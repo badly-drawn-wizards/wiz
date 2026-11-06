@@ -248,7 +248,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .dret i, .desc _ I => sorry
   | .darg q S D, .desc l I => sorry
   | .drec q j D, .desc l I => sorry
-  | .con x, .mu l I D i => sorry
+  | .con x, .mu l I D i _ => sorry
   | _, _ => sorry
 
 /-- **Exercise 1.7.** Infer the type of `t`. See the rules in the module docstring.
@@ -293,7 +293,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .ecase z m s bs => sorry
   | .desc l I => sorry
   | .delim v P a b c D => sorry
-  | .mu l I D i | .nu l I D i => sorry
+  | .mu l I D i _ | .nu l I D i _ => sorry
   | .ind l I D v P m i x => sorry
   | .out x => sorry
   | .coit l I D S st i s => sorry

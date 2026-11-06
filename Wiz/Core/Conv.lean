@@ -72,13 +72,13 @@ def delimMethodTys (g : Globals R) (l : Level) (I P : Val R) (w : R) : VTy R × 
 /-- `P : (i : I) → μ D i → Sort v` -/
 def indMotiveTy (g : Globals R) (l v : Level) (I D : Val R) (w : R) : VTy R :=
   eval g [D, I] (.pi "i" .default (.qlit w) (tv 1)
-    (.pi "_" .default (.qlit w) (.mu l (tv 2) (tv 1) (tv 0)) (.sort v)))
+    (.pi "_" .default (.qlit w) (.mu l (tv 2) (tv 1) (tv 0) none) (.sort v)))
 
 /-- `m : (0 i : I) → (xs : ⟦D⟧ (μ D) i) → (ih : All D (μ D) P i xs) → P i (con xs)` -/
 def indMethodTy (g : Globals R) (l v : Level) (I D P : Val R) (w : R) : VTy R :=
   -- i0 P1 D2 I3 ; xs0 i1 P2 D3 I4 ; ih0 xs1 i2 P3 D4 I5
-  let X₁ : Term R := .lam "j" (.mu l (tv 4) (tv 3) (tv 0))
-  let X₂ : Term R := .lam "j" (.mu l (tv 5) (tv 4) (tv 0))
+  let X₁ : Term R := .lam "j" (.mu l (tv 4) (tv 3) (tv 0) none)
+  let X₂ : Term R := .lam "j" (.mu l (tv 5) (tv 4) (tv 0) none)
   eval g [P, D, I] (.pi "i" .default (.qlit 0) (tv 2)
     (.pi "xs" .default (.qlit w) (tapps (Templates.interpTm l) [tv 3, tv 2, X₁, tv 0])
       (.pi "ih" .default (.qlit w) (tapps (Templates.allTm l v) [tv 4, tv 3, X₂, tv 2, tv 1, tv 0])
@@ -109,7 +109,7 @@ def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VTy R)
       | .ecase z m env bs, _ => ty := Closure.inst g m acc; acc := vEcase g z m acc env bs
       | .delim v P a b c, _ => ty := vApp g P acc; acc := vDelim g v P a b c acc
       | .ind l I D v P m i, _ => ty := vApp g (vApp g P i) acc; acc := vInd g l I D v P m i acc
-      | .out, .nu l I D i => ty := vInterp g l I D (nuFamily l I D) i; acc := vOut g acc
+      | .out, .nu l I D i _ => ty := vInterp g l I D (nuFamily l I D) i; acc := vOut g acc
       | _, _ => none
     pure ty
   | _ => none

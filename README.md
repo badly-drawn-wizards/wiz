@@ -177,7 +177,8 @@ Stage 4 has several steps, each committed separately:
 2. **Type-directed conversion, Σ / ⊤ / ⊥ with η** ✅ (below)
 3. **Observational equality** ✅ (below)
 4. **Quantity polymorphism** ✅ and **indexed descriptions, μ / ν** ✅ (below)
-5. Surface `inductive` / `structure` / `match`, compiled to eliminators
+5. Surface `inductive` / `structure` ✅ (below); dependent `match`, structural and
+   well-founded recursion, and copatterns are next
 
 ### 4a: universe polymorphism
 
@@ -349,3 +350,32 @@ once per node. Erased fields can be projected in erased positions (`Ctx.erased`)
 | 4.18 | `Core/Eval.lean`       | `eval` cases                                             |
 | 4.19 | `Core/Eval.lean`       | `vEcase`, `vDelim`, `vInd`, `vOut`: the computation rules |
 | 4.20 | `Core/Check.lean`      | typing rules                                             |
+
+### 4e (part 1): `inductive` and `structure`
+
+```
+inductive Vec (A : Type) : Nat → Type where
+  | nil : Vec A .zero
+  | cons {0 n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)
+
+structure Point where
+  x : Nat
+  y : Nat
+```
+
+An `inductive` elaborates to `Vec.desc` (its description), `Vec` (a nominal wrapper
+around `μ`, with a *display hint* so it prints as `Vec A n`), and constructors
+`Vec.nil`, `Vec.cons`, all checked by the kernel. Constructor fields are elaborated
+with `Vec` bound as a local variable: a field of type `Vec A j` becomes `Desc.rec`, the
+result type becomes `Desc.ret`. Positivity therefore holds by construction, and any
+other occurrence is an error. A `structure` is a Σ ending in `Unit` with constructor
+`S.mk`.
+
+`.c` (with or without arguments) is a constructor of the expected type. Applications
+containing such arguments are elaborated *expected type first* (`checkApp`), so
+`.cons .zero .nil : Vec Nat (.succ .zero)` resolves every constructor. Values print
+with their constructor names (`.cons .zero .zero .nil`, including erased fields).
+
+| #    | Where                  | What                                        |
+|------|------------------------|---------------------------------------------|
+| 4.21 | `Elab/Inductive.lean`  | `ctorDesc`: a constructor's description      |

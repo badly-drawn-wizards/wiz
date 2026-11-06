@@ -106,12 +106,18 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .darg q S D => sorry
   | .drec q j D => sorry
   | .delim v P a b c D => sorry
-  | .mu l I D i => sorry
+  | .mu l I D i h => sorry
   | .con x => sorry
   | .ind l I D v P m i x => sorry
-  | .nu l I D i => sorry
+  | .nu l I D i h => sorry
   | .out x => sorry
   | .coit l I D S st i s => sorry
+
+/-- Evaluate a display hint's arguments. -/
+partial def evalHint (g : Globals R) (env : Env R) :
+    Option (Name × List Level × List (Term R)) → Option (Name × List Level × List (Val R))
+  | some (n, us, as) => some (n, us, as.map (eval g env))
+  | none => none
 
 /-- **Exercise 1.2a.** Semantic application.
 A `lam` β-reduces; a neutral grows its spine (with `Elim.app`). Anything else is a
@@ -140,10 +146,10 @@ neutrals. `vInd` and `vOut` use the description templates of `Wiz.Core.Templates
 
 /-- `λ j. μ D j`, the family being defined, as a value. -/
 partial def muFamily (l : Level) (I D : Val R) : Val R :=
-  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0)))
+  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0) none))
 
 partial def nuFamily (l : Level) (I D : Val R) : Val R :=
-  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0)))
+  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0) none))
 
 /-- `⟦D⟧ X i` -/
 partial def vInterp (g : Globals R) (l : Level) (I D X i : Val R) : Val R :=

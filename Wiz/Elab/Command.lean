@@ -1,4 +1,4 @@
-import Wiz.Elab.Term
+import Wiz.Elab.Inductive
 import Wiz.Frontend.Parse
 
 /-!
@@ -44,21 +44,6 @@ structure CommandState (R : Type) where
   globals : Globals R := {}
   tables : ParserTables := Builtin.tables
   messages : Array Msg := #[]
-
-/-- Elaborate binders into a context, returning the context and the binders as
-`(name, binder info, quantity, type)`. -/
-def elabTelescope (ctx : LocalCtx R) (bs : List BinderView) :
-    ElabM R (LocalCtx R × Array (Name × BinderInfo × Term R × Term R)) := do
-  let mut ctx := ctx
-  let mut tele := #[]
-  for b in bs do
-    let ty ← match b.type with
-      | some s => pure (← Elab.checkType ctx s).1
-      | none => freshMeta ctx s!"the type of {b.name}"
-    let q ← Elab.elabQuantity ctx b.bi b.qty
-    tele := tele.push (b.name, b.bi, q, ty)
-    ctx := ctx.bind b.name (← evalIn ctx ty)
-  pure (ctx, tele)
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
@@ -137,6 +122,25 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
+  | "command.inductive" | "command.structure" =>
+    let name := ((cmd.getArg 1).getId?).getD "_"
+    let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
+    if s.globals.contains name then
+      report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
+    else
+      let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
+        else elabStructure cmd levelParams
+      match runElab s.globals elabCmd levelParams with
+      | .error e => report .error e.info e.msg
+      | .ok decls =>
+        let mut g := s.globals
+        for d in decls do
+          match addDecl g d with
+          | .ok g' => g := g'
+          | .error e =>
+            report .error cmd.info s!"kernel rejected {d.name}: {e}"
+            return
+        modify fun s => { s with globals := g }
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with
     | .ok tables => modify fun s => { s with tables }

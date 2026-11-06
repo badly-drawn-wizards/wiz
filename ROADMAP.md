@@ -17,6 +17,7 @@ questions are the actual decisions to make, not homework.
 | Equality | Observational type theory now: proof-irrelevant `Prop`, `Eq` computed by type, `cast` |
 | Universes | Lean-style level parameters, `Sort 0 = Prop` impredicative |
 | Quantities | First-class: a `Qty` type, binder quantities are terms, usage polynomials decided over finite rigs |
+| Matching / recursion / ν | Dependent (Cockx-style) pattern matching; structural (course-of-values) and well-founded recursion; copatterns compiled to `coit` |
 | Tags / desc ops / ν equality | Finite enums (labels as metadata); ⟦D⟧, All, hyps and map from a `Desc` eliminator via kernel templates; equality on ν is stuck for now |
 
 ## Suggested order
@@ -110,7 +111,7 @@ Proving Languages* (IJCAR 2020); the Lean 4 sources `Lean/Parser/*.lean`.
 **Determinism:** name metavariables and fresh variables with per-declaration counters,
 never by pointer address or global counters shared across threads.
 
-## Stage 4: Data as μ/ν, structural types, nominal wrappers (4a ✅ universes, 4b ✅ Σ/⊤/⊥, 4c ✅ OTT, 4d ✅ quantity polymorphism + descriptions, μ/ν)
+## Stage 4: Data as μ/ν, structural types, nominal wrappers (4a ✅ universes, 4b ✅ Σ/⊤/⊥, 4c ✅ OTT, 4d ✅ quantity polymorphism + descriptions, μ/ν, 4e ✅ inductive/structure)
 
 This stage has the most open design space.
 

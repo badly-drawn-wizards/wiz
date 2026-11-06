@@ -1,0 +1,23 @@
+-- Stage 4e: `inductive` and `structure`. `lake exe wiz check examples/inductive.wiz`
+
+inductive Nat where
+  | zero
+  | succ (n : Nat)
+
+-- An indexed family; the length is an erased field.
+inductive Vec (A : Type) : Nat → Type where
+  | nil : Vec A .zero
+  | cons {0 n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)
+
+#check Vec.cons
+
+-- `.c` picks the constructor from the expected type.
+def two : Vec Nat (.succ (.succ .zero)) := .cons .zero (.cons (.succ .zero) .nil)
+#reduce two
+
+structure Point where
+  x : Nat
+  y : Nat
+
+def p : Point := Point.mk .zero (.succ .zero)
+#reduce p.y

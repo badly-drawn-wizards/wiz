@@ -107,13 +107,14 @@ inductive Term (R : Type) where
   | drec (q j D : Term R)
   /-- the eliminator of descriptions, into `P : Desc I → Sort v` -/
   | delim (v : Level) (P mret marg mrec D : Term R)
-  /-- the least fixed point `μ D i` -/
-  | mu (l : Level) (I D i : Term R)
+  /-- the least fixed point `μ D i`. `hint` is display metadata: the nominal form
+  (`Vec A n`) to print instead; conversion ignores it. -/
+  | mu (l : Level) (I D i : Term R) (hint : Option (Name × List Level × List (Term R)))
   | con (x : Term R)
   /-- induction: `ind P m i x : P i x` for `x : μ D i` -/
   | ind (l : Level) (I D : Term R) (v : Level) (P m i x : Term R)
   /-- the greatest fixed point `ν D i` -/
-  | nu (l : Level) (I D i : Term R)
+  | nu (l : Level) (I D i : Term R) (hint : Option (Name × List Level × List (Term R)))
   /-- observation: `out x : ⟦D⟧ (ν D) i` -/
   | out (x : Term R)
   /-- coiteration: unfold a state `s : S i` with `step` -/
@@ -166,15 +167,19 @@ don't need a case per constructor. -/
   | .darg q S D => return .darg (← f 0 q) (← f 0 S) (← f 0 D)
   | .drec q j D => return .drec (← f 0 q) (← f 0 j) (← f 0 D)
   | .delim v P a b c D => return .delim (← fl v) (← f 0 P) (← f 0 a) (← f 0 b) (← f 0 c) (← f 0 D)
-  | .mu l I D i => return .mu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i)
+  | .mu l I D i h => return .mu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i) (← h.mapM (hintM fl f))
   | .con x => return .con (← f 0 x)
   | .ind l I D v P mt i x =>
     return .ind (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 mt) (← f 0 i) (← f 0 x)
-  | .nu l I D i => return .nu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i)
+  | .nu l I D i h => return .nu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i) (← h.mapM (hintM fl f))
   | .out x => return .out (← f 0 x)
   | .coit l I D S st i s =>
     return .coit (← fl l) (← f 0 I) (← f 0 D) (← f 0 S) (← f 0 st) (← f 0 i) (← f 0 s)
   | t => pure t
+where
+  hintM (fl : Level → m Level) (f : Nat → Term R → m (Term R)) :
+      Name × List Level × List (Term R) → m (Name × List Level × List (Term R))
+    | (n, us, as) => return (n, ← us.mapM fl, ← as.mapM (f 0))
 
 /-- Visit every immediate child (and level), ignoring the rebuilt term. -/
 def forChildren {m : Type → Type} [Monad m] (fl : Level → m Unit) (f : Nat → Term R → m Unit)
@@ -189,11 +194,34 @@ partial def lift (k : Nat) (cut : Nat := 0) : Term R → Term R
 /-- Abstract every occurrence of `target` (a term in the same context) as a new
 variable `var 0`, shifting the other free variables up. This is how the elaborator
 generalises a scrutinee in the expected type of a case (Lean's `kabstract`). -/
-partial def abstract [BEq R] (target : Term R) (t : Term R) (depth : Nat := 0) : Term R :=
+partial def abstract [BEq R] (t : Term R) (target : Term R) (depth : Nat := 0) : Term R :=
   if t == target.lift depth then .var depth else
   match t with
   | .var i => if i ≥ depth then .var (i + 1) else .var i
-  | t => Id.run <| t.mapChildrenM pure (fun d c => pure (abstract target c (depth + d)))
+  | t => Id.run <| t.mapChildrenM pure (fun d c => pure (abstract c target (depth + d)))
+
+/-- Remove variable `k`, which must not occur, lowering the variables above it. -/
+partial def strengthen? (k : Nat) (t : Term R) (depth : Nat := 0) : Option (Term R) :=
+  match t with
+  | .var i =>
+    if i < depth || i < k + depth then some (.var i)
+    else if i == k + depth then none
+    else some (.var (i - 1))
+  | t => t.mapChildrenM (m := Option) some (fun d c => strengthen? k c (depth + d))
+
+/-- Substitute `s` for variable `k`. `s` is a term in the context *without* `k`. -/
+partial def instantiateAt (t : Term R) (k : Nat) (s : Term R) (depth : Nat := 0) : Term R :=
+  match t with
+  | .var i =>
+    if i < depth || i < k + depth then .var i
+    else if i == k + depth then s.lift depth
+    else .var (i - 1)
+  | t => Id.run <| t.mapChildrenM pure (fun d c => pure (instantiateAt c k s (depth + d)))
+
+/-- The head and arguments of an application spine. -/
+def spine : Term R → Term R × List (Term R)
+  | .app f a => let (h, as) := spine f; (h, as ++ [a])
+  | t => (t, [])
 
 /-- Instantiate universe level parameters `ps` with `us`. -/
 partial def instLevels (ps : List Name) (us : List Level) (t : Term R) : Term R :=
