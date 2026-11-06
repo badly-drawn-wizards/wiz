@@ -73,17 +73,35 @@ instance : ToString ZeroOneMany where
 
 /-- **Exercise 0.1a.** Addition: "used in one place, then also used in another".
 Think about what `1 + 1` must be when there is no `2` available. -/
-def add (a b : ZeroOneMany) : ZeroOneMany :=
-  sorry
+--<sol
+def add : ZeroOneMany → ZeroOneMany → ZeroOneMany
+  | zero, b => b
+  | a, zero => a
+  | _, _ => many
+--|ex
+--| def add (a b : ZeroOneMany) : ZeroOneMany :=
+--|   sorry
+--sol>
 
 /-- **Exercise 0.1b.** Multiplication: "passed `b`-many times to a binder of quantity `a`". -/
-def mul (a b : ZeroOneMany) : ZeroOneMany :=
-  sorry
+--<sol
+def mul : ZeroOneMany → ZeroOneMany → ZeroOneMany
+  | zero, _ => zero
+  | _, zero => zero
+  | one, b => b
+  | a, one => a
+  | many, many => many
+--|ex
+--| def mul (a b : ZeroOneMany) : ZeroOneMany :=
+--|   sorry
+--sol>
 
 /-- **Exercise 0.1c.** Compatibility: may a variable declared `declared` be used `used` times?
 Hint: an ω variable tolerates any usage; a linear one tolerates exactly one use. -/
 def le (used declared : ZeroOneMany) : Bool :=
-  sorry
+  --<sol
+  used == declared || declared == many
+  --sol>
 
 /-- **Exercise 0.2.** Prove the laws. Once 0.1 is done, almost all of these fall to
 `intro a b c; cases a <;> cases b <;> cases c <;> rfl` (or `decide` on the
@@ -94,20 +112,76 @@ instance : QRig ZeroOneMany where
   add := add
   mul := mul
   le := le
-  add_assoc := sorry
-  add_comm := sorry
-  zero_add := sorry
-  mul_assoc := sorry
-  one_mul := sorry
-  mul_one := sorry
-  zero_mul := sorry
-  mul_zero := sorry
-  left_distrib := sorry
-  right_distrib := sorry
-  le_refl := sorry
-  le_trans := sorry
-  add_le_add := sorry
-  mul_le_mul := sorry
+  --<sol
+  add_assoc := by intro a b c; cases a <;> cases b <;> cases c <;> rfl
+  --|ex
+  --| add_assoc := sorry
+  --sol>
+  --<sol
+  add_comm := by intro a b; cases a <;> cases b <;> rfl
+  --|ex
+  --| add_comm := sorry
+  --sol>
+  --<sol
+  zero_add := by intro a; cases a <;> rfl
+  --|ex
+  --| zero_add := sorry
+  --sol>
+  --<sol
+  mul_assoc := by intro a b c; cases a <;> cases b <;> cases c <;> rfl
+  --|ex
+  --| mul_assoc := sorry
+  --sol>
+  --<sol
+  one_mul := by intro a; cases a <;> rfl
+  --|ex
+  --| one_mul := sorry
+  --sol>
+  --<sol
+  mul_one := by intro a; cases a <;> rfl
+  --|ex
+  --| mul_one := sorry
+  --sol>
+  --<sol
+  zero_mul := by intro a; cases a <;> rfl
+  --|ex
+  --| zero_mul := sorry
+  --sol>
+  --<sol
+  mul_zero := by intro a; cases a <;> rfl
+  --|ex
+  --| mul_zero := sorry
+  --sol>
+  --<sol
+  left_distrib := by intro a b c; cases a <;> cases b <;> cases c <;> rfl
+  --|ex
+  --| left_distrib := sorry
+  --sol>
+  --<sol
+  right_distrib := by intro a b c; cases a <;> cases b <;> cases c <;> rfl
+  --|ex
+  --| right_distrib := sorry
+  --sol>
+  --<sol
+  le_refl := by intro a; cases a <;> rfl
+  --|ex
+  --| le_refl := sorry
+  --sol>
+  --<sol
+  le_trans := by intro a b c; cases a <;> cases b <;> cases c <;> decide
+  --|ex
+  --| le_trans := sorry
+  --sol>
+  --<sol
+  add_le_add := by intro a b c d; cases a <;> cases b <;> cases c <;> cases d <;> decide
+  --|ex
+  --| add_le_add := sorry
+  --sol>
+  --<sol
+  mul_le_mul := by intro a b c d; cases a <;> cases b <;> cases c <;> cases d <;> decide
+  --|ex
+  --| mul_le_mul := sorry
+  --sol>
 
 end ZeroOneMany
 

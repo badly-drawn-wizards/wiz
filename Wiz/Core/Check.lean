@@ -137,7 +137,14 @@ variable [QRig R] [DecidableEq R] [ToString R]
 pop the binder's own usage off the head of the vector and check it is compatible
 with `q` (using `QRig.le`), returning the rest. Throw `quantityMismatch` otherwise. -/
 def popUsage (x : Name) (q : R) : Usage R → TCM (Usage R)
-  | u => sorry
+  --<sol
+  | used :: rest =>
+    if QRig.le used q then pure rest
+    else throw (.quantityMismatch x (toString q) (toString used))
+  | [] => throw (.other "internal error: usage vector underflow")
+  --|ex
+  --| | u => sorry
+  --sol>
 
 mutual
 
@@ -145,22 +152,74 @@ mutual
 rules here and fall back to `infer` + `conv` for everything else. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, ty with
-  | .lam x body, .pi _ q dom cod => sorry
-  | .letE x q tty val body, _ => sorry
-  | _, _ => sorry
+  --<sol
+  | .lam x body, .pi _ q dom cod => do
+    let u ← check (ctx.bind x q dom) body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
+    popUsage x q u
+  | .letE x q tty val body, _ => do
+    let _ ← checkType ctx tty
+    let vty := ctx.eval tty
+    let uv ← check ctx val vty
+    let ub ← check (ctx.define x q vty (ctx.eval val)) body ty
+    let ub ← popUsage x q ub
+    pure (q • uv + ub)
+  | _, _ => do
+    let (ty', u) ← infer ctx t
+    unless conv ctx.globals ctx.lvl ty ty' do
+      throw (.typeMismatch (ctx.showVal ty) (ctx.showVal ty'))
+    pure u
+  --|ex
+  --| | .lam x body, .pi _ q dom cod => sorry
+  --| | .letE x q tty val body, _ => sorry
+  --| | _, _ => sorry
+  --sol>
 
 /-- **Exercise 1.7.** Infer the type of `t`. See the rules in the module docstring.
 `checkType` (below) handles the "`A type@i`" premises. -/
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   match t with
-  | .var ix => sorry
-  | .const n => sorry
-  | .sort l => sorry
-  | .pi x q dom cod => sorry
+  --<sol
+  | .var ix => pure (ctx.types[ix]!, Usage.single ctx.lvl ix)
+  | .const n => match ctx.globals.find? n with
+    | some d => pure (Wiz.eval ctx.globals [] d.type, Usage.zeros ctx.lvl)
+    | none => throw (.unboundGlobal n)
+  | .sort l => pure (.sort (l + 1), Usage.zeros ctx.lvl)
+  | .pi x q dom cod => do
+    let i ← checkType ctx dom
+    let j ← checkType (ctx.bind x q (ctx.eval dom)) cod
+    pure (.sort (max i j), Usage.zeros ctx.lvl)
+  --|ex
+  --| | .var ix => sorry
+  --| | .const n => sorry
+  --| | .sort l => sorry
+  --| | .pi x q dom cod => sorry
+  --sol>
   | .lam .. => throw (.cannotInfer (ctx.showTerm t))
-  | .app f a => sorry
-  | .letE x q tty val body => sorry
-  | .ann tm tty => sorry
+  --<sol
+  | .app f a => do
+    let (fty, uf) ← infer ctx f
+    match fty with
+    | .pi _ q dom cod =>
+      let ua ← check ctx a dom
+      pure (Closure.inst ctx.globals cod (ctx.eval a), uf + q • ua)
+    | _ => throw (.notAFunction (ctx.showTerm f) (ctx.showVal fty))
+  | .letE x q tty val body => do
+    let _ ← checkType ctx tty
+    let vty := ctx.eval tty
+    let uv ← check ctx val vty
+    let (bty, ub) ← infer (ctx.define x q vty (ctx.eval val)) body
+    let ub ← popUsage x q ub
+    pure (bty, q • uv + ub)
+  | .ann tm tty => do
+    let _ ← checkType ctx tty
+    let vty := ctx.eval tty
+    let u ← check ctx tm vty
+    pure (vty, u)
+  --|ex
+  --| | .app f a => sorry
+  --| | .letE x q tty val body => sorry
+  --| | .ann tm tty => sorry
+  --sol>
 
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.
 The usage is discarded: type positions are erased. -/

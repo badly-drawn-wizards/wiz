@@ -36,24 +36,47 @@ mutual
 * `letE`: evaluate the value and push it onto the environment for the body.
 * `ann`: annotations have no computational content. -/
 partial def eval (g : Globals R) (env : Env R) : Term R → Val R
-  | .var ix => sorry
-  | .const n => sorry
-  | .sort l => sorry
-  | .pi x q dom cod => sorry
-  | .lam x body => sorry
-  | .app f a => sorry
-  | .letE _ _ _ val body => sorry
-  | .ann tm _ => sorry
+  --<sol
+  | .var ix => env[ix]!
+  | .const n => match g.find? n with
+    | some { value := some v, .. } => eval g [] v
+    | _ => .neutral (.global n) #[]
+  | .sort l => .sort l
+  | .pi x q dom cod => .pi x q (eval g env dom) (.mk env cod)
+  | .lam x body => .lam x (.mk env body)
+  | .app f a => vApp g (eval g env f) (eval g env a)
+  | .letE _ _ _ val body => eval g (eval g env val :: env) body
+  | .ann tm _ => eval g env tm
+  --|ex
+  --| | .var ix => sorry
+  --| | .const n => sorry
+  --| | .sort l => sorry
+  --| | .pi x q dom cod => sorry
+  --| | .lam x body => sorry
+  --| | .app f a => sorry
+  --| | .letE _ _ _ val body => sorry
+  --| | .ann tm _ => sorry
+  --sol>
 
 /-- **Exercise 1.2a.** Semantic application.
 A `lam` β-reduces; a neutral grows its spine. Anything else is a type error that the
 checker should have ruled out (use `panic!`). -/
 partial def vApp (g : Globals R) : Val R → Val R → Val R
-  | f, a => sorry
+  --<sol
+  | .lam _ c, a => Closure.inst g c a
+  | .neutral h sp, a => .neutral h (sp.push a)
+  | _, _ => panic! "vApp: ill-typed application"
+  --|ex
+  --| | f, a => sorry
+  --sol>
 
 /-- **Exercise 1.2b.** Instantiate a closure with a value for its bound variable. -/
 partial def Closure.inst (g : Globals R) : Closure R → Val R → Val R
-  | .mk env body, a => sorry
+  --<sol
+  | .mk env body, a => eval g (a :: env) body
+  --|ex
+  --| | .mk env body, a => sorry
+  --sol>
 
 end
 
@@ -61,7 +84,18 @@ end
 To quote under a binder, instantiate the closure with `Val.var l` and quote the
 result at `l + 1`. Remember to convert levels back into indices. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
-  | v => sorry
+  --<sol
+  | .neutral h sp =>
+    let hd : Term R := match h with
+      | .local x => .var (l - x - 1)
+      | .global n => .const n
+    sp.foldl (fun acc v => .app acc (quote g l v)) hd
+  | .sort k => .sort k
+  | .pi x q a b => .pi x q (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
+  | .lam x b => .lam x (quote g (l + 1) (Closure.inst g b (Val.var l)))
+  --|ex
+  --| | v => sorry
+  --sol>
 
 /-- Normal form of a closed term. -/
 def nf (g : Globals R) (t : Term R) : Term R :=

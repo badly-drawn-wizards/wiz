@@ -26,6 +26,20 @@ Cases to handle:
 * `neutral` vs `neutral`: same head, same spine length, pointwise convertible.
 * otherwise `false`. -/
 partial def conv (g : Globals R) (l : Lvl) : Val R → Val R → Bool
-  | a, b => sorry
+  --<sol
+  | .sort a, .sort b => a == b
+  | .pi _ q a b, .pi _ q' a' b' =>
+    q == q' && conv g l a a' &&
+      conv g (l + 1) (Closure.inst g b (Val.var l)) (Closure.inst g b' (Val.var l))
+  | .lam _ b, .lam _ b' =>
+    conv g (l + 1) (Closure.inst g b (Val.var l)) (Closure.inst g b' (Val.var l))
+  | .lam _ b, t => conv g (l + 1) (Closure.inst g b (Val.var l)) (vApp g t (Val.var l))
+  | t, .lam _ b => conv g (l + 1) (vApp g t (Val.var l)) (Closure.inst g b (Val.var l))
+  | .neutral h sp, .neutral h' sp' =>
+    h == h' && sp.size == sp'.size && (sp.zip sp').all fun (a, b) => conv g l a b
+  | _, _ => false
+  --|ex
+  --| | a, b => sorry
+  --sol>
 
 end Wiz
