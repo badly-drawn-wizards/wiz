@@ -35,6 +35,12 @@ instance : QRig Unit where
   add_le_add _ _ _ _ _ _ := rfl
   mul_le_mul _ _ _ _ _ _ := rfl
 
+instance : QuantitySyntax Unit where
+  ofLiteral _ := some ()
+  explicitDefault := ()
+  implicitDefault := ()
+  display _ := ""
+
 /-! ## `Nat`: exact usage counting -/
 
 instance : QRig Nat where
@@ -53,6 +59,13 @@ instance : QRig Nat where
   le_trans _ _ _ h₁ h₂ := by simp_all
   add_le_add _ _ _ _ h₁ h₂ := by simp_all
   mul_le_mul _ _ _ _ h₁ h₂ := by simp_all
+
+/-- There is no ω in `Nat`, so explicit binders default to exactly once. -/
+instance : QuantitySyntax Nat where
+  ofLiteral := String.toNat?
+  explicitDefault := 1
+  implicitDefault := 0
+  display := toString
 
 /-! ## `ZeroOneMany`: Idris 2's quantities -/
 
@@ -182,6 +195,16 @@ instance : QRig ZeroOneMany where
   --|ex
   --| mul_le_mul := sorry
   --sol>
+
+instance : QuantitySyntax ZeroOneMany where
+  ofLiteral
+    | "0" => some zero
+    | "1" => some one
+    | "ω" => some many
+    | _ => none
+  explicitDefault := many
+  implicitDefault := zero
+  display := toString
 
 end ZeroOneMany
 

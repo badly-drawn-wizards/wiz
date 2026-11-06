@@ -10,14 +10,14 @@ open Wiz Raw ZeroOneMany
 namespace Tests.Check
 
 /-- Expect a list of declarations to check. -/
-def accepts {R : Type} [QRig R] [DecidableEq R] [ToString R] (ds : List (Decl R)) : IO Unit :=
+def accepts {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R] (ds : List (Decl R)) : IO Unit :=
   match addDecls {} ds with
   | .ok _ => pure ()
   | .error e => throw (IO.userError s!"rejected: {e}")
 
 /-- Expect the *last* declaration to be rejected, with an error satisfying `p`.
 All earlier declarations must check. -/
-def rejects {R : Type} [QRig R] [DecidableEq R] [ToString R]
+def rejects {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
     (ds : List (Decl R)) (p : TypeError → Bool) (what : String) : IO Unit := do
   let g ← match addDecls {} ds.dropLast with
     | .ok g => pure g

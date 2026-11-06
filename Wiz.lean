@@ -16,3 +16,9 @@ import Wiz.Parser.Interp
 import Wiz.Parser.Builtin
 import Wiz.Parser.SyntaxCmd
 import Wiz.Frontend.Parse
+import Wiz.Elab.Basic
+import Wiz.Elab.Unify
+import Wiz.Elab.Zonk
+import Wiz.Elab.Term
+import Wiz.Elab.Command
+import Wiz.Frontend.Frontend

@@ -34,7 +34,8 @@ mutual
 * `pi`/`lam`: don't evaluate the body; capture it with `env` in a `Closure`.
 * `app`: evaluate both sides and use `vApp`.
 * `letE`: evaluate the value and push it onto the environment for the body.
-* `ann`: annotations have no computational content. -/
+* `ann`: annotations have no computational content.
+* `mvar`: (given) metavariables are stuck neutrals. -/
 partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --<sol
   | .var ix => env[ix]!
@@ -42,20 +43,22 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
     | some { value := some v, .. } => eval g [] v
     | _ => .neutral (.global n) #[]
   | .sort l => .sort l
-  | .pi x q dom cod => .pi x q (eval g env dom) (.mk env cod)
+  | .pi x bi q dom cod => .pi x bi q (eval g env dom) (.mk env cod)
   | .lam x body => .lam x (.mk env body)
   | .app f a => vApp g (eval g env f) (eval g env a)
   | .letE _ _ _ val body => eval g (eval g env val :: env) body
   | .ann tm _ => eval g env tm
+  | .mvar m => .neutral (.mvar m) #[]
   --|ex
   --| | .var ix => sorry
   --| | .const n => sorry
   --| | .sort l => sorry
-  --| | .pi x q dom cod => sorry
+  --| | .pi x bi q dom cod => sorry
   --| | .lam x body => sorry
   --| | .app f a => sorry
   --| | .letE _ _ _ val body => sorry
   --| | .ann tm _ => sorry
+  --| | .mvar m => .neutral (.mvar m) #[]
   --sol>
 
 /-- **Exercise 1.2a.** Semantic application.
@@ -82,16 +85,18 @@ end
 
 /-- **Exercise 1.3.** Read a value back into syntax in a context of `l` local variables.
 To quote under a binder, instantiate the closure with `Val.var l` and quote the
-result at `l + 1`. Remember to convert levels back into indices. -/
+result at `l + 1`. Remember to convert levels back into indices. A neutral's head can
+be a local, a global or a metavariable. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   --<sol
   | .neutral h sp =>
     let hd : Term R := match h with
       | .local x => .var (l - x - 1)
       | .global n => .const n
+      | .mvar m => .mvar m
     sp.foldl (fun acc v => .app acc (quote g l v)) hd
   | .sort k => .sort k
-  | .pi x q a b => .pi x q (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
+  | .pi x bi q a b => .pi x bi q (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
   | .lam x b => .lam x (quote g (l + 1) (Closure.inst g b (Val.var l)))
   --|ex
   --| | v => sorry

@@ -19,7 +19,7 @@ variable {R : Type} [DecidableEq R]
 
 Cases to handle:
 * `sort` vs `sort`: equal levels (no cumulativity yet).
-* `pi` vs `pi`: equal quantities, convertible domains, convertible codomains under a
+* `pi` vs `pi`: (binder info is irrelevant) equal quantities, convertible domains, convertible codomains under a
   fresh variable. (Should `(x :1 A) → B` and `(x :ω A) → B` be convertible? No --
   subtyping on quantities is a design choice you can revisit later.)
 * `lam` vs `lam`, and η: `lam` vs anything, anything vs `lam`.
@@ -28,7 +28,7 @@ Cases to handle:
 partial def conv (g : Globals R) (l : Lvl) : Val R → Val R → Bool
   --<sol
   | .sort a, .sort b => a == b
-  | .pi _ q a b, .pi _ q' a' b' =>
+  | .pi _ _ q a b, .pi _ _ q' a' b' =>
     q == q' && conv g l a a' &&
       conv g (l + 1) (Closure.inst g b (Val.var l)) (Closure.inst g b' (Val.var l))
   | .lam _ b, .lam _ b' =>

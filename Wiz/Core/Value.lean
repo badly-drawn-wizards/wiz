@@ -27,6 +27,8 @@ abbrev Lvl := Nat
 inductive Head where
   | local (lvl : Lvl)
   | global (name : Name)
+  /-- an unsolved (as far as the kernel knows) metavariable -/
+  | mvar (id : Nat)
   deriving Repr, BEq, DecidableEq
 
 mutual
@@ -34,7 +36,7 @@ inductive Val (R : Type) where
   /-- `head spine[0] spine[1] ...` -/
   | neutral (head : Head) (spine : Array (Val R))
   | sort (level : Nat)
-  | pi (x : Name) (q : R) (dom : Val R) (cod : Closure R)
+  | pi (x : Name) (bi : BinderInfo) (q : R) (dom : Val R) (cod : Closure R)
   | lam (x : Name) (body : Closure R)
 
 /-- A body waiting for the value of its bound variable. `env` gives the values of the

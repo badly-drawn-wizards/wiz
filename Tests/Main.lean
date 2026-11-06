@@ -2,6 +2,7 @@ import Tests.Rig
 import Tests.Eval
 import Tests.Check
 import Tests.Parser
+import Tests.Elab
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -11,7 +12,7 @@ open Tests
 
 def groups : List Group :=
   [Rig.group, Eval.evalGroup, Eval.convGroup, Check.mlttGroup, Check.qttGroup,
-   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup]
+   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group]
 
 /-- `lake test` runs everything; `lake test -- conv rig` runs only groups whose name
 starts with one of the arguments. -/

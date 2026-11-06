@@ -121,7 +121,7 @@ def define (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) (val : Val R) : Ctx R :
 
 def eval (ctx : Ctx R) (t : Term R) : Val R := Wiz.eval ctx.globals ctx.env t
 
-variable [ToString R]
+variable [QuantitySyntax R] [DecidableEq R]
 
 /-- Render a value for error messages. -/
 def showVal (ctx : Ctx R) (v : Val R) : String :=
@@ -131,7 +131,7 @@ def showTerm (ctx : Ctx R) (t : Term R) : String := t.pretty ctx.names
 
 end Ctx
 
-variable [QRig R] [DecidableEq R] [ToString R]
+variable [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
 /-- **Exercise 1.5.** Leave the scope of a binder `x` declared at quantity `q`:
 pop the binder's own usage off the head of the vector and check it is compatible
@@ -153,7 +153,7 @@ rules here and fall back to `infer` + `conv` for everything else. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, ty with
   --<sol
-  | .lam x body, .pi _ q dom cod => do
+  | .lam x body, .pi _ _ q dom cod => do
     let u ← check (ctx.bind x q dom) body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
     popUsage x q u
   | .letE x q tty val body, _ => do
@@ -169,7 +169,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
       throw (.typeMismatch (ctx.showVal ty) (ctx.showVal ty'))
     pure u
   --|ex
-  --| | .lam x body, .pi _ q dom cod => sorry
+  --| | .lam x body, .pi _ _ q dom cod => sorry
   --| | .letE x q tty val body, _ => sorry
   --| | _, _ => sorry
   --sol>
@@ -178,13 +178,14 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
 `checkType` (below) handles the "`A type@i`" premises. -/
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   match t with
+  | .mvar m => throw (.other s!"the kernel does not accept metavariables (?m{m})")
   --<sol
   | .var ix => pure (ctx.types[ix]!, Usage.single ctx.lvl ix)
   | .const n => match ctx.globals.find? n with
     | some d => pure (Wiz.eval ctx.globals [] d.type, Usage.zeros ctx.lvl)
     | none => throw (.unboundGlobal n)
   | .sort l => pure (.sort (l + 1), Usage.zeros ctx.lvl)
-  | .pi x q dom cod => do
+  | .pi x _ q dom cod => do
     let i ← checkType ctx dom
     let j ← checkType (ctx.bind x q (ctx.eval dom)) cod
     pure (.sort (max i j), Usage.zeros ctx.lvl)
@@ -192,14 +193,14 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .var ix => sorry
   --| | .const n => sorry
   --| | .sort l => sorry
-  --| | .pi x q dom cod => sorry
+  --| | .pi x _ q dom cod => sorry
   --sol>
   | .lam .. => throw (.cannotInfer (ctx.showTerm t))
   --<sol
   | .app f a => do
     let (fty, uf) ← infer ctx f
     match fty with
-    | .pi _ q dom cod =>
+    | .pi _ _ q dom cod =>
       let ua ← check ctx a dom
       pure (Closure.inst ctx.globals cod (ctx.eval a), uf + q • ua)
     | _ => throw (.notAFunction (ctx.showTerm f) (ctx.showVal fty))
