@@ -5,6 +5,15 @@ Each stage ends in a working, tested system. This document covers the order, the
 reasons for it, and the design questions you'll face at each stage. The design
 questions are the actual decisions to make, not homework.
 
+## Decisions so far
+
+| Topic | Decision |
+|---|---|
+| Surface syntax | Lean-like: `def f (x : A) : B := ...`, `fun x => ...` |
+| Quantities | Idris 2 prefix: `(1 x : A) → B`, `{0 A : Type}`. Omitted: ω explicit, 0 implicit |
+| Data | μ/ν over a universe of indexed descriptions |
+| Recursion | Kernel has eliminators only; pattern matching compiles to them |
+
 ## Suggested order
 
 ```
@@ -55,7 +64,7 @@ Reading:
 - Abel & Bernardy, *A Unified View of Modalities in Type Systems* (ICFP 2020)
 - Moon, Eades & Orchard, *Graded Modal Dependent Type Theory* (ESOP 2021)
 
-## Stage 2: Surface syntax with an extensible parser
+## Stage 2: Surface syntax with an extensible parser ✅ scaffolded
 
 Copy Lean's architecture, because it is what makes Lean extensible:
 

@@ -1,0 +1,13 @@
+-- Stage 2: everything here parses; nothing is type checked yet.
+
+def id {0 A : Type} (1 x : A) : A := x
+
+def twice {0 A : Type} (f : A → A) (x : A) : A :=
+  let y := f x
+  f y
+
+-- New syntax takes effect immediately.
+syntax:65 term:65 " + " term:66 : term
+syntax "if" term "then" term "else" term : term
+
+#check fun a b => if a then a + b else b

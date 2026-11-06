@@ -12,7 +12,7 @@ In tracked files, a block
     <indent>--sol>
 
 becomes the exercise lines (with `--| ` stripped), or `<indent>sorry` when there is
-no `--|ex` part. Files listed in .solutions-only are not copied. Tracked files in DST
+no `--|ex` part. An empty `--|ex` part deletes the block (solution-only helpers). Files listed in .solutions-only are not copied. Tracked files in DST
 that no longer exist in SRC are deleted.
 """
 import os, re, subprocess, sys
@@ -47,6 +47,8 @@ def strip(text: str, path: str) -> str:
             i += 1
         if i == len(lines):
             sys.exit(f"{path}:{start+1}: unterminated --<sol")
+        if not in_ex and indent == "":
+            sys.exit(f"{path}:{start+1}: top-level block needs an --|ex part (empty to delete)")
         out.extend(ex if in_ex else [indent + "sorry"])
         i += 1
     return "\n".join(out)
