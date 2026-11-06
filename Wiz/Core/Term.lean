@@ -71,6 +71,20 @@ inductive Term (R : Type) where
   | empty (level : Level)
   /-- `absurd t : motive`, given `t : empty l` -/
   | absurd (motive t : Term R)
+  -- Stage 4c: observational equality.
+  /-- `a = b` at type `A : Type u`. A proposition that *computes* by `A`. -/
+  | eq (A a b : Term R)
+  /-- `A = B` for types (what `eq (Sort l) A B` computes to); no level needed -/
+  | eqTy (A B : Term R)
+  /-- `refl a : a = a` (`A` is the type of `a`) -/
+  | refl (A a : Term R)
+  /-- `refl X : X = X` for a type `X` -/
+  | reflTy (X : Term R)
+  /-- `cast A B e t : B` given `e : A = B` and `t : A`. Computes by `A` and `B`. -/
+  | cast (A B e t : Term R)
+  /-- `transp A a P p b e : P b e` given `P : (b : A) → a = b → Prop`, `p : P a (refl a)`
+  and `e : a = b`. Transport into propositions; with `cast` it gives `J`. -/
+  | transp (A a P p b e : Term R)
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/
@@ -87,7 +101,7 @@ namespace Term
 variable {R : Type}
 
 /-- Instantiate universe level parameters `ps` with `us`. -/
-def instLevels (ps : List Name) (us : List Level) : Term R → Term R
+partial def instLevels (ps : List Name) (us : List Level) : Term R → Term R
   | .sort l => .sort (l.instParams ps us)
   | .const n ls => .const n (ls.map (·.instParams ps us))
   | .pi x bi q a b => .pi x bi q (instLevels ps us a) (instLevels ps us b)
@@ -104,10 +118,17 @@ def instLevels (ps : List Name) (us : List Level) : Term R → Term R
   | .unit l => .unit (l.instParams ps us)
   | .empty l => .empty (l.instParams ps us)
   | .absurd m t => .absurd (instLevels ps us m) (instLevels ps us t)
+  | .eq A a b => .eq (instLevels ps us A) (instLevels ps us a) (instLevels ps us b)
+  | .eqTy A B => .eqTy (instLevels ps us A) (instLevels ps us B)
+  | .refl A a => .refl (instLevels ps us A) (instLevels ps us a)
+  | .reflTy X => .reflTy (instLevels ps us X)
+  | .cast A B e t => .cast (instLevels ps us A) (instLevels ps us B) (instLevels ps us e) (instLevels ps us t)
+  | .transp A a P p b e => .transp (instLevels ps us A) (instLevels ps us a) (instLevels ps us P)
+      (instLevels ps us p) (instLevels ps us b) (instLevels ps us e)
   | t => t
 
 /-- All level parameter names mentioned in a term. -/
-def levelParamsUsed : Term R → List Name
+partial def levelParamsUsed : Term R → List Name
   | .sort l => l.params
   | .const _ ls => ls.flatMap Level.params
   | .pi _ _ _ a b | .app a b | .ann a b => levelParamsUsed a ++ levelParamsUsed b
@@ -117,6 +138,11 @@ def levelParamsUsed : Term R → List Name
   | .fst t | .snd t => levelParamsUsed t
   | .split _ s _ m _ _ b => levelParamsUsed s ++ levelParamsUsed m ++ levelParamsUsed b
   | .unit l | .empty l => l.params
+  | .eq A a b => levelParamsUsed A ++ levelParamsUsed a ++ levelParamsUsed b
+  | .eqTy A B | .refl A B => levelParamsUsed A ++ levelParamsUsed B
+  | .cast A B e t => levelParamsUsed A ++ levelParamsUsed B ++ levelParamsUsed e ++ levelParamsUsed t
+  | .transp A a P p b e => [A, a, P, p, b, e].flatMap levelParamsUsed
+  | .reflTy X => levelParamsUsed X
   | _ => []
 
 end Term

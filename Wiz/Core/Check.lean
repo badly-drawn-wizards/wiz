@@ -79,6 +79,29 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── absurd
     Γ ⊢ absurd M t ⇒ M ⊣ U
 
+## Observational equality (stage 4c)
+
+    Γ ⊢ A type@l   l ≠ 0 (A is not a proposition)   Γ ⊢ a, b ⇐ A
+    ──────────────────────────────── eq            (a proposition)
+    Γ ⊢ a = b ⇒ Prop ⊣ 0ₙ
+
+    Γ ⊢ A type@l    Γ ⊢ B type@l
+    ──────────────────────────────── eqTy
+    Γ ⊢ A = B ⇒ Prop ⊣ 0ₙ
+
+    Γ ⊢ refl a ⇒ (a = a) ⊣ 0ₙ          Γ ⊢ refl X ⇒ (X = X) ⊣ 0ₙ
+
+    Γ ⊢ A, B type@l    Γ ⊢ e ⇐ (A = B)    Γ ⊢ t ⇐ A ⊣ U
+    ──────────────────────────────── cast
+    Γ ⊢ cast A B e t ⇒ B ⊣ U
+
+    Γ ⊢ a, b ⇐ A    Γ ⊢ P ⇐ (b :0 A) → (_ :0 a = b) → Prop
+    Γ ⊢ p ⇐ P a (refl a)    Γ ⊢ e ⇐ (a = b)
+    ──────────────────────────────── transp
+    Γ ⊢ transp A a P p b e ⇒ P b e ⊣ 0ₙ
+
+Proofs carry no usage: they are erased, and conversion never looks at them.
+
 `split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
 using both on a linear pair uses it twice.
 
@@ -134,6 +157,8 @@ structure Ctx (R : Type) where
   lvl   : Lvl := 0
 
 namespace Ctx
+
+variable [Zero R] [DecidableEq R]
 
 /-- Go under a binder: the new variable is a fresh neutral. -/
 def bind (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) : Ctx R :=
@@ -224,6 +249,8 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
 /-- **Exercise 1.7.** Infer the type of `t`. See the rules in the module docstring.
 `checkType` (below) handles the "`A type@i`" premises.
 
+**Exercise 4.14** (stage 4c): `eq`, `eqTy`, `refl`, `reflTy`, `cast`, `transp`.
+
 **Exercise 4.7b** (stage 4b): `sigma`, `fst`, `snd`, `split`, `unit`, `empty`,
 `absurd`. `pair` and `tt` can only be checked. -/
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
@@ -309,6 +336,54 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | .empty _ => pure (ctx.eval m, u)
     | _ => throw (.typeMismatch "an empty type" (ctx.showVal ty))
   | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
+  | .eq A a b => do
+    let l ← checkType ctx A
+    unless l.isNeverZero do
+      throw (.other s!"equality is for types in Type u, not propositions: {ctx.showTerm A}")
+    let vA := ctx.eval A
+    let _ ← check ctx a vA
+    let _ ← check ctx b vA
+    pure (.sort 0, Usage.zeros ctx.lvl)
+  | .eqTy A B => do
+    let l ← checkType ctx A
+    let l' ← checkType ctx B
+    unless l.equiv l' do throw (.other "type equality between different universes")
+    pure (.sort 0, Usage.zeros ctx.lvl)
+  | .refl A a => do
+    let l ← checkType ctx A
+    unless l.isNeverZero do throw (.other "refl is for terms of types in Type u")
+    let _ ← check ctx a (ctx.eval A)
+    let va := ctx.eval a
+    pure (vEq ctx.globals (ctx.eval A) va va, Usage.zeros ctx.lvl)
+  | .reflTy X => do
+    let _ ← checkType ctx X
+    let vX := ctx.eval X
+    pure (vEqType ctx.globals vX vX, Usage.zeros ctx.lvl)
+  | .cast A B e t => do
+    let l ← checkType ctx A
+    let l' ← checkType ctx B
+    unless l.equiv l' do throw (.other "cast between different universes")
+    let vA := ctx.eval A
+    let vB := ctx.eval B
+    let _ ← check ctx e (vEqType ctx.globals vA vB)
+    let u ← check ctx t vA
+    pure (vB, u)
+  | .transp A a P p b e => do
+    let _ ← checkType ctx A
+    let vA := ctx.eval A
+    let _ ← check ctx a vA
+    let va := ctx.eval a
+    -- (b :0 A) → (_ :0 a = b) → Prop, with env [a, A]
+    let motiveTy : Val R := .pi "b" .default 0 vA
+      (.mk [va, vA] (.pi "_" .default 0 (.eq (.var 2) (.var 1) (.var 0)) (.sort 0)))
+    let _ ← check ctx P motiveTy
+    let vP := ctx.eval P
+    let g := ctx.globals
+    let _ ← check ctx p (vApp g (vApp g vP va) (.neutral (.refl vA va) #[]))
+    let _ ← check ctx b vA
+    let vb := ctx.eval b
+    let _ ← check ctx e (vEq g vA va vb)
+    pure (vApp g (vApp g vP vb) (ctx.eval e), Usage.zeros ctx.lvl)
   --|ex
   --| | .app f a => sorry
   --| | .letE x q tty val body => sorry
@@ -322,6 +397,13 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .empty l => sorry
   --| | .absurd m t => sorry
   --| | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
+  --| -- Exercise 4.14
+  --| | .eq A a b => sorry
+  --| | .eqTy A B => sorry
+  --| | .refl A a => sorry
+  --| | .reflTy X => sorry
+  --| | .cast A B e t => sorry
+  --| | .transp A a P p b e => sorry
   --sol>
 
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.

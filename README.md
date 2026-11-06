@@ -174,8 +174,8 @@ Stage 4 has several steps, each committed separately:
 
 1. **Universe polymorphism** ✅ (below)
 2. **Type-directed conversion, Σ / ⊤ / ⊥ with η** ✅ (below)
-3. Indexed descriptions and μ / ν with their eliminators
-4. Observational equality: a proof-irrelevant `Prop`, `Eq` computed by type, and `cast`
+3. **Observational equality** ✅ (below)
+4. Indexed descriptions and μ / ν with their eliminators
 5. Surface `inductive` / `structure` / `match`, compiled to eliminators
 
 ### 4a: universe polymorphism
@@ -229,3 +229,44 @@ field (`(0 n : A) × B`) can't be projected at all.
 | 4.9 | `Elab/Term.lean`   | `elabFields`: field access by name                         |
 
 `examples/pairs.wiz` shows it all.
+
+### 4c: observational equality
+
+`a = b` is not an inductive type. It is a proposition that **computes** by the type
+of `a` and `b` (Pujet & Tabareau, *Observational Equality: Now for Good*):
+
+| at type          | `a = b` computes to                                  | consequence |
+|------------------|------------------------------------------------------|-------------|
+| `(x : A) → B`    | `(x : A) → a x = b x`                                | funext      |
+| `(x : A) × B`    | `(e : a.1 = b.1) × cast … a.2 = b.2`                  |             |
+| `Unit`, `Empty`  | `True`                                               |             |
+| `Prop`           | `(a → b) × (b → a)`                                  | propext     |
+| `Type u`         | structural equality of types; `False` for different formers | no-confusion |
+| a type variable  | stuck                                                 |             |
+
+`cast e t : B` (for `e : A = B`, `t : A`) also computes by the two types.
+`transp P p e` transports into propositions, and together they give `J`
+(`examples/equality.wiz` derives `subst` and `sym`). Proofs are **definitionally
+irrelevant**, so conversion at a proposition always succeeds. **Regularity**,
+`cast A A e t ≡ t`, is a conversion rule (not an evaluation rule), which makes `J`
+compute on `refl`.
+
+Stuck equations, casts and proofs are new neutral heads (`Head.eq`, `Head.cast`,
+`Head.refl`, …). Some results of the computation rules need new binders. Values can't
+contain Lean functions, so those are closures over small term templates (see
+`vEq` in `Core/Eval.lean`).
+
+| #    | Where              | What                                                     |
+|------|--------------------|----------------------------------------------------------|
+| 4.10 | `Core/Eval.lean`   | `eval` cases                                             |
+| 4.11 | `Core/Eval.lean`   | `vEq`, `vEqType`, `vCast`: the computation rules         |
+| 4.12 | `Core/Eval.lean`   | `quote` for the new heads                                |
+| 4.13 | `Core/Conv.lean`   | proof irrelevance, regularity, comparing the new heads   |
+| 4.14 | `Core/Check.lean`  | typing rules                                             |
+
+Optional:
+* **4.15** Quotient types: `A / R` with `Eq (A / R) [a] [b] ↦ R a b`. This is where
+  OTT shines.
+* **4.16** Make `rfl` work when the expected equation has already computed (for
+  example at function types), by recording the original `a = b` alongside its
+  computed form.

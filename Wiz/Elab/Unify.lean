@@ -24,7 +24,7 @@ Reference: elaboration-zoo `03-holes`, which this follows closely.
 
 namespace Wiz
 
-variable {R : Type}
+variable {R : Type} [Zero R] [DecidableEq R]
 
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
 A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
@@ -104,6 +104,15 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
     | some x' => goSp (.var (p.dom - x' - 1)) sp
     | none => throwAt {} "a variable escapes the scope of the hole being solved"
   | .neutral (.global n us) sp => goSp (.const n us) sp
+  | .neutral (.eq A a b) sp => do goSp (.eq (← rename m p A) (← rename m p a) (← rename m p b)) sp
+  | .neutral (.eqTy A B) sp => do goSp (.eqTy (← rename m p A) (← rename m p B)) sp
+  | .neutral (.cast A B e t) sp => do
+    goSp (.cast (← rename m p A) (← rename m p B) (← rename m p e) (← rename m p t)) sp
+  | .neutral (.refl A a) sp => do goSp (.refl (← rename m p A) (← rename m p a)) sp
+  | .neutral (.reflTy X) sp => do goSp (.reflTy (← rename m p X)) sp
+  | .neutral (.transp A a P q b e) sp => do
+    goSp (.transp (← rename m p A) (← rename m p a) (← rename m p P) (← rename m p q)
+      (← rename m p b) (← rename m p e)) sp
   | .neutral (.mvar m') sp =>
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
     else goSp (.mvar m') sp
@@ -166,7 +175,6 @@ partial def unifyLevel (a b : Level) : ElabM R Unit := do
   --| sorry
   --sol>
 
-variable [DecidableEq R]
 
 mutual
 
@@ -210,16 +218,27 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
     if m == m' then unifySpine l sp sp' else solve l m sp (.neutral (.mvar m') sp')
   | .neutral (.mvar m) sp, t' => solve l m sp t'
   | t', .neutral (.mvar m) sp => solve l m sp t'
-  | .neutral (.global n us) sp, .neutral (.global n' us') sp' =>
-    unless n == n' && us.length == us'.length do throwAt {} "rigid mismatch"
-    for a in us, b in us' do unifyLevel a b
-    unifySpine l sp sp'
-  | .neutral h sp, .neutral h' sp' =>
-    if h.equiv h' then unifySpine l sp sp' else throwAt {} "rigid mismatch"
+  | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'
   | _, _ => throwAt {} "rigid mismatch"
   --|ex
   --| sorry
   --sol>
+
+/-- Rigid heads: the same variable, the same global (levels unified), or the same
+stuck observational construct (components unified). Any two proofs are equal. -/
+partial def unifyHead (l : Lvl) (h h' : Head R) : ElabM R Unit := do
+  let isProof : Head R → Bool
+    | .refl .. | .reflTy _ | .transp .. => true
+    | _ => false
+  match h, h' with
+  | .global n us, .global n' us' =>
+    unless n == n' && us.length == us'.length do throwAt {} "rigid mismatch"
+    for a in us, b in us' do unifyLevel a b
+  | .eq A a b, .eq A' a' b' => unify l A A'; unify l a a'; unify l b b'
+  | .eqTy A B, .eqTy A' B' => unify l A A'; unify l B B'
+  | .cast A B _ t, .cast A' B' _ t' => unify l A A'; unify l B B'; unify l t t'
+  | _, _ =>
+    unless (isProof h && isProof h') || h.equiv h' do throwAt {} "rigid mismatch"
 
 partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
   unless sp.size == sp'.size do throwAt {} "spine length mismatch"

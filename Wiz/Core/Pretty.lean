@@ -28,7 +28,7 @@ where
     | n + 1, y => if names.contains y then go n (y ++ "'") else y
 
 /-- Does `var ix` occur free in `t`? -/
-def Term.hasVar {R : Type} (ix : Nat) : Term R → Bool
+partial def Term.hasVar {R : Type} (ix : Nat) : Term R → Bool
   | .var i => i == ix
   | .pi _ _ _ a b => a.hasVar ix || b.hasVar (ix + 1)
   | .lam _ b => b.hasVar (ix + 1)
@@ -38,6 +38,11 @@ def Term.hasVar {R : Type} (ix : Nat) : Term R → Bool
   | .pair a b | .absurd a b => a.hasVar ix || b.hasVar ix
   | .fst t | .snd t => t.hasVar ix
   | .split _ s _ m _ _ b => s.hasVar ix || m.hasVar (ix + 1) || b.hasVar (ix + 2)
+  | .eq A a b => A.hasVar ix || a.hasVar ix || b.hasVar ix
+  | .eqTy A B | .refl A B => A.hasVar ix || B.hasVar ix
+  | .reflTy X => X.hasVar ix
+  | .cast A B e t => A.hasVar ix || B.hasVar ix || e.hasVar ix || t.hasVar ix
+  | .transp A a P p b e => [A, a, P, p, b, e].any (·.hasVar ix)
   | _ => false
 
 /-- `Prop`, `Type`, `Type 2`, `Type u`, `Sort u`, `Type (max u v)`, ... -/
@@ -67,7 +72,7 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
     if bi == .default && q == QuantitySyntax.explicitDefault && !cod.hasVar 0 then
       paren (prec > 25) s!"{dom.prettyPrec names 26} → {cod.prettyPrec ("_" :: names) 25}"
     else
-      let x' := freshen names x
+      let x' := freshen names (if x == "_" then "x" else x)
       let (o, c) := if bi == .implicit then ("{", "}") else ("(", ")")
       paren (prec > 25)
         s!"{o}{qtyPrefix bi q}{x'} : {dom.prettyPrec names 0}{c} → {cod.prettyPrec (x' :: names) 25}"
@@ -110,13 +115,23 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
     | some 1 => "Empty"
     | _ => s!"Empty.\{{l}}"
   | .absurd _ t => paren (prec > 1022) s!"absurd {t.prettyPrec names maxArg}"
+  | .eq _ a b | .eqTy a b =>
+    paren (prec > 50) s!"{a.prettyPrec names 51} = {b.prettyPrec names 51}"
+  | .refl _ a | .reflTy a => paren (prec > 1022) s!"refl {a.prettyPrec names maxArg}"
+  | .cast _ _ e t =>
+    paren (prec > 1022) s!"cast {e.prettyPrec names maxArg} {t.prettyPrec names maxArg}"
+  | .transp _ _ P p _ e =>
+    paren (prec > 1022)
+      s!"transp {P.prettyPrec names maxArg} {p.prettyPrec names maxArg} {e.prettyPrec names maxArg}"
 where
   tuple : Term R → Array (Term R) → Array (Term R)
     | .pair a b, acc => tuple b (acc.push a)
     | t, acc => acc.push t
   maxArg : Nat := 1023
   lams (names : List Name) : Term R → Array Name → Array Name × List Name × Term R
-    | .lam x b, acc => let x' := freshen names x; lams (x' :: names) b (acc.push x')
+    | .lam x b, acc =>
+      let x' := freshen names (if x == "_" && b.hasVar 0 then "x" else x)
+      lams (x' :: names) b (acc.push x')
     | t, acc => (acc, names, t)
   spine : Term R → Array (Term R) → Term R × Array (Term R)
     | .app f a, acc => spine f (#[a] ++ acc)

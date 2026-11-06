@@ -25,17 +25,25 @@ namespace Wiz
 
 abbrev Lvl := Nat
 
-inductive Head where
+mutual
+/-- What a neutral is stuck on. Besides variables, globals and metas, stage 4c adds
+stuck observational constructs: an equality or cast whose type is a neutral, and
+proofs (`refl`, `transp`), which never compute because proofs are irrelevant. -/
+inductive Head (R : Type) where
   | local (lvl : Lvl)
   | global (name : Name) (levels : List Level)
   /-- an unsolved (as far as the kernel knows) metavariable -/
   | mvar (id : Nat)
-  deriving Repr, BEq
+  | eq (A a b : Val R)
+  | eqTy (A B : Val R)
+  | cast (A B e t : Val R)
+  | refl (A a : Val R)
+  | reflTy (X : Val R)
+  | transp (A a P p b e : Val R)
 
-mutual
 inductive Val (R : Type) where
   /-- `head` followed by the eliminations in `spine`, innermost first -/
-  | neutral (head : Head) (spine : Array (Elim R))
+  | neutral (head : Head R) (spine : Array (Elim R))
   | sort (level : Level)
   | pi (x : Name) (bi : BinderInfo) (q : R) (dom : Val R) (cod : Closure R)
   | lam (x : Name) (body : Closure R)
@@ -69,8 +77,8 @@ instance {R : Type} : Inhabited (Val R) := ⟨.sort 0⟩
 def Val.var {R : Type} (l : Lvl) : Val R := .neutral (.local l) #[]
 
 /-- Heads are equal if they are the same variable, or the same global at equivalent
-levels. -/
-def Head.equiv : Head → Head → Bool
+levels. (The stage 4c heads contain values, which `convNe` compares.) -/
+def Head.equiv {R : Type} : Head R → Head R → Bool
   | .local a, .local b => a == b
   | .global n us, .global m vs =>
     n == m && us.length == vs.length && (us.zip vs).all fun (u, v) => u.equiv v

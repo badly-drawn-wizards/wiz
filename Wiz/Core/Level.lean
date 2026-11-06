@@ -135,6 +135,9 @@ partial def normalize : Level → NF
   | param n => [(.param n, 0)]
   | mvar m => [(.mvar m, 0)]
 
+/-- Is the level nonzero under every instantiation of its parameters? -/
+def isNeverZero (l : Level) : Bool := (normalize l).any fun (_, k) => k > 0
+
 /-- Definitional equality of levels. -/
 def equiv (a b : Level) : Bool := normalize a == normalize b
 
