@@ -44,6 +44,8 @@ structure CommandState (R : Type) where
   globals : Globals R := {}
   tables : ParserTables := Builtin.tables
   messages : Array Msg := #[]
+  /-- coinductive types and their observations (name, recursive?) -/
+  coinductives : List (Name × List (Name × Bool)) := []
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
@@ -117,6 +119,91 @@ def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R) := do
   ensureNoMVars val info
   pure (fullTy, val)
 
+/-- Copatterns: `def f binders : T args | .obs => rhs …` for a coinductive `T`
+compiles to `coit`. The state is the tuple of the explicit binders; a recursive
+observation must be a corecursive call `f e…` (that is the guardedness condition),
+whose arguments become the next state. -/
+def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : ElabM R (Term R × Term R) := do
+  let info := cmd.info
+  let g ← getGlobals
+  let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
+  let tyStx := (cmd.getArg 4).getArg 1
+  let (ty, _) ← Elab.checkType ctx tyStx
+  let ty ← zonk ctx.lvl ty
+  ensureNoMVars ty info
+  let .nu l I D i (some (T, us, args)) ← force (← evalIn ctx ty)
+    | throwAt tyStx.info "copatterns need a coinductive result type"
+  let q (lvl : Lvl) (v : Val R) : Term R := quote g lvl v
+  -- the state: the explicit binders
+  let explicit := (tele.toList.zipIdx.filter fun ((_, bi, _, _), _) => bi == .default)
+  let w : Term R := .qlit QuantitySyntax.explicitDefault
+  let stateTy : Term R := explicit.zipIdx.foldr (fun (((x, _, _, _), k), j) acc =>
+    .sigma x w ((q ctx.lvl ctx.types[ctx.lvl - k - 1]!).lift j) acc) (.unit (.succ l))
+  let vS ← evalIn ctx stateTy
+  -- the step function's context: i, s, then the explicit binders re-bound from s
+  let mut sctx := (ctx.bind "i" I).bind "s" vS
+  let sLvl := ctx.lvl + 1
+  let mut sv : Val R := Val.var sLvl
+  for ((x, _, _, _), k) in explicit do
+    sctx := sctx.define x ctx.types[ctx.lvl - k - 1]! (vFst sv)
+    sv := vSnd sv
+  -- one component per observation, in order
+  let alts := (cmd.getArg 5).args.toList
+  let mut comps : List (Term R) := []
+  for (o, isRec) in obs do
+    let some alt := alts.find? fun a =>
+        match (a.getArg 1).args[0]? with
+        | some p => p.isOfKind "term.dotIdent" && (p.getArg 1).getId? == some o
+        | none => false
+      | throwAt info s!"missing copattern .{o}"
+    let rhs := alt.getArg 3
+    if isRec then
+      -- `f e…`: the next state
+      let (h, es) := if rhs.isOfKind "term.app" then (rhs.getArg 0, (rhs.getArg 1).args.toList) else (rhs, [])
+      unless h.isOfKind "term.ident" && (h.getArg 0).getId? == some name do
+        throwAt rhs.info s!"the observation .{o} must be a corecursive call of {name} (guardedness)"
+      unless es.length == explicit.length do
+        throwAt rhs.info s!"{name} takes {explicit.length} explicit arguments"
+      let mut es' : List (Term R) := []
+      for e in es, ((_, _, _, _), k) in explicit do
+        es' := es' ++ [← Elab.check sctx e ctx.types[ctx.lvl - k - 1]!]
+      comps := comps ++ [es'.foldr .pair .tt]
+    else
+      let some od := g.find? (T ++ "." ++ o) | throwAt info s!"unknown observation {o}"
+      -- the observation's type at our parameters: {Δ} → T Δ → F
+      let mut oty : VTy R := eval g [] (od.type.instLevels od.levelParams us)
+      for a in args do
+        let .pi _ _ _ _ cod ← force oty | throwAt info "internal error: observation type"
+        oty ← instM cod a
+      let .pi _ _ _ _ cod ← force oty | throwAt info "internal error: observation type"
+      let F ← instM cod (Val.var 0)
+      comps := comps ++ [← Elab.check sctx rhs F]
+  let payload : Term R := comps.foldr .pair (.pair .tt .tt)
+  -- wrap the lets for the re-bound binders
+  let mut stepBody := payload
+  let mut lvl := sctx.lvl
+  for ((x, _, _, _), _) in explicit.reverse do
+    lvl := lvl - 1
+    stepBody := .letE x w (q lvl sctx.types[sctx.lvl - lvl - 1]!) (q lvl (vFst (Val.var 0))) stepBody
+  -- recompute the let values properly (projections of s), innermost last
+  let mut body := payload
+  let mut j := explicit.length
+  for ((x, _, _, _), k) in explicit.reverse do
+    j := j - 1
+    let lv := sLvl + 1 + j
+    let proj : Term R := .fst ((List.range j).foldl (fun t _ => .snd t) (.var (lv - sLvl - 1)))
+    body := .letE x w (q lv ctx.types[ctx.lvl - k - 1]!) proj body
+  let _ := stepBody
+  let step : Term R := .lam "i" (.lam "s" body)
+  let Sfun : Term R := .lam "_" (stateTy.lift 1)
+  let init : Term R := (explicit.map fun ((_, _, _, _), k) => (.var (ctx.lvl - k - 1) : Term R)).foldr .pair .tt
+  let coit : Term R := .coit l (q ctx.lvl I) (q ctx.lvl D) Sfun step (q ctx.lvl i) init
+  let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) coit
+  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b) ty
+  let val ← zonk 0 val
+  ensureNoMVars val info
+  pure (fullTy, val)
+
 def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := []) :
     Except ElabError α :=
   (x.run { globals := g, levelParams }).map (·.1)
@@ -168,10 +255,35 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
-      let r := runElab s.globals (elabDefEqns name cmd) levelParams
+      let pats := (cmd.getArg 5).args.toList.filterMap fun a => (a.getArg 1).args[0]?
+      let coinductiveOf? : Option (List (Name × Bool)) :=
+        if pats.all (·.isOfKind "term.dotIdent") then
+          s.coinductives.findSome? fun (_, obs) =>
+            if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some obs else none
+        else none
+      let r := match coinductiveOf? with
+        | some obs => runElab s.globals (elabCopatterns name cmd obs) levelParams
+        | none => runElab s.globals (elabDefEqns name cmd) levelParams
       match r with
       | .ok (ty, val) => addDeclChecked name levelParams ty (some val)
       | .error e => report .error e.info e.msg
+  | "command.coinductive" =>
+    let name := ((cmd.getArg 1).getId?).getD "_"
+    let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
+    if s.globals.contains name then
+      report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
+    else
+      match runElab s.globals (elabCoinductive cmd levelParams) levelParams with
+      | .error e => report .error e.info e.msg
+      | .ok (decls, obs) =>
+        let mut g := s.globals
+        for d in decls do
+          match addDecl g d with
+          | .ok g' => g := g'
+          | .error e =>
+            report .error cmd.info s!"kernel rejected {d.name}: {e}"
+            return
+        modify fun s => { s with globals := g, coinductives := s.coinductives ++ [(name, obs)] }
   | "command.inductive" | "command.structure" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?

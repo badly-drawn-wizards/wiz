@@ -378,3 +378,27 @@ def matchGroup : Group where
   ]
 
 end Tests.Elab
+
+namespace Tests.Elab
+
+def streamPrelude : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\n\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n\ndef nats (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => nats (.succ n)\n\n\ndef repeat {A : Type} (a : A) : Stream A\n  | .head => a\n  | .tail => repeat a\n\n"
+
+def coinductiveGroup : Group where
+  name := "copatterns"
+  exercise := "stage 4e"
+  cases := [
+    { name := "Stream, nats, repeat", run := fun _ => ok streamPrelude },
+    { name := "observations unfold lazily", run := fun _ =>
+        ok (streamPrelude ++ "#reduce (nats .zero).tail.tail.head") [".succ (.succ .zero)"] },
+    { name := "parameters stay fixed, explicit arguments are the state", run := fun _ =>
+        ok (streamPrelude ++ "#reduce (repeat Nat.zero).tail.tail.head") [".zero"] },
+    { name := "guardedness: a recursive observation must be a corecursive call", run := fun _ =>
+        fails (streamPrelude ++ "def bad (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => (bad n).tail") "guardedness" },
+    { name := "every observation must be defined", run := fun _ =>
+        fails (streamPrelude ++ "def bad (n : Nat) : Stream Nat\n  | .head => n") "missing copattern" },
+    { name := "generalised field notation on inductives too", run := fun _ =>
+        ok (matchPrelude ++ "def Vec.tail {A : Type} {n : Nat} : Vec A (.succ n) → Vec A n\n  | .cons _ xs => xs\n" ++
+            "def tl {A : Type} {n : Nat} (v : Vec A (.succ (.succ n))) : Vec A n := v.tail.tail") }
+  ]
+
+end Tests.Elab

@@ -77,15 +77,6 @@ def lookupLocal (ctx : LocalCtx R) (x : Name) : Option (Nat × VTy R) := Id.run 
     if n == x && x != "_" then return some (i, ty)
   none
 
-/-- **Exercise 4.9.** Field access by name: `t.f₁.f₂…`. Starting from `t : ty`, for
-each field name walk the Σ telescope of the (forced) type: if the current Σ's binder
-name is the field, project with `fst`; otherwise move on with `snd`, instantiating the
-second component's type with the first projection. Throw if the field isn't found.
-Returns the projected term and its type. -/
-partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : List Name) :
-    ElabM R (Term R × VTy R) := do
-  sorry
-
 /-- **Exercise 3.7.** Insert implicit applications: while the type forces to an
 *implicit* Π, apply the term to a fresh metavariable and instantiate the codomain with
 the metavariable's value. -/
@@ -128,6 +119,15 @@ private def isImplicitFun (stx : Syntax) : Bool :=
     match (stx.getArg 1).args[0]? with
     | some b => b.isOfKind "binder.implicit"
     | none => false
+
+/-- **Exercise 4.9.** Field access by name: `t.f₁.f₂…`. Starting from `t : ty`, for
+each field name walk the Σ telescope of the (forced) type: if the current Σ's binder
+name is the field, project with `fst`; otherwise move on with `snd`, instantiating the
+second component's type with the first projection. Throw if the field isn't found.
+Returns the projected term and its type. -/
+partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : List Name) :
+    ElabM R (Term R × VTy R) := do
+  sorry
 
 /-! ## Pattern matching (stage 4e)
 
@@ -973,6 +973,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.tuple" =>
     inferTuple ctx (#[stx.getArg 1] ++ ((stx.getArg 3).args.filter (!· matches .atom ..))).toList
   | "term.unitVal" => return (.tt, .unit 1)
+  | "term.field" =>
+    let (t, ty) ← infer ctx (stx.getArg 0)
+    -- `.a.b.c` lexes as one dotted identifier
+    let path := (((stx.getArg 2).getId?).getD "_").splitOn "."
+    elabFields ctx t ty path
   | "term.proj" =>
     let (t, ty) ← infer ctx (stx.getArg 0)
     match ← force ty, (stx.getArg 2).getNat? with
