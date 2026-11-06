@@ -242,6 +242,14 @@ partial def findAbsurd (g : Globals R) (ty e : Val R) : Option (Val R) :=
     (findAbsurd g A (vFst e)).orElse fun _ => findAbsurd g (Closure.inst g B (vFst e)) (vSnd e)
   | _ => none
 
+/-- The equations `a = b` (stuck, at a type `A`) inside a (Σ-nested) proof `e : ty`,
+as `(proof, A, a, b)`. -/
+partial def findEqs (g : Globals R) (ty e : Val R) : List (Val R × Val R × Val R × Val R) :=
+  match ty with
+  | .neutral (.eq A a b) #[] => [(e, A, a, b)]
+  | .sigma _ _ A B => findEqs g A (vFst e) ++ findEqs g (Closure.inst g B (vFst e)) (vSnd e)
+  | _ => []
+
 /-- The number of leading Π binders of a type term, with their binder infos. -/
 def piInfos : Term R → List (Name × BinderInfo × Term R)
   | .pi x bi _ A b => (x, bi, A) :: piInfos b
@@ -577,7 +585,7 @@ partial def inferTuple (ctx : LocalCtx R) (items : List Syntax) : ElabM R (Term 
     let g ← getGlobals
     -- the second component's type, weakened under the Σ binder
     let bTerm := quote g (ctx.lvl + 1) bty
-    return (.pair a b, .sigma "_" (.qlit QuantitySyntax.explicitDefault) aty (.mk (Val.var ctx.lvl :: ctx.env) bTerm))
+    return (.pair a b, .sigma "_" (.qlit QuantitySyntax.explicitDefault) aty (.mk ctx.env bTerm))
 
 /-- `let q (x, y) := s; body`, check mode only (the motive is the expected type). -/
 partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
@@ -851,9 +859,11 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       mt ← instM B (Val.var ctx'.lvl)
       ctx' := ctx'.bind "_ih" A
     let mut absurdBody : Option (Term R) := none
+    let mut eInfo : Option (Lvl × VTy R) := none
     if !modeA then
       let .pi _ _ _ E B ← force mt | throwAt ctx.info "internal error: equation"
       let eLvl := ctx'.lvl
+      eInfo := some (eLvl, E)
       mt ← instM B (Val.var eLvl)
       ctx' := ctx'.bind "e" E
       if let some prf := findAbsurd g (← force E) (Val.var eLvl) then
@@ -861,6 +871,33 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let body ← match absurdBody with
       | some b => pure b
       | none =>
+        -- the solution rule with an equation: find `y = t` (or `t = y`) with `y` a field
+        -- of this constructor, and substitute it in the later fields by re-binding them
+        let mut solution : Option (Lvl × Val R × Bool × Val R × Val R) := none
+        if let some (eLvl, E) := eInfo then
+          for (prf, A, a, b) in findEqs g (← force E) (Val.var eLvl) do
+            if solution.isSome then break
+            for (yv, tv, yFirst) in [(a, b, true), (b, a, false)] do
+              if let .neutral (.local y) #[] := yv then
+                let later := fieldLvls.toList.filter (· ≥ y)
+                let tTm := quote g ctx'.lvl tv
+                if fieldLvls.contains y && later.all (fun l => !tTm.hasVar (ctx'.lvl - l - 1)) &&
+                    solution.isNone then
+                  solution := some (y, tv, yFirst, prf, A)
+        let mut subst : List (Lvl × Val R) := []
+        let mut fieldLvls' := fieldLvls
+        let ctxBefore := ctx'
+        if let some (y, tv, _, _, _) := solution then
+          -- re-bind the fields after `y` with `y := t` (and earlier re-bound fields)
+          subst := [(y, tv)]
+          for d in fieldLvls.toList.filter (· > y) do
+            let tyTm := quote g ctx'.lvl ctx'.types[ctx'.lvl - d - 1]!
+            let env : Env R := (List.range ctx'.lvl).reverse.map fun l =>
+              ((subst.find? (·.1 == l)).map (·.2)).getD (Val.var l)
+            let ty' := eval g env tyTm
+            subst := subst ++ [(d, Val.var ctx'.lvl)]
+            fieldLvls' := fieldLvls'.map fun l => if l == d then ctx'.lvl else l
+            ctx' := ctx'.bind ctx'.names[ctx'.lvl - d - 1]! ty'
         let mut rsLvls : Array Lvl := #[]
         for r in rs do
           let .pi _ _ _ A B ← force mt | throwAt ctx.info "internal error: reverted variable"
@@ -898,10 +935,33 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
         let rc' := rc.map fun r => { r with ihs := r.ihs ++ (if useRec then
           ((fieldLvls.toList.zip (fieldInfos.map (·.2.2))).filter (fun (_, A) => isRecField A)).map (·.1)
             |>.zip ihLvls.toList else []) }
-        let inner ← compileMatch ctx' (vars.take k ++ fieldLvls.toList ++ rsLvls.toList) cls mt rc' false
-        let lamsN := rsLvls.toList.map nameOf' |>.length
-        let _ := lamsN
-        pure ((rs.map nameOf).foldr .lam inner)
+        let inner ← compileMatch ctx' (vars.take k ++ fieldLvls'.toList ++ rsLvls.toList) cls mt rc' false
+        let body0 := (rs.map nameOf).foldr .lam inner
+        match solution with
+        | none => pure body0
+        | some (y, tv, yFirst, prf, A) =>
+          -- cast `fun deps' => body0 : (Π deps[y := t]. M)` to `(Π deps. M)`, apply to deps
+          let L := ctxBefore.lvl
+          let deps := fieldLvls.toList.filter (· > y)
+          let vt (l : Lvl) : Term R := .var (L - l - 1)
+          let mut Gd := quote g L mt
+          for d in deps.reverse do
+            Gd := .pi ctxBefore.names[L - d - 1]! .default (.qlit QuantitySyntax.explicitDefault)
+              (quote g L ctxBefore.types[L - d - 1]!) (Gd.abstract (vt d))
+          let Gdz := Gd.abstract (vt y)              -- under a binder for `y`
+          let tTm := quote g L tv
+          let Gdt := Gdz.instantiateAt 0 tTm
+          let F := (deps.map fun d => ctxBefore.names[L - d - 1]!).foldr .lam body0
+          let (aT, bT, Q, refl) :=
+            if yFirst then  -- prf : y = t; Q z _ := (Π deps(z)) = (Π deps(y))
+              (vt y, tTm, Term.lam "z" (.lam "h" (.eqTy (Gdz.lift 1) (Gd.lift 2))), Term.reflTy Gd)
+            else            -- prf : t = y; Q z _ := (Π deps(t)) = (Π deps(z))
+              (tTm, vt y, Term.lam "z" (.lam "h" (.eqTy (Gdt.lift 2) (Gdz.lift 1))), Term.reflTy Gdt)
+          let eqPrf : Term R := .transp (quote g L A) aT Q refl bT (quote g L prf)
+          let _ := Q
+          let castTm : Term R := .cast Gdt Gd (if yFirst then eqPrf else eqPrf) F
+          -- `body0` was built under the re-bound fields, which sit after `e` in the context
+          pure (deps.foldl (fun acc d => .app acc (vt d)) castTm)
     -- lambdas for fields, hypotheses and the equation
     let names := fieldInfos.map (·.1) ++ (List.replicate nRec "_ih") ++ (if modeA then [] else ["e"])
     let method := names.foldr .lam body
