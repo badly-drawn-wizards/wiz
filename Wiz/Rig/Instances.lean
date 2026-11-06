@@ -23,6 +23,7 @@ instance : QRig Unit where
   add_comm _ _ := rfl
   zero_add _ := rfl
   mul_assoc _ _ _ := rfl
+  mul_comm _ _ := rfl
   one_mul _ := rfl
   mul_one _ := rfl
   zero_mul _ := rfl
@@ -34,6 +35,7 @@ instance : QRig Unit where
   le_trans _ _ _ _ _ := rfl
   add_le_add _ _ _ _ _ _ := rfl
   mul_le_mul _ _ _ _ _ _ := rfl
+  elements? := some [()]
 
 instance : QuantitySyntax Unit where
   ofLiteral _ := some ()
@@ -48,6 +50,7 @@ instance : QRig Nat where
   add_comm := Nat.add_comm
   zero_add := Nat.zero_add
   mul_assoc := Nat.mul_assoc
+  mul_comm := Nat.mul_comm
   one_mul := Nat.one_mul
   mul_one := Nat.mul_one
   zero_mul := Nat.zero_mul
@@ -107,9 +110,11 @@ instance : QRig ZeroOneMany where
   add := add
   mul := mul
   le := le
+  elements? := some [zero, one, many]
   add_assoc := sorry
   add_comm := sorry
   zero_add := sorry
+  mul_comm := sorry
   mul_assoc := sorry
   one_mul := sorry
   mul_one := sorry

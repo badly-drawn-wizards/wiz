@@ -11,7 +11,7 @@ away. That matters: the kernel can't infer a type for `(fun x => …) a`.
 
 namespace Wiz
 
-variable {R : Type} [Zero R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R]
 
 /-- **Exercise 3.6.** Replace solved metas in `t`, a term in a context of `l` variables.
 

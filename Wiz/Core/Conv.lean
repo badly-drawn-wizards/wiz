@@ -27,7 +27,7 @@ Framework with Surjective Pairs* (2007), and the "typed" variant in Abel's habil
 
 namespace Wiz
 
-variable {R : Type} [Zero R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R]
 
 /-- The type of a neutral's head: a local's type from `tys`, a global's declared type
 with its level parameters instantiated, or (stage 4c) the type of a stuck
@@ -66,6 +66,7 @@ partial def typeSort? (g : Globals R) (tys : Array (VTy R)) : VTy R → Option L
   | .sigma _ _ A B => do
     return .max (← typeSort? g tys A) (← typeSort? g (tys.push A) (Closure.inst g B (Val.var tys.size)))
   | .unit l | .empty l => some l
+  | .qty => some 1
   | v@(.neutral ..) => do
     match ← inferNe g tys v with
     | .sort l => some l

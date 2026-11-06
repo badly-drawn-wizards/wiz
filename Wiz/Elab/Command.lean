@@ -48,14 +48,14 @@ structure CommandState (R : Type) where
 /-- Elaborate binders into a context, returning the context and the binders as
 `(name, binder info, quantity, type)`. -/
 def elabTelescope (ctx : LocalCtx R) (bs : List BinderView) :
-    ElabM R (LocalCtx R × Array (Name × BinderInfo × R × Term R)) := do
+    ElabM R (LocalCtx R × Array (Name × BinderInfo × Term R × Term R)) := do
   let mut ctx := ctx
   let mut tele := #[]
   for b in bs do
     let ty ← match b.type with
       | some s => pure (← Elab.checkType ctx s).1
       | none => freshMeta ctx s!"the type of {b.name}"
-    let q ← elabQuantity ctx b.bi b.qty
+    let q ← Elab.elabQuantity ctx b.bi b.qty
     tele := tele.push (b.name, b.bi, q, ty)
     ctx := ctx.bind b.name (← evalIn ctx ty)
   pure (ctx, tele)
@@ -69,7 +69,7 @@ def solveSortConstraints : ElabM R Unit := do
       let t ← zonk ctx.lvl t
       if !t.mvars.isEmpty then continue
       let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
-                            qtys := ctx.names.map fun _ => QuantitySyntax.explicitDefault,
+                            qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
                             types := ctx.types, lvl := ctx.lvl }
       if let .ok (ty, _) := Wiz.infer kctx t then
         if let .sort l' ← force ty then

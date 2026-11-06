@@ -38,6 +38,8 @@ class Rig (R : Type) extends Zero R, One R, Add R, Mul R where
   add_comm      : ∀ a b : R, a + b = b + a
   zero_add      : ∀ a : R, 0 + a = a
   mul_assoc     : ∀ a b c : R, a * b * c = a * (b * c)
+  /-- Commutativity of `*` lets usage polynomials (stage 4d) use a normal form. -/
+  mul_comm      : ∀ a b : R, a * b = b * a
   one_mul       : ∀ a : R, 1 * a = a
   mul_one       : ∀ a : R, a * 1 = a
   zero_mul      : ∀ a : R, 0 * a = 0
@@ -55,6 +57,10 @@ class QRig (R : Type) extends Rig R where
   le_trans   : ∀ a b c, le a b = true → le b c = true → le a c = true
   add_le_add : ∀ a b c d, le a b = true → le c d = true → le (a + c) (b + d) = true
   mul_le_mul : ∀ a b c d, le a b = true → le c d = true → le (a * c) (b * d) = true
+  /-- All the quantities, if there are finitely many. With quantity polymorphism
+  (stage 4d), `used ≤ declared` for symbolic quantities is decided by trying every
+  assignment, which needs this list. -/
+  elements? : Option (List R) := none
 
 /-- How quantities are written in surface syntax and printed back.
 

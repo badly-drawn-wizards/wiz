@@ -24,7 +24,7 @@ kernel.
 
 namespace Wiz
 
-variable {R : Type} [Zero R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R]
 
 structure MetaEntry (R : Type) where
   solution : Option (Val R) := none

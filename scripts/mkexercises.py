@@ -60,6 +60,10 @@ def tracked(root):
 
 
 def main(src, dst):
+    dirty = subprocess.run(["git", "-C", dst, "status", "--porcelain"],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    if dirty:
+        sys.exit(f"{dst} has uncommitted changes; refusing to overwrite them:\n{dirty}")
     only = set()
     p = os.path.join(src, ".solutions-only")
     if os.path.exists(p):

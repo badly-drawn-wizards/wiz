@@ -10,7 +10,7 @@ the elaborator (`Wiz.Elab`), so they're listed with each parser.
 Notation: `[x]` means "a `null` node", so `optional p` gives `[]` or `[p...]`.
 
 ```
-quantity          := num | "ω"
+quantity          := num | "ω" | "%" term
 binder.explicit   := "(" [quantity] [names+] [":" type] ")"
 binder.implicit   := "{" [quantity] [names+] [":" type] "}"
 ```
@@ -27,7 +27,9 @@ def term (prec : Nat := 0) : ParserDescr := cat "term" prec
 def arrow : ParserDescr := orelse (atom "→") (atom "->")
 def seqs (ps : List ParserDescr) : ParserDescr := seq ps.toArray
 
-def quantity : ParserDescr := node "quantity" (orelse num (atom "ω"))
+/-- `0`, `1`, `ω`, or `%t` for a quantity-valued term (stage 4d). -/
+def quantity : ParserDescr :=
+  node "quantity" (orelse num (orelse (atom "ω") (seqs ["%", noWs, cat "term" maxPrec])))
 
 def hole : ParserDescr := node "term.hole" (atom "_")
 def binderIdent : ParserDescr := orelse ident hole
@@ -122,6 +124,7 @@ and the elaborator resolves it.
 def termLeading : List LeadingParser := [
   { kind := "term.ident", prec := maxPrec, p := ident },
   { kind := "term.num", prec := maxPrec, p := num },
+  { kind := "term.omega", prec := maxPrec, p := "ω" },
   { kind := "term.str", prec := maxPrec, p := str },
   { kind := "term.type", prec := maxPrec, p := seqs ["Type", optional (seqs [checkPrec leadPrec, level maxPrec])] },
   { kind := "term.sort", prec := maxPrec, p := seqs ["Sort", optional (seqs [checkPrec leadPrec, level maxPrec])] },

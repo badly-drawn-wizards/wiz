@@ -30,11 +30,11 @@ where
 /-- Does `var ix` occur free in `t`? -/
 partial def Term.hasVar {R : Type} (ix : Nat) : Term R → Bool
   | .var i => i == ix
-  | .pi _ _ _ a b => a.hasVar ix || b.hasVar (ix + 1)
+  | .pi _ _ q a b => q.hasVar ix || a.hasVar ix || b.hasVar (ix + 1)
   | .lam _ b => b.hasVar (ix + 1)
   | .app f a | .ann f a => f.hasVar ix || a.hasVar ix
   | .letE _ _ ty v b => ty.hasVar ix || v.hasVar ix || b.hasVar (ix + 1)
-  | .sigma _ _ a b => a.hasVar ix || b.hasVar (ix + 1)
+  | .sigma _ q a b => q.hasVar ix || a.hasVar ix || b.hasVar (ix + 1)
   | .pair a b | .absurd a b => a.hasVar ix || b.hasVar ix
   | .fst t | .snd t => t.hasVar ix
   | .split _ s _ m _ _ b => s.hasVar ix || m.hasVar (ix + 1) || b.hasVar (ix + 2)
@@ -59,7 +59,12 @@ def atomicSort (l : Level) : Bool := l.toNat? == some 0 || l.toNat? == some 1
 
 private def paren (b : Bool) (s : String) : String := if b then s!"({s})" else s
 
-private def qtyPrefix (bi : BinderInfo) (q : R) : String :=
+/-- Is the quantity term the literal default for this kind of binder? -/
+private def isDefaultQ (bi : BinderInfo) : Term R → Bool
+  | .qlit r => r == if bi == .implicit then QuantitySyntax.implicitDefault else QuantitySyntax.explicitDefault
+  | _ => false
+
+private def qtyPrefixLit (bi : BinderInfo) (q : R) : String :=
   let dflt := if bi == .implicit then QuantitySyntax.implicitDefault else QuantitySyntax.explicitDefault
   if q == dflt then "" else QuantitySyntax.display q ++ " "
 
@@ -67,15 +72,17 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .var ix => names[ix]?.getD s!"#{ix}"
   | .const n _ => n
   | .mvar m => s!"?m{m}"
+  | .qty => "Qty"
+  | .qlit r => QuantitySyntax.display r
   | .sort l => paren (prec > 1022 && !atomicSort l) (showSort l)
   | .pi x bi q dom cod =>
-    if bi == .default && q == QuantitySyntax.explicitDefault && !cod.hasVar 0 then
+    if bi == .default && isDefaultQ .default q && !cod.hasVar 0 then
       paren (prec > 25) s!"{dom.prettyPrec names 26} → {cod.prettyPrec ("_" :: names) 25}"
     else
       let x' := freshen names (if x == "_" then "x" else x)
       let (o, c) := if bi == .implicit then ("{", "}") else ("(", ")")
       paren (prec > 25)
-        s!"{o}{qtyPrefix bi q}{x'} : {dom.prettyPrec names 0}{c} → {cod.prettyPrec (x' :: names) 25}"
+        s!"{o}{qtyPrefix names bi q}{x'} : {dom.prettyPrec names 0}{c} → {cod.prettyPrec (x' :: names) 25}"
   | t@(.lam ..) =>
     let (xs, names', body) := lams names t #[]
     paren (prec > 0) s!"fun {" ".intercalate xs.toList} => {body.prettyPrec names' 0}"
@@ -86,15 +93,15 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .letE x q ty val body =>
     let x' := freshen names x
     paren (prec > 0)
-      s!"let {qtyPrefix .default q}{x'} : {ty.prettyPrec names 0} := {val.prettyPrec names 0}; {body.prettyPrec (x' :: names) 0}"
+      s!"let {qtyPrefix names .default q}{x'} : {ty.prettyPrec names 0} := {val.prettyPrec names 0}; {body.prettyPrec (x' :: names) 0}"
   | .ann tm ty => s!"({tm.prettyPrec names 0} : {ty.prettyPrec names 0})"
   | .sigma x q a b =>
-    if q == QuantitySyntax.explicitDefault && !b.hasVar 0 then
+    if isDefaultQ .default q && !b.hasVar 0 then
       paren (prec > 35) s!"{a.prettyPrec names 36} × {b.prettyPrec ("_" :: names) 35}"
     else
       let x' := freshen names x
       paren (prec > 35)
-        s!"({qtyPrefix .default q}{x'} : {a.prettyPrec names 0}) × {b.prettyPrec (x' :: names) 35}"
+        s!"({qtyPrefix names .default q}{x'} : {a.prettyPrec names 0}) × {b.prettyPrec (x' :: names) 35}"
   | t@(.pair ..) =>
     let parts := tuple t #[]
     s!"({", ".intercalate (parts.map (·.prettyPrec names 0)).toList})"
@@ -104,7 +111,7 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
     let x' := freshen names x
     let y' := freshen (x' :: names) y
     paren (prec > 0)
-      s!"let {qtyPrefix .default q}({x'}, {y'}) := {s.prettyPrec names 0}; {b.prettyPrec (y' :: x' :: names) 0}"
+      s!"let {qtyPrefix names .default q}({x'}, {y'}) := {s.prettyPrec names 0}; {b.prettyPrec (y' :: x' :: names) 0}"
   | .unit l => match l.toNat? with
     | some 0 => "True"
     | some 1 => "Unit"
@@ -128,6 +135,10 @@ where
     | .pair a b, acc => tuple b (acc.push a)
     | t, acc => acc.push t
   maxArg : Nat := 1023
+  /-- `1 `, `0 `, `%q `, or nothing for the default -/
+  qtyPrefix (names : List Name) (bi : BinderInfo) : Term R → String
+    | .qlit r => qtyPrefixLit bi r
+    | q => s!"%{q.prettyPrec names 1024} "
   lams (names : List Name) : Term R → Array Name → Array Name × List Name × Term R
     | .lam x b, acc =>
       let x' := freshen names (if x == "_" && b.hasVar 0 then "x" else x)

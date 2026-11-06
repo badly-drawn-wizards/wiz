@@ -26,7 +26,11 @@ On well-typed terms they do.
 
 namespace Wiz
 
-variable {R : Type} [Zero R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R]
+
+/-- Are two quantity values equal? `none` if either is not a polynomial (unknown). -/
+def sameQty (a b : Val R) : Option Bool := do
+  return QPoly.equiv (← a.toPoly?) (← b.toPoly?)
 
 /-- **Exercise 4.4b.** First projection. -/
 def vFst : Val R → Val R
@@ -89,6 +93,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .refl A a => sorry
   | .reflTy X => sorry
   | .transp A a P p b e => sorry
+  | .qty => .qty
+  | .qlit r => .qlit r
 
 /-- **Exercise 1.2a.** Semantic application.
 A `lam` β-reduces; a neutral grows its spine (with `Elim.app`). Anything else is a
@@ -106,7 +112,7 @@ partial def Closure.inst2 (g : Globals R) : Closure R → Val R → Val R → Va
 
 /-- **Exercise 4.4a.** `let (x, y) := s; body`: β-reduces on a `pair`, gets stuck on a
 neutral. -/
-partial def vSplit (g : Globals R) (q : R) (s : Val R) (z : Name) (m : Closure R) (x y : Name)
+partial def vSplit (g : Globals R) (q : Val R) (s : Val R) (z : Name) (m : Closure R) (x y : Name)
     (body : Closure R) : Val R :=
   sorry
 

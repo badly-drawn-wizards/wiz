@@ -24,7 +24,7 @@ Reference: elaboration-zoo `03-holes`, which this follows closely.
 
 namespace Wiz
 
-variable {R : Type} [Zero R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R]
 
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
 A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
@@ -136,7 +136,7 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
     | .app a, .app b => unify l a b
     | .fst, .fst | .snd, .snd => pure ()
     | .split q _ m _ _ b, .split q' _ m' _ _ b' =>
-      unless q == q' do throwAt {} "quantity mismatch"
+      unify l q q'
       unify (l + 1) (← instM m (Val.var l)) (← instM m' (Val.var l))
       unify (l + 2) (Closure.inst2 g b (Val.var l) (Val.var (l + 1)))
         (Closure.inst2 g b' (Val.var l) (Val.var (l + 1)))

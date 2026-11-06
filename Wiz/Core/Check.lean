@@ -151,17 +151,17 @@ structure Ctx (R : Type) where
   /-- values of locals, for evaluating types that mention them -/
   env   : Env R := []
   names : List Name := []
-  qtys  : List R := []
+  qtys  : List (QPoly R) := []
   types : List (VTy R) := []
   /-- number of locals in scope = the next fresh de Bruijn level -/
   lvl   : Lvl := 0
 
 namespace Ctx
 
-variable [Zero R] [DecidableEq R]
+variable [QRig R] [DecidableEq R]
 
 /-- Go under a binder: the new variable is a fresh neutral. -/
-def bind (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) : Ctx R :=
+def bind (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) : Ctx R :=
   { ctx with
     env := Val.var ctx.lvl :: ctx.env
     names := x :: ctx.names
@@ -170,7 +170,7 @@ def bind (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) : Ctx R :=
     lvl := ctx.lvl + 1 }
 
 /-- Go under a `let`: the new variable has a known value. -/
-def define (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) (val : Val R) : Ctx R :=
+def define (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) (val : Val R) : Ctx R :=
   { ctx with
     env := val :: ctx.env
     names := x :: ctx.names
@@ -195,10 +195,17 @@ end Ctx
 
 variable [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
+/-- A quantity value as a polynomial, or an error if it is something else (e.g. the
+result of a stuck computation). -/
+def qtyPoly (ctx : Ctx R) (q : Val R) : TCM (QPoly R) :=
+  match q.toPoly? with
+  | some p => pure p
+  | none => throw (.other s!"quantity must be a literal or a quantity variable: {ctx.showVal q}")
+
 /-- **Exercise 1.5.** Leave the scope of a binder `x` declared at quantity `q`:
 pop the binder's own usage off the head of the vector and check it is compatible
-with `q` (using `QRig.le`), returning the rest. Throw `quantityMismatch` otherwise. -/
-def popUsage (x : Name) (q : R) : Usage R → TCM (Usage R)
+with `q` (using `QPoly.le`), returning the rest. Throw `quantityMismatch` otherwise. -/
+def popUsage (x : Name) (q : QPoly R) : Usage R → TCM (Usage R)
   | u => sorry
 
 mutual
@@ -250,6 +257,14 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .reflTy X => sorry
   | .cast A B e t => sorry
   | .transp A a P p b e => sorry
+  | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
+  | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)
+
+/-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as
+for types), returned as a polynomial. -/
+partial def checkQty (ctx : Ctx R) (q : Term R) : TCM (QPoly R) := do
+  let _ ← check ctx q .qty
+  qtyPoly ctx (ctx.eval q)
 
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.
 The usage is discarded: type positions are erased. -/

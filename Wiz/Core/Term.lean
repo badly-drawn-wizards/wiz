@@ -11,7 +11,8 @@ substitute; see `Wiz.Core.Eval` for normalisation by evaluation).
 
 Names on binders (`x`) are kept only for pretty-printing.
 
-The quantity `q : R` on `pi` and `letE` is the QTT annotation. Lambdas carry no
+The quantity `q` on `pi` and `letE` is the QTT annotation. It is itself a term of
+type `Qty`: a literal `qlit r` (`r : R`), or (stage 4d) a quantity variable. Lambdas carry no
 quantity or domain: they are only ever *checked* against a `pi`, which supplies both.
 
 `BinderInfo` on `pi` says whether the argument is explicit or implicit. The kernel
@@ -45,25 +46,25 @@ inductive Term (R : Type) where
   | sort (level : Level)
   /-- `(q x : dom) → cod` (or `{q x : dom} → cod`), where `cod` lives under one extra
   binder -/
-  | pi (x : Name) (bi : BinderInfo) (q : R) (dom cod : Term R)
+  | pi (x : Name) (bi : BinderInfo) (q : Term R) (dom cod : Term R)
   /-- `λ x. body`, where `body` lives under one extra binder -/
   | lam (x : Name) (body : Term R)
   | app (fn arg : Term R)
   /-- `let x :q ty := val; body`, where `body` lives under one extra binder -/
-  | letE (x : Name) (q : R) (ty val body : Term R)
+  | letE (x : Name) (q : Term R) (ty val body : Term R)
   /-- `(tm : ty)`, used to switch from checking to inference -/
   | ann (tm ty : Term R)
   /-- metavariable number `id` (elaborator only) -/
   | mvar (id : Nat)
   -- Stage 4: structural types. `sigma` binder names double as field names.
   /-- `(q x : A) × B`: the first component may be used `q` times -/
-  | sigma (x : Name) (q : R) (fst snd : Term R)
+  | sigma (x : Name) (q : Term R) (fst snd : Term R)
   | pair (a b : Term R)
   | fst (t : Term R)
   | snd (t : Term R)
   /-- `let q (x, y) := scrut; body` with motive `fun z => motive` for the result type.
   `motive` is under one binder (`z`), `body` under two (`x`, then `y`). -/
-  | split (q : R) (scrut : Term R) (z : Name) (motive : Term R) (x y : Name) (body : Term R)
+  | split (q : Term R) (scrut : Term R) (z : Name) (motive : Term R) (x y : Name) (body : Term R)
   /-- the unit type in `Sort l`: `True` at level 0, `Unit` at level 1 -/
   | unit (level : Level)
   | tt
@@ -85,6 +86,11 @@ inductive Term (R : Type) where
   /-- `transp A a P p b e : P b e` given `P : (b : A) → a = b → Prop`, `p : P a (refl a)`
   and `e : a = b`. Transport into propositions; with `cast` it gives `J`. -/
   | transp (A a P p b e : Term R)
+  -- Stage 4d: quantity polymorphism. Binder quantities are terms of type `Qty`.
+  /-- the type of quantities -/
+  | qty
+  /-- a quantity literal -/
+  | qlit (r : R)
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/
@@ -104,17 +110,17 @@ variable {R : Type}
 partial def instLevels (ps : List Name) (us : List Level) : Term R → Term R
   | .sort l => .sort (l.instParams ps us)
   | .const n ls => .const n (ls.map (·.instParams ps us))
-  | .pi x bi q a b => .pi x bi q (instLevels ps us a) (instLevels ps us b)
+  | .pi x bi q a b => .pi x bi (instLevels ps us q) (instLevels ps us a) (instLevels ps us b)
   | .lam x b => .lam x (instLevels ps us b)
   | .app f a => .app (instLevels ps us f) (instLevels ps us a)
-  | .letE x q t v b => .letE x q (instLevels ps us t) (instLevels ps us v) (instLevels ps us b)
+  | .letE x q t v b => .letE x (instLevels ps us q) (instLevels ps us t) (instLevels ps us v) (instLevels ps us b)
   | .ann t ty => .ann (instLevels ps us t) (instLevels ps us ty)
-  | .sigma x q a b => .sigma x q (instLevels ps us a) (instLevels ps us b)
+  | .sigma x q a b => .sigma x (instLevels ps us q) (instLevels ps us a) (instLevels ps us b)
   | .pair a b => .pair (instLevels ps us a) (instLevels ps us b)
   | .fst t => .fst (instLevels ps us t)
   | .snd t => .snd (instLevels ps us t)
   | .split q s z m x y b =>
-    .split q (instLevels ps us s) z (instLevels ps us m) x y (instLevels ps us b)
+    .split (instLevels ps us q) (instLevels ps us s) z (instLevels ps us m) x y (instLevels ps us b)
   | .unit l => .unit (l.instParams ps us)
   | .empty l => .empty (l.instParams ps us)
   | .absurd m t => .absurd (instLevels ps us m) (instLevels ps us t)
