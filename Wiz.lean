@@ -8,3 +8,11 @@ import Wiz.Core.Usage
 import Wiz.Core.Pretty
 import Wiz.Core.Check
 import Wiz.Core.Raw
+import Wiz.Syntax.Basic
+import Wiz.Parser.Descr
+import Wiz.Parser.Token
+import Wiz.Parser.Monad
+import Wiz.Parser.Interp
+import Wiz.Parser.Builtin
+import Wiz.Parser.SyntaxCmd
+import Wiz.Frontend.Parse
