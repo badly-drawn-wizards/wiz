@@ -114,6 +114,7 @@ def levelTrailing : List TrailingParser := [
 | `term.tuple`         | max  | "(" term "," [terms] ")" |
 | `term.unitVal`       | max  | "(" ")" |
 | `term.proj` (trailing) | max | t "." num |
+| `term.field` (trailing) | max | t "." ident (a Σ field, or `T.f t` for a nominal `T`) |
 | `term.letPair`       | lead | "let" [quantity] "(" ident "," ident ")" ":=" term [";"] term |
 | `term.absurd`        | lead | "absurd" term |
 | `term.eq` (trailing) | 50   | a "=" b |
@@ -184,7 +185,8 @@ def termTrailing : List TrailingParser := [
   { kind := "term.arrow", prec := 25, lhsPrec := 26, p := seqs [arrow, term 25] },
   { kind := "term.prod", prec := 35, lhsPrec := 36, p := seqs ["×", term 35] },
   { kind := "term.eq", prec := 50, lhsPrec := 51, p := seqs ["=", term 51] },
-  { kind := "term.proj", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, num] }
+  { kind := "term.proj", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, num] },
+  { kind := "term.field", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, ident] }
 ]
 
 /-- Commands. Each command is parsed inside `withPosition`, so an application can't
@@ -200,6 +202,8 @@ continue onto a line starting at the command's column.
 | `command.syntax`             | "syntax" [":" prec] [name] [priority] [stx+] ":" ident |
 | `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] |
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] "where" [fields] |
+| `command.coinductive`        | like `structure`; the fields are observations |
+| `command.defEqns`            | "def" ident [".{" us "}"] [binders] ":" T [alts] |
 
 A constructor is `inductive.ctor`: "|" ident [binders] [":" T]. A field is
 `structure.field`: [quantity] ident ":" T, on its own line.
@@ -225,6 +229,9 @@ def commandLeading : List LeadingParser := [
         optional (seqs [":", term])]))] },
   { kind := "command.structure", prec := maxPrec,
     p := seqs ["structure", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
+      "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term])))] },
+  { kind := "command.coinductive", prec := maxPrec,
+    p := seqs ["coinductive", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
       "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term])))] }
 ]
 

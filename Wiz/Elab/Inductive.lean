@@ -212,6 +212,73 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     ctorDecls := ctorDecls ++ [d]
   pure ([descDecl, typeDecl] ++ ctorDecls)
 
+/-- Elaborate a `coinductive` command: one "constructor" whose fields are the
+observations. `T.desc`, `T := ν (T.desc Δ) ()`, and an observation function per field
+(`out x` projected). Returns the declarations and the observation names, with
+whether each is recursive. Fields may depend on the parameters only. -/
+def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
+    ElabM R (List (Decl R) × List (Name × Bool)) := do
+  let T := ((cmd.getArg 1).getId?).getD "_"
+  let us := levelParams.map Level.param
+  let (ctxΔ, Δ) ← elabTelescope {} ((cmd.getArg 3).args.flatMap binderViews).toList
+  let nΔ := Δ.size
+  let sig ← match (cmd.getArg 4).args[1]? with
+    | some s => pure (← checkType ctxΔ s).1
+    | none => pure (.sort 1)
+  let sig ← zonk ctxΔ.lvl sig
+  let l ← match peelSignature sig with
+    | .ok ([], l) => pure l
+    | .ok _ => throwAt (cmd.getArg 4).info "a coinductive type has no indices (yet)"
+    | .error e => throwAt (cmd.getArg 4).info e
+  let ctxT := ctxΔ.bind T (eval (← getGlobals) [] (pisTm Δ.toList sig))
+  let views : List BinderView := (cmd.getArg 6).args.toList.map fun f =>
+    { name := ((f.getArg 1).getId?).getD "_", info := f.info, bi := .default,
+      qty := (f.getArg 0).args[0]?, type := some (f.getArg 3) }
+  let (_, fs) ← elabTelescope ctxT views
+  let mut fs' := #[]
+  for (x, bi, q, A) in fs, k in [0:fs.size] do
+    let q ← zonk (ctxT.lvl + k) q
+    let A ← zonk (ctxT.lvl + k) A
+    ensureNoMVars q cmd.info; ensureNoMVars A cmd.info
+    fs' := fs'.push (x, bi, q, A)
+  let D ← match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) [] with
+    | .ok D => pure D
+    | .error e => throwAt cmd.info e
+  let I : Term R := .unit (.succ l)
+  let ΔNames := Δ.toList.map (·.1)
+  let descDecl : Decl R :=
+    { name := T ++ ".desc", levelParams := levelParams,
+      type := pisTm Δ.toList (.desc l I), value := some (lamsTm ΔNames D) }
+  let Δvars := telescopeVars nΔ 0
+  let nuTm : Term R := .nu l I (Δvars.foldl .app (.const (T ++ ".desc") us)) .tt (some (T, us, Δvars))
+  let typeDecl : Decl R :=
+    { name := T, levelParams := levelParams, type := pisTm Δ.toList sig, value := some (lamsTm ΔNames nuTm) }
+  -- observations: T.f : {Δ} → T Δ → F, with F not depending on earlier fields
+  let implicitΔ := Δ.toList.map fun (x, _, _, A) => (x, BinderInfo.implicit, (.qlit 0 : Term R), A)
+  let mut decls := [descDecl, typeDecl]
+  let mut obs := []
+  for (x, _, _, A) in fs'.toList, k in [0:fs'.size] do
+    -- `A` lives in [f_{k-1} … f₀, T, Δ]: drop the fields, then replace `T`
+    let mut A' := A
+    for _ in [0:k] do
+      match A'.strengthen? 0 with
+      | some a => A' := a
+      | none => throwAt cmd.info s!"the observation {x} may not depend on earlier observations"
+    let isRec := match (Term.spine A').1 with
+      | .var 0 => true
+      | _ => false
+    let F := A'.instantiateAt 0 (.const T us)
+    let Tapp : Term R := (telescopeVars nΔ 0).foldl .app (.const T us)
+    -- (out x).2…2.1 in context [x, Δ]
+    let proj : Term R := .fst ((List.range k).foldl (fun t _ => .snd t) (.out (.var 0)))
+    let d : Decl R :=
+      { name := T ++ "." ++ x, levelParams := levelParams,
+        type := pisTm implicitΔ (.pi "x" .default (.qlit QuantitySyntax.explicitDefault) Tapp (F.lift 1)),
+        value := some (lamsTm ΔNames (.lam "x" proj)) }
+    decls := decls ++ [d]
+    obs := obs ++ [(x, isRec)]
+  pure (decls, obs)
+
 /-- Elaborate a `structure` command to the Σ type and its constructor `S.mk`. -/
 def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl R)) := do
   let S := ((cmd.getArg 1).getId?).getD "_"

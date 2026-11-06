@@ -94,29 +94,6 @@ def lookupLocal (ctx : LocalCtx R) (x : Name) : Option (Nat × VTy R) := Id.run 
     if n == x && x != "_" then return some (i, ty)
   none
 
-/-- **Exercise 4.9.** Field access by name: `t.f₁.f₂…`. Starting from `t : ty`, for
-each field name walk the Σ telescope of the (forced) type: if the current Σ's binder
-name is the field, project with `fst`; otherwise move on with `snd`, instantiating the
-second component's type with the first projection. Throw if the field isn't found.
-Returns the projected term and its type. -/
-partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : List Name) :
-    ElabM R (Term R × VTy R) := do
-  --<sol
-  match fields with
-  | [] => pure (t, ty)
-  | f :: rest =>
-    let rec walk (t : Term R) (ty : VTy R) : ElabM R (Term R × VTy R) := do
-      match ← force ty with
-      | .sigma x _ A B =>
-        if x == f then pure (.fst t, A)
-        else walk (.snd t) (← instM B (vFst (← evalIn ctx t)))
-      | ty => throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty}"
-    let (t, ty) ← walk t ty
-    elabFields ctx t ty rest
-  --|ex
-  --| sorry
-  --sol>
-
 /-- **Exercise 3.7.** Insert implicit applications: while the type forces to an
 *implicit* Π, apply the term to a fresh metavariable and instantiate the codomain with
 the metavariable's value. -/
@@ -168,6 +145,42 @@ private def isImplicitFun (stx : Syntax) : Bool :=
     match (stx.getArg 1).args[0]? with
     | some b => b.isOfKind "binder.implicit"
     | none => false
+
+/-- **Exercise 4.9.** Field access by name: `t.f₁.f₂…`. Starting from `t : ty`, for
+each field name walk the Σ telescope of the (forced) type: if the current Σ's binder
+name is the field, project with `fst`; otherwise move on with `snd`, instantiating the
+second component's type with the first projection. Throw if the field isn't found.
+Returns the projected term and its type. -/
+partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : List Name) :
+    ElabM R (Term R × VTy R) := do
+  --<sol
+  match fields with
+  | [] => pure (t, ty)
+  | f :: rest =>
+    -- generalised field notation: `t.f` is `T.f t` for a nominal type `T`
+    let hint? : Option (Name × List Level × List (Val R)) := match ← force ty with
+      | .mu _ _ _ _ h | .nu _ _ _ _ h => h
+      | _ => none
+    if let some (T, us, args) := hint? then
+      if let some d := (← getGlobals).find? (T ++ "." ++ f) then
+        -- `T.f : {…} → T … → F`: insert the implicits as metavariables, then unify
+        let fty : VTy R := eval (← getGlobals) [] (d.type.instLevels d.levelParams us)
+        let (tm, fty) ← insertImplicits ctx (.const (T ++ "." ++ f) us) fty
+        let .pi _ _ _ dom cod ← force fty | throwAt ctx.info s!"{T}.{f} is not a function of {T}"
+        unifyAt ctx (.missing) dom ty
+        let tm' := Term.app tm t
+        return ← elabFields ctx tm' (← instM cod (← evalIn ctx t)) rest
+    let rec walk (t : Term R) (ty : VTy R) : ElabM R (Term R × VTy R) := do
+      match ← force ty with
+      | .sigma x _ A B =>
+        if x == f then pure (.fst t, A)
+        else walk (.snd t) (← instM B (vFst (← evalIn ctx t)))
+      | ty => throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty}"
+    let (t, ty) ← walk t ty
+    elabFields ctx t ty rest
+  --|ex
+  --| sorry
+  --sol>
 
 /-! ## Pattern matching (stage 4e)
 
@@ -1105,6 +1118,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.tuple" =>
     inferTuple ctx (#[stx.getArg 1] ++ ((stx.getArg 3).args.filter (!· matches .atom ..))).toList
   | "term.unitVal" => return (.tt, .unit 1)
+  | "term.field" =>
+    let (t, ty) ← infer ctx (stx.getArg 0)
+    -- `.a.b.c` lexes as one dotted identifier
+    let path := (((stx.getArg 2).getId?).getD "_").splitOn "."
+    elabFields ctx t ty path
   | "term.proj" =>
     let (t, ty) ← infer ctx (stx.getArg 0)
     match ← force ty, (stx.getArg 2).getNat? with

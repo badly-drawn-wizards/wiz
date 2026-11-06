@@ -410,4 +410,24 @@ computed equation contains `y = t` for a constructor field `y`, the later fields
 re-bound with `y := t`, and the branch is transported back along the equation with
 `cast`/`transp`.
 
-Not yet: course-of-values recursion, well-founded recursion, and copatterns.
+Coinductive types and **copatterns**:
+
+```
+coinductive Stream (A : Type) where
+  head : A
+  tail : Stream A
+
+def nats (n : Nat) : Stream Nat
+  | .head => n
+  | .tail => nats (.succ n)
+```
+
+A coinductive type is `ν` of a one-constructor description whose fields are the
+observations. Each observation `T.f` is a projection of `out`. A copattern definition
+compiles to `coit`: the state is the tuple of the definition's explicit arguments
+(implicit ones stay fixed), and each recursive observation must be a corecursive call,
+whose arguments are the next state. This is the guardedness check.
+`(nats .zero).tail.head` uses generalised field notation (`x.f` is `T.f x` for a
+nominal type `T`), which also works on inductives.
+
+Not yet: course-of-values recursion, and well-founded recursion (`termination_by`).

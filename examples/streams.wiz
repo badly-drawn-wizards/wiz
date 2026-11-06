@@ -1,0 +1,21 @@
+-- Stage 4e: coinductive types and copatterns. `lake exe wiz check examples/streams.wiz`
+
+inductive Nat where
+  | zero
+  | succ (n : Nat)
+
+coinductive Stream (A : Type) where
+  head : A
+  tail : Stream A
+
+def nats (n : Nat) : Stream Nat
+  | .head => n
+  | .tail => nats (.succ n)
+
+#reduce (nats .zero).tail.tail.head
+#reduce Stream.head (Stream.tail (nats .zero))
+
+def repeat {A : Type} (a : A) : Stream A
+  | .head => a
+  | .tail => repeat a
+#reduce (repeat Nat.zero).tail.head
