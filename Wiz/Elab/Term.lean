@@ -93,6 +93,21 @@ partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
     ElabM R (Term R × VTy R) := do
   sorry
 
+/-- Names the elaborator treats as data primitives when applied (and not shadowed). -/
+def builtinNames : List Name :=
+  ["Desc", "Desc.ret", "Desc.arg", "Desc.rec", "Desc.elim", "Desc.interp", "Desc.All",
+   "μ", "ν", "con", "ind", "out", "coit"]
+
+/-- `f a₁ … aₙ` where `f` is an unshadowed built-in name. -/
+def builtinApp? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Name × Array Syntax)) := do
+  unless stx.isOfKind "term.app" do return none
+  let head := stx.getArg 0
+  unless head.isOfKind "term.ident" do return none
+  let some n := (head.getArg 0).getId? | return none
+  unless builtinNames.contains n do return none
+  if (lookupLocal ctx n).isSome || (← getGlobals).contains n then return none
+  return some (n, (stx.getArg 1).args)
+
 /-- Unify, turning a failure into a readable type mismatch at `stx`.
 
 Unification is untyped, so it misses the η-rule for `Unit` (`P x =?= P ()` with
@@ -156,6 +171,7 @@ partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Lev
    `unifyAt` the expected and inferred types. -/
 partial def check (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
   let ctx := ctx.withInfo stx
+  if let some t ← checkData? ctx stx expected then return t
   sorry
 
 /-- Check `fun b₁ … bₙ => body` against `expected`, one binder at a time.
@@ -191,6 +207,120 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
       let (t, ty) ← inferFun ctx bs body
       unifyAt ctx body expected ty
       pure t
+
+/-- Stage 4d: data forms that need their expected type: tags, `ecase` (which
+generalises its scrutinee in the expected type), and the constructors `Desc.ret`,
+`Desc.arg`, `Desc.rec`, `con`, `coit`. -/
+partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
+    ElabM R (Option (Term R)) := do
+  let g ← getGlobals
+  let q := quote g ctx.lvl
+  let w := QuantitySyntax.explicitDefault (R := R)
+  let expected ← force expected
+  let shapeError (what : String) : ElabM R (Option (Term R)) := do
+    throwAt ctx.info s!"{what}, but the expected type is {← showVal ctx expected}"
+  match stx.kind with
+  | "term.tag" =>
+    let x := ((stx.getArg 1).getId?).getD "_"
+    let .enum ls := expected | shapeError s!"'{x} is a tag"
+    match ls.idxOf? x with
+    | some i => return some (.tag ls i)
+    | none => throwAt ctx.info s!"'{x} is not one of the tags {ls}"
+  | "term.ecase" =>
+    let (s, sty) ← infer ctx (stx.getArg 1)
+    let .enum ls ← force sty | throwAt ctx.info s!"ecase expects a tag, got {← showVal ctx sty}"
+    let bs := (stx.getArg 3).args.filter (!· matches .atom ..)
+    unless bs.size == ls.length do throwAt ctx.info s!"ecase needs {ls.length} branches"
+    let s := q (← evalIn ctx s)
+    let motive := Term.abstract s (q expected)
+    let bs ← bs.toList.mapIdxM fun k b => do
+      check ctx b (eval g (.tag ls k :: ctx.env) motive)
+    return some (.ecase "z" motive s bs)
+  | _ =>
+  let some (n, args) ← builtinApp? ctx stx | return none
+  match n, args, expected with
+  | "Desc.ret", #[i], .desc _ I => return some (.dret (← check ctx i I))
+  | "Desc.arg", #[qs, S, D], .desc l I =>
+    let qt ← check ctx qs .qty
+    let S' ← check ctx S (.sort (.succ l))
+    let vS ← evalIn ctx S'
+    let D' ← check ctx D (.pi "s" .default (.qlit w) vS (.mk [I] (.desc l (.var 1))))
+    return some (.darg qt S' D')
+  | "Desc.rec", #[qs, j, D], .desc l I =>
+    return some (.drec (← check ctx qs .qty) (← check ctx j I) (← check ctx D (.desc l I)))
+  | "con", #[x], .mu l I D i => return some (.con (← check ctx x (vInterp g l I D (muFamily l I D) i)))
+  | "coit", #[S, st, s], .nu l I D i =>
+    let S' ← check ctx S (coitStateTy l I w)
+    let vS ← evalIn ctx S'
+    let st' ← check ctx st (coitStepTy g l I D vS w)
+    let s' ← check ctx s (vApp g vS i)
+    return some (.coit l (q I) (q D) S' st' (q i) s')
+  | "Desc.ret", _, _ | "Desc.arg", _, _ | "Desc.rec", _, _ => shapeError s!"{n} builds a description"
+  | "con", _, _ => shapeError "con builds an inductive value"
+  | "coit", _, _ => shapeError "coit builds a coinductive value"
+  | _, _, _ => return none
+
+/-- Stage 4d: data primitives whose type can be inferred. -/
+partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term R × VTy R)) := do
+  let g ← getGlobals
+  let q := quote g ctx.lvl
+  let w := QuantitySyntax.explicitDefault (R := R)
+  let some (n, args) ← builtinApp? ctx stx | return none
+  let descOf (D : Syntax) : ElabM R (Term R × Level × VTy R) := do
+    let (D', dty) ← infer ctx D
+    let .desc l I ← force dty | throwAt ctx.info s!"expected a description, got {← showVal ctx dty}"
+    pure (D', l, I)
+  match n, args with
+  | "Desc", #[I] =>
+    let (I', lI) ← checkType ctx I
+    let l ← freshLevelMeta
+    unifyLevel lI (.succ l)
+    return some (.desc l I', .sort (.succ (.succ l)))
+  | "μ", #[D, i] | "ν", #[D, i] =>
+    let (D', l, I) ← descOf D
+    let i' ← check ctx i I
+    return some ((if n == "μ" then Term.mu else Term.nu) l (q I) D' i', .sort (.succ l))
+  | "Desc.elim", #[P, a, b, c, D] =>
+    let (D', l, I) ← descOf D
+    let v ← freshLevelMeta
+    let P' ← check ctx P (delimMotiveTy l v I w)
+    let vP ← evalIn ctx P'
+    let (ta, tb, tc) := delimMethodTys g l I vP w
+    return some (.delim v P' (← check ctx a ta) (← check ctx b tb) (← check ctx c tc) D',
+                 vApp g vP (← evalIn ctx D'))
+  | "Desc.interp", #[D, X, i] =>
+    let (D', l, I) ← descOf D
+    let X' ← check ctx X (coitStateTy l I w)
+    let i' ← check ctx i I
+    -- β-reduce the template: the kernel can't infer a type for a bare lambda
+    let v ← evalIn ctx ([q I, D', X', i'].foldl .app (Templates.interpTm l))
+    return some (q v, .sort (.succ l))
+  | "Desc.All", #[D, X, P, i, xs] =>
+    let (D', l, I) ← descOf D
+    let X' ← check ctx X (coitStateTy l I w)
+    let vX ← evalIn ctx X'
+    let v ← freshLevelMeta
+    -- (i : I) → X i → Sort v
+    let Pty : VTy R := eval g [vX, I] (.pi "i" .default (.qlit w) (.var 1)
+      (.pi "_" .default (.qlit w) (.app (.var 1) (.var 0)) (.sort v)))
+    let P' ← check ctx P Pty
+    let i' ← check ctx i I
+    let xs' ← check ctx xs (vInterp g l I (← evalIn ctx D') vX (← evalIn ctx i'))
+    let all ← evalIn ctx ([q I, D', X', P', i', xs'].foldl .app (Templates.allTm l v))
+    return some (q all, .sort (.max 1 v))
+  | "ind", #[P, m, x] =>
+    let (x', xty) ← infer ctx x
+    let .mu l I D i ← force xty | throwAt ctx.info s!"ind expects an inductive value, got {← showVal ctx xty}"
+    let v ← freshLevelMeta
+    let P' ← check ctx P (indMotiveTy g l v I D w)
+    let vP ← evalIn ctx P'
+    let m' ← check ctx m (indMethodTy g l v I D vP w)
+    return some (.ind l (q I) (q D) v P' m' (q i) x', vApp g (vApp g vP i) (← evalIn ctx x'))
+  | "out", #[x] =>
+    let (x', xty) ← infer ctx x
+    let .nu l I D i ← force xty | throwAt ctx.info s!"out expects a coinductive value, got {← showVal ctx xty}"
+    return some (.out x', vInterp g l I D (nuFamily l I D) i)
+  | _, _ => return none
 
 /-- Check `(a, b, c)` against a (right-nested) Σ. -/
 partial def checkTuple (ctx : LocalCtx R) (items : List Syntax) (expected : VTy R) :
@@ -371,7 +501,23 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let a ← freshMeta ctx "the type of a hole"
     let desc := if stx.isOfKind "term.hole" then "_" else s!"?{((stx.getArg 1).getId?).getD "_"}"
     return (← freshMeta ctx desc, ← evalIn ctx a)
-  | "term.app" => inferApp ctx stx
+  | "term.app" =>
+    if let some r ← inferData? ctx stx then return r
+    inferApp ctx stx
+  | "term.enum" =>
+    let ls := ((stx.getArg 2).args.filterMap Syntax.getId?).toList
+    return (.enum ls, .sort 1)
+  | "term.ecase" =>
+    -- non-dependent: the first branch's type is the type of every branch
+    let (s, sty) ← infer ctx (stx.getArg 1)
+    let .enum ls ← force sty | throwAt ctx.info s!"ecase expects a tag, got {← showVal ctx sty}"
+    let bs := ((stx.getArg 3).args.filter (!· matches .atom ..)).toList
+    let b₀ :: rest := bs | throwAt ctx.info "ecase needs branches"
+    unless bs.length == ls.length do throwAt ctx.info s!"ecase needs {ls.length} branches"
+    let (t₀, ty) ← infer ctx b₀
+    let ts ← rest.mapM fun b => check ctx b ty
+    let motive := (quote (← getGlobals) ctx.lvl ty).lift 1
+    return (.ecase "z" motive s (t₀ :: ts), ty)
   | "term.fun" => inferFun ctx ((stx.getArg 1).args.flatMap binderViews).toList (stx.getArg 3)
   | "term.let" => elabLet ctx stx none
   | "term.arrow" =>

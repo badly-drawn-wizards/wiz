@@ -24,7 +24,7 @@ Reference: elaboration-zoo `03-holes`, which this follows closely.
 
 namespace Wiz
 
-variable {R : Type} [QRig R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
 A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
@@ -141,6 +141,17 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
       unify (l + 2) (Closure.inst2 g b (Val.var l) (Val.var (l + 1)))
         (Closure.inst2 g b' (Val.var l) (Val.var (l + 1)))
     | .absurd m, .absurd m' => unify l m m'
+    | .ecase _ m env bs, .ecase _ m' env' bs' =>
+      unify (l + 1) (← instM m (Val.var l)) (← instM m' (Val.var l))
+      unless bs.length == bs'.length do throwAt {} "spine mismatch"
+      for b in bs, b' in bs' do unify l (eval g env b) (eval g env' b')
+    | .delim v P a b c, .delim v' P' a' b' c' =>
+      unifyLevel v v'
+      for (x, y) in [(P, P'), (a, a'), (b, b'), (c, c')] do unify l x y
+    | .ind u I D v P mt i, .ind u' I' D' v' P' mt' i' =>
+      unifyLevel u u'; unifyLevel v v'
+      for (x, y) in [(I, I'), (D, D'), (P, P'), (mt, mt'), (i, i')] do unify l x y
+    | .out, .out => pure ()
     | _, _ => throwAt {} "spine mismatch"
 
 end

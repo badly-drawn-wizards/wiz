@@ -117,6 +117,13 @@ def levelTrailing : List TrailingParser := [
 | `term.rfl`           | max  | "rfl" |
 | `term.cast`          | lead | "cast" term term |
 | `term.transp`        | lead | "transp" term term term |
+| `term.enum`          | max  | "Enum" "[" [idents] "]" |
+| `term.tag`           | max  | "'" ident |
+| `term.ecase`         | lead | "ecase" term "[" [terms] "]" |
+
+The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
+`Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out` and `coit` have no syntax of their
+own: they are names the elaborator recognises when applied (unless shadowed).
 
 Field access by name (`p.x`) needs no syntax: `p.x` lexes as one dotted identifier,
 and the elaborator resolves it.
@@ -155,7 +162,11 @@ def termLeading : List LeadingParser := [
   { kind := "term.refl", prec := leadPrec, p := seqs ["refl", term maxPrec] },
   { kind := "term.rfl", prec := maxPrec, p := "rfl" },
   { kind := "term.cast", prec := leadPrec, p := seqs ["cast", term maxPrec, term maxPrec] },
-  { kind := "term.transp", prec := leadPrec, p := seqs ["transp", term maxPrec, term maxPrec, term maxPrec] }
+  { kind := "term.transp", prec := leadPrec, p := seqs ["transp", term maxPrec, term maxPrec, term maxPrec] },
+  { kind := "term.enum", prec := maxPrec, p := seqs [nonReserved "Enum", "[", sepBy ident ",", "]"] },
+  { kind := "term.tag", prec := maxPrec, p := seqs ["'", noWs, ident] },
+  { kind := "term.ecase", prec := leadPrec,
+    p := seqs [nonReserved "ecase", term maxPrec, "[", withoutPosition (sepBy term ","), "]"] }
 ]
 
 def termTrailing : List TrailingParser := [

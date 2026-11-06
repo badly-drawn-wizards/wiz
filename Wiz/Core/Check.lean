@@ -59,8 +59,8 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── pair      (check only)
     Γ ⊢ (a, b) ⇐ (q x : A) × B ⊣ q·U₁ + U₂
 
-    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q
-    ──────────────────────────────── fst       (an erased field can't be projected)
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q  (or Γ is erased)
+    ──────────────────────────────── fst       (an erased field can't be projected at runtime)
     Γ ⊢ t.1 ⇒ A ⊣ U
 
     Γ ⊢ t ⇒ (q x : A) × B ⊣ U
@@ -101,6 +101,26 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     Γ ⊢ transp A a P p b e ⇒ P b e ⊣ 0ₙ
 
 Proofs carry no usage: they are erased, and conversion never looks at them.
+
+## Data (stage 4d)
+
+    Γ ⊢ Enum ls ⇒ Type        Γ ⊢ tag ls i ⇒ Enum ls   (i < |ls|)
+
+    Γ ⊢ t ⇒ Enum ls ⊣ U    Γ, z ⊢ M type    Γ ⊢ bₖ ⇐ M[tag k] ⊣ Vₖ
+    ──────────────────────────────── ecase     (⊔ = least upper bound in `le`)
+    Γ ⊢ ecase t [b…] ⇒ M[t] ⊣ U + (V₀ ⊔ … ⊔ Vₙ)
+
+    Γ ⊢ I type@(l+1) ⇒ Γ ⊢ Desc.{l} I ⇒ Type (l+1); ret/arg/rec check against it
+    Γ ⊢ Desc.elim P mret marg mrec D ⇒ P D                 (method types: `delimMethodTys`)
+    Γ ⊢ μ.{l} I D i ⇒ Type l           Γ ⊢ con x ⇐ μ D i  if  Γ ⊢ x ⇐ ⟦D⟧ (μ D) i
+    Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·Uₘ + Uₓ                    (`indMotiveTy`, `indMethodTy`)
+    Γ ⊢ ν.{l} I D i ⇒ Type l           Γ ⊢ out x ⇒ ⟦D⟧ (ν D) i
+    Γ ⊢ coit S step i s ⇒ ν D i ⊣ ω·U_step + U_s
+
+A method may run once per node, so its usage is scaled by ω (the rig's default
+quantity). Branches of `ecase` are alternatives, so a case uses the *join* of its
+branches' usages: with `{0, 1, ω}` a linear variable must be used the same way in
+every branch, and an ω variable may be used differently.
 
 `split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
 using both on a linear pair uses it twice.
@@ -155,10 +175,13 @@ structure Ctx (R : Type) where
   types : List (VTy R) := []
   /-- number of locals in scope = the next fresh de Bruijn level -/
   lvl   : Lvl := 0
+  /-- checking an erased position (a type, or an argument to a `0` binder)? There,
+  erased fields may be projected. (A light version of Atkey's σ = 0 mode.) -/
+  erased : Bool := false
 
 namespace Ctx
 
-variable [QRig R] [DecidableEq R]
+variable [QRig R] [DecidableEq R] [QuantitySyntax R]
 
 /-- Go under a binder: the new variable is a fresh neutral. -/
 def bind (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) : Ctx R :=
@@ -221,6 +244,11 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   -- Exercise 4.7a
   | .pair a b, .sigma _ q A B => sorry
   | .tt, .unit _ => sorry
+  -- Exercise 4.20
+  | .dret i, .desc _ I => sorry
+  | .darg q S D, .desc l I => sorry
+  | .drec q j D, .desc l I => sorry
+  | .con x, .mu l I D i => sorry
   | _, _ => sorry
 
 /-- **Exercise 1.7.** Infer the type of `t`. See the rules in the module docstring.
@@ -259,6 +287,17 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .transp A a P p b e => sorry
   | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
   | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)
+  -- Exercise 4.20: the data rules (see the module docstring)
+  | .enum _ => sorry
+  | .tag ls i => sorry
+  | .ecase z m s bs => sorry
+  | .desc l I => sorry
+  | .delim v P a b c D => sorry
+  | .mu l I D i | .nu l I D i => sorry
+  | .ind l I D v P m i x => sorry
+  | .out x => sorry
+  | .coit l I D S st i s => sorry
+  | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
 
 /-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as
 for types), returned as a polynomial. -/
@@ -269,7 +308,7 @@ partial def checkQty (ctx : Ctx R) (q : Term R) : TCM (QPoly R) := do
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.
 The usage is discarded: type positions are erased. -/
 partial def checkType (ctx : Ctx R) (a : Term R) : TCM Level := do
-  let (ty, _) ← infer ctx a
+  let (ty, _) ← infer { ctx with erased := true } a
   match ty with
   | .sort l => pure l
   | _ => throw (.notAType (ctx.showTerm a) (ctx.showVal ty))

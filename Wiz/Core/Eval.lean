@@ -1,4 +1,5 @@
 import Wiz.Core.Value
+import Wiz.Core.Templates
 
 /-!
 # Evaluation, quotation, normalisation
@@ -26,7 +27,7 @@ On well-typed terms they do.
 
 namespace Wiz
 
-variable {R : Type} [QRig R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 
 /-- Are two quantity values equal? `none` if either is not a polynomial (unknown). -/
 def sameQty (a b : Val R) : Option Bool := do
@@ -95,6 +96,22 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .transp A a P p b e => sorry
   | .qty => .qty
   | .qlit r => .qlit r
+  -- Exercise 4.18: constructors evaluate their parts; eliminators use
+  -- vEcase, vDelim, vInd and vOut.
+  | .enum ls => sorry
+  | .tag ls i => sorry
+  | .ecase z m s bs => sorry
+  | .desc l I => sorry
+  | .dret i => sorry
+  | .darg q S D => sorry
+  | .drec q j D => sorry
+  | .delim v P a b c D => sorry
+  | .mu l I D i => sorry
+  | .con x => sorry
+  | .ind l I D v P m i x => sorry
+  | .nu l I D i => sorry
+  | .out x => sorry
+  | .coit l I D S st i s => sorry
 
 /-- **Exercise 1.2a.** Semantic application.
 A `lam` β-reduces; a neutral grows its spine (with `Elim.app`). Anything else is a
@@ -114,6 +131,56 @@ partial def Closure.inst2 (g : Globals R) : Closure R → Val R → Val R → Va
 neutral. -/
 partial def vSplit (g : Globals R) (q : Val R) (s : Val R) (z : Name) (m : Closure R) (x y : Name)
     (body : Closure R) : Val R :=
+  sorry
+
+/- ### Data (stage 4d)
+
+`vEcase`, `vDelim`, `vInd` and `vOut` compute on canonical arguments and are stuck on
+neutrals. `vInd` and `vOut` use the description templates of `Wiz.Core.Templates`. -/
+
+/-- `λ j. μ D j`, the family being defined, as a value. -/
+partial def muFamily (l : Level) (I D : Val R) : Val R :=
+  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0)))
+
+partial def nuFamily (l : Level) (I D : Val R) : Val R :=
+  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0)))
+
+/-- `⟦D⟧ X i` -/
+partial def vInterp (g : Globals R) (l : Level) (I D X i : Val R) : Val R :=
+  [I, D, X, i].foldl (vApp g) (eval g [] (Templates.interpTm l))
+
+/-- `All D X P i xs` -/
+partial def vAll (g : Globals R) (l v : Level) (I D X P i xs : Val R) : Val R :=
+  [I, D, X, P, i, xs].foldl (vApp g) (eval g [] (Templates.allTm l v))
+
+/-- **Exercise 4.19a.** `ecase` on a tag picks the branch (evaluated in `env`). -/
+partial def vEcase (g : Globals R) (z : Name) (m : Closure R) (s : Val R) (env : Env R)
+    (bs : List (Term R)) : Val R :=
+  sorry
+
+/-- **Exercise 4.19b.** The description eliminator:
+
+    delim (ret i)     ↦ mret i
+    delim (arg q S D) ↦ marg q S D (fun s => delim (D s))
+    delim (rec q j D) ↦ mrec q j D (delim D)
+
+The `fun s => …` is a closure over a small template, as in `vEq`. -/
+partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec D : Val R) : Val R :=
+  sorry
+
+/-- **Exercise 4.19c.** Induction computes on constructors:
+
+    ind P m i (con xs) ↦ m i xs (hyps D (μ D) P (fun j y => ind P m j y) i xs)
+
+(`Templates.hypsTm`; the `fun j y => …` is a template closure). -/
+partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
+  sorry
+
+/-- **Exercise 4.19d.** Observing an unfolding runs one step and re-wraps the
+recursive positions:
+
+    out (coit S step i s) ↦ map D S (ν D) (fun j s => coit S step j s) i (step i s) -/
+partial def vOut (g : Globals R) (x : Val R) : Val R :=
   sorry
 
 /- ### Observational equality (stage 4c)
@@ -183,6 +250,10 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .snd => vSnd v
     | .split q z m x y b => vSplit g q v z m x y b
     | .absurd m => vAbsurd m v
+    | .ecase z m env bs => vEcase g z m v env bs
+    | .delim lv P a b c => vDelim g lv P a b c v
+    | .ind l I D lv P m i => vInd g l I D lv P m i v
+    | .out => vOut g v
 
 /-- **Exercise 1.3.** Read a value back into syntax in a context of `l` local variables.
 To quote under a binder, instantiate the closure with `Val.var l` and quote the
