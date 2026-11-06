@@ -438,25 +438,13 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   | .sort u, .sort w | .empty u, .empty w => if u.equiv w then t else stuck
   | .unit u, .unit w => if u.equiv w then .tt else stuck
   | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
-  | _, _ => stuck
+  -- regularity, when it is cheap to see: syntactically equal types (quoted at a level
+  -- above any variable in use)
+  | _, _ => if quote g 100000 A == quote g 100000 B then t else stuck
   --|ex
   --| sorry
   --sol>
 
-end
-
-/-- Apply a whole spine of eliminations to a value (used to unfold solved metas). -/
-def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
-  sp.foldl (init := v) fun v e => match e with
-    | .app a => vApp g v a
-    | .fst => vFst v
-    | .snd => vSnd v
-    | .split q z m x y b => vSplit g q v z m x y b
-    | .absurd m => vAbsurd m v
-    | .ecase z m env bs => vEcase g z m v env bs
-    | .delim lv P a b c => vDelim g lv P a b c v
-    | .ind l I D lv P m i => vInd g l I D lv P m i v
-    | .out => vOut g v
 
 /-- **Exercise 1.3.** Read a value back into syntax in a context of `l` local variables.
 To quote under a binder, instantiate the closure with `Val.var l` and quote the
@@ -522,6 +510,21 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   --|ex
   --| | v => sorry
   --sol>
+
+end
+
+/-- Apply a whole spine of eliminations to a value (used to unfold solved metas). -/
+def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
+  sp.foldl (init := v) fun v e => match e with
+    | .app a => vApp g v a
+    | .fst => vFst v
+    | .snd => vSnd v
+    | .split q z m x y b => vSplit g q v z m x y b
+    | .absurd m => vAbsurd m v
+    | .ecase z m env bs => vEcase g z m v env bs
+    | .delim lv P a b c => vDelim g lv P a b c v
+    | .ind l I D lv P m i => vInd g l I D lv P m i v
+    | .out => vOut g v
 
 /-- Normal form of a closed term. -/
 def nf (g : Globals R) (t : Term R) : Term R :=

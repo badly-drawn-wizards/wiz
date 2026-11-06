@@ -422,10 +422,12 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     unless l.equiv l' do throw (.other "cast between different universes")
     let vA := ctx.eval A
     let vB := ctx.eval B
-    let _ ← check ctx e (vEqType ctx.globals vA vB)
+    let _ ← check { ctx with erased := true } e (vEqType ctx.globals vA vB)
     let u ← check ctx t vA
     pure (vB, u)
   | .transp A a P p b e => do
+    -- a proof: everything in it is erased
+    let ctx := { ctx with erased := true }
     let _ ← checkType ctx A
     let vA := ctx.eval A
     let _ ← check ctx a vA
