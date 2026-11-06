@@ -405,6 +405,9 @@ observational equality computes. When it contains `False`, the case is closed
 automatically with `absurd`. Recursive calls on a recursive field of the first
 argument compile through `T.rec`, and the other arguments may change between calls.
 
-Not yet: the solution rule *with* an equation (`tail`, `zip`: a constructor's index
-variable has to be replaced by the scrutinee's index, transporting the hypotheses that
-mention it), course-of-values recursion, well-founded recursion, and copatterns.
+The solution rule *with* an equation is supported too (`tail`, `zip`). When the
+computed equation contains `y = t` for a constructor field `y`, the later fields are
+re-bound with `y := t`, and the branch is transported back along the equation with
+`cast`/`transp`.
+
+Not yet: course-of-values recursion, well-founded recursion, and copatterns.
