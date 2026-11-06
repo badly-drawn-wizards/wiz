@@ -24,7 +24,7 @@ Reference: elaboration-zoo `03-holes`, which this follows closely.
 
 namespace Wiz
 
-variable {R : Type} [Zero R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R]
 
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
 A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
@@ -96,7 +96,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
         let mo' ← rename m p.lift (← instM mo (Val.var p.cod))
         let g ← getGlobals
         let b' ← rename m p.lift.lift (Closure.inst2 g b (Val.var p.cod) (Val.var (p.cod + 1)))
-        pure (.split q acc z mo' x y b')
+        pure (.split (← rename m p q) acc z mo' x y b')
       | .absurd mo => return .absurd (← rename m p mo) acc
   match ← force v with
   | .neutral (.local x) sp =>
@@ -118,14 +118,16 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
     else goSp (.mvar m') sp
   | .sort l => pure (.sort l)
   | .pi x bi q a b =>
-    return .pi x bi q (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod)))
+    return .pi x bi (← rename m p q) (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod)))
   | .lam x b => return .lam x (← rename m p.lift (← instM b (Val.var p.cod)))
   | .sigma x q a b =>
-    return .sigma x q (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod)))
+    return .sigma x (← rename m p q) (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod)))
   | .pair a b => return .pair (← rename m p a) (← rename m p b)
   | .unit l => pure (.unit l)
   | .tt => pure .tt
   | .empty l => pure (.empty l)
+  | .qty => pure .qty
+  | .qlit r => pure (.qlit r)
   --|ex
   --| sorry
   --sol>
@@ -199,18 +201,19 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .sort a, .sort b => unifyLevel a b
   | .pi _ bi q a b, .pi _ bi' q' a' b' =>
     unless bi == bi' do throwAt {} "implicit vs explicit binder mismatch"
-    unless q == q' do throwAt {} "quantity mismatch"
+    unify l q q'
     unify l a a'
     unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
   | .sigma _ q a b, .sigma _ q' a' b' =>
-    unless q == q' do throwAt {} "quantity mismatch"
+    unify l q q'
     unify l a a'
     unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
   | .pair a b, .pair a' b' => unify l a a'; unify l b b'
   | .pair a b, t'@(.neutral ..) => unify l a (vFst t'); unify l b (vSnd t')
   | t'@(.neutral ..), .pair a b => unify l (vFst t') a; unify l (vSnd t') b
   | .unit u, .unit u' | .empty u, .empty u' => unifyLevel u u'
-  | .tt, .tt => pure ()
+  | .tt, .tt | .qty, .qty => pure ()
+  | .qlit a, .qlit b => unless a == b do throwAt {} "quantity mismatch"
   | .lam _ b, .lam _ b' => unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
   | .lam _ b, t' => unify (l + 1) (← instM b (Val.var l)) (← vAppM t' (Val.var l))
   | t', .lam _ b => unify (l + 1) (← vAppM t' (Val.var l)) (← instM b (Val.var l))
@@ -248,7 +251,7 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
     | .app a, .app b => unify l a b
     | .fst, .fst | .snd, .snd => pure ()
     | .split q _ m _ _ b, .split q' _ m' _ _ b' =>
-      unless q == q' do throwAt {} "quantity mismatch"
+      unify l q q'
       unify (l + 1) (← instM m (Val.var l)) (← instM m' (Val.var l))
       unify (l + 2) (Closure.inst2 g b (Val.var l) (Val.var (l + 1)))
         (Closure.inst2 g b' (Val.var l) (Val.var (l + 1)))

@@ -1,4 +1,5 @@
 import Wiz.Core.Term
+import Wiz.Core.QPoly
 
 /-!
 # Values: the semantic domain for normalisation by evaluation
@@ -45,13 +46,15 @@ inductive Val (R : Type) where
   /-- `head` followed by the eliminations in `spine`, innermost first -/
   | neutral (head : Head R) (spine : Array (Elim R))
   | sort (level : Level)
-  | pi (x : Name) (bi : BinderInfo) (q : R) (dom : Val R) (cod : Closure R)
+  | pi (x : Name) (bi : BinderInfo) (q : Val R) (dom : Val R) (cod : Closure R)
   | lam (x : Name) (body : Closure R)
-  | sigma (x : Name) (q : R) (fst : Val R) (snd : Closure R)
+  | sigma (x : Name) (q : Val R) (fst : Val R) (snd : Closure R)
   | pair (a b : Val R)
   | unit (level : Level)
   | tt
   | empty (level : Level)
+  | qty
+  | qlit (r : R)
 
 /-- An elimination stuck on a neutral. -/
 inductive Elim (R : Type) where
@@ -59,7 +62,7 @@ inductive Elim (R : Type) where
   | fst
   | snd
   /-- `motive` is under one binder, `body` under two -/
-  | split (q : R) (z : Name) (motive : Closure R) (x y : Name) (body : Closure R)
+  | split (q : Val R) (z : Name) (motive : Closure R) (x y : Name) (body : Closure R)
   | absurd (motive : Val R)
 
 /-- A body waiting for the values of its bound variables. `env` gives the values of
@@ -72,6 +75,13 @@ abbrev Env (R : Type) := List (Val R)
 abbrev VTy (R : Type) := Val R
 
 instance {R : Type} : Inhabited (Val R) := ⟨.sort 0⟩
+
+/-- A quantity value as a polynomial: a literal, or a quantity variable. `none` for
+anything else (a stuck computation, or an elaborator metavariable). -/
+def Val.toPoly? {R : Type} [QRig R] [DecidableEq R] : Val R → Option (QPoly R)
+  | .qlit r => some (QPoly.const r)
+  | .neutral (.local l) #[] => some (QPoly.var l)
+  | _ => none
 
 /-- The value of the local variable at level `l`. -/
 def Val.var {R : Type} (l : Lvl) : Val R := .neutral (.local l) #[]

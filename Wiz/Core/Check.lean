@@ -151,17 +151,17 @@ structure Ctx (R : Type) where
   /-- values of locals, for evaluating types that mention them -/
   env   : Env R := []
   names : List Name := []
-  qtys  : List R := []
+  qtys  : List (QPoly R) := []
   types : List (VTy R) := []
   /-- number of locals in scope = the next fresh de Bruijn level -/
   lvl   : Lvl := 0
 
 namespace Ctx
 
-variable [Zero R] [DecidableEq R]
+variable [QRig R] [DecidableEq R]
 
 /-- Go under a binder: the new variable is a fresh neutral. -/
-def bind (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) : Ctx R :=
+def bind (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) : Ctx R :=
   { ctx with
     env := Val.var ctx.lvl :: ctx.env
     names := x :: ctx.names
@@ -170,7 +170,7 @@ def bind (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) : Ctx R :=
     lvl := ctx.lvl + 1 }
 
 /-- Go under a `let`: the new variable has a known value. -/
-def define (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) (val : Val R) : Ctx R :=
+def define (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) (val : Val R) : Ctx R :=
   { ctx with
     env := val :: ctx.env
     names := x :: ctx.names
@@ -195,13 +195,20 @@ end Ctx
 
 variable [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
+/-- A quantity value as a polynomial, or an error if it is something else (e.g. the
+result of a stuck computation). -/
+def qtyPoly (ctx : Ctx R) (q : Val R) : TCM (QPoly R) :=
+  match q.toPoly? with
+  | some p => pure p
+  | none => throw (.other s!"quantity must be a literal or a quantity variable: {ctx.showVal q}")
+
 /-- **Exercise 1.5.** Leave the scope of a binder `x` declared at quantity `q`:
 pop the binder's own usage off the head of the vector and check it is compatible
-with `q` (using `QRig.le`), returning the rest. Throw `quantityMismatch` otherwise. -/
-def popUsage (x : Name) (q : R) : Usage R → TCM (Usage R)
+with `q` (using `QPoly.le`), returning the rest. Throw `quantityMismatch` otherwise. -/
+def popUsage (x : Name) (q : QPoly R) : Usage R → TCM (Usage R)
   --<sol
   | used :: rest =>
-    if QRig.le used q then pure rest
+    if QPoly.le used q then pure rest
     else throw (.quantityMismatch x (toString q) (toString used))
   | [] => throw (.other "internal error: usage vector underflow")
   --|ex
@@ -218,9 +225,11 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, ty with
   --<sol
   | .lam x body, .pi _ _ q dom cod => do
+    let q ← qtyPoly ctx q
     let u ← check (ctx.bind x q dom) body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
     popUsage x q u
   | .letE x q tty val body, _ => do
+    let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
     let uv ← check ctx val vty
@@ -228,6 +237,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let ub ← popUsage x q ub
     pure (q • uv + ub)
   | .pair a b, .sigma _ q A B => do
+    let q ← qtyPoly ctx q
     let ua ← check ctx a A
     let ub ← check ctx b (Closure.inst ctx.globals B (ctx.eval a))
     pure (q • ua + ub)
@@ -266,6 +276,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | none => throw (.unboundGlobal n)
   | .sort l => pure (.sort (.succ l), Usage.zeros ctx.lvl)
   | .pi x _ q dom cod => do
+    let q ← checkQty ctx q
     let i ← checkType ctx dom
     let j ← checkType (ctx.bind x q (ctx.eval dom)) cod
     pure (.sort (.imax i j), Usage.zeros ctx.lvl)
@@ -281,10 +292,12 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let (fty, uf) ← infer ctx f
     match fty with
     | .pi _ _ q dom cod =>
+      let q ← qtyPoly ctx q
       let ua ← check ctx a dom
       pure (Closure.inst ctx.globals cod (ctx.eval a), uf + q • ua)
     | _ => throw (.notAFunction (ctx.showTerm f) (ctx.showVal fty))
   | .letE x q tty val body => do
+    let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
     let uv ← check ctx val vty
@@ -297,6 +310,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let u ← check ctx tm vty
     pure (vty, u)
   | .sigma x q a b => do
+    let q ← checkQty ctx q
     let i ← checkType ctx a
     let j ← checkType (ctx.bind x q (ctx.eval a)) b
     pure (.sort (.max i j), Usage.zeros ctx.lvl)
@@ -304,7 +318,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let (ty, u) ← infer ctx t
     match ty with
     | .sigma x q A _ =>
-      unless QRig.le 1 q do
+      let q ← qtyPoly ctx q
+      unless QPoly.le (QPoly.const 1) q do
         throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
       pure (A, u)
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
@@ -314,10 +329,12 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | .sigma _ _ _ B => pure (Closure.inst ctx.globals B (vFst (ctx.eval t)), u)
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .split q s z m x y b => do
+    let q ← checkQty ctx q
     let (sty, us) ← infer ctx s
     match sty with
     | .sigma _ p A B =>
-      let _ ← checkType (ctx.bind z 0 sty) m
+      let p ← qtyPoly ctx p
+      let _ ← checkType (ctx.bind z [] sty) m
       let mc : Closure R := .mk ctx.env m
       let vx : Val R := Val.var ctx.lvl
       let vy : Val R := Val.var (ctx.lvl + 1)
@@ -374,8 +391,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx a vA
     let va := ctx.eval a
     -- (b :0 A) → (_ :0 a = b) → Prop, with env [a, A]
-    let motiveTy : Val R := .pi "b" .default 0 vA
-      (.mk [va, vA] (.pi "_" .default 0 (.eq (.var 2) (.var 1) (.var 0)) (.sort 0)))
+    let motiveTy : Val R := .pi "b" .default (.qlit 0) vA
+      (.mk [va, vA] (.pi "_" .default (.qlit 0) (.eq (.var 2) (.var 1) (.var 0)) (.sort 0)))
     let _ ← check ctx P motiveTy
     let vP := ctx.eval P
     let g := ctx.globals
@@ -384,6 +401,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let vb := ctx.eval b
     let _ ← check ctx e (vEq g vA va vb)
     pure (vApp g (vApp g vP vb) (ctx.eval e), Usage.zeros ctx.lvl)
+  | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
+  | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)
   --|ex
   --| | .app f a => sorry
   --| | .letE x q tty val body => sorry
@@ -404,7 +423,15 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .reflTy X => sorry
   --| | .cast A B e t => sorry
   --| | .transp A a P p b e => sorry
+  --| | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
+  --| | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)
   --sol>
+
+/-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as
+for types), returned as a polynomial. -/
+partial def checkQty (ctx : Ctx R) (q : Term R) : TCM (QPoly R) := do
+  let _ ← check ctx q .qty
+  qtyPoly ctx (ctx.eval q)
 
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.
 The usage is discarded: type positions are erased. -/

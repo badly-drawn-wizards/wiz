@@ -56,15 +56,14 @@ def binderViews (stx : Syntax) : Array BinderView :=
     (stx.getArg 2).args.map fun n => { name := binderName n, info := n.info, bi, qty, type }
   | _ => #[{ name := binderName stx, info := stx.info, bi := .default, qty := none, type := none }]
 
-def elabQuantity (ctx : LocalCtx R) (bi : BinderInfo) : Option Syntax → ElabM R R
-  | none => pure (if bi == .implicit then QuantitySyntax.implicitDefault else QuantitySyntax.explicitDefault)
-  | some q =>
-    let lit := match q.getArg 0 with
-      | .atom _ v => v
-      | n => (n.getNat?.map toString).getD "?"
-    match QuantitySyntax.ofLiteral lit with
-    | some r => pure r
-    | none => throwAt (ctx.withInfo q).info s!"'{lit}' is not a quantity of this rig"
+/-- A quantity literal (`0`, `1`, `ω`, …) as a term. -/
+def elabQtyLit (ctx : LocalCtx R) (stx : Syntax) (lit : String) : ElabM R (Term R) :=
+  match QuantitySyntax.ofLiteral lit with
+  | some r => pure (.qlit r)
+  | none => throwAt (ctx.withInfo stx).info s!"'{lit}' is not a quantity of this rig"
+
+def defaultQty (bi : BinderInfo) : Term R :=
+  .qlit (if bi == .implicit then QuantitySyntax.implicitDefault else QuantitySyntax.explicitDefault)
 
 /-- **Exercise 4.2.** Elaborate a universe level (see `Builtin.levelLeading` for the
 node kinds). A `level.param` must be one of the declaration's universe parameters
@@ -157,6 +156,15 @@ private def isImplicitFun (stx : Syntax) : Bool :=
 
 mutual
 
+/-- A binder's quantity: the default, a literal (`0`, `1`, `ω`), or (stage 4d)
+`%t` for a term `t : Qty`, such as a quantity variable. -/
+partial def elabQuantity (ctx : LocalCtx R) (bi : BinderInfo) : Option Syntax → ElabM R (Term R)
+  | none => pure (defaultQty bi)
+  | some q => match q.getArg 0 with
+    | .atom _ "%" => check ctx (q.getArg 1) .qty
+    | .atom _ v => elabQtyLit ctx q v
+    | n => elabQtyLit ctx q ((n.getNat?.map toString).getD "?")
+
 /-- Elaborate a type, returning it and its universe level (possibly a level
 metavariable). -/
 partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Level) := do
@@ -194,13 +202,9 @@ partial def check (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R
     if !isImplicitFun stx then
       let body ← check (ctx.bind x dom) stx (← instM cod (Val.var ctx.lvl))
       return .lam x body
-    checkOther ctx stx (.pi x .implicit (← lookupQ expected) dom cod)
+    checkOther ctx stx (← force expected)
   | expected => checkOther ctx stx expected
 where
-  lookupQ (v : VTy R) : ElabM R R := do
-    match ← force v with
-    | .pi _ _ q _ _ => pure q
-    | _ => pure QuantitySyntax.implicitDefault
   checkOther (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
     match stx.kind with
     | "term.fun" =>
@@ -215,6 +219,10 @@ where
       | .unit _ => pure .tt
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.letPair" => elabLetPair ctx stx expected
+    | "term.num" =>
+      match ← force expected with
+      | .qty => elabQtyLit ctx stx (((stx.getArg 0).getNat?.map toString).getD "?")
+      | _ => throwAt ctx.info "numerals need data types (stage 4e); only quantities so far"
     | "term.rfl" =>
       let g ← getGlobals
       match ← force expected with
@@ -263,8 +271,10 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
           unifyAt ctx tyStx dom (← evalIn ctx ty)
         if b.qty.isSome then
           let q' ← elabQuantity ctx b.bi b.qty
-          unless q == q' do
-            throwAt b.info s!"binder quantity {QuantitySyntax.display q'} does not match the expected {QuantitySyntax.display q}"
+          let vq' ← evalIn ctx q'
+          let ok ← tryCatch (do unify ctx.lvl q vq'; pure true) (fun _ => pure false)
+          unless ok do
+            throwAt b.info s!"binder quantity {showTerm ctx q'} does not match the expected {← showVal ctx q}"
         let t ← checkFun (ctx.bind b.name dom) rest body (← instM cod (Val.var ctx.lvl))
         return .lam b.name t
       else if bi == .implicit then
@@ -304,7 +314,7 @@ partial def inferTuple (ctx : LocalCtx R) (items : List Syntax) : ElabM R (Term 
     let g ← getGlobals
     -- the second component's type, weakened under the Σ binder
     let bTerm := quote g (ctx.lvl + 1) bty
-    return (.pair a b, .sigma "_" QuantitySyntax.explicitDefault aty (.mk (Val.var ctx.lvl :: ctx.env) bTerm))
+    return (.pair a b, .sigma "_" (.qlit QuantitySyntax.explicitDefault) aty (.mk (Val.var ctx.lvl :: ctx.env) bTerm))
 
 /-- `let q (x, y) := s; body`, check mode only (the motive is the expected type). -/
 partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
@@ -335,7 +345,7 @@ partial def inferFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     let ctx' := ctx.bind b.name vty
     let (t, bty) ← inferFun ctx' rest body
     let g ← getGlobals
-    return (.lam b.name t, .pi b.name b.bi q vty (.mk ctx.env (quote g ctx'.lvl bty)))
+    return (.lam b.name t, .pi b.name b.bi (← evalIn ctx q) vty (.mk ctx.env (quote g ctx'.lvl bty)))
 
 /-- `let` in either mode. -/
 partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)) :
@@ -413,7 +423,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy 
         let a ← freshMeta ctx "a function domain"
         let va ← evalIn ctx a
         let b ← freshMeta (ctx.bind "x" va) "a function codomain"
-        let pi : Val R := .pi "x" .default QuantitySyntax.explicitDefault va (.mk ctx.env b)
+        let pi : Val R := .pi "x" .default (.qlit QuantitySyntax.explicitDefault) va (.mk ctx.env b)
         unifyAt ctx fStx ty pi
         pure pi
       | ty => do
@@ -458,6 +468,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       | "Unit", some #[l] | "Empty", some #[l] =>
         let l ← elabLevel l
         return (if x == "Unit" then .unit l else .empty l, .sort l)
+      | "Qty", none => return (.qty, .sort 1)
       | "Unit", none | "True", none => return (.unit builtinLevel.get!, .sort builtinLevel.get!)
       | "Empty", none | "False", none => return (.empty builtinLevel.get!, .sort builtinLevel.get!)
       | _, _ =>
@@ -490,7 +501,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.arrow" =>
     let (a, l₁) ← checkType ctx (stx.getArg 0)
     let (b, l₂) ← checkType (ctx.bind "_" (← evalIn ctx a)) (stx.getArg 2)
-    return (.pi "_" .default QuantitySyntax.explicitDefault a b, .sort (.imax l₁ l₂))
+    return (.pi "_" .default (defaultQty .default) a b, .sort (.imax l₁ l₂))
   | "term.depArrow" =>
     let (t, l) ← elabPis ctx (binderViews (stx.getArg 0)).toList (stx.getArg 2)
     return (t, .sort l)
@@ -503,7 +514,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.prod" =>
     let (a, l₁) ← checkType ctx (stx.getArg 0)
     let (b, l₂) ← checkType (ctx.bind "_" (← evalIn ctx a)) (stx.getArg 2)
-    return (.sigma "_" QuantitySyntax.explicitDefault a b, .sort (.max l₁ l₂))
+    return (.sigma "_" (defaultQty .default) a b, .sort (.max l₁ l₂))
   | "term.tuple" =>
     inferTuple ctx (#[stx.getArg 1] ++ ((stx.getArg 3).args.filter (!· matches .atom ..))).toList
   | "term.unitVal" => return (.tt, .unit 1)
@@ -529,8 +540,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let g ← getGlobals
     match ← force ety with
     | .neutral (.eq A a b) #[] =>
-      let motiveTy : Val R := .pi "b" .default 0 A
-        (.mk [a, A] (.pi "_" .default 0 (.eq (.var 2) (.var 1) (.var 0)) (.sort 0)))
+      let motiveTy : Val R := .pi "b" .default (.qlit 0) A
+        (.mk [a, A] (.pi "_" .default (.qlit 0) (.eq (.var 2) (.var 1) (.var 0)) (.sort 0)))
       let P ← check ctx (stx.getArg 1) motiveTy
       let vP ← evalIn ctx P
       let p ← check ctx (stx.getArg 2) (vApp g (vApp g vP a) (.neutral (.refl A a) #[]))
@@ -547,7 +558,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     | _ => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
   | "term.letPair" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
-  | "term.num" | "term.str" => throwAt ctx.info "literals need data types (stage 4)"
+  | "term.omega" => return (← elabQtyLit ctx stx "ω", .qty)
+  | "term.num" | "term.str" => throwAt ctx.info "literals need data types (stage 4e)"
   | k => throwAt ctx.info s!"no elaborator for syntax kind {k}"
 
 end

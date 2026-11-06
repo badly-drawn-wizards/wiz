@@ -26,7 +26,11 @@ On well-typed terms they do.
 
 namespace Wiz
 
-variable {R : Type} [Zero R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R]
+
+/-- Are two quantity values equal? `none` if either is not a polynomial (unknown). -/
+def sameQty (a b : Val R) : Option Bool := do
+  return QPoly.equiv (← a.toPoly?) (← b.toPoly?)
 
 /-- **Exercise 4.4b.** First projection. -/
 def vFst : Val R → Val R
@@ -81,17 +85,17 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
     | some { value := some v, levelParams, .. } => eval g [] (v.instLevels levelParams us)
     | _ => .neutral (.global n us) #[]
   | .sort l => .sort l
-  | .pi x bi q dom cod => .pi x bi q (eval g env dom) (.mk env cod)
+  | .pi x bi q dom cod => .pi x bi (eval g env q) (eval g env dom) (.mk env cod)
   | .lam x body => .lam x (.mk env body)
   | .app f a => vApp g (eval g env f) (eval g env a)
   | .letE _ _ _ val body => eval g (eval g env val :: env) body
   | .ann tm _ => eval g env tm
   | .mvar m => .neutral (.mvar m) #[]
-  | .sigma x q a b => .sigma x q (eval g env a) (.mk env b)
+  | .sigma x q a b => .sigma x (eval g env q) (eval g env a) (.mk env b)
   | .pair a b => .pair (eval g env a) (eval g env b)
   | .fst t => vFst (eval g env t)
   | .snd t => vSnd (eval g env t)
-  | .split q s z m x y b => vSplit g q (eval g env s) z (.mk env m) x y (.mk env b)
+  | .split q s z m x y b => vSplit g (eval g env q) (eval g env s) z (.mk env m) x y (.mk env b)
   | .unit l => .unit l
   | .tt => .tt
   | .empty l => .empty l
@@ -104,6 +108,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .transp A a P p b e =>
     .neutral (.transp (eval g env A) (eval g env a) (eval g env P) (eval g env p)
       (eval g env b) (eval g env e)) #[]
+  | .qty => .qty
+  | .qlit r => .qlit r
   --|ex
   --| | .var ix => sorry
   --| | .const n us => sorry
@@ -131,6 +137,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .refl A a => sorry
   --| | .reflTy X => sorry
   --| | .transp A a P p b e => sorry
+  --| | .qty => .qty
+  --| | .qlit r => .qlit r
   --sol>
 
 /-- **Exercise 1.2a.** Semantic application.
@@ -159,7 +167,7 @@ partial def Closure.inst2 (g : Globals R) : Closure R → Val R → Val R → Va
 
 /-- **Exercise 4.4a.** `let (x, y) := s; body`: β-reduces on a `pair`, gets stuck on a
 neutral. -/
-partial def vSplit (g : Globals R) (q : R) (s : Val R) (z : Name) (m : Closure R) (x y : Name)
+partial def vSplit (g : Globals R) (q : Val R) (s : Val R) (z : Name) (m : Closure R) (x y : Name)
     (body : Closure R) : Val R :=
   --<sol
   match s with
@@ -201,19 +209,19 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   match A with
   | .pi x _ _ A₁ B =>
     -- (x :0 A₁) → (B x ∋ a x = b x); env: b, a, B
-    .pi x .default 0 A₁ (.mk [b, a, .lam x B] (.eq (.app (v 3) (v 0)) (.app (v 2) (v 0)) (.app (v 1) (v 0))))
+    .pi x .default (.qlit 0) A₁ (.mk [b, a, .lam x B] (.eq (.app (v 3) (v 0)) (.app (v 2) (v 0)) (.app (v 1) (v 0))))
   | .sigma x _ A₁ B =>
     -- env (inside the Σ, after `e`): b, a, B, A₁
     let P : Term R := .lam "y" (.lam "_" (.eqTy (.app (v 5) (.fst (v 4))) (.app (v 5) (v 1))))
     let apB : Term R := .transp (v 4) (.fst (v 2)) P (.reflTy (.app (v 3) (.fst (v 2)))) (.fst (v 1)) (v 0)
     let body : Term R := .eq (.app (v 3) (.fst (v 1)))
       (.cast (.app (v 3) (.fst (v 2))) (.app (v 3) (.fst (v 1))) apB (.snd (v 2))) (.snd (v 1))
-    .sigma "e" 0 (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁] body)
+    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁] body)
   | .unit _ | .empty _ => .unit 0
   | .sort l =>
     if l.equiv 0 then
       -- (a → b) × (b → a)
-      .sigma "_" 0 (.pi "_" .default 0 a (.mk [b] (v 1))) (.mk [a, b] (.pi "_" .default 0 (v 2) (v 2)))
+      .sigma "_" (.qlit 0) (.pi "_" .default (.qlit 0) a (.mk [b] (v 1))) (.mk [a, b] (.pi "_" .default (.qlit 0) (v 2) (v 2)))
     else if l.isNeverZero then vEqType g a b
     else .neutral (.eq A a b) #[]
   | _ => .neutral (.eq A a b) #[]
@@ -245,14 +253,14 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
     | _ => false
   match X, Y with
   | .pi _ _ q A B, .pi _ _ q' A' B' =>
-    if q != q' then .empty 0 else
+    if sameQty q q' == some false then .empty 0 else if sameQty q q' == none then .neutral (.eqTy X Y) #[] else
     -- env (inside the Σ, after `e`): B', B, A', A; inside the Π add `x`
-    .sigma "e" 0 (vEqType g A' A) (.mk [.lam "x" B', .lam "x" B, A', A]
-      (.pi "x" .default 0 (v 3) (.eqTy (.app (v 3) (.cast (v 4) (v 5) (v 1) (v 0))) (.app (v 2) (v 0)))))
+    .sigma "e" (.qlit 0) (vEqType g A' A) (.mk [.lam "x" B', .lam "x" B, A', A]
+      (.pi "x" .default (.qlit 0) (v 3) (.eqTy (.app (v 3) (.cast (v 4) (v 5) (v 1) (v 0))) (.app (v 2) (v 0)))))
   | .sigma _ q A B, .sigma _ q' A' B' =>
-    if q != q' then .empty 0 else
-    .sigma "e" 0 (vEqType g A A') (.mk [.lam "x" B', .lam "x" B, A', A]
-      (.pi "x" .default 0 (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0))))))
+    if sameQty q q' == some false then .empty 0 else if sameQty q q' == none then .neutral (.eqTy X Y) #[] else
+    .sigma "e" (.qlit 0) (vEqType g A A') (.mk [.lam "x" B', .lam "x" B, A', A]
+      (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0))))))
   | .sort u, .sort w | .unit u, .unit w | .empty u, .empty w => levels u w
   | _, _ => if canonical X && canonical Y then .empty 0 else .neutral (.eqTy X Y) #[]
   --|ex
@@ -276,13 +284,13 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   let stuck : Val R := .neutral (.cast A B e t) #[]
   match A, B with
   | .pi x _ q A₁ B₁, .pi _ _ q' A₂ B₂ =>
-    if q != q' then stuck else
+    if sameQty q q' != some true then stuck else
     -- env: t, e, B₂, B₁, A₂, A₁; index 0 is the new `x`
     let c : Term R := .cast (v 5) (v 6) (.fst (v 2)) (v 0)
     .lam x (.mk [t, e, .lam x B₂, .lam x B₁, A₂, A₁]
       (.cast (.app (v 4) c) (.app (v 3) (v 0)) (.app (.snd (v 2)) (v 0)) (.app (v 1) c)))
   | .sigma _ q A₁ B₁, .sigma _ q' A₂ B₂ =>
-    if q != q' then stuck else
+    if sameQty q q' != some true then stuck else
     let t₁ := vFst t
     let c₁ := vCast g A₁ A₂ (vFst e) t₁
     .pair c₁ (vCast g (Closure.inst g B₁ t₁) (Closure.inst g B₂ c₁) (vApp g (vSnd e) t₁) (vSnd t))
@@ -335,17 +343,19 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .fst => .fst acc
       | .snd => .snd acc
       | .split q z m x y b =>
-        .split q acc z (quote g (l + 1) (Closure.inst g m (Val.var l)))
+        .split (quote g l q) acc z (quote g (l + 1) (Closure.inst g m (Val.var l)))
           x y (quote g (l + 2) (Closure.inst2 g b (Val.var l) (Val.var (l + 1))))
       | .absurd m => .absurd (quote g l m) acc
   | .sort k => .sort k
-  | .pi x bi q a b => .pi x bi q (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
+  | .pi x bi q a b => .pi x bi (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
   | .lam x b => .lam x (quote g (l + 1) (Closure.inst g b (Val.var l)))
-  | .sigma x q a b => .sigma x q (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
+  | .sigma x q a b => .sigma x (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
   | .pair a b => .pair (quote g l a) (quote g l b)
   | .unit k => .unit k
   | .tt => .tt
   | .empty k => .empty k
+  | .qty => .qty
+  | .qlit r => .qlit r
   --|ex
   --| | v => sorry
   --sol>

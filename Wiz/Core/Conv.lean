@@ -27,7 +27,7 @@ Framework with Surjective Pairs* (2007), and the "typed" variant in Abel's habil
 
 namespace Wiz
 
-variable {R : Type} [Zero R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R]
 
 /-- The type of a neutral's head: a local's type from `tys`, a global's declared type
 with its level parameters instantiated, or (stage 4c) the type of a stuck
@@ -66,6 +66,7 @@ partial def typeSort? (g : Globals R) (tys : Array (VTy R)) : VTy R → Option L
   | .sigma _ _ A B => do
     return .max (← typeSort? g tys A) (← typeSort? g (tys.push A) (Closure.inst g B (Val.var tys.size)))
   | .unit l | .empty l => some l
+  | .qty => some 1
   | v@(.neutral ..) => do
     match ← inferNe g tys v with
     | .sort l => some l
@@ -106,6 +107,9 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
     let a₁ := vFst a
     conv g tys A a₁ (vFst b) && conv g tys (Closure.inst g B a₁) (vSnd a) (vSnd b)
   | .unit _ => true
+  | .qty => match sameQty a b with
+    | some r => r
+    | none => (convNe g tys a b).isSome
   | .sort _ => convTy g tys a b
   | _ => (convNe g tys a b).isSome
 where
@@ -134,15 +138,18 @@ partial def convTy (g : Globals R) (tys : Array (VTy R)) (a b : VTy R) : Bool :=
   match a, b with
   | .sort u, .sort u' => u.equiv u'
   | .pi _ _ q A B, .pi _ _ q' A' B' =>
-    (q == q' || isProp g tys a) && convTy g tys A A' &&
+    (convQty q q' || isProp g tys a) && convTy g tys A A' &&
       convTy g (tys.push A) (Closure.inst g B v) (Closure.inst g B' v)
   | .sigma _ q A B, .sigma _ q' A' B' =>
-    (q == q' || isProp g tys a) && convTy g tys A A' &&
+    (convQty q q' || isProp g tys a) && convTy g tys A A' &&
       convTy g (tys.push A) (Closure.inst g B v) (Closure.inst g B' v)
+  | .qty, .qty => true
   | .unit u, .unit u' => u.equiv u'
   | .empty u, .empty u' => u.equiv u'
   | .neutral .., .neutral .. => (convNe g tys a b).isSome
   | _, _ => false
+where
+  convQty (q q' : Val R) : Bool := conv g tys .qty q q'
   --|ex
   --| sorry
   --sol>
@@ -196,7 +203,7 @@ partial def convNe (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option 
       ty := Closure.inst g B (vFst acc)
       acc := vSnd acc
     | .split q _ m _ _ body, .split q' _ m' _ _ body', sty@(.sigma _ _ A B) =>
-      unless q == q' do none
+      unless conv g tys .qty q q' do none
       let l := tys.size
       unless convTy g (tys.push sty) (Closure.inst g m (Val.var l)) (Closure.inst g m' (Val.var l)) do none
       let x : Val R := Val.var l

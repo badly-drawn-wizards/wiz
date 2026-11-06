@@ -44,17 +44,17 @@ def toTerm (scope : List Name := []) : Raw R → Term R
     | some ix => .var ix
     | none => .const x []
   | .sort l => .sort (Level.ofNat (l + 1))
-  | .pi x bi q a b => .pi x bi q (a.toTerm scope) (b.toTerm (x :: scope))
+  | .pi x bi q a b => .pi x bi (.qlit q) (a.toTerm scope) (b.toTerm (x :: scope))
   | .lam x b => .lam x (b.toTerm (x :: scope))
   | .app f a => .app (f.toTerm scope) (a.toTerm scope)
-  | .letE x q t v b => .letE x q (t.toTerm scope) (v.toTerm scope) (b.toTerm (x :: scope))
+  | .letE x q t v b => .letE x (.qlit q) (t.toTerm scope) (v.toTerm scope) (b.toTerm (x :: scope))
   | .ann t ty => .ann (t.toTerm scope) (ty.toTerm scope)
-  | .sigma x q a b => .sigma x q (a.toTerm scope) (b.toTerm (x :: scope))
+  | .sigma x q a b => .sigma x (.qlit q) (a.toTerm scope) (b.toTerm (x :: scope))
   | .pair a b => .pair (a.toTerm scope) (b.toTerm scope)
   | .fst t => .fst (t.toTerm scope)
   | .snd t => .snd (t.toTerm scope)
   | .split q s z m x y b =>
-    .split q (s.toTerm scope) z (m.toTerm (z :: scope)) x y (b.toTerm (y :: x :: scope))
+    .split (.qlit q) (s.toTerm scope) z (m.toTerm (z :: scope)) x y (b.toTerm (y :: x :: scope))
   | .unit l => .unit (Level.ofNat l)
   | .tt => .tt
   | .empty l => .empty (Level.ofNat l)

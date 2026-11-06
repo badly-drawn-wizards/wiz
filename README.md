@@ -175,7 +175,7 @@ Stage 4 has several steps, each committed separately:
 1. **Universe polymorphism** ✅ (below)
 2. **Type-directed conversion, Σ / ⊤ / ⊥ with η** ✅ (below)
 3. **Observational equality** ✅ (below)
-4. Indexed descriptions and μ / ν with their eliminators
+4. **Quantity polymorphism** ✅ (below), then indexed descriptions and μ / ν
 5. Surface `inductive` / `structure` / `match`, compiled to eliminators
 
 ### 4a: universe polymorphism
@@ -270,3 +270,38 @@ Optional:
 * **4.16** Make `rfl` work when the expected equation has already computed (for
   example at function types), by recording the original `a = b` alongside its
   computed form.
+
+### 4d (part 1): quantity polymorphism
+
+Quantities are now **terms** of a primitive type `Qty`. A binder annotation is any
+quantity term: a literal (`1`, `ω`), or a variable written `%q`.
+
+```
+def app {A B : Type} {q : Qty} (f : (%q x : A) → B) (%q a : A) : B := f a
+```
+
+Usage vectors hold **polynomials** over the rig in the quantity variables
+(`Core/QPoly.lean`), so `a` above is used `q · 1 = q` times. `used ≤ declared` must
+hold for *every* value of the variables. For finite rigs that is decided by trying
+all assignments (`QRig.elements?`); for infinite rigs only syntactically equal
+polynomials are accepted.
+
+So `def keep {q : Qty} (%q x : A) : A := x` is **rejected**: `q` could be `0`, and an
+erased variable can't be returned. (Linear Haskell avoids this by having no `0`
+multiplicity.) Bounded quantity variables are an optional exercise.
+
+This is what lets descriptions (next) carry field quantities and still have a
+`Desc` eliminator: the eliminator abstracts over a field's quantity like any other
+argument.
+
+| #    | Where              | What                                                     |
+|------|--------------------|----------------------------------------------------------|
+| 4.15 | `Core/QPoly.lean`  | `leSymbolic`: `p ≤ q` for every assignment               |
+
+Stage 1 changed shape slightly: binder quantities are `Term`s / `Val`s, `Usage` holds
+`QPoly`s, and `Rig` gained `mul_comm`. The constant case of `QPoly.le` is provided,
+so stage 1 still only needs `QRig.le`.
+
+Optional:
+* **4.16** Bounded quantity variables: `{q : Qty} [1 ≤ q]`, so that `keep` above is
+  accepted, with the constraint checked at use sites.
