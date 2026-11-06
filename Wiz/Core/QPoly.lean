@@ -99,6 +99,17 @@ def equiv (p q : QPoly R) : Bool :=
         eval f p == eval f q
     | none => false
 
+/-- The least upper bound of two usages in the `le` order, used for the branches of a
+case (alternatives): `0 ⊔ 1 = ω` in `{0, 1, ω}`. Exists for equivalent polynomials,
+and for constants of a finite rig with a least common upper bound; otherwise `none`. -/
+def join? (p q : QPoly R) : Option (QPoly R) :=
+  if equiv p q then some p else
+  match p.isConst?, q.isConst?, QRig.elements? (R := R) with
+  | some a, some b, some elems =>
+    let ups := elems.filter fun e => QRig.le a e && QRig.le b e
+    (ups.find? fun e => ups.all (QRig.le e ·)).map const
+  | _, _, _ => none
+
 def toString [ToString R] (p : QPoly R) : String :=
   if p.isEmpty then "0" else
   " + ".intercalate <| p.map fun (xs, c) =>

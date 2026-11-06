@@ -110,7 +110,7 @@ Proving Languages* (IJCAR 2020); the Lean 4 sources `Lean/Parser/*.lean`.
 **Determinism:** name metavariables and fresh variables with per-declaration counters,
 never by pointer address or global counters shared across threads.
 
-## Stage 4: Data as μ/ν, structural types, nominal wrappers (4a ✅ universes, 4b ✅ Σ/⊤/⊥, 4c ✅ OTT, 4d ✅ quantity polymorphism)
+## Stage 4: Data as μ/ν, structural types, nominal wrappers (4a ✅ universes, 4b ✅ Σ/⊤/⊥, 4c ✅ OTT, 4d ✅ quantity polymorphism + descriptions, μ/ν)
 
 This stage has the most open design space.
 

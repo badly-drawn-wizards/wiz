@@ -27,7 +27,7 @@ Framework with Surjective Pairs* (2007), and the "typed" variant in Abel's habil
 
 namespace Wiz
 
-variable {R : Type} [QRig R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 
 /-- The type of a neutral's head: a local's type from `tys`, a global's declared type
 with its level parameters instantiated, or (stage 4c) the type of a stuck
@@ -42,6 +42,58 @@ def headType (g : Globals R) (tys : Array (VTy R)) : Head R → Option (VTy R)
   | .reflTy X => some (vEqType g X X)
   | .transp _ _ P _ b e => some (vApp g (vApp g P b) e)
 
+/-! ### Types of the data eliminators' arguments (stage 4d)
+
+Built as terms in a small environment and evaluated, like the templates. `w` is the
+quantity to put on the binders: the kernel uses the rig's default, and conversion
+(which only needs the types to direct η) passes anything. -/
+
+private def tv (i : Nat) : Term R := .var i
+private def tapps (f : Term R) (as : List (Term R)) : Term R := as.foldl .app f
+
+/-- `P : Desc I → Sort v` -/
+def delimMotiveTy (l v : Level) (I : Val R) (w : R) : VTy R :=
+  .pi "D" .default (.qlit w) (.desc l I) (.mk [] (.sort v))
+
+/-- The types of `mret`, `marg`, `mrec` for `Desc.elim` with motive `P`. -/
+def delimMethodTys (g : Globals R) (l : Level) (I P : Val R) (w : R) : VTy R × VTy R × VTy R :=
+  let pi (x : Name) (a b : Term R) : Term R := .pi x .default (.qlit w) a b
+  let env := [P, I]
+  -- i0 P1 I2
+  let mret := pi "i" (tv 1) (.app (tv 1) (.dret (tv 0)))
+  -- q0 P1 I2 ; S0 q1 P2 I3 ; E0 S1 q2 P3 I4 ; ih0 E1 S2 q3 P4 I5
+  let marg := pi "q" .qty (pi "S" (.sort (.succ l)) (pi "E" (pi "s" (tv 0) (.desc l (tv 4)))
+    (pi "ih" (pi "s" (tv 1) (.app (tv 4) (.app (tv 1) (tv 0)))) (.app (tv 4) (.darg (tv 3) (tv 2) (tv 1))))))
+  -- q0 P1 I2 ; j0 q1 P2 I3 ; E0 j1 q2 P3 I4 ; ih0 E1 j2 q3 P4 I5
+  let mrec := pi "q" .qty (pi "j" (tv 2) (pi "E" (.desc l (tv 3))
+    (pi "ih" (.app (tv 3) (tv 0)) (.app (tv 4) (.drec (tv 3) (tv 2) (tv 1))))))
+  (eval g env mret, eval g env marg, eval g env mrec)
+
+/-- `P : (i : I) → μ D i → Sort v` -/
+def indMotiveTy (g : Globals R) (l v : Level) (I D : Val R) (w : R) : VTy R :=
+  eval g [D, I] (.pi "i" .default (.qlit w) (tv 1)
+    (.pi "_" .default (.qlit w) (.mu l (tv 2) (tv 1) (tv 0)) (.sort v)))
+
+/-- `m : (0 i : I) → (xs : ⟦D⟧ (μ D) i) → (ih : All D (μ D) P i xs) → P i (con xs)` -/
+def indMethodTy (g : Globals R) (l v : Level) (I D P : Val R) (w : R) : VTy R :=
+  -- i0 P1 D2 I3 ; xs0 i1 P2 D3 I4 ; ih0 xs1 i2 P3 D4 I5
+  let X₁ : Term R := .lam "j" (.mu l (tv 4) (tv 3) (tv 0))
+  let X₂ : Term R := .lam "j" (.mu l (tv 5) (tv 4) (tv 0))
+  eval g [P, D, I] (.pi "i" .default (.qlit 0) (tv 2)
+    (.pi "xs" .default (.qlit w) (tapps (Templates.interpTm l) [tv 3, tv 2, X₁, tv 0])
+      (.pi "ih" .default (.qlit w) (tapps (Templates.allTm l v) [tv 4, tv 3, X₂, tv 2, tv 1, tv 0])
+        (tapps (tv 3) [tv 2, .con (tv 1)]))))
+
+/-- `S : I → Type l` -/
+def coitStateTy (l : Level) (I : Val R) (w : R) : VTy R :=
+  .pi "i" .default (.qlit w) I (.mk [] (.sort (.succ l)))
+
+/-- `step : (i : I) → S i → ⟦D⟧ S i` -/
+def coitStepTy (g : Globals R) (l : Level) (I D S : Val R) (w : R) : VTy R :=
+  -- i0 S1 D2 I3 ; s0 i1 S2 D3 I4
+  eval g [S, D, I] (.pi "i" .default (.qlit w) (tv 2)
+    (.pi "s" .default (.qlit w) (.app (tv 1) (tv 0)) (tapps (Templates.interpTm l) [tv 4, tv 3, tv 2, tv 1])))
+
 /-- The type of a neutral, computed by walking its spine from the head's type. -/
 def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VTy R)
   | .neutral h sp => do
@@ -54,6 +106,10 @@ def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VTy R)
       | .snd, .sigma _ _ _ B => ty := Closure.inst g B (vFst acc); acc := vSnd acc
       | .split q z m x y b, _ => ty := Closure.inst g m acc; acc := vSplit g q acc z m x y b
       | .absurd m, _ => ty := m; acc := vAbsurd m acc
+      | .ecase z m env bs, _ => ty := Closure.inst g m acc; acc := vEcase g z m acc env bs
+      | .delim v P a b c, _ => ty := vApp g P acc; acc := vDelim g v P a b c acc
+      | .ind l I D v P m i, _ => ty := vApp g (vApp g P i) acc; acc := vInd g l I D v P m i acc
+      | .out, .nu l I D i => ty := vInterp g l I D (nuFamily l I D) i; acc := vOut g acc
       | _, _ => none
     pure ty
   | _ => none
@@ -66,7 +122,9 @@ partial def typeSort? (g : Globals R) (tys : Array (VTy R)) : VTy R → Option L
   | .sigma _ _ A B => do
     return .max (← typeSort? g tys A) (← typeSort? g (tys.push A) (Closure.inst g B (Val.var tys.size)))
   | .unit l | .empty l => some l
-  | .qty => some 1
+  | .qty | .enum _ => some 1
+  | .desc l _ => some (.succ (.succ l))
+  | .mu l .. | .nu l .. => some (.succ l)
   | v@(.neutral ..) => do
     match ← inferNe g tys v with
     | .sort l => some l
@@ -110,6 +168,25 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
   | .qty => match sameQty a b with
     | some r => r
     | none => (convNe g tys a b).isSome
+  | .enum _ => match a, b with
+    | .tag _ i, .tag _ j => i == j
+    | _, _ => (convNe g tys a b).isSome
+  | .desc l I => match a, b with
+    | .dret i, .dret j => conv g tys I i j
+    | .darg q S E, .darg q' S' E' =>
+      conv g tys .qty q q' && convTy g tys S S' &&
+        conv g tys (.pi "s" .default (.qlit 1) S (.mk [I] (.desc l (.var 1)))) E E'
+    | .drec q j E, .drec q' j' E' =>
+      conv g tys .qty q q' && conv g tys I j j' && conv g tys (.desc l I) E E'
+    | _, _ => (convNe g tys a b).isSome
+  | .mu l I D i => match a, b with
+    | .con x, .con y => conv g tys (vInterp g l I D (muFamily l I D) i) x y
+    | _, _ => (convNe g tys a b).isSome
+  | .nu l I D i => match a, b with
+    | .coit _ _ _ S st j s, .coit _ _ _ S' st' j' s' =>
+      conv g tys (coitStateTy l I 1) S S' && conv g tys (coitStepTy g l I D S 1) st st' &&
+        conv g tys I j j' && conv g tys (vApp g S j) s s'
+    | _, _ => (convNe g tys a b).isSome
   | .sort _ => convTy g tys a b
   | _ => (convNe g tys a b).isSome
 where
@@ -144,6 +221,10 @@ partial def convTy (g : Globals R) (tys : Array (VTy R)) (a b : VTy R) : Bool :=
     (convQty q q' || isProp g tys a) && convTy g tys A A' &&
       convTy g (tys.push A) (Closure.inst g B v) (Closure.inst g B' v)
   | .qty, .qty => true
+  | .enum ls, .enum ls' => ls.length == ls'.length
+  | .desc l I, .desc l' I' => l.equiv l' && convTy g tys I I'
+  | .mu l I D i, .mu l' I' D' i' | .nu l I D i, .nu l' I' D' i' =>
+    l.equiv l' && convTy g tys I I' && conv g tys (.desc l I) D D' && conv g tys I i i'
   | .unit u, .unit u' => u.equiv u'
   | .empty u, .empty u' => u.equiv u'
   | .neutral .., .neutral .. => (convNe g tys a b).isSome
@@ -217,6 +298,28 @@ partial def convNe (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option 
       unless convTy g tys m m' do none
       ty := m
       acc := vAbsurd m acc
+    | .ecase z m env bs, .ecase _ m' env' bs', ety@(.enum ls) =>
+      let l := tys.size
+      unless convTy g (tys.push ety) (Closure.inst g m (Val.var l)) (Closure.inst g m' (Val.var l)) do none
+      unless bs.length == bs'.length do none
+      for b in bs, b' in bs', k in [0:bs.length] do
+        unless conv g tys (Closure.inst g m (.tag ls k)) (eval g env b) (eval g env' b') do none
+      ty := Closure.inst g m acc
+      acc := vEcase g z m acc env bs
+    | .delim v P a b c, .delim v' P' a' b' c', .desc l I =>
+      unless v.equiv v' && conv g tys (delimMotiveTy l v I 1) P P' do none
+      let (ta, tb, tc) := delimMethodTys g l I P 1
+      unless conv g tys ta a a' && conv g tys tb b b' && conv g tys tc c c' do none
+      ty := vApp g P acc
+      acc := vDelim g v P a b c acc
+    | .ind l I D v P m i, .ind _ _ _ v' P' m' i', _ =>
+      unless v.equiv v' && conv g tys (indMotiveTy g l v I D 1) P P' do none
+      unless conv g tys (indMethodTy g l v I D P 1) m m' && conv g tys I i i' do none
+      ty := vApp g (vApp g P i) acc
+      acc := vInd g l I D v P m i acc
+    | .out, .out, .nu l I D i =>
+      ty := vInterp g l I D (nuFamily l I D) i
+      acc := vOut g acc
     | _, _, _ => none
   pure ty
   --|ex

@@ -1,0 +1,33 @@
+-- Stage 4d: data as descriptions. `lake exe wiz check examples/data.wiz`
+-- (Stage 4e will add `inductive` and `match`, which generate all of this.)
+
+def BoolD : Desc Unit := Desc.arg 1 (Enum [false, true]) (fun _ => Desc.ret ())
+def Bool : Type := μ BoolD ()
+def true : Bool := con ('true, (), ())
+def false : Bool := con ('false, (), ())
+
+def NatD : Desc Unit :=
+  Desc.arg 1 (Enum [zero, succ]) (fun t => ecase t [Desc.ret (), Desc.rec 1 () (Desc.ret ())])
+def Nat : Type := μ NatD ()
+def zero : Nat := con ('zero, (), ())
+def succ (n : Nat) : Nat := con ('succ, n, (), ())
+
+def isZero (n : Nat) : Bool := ind (fun _ _ => Bool) (fun i xs ih => ecase xs.1 [true, false]) n
+#reduce isZero (succ zero)
+
+def add (m n : Nat) : Nat :=
+  ind (fun _ _ => Nat) (fun i xs ih =>
+    (ecase xs.1 [fun _ _ => n, fun rest h => succ h.1]
+      : (rest : Desc.interp (ecase xs.1 [Desc.ret (), Desc.rec 1 () (Desc.ret ())] : Desc Unit) (fun j => μ NatD j) i)
+        → Desc.All (ecase xs.1 [Desc.ret (), Desc.rec 1 () (Desc.ret ())] : Desc Unit) (fun j => μ NatD j) (fun _ _ => Nat) i rest
+        → Nat) xs.2 ih) m
+#reduce add (succ zero) (succ (succ zero))
+def twoPlusOne : add (succ (succ zero)) (succ zero) = succ (succ (succ zero)) := refl (succ (succ (succ zero)))
+
+def not (b : Bool) : Bool := ind (fun _ _ => Bool) (fun i xs ih => ecase xs.1 [true, false]) b
+
+def StreamD : Desc Unit := Desc.arg 1 Bool (fun _ => Desc.rec 1 () (Desc.ret ()))
+def Stream : Type := ν StreamD ()
+def alternate (b : Bool) : Stream :=
+  coit (fun _ => Bool) (fun i s => (s, not s, (), ())) b
+#reduce (out (out (alternate true)).2.1).1

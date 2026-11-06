@@ -1,4 +1,5 @@
 import Wiz.Core.Value
+import Wiz.Core.Templates
 
 /-!
 # Evaluation, quotation, normalisation
@@ -26,7 +27,7 @@ On well-typed terms they do.
 
 namespace Wiz
 
-variable {R : Type} [QRig R] [DecidableEq R]
+variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 
 /-- Are two quantity values equal? `none` if either is not a polynomial (unknown). -/
 def sameQty (a b : Val R) : Option Bool := do
@@ -110,6 +111,23 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
       (eval g env b) (eval g env e)) #[]
   | .qty => .qty
   | .qlit r => .qlit r
+  | .enum ls => .enum ls
+  | .tag ls i => .tag ls i
+  | .ecase z m s bs => vEcase g z (.mk env m) (eval g env s) env bs
+  | .desc l I => .desc l (eval g env I)
+  | .dret i => .dret (eval g env i)
+  | .darg q S D => .darg (eval g env q) (eval g env S) (eval g env D)
+  | .drec q j D => .drec (eval g env q) (eval g env j) (eval g env D)
+  | .delim v P a b c D =>
+    vDelim g v (eval g env P) (eval g env a) (eval g env b) (eval g env c) (eval g env D)
+  | .mu l I D i => .mu l (eval g env I) (eval g env D) (eval g env i)
+  | .con x => .con (eval g env x)
+  | .ind l I D v P m i x =>
+    vInd g l (eval g env I) (eval g env D) v (eval g env P) (eval g env m) (eval g env i) (eval g env x)
+  | .nu l I D i => .nu l (eval g env I) (eval g env D) (eval g env i)
+  | .out x => vOut g (eval g env x)
+  | .coit l I D S st i s =>
+    .coit l (eval g env I) (eval g env D) (eval g env S) (eval g env st) (eval g env i) (eval g env s)
   --|ex
   --| | .var ix => sorry
   --| | .const n us => sorry
@@ -139,6 +157,22 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .transp A a P p b e => sorry
   --| | .qty => .qty
   --| | .qlit r => .qlit r
+  --| -- Exercise 4.18: constructors evaluate their parts; eliminators use
+  --| -- vEcase, vDelim, vInd and vOut.
+  --| | .enum ls => sorry
+  --| | .tag ls i => sorry
+  --| | .ecase z m s bs => sorry
+  --| | .desc l I => sorry
+  --| | .dret i => sorry
+  --| | .darg q S D => sorry
+  --| | .drec q j D => sorry
+  --| | .delim v P a b c D => sorry
+  --| | .mu l I D i => sorry
+  --| | .con x => sorry
+  --| | .ind l I D v P m i x => sorry
+  --| | .nu l I D i => sorry
+  --| | .out x => sorry
+  --| | .coit l I D S st i s => sorry
   --sol>
 
 /-- **Exercise 1.2a.** Semantic application.
@@ -174,6 +208,99 @@ partial def vSplit (g : Globals R) (q : Val R) (s : Val R) (z : Name) (m : Closu
   | .pair a b => Closure.inst2 g body a b
   | .neutral h sp => .neutral h (sp.push (.split q z m x y body))
   | _ => panic! "vSplit: ill-typed"
+  --|ex
+  --| sorry
+  --sol>
+
+/- ### Data (stage 4d)
+
+`vEcase`, `vDelim`, `vInd` and `vOut` compute on canonical arguments and are stuck on
+neutrals. `vInd` and `vOut` use the description templates of `Wiz.Core.Templates`. -/
+
+/-- `λ j. μ D j`, the family being defined, as a value. -/
+partial def muFamily (l : Level) (I D : Val R) : Val R :=
+  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0)))
+
+partial def nuFamily (l : Level) (I D : Val R) : Val R :=
+  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0)))
+
+/-- `⟦D⟧ X i` -/
+partial def vInterp (g : Globals R) (l : Level) (I D X i : Val R) : Val R :=
+  [I, D, X, i].foldl (vApp g) (eval g [] (Templates.interpTm l))
+
+/-- `All D X P i xs` -/
+partial def vAll (g : Globals R) (l v : Level) (I D X P i xs : Val R) : Val R :=
+  [I, D, X, P, i, xs].foldl (vApp g) (eval g [] (Templates.allTm l v))
+
+/-- **Exercise 4.19a.** `ecase` on a tag picks the branch (evaluated in `env`). -/
+partial def vEcase (g : Globals R) (z : Name) (m : Closure R) (s : Val R) (env : Env R)
+    (bs : List (Term R)) : Val R :=
+  --<sol
+  match s with
+  | .tag _ i => eval g env (bs[i]?.getD (.var 0))
+  | .neutral h sp => .neutral h (sp.push (.ecase z m env bs))
+  | _ => panic! "vEcase: ill-typed"
+  --|ex
+  --| sorry
+  --sol>
+
+/-- **Exercise 4.19b.** The description eliminator:
+
+    delim (ret i)     ↦ mret i
+    delim (arg q S D) ↦ marg q S D (fun s => delim (D s))
+    delim (rec q j D) ↦ mrec q j D (delim D)
+
+The `fun s => …` is a closure over a small template, as in `vEq`. -/
+partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec D : Val R) : Val R :=
+  --<sol
+  match D with
+  | .dret i => vApp g mret i
+  | .darg q S E =>
+    -- s0 E1 mrec2 marg3 mret4 P5
+    let ih : Val R := .lam "s" (.mk [E, mrec, marg, mret, P]
+      (.delim v (.var 5) (.var 4) (.var 3) (.var 2) (.app (.var 1) (.var 0))))
+    [q, S, E, ih].foldl (vApp g) marg
+  | .drec q j E => [q, j, E, vDelim g v P mret marg mrec E].foldl (vApp g) mrec
+  | .neutral h sp => .neutral h (sp.push (.delim v P mret marg mrec))
+  | _ => panic! "vDelim: ill-typed"
+  --|ex
+  --| sorry
+  --sol>
+
+/-- **Exercise 4.19c.** Induction computes on constructors:
+
+    ind P m i (con xs) ↦ m i xs (hyps D (μ D) P (fun j y => ind P m j y) i xs)
+
+(`Templates.hypsTm`; the `fun j y => …` is a template closure). -/
+partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
+  --<sol
+  match x with
+  | .con xs =>
+    -- y0 j1 m2 P3 D4 I5
+    let f : Val R := .lam "j" (.mk [m, P, D, I]
+      (.lam "y" (.ind l (.var 5) (.var 4) v (.var 3) (.var 2) (.var 1) (.var 0))))
+    let hyps := [I, D, muFamily l I D, P, f, i, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+    [i, xs, hyps].foldl (vApp g) m
+  | .neutral h sp => .neutral h (sp.push (.ind l I D v P m i))
+  | _ => panic! "vInd: ill-typed"
+  --|ex
+  --| sorry
+  --sol>
+
+/-- **Exercise 4.19d.** Observing an unfolding runs one step and re-wraps the
+recursive positions:
+
+    out (coit S step i s) ↦ map D S (ν D) (fun j s => coit S step j s) i (step i s) -/
+partial def vOut (g : Globals R) (x : Val R) : Val R :=
+  --<sol
+  match x with
+  | .coit l I D S step i s =>
+    -- s0 j1 step2 S3 D4 I5
+    let f : Val R := .lam "j" (.mk [step, S, D, I]
+      (.lam "s" (.coit l (.var 5) (.var 4) (.var 3) (.var 2) (.var 1) (.var 0))))
+    [I, D, S, nuFamily l I D, f, i, [i, s].foldl (vApp g) step].foldl (vApp g) (eval g [] (Templates.mapTm l))
+  | .neutral h sp => .neutral h (sp.push .out)
+  | _ => panic! "vOut: ill-typed"
   --|ex
   --| sorry
   --sol>
@@ -218,6 +345,12 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
       (.cast (.app (v 3) (.fst (v 2))) (.app (v 3) (.fst (v 1))) apB (.snd (v 2))) (.snd (v 1))
     .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁] body)
   | .unit _ | .empty _ => .unit 0
+  | .enum _ => match a, b with
+    | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
+    | _, _ => .neutral (.eq A a b) #[]
+  | .mu l I D i => match a, b with
+    | .con x, .con y => vEq g (vInterp g l I D (muFamily l I D) i) x y
+    | _, _ => .neutral (.eq A a b) #[]
   | .sort l =>
     if l.equiv 0 then
       -- (a → b) × (b → a)
@@ -249,7 +382,7 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
     else if u.toNat?.isSome && w.toNat?.isSome then .empty 0
     else .neutral (.eqTy X Y) #[]
   let canonical : Val R → Bool
-    | .pi .. | .sigma .. | .sort _ | .unit _ | .empty _ => true
+    | .pi .. | .sigma .. | .sort _ | .unit _ | .empty _ | .enum _ | .desc .. | .mu .. | .nu .. => true
     | _ => false
   match X, Y with
   | .pi _ _ q A B, .pi _ _ q' A' B' =>
@@ -262,6 +395,8 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
     .sigma "e" (.qlit 0) (vEqType g A A') (.mk [.lam "x" B', .lam "x" B, A', A]
       (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0))))))
   | .sort u, .sort w | .unit u, .unit w | .empty u, .empty w => levels u w
+  | .enum ls, .enum ls' => if ls.length == ls'.length then .unit 0 else .empty 0
+  | .desc .., .desc .. | .mu .., .mu .. | .nu .., .nu .. => .neutral (.eqTy X Y) #[]
   | _, _ => if canonical X && canonical Y then .empty 0 else .neutral (.eqTy X Y) #[]
   --|ex
   --| sorry
@@ -296,6 +431,7 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
     .pair c₁ (vCast g (Closure.inst g B₁ t₁) (Closure.inst g B₂ c₁) (vApp g (vSnd e) t₁) (vSnd t))
   | .sort u, .sort w | .empty u, .empty w => if u.equiv w then t else stuck
   | .unit u, .unit w => if u.equiv w then .tt else stuck
+  | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
   | _, _ => stuck
   --|ex
   --| sorry
@@ -311,6 +447,10 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .snd => vSnd v
     | .split q z m x y b => vSplit g q v z m x y b
     | .absurd m => vAbsurd m v
+    | .ecase z m env bs => vEcase g z m v env bs
+    | .delim lv P a b c => vDelim g lv P a b c v
+    | .ind l I D lv P m i => vInd g l I D lv P m i v
+    | .out => vOut g v
 
 /-- **Exercise 1.3.** Read a value back into syntax in a context of `l` local variables.
 To quote under a binder, instantiate the closure with `Val.var l` and quote the
@@ -346,6 +486,12 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
         .split (quote g l q) acc z (quote g (l + 1) (Closure.inst g m (Val.var l)))
           x y (quote g (l + 2) (Closure.inst2 g b (Val.var l) (Val.var (l + 1))))
       | .absurd m => .absurd (quote g l m) acc
+      | .ecase z m env bs =>
+        .ecase z (quote g (l + 1) (Closure.inst g m (Val.var l))) acc
+          (bs.map fun b => quote g l (eval g env b))
+      | .delim v P a b c => .delim v (quote g l P) (quote g l a) (quote g l b) (quote g l c) acc
+      | .ind lv I D v P m i => .ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) acc
+      | .out => .out acc
   | .sort k => .sort k
   | .pi x bi q a b => .pi x bi (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
   | .lam x b => .lam x (quote g (l + 1) (Closure.inst g b (Val.var l)))
@@ -356,6 +502,17 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | .empty k => .empty k
   | .qty => .qty
   | .qlit r => .qlit r
+  | .enum ls => .enum ls
+  | .tag ls i => .tag ls i
+  | .desc k I => .desc k (quote g l I)
+  | .dret i => .dret (quote g l i)
+  | .darg q S D => .darg (quote g l q) (quote g l S) (quote g l D)
+  | .drec q j D => .drec (quote g l q) (quote g l j) (quote g l D)
+  | .mu k I D i => .mu k (quote g l I) (quote g l D) (quote g l i)
+  | .con x => .con (quote g l x)
+  | .nu k I D i => .nu k (quote g l I) (quote g l D) (quote g l i)
+  | .coit k I D S st i s =>
+    .coit k (quote g l I) (quote g l D) (quote g l S) (quote g l st) (quote g l i) (quote g l s)
   --|ex
   --| | v => sorry
   --sol>

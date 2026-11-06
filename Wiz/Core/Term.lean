@@ -91,6 +91,33 @@ inductive Term (R : Type) where
   | qty
   /-- a quantity literal -/
   | qlit (r : R)
+  -- Stage 4d: data. Labels are metadata; conversion ignores them.
+  /-- a finite enumeration of tags, `Enum [a, b, c]` -/
+  | enum (labels : List Name)
+  /-- the `i`-th tag of an enumeration -/
+  | tag (labels : List Name) (i : Nat)
+  /-- `ecase t [b₀, …]` with motive `fun z => motive` -/
+  | ecase (z : Name) (motive : Term R) (scrut : Term R) (branches : List (Term R))
+  /-- descriptions of indexed inductive types, `Desc.{l} I` -/
+  | desc (l : Level) (I : Term R)
+  | dret (i : Term R)
+  /-- a non-recursive field of quantity `q` and type `S`; `D : S → Desc I` -/
+  | darg (q S D : Term R)
+  /-- a recursive field of quantity `q` at index `j` -/
+  | drec (q j D : Term R)
+  /-- the eliminator of descriptions, into `P : Desc I → Sort v` -/
+  | delim (v : Level) (P mret marg mrec D : Term R)
+  /-- the least fixed point `μ D i` -/
+  | mu (l : Level) (I D i : Term R)
+  | con (x : Term R)
+  /-- induction: `ind P m i x : P i x` for `x : μ D i` -/
+  | ind (l : Level) (I D : Term R) (v : Level) (P m i x : Term R)
+  /-- the greatest fixed point `ν D i` -/
+  | nu (l : Level) (I D i : Term R)
+  /-- observation: `out x : ⟦D⟧ (ν D) i` -/
+  | out (x : Term R)
+  /-- coiteration: unfold a state `s : S i` with `step` -/
+  | coit (l : Level) (I D S step i s : Term R)
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/
@@ -106,50 +133,78 @@ namespace Term
 
 variable {R : Type}
 
+/-- Rebuild a term with `fl` applied to its levels and `f k c` to each immediate
+child `c`, where `k` is the number of binders the child is under. Generic traversals
+(level instantiation, zonking, free-variable checks) are written with this so they
+don't need a case per constructor. -/
+@[specialize] def mapChildrenM {m : Type → Type} [Monad m] (fl : Level → m Level)
+    (f : Nat → Term R → m (Term R)) : Term R → m (Term R)
+  | .pi x bi q a b => return .pi x bi (← f 0 q) (← f 0 a) (← f 1 b)
+  | .lam x b => return .lam x (← f 1 b)
+  | .app a b => return .app (← f 0 a) (← f 0 b)
+  | .letE x q t v b => return .letE x (← f 0 q) (← f 0 t) (← f 0 v) (← f 1 b)
+  | .ann a b => return .ann (← f 0 a) (← f 0 b)
+  | .sort l => return .sort (← fl l)
+  | .const n ls => return .const n (← ls.mapM fl)
+  | .sigma x q a b => return .sigma x (← f 0 q) (← f 0 a) (← f 1 b)
+  | .pair a b => return .pair (← f 0 a) (← f 0 b)
+  | .fst t => return .fst (← f 0 t)
+  | .snd t => return .snd (← f 0 t)
+  | .split q s z m x y b => return .split (← f 0 q) (← f 0 s) z (← f 1 m) x y (← f 2 b)
+  | .unit l => return .unit (← fl l)
+  | .empty l => return .empty (← fl l)
+  | .absurd a b => return .absurd (← f 0 a) (← f 0 b)
+  | .eq A a b => return .eq (← f 0 A) (← f 0 a) (← f 0 b)
+  | .eqTy A B => return .eqTy (← f 0 A) (← f 0 B)
+  | .refl A a => return .refl (← f 0 A) (← f 0 a)
+  | .reflTy X => return .reflTy (← f 0 X)
+  | .cast A B e t => return .cast (← f 0 A) (← f 0 B) (← f 0 e) (← f 0 t)
+  | .transp A a P p b e => return .transp (← f 0 A) (← f 0 a) (← f 0 P) (← f 0 p) (← f 0 b) (← f 0 e)
+  | .ecase z mo s bs => return .ecase z (← f 1 mo) (← f 0 s) (← bs.mapM (f 0))
+  | .desc l I => return .desc (← fl l) (← f 0 I)
+  | .dret i => return .dret (← f 0 i)
+  | .darg q S D => return .darg (← f 0 q) (← f 0 S) (← f 0 D)
+  | .drec q j D => return .drec (← f 0 q) (← f 0 j) (← f 0 D)
+  | .delim v P a b c D => return .delim (← fl v) (← f 0 P) (← f 0 a) (← f 0 b) (← f 0 c) (← f 0 D)
+  | .mu l I D i => return .mu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i)
+  | .con x => return .con (← f 0 x)
+  | .ind l I D v P mt i x =>
+    return .ind (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 mt) (← f 0 i) (← f 0 x)
+  | .nu l I D i => return .nu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i)
+  | .out x => return .out (← f 0 x)
+  | .coit l I D S st i s =>
+    return .coit (← fl l) (← f 0 I) (← f 0 D) (← f 0 S) (← f 0 st) (← f 0 i) (← f 0 s)
+  | t => pure t
+
+/-- Visit every immediate child (and level), ignoring the rebuilt term. -/
+def forChildren {m : Type → Type} [Monad m] (fl : Level → m Unit) (f : Nat → Term R → m Unit)
+    (t : Term R) : m Unit := do
+  let _ ← t.mapChildrenM (fun l => do fl l; pure l) (fun k c => do f k c; pure c)
+
+/-- Shift the free variables (indices `≥ cut`) up by `k`. -/
+partial def lift (k : Nat) (cut : Nat := 0) : Term R → Term R
+  | .var i => if i ≥ cut then .var (i + k) else .var i
+  | t => Id.run <| t.mapChildrenM pure (fun d c => pure (lift k (cut + d) c))
+
+/-- Abstract every occurrence of `target` (a term in the same context) as a new
+variable `var 0`, shifting the other free variables up. This is how the elaborator
+generalises a scrutinee in the expected type of a case (Lean's `kabstract`). -/
+partial def abstract [BEq R] (target : Term R) (t : Term R) (depth : Nat := 0) : Term R :=
+  if t == target.lift depth then .var depth else
+  match t with
+  | .var i => if i ≥ depth then .var (i + 1) else .var i
+  | t => Id.run <| t.mapChildrenM pure (fun d c => pure (abstract target c (depth + d)))
+
 /-- Instantiate universe level parameters `ps` with `us`. -/
-partial def instLevels (ps : List Name) (us : List Level) : Term R → Term R
-  | .sort l => .sort (l.instParams ps us)
-  | .const n ls => .const n (ls.map (·.instParams ps us))
-  | .pi x bi q a b => .pi x bi (instLevels ps us q) (instLevels ps us a) (instLevels ps us b)
-  | .lam x b => .lam x (instLevels ps us b)
-  | .app f a => .app (instLevels ps us f) (instLevels ps us a)
-  | .letE x q t v b => .letE x (instLevels ps us q) (instLevels ps us t) (instLevels ps us v) (instLevels ps us b)
-  | .ann t ty => .ann (instLevels ps us t) (instLevels ps us ty)
-  | .sigma x q a b => .sigma x (instLevels ps us q) (instLevels ps us a) (instLevels ps us b)
-  | .pair a b => .pair (instLevels ps us a) (instLevels ps us b)
-  | .fst t => .fst (instLevels ps us t)
-  | .snd t => .snd (instLevels ps us t)
-  | .split q s z m x y b =>
-    .split (instLevels ps us q) (instLevels ps us s) z (instLevels ps us m) x y (instLevels ps us b)
-  | .unit l => .unit (l.instParams ps us)
-  | .empty l => .empty (l.instParams ps us)
-  | .absurd m t => .absurd (instLevels ps us m) (instLevels ps us t)
-  | .eq A a b => .eq (instLevels ps us A) (instLevels ps us a) (instLevels ps us b)
-  | .eqTy A B => .eqTy (instLevels ps us A) (instLevels ps us B)
-  | .refl A a => .refl (instLevels ps us A) (instLevels ps us a)
-  | .reflTy X => .reflTy (instLevels ps us X)
-  | .cast A B e t => .cast (instLevels ps us A) (instLevels ps us B) (instLevels ps us e) (instLevels ps us t)
-  | .transp A a P p b e => .transp (instLevels ps us A) (instLevels ps us a) (instLevels ps us P)
-      (instLevels ps us p) (instLevels ps us b) (instLevels ps us e)
-  | t => t
+partial def instLevels (ps : List Name) (us : List Level) (t : Term R) : Term R :=
+  Id.run <| t.mapChildrenM (fun l => pure (l.instParams ps us)) (fun _ c => pure (instLevels ps us c))
 
 /-- All level parameter names mentioned in a term. -/
-partial def levelParamsUsed : Term R → List Name
-  | .sort l => l.params
-  | .const _ ls => ls.flatMap Level.params
-  | .pi _ _ _ a b | .app a b | .ann a b => levelParamsUsed a ++ levelParamsUsed b
-  | .lam _ b => levelParamsUsed b
-  | .letE _ _ t v b => levelParamsUsed t ++ levelParamsUsed v ++ levelParamsUsed b
-  | .sigma _ _ a b | .pair a b | .absurd a b => levelParamsUsed a ++ levelParamsUsed b
-  | .fst t | .snd t => levelParamsUsed t
-  | .split _ s _ m _ _ b => levelParamsUsed s ++ levelParamsUsed m ++ levelParamsUsed b
-  | .unit l | .empty l => l.params
-  | .eq A a b => levelParamsUsed A ++ levelParamsUsed a ++ levelParamsUsed b
-  | .eqTy A B | .refl A B => levelParamsUsed A ++ levelParamsUsed B
-  | .cast A B e t => levelParamsUsed A ++ levelParamsUsed B ++ levelParamsUsed e ++ levelParamsUsed t
-  | .transp A a P p b e => [A, a, P, p, b, e].flatMap levelParamsUsed
-  | .reflTy X => levelParamsUsed X
-  | _ => []
+partial def levelParamsUsed (t : Term R) : List Name :=
+  (go t |>.run []).2
+where
+  go (t : Term R) : StateM (List Name) Unit :=
+    t.forChildren (fun l => modify (l.params ++ ·)) (fun _ c => go c)
 
 end Term
 

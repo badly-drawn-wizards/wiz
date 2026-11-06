@@ -59,8 +59,8 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── pair      (check only)
     Γ ⊢ (a, b) ⇐ (q x : A) × B ⊣ q·U₁ + U₂
 
-    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q
-    ──────────────────────────────── fst       (an erased field can't be projected)
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q  (or Γ is erased)
+    ──────────────────────────────── fst       (an erased field can't be projected at runtime)
     Γ ⊢ t.1 ⇒ A ⊣ U
 
     Γ ⊢ t ⇒ (q x : A) × B ⊣ U
@@ -101,6 +101,26 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     Γ ⊢ transp A a P p b e ⇒ P b e ⊣ 0ₙ
 
 Proofs carry no usage: they are erased, and conversion never looks at them.
+
+## Data (stage 4d)
+
+    Γ ⊢ Enum ls ⇒ Type        Γ ⊢ tag ls i ⇒ Enum ls   (i < |ls|)
+
+    Γ ⊢ t ⇒ Enum ls ⊣ U    Γ, z ⊢ M type    Γ ⊢ bₖ ⇐ M[tag k] ⊣ Vₖ
+    ──────────────────────────────── ecase     (⊔ = least upper bound in `le`)
+    Γ ⊢ ecase t [b…] ⇒ M[t] ⊣ U + (V₀ ⊔ … ⊔ Vₙ)
+
+    Γ ⊢ I type@(l+1) ⇒ Γ ⊢ Desc.{l} I ⇒ Type (l+1); ret/arg/rec check against it
+    Γ ⊢ Desc.elim P mret marg mrec D ⇒ P D                 (method types: `delimMethodTys`)
+    Γ ⊢ μ.{l} I D i ⇒ Type l           Γ ⊢ con x ⇐ μ D i  if  Γ ⊢ x ⇐ ⟦D⟧ (μ D) i
+    Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·Uₘ + Uₓ                    (`indMotiveTy`, `indMethodTy`)
+    Γ ⊢ ν.{l} I D i ⇒ Type l           Γ ⊢ out x ⇒ ⟦D⟧ (ν D) i
+    Γ ⊢ coit S step i s ⇒ ν D i ⊣ ω·U_step + U_s
+
+A method may run once per node, so its usage is scaled by ω (the rig's default
+quantity). Branches of `ecase` are alternatives, so a case uses the *join* of its
+branches' usages: with `{0, 1, ω}` a linear variable must be used the same way in
+every branch, and an ω variable may be used differently.
 
 `split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
 using both on a linear pair uses it twice.
@@ -155,10 +175,13 @@ structure Ctx (R : Type) where
   types : List (VTy R) := []
   /-- number of locals in scope = the next fresh de Bruijn level -/
   lvl   : Lvl := 0
+  /-- checking an erased position (a type, or an argument to a `0` binder)? There,
+  erased fields may be projected. (A light version of Atkey's σ = 0 mode.) -/
+  erased : Bool := false
 
 namespace Ctx
 
-variable [QRig R] [DecidableEq R]
+variable [QRig R] [DecidableEq R] [QuantitySyntax R]
 
 /-- Go under a binder: the new variable is a fresh neutral. -/
 def bind (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) : Ctx R :=
@@ -242,6 +265,18 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let ub ← check ctx b (Closure.inst ctx.globals B (ctx.eval a))
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
+  | .dret i, .desc _ I => check ctx i I
+  | .darg q S D, .desc l I => do
+    let _ ← checkQty ctx q
+    let lS ← checkType ctx S
+    unless lS.equiv (.succ l) do throw (.other "a description's field type must be in its universe")
+    check ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S) (.mk [I] (.desc l (.var 1))))
+  | .drec q j D, .desc l I => do
+    let _ ← checkQty ctx q
+    let uj ← check ctx j I
+    let uD ← check ctx D (.desc l I)
+    pure (uj + uD)
+  | .con x, .mu l I D i => check ctx x (vInterp ctx.globals l I D (muFamily l I D) i)
   | _, _ => do
     let (ty', u) ← infer ctx t
     unless convTy ctx.globals ctx.tys ty ty' do
@@ -253,6 +288,11 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   --| -- Exercise 4.7a
   --| | .pair a b, .sigma _ q A B => sorry
   --| | .tt, .unit _ => sorry
+  --| -- Exercise 4.20
+  --| | .dret i, .desc _ I => sorry
+  --| | .darg q S D, .desc l I => sorry
+  --| | .drec q j D, .desc l I => sorry
+  --| | .con x, .mu l I D i => sorry
   --| | _, _ => sorry
   --sol>
 
@@ -293,7 +333,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     match fty with
     | .pi _ _ q dom cod =>
       let q ← qtyPoly ctx q
-      let ua ← check ctx a dom
+      let ua ← check (if q.isConst? == some 0 then { ctx with erased := true } else ctx) a dom
       pure (Closure.inst ctx.globals cod (ctx.eval a), uf + q • ua)
     | _ => throw (.notAFunction (ctx.showTerm f) (ctx.showVal fty))
   | .letE x q tty val body => do
@@ -319,7 +359,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     match ty with
     | .sigma x q A _ =>
       let q ← qtyPoly ctx q
-      unless QPoly.le (QPoly.const 1) q do
+      unless ctx.erased || QPoly.le (QPoly.const 1) q do
         throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
       pure (A, u)
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
@@ -403,6 +443,79 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     pure (vApp g (vApp g vP vb) (ctx.eval e), Usage.zeros ctx.lvl)
   | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
   | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)
+  | .enum _ => pure (.sort 1, Usage.zeros ctx.lvl)
+  | .tag ls i => do
+    unless i < ls.length do throw (.other s!"tag {i} out of range for {ls.length} labels")
+    pure (.enum ls, Usage.zeros ctx.lvl)
+  | .ecase z m s bs => do
+    let (sty, us) ← infer ctx s
+    let .enum ls := sty | throw (.typeMismatch "an enumeration" (ctx.showVal sty))
+    unless bs.length == ls.length do throw (.other s!"ecase needs {ls.length} branches, got {bs.length}")
+    let _ ← checkType (ctx.bind z [] sty) m
+    let mc : Closure R := .mk ctx.env m
+    let mut ub : Option (Usage R) := none
+    for b in bs, k in [0:bs.length] do
+      let u ← check ctx b (Closure.inst ctx.globals mc (.tag ls k))
+      match ub with
+      | none => ub := some u
+      | some u' =>
+        let joined := (u.zip u').mapM fun (p, p') => QPoly.join? p p'
+        let some j := joined | throw (.other "the branches of a case use variables incompatibly")
+        ub := some j
+    pure (Closure.inst ctx.globals mc (ctx.eval s), us + ub.getD (Usage.zeros ctx.lvl))
+  | .desc l I => do
+    let lI ← checkType ctx I
+    unless lI.equiv (.succ l) do throw (.other "a description's index type must be in its universe")
+    pure (.sort (.succ (.succ l)), Usage.zeros ctx.lvl)
+  | .delim v P a b c D => do
+    let (dty, uD) ← infer ctx D
+    let .desc l I := dty | throw (.typeMismatch "a description" (ctx.showVal dty))
+    let w := QuantitySyntax.explicitDefault
+    let _ ← check ctx P (delimMotiveTy l v I w)
+    let vP := ctx.eval P
+    let (ta, tb, tc) := delimMethodTys ctx.globals l I vP w
+    let ua ← check ctx a ta
+    let ub ← check ctx b tb
+    let uc ← check ctx c tc
+    pure (vApp ctx.globals vP (ctx.eval D), QPoly.const w • (ua + ub + uc) + uD)
+  | .mu l I D i | .nu l I D i => do
+    let lI ← checkType ctx I
+    unless lI.equiv (.succ l) do throw (.other "an index type must be in the data type's universe")
+    let vI := ctx.eval I
+    let _ ← check ctx D (.desc l vI)
+    let _ ← check ctx i vI
+    pure (.sort (.succ l), Usage.zeros ctx.lvl)
+  | .ind l I D v P m i x => do
+    let _ ← checkType ctx I
+    let vI := ctx.eval I
+    let _ ← check ctx D (.desc l vI)
+    let vD := ctx.eval D
+    let w := QuantitySyntax.explicitDefault
+    let _ ← check ctx P (indMotiveTy ctx.globals l v vI vD w)
+    let vP := ctx.eval P
+    let um ← check ctx m (indMethodTy ctx.globals l v vI vD vP w)
+    let _ ← check ctx i vI
+    let vi := ctx.eval i
+    let ux ← check ctx x (.mu l vI vD vi)
+    pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), QPoly.const w • um + ux)
+  | .out x => do
+    let (ty, u) ← infer ctx x
+    let .nu l I D i := ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
+    pure (vInterp ctx.globals l I D (nuFamily l I D) i, u)
+  | .coit l I D S st i s => do
+    let _ ← checkType ctx I
+    let vI := ctx.eval I
+    let _ ← check ctx D (.desc l vI)
+    let vD := ctx.eval D
+    let w := QuantitySyntax.explicitDefault
+    let _ ← check ctx S (coitStateTy l vI w)
+    let vS := ctx.eval S
+    let ust ← check ctx st (coitStepTy ctx.globals l vI vD vS w)
+    let _ ← check ctx i vI
+    let vi := ctx.eval i
+    let us ← check ctx s (vApp ctx.globals vS vi)
+    pure (.nu l vI vD vi, QPoly.const w • ust + us)
+  | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --|ex
   --| | .app f a => sorry
   --| | .letE x q tty val body => sorry
@@ -425,6 +538,17 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .transp A a P p b e => sorry
   --| | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
   --| | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)
+  --| -- Exercise 4.20: the data rules (see the module docstring)
+  --| | .enum _ => sorry
+  --| | .tag ls i => sorry
+  --| | .ecase z m s bs => sorry
+  --| | .desc l I => sorry
+  --| | .delim v P a b c D => sorry
+  --| | .mu l I D i | .nu l I D i => sorry
+  --| | .ind l I D v P m i x => sorry
+  --| | .out x => sorry
+  --| | .coit l I D S st i s => sorry
+  --| | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --sol>
 
 /-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as
@@ -436,7 +560,7 @@ partial def checkQty (ctx : Ctx R) (q : Term R) : TCM (QPoly R) := do
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.
 The usage is discarded: type positions are erased. -/
 partial def checkType (ctx : Ctx R) (a : Term R) : TCM Level := do
-  let (ty, _) ← infer ctx a
+  let (ty, _) ← infer { ctx with erased := true } a
   match ty with
   | .sort l => pure l
   | _ => throw (.notAType (ctx.showTerm a) (ctx.showVal ty))

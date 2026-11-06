@@ -30,20 +30,8 @@ where
 /-- Does `var ix` occur free in `t`? -/
 partial def Term.hasVar {R : Type} (ix : Nat) : Term R → Bool
   | .var i => i == ix
-  | .pi _ _ q a b => q.hasVar ix || a.hasVar ix || b.hasVar (ix + 1)
-  | .lam _ b => b.hasVar (ix + 1)
-  | .app f a | .ann f a => f.hasVar ix || a.hasVar ix
-  | .letE _ _ ty v b => ty.hasVar ix || v.hasVar ix || b.hasVar (ix + 1)
-  | .sigma _ q a b => q.hasVar ix || a.hasVar ix || b.hasVar (ix + 1)
-  | .pair a b | .absurd a b => a.hasVar ix || b.hasVar ix
-  | .fst t | .snd t => t.hasVar ix
-  | .split _ s _ m _ _ b => s.hasVar ix || m.hasVar (ix + 1) || b.hasVar (ix + 2)
-  | .eq A a b => A.hasVar ix || a.hasVar ix || b.hasVar ix
-  | .eqTy A B | .refl A B => A.hasVar ix || B.hasVar ix
-  | .reflTy X => X.hasVar ix
-  | .cast A B e t => A.hasVar ix || B.hasVar ix || e.hasVar ix || t.hasVar ix
-  | .transp A a P p b e => [A, a, P, p, b, e].any (·.hasVar ix)
-  | _ => false
+  | t => (t.forChildren (m := StateM Bool) (fun _ => pure ())
+      (fun k c => modify (· || c.hasVar (ix + k))) |>.run false).2
 
 /-- `Prop`, `Type`, `Type 2`, `Type u`, `Sort u`, `Type (max u v)`, ... -/
 def showSort (l : Level) : String :=
@@ -127,10 +115,27 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .refl _ a | .reflTy a => paren (prec > 1022) s!"refl {a.prettyPrec names maxArg}"
   | .cast _ _ e t =>
     paren (prec > 1022) s!"cast {e.prettyPrec names maxArg} {t.prettyPrec names maxArg}"
+  | .enum ls => s!"Enum [{", ".intercalate ls}]"
+  | .tag ls i => s!"'{ls[i]?.getD s!"#{i}"}"
+  | .ecase _ _ t bs =>
+    paren (prec > 1022) s!"ecase {t.prettyPrec names maxArg} [{", ".intercalate (bs.map (·.prettyPrec names 0))}]"
+  | .desc _ I => paren (prec > 1022) s!"Desc {I.prettyPrec names maxArg}"
+  | .dret i => app "Desc.ret" [i]
+  | .darg q S D => app "Desc.arg" [q, S, D]
+  | .drec q j D => app "Desc.rec" [q, j, D]
+  | .delim _ P a b c D => app "Desc.elim" [P, a, b, c, D]
+  | .mu _ _ D i => app "μ" [D, i]
+  | .con x => app "con" [x]
+  | .ind _ _ _ _ P m i x => app "ind" [P, m, i, x]
+  | .nu _ _ D i => app "ν" [D, i]
+  | .out x => app "out" [x]
+  | .coit _ _ _ S st i s => app "coit" [S, st, i, s]
   | .transp _ _ P p _ e =>
     paren (prec > 1022)
       s!"transp {P.prettyPrec names maxArg} {p.prettyPrec names maxArg} {e.prettyPrec names maxArg}"
 where
+  app (f : String) (args : List (Term R)) : String :=
+    paren (prec > 1022) (" ".intercalate (f :: args.map (·.prettyPrec names maxArg)))
   tuple : Term R → Array (Term R) → Array (Term R)
     | .pair a b, acc => tuple b (acc.push a)
     | t, acc => acc.push t

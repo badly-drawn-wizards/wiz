@@ -55,6 +55,17 @@ inductive Val (R : Type) where
   | empty (level : Level)
   | qty
   | qlit (r : R)
+  | enum (labels : List Name)
+  | tag (labels : List Name) (i : Nat)
+  | desc (l : Level) (I : Val R)
+  | dret (i : Val R)
+  | darg (q S D : Val R)
+  | drec (q j D : Val R)
+  | mu (l : Level) (I D i : Val R)
+  | con (x : Val R)
+  | nu (l : Level) (I D i : Val R)
+  /-- an unfolding, kept lazy until observed with `out` -/
+  | coit (l : Level) (I D S step i s : Val R)
 
 /-- An elimination stuck on a neutral. -/
 inductive Elim (R : Type) where
@@ -64,6 +75,11 @@ inductive Elim (R : Type) where
   /-- `motive` is under one binder, `body` under two -/
   | split (q : Val R) (z : Name) (motive : Closure R) (x y : Name) (body : Closure R)
   | absurd (motive : Val R)
+  /-- the branches are evaluated in `env` only when the tag is known -/
+  | ecase (z : Name) (motive : Closure R) (env : List (Val R)) (branches : List (Term R))
+  | delim (v : Level) (P mret marg mrec : Val R)
+  | ind (l : Level) (I D : Val R) (v : Level) (P m i : Val R)
+  | out
 
 /-- A body waiting for the values of its bound variables. `env` gives the values of
 the body's free variables, with the most recent binder at the head of the list. -/

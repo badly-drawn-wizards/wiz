@@ -73,6 +73,7 @@ These have no tests. Write your own tests in `Tests/` as you go.
   `Rig` laws.
 * **1.8** Implement Atkey's σ ∈ {0, 1} modes properly (see "Simplification vs. Atkey" in
   `Core/Check.lean`), so the checker stops verifying linearity inside type positions.
+  (Stage 4d adds a light version, `Ctx.erased`, which only relaxes projections.)
 * **1.9** Σ-types with a QTT-friendly eliminator, `let (x, y) := p; b`, which uses
   `p` once and binds both components at its quantity.
 * **1.10** Glued evaluation: stop unfolding globals eagerly, keeping both the stuck
@@ -175,7 +176,7 @@ Stage 4 has several steps, each committed separately:
 1. **Universe polymorphism** ✅ (below)
 2. **Type-directed conversion, Σ / ⊤ / ⊥ with η** ✅ (below)
 3. **Observational equality** ✅ (below)
-4. **Quantity polymorphism** ✅ (below), then indexed descriptions and μ / ν
+4. **Quantity polymorphism** ✅ and **indexed descriptions, μ / ν** ✅ (below)
 5. Surface `inductive` / `structure` / `match`, compiled to eliminators
 
 ### 4a: universe polymorphism
@@ -305,3 +306,46 @@ so stage 1 still only needs `QRig.le`.
 Optional:
 * **4.16** Bounded quantity variables: `{q : Qty} [1 ≤ q]`, so that `keep` above is
   accepted, with the constraint checked at use sites.
+
+### 4d (part 2): data as descriptions
+
+Inductive and coinductive types are **anonymous**: `μ D i` and `ν D i` for a
+*description* `D : Desc I`. Constructors are tags of a finite `Enum`:
+
+```
+def NatD : Desc Unit :=
+  Desc.arg 1 (Enum [zero, succ]) (fun t => ecase t [Desc.ret (), Desc.rec 1 () (Desc.ret ())])
+def Nat : Type := μ NatD ()
+def succ (n : Nat) : Nat := con ('succ, n, (), ())
+```
+
+| primitive | meaning |
+|---|---|
+| `Enum [a, b]`, `'a`, `ecase t [b₀, b₁]` | tags (labels are metadata), case on a tag |
+| `Desc I`, `Desc.ret i`, `Desc.arg q S D`, `Desc.rec q j D` | descriptions; fields carry quantities |
+| `Desc.elim P mret marg mrec D` | the eliminator of descriptions (generic programming) |
+| `μ D i`, `con xs`, `ind P m x` | least fixed point, constructor, induction |
+| `ν D i`, `coit S step s`, `out x` | greatest fixed point, unfold, observe |
+| `Desc.interp D X i`, `Desc.All D X P i xs` | `⟦D⟧ X i` and the induction hypotheses |
+
+`⟦D⟧`, `All`, the hypotheses and `map` are **not kernel primitives**. They are closed
+terms built with `Desc.elim` (`Core/Templates.lean`), so on a neutral description
+they get stuck as an ordinary `Desc.elim`. The field quantities are what made the
+eliminator need quantity polymorphism: `marg` abstracts over the field's `q : Qty`.
+
+Observational equality extends to data: `con a = con b ↦ a = b`, tags compare by
+index, and `Enum`s by size. Equality at ν is stuck (a design decision).
+
+A case uses the **join** of its branches' usages (`0 ⊔ 1 = ω`), so a linear variable
+must be used identically in every branch. `ind`'s method is scaled by ω, since it runs
+once per node. Erased fields can be projected in erased positions (`Ctx.erased`).
+
+`examples/data.wiz` defines `Bool`, `Nat`, addition by `ind` (with a hand-written
+"convoy" to branch on the tag, which `match` will generate in stage 4e), and streams.
+
+| #    | Where                  | What                                                     |
+|------|------------------------|----------------------------------------------------------|
+| 4.17 | `Core/Templates.lean`  | `allTm` (optional: the others are written for you)       |
+| 4.18 | `Core/Eval.lean`       | `eval` cases                                             |
+| 4.19 | `Core/Eval.lean`       | `vEcase`, `vDelim`, `vInd`, `vOut`: the computation rules |
+| 4.20 | `Core/Check.lean`      | typing rules                                             |
