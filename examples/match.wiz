@@ -1,0 +1,27 @@
+-- Stage 4e: pattern matching. `lake exe wiz check examples/match.wiz`
+
+inductive Nat where
+  | zero
+  | succ (n : Nat)
+
+inductive Vec (A : Type) : Nat → Type where
+  | nil : Vec A .zero
+  | cons {0 n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)
+
+def pred (n : Nat) : Nat := match n with
+  | .zero => .zero
+  | .succ m => m
+#reduce pred (.succ (.succ .zero))
+
+def add : Nat → Nat → Nat
+  | .zero, n => n
+  | .succ m, n => .succ (add m n)
+#reduce add (.succ .zero) (.succ (.succ .zero))
+
+def head {A : Type} {n : Nat} : Vec A (.succ n) → A
+  | .cons x _ => x
+
+def map {A B : Type} (f : A → B) {n : Nat} : Vec A n → Vec B n
+  | .nil => .nil
+  | .cons x xs => .cons (f x) (map xs)
+#reduce head (Vec.cons Nat.zero Vec.nil)

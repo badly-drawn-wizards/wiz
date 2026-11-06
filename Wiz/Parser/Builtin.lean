@@ -53,6 +53,10 @@ def bracketedBinder (requireType : Bool) : ParserDescr :=
 /-- Binders of `fun` and `∀`: a bare name or a bracketed group with optional type. -/
 def simpleBinder : ParserDescr := orelse (bracketedBinder false) binderIdent
 
+/-- `| p₁, …, pₙ => rhs` -/
+def matchAlt : ParserDescr :=
+  node "match.alt" (seqs ["|", sepBy1 (cat "term" 0) ",", "=>", cat "term" 0])
+
 def precedence : ParserDescr := node "prec" (orelse num ident)
 
 def level (prec : Nat := 0) : ParserDescr := cat "level" prec
@@ -121,6 +125,7 @@ def levelTrailing : List TrailingParser := [
 | `term.tag`           | max  | "'" ident |
 | `term.ecase`         | lead | "ecase" term "[" [terms] "]" |
 | `term.dotIdent`      | max  | "." ident (a constructor of the expected type) |
+| `term.match`         | lead | "match" [terms] "with" [alts] |
 
 The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
 `Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out` and `coit` have no syntax of their
@@ -167,6 +172,8 @@ def termLeading : List LeadingParser := [
   { kind := "term.enum", prec := maxPrec, p := seqs [nonReserved "Enum", "[", sepBy ident ",", "]"] },
   { kind := "term.tag", prec := maxPrec, p := seqs ["'", noWs, ident] },
   { kind := "term.dotIdent", prec := maxPrec, p := seqs [".", noWs, ident] },
+  { kind := "term.match", prec := leadPrec,
+    p := seqs ["match", sepBy1 term ",", "with", many1 matchAlt] },
   { kind := "term.ecase", prec := leadPrec,
     p := seqs [nonReserved "ecase", term maxPrec, "[", withoutPosition (sepBy term ","), "]"] }
 ]
@@ -200,6 +207,8 @@ A constructor is `inductive.ctor`: "|" ident [binders] [":" T]. A field is
 def commandLeading : List LeadingParser := [
   { kind := "command.def", prec := maxPrec,
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec false, ":=", term] },
+  { kind := "command.defEqns", prec := maxPrec,
+    p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec true, many1 matchAlt] },
   { kind := "command.axiom", prec := maxPrec,
     p := seqs ["axiom", ident, univParams, many (bracketedBinder false), typeSpec true] },
   { kind := "command.check", prec := maxPrec, p := seqs ["#check", term] },

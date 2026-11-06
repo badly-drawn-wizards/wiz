@@ -388,9 +388,10 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .empty l => pure (.sort l, Usage.zeros ctx.lvl)
   | .absurd m t => do
     let _ ← checkType ctx m
-    let (ty, u) ← infer ctx t
+    -- `t` can never be evaluated (nothing inhabits the empty type): an erased position
+    let (ty, _) ← infer { ctx with erased := true } t
     match ty with
-    | .empty _ => pure (ctx.eval m, u)
+    | .empty _ => pure (ctx.eval m, Usage.zeros ctx.lvl)
     | _ => throw (.typeMismatch "an empty type" (ctx.showVal ty))
   | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
   | .eq A a b => do

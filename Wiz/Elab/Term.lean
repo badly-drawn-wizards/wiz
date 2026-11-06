@@ -169,6 +169,115 @@ private def isImplicitFun (stx : Syntax) : Bool :=
     | some b => b.isOfKind "binder.implicit"
     | none => false
 
+/-! ## Pattern matching (stage 4e)
+
+`match` and equation-style definitions compile to a **case tree** over local
+variables, built from the generated `T.casesOn` (and `T.rec` for structural recursion).
+Splitting a variable `x : T Δ ξ`:
+
+* the variables matched *after* `x` are reverted into the motive and re-introduced in
+  every branch, so their types can mention `x`;
+* if the indices `ξ` are distinct variables, the motive generalises them, and each
+  branch sees them replaced by the constructor's indices (Cockx's *solution* rule);
+* otherwise the motive takes an equation `idx_c = ξ`. Observational equality
+  *computes* it: for an impossible constructor it contains `False`, and the branch is
+  closed with `absurd` (so impossible cases can be left out). Injectivity and
+  conflict therefore need no code of their own.
+
+Structural recursion: in `def f : … | pats => rhs` where the right-hand sides call
+`f`, the first column is split with `T.rec`, and a call `f y a…` on a recursive field
+`y` becomes the induction hypothesis for `y` applied to `a…` (the other arguments are
+generalised by the motive, so they may change in recursive calls). -/
+
+/-- A clause of a case tree: one pattern per remaining variable, the right-hand side,
+and the pattern variables bound so far (name, type, value). -/
+structure MClause (R : Type) where
+  pats : List Syntax
+  rhs : Syntax
+  binds : List (Name × VTy R × Val R) := []
+
+inductive PatView where
+  | var (n : Name)
+  | wild
+  /-- a constructor pattern: optional type name (from `T.c`), constructor, arguments -/
+  | ctor (T : Option Name) (c : Name) (args : List Syntax)
+
+def holeStx : Syntax := .node {} "term.hole" #[.atom {} "_"]
+
+/-- Recursion context: the function's name, and which field levels have hypotheses. -/
+structure RecCtx where
+  fn : Name
+  ihs : List (Lvl × Lvl) := []
+
+partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
+  let ctorOf (n : Name) : Option (Name × Name) :=
+    match n.splitOn "." with
+    | [T, c] => if g.contains (T ++ ".desc") && g.contains n then some (T, c) else none
+    | _ => none
+  match stx.kind with
+  | "term.paren" => patView g (stx.getArg 1)
+  | "term.hole" => pure .wild
+  | "term.dotIdent" => pure (.ctor none ((stx.getArg 1).getId?.getD "_") [])
+  | "term.ident" =>
+    let n := (stx.getArg 0).getId?.getD "_"
+    match ctorOf n with
+    | some (T, c) => pure (.ctor (some T) c [])
+    | none => pure (.var n)
+  | "term.app" =>
+    let h := stx.getArg 0
+    let args := (stx.getArg 1).args.toList
+    match h.kind with
+    | "term.dotIdent" => pure (.ctor none ((h.getArg 1).getId?.getD "_") args)
+    | "term.ident" => match ctorOf ((h.getArg 0).getId?.getD "_") with
+      | some (T, c) => pure (.ctor (some T) c args)
+      | none => .error "only constructors may be applied in patterns"
+    | _ => .error "invalid pattern"
+  | k => .error s!"invalid pattern ({k})"
+
+/-- Find a component of type `False`/`Empty` inside a (Σ-nested) proof `e : ty`. -/
+partial def findAbsurd (g : Globals R) (ty e : Val R) : Option (Val R) :=
+  match ty with
+  | .empty _ => some e
+  | .sigma _ _ A B =>
+    (findAbsurd g A (vFst e)).orElse fun _ => findAbsurd g (Closure.inst g B (vFst e)) (vSnd e)
+  | _ => none
+
+/-- The number of leading Π binders of a type term, with their binder infos. -/
+def piInfos : Term R → List (Name × BinderInfo × Term R)
+  | .pi x bi _ A b => (x, bi, A) :: piInfos b
+  | _ => []
+
+/-- Replace recursive calls `f y a…` (with `y` a field that has a hypothesis `h`) by
+`h a…`. Returns the rewritten syntax and the hypothesis bindings it needs. -/
+partial def rewriteRecCalls (rc : RecCtx) (binds : List (Name × VTy R × Val R))
+    (ihType : Lvl → Option (VTy R)) (stx : Syntax) :
+    Except String (Syntax × List (Name × VTy R × Val R)) := do
+  let isF (h : Syntax) := h.isOfKind "term.ident" && (h.getArg 0).getId? == some rc.fn
+  if stx.isOfKind "term.app" && isF (stx.getArg 0) then
+    let args := (stx.getArg 1).args
+    let some a := args[0]? | throw s!"recursive call of {rc.fn} without arguments"
+    let some y := (if a.isOfKind "term.ident" then (a.getArg 0).getId? else none)
+      | throw s!"recursive call of {rc.fn} must be on a variable"
+    let some (_, _, .neutral (.local fl) #[]) := binds.find? (·.1 == y)
+      | throw s!"recursive call of {rc.fn} on {y}, which is not a recursive field"
+    let some (_, ihl) := rc.ihs.find? (·.1 == fl)
+      | throw s!"recursive call of {rc.fn} on {y}, which is not structurally smaller"
+    let some ty := ihType ihl | throw "internal error: hypothesis without a type"
+    let ihName := "_ih_" ++ y
+    let ident : Syntax := .node a.info "term.ident" #[.ident a.info ihName]
+    let rest ← (args.extract 1 args.size).mapM (rewriteRecCalls rc binds ihType ·)
+    let restStx := rest.map (·.1)
+    let newBinds := [(ihName, ty, (.neutral (.local ihl) #[] : Val R))] ++ rest.toList.flatMap (·.2)
+    let stx' := if restStx.isEmpty then ident
+      else .node stx.info "term.app" #[ident, .node {} "null" restStx]
+    return (stx', newBinds)
+  if isF stx then throw s!"{rc.fn} may only be used in structurally recursive calls"
+  match stx with
+  | .node i k as =>
+    let rs ← as.mapM (rewriteRecCalls rc binds ihType ·)
+    return (.node i k (rs.map (·.1)), rs.toList.flatMap (·.2))
+  | s => return (s, [])
+
 mutual
 
 /-- A binder's quantity: the default, a literal (`0`, `1`, `ω`), or (stage 4d)
@@ -235,6 +344,7 @@ where
       | .unit _ => pure .tt
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.letPair" => elabLetPair ctx stx expected
+    | "term.match" => elabMatch ctx stx expected
     | "term.num" =>
       match ← force expected with
       | .qty => elabQtyLit ctx stx (((stx.getArg 0).getNat?.map toString).getD "?")
@@ -625,6 +735,221 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy 
   --|ex
   --| sorry
   --sol>
+
+/-- Compile clauses over the variables `vars` (levels) against `goal`. -/
+partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (MClause R))
+    (goal : VTy R) (rc : Option RecCtx) (top : Bool) : ElabM R (Term R) := do
+  let g ← getGlobals
+  let q (v : Val R) : Term R := quote g ctx.lvl v
+  let varTm (l : Lvl) : Term R := .var (ctx.lvl - l - 1)
+  let typeOf (l : Lvl) : VTy R := ctx.types[ctx.lvl - l - 1]!
+  let nameOf (l : Lvl) : Name := ctx.names[ctx.lvl - l - 1]!
+  let some cl := clauses.head? | throwAt ctx.info "missing cases"
+  -- find the first constructor pattern of the first clause
+  let views ← cl.pats.mapM fun p => match patView g p with
+    | .ok v => pure v
+    | .error e => throwAt p.info e
+  let some k := views.findIdx? (· matches .ctor ..) | do
+    -- all variables: bind them and elaborate the right-hand side
+    let mut binds := cl.binds
+    for v in views, x in vars do
+      if let .var n := v then binds := binds ++ [(n, typeOf x, Val.var x)]
+    let mut rhs := cl.rhs
+    if let some rc := rc then
+      let ihType (l : Lvl) : Option (VTy R) := ctx.types[ctx.lvl - l - 1]?
+      match rewriteRecCalls rc binds ihType cl.rhs with
+      | .ok (r, extra) => rhs := r; binds := binds ++ extra
+      | .error e => throwAt cl.rhs.info e
+    let mut ctx' := ctx
+    for (n, ty, val) in binds do ctx' := ctx'.define n ty val
+    let body ← check ctx' rhs goal
+    -- wrap the lets, innermost last
+    let mut t := body
+    let mut lvl := ctx'.lvl
+    for (n, ty, val) in binds.reverse do
+      lvl := lvl - 1
+      t := .letE n (.qlit QuantitySyntax.explicitDefault) (quote g lvl ty) (quote g lvl val) t
+    return t
+  if rc.isSome && top && k != 0 then
+    throwAt cl.rhs.info "structural recursion: the first argument must be matched first"
+  let x := vars[k]!
+  let rs := vars.drop (k + 1)
+  let xty ← force (typeOf x)
+  let .mu _ _ _ ξi (some (T, us, args)) := xty
+    | throwAt (cl.pats[k]!).info s!"cannot match on a value of type {← showVal ctx xty}"
+  let some descD := g.find? (T ++ ".desc") | throwAt ctx.info s!"{T} is not an inductive type"
+  let nΔ := (piInfos descD.type).length
+  let Δargs := args.take nΔ
+  let ξ := args.drop nΔ
+  let ξLvls := ξ.filterMap fun v => match v with
+    | .neutral (.local l) #[] => some l
+    | _ => none
+  let modeA := ξLvls.length == ξ.length && ξLvls.eraseDups.length == ξLvls.length &&
+    !ξLvls.contains x && ξLvls.all (fun l => !rs.contains l)
+  let useRec := rc.isSome && top
+  -- G := Π rs. goal
+  let w : Term R := .qlit QuantitySyntax.explicitDefault
+  let mut G := q goal
+  for r in rs.reverse do
+    G := .pi (nameOf r) .default w (q (typeOf r)) (G.abstract (varTm r))
+  let ctors : List Name := match descD.value.map (fun v => (piInfos descD.type).foldl (fun t _ => match t with
+      | .lam _ b => b
+      | t => t) v) with
+    | some (.darg _ (.enum ls) _) => ls
+    | _ => []
+  let nΞ := ξ.length
+  let motive : Term R ←
+    if modeA then
+      -- each abstraction puts `body` under one more binder, so later targets are lifted
+      let mut body := G
+      for l in ξLvls, i in [0:ξLvls.length] do body := body.abstract ((varTm l).lift i)
+      body := body.abstract ((varTm x).lift ξLvls.length)
+      pure ((ξLvls.map nameOf ++ [nameOf x]).foldr .lam body)
+    else
+      if G.hasVar (ctx.lvl - x - 1) then
+        throwAt (cl.pats[k]!).info "this match needs index unification whose goal depends on the scrutinee; not supported yet"
+      let .mu _ I _ _ _ := xty | unreachable!
+      let lhs : Term R := (List.range nΞ).foldr (fun k acc => .pair (.var (nΞ - k)) acc) .tt
+      let eqTm : Term R := .eq ((q I).lift (nΞ + 1)) lhs ((q ξi).lift (nΞ + 1))
+      let body : Term R := .pi "e" .default (.qlit 0) eqTm (G.lift (nΞ + 2))
+      pure ((List.range nΞ).foldr (fun k acc => .lam s!"i{k}" acc) (.lam "x" body))
+  -- the motive's universe
+  let tys := ctx.types.reverse.toArray
+  let some v := typeSort? g tys (← evalIn ctx G)
+    | throwAt ctx.info "could not determine the universe of the match's type"
+  let elimName := T ++ (if useRec then ".rec" else ".casesOn")
+  let some ed := g.find? elimName | throwAt ctx.info s!"{elimName} is missing"
+  let elimHead : Term R := .const elimName (us ++ [v])
+  let mut f : Term R := (Δargs.map q).foldl .app elimHead |>.app motive
+  -- the eliminator's type, instantiated with the parameters and the motive
+  let mut fty : VTy R := eval g [] (ed.type.instLevels ed.levelParams (us ++ [v]))
+  for a in Δargs ++ [← evalIn ctx motive] do
+    let .pi _ _ _ _ cod ← force fty | throwAt ctx.info "internal error: eliminator type"
+    fty ← instM cod a
+  -- one method per constructor
+  for c in ctors do
+    let some cd := g.find? (T ++ "." ++ c) | throwAt ctx.info s!"missing constructor {c}"
+    let fieldInfos := (piInfos cd.type).drop nΔ
+    let isRecField (A : Term R) : Bool := match (Term.spine A).1 with
+      | .const n _ => n == T
+      | _ => false
+    let nRec := if useRec then (fieldInfos.filter fun (_, _, A) => isRecField A).length else 0
+    let .pi _ _ _ mTy cod ← force fty | throwAt ctx.info "internal error: eliminator type"
+    -- introduce fields, hypotheses, the equation, and the reverted variables
+    let mut ctx' := ctx
+    let mut mt := mTy
+    let mut fieldLvls : Array Lvl := #[]
+    for (n, _, _) in fieldInfos do
+      let .pi _ _ _ A B ← force mt | throwAt ctx.info "internal error: method type"
+      fieldLvls := fieldLvls.push ctx'.lvl
+      mt ← instM B (Val.var ctx'.lvl)
+      ctx' := ctx'.bind n A
+    let mut ihLvls : Array Lvl := #[]
+    for _ in [0:nRec] do
+      let .pi _ _ _ A B ← force mt | throwAt ctx.info "internal error: hypothesis type"
+      ihLvls := ihLvls.push ctx'.lvl
+      mt ← instM B (Val.var ctx'.lvl)
+      ctx' := ctx'.bind "_ih" A
+    let mut absurdBody : Option (Term R) := none
+    if !modeA then
+      let .pi _ _ _ E B ← force mt | throwAt ctx.info "internal error: equation"
+      let eLvl := ctx'.lvl
+      mt ← instM B (Val.var eLvl)
+      ctx' := ctx'.bind "e" E
+      if let some prf := findAbsurd g (← force E) (Val.var eLvl) then
+        absurdBody := some (.absurd (quote g ctx'.lvl mt) (quote g ctx'.lvl prf))
+    let body ← match absurdBody with
+      | some b => pure b
+      | none =>
+        let mut rsLvls : Array Lvl := #[]
+        for r in rs do
+          let .pi _ _ _ A B ← force mt | throwAt ctx.info "internal error: reverted variable"
+          rsLvls := rsLvls.push ctx'.lvl
+          mt ← instM B (Val.var ctx'.lvl)
+          ctx' := ctx'.bind (nameOf r) A
+        -- the value of `x` in this branch, for variable patterns
+        let ctorVal ← evalIn ctx' ((Δargs.map (quote g ctx'.lvl) ++ fieldLvls.toList.map
+          (fun l => (.var (ctx'.lvl - l - 1) : Term R))).foldl .app (.const (T ++ "." ++ c) us))
+        let explicitIdx := fieldInfos.zipIdx.filter (fun ((_, bi, _), _) => bi == .default) |>.map (·.2)
+        let mut cls : List (MClause R) := []
+        for cl' in clauses do
+          let pv ← match patView g (cl'.pats[k]!) with
+            | .ok v => pure v
+            | .error e => throwAt (cl'.pats[k]!).info e
+          let before := cl'.pats.take k
+          let after := cl'.pats.drop (k + 1)
+          match pv with
+          | .ctor _ c' ps =>
+            if c' == c then
+              unless ps.length == explicitIdx.length do
+                throwAt (cl'.pats[k]!).info s!"{c} expects {explicitIdx.length} explicit arguments"
+              let sub := (List.range fieldInfos.length).map fun i =>
+                match explicitIdx.idxOf? i with
+                | some j => ps[j]!
+                | none => holeStx
+              cls := cls ++ [{ cl' with pats := before ++ sub ++ after }]
+          | .var n =>
+            let sub := fieldInfos.map fun _ => holeStx
+            let binds := cl'.binds ++ [(n, xty, ctorVal)]
+            cls := cls ++ [{ cl' with pats := before ++ sub ++ after, binds := binds }]
+          | .wild =>
+            cls := cls ++ [{ cl' with pats := before ++ (fieldInfos.map fun _ => holeStx) ++ after }]
+        if cls.isEmpty then throwAt ctx.info s!"missing case for constructor {c}"
+        let rc' := rc.map fun r => { r with ihs := r.ihs ++ (if useRec then
+          ((fieldLvls.toList.zip (fieldInfos.map (·.2.2))).filter (fun (_, A) => isRecField A)).map (·.1)
+            |>.zip ihLvls.toList else []) }
+        let inner ← compileMatch ctx' (vars.take k ++ fieldLvls.toList ++ rsLvls.toList) cls mt rc' false
+        let lamsN := rsLvls.toList.map nameOf' |>.length
+        let _ := lamsN
+        pure ((rs.map nameOf).foldr .lam inner)
+    -- lambdas for fields, hypotheses and the equation
+    let names := fieldInfos.map (·.1) ++ (List.replicate nRec "_ih") ++ (if modeA then [] else ["e"])
+    let method := names.foldr .lam body
+    f := .app f method
+    fty ← instM cod (← evalIn ctx method)
+  -- indices, scrutinee, equation proof, reverted variables
+  for vξ in ξ do f := .app f (q vξ)
+  f := .app f (varTm x)
+  if !modeA then
+    let .mu _ I _ _ _ := xty | unreachable!
+    f := .app f (.refl (q I) (q ξi))
+  for r in rs do f := .app f (varTm r)
+  pure f
+where
+  nameOf' (_ : Lvl) : Name := "_"
+
+/-- Elaborate `match e₁, …, eₙ with | p₁, …, pₙ => rhs …` against `expected`. -/
+partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
+  let g ← getGlobals
+  let scruts := (stx.getArg 1).args.filter (!· matches .atom ..)
+  let alts := (stx.getArg 3).args
+  let clauses : List (MClause R) := alts.toList.map fun a =>
+    { pats := ((a.getArg 1).args.filter (!· matches .atom ..)).toList, rhs := a.getArg 3 }
+  -- bind every scrutinee to a fresh variable, generalising it in the goal
+  let mut ctx' := ctx
+  let mut ts : Array (Term R) := #[]
+  let mut goalTm := quote g ctx.lvl expected
+  let mut binders : Array (Name × Term R) := #[]
+  for s in scruts do
+    let (t, ty) ← infer ctx s
+    ts := ts.push t
+    binders := binders.push ("x", quote g ctx.lvl ty)
+  -- abstract the scrutinees, last first
+  let mut absGoal := goalTm
+  for t in ts.reverse do absGoal := absGoal.abstract t
+  let _ := goalTm
+  let mut lvls : List Lvl := []
+  for (n, tyTm) in binders, i in [0:binders.size] do
+    -- scrutinee types are taken as they are (they may not depend on earlier scrutinees)
+    let vTy ← evalIn ctx' (tyTm.lift i)
+    lvls := lvls ++ [ctx'.lvl]
+    ctx' := ctx'.bind n vTy
+  goalTm := absGoal
+  let goal ← evalIn ctx' goalTm
+  let body ← compileMatch ctx' lvls clauses goal none true
+  let lam := (binders.toList.map (·.1)).foldr .lam body
+  let piTy := binders.toList.foldr (fun (n, A) acc => Term.pi n .default (.qlit QuantitySyntax.explicitDefault) A acc) goalTm
+  pure (ts.foldl .app (.ann lam piTy))
 
 /-- Infer the type of `stx`. -/
 partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) := do
