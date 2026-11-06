@@ -11,8 +11,11 @@ questions are the actual decisions to make, not homework.
 |---|---|
 | Surface syntax | Lean-like: `def f (x : A) : B := ...`, `fun x => ...` |
 | Quantities | Idris 2 prefix: `(1 x : A) → B`, `{0 A : Type}`. Omitted: ω explicit, 0 implicit |
-| Data | μ/ν over a universe of indexed descriptions |
+| Data | μ/ν over a universe of indexed descriptions; kernel types are **anonymous**, with names kept as metadata for error messages |
+| Structs | Σ / ⊤ with definitional η; variants and recursive types are μ |
 | Recursion | Kernel has eliminators only; pattern matching compiles to them |
+| Equality | Observational type theory now: proof-irrelevant `Prop`, `Eq` computed by type, `cast` |
+| Universes | Lean-style level parameters, `Sort 0 = Prop` impredicative |
 
 ## Suggested order
 
@@ -105,7 +108,7 @@ Proving Languages* (IJCAR 2020); the Lean 4 sources `Lean/Parser/*.lean`.
 **Determinism:** name metavariables and fresh variables with per-declaration counters,
 never by pointer address or global counters shared across threads.
 
-## Stage 4: Data as μ/ν, structural types, nominal wrappers
+## Stage 4: Data as μ/ν, structural types, nominal wrappers (4a ✅ universes)
 
 This stage has the most open design space.
 

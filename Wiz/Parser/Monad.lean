@@ -41,6 +41,8 @@ structure PCtx where
   input : Array Char
   tables : ParserTables
   savedPos? : Option Nat := none
+  /-- the precedence the innermost category is being parsed at -/
+  prec : Nat := 0
 
 structure PState where
   pos : Nat := 0

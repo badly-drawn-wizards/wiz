@@ -60,6 +60,21 @@ def elabTelescope (ctx : LocalCtx R) (bs : List BinderView) :
     ctx := ctx.bind b.name (← evalIn ctx ty)
   pure (ctx, tele)
 
+/-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
+recorded constraint whose hole is now solved, ask the kernel for the solution's type
+and unify its level. -/
+def solveSortConstraints : ElabM R Unit := do
+  for _ in [0:2] do
+    for (ctx, t, l) in (← get).sortConstraints do
+      let t ← zonk ctx.lvl t
+      if !t.mvars.isEmpty then continue
+      let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
+                            qtys := ctx.names.map fun _ => QuantitySyntax.explicitDefault,
+                            types := ctx.types, lvl := ctx.lvl }
+      if let .ok (ty, _) := Wiz.infer kctx t then
+        if let .sort l' ← force ty then
+          try unifyLevel l l' catch e => throwAt ctx.info e.msg
+
 /-- Elaborate the header and body of a `def` or `axiom` to closed, zonked terms. -/
 def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : Option Syntax)
     (info : SourceInfo) : ElabM R (Term R × Option (Term R)) := do
@@ -70,38 +85,42 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
   let val ← valStx.mapM fun s => do Elab.check ctx s (← evalIn ctx ty)
   let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b) ty
   let val := val.map fun v => tele.foldr (fun (x, _, _, _) b => Term.lam x b) v
+  solveSortConstraints
   let ty ← zonk 0 ty
-  ensureNoMVars ty
+  ensureNoMVars ty info
   let val ← val.mapM (zonk 0)
-  if let some v := val then ensureNoMVars v
+  if let some v := val then ensureNoMVars v info
   pure (ty, val)
 
-def runElab (g : Globals R) (x : ElabM R α) : Except ElabError α :=
-  (x.run { globals := g }).map (·.1)
+def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := []) :
+    Except ElabError α :=
+  (x.run { globals := g, levelParams }).map (·.1)
 
 /-- Elaborate one command, updating the state and adding messages. -/
 def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let s ← get
   let report (sev : Severity) (info : SourceInfo) (text : String) : StateM (CommandState R) Unit :=
     modify fun s => { s with messages := s.messages.push { info, severity := sev, text } }
-  let addDeclChecked (name : Name) (ty : Term R) (val : Option (Term R)) := do
-    match addDecl s.globals { name, type := ty, value := val } with
+  let addDeclChecked (name : Name) (levelParams : List Name) (ty : Term R) (val : Option (Term R)) := do
+    match addDecl s.globals { name, levelParams, type := ty, value := val } with
     | .ok g => modify fun s => { s with globals := g }
     | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
   match cmd.kind with
   | "command.def" | "command.axiom" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
-    let binders := (cmd.getArg 2).args
-    let typeStx := (cmd.getArg 3).args[1]?
-    let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 5) else none
+    let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
+    let binders := (cmd.getArg 3).args
+    let typeStx := (cmd.getArg 4).args[1]?
+    let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
-    else match runElab s.globals (elabDeclTerms binders typeStx valStx cmd.info) with
-      | .ok (ty, val) => addDeclChecked name ty val
+    else match runElab s.globals (elabDeclTerms binders typeStx valStx cmd.info) levelParams with
+      | .ok (ty, val) => addDeclChecked name levelParams ty val
       | .error e => report .error e.info e.msg
   | "command.check" =>
     let r := runElab s.globals do
       let (t, ty) ← Elab.infer {} (cmd.getArg 1)
+      solveSortConstraints
       let t ← zonk 0 t
       let ty ← zonk 0 (quote (← getGlobals) 0 ty)
       pure s!"{t.pretty} : {ty.pretty}"
@@ -111,6 +130,7 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.reduce" =>
     let r := runElab s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
+      solveSortConstraints
       let t ← zonk 0 t
       ensureNoMVars t
       pure (nf (← getGlobals) t).pretty

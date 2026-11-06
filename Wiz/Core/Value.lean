@@ -26,16 +26,16 @@ abbrev Lvl := Nat
 
 inductive Head where
   | local (lvl : Lvl)
-  | global (name : Name)
+  | global (name : Name) (levels : List Level)
   /-- an unsolved (as far as the kernel knows) metavariable -/
   | mvar (id : Nat)
-  deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq
 
 mutual
 inductive Val (R : Type) where
   /-- `head spine[0] spine[1] ...` -/
   | neutral (head : Head) (spine : Array (Val R))
-  | sort (level : Nat)
+  | sort (level : Level)
   | pi (x : Name) (bi : BinderInfo) (q : R) (dom : Val R) (cod : Closure R)
   | lam (x : Name) (body : Closure R)
 
@@ -44,6 +44,15 @@ body's free variables, with the most recent binder at the head of the list. -/
 inductive Closure (R : Type) where
   | mk (env : List (Val R)) (body : Term R)
 end
+
+/-- Heads are equal if they are the same variable, or the same global at equivalent
+levels. -/
+def Head.equiv : Head → Head → Bool
+  | .local a, .local b => a == b
+  | .global n us, .global m vs =>
+    n == m && us.length == vs.length && (us.zip vs).all fun (u, v) => u.equiv v
+  | .mvar a, .mvar b => a == b
+  | _, _ => false
 
 abbrev Env (R : Type) := List (Val R)
 abbrev VTy (R : Type) := Val R

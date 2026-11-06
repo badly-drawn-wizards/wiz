@@ -53,13 +53,45 @@ def simpleBinder : ParserDescr := orelse (bracketedBinder false) binderIdent
 
 def precedence : ParserDescr := node "prec" (orelse num ident)
 
+def level (prec : Nat := 0) : ParserDescr := cat "level" prec
+
+/-- `.{u, v}` after a name -/
+def univParams : ParserDescr := optional (seqs [noWs, ".{", sepBy1 ident ",", "}"])
+
+/-- Universe levels.
+
+| kind          | children |
+|---------------|----------|
+| `level.num`   | num |
+| `level.param` | ident |
+| `level.hole`  | "_" |
+| `level.paren` | "(" level ")" |
+| `level.max`, `level.imax` | "max" level level |
+| `level.add` (trailing) | level "+" num |
+-/
+def levelLeading : List LeadingParser := [
+  { kind := "level.num", prec := maxPrec, p := num },
+  { kind := "level.param", prec := maxPrec, p := ident },
+  { kind := "level.hole", prec := maxPrec, p := "_" },
+  { kind := "level.paren", prec := maxPrec, p := seqs ["(", withoutPosition (level 0), ")"] },
+  { kind := "level.max", prec := leadPrec, p := seqs [nonReserved "max", level maxPrec, level maxPrec] },
+  { kind := "level.imax", prec := leadPrec, p := seqs [nonReserved "imax", level maxPrec, level maxPrec] }
+]
+
+def levelTrailing : List TrailingParser := [
+  { kind := "level.add", prec := 65, lhsPrec := 65, p := seqs ["+", num] }
+]
+
 /-- Term syntax.
 
 | kind                 | prec | children |
 |----------------------|------|----------|
 | `term.ident`         | max  | ident |
 | `term.num`, `term.str` | max | literal |
-| `term.type`          | max  | "Type" [num] |
+| `term.type`          | max  | "Type" [level] |
+| `term.sort`          | max  | "Sort" [level] |
+| `term.prop`          | max  | "Prop" |
+| `term.identUniv`     | max  | ident ".{" [levels] "}" |
 | `term.hole`          | max  | "_" |
 | `term.syntheticHole` | max  | "?" ident |
 | `term.paren`         | max  | "(" term ")" |
@@ -76,7 +108,10 @@ def termLeading : List LeadingParser := [
   { kind := "term.ident", prec := maxPrec, p := ident },
   { kind := "term.num", prec := maxPrec, p := num },
   { kind := "term.str", prec := maxPrec, p := str },
-  { kind := "term.type", prec := maxPrec, p := seqs ["Type", optional num] },
+  { kind := "term.type", prec := maxPrec, p := seqs ["Type", optional (seqs [checkPrec leadPrec, level maxPrec])] },
+  { kind := "term.sort", prec := maxPrec, p := seqs ["Sort", optional (seqs [checkPrec leadPrec, level maxPrec])] },
+  { kind := "term.prop", prec := maxPrec, p := "Prop" },
+  { kind := "term.identUniv", prec := maxPrec, p := seqs [ident, noWs, ".{", sepBy1 (level 0) ",", "}"] },
   { kind := "term.hole", prec := maxPrec, p := "_" },
   { kind := "term.syntheticHole", prec := maxPrec, p := seqs ["?", noWs, ident] },
   { kind := "term.paren", prec := maxPrec, p := seqs ["(", withoutPosition term, ")"] },
@@ -104,8 +139,8 @@ continue onto a line starting at the command's column.
 
 | kind                         | children |
 |------------------------------|----------|
-| `command.def`                | "def" ident [binders] [":" T] ":=" term |
-| `command.axiom`              | "axiom" ident [binders] ":" T |
+| `command.def`                | "def" ident [".{" [us] "}"] [binders] [":" T] ":=" term |
+| `command.axiom`              | "axiom" ident [".{" [us] "}"] [binders] ":" T |
 | `command.check`              | "#check" term |
 | `command.reduce`             | "#reduce" term |
 | `command.declareSyntaxCat`   | "declare_syntax_cat" ident |
@@ -113,9 +148,9 @@ continue onto a line starting at the command's column.
 -/
 def commandLeading : List LeadingParser := [
   { kind := "command.def", prec := maxPrec,
-    p := seqs ["def", ident, many (bracketedBinder false), typeSpec false, ":=", term] },
+    p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec false, ":=", term] },
   { kind := "command.axiom", prec := maxPrec,
-    p := seqs ["axiom", ident, many (bracketedBinder false), typeSpec true] },
+    p := seqs ["axiom", ident, univParams, many (bracketedBinder false), typeSpec true] },
   { kind := "command.check", prec := maxPrec, p := seqs ["#check", term] },
   { kind := "command.reduce", prec := maxPrec, p := seqs ["#reduce", term] },
   { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
@@ -159,7 +194,9 @@ def stxTrailing : List TrailingParser := [
 
 def tables : ParserTables :=
   let t : ParserTables := {}
-  let t := ["term", "command", "stx"].foldl ParserTables.declareCategory t
+  let t := ["term", "command", "stx", "level"].foldl ParserTables.declareCategory t
+  let t := levelLeading.foldl (·.addLeading "level" ·) t
+  let t := levelTrailing.foldl (·.addTrailing "level" ·) t
   let t := termLeading.foldl (·.addLeading "term" ·) t
   let t := termTrailing.foldl (·.addTrailing "term" ·) t
   let t := commandLeading.foldl (·.addLeading "command" ·) t

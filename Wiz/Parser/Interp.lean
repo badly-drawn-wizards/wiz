@@ -175,6 +175,8 @@ partial def runDescr : ParserDescr → P (Array Syntax)
   | .noWs => do
     let s ← state
     if (← nextPos) == s.pos then pure #[] else failAt s.pos "no space before this token"
+  | .checkPrec p => do
+    if (← ctx).prec ≤ p then pure #[] else failAt (← nextPos) s!"precedence at most {p}"
 
 --<sol
 /-- Iterations of `many` after the ones already in `acc`. -/
@@ -218,7 +220,8 @@ partial def categoryLoop (c : Name) (rbp : Nat) : P Syntax := do
   let mut leading := #[]
   for lp in cat.leading, i in [0:cat.leading.size] do
     if lp.prec ≥ rbp then
-      if let some cand ← tryAlternative (runDescr (.node lp.kind lp.p) >>= fun r => pure r[0]!)
+      let run := withCtx (fun c => { c with prec := rbp }) (runDescr (.node lp.kind lp.p))
+      if let some cand ← tryAlternative (run >>= fun r => pure r[0]!)
           lp.prec lp.priority i then
         leading := leading.push cand
   let some best := Candidate.best leading | failAt (← nextPos) c

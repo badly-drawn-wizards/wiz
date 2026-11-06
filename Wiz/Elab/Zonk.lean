@@ -19,7 +19,8 @@ Split `t` into a head and arguments. If the head is a *solved* meta, evaluate
 `solution a₁ … aₙ` (arguments evaluated in the environment of variables
 `[Val.var (l-1), …, Val.var 0]`), quote the result back at `l`, and zonk *that*, since
 solutions can mention metas solved later. Otherwise rebuild the term, zonking every
-subterm (under binders at `l + 1`). Unsolved metas stay. -/
+subterm (under binders at `l + 1`) and instantiating level metas in `sort` and
+`const` (`instLevel`). Unsolved metas stay. -/
 partial def zonk (l : Lvl) (t : Term R) : ElabM R (Term R) := do
   --<sol
   let (h, args) := spine t #[]
@@ -35,10 +36,12 @@ partial def zonk (l : Lvl) (t : Term R) : ElabM R (Term R) := do
     | none => return (← args.mapM (zonk l)).foldl .app (.mvar m)
   | _ =>
     let h' ← match h with
-      | .pi x bi q a b => return .pi x bi q (← zonk l a) (← zonk (l + 1) b)
-      | .lam x b => return .lam x (← zonk (l + 1) b)
-      | .letE x q ty v b => return .letE x q (← zonk l ty) (← zonk l v) (← zonk (l + 1) b)
-      | .ann tm ty => return .ann (← zonk l tm) (← zonk l ty)
+      | .pi x bi q a b => pure (.pi x bi q (← zonk l a) (← zonk (l + 1) b))
+      | .lam x b => pure (.lam x (← zonk (l + 1) b))
+      | .letE x q ty v b => pure (.letE x q (← zonk l ty) (← zonk l v) (← zonk (l + 1) b))
+      | .ann tm ty => pure (.ann (← zonk l tm) (← zonk l ty))
+      | .sort u => pure (.sort (← instLevel u))
+      | .const n us => pure (.const n (← us.mapM instLevel))
       | other => pure other
     return (← args.mapM (zonk l)).foldl .app h'
 where
@@ -57,10 +60,21 @@ partial def Term.mvars : Term R → Array Nat
   | .letE _ _ ty v b => ty.mvars ++ v.mvars ++ b.mvars
   | _ => #[]
 
+/-- Does the term mention a level metavariable? -/
+partial def Term.hasLevelMVar : Term R → Bool
+  | .sort l => l.hasMVar
+  | .const _ us => us.any Level.hasMVar
+  | .pi _ _ _ a b | .app a b | .ann a b => a.hasLevelMVar || b.hasLevelMVar
+  | .lam _ b => b.hasLevelMVar
+  | .letE _ _ ty v b => ty.hasLevelMVar || v.hasLevelMVar || b.hasLevelMVar
+  | _ => false
+
 /-- Fail if `t` still contains unsolved metas, pointing at the first one's hole. -/
-def ensureNoMVars (t : Term R) : ElabM R Unit := do
+def ensureNoMVars (t : Term R) (info : SourceInfo := {}) : ElabM R Unit := do
   if let some m := t.mvars[0]? then
     let e ← lookupMeta m
     throwAt e.info s!"could not infer {e.desc}"
+  if t.hasLevelMVar then
+    throwAt info "could not infer a universe level; add a universe parameter or annotation"
 
 end Wiz

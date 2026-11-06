@@ -64,6 +64,9 @@ inductive ParserDescr where
   | colGe
   /-- no whitespace between the previous token and the next one -/
   | noWs
+  /-- succeed only if the enclosing category is being parsed at precedence ≤ `prec`.
+  `Type u` uses this so that in `f Type A`, `A` is an argument and not a level. -/
+  | checkPrec (prec : Nat)
   deriving Repr, Inhabited, BEq
 
 namespace ParserDescr

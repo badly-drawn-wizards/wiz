@@ -15,6 +15,7 @@ namespace Wiz
 
 inductive Raw (R : Type) where
   | var (x : Name)
+  /-- `Type n` -/
   | sort (level : Nat)
   | pi (x : Name) (bi : BinderInfo) (q : R) (dom cod : Raw R)
   | lam (x : Name) (body : Raw R)
@@ -31,8 +32,8 @@ variable {R : Type}
 def toTerm (scope : List Name := []) : Raw R → Term R
   | .var x => match scope.idxOf? x with
     | some ix => .var ix
-    | none => .const x
-  | .sort l => .sort l
+    | none => .const x []
+  | .sort l => .sort (Level.ofNat (l + 1))
   | .pi x bi q a b => .pi x bi q (a.toTerm scope) (b.toTerm (x :: scope))
   | .lam x b => .lam x (b.toTerm (x :: scope))
   | .app f a => .app (f.toTerm scope) (a.toTerm scope)

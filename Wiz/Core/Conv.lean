@@ -18,16 +18,16 @@ variable {R : Type} [DecidableEq R]
 /-- **Exercise 1.4.** Definitional equality of values.
 
 Cases to handle:
-* `sort` vs `sort`: equal levels (no cumulativity yet).
+* `sort` vs `sort`: equivalent levels (`Level.equiv`; no cumulativity).
 * `pi` vs `pi`: (binder info is irrelevant) equal quantities, convertible domains, convertible codomains under a
   fresh variable. (Should `(x :1 A) → B` and `(x :ω A) → B` be convertible? No --
   subtyping on quantities is a design choice you can revisit later.)
 * `lam` vs `lam`, and η: `lam` vs anything, anything vs `lam`.
-* `neutral` vs `neutral`: same head, same spine length, pointwise convertible.
+* `neutral` vs `neutral`: equivalent heads (`Head.equiv`), same spine length, pointwise convertible.
 * otherwise `false`. -/
 partial def conv (g : Globals R) (l : Lvl) : Val R → Val R → Bool
   --<sol
-  | .sort a, .sort b => a == b
+  | .sort a, .sort b => a.equiv b
   | .pi _ _ q a b, .pi _ _ q' a' b' =>
     q == q' && conv g l a a' &&
       conv g (l + 1) (Closure.inst g b (Val.var l)) (Closure.inst g b' (Val.var l))
@@ -36,7 +36,7 @@ partial def conv (g : Globals R) (l : Lvl) : Val R → Val R → Bool
   | .lam _ b, t => conv g (l + 1) (Closure.inst g b (Val.var l)) (vApp g t (Val.var l))
   | t, .lam _ b => conv g (l + 1) (vApp g t (Val.var l)) (Closure.inst g b (Val.var l))
   | .neutral h sp, .neutral h' sp' =>
-    h == h' && sp.size == sp'.size && (sp.zip sp').all fun (a, b) => conv g l a b
+    h.equiv h' && sp.size == sp'.size && (sp.zip sp').all fun (a, b) => conv g l a b
   | _, _ => false
   --|ex
   --| | a, b => sorry

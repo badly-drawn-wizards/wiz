@@ -90,7 +90,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
     match p.ren[x]? with
     | some x' => goSp (.var (p.dom - x' - 1)) sp
     | none => throwAt {} "a variable escapes the scope of the hole being solved"
-  | .neutral (.global n) sp => goSp (.const n) sp
+  | .neutral (.global n us) sp => goSp (.const n us) sp
   | .neutral (.mvar m') sp =>
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
     else goSp (.mvar m') sp
@@ -115,6 +115,38 @@ def solve (gamma : Lvl) (m : Nat) (sp : Array (Val R)) (rhs : Val R) : ElabM R U
   --| sorry
   --sol>
 
+/-- Does level metavariable `m` occur in `l`? -/
+def Level.occurs (m : Nat) : Level → Bool
+  | .mvar m' => m == m'
+  | .succ l => Level.occurs m l
+  | .max a b | .imax a b => Level.occurs m a || Level.occurs m b
+  | _ => false
+
+/-- **Exercise 4.1.** Unify two universe levels. Instantiate solved metas first
+(`instLevel`). Then:
+
+* if the levels are already equivalent (`Level.equiv`), succeed;
+* a lone metavariable `?u` against any level not containing it: assign it;
+* `a+1 =?= b+1`: unify `a` and `b`;
+* otherwise fail with a "universe level mismatch" error.
+
+This is deliberately incomplete. `max ?u ?v =?= 1` has several solutions, and Lean
+postpones such constraints instead of failing (see the optional exercises). -/
+partial def unifyLevel (a b : Level) : ElabM R Unit := do
+  --<sol
+  let a ← instLevel a
+  let b ← instLevel b
+  if a.equiv b then return
+  match a, b with
+  | .mvar m, l | l, .mvar m =>
+    if Level.occurs m l then throwAt {} s!"universe level mismatch: {a} vs {b}"
+    modify fun s => { s with levelMetas := s.levelMetas.set! m (some l) }
+  | .succ a', .succ b' => unifyLevel a' b'
+  | _, _ => throwAt {} s!"universe level mismatch: {a} vs {b}"
+  --|ex
+  --| sorry
+  --sol>
+
 variable [DecidableEq R]
 
 mutual
@@ -122,17 +154,18 @@ mutual
 /-- **Exercise 3.5.** Unify two values in a context of `l` variables, throwing on
 failure. Force both sides first, then:
 
-* `sort`/`sort`: equal levels.
+* `sort`/`sort`: `unifyLevel`.
 * `pi`/`pi`: equal binder info and quantities, unify domains and codomains.
 * `lam`/`lam`, and η: `lam`/anything and anything/`lam`, as in `conv`.
-* Two rigid neutrals (local or global heads) with the same head: unify the spines.
+* Two rigid neutrals with the same head: unify the spines. For globals, "the same
+  head" means the same name, with the levels unified pairwise.
 * Two flex neutrals with the same meta: unify the spines (a simple approximation).
 * A flex neutral against anything: `solve`.
 * Anything else fails. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   --<sol
   match ← force t, ← force u with
-  | .sort a, .sort b => unless a == b do throwAt {} s!"universe mismatch: Type {a} vs Type {b}"
+  | .sort a, .sort b => unifyLevel a b
   | .pi _ bi q a b, .pi _ bi' q' a' b' =>
     unless bi == bi' do throwAt {} "implicit vs explicit binder mismatch"
     unless q == q' do throwAt {} "quantity mismatch"
@@ -145,8 +178,12 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
     if m == m' then unifySpine l sp sp' else solve l m sp (.neutral (.mvar m') sp')
   | .neutral (.mvar m) sp, t' => solve l m sp t'
   | t', .neutral (.mvar m) sp => solve l m sp t'
+  | .neutral (.global n us) sp, .neutral (.global n' us') sp' =>
+    unless n == n' && us.length == us'.length do throwAt {} "rigid mismatch"
+    for a in us, b in us' do unifyLevel a b
+    unifySpine l sp sp'
   | .neutral h sp, .neutral h' sp' =>
-    if h == h' then unifySpine l sp sp' else throwAt {} "rigid mismatch"
+    if h.equiv h' then unifySpine l sp sp' else throwAt {} "rigid mismatch"
   | _, _ => throwAt {} "rigid mismatch"
   --|ex
   --| sorry
