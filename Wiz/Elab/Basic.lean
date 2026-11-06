@@ -38,12 +38,6 @@ structure ElabError where
   msg : String
   deriving Inhabited, Repr
 
-structure ElabState (R : Type) where
-  globals : Globals R
-  metas : Array (MetaEntry R) := #[]
-
-abbrev ElabM (R : Type) := StateT (ElabState R) (Except ElabError)
-
 /-- The local context. As in `Ctx`, the lists are aligned and index 0 is innermost. -/
 structure LocalCtx (R : Type) where
   env : Env R := []
@@ -54,6 +48,19 @@ structure LocalCtx (R : Type) where
   lvl : Lvl := 0
   /-- the syntax being elaborated, for error positions -/
   info : SourceInfo := {}
+
+structure ElabState (R : Type) where
+  globals : Globals R
+  metas : Array (MetaEntry R) := #[]
+  /-- level metavariables and their solutions -/
+  levelMetas : Array (Option Level) := #[]
+  /-- the universe level parameters of the declaration being elaborated -/
+  levelParams : List Name := []
+  /-- "the solution of this hole has type `Sort l`". Metas are untyped, so these are
+  checked after elaboration to solve level metavariables (see `solveSortConstraints`). -/
+  sortConstraints : Array (LocalCtx R × Term R × Level) := #[]
+
+abbrev ElabM (R : Type) := StateT (ElabState R) (Except ElabError)
 
 namespace LocalCtx
 
@@ -102,6 +109,20 @@ def freshMeta (ctx : LocalCtx R) (desc : String := "_") : ElabM R (Term R) := do
   for b in flags, lvl in [0:ctx.lvl] do
     if b then t := .app t (.var (ctx.lvl - lvl - 1))
   pure t
+
+/-- Record that the hole `t` (in `ctx`) must have type `Sort l`. -/
+def addSortConstraint (ctx : LocalCtx R) (t : Term R) (l : Level) : ElabM R Unit :=
+  modify fun s => { s with sortConstraints := s.sortConstraints.push (ctx, t, l) }
+
+def freshLevelMeta : ElabM R Level := do
+  let m := (← get).levelMetas.size
+  modify fun s => { s with levelMetas := s.levelMetas.push none }
+  pure (.mvar m)
+
+/-- Replace solved level metavariables. -/
+def instLevel (l : Level) : ElabM R Level := do
+  let ls := (← get).levelMetas
+  pure (l.instMVars fun m => ls[m]?.join)
 
 variable [QuantitySyntax R] [DecidableEq R]
 

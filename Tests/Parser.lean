@@ -67,7 +67,12 @@ def termGroup : Group where
         parses "f a → b" "(term.arrow (term.app (term.ident f) [(term.ident a)]) (term.ident b))" },
     { name := "Type and Type 1", run := fun _ => do
         parses "Type" "(term.type [])"
-        parses "Type 1" "(term.type [1])" },
+        parses "Type 1" "(term.type [(level.num 1)])" },
+    { name := "levels", run := fun _ => do
+        parses "Sort (max u (v+1))" "(term.sort [(level.paren (level.max (level.param u) (level.paren (level.add (level.param v) 1))))])"
+        parses "id.{0, u}" "(term.identUniv id [(level.num 0) (level.param u)])" },
+    { name := "no level inside an argument: f Type A", run := fun _ =>
+        parses "f Type A" "(term.app (term.ident f) [(term.type []) (term.ident A)])" },
     { name := "parenthesis vs ascription", run := fun _ => do
         parses "(x)" "(term.paren (term.ident x))"
         parses "(x : A)" "(term.ascription (term.ident x) (term.ident A))" },
@@ -123,12 +128,12 @@ def cmdGroup : Group where
   cases := [
     { name := "def with binders and type", run := fun _ => do
         let r ← parseFileOk "def id {0 A : Type} (1 x : A) : A := x"
-        checkEq "(command.def id [(binder.implicit [(quantity 0)] [A] [(term.type [])]) (binder.explicit [(quantity 1)] [x] [(term.ident A)])] [(term.ident A)] (term.ident x))"
+        checkEq "(command.def id [] [(binder.implicit [(quantity 0)] [A] [(term.type [])]) (binder.explicit [(quantity 1)] [x] [(term.ident A)])] [(term.ident A)] (term.ident x))"
           r.commands[0]!.toSExpr },
     { name := "commands split by layout", run := fun _ => do
         let r ← parseFileOk "def a := f\n  x\n#check a\naxiom b : Type"
         checkEq 3 r.commands.size
-        checkEq "(command.def a [] [] (term.app (term.ident f) [(term.ident x)]))" r.commands[0]!.toSExpr },
+        checkEq "(command.def a [] [] [] (term.app (term.ident f) [(term.ident x)]))" r.commands[0]!.toSExpr },
     { name := "error recovery", run := fun _ => do
         let r := parseFile "def a := (\ndef b := x\n#check b"
         checkEq 1 r.messages.size

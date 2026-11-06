@@ -1,0 +1,176 @@
+/-!
+# Universe levels
+
+As in Lean: `Sort 0` is `Prop`, `Sort (u+1)` is `Type u`.
+
+    Sort u : Sort (u+1)
+    ((x : A) → B) : Sort (imax u v)     when A : Sort u, B : Sort v
+
+`imax u v` is `0` when `v` is `0` and `max u v` otherwise. This makes `Prop`
+**impredicative**: a Π into a proposition is a proposition, whatever it quantifies
+over. Observational equality (stage 4) relies on that.
+
+Declarations can be **universe polymorphic**: `def id.{u} {A : Sort u} (x : A) : A`
+has a level parameter `u`, and each use `id.{v}` instantiates it.
+
+The kernel needs to decide level equality, for example `max u (u+1) = u+1`. We
+normalise levels to a canonical form, and two levels are equal if their normal forms
+are. This is complete for `zero`/`succ`/`max`/`param`. For `imax` it is a sound
+approximation, the same trade-off Lean makes.
+-/
+
+namespace Wiz
+
+inductive Level where
+  | zero
+  | succ (l : Level)
+  | max (a b : Level)
+  | imax (a b : Level)
+  | param (name : String)
+  /-- level metavariable (elaborator only) -/
+  | mvar (id : Nat)
+  deriving Repr, BEq, Inhabited, Hashable
+
+namespace Level
+
+def ofNat : Nat → Level
+  | 0 => zero
+  | n + 1 => succ (ofNat n)
+
+instance : OfNat Level n := ⟨ofNat n⟩
+
+def addOffset (l : Level) : Nat → Level
+  | 0 => l
+  | n + 1 => succ (addOffset l n)
+
+/-- Substitute level parameters. -/
+def instParams (ps : List String) (us : List Level) : Level → Level
+  | param n => match ps.idxOf? n with
+    | some i => us[i]?.getD (param n)
+    | none => param n
+  | succ l => succ (instParams ps us l)
+  | max a b => max (instParams ps us a) (instParams ps us b)
+  | imax a b => imax (instParams ps us a) (instParams ps us b)
+  | l => l
+
+/-- Replace level metavariables using `f`. -/
+partial def instMVars (f : Nat → Option Level) : Level → Level
+  | mvar m => match f m with
+    | some l => instMVars f l
+    | none => mvar m
+  | succ l => succ (instMVars f l)
+  | max a b => max (instMVars f a) (instMVars f b)
+  | imax a b => imax (instMVars f a) (instMVars f b)
+  | l => l
+
+def params : Level → List String
+  | param n => [n]
+  | succ l => params l
+  | max a b | imax a b => params a ++ params b
+  | _ => []
+
+def hasMVar : Level → Bool
+  | mvar _ => true
+  | succ l => hasMVar l
+  | max a b | imax a b => hasMVar a || hasMVar b
+  | _ => false
+
+/-! ## Normal forms
+
+A normal form is a list of `(atom, offset)` pairs read as the `max` of `atom + offset`,
+where an atom is `none` (the constant zero), a parameter, a metavariable, or an `imax`
+that couldn't be simplified. The list is sorted and has at most one entry per atom.
+The constant entry is dropped if another entry already guarantees it. -/
+
+inductive Atom where
+  | const
+  | param (n : String)
+  | mvar (m : Nat)
+  | imax (a b : List (Atom × Nat))
+  deriving BEq, Repr, Inhabited
+
+/-- A total order on atoms, so normal forms can be sorted. -/
+partial def Atom.lt : Atom → Atom → Bool
+  | .const, .const => false
+  | .const, _ => true
+  | _, .const => false
+  | .param a, .param b => a < b
+  | .param _, _ => true
+  | _, .param _ => false
+  | .mvar a, .mvar b => a < b
+  | .mvar _, _ => true
+  | _, .mvar _ => false
+  | .imax a b, .imax c d => toString (repr (a, b)) < toString (repr (c, d))
+
+abbrev NF := List (Atom × Nat)
+
+private def insertNF (x : Atom × Nat) : NF → NF
+  | [] => [x]
+  | y :: ys =>
+    if x.1 == y.1 then (y.1, Nat.max x.2 y.2) :: ys
+    else if x.1.lt y.1 then x :: y :: ys
+    else y :: insertNF x ys
+
+private def mergeNF (a b : NF) : NF := a.foldl (fun acc x => insertNF x acc) b
+
+private def cleanup (n : NF) : NF :=
+  let others := n.filter (·.1 != .const)
+  let maxOther := others.foldl (fun m x => Nat.max m x.2) 0
+  match n.find? (·.1 == .const) with
+  | some (_, c) => if !others.isEmpty && c ≤ maxOther then others else n
+  | none => n
+
+/-- Is the level certainly nonzero? -/
+private def nfNonZero (n : NF) : Bool := n.any fun (_, k) => k > 0
+
+partial def normalize : Level → NF
+  | zero => [(.const, 0)]
+  | succ l => cleanup ((normalize l).map fun (a, k) => (a, k + 1))
+  | max a b => cleanup (mergeNF (normalize a) (normalize b))
+  | imax a b =>
+    let nb := normalize b
+    if nfNonZero nb then normalize (max a b)
+    else if nb == [(.const, 0)] then [(.const, 0)]
+    else [(.imax (normalize a) nb, 0)]
+  | param n => [(.param n, 0)]
+  | mvar m => [(.mvar m, 0)]
+
+/-- Definitional equality of levels. -/
+def equiv (a b : Level) : Bool := normalize a == normalize b
+
+/-- The level as a number, if it is closed. -/
+def toNat? : Level → Option Nat
+  | zero => some 0
+  | succ l => (toNat? l).map (· + 1)
+  | max a b => do return Nat.max (← toNat? a) (← toNat? b)
+  | imax a b => do
+    let b' ← toNat? b
+    if b' == 0 then return 0 else return Nat.max (← toNat? a) b'
+  | _ => none
+
+/-- `l` as `base + k` with `k` maximal. -/
+def toOffset : Level → Level × Nat
+  | succ l => let (b, k) := toOffset l; (b, k + 1)
+  | l => (l, 0)
+
+partial def format : Level → String
+  | l => match toNat? l with
+    | some n => toString n
+    | none => match toOffset l with
+      | (b, 0) => match b with
+        | param n => n
+        | mvar m => s!"?u{m}"
+        | max a c => s!"max {formatArg a} {formatArg c}"
+        | imax a c => s!"imax {formatArg a} {formatArg c}"
+        | _ => "?"
+      | (b, k) => s!"{formatArg b}+{k}"
+where
+  formatArg (l : Level) : String :=
+    let s := format l
+    if s.contains ' ' || s.contains '+' then s!"({s})" else s
+
+instance : ToString Level := ⟨format⟩
+
+end Level
+
+end Wiz

@@ -29,8 +29,9 @@ mutual
 /-- **Exercise 1.1.** Evaluate a term in an environment.
 
 * `var ix`: look it up in `env` (index 0 is the head).
-* `const n`: evaluate the definition in the *empty* environment if there is one,
-  otherwise it is a stuck `neutral (.global n) #[]`.
+* `const n us`: evaluate the definition in the *empty* environment if there is one,
+  after instantiating its level parameters with `us` (`Term.instLevels`). Otherwise
+  it is a stuck `neutral (.global n us) #[]`.
 * `pi`/`lam`: don't evaluate the body; capture it with `env` in a `Closure`.
 * `app`: evaluate both sides and use `vApp`.
 * `letE`: evaluate the value and push it onto the environment for the body.
@@ -38,7 +39,7 @@ mutual
 * `mvar`: (given) metavariables are stuck neutrals. -/
 partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .var ix => sorry
-  | .const n => sorry
+  | .const n us => sorry
   | .sort l => sorry
   | .pi x bi q dom cod => sorry
   | .lam x body => sorry

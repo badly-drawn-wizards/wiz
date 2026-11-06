@@ -142,7 +142,7 @@ The elaborator produces *candidate* core terms and the stage 1 kernel re-checks 
 declaration. Metavariables are therefore untyped, and quantity errors come from the
 kernel. This follows Kovács' elaboration-zoo (`03-holes`, `04-implicit-args`).
 
-Stage 3 changed stage 1 in three small ways: Π types carry a `BinderInfo`
+Stage 3 changed stage 1 in three small ways (and stage 4 added universe levels): Π types carry a `BinderInfo`
 (explicit/implicit), there is a `Term.mvar` / `Head.mvar` the kernel rejects, and the
 pretty printer prints surface syntax.
 
@@ -167,3 +167,37 @@ pretty printer prints surface syntax.
 * **3.13** Postponement: when a check is stuck on an unsolved meta, such as a lambda
   checked against `?m`, postpone it and retry at the end of the declaration.
 * **3.14** Universe level metavariables, so `checkType` always knows the level.
+
+## Stage 4: data
+
+Stage 4 has several steps, each committed separately:
+
+1. **Universe polymorphism** ✅ (below)
+2. Type-directed conversion, Σ / ⊤ / ⊥ with η, and names kept as metadata
+3. Indexed descriptions and μ / ν with their eliminators
+4. Observational equality: a proof-irrelevant `Prop`, `Eq` computed by type, and `cast`
+5. Surface `inductive` / `structure` / `match`, compiled to eliminators
+
+### 4a: universe polymorphism
+
+`Wiz/Core/Level.lean` has Lean-style levels: `Sort 0` is `Prop` (impredicative),
+`Type u` is `Sort (u+1)`, and Π lives in `Sort (imax u v)`. Declarations take level
+parameters, `def id.{u} {A : Sort u} (x : A) : A := x`, and uses get fresh level
+metavariables (`id`) or explicit levels (`id.{1}`). The level normaliser is
+provided. Exercise 1.7's `pi` and `sort` cases now produce `imax` and `succ`.
+
+Metavariables are untyped, so the elaborator records "this hole has type `Sort l`"
+for implicit type arguments and type holes. After elaboration it asks the kernel for
+each solution's type to solve `l` (`solveSortConstraints`).
+
+| #   | Where              | What                                   |
+|-----|--------------------|----------------------------------------|
+| 4.1 | `Elab/Unify.lean`  | `unifyLevel`                           |
+| 4.2 | `Elab/Term.lean`   | `elabLevel`: level syntax → `Level`    |
+
+Optional:
+* **4.3** Write your own level normaliser and compare it with `Level.normalize`.
+  Can you make `imax` complete?
+* **4.4** Postpone level constraints such as `max ?u ?v =?= 1` instead of failing.
+* **4.5** Hide inserted implicit arguments when pretty printing (`id Type`, not
+  `id (Type 1) Type`). This needs the binder info of the head's type.

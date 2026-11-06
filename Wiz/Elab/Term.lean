@@ -12,7 +12,8 @@ Bidirectional, like the kernel, but on `Syntax` and with metavariables:
 
 Two mechanisms, following elaboration-zoo `04-implicit-args`:
 
-* **Insertion of implicit applications.** When a term of type `{A : Type} → A → A` is
+* **Insertion of implicit applications.** (When the implicit argument is a type, its
+  universe is recorded with `addSortConstraint`.) When a term of type `{A : Type} → A → A` is
   used where something that isn't an implicit function is expected, `?A` is inserted:
   `id` becomes `id ?A`. This happens before each explicit argument and in `check`'s
   fallback case. `@f` turns it off.
@@ -65,6 +66,12 @@ def elabQuantity (ctx : LocalCtx R) (bi : BinderInfo) : Option Syntax → ElabM 
     | some r => pure r
     | none => throwAt (ctx.withInfo q).info s!"'{lit}' is not a quantity of this rig"
 
+/-- **Exercise 4.2.** Elaborate a universe level (see `Builtin.levelLeading` for the
+node kinds). A `level.param` must be one of the declaration's universe parameters
+(`(← get).levelParams`); `_` is a fresh level metavariable. -/
+partial def elabLevel (stx : Syntax) : ElabM R Level := do
+  sorry
+
 /-- Look a name up in the local context, innermost first. -/
 def lookupLocal (ctx : LocalCtx R) (x : Name) : Option (Nat × VTy R) := Id.run do
   for n in ctx.names, ty in ctx.types, i in [0:ctx.lvl] do
@@ -96,13 +103,21 @@ private def isImplicitFun (stx : Syntax) : Bool :=
 
 mutual
 
-/-- Elaborate a type, returning it and its universe level if known. -/
-partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Option Nat) := do
-  if stx.isOfKind "term.hole" then return (← freshMeta (ctx.withInfo stx) "type", none)
+/-- Elaborate a type, returning it and its universe level (possibly a level
+metavariable). -/
+partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Level) := do
+  if stx.isOfKind "term.hole" then
+    let m ← freshMeta (ctx.withInfo stx) "type"
+    let u ← freshLevelMeta
+    addSortConstraint ctx m u
+    return (m, u)
   let (t, ty) ← infer ctx stx
   match ← force ty with
-  | .sort l => pure (t, some l)
-  | .neutral (.mvar _) _ => pure (t, none)
+  | .sort l => pure (t, l)
+  | ty@(.neutral (.mvar _) _) =>
+    let u ← freshLevelMeta
+    unifyAt ctx stx (.sort u) ty
+    pure (t, u)
   | ty => throwAt (ctx.withInfo stx).info s!"type expected, got a term of type {← showVal ctx ty}"
 
 /-- **Exercise 3.8.** Elaborate `stx` against `expected`. Force `expected` first.
@@ -191,16 +206,16 @@ partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)
 
 /-- A Π telescope `b₁ → … → bₙ → body` (used by `depArrow` and `∀`). -/
 partial def elabPis (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
-    ElabM R (Term R × Option Nat) := do
+    ElabM R (Term R × Level) := do
   match bs with
   | [] => checkType ctx body
   | b :: rest =>
     let (ty, l₁) ← match b.type with
       | some s => checkType ctx s
-      | none => pure (← freshMeta ctx s!"the type of {b.name}", none)
+      | none => pure (← freshMeta ctx s!"the type of {b.name}", ← freshLevelMeta)
     let q ← elabQuantity ctx b.bi b.qty
     let (cod, l₂) ← elabPis (ctx.bind b.name (← evalIn ctx ty)) rest body
-    return (.pi b.name b.bi q ty cod, do return max (← l₁) (← l₂))
+    return (.pi b.name b.bi q ty cod, .imax l₁ l₂)
 
 /-- **Exercise 3.9.** Infer the type of an application `f a₁ … aₙ` (`term.app`, with
 `f` = `stx.getArg 0` and the arguments in `(stx.getArg 1).args`).
@@ -218,15 +233,29 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy 
 partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) := do
   let ctx := ctx.withInfo stx
   match stx.kind with
-  | "term.ident" | "term.explicit" =>
+  | "term.ident" | "term.explicit" | "term.identUniv" =>
     let x := (stx.getArg (if stx.isOfKind "term.explicit" then 1 else 0)).getId?.getD "_"
-    if let some (ix, ty) := lookupLocal ctx x then return (.var ix, ty)
+    let explicitLevels : Option (Array Syntax) := if stx.isOfKind "term.identUniv" then
+        some ((stx.getArg 2).args.filter (!· matches .atom ..)) else none
+    if explicitLevels.isNone then
+      if let some (ix, ty) := lookupLocal ctx x then return (.var ix, ty)
     match (← getGlobals).find? x with
-    | some d => return (.const x, ← evalIn {} d.type)
+    | some d =>
+      let us ← match explicitLevels with
+        | some ls =>
+          unless ls.size == d.levelParams.length do
+            throwAt ctx.info s!"{x} has {d.levelParams.length} universe parameters, {ls.size} given"
+          ls.toList.mapM elabLevel
+        | none => d.levelParams.mapM fun _ => freshLevelMeta
+      return (.const x us, ← evalIn {} (d.type.instLevels d.levelParams us))
     | none => throwAt ctx.info s!"unknown identifier '{x}'"
-  | "term.type" =>
-    let l := ((stx.getArg 1).args[0]?.bind Syntax.getNat?).getD 0
-    return (.sort l, .sort (l + 1))
+  | "term.type" | "term.sort" =>
+    let l ← match (stx.getArg 1).args[0]? with
+      | some ls => elabLevel ls
+      | none => pure .zero
+    let l := if stx.isOfKind "term.type" then .succ l else l
+    return (.sort l, .sort (.succ l))
+  | "term.prop" => return (.sort .zero, .sort (.succ .zero))
   | "term.paren" => infer ctx (stx.getArg 1)
   | "term.ascription" =>
     let (ty, _) ← checkType ctx (stx.getArg 3)
@@ -243,13 +272,13 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.arrow" =>
     let (a, l₁) ← checkType ctx (stx.getArg 0)
     let (b, l₂) ← checkType (ctx.bind "_" (← evalIn ctx a)) (stx.getArg 2)
-    return (.pi "_" .default QuantitySyntax.explicitDefault a b, .sort (max (l₁.getD 0) (l₂.getD 0)))
+    return (.pi "_" .default QuantitySyntax.explicitDefault a b, .sort (.imax l₁ l₂))
   | "term.depArrow" =>
     let (t, l) ← elabPis ctx (binderViews (stx.getArg 0)).toList (stx.getArg 2)
-    return (t, .sort (l.getD 0))
+    return (t, .sort l)
   | "term.forall" =>
     let (t, l) ← elabPis ctx ((stx.getArg 1).args.flatMap binderViews).toList (stx.getArg 3)
-    return (t, .sort (l.getD 0))
+    return (t, .sort l)
   | "term.num" | "term.str" => throwAt ctx.info "literals need data types (stage 4)"
   | k => throwAt ctx.info s!"no elaborator for syntax kind {k}"
 

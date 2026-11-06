@@ -12,7 +12,7 @@ open Tests
 
 def groups : List Group :=
   [Rig.group, Eval.evalGroup, Eval.convGroup, Check.mlttGroup, Check.qttGroup,
-   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group]
+   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group, Elab.levelGroup]
 
 /-- `lake test` runs everything; `lake test -- conv rig` runs only groups whose name
 starts with one of the arguments. -/

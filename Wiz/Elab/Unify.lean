@@ -68,6 +68,26 @@ empty environment to get the solution. Record it with `solveMeta`. -/
 def solve (gamma : Lvl) (m : Nat) (sp : Array (Val R)) (rhs : Val R) : ElabM R Unit := do
   sorry
 
+/-- Does level metavariable `m` occur in `l`? -/
+def Level.occurs (m : Nat) : Level → Bool
+  | .mvar m' => m == m'
+  | .succ l => Level.occurs m l
+  | .max a b | .imax a b => Level.occurs m a || Level.occurs m b
+  | _ => false
+
+/-- **Exercise 4.1.** Unify two universe levels. Instantiate solved metas first
+(`instLevel`). Then:
+
+* if the levels are already equivalent (`Level.equiv`), succeed;
+* a lone metavariable `?u` against any level not containing it: assign it;
+* `a+1 =?= b+1`: unify `a` and `b`;
+* otherwise fail with a "universe level mismatch" error.
+
+This is deliberately incomplete. `max ?u ?v =?= 1` has several solutions, and Lean
+postpones such constraints instead of failing (see the optional exercises). -/
+partial def unifyLevel (a b : Level) : ElabM R Unit := do
+  sorry
+
 variable [DecidableEq R]
 
 mutual
@@ -75,10 +95,11 @@ mutual
 /-- **Exercise 3.5.** Unify two values in a context of `l` variables, throwing on
 failure. Force both sides first, then:
 
-* `sort`/`sort`: equal levels.
+* `sort`/`sort`: `unifyLevel`.
 * `pi`/`pi`: equal binder info and quantities, unify domains and codomains.
 * `lam`/`lam`, and η: `lam`/anything and anything/`lam`, as in `conv`.
-* Two rigid neutrals (local or global heads) with the same head: unify the spines.
+* Two rigid neutrals with the same head: unify the spines. For globals, "the same
+  head" means the same name, with the levels unified pairwise.
 * Two flex neutrals with the same meta: unify the spines (a simple approximation).
 * A flex neutral against anything: `solve`.
 * Anything else fails. -/

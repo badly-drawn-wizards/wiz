@@ -18,15 +18,16 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── var
     Γ ⊢ x_ix ⇒ Γ[ix].type ⊣ single n ix
 
+    c.{u₁…uₖ} has k level parameters
     ──────────────────────────────── const
-    Γ ⊢ c ⇒ type(c) ⊣ 0ₙ               (globals are not tracked locally)
+    Γ ⊢ c.{us} ⇒ type(c)[us] ⊣ 0ₙ      (globals are not tracked locally)
 
     ──────────────────────────────── sort
-    Γ ⊢ Type l ⇒ Type (l+1) ⊣ 0ₙ
+    Γ ⊢ Sort l ⇒ Sort (l+1) ⊣ 0ₙ
 
     Γ ⊢ A type@i     Γ, x:A ⊢ B type@j
     ──────────────────────────────── pi        (types are erased: usage 0ₙ)
-    Γ ⊢ (x :q A) → B ⇒ Type (max i j) ⊣ 0ₙ
+    Γ ⊢ (x :q A) → B ⇒ Sort (imax i j) ⊣ 0ₙ
 
     Γ, x :q A ⊢ b ⇐ B ⊣ (u :: U)     le u q
     ──────────────────────────────── lam
@@ -48,7 +49,7 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── switch
     Γ ⊢ t ⇐ A ⊣ U
 
-`Γ ⊢ A type@i` means `A ⇒ Type i`, with its usage **thrown away**: types live in
+`Γ ⊢ A type@i` means `A ⇒ Sort i`, with its usage **thrown away**: types live in
 the erased (0) fragment, so they may mention 0-quantity variables freely.
 
 ## Simplification vs. Atkey
@@ -155,7 +156,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   match t with
   | .mvar m => throw (.other s!"the kernel does not accept metavariables (?m{m})")
   | .var ix => sorry
-  | .const n => sorry
+  | .const n us => sorry
   | .sort l => sorry
   | .pi x _ q dom cod => sorry
   | .lam .. => throw (.cannotInfer (ctx.showTerm t))
@@ -165,7 +166,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
 
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.
 The usage is discarded: type positions are erased. -/
-partial def checkType (ctx : Ctx R) (a : Term R) : TCM Nat := do
+partial def checkType (ctx : Ctx R) (a : Term R) : TCM Level := do
   let (ty, _) ← infer ctx a
   match ty with
   | .sort l => pure l
@@ -176,6 +177,11 @@ end
 /-- Type check a declaration and add it to the global environment. -/
 def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   if g.contains d.name then throw (.duplicateDecl d.name)
+  unless d.levelParams.eraseDups.length == d.levelParams.length do
+    throw (.other s!"duplicate universe level parameter in {d.name}")
+  let used := d.type.levelParamsUsed ++ (d.value.map Term.levelParamsUsed).getD []
+  if let some u := used.find? (!d.levelParams.contains ·) then
+    throw (.other s!"unknown universe level parameter {u} in {d.name}")
   let ctx : Ctx R := { globals := g }
   let _ ← checkType ctx d.type
   if let some v := d.value then

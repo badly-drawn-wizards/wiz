@@ -36,6 +36,18 @@ def Term.hasVar {R : Type} (ix : Nat) : Term R → Bool
   | .letE _ _ ty v b => ty.hasVar ix || v.hasVar ix || b.hasVar (ix + 1)
   | _ => false
 
+/-- `Prop`, `Type`, `Type 2`, `Type u`, `Sort u`, `Type (max u v)`, ... -/
+def showSort (l : Level) : String :=
+  match l.toNat? with
+  | some 0 => "Prop"
+  | some 1 => "Type"
+  | some (n + 1) => s!"Type {n}"
+  | _ => match l with
+    | .succ l' => s!"Type {Level.format.formatArg l'}"
+    | _ => s!"Sort {Level.format.formatArg l}"
+
+def atomicSort (l : Level) : Bool := l.toNat? == some 0 || l.toNat? == some 1
+
 private def paren (b : Bool) (s : String) : String := if b then s!"({s})" else s
 
 private def qtyPrefix (bi : BinderInfo) (q : R) : String :=
@@ -44,9 +56,9 @@ private def qtyPrefix (bi : BinderInfo) (q : R) : String :=
 
 partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .var ix => names[ix]?.getD s!"#{ix}"
-  | .const n => n
+  | .const n _ => n
   | .mvar m => s!"?m{m}"
-  | .sort l => if l == 0 then "Type" else s!"Type {l}"
+  | .sort l => paren (prec > 1022 && !atomicSort l) (showSort l)
   | .pi x bi q dom cod =>
     if bi == .default && q == QuantitySyntax.explicitDefault && !cod.hasVar 0 then
       paren (prec > 25) s!"{dom.prettyPrec names 26} → {cod.prettyPrec ("_" :: names) 25}"

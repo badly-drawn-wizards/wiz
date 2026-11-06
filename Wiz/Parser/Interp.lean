@@ -151,6 +151,8 @@ partial def runDescr : ParserDescr → P (Array Syntax)
   | .noWs => do
     let s ← state
     if (← nextPos) == s.pos then pure #[] else failAt s.pos "no space before this token"
+  | .checkPrec p => do
+    if (← ctx).prec ≤ p then pure #[] else failAt (← nextPos) s!"precedence at most {p}"
 
 /-- **Exercise 2.5b.** The Pratt loop for category `c` at minimum precedence `rbp`.
 
