@@ -72,13 +72,13 @@ def delimMethodTys (g : Globals R) (l : Level) (I P : Val R) (w : R) : VTy R × 
 /-- `P : (i : I) → μ D i → Sort v` -/
 def indMotiveTy (g : Globals R) (l v : Level) (I D : Val R) (w : R) : VTy R :=
   eval g [D, I] (.pi "i" .default (.qlit w) (tv 1)
-    (.pi "_" .default (.qlit w) (.mu l (tv 2) (tv 1) (tv 0)) (.sort v)))
+    (.pi "_" .default (.qlit w) (.mu l (tv 2) (tv 1) (tv 0) none) (.sort v)))
 
 /-- `m : (0 i : I) → (xs : ⟦D⟧ (μ D) i) → (ih : All D (μ D) P i xs) → P i (con xs)` -/
 def indMethodTy (g : Globals R) (l v : Level) (I D P : Val R) (w : R) : VTy R :=
   -- i0 P1 D2 I3 ; xs0 i1 P2 D3 I4 ; ih0 xs1 i2 P3 D4 I5
-  let X₁ : Term R := .lam "j" (.mu l (tv 4) (tv 3) (tv 0))
-  let X₂ : Term R := .lam "j" (.mu l (tv 5) (tv 4) (tv 0))
+  let X₁ : Term R := .lam "j" (.mu l (tv 4) (tv 3) (tv 0) none)
+  let X₂ : Term R := .lam "j" (.mu l (tv 5) (tv 4) (tv 0) none)
   eval g [P, D, I] (.pi "i" .default (.qlit 0) (tv 2)
     (.pi "xs" .default (.qlit w) (tapps (Templates.interpTm l) [tv 3, tv 2, X₁, tv 0])
       (.pi "ih" .default (.qlit w) (tapps (Templates.allTm l v) [tv 4, tv 3, X₂, tv 2, tv 1, tv 0])
@@ -109,7 +109,7 @@ def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VTy R)
       | .ecase z m env bs, _ => ty := Closure.inst g m acc; acc := vEcase g z m acc env bs
       | .delim v P a b c, _ => ty := vApp g P acc; acc := vDelim g v P a b c acc
       | .ind l I D v P m i, _ => ty := vApp g (vApp g P i) acc; acc := vInd g l I D v P m i acc
-      | .out, .nu l I D i => ty := vInterp g l I D (nuFamily l I D) i; acc := vOut g acc
+      | .out, .nu l I D i _ => ty := vInterp g l I D (nuFamily l I D) i; acc := vOut g acc
       | _, _ => none
     pure ty
   | _ => none
@@ -179,10 +179,10 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
     | .drec q j E, .drec q' j' E' =>
       conv g tys .qty q q' && conv g tys I j j' && conv g tys (.desc l I) E E'
     | _, _ => (convNe g tys a b).isSome
-  | .mu l I D i => match a, b with
+  | .mu l I D i _ => match a, b with
     | .con x, .con y => conv g tys (vInterp g l I D (muFamily l I D) i) x y
     | _, _ => (convNe g tys a b).isSome
-  | .nu l I D i => match a, b with
+  | .nu l I D i _ => match a, b with
     | .coit _ _ _ S st j s, .coit _ _ _ S' st' j' s' =>
       conv g tys (coitStateTy l I 1) S S' && conv g tys (coitStepTy g l I D S 1) st st' &&
         conv g tys I j j' && conv g tys (vApp g S j) s s'
@@ -223,7 +223,7 @@ partial def convTy (g : Globals R) (tys : Array (VTy R)) (a b : VTy R) : Bool :=
   | .qty, .qty => true
   | .enum ls, .enum ls' => ls.length == ls'.length
   | .desc l I, .desc l' I' => l.equiv l' && convTy g tys I I'
-  | .mu l I D i, .mu l' I' D' i' | .nu l I D i, .nu l' I' D' i' =>
+  | .mu l I D i _, .mu l' I' D' i' _ | .nu l I D i _, .nu l' I' D' i' _ =>
     l.equiv l' && convTy g tys I I' && conv g tys (.desc l I) D D' && conv g tys I i i'
   | .unit u, .unit u' => u.equiv u'
   | .empty u, .empty u' => u.equiv u'
@@ -317,7 +317,7 @@ partial def convNe (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option 
       unless conv g tys (indMethodTy g l v I D P 1) m m' && conv g tys I i i' do none
       ty := vApp g (vApp g P i) acc
       acc := vInd g l I D v P m i acc
-    | .out, .out, .nu l I D i =>
+    | .out, .out, .nu l I D i _ =>
       ty := vInterp g l I D (nuFamily l I D) i
       acc := vOut g acc
     | _, _, _ => none

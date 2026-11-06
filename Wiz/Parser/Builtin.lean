@@ -120,6 +120,7 @@ def levelTrailing : List TrailingParser := [
 | `term.enum`          | max  | "Enum" "[" [idents] "]" |
 | `term.tag`           | max  | "'" ident |
 | `term.ecase`         | lead | "ecase" term "[" [terms] "]" |
+| `term.dotIdent`      | max  | "." ident (a constructor of the expected type) |
 
 The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
 `Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out` and `coit` have no syntax of their
@@ -165,6 +166,7 @@ def termLeading : List LeadingParser := [
   { kind := "term.transp", prec := leadPrec, p := seqs ["transp", term maxPrec, term maxPrec, term maxPrec] },
   { kind := "term.enum", prec := maxPrec, p := seqs [nonReserved "Enum", "[", sepBy ident ",", "]"] },
   { kind := "term.tag", prec := maxPrec, p := seqs ["'", noWs, ident] },
+  { kind := "term.dotIdent", prec := maxPrec, p := seqs [".", noWs, ident] },
   { kind := "term.ecase", prec := leadPrec,
     p := seqs [nonReserved "ecase", term maxPrec, "[", withoutPosition (sepBy term ","), "]"] }
 ]
@@ -189,6 +191,11 @@ continue onto a line starting at the command's column.
 | `command.reduce`             | "#reduce" term |
 | `command.declareSyntaxCat`   | "declare_syntax_cat" ident |
 | `command.syntax`             | "syntax" [":" prec] [name] [priority] [stx+] ":" ident |
+| `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] |
+| `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] "where" [fields] |
+
+A constructor is `inductive.ctor`: "|" ident [binders] [":" T]. A field is
+`structure.field`: [quantity] ident ":" T, on its own line.
 -/
 def commandLeading : List LeadingParser := [
   { kind := "command.def", prec := maxPrec,
@@ -202,7 +209,14 @@ def commandLeading : List LeadingParser := [
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
       optional (seqs ["(", nonReserved "name", ":=", ident, ")"]),
       optional (seqs ["(", nonReserved "priority", ":=", num, ")"]),
-      many1 (cat "stx" 0), ":", ident] }
+      many1 (cat "stx" 0), ":", ident] },
+  { kind := "command.inductive", prec := maxPrec,
+    p := seqs ["inductive", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
+      "where", many (node "inductive.ctor" (seqs ["|", ident, many (bracketedBinder false),
+        optional (seqs [":", term])]))] },
+  { kind := "command.structure", prec := maxPrec,
+    p := seqs ["structure", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
+      "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term])))] }
 ]
 
 /-- The grammar of grammars, used by the `syntax` command.

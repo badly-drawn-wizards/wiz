@@ -276,7 +276,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let uj ← check ctx j I
     let uD ← check ctx D (.desc l I)
     pure (uj + uD)
-  | .con x, .mu l I D i => check ctx x (vInterp ctx.globals l I D (muFamily l I D) i)
+  | .con x, .mu l I D i _ => check ctx x (vInterp ctx.globals l I D (muFamily l I D) i)
   | _, _ => do
     let (ty', u) ← infer ctx t
     unless convTy ctx.globals ctx.tys ty ty' do
@@ -292,7 +292,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   --| | .dret i, .desc _ I => sorry
   --| | .darg q S D, .desc l I => sorry
   --| | .drec q j D, .desc l I => sorry
-  --| | .con x, .mu l I D i => sorry
+  --| | .con x, .mu l I D i _ => sorry
   --| | _, _ => sorry
   --sol>
 
@@ -478,7 +478,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let ub ← check ctx b tb
     let uc ← check ctx c tc
     pure (vApp ctx.globals vP (ctx.eval D), QPoly.const w • (ua + ub + uc) + uD)
-  | .mu l I D i | .nu l I D i => do
+  | .mu l I D i _ | .nu l I D i _ => do
     let lI ← checkType ctx I
     unless lI.equiv (.succ l) do throw (.other "an index type must be in the data type's universe")
     let vI := ctx.eval I
@@ -496,11 +496,11 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let um ← check ctx m (indMethodTy ctx.globals l v vI vD vP w)
     let _ ← check ctx i vI
     let vi := ctx.eval i
-    let ux ← check ctx x (.mu l vI vD vi)
+    let ux ← check ctx x (.mu l vI vD vi none)
     pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), QPoly.const w • um + ux)
   | .out x => do
     let (ty, u) ← infer ctx x
-    let .nu l I D i := ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
+    let .nu l I D i _ := ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
     pure (vInterp ctx.globals l I D (nuFamily l I D) i, u)
   | .coit l I D S st i s => do
     let _ ← checkType ctx I
@@ -514,7 +514,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let vi := ctx.eval i
     let us ← check ctx s (vApp ctx.globals vS vi)
-    pure (.nu l vI vD vi, QPoly.const w • ust + us)
+    pure (.nu l vI vD vi none, QPoly.const w • ust + us)
   | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --|ex
   --| | .app f a => sorry
@@ -544,7 +544,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .ecase z m s bs => sorry
   --| | .desc l I => sorry
   --| | .delim v P a b c D => sorry
-  --| | .mu l I D i | .nu l I D i => sorry
+  --| | .mu l I D i _ | .nu l I D i _ => sorry
   --| | .ind l I D v P m i x => sorry
   --| | .out x => sorry
   --| | .coit l I D S st i s => sorry

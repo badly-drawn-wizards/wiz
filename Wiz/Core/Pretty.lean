@@ -124,10 +124,18 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .darg q S D => app "Desc.arg" [q, S, D]
   | .drec q j D => app "Desc.rec" [q, j, D]
   | .delim _ P a b c D => app "Desc.elim" [P, a, b, c, D]
-  | .mu _ _ D i => app "μ" [D, i]
+  | .mu _ _ _ _ (some (n, _, as)) | .nu _ _ _ _ (some (n, _, as)) =>
+    if as.isEmpty then n else app n as
+  | .mu _ _ D i none => app "μ" [D, i]
+  | .con (.pair (.tag ls i) rest) =>
+    -- `.c f₁ … fₙ`: the payload ends with the index equation and `()`
+    let fields := (tuple rest #[]).toList
+    let fields := fields.take (fields.length - 2)
+    let c := s!".{ls[i]?.getD s!"#{i}"}"
+    if fields.isEmpty then c else app c fields
   | .con x => app "con" [x]
   | .ind _ _ _ _ P m i x => app "ind" [P, m, i, x]
-  | .nu _ _ D i => app "ν" [D, i]
+  | .nu _ _ D i none => app "ν" [D, i]
   | .out x => app "out" [x]
   | .coit _ _ _ S st i s => app "coit" [S, st, i, s]
   | .transp _ _ P p _ e =>

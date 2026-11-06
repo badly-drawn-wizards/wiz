@@ -120,11 +120,11 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .drec q j D => .drec (eval g env q) (eval g env j) (eval g env D)
   | .delim v P a b c D =>
     vDelim g v (eval g env P) (eval g env a) (eval g env b) (eval g env c) (eval g env D)
-  | .mu l I D i => .mu l (eval g env I) (eval g env D) (eval g env i)
+  | .mu l I D i h => .mu l (eval g env I) (eval g env D) (eval g env i) (evalHint g env h)
   | .con x => .con (eval g env x)
   | .ind l I D v P m i x =>
     vInd g l (eval g env I) (eval g env D) v (eval g env P) (eval g env m) (eval g env i) (eval g env x)
-  | .nu l I D i => .nu l (eval g env I) (eval g env D) (eval g env i)
+  | .nu l I D i h => .nu l (eval g env I) (eval g env D) (eval g env i) (evalHint g env h)
   | .out x => vOut g (eval g env x)
   | .coit l I D S st i s =>
     .coit l (eval g env I) (eval g env D) (eval g env S) (eval g env st) (eval g env i) (eval g env s)
@@ -167,13 +167,19 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .darg q S D => sorry
   --| | .drec q j D => sorry
   --| | .delim v P a b c D => sorry
-  --| | .mu l I D i => sorry
+  --| | .mu l I D i h => sorry
   --| | .con x => sorry
   --| | .ind l I D v P m i x => sorry
-  --| | .nu l I D i => sorry
+  --| | .nu l I D i h => sorry
   --| | .out x => sorry
   --| | .coit l I D S st i s => sorry
   --sol>
+
+/-- Evaluate a display hint's arguments. -/
+partial def evalHint (g : Globals R) (env : Env R) :
+    Option (Name × List Level × List (Term R)) → Option (Name × List Level × List (Val R))
+  | some (n, us, as) => some (n, us, as.map (eval g env))
+  | none => none
 
 /-- **Exercise 1.2a.** Semantic application.
 A `lam` β-reduces; a neutral grows its spine (with `Elim.app`). Anything else is a
@@ -219,10 +225,10 @@ neutrals. `vInd` and `vOut` use the description templates of `Wiz.Core.Templates
 
 /-- `λ j. μ D j`, the family being defined, as a value. -/
 partial def muFamily (l : Level) (I D : Val R) : Val R :=
-  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0)))
+  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0) none))
 
 partial def nuFamily (l : Level) (I D : Val R) : Val R :=
-  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0)))
+  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0) none))
 
 /-- `⟦D⟧ X i` -/
 partial def vInterp (g : Globals R) (l : Level) (I D X i : Val R) : Val R :=
@@ -348,7 +354,7 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   | .enum _ => match a, b with
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
     | _, _ => .neutral (.eq A a b) #[]
-  | .mu l I D i => match a, b with
+  | .mu l I D i _ => match a, b with
     | .con x, .con y => vEq g (vInterp g l I D (muFamily l I D) i) x y
     | _, _ => .neutral (.eq A a b) #[]
   | .sort l =>
@@ -508,9 +514,9 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | .dret i => .dret (quote g l i)
   | .darg q S D => .darg (quote g l q) (quote g l S) (quote g l D)
   | .drec q j D => .drec (quote g l q) (quote g l j) (quote g l D)
-  | .mu k I D i => .mu k (quote g l I) (quote g l D) (quote g l i)
+  | .mu k I D i h => .mu k (quote g l I) (quote g l D) (quote g l i) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .con x => .con (quote g l x)
-  | .nu k I D i => .nu k (quote g l I) (quote g l D) (quote g l i)
+  | .nu k I D i h => .nu k (quote g l I) (quote g l D) (quote g l i) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .coit k I D S st i s =>
     .coit k (quote g l I) (quote g l D) (quote g l S) (quote g l st) (quote g l i) (quote g l s)
   --|ex

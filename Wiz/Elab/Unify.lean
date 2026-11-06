@@ -143,11 +143,15 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .dret i => return .dret (← rename m p i)
   | .darg q S D => return .darg (← rename m p q) (← rename m p S) (← rename m p D)
   | .drec q j D => return .drec (← rename m p q) (← rename m p j) (← rename m p D)
-  | .mu l I D i => return .mu l (← rename m p I) (← rename m p D) (← rename m p i)
-  | .nu l I D i => return .nu l (← rename m p I) (← rename m p D) (← rename m p i)
+  | .mu l I D i h => return .mu l (← rename m p I) (← rename m p D) (← rename m p i) (← renameHint h)
+  | .nu l I D i h => return .nu l (← rename m p I) (← rename m p D) (← rename m p i) (← renameHint h)
   | .con x => return .con (← rename m p x)
   | .coit l I D S st i s =>
     return .coit l (← rename m p I) (← rename m p D) (← rename m p S) (← rename m p st) (← rename m p i) (← rename m p s)
+where
+  renameHint : Option (Name × List Level × List (Val R)) → ElabM R (Option (Name × List Level × List (Term R)))
+    | some (n, us, as) => return some (n, us, ← as.mapM (rename m p))
+    | none => pure none
   --|ex
   --| sorry
   --sol>
@@ -239,7 +243,7 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .desc u I, .desc u' I' => unifyLevel u u'; unify l I I'
   | .dret i, .dret j => unify l i j
   | .darg q S D, .darg q' S' D' | .drec q S D, .drec q' S' D' => unify l q q'; unify l S S'; unify l D D'
-  | .mu u I D i, .mu u' I' D' i' | .nu u I D i, .nu u' I' D' i' =>
+  | .mu u I D i _, .mu u' I' D' i' _ | .nu u I D i _, .nu u' I' D' i' _ =>
     unifyLevel u u'; unify l I I'; unify l D D'; unify l i i'
   | .con x, .con y => unify l x y
   | .coit u I D S st i s, .coit u' I' D' S' st' i' s' =>

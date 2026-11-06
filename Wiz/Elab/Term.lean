@@ -259,6 +259,13 @@ where
     | "term.hole" => freshMeta ctx
     | "term.syntheticHole" => freshMeta ctx s!"?{((stx.getArg 1).getId?).getD "_"}"
     | "term.paren" => check ctx (stx.getArg 1) expected
+    | "term.app" =>
+      if (stx.getArg 0).isOfKind "term.explicit" || (← builtinApp? ctx stx).isSome ||
+          !(stx.getArg 1).args.any needsExpected then
+        let (t, ty) ← infer ctx stx
+        unifyAt ctx stx expected ty
+        pure t
+      else checkApp ctx stx expected
     | _ =>
       let (t, ty) ← infer ctx stx
       let (t, ty) ← if stx.isOfKind "term.explicit" then pure (t, ty) else insertImplicits ctx t ty
@@ -313,6 +320,22 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
   let expected ← force expected
   let shapeError (what : String) : ElabM R (Option (Term R)) := do
     throwAt ctx.info s!"{what}, but the expected type is {← showVal ctx expected}"
+  -- `.c` and `.c args`: a constructor of the expected (nominal) type
+  let dot? : Option (Syntax × Name) := match stx.kind with
+    | "term.dotIdent" => some (stx, ((stx.getArg 1).getId?).getD "_")
+    | "term.app" =>
+      let h := stx.getArg 0
+      if h.isOfKind "term.dotIdent" then some (h, ((h.getArg 1).getId?).getD "_") else none
+    | _ => none
+  if let some (h, c) := dot? then
+    match expected with
+    | .mu _ _ _ _ (some (T, _, _)) =>
+      unless (← getGlobals).contains (T ++ "." ++ c) do
+        throwAt h.info s!"{T} has no constructor {c}"
+      let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
+      let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
+      return some (← check ctx stx' expected)
+    | _ => return ← shapeError s!".{c} needs an expected inductive type"
   match stx.kind with
   | "term.tag" =>
     let x := ((stx.getArg 1).getId?).getD "_"
@@ -326,7 +349,7 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     let bs := (stx.getArg 3).args.filter (!· matches .atom ..)
     unless bs.size == ls.length do throwAt ctx.info s!"ecase needs {ls.length} branches"
     let s := q (← evalIn ctx s)
-    let motive := Term.abstract s (q expected)
+    let motive := (q expected).abstract s
     let bs ← bs.toList.mapIdxM fun k b => do
       check ctx b (eval g (.tag ls k :: ctx.env) motive)
     return some (.ecase "z" motive s bs)
@@ -342,8 +365,8 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     return some (.darg qt S' D')
   | "Desc.rec", #[qs, j, D], .desc l I =>
     return some (.drec (← check ctx qs .qty) (← check ctx j I) (← check ctx D (.desc l I)))
-  | "con", #[x], .mu l I D i => return some (.con (← check ctx x (vInterp g l I D (muFamily l I D) i)))
-  | "coit", #[S, st, s], .nu l I D i =>
+  | "con", #[x], .mu l I D i _ => return some (.con (← check ctx x (vInterp g l I D (muFamily l I D) i)))
+  | "coit", #[S, st, s], .nu l I D i _ =>
     let S' ← check ctx S (coitStateTy l I w)
     let vS ← evalIn ctx S'
     let st' ← check ctx st (coitStepTy g l I D vS w)
@@ -373,7 +396,7 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
   | "μ", #[D, i] | "ν", #[D, i] =>
     let (D', l, I) ← descOf D
     let i' ← check ctx i I
-    return some ((if n == "μ" then Term.mu else Term.nu) l (q I) D' i', .sort (.succ l))
+    return some ((if n == "μ" then Term.mu else Term.nu) l (q I) D' i' none, .sort (.succ l))
   | "Desc.elim", #[P, a, b, c, D] =>
     let (D', l, I) ← descOf D
     let v ← freshLevelMeta
@@ -404,7 +427,7 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
     return some (q all, .sort (.max 1 v))
   | "ind", #[P, m, x] =>
     let (x', xty) ← infer ctx x
-    let .mu l I D i ← force xty | throwAt ctx.info s!"ind expects an inductive value, got {← showVal ctx xty}"
+    let .mu l I D i _ ← force xty | throwAt ctx.info s!"ind expects an inductive value, got {← showVal ctx xty}"
     let v ← freshLevelMeta
     let P' ← check ctx P (indMotiveTy g l v I D w)
     let vP ← evalIn ctx P'
@@ -412,7 +435,7 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
     return some (.ind l (q I) (q D) v P' m' (q i) x', vApp g (vApp g vP i) (← evalIn ctx x'))
   | "out", #[x] =>
     let (x', xty) ← infer ctx x
-    let .nu l I D i ← force xty | throwAt ctx.info s!"out expects a coinductive value, got {← showVal ctx xty}"
+    let .nu l I D i _ ← force xty | throwAt ctx.info s!"out expects a coinductive value, got {← showVal ctx xty}"
     return some (.out x', vInterp g l I D (nuFamily l I D) i)
   | _, _ => return none
 
@@ -527,6 +550,39 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
       | .sort l => pure l
       | _ => freshLevelMeta
     return (.sigma b.name q ty cod, .sort (.max l₁ l₂))
+
+/-- Does elaborating this argument need its expected type to be known? -/
+partial def needsExpected (stx : Syntax) : Bool :=
+  (stx.isOfKind "term.paren" && needsExpected (stx.getArg 1)) ||
+  stx.isOfKind "term.dotIdent" || stx.isOfKind "term.tag" || stx.isOfKind "term.rfl" ||
+  (stx.isOfKind "term.app" && (stx.getArg 0).isOfKind "term.dotIdent")
+
+/-- An application in check mode, using the **expected type first**: every explicit
+argument gets a placeholder metavariable, the resulting type is unified with the
+expected type (failure is fine here), and only then are the arguments elaborated,
+against domains that are now usually known. That is what lets `.cons .zero .nil` find
+its constructors. Each placeholder is then unified with its argument. -/
+partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
+  let (f, fty) ← infer ctx (stx.getArg 0)
+  let mut f := f
+  let mut fty := fty
+  let mut pending : Array (Syntax × Term R × VTy R) := #[]
+  for arg in (stx.getArg 1).args do
+    (f, fty) ← insertImplicits ctx f fty
+    match ← force fty with
+    | .pi _ _ _ dom cod =>
+      let m ← freshMeta (ctx.withInfo arg) "an argument"
+      pending := pending.push (arg, m, dom)
+      f := .app f m
+      fty ← instM cod (← evalIn ctx m)
+    | _ => return ← (do let (t, ty) ← inferApp ctx stx; unifyAt ctx stx expected ty; pure t)
+  (f, fty) ← insertImplicits ctx f fty
+  let _ ← tryCatch (unify ctx.lvl expected fty) (fun _ => pure ())
+  for (arg, m, dom) in pending do
+    let a ← check ctx arg dom
+    unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
+  unifyAt ctx stx expected fty
+  pure f
 
 /-- **Exercise 3.9.** Infer the type of an application `f a₁ … aₙ` (`term.app`, with
 `f` = `stx.getArg 0` and the arguments in `(stx.getArg 1).args`).

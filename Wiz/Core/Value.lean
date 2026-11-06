@@ -61,9 +61,9 @@ inductive Val (R : Type) where
   | dret (i : Val R)
   | darg (q S D : Val R)
   | drec (q j D : Val R)
-  | mu (l : Level) (I D i : Val R)
+  | mu (l : Level) (I D i : Val R) (hint : Option (Name × List Level × List (Val R)))
   | con (x : Val R)
-  | nu (l : Level) (I D i : Val R)
+  | nu (l : Level) (I D i : Val R) (hint : Option (Name × List Level × List (Val R)))
   /-- an unfolding, kept lazy until observed with `out` -/
   | coit (l : Level) (I D S step i s : Val R)
 
