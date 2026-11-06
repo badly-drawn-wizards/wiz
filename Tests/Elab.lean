@@ -215,9 +215,9 @@ def ottGroup : Group where
         ok substDef },
     { name := "J computes on refl", run := fun _ =>
         ok (substDef ++ "def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl") },
-    { name := "cast computes on function types", run := fun _ =>
+    { name := "cast computes on function types (and vanishes between equal types)", run := fun _ =>
         ok "#reduce fun (A : Type) (e : (A → A) = (A → A)) (f : A → A) => (cast e f : A → A)"
-          ["fun A e f x => cast (e.2 x) (f (cast e.1 x))"] },
+          ["fun A e f x => f x"] },
     { name := "type equality", run := fun _ =>
         ok "def t : Type = Type := refl Type" },
     { name := "equality of proofs is rejected", run := fun _ =>
@@ -320,6 +320,17 @@ def inductiveGroup : Group where
         fails "inductive Bad where\n  | mk (f : Bad → Unit)" "may only occur" },
     { name := "fields may not depend on recursive fields", run := fun _ =>
         fails "inductive T : Type where\n  | mk (x : T) (y : (x, x).1 = x)" "may not depend" },
+    { name := "Nat.rec computes", run := fun _ =>
+        ok (indPrelude ++ "def add (m n : Nat) : Nat := Nat.rec (fun _ => Nat) n (fun _ ih => .succ ih) m\n" ++
+            "#reduce add (.succ .zero) (.succ (.succ .zero))") [".succ (.succ (.succ .zero))"] },
+    { name := "Vec.rec has Lean's shape", run := fun _ =>
+        ok (indPrelude ++ "#check Vec.rec")
+          ["Vec.rec : {A : Type} → (0 motive : (x : Nat) → Vec A x → Sort ?u0) → motive .zero .nil → ({n : Nat} → (x : A) → (xs : Vec A n) → motive n xs → motive (.succ n) (.cons n x xs)) → {x : Nat} → (x' : Vec A x) → motive x x'"] },
+    { name := "Vec.rec computes through indices", run := fun _ =>
+        ok (indPrelude ++ "def len {A : Type} {n : Nat} (v : Vec A n) : Nat := Vec.rec (fun _ _ => Nat) .zero (fun _ _ ih => .succ ih) v\n" ++
+            "#reduce len two") [".succ (.succ .zero)"] },
+    { name := "casesOn: predecessor", run := fun _ =>
+        ok (indPrelude ++ "def pred (n : Nat) : Nat := Nat.casesOn (fun _ => Nat) .zero (fun m => m) n\n#reduce pred (.succ (.succ .zero))") [".succ .zero"] },
     { name := "unknown constructor via dot", run := fun _ =>
         fails (indPrelude ++ "def bad : Nat := .three") "no constructor three" }
   ]

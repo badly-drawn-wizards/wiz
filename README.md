@@ -371,6 +371,12 @@ result type becomes `Desc.ret`. Positivity therefore holds by construction, and 
 other occurrence is an error. A `structure` is a Σ ending in `Unit` with constructor
 `S.mk`.
 
+Every `inductive` also gets Lean-style eliminators `T.rec` (with induction
+hypotheses) and `T.casesOn` (`Elab/Recursor.lean`). They are built on `ind`: a
+"convoy" `ecase` on the tag, then a `cast` along the constructor's index equation.
+In evaluation, `cast A B e t` reduces to `t` whenever `A` and `B` quote to the same
+term (cheap regularity), so normal forms stay readable.
+
 `.c` (with or without arguments) is a constructor of the expected type. Applications
 containing such arguments are elaborated *expected type first* (`checkApp`), so
 `.cons .zero .nil : Vec Nat (.succ .zero)` resolves every constructor. Values print

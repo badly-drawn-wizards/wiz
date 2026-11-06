@@ -1,4 +1,4 @@
-import Wiz.Elab.Inductive
+import Wiz.Elab.Recursor
 import Wiz.Frontend.Parse
 
 /-!
@@ -140,6 +140,18 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | .error e =>
             report .error cmd.info s!"kernel rejected {d.name}: {e}"
             return
+        -- the recursors need the declarations above
+        if cmd.isOfKind "command.inductive" then
+          let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 1).getId?
+          for withIH in [false, true] do
+            match mkRecursor g name ctors withIH with
+            | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
+            | .ok d =>
+              match addDecl g d with
+              | .ok g' => g := g'
+              | .error e =>
+                report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
+                return
         modify fun s => { s with globals := g }
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with

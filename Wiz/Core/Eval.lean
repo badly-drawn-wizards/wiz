@@ -246,20 +246,6 @@ directly. Quantities must match, or it's stuck. -/
 partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   sorry
 
-end
-
-/-- Apply a whole spine of eliminations to a value (used to unfold solved metas). -/
-def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
-  sp.foldl (init := v) fun v e => match e with
-    | .app a => vApp g v a
-    | .fst => vFst v
-    | .snd => vSnd v
-    | .split q z m x y b => vSplit g q v z m x y b
-    | .absurd m => vAbsurd m v
-    | .ecase z m env bs => vEcase g z m v env bs
-    | .delim lv P a b c => vDelim g lv P a b c v
-    | .ind l I D lv P m i => vInd g l I D lv P m i v
-    | .out => vOut g v
 
 /-- **Exercise 1.3.** Read a value back into syntax in a context of `l` local variables.
 To quote under a binder, instantiate the closure with `Val.var l` and quote the
@@ -275,6 +261,21 @@ and `absurd` eliminations. A `split`'s motive is under one binder and its body u
 two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | v => sorry
+
+end
+
+/-- Apply a whole spine of eliminations to a value (used to unfold solved metas). -/
+def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
+  sp.foldl (init := v) fun v e => match e with
+    | .app a => vApp g v a
+    | .fst => vFst v
+    | .snd => vSnd v
+    | .split q z m x y b => vSplit g q v z m x y b
+    | .absurd m => vAbsurd m v
+    | .ecase z m env bs => vEcase g z m v env bs
+    | .delim lv P a b c => vDelim g lv P a b c v
+    | .ind l I D lv P m i => vInd g l I D lv P m i v
+    | .out => vOut g v
 
 /-- Normal form of a closed term. -/
 def nf (g : Globals R) (t : Term R) : Term R :=
