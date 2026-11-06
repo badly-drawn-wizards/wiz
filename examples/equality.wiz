@@ -1,0 +1,23 @@
+-- Stage 4c: observational equality. `lake exe wiz check examples/equality.wiz`
+
+-- `f = g` computes to pointwise equality, so funext is the identity.
+def funext {A B : Type} (f g : A → B) (h : (x : A) → f x = g x) : f = g := h
+
+-- `P = Q` for propositions computes to `(P → Q) × (Q → P)`.
+def propext (P Q : Prop) (pq : P → Q) (qp : Q → P) : P = Q := (pq, qp)
+
+-- All proofs of a proposition are definitionally equal.
+def irrelevant (P : Prop) (p q : P) (C : P → Type) (c : C p) : C q := c
+
+-- Different type formers are provably different: `Unit = Empty` computes to `False`.
+def noConfusion (e : Unit = Empty) : False := e
+
+-- J, from transport into Prop plus cast.
+def subst {A : Type} (P : A → Type) {a b : A} (e : a = b) (pa : P a) : P b :=
+  cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa
+
+-- ... and it computes on refl (cast along `X = X` is the identity).
+def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl
+
+def sym {A : Type} {a b : A} (e : a = b) : b = a :=
+  transp (fun b _ => b = a) (refl a) e

@@ -24,7 +24,7 @@ Reference: elaboration-zoo `03-holes`, which this follows closely.
 
 namespace Wiz
 
-variable {R : Type}
+variable {R : Type} [Zero R] [DecidableEq R]
 
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
 A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
@@ -91,7 +91,6 @@ postpones such constraints instead of failing (see the optional exercises). -/
 partial def unifyLevel (a b : Level) : ElabM R Unit := do
   sorry
 
-variable [DecidableEq R]
 
 mutual
 
@@ -112,6 +111,22 @@ failure. Force both sides first, then:
 `unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   sorry
+
+/-- Rigid heads: the same variable, the same global (levels unified), or the same
+stuck observational construct (components unified). Any two proofs are equal. -/
+partial def unifyHead (l : Lvl) (h h' : Head R) : ElabM R Unit := do
+  let isProof : Head R → Bool
+    | .refl .. | .reflTy _ | .transp .. => true
+    | _ => false
+  match h, h' with
+  | .global n us, .global n' us' =>
+    unless n == n' && us.length == us'.length do throwAt {} "rigid mismatch"
+    for a in us, b in us' do unifyLevel a b
+  | .eq A a b, .eq A' a' b' => unify l A A'; unify l a a'; unify l b b'
+  | .eqTy A B, .eqTy A' B' => unify l A A'; unify l B B'
+  | .cast A B _ t, .cast A' B' _ t' => unify l A A'; unify l B B'; unify l t t'
+  | _, _ =>
+    unless (isProof h && isProof h') || h.equiv h' do throwAt {} "rigid mismatch"
 
 partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
   unless sp.size == sp'.size do throwAt {} "spine length mismatch"

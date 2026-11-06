@@ -12,10 +12,11 @@ def two : Nat := succ (succ zero)
 
 #reduce add two two
 
--- Leibniz equality: `2 + 2 = 4` holds by computation.
-def Eq {A : Type 1} (x y : A) : Type 2 := (P : A → Type 1) → P x → P y
-def refl {A : Type 1} (x : A) : Eq x x := fun P px => px
-def twoPlusTwo : Eq (add two two) (succ (succ two)) := refl _
+-- Leibniz equality: `2 + 2 = 4` holds by computation. (The built-in observational
+-- equality `a = b` arrives in stage 4c.)
+def Leibniz {A : Type 1} (x y : A) : Type 2 := (P : A → Type 1) → P x → P y
+def lrefl {A : Type 1} (x : A) : Leibniz x x := fun P px => px
+def twoPlusTwo : Leibniz (add two two) (succ (succ two)) := lrefl _
 
 -- Quantities: erased type, linear argument.
 def lid {0 A : Type} (1 x : A) : A := x

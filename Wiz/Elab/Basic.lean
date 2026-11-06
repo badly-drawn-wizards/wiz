@@ -24,7 +24,7 @@ kernel.
 
 namespace Wiz
 
-variable {R : Type}
+variable {R : Type} [Zero R] [DecidableEq R]
 
 structure MetaEntry (R : Type) where
   solution : Option (Val R) := none
@@ -124,7 +124,7 @@ def instLevel (l : Level) : ElabM R Level := do
   let ls := (← get).levelMetas
   pure (l.instMVars fun m => ls[m]?.join)
 
-variable [QuantitySyntax R] [DecidableEq R]
+variable [QuantitySyntax R]
 
 def showTerm (ctx : LocalCtx R) (t : Term R) : String := t.pretty ctx.names
 

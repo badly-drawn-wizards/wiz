@@ -79,6 +79,29 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── absurd
     Γ ⊢ absurd M t ⇒ M ⊣ U
 
+## Observational equality (stage 4c)
+
+    Γ ⊢ A type@l   l ≠ 0 (A is not a proposition)   Γ ⊢ a, b ⇐ A
+    ──────────────────────────────── eq            (a proposition)
+    Γ ⊢ a = b ⇒ Prop ⊣ 0ₙ
+
+    Γ ⊢ A type@l    Γ ⊢ B type@l
+    ──────────────────────────────── eqTy
+    Γ ⊢ A = B ⇒ Prop ⊣ 0ₙ
+
+    Γ ⊢ refl a ⇒ (a = a) ⊣ 0ₙ          Γ ⊢ refl X ⇒ (X = X) ⊣ 0ₙ
+
+    Γ ⊢ A, B type@l    Γ ⊢ e ⇐ (A = B)    Γ ⊢ t ⇐ A ⊣ U
+    ──────────────────────────────── cast
+    Γ ⊢ cast A B e t ⇒ B ⊣ U
+
+    Γ ⊢ a, b ⇐ A    Γ ⊢ P ⇐ (b :0 A) → (_ :0 a = b) → Prop
+    Γ ⊢ p ⇐ P a (refl a)    Γ ⊢ e ⇐ (a = b)
+    ──────────────────────────────── transp
+    Γ ⊢ transp A a P p b e ⇒ P b e ⊣ 0ₙ
+
+Proofs carry no usage: they are erased, and conversion never looks at them.
+
 `split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
 using both on a linear pair uses it twice.
 
@@ -134,6 +157,8 @@ structure Ctx (R : Type) where
   lvl   : Lvl := 0
 
 namespace Ctx
+
+variable [Zero R] [DecidableEq R]
 
 /-- Go under a binder: the new variable is a fresh neutral. -/
 def bind (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) : Ctx R :=
@@ -194,6 +219,8 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
 /-- **Exercise 1.7.** Infer the type of `t`. See the rules in the module docstring.
 `checkType` (below) handles the "`A type@i`" premises.
 
+**Exercise 4.14** (stage 4c): `eq`, `eqTy`, `refl`, `reflTy`, `cast`, `transp`.
+
 **Exercise 4.7b** (stage 4b): `sigma`, `fst`, `snd`, `split`, `unit`, `empty`,
 `absurd`. `pair` and `tt` can only be checked. -/
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
@@ -216,6 +243,13 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .empty l => sorry
   | .absurd m t => sorry
   | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
+  -- Exercise 4.14
+  | .eq A a b => sorry
+  | .eqTy A B => sorry
+  | .refl A a => sorry
+  | .reflTy X => sorry
+  | .cast A B e t => sorry
+  | .transp A a P p b e => sorry
 
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.
 The usage is discarded: type positions are erased. -/

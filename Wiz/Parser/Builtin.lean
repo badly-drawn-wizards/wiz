@@ -110,6 +110,11 @@ def levelTrailing : List TrailingParser := [
 | `term.proj` (trailing) | max | t "." num |
 | `term.letPair`       | lead | "let" [quantity] "(" ident "," ident ")" ":=" term [";"] term |
 | `term.absurd`        | lead | "absurd" term |
+| `term.eq` (trailing) | 50   | a "=" b |
+| `term.refl`          | lead | "refl" term |
+| `term.rfl`           | max  | "rfl" |
+| `term.cast`          | lead | "cast" term term |
+| `term.transp`        | lead | "transp" term term term |
 
 Field access by name (`p.x`) needs no syntax: `p.x` lexes as one dotted identifier,
 and the elaborator resolves it.
@@ -143,7 +148,11 @@ def termLeading : List LeadingParser := [
   { kind := "term.letPair", prec := leadPrec,
     p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ")", ":=", term,
       optional ";", term] },
-  { kind := "term.absurd", prec := leadPrec, p := seqs ["absurd", term maxPrec] }
+  { kind := "term.absurd", prec := leadPrec, p := seqs ["absurd", term maxPrec] },
+  { kind := "term.refl", prec := leadPrec, p := seqs ["refl", term maxPrec] },
+  { kind := "term.rfl", prec := maxPrec, p := "rfl" },
+  { kind := "term.cast", prec := leadPrec, p := seqs ["cast", term maxPrec, term maxPrec] },
+  { kind := "term.transp", prec := leadPrec, p := seqs ["transp", term maxPrec, term maxPrec, term maxPrec] }
 ]
 
 def termTrailing : List TrailingParser := [
@@ -151,6 +160,7 @@ def termTrailing : List TrailingParser := [
     p := many1 (seqs [colGt, term argPrec]) },
   { kind := "term.arrow", prec := 25, lhsPrec := 26, p := seqs [arrow, term 25] },
   { kind := "term.prod", prec := 35, lhsPrec := 36, p := seqs ["×", term 35] },
+  { kind := "term.eq", prec := 50, lhsPrec := 51, p := seqs ["=", term 51] },
   { kind := "term.proj", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, num] }
 ]
 

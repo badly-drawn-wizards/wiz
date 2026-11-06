@@ -46,8 +46,8 @@ def succ (n : Nat) : Nat := fun A s z => s (n A s z)
 def add (m n : Nat) : Nat := fun A s z => m A s (n A s z)
 def two : Nat := succ (succ zero)
 def four : Nat := add two two
-def Eq {A : Type 1} (x y : A) : Type 2 := (P : A → Type 1) → P x → P y
-def refl {A : Type 1} (x : A) : Eq x x := fun P px => px
+def Leibniz {A : Type 1} (x y : A) : Type 2 := (P : A → Type 1) → P x → P y
+def lrefl {A : Type 1} (x : A) : Leibniz x x := fun P px => px
 "
 
 def group : Group where
@@ -77,9 +77,9 @@ def group : Group where
     { name := "Church numerals and #reduce", run := fun _ =>
         ok (church ++ "#reduce add two two") ["fun A s z => s (s (s (s z)))"] },
     { name := "2 + 2 = 4 by refl, with implicit A", run := fun _ =>
-        ok (church ++ "def p : Eq (add two two) four := refl four") },
+        ok (church ++ "def p : Leibniz (add two two) four := lrefl four") },
     { name := "2 + 2 = 2 is a type mismatch", run := fun _ =>
-        fails (church ++ "def p : Eq (add two two) two := refl two") "type mismatch" },
+        fails (church ++ "def p : Leibniz (add two two) two := lrefl two") "type mismatch" },
     { name := "type mismatch message", run := fun _ =>
         fails "def bad (A : Type) (a : A) : Type := a" "type mismatch" },
     { name := "unknown identifier", run := fun _ =>
@@ -183,6 +183,47 @@ def structGroup : Group where
         ok "def efq {A : Type} (e : Empty) : A := absurd e\ndef efq' {P : Prop} (e : False) : P := absurd e" },
     { name := "True is a proposition", run := fun _ =>
         ok "#check True\n#check Unit" ["True : Prop", "Unit : Type"] }
+  ]
+
+end Tests.Elab
+
+namespace Tests.Elab
+
+def substDef : String :=
+  "def subst {A : Type} (P : A → Type) {a b : A} (e : a = b) (pa : P a) : P b :=\n" ++
+  "  cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa\n"
+
+def ottGroup : Group where
+  name := "observational equality"
+  exercise := "Exercises 4.10–4.14"
+  cases := [
+    { name := "function extensionality is definitional", run := fun _ =>
+        ok "def funext {A B : Type} (f g : A → B) (h : (x : A) → f x = g x) : f = g := h" },
+    { name := "propositional extensionality", run := fun _ =>
+        ok "def propext (P Q : Prop) (pq : P → Q) (qp : Q → P) : P = Q := (pq, qp)" },
+    { name := "proof irrelevance", run := fun _ =>
+        ok "def irr (P : Prop) (p q : P) (C : P → Type) (c : C p) : C q := c" },
+    { name := "equality at Unit is True", run := fun _ =>
+        ok "def uu (u v : Unit) : u = v := rfl" },
+    { name := "η for pairs, via refl", run := fun _ =>
+        ok "def peq {A B : Type} (p : A × B) : p = (p.1, p.2) := refl p" },
+    { name := "different type formers are unequal", run := fun _ =>
+        ok "def noconf (e : Unit = Empty) : False := e" },
+    { name := "cast along a reflexive equation is the identity (regularity)", run := fun _ =>
+        ok "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl" },
+    { name := "J from transp and cast", run := fun _ =>
+        ok substDef },
+    { name := "J computes on refl", run := fun _ =>
+        ok (substDef ++ "def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl") },
+    { name := "cast computes on function types", run := fun _ =>
+        ok "#reduce fun (A : Type) (e : (A → A) = (A → A)) (f : A → A) => (cast e f : A → A)"
+          ["fun A e f x => cast (e.2 x) (f (cast e.1 x))"] },
+    { name := "type equality", run := fun _ =>
+        ok "def t : Type = Type := refl Type" },
+    { name := "equality of proofs is rejected", run := fun _ =>
+        fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
+    { name := "wrong equation", run := fun _ =>
+        fails "def bad (A : Type) (a b : A) : a = b := rfl" "type mismatch" }
   ]
 
 end Tests.Elab

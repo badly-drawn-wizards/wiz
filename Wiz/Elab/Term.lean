@@ -389,7 +389,39 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     | .sigma _ _ A _, some 1 => return (.fst t, A)
     | .sigma _ _ _ B, some 2 => return (.snd t, ← instM B (vFst (← evalIn ctx t)))
     | ty, _ => throwAt ctx.info s!"cannot project from a value of type {← showVal ctx ty}"
-  | "term.letPair" | "term.absurd" =>
+  | "term.eq" =>
+    let (a, A) ← infer ctx (stx.getArg 0)
+    let b ← check ctx (stx.getArg 2) A
+    return (.eq (quote (← getGlobals) ctx.lvl A) a b, .sort 0)
+  | "term.refl" =>
+    let (a, A) ← infer ctx (stx.getArg 1)
+    let g ← getGlobals
+    let va ← evalIn ctx a
+    match ← force A with
+    | .sort _ => return (.reflTy a, vEqType g va va)
+    | A => return (.refl (quote g ctx.lvl A) a, vEq g A va va)
+  | "term.transp" =>
+    let (e, ety) ← infer ctx (stx.getArg 3)
+    let g ← getGlobals
+    match ← force ety with
+    | .neutral (.eq A a b) #[] =>
+      let motiveTy : Val R := .pi "b" .default 0 A
+        (.mk [a, A] (.pi "_" .default 0 (.eq (.var 2) (.var 1) (.var 0)) (.sort 0)))
+      let P ← check ctx (stx.getArg 1) motiveTy
+      let vP ← evalIn ctx P
+      let p ← check ctx (stx.getArg 2) (vApp g (vApp g vP a) (.neutral (.refl A a) #[]))
+      let q := quote g ctx.lvl
+      return (.transp (q A) (q a) P p (q b) e, vApp g (vApp g vP b) (← evalIn ctx e))
+    | ety => throwAt ctx.info s!"transp: expected a proof of an equation, got {← showVal ctx ety}"
+  | "term.cast" =>
+    let (e, ety) ← infer ctx (stx.getArg 1)
+    match ← force ety with
+    | .neutral (.eqTy X Y) #[] =>
+      let t ← check ctx (stx.getArg 2) X
+      let g ← getGlobals
+      return (.cast (quote g ctx.lvl X) (quote g ctx.lvl Y) e t, Y)
+    | _ => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
+  | "term.letPair" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
   | "term.num" | "term.str" => throwAt ctx.info "literals need data types (stage 4)"
   | k => throwAt ctx.info s!"no elaborator for syntax kind {k}"
