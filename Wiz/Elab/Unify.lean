@@ -27,14 +27,14 @@ namespace Wiz
 variable {R : Type}
 
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
-A neutral `?m sp` whose meta has a solution `v` becomes `v` applied to `sp`. Anything
-else is returned unchanged. -/
+A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
+`sp` applied (`vElims`). Anything else is returned unchanged. -/
 partial def force (v : Val R) : ElabM R (Val R) := do
   --<sol
   match v with
   | .neutral (.mvar m) sp =>
     match (← lookupMeta m).solution with
-    | some sol => force (← sp.foldlM vAppM sol)
+    | some sol => force (vElims (← getGlobals) sol sp)
     | none => pure v
   | _ => pure v
   --|ex
@@ -53,15 +53,16 @@ def PRen.lift (p : PRen) : PRen :=
   { dom := p.dom + 1, cod := p.cod + 1, ren := p.ren.insert p.cod p.dom }
 
 /-- **Exercise 3.2.** Invert a spine into a partial renaming. `gamma` is the size of the
-current context. Every spine entry must force to a bound variable with an empty spine
-(`.neutral (.local x) #[]`), and no variable may occur twice. Otherwise throw (at
-`{}`), saying the problem is outside the pattern fragment. The i-th spine variable
-maps to level i. -/
-def invert (gamma : Lvl) (sp : Array (Val R)) : ElabM R PRen := do
+current context. Every spine entry must be an application (`Elim.app v`) whose
+argument forces to a bound variable with an empty spine (`.neutral (.local x) #[]`),
+and no variable may occur twice. Otherwise throw (at `{}`), saying the problem is
+outside the pattern fragment. The i-th spine variable maps to level i. -/
+def invert (gamma : Lvl) (sp : Array (Elim R)) : ElabM R PRen := do
   --<sol
   let mut ren : Std.HashMap Lvl Lvl := {}
   let mut dom := 0
-  for v in sp do
+  for e in sp do
+    let .app v := e | throwAt {} "unification problem is outside the pattern fragment"
     match ← force v with
     | .neutral (.local x) #[] =>
       if ren.contains x then throwAt {} "non-linear spine: a variable is repeated"
@@ -79,12 +80,24 @@ scope and occurs.
 * A local `x` must be in `p.ren`; it becomes `.var (p.dom - ren[x] - 1)`. Otherwise
   throw a scope error.
 * A meta `?m'` with `m' == m` fails the occurs check. Otherwise it is kept.
-* Spines are renamed elementwise. Binders go under `p.lift` with a fresh variable
-  `Val.var p.cod`. Force first! -/
+* Spines are renamed elimination by elimination. Binders go under `p.lift` with a
+  fresh variable `Val.var p.cod` (twice for a `split` body). Force first!
+
+(The structural types of stage 4b are already handled in the solution's style. Add
+them when you get there.) -/
 partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   --<sol
-  let goSp (h : Term R) (sp : Array (Val R)) : ElabM R (Term R) :=
-    sp.foldlM (fun acc a => return .app acc (← rename m p a)) h
+  let goSp (h : Term R) (sp : Array (Elim R)) : ElabM R (Term R) :=
+    sp.foldlM (init := h) fun acc e => match e with
+      | .app a => return .app acc (← rename m p a)
+      | .fst => pure (.fst acc)
+      | .snd => pure (.snd acc)
+      | .split q z mo x y b => do
+        let mo' ← rename m p.lift (← instM mo (Val.var p.cod))
+        let g ← getGlobals
+        let b' ← rename m p.lift.lift (Closure.inst2 g b (Val.var p.cod) (Val.var (p.cod + 1)))
+        pure (.split q acc z mo' x y b')
+      | .absurd mo => return .absurd (← rename m p mo) acc
   match ← force v with
   | .neutral (.local x) sp =>
     match p.ren[x]? with
@@ -98,6 +111,12 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .pi x bi q a b =>
     return .pi x bi q (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod)))
   | .lam x b => return .lam x (← rename m p.lift (← instM b (Val.var p.cod)))
+  | .sigma x q a b =>
+    return .sigma x q (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod)))
+  | .pair a b => return .pair (← rename m p a) (← rename m p b)
+  | .unit l => pure (.unit l)
+  | .tt => pure .tt
+  | .empty l => pure (.empty l)
   --|ex
   --| sorry
   --sol>
@@ -105,7 +124,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
 /-- **Exercise 3.4.** Solve `?m sp =?= rhs` in a context of size `gamma`: invert the
 spine, rename `rhs`, wrap the result in `sp.size` lambdas, and evaluate it in the
 empty environment to get the solution. Record it with `solveMeta`. -/
-def solve (gamma : Lvl) (m : Nat) (sp : Array (Val R)) (rhs : Val R) : ElabM R Unit := do
+def solve (gamma : Lvl) (m : Nat) (sp : Array (Elim R)) (rhs : Val R) : ElabM R Unit := do
   --<sol
   let p ← invert gamma sp
   let body ← rename m p rhs
@@ -161,7 +180,11 @@ failure. Force both sides first, then:
   head" means the same name, with the levels unified pairwise.
 * Two flex neutrals with the same meta: unify the spines (a simple approximation).
 * A flex neutral against anything: `solve`.
-* Anything else fails. -/
+* Anything else fails.
+
+**Exercise 4.8** (stage 4b): `sigma`, `pair` (with η: `(a, b) =?= t` unifies `a` with
+`t.1` and `b` with `t.2`), `unit`, `tt`, `empty`; and the other eliminations in
+`unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   --<sol
   match ← force t, ← force u with
@@ -171,6 +194,15 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
     unless q == q' do throwAt {} "quantity mismatch"
     unify l a a'
     unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
+  | .sigma _ q a b, .sigma _ q' a' b' =>
+    unless q == q' do throwAt {} "quantity mismatch"
+    unify l a a'
+    unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
+  | .pair a b, .pair a' b' => unify l a a'; unify l b b'
+  | .pair a b, t'@(.neutral ..) => unify l a (vFst t'); unify l b (vSnd t')
+  | t'@(.neutral ..), .pair a b => unify l (vFst t') a; unify l (vSnd t') b
+  | .unit u, .unit u' | .empty u, .empty u' => unifyLevel u u'
+  | .tt, .tt => pure ()
   | .lam _ b, .lam _ b' => unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
   | .lam _ b, t' => unify (l + 1) (← instM b (Val.var l)) (← vAppM t' (Val.var l))
   | t', .lam _ b => unify (l + 1) (← vAppM t' (Val.var l)) (← instM b (Val.var l))
@@ -189,9 +221,20 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   --| sorry
   --sol>
 
-partial def unifySpine (l : Lvl) (sp sp' : Array (Val R)) : ElabM R Unit := do
+partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
   unless sp.size == sp'.size do throwAt {} "spine length mismatch"
-  for a in sp, b in sp' do unify l a b
+  let g ← getGlobals
+  for e in sp, e' in sp' do
+    match e, e' with
+    | .app a, .app b => unify l a b
+    | .fst, .fst | .snd, .snd => pure ()
+    | .split q _ m _ _ b, .split q' _ m' _ _ b' =>
+      unless q == q' do throwAt {} "quantity mismatch"
+      unify (l + 1) (← instM m (Val.var l)) (← instM m' (Val.var l))
+      unify (l + 2) (Closure.inst2 g b (Val.var l) (Val.var (l + 1)))
+        (Closure.inst2 g b' (Val.var l) (Val.var (l + 1)))
+    | .absurd m, .absurd m' => unify l m m'
+    | _, _ => throwAt {} "spine mismatch"
 
 end
 

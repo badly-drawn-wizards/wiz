@@ -49,6 +49,39 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── switch
     Γ ⊢ t ⇐ A ⊣ U
 
+## Structural types (stage 4b)
+
+    Γ ⊢ A type@i     Γ, x:A ⊢ B type@j
+    ──────────────────────────────── sigma
+    Γ ⊢ (q x : A) × B ⇒ Sort (max i j) ⊣ 0ₙ
+
+    Γ ⊢ a ⇐ A ⊣ U₁     Γ ⊢ b ⇐ B[a/x] ⊣ U₂
+    ──────────────────────────────── pair      (check only)
+    Γ ⊢ (a, b) ⇐ (q x : A) × B ⊣ q·U₁ + U₂
+
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q
+    ──────────────────────────────── fst       (an erased field can't be projected)
+    Γ ⊢ t.1 ⇒ A ⊣ U
+
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U
+    ──────────────────────────────── snd
+    Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ U
+
+    Γ ⊢ s ⇒ (p x : A) × B ⊣ U₁     Γ, z : (p x : A) × B ⊢ M type
+    Γ, x :(q·p) A, y :q B ⊢ b ⇐ M[(x, y)/z] ⊣ (u_y :: u_x :: U₂)
+    le u_y q     le u_x (q·p)
+    ──────────────────────────────── split
+    Γ ⊢ let q (x, y) := s; b ⇒ M[s/z] ⊣ q·U₁ + U₂
+
+    Γ ⊢ Unit_l ⇒ Sort l      Γ ⊢ () ⇐ Unit_l      Γ ⊢ Empty_l ⇒ Sort l
+
+    Γ ⊢ M type     Γ ⊢ t ⇒ Empty_l ⊣ U
+    ──────────────────────────────── absurd
+    Γ ⊢ absurd M t ⇒ M ⊣ U
+
+`split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
+using both on a linear pair uses it twice.
+
 `Γ ⊢ A type@i` means `A ⇒ Sort i`, with its usage **thrown away**: types live in
 the erased (0) fragment, so they may mention 0-quantity variables freely.
 
@@ -122,6 +155,9 @@ def define (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) (val : Val R) : Ctx R :
 
 def eval (ctx : Ctx R) (t : Term R) : Val R := Wiz.eval ctx.globals ctx.env t
 
+/-- The types of the locals indexed by level, as `conv` wants them. -/
+def tys (ctx : Ctx R) : Array (VTy R) := ctx.types.reverse.toArray
+
 variable [QuantitySyntax R] [DecidableEq R]
 
 /-- Render a value for error messages. -/
@@ -150,7 +186,9 @@ def popUsage (x : Name) (q : R) : Usage R → TCM (Usage R)
 mutual
 
 /-- **Exercise 1.6.** Check `t` against the type `ty`. Implement the `lam` and `letE`
-rules here and fall back to `infer` + `conv` for everything else. -/
+rules here and fall back to `infer` + `convTy` for everything else.
+
+**Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, ty with
   --<sol
@@ -164,19 +202,30 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let ub ← check (ctx.define x q vty (ctx.eval val)) body ty
     let ub ← popUsage x q ub
     pure (q • uv + ub)
+  | .pair a b, .sigma _ q A B => do
+    let ua ← check ctx a A
+    let ub ← check ctx b (Closure.inst ctx.globals B (ctx.eval a))
+    pure (q • ua + ub)
+  | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
   | _, _ => do
     let (ty', u) ← infer ctx t
-    unless conv ctx.globals ctx.lvl ty ty' do
+    unless convTy ctx.globals ctx.tys ty ty' do
       throw (.typeMismatch (ctx.showVal ty) (ctx.showVal ty'))
     pure u
   --|ex
   --| | .lam x body, .pi _ _ q dom cod => sorry
   --| | .letE x q tty val body, _ => sorry
+  --| -- Exercise 4.7a
+  --| | .pair a b, .sigma _ q A B => sorry
+  --| | .tt, .unit _ => sorry
   --| | _, _ => sorry
   --sol>
 
 /-- **Exercise 1.7.** Infer the type of `t`. See the rules in the module docstring.
-`checkType` (below) handles the "`A type@i`" premises. -/
+`checkType` (below) handles the "`A type@i`" premises.
+
+**Exercise 4.7b** (stage 4b): `sigma`, `fst`, `snd`, `split`, `unit`, `empty`,
+`absurd`. `pair` and `tt` can only be checked. -/
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   match t with
   | .mvar m => throw (.other s!"the kernel does not accept metavariables (?m{m})")
@@ -220,10 +269,59 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let vty := ctx.eval tty
     let u ← check ctx tm vty
     pure (vty, u)
+  | .sigma x q a b => do
+    let i ← checkType ctx a
+    let j ← checkType (ctx.bind x q (ctx.eval a)) b
+    pure (.sort (.max i j), Usage.zeros ctx.lvl)
+  | .fst t => do
+    let (ty, u) ← infer ctx t
+    match ty with
+    | .sigma x q A _ =>
+      unless QRig.le 1 q do
+        throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
+      pure (A, u)
+    | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
+  | .snd t => do
+    let (ty, u) ← infer ctx t
+    match ty with
+    | .sigma _ _ _ B => pure (Closure.inst ctx.globals B (vFst (ctx.eval t)), u)
+    | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
+  | .split q s z m x y b => do
+    let (sty, us) ← infer ctx s
+    match sty with
+    | .sigma _ p A B =>
+      let _ ← checkType (ctx.bind z 0 sty) m
+      let mc : Closure R := .mk ctx.env m
+      let vx : Val R := Val.var ctx.lvl
+      let vy : Val R := Val.var (ctx.lvl + 1)
+      let ctx₂ := (ctx.bind x (q * p) A).bind y q (Closure.inst ctx.globals B vx)
+      let ub ← check ctx₂ b (Closure.inst ctx.globals mc (.pair vx vy))
+      let ub ← popUsage y q ub
+      let ub ← popUsage x (q * p) ub
+      pure (Closure.inst ctx.globals mc (ctx.eval s), q • us + ub)
+    | _ => throw (.other s!"not a pair: {ctx.showTerm s}\n  has type: {ctx.showVal sty}")
+  | .unit l => pure (.sort l, Usage.zeros ctx.lvl)
+  | .empty l => pure (.sort l, Usage.zeros ctx.lvl)
+  | .absurd m t => do
+    let _ ← checkType ctx m
+    let (ty, u) ← infer ctx t
+    match ty with
+    | .empty _ => pure (ctx.eval m, u)
+    | _ => throw (.typeMismatch "an empty type" (ctx.showVal ty))
+  | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
   --|ex
   --| | .app f a => sorry
   --| | .letE x q tty val body => sorry
   --| | .ann tm tty => sorry
+  --| -- Exercise 4.7b
+  --| | .sigma x q a b => sorry
+  --| | .fst t => sorry
+  --| | .snd t => sorry
+  --| | .split q s z m x y b => sorry
+  --| | .unit l => sorry
+  --| | .empty l => sorry
+  --| | .absurd m t => sorry
+  --| | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
   --sol>
 
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.

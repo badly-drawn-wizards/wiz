@@ -55,6 +55,22 @@ inductive Term (R : Type) where
   | ann (tm ty : Term R)
   /-- metavariable number `id` (elaborator only) -/
   | mvar (id : Nat)
+  -- Stage 4: structural types. `sigma` binder names double as field names.
+  /-- `(q x : A) × B`: the first component may be used `q` times -/
+  | sigma (x : Name) (q : R) (fst snd : Term R)
+  | pair (a b : Term R)
+  | fst (t : Term R)
+  | snd (t : Term R)
+  /-- `let q (x, y) := scrut; body` with motive `fun z => motive` for the result type.
+  `motive` is under one binder (`z`), `body` under two (`x`, then `y`). -/
+  | split (q : R) (scrut : Term R) (z : Name) (motive : Term R) (x y : Name) (body : Term R)
+  /-- the unit type in `Sort l`: `True` at level 0, `Unit` at level 1 -/
+  | unit (level : Level)
+  | tt
+  /-- the empty type in `Sort l`: `False` at level 0, `Empty` at level 1 -/
+  | empty (level : Level)
+  /-- `absurd t : motive`, given `t : empty l` -/
+  | absurd (motive t : Term R)
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/
@@ -79,6 +95,15 @@ def instLevels (ps : List Name) (us : List Level) : Term R → Term R
   | .app f a => .app (instLevels ps us f) (instLevels ps us a)
   | .letE x q t v b => .letE x q (instLevels ps us t) (instLevels ps us v) (instLevels ps us b)
   | .ann t ty => .ann (instLevels ps us t) (instLevels ps us ty)
+  | .sigma x q a b => .sigma x q (instLevels ps us a) (instLevels ps us b)
+  | .pair a b => .pair (instLevels ps us a) (instLevels ps us b)
+  | .fst t => .fst (instLevels ps us t)
+  | .snd t => .snd (instLevels ps us t)
+  | .split q s z m x y b =>
+    .split q (instLevels ps us s) z (instLevels ps us m) x y (instLevels ps us b)
+  | .unit l => .unit (l.instParams ps us)
+  | .empty l => .empty (l.instParams ps us)
+  | .absurd m t => .absurd (instLevels ps us m) (instLevels ps us t)
   | t => t
 
 /-- All level parameter names mentioned in a term. -/
@@ -88,6 +113,10 @@ def levelParamsUsed : Term R → List Name
   | .pi _ _ _ a b | .app a b | .ann a b => levelParamsUsed a ++ levelParamsUsed b
   | .lam _ b => levelParamsUsed b
   | .letE _ _ t v b => levelParamsUsed t ++ levelParamsUsed v ++ levelParamsUsed b
+  | .sigma _ _ a b | .pair a b | .absurd a b => levelParamsUsed a ++ levelParamsUsed b
+  | .fst t | .snd t => levelParamsUsed t
+  | .split _ s _ m _ _ b => levelParamsUsed s ++ levelParamsUsed m ++ levelParamsUsed b
+  | .unit l | .empty l => l.params
   | _ => []
 
 end Term

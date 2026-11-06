@@ -173,7 +173,7 @@ pretty printer prints surface syntax.
 Stage 4 has several steps, each committed separately:
 
 1. **Universe polymorphism** ✅ (below)
-2. Type-directed conversion, Σ / ⊤ / ⊥ with η, and names kept as metadata
+2. **Type-directed conversion, Σ / ⊤ / ⊥ with η** ✅ (below)
 3. Indexed descriptions and μ / ν with their eliminators
 4. Observational equality: a proof-irrelevant `Prop`, `Eq` computed by type, and `cast`
 5. Surface `inductive` / `structure` / `match`, compiled to eliminators
@@ -201,3 +201,31 @@ Optional:
 * **4.4** Postpone level constraints such as `max ?u ?v =?= 1` instead of failing.
 * **4.5** Hide inserted implicit arguments when pretty printing (`id Type`, not
   `id (Type 1) Type`). This needs the binder info of the head's type.
+
+### 4b: Σ, Unit, Empty, and type-directed conversion
+
+Structs are Σ types ending in `Unit`, and the Σ binder names are the field names:
+`(x : Unit) × (y : Unit) × Unit` supports `p.y`. Pairs have η (`p ≡ (p.1, p.2)`),
+and so does `Unit` (`u ≡ ()`).
+
+η for `Unit` can't be decided without types, so **conversion is now type-directed**
+(`conv tys A a b`, `convTy`, and `convNe` for neutrals), and neutral spines hold
+general eliminations (`Elim`: application, `.1`, `.2`, `let (x, y) := …`, `absurd`).
+These changes landed in stage 1's files. Stage 1's exercises keep their numbers, and
+the new constructor cases inside them are labelled 4.3–4.8.
+
+Quantities: `(1 x : A) × B` is a pair whose first field is linear. `p.1` and `p.2`
+each use `p`, so a linear pair is consumed with `let 1 (x, y) := p; …`. An erased
+field (`(0 n : A) × B`) can't be projected at all.
+
+| #   | Where              | What                                                       |
+|-----|--------------------|------------------------------------------------------------|
+| 4.3 | `Core/Eval.lean`   | `eval` cases for Σ / pairs / Unit / Empty                  |
+| 4.4 | `Core/Eval.lean`   | `vSplit`, `vFst`, `vSnd`                                   |
+| 4.5 | `Core/Eval.lean`   | `quote` for the new values and eliminations                |
+| 4.6 | `Core/Conv.lean`   | η for pairs and Unit; `convTy` and `convNe` cases          |
+| 4.7 | `Core/Check.lean`  | typing rules (in the module docstring)                     |
+| 4.8 | `Elab/Unify.lean`  | unification cases                                          |
+| 4.9 | `Elab/Term.lean`   | `elabFields`: field access by name                         |
+
+`examples/pairs.wiz` shows it all.

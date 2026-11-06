@@ -42,6 +42,15 @@ partial def zonk (l : Lvl) (t : Term R) : ElabM R (Term R) := do
       | .ann tm ty => pure (.ann (← zonk l tm) (← zonk l ty))
       | .sort u => pure (.sort (← instLevel u))
       | .const n us => pure (.const n (← us.mapM instLevel))
+      | .sigma x q a b => pure (.sigma x q (← zonk l a) (← zonk (l + 1) b))
+      | .pair a b => pure (.pair (← zonk l a) (← zonk l b))
+      | .fst t => pure (.fst (← zonk l t))
+      | .snd t => pure (.snd (← zonk l t))
+      | .split q s z m x y b =>
+        pure (.split q (← zonk l s) z (← zonk (l + 1) m) x y (← zonk (l + 2) b))
+      | .unit u => pure (.unit (← instLevel u))
+      | .empty u => pure (.empty (← instLevel u))
+      | .absurd m t => pure (.absurd (← zonk l m) (← zonk l t))
       | other => pure other
     return (← args.mapM (zonk l)).foldl .app h'
 where
@@ -58,6 +67,9 @@ partial def Term.mvars : Term R → Array Nat
   | .pi _ _ _ a b | .app a b | .ann a b => a.mvars ++ b.mvars
   | .lam _ b => b.mvars
   | .letE _ _ ty v b => ty.mvars ++ v.mvars ++ b.mvars
+  | .sigma _ _ a b | .pair a b | .absurd a b => a.mvars ++ b.mvars
+  | .fst t | .snd t => t.mvars
+  | .split _ s _ m _ _ b => s.mvars ++ m.mvars ++ b.mvars
   | _ => #[]
 
 /-- Does the term mention a level metavariable? -/
@@ -67,6 +79,10 @@ partial def Term.hasLevelMVar : Term R → Bool
   | .pi _ _ _ a b | .app a b | .ann a b => a.hasLevelMVar || b.hasLevelMVar
   | .lam _ b => b.hasLevelMVar
   | .letE _ _ ty v b => ty.hasLevelMVar || v.hasLevelMVar || b.hasLevelMVar
+  | .sigma _ _ a b | .pair a b | .absurd a b => a.hasLevelMVar || b.hasLevelMVar
+  | .fst t | .snd t => t.hasLevelMVar
+  | .split _ s _ m _ _ b => s.hasLevelMVar || m.hasLevelMVar || b.hasLevelMVar
+  | .unit l | .empty l => l.hasMVar
   | _ => false
 
 /-- Fail if `t` still contains unsolved metas, pointing at the first one's hole. -/

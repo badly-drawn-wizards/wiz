@@ -1,0 +1,18 @@
+-- Stage 4b: Σ, Unit, Empty. `lake exe wiz check examples/pairs.wiz`
+
+def swap {A B : Type} (p : A × B) : B × A := (p.2, p.1)
+
+-- A struct is a Σ ending in Unit; the binder names are the field names.
+def Point : Type := (x : Unit) × (y : Unit) × Unit
+def origin : Point := ((), (), ())
+#reduce fun (p : Point) => p.y
+
+-- Linear pairs must be taken apart with a let-pattern (projecting twice uses p twice).
+def lswap {A B : Type} (1 p : (1 x : A) × B) : (1 y : B) × A :=
+  let 1 (x, y) := p
+  (y, x)
+
+-- η for Unit is definitional.
+def eta (u : Unit) (P : Unit → Type) (h : P ()) : P u := h
+
+def efq {A : Type} (e : Empty) : A := absurd e
