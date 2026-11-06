@@ -78,6 +78,15 @@ def lookupLocal (ctx : LocalCtx R) (x : Name) : Option (Nat × VTy R) := Id.run 
     if n == x && x != "_" then return some (i, ty)
   none
 
+/-- **Exercise 4.9.** Field access by name: `t.f₁.f₂…`. Starting from `t : ty`, for
+each field name walk the Σ telescope of the (forced) type: if the current Σ's binder
+name is the field, project with `fst`; otherwise move on with `snd`, instantiating the
+second component's type with the first projection. Throw if the field isn't found.
+Returns the projected term and its type. -/
+partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : List Name) :
+    ElabM R (Term R × VTy R) := do
+  sorry
+
 /-- **Exercise 3.7.** Insert implicit applications: while the type forces to an
 *implicit* Π, apply the term to a fresh metavariable and instantiate the codomain with
 the metavariable's value. -/
@@ -85,11 +94,16 @@ partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
     ElabM R (Term R × VTy R) := do
   sorry
 
-/-- Unify, turning a failure into a readable type mismatch at `stx`. -/
+/-- Unify, turning a failure into a readable type mismatch at `stx`.
+
+Unification is untyped, so it misses the η-rule for `Unit` (`P x =?= P ()` with
+`x : Unit`). When it fails, we ask the kernel's type-directed `convTy`, which treats
+unsolved metas as rigid, before giving up. -/
 def unifyAt (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : ElabM R Unit :=
   fun s => match unify ctx.lvl expected inferred s with
     | .ok r => .ok r
     | .error e =>
+      if convTy s.globals ctx.types.reverse.toArray expected inferred then .ok ((), s) else
       let show' (v : VTy R) := (quote s.globals ctx.lvl v).pretty ctx.names
       .error { info := (ctx.withInfo stx).info,
                msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})" }
@@ -168,6 +182,51 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
       unifyAt ctx body expected ty
       pure t
 
+/-- Check `(a, b, c)` against a (right-nested) Σ. -/
+partial def checkTuple (ctx : LocalCtx R) (items : List Syntax) (expected : VTy R) :
+    ElabM R (Term R) := do
+  match items with
+  | [] => throwAt ctx.info "empty tuple"
+  | [t] => check ctx t expected
+  | t :: rest =>
+    match ← force expected with
+    | .sigma _ _ A B =>
+      let a ← check ctx t A
+      let b ← checkTuple ctx rest (← instM B (← evalIn ctx a))
+      pure (.pair a b)
+    | expected =>
+      let (tm, ty) ← inferTuple ctx items
+      unifyAt ctx t expected ty
+      pure tm
+
+/-- Infer a tuple's type as a non-dependent Σ. -/
+partial def inferTuple (ctx : LocalCtx R) (items : List Syntax) : ElabM R (Term R × VTy R) := do
+  match items with
+  | [] => throwAt ctx.info "empty tuple"
+  | [t] => infer ctx t
+  | t :: rest =>
+    let (a, aty) ← infer ctx t
+    let (b, bty) ← inferTuple ctx rest
+    let g ← getGlobals
+    -- the second component's type, weakened under the Σ binder
+    let bTerm := quote g (ctx.lvl + 1) bty
+    return (.pair a b, .sigma "_" QuantitySyntax.explicitDefault aty (.mk (Val.var ctx.lvl :: ctx.env) bTerm))
+
+/-- `let q (x, y) := s; body`, check mode only (the motive is the expected type). -/
+partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
+  let q ← elabQuantity ctx .default (stx.getArg 1).args[0]?
+  let x := ((stx.getArg 3).getId?).getD "_"
+  let y := ((stx.getArg 5).getId?).getD "_"
+  let (s, sty) ← infer ctx (stx.getArg 8)
+  match ← force sty with
+  | .sigma _ _ A B =>
+    let g ← getGlobals
+    let motive := quote g (ctx.lvl + 1) expected
+    let ctx₂ := (ctx.bind x A).bind y (← instM B (Val.var ctx.lvl))
+    let body ← check ctx₂ (stx.getArg 10) expected
+    pure (.split q s "z" motive x y body)
+  | sty => throwAt (ctx.withInfo (stx.getArg 8)).info s!"let (x, y) := ... expects a pair, got {← showVal ctx sty}"
+
 /-- `fun` in inference mode: untyped binders get a metavariable as their type. -/
 partial def inferFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     ElabM R (Term R × VTy R) := do
@@ -217,6 +276,24 @@ partial def elabPis (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     let (cod, l₂) ← elabPis (ctx.bind b.name (← evalIn ctx ty)) rest body
     return (.pi b.name b.bi q ty cod, .imax l₁ l₂)
 
+/-- `(x : A) × (y : B) × C`, like `elabPis`. -/
+partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
+    ElabM R (Term R × VTy R) := do
+  match bs with
+  | [] =>
+    let (t, l) ← checkType ctx body
+    return (t, .sort l)
+  | b :: rest =>
+    let (ty, l₁) ← match b.type with
+      | some s => checkType ctx s
+      | none => pure (← freshMeta ctx s!"the type of {b.name}", ← freshLevelMeta)
+    let q ← elabQuantity ctx b.bi b.qty
+    let (cod, s) ← elabSigmas (ctx.bind b.name (← evalIn ctx ty)) rest body
+    let l₂ ← match ← force s with
+      | .sort l => pure l
+      | _ => freshLevelMeta
+    return (.sigma b.name q ty cod, .sort (.max l₁ l₂))
+
 /-- **Exercise 3.9.** Infer the type of an application `f a₁ … aₙ` (`term.app`, with
 `f` = `stx.getArg 0` and the arguments in `(stx.getArg 1).args`).
 
@@ -248,7 +325,24 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
           ls.toList.mapM elabLevel
         | none => d.levelParams.mapM fun _ => freshLevelMeta
       return (.const x us, ← evalIn {} (d.type.instLevels d.levelParams us))
-    | none => throwAt ctx.info s!"unknown identifier '{x}'"
+    | none =>
+      -- built-in types
+      let builtinLevel : Option Level := match explicitLevels with
+        | some _ => none
+        | none => some (if x == "True" || x == "False" then 0 else 1)
+      match x, explicitLevels with
+      | "Unit", some #[l] | "Empty", some #[l] =>
+        let l ← elabLevel l
+        return (if x == "Unit" then .unit l else .empty l, .sort l)
+      | "Unit", none | "True", none => return (.unit builtinLevel.get!, .sort builtinLevel.get!)
+      | "Empty", none | "False", none => return (.empty builtinLevel.get!, .sort builtinLevel.get!)
+      | _, _ =>
+      -- field access: `p.x.y`
+      match x.splitOn "." with
+      | base :: f :: fs =>
+        let (t, ty) ← infer ctx (.node stx.info "term.ident" #[.ident stx.info base])
+        elabFields ctx t ty (f :: fs)
+      | _ => throwAt ctx.info s!"unknown identifier '{x}'"
   | "term.type" | "term.sort" =>
     let l ← match (stx.getArg 1).args[0]? with
       | some ls => elabLevel ls
@@ -279,6 +373,24 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.forall" =>
     let (t, l) ← elabPis ctx ((stx.getArg 1).args.flatMap binderViews).toList (stx.getArg 3)
     return (t, .sort l)
+  | "term.depSigma" =>
+    let bs := (binderViews (stx.getArg 0)).toList
+    elabSigmas ctx bs (stx.getArg 2)
+  | "term.prod" =>
+    let (a, l₁) ← checkType ctx (stx.getArg 0)
+    let (b, l₂) ← checkType (ctx.bind "_" (← evalIn ctx a)) (stx.getArg 2)
+    return (.sigma "_" QuantitySyntax.explicitDefault a b, .sort (.max l₁ l₂))
+  | "term.tuple" =>
+    inferTuple ctx (#[stx.getArg 1] ++ ((stx.getArg 3).args.filter (!· matches .atom ..))).toList
+  | "term.unitVal" => return (.tt, .unit 1)
+  | "term.proj" =>
+    let (t, ty) ← infer ctx (stx.getArg 0)
+    match ← force ty, (stx.getArg 2).getNat? with
+    | .sigma _ _ A _, some 1 => return (.fst t, A)
+    | .sigma _ _ _ B, some 2 => return (.snd t, ← instM B (vFst (← evalIn ctx t)))
+    | ty, _ => throwAt ctx.info s!"cannot project from a value of type {← showVal ctx ty}"
+  | "term.letPair" | "term.absurd" =>
+    throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
   | "term.num" | "term.str" => throwAt ctx.info "literals need data types (stage 4)"
   | k => throwAt ctx.info s!"no elaborator for syntax kind {k}"
 

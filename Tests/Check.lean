@@ -148,4 +148,38 @@ def qttGroup : Group where
         (lams ["A", "x"] (.letE "B" zero ty "A" (.ann "x" "B")))] }
   ]
 
+/-! ## Structural types -/
+
+def structGroup : Group where
+  name := "check: structural types"
+  exercise := "Exercise 4.7"
+  cases := [
+    { name := "swap with projections", run := fun _ =>
+        accepts [Raw.defn "swap" (pi' "A" () ty (pi' "B" () ty (arr () (.sigma "_" () "A" "B") (.sigma "_" () "B" "A"))))
+          (lams ["A", "B", "p"] (.pair (.snd "p") (.fst "p")))] },
+    { name := "Σ lives in the larger universe", run := fun _ =>
+        accepts [Raw.defn "S" (.sort 1) (.sigma "A" () ty "A")] },
+    { name := "linear swap with let (x, y) := p", run := fun _ =>
+        accepts [Raw.defn "swap" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" "B") (.sigma "y" one "B" "A"))))
+          (lams ["A", "B", "p"] (.split one "p" "z" (.sigma "y" one "B" "A") "x" "y" (.pair "y" "x")))] },
+    { name := "linear pair projected twice is rejected", run := fun _ =>
+        rejects [Raw.defn "swap" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" "B") (.sigma "y" one "B" "A"))))
+          (lams ["A", "B", "p"] (.pair (.snd "p") (.fst "p")))] isQty "a quantity error" },
+    { name := "erased field cannot be projected", run := fun _ =>
+        rejects [Raw.defn "bad" (forallA (pi' "B" zero ty (arr many (.sigma "x" zero "A" "B") "A")))
+          (lams ["A", "B", "p"] (.fst "p"))] (fun | .other .. => true | _ => false) "a projection error" },
+    { name := "erased field can be bound by split and ignored", run := fun _ =>
+        accepts [Raw.defn "ok" (forallA (pi' "B" zero ty (arr one (.sigma "x" zero "A" "B") "B")))
+          (lams ["A", "B", "p"] (.split one "p" "z" "B" "x" "y" "y"))] },
+    { name := "unit η: P () → P u", run := fun _ =>
+        accepts (R := Unit) [Raw.defn "eta"
+          (pi' "u" () (.unit 1) (pi' "P" () (arr () (.unit 1) ty) (arr () (.app "P" .tt) (.app "P" "u"))))
+          (lams ["u", "P", "x"] "x")] },
+    { name := "ex falso", run := fun _ =>
+        accepts (R := Unit) [Raw.defn "efq" (pi' "A" () ty (arr () (.empty 1) "A"))
+          (lams ["A", "e"] (.absurd "A" "e"))] },
+    { name := "() only checks against Unit", run := fun _ =>
+        rejects (R := Unit) [Raw.defn "bad" (.empty 1) .tt] (fun _ => true) "an error" }
+  ]
+
 end Tests.Check

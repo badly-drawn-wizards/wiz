@@ -49,6 +49,39 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── switch
     Γ ⊢ t ⇐ A ⊣ U
 
+## Structural types (stage 4b)
+
+    Γ ⊢ A type@i     Γ, x:A ⊢ B type@j
+    ──────────────────────────────── sigma
+    Γ ⊢ (q x : A) × B ⇒ Sort (max i j) ⊣ 0ₙ
+
+    Γ ⊢ a ⇐ A ⊣ U₁     Γ ⊢ b ⇐ B[a/x] ⊣ U₂
+    ──────────────────────────────── pair      (check only)
+    Γ ⊢ (a, b) ⇐ (q x : A) × B ⊣ q·U₁ + U₂
+
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q
+    ──────────────────────────────── fst       (an erased field can't be projected)
+    Γ ⊢ t.1 ⇒ A ⊣ U
+
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U
+    ──────────────────────────────── snd
+    Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ U
+
+    Γ ⊢ s ⇒ (p x : A) × B ⊣ U₁     Γ, z : (p x : A) × B ⊢ M type
+    Γ, x :(q·p) A, y :q B ⊢ b ⇐ M[(x, y)/z] ⊣ (u_y :: u_x :: U₂)
+    le u_y q     le u_x (q·p)
+    ──────────────────────────────── split
+    Γ ⊢ let q (x, y) := s; b ⇒ M[s/z] ⊣ q·U₁ + U₂
+
+    Γ ⊢ Unit_l ⇒ Sort l      Γ ⊢ () ⇐ Unit_l      Γ ⊢ Empty_l ⇒ Sort l
+
+    Γ ⊢ M type     Γ ⊢ t ⇒ Empty_l ⊣ U
+    ──────────────────────────────── absurd
+    Γ ⊢ absurd M t ⇒ M ⊣ U
+
+`split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
+using both on a linear pair uses it twice.
+
 `Γ ⊢ A type@i` means `A ⇒ Sort i`, with its usage **thrown away**: types live in
 the erased (0) fragment, so they may mention 0-quantity variables freely.
 
@@ -122,6 +155,9 @@ def define (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) (val : Val R) : Ctx R :
 
 def eval (ctx : Ctx R) (t : Term R) : Val R := Wiz.eval ctx.globals ctx.env t
 
+/-- The types of the locals indexed by level, as `conv` wants them. -/
+def tys (ctx : Ctx R) : Array (VTy R) := ctx.types.reverse.toArray
+
 variable [QuantitySyntax R] [DecidableEq R]
 
 /-- Render a value for error messages. -/
@@ -143,15 +179,23 @@ def popUsage (x : Name) (q : R) : Usage R → TCM (Usage R)
 mutual
 
 /-- **Exercise 1.6.** Check `t` against the type `ty`. Implement the `lam` and `letE`
-rules here and fall back to `infer` + `conv` for everything else. -/
+rules here and fall back to `infer` + `convTy` for everything else.
+
+**Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, ty with
   | .lam x body, .pi _ _ q dom cod => sorry
   | .letE x q tty val body, _ => sorry
+  -- Exercise 4.7a
+  | .pair a b, .sigma _ q A B => sorry
+  | .tt, .unit _ => sorry
   | _, _ => sorry
 
 /-- **Exercise 1.7.** Infer the type of `t`. See the rules in the module docstring.
-`checkType` (below) handles the "`A type@i`" premises. -/
+`checkType` (below) handles the "`A type@i`" premises.
+
+**Exercise 4.7b** (stage 4b): `sigma`, `fst`, `snd`, `split`, `unit`, `empty`,
+`absurd`. `pair` and `tt` can only be checked. -/
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   match t with
   | .mvar m => throw (.other s!"the kernel does not accept metavariables (?m{m})")
@@ -163,6 +207,15 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .app f a => sorry
   | .letE x q tty val body => sorry
   | .ann tm tty => sorry
+  -- Exercise 4.7b
+  | .sigma x q a b => sorry
+  | .fst t => sorry
+  | .snd t => sorry
+  | .split q s z m x y b => sorry
+  | .unit l => sorry
+  | .empty l => sorry
+  | .absurd m t => sorry
+  | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
 
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.
 The usage is discarded: type positions are erased. -/

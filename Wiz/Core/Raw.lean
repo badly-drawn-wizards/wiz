@@ -22,6 +22,16 @@ inductive Raw (R : Type) where
   | app (fn arg : Raw R)
   | letE (x : Name) (q : R) (ty val body : Raw R)
   | ann (tm ty : Raw R)
+  | sigma (x : Name) (q : R) (a b : Raw R)
+  | pair (a b : Raw R)
+  | fst (t : Raw R)
+  | snd (t : Raw R)
+  | split (q : R) (scrut : Raw R) (z : Name) (motive : Raw R) (x y : Name) (body : Raw R)
+  /-- `Unit.{l}` -/
+  | unit (l : Nat)
+  | tt
+  | empty (l : Nat)
+  | absurd (motive t : Raw R)
   deriving Repr, Inhabited
 
 namespace Raw
@@ -39,6 +49,16 @@ def toTerm (scope : List Name := []) : Raw R → Term R
   | .app f a => .app (f.toTerm scope) (a.toTerm scope)
   | .letE x q t v b => .letE x q (t.toTerm scope) (v.toTerm scope) (b.toTerm (x :: scope))
   | .ann t ty => .ann (t.toTerm scope) (ty.toTerm scope)
+  | .sigma x q a b => .sigma x q (a.toTerm scope) (b.toTerm (x :: scope))
+  | .pair a b => .pair (a.toTerm scope) (b.toTerm scope)
+  | .fst t => .fst (t.toTerm scope)
+  | .snd t => .snd (t.toTerm scope)
+  | .split q s z m x y b =>
+    .split q (s.toTerm scope) z (m.toTerm (z :: scope)) x y (b.toTerm (y :: x :: scope))
+  | .unit l => .unit (Level.ofNat l)
+  | .tt => .tt
+  | .empty l => .empty (Level.ofNat l)
+  | .absurd m t => .absurd (m.toTerm scope) (t.toTerm scope)
 
 /-! ## DSL -/
 

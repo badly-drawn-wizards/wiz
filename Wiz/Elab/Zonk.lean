@@ -30,6 +30,9 @@ partial def Term.mvars : Term R → Array Nat
   | .pi _ _ _ a b | .app a b | .ann a b => a.mvars ++ b.mvars
   | .lam _ b => b.mvars
   | .letE _ _ ty v b => ty.mvars ++ v.mvars ++ b.mvars
+  | .sigma _ _ a b | .pair a b | .absurd a b => a.mvars ++ b.mvars
+  | .fst t | .snd t => t.mvars
+  | .split _ s _ m _ _ b => s.mvars ++ m.mvars ++ b.mvars
   | _ => #[]
 
 /-- Does the term mention a level metavariable? -/
@@ -39,6 +42,10 @@ partial def Term.hasLevelMVar : Term R → Bool
   | .pi _ _ _ a b | .app a b | .ann a b => a.hasLevelMVar || b.hasLevelMVar
   | .lam _ b => b.hasLevelMVar
   | .letE _ _ ty v b => ty.hasLevelMVar || v.hasLevelMVar || b.hasLevelMVar
+  | .sigma _ _ a b | .pair a b | .absurd a b => a.hasLevelMVar || b.hasLevelMVar
+  | .fst t | .snd t => t.hasLevelMVar
+  | .split _ s _ m _ _ b => s.hasLevelMVar || m.hasLevelMVar || b.hasLevelMVar
+  | .unit l | .empty l => l.hasMVar
   | _ => false
 
 /-- Fail if `t` still contains unsolved metas, pointing at the first one's hole. -/

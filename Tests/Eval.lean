@@ -52,24 +52,67 @@ def evalGroup : Group where
         (nf' (pi' "A" () ty (.app idR "A"))) }
   ]
 
-def isConv (a b : Raw Unit) (g : Globals Unit := axiomsG) : Bool :=
-  conv g 0 (eval g [] a.toTerm) (eval g [] b.toTerm)
+/-- Axioms for conversion tests: `A : Type`, `f : A → A`, `a b : A`, `u : Unit`,
+`p : A × A`. -/
+def convG : Globals Unit :=
+  [Raw.axiom "A" ty, Raw.axiom "f" (arr () "A" "A"), Raw.axiom "a" "A", Raw.axiom "b" "A"].foldl
+    Globals.insert {}
+  |>.insert { name := "u", type := .unit 1, value := none }
+  |>.insert { name := "p", type := .sigma "x" () (.const "A" []) (.const "A" []), value := none }
+
+/-- Are `x` and `y` convertible at type `t`? -/
+def isConv (t x y : Raw Unit) : Bool :=
+  let ev (r : Raw Unit) := eval convG [] r.toTerm
+  conv convG #[] (ev t) (ev x) (ev y)
+
+def isConvTy (x y : Raw Unit) : Bool :=
+  let ev (r : Raw Unit) := eval convG [] r.toTerm
+  convTy convG #[] (ev x) (ev y)
+
+def aa : Raw Unit := arr () "A" "A"
 
 def convGroup : Group where
   name := "conv"
   exercise := "Exercise 1.4"
   cases := [
-    { name := "Type ≡ Type", run := fun _ => check (isConv ty ty) "" },
-    { name := "Type ≢ Type 1", run := fun _ => check (!isConv ty (.sort 1)) "" },
-    { name := "α-equivalence: λx. x ≡ λy. y", run := fun _ => check (isConv idR (lams ["y"] "y")) "" },
-    { name := "β: (λx. x) a ≡ a", run := fun _ => check (isConv (.app idR "a") "a") "" },
-    { name := "η: λx. f x ≡ f", run := fun _ => check (isConv (lams ["x"] (.app "f" "x")) "f") "" },
-    { name := "η (other side): f ≡ λx. f x", run := fun _ => check (isConv "f" (lams ["x"] (.app "f" "x"))) "" },
-    { name := "different axioms: f ≢ a", run := fun _ => check (!isConv "f" "a") "" },
-    { name := "λx y. x ≢ λx y. y", run := fun _ => check (!isConv constR (lams ["x", "y"] "y")) "" },
-    { name := "church 2 + 2 ≡ 4", run := fun _ => check (isConv (apps addR [church 2, church 2]) (church 4)) "" },
+    { name := "Type ≡ Type", run := fun _ => check (isConvTy ty ty) "" },
+    { name := "Type ≢ Type 1", run := fun _ => check (!isConvTy ty (.sort 1)) "" },
+    { name := "α-equivalence: λx. x ≡ λy. y",
+      run := fun _ => check (isConv aa idR (lams ["y"] "y")) "" },
+    { name := "β: (λx. x) a ≡ a", run := fun _ => check (isConv "A" (.app idR "a") "a") "" },
+    { name := "η: λx. f x ≡ f", run := fun _ => check (isConv aa (lams ["x"] (.app "f" "x")) "f") "" },
+    { name := "η (other side): f ≡ λx. f x",
+      run := fun _ => check (isConv aa "f" (lams ["x"] (.app "f" "x"))) "" },
+    { name := "different axioms: a ≢ b", run := fun _ => check (!isConv "A" "a" "b") "" },
+    { name := "f a ≢ f b", run := fun _ => check (!isConv "A" (.app "f" "a") (.app "f" "b")) "" },
+    { name := "λx y. x ≢ λx y. y",
+      run := fun _ => check (!isConv (arr () "A" aa) constR (lams ["x", "y"] "y")) "" },
     { name := "Π: (A : Type) → A ≢ (A : Type) → Type",
-      run := fun _ => check (!isConv (pi' "A" () ty "A") (pi' "A" () ty ty)) "" }
+      run := fun _ => check (!isConvTy (pi' "A" () ty "A") (pi' "A" () ty ty)) "" }
+  ]
+
+def structGroup : Group where
+  name := "conv: structural types"
+  exercise := "Exercises 4.3–4.6"
+  cases := [
+    { name := "β for pairs: (a, b).1 ≡ a", run := fun _ =>
+        check (isConv "A" (.fst (.pair "a" "b")) "a") "" },
+    { name := "η for pairs: p ≡ (p.1, p.2)", run := fun _ =>
+        check (isConv (.sigma "x" () "A" "A") "p" (.pair (.fst "p") (.snd "p"))) "" },
+    { name := "η for unit: u ≡ ()", run := fun _ =>
+        check (isConv (.unit 1) "u" .tt) "" },
+    { name := "p.1 ≢ p.2", run := fun _ =>
+        check (!isConv "A" (.fst "p") (.snd "p")) "" },
+    { name := "split computes on pairs", run := fun _ =>
+        check (isConv "A" (.split () (.pair "a" "b") "z" "A" "x" "y" "y") "b") "" },
+    { name := "nf: (fun q => q.2) (a, b) ⇝ b", run := fun _ =>
+        checkEq "b" (nf' (.app (lams ["q"] (.snd "q")) (.pair "a" "b")) convG) },
+    { name := "nf of a stuck split", run := fun _ =>
+        checkEq "let (x, y) := p; f y"
+          (nf' (.split () "p" "z" "A" "x" "y" (.app "f" "y")) convG) },
+    { name := "Σ types compare structurally", run := fun _ => do
+        check (isConvTy (.sigma "x" () "A" "A") (.sigma "y" () "A" "A")) "names don't matter"
+        check (!isConvTy (.sigma "x" () "A" "A") (.sigma "x" () "A" (.unit 1))) "" }
   ]
 
 end Tests.Eval

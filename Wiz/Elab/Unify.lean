@@ -27,8 +27,8 @@ namespace Wiz
 variable {R : Type}
 
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
-A neutral `?m sp` whose meta has a solution `v` becomes `v` applied to `sp`. Anything
-else is returned unchanged. -/
+A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
+`sp` applied (`vElims`). Anything else is returned unchanged. -/
 partial def force (v : Val R) : ElabM R (Val R) := do
   sorry
 
@@ -44,11 +44,11 @@ def PRen.lift (p : PRen) : PRen :=
   { dom := p.dom + 1, cod := p.cod + 1, ren := p.ren.insert p.cod p.dom }
 
 /-- **Exercise 3.2.** Invert a spine into a partial renaming. `gamma` is the size of the
-current context. Every spine entry must force to a bound variable with an empty spine
-(`.neutral (.local x) #[]`), and no variable may occur twice. Otherwise throw (at
-`{}`), saying the problem is outside the pattern fragment. The i-th spine variable
-maps to level i. -/
-def invert (gamma : Lvl) (sp : Array (Val R)) : ElabM R PRen := do
+current context. Every spine entry must be an application (`Elim.app v`) whose
+argument forces to a bound variable with an empty spine (`.neutral (.local x) #[]`),
+and no variable may occur twice. Otherwise throw (at `{}`), saying the problem is
+outside the pattern fragment. The i-th spine variable maps to level i. -/
+def invert (gamma : Lvl) (sp : Array (Elim R)) : ElabM R PRen := do
   sorry
 
 /-- **Exercise 3.3.** Rename a value into a term in the solution's context, checking
@@ -57,15 +57,18 @@ scope and occurs.
 * A local `x` must be in `p.ren`; it becomes `.var (p.dom - ren[x] - 1)`. Otherwise
   throw a scope error.
 * A meta `?m'` with `m' == m` fails the occurs check. Otherwise it is kept.
-* Spines are renamed elementwise. Binders go under `p.lift` with a fresh variable
-  `Val.var p.cod`. Force first! -/
+* Spines are renamed elimination by elimination. Binders go under `p.lift` with a
+  fresh variable `Val.var p.cod` (twice for a `split` body). Force first!
+
+(The structural types of stage 4b are already handled in the solution's style. Add
+them when you get there.) -/
 partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   sorry
 
 /-- **Exercise 3.4.** Solve `?m sp =?= rhs` in a context of size `gamma`: invert the
 spine, rename `rhs`, wrap the result in `sp.size` lambdas, and evaluate it in the
 empty environment to get the solution. Record it with `solveMeta`. -/
-def solve (gamma : Lvl) (m : Nat) (sp : Array (Val R)) (rhs : Val R) : ElabM R Unit := do
+def solve (gamma : Lvl) (m : Nat) (sp : Array (Elim R)) (rhs : Val R) : ElabM R Unit := do
   sorry
 
 /-- Does level metavariable `m` occur in `l`? -/
@@ -102,13 +105,28 @@ failure. Force both sides first, then:
   head" means the same name, with the levels unified pairwise.
 * Two flex neutrals with the same meta: unify the spines (a simple approximation).
 * A flex neutral against anything: `solve`.
-* Anything else fails. -/
+* Anything else fails.
+
+**Exercise 4.8** (stage 4b): `sigma`, `pair` (with η: `(a, b) =?= t` unifies `a` with
+`t.1` and `b` with `t.2`), `unit`, `tt`, `empty`; and the other eliminations in
+`unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   sorry
 
-partial def unifySpine (l : Lvl) (sp sp' : Array (Val R)) : ElabM R Unit := do
+partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
   unless sp.size == sp'.size do throwAt {} "spine length mismatch"
-  for a in sp, b in sp' do unify l a b
+  let g ← getGlobals
+  for e in sp, e' in sp' do
+    match e, e' with
+    | .app a, .app b => unify l a b
+    | .fst, .fst | .snd, .snd => pure ()
+    | .split q _ m _ _ b, .split q' _ m' _ _ b' =>
+      unless q == q' do throwAt {} "quantity mismatch"
+      unify (l + 1) (← instM m (Val.var l)) (← instM m' (Val.var l))
+      unify (l + 2) (Closure.inst2 g b (Val.var l) (Val.var (l + 1)))
+        (Closure.inst2 g b' (Val.var l) (Val.var (l + 1)))
+    | .absurd m, .absurd m' => unify l m m'
+    | _, _ => throwAt {} "spine mismatch"
 
 end
 

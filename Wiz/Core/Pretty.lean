@@ -34,6 +34,10 @@ def Term.hasVar {R : Type} (ix : Nat) : Term R → Bool
   | .lam _ b => b.hasVar (ix + 1)
   | .app f a | .ann f a => f.hasVar ix || a.hasVar ix
   | .letE _ _ ty v b => ty.hasVar ix || v.hasVar ix || b.hasVar (ix + 1)
+  | .sigma _ _ a b => a.hasVar ix || b.hasVar (ix + 1)
+  | .pair a b | .absurd a b => a.hasVar ix || b.hasVar ix
+  | .fst t | .snd t => t.hasVar ix
+  | .split _ s _ m _ _ b => s.hasVar ix || m.hasVar (ix + 1) || b.hasVar (ix + 2)
   | _ => false
 
 /-- `Prop`, `Type`, `Type 2`, `Type u`, `Sort u`, `Type (max u v)`, ... -/
@@ -79,7 +83,37 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
     paren (prec > 0)
       s!"let {qtyPrefix .default q}{x'} : {ty.prettyPrec names 0} := {val.prettyPrec names 0}; {body.prettyPrec (x' :: names) 0}"
   | .ann tm ty => s!"({tm.prettyPrec names 0} : {ty.prettyPrec names 0})"
+  | .sigma x q a b =>
+    if q == QuantitySyntax.explicitDefault && !b.hasVar 0 then
+      paren (prec > 35) s!"{a.prettyPrec names 36} × {b.prettyPrec ("_" :: names) 35}"
+    else
+      let x' := freshen names x
+      paren (prec > 35)
+        s!"({qtyPrefix .default q}{x'} : {a.prettyPrec names 0}) × {b.prettyPrec (x' :: names) 35}"
+  | t@(.pair ..) =>
+    let parts := tuple t #[]
+    s!"({", ".intercalate (parts.map (·.prettyPrec names 0)).toList})"
+  | .fst t => s!"{t.prettyPrec names 1024}.1"
+  | .snd t => s!"{t.prettyPrec names 1024}.2"
+  | .split q s _ _ x y b =>
+    let x' := freshen names x
+    let y' := freshen (x' :: names) y
+    paren (prec > 0)
+      s!"let {qtyPrefix .default q}({x'}, {y'}) := {s.prettyPrec names 0}; {b.prettyPrec (y' :: x' :: names) 0}"
+  | .unit l => match l.toNat? with
+    | some 0 => "True"
+    | some 1 => "Unit"
+    | _ => s!"Unit.\{{l}}"
+  | .tt => "()"
+  | .empty l => match l.toNat? with
+    | some 0 => "False"
+    | some 1 => "Empty"
+    | _ => s!"Empty.\{{l}}"
+  | .absurd _ t => paren (prec > 1022) s!"absurd {t.prettyPrec names maxArg}"
 where
+  tuple : Term R → Array (Term R) → Array (Term R)
+    | .pair a b, acc => tuple b (acc.push a)
+    | t, acc => acc.push t
   maxArg : Nat := 1023
   lams (names : List Name) : Term R → Array Name → Array Name × List Name × Term R
     | .lam x b, acc => let x' := freshen names x; lams (x' :: names) b (acc.push x')

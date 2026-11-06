@@ -103,6 +103,16 @@ def levelTrailing : List TrailingParser := [
 | `term.depArrow`      | 25   | binder "→" term |
 | `term.app` (trailing)| lead | f [args+] |
 | `term.arrow` (trailing)| 25 | A "→" B |
+| `term.depSigma`      | 35   | binder "×" term |
+| `term.prod` (trailing) | 35 | A "×" B |
+| `term.tuple`         | max  | "(" term "," [terms] ")" |
+| `term.unitVal`       | max  | "(" ")" |
+| `term.proj` (trailing) | max | t "." num |
+| `term.letPair`       | lead | "let" [quantity] "(" ident "," ident ")" ":=" term [";"] term |
+| `term.absurd`        | lead | "absurd" term |
+
+Field access by name (`p.x`) needs no syntax: `p.x` lexes as one dotted identifier,
+and the elaborator resolves it.
 -/
 def termLeading : List LeadingParser := [
   { kind := "term.ident", prec := maxPrec, p := ident },
@@ -125,13 +135,23 @@ def termLeading : List LeadingParser := [
       optional ";", term] },
   { kind := "term.forall", prec := leadPrec,
     p := seqs ["∀", many1 simpleBinder, ",", term] },
-  { kind := "term.depArrow", prec := 25, p := seqs [bracketedBinder true, arrow, term 25] }
+  { kind := "term.depArrow", prec := 25, p := seqs [bracketedBinder true, arrow, term 25] },
+  { kind := "term.depSigma", prec := 35, p := seqs [explicitBinder true, "×", term 35] },
+  { kind := "term.tuple", prec := maxPrec,
+    p := seqs ["(", withoutPosition (seqs [term, ",", sepBy1 term ","]), ")"] },
+  { kind := "term.unitVal", prec := maxPrec, p := seqs ["(", ")"] },
+  { kind := "term.letPair", prec := leadPrec,
+    p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ")", ":=", term,
+      optional ";", term] },
+  { kind := "term.absurd", prec := leadPrec, p := seqs ["absurd", term maxPrec] }
 ]
 
 def termTrailing : List TrailingParser := [
   { kind := "term.app", prec := leadPrec, lhsPrec := maxPrec,
     p := many1 (seqs [colGt, term argPrec]) },
-  { kind := "term.arrow", prec := 25, lhsPrec := 26, p := seqs [arrow, term 25] }
+  { kind := "term.arrow", prec := 25, lhsPrec := 26, p := seqs [arrow, term 25] },
+  { kind := "term.prod", prec := 35, lhsPrec := 36, p := seqs ["×", term 35] },
+  { kind := "term.proj", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, num] }
 ]
 
 /-- Commands. Each command is parsed inside `withPosition`, so an application can't
