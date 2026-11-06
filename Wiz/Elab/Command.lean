@@ -77,6 +77,46 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
   if let some v := val then ensureNoMVars v info
   pure (ty, val)
 
+partial def syntaxMentions (n : Name) : Syntax → Bool
+  | .ident _ m => m == n
+  | .node _ _ as => as.any (syntaxMentions n)
+  | _ => false
+
+/-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
+arguments of `T`; a right-hand side that calls `f` makes it structurally recursive. -/
+def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R) := do
+  let info := cmd.info
+  let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
+  let tyStx := (cmd.getArg 4).getArg 1
+  let (ty, _) ← Elab.checkType ctx tyStx
+  let ty ← zonk ctx.lvl ty
+  ensureNoMVars ty info
+  let alts := (cmd.getArg 5).args
+  let clauses : List (MClause R) := alts.toList.map fun a =>
+    { pats := ((a.getArg 1).args.filter (!· matches .atom ..)).toList, rhs := a.getArg 3 }
+  let n := (clauses.head?.map (·.pats.length)).getD 0
+  -- introduce `n` arguments of the type
+  let mut ctx' := ctx
+  let mut tyv ← evalIn ctx ty
+  let mut vars : List Lvl := []
+  let mut names : List Name := []
+  for i in [0:n] do
+    let .pi x _ _ A B ← force tyv | throwAt tyStx.info s!"{name} takes fewer than {n} arguments"
+    let x := if x == "_" then s!"a{i}" else x
+    vars := vars ++ [ctx'.lvl]
+    names := names ++ [x]
+    tyv ← instM B (Val.var ctx'.lvl)
+    ctx' := ctx'.bind x A
+  let mentions (stx : Syntax) : Bool := syntaxMentions name stx
+  let rc : Option RecCtx := if clauses.any (fun c => mentions c.rhs) then some { fn := name } else none
+  let body ← compileMatch ctx' vars clauses tyv rc true
+  solveSortConstraints
+  let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body)
+  let fullTy := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b) ty
+  let val ← zonk 0 val
+  ensureNoMVars val info
+  pure (fullTy, val)
+
 def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := []) :
     Except ElabError α :=
   (x.run { globals := g, levelParams }).map (·.1)
@@ -122,6 +162,16 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
+  | "command.defEqns" =>
+    let name := ((cmd.getArg 1).getId?).getD "_"
+    let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
+    if s.globals.contains name then
+      report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
+    else
+      let r := runElab s.globals (elabDefEqns name cmd) levelParams
+      match r with
+      | .ok (ty, val) => addDeclChecked name levelParams ty (some val)
+      | .error e => report .error e.info e.msg
   | "command.inductive" | "command.structure" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?

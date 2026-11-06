@@ -385,3 +385,26 @@ with their constructor names (`.cons .zero .zero .nil`, including erased fields)
 | #    | Where                  | What                                        |
 |------|------------------------|---------------------------------------------|
 | 4.21 | `Elab/Inductive.lean`  | `ctorDesc`: a constructor's description      |
+
+### 4e (part 2): pattern matching and structural recursion
+
+```
+def add : Nat → Nat → Nat
+  | .zero, n => n
+  | .succ m, n => .succ (add m n)
+
+def head {A : Type} {n : Nat} : Vec A (.succ n) → A
+  | .cons x _ => x                      -- the `nil` case is impossible, so it's omitted
+```
+
+`match` and equation-style definitions compile to case trees over `T.casesOn`
+(`compileMatch` in `Elab/Term.lean`). Later match variables are reverted into the
+motive. Index *variables* are generalised by the motive, which is Cockx's solution
+rule without an equation. Other indices get an equation `idx_c = ξ`, which
+observational equality computes. When it contains `False`, the case is closed
+automatically with `absurd`. Recursive calls on a recursive field of the first
+argument compile through `T.rec`, and the other arguments may change between calls.
+
+Not yet: the solution rule *with* an equation (`tail`, `zip`: a constructor's index
+variable has to be replaced by the scrutinee's index, transporting the hypotheses that
+mention it), course-of-values recursion, well-founded recursion, and copatterns.
