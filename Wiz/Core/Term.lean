@@ -13,13 +13,25 @@ Names on binders (`x`) are kept only for pretty-printing.
 The quantity `q : R` on `pi` and `letE` is the QTT annotation. Lambdas carry no
 quantity or domain: they are only ever *checked* against a `pi`, which supplies both.
 
-Not in the core yet (see ROADMAP.md): metavariables (stage 3), μ/ν data (stage 4),
-universe polymorphism, Σ-types.
+`BinderInfo` on `pi` says whether the argument is explicit or implicit. The kernel
+ignores it; the elaborator uses it to insert implicit arguments.
+
+`mvar` is a metavariable, a hole the elaborator (stage 3) is still solving. The kernel
+evaluates it to a stuck neutral and rejects it in the type checker. Elaborated terms
+have all their metavariables replaced before they reach the kernel.
+
+Not in the core yet (see ROADMAP.md): μ/ν data (stage 4), universe polymorphism,
+Σ-types.
 -/
 
 namespace Wiz
 
 abbrev Name := String
+
+inductive BinderInfo where
+  | default
+  | implicit
+  deriving Repr, BEq, DecidableEq, Inhabited
 
 inductive Term (R : Type) where
   /-- de Bruijn index -/
@@ -28,8 +40,9 @@ inductive Term (R : Type) where
   | const (name : Name)
   /-- `Type l`. Non-cumulative for now: `Type l : Type (l+1)` only. -/
   | sort (level : Nat)
-  /-- `(x :q dom) → cod`, where `cod` lives under one extra binder -/
-  | pi (x : Name) (q : R) (dom cod : Term R)
+  /-- `(q x : dom) → cod` (or `{q x : dom} → cod`), where `cod` lives under one extra
+  binder -/
+  | pi (x : Name) (bi : BinderInfo) (q : R) (dom cod : Term R)
   /-- `λ x. body`, where `body` lives under one extra binder -/
   | lam (x : Name) (body : Term R)
   | app (fn arg : Term R)
@@ -37,6 +50,8 @@ inductive Term (R : Type) where
   | letE (x : Name) (q : R) (ty val body : Term R)
   /-- `(tm : ty)`, used to switch from checking to inference -/
   | ann (tm ty : Term R)
+  /-- metavariable number `id` (elaborator only) -/
+  | mvar (id : Nat)
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/

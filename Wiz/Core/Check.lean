@@ -121,7 +121,7 @@ def define (ctx : Ctx R) (x : Name) (q : R) (ty : VTy R) (val : Val R) : Ctx R :
 
 def eval (ctx : Ctx R) (t : Term R) : Val R := Wiz.eval ctx.globals ctx.env t
 
-variable [ToString R]
+variable [QuantitySyntax R] [DecidableEq R]
 
 /-- Render a value for error messages. -/
 def showVal (ctx : Ctx R) (v : Val R) : String :=
@@ -131,7 +131,7 @@ def showTerm (ctx : Ctx R) (t : Term R) : String := t.pretty ctx.names
 
 end Ctx
 
-variable [QRig R] [DecidableEq R] [ToString R]
+variable [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
 /-- **Exercise 1.5.** Leave the scope of a binder `x` declared at quantity `q`:
 pop the binder's own usage off the head of the vector and check it is compatible
@@ -145,7 +145,7 @@ mutual
 rules here and fall back to `infer` + `conv` for everything else. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, ty with
-  | .lam x body, .pi _ q dom cod => sorry
+  | .lam x body, .pi _ _ q dom cod => sorry
   | .letE x q tty val body, _ => sorry
   | _, _ => sorry
 
@@ -153,10 +153,11 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
 `checkType` (below) handles the "`A type@i`" premises. -/
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   match t with
+  | .mvar m => throw (.other s!"the kernel does not accept metavariables (?m{m})")
   | .var ix => sorry
   | .const n => sorry
   | .sort l => sorry
-  | .pi x q dom cod => sorry
+  | .pi x _ q dom cod => sorry
   | .lam .. => throw (.cannotInfer (ctx.showTerm t))
   | .app f a => sorry
   | .letE x q tty val body => sorry

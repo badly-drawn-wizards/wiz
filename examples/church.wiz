@@ -1,0 +1,25 @@
+-- Stage 3: `lake exe wiz check examples/church.wiz`
+
+def id {A : Type} (x : A) : A := x
+def comp {A B C : Type} (g : B → C) (f : A → B) (x : A) : C := g (f x)
+
+-- Church numerals
+def Nat : Type 1 := (A : Type) → (A → A) → A → A
+def zero : Nat := fun A s z => z
+def succ (n : Nat) : Nat := fun A s z => s (n A s z)
+def add (m n : Nat) : Nat := fun A s z => m A s (n A s z)
+def two : Nat := succ (succ zero)
+
+#reduce add two two
+
+-- Leibniz equality: `2 + 2 = 4` holds by computation.
+def Eq {A : Type 1} (x y : A) : Type 2 := (P : A → Type 1) → P x → P y
+def refl {A : Type 1} (x : A) : Eq x x := fun P px => px
+def twoPlusTwo : Eq (add two two) (succ (succ two)) := refl _
+
+-- Quantities: erased type, linear argument.
+def lid {0 A : Type} (1 x : A) : A := x
+#check lid
+
+-- Uncomment to see the kernel reject a duplicated linear variable:
+-- def dup {A : Type} (f : A → A → A) (1 x : A) : A := f x x

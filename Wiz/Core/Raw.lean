@@ -16,7 +16,7 @@ namespace Wiz
 inductive Raw (R : Type) where
   | var (x : Name)
   | sort (level : Nat)
-  | pi (x : Name) (q : R) (dom cod : Raw R)
+  | pi (x : Name) (bi : BinderInfo) (q : R) (dom cod : Raw R)
   | lam (x : Name) (body : Raw R)
   | app (fn arg : Raw R)
   | letE (x : Name) (q : R) (ty val body : Raw R)
@@ -33,7 +33,7 @@ def toTerm (scope : List Name := []) : Raw R → Term R
     | some ix => .var ix
     | none => .const x
   | .sort l => .sort l
-  | .pi x q a b => .pi x q (a.toTerm scope) (b.toTerm (x :: scope))
+  | .pi x bi q a b => .pi x bi q (a.toTerm scope) (b.toTerm (x :: scope))
   | .lam x b => .lam x (b.toTerm (x :: scope))
   | .app f a => .app (f.toTerm scope) (a.toTerm scope)
   | .letE x q t v b => .letE x q (t.toTerm scope) (v.toTerm scope) (b.toTerm (x :: scope))
@@ -53,10 +53,13 @@ def lams (xs : List Name) (b : Raw R) : Raw R := xs.foldr .lam b
 def apps (f : Raw R) (args : List (Raw R)) : Raw R := args.foldl .app f
 
 /-- `(x :q A) → B` -/
-def pi' (x : Name) (q : R) (a b : Raw R) : Raw R := .pi x q a b
+def pi' (x : Name) (q : R) (a b : Raw R) : Raw R := .pi x .default q a b
+
+/-- `{x :q A} → B` -/
+def ipi (x : Name) (q : R) (a b : Raw R) : Raw R := .pi x .implicit q a b
 
 /-- `A →q B` (non-dependent) -/
-def arr (q : R) (a b : Raw R) : Raw R := .pi "_" q a b
+def arr (q : R) (a b : Raw R) : Raw R := .pi "_" .default q a b
 
 end Raw
 

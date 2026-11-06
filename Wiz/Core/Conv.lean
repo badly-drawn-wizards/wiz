@@ -19,7 +19,7 @@ variable {R : Type} [DecidableEq R]
 
 Cases to handle:
 * `sort` vs `sort`: equal levels (no cumulativity yet).
-* `pi` vs `pi`: equal quantities, convertible domains, convertible codomains under a
+* `pi` vs `pi`: (binder info is irrelevant) equal quantities, convertible domains, convertible codomains under a
   fresh variable. (Should `(x :1 A) → B` and `(x :ω A) → B` be convertible? No --
   subtyping on quantities is a design choice you can revisit later.)
 * `lam` vs `lam`, and η: `lam` vs anything, anything vs `lam`.

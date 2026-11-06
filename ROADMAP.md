@@ -89,7 +89,7 @@ partial parses.
 Reading: Ullrich & de Moura, *Beyond Notations: Hygienic Macro Expansion for Theorem
 Proving Languages* (IJCAR 2020); the Lean 4 sources `Lean/Parser/*.lean`.
 
-## Stage 3: Elaborator
+## Stage 3: Elaborator ✅ scaffolded
 
 `Syntax → core Term`, with:
 

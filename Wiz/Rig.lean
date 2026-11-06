@@ -56,4 +56,16 @@ class QRig (R : Type) extends Rig R where
   add_le_add : ∀ a b c d, le a b = true → le c d = true → le (a + c) (b + d) = true
   mul_le_mul : ∀ a b c d, le a b = true → le c d = true → le (a * c) (b * d) = true
 
+/-- How quantities are written in surface syntax and printed back.
+
+Binders without a quantity get a default: Idris 2 uses ω for explicit binders and 0
+for implicit ones, since implicit arguments are almost always types or indices that
+should be erased. The pretty printer omits a quantity equal to the default. -/
+class QuantitySyntax (R : Type) where
+  /-- parse a quantity literal such as `0`, `1` or `ω` -/
+  ofLiteral : String → Option R
+  explicitDefault : R
+  implicitDefault : R
+  display : R → String
+
 end Wiz
