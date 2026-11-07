@@ -836,9 +836,23 @@ inductive MTm where
   | mu (l : Nat) (I D i : MTm)
   | con (x : MTm)
   | ind (l : Nat) (I D : MTm) (v : Nat) (P m i x : MTm)
+  /-- a global, from `globalDefs` -/
+  | const (name : String)
   deriving Inhabited
 
 namespace MTm
+
+/-- The global definitions (or axioms, without a value) the differential test uses, in
+order. -/
+def natD0 : MTm := darg (enum 2) (lam (ecase (desc 0 (unit 0)) (var 0) [dret star, drec star (dret star)]))
+def globalDefs : List (String × Option MTm × MTm) :=
+  [("idU", some (lam (var 0)), pi (univ 0) (univ 0)),
+   ("Nat", some (mu 0 (unit 0) natD0 star), univ 0),
+   ("zero", some (ann (con (pair (tag 2 0) (pair star star))) (const "Nat")), const "Nat"),
+   ("one", some (ann (con (pair (tag 2 1) (pair (const "zero") (pair star star)))) (const "Nat")), const "Nat"),
+   ("twice", some (lam (lam (app (var 1) (app (var 1) (var 0))))), pi (pi (univ 0) (univ 0)) (pi (univ 0) (univ 0))),
+   ("A", none, univ 0),
+   ("a", none, const "A")]
 
 def labels (k : Nat) : List Name := (List.range k).map (s!"a{·}")
 
@@ -879,6 +893,10 @@ partial def toWiz : MTm → String
   | mu l I D i => s!"(.mu {l} {I.toWiz} {D.toWiz} {i.toWiz})"
   | con x => s!"(.con {x.toWiz})"
   | ind l I D v P m i x => s!"(.ind {l} {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {i.toWiz} {x.toWiz})"
+  | const n => match globalDefs.find? (·.1 == n) with
+    | some (_, some v, ty) => s!"(.const \"{n}\" {v.toWiz} {ty.toWiz})"
+    | some (_, none, ty) => s!"(.axiomC \"{n}\" {ty.toWiz})"
+    | none => "(.var 999)"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -917,6 +935,7 @@ partial def toTerm : MTm → Term ZeroOneMany
   | mu l I D i => .mu (Level.ofNat l) I.toTerm D.toTerm i.toTerm .szInf none
   | con x => .con x.toTerm
   | ind l I D v P m i x => .ind (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm i.toTerm x.toTerm
+  | const n => .const n []
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -959,6 +978,7 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .mu l I D i _ _ => return mu (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i)
   | .con x => return con (← ofTerm x)
   | .ind l I D v P m i x => return ind (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm i) (← ofTerm x)
+  | .const n _ => some (const n)
   | _ => none
 
 /-- Printed like `show .nil` in `Kernel.wiz`. -/
@@ -999,6 +1019,7 @@ partial def pretty (l : Nat) : MTm → String
   | mu k I D i => s!"μ{k}({pretty l I}, {pretty l D}, {pretty l i})"
   | con x => s!"con({pretty l x})"
   | ind _ _ _ _ P m i x => s!"ind({pretty l P}, {pretty l m}, {pretty l i}, {pretty l x})"
+  | const n => n
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -1017,6 +1038,8 @@ def natTy : MTm := mu 0 (unit 0) natD star
 def natZero : MTm := ann (con (pair (tag 2 0) (pair star star))) natTy
 def natSucc (n : MTm) : MTm := ann (con (pair (tag 2 1) (pair n (pair star star)))) natTy
 
+def eqRefl' (A a : MTm) : MTm := refl A a
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
@@ -1034,14 +1057,22 @@ def samples : List MTm :=
    -- stuck on a variable
    ann (lam (ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 1))) star (var 0))) (pi natTy (enum 2)),
    -- an ill-typed method
-   ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (var 1)) star natZero]
+   ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (var 1)) star natZero,
+   -- globals: kept folded in types, unfolded when needed
+   const "idU", app (const "idU") (enum 2), ann star (eq (univ 0) (app (const "idU") (enum 2)) (enum 2)),
+   const "one", ann (const "zero") (const "Nat"), app (app (const "twice") (const "idU")) (const "A"),
+   eq (const "Nat") (const "zero") (const "one"), const "a", app (const "idU") (const "a"),
+   ann (lam (var 0)) (pi (const "A") (const "A")),
+   ann star (eq (enum 2) (ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 1))) star (const "one")) (tag 2 1)),
+   ann (eqRefl' (pi (univ 0) (univ 0)) (app (const "twice") (const "idU")))
+     (eq (pi (univ 0) (univ 0)) (app (const "twice") (const "idU")) (lam (var 0)))]
 
 /-- Random terms over `n` variables (a linear congruential generator), biased towards
 well-typed ones: annotated λs, applications of them, universes. -/
 partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
   let next (s : Nat) := (s * 1103515245 + 12345) % 2147483648
   let s := next seed
-  let pick := s / 65536 % 23
+  let pick := s / 65536 % 24
   if depth == 0 then
     if n > 0 && pick < 5 then (var (s / 7 % n), s) else (univ (s / 7 % 2), s)
   else match pick with
@@ -1125,6 +1156,12 @@ partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
       | _ =>
         -- `Desc.elim` into `Unit`: every method gives `tt`
         (delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))), s)
+    | 22 =>
+      -- a global, applied or not
+      let names := ["idU", "Nat", "zero", "one", "twice", "A", "a"]
+      let c := const (names[s / 5 % names.length]!)
+      let (a, s) := gen s (depth - 1) n
+      (if s / 3 % 2 == 0 then c else app c a, s)
     | 21 =>
       -- ill-typed or random data
       let (x, s) := gen s (depth - 1) n
@@ -1135,9 +1172,14 @@ end MTm
 
 /-- What the Lean kernel says about a closed term: its type (printed like the Wiz
 kernel prints) or `error`. -/
+def leanGlobals : Globals ZeroOneMany :=
+  MTm.globalDefs.foldl (fun g (n, v, ty) => match addDecl g { name := n, type := ty.toTerm, value := v.map MTm.toTerm } with
+    | .ok g' => g'
+    | .error _ => g) {}
+
 def leanVerdict (t : MTm) : String :=
-  match infer (R := ZeroOneMany) { globals := {} } t.toTerm with
-  | .ok (ty, _) => match MTm.ofTerm (quote ({} : Globals ZeroOneMany) 0 ty) with
+  match infer (R := ZeroOneMany) { globals := leanGlobals } t.toTerm with
+  | .ok (ty, _) => match MTm.ofTerm (quote leanGlobals 0 ty) with
     | some m => m.pretty 0
     | none => "?"
   | .error _ => "error"

@@ -1070,8 +1070,20 @@ it is stuck. The samples check that it computes (`tt : ind … 1 = #1` checks, a
 `= #0` doesn't) and agree with the Lean kernel.
 
 The Wiz kernel now covers the Lean kernel's dependent types, equality and data, apart
-from quantities, sizes, coinduction, globals and universe polymorphism. Next: those,
-or using it: checking real programs through the Wiz frontend.
+from quantities, sizes, coinduction, globals and universe polymorphism.
+
+### 14k: global constants ✅
+
+A global definition is a term `const name value type` that carries its (closed) value
+and type, shared rather than looked up in a table; an axiom is `axiomC name type`.
+Definitions are **glued** as in the Lean kernel: a constant applied to arguments keeps
+its name and spine together with its unfolding, quotation keeps the name, conversion
+compares two applications of the same constant by their arguments before unfolding
+(lazy delta), and `whnf` looks through them before matching on a value's shape. The
+differential test builds the same globals in the Lean kernel (with `addDecl`) and
+uses them in samples and random terms.
+
+Next: universe polymorphism (symbolic levels), then quantities, sizes, coinduction.
 
 ## Stage 11: tooling
 
