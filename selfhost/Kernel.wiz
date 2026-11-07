@@ -105,36 +105,36 @@ def show : Nat → Tm → String
   | l, .ann t ty => String.append (String.append "(" (show l t)) (String.append " : " (String.append (show l ty) ")"))
 
 -- the typing context: values of the variables, their types, the depth
-inductive Ctx where
+inductive TCtx where
   | mk (env : Env) (types : Env) (lvl : Nat)
-def Ctx.lvl : Ctx → Nat
+def TCtx.lvl : TCtx → Nat
   | .mk _ _ l => l
-def Ctx.env : Ctx → Env
+def TCtx.env : TCtx → Env
   | .mk e _ _ => e
-def Ctx.types : Ctx → Env
+def TCtx.types : TCtx → Env
   | .mk _ t _ => t
 -- a new variable of type `ty`
-def Ctx.bind (c : Ctx) (ty : Val) : Ctx := match c with
+def TCtx.bind (c : TCtx) (ty : Val) : TCtx := match c with
   | .mk e t l => .mk (.cons (fresh l) e) (.cons ty t) (l + 1)
 -- a new variable defined as `v`
-def Ctx.define (c : Ctx) (v ty : Val) : Ctx := match c with
+def TCtx.define (c : TCtx) (v ty : Val) : TCtx := match c with
   | .mk e t l => .mk (.cons v e) (.cons ty t) (l + 1)
 
-inductive Res where
+inductive TyRes where
   | ok (ty : Val)
   | err (msg : String)
 
-def showVal (c : Ctx) (v : Val) : String := show (Ctx.lvl c) (quote (Ctx.lvl c) v)
+def showVal (c : TCtx) (v : Val) : String := show (TCtx.lvl c) (quote (TCtx.lvl c) v)
 
 -- **Exercise 14.3.** Bidirectional type checking (`infer` and `check` in `Check.lean`).
 -- `check` returns the type it checked against.
 mutual
-def infer : Ctx → Tm → Res
+def infer : TCtx → Tm → TyRes
   --<sol
-  | c, .var i => .ok (lookup (Ctx.types c) i)
+  | c, .var i => .ok (lookup (TCtx.types c) i)
   | _, .univ n => .ok (.vuniv (n + 1))
   | c, .pi a b => match inferUniv c a with
-    | .ok (.vuniv i) => match inferUniv (Ctx.bind c (eval (Ctx.env c) a)) b with
+    | .ok (.vuniv i) => match inferUniv (TCtx.bind c (eval (TCtx.env c) a)) b with
       | .ok (.vuniv j) => .ok (.vuniv (Nat.max i j))
       | r => r
     | r => r
@@ -142,31 +142,31 @@ def infer : Ctx → Tm → Res
   | c, .app f a => match infer c f with
     | .ok fty => match fty with
       | .vpi dom env cod => match check c a dom with
-        | .ok _ => .ok (eval (.cons (eval (Ctx.env c) a) env) cod)
+        | .ok _ => .ok (eval (.cons (eval (TCtx.env c) a) env) cod)
         | r => r
       | ty => .err (String.append "not a function: its type is " (showVal c ty))
     | r => r
   | c, .letE ty v b => match inferUniv c ty with
     | .ok _ =>
-      let tyv := eval (Ctx.env c) ty;
+      let tyv := eval (TCtx.env c) ty;
       match check c v tyv with
-      | .ok _ => infer (Ctx.define c (eval (Ctx.env c) v) tyv) b
+      | .ok _ => infer (TCtx.define c (eval (TCtx.env c) v) tyv) b
       | r => r
     | r => r
   | c, .ann t ty => match inferUniv c ty with
-    | .ok _ => check c t (eval (Ctx.env c) ty)
+    | .ok _ => check c t (eval (TCtx.env c) ty)
     | r => r
   --|ex
   --| | _, _ => .err "not implemented"
   --sol>
-def check : Ctx → Tm → Val → Res
+def check : TCtx → Tm → Val → TyRes
   --<sol
   | c, .lam b, .vpi dom env cod =>
-    match check (Ctx.bind c dom) b (eval (.cons (fresh (Ctx.lvl c)) env) cod) with
+    match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
     | .ok _ => .ok (.vpi dom env cod)
     | r => r
   | c, t, ty => match infer c t with
-    | .ok ty' => match conv (Ctx.lvl c) ty ty' with
+    | .ok ty' => match conv (TCtx.lvl c) ty ty' with
       | .true => .ok ty
       | .false => .err (String.append (String.append "type mismatch: expected " (showVal c ty))
           (String.append ", got " (showVal c ty')))
@@ -175,7 +175,7 @@ def check : Ctx → Tm → Val → Res
   --| | _, _, _ => .err "not implemented"
   --sol>
 -- a type: its universe
-def inferUniv : Ctx → Tm → Res
+def inferUniv : TCtx → Tm → TyRes
   | c, t => match infer c t with
     | .ok ty => match ty with
       | .vuniv n => .ok (.vuniv n)
@@ -183,7 +183,7 @@ def inferUniv : Ctx → Tm → Res
     | r => r
 end
 
-def empty : Ctx := .mk .nil .nil 0
+def empty : TCtx := .mk .nil .nil 0
 
 -- type check a closed term: its type, or the error
 def typeOf (t : Tm) : String := match infer empty t with

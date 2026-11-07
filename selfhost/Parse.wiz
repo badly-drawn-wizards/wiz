@@ -435,3 +435,14 @@ def showRes : Res → String
 def parse (cats : List Cat) (tokens : List String) (cat : String) (text : String) : String :=
   let c := Ctx.mk (String.codes text) tokens cats .none 0;
   showRes (atEnd c (categoryParser c cat 0 (St.mk 0 0 .nil StrMap.empty)))
+
+-- the syntax tree of a whole input, for later stages
+inductive Parsed where
+  | ok (stx : Syntax)
+  | err (msg : String)
+def parseSyntax (cats : List Cat) (tokens : List String) (cat : String) (text : String) : Parsed :=
+  let c := Ctx.mk (String.codes text) tokens cats .none 0;
+  match atEnd c (categoryParser c cat 0 (St.mk 0 0 .nil StrMap.empty)) with
+  | .ok items _ => .ok (firstItem items)
+  | .err s => match s with
+    | .mk _ e x _ => .err ("error " +++ Nat.toString e +++ ": expected " +++ showExpected x)
