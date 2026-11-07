@@ -622,6 +622,44 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else if !s.globals.contains n then report .error cmd.info s!"unknown declaration {n}"
     else modify fun s => { s with builtins := (key, n) :: s.builtins,
                                   globals := { s.globals with builtins := (key, n) :: s.globals.builtins } }
+  | "command.extern" =>
+    -- an axiom, bound to a C function: the marshalling follows the Wiz type
+    let cname := ((cmd.getArg 1).getStr?).getD "_"
+    let header := if (cmd.getArg 2).isNone then "" else (((cmd.getArg 2).getArg 3).getStr?).getD ""
+    let name := ((cmd.getArg 3).getId?).getD "_"
+    if s.globals.contains name then report .error (cmd.getArg 3).info s!"'{name}' has already been declared"
+    else
+      let elabTy := runElab (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+        (elabDeclTerms #[] (some (cmd.getArg 5)) none cmd.info) []
+      match elabTy with
+      | .error e => report .error e.info e.msg
+      | .ok (ty, _) =>
+        let kind (t : Term R) : Option Char := match t with
+          | .unit _ => some 'v'
+          | t => match (Term.spine t).1 with
+            | .const "Nat" _ => some 'n'
+            | .const "UInt64" _ => some 'u'
+            | .const "Float64" _ => some 'f'
+            | .const "String" _ => some 's'
+            | .const "Bool" _ => some 'b'
+            | _ => none
+        let rec params : Term R → List (Term R) × Term R
+          | .pi _ _ _ A B => let (ps, r) := params B; (A :: ps, r)
+          | t => ([], t)
+        let (ps, res) := params ty
+        let (io, res) := match Term.spine res with
+          | (.const "IO" _, [A]) => (true, A)
+          | _ => (false, res)
+        match ps.mapM kind, kind res with
+        | some ks, some rk =>
+          let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}:{header}"
+          match addDecl s.globals { name, type := ty, value := none } with
+          | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
+                                              globals := { g with builtins := (key, name) :: g.builtins } }
+          | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
+        | _, _ =>
+          let msg := "a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool or Unit (the result may be in IO)"
+          report .error cmd.info msg
   | "command.attrMacro" =>
     let k := ((cmd.getArg 3).getId?).getD "_"
     let f := ((cmd.getArg 5).getId?).getD "_"

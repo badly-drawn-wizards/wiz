@@ -50,8 +50,10 @@ def buildCmd (path out : String) (llvm : Bool) : IO UInt32 := do
   let some s ← elabFile path | pure 1
   match Build.irProgram s "main" with
   | .error e => IO.eprintln e; pure 1
-  | .ok (decls, _) =>
-    let r ← if llvm then Build.compileLLVM (LLVM.program decls) out else Build.compileC (C.program decls) out
+  | .ok (decls, ty) =>
+    let io := Build.isIO ty
+    let r ← if llvm then Build.compileLLVM (LLVM.program decls io) out (C.glue (C.externs decls))
+      else Build.compileC (C.program decls io) out
     match r with
     | .error e => IO.eprintln e; pure 1
     | .ok () => pure 0
@@ -61,7 +63,7 @@ def runCmd (path : String) (llvm : Bool) : IO UInt32 := do
   let dir ← IO.FS.createTempDir
   match ← Build.runGlobal s "main" dir llvm with
   | .error e => IO.eprintln e; pure 1
-  | .ok v => IO.println v; pure 0
+  | .ok v => IO.print (if v.endsWith "\n" then v else v ++ "\n"); pure 0
 
 def main : List String → IO UInt32
   | ["parse", path] => parseCmd path

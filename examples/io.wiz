@@ -1,0 +1,12 @@
+import IO
+def loop : Nat → IO Unit
+  | .zero => IO.pure ()
+  | .succ n => do
+    IO.println (String.append "countdown " (Nat.toString (.succ n)));
+    loop n
+def main : IO Unit := do
+  IO.println "hello from Wiz";
+  IO.println (Float64.toString (Float64.div (Float64.ofNat 1) (Float64.ofNat 3)));
+  IO.println (Nat.toString (UInt64.toNat (UInt64.mul (UInt64.ofNat 1000000) (UInt64.ofNat 1000000))));
+  IO.println "λ unicode ✓";
+  loop 3

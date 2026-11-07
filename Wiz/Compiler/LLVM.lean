@@ -81,7 +81,7 @@ def expr (arities : Std.HashMap Name Nat) (env : Std.HashMap Var String) (x : St
       | "nat.succ" => "wiz_nat_succ" | "nat.pred" => "wiz_nat_pred"
       | "nat.add" => "wiz_nat_add" | "nat.sub" => "wiz_nat_sub" | "nat.mul" => "wiz_nat_mul"
       | "nat.beq" => "wiz_nat_beq" | "lazyTag" => "wiz_lazy_tag"
-      | _ => "wiz_unknown_prim"
+      | op => if (RVal.ExternSig.ofKey? op).isSome then C.externWrapper op else "wiz_unknown_prim"
     emit s!"  {x} = call i64 @{f}({args env as})"
   | .reset y => emit s!"  {x} = call i64 @wiz_reset(i64 {val env y})"
   | .reuse tok t as => do
@@ -172,13 +172,19 @@ declare void @wiz_unreachable()
 declare i32 @wiz_finish(i64)
 "
 
-/-- A whole LLVM module: the functions and a `main` that prints `wiz.entry`'s value. -/
-def program (decls : Array IR.Decl) : String :=
+/-- A whole LLVM module: the functions and a `main` that prints `wiz.entry`'s value (or
+runs it, for `IO`). The foreign wrappers are C (`C.glue`), compiled with the runtime. -/
+def program (decls : Array IR.Decl) (io : Bool := false) : String :=
   let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
   let parts := decls.map (decl arities)
   let globals := parts.foldl (fun acc (g, _) => acc ++ g) #[]
   let fns := parts.foldl (fun acc (_, f) => acc ++ f) #[]
-  runtimeDecls ++ "\n".intercalate globals.toList ++ "\n" ++ "\n".intercalate fns.toList ++
-    s!"\ndefine i32 @main() \{\n  %r = call i64 {fn "wiz.entry"}()\n  %c = call i32 @wiz_finish(i64 %r)\n  ret i32 %c\n}\n"
+  let externDecls := (C.externs decls).toList.map fun key =>
+    let n := RVal.nativeArity key
+    s!"declare i64 @{C.externWrapper key}({", ".intercalate (List.replicate n "i64")})\n"
+  let finish := if io then "wiz_finish_io" else "wiz_finish"
+  runtimeDecls ++ "declare i32 @wiz_finish_io(i64)\n" ++ String.join externDecls ++
+    "\n".intercalate globals.toList ++ "\n" ++ "\n".intercalate fns.toList ++
+    s!"\ndefine i32 @main() \{\n  %r = call i64 {fn "wiz.entry"}()\n  %c = call i32 @{finish}(i64 %r)\n  ret i32 %c\n}\n"
 
 end Wiz.LLVM

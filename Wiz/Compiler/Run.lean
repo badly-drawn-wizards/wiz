@@ -81,10 +81,26 @@ partial def toNat? : RVal → Option Nat
   | .obj 0 #[.obj 1 #[], .obj 0 #[k, _]] => (toNat? k).map (· + 1)
   | _ => none
 
-def nativeArity : Name → Nat
-  | "nat.zero" => 0
-  | "nat.succ" | "nat.pred" => 1
-  | _ => 2
+/-- A foreign function's key: `extern:cname:kinds:result:io:header` (see `extern`). -/
+structure ExternSig where
+  cname : String
+  params : List Char
+  result : Char
+  io : Bool
+  header : String
+
+def ExternSig.ofKey? (key : Name) : Option ExternSig :=
+  match key.splitOn ":" with
+  | ["extern", c, ps, r, io, h] => some { cname := c, params := ps.toList, result := (r.toList.headD 'v'), io := io == "io", header := h }
+  | _ => none
+
+def nativeArity (key : Name) : Nat :=
+  match ExternSig.ofKey? key with
+  | some sig => sig.params.length + (if sig.io then 1 else 0)
+  | none => match key with
+    | "nat.zero" => 0
+    | "nat.succ" | "nat.pred" => 1
+    | _ => 2
 
 end RVal
 
@@ -144,7 +160,7 @@ partial def fireNative (op : Name) (args : Array RVal) : RVal :=
   | "nat.sub" => .nat (n 0 - n 1)
   | "nat.mul" => .nat (n 0 * n 1)
   | "nat.beq" => .obj 0 #[.obj (if n 0 == n 1 then 1 else 0) #[], .obj 0 #[.erased, .erased]]
-  | _ => panic! s!"unknown native operation {op}"
+  | _ => panic! s!"{op}: foreign functions only run in compiled code (wiz run)"
 
 partial def applyN (code : Code) (f : RVal) (as : List RVal) : RVal := as.foldl (apply code) f
 
