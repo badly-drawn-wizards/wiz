@@ -5,7 +5,8 @@ import IO
 -- analysis (stage 14f), `Prop` with proof irrelevance (stage 14g), observational
 -- equality (stage 14h), descriptions and data (stage 14i), induction (stage 14j),
 -- global constants (stage 14k) and universe-polymorphic ones (stage 14l), quantities
--- (stage 14m), sizes and subtyping (stage 14n), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
+-- (stage 14m), sizes and subtyping (stage 14n), sized recursion (stage 14o), `let`, and
+-- type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
 -- with closures (an environment and a body), values quote back to normal forms, and
 -- conversion compares values at their types (with η, and all proofs of a proposition
 -- equal). Values carry `Sort` levels: `Prop` is `Sort 0`, and `U n` is `Sort (n + 1)`.
@@ -97,6 +98,16 @@ inductive Tm where
   | szSuc (s : Tm)
   | sizeLt (s : Tm)
   | mus (l : Nat) (I D i s : Tm)
+  -- sized recursion and case analysis on `x : μ^s D i` (stage 4f)
+  | sfix (l : Nat) (I D : Tm) (v : Nat) (P f s i x : Tm)
+  | scase (l : Nat) (I D : Tm) (v : Nat) (P m s i x : Tm)
+  -- coinduction (stages 4d, 4f): `ν^s D i`, observation `out x : ⟦D⟧ (ν D) i`, a ν
+  -- constructor, sized corecursion and coiteration (unfolding a state `s : S i` by `step`)
+  | nu (l : Nat) (I D i s : Tm)
+  | out (x : Tm)
+  | cocon (x : Tm)
+  | scofix (l : Nat) (I D A f s i a : Tm)
+  | coit (l : Nat) (I D S step i s : Tm)
   -- induction on `x : μ D i`, into the motive `P : (i : I) → μ D i → Sort v`
   | ind (l : Nat) (I D : Tm) (v : Nat) (P m i x : Tm)
   -- a global definition, carrying its (closed) value and type, and a global axiom: the
@@ -135,6 +146,11 @@ inductive Val where
   | vszSuc (s : Val)
   | vsizeLt (s : Val)
   | vcon (x : Val)
+  | vnu (l : Nat) (I D i sz : Val)
+  | vcocon (x : Val)
+  -- unfoldings: they compute only when observed
+  | vscofix (l : Nat) (I D A f sz i a : Val)
+  | vcoit (l : Nat) (I D S step i s : Val)
   -- **glued**: a global definition applied to `sp`, and its unfolding (`Val.unfold` in
   -- the Lean kernel, computed eagerly here); `whnf` looks through it
   | vglued (h : Head) (sp : Spine) (v : Val)
@@ -154,6 +170,9 @@ inductive Spine where
   | sabsurd (sp : Spine) (motive : Val)
   | sdelim (sp : Spine) (v : Nat) (P mret marg mrec mhrec : Val)
   | sind (sp : Spine) (l : Nat) (I D : Val) (v : Nat) (P m i : Val)
+  | ssfix (sp : Spine) (l : Nat) (I D : Val) (v : Nat) (P f s i : Val)
+  | sscase (sp : Spine) (l : Nat) (I D : Val) (v : Nat) (P m s i : Val)
+  | sout (sp : Spine)
 -- what a neutral is stuck on: a variable (by level), or an equality, cast or proof
 -- that doesn't compute
 inductive Head where
@@ -250,8 +269,19 @@ def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
   | .mu l I D i => .mu l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls i)
   | .con x => .con (tmSubst ps ls x)
   | .szSuc sz => .szSuc (tmSubst ps ls sz)
+  | .sfix l I D v P f sz i x => .sfix l (tmSubst ps ls I) (tmSubst ps ls D) v (tmSubst ps ls P) (tmSubst ps ls f)
+      (tmSubst ps ls sz) (tmSubst ps ls i) (tmSubst ps ls x)
+  | .scase l I D v P m sz i x => .scase l (tmSubst ps ls I) (tmSubst ps ls D) v (tmSubst ps ls P) (tmSubst ps ls m)
+      (tmSubst ps ls sz) (tmSubst ps ls i) (tmSubst ps ls x)
   | .sizeLt sz => .sizeLt (tmSubst ps ls sz)
   | .mus l I D i sz => .mus l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls i) (tmSubst ps ls sz)
+  | .nu l I D i sz => .nu l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls i) (tmSubst ps ls sz)
+  | .out x => .out (tmSubst ps ls x)
+  | .cocon x => .cocon (tmSubst ps ls x)
+  | .scofix l I D A f sz i a => .scofix l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls A) (tmSubst ps ls f)
+      (tmSubst ps ls sz) (tmSubst ps ls i) (tmSubst ps ls a)
+  | .coit l I D S st i x => .coit l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls S) (tmSubst ps ls st)
+      (tmSubst ps ls i) (tmSubst ps ls x)
   | .ind l I D v P m i x => .ind l (tmSubst ps ls I) (tmSubst ps ls D) v (tmSubst ps ls P) (tmSubst ps ls m)
       (tmSubst ps ls i) (tmSubst ps ls x)
   | t => t
@@ -310,6 +340,7 @@ def canonical : Val → Bool
   | .venum _ => .true
   | .vdesc _ _ => .true
   | .vmu _ _ _ _ _ => .true
+  | .vnu _ _ _ _ _ => .true
   | .vsize => .true
   | .vsizeLt _ => .true
   | _ => .false
@@ -353,11 +384,22 @@ def tmEq : Tm → Tm → Bool
       (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f'))))))
   | .mu l a b c, .mu l' d e f => Bool.and (Nat.beq l l') (Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f)))
   | .con a, .con b => tmEq a b
+  | .sfix l a b v c d e f g, .sfix l' a' b' v' c' d' e' f' g' => Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v'))
+      (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (Bool.and (tmEq f f') (tmEq g g')))))))
+  | .scase l a b v c d e f g, .scase l' a' b' v' c' d' e' f' g' => Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v'))
+      (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (Bool.and (tmEq f f') (tmEq g g')))))))
   | .size, .size => .true
   | .szInf, .szInf => .true
   | .szSuc a, .szSuc b => tmEq a b
   | .sizeLt a, .sizeLt b => tmEq a b
   | .mus l a b c d, .mus l' a' b' c' d' => Bool.and (Nat.beq l l') (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (tmEq d d'))))
+  | .nu l a b c d, .nu l' a' b' c' d' => Bool.and (Nat.beq l l') (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (tmEq d d'))))
+  | .out a, .out b => tmEq a b
+  | .cocon a, .cocon b => tmEq a b
+  | .scofix l a b c d e f g, .scofix l' a' b' c' d' e' f' g' => Bool.and (Nat.beq l l')
+      (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (Bool.and (tmEq f f') (tmEq g g')))))))
+  | .coit l a b c d e f, .coit l' a' b' c' d' e' f' => Bool.and (Nat.beq l l')
+      (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f'))))))
   | .const n _ ls _ _, .const n' _ ls' _ _ => Bool.and (kStrEq n n') (lvlsEq ls ls')
   | .sortL l, .sortL l' => Nat.beq (lvlNat l) (lvlNat l')
   | .axiomC n _, .axiomC n' _ => kStrEq n n'
@@ -444,6 +486,25 @@ def hypsTm (l v : Nat) : Tm :=
     (tApps (.var 5) (args5 (.var 4) (.var 3) (.var 2) (.var 1) (.snd (.var 0)))));
   tLams 2 (.delim (Nat.max (l + 2) (v + 1)) P mret marg mrec mhrec (.var 0))
 
+-- `fun I D X Y f i xs => map …`: apply `f` to every recursive field
+def mapTm (l : Nat) : Tm :=
+  let tyL : Tm := .univ l;
+  -- E0 D1 I2, then X, Y, f, i, xs
+  let P : Tm := .lam (.pi (.pi (.var 2) tyL) (.pi (.pi (.var 3) tyL)
+    (.pi (.pi (.var 4) (.pi (.app (.var 2) (.var 0)) (.app (.var 2) (.var 1))))
+      (.pi (.var 5) (.pi (interpApp l (.var 6) (.var 4) (.var 3) (.var 0)) (interpApp l (.var 7) (.var 5) (.var 3) (.var 1)))))));
+  let mret := tLams 6 (.var 0);
+  -- xs0 i1 f2 Y3 X4 ih5 E6 S7 q8
+  let marg := tLams 9 (.pair (.fst (.var 0))
+    (tApps (.var 5) (args6 (.fst (.var 0)) (.var 4) (.var 3) (.var 2) (.var 1) (.snd (.var 0)))));
+  -- xs0 i1 f2 Y3 X4 ih5 E6 j7 q8
+  let mrec := tLams 9 (.pair (tApps (.var 2) (args2 (.var 7) (.fst (.var 0))))
+    (tApps (.var 5) (args5 (.var 4) (.var 3) (.var 2) (.var 1) (.snd (.var 0)))));
+  -- xs0 i1 f2 Y3 X4 ih5 E6 j7 H8 q9
+  let mhrec := tLams 10 (.pair (.lam (tApps (.var 3) (args2 (.app (.var 8) (.var 0)) (.app (.fst (.var 1)) (.var 0)))))
+    (tApps (.var 5) (args5 (.var 4) (.var 3) (.var 2) (.var 1) (.snd (.var 0)))));
+  tLams 2 (.delim (l + 2) P mret marg mrec mhrec (.var 0))
+
 -- **Exercise 14.1.** Evaluation, application and projections (`eval`, `vApp`, `vFst`,
 -- `vSnd` in `Eval.lean`).
 mutual
@@ -485,6 +546,35 @@ def vIndW : Nat → Val → Val → Nat → Val → Val → Val → Val → Val
     vapp (vapp (vapp m i) xs) hyps
   | l, I, D, v, P, m, i, .vne h sp => .vne h (.sind sp l I D v P m i)
   | _, _, _, _, _, _, _, x => x
+-- sized recursion (`vSfix`): on a constructor, `f ∞ rec i x`, where `rec j i y` recurses
+def vSfix (l : Nat) (I D : Val) (v : Nat) (P f sz i x : Val) : Val := match whnf x with
+  | .vcon xs =>
+    -- inside: y0 i1 j2 f3 P4 D5 I6
+    let rec_ : Val := .vlam (.cons f (.cons P (.cons D (.cons I .nil))))
+      (.lam (.lam (.sfix l (.var 6) (.var 5) v (.var 4) (.var 3) (.var 2) (.var 1) (.var 0))));
+    vapp (vapp (vapp (vapp f .vszInf) rec_) i) (.vcon xs)
+  | .vne h sp => .vne h (.ssfix sp l I D v P f sz i)
+  | x' => x'
+-- sized case analysis (`vScase`): `m ∞ i xs`
+def vScase (l : Nat) (I D : Val) (v : Nat) (P m sz i x : Val) : Val := match whnf x with
+  | .vcon xs => vapp (vapp (vapp m .vszInf) i) xs
+  | .vne h sp => .vne h (.sscase sp l I D v P m sz i)
+  | x' => x'
+-- observation (`vOut`): run one step of an unfolding, re-wrapping the recursive fields
+def vOut (x : Val) : Val := match whnf x with
+  | .vcocon xs => xs
+  | .vcoit l I D S st i s =>
+    -- fun j s => coit … j s;  inside: s0 j1 step2 S3 D4 I5
+    let f : Val := .vlam (.cons st (.cons S (.cons D (.cons I .nil))))
+      (.lam (.coit l (.var 5) (.var 4) (.var 3) (.var 2) (.var 1) (.var 0)));
+    vapp (vapp (vapp (vapp (vapp (vapp (vapp (eval .nil (mapTm l)) I) D) S) (nuFamily l I D)) f) i) (vapp (vapp st i) s)
+  | .vscofix l I D A f _ i a =>
+    -- fun i a => scofix … ∞ i a;  inside: a0 i1 f2 A3 D4 I5
+    let rec_ : Val := .vlam (.cons f (.cons A (.cons D (.cons I .nil))))
+      (.lam (.scofix l (.var 5) (.var 4) (.var 3) (.var 2) .szInf (.var 1) (.var 0)));
+    vOut (vapp (vapp (vapp (vapp f .vszInf) rec_) i) a)
+  | .vne h sp => .vne h (.sout sp)
+  | x' => x'
 -- `⟦D⟧ X i`
 def vInterp (l : Nat) (I D X i : Val) : Val :=
   vapp (vapp (vapp (vapp (eval .nil (interpTm l)) I) D) X) i
@@ -494,6 +584,11 @@ def muFamily (l : Nat) (I D : Val) : Val :=
 -- `fun j => μ D j` at size `s`
 def muFamilyAt (l : Nat) (I D sz : Val) : Val :=
   .vlam (.cons sz (.cons D (.cons I .nil))) (.mus l (.var 3) (.var 2) (.var 0) (.var 1))
+-- `fun j => ν D j`, and at size `s`
+def nuFamily (l : Nat) (I D : Val) : Val :=
+  .vlam (.cons D (.cons I .nil)) (.nu l (.var 2) (.var 1) (.var 0) .szInf)
+def nuFamilyAt (l : Nat) (I D sz : Val) : Val :=
+  .vlam (.cons sz (.cons D (.cons I .nil))) (.nu l (.var 3) (.var 2) (.var 0) (.var 1))
 -- `a = b` at `A`, by `A` (`vEq` in `Eval.lean`; the closures are the same templates)
 def vEq (A a b : Val) : Val := vEqW (whnf A) (whnf a) (whnf b)
 def vEqW : Val → Val → Val → Val
@@ -535,6 +630,7 @@ def vEqTypeW : Val → Val → Val
   | .venum k, .venum k' => levels k k'
   | .vdesc l I, .vdesc l' I' => .vne (.heqTy (.vdesc l I) (.vdesc l' I')) .snil
   | .vmu l I D i s, .vmu l' I' D' i' s' => .vne (.heqTy (.vmu l I D i s) (.vmu l' I' D' i' s')) .snil
+  | .vnu l I D i s, .vnu l' I' D' i' s' => .vne (.heqTy (.vnu l I D i s) (.vnu l' I' D' i' s')) .snil
   | X, Y => match Bool.and (canonical X) (canonical Y) with
     | .true => .vempty 0
     | .false => .vne (.heqTy X Y) .snil
@@ -577,6 +673,11 @@ def quoteSpine : Nat → Tm → Spine → Tm
     .delim v (quote l P) (quote l a) (quote l b) (quote l c) (quote l d) (quoteSpine l h sp)
   | l, h, .sind sp k I D v P m i =>
     .ind k (quote l I) (quote l D) v (quote l P) (quote l m) (quote l i) (quoteSpine l h sp)
+  | l, h, .ssfix sp k I D v P f sz i =>
+    .sfix k (quote l I) (quote l D) v (quote l P) (quote l f) (quote l sz) (quote l i) (quoteSpine l h sp)
+  | l, h, .sscase sp k I D v P m sz i =>
+    .scase k (quote l I) (quote l D) v (quote l P) (quote l m) (quote l sz) (quote l i) (quoteSpine l h sp)
+  | l, h, .sout sp => .out (quoteSpine l h sp)
 def quoteHead : Nat → Head → Tm
   | l, .hvar x => .var (l - x - 1)
   | l, .heq A a b => .eq (quote l A) (quote l a) (quote l b)
@@ -652,6 +753,10 @@ def show (names : List String) : Nat → Tm → String
   | l, .mu k I D i => String.append (String.append (String.append "μ" (Nat.toString k)) (String.append "(" (show names l I)))
       (String.append (String.append ", " (show names l D)) (String.append ", " (String.append (show names l i) ")")))
   | l, .con x => String.append (String.append "con(" (show names l x)) ")"
+  | l, .sfix _ _ _ _ P f sz i x => String.append (String.append (String.append "sfix(" (show names l P)) (String.append ", " (show names l f)))
+      (String.append (String.append ", " (show names l sz)) (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")"))))
+  | l, .scase _ _ _ _ P m sz i x => String.append (String.append (String.append "scase(" (show names l P)) (String.append ", " (show names l m)))
+      (String.append (String.append ", " (show names l sz)) (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")"))))
   | _, .size => "Size"
   | _, .szInf => "∞"
   | l, .szSuc sz => String.append (String.append "↑(" (show names l sz)) ")"
@@ -659,6 +764,15 @@ def show (names : List String) : Nat → Tm → String
   | l, .mus k I D i sz => String.append (String.append (String.append "μ" (Nat.toString k)) (String.append "(" (show names l I)))
       (String.append (String.append ", " (show names l D)) (String.append (String.append ", " (show names l i))
         (String.append ", " (String.append (show names l sz) ")"))))
+  | l, .nu k I D i sz => String.append (String.append (String.append "ν" (Nat.toString k)) (String.append "(" (show names l I)))
+      (String.append (String.append ", " (show names l D)) (String.append (String.append ", " (show names l i))
+        (String.append ", " (String.append (show names l sz) ")"))))
+  | l, .out x => String.append (String.append "out(" (show names l x)) ")"
+  | l, .cocon x => String.append (String.append "cocon(" (show names l x)) ")"
+  | l, .scofix _ _ _ A f sz i a => String.append (String.append (String.append "scofix(" (show names l A)) (String.append ", " (show names l f)))
+      (String.append (String.append ", " (show names l sz)) (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l a) ")"))))
+  | l, .coit _ _ _ S st i x => String.append (String.append (String.append "coit(" (show names l S)) (String.append ", " (show names l st)))
+      (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")")))
   | _, .const n _ ls _ _ => String.append n (showLvls ls)
   | _, .sortL l => match lvlNat l with
     | .zero => "Prop"
@@ -761,6 +875,11 @@ def imax (i j : Nat) : Nat := match j with
   | .zero => 0
   | .succ _ => Nat.max i j
 
+-- the size of an observation's fields: `↑s ↦ s`, anything else ↦ `∞`
+def sizePredOrInf (sz : Val) : Val := match whnf sz with
+  | .vszSuc s => s
+  | _ => .vszInf
+
 -- The type of a neutral, and the universe of a type (`typeSort?` in `Conv.lean`).
 mutual
 -- the type of the variable at level `x` after the eliminations `sp`
@@ -779,6 +898,11 @@ def typeOfNe : TCtx → Head → Spine → Val
   | _, _, .sabsurd _ m => m
   | _, h, .sdelim sp _ P _ _ _ _ => vapp P (.vne h sp)
   | _, h, .sind sp _ _ _ _ P _ i => vapp (vapp P i) (.vne h sp)
+  | _, h, .ssfix sp _ _ _ _ P _ _ i => vapp (vapp P i) (.vne h sp)
+  | _, h, .sscase sp _ _ _ _ P _ _ i => vapp (vapp P i) (.vne h sp)
+  | c, x, .sout sp => match whnf (typeOfNe c x sp) with
+    | .vnu l I D i sz => vInterp l I D (nuFamilyAt l I D (sizePredOrInf sz)) i
+    | ty => ty
 -- the level of the universe a type lives in
 def sortOf (c : TCtx) (ty : Val) : Option Nat := sortOfW c (whnf ty)
 def sortOfW : TCtx → Val → Option Nat
@@ -798,6 +922,7 @@ def sortOfW : TCtx → Val → Option Nat
   | _, .venum _ => .some 1
   | _, .vdesc l _ => .some (l + 2)
   | _, .vmu l _ _ _ _ => .some (l + 1)
+  | _, .vnu l _ _ _ _ => .some (l + 1)
   | _, .vsize => .some 1
   | _, .vsizeLt _ => .some 1
   | c, .vne x sp => match whnf (typeOfNe c x sp) with
@@ -895,6 +1020,31 @@ def sizePred (sz : Val) : Option Val := match whnf sz with
   | .vszSuc s => .some s
   | _ => .none
 
+-- `f : (s :0 Size) → ((j :0 Size< s) → (i : I) → (y : μ^j D i) → P i y) → (i : I) → (x : μ^s D i) → P i x`
+def sfixFunTy (l : Nat) (I D P : Val) : Val :=
+  eval (.cons P (.cons D (.cons I .nil))) (.piq .qz .size
+    (.pi (.piq .qz (.sizeLt (.var 0))
+        (.pi (.var 4) (.pi (.mus l (.var 5) (.var 4) (.var 0) (.var 1)) (tApps (.var 4) (args2 (.var 1) (.var 0))))))
+      (.pi (.var 4) (.pi (.mus l (.var 5) (.var 4) (.var 0) (.var 2)) (tApps (.var 4) (args2 (.var 1) (.var 0)))))))
+-- `m : (j :0 Size< s) → (i :0 I) → (xs : ⟦D⟧ (μ^j D) i) → P i (con xs)`
+def scaseMethodTy (l : Nat) (I D P sz : Val) : Val :=
+  eval (.cons sz (.cons P (.cons D (.cons I .nil)))) (.piq .qz (.sizeLt (.var 0)) (.piq .qz (.var 4)
+    (.pi (tApps (interpTm l) (args4 (.var 5) (.var 4) (.lam (.mus l (.var 6) (.var 5) (.var 0) (.var 2))) (.var 0)))
+      (tApps (.var 4) (args2 (.var 1) (.con (.var 0)))))))
+
+-- `S : I → Type l`, the states of a coiteration (and `A`, the seeds of a corecursion)
+def coitStateTy (l : Nat) (I : Val) : Val := .vpi .qw I .nil (.univ l)
+-- `step : (i : I) → S i → ⟦D⟧ S i`
+def coitStepTy (l : Nat) (I D S : Val) : Val :=
+  -- i0 S1 D2 I3 ; s0 i1 S2 D3 I4
+  eval (.cons S (.cons D (.cons I .nil)))
+    (.pi (.var 2) (.pi (.app (.var 1) (.var 0)) (interpApp l (.var 4) (.var 3) (.var 2) (.var 1))))
+-- `f : (s :0 Size) → ((i : I) → A i → ν^s D i) → (i : I) → A i → ν^{↑s} D i`
+def scofixFunTy (l : Nat) (I D A : Val) : Val :=
+  eval (.cons A (.cons D (.cons I .nil))) (.piq .qz .size
+    (.pi (.pi (.var 3) (.pi (.app (.var 2) (.var 0)) (.nu l (.var 5) (.var 4) (.var 1) (.var 2))))
+      (.pi (.var 4) (.pi (.app (.var 3) (.var 0)) (.nu l (.var 6) (.var 5) (.var 1) (.szSuc (.var 3)))))))
+
 -- **Exercise 14.6.** Conversion (`conv` and `convTy` in `Conv.lean`): `conv c ty a b`
 -- compares `a` and `b` at type `ty`. All proofs of a proposition are equal; functions
 -- are compared by applying both to a fresh variable and pairs by their projections
@@ -940,6 +1090,7 @@ def convSpine : TCtx → Head → Spine → Spine → Bool
     | _ => .false)
   | c, x, .sfst r, .sfst r' => convSpine c x r r'
   | c, x, .ssnd r, .ssnd r' => convSpine c x r r'
+  | c, x, .sout r, .sout r' => convSpine c x r r'
   | c, x, .secase r e m bs, .secase r' e' m' bs' => Bool.and (convSpine c x r r')
       (match whnf (typeOfNe c x r) with
        | .venum k => Bool.and
@@ -953,6 +1104,14 @@ def convSpine : TCtx → Head → Spine → Spine → Bool
            (Bool.and (conv c (delimMret l I P) a a') (Bool.and (conv c (delimMarg l I P) b b')
              (Bool.and (conv c (delimMrec l I P) d d') (conv c (delimMhrec l I P) e e')))))
        | _ => .false)
+  | c, x, .ssfix r l I D v P f sz i, .ssfix r' l' I' D' v' P' f' sz' i' => Bool.and (convSpine c x r r')
+      (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
+        (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (sfixFunTy l I D P) f f')
+          (Bool.and (sizeEq sz sz') (conv c I i i')))))))
+  | c, x, .sscase r l I D v P m sz i, .sscase r' l' I' D' v' P' m' sz' i' => Bool.and (convSpine c x r r')
+      (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
+        (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (scaseMethodTy l I D P sz) m m')
+          (Bool.and (sizeEq sz sz') (conv c I i i')))))))
   | c, x, .sind r l I D v P m i, .sind r' l' I' D' v' P' m' i' => Bool.and (convSpine c x r r')
       (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
         (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (indMethodTy l v I D P) m m') (conv c I i i'))))))

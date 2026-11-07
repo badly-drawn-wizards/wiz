@@ -849,6 +849,13 @@ inductive MTm where
   | szSuc (s : MTm)
   | sizeLt (s : MTm)
   | mus (l : Nat) (I D i s : MTm)
+  | sfix (l : Nat) (I D : MTm) (v : Nat) (P f s i x : MTm)
+  | nu (l : Nat) (I D i s : MTm)
+  | out (x : MTm)
+  | cocon (x : MTm)
+  | scofix (l : Nat) (I D A f s i a : MTm)
+  | coit (l : Nat) (I D S st i s : MTm)
+  | scase (l : Nat) (I D : MTm) (v : Nat) (P m s i x : MTm)
   deriving Inhabited
 
 namespace MTm
@@ -929,6 +936,13 @@ partial def toWiz : MTm → String
   | szSuc s => s!"(.szSuc {s.toWiz})"
   | sizeLt s => s!"(.sizeLt {s.toWiz})"
   | mus l I D i s => s!"(.mus {l} {I.toWiz} {D.toWiz} {i.toWiz} {s.toWiz})"
+  | sfix l I D v P f s i x => s!"(.sfix {l} {I.toWiz} {D.toWiz} {v} {P.toWiz} {f.toWiz} {s.toWiz} {i.toWiz} {x.toWiz})"
+  | nu l I D i s => s!"(.nu {l} {I.toWiz} {D.toWiz} {i.toWiz} {s.toWiz})"
+  | out x => s!"(.out {x.toWiz})"
+  | cocon x => s!"(.cocon {x.toWiz})"
+  | scofix l I D A f s i a => s!"(.scofix {l} {I.toWiz} {D.toWiz} {A.toWiz} {f.toWiz} {s.toWiz} {i.toWiz} {a.toWiz})"
+  | coit l I D S st i s => s!"(.coit {l} {I.toWiz} {D.toWiz} {S.toWiz} {st.toWiz} {i.toWiz} {s.toWiz})"
+  | scase l I D v P m s i x => s!"(.scase {l} {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {s.toWiz} {i.toWiz} {x.toWiz})"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -977,6 +991,13 @@ partial def toTerm : MTm → Term ZeroOneMany
   | szSuc s => .szSuc s.toTerm
   | sizeLt s => .sizeLt s.toTerm
   | mus l I D i s => .mu (Level.ofNat l) I.toTerm D.toTerm i.toTerm s.toTerm none
+  | sfix l I D v P f s i x => .sfix (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm f.toTerm s.toTerm i.toTerm x.toTerm
+  | nu l I D i s => .nu (Level.ofNat l) I.toTerm D.toTerm i.toTerm s.toTerm none
+  | out x => .out x.toTerm
+  | cocon x => .cocon x.toTerm
+  | scofix l I D A f s i a => .scofix (Level.ofNat l) I.toTerm D.toTerm A.toTerm f.toTerm s.toTerm i.toTerm a.toTerm
+  | coit l I D S st i s => .coit (Level.ofNat l) I.toTerm D.toTerm S.toTerm st.toTerm i.toTerm s.toTerm
+  | scase l I D v P m s i x => .scase (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm s.toTerm i.toTerm x.toTerm
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -1020,6 +1041,13 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .delim v P a b c h D => return delim (← v.toNat?) (← ofTerm P) (← ofTerm a) (← ofTerm b) (← ofTerm c) (← ofTerm h) (← ofTerm D)
   | .mu l I D i .szInf _ => return mu (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i)
   | .mu l I D i s _ => return mus (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i) (← ofTerm s)
+  | .nu l I D i s _ => return nu (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i) (← ofTerm s)
+  | .out x => return out (← ofTerm x)
+  | .cocon x => return cocon (← ofTerm x)
+  | .scofix l I D A f s i a => return scofix (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm A) (← ofTerm f) (← ofTerm s) (← ofTerm i) (← ofTerm a)
+  | .coit l I D S st i s => return coit (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm S) (← ofTerm st) (← ofTerm i) (← ofTerm s)
+  | .sfix l I D v P f s i x => return sfix (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm f) (← ofTerm s) (← ofTerm i) (← ofTerm x)
+  | .scase l I D v P m s i x => return scase (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm s) (← ofTerm i) (← ofTerm x)
   | .size => some size
   | .szInf => some szInf
   | .szSuc s => return szSuc (← ofTerm s)
@@ -1072,6 +1100,13 @@ partial def pretty (l : Nat) : MTm → String
   | piq q a b => s!"(x{l} :{q} {pretty l a}) → {pretty (l + 1) b}"
   | sigmaq q a b => s!"(x{l} :{q} {pretty l a}) × {pretty (l + 1) b}"
   | letq _ _ v b => s!"let x{l} := {pretty l v}; {pretty (l + 1) b}"
+  | nu k I D i s => s!"ν{k}({pretty l I}, {pretty l D}, {pretty l i}, {pretty l s})"
+  | out x => s!"out({pretty l x})"
+  | cocon x => s!"cocon({pretty l x})"
+  | scofix _ _ _ A f s i a => s!"scofix({pretty l A}, {pretty l f}, {pretty l s}, {pretty l i}, {pretty l a})"
+  | coit _ _ _ S st i s => s!"coit({pretty l S}, {pretty l st}, {pretty l i}, {pretty l s})"
+  | sfix _ _ _ _ P f s i x => s!"sfix({pretty l P}, {pretty l f}, {pretty l s}, {pretty l i}, {pretty l x})"
+  | scase _ _ _ _ P m s i x => s!"scase({pretty l P}, {pretty l m}, {pretty l s}, {pretty l i}, {pretty l x})"
   | size => "Size"
   | szInf => "∞"
   | szSuc s => s!"↑({pretty l s})"
@@ -1093,6 +1128,16 @@ def lams : Nat → MTm → MTm
 def natD : MTm := darg (enum 2) (lam (ecase (desc 0 (unit 0)) (var 0) [dret star, drec star (dret star)]))
 def natTy : MTm := mu 0 (unit 0) natD star
 def natAt (s : MTm) : MTm := mus 0 (unit 0) natD star s
+/-- streams of bits, the stream that alternates (by coiteration), and zeros (by corecursion) -/
+def streamD : MTm := darg (enum 2) (lam (drec star (dret star)))
+def streamAt (s : MTm) : MTm := nu 0 (unit 0) streamD star s
+def streamTy : MTm := streamAt szInf
+def alt : MTm := coit 0 (unit 0) streamD (lam (enum 2))
+  (lams 2 (pair (var 0) (pair (ecase (enum 2) (var 0) [tag 2 1, tag 2 0]) (pair star star)))) star (tag 2 0)
+def zeros : MTm := scofix 0 (unit 0) streamD (lam (unit 0))
+  (lams 4 (cocon (pair (tag 2 0) (pair (app (app (var 2) (var 1)) (var 0)) (pair star star))))) szInf star star
+def shead (x : MTm) : MTm := fst (out x)
+def stail (x : MTm) : MTm := fst (snd (out x))
 def natZero : MTm := ann (con (pair (tag 2 0) (pair star star))) natTy
 def natSucc (n : MTm) : MTm := ann (con (pair (tag 2 1) (pair n (pair star star)))) natTy
 
@@ -1154,7 +1199,34 @@ def samples : List MTm :=
    ann (lam (lam (var 0))) (pi size (pi (sizeLt (var 0)) size)),
    ann (lam (lam (var 0))) (pi size (pi (sizeLt (var 0)) (sizeLt (szSuc (var 1))))),
    ann (lam (lam (var 0))) (pi size (pi (sizeLt (szSuc (var 0))) (sizeLt (var 1)))),
-   ann (lam (ann (con (pair (tag 2 0) (pair star star))) (natAt (var 0)))) (pi size (natAt (var 0)))]
+   ann (lam (ann (con (pair (tag 2 0) (pair star star))) (natAt (var 0)))) (pi size (natAt (var 0))),
+   -- sized case analysis and recursion: they compute (the method / function gets ∞)
+   scase 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 0))) szInf star (natSucc natZero),
+   ann star (eq (enum 2) (scase 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 0))) szInf star (natSucc natZero)) (tag 2 1)),
+   ann star (eq (enum 2) (scase 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 0))) szInf star (natSucc natZero)) (tag 2 0)),
+   sfix 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 4 (tag 2 0)) szInf star natZero,
+   ann star (eq (enum 2) (sfix 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 4 (tag 2 1)) szInf star natZero) (tag 2 1)),
+   ann (lam (lam (sfix 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 4 (tag 2 0)) (var 1) star (var 0))))
+     (pi size (pi (natAt (var 0)) (enum 2))),
+   -- an ill-typed method (the index is erased: it can't be returned)
+   scase 0 (unit 0) natD 1 (lams 2 (unit 0)) (lams 3 (var 1)) szInf star natZero,
+   -- coinduction: unfoldings compute when observed
+   alt, zeros,
+   ann star (eq (enum 2) (shead alt) (tag 2 0)),
+   ann star (eq (enum 2) (shead (stail alt)) (tag 2 1)),
+   ann star (eq (enum 2) (shead (stail alt)) (tag 2 0)),
+   ann star (eq (enum 2) (shead (stail (stail zeros))) (tag 2 0)),
+   ann (cocon (pair (tag 2 1) (pair alt (pair star star)))) streamTy,
+   ann star (eq (enum 2) (shead (ann (cocon (pair (tag 2 1) (pair alt (pair star star)))) streamTy)) (tag 2 1)),
+   coit 0 (unit 0) streamD (lam (enum 2)) (lams 2 (pair (var 0) star)) star (tag 2 0),
+   -- only a value of size ↑s (or ∞) can be observed; ν is contravariant in its size
+   ann (lam (lam (shead (var 0)))) (pi size (pi (streamAt (var 0)) (enum 2))),
+   ann (lam (lam (shead (var 0)))) (pi size (pi (streamAt (szSuc (var 0))) (enum 2))),
+   ann (lam (lam (var 0))) (pi size (pi streamTy (streamAt (var 1)))),
+   ann (lam (lam (var 0))) (pi size (pi (streamAt (var 0)) streamTy)),
+   -- stuck observations compare by their spines
+   ann (lam (lam (var 0))) (pi streamTy (pi (eq (enum 2) (shead (var 0)) (tag 2 0)) (eq (enum 2) (shead (var 1)) (tag 2 0)))),
+   ann (lam (lam (var 0))) (pi streamTy (pi (eq (enum 2) (shead (var 0)) (tag 2 0)) (eq (enum 2) (shead (stail (var 1))) (tag 2 0))))]
 
 /-- Random terms over `n` variables (a linear congruential generator), biased towards
 well-typed ones: annotated λs, applications of them, universes. -/

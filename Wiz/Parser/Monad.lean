@@ -48,6 +48,9 @@ structure PState where
   pos : Nat := 0
   err : ParseError := {}
   memo : Std.HashMap MemoKey (Option (Syntax × Nat)) := {}
+  /-- the token after each offset (where it starts, after whitespace), since alternatives
+  look at the same tokens again and again -/
+  toks : Std.HashMap Nat (Nat × Except String TokInfo) := {}
 
 inductive PResult (α : Type) where
   | ok (a : α) (s : PState)
@@ -98,16 +101,22 @@ def memoStore (k : MemoKey) (v : Option (Syntax × Nat)) : P Unit := fun _ s =>
 def nextPos : P Nat := do
   let c ← ctx
   let s ← state
-  pure (skipWs c.input s.pos)
+  match s.toks[s.pos]? with
+  | some (i, _) => pure i
+  | none => pure (skipWs c.input s.pos)
 
 /-- Look at the next token without consuming it. `none` at the end of input. -/
-def peekToken : P (Option TokInfo) := do
-  let c ← ctx
-  let i ← nextPos
-  if i ≥ c.input.size then return none
-  match readToken c.tables.tokens c.input i with
-  | .ok t => pure (some t)
-  | .error msg => failAt i msg
+def peekToken : P (Option TokInfo) := fun c s =>
+  let ((i, r), s) := match s.toks[s.pos]? with
+    | some e => (e, s)
+    | none =>
+      let i := skipWs c.input s.pos
+      let e := (i, readToken c.tables.tokens c.input i)
+      (e, { s with toks := s.toks.insert s.pos e })
+  if i ≥ c.input.size then .ok none s
+  else match r with
+    | .ok t => .ok (some t) s
+    | .error msg => failAt i msg c s
 
 /-- Consume the next token. -/
 def nextToken (expected : String) : P TokInfo := do
