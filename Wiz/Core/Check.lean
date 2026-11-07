@@ -277,7 +277,8 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .darg q S D, .desc l I => do
     let _ ← checkQty ctx q
     let lS ← checkType ctx S
-    unless lS.equiv (.succ l) do throw (.other "a description's field type must be in its universe")
+    -- fields may live in a smaller universe (the payload Σ takes the max)
+    unless Level.le lS (.succ l) do throw (.other "a description's field type must fit in its universe")
     check ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S) (.mk [I] (.desc l (.var 1))))
   | .drec q j D, .desc l I => do
     let _ ← checkQty ctx q
@@ -288,7 +289,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     -- strict positivity is automatic: `H` can't mention the type being defined
     let _ ← checkQty ctx q
     let lH ← checkType ctx H
-    unless lH.equiv (.succ l) do throw (.other "a description's branching type must be in its universe")
+    unless Level.le lH (.succ l) do throw (.other "a description's branching type must fit in its universe")
     let uj ← check ctx j (.pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1)))
     let uD ← check ctx D (.desc l I)
     pure (uj + uD)

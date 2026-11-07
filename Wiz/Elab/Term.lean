@@ -360,6 +360,9 @@ partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Lev
     addSortConstraint ctx m u
     return (m, u)
   let (t, ty) ← infer ctx stx
+  -- a type may still take implicit or instance arguments (`Commute e₁ e₂ m` with its
+  -- `[Monad m]` …): insert them
+  let (t, ty) ← if stx.isOfKind "term.explicit" then pure (t, ty) else insertImplicits ctx t ty
   match ← force ty with
   | .sort l => pure (t, l)
   | ty@(.neutral (.mvar _) _) =>
@@ -780,7 +783,8 @@ partial def needsExpected (stx : Syntax) : Bool :=
   -- check-only forms, also as the body of a `fun` (as in `bind x (fun y => match …)`);
   -- `term.block` is the prelude's `do`
   stx.isOfKind "term.match" || stx.isOfKind "term.by" || stx.isOfKind "term.block" ||
-  (stx.isOfKind "term.fun" && needsExpected (stx.getArg 3))
+  -- a lambda's binder types usually come from the expected type
+  stx.isOfKind "term.fun"
 
 /-- An application in check mode, using the **expected type first**: every explicit
 argument gets a placeholder metavariable, the resulting type is unified with the
@@ -1038,6 +1042,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
             fieldLvls' := fieldLvls'.map fun l => if l == d then ctx'.lvl else l
             ctx' := ctx'.bind ctx'.names[ctx'.lvl - d - 1]! ty'
         let mut rsLvls : Array Lvl := #[]
+        -- the motive over the reverted variables (the solution rule casts under them too)
+        let mtRs := mt
         for r in rs do
           let .pi _ _ _ A B ← force mt | throwAt ctx.info "internal error: reverted variable"
           rsLvls := rsLvls.push ctx'.lvl
@@ -1071,10 +1077,17 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           | .wild =>
             cls := cls ++ [{ cl' with pats := before ++ (fieldInfos.map fun _ => holeStx) ++ after }]
         if cls.isEmpty then throwAt ctx.info s!"missing case for constructor {c}"
+        -- reverted variables are re-introduced at new levels: their hypotheses follow them
+        let moved := rs.zip rsLvls.toList
+        let rc := rc.map fun r => { r with ihs := r.ihs.map fun (a, b) => ((moved.lookup a).getD a, (moved.lookup b).getD b) }
         let rc' := rc.map fun r => { r with ihs := r.ihs ++ (if useRec then
-          ((fieldLvls.toList.zip (fieldInfos.map (·.2.2))).filter (fun (_, A) => isRecField A)).map (·.1)
-            |>.zip ihLvls.toList else []) }
-        let inner ← compileMatch ctx' (vars.take k ++ fieldLvls'.toList ++ rsLvls.toList) cls mt rc' false
+          ((fieldLvls'.toList.zip (fieldInfos.map fun (f : Name × BinderInfo × Term R) => f.2.2)).filter
+            (fun (_, A) => isRecField A)).map (·.1) |>.zip ihLvls.toList else []) }
+        -- the hypotheses are extra (wildcard) columns, so that nested splits revert them too:
+        -- their types mention the fields being split
+        let ihCols := if useRec then ihLvls.toList else []
+        let cls2 := cls.map fun cl => { cl with pats := cl.pats ++ ihCols.map fun _ => holeStx }
+        let inner ← compileMatch ctx' (vars.take k ++ fieldLvls'.toList ++ rsLvls.toList ++ ihCols) cls2 mt rc' false
         let body0 := (rs.map nameOf).foldr .lam inner
         match solution with
         | none => pure body0
@@ -1083,7 +1096,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           let L := ctxBefore.lvl
           let deps := fieldLvls.toList.filter (· > y)
           let vt (l : Lvl) : Term R := .var (L - l - 1)
-          let mut Gd := quote g L mt
+          let mut Gd := quote g L mtRs
           for d in deps.reverse do
             Gd := .pi ctxBefore.names[L - d - 1]! .default (.qlit QuantitySyntax.explicitDefault)
               (quote g L ctxBefore.types[L - d - 1]!) (Gd.abstract (vt d))

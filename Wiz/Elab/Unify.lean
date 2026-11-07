@@ -62,21 +62,24 @@ def PRen.lift (p : PRen) : PRen :=
 /-- **Exercise 3.2.** Invert a spine into a partial renaming. `gamma` is the size of the
 current context. Every spine entry must be an application (`Elim.app v`) whose
 argument forces to a bound variable with an empty spine (`.neutral (.local x) #[]`),
-and no variable may occur twice. Otherwise throw (at `{}`), saying the problem is
-outside the pattern fragment. The i-th spine variable maps to level i. -/
+and a variable that occurs twice is left out of the renaming (the solution may not use
+it). Otherwise throw (at `{}`), saying the problem is outside the pattern fragment.
+The i-th spine variable maps to level i. -/
 def invert (gamma : Lvl) (sp : Array (Elim R)) : ElabM R PRen := do
   --<sol
   let mut ren : Std.HashMap Lvl Lvl := {}
+  let mut repeated : Array Lvl := #[]
   let mut dom := 0
   for e in sp do
     let .app v := e | throwAt {} "unification problem is outside the pattern fragment"
     match ← force v with
     | .neutral (.local x) #[] =>
-      if ren.contains x then throwAt {} "non-linear spine: a variable is repeated"
+      -- a repeated variable can't be used by the solution (which occurrence?)
+      if ren.contains x then repeated := repeated.push x
       ren := ren.insert x dom
       dom := dom + 1
     | _ => throwAt {} "unification problem is outside the pattern fragment"
-  pure { dom, cod := gamma, ren }
+  pure { dom, cod := gamma, ren := repeated.foldl (·.erase ·) ren }
   --|ex
   --| sorry
   --sol>
@@ -312,20 +315,59 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     let s ← get
     try x; pure true catch _ => set s; pure false
   match t, u with
-  | .unfold n us sp _, .unfold n' us' sp' _ =>
+  | .unfold n us sp v, .unfold n' us' sp' v' =>
     if n == n' && us.length == us'.length && sp.size == sp'.size then
-      attempt do
-        for a in us, b in us' do unifyLevel a b
-        unifySpine l sp sp'
-    else pure false
+      if ← attempt (do for a in us, b in us' do unifyLevel a b
+                       unifySpine l sp sp') then return true
+    -- lazy delta: unfold the later definition by one step, and compare again
+    let g ← getGlobals
+    let height (x : Name) : Nat := (g.order.idxOf? x).getD 0
+    -- (recursors compute: unfold them first; otherwise the later definition, then the other)
+    let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".scasesOn"
+    let first := isRec n || (!isRec n' && height n ≥ height n')
+    if first then
+      if ← attempt (unify l v.get u) then return true
+      attempt (unify l t v'.get)
+    else
+      if ← attempt (unify l t v'.get) then return true
+      attempt (unify l v.get u)
   | .neutral (.mvar m) sp, v@(.unfold ..) | v@(.unfold ..), .neutral (.mvar m) sp =>
     if ← attempt (solve l m sp v) then return true
     unifyFirstOrder l m sp v
+  -- a hole against a rigid neutral, outside the pattern fragment:
+  -- * the same projection on both sides (`?e.op =?= e.op`): unify what is projected;
+  -- * applications (`?M ?A =?= m A`): the first-order approximation.
+  -- (Heuristics like Lean's, tried only when pattern unification fails.)
+  | .neutral (.mvar m) sp, v@(.neutral h' sp') | v@(.neutral h' sp'), .neutral (.mvar m) sp =>
+    if h' matches .mvar _ then return false
+    if ← isPattern sp then return false
+    match sp.back?, sp'.back? with
+    | some .fst, some .fst | some .snd, some .snd =>
+      attempt (unify l (.neutral (.mvar m) sp.pop) (.neutral h' sp'.pop))
+    | _, _ =>
+      if sp.all (· matches .app _) && sp'.all (· matches .app _) && !sp'.isEmpty then
+        unifyFirstOrder l m sp v
+      else pure false
   | _, _ => pure false
+where
+  isPattern (sp : Array (Elim R)) : ElabM R Bool := do
+    for e in sp do
+      match e with
+      | .app a => unless (← forceMeta a) matches .neutral (.local _) #[] do return false
+      | _ => return false
+    pure true
 
 /-- The first-order approximation (see `unifyGlued`). -/
 partial def unifyFirstOrder (l : Lvl) (m : Nat) (sp : Array (Elim R)) (v : Val R) : ElabM R Bool := do
-  let .unfold n us sp' _ := v | pure false
+  -- the rigid side: a glued definition, or a variable (or other head) applied to arguments
+  let (rebuild, sp') : (Array (Elim R) → ElabM R (Val R)) × Array (Elim R) ← match v with
+    | .unfold n us sp' _ => pure ((fun pre => do
+        let g ← getGlobals
+        pure (pre.foldl (fun acc e => match e with
+          | .app b => vApp g acc b
+          | _ => acc) (eval g [] (.const n us)))), sp')
+    | .neutral h sp' => pure ((fun pre => pure (.neutral h pre)), sp')
+    | _ => return false
   let appArg : Elim R → Option (Val R)
     | .app a => some a
     | _ => none
@@ -341,8 +383,7 @@ partial def unifyFirstOrder (l : Lvl) (m : Nat) (sp : Array (Elim R)) (v : Val R
   try
     for a in args.extract k args.size, b in args'.extract (args'.size - j) args'.size do
       unify l a b
-    let g ← getGlobals
-    let head := (args'.extract 0 (args'.size - j)).foldl (vApp g) (eval g [] (.const n us))
+    let head ← rebuild (sp'.extract 0 (sp'.size - j))
     solve l m (sp.extract 0 k) head
     pure true
   catch _ =>

@@ -1,0 +1,27 @@
+import Eff
+def prog : Eff (Row.cons (State Nat) (Row.cons (Exn String) (Row.cons Console Row.nil))) Nat := do
+  n ← get;
+  println "starting";
+  put (n + 1);
+  m ← get;
+  Monad.pure (m * 10)
+def failing : Eff (Row.cons (State Nat) (Row.cons (Exn String) (Row.cons Console Row.nil))) Nat := do
+  println "about to fail";
+  throw "boom"
+def report : Except String (Nat × Nat) → String
+  | .ok p => String.append "ok " (Nat.toString p.1)
+  | .error e => String.append "error " e
+-- Reading the same environment twice, in either order: provably the same.
+def ReaderM (E A : Type) : Type := E → A
+instance {E : Type} : Monad (ReaderM E) where
+  pure := fun a => fun _ => a
+  bind := fun x f => fun env => f (x env) env
+instance {E : Type} : Handler (Reader E) (ReaderM E) where
+  handle := fun _ => fun env => env
+instance {E : Type} : Commute (Reader E) (Reader E) (ReaderM E) where
+  comm := fun o₁ o₂ B f => rfl
+def main : IO Unit := do
+  r ← runConsole (runExn (runState prog 4));
+  IO.println (report r);
+  r' ← runConsole (runExn (runState failing 4));
+  IO.println (report r')

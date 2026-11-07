@@ -648,7 +648,9 @@ def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := 
 def ioRun (src : String) (expected : String) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
-  let loader : Name → Option String := fun m => if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
+  let effLib ← IO.FS.readFile "lib/Eff.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib else none
   let headers ← Build.preprocessHeaders src
   let s := runFrontend (R := ZeroOneMany) src { loader, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -662,7 +664,9 @@ def ioRun (src : String) (expected : String) : IO Unit := do
 def ioFails (src : String) (fragment : String) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
-  let loader : Name → Option String := fun m => if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
+  let effLib ← IO.FS.readFile "lib/Eff.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib else none
   let s := runFrontend (R := ZeroOneMany) src { loader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
@@ -720,6 +724,34 @@ def ffiGroup : Group where
           "  IO.println (Nat.toString (Bytes.size (Bytes.ofString \"λx\")))") "ABC\n3\n" },
     { name := "foreign types are checked", run := fun _ =>
         ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
+  ]
+
+def effectsGroup : Group where
+  name := "effects"
+  exercise := "Stage 10a"
+  cases := [
+    { name := "state, exceptions and output, handled in turn", run := fun _ =>
+        ioRun ("import Eff\ndef prog : Eff (Row.cons (State Nat) (Row.cons (Exn String) (Row.cons Console Row.nil))) Nat := do\n" ++
+          "  n ← get;\n  println \"starting\";\n  put (n + 1);\n  m ← get;\n  Monad.pure (m * 10)\n" ++
+          "def report : Except String (Nat × Nat) → String\n  | .ok p => Nat.toString p.1\n  | .error e => e\n" ++
+          "def main : IO Unit := do\n  r ← runConsole (runExn (runState prog 4));\n  IO.println (report r)") "starting\n50\n" },
+    { name := "an exception stops the computation", run := fun _ =>
+        ioRun ("import Eff\ndef prog : Eff (Row.cons (Exn String) (Row.cons Console Row.nil)) Nat := do\n" ++
+          "  println \"before\";\n  n ← throw \"boom\";\n  println \"after\";\n  Monad.pure n\n" ++
+          "def report : Except String Nat → String\n  | .ok n => Nat.toString n\n  | .error e => e\n" ++
+          "def main : IO Unit := do\n  r ← runConsole (runExn prog);\n  IO.println (report r)") "before\nboom\n" },
+    { name := "effects that commute: the proof is checked", run := fun _ =>
+        ioRun ("import Eff\ndef ReaderM (E A : Type) : Type := E → A\ninstance {E : Type} : Monad (ReaderM E) where\n" ++
+          "  pure := fun a => fun _ => a\n  bind := fun x f => fun env => f (x env) env\n" ++
+          "instance {E : Type} : Handler (Reader E) (ReaderM E) where\n  handle := fun _ => fun env => env\n" ++
+          "instance {E : Type} : Commute (Reader E) (Reader E) (ReaderM E) where\n  comm := fun o₁ o₂ B f => rfl\n" ++
+          "def main : IO Unit := IO.println \"ok\"") "ok\n" },
+    { name := "effects that don't commute: no proof", run := fun _ =>
+        ioFails ("import Eff\ndef StateM (S A : Type) : Type := S → A × S\ninstance {S : Type} : Monad (StateM S) where\n" ++
+          "  pure := fun a => fun s => (a, s)\n  bind := fun x f => fun s => let (a, s') := x s; f a s'\n" ++
+          "instance {S : Type} : Handler (State S) (StateM S) where\n  handle := fun o => match o with\n" ++
+          "    | .get => fun s => (s, s)\n    | .put s' => fun _ => ((), s')\n" ++
+          "instance {S : Type} : Commute (State S) (State S) (StateM S) where\n  comm := fun o₁ o₂ B f => rfl") "kernel rejected" }
   ]
 
 /-- Programs for the native backends (C, or LLVM). -/
