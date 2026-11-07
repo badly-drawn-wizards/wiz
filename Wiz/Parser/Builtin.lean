@@ -223,6 +223,8 @@ def commandLeading : List LeadingParser := [
     p := seqs ["axiom", ident, univParams, many (bracketedBinder false), typeSpec true] },
   { kind := "command.check", prec := maxPrec, p := seqs ["#check", term] },
   { kind := "command.reduce", prec := maxPrec, p := seqs ["#reduce", term] },
+  { kind := "command.eval", prec := maxPrec, p := seqs ["#eval", term] },
+  { kind := "command.erase", prec := maxPrec, p := seqs ["#erase", ident] },
   { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
   { kind := "command.syntax", prec := maxPrec,
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
