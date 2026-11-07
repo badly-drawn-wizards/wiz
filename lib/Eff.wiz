@@ -138,3 +138,43 @@ def reorder {e₁ e₂ : Effect} {r : Row} {m : Type → Type} [i : Monad m] [h�
   | .op (.inl o) k => Eff.op (.inr (.inl o)) (fun x => reorder (k x))
   | .op (.inr (.inl o)) k => Eff.op (.inl o) (fun x => reorder (k x))
   | .op (.inr (.inr o)) k => Eff.op (.inr (.inr o)) (fun x => reorder (k x))
+
+-- Fusion (stage 10b). Programs written against these classes run either as trees of
+-- operations (the `Eff r` instances, with handlers) or directly in a monad (the
+-- `StateT`/`ReaderT`/`IO` instances), where each operation is a plain call and no tree
+-- is built: the handlers are fused into the program.
+class MonadState (S : Type) (m : Type → Type) where
+  getS : m S
+  putS : S → m Unit
+class MonadReader (E : Type) (m : Type → Type) where
+  askR : m E
+class MonadConsole (m : Type → Type) where
+  printLn : String → m Unit
+
+-- trees of operations
+instance {S : Type} {r : Row} [i : Member (State S) r] : MonadState S (Eff r) :=
+  MonadState.mk (@get S r i) (@put S r i)
+instance {E : Type} {r : Row} [i : Member (Reader E) r] : MonadReader E (Eff r) :=
+  MonadReader.mk (@ask E r i)
+instance {r : Row} [i : Member Console r] : MonadConsole (Eff r) :=
+  MonadConsole.mk (@println r i)
+
+-- direct: monad transformers over IO
+def StateT (S : Type) (m : Type → Type) (A : Type) : Type := S → m (A × S)
+instance {S : Type} {m : Type → Type} [i : Monad m] : Monad (StateT S m) :=
+  Monad.mk (fun a => fun s => @Monad.pure m i _ (a, s))
+    (fun x f => fun s => @Monad.bind m i _ _ (x s) (fun p => f p.1 p.2))
+instance {S : Type} {m : Type → Type} [i : Monad m] : MonadState S (StateT S m) :=
+  MonadState.mk (fun s => @Monad.pure m i _ (s, s)) (fun s' => fun _ => @Monad.pure m i _ ((), s'))
+instance {S : Type} {m : Type → Type} [i : Monad m] [c : MonadConsole m] : MonadConsole (StateT S m) :=
+  MonadConsole.mk (fun str => fun s => @Monad.bind m i _ _ (@MonadConsole.printLn m c str) (fun u => @Monad.pure m i _ (u, s)))
+
+def ReaderT (E : Type) (m : Type → Type) (A : Type) : Type := E → m A
+instance {E : Type} {m : Type → Type} [i : Monad m] : Monad (ReaderT E m) :=
+  Monad.mk (fun a => fun _ => @Monad.pure m i _ a) (fun x f => fun env => @Monad.bind m i _ _ (x env) (fun a => f a env))
+instance {E : Type} {m : Type → Type} [i : Monad m] : MonadReader E (ReaderT E m) :=
+  MonadReader.mk (fun env => @Monad.pure m i _ env)
+instance {E : Type} {m : Type → Type} [c : MonadConsole m] : MonadConsole (ReaderT E m) :=
+  MonadConsole.mk (fun str => fun _ => @MonadConsole.printLn m c str)
+
+instance : MonadConsole IO := MonadConsole.mk IO.println

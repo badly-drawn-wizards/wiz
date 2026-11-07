@@ -1,0 +1,21 @@
+import Eff
+def tick {m : Type → Type} [i : Monad m] [st : MonadState Nat m] : Nat → m Unit
+  | .zero => Monad.pure ()
+  | .succ n => do
+    k ← MonadState.getS;
+    MonadState.putS (k + 2);
+    tick n
+def prog {m : Type → Type} [i : Monad m] [st : MonadState Nat m] [c : MonadConsole m] (n : Nat) : m Nat := do
+  MonadConsole.printLn "counting";
+  tick n;
+  MonadState.getS
+def report (p : Nat × Nat) : IO Unit := IO.println (Nat.toString p.1)
+def N : Nat := 200000
+-- as a tree of operations, with handlers
+def viaTree : IO Unit := do
+  p ← runConsole (runState (prog N : Eff (Row.cons (State Nat) (Row.cons Console Row.nil)) Nat) 0);
+  report p
+-- fused: directly in StateT Nat IO
+def viaFusion : IO Unit := do
+  p ← (prog N : StateT Nat IO Nat) 0;
+  report p
