@@ -844,6 +844,11 @@ inductive MTm where
   | piq (q : ZeroOneMany) (a b : MTm)
   | sigmaq (q : ZeroOneMany) (a b : MTm)
   | letq (q : ZeroOneMany) (ty v b : MTm)
+  | size
+  | szInf
+  | szSuc (s : MTm)
+  | sizeLt (s : MTm)
+  | mus (l : Nat) (I D i s : MTm)
   deriving Inhabited
 
 namespace MTm
@@ -919,6 +924,11 @@ partial def toWiz : MTm → String
   | piq q a b => s!"(.piq {qWiz q} {a.toWiz} {b.toWiz})"
   | sigmaq q a b => s!"(.sigmaq {qWiz q} {a.toWiz} {b.toWiz})"
   | letq q t v b => s!"(.letq {qWiz q} {t.toWiz} {v.toWiz} {b.toWiz})"
+  | size => ".size"
+  | szInf => ".szInf"
+  | szSuc s => s!"(.szSuc {s.toWiz})"
+  | sizeLt s => s!"(.sizeLt {s.toWiz})"
+  | mus l I D i s => s!"(.mus {l} {I.toWiz} {D.toWiz} {i.toWiz} {s.toWiz})"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -962,6 +972,11 @@ partial def toTerm : MTm → Term ZeroOneMany
   | piq q a b => .pi "x" .default (.qlit q) a.toTerm b.toTerm
   | sigmaq q a b => .sigma "x" (.qlit q) a.toTerm b.toTerm
   | letq q t v b => .letE "x" (.qlit q) t.toTerm v.toTerm b.toTerm
+  | size => .size
+  | szInf => .szInf
+  | szSuc s => .szSuc s.toTerm
+  | sizeLt s => .sizeLt s.toTerm
+  | mus l I D i s => .mu (Level.ofNat l) I.toTerm D.toTerm i.toTerm s.toTerm none
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -1003,7 +1018,12 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .drec _ j E => return drec (← ofTerm j) (← ofTerm E)
   | .dhrec _ H j E => return dhrec (← ofTerm H) (← ofTerm j) (← ofTerm E)
   | .delim v P a b c h D => return delim (← v.toNat?) (← ofTerm P) (← ofTerm a) (← ofTerm b) (← ofTerm c) (← ofTerm h) (← ofTerm D)
-  | .mu l I D i _ _ => return mu (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i)
+  | .mu l I D i .szInf _ => return mu (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i)
+  | .mu l I D i s _ => return mus (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i) (← ofTerm s)
+  | .size => some size
+  | .szInf => some szInf
+  | .szSuc s => return szSuc (← ofTerm s)
+  | .sizeLt s => return sizeLt (← ofTerm s)
   | .con x => return con (← ofTerm x)
   | .ind l I D v P m i x => return ind (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm i) (← ofTerm x)
   | .const n us => return const n (← us.mapM Level.toNat?)
@@ -1052,6 +1072,11 @@ partial def pretty (l : Nat) : MTm → String
   | piq q a b => s!"(x{l} :{q} {pretty l a}) → {pretty (l + 1) b}"
   | sigmaq q a b => s!"(x{l} :{q} {pretty l a}) × {pretty (l + 1) b}"
   | letq _ _ v b => s!"let x{l} := {pretty l v}; {pretty (l + 1) b}"
+  | size => "Size"
+  | szInf => "∞"
+  | szSuc s => s!"↑({pretty l s})"
+  | sizeLt s => s!"Size<({pretty l s})"
+  | mus k I D i s => s!"μ{k}({pretty l I}, {pretty l D}, {pretty l i}, {pretty l s})"
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -1067,6 +1092,7 @@ def lams : Nat → MTm → MTm
 /-- The natural numbers as a description, `arg Enum2 (fun t => case t [ret tt, rec tt (ret tt)])`. -/
 def natD : MTm := darg (enum 2) (lam (ecase (desc 0 (unit 0)) (var 0) [dret star, drec star (dret star)]))
 def natTy : MTm := mu 0 (unit 0) natD star
+def natAt (s : MTm) : MTm := mus 0 (unit 0) natD star s
 def natZero : MTm := ann (con (pair (tag 2 0) (pair star star))) natTy
 def natSucc (n : MTm) : MTm := ann (con (pair (tag 2 1) (pair n (pair star star)))) natTy
 
@@ -1117,7 +1143,18 @@ def samples : List MTm :=
    fst (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
    snd (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, var 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
-   ann (lam (lam (ecase (univ 0) (var 1) [var 0, univ 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0)))]
+   ann (lam (lam (ecase (univ 0) (var 1) [var 0, univ 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
+   -- sizes and subtyping
+   size, szInf, sizeLt szInf, szSuc szInf,
+   ann (lam (ann (con (pair (tag 2 0) (pair star star))) (natAt (szSuc (var 0))))) (pi size (natAt (szSuc (var 0)))),
+   ann (lam (lam (ann (con (pair (tag 2 1) (pair (var 0) (pair star star)))) (natAt (szSuc (var 1))))))
+     (pi size (pi (natAt (var 0)) (natAt (szSuc (var 1))))),
+   ann (lam (lam (var 0))) (pi size (pi (natAt (var 0)) natTy)),
+   ann (lam (lam (var 0))) (pi size (pi natTy (natAt (var 0)))),
+   ann (lam (lam (var 0))) (pi size (pi (sizeLt (var 0)) size)),
+   ann (lam (lam (var 0))) (pi size (pi (sizeLt (var 0)) (sizeLt (szSuc (var 1))))),
+   ann (lam (lam (var 0))) (pi size (pi (sizeLt (szSuc (var 0))) (sizeLt (var 1)))),
+   ann (lam (ann (con (pair (tag 2 0) (pair star star))) (natAt (var 0)))) (pi size (natAt (var 0)))]
 
 /-- Random terms over `n` variables (a linear congruential generator), biased towards
 well-typed ones: annotated λs, applications of them, universes. -/
