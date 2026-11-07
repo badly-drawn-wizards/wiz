@@ -818,6 +818,9 @@ inductive MTm where
   | enum (k : Nat)
   | tag (k i : Nat)
   | ecase (m s : MTm) (bs : List MTm)
+  | prop
+  | ptrue
+  | pfalse
   deriving Inhabited
 
 namespace MTm
@@ -843,6 +846,9 @@ partial def toWiz : MTm → String
   | enum k => s!"(.enum {k})"
   | tag k i => s!"(.tag {k} {i})"
   | ecase m s bs => s!"(.ecase {m.toWiz} {s.toWiz} {bs.foldr (fun b acc => s!"(.tcons {b.toWiz} {acc})") ".tnil"})"
+  | prop => ".prop"
+  | ptrue => ".ptrue"
+  | pfalse => ".pfalse"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -863,11 +869,15 @@ partial def toTerm : MTm → Term ZeroOneMany
   | enum k => .enum (labels k)
   | tag k i => .tag (labels k) i
   | ecase m s bs => .ecase "z" m.toTerm s.toTerm (bs.map toTerm)
+  | prop => .sort .zero
+  | ptrue => .unit .zero
+  | pfalse => .empty .zero
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
   | .sort l => match l.toNat? with
     | some (n + 1) => some (univ n)
+    | some 0 => some prop
     | _ => none
   | .pi _ _ _ a b => return pi (← ofTerm a) (← ofTerm b)
   | .lam _ b => return lam (← ofTerm b)
@@ -878,10 +888,12 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .snd p => return snd (← ofTerm p)
   | .unit l => match l.toNat? with
     | some (n + 1) => some (unit n)
+    | some 0 => some ptrue
     | _ => none
   | .tt => some star
   | .empty l => match l.toNat? with
     | some (n + 1) => some (empty n)
+    | some 0 => some pfalse
     | _ => none
   | .absurd m t => return exfalso (← ofTerm m) (← ofTerm t)
   | .enum ls => some (enum ls.length)
@@ -909,6 +921,9 @@ partial def pretty (l : Nat) : MTm → String
   | enum k => s!"Enum{k}"
   | tag _ i => s!"#{i}"
   | ecase m s bs => s!"case({pretty (l + 1) m}, {pretty l s}{String.join (bs.map fun b => ", " ++ pretty l b)})"
+  | prop => "Prop"
+  | ptrue => "True"
+  | pfalse => "False"
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -922,7 +937,7 @@ well-typed ones: annotated λs, applications of them, universes. -/
 partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
   let next (s : Nat) := (s * 1103515245 + 12345) % 2147483648
   let s := next seed
-  let pick := s / 65536 % 17
+  let pick := s / 65536 % 19
   if depth == 0 then
     if n > 0 && pick < 5 then (var (s / 7 % n), s) else (univ (s / 7 % 2), s)
   else match pick with
@@ -960,6 +975,19 @@ partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
       let bs := (List.range k).map fun j => tag k' ((s / (j + 19)) % k')
       (ecase (enum k') sc bs, s)
     | 15 => let (t, s) := gen s (depth - 1) n; (exfalso (univ 0) t, s)
+    | 16 =>
+      -- propositions: `Prop`, `True`, `False`, `(P : Prop) → P → P`, `A → True`
+      match s / 5 % 6 with
+      | 0 => (prop, s)
+      | 1 => (ptrue, s)
+      | 2 => (pfalse, s)
+      | 3 => (pi prop (pi (var 0) (var 1)), s)
+      | 4 => let (a, s) := gen s (depth - 1) n; (pi a ptrue, s)
+      | _ => (ann star ptrue, s)
+    | 17 =>
+      -- a proof term: `λP p. p : (P : Prop) → P → P`, applied or not
+      let idP := ann (lam (lam (var 0))) (pi prop (pi (var 0) (var 1)))
+      (if s / 5 % 2 == 0 then idP else app (app idP ptrue) (ann star ptrue), s)
     | _ => if n > 0 then (var (s / 7 % n), s) else (univ (s / 7 % 3), s)
 
 end MTm

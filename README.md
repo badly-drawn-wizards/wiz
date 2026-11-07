@@ -1028,8 +1028,16 @@ so its 400 terms exercise them. Exercises 14.1–14.3 and 14.6 now include Σ.
 mutual inductive (`Tm` and its lists `Tms`). The generator adds them, often
 well-typed (cases returning tags), and both kernels agree on all 400 terms.
 
-Next: data through descriptions (they are built from enumerations and Σ), then
-quantities, extending the generator as the kernel grows.
+### 14g: `Prop`, and conversion at a type ✅
+
+`Prop` (`Sort 0`) with impredicative Π (`imax`), `True` and `False`, and conversion
+**at a type** like `Conv.lean`: all proofs of a proposition are equal, functions and
+pairs are compared by η, types structurally, neutrals by their eliminations at their
+types (computed from the variable's type, `typeOfNe`). Exercise 14.6 is now typed.
+(Also fixed: the index-equation binder of a match could shadow a variable `e`.)
+
+Next: observational equality (it lives in `Prop`), then data through descriptions,
+extending the generator as the kernel grows.
 
 ## Stage 11: tooling
 
