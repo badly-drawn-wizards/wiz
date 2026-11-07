@@ -1202,8 +1202,15 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let x := (stx.getArg (if stx.isOfKind "term.explicit" then 1 else 0)).getId?.getD "_"
     let explicitLevels : Option (Array Syntax) := if stx.isOfKind "term.identUniv" then
         some ((stx.getArg 2).args.filter (!· matches .atom ..)) else none
+    -- (stage 11) remember identifiers and their types, for hovers and go-to-definition
+    let record (n : Name) (c : LocalCtx R) (ty : VTy R) : ElabM R Unit := do
+      if stx.info.stop > 0 then
+        let shown ← showVal c ty
+        modify fun s => { s with hovers := s.hovers.push (stx.info, n, shown) }
     if explicitLevels.isNone then
-      if let some (ix, ty) := lookupLocal ctx x then return (.var ix, ty)
+      if let some (ix, ty) := lookupLocal ctx x then
+        record x ctx ty
+        return (.var ix, ty)
     -- a macro-scoped name that isn't a local refers to the global of its base name
     let x := stripScope x
     match (← getGlobals).find? x with
@@ -1214,7 +1221,9 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
             throwAt ctx.info s!"{x} has {d.levelParams.length} universe parameters, {ls.size} given"
           ls.toList.mapM elabLevel
         | none => d.levelParams.mapM fun _ => freshLevelMeta
-      return (.const x us, ← evalIn {} (d.type.instLevels d.levelParams us))
+      let ty ← evalIn {} (d.type.instLevels d.levelParams us)
+      record x {} ty
+      return (.const x us, ty)
     | none =>
       -- built-in types
       let builtinLevel : Option Level := match explicitLevels with

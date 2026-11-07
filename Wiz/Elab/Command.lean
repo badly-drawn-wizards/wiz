@@ -76,6 +76,12 @@ structure CommandState (R : Type) where
   cCode : Array String := #[]
   /-- foreign pointer types and their finalizers -/
   foreignTypes : List (Name × String) := []
+  /-- for the language server (stage 11): identifiers with their types, and where each
+  global was declared (its command's range, and module; `""` is the main file) -/
+  hovers : Array (SourceInfo × Name × String) := #[]
+  declSites : Std.HashMap Name (SourceInfo × String) := {}
+  /-- the module being elaborated (`""` for the main file) -/
+  module : String := ""
   /-- macro rules, latest first -/
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000
@@ -333,11 +339,13 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
   ensureNoMVars val info
   pure (fullTy, val)
 
-def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
+/-- Run the elaborator; also returns the identifiers it saw (for hovers). -/
+def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     (macros : List (Name × Syntax × Syntax × List Name) := []) (builtins : List (Name × Name) := [])
     (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
     (metaCode : Thunk (Except String Code) := Thunk.pure (.ok {}))
-    (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) : Except ElabError α :=
+    (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) :
+    Except ElabError (α × Array (SourceInfo × Name × String)) :=
   -- macros and tactics run against the globals as they are when this command starts
   let compileCode (roots : List Name) := match metaCode.get with
     | .ok c => if roots.all c.contains then .ok c
@@ -346,7 +354,14 @@ def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   let runProcMacro f stx scope := do Elab.runProcMacro (← compileCode [f, "Macro.run"]) f stx scope
   let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
   (x.run { globals := g, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
-           kernelInfer, classes, instances }).map (·.1)
+           kernelInfer, classes, instances }).map fun (a, st) => (a, st.hovers)
+
+def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
+    (macros : List (Name × Syntax × Syntax × List Name) := []) (builtins : List (Name × Name) := [])
+    (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
+    (metaCode : Thunk (Except String Code) := Thunk.pure (.ok {}))
+    (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) : Except ElabError α :=
+  (runElabH g x levelParams macros builtins procMacros tactics metaCode classes instances).map (·.1)
 
 /-- The erased code of the registered macros and tactics (and what they reach), on demand. -/
 def mkMetaCode (g : Globals R) (builtins procMacros tactics : List (Name × Name)) :
@@ -461,8 +476,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
-    else match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabDeclTerms binders typeStx valStx cmd.info) levelParams with
-      | .ok (ty, val) => addDeclChecked name levelParams ty val
+    else match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabDeclTerms binders typeStx valStx cmd.info) levelParams with
+      | .ok ((ty, val), hv) =>
+        modify fun s => { s with hovers := s.hovers ++ hv }
+        addDeclChecked name levelParams ty val
       | .error e => report .error e.info e.msg
   | "command.check" =>
     let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
@@ -501,10 +518,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some obs else none
         else none
       let r := match coinductiveOf? with
-        | some obs => runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabCopatterns name cmd obs) levelParams
-        | none => runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabDefEqns name cmd) levelParams
+        | some obs => runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabCopatterns name cmd obs) levelParams
+        | none => runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabDefEqns name cmd) levelParams
       match r with
-      | .ok (ty, val) => addDeclChecked name levelParams ty (some val)
+      | .ok ((ty, val), hv) =>
+        modify fun s => { s with hovers := s.hovers ++ hv }
+        addDeclChecked name levelParams ty (some val)
       | .error e => report .error e.info e.msg
   | "command.coinductive" =>
     let name := ((cmd.getArg 1).getId?).getD "_"

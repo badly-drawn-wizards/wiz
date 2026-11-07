@@ -28,17 +28,25 @@ where
           let msg : Msg := { info := cmd.info, severity := .error, text := s!"unknown module {m}" }
           go chars stop { s with messages := s.messages.push msg }
         | some src =>
-          let inner := runFrontend src { s with imported := m :: s.imported, messages := #[] }
+          let inner := runFrontend src { s with imported := m :: s.imported, messages := #[], module := m }
           let errs := inner.messages.filter (·.severity == .error)
           let msg : Msg := { info := cmd.info, severity := .error,
                              text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
-          go chars stop { inner with messages := msgs }
-      else go chars stop ((elabCommand cmd).run s).2
+          -- hovers are positions in this file: keep only ours
+          go chars stop { inner with messages := msgs, module := s.module, hovers := s.hovers }
+      else go chars stop (step cmd s)
     | .error e =>
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate
       go chars (recoverPos chars (skipWs chars pos))
         { s with messages := s.messages.push { info := { start := e.pos, stop := e.pos },
                                                 severity := .error, text := msg } }
+
+  /-- Elaborate one command, recording where the declarations it adds come from. -/
+  step (cmd : Syntax) (s : CommandState R) : CommandState R :=
+    let before := s.globals.order.size
+    let s' := ((elabCommand cmd).run s).2
+    let added := s'.globals.order.extract before s'.globals.order.size
+    { s' with declSites := added.foldl (fun m n => m.insert n (cmd.info, s.module)) s'.declSites }
 
 end Wiz

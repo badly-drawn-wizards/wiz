@@ -889,3 +889,21 @@ def main : IO Unit := do
 
 Not done yet: fusing handlers into direct code (evidence passing) for tail-resumptive
 operations, so that effects cost no allocation.
+
+## Stage 11: tooling
+
+### 11a–b: queries and a language server ✅
+
+* **Queries** (`Wiz/Query.lean`): elaboration is a pure function of the text, so each
+  command's result is memoised under a **content hash chained through every command
+  before it**. After an edit, only the commands from the edit on are elaborated again;
+  the same text gives the same result (deterministic builds). The elaborator records
+  identifiers with their types and ranges, and each global's declaration site, for
+  `hoverAt`, `definitionAt` and `completionsAt`.
+* **`wiz lsp`** (`Wiz/LSP.lean`): the Language Server Protocol over stdio, with
+  diagnostics as you type, hover types, go to definition (also into `lib/`), and
+  completion of global names. Each open document has its own query engine.
+
+Next (11c): persist the memo table to a content-addressed directory (`$WIZ_CACHE`),
+shared between machines; finer dependencies (re-elaborate only what an edit
+affects, not everything after it); hovers for declarations that fail.
