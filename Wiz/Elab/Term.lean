@@ -1,4 +1,5 @@
 import Wiz.Elab.Zonk
+import Wiz.Elab.Macro
 
 /-!
 # Elaborating terms
@@ -95,9 +96,19 @@ def builtinApp? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Name × Arr
   let head := stx.getArg 0
   unless head.isOfKind "term.ident" do return none
   let some n := (head.getArg 0).getId? | return none
+  if (lookupLocal ctx n).isSome then return none
+  let n := stripScope n
   unless builtinNames.contains n do return none
   if (lookupLocal ctx n).isSome || (← getGlobals).contains n then return none
   return some (n, (stx.getArg 1).args)
+
+/-- Expand a macro at `stx`, with a fresh scope. -/
+def expand? (stx : Syntax) : ElabM R (Option Syntax) := do
+  let s ← get
+  let rules := s.macros.map fun (kind, pattern, template, vars) => ({ kind, pattern, template, vars } : MacroRule)
+  match expandMacro? rules stx s.nextScope with
+  | some stx' => modify (fun s => { s with nextScope := s.nextScope + 1 }); pure (some stx')
+  | none => pure none
 
 /-- Unify, turning a failure into a readable type mismatch at `stx`.
 
@@ -288,6 +299,7 @@ partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Lev
    `unifyAt` the expected and inferred types. -/
 partial def check (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
   let ctx := ctx.withInfo stx
+  if let some stx' ← expand? stx then return ← check ctx stx' expected
   if let some t ← checkData? ctx stx expected then return t
   sorry
 
@@ -910,6 +922,7 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
 /-- Infer the type of `stx`. -/
 partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) := do
   let ctx := ctx.withInfo stx
+  if let some stx' ← expand? stx then return ← infer ctx stx'
   match stx.kind with
   | "term.ident" | "term.explicit" | "term.identUniv" =>
     let x := (stx.getArg (if stx.isOfKind "term.explicit" then 1 else 0)).getId?.getD "_"
@@ -917,6 +930,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
         some ((stx.getArg 2).args.filter (!· matches .atom ..)) else none
     if explicitLevels.isNone then
       if let some (ix, ty) := lookupLocal ctx x then return (.var ix, ty)
+    -- a macro-scoped name that isn't a local refers to the global of its base name
+    let x := stripScope x
     match (← getGlobals).find? x with
     | some d =>
       let us ← match explicitLevels with
@@ -980,7 +995,10 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let ts ← rest.mapM fun b => check ctx b ty
     let motive := (quote (← getGlobals) ctx.lvl ty).lift 1
     return (.ecase "z" motive s (t₀ :: ts), ty)
-  | "term.fun" => inferFun ctx ((stx.getArg 1).args.flatMap binderViews).toList (stx.getArg 3)
+  | "term.fun" =>
+    -- annotate: the kernel can't infer the type of a bare lambda (e.g. `(fun x => b) a`)
+    let (t, ty) ← inferFun ctx ((stx.getArg 1).args.flatMap binderViews).toList (stx.getArg 3)
+    return (.ann t (quote (← getGlobals) ctx.lvl ty), ty)
   | "term.let" => elabLet ctx stx none
   | "term.arrow" =>
     let (a, l₁) ← checkType ctx (stx.getArg 0)

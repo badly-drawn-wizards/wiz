@@ -47,6 +47,9 @@ structure CommandState (R : Type) where
   messages : Array Msg := #[]
   /-- coinductive types and their observations (name, recursive?) -/
   coinductives : List (Name × List (Name × Bool)) := []
+  /-- macro rules, latest first -/
+  macros : List (Name × Syntax × Syntax × List Name) := []
+  nextScope : Nat := 1000000
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
@@ -300,12 +303,63 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
   ensureNoMVars val info
   pure (fullTy, val)
 
-def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := []) :
-    Except ElabError α :=
-  (x.run { globals := g, levelParams }).map (·.1)
+def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
+    (macros : List (Name × Syntax × Syntax × List Name) := []) : Except ElabError α :=
+  (x.run { globals := g, levelParams, macros }).map (·.1)
+
+/-- `notation` and `infixl`/`infixr`/`infix`: register a syntax rule and a macro rule.
+Returns the new tables and the rule `(kind, pattern, template, vars)`. -/
+def notationRule (tables : ParserTables) (cmd : Syntax) :
+    Except String (ParserTables × (Name × Syntax × Syntax × List Name)) := do
+  let antiquot (v : Name) : Syntax := .node {} "antiquot" #[.atom {} "$", .ident {} v]
+  -- items: `.inl op` for an atom, `.inr (name, prec?)` for an argument
+  let (prec, items, rhs) ← if cmd.isOfKind "command.infix" then do
+      let kw := match cmd.getArg 0 with
+        | .atom _ v => v
+        | _ => "infix"
+      let p := ((cmd.getArg 2).getNat?).getD 0
+      let some op := (cmd.getArg 3).getStr? | throw "infix needs an operator string"
+      let (lp, rp) := if kw == "infixl" then (p, p + 1) else if kw == "infixr" then (p + 1, p) else (p + 1, p + 1)
+      let f := cmd.getArg 5
+      let rhs : Syntax := .node {} "term.app" #[f, .node {} "null"
+        #[.node {} "term.ident" #[.ident {} "a"], .node {} "term.ident" #[.ident {} "b"]]]
+      pure (p, [Sum.inr ("a", some lp), Sum.inl op, Sum.inr ("b", some rp)], rhs)
+    else do
+      let precOpt := cmd.getArg 1
+      let p ← if precOpt.isNone then pure maxPrec else precValue (precOpt.getArg 1)
+      let items ← (cmd.getArg 2).args.toList.mapM fun it => do
+        let x := it.getArg 0
+        match x.getStr? with
+        | some s => pure (Sum.inl s)
+        | none =>
+          let v := (x.getId?).getD "_"
+          let po := it.getArg 1
+          if po.isNone then pure (Sum.inr (v, none))
+          else pure (Sum.inr (v, some (← precValue (po.getArg 1))))
+      pure (p, items, cmd.getArg 4)
+  let descr (it : String ⊕ (Name × Option Nat)) : ParserDescr := match it with
+    | .inl s => .atom s.trimAscii.toString
+    | .inr (_, p?) => .cat "term" (p?.getD 0)
+  let pat (it : String ⊕ (Name × Option Nat)) : Syntax := match it with
+    | .inl s => .atom {} s.trimAscii.toString
+    | .inr (v, _) => antiquot v
+  let vars := items.filterMap fun | .inr (v, _) => some v | _ => none
+  match items with
+  | .inr (_, lp?) :: rest =>
+    let ps := rest.map descr
+    let p := if h : ps.length = 1 then ps[0] else .seq ps.toArray
+    let kind := mkKindName tables "term" p
+    let tables := tables.addTrailing "term" { kind, prec, lhsPrec := lp?.getD prec, p }
+    pure (tables, (kind, .node {} kind (items.map pat).toArray, rhs, vars))
+  | _ =>
+    let ps := items.map descr
+    let p := if h : ps.length = 1 then ps[0] else .seq ps.toArray
+    let kind := mkKindName tables "term" p
+    let tables := tables.addLeading "term" { kind, prec, p }
+    pure (tables, (kind, .node {} kind (items.map pat).toArray, rhs, vars))
 
 /-- Elaborate one command, updating the state and adding messages. -/
-def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
+partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let s ← get
   let report (sev : Severity) (info : SourceInfo) (text : String) : StateM (CommandState R) Unit :=
     modify fun s => { s with messages := s.messages.push { info, severity := sev, text } }
@@ -322,21 +376,25 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
-    else match runElab s.globals (elabDeclTerms binders typeStx valStx cmd.info) levelParams with
+    else match runElab (macros := s.macros) s.globals (elabDeclTerms binders typeStx valStx cmd.info) levelParams with
       | .ok (ty, val) => addDeclChecked name levelParams ty val
       | .error e => report .error e.info e.msg
   | "command.check" =>
-    let r := runElab s.globals do
+    let r := runElab (macros := s.macros) s.globals do
       let (t, ty) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
       let ty ← zonk 0 (quote (← getGlobals) 0 ty)
+      -- an inferred `fun` carries its type as an annotation; don't print it twice
+      let t := match t with
+        | .ann tm _ => tm
+        | t => t
       pure s!"{t.pretty} : {ty.pretty}"
     match r with
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
   | "command.reduce" =>
-    let r := runElab s.globals do
+    let r := runElab (macros := s.macros) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -358,8 +416,8 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some obs else none
         else none
       let r := match coinductiveOf? with
-        | some obs => runElab s.globals (elabCopatterns name cmd obs) levelParams
-        | none => runElab s.globals (elabDefEqns name cmd) levelParams
+        | some obs => runElab (macros := s.macros) s.globals (elabCopatterns name cmd obs) levelParams
+        | none => runElab (macros := s.macros) s.globals (elabDefEqns name cmd) levelParams
       match r with
       | .ok (ty, val) => addDeclChecked name levelParams ty (some val)
       | .error e => report .error e.info e.msg
@@ -369,7 +427,7 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
-      match runElab s.globals (elabCoinductive cmd levelParams) levelParams with
+      match runElab (macros := s.macros) s.globals (elabCoinductive cmd levelParams) levelParams with
       | .error e => report .error e.info e.msg
       | .ok (decls, obs) =>
         let mut g := s.globals
@@ -388,7 +446,7 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else
       let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
         else elabStructure cmd levelParams
-      match runElab s.globals elabCmd levelParams with
+      match runElab (macros := s.macros) s.globals elabCmd levelParams with
       | .error e => report .error e.info e.msg
       | .ok decls =>
         let mut g := s.globals
@@ -420,7 +478,7 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error err => report .error cmd.info s!"cannot erase {n}: {err}"
   | "command.eval" =>
     -- elaborate, erase, run, and read the result back using its type
-    let r := runElab s.globals do
+    let r := runElab (macros := s.macros) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -442,6 +500,26 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match updateTables s.tables cmd with
     | .ok tables => modify fun s => { s with tables }
     | .error msg => report .error cmd.info msg
-  | k => report .error cmd.info s!"no elaborator for command kind {k}"
+  | "command.macroRules" =>
+    for alt in (cmd.getArg 1).args do
+      let lhs := (alt.getArg 1).args[0]?.getD .missing
+      let rhs := alt.getArg 3
+      unless lhs.kind.startsWith "quote." && rhs.kind.startsWith "quote." do
+        report .error alt.info "a macro rule is `| `(cat| pattern) => `(cat| template)`"
+        return
+      let pattern := lhs.getArg 3
+      modify fun s => { s with macros := (pattern.kind, pattern, rhs.getArg 3, []) :: s.macros }
+  | "command.notation" | "command.infix" =>
+    match notationRule s.tables cmd with
+    | .ok (tables, rule) => modify fun s => { s with tables, macros := rule :: s.macros }
+    | .error e => report .error cmd.info e
+  | k =>
+    -- user-defined command syntax: expand a macro, if one applies
+    let rules := s.macros.map fun (kind, pattern, template, vars) => ({ kind, pattern, template, vars } : Elab.MacroRule)
+    match Elab.expandMacro? rules cmd s.nextScope with
+    | some cmd' =>
+      modify fun s => { s with nextScope := s.nextScope + 1 }
+      elabCommand cmd'
+    | none => report .error cmd.info s!"no elaborator for command kind {k}"
 
 end Wiz

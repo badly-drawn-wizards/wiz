@@ -45,7 +45,7 @@ def recoverPos (chars : Array Char) (pos : Nat) : Nat := Id.run do
 def updateTables (tables : ParserTables) (cmd : Syntax) : Except String ParserTables :=
   match cmd.kind with
   | "command.declareSyntaxCat" => match (cmd.getArg 1).getId? with
-    | some c => pure (tables.declareCategory c)
+    | some c => pure (Builtin.addMetaParsers (tables.declareCategory c) c)
     | none => throw "malformed declare_syntax_cat"
   | "command.syntax" => addSyntax tables cmd
   | _ => pure tables

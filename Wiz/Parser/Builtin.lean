@@ -274,6 +274,33 @@ def stxTrailing : List TrailingParser := [
   { kind := "stx.optional", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "?"] }
 ]
 
+/-- Metaprogramming support for a category `c`: antiquotations `$x` inside it, and the
+quotation `` `(c| …) `` as a term. -/
+def addMetaParsers (t : ParserTables) (c : Name) : ParserTables :=
+  let t := t.addLeading c { kind := "antiquot", prec := maxPrec, p := seqs ["$", noWs, ident] }
+  let q : LeadingParser :=
+    { kind := "quote." ++ c, prec := maxPrec,
+      p := seqs ["`(", nonReserved c, "|", withoutPosition (cat c 0), ")"] }
+  t.addLeading "term" q
+
+/-- Macro commands.
+
+| kind                   | children |
+|------------------------|----------|
+| `command.macroRules`   | "macro_rules" [alts] (each `| `(c| pattern) => `(c| template)`) |
+| `command.notation`     | "notation" [":" prec] [items] "=>" term (items: str or ident [":" prec]) |
+| `command.infix`        | ("infixl" / "infixr" / "infix") ":" num str "=>" term |
+-/
+def macroCommands : List LeadingParser := [
+  { kind := "command.macroRules", prec := maxPrec, p := seqs ["macro_rules", many1 matchAlt] },
+  { kind := "command.notation", prec := maxPrec,
+    p := seqs ["notation", optional (seqs [noWs, ":", noWs, precedence]),
+      many1 (node "notation.item" (orelse str (seqs [ident, optional (seqs [noWs, ":", noWs, precedence])]))),
+      "=>", term] },
+  { kind := "command.infix", prec := maxPrec,
+    p := seqs [orelse "infixl" (orelse "infixr" "infix"), noWs, ":", noWs, num, str, "=>", term] }
+]
+
 def tables : ParserTables :=
   let t : ParserTables := {}
   let t := ["term", "command", "stx", "level"].foldl ParserTables.declareCategory t
@@ -283,6 +310,8 @@ def tables : ParserTables :=
   let t := termTrailing.foldl (·.addTrailing "term" ·) t
   let t := commandLeading.foldl (·.addLeading "command" ·) t
   let t := stxLeading.foldl (·.addLeading "stx" ·) t
-  stxTrailing.foldl (·.addTrailing "stx" ·) t
+  let t := stxTrailing.foldl (·.addTrailing "stx" ·) t
+  let t := macroCommands.foldl (·.addLeading "command" ·) t
+  ["term", "command", "level"].foldl addMetaParsers t
 
 end Wiz.Builtin

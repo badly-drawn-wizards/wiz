@@ -104,6 +104,15 @@ partial def runDescr : ParserDescr → P (Array Syntax)
     let i ← nextPos
     match ← peekToken with
     | some t@{ tok := .ident _, .. } => setPos t.stop; pure #[tokSyntax t]
+    | some t@{ tok := .atom "$", .. } =>
+      -- an antiquotation where an identifier is expected (inside quotations)
+      setPos t.stop
+      match ← peekToken with
+      | some t'@{ tok := .ident _, .. } =>
+        if t'.start != t.stop then failAt i "identifier" else
+        setPos t'.stop
+        pure #[.node { start := t.start, stop := t'.stop } "antiquot" #[tokSyntax t, tokSyntax t']]
+      | _ => failAt i "identifier"
     | _ => failAt i "identifier"
   | .num => do
     let i ← nextPos
