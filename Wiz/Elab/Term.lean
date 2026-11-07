@@ -381,7 +381,17 @@ where
     | "term.num" =>
       match ← force expected with
       | .qty => elabQtyLit ctx stx (((stx.getArg 0).getNat?.map toString).getD "?")
-      | _ => throwAt ctx.info "numerals need data types (stage 4e); only quantities so far"
+      | .mu _ _ _ _ _ (some (T, us, _)) =>
+        -- a numeral of the `builtin nat` type: `succ (… (succ zero))` (the kernel's Nat
+        -- is unary; the runtime uses native numbers)
+        let s ← get
+        match s.builtins.lookup "nat" with
+        | some N =>
+          if N != T then throwAt ctx.info s!"numerals are for {N}, not {T}" else
+          let n := ((stx.getArg 0).getNat?).getD 0
+          pure ((List.range n).foldl (fun t _ => Term.app (.const (T ++ ".succ") us) t) (.const (T ++ ".zero") us))
+        | none => throwAt ctx.info "numerals need `builtin nat := …`"
+      | _ => throwAt ctx.info "a numeral needs an expected type (a quantity or the builtin Nat)"
     | "term.rfl" =>
       let g ← getGlobals
       match ← force expected with
@@ -1224,7 +1234,14 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.letPair" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
   | "term.omega" => return (← elabQtyLit ctx stx "ω", .qty)
-  | "term.num" | "term.str" => throwAt ctx.info "literals need data types (stage 4e)"
+  | "term.num" =>
+    -- an unannotated numeral is a `builtin nat`
+    match (← get).builtins.lookup "nat" with
+    | some N =>
+      let ty := eval (← getGlobals) ctx.env (.const N [])
+      return (← check ctx stx ty, ty)
+    | none => throwAt ctx.info "numerals need `builtin nat := …` or a type ascription"
+  | "term.str" => throwAt ctx.info "string literals need data types (stage 4e)"
   | k => throwAt ctx.info s!"no elaborator for syntax kind {k}"
 
 end

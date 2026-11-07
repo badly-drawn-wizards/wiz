@@ -65,6 +65,8 @@ structure ElabState (R : Type) where
   macros : List (Name × Syntax × Syntax × List Name) := []
   /-- the next fresh macro scope -/
   nextScope : Nat := 1
+  /-- `builtin key := name` registrations (numerals need the `nat` type) -/
+  builtins : List (Name × Name) := []
 
 abbrev ElabM (R : Type) := StateT (ElabState R) (Except ElabError)
 

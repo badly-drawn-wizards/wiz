@@ -15,9 +15,21 @@ def parseCmd (path : String) : IO UInt32 := do
     IO.eprintln s!"{path}:{m.render input}"
   pure (if r.messages.isEmpty then 0 else 1)
 
+/-- Read every `lib/*.wiz` (and `$WIZ_PATH/*.wiz`) up front: the frontend is pure. -/
+def loadLibrary : IO (Std.HashMap Name String) := do
+  let dirs := ["lib"] ++ ((← IO.getEnv "WIZ_PATH").map ([·])).getD []
+  let mut m : Std.HashMap Name String := {}
+  for d in dirs do
+    if ← System.FilePath.isDir d then
+      for e in ← System.FilePath.readDir d do
+        if e.path.extension == some "wiz" then
+          m := m.insert (e.path.fileStem.getD "") (← IO.FS.readFile e.path)
+  pure m
+
 def checkCmd (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
-  let s := runFrontend (R := ZeroOneMany) input
+  let lib ← loadLibrary
+  let s := runFrontend (R := ZeroOneMany) input { loader := (lib[·]?) }
   for m in s.messages do
     let line := s!"{path}:{m.render input}"
     if m.severity == .error then IO.eprintln line else IO.println line

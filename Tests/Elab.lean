@@ -481,4 +481,30 @@ def macroGroup : Group where
             "macro_rules\n  | `(term| digits) => `(term| Nat.zero)\n#eval (digits : Nat)") [".zero"] }
   ]
 
+/-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
+def okLib (input : String) (infos : List String := []) : IO Unit := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let loader : Name → Option String := fun m => if m == "Prelude" then some prelude else none
+  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
+
+def builtinGroup : Group where
+  name := "builtins"
+  exercise := "Stage 6b"
+  cases := [
+    { name := "import the prelude", run := fun _ =>
+        okLib "import Prelude\n#check List.append" ["List.append : {A : Type} → List A → List A → List A"] },
+    { name := "numerals and native arithmetic", run := fun _ =>
+        okLib "import Prelude\n#eval 100 * 100 * 100 - 1" ["999999"] },
+    { name := "recursion over native numbers", run := fun _ =>
+        okLib "import Prelude\ndef fact : Nat → Nat\n  | .zero => 1\n  | .succ n => (.succ n) * fact n\n#eval fact 20"
+          ["2432902008176640000"] },
+    { name := "numerals reduce in the kernel", run := fun _ =>
+        okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4" },
+    { name := "native equality", run := fun _ =>
+        okLib "import Prelude\n#eval Nat.beq 3 3" [".true"] }
+  ]
+
 end Tests.Elab
