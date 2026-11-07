@@ -5,9 +5,7 @@
 -- consumes the most input wins (then priority, then the one declared later); category
 -- parses are memoised (packrat), in a `StrMap`.
 --
--- Wiz has no mutual recursion yet, so the interpreter is one function `go` over the
--- tasks of the Lean version (`Task`), recursing on a fuel argument; the structural
--- parts (`runDescr` and the loops over alternatives) get `go fuel` as an argument.
+-- The interpreter is a `mutual` block of partial definitions, like the Lean version.
 -- Sequences are binary (`seq`), since inductive types can't nest a `List` of themselves.
 
 infixl:65 " +++ " => String.append
@@ -122,7 +120,7 @@ def failAt (i : Nat) (what : String) (s : St) : Res := match s with
       | .true => .err (.mk p e (addExpected x what) m)
       | .false => .err s
 
-def nextPos (c : Ctx) (s : St) : Nat := skipWs big (Ctx.input c) (St.pos s)
+def nextPos (c : Ctx) (s : St) : Nat := skipWs (Ctx.input c) (St.pos s)
 
 inductive Peek where
   | eof
@@ -143,29 +141,14 @@ def tokSyntax : Tok → Syntax
   | .error m => .atom m
 
 -- the column of an offset
-def colOf : Nat → Array Nat → Nat → Nat → Nat
-  | .zero, _, _, col => col
-  | .succ fuel, input, j, col => match j with
-    | .zero => col
-    | .succ j' => match Nat.beq (at input j') 10 with
-      | .true => col
-      | .false => colOf fuel input j' (col + 1)
-def column (c : Ctx) (i : Nat) : Nat := colOf big (Ctx.input c) i 0
+def colOf : Nat → Array Nat → Nat → Nat
+  | .zero, _, col => col
+  | .succ j', input, col => match Nat.beq (at input j') 10 with
+    | .true => col
+    | .false => colOf j' input (col + 1)
+def column (c : Ctx) (i : Nat) : Nat := colOf i (Ctx.input c) 0
 
 def quoted (t : String) : String := "'" +++ t +++ "'"
-
--- what `go` can be asked to do
-inductive Task where
-  -- a category at a minimum precedence, memoised
-  | category (cat : String) (rbp : Nat)
-  -- the Pratt loop for a category
-  | loop (cat : String) (rbp : Nat)
-  -- trailing parsers after `lhs`
-  | trailing (trs : List Trailing) (rbp : Nat) (lhs : Syntax) (lhsPrec : Nat)
-  -- iterations of `many p` after the ones in `acc`
-  | many (p : PD) (acc : List Syntax)
-  -- `(sep p)*` after `acc`, then an optional trailing `sep`
-  | sep (p : PD) (sep : String) (trailing : Bool) (acc : List Syntax)
 
 def tokenParser (c : Ctx) (s : St) (what : String) (accept : Tok → Option Syntax) : Res :=
   let i := nextPos c s;
@@ -175,113 +158,6 @@ def tokenParser (c : Ctx) (s : St) (what : String) (accept : Tok → Option Synt
   | .tok t _ stop => match accept t with
     | .some stx => .ok (one stx) (St.setPos s stop)
     | .none => failAt i what s
-
--- **Exercise 12.2.** Interpret a descriptor (`runDescr` in `Interp.lean`). `run` does
--- the tasks: `cat` is `run c (.category name prec)`, and `many`, `sepBy` use the loops.
-def runDescr : PD → (Ctx → Task → St → Res) → Ctx → St → Res
-  | .atom tok, run, c, s => tokenParser c s (quoted tok) (fun t => match t with
-    | .atom v => match strEq v tok with
-      | .true => .some (.atom v)
-      | .false => .none
-    | _ => .none)
-  | .nonReserved tok, run, c, s => tokenParser c s (quoted tok) (fun t => match t with
-    | .atom v => match strEq v tok with
-      | .true => .some (.atom tok)
-      | .false => .none
-    | .ident v => match strEq v tok with
-      | .true => .some (.atom tok)
-      | .false => .none
-    | _ => .none)
-  | .ident, run, c, s =>
-    let i := nextPos c s;
-    match peek c i with
-    | .tok t _ stop => match t with
-      | .ident n => .ok (one (.ident n)) (St.setPos s stop)
-      | .atom v => match strEq v "$" with
-        -- an antiquotation where an identifier is expected (inside quotations)
-        | .true => match peek c stop with
-          | .tok t2 start2 stop2 => match t2 with
-            | .ident n => match Nat.beq start2 stop with
-              | .true => .ok (one (mkNode "antiquot" (.cons (.atom "$") (one (.ident n))))) (St.setPos s stop2)
-              | .false => failAt i "identifier" s
-            | _ => failAt i "identifier" s
-          | _ => failAt i "identifier" s
-        | .false => failAt i "identifier" s
-      | _ => failAt i "identifier" s
-    | .bad m => failAt i m s
-    | .eof => failAt i "identifier" s
-  | .num, run, c, s => tokenParser c s "numeral" (fun t => match t with
-    | .num d => .some (tokSyntax (.num d))
-    | _ => .none)
-  | .str, run, c, s => tokenParser c s "string literal" (fun t => match t with
-    | .str v => .some (tokSyntax (.str v))
-    | _ => .none)
-  | .cat name prec, run, c, s => run c (.category name prec) s
-  | .empty, run, _, s => .ok .nil s
-  | .seq p q, run, c, s => match runDescr p run c s with
-    | .ok a s1 => match runDescr q run c s1 with
-      | .ok b s2 => .ok (List.append a b) s2
-      | .err s2 => .err s2
-    | .err s1 => .err s1
-  --<sol
-  | .many p, run, c, s => match run c (.many p .nil) s with
-    | .ok acc s1 => .ok (one (mkNull acc)) s1
-    | .err s1 => .err s1
-  | .many1 p, run, c, s => match runDescr p run c s with
-    | .ok hd s1 => match run c (.many p (one (packItems hd))) s1 with
-      | .ok acc s2 => .ok (one (mkNull acc)) s2
-      | .err s2 => .err s2
-    | .err s1 => .err s1
-  | .optional p, run, c, s => match runDescr p run c s with
-    | .ok items s1 => .ok (one (mkNull items)) s1
-    | .err s1 => .ok (one (mkNull .nil)) (St.merge s s1)
-  | .sepBy p sp tr, run, c, s => match runDescr p run c s with
-    | .ok hd s1 => match run c (.sep p sp tr (one (packItems hd))) s1 with
-      | .ok acc s2 => .ok (one (mkNull acc)) s2
-      | .err s2 => .err s2
-    | .err s1 => .ok (one (mkNull .nil)) (St.merge s s1)
-  | .sepBy1 p sp tr, run, c, s => match runDescr p run c s with
-    | .ok hd s1 => match run c (.sep p sp tr (one (packItems hd))) s1 with
-      | .ok acc s2 => .ok (one (mkNull acc)) s2
-      | .err s2 => .err s2
-    | .err s1 => .err s1
-  --|ex
-  --| -- many, many1, optional, sepBy, sepBy1: see `runDescr` in `Interp.lean`; a failed
-  --| -- attempt goes back to where it started, keeping the error and memo (`St.merge`).
-  --| | .many _, run, _, s => .err s
-  --| | .many1 _, run, _, s => .err s
-  --| | .optional _, run, _, s => .err s
-  --| | .sepBy _ _ _, run, _, s => .err s
-  --| | .sepBy1 _ _ _, run, _, s => .err s
-  --sol>
-  | .orelse p q, run, c, s => match runDescr p run c s with
-    | .ok a s1 => .ok a s1
-    | .err s1 => runDescr q run c (St.merge s s1)
-  | .node k p, run, c, s => match runDescr p run c s with
-    | .ok items s1 => .ok (one (mkNode k items)) s1
-    | .err s1 => .err s1
-  | .withPosition p, run, c, s => runDescr p run (Ctx.withSaved c (.some (nextPos c s))) s
-  | .withoutPosition p, run, c, s => runDescr p run (Ctx.withSaved c .none) s
-  | .colGt, run, c, s => match Ctx.saved c with
-    | .none => .ok .nil s
-    | .some sp =>
-      let i := nextPos c s;
-      match Nat.lt (column c sp) (column c i) with
-      | .true => .ok .nil s
-      | .false => failAt i ("token right of column " +++ Nat.toString (column c sp + 1)) s
-  | .colGe, run, c, s => match Ctx.saved c with
-    | .none => .ok .nil s
-    | .some sp =>
-      let i := nextPos c s;
-      match Nat.le (column c sp) (column c i) with
-      | .true => .ok .nil s
-      | .false => failAt i ("token at or right of column " +++ Nat.toString (column c sp + 1)) s
-  | .noWs, run, c, s => match Nat.beq (nextPos c s) (St.pos s) with
-    | .true => .ok .nil s
-    | .false => failAt (St.pos s) "no space before this token" s
-  | .checkPrec p, run, c, s => match Nat.le (Ctx.prec c) p with
-    | .true => .ok .nil s
-    | .false => failAt (nextPos c s) ("precedence at most " +++ Nat.toString p) s
 
 -- a successful alternative: what it built, where it stopped, its rank, its state
 inductive Cand where
@@ -303,30 +179,6 @@ inductive Alts where
 def commit (c : Cand) (s : St) : St := match c with
   | .mk _ _ _ _ _ st => St.merge st s
 
--- try the leading parsers that allow precedence `rbp`
-def leadAlts : List Leading → (Ctx → Task → St → Res) → Ctx → Nat → Nat → St → Option Cand → Alts
-  | .nil, _, _, _, _, s, b => .mk b s
-  | .cons (.mk k prec prio p) rest, run, c, rbp, ix, s, b => match Nat.le rbp prec with
-    | .false => leadAlts rest run c rbp (ix + 1) s b
-    | .true => match runDescr (.node k p) run (Ctx.withPrec c rbp) s with
-      | .ok items s1 => leadAlts rest run c rbp (ix + 1) (St.merge s s1)
-          (best b (Cand.mk (firstItem items) (St.pos s1) prec prio ix s1))
-      | .err s1 => leadAlts rest run c rbp (ix + 1) (St.merge s s1) b
-
--- try the trailing parsers that apply after `lhs`; ignore those consuming nothing
-def trailAlts : List Trailing → (Ctx → Task → St → Res) → Ctx → Nat → Syntax → Nat → Nat → Nat → St →
-    Option Cand → Alts
-  | .nil, _, _, _, _, _, _, _, s, b => .mk b s
-  | .cons (.mk k prec lp prio p) rest, run, c, rbp, lhs, lhsPrec, start, ix, s, b =>
-    match Bool.and (Nat.le rbp prec) (Nat.le lp lhsPrec) with
-    | .false => trailAlts rest run c rbp lhs lhsPrec start (ix + 1) s b
-    | .true => match runDescr p run c s with
-      | .ok items s1 => match Nat.lt start (St.pos s1) with
-        | .true => trailAlts rest run c rbp lhs lhsPrec start (ix + 1) (St.merge s s1)
-            (best b (Cand.mk (mkNode k (.cons lhs items)) (St.pos s1) prec prio ix s1))
-        | .false => trailAlts rest run c rbp lhs lhsPrec start (ix + 1) (St.merge s s1) b
-      | .err s1 => trailAlts rest run c rbp lhs lhsPrec start (ix + 1) (St.merge s s1) b
-
 def findCat : List Cat → String → Option Cat
   | .nil, _ => .none
   | .cons (.mk n l t) rest, name => match strEq n name with
@@ -339,49 +191,201 @@ def showSaved : Option Nat → String
 def memoKey (c : Ctx) (name : String) (rbp : Nat) (s : St) : Str :=
   Str.ofString (name +++ ":" +++ Nat.toString rbp +++ ":" +++ Nat.toString (St.pos s) +++ ":" +++ showSaved (Ctx.saved c))
 
--- **Exercise 12.3.** The tasks (`categoryParser`, `categoryLoop`, `trailingLoop`,
--- `manyLoop`, `sepLoop` in `Interp.lean`); the memo and the category loop are given.
-def go : Nat → Ctx → Task → St → Res
-  | .zero, _, _, s => .err s
-  | .succ fuel, c, task, s => match task with
-    | .category name rbp =>
-      let key := memoKey c name rbp s;
-      match StrMap.findD (St.memo s) key Memo.none with
-      | .ok stx stop => .ok (one stx) (St.setPos s stop)
-      | .fail => failAt (nextPos c s) name s
-      | .none => match go fuel c (.loop name rbp) s with
-        | .ok items s1 => .ok items (St.setMemo s1 (StrMap.insert (St.memo s1) key (Memo.ok (firstItem items) (St.pos s1))))
-        | .err s1 =>
-          let s2 := St.merge s s1;
-          failAt (nextPos c s2) name (St.setMemo s2 (StrMap.insert (St.memo s2) key Memo.fail))
-    | .loop name rbp => match findCat (Ctx.cats c) name with
-      | .none => failAt (nextPos c s) ("declared syntax category " +++ name) s
-      | .some (.mk _ leading trailing) => match leadAlts leading (go fuel) c rbp 0 s .none with
-        | .mk .none s1 => failAt (nextPos c s1) name s1
-        | .mk (.some cand) s1 => match cand with
-          | .mk stx _ prec _ _ _ => go fuel c (.trailing trailing rbp stx prec) (commit cand s1)
-    --<sol
-    | .trailing trs rbp lhs lhsPrec => match trailAlts trs (go fuel) c rbp lhs lhsPrec (St.pos s) 0 s .none with
-      | .mk .none s1 => .ok (one lhs) s1
-      | .mk (.some cand) s1 => match cand with
-        | .mk stx _ prec _ _ _ => go fuel c (.trailing trs rbp stx prec) (commit cand s1)
-    | .many p acc => match runDescr p (go fuel) c s with
-      | .ok items s1 => match Nat.beq (St.pos s1) (St.pos s) with
-        | .true => .ok acc s1
-        | .false => go fuel c (.many p (List.append acc (one (packItems items)))) s1
-      | .err s1 => .ok acc (St.merge s s1)
-    | .sep p sp tr acc => match runDescr (.atom sp) (go fuel) c s with
-      | .err s1 => .ok acc (St.merge s s1)
-      | .ok sepItems s1 => match runDescr p (go fuel) c s1 with
-        | .ok items s2 => go fuel c (.sep p sp tr (List.append acc (List.append sepItems (one (packItems items))))) s2
-        | .err s2 =>
-          let s3 := St.merge s1 s2;
-          match tr with
-          | .true => .ok (List.append acc sepItems) s3
-          | .false => failAt (nextPos c s3) "separated item" s3
-    --|ex
-    --| | _ => .err s
-    --sol>
+-- The interpreter: mutually recursive, and partial (it terminates because every loop
+-- consumes input, which Wiz can't see).
+mutual
+
+-- **Exercise 12.2.** Interpret a descriptor (`runDescr` in `Interp.lean`); `cat` uses
+-- `categoryParser`, and `many`, `sepBy` the loops below.
+def runDescr : PD → Ctx → St → Res
+  | .atom tok, c, s => tokenParser c s (quoted tok) (fun t => match t with
+    | .atom v => match strEq v tok with
+      | .true => .some (.atom v)
+      | .false => .none
+    | _ => .none)
+  | .nonReserved tok, c, s => tokenParser c s (quoted tok) (fun t => match t with
+    | .atom v => match strEq v tok with
+      | .true => .some (.atom tok)
+      | .false => .none
+    | .ident v => match strEq v tok with
+      | .true => .some (.atom tok)
+      | .false => .none
+    | _ => .none)
+  | .ident, c, s =>
+    let i := nextPos c s;
+    match peek c i with
+    | .tok t _ stop => match t with
+      | .ident n => .ok (one (.ident n)) (St.setPos s stop)
+      | .atom v => match strEq v "$" with
+        -- an antiquotation where an identifier is expected (inside quotations)
+        | .true => match peek c stop with
+          | .tok t2 start2 stop2 => match t2 with
+            | .ident n => match Nat.beq start2 stop with
+              | .true => .ok (one (mkNode "antiquot" (.cons (.atom "$") (one (.ident n))))) (St.setPos s stop2)
+              | .false => failAt i "identifier" s
+            | _ => failAt i "identifier" s
+          | _ => failAt i "identifier" s
+        | .false => failAt i "identifier" s
+      | _ => failAt i "identifier" s
+    | .bad m => failAt i m s
+    | .eof => failAt i "identifier" s
+  | .num, c, s => tokenParser c s "numeral" (fun t => match t with
+    | .num d => .some (tokSyntax (.num d))
+    | _ => .none)
+  | .str, c, s => tokenParser c s "string literal" (fun t => match t with
+    | .str v => .some (tokSyntax (.str v))
+    | _ => .none)
+  | .cat name prec, c, s => categoryParser c name prec s
+  | .empty, _, s => .ok .nil s
+  | .seq p q, c, s => match runDescr p c s with
+    | .ok a s1 => match runDescr q c s1 with
+      | .ok b s2 => .ok (List.append a b) s2
+      | .err s2 => .err s2
+    | .err s1 => .err s1
+  --<sol
+  | .many p, c, s => match manyLoop c p .nil s with
+    | .ok acc s1 => .ok (one (mkNull acc)) s1
+    | .err s1 => .err s1
+  | .many1 p, c, s => match runDescr p c s with
+    | .ok hd s1 => match manyLoop c p (one (packItems hd)) s1 with
+      | .ok acc s2 => .ok (one (mkNull acc)) s2
+      | .err s2 => .err s2
+    | .err s1 => .err s1
+  | .optional p, c, s => match runDescr p c s with
+    | .ok items s1 => .ok (one (mkNull items)) s1
+    | .err s1 => .ok (one (mkNull .nil)) (St.merge s s1)
+  | .sepBy p sp tr, c, s => match runDescr p c s with
+    | .ok hd s1 => match sepLoop c p sp tr (one (packItems hd)) s1 with
+      | .ok acc s2 => .ok (one (mkNull acc)) s2
+      | .err s2 => .err s2
+    | .err s1 => .ok (one (mkNull .nil)) (St.merge s s1)
+  | .sepBy1 p sp tr, c, s => match runDescr p c s with
+    | .ok hd s1 => match sepLoop c p sp tr (one (packItems hd)) s1 with
+      | .ok acc s2 => .ok (one (mkNull acc)) s2
+      | .err s2 => .err s2
+    | .err s1 => .err s1
+  --|ex
+  --| -- many, many1, optional, sepBy, sepBy1: see `runDescr` in `Interp.lean`; a failed
+  --| -- attempt goes back to where it started, keeping the error and memo (`St.merge`).
+  --| | .many _, _, s => .err s
+  --| | .many1 _, _, s => .err s
+  --| | .optional _, _, s => .err s
+  --| | .sepBy _ _ _, _, s => .err s
+  --| | .sepBy1 _ _ _, _, s => .err s
+  --sol>
+  | .orelse p q, c, s => match runDescr p c s with
+    | .ok a s1 => .ok a s1
+    | .err s1 => runDescr q c (St.merge s s1)
+  | .node k p, c, s => match runDescr p c s with
+    | .ok items s1 => .ok (one (mkNode k items)) s1
+    | .err s1 => .err s1
+  | .withPosition p, c, s => runDescr p (Ctx.withSaved c (.some (nextPos c s))) s
+  | .withoutPosition p, c, s => runDescr p (Ctx.withSaved c .none) s
+  | .colGt, c, s => match Ctx.saved c with
+    | .none => .ok .nil s
+    | .some sp =>
+      let i := nextPos c s;
+      match Nat.lt (column c sp) (column c i) with
+      | .true => .ok .nil s
+      | .false => failAt i ("token right of column " +++ Nat.toString (column c sp + 1)) s
+  | .colGe, c, s => match Ctx.saved c with
+    | .none => .ok .nil s
+    | .some sp =>
+      let i := nextPos c s;
+      match Nat.le (column c sp) (column c i) with
+      | .true => .ok .nil s
+      | .false => failAt i ("token at or right of column " +++ Nat.toString (column c sp + 1)) s
+  | .noWs, c, s => match Nat.beq (nextPos c s) (St.pos s) with
+    | .true => .ok .nil s
+    | .false => failAt (St.pos s) "no space before this token" s
+  | .checkPrec p, c, s => match Nat.le (Ctx.prec c) p with
+    | .true => .ok .nil s
+    | .false => failAt (nextPos c s) ("precedence at most " +++ Nat.toString p) s
+
+-- a category at a minimum precedence, memoised
+def categoryParser (c : Ctx) (name : String) (rbp : Nat) (s : St) : Res :=
+  let key := memoKey c name rbp s;
+  match StrMap.findD (St.memo s) key Memo.none with
+  | .ok stx stop => .ok (one stx) (St.setPos s stop)
+  | .fail => failAt (nextPos c s) name s
+  | .none => match categoryLoop c name rbp s with
+    | .ok items s1 => .ok items (St.setMemo s1 (StrMap.insert (St.memo s1) key (Memo.ok (firstItem items) (St.pos s1))))
+    | .err s1 =>
+      let s2 := St.merge s s1;
+      failAt (nextPos c s2) name (St.setMemo s2 (StrMap.insert (St.memo s2) key Memo.fail))
+
+-- the Pratt loop: the best leading parser, then trailing parsers
+def categoryLoop (c : Ctx) (name : String) (rbp : Nat) (s : St) : Res :=
+  match findCat (Ctx.cats c) name with
+  | .none => failAt (nextPos c s) ("declared syntax category " +++ name) s
+  | .some (.mk _ leading trailing) => match leadAlts leading c rbp 0 s .none with
+    | .mk .none s1 => failAt (nextPos c s1) name s1
+    | .mk (.some cand) s1 => match cand with
+      | .mk stx _ prec _ _ _ => trailingLoop c trailing rbp stx prec (commit cand s1)
+
+-- **Exercise 12.3.** The loops (`trailingLoop`, `manyLoop`, `sepLoop` in `Interp.lean`).
+def trailingLoop (c : Ctx) (trs : List Trailing) (rbp : Nat) (lhs : Syntax) (lhsPrec : Nat) (s : St) : Res :=
+  --<sol
+  match trailAlts trs c rbp lhs lhsPrec (St.pos s) 0 s .none with
+  | .mk .none s1 => .ok (one lhs) s1
+  | .mk (.some cand) s1 => match cand with
+    | .mk stx _ prec _ _ _ => trailingLoop c trs rbp stx prec (commit cand s1)
+  --|ex
+  --| .ok (one lhs) s
+  --sol>
+
+-- iterations of `many p` after the ones in `acc`
+def manyLoop (c : Ctx) (p : PD) (acc : List Syntax) (s : St) : Res :=
+  --<sol
+  match runDescr p c s with
+  | .ok items s1 => match Nat.beq (St.pos s1) (St.pos s) with
+    | .true => .ok acc s1
+    | .false => manyLoop c p (List.append acc (one (packItems items))) s1
+  | .err s1 => .ok acc (St.merge s s1)
+  --|ex
+  --| .ok acc s
+  --sol>
+
+-- `(sep p)*` after `acc`, then an optional trailing `sep`
+def sepLoop (c : Ctx) (p : PD) (sp : String) (tr : Bool) (acc : List Syntax) (s : St) : Res :=
+  --<sol
+  match runDescr (.atom sp) c s with
+  | .err s1 => .ok acc (St.merge s s1)
+  | .ok sepItems s1 => match runDescr p c s1 with
+    | .ok items s2 => sepLoop c p sp tr (List.append acc (List.append sepItems (one (packItems items)))) s2
+    | .err s2 =>
+      let s3 := St.merge s1 s2;
+      match tr with
+      | .true => .ok (List.append acc sepItems) s3
+      | .false => failAt (nextPos c s3) "separated item" s3
+  --|ex
+  --| .ok acc s
+  --sol>
+
+-- try the leading parsers that allow precedence `rbp`
+def leadAlts : List Leading → Ctx → Nat → Nat → St → Option Cand → Alts
+  | .nil, _, _, _, s, b => .mk b s
+  | .cons (.mk k prec prio p) rest, c, rbp, ix, s, b => match Nat.le rbp prec with
+    | .false => leadAlts rest c rbp (ix + 1) s b
+    | .true => match runDescr (.node k p) (Ctx.withPrec c rbp) s with
+      | .ok items s1 => leadAlts rest c rbp (ix + 1) (St.merge s s1)
+          (best b (Cand.mk (firstItem items) (St.pos s1) prec prio ix s1))
+      | .err s1 => leadAlts rest c rbp (ix + 1) (St.merge s s1) b
+
+-- try the trailing parsers that apply after `lhs`; ignore those consuming nothing
+def trailAlts : List Trailing → Ctx → Nat → Syntax → Nat → Nat → Nat → St → Option Cand → Alts
+  | .nil, _, _, _, _, _, _, s, b => .mk b s
+  | .cons (.mk k prec lp prio p) rest, c, rbp, lhs, lhsPrec, start, ix, s, b =>
+    match Bool.and (Nat.le rbp prec) (Nat.le lp lhsPrec) with
+    | .false => trailAlts rest c rbp lhs lhsPrec start (ix + 1) s b
+    | .true => match runDescr p c s with
+      | .ok items s1 => match Nat.lt start (St.pos s1) with
+        | .true => trailAlts rest c rbp lhs lhsPrec start (ix + 1) (St.merge s s1)
+            (best b (Cand.mk (mkNode k (.cons lhs items)) (St.pos s1) prec prio ix s1))
+        | .false => trailAlts rest c rbp lhs lhsPrec start (ix + 1) (St.merge s s1) b
+      | .err s1 => trailAlts rest c rbp lhs lhsPrec start (ix + 1) (St.merge s s1) b
+
+end
 
 -- the syntax tree as an S-expression (`Syntax.toSExpr` with atoms)
 def sexpr {b : Bool} : SyntaxF b → String
@@ -430,4 +434,4 @@ def showRes : Res → String
 -- parse a whole input as category `cat`: the tree, or `error <offset>: expected …`
 def parse (cats : List Cat) (tokens : List String) (cat : String) (text : String) : String :=
   let c := Ctx.mk (String.codes text) tokens cats .none 0;
-  showRes (atEnd c (go big c (.category cat 0) (St.mk 0 0 .nil StrMap.empty)))
+  showRes (atEnd c (categoryParser c cat 0 (St.mk 0 0 .nil StrMap.empty)))

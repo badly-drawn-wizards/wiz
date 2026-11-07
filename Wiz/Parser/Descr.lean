@@ -121,13 +121,34 @@ def addTokens (t : ParserTables) (toks : List String) : ParserTables :=
 def declareCategory (t : ParserTables) (c : Name) : ParserTables :=
   if t.cats.contains c then t else { t with cats := t.cats.insert c {} }
 
+/-- Keywords spelled like identifiers are reserved only by `term` and `command` syntax:
+elsewhere (tactics such as `first` or `exact`) they are `nonReserved`, so they stay
+usable as names (stage 13). -/
+partial def _root_.Wiz.ParserDescr.unreserve : ParserDescr → ParserDescr
+  | .atom t => if t != "" && (t.front.isAlpha || t.front == '_') && t.all (fun c => c.isAlphanum || c == '_') then .nonReserved t else .atom t
+  | .seq ps => .seq (ps.map unreserve)
+  | .many p => .many p.unreserve
+  | .many1 p => .many1 p.unreserve
+  | .optional p => .optional p.unreserve
+  | .sepBy p s tr => .sepBy p.unreserve s tr
+  | .sepBy1 p s tr => .sepBy1 p.unreserve s tr
+  | .orelse p q => .orelse p.unreserve q.unreserve
+  | .node k p => .node k p.unreserve
+  | .withPosition p => .withPosition p.unreserve
+  | .withoutPosition p => .withoutPosition p.unreserve
+  | p => p
+
+def reservesKeywords (c : Name) : Bool := c == "term" || c == "command"
+
 def addLeading (t : ParserTables) (c : Name) (lp : LeadingParser) : ParserTables :=
+  let lp := if reservesKeywords c then lp else { lp with p := lp.p.unreserve }
   let cat := t.cats.getD c {}
   { t.addTokens lp.p.tokens with
     cats := t.cats.insert c { cat with leading := cat.leading.push lp }
     kinds := t.kinds.insert lp.kind () }
 
 def addTrailing (t : ParserTables) (c : Name) (tp : TrailingParser) : ParserTables :=
+  let tp := if reservesKeywords c then tp else { tp with p := tp.p.unreserve }
   let cat := t.cats.getD c {}
   { t.addTokens tp.p.tokens with
     cats := t.cats.insert c { cat with trailing := cat.trailing.push tp }

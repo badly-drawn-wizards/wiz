@@ -671,6 +671,16 @@ def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
     let _ ← check ctx v (ctx.eval d.type)
   pure (g.insert d)
 
+/-- A partial definition (stage 13): `f` itself is opaque to the kernel, an axiom (so
+its type must be inhabited, which the elaborator checks), and its implementation, which
+may call `f` and the other definitions of its group, is checked against the type and
+kept for the compiler. -/
+def addPartialImpl (g : Globals R) (name : Name) (impl : Term R) : TCM (Globals R) := do
+  let some d := g.find? name | throw (.other s!"unknown declaration {name}")
+  let ctx : Ctx R := { globals := g }
+  let _ ← check ctx impl (ctx.eval d.type)
+  pure (g.insert { d with impl := some impl })
+
 /-- Check a list of declarations in order. -/
 def addDecls (g : Globals R) (ds : List (Decl R)) : TCM (Globals R) :=
   ds.foldlM addDecl g
