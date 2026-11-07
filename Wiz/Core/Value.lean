@@ -82,6 +82,11 @@ inductive Val (R : Type) where
   messages, and lets type classes see their class and the nominal heads. Use `whnf`
   before matching on a value's shape. -/
   | unfold (name : Name) (levels : List Level) (sp : Array (Elim R)) (val : Thunk (Val R))
+  /-- **glued** induction on a numeral, `ind l I D v P m i x`, computed only when needed:
+  the induction hypotheses of a numeral (so that `ind` on `1000000` doesn't compute a
+  million of them first), applied to the eliminations `sp` (applications and
+  projections, which stay lazy). `whnf` forces it; quoting keeps the folded form. -/
+  | lazyInd (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) (sp : Array (Elim R)) (val : Thunk (Val R))
 
 /-- An elimination stuck on a neutral. -/
 inductive Elim (R : Type) where
@@ -114,6 +119,7 @@ instance {R : Type} : Inhabited (Val R) := ⟨.sort 0⟩
 anything else (a stuck computation, or an elaborator metavariable). -/
 partial def Val.toPoly? {R : Type} [QRig R] [DecidableEq R] : Val R → Option (QPoly R)
   | .unfold _ _ _ v => Val.toPoly? v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => Val.toPoly? v.get
   | .qlit r => some (QPoly.const r)
   | .neutral (.local l) #[] => some (QPoly.var l)
   | _ => none

@@ -104,6 +104,7 @@ A size is `∞`, or a size variable (any neutral) plus a number of `↑`s. -/
 /-- `(base, k)` for `↑ᵏ base`; `none` as the base means `∞`. -/
 partial def sizeView : Val R → Option (Val R) × Nat
   | .unfold _ _ _ v => sizeView v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => sizeView v.get
   | .szInf => (none, 0)
   | .szSuc s => let (b, k) := sizeView s; (b, k + 1)
   | v => (some v, 0)
@@ -138,6 +139,7 @@ partial def sizeLe (tys : Array (VTy R)) (a b : Val R) : Bool :=
 for a size variable, which can't be built from or observed. -/
 partial def sizePred? : Val R → Option (Val R)
   | .unfold _ _ _ v => sizePred? v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => sizePred? v.get
   | .szInf => some .szInf
   | .szSuc s => some s
   | _ => none
@@ -171,6 +173,7 @@ def scofixFunTy (g : Globals R) (l : Level) (I D A : Val R) (w : R) : VTy R :=
 /-- The type of a neutral, computed by walking its spine from the head's type. -/
 partial def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VTy R)
   | .unfold n us sp _ => inferNe g tys (.neutral (.global n us) sp)
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => inferNe g tys v.get
   | .neutral h sp => do
     let mut ty ← headType g tys h
     let mut acc : Val R := .neutral h #[]
@@ -195,6 +198,7 @@ partial def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VT
 /-- The universe level of a type, if it can be computed. -/
 partial def typeSort? (g : Globals R) (tys : Array (VTy R)) : VTy R → Option Level
   | .unfold _ _ _ v => typeSort? g tys v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => typeSort? g tys v.get
   | .sort l => some (.succ l)
   | .pi _ _ _ A B => do
     return .imax (← typeSort? g tys A) (← typeSort? g (tys.push A) (Closure.inst g B (Val.var tys.size)))
@@ -343,6 +347,8 @@ partial def convGlued (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Opti
     if n == n' && us.length == us'.length && (us.zip us').all (fun (u, u') => u.equiv u') then
       some (convNe g tys (.neutral (.global n us) sp) (.neutral (.global n' us') sp')).isSome
     else none
+  -- the same induction on a numeral: compare the folded forms
+  | a@(.lazyInd ..), b@(.lazyInd ..) => some (quote g tys.size a == quote g tys.size b)
   | _, _ => none
 
 /-- **Exercise 1.4c.** Compare two neutrals. On success return their (common) type.

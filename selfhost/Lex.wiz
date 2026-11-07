@@ -1,8 +1,12 @@
 import IO
+import Std
 -- The lexer, in Wiz: the first piece of the self-hosted frontend (stage 12b).
--- It follows `Wiz/Parser/Token.lean`: whitespace and nested comments, identifiers
--- (with dotted components), numbers, string literals with escapes, and the longest
--- symbol from a token table (a symbol at least as long as an identifier wins).
+-- It follows `Wiz/Parser/Token.lean`: tokens are read on demand at an offset of the
+-- input (an array of code points), so the parser can look ahead from anywhere.
+-- Whitespace and nested comments, identifiers (with dotted components), numbers,
+-- string literals with escapes, and the longest symbol from a token table (a symbol at
+-- least as long as an identifier wins). Loops take a fuel argument, as recursion must
+-- be structural.
 
 def Char.code : Char → Nat
   | .mk n => n
@@ -22,151 +26,189 @@ def Bool.not : Bool → Bool
   | .true => .false
   | .false => .true
 def between (c lo hi : Nat) : Bool := Bool.and (Nat.le lo c) (Nat.le c hi)
-def is (c : Char) (n : Nat) : Bool := Nat.beq (Char.code c) n
 
-def isAlpha (c : Char) : Bool := Bool.or (between (Char.code c) 65 90) (between (Char.code c) 97 122)
-def isDigit (c : Char) : Bool := between (Char.code c) 48 57
+-- character classes, on code points
+def isAlpha (c : Nat) : Bool := Bool.or (between c 65 90) (between c 97 122)
+def isDigit (c : Nat) : Bool := between c 48 57
 -- ASCII letters, `_`, and Greek letters except λ (955), Π (928) and Σ (931)
-def isIdStart (c : Char) : Bool :=
-  Bool.or (Bool.or (isAlpha c) (is c 95))
-    (Bool.or (Bool.and (between (Char.code c) 945 969) (Bool.not (is c 955)))
-             (Bool.and (between (Char.code c) 913 937) (Bool.and (Bool.not (is c 928)) (Bool.not (is c 931)))))
-def isIdRest (c : Char) : Bool :=
+def isIdStart (c : Nat) : Bool :=
+  Bool.or (Bool.or (isAlpha c) (Nat.beq c 95))
+    (Bool.or (Bool.and (between c 945 969) (Bool.not (Nat.beq c 955)))
+             (Bool.and (between c 913 937) (Bool.and (Bool.not (Nat.beq c 928)) (Bool.not (Nat.beq c 931)))))
+def isIdRest (c : Nat) : Bool :=
   Bool.or (Bool.or (isIdStart c) (isDigit c))
-    (Bool.or (Bool.or (is c 39) (is c 33)) (between (Char.code c) 8320 8329))
-def isSpace (c : Char) : Bool := Bool.or (Bool.or (is c 32) (is c 9)) (Bool.or (is c 13) (is c 10))
+    (Bool.or (Bool.or (Nat.beq c 39) (Nat.beq c 33)) (between c 8320 8329))
+def isSpace (c : Nat) : Bool := Bool.or (Bool.or (Nat.beq c 32) (Nat.beq c 9)) (Bool.or (Nat.beq c 13) (Nat.beq c 10))
 
--- skip to after the end of the line
-def lineEnd : List Char → List Char
-  | .nil => .nil
-  | .cons c rest => match is c 10 with
-    | .true => rest
-    | .false => lineEnd rest
--- skip a block comment (nested), `depth` levels deep (structural recursion on a fuel
--- argument: the input shrinks by two characters at a time, not by one field)
-def blockEnd : Nat → List Char → Nat → List Char
-  | .zero, cs, _ => cs
-  | .succ fuel, .nil, _ => .nil
-  | .succ fuel, .cons c rest, d => match rest with
-    | .nil => .nil
-    | .cons c2 rest2 => match Bool.and (is c 45) (is c2 47) with
-      | .true => match d with
-        | .zero => rest2
-        | .succ d' => match d' with
-          | .zero => rest2
-          | .succ _ => blockEnd fuel rest2 d'
-      | .false => match Bool.and (is c 47) (is c2 45) with
-        | .true => blockEnd fuel rest2 (.succ d)
-        | .false => blockEnd fuel rest d
+-- the input: code points; `0` past the end
+def at (input : Array Nat) (i : Nat) : Nat := Array.getD input i 0
+def codesOf : List Char → Array Nat → Array Nat
+  | .nil, a => a
+  | .cons c cs, a => codesOf cs (Array.push a (Char.code c))
+def String.codes (s : String) : Array Nat := match s with
+  | .mk cs => codesOf cs Array.empty
+-- the characters of `n` code points from `i`
+def slice : Nat → Array Nat → Nat → List Char
+  | .zero, _, _ => .nil
+  | .succ n, input, i => .cons (Char.mk (at input i)) (slice n input (i + 1))
 
--- whitespace and comments: how many characters to drop (with fuel)
-def skipWs : Nat → List Char → List Char
-  | .zero, cs => cs
-  | .succ fuel, .nil => .nil
-  | .succ fuel, .cons c rest => match isSpace c with
-    | .true => skipWs fuel rest
-    | .false => match rest with
-      | .nil => .cons c rest
-      | .cons c2 rest2 => match Bool.and (is c 45) (is c2 45) with
-        | .true => skipWs fuel (lineEnd rest2)
-        | .false => match Bool.and (is c 47) (is c2 45) with
-          | .true => skipWs fuel (blockEnd 1000000 rest2 1)
-          | .false => .cons c rest
+def big : Nat := 100000000
 
--- an identifier: its characters (reversed) and the rest
-def readIdent : List Char → List Char → List Char × List Char
-  | .nil, acc => (acc, .nil)
-  | .cons c rest, acc => match isIdRest c with
-    | .true => readIdent rest (.cons c acc)
-    | .false => match is c 46 with
-      | .true => match rest with
-        | .nil => (acc, .cons c rest)
-        | .cons c2 _ => match isIdStart c2 with
-          | .true => readIdent rest (.cons c acc)
-          | .false => (acc, .cons c rest)
-      | .false => (acc, .cons c rest)
+-- after the end of the line
+def lineEnd : Nat → Array Nat → Nat → Nat
+  | .zero, _, j => j
+  | .succ fuel, input, j => match Nat.beq (at input j) 0 with
+    | .true => j
+    | .false => match Nat.beq (at input j) 10 with
+      | .true => j + 1
+      | .false => lineEnd fuel input (j + 1)
+-- after the end of a block comment, `d` levels deep (comments nest)
+def blockEnd : Nat → Array Nat → Nat → Nat → Nat
+  | .zero, _, j, _ => j
+  | .succ fuel, input, j, d =>
+    let c := at input j;
+    let c2 := at input (j + 1);
+    match Nat.beq c 0 with
+    | .true => j
+    | .false => match Bool.and (Nat.beq c 45) (Nat.beq c2 47) with
+      | .true => match Nat.beq d 1 with
+        | .true => j + 2
+        | .false => blockEnd fuel input (j + 2) (d - 1)
+      | .false => match Bool.and (Nat.beq c 47) (Nat.beq c2 45) with
+        | .true => blockEnd fuel input (j + 2) (d + 1)
+        | .false => blockEnd fuel input (j + 1) d
+-- the offset of the next significant character
+def skipWs : Nat → Array Nat → Nat → Nat
+  | .zero, _, i => i
+  | .succ fuel, input, i =>
+    let c := at input i;
+    let c2 := at input (i + 1);
+    match isSpace c with
+    | .true => skipWs fuel input (i + 1)
+    | .false => match Bool.and (Nat.beq c 45) (Nat.beq c2 45) with
+      | .true => skipWs fuel input (lineEnd big input (i + 2))
+      | .false => match Bool.and (Nat.beq c 47) (Nat.beq c2 45) with
+        | .true => skipWs fuel input (blockEnd big input (i + 2) 1)
+        | .false => i
 
-def readDigits : List Char → List Char → List Char × List Char
-  | .nil, acc => (acc, .nil)
-  | .cons c rest, acc => match isDigit c with
-    | .true => readDigits rest (.cons c acc)
-    | .false => (acc, .cons c rest)
-
--- a string literal's contents (after the opening quote), decoded (reversed)
-def readStr : Nat → List Char → List Char → Option (List Char × List Char)
-  | .zero, _, _ => .none
-  | .succ fuel, .nil, _ => .none
-  | .succ fuel, .cons c rest, acc => match is c 34 with
-    | .true => .some (acc, rest)
-    | .false => match is c 92 with
-      | .false => readStr fuel rest (.cons c acc)
-      | .true => match rest with
-        | .nil => .none
-        | .cons e rest2 =>
-          let d : Char := match is e 110 with
-            | .true => Char.mk 10
-            | .false => match is e 116 with
-              | .true => Char.mk 9
-              | .false => e;
-          readStr fuel rest2 (.cons d acc)
+-- the end of an identifier (a `.` continues it if an identifier can start after it)
+def identEnd : Nat → Array Nat → Nat → Nat
+  | .zero, _, j => j
+  | .succ fuel, input, j =>
+    let c := at input j;
+    match isIdRest c with
+    | .true => identEnd fuel input (j + 1)
+    | .false => match Bool.and (Nat.beq c 46) (isIdStart (at input (j + 1))) with
+      | .true => identEnd fuel input (j + 1)
+      | .false => j
+def digitsEnd : Nat → Array Nat → Nat → Nat
+  | .zero, _, j => j
+  | .succ fuel, input, j => match isDigit (at input j) with
+    | .true => digitsEnd fuel input (j + 1)
+    | .false => j
 
 def reverse : List Char → List Char → List Char
   | .nil, acc => acc
   | .cons c cs, acc => reverse cs (.cons c acc)
 
-def Char.eq (a b : Char) : Bool := Nat.beq (Char.code a) (Char.code b)
-def isPrefix : List Char → List Char → Bool
-  | .nil, _ => .true
-  | .cons _ _, .nil => .false
-  | .cons a as, .cons b bs => Bool.and (Char.eq a b) (isPrefix as bs)
+-- a string literal's contents after the opening quote: decoded, and the offset after it
+inductive StrLit where
+  | ok (s : List Char) (stop : Nat)
+  | err (msg : String)
+def readStr : Nat → Array Nat → Nat → List Char → StrLit
+  | .zero, _, _, _ => .err "unterminated string literal"
+  | .succ fuel, input, j, acc =>
+    let c := at input j;
+    match Nat.beq c 0 with
+    | .true => .err "unterminated string literal"
+    | .false => match Nat.beq c 34 with
+      | .true => .ok (reverse acc .nil) (j + 1)
+      | .false => match Nat.beq c 92 with
+        | .false => readStr fuel input (j + 1) (.cons (Char.mk c) acc)
+        | .true =>
+          let e := at input (j + 1);
+          match Nat.beq e 110 with
+          | .true => readStr fuel input (j + 2) (.cons (Char.mk 10) acc)
+          | .false => match Nat.beq e 116 with
+            | .true => readStr fuel input (j + 2) (.cons (Char.mk 9) acc)
+            | .false => match Bool.or (Nat.beq e 92) (Nat.beq e 34) with
+              | .true => readStr fuel input (j + 2) (.cons (Char.mk e) acc)
+              | .false => match Nat.beq e 0 with
+                | .true => .err "unterminated string literal"
+                | .false => .err (String.append "unknown escape sequence \\" (String.mk (.cons (Char.mk e) .nil)))
+
 def len : List Char → Nat
   | .nil => 0
   | .cons _ cs => .succ (len cs)
-def drop : Nat → List Char → List Char
-  | .zero, cs => cs
-  | .succ n, cs => match cs with
-    | .nil => .nil
-    | .cons _ rest => drop n rest
+def isNil : List Char → Bool
+  | .nil => .true
+  | .cons _ _ => .false
+-- does `tok` occur at offset `i`?
+def matchesAt : List Char → Array Nat → Nat → Bool
+  | .nil, _, _ => .true
+  | .cons c cs, input, i => Bool.and (Nat.beq (Char.code c) (at input i)) (matchesAt cs input (i + 1))
 
--- the longest token of the table at the start of `cs` (or the empty list)
-def longest : List String → List Char → List Char → List Char
+-- the longest token of the table at offset `i` (or the empty list)
+def longest : List String → Array Nat → Nat → List Char → List Char
   --<sol
-  | .nil, _, best => best
-  | .cons (.mk t) ts, cs, best => match Bool.and (isPrefix t cs) (Nat.lt (len best) (len t)) with
-    | .true => longest ts cs t
-    | .false => longest ts cs best
+  | .nil, _, _, best => best
+  | .cons (.mk t) ts, input, i, best => match Bool.and (matchesAt t input i) (Nat.lt (len best) (len t)) with
+    | .true => longest ts input i t
+    | .false => longest ts input i best
   --|ex
-  --| -- Exercise 12.1: walk the table, keeping in `best` the longest token that is a
-  --| -- prefix of `cs` (`isPrefix`, `len`, `Nat.lt`); a `String` is `.mk` of its characters.
-  --| | _, _, best => best
+  --| -- Exercise 12.1: walk the table, keeping in `best` the longest token that occurs at
+  --| -- offset `i` (`matchesAt`, `len`, `Nat.lt`); a `String` is `.mk` of its characters.
+  --| | _, _, _, best => best
   --sol>
 
-def tok (kind : String) (cs : List Char) : String := String.append kind (String.mk cs)
+inductive Tok where
+  | atom (val : String)
+  | ident (val : String)
+  | num (digits : String)
+  | str (val : String)
+  | error (msg : String)
+-- a token and where it is: [start, stop)
+inductive TokInfo where
+  | mk (tok : Tok) (start stop : Nat)
 
--- the tokens of the input, as `kind:text` lines (reversed)
-def lex : Nat → List String → List Char → List String → List String
-  | .zero, _, _, acc => acc
-  | .succ fuel, tokens, input, acc => match skipWs 1000000 input with
-    | .nil => acc
-    | .cons c rest =>
-      let sym := longest tokens (.cons c rest) .nil;
-      match isIdStart c with
-      | .true =>
-        let p := readIdent (.cons c rest) .nil;
-        match Nat.le (len p.1) (len sym) with
-        | .true => lex fuel tokens (drop (len sym) (.cons c rest)) (.cons (tok "atom:" sym) acc)
-        | .false => lex fuel tokens p.2 (.cons (tok "ident:" (reverse p.1 .nil)) acc)
-      | .false => match isDigit c with
-        | .true =>
-          let p := readDigits (.cons c rest) .nil;
-          lex fuel tokens p.2 (.cons (tok "num:" (reverse p.1 .nil)) acc)
-        | .false => match is c 34 with
-          | .true => match readStr 1000000 rest .nil with
-            | .some p => lex fuel tokens p.2 (.cons (tok "str:" (reverse p.1 .nil)) acc)
-            | .none => .cons "error:unterminated string literal" acc
-          | .false => match sym with
-            | .nil => .cons (String.append "error:unexpected character " (String.mk (.cons c .nil))) acc
-            | .cons _ _ => lex fuel tokens (drop (len sym) (.cons c rest)) (.cons (tok "atom:" sym) acc)
+-- the token at offset `i`, which must not be whitespace
+def readToken (tokens : List String) (input : Array Nat) (i : Nat) : TokInfo :=
+  let c := at input i;
+  let sym := longest tokens input i .nil;
+  match isIdStart c with
+  | .true =>
+    let j := identEnd big input i;
+    -- a symbol token at least as long as the identifier wins (e.g. a keyword)
+    match Bool.and (Bool.not (isNil sym)) (Nat.le (j - i) (len sym)) with
+    | .true => TokInfo.mk (Tok.atom (String.mk sym)) i (i + len sym)
+    | .false => TokInfo.mk (Tok.ident (String.mk (slice (j - i) input i))) i j
+  | .false => match isDigit c with
+    | .true =>
+      let j := digitsEnd big input i;
+      TokInfo.mk (Tok.num (String.mk (slice (j - i) input i))) i j
+    | .false => match Nat.beq c 34 with
+      | .true => match readStr big input (i + 1) .nil with
+        | .ok s j => TokInfo.mk (Tok.str (String.mk s)) i j
+        | .err m => TokInfo.mk (Tok.error m) i i
+      | .false => match sym with
+        | .nil => TokInfo.mk (Tok.error (String.append "unexpected character '"
+            (String.append (String.mk (.cons (Char.mk c) .nil)) "'"))) i i
+        | .cons _ _ => TokInfo.mk (Tok.atom (String.mk sym)) i (i + len sym)
+
+-- all the tokens, as `kind:text` lines (reversed)
+def lex : Nat → List String → Array Nat → Nat → List String → List String
+  | .zero, _, _, _, acc => acc
+  | .succ fuel, tokens, input, i, acc =>
+    let j := skipWs big input i;
+    match Nat.lt j (Array.size input) with
+    | .false => acc
+    | .true => match readToken tokens input j with
+      | .mk t _ stop => match t with
+        | .atom s => lex fuel tokens input stop (.cons (String.append "atom:" s) acc)
+        | .ident s => lex fuel tokens input stop (.cons (String.append "ident:" s) acc)
+        | .num s => lex fuel tokens input stop (.cons (String.append "num:" s) acc)
+        | .str s => lex fuel tokens input stop (.cons (String.append "str:" s) acc)
+        | .error m => .cons (String.append "error:" m) acc
 
 def printAll : List String → IO Unit
   | .nil => IO.pure ()
@@ -174,5 +216,5 @@ def printAll : List String → IO Unit
     IO.println s;
     printAll ss
 
-def tokenize (tokens : List String) (input : String) : List String := match input with
-  | .mk cs => lex 1000000 tokens cs .nil
+def tokenize (tokens : List String) (input : String) : List String :=
+  lex big tokens (String.codes input) 0 .nil

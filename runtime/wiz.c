@@ -27,7 +27,7 @@ typedef uintptr_t wiz_val;
 #define WIZ_IS_SCALAR(v) ((v) & 1)
 #define WIZ_MAX_SMALL (((uintptr_t)1 << 62) - 1)
 
-enum { WIZ_TAG_CLO = 0xFFFF0000u, WIZ_TAG_BIG = 0xFFFF0001u, WIZ_TAG_RAW = 0xFFFF0002u,
+enum { WIZ_TAG_FIRST_SPECIAL = 0xFFFF0000u, WIZ_TAG_CLO = 0xFFFF0000u, WIZ_TAG_BIG = 0xFFFF0001u, WIZ_TAG_RAW = 0xFFFF0002u,
        WIZ_TAG_EXT = 0xFFFF0003u, WIZ_TAG_BYTES = 0xFFFF0004u, WIZ_TAG_ARRAY = 0xFFFF0005u,
        WIZ_TAG_STR = 0xFFFF0006u, WIZ_TAG_MAP = 0xFFFF0007u };
 
@@ -95,6 +95,45 @@ typedef struct {
 
 static int64_t wiz_live = 0;
 
+/* with WIZ_LEAKS set, remember every live object, to list the leaked ones at exit */
+static int wiz_leaks = -1;
+static void *wiz_watch = NULL;
+static void **wiz_track_tab = NULL;
+static size_t wiz_track_cap = 0, wiz_track_n = 0;
+static size_t wiz_track_slot(void *p) {
+  size_t i = ((uintptr_t)p >> 4) * 11400714819323198485ull & (wiz_track_cap - 1);
+  while (wiz_track_tab[i] && wiz_track_tab[i] != p) i = (i + 1) & (wiz_track_cap - 1);
+  return i;
+}
+static void wiz_track(void *p) {
+  if (wiz_leaks < 0) {
+    wiz_leaks = getenv("WIZ_LEAKS") != NULL;
+    if (getenv("WIZ_WATCH")) wiz_watch = (void *)strtoull(getenv("WIZ_WATCH"), NULL, 16);
+  }
+  if (!wiz_leaks) return;
+  if (2 * (wiz_track_n + 1) > wiz_track_cap) {
+    void **old = wiz_track_tab; size_t oc = wiz_track_cap;
+    wiz_track_cap = oc ? 2 * oc : 1024;
+    wiz_track_tab = (void **)calloc(wiz_track_cap, sizeof(void *));
+    wiz_track_n = 0;
+    for (size_t i = 0; i < oc; i++) if (old[i] && old[i] != (void *)1) { wiz_track_tab[wiz_track_slot(old[i])] = old[i]; wiz_track_n++; }
+    free(old);
+  }
+  wiz_track_tab[wiz_track_slot(p)] = p;
+  wiz_track_n++;
+}
+static void wiz_untrack(void *p) {
+  if (wiz_leaks != 1) return;
+  /* rebuild the probe chain after removing */
+  size_t i = wiz_track_slot(p);
+  if (wiz_track_tab[i] != p) return;
+  wiz_track_tab[i] = NULL; wiz_track_n--;
+  for (size_t j = (i + 1) & (wiz_track_cap - 1); wiz_track_tab[j]; j = (j + 1) & (wiz_track_cap - 1)) {
+    void *q = wiz_track_tab[j]; wiz_track_tab[j] = NULL; wiz_track_n--;
+    wiz_track_tab[wiz_track_slot(q)] = q; wiz_track_n++;
+  }
+}
+
 static void wiz_panic(const char *msg) {
   fprintf(stderr, "wiz: %s\n", msg);
   exit(3);
@@ -107,6 +146,7 @@ static void *wiz_alloc(size_t bytes, uint32_t tag, uint32_t size) {
   h->tag = tag;
   h->size = size;
   wiz_live++;
+  wiz_track(h);
   return h;
 }
 
@@ -116,13 +156,19 @@ WIZ_API wiz_val wiz_ctor_new(uint32_t tag, uint32_t n) {
 }
 #define WIZ_SET(o, i, v) (((wiz_ctor *)(o))->fields[i] = (v))
 
+/* with WIZ_WATCH=<address> (and WIZ_LEAKS), log the reference count changes of one object */
+static void wiz_watch_log(const char *what, wiz_val v, void *from) {
+  if ((void *)v == wiz_watch) fprintf(stderr, "  %s %p: rc %ld, from %p\n", what, (void *)v, (long)((wiz_hdr *)v)->rc, from);
+}
 WIZ_API void wiz_inc(wiz_val v) {
   if (!WIZ_IS_SCALAR(v)) ((wiz_hdr *)v)->rc++;
+  if (wiz_watch) wiz_watch_log("inc", v, __builtin_return_address(0));
 }
 
 static void wiz_free(wiz_val v);
 
 WIZ_API void wiz_dec(wiz_val v) {
+  if (wiz_watch) wiz_watch_log("dec", v, __builtin_return_address(0));
   if (!WIZ_IS_SCALAR(v) && --((wiz_hdr *)v)->rc == 0) wiz_free(v);
 }
 
@@ -155,6 +201,7 @@ static void wiz_free(wiz_val v) {
     for (uint32_t i = 0; i < h->size; i++) wiz_dec(o->fields[i]);
   }
   wiz_live--;
+  wiz_untrack(h);
   free(h);
 }
 
@@ -321,7 +368,7 @@ WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
   wiz_boxed_fn fn = c->fn;
   uint32_t arity = c->arity;
   /* take the captured arguments: move them out of a unique closure, else share them */
-  if (c->h.rc == 1) { wiz_live--; free(c); }
+  if (c->h.rc == 1) { wiz_live--; wiz_untrack(c); free(c); }
   else { for (uint32_t i = 0; i < m; i++) wiz_inc(all[i]); c->h.rc--; }
   if (total == arity) return fn(all);
   if (total < arity) return wiz_clo_new(fn, arity, total, all);
@@ -334,7 +381,9 @@ WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
 WIZ_API wiz_val wiz_reset(wiz_val x) {
   if (!WIZ_IS_SCALAR(x)) {
     wiz_hdr *h = (wiz_hdr *)x;
-    if (h->rc == 1 && h->tag != WIZ_TAG_CLO && h->tag != WIZ_TAG_BIG) {
+    /* only a constructor's cell can be reused: closures, numbers and the runtime's own
+       objects (arrays, strings, maps …) own more than their fields */
+    if (h->rc == 1 && h->tag < WIZ_TAG_FIRST_SPECIAL) {
       for (uint32_t i = 0; i < h->size; i++) wiz_dec(((wiz_ctor *)x)->fields[i]);
       return x;
     }
@@ -348,9 +397,29 @@ WIZ_API wiz_val wiz_reuse(wiz_val tok, uint32_t tag, uint32_t n) {
     wiz_hdr *h = (wiz_hdr *)tok;
     if (h->size == n) { h->tag = tag; return tok; }
     wiz_live--;
+    wiz_untrack(h);
     free(h);
   }
   return wiz_ctor_new(tag, n);
+}
+
+/* list the objects still alive (with WIZ_LEAKS set) */
+static void wiz_report_leaks(void) {
+  if (wiz_leaks != 1) return;
+  for (size_t i = 0; i < wiz_track_cap; i++) {
+    wiz_hdr *h = (wiz_hdr *)wiz_track_tab[i];
+    if (!h) continue;
+    fprintf(stderr, "  leaked %p: tag %u, %u fields, rc %u:", (void *)h, h->tag, h->size, (unsigned)h->rc);
+    if (h->tag < 1000) {
+      wiz_ctor *o = (wiz_ctor *)h;
+      for (uint32_t k = 0; k < h->size; k++) {
+        wiz_val f = o->fields[k];
+        if (WIZ_IS_SCALAR(f)) fprintf(stderr, " %lu", (unsigned long)WIZ_UNBOX(f));
+        else fprintf(stderr, " <tag %u>", ((wiz_hdr *)f)->tag);
+      }
+    }
+    fprintf(stderr, "\n");
+  }
 }
 
 WIZ_API void wiz_unreachable(void) { wiz_panic("reached an impossible case"); }
@@ -735,7 +804,7 @@ WIZ_API int wiz_finish_io(wiz_val main) {
   wiz_val w = WIZ_BOX(0);
   wiz_val r = wiz_apply(main, 1, &w);
   wiz_dec(r);
-  if (wiz_live != 0) { fprintf(stderr, "wiz: %ld objects leaked\n", (long)wiz_live); return 2; }
+  if (wiz_live != 0) { fprintf(stderr, "wiz: %ld objects leaked\n", (long)wiz_live); wiz_report_leaks(); return 2; }
   return 0;
 }
 
@@ -743,7 +812,7 @@ WIZ_API int wiz_finish(wiz_val r) {
   wiz_print(r);
   putchar('\n');
   wiz_dec(r);
-  if (wiz_live != 0) { fprintf(stderr, "wiz: %ld objects leaked\n", (long)wiz_live); return 2; }
+  if (wiz_live != 0) { fprintf(stderr, "wiz: %ld objects leaked\n", (long)wiz_live); wiz_report_leaks(); return 2; }
   return 0;
 }
 
