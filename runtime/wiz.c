@@ -285,6 +285,13 @@ WIZ_API wiz_val wiz_nat_beq(wiz_val a, wiz_val b) {
   wiz_dec(a); wiz_dec(b);
   return WIZ_BOX(eq ? 1 : 0);
 }
+WIZ_API wiz_val wiz_nat_blt(wiz_val a, wiz_val b) {
+  int lt;
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) lt = WIZ_UNBOX(a) < WIZ_UNBOX(b);
+  else { mpz_t x, y; wiz_to_mpz(x, a); wiz_to_mpz(y, b); lt = mpz_cmp(x, y) < 0; mpz_clear(x); mpz_clear(y); }
+  wiz_dec(a); wiz_dec(b);
+  return WIZ_BOX(lt ? 1 : 0);
+}
 
 /* ---- flat objects: tags and fields by runtime values (`pack`, `unpack`) ---- */
 

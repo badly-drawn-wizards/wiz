@@ -211,6 +211,11 @@ partial def fireNative (op : Name) (args : Array RVal) : RVal :=
   | "nat.sub" => .nat (n 0 - n 1)
   | "nat.mul" => .nat (n 0 * n 1)
   | "nat.beq" => .obj (if n 0 == n 1 then 1 else 0) #[]
+  | "nat.blt" => .obj (if n 0 < n 1 then 1 else 0) #[]
+  -- a few pure foreign functions the interpreter knows itself
+  | "extern:wiz_nat_show:n:s:pure::" =>
+    let chars := (toString (n 0)).toList.foldr (fun c t => RVal.obj 1 #[.obj 0 #[.nat c.toNat], t]) (.obj 0 #[])
+    .obj 0 #[chars]
   | _ => panic! s!"{op}: foreign functions only run in compiled code (wiz run)"
 
 partial def applyN (code : Code) (f : RVal) (as : List RVal) : RVal := as.foldl (apply code) f

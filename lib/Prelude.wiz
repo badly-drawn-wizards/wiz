@@ -86,6 +86,28 @@ builtin nat.add := Nat.add
 builtin nat.sub := Nat.sub
 builtin nat.mul := Nat.mul
 builtin nat.beq := Nat.beq
+-- (stage 14) comparisons and Boolean connectives; `Nat.lt` runs natively
+def Nat.lt : Nat → Nat → Bool
+  | .zero, .zero => .false
+  | .zero, .succ _ => .true
+  | .succ _, .zero => .false
+  | .succ m, .succ n => Nat.lt m n
+builtin nat.blt := Nat.lt
+def Nat.le (m n : Nat) : Bool := Nat.lt m (Nat.succ n)
+def Nat.max (m n : Nat) : Nat := match Nat.lt m n with
+  | .true => n
+  | .false => m
+def Bool.and : Bool → Bool → Bool
+  | .true, b => b
+  | .false, _ => .false
+def Bool.or : Bool → Bool → Bool
+  | .true, _ => .true
+  | .false, b => b
+def Bool.not : Bool → Bool
+  | .true => .false
+  | .false => .true
+def Char.code : Char → Nat
+  | .mk n => n
 builtin string := String
 
 -- Errors.

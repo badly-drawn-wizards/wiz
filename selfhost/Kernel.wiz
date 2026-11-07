@@ -1,0 +1,194 @@
+import IO
+-- A type checker in Wiz (stage 14a): the core of `Wiz/Core`, for a small calculus:
+-- variables (de Bruijn indices), universes `U n`, Π types, λ, application, `let`, and
+-- type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to
+-- values with closures (an environment and a body), values quote back to normal forms,
+-- and two types are convertible when their normal forms are equal.
+--
+-- Values and environments are mutually inductive (a closure holds an environment of
+-- values), and evaluation, application and quotation are mutually recursive.
+
+inductive Tm where
+  | var (i : Nat)
+  | univ (n : Nat)
+  | pi (dom cod : Tm)
+  | lam (body : Tm)
+  | app (f a : Tm)
+  | letE (ty val body : Tm)
+  | ann (t ty : Tm)
+
+mutual
+inductive Val where
+  | vuniv (n : Nat)
+  -- `(x : dom) → cod`, `cod` under one binder, closed over `env`
+  | vpi (dom : Val) (env : Env) (cod : Tm)
+  | vlam (env : Env) (body : Tm)
+  -- a variable (by level) applied to arguments (the last one first)
+  | vne (lvl : Nat) (spine : Env)
+inductive Env where
+  | nil
+  | cons (v : Val) (rest : Env)
+end
+
+def lookup : Env → Nat → Val
+  | .nil, _ => .vuniv 0
+  | .cons v rest, i => match i with
+    | .zero => v
+    | .succ j => lookup rest j
+
+-- **Exercise 14.1.** Evaluation and application (`eval` and `vApp` in `Eval.lean`).
+mutual
+def eval : Env → Tm → Val
+  --<sol
+  | env, .var i => lookup env i
+  | _, .univ n => .vuniv n
+  | env, .pi a b => .vpi (eval env a) env b
+  | env, .lam b => .vlam env b
+  | env, .app f a => vapp (eval env f) (eval env a)
+  | env, .letE _ v b => eval (.cons (eval env v) env) b
+  | env, .ann t _ => eval env t
+  --|ex
+  --| | _, _ => .vuniv 0
+  --sol>
+def vapp : Val → Val → Val
+  --<sol
+  | .vlam env b, a => eval (.cons a env) b
+  | .vne l sp, a => .vne l (.cons a sp)
+  | v, _ => v
+  --|ex
+  --| | v, _ => v
+  --sol>
+end
+
+-- a fresh variable at level `l`
+def fresh (l : Nat) : Val := .vne l .nil
+
+-- **Exercise 14.2.** Quotation (`quote` in `Eval.lean`): back to a term at depth `l`.
+mutual
+def quote : Nat → Val → Tm
+  --<sol
+  | _, .vuniv n => .univ n
+  | l, .vpi a env b => .pi (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b))
+  | l, .vlam env b => .lam (quote (l + 1) (eval (.cons (fresh l) env) b))
+  | l, .vne x sp => quoteSpine l (.var (l - x - 1)) sp
+  --|ex
+  --| | _, _ => .univ 0
+  --sol>
+def quoteSpine : Nat → Tm → Env → Tm
+  | _, h, .nil => h
+  | l, h, .cons a rest => .app (quoteSpine l h rest) (quote l a)
+end
+
+def tmEq : Tm → Tm → Bool
+  | .var i, .var j => Nat.beq i j
+  | .univ m, .univ n => Nat.beq m n
+  | .pi a b, .pi c d => Bool.and (tmEq a c) (tmEq b d)
+  | .lam a, .lam b => tmEq a b
+  | .app f a, .app g b => Bool.and (tmEq f g) (tmEq a b)
+  | .letE a b c, .letE d e f => Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f))
+  | .ann a b, .ann c d => Bool.and (tmEq a c) (tmEq b d)
+  | _, _ => .false
+
+-- two values are convertible when their normal forms are equal (no η)
+def conv (l : Nat) (a b : Val) : Bool := tmEq (quote l a) (quote l b)
+
+-- terms, printed with the variables named by level (`x0` is the outermost)
+def show : Nat → Tm → String
+  | l, .var i => String.append "x" (Nat.toString (l - i - 1))
+  | _, .univ n => String.append "U" (Nat.toString n)
+  | l, .pi a b => String.append (String.append (String.append "(x" (Nat.toString l))
+      (String.append " : " (show l a))) (String.append ") → " (show (l + 1) b))
+  | l, .lam b => String.append (String.append "λx" (Nat.toString l)) (String.append ". " (show (l + 1) b))
+  | l, .app f a => String.append (String.append "(" (show l f)) (String.append " " (String.append (show l a) ")"))
+  | l, .letE t v b => String.append (String.append "let x" (Nat.toString l))
+      (String.append (String.append " := " (show l v)) (String.append "; " (show (l + 1) b)))
+  | l, .ann t ty => String.append (String.append "(" (show l t)) (String.append " : " (String.append (show l ty) ")"))
+
+-- the typing context: values of the variables, their types, the depth
+inductive Ctx where
+  | mk (env : Env) (types : Env) (lvl : Nat)
+def Ctx.lvl : Ctx → Nat
+  | .mk _ _ l => l
+def Ctx.env : Ctx → Env
+  | .mk e _ _ => e
+def Ctx.types : Ctx → Env
+  | .mk _ t _ => t
+-- a new variable of type `ty`
+def Ctx.bind (c : Ctx) (ty : Val) : Ctx := match c with
+  | .mk e t l => .mk (.cons (fresh l) e) (.cons ty t) (l + 1)
+-- a new variable defined as `v`
+def Ctx.define (c : Ctx) (v ty : Val) : Ctx := match c with
+  | .mk e t l => .mk (.cons v e) (.cons ty t) (l + 1)
+
+inductive Res where
+  | ok (ty : Val)
+  | err (msg : String)
+
+def showVal (c : Ctx) (v : Val) : String := show (Ctx.lvl c) (quote (Ctx.lvl c) v)
+
+-- **Exercise 14.3.** Bidirectional type checking (`infer` and `check` in `Check.lean`).
+-- `check` returns the type it checked against.
+mutual
+def infer : Ctx → Tm → Res
+  --<sol
+  | c, .var i => .ok (lookup (Ctx.types c) i)
+  | _, .univ n => .ok (.vuniv (n + 1))
+  | c, .pi a b => match inferUniv c a with
+    | .ok (.vuniv i) => match inferUniv (Ctx.bind c (eval (Ctx.env c) a)) b with
+      | .ok (.vuniv j) => .ok (.vuniv (Nat.max i j))
+      | r => r
+    | r => r
+  | _, .lam _ => .err "cannot infer the type of a λ; add a type ascription"
+  | c, .app f a => match infer c f with
+    | .ok fty => match fty with
+      | .vpi dom env cod => match check c a dom with
+        | .ok _ => .ok (eval (.cons (eval (Ctx.env c) a) env) cod)
+        | r => r
+      | ty => .err (String.append "not a function: its type is " (showVal c ty))
+    | r => r
+  | c, .letE ty v b => match inferUniv c ty with
+    | .ok _ =>
+      let tyv := eval (Ctx.env c) ty;
+      match check c v tyv with
+      | .ok _ => infer (Ctx.define c (eval (Ctx.env c) v) tyv) b
+      | r => r
+    | r => r
+  | c, .ann t ty => match inferUniv c ty with
+    | .ok _ => check c t (eval (Ctx.env c) ty)
+    | r => r
+  --|ex
+  --| | _, _ => .err "not implemented"
+  --sol>
+def check : Ctx → Tm → Val → Res
+  --<sol
+  | c, .lam b, .vpi dom env cod =>
+    match check (Ctx.bind c dom) b (eval (.cons (fresh (Ctx.lvl c)) env) cod) with
+    | .ok _ => .ok (.vpi dom env cod)
+    | r => r
+  | c, t, ty => match infer c t with
+    | .ok ty' => match conv (Ctx.lvl c) ty ty' with
+      | .true => .ok ty
+      | .false => .err (String.append (String.append "type mismatch: expected " (showVal c ty))
+          (String.append ", got " (showVal c ty')))
+    | r => r
+  --|ex
+  --| | _, _, _ => .err "not implemented"
+  --sol>
+-- a type: its universe
+def inferUniv : Ctx → Tm → Res
+  | c, t => match infer c t with
+    | .ok ty => match ty with
+      | .vuniv n => .ok (.vuniv n)
+      | ty => .err (String.append "not a type: its type is " (showVal c ty))
+    | r => r
+end
+
+def empty : Ctx := .mk .nil .nil 0
+
+-- type check a closed term: its type, or the error
+def typeOf (t : Tm) : String := match infer empty t with
+  | .ok ty => show 0 (quote 0 ty)
+  | .err m => String.append "error: " m
+
+-- the normal form of a closed term
+def normalize (t : Tm) : String := show 0 (quote 0 (eval .nil t))

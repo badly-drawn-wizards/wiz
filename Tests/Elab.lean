@@ -799,7 +799,7 @@ def leanParse (t : ParserTables) (cat : Name) (input : String) : String :=
 
 def selfHostGroup : Group where
   name := "selfhost"
-  exercise := "Stage 12b–d"
+  exercise := "Stages 12b–14a"
   cases := [
     { name := "the lexer in Wiz agrees with the Lean lexer", run := fun _ => do
         let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
@@ -827,7 +827,22 @@ def selfHostGroup : Group where
         let prog := lexSrc ++ "\n" ++ parseSrc ++ "\n" ++ wizTables t ++
           s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
           s!"def main : IO Unit := printAll {wizList calls}\n"
-        ioRun prog ("\n".intercalate expected ++ "\n") }
+        ioRun prog ("\n".intercalate expected ++ "\n") },
+    { name := "the type checker in Wiz", run := fun _ => do
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let defs := "def idTy : Tm := .pi (.univ 0) (.pi (.var 0) (.var 1))\n" ++
+          "def idTm : Tm := .ann (.lam (.lam (.var 0))) idTy\n" ++
+          "def cnat : Tm := .pi (.univ 0) (.pi (.pi (.var 0) (.var 1)) (.pi (.var 1) (.var 2)))\n" ++
+          "def two : Tm := .ann (.lam (.lam (.lam (.app (.var 1) (.app (.var 1) (.var 0)))))) cnat\n" ++
+          "def add : Tm := .ann (.lam (.lam (.lam (.lam (.lam (.app (.app (.app (.var 4) (.var 2)) (.var 1)) " ++
+          "(.app (.app (.app (.var 3) (.var 2)) (.var 1)) (.var 0)))))))) (.pi cnat (.pi cnat cnat))\n" ++
+          "def viaId : Tm := .ann (.lam (.lam (.app (.app idTm (.var 1)) (.var 0)))) idTy\n"
+        let main := "def main : IO Unit := do\n  IO.println (typeOf idTm);\n  IO.println (typeOf viaId);\n" ++
+          "  IO.println (typeOf (.app idTm cnat));\n  IO.println (typeOf (.app (.app add two) two));\n" ++
+          "  IO.println (normalize (.app (.app add two) two));\n  IO.println (typeOf (.app (.univ 0) (.univ 0)))\n"
+        ioRun (kernel ++ "\n" ++ defs ++ main) ("(x0 : U0) → (x1 : x0) → x0\n(x0 : U0) → (x1 : x0) → x0\n" ++
+          "error: type mismatch: expected U0, got U1\n(x0 : U0) → (x1 : (x1 : x0) → x0) → (x2 : x0) → x0\n" ++
+          "λx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\nerror: not a function: its type is U1\n") }
   ]
 
 def languageGroup : Group where
