@@ -47,8 +47,12 @@ def implicitBinder (requireType : Bool) : ParserDescr :=
   node "binder.implicit" <| seqs ["{", withoutPosition <| seqs
     [optional quantity, many1 binderIdent, typeSpec requireType], "}"]
 
+/-- `[x : C A]` or `[C A]`: an instance-implicit binder (stage 7) -/
+def instBinder : ParserDescr :=
+  node "binder.inst" <| seqs ["[", withoutPosition <| seqs [optional (seqs [ident, ":"]), term], "]"]
+
 def bracketedBinder (requireType : Bool) : ParserDescr :=
-  orelse (explicitBinder requireType) (implicitBinder requireType)
+  orelse (explicitBinder requireType) (orelse (implicitBinder requireType) instBinder)
 
 /-- Binders of `fun` and `∀`: a bare name or a bracketed group with optional type. -/
 def simpleBinder : ParserDescr := orelse (bracketedBinder false) binderIdent
@@ -249,6 +253,15 @@ def commandLeading : List LeadingParser := [
   { kind := "command.structure", prec := maxPrec,
     p := seqs ["structure", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
       "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term])))] },
+  -- stage 7: a class is a structure whose values are found by instance resolution
+  { kind := "command.class", prec := maxPrec,
+    p := seqs ["class", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
+      "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term])))] },
+  { kind := "command.instance", prec := maxPrec,
+    p := seqs ["instance", optional (seqs ["(", nonReserved "priority", ":=", num, ")"]),
+      many (bracketedBinder false), ":", term,
+      orelse (seqs [":=", term])
+        (seqs ["where", withPosition (many1 (node "instance.field" (seqs [colGe, ident, ":=", term])))])] },
   { kind := "command.coinductive", prec := maxPrec,
     p := seqs ["coinductive", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
       "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term])))] }

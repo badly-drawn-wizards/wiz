@@ -157,6 +157,18 @@ def TacticM.evalTactic (stx : Syntax) : TacticM Unit := fun k => Tac.evalTactic 
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
+-- Type classes (stage 7). `outParam` marks a class parameter that instance resolution
+-- determines (it is the identity).
+def outParam.{u} (A : Sort u) : Sort u := A
+
+class Monad (m : Type → Type) where
+  pure : {A : Type} → A → m A
+  bind : {A B : Type} → m A → (A → m B) → m B
+
+instance : Monad TacticM where
+  pure := TacticM.pure
+  bind := TacticM.bind
+
 -- Macros: `MacroM` is the same monad (it only uses `fresh` and `fail`).
 def MacroM (A : Type) : Type := TacticM A
 def MacroM.pure {A : Type} (a : A) : MacroM A := TacticM.pure a
@@ -166,7 +178,7 @@ def MacroM.fresh : MacroM Nat := TacticM.fresh
 def Macro : Type := Syntax → MacroM Syntax
 def Macro.run (m : MacroM Syntax) : Tac := m (fun s => Tac.result s)
 
--- `do` notation, written as macros: `do x ← e; rest`, `do e; rest` and `do e`.
+-- `do` notation for any `Monad`, written as macros: `do x ← e; rest`, `do e; rest`, `do e`.
 declare_syntax_cat doSeq
 syntax (name := last) term : doSeq
 syntax (name := bind) ident "←" term ";" doSeq : doSeq
@@ -175,9 +187,9 @@ syntax (name := block) "do" doSeq : term
 macro_rules
   | `(term| do $e:term) => `(term| $e)
 macro_rules
-  | `(term| do $e:term; $rest) => `(term| TacticM.bind $e (fun _ => do $rest))
+  | `(term| do $e:term; $rest) => `(term| Monad.bind $e (fun _ => do $rest))
 macro_rules
-  | `(term| do $x ← $e; $rest) => `(term| TacticM.bind $e (fun $x => do $rest))
+  | `(term| do $x ← $e; $rest) => `(term| Monad.bind $e (fun $x => do $rest))
 
 -- Taking syntax apart.
 def SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax
