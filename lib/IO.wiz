@@ -1,0 +1,40 @@
+import Prelude
+-- Effects through a linear world token (stage 9), and the C FFI.
+
+-- The world: a token that `IO` actions take and give back exactly once (quantity 1), so
+-- the kernel's usage checking orders them. At runtime it is a scalar.
+axiom World : Type
+def IO (A : Type) : Type := (1 w : World) → A × World
+def IO.pure {A : Type} (a : A) : IO A := fun w => (a, w)
+def IO.bind {A B : Type} (x : IO A) (f : A → IO B) : IO B := fun w =>
+  let 1 (a, w') := x w; f a w'
+instance : Monad IO where
+  pure := IO.pure
+  bind := IO.bind
+
+-- Machine types: opaque to the kernel, native at runtime (through the FFI).
+axiom UInt64 : Type
+extern "wiz_u64_id" UInt64.ofNat : Nat → UInt64
+extern "wiz_u64_id" UInt64.toNat : UInt64 → Nat
+extern "wiz_u64_add" UInt64.add : UInt64 → UInt64 → UInt64
+extern "wiz_u64_sub" UInt64.sub : UInt64 → UInt64 → UInt64
+extern "wiz_u64_mul" UInt64.mul : UInt64 → UInt64 → UInt64
+extern "wiz_u64_div" UInt64.div : UInt64 → UInt64 → UInt64
+extern "wiz_u64_mod" UInt64.mod : UInt64 → UInt64 → UInt64
+extern "wiz_u64_lt" UInt64.lt : UInt64 → UInt64 → Bool
+extern "wiz_u64_eq" UInt64.eq : UInt64 → UInt64 → Bool
+
+axiom Float64 : Type
+extern "wiz_f64_of_nat" Float64.ofNat : Nat → Float64
+extern "wiz_f64_add" Float64.add : Float64 → Float64 → Float64
+extern "wiz_f64_sub" Float64.sub : Float64 → Float64 → Float64
+extern "wiz_f64_mul" Float64.mul : Float64 → Float64 → Float64
+extern "wiz_f64_div" Float64.div : Float64 → Float64 → Float64
+extern "wiz_f64_lt" Float64.lt : Float64 → Float64 → Bool
+extern "wiz_f64_show" Float64.toString : Float64 → String
+
+extern "wiz_nat_show" Nat.toString : Nat → String
+
+-- Output.
+extern "wiz_io_println" IO.println : String → IO Unit
+extern "wiz_io_print" IO.print : String → IO Unit

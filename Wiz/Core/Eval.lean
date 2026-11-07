@@ -60,7 +60,7 @@ def natOpArity : Name → Nat
 `Term.natOp` on its arguments, so it computes natively when they are literals. -/
 def vBuiltin? (g : Globals R) (n : Name) : Option (Val R) := do
   let k ← g.builtinKey? n
-  if k == "nat" || k == "string" || k == "nat.beq" then none
+  if !k.startsWith "nat." || k == "nat.beq" then none
   else if k == "nat.zero" then some (.natLit 0)
   else if natOpArity k == 1 then some (.lam "a" (.mk [] (.natOp k #[.var 0])))
   else some (.lam "a" (.mk [] (.lam "b" (.natOp k #[.var 1, .var 0]))))

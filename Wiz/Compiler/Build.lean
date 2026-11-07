@@ -24,10 +24,15 @@ def irProgram (s : CommandState R) (n : Name) : Except String (Array IR.Decl × 
   let decls ← IR.lowerProgram code (.global n)
   pure (decls.map (·.optimize), d.type)
 
+/-- Is this the type `IO A`? Then `main` is run, not printed. -/
+def isIO (ty : Term R) : Bool := match (Term.spine ty).1 with
+  | .const "IO" _ => true
+  | _ => false
+
 /-- The C program that computes the global `n`, and `n`'s type. -/
 def cProgram (s : CommandState R) (n : Name) : Except String (String × Term R) := do
   let (decls, ty) ← irProgram s n
-  pure (C.program decls, ty)
+  pure (C.program decls (isIO ty), ty)
 
 def words (s : Option String) : List String :=
   ((s.getD "").splitOn " ").filter (· ≠ "")
@@ -44,11 +49,11 @@ def compileC (src : String) (exe : System.FilePath) : IO (Except String Unit) :=
 
 /-- Compile an LLVM module to an executable: `llc` (`$WIZ_LLC`) for the module, the C
 compiler for the runtime (exported with `-DWIZ_API=`), and the C compiler to link. -/
-def compileLLVM (ll : String) (exe : System.FilePath) : IO (Except String Unit) := do
+def compileLLVM (ll : String) (exe : System.FilePath) (glue : String := "") : IO (Except String Unit) := do
   let llFile := exe.withExtension "ll"
   let rtFile := exe.withFileName "wiz_runtime.c"
   IO.FS.writeFile llFile ll
-  IO.FS.writeFile rtFile C.runtime
+  IO.FS.writeFile rtFile (C.runtime ++ "\n" ++ glue)
   let cc := (← IO.getEnv "WIZ_CC").getD "cc"
   let llc := (← IO.getEnv "WIZ_LLC").getD "llc"
   let cflags := (words (← IO.getEnv "WIZ_CFLAGS")).toArray
@@ -96,12 +101,16 @@ def runGlobal (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bo
   | .error e => pure (.error e)
   | .ok (decls, ty) =>
     let exe := dir / "wiz_main"
-    let built ← if llvm then compileLLVM (LLVM.program decls) exe else compileC (C.program decls) exe
+    let io := isIO ty
+    let built ← if llvm then compileLLVM (LLVM.program decls io) exe (C.glue (C.externs decls))
+      else compileC (C.program decls io) exe
     match built with
     | .error e => pure (.error e)
     | .ok () =>
       let out ← IO.Process.output { cmd := exe.toString }
       if out.exitCode != 0 then return .error s!"the program failed ({out.exitCode}): {out.stderr}"
+      -- an `IO` program prints for itself
+      if io then return .ok out.stdout
       match parseValue out.stdout with
       | none => pure (.error s!"could not read the result: {out.stdout}")
       | some v => pure (.ok (readback s.globals s.builtins (eval s.globals [] ty) v).pretty)

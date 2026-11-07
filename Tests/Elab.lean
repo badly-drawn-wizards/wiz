@@ -644,6 +644,50 @@ def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := 
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
 
+/-- Build `main : IO _` with the C backend (and the `IO` library) and compare its output. -/
+def ioRun (src : String) (expected : String) : IO Unit := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let ioLib ← IO.FS.readFile "lib/IO.wiz"
+  let loader : Name → Option String := fun m => if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
+  let s := runFrontend (R := ZeroOneMany) src { loader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let dir ← IO.FS.createTempDir
+  match ← Build.runGlobal s "main" dir with
+  | .ok v => checkEq expected v
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+
+def ioFails (src : String) (fragment : String) : IO Unit := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let ioLib ← IO.FS.readFile "lib/IO.wiz"
+  let loader : Name → Option String := fun m => if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
+  let s := runFrontend (R := ZeroOneMany) src { loader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+  unless (errs[0]!.splitOn fragment).length > 1 do throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+def ffiGroup : Group where
+  name := "ffi"
+  exercise := "Stage 9a"
+  cases := [
+    { name := "IO actions run in order", run := fun _ =>
+        ioRun "import IO\ndef main : IO Unit := do\n  IO.println \"one\";\n  IO.println \"two\"" "one\ntwo\n" },
+    { name := "the world is linear: it can't be duplicated", run := fun _ =>
+        ioFails "import IO\ndef bad (x : IO Unit) : IO Unit := fun w =>\n  let 1 (a, w') := x w; x w" "quantity 1" },
+    { name := "machine integers and floats", run := fun _ =>
+        ioRun ("import IO\ndef main : IO Unit := do\n" ++
+          "  IO.println (Nat.toString (UInt64.toNat (UInt64.mul (UInt64.ofNat 1000000) (UInt64.ofNat 1000000))));\n" ++
+          "  IO.println (Float64.toString (Float64.div (Float64.ofNat 1) (Float64.ofNat 4)))") "1000000000000\n0.25\n" },
+    { name := "strings are marshalled as UTF-8", run := fun _ =>
+        ioRun "import IO\ndef main : IO Unit := IO.println \"λ ✓\"" "λ ✓\n" },
+    { name := "a C library function, through its header", run := fun _ =>
+        ioRun ("import IO\nextern \"strlen\" (header := \"string.h\") strlen : String → Nat\n" ++
+          "def main : IO Unit := IO.println (Nat.toString (strlen \"hello\"))") "5\n" },
+    { name := "foreign types are checked", run := fun _ =>
+        ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
+  ]
+
 /-- Programs for the native backends (C, or LLVM). -/
 def nativeCases (llvm : Bool) : List Case :=
 [

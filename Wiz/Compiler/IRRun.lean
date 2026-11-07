@@ -99,7 +99,7 @@ def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
       | _ => pure 0
     args.forM dropV
     pure (.tag t)
-  | _ => throw s!"unknown primitive {op}"
+  | _ => throw s!"{op}: foreign functions only run in compiled code (wiz run)"
 
 mutual
 
