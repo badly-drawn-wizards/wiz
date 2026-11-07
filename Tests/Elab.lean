@@ -844,6 +844,9 @@ def nativeCases (llvm : Bool) : List Case :=
         cRun (llvm := llvm) (streamPrelude ++ "def main : Nat := (nats .zero).tail.tail.head") ".succ (.succ .zero)" },
     { name := "infinitary data", run := fun _ =>
         cRun (llvm := llvm) (treePrelude ++ "def main : Nat := Tree.depthAt (.node (fun i => .node (fun j => .leaf))) 3") "3" },
+    { name := "deep recursion (direct recursion, big stack)", run := fun _ =>
+        cRun (llvm := llvm) "import Prelude\ndef sumTo : Nat → Nat\n  | .zero => 0\n  | .succ n => (.succ n) + sumTo n\ndef main : Nat := sumTo 100000"
+          "5000050000" },
     { name := "type classes and do", run := fun _ =>
         cRun (llvm := llvm) ("import Prelude\ninstance : Monad Option where\n  pure := fun a => Option.some a\n" ++
           "  bind := fun x f => match x with\n    | .none => Option.none\n    | .some a => f a\n" ++

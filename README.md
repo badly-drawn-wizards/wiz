@@ -902,8 +902,22 @@ runConsole (runState (prog : Eff (Row.cons (State Nat) (Row.cons Console Row.nil
 (prog : StateT Nat IO Nat) 0                                                                 -- fused
 ```
 
-(Deep recursion currently needs a big stack: the generic eliminators compute all
-induction hypotheses eagerly. Specialising them is the next step, stage 12a.)
+## Stage 12: towards self-hosting
+
+### 12a (part 1): compiled recursion ✅
+
+* **Direct recursion.** For a structurally recursive definition, the elaborator also
+  produces the compiler's version (`Decl.impl`, not checked by the kernel): the same
+  equations, with case analysis and the definition calling itself. Only the recursive
+  calls the program makes are computed, instead of every induction hypothesis.
+* **Case analysis.** `T.casesOn`'s method no longer threads the hypotheses through, and
+  erasure applies such a method directly instead of computing them.
+* **Stack.** Compiled programs run on a thread with a 1 GB stack (`$WIZ_STACK_MB`), so
+  deep non-tail recursion (`sumTo 100000`) works.
+
+Next: the standard library for self-hosting (arrays and hash maps updated in place when
+unique, string operations, file IO), flat constructor objects, then porting the lexer
+and the parser.
 
 ## Stage 11: tooling
 

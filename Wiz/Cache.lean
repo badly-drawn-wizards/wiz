@@ -287,7 +287,8 @@ def dinfo (x : Sx) : Option SourceInfo := do
 
 def Effect.toSx (e : Effect R) : Sx :=
   let decl (d : Decl R) : Sx := list [str d.name, list (d.levelParams.map str), term d.type,
-    (match d.value with | some v => term v | none => .a "none"), .a (toString d.inline)]
+    (match d.value with | some v => term v | none => .a "none"), .a (toString d.inline),
+    (match d.impl with | some v => term v | none => .a "none")]
   let msg (m : Msg) : Sx := list [info m.info, .a (if m.severity == .error then "error" else "info"), str m.text]
   list [list (e.decls.toList.map decl), list (e.messages.toList.map msg),
     list (e.builtins.map fun (k, n) => list [str k, str n]),
@@ -302,10 +303,11 @@ def Effect.toSx (e : Effect R) : Sx :=
 def Effect.ofSx? (x : Sx) : Option (Effect R) := do
   let #[ds, ms, bs, cs, is, cos, fts, cc, hs, ss] ← items? x | none
   let decl (x : Sx) : Option (Decl R) := do
-    let #[n, ps, ty, v, inl] ← items? x | none
+    let #[n, ps, ty, v, inl, im] ← items? x | none
     pure { name := ← atom? n, levelParams := ← (← items? ps).toList.mapM atom?, type := ← dterm ty,
            value := ← (match v with | .a "none" => some none | v => (dterm v).map some),
-           inline := (← atom? inl) == "true" }
+           inline := (← atom? inl) == "true",
+           impl := ← (match im with | .a "none" => some none | v => (dterm v).map some) }
   let msg (x : Sx) : Option Msg := do
     let #[i, sev, t] ← items? x | none
     pure { info := ← dinfo i, severity := if (← atom? sev) == "error" then .error else .info, text := ← atom? t }
@@ -338,7 +340,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
-def salt : UInt64 := hash "wiz-cache-1"
+def salt : UInt64 := hash "wiz-cache-2"
 
 /-- Elaborate `input` (like `Query.elaborate`), reading and writing `dir`. Returns the
 final state and how many commands came from the disk cache. -/

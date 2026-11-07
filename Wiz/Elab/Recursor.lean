@@ -253,7 +253,9 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
       let M := B.lam "j" fun j => B.lam "i" fun i => B.lam "xs" fun xs => methodBody (some j) i xs none
       fun d => .scase l (Iv d) (Dv d) v (P d) (M d) (sv d) (tuple ξ.toList d) (xv d)
     | none =>
-      let M := B.lam "i" fun i => B.lam "xs" fun xs => B.lam "ih" fun ih => methodBody none i xs (some ih)
+      -- (`casesOn` ignores the hypotheses: then the compiler can skip computing them)
+      let M := B.lam "i" fun i => B.lam "xs" fun xs => B.lam "ih" fun ih =>
+        methodBody none i xs (if withIH then some ih else none)
       fun d => .ind l (Iv d) (Dv d) v (P d) (M d) (tuple ξ.toList d) (xv d)
   pure { name := recName, levelParams := ps ++ [vName], type := ty 0, value := some (val 0) }
 

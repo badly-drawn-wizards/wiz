@@ -16,7 +16,7 @@ namespace Wiz.C
 open IR
 
 /-- The runtime, embedded in the compiler. (Lake does not track `include_str`: after
-editing `runtime/wiz.c`, change this file too, e.g. this counter: 7.) -/
+editing `runtime/wiz.c`, change this file too, e.g. this counter: 8.) -/
 def runtime : String := include_str "../../runtime/wiz.c"
 
 /-- A C identifier for a Wiz name: letters and digits stay, anything else is `_xx`. -/
@@ -169,10 +169,10 @@ def program (decls : Array IR.Decl) (io : Bool := false) (extra : String := "") 
   let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
   let protos := decls.toList.map fun d =>
     s!"{signature d};\nstatic wiz_val {mangle d.name}_boxed(wiz_val *a);\n"
-  let finish := if io then "wiz_finish_io" else "wiz_finish"
+  let finish := if io then "1" else "0"
   runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ extra ++ "\n" ++ glue (externs decls) ++
     "\n/* ---- generated ---- */\n\n" ++ String.join protos ++ "\n" ++
     String.join (decls.toList.map (decl arities ·)) ++
-    s!"\nint main(void) \{ return {finish}({mangle "wiz.entry"}()); }\n"
+    s!"\nint main(void) \{ return wiz_run_main({mangle "wiz.entry"}, {finish}); }\n"
 
 end Wiz.C

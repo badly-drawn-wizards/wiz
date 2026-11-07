@@ -166,6 +166,9 @@ structure Decl (R : Type) where
   /-- unfold eagerly instead of gluing (constructors, so values look like constructor
   applications) -/
   inline : Bool := false
+  /-- an implementation for the compiler, not checked by the kernel: a structurally
+  recursive definition, with direct recursion instead of the recursor -/
+  impl : Option (Term R) := none
   deriving Repr, Inhabited
 
 namespace Term

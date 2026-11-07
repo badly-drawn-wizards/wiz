@@ -182,9 +182,9 @@ def program (decls : Array IR.Decl) (io : Bool := false) : String :=
   let externDecls := (C.externs decls).toList.map fun key =>
     let n := RVal.nativeArity key
     s!"declare i64 @{C.externWrapper key}({", ".intercalate (List.replicate n "i64")})\n"
-  let finish := if io then "wiz_finish_io" else "wiz_finish"
-  runtimeDecls ++ "declare i32 @wiz_finish_io(i64)\n" ++ String.join externDecls ++
+  let io' := if io then 1 else 0
+  runtimeDecls ++ "declare i32 @wiz_run_main(ptr, i32)\n" ++ String.join externDecls ++
     "\n".intercalate globals.toList ++ "\n" ++ "\n".intercalate fns.toList ++
-    s!"\ndefine i32 @main() \{\n  %r = call i64 {fn "wiz.entry"}()\n  %c = call i32 @{finish}(i64 %r)\n  ret i32 %c\n}\n"
+    s!"\ndefine i32 @main() \{\n  %c = call i32 @wiz_run_main(ptr {fn "wiz.entry"}, i32 {io'})\n  ret i32 %c\n}\n"
 
 end Wiz.LLVM

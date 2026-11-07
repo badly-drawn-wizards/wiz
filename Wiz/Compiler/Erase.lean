@@ -112,6 +112,17 @@ private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
 
 mutual
 
+/-- The free variables of a term (as indices at its top). -/
+partial def Wiz.IR.freeIdx' (t : Term R) (depth : Nat := 0) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=
+  match t with
+  | .var i => if i ≥ depth then acc.insert (i - depth) else acc
+  | t => Id.run do
+    let mut acc := acc
+    let ((), acc') := (t.forChildren (m := StateM (Std.HashSet Nat)) (fun _ => pure ())
+      (fun d c => modify fun a => Wiz.IR.freeIdx' c (depth + d) a)).run acc
+    acc := acc'
+    pure acc
+
 /-- **Exercise 5.1a.** Erase `t`, checking it against `ty`.
 
 * if `ty` is `erasable`, the result is `◾`;
@@ -165,7 +176,8 @@ end
 
 /-- Erase a global definition. -/
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
-  let some v := d.value | return .prim .unreachable #[]
+  -- the compiler's version (direct recursion), if the elaborator made one
+  let some v := d.impl <|> d.value | return .prim .unreachable #[]
   let ctx : Ctx R := { globals := g }
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
