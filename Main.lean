@@ -54,8 +54,8 @@ def buildCmd (path out : String) (llvm : Bool) : IO UInt32 := do
   | .error e => IO.eprintln e; pure 1
   | .ok (decls, ty) =>
     let io := Build.isIO ty
-    let r ← if llvm then Build.compileLLVM (LLVM.program decls io) out (C.glue (C.externs decls))
-      else Build.compileC (C.program decls io) out
+    let r ← if llvm then Build.compileLLVM (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls))
+      else Build.compileC (C.program decls io (Build.extraC s)) out
     match r with
     | .error e => IO.eprintln e; pure 1
     | .ok () => pure 0
