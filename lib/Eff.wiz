@@ -1,0 +1,140 @@
+import IO
+-- Algebraic effects as a library (stage 10).
+--
+-- An effect is a set of operations, each with the type of its answer. A computation
+-- `Eff r A` is a tree of operations from the row `r`, with continuations (a free monad).
+-- Handlers interpret the first effect of the row and leave the rest. Rows can be
+-- reordered only where the effects provably commute (`Commute`).
+
+structure Effect where
+  op : Type
+  ret : op → Type
+
+inductive Row : Type 1 where
+  | nil
+  | cons (e : Effect) (r : Row)
+
+inductive Sum (A B : Type) where
+  | inl (a : A)
+  | inr (b : B)
+
+-- The operations of a row, and their answer types.
+def Union : Row → Type
+  | .nil => Empty
+  | .cons e r => Sum e.op (Union r)
+def RetU : (r : Row) → Union r → Type
+  | .nil, o => absurd o
+  | .cons e r, .inl o => e.ret o
+  | .cons e r, .inr o => RetU r o
+
+inductive Eff (r : Row) (A : Type) where
+  | pure (a : A)
+  | op (o : Union r) (k : RetU r o → Eff r A)
+
+def Eff.bind {r : Row} {A B : Type} : Eff r A → (A → Eff r B) → Eff r B
+  | .pure a, f => f a
+  | .op o k, f => .op o (fun x => Eff.bind (k x) f)
+instance {r : Row} : Monad (Eff r) where
+  pure := fun a => Eff.pure a
+  bind := Eff.bind
+
+-- `e` is in the row `r`: how to inject its operations, and read their answers back.
+class Member (e : Effect) (r : Row) where
+  inj : e.op → Union r
+  prj : (o : e.op) → RetU r (inj o) → e.ret o
+instance {e : Effect} {r : Row} : Member e (Row.cons e r) where
+  inj := fun o => Sum.inl o
+  prj := fun o x => x
+instance {e e' : Effect} {r : Row} [i : Member e r] : Member e (Row.cons e' r) :=
+  Member.mk (fun o => @Sum.inr e'.op (Union r) (@Member.inj e r i o)) (fun o x => @Member.prj e r i o x)
+
+-- Perform an operation of an effect in the row.
+def send (0 e : Effect) {r : Row} [i : Member e r] (o : e.op) : Eff r (e.ret o) :=
+  @Eff.op r (e.ret o) (@Member.inj e r i o) (fun x => Eff.pure (@Member.prj e r i o x))
+
+-- A computation with no effects left.
+def Eff.run {A : Type} : Eff Row.nil A → A
+  | .pure a => a
+  | .op o k => absurd o
+
+-- State.
+inductive StateOp (S : Type) where
+  | get
+  | put (s : S)
+def State (S : Type) : Effect := Effect.mk (StateOp S) (fun o => match o with
+  | .get => S
+  | .put _ => Unit)
+def get {S : Type} {r : Row} [Member (State S) r] : Eff r S := send (State S) StateOp.get
+def put {S : Type} {r : Row} [Member (State S) r] (s : S) : Eff r Unit := send (State S) (StateOp.put s)
+def runState {S : Type} {r : Row} {A : Type} : Eff (Row.cons (State S) r) A → S → Eff r (A × S)
+  | .pure a, s => Eff.pure (a, s)
+  | .op (.inl .get) k, s => runState (k s) s
+  | .op (.inl (.put s')) k, s => runState (k ()) s'
+  | .op (.inr o) k, s => Eff.op o (fun x => runState (k x) s)
+
+-- Reading an environment.
+inductive ReaderOp where
+  | ask
+def Reader (E : Type) : Effect := Effect.mk ReaderOp (fun _ => E)
+def ask {E : Type} {r : Row} [Member (Reader E) r] : Eff r E := send (Reader E) ReaderOp.ask
+def runReader {E : Type} {r : Row} {A : Type} : Eff (Row.cons (Reader E) r) A → E → Eff r A
+  | .pure a, _ => Eff.pure a
+  | .op (.inl .ask) k, env => runReader (k env) env
+  | .op (.inr o) k, env => Eff.op o (fun x => runReader (k x) env)
+
+-- Exceptions: the handler stops at the first one.
+inductive ExnOp (X : Type) where
+  | throw (x : X)
+def Exn (X : Type) : Effect := Effect.mk (ExnOp X) (fun _ => Empty)
+def throw {X A : Type} {r : Row} [Member (Exn X) r] (x : X) : Eff r A :=
+  Eff.bind (send (Exn X) (ExnOp.throw x)) (fun e => absurd e)
+def runExn {X : Type} {r : Row} {A : Type} : Eff (Row.cons (Exn X) r) A → Eff r (Except X A)
+  | .pure a => Eff.pure (Except.ok a)
+  | .op (.inl (.throw x)) _ => Eff.pure (Except.error x)
+  | .op (.inr o) k => Eff.op o (fun x => runExn (k x))
+
+-- Output, handled by `IO` at the bottom of the row.
+inductive ConsoleOp where
+  | println (s : String)
+def Console : Effect := Effect.mk ConsoleOp (fun _ => Unit)
+def println {r : Row} [Member Console r] (s : String) : Eff r Unit := send Console (ConsoleOp.println s)
+def runConsole {A : Type} : Eff (Row.cons Console Row.nil) A → IO A
+  | .pure a => IO.pure a
+  | .op (.inl (.println s)) k => Monad.bind (IO.println s) (fun u => runConsole (k u))
+  | .op (.inr o) _ => absurd o
+
+-- Lowering to a monad: every effect of the row is handled in the same monad `m`.
+class Handler (e : Effect) (m : Type → Type) where
+  handle : (o : e.op) → m (e.ret o)
+class Handlers (r : Row) (m : Type → Type) where
+  handleU : (o : Union r) → m (RetU r o)
+instance {m : Type → Type} : Handlers Row.nil m where
+  handleU := fun o => absurd o
+instance {e : Effect} {r : Row} {m : Type → Type} [h : Handler e m] [hs : Handlers r m] : Handlers (Row.cons e r) m :=
+  Handlers.mk (fun o => match o with
+    | .inl o' => @Handler.handle e m h o'
+    | .inr o' => @Handlers.handleU r m hs o')
+def interpret {r : Row} {m : Type → Type} [i : Monad m] [hs : Handlers r m] {A : Type} : Eff r A → m A
+  | .pure a => @Monad.pure m i A a
+  | .op o k => @Monad.bind m i (RetU r o) A (@Handlers.handleU r m hs o) (fun x => interpret (k x))
+
+-- Two effects commute in `m` when their operations can be swapped: a proof obligation,
+-- checked by the kernel. Only then may a row be reordered.
+class Commute (e₁ e₂ : Effect) (m : Type → Type) [i : Monad m] [h₁ : Handler e₁ m] [h₂ : Handler e₂ m] where
+  comm : (o₁ : e₁.op) → (o₂ : e₂.op) → (B : Type) → (f : e₁.ret o₁ → e₂.ret o₂ → m B) →
+    @Monad.bind m i (e₁.ret o₁) B (@Handler.handle e₁ m h₁ o₁)
+      (fun a => @Monad.bind m i (e₂.ret o₂) B (@Handler.handle e₂ m h₂ o₂) (fun b => f a b)) =
+    @Monad.bind m i (e₂.ret o₂) B (@Handler.handle e₂ m h₂ o₂)
+      (fun b => @Monad.bind m i (e₁.ret o₁) B (@Handler.handle e₁ m h₁ o₁) (fun a => f a b))
+
+-- Swap the first two effects of a row (the meaning in `m` is unchanged, by `comm`).
+def Eff.swapU {e₁ e₂ : Effect} {r : Row} : Union (Row.cons e₁ (Row.cons e₂ r)) → Union (Row.cons e₂ (Row.cons e₁ r))
+  | .inl o => .inr (.inl o)
+  | .inr (.inl o) => .inl o
+  | .inr (.inr o) => .inr (.inr o)
+def reorder {e₁ e₂ : Effect} {r : Row} {m : Type → Type} [i : Monad m] [h₁ : Handler e₁ m] [h₂ : Handler e₂ m]
+    [c : @Commute e₁ e₂ m i h₁ h₂] {A : Type} : Eff (Row.cons e₁ (Row.cons e₂ r)) A → Eff (Row.cons e₂ (Row.cons e₁ r)) A
+  | .pure a => Eff.pure a
+  | .op (.inl o) k => Eff.op (.inr (.inl o)) (fun x => reorder (k x))
+  | .op (.inr (.inl o)) k => Eff.op (.inl o) (fun x => reorder (k x))
+  | .op (.inr (.inr o)) k => Eff.op (.inr (.inr o)) (fun x => reorder (k x))

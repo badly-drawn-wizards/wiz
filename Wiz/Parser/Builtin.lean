@@ -146,8 +146,10 @@ def termLeading : List LeadingParser := [
   { kind := "term.num", prec := maxPrec, p := num },
   { kind := "term.omega", prec := maxPrec, p := "ω" },
   { kind := "term.str", prec := maxPrec, p := str },
-  { kind := "term.type", prec := maxPrec, p := seqs ["Type", optional (seqs [checkPrec leadPrec, level maxPrec])] },
-  { kind := "term.sort", prec := maxPrec, p := seqs ["Sort", optional (seqs [checkPrec leadPrec, level maxPrec])] },
+  -- the level must be right of the enclosing position: in a structure, `op : Type` and a
+  -- field `ret` on the next line are two fields, not `Type ret`
+  { kind := "term.type", prec := maxPrec, p := seqs ["Type", optional (seqs [checkPrec leadPrec, colGt, level maxPrec])] },
+  { kind := "term.sort", prec := maxPrec, p := seqs ["Sort", optional (seqs [checkPrec leadPrec, colGt, level maxPrec])] },
   { kind := "term.prop", prec := maxPrec, p := "Prop" },
   { kind := "term.identUniv", prec := maxPrec, p := seqs [ident, noWs, ".{", sepBy1 (level 0) ",", "}"] },
   { kind := "term.hole", prec := maxPrec, p := "_" },

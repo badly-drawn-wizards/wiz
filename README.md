@@ -852,3 +852,40 @@ extern "fputs" (header := "stdio.h") fputs : String → FILE → IO Nat
 
 The FFI is complete for now. Not done yet: callbacks (C calling Wiz closures), structs
 by value, and mapping more of a header's pointer types onto foreign types automatically.
+
+## Stage 10: effects
+
+### 10a: effects as a library, commutation as proofs ✅
+
+```
+import Eff
+def prog : Eff (Row.cons (State Nat) (Row.cons (Exn String) (Row.cons Console Row.nil))) Nat := do
+  n ← get;
+  println "starting";
+  put (n + 1);
+  Monad.pure n
+def main : IO Unit := do
+  r ← runConsole (runExn (runState prog 4))
+  …
+```
+
+* `lib/Eff.wiz`: an `Effect` is a type of operations with an answer type for each, a
+  `Row` lists effects, and `Eff r A` is a free monad over the row's operations (its
+  continuations are infinitary fields). `Member e r` (two instances, found by
+  resolution) injects an effect's operations into a row; `send` performs one.
+* Handlers peel the first effect off a row: `runState`, `runReader`, `runExn`, and
+  `runConsole` into `IO` at the bottom.
+* **Lowering to a monad**: a `Handler e m` for every effect of a row gives
+  `interpret : Eff r A → m A`. **Commutation is a proof obligation**:
+  `Commute e₁ e₂ m` asks for a proof (kernel-checked, with the OTT equality) that
+  swapping two operations doesn't change the result in `m`; `reorder` needs it. Two
+  readers commute (the proof is `rfl`); the kernel rejects the same claim for state.
+* This needed more of the elaborator: dependent matching now carries induction
+  hypotheses through nested patterns; unification got lazy delta (unfold the later
+  definition one step), first-order approximation against variables, projections of
+  holes, and non-linear spines; description fields may live in smaller universes;
+  `Type` takes a universe argument only right of the enclosing position; types get
+  their trailing instance arguments.
+
+Not done yet: fusing handlers into direct code (evidence passing) for tail-resumptive
+operations, so that effects cost no allocation.

@@ -158,6 +158,9 @@ where
         go fuel (set zero a) (set zero b) && go fuel (set (succ (param p)) a) (set (succ (param p)) b)
       | _, _ => false
 
+/-- `a ≤ b` for every instantiation (as far as `equiv` can tell). -/
+def le (a b : Level) : Bool := equiv (max a b) b
+
 /-- The level as a number, if it is closed. -/
 def toNat? : Level → Option Nat
   | zero => some 0
