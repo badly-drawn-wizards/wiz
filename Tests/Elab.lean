@@ -799,7 +799,7 @@ def leanParse (t : ParserTables) (cat : Name) (input : String) : String :=
 
 def selfHostGroup : Group where
   name := "selfhost"
-  exercise := "Stages 12b–14b"
+  exercise := "Stages 12b–14c"
   cases := [
     { name := "the lexer in Wiz agrees with the Lean lexer", run := fun _ => do
         let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
@@ -856,7 +856,20 @@ def selfHostGroup : Group where
           s!"def main : IO Unit := printAll {wizList calls}\n"
         ioRun prog ("(x0 : U0) → (x1 : x0) → x0\nU3\n(x0 : U0) → U0\n" ++
           "error: cannot infer the type of a λ; add a type ascription\nscope error: unknown identifier y\n" ++
-          "(x0 : (x0 : U0) → U0) → (x1 : U0) → U0\nparse " ++ leanParse t "term" bad ++ "\n") }
+          "(x0 : (x0 : U0) → U0) → (x1 : U0) → U0\nparse " ++ leanParse t "term" bad ++ "\n") },
+    { name := "a file of definitions, checked in Wiz", run := fun _ => do
+        let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
+        let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
+        let t := Builtin.tables
+        let file := "def N : Type 1 := (A : Type) → (A → A) → A → A\ndef two : N := fun A s z => s (s z)\n" ++
+          "def add (m n : N) : N := fun A s z => m A s (n A s z)\n#reduce add two two\n#check add two\n" ++
+          "def bad : Type := Type\n#check bad\n"
+        let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
+          s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
+          s!"def main : IO Unit := printAll (checkFile cats tokens {wizLit file})\n"
+        ioRun prog ("N : U1\ntwo : N\nadd : (x2 : N) → (x3 : N) → N\nλx3. λx4. λx5. (x4 (x4 (x4 (x4 x5))))\n" ++
+          "(x3 : (x3 : U0) → (x4 : (x4 : x3) → x3) → (x5 : x3) → x3) → (x4 : U0) → (x5 : (x5 : x4) → x4) → (x6 : x4) → x4\n" ++
+          "error: type mismatch: expected U0, got U1\nerror: unknown identifier bad\n") }
   ]
 
 def languageGroup : Group where

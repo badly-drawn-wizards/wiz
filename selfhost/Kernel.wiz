@@ -92,17 +92,26 @@ def tmEq : Tm → Tm → Bool
 -- two values are convertible when their normal forms are equal (no η)
 def conv (l : Nat) (a b : Val) : Bool := tmEq (quote l a) (quote l b)
 
--- terms, printed with the variables named by level (`x0` is the outermost)
-def show : Nat → Tm → String
-  | l, .var i => String.append "x" (Nat.toString (l - i - 1))
+-- the name of the variable at level `l`: from `names` (the outermost first), or `x<l>`
+def nameFrom : List String → Nat → Nat → String
+  | .nil, _, l => String.append "x" (Nat.toString l)
+  | .cons n ns, k, l => match k with
+    | .zero => n
+    | .succ k' => nameFrom ns k' l
+def nameAt (names : List String) (l : Nat) : String := nameFrom names l l
+
+-- terms, printed with the variables named by level (`x0` is the outermost, unless
+-- `names` names it)
+def show (names : List String) : Nat → Tm → String
+  | l, .var i => nameAt names (l - i - 1)
   | _, .univ n => String.append "U" (Nat.toString n)
-  | l, .pi a b => String.append (String.append (String.append "(x" (Nat.toString l))
-      (String.append " : " (show l a))) (String.append ") → " (show (l + 1) b))
-  | l, .lam b => String.append (String.append "λx" (Nat.toString l)) (String.append ". " (show (l + 1) b))
-  | l, .app f a => String.append (String.append "(" (show l f)) (String.append " " (String.append (show l a) ")"))
-  | l, .letE t v b => String.append (String.append "let x" (Nat.toString l))
-      (String.append (String.append " := " (show l v)) (String.append "; " (show (l + 1) b)))
-  | l, .ann t ty => String.append (String.append "(" (show l t)) (String.append " : " (String.append (show l ty) ")"))
+  | l, .pi a b => String.append (String.append (String.append "(" (nameAt names l))
+      (String.append " : " (show names l a))) (String.append ") → " (show names (l + 1) b))
+  | l, .lam b => String.append (String.append "λ" (nameAt names l)) (String.append ". " (show names (l + 1) b))
+  | l, .app f a => String.append (String.append "(" (show names l f)) (String.append " " (String.append (show names l a) ")"))
+  | l, .letE t v b => String.append (String.append "let " (nameAt names l))
+      (String.append (String.append " := " (show names l v)) (String.append "; " (show names (l + 1) b)))
+  | l, .ann t ty => String.append (String.append "(" (show names l t)) (String.append " : " (String.append (show names l ty) ")"))
 
 -- the typing context: values of the variables, their types, the depth
 inductive TCtx where
@@ -124,7 +133,7 @@ inductive TyRes where
   | ok (ty : Val)
   | err (msg : String)
 
-def showVal (c : TCtx) (v : Val) : String := show (TCtx.lvl c) (quote (TCtx.lvl c) v)
+def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
 
 -- **Exercise 14.3.** Bidirectional type checking (`infer` and `check` in `Check.lean`).
 -- `check` returns the type it checked against.
@@ -187,8 +196,8 @@ def empty : TCtx := .mk .nil .nil 0
 
 -- type check a closed term: its type, or the error
 def typeOf (t : Tm) : String := match infer empty t with
-  | .ok ty => show 0 (quote 0 ty)
+  | .ok ty => show .nil 0 (quote 0 ty)
   | .err m => String.append "error: " m
 
 -- the normal form of a closed term
-def normalize (t : Tm) : String := show 0 (quote 0 (eval .nil t))
+def normalize (t : Tm) : String := show .nil 0 (quote 0 (eval .nil t))

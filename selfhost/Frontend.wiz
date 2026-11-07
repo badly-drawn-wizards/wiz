@@ -141,3 +141,93 @@ def checkText (cats : List Cat) (tokens : List String) (text : String) : String 
   | .ok stx => match elab .nil stx with
     | .err m => String.append "scope error: " m
     | .ok t => typeOf t
+
+-- A file of commands (stage 14c): `def x (binders) : T := v`, `#check t` and
+-- `#reduce t`. The global definitions are the outermost variables of the typing
+-- context, defined as their values, so the kernel needs nothing new.
+
+-- binder groups `(x y : A) …` around a result: Π types, each `A` read in its context
+mutual
+def groupPis : List String → List Syntax → Syntax → Elab
+  | names, .nil, body => elab names body
+  | names, .cons b bs, body => match binderType b with
+    | .none => .err "the binders of a definition need types"
+    | .some a => piGroup names (binderNames b) a bs body
+def piGroup : List String → List String → Syntax → List Syntax → Syntax → Elab
+  | names, .nil, _, bs, body => groupPis names bs body
+  | names, .cons x xs, a, bs, body => match elab names a with
+    | .ok aT => match piGroup (.cons x names) xs a bs body with
+      | .ok b => .ok (.pi aT b)
+      | e => e
+    | e => e
+end
+
+def List.reverseOf {A : Type} : List A → List A → List A
+  | .nil, acc => acc
+  | .cons x xs, acc => List.reverseOf xs (.cons x acc)
+
+inductive Global where
+  | mk (name : String) (val : Val) (ty : Val)
+-- the globals (the latest first) as a typing context, and their names
+def gctx : List Global → TCtx
+  | .nil => empty
+  | .cons (.mk _ v t) rest => TCtx.define (gctx rest) v t
+def gnames : List Global → List String
+  | .nil => .nil
+  | .cons (.mk n _ _) rest => .cons n (gnames rest)
+
+-- the output of a command, and the globals after it
+inductive Step where
+  | mk (out : String) (gs : List Global)
+
+def errStep (gs : List Global) (m : String) : Step := .mk (String.append "error: " m) gs
+
+-- **Exercise 14.5.** One command.
+def command (gs : List Global) (stx : Syntax) : Step :=
+  --<sol
+  let c := gctx gs;
+  let names := gnames gs;
+  let l := TCtx.lvl c;
+  let shown := List.reverseOf names .nil;
+  match strEq (kindOf stx) "command.def" with
+  | .true => match kid stx 1 with
+    | .ident x => match kids (kid stx 4) with
+      | .cons _ (.cons tyStx _) => match groupPis names (kids (kid stx 3)) tyStx with
+        | .err m => errStep gs m
+        | .ok tyT => match inferUniv c tyT with
+          | .err m => errStep gs m
+          | .ok _ =>
+            let tyV := eval (TCtx.env c) tyT;
+            match lams names (binders (kids (kid stx 3))) (kid stx 6) with
+            | .err m => errStep gs m
+            | .ok v => match check c v tyV with
+              | .err m => errStep gs m
+              | .ok _ => .mk (String.append x (String.append " : " (show shown l tyT)))
+                  (.cons (.mk x (eval (TCtx.env c) v) tyV) gs)
+      | _ => errStep gs "a definition needs a type"
+    | _ => errStep gs "a definition needs a name"
+  | .false => match elab names (kid stx 1) with
+    | .err m => errStep gs m
+    | .ok t => match infer c t with
+      | .err m => errStep gs m
+      | .ok ty => match strEq (kindOf stx) "command.check" with
+        | .true => .mk (show shown l (quote l ty)) gs
+        | .false => match strEq (kindOf stx) "command.reduce" with
+          | .true => .mk (show shown l (quote l (eval (TCtx.env c) t))) gs
+          | .false => errStep gs (String.append "unsupported command " (kindOf stx))
+  --|ex
+  --| errStep gs "not implemented"
+  --sol>
+
+-- all the commands of a file, one output line each
+partial def runCommands (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat)
+    (gs : List Global) (out : List String) : List String :=
+  match Nat.lt (skipWs input pos) (Array.size input) with
+  | .false => out
+  | .true => match parseCommandAt cats tokens input pos with
+    | .err m => .cons (String.append "parse " m) out
+    | .ok stx stop => match command gs stx with
+      | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
+
+def checkFile (cats : List Cat) (tokens : List String) (text : String) : List String :=
+  List.reverseOf (runCommands cats tokens (String.codes text) 0 .nil .nil) .nil
