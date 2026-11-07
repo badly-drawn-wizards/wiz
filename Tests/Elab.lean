@@ -836,8 +836,10 @@ inductive MTm where
   | mu (l : Nat) (I D i : MTm)
   | con (x : MTm)
   | ind (l : Nat) (I D : MTm) (v : Nat) (P m i x : MTm)
-  /-- a global, from `globalDefs` -/
-  | const (name : String)
+  /-- a global, from `globalDefs`, at some universe levels -/
+  | const (name : String) (levels : List Nat := [])
+  /-- `Sort u` for a level parameter (inside universe-polymorphic globals) -/
+  | sortParam (u : String)
   deriving Inhabited
 
 namespace MTm
@@ -845,14 +847,18 @@ namespace MTm
 /-- The global definitions (or axioms, without a value) the differential test uses, in
 order. -/
 def natD0 : MTm := darg (enum 2) (lam (ecase (desc 0 (unit 0)) (var 0) [dret star, drec star (dret star)]))
-def globalDefs : List (String × Option MTm × MTm) :=
-  [("idU", some (lam (var 0)), pi (univ 0) (univ 0)),
-   ("Nat", some (mu 0 (unit 0) natD0 star), univ 0),
-   ("zero", some (ann (con (pair (tag 2 0) (pair star star))) (const "Nat")), const "Nat"),
-   ("one", some (ann (con (pair (tag 2 1) (pair (const "zero") (pair star star)))) (const "Nat")), const "Nat"),
-   ("twice", some (lam (lam (app (var 1) (app (var 1) (var 0))))), pi (pi (univ 0) (univ 0)) (pi (univ 0) (univ 0))),
-   ("A", none, univ 0),
-   ("a", none, const "A")]
+def globalDefs : List (String × List String × Option MTm × MTm) :=
+  [("idU", [], some (lam (var 0)), pi (univ 0) (univ 0)),
+   ("Nat", [], some (mu 0 (unit 0) natD0 star), univ 0),
+   ("zero", [], some (ann (con (pair (tag 2 0) (pair star star))) (const "Nat")), const "Nat"),
+   ("one", [], some (ann (con (pair (tag 2 1) (pair (const "zero") (pair star star)))) (const "Nat")), const "Nat"),
+   ("twice", [], some (lam (lam (app (var 1) (app (var 1) (var 0))))), pi (pi (univ 0) (univ 0)) (pi (univ 0) (univ 0))),
+   ("A", [], none, univ 0),
+   ("a", [], none, const "A"),
+   -- universe-polymorphic
+   ("idP", ["u"], some (lam (lam (var 0))), pi (sortParam "u") (pi (var 0) (var 1))),
+   ("constP", ["u", "v"], some (lam (lam (lam (lam (var 1))))),
+     pi (sortParam "u") (pi (sortParam "v") (pi (var 1) (pi (var 1) (var 3)))))]
 
 def labels (k : Nat) : List Name := (List.range k).map (s!"a{·}")
 
@@ -893,10 +899,14 @@ partial def toWiz : MTm → String
   | mu l I D i => s!"(.mu {l} {I.toWiz} {D.toWiz} {i.toWiz})"
   | con x => s!"(.con {x.toWiz})"
   | ind l I D v P m i x => s!"(.ind {l} {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {i.toWiz} {x.toWiz})"
-  | const n => match globalDefs.find? (·.1 == n) with
-    | some (_, some v, ty) => s!"(.const \"{n}\" {v.toWiz} {ty.toWiz})"
-    | some (_, none, ty) => s!"(.axiomC \"{n}\" {ty.toWiz})"
+  | const n ls => match globalDefs.find? (·.1 == n) with
+    | some (_, ps, some v, ty) =>
+      let psW := ps.foldr (fun p acc => s!"(.cons \"{p}\" {acc})") ".nil"
+      let lsW := ls.foldr (fun l acc => s!"(.cons (.lnum {l}) {acc})") ".nil"
+      s!"(.const \"{n}\" {psW} {lsW} {v.toWiz} {ty.toWiz})"
+    | some (_, _, none, ty) => s!"(.axiomC \"{n}\" {ty.toWiz})"
     | none => "(.var 999)"
+  | sortParam u => s!"(.sortL (.lparam \"{u}\"))"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -935,7 +945,8 @@ partial def toTerm : MTm → Term ZeroOneMany
   | mu l I D i => .mu (Level.ofNat l) I.toTerm D.toTerm i.toTerm .szInf none
   | con x => .con x.toTerm
   | ind l I D v P m i x => .ind (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm i.toTerm x.toTerm
-  | const n => .const n []
+  | const n ls => .const n (ls.map Level.ofNat)
+  | sortParam u => .sort (.param u)
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -978,7 +989,7 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .mu l I D i _ _ => return mu (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i)
   | .con x => return con (← ofTerm x)
   | .ind l I D v P m i x => return ind (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm i) (← ofTerm x)
-  | .const n _ => some (const n)
+  | .const n us => return const n (← us.mapM Level.toNat?)
   | _ => none
 
 /-- Printed like `show .nil` in `Kernel.wiz`. -/
@@ -1019,7 +1030,8 @@ partial def pretty (l : Nat) : MTm → String
   | mu k I D i => s!"μ{k}({pretty l I}, {pretty l D}, {pretty l i})"
   | con x => s!"con({pretty l x})"
   | ind _ _ _ _ P m i x => s!"ind({pretty l P}, {pretty l m}, {pretty l i}, {pretty l x})"
-  | const n => n
+  | const n ls => if ls.isEmpty then n else n ++ ".{" ++ ", ".intercalate (ls.map toString) ++ "}"
+  | sortParam u => s!"Sort {u}"
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -1065,7 +1077,14 @@ def samples : List MTm :=
    ann (lam (var 0)) (pi (const "A") (const "A")),
    ann star (eq (enum 2) (ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 1))) star (const "one")) (tag 2 1)),
    ann (eqRefl' (pi (univ 0) (univ 0)) (app (const "twice") (const "idU")))
-     (eq (pi (univ 0) (univ 0)) (app (const "twice") (const "idU")) (lam (var 0)))]
+     (eq (pi (univ 0) (univ 0)) (app (const "twice") (const "idU")) (lam (var 0))),
+   -- universe polymorphism: instances at different levels
+   const "idP" [1], const "idP" [0], const "idP" [2], app (app (const "idP" [1]) (enum 2)) (tag 2 1),
+   app (app (const "idP" [1]) (univ 0)) (enum 2), app (app (const "idP" [2]) (univ 0)) (enum 2),
+   app (app (app (app (const "constP" [1, 2]) (enum 2)) (univ 0)) (tag 2 0)) (enum 3),
+   ann (const "idP" [1]) (pi (univ 0) (pi (var 0) (var 1))),
+   ann (lam (app (app (const "idP" [1]) (enum 2)) (var 0))) (pi (enum 2) (enum 2)),
+   eq (pi (enum 2) (enum 2)) (app (const "idP" [1]) (enum 2)) (lam (var 0))]
 
 /-- Random terms over `n` variables (a linear congruential generator), biased towards
 well-typed ones: annotated λs, applications of them, universes. -/
@@ -1158,8 +1177,10 @@ partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
         (delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))), s)
     | 22 =>
       -- a global, applied or not
-      let names := ["idU", "Nat", "zero", "one", "twice", "A", "a"]
-      let c := const (names[s / 5 % names.length]!)
+      let names := ["idU", "Nat", "zero", "one", "twice", "A", "a", "idP", "constP"]
+      let nm := names[s / 5 % names.length]!
+      let lv := (List.range (if nm == "idP" then 1 else if nm == "constP" then 2 else 0)).map fun j => s / (j + 23) % 3
+      let c := const nm lv
       let (a, s) := gen s (depth - 1) n
       (if s / 3 % 2 == 0 then c else app c a, s)
     | 21 =>
@@ -1173,7 +1194,7 @@ end MTm
 /-- The globals of the differential test, in the Lean kernel. (A function, so that it
 is computed in the test, not when the module starts.) -/
 def leanGlobals (_ : Unit := ()) : Globals ZeroOneMany :=
-  MTm.globalDefs.foldl (fun g (n, v, ty) => match addDecl g { name := n, type := ty.toTerm, value := v.map MTm.toTerm } with
+  MTm.globalDefs.foldl (fun g (n, ps, v, ty) => match addDecl g { name := n, levelParams := ps, type := ty.toTerm, value := v.map MTm.toTerm } with
     | .ok g' => g'
     | .error _ => g) {}
 
