@@ -3,7 +3,7 @@ import IO
 -- variables (de Bruijn indices), universes `U n`, Π types, λ, application, Σ types,
 -- pairs and projections (stage 14e), `Unit`, `Empty`, finite enumerations with case
 -- analysis (stage 14f), `Prop` with proof irrelevance (stage 14g), observational
--- equality (stage 14h), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
+-- equality (stage 14h), descriptions and data (stage 14i), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
 -- with closures (an environment and a body), values quote back to normal forms, and
 -- conversion compares values at their types (with η, and all proofs of a proposition
 -- equal). Values carry `Sort` levels: `Prop` is `Sort 0`, and `U n` is `Sort (n + 1)`.
@@ -49,6 +49,18 @@ inductive Tm where
   | tyRefl (X : Tm)
   | coe (A B e t : Tm)
   | subst (A a P p b e : Tm)
+  -- descriptions of indexed data (`descr l I` is `Desc.{l} I`, stage 4d; `desc` would
+  -- clash with the family's own description), their eliminator (with the
+  -- motive's universe `v`), the data type `μ D i`, and its constructor. Quantities are
+  -- not part of this kernel: where the Lean kernel passes one, this one passes `tt`.
+  | descr (l : Nat) (I : Tm)
+  | dret (i : Tm)
+  | darg (S D : Tm)
+  | drec (j D : Tm)
+  | dhrec (H j D : Tm)
+  | delim (v : Nat) (P mret marg mrec mhrec D : Tm)
+  | mu (l : Nat) (I D i : Tm)
+  | con (x : Tm)
 inductive Tms where
   | tnil
   | tcons (t : Tm) (rest : Tms)
@@ -70,6 +82,13 @@ inductive Val where
   | vempty (l : Nat)
   | venum (k : Nat)
   | vtag (k i : Nat)
+  | vdesc (l : Nat) (I : Val)
+  | vdret (i : Val)
+  | vdarg (S E : Val)
+  | vdrec (j E : Val)
+  | vdhrec (H j E : Val)
+  | vmu (l : Nat) (I D i : Val)
+  | vcon (x : Val)
   -- a stuck head and the eliminations applied to it
   | vne (head : Head) (spine : Spine)
 inductive Env where
@@ -84,6 +103,7 @@ inductive Spine where
   -- a stuck case: its motive and branches, closed over `env`
   | secase (sp : Spine) (env : Env) (motive : Tm) (branches : Tms)
   | sabsurd (sp : Spine) (motive : Val)
+  | sdelim (sp : Spine) (v : Nat) (P mret marg mrec mhrec : Val)
 -- what a neutral is stuck on: a variable (by level), or an equality, cast or proof
 -- that doesn't compute
 inductive Head where
@@ -129,6 +149,8 @@ def canonical : Val → Bool
   | .vunit _ => .true
   | .vempty _ => .true
   | .venum _ => .true
+  | .vdesc _ _ => .true
+  | .vmu _ _ _ _ => .true
   | _ => .false
 
 -- syntactic equality of terms
@@ -159,12 +181,48 @@ def tmEq : Tm → Tm → Bool
   | .eqRefl _ _, .eqRefl _ _ => .true
   | .tyRefl _, .tyRefl _ => .true
   | .subst _ _ _ _ _ _, .subst _ _ _ _ _ _ => .true
+  | .descr l a, .descr l' b => Bool.and (Nat.beq l l') (tmEq a b)
+  | .dret a, .dret b => tmEq a b
+  | .darg a b, .darg c d => Bool.and (tmEq a c) (tmEq b d)
+  | .drec a b, .drec c d => Bool.and (tmEq a c) (tmEq b d)
+  | .dhrec a b c, .dhrec d e f => Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f))
+  | .delim v a b c d e f, .delim v' a' b' c' d' e' f' => Bool.and (Nat.beq v v') (Bool.and (tmEq a a')
+      (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f'))))))
+  | .mu l a b c, .mu l' d e f => Bool.and (Nat.beq l l') (Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f)))
+  | .con a, .con b => tmEq a b
   | _, _ => .false
 def tmsEq : Tms → Tms → Bool
   | .tnil, .tnil => .true
   | .tcons a r, .tcons b r' => Bool.and (tmEq a b) (tmsEq r r')
   | _, _ => .false
 end
+
+-- The templates of `Templates.lean`, as terms (the same de Bruijn layout; quantity
+-- binders stay, quantity arguments go).
+def tLams : Nat → Tm → Tm
+  | .zero, b => b
+  | .succ n, b => .lam (tLams n b)
+def tApps : Tm → Tms → Tm
+  | f, .tnil => f
+  | f, .tcons a rest => tApps (.app f a) rest
+def args2 (a b : Tm) : Tms := .tcons a (.tcons b .tnil)
+def args3 (a b c : Tm) : Tms := .tcons a (args2 b c)
+def args4 (a b c d : Tm) : Tms := .tcons a (args3 b c d)
+
+-- `fun I D X i => ⟦D⟧ X i` for `D : Desc.{l} I`
+def interpTm (l : Nat) : Tm :=
+  let tyL : Tm := .univ l;
+  -- D'0 D1 I2
+  let P : Tm := .lam (.pi (.pi (.var 2) tyL) (.pi (.var 3) tyL));
+  -- i0 X1 j2 D3 I4
+  let mret := tLams 3 (.sigma (.eq (.var 4) (.var 2) (.var 0)) (.unit l));
+  -- i0 X1 ih2 E3 S4 q5
+  let marg := tLams 6 (.sigma (.var 4) (tApps (.var 3) (args3 (.var 0) (.var 2) (.var 1))));
+  -- i0 X1 ih2 E3 j4 q5
+  let mrec := tLams 6 (.sigma (.app (.var 1) (.var 4)) (tApps (.var 3) (args2 (.var 2) (.var 1))));
+  -- i0 X1 ih2 E3 j4 H5 q6
+  let mhrec := tLams 7 (.sigma (.pi (.var 5) (.app (.var 2) (.app (.var 5) (.var 0)))) (tApps (.var 3) (args2 (.var 2) (.var 1))));
+  tLams 2 (.delim (l + 2) P mret marg mrec mhrec (.var 0))
 
 -- **Exercise 14.1.** Evaluation, application and projections (`eval`, `vApp`, `vFst`,
 -- `vSnd` in `Eval.lean`).
@@ -177,6 +235,26 @@ def vfst : Val → Val
   | v => v
 def vsnd : Val → Val
   | v => v
+-- `Desc.elim` (`vDelim` in `Eval.lean`): the methods get `tt` for the quantity
+def vDelim : Nat → Val → Val → Val → Val → Val → Val → Val
+  | _, _, mret, _, _, _, .vdret i => vapp mret i
+  | v, P, mret, marg, mrec, mhrec, .vdarg S E =>
+    -- fun s => Desc.elim … (E s);  inside: s0 E1 mhrec2 mrec3 marg4 mret5 P6
+    let ih : Val := .vlam (.cons E (.cons mhrec (.cons mrec (.cons marg (.cons mret (.cons P .nil))))))
+      (.delim v (.var 6) (.var 5) (.var 4) (.var 3) (.var 2) (.app (.var 1) (.var 0)));
+    vapp (vapp (vapp (vapp marg .vtt) S) E) ih
+  | v, P, mret, marg, mrec, mhrec, .vdrec j E =>
+    vapp (vapp (vapp (vapp mrec .vtt) j) E) (vDelim v P mret marg mrec mhrec E)
+  | v, P, mret, marg, mrec, mhrec, .vdhrec H j E =>
+    vapp (vapp (vapp (vapp (vapp mhrec .vtt) H) j) E) (vDelim v P mret marg mrec mhrec E)
+  | v, P, mret, marg, mrec, mhrec, .vne h sp => .vne h (.sdelim sp v P mret marg mrec mhrec)
+  | _, _, _, _, _, _, d => d
+-- `⟦D⟧ X i`
+def vInterp (l : Nat) (I D X i : Val) : Val :=
+  vapp (vapp (vapp (vapp (eval .nil (interpTm l)) I) D) X) i
+-- `fun j => μ D j`
+def muFamily (l : Nat) (I D : Val) : Val :=
+  .vlam (.cons D (.cons I .nil)) (.mu l (.var 2) (.var 1) (.var 0))
 -- `a = b` at `A`, by `A` (`vEq` in `Eval.lean`; the closures are the same templates)
 def vEq : Val → Val → Val → Val
   | .vpi a1 env b1, a, b => .vpi a1 (.cons b (.cons a (.cons (.vlam env b1) .nil)))
@@ -192,6 +270,7 @@ def vEq : Val → Val → Val → Val
   | .venum k, .vtag _ i, .vtag _ j => match Nat.beq i j with
     | .true => .vunit 0
     | .false => .vempty 0
+  | .vmu l I D i, .vcon x, .vcon y => vEq (vInterp l I D (muFamily l I D) i) x y
   | .vsort l, a, b => match l with
     -- propositions: equal when equivalent
     | .zero => .vsigma (.vpi a (.cons b .nil) (.var 1)) (.cons a (.cons b .nil)) (.pi (.var 2) (.var 2))
@@ -209,6 +288,8 @@ def vEqType : Val → Val → Val
   | .vunit l, .vunit l' => levels l l'
   | .vempty l, .vempty l' => levels l l'
   | .venum k, .venum k' => levels k k'
+  | .vdesc l I, .vdesc l' I' => .vne (.heqTy (.vdesc l I) (.vdesc l' I')) .snil
+  | .vmu l I D i, .vmu l' I' D' i' => .vne (.heqTy (.vmu l I D i) (.vmu l' I' D' i')) .snil
   | X, Y => match Bool.and (canonical X) (canonical Y) with
     | .true => .vempty 0
     | .false => .vne (.heqTy X Y) .snil
@@ -242,6 +323,8 @@ def quoteSpine : Nat → Tm → Spine → Tm
   | l, h, .secase sp env m bs =>
     .ecase (quote (l + 1) (eval (.cons (fresh l) env) m)) (quoteSpine l h sp) (quoteBranches l env bs)
   | l, h, .sabsurd sp m => .exfalso (quote l m) (quoteSpine l h sp)
+  | l, h, .sdelim sp v P a b c d =>
+    .delim v (quote l P) (quote l a) (quote l b) (quote l c) (quote l d) (quoteSpine l h sp)
 def quoteHead : Nat → Head → Tm
   | l, .hvar x => .var (l - x - 1)
   | l, .heq A a b => .eq (quote l A) (quote l a) (quote l b)
@@ -291,6 +374,19 @@ def show (names : List String) : Nat → Tm → String
       (String.append ", " (String.append (show names l b) ")"))
   | l, .eqTy A B => String.append (String.append "EqTy(" (show names l A)) (String.append ", " (String.append (show names l B) ")"))
   | l, .eqRefl A a => String.append (String.append "refl(" (show names l A)) (String.append ", " (String.append (show names l a) ")"))
+  | l, .descr k I => String.append (String.append "Desc" (Nat.toString k)) (String.append "(" (String.append (show names l I) ")"))
+  | l, .dret i => String.append (String.append "ret(" (show names l i)) ")"
+  | l, .darg S E => String.append (String.append "arg(" (show names l S)) (String.append ", " (String.append (show names l E) ")"))
+  | l, .drec j E => String.append (String.append "rec(" (show names l j)) (String.append ", " (String.append (show names l E) ")"))
+  | l, .dhrec H j E => String.append (String.append (String.append "hrec(" (show names l H)) (String.append ", " (show names l j)))
+      (String.append ", " (String.append (show names l E) ")"))
+  | l, .delim v P a b c d D => String.append (String.append (String.append "elim(" (show names l P))
+      (String.append ", " (show names l a))) (String.append (String.append (String.append ", " (show names l b))
+        (String.append ", " (show names l c))) (String.append (String.append ", " (show names l d))
+          (String.append ", " (String.append (show names l D) ")"))))
+  | l, .mu k I D i => String.append (String.append (String.append "μ" (Nat.toString k)) (String.append "(" (show names l I)))
+      (String.append (String.append ", " (show names l D)) (String.append ", " (String.append (show names l i) ")")))
+  | l, .con x => String.append (String.append "con(" (show names l x)) ")"
   | l, .tyRefl X => String.append (String.append "reflTy(" (show names l X)) ")"
   | l, .coe A B e t => String.append (String.append (String.append "cast(" (show names l A)) (String.append ", " (show names l B)))
       (String.append (String.append ", " (show names l e)) (String.append ", " (String.append (show names l t) ")")))
@@ -349,6 +445,7 @@ def typeOfNe : TCtx → Head → Spine → Val
     | ty => ty
   | _, x, .secase sp env m _ => eval (.cons (.vne x sp) env) m
   | _, _, .sabsurd _ m => m
+  | _, h, .sdelim sp _ P _ _ _ _ => vapp P (.vne h sp)
 -- the level of the universe a type lives in
 def sortOf : TCtx → Val → Option Nat
   | c, .vpi a env b => match sortOf c a with
@@ -365,6 +462,8 @@ def sortOf : TCtx → Val → Option Nat
   | _, .vunit l => .some l
   | _, .vempty l => .some l
   | _, .venum _ => .some 1
+  | _, .vdesc l _ => .some (l + 2)
+  | _, .vmu l _ _ _ => .some (l + 1)
   | c, .vne x sp => match typeOfNe c x sp with
     | .vsort l => .some l
     | _ => .none
@@ -383,6 +482,28 @@ end
 def isProp (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
   | .some l => Nat.beq l 0
   | .none => .false
+
+-- `Sort v` as a term
+def sortTm (v : Nat) : Tm := match v with
+  | .zero => .prop
+  | .succ n => .univ n
+-- the quantity binders of the method types: this kernel has no quantities, so `Unit`
+def qTy : Tm := .unit 0
+-- `P : Desc I → Sort v`
+def delimMotiveTy (l v : Nat) (I : Val) : Val := .vpi (.vdesc l I) .nil (sortTm v)
+-- the types of `mret`, `marg`, `mrec`, `mhrec` (`delimMethodTys` in `Conv.lean`)
+def delimMret (l : Nat) (I P : Val) : Val :=
+  -- i0 P1 I2
+  eval (.cons P (.cons I .nil)) (.pi (.var 1) (.app (.var 1) (.dret (.var 0))))
+def delimMarg (l : Nat) (I P : Val) : Val :=
+  eval (.cons P (.cons I .nil)) (.pi qTy (.pi (.univ l) (.pi (.pi (.var 0) (.descr l (.var 4)))
+    (.pi (.pi (.var 1) (.app (.var 4) (.app (.var 1) (.var 0)))) (.app (.var 4) (.darg (.var 2) (.var 1)))))))
+def delimMrec (l : Nat) (I P : Val) : Val :=
+  eval (.cons P (.cons I .nil)) (.pi qTy (.pi (.var 2) (.pi (.descr l (.var 3))
+    (.pi (.app (.var 3) (.var 0)) (.app (.var 4) (.drec (.var 2) (.var 1)))))))
+def delimMhrec (l : Nat) (I P : Val) : Val :=
+  eval (.cons P (.cons I .nil)) (.pi qTy (.pi (.univ l) (.pi (.pi (.var 0) (.var 4)) (.pi (.descr l (.var 4))
+    (.pi (.app (.var 4) (.var 0)) (.app (.var 5) (.dhrec (.var 3) (.var 2) (.var 1))))))))
 
 -- **Exercise 14.6.** Conversion (`conv` and `convTy` in `Conv.lean`): `conv c ty a b`
 -- compares `a` and `b` at type `ty`. All proofs of a proposition are equal; functions
@@ -424,6 +545,12 @@ def convSpine : TCtx → Head → Spine → Spine → Bool
            (convBranches c k e m e' bs bs' 0)
        | _ => .false)
   | c, x, .sabsurd r m, .sabsurd r' m' => Bool.and (convSpine c x r r') (convTy c m m')
+  | c, x, .sdelim r v P a b d e, .sdelim r' v' P' a' b' d' e' => Bool.and (convSpine c x r r')
+      (match typeOfNe c x r with
+       | .vdesc l I => Bool.and (Nat.beq v v') (Bool.and (conv c (delimMotiveTy l v I) P P')
+           (Bool.and (conv c (delimMret l I P) a a') (Bool.and (conv c (delimMarg l I P) b b')
+             (Bool.and (conv c (delimMrec l I P) d d') (conv c (delimMhrec l I P) e e')))))
+       | _ => .false)
   | _, _, _, _ => .false
 def convBranches : TCtx → Nat → Env → Tm → Env → Tms → Tms → Nat → Bool
   | _, _, _, _, _, .tnil, .tnil, _ => .true
