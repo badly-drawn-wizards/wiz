@@ -740,6 +740,15 @@ def effectsGroup : Group where
           "  println \"before\";\n  n ← throw \"boom\";\n  println \"after\";\n  Monad.pure n\n" ++
           "def report : Except String Nat → String\n  | .ok n => Nat.toString n\n  | .error e => e\n" ++
           "def main : IO Unit := do\n  r ← runConsole (runExn prog);\n  IO.println (report r)") "before\nboom\n" },
+    { name := "fusion: one program, as a tree or directly", run := fun _ => do
+        let prog := "import Eff\ndef tick {m : Type → Type} [i : Monad m] [st : MonadState Nat m] : Nat → m Unit\n" ++
+          "  | .zero => Monad.pure ()\n  | .succ n => do\n    k ← MonadState.getS;\n    MonadState.putS (k + 2);\n    tick n\n" ++
+          "def prog {m : Type → Type} [i : Monad m] [st : MonadState Nat m] [c : MonadConsole m] : m Nat := do\n" ++
+          "  MonadConsole.printLn \"counting\";\n  tick 50;\n  MonadState.getS\n" ++
+          "def report (p : Nat × Nat) : IO Unit := IO.println (Nat.toString p.1)\n"
+        ioRun (prog ++ "def main : IO Unit := do\n  p ← runConsole (runState (prog : Eff (Row.cons (State Nat) (Row.cons Console Row.nil)) Nat) 0);\n  report p")
+          "counting\n100\n"
+        ioRun (prog ++ "def main : IO Unit := do\n  p ← (prog : StateT Nat IO Nat) 0;\n  report p") "counting\n100\n" },
     { name := "effects that commute: the proof is checked", run := fun _ =>
         ioRun ("import Eff\ndef ReaderM (E A : Type) : Type := E → A\ninstance {E : Type} : Monad (ReaderM E) where\n" ++
           "  pure := fun a => fun _ => a\n  bind := fun x f => fun env => f (x env) env\n" ++
