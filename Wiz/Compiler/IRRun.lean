@@ -1,4 +1,4 @@
-import Wiz.Compiler.RC
+import Wiz.Compiler.Reuse
 import Wiz.Compiler.Run
 
 /-!
@@ -26,6 +26,8 @@ inductive IVal where
 inductive Obj where
   | ctor (tag : Nat) (fields : Array IVal)
   | clo (f : Name) (args : Array IVal)
+  /-- a cell kept by `reset` for `reuse` -/
+  | token (size : Nat)
   deriving Inhabited
 
 structure Heap where
@@ -62,6 +64,7 @@ partial def dropV : IVal → RunM Unit
       match o with
       | .ctor _ fs => fs.forM dropV
       | .clo _ as => as.forM dropV
+      | .token _ => pure ()
   | _ => pure ()
 
 /-- The `natView` of a number, as fresh objects. -/
@@ -141,7 +144,7 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
       | .proj i y => do
         match ← get y with
         | .ptr id => do
-          let .ctor _ fs := (← getObj id).2 | throw "projection from a closure"
+          let .ctor _ fs := (← getObj id).2 | throw "projection from a closure or token"
           let fv := fs[i]?.getD .erased
           dupV fv
           pure fv
@@ -152,6 +155,31 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
       | .pap f as => alloc (.clo f (← as.mapM get))
       | .ap f as => apply prog (← get f) (← as.mapM get)
       | .prim op as => nativeOp op (← as.mapM get)
+      | .reset y => do
+        let v ← get y
+        match v with
+        | .ptr id =>
+          match ← getObj id with
+          | (1, .ctor _ fs) => do
+            fs.forM dropV
+            modify fun h => { h with objs := h.objs.insert id (1, .token fs.size) }
+            pure v
+          | _ => dropV v; pure .erased
+        | _ => pure .erased
+      | .reuse tok t as => do
+        let vs ← as.mapM get
+        match ← get tok with
+        | .ptr id =>
+          match ← getObj id with
+          | (_, .token n) =>
+            if n == vs.size then
+              modify fun h => { h with objs := h.objs.insert id (1, .ctor t vs) }
+              pure (.ptr id)
+            else
+              modify fun h => { h with objs := h.objs.erase id }
+              alloc (.ctor t vs)
+          | _ => throw "reuse of a non-token"
+        | _ => alloc (.ctor t vs)
     run prog (env.insert x v) joins rest
   | .case x alts =>
     let t ← match ← get x with
@@ -160,7 +188,7 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
       | .ptr id => do
         match (← getObj id).2 with
         | .ctor t _ => pure t
-        | _ => throw "case on a closure"
+        | _ => throw "case on a closure or token"
       | .erased => throw "case on ◾"
     match alts[t]? with
     | some alt => run prog env joins alt
@@ -187,6 +215,7 @@ partial def toRVal (h : Heap) : IVal → RVal
     | some (_, .ctor 1001 _) => .scofix .erased .erased .erased
     | some (_, .ctor t fs) => .obj t (fs.map (toRVal h))
     | some (_, .clo _ _) => .clo [] .erased
+    | some (_, .token _) => .erased
     | none => .erased
 
 /-- Run `main`; returns the result (as an interpreter value), the number of objects

@@ -235,6 +235,30 @@ static wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
   return wiz_apply(r, total - arity, all + arity);
 }
 
+/* ---- reuse (Perceus): `reset` keeps a unique object's cell, `reuse` fills it ---- */
+
+static wiz_val wiz_reset(wiz_val x) {
+  if (!WIZ_IS_SCALAR(x)) {
+    wiz_hdr *h = (wiz_hdr *)x;
+    if (h->rc == 1 && h->tag != WIZ_TAG_CLO && h->tag != WIZ_TAG_BIG) {
+      for (uint32_t i = 0; i < h->size; i++) wiz_dec(((wiz_ctor *)x)->fields[i]);
+      return x;
+    }
+  }
+  wiz_dec(x);
+  return WIZ_BOX(0);
+}
+
+static wiz_val wiz_reuse(wiz_val tok, uint32_t tag, uint32_t n) {
+  if (!WIZ_IS_SCALAR(tok)) {
+    wiz_hdr *h = (wiz_hdr *)tok;
+    if (h->size == n) { h->tag = tag; return tok; }
+    wiz_live--;
+    free(h);
+  }
+  return wiz_ctor_new(tag, n);
+}
+
 static void wiz_unreachable(void) { wiz_panic("reached an impossible case"); }
 
 /* ---- output: a generic tree, read back by the compiler using the type ---- */

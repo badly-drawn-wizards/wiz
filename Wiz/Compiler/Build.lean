@@ -21,7 +21,7 @@ def cProgram (s : CommandState R) (n : Name) : Except String (String × Term R) 
   let some d := s.globals.find? n | throw s!"no definition {n}"
   let code ← (compileReachable s.globals s.builtins [n]).mapError toString
   let decls ← IR.lowerProgram code (.global n)
-  pure (C.program (decls.map (·.insertRC)), d.type)
+  pure (C.program (decls.map (·.optimize)), d.type)
 
 def words (s : Option String) : List String :=
   ((s.getD "").splitOn " ").filter (· ≠ "")

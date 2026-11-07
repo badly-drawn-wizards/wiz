@@ -39,6 +39,10 @@ inductive Expr where
   | ap (f : Var) (args : Array Var)
   /-- a runtime operation: `nat.add` …, `lazyTag` -/
   | prim (op : Name) (args : Array Var)
+  /-- (8c) drop `x`, but if it was unique keep its memory as a *reuse token* -/
+  | reset (x : Var)
+  /-- (8c) `ctor tag args`, in the token's memory if it has the right size -/
+  | reuse (tok : Var) (tag : Nat) (args : Array Var)
   deriving Repr, Inhabited, BEq
 
 inductive Body where
@@ -65,7 +69,8 @@ namespace Expr
 def args : Expr → Array Var
   | ctor _ as | fap _ as | pap _ as | prim _ as => as
   | ap f as => #[f] ++ as
-  | proj _ x => #[x]
+  | proj _ x | reset x => #[x]
+  | reuse tok _ as => #[tok] ++ as
   | _ => #[]
 
 def toString : Expr → String
@@ -77,6 +82,8 @@ def toString : Expr → String
   | pap f as => s!"pap {f} {vs as}"
   | ap f as => s!"ap x{f} {vs as}"
   | prim op as => s!"prim {op} {vs as}"
+  | reset x => s!"reset x{x}"
+  | reuse tok t as => s!"reuse x{tok} in ctor {t} {vs as}"
 where
   vs (as : Array Var) : String := " ".intercalate (as.toList.map (s!"x{·}"))
 

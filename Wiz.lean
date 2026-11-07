@@ -30,6 +30,7 @@ import Wiz.Compiler.IR
 import Wiz.Compiler.PrimCode
 import Wiz.Compiler.Lower
 import Wiz.Compiler.RC
+import Wiz.Compiler.Reuse
 import Wiz.Compiler.IRRun
 import Wiz.Compiler.C
 import Wiz.Compiler.Build

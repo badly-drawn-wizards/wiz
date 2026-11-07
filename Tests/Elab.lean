@@ -618,6 +618,13 @@ def backendGroup : Group where
     { name := "the IR, with reference counting (Exercise 8.1)", run := fun _ =>
         okLib "import Prelude\ndef twice (f : Nat → Nat) (x : Nat) : Nat := f (f x)\n#ir twice"
           ["def twice x0 x1 :=\n  dup x0\n  let x2 := ap x0 x1\n  let x3 := ap x0 x2\n  ret x3"] },
+    { name := "reuse: a dead cell is reused for a new one (Exercise 8.3)", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let src := "import Prelude\ndef inc : List Nat → List Nat\n  | .nil => .nil\n  | .cons x xs => .cons (x + 1) (inc xs)\n#ir inc\n#run inc (.cons 1 (.cons 2 .nil))"
+        let s := runFrontend (R := ZeroOneMany) src { loader := fun _ => some prelude }
+        let texts := s.messages.toList.map (·.text)
+        check (texts.any fun t => (t.splitOn "reuse").length > 1) s!"no reuse in {texts}"
+        check (texts.contains ".cons 2 (.cons 3 .nil)") s!"wrong result: {texts}" },
     { name := "unused parameters are dropped at once", run := fun _ =>
         okLib "import Prelude\ndef k (x y : List Nat) : List Nat := x\n#ir k"
           ["def k x0 x1 :=\n  drop x1\n  ret x0"] }
