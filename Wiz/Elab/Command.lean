@@ -51,6 +51,12 @@ structure CommandState (R : Type) where
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
 and unify its level. -/
 def solveSortConstraints : ElabM R Unit := do
+  -- size metavariables nothing constrained default to `∞`
+  let ms := (← get).metas
+  for e in ms, m in [0:ms.size] do
+    if e.desc == "a size" && e.solution.isNone then
+      let sol : Term R := (List.range e.arity).foldl (fun t _ => .lam "_" t) .szInf
+      solveMeta m (eval (← getGlobals) [] sol)
   for _ in [0:2] do
     for (ctx, t, l) in (← get).sortConstraints do
       let t ← zonk ctx.lvl t
@@ -84,6 +90,89 @@ partial def syntaxMentions (n : Name) : Syntax → Bool
   | .node _ _ as => as.any (syntaxMentions n)
   | _ => false
 
+/-- A recursive definition with a sized first argument, `def f {i : Size} : T^i → … | …`,
+compiles to `sfix`. Inside, `f` is a local definition `fun {j : Size< s} y => rec j () y`,
+so a recursive call type-checks only on an argument of a smaller size: that is the
+termination check. Nested matches give fields of ever smaller sizes, so
+course-of-values recursion (`fib (n + 2) = fib n + fib (n + 1)`) works. (Non-indexed
+types only, for now.) -/
+def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (Name × BinderInfo × Term R × Term R))
+    (ty : Term R) (si : Lvl) (clauses : List (MClause R)) : ElabM R (Term R × Term R) := do
+  let info := cmd.info
+  let g ← getGlobals
+  let w : R := QuantitySyntax.explicitDefault
+  let .pi x0 bi0 q0 A0 B := ty | throwAt info "internal error: sized definition"
+  -- the outer `fun x0 =>`
+  let vA0 ← evalIn ctx A0
+  let .mu l I D idx _ hint ← force vA0 | throwAt info "internal error: sized argument"
+  unless (← force I) matches .unit _ do
+    throwAt info "sized recursion is only supported on non-indexed types (for now)"
+  let c1 := ctx.bind x0 vA0
+  let q (c : LocalCtx R) (v : Val R) : Term R := quote g c.lvl v
+  -- P := fun _ x' => B[x0 := x']   (B is under the x0 binder)
+  let P : Term R := .lam "_" (.lam x0 (B.lift 1 1))
+  let vP ← evalIn c1 P
+  let some vlev := typeSort? g c1.types.reverse.toArray (← evalIn c1 B)
+    | throwAt info "could not determine the universe of the result"
+  -- F := fun s rec i x' => let f := …; fun rest => tree
+  let fty := sfixFunTy g l I D vP w
+  let .pi _ _ _ _ c_s ← force fty | throwAt info "internal error"
+  let ctxS := c1.bind "s" .size
+  let sv := Val.var c1.lvl
+  let afterS ← instM c_s sv
+  let .pi _ _ _ recTy c_rec ← force afterS | throwAt info "internal error"
+  let ctxR := ctxS.bind "rec" recTy
+  let recV := Val.var ctxS.lvl
+  let afterRec ← instM c_rec recV
+  let .pi _ _ _ iTy c_i ← force afterRec | throwAt info "internal error"
+  let ctxI := ctxR.bind "i" iTy
+  let iV := Val.var ctxR.lvl
+  let afterI ← instM c_i iV
+  let .pi _ _ _ xTy c_x ← force afterI | throwAt info "internal error"
+  -- keep the nominal display (the match compiler finds `T` through it)
+  let xTy := match xTy with
+    | .mu l' I' D' i' s' _ => Val.mu l' I' D' i' s' hint
+    | t => t
+  let ctxX := ctxI.bind x0 xTy
+  let xLvl := ctxI.lvl
+  let goalP ← instM c_x (Val.var xLvl)
+  -- the local `f : {j : Size< s} → (y : T^j) → P () y`
+  let L := ctxX.lvl
+  let sT : Term R := .var (L - c1.lvl - 1)
+  let recT : Term R := .var (L - ctxS.lvl - 1)
+  let hintT := hint.map fun (n, us, as) => (n, us, as.map (quote g (L + 2)))
+  let fTyTm : Term R := .pi "j" .implicit (.qlit 0) (.sizeLt sT)
+    (.pi "y" .default (.qlit w) (.mu l (q ctxX I |>.lift 1) (q ctxX D |>.lift 1) (q ctxX idx |>.lift 1) (.var 0) hintT)
+      ((Term.app (Term.app ((P.lift (L - c1.lvl)).lift 2) .tt) (.var 0))))
+  -- β-reduce `P () y` (the kernel can't infer the type of an applied lambda)
+  let fTyTm := quote g L (← evalIn ctxX fTyTm)
+  let fValTm : Term R := .lam "j" (.lam "y" (.app (.app (.app (recT.lift 2) (.var 1)) .tt) (.var 0)))
+  let ctxL := ctxX.define name (← evalIn ctxX fTyTm) (← evalIn ctxX fValTm)
+  -- introduce the remaining arguments
+  let mut ctx' := ctxL
+  let mut goal := goalP
+  let mut vars : List Lvl := [xLvl]
+  let mut names : List Name := []
+  let n := (clauses.head?.map (·.pats.length)).getD 1
+  for k in [1:n] do
+    let .pi x _ _ A Bc ← force goal | throwAt info s!"{name} takes fewer than {n} arguments"
+    let x := if x == "_" then s!"a{k}" else x
+    vars := vars ++ [ctx'.lvl]
+    names := names ++ [x]
+    goal ← instM Bc (Val.var ctx'.lvl)
+    ctx' := ctx'.bind x A
+  let tree ← compileMatch ctx' vars clauses goal none true
+  let body := Term.letE name (.qlit w) fTyTm fValTm (names.foldr .lam tree)
+  let F : Term R := .lam "s" (.lam "rec" (.lam "i" (.lam x0 body)))
+  let sizeVarT : Term R := .var (c1.lvl - si - 1)
+  let sfixT : Term R := .sfix l (q c1 I) (q c1 D) vlev P F sizeVarT .tt (.var 0)
+  solveSortConstraints
+  let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (.lam x0 sfixT)
+  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b) (Term.pi x0 bi0 q0 A0 B)
+  let val ← zonk 0 val
+  ensureNoMVars val info
+  pure (fullTy, val)
+
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
 arguments of `T`; a right-hand side that calls `f` makes it structurally recursive. -/
 def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R) := do
@@ -111,6 +200,12 @@ def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R) := do
     ctx' := ctx'.bind x A
   let mentions (stx : Syntax) : Bool := syntaxMentions name stx
   let rc : Option RecCtx := if clauses.any (fun c => mentions c.rhs) then some { fn := name } else none
+  -- a recursive definition whose first argument has a size-variable size: compile to `sfix`
+  if rc.isSome then
+    if let some x0 := vars.head? then
+      if let .mu _ _ _ _ (.neutral (.local si) #[]) _ ← force ctx'.types[ctx'.lvl - x0 - 1]! then
+        if si < ctx.lvl then
+          return ← elabSizedDef name cmd ctx tele ty si clauses
   let body ← compileMatch ctx' vars clauses tyv rc true
   solveSortConstraints
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body)

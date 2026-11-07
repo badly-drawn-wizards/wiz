@@ -460,12 +460,29 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     | _ => none
   if let some (h, c) := dot? then
     match expected with
-    | .mu _ _ _ _ _ (some (T, _, _)) =>
+    | .mu l I D i sz (some (T, us, args)) =>
       unless (← getGlobals).contains (T ++ "." ++ c) do
         throwAt h.info s!"{T} has no constructor {c}"
       let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
       let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
-      return some (← check ctx stx' expected)
+      let sizedBase := match (sizeView sz).1 with
+        | some (.neutral (.local _) #[]) | some (.neutral (.mvar _) _) => true
+        | _ => false
+      if !sizedBase then return some (← check ctx stx' expected)
+      -- a sized expected type: the value has size `↑m`, where `m` is the size of its
+      -- recursive arguments (the generated constructors themselves return `T^∞`)
+      let m ← freshMeta ctx "a size"
+      let vm ← evalIn ctx m
+      if stx.isOfKind "term.app" then
+        for a in (stx.getArg 1).args do
+          let some (_, aty) ← tryCatch (some <$> infer ctx a) (fun _ => pure none) | continue
+          if let .mu _ _ _ _ asz (some (T', _, _)) ← force aty then
+            if T' == T then unifyAt ctx a vm asz
+      let (t, _) ← infer ctx stx'
+      let payload := quote g ctx.lvl (← evalIn ctx t)
+      let ty : Val R := .mu l I D i (.szSuc vm) (some (T, us, args))
+      unifyAt ctx stx expected ty
+      return some (.ann payload (q ty))
     | _ => return ← shapeError s!".{c} needs an expected inductive type"
   match stx.kind with
   | "term.tag" =>
@@ -796,7 +813,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let x := vars[k]!
   let rs := vars.drop (k + 1)
   let xty ← force (typeOf x)
-  let .mu _ _ _ ξi _ (some (T, us, args)) := xty
+  let .mu _ _ _ ξi xsz (some (T, us, args)) := xty
     | throwAt (cl.pats[k]!).info s!"cannot match on a value of type {← showVal ctx xty}"
   let some descD := g.find? (T ++ ".desc") | throwAt ctx.info s!"{T} is not an inductive type"
   let nΔ := (piInfos descD.type).length
@@ -808,6 +825,10 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let modeA := ξLvls.length == ξ.length && ξLvls.eraseDups.length == ξLvls.length &&
     !ξLvls.contains x && ξLvls.all (fun l => !rs.contains l)
   let useRec := rc.isSome && top
+  -- a scrutinee of finite size is split with the sized eliminator, keeping field sizes
+  let sized := !(xsz matches .szInf)
+  if sized && useRec then
+    throwAt ctx.info "structural recursion on a sized argument: give the definition a sized signature instead"
   -- G := Π rs. goal
   let w : Term R := .qlit QuantitySyntax.explicitDefault
   let mut G := q goal
@@ -838,13 +859,14 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let tys := ctx.types.reverse.toArray
   let some v := typeSort? g tys (← evalIn ctx G)
     | throwAt ctx.info "could not determine the universe of the match's type"
-  let elimName := T ++ (if useRec then ".rec" else ".casesOn")
+  let elimName := T ++ (if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn")
   let some ed := g.find? elimName | throwAt ctx.info s!"{elimName} is missing"
   let elimHead : Term R := .const elimName (us ++ [v])
-  let mut f : Term R := (Δargs.map q).foldl .app elimHead |>.app motive
-  -- the eliminator's type, instantiated with the parameters and the motive
+  let sizeArgs : List (Val R) := if sized then [xsz] else []
+  let mut f : Term R := ((Δargs ++ sizeArgs).map q).foldl .app elimHead |>.app motive
+  -- the eliminator's type, instantiated with the parameters (size) and the motive
   let mut fty : VTy R := eval g [] (ed.type.instLevels ed.levelParams (us ++ [v]))
-  for a in Δargs ++ [← evalIn ctx motive] do
+  for a in Δargs ++ sizeArgs ++ [← evalIn ctx motive] do
     let .pi _ _ _ _ cod ← force fty | throwAt ctx.info "internal error: eliminator type"
     fty ← instM cod a
   -- one method per constructor
@@ -859,6 +881,11 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     -- introduce fields, hypotheses, the equation, and the reverted variables
     let mut ctx' := ctx
     let mut mt := mTy
+    if sized then
+      -- the fields' size `j : Size< s`
+      let .pi _ _ _ A B ← force mt | throwAt ctx.info "internal error: sized method"
+      mt ← instM B (Val.var ctx'.lvl)
+      ctx' := ctx'.bind "_j" A
     let mut fieldLvls : Array Lvl := #[]
     for (n, _, _) in fieldInfos do
       let .pi _ _ _ A B ← force mt | throwAt ctx.info "internal error: method type"
@@ -976,7 +1003,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           -- `body0` was built under the re-bound fields, which sit after `e` in the context
           pure (deps.foldl (fun acc d => .app acc (vt d)) castTm)
     -- lambdas for fields, hypotheses and the equation
-    let names := fieldInfos.map (·.1) ++ (List.replicate nRec "_ih") ++ (if modeA then [] else ["e"])
+    let names := (if sized then ["_j"] else []) ++ fieldInfos.map (·.1) ++ (List.replicate nRec "_ih") ++
+      (if modeA then [] else ["e"])
     let method := names.foldr .lam body
     f := .app f method
     fty ← instM cod (← evalIn ctx method)

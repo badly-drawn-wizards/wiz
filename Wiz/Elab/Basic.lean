@@ -32,6 +32,8 @@ structure MetaEntry (R : Type) where
   info : SourceInfo := {}
   /-- the name of a `?x` hole, or a description like "implicit argument A" -/
   desc : String := "_"
+  /-- how many bound variables it is applied to -/
+  arity : Nat := 0
 
 structure ElabError where
   info : SourceInfo
@@ -102,7 +104,8 @@ def solveMeta (m : Nat) (v : Val R) : ElabM R Unit :=
 /-- A fresh metavariable applied to all the bound variables of `ctx`. -/
 def freshMeta (ctx : LocalCtx R) (desc : String := "_") : ElabM R (Term R) := do
   let m := (← get).metas.size
-  modify fun s => { s with metas := s.metas.push { info := ctx.info, desc } }
+  let arity := (ctx.bound.filter id).length
+  modify fun s => { s with metas := s.metas.push { info := ctx.info, desc, arity } }
   -- `bound` is innermost first; walk it from the outside in, i.e. by level
   let flags := ctx.bound.reverse
   let mut t : Term R := .mvar m

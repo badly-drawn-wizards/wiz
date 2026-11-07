@@ -1,0 +1,15 @@
+-- Stage 4f: sized types. `lake exe wiz check examples/sized.wiz`
+-- fib calls itself on n and n+1 (not just a direct subterm): course-of-values
+-- recursion, justified by sizes: every recursive call is on a smaller size.
+
+inductive Nat where
+  | zero
+  | succ (n : Nat)
+def add : Nat → Nat → Nat
+  | .zero, n => n
+  | .succ m, n => .succ (add m n)
+def fib {i : Size} : Nat^i → Nat
+  | .zero => .succ .zero
+  | .succ .zero => .succ .zero
+  | .succ (.succ n) => add (fib n) (fib (.succ n))
+#reduce fib (.succ (.succ (.succ (.succ .zero))))

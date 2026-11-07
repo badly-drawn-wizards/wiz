@@ -432,7 +432,7 @@ nominal type `T`), which also works on inductives.
 
 Not yet: course-of-values recursion, and well-founded recursion (`termination_by`).
 
-### 4f: sized types (in progress)
+### 4f: sized types
 
 Well-founded recursion and general corecursion are justified by **sizes** (Abel-style),
 your choice over `Acc`/`termination_by` and guarded recursion. `μ` and `ν` carry a size:
@@ -454,3 +454,22 @@ your choice over `Acc`/`termination_by` and guarded recursion. `μ` and `ν` car
 |------|--------------------|-----------------------------------------------------|
 | 4.22 | `Core/Eval.lean`   | `vSfix`, `vScase` (and the eval cases)              |
 | 4.23 | `Core/Check.lean`  | typing rules for `sfix`, `scofix`, `cocon`, `scase` |
+
+Definitions with a sized signature use all of this automatically:
+
+```
+def fib {i : Size} : Nat^i → Nat
+  | .zero => .succ .zero
+  | .succ .zero => .succ .zero
+  | .succ (.succ n) => add (fib n) (fib (.succ n))
+```
+
+compiles to `sfix`. Inside, `fib` is a local function that only accepts arguments of
+a size below the current one, so the termination check is ordinary type checking.
+Matching on a sized value uses `T.scasesOn` (fields at a smaller size). A constructor
+checked against a sized type gets size `↑m`, where `m` is the size of its recursive
+arguments, so `fib (.succ n)` is accepted because `n` is two levels down. Unconstrained
+size metavariables default to `∞`.
+
+Limitations: non-indexed types only, recursion on the first argument, and no
+as-patterns (size-preserving functions like `minus` want `x@.zero`).
