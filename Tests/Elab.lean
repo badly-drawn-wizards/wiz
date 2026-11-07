@@ -835,6 +835,7 @@ inductive MTm where
   | delim (v : Nat) (P a b c h D : MTm)
   | mu (l : Nat) (I D i : MTm)
   | con (x : MTm)
+  | ind (l : Nat) (I D : MTm) (v : Nat) (P m i x : MTm)
   deriving Inhabited
 
 namespace MTm
@@ -877,6 +878,7 @@ partial def toWiz : MTm → String
   | delim v P a b c h D => s!"(.delim {v} {P.toWiz} {a.toWiz} {b.toWiz} {c.toWiz} {h.toWiz} {D.toWiz})"
   | mu l I D i => s!"(.mu {l} {I.toWiz} {D.toWiz} {i.toWiz})"
   | con x => s!"(.con {x.toWiz})"
+  | ind l I D v P m i x => s!"(.ind {l} {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {i.toWiz} {x.toWiz})"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -914,6 +916,7 @@ partial def toTerm : MTm → Term ZeroOneMany
   | delim v P a b c h D => .delim (Level.ofNat v) P.toTerm a.toTerm b.toTerm c.toTerm h.toTerm D.toTerm
   | mu l I D i => .mu (Level.ofNat l) I.toTerm D.toTerm i.toTerm .szInf none
   | con x => .con x.toTerm
+  | ind l I D v P m i x => .ind (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm i.toTerm x.toTerm
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -955,6 +958,7 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .delim v P a b c h D => return delim (← v.toNat?) (← ofTerm P) (← ofTerm a) (← ofTerm b) (← ofTerm c) (← ofTerm h) (← ofTerm D)
   | .mu l I D i _ _ => return mu (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i)
   | .con x => return con (← ofTerm x)
+  | .ind l I D v P m i x => return ind (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm i) (← ofTerm x)
   | _ => none
 
 /-- Printed like `show .nil` in `Kernel.wiz`. -/
@@ -994,6 +998,7 @@ partial def pretty (l : Nat) : MTm → String
   | delim _ P a b c h D => s!"elim({pretty l P}, {pretty l a}, {pretty l b}, {pretty l c}, {pretty l h}, {pretty l D})"
   | mu k I D i => s!"μ{k}({pretty l I}, {pretty l D}, {pretty l i})"
   | con x => s!"con({pretty l x})"
+  | ind _ _ _ _ P m i x => s!"ind({pretty l P}, {pretty l m}, {pretty l i}, {pretty l x})"
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -1019,7 +1024,17 @@ def samples : List MTm :=
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
-   ann (con (pair (tag 2 0) star)) natTy]
+   ann (con (pair (tag 2 0) star)) natTy,
+   -- induction: a constant method, and one that returns the constructor's tag
+   ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (tag 2 0)) star natZero,
+   ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 1))) star (natSucc natZero),
+   -- it computes: `tt : ind … 1 = #1` checks, `tt : ind … 1 = #0` doesn't
+   ann star (eq (enum 2) (ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 1))) star (natSucc natZero)) (tag 2 1)),
+   ann star (eq (enum 2) (ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 1))) star (natSucc natZero)) (tag 2 0)),
+   -- stuck on a variable
+   ann (lam (ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (fst (var 1))) star (var 0))) (pi natTy (enum 2)),
+   -- an ill-typed method
+   ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (var 1)) star natZero]
 
 /-- Random terms over `n` variables (a linear congruential generator), biased towards
 well-typed ones: annotated λs, applications of them, universes. -/

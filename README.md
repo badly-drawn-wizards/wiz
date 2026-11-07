@@ -1061,7 +1061,17 @@ payloads. This kernel has no quantities: where the templates take one, it passes
 list of samples first (the natural numbers, constructors, `Desc.elim` into `Unit`,
 ill-typed payloads), then the random terms.
 
-Next: induction (`ind`, with the `All` and hypotheses templates), extending the samples.
+### 14j: induction ✅
+
+`ind` on `μ D i`, with the motive and method types of the Lean kernel and the `All`
+and hypotheses templates (`allTm`, `hypsTm`, the same `Desc.elim` terms): on a
+constructor, the method gets the payload and the induction hypotheses; on a variable
+it is stuck. The samples check that it computes (`tt : ind … 1 = #1` checks, and
+`= #0` doesn't) and agree with the Lean kernel.
+
+The Wiz kernel now covers the Lean kernel's dependent types, equality and data, apart
+from quantities, sizes, coinduction, globals and universe polymorphism. Next: those,
+or using it: checking real programs through the Wiz frontend.
 
 ## Stage 11: tooling
 
