@@ -254,7 +254,7 @@ content-addressed key-value store, like Bazel's remote cache.
 instead of writing JSON-RPC yourself. Hover, go-to-definition and diagnostics are all
 queries.
 
-## Stage 12: Self-hosting
+## Stage 12: Self-hosting (12a–d ✅: stdlib, flat objects, lexer and parser in Wiz)
 
 * Use Lean's **stage0** approach: commit the *generated C* of the compiler. Stage 1 is
   stage0's C compiling the current sources.
@@ -262,6 +262,11 @@ queries.
   test** it: run the Lean-hosted kernel and the Wiz-hosted kernel on the same corpus and
   compare results.
 * Keep the Lean implementation as the reference until the Wiz one passes everything.
+
+Stage 13 ✅ improved the language for this (mutual and partial definitions, mutual
+inductive types, recursion on any argument, tuple patterns, inferred `match`), and
+stage 14 ✅ (a, b, c) has a Wiz type checker for a core calculus, with a frontend from
+text. Growing it to the full kernel, with differential tests, is next.
 
 ## Stretch: cubical type theory
 
