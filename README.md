@@ -1094,7 +1094,19 @@ definition itself, with symbolic level equivalence, comes with checking declarat
 The differential test adds polymorphic globals (`idP.{u}`, `constP.{u v}`) used at
 various levels.
 
-Next: quantities, then sizes and coinduction, and checking declarations.
+### 14m: quantities ✅
+
+Binders carry a quantity (`0`, `1`, `ω`: `piq`, `sigmaq`, `letq`; the plain forms are
+`ω`), and every judgement returns a **usage vector**, as in `Check.lean`: a variable
+counts once, an application adds its argument's usage scaled by the binder's
+quantity, leaving a binder checks its variable's usage against the quantity, case
+branches join, and types and proofs count nothing (erased positions, where an erased
+field may also be projected). The kernel's own templates use the Lean kernel's
+quantities (equations and indices are erased), and printing shows `:0` and `:1`.
+The differential test adds linear and erased binders, in samples and at random.
+
+Next: sizes and coinduction, then checking declarations (with symbolic levels), and
+the performance work that self-hosting will need (lazy unfolding first).
 
 ## Stage 11: tooling
 

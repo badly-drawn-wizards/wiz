@@ -840,6 +840,10 @@ inductive MTm where
   | const (name : String) (levels : List Nat := [])
   /-- `Sort u` for a level parameter (inside universe-polymorphic globals) -/
   | sortParam (u : String)
+  /-- binders with a quantity other than ω: `0` or `1` -/
+  | piq (q : ZeroOneMany) (a b : MTm)
+  | sigmaq (q : ZeroOneMany) (a b : MTm)
+  | letq (q : ZeroOneMany) (ty v b : MTm)
   deriving Inhabited
 
 namespace MTm
@@ -859,6 +863,11 @@ def globalDefs : List (String × List String × Option MTm × MTm) :=
    ("idP", ["u"], some (lam (lam (var 0))), pi (sortParam "u") (pi (var 0) (var 1))),
    ("constP", ["u", "v"], some (lam (lam (lam (lam (var 1))))),
      pi (sortParam "u") (pi (sortParam "v") (pi (var 1) (pi (var 1) (var 3)))))]
+
+def qWiz : ZeroOneMany → String
+  | .zero => ".qz"
+  | .one => ".qo"
+  | .many => ".qw"
 
 def labels (k : Nat) : List Name := (List.range k).map (s!"a{·}")
 
@@ -907,6 +916,9 @@ partial def toWiz : MTm → String
     | some (_, _, none, ty) => s!"(.axiomC \"{n}\" {ty.toWiz})"
     | none => "(.var 999)"
   | sortParam u => s!"(.sortL (.lparam \"{u}\"))"
+  | piq q a b => s!"(.piq {qWiz q} {a.toWiz} {b.toWiz})"
+  | sigmaq q a b => s!"(.sigmaq {qWiz q} {a.toWiz} {b.toWiz})"
+  | letq q t v b => s!"(.letq {qWiz q} {t.toWiz} {v.toWiz} {b.toWiz})"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -947,6 +959,9 @@ partial def toTerm : MTm → Term ZeroOneMany
   | ind l I D v P m i x => .ind (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm i.toTerm x.toTerm
   | const n ls => .const n (ls.map Level.ofNat)
   | sortParam u => .sort (.param u)
+  | piq q a b => .pi "x" .default (.qlit q) a.toTerm b.toTerm
+  | sigmaq q a b => .sigma "x" (.qlit q) a.toTerm b.toTerm
+  | letq q t v b => .letE "x" (.qlit q) t.toTerm v.toTerm b.toTerm
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -954,10 +969,12 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
     | some (n + 1) => some (univ n)
     | some 0 => some prop
     | _ => none
-  | .pi _ _ _ a b => return pi (← ofTerm a) (← ofTerm b)
+  | .pi _ _ (.qlit .many) a b => return pi (← ofTerm a) (← ofTerm b)
+  | .pi _ _ (.qlit q) a b => return piq q (← ofTerm a) (← ofTerm b)
   | .lam _ b => return lam (← ofTerm b)
   | .app f a => return app (← ofTerm f) (← ofTerm a)
-  | .sigma _ _ a b => return sigma (← ofTerm a) (← ofTerm b)
+  | .sigma _ (.qlit .many) a b => return sigma (← ofTerm a) (← ofTerm b)
+  | .sigma _ (.qlit q) a b => return sigmaq q (← ofTerm a) (← ofTerm b)
   | .pair a b => return pair (← ofTerm a) (← ofTerm b)
   | .fst p => return fst (← ofTerm p)
   | .snd p => return snd (← ofTerm p)
@@ -1032,6 +1049,9 @@ partial def pretty (l : Nat) : MTm → String
   | ind _ _ _ _ P m i x => s!"ind({pretty l P}, {pretty l m}, {pretty l i}, {pretty l x})"
   | const n ls => if ls.isEmpty then n else n ++ ".{" ++ ", ".intercalate (ls.map toString) ++ "}"
   | sortParam u => s!"Sort {u}"
+  | piq q a b => s!"(x{l} :{q} {pretty l a}) → {pretty (l + 1) b}"
+  | sigmaq q a b => s!"(x{l} :{q} {pretty l a}) × {pretty (l + 1) b}"
+  | letq _ _ v b => s!"let x{l} := {pretty l v}; {pretty (l + 1) b}"
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -1084,7 +1104,20 @@ def samples : List MTm :=
    app (app (app (app (const "constP" [1, 2]) (enum 2)) (univ 0)) (tag 2 0)) (enum 3),
    ann (const "idP" [1]) (pi (univ 0) (pi (var 0) (var 1))),
    ann (lam (app (app (const "idP" [1]) (enum 2)) (var 0))) (pi (enum 2) (enum 2)),
-   eq (pi (enum 2) (enum 2)) (app (const "idP" [1]) (enum 2)) (lam (var 0))]
+   eq (pi (enum 2) (enum 2)) (app (const "idP" [1]) (enum 2)) (lam (var 0)),
+   -- quantities: linear and erased binders
+   ann (lam (var 0)) (piq .one (univ 0) (univ 0)),
+   ann (lam (pair (var 0) (var 0))) (piq .one (univ 0) (sigma (univ 0) (univ 0))),
+   ann (lam (var 0)) (piq .zero (univ 0) (univ 0)),
+   ann (lam (ann star (unit 0))) (piq .zero (univ 0) (unit 0)),
+   ann (lam (lam (var 0))) (piq .zero (univ 0) (pi (var 0) (var 1))),
+   app (ann (lam (lam (var 0))) (piq .zero (univ 0) (pi (var 0) (var 1)))) (enum 2),
+   letq .one (univ 0) (enum 2) (var 0), letq .zero (univ 0) (enum 2) (var 0),
+   letq .zero (univ 0) (enum 2) (ann (lam (var 0)) (pi (var 0) (var 1))),
+   fst (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
+   snd (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
+   ann (lam (lam (ecase (univ 0) (var 1) [var 0, var 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
+   ann (lam (lam (ecase (univ 0) (var 1) [var 0, univ 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0)))]
 
 /-- Random terms over `n` variables (a linear congruential generator), biased towards
 well-typed ones: annotated λs, applications of them, universes. -/
@@ -1100,7 +1133,11 @@ partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
       let (a, s) := gen s (depth - 1) n
       let (b, s) := gen s (depth - 1) (n + 1)
       let (body, s) := gen s (depth - 1) (n + 1)
-      (ann (lam body) (pi a b), s)
+      let ty := match s / 29 % 4 with
+        | 0 => piq .zero a b
+        | 1 => piq .one a b
+        | _ => pi a b
+      (ann (lam body) ty, s)
     | 4 | 5 => let (f, s) := gen s (depth - 1) n; let (a, s) := gen s (depth - 1) n; (app f a, s)
     | 6 =>
       let (t, s) := gen s (depth - 1) n
@@ -1290,7 +1327,7 @@ def selfHostGroup : Group where
           terms := terms.push t
           seed := s
         let expected := terms.toList.map leanVerdict
-        let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
+        let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
         let calls := terms.toList.map fun t => s!"(verdict {t.toWiz})"
         let main := s!"def main : IO Unit := printAll {wizList calls}\n"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
