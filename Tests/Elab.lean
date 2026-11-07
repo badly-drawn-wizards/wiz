@@ -821,6 +821,12 @@ inductive MTm where
   | prop
   | ptrue
   | pfalse
+  | eq (A a b : MTm)
+  | eqTy (A B : MTm)
+  | refl (A a : MTm)
+  | reflTy (X : MTm)
+  | cast (A B e t : MTm)
+  | transp (A a P p b e : MTm)
   deriving Inhabited
 
 namespace MTm
@@ -849,6 +855,12 @@ partial def toWiz : MTm → String
   | prop => ".prop"
   | ptrue => ".ptrue"
   | pfalse => ".pfalse"
+  | eq A a b => s!"(.eq {A.toWiz} {a.toWiz} {b.toWiz})"
+  | eqTy A B => s!"(.eqTy {A.toWiz} {B.toWiz})"
+  | refl A a => s!"(.eqRefl {A.toWiz} {a.toWiz})"
+  | reflTy X => s!"(.tyRefl {X.toWiz})"
+  | cast A B e t => s!"(.coe {A.toWiz} {B.toWiz} {e.toWiz} {t.toWiz})"
+  | transp A a P p b e => s!"(.subst {A.toWiz} {a.toWiz} {P.toWiz} {p.toWiz} {b.toWiz} {e.toWiz})"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -872,6 +884,12 @@ partial def toTerm : MTm → Term ZeroOneMany
   | prop => .sort .zero
   | ptrue => .unit .zero
   | pfalse => .empty .zero
+  | eq A a b => .eq A.toTerm a.toTerm b.toTerm
+  | eqTy A B => .eqTy A.toTerm B.toTerm
+  | refl A a => .refl A.toTerm a.toTerm
+  | reflTy X => .reflTy X.toTerm
+  | cast A B e t => .cast A.toTerm B.toTerm e.toTerm t.toTerm
+  | transp A a P p b e => .transp A.toTerm a.toTerm P.toTerm p.toTerm b.toTerm e.toTerm
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -899,6 +917,12 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .enum ls => some (enum ls.length)
   | .tag ls i => some (tag ls.length i)
   | .ecase _ m s bs => return ecase (← ofTerm m) (← ofTerm s) (← bs.mapM ofTerm)
+  | .eq A a b => return eq (← ofTerm A) (← ofTerm a) (← ofTerm b)
+  | .eqTy A B => return eqTy (← ofTerm A) (← ofTerm B)
+  | .refl A a => return refl (← ofTerm A) (← ofTerm a)
+  | .reflTy X => return reflTy (← ofTerm X)
+  | .cast A B e t => return cast (← ofTerm A) (← ofTerm B) (← ofTerm e) (← ofTerm t)
+  | .transp A a P p b e => return transp (← ofTerm A) (← ofTerm a) (← ofTerm P) (← ofTerm p) (← ofTerm b) (← ofTerm e)
   | _ => none
 
 /-- Printed like `show .nil` in `Kernel.wiz`. -/
@@ -924,6 +948,12 @@ partial def pretty (l : Nat) : MTm → String
   | prop => "Prop"
   | ptrue => "True"
   | pfalse => "False"
+  | eq A a b => s!"Eq({pretty l A}, {pretty l a}, {pretty l b})"
+  | eqTy A B => s!"EqTy({pretty l A}, {pretty l B})"
+  | refl A a => s!"refl({pretty l A}, {pretty l a})"
+  | reflTy X => s!"reflTy({pretty l X})"
+  | cast A B e t => s!"cast({pretty l A}, {pretty l B}, {pretty l e}, {pretty l t})"
+  | transp A a P p b e => s!"transp({pretty l A}, {pretty l a}, {pretty l P}, {pretty l p}, {pretty l b}, {pretty l e})"
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -937,7 +967,7 @@ well-typed ones: annotated λs, applications of them, universes. -/
 partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
   let next (s : Nat) := (s * 1103515245 + 12345) % 2147483648
   let s := next seed
-  let pick := s / 65536 % 19
+  let pick := s / 65536 % 21
   if depth == 0 then
     if n > 0 && pick < 5 then (var (s / 7 % n), s) else (univ (s / 7 % 2), s)
   else match pick with
@@ -988,6 +1018,27 @@ partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
       -- a proof term: `λP p. p : (P : Prop) → P → P`, applied or not
       let idP := ann (lam (lam (var 0))) (pi prop (pi (var 0) (var 1)))
       (if s / 5 % 2 == 0 then idP else app (app idP ptrue) (ann star ptrue), s)
+    | 18 =>
+      -- equalities and their proofs, often well-typed
+      let k := s / 5 % 2 + 1
+      let i := s / 7 % k
+      let j := s / 11 % k
+      let fnTy := pi (univ 0) (univ 0)
+      let idU := ann (lam (var 0)) fnTy
+      match s / 13 % 8 with
+      | 0 => (refl (enum k) (tag k i), s)
+      | 1 => (ann star (eq (enum k) (tag k i) (tag k j)), s)
+      | 2 => (eq (enum k) (tag k i) (tag k j), s)
+      | 3 => (cast (univ 0) (univ 0) (reflTy (univ 0)) (enum k), s)
+      | 4 => (eqTy (univ 0) (univ (s / 17 % 2)), s)
+      | 5 => (cast fnTy fnTy (reflTy fnTy) idU, s)
+      | 6 => (eq fnTy idU idU, s)
+      | _ => (refl (univ 0) (enum k), s)
+    | 19 =>
+      let (a, s) := gen s (depth - 1) n
+      let (b, s) := gen s (depth - 1) n
+      let (A, s) := gen s (depth - 1) n
+      (if s / 3 % 2 == 0 then eq A a b else cast A A (reflTy A) a, s)
     | _ => if n > 0 then (var (s / 7 % n), s) else (univ (s / 7 % 3), s)
 
 end MTm

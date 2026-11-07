@@ -1036,8 +1036,21 @@ pairs are compared by η, types structurally, neutrals by their eliminations at 
 types (computed from the variable's type, `typeOfNe`). Exercise 14.6 is now typed.
 (Also fixed: the index-equation binder of a match could shadow a variable `e`.)
 
-Next: observational equality (it lives in `Prop`), then data through descriptions,
-extending the generator as the kernel grows.
+### 14h: observational equality ✅
+
+`a = b` and `A = B` compute by type, as in `Eval.lean` (with the same closure templates):
+pointwise for functions, componentwise (with a cast of the second component) for pairs,
+`True`/`False` for tags, logical equivalence for propositions. `cast` computes by the
+two types, and `refl`, `reflTy`, `transp` are proofs. A neutral now has a **head**: a
+variable, or a stuck equality, cast or proof. (In the Wiz source the constructors are
+`eqRefl`, `tyRefl`, `coe` and `subst`: `refl`, `cast` and `transp` are keywords.) The
+differential generator adds equalities and their proofs, often well-typed.
+
+Elaborating the Wiz kernel has become slow (about 25 seconds): every match on a mutual
+family carries the index equations through each branch. That is the elaborator's next
+performance problem.
+
+Next: data through descriptions, extending the generator as the kernel grows.
 
 ## Stage 11: tooling
 

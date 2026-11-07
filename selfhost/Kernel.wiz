@@ -2,8 +2,8 @@ import IO
 -- A type checker in Wiz (stage 14a): the core of `Wiz/Core`, for a small calculus:
 -- variables (de Bruijn indices), universes `U n`, Π types, λ, application, Σ types,
 -- pairs and projections (stage 14e), `Unit`, `Empty`, finite enumerations with case
--- analysis (stage 14f), `Prop` with proof irrelevance (stage 14g), `let`, and type
--- ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
+-- analysis (stage 14f), `Prop` with proof irrelevance (stage 14g), observational
+-- equality (stage 14h), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
 -- with closures (an environment and a body), values quote back to normal forms, and
 -- conversion compares values at their types (with η, and all proofs of a proposition
 -- equal). Values carry `Sort` levels: `Prop` is `Sort 0`, and `U n` is `Sort (n + 1)`.
@@ -39,6 +39,16 @@ inductive Tm where
   | enum (k : Nat)
   | tag (k i : Nat)
   | ecase (motive scrut : Tm) (branches : Tms)
+  -- observational equality (`Eval.lean`, stage 4c): `a = b` at `A`, `A = B` between
+  -- types, their proofs `eqRefl`, `tyRefl`, `subst` (`refl`, `reflTy` and `transp`:
+  -- transport in a family of propositions), and `coe A B e t : B` (`cast`) for `t : A`
+  -- and `e : A = B` (the Wiz keywords can't be constructor names)
+  | eq (A a b : Tm)
+  | eqTy (A B : Tm)
+  | eqRefl (A a : Tm)
+  | tyRefl (X : Tm)
+  | coe (A B e t : Tm)
+  | subst (A a P p b e : Tm)
 inductive Tms where
   | tnil
   | tcons (t : Tm) (rest : Tms)
@@ -60,8 +70,8 @@ inductive Val where
   | vempty (l : Nat)
   | venum (k : Nat)
   | vtag (k i : Nat)
-  -- a variable (by level) and the eliminations applied to it
-  | vne (lvl : Nat) (spine : Spine)
+  -- a stuck head and the eliminations applied to it
+  | vne (head : Head) (spine : Spine)
 inductive Env where
   | nil
   | cons (v : Val) (rest : Env)
@@ -74,6 +84,16 @@ inductive Spine where
   -- a stuck case: its motive and branches, closed over `env`
   | secase (sp : Spine) (env : Env) (motive : Tm) (branches : Tms)
   | sabsurd (sp : Spine) (motive : Val)
+-- what a neutral is stuck on: a variable (by level), or an equality, cast or proof
+-- that doesn't compute
+inductive Head where
+  | hvar (lvl : Nat)
+  | heq (A a b : Val)
+  | heqTy (A B : Val)
+  | hcast (A B e t : Val)
+  | hrefl (A a : Val)
+  | hreflTy (X : Val)
+  | htransp (A a P p b e : Val)
 end
 
 def tmsNth : Tms → Nat → Tm
@@ -90,6 +110,61 @@ def lookup : Env → Nat → Val
   | .cons v rest, i => match i with
     | .zero => v
     | .succ j => lookup rest j
+
+-- a fresh variable at level `l`
+def fresh (l : Nat) : Val := .vne (.hvar l) .snil
+
+-- `True` if the levels are equal, else `False`
+def levels (l l' : Nat) : Val := match Nat.beq l l' with
+  | .true => .vunit 0
+  | .false => .vempty 0
+def same (l l' : Nat) (yes no : Val) : Val := match Nat.beq l l' with
+  | .true => yes
+  | .false => no
+-- a type former (so different ones are never equal)
+def canonical : Val → Bool
+  | .vpi _ _ _ => .true
+  | .vsigma _ _ _ => .true
+  | .vsort _ => .true
+  | .vunit _ => .true
+  | .vempty _ => .true
+  | .venum _ => .true
+  | _ => .false
+
+-- syntactic equality of terms
+mutual
+def tmEq : Tm → Tm → Bool
+  | .var i, .var j => Nat.beq i j
+  | .univ m, .univ n => Nat.beq m n
+  | .prop, .prop => .true
+  | .pi a b, .pi c d => Bool.and (tmEq a c) (tmEq b d)
+  | .lam a, .lam b => tmEq a b
+  | .app f a, .app g b => Bool.and (tmEq f g) (tmEq a b)
+  | .sigma a b, .sigma c d => Bool.and (tmEq a c) (tmEq b d)
+  | .pair a b, .pair c d => Bool.and (tmEq a c) (tmEq b d)
+  | .fst a, .fst b => tmEq a b
+  | .snd a, .snd b => tmEq a b
+  | .unit m, .unit n => Nat.beq m n
+  | .star, .star => .true
+  | .empty m, .empty n => Nat.beq m n
+  | .ptrue, .ptrue => .true
+  | .pfalse, .pfalse => .true
+  | .exfalso a b, .exfalso c d => Bool.and (tmEq a c) (tmEq b d)
+  | .enum k, .enum k' => Nat.beq k k'
+  | .tag _ i, .tag _ j => Nat.beq i j
+  | .ecase a b bs, .ecase c d bs' => Bool.and (tmEq a c) (Bool.and (tmEq b d) (tmsEq bs bs'))
+  | .eq a b c, .eq d e f => Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f))
+  | .eqTy a b, .eqTy c d => Bool.and (tmEq a c) (tmEq b d)
+  | .coe a b _ t, .coe c d _ u => Bool.and (tmEq a c) (Bool.and (tmEq b d) (tmEq t u))
+  | .eqRefl _ _, .eqRefl _ _ => .true
+  | .tyRefl _, .tyRefl _ => .true
+  | .subst _ _ _ _ _ _, .subst _ _ _ _ _ _ => .true
+  | _, _ => .false
+def tmsEq : Tms → Tms → Bool
+  | .tnil, .tnil => .true
+  | .tcons a r, .tcons b r' => Bool.and (tmEq a b) (tmsEq r r')
+  | _, _ => .false
+end
 
 -- **Exercise 14.1.** Evaluation, application and projections (`eval`, `vApp`, `vFst`,
 -- `vSnd` in `Eval.lean`).
@@ -114,21 +189,28 @@ def eval : Env → Tm → Val
   | _, .ptrue => .vunit 0
   | _, .pfalse => .vempty 0
   | env, .exfalso m t => match eval env t with
-    | .vne l sp => .vne l (.sabsurd sp (eval env m))
+    | .vne h sp => .vne h (.sabsurd sp (eval env m))
     | v => v
   | _, .enum k => .venum k
   | _, .tag k i => .vtag k i
   | env, .ecase m s bs => match eval env s with
     | .vtag _ i => eval env (tmsNth bs i)
-    | .vne l sp => .vne l (.secase sp env m bs)
+    | .vne h sp => .vne h (.secase sp env m bs)
     | v => v
+  | env, .eq A a b => vEq (eval env A) (eval env a) (eval env b)
+  | env, .eqTy A B => vEqType (eval env A) (eval env B)
+  | env, .coe A B e t => vCast (eval env A) (eval env B) (eval env e) (eval env t)
+  | env, .eqRefl A a => .vne (.hrefl (eval env A) (eval env a)) .snil
+  | env, .tyRefl X => .vne (.hreflTy (eval env X)) .snil
+  | env, .subst A a P p b e =>
+    .vne (.htransp (eval env A) (eval env a) (eval env P) (eval env p) (eval env b) (eval env e)) .snil
   --|ex
   --| | _, _ => .vsort 0
   --sol>
 def vapp : Val → Val → Val
   --<sol
   | .vlam env b, a => eval (.cons a env) b
-  | .vne l sp, a => .vne l (.sapp sp a)
+  | .vne h sp, a => .vne h (.sapp sp a)
   | v, _ => v
   --|ex
   --| | v, _ => v
@@ -136,7 +218,7 @@ def vapp : Val → Val → Val
 def vfst : Val → Val
   --<sol
   | .vpair a _ => a
-  | .vne l sp => .vne l (.sfst sp)
+  | .vne h sp => .vne h (.sfst sp)
   | v => v
   --|ex
   --| | v => v
@@ -144,18 +226,66 @@ def vfst : Val → Val
 def vsnd : Val → Val
   --<sol
   | .vpair _ b => b
-  | .vne l sp => .vne l (.ssnd sp)
+  | .vne h sp => .vne h (.ssnd sp)
   | v => v
   --|ex
   --| | v => v
   --sol>
-end
-
--- a fresh variable at level `l`
-def fresh (l : Nat) : Val := .vne l .snil
+-- `a = b` at `A`, by `A` (`vEq` in `Eval.lean`; the closures are the same templates)
+def vEq : Val → Val → Val → Val
+  | .vpi a1 env b1, a, b => .vpi a1 (.cons b (.cons a (.cons (.vlam env b1) .nil)))
+      (.eq (.app (.var 3) (.var 0)) (.app (.var 2) (.var 0)) (.app (.var 1) (.var 0)))
+  | .vsigma a1 env b1, a, b =>
+    let P : Tm := .lam (.lam (.eqTy (.app (.var 5) (.fst (.var 4))) (.app (.var 5) (.var 1))));
+    let apB : Tm := .subst (.var 4) (.fst (.var 2)) P (.tyRefl (.app (.var 3) (.fst (.var 2)))) (.fst (.var 1)) (.var 0);
+    .vsigma (vEq a1 (vfst a) (vfst b)) (.cons b (.cons a (.cons (.vlam env b1) (.cons a1 .nil))))
+      (.eq (.app (.var 3) (.fst (.var 1)))
+        (.coe (.app (.var 3) (.fst (.var 2))) (.app (.var 3) (.fst (.var 1))) apB (.snd (.var 2))) (.snd (.var 1)))
+  | .vunit _, _, _ => .vunit 0
+  | .vempty _, _, _ => .vunit 0
+  | .venum k, .vtag _ i, .vtag _ j => match Nat.beq i j with
+    | .true => .vunit 0
+    | .false => .vempty 0
+  | .vsort l, a, b => match l with
+    -- propositions: equal when equivalent
+    | .zero => .vsigma (.vpi a (.cons b .nil) (.var 1)) (.cons a (.cons b .nil)) (.pi (.var 2) (.var 2))
+    | .succ _ => vEqType a b
+  | A, a, b => .vne (.heq A a b) .snil
+-- `A = B` between types (`vEqType`)
+def vEqType : Val → Val → Val
+  | .vpi a env b, .vpi a' env' b' => .vsigma (vEqType a' a)
+      (.cons (.vlam env' b') (.cons (.vlam env b) (.cons a' (.cons a .nil))))
+      (.pi (.var 3) (.eqTy (.app (.var 3) (.coe (.var 4) (.var 5) (.var 1) (.var 0))) (.app (.var 2) (.var 0))))
+  | .vsigma a env b, .vsigma a' env' b' => .vsigma (vEqType a a')
+      (.cons (.vlam env' b') (.cons (.vlam env b) (.cons a' (.cons a .nil))))
+      (.pi (.var 4) (.eqTy (.app (.var 3) (.var 0)) (.app (.var 2) (.coe (.var 5) (.var 4) (.var 1) (.var 0)))))
+  | .vsort l, .vsort l' => levels l l'
+  | .vunit l, .vunit l' => levels l l'
+  | .vempty l, .vempty l' => levels l l'
+  | .venum k, .venum k' => levels k k'
+  | X, Y => match Bool.and (canonical X) (canonical Y) with
+    | .true => .vempty 0
+    | .false => .vne (.heqTy X Y) .snil
+-- `cast A B e t` (`vCast`)
+def vCast : Val → Val → Val → Val → Val
+  | .vpi a1 env1 b1, .vpi a2 env2 b2, e, t =>
+    let c : Tm := .coe (.var 5) (.var 6) (.fst (.var 2)) (.var 0);
+    .vlam (.cons t (.cons e (.cons (.vlam env2 b2) (.cons (.vlam env1 b1) (.cons a2 (.cons a1 .nil))))))
+      (.coe (.app (.var 4) c) (.app (.var 3) (.var 0)) (.app (.snd (.var 2)) (.var 0)) (.app (.var 1) c))
+  | .vsigma a1 env1 b1, .vsigma a2 env2 b2, e, t =>
+    let t1 := vfst t;
+    let c1 := vCast a1 a2 (vfst e) t1;
+    .vpair c1 (vCast (eval (.cons t1 env1) b1) (eval (.cons c1 env2) b2) (vapp (vsnd e) t1) (vsnd t))
+  | .vsort l, .vsort l', e, t => same l l' t (.vne (.hcast (.vsort l) (.vsort l') e t) .snil)
+  | .vempty l, .vempty l', e, t => same l l' t (.vne (.hcast (.vempty l) (.vempty l') e t) .snil)
+  | .vunit l, .vunit l', e, t => same l l' .vtt (.vne (.hcast (.vunit l) (.vunit l') e t) .snil)
+  | .venum k, .venum k', e, t => same k k' t (.vne (.hcast (.venum k) (.venum k') e t) .snil)
+  -- regularity, when it is cheap to see: syntactically equal types
+  | A, B, e, t => match tmEq (quote 100000 A) (quote 100000 B) with
+    | .true => t
+    | .false => .vne (.hcast A B e t) .snil
 
 -- **Exercise 14.2.** Quotation (`quote` in `Eval.lean`): back to a term at depth `l`.
-mutual
 def quote : Nat → Val → Tm
   --<sol
   | _, .vsort l => match l with
@@ -174,7 +304,7 @@ def quote : Nat → Val → Tm
     | .succ n => .empty n
   | _, .venum k => .enum k
   | _, .vtag k i => .tag k i
-  | l, .vne x sp => quoteSpine l (.var (l - x - 1)) sp
+  | l, .vne h sp => quoteSpine l (quoteHead l h) sp
   --|ex
   --| | _, _ => .univ 0
   --sol>
@@ -186,6 +316,14 @@ def quoteSpine : Nat → Tm → Spine → Tm
   | l, h, .secase sp env m bs =>
     .ecase (quote (l + 1) (eval (.cons (fresh l) env) m)) (quoteSpine l h sp) (quoteBranches l env bs)
   | l, h, .sabsurd sp m => .exfalso (quote l m) (quoteSpine l h sp)
+def quoteHead : Nat → Head → Tm
+  | l, .hvar x => .var (l - x - 1)
+  | l, .heq A a b => .eq (quote l A) (quote l a) (quote l b)
+  | l, .heqTy A B => .eqTy (quote l A) (quote l B)
+  | l, .hcast A B e t => .coe (quote l A) (quote l B) (quote l e) (quote l t)
+  | l, .hrefl A a => .eqRefl (quote l A) (quote l a)
+  | l, .hreflTy X => .tyRefl (quote l X)
+  | l, .htransp A a P p b e => .subst (quote l A) (quote l a) (quote l P) (quote l p) (quote l b) (quote l e)
 def quoteBranches : Nat → Env → Tms → Tms
   | _, _, .tnil => .tnil
   | l, env, .tcons b rest => .tcons (quote l (eval env b)) (quoteBranches l env rest)
@@ -223,6 +361,16 @@ def show (names : List String) : Nat → Tm → String
   | _, .empty n => String.append "Empty" (Nat.toString n)
   | _, .ptrue => "True"
   | _, .pfalse => "False"
+  | l, .eq A a b => String.append (String.append (String.append "Eq(" (show names l A)) (String.append ", " (show names l a)))
+      (String.append ", " (String.append (show names l b) ")"))
+  | l, .eqTy A B => String.append (String.append "EqTy(" (show names l A)) (String.append ", " (String.append (show names l B) ")"))
+  | l, .eqRefl A a => String.append (String.append "refl(" (show names l A)) (String.append ", " (String.append (show names l a) ")"))
+  | l, .tyRefl X => String.append (String.append "reflTy(" (show names l X)) ")"
+  | l, .coe A B e t => String.append (String.append (String.append "cast(" (show names l A)) (String.append ", " (show names l B)))
+      (String.append (String.append ", " (show names l e)) (String.append ", " (String.append (show names l t) ")")))
+  | l, .subst A a P p b e => String.append (String.append (String.append "transp(" (show names l A)) (String.append ", " (show names l a)))
+      (String.append (String.append (String.append ", " (show names l P)) (String.append ", " (show names l p)))
+        (String.append (String.append ", " (show names l b)) (String.append ", " (String.append (show names l e) ")"))))
   | l, .exfalso m t => String.append (String.append "absurd(" (show names l m)) (String.append ", " (String.append (show names l t) ")"))
   | _, .enum k => String.append "Enum" (Nat.toString k)
   | _, .tag _ i => String.append "#" (Nat.toString i)
@@ -262,8 +410,8 @@ def imax (i j : Nat) : Nat := match j with
 -- The type of a neutral, and the universe of a type (`typeSort?` in `Conv.lean`).
 mutual
 -- the type of the variable at level `x` after the eliminations `sp`
-def typeOfNe : TCtx → Nat → Spine → Val
-  | c, x, .snil => lookup (TCtx.types c) (TCtx.lvl c - x - 1)
+def typeOfNe : TCtx → Head → Spine → Val
+  | c, h, .snil => headType c h
   | c, x, .sapp sp a => match typeOfNe c x sp with
     | .vpi _ env cod => eval (.cons a env) cod
     | ty => ty
@@ -295,6 +443,15 @@ def sortOf : TCtx → Val → Option Nat
     | .vsort l => .some l
     | _ => .none
   | _, _ => .none
+-- the type of a head
+def headType : TCtx → Head → Val
+  | c, .hvar x => lookup (TCtx.types c) (TCtx.lvl c - x - 1)
+  | _, .heq _ _ _ => .vsort 0
+  | _, .heqTy _ _ => .vsort 0
+  | _, .hcast _ B _ _ => B
+  | _, .hrefl A a => vEq A a a
+  | _, .hreflTy X => vEqType X X
+  | _, .htransp _ _ P _ b e => vapp (vapp P b) e
 end
 
 def isProp (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
@@ -340,10 +497,20 @@ def convTy : TCtx → Val → Val → Bool
 def convNe : TCtx → Val → Val → Bool
   | _, .vtag _ i, .vtag _ j => Nat.beq i j
   | _, .vtt, .vtt => .true
-  | c, .vne x sp, .vne y sp' => Bool.and (Nat.beq x y) (convSpine c x sp sp')
+  | c, .vne x sp, .vne y sp' => Bool.and (convHead c x y) (convSpine c x sp sp')
+  | _, _, _ => .false
+-- the same head: the same variable, or equal components (proofs are all equal)
+def convHead : TCtx → Head → Head → Bool
+  | _, .hvar x, .hvar y => Nat.beq x y
+  | c, .heq A a b, .heq A' a' b' => Bool.and (convTy c A A') (Bool.and (conv c A a a') (conv c A b b'))
+  | c, .heqTy A B, .heqTy A' B' => Bool.and (convTy c A A') (convTy c B B')
+  | c, .hcast A B _ t, .hcast A' B' _ t' => Bool.and (convTy c A A') (Bool.and (convTy c B B') (conv c A t t'))
+  | _, .hrefl _ _, .hrefl _ _ => .true
+  | _, .hreflTy _, .hreflTy _ => .true
+  | _, .htransp _ _ _ _ _ _, .htransp _ _ _ _ _ _ => .true
   | _, _, _ => .false
 -- the same head `x`: compare the eliminations, at their types
-def convSpine : TCtx → Nat → Spine → Spine → Bool
+def convSpine : TCtx → Head → Spine → Spine → Bool
   | _, _, .snil, .snil => .true
   | c, x, .sapp r a, .sapp r' b => Bool.and (convSpine c x r r') (match typeOfNe c x r with
     | .vpi dom _ _ => conv c dom a b
@@ -430,6 +597,73 @@ def infer : TCtx → Tm → TyRes
             | r => r
           | r => r
       | ty => .err (String.append "not an enumeration: " (showVal c ty))
+    | r => r
+  | c, .eq A a b => match inferUniv c A with
+    | .ok (.vsort l) => match Nat.beq l 0 with
+      | .true => .err "equality is for types in Type u, not propositions"
+      | .false =>
+        let vA := eval (TCtx.env c) A;
+        match check c a vA with
+        | .ok _ => match check c b vA with
+          | .ok _ => .ok (.vsort 0)
+          | r => r
+        | r => r
+    | r => r
+  | c, .eqTy A B => match inferUniv c A with
+    | .ok (.vsort l) => match inferUniv c B with
+      | .ok (.vsort l') => match Nat.beq l l' with
+        | .true => .ok (.vsort 0)
+        | .false => .err "type equality between different universes"
+      | r => r
+    | r => r
+  | c, .eqRefl A a => match inferUniv c A with
+    | .ok (.vsort l) => match Nat.beq l 0 with
+      | .true => .err "refl is for terms of types in Type u"
+      | .false =>
+        let vA := eval (TCtx.env c) A;
+        match check c a vA with
+        | .ok _ => .ok (vEq vA (eval (TCtx.env c) a) (eval (TCtx.env c) a))
+        | r => r
+    | r => r
+  | c, .tyRefl X => match inferUniv c X with
+    | .ok _ => .ok (vEqType (eval (TCtx.env c) X) (eval (TCtx.env c) X))
+    | r => r
+  | c, .coe A B e t => match inferUniv c A with
+    | .ok (.vsort l) => match inferUniv c B with
+      | .ok (.vsort l') => match Nat.beq l l' with
+        | .false => .err "cast between different universes"
+        | .true =>
+          let vA := eval (TCtx.env c) A;
+          let vB := eval (TCtx.env c) B;
+          match check c e (vEqType vA vB) with
+          | .ok _ => match check c t vA with
+            | .ok _ => .ok vB
+            | r => r
+          | r => r
+      | r => r
+    | r => r
+  | c, .subst A a P p b e => match inferUniv c A with
+    | .ok _ =>
+      let vA := eval (TCtx.env c) A;
+      match check c a vA with
+      | .ok _ =>
+        let va := eval (TCtx.env c) a;
+        -- (b : A) → a = b → Prop
+        let motiveTy : Val := .vpi vA (.cons va (.cons vA .nil)) (.pi (.eq (.var 2) (.var 1) (.var 0)) .prop);
+        match check c P motiveTy with
+        | .ok _ =>
+          let vP := eval (TCtx.env c) P;
+          match check c p (vapp (vapp vP va) (.vne (.hrefl vA va) .snil)) with
+          | .ok _ => match check c b vA with
+            | .ok _ =>
+              let vb := eval (TCtx.env c) b;
+              match check c e (vEq vA va vb) with
+              | .ok _ => .ok (vapp (vapp vP vb) (eval (TCtx.env c) e))
+              | r => r
+            | r => r
+          | r => r
+        | r => r
+      | r => r
     | r => r
   | c, .fst p => match infer c p with
     | .ok ty => match ty with
