@@ -1,12 +1,13 @@
 import IO
 -- A type checker in Wiz (stage 14a): the core of `Wiz/Core`, for a small calculus:
--- variables (de Bruijn indices), universes `U n`, Π types, λ, application, `let`, and
--- type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to
+-- variables (de Bruijn indices), universes `U n`, Π types, λ, application, Σ types,
+-- pairs and projections (stage 14e), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to
 -- values with closures (an environment and a body), values quote back to normal forms,
--- and two types are convertible when their normal forms are equal.
+-- and conversion compares values (with η for functions and pairs).
 --
--- Values and environments are mutually inductive (a closure holds an environment of
--- values), and evaluation, application and quotation are mutually recursive.
+-- Values, environments and spines are mutually inductive (a closure holds an
+-- environment of values), and evaluation, application and quotation are mutually
+-- recursive.
 
 inductive Tm where
   | var (i : Nat)
@@ -16,6 +17,10 @@ inductive Tm where
   | app (f a : Tm)
   | letE (ty val body : Tm)
   | ann (t ty : Tm)
+  | sigma (fst snd : Tm)
+  | pair (a b : Tm)
+  | fst (p : Tm)
+  | snd (p : Tm)
 
 mutual
 inductive Val where
@@ -23,11 +28,20 @@ inductive Val where
   -- `(x : dom) → cod`, `cod` under one binder, closed over `env`
   | vpi (dom : Val) (env : Env) (cod : Tm)
   | vlam (env : Env) (body : Tm)
-  -- a variable (by level) applied to arguments (the last one first)
-  | vne (lvl : Nat) (spine : Env)
+  -- `(x : fst) × snd`, `snd` under one binder, closed over `env`
+  | vsigma (fst : Val) (env : Env) (snd : Tm)
+  | vpair (a b : Val)
+  -- a variable (by level) and the eliminations applied to it
+  | vne (lvl : Nat) (spine : Spine)
 inductive Env where
   | nil
   | cons (v : Val) (rest : Env)
+-- eliminations, the last one outermost
+inductive Spine where
+  | snil
+  | sapp (sp : Spine) (a : Val)
+  | sfst (sp : Spine)
+  | ssnd (sp : Spine)
 end
 
 def lookup : Env → Nat → Val
@@ -36,36 +50,46 @@ def lookup : Env → Nat → Val
     | .zero => v
     | .succ j => lookup rest j
 
--- **Exercise 14.1.** Evaluation and application (`eval` and `vApp` in `Eval.lean`).
+-- **Exercise 14.1.** Evaluation, application and projections (`eval`, `vApp`, `vFst`,
+-- `vSnd` in `Eval.lean`).
 mutual
 def eval : Env → Tm → Val
   | _, _ => .vuniv 0
 def vapp : Val → Val → Val
   | v, _ => v
+def vfst : Val → Val
+  | v => v
+def vsnd : Val → Val
+  | v => v
 end
 
 -- a fresh variable at level `l`
-def fresh (l : Nat) : Val := .vne l .nil
+def fresh (l : Nat) : Val := .vne l .snil
 
 -- **Exercise 14.2.** Quotation (`quote` in `Eval.lean`): back to a term at depth `l`.
 mutual
 def quote : Nat → Val → Tm
   | _, _ => .univ 0
-def quoteSpine : Nat → Tm → Env → Tm
-  | _, h, .nil => h
-  | l, h, .cons a rest => .app (quoteSpine l h rest) (quote l a)
+def quoteSpine : Nat → Tm → Spine → Tm
+  | _, h, .snil => h
+  | l, h, .sapp sp a => .app (quoteSpine l h sp) (quote l a)
+  | l, h, .sfst sp => .fst (quoteSpine l h sp)
+  | l, h, .ssnd sp => .snd (quoteSpine l h sp)
 end
 
 -- **Exercise 14.6.** Conversion (`conv` in `Conv.lean`), on values at depth `l`: equal
--- universes, Π types with convertible domains and codomains, the same variable applied
--- to convertible arguments, and functions compared by applying both to a fresh
--- variable (that is η: `f` and `λx. f x` are convertible).
+-- universes, Π and Σ types with convertible components, the same variable with
+-- convertible eliminations, functions compared by applying both to a fresh variable,
+-- and pairs by their projections (that is η: `f` and `λx. f x` are convertible, and so
+-- are `p` and `(p.1, p.2)`).
 mutual
 def conv : Nat → Val → Val → Bool
   | _, _, _ => .false
-def convSpine : Nat → Env → Env → Bool
-  | _, .nil, .nil => .true
-  | l, .cons a r, .cons b r' => Bool.and (conv l a b) (convSpine l r r')
+def convSpine : Nat → Spine → Spine → Bool
+  | _, .snil, .snil => .true
+  | l, .sapp r a, .sapp r' b => Bool.and (convSpine l r r') (conv l a b)
+  | l, .sfst r, .sfst r' => convSpine l r r'
+  | l, .ssnd r, .ssnd r' => convSpine l r r'
   | _, _, _ => .false
 end
 
@@ -89,6 +113,11 @@ def show (names : List String) : Nat → Tm → String
   | l, .letE t v b => String.append (String.append "let " (nameAt names l))
       (String.append (String.append " := " (show names l v)) (String.append "; " (show names (l + 1) b)))
   | l, .ann t ty => String.append (String.append "(" (show names l t)) (String.append " : " (String.append (show names l ty) ")"))
+  | l, .sigma a b => String.append (String.append (String.append "(" (nameAt names l))
+      (String.append " : " (show names l a))) (String.append ") × " (show names (l + 1) b))
+  | l, .pair a b => String.append (String.append "(" (show names l a)) (String.append ", " (String.append (show names l b) ")"))
+  | l, .fst p => String.append (show names l p) ".1"
+  | l, .snd p => String.append (show names l p) ".2"
 
 -- the typing context: values of the variables, their types, the depth
 inductive TCtx where

@@ -1014,8 +1014,15 @@ the same inferred type.
 |------|-----------------------|-----------------------------------------|
 | 14.6 | `selfhost/Kernel.wiz` | `conv`: values, with η                  |
 
-Next: grow the Wiz kernel towards the real one (Σ types, data through descriptions,
-quantities), extending the generator as it grows.
+### 14e: Σ types ✅
+
+Pairs, projections and Σ types in the Wiz kernel, with η for pairs (`p` and `(p.1, p.2)`
+are convertible); neutral values carry a spine of eliminations (`Val`, `Env` and
+`Spine` are mutually inductive). The differential generator mixes in well-typed pairs,
+so its 400 terms exercise them. Exercises 14.1–14.3 and 14.6 now include Σ.
+
+Next: data through descriptions, then quantities, extending the generator as the kernel
+grows.
 
 ## Stage 11: tooling
 
