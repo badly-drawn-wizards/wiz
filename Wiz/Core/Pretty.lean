@@ -76,7 +76,10 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
       paren (prec > 25) s!"{dom.prettyPrec names 26} → {cod.prettyPrec ("_" :: names) 25}"
     else
       let x' := freshen names (if x == "_" then "x" else x)
-      let (o, c) := if bi == .implicit then ("{", "}") else ("(", ")")
+      let (o, c) := match bi with
+        | .implicit => ("{", "}")
+        | .instImplicit => ("[", "]")
+        | .default => ("(", ")")
       paren (prec > 25)
         s!"{o}{qtyPrefix names bi q}{x'} : {dom.prettyPrec names 0}{c} → {cod.prettyPrec (x' :: names) 25}"
   | t@(.lam ..) =>

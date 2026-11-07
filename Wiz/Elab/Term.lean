@@ -1,6 +1,7 @@
 import Wiz.Elab.Zonk
 import Wiz.Elab.Macro
 import Wiz.Elab.Tactic
+import Wiz.Elab.Class
 
 /-!
 # Elaborating terms
@@ -56,6 +57,9 @@ def binderViews (stx : Syntax) : Array BinderView :=
     let qty := (stx.getArg 1).args[0]?
     let type := (stx.getArg 3).args[1]?
     (stx.getArg 2).args.map fun n => { name := binderName n, info := n.info, bi, qty, type }
+  | "binder.inst" =>
+    let name := (((stx.getArg 1).args[0]?).bind Syntax.getId?).getD "inst✝"
+    #[{ name, info := stx.info, bi := .instImplicit, qty := none, type := some (stx.getArg 2) }]
   | _ => #[{ name := binderName stx, info := stx.info, bi := .default, qty := none, type := none }]
 
 /-- A quantity literal (`0`, `1`, `ω`, …) as a term. -/
@@ -84,6 +88,11 @@ def lookupLocal (ctx : LocalCtx R) (x : Name) : Option (Nat × VTy R) := Id.run 
 the metavariable's value. -/
 partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
     ElabM R (Term R × VTy R) := do
+  -- (given, stage 7) an instance argument: a hole for instance resolution
+  if let .pi x .instImplicit _ dom cod ← force ty then
+    let m ← freshMeta ctx s!"instance {x}"
+    addInstProblem ctx m dom
+    return ← insertImplicits ctx (.app t m) (← instM cod (← evalIn ctx m))
   sorry
 
 /-- Names the elaborator treats as data primitives when applied (and not shadowed). -/
@@ -322,6 +331,9 @@ partial def check (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R
   let ctx := ctx.withInfo stx
   if let some stx' ← expand? stx then return ← check ctx stx' expected
   if let some t ← checkData? ctx stx expected then return t
+  -- (given, stage 7) against `[x : C A] → B`, bind the instance as a local
+  if let .pi x .instImplicit _ dom cod ← force expected then
+    return .lam x (← check (ctx.bind x dom) stx (← instM cod (Val.var ctx.lvl)))
   sorry
 
 /-- Check `fun b₁ … bₙ => body` against `expected`, one binder at a time.
@@ -349,7 +361,7 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
             throwAt b.info s!"binder quantity {showTerm ctx q'} does not match the expected {← showVal ctx q}"
         let t ← checkFun (ctx.bind b.name dom) rest body (← instM cod (Val.var ctx.lvl))
         return .lam b.name t
-      else if bi == .implicit then
+      else if bi == .implicit || bi == .instImplicit then
         let t ← checkFun (ctx.bind x dom) bs body (← instM cod (Val.var ctx.lvl))
         return .lam x t
       else throwAt b.info "unexpected implicit binder: the expected type takes an explicit argument"

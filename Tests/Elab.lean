@@ -546,6 +546,52 @@ def tacticGroup : Group where
           "def k : Nat → Nat → Nat := by intros2; exact b") }
   ]
 
+def classPrelude : String := "import Prelude
+class Inhabited (A : Type) where
+  default : A
+instance : Inhabited Nat := Inhabited.mk 0
+instance : Inhabited Bool where
+  default := Bool.true
+instance {A : Type} [Inhabited A] : Inhabited (List A) where
+  default := List.cons Inhabited.default List.nil
+"
+
+def classGroup : Group where
+  name := "classes"
+  exercise := "Exercise 7.1"
+  cases := [
+    { name := "methods take the instance as an instance-implicit argument", run := fun _ =>
+        okLib (classPrelude ++ "#check Inhabited.default") ["Inhabited.default : {A : Type} → [self : Inhabited A] → A"] },
+    { name := "an instance is found", run := fun _ =>
+        okLib (classPrelude ++ "#eval (Inhabited.default : Bool)") [".true"] },
+    { name := "instances with instance arguments chain", run := fun _ =>
+        okLib (classPrelude ++ "#eval (Inhabited.default : List (List Nat))") [".cons (.cons 0 .nil) .nil"] },
+    { name := "local instances", run := fun _ =>
+        okLib (classPrelude ++ "def orDefault {A : Type} [Inhabited A] : Option A → A\n  | .some a => a\n  | .none => Inhabited.default\n" ++
+          "#eval orDefault (Option.none : Option Bool)") [".true"] },
+    { name := "a missing instance is an error", run := fun _ =>
+        failsLib (classPrelude ++ "#eval (Inhabited.default : String)") "failed to synthesize an instance of Inhabited String" },
+    { name := "output parameters are determined by the instance", run := fun _ =>
+        okLib ("import Prelude\nclass HAdd (A B : Type) (C : outParam Type) where\n  hadd : A → B → C\n" ++
+          "instance : HAdd Nat Bool Nat where\n  hadd := fun n b => n\n#check HAdd.hadd (3 : Nat) Bool.true")
+          ["HAdd.hadd Nat Bool Nat instHAddNatBoolNat (3 : Nat) Bool.true : Nat"] },
+    { name := "later instances win", run := fun _ =>
+        okLib (classPrelude ++ "instance : Inhabited Nat := Inhabited.mk 7\n#eval (Inhabited.default : Nat)") ["7"] },
+    { name := "priorities", run := fun _ =>
+        okLib (classPrelude ++ "instance (priority := 2000) : Inhabited Nat := Inhabited.mk 5\n" ++
+          "instance : Inhabited Nat := Inhabited.mk 7\n#eval (Inhabited.default : Nat)") ["5"] },
+    { name := "tabling: a cyclic instance fails instead of looping", run := fun _ =>
+        failsLib ("import Prelude\nclass Loop (A : Type) where\n  x : A\ninstance {A : Type} [Loop A] : Loop A := Loop.mk Loop.x\n" ++
+          "#eval (Loop.x : Nat)") "failed to synthesize an instance of Loop Nat" },
+    { name := "do notation for any Monad", run := fun _ =>
+        okLib ("import Prelude\ninstance : Monad Option where\n  pure := fun a => Option.some a\n" ++
+          "  bind := fun x f => match x with\n    | .none => Option.none\n    | .some a => f a\n" ++
+          "def addOpt (x y : Option Nat) : Option Nat := do\n  a ← x;\n  b ← y;\n  Monad.pure (a + b)\n" ++
+          "#eval addOpt (.some 1) (.some 2)\n#eval addOpt (.some 1) .none") [".some 3", ".none"] },
+    { name := "a class's universe is inferred from its fields", run := fun _ =>
+        okLib "import Prelude\nclass Functor (f : Type → Type) where\n  map : {A B : Type} → (A → B) → f A → f B\n#check Functor" ["Functor : (Type → Type) → Type 1"] }
+  ]
+
 def builtinGroup : Group where
   name := "builtins"
   exercise := "Stage 6b"

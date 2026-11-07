@@ -269,14 +269,6 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let S := ((cmd.getArg 1).getId?).getD "_"
   let us := levelParams.map Level.param
   let (ctxΔ, Δ) ← elabTelescope {} ((cmd.getArg 3).args.flatMap binderViews).toList
-  let sig ← match (cmd.getArg 4).args[1]? with
-    | some s => pure (← checkType ctxΔ s).1
-    | none => pure (.sort 1)
-  let sig ← zonk ctxΔ.lvl sig
-  let l ← match peelSignature sig with
-    | .ok ([], l) => pure l
-    | .ok _ => throwAt (cmd.getArg 4).info "a structure has no indices"
-    | .error e => throwAt (cmd.getArg 4).info e
   let views : List BinderView := (cmd.getArg 6).args.toList.map fun f =>
     { name := ((f.getArg 1).getId?).getD "_", info := f.info, bi := .default,
       qty := (f.getArg 0).args[0]?, type := some (f.getArg 3) }
@@ -287,7 +279,29 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     let A ← zonk (ctxΔ.lvl + k) A
     ensureNoMVars q cmd.info; ensureNoMVars A cmd.info
     fs' := fs'.push (x, bi, q, A)
-  let _ := ctxF
+  -- the parameters' types may have level metavariables (`outParam.{?u} Type`)
+  let mut Δz := #[]
+  for (x, bi, q, A) in Δ, k in [0:Δ.size] do
+    Δz := Δz.push (x, bi, ← zonk k q, ← zonk k A)
+  let Δ := Δz
+  -- the universe: as given, or else big enough for every field (closed levels only)
+  let sig ← match (cmd.getArg 4).args[1]? with
+    | some s => pure (← checkType ctxΔ s).1
+    | none =>
+      let g ← getGlobals
+      let tys := ctxF.types.reverse.toArray
+      let mut n := 1
+      for (_, _, _, A) in fs', k in [0:fs'.size] do
+        let env := (List.range (ctxΔ.lvl + k)).reverse.map Val.var
+        match typeSort? g (tys.extract 0 (ctxΔ.lvl + k)) (eval g env A) with
+        | some s => if let some m := s.toNat? then n := max n m
+        | none => pure ()
+      pure (.sort (Level.ofNat n))
+  let sig ← zonk ctxΔ.lvl sig
+  let l ← match peelSignature sig with
+    | .ok ([], l) => pure l
+    | .ok _ => throwAt (cmd.getArg 4).info "a structure has no indices"
+    | .error e => throwAt (cmd.getArg 4).info e
   let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc) (.unit (.succ l))
   let ΔNames := Δ.toList.map (·.1)
   let n := fs'.size

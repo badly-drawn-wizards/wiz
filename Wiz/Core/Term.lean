@@ -34,6 +34,8 @@ abbrev Name := String
 inductive BinderInfo where
   | default
   | implicit
+  /-- `[x : C A]`: filled by type class resolution (the kernel treats it as implicit) -/
+  | instImplicit
   deriving Repr, BEq, DecidableEq, Inhabited
 
 inductive Term (R : Type) where

@@ -36,6 +36,21 @@ structure MetaEntry (R : Type) where
   /-- how many bound variables it is applied to -/
   arity : Nat := 0
 
+/-- A type class: its parameters' output flags (`outParam`) and its fields, in order. -/
+structure ClassInfo where
+  name : Name
+  outParams : List Bool
+  fields : List Name
+  deriving Inhabited
+
+/-- An instance: a global whose type ends in an application of `cls`. Later instances
+and higher priorities are tried first. -/
+structure InstanceInfo where
+  name : Name
+  cls : Name
+  priority : Nat := 1000
+  deriving Inhabited
+
 structure ElabError where
   info : SourceInfo
   msg : String
@@ -79,6 +94,11 @@ structure ElabState (R : Type) where
   /-- erase what is reachable from these globals, for the interpreter (supplied by the
   command elaborator) -/
   compileCode : List Name → Except String Code := fun _ => .error "tactics can't run here"
+  /-- type classes and instances in scope (stage 7) -/
+  classes : List ClassInfo := []
+  instances : Array InstanceInfo := #[]
+  /-- instance problems not solved yet: the hole, in its context, and its class type -/
+  pendingInsts : Array (LocalCtx R × Term R × VTy R) := #[]
   /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
   kernelInfer : Ctx R → Term R → Except String (VTy R) := fun _ _ => .error "no kernel here"
 

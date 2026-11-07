@@ -1,0 +1,47 @@
+import Prelude
+-- Type classes: classes are structures, instances are found by tabled resolution.
+
+class Inhabited (A : Type) where
+  default : A
+
+instance : Inhabited Nat := Inhabited.mk 0
+instance : Inhabited Bool where
+  default := Bool.true
+instance {A : Type} [Inhabited A] : Inhabited (List A) where
+  default := List.cons Inhabited.default List.nil
+
+#check Inhabited.default
+#eval (Inhabited.default : List (List Bool))
+
+-- a local instance
+def orDefault {A : Type} [Inhabited A] : Option A → A
+  | .some a => a
+  | .none => Inhabited.default
+#eval orDefault (Option.none : Option Nat)
+
+-- an output parameter: the result type is determined by the instance
+class HAdd (A B : Type) (C : outParam Type) where
+  hadd : A → B → C
+instance : HAdd Nat Bool Nat where
+  hadd := fun n b => match b with
+    | .true => Nat.succ n
+    | .false => n
+#eval HAdd.hadd (3 : Nat) Bool.true
+
+-- `do` works for any monad
+instance : Monad Option where
+  pure := fun a => Option.some a
+  bind := fun x f => match x with
+    | .none => Option.none
+    | .some a => f a
+def addOpt (x y : Option Nat) : Option Nat := do
+  a ← x;
+  b ← y;
+  Monad.pure (a + b)
+#eval addOpt (.some 1) (.some 2)
+#eval addOpt (.some 1) .none
+
+-- a looping instance: tabling makes resolution fail instead of diverging
+class Loop (A : Type) where
+  x : A
+instance {A : Type} [Loop A] : Loop A := Loop.mk Loop.x

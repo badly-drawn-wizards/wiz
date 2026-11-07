@@ -650,3 +650,44 @@ disappeared. Now a defined constant evaluates to a **glued** value
 * Exercise 3.1 is now `forceMeta` (metas only). `force` also unfolds glued heads.
 
 The prelude now elaborates about 6× faster.
+
+### 7b: classes, instances, tabled resolution ✅
+
+```
+class Inhabited (A : Type) where
+  default : A
+instance : Inhabited Nat := Inhabited.mk 0
+instance {A : Type} [Inhabited A] : Inhabited (List A) where
+  default := List.cons Inhabited.default List.nil
+#eval (Inhabited.default : List Nat)       -- .cons 0 .nil
+```
+
+* `class` is `structure` plus a record of the class (its fields, and which
+  parameters are `outParam`s). It generates methods `C.f : {Δ} → [self : C Δ] → F`.
+  A structure's universe is now inferred from its fields when not given.
+* `[x : C A]` / `[C A]` binders are `BinderInfo.instImplicit`. Applying a function
+  creates a hole and an **instance problem**. It is solved when its non-output
+  arguments are known, at the latest at the end of the command. Inside a definition,
+  instance binders are local instances.
+* `instance (priority := n)? binders : C T := v`, or `where f := …` with the fields
+  by name. The instance is named after its type (`instInhabitedNat`). Instances
+  overlap freely (Lean-style): local instances first, then higher priority, then
+  later declarations.
+* **Resolution** (`Elab/Class.lean`) is tabled, after Selsam, Ullrich & de Moura
+  (2020), with generator and consumer nodes and an answer table per normalised goal.
+  A subgoal already in the table waits for that goal's answers instead of being
+  solved again, so cyclic instances fail instead of looping. Output parameters are
+  fresh holes during resolution and are unified with the answer afterwards.
+* `do` now works for any `Monad` (`class Monad (m : Type → Type)` in the prelude,
+  with an instance for `TacticM`), thanks to glued evaluation and the first-order
+  approximation: `?m ?A =?= TacticM Nat` gives `?m := TacticM`.
+
+| #   | Where              | What                                             |
+|-----|--------------------|--------------------------------------------------|
+| 7.1 | `Elab/Class.lean`  | `applyInstance`: an instance's subgoals          |
+
+Known limitations: no auto-bound implicits (write `{A : Type}`); instance problems
+must have no holes left in their arguments by the end of the command; answers must be
+complete terms; no default instances or coercions yet.
+
+Next: the backend (stage 8: an IR, C and LLVM, reference counting with reuse).
