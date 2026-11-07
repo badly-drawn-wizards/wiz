@@ -7,6 +7,7 @@ def usage : String := "usage:
   wiz check FILE          elaborate and type check (quantities: 0, 1, ω)
   wiz build FILE -o OUT [--llvm]   compile the definition `main` to an executable (via C or LLVM)
   wiz run FILE [--llvm]            build and run `main`, printing its value
+  wiz lsp                          a language server on stdin/stdout
 C compiler: $WIZ_CC (default cc), extra flags in $WIZ_CFLAGS and $WIZ_LDFLAGS (GMP); llc: $WIZ_LLC"
 
 def parseCmd (path : String) : IO UInt32 := do
@@ -27,6 +28,18 @@ def loadLibrary : IO (Std.HashMap Name String) := do
       for e in ← System.FilePath.readDir d do
         if e.path.extension == some "wiz" then
           m := m.insert (e.path.fileStem.getD "") (← IO.FS.readFile e.path)
+  pure m
+
+/-- Library modules with their paths (for the language server's go-to-definition). -/
+def loadLibraryPaths : IO (Std.HashMap String (String × String)) := do
+  let dirs := ["lib"] ++ ((← IO.getEnv "WIZ_PATH").map ([·])).getD []
+  let mut m : Std.HashMap String (String × String) := {}
+  for d in dirs do
+    if ← System.FilePath.isDir d then
+      for e in ← System.FilePath.readDir d do
+        if e.path.extension == some "wiz" then
+          let abs ← IO.FS.realPath e.path
+          m := m.insert (e.path.fileStem.getD "") (abs.toString, ← IO.FS.readFile e.path)
   pure m
 
 def checkCmd (path : String) : IO UInt32 := do
@@ -74,4 +87,5 @@ def main : List String → IO UInt32
   | ["build", path, "-o", out, "--llvm"] => buildCmd path out true
   | ["run", path] => runCmd path false
   | ["run", path, "--llvm"] => runCmd path true
+  | ["lsp"] => do LSP.serve (← loadLibraryPaths); pure 0
   | _ => do IO.println usage; pure 0

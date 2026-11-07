@@ -37,3 +37,5 @@ import Wiz.Compiler.LLVM
 import Wiz.Compiler.Build
 import Wiz.FFI.CParse
 import Wiz.FFI.CGlue
+import Wiz.Query
+import Wiz.LSP

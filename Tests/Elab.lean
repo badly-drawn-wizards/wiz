@@ -754,6 +754,50 @@ def effectsGroup : Group where
           "instance {S : Type} : Commute (State S) (State S) (StateM S) where\n  comm := fun o₁ o₂ B f => rfl") "kernel rejected" }
   ]
 
+def toolingGroup : Group where
+  name := "tooling"
+  exercise := "Stage 11"
+  cases := [
+    { name := "queries: an edit re-elaborates only what follows it", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let v1 := "import Prelude\ndef a : Nat := 1\ndef b : Nat := a + 1\ndef c : Nat := b + 1\n"
+        let (s1, eng) := Query.elaborate {} v1 init
+        checkEq 4 eng.elaborated
+        let v2 := v1.replace "b + 1" "b + 2"
+        let (s2, eng) := Query.elaborate eng v2 init
+        checkEq 5 eng.elaborated
+        check (s1.messages.isEmpty && s2.messages.isEmpty) "unexpected messages"
+        -- the same text again: everything is reused
+        let (_, eng) := Query.elaborate eng v2 init
+        checkEq 5 eng.elaborated },
+    { name := "queries: hover, definition, completion", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let src := "import Prelude\ndef double (n : Nat) : Nat := n + n\ndef four : Nat := double 2\n"
+        let (s, _) := Query.elaborate {} src init
+        let off := (src.splitOn "double 2")[0]!.length
+        checkEq "(some (double, Nat → Nat))" (toString (Query.hoverAt s off))
+        match Query.definitionAt s off with
+        | some (n, info, m) => checkEq "double 15 \"\"" s!"{n} {info.start} {repr m}"
+        | none => throw (IO.userError "no definition")
+        let pre := src ++ "def x : Nat := dou"
+        let (s', _) := Query.elaborate {} pre init
+        checkEq "#[double]" (toString (Query.completionsAt s' pre pre.length)) },
+    { name := "the language server answers requests", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let srv : LSP.Server := { libs := ({} : Std.HashMap String (String × String)).insert "Prelude" ("lib/Prelude.wiz", prelude) }
+        let req (s : String) : Lean.Json := (Lean.Json.parse s).toOption.get!
+        let (srv, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}")
+        check ((out[0]!.compress.splitOn "hoverProvider").length > 1) "no capabilities"
+        let (srv, out) := LSP.handle srv (req ("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":" ++
+          "{\"uri\":\"file:///t.wiz\",\"text\":\"import Prelude\\ndef ok : Nat := 1\\ndef bad : Nat := true\\n\"}}}"))
+        check ((out[0]!.compress.splitOn "unknown identifier").length > 1) s!"no diagnostic: {out[0]!.compress}"
+        let (_, out) := LSP.handle srv (req ("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":" ++
+          "{\"textDocument\":{\"uri\":\"file:///t.wiz\"},\"position\":{\"line\":1,\"character\":9}}}"))
+        check ((out[0]!.compress.splitOn "Nat : Type").length > 1) s!"no hover: {out[0]!.compress}" }
+  ]
+
 /-- Programs for the native backends (C, or LLVM). -/
 def nativeCases (llvm : Bool) : List Case :=
 [

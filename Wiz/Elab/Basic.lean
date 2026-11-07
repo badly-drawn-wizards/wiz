@@ -97,6 +97,8 @@ structure ElabState (R : Type) where
   /-- type classes and instances in scope (stage 7) -/
   classes : List ClassInfo := []
   instances : Array InstanceInfo := #[]
+  /-- for the language server: identifiers, where they are, and their types (stage 11) -/
+  hovers : Array (SourceInfo × Name × String) := #[]
   /-- instance problems not solved yet: the hole, in its context, and its class type -/
   pendingInsts : Array (LocalCtx R × Term R × VTy R) := #[]
   /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
