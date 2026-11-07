@@ -221,8 +221,8 @@ variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
 def RVal.tag? : RVal → Option Nat
   | .obj t _ => some t
-  | .nat 0 => some 0
-  | .nat _ => some 1
+  -- a scalar tag (as printed by compiled code)
+  | .nat t => some t
   | _ => none
 
 /-- The characters of a value of the registered `string` type,
@@ -256,6 +256,7 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
     let a' := readback A (v.field 0)
     .pair a' (readback (Closure.inst g B (eval g [] a')) (v.field 1))
   | .enum ls, .obj t _ => .tag ls t
+  | .enum ls, .nat t => .tag ls t
   | .unit _, _ => .tt
   | .pi .., _ => .const "<function>" []
   | .nu .., _ => .const "<codata>" []

@@ -238,7 +238,7 @@ def lowerProgram (code : Code) (main : ETerm) : Except String (Array Decl) := do
     match e with
     | .prim .unreachable #[.global key] => natives := natives.insert n key
     | e => defs := defs.push (n, e)
-  defs := (defs.qsort (·.1 < ·.1)) ++ PrimCode.all.toArray ++ #[("main", main)]
+  defs := (defs.qsort (·.1 < ·.1)) ++ PrimCode.all.toArray ++ #[("wiz.entry", main)]
   let arities : Std.HashMap Name Nat := defs.foldl (fun m (n, e) => m.insert n (peelLams e).1.length) {}
   let mut out : Array Decl := #[]
   -- wrappers for partially applied native operations

@@ -717,4 +717,29 @@ complete terms; no default instances or coercions yet.
 |-----|-------------------|------------------------------------------|
 | 8.1 | `Compiler/RC.lean`| `insertRC`: Perceus `dup`/`drop`        |
 
-Next: C code generation and a C runtime (GMP numbers), then reuse analysis and LLVM.
+### 8b: C ✅
+
+```
+$ wiz run fact.wiz        # def main : Nat := fact 30
+265252859812191058636308480000000
+```
+
+* `wiz build FILE -o OUT` compiles the definition `main` to C and then to an
+  executable; `wiz run FILE` also runs it and reads the printed result back with
+  `main`'s type. The C compiler is `$WIZ_CC` (default `cc`), with `$WIZ_CFLAGS` and
+  `$WIZ_LDFLAGS` for GMP. The C tests skip themselves if GMP isn't found.
+* **Runtime** (`runtime/wiz.c`, embedded in the compiler): a value is a word; scalars
+  have the low bit set; objects have a header (reference count, tag, size). Closures
+  point to a boxed entry and share or move their captured arguments when applied.
+  Numbers that don't fit in 62 bits are GMP integers. Projecting a number gives its
+  unary view. The program checks at exit that every object was freed.
+* **Codegen** (`Compiler/C.lean`): one C function per IR function (plus a boxed
+  version for closures); `case` is a `switch`, join points are labels, `dup`/`drop`
+  call the runtime.
+
+| #   | Where              | What                                   |
+|-----|--------------------|----------------------------------------|
+| 8.2 | `Compiler/C.lean`  | `body`: C statements for an IR body    |
+
+Next: reuse analysis (drop specialisation and in-place updates), borrowed parameters,
+then textual LLVM IR.

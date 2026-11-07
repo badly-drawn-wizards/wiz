@@ -193,7 +193,7 @@ partial def toRVal (h : Heap) : IVal → RVal
 allocated, and an error if anything leaked. -/
 def runProgram (decls : Array Decl) : Except String (RVal × Nat) := do
   let prog := decls.foldl (fun m d => m.insert d.name d) {}
-  let (v, h) ← (call prog "main" #[]).run {}
+  let (v, h) ← (call prog "wiz.entry" #[]).run {}
   let r := toRVal h v
   let ((), h) ← (dropV v).run h
   unless h.objs.isEmpty do throw s!"{h.objs.size} objects leaked"
