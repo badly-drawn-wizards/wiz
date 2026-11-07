@@ -215,7 +215,8 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
 
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
 arguments of `T`; a right-hand side that calls `f` makes it structurally recursive. -/
-def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R × Option (Term R)) := do
+def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
+    ElabM R (Term R × Term R × Option (Term R)) := do
   let info := cmd.info
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
@@ -239,15 +240,32 @@ def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R × Opti
     tyv ← instM B (Val.var ctx'.lvl)
     ctx' := ctx'.bind x A
   let mentions (stx : Syntax) : Bool := syntaxMentions name stx
-  let rc : Option RecCtx := if clauses.any (fun c => mentions c.rhs) then some { fn := name } else none
+  -- (a partial definition calls itself as a declared constant instead)
+  let recursive := !isPartial && clauses.any (fun c => mentions c.rhs)
+  -- structural recursion is on the first argument the first clause matches: put its
+  -- column first (the others follow in order, as the hypotheses take them)
+  let g ← getGlobals
+  let pos : Nat := if !recursive then 0 else
+    match clauses.head? with
+    | some c => (c.pats.findIdx? fun p => match patView g p with
+        | .ok (.ctor ..) => true
+        | _ => false).getD 0
+    | none => 0
+  let perm {α : Type} (xs : List α) : List α :=
+    match xs.drop pos with
+    | x :: rest => if pos == 0 then xs else x :: (xs.take pos ++ rest)
+    | [] => xs
+  let params := (tele.filterMap fun (x, bi, _, _) => if bi == .default then some x else none).toList
+  let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n } else none
   -- a recursive definition whose first argument has a size-variable size: compile to `sfix`
-  if rc.isSome then
+  if rc.isSome && pos == 0 then
     if let some x0 := vars.head? then
       if let .mu _ _ _ _ (.neutral (.local si) #[]) _ ← force ctx'.types[ctx'.lvl - x0 - 1]! then
         if si < ctx.lvl then
           let (t, v) ← elabSizedDef name cmd ctx tele ty si clauses
           return (t, v, none)
-  let body ← compileMatch ctx' vars clauses tyv rc true
+  let clauses := clauses.map fun c => { c with pats := perm c.pats }
+  let body ← compileMatch ctx' (perm vars) clauses tyv rc true
   solveSortConstraints
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body)
   let fullTy := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b) ty
@@ -260,7 +278,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R × Opti
     let saved ← get
     try
       modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
-      let body' ← compileMatch ctx' vars clauses tyv none true
+      let body' ← compileMatch ctx' (perm vars) clauses tyv none true
       solveSortConstraints
       let v' ← zonk 0 (tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body'))
       modify fun s => { s with globals := saved.globals }
@@ -470,6 +488,55 @@ def notationRule (tables : ParserTables) (cmd : Syntax) :
     let tables := tables.addLeading "term" { kind, prec, p }
     pure (tables, (kind, .node {} kind (items.map pat).toArray, rhs, vars))
 
+/-- Can the elaborator see that a type is inhabited? A partial definition is an axiom
+to the kernel, and this keeps such axioms from proving `False`. Conservative: Π types
+with an inhabited codomain, sorts, `Unit`, nonempty enumerations, pairs, data types with
+a constructor whose fields are inhabited (not indexed, no recursive fields), and types
+that some declared constant inhabits (`StrMap.empty : StrMap V`). -/
+partial def inhabitedTy (g : Globals R) (lvl fuel : Nat) (ty : Val R) (hyps : List Name := []) : Bool :=
+  if fuel == 0 then false else
+  let headOf (v : Val R) : Option Name := match whnf v with
+    | .neutral (.global n _) _ => some n
+    | .mu _ _ _ _ _ (some (n, _, _)) => some n
+    | _ => none
+  -- the variables bound so far inhabit their types (`IO A := (w : World) → A × World`)
+  let inh (v : Val R) : Bool :=
+    (match headOf v with
+     | some n => hyps.contains n
+     | none => false) || inhabitedTy g (lvl + 1) (fuel - 1) v hyps
+  -- a constant whose type ends in `T …`, with inhabited argument types
+  -- (the argument types are checked only shallowly: this search runs over all globals)
+  let rec witness (T : Name) (n : Nat) (v : Val R) : Bool :=
+    match whnf v with
+    | .pi _ _ _ dom cod =>
+      inhabitedTy g (lvl + n + 1) (min (fuel - 1) 2) dom hyps && witness T (n + 1) (Closure.inst g cod (Val.var (lvl + n)))
+    | v => headOf v == some T
+  let byConstant (T : Name) : Bool := g.order.any fun c => match g.find? c with
+    | some d => c != T && witness T 0 (eval g [] (d.type.instLevels d.levelParams (d.levelParams.map fun _ => .zero)))
+    | none => false
+  let rec fields (d : Val R) : Bool := match whnf d with
+    | .dret _ => true
+    | .darg _ S E => inh S && fields (vApp g E (Val.var lvl))
+    | _ => false
+  match whnf ty with
+  | .pi _ _ _ dom cod =>
+    inhabitedTy g (lvl + 1) (fuel - 1) (Closure.inst g cod (Val.var lvl)) ((headOf dom).toList ++ hyps)
+  | .sort _ | .unit _ | .qty | .size | .desc .. => true
+  | .enum ls => !ls.isEmpty
+  | .sigma _ _ A B => inh A && inh (Closure.inst g B (Val.var lvl))
+  | .mu _ I D _ _ hint =>
+    let byCtor := match whnf I, whnf D with
+      | .unit _, .darg _ S F => match whnf S with
+        | .enum ls => (List.range ls.length).any fun i => fields (vApp g F (.tag ls i))
+        | _ => fields D
+      | .unit _, _ => fields D
+      | _, _ => false
+    byCtor || (match hint with
+      | some (T, _, _) => byConstant T
+      | none => false)
+  | .neutral (.global T _) _ => byConstant T
+  | _ => false
+
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let s ← get
@@ -498,6 +565,48 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         modify fun s => { s with hovers := s.hovers ++ hv }
         addDeclChecked name levelParams ty val
       | .error e => report .error e.info e.msg
+  | "command.partial" | "command.mutual" =>
+    let defs := if cmd.isOfKind "command.partial" then #[cmd.getArg 1] else (cmd.getArg 1).args
+    let typeOf (d : Syntax) : Option Syntax :=
+      if d.isOfKind "command.defEqns" then some ((d.getArg 4).getArg 1) else (d.getArg 4).args[1]?
+    -- the signatures first, as axioms (so the bodies can call each other)
+    let mut g := s.globals
+    let mut sigs : Array (Syntax × Name × List Name) := #[]
+    for d in defs do
+      unless d.isOfKind "command.def" || d.isOfKind "command.defEqns" do
+        report .error d.info "only definitions can be partial"
+        return
+      let name := ((d.getArg 1).getId?).getD "_"
+      let levelParams := ((d.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
+      if g.contains name then
+        report .error (d.getArg 1).info s!"'{name}' has already been declared"
+        return
+      let some tyStx := typeOf d | report .error d.info "a partial definition needs a type"; return
+      match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) g (elabDeclTerms (d.getArg 3).args (some tyStx) none d.info) levelParams with
+      | .ok ((ty, _), _) =>
+        unless inhabitedTy g 0 16 (eval g [] (ty.instLevels levelParams (levelParams.map fun _ => .zero))) do
+          report .error (d.getArg 1).info s!"partial definition {name}: its type must be visibly inhabited (the kernel treats {name} as an axiom)"
+          return
+        g := g.insert { name, levelParams, type := ty, value := none }
+        sigs := sigs.push (d, name, levelParams)
+      | .error e => report .error e.info e.msg; return
+    -- then the bodies, checked by the kernel and kept as the implementations
+    for (d, name, levelParams) in sigs do
+      let body : ElabM R (Term R) :=
+        if d.isOfKind "command.defEqns" then do
+          let (_, v, _) ← elabDefEqns name d (isPartial := true)
+          pure v
+        else do
+          let (_, v) ← elabDeclTerms (d.getArg 3).args (typeOf d) (some (d.getArg 6)) d.info
+          pure (v.getD (.const name []))
+      match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) g body levelParams with
+      | .ok (v, hv) =>
+        modify fun s => { s with hovers := s.hovers ++ hv }
+        match addPartialImpl g name v with
+        | .ok g' => g := g'
+        | .error e => report .error d.info s!"kernel rejected {name}: {e}"; return
+      | .error e => report .error e.info e.msg; return
+    modify fun s => { s with globals := g }
   | "command.check" =>
     let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
       let (t, ty) ← Elab.infer {} (cmd.getArg 1)

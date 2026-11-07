@@ -61,6 +61,9 @@ inductive String where
 def String.append : String → String → String
   | .mk xs, .mk ys => .mk (List.append xs ys)
 infixr:67 " ++ " => List.append
+-- `x |> f` is `f x` (stage 13)
+def pipe {A B : Type} (a : A) (f : A → B) : B := f a
+infixl:10 " |> " => pipe
 
 -- Syntax trees, as one indexed family (descriptions have no nested inductives yet):
 -- index `true` is a tree, `false` a list of trees.

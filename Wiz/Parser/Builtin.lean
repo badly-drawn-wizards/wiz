@@ -221,6 +221,8 @@ continue onto a line starting at the command's column.
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] "where" [fields] |
 | `command.coinductive`        | like `structure`; the fields are observations |
 | `command.defEqns`            | "def" ident [".{" us "}"] [binders] ":" T [alts] |
+| `command.partial`            | "partial" command (a `def`) |
+| `command.mutual`             | "mutual" [command+] "end" (`def`s, all partial) |
 
 A constructor is `inductive.ctor`: "|" ident [binders] [":" T]. A field is
 `structure.field`: [quantity] ident ":" T, on its own line.
@@ -230,6 +232,9 @@ def commandLeading : List LeadingParser := [
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec false, ":=", term] },
   { kind := "command.defEqns", prec := maxPrec,
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec true, many1 matchAlt] },
+  -- stage 13: general recursion; a `mutual` block's definitions are partial too
+  { kind := "command.partial", prec := maxPrec, p := seqs ["partial", cat "command" 0] },
+  { kind := "command.mutual", prec := maxPrec, p := seqs ["mutual", many1 (cat "command" 0), "end"] },
   { kind := "command.axiom", prec := maxPrec,
     p := seqs ["axiom", ident, univParams, many (bracketedBinder false), typeSpec true] },
   { kind := "command.check", prec := maxPrec, p := seqs ["#check", term] },

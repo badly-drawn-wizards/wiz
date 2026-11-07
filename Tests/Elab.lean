@@ -830,6 +830,38 @@ def selfHostGroup : Group where
         ioRun prog ("\n".intercalate expected ++ "\n") }
   ]
 
+def languageGroup : Group where
+  name := "language"
+  exercise := "Stage 13"
+  cases := [
+    { name := "recursion on a later argument, with parameters before the colon", run := fun _ =>
+        okLib ("import Prelude\ndef addE (w : Nat) : List Nat → List Nat\n  | .nil => .cons w .nil\n" ++
+          "  | .cons x xs => .cons x (addE w xs)\ndef app2 : Nat → List Nat → List Nat → List Nat\n" ++
+          "  | k, .nil, ys => ys\n  | k, .cons x xs, ys => .cons (Nat.add x k) (app2 k xs ys)\n" ++
+          "#eval addE 9 (.cons 1 .nil)\n#eval app2 10 (.cons 1 .nil) (.cons 7 .nil)")
+          [".cons 1 (.cons 9 .nil)", ".cons 11 (.cons 7 .nil)"] },
+    { name := "a parameter must be passed unchanged", run := fun _ =>
+        failsLib "import Prelude\ndef bad (w : Nat) : List Nat → Nat\n  | .nil => w\n  | .cons x xs => bad x xs"
+          "must pass the parameter w unchanged" },
+    { name := "mutual (partial) definitions", run := fun _ =>
+        okLib ("import Prelude\nmutual\ndef isEven : Nat → Bool\n  | .zero => .true\n  | .succ n => isOdd n\n" ++
+          "def isOdd : Nat → Bool\n  | .zero => .false\n  | .succ n => isEven n\nend\n#eval isOdd 7\n" ++
+          "partial def down (n : Nat) : Nat := match n with\n  | .zero => 0\n  | .succ m => down m\n#eval down 5")
+          [".true", "0"] },
+    { name := "a partial definition needs an inhabited type", run := fun _ =>
+        failsLib "import Prelude\ninductive Void where\npartial def loop (n : Nat) : Void := loop n"
+          "must be visibly inhabited" },
+    { name := "match without an expected type", run := fun _ =>
+        okLib ("import Prelude\ndef f (b : Bool) (n : Nat) : Nat :=\n  let k := match b with\n    | .true => n\n" ++
+          "    | .false => 0;\n  Nat.add k 1\n#eval f .true 4") ["5"] },
+    { name := "tuple patterns", run := fun _ =>
+        okLib ("import Prelude\ndef sum3 : Nat × Nat × Nat → Nat\n  | (a, b, c) => Nat.add a (Nat.add b c)\n" ++
+          "def firstZero : Nat × Nat → Bool\n  | (.zero, _) => .true\n  | p => .false\n" ++
+          "#eval sum3 (1, 2, 3)\n#eval firstZero (0, 5)\n#eval firstZero (2, 5)") ["6", ".true", ".false"] },
+    { name := "the pipe operator", run := fun _ =>
+        okLib "import Prelude\n#eval 3 |> Nat.succ |> Nat.succ" ["5"] }
+  ]
+
 def stdGroup : Group where
   name := "std"
   exercise := "Stage 12a"

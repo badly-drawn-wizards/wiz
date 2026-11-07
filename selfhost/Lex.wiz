@@ -5,8 +5,8 @@ import Std
 -- input (an array of code points), so the parser can look ahead from anywhere.
 -- Whitespace and nested comments, identifiers (with dotted components), numbers,
 -- string literals with escapes, and the longest symbol from a token table (a symbol at
--- least as long as an identifier wins). Loops take a fuel argument, as recursion must
--- be structural.
+-- least as long as an identifier wins). The scanning loops are partial definitions:
+-- they terminate because the offset grows, which Wiz can't see.
 
 def Char.code : Char → Nat
   | .mk n => n
@@ -52,20 +52,15 @@ def slice : Nat → Array Nat → Nat → List Char
   | .zero, _, _ => .nil
   | .succ n, input, i => .cons (Char.mk (at input i)) (slice n input (i + 1))
 
-def big : Nat := 100000000
-
 -- after the end of the line
-def lineEnd : Nat → Array Nat → Nat → Nat
-  | .zero, _, j => j
-  | .succ fuel, input, j => match Nat.beq (at input j) 0 with
-    | .true => j
-    | .false => match Nat.beq (at input j) 10 with
-      | .true => j + 1
-      | .false => lineEnd fuel input (j + 1)
+partial def lineEnd (input : Array Nat) (j : Nat) : Nat :=
+  match Nat.beq (at input j) 0 with
+  | .true => j
+  | .false => match Nat.beq (at input j) 10 with
+    | .true => j + 1
+    | .false => lineEnd input (j + 1)
 -- after the end of a block comment, `d` levels deep (comments nest)
-def blockEnd : Nat → Array Nat → Nat → Nat → Nat
-  | .zero, _, j, _ => j
-  | .succ fuel, input, j, d =>
+partial def blockEnd (input : Array Nat) (j d : Nat) : Nat :=
     let c := at input j;
     let c2 := at input (j + 1);
     match Nat.beq c 0 with
@@ -73,39 +68,34 @@ def blockEnd : Nat → Array Nat → Nat → Nat → Nat
     | .false => match Bool.and (Nat.beq c 45) (Nat.beq c2 47) with
       | .true => match Nat.beq d 1 with
         | .true => j + 2
-        | .false => blockEnd fuel input (j + 2) (d - 1)
+        | .false => blockEnd input (j + 2) (d - 1)
       | .false => match Bool.and (Nat.beq c 47) (Nat.beq c2 45) with
-        | .true => blockEnd fuel input (j + 2) (d + 1)
-        | .false => blockEnd fuel input (j + 1) d
+        | .true => blockEnd input (j + 2) (d + 1)
+        | .false => blockEnd input (j + 1) d
 -- the offset of the next significant character
-def skipWs : Nat → Array Nat → Nat → Nat
-  | .zero, _, i => i
-  | .succ fuel, input, i =>
+partial def skipWs (input : Array Nat) (i : Nat) : Nat :=
     let c := at input i;
     let c2 := at input (i + 1);
     match isSpace c with
-    | .true => skipWs fuel input (i + 1)
+    | .true => skipWs input (i + 1)
     | .false => match Bool.and (Nat.beq c 45) (Nat.beq c2 45) with
-      | .true => skipWs fuel input (lineEnd big input (i + 2))
+      | .true => skipWs input (lineEnd input (i + 2))
       | .false => match Bool.and (Nat.beq c 47) (Nat.beq c2 45) with
-        | .true => skipWs fuel input (blockEnd big input (i + 2) 1)
+        | .true => skipWs input (blockEnd input (i + 2) 1)
         | .false => i
 
 -- the end of an identifier (a `.` continues it if an identifier can start after it)
-def identEnd : Nat → Array Nat → Nat → Nat
-  | .zero, _, j => j
-  | .succ fuel, input, j =>
-    let c := at input j;
-    match isIdRest c with
-    | .true => identEnd fuel input (j + 1)
-    | .false => match Bool.and (Nat.beq c 46) (isIdStart (at input (j + 1))) with
-      | .true => identEnd fuel input (j + 1)
-      | .false => j
-def digitsEnd : Nat → Array Nat → Nat → Nat
-  | .zero, _, j => j
-  | .succ fuel, input, j => match isDigit (at input j) with
-    | .true => digitsEnd fuel input (j + 1)
+partial def identEnd (input : Array Nat) (j : Nat) : Nat :=
+  let c := at input j;
+  match isIdRest c with
+  | .true => identEnd input (j + 1)
+  | .false => match Bool.and (Nat.beq c 46) (isIdStart (at input (j + 1))) with
+    | .true => identEnd input (j + 1)
     | .false => j
+partial def digitsEnd (input : Array Nat) (j : Nat) : Nat :=
+  match isDigit (at input j) with
+  | .true => digitsEnd input (j + 1)
+  | .false => j
 
 def reverse : List Char → List Char → List Char
   | .nil, acc => acc
@@ -115,24 +105,22 @@ def reverse : List Char → List Char → List Char
 inductive StrLit where
   | ok (s : List Char) (stop : Nat)
   | err (msg : String)
-def readStr : Nat → Array Nat → Nat → List Char → StrLit
-  | .zero, _, _, _ => .err "unterminated string literal"
-  | .succ fuel, input, j, acc =>
+partial def readStr (input : Array Nat) (j : Nat) (acc : List Char) : StrLit :=
     let c := at input j;
     match Nat.beq c 0 with
     | .true => .err "unterminated string literal"
     | .false => match Nat.beq c 34 with
       | .true => .ok (reverse acc .nil) (j + 1)
       | .false => match Nat.beq c 92 with
-        | .false => readStr fuel input (j + 1) (.cons (Char.mk c) acc)
+        | .false => readStr input (j + 1) (.cons (Char.mk c) acc)
         | .true =>
           let e := at input (j + 1);
           match Nat.beq e 110 with
-          | .true => readStr fuel input (j + 2) (.cons (Char.mk 10) acc)
+          | .true => readStr input (j + 2) (.cons (Char.mk 10) acc)
           | .false => match Nat.beq e 116 with
-            | .true => readStr fuel input (j + 2) (.cons (Char.mk 9) acc)
+            | .true => readStr input (j + 2) (.cons (Char.mk 9) acc)
             | .false => match Bool.or (Nat.beq e 92) (Nat.beq e 34) with
-              | .true => readStr fuel input (j + 2) (.cons (Char.mk e) acc)
+              | .true => readStr input (j + 2) (.cons (Char.mk e) acc)
               | .false => match Nat.beq e 0 with
                 | .true => .err "unterminated string literal"
                 | .false => .err (String.append "unknown escape sequence \\" (String.mk (.cons (Char.mk e) .nil)))
@@ -170,17 +158,17 @@ def readToken (tokens : List String) (input : Array Nat) (i : Nat) : TokInfo :=
   let sym := longest tokens input i .nil;
   match isIdStart c with
   | .true =>
-    let j := identEnd big input i;
+    let j := identEnd input i;
     -- a symbol token at least as long as the identifier wins (e.g. a keyword)
     match Bool.and (Bool.not (isNil sym)) (Nat.le (j - i) (len sym)) with
     | .true => TokInfo.mk (Tok.atom (String.mk sym)) i (i + len sym)
     | .false => TokInfo.mk (Tok.ident (String.mk (slice (j - i) input i))) i j
   | .false => match isDigit c with
     | .true =>
-      let j := digitsEnd big input i;
+      let j := digitsEnd input i;
       TokInfo.mk (Tok.num (String.mk (slice (j - i) input i))) i j
     | .false => match Nat.beq c 34 with
-      | .true => match readStr big input (i + 1) .nil with
+      | .true => match readStr input (i + 1) .nil with
         | .ok s j => TokInfo.mk (Tok.str (String.mk s)) i j
         | .err m => TokInfo.mk (Tok.error m) i i
       | .false => match sym with
@@ -189,18 +177,16 @@ def readToken (tokens : List String) (input : Array Nat) (i : Nat) : TokInfo :=
         | .cons _ _ => TokInfo.mk (Tok.atom (String.mk sym)) i (i + len sym)
 
 -- all the tokens, as `kind:text` lines (reversed)
-def lex : Nat → List String → Array Nat → Nat → List String → List String
-  | .zero, _, _, _, acc => acc
-  | .succ fuel, tokens, input, i, acc =>
-    let j := skipWs big input i;
+partial def lex (tokens : List String) (input : Array Nat) (i : Nat) (acc : List String) : List String :=
+    let j := skipWs input i;
     match Nat.lt j (Array.size input) with
     | .false => acc
     | .true => match readToken tokens input j with
       | .mk t _ stop => match t with
-        | .atom s => lex fuel tokens input stop (.cons (String.append "atom:" s) acc)
-        | .ident s => lex fuel tokens input stop (.cons (String.append "ident:" s) acc)
-        | .num s => lex fuel tokens input stop (.cons (String.append "num:" s) acc)
-        | .str s => lex fuel tokens input stop (.cons (String.append "str:" s) acc)
+        | .atom s => lex tokens input stop (.cons (String.append "atom:" s) acc)
+        | .ident s => lex tokens input stop (.cons (String.append "ident:" s) acc)
+        | .num s => lex tokens input stop (.cons (String.append "num:" s) acc)
+        | .str s => lex tokens input stop (.cons (String.append "str:" s) acc)
         | .error m => .cons (String.append "error:" m) acc
 
 def printAll : List String → IO Unit
@@ -210,4 +196,4 @@ def printAll : List String → IO Unit
     printAll ss
 
 def tokenize (tokens : List String) (input : String) : List String :=
-  lex big tokens (String.codes input) 0 .nil
+  lex tokens (String.codes input) 0 .nil

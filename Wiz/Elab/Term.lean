@@ -196,13 +196,24 @@ inductive PatView where
   | wild
   /-- a constructor pattern: optional type name (from `T.c`), constructor, arguments -/
   | ctor (T : Option Name) (c : Name) (args : List Syntax)
+  /-- a pair pattern `(a, b)` (`(a, b, c)` is `(a, (b, c))`) -/
+  | tuple (a b : Syntax)
+  deriving Inhabited
 
 def holeStx : Syntax := .node {} "term.hole" #[.atom {} "_"]
 
-/-- Recursion context: the function's name, and which field levels have hypotheses. -/
+/-- Recursion context: the function's name, and which field levels have hypotheses.
+A recursive call `f p… a…` passes the explicit parameters (`params`, the binders before
+the colon) unchanged, and recurses on its argument number `pos` (after the parameters);
+its other arguments go to the hypothesis. -/
 structure RecCtx where
   fn : Name
   ihs : List (Lvl × Lvl) := []
+  params : List Name := []
+  pos : Nat := 0
+  /-- the number of matched arguments: a call with no more arguments than that leaves
+  the parameters out (they are fixed anyway) -/
+  cols : Nat := 0
 
 partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
   let ctorOf (n : Name) : Option (Name × Name) :=
@@ -211,6 +222,14 @@ partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
     | _ => none
   match stx.kind with
   | "term.paren" => patView g (stx.getArg 1)
+  | "term.tuple" =>
+    let rest := (stx.getArg 3).args.filter (!· matches .atom ..)
+    match rest[0]? with
+    | none => .error "invalid tuple pattern"
+    | some b =>
+      let b := if rest.size == 1 then b else
+        .node stx.info "term.tuple" #[.atom {} "(", b, .atom {} ",", .node {} "null" (rest.extract 1 rest.size), .atom {} ")"]
+      pure (.tuple (stx.getArg 1) b)
   | "term.hole" => pure .wild
   | "term.dotIdent" => pure (.ctor none ((stx.getArg 1).getId?.getD "_") [])
   | "term.ident" =>
@@ -259,7 +278,13 @@ partial def rewriteRecCalls (rc : RecCtx) (binds : List (Name × VTy R × Val R)
   let isF (h : Syntax) := h.isOfKind "term.ident" && (h.getArg 0).getId? == some rc.fn
   if stx.isOfKind "term.app" && isF (stx.getArg 0) then
     let args := (stx.getArg 1).args
-    let some a := args[0]? | throw s!"recursive call of {rc.fn} without arguments"
+    let np := if args.size ≤ rc.cols then 0 else rc.params.length
+    for p in rc.params.take np, i in [0:np] do
+      let ok := match args[i]? with
+        | some a => a.isOfKind "term.ident" && (a.getArg 0).getId? == some p
+        | none => false
+      unless ok do throw s!"recursive call of {rc.fn} must pass the parameter {p} unchanged"
+    let some a := args[np + rc.pos]? | throw s!"recursive call of {rc.fn} without its structural argument"
     let rec unparen (s : Syntax) : Syntax := if s.isOfKind "term.paren" then unparen (s.getArg 1) else s
     let a := unparen a
     -- `y`, or `k e…` for an infinitary field `k`
@@ -274,7 +299,8 @@ partial def rewriteRecCalls (rc : RecCtx) (binds : List (Name × VTy R × Val R)
     let some ty := ihType ihl | throw "internal error: hypothesis without a type"
     let ihName := "_ih_" ++ y
     let ident : Syntax := .node a.info "term.ident" #[.ident a.info ihName]
-    let rest ← (kargs ++ args.extract 1 args.size).mapM (rewriteRecCalls rc binds ihType ·)
+    let others := args.extract np (np + rc.pos) ++ args.extract (np + rc.pos + 1) args.size
+    let rest ← (kargs ++ others).mapM (rewriteRecCalls rc binds ihType ·)
     let restStx := rest.map (·.1)
     let newBinds := [(ihName, ty, (.neutral (.local ihl) #[] : Val R))] ++ rest.toList.flatMap (·.2)
     let stx' := if restStx.isEmpty then ident
@@ -718,7 +744,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let views ← cl.pats.mapM fun p => match patView g p with
     | .ok v => pure v
     | .error e => throwAt p.info e
-  let some k := views.findIdx? (· matches .ctor ..) | do
+  let some k := views.findIdx? (fun v => v matches .ctor .. || v matches .tuple ..) | do
     -- all variables: bind them and elaborate the right-hand side
     let mut binds := cl.binds
     for v in views, x in vars do
@@ -739,6 +765,28 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       lvl := lvl - 1
       t := .letE n (.qlit QuantitySyntax.explicitDefault) (quote g lvl ty) (quote g lvl val) t
     return t
+  -- a pair pattern: match the components, as two new (defined) variables
+  if views[k]! matches .tuple .. then
+    let x := vars[k]!
+    let .sigma _ _ A B ← force (typeOf x)
+      | throwAt (cl.pats[k]!).info s!"a tuple pattern needs a pair, not {← showVal ctx (typeOf x)}"
+    let xv ← evalIn ctx (varTm x)
+    let v1 := vFst xv
+    let ty2 := Closure.inst g B v1
+    let v2 := vSnd xv
+    let ctx2 := (ctx.define "fst✝" A v1).define "snd✝" ty2 v2
+    let vars' := vars.take k ++ [ctx.lvl, ctx.lvl + 1] ++ vars.drop (k + 1)
+    let clauses' ← clauses.mapM fun c => do
+      let p := c.pats[k]!
+      let (ps, binds) ← match patView g p with
+        | .ok (.tuple a b) => pure ([a, b], c.binds)
+        | .ok (.var n) => pure ([holeStx, holeStx], c.binds ++ [(n, typeOf x, xv)])
+        | .ok .wild => pure ([holeStx, holeStx], c.binds)
+        | _ => throwAt p.info "expected a tuple pattern"
+      pure { c with pats := c.pats.take k ++ ps ++ c.pats.drop (k + 1), binds }
+    let body ← compileMatch ctx2 vars' clauses' goal rc top
+    let w : Term R := .qlit QuantitySyntax.explicitDefault
+    return .letE "fst✝" w (q A) (q v1) (.letE "snd✝" w (quote g (ctx.lvl + 1) ty2) (quote g (ctx.lvl + 1) v2) body)
   if rc.isSome && top && k != 0 then
     throwAt cl.rhs.info "structural recursion: the first argument must be matched first"
   let x := vars[k]!
@@ -788,7 +836,12 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       pure ((List.range nΞ).foldr (fun k acc => .lam s!"i{k}" acc) (.lam "x" body))
   -- the motive's universe
   let tys := ctx.types.reverse.toArray
-  let some v := typeSort? g tys (← evalIn ctx G)
+  let Gv ← evalIn ctx G
+  -- a type still to be found (an inferred `match`) is taken to be in `Type`
+  let unknown := match whnf Gv with
+    | .neutral (.mvar _) _ => true
+    | _ => false
+  let some v := (typeSort? g tys Gv).orElse fun _ => if unknown then some (.succ .zero) else none
     | throwAt ctx.info "could not determine the universe of the match's type"
   let elimName := T ++ (if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn")
   let some ed := g.find? elimName | throwAt ctx.info s!"{elimName} is missing"
@@ -911,6 +964,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
             cls := cls ++ [{ cl' with pats := before ++ sub ++ after, binds := binds }]
           | .wild =>
             cls := cls ++ [{ cl' with pats := before ++ (fieldInfos.map fun _ => holeStx) ++ after }]
+          | .tuple .. => throwAt (cl'.pats[k]!).info "a tuple pattern needs a pair"
         if cls.isEmpty then throwAt ctx.info s!"missing case for constructor {c}"
         -- reverted variables are re-introduced at new levels: their hypotheses follow them
         let moved := rs.zip rsLvls.toList
@@ -1177,6 +1231,17 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       let g ← getGlobals
       return (.cast (quote g ctx.lvl X) (quote g ctx.lvl Y) e t, Y)
     | _ => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
+  | "term.match" =>
+    -- stage 13: the type is found from the alternatives (a metavariable, in `Type`)
+    -- (not depending on the scrutinised variables: the motive abstracts them, which
+    -- would leave the metavariable outside the pattern fragment)
+    let scrut := (stx.getArg 1).args.toList.filterMap fun a =>
+      if a.isOfKind "term.ident" then (a.getArg 0).getId? else none
+    let firstIx (n : Name) : Option Nat := ctx.names.findIdx? (· == n)
+    let hidden := scrut.filterMap firstIx
+    let ctx' := { ctx with bound := ctx.bound.zipIdx.map fun (b, i) => b && !hidden.contains i }
+    let ty ← evalIn ctx (← freshMeta ctx' "the type of this match")
+    return (← check ctx stx ty, ty)
   | "term.letPair" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
   | "term.omega" => return (← elabQtyLit ctx stx "ω", .qty)
