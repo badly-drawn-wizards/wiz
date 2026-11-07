@@ -1170,14 +1170,15 @@ partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
 
 end MTm
 
-/-- What the Lean kernel says about a closed term: its type (printed like the Wiz
-kernel prints) or `error`. -/
-/-- (A function, so that it is computed in the test, not when the module starts.) -/
+/-- The globals of the differential test, in the Lean kernel. (A function, so that it
+is computed in the test, not when the module starts.) -/
 def leanGlobals (_ : Unit := ()) : Globals ZeroOneMany :=
   MTm.globalDefs.foldl (fun g (n, v, ty) => match addDecl g { name := n, type := ty.toTerm, value := v.map MTm.toTerm } with
     | .ok g' => g'
     | .error _ => g) {}
 
+/-- What the Lean kernel says about a closed term: its type (printed like the Wiz
+kernel prints) or `error`. -/
 def leanVerdict (t : MTm) : String :=
   let g := leanGlobals ()
   match infer (R := ZeroOneMany) { globals := g } t.toTerm with
