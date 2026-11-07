@@ -104,7 +104,10 @@ partial def lower (env : List Binding) (e : ETerm) (k : Cont) : LowerM Body := d
     | none => throw s!"lower: unbound variable {i}"
   | .global n => do
     match (← read).natives.get? n with
-    | some op => bind (if RVal.nativeArity op == 0 then .lit 0 else .pap (nativeWrapper op) #[]) k
+    | some op =>
+      -- `nat.zero` is a number; a foreign constant is a call
+      bind (if op == "nat.zero" then .lit 0 else if RVal.nativeArity op == 0 then .prim op #[]
+        else .pap (nativeWrapper op) #[]) k
     | none =>
       let a := ((← read).arities.get? n).getD 0
       bind (if a == 0 then .fap n #[] else .pap n #[]) k

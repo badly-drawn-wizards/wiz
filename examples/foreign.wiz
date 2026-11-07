@@ -1,0 +1,14 @@
+import IO
+foreign_type FILE (finalizer := "fclose")
+extern "fopen" (header := "stdio.h") fopen : String → String → IO FILE
+extern "fputs" (header := "stdio.h") fputs : String → FILE → IO Nat
+def fill : Nat → Bytes → Bytes
+  | .zero, b => b
+  | .succ n, b => Bytes.push (fill n b) (65 + n)
+def main : IO Unit := do
+  f ← fopen "/tmp/claude-1000/wiz_ffi_test.txt" "w";
+  n ← fputs "written by wiz, closed by a finalizer\n" f;
+  s ← IO.readFile "/tmp/claude-1000/wiz_ffi_test.txt";
+  IO.print s;
+  IO.println (Bytes.toString (fill 5 Bytes.empty));
+  IO.println (Nat.toString (Bytes.size (Bytes.ofString "λx")))

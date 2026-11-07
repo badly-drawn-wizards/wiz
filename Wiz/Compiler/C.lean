@@ -16,7 +16,7 @@ namespace Wiz.C
 open IR
 
 /-- The runtime, embedded in the compiler. (Lake does not track `include_str`: after
-editing `runtime/wiz.c`, change this file too, e.g. this counter: 4.) -/
+editing `runtime/wiz.c`, change this file too, e.g. this counter: 7.) -/
 def runtime : String := include_str "../../runtime/wiz.c"
 
 /-- A C identifier for a Wiz name: letters and digits stay, anything else is `_xx`. -/
@@ -86,6 +86,8 @@ def ctype : Char → String
   | 'f' => "double"
   | 's' => "const char *"
   | 'b' => "int"
+  | 'p' => "void *"
+  | 'w' => "wiz_val"
   | _ => "void"
 
 /-- C glue for the foreign functions: their headers (or prototypes), and a marshalling
@@ -111,6 +113,8 @@ def glue (keys : Array Name) : String := Id.run do
       | 'f' => body := body ++ s!"  double c{i} = wiz_in_f64(a{i});\n"; cargs := cargs.push s!"c{i}"
       | 's' => body := body ++ s!"  char *c{i} = wiz_in_string(a{i});\n"; cargs := cargs.push s!"c{i}"
       | 'b' => body := body ++ s!"  int c{i} = wiz_in_bool(a{i});\n"; cargs := cargs.push s!"c{i}"
+      | 'p' => body := body ++ s!"  void *c{i} = wiz_in_ptr(a{i});\n"; cargs := cargs.push s!"c{i}"
+      | 'w' => cargs := cargs.push s!"a{i}"
       | _ => body := body ++ s!"  wiz_dec(a{i});\n"
     let call := s!"{sig.cname}({", ".intercalate cargs.toList})"
     body := body ++ match sig.result with
@@ -119,9 +123,15 @@ def glue (keys : Array Name) : String := Id.run do
       | 'f' => s!"  wiz_val r = wiz_out_f64({call});\n"
       | 's' => s!"  wiz_val r = wiz_out_string({call});\n"
       | 'b' => s!"  wiz_val r = wiz_out_bool({call});\n"
+      | 'p' =>
+        let fin := if sig.fin == "" then "NULL" else s!"(void (*)(void *)){sig.fin}"
+        s!"  wiz_val r = wiz_out_ptr((void *){call}, {fin});\n"
+      | 'w' => s!"  wiz_val r = {call};\n"
       | _ => s!"  {call};\n  wiz_val r = WIZ_BOX(0);\n"
     for k in sig.params, i in [0:n] do
       if k == 's' then body := body ++ s!"  free(c{i});\n"
+      -- a foreign pointer is borrowed for the call: release it after
+      if k == 'p' then body := body ++ s!"  wiz_dec(a{i});\n"
     body := body ++ (if sig.io then "  return wiz_io_result(r, w);\n" else "  return r;\n")
     out := out ++ s!"WIZ_API wiz_val {externWrapper key}({", ".intercalate params}) {lb}\n{body}{rb}\n"
   pure (String.join (includes.toList.map (s!"#include <{·}>\n")) ++ out)

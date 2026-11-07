@@ -708,6 +708,16 @@ def ffiGroup : Group where
         ioFails "import IO\nglue bad (n : Nat) : Nat := \"return system(n);\"" "unknown C function system" },
     { name := "glue: types are checked", run := fun _ =>
         ioFails "import IO\nglue bad (n : Nat) : String := \"return n + 1;\"" "expected a string" },
+    { name := "foreign pointers are released by their finalizer", run := fun _ =>
+        ioRun ("import IO\nforeign_type FILE (finalizer := \"fclose\")\n" ++
+          "extern \"fopen\" (header := \"stdio.h\") fopen : String → String → IO FILE\n" ++
+          "extern \"fputs\" (header := \"stdio.h\") fputs : String → FILE → IO Nat\n" ++
+          "def main : IO Unit := do\n  f ← fopen \"/tmp/wiz_test_fin.txt\" \"w\";\n  n ← fputs \"closed\\n\" f;\n" ++
+          "  s ← IO.readFile \"/tmp/wiz_test_fin.txt\";\n  IO.print s") "closed\n" },
+    { name := "byte buffers", run := fun _ =>
+        ioRun ("import IO\ndef fill : Nat → Bytes → Bytes\n  | .zero, b => b\n  | .succ n, b => Bytes.push (fill n b) (65 + n)\n" ++
+          "def main : IO Unit := do\n  IO.println (Bytes.toString (fill 3 Bytes.empty));\n" ++
+          "  IO.println (Nat.toString (Bytes.size (Bytes.ofString \"λx\")))") "ABC\n3\n" },
     { name := "foreign types are checked", run := fun _ =>
         ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
   ]

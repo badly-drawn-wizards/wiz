@@ -38,3 +38,13 @@ extern "wiz_nat_show" Nat.toString : Nat → String
 -- Output.
 extern "wiz_io_println" IO.println : String → IO Unit
 extern "wiz_io_print" IO.print : String → IO Unit
+extern "wiz_io_read_file" IO.readFile : String → IO String
+
+-- Byte buffers: functional, but `push` updates in place when the buffer is unique.
+axiom Bytes : Type
+extern "wiz_bytes_empty" Bytes.empty : Bytes
+extern "wiz_bytes_push" Bytes.push : Bytes → Nat → Bytes
+extern "wiz_bytes_size" Bytes.size : Bytes → Nat
+extern "wiz_bytes_get" Bytes.get : Bytes → Nat → Nat
+extern "wiz_bytes_of_string" Bytes.ofString : String → Bytes
+extern "wiz_bytes_to_string" Bytes.toString : Bytes → String

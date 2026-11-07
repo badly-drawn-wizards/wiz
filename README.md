@@ -834,4 +834,21 @@ checked code is emitted into the program, with its headers, and bound like an
 |-----|--------------------|------------------------------------------|
 | 9.2 | `FFI/CGlue.lean`   | `expr`: types of glue expressions        |
 
-Next: foreign pointers with finalizers, and byte buffers.
+### 9d: foreign pointers, finalizers, buffers ✅
+
+```
+foreign_type FILE (finalizer := "fclose")
+extern "fopen" (header := "stdio.h") fopen : String → String → IO FILE
+extern "fputs" (header := "stdio.h") fputs : String → FILE → IO Nat
+```
+
+* `foreign_type T (finalizer := "f")` declares an opaque type of C pointers. A pointer
+  returned by a foreign function is wrapped in a reference-counted object, and `f` runs
+  when the last reference goes. An argument is borrowed during the call and released
+  after it. Glue code can pass foreign pointers on but not look inside them.
+* `Bytes` (in `lib/IO.wiz`) is a byte buffer whose `push` updates in place when the
+  buffer is unique (the same idea as Perceus reuse). It has `IO.readFile` for input.
+  Runtime helpers like these take Wiz values as they are (the `w` marshalling kind).
+
+The FFI is complete for now. Not done yet: callbacks (C calling Wiz closures), structs
+by value, and mapping more of a header's pointer types onto foreign types automatically.
