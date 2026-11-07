@@ -128,13 +128,27 @@ def builtinApp? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Name × Arr
   if (lookupLocal ctx n).isSome || (← getGlobals).contains n then return none
   return some (n, (stx.getArg 1).args)
 
+/-- The term for a string literal, `String.mk [Char.mk n, …]` with numerals `n`. The
+prelude's names are fixed here. -/
+def mkStringLit (str : String) (us : List Level := []) : ElabM R (Term R) := do
+  let S := ((← get).builtins.lookup "string").getD "String"
+  let charTy : Term R := .const "Char" []
+  let chr (c : Char) : Term R := .app (.const "Char.mk" []) (.natLit c.toNat)
+  let list := str.toList.foldr (fun c t => Term.app (.app (.app (.const "List.cons" []) charTy) (chr c)) t)
+    (.app (.const "List.nil" []) charTy)
+  pure (.app (.const (S ++ ".mk") us) list)
+
 /-- Expand a macro at `stx`, with a fresh scope. -/
 def expand? (stx : Syntax) : ElabM R (Option Syntax) := do
   let s ← get
   let rules := s.macros.map fun (kind, pattern, template, vars) => ({ kind, pattern, template, vars } : MacroRule)
   match expandMacro? rules stx s.nextScope with
   | some stx' => modify (fun s => { s with nextScope := s.nextScope + 1 }); pure (some stx')
-  | none => pure none
+  | none =>
+    let some f := s.procMacros.lookup stx.kind | pure none
+    match s.runProcMacro f stx s.nextScope with
+    | .ok (stx', next) => modify (fun s => { s with nextScope := next }); pure (some stx')
+    | .error e => throwAt stx.info e
 
 /-- Unify, turning a failure into a readable type mismatch at `stx`.
 
@@ -388,8 +402,7 @@ where
         match s.builtins.lookup "nat" with
         | some N =>
           if N != T then throwAt ctx.info s!"numerals are for {N}, not {T}" else
-          let n := ((stx.getArg 0).getNat?).getD 0
-          pure ((List.range n).foldl (fun t _ => Term.app (.const (T ++ ".succ") us) t) (.const (T ++ ".zero") us))
+          pure (.natLit ((stx.getArg 0).getNat?.getD 0))
         | none => throwAt ctx.info "numerals need `builtin nat := …`"
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.str" =>
@@ -400,15 +413,7 @@ where
         match s.builtins.lookup "string" with
         | some S =>
           if S != T then throwAt ctx.info s!"string literals are for {S}, not {T}" else
-          let str := ((stx.getArg 0).getStr?).getD ""
-          let N := (s.builtins.lookup "nat").getD "Nat"
-          let num (n : Nat) : Term R :=
-            (List.range n).foldl (fun t _ => Term.app (.const (N ++ ".succ") []) t) (.const (N ++ ".zero") [])
-          let charTy : Term R := .const "Char" []
-          let chr (c : Char) : Term R := .app (.const "Char.mk" []) (num c.toNat)
-          let list := str.toList.foldr (fun c t => Term.app (.app (.app (.const "List.cons" []) charTy) (chr c)) t)
-            (.app (.const "List.nil" []) charTy)
-          pure (.app (.const (T ++ ".mk") us) list)
+          mkStringLit (((stx.getArg 0).getStr?).getD "") us
         | none => throwAt ctx.info "string literals need `builtin string := …`"
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.rfl" =>
@@ -1075,7 +1080,8 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   for s in scruts do
     let (t, ty) ← infer ctx s
     ts := ts.push t
-    binders := binders.push ("x", quote g ctx.lvl ty)
+    -- an inaccessible name, so the user's own `x` isn't shadowed
+    binders := binders.push ("x✝", quote g ctx.lvl ty)
   -- abstract the scrutinees, last first
   let mut absGoal := goalTm
   for t in ts.reverse do absGoal := absGoal.abstract t
@@ -1092,6 +1098,33 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   let lam := (binders.toList.map (·.1)).foldr .lam body
   let piTy := binders.toList.foldr (fun (n, A) acc => Term.pi n .default (.qlit QuantitySyntax.explicitDefault) A acc) goalTm
   pure (ts.foldl .app (.ann lam piTy))
+
+/-- **Exercise 6.2.** Elaborate the body of a quotation to a term that builds it as a
+Wiz `Syntax` value: `SyntaxF.missing`, `SyntaxF.atom "v"`, `SyntaxF.node "k" args` with
+`args` a chain of `SyntaxF.cons`/`SyntaxF.nil`, and `SyntaxF.ident "x✝"`: an
+identifier gets the `✝` mark (its scope is chosen when the macro runs) unless it is
+dotted or under one of the `unscopedParents`, as in `instantiate`. An antiquotation
+`$x` is the local `x`, checked against `Syntax`. `mkStringLit` builds strings. -/
+partial def elabQuote (ctx : LocalCtx R) (syntaxTy : VTy R) (parent : Name) (stx : Syntax) :
+    ElabM R (Term R) := do
+  --<sol
+  let c (n : Name) : Term R := .const ("SyntaxF." ++ n) []
+  if let some x := antiquotName? stx then
+    return ← check ctx (.node stx.info "term.ident" #[.ident stx.info x]) syntaxTy
+  match stx with
+  | .missing => pure (c "missing")
+  | .atom _ v => pure (.app (c "atom") (← mkStringLit v))
+  | .ident _ n =>
+    let n := if unscopedParents.contains parent || n.contains '.' then n else n ++ "✝"
+    pure (.app (c "ident") (← mkStringLit n))
+  | .node _ k args =>
+    let mut list := c "nil"
+    for a in args.reverse do
+      list := .app (.app (c "cons") (← elabQuote ctx syntaxTy k a)) list
+    pure (.app (.app (c "node") (← mkStringLit k)) list)
+  --|ex
+  --| sorry
+  --sol>
 
 /-- Infer the type of `stx`. -/
 partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) := do
@@ -1266,7 +1299,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       let ty := eval (← getGlobals) ctx.env (.const S [])
       return (← check ctx stx ty, ty)
     | none => throwAt ctx.info "string literals need `builtin string := …`"
-  | k => throwAt ctx.info s!"no elaborator for syntax kind {k}"
+  | k =>
+    if k.startsWith "quote." then
+      let syntaxTy ← evalIn {} (.const "Syntax" [])
+      return (← elabQuote ctx syntaxTy "" (stx.getArg 3), syntaxTy)
+    throwAt ctx.info s!"no elaborator for syntax kind {k}"
 
 end
 

@@ -20,6 +20,7 @@ import Wiz.Elab.Basic
 import Wiz.Elab.Unify
 import Wiz.Elab.Zonk
 import Wiz.Elab.Term
+import Wiz.Elab.ProcMacro
 import Wiz.Elab.Command
 import Wiz.Frontend.Frontend
 import Wiz.Compiler.Erase

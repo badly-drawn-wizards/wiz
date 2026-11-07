@@ -147,6 +147,8 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .nu _ _ D i s none => app (if s matches .szInf then "ν" else s!"ν^{s.prettyPrec names 1024}") [D, i]
   | .out x => app "out" [x]
   | .coit _ _ _ S st i s => app "coit" [S, st, i, s]
+  | .natLit n => toString n
+  | .natOp op args => app s!"<{op}>" args.toList
   | .transp _ _ P p _ e =>
     paren (prec > 1022)
       s!"transp {P.prettyPrec names maxArg} {p.prettyPrec names maxArg} {e.prettyPrec names maxArg}"

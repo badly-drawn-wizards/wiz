@@ -53,6 +53,22 @@ def vSnd : Val R → Val R
   --| | v => sorry
   --sol>
 
+/-- The arity of a registered operation on numbers. -/
+def natOpArity : Name → Nat
+  | "nat.zero" => 0
+  | "nat.succ" | "nat.pred" => 1
+  | _ => 2
+
+/-- The value of a global registered as an operation on numbers (`builtin nat.add := …`):
+`nat.zero` is the literal `0`, and an operation is a closure whose body is a
+`Term.natOp` on its arguments, so it computes natively when they are literals. -/
+def vBuiltin? (g : Globals R) (n : Name) : Option (Val R) := do
+  let k ← g.builtinKey? n
+  if k == "nat" || k == "string" || k == "nat.beq" then none
+  else if k == "nat.zero" then some (.natLit 0)
+  else if natOpArity k == 1 then some (.lam "a" (.mk [] (.natOp k #[.var 0])))
+  else some (.lam "a" (.mk [] (.lam "b" (.natOp k #[.var 1, .var 0]))))
+
 /-- `absurd` is always stuck: the empty type has no constructors. -/
 def vAbsurd (m : Val R) : Val R → Val R
   | .neutral h sp => .neutral h (sp.push (.absurd m))
@@ -82,9 +98,11 @@ compute).
 partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --<sol
   | .var ix => env[ix]!
-  | .const n us => match g.find? n with
+  | .const n us => if let some v := vBuiltin? g n then v else match g.find? n with
     | some { value := some v, levelParams, .. } => eval g [] (v.instLevels levelParams us)
     | _ => .neutral (.global n us) #[]
+  | .natLit n => .natLit n
+  | .natOp op args => vNatOp g op (args.map (eval g env))
   | .sort l => .sort l
   | .pi x bi q dom cod => .pi x bi (eval g env q) (eval g env dom) (.mk env cod)
   | .lam x body => .lam x (.mk env body)
@@ -146,7 +164,10 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
     .coit l (eval g env I) (eval g env D) (eval g env S) (eval g env st) (eval g env i) (eval g env s)
   --|ex
   --| | .var ix => sorry
-  --| | .const n us => sorry
+  --| -- (given) numerals; `vBuiltin?` registered operations
+  --| | .natLit n => .natLit n
+  --| | .natOp op args => vNatOp g op (args.map (eval g env))
+  --| | .const n us => if let some v := vBuiltin? g n then v else sorry
   --| | .sort l => sorry
   --| | .pi x bi q dom cod => sorry
   --| | .lam x body => sorry
@@ -307,12 +328,42 @@ partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec D : Val R) : Va
   --| sorry
   --sol>
 
+/-- A numeral as a constructor, one step deep: `0 ↦ zero`, `n+1 ↦ succ (natLit n)`, using
+the constructors' definitions (not their `vBuiltin?` values). Other values are
+unchanged. -/
+partial def vNatView (g : Globals R) : Val R → Val R
+  | .natLit n =>
+    let ctor (k : Name) : Val R := match (g.builtins.lookup k).bind g.find? with
+      | some { value := some v, .. } => eval g [] v
+      | _ => panic! s!"numerals need `builtin {k}`"
+    if n == 0 then ctor "nat.zero" else vApp g (ctor "nat.succ") (.natLit (n - 1))
+  | v => v
+
+/-- A registered operation applied to all its arguments: native arithmetic on literals,
+otherwise the operation's definition. -/
+partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
+  let lits := args.filterMap fun | .natLit n => some n | _ => none
+  let native : Option Nat := if lits.size != args.size then none else
+    match op, lits with
+    | "nat.succ", #[a] => some (a + 1)
+    | "nat.pred", #[a] => some (a - 1)
+    | "nat.add", #[a, b] => some (a + b)
+    | "nat.sub", #[a, b] => some (a - b)
+    | "nat.mul", #[a, b] => some (a * b)
+    | _, _ => none
+  match native with
+  | some n => .natLit n
+  | none => match (g.builtins.lookup op).bind g.find? with
+    | some { value := some v, .. } => args.foldl (vApp g) (eval g [] v)
+    | _ => panic! s!"no definition for builtin {op}"
+
 /-- **Exercise 4.19c.** Induction computes on constructors:
 
     ind P m i (con xs) ↦ m i xs (hyps D (μ D) P (fun j y => ind P m j y) i xs)
 
 (`Templates.hypsTm`; the `fun j y => …` is a template closure). -/
 partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
+  let x := vNatView g x
   --<sol
   match x with
   | .con xs =>
@@ -332,6 +383,7 @@ calls at size `∞` (sizes are irrelevant at runtime):
 
     sfix P f s i (con xs) ↦ f ∞ (fun j i y => sfix P f j i y) i (con xs) -/
 partial def vSfix (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P f s i x : Val R) : Val R :=
+  let x := vNatView g x
   --<sol
   match x with
   | .con _ =>
@@ -348,6 +400,7 @@ partial def vSfix (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P f s i
 /-- **Exercise 4.22b.** Sized case analysis: `scase P m s i (con xs) ↦ m ∞ i xs` (the
 size of the fields is irrelevant at runtime). -/
 partial def vScase (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m s i x : Val R) : Val R :=
+  let x := vNatView g x
   --<sol
   match x with
   | .con xs => [.szInf, i, xs].foldl (vApp g) m
@@ -407,6 +460,10 @@ Reference: Pujet & Tabareau, *Observational Equality: Now for Good* (POPL 2022).
 `Level.equiv l 0`; for `Type u` (`Level.isNeverZero`) it's `vEqType`. Otherwise
 it's stuck. -/
 partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
+  -- numerals: decide directly, or else look one step inside (`vNatView`)
+  if let (.natLit n, .natLit m) := (a, b) then (if n == m then .unit 0 else .empty 0) else
+  let a := vNatView g a
+  let b := vNatView g b
   --<sol
   let v (i : Nat) : Term R := .var i
   match A with
@@ -578,6 +635,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | .drec q j D => .drec (quote g l q) (quote g l j) (quote g l D)
   | .mu k I D i s h => .mu k (quote g l I) (quote g l D) (quote g l i) (quote g l s) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .con x => .con (quote g l x)
+  | .natLit n => .natLit n
   | .nu k I D i s h => .nu k (quote g l I) (quote g l D) (quote g l i) (quote g l s) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .size => .size
   | .szInf => .szInf
@@ -589,6 +647,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | .coit k I D S st i s =>
     .coit k (quote g l I) (quote g l D) (quote g l S) (quote g l st) (quote g l i) (quote g l s)
   --|ex
+  --| | .natLit n => .natLit n  -- (given)
   --| | v => sorry
   --sol>
 

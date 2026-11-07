@@ -321,6 +321,10 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   match t with
   | .mvar m => throw (.other s!"the kernel does not accept metavariables (?m{m})")
+  | .natLit _ => match ctx.globals.builtins.lookup "nat" with
+    | some N => pure (ctx.eval (.const N []), Usage.zeros ctx.lvl)
+    | none => throw (.other "numerals need `builtin nat := …`")
+  | .natOp .. => throw (.cannotInfer (ctx.showTerm t))
   --<sol
   | .var ix => pure (ctx.types[ix]!, Usage.single ctx.lvl ix)
   | .const n us => match ctx.globals.find? n with

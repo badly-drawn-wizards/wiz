@@ -288,3 +288,4 @@ stones:
 | Parallel elaboration vs determinism | Per-declaration name supplies, ordered merge (stage 11) |
 | Extensible parser vs caching | Parsers as data (`ParserDescr`), not code (stage 2) |
 | Cubical vs QTT | Open research; OTT first |
+| Literals as encodings vs a fast kernel | Kernel `natLit` for the `builtin nat` type, unfolding one step on demand (stage 6b) |

@@ -86,6 +86,7 @@ scope and occurs.
 (The structural types of stage 4b are already handled in the solution's style. Add
 them when you get there.) -/
 partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
+  if let .natLit n ← force v then return .natLit n
   --<sol
   let goSp (h : Term R) (sp : Array (Elim R)) : ElabM R (Term R) :=
     sp.foldlM (init := h) fun acc e => match e with
@@ -157,6 +158,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .mu l I D i s h => return .mu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .nu l I D i s h => return .nu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .con x => return .con (← rename m p x)
+  | .natLit n => return .natLit n
   | .coit l I D S st i s =>
     return .coit l (← rename m p I) (← rename m p D) (← rename m p S) (← rename m p st) (← rename m p i) (← rename m p s)
 where
@@ -231,6 +233,11 @@ failure. Force both sides first, then:
 `t.1` and `b` with `t.2`), `unit`, `tt`, `empty`; and the other eliminations in
 `unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
+  -- numerals: compare two directly, or else look one step inside (`vNatView`)
+  let g ← getGlobals
+  let (t, u) ← match ← force t, ← force u with
+    | .natLit n, .natLit m => if n == m then return () else throwAt {} s!"{n} ≠ {m}"
+    | t, u => pure (vNatView g t, vNatView g u)
   --<sol
   match ← force t, ← force u with
   | .sort a, .sort b => unifyLevel a b

@@ -109,7 +109,9 @@ partial def run (code : Code) (env : List RVal) : ETerm → RVal
     | _ => panic! "case on a non-object"
   | .fix _ b => .fixv env b
   | .prim op as => runPrim code op (as.map (run code env))
+  | .natLit n => .nat n
   --|ex
+  --| | .natLit n => .nat n  -- (given)
   --| | t => sorry
   --sol>
 

@@ -142,6 +142,13 @@ inductive Term (R : Type) where
   | scofix (l : Level) (I D A f s i a : Term R)
   /-- coiteration: unfold a state `s : S i` with `step` -/
   | coit (l : Level) (I D S step i s : Term R)
+  /-- a numeral of the `builtin nat` type. It means `succ (… (succ zero))`, and
+  unfolds one step at a time when something looks inside it. -/
+  | natLit (n : Nat)
+  /-- only made by `eval`, inside the closure for a registered operation such as
+  `nat.add`: compute natively when the arguments (variables) are literals, else apply
+  the definition -/
+  | natOp (op : Name) (args : Array (Term R))
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/
@@ -273,6 +280,8 @@ the environment does so deterministically (never iterate the hash map directly).
 structure Globals (R : Type) where
   decls : Std.HashMap Name (Decl R) := {}
   order : Array Name := #[]
+  /-- `builtin key := name` registrations, such as `("nat", Nat)` and `("nat.add", Nat.add)` -/
+  builtins : List (Name × Name) := []
 
 namespace Globals
 
@@ -282,9 +291,14 @@ def find? (g : Globals R) (n : Name) : Option (Decl R) := g.decls[n]?
 
 def contains (g : Globals R) (n : Name) : Bool := g.decls.contains n
 
+/-- The key `n` is registered under (`nat.add`, ...), if any. -/
+def builtinKey? (g : Globals R) (n : Name) : Option Name :=
+  (g.builtins.find? (·.2 == n)).map (·.1)
+
 /-- Unchecked insertion. Use `Wiz.addDecl` to type check first. -/
 def insert (g : Globals R) (d : Decl R) : Globals R :=
-  { decls := g.decls.insert d.name d
+  { g with
+    decls := g.decls.insert d.name d
     order := if g.decls.contains d.name then g.order else g.order.push d.name }
 
 end Globals

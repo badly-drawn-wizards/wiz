@@ -67,6 +67,12 @@ structure ElabState (R : Type) where
   nextScope : Nat := 1
   /-- `builtin key := name` registrations (numerals need the `nat` type) -/
   builtins : List (Name × Name) := []
+  /-- procedural macros: node kind and the Wiz function that expands it, latest first -/
+  procMacros : List (Name × Name) := []
+  /-- runs a procedural macro (`f`, the node, the next scope); the command elaborator
+  supplies it, since it needs the compiler -/
+  runProcMacro : Name → Syntax → Nat → Except String (Syntax × Nat) :=
+    fun _ _ _ => .error "procedural macros can't run here"
 
 abbrev ElabM (R : Type) := StateT (ElabState R) (Except ElabError)
 

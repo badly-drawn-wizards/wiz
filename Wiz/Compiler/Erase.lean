@@ -58,6 +58,8 @@ inductive ETerm where
   /-- `fix x. body`: general recursion (termination was checked by the kernel) -/
   | fix (x : Name) (body : ETerm)
   | prim (op : Prim) (args : Array ETerm)
+  /-- a numeral, a native number at runtime -/
+  | natLit (n : Nat)
   deriving Repr, Inhabited
 
 namespace ETerm
@@ -89,6 +91,7 @@ partial def toString : ETerm → String
   | case s bs => s!"(case {toString s} [{", ".intercalate (bs.toList.map toString)}])"
   | fix x b => s!"(fix {x}. {toString b})"
   | prim op as => s!"({reprStr op}{String.join (as.toList.map (" " ++ toString ·))})"
+  | natLit n => s!"{n}"
 
 instance : ToString ETerm := ⟨toString⟩
 
@@ -164,6 +167,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
 partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
   let (ty, _) ← infer ctx t
   if erasable ctx ty then return (.erased, ty)
+  if let .natLit n := t then return (.natLit n, ty)
   --<sol
   let g := ctx.globals
   let e : ETerm ← match t with

@@ -179,7 +179,9 @@ def termLeading : List LeadingParser := [
   { kind := "term.szSuc", prec := maxPrec, p := seqs ["↑", term maxPrec] },
   { kind := "term.sizeLt", prec := leadPrec, p := seqs ["Size<", term maxPrec] },
   { kind := "term.match", prec := leadPrec,
-    p := seqs ["match", sepBy1 term ",", "with", many1 matchAlt] },
+    -- alternatives line up at or right of the first `|`, so an outer match's next
+    -- alternative ends a nested match (as in Lean)
+    p := seqs ["match", sepBy1 term ",", "with", withPosition (many1 (seqs [colGe, matchAlt]))] },
   { kind := "term.ecase", prec := leadPrec,
     p := seqs [nonReserved "ecase", term maxPrec, "[", withoutPosition (sepBy term ","), "]"] }
 ]
@@ -227,6 +229,8 @@ def commandLeading : List LeadingParser := [
   { kind := "command.erase", prec := maxPrec, p := seqs ["#erase", ident] },
   { kind := "command.import", prec := maxPrec, p := seqs ["import", ident] },
   { kind := "command.builtin", prec := maxPrec, p := seqs ["builtin", ident, ":=", ident] },
+  { kind := "command.attrMacro", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "macro", ident, "]", ident] },
   { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
   { kind := "command.syntax", prec := maxPrec,
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
@@ -277,9 +281,17 @@ def stxTrailing : List TrailingParser := [
 ]
 
 /-- Metaprogramming support for a category `c`: antiquotations `$x` inside it, and the
-quotation `` `(c| …) `` as a term. -/
+quotation `` `(c| …) `` as a term.
+
+An antiquotation wins ties against the category's other rules (a user rule like
+`syntax term : doSeq` would otherwise also read `$x` as a `doSeq`). To mean the
+other reading, annotate the category: in a `doSeq`, `$x:term` is a term, because
+it consumes more input than the `doSeq` antiquotation `$x`. -/
 def addMetaParsers (t : ParserTables) (c : Name) : ParserTables :=
-  let t := t.addLeading c { kind := "antiquot", prec := maxPrec, p := seqs ["$", noWs, ident] }
+  let plain := seqs ["$", noWs, ident]
+  let annotated := seqs ["$", noWs, ident, noWs, ":", noWs, nonReserved c]
+  let t := t.addLeading c { kind := "antiquot", prec := maxPrec, priority := 1000, p := plain }
+  let t := t.addLeading c { kind := "antiquot", prec := maxPrec, priority := 1000, p := annotated }
   let q : LeadingParser :=
     { kind := "quote." ++ c, prec := maxPrec,
       p := seqs ["`(", nonReserved c, "|", withoutPosition (cat c 0), ")"] }

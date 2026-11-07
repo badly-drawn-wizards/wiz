@@ -1,0 +1,16 @@
+import Prelude
+-- Quotations, procedural macros (run in the interpreter), and hygiene.
+#eval `(term| f x)
+syntax (name := twice) "twice!" term : term
+def twiceMacro : Macro := fun stx => do
+  e ← MacroM.pure (Syntax.getArg stx 1);
+  MacroM.pure `(term| let y := $e; Nat.add y y)
+attribute [macro term.twice] twiceMacro
+#eval twice! 21
+def y : Nat := 5
+#eval twice! y
+-- A macro that fails: this reports an error on purpose.
+syntax (name := boom) "boom!" : term
+def boomMacro : Macro := fun _ => MacroM.throw "kaboom"
+attribute [macro term.boom] boomMacro
+#eval (boom! : Nat)

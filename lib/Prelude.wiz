@@ -84,3 +84,44 @@ builtin nat.sub := Nat.sub
 builtin nat.mul := Nat.mul
 builtin nat.beq := Nat.beq
 builtin string := String
+
+-- Errors.
+inductive Except (E A : Type) where
+  | error (e : E)
+  | ok (a : A)
+
+-- The macro monad: a supply of fresh macro scopes, and failure with a message.
+def MacroM (A : Type) : Type := Nat → Except String (A × Nat)
+def MacroM.pure {A : Type} (a : A) : MacroM A := fun s => .ok (a, s)
+def MacroM.bind {A B : Type} (x : MacroM A) (f : A → MacroM B) : MacroM B := fun s =>
+  match x s with
+  | .error e => .error e
+  | .ok p => f p.1 p.2
+def MacroM.throw {A : Type} (e : String) : MacroM A := fun _ => .error e
+def MacroM.fresh : MacroM Nat := fun s => .ok (s, Nat.succ s)
+
+-- A procedural macro, registered with `attribute [macro kind] f`.
+def Macro : Type := Syntax → MacroM Syntax
+
+-- `do` notation for `MacroM`, written as macros: `do x ← e; rest` and `do e`.
+declare_syntax_cat doSeq
+syntax (name := last) term : doSeq
+syntax (name := bind) ident "←" term ";" doSeq : doSeq
+syntax (name := seq) term ";" doSeq : doSeq
+syntax (name := block) "do" doSeq : term
+macro_rules
+  | `(term| do $e:term) => `(term| $e)
+macro_rules
+  | `(term| do $e:term; $rest) => `(term| MacroM.bind $e (fun _ => do $rest))
+macro_rules
+  | `(term| do $x ← $e; $rest) => `(term| MacroM.bind $e (fun $x => do $rest))
+
+-- Taking syntax apart.
+def SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax
+  | .cons x t, n => match n with
+    | .zero => x
+    | .succ m => SyntaxF.nth t m
+  | _, _ => .missing
+def Syntax.getArg (stx : Syntax) (i : Nat) : Syntax := match stx with
+  | .node _ args => SyntaxF.nth args i
+  | _ => .missing

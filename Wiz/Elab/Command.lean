@@ -1,5 +1,6 @@
 import Wiz.Elab.Recursor
 import Wiz.Compiler.Run
+import Wiz.Elab.ProcMacro
 import Wiz.Frontend.Parse
 
 /-!
@@ -52,6 +53,8 @@ structure CommandState (R : Type) where
   imported : List Name := []
   /-- `builtin key := name` registrations -/
   builtins : List (Name × Name) := []
+  /-- `attribute [macro k] f` registrations, latest first -/
+  procMacros : List (Name × Name) := []
   /-- macro rules, latest first -/
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000
@@ -309,9 +312,13 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
   pure (fullTy, val)
 
 def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
-    (macros : List (Name × Syntax × Syntax × List Name) := []) (builtins : List (Name × Name) := []) :
-    Except ElabError α :=
-  (x.run { globals := g, levelParams, macros, builtins }).map (·.1)
+    (macros : List (Name × Syntax × Syntax × List Name) := []) (builtins : List (Name × Name) := [])
+    (procMacros : List (Name × Name) := []) : Except ElabError α :=
+  -- procedural macros run against the globals as they are when this command starts
+  let runProcMacro f stx scope := do
+    let code ← (compileAll g builtins).mapError (s!"cannot compile macro {f}: {·}")
+    Elab.runProcMacro code f stx scope
+  (x.run { globals := g, levelParams, macros, builtins, procMacros, runProcMacro }).map (·.1)
 
 /-- `notation` and `infixl`/`infixr`/`infix`: register a syntax rule and a macro rule.
 Returns the new tables and the rule `(kind, pattern, template, vars)`. -/
@@ -382,11 +389,11 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
-    else match runElab (macros := s.macros) (builtins := s.builtins) s.globals (elabDeclTerms binders typeStx valStx cmd.info) levelParams with
+    else match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals (elabDeclTerms binders typeStx valStx cmd.info) levelParams with
       | .ok (ty, val) => addDeclChecked name levelParams ty val
       | .error e => report .error e.info e.msg
   | "command.check" =>
-    let r := runElab (macros := s.macros) (builtins := s.builtins) s.globals do
+    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals do
       let (t, ty) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -400,7 +407,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
   | "command.reduce" =>
-    let r := runElab (macros := s.macros) (builtins := s.builtins) s.globals do
+    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -422,8 +429,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some obs else none
         else none
       let r := match coinductiveOf? with
-        | some obs => runElab (macros := s.macros) (builtins := s.builtins) s.globals (elabCopatterns name cmd obs) levelParams
-        | none => runElab (macros := s.macros) (builtins := s.builtins) s.globals (elabDefEqns name cmd) levelParams
+        | some obs => runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals (elabCopatterns name cmd obs) levelParams
+        | none => runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals (elabDefEqns name cmd) levelParams
       match r with
       | .ok (ty, val) => addDeclChecked name levelParams ty (some val)
       | .error e => report .error e.info e.msg
@@ -433,7 +440,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
-      match runElab (macros := s.macros) (builtins := s.builtins) s.globals (elabCoinductive cmd levelParams) levelParams with
+      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals (elabCoinductive cmd levelParams) levelParams with
       | .error e => report .error e.info e.msg
       | .ok (decls, obs) =>
         let mut g := s.globals
@@ -452,7 +459,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else
       let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
         else elabStructure cmd levelParams
-      match runElab (macros := s.macros) (builtins := s.builtins) s.globals elabCmd levelParams with
+      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals elabCmd levelParams with
       | .error e => report .error e.info e.msg
       | .ok decls =>
         let mut g := s.globals
@@ -481,7 +488,18 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "string"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
     else if !s.globals.contains n then report .error cmd.info s!"unknown declaration {n}"
-    else modify fun s => { s with builtins := (key, n) :: s.builtins }
+    else modify fun s => { s with builtins := (key, n) :: s.builtins,
+                                  globals := { s.globals with builtins := (key, n) :: s.globals.builtins } }
+  | "command.attrMacro" =>
+    let k := ((cmd.getArg 3).getId?).getD "_"
+    let f := ((cmd.getArg 5).getId?).getD "_"
+    let ok := runElab s.globals do
+      let (_, ty) ← Elab.infer {} (.node cmd.info "term.ident" #[cmd.getArg 5])
+      let macroTy ← evalIn {} (.const "Macro" [])
+      unifyAt {} cmd macroTy ty
+    match ok with
+    | .error e => report .error e.info s!"{f} is not a macro: {e.msg}"
+    | .ok () => modify fun s => { s with procMacros := (k, f) :: s.procMacros }
   | "command.erase" =>
     let n := ((cmd.getArg 1).getId?).getD "_"
     match s.globals.find? n with
@@ -491,7 +509,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error err => report .error cmd.info s!"cannot erase {n}: {err}"
   | "command.eval" =>
     -- elaborate, erase, run, and read the result back using its type
-    let r := runElab (macros := s.macros) (builtins := s.builtins) s.globals do
+    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
