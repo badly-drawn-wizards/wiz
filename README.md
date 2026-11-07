@@ -923,8 +923,88 @@ runConsole (runState (prog : Eff (Row.cons (State Nat) (Row.cons Console Row.nil
 Foreign functions can now take erased arguments (`{A : Type}`) and pass Wiz values as
 they are.
 
-Next: flat constructor objects (instead of nested pairs), then porting the lexer and the
-parser to Wiz.
+### 12b: the lexer in Wiz ✅
+
+`selfhost/Lex.wiz` reads tokens at an offset of the input (an array of code points),
+like `Wiz/Parser/Token.lean`: whitespace and nested comments, dotted identifiers,
+numbers, string literals with escapes, and the longest symbol of the token table. The
+test lexes a program with the full built-in token table and compares with the Lean lexer.
+
+| #    | Where              | What                                          |
+|------|--------------------|-----------------------------------------------|
+| 12.1 | `selfhost/Lex.wiz` | `longest`: the longest token at an offset     |
+
+### 12c: flat constructor objects ✅
+
+A data value is one object `⟨tag f₁ … fₙ⟩` at runtime instead of a tag and a chain of
+pairs (lists stay linked lists; `Array` stays a vector). Erasure builds constructors
+directly and resolves case analysis to field reads (**views**); generic code (`ind`
+with hypotheses) converts with `pack`/`unpack`, which walk the description. Numbers stay
+native. Redexes become `let`s, and scalars get no reference counting.
+
+### 12d: the parser in Wiz ✅
+
+`selfhost/Parse.wiz` interprets the grammar descriptors (`ParserDescr`) like
+`Wiz/Parser/Interp.lean`: Pratt parsing of syntax categories, the longest alternative
+wins, and category parses are memoised (packrat) in a `StrMap`. The test turns
+`Builtin.tables` into Wiz data and compares the trees (and errors) with the Lean parser.
+
+| #    | Where                | What                                                   |
+|------|----------------------|--------------------------------------------------------|
+| 12.2 | `selfhost/Parse.wiz` | `runDescr`: `many`, `many1`, `optional`, `sepBy(1)`    |
+| 12.3 | `selfhost/Parse.wiz` | `trailingLoop`, `manyLoop`, `sepLoop`                  |
+
+Along the way: induction on a big numeral is lazy in the kernel (`Val.lazyInd`, glued,
+so fuel arguments like `100000000` cost nothing), constructor fields no longer shadow
+variables in `match` alternatives, and reuse only recycles constructor cells.
+`WIZ_LEAKS=1` lists the objects a compiled program leaks (`WIZ_WATCH=<address>` traces
+one).
+
+## Stage 13: the language, for programs this size
+
+Writing the lexer and parser in Wiz showed what the language lacked:
+
+* **Recursion on any argument.** The structural argument is the first one the first
+  clause matches; parameters before the colon may be passed unchanged or left out.
+* **`partial def` and `mutual … end`.** General recursion: the kernel treats the
+  definition as an axiom (its type must be visibly inhabited, so no `False`), and its
+  implementation (checked against the type) is what `#eval` and compiled code run. The
+  parser's core is a mutual block, with no fuel.
+* **Mutual inductive types.** `mutual inductive A … inductive B … end` becomes one
+  family indexed by a tag type, `A_B : A_B.Tag → Type`, with `def A := A_B .A`.
+  Recursion over a family at a concrete index (`SyntaxF .false`) works.
+* **`match` without an expected type**, **tuple patterns** `(a, b, c)`, and `x |> f`.
+* Keywords of tactic syntax (`first`, `exact` …) are no longer reserved words.
+* The prelude has `Nat.lt` (native at runtime), `Nat.le`, `Nat.max`, `Bool.and/or/not`.
+
+## Stage 14: the kernel in Wiz
+
+### 14a: a type checker ✅
+
+`selfhost/Kernel.wiz`: normalisation by evaluation for a core calculus (variables,
+universes, Π, λ, application, `let`, ascription), with values and environments mutually
+inductive (closures), and bidirectional checking.
+
+| #    | Where                 | What                                    |
+|------|-----------------------|-----------------------------------------|
+| 14.1 | `selfhost/Kernel.wiz` | `eval`, `vapp`                          |
+| 14.2 | `selfhost/Kernel.wiz` | `quote`                                 |
+| 14.3 | `selfhost/Kernel.wiz` | `infer`, `check`                        |
+
+### 14b–c: from text to checked definitions ✅
+
+`selfhost/Frontend.wiz` scope-checks Wiz syntax (identifiers, `Type n`, Π and arrows,
+`fun`, application, `let`, ascription) into the kernel's terms, and processes a file of
+`def`, `#check` and `#reduce` commands, the globals being defined variables of the
+typing context. Lexer, parser, scope checker and type checker all run as compiled Wiz.
+
+| #    | Where                   | What                                     |
+|------|-------------------------|------------------------------------------|
+| 14.4 | `selfhost/Frontend.wiz` | `elab`: names to de Bruijn indices       |
+| 14.5 | `selfhost/Frontend.wiz` | `command`: one command                   |
+
+Next: grow the Wiz kernel towards the real one (Σ types, data through descriptions,
+quantities), and test it differentially against the Lean kernel.
 
 ## Stage 11: tooling
 
