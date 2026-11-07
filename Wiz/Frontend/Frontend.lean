@@ -11,13 +11,30 @@ namespace Wiz
 
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
+/-- `import M`: elaborate the library module `M` (once) into the current state. Its
+messages are reported at the `import` if it has errors. -/
 partial def runFrontend (input : String) (s : CommandState R := {}) : CommandState R :=
   go input.toList.toArray 0 s
 where
   go (chars : Array Char) (pos : Nat) (s : CommandState R) : CommandState R :=
     if skipWs chars pos ≥ chars.size then s else
     match parseCommand chars s.tables pos with
-    | .ok (cmd, stop) => go chars stop ((elabCommand cmd).run s).2
+    | .ok (cmd, stop) =>
+      if cmd.isOfKind "command.import" then
+        let m := ((cmd.getArg 1).getId?).getD "_"
+        if s.imported.contains m then go chars stop s else
+        match s.loader m with
+        | none =>
+          let msg : Msg := { info := cmd.info, severity := .error, text := s!"unknown module {m}" }
+          go chars stop { s with messages := s.messages.push msg }
+        | some src =>
+          let inner := runFrontend src { s with imported := m :: s.imported, messages := #[] }
+          let errs := inner.messages.filter (·.severity == .error)
+          let msg : Msg := { info := cmd.info, severity := .error,
+                             text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+          let msgs := if errs.isEmpty then s.messages else s.messages.push msg
+          go chars stop { inner with messages := msgs }
+      else go chars stop ((elabCommand cmd).run s).2
     | .error e =>
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate
       go chars (recoverPos chars (skipWs chars pos))

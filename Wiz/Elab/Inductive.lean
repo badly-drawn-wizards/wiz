@@ -134,7 +134,8 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     let n := fs.size
     let target ← match (c.getArg 3).args[1]? with
       | some s => pure (← checkType ctxF s).1
-      | none => pure (.var n)
+      -- no result type: `T` applied to the parameters
+      | none => pure ((telescopeVars nΔ (n + 1)).foldl .app (.var n))
     -- zonk the fields and the target in their contexts
     let mut fs' := #[]
     for (x, bi, q, A) in fs, k in [0:n] do

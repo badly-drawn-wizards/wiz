@@ -37,6 +37,10 @@ inductive RVal where
   | fixv (env : List RVal) (body : ETerm)
   /-- a primitive waiting for more arguments -/
   | pap (op : PapOp) (args : Array RVal)
+  /-- a natural number of a type registered with `builtin nat` -/
+  | nat (n : Nat)
+  /-- a native operation waiting for arguments -/
+  | native (op : Name) (args : Array RVal)
   /-- lazy coinductive values -/
   | coit (D step i s : RVal)
   | scofix (f i a : RVal)
@@ -49,10 +53,31 @@ def arity : PapOp → Nat
   | .coitK => 4
   | .scofixK => 4
 
+/-- A native number looks like its payload when inspected:
+`0 ↦ ⟨0 ⟨0⟩ ⟨0 ◾ ◾⟩⟩` and `n+1 ↦ ⟨0 ⟨1⟩ ⟨0 n ⟨0 ◾ ◾⟩⟩⟩`. -/
+def natView : Nat → RVal
+  | 0 => .obj 0 #[.obj 0 #[], .obj 0 #[.erased, .erased]]
+  | n + 1 => .obj 0 #[.obj 1 #[], .obj 0 #[.nat n, .obj 0 #[.erased, .erased]]]
+
 def field (v : RVal) (i : Nat) : RVal :=
   match v with
   | .obj _ fs => fs[i]?.getD .erased
+  | .nat n => match natView n with
+    | .obj _ fs => fs[i]?.getD .erased
+    | _ => .erased
   | _ => .erased
+
+/-- The number a value denotes, if it is one (native, or a unary payload). -/
+partial def toNat? : RVal → Option Nat
+  | .nat n => some n
+  | .obj 0 #[.obj 0 #[], _] => some 0
+  | .obj 0 #[.obj 1 #[], .obj 0 #[k, _]] => (toNat? k).map (· + 1)
+  | _ => none
+
+def nativeArity : Name → Nat
+  | "nat.zero" => 0
+  | "nat.succ" | "nat.pred" => 1
+  | _ => 2
 
 end RVal
 
@@ -74,7 +99,22 @@ partial def apply (code : Code) (f a : RVal) : RVal :=
   | .pap op args =>
     let args := args.push a
     if args.size < RVal.arity op then .pap op args else firePap code op args
+  | .native op args =>
+    let args := args.push a
+    if args.size < RVal.nativeArity op then .native op args else fireNative op args
   | _ => .erased
+
+/-- Native arithmetic. `nat.beq` returns a tag of the prelude's `Bool` (`false`, `true`). -/
+partial def fireNative (op : Name) (args : Array RVal) : RVal :=
+  let n (i : Nat) : Nat := ((args[i]?.getD .erased).toNat?).getD 0
+  match op with
+  | "nat.succ" => .nat (n 0 + 1)
+  | "nat.pred" => .nat (n 0 - 1)
+  | "nat.add" => .nat (n 0 + n 1)
+  | "nat.sub" => .nat (n 0 - n 1)
+  | "nat.mul" => .nat (n 0 * n 1)
+  | "nat.beq" => .obj 0 #[.obj (if n 0 == n 1 then 1 else 0) #[], .obj 0 #[.erased, .erased]]
+  | _ => panic! s!"unknown native operation {op}"
 
 partial def applyN (code : Code) (f : RVal) (as : List RVal) : RVal := as.foldl (apply code) f
 
@@ -115,21 +155,36 @@ end
 
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
-/-- Read a runtime value back as a term of type `ty`, for printing. -/
-partial def readback (g : Globals R) (ty : VTy R) (v : RVal) : Term R :=
+/-- Read a runtime value back as a term of type `ty`, for printing. Numbers of the
+registered `nat` type print in decimal. -/
+partial def readback (g : Globals R) (natTy : Option Name) (ty : VTy R) (v : RVal) : Term R :=
+  let readback := readback g natTy
   match ty, v with
-  | .mu l I D i _ _, v => .con (readback g (vInterp g l I D (muFamily l I D) i) v)
-  | .sigma _ _ A B, .obj _ #[a, b] =>
-    let a' := readback g A a
-    .pair a' (readback g (Closure.inst g B (eval g [] a')) b)
+  | .mu _ _ _ _ _ (some (T, _, _)), v =>
+    match natTy, v.toNat? with
+    | some N, some n => if N == T then .const (toString n) [] else readbackData ty v
+    | _, _ => readbackData ty v
+  | .mu .., v => readbackData ty v
+  | .sigma _ _ A B, v =>
+    let a' := readback A (v.field 0)
+    .pair a' (readback (Closure.inst g B (eval g [] a')) (v.field 1))
   | .enum ls, .obj t _ => .tag ls t
   | .unit _, _ => .tt
   | .pi .., _ => .const "<function>" []
   | .nu .., _ => .const "<codata>" []
   | _, _ => .tt
+where
+  readbackData (ty : VTy R) (v : RVal) : Term R :=
+    match ty with
+    | .mu l I D i _ _ =>
+      let v := match v with
+        | .nat n => RVal.natView n
+        | v => v
+      .con (readback g natTy (vInterp g l I D (muFamily l I D) i) v)
+    | _ => .tt
 
 /-- Erase every definition the term depends on (all globals, in order). -/
-def compileAll (g : Globals R) : TCM Code := do
+def compileAll (g : Globals R) (builtins : List (Name × Name) := []) : TCM Code := do
   let mut code : Code := {}
   for n in g.order do
     if let some d := g.find? n then
@@ -138,6 +193,9 @@ def compileAll (g : Globals R) : TCM Code := do
         | .ok e => e
         | .error _ => .prim .unreachable #[]
       code := code.insert n e
+  -- definitions registered as native operations
+  for (key, n) in builtins do
+    if key != "nat" then code := code.insert n (.prim .unreachable #[.global key])
   pure code
 
 end Wiz

@@ -1,0 +1,80 @@
+-- The Wiz prelude: `import Prelude`.
+
+inductive Bool where
+  | false
+  | true
+
+inductive Nat where
+  | zero
+  | succ (n : Nat)
+
+def Nat.add : Nat → Nat → Nat
+  | .zero, n => n
+  | .succ m, n => .succ (Nat.add m n)
+
+def Nat.mul : Nat → Nat → Nat
+  | .zero, _ => .zero
+  | .succ m, n => Nat.add n (Nat.mul m n)
+
+def Nat.pred : Nat → Nat
+  | .zero => .zero
+  | .succ n => n
+
+-- `n - m`, recursing on `m` (structural recursion is on the first argument)
+def Nat.subFrom : Nat → Nat → Nat
+  | .zero, n => n
+  | .succ m, n => Nat.pred (Nat.subFrom m n)
+
+def Nat.sub (n m : Nat) : Nat := Nat.subFrom m n
+
+def Nat.beq : Nat → Nat → Bool
+  | .zero, .zero => .true
+  | .succ m, .succ n => Nat.beq m n
+  | _, _ => .false
+
+infixl:65 " + " => Nat.add
+infixl:65 " - " => Nat.sub
+infixl:70 " * " => Nat.mul
+
+inductive List (A : Type) where
+  | nil
+  | cons (head : A) (tail : List A)
+
+def List.append {A : Type} : List A → List A → List A
+  | .nil, ys => ys
+  | .cons x xs, ys => .cons x (List.append xs ys)
+
+def List.length {A : Type} : List A → Nat
+  | .nil => .zero
+  | .cons _ xs => .succ (List.length xs)
+
+inductive Option (A : Type) where
+  | none
+  | some (val : A)
+
+-- Characters are code points; strings are lists of characters.
+def Char : Type := Nat
+def String : Type := List Char
+infixr:67 " ++ " => List.append
+
+-- Syntax trees, as one indexed family (descriptions have no nested inductives yet):
+-- index `true` is a tree, `false` a list of trees.
+inductive SyntaxF : Bool → Type where
+  | missing : SyntaxF .true
+  | atom (val : String) : SyntaxF .true
+  | ident (val : String) : SyntaxF .true
+  | node (kind : String) (args : SyntaxF .false) : SyntaxF .true
+  | nil : SyntaxF .false
+  | cons (head : SyntaxF .true) (tail : SyntaxF .false) : SyntaxF .false
+
+def Syntax : Type := SyntaxF .true
+
+-- Fast numbers at runtime (the kernel keeps the unary definitions above).
+builtin nat := Nat
+builtin nat.zero := Nat.zero
+builtin nat.succ := Nat.succ
+builtin nat.pred := Nat.pred
+builtin nat.add := Nat.add
+builtin nat.sub := Nat.sub
+builtin nat.mul := Nat.mul
+builtin nat.beq := Nat.beq

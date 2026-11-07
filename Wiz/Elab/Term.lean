@@ -1079,7 +1079,14 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.letPair" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
   | "term.omega" => return (← elabQtyLit ctx stx "ω", .qty)
-  | "term.num" | "term.str" => throwAt ctx.info "literals need data types (stage 4e)"
+  | "term.num" =>
+    -- an unannotated numeral is a `builtin nat`
+    match (← get).builtins.lookup "nat" with
+    | some N =>
+      let ty := eval (← getGlobals) ctx.env (.const N [])
+      return (← check ctx stx ty, ty)
+    | none => throwAt ctx.info "numerals need `builtin nat := …` or a type ascription"
+  | "term.str" => throwAt ctx.info "string literals need data types (stage 4e)"
   | k => throwAt ctx.info s!"no elaborator for syntax kind {k}"
 
 end
