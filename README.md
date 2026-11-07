@@ -1051,7 +1051,17 @@ inhabitedness check for partial definitions evaluated the type of every global, 
 each definition. It now looks only at constants whose type visibly ends in the right
 type: 3 seconds.)
 
-Next: data through descriptions, extending the generator as the kernel grows.
+### 14i: descriptions and data ✅
+
+Descriptions (`descr l I` for `Desc.{l} I`, with `ret`, `arg`, `rec`, `hrec`),
+`Desc.elim`, `μ D i` and constructors, as in the Lean kernel: `⟦D⟧ X i` is the same
+`interpTm` template, written with `Desc.elim`, and `con x = con y` is equality of the
+payloads. This kernel has no quantities: where the templates take one, it passes `tt`
+(and the method types bind it at `Unit`). The differential test now always checks a
+list of samples first (the natural numbers, constructors, `Desc.elim` into `Unit`,
+ill-typed payloads), then the random terms.
+
+Next: induction (`ind`, with the `All` and hypotheses templates), extending the samples.
 
 ## Stage 11: tooling
 

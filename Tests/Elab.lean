@@ -827,6 +827,14 @@ inductive MTm where
   | reflTy (X : MTm)
   | cast (A B e t : MTm)
   | transp (A a P p b e : MTm)
+  | desc (l : Nat) (I : MTm)
+  | dret (i : MTm)
+  | darg (S E : MTm)
+  | drec (j E : MTm)
+  | dhrec (H j E : MTm)
+  | delim (v : Nat) (P a b c h D : MTm)
+  | mu (l : Nat) (I D i : MTm)
+  | con (x : MTm)
   deriving Inhabited
 
 namespace MTm
@@ -861,6 +869,14 @@ partial def toWiz : MTm → String
   | reflTy X => s!"(.tyRefl {X.toWiz})"
   | cast A B e t => s!"(.coe {A.toWiz} {B.toWiz} {e.toWiz} {t.toWiz})"
   | transp A a P p b e => s!"(.subst {A.toWiz} {a.toWiz} {P.toWiz} {p.toWiz} {b.toWiz} {e.toWiz})"
+  | desc l I => s!"(.descr {l} {I.toWiz})"
+  | dret i => s!"(.dret {i.toWiz})"
+  | darg S E => s!"(.darg {S.toWiz} {E.toWiz})"
+  | drec j E => s!"(.drec {j.toWiz} {E.toWiz})"
+  | dhrec H j E => s!"(.dhrec {H.toWiz} {j.toWiz} {E.toWiz})"
+  | delim v P a b c h D => s!"(.delim {v} {P.toWiz} {a.toWiz} {b.toWiz} {c.toWiz} {h.toWiz} {D.toWiz})"
+  | mu l I D i => s!"(.mu {l} {I.toWiz} {D.toWiz} {i.toWiz})"
+  | con x => s!"(.con {x.toWiz})"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -890,6 +906,14 @@ partial def toTerm : MTm → Term ZeroOneMany
   | reflTy X => .reflTy X.toTerm
   | cast A B e t => .cast A.toTerm B.toTerm e.toTerm t.toTerm
   | transp A a P p b e => .transp A.toTerm a.toTerm P.toTerm p.toTerm b.toTerm e.toTerm
+  | desc l I => .desc (Level.ofNat l) I.toTerm
+  | dret i => .dret i.toTerm
+  | darg S E => .darg (.qlit .many) S.toTerm E.toTerm
+  | drec j E => .drec (.qlit .many) j.toTerm E.toTerm
+  | dhrec H j E => .dhrec (.qlit .many) H.toTerm j.toTerm E.toTerm
+  | delim v P a b c h D => .delim (Level.ofNat v) P.toTerm a.toTerm b.toTerm c.toTerm h.toTerm D.toTerm
+  | mu l I D i => .mu (Level.ofNat l) I.toTerm D.toTerm i.toTerm .szInf none
+  | con x => .con x.toTerm
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -923,6 +947,14 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .reflTy X => return reflTy (← ofTerm X)
   | .cast A B e t => return cast (← ofTerm A) (← ofTerm B) (← ofTerm e) (← ofTerm t)
   | .transp A a P p b e => return transp (← ofTerm A) (← ofTerm a) (← ofTerm P) (← ofTerm p) (← ofTerm b) (← ofTerm e)
+  | .desc l I => return desc (← l.toNat?) (← ofTerm I)
+  | .dret i => return dret (← ofTerm i)
+  | .darg _ S E => return darg (← ofTerm S) (← ofTerm E)
+  | .drec _ j E => return drec (← ofTerm j) (← ofTerm E)
+  | .dhrec _ H j E => return dhrec (← ofTerm H) (← ofTerm j) (← ofTerm E)
+  | .delim v P a b c h D => return delim (← v.toNat?) (← ofTerm P) (← ofTerm a) (← ofTerm b) (← ofTerm c) (← ofTerm h) (← ofTerm D)
+  | .mu l I D i _ _ => return mu (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i)
+  | .con x => return con (← ofTerm x)
   | _ => none
 
 /-- Printed like `show .nil` in `Kernel.wiz`. -/
@@ -954,6 +986,14 @@ partial def pretty (l : Nat) : MTm → String
   | reflTy X => s!"reflTy({pretty l X})"
   | cast A B e t => s!"cast({pretty l A}, {pretty l B}, {pretty l e}, {pretty l t})"
   | transp A a P p b e => s!"transp({pretty l A}, {pretty l a}, {pretty l P}, {pretty l p}, {pretty l b}, {pretty l e})"
+  | desc k I => s!"Desc{k}({pretty l I})"
+  | dret i => s!"ret({pretty l i})"
+  | darg S E => s!"arg({pretty l S}, {pretty l E})"
+  | drec j E => s!"rec({pretty l j}, {pretty l E})"
+  | dhrec H j E => s!"hrec({pretty l H}, {pretty l j}, {pretty l E})"
+  | delim _ P a b c h D => s!"elim({pretty l P}, {pretty l a}, {pretty l b}, {pretty l c}, {pretty l h}, {pretty l D})"
+  | mu k I D i => s!"μ{k}({pretty l I}, {pretty l D}, {pretty l i})"
+  | con x => s!"con({pretty l x})"
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -962,12 +1002,31 @@ def wellTypedPair (s : Nat) : MTm :=
   if s / 3 % 2 == 0 then ann (pair (univ k) (univ k)) (sigma (univ (k + 1)) (univ (k + 1)))
   else ann (pair (univ k) (lam (var 0))) (sigma (univ (k + 1)) (pi (var 0) (var 1)))
 
+def lams : Nat → MTm → MTm
+  | 0, b => b
+  | k + 1, b => lam (lams k b)
+
+/-- The natural numbers as a description, `arg Enum2 (fun t => case t [ret tt, rec tt (ret tt)])`. -/
+def natD : MTm := darg (enum 2) (lam (ecase (desc 0 (unit 0)) (var 0) [dret star, drec star (dret star)]))
+def natTy : MTm := mu 0 (unit 0) natD star
+def natZero : MTm := ann (con (pair (tag 2 0) (pair star star))) natTy
+def natSucc (n : MTm) : MTm := ann (con (pair (tag 2 1) (pair n (pair star star)))) natTy
+
+/-- Terms the differential test always checks (well-typed ones the generator rarely
+builds whole), before the random ones. -/
+def samples : List MTm :=
+  [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+   eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
+   delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
+   ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
+   ann (con (pair (tag 2 0) star)) natTy]
+
 /-- Random terms over `n` variables (a linear congruential generator), biased towards
 well-typed ones: annotated λs, applications of them, universes. -/
 partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
   let next (s : Nat) := (s * 1103515245 + 12345) % 2147483648
   let s := next seed
-  let pick := s / 65536 % 21
+  let pick := s / 65536 % 23
   if depth == 0 then
     if n > 0 && pick < 5 then (var (s / 7 % n), s) else (univ (s / 7 % 2), s)
   else match pick with
@@ -1039,6 +1098,22 @@ partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
       let (b, s) := gen s (depth - 1) n
       let (A, s) := gen s (depth - 1) n
       (if s / 3 % 2 == 0 then eq A a b else cast A A (reflTy A) a, s)
+    | 20 =>
+      -- data: the natural numbers
+      match s / 5 % 7 with
+      | 0 => (natTy, s)
+      | 1 => (natZero, s)
+      | 2 => (natSucc natZero, s)
+      | 3 => (ann natD (desc 0 (unit 0)), s)
+      | 4 => (eq natTy natZero (natSucc natZero), s)
+      | 5 => (refl natTy (natSucc natZero), s)
+      | _ =>
+        -- `Desc.elim` into `Unit`: every method gives `tt`
+        (delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))), s)
+    | 21 =>
+      -- ill-typed or random data
+      let (x, s) := gen s (depth - 1) n
+      (if s / 3 % 2 == 0 then ann (con x) natTy else ann (dret x) (desc 0 (unit 0)), s)
     | _ => if n > 0 then (var (s / 7 % n), s) else (univ (s / 7 % 3), s)
 
 end MTm
@@ -1127,7 +1202,7 @@ def selfHostGroup : Group where
           "error: type mismatch: expected U0, got U1\nerror: unknown identifier bad\n") },
     { name := "the Wiz kernel agrees with the Lean kernel (400 random terms)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
-        let mut terms : Array MTm := #[]
+        let mut terms : Array MTm := MTm.samples.toArray
         let mut seed := 42
         for i in [0:400] do
           let (t, s) := MTm.gen seed (2 + i % 3) 0
