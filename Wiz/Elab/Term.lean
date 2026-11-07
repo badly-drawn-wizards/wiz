@@ -1,5 +1,6 @@
 import Wiz.Elab.Zonk
 import Wiz.Elab.Macro
+import Wiz.Elab.Tactic
 
 /-!
 # Elaborating terms
@@ -398,6 +399,7 @@ where
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.letPair" => elabLetPair ctx stx expected
     | "term.match" => elabMatch ctx stx expected
+    | "term.by" => elabBy ctx stx expected
     | "term.num" =>
       match ← force expected with
       | .qty => elabQtyLit ctx stx (((stx.getArg 0).getNat?.map toString).getD "?")
@@ -761,7 +763,11 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
 partial def needsExpected (stx : Syntax) : Bool :=
   (stx.isOfKind "term.paren" && needsExpected (stx.getArg 1)) ||
   stx.isOfKind "term.dotIdent" || stx.isOfKind "term.tag" || stx.isOfKind "term.rfl" ||
-  (stx.isOfKind "term.app" && (stx.getArg 0).isOfKind "term.dotIdent")
+  (stx.isOfKind "term.app" && (stx.getArg 0).isOfKind "term.dotIdent") ||
+  -- check-only forms, also as the body of a `fun` (as in `bind x (fun y => match …)`);
+  -- `term.block` is the prelude's `do`
+  stx.isOfKind "term.match" || stx.isOfKind "term.by" || stx.isOfKind "term.block" ||
+  (stx.isOfKind "term.fun" && needsExpected (stx.getArg 3))
 
 /-- An application in check mode, using the **expected type first**: every explicit
 argument gets a placeholder metavariable, the resulting type is unified with the
@@ -784,11 +790,28 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
     | _ => return ← (do let (t, ty) ← inferApp ctx stx; unifyAt ctx stx expected ty; pure t)
   (f, fty) ← insertImplicits ctx f fty
   let _ ← tryCatch (unify ctx.lvl expected fty) (fun _ => pure ())
+  let mut args : Array (Term R × Term R) := #[]
   for (arg, m, dom) in pending do
     let a ← check ctx arg dom
-    unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
+    args := args.push (m, a)
+    -- solve the placeholder with `fun Γ => a` directly when we can: unification would
+    -- quote `a`'s value, which can be expensive (normalising under binders)
+    let unsolved ← match (Term.spine m).1 with
+      | .mvar id => pure (if (← lookupMeta id).solution.isNone then some id else none)
+      | _ => pure none
+    match unsolved with
+    | some mid =>
+      if ctx.bound.all (· == true) then
+        solveMeta mid (eval (← getGlobals) [] (ctx.names.reverse.foldr (fun x b => Term.lam x b) a))
+      else unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
+    | none => unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
   unifyAt ctx stx expected fty
-  pure f
+  -- the application itself takes the arguments as written, not the placeholders (whose
+  -- solutions would zonk to normal forms)
+  let rec respine (t : Term R) : Term R := match t with
+    | .app g x => .app (respine g) (((args.find? (·.1 == x)).map (·.2)).getD x)
+    | t => t
+  pure (respine f)
 
 /-- **Exercise 3.9.** Infer the type of an application `f a₁ … aₙ` (`term.app`, with
 `f` = `stx.getArg 0` and the arguments in `(stx.getArg 1).args`).
@@ -1092,7 +1115,8 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   -- bind every scrutinee to a fresh variable, generalising it in the goal
   let mut ctx' := ctx
   let mut ts : Array (Term R) := #[]
-  let mut goalTm := quote g ctx.lvl expected
+  -- zonk: solved metas in the expected type would otherwise hide its universe
+  let mut goalTm ← zonk ctx.lvl (quote g ctx.lvl expected)
   let mut binders : Array (Name × Term R) := #[]
   for s in scruts do
     let (t, ty) ← infer ctx s
@@ -1321,6 +1345,168 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       let syntaxTy ← evalIn {} (.const "Syntax" [])
       return (← elabQuote ctx syntaxTy "" (stx.getArg 3), syntaxTy)
     throwAt ctx.info s!"no elaborator for syntax kind {k}"
+
+
+-- Tactics (see `Elab/Tactic.lean`)
+
+/-- Run the tactic syntax `stx`: expand macros, find the Wiz function registered for
+its kind, run it to a `Tac` request chain, and interpret that. -/
+partial def evalTacticStx (code : Code) (st : TacState R) (stx : Syntax) : ElabM R (TacState R) := do
+  if stx matches .atom .. then return st
+  if let some stx' ← expand? stx then return ← evalTacticStx code st stx'
+  let some f := (← get).tactics.lookup stx.kind | throwAt stx.info s!"no tactic for syntax kind {stx.kind}"
+  let t := apply code (run code [] (.global "TacticM.run")) (apply code (run code [] (.global f)) (encodeSyntax stx))
+  runTac code stx.info st t
+
+/-- **Exercise 6.5** (the request loop). Interpret the requests of a `Tac` value (the
+constructor numbers are in `TacTag`), threading the tactic state, until `done`.
+Each request's last field is its continuation: apply it (`apply code`) to the encoded
+answer and continue. A failure is an elaboration error; `catch` runs its handler
+on the state from *before* the body (`ElabM` drops state changes on an exception). -/
+partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal) : ElabM R (TacState R) := do
+  let g ← getGlobals
+  let fld (i : Nat) : RVal := v.conField i
+  let num (r : RVal) : ElabM R Nat := match r.toNat? with
+    | some n => pure n
+    | none => throwAt info "tactic: malformed number"
+  let str (r : RVal) : ElabM R String := match r.toString? with
+    | some s => pure s
+    | none => throwAt info "tactic: malformed string"
+  let stxOf (r : RVal) : ElabM R Syntax := match decodeSyntax info r with
+    | some s => pure s
+    | none => throwAt info "tactic: malformed syntax"
+  let goalOf (r : RVal) : ElabM R (Goal R) := do
+    let some gl := st.goals[← num r]? | throwAt info "tactic: unknown goal"
+    pure gl
+  -- reflect a term (zonked first) in a goal's context
+  let refl (st : TacState R) (gl : Goal R) (t : Term R) (depth : Nat := gl.ctx.lvl) :
+      ElabM R (RVal × TacState R) := do
+    let t ← zonk depth t
+    let (r, hs) := (reflect t depth).run st.handles
+    pure (r, { st with handles := hs })
+  let addGoal (st : TacState R) (gl : Goal R) : TacState R × Nat :=
+    ({ st with goals := st.goals.push gl }, st.goals.size)
+  let unifyGoal (gl : Goal R) (t : Term R) : ElabM R Unit := do
+    unify gl.ctx.lvl (← evalIn gl.ctx gl.tm) (← evalIn gl.ctx t)
+  --<sol
+  let tag := ((v.field 0).tag?).getD 1000
+  if tag == TacTag.done then return st
+  if tag == TacTag.result then throwAt info "a tactic may not return syntax"
+  if tag == TacTag.fail then throwAt info (((fld 0).toString?).getD "tactic failed")
+  if tag == TacTag.trace then return ← runTac code info st (fld 1)
+  if tag == TacTag.fresh then
+    let n := (← get).nextScope
+    modify fun s => { s with nextScope := n + 1 }
+    return ← runTac code info st (apply code (fld 0) (.nat n))
+  if tag == TacTag.getGoals then
+    let opens ← st.open.filterM fun i => match st.goals[i]? with
+      | some gl => gl.isOpen
+      | none => pure false
+    return ← runTac code info { st with «open» := opens } (apply code (fld 0) (encodeList (opens.map encodeNat)))
+  if tag == TacTag.setGoals then
+    let some gs := decodeList (fld 0) | throwAt info "tactic: malformed goal list"
+    return ← runTac code info { st with «open» := ← gs.mapM num } (fld 1)
+  if tag == TacTag.evalTactic then
+    let st ← evalTacticStx code st (← stxOf (fld 0))
+    return ← runTac code info st (fld 1)
+  if tag == TacTag.catch_ then
+    let st' ← try runTac code info st (fld 0)
+      catch e => runTac code info st (apply code (fld 1) (encodeString e.msg))
+    return ← runTac code info st' (fld 2)
+  -- the rest are about a goal, the first field
+  let gl ← goalOf (fld 0)
+  let lvl := gl.ctx.lvl
+  if tag == TacTag.goalType then
+    let (r, st) ← refl st gl (quote g lvl gl.ty)
+    return ← runTac code info st (apply code (fld 1) r)
+  if tag == TacTag.goalExpr then
+    let (r, st) ← refl st gl gl.tm
+    return ← runTac code info st (apply code (fld 1) r)
+  if tag == TacTag.goalHyps then
+    let mut st := st
+    let mut hyps : Array RVal := #[]
+    for j in [0:lvl] do
+      let (r, st') ← refl st gl (quote g lvl gl.ctx.types[j]!)
+      st := st'
+      hyps := hyps.push (encodePair (encodeString gl.ctx.names[j]!) r)
+    return ← runTac code info st (apply code (fld 1) (encodeList hyps.toList))
+  if tag == TacTag.intro then
+    let x ← str (fld 1)
+    let .pi _ _ _ dom cod ← force gl.ty | throwAt info "intro: the goal is not a function type"
+    let ctx' := gl.ctx.bind x dom
+    let m ← freshMeta ctx' "goal"
+    unifyGoal gl (.lam x m)
+    let (st, id) := addGoal st { ctx := ctx', ty := ← instM cod (Val.var lvl), tm := m }
+    return ← runTac code info st (apply code (fld 2) (.nat id))
+  if tag == TacTag.exact then
+    let stx ← stxOf (fld 1)
+    let t ← check (gl.ctx.withInfo stx) stx gl.ty
+    unifyGoal gl t
+    return ← runTac code info st (fld 2)
+  if tag == TacTag.elabInfer then
+    let (t, ty) ← infer gl.ctx (← stxOf (fld 1))
+    let (r₁, st) ← refl st gl t
+    let (r₂, st) ← refl st gl (quote g lvl ty)
+    return ← runTac code info st (apply code (fld 2) (encodePair r₁ r₂))
+  if tag == TacTag.assign then
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    if t.mvars.isEmpty then
+      match (← get).kernelInfer (gl.kernelCtx g) t with
+      | .ok ty => unifyAt gl.ctx .missing gl.ty ty
+      | .error e => throwAt info s!"assign: {e}"
+    unifyGoal gl t
+    return ← runTac code info st (fld 2)
+  if tag == TacTag.newGoal then
+    let ty ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
+    let m ← freshMeta gl.ctx "goal"
+    let (st, id) := addGoal st { ctx := gl.ctx, ty, tm := m }
+    return ← runTac code info st (apply code (fld 2) (.nat id))
+  if tag == TacTag.normalize then
+    let v' ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
+    let (r, st) ← refl st gl (quote g lvl v')
+    return ← runTac code info st (apply code (fld 2) r)
+  if tag == TacTag.instantiate then
+    let body ← reify st.handles (fld 1) (lvl + 1)
+    let arg ← reify st.handles (fld 2) lvl
+    let (r, st) ← refl st gl (body.instantiateAt 0 arg)
+    return ← runTac code info st (apply code (fld 3) r)
+  if tag == TacTag.isDefEq then
+    let a ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
+    let b ← evalIn gl.ctx (← reify st.handles (fld 2) lvl)
+    let ok ← try unify lvl a b; pure true catch _ => pure false
+    return ← runTac code info st (apply code (fld 3) (encodeBool ok))
+  if tag == TacTag.inferType then
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    unless t.mvars.isEmpty do throwAt info "inferType: the term has holes"
+    let ty ← match (← get).kernelInfer (gl.kernelCtx g) t with
+      | .ok ty => pure ty
+      | .error e => throwAt info s!"inferType: {e}"
+    let (r, st) ← refl st gl (quote g lvl ty)
+    return ← runTac code info st (apply code (fld 2) r)
+  throwAt info s!"tactic: unknown request {tag}"
+  --|ex
+  --| sorry
+  --sol>
+
+/-- `by tac₁; tac₂ …`: a hole of the expected type, filled by running the tactics. -/
+partial def elabBy (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
+  let s ← get
+  let code ← match s.compileCode ("TacticM.run" :: s.tactics.map (·.2)) with
+    | .ok c => pure c
+    | .error e => throwAt ctx.info e
+  let m ← freshMeta ctx "by"
+  let mut st : TacState R := { goals := #[{ ctx, ty := expected, tm := m }], «open» := [0] }
+  -- each step is `[tactic, [";"?]]`
+  let tacs := (stx.getArg 1).args.filterMap fun step => step.args[0]?
+  for t in tacs do
+    st ← try evalTacticStx code st t
+      catch e => throw (if e.info.stop == 0 then { e with info := (ctx.withInfo t).info } else e)
+  let mut rest : Array String := #[]
+  for i in st.open do
+    if let some gl := st.goals[i]? then
+      if ← gl.isOpen then rest := rest.push (← gl.show)
+  unless rest.isEmpty do throwAt ctx.info s!"unsolved goals:\n{"\n\n".intercalate rest.toList}"
+  pure m
 
 end
 

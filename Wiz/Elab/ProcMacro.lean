@@ -6,18 +6,19 @@ import Wiz.Elab.Macro
 
 A procedural macro is a Wiz function `f : Macro`, from the prelude:
 
-    def MacroM (A : Type) : Type := Nat → Except String (A × Nat)
+    def MacroM (A : Type) : Type := TacticM A     -- requests: `fresh`, `fail`
     def Macro : Type := Syntax → MacroM Syntax
 
 registered for a node kind with `attribute [macro k] f`. To expand a node of kind `k`
 the elaborator **runs `f` in the interpreter**: it encodes the node as a runtime
-`Syntax` value, applies `f` to it and to the next free macro scope, and decodes the
-result. That needs the host and the prelude to agree on data layouts:
+`Syntax` value, applies `f` to it, answers its requests (fresh macro scopes) until it
+returns, and decodes the result. That needs the host and the prelude to agree on data
+layouts:
 
     SyntaxF:  missing | atom (val : String) | ident (val : String)
             | node (kind : String) (args : SyntaxF .false) | nil | cons (head) (tail)
     String := String.mk (data : List Char),   Char := Char.mk (val : Nat)
-    List:     nil | cons (head) (tail),        Except: error (e) | ok (a)
+    List:     nil | cons (head) (tail),        Tac: see `Elab/Tactic.lean`
 
 and a constructor value with tag `t` and fields `f₁ … fₙ` is `⟨0 ⟨t⟩ ⟨0 f₁ … ⟨0 fₙ ◾⟩⟩⟩`
 (see `Run.lean`).
@@ -75,17 +76,26 @@ partial def scopeQuoted (scope : Nat) : Syntax → Syntax
   | .node i k as => .node i k (as.map (scopeQuoted scope))
   | s => s
 
-/-- Run the macro `f` on `stx`: returns the expansion and the next free scope. -/
-def runProcMacro (code : Code) (f : Name) (stx : Syntax) (scope : Nat) :
-    Except String (Syntax × Nat) := do
-  let r := apply code (apply code (run code [] (.global f)) (encodeSyntax stx)) (.nat (scope + 1))
-  match (r.field 0).tag? with
-  | some 0 => throw (((r.conField 0).toString?).getD "macro failed")
-  | some 1 =>
-    let p := r.conField 0
-    let some out := decodeSyntax stx.info (p.field 0) | throw s!"macro {f} returned a malformed syntax tree"
-    let next := ((p.field 1).toNat?).getD (scope + 1)
-    pure (scopeQuoted scope out, max next (scope + 1))
-  | _ => throw s!"macro {f} returned a malformed result"
+/-- Run the macro `f` on `stx`: returns the expansion and the next free scope.
+
+`f stx : MacroM Syntax`, and `Macro.run` turns it into a `Tac` request chain ending in
+`result stx'` (see `Elab/Tactic.lean`). A macro may only ask for fresh scopes (`fresh`),
+fail (`fail`), or `trace` (ignored here). -/
+partial def runProcMacro (code : Code) (f : Name) (stx : Syntax) (scope : Nat) :
+    Except String (Syntax × Nat) :=
+  let m := apply code (run code [] (.global f)) (encodeSyntax stx)
+  go (apply code (run code [] (.global "Macro.run")) m) (scope + 1)
+where
+  go (v : RVal) (next : Nat) : Except String (Syntax × Nat) :=
+    match (v.field 0).tag? with
+    | some 1 => -- result
+      match decodeSyntax stx.info (v.conField 0) with
+      | some out => pure (scopeQuoted scope out, next)
+      | none => throw s!"macro {f} returned a malformed syntax tree"
+    | some 2 => throw (((v.conField 0).toString?).getD "macro failed") -- fail
+    | some 3 => go (v.conField 1) next -- trace
+    | some 4 => go (apply code (v.conField 0) (.nat next)) (next + 1) -- fresh
+    | some t => throw s!"macro {f} made a request ({t}) that only tactics can make"
+    | none => throw s!"macro {f} returned a malformed result"
 
 end Wiz.Elab

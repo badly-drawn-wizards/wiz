@@ -55,6 +55,11 @@ structure CommandState (R : Type) where
   builtins : List (Name × Name) := []
   /-- `attribute [macro k] f` registrations, latest first -/
   procMacros : List (Name × Name) := []
+  /-- `attribute [tactic k] f` registrations, latest first -/
+  tactics : List (Name × Name) := []
+  /-- the erased code of every registered macro and tactic, made on first use (a `Thunk`
+  remembers its value) and remade when one is registered -/
+  metaCode : Thunk (Except String Code) := Thunk.pure (.ok {})
   /-- macro rules, latest first -/
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000
@@ -313,12 +318,24 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
 
 def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     (macros : List (Name × Syntax × Syntax × List Name) := []) (builtins : List (Name × Name) := [])
-    (procMacros : List (Name × Name) := []) : Except ElabError α :=
-  -- procedural macros run against the globals as they are when this command starts
-  let runProcMacro f stx scope := do
-    let code ← (compileAll g builtins).mapError (s!"cannot compile macro {f}: {·}")
-    Elab.runProcMacro code f stx scope
-  (x.run { globals := g, levelParams, macros, builtins, procMacros, runProcMacro }).map (·.1)
+    (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
+    (metaCode : Thunk (Except String Code) := Thunk.pure (.ok {})) : Except ElabError α :=
+  -- macros and tactics run against the globals as they are when this command starts
+  let compileCode (roots : List Name) := match metaCode.get with
+    | .ok c => if roots.all c.contains then .ok c
+      else (compileReachable g builtins roots).mapError (s!"cannot compile the environment: {·}")
+    | .error e => .error e
+  let runProcMacro f stx scope := do Elab.runProcMacro (← compileCode [f, "Macro.run"]) f stx scope
+  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
+  (x.run { globals := g, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
+           kernelInfer }).map (·.1)
+
+/-- The erased code of the registered macros and tactics (and what they reach), on demand. -/
+def mkMetaCode (g : Globals R) (builtins procMacros tactics : List (Name × Name)) :
+    Thunk (Except String Code) :=
+  Thunk.mk fun _ =>
+    let roots := "TacticM.run" :: "Macro.run" :: (procMacros ++ tactics).map (·.2)
+    (compileReachable g builtins roots).mapError (s!"cannot compile the macros and tactics: {·}")
 
 /-- `notation` and `infixl`/`infixr`/`infix`: register a syntax rule and a macro rule.
 Returns the new tables and the rule `(kind, pattern, template, vars)`. -/
@@ -389,11 +406,11 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
-    else match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals (elabDeclTerms binders typeStx valStx cmd.info) levelParams with
+    else match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) s.globals (elabDeclTerms binders typeStx valStx cmd.info) levelParams with
       | .ok (ty, val) => addDeclChecked name levelParams ty val
       | .error e => report .error e.info e.msg
   | "command.check" =>
-    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals do
+    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) s.globals do
       let (t, ty) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -407,7 +424,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
   | "command.reduce" =>
-    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals do
+    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -429,8 +446,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some obs else none
         else none
       let r := match coinductiveOf? with
-        | some obs => runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals (elabCopatterns name cmd obs) levelParams
-        | none => runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals (elabDefEqns name cmd) levelParams
+        | some obs => runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) s.globals (elabCopatterns name cmd obs) levelParams
+        | none => runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) s.globals (elabDefEqns name cmd) levelParams
       match r with
       | .ok (ty, val) => addDeclChecked name levelParams ty (some val)
       | .error e => report .error e.info e.msg
@@ -440,7 +457,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
-      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals (elabCoinductive cmd levelParams) levelParams with
+      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) s.globals (elabCoinductive cmd levelParams) levelParams with
       | .error e => report .error e.info e.msg
       | .ok (decls, obs) =>
         let mut g := s.globals
@@ -459,7 +476,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else
       let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
         else elabStructure cmd levelParams
-      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals elabCmd levelParams with
+      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) s.globals elabCmd levelParams with
       | .error e => report .error e.info e.msg
       | .ok decls =>
         let mut g := s.globals
@@ -499,7 +516,21 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       unifyAt {} cmd macroTy ty
     match ok with
     | .error e => report .error e.info s!"{f} is not a macro: {e.msg}"
-    | .ok () => modify fun s => { s with procMacros := (k, f) :: s.procMacros }
+    | .ok () =>
+      modify fun s => { s with procMacros := (k, f) :: s.procMacros }
+      modify fun s => { s with metaCode := mkMetaCode s.globals s.builtins s.procMacros s.tactics }
+  | "command.attrTactic" =>
+    let k := ((cmd.getArg 3).getId?).getD "_"
+    let f := ((cmd.getArg 5).getId?).getD "_"
+    let ok := runElab s.globals do
+      let (_, ty) ← Elab.infer {} (.node cmd.info "term.ident" #[cmd.getArg 5])
+      let tacticTy ← evalIn {} (.const "Tactic" [])
+      unifyAt {} cmd tacticTy ty
+    match ok with
+    | .error e => report .error e.info s!"{f} is not a tactic: {e.msg}"
+    | .ok () =>
+      modify fun s => { s with tactics := (k, f) :: s.tactics }
+      modify fun s => { s with metaCode := mkMetaCode s.globals s.builtins s.procMacros s.tactics }
   | "command.erase" =>
     let n := ((cmd.getArg 1).getId?).getD "_"
     match s.globals.find? n with
@@ -509,7 +540,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error err => report .error cmd.info s!"cannot erase {n}: {err}"
   | "command.eval" =>
     -- elaborate, erase, run, and read the result back using its type
-    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) s.globals do
+    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -519,14 +550,16 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .error e => report .error e.info e.msg
     | .ok t =>
       let ctx : Ctx R := { globals := s.globals }
-      match Wiz.infer ctx t, compileAll s.globals s.builtins with
-      | .ok (ty, _), .ok code =>
-        match eraseCheck ctx t ty with
-        | .ok e =>
-          let v := run code [] e
-          report .info cmd.info (readback s.globals s.builtins ty v).pretty
-        | .error err => report .error cmd.info s!"cannot run this: {err}"
-      | .error err, _ | _, .error err => report .error cmd.info s!"cannot run this: {err}"
+      let result := do
+        let (ty, _) ← Wiz.infer ctx t
+        let e ← eraseCheck ctx t ty
+        let code ← compileReachable s.globals s.builtins (e.globals.toList)
+        pure (ty, e, code)
+      match result with
+      | .ok (ty, e, code) =>
+        let v := run code [] e
+        report .info cmd.info (readback s.globals s.builtins ty v).pretty
+      | .error err => report .error cmd.info s!"cannot run this: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with
     | .ok tables => modify fun s => { s with tables }

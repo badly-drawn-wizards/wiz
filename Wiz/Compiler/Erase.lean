@@ -155,6 +155,8 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     let v' ← if p == [] then pure .erased else eraseCheck ctx v vTy
     let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty
     return .letE x v' b'
+  -- the type is known (and not erasable), so don't infer the whole application again
+  | .app .., _ => return (← eraseSpine ctx t).1
   | _, _ => return (← eraseInfer ctx t).1
   --|ex
   --| sorry
@@ -176,13 +178,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
   let e : ETerm ← match t with
     | .var ix => pure (.var ix)
     | .const n _ => pure (.global n)
-    | .app f a => do
-      let (f', fty) ← eraseInfer ctx f
-      match fty with
-      | .pi _ _ q dom _ =>
-        let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a dom
-        pure (.app f' a')
-      | _ => throw (.other "erasure: application of a non-function")
+    | .app .. => pure (← eraseSpine ctx t).1
     | .ann tm ty' => eraseCheck ctx tm (ctx.eval ty')
     | .letE .. => eraseCheck ctx t ty
     | .fst p => pure (.proj 0 (← eraseInfer ctx p).1)
@@ -250,6 +246,23 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
 
 /-- Erase a term in inference mode, keeping only the program. -/
 partial def eraseE (ctx : Ctx R) (t : Term R) : TCM ETerm := return (← eraseInfer ctx t).1
+
+/-- Erase an application spine `h a₁ … aₙ` at once, returning its type: erasing `f a`
+by erasing `f` recursively would re-infer every prefix (quadratic in long chains such
+as string literals). -/
+partial def eraseSpine (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
+  let (h, args) := t.spine
+  let (h', hty) ← eraseInfer ctx h
+  let mut acc := h'
+  let mut fty := hty
+  for a in args do
+    match fty with
+    | .pi _ _ q dom cod =>
+      let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a dom
+      acc := .app acc a'
+      fty := Closure.inst ctx.globals cod (ctx.eval a)
+    | _ => throw (.other "erasure: application of a non-function")
+  pure (acc, fty)
 
 end
 

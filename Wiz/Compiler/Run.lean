@@ -266,19 +266,42 @@ where
       .con (readback g builtins (vInterp g l I D (muFamily l I D) i) v)
     | _ => .tt
 
-/-- Erase every definition the term depends on (all globals, in order). -/
-def compileAll (g : Globals R) (builtins : List (Name × Name) := []) : TCM Code := do
+/-- The globals an erased term mentions. -/
+partial def ETerm.globals (e : ETerm) (acc : Array Name := #[]) : Array Name :=
+  match e with
+  | .global n => acc.push n
+  | .lam _ b | .fix _ b | .proj _ b => b.globals acc
+  | .app f a => a.globals (f.globals acc)
+  | .letE _ v b => b.globals (v.globals acc)
+  | .obj _ fs | .prim _ fs => fs.foldl (fun acc f => f.globals acc) acc
+  | .case s bs => bs.foldl (fun acc b => b.globals acc) (s.globals acc)
+  | _ => acc
+
+/-- Erase the definitions reachable from `roots`. (Erasing everything would be wasteful:
+recursors of big types are expensive to erase and rarely run.) -/
+def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : List Name) : TCM Code := do
   let mut code : Code := {}
-  for n in g.order do
-    if let some d := g.find? n then
-      -- a declaration that can't be erased yet becomes a runtime error if it is reached
-      let e := match eraseDecl g d with
-        | .ok e => e
-        | .error _ => .prim .unreachable #[]
-      code := code.insert n e
+  let mut todo := roots.toArray
   -- definitions registered as native operations
-  for (key, n) in builtins do
-    if key != "nat" then code := code.insert n (.prim .unreachable #[.global key])
+  let natives := builtins.filter fun (key, _) => key != "nat" && key != "string"
+  while h : todo.size > 0 do
+    let n := todo.back
+    todo := todo.pop
+    if code.contains n then continue
+    if let some (key, _) := natives.find? (·.2 == n) then
+      code := code.insert n (.prim .unreachable #[.global key])
+      continue
+    let some d := g.find? n | continue
+    -- a declaration that can't be erased yet becomes a runtime error if it is reached
+    let e := match eraseDecl g d with
+      | .ok e => e
+      | .error _ => .prim .unreachable #[]
+    code := code.insert n e
+    todo := e.globals todo
   pure code
+
+/-- Erase every global. -/
+def compileAll (g : Globals R) (builtins : List (Name × Name) := []) : TCM Code :=
+  compileReachable g builtins g.order.toList
 
 end Wiz

@@ -1,5 +1,6 @@
 import Wiz.Core.Check
 import Wiz.Syntax.Basic
+import Wiz.Compiler.Run
 
 /-!
 # The elaborator monad
@@ -73,6 +74,13 @@ structure ElabState (R : Type) where
   supplies it, since it needs the compiler -/
   runProcMacro : Name → Syntax → Nat → Except String (Syntax × Nat) :=
     fun _ _ _ => .error "procedural macros can't run here"
+  /-- tactics: node kind and the Wiz function that runs it, latest first -/
+  tactics : List (Name × Name) := []
+  /-- erase what is reachable from these globals, for the interpreter (supplied by the
+  command elaborator) -/
+  compileCode : List Name → Except String Code := fun _ => .error "tactics can't run here"
+  /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
+  kernelInfer : Ctx R → Term R → Except String (VTy R) := fun _ _ => .error "no kernel here"
 
 abbrev ElabM (R : Type) := StateT (ElabState R) (Except ElabError)
 

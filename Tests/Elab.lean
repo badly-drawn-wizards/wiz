@@ -481,6 +481,15 @@ def macroGroup : Group where
             "macro_rules\n  | `(term| digits) => `(term| Nat.zero)\n#eval (digits : Nat)") [".zero"] }
   ]
 
+/-- Exactly one error (with `lib/` importable), mentioning `fragment`. -/
+def failsLib (input : String) (fragment : String) : IO Unit := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let s := runFrontend (R := ZeroOneMany) input { loader := fun m => if m == "Prelude" then some prelude else none }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+  unless (errs[0]!.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
 def treePrelude : String := "import Prelude
 inductive Tree where
   | leaf
@@ -506,6 +515,36 @@ def okLib (input : String) (infos : List String := []) : IO Unit := do
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
+
+def tacticGroup : Group where
+  name := "tactics"
+  exercise := "Exercises 6.4–6.6"
+  cases := [
+    { name := "intro and exact", run := fun _ =>
+        okLib "import Prelude\ndef id' : (A : Type) → A → A := by\n  intro A\n  intro x\n  exact x\n#check id'"
+          ["id' : (A : Type) → A → A"] },
+    { name := "tactics separated by ;", run := fun _ =>
+        okLib "import Prelude\ndef k : Nat → Bool → Nat := by intro n; intro b; exact n" },
+    { name := "assumption (Exercise 6.6)", run := fun _ =>
+        okLib "import Prelude\ndef k : Nat → Bool → Nat := by intro n; intro b; assumption" },
+    { name := "rfl is a tactic macro", run := fun _ =>
+        okLib "import Prelude\ndef two : 1 + 1 = 2 := by rfl" },
+    { name := "apply makes goals for the arguments", run := fun _ =>
+        okLib "import Prelude\ndef ap : (A B : Type) → (A → B) → A → B := by\n  intro A; intro B; intro f; intro a\n  apply f\n  assumption" },
+    { name := "first and try", run := fun _ =>
+        okLib "import Prelude\ndef t : Nat := by try exact Bool.true; first | exact Bool.true | exact 3" },
+    { name := "unsolved goals are reported with their context", run := fun _ =>
+        failsLib "import Prelude\ndef bad : Nat → Bool := by intro n" "unsolved goals:\nn : Nat\n⊢ Bool" },
+    { name := "a failing tactic is an error at the tactic", run := fun _ =>
+        failsLib "import Prelude\ndef bad : Nat := by assumption" "assumption: no hypothesis matches the goal" },
+    { name := "the proof term is checked by the kernel", run := fun _ =>
+        okLib "import Prelude\ndef k : Nat → Nat := by intro n; exact (n + 1)\n#eval k 41" ["42"] },
+    { name := "a user-defined tactic, written in Wiz", run := fun _ =>
+        okLib ("import Prelude\nsyntax (name := intros2) \"intros2\" : tactic\n" ++
+          "def myIntros : Tactic := fun _ => do\n  g ← TacticM.mainGoal;\n  g1 ← TacticM.intro g \"a\";\n  g2 ← TacticM.intro g1 \"b\";\n" ++
+          "  TacticM.replaceMainGoal (.cons g2 .nil)\nattribute [tactic tactic.intros2] myIntros\n" ++
+          "def k : Nat → Nat → Nat := by intros2; exact b") }
+  ]
 
 def builtinGroup : Group where
   name := "builtins"
@@ -534,8 +573,8 @@ def builtinGroup : Group where
     { name := "non-ASCII strings are cheap", run := fun _ =>
         okLib "import Prelude\n#eval \"λ✝\"" ["\"λ✝\""] },
     { name := "do notation (a macro)", run := fun _ =>
-        okLib "import Prelude\n#eval (do x ← MacroM.fresh; y ← MacroM.fresh; MacroM.pure (x + y) : MacroM Nat) 5"
-          [".ok (11, 7)"] },
+        okLib ("import Prelude\n#eval (do x ← TacticM.pure 2; y ← TacticM.pure 3; TacticM.pure (x + y) : TacticM Nat)\n" ++
+          "  (fun n => Tac.setGoals (.cons n .nil) Tac.done)") [".setGoals (.cons 5 .nil) .done"] },
     { name := "quotations build Syntax (Exercise 6.2)", run := fun _ =>
         okLib "import Prelude\n#eval `(term| f .x)"
           [".node \"term.app\" (.cons (.node \"term.ident\" (.cons (.ident \"f✝\") .nil)) " ++

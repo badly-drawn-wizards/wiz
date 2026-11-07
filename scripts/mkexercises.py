@@ -72,7 +72,7 @@ def main(src, dst):
     for f in sorted(files):
         with open(os.path.join(src, f), "rb") as h:
             data = h.read()
-        if f.endswith(".lean"):
+        if f.endswith((".lean", ".wiz")):
             data = strip(data.decode(), f).encode()
         target = os.path.join(dst, f)
         os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
