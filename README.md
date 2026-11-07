@@ -741,5 +741,20 @@ $ wiz run fact.wiz        # def main : Nat := fact 30
 |-----|--------------------|----------------------------------------|
 | 8.2 | `Compiler/C.lean`  | `body`: C statements for an IR body    |
 
-Next: reuse analysis (drop specialisation and in-place updates), borrowed parameters,
-then textual LLVM IR.
+### 8c: reuse ✅
+
+`Compiler/Reuse.lean` pairs each `drop x` with a later allocation in the same block:
+`let w := reset x; …; let y := reuse w in ctor t args`. At runtime, if `x` was unique,
+its fields are dropped and the new object is written into its cell (if the sizes
+match), so updating data you own happens in place. Constructor functions are inlined
+when fully applied, so user code takes part. The generic eliminators already reuse
+their payload pairs.
+
+| #   | Where                 | What                                          |
+|-----|-----------------------|-----------------------------------------------|
+| 8.3 | `Compiler/Reuse.lean` | `insertReuse`: pair drops with allocations    |
+
+Still to do in the backend: specialise the eliminators for known descriptions (flat
+constructor objects instead of nested pairs, direct recursion instead of walking the
+description), borrowed parameters, drop specialisation, and textual LLVM IR (`llc`
+works in this environment, through the Nix store).

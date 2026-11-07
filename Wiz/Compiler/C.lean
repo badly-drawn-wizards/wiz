@@ -51,6 +51,10 @@ def expr (arities : Std.HashMap Name Nat) (x : Var) : Expr → String
     let arr := if as.isEmpty then "NULL" else s!"(wiz_val[]){lb}{args as}{rb}"
     s!"{var x} = wiz_clo_new({mangle f}_boxed, {(arities.get? f).getD 0}, {as.size}, {arr});"
   | .ap f as => s!"{var x} = wiz_apply({var f}, {as.size}, (wiz_val[]){lb}{args as}{rb});"
+  | .reset y => s!"{var x} = wiz_reset({var y});"
+  | .reuse tok t as =>
+    let sets := as.toList.zipIdx.map fun (a, i) => s!" WIZ_SET({var x}, {i}, {var a});"
+    s!"{var x} = wiz_reuse({var tok}, {t}, {as.size});" ++ String.join sets
   | .prim op as =>
     let fn := match op with
       | "nat.succ" => "wiz_nat_succ" | "nat.pred" => "wiz_nat_pred"
@@ -99,7 +103,8 @@ def signature (d : IR.Decl) : String :=
   s!"static wiz_val {mangle d.name}({ps})"
 
 def decl (arities : Std.HashMap Name Nat) (d : IR.Decl) : String :=
-  let locals := (bound d.body).filter (!d.params.contains ·)
+  -- (a reuse token may be bound in several branches: declare it once)
+  let locals := ((bound d.body).filter (!d.params.contains ·)).toList.eraseDups.toArray
   let decls := if locals.isEmpty then "" else s!"  wiz_val {", ".intercalate (locals.toList.map var)};\n"
   let boxedArgs := ", ".intercalate ((List.range d.params.size).map (s!"a[{·}]"))
   s!"{signature d} {lb}\n{decls}{body arities {} d.body}{rb}\n" ++

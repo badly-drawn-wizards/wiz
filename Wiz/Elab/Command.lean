@@ -692,7 +692,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let e ← (eraseCheck ctx t ty).mapError toString
         let code ← (compileReachable s.globals s.builtins e.globals.toList).mapError toString
         let decls ← IR.lowerProgram code e
-        let (v, _) ← IR.runProgram (decls.map (·.insertRC))
+        let (v, _) ← IR.runProgram (decls.map (·.optimize))
         pure (ty, v)
       match result with
       | .ok (ty, v) => report .info cmd.info (readback s.globals s.builtins ty v).pretty
@@ -705,7 +705,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match result with
     | .ok decls =>
       let mine := decls.filter fun d => d.name == n || d.name.startsWith (n ++ ".")
-      report .info cmd.info ("\n".intercalate (mine.toList.map (·.insertRC.toString)))
+      report .info cmd.info ("\n".intercalate (mine.toList.map (·.optimize.toString)))
     | .error err => report .error cmd.info s!"#ir: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with

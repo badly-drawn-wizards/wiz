@@ -35,6 +35,8 @@ structure Ctx where
   natives : Std.HashMap Name Name
   /-- the function being lowered, for naming lifted lambdas -/
   owner : Name
+  /-- functions inlined when fully applied: constructors (bodies that only build objects) -/
+  inlines : Std.HashMap Name ETerm := {}
 
 abbrev LowerM := ReaderT Ctx (StateT (Nat × Nat × Array Decl) (Except String))
 
@@ -218,6 +220,9 @@ partial def lowerApp (env : List Binding) (e : ETerm) (k : Cont) : LowerM Body :
       else bind (.pap (nativeWrapper op) xs) k
     | _, some (f, pre, arity) =>
       let all := pre ++ xs
+      if let some body := (← read).inlines.get? f then
+        if pre.isEmpty && all.size == arity then
+          return ← lower (all.toList.reverse.map Binding.var) body k
       if all.size == arity then bind (.fap f all) k
       else if all.size < arity then bind (.pap f all) k
       else
@@ -227,6 +232,12 @@ partial def lowerApp (env : List Binding) (e : ETerm) (k : Cont) : LowerM Body :
       lower env h (.fn fun f => bind (.ap f xs) k)
 
 end
+
+/-- A body that only builds objects (a constructor's). -/
+partial def ctorShaped : ETerm → Bool
+  | .obj _ fs => fs.all ctorShaped
+  | .var _ | .erased | .natLit _ => true
+  | _ => false
 
 /-- Lower a whole program: the reachable definitions, the eliminators of `PrimCode`,
 wrappers for native operations, and `main`. The result is sorted by name, so the
@@ -240,6 +251,10 @@ def lowerProgram (code : Code) (main : ETerm) : Except String (Array Decl) := do
     | e => defs := defs.push (n, e)
   defs := (defs.qsort (·.1 < ·.1)) ++ PrimCode.all.toArray ++ #[("wiz.entry", main)]
   let arities : Std.HashMap Name Nat := defs.foldl (fun m (n, e) => m.insert n (peelLams e).1.length) {}
+  -- constructors: inline them, so allocations can meet drops (and reuse)
+  let inlines : Std.HashMap Name ETerm := defs.foldl (fun m (n, e) =>
+    let (xs, b) := peelLams e
+    if !xs.isEmpty && ctorShaped b then m.insert n b else m) {}
   let mut out : Array Decl := #[]
   -- wrappers for partially applied native operations
   for key in (natives.toList.map (·.2)).eraseDups.toArray.qsort (· < ·) do
@@ -248,7 +263,7 @@ def lowerProgram (code : Code) (main : ETerm) : Except String (Array Decl) := do
                       body := .vdecl ps.size (.prim key ps) (.ret ps.size) }
   for (n, e) in defs do
     let (xs, body) := peelLams e
-    let ctx : Ctx := { arities, natives, owner := n }
+    let ctx : Ctx := { arities, natives, owner := n, inlines }
     let params := (List.range xs.length).toArray
     let env := params.toList.reverse.map Binding.var
     let (b, (_, _, lifted)) ← (lower env body .ret).run ctx |>.run (xs.length, 0, #[])
