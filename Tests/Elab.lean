@@ -658,7 +658,7 @@ def ioRun (src : String) (expected : String) : IO Unit := do
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal s "main" dir with
+  match ← Build.runGlobal s "main" dir (timeout := some 120) with
   | .ok v => checkEq expected v
   | .error e =>
     if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
@@ -726,6 +726,40 @@ def ffiGroup : Group where
           "  IO.println (Nat.toString (Bytes.size (Bytes.ofString \"λx\")))") "ABC\n3\n" },
     { name := "foreign types are checked", run := fun _ =>
         ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
+  ]
+
+/-- Tokens as the Lean lexer reads them, as `kind:text` lines. -/
+partial def leanTokens (tokens : Array String) (input : String) : List String :=
+  let chars := input.toList.toArray
+  let rec go (i : Nat) (acc : List String) : List String :=
+    let i := skipWs chars i
+    if i ≥ chars.size then acc.reverse else
+    match readToken tokens chars i with
+    | .ok t =>
+      let line := match t.tok with
+        | .atom a => "atom:" ++ a | .ident n => "ident:" ++ n | .num d => "num:" ++ d | .str s => "str:" ++ s
+      go t.stop (line :: acc)
+    | .error e => (("error:" ++ e) :: acc).reverse
+  go 0 []
+
+/-- A Wiz string literal. -/
+def wizLit (s : String) : String :=
+  "\"" ++ String.join (s.toList.map fun c => if c == '"' then "\\\"" else if c == '\\' then "\\\\" else if c == '\n' then "\\n" else c.toString) ++ "\""
+
+def selfHostGroup : Group where
+  name := "selfhost"
+  exercise := "Stage 12b"
+  cases := [
+    { name := "the lexer in Wiz agrees with the Lean lexer", run := fun _ => do
+        let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
+        let input := "def f (x : Nat) : Nat := x + 1 -- a comment\n/- a /- nested -/ block -/ #eval f 41\n" ++
+          "inductive T where | a | b (t : T)\ndef s : String := \"hi\\n\" -- strings\ndef α₁ : List.cons → Nat.add := λ x => x.1"
+        let toks := Builtin.tables.tokens
+        let expected := leanTokens toks input
+        let table := toks.toList.foldr (fun t acc => s!"(.cons {wizLit t} {acc})") ".nil"
+        let prog := lexSrc ++ s!"\ndef main : IO Unit := printAll (List.reverseL (tokenize {table} {wizLit input}) .nil)\n"
+        let prog := prog.replace "def printAll" "def List.reverseL : List String → List String → List String\n  | .nil, acc => acc\n  | .cons x xs, acc => List.reverseL xs (.cons x acc)\ndef printAll"
+        ioRun prog ("\n".intercalate expected ++ "\n") }
   ]
 
 def stdGroup : Group where
