@@ -1165,7 +1165,16 @@ def check (c : TCtx) (t : Tm) (ty : Val) : TyRes := match checkW c t (whnf ty) w
   | .ok _ u => .ok ty u
   | r => r
 def checkW : TCtx → Tm → Val → TyRes
-  | _, _, _ => .err "not implemented"
+  | c, t, ty => checkByInfer c t ty
+-- (given) Otherwise: infer, and the type must be a subtype of the expected one. (A
+-- catch-all row is copied into every case the rows above it split off, so a long
+-- right-hand side here would be compiled hundreds of times: keep it a call.)
+def checkByInfer (c : TCtx) (t : Tm) (ty : Val) : TyRes := match infer c t with
+  | .ok ty' u => match subTy c ty' ty with
+    | .true => .ok ty u
+    | .false => .err (String.append (String.append "type mismatch: expected " (showVal c ty))
+        (String.append ", got " (showVal c ty')))
+  | r => r
 -- branch `i` and on, against the motive at tag `i`; the usages are joined
 def checkBranches : TCtx → Nat → Tm → Tms → Nat → Option (List Q) → TyRes
   | c, k, _, .tnil, _, acc => match acc with

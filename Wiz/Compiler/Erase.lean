@@ -218,6 +218,32 @@ partial def Wiz.IR.freeIdx' (t : Term R) (depth : Nat := 0) (acc : Std.HashSet N
     acc := acc'
     pure acc
 
+/-- The type of a term that is already known to be well typed, without checking it
+again: along an elimination spine only (heads, applications, projections, annotations,
+`ecase`, `ind`), else by the kernel's `infer`. Erasure asks for the type of every
+subterm, so a full `infer` at each would re-check each subterm once per enclosing node:
+quadratic in the nesting depth of the deep `casesOn` trees that `match` produces. -/
+partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
+  let g := ctx.globals
+  match t with
+  | .var ix => pure ctx.types[ix]!
+  | .const n us => match g.find? n with
+    | some d => pure (Wiz.eval g [] (d.type.instLevels d.levelParams us))
+    | none => throw (.unboundGlobal n)
+  | .app f a => match whnf (← quickType ctx f) with
+    | .pi _ _ _ _ cod => pure (Closure.inst g cod (ctx.eval a))
+    | _ => return (← infer ctx t).1
+  | .fst p => match whnf (← quickType ctx p) with
+    | .sigma _ _ A _ => pure A
+    | _ => return (← infer ctx t).1
+  | .snd p => match whnf (← quickType ctx p) with
+    | .sigma _ _ _ B => pure (Closure.inst g B (vFst (ctx.eval p)))
+    | _ => return (← infer ctx t).1
+  | .ann _ ty => pure (ctx.eval ty)
+  | .ecase _ m s _ => pure (Closure.inst g (.mk ctx.env m) (ctx.eval s))
+  | .ind _ _ _ _ P _ i x => pure (vApp g (vApp g (ctx.eval P) (ctx.eval i)) (ctx.eval x))
+  | _ => return (← infer ctx t).1
+
 /-- **Exercise 5.1a.** Erase `t`, checking it against `ty`.
 
 * if `ty` is `erasable`, the result is `◾`;
@@ -246,7 +272,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
 * the eliminators `ind`, `Desc.elim`, `out`, `coit`, `scofix` become primitives;
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
 partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
-  let (ty, _) ← infer ctx t
+  let ty ← quickType ctx t
   if erasable ctx ty then return (.erased, ty)
   if let .natLit n := t then return (.natLit n, ty)
   sorry
