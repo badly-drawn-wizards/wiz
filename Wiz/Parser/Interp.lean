@@ -53,7 +53,7 @@ structure Candidate where
   prec : Nat
   priority : Nat
   index : Nat
-  /-- the parser state after it ran (offset, errors, memo) -/
+  /-- the parser state after it ran (offset, errors; not the memo or token cache) -/
   state : PState
 
 /-- **Exercise 2.5a.** Pick the winning candidate: the furthest `stop`, then the
@@ -73,13 +73,19 @@ returns the candidate *without* committing to its state; on failure it still kee
 error and memo information. -/
 def tryAlternative (p : P Syntax) (prec priority index : Nat) : P (Option Candidate) :=
   fun c s => match p c s with
-    | .ok stx s' => .ok (some { stx, stop := s'.pos, prec, priority, index, state := s' })
-        { s with err := s'.err, memo := s'.memo }
-    | .error s' => .ok none { s with err := s'.err, memo := s'.memo }
+    | .ok stx s' =>
+      -- the candidate doesn't keep the memo (`commit` replaces it anyway): sharing it would
+      -- make the next `memoStore` copy the whole table
+      let memo := s'.memo
+      let toks := s'.toks
+      let state := { s' with memo := {}, toks := {} }
+      .ok (some { stx, stop := s'.pos, prec, priority, index, state })
+        { s with err := s'.err, memo, toks }
+    | .error s' => .ok none { s with err := s'.err, memo := s'.memo, toks := s'.toks }
 
 /-- Commit to a candidate's state, keeping the accumulated errors and memo. -/
 def commit (cand : Candidate) : P Unit := fun _ s =>
-  .ok () { cand.state with err := s.err, memo := s.memo }
+  .ok () { cand.state with err := s.err, memo := s.memo, toks := s.toks }
 
 mutual
 
@@ -263,7 +269,9 @@ partial def trailingLoop (cat : Category) (rbp : Nat) (lhs : Syntax) (lhsPrec : 
 --sol>
 /-- Memoised category parser. -/
 partial def categoryParser (c : Name) (rbp : Nat) : P Syntax := do
-  let key : MemoKey := { cat := c, prec := rbp, pos := (← state).pos, saved := (← ctx).savedPos? }
+  -- the saved position only matters through its column (`colGt`/`colGe`), so key on that:
+  -- nested layout blocks then share their memo entries
+  let key : MemoKey := { cat := c, prec := rbp, pos := (← state).pos, saved := (← ctx).savedPos?.map (colOf (← ctx).input) }
   match ← memoLookup key with
   | some (some (stx, stop)) => setPos stop; pure stx
   | some none => failAt (← nextPos) c

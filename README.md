@@ -1113,9 +1113,28 @@ builds a value of size `↑s` from fields at `s`. Checking falls back to **subty
 (`sizeLe`, which uses a variable's `Size< u` bound), functions contravariant in their
 domain (and may differ in quantity when they are propositions), pairs covariant.
 
-Next: sized recursion (`sfix`, `scase`) and coinduction, then checking declarations
-(with symbolic levels), and the performance work that self-hosting will need (lazy
-unfolding first).
+### 14o: sized recursion ✅
+
+`sfix` (recursion whose function takes a smaller size `Size< s`) and `scase` (case
+analysis giving the fields at the predecessor size), with the method types computed
+from the description as in the Lean kernel (`sfixFunTy`, `scaseMethodTy`). Both reduce
+on a constructor; the recursive function is used ω times. The differential test checks
+that they compute, and that the index can't be returned (it is erased).
+
+### 14p: coinduction ✅
+
+`ν^s D i`, `out`, `cocon`, coiteration (`coit`) and sized corecursion (`scofix`), as
+in the Lean kernel: unfoldings compute only when observed (`out` re-wraps the recursive
+fields with the `map` template), only a value of size `↑s` or `∞` can be observed, and
+`ν` is contravariant in its size. Unfoldings are compared structurally (there is no
+bisimulation). The differential test observes streams built both ways.
+
+The parser got a per-offset token cache (each alternative used to re-lex, scanning the
+whole token table) and no longer shares its memo table with candidate states (each
+store copied the table): `Kernel.wiz` now checks in a third of the time.
+
+Next: checking declarations (with symbolic levels), and the performance work that
+self-hosting will need (lazy unfolding first).
 
 ## Stage 11: tooling
 
