@@ -1086,7 +1086,12 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       let ty := eval (← getGlobals) ctx.env (.const N [])
       return (← check ctx stx ty, ty)
     | none => throwAt ctx.info "numerals need `builtin nat := …` or a type ascription"
-  | "term.str" => throwAt ctx.info "string literals need data types (stage 4e)"
+  | "term.str" =>
+    match (← get).builtins.lookup "string" with
+    | some S =>
+      let ty := eval (← getGlobals) ctx.env (.const S [])
+      return (← check ctx stx ty, ty)
+    | none => throwAt ctx.info "string literals need `builtin string := …`"
   | k => throwAt ctx.info s!"no elaborator for syntax kind {k}"
 
 end

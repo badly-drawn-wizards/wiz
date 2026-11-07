@@ -504,7 +504,13 @@ def builtinGroup : Group where
     { name := "numerals reduce in the kernel", run := fun _ =>
         okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4" },
     { name := "native equality", run := fun _ =>
-        okLib "import Prelude\n#eval Nat.beq 3 3" [".true"] }
+        okLib "import Prelude\n#eval Nat.beq 3 3" [".true"] },
+    { name := "string literals", run := fun _ =>
+        okLib "import Prelude\n#eval String.append \"ab\" \"cd\"" ["\"abcd\""] },
+    { name := "a numeral is not a string", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef s : String := 3" { loader := fun _ => some prelude }
+        check (s.messages.any (·.severity == .error)) "expected an error" }
   ]
 
 end Tests.Elab

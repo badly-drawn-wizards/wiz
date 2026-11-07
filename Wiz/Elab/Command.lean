@@ -478,7 +478,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.builtin" =>
     let key := ((cmd.getArg 1).getId?).getD "_"
     let n := ((cmd.getArg 3).getId?).getD "_"
-    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq"]
+    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "string"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
     else if !s.globals.contains n then report .error cmd.info s!"unknown declaration {n}"
     else modify fun s => { s with builtins := (key, n) :: s.builtins }
@@ -506,7 +506,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         match eraseCheck ctx t ty with
         | .ok e =>
           let v := run code [] e
-          report .info cmd.info (readback s.globals (s.builtins.lookup "nat") ty v).pretty
+          report .info cmd.info (readback s.globals s.builtins ty v).pretty
         | .error err => report .error cmd.info s!"cannot run this: {err}"
       | .error err, _ | _, .error err => report .error cmd.info s!"cannot run this: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
