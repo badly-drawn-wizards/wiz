@@ -1,0 +1,102 @@
+-- From text to a checked term, all in Wiz (stage 14b): the lexer and parser read the
+-- full Wiz grammar, and this scope checker turns the syntax of a few term forms into
+-- the kernel's `Tm` (names become de Bruijn indices), which `Kernel.wiz` type checks.
+-- Load it after `Lex.wiz`, `Parse.wiz` and `Kernel.wiz`.
+--
+-- Supported: identifiers, `Type n`, `(x : A) → B`, `A → B`, `fun x (y : A) => b` (the
+-- binder types are not kept: a λ is checked against a type), application,
+-- `let x : A := v; b`, `(t : T)` and parentheses.
+
+-- the arguments of a node, as a list
+def argsOf : SyntaxF .false → List Syntax
+  | .nil => .nil
+  | .cons s rest => .cons s (argsOf rest)
+def kids : Syntax → List Syntax
+  | .node _ args => argsOf args
+  | _ => .nil
+def kid (s : Syntax) (i : Nat) : Syntax := Syntax.getArg s i
+def kindOf : Syntax → String
+  | .node k _ => k
+  | _ => ""
+def is (s : Syntax) (k : String) : Bool := strEq (kindOf s) k
+
+def digits : List Char → Nat → Nat
+  | .nil, acc => acc
+  | .cons c cs, acc => digits cs (Nat.add (Nat.mul acc 10) (Char.code c - 48))
+
+def indexOf : List String → String → Nat → Option Nat
+  | .nil, _, _ => .none
+  | .cons n ns, x, i => match strEq n x with
+    | .true => .some i
+    | .false => indexOf ns x (i + 1)
+
+inductive Elab where
+  | ok (t : Tm)
+  | err (msg : String)
+
+-- the names a binder introduces, and its type (if any)
+def identNames : List Syntax → List String
+  | .nil => .nil
+  | .cons s rest => .cons (match s with
+      | .ident n => n
+      | _ => "_") (identNames rest)
+def binderNames (b : Syntax) : List String := match b with
+  | .ident n => .cons n .nil
+  | _ => identNames (kids (kid b 2))
+def binderType (b : Syntax) : Option Syntax := match kids (kid b 3) with
+  | .cons _ (.cons t _) => .some t
+  | _ => .none
+
+-- all the names of a `fun`'s binders
+def binders : List Syntax → List String
+  | .nil => .nil
+  | .cons b bs => List.append (binderNames b) (binders bs)
+
+def univLevel (s : Syntax) : Nat := match kids (kid s 1) with
+  | .cons l _ => match kid l 0 with
+    | .node _ args => match argsOf args with
+      | .cons (.atom d) _ => match d with
+        | .mk cs => digits cs 0
+      | _ => 0
+    | _ => 0
+  | .nil => 0
+
+-- **Exercise 14.4.** Scope checking: names (innermost first) to indices.
+mutual
+def elab : List String → Syntax → Elab
+  | _, _ => .err "not implemented"
+def both : List String → Syntax → Syntax → (Tm → Tm → Tm) → Elab
+  | names, a, b, k => match elab names a with
+    | .ok x => match elab names b with
+      | .ok y => .ok (k x y)
+      | e => e
+    | e => e
+-- `(x y : A) → B`: one Π per name, `A` read in each one's context
+def pis : List String → List String → Option Syntax → Syntax → Elab
+  | names, .nil, _, body => elab names body
+  | names, .cons x xs, ty, body => match ty with
+    | .none => .err "a Π needs a binder type"
+    | .some a => match elab names a with
+      | .ok aT => match pis (.cons x names) xs ty body with
+        | .ok b => .ok (.pi aT b)
+        | e => e
+      | e => e
+def lams : List String → List String → Syntax → Elab
+  | names, .nil, body => elab names body
+  | names, .cons x xs, body => match lams (.cons x names) xs body with
+    | .ok b => .ok (.lam b)
+    | e => e
+def apps : List String → Tm → List Syntax → Elab
+  | _, f, .nil => .ok f
+  | names, f, .cons a rest => match elab names a with
+    | .ok aT => apps names (.app f aT) rest
+    | e => e
+end
+
+-- parse, scope check and type check a closed term
+def checkText (cats : List Cat) (tokens : List String) (text : String) : String :=
+  match parseSyntax cats tokens "term" text with
+  | .err m => String.append "parse " m
+  | .ok stx => match elab .nil stx with
+    | .err m => String.append "scope error: " m
+    | .ok t => typeOf t

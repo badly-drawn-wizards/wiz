@@ -799,7 +799,7 @@ def leanParse (t : ParserTables) (cat : Name) (input : String) : String :=
 
 def selfHostGroup : Group where
   name := "selfhost"
-  exercise := "Stages 12b–14a"
+  exercise := "Stages 12b–14b"
   cases := [
     { name := "the lexer in Wiz agrees with the Lean lexer", run := fun _ => do
         let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
@@ -842,7 +842,21 @@ def selfHostGroup : Group where
           "  IO.println (normalize (.app (.app add two) two));\n  IO.println (typeOf (.app (.univ 0) (.univ 0)))\n"
         ioRun (kernel ++ "\n" ++ defs ++ main) ("(x0 : U0) → (x1 : x0) → x0\n(x0 : U0) → (x1 : x0) → x0\n" ++
           "error: type mismatch: expected U0, got U1\n(x0 : U0) → (x1 : (x1 : x0) → x0) → (x2 : x0) → x0\n" ++
-          "λx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\nerror: not a function: its type is U1\n") }
+          "λx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\nerror: not a function: its type is U1\n") },
+    { name := "text to checked term, all in Wiz", run := fun _ => do
+        let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
+        let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
+        let t := Builtin.tables
+        let bad := "(fun (x : Type) => x"
+        let cases := ["(fun A x => x : (A : Type) → A → A)", "Type 2", "let T : Type 1 := Type; (fun x => x : T → T)",
+          "fun x => x", "y", "(fun f x => f x : (Type → Type) → Type → Type)", bad]
+        let calls := cases.map fun c => s!"(checkText cats tokens {wizLit c})"
+        let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
+          s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
+          s!"def main : IO Unit := printAll {wizList calls}\n"
+        ioRun prog ("(x0 : U0) → (x1 : x0) → x0\nU3\n(x0 : U0) → U0\n" ++
+          "error: cannot infer the type of a λ; add a type ascription\nscope error: unknown identifier y\n" ++
+          "(x0 : (x0 : U0) → U0) → (x1 : U0) → U0\nparse " ++ leanParse t "term" bad ++ "\n") }
   ]
 
 def languageGroup : Group where
