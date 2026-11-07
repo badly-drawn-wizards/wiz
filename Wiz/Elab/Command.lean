@@ -131,7 +131,7 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
   let (ty, _) ← Elab.checkType ctx tyStx
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
-  let .nu l I D i (some (T, us, args)) ← force (← evalIn ctx ty)
+  let .nu l I D i _ (some (T, us, args)) ← force (← evalIn ctx ty)
     | throwAt tyStx.info "copatterns need a coinductive result type"
   let q (lvl : Lvl) (v : Val R) : Term R := quote g lvl v
   -- the state: the explicit binders
@@ -305,8 +305,8 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- the recursors need the declarations above
         if cmd.isOfKind "command.inductive" then
           let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 1).getId?
-          for withIH in [false, true] do
-            match mkRecursor g name ctors withIH with
+          for (withIH, sized) in [(false, false), (true, false), (false, true)] do
+            match mkRecursor g name ctors withIH sized with
             | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
             | .ok d =>
               match addDecl g d with

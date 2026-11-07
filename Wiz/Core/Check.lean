@@ -241,7 +241,9 @@ def popUsage (x : Name) (q : QPoly R) : Usage R → TCM (Usage R)
 mutual
 
 /-- **Exercise 1.6.** Check `t` against the type `ty`. Implement the `lam` and `letE`
-rules here and fall back to `infer` + `convTy` for everything else.
+rules here and fall back to `infer` + `convTy` for everything else. (Stage 4f
+replaces `convTy` with `subTy`, sized subtyping: the inferred type must be a subtype
+of the expected one.)
 
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
@@ -265,6 +267,12 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let ub ← check ctx b (Closure.inst ctx.globals B (ctx.eval a))
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
+  | t, .sizeLt s => do
+    -- a size below `s`: `↑t ≤ s`
+    let _ ← check { ctx with erased := true } t .size
+    unless sizeLe ctx.tys (.szSuc (ctx.eval t)) s do
+      throw (.other s!"the size {ctx.showTerm t} is not below {ctx.showVal s}")
+    pure (Usage.zeros ctx.lvl)
   | .dret i, .desc _ I => check ctx i I
   | .darg q S D, .desc l I => do
     let _ ← checkQty ctx q
@@ -276,10 +284,17 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let uj ← check ctx j I
     let uD ← check ctx D (.desc l I)
     pure (uj + uD)
-  | .con x, .mu l I D i _ => check ctx x (vInterp ctx.globals l I D (muFamily l I D) i)
+  | .con x, .mu l I D i s _ => do
+    let some s' := sizePred? s
+      | throw (.other s!"a constructor builds a value of size ↑s, not {ctx.showVal s}")
+    check ctx x (vInterp ctx.globals l I D (muFamilyAt l I D s') i)
+  | .cocon x, .nu l I D i s _ => do
+    let some s' := sizePred? s
+      | throw (.other s!"cocon builds a value of size ↑s, not {ctx.showVal s}")
+    check ctx x (vInterp ctx.globals l I D (nuFamilyAt l I D s') i)
   | _, _ => do
     let (ty', u) ← infer ctx t
-    unless convTy ctx.globals ctx.tys ty ty' do
+    unless subTy ctx.globals ctx.tys ty' ty do
       throw (.typeMismatch (ctx.showVal ty) (ctx.showVal ty'))
     pure u
   --|ex
@@ -292,7 +307,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   --| | .dret i, .desc _ I => sorry
   --| | .darg q S D, .desc l I => sorry
   --| | .drec q j D, .desc l I => sorry
-  --| | .con x, .mu l I D i _ => sorry
+  --| | .con x, .mu l I D i _ _ => sorry
   --| | _, _ => sorry
   --sol>
 
@@ -446,6 +461,10 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     pure (vApp g (vApp g vP vb) (ctx.eval e), Usage.zeros ctx.lvl)
   | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
   | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)
+  | .size => pure (.sort 1, Usage.zeros ctx.lvl)
+  | .sizeLt s => do let _ ← check { ctx with erased := true } s .size; pure (.sort 1, Usage.zeros ctx.lvl)
+  | .szInf => pure (.size, Usage.zeros ctx.lvl)
+  | .szSuc s => do let _ ← check { ctx with erased := true } s .size; pure (.size, Usage.zeros ctx.lvl)
   | .enum _ => pure (.sort 1, Usage.zeros ctx.lvl)
   | .tag ls i => do
     unless i < ls.length do throw (.other s!"tag {i} out of range for {ls.length} labels")
@@ -481,7 +500,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let ub ← check ctx b tb
     let uc ← check ctx c tc
     pure (vApp ctx.globals vP (ctx.eval D), QPoly.const w • (ua + ub + uc) + uD)
-  | .mu l I D i _ | .nu l I D i _ => do
+  | .mu l I D i _ _ | .nu l I D i _ _ => do
     let lI ← checkType ctx I
     unless lI.equiv (.succ l) do throw (.other "an index type must be in the data type's universe")
     let vI := ctx.eval I
@@ -499,12 +518,55 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let um ← check ctx m (indMethodTy ctx.globals l v vI vD vP w)
     let _ ← check ctx i vI
     let vi := ctx.eval i
-    let ux ← check ctx x (.mu l vI vD vi none)
+    let ux ← check ctx x (.mu l vI vD vi .szInf none)
     pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), QPoly.const w • um + ux)
   | .out x => do
     let (ty, u) ← infer ctx x
-    let .nu l I D i _ := ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
-    pure (vInterp ctx.globals l I D (nuFamily l I D) i, u)
+    let .nu l I D i s _ := ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
+    let some s' := sizePred? s
+      | throw (.other s!"only a value of size ↑s or ∞ can be observed, not {ctx.showVal s}")
+    pure (vInterp ctx.globals l I D (nuFamilyAt l I D s') i, u)
+  | .sfix l I D v P f s i x => do
+    let _ ← checkType ctx I
+    let vI := ctx.eval I
+    let _ ← check ctx D (.desc l vI)
+    let vD := ctx.eval D
+    let w := QuantitySyntax.explicitDefault
+    let _ ← check ctx P (indMotiveTy ctx.globals l v vI vD w)
+    let vP := ctx.eval P
+    let uf ← check ctx f (sfixFunTy ctx.globals l vI vD vP w)
+    let _ ← check { ctx with erased := true } s .size
+    let _ ← check ctx i vI
+    let ux ← check ctx x (.mu l vI vD (ctx.eval i) (ctx.eval s) none)
+    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), QPoly.const w • uf + ux)
+  | .scofix l I D A f s i a => do
+    let _ ← checkType ctx I
+    let vI := ctx.eval I
+    let _ ← check ctx D (.desc l vI)
+    let vD := ctx.eval D
+    let w := QuantitySyntax.explicitDefault
+    let _ ← check ctx A (coitStateTy l vI w)
+    let vA := ctx.eval A
+    let uf ← check ctx f (scofixFunTy ctx.globals l vI vD vA w)
+    let _ ← check { ctx with erased := true } s .size
+    let _ ← check ctx i vI
+    let ua ← check ctx a (vApp ctx.globals vA (ctx.eval i))
+    pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, QPoly.const w • uf + ua)
+  | .scase l I D v P m s i x => do
+    let _ ← checkType ctx I
+    let vI := ctx.eval I
+    let _ ← check ctx D (.desc l vI)
+    let vD := ctx.eval D
+    let w := QuantitySyntax.explicitDefault
+    let _ ← check ctx P (indMotiveTy ctx.globals l v vI vD w)
+    let vP := ctx.eval P
+    let _ ← check { ctx with erased := true } s .size
+    let vs := ctx.eval s
+    let um ← check ctx m (scaseMethodTy ctx.globals l vI vD vP vs w)
+    let _ ← check ctx i vI
+    let ux ← check ctx x (.mu l vI vD (ctx.eval i) vs none)
+    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + ux)
+  | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   | .coit l I D S st i s => do
     let _ ← checkType ctx I
     let vI := ctx.eval I
@@ -517,7 +579,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let vi := ctx.eval i
     let us ← check ctx s (vApp ctx.globals vS vi)
-    pure (.nu l vI vD vi none, QPoly.const w • ust + us)
+    pure (.nu l vI vD vi .szInf none, QPoly.const w • ust + us)
   | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --|ex
   --| | .app f a => sorry
@@ -541,16 +603,25 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .transp A a P p b e => sorry
   --| | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
   --| | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)
+  --| | .size => pure (.sort 1, Usage.zeros ctx.lvl)
+  --| | .sizeLt s => do let _ ← check { ctx with erased := true } s .size; pure (.sort 1, Usage.zeros ctx.lvl)
+  --| | .szInf => pure (.size, Usage.zeros ctx.lvl)
+  --| | .szSuc s => do let _ ← check { ctx with erased := true } s .size; pure (.size, Usage.zeros ctx.lvl)
   --| -- Exercise 4.20: the data rules (see the module docstring)
   --| | .enum _ => sorry
   --| | .tag ls i => sorry
   --| | .ecase z m s bs => sorry
   --| | .desc l I => sorry
   --| | .delim v P a b c D => sorry
-  --| | .mu l I D i _ | .nu l I D i _ => sorry
+  --| | .mu l I D i _ _ | .nu l I D i _ _ => sorry
   --| | .ind l I D v P m i x => sorry
   --| | .out x => sorry
   --| | .coit l I D S st i s => sorry
+  --| -- Exercise 4.23: the sized rules
+  --| | .sfix l I D v P f s i x => sorry
+  --| | .scofix l I D A f s i a => sorry
+  --| | .scase l I D v P m s i x => sorry
+  --| | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   --| | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --sol>
 

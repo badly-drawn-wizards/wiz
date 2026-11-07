@@ -187,7 +187,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let Δvars := telescopeVars nΔ nΞ
   let ξvars := telescopeVars nΞ 0
   let muTm : Term R := .mu l (I.lift nΞ) ((Δvars.foldl .app (.const descName us)))
-    (tupleTm ξvars) (some (T, us, Δvars ++ ξvars))
+    (tupleTm ξvars) .szInf (some (T, us, Δvars ++ ξvars))
   let typeDecl : Decl R :=
     { name := T, levelParams := levelParams,
       type := pisTm ΔBinders sig, value := some (lamsTm (ΔNames ++ ξNames) muTm) }
@@ -250,7 +250,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     { name := T ++ ".desc", levelParams := levelParams,
       type := pisTm Δ.toList (.desc l I), value := some (lamsTm ΔNames D) }
   let Δvars := telescopeVars nΔ 0
-  let nuTm : Term R := .nu l I (Δvars.foldl .app (.const (T ++ ".desc") us)) .tt (some (T, us, Δvars))
+  let nuTm : Term R := .nu l I (Δvars.foldl .app (.const (T ++ ".desc") us)) .tt .szInf (some (T, us, Δvars))
   let typeDecl : Decl R :=
     { name := T, levelParams := levelParams, type := pisTm Δ.toList sig, value := some (lamsTm ΔNames nuTm) }
   -- observations: T.f : {Δ} → T Δ → F, with F not depending on earlier fields

@@ -120,12 +120,28 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .drec q j D => .drec (eval g env q) (eval g env j) (eval g env D)
   | .delim v P a b c D =>
     vDelim g v (eval g env P) (eval g env a) (eval g env b) (eval g env c) (eval g env D)
-  | .mu l I D i h => .mu l (eval g env I) (eval g env D) (eval g env i) (evalHint g env h)
+  | .mu l I D i s h => .mu l (eval g env I) (eval g env D) (eval g env i) (eval g env s) (evalHint g env h)
   | .con x => .con (eval g env x)
   | .ind l I D v P m i x =>
     vInd g l (eval g env I) (eval g env D) v (eval g env P) (eval g env m) (eval g env i) (eval g env x)
-  | .nu l I D i h => .nu l (eval g env I) (eval g env D) (eval g env i) (evalHint g env h)
+  | .nu l I D i s h => .nu l (eval g env I) (eval g env D) (eval g env i) (eval g env s) (evalHint g env h)
   | .out x => vOut g (eval g env x)
+  | .size => .size
+  | .szInf => .szInf
+  | .szSuc s => match eval g env s with
+    | .szInf => .szInf
+    | v => .szSuc v
+  | .sizeLt s => .sizeLt (eval g env s)
+  | .sfix l I D v P f s i x =>
+    vSfix g l (eval g env I) (eval g env D) v (eval g env P) (eval g env f) (eval g env s)
+      (eval g env i) (eval g env x)
+  | .cocon x => .cocon (eval g env x)
+  | .scase l I D v P m s i x =>
+    vScase g l (eval g env I) (eval g env D) v (eval g env P) (eval g env m) (eval g env s)
+      (eval g env i) (eval g env x)
+  | .scofix l I D A f s i a =>
+    .scofix l (eval g env I) (eval g env D) (eval g env A) (eval g env f) (eval g env s)
+      (eval g env i) (eval g env a)
   | .coit l I D S st i s =>
     .coit l (eval g env I) (eval g env D) (eval g env S) (eval g env st) (eval g env i) (eval g env s)
   --|ex
@@ -167,12 +183,23 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .darg q S D => sorry
   --| | .drec q j D => sorry
   --| | .delim v P a b c D => sorry
-  --| | .mu l I D i h => sorry
+  --| | .mu l I D i s h => sorry
   --| | .con x => sorry
   --| | .ind l I D v P m i x => sorry
-  --| | .nu l I D i h => sorry
+  --| | .nu l I D i s h => sorry
   --| | .out x => sorry
   --| | .coit l I D S st i s => sorry
+  --| | .size => .size
+  --| | .szInf => .szInf
+  --| | .szSuc s => match eval g env s with
+  --|   | .szInf => .szInf
+  --|   | v => .szSuc v
+  --| | .sizeLt s => .sizeLt (eval g env s)
+  --| -- Exercise 4.22: the sized primitives (vSfix, and cocon/scofix are values)
+  --| | .sfix l I D v P f s i x => sorry
+  --| | .cocon x => sorry
+  --| | .scase l I D v P m s i x => sorry
+  --| | .scofix l I D A f s i a => sorry
   --sol>
 
 /-- Evaluate a display hint's arguments. -/
@@ -223,12 +250,19 @@ partial def vSplit (g : Globals R) (q : Val R) (s : Val R) (z : Name) (m : Closu
 `vEcase`, `vDelim`, `vInd` and `vOut` compute on canonical arguments and are stuck on
 neutrals. `vInd` and `vOut` use the description templates of `Wiz.Core.Templates`. -/
 
+/-- `λ j. μ^s D j` and `λ j. ν^s D j` at a given size. -/
+partial def muFamilyAt (l : Level) (I D s : Val R) : Val R :=
+  .lam "j" (.mk [s, D, I] (.mu l (.var 3) (.var 2) (.var 0) (.var 1) none))
+
+partial def nuFamilyAt (l : Level) (I D s : Val R) : Val R :=
+  .lam "j" (.mk [s, D, I] (.nu l (.var 3) (.var 2) (.var 0) (.var 1) none))
+
 /-- `λ j. μ D j`, the family being defined, as a value. -/
 partial def muFamily (l : Level) (I D : Val R) : Val R :=
-  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0) none))
+  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0) .szInf none))
 
 partial def nuFamily (l : Level) (I D : Val R) : Val R :=
-  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0) none))
+  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0) .szInf none))
 
 /-- `⟦D⟧ X i` -/
 partial def vInterp (g : Globals R) (l : Level) (I D X i : Val R) : Val R :=
@@ -293,6 +327,36 @@ partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x 
   --| sorry
   --sol>
 
+/-- **Exercise 4.22a.** Sized recursion unfolds on a constructor, with the recursive
+calls at size `∞` (sizes are irrelevant at runtime):
+
+    sfix P f s i (con xs) ↦ f ∞ (fun j i y => sfix P f j i y) i (con xs) -/
+partial def vSfix (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P f s i x : Val R) : Val R :=
+  --<sol
+  match x with
+  | .con _ =>
+    -- y0 i1 j2 f3 P4 D5 I6
+    let rec_ : Val R := .lam "j" (.mk [f, P, D, I] (.lam "i" (.lam "y"
+      (.sfix l (.var 6) (.var 5) v (.var 4) (.var 3) (.var 2) (.var 1) (.var 0)))))
+    [.szInf, rec_, i, x].foldl (vApp g) f
+  | .neutral h sp => .neutral h (sp.push (.sfix l I D v P f s i))
+  | _ => panic! "vSfix: ill-typed"
+  --|ex
+  --| sorry
+  --sol>
+
+/-- **Exercise 4.22b.** Sized case analysis: `scase P m s i (con xs) ↦ m ∞ i xs` (the
+size of the fields is irrelevant at runtime). -/
+partial def vScase (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m s i x : Val R) : Val R :=
+  --<sol
+  match x with
+  | .con xs => [.szInf, i, xs].foldl (vApp g) m
+  | .neutral h sp => .neutral h (sp.push (.scase l I D v P m s i))
+  | _ => panic! "vScase: ill-typed"
+  --|ex
+  --| sorry
+  --sol>
+
 /-- **Exercise 4.19d.** Observing an unfolding runs one step and re-wraps the
 recursive positions:
 
@@ -305,6 +369,12 @@ partial def vOut (g : Globals R) (x : Val R) : Val R :=
     let f : Val R := .lam "j" (.mk [step, S, D, I]
       (.lam "s" (.coit l (.var 5) (.var 4) (.var 3) (.var 2) (.var 1) (.var 0))))
     [I, D, S, nuFamily l I D, f, i, [i, s].foldl (vApp g) step].foldl (vApp g) (eval g [] (Templates.mapTm l))
+  | .cocon xs => xs
+  | .scofix l I D A f _ i a =>
+    -- a0 i1 f2 A3 D4 I5
+    let rec_ : Val R := .lam "i" (.mk [f, A, D, I]
+      (.lam "a" (.scofix l (.var 5) (.var 4) (.var 3) (.var 2) .szInf (.var 1) (.var 0))))
+    vOut g ([.szInf, rec_, i, a].foldl (vApp g) f)
   | .neutral h sp => .neutral h (sp.push .out)
   | _ => panic! "vOut: ill-typed"
   --|ex
@@ -354,7 +424,7 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   | .enum _ => match a, b with
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
     | _, _ => .neutral (.eq A a b) #[]
-  | .mu l I D i _ => match a, b with
+  | .mu l I D i _ _ => match a, b with
     | .con x, .con y => vEq g (vInterp g l I D (muFamily l I D) i) x y
     | _, _ => .neutral (.eq A a b) #[]
   | .sort l =>
@@ -486,6 +556,10 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .delim v P a b c => .delim v (quote g l P) (quote g l a) (quote g l b) (quote g l c) acc
       | .ind lv I D v P m i => .ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) acc
       | .out => .out acc
+      | .scase lv I D v P m s i =>
+        .scase lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l s) (quote g l i) acc
+      | .sfix lv I D v P f s i =>
+        .sfix lv (quote g l I) (quote g l D) v (quote g l P) (quote g l f) (quote g l s) (quote g l i) acc
   | .sort k => .sort k
   | .pi x bi q a b => .pi x bi (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
   | .lam x b => .lam x (quote g (l + 1) (Closure.inst g b (Val.var l)))
@@ -502,9 +576,16 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | .dret i => .dret (quote g l i)
   | .darg q S D => .darg (quote g l q) (quote g l S) (quote g l D)
   | .drec q j D => .drec (quote g l q) (quote g l j) (quote g l D)
-  | .mu k I D i h => .mu k (quote g l I) (quote g l D) (quote g l i) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
+  | .mu k I D i s h => .mu k (quote g l I) (quote g l D) (quote g l i) (quote g l s) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .con x => .con (quote g l x)
-  | .nu k I D i h => .nu k (quote g l I) (quote g l D) (quote g l i) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
+  | .nu k I D i s h => .nu k (quote g l I) (quote g l D) (quote g l i) (quote g l s) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
+  | .size => .size
+  | .szInf => .szInf
+  | .szSuc s => .szSuc (quote g l s)
+  | .sizeLt s => .sizeLt (quote g l s)
+  | .cocon x => .cocon (quote g l x)
+  | .scofix k I D A f s i a =>
+    .scofix k (quote g l I) (quote g l D) (quote g l A) (quote g l f) (quote g l s) (quote g l i) (quote g l a)
   | .coit k I D S st i s =>
     .coit k (quote g l I) (quote g l D) (quote g l S) (quote g l st) (quote g l i) (quote g l s)
   --|ex
@@ -525,6 +606,8 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .delim lv P a b c => vDelim g lv P a b c v
     | .ind l I D lv P m i => vInd g l I D lv P m i v
     | .out => vOut g v
+    | .sfix l I D lv P f s i => vSfix g l I D lv P f s i v
+    | .scase l I D lv P m s i => vScase g l I D lv P m s i v
 
 /-- Normal form of a closed term. -/
 def nf (g : Globals R) (t : Term R) : Term R :=

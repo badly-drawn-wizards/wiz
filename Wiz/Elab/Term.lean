@@ -134,7 +134,7 @@ def unifyAt (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Elab
   fun s => match unify ctx.lvl expected inferred s with
     | .ok r => .ok r
     | .error e =>
-      if convTy s.globals ctx.types.reverse.toArray expected inferred then .ok ((), s) else
+      if subTy s.globals ctx.types.reverse.toArray inferred expected then .ok ((), s) else
       let show' (v : VTy R) := (quote s.globals ctx.lvl v).pretty ctx.names
       .error { info := (ctx.withInfo stx).info,
                msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})" }
@@ -159,7 +159,7 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
   | f :: rest =>
     -- generalised field notation: `t.f` is `T.f t` for a nominal type `T`
     let hint? : Option (Name × List Level × List (Val R)) := match ← force ty with
-      | .mu _ _ _ _ h | .nu _ _ _ _ h => h
+      | .mu _ _ _ _ _ h | .nu _ _ _ _ _ h => h
       | _ => none
     if let some (T, us, args) := hint? then
       if let some d := (← getGlobals).find? (T ++ "." ++ f) then
@@ -460,7 +460,7 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     | _ => none
   if let some (h, c) := dot? then
     match expected with
-    | .mu _ _ _ _ (some (T, _, _)) =>
+    | .mu _ _ _ _ _ (some (T, _, _)) =>
       unless (← getGlobals).contains (T ++ "." ++ c) do
         throwAt h.info s!"{T} has no constructor {c}"
       let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
@@ -496,8 +496,8 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     return some (.darg qt S' D')
   | "Desc.rec", #[qs, j, D], .desc l I =>
     return some (.drec (← check ctx qs .qty) (← check ctx j I) (← check ctx D (.desc l I)))
-  | "con", #[x], .mu l I D i _ => return some (.con (← check ctx x (vInterp g l I D (muFamily l I D) i)))
-  | "coit", #[S, st, s], .nu l I D i _ =>
+  | "con", #[x], .mu l I D i _ _ => return some (.con (← check ctx x (vInterp g l I D (muFamily l I D) i)))
+  | "coit", #[S, st, s], .nu l I D i _ _ =>
     let S' ← check ctx S (coitStateTy l I w)
     let vS ← evalIn ctx S'
     let st' ← check ctx st (coitStepTy g l I D vS w)
@@ -527,7 +527,7 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
   | "μ", #[D, i] | "ν", #[D, i] =>
     let (D', l, I) ← descOf D
     let i' ← check ctx i I
-    return some ((if n == "μ" then Term.mu else Term.nu) l (q I) D' i' none, .sort (.succ l))
+    return some ((if n == "μ" then Term.mu else Term.nu) l (q I) D' i' .szInf none, .sort (.succ l))
   | "Desc.elim", #[P, a, b, c, D] =>
     let (D', l, I) ← descOf D
     let v ← freshLevelMeta
@@ -558,7 +558,7 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
     return some (q all, .sort (.max 1 v))
   | "ind", #[P, m, x] =>
     let (x', xty) ← infer ctx x
-    let .mu l I D i _ ← force xty | throwAt ctx.info s!"ind expects an inductive value, got {← showVal ctx xty}"
+    let .mu l I D i _ _ ← force xty | throwAt ctx.info s!"ind expects an inductive value, got {← showVal ctx xty}"
     let v ← freshLevelMeta
     let P' ← check ctx P (indMotiveTy g l v I D w)
     let vP ← evalIn ctx P'
@@ -566,7 +566,7 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
     return some (.ind l (q I) (q D) v P' m' (q i) x', vApp g (vApp g vP i) (← evalIn ctx x'))
   | "out", #[x] =>
     let (x', xty) ← infer ctx x
-    let .nu l I D i _ ← force xty | throwAt ctx.info s!"out expects a coinductive value, got {← showVal ctx xty}"
+    let .nu l I D i _ _ ← force xty | throwAt ctx.info s!"out expects a coinductive value, got {← showVal ctx xty}"
     return some (.out x', vInterp g l I D (nuFamily l I D) i)
   | _, _ => return none
 
@@ -796,7 +796,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let x := vars[k]!
   let rs := vars.drop (k + 1)
   let xty ← force (typeOf x)
-  let .mu _ _ _ ξi (some (T, us, args)) := xty
+  let .mu _ _ _ ξi _ (some (T, us, args)) := xty
     | throwAt (cl.pats[k]!).info s!"cannot match on a value of type {← showVal ctx xty}"
   let some descD := g.find? (T ++ ".desc") | throwAt ctx.info s!"{T} is not an inductive type"
   let nΔ := (piInfos descD.type).length
@@ -829,7 +829,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     else
       if G.hasVar (ctx.lvl - x - 1) then
         throwAt (cl.pats[k]!).info "this match needs index unification whose goal depends on the scrutinee; not supported yet"
-      let .mu _ I _ _ _ := xty | unreachable!
+      let .mu _ I _ _ _ _ := xty | unreachable!
       let lhs : Term R := (List.range nΞ).foldr (fun k acc => .pair (.var (nΞ - k)) acc) .tt
       let eqTm : Term R := .eq ((q I).lift (nΞ + 1)) lhs ((q ξi).lift (nΞ + 1))
       let body : Term R := .pi "e" .default (.qlit 0) eqTm (G.lift (nΞ + 2))
@@ -984,7 +984,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   for vξ in ξ do f := .app f (q vξ)
   f := .app f (varTm x)
   if !modeA then
-    let .mu _ I _ _ _ := xty | unreachable!
+    let .mu _ I _ _ _ _ := xty | unreachable!
     f := .app f (.refl (q I) (q ξi))
   for r in rs do f := .app f (varTm r)
   pure f
@@ -1053,6 +1053,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
         let l ← elabLevel l
         return (if x == "Unit" then .unit l else .empty l, .sort l)
       | "Qty", none => return (.qty, .sort 1)
+      | "Size", none => return (.size, .sort 1)
       | "Unit", none | "True", none => return (.unit builtinLevel.get!, .sort builtinLevel.get!)
       | "Empty", none | "False", none => return (.empty builtinLevel.get!, .sort builtinLevel.get!)
       | _, _ =>
@@ -1118,6 +1119,19 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.tuple" =>
     inferTuple ctx (#[stx.getArg 1] ++ ((stx.getArg 3).args.filter (!· matches .atom ..))).toList
   | "term.unitVal" => return (.tt, .unit 1)
+  | "term.szInf" => return (.szInf, .size)
+  | "term.szSuc" => return (.szSuc (← check ctx (stx.getArg 1) .size), .size)
+  | "term.sizeLt" => return (.sizeLt (← check ctx (stx.getArg 1) .size), .sort 1)
+  | "term.sized" =>
+    let (T, ty) ← infer ctx (stx.getArg 0)
+    let s ← check ctx (stx.getArg 2) .size
+    let g ← getGlobals
+    let q := quote g ctx.lvl
+    let qh (h : Option (Name × List Level × List (Val R))) := h.map fun (n, us, as) => (n, us, as.map q)
+    match ← force (← evalIn ctx T) with
+    | .mu l I D i _ h => return (.mu l (q I) (q D) (q i) s (qh h), ty)
+    | .nu l I D i _ h => return (.nu l (q I) (q D) (q i) s (qh h), ty)
+    | v => throwAt ctx.info s!"only inductive and coinductive types have sizes, not {← showVal ctx v}"
   | "term.field" =>
     let (t, ty) ← infer ctx (stx.getArg 0)
     -- `.a.b.c` lexes as one dotted identifier

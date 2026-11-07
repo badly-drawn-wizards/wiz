@@ -61,6 +61,14 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .const n _ => n
   | .mvar m => s!"?m{m}"
   | .qty => "Qty"
+  | .size => "Size"
+  | .sizeLt s => paren (prec > 1022) s!"Size< {s.prettyPrec names 1024}"
+  | .szInf => "∞"
+  | .szSuc s => s!"↑{s.prettyPrec names 1024}"
+  | .sfix _ _ _ _ P f s i x => app "sfix" [P, f, s, i, x]
+  | .cocon x => app "cocon" [x]
+  | .scase _ _ _ _ P m s i x => app "scase" [P, m, s, i, x]
+  | .scofix _ _ _ A f s i a => app "scofix" [A, f, s, i, a]
   | .qlit r => QuantitySyntax.display r
   | .sort l => paren (prec > 1022 && !atomicSort l) (showSort l)
   | .pi x bi q dom cod =>
@@ -124,9 +132,10 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .darg q S D => app "Desc.arg" [q, S, D]
   | .drec q j D => app "Desc.rec" [q, j, D]
   | .delim _ P a b c D => app "Desc.elim" [P, a, b, c, D]
-  | .mu _ _ _ _ (some (n, _, as)) | .nu _ _ _ _ (some (n, _, as)) =>
+  | .mu _ _ _ _ s (some (n, _, as)) | .nu _ _ _ _ s (some (n, _, as)) =>
+    let n := if s matches .szInf then n else s!"{n}^{s.prettyPrec names 1024}"
     if as.isEmpty then n else app n as
-  | .mu _ _ D i none => app "μ" [D, i]
+  | .mu _ _ D i s none => app (if s matches .szInf then "μ" else s!"μ^{s.prettyPrec names 1024}") [D, i]
   | .con (.pair (.tag ls i) rest) =>
     -- `.c f₁ … fₙ`: the payload ends with the index equation and `()`
     let fields := (tuple rest #[]).toList
@@ -135,7 +144,7 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
     if fields.isEmpty then c else app c fields
   | .con x => app "con" [x]
   | .ind _ _ _ _ P m i x => app "ind" [P, m, i, x]
-  | .nu _ _ D i none => app "ν" [D, i]
+  | .nu _ _ D i s none => app (if s matches .szInf then "ν" else s!"ν^{s.prettyPrec names 1024}") [D, i]
   | .out x => app "out" [x]
   | .coit _ _ _ S st i s => app "coit" [S, st, i, s]
   | .transp _ _ P p _ e =>

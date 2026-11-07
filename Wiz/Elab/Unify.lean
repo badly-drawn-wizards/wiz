@@ -107,6 +107,10 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | .ind l I D v P mt i =>
         return .ind l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p mt) (← rename m p i) acc
       | .out => pure (.out acc)
+      | .scase l I D v P mt s i =>
+        return .scase l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p mt) (← rename m p s) (← rename m p i) acc
+      | .sfix l I D v P f s i =>
+        return .sfix l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p f) (← rename m p s) (← rename m p i) acc
   match ← force v with
   | .neutral (.local x) sp =>
     match p.ren[x]? with
@@ -137,14 +141,21 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .empty l => pure (.empty l)
   | .qty => pure .qty
   | .qlit r => pure (.qlit r)
+  | .size => pure .size
+  | .sizeLt s => return .sizeLt (← rename m p s)
+  | .szInf => pure .szInf
+  | .szSuc s => return .szSuc (← rename m p s)
+  | .cocon x => return .cocon (← rename m p x)
+  | .scofix l I D A f s i a =>
+    return .scofix l (← rename m p I) (← rename m p D) (← rename m p A) (← rename m p f) (← rename m p s) (← rename m p i) (← rename m p a)
   | .enum ls => pure (.enum ls)
   | .tag ls i => pure (.tag ls i)
   | .desc l I => return .desc l (← rename m p I)
   | .dret i => return .dret (← rename m p i)
   | .darg q S D => return .darg (← rename m p q) (← rename m p S) (← rename m p D)
   | .drec q j D => return .drec (← rename m p q) (← rename m p j) (← rename m p D)
-  | .mu l I D i h => return .mu l (← rename m p I) (← rename m p D) (← rename m p i) (← renameHint h)
-  | .nu l I D i h => return .nu l (← rename m p I) (← rename m p D) (← rename m p i) (← renameHint h)
+  | .mu l I D i s h => return .mu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
+  | .nu l I D i s h => return .nu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .con x => return .con (← rename m p x)
   | .coit l I D S st i s =>
     return .coit l (← rename m p I) (← rename m p D) (← rename m p S) (← rename m p st) (← rename m p i) (← rename m p s)
@@ -236,15 +247,19 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .pair a b, t'@(.neutral ..) => unify l a (vFst t'); unify l b (vSnd t')
   | t'@(.neutral ..), .pair a b => unify l (vFst t') a; unify l (vSnd t') b
   | .unit u, .unit u' | .empty u, .empty u' => unifyLevel u u'
-  | .tt, .tt | .qty, .qty => pure ()
+  | .tt, .tt | .qty, .qty | .size, .size | .szInf, .szInf => pure ()
+  | .szSuc a, .szSuc b | .cocon a, .cocon b | .sizeLt a, .sizeLt b => unify l a b
+  | .scofix u I D A f s i a, .scofix u' I' D' A' f' s' i' a' =>
+    unifyLevel u u'
+    for (x, y) in [(I, I'), (D, D'), (A, A'), (f, f'), (s, s'), (i, i'), (a, a')] do unify l x y
   | .qlit a, .qlit b => unless a == b do throwAt {} "quantity mismatch"
   | .enum ls, .enum ls' => unless ls.length == ls'.length do throwAt {} "enumeration size mismatch"
   | .tag _ i, .tag _ j => unless i == j do throwAt {} "tag mismatch"
   | .desc u I, .desc u' I' => unifyLevel u u'; unify l I I'
   | .dret i, .dret j => unify l i j
   | .darg q S D, .darg q' S' D' | .drec q S D, .drec q' S' D' => unify l q q'; unify l S S'; unify l D D'
-  | .mu u I D i _, .mu u' I' D' i' _ | .nu u I D i _, .nu u' I' D' i' _ =>
-    unifyLevel u u'; unify l I I'; unify l D D'; unify l i i'
+  | .mu u I D i s _, .mu u' I' D' i' s' _ | .nu u I D i s _, .nu u' I' D' i' s' _ =>
+    unifyLevel u u'; unify l I I'; unify l D D'; unify l i i'; unify l s s'
   | .con x, .con y => unify l x y
   | .coit u I D S st i s, .coit u' I' D' S' st' i' s' =>
     unifyLevel u u'
@@ -302,6 +317,12 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (mt, mt'), (i, i')] do unify l x y
     | .out, .out => pure ()
+    | .scase u I D v P f s i, .scase u' I' D' v' P' f' s' i' =>
+      unifyLevel u u'; unifyLevel v v'
+      for (x, y) in [(I, I'), (D, D'), (P, P'), (f, f'), (s, s'), (i, i')] do unify l x y
+    | .sfix u I D v P f s i, .sfix u' I' D' v' P' f' s' i' =>
+      unifyLevel u u'; unifyLevel v v'
+      for (x, y) in [(I, I'), (D, D'), (P, P'), (f, f'), (s, s'), (i, i')] do unify l x y
     | _, _ => throwAt {} "spine mismatch"
 
 end

@@ -431,3 +431,26 @@ whose arguments are the next state. This is the guardedness check.
 nominal type `T`), which also works on inductives.
 
 Not yet: course-of-values recursion, and well-founded recursion (`termination_by`).
+
+### 4f: sized types (in progress)
+
+Well-founded recursion and general corecursion are justified by **sizes** (Abel-style),
+your choice over `Acc`/`termination_by` and guarded recursion. `μ` and `ν` carry a size:
+`Nat^i` is the naturals below depth `i`, and `Nat` is `Nat^∞`.
+
+* Sizes: `Size`, `∞`, `↑s`, and `Size< s` (sizes below `s`). Comparison uses the
+  bounds in the context.
+* **Subtyping**: `μ^s ≤ μ^t` when `s ≤ t` (and the reverse for `ν`), applied through Π
+  and Σ. The kernel's mode switch checks `inferred ≤ expected` (`subTy`).
+* `con xs : μ^{↑s}` for a payload at `μ^s`; `out : ν^{↑s} → ⟦D⟧ (ν^s)`; `cocon` builds ν
+  values.
+* `sfix P f s i x` is recursion where the recursive call takes any `j : Size< s`. It
+  unfolds only on constructors.
+* `scase P m s i x` is case analysis on `x : μ^s` whose fields live at some `j : Size< s`.
+* `scofix` is sized corecursion that unfolds only under `out`.
+* Every inductive also gets `T.scasesOn`.
+
+| #    | Where              | What                                                |
+|------|--------------------|-----------------------------------------------------|
+| 4.22 | `Core/Eval.lean`   | `vSfix`, `vScase` (and the eval cases)              |
+| 4.23 | `Core/Check.lean`  | typing rules for `sfix`, `scofix`, `cocon`, `scase` |
