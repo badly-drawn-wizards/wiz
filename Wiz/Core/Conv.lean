@@ -103,6 +103,7 @@ A size is `∞`, or a size variable (any neutral) plus a number of `↑`s. -/
 
 /-- `(base, k)` for `↑ᵏ base`; `none` as the base means `∞`. -/
 partial def sizeView : Val R → Option (Val R) × Nat
+  | .unfold _ _ _ v => sizeView v.get
   | .szInf => (none, 0)
   | .szSuc s => let (b, k) := sizeView s; (b, k + 1)
   | v => (some v, 0)
@@ -135,7 +136,8 @@ partial def sizeLe (tys : Array (VTy R)) (a b : Val R) : Bool :=
 
 /-- The predecessor of a size, for `con`/`cocon`/`out`: `↑s ↦ s`, `∞ ↦ ∞`; `none`
 for a size variable, which can't be built from or observed. -/
-def sizePred? : Val R → Option (Val R)
+partial def sizePred? : Val R → Option (Val R)
+  | .unfold _ _ _ v => sizePred? v.get
   | .szInf => some .szInf
   | .szSuc s => some s
   | _ => none
@@ -167,12 +169,13 @@ def scofixFunTy (g : Globals R) (l : Level) (I D A : Val R) (w : R) : VTy R :=
       (pi "i" (tv 4) (pi "a" (.app (tv 3) (tv 0)) (.nu l (tv 6) (tv 5) (tv 1) (.szSuc (tv 3)) none)))))
 
 /-- The type of a neutral, computed by walking its spine from the head's type. -/
-def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VTy R)
+partial def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VTy R)
+  | .unfold n us sp _ => inferNe g tys (.neutral (.global n us) sp)
   | .neutral h sp => do
     let mut ty ← headType g tys h
     let mut acc : Val R := .neutral h #[]
     for e in sp do
-      match e, ty with
+      match e, whnf ty with
       | .app x, .pi _ _ _ _ cod => ty := Closure.inst g cod x; acc := vApp g acc x
       | .fst, .sigma _ _ A _ => ty := A; acc := vFst acc
       | .snd, .sigma _ _ _ B => ty := Closure.inst g B (vFst acc); acc := vSnd acc
@@ -191,6 +194,7 @@ def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VTy R)
 
 /-- The universe level of a type, if it can be computed. -/
 partial def typeSort? (g : Globals R) (tys : Array (VTy R)) : VTy R → Option Level
+  | .unfold _ _ _ v => typeSort? g tys v.get
   | .sort l => some (.succ l)
   | .pi _ _ _ A B => do
     return .imax (← typeSort? g tys A) (← typeSort? g (tys.push A) (Closure.inst g B (Val.var tys.size)))
@@ -201,7 +205,7 @@ partial def typeSort? (g : Globals R) (tys : Array (VTy R)) : VTy R → Option L
   | .desc l _ => some (.succ (.succ l))
   | .mu l .. | .nu l .. => some (.succ l)
   | v@(.neutral ..) => do
-    match ← inferNe g tys v with
+    match whnf (← inferNe g tys v) with
     | .sort l => some l
     | _ => none
   | _ => none
@@ -228,10 +232,15 @@ mutual
 `true`. Then **regularity**: a stuck `cast A B e t` with an empty spine and
 `convTy A B` is replaced by `t` (on either side) before comparing. -/
 partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R) : Bool :=
+  -- glued values with the same head: compare the spines first, unfold if that fails
+  if let some r := convGlued g tys a b then r || conv g tys ty (whnf a) (whnf b) else
+  let a := whnf a
+  let b := whnf b
   -- numerals: compare two directly, or else look one step inside (`vNatView`)
   if let (.natLit n, .natLit m) := (a, b) then n == m else
   let a := vNatView g a
   let b := vNatView g b
+  let ty := whnf ty
   sorry
 
 /-- **Exercise 1.4b.** Equality of two types.
@@ -246,7 +255,20 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
 **Exercise 4.6b** (stage 4b): `sigma`/`sigma` like `pi`; `unit`/`unit` and
 `empty`/`empty` by `Level.equiv`. -/
 partial def convTy (g : Globals R) (tys : Array (VTy R)) (a b : VTy R) : Bool :=
+  if let some r := convGlued g tys a b then r || convTy g tys (whnf a) (whnf b) else
+  let a := whnf a
+  let b := whnf b
   sorry
+
+/-- Two glued values (`Val.unfold`) with the same global head: are their spines
+convertible? `none` unless both are glued with the same head. -/
+partial def convGlued (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option Bool :=
+  match a, b with
+  | .unfold n us sp _, .unfold n' us' sp' _ =>
+    if n == n' && us.length == us'.length && (us.zip us').all (fun (u, u') => u.equiv u') then
+      some (convNe g tys (.neutral (.global n us) sp) (.neutral (.global n' us') sp')).isSome
+    else none
+  | _, _ => none
 
 /-- **Exercise 1.4c.** Compare two neutrals. On success return their (common) type.
 
@@ -278,7 +300,7 @@ end
 the domain, and everything else is conversion. -/
 partial def subTy (g : Globals R) (tys : Array (VTy R)) (A B : VTy R) : Bool :=
   let v := Val.var tys.size
-  match A, B with
+  match whnf A, whnf B with
   | .mu l I D i s _, .mu l' I' D' i' s' _ =>
     l.equiv l' && sizeLe tys s s' && convTy g tys I I' && conv g tys (.desc l I) D D' && conv g tys I i i'
   | .nu l I D i s _, .nu l' I' D' i' s' _ =>

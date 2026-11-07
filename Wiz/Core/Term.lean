@@ -161,6 +161,9 @@ structure Decl (R : Type) where
   levelParams : List Name := []
   type  : Term R
   value : Option (Term R)
+  /-- unfold eagerly instead of gluing (constructors, so values look like constructor
+  applications) -/
+  inline : Bool := false
   deriving Repr, Inhabited
 
 namespace Term
@@ -286,6 +289,8 @@ structure Globals (R : Type) where
   order : Array Name := #[]
   /-- `builtin key := name` registrations, such as `("nat", Nat)` and `("nat.add", Nat.add)` -/
   builtins : List (Name × Name) := []
+  /-- unfold every definition eagerly (no gluing), for normal forms -/
+  eager : Bool := false
 
 namespace Globals
 

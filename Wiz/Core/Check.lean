@@ -240,7 +240,7 @@ of the expected one.)
 
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
-  match t, ty with
+  match t, whnf ty with
   | .lam x body, .pi _ _ q dom cod => sorry
   | .letE x q tty val body, _ => sorry
   -- Exercise 4.7a
@@ -325,7 +325,7 @@ partial def checkQty (ctx : Ctx R) (q : Term R) : TCM (QPoly R) := do
 The usage is discarded: type positions are erased. -/
 partial def checkType (ctx : Ctx R) (a : Term R) : TCM Level := do
   let (ty, _) ← infer { ctx with erased := true } a
-  match ty with
+  match whnf ty with
   | .sort l => pure l
   | _ => throw (.notAType (ctx.showTerm a) (ctx.showVal ty))
 

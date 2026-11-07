@@ -29,8 +29,15 @@ variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
 A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
 `sp` applied (`vElims`). Anything else is returned unchanged. -/
-partial def force (v : Val R) : ElabM R (Val R) := do
+partial def forceMeta (v : Val R) : ElabM R (Val R) := do
   sorry
+
+/-- Unfold solved metavariables and glued definitions at the head: the value's shape,
+ready to match on. (`forceMeta` keeps glued heads, for unification.) -/
+partial def force (v : Val R) : ElabM R (Val R) := do
+  match ← forceMeta v with
+  | .unfold _ _ _ v => force v.get
+  | v => pure v
 
 /-- A partial renaming from context `cod` (size `cod`) to context `dom` (size `dom`):
 `ren` maps the levels of variables in the spine to their new levels. -/
@@ -63,6 +70,8 @@ scope and occurs.
 (The structural types of stage 4b are already handled in the solution's style. Add
 them when you get there.) -/
 partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
+  -- (given) a glued value keeps its name in the solution
+  if let .unfold n us sp _ ← forceMeta v then return ← rename m p (.neutral (.global n us) sp)
   if let .natLit n ← force v then return .natLit n
   sorry
 
@@ -111,12 +120,64 @@ failure. Force both sides first, then:
 `t.1` and `b` with `t.2`), `unit`, `tt`, `empty`; and the other eliminations in
 `unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
+  if ← unifyGlued l (← forceMeta t) (← forceMeta u) then return ()
   -- numerals: compare two directly, or else look one step inside (`vNatView`)
   let g ← getGlobals
   let (t, u) ← match ← force t, ← force u with
     | .natLit n, .natLit m => if n == m then return () else throwAt {} s!"{n} ≠ {m}"
     | t, u => pure (vNatView g t, vNatView g u)
   sorry
+
+/-- Glued values (given). Returns `true` if it solved the problem:
+
+* the same global head on both sides: unify the spines (on failure, undo and let the
+  caller unfold);
+* an unsolved meta against a glued value: solve it with the value as it is, so the
+  solution keeps the definition's name; outside the pattern fragment, try the
+  **first-order approximation** `?m a₁ … aₖ =?= f b₁ … bₙ` ↦ `aᵢ =?= bₙ₋ₖ₊ᵢ` and
+  `?m =?= f b₁ … bₙ₋ₖ` (for the trailing non-variable `aᵢ`; this is how `?M ?A` meets
+  `TacticM Nat`). -/
+partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
+  let attempt (x : ElabM R Unit) : ElabM R Bool := do
+    let s ← get
+    try x; pure true catch _ => set s; pure false
+  match t, u with
+  | .unfold n us sp _, .unfold n' us' sp' _ =>
+    if n == n' && us.length == us'.length && sp.size == sp'.size then
+      attempt do
+        for a in us, b in us' do unifyLevel a b
+        unifySpine l sp sp'
+    else pure false
+  | .neutral (.mvar m) sp, v@(.unfold ..) | v@(.unfold ..), .neutral (.mvar m) sp =>
+    if ← attempt (solve l m sp v) then return true
+    unifyFirstOrder l m sp v
+  | _, _ => pure false
+
+/-- The first-order approximation (see `unifyGlued`). -/
+partial def unifyFirstOrder (l : Lvl) (m : Nat) (sp : Array (Elim R)) (v : Val R) : ElabM R Bool := do
+  let .unfold n us sp' _ := v | pure false
+  let appArg : Elim R → Option (Val R)
+    | .app a => some a
+    | _ => none
+  let some args := sp.mapM appArg | pure false
+  let some args' := sp'.mapM appArg | pure false
+  -- the arguments after the longest prefix of bound variables
+  let mut k := 0
+  for a in args do
+    if (← forceMeta a) matches .neutral (.local _) #[] then k := k + 1 else break
+  let j := args.size - k
+  if j == 0 || j > args'.size then return false
+  let s ← get
+  try
+    for a in args.extract k args.size, b in args'.extract (args'.size - j) args'.size do
+      unify l a b
+    let g ← getGlobals
+    let head := (args'.extract 0 (args'.size - j)).foldl (vApp g) (eval g [] (.const n us))
+    solve l m (sp.extract 0 k) head
+    pure true
+  catch _ =>
+    set s
+    pure false
 
 /-- Rigid heads: the same variable, the same global (levels unified), or the same
 stuck observational construct (components unified). Any two proofs are equal. -/

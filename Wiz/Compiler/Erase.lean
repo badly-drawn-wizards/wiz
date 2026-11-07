@@ -101,7 +101,7 @@ variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
 /-- Values of this type have no runtime content: types, proofs, sizes, quantities. -/
 def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
-  match ty with
+  match whnf ty with
   | .sort _ | .size | .sizeLt _ | .qty => true
   | _ => isProp ctx.globals ctx.tys ty
 
@@ -150,7 +150,7 @@ partial def eraseSpine (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
   let mut acc := h'
   let mut fty := hty
   for a in args do
-    match fty with
+    match whnf fty with
     | .pi _ _ q dom cod =>
       let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a dom
       acc := .app acc a'
