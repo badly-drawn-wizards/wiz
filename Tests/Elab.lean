@@ -623,6 +623,40 @@ def backendGroup : Group where
           ["def k x0 x1 :=\n  drop x1\n  ret x0"] }
   ]
 
+/-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
+the C toolchain can't find GMP: set `WIZ_CFLAGS`/`WIZ_LDFLAGS` to run these. -/
+def cRun (src : String) (expected : String) : IO Unit := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let s := runFrontend (R := ZeroOneMany) src { loader := fun m => if m == "Prelude" then some prelude else none }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let dir ← IO.FS.createTempDir
+  match ← Build.runGlobal s "main" dir with
+  | .ok v => checkEq expected v
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no GMP)" else throw (IO.userError e)
+
+def cGroup : Group where
+  name := "c"
+  exercise := "Exercise 8.2"
+  cases := [
+    { name := "numbers, with GMP for big ones", run := fun _ =>
+        cRun "import Prelude\ndef fact : Nat → Nat\n  | .zero => 1\n  | .succ n => (.succ n) * fact n\ndef main : Nat := fact 25"
+          "15511210043330985984000000" },
+    { name := "strings", run := fun _ =>
+        cRun "import Prelude\ndef main : String := String.append \"hello, \" \"world\"" "\"hello, world\"" },
+    { name := "closures", run := fun _ =>
+        cRun "import Prelude\ndef adder (n : Nat) : Nat → Nat := fun x => x + n\ndef twice (f : Nat → Nat) (x : Nat) : Nat := f (f x)\ndef main : Nat := twice (adder 10) 1" "21" },
+    { name := "codata", run := fun _ =>
+        cRun (streamPrelude ++ "def main : Nat := (nats .zero).tail.tail.head") ".succ (.succ .zero)" },
+    { name := "infinitary data", run := fun _ =>
+        cRun (treePrelude ++ "def main : Nat := Tree.depthAt (.node (fun i => .node (fun j => .leaf))) 3") "3" },
+    { name := "type classes and do", run := fun _ =>
+        cRun ("import Prelude\ninstance : Monad Option where\n  pure := fun a => Option.some a\n" ++
+          "  bind := fun x f => match x with\n    | .none => Option.none\n    | .some a => f a\n" ++
+          "def main : Option Nat := do\n  a ← Option.some 1;\n  b ← Option.some 2;\n  Monad.pure (a + b)") ".some 3" }
+  ]
+
 def builtinGroup : Group where
   name := "builtins"
   exercise := "Stage 6b"
