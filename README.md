@@ -501,3 +501,31 @@ as-patterns (size-preserving functions like `minus` want `x@.zero`).
 Next: an ANF intermediate representation with join points and explicit closures,
 specialising the primitives for known descriptions (flat constructor objects), and
 then macros (stage 6), which run in this interpreter.
+
+## Stage 6: macros
+
+### 6a: macros by example ✅
+
+```
+infixl:65 " + " => add
+notation "two" => Nat.succ (Nat.succ Nat.zero)
+syntax "if" term "then" term "else" term : term
+macro_rules
+  | `(term| if $c then $t else $e) => `(term| match $c with | .true => $t | .false => $e)
+```
+
+* Every syntax category has **antiquotations** `$x`, and every category `c` has a
+  **quotation** `` `(c| …) `` as a term (`Builtin.addMetaParsers`, also run for
+  `declare_syntax_cat`).
+* `macro_rules` match syntax structurally and instantiate templates
+  (`Elab/Macro.lean`). `notation` and `infixl`/`infixr`/`infix` register a syntax rule
+  and a macro rule together. User command syntax expands too.
+* **Hygiene** via macro scopes: identifiers a template introduces become `x✝n`. Locals
+  must match exactly, and globals are found with the scope stripped.
+
+| #   | Where              | What                                      |
+|-----|--------------------|-------------------------------------------|
+| 6.1 | `Elab/Macro.lean`  | `matchPattern`, `instantiate` (hygiene)   |
+
+Next: procedural macros and tactics *written in Wiz*, run in the stage 5 interpreter
+(your choice), over a reflected `Syntax` and elaborator API.

@@ -1,0 +1,28 @@
+-- Stage 6: macros by example. `lake exe wiz check examples/macros.wiz`
+
+inductive Nat where
+  | zero
+  | succ (n : Nat)
+def add : Nat → Nat → Nat
+  | .zero, n => n
+  | .succ m, n => .succ (add m n)
+def mul : Nat → Nat → Nat
+  | .zero, _ => .zero
+  | .succ m, n => add n (mul m n)
+infixl:65 " + " => add
+infixl:70 " * " => mul
+notation "two" => Nat.succ (Nat.succ Nat.zero)
+#eval two + two * two
+inductive Bool where
+  | false
+  | true
+syntax "if" term "then" term "else" term : term
+macro_rules
+  | `(term| if $c then $t else $e) => `(term| match $c with | .true => $t | .false => $e)
+#eval (if Bool.true then two else Nat.zero : Nat)
+-- hygiene: the template's `x` does not capture the user's `x`
+syntax "const_x" term : term
+macro_rules
+  | `(term| const_x $e) => `(term| (fun x => $e) Nat.zero)
+def h (x : Nat) : Nat := const_x x
+#eval h two

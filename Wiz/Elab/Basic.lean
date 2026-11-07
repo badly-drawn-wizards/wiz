@@ -61,6 +61,10 @@ structure ElabState (R : Type) where
   /-- "the solution of this hole has type `Sort l`". Metas are untyped, so these are
   checked after elaboration to solve level metavariables (see `solveSortConstraints`). -/
   sortConstraints : Array (LocalCtx R × Term R × Level) := #[]
+  /-- macro rules in scope, latest first: (kind, pattern, template, notation vars) -/
+  macros : List (Name × Syntax × Syntax × List Name) := []
+  /-- the next fresh macro scope -/
+  nextScope : Nat := 1
 
 abbrev ElabM (R : Type) := StateT (ElabState R) (Except ElabError)
 
