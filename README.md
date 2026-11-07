@@ -814,4 +814,24 @@ or structs by value) are skipped. On glibc, `string.h` gives 66 prototypes and
 |-----|--------------------|---------------------------------------------------|
 | 9.1 | `FFI/CParse.lean`  | `declarator`: pointers, names, parameter lists    |
 
-Next: checked C glue snippets, and foreign pointers with finalizers.
+### 9c: checked C glue ✅
+
+```
+import_c "string.h"
+glue sumTo (n : Nat) : Nat := "uint64_t s = 0; for (uint64_t i = 0; i < n; i++) s += i; return s;"
+glue twiceLen (s : String) : Nat := "return strlen(s) * 2;"
+```
+
+A `glue` function's body is C, in a **checked subset** (`FFI/CGlue.lean`): scalar
+locals, assignments, `if`/`while`/`for`/`return`, arithmetic and logic on integers and
+doubles, strings passed around, and calls to functions from imported headers (with
+their types checked). Pointer dereference, address-of, casts, indexing, member access,
+`goto`, `asm` and `sizeof` are rejected, so glue can't corrupt memory by itself. The
+checked code is emitted into the program, with its headers, and bound like an
+`extern`.
+
+| #   | Where              | What                                     |
+|-----|--------------------|------------------------------------------|
+| 9.2 | `FFI/CGlue.lean`   | `expr`: types of glue expressions        |
+
+Next: foreign pointers with finalizers, and byte buffers.

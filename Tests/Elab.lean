@@ -694,6 +694,20 @@ def ffiGroup : Group where
         checkEq "true" (toString (fs.toList.find? (·.name == "printf") |>.map (·.variadic) |>.getD false))
         let q := (fs.toList.find? (·.name == "qsort")).get!
         checkEq "true" (toString (q.params.getLast! == FFI.CType.other "function pointer")) },
+    { name := "glue: checked C snippets", run := fun _ =>
+        ioRun ("import IO\nimport_c \"string.h\"\n" ++
+          "glue sumTo (n : Nat) : Nat := \"uint64_t s = 0; for (uint64_t i = 0; i < n; i++) s += i; return s;\"\n" ++
+          "glue twiceLen (s : String) : Nat := \"return strlen(s) * 2;\"\n" ++
+          "def main : IO Unit := do\n  IO.println (Nat.toString (sumTo 100));\n  IO.println (Nat.toString (twiceLen \"hello\"))")
+          "4950\n10\n" },
+    { name := "glue: no pointers (Exercise 9.2)", run := fun _ =>
+        ioFails "import IO\nglue bad (n : Nat) : Nat := \"return *n;\"" "pointer dereference" },
+    { name := "glue: no indexing", run := fun _ =>
+        ioFails "import IO\nglue bad (s : String) : Nat := \"return s[0];\"" "indexing" },
+    { name := "glue: only declared functions", run := fun _ =>
+        ioFails "import IO\nglue bad (n : Nat) : Nat := \"return system(n);\"" "unknown C function system" },
+    { name := "glue: types are checked", run := fun _ =>
+        ioFails "import IO\nglue bad (n : Nat) : String := \"return n + 1;\"" "expected a string" },
     { name := "foreign types are checked", run := fun _ =>
         ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
   ]

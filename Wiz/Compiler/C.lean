@@ -179,12 +179,12 @@ where
 /-- A whole C program: the runtime, the foreign glue, the functions, and a `main` that
 prints the result of the Wiz `main` (or, for `main : IO A`, runs it) and checks for
 leaks. -/
-def program (decls : Array IR.Decl) (io : Bool := false) : String :=
+def program (decls : Array IR.Decl) (io : Bool := false) (extra : String := "") : String :=
   let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
   let protos := decls.toList.map fun d =>
     s!"{signature d};\nstatic wiz_val {mangle d.name}_boxed(wiz_val *a);\n"
   let finish := if io then "wiz_finish_io" else "wiz_finish"
-  runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ glue (externs decls) ++
+  runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ extra ++ "\n" ++ glue (externs decls) ++
     "\n/* ---- generated ---- */\n\n" ++ String.join protos ++ "\n" ++
     String.join (decls.toList.map (decl arities ·)) ++
     s!"\nint main(void) \{ return {finish}({mangle "wiz.entry"}()); }\n"

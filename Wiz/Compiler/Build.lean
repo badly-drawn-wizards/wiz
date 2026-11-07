@@ -24,6 +24,9 @@ def irProgram (s : CommandState R) (n : Name) : Except String (Array IR.Decl × 
   let decls ← IR.lowerProgram code (.global n)
   pure (decls.map (·.optimize), d.type)
 
+/-- Header includes and glue functions, in order. -/
+def extraC (s : CommandState R) : String := "\n".intercalate s.cCode.toList
+
 /-- Is this the type `IO A`? Then `main` is run, not printed. -/
 def isIO (ty : Term R) : Bool := match (Term.spine ty).1 with
   | .const "IO" _ => true
@@ -32,7 +35,7 @@ def isIO (ty : Term R) : Bool := match (Term.spine ty).1 with
 /-- The C program that computes the global `n`, and `n`'s type. -/
 def cProgram (s : CommandState R) (n : Name) : Except String (String × Term R) := do
   let (decls, ty) ← irProgram s n
-  pure (C.program decls (isIO ty), ty)
+  pure (C.program decls (isIO ty) (extraC s), ty)
 
 def words (s : Option String) : List String :=
   ((s.getD "").splitOn " ").filter (· ≠ "")
@@ -102,8 +105,8 @@ def runGlobal (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bo
   | .ok (decls, ty) =>
     let exe := dir / "wiz_main"
     let io := isIO ty
-    let built ← if llvm then compileLLVM (LLVM.program decls io) exe (C.glue (C.externs decls))
-      else compileC (C.program decls io) exe
+    let built ← if llvm then compileLLVM (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls))
+      else compileC (C.program decls io (extraC s)) exe
     match built with
     | .error e => pure (.error e)
     | .ok () =>

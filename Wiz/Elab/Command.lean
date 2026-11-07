@@ -3,6 +3,8 @@ import Wiz.Compiler.Run
 import Wiz.Compiler.IRRun
 import Wiz.Compiler.Lower
 import Wiz.FFI.CParse
+import Wiz.FFI.CGlue
+import Wiz.Compiler.C
 import Wiz.Elab.ProcMacro
 import Wiz.Frontend.Parse
 
@@ -68,6 +70,10 @@ structure CommandState (R : Type) where
   instances : Array InstanceInfo := #[]
   /-- preprocessed C headers, for `import_c` (the command line runs the preprocessor) -/
   cHeaders : String → Option String := fun _ => none
+  /-- the C functions glue code may call: from imported headers, and earlier glue -/
+  cFuncs : List (String × List FFI.GTy × FFI.GTy) := []
+  /-- C code to emit: header includes and the glue functions -/
+  cCode : Array String := #[]
   /-- macro rules, latest first -/
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000
@@ -628,7 +634,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.importC" =>
     -- bind every function of a C header whose types we can marshal
     let header := ((cmd.getArg 1).getStr?).getD "_"
-    let pure := !(cmd.getArg 2).isNone
+    let isPure := !(cmd.getArg 2).isNone
     match s.cHeaders header with
     | none => report .error cmd.info s!"{header} was not preprocessed (run through `wiz check` or `wiz run`)"
     | some src =>
@@ -649,17 +655,77 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         | 'b' => .const "Bool" []
         | _ => .unit 1
       let w : Term R := .qlit QuantitySyntax.explicitDefault
-      for f in FFI.parseHeader src do
+      let funcs := FFI.parseHeader src
+      -- glue code may call these, and needs the header
+      let usable := funcs.toList.filterMap fun f => do
+        if f.variadic then none
+        let ps ← f.params.mapM FFI.GTy.ofC
+        pure (f.name, ps, ← FFI.GTy.ofC f.ret)
+      modify fun s => { s with cFuncs := usable ++ s.cFuncs, cCode := s.cCode.push s!"#include <{header}>" }
+      for f in funcs do
         let name : Name := "C." ++ f.name
         if f.variadic || (← get).globals.contains name then continue
         let (some ks, some rk) := (f.params.mapM (kindOf · false), kindOf f.ret true) | continue
-        let res := if pure then tyOf rk else .app (.const "IO" []) (tyOf rk)
+        let res := if isPure then tyOf rk else .app (.const "IO" []) (tyOf rk)
         let ty := ks.foldr (fun k acc => .pi "_" .default w (tyOf k) acc) res
-        let key : Name := s!"extern:{f.name}:{String.mk ks}:{rk}:{if pure then "pure" else "io"}:{header}"
+        let key : Name := s!"extern:{f.name}:{String.mk ks}:{rk}:{if isPure then "pure" else "io"}:{header}"
         match addDecl (← get).globals { name, type := ty, value := none } with
         | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
                                             globals := { g with builtins := (key, name) :: g.builtins } }
         | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
+  | "command.glue" =>
+    -- a foreign function defined by checked C code
+    let name := ((cmd.getArg 1).getId?).getD "_"
+    let binders := (cmd.getArg 2).args
+    let body := ((cmd.getArg 6).getStr?).getD ""
+    if s.globals.contains name then report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
+    else
+      let elabTy := runElab (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+        (elabDeclTerms binders (some (cmd.getArg 4)) none cmd.info) []
+      match elabTy with
+      | .error e => report .error e.info e.msg
+      | .ok (ty, _) =>
+        let names := (binders.flatMap Elab.binderViews).toList.map (·.name)
+        let kind (t : Term R) : Option Char := match t with
+          | .unit _ => some 'v'
+          | t => match (Term.spine t).1 with
+            | .const "Nat" _ => some 'n' | .const "UInt64" _ => some 'u' | .const "Float64" _ => some 'f'
+            | .const "String" _ => some 's' | .const "Bool" _ => some 'b'
+            | _ => none
+        let rec gparams : Term R → List (Term R) × Term R
+          | .pi _ _ _ A B => let (ps, r) := gparams B; (A :: ps, r)
+          | t => ([], t)
+        let (ps, res) := gparams ty
+        let (io, res) := match Term.spine res with
+          | (.const "IO" _, [A]) => (true, A)
+          | _ => (false, res)
+        match ps.mapM kind, kind res with
+        | some ks, some rk =>
+          if names.length != ks.length then report .error cmd.info "glue: every parameter needs a name" else
+          let gty (k : Char) : FFI.GTy := match k with
+            | 'f' => .dbl | 's' => .str | 'v' => .void | _ => .int
+          let cty (k : Char) : String := match k with
+            | 'f' => "double" | 's' => "const char *" | 'v' => "void" | 'b' => "int" | _ => "uint64_t"
+          let pairs := (names.zip ks).filter (·.2 != 'v')
+          match FFI.checkGlue body (pairs.map fun (x, k) => (x, gty k)) s.cFuncs (gty rk) with
+          | .error e => report .error (cmd.getArg 6).info s!"glue: {e}"
+          | .ok () =>
+            let cname := "wiz_glue_" ++ ((C.mangle name).drop 2).toString
+            let cparams := ", ".intercalate (pairs.map fun (x, k) => s!"{cty k} {x}")
+            let code := s!"static {cty rk} {cname}({if cparams.isEmpty then "void" else cparams}) \{
+{body}
+}"
+            let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}:"
+            match addDecl s.globals { name, type := ty, value := none } with
+            | .ok g =>
+              modify fun s => { s with builtins := (key, name) :: s.builtins,
+                                       globals := { g with builtins := (key, name) :: g.builtins },
+                                       cCode := s.cCode.push code,
+                                       cFuncs := (cname, pairs.map (gty ·.2), gty rk) :: s.cFuncs }
+            | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
+        | _, _ =>
+          let msg := "a glue function's arguments and result must be Nat, UInt64, Float64, String, Bool or Unit (the result may be in IO)"
+          report .error cmd.info msg
   | "command.extern" =>
     -- an axiom, bound to a C function: the marshalling follows the Wiz type
     let cname := ((cmd.getArg 1).getStr?).getD "_"
