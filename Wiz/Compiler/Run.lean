@@ -201,15 +201,38 @@ end
 
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
-/-- Read a runtime value back as a term of type `ty`, for printing. Numbers of the
-registered `nat` type print in decimal. -/
-partial def readback (g : Globals R) (natTy : Option Name) (ty : VTy R) (v : RVal) : Term R :=
-  let readback := readback g natTy
+def RVal.tag? : RVal → Option Nat
+  | .obj t _ => some t
+  | .nat 0 => some 0
+  | .nat _ => some 1
+  | _ => none
+
+/-- The characters of a value of the registered `string` type,
+`String.mk (List.cons (Char.mk n) …)`. -/
+partial def RVal.toString? (v : RVal) : Option String := do
+  let rec chars (l : RVal) (acc : String) : Option String := do
+    match ← (l.field 0).tag? with
+    | 0 => some acc
+    | _ =>
+      let n ← (((l.field 1).field 0).field 1).field 0 |>.toNat?
+      chars (((l.field 1).field 1).field 0) (acc.push (Char.ofNat n))
+  chars ((v.field 1).field 0) ""
+
+/-- Read a runtime value back as a term of type `ty`, for printing. Numbers and
+strings of the registered `nat` and `string` types print as literals. -/
+partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy R) (v : RVal) : Term R :=
+  let readback := readback g builtins
   match ty, v with
   | .mu _ _ _ _ _ (some (T, _, _)), v =>
-    match natTy, v.toNat? with
-    | some N, some n => if N == T then .const (toString n) [] else readbackData ty v
-    | _, _ => readbackData ty v
+    if builtins.lookup "nat" == some T then
+      match v.toNat? with
+      | some n => .const (toString n) []
+      | none => readbackData ty v
+    else if builtins.lookup "string" == some T then
+      match v.toString? with
+      | some s => .const s.quote []
+      | none => readbackData ty v
+    else readbackData ty v
   | .mu .., v => readbackData ty v
   | .sigma _ _ A B, v =>
     let a' := readback A (v.field 0)
@@ -226,7 +249,7 @@ where
       let v := match v with
         | .nat n => RVal.natView n
         | v => v
-      .con (readback g natTy (vInterp g l I D (muFamily l I D) i) v)
+      .con (readback g builtins (vInterp g l I D (muFamily l I D) i) v)
     | _ => .tt
 
 /-- Erase every definition the term depends on (all globals, in order). -/

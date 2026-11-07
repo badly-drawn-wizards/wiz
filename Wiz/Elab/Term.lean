@@ -391,7 +391,26 @@ where
           let n := ((stx.getArg 0).getNat?).getD 0
           pure ((List.range n).foldl (fun t _ => Term.app (.const (T ++ ".succ") us) t) (.const (T ++ ".zero") us))
         | none => throwAt ctx.info "numerals need `builtin nat := …`"
-      | _ => throwAt ctx.info "a numeral needs an expected type (a quantity or the builtin Nat)"
+      | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+    | "term.str" =>
+      match ← force expected with
+      | .mu _ _ _ _ _ (some (T, us, _)) =>
+        -- a string of the `builtin string` type: `String.mk [Char.mk n, …]`
+        let s ← get
+        match s.builtins.lookup "string" with
+        | some S =>
+          if S != T then throwAt ctx.info s!"string literals are for {S}, not {T}" else
+          let str := ((stx.getArg 0).getStr?).getD ""
+          let N := (s.builtins.lookup "nat").getD "Nat"
+          let num (n : Nat) : Term R :=
+            (List.range n).foldl (fun t _ => Term.app (.const (N ++ ".succ") []) t) (.const (N ++ ".zero") [])
+          let charTy : Term R := .const "Char" []
+          let chr (c : Char) : Term R := .app (.const "Char.mk" []) (num c.toNat)
+          let list := str.toList.foldr (fun c t => Term.app (.app (.app (.const "List.cons" []) charTy) (chr c)) t)
+            (.app (.const "List.nil" []) charTy)
+          pure (.app (.const (T ++ ".mk") us) list)
+        | none => throwAt ctx.info "string literals need `builtin string := …`"
+      | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.rfl" =>
       let g ← getGlobals
       match ← force expected with
@@ -1241,7 +1260,12 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       let ty := eval (← getGlobals) ctx.env (.const N [])
       return (← check ctx stx ty, ty)
     | none => throwAt ctx.info "numerals need `builtin nat := …` or a type ascription"
-  | "term.str" => throwAt ctx.info "string literals need data types (stage 4e)"
+  | "term.str" =>
+    match (← get).builtins.lookup "string" with
+    | some S =>
+      let ty := eval (← getGlobals) ctx.env (.const S [])
+      return (← check ctx stx ty, ty)
+    | none => throwAt ctx.info "string literals need `builtin string := …`"
   | k => throwAt ctx.info s!"no elaborator for syntax kind {k}"
 
 end

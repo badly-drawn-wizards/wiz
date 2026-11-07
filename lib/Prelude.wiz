@@ -52,9 +52,14 @@ inductive Option (A : Type) where
   | none
   | some (val : A)
 
--- Characters are code points; strings are lists of characters.
-def Char : Type := Nat
-def String : Type := List Char
+-- Characters are code points; strings are lists of characters. Both are wrapped in
+-- their own types so that `#eval` can print them as literals.
+inductive Char where
+  | mk (val : Nat)
+inductive String where
+  | mk (data : List Char)
+def String.append : String → String → String
+  | .mk xs, .mk ys => .mk (List.append xs ys)
 infixr:67 " ++ " => List.append
 
 -- Syntax trees, as one indexed family (descriptions have no nested inductives yet):
@@ -78,3 +83,4 @@ builtin nat.add := Nat.add
 builtin nat.sub := Nat.sub
 builtin nat.mul := Nat.mul
 builtin nat.beq := Nat.beq
+builtin string := String
