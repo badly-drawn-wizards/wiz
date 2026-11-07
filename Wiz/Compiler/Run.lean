@@ -209,6 +209,10 @@ partial def runPrim (code : Code) : Prim → Array RVal → RVal
   | .scofix, #[f, i, a] => .scofix f i a
   | .out, #[x] => out code x
   | .unreachable, _ => panic! "reached an impossible case"
+  | .lazyTag, #[x] => match x with
+    | .coit .. => .obj 1 #[]
+    | .scofix .. => .obj 2 #[]
+    | _ => .obj 0 #[]
   | _, _ => panic! "bad primitive application"
 
 end

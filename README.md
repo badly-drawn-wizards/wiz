@@ -690,4 +690,31 @@ Known limitations: no auto-bound implicits (write `{A : Type}`); instance proble
 must have no holes left in their arguments by the end of the command; answers must be
 complete terms; no default instances or coercions yet.
 
-Next: the backend (stage 8: an IR, C and LLVM, reference counting with reuse).
+## Stage 8: the backend
+
+### 8a: IR and Perceus reference counting ✅
+
+```
+#ir twice          -- def twice x0 x1 :=  dup x0;  let x2 := ap x0 x1;  let x3 := ap x0 x2;  ret x3
+#run fact 10       -- 3628800, through the IR, on a heap that checks reference counts
+```
+
+* **IR** (`Compiler/IR.lean`): A-normal form, first order: objects (`ctor`), fields
+  (`proj`), direct calls (`fap`), closures (`pap`/`ap`), native operations (`prim`),
+  `case` on tags, join points. Constructors without fields and numbers are unboxed
+  scalars.
+* **Lowering** (`Compiler/Lower.lean`): lambda lifting, closure conversion, arities,
+  join points for non-tail `case`s (closed over their variables). The generic
+  eliminators are written in the erased language (`Compiler/PrimCode.lean`) and
+  compiled like user code. The output is sorted by name, so it's deterministic.
+* **Perceus** (`Compiler/RC.lean`): every variable is owned; `dup` an argument that
+  is still needed, and `drop` a variable as soon as it's dead (garbage free).
+* **Checked heap** (`Compiler/IRRun.lean`): `#run` runs the IR with explicit reference
+  counts and fails on use after free, double free, or leaks. All the examples give the
+  same results under `#run` as under `#eval`.
+
+| #   | Where             | What                                     |
+|-----|-------------------|------------------------------------------|
+| 8.1 | `Compiler/RC.lean`| `insertRC`: Perceus `dup`/`drop`        |
+
+Next: C code generation and a C runtime (GMP numbers), then reuse analysis and LLVM.

@@ -592,6 +592,37 @@ def classGroup : Group where
         okLib "import Prelude\nclass Functor (f : Type → Type) where\n  map : {A B : Type} → (A → B) → f A → f B\n#check Functor" ["Functor : (Type → Type) → Type 1"] }
   ]
 
+def backendGroup : Group where
+  name := "backend"
+  exercise := "Exercise 8.1"
+  cases := [
+    { name := "numbers through the IR", run := fun _ =>
+        okLib "import Prelude\n#run 100 * 100 + 1" ["10001"] },
+    { name := "recursion, without leaks", run := fun _ =>
+        okLib "import Prelude\ndef fact : Nat → Nat\n  | .zero => 1\n  | .succ n => (.succ n) * fact n\n#run fact 10" ["3628800"] },
+    { name := "lists and strings", run := fun _ =>
+        okLib "import Prelude\n#run List.append (.cons (1 : Nat) .nil) (.cons 2 .nil)\n#run String.append \"ab\" \"cd\""
+          [".cons 1 (.cons 2 .nil)", "\"abcd\""] },
+    { name := "closures capture their variables", run := fun _ =>
+        okLib "import Prelude\ndef adder (n : Nat) : Nat → Nat := fun x => x + n\ndef twice (f : Nat → Nat) (x : Nat) : Nat := f (f x)\n#run twice (adder 10) 1"
+          ["21"] },
+    { name := "codata is lazy", run := fun _ =>
+        okLib (streamPrelude ++ "#run (nats .zero).tail.tail.head") [".succ (.succ .zero)"] },
+    { name := "sized recursion", run := fun _ =>
+        okLib (runPrelude ++ "#run fib (.succ (.succ (.succ (.succ (.succ .zero)))))")
+          [".succ (.succ (.succ (.succ (.succ (.succ (.succ (.succ .zero)))))))"] },
+    { name := "infinitary data", run := fun _ =>
+        okLib (treePrelude ++ "#run Tree.depthAt (.node (fun i => .node (fun j => .leaf))) 3") ["3"] },
+    { name := "type class dictionaries", run := fun _ =>
+        okLib (classPrelude ++ "#run (Inhabited.default : List (List Nat))") [".cons (.cons 0 .nil) .nil"] },
+    { name := "the IR, with reference counting (Exercise 8.1)", run := fun _ =>
+        okLib "import Prelude\ndef twice (f : Nat → Nat) (x : Nat) : Nat := f (f x)\n#ir twice"
+          ["def twice x0 x1 :=\n  dup x0\n  let x2 := ap x0 x1\n  let x3 := ap x0 x2\n  ret x3"] },
+    { name := "unused parameters are dropped at once", run := fun _ =>
+        okLib "import Prelude\ndef k (x y : List Nat) : List Nat := x\n#ir k"
+          ["def k x0 x1 :=\n  drop x1\n  ret x0"] }
+  ]
+
 def builtinGroup : Group where
   name := "builtins"
   exercise := "Stage 6b"
