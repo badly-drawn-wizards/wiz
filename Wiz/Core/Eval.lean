@@ -33,8 +33,15 @@ variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 def sameQty (a b : Val R) : Option Bool := do
   return QPoly.equiv (← a.toPoly?) (← b.toPoly?)
 
+/-- Unfold glued values (`Val.unfold`) until the head is not a definition: do this before
+matching on a value's shape. -/
+partial def whnf : Val R → Val R
+  | .unfold _ _ _ v => whnf v.get
+  | v => v
+
 /-- **Exercise 4.4b.** First projection. -/
-def vFst : Val R → Val R
+partial def vFst : Val R → Val R
+  | .unfold _ _ _ v => vFst v.get  -- (given) unfold glued values
   --<sol
   | .pair a _ => a
   | .neutral h sp => .neutral h (sp.push .fst)
@@ -44,7 +51,8 @@ def vFst : Val R → Val R
   --sol>
 
 /-- **Exercise 4.4c.** Second projection. -/
-def vSnd : Val R → Val R
+partial def vSnd : Val R → Val R
+  | .unfold _ _ _ v => vSnd v.get  -- (given)
   --<sol
   | .pair _ b => b
   | .neutral h sp => .neutral h (sp.push .snd)
@@ -79,9 +87,11 @@ mutual
 /-- **Exercise 1.1.** Evaluate a term in an environment.
 
 * `var ix`: look it up in `env` (index 0 is the head).
-* `const n us`: evaluate the definition in the *empty* environment if there is one,
-  after instantiating its level parameters with `us` (`Term.instLevels`). Otherwise
-  it is a stuck `neutral (.global n us) #[]`.
+* `const n us`: if there is a definition, a **glued** value `unfold n us #[] t`, where
+  the thunk `t` evaluates the definition in the *empty* environment, after
+  instantiating its level parameters with `us` (`Term.instLevels`). Declarations
+  marked `inline` (constructors), or all of them if `g.eager`, are evaluated right
+  away instead. Without a definition it is a stuck `neutral (.global n us) #[]`.
 * `pi`/`lam`: don't evaluate the body; capture it with `env` in a `Closure`.
 * `app`: evaluate both sides and use `vApp`.
 * `letE`: evaluate the value and push it onto the environment for the body.
@@ -99,7 +109,9 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --<sol
   | .var ix => env[ix]!
   | .const n us => if let some v := vBuiltin? g n then v else match g.find? n with
-    | some { value := some v, levelParams, .. } => eval g [] (v.instLevels levelParams us)
+    | some { value := some v, levelParams, inline, .. } =>
+      if inline || g.eager then eval g [] (v.instLevels levelParams us)
+      else .unfold n us #[] (Thunk.mk fun _ => eval g [] (v.instLevels levelParams us))
     | _ => .neutral (.global n us) #[]
   | .natLit n => .natLit n
   | .natOp op args => vNatOp g op (args.map (eval g env))
@@ -235,6 +247,8 @@ partial def evalHint (g : Globals R) (env : Env R) :
 A `lam` β-reduces; a neutral grows its spine (with `Elim.app`). Anything else is a
 type error that the checker should have ruled out (use `panic!`). -/
 partial def vApp (g : Globals R) : Val R → Val R → Val R
+  -- (given) a glued application grows its spine, and its unfolding lazily
+  | .unfold n us sp v, a => .unfold n us (sp.push (.app a)) (Thunk.mk fun _ => vApp g v.get a)
   --<sol
   | .lam _ c, a => Closure.inst g c a
   | .neutral h sp, a => .neutral h (sp.push (.app a))
@@ -259,6 +273,7 @@ partial def Closure.inst2 (g : Globals R) : Closure R → Val R → Val R → Va
 neutral. -/
 partial def vSplit (g : Globals R) (q : Val R) (s : Val R) (z : Name) (m : Closure R) (x y : Name)
     (body : Closure R) : Val R :=
+  let s := whnf s
   --<sol
   match s with
   | .pair a b => Closure.inst2 g body a b
@@ -298,6 +313,7 @@ partial def vAll (g : Globals R) (l v : Level) (I D X P i xs : Val R) : Val R :=
 /-- **Exercise 4.19a.** `ecase` on a tag picks the branch (evaluated in `env`). -/
 partial def vEcase (g : Globals R) (z : Name) (m : Closure R) (s : Val R) (env : Env R)
     (bs : List (Term R)) : Val R :=
+  let s := whnf s
   --<sol
   match s with
   | .tag _ i => eval g env (bs[i]?.getD (.var 0))
@@ -316,6 +332,7 @@ partial def vEcase (g : Globals R) (z : Name) (m : Closure R) (s : Val R) (env :
 
 The `fun s => …` is a closure over a small template, as in `vEq`. -/
 partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec mhrec D : Val R) : Val R :=
+  let D := whnf D
   --<sol
   match D with
   | .dret i => vApp g mret i
@@ -346,7 +363,9 @@ partial def vNatView (g : Globals R) : Val R → Val R
 /-- A registered operation applied to all its arguments: native arithmetic on literals,
 otherwise the operation's definition. -/
 partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
-  let lits := args.filterMap fun | .natLit n => some n | _ => none
+  let lits := args.filterMap fun a => match whnf a with
+    | .natLit n => some n
+    | _ => none
   let native : Option Nat := if lits.size != args.size then none else
     match op, lits with
     | "nat.succ", #[a] => some (a + 1)
@@ -367,7 +386,7 @@ partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
 
 (`Templates.hypsTm`; the `fun j y => …` is a template closure). -/
 partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
-  let x := vNatView g x
+  let x := vNatView g (whnf x)
   --<sol
   match x with
   | .con xs =>
@@ -387,7 +406,7 @@ calls at size `∞` (sizes are irrelevant at runtime):
 
     sfix P f s i (con xs) ↦ f ∞ (fun j i y => sfix P f j i y) i (con xs) -/
 partial def vSfix (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P f s i x : Val R) : Val R :=
-  let x := vNatView g x
+  let x := vNatView g (whnf x)
   --<sol
   match x with
   | .con _ =>
@@ -404,7 +423,7 @@ partial def vSfix (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P f s i
 /-- **Exercise 4.22b.** Sized case analysis: `scase P m s i (con xs) ↦ m ∞ i xs` (the
 size of the fields is irrelevant at runtime). -/
 partial def vScase (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m s i x : Val R) : Val R :=
-  let x := vNatView g x
+  let x := vNatView g (whnf x)
   --<sol
   match x with
   | .con xs => [.szInf, i, xs].foldl (vApp g) m
@@ -419,6 +438,7 @@ recursive positions:
 
     out (coit S step i s) ↦ map D S (ν D) (fun j s => coit S step j s) i (step i s) -/
 partial def vOut (g : Globals R) (x : Val R) : Val R :=
+  let x := whnf x
   --<sol
   match x with
   | .coit l I D S step i s =>
@@ -465,9 +485,10 @@ Reference: Pujet & Tabareau, *Observational Equality: Now for Good* (POPL 2022).
 it's stuck. -/
 partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   -- numerals: decide directly, or else look one step inside (`vNatView`)
-  if let (.natLit n, .natLit m) := (a, b) then (if n == m then .unit 0 else .empty 0) else
-  let a := vNatView g a
-  let b := vNatView g b
+  if let (.natLit n, .natLit m) := (whnf a, whnf b) then (if n == m then .unit 0 else .empty 0) else
+  let A := whnf A
+  let a := vNatView g (whnf a)
+  let b := vNatView g (whnf b)
   --<sol
   let v (i : Nat) : Term R := .var i
   match A with
@@ -512,6 +533,8 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
 Why can't `Sort u = Sort v` be `False` when `u` and `v` are different parameters?
 (Instantiate them with the same level.) -/
 partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
+  let X := whnf X
+  let Y := whnf Y
   --<sol
   let v (i : Nat) : Term R := .var i
   let levels (u w : Level) : Val R :=
@@ -551,6 +574,8 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
 The Π case needs a template (it builds a lambda); the Σ case can be computed
 directly. Quantities must match, or it's stuck. -/
 partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
+  let A := whnf A
+  let B := whnf B
   --<sol
   let v (i : Nat) : Term R := .var i
   let stuck : Val R := .neutral (.cast A B e t) #[]
@@ -590,6 +615,8 @@ and `transp` (just quote their components).
 and `absurd` eliminations. A `split`'s motive is under one binder and its body under
 two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
+  -- (given) a glued value keeps its name
+  | .unfold n us sp _ => quote g l (.neutral (.global n us) sp)
   --<sol
   | .neutral h sp =>
     let hd : Term R := match h with
@@ -673,8 +700,9 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .sfix l I D lv P f s i => vSfix g l I D lv P f s i v
     | .scase l I D lv P m s i => vScase g l I D lv P m s i v
 
-/-- Normal form of a closed term. -/
+/-- Normal form of a closed term (every definition unfolded). -/
 def nf (g : Globals R) (t : Term R) : Term R :=
+  let g := { g with eager := true }
   quote g 0 (eval g [] t)
 
 end Wiz

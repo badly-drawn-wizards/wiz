@@ -76,6 +76,12 @@ inductive Val (R : Type) where
   | coit (l : Level) (I D S step i s : Val R)
   /-- a numeral of the `builtin nat` type (see `Term.natLit`) -/
   | natLit (n : Nat)
+  /-- **glued**: the global `name` applied to the eliminations `sp`, together with its
+  unfolding, computed only when needed (a `Thunk` remembers it). Keeping the head
+  lets conversion compare `f a` with `f b` without unfolding `f`, keeps names in error
+  messages, and lets type classes see their class and the nominal heads. Use `whnf`
+  before matching on a value's shape. -/
+  | unfold (name : Name) (levels : List Level) (sp : Array (Elim R)) (val : Thunk (Val R))
 
 /-- An elimination stuck on a neutral. -/
 inductive Elim (R : Type) where
@@ -106,7 +112,8 @@ instance {R : Type} : Inhabited (Val R) := ⟨.sort 0⟩
 
 /-- A quantity value as a polynomial: a literal, or a quantity variable. `none` for
 anything else (a stuck computation, or an elaborator metavariable). -/
-def Val.toPoly? {R : Type} [QRig R] [DecidableEq R] : Val R → Option (QPoly R)
+partial def Val.toPoly? {R : Type} [QRig R] [DecidableEq R] : Val R → Option (QPoly R)
+  | .unfold _ _ _ v => Val.toPoly? v.get
   | .qlit r => some (QPoly.const r)
   | .neutral (.local l) #[] => some (QPoly.var l)
   | _ => none

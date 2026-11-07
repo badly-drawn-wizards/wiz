@@ -247,7 +247,7 @@ of the expected one.)
 
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
-  match t, ty with
+  match t, whnf ty with
   --<sol
   | .lam x body, .pi _ _ q dom cod => do
     let q ← qtyPoly ctx q
@@ -358,7 +358,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --<sol
   | .app f a => do
     let (fty, uf) ← infer ctx f
-    match fty with
+    match whnf fty with
     | .pi _ _ q dom cod =>
       let q ← qtyPoly ctx q
       let ua ← check (if q.isConst? == some 0 then { ctx with erased := true } else ctx) a dom
@@ -384,7 +384,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     pure (.sort (.max i j), Usage.zeros ctx.lvl)
   | .fst t => do
     let (ty, u) ← infer ctx t
-    match ty with
+    match whnf ty with
     | .sigma x q A _ =>
       let q ← qtyPoly ctx q
       unless ctx.erased || QPoly.le (QPoly.const 1) q do
@@ -393,13 +393,13 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .snd t => do
     let (ty, u) ← infer ctx t
-    match ty with
+    match whnf ty with
     | .sigma _ _ _ B => pure (Closure.inst ctx.globals B (vFst (ctx.eval t)), u)
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .split q s z m x y b => do
     let q ← checkQty ctx q
     let (sty, us) ← infer ctx s
-    match sty with
+    match whnf sty with
     | .sigma _ p A B =>
       let p ← qtyPoly ctx p
       let _ ← checkType (ctx.bind z [] sty) m
@@ -418,7 +418,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← checkType ctx m
     -- `t` can never be evaluated (nothing inhabits the empty type): an erased position
     let (ty, _) ← infer { ctx with erased := true } t
-    match ty with
+    match whnf ty with
     | .empty _ => pure (ctx.eval m, Usage.zeros ctx.lvl)
     | _ => throw (.typeMismatch "an empty type" (ctx.showVal ty))
   | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
@@ -484,7 +484,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     pure (.enum ls, Usage.zeros ctx.lvl)
   | .ecase z m s bs => do
     let (sty, us) ← infer ctx s
-    let .enum ls := sty | throw (.typeMismatch "an enumeration" (ctx.showVal sty))
+    let .enum ls := whnf sty | throw (.typeMismatch "an enumeration" (ctx.showVal sty))
     unless bs.length == ls.length do throw (.other s!"ecase needs {ls.length} branches, got {bs.length}")
     let _ ← checkType (ctx.bind z [] sty) m
     let mc : Closure R := .mk ctx.env m
@@ -504,7 +504,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     pure (.sort (.succ (.succ l)), Usage.zeros ctx.lvl)
   | .delim v P a b c h D => do
     let (dty, uD) ← infer ctx D
-    let .desc l I := dty | throw (.typeMismatch "a description" (ctx.showVal dty))
+    let .desc l I := whnf dty | throw (.typeMismatch "a description" (ctx.showVal dty))
     let w := QuantitySyntax.explicitDefault
     let _ ← check ctx P (delimMotiveTy l v I w)
     let vP := ctx.eval P
@@ -536,7 +536,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), QPoly.const w • um + ux)
   | .out x => do
     let (ty, u) ← infer ctx x
-    let .nu l I D i s _ := ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
+    let .nu l I D i s _ := whnf ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
     let some s' := sizePred? s
       | throw (.other s!"only a value of size ↑s or ∞ can be observed, not {ctx.showVal s}")
     pure (vInterp ctx.globals l I D (nuFamilyAt l I D s') i, u)
@@ -649,7 +649,7 @@ partial def checkQty (ctx : Ctx R) (q : Term R) : TCM (QPoly R) := do
 The usage is discarded: type positions are erased. -/
 partial def checkType (ctx : Ctx R) (a : Term R) : TCM Level := do
   let (ty, _) ← infer { ctx with erased := true } a
-  match ty with
+  match whnf ty with
   | .sort l => pure l
   | _ => throw (.notAType (ctx.showTerm a) (ctx.showVal ty))
 

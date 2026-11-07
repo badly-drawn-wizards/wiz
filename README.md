@@ -624,3 +624,29 @@ without quoting.
 | 6.6 | `lib/Prelude.wiz`     | `TacticM.findHyp`, for `assumption` (in Wiz!)      |
 
 Next: typeclasses with tabled resolution (stage 7), which also make `do` generic.
+
+## Stage 7: type classes
+
+### 7a: glued evaluation ✅
+
+Type classes need to see names: the class in `Add Nat`, the nominal head in
+`Monad TacticM`. Evaluation used to unfold every definition eagerly, so those names
+disappeared. Now a defined constant evaluates to a **glued** value
+`Val.unfold n us sp t`: the head `n` applied to the spine `sp`, with its unfolding
+`t` computed lazily (a `Thunk` remembers it), as in smalltt and Lean.
+
+* `vApp` grows a glued spine (lazily), and `quote` keeps the name. So types print as
+  `TacticM Nat`, and elaborated terms and meta solutions stay small.
+* `whnf` unfolds glued heads. Everything that matches on a value's shape calls it
+  first: the kernel's eliminators, `check`/`infer`, erasure, and the elaborator's
+  `force`. The exercise code got given `whnf` lines (or a given first match arm) where
+  needed.
+* `conv`/`convTy` (`convGlued`) and `unify` (`unifyGlued`) first compare two glued
+  values with the same head by their spines, and unfold only if that fails. A meta
+  is solved with a glued value as is. Outside the pattern fragment, `unify` tries
+  the **first-order approximation** (`?m a =?= f b` ↦ `?m =?= f`, `a =?= b`).
+* `Decl.inline` (constructors) unfold eagerly, so values still print as `.succ n`.
+  `nf` (`#reduce`) evaluates with `Globals.eager`.
+* Exercise 3.1 is now `forceMeta` (metas only). `force` also unfolds glued heads.
+
+The prelude now elaborates about 6× faster.

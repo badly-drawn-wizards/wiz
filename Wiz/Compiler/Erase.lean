@@ -101,7 +101,7 @@ variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
 /-- Values of this type have no runtime content: types, proofs, sizes, quantities. -/
 def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
-  match ty with
+  match whnf ty with
   | .sort _ | .size | .sizeLt _ | .qty => true
   | _ => isProp ctx.globals ctx.tys ty
 
@@ -125,7 +125,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
   if erasable ctx ty then return .erased
   --<sol
   let g := ctx.globals
-  match t, ty with
+  match t, whnf ty with
   | .lam x b, .pi _ _ q dom cod =>
     let some p := q.toPoly? | throw (.other "erasure: unknown quantity")
     let b' ← eraseCheck (ctx.bind x p dom) b (Closure.inst g cod (Val.var ctx.lvl))
@@ -185,7 +185,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
     | .snd p => pure (.proj 1 (← eraseInfer ctx p).1)
     | .split _ s _ _ x y b => do
       let (s', sty) ← eraseInfer ctx s
-      let .sigma _ q A B := sty | throw (.other "erasure: split of a non-pair")
+      let .sigma _ q A B := whnf sty | throw (.other "erasure: split of a non-pair")
       let some pq := q.toPoly? | throw (.other "erasure: unknown quantity")
       -- let s := s'; let x := s.0; let y := s.1; b   (b lives under x, y: lift past s)
       let vx := Val.var ctx.lvl
@@ -194,7 +194,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       pure (.letE "s" s' (.letE x (.proj 0 (.var 0)) (.letE y (.proj 1 (.var 1)) (b'.lift 1 2))))
     | .ecase _ m s bs => do
       let (s', sty) ← eraseInfer ctx s
-      let .enum ls := sty | throw (.other "erasure: case on a non-tag")
+      let .enum ls := whnf sty | throw (.other "erasure: case on a non-tag")
       let mc : Closure R := .mk ctx.env m
       let bs' ← bs.toArray.mapIdxM fun k b => eraseCheck ctx b (Closure.inst g mc (.tag ls k))
       pure (.case s' bs')
@@ -208,7 +208,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
         ← eraseCheck ctx i vI, ← eraseE ctx x])
     | .delim v P a b c h D => do
       let (dty, _) ← infer ctx D
-      let .desc l I := dty | throw (.other "erasure: Desc.elim on a non-description")
+      let .desc l I := whnf dty | throw (.other "erasure: Desc.elim on a non-description")
       let (ta, tb, tc, th) := delimMethodTys g l I (ctx.eval P) QuantitySyntax.explicitDefault
       let _ := v
       pure (.prim .delim #[← eraseCheck ctx a ta, ← eraseCheck ctx b tb, ← eraseCheck ctx c tc,
@@ -256,7 +256,7 @@ partial def eraseSpine (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
   let mut acc := h'
   let mut fty := hty
   for a in args do
-    match fty with
+    match whnf fty with
     | .pi _ _ q dom cod =>
       let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a dom
       acc := .app acc a'

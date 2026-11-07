@@ -225,7 +225,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     let d : Decl R :=
       { name := T ++ "." ++ cname, levelParams := levelParams,
         type := pisTm implicitΔ (pisTm fsTy resTy),
-        value := some (lamsTm ΔNames (lamsTm (fs.map (·.1)) (.con payload))) }
+        value := some (lamsTm ΔNames (lamsTm (fs.map (·.1)) (.con payload))), inline := true }
     ctorDecls := ctorDecls ++ [d]
   pure ([descDecl, typeDecl] ++ ctorDecls)
 
@@ -291,7 +291,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     let d : Decl R :=
       { name := T ++ "." ++ x, levelParams := levelParams,
         type := pisTm implicitΔ (.pi "x" .default (.qlit QuantitySyntax.explicitDefault) Tapp (F.lift 1)),
-        value := some (lamsTm ΔNames (.lam "x" proj)) }
+        value := some (lamsTm ΔNames (.lam "x" proj)), inline := true }
     decls := decls ++ [d]
     obs := obs ++ [(x, isRec)]
   pure (decls, obs)
@@ -330,7 +330,7 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
       value := some (lamsTm ΔNames body) }
   let mkDecl : Decl R :=
     { name := S ++ ".mk", levelParams := levelParams, type := pisTm implicitΔ (pisTm fs'.toList Sapp),
-      value := some (lamsTm ΔNames (lamsTm (fs'.toList.map (·.1)) (tupleTm (telescopeVars n 0)))) }
+      value := some (lamsTm ΔNames (lamsTm (fs'.toList.map (·.1)) (tupleTm (telescopeVars n 0)))), inline := true }
   pure [sDecl, mkDecl]
 
 end Wiz.Elab

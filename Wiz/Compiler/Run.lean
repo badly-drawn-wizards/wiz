@@ -236,7 +236,7 @@ partial def RVal.toString? (v : RVal) : Option String := do
 strings of the registered `nat` and `string` types print as literals. -/
 partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy R) (v : RVal) : Term R :=
   let readback := readback g builtins
-  match ty, v with
+  match whnf ty, v with
   | .mu _ _ _ _ _ (some (T, _, _)), v =>
     if builtins.lookup "nat" == some T then
       match v.toNat? with
@@ -258,7 +258,7 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
   | _, _ => .tt
 where
   readbackData (ty : VTy R) (v : RVal) : Term R :=
-    match ty with
+    match whnf ty with
     | .mu l I D i _ _ =>
       let v := match v with
         | .nat n => RVal.natView n
