@@ -22,3 +22,5 @@ import Wiz.Elab.Zonk
 import Wiz.Elab.Term
 import Wiz.Elab.Command
 import Wiz.Frontend.Frontend
+import Wiz.Compiler.Erase
+import Wiz.Compiler.Run

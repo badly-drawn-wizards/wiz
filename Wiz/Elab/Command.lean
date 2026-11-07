@@ -1,4 +1,5 @@
 import Wiz.Elab.Recursor
+import Wiz.Compiler.Run
 import Wiz.Frontend.Parse
 
 /-!
@@ -410,6 +411,33 @@ def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
                 report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
                 return
         modify fun s => { s with globals := g }
+  | "command.erase" =>
+    let n := ((cmd.getArg 1).getId?).getD "_"
+    match s.globals.find? n with
+    | none => report .error cmd.info s!"unknown declaration {n}"
+    | some d => match eraseDecl s.globals d with
+      | .ok e => report .info cmd.info s!"{n} := {e}"
+      | .error err => report .error cmd.info s!"cannot erase {n}: {err}"
+  | "command.eval" =>
+    -- elaborate, erase, run, and read the result back using its type
+    let r := runElab s.globals do
+      let (t, _) ← Elab.infer {} (cmd.getArg 1)
+      solveSortConstraints
+      let t ← zonk 0 t
+      ensureNoMVars t cmd.info
+      pure t
+    match r with
+    | .error e => report .error e.info e.msg
+    | .ok t =>
+      let ctx : Ctx R := { globals := s.globals }
+      match Wiz.infer ctx t, compileAll s.globals with
+      | .ok (ty, _), .ok code =>
+        match eraseCheck ctx t ty with
+        | .ok e =>
+          let v := run code [] e
+          report .info cmd.info (readback s.globals ty v).pretty
+        | .error err => report .error cmd.info s!"cannot run this: {err}"
+      | .error err, _ | _, .error err => report .error cmd.info s!"cannot run this: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with
     | .ok tables => modify fun s => { s with tables }
