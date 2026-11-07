@@ -41,6 +41,9 @@ inductive Prim where
   | out
   /-- reached an absurd case -/
   | unreachable
+  /-- `0` for an observed coinductive value, `1` for a `coit`, `2` for an `scofix` (the
+  backend's `out` is written with it) -/
+  | lazyTag
   deriving Repr, BEq, Inhabited
 
 inductive ETerm where

@@ -26,3 +26,8 @@ import Wiz.Elab.Command
 import Wiz.Frontend.Frontend
 import Wiz.Compiler.Erase
 import Wiz.Compiler.Run
+import Wiz.Compiler.IR
+import Wiz.Compiler.PrimCode
+import Wiz.Compiler.Lower
+import Wiz.Compiler.RC
+import Wiz.Compiler.IRRun

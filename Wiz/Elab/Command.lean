@@ -1,5 +1,7 @@
 import Wiz.Elab.Recursor
 import Wiz.Compiler.Run
+import Wiz.Compiler.IRRun
+import Wiz.Compiler.Lower
 import Wiz.Elab.ProcMacro
 import Wiz.Frontend.Parse
 
@@ -673,6 +675,38 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let v := run code [] e
         report .info cmd.info (readback s.globals s.builtins ty v).pretty
       | .error err => report .error cmd.info s!"cannot run this: {err}"
+  | "command.run" =>
+    -- like `#eval`, but through the IR, with reference counting, on a checked heap
+    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+      let (t, _) ← Elab.infer {} (cmd.getArg 1)
+      solveSortConstraints
+      let t ← zonk 0 t
+      ensureNoMVars t cmd.info
+      pure t
+    match r with
+    | .error e => report .error e.info e.msg
+    | .ok t =>
+      let ctx : Ctx R := { globals := s.globals }
+      let result : Except String (VTy R × RVal) := do
+        let (ty, _) ← (Wiz.infer ctx t).mapError toString
+        let e ← (eraseCheck ctx t ty).mapError toString
+        let code ← (compileReachable s.globals s.builtins e.globals.toList).mapError toString
+        let decls ← IR.lowerProgram code e
+        let (v, _) ← IR.runProgram (decls.map (·.insertRC))
+        pure (ty, v)
+      match result with
+      | .ok (ty, v) => report .info cmd.info (readback s.globals s.builtins ty v).pretty
+      | .error err => report .error cmd.info s!"#run: {err}"
+  | "command.ir" =>
+    let n := ((cmd.getArg 1).getId?).getD "_"
+    let result : Except String (Array IR.Decl) := do
+      let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+      IR.lowerProgram code (.global n)
+    match result with
+    | .ok decls =>
+      let mine := decls.filter fun d => d.name == n || d.name.startsWith (n ++ ".")
+      report .info cmd.info ("\n".intercalate (mine.toList.map (·.insertRC.toString)))
+    | .error err => report .error cmd.info s!"#ir: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with
     | .ok tables => modify fun s => { s with tables }

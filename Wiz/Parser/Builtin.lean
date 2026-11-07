@@ -235,6 +235,9 @@ def commandLeading : List LeadingParser := [
   { kind := "command.eval", prec := maxPrec, p := seqs ["#eval", term] },
   { kind := "command.erase", prec := maxPrec, p := seqs ["#erase", ident] },
   { kind := "command.import", prec := maxPrec, p := seqs ["import", ident] },
+  -- stage 8: run through the backend pipeline (IR, reference counting), print the IR
+  { kind := "command.run", prec := maxPrec, p := seqs ["#run", term] },
+  { kind := "command.ir", prec := maxPrec, p := seqs ["#ir", ident] },
   { kind := "command.builtin", prec := maxPrec, p := seqs ["builtin", ident, ":=", ident] },
   { kind := "command.attrMacro", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "macro", ident, "]", ident] },
