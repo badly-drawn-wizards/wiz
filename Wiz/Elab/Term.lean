@@ -827,7 +827,9 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       let .pi _ _ _ A B ← force mt | throwAt ctx.info "internal error: method type"
       fieldLvls := fieldLvls.push ctx'.lvl
       mt ← instM B (Val.var ctx'.lvl)
-      ctx' := ctx'.bind n A
+      -- hidden: the patterns name the fields (`.ok items s1`), and a field's own name
+      -- (`s`) must not shadow a variable of the same name in the right-hand side
+      ctx' := ctx'.bind (n ++ "✝") A
     let mut ihLvls : Array Lvl := #[]
     for _ in [0:nRec] do
       let .pi _ _ _ A B ← force mt | throwAt ctx.info "internal error: hypothesis type"

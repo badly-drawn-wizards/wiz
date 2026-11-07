@@ -37,6 +37,7 @@ ready to match on. (`forceMeta` keeps glued heads, for unification.) -/
 partial def force (v : Val R) : ElabM R (Val R) := do
   match ← forceMeta v with
   | .unfold _ _ _ v => force v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => force v.get
   | v => pure v
 
 /-- A partial renaming from context `cod` (size `cod`) to context `dom` (size `dom`):
@@ -73,6 +74,14 @@ them when you get there.) -/
 partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   -- (given) a glued value keeps its name in the solution
   if let .unfold n us sp _ ← forceMeta v then return ← rename m p (.neutral (.global n us) sp)
+  -- (given) and glued induction on a numeral keeps its folded form
+  if let .lazyInd lv I D w P mt i x sp _ ← forceMeta v then
+    let t := Term.ind lv (← rename m p I) (← rename m p D) w (← rename m p P) (← rename m p mt) (← rename m p i) (← rename m p x)
+    return ← sp.foldlM (fun t e => match e with
+      | .app a => return .app t (← rename m p a)
+      | .fst => pure (.fst t)
+      | .snd => pure (.snd t)
+      | _ => pure t) t
   if let .natLit n ← force v then return .natLit n
   sorry
 
@@ -143,6 +152,9 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     let s ← get
     try x; pure true catch _ => set s; pure false
   match t, u with
+  | .lazyInd .., .lazyInd .. =>
+    let g ← getGlobals
+    pure (quote g l t == quote g l u)
   | .unfold n us sp v, .unfold n' us' sp' v' =>
     if n == n' && us.length == us'.length && sp.size == sp'.size then
       if ← attempt (do for a in us, b in us' do unifyLevel a b

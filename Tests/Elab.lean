@@ -746,9 +746,60 @@ partial def leanTokens (tokens : Array String) (input : String) : List String :=
 def wizLit (s : String) : String :=
   "\"" ++ String.join (s.toList.map fun c => if c == '"' then "\\\"" else if c == '\\' then "\\\\" else if c == '\n' then "\\n" else c.toString) ++ "\""
 
+/-- A grammar descriptor as a Wiz `PD` (`selfhost/Parse.wiz`): sequences become binary. -/
+partial def wizPD : ParserDescr → String
+  | .atom t => s!"(PD.atom {wizLit t})"
+  | .nonReserved t => s!"(PD.nonReserved {wizLit t})"
+  | .ident => "PD.ident"
+  | .num => "PD.num"
+  | .str => "PD.str"
+  | .cat c p => s!"(PD.cat {wizLit c} {p})"
+  | .seq ps => ps.toList.foldr (fun p acc => if acc == "PD.empty" then wizPD p else s!"(PD.seq {wizPD p} {acc})") "PD.empty"
+  | .many p => s!"(PD.many {wizPD p})"
+  | .many1 p => s!"(PD.many1 {wizPD p})"
+  | .optional p => s!"(PD.optional {wizPD p})"
+  | .sepBy p sep t => s!"(PD.sepBy {wizPD p} {wizLit sep} {if t then ".true" else ".false"})"
+  | .sepBy1 p sep t => s!"(PD.sepBy1 {wizPD p} {wizLit sep} {if t then ".true" else ".false"})"
+  | .orelse p q => s!"(PD.orelse {wizPD p} {wizPD q})"
+  | .node k p => s!"(PD.node {wizLit k} {wizPD p})"
+  | .withPosition p => s!"(PD.withPosition {wizPD p})"
+  | .withoutPosition p => s!"(PD.withoutPosition {wizPD p})"
+  | .colGt => "PD.colGt"
+  | .colGe => "PD.colGe"
+  | .noWs => "PD.noWs"
+  | .checkPrec p => s!"(PD.checkPrec {p})"
+
+/-- A Wiz list literal. -/
+def wizList (xs : List String) : String := xs.foldr (fun x acc => s!"(.cons {x} {acc})") ".nil"
+
+/-- The parser tables as Wiz definitions: one per category, then `cats`. -/
+def wizTables (t : ParserTables) : String := Id.run do
+  let names := (t.cats.toList.map (·.1)).toArray.qsort (· < ·)
+  let mut out := ""
+  let mut i := 0
+  for n in names do
+    let cat := t.cats[n]!
+    let ls := cat.leading.toList.map fun lp => s!"(Leading.mk {wizLit lp.kind} {lp.prec} {lp.priority} {wizPD lp.p})"
+    let ts := cat.trailing.toList.map fun tp => s!"(Trailing.mk {wizLit tp.kind} {tp.prec} {tp.lhsPrec} {tp.priority} {wizPD tp.p})"
+    out := out ++ s!"def cat{i} : Cat := Cat.mk {wizLit n} {wizList ls} {wizList ts}\n"
+    i := i + 1
+  out := out ++ s!"def cats : List Cat := {wizList ((List.range names.size).map (s!"cat{·}"))}\n"
+  pure out
+
+/-- What the Lean parser makes of `input`, printed like `parse` in `Parse.wiz`. -/
+def leanParse (t : ParserTables) (cat : Name) (input : String) : String :=
+  let chars := input.toList.toArray
+  let p : P Syntax := do
+    let stx ← categoryParser cat 0
+    let i ← P.nextPos
+    if i < chars.size then P.failAt i "end of input" else pure stx
+  match p.run chars t with
+  | .ok (stx, _) => stx.toSExpr (atoms := true)
+  | .error e => s!"error {e.pos}: expected {", ".intercalate e.expected.toList}"
+
 def selfHostGroup : Group where
   name := "selfhost"
-  exercise := "Stage 12b"
+  exercise := "Stage 12b–d"
   cases := [
     { name := "the lexer in Wiz agrees with the Lean lexer", run := fun _ => do
         let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
@@ -759,6 +810,23 @@ def selfHostGroup : Group where
         let table := toks.toList.foldr (fun t acc => s!"(.cons {wizLit t} {acc})") ".nil"
         let prog := lexSrc ++ s!"\ndef main : IO Unit := printAll (List.reverseL (tokenize {table} {wizLit input}) .nil)\n"
         let prog := prog.replace "def printAll" "def List.reverseL : List String → List String → List String\n  | .nil, acc => acc\n  | .cons x xs, acc => List.reverseL xs (.cons x acc)\ndef printAll"
+        ioRun prog ("\n".intercalate expected ++ "\n") },
+    { name := "the parser in Wiz agrees with the Lean parser", run := fun _ => do
+        let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
+        let parseSrc ← IO.FS.readFile "selfhost/Parse.wiz"
+        let t := Builtin.tables
+        let cases : List (Name × String) := [
+          ("term", "f x y"), ("term", "fun (x : Nat) => x"), ("term", "(x : A) → B x"),
+          ("term", "(a, b).1"), ("term", "match n with\n  | .zero => a\n  | .succ m => b"),
+          ("term", "let x := 1; x"), ("term", "f (g x"), ("term", "Type 1"),
+          ("command", "def f (x : Nat) : Nat := x"),
+          ("command", "inductive T where\n  | a\n  | b (t : T)"),
+          ("command", "#eval f 41"), ("command", "def f : Nat → Nat\n  | .zero => 0\n  | .succ n => n")]
+        let expected := cases.map fun (c, i) => leanParse t c i
+        let calls := cases.map fun (c, i) => s!"(parse cats tokens {wizLit c} {wizLit i})"
+        let prog := lexSrc ++ "\n" ++ parseSrc ++ "\n" ++ wizTables t ++
+          s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
+          s!"def main : IO Unit := printAll {wizList calls}\n"
         ioRun prog ("\n".intercalate expected ++ "\n") }
   ]
 

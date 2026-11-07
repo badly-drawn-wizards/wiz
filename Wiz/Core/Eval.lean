@@ -37,16 +37,19 @@ def sameQty (a b : Val R) : Option Bool := do
 matching on a value's shape. -/
 partial def whnf : Val R → Val R
   | .unfold _ _ _ v => whnf v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => whnf v.get
   | v => v
 
 /-- **Exercise 4.4b.** First projection. -/
 partial def vFst : Val R → Val R
   | .unfold _ _ _ v => vFst v.get  -- (given) unfold glued values
+  | .lazyInd l I D w P m i x sp v => .lazyInd l I D w P m i x (sp.push .fst) (Thunk.mk fun _ => vFst v.get)  -- (given)
   | v => sorry
 
 /-- **Exercise 4.4c.** Second projection. -/
 partial def vSnd : Val R → Val R
   | .unfold _ _ _ v => vSnd v.get  -- (given)
+  | .lazyInd l I D w P m i x sp v => .lazyInd l I D w P m i x (sp.push .snd) (Thunk.mk fun _ => vSnd v.get)  -- (given)
   | v => sorry
 
 /-- The arity of a registered operation on numbers. -/
@@ -166,6 +169,7 @@ type error that the checker should have ruled out (use `panic!`). -/
 partial def vApp (g : Globals R) : Val R → Val R → Val R
   -- (given) a glued application grows its spine, and its unfolding lazily
   | .unfold n us sp v, a => .unfold n us (sp.push (.app a)) (Thunk.mk fun _ => vApp g v.get a)
+  | .lazyInd l I D w P m i x sp v, a => .lazyInd l I D w P m i x (sp.push (.app a)) (Thunk.mk fun _ => vApp g v.get a)
   | f, a => sorry
 
 /-- **Exercise 1.2b.** Instantiate a closure with a value for its bound variable. -/
@@ -264,9 +268,16 @@ partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
     ind P m i (con xs) ↦ m i xs (hyps D (μ D) P (fun j y => ind P m j y) i xs)
 
 (`Templates.hypsTm`; the `fun j y => …` is a template closure). -/
-partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
+partial def vIndStep (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
   let x := vNatView g (whnf x)
   sorry
+
+/-- `ind` on a numeral `n + 1` is computed only when needed (`Val.lazyInd`): its
+hypothesis is `ind` on `n`, so computing eagerly would go all the way down to `0`. -/
+partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
+  match whnf x with
+  | .natLit (_ + 1) => .lazyInd l I D v P m i x #[] (Thunk.mk fun _ => vIndStep g l I D v P m i x)
+  | _ => vIndStep g l I D v P m i x
 
 /-- **Exercise 4.22a.** Sized recursion unfolds on a constructor, with the recursive
 calls at size `∞` (sizes are irrelevant at runtime):
@@ -372,6 +383,13 @@ two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   -- (given) a glued value keeps its name
   | .unfold n us sp _ => quote g l (.neutral (.global n us) sp)
+  | .lazyInd lv I D v P m i x sp _ =>
+    sp.foldl (fun t e => match e with
+      | .app a => .app t (quote g l a)
+      | .fst => .fst t
+      | .snd => .snd t
+      | _ => t)
+      (.ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) (quote g l x))
   | .natLit n => .natLit n  -- (given)
   | v => sorry
 
