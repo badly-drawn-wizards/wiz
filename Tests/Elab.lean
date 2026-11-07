@@ -276,7 +276,7 @@ def dataGroup : Group where
         ok (dataPrelude ++ "#reduce (out (out (out (alternate true)).2.1).2.1).1") [".true"] },
     { name := "Desc.elim computes on a closed description", run := fun _ =>
         ok (dataPrelude ++ "def isRet (D : Desc Unit) : Bool :=\n" ++
-            "  Desc.elim (fun _ => Bool) (fun i => true) (fun q S E ih => false) (fun q j E ih => false) D\n" ++
+            "  Desc.elim (fun _ => Bool) (fun i => true) (fun q S E ih => false) (fun q j E ih => false) (fun q H j E ih => false) D\n" ++
             "#reduce isRet (Desc.ret ())\n#reduce isRet NatD") [".true", ".false"] },
     { name := "a constructor with the wrong fields is rejected", run := fun _ =>
         fails (dataPrelude ++ "def bad : Nat := con ('succ, (), ())") "type mismatch" },
@@ -481,6 +481,15 @@ def macroGroup : Group where
             "macro_rules\n  | `(term| digits) => `(term| Nat.zero)\n#eval (digits : Nat)") [".zero"] }
   ]
 
+def treePrelude : String := "import Prelude
+inductive Tree where
+  | leaf
+  | node (k : Nat → Tree)
+def Tree.depthAt : Tree → Nat → Nat
+  | .leaf, _ => 1
+  | .node k, n => Tree.depthAt (k n) n + 1
+"
+
 def procPrelude : String := "import Prelude
 syntax (name := twice) \"twice!\" term : term
 def twiceMacro : Macro := fun stx => do
@@ -544,6 +553,19 @@ def builtinGroup : Group where
     { name := "only a Macro can be a macro", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let s := runFrontend (R := ZeroOneMany) "import Prelude\nattribute [macro term.app] Nat.add" { loader := fun _ => some prelude }
+        check (s.messages.any (·.severity == .error)) "expected an error" },
+    { name := "infinitary inductive: recursor", run := fun _ =>
+        okLib (treePrelude ++ "#check Tree.rec")
+          ["Tree.rec : (0 motive : Tree → Sort ?u0) → motive .leaf → ((k : Nat → Tree) → ((x : Nat) → motive (k x)) → " ++
+           "motive (.node k)) → (x : Tree) → motive x"] },
+    { name := "infinitary inductive: structural recursion through k n", run := fun _ =>
+        okLib (treePrelude ++ "#eval Tree.depthAt (.node (fun i => .node (fun j => .leaf))) 3") ["3"] },
+    { name := "infinitary inductive: indexed, dependent branching", run := fun _ =>
+        okLib ("import Prelude\ninductive W (A : Type) : Nat → Type where\n  | sup (n : Nat) (k : (i : Nat) → W A i) : W A (.succ n)\n" ++
+          "#check W.sup") ["W.sup : {A : Type} → (n : Nat) → ((i : Nat) → W A i) → W A (.succ n)"] },
+    { name := "infinitary inductive: the domain may not mention the type", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ninductive Bad where\n  | mk (k : Bad → Bad)" { loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "a match does not shadow the user's variables", run := fun _ =>
         okLib "import Prelude\ndef e (x : Bool) (n : Nat) : Bool := match n with\n  | .zero => x\n  | .succ _ => x" },

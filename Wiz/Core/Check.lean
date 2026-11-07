@@ -110,8 +110,8 @@ Proofs carry no usage: they are erased, and conversion never looks at them.
     ──────────────────────────────── ecase     (⊔ = least upper bound in `le`)
     Γ ⊢ ecase t [b…] ⇒ M[t] ⊣ U + (V₀ ⊔ … ⊔ Vₙ)
 
-    Γ ⊢ I type@(l+1) ⇒ Γ ⊢ Desc.{l} I ⇒ Type (l+1); ret/arg/rec check against it
-    Γ ⊢ Desc.elim P mret marg mrec D ⇒ P D                 (method types: `delimMethodTys`)
+    Γ ⊢ I type@(l+1) ⇒ Γ ⊢ Desc.{l} I ⇒ Type (l+1); ret/arg/rec/hrec check against it
+    Γ ⊢ Desc.elim P mret marg mrec mhrec D ⇒ P D                 (method types: `delimMethodTys`)
     Γ ⊢ μ.{l} I D i ⇒ Type l           Γ ⊢ con x ⇐ μ D i  if  Γ ⊢ x ⇐ ⟦D⟧ (μ D) i
     Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·Uₘ + Uₓ                    (`indMotiveTy`, `indMethodTy`)
     Γ ⊢ ν.{l} I D i ⇒ Type l           Γ ⊢ out x ⇒ ⟦D⟧ (ν D) i
@@ -250,6 +250,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .dret i, .desc _ I => sorry
   | .darg q S D, .desc l I => sorry
   | .drec q j D, .desc l I => sorry
+  | .dhrec q H j D, .desc l I => sorry
   | .con x, .mu l I D i _ _ => sorry
   | _, _ => sorry
 
@@ -302,7 +303,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .tag ls i => sorry
   | .ecase z m s bs => sorry
   | .desc l I => sorry
-  | .delim v P a b c D => sorry
+  | .delim v P a b c h D => sorry
   | .mu l I D i _ _ | .nu l I D i _ _ => sorry
   | .ind l I D v P m i x => sorry
   | .out x => sorry
@@ -312,7 +313,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .scofix l I D A f s i a => sorry
   | .scase l I D v P m s i x => sorry
   | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
-  | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
+  | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
 
 /-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as
 for types), returned as a polynomial. -/

@@ -571,5 +571,18 @@ attribute [macro term.twice] twiceMacro
 | 6.2 | `Elab/Term.lean`       | `elabQuote`: a quotation as a term building `Syntax` |
 | 6.3 | `Elab/ProcMacro.lean`  | `decodeSyntax`: a runtime value back to `Syntax`  |
 
-Next: tactics written in Wiz (`TacticM` over goal metavariables), with a reflected
-elaborator API.
+### 6c: tactics in Wiz (in progress)
+
+**Infinitary inductives.** Descriptions gain `Desc.hrec q H j D`, a field
+`(h : H) → μ D (j h)`: one subtree per `h`, as in W-types. `Desc.elim` takes a fifth
+method, `interp`/`All`/`hyps`/`map` have the obvious extra case, and `All` now lives in
+`Sort (max (l+1) v)`. `inductive` accepts fields like `(k : Nat → Tree)`, the recursor's
+hypothesis for them is `(x : Nat) → motive (k x)`, and structural recursion accepts
+`f (k n)`. `Level.equiv` now decides `imax` by splitting on parameters. The tactic monad
+needs all of this: it is a free monad, whose continuations are infinitary fields.
+
+If you have already done exercises 4.17–4.21 (the templates, `vDelim`, description
+checking and `ctorDesc`), add the `hrec` cases.
+
+Next: `TacticM` as a free monad over elaborator requests, interpreted by the host,
+with a reflected `Expr` (and opaque handles for the other kernel forms).

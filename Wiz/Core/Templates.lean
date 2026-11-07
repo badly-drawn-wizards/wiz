@@ -10,8 +10,10 @@ neutral description they get stuck as an ordinary `Desc.elim` elimination.
 
     ⟦ret j⟧ X i      = (0 _ : j = i) × Unit          ⟦arg q S D⟧ X i = (%q s : S) × ⟦D s⟧ X i
                                                      ⟦rec q j D⟧ X i = (%q _ : X j) × ⟦D⟧ X i
+                                       ⟦hrec q H j D⟧ X i = (%q _ : (h : H) → X (j h)) × ⟦D⟧ X i
     All (ret j) …    = Unit                          All (arg …) P i xs = All (D xs.1) P i xs.2
                                                      All (rec …) P i xs = P j xs.1 × All D P i xs.2
+                                   All (hrec …) P i xs = ((h : H) → P (j h) (xs.1 h)) × All D P i xs.2
     hyps / map       : the same recursion, building the hypotheses / mapping `f` over recursive fields
 
 Each template takes `I D` first, then the operation's own arguments. Comments give the
@@ -43,7 +45,10 @@ def interpTm (l : Level) : Term R :=
   let marg := lams ["q", "S", "E", "ih", "X", "i"] (.sigma "s" (v 5) (v 4) (apps (v 3) [v 0, v 2, v 1]))
   -- i0 X1 ih2 E3 j4 q5
   let mrec := lams ["q", "j", "E", "ih", "X", "i"] (.sigma "_" (v 5) (.app (v 1) (v 4)) (apps (v 3) [v 2, v 1]))
-  lams ["I", "D"] (.delim (.succ (.succ l)) P mret marg mrec (v 0))
+  -- i0 X1 ih2 E3 j4 H5 q6
+  let mhrec := lams ["q", "H", "j", "E", "ih", "X", "i"]
+    (.sigma "_" (v 6) (pi "h" (v 5) (.app (v 2) (.app (v 5) (v 0)))) (apps (v 3) [v 2, v 1]))
+  lams ["I", "D"] (.delim (.succ (.succ l)) P mret marg mrec mhrec (v 0))
 
 private def interpApp (l : Level) (I E X i : Term R) : Term R := apps (interpTm l) [I, E, X, i]
 
@@ -66,7 +71,10 @@ def hypsTm (l v' : Level) : Term R :=
   -- xs0 i1 f2 P3 X4 ih5 E6 j7 q8
   let mrec := lams ["q", "j", "E", "ih", "X", "P", "f", "i", "xs"]
     (.pair (apps (v 2) [v 7, .fst (v 0)]) (apps (v 5) [v 4, v 3, v 2, v 1, .snd (v 0)]))
-  lams ["I", "D"] (.delim (.max (.succ (.succ l)) (.succ v')) P mret marg mrec (v 0))
+  -- xs0 i1 f2 P3 X4 ih5 E6 j7 H8 q9
+  let mhrec := lams ["q", "H", "j", "E", "ih", "X", "P", "f", "i", "xs"]
+    (.pair (.lam "h" (apps (v 3) [.app (v 8) (v 0), .app (.fst (v 1)) (v 0)])) (apps (v 5) [v 4, v 3, v 2, v 1, .snd (v 0)]))
+  lams ["I", "D"] (.delim (.max (.succ (.succ l)) (.succ v')) P mret marg mrec mhrec (v 0))
 
 /-- `fun I D X Y f i xs => map …`: apply `f` to every recursive field. -/
 def mapTm (l : Level) : Term R :=
@@ -82,6 +90,9 @@ def mapTm (l : Level) : Term R :=
   -- xs0 i1 f2 Y3 X4 ih5 E6 j7 q8
   let mrec := lams ["q", "j", "E", "ih", "X", "Y", "f", "i", "xs"]
     (.pair (apps (v 2) [v 7, .fst (v 0)]) (apps (v 5) [v 4, v 3, v 2, v 1, .snd (v 0)]))
-  lams ["I", "D"] (.delim (.succ (.succ l)) P mret marg mrec (v 0))
+  -- xs0 i1 f2 Y3 X4 ih5 E6 j7 H8 q9
+  let mhrec := lams ["q", "H", "j", "E", "ih", "X", "Y", "f", "i", "xs"]
+    (.pair (.lam "h" (apps (v 3) [.app (v 8) (v 0), .app (.fst (v 1)) (v 0)])) (apps (v 5) [v 4, v 3, v 2, v 1, .snd (v 0)]))
+  lams ["I", "D"] (.delim (.succ (.succ l)) P mret marg mrec mhrec (v 0))
 
 end Wiz.Templates

@@ -31,7 +31,7 @@ namespace Wiz
 inductive Prim where
   /-- `ind D m i x` -/
   | ind
-  /-- `delim mret marg mrec D` -/
+  /-- `delim mret marg mrec mhrec D` -/
   | delim
   /-- `coit D step i s` -/
   | coit
@@ -117,8 +117,8 @@ mutual
   is `0`;
 * `con x` against `μ D i` (and `cocon` against `ν`): just the erased payload, checked
   against `⟦D⟧ (μ D) i`;
-* `dret`/`darg`/`drec` against `Desc I`: descriptions are runtime data, as
-  `obj 0 #[i]`, `obj 1 #[◾, D]` and `obj 2 #[j, D]`;
+* `dret`/`darg`/`drec`/`dhrec` against `Desc I`: descriptions are runtime data, as
+  `obj 0 #[i]`, `obj 1 #[◾, D]`, `obj 2 #[j, D]` and `obj 3 #[◾, j, D]`;
 * `tt` is `◾`; `letE` keeps the binder (with `◾` for a `0` let);
 * everything else: `eraseInfer`. -/
 partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do

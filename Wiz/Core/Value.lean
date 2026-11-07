@@ -61,6 +61,7 @@ inductive Val (R : Type) where
   | dret (i : Val R)
   | darg (q S D : Val R)
   | drec (q j D : Val R)
+  | dhrec (q H j D : Val R)
   | mu (l : Level) (I D i : Val R) (sz : Val R) (hint : Option (Name × List Level × List (Val R)))
   | con (x : Val R)
   | nu (l : Level) (I D i : Val R) (sz : Val R) (hint : Option (Name × List Level × List (Val R)))
@@ -86,7 +87,7 @@ inductive Elim (R : Type) where
   | absurd (motive : Val R)
   /-- the branches are evaluated in `env` only when the tag is known -/
   | ecase (z : Name) (motive : Closure R) (env : List (Val R)) (branches : List (Term R))
-  | delim (v : Level) (P mret marg mrec : Val R)
+  | delim (v : Level) (P mret marg mrec mhrec : Val R)
   | ind (l : Level) (I D : Val R) (v : Level) (P m i : Val R)
   | sfix (l : Level) (I D : Val R) (v : Level) (P f s i : Val R)
   | scase (l : Level) (I D : Val R) (v : Level) (P m s i : Val R)

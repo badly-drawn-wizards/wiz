@@ -105,8 +105,11 @@ inductive Term (R : Type) where
   | darg (q S D : Term R)
   /-- a recursive field of quantity `q` at index `j` -/
   | drec (q j D : Term R)
+  /-- an infinitary recursive field `(h : H) → μ D (j h)` of quantity `q`, for
+  `j : H → I` (a "higher" recursive field: one subtree per `h`) -/
+  | dhrec (q H j D : Term R)
   /-- the eliminator of descriptions, into `P : Desc I → Sort v` -/
-  | delim (v : Level) (P mret marg mrec D : Term R)
+  | delim (v : Level) (P mret marg mrec mhrec D : Term R)
   /-- the least fixed point `μ D i`. `hint` is display metadata: the nominal form
   (`Vec A n`) to print instead; conversion ignores it. -/
   | mu (l : Level) (I D i : Term R) (sz : Term R) (hint : Option (Name × List Level × List (Term R)))
@@ -196,7 +199,8 @@ don't need a case per constructor. -/
   | .dret i => return .dret (← f 0 i)
   | .darg q S D => return .darg (← f 0 q) (← f 0 S) (← f 0 D)
   | .drec q j D => return .drec (← f 0 q) (← f 0 j) (← f 0 D)
-  | .delim v P a b c D => return .delim (← fl v) (← f 0 P) (← f 0 a) (← f 0 b) (← f 0 c) (← f 0 D)
+  | .dhrec q H j D => return .dhrec (← f 0 q) (← f 0 H) (← f 0 j) (← f 0 D)
+  | .delim v P a b c h D => return .delim (← fl v) (← f 0 P) (← f 0 a) (← f 0 b) (← f 0 c) (← f 0 h) (← f 0 D)
   | .mu l I D i s h => return .mu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i) (← f 0 s) (← h.mapM (hintM fl f))
   | .con x => return .con (← f 0 x)
   | .ind l I D v P mt i x =>

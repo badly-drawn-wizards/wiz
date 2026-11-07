@@ -151,9 +151,9 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
       unify (l + 1) (← instM m (Val.var l)) (← instM m' (Val.var l))
       unless bs.length == bs'.length do throwAt {} "spine mismatch"
       for b in bs, b' in bs' do unify l (eval g env b) (eval g env' b')
-    | .delim v P a b c, .delim v' P' a' b' c' =>
+    | .delim v P a b c h, .delim v' P' a' b' c' h' =>
       unifyLevel v v'
-      for (x, y) in [(P, P'), (a, a'), (b, b'), (c, c')] do unify l x y
+      for (x, y) in [(P, P'), (a, a'), (b, b'), (c, c'), (h, h')] do unify l x y
     | .ind u I D v P mt i, .ind u' I' D' v' P' mt' i' =>
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (mt, mt'), (i, i')] do unify l x y

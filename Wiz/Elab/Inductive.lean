@@ -73,6 +73,9 @@ Build the description from the end:
     parameters and produce `Desc.rec q (tupleTm indices) D`. `D` was built *under*
     `f_k`, so remove it with `strengthen? 0`. If that fails, a later field depends on a
     recursive one: error;
+  - if `F` is `(h : H) → T …` (an *infinitary* recursive field), check that `H` doesn't
+    mention `T` and produce `Desc.hrec q H (fun h => tupleTm indices) D`, where the
+    indices live under `h` (so `T` is `var (k + 1)` there);
   - otherwise produce `Desc.arg q F (.lam name D)`.
 * Finally remove `T` itself (`strengthen? 0`). If it still occurs, it was used in a
   non-recursive position: error.

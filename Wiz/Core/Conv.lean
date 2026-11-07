@@ -55,8 +55,8 @@ private def tapps (f : Term R) (as : List (Term R)) : Term R := as.foldl .app f
 def delimMotiveTy (l v : Level) (I : Val R) (w : R) : VTy R :=
   .pi "D" .default (.qlit w) (.desc l I) (.mk [] (.sort v))
 
-/-- The types of `mret`, `marg`, `mrec` for `Desc.elim` with motive `P`. -/
-def delimMethodTys (g : Globals R) (l : Level) (I P : Val R) (w : R) : VTy R × VTy R × VTy R :=
+/-- The types of `mret`, `marg`, `mrec`, `mhrec` for `Desc.elim` with motive `P`. -/
+def delimMethodTys (g : Globals R) (l : Level) (I P : Val R) (w : R) : VTy R × VTy R × VTy R × VTy R :=
   let pi (x : Name) (a b : Term R) : Term R := .pi x .default (.qlit w) a b
   let env := [P, I]
   -- i0 P1 I2
@@ -67,7 +67,10 @@ def delimMethodTys (g : Globals R) (l : Level) (I P : Val R) (w : R) : VTy R × 
   -- q0 P1 I2 ; j0 q1 P2 I3 ; E0 j1 q2 P3 I4 ; ih0 E1 j2 q3 P4 I5
   let mrec := pi "q" .qty (pi "j" (tv 2) (pi "E" (.desc l (tv 3))
     (pi "ih" (.app (tv 3) (tv 0)) (.app (tv 4) (.drec (tv 3) (tv 2) (tv 1))))))
-  (eval g env mret, eval g env marg, eval g env mrec)
+  -- q0 P1 I2 ; H0 q1 P2 I3 ; j0 H1 q2 P3 I4 ; E0 j1 H2 q3 P4 I5 ; ih0 E1 j2 H3 q4 P5 I6
+  let mhrec := pi "q" .qty (pi "H" (.sort (.succ l)) (pi "j" (pi "h" (tv 0) (tv 4)) (pi "E" (.desc l (tv 4))
+    (pi "ih" (.app (tv 4) (tv 0)) (.app (tv 5) (.dhrec (tv 4) (tv 3) (tv 2) (tv 1)))))))
+  (eval g env mret, eval g env marg, eval g env mrec, eval g env mhrec)
 
 /-- `P : (i : I) → μ D i → Sort v` -/
 def indMotiveTy (g : Globals R) (l v : Level) (I D : Val R) (w : R) : VTy R :=
@@ -176,7 +179,7 @@ def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VTy R)
       | .split q z m x y b, _ => ty := Closure.inst g m acc; acc := vSplit g q acc z m x y b
       | .absurd m, _ => ty := m; acc := vAbsurd m acc
       | .ecase z m env bs, _ => ty := Closure.inst g m acc; acc := vEcase g z m acc env bs
-      | .delim v P a b c, _ => ty := vApp g P acc; acc := vDelim g v P a b c acc
+      | .delim v P a b c h, _ => ty := vApp g P acc; acc := vDelim g v P a b c h acc
       | .ind l I D v P m i, _ => ty := vApp g (vApp g P i) acc; acc := vInd g l I D v P m i acc
       | .out, .nu l I D i s _ =>
         ty := vInterp g l I D (nuFamilyAt l I D ((sizePred? s).getD .szInf)) i; acc := vOut g acc

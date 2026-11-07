@@ -124,7 +124,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .dret i => sorry
   | .darg q S D => sorry
   | .drec q j D => sorry
-  | .delim v P a b c D => sorry
+  | .dhrec q H j D => sorry
+  | .delim v P a b c h D => sorry
   | .mu l I D i s h => sorry
   | .con x => sorry
   | .ind l I D v P m i x => sorry
@@ -206,9 +207,10 @@ partial def vEcase (g : Globals R) (z : Name) (m : Closure R) (s : Val R) (env :
     delim (ret i)     ↦ mret i
     delim (arg q S D) ↦ marg q S D (fun s => delim (D s))
     delim (rec q j D) ↦ mrec q j D (delim D)
+    delim (hrec q H j D) ↦ mhrec q H j D (delim D)
 
 The `fun s => …` is a closure over a small template, as in `vEq`. -/
-partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec D : Val R) : Val R :=
+partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec mhrec D : Val R) : Val R :=
   sorry
 
 /-- A numeral as a constructor, one step deep: `0 ↦ zero`, `n+1 ↦ succ (natLit n)`, using
@@ -359,7 +361,7 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .split q z m x y b => vSplit g q v z m x y b
     | .absurd m => vAbsurd m v
     | .ecase z m env bs => vEcase g z m v env bs
-    | .delim lv P a b c => vDelim g lv P a b c v
+    | .delim lv P a b c h => vDelim g lv P a b c h v
     | .ind l I D lv P m i => vInd g l I D lv P m i v
     | .out => vOut g v
     | .sfix l I D lv P f s i => vSfix g l I D lv P f s i v
