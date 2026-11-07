@@ -5,9 +5,9 @@ open Wiz
 def usage : String := "usage:
   wiz parse FILE          print the syntax tree of every command
   wiz check FILE          elaborate and type check (quantities: 0, 1, ω)
-  wiz build FILE -o OUT   compile the definition `main` to an executable (via C)
-  wiz run FILE            build and run `main`, printing its value
-C compiler: $WIZ_CC (default cc), extra flags in $WIZ_CFLAGS and $WIZ_LDFLAGS (GMP)"
+  wiz build FILE -o OUT [--llvm]   compile the definition `main` to an executable (via C or LLVM)
+  wiz run FILE [--llvm]            build and run `main`, printing its value
+C compiler: $WIZ_CC (default cc), extra flags in $WIZ_CFLAGS and $WIZ_LDFLAGS (GMP); llc: $WIZ_LLC"
 
 def parseCmd (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
@@ -46,25 +46,28 @@ def elabFile (path : String) : IO (Option (CommandState ZeroOneMany)) := do
     if m.severity == .error then IO.eprintln s!"{path}:{m.render input}"
   pure (if s.messages.any (·.severity == .error) then none else some s)
 
-def buildCmd (path out : String) : IO UInt32 := do
+def buildCmd (path out : String) (llvm : Bool) : IO UInt32 := do
   let some s ← elabFile path | pure 1
-  match Build.cProgram s "main" with
+  match Build.irProgram s "main" with
   | .error e => IO.eprintln e; pure 1
-  | .ok (src, _) =>
-    match ← Build.compileC src out with
+  | .ok (decls, _) =>
+    let r ← if llvm then Build.compileLLVM (LLVM.program decls) out else Build.compileC (C.program decls) out
+    match r with
     | .error e => IO.eprintln e; pure 1
     | .ok () => pure 0
 
-def runCmd (path : String) : IO UInt32 := do
+def runCmd (path : String) (llvm : Bool) : IO UInt32 := do
   let some s ← elabFile path | pure 1
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal s "main" dir with
+  match ← Build.runGlobal s "main" dir llvm with
   | .error e => IO.eprintln e; pure 1
   | .ok v => IO.println v; pure 0
 
 def main : List String → IO UInt32
   | ["parse", path] => parseCmd path
   | ["check", path] => checkCmd path
-  | ["build", path, "-o", out] => buildCmd path out
-  | ["run", path] => runCmd path
+  | ["build", path, "-o", out] => buildCmd path out false
+  | ["build", path, "-o", out, "--llvm"] => buildCmd path out true
+  | ["run", path] => runCmd path false
+  | ["run", path, "--llvm"] => runCmd path true
   | _ => do IO.println usage; pure 0

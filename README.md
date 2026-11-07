@@ -754,7 +754,14 @@ their payload pairs.
 |-----|-----------------------|-----------------------------------------------|
 | 8.3 | `Compiler/Reuse.lean` | `insertReuse`: pair drops with allocations    |
 
+### 8d: LLVM ✅
+
+`wiz build FILE -o OUT --llvm` and `wiz run FILE --llvm` go through textual LLVM IR
+(`Compiler/LLVM.lean`) and `llc` (`$WIZ_LLC`). The runtime is the same C file,
+compiled separately with `-DWIZ_API=` so that its functions are exported. In SSA form,
+join point parameters live in stack slots, and a variable bound in several branches
+gets one name per branch. The LLVM tests are the C tests, through LLVM.
+
 Still to do in the backend: specialise the eliminators for known descriptions (flat
 constructor objects instead of nested pairs, direct recursion instead of walking the
-description), borrowed parameters, drop specialisation, and textual LLVM IR (`llc`
-works in this environment, through the Nix store).
+description), borrowed parameters, and drop specialisation.

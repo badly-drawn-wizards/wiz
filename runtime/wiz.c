@@ -15,6 +15,12 @@
 
 typedef uintptr_t wiz_val;
 
+/* Generated C includes this file, so everything is `static`. For the LLVM backend it
+   is compiled on its own with -DWIZ_API= so the functions are exported. */
+#ifndef WIZ_API
+#define WIZ_API static
+#endif
+
 #define WIZ_BOX(n) ((((wiz_val)(n)) << 1) | 1)
 #define WIZ_UNBOX(v) ((v) >> 1)
 #define WIZ_IS_SCALAR(v) ((v) & 1)
@@ -64,19 +70,19 @@ static void *wiz_alloc(size_t bytes, uint32_t tag, uint32_t size) {
   return h;
 }
 
-static wiz_val wiz_ctor_new(uint32_t tag, uint32_t n) {
+WIZ_API wiz_val wiz_ctor_new(uint32_t tag, uint32_t n) {
   wiz_ctor *o = (wiz_ctor *)wiz_alloc(sizeof(wiz_ctor) + n * sizeof(wiz_val), tag, n);
   return (wiz_val)o;
 }
 #define WIZ_SET(o, i, v) (((wiz_ctor *)(o))->fields[i] = (v))
 
-static inline void wiz_inc(wiz_val v) {
+WIZ_API void wiz_inc(wiz_val v) {
   if (!WIZ_IS_SCALAR(v)) ((wiz_hdr *)v)->rc++;
 }
 
 static void wiz_free(wiz_val v);
 
-static inline void wiz_dec(wiz_val v) {
+WIZ_API void wiz_dec(wiz_val v) {
   if (!WIZ_IS_SCALAR(v) && --((wiz_hdr *)v)->rc == 0) wiz_free(v);
 }
 
@@ -95,7 +101,7 @@ static void wiz_free(wiz_val v) {
   free(h);
 }
 
-static inline uint32_t wiz_tag(wiz_val v) {
+WIZ_API uint32_t wiz_tag(wiz_val v) {
   return WIZ_IS_SCALAR(v) ? (uint32_t)WIZ_UNBOX(v) : ((wiz_hdr *)v)->tag;
 }
 
@@ -119,13 +125,13 @@ static void wiz_to_mpz(mpz_t z, wiz_val v) {
   else mpz_init_set(z, ((wiz_big *)v)->z);
 }
 
-static wiz_val wiz_nat_lit(const char *digits) {
+WIZ_API wiz_val wiz_nat_lit(const char *digits) {
   mpz_t z;
   mpz_init_set_str(z, digits, 10);
   return wiz_big_norm(z);
 }
 
-static wiz_val wiz_nat_add(wiz_val a, wiz_val b) {
+WIZ_API wiz_val wiz_nat_add(wiz_val a, wiz_val b) {
   if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) {
     uintptr_t r = WIZ_UNBOX(a) + WIZ_UNBOX(b);
     if (r <= WIZ_MAX_SMALL) return WIZ_BOX(r);
@@ -137,7 +143,7 @@ static wiz_val wiz_nat_add(wiz_val a, wiz_val b) {
   return wiz_big_norm(x);
 }
 
-static wiz_val wiz_nat_sub(wiz_val a, wiz_val b) {
+WIZ_API wiz_val wiz_nat_sub(wiz_val a, wiz_val b) {
   if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b))
     return WIZ_BOX(WIZ_UNBOX(a) > WIZ_UNBOX(b) ? WIZ_UNBOX(a) - WIZ_UNBOX(b) : 0);
   mpz_t x, y;
@@ -148,7 +154,7 @@ static wiz_val wiz_nat_sub(wiz_val a, wiz_val b) {
   return wiz_big_norm(x);
 }
 
-static wiz_val wiz_nat_mul(wiz_val a, wiz_val b) {
+WIZ_API wiz_val wiz_nat_mul(wiz_val a, wiz_val b) {
   if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) {
     uintptr_t r;
     if (!__builtin_mul_overflow(WIZ_UNBOX(a), WIZ_UNBOX(b), &r) && r <= WIZ_MAX_SMALL) return WIZ_BOX(r);
@@ -160,8 +166,8 @@ static wiz_val wiz_nat_mul(wiz_val a, wiz_val b) {
   return wiz_big_norm(x);
 }
 
-static wiz_val wiz_nat_succ(wiz_val a) { return wiz_nat_add(a, WIZ_BOX(1)); }
-static wiz_val wiz_nat_pred(wiz_val a) { return wiz_nat_sub(a, WIZ_BOX(1)); }
+WIZ_API wiz_val wiz_nat_succ(wiz_val a) { return wiz_nat_add(a, WIZ_BOX(1)); }
+WIZ_API wiz_val wiz_nat_pred(wiz_val a) { return wiz_nat_sub(a, WIZ_BOX(1)); }
 
 static int wiz_nat_eq(wiz_val a, wiz_val b) {
   if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) return a == b;
@@ -170,7 +176,7 @@ static int wiz_nat_eq(wiz_val a, wiz_val b) {
 }
 
 /* the prelude's `Bool` payload: ⟨tag, ⟨◾, ◾⟩⟩ */
-static wiz_val wiz_nat_beq(wiz_val a, wiz_val b) {
+WIZ_API wiz_val wiz_nat_beq(wiz_val a, wiz_val b) {
   int eq = wiz_nat_eq(a, b);
   wiz_dec(a); wiz_dec(b);
   wiz_val u = wiz_ctor_new(0, 2);
@@ -182,7 +188,7 @@ static wiz_val wiz_nat_beq(wiz_val a, wiz_val b) {
 
 /* ---- fields: a number looks like its unary payload (`natView`) ---- */
 
-static wiz_val wiz_proj(wiz_val v, uint32_t i) {
+WIZ_API wiz_val wiz_proj(wiz_val v, uint32_t i) {
   if (WIZ_IS_SCALAR(v) || wiz_is_big(v)) {
     int zero = WIZ_IS_SCALAR(v) ? WIZ_UNBOX(v) == 0 : 0;
     if (i == 0) return WIZ_BOX(zero ? 0 : 1);
@@ -200,7 +206,7 @@ static wiz_val wiz_proj(wiz_val v, uint32_t i) {
 }
 
 /* `0` for an observed coinductive value, `1` for coit, `2` for scofix */
-static wiz_val wiz_lazy_tag(wiz_val v) {
+WIZ_API wiz_val wiz_lazy_tag(wiz_val v) {
   uint32_t t = WIZ_IS_SCALAR(v) ? 0 : ((wiz_hdr *)v)->tag;
   wiz_dec(v);
   return WIZ_BOX(t == 1000 ? 1 : t == 1001 ? 2 : 0);
@@ -208,7 +214,7 @@ static wiz_val wiz_lazy_tag(wiz_val v) {
 
 /* ---- closures ---- */
 
-static wiz_val wiz_clo_new(wiz_boxed_fn fn, uint32_t arity, uint32_t n, wiz_val *args) {
+WIZ_API wiz_val wiz_clo_new(wiz_boxed_fn fn, uint32_t arity, uint32_t n, wiz_val *args) {
   wiz_clo *c = (wiz_clo *)wiz_alloc(sizeof(wiz_clo) + n * sizeof(wiz_val), WIZ_TAG_CLO, n);
   c->fn = fn;
   c->arity = arity;
@@ -217,7 +223,7 @@ static wiz_val wiz_clo_new(wiz_boxed_fn fn, uint32_t arity, uint32_t n, wiz_val 
 }
 
 /* Apply a closure (owned) to `n` arguments (owned). */
-static wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
+WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
   if (WIZ_IS_SCALAR(f) || ((wiz_hdr *)f)->tag != WIZ_TAG_CLO) wiz_panic("applying a non-function");
   wiz_clo *c = (wiz_clo *)f;
   uint32_t m = c->h.size, total = m + n;
@@ -237,7 +243,7 @@ static wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
 
 /* ---- reuse (Perceus): `reset` keeps a unique object's cell, `reuse` fills it ---- */
 
-static wiz_val wiz_reset(wiz_val x) {
+WIZ_API wiz_val wiz_reset(wiz_val x) {
   if (!WIZ_IS_SCALAR(x)) {
     wiz_hdr *h = (wiz_hdr *)x;
     if (h->rc == 1 && h->tag != WIZ_TAG_CLO && h->tag != WIZ_TAG_BIG) {
@@ -249,7 +255,7 @@ static wiz_val wiz_reset(wiz_val x) {
   return WIZ_BOX(0);
 }
 
-static wiz_val wiz_reuse(wiz_val tok, uint32_t tag, uint32_t n) {
+WIZ_API wiz_val wiz_reuse(wiz_val tok, uint32_t tag, uint32_t n) {
   if (!WIZ_IS_SCALAR(tok)) {
     wiz_hdr *h = (wiz_hdr *)tok;
     if (h->size == n) { h->tag = tag; return tok; }
@@ -259,7 +265,7 @@ static wiz_val wiz_reuse(wiz_val tok, uint32_t tag, uint32_t n) {
   return wiz_ctor_new(tag, n);
 }
 
-static void wiz_unreachable(void) { wiz_panic("reached an impossible case"); }
+WIZ_API void wiz_unreachable(void) { wiz_panic("reached an impossible case"); }
 
 /* ---- output: a generic tree, read back by the compiler using the type ---- */
 
@@ -273,7 +279,10 @@ static void wiz_print(wiz_val v) {
   putchar(')');
 }
 
-static int wiz_finish(wiz_val r) {
+/* WIZ_SET as a function, for the LLVM backend */
+WIZ_API void wiz_set(wiz_val o, uint32_t i, wiz_val v) { WIZ_SET(o, i, v); }
+
+WIZ_API int wiz_finish(wiz_val r) {
   wiz_print(r);
   putchar('\n');
   wiz_dec(r);

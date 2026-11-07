@@ -1,0 +1,184 @@
+import Wiz.Compiler.C
+
+/-!
+# LLVM IR code generation
+
+The same IR as `C.lean`, as textual LLVM IR, compiled with `llc` and linked with the
+runtime (compiled separately, with its functions exported). Values are `i64`.
+
+LLVM is in SSA form, so two things change compared to C:
+
+* a join point's parameters live in stack slots (`alloca`): a jump stores the
+  arguments and branches, and the join block loads them. (`llc`'s optimiser turns
+  these into registers);
+* a variable bound in several branches (a reuse token) gets a distinct SSA name in
+  each, so names are tracked in an environment.
+-/
+
+namespace Wiz.LLVM
+
+open IR
+
+structure St where
+  out : Array String := #[]
+  next : Nat := 0
+  /-- join point ↦ its parameters (whose stack slots are `%jp<x>`) -/
+  joins : Std.HashMap JoinId (Array Var) := {}
+
+abbrev M := StateM St
+
+def emit (line : String) : M Unit := modify fun s => { s with out := s.out.push line }
+def fresh (base : String) : M String := modifyGet fun s => (s!"%{base}.{s.next}", { s with next := s.next + 1 })
+
+def fn (n : Name) : String := "@" ++ C.mangle n
+
+/-- The SSA name of a variable. -/
+def val (env : Std.HashMap Var String) (x : Var) : String := env.getD x s!"%x{x}"
+
+def bind (env : Std.HashMap Var String) (x : Var) : M (Std.HashMap Var String × String) := do
+  let name ← fresh s!"x{x}"
+  pure (env.insert x name, name)
+
+/-- An array of values on the stack, for closures. -/
+def array (env : Std.HashMap Var String) (xs : Array Var) : M String := do
+  if xs.isEmpty then return "null"
+  let arr ← fresh "arr"
+  emit s!"  {arr} = alloca [{xs.size} x i64]"
+  for x in xs, i in [0:xs.size] do
+    let p ← fresh "p"
+    emit s!"  {p} = getelementptr [{xs.size} x i64], ptr {arr}, i64 0, i64 {i}"
+    emit s!"  store i64 {val env x}, ptr {p}"
+  pure arr
+
+def args (env : Std.HashMap Var String) (xs : Array Var) : String :=
+  ", ".intercalate (xs.toList.map (s!"i64 {val env ·}"))
+
+def expr (arities : Std.HashMap Name Nat) (env : Std.HashMap Var String) (x : String) : Expr → M Unit
+  | .erased => emit s!"  {x} = add i64 0, 1"
+  | .lit n =>
+    if n < 2 ^ 62 then emit s!"  {x} = add i64 0, {2 * n + 1}"
+    else do
+      -- a big literal: through the runtime, from its digits
+      let s := toString n
+      let g := "@" ++ ((← fresh "lit").drop 1) ++ ".str"
+      emit s!"  {x} = call i64 @wiz_nat_lit(ptr {g})"
+      modify fun st => { st with out := st.out.push s!";global {g} = private constant [{s.length + 1} x i8] c\"{s}\\00\"" }
+  | .ctor t as =>
+    if as.isEmpty then emit s!"  {x} = add i64 0, {2 * t + 1}"
+    else do
+      emit s!"  {x} = call i64 @wiz_ctor_new(i32 {t}, i32 {as.size})"
+      for a in as, i in [0:as.size] do emit s!"  call void @wiz_set(i64 {x}, i32 {i}, i64 {val env a})"
+  | .proj i y => emit s!"  {x} = call i64 @wiz_proj(i64 {val env y}, i32 {i})"
+  | .fap f as => emit s!"  {x} = call i64 {fn f}({args env as})"
+  | .pap f as => do
+    let arr ← array env as
+    emit s!"  {x} = call i64 @wiz_clo_new(ptr {fn f}_boxed, i32 {(arities.get? f).getD 0}, i32 {as.size}, ptr {arr})"
+  | .ap f as => do
+    let arr ← array env as
+    emit s!"  {x} = call i64 @wiz_apply(i64 {val env f}, i32 {as.size}, ptr {arr})"
+  | .prim op as =>
+    let f := match op with
+      | "nat.succ" => "wiz_nat_succ" | "nat.pred" => "wiz_nat_pred"
+      | "nat.add" => "wiz_nat_add" | "nat.sub" => "wiz_nat_sub" | "nat.mul" => "wiz_nat_mul"
+      | "nat.beq" => "wiz_nat_beq" | "lazyTag" => "wiz_lazy_tag"
+      | _ => "wiz_unknown_prim"
+    emit s!"  {x} = call i64 @{f}({args env as})"
+  | .reset y => emit s!"  {x} = call i64 @wiz_reset(i64 {val env y})"
+  | .reuse tok t as => do
+    emit s!"  {x} = call i64 @wiz_reuse(i64 {val env tok}, i32 {t}, i32 {as.size})"
+    for a in as, i in [0:as.size] do emit s!"  call void @wiz_set(i64 {x}, i32 {i}, i64 {val env a})"
+
+partial def body (arities : Std.HashMap Name Nat) (env : Std.HashMap Var String) : Body → M Unit
+  | .vdecl x e rest => do
+    let (env, name) ← bind env x
+    expr arities env name e
+    body arities env rest
+  | .case x alts => do
+    let t ← fresh "tag"
+    emit s!"  {t} = call i32 @wiz_tag(i64 {val env x})"
+    let labels ← alts.mapM fun _ => fresh "case"
+    let dflt ← fresh "default"
+    let cases := labels.toList.zipIdx.map fun (l, i) => s!"i32 {i}, label {l}"
+    emit s!"  switch i32 {t}, label {dflt} [ {" ".intercalate cases} ]"
+    for a in alts, l in labels do
+      emit s!"{l.drop 1}:"
+      body arities env a
+    emit s!"{dflt.drop 1}:"
+    emit "  call void @wiz_unreachable()"
+    emit "  unreachable"
+  | .ret x => emit s!"  ret i64 {val env x}"
+  | .jdecl j ps jb k => do
+    modify fun s => { s with joins := s.joins.insert j ps }
+    body arities env k
+    emit s!"j{j}:"
+    let mut env' : Std.HashMap Var String := {}
+    for p in ps do
+      let (e, name) ← bind env' p
+      env' := e
+      emit s!"  {name} = load i64, ptr %jp{p}"
+    body arities env' jb
+  | .jmp j as => do
+    let ps := ((← get).joins.get? j).getD #[]
+    for p in ps, a in as do emit s!"  store i64 {val env a}, ptr %jp{p}"
+    emit s!"  br label %j{j}"
+  | .dup x rest => do emit s!"  call void @wiz_inc(i64 {val env x})"; body arities env rest
+  | .drop x rest => do emit s!"  call void @wiz_dec(i64 {val env x})"; body arities env rest
+  | .unreachable => do emit "  call void @wiz_unreachable()"; emit "  unreachable"
+
+/-- The join point parameters of a body (each gets a stack slot). -/
+partial def joinParams : Body → Array Var
+  | .vdecl _ _ b | .dup _ b | .drop _ b => joinParams b
+  | .case _ alts => alts.foldl (fun acc a => acc ++ joinParams a) #[]
+  | .jdecl _ ps jb k => ps ++ joinParams jb ++ joinParams k
+  | _ => #[]
+
+def decl (arities : Std.HashMap Name Nat) (d : IR.Decl) : Array String × Array String :=
+  let ps := ", ".intercalate (d.params.toList.map (s!"i64 %x{·}"))
+  let ((), st) := (do
+    for p in joinParams d.body do emit s!"  %jp{p} = alloca i64"
+    body arities {} d.body : M Unit).run {}
+  -- big literals are globals: move them out of the function
+  let (globals, lines) := st.out.partition (·.startsWith ";global ")
+  let globals := globals.map fun g => (g.drop 8).toString
+  let boxedLoads := (List.range d.params.size).map fun i =>
+    s!"  %p{i} = getelementptr i64, ptr %a, i64 {i}\n  %a{i} = load i64, ptr %p{i}"
+  let boxedArgs := ", ".intercalate ((List.range d.params.size).map (s!"i64 %a{·}"))
+  (globals, #[s!"define internal i64 {fn d.name}({ps}) {lb}", "entry:"] ++ lines ++ #[rb,
+    s!"define internal i64 {fn d.name}_boxed(ptr %a) {lb}\n{"\n".intercalate boxedLoads}\n  %r = call i64 {fn d.name}({boxedArgs})\n  ret i64 %r\n{rb}"])
+where
+  lb := "{"
+  rb := "}"
+
+def runtimeDecls : String := "
+declare i64 @wiz_ctor_new(i32, i32)
+declare void @wiz_set(i64, i32, i64)
+declare void @wiz_inc(i64)
+declare void @wiz_dec(i64)
+declare i32 @wiz_tag(i64)
+declare i64 @wiz_proj(i64, i32)
+declare i64 @wiz_nat_lit(ptr)
+declare i64 @wiz_nat_add(i64, i64)
+declare i64 @wiz_nat_sub(i64, i64)
+declare i64 @wiz_nat_mul(i64, i64)
+declare i64 @wiz_nat_succ(i64)
+declare i64 @wiz_nat_pred(i64)
+declare i64 @wiz_nat_beq(i64, i64)
+declare i64 @wiz_lazy_tag(i64)
+declare i64 @wiz_clo_new(ptr, i32, i32, ptr)
+declare i64 @wiz_apply(i64, i32, ptr)
+declare i64 @wiz_reset(i64)
+declare i64 @wiz_reuse(i64, i32, i32)
+declare void @wiz_unreachable()
+declare i32 @wiz_finish(i64)
+"
+
+/-- A whole LLVM module: the functions and a `main` that prints `wiz.entry`'s value. -/
+def program (decls : Array IR.Decl) : String :=
+  let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
+  let parts := decls.map (decl arities)
+  let globals := parts.foldl (fun acc (g, _) => acc ++ g) #[]
+  let fns := parts.foldl (fun acc (_, f) => acc ++ f) #[]
+  runtimeDecls ++ "\n".intercalate globals.toList ++ "\n" ++ "\n".intercalate fns.toList ++
+    s!"\ndefine i32 @main() \{\n  %r = call i64 {fn "wiz.entry"}()\n  %c = call i32 @wiz_finish(i64 %r)\n  ret i32 %c\n}\n"
+
+end Wiz.LLVM
