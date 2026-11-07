@@ -322,10 +322,24 @@ def piInfos : Term R → List (Name × BinderInfo × Term R)
   | .pi x bi _ A b => (x, bi, A) :: piInfos b
   | _ => []
 
+/-- A proof of a proposition that holds by computation: `Unit`, pairs of such, and stuck
+equations `a = b` (which hold by `refl` when they arise from a match on a family with a
+concrete index, `SyntaxF .false`). -/
+partial def trivialProof (g : Globals R) (ty : Val R) : Option (Val R) :=
+  match whnf ty with
+  | .unit _ => some .tt
+  | .sigma _ _ A B => do
+    let a ← trivialProof g A
+    let b ← trivialProof g (Closure.inst g B a)
+    pure (.pair a b)
+  | .neutral (.eq A a _) _ => some (.neutral (.refl A a) #[])
+  | .neutral (.eqTy X _) _ => some (.neutral (.reflTy X) #[])
+  | _ => none
+
 /-- Replace recursive calls `f y a…` (with `y` a field that has a hypothesis `h`) by
 `h a…`, and `f (k e) a…` (with `k` an infinitary field) by `h e a…`. Returns the
 rewritten syntax and the hypothesis bindings it needs. -/
-partial def rewriteRecCalls (rc : RecCtx) (binds : List (Name × VTy R × Val R))
+partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name × VTy R × Val R))
     (ihType : Lvl → Option (VTy R)) (stx : Syntax) :
     Except String (Syntax × List (Name × VTy R × Val R)) := do
   let isF (h : Syntax) := h.isOfKind "term.ident" && (h.getArg 0).getId? == some rc.fn
@@ -350,19 +364,27 @@ partial def rewriteRecCalls (rc : RecCtx) (binds : List (Name × VTy R × Val R)
     let some (_, ihl) := rc.ihs.find? (·.1 == fl)
       | throw s!"recursive call of {rc.fn} on {y}, which is not structurally smaller"
     let some ty := ihType ihl | throw "internal error: hypothesis without a type"
+    -- a family matched at a concrete index: the hypothesis first wants the (trivial)
+    -- proof that the field's index is that index
+    let ihVal : Val R := .neutral (.local ihl) #[]
+    let (ihVal, ty) := match whnf ty with
+      | .pi _ _ q dom cod => match q.toPoly?, trivialProof g dom with
+        | some [], some p => (vApp g ihVal p, Closure.inst g cod p)
+        | _, _ => (ihVal, ty)
+      | _ => (ihVal, ty)
     let ihName := "_ih_" ++ y
     let ident : Syntax := .node a.info "term.ident" #[.ident a.info ihName]
     let others := args.extract np (np + rc.pos) ++ args.extract (np + rc.pos + 1) args.size
-    let rest ← (kargs ++ others).mapM (rewriteRecCalls rc binds ihType ·)
+    let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType ·)
     let restStx := rest.map (·.1)
-    let newBinds := [(ihName, ty, (.neutral (.local ihl) #[] : Val R))] ++ rest.toList.flatMap (·.2)
+    let newBinds := [(ihName, ty, ihVal)] ++ rest.toList.flatMap (·.2)
     let stx' := if restStx.isEmpty then ident
       else .node stx.info "term.app" #[ident, .node {} "null" restStx]
     return (stx', newBinds)
   if isF stx then throw s!"{rc.fn} may only be used in structurally recursive calls"
   match stx with
   | .node i k as =>
-    let rs ← as.mapM (rewriteRecCalls rc binds ihType ·)
+    let rs ← as.mapM (rewriteRecCalls g rc binds ihType ·)
     return (.node i k (rs.map (·.1)), rs.toList.flatMap (·.2))
   | s => return (s, [])
 
@@ -919,7 +941,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let mut rhs := cl.rhs
     if let some rc := rc then
       let ihType (l : Lvl) : Option (VTy R) := ctx.types[ctx.lvl - l - 1]?
-      match rewriteRecCalls rc binds ihType cl.rhs with
+      match rewriteRecCalls g rc binds ihType cl.rhs with
       | .ok (r, extra) => rhs := r; binds := binds ++ extra
       | .error e => throwAt cl.rhs.info e
     let mut ctx' := ctx
