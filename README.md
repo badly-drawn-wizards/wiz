@@ -1046,9 +1046,10 @@ variable, or a stuck equality, cast or proof. (In the Wiz source the constructor
 `eqRefl`, `tyRefl`, `coe` and `subst`: `refl`, `cast` and `transp` are keywords.) The
 differential generator adds equalities and their proofs, often well-typed.
 
-Elaborating the Wiz kernel has become slow (about 25 seconds): every match on a mutual
-family carries the index equations through each branch. That is the elaborator's next
-performance problem.
+(Checking the Wiz kernel had become slow, 24 seconds. A profile showed the cause: the
+inhabitedness check for partial definitions evaluated the type of every global, for
+each definition. It now looks only at constants whose type visibly ends in the right
+type: 3 seconds.)
 
 Next: data through descriptions, extending the generator as the kernel grows.
 

@@ -511,8 +511,15 @@ partial def inhabitedTy (g : Globals R) (lvl fuel : Nat) (ty : Val R) (hyps : Li
     | .pi _ _ _ dom cod =>
       inhabitedTy g (lvl + n + 1) (min (fuel - 1) 2) dom hyps && witness T (n + 1) (Closure.inst g cod (Val.var (lvl + n)))
     | v => headOf v == some T
+  -- (only constants whose type visibly ends in `T …` are evaluated: this runs often)
+  let rec resultHead : Term R → Option Name
+    | .pi _ _ _ _ b => resultHead b
+    | t => match t.spine.1 with
+      | .const n _ => some n
+      | _ => none
   let byConstant (T : Name) : Bool := g.order.any fun c => match g.find? c with
-    | some d => c != T && witness T 0 (eval g [] (d.type.instLevels d.levelParams (d.levelParams.map fun _ => .zero)))
+    | some d => c != T && resultHead d.type == some T &&
+        witness T 0 (eval g [] (d.type.instLevels d.levelParams (d.levelParams.map fun _ => .zero)))
     | none => false
   let rec fields (d : Val R) : Bool := match whnf d with
     | .dret _ => true
