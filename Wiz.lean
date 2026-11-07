@@ -35,3 +35,4 @@ import Wiz.Compiler.IRRun
 import Wiz.Compiler.C
 import Wiz.Compiler.LLVM
 import Wiz.Compiler.Build
+import Wiz.FFI.CParse

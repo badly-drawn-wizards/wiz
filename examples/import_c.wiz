@@ -1,0 +1,10 @@
+import IO
+import_c "string.h"
+import_c "math.h" (pure)
+#check C.strlen
+#check C.pow
+def main : IO Unit := do
+  n ← C.strlen "hello, world";
+  IO.println (Nat.toString n);
+  IO.println (Float64.toString (C.pow (Float64.ofNat 2) (Float64.ofNat 10)));
+  IO.println (Float64.toString (C.sqrt (Float64.ofNat 2)))
