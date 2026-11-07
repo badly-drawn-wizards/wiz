@@ -8,9 +8,13 @@ coinductive values (`coit`, `scofix`) are lazy and unfold only under `out`.
 
 The generic eliminators are **primitives that walk the description** at runtime. A
 description is an ordinary runtime value: `⟨0 i⟩` (ret), `⟨1 ◾ F⟩` (arg), `⟨2 j D⟩`
-(rec), `⟨3 ◾ j D⟩` (hrec). A data value is its payload of nested pairs, `⟨0 tag ⟨0 f₁ … ⟩⟩`.
+(rec), `⟨3 ◾ j D⟩` (hrec), with `⟨4 ◾ F⟩` for an arg that is a tag and `⟨5 D⟩` marking
+the description of numbers. A data value is a flat object `⟨tag f₁ … fₙ⟩` (see
+`Erase.lean`); `unpack` gives its payload of nested pairs, `⟨0 tag ⟨0 f₁ … ⟩⟩`, and
+`pack` goes back.
 
-    ind D m i x      = m i x (hyps D x),   hyps (rec j D') ⟨y, r⟩ = ⟨ind D m j y, hyps D' r⟩
+    ind D m i x      = m i u (hyps D u),   u = unpack D x
+                                          hyps (rec j D') ⟨y, r⟩ = ⟨ind D m j y, hyps D' r⟩
                                           hyps (hrec j D') ⟨k, r⟩ = ⟨fun h => ind D m (j h) (k h), hyps D' r⟩
     out (coit D step i s) = map D (coit D step) i (step i s)
 
@@ -77,9 +81,52 @@ def field (v : RVal) (i : Nat) : RVal :=
 /-- The number a value denotes, if it is one (native, or a unary payload). -/
 partial def toNat? : RVal → Option Nat
   | .nat n => some n
-  | .obj 0 #[.obj 0 #[], _] => some 0
-  | .obj 0 #[.obj 1 #[], .obj 0 #[k, _]] => (toNat? k).map (· + 1)
+  | .obj 0 #[] => some 0
+  | .obj 1 #[k] => (toNat? k).map (· + 1)
   | _ => none
+
+/-- The tag of an object (a number's is `0` or `1`). -/
+def tagOf : RVal → Nat
+  | .obj t _ => t
+  | .nat n => if n == 0 then 0 else 1
+  | _ => 0
+
+/-- The payload of a flat value, along the description `D` (see `Erase.lean`). -/
+partial def unpackWith (apply : RVal → RVal → RVal) (D v : RVal) : RVal :=
+  match D with
+  | .obj 5 _ => match v with
+    | .nat n => natView n
+    | .obj 0 _ => natView 0
+    | _ => match v.field 0 with
+      | .nat n => natView (n + 1)
+      | _ => .erased
+  | .obj 4 #[_, F] =>
+    let t := RVal.obj (tagOf v) #[]
+    .obj 0 #[t, rest (apply F t) 0]
+  | d => rest d 0
+where
+  rest (d : RVal) (n : Nat) : RVal :=
+    match d with
+    | .obj 1 #[_, F] | .obj 4 #[_, F] => let f := v.field n; .obj 0 #[f, rest (apply F f) (n + 1)]
+    | .obj 2 #[_, D'] | .obj 3 #[_, _, D'] => .obj 0 #[v.field n, rest D' (n + 1)]
+    | _ => .obj 0 #[.erased, .erased]
+
+/-- A payload as a flat value. -/
+partial def packWith (apply : RVal → RVal → RVal) (D x : RVal) : RVal :=
+  match D with
+  | .obj 5 _ => match tagOf (x.field 0) with
+    | 0 => .nat 0
+    | _ => match (x.field 1).field 0 |>.toNat? with
+      | some n => .nat (n + 1)
+      | none => .erased
+  | .obj 4 #[_, F] => .obj (tagOf (x.field 0)) (fields (apply F (x.field 0)) (x.field 1) #[])
+  | d => .obj 0 (fields d x #[])
+where
+  fields (d x : RVal) (acc : Array RVal) : Array RVal :=
+    match d with
+    | .obj 1 #[_, F] | .obj 4 #[_, F] => fields (apply F (x.field 0)) (x.field 1) (acc.push (x.field 0))
+    | .obj 2 #[_, D'] | .obj 3 #[_, _, D'] => fields D' (x.field 1) (acc.push (x.field 0))
+    | _ => acc
 
 /-- A foreign function's key: `extern:cname:kinds:result:io:header:finalizer` (see
 `extern`). Kinds: `n` Nat, `u` UInt64, `f` Float64, `s` String, `b` Bool, `v` Unit,
@@ -141,7 +188,7 @@ partial def fireNative (op : Name) (args : Array RVal) : RVal :=
   | "nat.add" => .nat (n 0 + n 1)
   | "nat.sub" => .nat (n 0 - n 1)
   | "nat.mul" => .nat (n 0 * n 1)
-  | "nat.beq" => .obj 0 #[.obj (if n 0 == n 1 then 1 else 0) #[], .obj 0 #[.erased, .erased]]
+  | "nat.beq" => .obj (if n 0 == n 1 then 1 else 0) #[]
   | _ => panic! s!"{op}: foreign functions only run in compiled code (wiz run)"
 
 partial def applyN (code : Code) (f : RVal) (as : List RVal) : RVal := as.foldl (apply code) f
@@ -154,15 +201,17 @@ partial def firePap (code : Code) : PapOp → Array RVal → RVal
   | .scofixK, #[f, _, i, a] => .scofix f i a
   | _, _ => panic! "bad partial application"
 
-/-- **Exercise 5.3a.** `ind D m i x = m i x (hyps D x)`, where `hyps` walks the description
-alongside the payload, recursing at each `rec` field (see the module docstring). -/
+/-- **Exercise 5.3a.** `ind D m i x = m i u (hyps D u)` with the payload `u = unpack D x`,
+where `hyps` walks the description alongside the payload, recursing at each `rec`
+field (see the module docstring). `D` may be marked as the description of numbers,
+`⟨5 D'⟩`: `unpack` needs the mark, `hyps` walks `D'`, and the recursive calls get `D`. -/
 partial def ind (code : Code) (D m i x : RVal) : RVal :=
   sorry
 
 partial def delim (code : Code) (mret marg mrec mhrec D : RVal) : RVal :=
   match D with
   | .obj 0 #[i] => apply code mret i
-  | .obj 1 #[_, F] => applyN code marg [.erased, .erased, F, .pap .delimRec #[mret, marg, mrec, mhrec, F]]
+  | .obj 1 #[_, F] | .obj 4 #[_, F] => applyN code marg [.erased, .erased, F, .pap .delimRec #[mret, marg, mrec, mhrec, F]]
   | .obj 2 #[j, D'] => applyN code mrec [.erased, j, D', delim code mret marg mrec mhrec D']
   | .obj 3 #[_, j, D'] => applyN code mhrec [.erased, .erased, j, D', delim code mret marg mrec mhrec D']
   | _ => panic! "Desc.elim: not a description"
@@ -184,6 +233,19 @@ partial def runPrim (code : Code) : Prim → Array RVal → RVal
     | .coit .. => .obj 1 #[]
     | .scofix .. => .obj 2 #[]
     | _ => .obj 0 #[]
+  | .pack, #[D, x] => RVal.packWith (apply code) D x
+  | .unpack, #[D, x] | .view .., #[D, x] => RVal.unpackWith (apply code) D x
+  | .tag, #[x] => .obj (RVal.tagOf x) #[]
+  | .natTag, #[x] => .obj (RVal.tagOf x) #[]
+  | .natPred, #[x] => .nat (((x.toNat?).getD 1) - 1)
+  | .natSucc, #[x] => .nat (((x.toNat?).getD 0) + 1)
+  | .fieldAt, #[x, n] => x.field ((n.toNat?).getD 0)
+  | .mkObj, #[t, fs] =>
+    let rec collect (l : RVal) (acc : Array RVal) (fuel : Nat) : Array RVal :=
+      match fuel, l with
+      | f + 1, .obj 0 #[a, rest] => collect rest (acc.push a) f
+      | _, _ => acc
+    .obj (RVal.tagOf t) (collect fs #[] 100000)
   | _, _ => panic! "bad primitive application"
 
 end
@@ -200,12 +262,12 @@ def RVal.tag? : RVal → Option Nat
 `String.mk (List.cons (Char.mk n) …)`. -/
 partial def RVal.toString? (v : RVal) : Option String := do
   let rec chars (l : RVal) (acc : String) : Option String := do
-    match ← (l.field 0).tag? with
+    match ← l.tag? with
     | 0 => some acc
     | _ =>
-      let n ← (((l.field 1).field 0).field 1).field 0 |>.toNat?
-      chars (((l.field 1).field 1).field 0) (acc.push (Char.ofNat n))
-  chars ((v.field 1).field 0) ""
+      let n ← ((l.field 0).field 0).toNat?
+      chars (l.field 1) (acc.push (Char.ofNat n))
+  chars (v.field 0) ""
 
 /-- Read a runtime value back as a term of type `ty`, for printing. Numbers and
 strings of the registered `nat` and `string` types print as literals. -/
@@ -237,10 +299,35 @@ where
     match whnf ty with
     | .mu l I D i _ _ =>
       let v := match v with
-        | .nat n => RVal.natView n
-        | v => v
+        | .nat n => if builtins.lookup "nat" == (match whnf ty with
+            | .mu _ _ _ _ _ (some (T, _, _)) => some T
+            | _ => none) then RVal.natView n else unflat D v
+        | v => unflat D v
       .con (readback g builtins (vInterp g l I D (muFamily l I D) i) v)
     | _ => .tt
+  /-- The payload of a flat value, walking the description (as a value). -/
+  unflat (D : Val R) (v : RVal) : RVal :=
+    let field (n : Nat) : RVal := match v with
+      | .obj _ fs => fs[n]?.getD .erased
+      | _ => .erased
+    let rec rest (d : Val R) (n : Nat) (fuel : Nat) : RVal :=
+      match fuel with
+      | 0 => .erased
+      | fuel + 1 =>
+      match whnf d with
+      | .darg _ S F =>
+        let f := field n
+        .obj 0 #[f, rest (vApp g F (eval g [] (readback g builtins S f))) (n + 1) fuel]
+      | .drec _ _ D' | .dhrec _ _ _ D' => .obj 0 #[field n, rest D' (n + 1) fuel]
+      | _ => .obj 0 #[.erased, .erased]
+    match whnf D with
+    | .darg _ S F =>
+      match whnf S with
+      | .enum ls =>
+        let t := (v.tag?).getD 0
+        .obj 0 #[.obj t #[], rest (vApp g F (.tag ls t)) 0 10000]
+      | _ => rest D 0 10000
+    | _ => rest D 0 10000
 
 /-- The globals an erased term mentions. -/
 partial def ETerm.globals (e : ETerm) (acc : Array Name := #[]) : Array Name :=

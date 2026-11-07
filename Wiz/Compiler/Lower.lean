@@ -128,6 +128,14 @@ partial def lower (env : List Binding) (e : ETerm) (k : Cont) : LowerM Body := d
     | .ind => lowerArgs env args.toList fun xs => bind (.fap "wiz.ind" xs.toArray) k
     | .delim => lowerArgs env args.toList fun xs => bind (.fap "wiz.delim" xs.toArray) k
     | .out => lowerArgs env args.toList fun xs => bind (.fap "wiz.out" xs.toArray) k
+    | .pack => lowerArgs env args.toList fun xs => bind (.fap "wiz.pack" xs.toArray) k
+    | .unpack | .view .. => lowerArgs env args.toList fun xs => bind (.fap "wiz.unpack" xs.toArray) k
+    | .tag => lowerArgs env args.toList fun xs => bind (.prim "tag" xs.toArray) k
+    | .natTag => lowerArgs env args.toList fun xs => bind (.prim "natTag" xs.toArray) k
+    | .natPred => lowerArgs env args.toList fun xs => bind (.prim "nat.pred" xs.toArray) k
+    | .natSucc => lowerArgs env args.toList fun xs => bind (.prim "nat.succ" xs.toArray) k
+    | .fieldAt => lowerArgs env args.toList fun xs => bind (.prim "fieldAt" xs.toArray) k
+    | .mkObj => lowerArgs env args.toList fun xs => bind (.prim "mkObj" xs.toArray) k
 
 partial def lowerArgs (env : List Binding) (es : List ETerm) (k : List Var → LowerM Body) : LowerM Body :=
   match es with

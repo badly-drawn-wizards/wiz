@@ -452,7 +452,7 @@ def runGroup : Group where
     { name := "erased fields are gone at runtime", run := fun _ =>
         ok (runPrelude ++ "inductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A .zero\n" ++
             "  | cons {0 n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n#erase Vec.cons")
-          ["Vec.cons := (λA. (λn. (λx. (λxs. ⟨0 ⟨1⟩ ⟨0 ◾ ⟨0 #1 ⟨0 #0 ⟨0 ◾ ◾⟩⟩⟩⟩⟩))))"] }
+          ["Vec.cons := (λA. (λn. (λx. (λxs. ⟨1 ◾ #1 #0⟩))))"] }
   ]
 
 end Tests.Elab

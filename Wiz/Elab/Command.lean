@@ -866,7 +866,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let ctx : Ctx R := { globals := s.globals }
       let result := do
         let (ty, _) ← Wiz.infer ctx t
-        let e ← eraseCheck ctx t ty
+        let e ← eraseTop ctx t ty
         let code ← compileReachable s.globals s.builtins (e.globals.toList)
         pure (ty, e, code)
       match result with
@@ -888,7 +888,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let ctx : Ctx R := { globals := s.globals }
       let result : Except String (VTy R × RVal) := do
         let (ty, _) ← (Wiz.infer ctx t).mapError toString
-        let e ← (eraseCheck ctx t ty).mapError toString
+        let e ← (eraseTop ctx t ty).mapError toString
         let code ← (compileReachable s.globals s.builtins e.globals.toList).mapError toString
         let decls ← IR.lowerProgram code e
         let (v, _) ← IR.runProgram (decls.map (·.optimize))
