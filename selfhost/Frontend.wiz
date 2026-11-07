@@ -196,13 +196,13 @@ def command (gs : List Global) (stx : Syntax) : Step :=
         | .err m => errStep gs m
         | .ok tyT => match inferUniv c tyT with
           | .err m => errStep gs m
-          | .ok _ =>
+          | .ok _ _ =>
             let tyV := eval (TCtx.env c) tyT;
             match lams names (binders (kids (kid stx 3))) (kid stx 6) with
             | .err m => errStep gs m
             | .ok v => match check c v tyV with
               | .err m => errStep gs m
-              | .ok _ => .mk (String.append x (String.append " : " (show shown l tyT)))
+              | .ok _ _ => .mk (String.append x (String.append " : " (show shown l tyT)))
                   (.cons (.mk x (eval (TCtx.env c) v) tyV) gs)
       | _ => errStep gs "a definition needs a type"
     | _ => errStep gs "a definition needs a name"
@@ -210,7 +210,7 @@ def command (gs : List Global) (stx : Syntax) : Step :=
     | .err m => errStep gs m
     | .ok t => match infer c t with
       | .err m => errStep gs m
-      | .ok ty => match strEq (kindOf stx) "command.check" with
+      | .ok ty _ => match strEq (kindOf stx) "command.check" with
         | .true => .mk (show shown l (quote l ty)) gs
         | .false => match strEq (kindOf stx) "command.reduce" with
           | .true => .mk (show shown l (quote l (eval (TCtx.env c) t))) gs
