@@ -859,7 +859,18 @@ def languageGroup : Group where
           "def firstZero : Nat × Nat → Bool\n  | (.zero, _) => .true\n  | p => .false\n" ++
           "#eval sum3 (1, 2, 3)\n#eval firstZero (0, 5)\n#eval firstZero (2, 5)") ["6", ".true", ".false"] },
     { name := "the pipe operator", run := fun _ =>
-        okLib "import Prelude\n#eval 3 |> Nat.succ |> Nat.succ" ["5"] }
+        okLib "import Prelude\n#eval 3 |> Nat.succ |> Nat.succ" ["5"] },
+    { name := "recursion over a family at a concrete index", run := fun _ =>
+        okLib ("import Prelude\ndef len : SyntaxF .false → Nat\n  | .nil => 0\n  | .cons _ xs => Nat.succ (len xs)\n" ++
+          "#eval len (.cons .missing (.cons .missing .nil))") ["2"] },
+    { name := "mutual inductive types", run := fun _ =>
+        okLib ("import Prelude\nmutual\ninductive Tm where\n  | var (i : Nat)\n  | lam (body : Tm)\n  | app (f : Tm) (args : Tms)\n" ++
+          "inductive Tms where\n  | nil\n  | cons (t : Tm) (ts : Tms)\nend\nmutual\ndef size : Tm → Nat\n  | .var _ => 1\n" ++
+          "  | .lam b => Nat.succ (size b)\n  | .app f args => Nat.add (size f) (sizes args)\ndef sizes : Tms → Nat\n" ++
+          "  | .nil => 0\n  | .cons t ts => Nat.add (size t) (sizes ts)\nend\n" ++
+          "#eval size (.app (.lam (.var 0)) (.cons (.var 1) (.cons (.var 2) .nil)))") ["4"] },
+    { name := "tactic keywords are not reserved", run := fun _ =>
+        okLib "import Prelude\ndef f (first exact : Nat) : Nat := Nat.add first exact\n#eval f 1 2\ndef t : Nat := by exact 3" ["3"] }
   ]
 
 def stdGroup : Group where

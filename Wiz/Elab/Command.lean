@@ -537,6 +537,41 @@ partial def inhabitedTy (g : Globals R) (lvl fuel : Nat) (ty : Val R) (hyps : Li
   | .neutral (.global T _) _ => byConstant T
   | _ => false
 
+/-- Mutual inductive types (stage 13) as one family indexed by a tag type:
+
+    mutual inductive A … inductive B … end   ↦   inductive A_B.Tag | A | B
+                                                 inductive A_B : A_B.Tag → Type (all constructors)
+                                                 def A : Type := A_B A_B.Tag.A   (and B)
+
+Inside the constructors, `A` and `B` stand for their family members. Matching works on
+the family's constructors (at a concrete index). No parameters or indices yet. -/
+partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Except String (List Syntax) := do
+  let names := defs.map fun d => ((d.getArg 1).getId?).getD "_"
+  for d in defs do
+    unless (d.getArg 2).args.isEmpty && (d.getArg 3).args.isEmpty && (d.getArg 4).args.isEmpty do
+      throw "mutual inductive types may not have universe parameters, parameters or indices (yet)"
+  let fam := "_".intercalate names.toList
+  let parse (text : String) : Except String Syntax := match parseCommand text.toList.toArray tables 0 with
+    | .ok (stx, _) => pure stx
+    | .error _ => throw s!"internal error: could not parse {text}"
+  let tagCmd ← parse s!"inductive {fam}.Tag where{String.join (names.toList.map (s!"\n  | " ++ ·))}"
+  let famFrame ← parse s!"inductive {fam} : {fam}.Tag → Type where"
+  let substs ← names.mapM fun n => match parseCategory tables "term" s!"({fam} {fam}.Tag.{n})" with
+    | .ok t => pure (n, t)
+    | .error e => throw s!"internal error: {e}"
+  let rec subst (stx : Syntax) : Syntax := match stx with
+    | .node i "term.ident" #[.ident j n] => match substs.find? (·.1 == n) with
+      | some (_, t) => t
+      | none => .node i "term.ident" #[.ident j n]
+    | .node i k as => .node i k (as.map subst)
+    | s => s
+  let ctors := (defs.zip substs).flatMap fun (d, (_, self)) => (d.getArg 6).args.map fun c =>
+    let c := subst c
+    if (c.getArg 3).args.isEmpty then c.setArg 3 (.node {} "null" #[.atom {} ":", self]) else c
+  let famCmd := famFrame.setArg 6 (.node {} "null" ctors)
+  let typeDefs ← names.mapM fun n => parse s!"def {n} : Type := {fam} {fam}.Tag.{n}"
+  pure ([tagCmd, famCmd] ++ typeDefs.toList)
+
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let s ← get
@@ -567,6 +602,11 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error e => report .error e.info e.msg
   | "command.partial" | "command.mutual" =>
     let defs := if cmd.isOfKind "command.partial" then #[cmd.getArg 1] else (cmd.getArg 1).args
+    if cmd.isOfKind "command.mutual" && defs.all (·.isOfKind "command.inductive") then
+      match mutualInductive s.tables defs with
+      | .ok cmds => for c in cmds do elabCommand c
+      | .error e => report .error cmd.info e
+      return
     let typeOf (d : Syntax) : Option Syntax :=
       if d.isOfKind "command.defEqns" then some ((d.getArg 4).getArg 1) else (d.getArg 4).args[1]?
     -- the signatures first, as axioms (so the bodies can call each other)

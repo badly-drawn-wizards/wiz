@@ -55,6 +55,9 @@ def args : Syntax → Array Syntax
   | _ => #[]
 
 def getArg (s : Syntax) (i : Nat) : Syntax := s.args[i]?.getD missing
+def setArg (s : Syntax) (i : Nat) (a : Syntax) : Syntax := match s with
+  | node info k as => node info k (as.set! i a)
+  | s => s
 
 def isOfKind (s : Syntax) (k : Name) : Bool := s.kind == k
 
