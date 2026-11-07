@@ -3,7 +3,8 @@ import IO
 -- variables (de Bruijn indices), universes `U n`, Π types, λ, application, Σ types,
 -- pairs and projections (stage 14e), `Unit`, `Empty`, finite enumerations with case
 -- analysis (stage 14f), `Prop` with proof irrelevance (stage 14g), observational
--- equality (stage 14h), descriptions and data (stage 14i), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
+-- equality (stage 14h), descriptions and data (stage 14i), induction (stage 14j),
+-- `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
 -- with closures (an environment and a body), values quote back to normal forms, and
 -- conversion compares values at their types (with η, and all proofs of a proposition
 -- equal). Values carry `Sort` levels: `Prop` is `Sort 0`, and `U n` is `Sort (n + 1)`.
@@ -61,6 +62,8 @@ inductive Tm where
   | delim (v : Nat) (P mret marg mrec mhrec D : Tm)
   | mu (l : Nat) (I D i : Tm)
   | con (x : Tm)
+  -- induction on `x : μ D i`, into the motive `P : (i : I) → μ D i → Sort v`
+  | ind (l : Nat) (I D : Tm) (v : Nat) (P m i x : Tm)
 inductive Tms where
   | tnil
   | tcons (t : Tm) (rest : Tms)
@@ -104,6 +107,7 @@ inductive Spine where
   | secase (sp : Spine) (env : Env) (motive : Tm) (branches : Tms)
   | sabsurd (sp : Spine) (motive : Val)
   | sdelim (sp : Spine) (v : Nat) (P mret marg mrec mhrec : Val)
+  | sind (sp : Spine) (l : Nat) (I D : Val) (v : Nat) (P m i : Val)
 -- what a neutral is stuck on: a variable (by level), or an equality, cast or proof
 -- that doesn't compute
 inductive Head where
@@ -190,6 +194,8 @@ def tmEq : Tm → Tm → Bool
       (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f'))))))
   | .mu l a b c, .mu l' d e f => Bool.and (Nat.beq l l') (Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f)))
   | .con a, .con b => tmEq a b
+  | .ind l a b v c d e f, .ind l' a' b' v' c' d' e' f' => Bool.and (Nat.beq l l') (Bool.and (Nat.beq v v')
+      (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f')))))))
   | _, _ => .false
 def tmsEq : Tms → Tms → Bool
   | .tnil, .tnil => .true
@@ -224,6 +230,53 @@ def interpTm (l : Nat) : Tm :=
   let mhrec := tLams 7 (.sigma (.pi (.var 5) (.app (.var 2) (.app (.var 5) (.var 0)))) (tApps (.var 3) (args2 (.var 2) (.var 1))));
   tLams 2 (.delim (l + 2) P mret marg mrec mhrec (.var 0))
 
+-- `Sort v` and the unit type in it, as terms
+def sortTm (v : Nat) : Tm := match v with
+  | .zero => .prop
+  | .succ n => .univ n
+def unitTm (v : Nat) : Tm := match v with
+  | .zero => .ptrue
+  | .succ n => .unit n
+def args5 (a b c d e : Tm) : Tms := .tcons a (args4 b c d e)
+def args6 (a b c d e f : Tm) : Tms := .tcons a (args5 b c d e f)
+def interpApp (l : Nat) (I E X i : Tm) : Tm := tApps (interpTm l) (args4 I E X i)
+
+-- `fun I D X P i xs => All D X P i xs`: one proof of `P` per recursive field
+def allTm (l v : Nat) : Tm :=
+  let tyL : Tm := .univ l;
+  -- E0 D1 I2, then X, P, i, xs
+  let P : Tm := .lam (.pi (.pi (.var 2) tyL) (.pi (.pi (.var 3) (.pi (.app (.var 1) (.var 0)) (sortTm v)))
+    (.pi (.var 4) (.pi (interpApp l (.var 5) (.var 3) (.var 2) (.var 0)) (sortTm (Nat.max (l + 1) v))))));
+  let mret := tLams 5 (unitTm (Nat.max (l + 1) v));
+  -- xs0 i1 P2 X3 ih4 E5 S6 q7
+  let marg := tLams 8 (tApps (.var 4) (args5 (.fst (.var 0)) (.var 3) (.var 2) (.var 1) (.snd (.var 0))));
+  -- xs0 i1 P2 X3 ih4 E5 j6 q7
+  let mrec := tLams 8 (.sigma (tApps (.var 2) (args2 (.var 6) (.fst (.var 0))))
+    (tApps (.var 5) (args4 (.var 4) (.var 3) (.var 2) (.snd (.var 1)))));
+  -- xs0 i1 P2 X3 ih4 E5 j6 H7 q8
+  let mhrec := tLams 9 (.sigma (.pi (.var 7) (tApps (.var 3) (args2 (.app (.var 7) (.var 0)) (.app (.fst (.var 1)) (.var 0)))))
+    (tApps (.var 5) (args4 (.var 4) (.var 3) (.var 2) (.snd (.var 1)))));
+  tLams 2 (.delim (Nat.max (l + 2) (v + 1)) P mret marg mrec mhrec (.var 0))
+
+-- `fun I D X P f i xs => hyps …`: apply `f` to every recursive field
+def hypsTm (l v : Nat) : Tm :=
+  let tyL : Tm := .univ l;
+  -- E0 D1 I2, then X, P, f, i, xs
+  let P : Tm := .lam (.pi (.pi (.var 2) tyL) (.pi (.pi (.var 3) (.pi (.app (.var 1) (.var 0)) (sortTm v)))
+    (.pi (.pi (.var 4) (.pi (.app (.var 2) (.var 0)) (tApps (.var 2) (args2 (.var 1) (.var 0)))))
+      (.pi (.var 5) (.pi (interpApp l (.var 6) (.var 4) (.var 3) (.var 0))
+        (tApps (allTm l v) (args6 (.var 7) (.var 5) (.var 4) (.var 3) (.var 1) (.var 0))))))));
+  let mret := tLams 6 .star;
+  -- xs0 i1 f2 P3 X4 ih5 E6 S7 q8
+  let marg := tLams 9 (tApps (.var 5) (args6 (.fst (.var 0)) (.var 4) (.var 3) (.var 2) (.var 1) (.snd (.var 0))));
+  -- xs0 i1 f2 P3 X4 ih5 E6 j7 q8
+  let mrec := tLams 9 (.pair (tApps (.var 2) (args2 (.var 7) (.fst (.var 0))))
+    (tApps (.var 5) (args5 (.var 4) (.var 3) (.var 2) (.var 1) (.snd (.var 0)))));
+  -- xs0 i1 f2 P3 X4 ih5 E6 j7 H8 q9
+  let mhrec := tLams 10 (.pair (.lam (tApps (.var 3) (args2 (.app (.var 8) (.var 0)) (.app (.fst (.var 1)) (.var 0)))))
+    (tApps (.var 5) (args5 (.var 4) (.var 3) (.var 2) (.var 1) (.snd (.var 0)))));
+  tLams 2 (.delim (Nat.max (l + 2) (v + 1)) P mret marg mrec mhrec (.var 0))
+
 -- **Exercise 14.1.** Evaluation, application and projections (`eval`, `vApp`, `vFst`,
 -- `vSnd` in `Eval.lean`).
 mutual
@@ -249,6 +302,17 @@ def vDelim : Nat → Val → Val → Val → Val → Val → Val → Val
     vapp (vapp (vapp (vapp (vapp mhrec .vtt) H) j) E) (vDelim v P mret marg mrec mhrec E)
   | v, P, mret, marg, mrec, mhrec, .vne h sp => .vne h (.sdelim sp v P mret marg mrec mhrec)
   | _, _, _, _, _, _, d => d
+-- induction (`vInd` in `Eval.lean`): on a constructor, the method applied to the payload
+-- and its hypotheses (`ind` at each recursive field)
+def vInd : Nat → Val → Val → Nat → Val → Val → Val → Val → Val
+  | l, I, D, v, P, m, i, .vcon xs =>
+    -- fun j y => ind … j y;  inside: y0 j1 m2 P3 D4 I5
+    let f : Val := .vlam (.cons m (.cons P (.cons D (.cons I .nil))))
+      (.lam (.ind l (.var 5) (.var 4) v (.var 3) (.var 2) (.var 1) (.var 0)));
+    let hyps := vapp (vapp (vapp (vapp (vapp (vapp (vapp (eval .nil (hypsTm l v)) I) D) (muFamily l I D)) P) f) i) xs;
+    vapp (vapp (vapp m i) xs) hyps
+  | l, I, D, v, P, m, i, .vne h sp => .vne h (.sind sp l I D v P m i)
+  | _, _, _, _, _, _, _, x => x
 -- `⟦D⟧ X i`
 def vInterp (l : Nat) (I D X i : Val) : Val :=
   vapp (vapp (vapp (vapp (eval .nil (interpTm l)) I) D) X) i
@@ -325,6 +389,8 @@ def quoteSpine : Nat → Tm → Spine → Tm
   | l, h, .sabsurd sp m => .exfalso (quote l m) (quoteSpine l h sp)
   | l, h, .sdelim sp v P a b c d =>
     .delim v (quote l P) (quote l a) (quote l b) (quote l c) (quote l d) (quoteSpine l h sp)
+  | l, h, .sind sp k I D v P m i =>
+    .ind k (quote l I) (quote l D) v (quote l P) (quote l m) (quote l i) (quoteSpine l h sp)
 def quoteHead : Nat → Head → Tm
   | l, .hvar x => .var (l - x - 1)
   | l, .heq A a b => .eq (quote l A) (quote l a) (quote l b)
@@ -387,6 +453,8 @@ def show (names : List String) : Nat → Tm → String
   | l, .mu k I D i => String.append (String.append (String.append "μ" (Nat.toString k)) (String.append "(" (show names l I)))
       (String.append (String.append ", " (show names l D)) (String.append ", " (String.append (show names l i) ")")))
   | l, .con x => String.append (String.append "con(" (show names l x)) ")"
+  | l, .ind _ _ _ _ P m i x => String.append (String.append (String.append "ind(" (show names l P)) (String.append ", " (show names l m)))
+      (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")")))
   | l, .tyRefl X => String.append (String.append "reflTy(" (show names l X)) ")"
   | l, .coe A B e t => String.append (String.append (String.append "cast(" (show names l A)) (String.append ", " (show names l B)))
       (String.append (String.append ", " (show names l e)) (String.append ", " (String.append (show names l t) ")")))
@@ -446,6 +514,7 @@ def typeOfNe : TCtx → Head → Spine → Val
   | _, x, .secase sp env m _ => eval (.cons (.vne x sp) env) m
   | _, _, .sabsurd _ m => m
   | _, h, .sdelim sp _ P _ _ _ _ => vapp P (.vne h sp)
+  | _, h, .sind sp _ _ _ _ P _ i => vapp (vapp P i) (.vne h sp)
 -- the level of the universe a type lives in
 def sortOf : TCtx → Val → Option Nat
   | c, .vpi a env b => match sortOf c a with
@@ -483,10 +552,6 @@ def isProp (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
   | .some l => Nat.beq l 0
   | .none => .false
 
--- `Sort v` as a term
-def sortTm (v : Nat) : Tm := match v with
-  | .zero => .prop
-  | .succ n => .univ n
 -- the quantity binders of the method types: this kernel has no quantities, so `Unit`
 def qTy : Tm := .unit 0
 -- `P : Desc I → Sort v`
@@ -504,6 +569,19 @@ def delimMrec (l : Nat) (I P : Val) : Val :=
 def delimMhrec (l : Nat) (I P : Val) : Val :=
   eval (.cons P (.cons I .nil)) (.pi qTy (.pi (.univ l) (.pi (.pi (.var 0) (.var 4)) (.pi (.descr l (.var 4))
     (.pi (.app (.var 4) (.var 0)) (.app (.var 5) (.dhrec (.var 3) (.var 2) (.var 1))))))))
+
+-- `P : (i : I) → μ D i → Sort v`
+def indMotiveTy (l v : Nat) (I D : Val) : Val :=
+  eval (.cons D (.cons I .nil)) (.pi (.var 1) (.pi (.mu l (.var 2) (.var 1) (.var 0)) (sortTm v)))
+-- `m : (i : I) → (xs : ⟦D⟧ (μ D) i) → All D (μ D) P i xs → P i (con xs)`
+def indMethodTy (l v : Nat) (I D P : Val) : Val :=
+  -- i0 P1 D2 I3 ; xs0 i1 P2 D3 I4 ; ih0 xs1 i2 P3 D4 I5
+  let X1 : Tm := .lam (.mu l (.var 4) (.var 3) (.var 0));
+  let X2 : Tm := .lam (.mu l (.var 5) (.var 4) (.var 0));
+  eval (.cons P (.cons D (.cons I .nil))) (.pi (.var 2)
+    (.pi (tApps (interpTm l) (args4 (.var 3) (.var 2) X1 (.var 0)))
+      (.pi (tApps (allTm l v) (args6 (.var 4) (.var 3) X2 (.var 2) (.var 1) (.var 0)))
+        (tApps (.var 3) (args2 (.var 2) (.con (.var 1)))))))
 
 -- **Exercise 14.6.** Conversion (`conv` and `convTy` in `Conv.lean`): `conv c ty a b`
 -- compares `a` and `b` at type `ty`. All proofs of a proposition are equal; functions
@@ -551,6 +629,9 @@ def convSpine : TCtx → Head → Spine → Spine → Bool
            (Bool.and (conv c (delimMret l I P) a a') (Bool.and (conv c (delimMarg l I P) b b')
              (Bool.and (conv c (delimMrec l I P) d d') (conv c (delimMhrec l I P) e e')))))
        | _ => .false)
+  | c, x, .sind r l I D v P m i, .sind r' l' I' D' v' P' m' i' => Bool.and (convSpine c x r r')
+      (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
+        (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (indMethodTy l v I D P) m m') (conv c I i i'))))))
   | _, _, _, _ => .false
 def convBranches : TCtx → Nat → Env → Tm → Env → Tms → Tms → Nat → Bool
   | _, _, _, _, _, .tnil, .tnil, _ => .true
