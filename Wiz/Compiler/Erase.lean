@@ -110,6 +110,32 @@ def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
 
 private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
 
+/-- A call of a generated `T.casesOn`, unfolded and beta-reduced: as a function, its
+arguments (the branches) would all be computed before the call; unfolded, they sit in
+the branches of a `case` and only the one taken runs. -/
+def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
+  let (.const n us, args) := t.spine | none
+  unless n.endsWith ".casesOn" do none
+  let d ← g.find? n
+  let v ← d.value
+  -- the arguments are annotated with their types, so that the kernel can still infer
+  -- the places they end up in (the motive applied, a branch under a cast)
+  let rec beta : Term R → Term R → List (Term R) → Option (Term R)
+    | .lam _ b, .pi _ _ _ A B, a :: as =>
+      let a' := if a matches .var _ | .const .. | .ann .. then a else .ann a A
+      beta (b.instantiateAt 0 a') (B.instantiateAt 0 a') as
+    | _, _, _ :: _ => none
+    | b, _, [] => some b
+  -- only when every binder gets an argument
+  let rec arity : Term R → Nat
+    | .lam _ b => arity b + 1
+    | _ => 0
+  let v := v.instLevels d.levelParams us
+  let k := arity v
+  if args.length < k then none
+  let b ← beta v (d.type.instLevels d.levelParams us) (args.take k)
+  pure ((args.drop k).foldl .app b)
+
 mutual
 
 /-- The free variables of a term (as indices at its top). -/
@@ -170,7 +196,9 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty
     return .letE x v' b'
   -- the type is known (and not erasable), so don't infer the whole application again
-  | .app .., _ => return (← eraseSpine ctx t).1
+  | .app .., _ => match unfoldCases? g t with
+    | some t' => eraseCheck ctx t' ty
+    | none => return (← eraseSpine ctx t).1
   | _, _ => return (← eraseInfer ctx t).1
   --|ex
   --| sorry
@@ -192,7 +220,9 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
   let e : ETerm ← match t with
     | .var ix => pure (.var ix)
     | .const n _ => pure (.global n)
-    | .app .. => pure (← eraseSpine ctx t).1
+    | .app .. => match unfoldCases? g t with
+      | some t' => pure (← eraseInfer ctx t').1
+      | none => pure (← eraseSpine ctx t).1
     | .ann tm ty' => eraseCheck ctx tm (ctx.eval ty')
     | .letE .. => eraseCheck ctx t ty
     | .fst p => pure (.proj 0 (← eraseInfer ctx p).1)

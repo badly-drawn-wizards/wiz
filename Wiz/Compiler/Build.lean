@@ -97,8 +97,10 @@ where
     | cs => let (n, rest) ← num cs; return (.nat n, rest)
 
 /-- Build and run the global `n` (through C, or LLVM); returns its result, read back
-with its type. -/
-def runGlobal (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bool := false) :
+with its type. With `timeout`, the program is stopped after that many seconds (by
+coreutils' `timeout`). -/
+def runGlobal (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bool := false)
+    (timeout : Option Nat := none) :
     IO (Except String String) := do
   match irProgram s n with
   | .error e => pure (.error e)
@@ -110,7 +112,10 @@ def runGlobal (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bo
     match built with
     | .error e => pure (.error e)
     | .ok () =>
-      let out ← IO.Process.output { cmd := exe.toString }
+      let out ← match timeout with
+        | some t => IO.Process.output { cmd := "timeout", args := #[toString t, exe.toString] }
+        | none => IO.Process.output { cmd := exe.toString }
+      if out.exitCode == 124 && timeout.isSome then return .error "the program timed out"
       if out.exitCode != 0 then return .error s!"the program failed ({out.exitCode}): {out.stderr}"
       -- an `IO` program prints for itself
       if io then return .ok out.stdout
