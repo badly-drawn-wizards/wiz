@@ -1172,14 +1172,16 @@ end MTm
 
 /-- What the Lean kernel says about a closed term: its type (printed like the Wiz
 kernel prints) or `error`. -/
-def leanGlobals : Globals ZeroOneMany :=
+/-- (A function, so that it is computed in the test, not when the module starts.) -/
+def leanGlobals (_ : Unit := ()) : Globals ZeroOneMany :=
   MTm.globalDefs.foldl (fun g (n, v, ty) => match addDecl g { name := n, type := ty.toTerm, value := v.map MTm.toTerm } with
     | .ok g' => g'
     | .error _ => g) {}
 
 def leanVerdict (t : MTm) : String :=
-  match infer (R := ZeroOneMany) { globals := leanGlobals } t.toTerm with
-  | .ok (ty, _) => match MTm.ofTerm (quote leanGlobals 0 ty) with
+  let g := leanGlobals ()
+  match infer (R := ZeroOneMany) { globals := g } t.toTerm with
+  | .ok (ty, _) => match MTm.ofTerm (quote g 0 ty) with
     | some m => m.pretty 0
     | none => "?"
   | .error _ => "error"
