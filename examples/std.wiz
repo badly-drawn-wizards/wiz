@@ -1,0 +1,19 @@
+import Std
+def fill : Nat → Array Nat → Array Nat
+  | .zero, a => a
+  | .succ n, a => Array.push (fill n a) (n * n)
+def countWords : List String → StrMap Nat → StrMap Nat
+  | .nil, m => m
+  | .cons w ws, m => countWords ws (StrMap.insert m (Str.ofString w) (StrMap.findD m (Str.ofString w) 0 + 1))
+def main : IO Unit := do
+  let a := fill 10 Array.empty;
+  IO.println (Nat.toString (Array.getD a 9 0));
+  IO.println (Nat.toString (Array.size (Array.set a 0 7)));
+  let t := Str.append (Str.ofString "hello, ") (Str.ofString "world");
+  IO.println (Str.toString (Str.slice t 7 12));
+  IO.println (Nat.toString (Str.size t));
+  let m := countWords (.cons "a" (.cons "b" (.cons "a" .nil))) StrMap.empty;
+  IO.println (Nat.toString (StrMap.findD m (Str.ofString "a") 0));
+  IO.writeFile "/tmp/claude-1000/wiz_std.txt" "saved";
+  s ← IO.readFile "/tmp/claude-1000/wiz_std.txt";
+  IO.println s

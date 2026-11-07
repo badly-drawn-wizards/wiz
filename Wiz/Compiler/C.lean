@@ -16,7 +16,7 @@ namespace Wiz.C
 open IR
 
 /-- The runtime, embedded in the compiler. (Lake does not track `include_str`: after
-editing `runtime/wiz.c`, change this file too, e.g. this counter: 8.) -/
+editing `runtime/wiz.c`, change this file too, e.g. this counter: 9.) -/
 def runtime : String := include_str "../../runtime/wiz.c"
 
 /-- A C identifier for a Wiz name: letters and digits stay, anything else is `_xx`. -/
@@ -100,7 +100,7 @@ def glue (keys : Array Name) : String := Id.run do
     if sig.header != "" then
       unless includes.contains sig.header do includes := includes.push sig.header
     else if !sig.cname.startsWith "wiz_" then
-      let ps := sig.params.filter (· != 'v') |>.map ctype
+      let ps := sig.params.filter (fun k => k != 'v' && k != 'e') |>.map ctype
       out := out ++ s!"extern {ctype sig.result} {sig.cname}({if ps.isEmpty then "void" else ", ".intercalate ps});\n"
     let n := sig.params.length
     let params := (List.range n).map (s!"wiz_val a{·}") ++ (if sig.io then ["wiz_val w"] else [])
@@ -115,6 +115,7 @@ def glue (keys : Array Name) : String := Id.run do
       | 'b' => body := body ++ s!"  int c{i} = wiz_in_bool(a{i});\n"; cargs := cargs.push s!"c{i}"
       | 'p' => body := body ++ s!"  void *c{i} = wiz_in_ptr(a{i});\n"; cargs := cargs.push s!"c{i}"
       | 'w' => cargs := cargs.push s!"a{i}"
+      | 'e' => pure ()
       | _ => body := body ++ s!"  wiz_dec(a{i});\n"
     let call := s!"{sig.cname}({", ".intercalate cargs.toList})"
     body := body ++ match sig.result with

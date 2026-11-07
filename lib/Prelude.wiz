@@ -190,6 +190,10 @@ macro_rules
   | `(term| do $e:term; $rest) => `(term| Monad.bind $e (fun _ => do $rest))
 macro_rules
   | `(term| do $x ← $e; $rest) => `(term| Monad.bind $e (fun $x => do $rest))
+-- `do let x := e; rest` (declared last: it wins over `let` as a term)
+syntax (name := letBind) "let" ident ":=" term ";" doSeq : doSeq
+macro_rules
+  | `(term| do let $x := $e; $rest) => `(term| let $x := $e; do $rest)
 
 -- Taking syntax apart.
 def SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax

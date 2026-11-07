@@ -915,9 +915,16 @@ runConsole (runState (prog : Eff (Row.cons (State Nat) (Row.cons Console Row.nil
 * **Stack.** Compiled programs run on a thread with a 1 GB stack (`$WIZ_STACK_MB`), so
   deep non-tail recursion (`sumTo 100000`) works.
 
-Next: the standard library for self-hosting (arrays and hash maps updated in place when
-unique, string operations, file IO), flat constructor objects, then porting the lexer
-and the parser.
+### 12a (part 2): a standard library for systems code ✅
+
+`lib/Std.wiz`: `Array A`, native text `Str` (UTF-8, with slicing and comparison), and
+`StrMap V` (hash maps from text), all functional but **updated in place when unique**
+(as Perceus reuse does for constructors). Plus `IO.writeFile`, and `do let x := e; …`.
+Foreign functions can now take erased arguments (`{A : Type}`) and pass Wiz values as
+they are.
+
+Next: flat constructor objects (instead of nested pairs), then porting the lexer and the
+parser to Wiz.
 
 ## Stage 11: tooling
 
