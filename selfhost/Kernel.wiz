@@ -2,9 +2,11 @@ import IO
 -- A type checker in Wiz (stage 14a): the core of `Wiz/Core`, for a small calculus:
 -- variables (de Bruijn indices), universes `U n`, Π types, λ, application, Σ types,
 -- pairs and projections (stage 14e), `Unit`, `Empty`, finite enumerations with case
--- analysis (stage 14f), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to
--- values with closures (an environment and a body), values quote back to normal forms,
--- and conversion compares values (with η for functions and pairs).
+-- analysis (stage 14f), `Prop` with proof irrelevance (stage 14g), `let`, and type
+-- ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
+-- with closures (an environment and a body), values quote back to normal forms, and
+-- conversion compares values at their types (with η, and all proofs of a proposition
+-- equal). Values carry `Sort` levels: `Prop` is `Sort 0`, and `U n` is `Sort (n + 1)`.
 --
 -- Values, environments and spines are mutually inductive (a closure holds an
 -- environment of values), and evaluation, application and quotation are mutually
@@ -13,7 +15,9 @@ import IO
 mutual
 inductive Tm where
   | var (i : Nat)
+  -- `U n` (= `Type n`, `Sort (n + 1)`), and `Prop` (`Sort 0`)
   | univ (n : Nat)
+  | prop
   | pi (dom cod : Tm)
   | lam (body : Tm)
   | app (f a : Tm)
@@ -23,10 +27,12 @@ inductive Tm where
   | pair (a b : Tm)
   | fst (p : Tm)
   | snd (p : Tm)
-  -- `Unit n`, `Empty n : U n`; `exfalso motive t` for `t : Empty n`
+  -- `Unit n`, `Empty n : U n`, `True`, `False : Prop`; `exfalso motive t` for an empty `t`
   | unit (n : Nat)
   | star
   | empty (n : Nat)
+  | ptrue
+  | pfalse
   | exfalso (motive t : Tm)
   -- an enumeration of `k` tags, its `i`-th tag, and case analysis (the motive is
   -- under one binder, the scrutinee)
@@ -40,16 +46,18 @@ end
 
 mutual
 inductive Val where
-  | vuniv (n : Nat)
+  -- `Sort l`
+  | vsort (l : Nat)
   -- `(x : dom) → cod`, `cod` under one binder, closed over `env`
   | vpi (dom : Val) (env : Env) (cod : Tm)
   | vlam (env : Env) (body : Tm)
   -- `(x : fst) × snd`, `snd` under one binder, closed over `env`
   | vsigma (fst : Val) (env : Env) (snd : Tm)
   | vpair (a b : Val)
-  | vunit (n : Nat)
+  -- the unit and empty types in `Sort l`
+  | vunit (l : Nat)
   | vtt
-  | vempty (n : Nat)
+  | vempty (l : Nat)
   | venum (k : Nat)
   | vtag (k i : Nat)
   -- a variable (by level) and the eliminations applied to it
@@ -78,7 +86,7 @@ def tmsLen : Tms → Nat
   | .tcons _ rest => Nat.succ (tmsLen rest)
 
 def lookup : Env → Nat → Val
-  | .nil, _ => .vuniv 0
+  | .nil, _ => .vsort 0
   | .cons v rest, i => match i with
     | .zero => v
     | .succ j => lookup rest j
@@ -89,7 +97,8 @@ mutual
 def eval : Env → Tm → Val
   --<sol
   | env, .var i => lookup env i
-  | _, .univ n => .vuniv n
+  | _, .univ n => .vsort (n + 1)
+  | _, .prop => .vsort 0
   | env, .pi a b => .vpi (eval env a) env b
   | env, .lam b => .vlam env b
   | env, .app f a => vapp (eval env f) (eval env a)
@@ -99,9 +108,11 @@ def eval : Env → Tm → Val
   | env, .pair a b => .vpair (eval env a) (eval env b)
   | env, .fst p => vfst (eval env p)
   | env, .snd p => vsnd (eval env p)
-  | _, .unit n => .vunit n
+  | _, .unit n => .vunit (n + 1)
   | _, .star => .vtt
-  | _, .empty n => .vempty n
+  | _, .empty n => .vempty (n + 1)
+  | _, .ptrue => .vunit 0
+  | _, .pfalse => .vempty 0
   | env, .exfalso m t => match eval env t with
     | .vne l sp => .vne l (.sabsurd sp (eval env m))
     | v => v
@@ -112,7 +123,7 @@ def eval : Env → Tm → Val
     | .vne l sp => .vne l (.secase sp env m bs)
     | v => v
   --|ex
-  --| | _, _ => .vuniv 0
+  --| | _, _ => .vsort 0
   --sol>
 def vapp : Val → Val → Val
   --<sol
@@ -147,14 +158,20 @@ def fresh (l : Nat) : Val := .vne l .snil
 mutual
 def quote : Nat → Val → Tm
   --<sol
-  | _, .vuniv n => .univ n
+  | _, .vsort l => match l with
+    | .zero => .prop
+    | .succ n => .univ n
   | l, .vpi a env b => .pi (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b))
   | l, .vlam env b => .lam (quote (l + 1) (eval (.cons (fresh l) env) b))
   | l, .vsigma a env b => .sigma (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b))
   | l, .vpair a b => .pair (quote l a) (quote l b)
-  | _, .vunit n => .unit n
+  | _, .vunit l => match l with
+    | .zero => .ptrue
+    | .succ n => .unit n
   | _, .vtt => .star
-  | _, .vempty n => .empty n
+  | _, .vempty l => match l with
+    | .zero => .pfalse
+    | .succ n => .empty n
   | _, .venum k => .enum k
   | _, .vtag k i => .tag k i
   | l, .vne x sp => quoteSpine l (.var (l - x - 1)) sp
@@ -174,51 +191,6 @@ def quoteBranches : Nat → Env → Tms → Tms
   | l, env, .tcons b rest => .tcons (quote l (eval env b)) (quoteBranches l env rest)
 end
 
--- **Exercise 14.6.** Conversion (`conv` in `Conv.lean`), on values at depth `l`: equal
--- universes, Π and Σ types with convertible components, the same variable with
--- convertible eliminations, functions compared by applying both to a fresh variable,
--- and pairs by their projections (that is η: `f` and `λx. f x` are convertible, and so
--- are `p` and `(p.1, p.2)`).
-mutual
-def conv : Nat → Val → Val → Bool
-  --<sol
-  | _, .vuniv m, .vuniv n => Nat.beq m n
-  | l, .vpi a e b, .vpi a' e' b' =>
-    Bool.and (conv l a a') (conv (l + 1) (eval (.cons (fresh l) e) b) (eval (.cons (fresh l) e') b'))
-  | l, .vlam e b, .vlam e' b' => conv (l + 1) (eval (.cons (fresh l) e) b) (eval (.cons (fresh l) e') b')
-  | l, .vlam e b, v => conv (l + 1) (eval (.cons (fresh l) e) b) (vapp v (fresh l))
-  | l, v, .vlam e b => conv (l + 1) (vapp v (fresh l)) (eval (.cons (fresh l) e) b)
-  | l, .vsigma a e b, .vsigma a' e' b' =>
-    Bool.and (conv l a a') (conv (l + 1) (eval (.cons (fresh l) e) b) (eval (.cons (fresh l) e') b'))
-  | l, .vpair a b, .vpair a' b' => Bool.and (conv l a a') (conv l b b')
-  | l, .vpair a b, v => Bool.and (conv l a (vfst v)) (conv l b (vsnd v))
-  | l, v, .vpair a b => Bool.and (conv l (vfst v) a) (conv l (vsnd v) b)
-  | l, .vne x sp, .vne y sp' => Bool.and (Nat.beq x y) (convSpine l sp sp')
-  | _, .vunit m, .vunit n => Nat.beq m n
-  | _, .vtt, .vtt => .true
-  | _, .vempty m, .vempty n => Nat.beq m n
-  | _, .venum k, .venum k' => Nat.beq k k'
-  | _, .vtag _ i, .vtag _ j => Nat.beq i j
-  | _, _, _ => .false
-  --|ex
-  --| | _, _, _ => .false
-  --sol>
-def convSpine : Nat → Spine → Spine → Bool
-  | _, .snil, .snil => .true
-  | l, .sapp r a, .sapp r' b => Bool.and (convSpine l r r') (conv l a b)
-  | l, .sfst r, .sfst r' => convSpine l r r'
-  | l, .ssnd r, .ssnd r' => convSpine l r r'
-  | l, .secase r e m bs, .secase r' e' m' bs' => Bool.and (convSpine l r r')
-      (Bool.and (conv (l + 1) (eval (.cons (fresh l) e) m) (eval (.cons (fresh l) e') m'))
-        (convBranches l e e' bs bs'))
-  | l, .sabsurd r m, .sabsurd r' m' => Bool.and (convSpine l r r') (conv l m m')
-  | _, _, _ => .false
-def convBranches : Nat → Env → Env → Tms → Tms → Bool
-  | _, _, _, .tnil, .tnil => .true
-  | l, e, e', .tcons b r, .tcons b' r' => Bool.and (conv l (eval e b) (eval e' b')) (convBranches l e e' r r')
-  | _, _, _, _, _ => .false
-end
-
 -- the name of the variable at level `l`: from `names` (the outermost first), or `x<l>`
 def nameFrom : List String → Nat → Nat → String
   | .nil, _, l => String.append "x" (Nat.toString l)
@@ -233,6 +205,7 @@ mutual
 def show (names : List String) : Nat → Tm → String
   | l, .var i => nameAt names (l - i - 1)
   | _, .univ n => String.append "U" (Nat.toString n)
+  | _, .prop => "Prop"
   | l, .pi a b => String.append (String.append (String.append "(" (nameAt names l))
       (String.append " : " (show names l a))) (String.append ") → " (show names (l + 1) b))
   | l, .lam b => String.append (String.append "λ" (nameAt names l)) (String.append ". " (show names (l + 1) b))
@@ -248,6 +221,8 @@ def show (names : List String) : Nat → Tm → String
   | _, .unit n => String.append "Unit" (Nat.toString n)
   | _, .star => "tt"
   | _, .empty n => String.append "Empty" (Nat.toString n)
+  | _, .ptrue => "True"
+  | _, .pfalse => "False"
   | l, .exfalso m t => String.append (String.append "absurd(" (show names l m)) (String.append ", " (String.append (show names l t) ")"))
   | _, .enum k => String.append "Enum" (Nat.toString k)
   | _, .tag _ i => String.append "#" (Nat.toString i)
@@ -280,6 +255,116 @@ inductive TyRes where
   | ok (ty : Val)
   | err (msg : String)
 
+def imax (i j : Nat) : Nat := match j with
+  | .zero => 0
+  | .succ _ => Nat.max i j
+
+-- The type of a neutral, and the universe of a type (`typeSort?` in `Conv.lean`).
+mutual
+-- the type of the variable at level `x` after the eliminations `sp`
+def typeOfNe : TCtx → Nat → Spine → Val
+  | c, x, .snil => lookup (TCtx.types c) (TCtx.lvl c - x - 1)
+  | c, x, .sapp sp a => match typeOfNe c x sp with
+    | .vpi _ env cod => eval (.cons a env) cod
+    | ty => ty
+  | c, x, .sfst sp => match typeOfNe c x sp with
+    | .vsigma a _ _ => a
+    | ty => ty
+  | c, x, .ssnd sp => match typeOfNe c x sp with
+    | .vsigma _ env b => eval (.cons (vfst (.vne x sp)) env) b
+    | ty => ty
+  | _, x, .secase sp env m _ => eval (.cons (.vne x sp) env) m
+  | _, _, .sabsurd _ m => m
+-- the level of the universe a type lives in
+def sortOf : TCtx → Val → Option Nat
+  | c, .vpi a env b => match sortOf c a with
+    | .some i => match sortOf (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b) with
+      | .some j => .some (imax i j)
+      | .none => .none
+    | .none => .none
+  | c, .vsigma a env b => match sortOf c a with
+    | .some i => match sortOf (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b) with
+      | .some j => .some (Nat.max i j)
+      | .none => .none
+    | .none => .none
+  | _, .vsort l => .some (l + 1)
+  | _, .vunit l => .some l
+  | _, .vempty l => .some l
+  | _, .venum _ => .some 1
+  | c, .vne x sp => match typeOfNe c x sp with
+    | .vsort l => .some l
+    | _ => .none
+  | _, _ => .none
+end
+
+def isProp (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
+  | .some l => Nat.beq l 0
+  | .none => .false
+
+-- **Exercise 14.6.** Conversion (`conv` and `convTy` in `Conv.lean`): `conv c ty a b`
+-- compares `a` and `b` at type `ty`. All proofs of a proposition are equal; functions
+-- are compared by applying both to a fresh variable and pairs by their projections
+-- (that is η); types structurally (`convTy`); anything else must be the same variable
+-- with convertible eliminations (`convNe`).
+mutual
+def conv : TCtx → Val → Val → Val → Bool
+  --<sol
+  | c, ty, a, b => match isProp c ty with
+    | .true => .true
+    | .false => match ty with
+      | .vpi dom env cod =>
+        let x := fresh (TCtx.lvl c);
+        conv (TCtx.bind c dom) (eval (.cons x env) cod) (vapp a x) (vapp b x)
+      | .vsigma ta env tb =>
+        Bool.and (conv c ta (vfst a) (vfst b)) (conv c (eval (.cons (vfst a) env) tb) (vsnd a) (vsnd b))
+      | .vunit _ => .true
+      | .vsort _ => convTy c a b
+      | _ => convNe c a b
+  --|ex
+  --| | _, _, _, _ => .false
+  --sol>
+def convTy : TCtx → Val → Val → Bool
+  --<sol
+  | c, .vpi a e b, .vpi a' e' b' => Bool.and (convTy c a a')
+      (convTy (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) e) b) (eval (.cons (fresh (TCtx.lvl c)) e') b'))
+  | c, .vsigma a e b, .vsigma a' e' b' => Bool.and (convTy c a a')
+      (convTy (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) e) b) (eval (.cons (fresh (TCtx.lvl c)) e') b'))
+  | _, .vsort l, .vsort l' => Nat.beq l l'
+  | _, .vunit l, .vunit l' => Nat.beq l l'
+  | _, .vempty l, .vempty l' => Nat.beq l l'
+  | _, .venum k, .venum k' => Nat.beq k k'
+  | c, a, b => convNe c a b
+  --|ex
+  --| | _, _, _ => .false
+  --sol>
+def convNe : TCtx → Val → Val → Bool
+  | _, .vtag _ i, .vtag _ j => Nat.beq i j
+  | _, .vtt, .vtt => .true
+  | c, .vne x sp, .vne y sp' => Bool.and (Nat.beq x y) (convSpine c x sp sp')
+  | _, _, _ => .false
+-- the same head `x`: compare the eliminations, at their types
+def convSpine : TCtx → Nat → Spine → Spine → Bool
+  | _, _, .snil, .snil => .true
+  | c, x, .sapp r a, .sapp r' b => Bool.and (convSpine c x r r') (match typeOfNe c x r with
+    | .vpi dom _ _ => conv c dom a b
+    | _ => .false)
+  | c, x, .sfst r, .sfst r' => convSpine c x r r'
+  | c, x, .ssnd r, .ssnd r' => convSpine c x r r'
+  | c, x, .secase r e m bs, .secase r' e' m' bs' => Bool.and (convSpine c x r r')
+      (match typeOfNe c x r with
+       | .venum k => Bool.and
+           (convTy (TCtx.bind c (.venum k)) (eval (.cons (fresh (TCtx.lvl c)) e) m) (eval (.cons (fresh (TCtx.lvl c)) e') m'))
+           (convBranches c k e m e' bs bs' 0)
+       | _ => .false)
+  | c, x, .sabsurd r m, .sabsurd r' m' => Bool.and (convSpine c x r r') (convTy c m m')
+  | _, _, _, _ => .false
+def convBranches : TCtx → Nat → Env → Tm → Env → Tms → Tms → Nat → Bool
+  | _, _, _, _, _, .tnil, .tnil, _ => .true
+  | c, k, e, m, e', .tcons b r, .tcons b' r', i =>
+    Bool.and (conv c (eval (.cons (.vtag k i) e) m) (eval e b) (eval e' b')) (convBranches c k e m e' r r' (i + 1))
+  | _, _, _, _, _, _, _, _ => .false
+end
+
 def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
 
 -- **Exercise 14.3.** Bidirectional type checking (`infer` and `check` in `Check.lean`).
@@ -288,10 +373,11 @@ mutual
 def infer : TCtx → Tm → TyRes
   --<sol
   | c, .var i => .ok (lookup (TCtx.types c) i)
-  | _, .univ n => .ok (.vuniv (n + 1))
+  | _, .univ n => .ok (.vsort (n + 2))
+  | _, .prop => .ok (.vsort 1)
   | c, .pi a b => match inferUniv c a with
-    | .ok (.vuniv i) => match inferUniv (TCtx.bind c (eval (TCtx.env c) a)) b with
-      | .ok (.vuniv j) => .ok (.vuniv (Nat.max i j))
+    | .ok (.vsort i) => match inferUniv (TCtx.bind c (eval (TCtx.env c) a)) b with
+      | .ok (.vsort j) => .ok (.vsort (imax i j))
       | r => r
     | r => r
   | _, .lam _ => .err "cannot infer the type of a λ; add a type ascription"
@@ -313,13 +399,15 @@ def infer : TCtx → Tm → TyRes
     | .ok _ => check c t (eval (TCtx.env c) ty)
     | r => r
   | c, .sigma a b => match inferUniv c a with
-    | .ok (.vuniv i) => match inferUniv (TCtx.bind c (eval (TCtx.env c) a)) b with
-      | .ok (.vuniv j) => .ok (.vuniv (Nat.max i j))
+    | .ok (.vsort i) => match inferUniv (TCtx.bind c (eval (TCtx.env c) a)) b with
+      | .ok (.vsort j) => .ok (.vsort (Nat.max i j))
       | r => r
     | r => r
   | _, .pair _ _ => .err "cannot infer the type of a pair; add a type ascription"
-  | _, .unit n => .ok (.vuniv n)
-  | _, .empty n => .ok (.vuniv n)
+  | _, .unit n => .ok (.vsort (n + 1))
+  | _, .empty n => .ok (.vsort (n + 1))
+  | _, .ptrue => .ok (.vsort 0)
+  | _, .pfalse => .ok (.vsort 0)
   | _, .star => .err "cannot infer the type of tt; add a type ascription"
   | c, .exfalso m t => match inferUniv c m with
     | .ok _ => match infer c t with
@@ -328,7 +416,7 @@ def infer : TCtx → Tm → TyRes
         | ty => .err (String.append "not empty: " (showVal c ty))
       | r => r
     | r => r
-  | _, .enum _ => .ok (.vuniv 0)
+  | _, .enum _ => .ok (.vsort 1)
   | _, .tag k i => match Nat.lt i k with
     | .true => .ok (.venum k)
     | .false => .err "tag out of range"
@@ -369,7 +457,7 @@ def check : TCtx → Tm → Val → TyRes
       | r => r
     | r => r
   | c, t, ty => match infer c t with
-    | .ok ty' => match conv (TCtx.lvl c) ty ty' with
+    | .ok ty' => match convTy c ty ty' with
       | .true => .ok ty
       | .false => .err (String.append (String.append "type mismatch: expected " (showVal c ty))
           (String.append ", got " (showVal c ty')))
@@ -387,7 +475,7 @@ def checkBranches : TCtx → Nat → Tm → Tms → Nat → TyRes
 def inferUniv : TCtx → Tm → TyRes
   | c, t => match infer c t with
     | .ok ty => match ty with
-      | .vuniv n => .ok (.vuniv n)
+      | .vsort l => .ok (.vsort l)
       | ty => .err (String.append "not a type: its type is " (showVal c ty))
     | r => r
 end

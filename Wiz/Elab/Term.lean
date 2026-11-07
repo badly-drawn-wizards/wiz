@@ -1085,7 +1085,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       let eLvl := ctx'.lvl
       eInfo := some (eLvl, E)
       mt ← instM B (Val.var eLvl)
-      ctx' := ctx'.bind "e" E
+      ctx' := ctx'.bind "e✝" E
       if let some prf := findAbsurd g (← force E) (Val.var eLvl) then
         absurdBody := some (.absurd (quote g ctx'.lvl mt) (quote g ctx'.lvl prf))
     let body ← match absurdBody with
