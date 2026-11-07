@@ -1105,8 +1105,17 @@ field may also be projected). The kernel's own templates use the Lean kernel's
 quantities (equations and indices are erased), and printing shows `:0` and `:1`.
 The differential test adds linear and erased binders, in samples and at random.
 
-Next: sizes and coinduction, then checking declarations (with symbolic levels), and
-the performance work that self-hosting will need (lazy unfolding first).
+### 14n: sizes and subtyping ✅
+
+`Size`, `∞`, `↑s`, `Size< s`, and `μ D i` at a size (`∞` by default); a constructor
+builds a value of size `↑s` from fields at `s`. Checking falls back to **subtyping**
+(`subTy`, exercise 14.7) as in the Lean kernel: data types are covariant in their size
+(`sizeLe`, which uses a variable's `Size< u` bound), functions contravariant in their
+domain (and may differ in quantity when they are propositions), pairs covariant.
+
+Next: sized recursion (`sfix`, `scase`) and coinduction, then checking declarations
+(with symbolic levels), and the performance work that self-hosting will need (lazy
+unfolding first).
 
 ## Stage 11: tooling
 

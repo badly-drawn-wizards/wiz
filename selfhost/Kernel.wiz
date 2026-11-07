@@ -4,8 +4,8 @@ import IO
 -- pairs and projections (stage 14e), `Unit`, `Empty`, finite enumerations with case
 -- analysis (stage 14f), `Prop` with proof irrelevance (stage 14g), observational
 -- equality (stage 14h), descriptions and data (stage 14i), induction (stage 14j),
--- global constants (stage 14k) and universe-polymorphic ones (stage 14l), `let`, and type
--- ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
+-- global constants (stage 14k) and universe-polymorphic ones (stage 14l), quantities
+-- (stage 14m), sizes and subtyping (stage 14n), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
 -- with closures (an environment and a body), values quote back to normal forms, and
 -- conversion compares values at their types (with η, and all proofs of a proposition
 -- equal). Values carry `Sort` levels: `Prop` is `Sort 0`, and `U n` is `Sort (n + 1)`.
@@ -90,6 +90,13 @@ inductive Tm where
   | delim (v : Nat) (P mret marg mrec mhrec D : Tm)
   | mu (l : Nat) (I D i : Tm)
   | con (x : Tm)
+  -- sizes (stage 4f): the type `Size`, `∞`, `↑s`, the sizes below `s`, and `μ` at a size
+  -- (`mu` is at `∞`)
+  | size
+  | szInf
+  | szSuc (s : Tm)
+  | sizeLt (s : Tm)
+  | mus (l : Nat) (I D i s : Tm)
   -- induction on `x : μ D i`, into the motive `P : (i : I) → μ D i → Sort v`
   | ind (l : Nat) (I D : Tm) (v : Nat) (P m i x : Tm)
   -- a global definition, carrying its (closed) value and type, and a global axiom: the
@@ -122,7 +129,11 @@ inductive Val where
   | vdarg (S E : Val)
   | vdrec (j E : Val)
   | vdhrec (H j E : Val)
-  | vmu (l : Nat) (I D i : Val)
+  | vmu (l : Nat) (I D i sz : Val)
+  | vsize
+  | vszInf
+  | vszSuc (s : Val)
+  | vsizeLt (s : Val)
   | vcon (x : Val)
   -- **glued**: a global definition applied to `sp`, and its unfolding (`Val.unfold` in
   -- the Lean kernel, computed eagerly here); `whnf` looks through it
@@ -238,6 +249,9 @@ def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
       (tmSubst ps ls h) (tmSubst ps ls D)
   | .mu l I D i => .mu l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls i)
   | .con x => .con (tmSubst ps ls x)
+  | .szSuc sz => .szSuc (tmSubst ps ls sz)
+  | .sizeLt sz => .sizeLt (tmSubst ps ls sz)
+  | .mus l I D i sz => .mus l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls i) (tmSubst ps ls sz)
   | .ind l I D v P m i x => .ind l (tmSubst ps ls I) (tmSubst ps ls D) v (tmSubst ps ls P) (tmSubst ps ls m)
       (tmSubst ps ls i) (tmSubst ps ls x)
   | t => t
@@ -295,7 +309,9 @@ def canonical : Val → Bool
   | .vempty _ => .true
   | .venum _ => .true
   | .vdesc _ _ => .true
-  | .vmu _ _ _ _ => .true
+  | .vmu _ _ _ _ _ => .true
+  | .vsize => .true
+  | .vsizeLt _ => .true
   | _ => .false
 
 -- syntactic equality of terms
@@ -337,6 +353,11 @@ def tmEq : Tm → Tm → Bool
       (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f'))))))
   | .mu l a b c, .mu l' d e f => Bool.and (Nat.beq l l') (Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f)))
   | .con a, .con b => tmEq a b
+  | .size, .size => .true
+  | .szInf, .szInf => .true
+  | .szSuc a, .szSuc b => tmEq a b
+  | .sizeLt a, .sizeLt b => tmEq a b
+  | .mus l a b c d, .mus l' a' b' c' d' => Bool.and (Nat.beq l l') (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (tmEq d d'))))
   | .const n _ ls _ _, .const n' _ ls' _ _ => Bool.and (kStrEq n n') (lvlsEq ls ls')
   | .sortL l, .sortL l' => Nat.beq (lvlNat l) (lvlNat l')
   | .axiomC n _, .axiomC n' _ => kStrEq n n'
@@ -471,7 +492,12 @@ def eval : Env → Tm → Val
   | env, .dhrec H j D => .vdhrec (eval env H) (eval env j) (eval env D)
   | env, .delim v P a b c h D =>
     vDelim v (eval env P) (eval env a) (eval env b) (eval env c) (eval env h) (eval env D)
-  | env, .mu l I D i => .vmu l (eval env I) (eval env D) (eval env i)
+  | env, .mu l I D i => .vmu l (eval env I) (eval env D) (eval env i) .vszInf
+  | env, .mus l I D i sz => .vmu l (eval env I) (eval env D) (eval env i) (eval env sz)
+  | _, .size => .vsize
+  | _, .szInf => .vszInf
+  | env, .szSuc sz => .vszSuc (eval env sz)
+  | env, .sizeLt sz => .vsizeLt (eval env sz)
   | env, .con x => .vcon (eval env x)
   | env, .ind l I D v P m i x =>
     vInd l (eval env I) (eval env D) v (eval env P) (eval env m) (eval env i) (eval env x)
@@ -541,6 +567,9 @@ def vInterp (l : Nat) (I D X i : Val) : Val :=
 -- `fun j => μ D j`
 def muFamily (l : Nat) (I D : Val) : Val :=
   .vlam (.cons D (.cons I .nil)) (.mu l (.var 2) (.var 1) (.var 0))
+-- `fun j => μ D j` at size `s`
+def muFamilyAt (l : Nat) (I D sz : Val) : Val :=
+  .vlam (.cons sz (.cons D (.cons I .nil))) (.mus l (.var 3) (.var 2) (.var 0) (.var 1))
 -- `a = b` at `A`, by `A` (`vEq` in `Eval.lean`; the closures are the same templates)
 def vEq (A a b : Val) : Val := vEqW (whnf A) (whnf a) (whnf b)
 def vEqW : Val → Val → Val → Val
@@ -557,7 +586,7 @@ def vEqW : Val → Val → Val → Val
   | .venum k, .vtag _ i, .vtag _ j => match Nat.beq i j with
     | .true => .vunit 0
     | .false => .vempty 0
-  | .vmu l I D i, .vcon x, .vcon y => vEq (vInterp l I D (muFamily l I D) i) x y
+  | .vmu l I D i _, .vcon x, .vcon y => vEq (vInterp l I D (muFamily l I D) i) x y
   | .vsort l, a, b => match l with
     -- propositions: equal when equivalent
     | .zero => .vsigma .qz (.vpi .qz a (.cons b .nil) (.var 1)) (.cons a (.cons b .nil)) (.piq .qz (.var 2) (.var 2))
@@ -581,7 +610,7 @@ def vEqTypeW : Val → Val → Val
   | .vempty l, .vempty l' => levels l l'
   | .venum k, .venum k' => levels k k'
   | .vdesc l I, .vdesc l' I' => .vne (.heqTy (.vdesc l I) (.vdesc l' I')) .snil
-  | .vmu l I D i, .vmu l' I' D' i' => .vne (.heqTy (.vmu l I D i) (.vmu l' I' D' i')) .snil
+  | .vmu l I D i s, .vmu l' I' D' i' s' => .vne (.heqTy (.vmu l I D i s) (.vmu l' I' D' i' s')) .snil
   | X, Y => match Bool.and (canonical X) (canonical Y) with
     | .true => .vempty 0
     | .false => .vne (.heqTy X Y) .snil
@@ -633,7 +662,13 @@ def quote : Nat → Val → Tm
   | l, .vdarg S E => .darg (quote l S) (quote l E)
   | l, .vdrec j E => .drec (quote l j) (quote l E)
   | l, .vdhrec H j E => .dhrec (quote l H) (quote l j) (quote l E)
-  | l, .vmu k I D i => .mu k (quote l I) (quote l D) (quote l i)
+  | l, .vmu k I D i sz => match sz with
+    | .vszInf => .mu k (quote l I) (quote l D) (quote l i)
+    | _ => .mus k (quote l I) (quote l D) (quote l i) (quote l sz)
+  | _, .vsize => .size
+  | _, .vszInf => .szInf
+  | l, .vszSuc sz => .szSuc (quote l sz)
+  | l, .vsizeLt sz => .sizeLt (quote l sz)
   | l, .vcon x => .con (quote l x)
   | l, .vne h sp => quoteSpine l (quoteHead l h) sp
   | l, .vglued h sp _ => quoteSpine l (quoteHead l h) sp
@@ -727,6 +762,13 @@ def show (names : List String) : Nat → Tm → String
   | l, .mu k I D i => String.append (String.append (String.append "μ" (Nat.toString k)) (String.append "(" (show names l I)))
       (String.append (String.append ", " (show names l D)) (String.append ", " (String.append (show names l i) ")")))
   | l, .con x => String.append (String.append "con(" (show names l x)) ")"
+  | _, .size => "Size"
+  | _, .szInf => "∞"
+  | l, .szSuc sz => String.append (String.append "↑(" (show names l sz)) ")"
+  | l, .sizeLt sz => String.append (String.append "Size<(" (show names l sz)) ")"
+  | l, .mus k I D i sz => String.append (String.append (String.append "μ" (Nat.toString k)) (String.append "(" (show names l I)))
+      (String.append (String.append ", " (show names l D)) (String.append (String.append ", " (show names l i))
+        (String.append ", " (String.append (show names l sz) ")"))))
   | _, .const n _ ls _ _ => String.append n (showLvls ls)
   | _, .sortL l => match lvlNat l with
     | .zero => "Prop"
@@ -865,7 +907,9 @@ def sortOfW : TCtx → Val → Option Nat
   | _, .vempty l => .some l
   | _, .venum _ => .some 1
   | _, .vdesc l _ => .some (l + 2)
-  | _, .vmu l _ _ _ => .some (l + 1)
+  | _, .vmu l _ _ _ _ => .some (l + 1)
+  | _, .vsize => .some 1
+  | _, .vsizeLt _ => .some 1
   | c, .vne x sp => match whnf (typeOfNe c x sp) with
     | .vsort l => .some l
     | _ => .none
@@ -918,6 +962,49 @@ def indMethodTy (l v : Nat) (I D P : Val) : Val :=
       (.pi (tApps (allTm l v) (args6 (.var 4) (.var 3) X2 (.var 2) (.var 1) (.var 0)))
         (tApps (.var 3) (args2 (.var 2) (.con (.var 1)))))))
 
+-- Sizes (`Conv.lean`): `∞`, or a size variable with a number of `↑`s
+inductive SizeView where
+  | inf (k : Nat)
+  | var (x : Nat) (k : Nat)
+  | other
+def sizeView : Val → SizeView
+  | .vszInf => .inf 0
+  | .vszSuc sz => match sizeView sz with
+    | .inf k => .inf (k + 1)
+    | .var x k => .var x (k + 1)
+    | .other => .other
+  | .vne (.hvar x) .snil => .var x 0
+  | .vglued _ _ v => sizeView v
+  | _ => .other
+def sizeEq (a b : Val) : Bool := match sizeView a with
+  | .inf _ => match sizeView b with
+    | .inf _ => .true
+    | _ => .false
+  | .var x k => match sizeView b with
+    | .var y m => Bool.and (Nat.beq k m) (Nat.beq x y)
+    | _ => .false
+  | .other => .false
+def addSucs : Nat → Val → Val
+  | .zero, sz => sz
+  | .succ k, sz => .vszSuc (addSucs k sz)
+-- `a ≤ b`: anything is below `∞`; `↑ᵏ x ≤ ↑ᵐ x` when `k ≤ m`; and `x : Size< u` gives
+-- `↑ᵏ x ≤ b` when `↑ᵏ⁻¹ u ≤ b`
+partial def sizeLe (c : TCtx) (a b : Val) : Bool := match sizeView b with
+  | .inf _ => .true
+  | vb => match sizeView a with
+    | .var x k => Bool.or (match vb with
+        | .var y m => Bool.and (Nat.le k m) (Nat.beq x y)
+        | _ => .false)
+      (match whnf (lookup (TCtx.types c) (TCtx.lvl c - x - 1)) with
+       | .vsizeLt u => sizeLe c (addSucs (k - 1) u) b
+       | _ => .false)
+    | _ => .false
+-- the size of a constructor's fields: `↑s ↦ s`, `∞ ↦ ∞`
+def sizePred (sz : Val) : Option Val := match whnf sz with
+  | .vszInf => .some .vszInf
+  | .vszSuc s => .some s
+  | _ => .none
+
 -- **Exercise 14.6.** Conversion (`conv` and `convTy` in `Conv.lean`): `conv c ty a b`
 -- compares `a` and `b` at type `ty`. All proofs of a proposition are equal; functions
 -- are compared by applying both to a fresh variable and pairs by their projections
@@ -951,7 +1038,7 @@ def conv : TCtx → Val → Val → Val → Bool
               (Bool.and (conv c (.vpi .qw H (.cons I .nil) (.var 1)) j j') (conv c (.vdesc l I) E E'))
           | _ => .false
         | _ => convNe c a b
-      | .vmu l I D i => match whnf a with
+      | .vmu l I D i _ => match whnf a with
         | .vcon x => match whnf b with
           | .vcon y => conv c (vInterp l I D (muFamily l I D) i) x y
           | _ => .false
@@ -978,7 +1065,9 @@ def convTyW : TCtx → Val → Val → Bool
   | _, .vempty l, .vempty l' => Nat.beq l l'
   | _, .venum k, .venum k' => Nat.beq k k'
   | c, .vdesc l I, .vdesc l' I' => Bool.and (Nat.beq l l') (convTy c I I')
-  | c, .vmu l I D i, .vmu l' I' D' i' => Bool.and (Nat.beq l l') (Bool.and (convTy c I I')
+  | _, .vsize, .vsize => .true
+  | c, .vsizeLt s, .vsizeLt s' => sizeEq s s'
+  | c, .vmu l I D i s, .vmu l' I' D' i' s' => Bool.and (Bool.and (Nat.beq l l') (sizeEq s s')) (Bool.and (convTy c I I')
       (Bool.and (conv c (.vdesc l I) D D') (conv c I i i')))
   | c, a, b => convNe c a b
   --|ex
@@ -1034,6 +1123,36 @@ def convBranches : TCtx → Nat → Env → Tm → Env → Tms → Tms → Nat �
   | c, k, e, m, e', .tcons b r, .tcons b' r', i =>
     Bool.and (conv c (eval (.cons (.vtag k i) e) m) (eval e b) (eval e' b')) (convBranches c k e m e' r r' (i + 1))
   | _, _, _, _, _, _, _, _ => .false
+
+-- **Exercise 14.7.** Subtyping (`subTy` in `Conv.lean`): sizes grow covariantly in `μ`,
+-- functions are contravariant in their domain (and may differ in quantity when they are
+-- propositions), pairs covariant; otherwise convertible.
+def subTy (c : TCtx) (A B : Val) : Bool := match whnf A with
+  --<sol
+  | .vmu l I D i s => match whnf B with
+    | .vmu l' I' D' i' s' => Bool.and (Bool.and (Nat.beq l l') (sizeLe c s s'))
+        (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D') (conv c I i i')))
+    | B' => convTy c (.vmu l I D i s) B'
+  | .vpi q a1 e1 b1 => match whnf B with
+    | .vpi q' a2 e2 b2 =>
+      let x := fresh (TCtx.lvl c);
+      Bool.and (Bool.or (qEq q q') (isProp c (.vpi q a1 e1 b1))) (Bool.and (subTy c a2 a1)
+        (subTy (TCtx.bind c a2) (eval (.cons x e1) b1) (eval (.cons x e2) b2)))
+    | B' => convTy c (.vpi q a1 e1 b1) B'
+  | .vsigma q a1 e1 b1 => match whnf B with
+    | .vsigma q' a2 e2 b2 =>
+      let x := fresh (TCtx.lvl c);
+      Bool.and (qEq q q') (Bool.and (subTy c a1 a2)
+        (subTy (TCtx.bind c a1) (eval (.cons x e1) b1) (eval (.cons x e2) b2)))
+    | B' => convTy c (.vsigma q a1 e1 b1) B'
+  | .vsizeLt sz => match whnf B with
+    | .vsize => .true
+    | .vsizeLt t => sizeLe c sz t
+    | B' => convTy c (.vsizeLt sz) B'
+  | A' => convTy c A' B
+  --|ex
+  --| A' => convTy c A' B
+  --sol>
 end
 
 def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
@@ -1188,6 +1307,15 @@ def infer : TCtx → Tm → TyRes
   | _, .drec _ _ => .err "cannot infer the type of a description; add a type ascription"
   | _, .dhrec _ _ _ => .err "cannot infer the type of a description; add a type ascription"
   | _, .con _ => .err "cannot infer the type of a constructor; add a type ascription"
+  | c, .size => .ok (.vsort 1) (uZeros (TCtx.lvl c))
+  | c, .szInf => .ok .vsize (uZeros (TCtx.lvl c))
+  | c, .szSuc sz => match check (TCtx.erase c) sz .vsize with
+    | .ok _ _ => .ok .vsize (uZeros (TCtx.lvl c))
+    | r => r
+  | c, .sizeLt sz => match check (TCtx.erase c) sz .vsize with
+    | .ok _ _ => .ok (.vsort 1) (uZeros (TCtx.lvl c))
+    | r => r
+  | c, .mus l I D i _ => infer c (.mu l I D i)
   | c, .mu l I D i => match inferUniv c I with
     | .ok (.vsort lI) _ => match Nat.beq lI (l + 1) with
       | .false => .err "an index type must be in the data type's universe"
@@ -1230,7 +1358,7 @@ def infer : TCtx → Tm → TyRes
           | .ok _ um => match check c i vI with
             | .ok _ _ =>
               let vi := eval (TCtx.env c) i;
-              match check c x (.vmu l vI vD vi) with
+              match check c x (.vmu l vI vD vi .vszInf) with
               | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd (uScale .qw um) ux)
               | r => r
             | r => r
@@ -1307,11 +1435,18 @@ def checkW : TCtx → Tm → Val → TyRes
           | r => r
         | r => r
     | r => r
-  | c, .con x, .vmu l I D i => match check c x (vInterp l I D (muFamily l I D) i) with
-    | .ok _ u => .ok (.vmu l I D i) u
+  | c, .con x, .vmu l I D i sz => match sizePred sz with
+    | .some sz' => match check c x (vInterp l I D (muFamilyAt l I D sz') i) with
+      | .ok _ u => .ok (.vmu l I D i sz) u
+      | r => r
+    | .none => .err "a constructor builds a value of size ↑s"
+  | c, t, .vsizeLt sz => match check c t .vsize with
+    | .ok _ _ => match sizeLe c (.vszSuc (eval (TCtx.env c) t)) sz with
+      | .true => .ok (.vsizeLt sz) (uZeros (TCtx.lvl c))
+      | .false => .err "the size is not below its bound"
     | r => r
   | c, t, ty => match infer c t with
-    | .ok ty' u => match convTy c ty ty' with
+    | .ok ty' u => match subTy c ty' ty with
       | .true => .ok ty u
       | .false => .err (String.append (String.append "type mismatch: expected " (showVal c ty))
           (String.append ", got " (showVal c ty')))
