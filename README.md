@@ -527,5 +527,49 @@ macro_rules
 |-----|--------------------|-------------------------------------------|
 | 6.1 | `Elab/Macro.lean`  | `matchPattern`, `instantiate` (hygiene)   |
 
-Next: procedural macros and tactics *written in Wiz*, run in the stage 5 interpreter
-(your choice), over a reflected `Syntax` and elaborator API.
+### 6b: the prelude, literals and procedural macros ✅
+
+```
+import Prelude
+#eval 100 * 100 * 100 - 1          -- 999999, computed natively
+def t : 2 + 2 = 4 := refl 4         -- the kernel computes on literals too
+
+syntax (name := twice) "twice!" term : term
+def twiceMacro : Macro := fun stx => do
+  e ← MacroM.pure (Syntax.getArg stx 1);
+  MacroM.pure `(term| let y := $e; Nat.add y y)
+attribute [macro term.twice] twiceMacro
+#eval twice! 21                     -- 42
+```
+
+* `import M` loads `lib/M.wiz` (and `$WIZ_PATH`). `lib/Prelude.wiz` defines `Bool`,
+  `Nat`, `List`, `Option`, `Char`, `String`, `Except`, `Syntax`, `MacroM`, and `do`
+  notation (written as macros).
+* `builtin key := name` registers prelude definitions with the kernel and the runtime
+  (as Agda's `BUILTIN`): `nat` and its constructors and operations, and `string`.
+* **Literals.** A numeral of the registered `Nat` is a kernel literal `natLit n`. It
+  unfolds one step at a time (`0 ↦ zero`, `n+1 ↦ succ (natLit n)`, `vNatView`) when an
+  eliminator, `conv`, `unify` or `vEq` looks inside it. Registered operations compute
+  natively on literals (`vBuiltin?`, `vNatOp`), and otherwise fall back to their
+  definitions. The runtime uses native numbers that look like their unary payloads
+  when inspected (`RVal.nat`, `natView`). Strings are `String.mk [Char.mk n, …]`, and
+  `#eval` prints numbers and strings as literals.
+* **Quotations in terms** build `Syntax` values (`elabQuote`): identifiers are marked
+  `x✝`, and `$x` refers to a local `x : Syntax`.
+* **Procedural macros** are Wiz functions `Syntax → MacroM Syntax`, where
+  `MacroM A := Nat → Except String (A × Nat)` (a supply of fresh scopes, plus failure).
+  `attribute [macro k] f` registers `f` for node kind `k`. Expanding a node compiles
+  the environment, encodes the node as a runtime value, runs `f` in the interpreter,
+  and decodes the result (`Elab/ProcMacro.lean`). The `x✝` marks then get this
+  expansion's scope.
+* Antiquotations win ties within their category; `$x:term` picks the other reading.
+  `match` alternatives must line up (`colGe`), so a nested `match` ends where the
+  outer one's next alternative starts.
+
+| #   | Where                  | What                                              |
+|-----|------------------------|---------------------------------------------------|
+| 6.2 | `Elab/Term.lean`       | `elabQuote`: a quotation as a term building `Syntax` |
+| 6.3 | `Elab/ProcMacro.lean`  | `decodeSyntax`: a runtime value back to `Syntax`  |
+
+Next: tactics written in Wiz (`TacticM` over goal metavariables), with a reflected
+elaborator API.

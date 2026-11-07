@@ -225,6 +225,10 @@ mutual
 `true`. Then **regularity**: a stuck `cast A B e t` with an empty spine and
 `convTy A B` is replaced by `t` (on either side) before comparing. -/
 partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R) : Bool :=
+  -- numerals: compare two directly, or else look one step inside (`vNatView`)
+  if let (.natLit n, .natLit m) := (a, b) then n == m else
+  let a := vNatView g a
+  let b := vNatView g b
   sorry
 
 /-- **Exercise 1.4b.** Equality of two types.

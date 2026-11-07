@@ -481,6 +481,14 @@ def macroGroup : Group where
             "macro_rules\n  | `(term| digits) => `(term| Nat.zero)\n#eval (digits : Nat)") [".zero"] }
   ]
 
+def procPrelude : String := "import Prelude
+syntax (name := twice) \"twice!\" term : term
+def twiceMacro : Macro := fun stx => do
+  e ← MacroM.pure (Syntax.getArg stx 1);
+  MacroM.pure `(term| let y := $e; Nat.add y y)
+attribute [macro term.twice] twiceMacro
+"
+
 /-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
 def okLib (input : String) (infos : List String := []) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
@@ -505,6 +513,43 @@ def builtinGroup : Group where
         okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4" },
     { name := "native equality", run := fun _ =>
         okLib "import Prelude\n#eval Nat.beq 3 3" [".true"] },
+    { name := "kernel arithmetic on literals is native", run := fun _ =>
+        okLib "import Prelude\ndef t : 100000 * 100000 = 10000000000 := refl 10000000000" },
+    { name := "literals unfold under eliminators", run := fun _ =>
+        okLib ("import Prelude\ndef isZero : Nat → Bool\n  | .zero => .true\n  | .succ _ => .false\n" ++
+          "def t : isZero 3 = Bool.false := refl Bool.false\ndef u : Nat.succ 4 = 5 := refl 5") },
+    { name := "different literals are not equal", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : 2 + 2 = 5 := refl 4" { loader := fun _ => some prelude }
+        check (s.messages.any (·.severity == .error)) "expected an error" },
+    { name := "non-ASCII strings are cheap", run := fun _ =>
+        okLib "import Prelude\n#eval \"λ✝\"" ["\"λ✝\""] },
+    { name := "do notation (a macro)", run := fun _ =>
+        okLib "import Prelude\n#eval (do x ← MacroM.fresh; y ← MacroM.fresh; MacroM.pure (x + y) : MacroM Nat) 5"
+          [".ok (11, 7)"] },
+    { name := "quotations build Syntax (Exercise 6.2)", run := fun _ =>
+        okLib "import Prelude\n#eval `(term| f .x)"
+          [".node \"term.app\" (.cons (.node \"term.ident\" (.cons (.ident \"f✝\") .nil)) " ++
+           "(.cons (.node \"null\" (.cons (.node \"term.dotIdent\" (.cons (.atom \".\") (.cons (.ident \"x\") .nil))) .nil)) .nil))"] },
+    { name := "a procedural macro (Exercise 6.3)", run := fun _ =>
+        okLib (procPrelude ++ "#eval twice! 21") ["42"] },
+    { name := "procedural macros are hygienic", run := fun _ =>
+        okLib (procPrelude ++ "def y : Nat := 5\n#eval twice! y") ["10"] },
+    { name := "a procedural macro can fail", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let src := procPrelude ++ "syntax (name := boom) \"boom!\" : term\n" ++
+          "def boomMacro : Macro := fun _ => MacroM.throw \"kaboom\"\nattribute [macro term.boom] boomMacro\n#eval (boom! : Nat)"
+        let s := runFrontend (R := ZeroOneMany) src { loader := fun _ => some prelude }
+        check (s.messages.any (·.text == "kaboom")) s!"expected kaboom, got {s.messages.map (·.text)}" },
+    { name := "only a Macro can be a macro", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\nattribute [macro term.app] Nat.add" { loader := fun _ => some prelude }
+        check (s.messages.any (·.severity == .error)) "expected an error" },
+    { name := "a match does not shadow the user's variables", run := fun _ =>
+        okLib "import Prelude\ndef e (x : Bool) (n : Nat) : Bool := match n with\n  | .zero => x\n  | .succ _ => x" },
+    { name := "nested match alternatives line up (colGe)", run := fun _ =>
+        okLib ("import Prelude\ndef nth : List Bool → Nat → Bool\n  | .cons x t, n => match n with\n" ++
+          "    | .zero => x\n    | .succ m => nth t m\n  | _, _ => .false\n#eval nth (.cons .false (.cons .true .nil)) 1") [".true"] },
     { name := "string literals", run := fun _ =>
         okLib "import Prelude\n#eval String.append \"ab\" \"cd\"" ["\"abcd\""] },
     { name := "a numeral is not a string", run := fun _ => do

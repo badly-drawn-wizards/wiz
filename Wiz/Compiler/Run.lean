@@ -90,6 +90,7 @@ mutual
 a type); `case` branches on the tag of an object; `fix` builds a `fixv`; primitives
 go to `runPrim`. -/
 partial def run (code : Code) (env : List RVal) : ETerm → RVal
+  | .natLit n => .nat n  -- (given)
   | t => sorry
 
 partial def apply (code : Code) (f a : RVal) : RVal :=

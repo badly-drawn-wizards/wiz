@@ -63,6 +63,7 @@ scope and occurs.
 (The structural types of stage 4b are already handled in the solution's style. Add
 them when you get there.) -/
 partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
+  if let .natLit n ← force v then return .natLit n
   sorry
 
 /-- **Exercise 3.4.** Solve `?m sp =?= rhs` in a context of size `gamma`: invert the
@@ -110,6 +111,11 @@ failure. Force both sides first, then:
 `t.1` and `b` with `t.2`), `unit`, `tt`, `empty`; and the other eliminations in
 `unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
+  -- numerals: compare two directly, or else look one step inside (`vNatView`)
+  let g ← getGlobals
+  let (t, u) ← match ← force t, ← force u with
+    | .natLit n, .natLit m => if n == m then return () else throwAt {} s!"{n} ≠ {m}"
+    | t, u => pure (vNatView g t, vNatView g u)
   sorry
 
 /-- Rigid heads: the same variable, the same global (levels unified), or the same

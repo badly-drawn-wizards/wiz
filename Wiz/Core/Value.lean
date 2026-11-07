@@ -73,6 +73,8 @@ inductive Val (R : Type) where
   | scofix (l : Level) (I D A f s i a : Val R)
   /-- an unfolding, kept lazy until observed with `out` -/
   | coit (l : Level) (I D S step i s : Val R)
+  /-- a numeral of the `builtin nat` type (see `Term.natLit`) -/
+  | natLit (n : Nat)
 
 /-- An elimination stuck on a neutral. -/
 inductive Elim (R : Type) where

@@ -41,6 +41,22 @@ def vFst : Val R → Val R
 def vSnd : Val R → Val R
   | v => sorry
 
+/-- The arity of a registered operation on numbers. -/
+def natOpArity : Name → Nat
+  | "nat.zero" => 0
+  | "nat.succ" | "nat.pred" => 1
+  | _ => 2
+
+/-- The value of a global registered as an operation on numbers (`builtin nat.add := …`):
+`nat.zero` is the literal `0`, and an operation is a closure whose body is a
+`Term.natOp` on its arguments, so it computes natively when they are literals. -/
+def vBuiltin? (g : Globals R) (n : Name) : Option (Val R) := do
+  let k ← g.builtinKey? n
+  if k == "nat" || k == "string" || k == "nat.beq" then none
+  else if k == "nat.zero" then some (.natLit 0)
+  else if natOpArity k == 1 then some (.lam "a" (.mk [] (.natOp k #[.var 0])))
+  else some (.lam "a" (.mk [] (.lam "b" (.natOp k #[.var 1, .var 0]))))
+
 /-- `absurd` is always stuck: the empty type has no constructors. -/
 def vAbsurd (m : Val R) : Val R → Val R
   | .neutral h sp => .neutral h (sp.push (.absurd m))
@@ -69,7 +85,10 @@ compute).
 `vSnd`, `vSplit` and `vAbsurd`. -/
 partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .var ix => sorry
-  | .const n us => sorry
+  -- (given) numerals; `vBuiltin?` registered operations
+  | .natLit n => .natLit n
+  | .natOp op args => vNatOp g op (args.map (eval g env))
+  | .const n us => if let some v := vBuiltin? g n then v else sorry
   | .sort l => sorry
   | .pi x bi q dom cod => sorry
   | .lam x body => sorry
@@ -192,12 +211,42 @@ The `fun s => …` is a closure over a small template, as in `vEq`. -/
 partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec D : Val R) : Val R :=
   sorry
 
+/-- A numeral as a constructor, one step deep: `0 ↦ zero`, `n+1 ↦ succ (natLit n)`, using
+the constructors' definitions (not their `vBuiltin?` values). Other values are
+unchanged. -/
+partial def vNatView (g : Globals R) : Val R → Val R
+  | .natLit n =>
+    let ctor (k : Name) : Val R := match (g.builtins.lookup k).bind g.find? with
+      | some { value := some v, .. } => eval g [] v
+      | _ => panic! s!"numerals need `builtin {k}`"
+    if n == 0 then ctor "nat.zero" else vApp g (ctor "nat.succ") (.natLit (n - 1))
+  | v => v
+
+/-- A registered operation applied to all its arguments: native arithmetic on literals,
+otherwise the operation's definition. -/
+partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
+  let lits := args.filterMap fun | .natLit n => some n | _ => none
+  let native : Option Nat := if lits.size != args.size then none else
+    match op, lits with
+    | "nat.succ", #[a] => some (a + 1)
+    | "nat.pred", #[a] => some (a - 1)
+    | "nat.add", #[a, b] => some (a + b)
+    | "nat.sub", #[a, b] => some (a - b)
+    | "nat.mul", #[a, b] => some (a * b)
+    | _, _ => none
+  match native with
+  | some n => .natLit n
+  | none => match (g.builtins.lookup op).bind g.find? with
+    | some { value := some v, .. } => args.foldl (vApp g) (eval g [] v)
+    | _ => panic! s!"no definition for builtin {op}"
+
 /-- **Exercise 4.19c.** Induction computes on constructors:
 
     ind P m i (con xs) ↦ m i xs (hyps D (μ D) P (fun j y => ind P m j y) i xs)
 
 (`Templates.hypsTm`; the `fun j y => …` is a template closure). -/
 partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
+  let x := vNatView g x
   sorry
 
 /-- **Exercise 4.22a.** Sized recursion unfolds on a constructor, with the recursive
@@ -205,11 +254,13 @@ calls at size `∞` (sizes are irrelevant at runtime):
 
     sfix P f s i (con xs) ↦ f ∞ (fun j i y => sfix P f j i y) i (con xs) -/
 partial def vSfix (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P f s i x : Val R) : Val R :=
+  let x := vNatView g x
   sorry
 
 /-- **Exercise 4.22b.** Sized case analysis: `scase P m s i (con xs) ↦ m ∞ i xs` (the
 size of the fields is irrelevant at runtime). -/
 partial def vScase (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m s i x : Val R) : Val R :=
+  let x := vNatView g x
   sorry
 
 /-- **Exercise 4.19d.** Observing an unfolding runs one step and re-wraps the
@@ -245,6 +296,10 @@ Reference: Pujet & Tabareau, *Observational Equality: Now for Good* (POPL 2022).
 `Level.equiv l 0`; for `Type u` (`Level.isNeverZero`) it's `vEqType`. Otherwise
 it's stuck. -/
 partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
+  -- numerals: decide directly, or else look one step inside (`vNatView`)
+  if let (.natLit n, .natLit m) := (a, b) then (if n == m then .unit 0 else .empty 0) else
+  let a := vNatView g a
+  let b := vNatView g b
   sorry
 
 /-- **Exercise 4.11b.** Equality of types:
@@ -290,6 +345,7 @@ and `transp` (just quote their components).
 and `absurd` eliminations. A `split`'s motive is under one binder and its body under
 two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
+  | .natLit n => .natLit n  -- (given)
   | v => sorry
 
 end
