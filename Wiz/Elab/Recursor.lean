@@ -83,7 +83,7 @@ def peelPis : Term R → List (Name × BinderInfo × Term R × Term R) × Term R
 
 open B in
 /-- Generate `T.rec` (`withIH := true`) or `T.casesOn`. -/
-def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) :
+def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (sized : Bool := false) :
     Except String (Decl R) := do
   let some Td := g.find? T | throw s!"unknown inductive {T}"
   let some descD := g.find? (T ++ ".desc") | throw s!"{T} has no description"
@@ -112,7 +112,7 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) :
     let (bs, res) := peelPis cd.type
     let fields := bs.drop nΔ
     cinfo := cinfo.push (c, fields, (Term.spine res).2.drop nΔ)
-  let recName := T ++ (if withIH then ".rec" else ".casesOn")
+  let recName := T ++ (if sized then ".scasesOn" else if withIH then ".rec" else ".casesOn")
   -- the shared signature, as a function of the bound variables
   let Tc : B R := closed (.const T us)
   let isRec (A : Term R) : Bool := match (Term.spine A).1 with
@@ -121,14 +121,23 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) :
   /- Bind Δ, motive, methods, ξ, x with `binder`, then finish with `k`. -/
   let rec bindTele (binder : Name → BinderInfo → B R → B R → (B R → B R) → B R)
       (bs : List (Name × BinderInfo × Term R × Term R)) (σ : Array (B R))
-      (bi? : Option BinderInfo) (q? : Option (B R)) (k : Array (B R) → B R) : B R :=
+      (bi? : Option BinderInfo) (q? : Option (B R)) (k : Array (B R) → B R)
+      (tyOf : Term R → Array (B R) → B R := ofTele) : B R :=
     match bs with
     | [] => k σ
     | (x, bi, q, A) :: rest =>
-      binder x (bi?.getD bi) (q?.getD (ofTele q σ)) (ofTele A σ) fun xv =>
-        bindTele binder rest (σ.push xv) bi? q? k
-  let build (binder : Name → BinderInfo → B R → B R → (B R → B R) → B R) (body : Array (B R) → B R → Array (B R) → Array (B R) → B R → B R) : B R :=
+      binder x (bi?.getD bi) (q?.getD (ofTele q σ)) (tyOf A σ) fun xv =>
+        bindTele binder rest (σ.push xv) bi? q? k tyOf
+  -- `T Δ js` at size `sz`, keeping the display hint
+  let sizedT (Δv : Array (B R)) (js : List (B R)) (sz : B R) : B R := fun d =>
+    .mu l ((ofTele I Δv) d) ((app (closed (.const (T ++ ".desc") us)) Δv.toList) d) (tuple js d) (sz d)
+      (some (T, us, (Δv.toList ++ js).map (· d)))
+  let build (binder : Name → BinderInfo → B R → B R → (B R → B R) → B R)
+      (body : Option (B R) → Array (B R) → B R → Array (B R) → Array (B R) → B R → B R) : B R :=
     bindTele binder Δ #[] (some .implicit) (some (qlit 0)) fun Δv =>
+    let withSize (k : Option (B R) → B R) : B R :=
+      if sized then binder "s" .implicit (qlit 0) (closed .size) fun sv => k (some sv) else k none
+    withSize fun sv? =>
     -- motive : (ξ : Ξ) → T Δ ξ → Sort v
     let motiveTy : B R :=
       bindTele (fun x bi q A k => B.pi x bi q A k) Ξ Δv none none fun σ =>
@@ -140,11 +149,17 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) :
       match cs with
       | [] =>
         bindTele binder Ξ Δv (some .implicit) (some (qlit 0)) fun σ =>
-          binder "x" .default (qlit w) (app Tc σ.toList) fun xv =>
-            body Δv mot ms (σ.extract nΔ σ.size) xv
+          let xTy := match sv? with
+            | some sv => sizedT Δv (σ.extract nΔ σ.size).toList sv
+            | none => app Tc σ.toList
+          binder "x" .default (qlit w) xTy fun xv =>
+            body sv? Δv mot ms (σ.extract nΔ σ.size) xv
       | (c, fields, idx) :: rest =>
-        let mTy : B R :=
-          bindTele (fun x bi q A k => B.pi x bi q A k) fields Δv none none fun σ =>
+        let fieldsTy (jv? : Option (B R)) : B R :=
+          bindTele (fun x bi q A k => B.pi x bi q A k) fields Δv none none (tyOf := fun A σ =>
+            match jv? with
+            | some jv => if isRec A then sizedT Δv (((Term.spine A).2.drop nΔ).map (ofTele · σ)) jv else ofTele A σ
+            | none => ofTele A σ) fun σ =>
             let fs := σ.extract nΔ σ.size
             let recs := (fields.zip fs.toList).zipIdx.filterMap fun (((_, _, _, A), f), k) =>
               if isRec A then some (A, f, k) else none
@@ -157,30 +172,43 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) :
                 let σk := σ.extract 0 (nΔ + k)
                 B.pi "ih" .default (qlit w) (app mot ((js.map (ofTele · σk)) ++ [f])) fun _ => ihs rs' σ'
             if withIH then ihs recs σ else ihs [] σ
+        let mTy : B R := match sv? with
+          | some sv => B.pi "j" .default (qlit 0) (fun d => .sizeLt (sv d)) fun jv => fieldsTy (some jv)
+          | none => fieldsTy none
         binder ("m_" ++ c) .default (qlit w) mTy fun m => methods rest (ms.push m)
     methods cinfo.toList #[]
   -- the type
-  let ty := build (fun x bi q A k => B.pi x bi q A k) fun _ mot _ ξ xv => app mot (ξ.toList ++ [xv])
+  let ty := build (fun x bi q A k => B.pi x bi q A k) fun _ _ mot _ ξ xv => app mot (ξ.toList ++ [xv])
   -- the value
-  let val := build (fun x _ _ _ k => B.lam x k) fun Δv mot ms ξ xv =>
+  let val := build (fun x _ _ _ k => B.lam x k) fun sv? Δv mot ms ξ xv =>
     let Iv := ofTele I Δv
     let Dv := app (closed (.const (T ++ ".desc") us)) Δv.toList
-    let X := B.lam "j" fun j => fun d => .mu l (Iv d) (Dv d) (j d) none
+    let familyAt (sz : B R) : B R := B.lam "j" fun j => fun d => .mu l (Iv d) (Dv d) (j d) (sz d) none
     let unpack (i : B R) : List (B R) := (List.range nΞ).map (proj i)
     let P := B.lam "i" fun i => B.lam "y" fun y => app mot (unpack i ++ [y])
     let Fv := ofTele F Δv
-    let M := B.lam "i" fun i => B.lam "xs" fun xs => B.lam "ih" fun ih =>
+    -- the method of `ind` (`fun i xs ih`) or of `scase` (`fun j i xs`, no hypotheses)
+    let methodBody (jv? : Option (B R)) (i xs : B R) (ih? : Option (B R)) : B R :=
+      let X := familyAt (jv?.getD (closed .szInf))
+      -- `con payload` at index `idx`: in sized mode it is a value of size `↑j`, so say so
+      -- (it then subtypes into the motive's `μ^∞`)
+      let conAt (idx payload : B R) : B R := fun d =>
+        match jv? with
+        | some jv => .ann (.con (payload d)) (.mu l (Iv d) (Dv d) (idx d) (.szSuc (jv d)) none)
+        | none => .con (payload d)
       let interpOf (Dz : B R) := app (closed (Templates.interpTm l)) [Iv, Dz, X, i]
       let allOf (Dz r : B R) := app (closed (Templates.allTm l v)) [Iv, Dz, X, P, i, r]
       let motiveZ : B R := fun d =>
         -- under the ecase binder `z`, which is variable `d - 1` at depth `d`
         let z := bvar (d - 1)
         let Dz := app Fv [z]
-        norm g (B.pi "rest" .default (qlit w) (interpOf Dz) fun r =>
-          B.pi "h" .default (qlit w) (allOf Dz r) fun _ =>
-            app P [i, fun d => .con (.pair (z d) (r d))]) d
+        -- normalise only the template parts: evaluation would drop `conAt`'s annotation
+        (B.pi "rest" .default (qlit w) (norm g (interpOf Dz)) fun r =>
+          let goal := app mot (unpack i ++ [conAt i (pair z r)])
+          if ih?.isSome then B.pi "h" .default (qlit w) (norm g (allOf Dz r)) fun _ => goal else goal) d
       let branches : List (B R) := cinfo.toList.zipIdx.map fun ((c, fields, idx), ci) =>
-        B.lam "rest" fun r => B.lam "h" fun h =>
+        let withH (k : B R → B R) : B R := if ih?.isSome then B.lam "h" k else k (closed .tt)
+        B.lam "rest" fun r => withH fun h =>
           let n := fields.length
           let fs := (List.range n).map (proj r)
           let e := proj r n
@@ -191,17 +219,26 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) :
           let ctorApp := app (closed (.const (T ++ "." ++ c) us)) (Δv.toList ++ fs)
           let A := norm g (app mot (idxB ++ [ctorApp]))
           let tag : B R := closed (.tag ls ci)
-          let Bty := norm g (app mot (unpack i ++ [fun d => .con (.pair (tag d) (r d))]))
+          let Bty := app mot (unpack i ++ [conAt i (pair tag r)])
           -- Q j e' := A = motive j (con (tag, f…, e', ()))
           let Q := B.lam "j" fun j => B.lam "e" fun e' => fun d =>
-            .eqTy (A d) ((norm g (app mot (unpack j ++
-              [fun d => .con (.pair (tag d) ((fs ++ [e']).foldr pair (closed .tt) d))]))) d)
+            .eqTy (A d) ((app mot (unpack j ++
+              [conAt j (pair tag ((fs ++ [e']).foldr pair (closed .tt)))])) d)
           let prf : B R := fun d => .transp (Iv d) (tuple idxB d) (Q d) (.reflTy (A d)) (i d) (e d)
-          let inner := app (ms[ci]!) (fs ++ (if withIH then ihs else []))
+          let inner := app (ms[ci]!) ((jv?.toList) ++ fs ++ (if withIH then ihs else []))
           fun d => .cast (A d) (Bty d) (prf d) (inner d)
-      fun d => .app (.app (.ecase "z" (motiveZ (d + 1)) (.fst (xs d)) (branches.map (· d)))
-        (.snd (xs d))) (ih d)
-    fun d => .ind l (Iv d) (Dv d) v (P d) (M d) (tuple ξ.toList d) (xv d)
+      fun d =>
+        let e := Term.app (.ecase "z" (motiveZ (d + 1)) (.fst (xs d)) (branches.map (· d))) (.snd (xs d))
+        match ih? with
+        | some ih => .app e (ih d)
+        | none => e
+    match sv? with
+    | some sv =>
+      let M := B.lam "j" fun j => B.lam "i" fun i => B.lam "xs" fun xs => methodBody (some j) i xs none
+      fun d => .scase l (Iv d) (Dv d) v (P d) (M d) (sv d) (tuple ξ.toList d) (xv d)
+    | none =>
+      let M := B.lam "i" fun i => B.lam "xs" fun xs => B.lam "ih" fun ih => methodBody none i xs (some ih)
+      fun d => .ind l (Iv d) (Dv d) v (P d) (M d) (tuple ξ.toList d) (xv d)
   pure { name := recName, levelParams := ps ++ [vName], type := ty 0, value := some (val 0) }
 
 end Wiz.Elab

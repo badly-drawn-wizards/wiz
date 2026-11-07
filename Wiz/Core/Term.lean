@@ -109,14 +109,37 @@ inductive Term (R : Type) where
   | delim (v : Level) (P mret marg mrec D : Term R)
   /-- the least fixed point `μ D i`. `hint` is display metadata: the nominal form
   (`Vec A n`) to print instead; conversion ignores it. -/
-  | mu (l : Level) (I D i : Term R) (hint : Option (Name × List Level × List (Term R)))
+  | mu (l : Level) (I D i : Term R) (sz : Term R) (hint : Option (Name × List Level × List (Term R)))
   | con (x : Term R)
   /-- induction: `ind P m i x : P i x` for `x : μ D i` -/
   | ind (l : Level) (I D : Term R) (v : Level) (P m i x : Term R)
   /-- the greatest fixed point `ν D i` -/
-  | nu (l : Level) (I D i : Term R) (hint : Option (Name × List Level × List (Term R)))
+  | nu (l : Level) (I D i : Term R) (sz : Term R) (hint : Option (Name × List Level × List (Term R)))
   /-- observation: `out x : ⟦D⟧ (ν D) i` -/
   | out (x : Term R)
+  -- Sized types: sizes are erased bounds on the depth of μ/ν values.
+  /-- the type of sizes -/
+  | size
+  /-- the infinite size: `μ^∞` is the ordinary inductive type -/
+  | szInf
+  /-- the successor size `↑s` -/
+  | szSuc (s : Term R)
+  /-- `Size< s`: the sizes below `s` -/
+  | sizeLt (s : Term R)
+  /-- sized recursion: `sfix P f s i x : P i x` for `x : μ^s D i`, where
+  `f : (s : Size) → ((j : Size< s) → (i : I) → (y : μ^j D i) → P i y) → (i : I) → (x : μ^s D i) → P i x`.
+  It unfolds only on a constructor. -/
+  | sfix (l : Level) (I D : Term R) (v : Level) (P f s i x : Term R)
+  /-- sized case analysis: `scase P m s i x : P i x` for `x : μ^s D i`, where
+  `m : (j : Size< s) → (i : I) → (xs : ⟦D⟧ (μ^j D) i) → P i (con xs)`: the fields have
+  some size below `s` -/
+  | scase (l : Level) (I D : Term R) (v : Level) (P m s i x : Term R)
+  /-- a ν constructor: `cocon xs : ν^{↑s} D i` for `xs : ⟦D⟧ (ν^s D) i` -/
+  | cocon (x : Term R)
+  /-- sized corecursion: `scofix A f s i a : ν^s D i`, where
+  `f : (s : Size) → ((i : I) → A i → ν^s D i) → (i : I) → A i → ν^{↑s} D i`.
+  It unfolds only when observed with `out`. -/
+  | scofix (l : Level) (I D A f s i a : Term R)
   /-- coiteration: unfold a state `s : S i` with `step` -/
   | coit (l : Level) (I D S step i s : Term R)
   deriving Repr, Inhabited, BEq
@@ -167,12 +190,21 @@ don't need a case per constructor. -/
   | .darg q S D => return .darg (← f 0 q) (← f 0 S) (← f 0 D)
   | .drec q j D => return .drec (← f 0 q) (← f 0 j) (← f 0 D)
   | .delim v P a b c D => return .delim (← fl v) (← f 0 P) (← f 0 a) (← f 0 b) (← f 0 c) (← f 0 D)
-  | .mu l I D i h => return .mu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i) (← h.mapM (hintM fl f))
+  | .mu l I D i s h => return .mu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i) (← f 0 s) (← h.mapM (hintM fl f))
   | .con x => return .con (← f 0 x)
   | .ind l I D v P mt i x =>
     return .ind (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 mt) (← f 0 i) (← f 0 x)
-  | .nu l I D i h => return .nu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i) (← h.mapM (hintM fl f))
+  | .nu l I D i s h => return .nu (← fl l) (← f 0 I) (← f 0 D) (← f 0 i) (← f 0 s) (← h.mapM (hintM fl f))
   | .out x => return .out (← f 0 x)
+  | .szSuc s => return .szSuc (← f 0 s)
+  | .sizeLt s => return .sizeLt (← f 0 s)
+  | .sfix l I D v P g s i x =>
+    return .sfix (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 x)
+  | .cocon x => return .cocon (← f 0 x)
+  | .scase l I D v P m s i x =>
+    return .scase (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 m) (← f 0 s) (← f 0 i) (← f 0 x)
+  | .scofix l I D A g s i a =>
+    return .scofix (← fl l) (← f 0 I) (← f 0 D) (← f 0 A) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 a)
   | .coit l I D S st i s =>
     return .coit (← fl l) (← f 0 I) (← f 0 D) (← f 0 S) (← f 0 st) (← f 0 i) (← f 0 s)
   | t => pure t

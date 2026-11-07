@@ -61,9 +61,16 @@ inductive Val (R : Type) where
   | dret (i : Val R)
   | darg (q S D : Val R)
   | drec (q j D : Val R)
-  | mu (l : Level) (I D i : Val R) (hint : Option (Name × List Level × List (Val R)))
+  | mu (l : Level) (I D i : Val R) (sz : Val R) (hint : Option (Name × List Level × List (Val R)))
   | con (x : Val R)
-  | nu (l : Level) (I D i : Val R) (hint : Option (Name × List Level × List (Val R)))
+  | nu (l : Level) (I D i : Val R) (sz : Val R) (hint : Option (Name × List Level × List (Val R)))
+  | size
+  | szInf
+  | szSuc (s : Val R)
+  | sizeLt (s : Val R)
+  | cocon (x : Val R)
+  /-- a sized corecursive value, kept lazy until observed with `out` -/
+  | scofix (l : Level) (I D A f s i a : Val R)
   /-- an unfolding, kept lazy until observed with `out` -/
   | coit (l : Level) (I D S step i s : Val R)
 
@@ -79,6 +86,8 @@ inductive Elim (R : Type) where
   | ecase (z : Name) (motive : Closure R) (env : List (Val R)) (branches : List (Term R))
   | delim (v : Level) (P mret marg mrec : Val R)
   | ind (l : Level) (I D : Val R) (v : Level) (P m i : Val R)
+  | sfix (l : Level) (I D : Val R) (v : Level) (P f s i : Val R)
+  | scase (l : Level) (I D : Val R) (v : Level) (P m s i : Val R)
   | out
 
 /-- A body waiting for the values of its bound variables. `env` gives the values of

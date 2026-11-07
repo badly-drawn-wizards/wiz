@@ -152,6 +152,12 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (mt, mt'), (i, i')] do unify l x y
     | .out, .out => pure ()
+    | .scase u I D v P f s i, .scase u' I' D' v' P' f' s' i' =>
+      unifyLevel u u'; unifyLevel v v'
+      for (x, y) in [(I, I'), (D, D'), (P, P'), (f, f'), (s, s'), (i, i')] do unify l x y
+    | .sfix u I D v P f s i, .sfix u' I' D' v' P' f' s' i' =>
+      unifyLevel u u'; unifyLevel v v'
+      for (x, y) in [(I, I'), (D, D'), (P, P'), (f, f'), (s, s'), (i, i')] do unify l x y
     | _, _ => throwAt {} "spine mismatch"
 
 end

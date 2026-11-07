@@ -106,12 +106,23 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .darg q S D => sorry
   | .drec q j D => sorry
   | .delim v P a b c D => sorry
-  | .mu l I D i h => sorry
+  | .mu l I D i s h => sorry
   | .con x => sorry
   | .ind l I D v P m i x => sorry
-  | .nu l I D i h => sorry
+  | .nu l I D i s h => sorry
   | .out x => sorry
   | .coit l I D S st i s => sorry
+  | .size => .size
+  | .szInf => .szInf
+  | .szSuc s => match eval g env s with
+    | .szInf => .szInf
+    | v => .szSuc v
+  | .sizeLt s => .sizeLt (eval g env s)
+  -- Exercise 4.22: the sized primitives (vSfix, and cocon/scofix are values)
+  | .sfix l I D v P f s i x => sorry
+  | .cocon x => sorry
+  | .scase l I D v P m s i x => sorry
+  | .scofix l I D A f s i a => sorry
 
 /-- Evaluate a display hint's arguments. -/
 partial def evalHint (g : Globals R) (env : Env R) :
@@ -144,12 +155,19 @@ partial def vSplit (g : Globals R) (q : Val R) (s : Val R) (z : Name) (m : Closu
 `vEcase`, `vDelim`, `vInd` and `vOut` compute on canonical arguments and are stuck on
 neutrals. `vInd` and `vOut` use the description templates of `Wiz.Core.Templates`. -/
 
+/-- `λ j. μ^s D j` and `λ j. ν^s D j` at a given size. -/
+partial def muFamilyAt (l : Level) (I D s : Val R) : Val R :=
+  .lam "j" (.mk [s, D, I] (.mu l (.var 3) (.var 2) (.var 0) (.var 1) none))
+
+partial def nuFamilyAt (l : Level) (I D s : Val R) : Val R :=
+  .lam "j" (.mk [s, D, I] (.nu l (.var 3) (.var 2) (.var 0) (.var 1) none))
+
 /-- `λ j. μ D j`, the family being defined, as a value. -/
 partial def muFamily (l : Level) (I D : Val R) : Val R :=
-  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0) none))
+  .lam "j" (.mk [D, I] (.mu l (.var 2) (.var 1) (.var 0) .szInf none))
 
 partial def nuFamily (l : Level) (I D : Val R) : Val R :=
-  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0) none))
+  .lam "j" (.mk [D, I] (.nu l (.var 2) (.var 1) (.var 0) .szInf none))
 
 /-- `⟦D⟧ X i` -/
 partial def vInterp (g : Globals R) (l : Level) (I D X i : Val R) : Val R :=
@@ -180,6 +198,18 @@ partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec D : Val R) : Va
 
 (`Templates.hypsTm`; the `fun j y => …` is a template closure). -/
 partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
+  sorry
+
+/-- **Exercise 4.22a.** Sized recursion unfolds on a constructor, with the recursive
+calls at size `∞` (sizes are irrelevant at runtime):
+
+    sfix P f s i (con xs) ↦ f ∞ (fun j i y => sfix P f j i y) i (con xs) -/
+partial def vSfix (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P f s i x : Val R) : Val R :=
+  sorry
+
+/-- **Exercise 4.22b.** Sized case analysis: `scase P m s i (con xs) ↦ m ∞ i xs` (the
+size of the fields is irrelevant at runtime). -/
+partial def vScase (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m s i x : Val R) : Val R :=
   sorry
 
 /-- **Exercise 4.19d.** Observing an unfolding runs one step and re-wraps the
@@ -276,6 +306,8 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .delim lv P a b c => vDelim g lv P a b c v
     | .ind l I D lv P m i => vInd g l I D lv P m i v
     | .out => vOut g v
+    | .sfix l I D lv P f s i => vSfix g l I D lv P f s i v
+    | .scase l I D lv P m s i => vScase g l I D lv P m s i v
 
 /-- Normal form of a closed term. -/
 def nf (g : Globals R) (t : Term R) : Term R :=

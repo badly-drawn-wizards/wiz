@@ -234,7 +234,9 @@ def popUsage (x : Name) (q : QPoly R) : Usage R → TCM (Usage R)
 mutual
 
 /-- **Exercise 1.6.** Check `t` against the type `ty`. Implement the `lam` and `letE`
-rules here and fall back to `infer` + `convTy` for everything else.
+rules here and fall back to `infer` + `convTy` for everything else. (Stage 4f
+replaces `convTy` with `subTy`, sized subtyping: the inferred type must be a subtype
+of the expected one.)
 
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
@@ -248,7 +250,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .dret i, .desc _ I => sorry
   | .darg q S D, .desc l I => sorry
   | .drec q j D, .desc l I => sorry
-  | .con x, .mu l I D i _ => sorry
+  | .con x, .mu l I D i _ _ => sorry
   | _, _ => sorry
 
 /-- **Exercise 1.7.** Infer the type of `t`. See the rules in the module docstring.
@@ -287,16 +289,25 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .transp A a P p b e => sorry
   | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
   | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)
+  | .size => pure (.sort 1, Usage.zeros ctx.lvl)
+  | .sizeLt s => do let _ ← check { ctx with erased := true } s .size; pure (.sort 1, Usage.zeros ctx.lvl)
+  | .szInf => pure (.size, Usage.zeros ctx.lvl)
+  | .szSuc s => do let _ ← check { ctx with erased := true } s .size; pure (.size, Usage.zeros ctx.lvl)
   -- Exercise 4.20: the data rules (see the module docstring)
   | .enum _ => sorry
   | .tag ls i => sorry
   | .ecase z m s bs => sorry
   | .desc l I => sorry
   | .delim v P a b c D => sorry
-  | .mu l I D i _ | .nu l I D i _ => sorry
+  | .mu l I D i _ _ | .nu l I D i _ _ => sorry
   | .ind l I D v P m i x => sorry
   | .out x => sorry
   | .coit l I D S st i s => sorry
+  -- Exercise 4.23: the sized rules
+  | .sfix l I D v P f s i x => sorry
+  | .scofix l I D A f s i a => sorry
+  | .scase l I D v P m s i x => sorry
+  | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
 
 /-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as

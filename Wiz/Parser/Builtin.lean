@@ -127,6 +127,8 @@ def levelTrailing : List TrailingParser := [
 | `term.ecase`         | lead | "ecase" term "[" [terms] "]" |
 | `term.dotIdent`      | max  | "." ident (a constructor of the expected type) |
 | `term.match`         | lead | "match" [terms] "with" [alts] |
+| `term.szInf`, `term.szSuc`, `term.sizeLt` | | "∞", "↑" s, "Size<" s |
+| `term.sized` (trailing) | max | T "^" s: an inductive or coinductive type at size `s` |
 
 The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
 `Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out` and `coit` have no syntax of their
@@ -173,6 +175,9 @@ def termLeading : List LeadingParser := [
   { kind := "term.enum", prec := maxPrec, p := seqs [nonReserved "Enum", "[", sepBy ident ",", "]"] },
   { kind := "term.tag", prec := maxPrec, p := seqs ["'", noWs, ident] },
   { kind := "term.dotIdent", prec := maxPrec, p := seqs [".", noWs, ident] },
+  { kind := "term.szInf", prec := maxPrec, p := "∞" },
+  { kind := "term.szSuc", prec := maxPrec, p := seqs ["↑", term maxPrec] },
+  { kind := "term.sizeLt", prec := leadPrec, p := seqs ["Size<", term maxPrec] },
   { kind := "term.match", prec := leadPrec,
     p := seqs ["match", sepBy1 term ",", "with", many1 matchAlt] },
   { kind := "term.ecase", prec := leadPrec,
@@ -186,7 +191,8 @@ def termTrailing : List TrailingParser := [
   { kind := "term.prod", prec := 35, lhsPrec := 36, p := seqs ["×", term 35] },
   { kind := "term.eq", prec := 50, lhsPrec := 51, p := seqs ["=", term 51] },
   { kind := "term.proj", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, num] },
-  { kind := "term.field", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, ident] }
+  { kind := "term.field", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, ident] },
+  { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "^", term maxPrec] }
 ]
 
 /-- Commands. Each command is parsed inside `withPosition`, so an application can't
