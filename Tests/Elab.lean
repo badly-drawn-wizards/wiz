@@ -811,11 +811,20 @@ inductive MTm where
   | pair (a b : MTm)
   | fst (p : MTm)
   | snd (p : MTm)
+  | unit (n : Nat)
+  | star
+  | empty (n : Nat)
+  | exfalso (m t : MTm)
+  | enum (k : Nat)
+  | tag (k i : Nat)
+  | ecase (m s : MTm) (bs : List MTm)
   deriving Inhabited
 
 namespace MTm
 
-def toWiz : MTm → String
+def labels (k : Nat) : List Name := (List.range k).map (s!"a{·}")
+
+partial def toWiz : MTm → String
   | var i => s!"(.var {i})"
   | univ n => s!"(.univ {n})"
   | pi a b => s!"(.pi {a.toWiz} {b.toWiz})"
@@ -827,8 +836,15 @@ def toWiz : MTm → String
   | pair a b => s!"(.pair {a.toWiz} {b.toWiz})"
   | fst p => s!"(.fst {p.toWiz})"
   | snd p => s!"(.snd {p.toWiz})"
+  | unit n => s!"(.unit {n})"
+  | star => ".star"
+  | empty n => s!"(.empty {n})"
+  | exfalso m t => s!"(.exfalso {m.toWiz} {t.toWiz})"
+  | enum k => s!"(.enum {k})"
+  | tag k i => s!"(.tag {k} {i})"
+  | ecase m s bs => s!"(.ecase {m.toWiz} {s.toWiz} {bs.foldr (fun b acc => s!"(.tcons {b.toWiz} {acc})") ".tnil"})"
 
-def toTerm : MTm → Term ZeroOneMany
+partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
   | univ n => .sort (Level.ofNat (n + 1))
   | pi a b => .pi "x" .default (.qlit .many) a.toTerm b.toTerm
@@ -840,6 +856,13 @@ def toTerm : MTm → Term ZeroOneMany
   | pair a b => .pair a.toTerm b.toTerm
   | fst p => .fst p.toTerm
   | snd p => .snd p.toTerm
+  | unit n => .unit (Level.ofNat (n + 1))
+  | star => .tt
+  | empty n => .empty (Level.ofNat (n + 1))
+  | exfalso m t => .absurd m.toTerm t.toTerm
+  | enum k => .enum (labels k)
+  | tag k i => .tag (labels k) i
+  | ecase m s bs => .ecase "z" m.toTerm s.toTerm (bs.map toTerm)
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -853,10 +876,21 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .pair a b => return pair (← ofTerm a) (← ofTerm b)
   | .fst p => return fst (← ofTerm p)
   | .snd p => return snd (← ofTerm p)
+  | .unit l => match l.toNat? with
+    | some (n + 1) => some (unit n)
+    | _ => none
+  | .tt => some star
+  | .empty l => match l.toNat? with
+    | some (n + 1) => some (empty n)
+    | _ => none
+  | .absurd m t => return exfalso (← ofTerm m) (← ofTerm t)
+  | .enum ls => some (enum ls.length)
+  | .tag ls i => some (tag ls.length i)
+  | .ecase _ m s bs => return ecase (← ofTerm m) (← ofTerm s) (← bs.mapM ofTerm)
   | _ => none
 
 /-- Printed like `show .nil` in `Kernel.wiz`. -/
-def pretty (l : Nat) : MTm → String
+partial def pretty (l : Nat) : MTm → String
   | var i => s!"x{l - i - 1}"
   | univ n => s!"U{n}"
   | pi a b => s!"(x{l} : {pretty l a}) → {pretty (l + 1) b}"
@@ -868,6 +902,13 @@ def pretty (l : Nat) : MTm → String
   | pair a b => s!"({pretty l a}, {pretty l b})"
   | fst p => s!"{pretty l p}.1"
   | snd p => s!"{pretty l p}.2"
+  | unit n => s!"Unit{n}"
+  | star => "tt"
+  | empty n => s!"Empty{n}"
+  | exfalso m t => s!"absurd({pretty l m}, {pretty l t})"
+  | enum k => s!"Enum{k}"
+  | tag _ i => s!"#{i}"
+  | ecase m s bs => s!"case({pretty (l + 1) m}, {pretty l s}{String.join (bs.map fun b => ", " ++ pretty l b)})"
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -881,7 +922,7 @@ well-typed ones: annotated λs, applications of them, universes. -/
 partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
   let next (s : Nat) := (s * 1103515245 + 12345) % 2147483648
   let s := next seed
-  let pick := s / 65536 % 13
+  let pick := s / 65536 % 17
   if depth == 0 then
     if n > 0 && pick < 5 then (var (s / 7 % n), s) else (univ (s / 7 % 2), s)
   else match pick with
@@ -909,6 +950,16 @@ partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
       let (p, s) := if s / 11 % 2 == 0 then gen s (depth - 1) n else (wellTypedPair s, (s * 7 + 3) % 2147483648)
       (if s / 3 % 2 == 0 then fst p else snd p, s)
     | 11 => (wellTypedPair s, s)
+    | 12 => let k := s / 5 % 2; (if s / 3 % 2 == 0 then unit k else ann star (unit k), s)
+    | 13 => let k := s / 5 % 3 + 1; (tag k (s / 7 % (k + 1)), s)
+    | 14 =>
+      -- a case on a tag (or a variable), returning tags of another enumeration
+      let k := s / 5 % 2 + 1
+      let k' := s / 11 % 2 + 1
+      let (sc, s) := if n > 0 && s / 13 % 3 == 0 then (var (s / 17 % n), s) else (tag k (s / 7 % k), s)
+      let bs := (List.range k).map fun j => tag k' ((s / (j + 19)) % k')
+      (ecase (enum k') sc bs, s)
+    | 15 => let (t, s) := gen s (depth - 1) n; (exfalso (univ 0) t, s)
     | _ => if n > 0 then (var (s / 7 % n), s) else (univ (s / 7 % 3), s)
 
 end MTm

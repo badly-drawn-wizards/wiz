@@ -1021,8 +1021,15 @@ are convertible); neutral values carry a spine of eliminations (`Val`, `Env` and
 `Spine` are mutually inductive). The differential generator mixes in well-typed pairs,
 so its 400 terms exercise them. Exercises 14.1–14.3 and 14.6 now include Σ.
 
-Next: data through descriptions, then quantities, extending the generator as the kernel
-grows.
+### 14f: finite types ✅
+
+`Unit n`, `Empty n` (with `exfalso`), and enumerations of `k` tags with case analysis
+(a motive under a binder; a stuck case is an elimination in the spine). Terms are now a
+mutual inductive (`Tm` and its lists `Tms`). The generator adds them, often
+well-typed (cases returning tags), and both kernels agree on all 400 terms.
+
+Next: data through descriptions (they are built from enumerations and Σ), then
+quantities, extending the generator as the kernel grows.
 
 ## Stage 11: tooling
 
