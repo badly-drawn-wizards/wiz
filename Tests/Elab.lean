@@ -784,6 +784,29 @@ def toolingGroup : Group where
         let pre := src ++ "def x : Nat := dou"
         let (s', _) := Query.elaborate {} pre init
         checkEq "#[double]" (toString (Query.completionsAt s' pre pre.length)) },
+    { name := "the shared cache gives the same results", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let src := "import Prelude\ninductive T where\n  | a\n  | b (t : T)\ndef size : T → Nat\n  | .a => 1\n  | .b t => size t + 1\n#eval size (.b (.b .a))\ndef bad : Nat := true\n"
+        let plain := runFrontend src init
+        let dir ← IO.FS.createTempDir
+        let (cold, h1) ← Cache.elaborateCached dir src init 0
+        let (warm, h2) ← Cache.elaborateCached dir src init 0
+        checkEq 0 h1
+        check (h2 > 0) "nothing came from the cache"
+        let msgs (st : CommandState ZeroOneMany) := toString (st.messages.toList.map (·.render src))
+        checkEq (msgs plain) (msgs cold)
+        checkEq (msgs plain) (msgs warm)
+        checkEq plain.globals.order.size warm.globals.order.size },
+    { name := "terms survive the cache's format", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let st := runFrontend (R := ZeroOneMany) "import Prelude" { loader := fun _ => some prelude }
+        for n in ["List.append", "Nat.rec", "SyntaxF.casesOn", "Tac.rec", "Monad.bind"] do
+          let some d := st.globals.find? n | throw (IO.userError s!"no {n}")
+          let text := (Cache.term d.type).render
+          match (Cache.Sx.parse text).bind (Cache.dterm (R := ZeroOneMany)) with
+          | some t => check (t == d.type) s!"{n}: the type changed in the round trip"
+          | none => throw (IO.userError s!"{n}: could not read back {text.take 200}") },
     { name := "the language server answers requests", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let srv : LSP.Server := { libs := ({} : Std.HashMap String (String × String)).insert "Prelude" ("lib/Prelude.wiz", prelude) }

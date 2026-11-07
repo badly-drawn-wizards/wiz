@@ -904,6 +904,15 @@ operations, so that effects cost no allocation.
   diagnostics as you type, hover types, go to definition (also into `lib/`), and
   completion of global names. Each open document has its own query engine.
 
-Next (11c): persist the memo table to a content-addressed directory (`$WIZ_CACHE`),
-shared between machines; finer dependencies (re-elaborate only what an edit
-affects, not everything after it); hovers for declarations that fail.
+### 11c: a shared, content-addressed cache ✅
+
+`wiz check`/`build`/`run` keep each command's **effect** (declarations, messages,
+registrations, hovers) in `$WIZ_CACHE` (default `.wiz-cache`; `WIZ_CACHE=off` turns it
+off), under the command's chained content hash. A shared directory is a shared cache,
+since equal keys mean equal results. Imported modules are cached command by command
+too. Commands that change the grammar or the macros rerun (they are cheap).
+`Wiz/Cache.lean` serialises terms as S-expressions (quantities through the rig's
+literal syntax). Every example gives the same output from the cache as without it.
+
+Next: finer dependencies (re-elaborate only what an edit affects, not everything
+after it), and hovers for declarations that fail.

@@ -42,11 +42,22 @@ def loadLibraryPaths : IO (Std.HashMap String (String × String)) := do
           m := m.insert (e.path.fileStem.getD "") (abs.toString, ← IO.FS.readFile e.path)
   pure m
 
-def checkCmd (path : String) : IO UInt32 := do
-  let input ← IO.FS.readFile path
+/-- Elaborate a file, through the shared cache (`$WIZ_CACHE`, default `.wiz-cache`;
+`WIZ_CACHE=off` disables it). -/
+def elaborate (input : String) : IO (CommandState ZeroOneMany) := do
   let lib ← loadLibrary
   let headers ← Build.preprocessHeaders input
-  let s := runFrontend (R := ZeroOneMany) input { loader := (lib[·]?), cHeaders := (headers[·]?) }
+  let init : CommandState ZeroOneMany := { loader := (lib[·]?), cHeaders := (headers[·]?) }
+  match (← IO.getEnv "WIZ_CACHE").getD ".wiz-cache" with
+  | "off" => pure (runFrontend input init)
+  | dir =>
+    -- the key starts from the libraries and headers the file can see
+    let key₀ := hash (toString (lib.toList.map (·.2)) ++ toString (headers.toList.map (·.2)))
+    pure (← Cache.elaborateCached dir input init key₀).1
+
+def checkCmd (path : String) : IO UInt32 := do
+  let input ← IO.FS.readFile path
+  let s ← elaborate input
   for m in s.messages do
     let line := s!"{path}:{m.render input}"
     if m.severity == .error then IO.eprintln line else IO.println line
@@ -54,9 +65,7 @@ def checkCmd (path : String) : IO UInt32 := do
 
 def elabFile (path : String) : IO (Option (CommandState ZeroOneMany)) := do
   let input ← IO.FS.readFile path
-  let lib ← loadLibrary
-  let headers ← Build.preprocessHeaders input
-  let s := runFrontend (R := ZeroOneMany) input { loader := (lib[·]?), cHeaders := (headers[·]?) }
+  let s ← elaborate input
   for m in s.messages do
     if m.severity == .error then IO.eprintln s!"{path}:{m.render input}"
   pure (if s.messages.any (·.severity == .error) then none else some s)
