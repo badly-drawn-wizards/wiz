@@ -115,4 +115,19 @@ def runGlobal (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bo
       | none => pure (.error s!"could not read the result: {out.stdout}")
       | some v => pure (.ok (readback s.globals s.builtins (eval s.globals [] ty) v).pretty)
 
+/-- Preprocess the headers a file imports (`import_c "h"`), since the frontend is pure. -/
+def preprocessHeaders (input : String) : IO (Std.HashMap String String) := do
+  let mut m : Std.HashMap String String := {}
+  for part in (input.splitOn "import_c \"").drop 1 do
+    let h := (part.splitOn "\"").headD ""
+    if h.isEmpty || m.contains h then continue
+    let cc := (← IO.getEnv "WIZ_CC").getD "cc"
+    let dir ← IO.FS.createTempDir
+    IO.FS.writeFile (dir / "h.c") s!"#include <{h}>\n"
+    let out ← IO.Process.output { cmd := cc, args := #["-E", "-P", (dir / "h.c").toString] ++
+      (words (← IO.getEnv "WIZ_CFLAGS")).toArray }
+    if out.exitCode == 0 then m := m.insert h out.stdout
+  pure m
+
+
 end Wiz.Build

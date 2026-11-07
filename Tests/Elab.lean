@@ -649,7 +649,8 @@ def ioRun (src : String) (expected : String) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let loader : Name → Option String := fun m => if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
-  let s := runFrontend (R := ZeroOneMany) src { loader }
+  let headers ← Build.preprocessHeaders src
+  let s := runFrontend (R := ZeroOneMany) src { loader, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
@@ -684,6 +685,15 @@ def ffiGroup : Group where
     { name := "a C library function, through its header", run := fun _ =>
         ioRun ("import IO\nextern \"strlen\" (header := \"string.h\") strlen : String → Nat\n" ++
           "def main : IO Unit := IO.println (Nat.toString (strlen \"hello\"))") "5\n" },
+    { name := "import_c binds a header's functions", run := fun _ =>
+        ioRun ("import IO\nimport_c \"string.h\"\nimport_c \"stdlib.h\" (pure)\ndef main : IO Unit := do\n" ++
+          "  n ← C.strlen \"hello, world\";\n  IO.println (Nat.toString n);\n  IO.println (Nat.toString (C.atoi \"42\"))") "12\n42\n" },
+    { name := "the C subset parser (Exercise 9.1)", run := fun _ => do
+        let fs := FFI.parseHeader "typedef unsigned long size_t;\nextern size_t strlen (const char *__s) __attribute__ ((__pure__));\nstruct S { int x; };\ntypedef int (*cmp_t)(const void *, const void *);\nvoid qsort(void *b, size_t n, size_t s, cmp_t c);\nstatic inline int twice(int x) { return 2 * x; }\nint printf(const char *f, ...);"
+        checkEq "[strlen, qsort, twice, printf]" (toString (fs.toList.map (·.name)))
+        checkEq "true" (toString (fs.toList.find? (·.name == "printf") |>.map (·.variadic) |>.getD false))
+        let q := (fs.toList.find? (·.name == "qsort")).get!
+        checkEq "true" (toString (q.params.getLast! == FFI.CType.other "function pointer")) },
     { name := "foreign types are checked", run := fun _ =>
         ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
   ]

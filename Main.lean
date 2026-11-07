@@ -32,7 +32,8 @@ def loadLibrary : IO (Std.HashMap Name String) := do
 def checkCmd (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
   let lib ← loadLibrary
-  let s := runFrontend (R := ZeroOneMany) input { loader := (lib[·]?) }
+  let headers ← Build.preprocessHeaders input
+  let s := runFrontend (R := ZeroOneMany) input { loader := (lib[·]?), cHeaders := (headers[·]?) }
   for m in s.messages do
     let line := s!"{path}:{m.render input}"
     if m.severity == .error then IO.eprintln line else IO.println line
@@ -41,7 +42,8 @@ def checkCmd (path : String) : IO UInt32 := do
 def elabFile (path : String) : IO (Option (CommandState ZeroOneMany)) := do
   let input ← IO.FS.readFile path
   let lib ← loadLibrary
-  let s := runFrontend (R := ZeroOneMany) input { loader := (lib[·]?) }
+  let headers ← Build.preprocessHeaders input
+  let s := runFrontend (R := ZeroOneMany) input { loader := (lib[·]?), cHeaders := (headers[·]?) }
   for m in s.messages do
     if m.severity == .error then IO.eprintln s!"{path}:{m.render input}"
   pure (if s.messages.any (·.severity == .error) then none else some s)

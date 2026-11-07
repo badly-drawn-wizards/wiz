@@ -793,5 +793,25 @@ def main : IO Unit := do
 * `wiz run` on `main : IO A` runs it. Foreign functions only run in compiled code
   (`#eval`/`#run` report them).
 
-Next: reading C headers (`cc -E` plus a C-subset parser), checked C glue snippets, and
-foreign pointers with finalizers.
+### 9b: importing C headers ✅
+
+```
+import IO
+import_c "string.h"            -- C.strlen : String → IO Nat, …
+import_c "math.h" (pure)       -- C.pow : Float64 → Float64 → Float64, …
+```
+
+`import_c "h"` binds every function of a header whose types can be marshalled, as
+`C.name`, in `IO` unless the import is marked `pure`. The command line tool (and the
+tests) run the header through `cc -E -P` first, since the frontend is pure. A parser
+for a small C subset (`FFI/CParse.lean`) reads the prototypes and the typedefs they
+use, and skips struct bodies, inline function bodies and GNU extensions. Variadic
+functions and functions taking pointers other than `char*` (or function pointers,
+or structs by value) are skipped. On glibc, `string.h` gives 66 prototypes and
+`math.h` gives 620.
+
+| #   | Where              | What                                              |
+|-----|--------------------|---------------------------------------------------|
+| 9.1 | `FFI/CParse.lean`  | `declarator`: pointers, names, parameter lists    |
+
+Next: checked C glue snippets, and foreign pointers with finalizers.

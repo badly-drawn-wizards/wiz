@@ -2,6 +2,7 @@ import Wiz.Elab.Recursor
 import Wiz.Compiler.Run
 import Wiz.Compiler.IRRun
 import Wiz.Compiler.Lower
+import Wiz.FFI.CParse
 import Wiz.Elab.ProcMacro
 import Wiz.Frontend.Parse
 
@@ -65,6 +66,8 @@ structure CommandState (R : Type) where
   /-- type classes and instances (stage 7) -/
   classes : List ClassInfo := []
   instances : Array InstanceInfo := #[]
+  /-- preprocessed C headers, for `import_c` (the command line runs the preprocessor) -/
+  cHeaders : String → Option String := fun _ => none
   /-- macro rules, latest first -/
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000
@@ -622,6 +625,41 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else if !s.globals.contains n then report .error cmd.info s!"unknown declaration {n}"
     else modify fun s => { s with builtins := (key, n) :: s.builtins,
                                   globals := { s.globals with builtins := (key, n) :: s.globals.builtins } }
+  | "command.importC" =>
+    -- bind every function of a C header whose types we can marshal
+    let header := ((cmd.getArg 1).getStr?).getD "_"
+    let pure := !(cmd.getArg 2).isNone
+    match s.cHeaders header with
+    | none => report .error cmd.info s!"{header} was not preprocessed (run through `wiz check` or `wiz run`)"
+    | some src =>
+      let rec kindOf (t : FFI.CType) (isResult : Bool) : Option Char := match t with
+        | .const t => kindOf t isResult
+        | .int "_Bool" => some 'b'
+        | .int _ => some 'n'
+        | .float _ => some 'f'
+        | .void => if isResult then some 'v' else none
+        | .ptr t => match t with
+          | .int "char" | .const (.int "char") => some 's'
+          | _ => none
+        | .other _ => none
+      let tyOf (k : Char) : Term R := match k with
+        | 'n' => .const "Nat" []
+        | 'f' => .const "Float64" []
+        | 's' => .const "String" []
+        | 'b' => .const "Bool" []
+        | _ => .unit 1
+      let w : Term R := .qlit QuantitySyntax.explicitDefault
+      for f in FFI.parseHeader src do
+        let name : Name := "C." ++ f.name
+        if f.variadic || (← get).globals.contains name then continue
+        let (some ks, some rk) := (f.params.mapM (kindOf · false), kindOf f.ret true) | continue
+        let res := if pure then tyOf rk else .app (.const "IO" []) (tyOf rk)
+        let ty := ks.foldr (fun k acc => .pi "_" .default w (tyOf k) acc) res
+        let key : Name := s!"extern:{f.name}:{String.mk ks}:{rk}:{if pure then "pure" else "io"}:{header}"
+        match addDecl (← get).globals { name, type := ty, value := none } with
+        | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
+                                            globals := { g with builtins := (key, name) :: g.builtins } }
+        | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
   | "command.extern" =>
     -- an axiom, bound to a C function: the marshalling follows the Wiz type
     let cname := ((cmd.getArg 1).getStr?).getD "_"

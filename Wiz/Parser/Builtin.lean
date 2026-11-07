@@ -240,6 +240,8 @@ def commandLeading : List LeadingParser := [
   { kind := "command.ir", prec := maxPrec, p := seqs ["#ir", ident] },
   { kind := "command.builtin", prec := maxPrec, p := seqs ["builtin", ident, ":=", ident] },
   -- stage 9: a foreign (C) function
+  { kind := "command.importC", prec := maxPrec,
+    p := seqs ["import_c", str, optional (seqs ["(", nonReserved "pure", ")"])] },
   { kind := "command.extern", prec := maxPrec,
     p := seqs ["extern", str, optional (seqs ["(", nonReserved "header", ":=", str, ")"]), ident, ":", term] },
   { kind := "command.attrMacro", prec := maxPrec,
