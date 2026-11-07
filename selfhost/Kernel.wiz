@@ -1,7 +1,8 @@
 import IO
 -- A type checker in Wiz (stage 14a): the core of `Wiz/Core`, for a small calculus:
 -- variables (de Bruijn indices), universes `U n`, Π types, λ, application, Σ types,
--- pairs and projections (stage 14e), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to
+-- pairs and projections (stage 14e), `Unit`, `Empty`, finite enumerations with case
+-- analysis (stage 14f), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to
 -- values with closures (an environment and a body), values quote back to normal forms,
 -- and conversion compares values (with η for functions and pairs).
 --
@@ -9,6 +10,7 @@ import IO
 -- environment of values), and evaluation, application and quotation are mutually
 -- recursive.
 
+mutual
 inductive Tm where
   | var (i : Nat)
   | univ (n : Nat)
@@ -21,6 +23,20 @@ inductive Tm where
   | pair (a b : Tm)
   | fst (p : Tm)
   | snd (p : Tm)
+  -- `Unit n`, `Empty n : U n`; `exfalso motive t` for `t : Empty n`
+  | unit (n : Nat)
+  | star
+  | empty (n : Nat)
+  | exfalso (motive t : Tm)
+  -- an enumeration of `k` tags, its `i`-th tag, and case analysis (the motive is
+  -- under one binder, the scrutinee)
+  | enum (k : Nat)
+  | tag (k i : Nat)
+  | ecase (motive scrut : Tm) (branches : Tms)
+inductive Tms where
+  | tnil
+  | tcons (t : Tm) (rest : Tms)
+end
 
 mutual
 inductive Val where
@@ -31,6 +47,11 @@ inductive Val where
   -- `(x : fst) × snd`, `snd` under one binder, closed over `env`
   | vsigma (fst : Val) (env : Env) (snd : Tm)
   | vpair (a b : Val)
+  | vunit (n : Nat)
+  | vtt
+  | vempty (n : Nat)
+  | venum (k : Nat)
+  | vtag (k i : Nat)
   -- a variable (by level) and the eliminations applied to it
   | vne (lvl : Nat) (spine : Spine)
 inductive Env where
@@ -42,7 +63,19 @@ inductive Spine where
   | sapp (sp : Spine) (a : Val)
   | sfst (sp : Spine)
   | ssnd (sp : Spine)
+  -- a stuck case: its motive and branches, closed over `env`
+  | secase (sp : Spine) (env : Env) (motive : Tm) (branches : Tms)
+  | sabsurd (sp : Spine) (motive : Val)
 end
+
+def tmsNth : Tms → Nat → Tm
+  | .tnil, _ => .star
+  | .tcons t rest, i => match i with
+    | .zero => t
+    | .succ j => tmsNth rest j
+def tmsLen : Tms → Nat
+  | .tnil => 0
+  | .tcons _ rest => Nat.succ (tmsLen rest)
 
 def lookup : Env → Nat → Val
   | .nil, _ => .vuniv 0
@@ -66,6 +99,18 @@ def eval : Env → Tm → Val
   | env, .pair a b => .vpair (eval env a) (eval env b)
   | env, .fst p => vfst (eval env p)
   | env, .snd p => vsnd (eval env p)
+  | _, .unit n => .vunit n
+  | _, .star => .vtt
+  | _, .empty n => .vempty n
+  | env, .exfalso m t => match eval env t with
+    | .vne l sp => .vne l (.sabsurd sp (eval env m))
+    | v => v
+  | _, .enum k => .venum k
+  | _, .tag k i => .vtag k i
+  | env, .ecase m s bs => match eval env s with
+    | .vtag _ i => eval env (tmsNth bs i)
+    | .vne l sp => .vne l (.secase sp env m bs)
+    | v => v
   --|ex
   --| | _, _ => .vuniv 0
   --sol>
@@ -107,6 +152,11 @@ def quote : Nat → Val → Tm
   | l, .vlam env b => .lam (quote (l + 1) (eval (.cons (fresh l) env) b))
   | l, .vsigma a env b => .sigma (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b))
   | l, .vpair a b => .pair (quote l a) (quote l b)
+  | _, .vunit n => .unit n
+  | _, .vtt => .star
+  | _, .vempty n => .empty n
+  | _, .venum k => .enum k
+  | _, .vtag k i => .tag k i
   | l, .vne x sp => quoteSpine l (.var (l - x - 1)) sp
   --|ex
   --| | _, _ => .univ 0
@@ -116,6 +166,12 @@ def quoteSpine : Nat → Tm → Spine → Tm
   | l, h, .sapp sp a => .app (quoteSpine l h sp) (quote l a)
   | l, h, .sfst sp => .fst (quoteSpine l h sp)
   | l, h, .ssnd sp => .snd (quoteSpine l h sp)
+  | l, h, .secase sp env m bs =>
+    .ecase (quote (l + 1) (eval (.cons (fresh l) env) m)) (quoteSpine l h sp) (quoteBranches l env bs)
+  | l, h, .sabsurd sp m => .exfalso (quote l m) (quoteSpine l h sp)
+def quoteBranches : Nat → Env → Tms → Tms
+  | _, _, .tnil => .tnil
+  | l, env, .tcons b rest => .tcons (quote l (eval env b)) (quoteBranches l env rest)
 end
 
 -- **Exercise 14.6.** Conversion (`conv` in `Conv.lean`), on values at depth `l`: equal
@@ -138,6 +194,11 @@ def conv : Nat → Val → Val → Bool
   | l, .vpair a b, v => Bool.and (conv l a (vfst v)) (conv l b (vsnd v))
   | l, v, .vpair a b => Bool.and (conv l (vfst v) a) (conv l (vsnd v) b)
   | l, .vne x sp, .vne y sp' => Bool.and (Nat.beq x y) (convSpine l sp sp')
+  | _, .vunit m, .vunit n => Nat.beq m n
+  | _, .vtt, .vtt => .true
+  | _, .vempty m, .vempty n => Nat.beq m n
+  | _, .venum k, .venum k' => Nat.beq k k'
+  | _, .vtag _ i, .vtag _ j => Nat.beq i j
   | _, _, _ => .false
   --|ex
   --| | _, _, _ => .false
@@ -147,7 +208,15 @@ def convSpine : Nat → Spine → Spine → Bool
   | l, .sapp r a, .sapp r' b => Bool.and (convSpine l r r') (conv l a b)
   | l, .sfst r, .sfst r' => convSpine l r r'
   | l, .ssnd r, .ssnd r' => convSpine l r r'
+  | l, .secase r e m bs, .secase r' e' m' bs' => Bool.and (convSpine l r r')
+      (Bool.and (conv (l + 1) (eval (.cons (fresh l) e) m) (eval (.cons (fresh l) e') m'))
+        (convBranches l e e' bs bs'))
+  | l, .sabsurd r m, .sabsurd r' m' => Bool.and (convSpine l r r') (conv l m m')
   | _, _, _ => .false
+def convBranches : Nat → Env → Env → Tms → Tms → Bool
+  | _, _, _, .tnil, .tnil => .true
+  | l, e, e', .tcons b r, .tcons b' r' => Bool.and (conv l (eval e b) (eval e' b')) (convBranches l e e' r r')
+  | _, _, _, _, _ => .false
 end
 
 -- the name of the variable at level `l`: from `names` (the outermost first), or `x<l>`
@@ -158,6 +227,7 @@ def nameFrom : List String → Nat → Nat → String
     | .succ k' => nameFrom ns k' l
 def nameAt (names : List String) (l : Nat) : String := nameFrom names l l
 
+mutual
 -- terms, printed with the variables named by level (`x0` is the outermost, unless
 -- `names` names it)
 def show (names : List String) : Nat → Tm → String
@@ -175,6 +245,20 @@ def show (names : List String) : Nat → Tm → String
   | l, .pair a b => String.append (String.append "(" (show names l a)) (String.append ", " (String.append (show names l b) ")"))
   | l, .fst p => String.append (show names l p) ".1"
   | l, .snd p => String.append (show names l p) ".2"
+  | _, .unit n => String.append "Unit" (Nat.toString n)
+  | _, .star => "tt"
+  | _, .empty n => String.append "Empty" (Nat.toString n)
+  | l, .exfalso m t => String.append (String.append "absurd(" (show names l m)) (String.append ", " (String.append (show names l t) ")"))
+  | _, .enum k => String.append "Enum" (Nat.toString k)
+  | _, .tag _ i => String.append "#" (Nat.toString i)
+  | l, .ecase m s bs => String.append (String.append (String.append "case(" (show names (l + 1) m))
+      (String.append ", " (show names l s))) (String.append (showBranches names l bs) ")")
+
+-- the branches, each after `, `
+def showBranches (names : List String) : Nat → Tms → String
+  | _, .tnil => ""
+  | l, .tcons b rest => String.append (String.append ", " (show names l b)) (showBranches names l rest)
+end
 
 -- the typing context: values of the variables, their types, the depth
 inductive TCtx where
@@ -234,6 +318,31 @@ def infer : TCtx → Tm → TyRes
       | r => r
     | r => r
   | _, .pair _ _ => .err "cannot infer the type of a pair; add a type ascription"
+  | _, .unit n => .ok (.vuniv n)
+  | _, .empty n => .ok (.vuniv n)
+  | _, .star => .err "cannot infer the type of tt; add a type ascription"
+  | c, .exfalso m t => match inferUniv c m with
+    | .ok _ => match infer c t with
+      | .ok ty => match ty with
+        | .vempty _ => .ok (eval (TCtx.env c) m)
+        | ty => .err (String.append "not empty: " (showVal c ty))
+      | r => r
+    | r => r
+  | _, .enum _ => .ok (.vuniv 0)
+  | _, .tag k i => match Nat.lt i k with
+    | .true => .ok (.venum k)
+    | .false => .err "tag out of range"
+  | c, .ecase m sc bs => match infer c sc with
+    | .ok sty => match sty with
+      | .venum k => match Nat.beq k (tmsLen bs) with
+        | .false => .err "wrong number of branches"
+        | .true => match inferUniv (TCtx.bind c (.venum k)) m with
+          | .ok _ => match checkBranches c k m bs 0 with
+            | .ok _ => .ok (eval (.cons (eval (TCtx.env c) sc) (TCtx.env c)) m)
+            | r => r
+          | r => r
+      | ty => .err (String.append "not an enumeration: " (showVal c ty))
+    | r => r
   | c, .fst p => match infer c p with
     | .ok ty => match ty with
       | .vsigma a _ _ => .ok a
@@ -253,6 +362,7 @@ def check : TCtx → Tm → Val → TyRes
     match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
     | .ok _ => .ok (.vpi dom env cod)
     | r => r
+  | _, .star, .vunit n => .ok (.vunit n)
   | c, .pair a b, .vsigma ta env tb => match check c a ta with
     | .ok _ => match check c b (eval (.cons (eval (TCtx.env c) a) env) tb) with
       | .ok _ => .ok (.vsigma ta env tb)
@@ -267,6 +377,12 @@ def check : TCtx → Tm → Val → TyRes
   --|ex
   --| | _, _, _ => .err "not implemented"
   --sol>
+-- branch `i` and on, against the motive at tag `i`
+def checkBranches : TCtx → Nat → Tm → Tms → Nat → TyRes
+  | _, k, _, .tnil, _ => .ok (.venum k)
+  | c, k, m, .tcons b rest, i => match check c b (eval (.cons (.vtag k i) (TCtx.env c)) m) with
+    | .ok _ => checkBranches c k m rest (i + 1)
+    | r => r
 -- a type: its universe
 def inferUniv : TCtx → Tm → TyRes
   | c, t => match infer c t with
