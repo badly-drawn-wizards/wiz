@@ -1003,8 +1003,19 @@ typing context. Lexer, parser, scope checker and type checker all run as compile
 | 14.4 | `selfhost/Frontend.wiz` | `elab`: names to de Bruijn indices       |
 | 14.5 | `selfhost/Frontend.wiz` | `command`: one command                   |
 
+### 14d: differential testing ✅
+
+Conversion in the Wiz kernel compares values, with η for functions, like `Conv.lean`.
+A test generates 300 pseudo-random closed terms, checks each with both kernels (the
+Lean kernel through the same terms, quantities `ω`), and requires the same verdict and
+the same inferred type.
+
+| #    | Where                 | What                                    |
+|------|-----------------------|-----------------------------------------|
+| 14.6 | `selfhost/Kernel.wiz` | `conv`: values, with η                  |
+
 Next: grow the Wiz kernel towards the real one (Σ types, data through descriptions,
-quantities), and test it differentially against the Lean kernel.
+quantities), extending the generator as it grows.
 
 ## Stage 11: tooling
 

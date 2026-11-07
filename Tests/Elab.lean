@@ -797,6 +797,93 @@ def leanParse (t : ParserTables) (cat : Name) (input : String) : String :=
   | .ok (stx, _) => stx.toSExpr (atoms := true)
   | .error e => s!"error {e.pos}: expected {", ".intercalate e.expected.toList}"
 
+/-- The core calculus of `selfhost/Kernel.wiz`, for differential tests against the
+Lean kernel. -/
+inductive MTm where
+  | var (i : Nat)
+  | univ (n : Nat)
+  | pi (a b : MTm)
+  | lam (b : MTm)
+  | app (f a : MTm)
+  | letE (ty v b : MTm)
+  | ann (t ty : MTm)
+  deriving Inhabited
+
+namespace MTm
+
+def toWiz : MTm → String
+  | var i => s!"(.var {i})"
+  | univ n => s!"(.univ {n})"
+  | pi a b => s!"(.pi {a.toWiz} {b.toWiz})"
+  | lam b => s!"(.lam {b.toWiz})"
+  | app f a => s!"(.app {f.toWiz} {a.toWiz})"
+  | letE t v b => s!"(.letE {t.toWiz} {v.toWiz} {b.toWiz})"
+  | ann t ty => s!"(.ann {t.toWiz} {ty.toWiz})"
+
+def toTerm : MTm → Term ZeroOneMany
+  | var i => .var i
+  | univ n => .sort (Level.ofNat (n + 1))
+  | pi a b => .pi "x" .default (.qlit .many) a.toTerm b.toTerm
+  | lam b => .lam "x" b.toTerm
+  | app f a => .app f.toTerm a.toTerm
+  | letE t v b => .letE "x" (.qlit .many) t.toTerm v.toTerm b.toTerm
+  | ann t ty => .ann t.toTerm ty.toTerm
+
+partial def ofTerm : Term ZeroOneMany → Option MTm
+  | .var i => some (var i)
+  | .sort l => match l.toNat? with
+    | some (n + 1) => some (univ n)
+    | _ => none
+  | .pi _ _ _ a b => return pi (← ofTerm a) (← ofTerm b)
+  | .lam _ b => return lam (← ofTerm b)
+  | .app f a => return app (← ofTerm f) (← ofTerm a)
+  | _ => none
+
+/-- Printed like `show .nil` in `Kernel.wiz`. -/
+def pretty (l : Nat) : MTm → String
+  | var i => s!"x{l - i - 1}"
+  | univ n => s!"U{n}"
+  | pi a b => s!"(x{l} : {pretty l a}) → {pretty (l + 1) b}"
+  | lam b => s!"λx{l}. {pretty (l + 1) b}"
+  | app f a => s!"({pretty l f} {pretty l a})"
+  | letE _ v b => s!"let x{l} := {pretty l v}; {pretty (l + 1) b}"
+  | ann t ty => s!"({pretty l t} : {pretty l ty})"
+
+/-- Random terms over `n` variables (a linear congruential generator), biased towards
+well-typed ones: annotated λs, applications of them, universes. -/
+partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
+  let next (s : Nat) := (s * 1103515245 + 12345) % 2147483648
+  let s := next seed
+  let pick := s / 65536 % 10
+  if depth == 0 then
+    if n > 0 && pick < 5 then (var (s / 7 % n), s) else (univ (s / 7 % 2), s)
+  else match pick with
+    | 0 | 1 => let (a, s) := gen s (depth - 1) n; let (b, s) := gen s (depth - 1) (n + 1); (pi a b, s)
+    | 2 | 3 =>
+      let (a, s) := gen s (depth - 1) n
+      let (b, s) := gen s (depth - 1) (n + 1)
+      let (body, s) := gen s (depth - 1) (n + 1)
+      (ann (lam body) (pi a b), s)
+    | 4 | 5 => let (f, s) := gen s (depth - 1) n; let (a, s) := gen s (depth - 1) n; (app f a, s)
+    | 6 =>
+      let (t, s) := gen s (depth - 1) n
+      let (v, s) := gen s (depth - 1) n
+      let (b, s) := gen s (depth - 1) (n + 1)
+      (letE t v b, s)
+    | 7 => let (t, s) := gen s (depth - 1) n; let (ty, s) := gen s (depth - 1) n; (ann t ty, s)
+    | _ => if n > 0 then (var (s / 7 % n), s) else (univ (s / 7 % 3), s)
+
+end MTm
+
+/-- What the Lean kernel says about a closed term: its type (printed like the Wiz
+kernel prints) or `error`. -/
+def leanVerdict (t : MTm) : String :=
+  match infer (R := ZeroOneMany) { globals := {} } t.toTerm with
+  | .ok (ty, _) => match MTm.ofTerm (quote ({} : Globals ZeroOneMany) 0 ty) with
+    | some m => m.pretty 0
+    | none => "?"
+  | .error _ => "error"
+
 def selfHostGroup : Group where
   name := "selfhost"
   exercise := "Stages 12b–14c"
@@ -869,7 +956,22 @@ def selfHostGroup : Group where
           s!"def main : IO Unit := printAll (checkFile cats tokens {wizLit file})\n"
         ioRun prog ("N : U1\ntwo : N\nadd : (x2 : N) → (x3 : N) → N\nλx3. λx4. λx5. (x4 (x4 (x4 (x4 x5))))\n" ++
           "(x3 : (x3 : U0) → (x4 : (x4 : x3) → x3) → (x5 : x3) → x3) → (x4 : U0) → (x5 : (x5 : x4) → x4) → (x6 : x4) → x4\n" ++
-          "error: type mismatch: expected U0, got U1\nerror: unknown identifier bad\n") }
+          "error: type mismatch: expected U0, got U1\nerror: unknown identifier bad\n") },
+    { name := "the Wiz kernel agrees with the Lean kernel (300 random terms)", run := fun _ => do
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let mut terms : Array MTm := #[]
+        let mut seed := 42
+        for i in [0:300] do
+          let (t, s) := MTm.gen seed (2 + i % 3) 0
+          terms := terms.push t
+          seed := s
+        let expected := terms.toList.map leanVerdict
+        let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
+        let calls := terms.toList.map fun t => s!"(verdict {t.toWiz})"
+        let main := s!"def main : IO Unit := printAll {wizList calls}\n"
+        let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
+        unless (expected.filter (· != "error")).length ≥ 30 do throw (IO.userError "too few well-typed terms")
+        ioRun (kernel ++ "\n" ++ verdict ++ printAll ++ main) ("\n".intercalate expected ++ "\n") }
   ]
 
 def languageGroup : Group where
