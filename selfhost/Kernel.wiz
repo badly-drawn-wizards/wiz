@@ -1740,20 +1740,29 @@ def checkW : TCtx → Tm → Val → TyRes
       | .ok _ u => .ok (.vnu l I D i sz) u
       | r => r
     | .none => .err "cocon builds a value of size ↑s"
-  | c, t, .vsizeLt sz => match check c t .vsize with
-    | .ok _ _ => match sizeLe c (.vszSuc (eval (TCtx.env c) t)) sz with
-      | .true => .ok (.vsizeLt sz) (uZeros (TCtx.lvl c))
-      | .false => .err "the size is not below its bound"
-    | r => r
-  | c, t, ty => match infer c t with
-    | .ok ty' u => match subTy c ty' ty with
-      | .true => .ok ty u
-      | .false => .err (String.append (String.append "type mismatch: expected " (showVal c ty))
-          (String.append ", got " (showVal c ty')))
-    | r => r
+  | c, t, .vsizeLt sz => checkBelow c t sz
+  | c, t, ty => checkByInfer c t ty
   --|ex
-  --| | _, _, _ => .err "not implemented"
+  --| | c, t, ty => checkByInfer c t ty
   --sol>
+-- (given) Otherwise: infer, and the type must be a subtype of the expected one. (A
+-- catch-all row is copied into every case the rows above it split off, so a long
+-- right-hand side here would be compiled hundreds of times: keep it a call.)
+def checkByInfer (c : TCtx) (t : Tm) (ty : Val) : TyRes := match infer c t with
+  | .ok ty' u => match subTy c ty' ty with
+    | .true => .ok ty u
+    | .false => .err (String.append (String.append "type mismatch: expected " (showVal c ty))
+        (String.append ", got " (showVal c ty')))
+  | r => r
+--<sol
+-- a size below `sz`
+def checkBelow (c : TCtx) (t : Tm) (sz : Val) : TyRes := match check c t .vsize with
+  | .ok _ _ => match sizeLe c (.vszSuc (eval (TCtx.env c) t)) sz with
+    | .true => .ok (.vsizeLt sz) (uZeros (TCtx.lvl c))
+    | .false => .err "the size is not below its bound"
+  | r => r
+--|ex
+--sol>
 -- branch `i` and on, against the motive at tag `i`; the usages are joined
 def checkBranches : TCtx → Nat → Tm → Tms → Nat → Option (List Q) → TyRes
   | c, k, _, .tnil, _, acc => match acc with

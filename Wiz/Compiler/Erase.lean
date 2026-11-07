@@ -218,6 +218,32 @@ partial def Wiz.IR.freeIdx' (t : Term R) (depth : Nat := 0) (acc : Std.HashSet N
     acc := acc'
     pure acc
 
+/-- The type of a term that is already known to be well typed, without checking it
+again: along an elimination spine only (heads, applications, projections, annotations,
+`ecase`, `ind`), else by the kernel's `infer`. Erasure asks for the type of every
+subterm, so a full `infer` at each would re-check each subterm once per enclosing node:
+quadratic in the nesting depth of the deep `casesOn` trees that `match` produces. -/
+partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
+  let g := ctx.globals
+  match t with
+  | .var ix => pure ctx.types[ix]!
+  | .const n us => match g.find? n with
+    | some d => pure (Wiz.eval g [] (d.type.instLevels d.levelParams us))
+    | none => throw (.unboundGlobal n)
+  | .app f a => match whnf (← quickType ctx f) with
+    | .pi _ _ _ _ cod => pure (Closure.inst g cod (ctx.eval a))
+    | _ => return (← infer ctx t).1
+  | .fst p => match whnf (← quickType ctx p) with
+    | .sigma _ _ A _ => pure A
+    | _ => return (← infer ctx t).1
+  | .snd p => match whnf (← quickType ctx p) with
+    | .sigma _ _ _ B => pure (Closure.inst g B (vFst (ctx.eval p)))
+    | _ => return (← infer ctx t).1
+  | .ann _ ty => pure (ctx.eval ty)
+  | .ecase _ m s _ => pure (Closure.inst g (.mk ctx.env m) (ctx.eval s))
+  | .ind _ _ _ _ P _ i x => pure (vApp g (vApp g (ctx.eval P) (ctx.eval i)) (ctx.eval x))
+  | _ => return (← infer ctx t).1
+
 /-- **Exercise 5.1a.** Erase `t`, checking it against `ty`.
 
 * if `ty` is `erasable`, the result is `◾`;
@@ -297,7 +323,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
 * the eliminators `ind`, `Desc.elim`, `out`, `coit`, `scofix` become primitives;
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
 partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
-  let (ty, _) ← infer ctx t
+  let ty ← quickType ctx t
   if erasable ctx ty then return (.erased, ty)
   if let .natLit n := t then return (.natLit n, ty)
   --<sol
@@ -339,13 +365,13 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
         | .lam _ (.lam _ (.lam _ body)) => !(Wiz.IR.freeIdx' body).contains 0
         | _ => false
       let D' ← eraseCheck ctx D (.desc l vI)
-      let (xty, _) ← infer ctx x
+      let xty ← quickType ctx x
       if isCases then pure (.apps m' [← eraseCheck ctx i vI, viewOf g vD xty D' (← eraseE ctx x), .erased])
       else
         let D' := if isNatTy g xty then .obj 5 #[D'] else D'
         pure (.prim .ind #[D', m', ← eraseCheck ctx i vI, ← eraseE ctx x])
     | .delim v P a b c h D => do
-      let (dty, _) ← infer ctx D
+      let dty ← quickType ctx D
       let .desc l I := whnf dty | throw (.other "erasure: Desc.elim on a non-description")
       let (ta, tb, tc, th) := delimMethodTys g l I (ctx.eval P) QuantitySyntax.explicitDefault
       let _ := v
@@ -374,7 +400,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       let (vI, vD, vP) := (ctx.eval I, ctx.eval D, ctx.eval P)
       let mTy := scaseMethodTy g l vI vD vP (ctx.eval s) QuantitySyntax.explicitDefault
       let _ := v
-      let (xty, _) ← infer ctx x
+      let xty ← quickType ctx x
       let D' ← eraseCheck ctx D (.desc l vI)
       pure (.apps (← eraseCheck ctx m mTy) [.erased, ← eraseCheck ctx i vI, viewOf g vD xty D' (← eraseE ctx x)])
     | .tag _ i => pure (.obj i #[])
