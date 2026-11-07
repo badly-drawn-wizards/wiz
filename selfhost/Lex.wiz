@@ -8,23 +8,6 @@ import Std
 -- least as long as an identifier wins). The scanning loops are partial definitions:
 -- they terminate because the offset grows, which Wiz can't see.
 
-def Char.code : Char → Nat
-  | .mk n => n
-def Nat.lt : Nat → Nat → Bool
-  | .zero, .zero => .false
-  | .zero, .succ _ => .true
-  | .succ _, .zero => .false
-  | .succ m, .succ n => Nat.lt m n
-def Nat.le (m n : Nat) : Bool := Nat.lt m (n + 1)
-def Bool.and : Bool → Bool → Bool
-  | .true, b => b
-  | .false, _ => .false
-def Bool.or : Bool → Bool → Bool
-  | .true, _ => .true
-  | .false, b => b
-def Bool.not : Bool → Bool
-  | .true => .false
-  | .false => .true
 def between (c lo hi : Nat) : Bool := Bool.and (Nat.le lo c) (Nat.le c hi)
 
 -- character classes, on code points

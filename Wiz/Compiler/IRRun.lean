@@ -86,6 +86,7 @@ def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
   | "nat.sub" => pure (.num (n 0 - n 1))
   | "nat.mul" => pure (.num (n 0 * n 1))
   | "nat.beq" => pure (.tag (if n 0 == n 1 then 1 else 0))
+  | "nat.blt" => pure (.tag (if n 0 < n 1 then 1 else 0))
   | "natTag" => pure (.tag (if n 0 == 0 then 0 else 1))
   | "tag" =>
     let t ← match (args[0]? : Option IVal) with
