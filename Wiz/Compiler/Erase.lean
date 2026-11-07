@@ -141,6 +141,23 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
 /-- Erase a term in inference mode, keeping only the program. -/
 partial def eraseE (ctx : Ctx R) (t : Term R) : TCM ETerm := return (← eraseInfer ctx t).1
 
+/-- Erase an application spine `h a₁ … aₙ` at once, returning its type: erasing `f a`
+by erasing `f` recursively would re-infer every prefix (quadratic in long chains such
+as string literals). -/
+partial def eraseSpine (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
+  let (h, args) := t.spine
+  let (h', hty) ← eraseInfer ctx h
+  let mut acc := h'
+  let mut fty := hty
+  for a in args do
+    match fty with
+    | .pi _ _ q dom cod =>
+      let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a dom
+      acc := .app acc a'
+      fty := Closure.inst ctx.globals cod (ctx.eval a)
+    | _ => throw (.other "erasure: application of a non-function")
+  pure (acc, fty)
+
 end
 
 /-- Erase a global definition. -/

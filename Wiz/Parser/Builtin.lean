@@ -182,6 +182,9 @@ def termLeading : List LeadingParser := [
     -- alternatives line up at or right of the first `|`, so an outer match's next
     -- alternative ends a nested match (as in Lean)
     p := seqs ["match", sepBy1 term ",", "with", withPosition (many1 (seqs [colGe, matchAlt]))] },
+  -- tactics line up (or are separated by `;`); the tactics themselves come from the prelude
+  { kind := "term.by", prec := leadPrec,
+    p := seqs ["by", withPosition (many1 (seqs [colGe, cat "tactic" 0, optional ";"]))] },
   { kind := "term.ecase", prec := leadPrec,
     p := seqs [nonReserved "ecase", term maxPrec, "[", withoutPosition (sepBy term ","), "]"] }
 ]
@@ -231,6 +234,8 @@ def commandLeading : List LeadingParser := [
   { kind := "command.builtin", prec := maxPrec, p := seqs ["builtin", ident, ":=", ident] },
   { kind := "command.attrMacro", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "macro", ident, "]", ident] },
+  { kind := "command.attrTactic", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "tactic", ident, "]", ident] },
   { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
   { kind := "command.syntax", prec := maxPrec,
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
@@ -317,7 +322,7 @@ def macroCommands : List LeadingParser := [
 
 def tables : ParserTables :=
   let t : ParserTables := {}
-  let t := ["term", "command", "stx", "level"].foldl ParserTables.declareCategory t
+  let t := ["term", "command", "stx", "level", "tactic"].foldl ParserTables.declareCategory t
   let t := levelLeading.foldl (·.addLeading "level" ·) t
   let t := levelTrailing.foldl (·.addTrailing "level" ·) t
   let t := termLeading.foldl (·.addLeading "term" ·) t
@@ -326,6 +331,6 @@ def tables : ParserTables :=
   let t := stxLeading.foldl (·.addLeading "stx" ·) t
   let t := stxTrailing.foldl (·.addTrailing "stx" ·) t
   let t := macroCommands.foldl (·.addLeading "command" ·) t
-  ["term", "command", "level"].foldl addMetaParsers t
+  ["term", "command", "level", "tactic"].foldl addMetaParsers t
 
 end Wiz.Builtin

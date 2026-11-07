@@ -1,0 +1,28 @@
+import Prelude
+-- Tactics are Wiz functions from syntax to `TacticM Unit` (see lib/Prelude.wiz).
+
+def id' : (A : Type) → A → A := by
+  intro A
+  intro x
+  exact x
+
+def k : Nat → Bool → Nat := by intro n; intro b; assumption
+
+def two : 1 + 1 = 2 := by rfl
+
+def ap : (A B : Type) → (A → B) → A → B := by
+  intro A; intro B; intro f; intro a
+  apply f
+  assumption
+
+-- A new tactic: introduce two variables, named `a` and `b`.
+syntax (name := intros2) "intros2" : tactic
+def myIntros : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  g1 ← TacticM.intro g "a";
+  g2 ← TacticM.intro g1 "b";
+  TacticM.replaceMainGoal (.cons g2 .nil)
+attribute [tactic tactic.intros2] myIntros
+
+def snd : Nat → Nat → Nat := by intros2; exact b
+#eval snd 1 2

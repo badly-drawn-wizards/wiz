@@ -571,7 +571,7 @@ attribute [macro term.twice] twiceMacro
 | 6.2 | `Elab/Term.lean`       | `elabQuote`: a quotation as a term building `Syntax` |
 | 6.3 | `Elab/ProcMacro.lean`  | `decodeSyntax`: a runtime value back to `Syntax`  |
 
-### 6c: tactics in Wiz (in progress)
+### 6c: tactics in Wiz ✅
 
 **Infinitary inductives.** Descriptions gain `Desc.hrec q H j D`, a field
 `(h : H) → μ D (j h)`: one subtree per `h`, as in W-types. `Desc.elim` takes a fifth
@@ -584,5 +584,43 @@ needs all of this: it is a free monad, whose continuations are infinitary fields
 If you have already done exercises 4.17–4.21 (the templates, `vDelim`, description
 checking and `ctorDesc`), add the `hrec` cases.
 
-Next: `TacticM` as a free monad over elaborator requests, interpreted by the host,
-with a reflected `Expr` (and opaque handles for the other kernel forms).
+**Tactics** (`examples/tactics.wiz`):
+
+```
+def ap : (A B : Type) → (A → B) → A → B := by
+  intro A; intro B; intro f; intro a
+  apply f
+  assumption
+```
+
+* `by tac₁; tac₂ …` (or one tactic per line) makes a hole of the expected type and runs
+  the tactics on it. Leftover goals are reported with their hypotheses.
+* A tactic is a **Wiz function** `Syntax → TacticM Unit`, registered for a `tactic`
+  syntax kind with `attribute [tactic k] f`. Tactic syntax can also be macros
+  (`rfl` is `exact rfl`).
+* `TacticM A := (A → Tac) → Tac`, where `Tac` is an inductive type of **requests** to
+  the elaborator, each with a continuation (an infinitary field). The elaborator
+  interprets them (`runTac`): goals (`getGoals`, `setGoals`, `goalType`, `goalHyps`),
+  `intro`, `exact`, `elabInfer`, `assign`, `newGoal`, `isDefEq`, `normalize`,
+  `instantiate`, `inferType`, `evalTactic`, and `catch` (which backtracks the elaborator
+  state). Tactic code itself stays pure and deterministic. Macros use the same monad
+  (`MacroM := TacticM`, requesting only `fresh` and `fail`), so `do` notation serves both.
+* Terms are reflected as `Expr` (de Bruijn variables, constants, closed sorts, Π, λ,
+  application, numerals). Every other kernel form is an **opaque handle** that
+  remembers its depth, and nominal types are shown by name (`Vec A n`).
+* The prelude's tactics: `intro`, `exact`, `rfl`, `assumption`, `apply`, `try`,
+  `first | t | u`, `( t; u )`, `repeat`, `trace`.
+* Macro and tactic code is erased once, on first use, and only what is reachable
+  from them (`compileReachable`; `#eval` does the same).
+
+Also fixed along the way: `elabMatch` zonks the expected type, and `checkApp` keeps the
+written arguments (not the placeholders' normal forms) and solves placeholders
+without quoting.
+
+| #   | Where                 | What                                               |
+|-----|-----------------------|----------------------------------------------------|
+| 6.4 | `Elab/Tactic.lean`    | `reflect` and `reify`: terms ↔ `Expr` with handles |
+| 6.5 | `Elab/Term.lean`      | `runTac`: the request loop                         |
+| 6.6 | `lib/Prelude.wiz`     | `TacticM.findHyp`, for `assumption` (in Wiz!)      |
+
+Next: typeclasses with tabled resolution (stage 7), which also make `do` generic.

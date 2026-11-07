@@ -90,20 +90,83 @@ inductive Except (E A : Type) where
   | error (e : E)
   | ok (a : A)
 
--- The macro monad: a supply of fresh macro scopes, and failure with a message.
-def MacroM (A : Type) : Type := Nat → Except String (A × Nat)
-def MacroM.pure {A : Type} (a : A) : MacroM A := fun s => .ok (a, s)
-def MacroM.bind {A B : Type} (x : MacroM A) (f : A → MacroM B) : MacroM B := fun s =>
-  match x s with
-  | .error e => .error e
-  | .ok p => f p.1 p.2
-def MacroM.throw {A : Type} (e : String) : MacroM A := fun _ => .error e
-def MacroM.fresh : MacroM Nat := fun s => .ok (s, Nat.succ s)
+-- Reflected terms, for tactics. Variables are de Bruijn indices, relative to the goal's
+-- context. Kernel forms with no constructor here (μ, descriptions, equality, sizes, …)
+-- are `opaque` handles, held by the elaborator.
+inductive Expr where
+  | var (i : Nat)
+  | const (n : String)
+  | sort (u : Nat)
+  | pi (x : String) (implicit : Bool) (q : Expr) (dom : Expr) (body : Expr)
+  | lam (x : String) (body : Expr)
+  | app (f : Expr) (a : Expr)
+  | lit (n : Nat)
+  | opaque (id : Nat)
 
+-- Requests to the elaborator, each with what to do with the answer: a free monad (its
+-- continuations are infinitary fields). The elaborator interprets them; the order of
+-- the constructors is fixed (`Elab/Tactic.lean`).
+inductive Tac where
+  | done
+  | result (stx : Syntax)
+  | fail (msg : String)
+  | trace (msg : String) (next : Tac)
+  | fresh (k : Nat → Tac)
+  | getGoals (k : List Nat → Tac)
+  | setGoals (gs : List Nat) (next : Tac)
+  | goalType (g : Nat) (k : Expr → Tac)
+  | goalExpr (g : Nat) (k : Expr → Tac)
+  | goalHyps (g : Nat) (k : List (String × Expr) → Tac)
+  | intro (g : Nat) (x : String) (k : Nat → Tac)
+  | exact (g : Nat) (stx : Syntax) (next : Tac)
+  | elabInfer (g : Nat) (stx : Syntax) (k : Expr × Expr → Tac)
+  | assign (g : Nat) (e : Expr) (next : Tac)
+  | newGoal (g : Nat) (ty : Expr) (k : Nat → Tac)
+  | normalize (g : Nat) (e : Expr) (k : Expr → Tac)
+  | instantiate (g : Nat) (body : Expr) (arg : Expr) (k : Expr → Tac)
+  | isDefEq (g : Nat) (a : Expr) (b : Expr) (k : Bool → Tac)
+  | inferType (g : Nat) (e : Expr) (k : Expr → Tac)
+  | evalTactic (stx : Syntax) (next : Tac)
+  | catch (body : Tac) (handler : String → Tac) (next : Tac)
+
+-- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
+-- composition. Macros and tactics both use it.
+def TacticM (A : Type) : Type := (A → Tac) → Tac
+def TacticM.pure {A : Type} (a : A) : TacticM A := fun k => k a
+def TacticM.bind {A B : Type} (x : TacticM A) (f : A → TacticM B) : TacticM B := fun k => x (fun a => f a k)
+def TacticM.run (t : TacticM Unit) : Tac := t (fun _ => Tac.done)
+def TacticM.fail {A : Type} (msg : String) : TacticM A := fun _ => Tac.fail msg
+def TacticM.trace (msg : String) : TacticM Unit := fun k => Tac.trace msg (k ())
+def TacticM.fresh : TacticM Nat := fun k => Tac.fresh k
+def TacticM.getGoals : TacticM (List Nat) := fun k => Tac.getGoals k
+def TacticM.setGoals (gs : List Nat) : TacticM Unit := fun k => Tac.setGoals gs (k ())
+def TacticM.goalType (g : Nat) : TacticM Expr := fun k => Tac.goalType g k
+def TacticM.goalExpr (g : Nat) : TacticM Expr := fun k => Tac.goalExpr g k
+def TacticM.goalHyps (g : Nat) : TacticM (List (String × Expr)) := fun k => Tac.goalHyps g k
+def TacticM.intro (g : Nat) (x : String) : TacticM Nat := fun k => Tac.intro g x k
+def TacticM.exact (g : Nat) (stx : Syntax) : TacticM Unit := fun k => Tac.exact g stx (k ())
+def TacticM.elabInfer (g : Nat) (stx : Syntax) : TacticM (Expr × Expr) := fun k => Tac.elabInfer g stx k
+def TacticM.assign (g : Nat) (e : Expr) : TacticM Unit := fun k => Tac.assign g e (k ())
+def TacticM.newGoal (g : Nat) (ty : Expr) : TacticM Nat := fun k => Tac.newGoal g ty k
+def TacticM.normalize (g : Nat) (e : Expr) : TacticM Expr := fun k => Tac.normalize g e k
+-- `body` (under one more binder than goal `g`'s context) with `arg` for its variable 0
+def TacticM.instantiate (g : Nat) (body arg : Expr) : TacticM Expr := fun k => Tac.instantiate g body arg k
+def TacticM.isDefEq (g : Nat) (a b : Expr) : TacticM Bool := fun k => Tac.isDefEq g a b k
+def TacticM.inferType (g : Nat) (e : Expr) : TacticM Expr := fun k => Tac.inferType g e k
+def TacticM.evalTactic (stx : Syntax) : TacticM Unit := fun k => Tac.evalTactic stx (k ())
+def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
+  fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
+
+-- Macros: `MacroM` is the same monad (it only uses `fresh` and `fail`).
+def MacroM (A : Type) : Type := TacticM A
+def MacroM.pure {A : Type} (a : A) : MacroM A := TacticM.pure a
+def MacroM.throw {A : Type} (e : String) : MacroM A := TacticM.fail e
+def MacroM.fresh : MacroM Nat := TacticM.fresh
 -- A procedural macro, registered with `attribute [macro kind] f`.
 def Macro : Type := Syntax → MacroM Syntax
+def Macro.run (m : MacroM Syntax) : Tac := m (fun s => Tac.result s)
 
--- `do` notation for `MacroM`, written as macros: `do x ← e; rest` and `do e`.
+-- `do` notation, written as macros: `do x ← e; rest`, `do e; rest` and `do e`.
 declare_syntax_cat doSeq
 syntax (name := last) term : doSeq
 syntax (name := bind) ident "←" term ";" doSeq : doSeq
@@ -112,9 +175,9 @@ syntax (name := block) "do" doSeq : term
 macro_rules
   | `(term| do $e:term) => `(term| $e)
 macro_rules
-  | `(term| do $e:term; $rest) => `(term| MacroM.bind $e (fun _ => do $rest))
+  | `(term| do $e:term; $rest) => `(term| TacticM.bind $e (fun _ => do $rest))
 macro_rules
-  | `(term| do $x ← $e; $rest) => `(term| MacroM.bind $e (fun $x => do $rest))
+  | `(term| do $x ← $e; $rest) => `(term| TacticM.bind $e (fun $x => do $rest))
 
 -- Taking syntax apart.
 def SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax
@@ -125,3 +188,114 @@ def SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax
 def Syntax.getArg (stx : Syntax) (i : Nat) : Syntax := match stx with
   | .node _ args => SyntaxF.nth args i
   | _ => .missing
+
+-- Tactics: a tactic is a Wiz function from its syntax to `TacticM Unit`, registered
+-- with `attribute [tactic kind] f`. `by tac₁; tac₂ …` runs them on the goal.
+def Tactic : Type := Syntax → TacticM Unit
+
+def TacticM.mainGoal : TacticM Nat := do
+  gs ← TacticM.getGoals;
+  match gs with
+  | .nil => TacticM.fail "no goals"
+  | .cons g _ => TacticM.pure g
+
+def TacticM.replaceMainGoal (new : List Nat) : TacticM Unit := do
+  gs ← TacticM.getGoals;
+  match gs with
+  | .nil => TacticM.setGoals new
+  | .cons _ rest => TacticM.setGoals (List.append new rest)
+
+def Syntax.identName (stx : Syntax) : TacticM String := match stx with
+  | .ident s => TacticM.pure s
+  | _ => TacticM.fail "expected an identifier"
+
+syntax (name := intro) "intro" ident : tactic
+def Tactic.intro : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  x ← Syntax.identName (Syntax.getArg stx 1);
+  g' ← TacticM.intro g x;
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.intro] Tactic.intro
+
+syntax (name := exact) "exact" term : tactic
+def Tactic.exact : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  TacticM.exact g (Syntax.getArg stx 1);
+  TacticM.replaceMainGoal .nil
+attribute [tactic tactic.exact] Tactic.exact
+
+syntax (name := rflTac) "rfl" : tactic
+macro_rules
+  | `(tactic| rfl) => `(tactic| exact rfl)
+
+-- `assumption`: close the goal with a hypothesis of a definitionally equal type.
+def TacticM.findHyp : List (String × Expr) → Nat → Nat → Expr → TacticM Unit
+  -- Exercise 6.6: try the hypotheses in order (the `i`th is `Expr.var i`), with
+  -- `TacticM.isDefEq` against the goal `ty`, and `TacticM.assign` the first that fits.
+  | _, _, _, _ => TacticM.fail "assumption: not implemented yet"
+syntax (name := assumption) "assumption" : tactic
+def Tactic.assumption : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  ty ← TacticM.goalType g;
+  hyps ← TacticM.goalHyps g;
+  TacticM.findHyp hyps 0 g ty;
+  TacticM.replaceMainGoal .nil
+attribute [tactic tactic.assumption] Tactic.assumption
+
+-- `apply f`: a new goal for each argument of `f`, then unify `f`'s result type with the
+-- goal. Arguments that unification determines are dropped from the goals.
+def TacticM.applyLoop : Nat → Nat → Expr → Expr → List Nat → TacticM (List Nat)
+  | .zero, _, _, _, _ => TacticM.fail "apply: too many arguments"
+  | .succ fuel, g, e, ty, acc => match ty with
+    | .pi _ _ _ dom body => do
+      ng ← TacticM.newGoal g dom;
+      a ← TacticM.goalExpr ng;
+      body' ← TacticM.instantiate g body a;
+      TacticM.applyLoop fuel g (.app e a) body' (List.append acc (.cons ng .nil))
+    | _ => do
+      goalTy ← TacticM.goalType g;
+      ok ← TacticM.isDefEq g ty goalTy;
+      match ok with
+      | .true => do TacticM.assign g e; TacticM.pure acc
+      | .false => TacticM.fail "apply: the result type does not match the goal"
+syntax (name := apply) "apply" term : tactic
+def Tactic.apply : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  p ← TacticM.elabInfer g (Syntax.getArg stx 1);
+  new ← TacticM.applyLoop 64 g p.1 p.2 .nil;
+  TacticM.replaceMainGoal new
+attribute [tactic tactic.apply] Tactic.apply
+
+syntax (name := try) "try" tactic : tactic
+def Tactic.try : Tactic := fun stx =>
+  TacticM.tryCatch (TacticM.evalTactic (Syntax.getArg stx 1)) (fun _ => TacticM.pure ())
+attribute [tactic tactic.try] Tactic.try
+
+syntax (name := first) "first" "|" tactic "|" tactic : tactic
+def Tactic.first : Tactic := fun stx =>
+  TacticM.tryCatch (TacticM.evalTactic (Syntax.getArg stx 2)) (fun _ => TacticM.evalTactic (Syntax.getArg stx 4))
+attribute [tactic tactic.first] Tactic.first
+
+-- `(tac₁; tac₂; …)` runs a sequence.
+def TacticM.evalSeq {b : Bool} : SyntaxF b → TacticM Unit
+  | .cons t ts => do TacticM.evalTactic t; TacticM.evalSeq ts
+  | _ => TacticM.pure ()
+syntax (name := paren) "(" sepBy(tactic, ";") ")" : tactic
+def Tactic.paren : Tactic := fun stx => match Syntax.getArg stx 1 with
+  | .node _ ts => TacticM.evalSeq ts
+  | _ => TacticM.pure ()
+attribute [tactic tactic.paren] Tactic.paren
+
+-- `repeat tac`: run `tac` until it fails (at most 64 times).
+def TacticM.repeatN : Nat → Syntax → TacticM Unit
+  | .zero, _ => TacticM.pure ()
+  | .succ n, t => TacticM.tryCatch (do TacticM.evalTactic t; TacticM.repeatN n t) (fun _ => TacticM.pure ())
+syntax (name := repeat) "repeat" tactic : tactic
+def Tactic.repeat : Tactic := fun stx => TacticM.repeatN 64 (Syntax.getArg stx 1)
+attribute [tactic tactic.repeat] Tactic.repeat
+
+syntax (name := trace) "trace" str : tactic
+def Tactic.trace : Tactic := fun stx => match Syntax.getArg (Syntax.getArg stx 1) 0 with
+  | .atom s => TacticM.trace s
+  | _ => TacticM.pure ()
+attribute [tactic tactic.trace] Tactic.trace
