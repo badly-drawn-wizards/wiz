@@ -4,7 +4,7 @@ import IO
 -- pairs and projections (stage 14e), `Unit`, `Empty`, finite enumerations with case
 -- analysis (stage 14f), `Prop` with proof irrelevance (stage 14g), observational
 -- equality (stage 14h), descriptions and data (stage 14i), induction (stage 14j),
--- `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
+-- global constants (stage 14k), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
 -- with closures (an environment and a body), values quote back to normal forms, and
 -- conversion compares values at their types (with η, and all proofs of a proposition
 -- equal). Values carry `Sort` levels: `Prop` is `Sort 0`, and `U n` is `Sort (n + 1)`.
@@ -64,6 +64,10 @@ inductive Tm where
   | con (x : Tm)
   -- induction on `x : μ D i`, into the motive `P : (i : I) → μ D i → Sort v`
   | ind (l : Nat) (I D : Tm) (v : Nat) (P m i x : Tm)
+  -- a global definition, carrying its (closed) value and type, and a global axiom: the
+  -- terms are shared, so there is no table of globals to pass around
+  | const (name : String) (value ty : Tm)
+  | axiomC (name : String) (ty : Tm)
 inductive Tms where
   | tnil
   | tcons (t : Tm) (rest : Tms)
@@ -92,6 +96,9 @@ inductive Val where
   | vdhrec (H j E : Val)
   | vmu (l : Nat) (I D i : Val)
   | vcon (x : Val)
+  -- **glued**: a global definition applied to `sp`, and its unfolding (`Val.unfold` in
+  -- the Lean kernel, computed eagerly here); `whnf` looks through it
+  | vglued (h : Head) (sp : Spine) (v : Val)
   -- a stuck head and the eliminations applied to it
   | vne (head : Head) (spine : Spine)
 inductive Env where
@@ -118,7 +125,22 @@ inductive Head where
   | hrefl (A a : Val)
   | hreflTy (X : Val)
   | htransp (A a P p b e : Val)
+  | hconst (name : String) (value ty : Tm)
+  | haxiom (name : String) (ty : Tm)
 end
+
+-- unfold glued definitions at the head: do this before matching on a value's shape
+def whnf : Val → Val
+  | .vglued _ _ v => whnf v
+  | v => v
+
+def kCharsEq : List Char → List Char → Bool
+  | .nil, .nil => .true
+  | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (kCharsEq as bs)
+  | _, _ => .false
+def kStrEq (a b : String) : Bool := match a with
+  | .mk x => match b with
+    | .mk y => kCharsEq x y
 
 def tmsNth : Tms → Nat → Tm
   | .tnil, _ => .star
@@ -194,6 +216,8 @@ def tmEq : Tm → Tm → Bool
       (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f'))))))
   | .mu l a b c, .mu l' d e f => Bool.and (Nat.beq l l') (Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f)))
   | .con a, .con b => tmEq a b
+  | .const n _ _, .const n' _ _ => kStrEq n n'
+  | .axiomC n _, .axiomC n' _ => kStrEq n n'
   | .ind l a b v c d e f, .ind l' a' b' v' c' d' e' f' => Bool.and (Nat.beq l l') (Bool.and (Nat.beq v v')
       (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f')))))))
   | _, _ => .false
@@ -299,12 +323,12 @@ def eval : Env → Tm → Val
   | _, .empty n => .vempty (n + 1)
   | _, .ptrue => .vunit 0
   | _, .pfalse => .vempty 0
-  | env, .exfalso m t => match eval env t with
+  | env, .exfalso m t => match whnf (eval env t) with
     | .vne h sp => .vne h (.sabsurd sp (eval env m))
     | v => v
   | _, .enum k => .venum k
   | _, .tag k i => .vtag k i
-  | env, .ecase m s bs => match eval env s with
+  | env, .ecase m s bs => match whnf (eval env s) with
     | .vtag _ i => eval env (tmsNth bs i)
     | .vne h sp => .vne h (.secase sp env m bs)
     | v => v
@@ -326,10 +350,13 @@ def eval : Env → Tm → Val
   | env, .con x => .vcon (eval env x)
   | env, .ind l I D v P m i x =>
     vInd l (eval env I) (eval env D) v (eval env P) (eval env m) (eval env i) (eval env x)
+  | _, .const n v ty => .vglued (.hconst n v ty) .snil (eval .nil v)
+  | _, .axiomC n ty => .vne (.haxiom n ty) .snil
   --|ex
   --| | _, _ => .vsort 0
   --sol>
 def vapp : Val → Val → Val
+  | .vglued h sp v, a => .vglued h (.sapp sp a) (vapp v a)  -- (given) glued stays glued
   --<sol
   | .vlam env b, a => eval (.cons a env) b
   | .vne h sp, a => .vne h (.sapp sp a)
@@ -338,6 +365,7 @@ def vapp : Val → Val → Val
   --| | v, _ => v
   --sol>
 def vfst : Val → Val
+  | .vglued h sp v => .vglued h (.sfst sp) (vfst v)  -- (given)
   --<sol
   | .vpair a _ => a
   | .vne h sp => .vne h (.sfst sp)
@@ -346,6 +374,7 @@ def vfst : Val → Val
   --| | v => v
   --sol>
 def vsnd : Val → Val
+  | .vglued h sp v => .vglued h (.ssnd sp) (vsnd v)  -- (given)
   --<sol
   | .vpair _ b => b
   | .vne h sp => .vne h (.ssnd sp)
@@ -354,7 +383,8 @@ def vsnd : Val → Val
   --| | v => v
   --sol>
 -- `Desc.elim` (`vDelim` in `Eval.lean`): the methods get `tt` for the quantity
-def vDelim : Nat → Val → Val → Val → Val → Val → Val → Val
+def vDelim (v : Nat) (P mret marg mrec mhrec D : Val) : Val := vDelimW v P mret marg mrec mhrec (whnf D)
+def vDelimW : Nat → Val → Val → Val → Val → Val → Val → Val
   | _, _, mret, _, _, _, .vdret i => vapp mret i
   | v, P, mret, marg, mrec, mhrec, .vdarg S E =>
     -- fun s => Desc.elim … (E s);  inside: s0 E1 mhrec2 mrec3 marg4 mret5 P6
@@ -369,7 +399,8 @@ def vDelim : Nat → Val → Val → Val → Val → Val → Val → Val
   | _, _, _, _, _, _, d => d
 -- induction (`vInd` in `Eval.lean`): on a constructor, the method applied to the payload
 -- and its hypotheses (`ind` at each recursive field)
-def vInd : Nat → Val → Val → Nat → Val → Val → Val → Val → Val
+def vInd (l : Nat) (I D : Val) (v : Nat) (P m i x : Val) : Val := vIndW l I D v P m i (whnf x)
+def vIndW : Nat → Val → Val → Nat → Val → Val → Val → Val → Val
   | l, I, D, v, P, m, i, .vcon xs =>
     -- fun j y => ind … j y;  inside: y0 j1 m2 P3 D4 I5
     let f : Val := .vlam (.cons m (.cons P (.cons D (.cons I .nil))))
@@ -385,7 +416,8 @@ def vInterp (l : Nat) (I D X i : Val) : Val :=
 def muFamily (l : Nat) (I D : Val) : Val :=
   .vlam (.cons D (.cons I .nil)) (.mu l (.var 2) (.var 1) (.var 0))
 -- `a = b` at `A`, by `A` (`vEq` in `Eval.lean`; the closures are the same templates)
-def vEq : Val → Val → Val → Val
+def vEq (A a b : Val) : Val := vEqW (whnf A) (whnf a) (whnf b)
+def vEqW : Val → Val → Val → Val
   | .vpi a1 env b1, a, b => .vpi a1 (.cons b (.cons a (.cons (.vlam env b1) .nil)))
       (.eq (.app (.var 3) (.var 0)) (.app (.var 2) (.var 0)) (.app (.var 1) (.var 0)))
   | .vsigma a1 env b1, a, b =>
@@ -406,7 +438,8 @@ def vEq : Val → Val → Val → Val
     | .succ _ => vEqType a b
   | A, a, b => .vne (.heq A a b) .snil
 -- `A = B` between types (`vEqType`)
-def vEqType : Val → Val → Val
+def vEqType (X Y : Val) : Val := vEqTypeW (whnf X) (whnf Y)
+def vEqTypeW : Val → Val → Val
   | .vpi a env b, .vpi a' env' b' => .vsigma (vEqType a' a)
       (.cons (.vlam env' b') (.cons (.vlam env b) (.cons a' (.cons a .nil))))
       (.pi (.var 3) (.eqTy (.app (.var 3) (.coe (.var 4) (.var 5) (.var 1) (.var 0))) (.app (.var 2) (.var 0))))
@@ -423,7 +456,8 @@ def vEqType : Val → Val → Val
     | .true => .vempty 0
     | .false => .vne (.heqTy X Y) .snil
 -- `cast A B e t` (`vCast`)
-def vCast : Val → Val → Val → Val → Val
+def vCast (A B e t : Val) : Val := vCastW (whnf A) (whnf B) e t
+def vCastW : Val → Val → Val → Val → Val
   | .vpi a1 env1 b1, .vpi a2 env2 b2, e, t =>
     let c : Tm := .coe (.var 5) (.var 6) (.fst (.var 2)) (.var 0);
     .vlam (.cons t (.cons e (.cons (.vlam env2 b2) (.cons (.vlam env1 b1) (.cons a2 (.cons a1 .nil))))))
@@ -468,6 +502,7 @@ def quote : Nat → Val → Tm
   | l, .vmu k I D i => .mu k (quote l I) (quote l D) (quote l i)
   | l, .vcon x => .con (quote l x)
   | l, .vne h sp => quoteSpine l (quoteHead l h) sp
+  | l, .vglued h sp _ => quoteSpine l (quoteHead l h) sp
   --|ex
   --| | _, _ => .univ 0
   --sol>
@@ -491,6 +526,8 @@ def quoteHead : Nat → Head → Tm
   | l, .hrefl A a => .eqRefl (quote l A) (quote l a)
   | l, .hreflTy X => .tyRefl (quote l X)
   | l, .htransp A a P p b e => .subst (quote l A) (quote l a) (quote l P) (quote l p) (quote l b) (quote l e)
+  | _, .hconst n v ty => .const n v ty
+  | _, .haxiom n ty => .axiomC n ty
 def quoteBranches : Nat → Env → Tms → Tms
   | _, _, .tnil => .tnil
   | l, env, .tcons b rest => .tcons (quote l (eval env b)) (quoteBranches l env rest)
@@ -545,6 +582,8 @@ def show (names : List String) : Nat → Tm → String
   | l, .mu k I D i => String.append (String.append (String.append "μ" (Nat.toString k)) (String.append "(" (show names l I)))
       (String.append (String.append ", " (show names l D)) (String.append ", " (String.append (show names l i) ")")))
   | l, .con x => String.append (String.append "con(" (show names l x)) ")"
+  | _, .const n _ _ => n
+  | _, .axiomC n _ => n
   | l, .ind _ _ _ _ P m i x => String.append (String.append (String.append "ind(" (show names l P)) (String.append ", " (show names l m)))
       (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")")))
   | l, .tyRefl X => String.append (String.append "reflTy(" (show names l X)) ")"
@@ -594,13 +633,13 @@ mutual
 -- the type of the variable at level `x` after the eliminations `sp`
 def typeOfNe : TCtx → Head → Spine → Val
   | c, h, .snil => headType c h
-  | c, x, .sapp sp a => match typeOfNe c x sp with
+  | c, x, .sapp sp a => match whnf (typeOfNe c x sp) with
     | .vpi _ env cod => eval (.cons a env) cod
     | ty => ty
-  | c, x, .sfst sp => match typeOfNe c x sp with
+  | c, x, .sfst sp => match whnf (typeOfNe c x sp) with
     | .vsigma a _ _ => a
     | ty => ty
-  | c, x, .ssnd sp => match typeOfNe c x sp with
+  | c, x, .ssnd sp => match whnf (typeOfNe c x sp) with
     | .vsigma _ env b => eval (.cons (vfst (.vne x sp)) env) b
     | ty => ty
   | _, x, .secase sp env m _ => eval (.cons (.vne x sp) env) m
@@ -608,7 +647,8 @@ def typeOfNe : TCtx → Head → Spine → Val
   | _, h, .sdelim sp _ P _ _ _ _ => vapp P (.vne h sp)
   | _, h, .sind sp _ _ _ _ P _ i => vapp (vapp P i) (.vne h sp)
 -- the level of the universe a type lives in
-def sortOf : TCtx → Val → Option Nat
+def sortOf (c : TCtx) (ty : Val) : Option Nat := sortOfW c (whnf ty)
+def sortOfW : TCtx → Val → Option Nat
   | c, .vpi a env b => match sortOf c a with
     | .some i => match sortOf (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b) with
       | .some j => .some (imax i j)
@@ -625,7 +665,7 @@ def sortOf : TCtx → Val → Option Nat
   | _, .venum _ => .some 1
   | _, .vdesc l _ => .some (l + 2)
   | _, .vmu l _ _ _ => .some (l + 1)
-  | c, .vne x sp => match typeOfNe c x sp with
+  | c, .vne x sp => match whnf (typeOfNe c x sp) with
     | .vsort l => .some l
     | _ => .none
   | _, _ => .none
@@ -638,6 +678,8 @@ def headType : TCtx → Head → Val
   | _, .hrefl A a => vEq A a a
   | _, .hreflTy X => vEqType X X
   | _, .htransp _ _ P _ b e => vapp (vapp P b) e
+  | _, .hconst _ _ ty => eval .nil ty
+  | _, .haxiom _ ty => eval .nil ty
 end
 
 def isProp (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
@@ -685,7 +727,7 @@ def conv : TCtx → Val → Val → Val → Bool
   --<sol
   | c, ty, a, b => match isProp c ty with
     | .true => .true
-    | .false => match ty with
+    | .false => match whnf ty with
       | .vpi dom env cod =>
         let x := fresh (TCtx.lvl c);
         conv (TCtx.bind c dom) (eval (.cons x env) cod) (vapp a x) (vapp b x)
@@ -693,23 +735,23 @@ def conv : TCtx → Val → Val → Val → Bool
         Bool.and (conv c ta (vfst a) (vfst b)) (conv c (eval (.cons (vfst a) env) tb) (vsnd a) (vsnd b))
       | .vunit _ => .true
       | .vsort _ => convTy c a b
-      | .vdesc l I => match a with
-        | .vdret i => match b with
+      | .vdesc l I => match whnf a with
+        | .vdret i => match whnf b with
           | .vdret j => conv c I i j
           | _ => .false
-        | .vdarg S E => match b with
+        | .vdarg S E => match whnf b with
           | .vdarg S' E' => Bool.and (convTy c S S') (conv c (.vpi S (.cons I .nil) (.descr l (.var 1))) E E')
           | _ => .false
-        | .vdrec j E => match b with
+        | .vdrec j E => match whnf b with
           | .vdrec j' E' => Bool.and (conv c I j j') (conv c (.vdesc l I) E E')
           | _ => .false
-        | .vdhrec H j E => match b with
+        | .vdhrec H j E => match whnf b with
           | .vdhrec H' j' E' => Bool.and (convTy c H H')
               (Bool.and (conv c (.vpi H (.cons I .nil) (.var 1)) j j') (conv c (.vdesc l I) E E'))
           | _ => .false
         | _ => convNe c a b
-      | .vmu l I D i => match a with
-        | .vcon x => match b with
+      | .vmu l I D i => match whnf a with
+        | .vcon x => match whnf b with
           | .vcon y => conv c (vInterp l I D (muFamily l I D) i) x y
           | _ => .false
         | _ => convNe c a b
@@ -717,7 +759,14 @@ def conv : TCtx → Val → Val → Val → Bool
   --|ex
   --| | _, _, _, _ => .false
   --sol>
-def convTy : TCtx → Val → Val → Bool
+def convTy (c : TCtx) (a b : Val) : Bool := match lazyDelta c a b with
+  | .true => .true
+  | .false => convTyW c (whnf a) (whnf b)
+-- two glued values with the same head: compare the spines (else they get unfolded)
+def lazyDelta : TCtx → Val → Val → Bool
+  | c, .vglued h sp _, .vglued h' sp' _ => Bool.and (convHead c h h') (convSpine c h sp sp')
+  | _, _, _ => .false
+def convTyW : TCtx → Val → Val → Bool
   --<sol
   | c, .vpi a e b, .vpi a' e' b' => Bool.and (convTy c a a')
       (convTy (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) e) b) (eval (.cons (fresh (TCtx.lvl c)) e') b'))
@@ -734,7 +783,10 @@ def convTy : TCtx → Val → Val → Bool
   --|ex
   --| | _, _, _ => .false
   --sol>
-def convNe : TCtx → Val → Val → Bool
+def convNe (c : TCtx) (a b : Val) : Bool := match lazyDelta c a b with
+  | .true => .true
+  | .false => convNeW c (whnf a) (whnf b)
+def convNeW : TCtx → Val → Val → Bool
   | _, .vtag _ i, .vtag _ j => Nat.beq i j
   | _, .vtt, .vtt => .true
   | c, .vne x sp, .vne y sp' => Bool.and (convHead c x y) (convSpine c x sp sp')
@@ -742,6 +794,8 @@ def convNe : TCtx → Val → Val → Bool
 -- the same head: the same variable, or equal components (proofs are all equal)
 def convHead : TCtx → Head → Head → Bool
   | _, .hvar x, .hvar y => Nat.beq x y
+  | _, .hconst n _ _, .hconst n' _ _ => kStrEq n n'
+  | _, .haxiom n _, .haxiom n' _ => kStrEq n n'
   | c, .heq A a b, .heq A' a' b' => Bool.and (convTy c A A') (Bool.and (conv c A a a') (conv c A b b'))
   | c, .heqTy A B, .heqTy A' B' => Bool.and (convTy c A A') (convTy c B B')
   | c, .hcast A B _ t, .hcast A' B' _ t' => Bool.and (convTy c A A') (Bool.and (convTy c B B') (conv c A t t'))
@@ -752,20 +806,20 @@ def convHead : TCtx → Head → Head → Bool
 -- the same head `x`: compare the eliminations, at their types
 def convSpine : TCtx → Head → Spine → Spine → Bool
   | _, _, .snil, .snil => .true
-  | c, x, .sapp r a, .sapp r' b => Bool.and (convSpine c x r r') (match typeOfNe c x r with
+  | c, x, .sapp r a, .sapp r' b => Bool.and (convSpine c x r r') (match whnf (typeOfNe c x r) with
     | .vpi dom _ _ => conv c dom a b
     | _ => .false)
   | c, x, .sfst r, .sfst r' => convSpine c x r r'
   | c, x, .ssnd r, .ssnd r' => convSpine c x r r'
   | c, x, .secase r e m bs, .secase r' e' m' bs' => Bool.and (convSpine c x r r')
-      (match typeOfNe c x r with
+      (match whnf (typeOfNe c x r) with
        | .venum k => Bool.and
            (convTy (TCtx.bind c (.venum k)) (eval (.cons (fresh (TCtx.lvl c)) e) m) (eval (.cons (fresh (TCtx.lvl c)) e') m'))
            (convBranches c k e m e' bs bs' 0)
        | _ => .false)
   | c, x, .sabsurd r m, .sabsurd r' m' => Bool.and (convSpine c x r r') (convTy c m m')
   | c, x, .sdelim r v P a b d e, .sdelim r' v' P' a' b' d' e' => Bool.and (convSpine c x r r')
-      (match typeOfNe c x r with
+      (match whnf (typeOfNe c x r) with
        | .vdesc l I => Bool.and (Nat.beq v v') (Bool.and (conv c (delimMotiveTy l v I) P P')
            (Bool.and (conv c (delimMret l I P) a a') (Bool.and (conv c (delimMarg l I P) b b')
              (Bool.and (conv c (delimMrec l I P) d d') (conv c (delimMhrec l I P) e e')))))
@@ -798,7 +852,7 @@ def infer : TCtx → Tm → TyRes
     | r => r
   | _, .lam _ => .err "cannot infer the type of a λ; add a type ascription"
   | c, .app f a => match infer c f with
-    | .ok fty => match fty with
+    | .ok fty => match whnf fty with
       | .vpi dom env cod => match check c a dom with
         | .ok _ => .ok (eval (.cons (eval (TCtx.env c) a) env) cod)
         | r => r
@@ -827,7 +881,7 @@ def infer : TCtx → Tm → TyRes
   | _, .star => .err "cannot infer the type of tt; add a type ascription"
   | c, .exfalso m t => match inferUniv c m with
     | .ok _ => match infer c t with
-      | .ok ty => match ty with
+      | .ok ty => match whnf ty with
         | .vempty _ => .ok (eval (TCtx.env c) m)
         | ty => .err (String.append "not empty: " (showVal c ty))
       | r => r
@@ -837,7 +891,7 @@ def infer : TCtx → Tm → TyRes
     | .true => .ok (.venum k)
     | .false => .err "tag out of range"
   | c, .ecase m sc bs => match infer c sc with
-    | .ok sty => match sty with
+    | .ok sty => match whnf sty with
       | .venum k => match Nat.beq k (tmsLen bs) with
         | .false => .err "wrong number of branches"
         | .true => match inferUniv (TCtx.bind c (.venum k)) m with
@@ -956,8 +1010,10 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
+  | _, .const _ _ ty => .ok (eval .nil ty)
+  | _, .axiomC _ ty => .ok (eval .nil ty)
   | c, .delim v P a b d e D => match infer c D with
-    | .ok dty => match dty with
+    | .ok dty => match whnf dty with
       | .vdesc l I => match check c P (delimMotiveTy l v I) with
         | .ok _ =>
           let vP := eval (TCtx.env c) P;
@@ -974,19 +1030,23 @@ def infer : TCtx → Tm → TyRes
       | ty => .err (String.append "not a description: " (showVal c ty))
     | r => r
   | c, .fst p => match infer c p with
-    | .ok ty => match ty with
+    | .ok ty => match whnf ty with
       | .vsigma a _ _ => .ok a
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   | c, .snd p => match infer c p with
-    | .ok ty => match ty with
+    | .ok ty => match whnf ty with
       | .vsigma _ env b => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b)
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   --|ex
   --| | _, _ => .err "not implemented"
   --sol>
-def check : TCtx → Tm → Val → TyRes
+-- (given) `check` matches on the type's shape (`whnf`), and answers with the type it got
+def check (c : TCtx) (t : Tm) (ty : Val) : TyRes := match checkW c t (whnf ty) with
+  | .ok _ => .ok ty
+  | r => r
+def checkW : TCtx → Tm → Val → TyRes
   --<sol
   | c, .lam b, .vpi dom env cod =>
     match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
@@ -1043,7 +1103,7 @@ def checkBranches : TCtx → Nat → Tm → Tms → Nat → TyRes
 -- a type: its universe
 def inferUniv : TCtx → Tm → TyRes
   | c, t => match infer c t with
-    | .ok ty => match ty with
+    | .ok ty => match whnf ty with
       | .vsort l => .ok (.vsort l)
       | ty => .err (String.append "not a type: its type is " (showVal c ty))
     | r => r
