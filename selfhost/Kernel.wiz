@@ -4,7 +4,8 @@ import IO
 -- pairs and projections (stage 14e), `Unit`, `Empty`, finite enumerations with case
 -- analysis (stage 14f), `Prop` with proof irrelevance (stage 14g), observational
 -- equality (stage 14h), descriptions and data (stage 14i), induction (stage 14j),
--- global constants (stage 14k), `let`, and type ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
+-- global constants (stage 14k) and universe-polymorphic ones (stage 14l), `let`, and type
+-- ascriptions. Normalisation by evaluation, as in `Eval.lean`: terms evaluate to values
 -- with closures (an environment and a body), values quote back to normal forms, and
 -- conversion compares values at their types (with η, and all proofs of a proposition
 -- equal). Values carry `Sort` levels: `Prop` is `Sort 0`, and `U n` is `Sort (n + 1)`.
@@ -13,12 +14,24 @@ import IO
 -- environment of values), and evaluation, application and quotation are mutually
 -- recursive.
 
+-- universe levels in terms: numerals, parameters (of a universe-polymorphic constant),
+-- and their successors and maxima. Values only ever see closed levels (a constant is
+-- instantiated before it is evaluated), so their levels are numbers.
+inductive Lvl where
+  | lnum (n : Nat)
+  | lparam (name : String)
+  | lsucc (l : Lvl)
+  | lmax (a b : Lvl)
+  | limax (a b : Lvl)
+
 mutual
 inductive Tm where
   | var (i : Nat)
   -- `U n` (= `Type n`, `Sort (n + 1)`), and `Prop` (`Sort 0`)
   | univ (n : Nat)
   | prop
+  -- `Sort l` for any level (`univ n` and `prop` are the closed ones)
+  | sortL (l : Lvl)
   | pi (dom cod : Tm)
   | lam (body : Tm)
   | app (f a : Tm)
@@ -66,7 +79,7 @@ inductive Tm where
   | ind (l : Nat) (I D : Tm) (v : Nat) (P m i x : Tm)
   -- a global definition, carrying its (closed) value and type, and a global axiom: the
   -- terms are shared, so there is no table of globals to pass around
-  | const (name : String) (value ty : Tm)
+  | const (name : String) (params : List String) (levels : List Lvl) (value ty : Tm)
   | axiomC (name : String) (ty : Tm)
 inductive Tms where
   | tnil
@@ -125,14 +138,9 @@ inductive Head where
   | hrefl (A a : Val)
   | hreflTy (X : Val)
   | htransp (A a P p b e : Val)
-  | hconst (name : String) (value ty : Tm)
+  | hconst (name : String) (params : List String) (levels : List Lvl) (value ty : Tm)
   | haxiom (name : String) (ty : Tm)
 end
-
--- unfold glued definitions at the head: do this before matching on a value's shape
-def whnf : Val → Val
-  | .vglued _ _ v => whnf v
-  | v => v
 
 def kCharsEq : List Char → List Char → Bool
   | .nil, .nil => .true
@@ -141,6 +149,91 @@ def kCharsEq : List Char → List Char → Bool
 def kStrEq (a b : String) : Bool := match a with
   | .mk x => match b with
     | .mk y => kCharsEq x y
+def lvlImax (i j : Nat) : Nat := match j with
+  | .zero => 0
+  | .succ _ => Nat.max i j
+-- a closed level as a number (a parameter that is left counts as `0`)
+def lvlNat : Lvl → Nat
+  | .lnum n => n
+  | .lparam _ => 0
+  | .lsucc l => lvlNat l + 1
+  | .lmax a b => Nat.max (lvlNat a) (lvlNat b)
+  | .limax a b => lvlImax (lvlNat a) (lvlNat b)
+-- levels, compared as numbers, and shown as `.{1, 2}`
+def lvlsEq : List Lvl → List Lvl → Bool
+  | .nil, .nil => .true
+  | .cons a r, .cons b r' => Bool.and (Nat.beq (lvlNat a) (lvlNat b)) (lvlsEq r r')
+  | _, _ => .false
+def showLvlsFrom : List Lvl → String
+  | .nil => ""
+  | .cons l rest => match rest with
+    | .nil => Nat.toString (lvlNat l)
+    | .cons _ _ => String.append (String.append (Nat.toString (lvlNat l)) ", ") (showLvlsFrom rest)
+def showLvls : List Lvl → String
+  | .nil => ""
+  | ls => String.append (String.append ".{" (showLvlsFrom ls)) "}"
+def lookupLvl : List String → List Lvl → String → Lvl
+  | .cons p ps, .cons l ls, n => match kStrEq p n with
+    | .true => l
+    | .false => lookupLvl ps ls n
+  | _, _, n => .lparam n
+-- substitute levels for parameters
+def substLvl (ps : List String) (ls : List Lvl) : Lvl → Lvl
+  | .lparam n => lookupLvl ps ls n
+  | .lsucc l => .lsucc (substLvl ps ls l)
+  | .lmax a b => .lmax (substLvl ps ls a) (substLvl ps ls b)
+  | .limax a b => .limax (substLvl ps ls a) (substLvl ps ls b)
+  | l => l
+def substLvls (ps : List String) (ls : List Lvl) : List Lvl → List Lvl
+  | .nil => .nil
+  | .cons l rest => .cons (substLvl ps ls l) (substLvls ps ls rest)
+-- instantiate a universe-polymorphic definition's levels (the definitions of the
+-- constants it mentions are closed, so they are left alone)
+mutual
+def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
+  | .sortL l => .sortL (substLvl ps ls l)
+  | .const n ps' ls' v ty => .const n ps' (substLvls ps ls ls') v ty
+  | .pi a b => .pi (tmSubst ps ls a) (tmSubst ps ls b)
+  | .lam b => .lam (tmSubst ps ls b)
+  | .app f a => .app (tmSubst ps ls f) (tmSubst ps ls a)
+  | .letE t v b => .letE (tmSubst ps ls t) (tmSubst ps ls v) (tmSubst ps ls b)
+  | .ann t ty => .ann (tmSubst ps ls t) (tmSubst ps ls ty)
+  | .sigma a b => .sigma (tmSubst ps ls a) (tmSubst ps ls b)
+  | .pair a b => .pair (tmSubst ps ls a) (tmSubst ps ls b)
+  | .fst p => .fst (tmSubst ps ls p)
+  | .snd p => .snd (tmSubst ps ls p)
+  | .exfalso m t => .exfalso (tmSubst ps ls m) (tmSubst ps ls t)
+  | .ecase m sc bs => .ecase (tmSubst ps ls m) (tmSubst ps ls sc) (tmsSubst ps ls bs)
+  | .eq A a b => .eq (tmSubst ps ls A) (tmSubst ps ls a) (tmSubst ps ls b)
+  | .eqTy A B => .eqTy (tmSubst ps ls A) (tmSubst ps ls B)
+  | .eqRefl A a => .eqRefl (tmSubst ps ls A) (tmSubst ps ls a)
+  | .tyRefl X => .tyRefl (tmSubst ps ls X)
+  | .coe A B e t => .coe (tmSubst ps ls A) (tmSubst ps ls B) (tmSubst ps ls e) (tmSubst ps ls t)
+  | .subst A a P p b e => .subst (tmSubst ps ls A) (tmSubst ps ls a) (tmSubst ps ls P) (tmSubst ps ls p)
+      (tmSubst ps ls b) (tmSubst ps ls e)
+  | .descr l I => .descr l (tmSubst ps ls I)
+  | .dret i => .dret (tmSubst ps ls i)
+  | .darg S D => .darg (tmSubst ps ls S) (tmSubst ps ls D)
+  | .drec j D => .drec (tmSubst ps ls j) (tmSubst ps ls D)
+  | .dhrec H j D => .dhrec (tmSubst ps ls H) (tmSubst ps ls j) (tmSubst ps ls D)
+  | .delim v P a b c h D => .delim v (tmSubst ps ls P) (tmSubst ps ls a) (tmSubst ps ls b) (tmSubst ps ls c)
+      (tmSubst ps ls h) (tmSubst ps ls D)
+  | .mu l I D i => .mu l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls i)
+  | .con x => .con (tmSubst ps ls x)
+  | .ind l I D v P m i x => .ind l (tmSubst ps ls I) (tmSubst ps ls D) v (tmSubst ps ls P) (tmSubst ps ls m)
+      (tmSubst ps ls i) (tmSubst ps ls x)
+  | t => t
+def tmsSubst (ps : List String) (ls : List Lvl) : Tms → Tms
+  | .tnil => .tnil
+  | .tcons t rest => .tcons (tmSubst ps ls t) (tmsSubst ps ls rest)
+end
+
+-- unfold glued definitions at the head: do this before matching on a value's shape
+def whnf : Val → Val
+  | .vglued _ _ v => whnf v
+  | v => v
+
+
 
 def tmsNth : Tms → Nat → Tm
   | .tnil, _ => .star
@@ -216,7 +309,8 @@ def tmEq : Tm → Tm → Bool
       (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f'))))))
   | .mu l a b c, .mu l' d e f => Bool.and (Nat.beq l l') (Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f)))
   | .con a, .con b => tmEq a b
-  | .const n _ _, .const n' _ _ => kStrEq n n'
+  | .const n _ ls _ _, .const n' _ ls' _ _ => Bool.and (kStrEq n n') (lvlsEq ls ls')
+  | .sortL l, .sortL l' => Nat.beq (lvlNat l) (lvlNat l')
   | .axiomC n _, .axiomC n' _ => kStrEq n n'
   | .ind l a b v c d e f, .ind l' a' b' v' c' d' e' f' => Bool.and (Nat.beq l l') (Bool.and (Nat.beq v v')
       (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f')))))))
@@ -350,7 +444,8 @@ def eval : Env → Tm → Val
   | env, .con x => .vcon (eval env x)
   | env, .ind l I D v P m i x =>
     vInd l (eval env I) (eval env D) v (eval env P) (eval env m) (eval env i) (eval env x)
-  | _, .const n v ty => .vglued (.hconst n v ty) .snil (eval .nil v)
+  | _, .sortL l => .vsort (lvlNat l)
+  | _, .const n ps ls v ty => .vglued (.hconst n ps ls v ty) .snil (eval .nil (tmSubst ps ls v))
   | _, .axiomC n ty => .vne (.haxiom n ty) .snil
   --|ex
   --| | _, _ => .vsort 0
@@ -526,7 +621,7 @@ def quoteHead : Nat → Head → Tm
   | l, .hrefl A a => .eqRefl (quote l A) (quote l a)
   | l, .hreflTy X => .tyRefl (quote l X)
   | l, .htransp A a P p b e => .subst (quote l A) (quote l a) (quote l P) (quote l p) (quote l b) (quote l e)
-  | _, .hconst n v ty => .const n v ty
+  | _, .hconst n ps ls v ty => .const n ps ls v ty
   | _, .haxiom n ty => .axiomC n ty
 def quoteBranches : Nat → Env → Tms → Tms
   | _, _, .tnil => .tnil
@@ -582,7 +677,10 @@ def show (names : List String) : Nat → Tm → String
   | l, .mu k I D i => String.append (String.append (String.append "μ" (Nat.toString k)) (String.append "(" (show names l I)))
       (String.append (String.append ", " (show names l D)) (String.append ", " (String.append (show names l i) ")")))
   | l, .con x => String.append (String.append "con(" (show names l x)) ")"
-  | _, .const n _ _ => n
+  | _, .const n _ ls _ _ => String.append n (showLvls ls)
+  | _, .sortL l => match lvlNat l with
+    | .zero => "Prop"
+    | .succ n => String.append "U" (Nat.toString n)
   | _, .axiomC n _ => n
   | l, .ind _ _ _ _ P m i x => String.append (String.append (String.append "ind(" (show names l P)) (String.append ", " (show names l m)))
       (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")")))
@@ -678,7 +776,7 @@ def headType : TCtx → Head → Val
   | _, .hrefl A a => vEq A a a
   | _, .hreflTy X => vEqType X X
   | _, .htransp _ _ P _ b e => vapp (vapp P b) e
-  | _, .hconst _ _ ty => eval .nil ty
+  | _, .hconst _ ps ls _ ty => eval .nil (tmSubst ps ls ty)
   | _, .haxiom _ ty => eval .nil ty
 end
 
@@ -794,7 +892,7 @@ def convNeW : TCtx → Val → Val → Bool
 -- the same head: the same variable, or equal components (proofs are all equal)
 def convHead : TCtx → Head → Head → Bool
   | _, .hvar x, .hvar y => Nat.beq x y
-  | _, .hconst n _ _, .hconst n' _ _ => kStrEq n n'
+  | _, .hconst n _ ls _ _, .hconst n' _ ls' _ _ => Bool.and (kStrEq n n') (lvlsEq ls ls')
   | _, .haxiom n _, .haxiom n' _ => kStrEq n n'
   | c, .heq A a b, .heq A' a' b' => Bool.and (convTy c A A') (Bool.and (conv c A a a') (conv c A b b'))
   | c, .heqTy A B, .heqTy A' B' => Bool.and (convTy c A A') (convTy c B B')
@@ -1010,7 +1108,8 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | _, .const _ _ ty => .ok (eval .nil ty)
+  | _, .const _ ps ls _ ty => .ok (eval .nil (tmSubst ps ls ty))
+  | _, .sortL l => .ok (.vsort (lvlNat l + 1))
   | _, .axiomC _ ty => .ok (eval .nil ty)
   | c, .delim v P a b d e D => match infer c D with
     | .ok dty => match whnf dty with

@@ -1083,7 +1083,18 @@ compares two applications of the same constant by their arguments before unfoldi
 differential test builds the same globals in the Lean kernel (with `addDecl`) and
 uses them in samples and random terms.
 
-Next: universe polymorphism (symbolic levels), then quantities, sizes, coinduction.
+### 14l: universe polymorphism ✅
+
+Levels in terms are expressions over level parameters (`Lvl`: numerals, parameters,
+successor, `max`, `imax`), and `Sort l` takes any of them. A universe-polymorphic
+constant carries its parameters and the levels it is used at; using it substitutes the
+levels into its definition (`tmSubst`) before evaluating. Every term the kernel
+evaluates is closed, so values only ever see numeric levels. (Checking a polymorphic
+definition itself, with symbolic level equivalence, comes with checking declarations.)
+The differential test adds polymorphic globals (`idP.{u}`, `constP.{u v}`) used at
+various levels.
+
+Next: quantities, then sizes and coinduction, and checking declarations.
 
 ## Stage 11: tooling
 
