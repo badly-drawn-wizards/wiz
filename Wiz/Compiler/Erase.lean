@@ -14,12 +14,20 @@ program (`ETerm`) by erasing everything with no runtime content:
 Binders are kept (an erased argument is passed as `◾`), so de Bruijn indices don't
 change. A later pass can drop them.
 
-**Data representation.** A value of `μ D i` is just its payload: nested pairs
-`(tag, f₁, …, fₙ, ◾, ◾)`. Pairs are 2-field objects and tags are 0-field objects.
-That suits anonymous types. The generic eliminators (`ind`, `Desc.elim`, the `map`
-behind coiteration) become runtime **primitives** that walk the description, which
-is itself an ordinary runtime value. A real backend (stage 8) specialises them for
-known descriptions.
+**Data representation.** The payload of a value of `μ D i` is nested pairs
+`(tag, f₁, …, fₙ, e, ())`. At runtime it is **flat**: one object `⟨tag f₁ … fₙ⟩`, with
+the constructor's tag as the object's tag (or `⟨0 f₁ … fₙ⟩` if the description doesn't
+start with a choice of tag), and `◾` in the places of erased fields. Numbers of the
+registered `nat` type stay numbers. A constructor applied to its fields becomes the
+object directly; case analysis reads the fields directly (`resolveViews`). Code that
+handles payloads generically (`ind` with hypotheses) converts with the primitives
+`pack` and `unpack`, which walk the description.
+
+The generic eliminators (`ind`, `Desc.elim`, the `map` behind coiteration) become
+runtime **primitives** that walk the description, which is itself an ordinary runtime
+value. A description whose first argument is a tag, `Desc.arg (Enum ls) F`, is marked:
+`⟨4 ◾ F⟩` instead of `⟨1 ◾ F⟩`, so that `pack` knows to use the tag. For a number,
+`ind` and the conversions get the description wrapped as `⟨5 D⟩`.
 
 Erasure is **type-directed**, so it is bidirectional like the kernel: `eraseCheck`
 knows the expected type, `eraseInfer` computes it with the kernel's `infer`.
@@ -44,6 +52,23 @@ inductive Prim where
   /-- `0` for an observed coinductive value, `1` for a `coit`, `2` for an `scofix` (the
   backend's `out` is written with it) -/
   | lazyTag
+  /-- `pack D x`: a payload of nested pairs as a flat object (see below) -/
+  | pack
+  /-- `unpack D v`: a flat object as its payload of nested pairs -/
+  | unpack
+  /-- `view D x`: the payload of `x`, seen through projections (removed by `resolveViews`) -/
+  | view (absorbed nat : Bool)
+  /-- the tag of an object, as a 0-field object -/
+  | tag
+  /-- the tag (`0` zero, `1` successor) and the field of a number -/
+  | natTag
+  | natPred
+  | natSucc
+  /-- `fieldAt v n`: field `n` (a runtime number) of an object -/
+  | fieldAt
+  /-- `mkObj t fs`: an object with the tag of `t` and the fields listed by `fs`
+  (nested pairs ending in `◾`) -/
+  | mkObj
   deriving Repr, BEq, Inhabited
 
 inductive ETerm where
@@ -136,6 +161,50 @@ def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   let b ← beta v (d.type.instLevels d.levelParams us) (args.take k)
   pure ((args.drop k).foldl .app b)
 
+/-- Is `ty` (a `μ`) the registered `nat` type? Its values are numbers at runtime. -/
+def isNatTy (g : Globals R) (ty : Val R) : Bool :=
+  match whnf ty with
+  | .mu _ _ _ _ _ (some (T, _, _)) => g.builtins.lookup "nat" == some T
+  | _ => false
+
+/-- Does a description start with a choice of tag, `Desc.arg (Enum ls) F`? Then the
+tag is the flat object's tag. -/
+def startsWithTag (D : Val R) : Bool :=
+  match whnf D with
+  | .darg _ S _ => (whnf S matches .enum _)
+  | _ => false
+
+private def stripAnn : Term R → Term R
+  | .ann t _ => stripAnn t
+  | t => t
+
+/-- The fields of a literal payload: the term `x` and its erasure `x'` walked along the
+description `d` (one field per `arg`, `rec` and `hrec`, up to the `ret`). -/
+partial def flatFields (g : Globals R) (ctx : Ctx R) (d : Val R) (x : Term R) (x' : ETerm) :
+    Option (Array ETerm) :=
+  match whnf d with
+  | .dret _ => some #[]
+  | .darg _ _ F => match stripAnn x, x' with
+    | .pair a r, .obj 0 #[a', r'] => (flatFields g ctx (vApp g F (ctx.eval a)) r r').map (#[a'] ++ ·)
+    | _, _ => none
+  | .drec _ _ D' | .dhrec _ _ _ D' => match stripAnn x, x' with
+    | .pair _ r, .obj 0 #[a', r'] => (flatFields g ctx D' r r').map (#[a'] ++ ·)
+    | _, _ => none
+  | _ => none
+
+/-- A literal payload as a flat object: its tag and fields. -/
+def flatCon (g : Globals R) (ctx : Ctx R) (D : Val R) (x : Term R) (x' : ETerm) : Option (Nat × Array ETerm) :=
+  if startsWithTag D then
+    match whnf D, stripAnn x, x' with
+    | .darg _ _ F, .pair a r, .obj 0 #[.obj k #[], r'] => (flatFields g ctx (vApp g F (ctx.eval a)) r r').map (k, ·)
+    | _, _, _ => none
+  else (flatFields g ctx D x x').map (0, ·)
+
+/-- A use of a value's payload: `view D x` as an argument (see `resolveViews`). -/
+def viewOf (g : Globals R) (D : Val R) (xty : Val R) (D' x' : ETerm) : ETerm :=
+  let nat := isNatTy g xty
+  .prim (.view (startsWithTag D) nat) #[if nat then .obj 5 #[D'] else D', x']
+
 mutual
 
 /-- The free variables of a term (as indices at its top). -/
@@ -155,10 +224,14 @@ partial def Wiz.IR.freeIdx' (t : Term R) (depth : Nat := 0) (acc : Std.HashSet N
 * `lam` against a Π: erase the body under the binder;
 * `pair` against a Σ: an object `obj 0 #[a, b]`, with `a` erased if the Σ's quantity
   is `0`;
-* `con x` against `μ D i` (and `cocon` against `ν`): just the erased payload, checked
-  against `⟦D⟧ (μ D) i`;
+* `con x` against `μ D i`: erase the payload `x` against `⟦D⟧ (μ D) i`, then make it
+  flat: `flatCon` gives the tag and fields of a literal payload (`obj k fs`; for the
+  `nat` type, `natLit 0` or the successor applied to the field); otherwise
+  `prim .pack #[D', x']` (with `D'` wrapped as `obj 5 #[D']` for `nat`);
+* `cocon x` against `ν`: just the erased payload;
 * `dret`/`darg`/`drec`/`dhrec` against `Desc I`: descriptions are runtime data, as
-  `obj 0 #[i]`, `obj 1 #[◾, D]`, `obj 2 #[j, D]` and `obj 3 #[◾, j, D]`;
+  `obj 0 #[i]`, `obj 1 #[◾, D]` (`obj 4 #[◾, D]` if `S` is an `Enum`), `obj 2 #[j, D]`
+  and `obj 3 #[◾, j, D]`;
 * `tt` is `◾`; `letE` keeps the binder (with `◾` for a `0` let);
 * everything else: `eraseInfer`. -/
 partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
@@ -175,14 +248,26 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     let b' ← eraseCheck ctx b (Closure.inst g B (ctx.eval a))
     return .obj 0 #[a', b']
   | .con x, .mu l I D i s _ =>
-    eraseCheck ctx x (vInterp g l I D (muFamilyAt l I D ((sizePred? s).getD .szInf)) i)
+    let x' ← eraseCheck ctx x (vInterp g l I D (muFamilyAt l I D ((sizePred? s).getD .szInf)) i)
+    let nat := isNatTy g ty
+    match flatCon g ctx D x x', nat with
+    | some (k, fs), false => return .obj k fs
+    | some (0, _), true => return .natLit 0
+    | some (_, fs), true =>
+      match g.builtins.lookup "nat.succ", fs[0]? with
+      | some succ, some f => return .app (.global succ) f
+      | _, _ => return .prim .pack #[.obj 5 #[← eraseCheck ctx (quote g ctx.lvl D) (.desc l I)], x']
+    | none, _ =>
+      let D' ← eraseCheck ctx (quote g ctx.lvl D) (.desc l I)
+      return .prim .pack #[if nat then .obj 5 #[D'] else D', x']
   | .cocon x, .nu l I D i s _ =>
     eraseCheck ctx x (vInterp g l I D (nuFamilyAt l I D ((sizePred? s).getD .szInf)) i)
   | .dret i, .desc _ I => return .obj 0 #[← eraseCheck ctx i I]
   | .darg _ S D, .desc l I =>
     let D' ← eraseCheck ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S)
       (.mk [I] (.desc l (.var 1))))
-    return .obj 1 #[.erased, D']
+    -- a choice of tag is marked, for `pack`
+    return .obj (if whnf (ctx.eval S) matches .enum _ then 4 else 1) #[.erased, D']
   | .drec _ j D, .desc l I =>
     return .obj 2 #[← eraseCheck ctx j I, ← eraseCheck ctx D (.desc l I)]
   | .dhrec _ H j D, .desc l I =>
@@ -253,8 +338,12 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       let isCases := match m with
         | .lam _ (.lam _ (.lam _ body)) => !(Wiz.IR.freeIdx' body).contains 0
         | _ => false
-      if isCases then pure (.apps m' [← eraseCheck ctx i vI, ← eraseE ctx x, .erased])
-      else pure (.prim .ind #[← eraseCheck ctx D (.desc l vI), m', ← eraseCheck ctx i vI, ← eraseE ctx x])
+      let D' ← eraseCheck ctx D (.desc l vI)
+      let (xty, _) ← infer ctx x
+      if isCases then pure (.apps m' [← eraseCheck ctx i vI, viewOf g vD xty D' (← eraseE ctx x), .erased])
+      else
+        let D' := if isNatTy g xty then .obj 5 #[D'] else D'
+        pure (.prim .ind #[D', m', ← eraseCheck ctx i vI, ← eraseE ctx x])
     | .delim v P a b c h D => do
       let (dty, _) ← infer ctx D
       let .desc l I := whnf dty | throw (.other "erasure: Desc.elim on a non-description")
@@ -285,7 +374,9 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       let (vI, vD, vP) := (ctx.eval I, ctx.eval D, ctx.eval P)
       let mTy := scaseMethodTy g l vI vD vP (ctx.eval s) QuantitySyntax.explicitDefault
       let _ := v
-      pure (.apps (← eraseCheck ctx m mTy) [.erased, ← eraseCheck ctx i vI, ← eraseE ctx x])
+      let (xty, _) ← infer ctx x
+      let D' ← eraseCheck ctx D (.desc l vI)
+      pure (.apps (← eraseCheck ctx m mTy) [.erased, ← eraseCheck ctx i vI, viewOf g vD xty D' (← eraseE ctx x)])
     | .tag _ i => pure (.obj i #[])
     | _ => throw (.other s!"erasure: unexpected term {ctx.showTerm t}")
   return (e, ty)
@@ -315,6 +406,114 @@ partial def eraseSpine (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
 
 end
 
+/-! ### Resolving views
+
+Redexes `(λ x. b) a` become `let x := a; b`. Case analysis gets a value's payload as `view D x`. Its projections are resolved
+against the flat object: with `x` bound to `y`, the payload's `.0` is the tag of `y`
+(`prim .tag`, or a `case` on `y` itself), and `.1.….1.0` (`j` times `.1`) is field
+`j - 1`. Without a tag in front (`absorbed = false`) it is field `j`; for a number, the
+tag and field are `natTag` and `natPred`. A view used any other way is converted with
+`unpack`. -/
+
+/-- A variable bound to (a suffix of) a payload: `j` levels into the view of the flat
+value at level `y`; `D` is the description, valid at level `dLvl`. -/
+structure Virt where
+  y : Nat
+  j : Nat
+  absorbed : Bool
+  nat : Bool
+  D : ETerm
+  dLvl : Nat
+
+/-- The field that `.0` of a view reaches, at depth `d`. -/
+def Virt.field (v : Virt) (d : Nat) : ETerm :=
+  let y := ETerm.var (d - 1 - v.y)
+  if v.absorbed then
+    if v.j == 0 then .prim (if v.nat then .natTag else .tag) #[y]
+    else if v.nat then .prim .natPred #[y] else .proj (v.j - 1) y
+  else .proj v.j y
+
+/-- The view as an ordinary payload, at depth `d`. -/
+def Virt.materialize (v : Virt) (d : Nat) : ETerm :=
+  (List.range v.j).foldl (fun t _ => .proj 1 t) (.prim .unpack #[v.D.lift (d - v.dLvl), .var (d - 1 - v.y)])
+
+private def isView : ETerm → Bool
+  | .prim (.view ..) _ => true
+  | _ => false
+
+mutual
+
+private partial def rwV (d : Nat) (env : List (Option Virt)) : ETerm → Sum Virt ETerm
+  | .var i => match env[i]? with
+    | some (some v) => .inl v
+    | _ => .inr (.var i)
+  | .proj k t => match rwV d env t with
+    | .inl v => if k == 1 then .inl { v with j := v.j + 1 } else .inr (v.field d)
+    | .inr t' => .inr (.proj k t')
+  | t => .inr (rw d env t)
+
+private partial def rw (d : Nat) (env : List (Option Virt)) (t : ETerm) : ETerm :=
+  match t with
+  | .var i => match env[i]? with
+    | some (some v) => v.materialize d
+    | _ => .var i
+  | .proj .. => match rwV d env t with
+    | .inl v => v.materialize d
+    | .inr t' => t'
+  | .letE x (.prim (.view ab nat) #[D, e]) b =>
+    -- let y := e; let x := ◾; b   (b lives under x and y: lift past y)
+    let v : Virt := { y := d, j := 0, absorbed := ab, nat, D := rw d env D, dLvl := d }
+    .letE "y" (rw d env e) (.letE x .erased (rw (d + 2) (some v :: none :: env) (b.lift 1 1)))
+  | .letE x val b => match rwV d env val with
+    | .inl v => .letE x .erased (rw (d + 1) (some v :: env) b)
+    | .inr val' => .letE x val' (rw (d + 1) (none :: env) b)
+  | .app .. =>
+    let (h, args) := spine t []
+    let viewy (a : ETerm) : Bool := isView a || (rwV d env a matches .inl _)
+    match h with
+    -- `(λ x… . b) a…` is `let x := a; …` (in a strict language), and doesn't need a closure
+    | .lam .. => rw d env (toLets h args 0)
+    -- `(case s [b…]) a…` with a view among simple arguments: `case s [b a…, …]`
+    | .case s bs =>
+      if args.all simple && args.any viewy then rw d env (.case s (bs.map (ETerm.apps · args)))
+      else args.foldl (fun f a => .app f (rw d env a)) (rw d env h)
+    | _ => args.foldl (fun f a => .app f (rw d env a)) (rw d env h)
+  | .case s bs =>
+    let s' := match rwV d env s with
+      | .inl v => v.materialize d
+      | .inr s' => s'
+    -- `case` reads the tag of an object itself
+    let s' := match s' with
+      | .prim .tag #[y] => y
+      | s' => s'
+    .case s' (bs.map (rw d env))
+  | .lam x b => .lam x (rw (d + 1) (none :: env) b)
+  | .fix x b => .fix x (rw (d + 1) (none :: env) b)
+  | .obj tg fs => .obj tg (fs.map (rw d env))
+  | .prim (.view _ _) #[D, e] => .prim .unpack #[rw d env D, rw d env e]
+  | .prim op as => .prim op (as.map (rw d env))
+  | t => t
+where
+  spine : ETerm → List ETerm → ETerm × List ETerm
+    | .app f a, acc => spine f (a :: acc)
+    | t, acc => (t, acc)
+  simple : ETerm → Bool
+    | .var _ | .erased => true
+    | .proj _ t => simple t
+    | _ => false
+  toLets : ETerm → List ETerm → Nat → ETerm
+    | .lam x b, a :: as, k => .letE x (a.lift k) (toLets b as (k + 1))
+    | b, as, k => ETerm.apps b (as.map (·.lift k))
+
+end
+
+/-- Resolve the views of a closed erased term. -/
+def resolveViews (e : ETerm) : ETerm := rw 0 [] e
+
+/-- Erase a closed term against its type, with views resolved. -/
+def eraseTop (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm :=
+  return resolveViews (← eraseCheck ctx t ty)
+
 /-- Erase a global definition. -/
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- the compiler's version (direct recursion), if the elaborator made one
@@ -323,6 +522,6 @@ def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
   let us := d.levelParams.map fun _ => Level.succ .zero
-  eraseCheck ctx (v.instLevels d.levelParams us) (ctx.eval (d.type.instLevels d.levelParams us))
+  eraseTop ctx (v.instLevels d.levelParams us) (ctx.eval (d.type.instLevels d.levelParams us))
 
 end Wiz

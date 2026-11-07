@@ -232,14 +232,45 @@ static int wiz_nat_eq(wiz_val a, wiz_val b) {
   return mpz_cmp(((wiz_big *)a)->z, ((wiz_big *)b)->z) == 0;
 }
 
-/* the prelude's `Bool` payload: ⟨tag, ⟨◾, ◾⟩⟩ */
+/* the prelude's `Bool`: a constructor without fields is its tag */
 WIZ_API wiz_val wiz_nat_beq(wiz_val a, wiz_val b) {
   int eq = wiz_nat_eq(a, b);
   wiz_dec(a); wiz_dec(b);
-  wiz_val u = wiz_ctor_new(0, 2);
-  WIZ_SET(u, 0, WIZ_BOX(0)); WIZ_SET(u, 1, WIZ_BOX(0));
-  wiz_val r = wiz_ctor_new(0, 2);
-  WIZ_SET(r, 0, WIZ_BOX(eq ? 1 : 0)); WIZ_SET(r, 1, u);
+  return WIZ_BOX(eq ? 1 : 0);
+}
+
+/* ---- flat objects: tags and fields by runtime values (`pack`, `unpack`) ---- */
+
+WIZ_API wiz_val wiz_tag_of(wiz_val v) {
+  uint32_t t = wiz_tag(v);
+  wiz_dec(v);
+  return WIZ_BOX(t);
+}
+WIZ_API wiz_val wiz_nat_tag(wiz_val v) {
+  int zero = WIZ_IS_SCALAR(v) && WIZ_UNBOX(v) == 0;
+  wiz_dec(v);
+  return WIZ_BOX(zero ? 0 : 1);
+}
+WIZ_API wiz_val wiz_field_at(wiz_val v, wiz_val n) {
+  wiz_val f = ((wiz_ctor *)v)->fields[WIZ_UNBOX(n)];
+  wiz_inc(f);
+  wiz_dec(v);
+  return f;
+}
+/* an object with the tag of `t` and the fields listed by `l` (nested pairs ending in ◾) */
+WIZ_API wiz_val wiz_mk_obj(wiz_val t, wiz_val l) {
+  uint32_t tag = wiz_tag(t), n = 0;
+  wiz_dec(t);
+  for (wiz_val c = l; !WIZ_IS_SCALAR(c); c = ((wiz_ctor *)c)->fields[1]) n++;
+  if (n == 0) { wiz_dec(l); return WIZ_BOX(tag); }
+  wiz_val r = wiz_ctor_new(tag, n);
+  uint32_t i = 0;
+  for (wiz_val c = l; !WIZ_IS_SCALAR(c); c = ((wiz_ctor *)c)->fields[1]) {
+    wiz_val f = ((wiz_ctor *)c)->fields[0];
+    wiz_inc(f);
+    WIZ_SET(r, i++, f);
+  }
+  wiz_dec(l);
   return r;
 }
 
@@ -357,26 +388,18 @@ WIZ_API wiz_val wiz_out_nat(uint64_t n) {
   return wiz_big_norm(z);
 }
 
-/* a constructor value as the erased payload: ⟨tag, ⟨f₁, … ⟨◾, ◾⟩⟩⟩ */
+/* a constructor value: a flat object ⟨tag f₁ … fₙ⟩, or just the tag without fields */
 static wiz_val wiz_con(uint32_t tag, uint32_t n, wiz_val *fields) {
-  wiz_val rest = wiz_ctor_new(0, 2);
-  WIZ_SET(rest, 0, WIZ_BOX(0)); WIZ_SET(rest, 1, WIZ_BOX(0));
-  for (uint32_t i = n; i > 0; i--) {
-    wiz_val c = wiz_ctor_new(0, 2);
-    WIZ_SET(c, 0, fields[i - 1]); WIZ_SET(c, 1, rest);
-    rest = c;
-  }
-  wiz_val r = wiz_ctor_new(0, 2);
-  WIZ_SET(r, 0, WIZ_BOX(tag)); WIZ_SET(r, 1, rest);
+  if (n == 0) return WIZ_BOX(tag);
+  wiz_val r = wiz_ctor_new(tag, n);
+  for (uint32_t i = 0; i < n; i++) WIZ_SET(r, i, fields[i]);
   return r;
 }
 static wiz_val wiz_field_ref(wiz_val v, uint32_t i) { /* borrowed */
-  wiz_val rest = ((wiz_ctor *)v)->fields[1];
-  for (uint32_t k = 0; k < i; k++) rest = ((wiz_ctor *)rest)->fields[1];
-  return ((wiz_ctor *)rest)->fields[0];
+  return ((wiz_ctor *)v)->fields[i];
 }
 
-WIZ_API int wiz_in_bool(wiz_val v) { int b = (int)wiz_tag(((wiz_ctor *)v)->fields[0]); wiz_dec(v); return b; }
+WIZ_API int wiz_in_bool(wiz_val v) { int b = (int)wiz_tag(v); wiz_dec(v); return b; }
 WIZ_API wiz_val wiz_out_bool(int b) { return wiz_con(b ? 1 : 0, 0, NULL); }
 
 /* String := String.mk (List Char), Char := Char.mk Nat; C strings are UTF-8 */
@@ -384,7 +407,7 @@ WIZ_API char *wiz_in_string(wiz_val s) {
   size_t cap = 16, len = 0;
   char *buf = (char *)malloc(cap);
   wiz_val l = wiz_field_ref(s, 0);
-  while (wiz_tag(((wiz_ctor *)l)->fields[0]) == 1) {
+  while (wiz_tag(l) == 1) {
     wiz_val ch = wiz_field_ref(l, 0);
     wiz_val cp = wiz_field_ref(ch, 0);
     uint32_t c = WIZ_IS_SCALAR(cp) ? (uint32_t)WIZ_UNBOX(cp) : 0xFFFD;

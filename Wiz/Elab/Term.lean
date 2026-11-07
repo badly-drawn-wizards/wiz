@@ -1424,7 +1424,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   let unifyGoal (gl : Goal R) (t : Term R) : ElabM R Unit := do
     unify gl.ctx.lvl (← evalIn gl.ctx gl.tm) (← evalIn gl.ctx t)
   --<sol
-  let tag := ((v.field 0).tag?).getD 1000
+  let tag := (v.tag?).getD 1000
   if tag == TacTag.done then return st
   if tag == TacTag.result then throwAt info "a tactic may not return syntax"
   if tag == TacTag.fail then throwAt info (((fld 0).toString?).getD "tactic failed")

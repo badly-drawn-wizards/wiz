@@ -78,12 +78,12 @@ def encodePair (a b : RVal) : RVal := .obj 0 #[a, b]
 
 /-- The elements of a runtime `List`. -/
 partial def decodeList (v : RVal) : Option (List RVal) :=
-  match (v.field 0).tag? with
+  match v.tag? with
   | some 0 => some []
   | some 1 => do return v.conField 0 :: (← decodeList (v.conField 1))
   | _ => none
 
-def decodeBool (v : RVal) : Option Bool := (v.field 0).tag?.map (· == 1)
+def decodeBool (v : RVal) : Option Bool := v.tag?.map (· == 1)
 
 /-! ## Reflection -/
 
@@ -133,7 +133,7 @@ partial def reify (handles : Array (Term R × Nat)) (v : RVal) (depth : Nat) : E
   let nat (v : RVal) : ElabM R Nat := match v.toNat? with
     | some n => pure n
     | none => throwAt {} "tactic: malformed number"
-  match (v.field 0).tag? with
+  match v.tag? with
   | some 0 => return .var (← nat (v.conField 0))
   | some 1 =>
     let n ← str (v.conField 0)

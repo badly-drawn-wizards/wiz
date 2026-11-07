@@ -20,8 +20,8 @@ layouts:
     String := String.mk (data : List Char),   Char := Char.mk (val : Nat)
     List:     nil | cons (head) (tail),        Tac: see `Elab/Tactic.lean`
 
-and a constructor value with tag `t` and fields `f₁ … fₙ` is `⟨0 ⟨t⟩ ⟨0 f₁ … ⟨0 fₙ ◾⟩⟩⟩`
-(see `Run.lean`).
+and a constructor value with tag `t` and fields `f₁ … fₙ` is the flat object
+`⟨t f₁ … fₙ⟩` (see `Erase.lean`).
 
 **Hygiene.** A quotation in a Wiz term marks each identifier it introduces as `x✝`
 (a scope still to be chosen). When a macro's output comes back, `x✝` becomes `x✝n`
@@ -30,9 +30,8 @@ for this expansion's scope `n`, exactly as `macro_rules` templates are scoped.
 
 namespace Wiz.Elab
 
-/-- A constructor value: tag, then the fields in a right-nested chain. -/
-def mkCon (tag : Nat) (fields : List RVal) : RVal :=
-  .obj 0 #[.obj tag #[], fields.foldr (fun f r => .obj 0 #[f, r]) (.obj 0 #[.erased, .erased])]
+/-- A constructor value: a flat object. -/
+def mkCon (tag : Nat) (fields : List RVal) : RVal := .obj tag fields.toArray
 
 def encodeString (s : String) : RVal :=
   mkCon 0 [s.toList.foldr (fun c t => mkCon 1 [mkCon 0 [.nat c.toNat], t]) (mkCon 0 [])]
@@ -46,15 +45,14 @@ partial def encodeSyntax : Syntax → RVal
     mkCon 3 [encodeString k, args.foldr (fun a t => mkCon 5 [encodeSyntax a, t]) (mkCon 4 [])]
 
 /-- The `i`th field of a constructor value. -/
-def _root_.Wiz.RVal.conField (v : RVal) (i : Nat) : RVal :=
-  (List.range i).foldl (fun r _ => r.field 1) (v.field 1) |>.field 0
+def _root_.Wiz.RVal.conField (v : RVal) (i : Nat) : RVal := v.field i
 
 /-- **Exercise 6.3.** Decode a runtime `Syntax` value (see the layouts in the module
 docstring; `RVal.tag?`, `RVal.conField` and `RVal.toString?` help). Every node gets
 the source position `info` of the macro call, so errors in the expansion point there. -/
 partial def decodeSyntax (info : SourceInfo) (v : RVal) : Option Syntax :=
   --<sol
-  match (v.field 0).tag? with
+  match v.tag? with
   | some 0 => some .missing
   | some 1 => return .atom info (← (v.conField 0).toString?)
   | some 2 => return .ident info (← (v.conField 0).toString?)
@@ -62,7 +60,7 @@ partial def decodeSyntax (info : SourceInfo) (v : RVal) : Option Syntax :=
   | _ => none
 where
   list (l : RVal) (acc : Array Syntax) : Option (Array Syntax) :=
-    match (l.field 0).tag? with
+    match l.tag? with
     | some 4 => some acc
     | some 5 => do list (l.conField 1) (acc.push (← decodeSyntax info (l.conField 0)))
     | _ => none
@@ -87,7 +85,7 @@ partial def runProcMacro (code : Code) (f : Name) (stx : Syntax) (scope : Nat) :
   go (apply code (run code [] (.global "Macro.run")) m) (scope + 1)
 where
   go (v : RVal) (next : Nat) : Except String (Syntax × Nat) :=
-    match (v.field 0).tag? with
+    match v.tag? with
     | some 1 => -- result
       match decodeSyntax stx.info (v.conField 0) with
       | some out => pure (scopeQuoted scope out, next)

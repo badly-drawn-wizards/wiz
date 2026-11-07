@@ -85,10 +85,49 @@ def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
   | "nat.add" => pure (.num (n 0 + n 1))
   | "nat.sub" => pure (.num (n 0 - n 1))
   | "nat.mul" => pure (.num (n 0 * n 1))
-  | "nat.beq" =>
-    -- the prelude's `Bool` payload
-    let b ← alloc (.ctor 0 #[.erased, .erased])
-    alloc (.ctor 0 #[.tag (if n 0 == n 1 then 1 else 0), b])
+  | "nat.beq" => pure (.tag (if n 0 == n 1 then 1 else 0))
+  | "natTag" => pure (.tag (if n 0 == 0 then 0 else 1))
+  | "tag" =>
+    let t ← match (args[0]? : Option IVal) with
+      | some (.ptr id) => do
+        match (← getObj id).2 with
+        | .ctor t _ => pure t
+        | _ => throw "tag of a closure or token"
+      | some (.tag t) => pure t
+      | some (.num k) => pure (if k == 0 then 0 else 1)
+      | _ => pure 0
+    args.forM dropV
+    pure (.tag t)
+  | "fieldAt" =>
+    match (args[0]? : Option IVal), (args[1]? : Option IVal) with
+    | some (.ptr id), some (.num i) => do
+      let .ctor _ fs := (← getObj id).2 | throw "fieldAt of a closure or token"
+      let fv := fs[i]?.getD .erased
+      dupV fv
+      dropV (.ptr id)
+      pure fv
+    | some (.num k), some (.num 0) => pure (.num (k - 1))
+    | _, _ => throw "fieldAt: bad arguments"
+  | "mkObj" =>
+    let t := match (args[0]? : Option IVal) with
+      | some (.tag t) => t
+      | some (.num t) => t
+      | _ => 0
+    -- the fields: nested pairs ending in ◾
+    let mut fs : Array IVal := #[]
+    let mut l := (args[1]?).getD .erased
+    let mut fuel := 100000
+    while fuel > 0 do
+      fuel := fuel - 1
+      match l with
+      | .ptr id =>
+        let .ctor _ #[a, rest] := (← getObj id).2 | throw "mkObj: not a list"
+        dupV a; dupV rest
+        dropV l
+        fs := fs.push a
+        l := rest
+      | _ => break
+    if fs.isEmpty then pure (.tag t) else alloc (.ctor t fs)
   | "lazyTag" =>
     let t ← match (args[0]? : Option IVal) with
       | some (.ptr id) => do
