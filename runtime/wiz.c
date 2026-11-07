@@ -7,6 +7,7 @@
    `dup`/`drop` (Perceus): every function owns its arguments. */
 
 #include <alloca.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -522,4 +523,29 @@ WIZ_API int wiz_finish(wiz_val r) {
   wiz_dec(r);
   if (wiz_live != 0) { fprintf(stderr, "wiz: %ld objects leaked\n", (long)wiz_live); return 2; }
   return 0;
+}
+
+/* ---- main: run on a thread with a big stack (deep recursion is normal in functional
+   code); $WIZ_STACK_MB sets its size, default 1024 ---- */
+
+typedef struct { wiz_val (*entry)(void); int io; int rc; } wiz_main_args;
+
+static void *wiz_main_thread(void *p) {
+  wiz_main_args *a = (wiz_main_args *)p;
+  wiz_val v = a->entry();
+  a->rc = a->io ? wiz_finish_io(v) : wiz_finish(v);
+  return NULL;
+}
+
+WIZ_API int wiz_run_main(wiz_val (*entry)(void), int io) {
+  wiz_main_args args = {entry, io, 0};
+  const char *mb = getenv("WIZ_STACK_MB");
+  size_t size = (size_t)(mb ? atol(mb) : 1024) << 20;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, size);
+  pthread_t t;
+  if (pthread_create(&t, &attr, wiz_main_thread, &args) != 0) return wiz_main_thread(&args), args.rc;
+  pthread_join(t, NULL);
+  return args.rc;
 }

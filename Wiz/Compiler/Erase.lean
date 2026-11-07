@@ -112,6 +112,17 @@ private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
 
 mutual
 
+/-- The free variables of a term (as indices at its top). -/
+partial def Wiz.IR.freeIdx' (t : Term R) (depth : Nat := 0) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=
+  match t with
+  | .var i => if i ≥ depth then acc.insert (i - depth) else acc
+  | t => Id.run do
+    let mut acc := acc
+    let ((), acc') := (t.forChildren (m := StateM (Std.HashSet Nat)) (fun _ => pure ())
+      (fun d c => modify fun a => Wiz.IR.freeIdx' c (depth + d) a)).run acc
+    acc := acc'
+    pure acc
+
 /-- **Exercise 5.1a.** Erase `t`, checking it against `ty`.
 
 * if `ty` is `erasable`, the result is `◾`;
@@ -207,8 +218,13 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
     | .ind l I D v P m i x => do
       let w := QuantitySyntax.explicitDefault
       let (vI, vD, vP) := (ctx.eval I, ctx.eval D, ctx.eval P)
-      pure (.prim .ind #[← eraseCheck ctx D (.desc l vI), ← eraseCheck ctx m (indMethodTy g l v vI vD vP w),
-        ← eraseCheck ctx i vI, ← eraseE ctx x])
+      let m' ← eraseCheck ctx m (indMethodTy g l v vI vD vP w)
+      -- case analysis (the method ignores its hypotheses): don't compute them
+      let isCases := match m with
+        | .lam _ (.lam _ (.lam _ body)) => !(Wiz.IR.freeIdx' body).contains 0
+        | _ => false
+      if isCases then pure (.apps m' [← eraseCheck ctx i vI, ← eraseE ctx x, .erased])
+      else pure (.prim .ind #[← eraseCheck ctx D (.desc l vI), m', ← eraseCheck ctx i vI, ← eraseE ctx x])
     | .delim v P a b c h D => do
       let (dty, _) ← infer ctx D
       let .desc l I := whnf dty | throw (.other "erasure: Desc.elim on a non-description")
@@ -271,7 +287,8 @@ end
 
 /-- Erase a global definition. -/
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
-  let some v := d.value | return .prim .unreachable #[]
+  -- the compiler's version (direct recursion), if the elaborator made one
+  let some v := d.impl <|> d.value | return .prim .unreachable #[]
   let ctx : Ctx R := { globals := g }
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance

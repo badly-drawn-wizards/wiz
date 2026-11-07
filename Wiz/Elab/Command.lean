@@ -215,7 +215,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
 
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
 arguments of `T`; a right-hand side that calls `f` makes it structurally recursive. -/
-def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R) := do
+def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R × Option (Term R)) := do
   let info := cmd.info
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
@@ -245,14 +245,30 @@ def elabDefEqns (name : Name) (cmd : Syntax) : ElabM R (Term R × Term R) := do
     if let some x0 := vars.head? then
       if let .mu _ _ _ _ (.neutral (.local si) #[]) _ ← force ctx'.types[ctx'.lvl - x0 - 1]! then
         if si < ctx.lvl then
-          return ← elabSizedDef name cmd ctx tele ty si clauses
+          let (t, v) ← elabSizedDef name cmd ctx tele ty si clauses
+          return (t, v, none)
   let body ← compileMatch ctx' vars clauses tyv rc true
   solveSortConstraints
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body)
   let fullTy := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b) ty
   let val ← zonk 0 val
   ensureNoMVars val info
-  pure (fullTy, val)
+  -- for the compiler: the same equations with direct recursion (the definition, as an
+  -- axiom for the moment, is called like any function) and case analysis, so that only
+  -- the recursive calls the program makes are computed
+  let impl ← if rc.isNone then pure none else do
+    let saved ← get
+    try
+      modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
+      let body' ← compileMatch ctx' vars clauses tyv none true
+      solveSortConstraints
+      let v' ← zonk 0 (tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body'))
+      modify fun s => { s with globals := saved.globals }
+      pure (if v'.mvars.isEmpty then some v' else none)
+    catch _ =>
+      set saved
+      pure none
+  pure (fullTy, val, impl)
 
 /-- Copatterns: `def f binders : T args | .obs => rhs …` for a coinductive `T`
 compiles to `coit`. The state is the tuple of the explicit binders; a recursive
@@ -463,8 +479,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let finOf (t : Term R) : String := match (Term.spine t).1 with
     | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
     | _ => ""
-  let addDeclChecked (name : Name) (levelParams : List Name) (ty : Term R) (val : Option (Term R)) := do
-    match addDecl s.globals { name, levelParams, type := ty, value := val } with
+  let addDeclChecked (name : Name) (levelParams : List Name) (ty : Term R) (val : Option (Term R))
+      (impl : Option (Term R) := none) := do
+    match addDecl s.globals { name, levelParams, type := ty, value := val, impl } with
     | .ok g => modify fun s => { s with globals := g }
     | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
   match cmd.kind with
@@ -518,12 +535,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some obs else none
         else none
       let r := match coinductiveOf? with
-        | some obs => runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabCopatterns name cmd obs) levelParams
+        | some obs => runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (do let (t, v) ← elabCopatterns name cmd obs; pure (t, v, none)) levelParams
         | none => runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabDefEqns name cmd) levelParams
       match r with
-      | .ok ((ty, val), hv) =>
+      | .ok ((ty, val, impl), hv) =>
         modify fun s => { s with hovers := s.hovers ++ hv }
-        addDeclChecked name levelParams ty (some val)
+        addDeclChecked name levelParams ty (some val) impl
       | .error e => report .error e.info e.msg
   | "command.coinductive" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
