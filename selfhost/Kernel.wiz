@@ -56,18 +56,18 @@ def quoteSpine : Nat → Tm → Env → Tm
   | l, h, .cons a rest => .app (quoteSpine l h rest) (quote l a)
 end
 
-def tmEq : Tm → Tm → Bool
-  | .var i, .var j => Nat.beq i j
-  | .univ m, .univ n => Nat.beq m n
-  | .pi a b, .pi c d => Bool.and (tmEq a c) (tmEq b d)
-  | .lam a, .lam b => tmEq a b
-  | .app f a, .app g b => Bool.and (tmEq f g) (tmEq a b)
-  | .letE a b c, .letE d e f => Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f))
-  | .ann a b, .ann c d => Bool.and (tmEq a c) (tmEq b d)
-  | _, _ => .false
-
--- two values are convertible when their normal forms are equal (no η)
-def conv (l : Nat) (a b : Val) : Bool := tmEq (quote l a) (quote l b)
+-- **Exercise 14.6.** Conversion (`conv` in `Conv.lean`), on values at depth `l`: equal
+-- universes, Π types with convertible domains and codomains, the same variable applied
+-- to convertible arguments, and functions compared by applying both to a fresh
+-- variable (that is η: `f` and `λx. f x` are convertible).
+mutual
+def conv : Nat → Val → Val → Bool
+  | _, _, _ => .false
+def convSpine : Nat → Env → Env → Bool
+  | _, .nil, .nil => .true
+  | l, .cons a r, .cons b r' => Bool.and (conv l a b) (convSpine l r r')
+  | _, _, _ => .false
+end
 
 -- the name of the variable at level `l`: from `names` (the outermost first), or `x<l>`
 def nameFrom : List String → Nat → Nat → String
