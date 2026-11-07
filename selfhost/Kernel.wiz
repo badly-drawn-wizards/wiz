@@ -967,7 +967,7 @@ def convBranches : TCtx → Nat → Env → Tm → Env → Tms → Tms → Nat �
 -- functions are contravariant in their domain (and may differ in quantity when they are
 -- propositions), pairs covariant; otherwise convertible.
 def subTy (c : TCtx) (A B : Val) : Bool := match whnf A with
-  A' => convTy c A' B
+  | A' => convTy c A' B
 end
 
 def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
