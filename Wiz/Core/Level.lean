@@ -138,8 +138,25 @@ partial def normalize : Level → NF
 /-- Is the level nonzero under every instantiation of its parameters? -/
 def isNeverZero (l : Level) : Bool := (normalize l).any fun (_, k) => k > 0
 
-/-- Definitional equality of levels. -/
-def equiv (a b : Level) : Bool := normalize a == normalize b
+/-- A parameter that decides whether some `imax` in `l` is zero, if any. -/
+def imaxParam? : Level → Option String
+  | succ l => imaxParam? l
+  | max a b => imaxParam? a <|> imaxParam? b
+  | imax a b =>
+    imaxParam? a <|> imaxParam? b <|> (if isNeverZero b then none else (params b).head?)
+  | _ => none
+
+/-- Definitional equality of levels. Normal forms decide it except for `imax`, so when
+they differ we split on a parameter `p` that an `imax` depends on: `p = 0` or
+`p = p' + 1` (where every `imax … p` becomes a `max`). -/
+def equiv (a b : Level) : Bool := go 8 a b
+where
+  go (fuel : Nat) (a b : Level) : Bool :=
+    normalize a == normalize b || match fuel, imaxParam? a <|> imaxParam? b with
+      | fuel + 1, some p =>
+        let set (u : Level) (l : Level) := instParams [p] [u] l
+        go fuel (set zero a) (set zero b) && go fuel (set (succ (param p)) a) (set (succ (param p)) b)
+      | _, _ => false
 
 /-- The level as a number, if it is closed. -/
 def toNat? : Level → Option Nat

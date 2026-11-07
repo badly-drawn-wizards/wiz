@@ -115,9 +115,15 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
   let recName := T ++ (if sized then ".scasesOn" else if withIH then ".rec" else ".casesOn")
   -- the shared signature, as a function of the bound variables
   let Tc : B R := closed (.const T us)
-  let isRec (A : Term R) : Bool := match (Term.spine A).1 with
-    | .const n _ => n == T
-    | _ => false
+  -- a recursive field `T Δ js`, or an infinitary one `(h : H) → T Δ js` (`js` under `h`)
+  let recView (A : Term R) : Option (Option (Name × Term R) × List (Term R)) :=
+    match Term.spine A with
+    | (.const n _, args) => if n == T then some (none, args.drop nΔ) else none
+    | (.pi h _ _ H Bd, []) => match Term.spine Bd with
+      | (.const n _, args) => if n == T then some (some (h, H), args.drop nΔ) else none
+      | _ => none
+    | _ => none
+  let isRec (A : Term R) : Bool := (recView A).isSome
   /- Bind Δ, motive, methods, ξ, x with `binder`, then finish with `k`. -/
   let rec bindTele (binder : Name → BinderInfo → B R → B R → (B R → B R) → B R)
       (bs : List (Name × BinderInfo × Term R × Term R)) (σ : Array (B R))
@@ -158,7 +164,11 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
         let fieldsTy (jv? : Option (B R)) : B R :=
           bindTele (fun x bi q A k => B.pi x bi q A k) fields Δv none none (tyOf := fun A σ =>
             match jv? with
-            | some jv => if isRec A then sizedT Δv (((Term.spine A).2.drop nΔ).map (ofTele · σ)) jv else ofTele A σ
+            | some jv => match recView A with
+              | some (none, js) => sizedT Δv (js.map (ofTele · σ)) jv
+              | some (some (h, H), js) =>
+                B.pi h .default (qlit w) (ofTele H σ) fun hv => sizedT Δv (js.map (ofTele · (σ.push hv))) jv
+              | none => ofTele A σ
             | none => ofTele A σ) fun σ =>
             let fs := σ.extract nΔ σ.size
             let recs := (fields.zip fs.toList).zipIdx.filterMap fun (((_, _, _, A), f), k) =>
@@ -168,9 +178,15 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
               | [] => app mot ((idx.map (ofTele · σ)) ++ [app (closed (.const (T ++ "." ++ c) us)) σ.toList])
               | (A, f, k) :: rs' =>
                 -- `A` lives in the context of Δ and the fields before it
-                let js := (Term.spine A).2.drop nΔ
                 let σk := σ.extract 0 (nΔ + k)
-                B.pi "ih" .default (qlit w) (app mot ((js.map (ofTele · σk)) ++ [f])) fun _ => ihs rs' σ'
+                let ihTy : B R := match recView A with
+                  | some (some (h, H), js) =>
+                    -- infinitary: one hypothesis per `h`
+                    B.pi h .default (qlit w) (ofTele H σk) fun hv =>
+                      app mot ((js.map (ofTele · (σk.push hv))) ++ [app f [hv]])
+                  | some (none, js) => app mot ((js.map (ofTele · σk)) ++ [f])
+                  | none => app mot [f]
+                B.pi "ih" .default (qlit w) ihTy fun _ => ihs rs' σ'
             if withIH then ihs recs σ else ihs [] σ
         let mTy : B R := match sv? with
           | some sv => B.pi "j" .default (qlit 0) (fun d => .sizeLt (sv d)) fun jv => fieldsTy (some jv)

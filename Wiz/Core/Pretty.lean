@@ -131,7 +131,8 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .dret i => app "Desc.ret" [i]
   | .darg q S D => app "Desc.arg" [q, S, D]
   | .drec q j D => app "Desc.rec" [q, j, D]
-  | .delim _ P a b c D => app "Desc.elim" [P, a, b, c, D]
+  | .dhrec q H j D => app "Desc.hrec" [q, H, j, D]
+  | .delim _ P a b c h D => app "Desc.elim" [P, a, b, c, h, D]
   | .mu _ _ _ _ s (some (n, _, as)) | .nu _ _ _ _ s (some (n, _, as)) =>
     let n := if s matches .szInf then n else s!"{n}^{s.prettyPrec names 1024}"
     if as.isEmpty then n else app n as

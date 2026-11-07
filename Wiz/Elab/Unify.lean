@@ -104,7 +104,8 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
         let g ← getGlobals
         let bs' ← bs.mapM fun b => rename m p (eval g env b)
         pure (.ecase z mo' acc bs')
-      | .delim v P a b c => return .delim v (← rename m p P) (← rename m p a) (← rename m p b) (← rename m p c) acc
+      | .delim v P a b c h =>
+        return .delim v (← rename m p P) (← rename m p a) (← rename m p b) (← rename m p c) (← rename m p h) acc
       | .ind l I D v P mt i =>
         return .ind l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p mt) (← rename m p i) acc
       | .out => pure (.out acc)
@@ -155,6 +156,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .dret i => return .dret (← rename m p i)
   | .darg q S D => return .darg (← rename m p q) (← rename m p S) (← rename m p D)
   | .drec q j D => return .drec (← rename m p q) (← rename m p j) (← rename m p D)
+  | .dhrec q H j D => return .dhrec (← rename m p q) (← rename m p H) (← rename m p j) (← rename m p D)
   | .mu l I D i s h => return .mu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .nu l I D i s h => return .nu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .con x => return .con (← rename m p x)
@@ -265,6 +267,7 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .desc u I, .desc u' I' => unifyLevel u u'; unify l I I'
   | .dret i, .dret j => unify l i j
   | .darg q S D, .darg q' S' D' | .drec q S D, .drec q' S' D' => unify l q q'; unify l S S'; unify l D D'
+  | .dhrec q H j D, .dhrec q' H' j' D' => unify l q q'; unify l H H'; unify l j j'; unify l D D'
   | .mu u I D i s _, .mu u' I' D' i' s' _ | .nu u I D i s _, .nu u' I' D' i' s' _ =>
     unifyLevel u u'; unify l I I'; unify l D D'; unify l i i'; unify l s s'
   | .con x, .con y => unify l x y
@@ -317,9 +320,9 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
       unify (l + 1) (← instM m (Val.var l)) (← instM m' (Val.var l))
       unless bs.length == bs'.length do throwAt {} "spine mismatch"
       for b in bs, b' in bs' do unify l (eval g env b) (eval g env' b')
-    | .delim v P a b c, .delim v' P' a' b' c' =>
+    | .delim v P a b c h, .delim v' P' a' b' c' h' =>
       unifyLevel v v'
-      for (x, y) in [(P, P'), (a, a'), (b, b'), (c, c')] do unify l x y
+      for (x, y) in [(P, P'), (a, a'), (b, b'), (c, c'), (h, h')] do unify l x y
     | .ind u I D v P mt i, .ind u' I' D' v' P' mt' i' =>
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (mt, mt'), (i, i')] do unify l x y

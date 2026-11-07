@@ -8,9 +8,10 @@ coinductive values (`coit`, `scofix`) are lazy and unfold only under `out`.
 
 The generic eliminators are **primitives that walk the description** at runtime. A
 description is an ordinary runtime value: `⟨0 i⟩` (ret), `⟨1 ◾ F⟩` (arg), `⟨2 j D⟩`
-(rec). A data value is its payload of nested pairs, `⟨0 tag ⟨0 f₁ … ⟩⟩`.
+(rec), `⟨3 ◾ j D⟩` (hrec). A data value is its payload of nested pairs, `⟨0 tag ⟨0 f₁ … ⟩⟩`.
 
     ind D m i x      = m i x (hyps D x),   hyps (rec j D') ⟨y, r⟩ = ⟨ind D m j y, hyps D' r⟩
+                                          hyps (hrec j D') ⟨k, r⟩ = ⟨fun h => ind D m (j h) (k h), hyps D' r⟩
     out (coit D step i s) = map D (coit D step) i (step i s)
 
 `#eval` reads a value back into a term using its **type**, so results print with
@@ -21,8 +22,12 @@ namespace Wiz
 
 /-- Partially applied runtime primitives (closures the runtime itself creates). -/
 inductive PapOp where
-  /-- `fun s => delim mret marg mrec (F s)`: args `mret marg mrec F`, arity 1 -/
+  /-- `fun s => delim mret marg mrec mhrec (F s)`: args `mret marg mrec mhrec F`, arity 1 -/
   | delimRec
+  /-- `fun h => ind D m (j h) (k h)`: args `D m j k`, arity 1 -/
+  | indK
+  /-- `fun h => f (j h) (k h)`: args `f j k`, arity 1 -/
+  | mapK
   /-- `fun j s => coit D step j s`: args `D step`, arity 2 -/
   | coitK
   /-- `fun j i a => scofix f i a`: args `f`, arity 3 -/
@@ -49,7 +54,9 @@ inductive RVal where
 namespace RVal
 
 def arity : PapOp → Nat
-  | .delimRec => 5
+  | .delimRec => 6
+  | .indK => 5
+  | .mapK => 4
   | .coitK => 4
   | .scofixK => 4
 
@@ -142,7 +149,9 @@ partial def fireNative (op : Name) (args : Array RVal) : RVal :=
 partial def applyN (code : Code) (f : RVal) (as : List RVal) : RVal := as.foldl (apply code) f
 
 partial def firePap (code : Code) : PapOp → Array RVal → RVal
-  | .delimRec, #[mret, marg, mrec, F, s] => delim code mret marg mrec (apply code F s)
+  | .delimRec, #[mret, marg, mrec, mhrec, F, s] => delim code mret marg mrec mhrec (apply code F s)
+  | .indK, #[D, m, j, k, h] => ind code D m (apply code j h) (apply code k h)
+  | .mapK, #[f, j, k, h] => applyN code f [apply code j h, apply code k h]
   | .coitK, #[D, step, j, s] => .coit D step j s
   | .scofixK, #[f, _, i, a] => .scofix f i a
   | _, _ => panic! "bad partial application"
@@ -158,16 +167,18 @@ where
     | .obj 0 _ => .erased
     | .obj 1 #[_, F] => hyps (apply code F (xs.field 0)) (xs.field 1)
     | .obj 2 #[j, D'] => .obj 0 #[ind code D m j (xs.field 0), hyps D' (xs.field 1)]
+    | .obj 3 #[_, j, D'] => .obj 0 #[.pap .indK #[D, m, j, xs.field 0], hyps D' (xs.field 1)]
     | _ => panic! "ind: not a description"
   --|ex
   --| sorry
   --sol>
 
-partial def delim (code : Code) (mret marg mrec D : RVal) : RVal :=
+partial def delim (code : Code) (mret marg mrec mhrec D : RVal) : RVal :=
   match D with
   | .obj 0 #[i] => apply code mret i
-  | .obj 1 #[_, F] => applyN code marg [.erased, .erased, F, .pap .delimRec #[mret, marg, mrec, F]]
-  | .obj 2 #[j, D'] => applyN code mrec [.erased, j, D', delim code mret marg mrec D']
+  | .obj 1 #[_, F] => applyN code marg [.erased, .erased, F, .pap .delimRec #[mret, marg, mrec, mhrec, F]]
+  | .obj 2 #[j, D'] => applyN code mrec [.erased, j, D', delim code mret marg mrec mhrec D']
+  | .obj 3 #[_, j, D'] => applyN code mhrec [.erased, .erased, j, D', delim code mret marg mrec mhrec D']
   | _ => panic! "Desc.elim: not a description"
 
 /-- **Exercise 5.3b.** Observe a coinductive value. A `coit` runs one step and re-wraps
@@ -185,6 +196,7 @@ where
     | .obj 0 _ => xs
     | .obj 1 #[_, F] => .obj 0 #[xs.field 0, map (apply code F (xs.field 0)) f (xs.field 1)]
     | .obj 2 #[j, D'] => .obj 0 #[applyN code f [j, xs.field 0], map D' f (xs.field 1)]
+    | .obj 3 #[_, j, D'] => .obj 0 #[.pap .mapK #[f, j, xs.field 0], map D' f (xs.field 1)]
     | _ => panic! "out: not a description"
   --|ex
   --| sorry
@@ -192,7 +204,7 @@ where
 
 partial def runPrim (code : Code) : Prim → Array RVal → RVal
   | .ind, #[D, m, i, x] => ind code D m i x
-  | .delim, #[a, b, c, D] => delim code a b c D
+  | .delim, #[a, b, c, h, D] => delim code a b c h D
   | .coit, #[D, st, i, s] => .coit D st i s
   | .scofix, #[f, i, a] => .scofix f i a
   | .out, #[x] => out code x

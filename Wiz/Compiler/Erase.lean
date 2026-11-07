@@ -31,7 +31,7 @@ namespace Wiz
 inductive Prim where
   /-- `ind D m i x` -/
   | ind
-  /-- `delim mret marg mrec D` -/
+  /-- `delim mret marg mrec mhrec D` -/
   | delim
   /-- `coit D step i s` -/
   | coit
@@ -117,8 +117,8 @@ mutual
   is `0`;
 * `con x` against `μ D i` (and `cocon` against `ν`): just the erased payload, checked
   against `⟦D⟧ (μ D) i`;
-* `dret`/`darg`/`drec` against `Desc I`: descriptions are runtime data, as
-  `obj 0 #[i]`, `obj 1 #[◾, D]` and `obj 2 #[j, D]`;
+* `dret`/`darg`/`drec`/`dhrec` against `Desc I`: descriptions are runtime data, as
+  `obj 0 #[i]`, `obj 1 #[◾, D]`, `obj 2 #[j, D]` and `obj 3 #[◾, j, D]`;
 * `tt` is `◾`; `letE` keeps the binder (with `◾` for a `0` let);
 * everything else: `eraseInfer`. -/
 partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
@@ -145,6 +145,9 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     return .obj 1 #[.erased, D']
   | .drec _ j D, .desc l I =>
     return .obj 2 #[← eraseCheck ctx j I, ← eraseCheck ctx D (.desc l I)]
+  | .dhrec _ H j D, .desc l I =>
+    let jTy : VTy R := .pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1))
+    return .obj 3 #[.erased, ← eraseCheck ctx j jTy, ← eraseCheck ctx D (.desc l I)]
   | .tt, _ => return .erased
   | .letE x q ty' v b, _ =>
     let vTy := ctx.eval ty'
@@ -207,12 +210,13 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       let (vI, vD, vP) := (ctx.eval I, ctx.eval D, ctx.eval P)
       pure (.prim .ind #[← eraseCheck ctx D (.desc l vI), ← eraseCheck ctx m (indMethodTy g l v vI vD vP w),
         ← eraseCheck ctx i vI, ← eraseE ctx x])
-    | .delim v P a b c D => do
+    | .delim v P a b c h D => do
       let (dty, _) ← infer ctx D
       let .desc l I := dty | throw (.other "erasure: Desc.elim on a non-description")
-      let (ta, tb, tc) := delimMethodTys g l I (ctx.eval P) QuantitySyntax.explicitDefault
+      let (ta, tb, tc, th) := delimMethodTys g l I (ctx.eval P) QuantitySyntax.explicitDefault
       let _ := v
-      pure (.prim .delim #[← eraseCheck ctx a ta, ← eraseCheck ctx b tb, ← eraseCheck ctx c tc, ← eraseE ctx D])
+      pure (.prim .delim #[← eraseCheck ctx a ta, ← eraseCheck ctx b tb, ← eraseCheck ctx c tc,
+        ← eraseCheck ctx h th, ← eraseE ctx D])
     | .out x => pure (.prim .out #[← eraseE ctx x])
     | .coit l I D S st i s => do
       let (vI, vD) := (ctx.eval I, ctx.eval D)

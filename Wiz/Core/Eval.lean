@@ -136,8 +136,9 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .dret i => .dret (eval g env i)
   | .darg q S D => .darg (eval g env q) (eval g env S) (eval g env D)
   | .drec q j D => .drec (eval g env q) (eval g env j) (eval g env D)
-  | .delim v P a b c D =>
-    vDelim g v (eval g env P) (eval g env a) (eval g env b) (eval g env c) (eval g env D)
+  | .dhrec q H j D => .dhrec (eval g env q) (eval g env H) (eval g env j) (eval g env D)
+  | .delim v P a b c h D =>
+    vDelim g v (eval g env P) (eval g env a) (eval g env b) (eval g env c) (eval g env h) (eval g env D)
   | .mu l I D i s h => .mu l (eval g env I) (eval g env D) (eval g env i) (eval g env s) (evalHint g env h)
   | .con x => .con (eval g env x)
   | .ind l I D v P m i x =>
@@ -203,7 +204,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .dret i => sorry
   --| | .darg q S D => sorry
   --| | .drec q j D => sorry
-  --| | .delim v P a b c D => sorry
+  --| | .dhrec q H j D => sorry
+  --| | .delim v P a b c h D => sorry
   --| | .mu l I D i s h => sorry
   --| | .con x => sorry
   --| | .ind l I D v P m i x => sorry
@@ -310,19 +312,21 @@ partial def vEcase (g : Globals R) (z : Name) (m : Closure R) (s : Val R) (env :
     delim (ret i)     ↦ mret i
     delim (arg q S D) ↦ marg q S D (fun s => delim (D s))
     delim (rec q j D) ↦ mrec q j D (delim D)
+    delim (hrec q H j D) ↦ mhrec q H j D (delim D)
 
 The `fun s => …` is a closure over a small template, as in `vEq`. -/
-partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec D : Val R) : Val R :=
+partial def vDelim (g : Globals R) (v : Level) (P mret marg mrec mhrec D : Val R) : Val R :=
   --<sol
   match D with
   | .dret i => vApp g mret i
   | .darg q S E =>
-    -- s0 E1 mrec2 marg3 mret4 P5
-    let ih : Val R := .lam "s" (.mk [E, mrec, marg, mret, P]
-      (.delim v (.var 5) (.var 4) (.var 3) (.var 2) (.app (.var 1) (.var 0))))
+    -- s0 E1 mhrec2 mrec3 marg4 mret5 P6
+    let ih : Val R := .lam "s" (.mk [E, mhrec, mrec, marg, mret, P]
+      (.delim v (.var 6) (.var 5) (.var 4) (.var 3) (.var 2) (.app (.var 1) (.var 0))))
     [q, S, E, ih].foldl (vApp g) marg
-  | .drec q j E => [q, j, E, vDelim g v P mret marg mrec E].foldl (vApp g) mrec
-  | .neutral h sp => .neutral h (sp.push (.delim v P mret marg mrec))
+  | .drec q j E => [q, j, E, vDelim g v P mret marg mrec mhrec E].foldl (vApp g) mrec
+  | .dhrec q H j E => [q, H, j, E, vDelim g v P mret marg mrec mhrec E].foldl (vApp g) mhrec
+  | .neutral h sp => .neutral h (sp.push (.delim v P mret marg mrec mhrec))
   | _ => panic! "vDelim: ill-typed"
   --|ex
   --| sorry
@@ -610,7 +614,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .ecase z m env bs =>
         .ecase z (quote g (l + 1) (Closure.inst g m (Val.var l))) acc
           (bs.map fun b => quote g l (eval g env b))
-      | .delim v P a b c => .delim v (quote g l P) (quote g l a) (quote g l b) (quote g l c) acc
+      | .delim v P a b c h => .delim v (quote g l P) (quote g l a) (quote g l b) (quote g l c) (quote g l h) acc
       | .ind lv I D v P m i => .ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) acc
       | .out => .out acc
       | .scase lv I D v P m s i =>
@@ -633,6 +637,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | .dret i => .dret (quote g l i)
   | .darg q S D => .darg (quote g l q) (quote g l S) (quote g l D)
   | .drec q j D => .drec (quote g l q) (quote g l j) (quote g l D)
+  | .dhrec q H j D => .dhrec (quote g l q) (quote g l H) (quote g l j) (quote g l D)
   | .mu k I D i s h => .mu k (quote g l I) (quote g l D) (quote g l i) (quote g l s) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .con x => .con (quote g l x)
   | .natLit n => .natLit n
@@ -662,7 +667,7 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .split q z m x y b => vSplit g q v z m x y b
     | .absurd m => vAbsurd m v
     | .ecase z m env bs => vEcase g z m v env bs
-    | .delim lv P a b c => vDelim g lv P a b c v
+    | .delim lv P a b c h => vDelim g lv P a b c h v
     | .ind l I D lv P m i => vInd g l I D lv P m i v
     | .out => vOut g v
     | .sfix l I D lv P f s i => vSfix g l I D lv P f s i v

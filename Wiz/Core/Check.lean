@@ -110,8 +110,8 @@ Proofs carry no usage: they are erased, and conversion never looks at them.
     ──────────────────────────────── ecase     (⊔ = least upper bound in `le`)
     Γ ⊢ ecase t [b…] ⇒ M[t] ⊣ U + (V₀ ⊔ … ⊔ Vₙ)
 
-    Γ ⊢ I type@(l+1) ⇒ Γ ⊢ Desc.{l} I ⇒ Type (l+1); ret/arg/rec check against it
-    Γ ⊢ Desc.elim P mret marg mrec D ⇒ P D                 (method types: `delimMethodTys`)
+    Γ ⊢ I type@(l+1) ⇒ Γ ⊢ Desc.{l} I ⇒ Type (l+1); ret/arg/rec/hrec check against it
+    Γ ⊢ Desc.elim P mret marg mrec mhrec D ⇒ P D                 (method types: `delimMethodTys`)
     Γ ⊢ μ.{l} I D i ⇒ Type l           Γ ⊢ con x ⇐ μ D i  if  Γ ⊢ x ⇐ ⟦D⟧ (μ D) i
     Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·Uₘ + Uₓ                    (`indMotiveTy`, `indMethodTy`)
     Γ ⊢ ν.{l} I D i ⇒ Type l           Γ ⊢ out x ⇒ ⟦D⟧ (ν D) i
@@ -284,6 +284,14 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let uj ← check ctx j I
     let uD ← check ctx D (.desc l I)
     pure (uj + uD)
+  | .dhrec q H j D, .desc l I => do
+    -- strict positivity is automatic: `H` can't mention the type being defined
+    let _ ← checkQty ctx q
+    let lH ← checkType ctx H
+    unless lH.equiv (.succ l) do throw (.other "a description's branching type must be in its universe")
+    let uj ← check ctx j (.pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1)))
+    let uD ← check ctx D (.desc l I)
+    pure (uj + uD)
   | .con x, .mu l I D i s _ => do
     let some s' := sizePred? s
       | throw (.other s!"a constructor builds a value of size ↑s, not {ctx.showVal s}")
@@ -307,6 +315,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   --| | .dret i, .desc _ I => sorry
   --| | .darg q S D, .desc l I => sorry
   --| | .drec q j D, .desc l I => sorry
+  --| | .dhrec q H j D, .desc l I => sorry
   --| | .con x, .mu l I D i _ _ => sorry
   --| | _, _ => sorry
   --sol>
@@ -493,17 +502,18 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let lI ← checkType ctx I
     unless lI.equiv (.succ l) do throw (.other "a description's index type must be in its universe")
     pure (.sort (.succ (.succ l)), Usage.zeros ctx.lvl)
-  | .delim v P a b c D => do
+  | .delim v P a b c h D => do
     let (dty, uD) ← infer ctx D
     let .desc l I := dty | throw (.typeMismatch "a description" (ctx.showVal dty))
     let w := QuantitySyntax.explicitDefault
     let _ ← check ctx P (delimMotiveTy l v I w)
     let vP := ctx.eval P
-    let (ta, tb, tc) := delimMethodTys ctx.globals l I vP w
+    let (ta, tb, tc, th) := delimMethodTys ctx.globals l I vP w
     let ua ← check ctx a ta
     let ub ← check ctx b tb
     let uc ← check ctx c tc
-    pure (vApp ctx.globals vP (ctx.eval D), QPoly.const w • (ua + ub + uc) + uD)
+    let uh ← check ctx h th
+    pure (vApp ctx.globals vP (ctx.eval D), QPoly.const w • (ua + ub + uc + uh) + uD)
   | .mu l I D i _ _ | .nu l I D i _ _ => do
     let lI ← checkType ctx I
     unless lI.equiv (.succ l) do throw (.other "an index type must be in the data type's universe")
@@ -584,7 +594,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let vi := ctx.eval i
     let us ← check ctx s (vApp ctx.globals vS vi)
     pure (.nu l vI vD vi .szInf none, QPoly.const w • ust + us)
-  | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
+  | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --|ex
   --| | .app f a => sorry
   --| | .letE x q tty val body => sorry
@@ -616,7 +626,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .tag ls i => sorry
   --| | .ecase z m s bs => sorry
   --| | .desc l I => sorry
-  --| | .delim v P a b c D => sorry
+  --| | .delim v P a b c h D => sorry
   --| | .mu l I D i _ _ | .nu l I D i _ _ => sorry
   --| | .ind l I D v P m i x => sorry
   --| | .out x => sorry
@@ -626,7 +636,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .scofix l I D A f s i a => sorry
   --| | .scase l I D v P m s i x => sorry
   --| | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
-  --| | .dret _ | .darg .. | .drec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
+  --| | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --sol>
 
 /-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as

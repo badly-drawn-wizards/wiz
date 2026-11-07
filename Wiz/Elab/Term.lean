@@ -113,7 +113,7 @@ partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
 
 /-- Names the elaborator treats as data primitives when applied (and not shadowed). -/
 def builtinNames : List Name :=
-  ["Desc", "Desc.ret", "Desc.arg", "Desc.rec", "Desc.elim", "Desc.interp", "Desc.All",
+  ["Desc", "Desc.ret", "Desc.arg", "Desc.rec", "Desc.hrec", "Desc.elim", "Desc.interp", "Desc.All",
    "μ", "ν", "con", "ind", "out", "coit"]
 
 /-- `f a₁ … aₙ` where `f` is an unshadowed built-in name. -/
@@ -294,7 +294,8 @@ def piInfos : Term R → List (Name × BinderInfo × Term R)
   | _ => []
 
 /-- Replace recursive calls `f y a…` (with `y` a field that has a hypothesis `h`) by
-`h a…`. Returns the rewritten syntax and the hypothesis bindings it needs. -/
+`h a…`, and `f (k e) a…` (with `k` an infinitary field) by `h e a…`. Returns the
+rewritten syntax and the hypothesis bindings it needs. -/
 partial def rewriteRecCalls (rc : RecCtx) (binds : List (Name × VTy R × Val R))
     (ihType : Lvl → Option (VTy R)) (stx : Syntax) :
     Except String (Syntax × List (Name × VTy R × Val R)) := do
@@ -302,7 +303,12 @@ partial def rewriteRecCalls (rc : RecCtx) (binds : List (Name × VTy R × Val R)
   if stx.isOfKind "term.app" && isF (stx.getArg 0) then
     let args := (stx.getArg 1).args
     let some a := args[0]? | throw s!"recursive call of {rc.fn} without arguments"
-    let some y := (if a.isOfKind "term.ident" then (a.getArg 0).getId? else none)
+    let rec unparen (s : Syntax) : Syntax := if s.isOfKind "term.paren" then unparen (s.getArg 1) else s
+    let a := unparen a
+    -- `y`, or `k e…` for an infinitary field `k`
+    let (yStx, kargs) :=
+      if a.isOfKind "term.app" then (a.getArg 0, (a.getArg 1).args) else (a, #[])
+    let some y := (if yStx.isOfKind "term.ident" then (yStx.getArg 0).getId? else none)
       | throw s!"recursive call of {rc.fn} must be on a variable"
     let some (_, _, .neutral (.local fl) #[]) := binds.find? (·.1 == y)
       | throw s!"recursive call of {rc.fn} on {y}, which is not a recursive field"
@@ -311,7 +317,7 @@ partial def rewriteRecCalls (rc : RecCtx) (binds : List (Name × VTy R × Val R)
     let some ty := ihType ihl | throw "internal error: hypothesis without a type"
     let ihName := "_ih_" ++ y
     let ident : Syntax := .node a.info "term.ident" #[.ident a.info ihName]
-    let rest ← (args.extract 1 args.size).mapM (rewriteRecCalls rc binds ihType ·)
+    let rest ← (kargs ++ args.extract 1 args.size).mapM (rewriteRecCalls rc binds ihType ·)
     let restStx := rest.map (·.1)
     let newBinds := [(ihName, ty, (.neutral (.local ihl) #[] : Val R))] ++ rest.toList.flatMap (·.2)
     let stx' := if restStx.isEmpty then ident
@@ -488,7 +494,7 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
 
 /-- Stage 4d: data forms that need their expected type: tags, `ecase` (which
 generalises its scrutinee in the expected type), and the constructors `Desc.ret`,
-`Desc.arg`, `Desc.rec`, `con`, `coit`. -/
+`Desc.arg`, `Desc.rec`, `Desc.hrec`, `con`, `coit`. -/
 partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     ElabM R (Option (Term R)) := do
   let g ← getGlobals
@@ -559,6 +565,11 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     return some (.darg qt S' D')
   | "Desc.rec", #[qs, j, D], .desc l I =>
     return some (.drec (← check ctx qs .qty) (← check ctx j I) (← check ctx D (.desc l I)))
+  | "Desc.hrec", #[qs, H, j, D], .desc l I =>
+    let (H', lH) ← checkType ctx H
+    unifyLevel lH (.succ l)
+    let jTy : VTy R := .pi "h" .default (.qlit w) (← evalIn ctx H') (.mk ctx.env (quote g (ctx.lvl + 1) I))
+    return some (.dhrec (← check ctx qs .qty) H' (← check ctx j jTy) (← check ctx D (.desc l I)))
   | "con", #[x], .mu l I D i _ _ => return some (.con (← check ctx x (vInterp g l I D (muFamily l I D) i)))
   | "coit", #[S, st, s], .nu l I D i _ _ =>
     let S' ← check ctx S (coitStateTy l I w)
@@ -566,7 +577,8 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     let st' ← check ctx st (coitStepTy g l I D vS w)
     let s' ← check ctx s (vApp g vS i)
     return some (.coit l (q I) (q D) S' st' (q i) s')
-  | "Desc.ret", _, _ | "Desc.arg", _, _ | "Desc.rec", _, _ => shapeError s!"{n} builds a description"
+  | "Desc.ret", _, _ | "Desc.arg", _, _ | "Desc.rec", _, _ | "Desc.hrec", _, _ =>
+    shapeError s!"{n} builds a description"
   | "con", _, _ => shapeError "con builds an inductive value"
   | "coit", _, _ => shapeError "coit builds a coinductive value"
   | _, _, _ => return none
@@ -591,13 +603,13 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
     let (D', l, I) ← descOf D
     let i' ← check ctx i I
     return some ((if n == "μ" then Term.mu else Term.nu) l (q I) D' i' .szInf none, .sort (.succ l))
-  | "Desc.elim", #[P, a, b, c, D] =>
+  | "Desc.elim", #[P, a, b, c, h, D] =>
     let (D', l, I) ← descOf D
     let v ← freshLevelMeta
     let P' ← check ctx P (delimMotiveTy l v I w)
     let vP ← evalIn ctx P'
-    let (ta, tb, tc) := delimMethodTys g l I vP w
-    return some (.delim v P' (← check ctx a ta) (← check ctx b tb) (← check ctx c tc) D',
+    let (ta, tb, tc, th) := delimMethodTys g l I vP w
+    return some (.delim v P' (← check ctx a ta) (← check ctx b tb) (← check ctx c tc) (← check ctx h th) D',
                  vApp g vP (← evalIn ctx D'))
   | "Desc.interp", #[D, X, i] =>
     let (D', l, I) ← descOf D
@@ -618,7 +630,7 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
     let i' ← check ctx i I
     let xs' ← check ctx xs (vInterp g l I (← evalIn ctx D') vX (← evalIn ctx i'))
     let all ← evalIn ctx ([q I, D', X', P', i', xs'].foldl .app (Templates.allTm l v))
-    return some (q all, .sort (.max 1 v))
+    return some (q all, .sort (.max (.succ l) v))
   | "ind", #[P, m, x] =>
     let (x', xty) ← infer ctx x
     let .mu l I D i _ _ ← force xty | throwAt ctx.info s!"ind expects an inductive value, got {← showVal ctx xty}"
@@ -919,9 +931,14 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   for c in ctors do
     let some cd := g.find? (T ++ "." ++ c) | throwAt ctx.info s!"missing constructor {c}"
     let fieldInfos := (piInfos cd.type).drop nΔ
-    let isRecField (A : Term R) : Bool := match (Term.spine A).1 with
-      | .const n _ => n == T
-      | _ => false
+    -- `T …`, or `(h : H) → T …` (an infinitary field: its hypothesis is a function)
+    let isRecField (A : Term R) : Bool :=
+      let head : Term R → Bool := fun A => match (Term.spine A).1 with
+        | .const n _ => n == T
+        | _ => false
+      match A with
+      | .pi _ _ _ _ B => head B
+      | A => head A
     let nRec := if useRec then (fieldInfos.filter fun (_, _, A) => isRecField A).length else 0
     let .pi _ _ _ mTy cod ← force fty | throwAt ctx.info "internal error: eliminator type"
     -- introduce fields, hypotheses, the equation, and the reverted variables
