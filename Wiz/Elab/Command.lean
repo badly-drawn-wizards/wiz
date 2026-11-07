@@ -790,23 +790,28 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .ok (ty, _) =>
         let kind (t : Term R) : Option Char := match t with
           | .unit _ => some 'v'
+          -- a type variable: any Wiz value, passed as it is
+          | .var _ => some 'w'
           | t => match (Term.spine t).1 with
             | .const "Nat" _ => some 'n'
             | .const "UInt64" _ => some 'u'
             | .const "Float64" _ => some 'f'
             | .const "String" _ => some 's'
             | .const "Bool" _ => some 'b'
-            | .const "Bytes" _ => some 'w'
+            | .const "Bytes" _ | .const "Array" _ | .const "Str" _ | .const "StrMap" _ => some 'w'
+            | .var _ => some 'w'
             | .const n _ => if s.foreignTypes.any (·.1 == n) then some 'p' else none
             | _ => none
-        let rec params : Term R → List (Term R) × Term R
-          | .pi _ _ _ A B => let (ps, r) := params B; (A :: ps, r)
+        let rec params : Term R → List (Term R × Term R) × Term R
+          | .pi _ _ q A B => let (ps, r) := params B; ((q, A) :: ps, r)
           | t => ([], t)
         let (ps, res) := params ty
         let (io, res) := match Term.spine res with
           | (.const "IO" _, [A]) => (true, A)
           | _ => (false, res)
-        match ps.mapM kind, kind res with
+        -- erased parameters (`{A : Type}`) are passed as ◾ and ignored
+        let pkind (qa : Term R × Term R) : Option Char := if qa.1 == .qlit 0 then some 'e' else kind qa.2
+        match ps.mapM pkind, kind res with
         | some ks, some rk =>
           let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}:{header}:{finOf res}"
           match addDecl s.globals { name, type := ty, value := none } with

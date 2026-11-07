@@ -1,0 +1,31 @@
+import IO
+-- The standard library for systems code (stage 12a): containers and text with native
+-- representations, updated in place when they are unique.
+
+-- Arrays of any values.
+axiom Array : Type → Type
+extern "wiz_array_empty" Array.empty : {A : Type} → Array A
+extern "wiz_array_push" Array.push : {A : Type} → Array A → A → Array A
+extern "wiz_array_size" Array.size : {A : Type} → Array A → Nat
+extern "wiz_array_get" Array.getD : {A : Type} → Array A → Nat → A → A
+extern "wiz_array_set" Array.set : {A : Type} → Array A → Nat → A → Array A
+
+-- UTF-8 text (a native `String`).
+axiom Str : Type
+extern "wiz_str_of_cstr" Str.ofString : String → Str
+extern "wiz_str_to_cstr" Str.toString : Str → String
+extern "wiz_str_append" Str.append : Str → Str → Str
+extern "wiz_str_size" Str.size : Str → Nat
+extern "wiz_str_byte" Str.byte : Str → Nat → Nat
+extern "wiz_str_slice" Str.slice : Str → Nat → Nat → Str
+extern "wiz_str_eq" Str.eq : Str → Str → Bool
+extern "wiz_str_lt" Str.lt : Str → Str → Bool
+
+-- Maps from text.
+axiom StrMap : Type → Type
+extern "wiz_map_empty" StrMap.empty : {V : Type} → StrMap V
+extern "wiz_map_insert" StrMap.insert : {V : Type} → StrMap V → Str → V → StrMap V
+extern "wiz_map_find" StrMap.findD : {V : Type} → StrMap V → Str → V → V
+extern "wiz_map_size" StrMap.size : {V : Type} → StrMap V → Nat
+
+extern "wiz_io_write_file" IO.writeFile : String → String → IO Unit

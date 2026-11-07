@@ -28,7 +28,8 @@ typedef uintptr_t wiz_val;
 #define WIZ_MAX_SMALL (((uintptr_t)1 << 62) - 1)
 
 enum { WIZ_TAG_CLO = 0xFFFF0000u, WIZ_TAG_BIG = 0xFFFF0001u, WIZ_TAG_RAW = 0xFFFF0002u,
-       WIZ_TAG_EXT = 0xFFFF0003u, WIZ_TAG_BYTES = 0xFFFF0004u };
+       WIZ_TAG_EXT = 0xFFFF0003u, WIZ_TAG_BYTES = 0xFFFF0004u, WIZ_TAG_ARRAY = 0xFFFF0005u,
+       WIZ_TAG_STR = 0xFFFF0006u, WIZ_TAG_MAP = 0xFFFF0007u };
 
 
 typedef struct {
@@ -69,6 +70,28 @@ typedef struct {
   size_t len, cap;
   unsigned char *data;
 } wiz_bytes;
+
+/* an array of Wiz values */
+typedef struct {
+  wiz_hdr h;
+  size_t len, cap;
+  wiz_val *data;
+} wiz_array;
+
+/* UTF-8 text (immutable) */
+typedef struct {
+  wiz_hdr h;
+  size_t len; /* bytes */
+  char data[];
+} wiz_str;
+
+/* a hash map from text to Wiz values (open addressing) */
+typedef struct {
+  wiz_hdr h;
+  size_t count, cap;
+  wiz_val *keys; /* Str objects, or 0 for empty */
+  wiz_val *vals;
+} wiz_map;
 
 static int64_t wiz_live = 0;
 
@@ -117,6 +140,16 @@ static void wiz_free(wiz_val v) {
     if (e->fin && e->ptr) e->fin(e->ptr);
   } else if (h->tag == WIZ_TAG_BYTES) {
     free(((wiz_bytes *)v)->data);
+  } else if (h->tag == WIZ_TAG_ARRAY) {
+    wiz_array *a = (wiz_array *)v;
+    for (size_t i = 0; i < a->len; i++) wiz_dec(a->data[i]);
+    free(a->data);
+  } else if (h->tag == WIZ_TAG_STR) {
+    /* the text is inline */
+  } else if (h->tag == WIZ_TAG_MAP) {
+    wiz_map *m = (wiz_map *)v;
+    for (size_t i = 0; i < m->cap; i++) if (m->keys[i]) { wiz_dec(m->keys[i]); wiz_dec(m->vals[i]); }
+    free(m->keys); free(m->vals);
   } else {
     wiz_ctor *o = (wiz_ctor *)v;
     for (uint32_t i = 0; i < h->size; i++) wiz_dec(o->fields[i]);
@@ -452,6 +485,172 @@ WIZ_API const char *wiz_bytes_to_string(wiz_val v) {
   wiz_scratch[b->len] = 0;
   wiz_dec(v);
   return wiz_scratch;
+}
+
+/* ---- arrays: functional, updated in place when unique ---- */
+
+WIZ_API wiz_val wiz_array_empty(void) {
+  wiz_array *a = (wiz_array *)wiz_alloc(sizeof(wiz_array), WIZ_TAG_ARRAY, 0);
+  a->len = a->cap = 0; a->data = NULL;
+  return (wiz_val)a;
+}
+static wiz_val wiz_array_unique(wiz_val v) {
+  wiz_array *a = (wiz_array *)v;
+  if (a->h.rc == 1) return v;
+  wiz_array *c = (wiz_array *)wiz_array_empty();
+  c->len = c->cap = a->len;
+  c->data = (wiz_val *)malloc((a->len ? a->len : 1) * sizeof(wiz_val));
+  for (size_t i = 0; i < a->len; i++) { c->data[i] = a->data[i]; wiz_inc(a->data[i]); }
+  wiz_dec(v);
+  return (wiz_val)c;
+}
+WIZ_API wiz_val wiz_array_push(wiz_val v, wiz_val x) {
+  v = wiz_array_unique(v);
+  wiz_array *a = (wiz_array *)v;
+  if (a->len == a->cap) { a->cap = a->cap ? 2 * a->cap : 8; a->data = (wiz_val *)realloc(a->data, a->cap * sizeof(wiz_val)); }
+  a->data[a->len++] = x;
+  return v;
+}
+WIZ_API uint64_t wiz_array_size(wiz_val v) { uint64_t n = ((wiz_array *)v)->len; wiz_dec(v); return n; }
+/* the element at i (a new reference), or the default */
+WIZ_API wiz_val wiz_array_get(wiz_val v, uint64_t i, wiz_val dflt) {
+  wiz_array *a = (wiz_array *)v;
+  wiz_val r;
+  if (i < a->len) { r = a->data[i]; wiz_inc(r); wiz_dec(dflt); } else r = dflt;
+  wiz_dec(v);
+  return r;
+}
+WIZ_API wiz_val wiz_array_set(wiz_val v, uint64_t i, wiz_val x) {
+  if (i >= ((wiz_array *)v)->len) { wiz_dec(x); return v; }
+  v = wiz_array_unique(v);
+  wiz_array *a = (wiz_array *)v;
+  wiz_dec(a->data[i]);
+  a->data[i] = x;
+  return v;
+}
+
+/* ---- text ---- */
+
+static wiz_val wiz_str_new(const char *s, size_t n) {
+  wiz_str *t = (wiz_str *)wiz_alloc(sizeof(wiz_str) + n + 1, WIZ_TAG_STR, 0);
+  t->len = n;
+  memcpy(t->data, s, n);
+  t->data[n] = 0;
+  return (wiz_val)t;
+}
+WIZ_API wiz_val wiz_str_of_cstr(const char *s) { return wiz_str_new(s, strlen(s)); }
+WIZ_API const char *wiz_str_to_cstr(wiz_val v) {
+  wiz_str *t = (wiz_str *)v;
+  free(wiz_scratch);
+  wiz_scratch = (char *)malloc(t->len + 1);
+  memcpy(wiz_scratch, t->data, t->len + 1);
+  wiz_dec(v);
+  return wiz_scratch;
+}
+WIZ_API wiz_val wiz_str_append(wiz_val a, wiz_val b) {
+  wiz_str *x = (wiz_str *)a, *y = (wiz_str *)b;
+  wiz_str *t = (wiz_str *)wiz_alloc(sizeof(wiz_str) + x->len + y->len + 1, WIZ_TAG_STR, 0);
+  t->len = x->len + y->len;
+  memcpy(t->data, x->data, x->len);
+  memcpy(t->data + x->len, y->data, y->len + 1);
+  wiz_dec(a); wiz_dec(b);
+  return (wiz_val)t;
+}
+WIZ_API uint64_t wiz_str_size(wiz_val v) { uint64_t n = ((wiz_str *)v)->len; wiz_dec(v); return n; }
+WIZ_API uint64_t wiz_str_byte(wiz_val v, uint64_t i) {
+  wiz_str *t = (wiz_str *)v;
+  uint64_t r = i < t->len ? (unsigned char)t->data[i] : 0;
+  wiz_dec(v);
+  return r;
+}
+WIZ_API wiz_val wiz_str_slice(wiz_val v, uint64_t from, uint64_t to) {
+  wiz_str *t = (wiz_str *)v;
+  if (to > t->len) to = t->len;
+  if (from > to) from = to;
+  wiz_val r = wiz_str_new(t->data + from, to - from);
+  wiz_dec(v);
+  return r;
+}
+WIZ_API int wiz_str_eq(wiz_val a, wiz_val b) {
+  wiz_str *x = (wiz_str *)a, *y = (wiz_str *)b;
+  int r = x->len == y->len && memcmp(x->data, y->data, x->len) == 0;
+  wiz_dec(a); wiz_dec(b);
+  return r;
+}
+WIZ_API int wiz_str_lt(wiz_val a, wiz_val b) {
+  wiz_str *x = (wiz_str *)a, *y = (wiz_str *)b;
+  size_t n = x->len < y->len ? x->len : y->len;
+  int c = memcmp(x->data, y->data, n);
+  int r = c < 0 || (c == 0 && x->len < y->len);
+  wiz_dec(a); wiz_dec(b);
+  return r;
+}
+
+/* ---- maps from text: functional, updated in place when unique ---- */
+
+static uint64_t wiz_str_hash(wiz_str *t) {
+  uint64_t h = 1469598103934665603ULL;
+  for (size_t i = 0; i < t->len; i++) { h ^= (unsigned char)t->data[i]; h *= 1099511628211ULL; }
+  return h;
+}
+static int wiz_str_same(wiz_str *x, wiz_str *y) { return x->len == y->len && memcmp(x->data, y->data, x->len) == 0; }
+WIZ_API wiz_val wiz_map_empty(void) {
+  wiz_map *m = (wiz_map *)wiz_alloc(sizeof(wiz_map), WIZ_TAG_MAP, 0);
+  m->count = 0; m->cap = 8;
+  m->keys = (wiz_val *)calloc(8, sizeof(wiz_val));
+  m->vals = (wiz_val *)calloc(8, sizeof(wiz_val));
+  return (wiz_val)m;
+}
+static wiz_val wiz_map_unique(wiz_val v) {
+  wiz_map *m = (wiz_map *)v;
+  if (m->h.rc == 1) return v;
+  wiz_map *c = (wiz_map *)wiz_alloc(sizeof(wiz_map), WIZ_TAG_MAP, 0);
+  c->count = m->count; c->cap = m->cap;
+  c->keys = (wiz_val *)calloc(m->cap, sizeof(wiz_val));
+  c->vals = (wiz_val *)calloc(m->cap, sizeof(wiz_val));
+  for (size_t i = 0; i < m->cap; i++)
+    if (m->keys[i]) { c->keys[i] = m->keys[i]; c->vals[i] = m->vals[i]; wiz_inc(m->keys[i]); wiz_inc(m->vals[i]); }
+  wiz_dec(v);
+  return (wiz_val)c;
+}
+static void wiz_map_put(wiz_map *m, wiz_val k, wiz_val x) {
+  size_t i = wiz_str_hash((wiz_str *)k) & (m->cap - 1);
+  while (m->keys[i] && !wiz_str_same((wiz_str *)m->keys[i], (wiz_str *)k)) i = (i + 1) & (m->cap - 1);
+  if (m->keys[i]) { wiz_dec(m->keys[i]); wiz_dec(m->vals[i]); } else m->count++;
+  m->keys[i] = k; m->vals[i] = x;
+}
+WIZ_API wiz_val wiz_map_insert(wiz_val v, wiz_val k, wiz_val x) {
+  v = wiz_map_unique(v);
+  wiz_map *m = (wiz_map *)v;
+  if (2 * (m->count + 1) > m->cap) {
+    size_t oc = m->cap;
+    wiz_val *ok = m->keys, *ov = m->vals;
+    m->cap *= 2; m->count = 0;
+    m->keys = (wiz_val *)calloc(m->cap, sizeof(wiz_val));
+    m->vals = (wiz_val *)calloc(m->cap, sizeof(wiz_val));
+    for (size_t i = 0; i < oc; i++) if (ok[i]) wiz_map_put(m, ok[i], ov[i]);
+    free(ok); free(ov);
+  }
+  wiz_map_put(m, k, x);
+  return v;
+}
+/* the value for k (a new reference), or the default */
+WIZ_API wiz_val wiz_map_find(wiz_val v, wiz_val k, wiz_val dflt) {
+  wiz_map *m = (wiz_map *)v;
+  size_t i = wiz_str_hash((wiz_str *)k) & (m->cap - 1);
+  wiz_val r = dflt;
+  while (m->keys[i]) {
+    if (wiz_str_same((wiz_str *)m->keys[i], (wiz_str *)k)) { r = m->vals[i]; wiz_inc(r); wiz_dec(dflt); break; }
+    i = (i + 1) & (m->cap - 1);
+  }
+  wiz_dec(v); wiz_dec(k);
+  return r;
+}
+WIZ_API uint64_t wiz_map_size(wiz_val v) { uint64_t n = ((wiz_map *)v)->count; wiz_dec(v); return n; }
+
+WIZ_API void wiz_io_write_file(const char *path, const char *text) {
+  FILE *f = fopen(path, "wb");
+  if (f) { fputs(text, f); fclose(f); }
 }
 
 /* files, for the library */
