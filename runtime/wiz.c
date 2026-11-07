@@ -26,7 +26,9 @@ typedef uintptr_t wiz_val;
 #define WIZ_IS_SCALAR(v) ((v) & 1)
 #define WIZ_MAX_SMALL (((uintptr_t)1 << 62) - 1)
 
-enum { WIZ_TAG_CLO = 0xFFFF0000u, WIZ_TAG_BIG = 0xFFFF0001u, WIZ_TAG_RAW = 0xFFFF0002u };
+enum { WIZ_TAG_CLO = 0xFFFF0000u, WIZ_TAG_BIG = 0xFFFF0001u, WIZ_TAG_RAW = 0xFFFF0002u,
+       WIZ_TAG_EXT = 0xFFFF0003u, WIZ_TAG_BYTES = 0xFFFF0004u };
+
 
 typedef struct {
   int64_t rc;
@@ -52,6 +54,20 @@ typedef struct {
   wiz_hdr h;
   mpz_t z;
 } wiz_big;
+
+/* a foreign pointer, with the function that releases it (or NULL) */
+typedef struct {
+  wiz_hdr h;
+  void *ptr;
+  void (*fin)(void *);
+} wiz_ext;
+
+/* a byte buffer */
+typedef struct {
+  wiz_hdr h;
+  size_t len, cap;
+  unsigned char *data;
+} wiz_bytes;
 
 static int64_t wiz_live = 0;
 
@@ -95,6 +111,11 @@ static void wiz_free(wiz_val v) {
     mpz_clear(((wiz_big *)v)->z);
   } else if (h->tag == WIZ_TAG_RAW) {
     /* raw machine words: nothing inside to drop */
+  } else if (h->tag == WIZ_TAG_EXT) {
+    wiz_ext *e = (wiz_ext *)v;
+    if (e->fin && e->ptr) e->fin(e->ptr);
+  } else if (h->tag == WIZ_TAG_BYTES) {
+    free(((wiz_bytes *)v)->data);
   } else {
     wiz_ctor *o = (wiz_ctor *)v;
     for (uint32_t i = 0; i < h->size; i++) wiz_dec(o->fields[i]);
@@ -375,6 +396,79 @@ WIZ_API wiz_val wiz_io_result(wiz_val v, wiz_val world) {
   wiz_val p = wiz_ctor_new(0, 2);
   WIZ_SET(p, 0, v); WIZ_SET(p, 1, world);
   return p;
+}
+
+/* foreign pointers: borrowed for a call (the wrapper drops the reference after it) */
+WIZ_API void *wiz_in_ptr(wiz_val v) { return ((wiz_ext *)v)->ptr; }
+WIZ_API wiz_val wiz_out_ptr(void *p, void (*fin)(void *)) {
+  wiz_ext *e = (wiz_ext *)wiz_alloc(sizeof(wiz_ext), WIZ_TAG_EXT, 0);
+  e->ptr = p;
+  e->fin = fin;
+  return (wiz_val)e;
+}
+
+/* byte buffers: functional, but updated in place when unique (Perceus) */
+WIZ_API wiz_val wiz_bytes_empty(void) {
+  wiz_bytes *b = (wiz_bytes *)wiz_alloc(sizeof(wiz_bytes), WIZ_TAG_BYTES, 0);
+  b->len = 0; b->cap = 0; b->data = NULL;
+  return (wiz_val)b;
+}
+static wiz_val wiz_bytes_unique(wiz_val v) {
+  wiz_bytes *b = (wiz_bytes *)v;
+  if (b->h.rc == 1) return v;
+  wiz_bytes *c = (wiz_bytes *)wiz_bytes_empty();
+  c->len = c->cap = b->len;
+  c->data = (unsigned char *)malloc(b->len ? b->len : 1);
+  memcpy(c->data, b->data, b->len);
+  wiz_dec(v);
+  return (wiz_val)c;
+}
+WIZ_API wiz_val wiz_bytes_push(wiz_val v, uint64_t x) {
+  v = wiz_bytes_unique(v);
+  wiz_bytes *b = (wiz_bytes *)v;
+  if (b->len == b->cap) { b->cap = b->cap ? 2 * b->cap : 8; b->data = (unsigned char *)realloc(b->data, b->cap); }
+  b->data[b->len++] = (unsigned char)x;
+  return v;
+}
+WIZ_API uint64_t wiz_bytes_size(wiz_val v) { uint64_t n = ((wiz_bytes *)v)->len; wiz_dec(v); return n; }
+WIZ_API uint64_t wiz_bytes_get(wiz_val v, uint64_t i) {
+  wiz_bytes *b = (wiz_bytes *)v;
+  uint64_t r = i < b->len ? b->data[i] : 0;
+  wiz_dec(v);
+  return r;
+}
+WIZ_API wiz_val wiz_bytes_of_string(const char *s) {
+  wiz_val v = wiz_bytes_empty();
+  for (const char *p = s; *p; p++) v = wiz_bytes_push(v, (unsigned char)*p);
+  return v;
+}
+static char *wiz_scratch = NULL;
+WIZ_API const char *wiz_bytes_to_string(wiz_val v) {
+  wiz_bytes *b = (wiz_bytes *)v;
+  free(wiz_scratch);
+  wiz_scratch = (char *)malloc(b->len + 1);
+  memcpy(wiz_scratch, b->data, b->len);
+  wiz_scratch[b->len] = 0;
+  wiz_dec(v);
+  return wiz_scratch;
+}
+
+/* files, for the library */
+WIZ_API const char *wiz_io_read_file(const char *path) {
+  FILE *f = fopen(path, "rb");
+  free(wiz_scratch);
+  wiz_scratch = NULL;
+  if (!f) { wiz_scratch = (char *)calloc(1, 1); return wiz_scratch; }
+  size_t cap = 1024, len = 0;
+  wiz_scratch = (char *)malloc(cap);
+  size_t n;
+  while ((n = fread(wiz_scratch + len, 1, cap - len - 1, f)) > 0) {
+    len += n;
+    if (len + 1 == cap) { cap *= 2; wiz_scratch = (char *)realloc(wiz_scratch, cap); }
+  }
+  wiz_scratch[len] = 0;
+  fclose(f);
+  return wiz_scratch;
 }
 
 /* functions for the library to bind */

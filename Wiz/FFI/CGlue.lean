@@ -22,6 +22,8 @@ namespace Wiz.FFI
 /-- The types of the subset: integers, doubles and strings. -/
 inductive GTy where
   | int | dbl | str | void
+  /-- an opaque foreign pointer: it can only be passed on -/
+  | ptr
   deriving BEq, Repr, Inhabited
 
 def GTy.ofC : CType → Option GTy
@@ -31,11 +33,11 @@ def GTy.ofC : CType → Option GTy
   | .void => some .void
   | .ptr t => match t with
     | .int "char" | .const (.int "char") => some .str
-    | _ => none
+    | _ => some .ptr
   | .other _ => none
 
 def GTy.show : GTy → String
-  | .int => "an integer" | .dbl => "a double" | .str => "a string" | .void => "void"
+  | .int => "an integer" | .dbl => "a double" | .str => "a string" | .void => "void" | .ptr => "a pointer"
 
 /-- Type names allowed for locals. -/
 def localTypes : List (List String × GTy) :=
@@ -96,14 +98,14 @@ partial def expr (prec : Nat := 0) : G GTy := do
       expect ":"
       let b ← expr
       unless lhs == .int || lhs == .dbl do throw "the condition of ?: must be a number"
-      unless a == b || (a != .str && b != .str) do throw s!"the branches of ?: have different types"
+      unless a == b || (a != .str && b != .str && a != .ptr && b != .ptr) do throw s!"the branches of ?: have different types"
       lhs := if a == .str then .str else if a == .dbl || b == .dbl then .dbl else .int
       continue
     let some lvl := binops.findIdx? (·.contains t) | break
     if lvl < prec then break
     let _ ← gnext
     let rhs ← expr (lvl + 1)
-    if lhs == .str || rhs == .str then throw s!"'{t}' needs numbers, not strings"
+    if lhs == .str || rhs == .str || lhs == .ptr || rhs == .ptr then throw s!"'{t}' needs numbers"
     lhs := if lvl ≤ 6 then .int else if lhs == .dbl || rhs == .dbl then .dbl else .int
   pure lhs
   --|ex
@@ -145,7 +147,7 @@ partial def primary : G GTy := do
     let _ ← gnext
     unless args.size == ps.length do throw s!"{t} takes {ps.length} arguments, not {args.size}"
     for a in args, p in ps do
-      unless a == p || (a != .str && p != .str) do throw s!"{t}: expected {p.show}, got {a.show}"
+      unless a == p || (a != .str && p != .str && a != .ptr && p != .ptr) do throw s!"{t}: expected {p.show}, got {a.show}"
     return r
   match (← get).vars.lookup t with
   | some ty =>
@@ -189,7 +191,7 @@ partial def stmt : G Unit := do
     let r := (← get).ret
     if r == .void then expect ";" else
       let a ← expr
-      unless a == r || (a != .str && r != .str) do throw s!"return: expected {r.show}, got {a.show}"
+      unless a == r || (a != .str && r != .str && a != .ptr && r != .ptr) do throw s!"return: expected {r.show}, got {a.show}"
       expect ";"
   else if t == "break" || t == "continue" then let _ ← gnext; expect ";"
   else
@@ -204,7 +206,7 @@ partial def stmt : G Unit := do
       if (← gpeek) == "=" then
         let _ ← gnext
         let a ← expr
-        unless a == ty || (a != .str && ty != .str) do throw s!"{x}: expected {ty.show}, got {a.show}"
+        unless a == ty || (a != .str && ty != .str && a != .ptr && ty != .ptr) do throw s!"{x}: expected {ty.show}, got {a.show}"
       modify fun s => { s with vars := (x, ty) :: s.vars }
       expect ";"
     | none => simple; expect ";"
@@ -217,7 +219,7 @@ where
       let _ ← gnext; let _ ← gnext
       let some ty := (← get).vars.lookup x | throw s!"unknown variable {x}"
       let a ← expr
-      unless a == ty || (a != .str && ty != .str) do throw s!"{x}: expected {ty.show}, got {a.show}"
+      unless a == ty || (a != .str && ty != .str && a != .ptr && ty != .ptr) do throw s!"{x}: expected {ty.show}, got {a.show}"
       if ty == .str && op != "=" then throw s!"'{op}' needs numbers"
     else if op == "++" || op == "--" then
       let _ ← gnext; let _ ← gnext

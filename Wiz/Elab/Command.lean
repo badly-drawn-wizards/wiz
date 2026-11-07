@@ -74,6 +74,8 @@ structure CommandState (R : Type) where
   cFuncs : List (String × List FFI.GTy × FFI.GTy) := []
   /-- C code to emit: header includes and the glue functions -/
   cCode : Array String := #[]
+  /-- foreign pointer types and their finalizers -/
+  foreignTypes : List (Name × String) := []
   /-- macro rules, latest first -/
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000
@@ -442,6 +444,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let s ← get
   let report (sev : Severity) (info : SourceInfo) (text : String) : StateM (CommandState R) Unit :=
     modify fun s => { s with messages := s.messages.push { info, severity := sev, text } }
+  -- the finalizer of a foreign pointer type (for a foreign function's result)
+  let finOf (t : Term R) : String := match (Term.spine t).1 with
+    | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
+    | _ => ""
   let addDeclChecked (name : Name) (levelParams : List Name) (ty : Term R) (val : Option (Term R)) := do
     match addDecl s.globals { name, levelParams, type := ty, value := val } with
     | .ok g => modify fun s => { s with globals := g }
@@ -631,6 +637,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else if !s.globals.contains n then report .error cmd.info s!"unknown declaration {n}"
     else modify fun s => { s with builtins := (key, n) :: s.builtins,
                                   globals := { s.globals with builtins := (key, n) :: s.globals.builtins } }
+  | "command.foreignType" =>
+    -- an opaque C pointer type; values are released with the finalizer
+    let name := ((cmd.getArg 1).getId?).getD "_"
+    let fin := if (cmd.getArg 2).isNone then "" else (((cmd.getArg 2).getArg 3).getStr?).getD ""
+    match addDecl s.globals { name, type := .sort 1, value := none } with
+    | .ok g => modify fun s => { s with globals := g, foreignTypes := (name, fin) :: s.foreignTypes }
+    | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
   | "command.importC" =>
     -- bind every function of a C header whose types we can marshal
     let header := ((cmd.getArg 1).getStr?).getD "_"
@@ -668,7 +681,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let (some ks, some rk) := (f.params.mapM (kindOf · false), kindOf f.ret true) | continue
         let res := if isPure then tyOf rk else .app (.const "IO" []) (tyOf rk)
         let ty := ks.foldr (fun k acc => .pi "_" .default w (tyOf k) acc) res
-        let key : Name := s!"extern:{f.name}:{String.mk ks}:{rk}:{if isPure then "pure" else "io"}:{header}"
+        let key : Name := s!"extern:{f.name}:{String.mk ks}:{rk}:{if isPure then "pure" else "io"}:{header}:"
         match addDecl (← get).globals { name, type := ty, value := none } with
         | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
                                             globals := { g with builtins := (key, name) :: g.builtins } }
@@ -691,6 +704,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | t => match (Term.spine t).1 with
             | .const "Nat" _ => some 'n' | .const "UInt64" _ => some 'u' | .const "Float64" _ => some 'f'
             | .const "String" _ => some 's' | .const "Bool" _ => some 'b'
+            | .const n _ => if s.foreignTypes.any (·.1 == n) then some 'p' else none
             | _ => none
         let rec gparams : Term R → List (Term R) × Term R
           | .pi _ _ _ A B => let (ps, r) := gparams B; (A :: ps, r)
@@ -703,9 +717,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         | some ks, some rk =>
           if names.length != ks.length then report .error cmd.info "glue: every parameter needs a name" else
           let gty (k : Char) : FFI.GTy := match k with
-            | 'f' => .dbl | 's' => .str | 'v' => .void | _ => .int
+            | 'f' => .dbl | 's' => .str | 'v' => .void | 'p' => .ptr | _ => .int
           let cty (k : Char) : String := match k with
-            | 'f' => "double" | 's' => "const char *" | 'v' => "void" | 'b' => "int" | _ => "uint64_t"
+            | 'f' => "double" | 's' => "const char *" | 'v' => "void" | 'b' => "int" | 'p' => "void *" | _ => "uint64_t"
           let pairs := (names.zip ks).filter (·.2 != 'v')
           match FFI.checkGlue body (pairs.map fun (x, k) => (x, gty k)) s.cFuncs (gty rk) with
           | .error e => report .error (cmd.getArg 6).info s!"glue: {e}"
@@ -715,7 +729,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             let code := s!"static {cty rk} {cname}({if cparams.isEmpty then "void" else cparams}) \{
 {body}
 }"
-            let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}:"
+            let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}::{finOf res}"
             match addDecl s.globals { name, type := ty, value := none } with
             | .ok g =>
               modify fun s => { s with builtins := (key, name) :: s.builtins,
@@ -746,6 +760,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             | .const "Float64" _ => some 'f'
             | .const "String" _ => some 's'
             | .const "Bool" _ => some 'b'
+            | .const "Bytes" _ => some 'w'
+            | .const n _ => if s.foreignTypes.any (·.1 == n) then some 'p' else none
             | _ => none
         let rec params : Term R → List (Term R) × Term R
           | .pi _ _ _ A B => let (ps, r) := params B; (A :: ps, r)
@@ -756,7 +772,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | _ => (false, res)
         match ps.mapM kind, kind res with
         | some ks, some rk =>
-          let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}:{header}"
+          let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}:{header}:{finOf res}"
           match addDecl s.globals { name, type := ty, value := none } with
           | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
                                               globals := { g with builtins := (key, name) :: g.builtins } }

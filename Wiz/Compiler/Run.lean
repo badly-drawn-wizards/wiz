@@ -81,17 +81,21 @@ partial def toNat? : RVal → Option Nat
   | .obj 0 #[.obj 1 #[], .obj 0 #[k, _]] => (toNat? k).map (· + 1)
   | _ => none
 
-/-- A foreign function's key: `extern:cname:kinds:result:io:header` (see `extern`). -/
+/-- A foreign function's key: `extern:cname:kinds:result:io:header:finalizer` (see
+`extern`). Kinds: `n` Nat, `u` UInt64, `f` Float64, `s` String, `b` Bool, `v` Unit,
+`p` a foreign pointer (the finalizer is for a pointer result), `w` a Wiz value passed as is. -/
 structure ExternSig where
   cname : String
   params : List Char
   result : Char
   io : Bool
   header : String
+  fin : String := ""
 
 def ExternSig.ofKey? (key : Name) : Option ExternSig :=
   match key.splitOn ":" with
-  | ["extern", c, ps, r, io, h] => some { cname := c, params := ps.toList, result := (r.toList.headD 'v'), io := io == "io", header := h }
+  | ["extern", c, ps, r, io, h, fin] =>
+    some { cname := c, params := ps.toList, result := (r.toList.headD 'v'), io := io == "io", header := h, fin }
   | _ => none
 
 def nativeArity (key : Name) : Nat :=

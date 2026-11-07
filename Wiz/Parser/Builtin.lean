@@ -242,6 +242,8 @@ def commandLeading : List LeadingParser := [
   -- stage 9: a foreign (C) function
   { kind := "command.glue", prec := maxPrec,
     p := seqs ["glue", ident, many (bracketedBinder false), ":", term, ":=", str] },
+  { kind := "command.foreignType", prec := maxPrec,
+    p := seqs ["foreign_type", ident, optional (seqs ["(", nonReserved "finalizer", ":=", str, ")"])] },
   { kind := "command.importC", prec := maxPrec,
     p := seqs ["import_c", str, optional (seqs ["(", nonReserved "pure", ")"])] },
   { kind := "command.extern", prec := maxPrec,
