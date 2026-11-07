@@ -1151,7 +1151,7 @@ def subTy (c : TCtx) (A B : Val) : Bool := match whnf A with
     | B' => convTy c (.vsizeLt sz) B'
   | A' => convTy c A' B
   --|ex
-  --| A' => convTy c A' B
+  --| | A' => convTy c A' B
   --sol>
 end
 
