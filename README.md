@@ -1317,7 +1317,26 @@ with that metavariable. `@f` inserts no implicit arguments.
 of its type (`addAxioms`), so that the bodies may call any of them, as the Lean kernel
 sees partial definitions; then each body is checked as usual and replaces the axiom.
 
-Next: indices and mutual inductive types; typed parameter and result types in matches.
+## Stage 18: more data in the self-hosted frontend
+
+### 18a: indexed families ✅
+
+`inductive Vec (A : Type) : Nat → Type where | nil : Vec A Nat.zero | cons (n : Nat)
+(a : A) (v : Vec A n) : Vec A (Nat.succ n)` (one index): the description's index type
+is `Nat`, a recursive field `Vec A j` is `drec j`, a constructor ends in `dret i` for
+its result's index `i` (exercise 16.1 now takes the index), and its payload ends in the
+proof `refl I i`. `Vec` is `fun A i => μ D i`. A match on `v : Vec A n` runs induction at
+`v`'s index, with the index type in the method's binders, the convoy's templates and
+`cur✝` (whose index is the method's). The motive is still constant, so a match needs a
+case (or a catch-all) for every constructor, even one the index rules out.
+
+Elaboration got two things this needed: an application checked against a type unifies
+its result type with it before the postponed `.c` arguments are done, and an argument
+whose type is still unknown at the end of its application waits in the elaboration state
+until the whole definition is elaborated (`drain`).
+
+Next: index equations in the motive (so impossible cases go away), mutual inductive
+types (a family indexed by a tag), typed parameter and result types in matches.
 
 ## Stage 11: tooling
 
