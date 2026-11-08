@@ -666,6 +666,34 @@ end
 inductive HE where
   | ok (t : Tm) (ty : Val) (es : ES) (mask : List Bool)
   | err (msg : String)
+-- a postponed argument: its syntax, type, and the metavariable standing for it
+inductive Post where
+  | mk (s : Syntax) (dom : Val) (m : Tm)
+def isDotStx (s : Syntax) : Bool := match strEq (kindOf s) "term.dotIdent" with
+  | .true => .true
+  | .false => Bool.and (strEq (kindOf s) "term.app") (strEq (kindOf (kid s 0)) "term.dotIdent")
+def isMetaApp (es : ES) (ty : Val) : Bool := match metaApp es (force es ty) with
+  | .mk _ _ => .true
+  | .none => .false
+-- `.c` (or `.c a …`) against a type `T …`: `T.c`
+def dotName (es : ES) (ty : Val) (c : String) : Option String := match force es ty with
+  | .vglued (.hconst T _ _ _ _) _ _ => .some (String.append (String.append T ".") c)
+  | _ => .none
+def dotCtor (es : ES) (ty : Val) (s : Syntax) : Option Syntax :=
+  let ident := fun (n : String) => mkNode "term.ident" (one (.ident n));
+  match strEq (kindOf s) "term.dotIdent" with
+  | .true => match kid s 1 with
+    | .ident c => match dotName es ty c with
+      | .some n => .some (ident n)
+      | .none => .none
+    | _ => .none
+  | .false => match Bool.and (strEq (kindOf s) "term.app") (strEq (kindOf (kid s 0)) "term.dotIdent") with
+    | .true => match kid (kid s 0) 1 with
+      | .ident c => match dotName es ty c with
+        | .some n => .some (mkNode "term.app" (.cons (ident n) (one (kid s 1))))
+        | .none => .none
+      | _ => .none
+    | .false => .none
 -- the level of a sort
 def sortLvl (es : ES) (ty : Val) : Lvl := match whnf (force es ty) with
   | .vsort l => l
@@ -697,9 +725,16 @@ def inferHead (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : HE :=
   | .ident n => identHead gs es cx n
   | _ => match strEq k "term.ident" with
     | .true => identHead gs es cx (identOf s)
-    | .false => match inferT1 gs es cx s with
-      | .ok t ty es' => HE.ok t ty es' .nil
-      | .err m => HE.err m
+    | .false => match strEq k "term.explicit" with
+      -- `@f`: no implicit arguments are inserted
+      | .true => match kid s 1 with
+        | .ident n => match identHead gs es cx n with
+          | .ok t ty es' _ => HE.ok t ty es' .nil
+          | e => e
+        | _ => HE.err "@ needs an identifier"
+      | .false => match inferT1 gs es cx s with
+        | .ok t ty es' => HE.ok t ty es' .nil
+        | .err m => HE.err m
 def identHead (gs : Globals) (es : ES) (cx : Cx) (n : String) : HE :=
   let d := Cx.lvl cx;
   match Scope.lookup (Cx.sc cx) n with
@@ -726,7 +761,7 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
     | .true => .ok (.univ (univLevel s)) (.vsort (.lnum (univLevel s + 2))) es
     | .false => match strEq k "term.app" with
       | .true => match inferHead gs es cx (kid s 0) with
-        | .ok f fty es' m => appArgsT gs es' cx f fty m (kids (kid s 1))
+        | .ok f fty es' m => appArgsT gs es' cx f fty m (kids (kid s 1)) .nil
         | .err msg => .err msg
       | .false => match strEq k "term.arrow" with
         | .true => match inferType gs es cx (kid s 0) with
@@ -765,20 +800,38 @@ def depPis (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (aStx body : Sy
       | .ok b lb es2 => .ok (.pi a b) (.vsort (.limax (sortLvl es2 la) (sortLvl es2 lb))) es2
       | e => e
     | e => e
--- the arguments of an application, inserting implicit ones by the mask
-def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List Bool) (args : List Syntax) : TE :=
+-- the arguments of an application, inserting implicit ones by the mask. A `.c`
+-- argument whose type isn't known yet is postponed: a metavariable stands for it until
+-- the other arguments are done
+def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List Bool) (args : List Syntax) (post : List Post) : TE :=
   match args with
-  | .nil => insertImplicits gs es cx f fty m
+  | .nil => match resolvePosts gs es cx post with
+    | .some es' => insertImplicits gs es' cx f fty m
+    | .none => .err "could not elaborate a constructor argument"
   | .cons a rest => match m with
     | .cons .true m' => match whnf fty with
       | .vpi _ dom env cod => match newMeta es cx dom with
-        | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args
+        | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post
       | _ => .err "too many implicit arguments"
     | _ => match whnf (force es fty) with
-      | .vpi _ dom env cod => match checkT gs es cx a dom with
-        | .ok ta _ es1 => appArgsT gs es1 cx (.app f ta) (eval (.cons (eval (TCtx.env (Cx.c cx)) ta) env) cod) (tailBools m) rest
-        | e => e
+      | .vpi _ dom env cod => match Bool.and (isDotStx a) (isMetaApp es dom) with
+        | .true => match newMeta es cx dom with
+          | .mk mt es1 => appArgsT gs es1 cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
+              (.cons (.mk a dom mt) post)
+        | .false => match checkT gs es cx a dom with
+          | .ok ta _ es1 => appArgsT gs es1 cx (.app f ta) (eval (.cons (eval (TCtx.env (Cx.c cx)) ta) env) cod) (tailBools m) rest post
+          | e => e
       | ty => .err (String.append "not a function: its type is " (show .nil (Cx.lvl cx) (quote (Cx.lvl cx) ty)))
+-- the postponed arguments, each unified with its metavariable
+def resolvePosts (gs : Globals) (es : ES) (cx : Cx) : List Post → Option ES
+  | .nil => .some es
+  | .cons (.mk a dom mt) rest => match resolvePosts gs es cx rest with
+    | .some es1 => match checkT gs es1 cx a dom with
+      | .ok t _ es2 =>
+        let env := TCtx.env (Cx.c cx);
+        unify es2 cx (eval env mt) (eval env t)
+      | .err _ => .none
+    | .none => .none
 -- `let x : A := v; b`, inferred or checked
 def letT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (expected : Option Val) : TE := match binderType s with
   | .none => .err "let needs a type"
@@ -804,7 +857,9 @@ def checkT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (ty : Val) : TE :=
   let k := kindOf s;
   match strEq k "term.paren" with
   | .true => checkT gs es cx (kid s 1) ty
-  | .false => match strEq k "term.hole" with
+  | .false => match dotCtor es ty s with
+    | .some s' => checkT gs es cx s' ty
+    | .none => match strEq k "term.hole" with
     | .true => match newMeta es cx ty with
       | .mk mt es' => .ok mt ty es'
     | .false => match strEq k "term.fun" with

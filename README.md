@@ -1303,7 +1303,15 @@ later parameters are bound again). Recursive calls leave out the implicit parame
 Typed elaboration produces constants, so for `#reduce` the definitions are inlined
 afterwards (`inlineTm`) instead of being compiled twice.
 
-Next: implicit λs and `@f` (explicit application), indices, mutual types and `partial`.
+### 17c: `.c` and `@f` ✅
+
+A constructor can be written `.c` (or `.c a b`) where the expected type is `T …`: it is
+`T.c`. An argument written so whose type is still an unsolved metavariable (the `.zero`
+in `.cons .zero xs`, before `xs` fixes the list's type) is postponed: a metavariable
+stands for it until the other arguments are elaborated, then it is checked and unified
+with that metavariable. `@f` inserts no implicit arguments.
+
+Next: indices, mutual types and `partial`; typed parameter and result types in matches.
 
 ## Stage 11: tooling
 
