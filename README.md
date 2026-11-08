@@ -1430,8 +1430,27 @@ closed on the way:
   needs them.
 
 The self-hosted frontend now checks `Lex.wiz` and `Parse.wiz` together (96
-declarations, about 20 s). Next: `Kernel.wiz` (mutual types `Val`/`Env`/`Spine`/`Head`,
-`Nat.max`, `Unit` in constructor fields).
+declarations, about 20 s).
+
+### 19e: towards `Kernel.wiz` ✅
+
+* A field `(v : Unit → Val)` of a mutual type is higher-order recursive: `dhrec H (fun _
+  => tag j) D` in the description.
+* Induction only where it is needed: a definition's match uses `ind` only when the
+  definition calls itself and isn't partial (a partial definition calls its axiom);
+  every other split is case analysis. This also avoids building hypotheses for
+  function fields.
+* A catch-all at the structural split of a mutual member (a closed index, 18b) used to
+  bind the variable to `con (tag, rest)` at the method's index; it is now moved to the
+  scrutinee's index with `coe` along `F i = F idx` (obtained by `subst` from `tyRefl`),
+  so `| t => t` has the right type.
+* `Unit` in constructor fields, `fun _ => …`, and `Nat.max` in the Prelude.
+
+`Kernel.wiz` still doesn't check: `vCastW` matches two columns of the four-member
+family `Val`/`Env`/`Spine`/`Head` (about 70 constructors) with a catch-all row, which is
+copied into about 70 × 70 leaves (the Lean side shares such a row as a function), and
+`whnf` recurses through a function field (`whnf (v ())`), which needs function
+hypotheses.
 
 ## Stage 11: tooling
 
