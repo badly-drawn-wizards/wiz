@@ -1250,8 +1250,14 @@ the parameters first (the self-hosted frontend has no implicit arguments yet:
 field types with the scrutinee type's arguments, again by normalising
 (`(fun ps => D) args`) rather than substituting.
 
-Next: indices, nested patterns and several scrutinees; implicit arguments (which need
-metavariables in the self-hosted frontend).
+### 16d: equations ✅
+
+`def f (ps) : A → R | p => rhs …` (one pattern per alternative) is read as
+`def f (ps) (x✝ : A) : R := match x✝ with | p => rhs …` (`eqnsToMatch`, on the syntax
+tree; `(x : A) → R` names the parameter).
+
+Next: several scrutinees and nested patterns (a column-by-column match compiler),
+indices, implicit arguments (which need metavariables in the self-hosted frontend).
 
 ## Stage 11: tooling
 

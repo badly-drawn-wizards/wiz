@@ -676,6 +676,33 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
     | _ => errStep gs "a definition needs a type"
   | _ => errStep gs "a definition needs a name"
 
+-- Equations (stage 16d): `def f (ps) : A → R | p => rhs …`, one pattern per
+-- alternative, is `def f (ps) (x✝ : A) : R := match x✝ with | p => rhs …`
+def eqnsToMatch (stx : Syntax) : Option Syntax := match kids (kid stx 4) with
+  | .cons colon (.cons ty _) =>
+    let arrow := strEq (kindOf ty) "term.arrow";
+    let dep := strEq (kindOf ty) "term.depArrow";
+    match Bool.or arrow dep with
+    | .false => .none
+    | .true =>
+      let x := match dep with
+        | .true => nthName (binderNames (kid ty 0)) 0
+        | .false => "x✝";
+      let A : Syntax := match dep with
+        | .true => match binderType (kid ty 0) with
+          | .some a => a
+          | .none => .missing
+        | .false => kid ty 0;
+      let ident := mkNode "term.ident" (one (.ident x));
+      let binder := mkNode "binder.explicit" (.cons (.atom "(") (.cons (mkNull .nil)
+        (.cons (mkNull (one (.ident x))) (.cons (mkNull (.cons (.atom ":") (one A))) (one (.atom ")"))))));
+      let body := mkNode "term.match" (.cons (.atom "match") (.cons (mkNull (one ident))
+        (.cons (.atom "with") (one (kid stx 5)))));
+      .some (mkNode "command.def" (.cons (.atom "def") (.cons (kid stx 1) (.cons (kid stx 2)
+        (.cons (mkNull (List.append (kids (kid stx 3)) (one binder)))
+          (.cons (mkNull (.cons colon (one (kid ty 2)))) (.cons (.atom ":=") (one body))))))))
+  | _ => .none
+
 -- all the commands of a file, one output line each
 partial def runCommands (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat)
     (gs : Globals) (out : List String) : List String :=
@@ -688,7 +715,11 @@ partial def runCommands (cats : List Cat) (tokens : List String) (input : Array 
         | .true => inductiveCmd gs stx
         | .false => match Bool.and (strEq (kindOf stx) "command.def") (strEq (kindOf (kid stx 6)) "term.match") with
           | .true => matchDefCmd gs stx
-          | .false => command gs stx;
+          | .false => match strEq (kindOf stx) "command.defEqns" with
+            | .true => match eqnsToMatch stx with
+              | .some d => matchDefCmd gs d
+              | .none => errStep gs "equations need a function type"
+            | .false => command gs stx;
       match step with
       | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
 

@@ -1474,16 +1474,50 @@ def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
   | .ok _ => "ok"
   | .error _ => "error"
 
-/-- Check a file of commands with the whole self-hosted pipeline (compiled), and compare
-its output. -/
-def selfhostCheckFile (file expected : String) : IO Unit := do
+/-- The whole self-hosted pipeline as a compiled program that checks the file `input.wiz`
+in its working directory. It is built once and kept (under `/tmp`, keyed by its source
+and this test binary), since every test that uses it would otherwise compile it again. -/
+def selfhostChecker : IO (Except String System.FilePath) := do
   let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
   let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
   let t := Builtin.tables
   let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
     s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
-    s!"def main : IO Unit := printAll (checkFile cats tokens {wizLit file})\n"
-  ioRun prog expected
+    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  printAll (checkFile cats tokens text)\n"
+  let stamp := toString (← (← IO.appPath).metadata).modified.sec
+  let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
+  let exe := dir / "checker"
+  if ← exe.pathExists then return .ok exe
+  IO.FS.createDirAll dir
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let ioLib ← IO.FS.readFile "lib/IO.wiz"
+  let stdLib ← IO.FS.readFile "lib/Std.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib else none
+  let s := runFrontend (R := ZeroOneMany) prog { loader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render prog
+  unless errs.isEmpty do return .error s!"unexpected errors:\n{"\n".intercalate errs.toList}"
+  match Build.irProgram s "main" with
+  | .error e => return .error e
+  | .ok (decls, _) =>
+    -- built under another name and renamed: tests may run at the same time
+    let tmp := dir / s!"checker-{← IO.monoNanosNow}"
+    match ← Build.compileC (C.program decls true (Build.extraC s)) tmp with
+    | .error e => return .error e
+    | .ok () => IO.FS.rename tmp exe; return .ok exe
+
+/-- Check a file of commands with the whole self-hosted pipeline (compiled), and compare
+its output. -/
+def selfhostCheckFile (file expected : String) : IO Unit := do
+  match ← selfhostChecker with
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+  | .ok exe =>
+    let dir ← IO.FS.createTempDir
+    IO.FS.writeFile (dir / "input.wiz") file
+    let out ← IO.Process.output { cmd := "timeout", args := #["120", exe.toString], cwd := dir }
+    unless out.exitCode == 0 do throw (IO.userError s!"the checker failed ({out.exitCode}): {out.stderr}")
+    checkEq expected out.stdout
 
 def selfHostGroup : Group where
   name := "selfhost"
@@ -1545,31 +1579,19 @@ def selfHostGroup : Group where
         ioRun prog ("(x0 : U0) → (x1 : x0) → x0\nU3\n(x0 : U0) → U0\n" ++
           "error: cannot infer the type of a λ; add a type ascription\nscope error: unknown identifier y\n" ++
           "(x0 : (x0 : U0) → U0) → (x1 : U0) → U0\nparse " ++ leanParse t "term" bad ++ "\n") },
-    { name := "a file of definitions, checked in Wiz", run := fun _ => do
-        let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
-        let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
-        let t := Builtin.tables
-        let file := "def N : Type 1 := (A : Type) → (A → A) → A → A\ndef two : N := fun A s z => s (s z)\n" ++
+    { name := "a file of definitions, checked in Wiz", run := fun _ =>
+        selfhostCheckFile ("def N : Type 1 := (A : Type) → (A → A) → A → A\ndef two : N := fun A s z => s (s z)\n" ++
           "def add (m n : N) : N := fun A s z => m A s (n A s z)\n#reduce add two two\n#check add two\n" ++
-          "def bad : Type := Type\n#check bad\n"
-        let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
-          s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
-          s!"def main : IO Unit := printAll (checkFile cats tokens {wizLit file})\n"
-        ioRun prog ("N : U1\ntwo : N\nadd : (x0 : N) → (x1 : N) → N\nλx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\n" ++
+          "def bad : Type := Type\n#check bad\n")
+          ("N : U1\ntwo : N\nadd : (x0 : N) → (x1 : N) → N\nλx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\n" ++
           "(x0 : N) → N\n" ++
           "error: type mismatch: expected U0, got U1\nerror: unknown identifier bad\n") },
     { name := "inductive types, checked in Wiz", run := fun _ => do
-        let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
-        let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
-        let t := Builtin.tables
         let file := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ndef two : Nat := Nat.succ (Nat.succ Nat.zero)\n" ++
           "#check Nat.succ\n#reduce two\ninductive Pair where\n  | mk (a b : Nat)\n#check Pair.mk\n" ++
           "#reduce Pair.mk two Nat.zero\ninductive Bad where\n  | mk (f : Bad → Bad)\ndef bad : Nat := Nat.succ Type\n"
-        let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
-          s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
-          s!"def main : IO Unit := printAll (checkFile cats tokens {wizLit file})\n"
         let natTy := "μ0(Unit0, arg(Enum2, λx0. case(Desc0(Unit0), x0, ret(tt), rec(tt, ret(tt)))), tt)"
-        ioRun prog ("Nat : U0\ntwo : Nat\n(x0 : Nat) → Nat\n" ++
+        selfhostCheckFile file ("Nat : U0\ntwo : Nat\n(x0 : Nat) → Nat\n" ++
           "con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt))))\n" ++
           "Pair : U0\n(x0 : Nat) → (x1 : Nat) → Pair\n" ++
           "con((#0, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (con((#0, (tt, tt))), (tt, tt)))))\n" ++
@@ -1580,6 +1602,9 @@ def selfHostGroup : Group where
     { name := "parameterised inductive types, checked in Wiz", run := fun _ =>
         selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\ndef add (m n : Nat) : Nat := match m with\n  | .zero => n\n  | .succ k => Nat.succ (add k n)\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\n#check List.cons\ndef one : Nat := Nat.succ Nat.zero\ndef xs : List Nat := List.cons Nat one (List.cons Nat Nat.zero (List.nil Nat))\ndef length (A : Type) (l : List A) : Nat := match l with\n  | .nil => Nat.zero\n  | .cons h t => Nat.succ (length A t)\n#reduce length Nat xs\ndef sum (l : List Nat) : Nat := match l with\n  | .nil => Nat.zero\n  | .cons h t => add h (sum t)\n#reduce sum xs\ndef append (A : Type) (l r : List A) : List A := match l with\n  | .nil => r\n  | .cons h t => List.cons A h (append A t r)\n#reduce length Nat (append Nat xs xs)\ninductive Pair (A B : Type) where\n  | mk (a : A) (b : B)\ndef fst (A B : Type) (p : Pair A B) : A := match p with\n  | .mk a b => a\n#reduce fst Nat (List Nat) (Pair.mk Nat (List Nat) one xs)\n"
           "Nat : U0\nadd : (x0 : Nat) → (x1 : Nat) → Nat\nList : (x0 : U0) → U0\n(x0 : U0) → (x1 : x0) → (x2 : (List x0)) → (List x0)\none : Nat\nxs : (List Nat)\nlength : (x0 : U0) → (x1 : (List x0)) → Nat\ncon((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt))))\nsum : (x0 : (List Nat)) → Nat\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\nappend : (x0 : U0) → (x1 : (List x0)) → (x2 : (List x0)) → (List x0)\ncon((#1, (con((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt))))\nPair : (x0 : U0) → (x1 : U0) → U0\nfst : (x0 : U0) → (x1 : U0) → (x2 : ((Pair x0) x1)) → x0\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\n" },
+    { name := "definitions by equations, checked in Wiz", run := fun _ =>
+        selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ndef len (A : Type) : List A → Nat\n  | .nil => Nat.zero\n  | .cons h t => Nat.succ (len A t)\n#check len\n#reduce len Nat (List.cons Nat Nat.zero (List.nil Nat))\ndef double : (n : Nat) → Nat\n  | .zero => Nat.zero\n  | .succ k => Nat.succ (Nat.succ (double k))\n#reduce double (Nat.succ Nat.zero)\n"
+          "Nat : U0\nList : (x0 : U0) → U0\nlen : (x0 : U0) → (x1 : (List x0)) → Nat\n(x0 : U0) → (x1 : (List x0)) → Nat\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\ndouble : (x0 : Nat) → Nat\ncon((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt))))\n" },
     { name := "the Wiz kernel agrees with the Lean kernel (400 random terms)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let mut terms : Array MTm := MTm.samples.toArray
