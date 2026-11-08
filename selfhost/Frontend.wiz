@@ -787,6 +787,20 @@ end
 inductive HE where
   | ok (t : Tm) (ty : Val) (es : ES) (mask : List Bool)
   | err (msg : String)
+-- `a.b.c` as `a.b` and `c`
+inductive Split where
+  | mk (base field : String)
+def lastDot : List Char → Nat → Option Nat → Option Nat
+  | .nil, _, best => best
+  | .cons c rest, i, best => lastDot rest (i + 1) (match Nat.beq (Char.code c) 46 with
+    | .true => .some i
+    | .false => best)
+def splitLast (n : String) : Option Split := match n with
+  | .mk cs => match lastDot cs 0 .none with
+    | .some i => match Nat.lt 0 i with
+      | .true => .some (.mk (.mk (takeL i cs)) (.mk (dropL (i + 1) cs)))
+      | .false => .none
+    | .none => .none
 -- the arguments still waiting, while some can be done
 inductive DR where
   | ok (es : ES) (progress : Bool)
@@ -865,12 +879,33 @@ def inferHead (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : HE :=
 def identHead (gs : Globals) (es : ES) (cx : Cx) (n : String) : HE :=
   let d := Cx.lvl cx;
   match Scope.lookup (Cx.sc cx) n with
-  | .none => .err (String.append "unknown identifier " n)
+  | .none => match splitLast n with
+    -- `x.f`: the projection `T.f x`, for `x : T …`
+    | .some (.mk base f) => match identHead gs es cx base with
+      | .ok bt bty es1 m => match insertImplicits gs es1 cx bt bty m with
+        | .ok bt' bty' es2 => match projT gs es2 cx bt' bty' f with
+          | .err _ => .err (String.append "unknown identifier " n)
+          | r => r
+        | .err msg => .err msg
+      | e => e
+    | .none => .err (String.append "unknown identifier " n)
   | .some i => match Nat.lt i d with
     | .true => .ok (.var i) (lookup (TCtx.types (Cx.c cx)) i) es .nil
     | .false => match globalTm .false gs (i - d) with
       | .const nm ps ls v ty => .ok (.const nm ps ls v ty) (eval .nil ty) es (globalMask gs (i - d))
       | t => .err "a global that isn't a constant"
+-- the projection `T.f t`, for `t : T …`
+def projT (gs : Globals) (es : ES) (cx : Cx) (bt : Tm) (bty : Val) (f : String) : HE := match force es bty with
+  | .vglued (.hconst T _ _ _ _) _ _ => match identHead gs es cx (String.append (String.append T ".") f) with
+    | .ok pt pty es3 pm => match insertImplicits gs es3 cx pt pty pm with
+      | .ok pt' pty' es4 => match whnf (force es4 pty') with
+        | .vpi _ dom env cod => match unify es4 cx bty dom with
+          | .some es5 => .ok (.app pt' bt) (eval (.cons (eval (TCtx.env (Cx.c cx)) bt) env) cod) es5 .nil
+          | .none => .err (String.append "cannot apply the projection " f)
+        | _ => .err (String.append "not a projection: " f)
+      | .err msg => .err msg
+    | e => e
+  | _ => .err (String.append "no field " f)
 -- apply metavariables for the leading implicit parameters
 def insertImplicits (gs : Globals) (es : ES) (cx : Cx) (t : Tm) (ty : Val) (m : List Bool) : TE :=
   match m with
@@ -910,6 +945,14 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
               | e => e
             | .false => match strEq k "term.let" with
               | .true => letT gs es cx s .none
+              | .false => match strEq k "term.field" with
+              | .true => match inferT gs es cx (kid s 0) with
+                | .ok t ty es1 => match projT gs es1 cx t ty (match kid s 2 with
+                    | .ident f => f
+                    | _ => "_") with
+                  | .ok t' ty' es2 _ => .ok t' ty' es2
+                  | .err m => .err m
+                | e => e
               | .false => match strEq k "term.fun" with
                 | .true => .err "cannot infer the type of a λ; add a type ascription"
                 | .false => .err (String.append "unsupported syntax " k)
@@ -1790,27 +1833,39 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
 def command (gs : Globals) (stx : Syntax) : Step :=
   errStep gs "not implemented"
 
--- Mutual inductive types (stage 18c): `mutual inductive A … inductive B … end` (without
--- parameters or indices) is one family `A_B : Enum m → Type` indexed by a tag, with
--- every member's constructors; a field whose type is a member is recursive at that
--- member's tag, and member `j`'s constructors end at tag `j`. Each member is the
--- constant `A := A_B (tag 0)`, so a match on an `A` runs at a closed index: the other
--- members' constructors are ruled out (18b).
+-- Mutual inductive types (stages 18c–d): `mutual inductive A (ps) … inductive B (ps) …
+-- end` (the members share the parameters `ps`; no indices) is one family
+-- `A_B : (ps) → Enum m → Type` indexed by a tag, with every member's constructors; a
+-- field whose type is a member applied to the parameters is recursive at that member's
+-- tag, and member `j`'s constructors end at tag `j`. Each member is the constant
+-- `A := fun ps => A_B ps (tag 0)`, so a match on an `A ps` runs at a closed index: the
+-- other members' constructors are ruled out (18b). Constructors take the parameters
+-- implicitly.
 def indexOfName : List String → String → Nat → Option Nat
   | .nil, _, _ => .none
   | .cons y ys, x, i => match strEq x y with
     | .true => .some i
     | .false => indexOfName ys x (i + 1)
+-- the member a field's type is (applied to the parameters), if any
+def memberOf (members : List String) (ps : List String) (ty : Syntax) : Option Nat :=
+  let head := match strEq (kindOf ty) "term.app" with
+    | .true => identOf (kid ty 0)
+    | .false => identOf ty;
+  match indexOfName members head 0 with
+  | .some j => match recField head ps 0 ty with
+    | .yes _ => .some j
+    | .no => .none
+  | .none => .none
 -- a member constructor's fields: as a description (`m` members, this one `j`)
-def mctorDesc (inline : Bool) (gs : Globals) (members : List String) (m j : Nat) : Scope → Nat → List Field → Elab
+def mctorDesc (inline : Bool) (gs : Globals) (members ps : List String) (m j : Nat) : Scope → Nat → List Field → Elab
   | _, _, .nil => .ok (.dret (.tag m j))
-  | sc, d, .cons (.mk x ty) rest => match indexOfName members (identOf ty) 0 with
-    | .some j' => match mctorDesc inline gs members m j sc d rest with
+  | sc, d, .cons (.mk x ty) rest => match memberOf members ps ty with
+    | .some j' => match mctorDesc inline gs members ps m j sc d rest with
       | .ok D => .ok (.drec (.tag m j') D)
       | e => e
     | .none => match elab sc ty with
       | .err m' => .err m'
-      | .ok A => match mctorDesc inline gs members m j (Scope.bind sc x) (d + 1) rest with
+      | .ok A => match mctorDesc inline gs members ps m j (Scope.bind sc x) (d + 1) rest with
         | .ok D => .ok (.darg (closeG inline gs d A) (.lam D))
         | e => e
 -- a member constructor: the member's index and the syntax
@@ -1822,11 +1877,11 @@ def mctorsOf (j : Nat) : List Syntax → List MCtor
 def memberCtors : List Syntax → Nat → List MCtor
   | .nil, _ => .nil
   | .cons d rest, j => List.append (mctorsOf j (kids (kid d 6))) (memberCtors rest (j + 1))
-def mdescs (inline : Bool) (gs : Globals) (members : List String) (m : Nat) : List MCtor → Descs
+def mdescs (inline : Bool) (gs : Globals) (members ps : List String) (m : Nat) : List MCtor → Descs
   | .nil => .ok .tnil
-  | .cons (.mk j c) rest => match mctorDesc inline gs members m j (Scope.bind (Globals.scope gs) "t✝") 1 (ctorFields c) with
+  | .cons (.mk j c) rest => match mctorDesc inline gs members ps m j (Scope.bind (bindAll (Globals.scope gs) ps) "t✝") (List.length ps + 1) (ctorFields c) with
     | .err e => .err e
-    | .ok D => match mdescs inline gs members m rest with
+    | .ok D => match mdescs inline gs members ps m rest with
       | .ok ds => .ok (.tcons D ds)
       | e => e
 def identOf' (s : Syntax) : String := match s with
@@ -1840,74 +1895,86 @@ def joinUnder : List String → String
   | .cons n rest => match rest with
     | .nil => n
     | .cons _ _ => String.append (String.append n "_") (joinUnder rest)
--- the member types `A := F (tag j)`
-def addMembers (F : Tm) (FI : Tm) (m : Nat) : Globals → Nat → List String → Globals
+-- the member types `A := fun ps => F ps (tag j)`
+def addMembers (F FI : Tm) (np : Nat) (pts : Tms) (m : Nat) : Globals → Nat → List String → Globals
   | gs, _, .nil => gs
-  | gs, j, .cons n rest => addMembers F FI m (Globals.add gs (.mk n (.univ 0) (.app F (.tag m j)) (.app FI (.tag m j)) .nil)) (j + 1) rest
--- the member constructors `A.c := fun fields => con (tag, fields…, refl, tt)`
+  | gs, j, .cons n rest =>
+    let at := fun (f : Tm) => tLams np (.app (tApps f (pvars np np)) (.tag m j));
+    addMembers F FI np pts m (Globals.add gs (.mk n (piTele pts (.univ 0)) (at F) (at FI) .nil)) (j + 1) rest
+-- the member constructors `A.c := fun ps fields => con (tag, fields…, refl, tt)`
 inductive MAdded where
   | ok (gs : Globals) (ctors : List Ctor)
   | err (msg : String)
-def markRec (members : List String) : List Field → List CField → List CField
-  | .cons (.mk _ ty) fs, .cons (.mk x _ A AI) cs => .cons (.mk x (match indexOfName members (identOf ty) 0 with
+def markRec (members ps : List String) : List Field → List CField → List CField
+  | .cons (.mk _ ty) fs, .cons (.mk x _ A AI) cs => .cons (.mk x (match memberOf members ps ty with
       | .some _ => .true
-      | .none => .false) A AI) (markRec members fs cs)
+      | .none => .false) A AI) (markRec members ps fs cs)
   | _, _ => .nil
-def addMCtors (members : List String) (m k : Nat) : Globals → Nat → List MCtor → MAdded
+def addMCtors (members ps : List String) (pts : Tms) (m k : Nat) : Globals → Nat → List MCtor → MAdded
   | gs, _, .nil => .ok gs .nil
   | gs, ci, .cons (.mk j c) rest =>
     let fs0 := ctorFields c;
     let n := List.length fs0;
+    let np := List.length ps;
     let T := nthName members j;
     match Scope.lookup (Globals.scope gs) T with
     | .none => .err T
     | .some ti =>
       let Tc := globalTm .false gs ti;
-      match ctorFieldTys gs "" .nil 0 Tc Tc (Globals.scope gs) 0 fs0 with
+      match ctorFieldTys gs "" .nil 0 Tc Tc (bindAll (Globals.scope gs) ps) np fs0 with
       | .err e => .err e
       | .ok fs1 =>
         -- (a field typed by a member is recursive)
-        let fs := markRec members fs0 fs1;
-        let ty := ctorType Tc fs;
-        let v := tLams n (.con (.pair (.tag k ci) (payloadP (.eqRefl (.enum m) (.tag m j)) n (n - 1))));
+        let fs := markRec members ps fs0 fs1;
+        let ty := piTele pts (ctorType (tApps Tc (pvars np (np + n))) fs);
+        let v := tLams (np + n) (.con (.pair (.tag k ci) (payloadP (.eqRefl (.enum m) (.tag m j)) n (n - 1))));
         match check empty v (eval .nil ty) with
         | .err e => .err e
-        | .ok _ _ => match addMCtors members m k (Globals.add gs (.mk (String.append (String.append T ".") (ctorName c)) ty v v (falses n))) (ci + 1) rest with
+        | .ok _ _ => match addMCtors members ps pts m k (Globals.add gs (.mk (String.append (String.append T ".") (ctorName c)) ty v v
+            (List.append (trues np) (falses n)))) (ci + 1) rest with
           | .ok gs' cs => .ok gs' (.cons (.mk (ctorName c) fs (.tag m j)) cs)
           | e => e
-def addMemberInds (I D DI : Tm) (cs : List Ctor) (fam : Tm) (m : Nat) : Globals → Nat → List String → Globals
+def addMemberInds (np : Nat) (I D DI : Tm) (cs : List Ctor) (fam : Tm) (m : Nat) : Globals → Nat → List String → Globals
   | gs, _, .nil => gs
-  | gs, j, .cons n rest => addMemberInds I D DI cs fam m (Globals.addInd gs n (.mk 0 I D DI cs (.some (.tag m j)) fam)) (j + 1) rest
-def memberLines : List String → String
+  | gs, j, .cons n rest => addMemberInds np I D DI cs fam m (Globals.addInd gs n (.mk np I D DI cs (.some (.tag m j)) fam)) (j + 1) rest
+def memberLines (ty : String) : List String → String
   | .nil => ""
   | .cons n rest => match rest with
-    | .nil => String.append n " : U0"
-    | .cons _ _ => String.append (String.append n " : U0\n") (memberLines rest)
+    | .nil => String.append n ty
+    | .cons _ _ => String.append (String.append n ty) (String.append "\n" (memberLines ty rest))
 def mutualInductiveCmd (gs : Globals) (defs : List Syntax) : Step :=
   let members := memberNames defs;
   let m := List.length members;
   let F := joinUnder members;
   let mcs := memberCtors defs 0;
   let k := List.length mcs;
+  let params := fieldsOf (kids (kid (nthSyntax defs 0) 3));
+  let ps := fieldNames params;
+  let np := List.length ps;
   let I : Tm := .enum m;
   let mkD := fun (ds : Tms) => (.darg (.enum k) (.lam (.ecase (.descr 0 I) (.var 0) ds)) : Tm);
-  match mdescs .false gs members m mcs with
+  match elabTele gs (Globals.scope gs) 0 params with
   | .err e => errStep gs e
-  | .ok ds => match mdescs .true gs members m mcs with
+  | .ok pts => match mdescs .false gs members ps m mcs with
     | .err e => errStep gs e
-    | .ok dsI =>
-      let fty : Tm := .pi I (.univ 0);
-      let fval : Tm := .lam (.mu 0 I (mkD ds) (.var 0));
-      match check empty fval (eval .nil fty) with
+    | .ok ds => match mdescs .true gs members ps m mcs with
       | .err e => errStep gs e
-      | .ok _ _ =>
-        let fvalI : Tm := .lam (.mu 0 I (mkD dsI) (.var 0));
-        let gs1 := Globals.add gs (.mk F fty fval fvalI .nil);
-        let Fc : Tm := .const F .nil .nil fval fty;
-        let gs2 := addMembers Fc fvalI m gs1 0 members;
-        match addMCtors members m k gs2 0 mcs with
+      | .ok dsI =>
+        -- `fun ps i => μ D i` (the description moved under `i`)
+        let body := fun (D : Tm) => tLams np (.lam (.mu 0 I (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0)));
+        let fty := piTele pts (.pi I (.univ 0));
+        let fval := body (mkD ds);
+        match check empty fval (eval .nil fty) with
         | .err e => errStep gs e
-        | .ok gs3 cs => .mk (memberLines members) (addMemberInds I (mkD ds) (mkD dsI) cs Fc m gs3 0 members)
+        | .ok _ _ =>
+          let fvalI := body (mkD dsI);
+          let gs1 := Globals.add gs (.mk F fty fval fvalI .nil);
+          let Fc : Tm := .const F .nil .nil fval fty;
+          let gs2 := addMembers Fc fvalI np pts m gs1 0 members;
+          match addMCtors members ps pts m k gs2 0 mcs with
+          | .err e => errStep gs e
+          | .ok gs3 cs => .mk (memberLines (String.append " : " (show .nil 0 (piTele pts (.univ 0)))) members)
+              (addMemberInds np I (mkD ds) (mkD dsI) cs Fc m gs3 0 members)
 
 -- Equations (stages 16d–e): `def f (ps) : A₁ → … → Aₘ → R | p₁, …, pₘ => rhs …` is
 -- `def f (ps) (x✝₁ : A₁) … : R := match x✝₁, … with | p₁, …, pₘ => rhs …`
@@ -2013,6 +2080,55 @@ def partialCmd (gs : Globals) (defs : List Syntax) : Step := match addAxioms gs 
   | .err m => errStep gs m
   | .ok gs1 => defsSteps gs1 defs
 
+-- Structures (stage 18e): `structure T (ps) where f₁ : A₁ …` is the inductive type
+-- `T (ps) where | mk (f₁ : A₁) …` and a projection `T.fᵢ {ps} (s : T ps) : Aᵢ` for each
+-- field, by `match s with | .mk f₁ … => fᵢ` (all built as syntax, then checked as
+-- usual; a field's type may not mention an earlier field yet).
+def identStx (n : String) : Syntax := mkNode "term.ident" (one (.ident n))
+def binderStx (ob cb x : String) (A : Syntax) : Syntax :=
+  mkNode (match strEq ob "{" with
+    | .true => "binder.implicit"
+    | .false => "binder.explicit") (.cons (.atom ob) (.cons (mkNull .nil)
+    (.cons (mkNull (one (.ident x))) (.cons (mkNull (.cons (.atom ":") (one A))) (one (.atom cb))))))
+-- the parameter binders, made implicit
+def implicitBinders : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons b rest => .cons (mkNode "binder.implicit" (.cons (.atom "{") (.cons (kid b 1) (.cons (kid b 2)
+      (.cons (kid b 3) (one (.atom "}"))))))) (implicitBinders rest)
+def fieldName (f : Syntax) : String := identOf' (kid f 1)
+def fieldBinders : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons f rest => .cons (binderStx "(" ")" (fieldName f) (kid f 3)) (fieldBinders rest)
+def fieldIdents : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons f rest => .cons (identStx (fieldName f)) (fieldIdents rest)
+def projections (T : String) (bs : List Syntax) (sTy pat : Syntax) : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons f rest =>
+    let alt := mkNode "match.alt" (.cons (.atom "|") (.cons (mkNull (one pat)) (.cons (.atom "=>") (one (identStx (fieldName f))))));
+    let body := mkNode "term.match" (.cons (.atom "match") (.cons (mkNull (one (identStx "s✝")))
+      (.cons (.atom "with") (one (mkNull (one alt))))));
+    let d := mkNode "command.def" (.cons (.atom "def") (.cons (.ident (String.append (String.append T ".") (fieldName f)))
+      (.cons (mkNull .nil) (.cons (mkNull (List.append (implicitBinders bs) (one (binderStx "(" ")" "s✝" sTy))))
+        (.cons (mkNull (.cons (.atom ":") (one (kid f 3)))) (.cons (.atom ":=") (one body)))))));
+    .cons d (projections T bs sTy pat rest)
+def strIdents : List String → List Syntax
+  | .nil => .nil
+  | .cons x rest => .cons (identStx x) (strIdents rest)
+def structCmd (gs : Globals) (stx : Syntax) : Step :=
+  let T := identOf' (kid stx 1);
+  let bs := kids (kid stx 3);
+  let fs := kids (kid stx 6);
+  let ps := fieldNames (fieldsOf bs);
+  let sTy := match ps with
+    | .nil => identStx T
+    | .cons _ _ => mkNode "term.app" (.cons (identStx T) (one (mkNull (strIdents ps))));
+  let ctor := mkNode "inductive.ctor" (.cons (.atom "|") (.cons (.ident "mk") (.cons (mkNull (fieldBinders fs)) (one (mkNull .nil)))));
+  let ind := mkNode "command.inductive" (.cons (.atom "inductive") (.cons (kid stx 1) (.cons (kid stx 2) (.cons (kid stx 3)
+    (.cons (kid stx 4) (.cons (.atom "where") (one (mkNull (one ctor)))))))));
+  let pat := mkNode "term.app" (.cons (mkNode "term.dotIdent" (.cons (.atom ".") (one (.ident "mk")))) (one (mkNull (fieldIdents fs))));
+  defsSteps gs (.cons ind (projections T bs sTy pat fs))
+
 -- all the commands of a file, one output line each
 partial def runCommands (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat)
     (gs : Globals) (out : List String) : List String :=
@@ -2027,7 +2143,9 @@ partial def runCommands (cats : List Cat) (tokens : List String) (input : Array 
           | .true => match strEq (kindOf (nthSyntax (nonAtoms (kids (kid stx 1))) 0)) "command.inductive" with
             | .true => mutualInductiveCmd gs (nonAtoms (kids (kid stx 1)))
             | .false => partialCmd gs (nonAtoms (kids (kid stx 1)))
-          | .false => defStep gs stx;
+          | .false => match strEq (kindOf stx) "command.structure" with
+            | .true => structCmd gs stx
+            | .false => defStep gs stx;
       match step with
       | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
 
