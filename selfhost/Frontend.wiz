@@ -5,7 +5,7 @@
 --
 -- Supported: identifiers, `Type n`, `(x : A) → B`, `A → B`, `fun x (y : A) => b` (the
 -- binder types are not kept: a λ is checked against a type), application,
--- `let x : A := v; b`, `(t : T)` and parentheses.
+-- `let x : A := v; b`, `(t : T)` and parentheses; and (stage 16) inductive types.
 
 -- the arguments of a node, as a list
 def argsOf : SyntaxF .false → List Syntax
@@ -259,6 +259,116 @@ def command (gs : Globals) (stx : Syntax) : Step :=
   --| errStep gs "not implemented"
   --sol>
 
+-- Inductive types (stage 16a): `inductive T where | c (x : A) (y : T) …`, without
+-- parameters or indices, in `Type`. `T` is the constant `μ D tt` for the description
+--   D := darg (Enum k) (fun t => ecase t [D₁, …, Dₖ])
+-- and each constructor `T.c` the constant `fun fields => con (tag, fields…, tt, tt)`.
+
+-- a constructor's field, and whether its type is `T` itself (a recursive field)
+inductive Field where
+  | mk (name : String) (ty : Syntax)
+def fieldsNamed (ty : Syntax) : List String → List Field
+  | .nil => .nil
+  | .cons x xs => .cons (.mk x ty) (fieldsNamed ty xs)
+def fieldsOf : List Syntax → List Field
+  | .nil => .nil
+  | .cons b bs => match binderType b with
+    | .none => fieldsOf bs
+    | .some ty => List.append (fieldsNamed ty (binderNames b)) (fieldsOf bs)
+def isRecField (T : String) (ty : Syntax) : Bool := match strEq (kindOf ty) "term.ident" with
+  | .true => match kid ty 0 with
+    | .ident n => strEq n T
+    | _ => .false
+  | .false => .false
+def ctorName (c : Syntax) : String := match kid c 1 with
+  | .ident n => n
+  | _ => "_"
+def ctorFields (c : Syntax) : List Field := fieldsOf (kids (kid c 2))
+
+-- **Exercise 16.1.** The description of a constructor's fields (`ctorDesc` in
+-- `Inductive.lean`): a field `(x : A)` is `darg A (fun x => …)`, a recursive one (of
+-- type `T`) is `drec tt …`, and the end is `dret tt`. A recursive field binds no
+-- variable. `sc` is the scope (the globals, then `t✝` and the fields so far that are
+-- bound) and `d` the number of those binders, for closing a field's type over the
+-- globals (`closeG inline gs d`).
+def ctorDesc (inline : Bool) (gs : Globals) (T : String) : Scope → Nat → List Field → Elab
+  --<sol
+  | _, _, .nil => .ok (.dret .star)
+  | sc, d, .cons (.mk x ty) rest => match isRecField T ty with
+    | .true => match ctorDesc inline gs T sc d rest with
+      | .ok D => .ok (.drec .star D)
+      | e => e
+    | .false => match elab sc ty with
+      | .err m => .err m
+      | .ok A => match ctorDesc inline gs T (Scope.bind sc x) (d + 1) rest with
+        | .ok D => .ok (.darg (closeG inline gs d A) (.lam D))
+        | e => e
+  --|ex
+  --| | _, _, _ => .err "not implemented"
+  --sol>
+
+-- the constructors' descriptions, under the binder `t✝` of the tag
+inductive Descs where
+  | ok (ds : Tms)
+  | err (msg : String)
+def ctorDescs (inline : Bool) (gs : Globals) (T : String) : List Syntax → Descs
+  | .nil => .ok .tnil
+  | .cons c cs => match ctorDesc inline gs T (Scope.bind (Globals.scope gs) "t✝") 1 (ctorFields c) with
+    | .err m => .err m
+    | .ok D => match ctorDescs inline gs T cs with
+      | .ok ds => .ok (.tcons D ds)
+      | e => e
+-- a constructor's type: `(fields) → T`, every field bound
+def ctorType (gs : Globals) (T : String) (Tc : Tm) : Scope → Nat → List Field → Elab
+  | _, _, .nil => .ok Tc
+  | sc, d, .cons (.mk x ty) rest =>
+    let A : Elab := match isRecField T ty with
+      | .true => .ok Tc
+      | .false => match elab sc ty with
+        | .ok A => .ok (closeG .false gs d A)
+        | e => e;
+    match A with
+    | .err m => .err m
+    | .ok A => match ctorType gs T Tc (Scope.bind sc x) (d + 1) rest with
+      | .ok B => .ok (.pi A B)
+      | e => e
+-- the payload `(field₁, …, (tt, tt))`, the first field being `var (n - 1)`
+def payloadTm : Nat → Nat → Tm
+  | .zero, _ => .pair .star .star
+  | .succ r, i => .pair (.var i) (payloadTm r (i - 1))
+-- add the constructors from the `i`th on
+def addCtors (T : String) (Tc : Tm) (k : Nat) : Globals → Nat → List Syntax → Option Globals
+  | gs, _, .nil => .some gs
+  | gs, i, .cons c cs =>
+    let fs := ctorFields c;
+    let n := List.length fs;
+    match ctorType gs T Tc (Globals.scope gs) 0 fs with
+    | .err _ => .none
+    | .ok ty =>
+      let v := tLams n (.con (.pair (.tag k i) (payloadTm n (n - 1))));
+      match check empty v (eval .nil ty) with
+      | .err _ => .none
+      | .ok _ _ => addCtors T Tc k (Globals.add gs (.mk (String.append (String.append T ".") (ctorName c)) ty v v)) (i + 1) cs
+def inductiveCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
+  | .ident T =>
+    let ctors := kids (kid stx 6);
+    let k := List.length ctors;
+    let mkD := fun (ds : Tms) => (.darg (.enum k) (.lam (.ecase (.descr 0 (.unit 0)) (.var 0) ds)) : Tm);
+    match ctorDescs .false gs T ctors with
+    | .err m => errStep gs m
+    | .ok ds => match ctorDescs .true gs T ctors with
+      | .err m => errStep gs m
+      | .ok dsI =>
+        let val : Tm := .mu 0 (.unit 0) (mkD ds) .star;
+        match check empty val (.vsort (.lnum 1)) with
+        | .err m => errStep gs m
+        | .ok _ _ =>
+          let gs1 := Globals.add gs (.mk T (.univ 0) val (.mu 0 (.unit 0) (mkD dsI) .star));
+          match addCtors T (.const T .nil .nil val (.univ 0)) k gs1 0 ctors with
+          | .none => errStep gs "ill-typed constructor"
+          | .some gs2 => .mk (String.append T " : U0") gs2
+  | _ => errStep gs "an inductive type needs a name"
+
 -- all the commands of a file, one output line each
 partial def runCommands (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat)
     (gs : Globals) (out : List String) : List String :=
@@ -266,7 +376,11 @@ partial def runCommands (cats : List Cat) (tokens : List String) (input : Array 
   | .false => out
   | .true => match parseCommandAt cats tokens input pos with
     | .err m => .cons (String.append "parse " m) out
-    | .ok stx stop => match command gs stx with
+    | .ok stx stop =>
+      let step := match strEq (kindOf stx) "command.inductive" with
+        | .true => inductiveCmd gs stx
+        | .false => command gs stx;
+      match step with
       | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
 
 def checkFile (cats : List Cat) (tokens : List String) (text : String) : List String :=

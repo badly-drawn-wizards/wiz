@@ -1203,6 +1203,26 @@ the largest share left is reference counting (about 1.4 billion `inc`/`dec` for 
 
 Next: fewer index equations for mutual families (elaboration time and code size).
 
+## Stage 16: data in the self-hosted frontend
+
+### 16a: inductive types ✅
+
+`selfhost/Frontend.wiz` reads `inductive T where | c (x : A) (y : T) …` (no parameters
+or indices yet, in `Type`): `T` becomes the constant `μ D tt` for the description
+
+    D := darg (Enum k) (fun t => ecase t [D₁, …, Dₖ])
+
+with one `Dᵢ` per constructor (exercise 16.1, `ctorDesc`: a field `(x : A)` is
+`darg A (fun x => …)`, a field of type `T` is `drec tt …`, the end is `dret tt`), and
+each constructor `T.c` the constant `fun fields => con (tag, fields…, tt, tt)`. The
+Wiz kernel checks all of them.
+
+| #    | Where                   | What                                     |
+|------|-------------------------|------------------------------------------|
+| 16.1 | `selfhost/Frontend.wiz` | `ctorDesc`: a constructor's description  |
+
+Next: `match` (to `ind`, recursive calls to induction hypotheses), then parameters.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅

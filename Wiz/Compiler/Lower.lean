@@ -270,8 +270,9 @@ def lowerProgram (code : Code) (main : ETerm) : Except String (Array Decl) := do
   -- wrappers for partially applied native operations
   for key in (natives.toList.map (·.2)).eraseDups.toArray.qsort (· < ·) do
     let ps := (List.range (RVal.nativeArity key)).toArray
-    out := out.push { name := nativeWrapper key, params := ps,
-                      body := .vdecl ps.size (.prim key ps) (.ret ps.size) }
+    -- (`nat.zero` is a number, not an operation)
+    let e : Expr := if key == "nat.zero" then .lit 0 else .prim key ps
+    out := out.push { name := nativeWrapper key, params := ps, body := .vdecl ps.size e (.ret ps.size) }
   for (n, e) in defs do
     let (xs, body) := peelLams e
     let ctx : Ctx := { arities, natives, owner := n, inlines }

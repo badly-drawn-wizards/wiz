@@ -1547,6 +1547,22 @@ def selfHostGroup : Group where
         ioRun prog ("N : U1\ntwo : N\nadd : (x0 : N) → (x1 : N) → N\nλx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\n" ++
           "(x0 : N) → N\n" ++
           "error: type mismatch: expected U0, got U1\nerror: unknown identifier bad\n") },
+    { name := "inductive types, checked in Wiz", run := fun _ => do
+        let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
+        let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
+        let t := Builtin.tables
+        let file := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ndef two : Nat := Nat.succ (Nat.succ Nat.zero)\n" ++
+          "#check Nat.succ\n#reduce two\ninductive Pair where\n  | mk (a b : Nat)\n#check Pair.mk\n" ++
+          "#reduce Pair.mk two Nat.zero\ninductive Bad where\n  | mk (f : Bad → Bad)\ndef bad : Nat := Nat.succ Type\n"
+        let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
+          s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
+          s!"def main : IO Unit := printAll (checkFile cats tokens {wizLit file})\n"
+        let natTy := "μ0(Unit0, arg(Enum2, λx0. case(Desc0(Unit0), x0, ret(tt), rec(tt, ret(tt)))), tt)"
+        ioRun prog ("Nat : U0\ntwo : Nat\n(x0 : Nat) → Nat\n" ++
+          "con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt))))\n" ++
+          "Pair : U0\n(x0 : Nat) → (x1 : Nat) → Pair\n" ++
+          "con((#0, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (con((#0, (tt, tt))), (tt, tt)))))\n" ++
+          s!"error: unknown identifier Bad\nerror: type mismatch: expected {natTy}, got U1\n") },
     { name := "the Wiz kernel agrees with the Lean kernel (400 random terms)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let mut terms : Array MTm := MTm.samples.toArray
