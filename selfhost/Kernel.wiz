@@ -122,7 +122,7 @@ end
 mutual
 inductive Val where
   -- `Sort l`
-  | vsort (l : Nat)
+  | vsort (l : Lvl)
   -- `(x : dom) → cod`, `cod` under one binder, closed over `env`
   | vpi (q : Q) (dom : Val) (env : Env) (cod : Tm)
   | vlam (env : Env) (body : Tm)
@@ -194,29 +194,130 @@ def kCharsEq : List Char → List Char → Bool
 def kStrEq (a b : String) : Bool := match a with
   | .mk x => match b with
     | .mk y => kCharsEq x y
-def lvlImax (i j : Nat) : Nat := match j with
-  | .zero => 0
-  | .succ _ => Nat.max i j
--- a closed level as a number (a parameter that is left counts as `0`)
-def lvlNat : Lvl → Nat
-  | .lnum n => n
-  | .lparam _ => 0
-  | .lsucc l => lvlNat l + 1
-  | .lmax a b => Nat.max (lvlNat a) (lvlNat b)
-  | .limax a b => lvlImax (lvlNat a) (lvlNat b)
--- levels, compared as numbers, and shown as `.{1, 2}`
-def lvlsEq : List Lvl → List Lvl → Bool
-  | .nil, .nil => .true
-  | .cons a r, .cons b r' => Bool.and (Nat.beq (lvlNat a) (lvlNat b)) (lvlsEq r r')
+def kCharsLt : List Char → List Char → Bool
+  | .nil, .cons _ _ => .true
+  | .cons a as, .cons b bs => match Nat.lt (Char.code a) (Char.code b) with
+    | .true => .true
+    | .false => Bool.and (Nat.beq (Char.code a) (Char.code b)) (kCharsLt as bs)
   | _, _ => .false
-def showLvlsFrom : List Lvl → String
-  | .nil => ""
-  | .cons l rest => match rest with
-    | .nil => Nat.toString (lvlNat l)
-    | .cons _ _ => String.append (String.append (Nat.toString (lvlNat l)) ", ") (showLvlsFrom rest)
-def showLvls : List Lvl → String
-  | .nil => ""
-  | ls => String.append (String.append ".{" (showLvlsFrom ls)) "}"
+def kStrLt (a b : String) : Bool := match a with
+  | .mk x => match b with
+    | .mk y => kCharsLt x y
+
+-- Normal forms of levels (`Level.normalize` in `Level.lean`): the `max` of entries
+-- `atom + k`, sorted, at most one per atom, where an atom is the constant `0`, a
+-- parameter, or an `imax` that doesn't simplify
+mutual
+inductive LAtom where
+  | aconst
+  | aparam (n : String)
+  | aimax (a b : LNF)
+inductive LNF where
+  | nnil
+  | ncons (a : LAtom) (k : Nat) (rest : LNF)
+end
+
+mutual
+def atomEq : LAtom → LAtom → Bool
+  | .aconst, .aconst => .true
+  | .aparam a, .aparam b => kStrEq a b
+  | .aimax a b, .aimax c d => Bool.and (nfEq a c) (nfEq b d)
+  | _, _ => .false
+def nfEq : LNF → LNF → Bool
+  | .nnil, .nnil => .true
+  | .ncons a k r, .ncons b m r' => Bool.and (Bool.and (atomEq a b) (Nat.beq k m)) (nfEq r r')
+  | _, _ => .false
+end
+mutual
+def atomShow : LAtom → String
+  | .aconst => "0"
+  | .aparam n => n
+  | .aimax a b => String.append (String.append (String.append "imax(" (nfShow a)) ", ") (String.append (nfShow b) ")")
+def nfShow : LNF → String
+  | .nnil => ""
+  | .ncons a k r => String.append (String.append (String.append (atomShow a) "+") (Nat.toString k))
+      (String.append " " (nfShow r))
+end
+def atomRank : LAtom → Nat
+  | .aconst => 0
+  | .aparam _ => 1
+  | .aimax _ _ => 2
+-- a total order on atoms, to keep normal forms sorted
+def atomLt (a b : LAtom) : Bool := match a with
+  | .aparam x => match b with
+    | .aparam y => kStrLt x y
+    | _ => Nat.lt (atomRank a) (atomRank b)
+  | .aimax _ _ => match b with
+    | .aimax _ _ => kStrLt (atomShow a) (atomShow b)
+    | _ => Nat.lt (atomRank a) (atomRank b)
+  | _ => Nat.lt (atomRank a) (atomRank b)
+def nfInsert (x : LAtom) (k : Nat) : LNF → LNF
+  | .nnil => .ncons x k .nnil
+  | .ncons y m ys => match atomEq x y with
+    | .true => .ncons y (Nat.max k m) ys
+    | .false => match atomLt x y with
+      | .true => .ncons x k (.ncons y m ys)
+      | .false => .ncons y m (nfInsert x k ys)
+def nfMerge : LNF → LNF → LNF
+  | .nnil, b => b
+  | .ncons x k r, b => nfMerge r (nfInsert x k b)
+def nfShift : LNF → LNF
+  | .nnil => .nnil
+  | .ncons a k r => .ncons a (k + 1) (nfShift r)
+def nfOthers : LNF → LNF
+  | .nnil => .nnil
+  | .ncons a k r => match a with
+    | .aconst => nfOthers r
+    | _ => .ncons a k (nfOthers r)
+def nfMaxK : LNF → Nat
+  | .nnil => 0
+  | .ncons _ k r => Nat.max k (nfMaxK r)
+def nfConst : LNF → Option Nat
+  | .nnil => .none
+  | .ncons a k r => match a with
+    | .aconst => .some k
+    | _ => nfConst r
+-- drop the constant entry when another entry already guarantees it
+def nfCleanup (n : LNF) : LNF := match nfConst n with
+  | .none => n
+  | .some c => match nfOthers n with
+    | .nnil => n
+    | .ncons a k r => match Nat.le c (nfMaxK (.ncons a k r)) with
+      | .true => .ncons a k r
+      | .false => n
+-- certainly nonzero
+def nfNonZero : LNF → Bool
+  | .nnil => .false
+  | .ncons _ k r => Bool.or (Nat.lt 0 k) (nfNonZero r)
+def nfZero : LNF := .ncons .aconst 0 .nnil
+
+-- **Exercise 14.8.** Normalise a level (`Level.normalize`): `imax a b` is `max a b` when
+-- `b` is certainly nonzero, `0` when `b` is `0`, and an atom otherwise.
+def lvlNorm : Lvl → LNF
+  | _ => nfZero
+
+def lvlParams : Lvl → List String
+  | .lparam n => .cons n .nil
+  | .lsucc l => lvlParams l
+  | .lmax a b => List.append (lvlParams a) (lvlParams b)
+  | .limax a b => List.append (lvlParams a) (lvlParams b)
+  | _ => .nil
+def lvlNeverZero (l : Lvl) : Bool := nfNonZero (lvlNorm l)
+def orElseStr : Option String → Option String → Option String
+  | .some a, _ => .some a
+  | .none, b => b
+def headStr : List String → Option String
+  | .nil => .none
+  | .cons a _ => .some a
+-- a parameter that decides whether some `imax` is zero
+def imaxParam : Lvl → Option String
+  | .lsucc l => imaxParam l
+  | .lmax a b => orElseStr (imaxParam a) (imaxParam b)
+  | .limax a b => orElseStr (orElseStr (imaxParam a) (imaxParam b)) (match lvlNeverZero b with
+    | .true => .none
+    | .false => headStr (lvlParams b))
+  | _ => .none
+-- a closed level as a number (a parameter that is left counts as `0`)
 def lookupLvl : List String → List Lvl → String → Lvl
   | .cons p ps, .cons l ls, n => match kStrEq p n with
     | .true => l
@@ -229,6 +330,59 @@ def substLvl (ps : List String) (ls : List Lvl) : Lvl → Lvl
   | .lmax a b => .lmax (substLvl ps ls a) (substLvl ps ls b)
   | .limax a b => .limax (substLvl ps ls a) (substLvl ps ls b)
   | l => l
+-- (`Level.equiv`) normal forms decide equality except for `imax`: then split on a
+-- parameter `p` an `imax` depends on, `p = 0` or `p = p + 1`
+def lvlEquivF : Nat → Lvl → Lvl → Bool
+  | .zero, a, b => nfEq (lvlNorm a) (lvlNorm b)
+  | .succ f, a, b => match nfEq (lvlNorm a) (lvlNorm b) with
+    | .true => .true
+    | .false => match orElseStr (imaxParam a) (imaxParam b) with
+      | .none => .false
+      | .some p =>
+        let ps := List.cons p .nil;
+        let z := List.cons (Lvl.lnum 0) .nil;
+        let sp := List.cons (Lvl.lsucc (.lparam p)) .nil;
+        Bool.and (lvlEquivF f (substLvl ps z a) (substLvl ps z b)) (lvlEquivF f (substLvl ps sp a) (substLvl ps sp b))
+def lvlEquiv (a b : Lvl) : Bool := lvlEquivF 8 a b
+def lvlLe (a b : Lvl) : Bool := lvlEquiv (.lmax a b) b
+-- a level without parameters, as a number
+def lvlClosed : Lvl → Option Nat
+  | .lnum n => .some n
+  | .lsucc l => match lvlClosed l with
+    | .some n => .some (n + 1)
+    | .none => .none
+  | .lmax a b => match lvlClosed a with
+    | .some m => match lvlClosed b with
+      | .some n => .some (Nat.max m n)
+      | .none => .none
+    | .none => .none
+  | .limax a b => match lvlClosed a with
+    | .some m => match lvlClosed b with
+      | .some n => match n with
+        | .zero => .some 0
+        | .succ _ => .some (Nat.max m n)
+      | .none => .none
+    | .none => .none
+  | .lparam _ => .none
+def lvlShow : Lvl → String
+  | .lnum n => Nat.toString n
+  | .lparam n => n
+  | .lsucc l => String.append (String.append "(" (lvlShow l)) ")+1"
+  | .lmax a b => String.append (String.append (String.append "max(" (lvlShow a)) ", ") (String.append (lvlShow b) ")")
+  | .limax a b => String.append (String.append (String.append "imax(" (lvlShow a)) ", ") (String.append (lvlShow b) ")")
+-- levels, compared and shown as `.{1, u}`
+def lvlsEq : List Lvl → List Lvl → Bool
+  | .nil, .nil => .true
+  | .cons a r, .cons b r' => Bool.and (lvlEquiv a b) (lvlsEq r r')
+  | _, _ => .false
+def showLvlsFrom : List Lvl → String
+  | .nil => ""
+  | .cons l rest => match rest with
+    | .nil => lvlShow l
+    | .cons _ _ => String.append (String.append (lvlShow l) ", ") (showLvlsFrom rest)
+def showLvls : List Lvl → String
+  | .nil => ""
+  | ls => String.append (String.append ".{" (showLvlsFrom ls)) "}"
 def substLvls (ps : List String) (ls : List Lvl) : List Lvl → List Lvl
   | .nil => .nil
   | .cons l rest => .cons (substLvl ps ls l) (substLvls ps ls rest)
@@ -315,7 +469,7 @@ def tmsLen : Tms → Nat
   | .tcons _ rest => Nat.succ (tmsLen rest)
 
 def lookup : Env → Nat → Val
-  | .nil, _ => .vsort 0
+  | .nil, _ => .vsort (.lnum 0)
   | .cons v rest, i => match i with
     | .zero => v
     | .succ j => lookup rest j
@@ -401,7 +555,7 @@ def tmEq : Tm → Tm → Bool
   | .coit l a b c d e f, .coit l' a' b' c' d' e' f' => Bool.and (Nat.beq l l')
       (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f'))))))
   | .const n _ ls _ _, .const n' _ ls' _ _ => Bool.and (kStrEq n n') (lvlsEq ls ls')
-  | .sortL l, .sortL l' => Nat.beq (lvlNat l) (lvlNat l')
+  | .sortL l, .sortL l' => lvlEquiv l l'
   | .axiomC n _, .axiomC n' _ => kStrEq n n'
   | .ind l a b v c d e f, .ind l' a' b' v' c' d' e' f' => Bool.and (Nat.beq l l') (Bool.and (Nat.beq v v')
       (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f')))))))
@@ -509,7 +663,7 @@ def mapTm (l : Nat) : Tm :=
 -- `vSnd` in `Eval.lean`).
 mutual
 def eval : Env → Tm → Val
-  | _, _ => .vsort 0
+  | _, _ => .vsort (.lnum 0)
 def vapp : Val → Val → Val
   | .vglued h sp v, a => .vglued h (.sapp sp a) (vapp v a)  -- (given) glued stays glued
   | v, _ => v
@@ -606,10 +760,12 @@ def vEqW : Val → Val → Val → Val
     | .true => .vunit 0
     | .false => .vempty 0
   | .vmu l I D i _, .vcon x, .vcon y => vEq (vInterp l I D (muFamily l I D) i) x y
-  | .vsort l, a, b => match l with
+  | .vsort l, a, b => match lvlEquiv l (.lnum 0) with
     -- propositions: equal when equivalent
-    | .zero => .vsigma .qz (.vpi .qz a (.cons b .nil) (.var 1)) (.cons a (.cons b .nil)) (.piq .qz (.var 2) (.var 2))
-    | .succ _ => vEqType a b
+    | .true => .vsigma .qz (.vpi .qz a (.cons b .nil) (.var 1)) (.cons a (.cons b .nil)) (.piq .qz (.var 2) (.var 2))
+    | .false => match lvlNeverZero l with
+      | .true => vEqType a b
+      | .false => .vne (.heq (.vsort l) a b) .snil
   | A, a, b => .vne (.heq A a b) .snil
 -- `A = B` between types (`vEqType`)
 def vEqType (X Y : Val) : Val := vEqTypeW (whnf X) (whnf Y)
@@ -624,7 +780,13 @@ def vEqTypeW : Val → Val → Val
     | .true => .vsigma .qz (vEqType a a')
       (.cons (.vlam env' b') (.cons (.vlam env b) (.cons a' (.cons a .nil))))
       (.piq .qz (.var 4) (.eqTy (.app (.var 3) (.var 0)) (.app (.var 2) (.coe (.var 5) (.var 4) (.var 1) (.var 0)))))
-  | .vsort l, .vsort l' => levels l l'
+  | .vsort l, .vsort l' => match lvlEquiv l l' with
+    | .true => .vunit 0
+    | .false => match lvlClosed l with
+      | .some _ => match lvlClosed l' with
+        | .some _ => .vempty 0
+        | .none => .vne (.heqTy (.vsort l) (.vsort l')) .snil
+      | .none => .vne (.heqTy (.vsort l) (.vsort l')) .snil
   | .vunit l, .vunit l' => levels l l'
   | .vempty l, .vempty l' => levels l l'
   | .venum k, .venum k' => levels k k'
@@ -649,7 +811,9 @@ def vCastW : Val → Val → Val → Val → Val
       let t1 := vfst t;
       let c1 := vCast a1 a2 (vfst e) t1;
       .vpair c1 (vCast (eval (.cons t1 env1) b1) (eval (.cons c1 env2) b2) (vapp (vsnd e) t1) (vsnd t))
-  | .vsort l, .vsort l', e, t => same l l' t (.vne (.hcast (.vsort l) (.vsort l') e t) .snil)
+  | .vsort l, .vsort l', e, t => match lvlEquiv l l' with
+    | .true => t
+    | .false => .vne (.hcast (.vsort l) (.vsort l') e t) .snil
   | .vempty l, .vempty l', e, t => same l l' t (.vne (.hcast (.vempty l) (.vempty l') e t) .snil)
   | .vunit l, .vunit l', e, t => same l l' .vtt (.vne (.hcast (.vunit l) (.vunit l') e t) .snil)
   | .venum k, .venum k', e, t => same k k' t (.vne (.hcast (.venum k) (.venum k') e t) .snil)
@@ -774,9 +938,11 @@ def show (names : List String) : Nat → Tm → String
   | l, .coit _ _ _ S st i x => String.append (String.append (String.append "coit(" (show names l S)) (String.append ", " (show names l st)))
       (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")")))
   | _, .const n _ ls _ _ => String.append n (showLvls ls)
-  | _, .sortL l => match lvlNat l with
-    | .zero => "Prop"
-    | .succ n => String.append "U" (Nat.toString n)
+  | _, .sortL l => match lvlClosed l with
+    | .some n => match n with
+      | .zero => "Prop"
+      | .succ m => String.append "U" (Nat.toString m)
+    | .none => String.append (String.append "Sort(" (lvlShow l)) ")"
   | _, .axiomC n _ => n
   | l, .ind _ _ _ _ P m i x => String.append (String.append (String.append "ind(" (show names l P)) (String.append ", " (show names l m)))
       (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")")))
@@ -871,10 +1037,6 @@ inductive TyRes where
   | ok (ty : Val) (u : List Q)
   | err (msg : String)
 
-def imax (i j : Nat) : Nat := match j with
-  | .zero => 0
-  | .succ _ => Nat.max i j
-
 -- the size of an observation's fields: `↑s ↦ s`, anything else ↦ `∞`
 def sizePredOrInf (sz : Val) : Val := match whnf sz with
   | .vszSuc s => s
@@ -904,27 +1066,27 @@ def typeOfNe : TCtx → Head → Spine → Val
     | .vnu l I D i sz => vInterp l I D (nuFamilyAt l I D (sizePredOrInf sz)) i
     | ty => ty
 -- the level of the universe a type lives in
-def sortOf (c : TCtx) (ty : Val) : Option Nat := sortOfW c (whnf ty)
-def sortOfW : TCtx → Val → Option Nat
+def sortOf (c : TCtx) (ty : Val) : Option Lvl := sortOfW c (whnf ty)
+def sortOfW : TCtx → Val → Option Lvl
   | c, .vpi _ a env b => match sortOf c a with
     | .some i => match sortOf (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b) with
-      | .some j => .some (imax i j)
+      | .some j => .some (.limax i j)
       | .none => .none
     | .none => .none
   | c, .vsigma _ a env b => match sortOf c a with
     | .some i => match sortOf (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b) with
-      | .some j => .some (Nat.max i j)
+      | .some j => .some (.lmax i j)
       | .none => .none
     | .none => .none
-  | _, .vsort l => .some (l + 1)
-  | _, .vunit l => .some l
-  | _, .vempty l => .some l
-  | _, .venum _ => .some 1
-  | _, .vdesc l _ => .some (l + 2)
-  | _, .vmu l _ _ _ _ => .some (l + 1)
-  | _, .vnu l _ _ _ _ => .some (l + 1)
-  | _, .vsize => .some 1
-  | _, .vsizeLt _ => .some 1
+  | _, .vsort l => .some (.lsucc l)
+  | _, .vunit l => .some (.lnum l)
+  | _, .vempty l => .some (.lnum l)
+  | _, .venum _ => .some (.lnum 1)
+  | _, .vdesc l _ => .some (.lnum (l + 2))
+  | _, .vmu l _ _ _ _ => .some (.lnum (l + 1))
+  | _, .vnu l _ _ _ _ => .some (.lnum (l + 1))
+  | _, .vsize => .some (.lnum 1)
+  | _, .vsizeLt _ => .some (.lnum 1)
   | c, .vne x sp => match whnf (typeOfNe c x sp) with
     | .vsort l => .some l
     | _ => .none
@@ -932,8 +1094,8 @@ def sortOfW : TCtx → Val → Option Nat
 -- the type of a head
 def headType : TCtx → Head → Val
   | c, .hvar x => lookup (TCtx.types c) (TCtx.lvl c - x - 1)
-  | _, .heq _ _ _ => .vsort 0
-  | _, .heqTy _ _ => .vsort 0
+  | _, .heq _ _ _ => .vsort (.lnum 0)
+  | _, .heqTy _ _ => .vsort (.lnum 0)
   | _, .hcast _ B _ _ => B
   | _, .hrefl A a => vEq A a a
   | _, .hreflTy X => vEqType X X
@@ -943,7 +1105,7 @@ def headType : TCtx → Head → Val
 end
 
 def isProp (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
-  | .some l => Nat.beq l 0
+  | .some l => lvlEquiv l (.lnum 0)
   | .none => .false
 
 -- the quantity binders of the method types: this kernel has no quantities, so `Unit`
@@ -1143,8 +1305,8 @@ def former : TCtx → Tm → Tm → Bool → TyRes
   | c, a, b, isPi => match inferUniv c a with
     | .ok (.vsort i) _ => match inferUniv (TCtx.bind c (eval (TCtx.env c) a)) b with
       | .ok (.vsort j) _ => match isPi with
-        | .true => .ok (.vsort (imax i j)) (uZeros (TCtx.lvl c))
-        | .false => .ok (.vsort (Nat.max i j)) (uZeros (TCtx.lvl c))
+        | .true => .ok (.vsort (.limax i j)) (uZeros (TCtx.lvl c))
+        | .false => .ok (.vsort (.lmax i j)) (uZeros (TCtx.lvl c))
       | r => r
     | r => r
 -- `let x :q ty := v; b`
@@ -1195,6 +1357,15 @@ def inferUniv : TCtx → Tm → TyRes
 end
 
 def empty : TCtx := .mk .nil .nil 0 .false
+
+-- check a declaration (`addDecl` in `Check.lean`): its type is a type and its value, if
+-- it has one, has that type. Its level parameters stay symbolic, so this checks it at
+-- every level at once.
+def checkDecl (ty : Tm) (value : Option Tm) : TyRes := match inferUniv empty ty with
+  | .ok _ _ => match value with
+    | .none => .ok (eval .nil ty) .nil
+    | .some v => check empty v (eval .nil ty)
+  | r => r
 
 -- type check a closed term: its type, or the error
 def typeOf (t : Tm) : String := match infer empty t with
