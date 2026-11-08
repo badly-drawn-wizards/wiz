@@ -1345,7 +1345,16 @@ clause covers is then ruled out if the index makes it impossible: its payload pr
 A hypothesis for a recursive field with that same index is applied to `refl` already.
 The parameter and result types of a match are now elaborated with types too.
 
-Next: mutual inductive types, as a family indexed by a tag.
+### 18c: mutual inductive types ✅
+
+`mutual inductive Tm … inductive Tms … end` (no parameters or indices yet) is one
+family `Tm_Tms : Enum 2 → Type` over every member's constructors: a field whose type is
+a member is recursive at that member's tag, and a member's constructors end at its tag.
+Each member is the constant `Tm := Tm_Tms (tag 0)`, and its constructors `Tm.c` build
+the family's values. A match on a `Tm` runs at a closed index, so 18b rules out the
+other members' constructors: a match lists only its own type's.
+
+Next: parameters for mutual types, `structure`, numerals and strings.
 
 ## Stage 11: tooling
 
