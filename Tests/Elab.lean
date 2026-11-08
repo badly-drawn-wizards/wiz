@@ -1474,6 +1474,17 @@ def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
   | .ok _ => "ok"
   | .error _ => "error"
 
+/-- Check a file of commands with the whole self-hosted pipeline (compiled), and compare
+its output. -/
+def selfhostCheckFile (file expected : String) : IO Unit := do
+  let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
+  let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
+  let t := Builtin.tables
+  let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
+    s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
+    s!"def main : IO Unit := printAll (checkFile cats tokens {wizLit file})\n"
+  ioRun prog expected
+
 def selfHostGroup : Group where
   name := "selfhost"
   exercise := "Stages 12b–14q"
@@ -1563,6 +1574,9 @@ def selfHostGroup : Group where
           "Pair : U0\n(x0 : Nat) → (x1 : Nat) → Pair\n" ++
           "con((#0, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (con((#0, (tt, tt))), (tt, tt)))))\n" ++
           s!"error: unknown identifier Bad\nerror: type mismatch: expected {natTy}, got U1\n") },
+    { name := "pattern matching and structural recursion, checked in Wiz", run := fun _ =>
+        selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\ndef two : Nat := Nat.succ (Nat.succ Nat.zero)\ndef add (m n : Nat) : Nat := match m with\n  | .zero => n\n  | .succ k => Nat.succ (add k n)\n#reduce add two two\ndef mul (m n : Nat) : Nat := match n with\n  | .zero => Nat.zero\n  | .succ k => add m (mul m k)\n#reduce mul two (Nat.succ (Nat.succ (Nat.succ Nat.zero)))\ndef Code (n : Nat) : Type := match n with\n  | .zero => Nat\n  | _ => Nat → Nat\n#check Code\ndef pred (n : Nat) : Nat := match n with\n  | .succ k => k\n  | x => x\n#reduce pred two\ndef bad (n : Nat) : Nat := match n with\n  | .succ k => k\ndef bad2 (m n : Nat) : Nat := match m with\n  | .zero => n\n  | .succ k => add k (bad2 n k)\n"
+          "Nat : U0\ntwo : Nat\nadd : (x0 : Nat) → (x1 : Nat) → Nat\ncon((#1, (con((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt))))\nmul : (x0 : Nat) → (x1 : Nat) → Nat\ncon((#1, (con((#1, (con((#1, (con((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt))))\nCode : (x0 : Nat) → U0\n(x0 : Nat) → U0\npred : (x0 : Nat) → Nat\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\nerror: missing case zero\nerror: unknown identifier bad2\n" },
     { name := "the Wiz kernel agrees with the Lean kernel (400 random terms)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let mut terms : Array MTm := MTm.samples.toArray

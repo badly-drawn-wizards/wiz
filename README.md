@@ -1221,7 +1221,26 @@ Wiz kernel checks all of them.
 |------|-------------------------|------------------------------------------|
 | 16.1 | `selfhost/Frontend.wiz` | `ctorDesc`: a constructor's description  |
 
-Next: `match` (to `ind`, recursive calls to induction hypotheses), then parameters.
+### 16b: pattern matching and structural recursion ✅
+
+`def f (ps) : R := match x with | .c a b => rhs …`, for a parameter `x` of an inductive
+type (and `R` not mentioning `x`), becomes induction with the motive `fun i y => R` and
+the method
+
+    fun i xs ih => (ecase (fst xs) [b₁, …, bₖ] : convoy) (snd xs) ih
+
+where each branch `bᵢ := fun rest ih => let fields := …; let hyps := …; rhs` (exercise
+16.2, `branchTm`) names the payload's fields and the recursive fields' induction
+hypotheses; a recursive call `f … y …` on a recursive field `y`, the other arguments
+unchanged, is `y`'s hypothesis. A catch-all `x =>` stands for the missing
+constructors. The convoy's types apply the `interp` and `All` templates, which the
+frontend normalises first (`nfAt`: the kernel can't infer the type of an applied λ).
+
+| #    | Where                   | What                                     |
+|------|-------------------------|------------------------------------------|
+| 16.2 | `selfhost/Frontend.wiz` | `branchTm`: one branch of the method      |
+
+Next: parameters (`List A`), then nested patterns and several scrutinees.
 
 ## Stage 11: tooling
 

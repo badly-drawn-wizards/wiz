@@ -146,18 +146,31 @@ def List.reverseOf {A : Type} : List A → List A → List A
 -- doesn't unfold constants)
 inductive Global where
   | mk (name : String) (ty val inlined : Tm)
--- the globals so far: by position (the first is `0`), and their names in scope
+-- an inductive type (stage 16): its description (with constants, and inlined), and
+-- each constructor's fields: name, whether recursive, and type (over the fields before)
+inductive CField where
+  | mk (name : String) (isRec : Bool) (ty tyI : Tm)
+inductive Ctor where
+  | mk (name : String) (fields : List CField)
+inductive IndInfo where
+  | mk (D DI : Tm) (ctors : List Ctor)
+-- the globals so far: by position (the first is `0`), their names in scope, and the
+-- inductive types by name
 inductive Globals where
-  | mk (all : Array Global) (scope : Scope)
-def Globals.empty : Globals := .mk Array.empty Scope.empty
+  | mk (all : Array Global) (scope : Scope) (inds : StrMap (Option IndInfo))
+def Globals.empty : Globals := .mk Array.empty Scope.empty StrMap.empty
 def Globals.scope : Globals → Scope
-  | .mk _ sc => sc
+  | .mk _ sc _ => sc
 def Globals.add (gs : Globals) (g : Global) : Globals := match gs with
-  | .mk all sc => match g with
-    | .mk x _ _ _ => .mk (Array.push all g) (Scope.addGlobal sc x)
+  | .mk all sc inds => match g with
+    | .mk x _ _ _ => .mk (Array.push all g) (Scope.addGlobal sc x) inds
+def Globals.addInd (gs : Globals) (T : String) (info : IndInfo) : Globals := match gs with
+  | .mk all sc inds => .mk all sc (StrMap.insert inds (Str.ofString T) (.some info))
+def Globals.ind (gs : Globals) (T : String) : Option IndInfo := match gs with
+  | .mk _ _ inds => StrMap.findD inds (Str.ofString T) .none
 -- the global at index `i` (the latest is `0`): a constant, or its value inlined
 def globalTm (inline : Bool) (gs : Globals) (i : Nat) : Tm := match gs with
-  | .mk all _ => match Array.getD all (Array.size all - 1 - i) (.mk "?" .star .star .star) with
+  | .mk all _ _ => match Array.getD all (Array.size all - 1 - i) (.mk "?" .star .star .star) with
     | .mk n ty v iv => match inline with
       | .true => iv
       | .false => .const n .nil .nil v ty
@@ -232,37 +245,49 @@ def ctorDescs (inline : Bool) (gs : Globals) (T : String) : List Syntax → Desc
     | .ok D => match ctorDescs inline gs T cs with
       | .ok ds => .ok (.tcons D ds)
       | e => e
--- a constructor's type: `(fields) → T`, every field bound
-def ctorType (gs : Globals) (T : String) (Tc : Tm) : Scope → Nat → List Field → Elab
-  | _, _, .nil => .ok Tc
+-- a constructor's fields with their types, every field bound in the later ones
+inductive CFields where
+  | ok (fs : List CField)
+  | err (msg : String)
+def ctorFieldTys (gs : Globals) (T : String) (Tc TcI : Tm) : Scope → Nat → List Field → CFields
+  | _, _, .nil => .ok .nil
   | sc, d, .cons (.mk x ty) rest =>
-    let A : Elab := match isRecField T ty with
-      | .true => .ok Tc
+    let A : CFields := match isRecField T ty with
+      | .true => .ok (.cons (.mk x .true Tc TcI) .nil)
       | .false => match elab sc ty with
-        | .ok A => .ok (closeG .false gs d A)
-        | e => e;
+        | .ok A => .ok (.cons (.mk x .false (closeG .false gs d A) (closeG .true gs d A)) .nil)
+        | .err m => .err m;
     match A with
     | .err m => .err m
-    | .ok A => match ctorType gs T Tc (Scope.bind sc x) (d + 1) rest with
-      | .ok B => .ok (.pi A B)
+    | .ok f => match ctorFieldTys gs T Tc TcI (Scope.bind sc x) (d + 1) rest with
+      | .ok fs => .ok (List.append f fs)
       | e => e
+-- a constructor's type: `(fields) → T`
+def ctorType (Tc : Tm) : List CField → Tm
+  | .nil => Tc
+  | .cons (.mk _ _ A _) rest => .pi A (ctorType Tc rest)
 -- the payload `(field₁, …, (tt, tt))`, the first field being `var (n - 1)`
 def payloadTm : Nat → Nat → Tm
   | .zero, _ => .pair .star .star
   | .succ r, i => .pair (.var i) (payloadTm r (i - 1))
--- add the constructors from the `i`th on
-def addCtors (T : String) (Tc : Tm) (k : Nat) : Globals → Nat → List Syntax → Option Globals
-  | gs, _, .nil => .some gs
+-- add the constructors from the `i`th on, collecting their fields
+inductive Added where
+  | ok (gs : Globals) (ctors : List Ctor)
+  | err
+def addCtors (T : String) (Tc TcI : Tm) (k : Nat) : Globals → Nat → List Syntax → Added
+  | gs, _, .nil => .ok gs .nil
   | gs, i, .cons c cs =>
-    let fs := ctorFields c;
-    let n := List.length fs;
-    match ctorType gs T Tc (Globals.scope gs) 0 fs with
-    | .err _ => .none
-    | .ok ty =>
+    let n := List.length (ctorFields c);
+    match ctorFieldTys gs T Tc TcI (Globals.scope gs) 0 (ctorFields c) with
+    | .err _ => .err
+    | .ok fs =>
+      let ty := ctorType Tc fs;
       let v := tLams n (.con (.pair (.tag k i) (payloadTm n (n - 1))));
       match check empty v (eval .nil ty) with
-      | .err _ => .none
-      | .ok _ _ => addCtors T Tc k (Globals.add gs (.mk (String.append (String.append T ".") (ctorName c)) ty v v)) (i + 1) cs
+      | .err _ => .err
+      | .ok _ _ => match addCtors T Tc TcI k (Globals.add gs (.mk (String.append (String.append T ".") (ctorName c)) ty v v)) (i + 1) cs with
+        | .ok gs' rest => .ok gs' (.cons (.mk (ctorName c) fs) rest)
+        | .err => .err
 def inductiveCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
   | .ident T =>
     let ctors := kids (kid stx 6);
@@ -277,11 +302,297 @@ def inductiveCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
         match check empty val (.vsort (.lnum 1)) with
         | .err m => errStep gs m
         | .ok _ _ =>
-          let gs1 := Globals.add gs (.mk T (.univ 0) val (.mu 0 (.unit 0) (mkD dsI) .star));
-          match addCtors T (.const T .nil .nil val (.univ 0)) k gs1 0 ctors with
-          | .none => errStep gs "ill-typed constructor"
-          | .some gs2 => .mk (String.append T " : U0") gs2
+          let valI : Tm := .mu 0 (.unit 0) (mkD dsI) .star;
+          let gs1 := Globals.add gs (.mk T (.univ 0) val valI);
+          match addCtors T (.const T .nil .nil val (.univ 0)) valI k gs1 0 ctors with
+          | .err => errStep gs "ill-typed constructor"
+          | .ok gs2 cs => .mk (String.append T " : U0") (Globals.addInd gs2 T (.mk (mkD ds) (mkD dsI) cs))
   | _ => errStep gs "an inductive type needs a name"
+
+-- Pattern matching in definitions (stage 16b): in `def f (ps) : R := match x with …`,
+-- `x` a parameter of an inductive type, the match becomes induction with the motive
+-- `fun i y => R` (so `R` may not mention `x`) and the method
+--   fun i xs ih => (ecase (fst xs) [b₁, …, bₖ] : convoy) (snd xs) ih
+-- where each branch `bᵢ := fun rest ih => let fields := …; rhs` takes the constructor's
+-- payload `rest` and its induction hypotheses `ih`. A recursive call `f … y …` on a
+-- recursive field `y` (the other arguments passed unchanged) is `y`'s hypothesis.
+
+-- shift the variables from `c` on of a scope-checked term by `k`
+def shiftTm (k : Nat) : Nat → Tm → Tm
+  | c, .var i => match Nat.lt i c with
+    | .true => .var i
+    | .false => .var (i + k)
+  | c, .pi a b => .pi (shiftTm k c a) (shiftTm k (c + 1) b)
+  | c, .lam b => .lam (shiftTm k (c + 1) b)
+  | c, .app f a => .app (shiftTm k c f) (shiftTm k c a)
+  | c, .letE ty v b => .letE (shiftTm k c ty) (shiftTm k c v) (shiftTm k (c + 1) b)
+  | c, .ann t ty => .ann (shiftTm k c t) (shiftTm k c ty)
+  | _, t => t
+-- the normal form of a term under `d` binders (to reduce applied templates: the kernel
+-- can't infer the type of a λ applied to arguments)
+def freshEnv : Nat → Env
+  | .zero => .nil
+  | .succ k => .cons (fresh k) (freshEnv k)
+def nfAt (d : Nat) (t : Tm) : Tm := quote d (eval (freshEnv d) t)
+def sndN : Nat → Tm → Tm
+  | .zero, t => t
+  | .succ n, t => sndN n (.snd t)
+
+-- a pattern: a constructor and names for its fields, or a variable (or `_`)
+inductive Pat where
+  | ctor (c : String) (vars : List String)
+  | any (x : String)
+def identOf (s : Syntax) : String := match strEq (kindOf s) "term.ident" with
+  | .true => match kid s 0 with
+    | .ident n => n
+    | _ => "_"
+  | .false => "_"
+-- `T.c` without the `T.`
+def dropPrefix : List Char → List Char → Option (List Char)
+  | .nil, rest => .some rest
+  | .cons a as, .cons b bs => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => dropPrefix as bs
+    | .false => .none
+  | _, .nil => .none
+def ctorOfName (T n : String) : Option String := match String.append T "." with
+  | .mk ts => match n with
+    | .mk ns => match dropPrefix ts ns with
+      | .some c => .some (.mk c)
+      | .none => .none
+def patVars : List Syntax → List String
+  | .nil => .nil
+  | .cons s rest => .cons (identOf s) (patVars rest)
+def headCtor (T : String) (h : Syntax) : Option String := match strEq (kindOf h) "term.dotIdent" with
+  | .true => match kid h 1 with
+    | .ident c => .some c
+    | _ => .none
+  | .false => ctorOfName T (identOf h)
+partial def patOf (T : String) (p : Syntax) : Pat := match strEq (kindOf p) "term.paren" with
+  | .true => patOf T (kid p 1)
+  | .false => match strEq (kindOf p) "term.app" with
+    | .true => match headCtor T (kid p 0) with
+      | .some c => .ctor c (patVars (kids (kid p 1)))
+      | .none => .any "_"
+    | .false => match headCtor T p with
+      | .some c => .ctor c .nil
+      | .none => .any (identOf p)
+
+inductive Alt where
+  | mk (pat : Pat) (rhs : Syntax)
+def altsOf (T : String) : List Syntax → List Alt
+  | .nil => .nil
+  | .cons a rest => match kids (kid a 1) with
+    | .cons p _ => .cons (.mk (patOf T p) (kid a 3)) (altsOf T rest)
+    | .nil => altsOf T rest
+-- the alternative for constructor `c`: its own, or the first catch-all
+def findAlt (c : String) : List Alt → Option Alt
+  | .nil => .none
+  | .cons (.mk p rhs) rest => match p with
+    | .ctor c' _ => match strEq c c' with
+      | .true => .some (.mk p rhs)
+      | .false => findAlt c rest
+    | .any _ => .some (.mk p rhs)
+
+-- the names of the recursive fields' hypotheses: field name ↦ hypothesis name
+inductive IHName where
+  | mk (field ih : String)
+def ihFor (x : String) : List IHName → Option String
+  | .nil => .none
+  | .cons (.mk y h) rest => match strEq x y with
+    | .true => .some h
+    | .false => ihFor x rest
+def nthSyntax : List Syntax → Nat → Syntax
+  | .nil, _ => .missing
+  | .cons s rest, i => match i with
+    | .zero => s
+    | .succ j => nthSyntax rest j
+def nthName : List String → Nat → String
+  | .nil, _ => "_"
+  | .cons s rest, i => match i with
+    | .zero => s
+    | .succ j => nthName rest j
+-- the arguments are the parameters, except the structural one, a field with a
+-- hypothesis: that hypothesis
+def recCallIH (params : List String) (p : Nat) (ihs : List IHName) : List Syntax → Nat → Option String
+  | .nil, i => match Nat.beq i (List.length params) with
+    | .true => .some ""
+    | .false => .none
+  | .cons a rest, i => match recCallIH params p ihs rest (i + 1) with
+    | .none => .none
+    | .some h => match Nat.beq i p with
+      | .true => ihFor (identOf a) ihs
+      | .false => match strEq (identOf a) (nthName params i) with
+        | .true => .some h
+        | .false => .none
+mutual
+-- replace the recursive calls `f …` by hypotheses
+def rewriteRec (f : String) (params : List String) (p : Nat) (ihs : List IHName) (stx : Syntax) : Syntax :=
+  match stx with
+  | .node k args => match Bool.and (strEq k "term.app") (strEq (identOf (kid stx 0)) f) with
+    | .true => match recCallIH params p ihs (kids (kid stx 1)) 0 with
+      | .some h => match strEq h "" with
+        | .true => .node k (rewriteArgs f params p ihs args)
+        | .false => .node "term.ident" (.cons (.ident h) .nil)
+      | .none => .node k (rewriteArgs f params p ihs args)
+    | .false => .node k (rewriteArgs f params p ihs args)
+  | s => s
+def rewriteArgs (f : String) (params : List String) (p : Nat) (ihs : List IHName) : SyntaxF .false → SyntaxF .false
+  | .nil => .nil
+  | .cons s rest => .cons (rewriteRec f params p ihs s) (rewriteArgs f params p ihs rest)
+end
+
+-- what a match needs: the function's name, parameters and structural position, the
+-- scope of the parameters, the result type `R` over the parameters, the type's
+-- constant, and the motive `P`
+inductive MatchCtx where
+  | mk (f : String) (params : List String) (p : Nat) (sc : Scope) (R T P : Tm)
+def bindAll : Scope → List String → Scope
+  | sc, .nil => sc
+  | sc, .cons x xs => bindAll (Scope.bind sc x) xs
+-- `let x : A := v` for each field, `v` its projection from the payload `var (1 + j)`
+def fieldLets (inline : Bool) (body : Tm) : Nat → List CField → Tm
+  | _, .nil => body
+  | j, .cons (.mk _ _ A AI) rest =>
+    .letE (match inline with
+      | .true => AI
+      | .false => A) (.fst (sndN j (.var (1 + j)))) (fieldLets inline body (j + 1) rest)
+-- the hypotheses: `let h : R := fst (snd^r ih)`, at `F` fields past the branch's binders
+def ihLets (R : Tm) (F : Nat) (body : Tm) : Nat → Nat → Tm
+  | _, .zero => body
+  | r, .succ m => .letE (shiftTm (5 + F + r) 0 R) (.fst (sndN r (.var (F + r)))) (ihLets R F body (r + 1) m)
+def recCount : List CField → Nat
+  | .nil => 0
+  | .cons (.mk _ isRec _ _) rest => match isRec with
+    | .true => recCount rest + 1
+    | .false => recCount rest
+def tailNames : List String → List String
+  | .nil => .nil
+  | .cons _ xs => xs
+-- the names of the fields' hypotheses (for the recursive fields named by the pattern)
+def ihNames : List CField → List String → List IHName
+  | .nil, _ => .nil
+  | .cons (.mk _ isRec _ _) fs, xs => match xs with
+    | .nil => ihNames fs .nil
+    | .cons x rest => match isRec with
+      | .true => .cons (.mk x (String.append "ih✝" x)) (ihNames fs rest)
+      | .false => ihNames fs rest
+def ihBinders : List CField → List String → List String
+  | .nil, _ => .nil
+  | .cons (.mk _ isRec _ _) fs, xs => match isRec with
+    | .true => .cons (String.append "ih✝" (nthName xs 0)) (ihBinders fs (tailNames xs))
+    | .false => ihBinders fs (tailNames xs)
+def padNames : List CField → List String → List String
+  | .nil, _ => .nil
+  | .cons _ fs, xs => .cons (nthName xs 0) (padNames fs (tailNames xs))
+
+-- **Exercise 16.2.** One branch of the method, at depth `n + 3` (the parameters, then
+-- `i`, `xs`, `ih`): `fun rest ih => …` around the right-hand side, which sees the fields
+-- as `let`s (`fieldLets`), then the recursive fields' hypotheses (`ihLets`); the
+-- recursive calls become those (`rewriteRec`). A catch-all `x =>` binds `x` to the
+-- scrutinee instead.
+def branchTm (inline : Bool) (gs : Globals) (mc : MatchCtx) (n : Nat) (fs : List CField) (alt : Alt) : Elab :=
+  .err "not implemented"
+
+inductive Branches where
+  | ok (bs : Tms)
+  | err (msg : String)
+def branchesTm (inline : Bool) (gs : Globals) (mc : MatchCtx) (n : Nat) (alts : List Alt) : List Ctor → Branches
+  | .nil => .ok .tnil
+  | .cons (.mk c fs) rest => match findAlt c alts with
+    | .none => .err (String.append "missing case " c)
+    | .some a => match branchTm inline gs mc n fs a with
+      | .err m => .err m
+      | .ok b => match branchesTm inline gs mc n alts rest with
+        | .ok bs => .ok (.tcons b bs)
+        | e => e
+def descBranches : Tm → Tms
+  | .darg _ (.lam (.ecase _ _ ds)) => ds
+  | _ => .tnil
+-- bind `n` parameter types (a Π type's), then the rest
+inductive Peeled where
+  | mk (c : TCtx) (rest : Val)
+def peelCtx : Nat → TCtx → Val → Peeled
+  | .zero, c, v => .mk c v
+  | .succ k, c, v => match whnf v with
+    | .vpi _ dom env cod => peelCtx k (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod)
+    | v' => .mk c v'
+-- the definition `fun ps => ind … P M tt x`
+def matchTm (inline : Bool) (gs : Globals) (mc : MatchCtx) (n v : Nat) (info : IndInfo) (alts : List Alt) : Elab :=
+  match info with
+  | .mk D0 DI ctors =>
+    let D := match inline with
+      | .true => DI
+      | .false => D0;
+    match mc with
+    | .mk _ _ p _ _ _ P =>
+      let DS := descBranches D;
+      let X : Tm := .lam (.mu 0 (.unit 0) D (.var 0));
+      let Dt := fun (t : Nat) => (.ecase (.descr 0 (.unit 0)) (.var t) DS : Tm);
+      let MT : Tm := .pi (nfAt (n + 4) (interpApp 0 (.unit 0) (Dt 0) X (.var 3)))
+        (.pi (nfAt (n + 5) (tApps (allTm 0 v) (args6 (.unit 0) (Dt 1) X (shiftTm 5 0 P) (.var 4) (.var 0))))
+          (nfAt (n + 6) (.app (.app (shiftTm 6 0 P) (.var 5)) (.con (.pair (.var 2) (.var 1))))));
+      match branchesTm inline gs mc n alts ctors with
+      | .err m => .err m
+      | .ok bs =>
+        let M : Tm := .lam (.lam (.lam (.app (.app (.ecase MT (.fst (.var 1)) bs) (.snd (.var 1))) (.var 0))));
+        .ok (tLams n (.ind 0 (.unit 0) D v P M .star (.var (n - 1 - p))))
+def indexIn : List String → String → Nat → Option Nat
+  | .nil, _, _ => .none
+  | .cons y ys, x, i => match strEq x y with
+    | .true => .some i
+    | .false => indexIn ys x (i + 1)
+def fieldNames : List Field → List String
+  | .nil => .nil
+  | .cons (.mk x _) rest => .cons x (fieldNames rest)
+def fieldTy : List Field → Nat → Syntax
+  | .nil, _ => .missing
+  | .cons (.mk _ ty) rest, i => match i with
+    | .zero => ty
+    | .succ j => fieldTy rest j
+def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
+  | .ident f => match kids (kid stx 4) with
+    | .cons _ (.cons rStx _) =>
+      let ps := fieldsOf (kids (kid stx 3));
+      let params := fieldNames ps;
+      let n := List.length params;
+      let body := kid stx 6;
+      let x := identOf (nthSyntax (kids (kid body 1)) 0);
+      match indexIn params x 0 with
+      | .none => errStep gs "a match must be on a parameter"
+      | .some p =>
+        let T := identOf (fieldTy ps p);
+        match Globals.ind gs T with
+        | .none => errStep gs (String.append "not an inductive type: " T)
+        | .some info => match groupPis (Globals.scope gs) (kids (kid stx 3)) rStx with
+          | .err m => errStep gs m
+          | .ok tyE =>
+            let tyT := closeG .false gs 0 tyE;
+            let sc := bindAll (Globals.scope gs) params;
+            match elab sc rStx with
+            | .err m => errStep gs m
+            | .ok RE => match peelCtx n empty (eval .nil tyT) with
+              | .mk c Rv => match sortOf c Rv with
+                | .none => errStep gs "the result is not a type"
+                | .some l => match lvlClosed l with
+                  | .none => errStep gs "the result's universe must be a number"
+                  | .some v => match Scope.lookup (Globals.scope gs) T with
+                    | .none => errStep gs T
+                    | .some ti =>
+                      let alts := altsOf T (kids (kid body 3));
+                      let R := closeG .false gs n RE;
+                      let RI := closeG .true gs n RE;
+                      let mc := MatchCtx.mk f params p sc R (globalTm .false gs ti) (.lam (.lam (shiftTm 2 0 R)));
+                      let mcI := MatchCtx.mk f params p sc RI (globalTm .true gs ti) (.lam (.lam (shiftTm 2 0 RI)));
+                      match matchTm .false gs mc n v info alts with
+                      | .err m => errStep gs m
+                      | .ok t => match matchTm .true gs mcI n v info alts with
+                        | .err m => errStep gs m
+                        | .ok tI => match check empty t (eval .nil tyT) with
+                          | .err m => errStep gs m
+                          | .ok _ _ => .mk (String.append f (String.append " : " (show .nil 0 tyT)))
+                              (Globals.add gs (.mk f tyT t tI))
+    | _ => errStep gs "a definition needs a type"
+  | _ => errStep gs "a definition needs a name"
 
 -- all the commands of a file, one output line each
 partial def runCommands (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat)
@@ -293,7 +604,9 @@ partial def runCommands (cats : List Cat) (tokens : List String) (input : Array 
     | .ok stx stop =>
       let step := match strEq (kindOf stx) "command.inductive" with
         | .true => inductiveCmd gs stx
-        | .false => command gs stx;
+        | .false => match Bool.and (strEq (kindOf stx) "command.def") (strEq (kindOf (kid stx 6)) "term.match") with
+          | .true => matchDefCmd gs stx
+          | .false => command gs stx;
       match step with
       | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
 
