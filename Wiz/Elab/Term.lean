@@ -340,7 +340,7 @@ partial def trivialProof (g : Globals R) (ty : Val R) : Option (Val R) :=
 `h a…`, and `f (k e) a…` (with `k` an infinitary field) by `h e a…`. Returns the
 rewritten syntax and the hypothesis bindings it needs. -/
 partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name × VTy R × Val R))
-    (ihType : Lvl → Option (VTy R)) (stx : Syntax) :
+    (ihType : Lvl → Option (VTy R)) (lvl : Lvl) (stx : Syntax) :
     Except String (Syntax × List (Name × VTy R × Val R)) := do
   let isF (h : Syntax) := h.isOfKind "term.ident" && (h.getArg 0).getId? == some rc.fn
   if stx.isOfKind "term.app" && isF (stx.getArg 0) then
@@ -370,12 +370,29 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     let (ihVal, ty) := match whnf ty with
       | .pi _ _ q dom cod => match q.toPoly?, trivialProof g dom with
         | some [], some p => (vApp g ihVal p, Closure.inst g cod p)
-        | _, _ => (ihVal, ty)
+        | _, _ =>
+          -- an infinitary field: the proof comes after `h`, so the hypothesis becomes
+          -- `fun h => ih h proof : (h : H) → R[e := proof]` (built at level `lvl`, the
+          -- right-hand side's context, by quoting and evaluating back)
+          match kargs.isEmpty, whnf ty with
+          | false, .pi hn hbi hq H hcod =>
+            match whnf (Closure.inst g hcod (Val.var lvl)) with
+            | .pi _ _ q' E cod2 => match q'.toPoly?, trivialProof g E with
+              | some [], some p =>
+                let env : Env R := (List.range lvl).reverse.map Val.var
+                let pTm := quote g (lvl + 1) p
+                let tyTm : Term R := .pi hn hbi (quote g lvl hq) (quote g lvl H)
+                  (quote g (lvl + 1) (Closure.inst g cod2 p))
+                let valTm : Term R := .lam hn (.app (.app (.var (lvl - ihl)) (.var 0)) pTm)
+                (eval g env valTm, eval g env tyTm)
+              | _, _ => (ihVal, ty)
+            | _ => (ihVal, ty)
+          | _, _ => (ihVal, ty)
       | _ => (ihVal, ty)
     let ihName := "_ih_" ++ y
     let ident : Syntax := .node a.info "term.ident" #[.ident a.info ihName]
     let others := args.extract np (np + rc.pos) ++ args.extract (np + rc.pos + 1) args.size
-    let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType ·)
+    let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType lvl ·)
     let restStx := rest.map (·.1)
     let newBinds := [(ihName, ty, ihVal)] ++ rest.toList.flatMap (·.2)
     let stx' := if restStx.isEmpty then ident
@@ -384,7 +401,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
   if isF stx then throw s!"{rc.fn} may only be used in structurally recursive calls"
   match stx with
   | .node i k as =>
-    let rs ← as.mapM (rewriteRecCalls g rc binds ihType ·)
+    let rs ← as.mapM (rewriteRecCalls g rc binds ihType lvl ·)
     return (.node i k (rs.map (·.1)), rs.toList.flatMap (·.2))
   | s => return (s, [])
 
@@ -975,7 +992,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let mut rhs := cl.rhs
     if let some rc := rc then
       let ihType (l : Lvl) : Option (VTy R) := ctx.types[ctx.lvl - l - 1]?
-      match rewriteRecCalls g rc binds ihType cl.rhs with
+      match rewriteRecCalls g rc binds ihType ctx.lvl cl.rhs with
       | .ok (r, extra) => rhs := r; binds := binds ++ extra
       | .error e => throwAt cl.rhs.info e
     let mut ctx' := ctx
@@ -1183,7 +1200,10 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
               cls := cls ++ [{ cl' with pats := before ++ sub ++ after }]
           | .var n =>
             let sub := fieldInfos.map fun _ => holeStx
-            let binds := cl'.binds ++ [(n, xty, ctorVal)]
+            -- the variable is `x` itself, unless the goal depends on `x` (then only the
+            -- constructor has the refined type): no object is rebuilt from its fields
+            let xVal := if G.hasVar (ctx.lvl - x - 1) then ctorVal else Val.var x
+            let binds := cl'.binds ++ [(n, xty, xVal)]
             cls := cls ++ [{ cl' with pats := before ++ sub ++ after, binds := binds }]
           | .wild =>
             cls := cls ++ [{ cl' with pats := before ++ (fieldInfos.map fun _ => holeStx) ++ after }]

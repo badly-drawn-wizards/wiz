@@ -465,9 +465,7 @@ def sigmaTm (q : Q) (a b : Tm) : Tm := match q with
   | q => .sigmaq q a b
 
 -- unfold glued definitions at the head: do this before matching on a value's shape
--- (partial: it goes on into the unfolding it forces, which structural recursion can't
--- see as smaller)
-partial def whnf : Val → Val
+def whnf : Val → Val
   | .vglued _ _ v => whnf (v ())
   | v => v
 
@@ -1286,7 +1284,7 @@ inductive SizeView where
   | inf (k : Nat)
   | var (x : Nat) (k : Nat)
   | other
-partial def sizeView : Val → SizeView
+def sizeView : Val → SizeView
   | .vszInf => .inf 0
   | .vszSuc sz => match sizeView sz with
     | .inf k => .inf (k + 1)
