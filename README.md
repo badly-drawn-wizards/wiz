@@ -1169,9 +1169,10 @@ the Lean kernel's `Val.unfold` holds a `Thunk`: a global is unfolded only when `
 looks through it, and once. Checking a term that mentions a large global 300 times
 (without needing its value) went from 206 s to 1 s.
 
-(`whnf` is `partial`: structural recursion through a function field of a mutual family
-gets an induction hypothesis with an index equation that the call doesn't supply, an
-elaborator gap.)
+(`whnf` recurses into the forced unfolding: structural recursion through a function
+field. For a mutual family, that field's induction hypothesis wants the index equation
+after the field's argument; the recursive call now supplies it, as `fun h => ih h
+proof`.)
 
 ### 15b: the self-hosted pipeline, measured ✅
 

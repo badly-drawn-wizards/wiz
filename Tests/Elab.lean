@@ -1616,7 +1616,12 @@ def languageGroup : Group where
           "  | .nil => 0\n  | .cons t ts => Nat.add (size t) (sizes ts)\nend\n" ++
           "#eval size (.app (.lam (.var 0)) (.cons (.var 1) (.cons (.var 2) .nil)))") ["4"] },
     { name := "tactic keywords are not reserved", run := fun _ =>
-        okLib "import Prelude\ndef f (first exact : Nat) : Nat := Nat.add first exact\n#eval f 1 2\ndef t : Nat := by exact 3" ["3"] }
+        okLib "import Prelude\ndef f (first exact : Nat) : Nat := Nat.add first exact\n#eval f 1 2\ndef t : Nat := by exact 3" ["3"] },
+    { name := "structural recursion through a function field of a mutual family", run := fun _ =>
+        okLib ("import Prelude\nmutual\ninductive A where\n  | a0\n  | a1 (f : Unit → A)\n" ++
+          "inductive B where\n  | b0\n  | b1 (x : A)\nend\n" ++
+          "def depthA : A → Nat\n  | .a1 f => Nat.succ (depthA (f ()))\n  | .a0 => 0\n" ++
+          "#eval depthA (.a1 (fun _ => .a1 (fun _ => .a0)))") ["2"] }
   ]
 
 def stdGroup : Group where
