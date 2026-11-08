@@ -190,6 +190,8 @@ partial def fireNative (op : Name) (args : Array RVal) : RVal :=
   | "nat.mul" => .nat (n 0 * n 1)
   | "nat.beq" => .obj (if n 0 == n 1 then 1 else 0) #[]
   | "nat.blt" => .obj (if n 0 < n 1 then 1 else 0) #[]
+  -- the interpreter doesn't memoise: a suspension is its function
+  | "memo" => args[1]?.getD .erased
   -- a few pure foreign functions the interpreter knows itself
   | "extern:wiz_nat_show:n:s:pure::" =>
     let chars := (toString (n 0)).toList.foldr (fun c t => RVal.obj 1 #[.obj 0 #[.nat c.toNat], t]) (.obj 0 #[])

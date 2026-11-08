@@ -29,7 +29,7 @@ typedef uintptr_t wiz_val;
 
 enum { WIZ_TAG_FIRST_SPECIAL = 0xFFFF0000u, WIZ_TAG_CLO = 0xFFFF0000u, WIZ_TAG_BIG = 0xFFFF0001u, WIZ_TAG_RAW = 0xFFFF0002u,
        WIZ_TAG_EXT = 0xFFFF0003u, WIZ_TAG_BYTES = 0xFFFF0004u, WIZ_TAG_ARRAY = 0xFFFF0005u,
-       WIZ_TAG_STR = 0xFFFF0006u, WIZ_TAG_MAP = 0xFFFF0007u };
+       WIZ_TAG_STR = 0xFFFF0006u, WIZ_TAG_MAP = 0xFFFF0007u, WIZ_TAG_THUNK = 0xFFFF0008u };
 
 
 typedef struct {
@@ -56,6 +56,14 @@ typedef struct {
   wiz_hdr h;
   mpz_t z;
 } wiz_big;
+
+/* a memoised suspension (`memo f`): applied like a closure, it runs `f` once and keeps
+   the result; `fn` is 0 once it has */
+typedef struct {
+  wiz_hdr h;
+  wiz_val fn;
+  wiz_val val;
+} wiz_thunk;
 
 /* a foreign pointer, with the function that releases it (or NULL) */
 typedef struct {
@@ -192,6 +200,9 @@ static void wiz_free(wiz_val v) {
     free(a->data);
   } else if (h->tag == WIZ_TAG_STR) {
     /* the text is inline */
+  } else if (h->tag == WIZ_TAG_THUNK) {
+    wiz_thunk *t = (wiz_thunk *)v;
+    if (t->fn) wiz_dec(t->fn); else wiz_dec(t->val);
   } else if (h->tag == WIZ_TAG_MAP) {
     wiz_map *m = (wiz_map *)v;
     for (size_t i = 0; i < m->cap; i++) if (m->keys[i]) { wiz_dec(m->keys[i]); wiz_dec(m->vals[i]); }
@@ -364,8 +375,30 @@ WIZ_API wiz_val wiz_clo_new(wiz_boxed_fn fn, uint32_t arity, uint32_t n, wiz_val
   return (wiz_val)c;
 }
 
+/* `memo A f`: the suspension `f` (owned), run at most once */
+WIZ_API wiz_val wiz_memo(wiz_val ty, wiz_val f) {
+  (void)ty;
+  wiz_thunk *t = (wiz_thunk *)wiz_alloc(sizeof(wiz_thunk), WIZ_TAG_THUNK, 0);
+  t->fn = f;
+  t->val = WIZ_BOX(0);
+  return (wiz_val)t;
+}
+
 /* Apply a closure (owned) to `n` arguments (owned). */
 WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
+  if (!WIZ_IS_SCALAR(f) && ((wiz_hdr *)f)->tag == WIZ_TAG_THUNK) {
+    /* force: the first argument is the unit */
+    wiz_thunk *t = (wiz_thunk *)f;
+    if (t->fn) {
+      wiz_val g = t->fn;
+      t->fn = 0;
+      t->val = wiz_apply(g, 1, args);
+    } else wiz_dec(args[0]);
+    wiz_val r = t->val;
+    wiz_inc(r);
+    wiz_dec(f);
+    return n > 1 ? wiz_apply(r, n - 1, args + 1) : r;
+  }
   if (WIZ_IS_SCALAR(f) || ((wiz_hdr *)f)->tag != WIZ_TAG_CLO) wiz_panic("applying a non-function");
   wiz_clo *c = (wiz_clo *)f;
   uint32_t m = c->h.size, total = m + n;
@@ -796,7 +829,7 @@ static void wiz_print(wiz_val v) {
   if (WIZ_IS_SCALAR(v)) { printf("%lu", (unsigned long)WIZ_UNBOX(v)); return; }
   wiz_hdr *h = (wiz_hdr *)v;
   if (h->tag == WIZ_TAG_BIG) { mpz_out_str(stdout, 10, ((wiz_big *)v)->z); return; }
-  if (h->tag == WIZ_TAG_CLO) { printf("<fn>"); return; }
+  if (h->tag == WIZ_TAG_CLO || h->tag == WIZ_TAG_THUNK) { printf("<fn>"); return; }
   if (h->tag == WIZ_TAG_RAW) { printf("#%llu", (unsigned long long)wiz_raw_bits(v)); return; }
   printf("(%u", h->tag);
   for (uint32_t i = 0; i < h->size; i++) { putchar(' '); wiz_print(((wiz_ctor *)v)->fields[i]); }

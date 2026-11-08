@@ -16,7 +16,7 @@ namespace Wiz.C
 open IR
 
 /-- The runtime, embedded in the compiler. (Lake does not track `include_str`: after
-editing `runtime/wiz.c`, change this file too, e.g. this counter: 15.) -/
+editing `runtime/wiz.c`, change this file too, e.g. this counter: 17.) -/
 def runtime : String := include_str "../../runtime/wiz.c"
 
 /-- A C identifier for a Wiz name: letters and digits stay, anything else is `_xx`. -/
@@ -64,7 +64,7 @@ def expr (arities : Std.HashMap Name Nat) (x : Var) : Expr → String
     let fn := match op with
       | "nat.succ" => "wiz_nat_succ" | "nat.pred" => "wiz_nat_pred"
       | "nat.add" => "wiz_nat_add" | "nat.sub" => "wiz_nat_sub" | "nat.mul" => "wiz_nat_mul"
-      | "nat.beq" => "wiz_nat_beq" | "nat.blt" => "wiz_nat_blt" | "lazyTag" => "wiz_lazy_tag"
+      | "nat.beq" => "wiz_nat_beq" | "nat.blt" => "wiz_nat_blt" | "lazyTag" => "wiz_lazy_tag" | "memo" => "wiz_memo"
       | "tag" => "wiz_tag_of" | "natTag" => "wiz_nat_tag" | "fieldAt" => "wiz_field_at" | "mkObj" => "wiz_mk_obj"
       | op => if (RVal.ExternSig.ofKey? op).isSome then externWrapper op else "wiz_unknown_prim"
     s!"{var x} = {fn}({args as});"
