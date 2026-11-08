@@ -1341,7 +1341,10 @@ def identHead (gs : Globals) (es : ES) (cx : Cx) (n : String) : HE :=
           | r => r
         | .err msg => .err msg
       | e => e
-    | .none => .err (String.append "unknown identifier " n)
+    | .none => match strEq n "Unit" with
+      -- (built in, like `Type`)
+      | .true => .ok (.unit 0) (.vsort (.lnum 1)) es .nil
+      | .false => .err (String.append "unknown identifier " n)
   | .some i => match Nat.lt i d with
     | .true => .ok (.var i) (lookup (TCtx.types (Cx.c cx)) i) es .nil
     | .false => match globalTm .false gs (i - d) with
@@ -1409,6 +1412,8 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
     | .true => numeral gs es cx (numValue s)
     | .false => match strEq k "term.str" with
     | .true => stringLit gs es cx (strValue s)
+    | .false => match strEq k "term.unitVal" with
+    | .true => .ok .star (.vunit 1) es
     | .false => match strEq k "term.type" with
     | .true => .ok (.univ (univLevel s)) (.vsort (.lnum (univLevel s + 2))) es
     | .false => match strEq k "term.app" with
@@ -1526,23 +1531,28 @@ def drain (gs : Globals) (es : ES) : Option ES := match es with
         | .false => .none
       | .err => .none
 -- `let x : A := v; b`, inferred or checked
-def letT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (expected : Option Val) : TE := match binderType s with
-  | .none => .err "let needs a type"
+def letT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (expected : Option Val) : TE :=
+  let body := fun (A : Tm) (Av : Val) (v : Tm) (es2 : ES) => (match kid s 2 with
+    | .ident x =>
+      let cx' := Cx.define cx x (eval (TCtx.env (Cx.c cx)) v) Av;
+      match expected with
+      | .some T => match checkT gs es2 cx' (kid s 7) T with
+        | .ok b _ es3 => TE.ok (.letE A v b) T es3
+        | e => e
+      | .none => match inferT gs es2 cx' (kid s 7) with
+        | .ok b bty es3 => .ok (.letE A v b) bty es3
+        | e => e
+    | _ => TE.err "let needs a name" : TE);
+  match binderType s with
+  -- (without a type, the value's inferred type: stage 19c)
+  | .none => match inferT gs es cx (kid s 5) with
+    | .ok v Av es2 => body (quote (Cx.lvl cx) (force es2 Av)) Av v es2
+    | e => e
   | .some tyS => match inferType gs es cx tyS with
     | .ok A _ es1 =>
       let Av := eval (TCtx.env (Cx.c cx)) A;
       match checkT gs es1 cx (kid s 5) Av with
-      | .ok v _ es2 => match kid s 2 with
-        | .ident x =>
-          let cx' := Cx.define cx x (eval (TCtx.env (Cx.c cx)) v) Av;
-          match expected with
-          | .some T => match checkT gs es2 cx' (kid s 7) T with
-            | .ok b _ es3 => .ok (.letE A v b) T es3
-            | e => e
-          | .none => match inferT gs es2 cx' (kid s 7) with
-            | .ok b bty es3 => .ok (.letE A v b) bty es3
-            | e => e
-        | _ => .err "let needs a name"
+      | .ok v _ es2 => body A Av v es2
       | e => e
     | e => e
 -- check `s` against `ty`
@@ -1731,7 +1741,7 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
           let cx3 := match top with
             | .true => Cx.bind cx2 "ih✝" (eval (TCtx.env (Cx.c cx2))
                 (tApps (allTm 0 v) (args6 (IAt (d + 2)) (DAt (d + 2)) (XAt (d + 2)) (PAt (d + 2)) (.var 1) (.var 0))))
-            | .false => Cx.define cx2 "ih✝" .vtt (.vunit 0);
+            | .false => Cx.define cx2 "ih✝" .vtt (.vunit 1);
           -- the motive's body as a value (it doesn't use `i` and `y`)
           let MBv := eval (.cons .vtt (.cons .vtt env)) MB;
           match branches gs mc es cx3 expected cols top ihLvls cls k (.mk L ty tyI) T np pargs nidxE I idx fam modeB MB0 MB MBv MT G b (lenL ctors) 0 ctors with
@@ -2245,6 +2255,14 @@ def addAxioms : Globals → List Syntax → AxR
             | .ok _ _ => addAxioms (Globals.add gs (.mk f ty (.axiomC f ty) (.axiomC f ty) (paramMask (kids (kid d 3))))) rest
       | _ => .err "a partial definition needs a type"
     | _ => .err "a definition needs a name"
+-- `axiom f (bs) : T` (stage 19c), printed like a definition
+def axiomCmd (gs : Globals) (stx : Syntax) : Step := match addAxioms gs (one stx) with
+  | .err m => errStep gs m
+  | .ok gs' => match kid stx 1 with
+    | .ident f => match identHead gs' ES.empty (Cx.mk empty (Globals.scope gs')) f with
+      | .ok _ ty _ _ => .mk (String.append (String.append f " : ") (show .nil 0 (quote 0 ty))) gs'
+      | .err m => errStep gs m
+    | _ => errStep gs "an axiom needs a name"
 def joinLines : List String → String
   | .nil => ""
   | .cons l rest => match rest with
@@ -2313,7 +2331,7 @@ def structCmd (gs : Globals) (stx : Syntax) : Step :=
 
 -- The self-hosted frontend's Prelude (stage 19a), read by `import Prelude`: numbers,
 -- Booleans, lists, options, pairs, characters (by their code) and strings.
-def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.pred : Nat → Nat\n  | .zero => .zero\n  | .succ n => n\ndef Nat.sub : Nat → Nat → Nat\n  | m, .zero => m\n  | m, .succ n => Nat.pred (Nat.sub m n)\ninfixl:65 \" + \" => Nat.add\ninfixl:65 \" - \" => Nat.sub\ninfixl:70 \" * \" => Nat.mul\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Nat.lt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.lt m n\ndef Nat.le (m n : Nat) : Bool := Nat.lt m (.succ n)\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ninfixr:67 \" ++ \" => List.append\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\n"
+def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.pred : Nat → Nat\n  | .zero => .zero\n  | .succ n => n\ndef Nat.sub : Nat → Nat → Nat\n  | m, .zero => m\n  | m, .succ n => Nat.pred (Nat.sub m n)\ninfixl:65 \" + \" => Nat.add\ninfixl:65 \" - \" => Nat.sub\ninfixl:70 \" * \" => Nat.mul\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Nat.lt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.lt m n\ndef Nat.le (m n : Nat) : Bool := Nat.lt m (.succ n)\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ninfixr:67 \" ++ \" => List.append\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\naxiom Array : Type → Type\naxiom Array.empty {A : Type} : Array A\naxiom Array.push {A : Type} (a : Array A) (x : A) : Array A\naxiom Array.size {A : Type} (a : Array A) : Nat\naxiom Array.getD {A : Type} (a : Array A) (i : Nat) (d : A) : A\naxiom Array.set {A : Type} (a : Array A) (i : Nat) (x : A) : Array A\naxiom World : Type\ndef IO (A : Type) : Type := World → Prod A World\ndef IO.pure {A : Type} (a : A) : IO A := fun w => .mk a w\ndef IO.bind {A B : Type} (x : IO A) (f : A → IO B) : IO B := fun w => f (x w).fst (x w).snd\naxiom IO.println : String → IO Unit\naxiom IO.readFile : String → IO String\n"
 
 -- Infix operators (stage 19b): `infixl:p " op " => f` (also `infixr`, `infix`) adds a
 -- trailing term parser `a op b` (kind `term.infix op`) and the token `op`; each later
@@ -2342,24 +2360,58 @@ inductive Infix where
 -- the notation (the kind and `f`, the command's last argument).
 def infixCmd (cats : List Cat) (tokens : List String) (stx : Syntax) : Infix :=
   .mk cats tokens (.mk "" (kid stx 5))
+def identOf'' (s : Syntax) : String := match s with
+  | .ident n => n
+  | _ => "_"
 def noteFor : List Note → String → Option Syntax
   | .nil, _ => .none
   | .cons (.mk k f) rest, k' => match strEq k k' with
     | .true => .some f
     | .false => noteFor rest k'
+-- `do` (stage 19c, for `IO` only: there are no type classes): `do x ← e; rest` is
+-- `IO.bind e (fun x => do rest)`, `do e; rest` is `IO.bind e (fun _ => do rest)`,
+-- `do let x := v; rest` is `IO.bind (IO.pure v) (fun x => do rest)`, `do e` is `e`
+def ioBind (e : Syntax) (x : String) (rest : Syntax) : Syntax :=
+  mkNode "term.app" (.cons (mkNode "term.ident" (one (.ident "IO.bind"))) (one (mkNull (.cons e
+    (one (mkNode "term.fun" (.cons (.atom "fun") (.cons (mkNull (one (.ident x))) (.cons (.atom "=>") (one rest))))))))))
+partial def expandDo (s : Syntax) : Syntax :=
+  let k := kindOf s;
+  match strEq k "doSeq.bind" with
+  | .true => ioBind (kid s 2) (identOf'' (kid s 0)) (expandDo (kid s 4))
+  | .false => match strEq k "doSeq.seq" with
+    | .true => ioBind (kid s 0) "_" (expandDo (kid s 2))
+    | .false => match strEq k "doSeq.let" with
+      | .true => ioBind (mkNode "term.app" (.cons (mkNode "term.ident" (one (.ident "IO.pure"))) (one (mkNull (one (kid s 3))))))
+          (identOf'' (kid s 1)) (expandDo (kid s 5))
+      | .false => kid s 0
 mutual
 def expandNotes (notes : List Note) (s : Syntax) : Syntax := match s with
   | .node k args =>
     let s' : Syntax := .node k (expandArgs notes args);
-    match noteFor notes k with
-    | .some f => mkNode "term.app" (.cons f (one (mkNull (.cons (kid s' 0) (one (kid s' 2))))))
-    | .none => s'
+    match strEq k "term.do" with
+    | .true => expandDo (kid s' 1)
+    | .false => match noteFor notes k with
+      | .some f => mkNode "term.app" (.cons f (one (mkNull (.cons (kid s' 0) (one (kid s' 2))))))
+      | .none => s'
   | s => s
 def expandArgs (notes : List Note) : SyntaxF .false → SyntaxF .false
   | .nil => .nil
   | .cons s rest => .cons (expandNotes notes s) (expandArgs notes rest)
 end
 
+-- the `do` grammar: a category `doSeq`, and `do doSeq` a term
+def addLeadingTo (cat : String) (l : Leading) : List Cat → List Cat
+  | .nil => .nil
+  | .cons (.mk n ls ts) rest => match strEq n cat with
+    | .true => .cons (.mk n (List.append ls (.cons l .nil)) ts) rest
+    | .false => .cons (.mk n ls ts) (addLeadingTo cat l rest)
+def thenRest (p : PD) : PD := .seq p (.seq (.atom ";") (.cat "doSeq" 0))
+def doCats (cats : List Cat) : List Cat :=
+  addLeadingTo "term" (.mk "term.do" 1024 0 (.seq (.atom "do") (.cat "doSeq" 0)))
+    (List.append cats (.cons (.mk "doSeq" (.cons (.mk "doSeq.last" 1024 0 (.cat "term" 0))
+      (.cons (.mk "doSeq.bind" 1024 0 (.seq .ident (.seq (.atom "←") (thenRest (.cat "term" 0)))))
+      (.cons (.mk "doSeq.seq" 1024 0 (thenRest (.cat "term" 0)))
+      (.cons (.mk "doSeq.let" 1024 0 (.seq (.atom "let") (.seq .ident (.seq (.atom ":=") (thenRest (.cat "term" 0)))))) .nil)))) .nil) .nil))
 -- the output so far, the globals, and the parser's tables and notations
 inductive Run where
   | mk (out : List String) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)
@@ -2372,7 +2424,7 @@ partial def runCommands (cats : List Cat) (tokens : List String) (notes : List N
     | .err m => .mk (.cons (String.append "parse " m) out) gs cats tokens notes
     | .ok stx0 stop => match strEq (kindOf stx0) "command.import" with
     -- (only the Prelude: its commands are checked, silently)
-    | .true => match runCommands cats tokens notes (String.codes preludeText) 0 gs .nil with
+    | .true => match runCommands (doCats cats) (.cons "←" (.cons "do" tokens)) notes (String.codes preludeText) 0 gs .nil with
       | .mk _ gs' cats' tokens' notes' => runCommands cats' tokens' notes' input stop gs' out
     | .false => match strEq (kindOf stx0) "command.infix" with
     | .true => match infixCmd cats tokens stx0 with
@@ -2389,7 +2441,13 @@ partial def runCommands (cats : List Cat) (tokens : List String) (notes : List N
             | .false => partialCmd gs (nonAtoms (kids (kid stx 1)))
           | .false => match strEq (kindOf stx) "command.structure" with
             | .true => structCmd gs stx
-            | .false => defStep gs stx;
+            | .false => match strEq (kindOf stx) "command.axiom" with
+              | .true => axiomCmd gs stx
+              | .false => match strEq (kindOf stx) "command.extern" with
+                -- (to the checker, a foreign function is an axiom)
+                | .true => axiomCmd gs (mkNode "command.axiom" (.cons (.atom "axiom") (.cons (kid stx 3)
+                    (.cons (mkNull .nil) (.cons (mkNull .nil) (one (mkNull (.cons (.atom ":") (one (kid stx 5))))))))))
+                | .false => defStep gs stx;
       match step with
       | .mk line gs' => runCommands cats tokens notes input stop gs' (.cons line out)
 

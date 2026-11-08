@@ -1400,7 +1400,21 @@ token `+`. Each later command is expanded before it is elaborated, `a + b` stand
 in a pattern, `n + 2` is `.succ (.succ n)`. **Exercise 19.1** is `infixCmd`, the new
 parser entry and notation.
 
-Next: `Array`, `IO` and `do`, enough to check `Lex.wiz` itself.
+### 19c: axioms, `IO`, `do` — the frontend checks `Lex.wiz` ✅
+
+`axiom f (bs) : T` and `extern "c_name" f : T` (a foreign function is an axiom to the
+checker) declare constants. `Unit` and `()` are built in. The Prelude declares `Array`
+and its operations as axioms, and `IO A := World → Prod A World` with `IO.pure`,
+`IO.bind` and the axioms `IO.println`, `IO.readFile`. `import Prelude` also adds the
+`do` grammar to the parser's tables (there are no type classes, so `do` is for `IO`
+only): `x ← e; rest`, `e; rest` and `let x := v; rest` expand to `IO.bind`. A `let`
+may now leave out its type (the value's inferred type is used).
+
+With these, the self-hosted frontend checks the first file of its own source,
+`selfhost/Lex.wiz` (every declaration, no errors; about 18 s).
+
+Next: `Parse.wiz` (`mutual` blocks of partial definitions over `PD`, `StrMap`), then
+`Kernel.wiz` and `Frontend.wiz`.
 
 ## Stage 11: tooling
 
