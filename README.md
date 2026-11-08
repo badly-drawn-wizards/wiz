@@ -1391,7 +1391,16 @@ analysis (the kernel's `scase` at `∞`, whose method sees the payload at `μ^j 
 size `j`). Computing induction hypotheses nobody uses made nested matches exponential:
 `Nat.beq 14 14` took 0.7 s, `Nat.beq 65 65` now takes 0.17 s.
 
-Next: `do`, generalising the parameters before the structural one.
+### 19b: infix operators ✅
+
+`infixl:65 " + " => Nat.add` (and `infixr`, `infix`) extends the self-hosted parser
+while it runs: a trailing `term` parser `a + b` at the declared precedence, and the
+token `+`. Each later command is expanded before it is elaborated, `a + b` standing for
+`Nat.add a b`, like the Lean side's macro rule. The Prelude declares `+ - *` and `++`;
+in a pattern, `n + 2` is `.succ (.succ n)`. **Exercise 19.1** is `infixCmd`, the new
+parser entry and notation.
+
+Next: `Array`, `IO` and `do`, enough to check `Lex.wiz` itself.
 
 ## Stage 11: tooling
 

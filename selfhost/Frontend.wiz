@@ -968,9 +968,20 @@ partial def patOf (T : String) (p : Syntax) : Pat := match strEq (kindOf p) "ter
     | .zero => .ctor "zero" .nil
     | .succ k => .ctor "succ" (one (mkNode "term.num" (one (.atom (Nat.toString k)))))
   | .false => match strEq (kindOf p) "term.app" with
-    | .true => match headCtor T (kid p 0) with
-      | .some c => .ctor c (kids (kid p 1))
-      | .none => .any "_"
+    | .true => match strEq (identOf (kid p 0)) "Nat.add" with
+      -- `a + (k + 1)` (from `infixl " + " => Nat.add`) is `.succ (a + k)`
+      | .true => match kids (kid p 1) with
+        | .cons a (.cons b .nil) => match strEq (kindOf b) "term.num" with
+          | .true => match numValue b with
+            | .zero => patOf T a
+            | .succ k => .ctor "succ" (one (match k with
+              | .zero => a
+              | _ => mkNode "term.app" (.cons (kid p 0) (one (mkNull (.cons a (one (mkNode "term.num" (one (.atom (Nat.toString k)))))))))))
+          | .false => .any "_"
+        | _ => .any "_"
+      | .false => match headCtor T (kid p 0) with
+        | .some c => .ctor c (kids (kid p 1))
+        | .none => .any "_"
     | .false => match headCtor T p with
       | .some c => .ctor c .nil
       | .none => .any (identOf p)
@@ -2302,23 +2313,74 @@ def structCmd (gs : Globals) (stx : Syntax) : Step :=
 
 -- The self-hosted frontend's Prelude (stage 19a), read by `import Prelude`: numbers,
 -- Booleans, lists, options, pairs, characters (by their code) and strings.
-def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\n"
+def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.pred : Nat → Nat\n  | .zero => .zero\n  | .succ n => n\ndef Nat.sub : Nat → Nat → Nat\n  | m, .zero => m\n  | m, .succ n => Nat.pred (Nat.sub m n)\ninfixl:65 \" + \" => Nat.add\ninfixl:65 \" - \" => Nat.sub\ninfixl:70 \" * \" => Nat.mul\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Nat.lt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.lt m n\ndef Nat.le (m n : Nat) : Bool := Nat.lt m (.succ n)\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ninfixr:67 \" ++ \" => List.append\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\n"
 
--- the output so far, and the globals
+-- Infix operators (stage 19b): `infixl:p " op " => f` (also `infixr`, `infix`) adds a
+-- trailing term parser `a op b` (kind `term.infix op`) and the token `op`; each later
+-- command is expanded before it is elaborated, `a op b` standing for `f a b`. The left
+-- operand of `infixl` is at precedence `p` and the right one at `p + 1`, and the
+-- other way round for `infixr`.
+inductive Note where
+  | mk (kind : String) (f : Syntax)
+def dropSp : List Char → List Char
+  | .nil => .nil
+  | .cons c rest => match Nat.beq (Char.code c) 32 with
+    | .true => dropSp rest
+    | .false => .cons c rest
+def trimStr (s : String) : String := match s with
+  | .mk cs => .mk (List.reverseOf (dropSp (List.reverseOf (dropSp cs) .nil)) .nil)
+def addTrailingTo (cat : String) (t : Trailing) : List Cat → List Cat
+  | .nil => .nil
+  | .cons (.mk n ls ts) rest => match strEq n cat with
+    | .true => .cons (.mk n ls (List.append ts (.cons t .nil))) rest
+    | .false => .cons (.mk n ls ts) (addTrailingTo cat t rest)
+inductive Infix where
+  | mk (cats : List Cat) (tokens : List String) (note : Note)
+-- **Exercise 19.1.** `infixl:p " op " => f`: the parser tables with the trailing term
+-- parser `op` then a term (kind `term.infix op`; left operand at `p`, right at `p + 1`,
+-- swapped for `infixr`, both `p + 1` for `infix`), the token `op` (spaces trimmed), and
+-- the notation (the kind and `f`, the command's last argument).
+def infixCmd (cats : List Cat) (tokens : List String) (stx : Syntax) : Infix :=
+  .mk cats tokens (.mk "" (kid stx 5))
+def noteFor : List Note → String → Option Syntax
+  | .nil, _ => .none
+  | .cons (.mk k f) rest, k' => match strEq k k' with
+    | .true => .some f
+    | .false => noteFor rest k'
+mutual
+def expandNotes (notes : List Note) (s : Syntax) : Syntax := match s with
+  | .node k args =>
+    let s' : Syntax := .node k (expandArgs notes args);
+    match noteFor notes k with
+    | .some f => mkNode "term.app" (.cons f (one (mkNull (.cons (kid s' 0) (one (kid s' 2))))))
+    | .none => s'
+  | s => s
+def expandArgs (notes : List Note) : SyntaxF .false → SyntaxF .false
+  | .nil => .nil
+  | .cons s rest => .cons (expandNotes notes s) (expandArgs notes rest)
+end
+
+-- the output so far, the globals, and the parser's tables and notations
 inductive Run where
-  | mk (out : List String) (gs : Globals)
+  | mk (out : List String) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)
 -- all the commands of a file, one output line each
-partial def runCommands (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat)
+partial def runCommands (cats : List Cat) (tokens : List String) (notes : List Note) (input : Array Nat) (pos : Nat)
     (gs : Globals) (out : List String) : Run :=
   match Nat.lt (skipWs input pos) (Array.size input) with
-  | .false => .mk out gs
+  | .false => .mk out gs cats tokens notes
   | .true => match parseCommandAt cats tokens input pos with
-    | .err m => .mk (.cons (String.append "parse " m) out) gs
-    | .ok stx stop => match strEq (kindOf stx) "command.import" with
+    | .err m => .mk (.cons (String.append "parse " m) out) gs cats tokens notes
+    | .ok stx0 stop => match strEq (kindOf stx0) "command.import" with
     -- (only the Prelude: its commands are checked, silently)
-    | .true => match runCommands cats tokens (String.codes preludeText) 0 gs .nil with
-      | .mk _ gs' => runCommands cats tokens input stop gs' out
+    | .true => match runCommands cats tokens notes (String.codes preludeText) 0 gs .nil with
+      | .mk _ gs' cats' tokens' notes' => runCommands cats' tokens' notes' input stop gs' out
+    | .false => match strEq (kindOf stx0) "command.infix" with
+    | .true => match infixCmd cats tokens stx0 with
+      | .mk cats' tokens' note => runCommands cats' tokens' (.cons note notes) input stop gs out
     | .false =>
+      let stx := match notes with
+        | .nil => stx0
+        | _ => expandNotes notes stx0;
       let step := match strEq (kindOf stx) "command.partial" with
         | .true => partialCmd gs (one (kid stx 1))
         | .false => match strEq (kindOf stx) "command.mutual" with
@@ -2329,8 +2391,8 @@ partial def runCommands (cats : List Cat) (tokens : List String) (input : Array 
             | .true => structCmd gs stx
             | .false => defStep gs stx;
       match step with
-      | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
+      | .mk line gs' => runCommands cats tokens notes input stop gs' (.cons line out)
 
 def checkFile (cats : List Cat) (tokens : List String) (text : String) : List String :=
-  match runCommands cats tokens (String.codes text) 0 Globals.empty .nil with
-  | .mk out _ => List.reverseOf out .nil
+  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with
+  | .mk out _ _ _ _ => List.reverseOf out .nil
