@@ -30,6 +30,23 @@ def indexOf : List String → String → Nat → Option Nat
     | .true => .some i
     | .false => indexOf ns x (i + 1)
 
+-- the names in scope: the local binders (innermost first, with their number) and the
+-- globals, by name (each with its position plus one; there are `count`)
+inductive Scope where
+  | mk (locals : List String) (depth : Nat) (globals : StrMap Nat) (count : Nat)
+def Scope.empty : Scope := .mk .nil 0 StrMap.empty 0
+def Scope.bind (sc : Scope) (x : String) : Scope := match sc with
+  | .mk ls d gs n => .mk (.cons x ls) (d + 1) gs n
+def Scope.addGlobal (sc : Scope) (x : String) : Scope := match sc with
+  | .mk ls d gs n => .mk ls d (StrMap.insert gs (Str.ofString x) (n + 1)) (n + 1)
+-- a name's index: a local binder's, or past them a global's (the latest is the nearest)
+def Scope.lookup (sc : Scope) (x : String) : Option Nat := match sc with
+  | .mk ls d gs n => match indexOf ls x 0 with
+    | .some i => .some i
+    | .none => match StrMap.findD gs (Str.ofString x) 0 with
+      | .zero => .none
+      | .succ p => .some (d + (n - 1 - p))
+
 inductive Elab where
   | ok (t : Tm)
   | err (msg : String)
@@ -61,32 +78,32 @@ def univLevel (s : Syntax) : Nat := match kids (kid s 1) with
     | _ => 0
   | .nil => 0
 
--- **Exercise 14.4.** Scope checking: names (innermost first) to indices.
+-- **Exercise 14.4.** Scope checking: names to indices (`Scope.lookup`, `Scope.bind`).
 mutual
-def elab : List String → Syntax → Elab
+def elab : Scope → Syntax → Elab
   | _, _ => .err "not implemented"
-def both : List String → Syntax → Syntax → (Tm → Tm → Tm) → Elab
+def both : Scope → Syntax → Syntax → (Tm → Tm → Tm) → Elab
   | names, a, b, k => match elab names a with
     | .ok x => match elab names b with
       | .ok y => .ok (k x y)
       | e => e
     | e => e
 -- `(x y : A) → B`: one Π per name, `A` read in each one's context
-def pis : List String → List String → Option Syntax → Syntax → Elab
+def pis : Scope → List String → Option Syntax → Syntax → Elab
   | names, .nil, _, body => elab names body
   | names, .cons x xs, ty, body => match ty with
     | .none => .err "a Π needs a binder type"
     | .some a => match elab names a with
-      | .ok aT => match pis (.cons x names) xs ty body with
+      | .ok aT => match pis (Scope.bind names x) xs ty body with
         | .ok b => .ok (.pi aT b)
         | e => e
       | e => e
-def lams : List String → List String → Syntax → Elab
+def lams : Scope → List String → Syntax → Elab
   | names, .nil, body => elab names body
-  | names, .cons x xs, body => match lams (.cons x names) xs body with
+  | names, .cons x xs, body => match lams (Scope.bind names x) xs body with
     | .ok b => .ok (.lam b)
     | e => e
-def apps : List String → Tm → List Syntax → Elab
+def apps : Scope → Tm → List Syntax → Elab
   | _, f, .nil => .ok f
   | names, f, .cons a rest => match elab names a with
     | .ok aT => apps names (.app f aT) rest
@@ -97,25 +114,24 @@ end
 def checkText (cats : List Cat) (tokens : List String) (text : String) : String :=
   match parseSyntax cats tokens "term" text with
   | .err m => String.append "parse " m
-  | .ok stx => match elab .nil stx with
+  | .ok stx => match elab Scope.empty stx with
     | .err m => String.append "scope error: " m
     | .ok t => typeOf t
 
 -- A file of commands (stage 14c): `def x (binders) : T := v`, `#check t` and
--- `#reduce t`. The global definitions are the outermost variables of the typing
--- context, defined as their values, so the kernel needs nothing new.
+-- `#reduce t`. The global definitions are the kernel's constants.
 
 -- binder groups `(x y : A) …` around a result: Π types, each `A` read in its context
 mutual
-def groupPis : List String → List Syntax → Syntax → Elab
+def groupPis : Scope → List Syntax → Syntax → Elab
   | names, .nil, body => elab names body
   | names, .cons b bs, body => match binderType b with
     | .none => .err "the binders of a definition need types"
     | .some a => piGroup names (binderNames b) a bs body
-def piGroup : List String → List String → Syntax → List Syntax → Syntax → Elab
+def piGroup : Scope → List String → Syntax → List Syntax → Syntax → Elab
   | names, .nil, _, bs, body => groupPis names bs body
   | names, .cons x xs, a, bs, body => match elab names a with
-    | .ok aT => match piGroup (.cons x names) xs a bs body with
+    | .ok aT => match piGroup (Scope.bind names x) xs a bs body with
       | .ok b => .ok (.pi aT b)
       | e => e
     | e => e
@@ -125,29 +141,54 @@ def List.reverseOf {A : Type} : List A → List A → List A
   | .nil, acc => acc
   | .cons x xs, acc => List.reverseOf xs (.cons x acc)
 
+-- a global: its name, type, and value as closed terms (other globals are constants
+-- in them), and its value with every global inlined (for `#reduce`, since `quote`
+-- doesn't unfold constants)
 inductive Global where
-  | mk (name : String) (val : Val) (ty : Val)
--- the globals (the latest first) as a typing context, and their names
-def gctx : List Global → TCtx
-  | .nil => empty
-  | .cons (.mk _ v t) rest => TCtx.define (gctx rest) v t
-def gnames : List Global → List String
-  | .nil => .nil
-  | .cons (.mk n _ _) rest => .cons n (gnames rest)
+  | mk (name : String) (ty val inlined : Tm)
+-- the globals so far: by position (the first is `0`), and their names in scope
+inductive Globals where
+  | mk (all : Array Global) (scope : Scope)
+def Globals.empty : Globals := .mk Array.empty Scope.empty
+def Globals.scope : Globals → Scope
+  | .mk _ sc => sc
+def Globals.add (gs : Globals) (g : Global) : Globals := match gs with
+  | .mk all sc => match g with
+    | .mk x _ _ _ => .mk (Array.push all g) (Scope.addGlobal sc x)
+-- the global at index `i` (the latest is `0`): a constant, or its value inlined
+def globalTm (inline : Bool) (gs : Globals) (i : Nat) : Tm := match gs with
+  | .mk all _ => match Array.getD all (Array.size all - 1 - i) (.mk "?" .star .star .star) with
+    | .mk n ty v iv => match inline with
+      | .true => iv
+      | .false => .const n .nil .nil v ty
+-- close a scope-checked term: the variables beyond the `d` binders it is under are
+-- globals (each command is checked in the empty context, so usage vectors and lookups
+-- don't grow with the number of globals)
+def closeG (inline : Bool) (gs : Globals) : Nat → Tm → Tm
+  | d, .var i => match Nat.lt i d with
+    | .true => .var i
+    | .false => globalTm inline gs (i - d)
+  | d, .pi a b => .pi (closeG inline gs d a) (closeG inline gs (d + 1) b)
+  | d, .lam b => .lam (closeG inline gs (d + 1) b)
+  | d, .app f a => .app (closeG inline gs d f) (closeG inline gs d a)
+  | d, .letE ty v b => .letE (closeG inline gs d ty) (closeG inline gs d v) (closeG inline gs (d + 1) b)
+  | d, .ann t ty => .ann (closeG inline gs d t) (closeG inline gs d ty)
+  | _, t => t
 
 -- the output of a command, and the globals after it
 inductive Step where
-  | mk (out : String) (gs : List Global)
+  | mk (out : String) (gs : Globals)
 
-def errStep (gs : List Global) (m : String) : Step := .mk (String.append "error: " m) gs
+def errStep (gs : Globals) (m : String) : Step := .mk (String.append "error: " m) gs
 
--- **Exercise 14.5.** One command.
-def command (gs : List Global) (stx : Syntax) : Step :=
+-- **Exercise 14.5.** One command. Scope-check against the globals' names, close the
+-- result over the globals (`closeG`), and check it in the empty context.
+def command (gs : Globals) (stx : Syntax) : Step :=
   errStep gs "not implemented"
 
 -- all the commands of a file, one output line each
 partial def runCommands (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat)
-    (gs : List Global) (out : List String) : List String :=
+    (gs : Globals) (out : List String) : List String :=
   match Nat.lt (skipWs input pos) (Array.size input) with
   | .false => out
   | .true => match parseCommandAt cats tokens input pos with
@@ -156,4 +197,4 @@ partial def runCommands (cats : List Cat) (tokens : List String) (input : Array 
       | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
 
 def checkFile (cats : List Cat) (tokens : List String) (text : String) : List String :=
-  List.reverseOf (runCommands cats tokens (String.codes text) 0 .nil .nil) .nil
+  List.reverseOf (runCommands cats tokens (String.codes text) 0 Globals.empty .nil) .nil

@@ -995,8 +995,8 @@ inductive (closures), and bidirectional checking.
 
 `selfhost/Frontend.wiz` scope-checks Wiz syntax (identifiers, `Type n`, Π and arrows,
 `fun`, application, `let`, ascription) into the kernel's terms, and processes a file of
-`def`, `#check` and `#reduce` commands, the globals being defined variables of the
-typing context. Lexer, parser, scope checker and type checker all run as compiled Wiz.
+`def`, `#check` and `#reduce` commands, the globals being the kernel's constants (each
+command is checked in the empty context). Lexer, parser, scope checker and type checker all run as compiled Wiz.
 
 | #    | Where                   | What                                     |
 |------|-------------------------|------------------------------------------|
@@ -1173,8 +1173,25 @@ looks through it, and once. Checking a term that mentions a large global 300 tim
 gets an induction hypothesis with an index equation that the call doesn't supply, an
 elaborator gap.)
 
-Next: Str/Array instead of `List Char` in the self-hosted code, borrow inference,
-`ap` of a known partial application, fewer index equations for mutual families.
+### 15b: the self-hosted pipeline, measured ✅
+
+A benchmark checks a file of 300 definitions (and one of 3000) with the self-hosted
+pipeline compiled to C, against the Lean-hosted `wiz check`. At first the self-hosted
+one took 1.5 s (and 32 s, so quadratic) against 0.08 s (0.68 s). Profiling the compiled
+program with `gprof` (`WIZ_CFLAGS=-pg`):
+
+* the parser spent nearly all its time reading tokens, each read trying every token of
+  the table: the context now keeps the table by first character (`tokenBuckets`), and
+  a candidate no longer shares the memo table with the live state;
+* globals were variables of the typing context, so every command rebuilt it, and every
+  usage vector and name lookup grew with the number of globals: they are now the
+  kernel's constants (checked in the empty context, unfolded lazily since 15a), found
+  by name in a `StrMap` (`Scope`), and kept in an `Array`.
+
+Now 0.25 s (2.4 s): linear, within 3–4× of the Lean-hosted checker.
+
+Next: borrow inference, `ap` of a known partial application, fewer index equations for
+mutual families.
 
 ## Stage 11: tooling
 

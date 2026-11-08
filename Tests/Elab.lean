@@ -1544,8 +1544,8 @@ def selfHostGroup : Group where
         let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
           s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
           s!"def main : IO Unit := printAll (checkFile cats tokens {wizLit file})\n"
-        ioRun prog ("N : U1\ntwo : N\nadd : (x2 : N) → (x3 : N) → N\nλx3. λx4. λx5. (x4 (x4 (x4 (x4 x5))))\n" ++
-          "(x3 : (x3 : U0) → (x4 : (x4 : x3) → x3) → (x5 : x3) → x3) → (x4 : U0) → (x5 : (x5 : x4) → x4) → (x6 : x4) → x4\n" ++
+        ioRun prog ("N : U1\ntwo : N\nadd : (x0 : N) → (x1 : N) → N\nλx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\n" ++
+          "(x0 : N) → N\n" ++
           "error: type mismatch: expected U0, got U1\nerror: unknown identifier bad\n") },
     { name := "the Wiz kernel agrees with the Lean kernel (400 random terms)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"

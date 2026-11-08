@@ -85,12 +85,32 @@ def St.memo : St → StrMap Memo
 def St.setMemo (s : St) (m : StrMap Memo) : St := match s with
   | .mk p e x _ => .mk p e x m
 
--- the context: input, token table, categories, the position for `colGt`, the precedence
+-- the token table by first character (its code, or 128 for any other), so reading a
+-- token only tries those that can match
+def bucketOf (code : Nat) : Nat := match Nat.lt code 128 with
+  | .true => code
+  | .false => 128
+def emptyBuckets : Nat → Array (List String) → Array (List String)
+  | .zero, acc => acc
+  | .succ n, acc => emptyBuckets n (Array.push acc .nil)
+def addToken (b : Array (List String)) (t : String) : Array (List String) := match t with
+  | .mk cs => match cs with
+    | .nil => b
+    | .cons ch _ =>
+      let k := bucketOf (Char.code ch);
+      Array.set b k (.cons t (Array.getD b k .nil))
+def bucketTokens : List String → Array (List String) → Array (List String)
+  | .nil, b => b
+  | .cons t ts, b => bucketTokens ts (addToken b t)
+def tokenBuckets (ts : List String) : Array (List String) := bucketTokens ts (emptyBuckets 129 Array.empty)
+
+-- the context: input, token table (by first character), categories, the position for
+-- `colGt`, the precedence
 inductive Ctx where
-  | mk (input : Array Nat) (tokens : List String) (cats : List Cat) (saved : Option Nat) (prec : Nat)
+  | mk (input : Array Nat) (tokens : Array (List String)) (cats : List Cat) (saved : Option Nat) (prec : Nat)
 def Ctx.input : Ctx → Array Nat
   | .mk i _ _ _ _ => i
-def Ctx.tokens : Ctx → List String
+def Ctx.tokens : Ctx → Array (List String)
   | .mk _ t _ _ _ => t
 def Ctx.cats : Ctx → List Cat
   | .mk _ _ c _ _ => c
@@ -128,7 +148,7 @@ inductive Peek where
   | bad (msg : String)
 def peek (c : Ctx) (i : Nat) : Peek := match Nat.lt i (Array.size (Ctx.input c)) with
   | .false => .eof
-  | .true => match readToken (Ctx.tokens c) (Ctx.input c) i with
+  | .true => match readToken (Array.getD (Ctx.tokens c) (bucketOf (at (Ctx.input c) i)) .nil) (Ctx.input c) i with
     | .mk t start stop => match t with
       | .error m => .bad m
       | t => .tok t start stop
@@ -159,7 +179,9 @@ def tokenParser (c : Ctx) (s : St) (what : String) (accept : Tok → Option Synt
     | .some stx => .ok (one stx) (St.setPos s stop)
     | .none => failAt i what s
 
--- a successful alternative: what it built, where it stopped, its rank, its state
+-- a successful alternative: what it built, where it stopped, its rank, its state (without
+-- the memo: `commit` keeps the current one, and sharing it would make the next insert
+-- copy the whole table)
 inductive Cand where
   | mk (stx : Syntax) (stop prec priority index : Nat) (st : St)
 def Cand.better (c : Cand) (b : Cand) : Bool := match c with
@@ -317,8 +339,12 @@ def leadAlts : List Leading → Ctx → Nat → Nat → St → Option Cand → A
   | .cons (.mk k prec prio p) rest, c, rbp, ix, s, b => match Nat.le rbp prec with
     | .false => leadAlts rest c rbp (ix + 1) s b
     | .true => match runDescr (.node k p) (Ctx.withPrec c rbp) s with
-      | .ok items s1 => leadAlts rest c rbp (ix + 1) (St.merge s s1)
-          (best b (Cand.mk (firstItem items) (St.pos s1) prec prio ix s1))
+      | .ok items s1 =>
+        let stop := St.pos s1;
+        let m := St.memo s1;
+        let st := St.setMemo s1 StrMap.empty;
+        leadAlts rest c rbp (ix + 1) (St.setMemo (St.merge s st) m)
+          (best b (Cand.mk (firstItem items) stop prec prio ix st))
       | .err s1 => leadAlts rest c rbp (ix + 1) (St.merge s s1) b
 
 -- try the trailing parsers that apply after `lhs`; ignore those consuming nothing
@@ -329,8 +355,12 @@ def trailAlts : List Trailing → Ctx → Nat → Syntax → Nat → Nat → Nat
     | .false => trailAlts rest c rbp lhs lhsPrec start (ix + 1) s b
     | .true => match runDescr p c s with
       | .ok items s1 => match Nat.lt start (St.pos s1) with
-        | .true => trailAlts rest c rbp lhs lhsPrec start (ix + 1) (St.merge s s1)
-            (best b (Cand.mk (mkNode k (.cons lhs items)) (St.pos s1) prec prio ix s1))
+        | .true =>
+          let stop := St.pos s1;
+          let m := St.memo s1;
+          let st := St.setMemo s1 StrMap.empty;
+          trailAlts rest c rbp lhs lhsPrec start (ix + 1) (St.setMemo (St.merge s st) m)
+            (best b (Cand.mk (mkNode k (.cons lhs items)) stop prec prio ix st))
         | .false => trailAlts rest c rbp lhs lhsPrec start (ix + 1) (St.merge s s1) b
       | .err s1 => trailAlts rest c rbp lhs lhsPrec start (ix + 1) (St.merge s s1) b
 
@@ -382,7 +412,7 @@ def showRes : Res → String
 
 -- parse a whole input as category `cat`: the tree, or `error <offset>: expected …`
 def parse (cats : List Cat) (tokens : List String) (cat : String) (text : String) : String :=
-  let c := Ctx.mk (String.codes text) tokens cats .none 0;
+  let c := Ctx.mk (String.codes text) (tokenBuckets tokens) cats .none 0;
   showRes (atEnd c (categoryParser c cat 0 (St.mk 0 0 .nil StrMap.empty)))
 
 -- the syntax tree of a whole input, for later stages
@@ -390,7 +420,7 @@ inductive Parsed where
   | ok (stx : Syntax)
   | err (msg : String)
 def parseSyntax (cats : List Cat) (tokens : List String) (cat : String) (text : String) : Parsed :=
-  let c := Ctx.mk (String.codes text) tokens cats .none 0;
+  let c := Ctx.mk (String.codes text) (tokenBuckets tokens) cats .none 0;
   match atEnd c (categoryParser c cat 0 (St.mk 0 0 .nil StrMap.empty)) with
   | .ok items _ => .ok (firstItem items)
   | .err s => match s with
@@ -401,7 +431,7 @@ inductive PCmd where
   | ok (stx : Syntax) (stop : Nat)
   | err (msg : String)
 def parseCommandAt (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat) : PCmd :=
-  let c := Ctx.mk input tokens cats .none 0;
+  let c := Ctx.mk input (tokenBuckets tokens) cats .none 0;
   match runDescr (.withPosition (.cat "command" 0)) c (St.mk pos 0 .nil StrMap.empty) with
   | .ok items s => .ok (firstItem items) (St.pos s)
   | .err s => match s with
