@@ -1200,9 +1200,11 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
               cls := cls ++ [{ cl' with pats := before ++ sub ++ after }]
           | .var n =>
             let sub := fieldInfos.map fun _ => holeStx
-            -- the variable is `x` itself, unless the goal depends on `x` (then only the
-            -- constructor has the refined type): no object is rebuilt from its fields
-            let xVal := if G.hasVar (ctx.lvl - x - 1) then ctorVal else Val.var x
+            -- the variable is `x` itself (no object is rebuilt from its fields), unless
+            -- the goal depends on `x` (then only the constructor has the refined type) or
+            -- this is the recursor's split: its method also runs for the hypotheses,
+            -- where the value at hand is the constructor, not `x`
+            let xVal := if useRec || G.hasVar (ctx.lvl - x - 1) then ctorVal else Val.var x
             let binds := cl'.binds ++ [(n, xty, xVal)]
             cls := cls ++ [{ cl' with pats := before ++ sub ++ after, binds := binds }]
           | .wild =>

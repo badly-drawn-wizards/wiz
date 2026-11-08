@@ -1238,7 +1238,7 @@ frontend normalises first (`nfAt`: the kernel can't infer the type of an applied
 
 | #    | Where                   | What                                     |
 |------|-------------------------|------------------------------------------|
-| 16.2 | `selfhost/Frontend.wiz` | `branchTm`: one branch of the method      |
+| 16.2 | `selfhost/Frontend.wiz` | `branchTm` (16e: `specialize`)           |
 
 ### 16c: parameters ✅
 
@@ -1256,8 +1256,30 @@ field types with the scrutinee type's arguments, again by normalising
 `def f (ps) (x✝ : A) : R := match x✝ with | p => rhs …` (`eqnsToMatch`, on the syntax
 tree; `(x : A) → R` names the parameter).
 
-Next: several scrutinees and nested patterns (a column-by-column match compiler),
-indices, implicit arguments (which need metavariables in the self-hosted frontend).
+### 16e: several scrutinees and nested patterns ✅
+
+The match compiler now works column by column, as `compileMatch` in `Term.lean`: split on
+the first column where the first clause has a constructor pattern (an `ind` with the
+constant motive), replacing that column by the constructor's fields in each branch
+(exercise 16.2, `specialize`: the clauses that remain, with their sub-patterns); a leaf
+binds its variables with `let`s. The first split is on the structural column (the
+leftmost one any clause matches): its method runs for the induction hypotheses too, so
+the parameters after it are generalised in its motive (and bound again in each branch:
+a recursive call may change them), and a variable for the column is the value at hand
+(`cur✝ := con (tag, rest)`). Equations take several columns. The Wiz kernel got the
+Lean kernel's check rule for `let`.
+
+That last point was also wrong in the Lean elaborator since the scrutinee change above:
+a catch-all variable of a recursive definition stood for the original argument in the
+kernel's term (only `#eval`, which runs the `casesOn` implementation, was right). Now it
+is the constructor at the recursor's split.
+
+| #    | Where                   | What                                     |
+|------|-------------------------|------------------------------------------|
+| 16.2 | `selfhost/Frontend.wiz` | `specialize`: the clauses for a constructor |
+
+Next: indices, implicit arguments (which need metavariables in the self-hosted
+frontend).
 
 ## Stage 11: tooling
 

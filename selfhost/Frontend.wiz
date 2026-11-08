@@ -321,6 +321,11 @@ def isRecField (T : String) (ps : List String) (ty : Syntax) : Bool := match str
 def pvars : Nat → Nat → Tms
   | .zero, _ => .tnil
   | .succ k, d => .tcons (.var (d - 1)) (pvars k (d - 1))
+def tmsDrop : Nat → Tms → Tms
+  | .zero, ts => ts
+  | .succ k, ts => match ts with
+    | .tnil => .tnil
+    | .tcons _ rest => tmsDrop k rest
 def tmsAppend : Tms → Tms → Tms
   | .tnil, b => b
   | .tcons t rest, b => .tcons t (tmsAppend rest b)
@@ -456,13 +461,17 @@ def inductiveCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
                 (Globals.addInd gs2 T (.mk np (mkD ds) (mkD dsI) cs))
   | _ => errStep gs "an inductive type needs a name"
 
--- Pattern matching in definitions (stage 16b): in `def f (ps) : R := match x with …`,
--- `x` a parameter of an inductive type, the match becomes induction with the motive
--- `fun i y => R` (so `R` may not mention `x`) and the method
+-- Pattern matching in definitions (stages 16b, 16e): `def f (ps) : R := match x, y with
+-- | p₁, q₁ => rhs₁ …`, the scrutinees parameters and `R` not mentioning them, is
+-- compiled column by column: split on the first column where the first clause has a
+-- constructor pattern (an `ind` with the constant motive `fun i y => R`), so that in
+-- the branch for constructor `c` that column is replaced by `c`'s fields; a clause with
+-- a variable there names the column (a `let` at the leaf). The method of a split is
 --   fun i xs ih => (ecase (fst xs) [b₁, …, bₖ] : convoy) (snd xs) ih
--- where each branch `bᵢ := fun rest ih => let fields := …; rhs` takes the constructor's
--- payload `rest` and its induction hypotheses `ih`. A recursive call `f … y …` on a
--- recursive field `y` (the other arguments passed unchanged) is `y`'s hypothesis.
+-- with each branch `bᵢ := fun rest ih => let fields := …; …`. The first split is the
+-- structural one: its recursive fields' induction hypotheses are `let`s too, and a
+-- recursive call `f … y …` on such a field (the other arguments being the parameters)
+-- becomes `y`'s hypothesis.
 
 -- the normal form of a term under `d` binders (to reduce applied templates: the kernel
 -- can't infer the type of a λ applied to arguments)
@@ -474,9 +483,27 @@ def sndN : Nat → Tm → Tm
   | .zero, t => t
   | .succ n, t => sndN n (.snd t)
 
--- a pattern: a constructor and names for its fields, or a variable (or `_`)
+def nthSyntax : List Syntax → Nat → Syntax
+  | .nil, _ => .missing
+  | .cons s rest, i => match i with
+    | .zero => s
+    | .succ j => nthSyntax rest j
+def nthName : List String → Nat → String
+  | .nil, _ => "_"
+  | .cons s rest, i => match i with
+    | .zero => s
+    | .succ j => nthName rest j
+-- the field variables before field `j`, as arguments: `var (j - 1), …, var 0`
+def fvars : Nat → Tms
+  | .zero => .tnil
+  | .succ k => tmsAppend (.tcons (.var k) .tnil) (fvars k)
+def elemNat : Nat → List Nat → Bool
+  | _, .nil => .false
+  | x, .cons y ys => Bool.or (Nat.beq x y) (elemNat x ys)
+
+-- a pattern: a constructor and its sub-patterns, or a variable (or `_`)
 inductive Pat where
-  | ctor (c : String) (vars : List String)
+  | ctor (c : String) (subs : List Syntax)
   | any (x : String)
 -- `T.c` without the `T.`
 def dropPrefix : List Char → List Char → Option (List Char)
@@ -490,9 +517,6 @@ def ctorOfName (T n : String) : Option String := match String.append T "." with
     | .mk ns => match dropPrefix ts ns with
       | .some c => .some (.mk c)
       | .none => .none
-def patVars : List Syntax → List String
-  | .nil => .nil
-  | .cons s rest => .cons (identOf s) (patVars rest)
 def headCtor (T : String) (h : Syntax) : Option String := match strEq (kindOf h) "term.dotIdent" with
   | .true => match kid h 1 with
     | .ident c => .some c
@@ -502,27 +526,72 @@ partial def patOf (T : String) (p : Syntax) : Pat := match strEq (kindOf p) "ter
   | .true => patOf T (kid p 1)
   | .false => match strEq (kindOf p) "term.app" with
     | .true => match headCtor T (kid p 0) with
-      | .some c => .ctor c (patVars (kids (kid p 1)))
+      | .some c => .ctor c (kids (kid p 1))
       | .none => .any "_"
     | .false => match headCtor T p with
       | .some c => .ctor c .nil
       | .none => .any (identOf p)
+def isVarPat (p : Syntax) : Bool := match strEq (kindOf p) "term.ident" with
+  | .true => .true
+  | .false => strEq (kindOf p) "term.hole"
 
-inductive Alt where
-  | mk (pat : Pat) (rhs : Syntax)
-def altsOf (T : String) : List Syntax → List Alt
+-- a column: a variable (by level) and its type, with constants and inlined, over the
+-- binders before it
+inductive Col where
+  | mk (lvl : Nat) (ty tyI : Tm)
+-- a name a clause gives a column
+inductive Bind where
+  | mk (name : String) (col : Col)
+inductive Clause where
+  | mk (pats : List Syntax) (binds : List Bind) (rhs : Syntax)
+def holeStx : Syntax := mkNode "term.hole" (one (.atom "_"))
+def holes : Nat → List Syntax
+  | .zero => .nil
+  | .succ k => .cons holeStx (holes k)
+def nthCol : List Col → Nat → Col
+  | .nil, _ => .mk 0 .star .star
+  | .cons c rest, i => match i with
+    | .zero => c
+    | .succ j => nthCol rest j
+def takeL {A : Type} : Nat → List A → List A
+  | .zero, _ => .nil
+  | .succ k, xs => match xs with
+    | .nil => .nil
+    | .cons x rest => .cons x (takeL k rest)
+def dropL {A : Type} : Nat → List A → List A
+  | .zero, xs => xs
+  | .succ k, xs => match xs with
+    | .nil => .nil
+    | .cons _ rest => dropL k rest
+-- `n` sub-patterns: as given, or holes if there are fewer
+def padPats : Nat → List Syntax → List Syntax
+  | .zero, _ => .nil
+  | .succ k, ps => match ps with
+    | .nil => .cons holeStx (padPats k .nil)
+    | .cons p rest => .cons p (padPats k rest)
+
+-- **Exercise 16.2.** The clauses for constructor `c` (of type `T`) after splitting
+-- column `k` (`col`): a clause with `c` there gets its sub-patterns in place of that
+-- column (`padPats F`), one with a variable gets `F` holes and binds the variable to
+-- `col` (unless it is `_`), and one with another constructor is dropped.
+def specialize (T c : String) (k F : Nat) (col : Col) : List Clause → List Clause
+  --<sol
   | .nil => .nil
-  | .cons a rest => match kids (kid a 1) with
-    | .cons p _ => .cons (.mk (patOf T p) (kid a 3)) (altsOf T rest)
-    | .nil => altsOf T rest
--- the alternative for constructor `c`: its own, or the first catch-all
-def findAlt (c : String) : List Alt → Option Alt
-  | .nil => .none
-  | .cons (.mk p rhs) rest => match p with
-    | .ctor c' _ => match strEq c c' with
-      | .true => .some (.mk p rhs)
-      | .false => findAlt c rest
-    | .any _ => .some (.mk p rhs)
+  | .cons (.mk pats binds rhs) rest =>
+    let before := takeL k pats;
+    let after := dropL (k + 1) pats;
+    match patOf T (nthSyntax pats k) with
+    | .ctor c' subs => match strEq c c' with
+      | .true => .cons (.mk (List.append before (List.append (padPats F subs) after)) binds rhs) (specialize T c k F col rest)
+      | .false => specialize T c k F col rest
+    | .any x =>
+      let binds' := match strEq x "_" with
+        | .true => binds
+        | .false => List.append binds (.cons (Bind.mk x col) .nil);
+      .cons (.mk (List.append before (List.append (holes F) after)) binds' rhs) (specialize T c k F col rest)
+  --|ex
+  --| | _ => .nil
+  --sol>
 
 -- the names of the recursive fields' hypotheses: field name ↦ hypothesis name
 inductive IHName where
@@ -532,146 +601,285 @@ def ihFor (x : String) : List IHName → Option String
   | .cons (.mk y h) rest => match strEq x y with
     | .true => .some h
     | .false => ihFor x rest
-def nthSyntax : List Syntax → Nat → Syntax
-  | .nil, _ => .missing
-  | .cons s rest, i => match i with
-    | .zero => s
-    | .succ j => nthSyntax rest j
-def nthName : List String → Nat → String
-  | .nil, _ => "_"
-  | .cons s rest, i => match i with
-    | .zero => s
-    | .succ j => nthName rest j
--- the arguments are the parameters, except the structural one, a field with a
--- hypothesis: that hypothesis
-def recCallIH (params : List String) (p : Nat) (ihs : List IHName) : List Syntax → Nat → Option String
+-- the levels a name stands for (in a clause's binds)
+def bindLvl (x : String) : List Bind → Option Nat
+  | .nil => .none
+  | .cons (.mk y (.mk l _ _)) rest => match strEq x y with
+    | .true => .some l
+    | .false => bindLvl x rest
+-- is the argument the `i`th parameter (by its name, or a name for its column)?
+def isParamArg (params : List String) (binds : List Bind) (i : Nat) (a : Syntax) : Bool :=
+  match strEq (identOf a) (nthName params i) with
+  | .true => .true
+  | .false => match bindLvl (identOf a) binds with
+    | .some l => Nat.beq l i
+    | .none => .false
+-- the arguments before the structural one are the parameters, the structural one a
+-- field with a hypothesis: that hypothesis (the later arguments are its arguments)
+def recCallIH (params : List String) (binds : List Bind) (p : Nat) (ihs : List IHName) : List Syntax → Nat → Option String
   | .nil, i => match Nat.beq i (List.length params) with
     | .true => .some ""
     | .false => .none
-  | .cons a rest, i => match recCallIH params p ihs rest (i + 1) with
+  | .cons a rest, i => match recCallIH params binds p ihs rest (i + 1) with
     | .none => .none
     | .some h => match Nat.beq i p with
       | .true => ihFor (identOf a) ihs
-      | .false => match strEq (identOf a) (nthName params i) with
+      | .false => match Nat.lt p i with
         | .true => .some h
-        | .false => .none
+        | .false => match isParamArg params binds i a with
+          | .true => .some h
+          | .false => .none
+-- what a match needs: the function's name, parameters and structural position, the
+-- result type `R` (over the `n` parameters), the motive's universe `v`
+inductive MatchCtx where
+  | mk (f : String) (params : List String) (p n v : Nat) (R RI : Tm) (pts ptsI : Tms)
 mutual
 -- replace the recursive calls `f …` by hypotheses
-def rewriteRec (f : String) (params : List String) (p : Nat) (ihs : List IHName) (stx : Syntax) : Syntax :=
-  match stx with
-  | .node k args => match Bool.and (strEq k "term.app") (strEq (identOf (kid stx 0)) f) with
-    | .true => match recCallIH params p ihs (kids (kid stx 1)) 0 with
-      | .some h => match strEq h "" with
-        | .true => .node k (rewriteArgs f params p ihs args)
-        | .false => .node "term.ident" (.cons (.ident h) .nil)
-      | .none => .node k (rewriteArgs f params p ihs args)
-    | .false => .node k (rewriteArgs f params p ihs args)
-  | s => s
-def rewriteArgs (f : String) (params : List String) (p : Nat) (ihs : List IHName) : SyntaxF .false → SyntaxF .false
+def rewriteRec (mc : MatchCtx) (binds : List Bind) (ihs : List IHName) (stx : Syntax) : Syntax :=
+  match mc with
+  | .mk f params p _ _ _ _ _ _ => match stx with
+    | .node k args => match Bool.and (strEq k "term.app") (strEq (identOf (kid stx 0)) f) with
+      | .true => match recCallIH params binds p ihs (kids (kid stx 1)) 0 with
+        | .some h => match strEq h "" with
+          | .true => .node k (rewriteArgs mc binds ihs args)
+          | .false =>
+            let ih := mkNode "term.ident" (one (.ident h));
+            match dropL (p + 1) (kids (kid stx 1)) with
+            | .nil => ih
+            | later => mkNode "term.app" (.cons ih (one (.node "null" (rewriteArgs mc binds ihs (toArgs later)))))
+        | .none => .node k (rewriteArgs mc binds ihs args)
+      | .false => .node k (rewriteArgs mc binds ihs args)
+    | s => s
+def rewriteArgs (mc : MatchCtx) (binds : List Bind) (ihs : List IHName) : SyntaxF .false → SyntaxF .false
   | .nil => .nil
-  | .cons s rest => .cons (rewriteRec f params p ihs s) (rewriteArgs f params p ihs rest)
+  | .cons s rest => .cons (rewriteRec mc binds ihs s) (rewriteArgs mc binds ihs rest)
 end
 
--- what a match needs: the function's name, parameters and structural position, the
--- scope of the parameters, the result type `R` over the parameters, the type's
--- constant and the arguments of the scrutinee's type (over the parameters: `n` of
--- them), the motive `P`, and the number of the type's own parameters
-inductive MatchCtx where
-  | mk (f : String) (params : List String) (p : Nat) (sc : Scope) (R T : Tm) (args : Tms) (P : Tm) (np : Nat)
-def MatchCtx.args : MatchCtx → Tms
-  | .mk _ _ _ _ _ _ a _ _ => a
-def MatchCtx.np : MatchCtx → Nat
-  | .mk _ _ _ _ _ _ _ _ np => np
--- the field variables before field `j`, as arguments: `var (j - 1), …, var 0`
-def fvars : Nat → Tms
-  | .zero => .tnil
-  | .succ k => tmsAppend (.tcons (.var k) .tnil) (fvars k)
--- `let x : A := v` for each field, `v` its projection from the payload `var (1 + j)`;
--- `A` (over the type's parameters and the fields before) gets the scrutinee type's
--- arguments, at depth `d + j`
-def fieldLets (inline : Bool) (body : Tm) (np n d : Nat) (args : Tms) : Nat → List CField → Tm
-  | _, .nil => body
-  | j, .cons (.mk _ _ A AI) rest =>
-    let A' := match inline with
-      | .true => AI
-      | .false => A;
-    let inst := nfAt (d + j) (tApps (tLams np (tLams j A')) (tmsAppend (shiftTms (d + j - n) args) (fvars j)));
-    .letE inst (.fst (sndN j (.var (1 + j)))) (fieldLets inline body np n d args (j + 1) rest)
--- the hypotheses: `let h : R := fst (snd^r ih)`, at `F` fields past the branch's binders
-def ihLets (R : Tm) (F : Nat) (body : Tm) : Nat → Nat → Tm
-  | _, .zero => body
-  | r, .succ m => .letE (shiftTm (5 + F + r) 0 R) (.fst (sndN r (.var (F + r)))) (ihLets R F body (r + 1) m)
-def recCount : List CField → Nat
-  | .nil => 0
-  | .cons (.mk _ isRec _ _) rest => match isRec with
-    | .true => recCount rest + 1
-    | .false => recCount rest
-def tailNames : List String → List String
+-- a type's head constant and arguments
+inductive TyHead where
+  | mk (name : String) (args : Tms)
+  | none
+def headOf : Tm → Tms → TyHead
+  | .const n _ _ _ _, acc => .mk n acc
+  | .app f a, acc => headOf f (.tcons a acc)
+  | _, _ => .none
+def headTm : Tm → Tm
+  | .app f _ => headTm f
+  | t => t
+-- the hypotheses' names, for the binds standing for recursive fields that have one
+def ihNamesOf (ihLvls : List Nat) : List Bind → List IHName
   | .nil => .nil
-  | .cons _ xs => xs
--- the names of the fields' hypotheses (for the recursive fields named by the pattern)
-def ihNames : List CField → List String → List IHName
-  | .nil, _ => .nil
-  | .cons (.mk _ isRec _ _) fs, xs => match xs with
-    | .nil => ihNames fs .nil
-    | .cons x rest => match isRec with
-      | .true => .cons (.mk x (String.append "ih✝" x)) (ihNames fs rest)
-      | .false => ihNames fs rest
-def ihBinders : List CField → List String → List String
-  | .nil, _ => .nil
-  | .cons (.mk _ isRec _ _) fs, xs => match isRec with
-    | .true => .cons (String.append "ih✝" (nthName xs 0)) (ihBinders fs (tailNames xs))
-    | .false => ihBinders fs (tailNames xs)
-def padNames : List CField → List String → List String
-  | .nil, _ => .nil
-  | .cons _ fs, xs => .cons (nthName xs 0) (padNames fs (tailNames xs))
-
--- **Exercise 16.2.** One branch of the method, at depth `n + 3` (the parameters, then
--- `i`, `xs`, `ih`): `fun rest ih => …` around the right-hand side, which sees the fields
--- as `let`s (`fieldLets`), then the recursive fields' hypotheses (`ihLets`); the
--- recursive calls become those (`rewriteRec`). A catch-all `x =>` binds `x` to the
--- scrutinee instead.
-def branchTm (inline : Bool) (gs : Globals) (mc : MatchCtx) (n : Nat) (fs : List CField) (alt : Alt) : Elab :=
-  --<sol
-  match mc with
-  | .mk f params p sc R T args _ np => match alt with
-    | .mk pat rhs =>
-      let sc5 := bindAll sc (.cons "i✝" (.cons "xs✝" (.cons "ih✝" (.cons "rest✝" (.cons "ihs✝" .nil)))));
-      match pat with
-      | .any x =>
-        let d := n + 6;
-        match elab (Scope.bind sc5 x) rhs with
-        | .err m => .err m
-        | .ok b => .ok (.lam (.lam (.letE (tApps T (shiftTms 5 args)) (.var (n + 4 - p)) (closeG inline gs d b))))
-      | .ctor _ vars =>
-        let F := List.length fs;
-        let Rc := recCount fs;
-        let names := padNames fs vars;
-        let sc' := bindAll (bindAll sc5 names) (ihBinders fs vars);
-        let rhs' := rewriteRec f params p (ihNames fs vars) rhs;
-        match elab sc' rhs' with
-        | .err m => .err m
-        | .ok b => .ok (.lam (.lam (fieldLets inline (ihLets R F (closeG inline gs (n + 5 + F + Rc) b) 0 Rc) np n (n + 5) args 0 fs)))
-  --|ex
-  --| .err "not implemented"
-  --sol>
+  | .cons (.mk x (.mk l _ _)) rest => match elemNat l ihLvls with
+    | .true => .cons (.mk x (String.append "ih✝" (Nat.toString l))) (ihNamesOf ihLvls rest)
+    | .false => ihNamesOf ihLvls rest
+def ihLvlNames : List Nat → List String
+  | .nil => .nil
+  | .cons l rest => .cons (String.append "ih✝" (Nat.toString l)) (ihLvlNames rest)
+-- `let x : A := var` for each bind, from depth `d`
+def bindLets (inline : Bool) (body : Tm) : Nat → List Bind → Tm
+  | _, .nil => body
+  | d, .cons (.mk _ (.mk l ty tyI)) rest =>
+    let A := match inline with
+      | .true => tyI
+      | .false => ty;
+    .letE (shiftTm (d - l) 0 A) (.var (d - 1 - l)) (bindLets inline body (d + 1) rest)
+def bindNames : List Bind → List String
+  | .nil => .nil
+  | .cons (.mk x _) rest => .cons x (bindNames rest)
+-- the fields as `let`s from depth `d0` (`rest` just before the first) and as columns,
+-- each field type (over the type's parameters and the fields before) given the
+-- arguments `args` (at depth `L`)
+inductive Lets where
+  | mk (wrap : Tm → Tm) (cols : List Col) (recs : List Nat)
+def fieldCols (np L d0 : Nat) (args argsI : Tms) : Nat → List CField → Lets
+  | _, .nil => .mk (fun b => b) .nil .nil
+  | j, .cons (.mk _ isRec A AI) rest =>
+    let d := d0 + j;
+    let inst := fun (A' : Tm) (as : Tms) => nfAt d (tApps (tLams np (tLams j A')) (tmsAppend (shiftTms (d - L) as) (fvars j)));
+    let ty := inst A args;
+    let tyI := inst AI argsI;
+    match fieldCols np L d0 args argsI (j + 1) rest with
+    | .mk wrap cols recs => .mk (fun b => .letE ty (.fst (sndN j (.var (1 + j)))) (wrap b))
+        (.cons (.mk d ty tyI) cols) (match isRec with
+          | .true => .cons d recs
+          | .false => recs)
+-- the hypotheses: `let h : M := fst (snd^r ih)`, after `F` fields, at depth `d0 + F`;
+-- `M` is the motive's body, at depth `md`
+def ihLets (M : Tm) (md d0 F : Nat) (body : Tm) : Nat → Nat → Tm
+  | _, .zero => body
+  | r, .succ m => .letE (shiftTm (d0 + F + r - md) 0 M) (.fst (sndN r (.var (F + r)))) (ihLets M md d0 F body (r + 1) m)
+-- the parameters after the structural one (`p`): their types as a telescope over the
+-- binders at depth `base` (the parameters up to `p` stay where they are)
+def genTys (p base : Nat) : Nat → Tms → Tms
+  | _, .tnil => .tnil
+  | m, .tcons t rest => .tcons (shiftTm (base - p - 1) m t) (genTys p base (m + 1) rest)
+def nthTm : Tms → Nat → Tm
+  | .tnil, _ => .star
+  | .tcons t rest, i => match i with
+    | .zero => t
+    | .succ j => nthTm rest j
+-- move the columns of the parameters after `p` to their new binders from depth `base`
+def regen (p n base : Nat) (pts ptsI : Tms) : List Col → List Col
+  | .nil => .nil
+  | .cons (.mk l ty tyI) rest => match Bool.and (Nat.lt p l) (Nat.lt l n) with
+    | .true => .cons (.mk (base + (l - p - 1)) (shiftTm (base - p - 1) (l - p - 1) (nthTm pts l))
+        (shiftTm (base - p - 1) (l - p - 1) (nthTm ptsI l))) (regen p n base pts ptsI rest)
+    | .false => .cons (.mk l ty tyI) (regen p n base pts ptsI rest)
+def genVars (d : Nat) : Nat → Nat → Tms
+  | .zero, _ => .tnil
+  | .succ k, l => .tcons (.var (d - 1 - l)) (genVars d k (l + 1))
+def lenL {A : Type} (xs : List A) : Nat := List.length xs
 
 inductive Branches where
   | ok (bs : Tms)
   | err (msg : String)
-def branchesTm (inline : Bool) (gs : Globals) (mc : MatchCtx) (n : Nat) (alts : List Alt) : List Ctor → Branches
-  | .nil => .ok .tnil
-  | .cons (.mk c fs) rest => match findAlt c alts with
-    | .none => .err (String.append "missing case " c)
-    | .some a => match branchTm inline gs mc n fs a with
-      | .err m => .err m
-      | .ok b => match branchesTm inline gs mc n alts rest with
-        | .ok bs => .ok (.tcons b bs)
-        | e => e
+def noBranches : Branches := .ok .tnil
 -- `fun t => ecase t [D₁, …]`, the description after its tag
 def descFn : Tm → Tm
   | .darg _ f => f
   | t => t
+mutual
+-- compile the clauses over the columns, at depth `d` (`sc` names those binders);
+-- `top`: the next split is the structural one; `ihLvls`: the fields with hypotheses
+def compileM (inline : Bool) (gs : Globals) (mc : MatchCtx) (d : Nat) (sc : Scope) (cols : List Col)
+    (top : Bool) (ihLvls : List Nat) (cls : List Clause) : Elab :=
+  match cls with
+  | .nil => .err "missing case"
+  | .cons (.mk pats binds rhs) _ => match firstCtorCol pats 0 with
+    | .none =>
+      -- a leaf: bind the variables, rewrite the recursive calls, elaborate
+      let binds' := List.append binds (varBinds pats cols);
+      let rhs' := rewriteRec mc binds' (ihNamesOf ihLvls binds') rhs;
+      match elab (bindAll sc (bindNames binds')) rhs' with
+      | .err m => .err m
+      | .ok b => .ok (bindLets inline (closeG inline gs (d + lenL binds') b) d binds')
+    | .some k =>
+      -- the first split is on the structural column
+      let k' := match top with
+        | .true => match mc with
+          | .mk _ _ p _ _ _ _ _ _ => colIndex p cols 0 k
+        | .false => k;
+      splitCol inline gs mc d sc cols top ihLvls cls k'
+-- the index of the column at level `l` (else `dflt`)
+def colIndex (l : Nat) : List Col → Nat → Nat → Nat
+  | .nil, _, dflt => dflt
+  | .cons (.mk l' _ _) rest, i, dflt => match Nat.beq l l' with
+    | .true => i
+    | .false => colIndex l rest (i + 1) dflt
+  -- the first column with a constructor pattern
+def firstCtorCol : List Syntax → Nat → Option Nat
+  | .nil, _ => .none
+  | .cons p rest, i => match isVarPat p with
+    | .true => firstCtorCol rest (i + 1)
+    | .false => .some i
+def varBinds : List Syntax → List Col → List Bind
+  | .cons p ps, .cons c cs => match strEq (identOf p) "_" with
+    | .true => varBinds ps cs
+    | .false => .cons (.mk (identOf p) c) (varBinds ps cs)
+  | _, _ => .nil
+def splitCol (inline : Bool) (gs : Globals) (mc : MatchCtx) (d : Nat) (sc : Scope) (cols : List Col)
+    (top : Bool) (ihLvls : List Nat) (cls : List Clause) (k : Nat) : Elab :=
+  match nthCol cols k with
+  | .mk L ty tyI => match headOf ty .tnil with
+    | .none => .err "a pattern on a value that isn't of an inductive type"
+    | .mk T args =>
+      -- (types don't compute: the inlined pass, for `#reduce`, may keep their constants)
+      let argsI := args;
+      match Globals.ind gs T with
+        | .none => .err (String.append "not an inductive type: " T)
+        | .some (.mk np D0 DI ctors) => match mc with
+          | .mk _ params p n v R RI pts ptsI =>
+            let D := match inline with
+              | .true => DI
+              | .false => D0;
+            let as := match inline with
+              | .true => argsI
+              | .false => args;
+            let R' := match inline with
+              | .true => RI
+              | .false => R;
+            -- the description with the arguments, at depth `dd`
+            let DAt := fun (dd : Nat) => nfAt dd (tApps (tLams np D) (shiftTms (dd - L) as));
+            let XAt := fun (dd : Nat) => (.lam (.mu 0 (.unit 0) (DAt (dd + 1)) (.var 0)) : Tm);
+            let DtAt := fun (dd t : Nat) => nfAt dd (.app (descFn (DAt dd)) (.var t));
+            -- the motive's body (at depth `d + 2`): `R`, or at the structural split
+            -- `(q : …) → R` over the parameters after the structural one
+            let G := match top with
+              | .true => n - 1 - p
+              | .false => 0;
+            let pts' := match inline with
+              | .true => ptsI
+              | .false => pts;
+            let MB : Tm := match top with
+              | .true => piTele (genTys p (d + 2) 0 (tmsDrop (p + 1) pts')) (shiftTm (d + 1 - p) G (shiftTm (n - n) 0 R'))
+              | .false => shiftTm (d + 2 - n) 0 R';
+            let PAt := fun (dd : Nat) => (.lam (.lam (shiftTm (dd - d) 0 MB)) : Tm);
+            let MT : Tm := .pi (nfAt (d + 4) (interpApp 0 (.unit 0) (DtAt (d + 4) 0) (XAt (d + 4)) (.var 3)))
+              (.pi (nfAt (d + 5) (tApps (allTm 0 v) (args6 (.unit 0) (DtAt (d + 5) 1) (XAt (d + 5)) (PAt (d + 5)) (.var 4) (.var 0))))
+                (shiftTm 4 0 MB));
+            match branches inline gs mc d sc cols top ihLvls cls k (.mk L ty tyI) T np args argsI MB G (lenL ctors) 0 ctors with
+            | .err m => .err m
+            | .ok bs =>
+              let M : Tm := .lam (.lam (.lam (.app (.app (.ecase MT (.fst (.var 1)) bs) (.snd (.var 1))) (.var 0))));
+              .ok (tApps (.ind 0 (.unit 0) (DAt d) v (PAt d) M .star (.var (d - 1 - L))) (genVars d G (p + 1)))
+-- one branch per constructor, at depth `d + 3`: `fun rest ih => let fields; (let hyps;) …`
+def branches (inline : Bool) (gs : Globals) (mc : MatchCtx) (d : Nat) (sc : Scope) (cols : List Col)
+    (top : Bool) (ihLvls : List Nat) (cls : List Clause) (k : Nat) (col : Col) (T : String) (np : Nat)
+    (args argsI : Tms) (MB : Tm) (G : Nat) (nc i : Nat) : List Ctor → Branches
+  | .nil => .ok .tnil
+  | .cons (.mk c fs) rest =>
+    let F := lenL fs;
+    let d0 := d + 5;
+    match col with
+    | .mk L _ _ => match fieldCols np L d0 args argsI 0 fs with
+      | .mk wrap fcols recs =>
+        let Rc := match top with
+          | .true => lenL recs
+          | .false => 0;
+        let ihLvls' := match top with
+          | .true => List.append ihLvls recs
+          | .false => ihLvls;
+        let sc' := bindAll (bindAll sc (.cons "i✝" (.cons "xs✝" (.cons "ih✝" (.cons "rest✝" (.cons "ihs✝" .nil))))))
+          (List.append (fieldBinderNames F) (match top with
+            | .true => ihLvlNames recs
+            | .false => .nil));
+        let cols' := List.append (takeL k cols) (List.append fcols (dropL (k + 1) cols));
+        match mc with
+        | .mk _ params p n _ _ _ pts ptsI =>
+          -- at the structural split, the method also runs for the hypotheses: a variable
+          -- for the column is the value at hand, `cur✝ := con (tag, rest)`; and the
+          -- later parameters are bound again (`fun q => …`)
+          let base := d0 + F + Rc;
+          let top1 := match top with
+            | .true => 1
+            | .false => 0;
+          let curTy := match col with
+            | .mk L ty _ => tApps (headTm ty) (shiftTms (base - L) args);
+          let curCol := match top with
+            | .true => Col.mk base curTy curTy
+            | .false => col;
+          let cols'' := match top with
+            | .true => regen p n (base + 1) pts ptsI cols'
+            | .false => cols';
+          let sc'' := match top with
+            | .true => bindAll (Scope.bind sc' "cur✝") (dropL (p + 1) params)
+            | .false => sc';
+          match compileM inline gs mc (base + top1 + G) sc'' cols'' .false ihLvls' (specialize T c k F curCol cls) with
+          | .err m => .err (match strEq m "missing case" with
+            | .true => String.append "missing case " c
+            | .false => m)
+          | .ok body =>
+            let inner : Tm := match top with
+              | .true => .letE curTy (.con (.pair (.tag nc i) (.var (F + Rc + 1)))) (tLams G body)
+              | .false => tLams G body;
+            match branches inline gs mc d sc cols top ihLvls cls k col T np args argsI MB G nc (i + 1) rest with
+            | .ok bs => .ok (.tcons (.lam (.lam (wrap (ihLets MB (d + 2) d0 F inner 0 Rc)))) bs)
+            | e => e
+def fieldBinderNames : Nat → List String
+  | .zero => .nil
+  | .succ k => .cons "_" (fieldBinderNames k)
+end
+
 -- bind `n` parameter types (a Π type's), then the rest
 inductive Peeled where
   | mk (c : TCtx) (rest : Val)
@@ -680,135 +888,133 @@ def peelCtx : Nat → TCtx → Val → Peeled
   | .succ k, c, v => match whnf v with
     | .vpi _ dom env cod => peelCtx k (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod)
     | v' => .mk c v'
--- the definition `fun ps => ind … P M tt x`
-def matchTm (inline : Bool) (gs : Globals) (mc : MatchCtx) (n v : Nat) (info : IndInfo) (alts : List Alt) : Elab :=
-  match info with
-  | .mk np D0 DI ctors =>
-    let D := match inline with
-      | .true => DI
-      | .false => D0;
-    match mc with
-    | .mk _ _ p _ _ _ args P _ =>
-      -- the description with the scrutinee type's arguments, at depth `d`
-      let DAt := fun (d : Nat) => nfAt d (tApps (tLams np D) (shiftTms (d - n) args));
-      let XAt := fun (d : Nat) => (.lam (.mu 0 (.unit 0) (DAt (d + 1)) (.var 0)) : Tm);
-      let DtAt := fun (d t : Nat) => nfAt d (.app (descFn (DAt d)) (.var t));
-      let MT : Tm := .pi (nfAt (n + 4) (interpApp 0 (.unit 0) (DtAt (n + 4) 0) (XAt (n + 4)) (.var 3)))
-        (.pi (nfAt (n + 5) (tApps (allTm 0 v) (args6 (.unit 0) (DtAt (n + 5) 1) (XAt (n + 5)) (shiftTm 5 0 P) (.var 4) (.var 0))))
-          (nfAt (n + 6) (.app (.app (shiftTm 6 0 P) (.var 5)) (.con (.pair (.var 2) (.var 1))))));
-      match branchesTm inline gs mc n alts ctors with
-      | .err m => .err m
-      | .ok bs =>
-        let M : Tm := .lam (.lam (.lam (.app (.app (.ecase MT (.fst (.var 1)) bs) (.snd (.var 1))) (.var 0))));
-        .ok (tLams n (.ind 0 (.unit 0) (DAt n) v P M .star (.var (n - 1 - p))))
 def indexIn : List String → String → Nat → Option Nat
   | .nil, _, _ => .none
   | .cons y ys, x, i => match strEq x y with
     | .true => .some i
     | .false => indexIn ys x (i + 1)
-def fieldTy : List Field → Nat → Syntax
-  | .nil, _ => .missing
-  | .cons (.mk _ ty) rest, i => match i with
-    | .zero => ty
-    | .succ j => fieldTy rest j
--- the arguments of the scrutinee's type, over the parameters (`n` of them)
-def elabArgs (gs : Globals) (sc : Scope) (n : Nat) : List Syntax → TmsR
-  | .nil => .ok .tnil
-  | .cons a rest => match elab sc a with
+def elabTeleI (gs : Globals) : Scope → Nat → List Field → TmsR
+  | _, _, .nil => .ok .tnil
+  | sc, d, .cons (.mk x ty) rest => match elab sc ty with
     | .err m => .err m
-    | .ok t => match elabArgs gs sc n rest with
-      | .ok ts => .ok (.tcons (closeG .false gs n t) ts)
+    | .ok A => match elabTeleI gs (Scope.bind sc x) (d + 1) rest with
+      | .ok ts => .ok (.tcons (closeG .true gs d A) ts)
       | e => e
-def elabArgsI (gs : Globals) (sc : Scope) (n : Nat) : List Syntax → TmsR
-  | .nil => .ok .tnil
-  | .cons a rest => match elab sc a with
-    | .err m => .err m
-    | .ok t => match elabArgsI gs sc n rest with
-      | .ok ts => .ok (.tcons (closeG .true gs n t) ts)
+-- the columns for the scrutinees (parameters, by name)
+inductive ColsR where
+  | ok (cols : List Col)
+  | err (msg : String)
+def scrutCols (params : List String) (pts ptsI : Tms) : List Syntax → ColsR
+  | .nil => .ok .nil
+  | .cons s rest => match indexIn params (identOf s) 0 with
+    | .none => .err "a match must be on parameters"
+    | .some i => match scrutCols params pts ptsI rest with
+      | .ok cs => .ok (.cons (.mk i (nthTm pts i) (nthTm ptsI i)) cs)
       | e => e
+def nonAtoms : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons s rest => match s with
+    | .atom _ => nonAtoms rest
+    | _ => .cons s (nonAtoms rest)
+def clausesOf : List Syntax → List Clause
+  | .nil => .nil
+  | .cons a rest => .cons (.mk (nonAtoms (kids (kid a 1))) .nil (kid a 3)) (clausesOf rest)
+-- the structural column: the leftmost one any clause has a constructor pattern in
+def anyCtorAt (k : Nat) : List Clause → Bool
+  | .nil => .false
+  | .cons (.mk pats _ _) rest => Bool.or (Bool.not (isVarPat (nthSyntax pats k))) (anyCtorAt k rest)
+def structuralCol (cls : List Clause) : Nat → Nat → Option Nat
+  | .zero, _ => .none
+  | .succ m, k => match anyCtorAt k cls with
+    | .true => .some k
+    | .false => structuralCol cls m (k + 1)
+def colLvl : Col → Nat
+  | .mk l _ _ => l
 def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
   | .ident f => match kids (kid stx 4) with
     | .cons _ (.cons rStx _) =>
       let ps := fieldsOf (kids (kid stx 3));
       let params := fieldNames ps;
-      let n := List.length params;
+      let n := lenL params;
       let body := kid stx 6;
-      let x := identOf (nthSyntax (kids (kid body 1)) 0);
-      match indexIn params x 0 with
-      | .none => errStep gs "a match must be on a parameter"
-      | .some p =>
-        let tyS := fieldTy ps p;
-        let isApp := strEq (kindOf tyS) "term.app";
-        let T := match isApp with
-          | .true => identOf (kid tyS 0)
-          | .false => identOf tyS;
-        let argStx : List Syntax := match isApp with
-          | .true => kids (kid tyS 1)
-          | .false => .nil;
-        match Globals.ind gs T with
-        | .none => errStep gs (String.append "not an inductive type: " T)
-        | .some info => match groupPis (Globals.scope gs) (kids (kid stx 3)) rStx with
+      match elabTele gs (Globals.scope gs) 0 ps with
+      | .err m => errStep gs m
+      | .ok pts => match elabTeleI gs (Globals.scope gs) 0 ps with
+        | .err m => errStep gs m
+        | .ok ptsI => match scrutCols params pts ptsI (nonAtoms (kids (kid body 1))) with
           | .err m => errStep gs m
-          | .ok tyE =>
-            let tyT := closeG .false gs 0 tyE;
-            let sc := bindAll (Globals.scope gs) params;
-            match elab sc rStx with
+          | .ok cols => match groupPis (Globals.scope gs) (kids (kid stx 3)) rStx with
             | .err m => errStep gs m
-            | .ok RE => match peelCtx n empty (eval .nil tyT) with
-              | .mk c Rv => match sortOf c Rv with
-                | .none => errStep gs "the result is not a type"
-                | .some l => match lvlClosed l with
-                  | .none => errStep gs "the result's universe must be a number"
-                  | .some v => match Scope.lookup (Globals.scope gs) T with
-                    | .none => errStep gs T
-                    | .some ti => match elabArgs gs sc n argStx with
-                    | .err m => errStep gs m
-                    | .ok args => match elabArgsI gs sc n argStx with
-                    | .err m => errStep gs m
-                    | .ok argsI =>
-                      let alts := altsOf T (kids (kid body 3));
-                      let R := closeG .false gs n RE;
-                      let RI := closeG .true gs n RE;
-                      let np := match info with
-                        | .mk np _ _ _ => np;
-                      let mc := MatchCtx.mk f params p sc R (globalTm .false gs ti) args (.lam (.lam (shiftTm 2 0 R))) np;
-                      let mcI := MatchCtx.mk f params p sc RI (globalTm .true gs ti) argsI (.lam (.lam (shiftTm 2 0 RI))) np;
-                      match matchTm .false gs mc n v info alts with
+            | .ok tyE =>
+              let tyT := closeG .false gs 0 tyE;
+              let sc := bindAll (Globals.scope gs) params;
+              match elab sc rStx with
+              | .err m => errStep gs m
+              | .ok RE => match peelCtx n empty (eval .nil tyT) with
+                | .mk c Rv => match sortOf c Rv with
+                  | .none => errStep gs "the result is not a type"
+                  | .some l => match lvlClosed l with
+                    | .none => errStep gs "the result's universe must be a number"
+                    | .some v =>
+                      let cls := clausesOf (kids (kid body 3));
+                      -- the structural parameter: the first one split
+                      let p := match structuralCol cls (lenL cols) 0 with
+                        | .some k => colLvl (nthCol cols k)
+                        | .none => 0;
+                      let mc := MatchCtx.mk f params p n v (closeG .false gs n RE) (closeG .true gs n RE) pts ptsI;
+                      match compileM .false gs mc n sc cols .true .nil cls with
                       | .err m => errStep gs m
-                      | .ok t => match matchTm .true gs mcI n v info alts with
+                      | .ok t => match compileM .true gs mc n sc cols .true .nil cls with
                         | .err m => errStep gs m
-                        | .ok tI => match check empty t (eval .nil tyT) with
+                        | .ok tI =>
+                          let fn := tLams n t;
+                          match check empty fn (eval .nil tyT) with
                           | .err m => errStep gs m
                           | .ok _ _ => .mk (String.append f (String.append " : " (show .nil 0 tyT)))
-                              (Globals.add gs (.mk f tyT t tI))
+                              (Globals.add gs (.mk f tyT fn (tLams n tI)))
     | _ => errStep gs "a definition needs a type"
   | _ => errStep gs "a definition needs a name"
 
--- Equations (stage 16d): `def f (ps) : A → R | p => rhs …`, one pattern per
--- alternative, is `def f (ps) (x✝ : A) : R := match x✝ with | p => rhs …`
-def eqnsToMatch (stx : Syntax) : Option Syntax := match kids (kid stx 4) with
-  | .cons colon (.cons ty _) =>
+-- Equations (stages 16d–e): `def f (ps) : A₁ → … → Aₘ → R | p₁, …, pₘ => rhs …` is
+-- `def f (ps) (x✝₁ : A₁) … : R := match x✝₁, … with | p₁, …, pₘ => rhs …`
+-- (`(x : A) → B` names its parameter)
+inductive Peel where
+  | mk (binders scruts : List Syntax) (res : Syntax)
+  | fail
+def peelArrows : Nat → Nat → Syntax → Peel
+  | .zero, _, ty => .mk .nil .nil ty
+  | .succ k, i, ty =>
     let arrow := strEq (kindOf ty) "term.arrow";
     let dep := strEq (kindOf ty) "term.depArrow";
     match Bool.or arrow dep with
-    | .false => .none
+    | .false => .fail
     | .true =>
       let x := match dep with
         | .true => nthName (binderNames (kid ty 0)) 0
-        | .false => "x✝";
+        | .false => String.append "x✝" (Nat.toString i);
       let A : Syntax := match dep with
         | .true => match binderType (kid ty 0) with
           | .some a => a
           | .none => .missing
         | .false => kid ty 0;
-      let ident := mkNode "term.ident" (one (.ident x));
       let binder := mkNode "binder.explicit" (.cons (.atom "(") (.cons (mkNull .nil)
         (.cons (mkNull (one (.ident x))) (.cons (mkNull (.cons (.atom ":") (one A))) (one (.atom ")"))))));
-      let body := mkNode "term.match" (.cons (.atom "match") (.cons (mkNull (one ident))
+      match peelArrows k (i + 1) (kid ty 2) with
+      | .mk bs xs res => .mk (.cons binder bs) (.cons (mkNode "term.ident" (one (.ident x))) xs) res
+      | .fail => .fail
+def eqnsToMatch (stx : Syntax) : Option Syntax := match kids (kid stx 4) with
+  | .cons colon (.cons ty _) =>
+    let m := match kids (kid stx 5) with
+      | .cons a _ => lenL (nonAtoms (kids (kid a 1)))
+      | .nil => 1;
+    match peelArrows m 0 ty with
+    | .fail => .none
+    | .mk bs xs res =>
+      let body := mkNode "term.match" (.cons (.atom "match") (.cons (mkNull xs)
         (.cons (.atom "with") (one (kid stx 5)))));
       .some (mkNode "command.def" (.cons (.atom "def") (.cons (kid stx 1) (.cons (kid stx 2)
-        (.cons (mkNull (List.append (kids (kid stx 3)) (one binder)))
-          (.cons (mkNull (.cons colon (one (kid ty 2)))) (.cons (.atom ":=") (one body))))))))
+        (.cons (mkNull (List.append (kids (kid stx 3)) bs))
+          (.cons (mkNull (.cons colon (one res))) (.cons (.atom ":=") (one body))))))))
   | _ => .none
 
 -- all the commands of a file, one output line each
