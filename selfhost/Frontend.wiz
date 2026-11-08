@@ -2472,6 +2472,8 @@ def infixCmd (cats : List Cat) (tokens : List String) (stx : Syntax) : Infix :=
     | .false => p + 1;
   let kind := String.append "term.infix " op;
   .mk (addTrailingTo "term" (.mk kind p lp 0 (.seq (.atom op) (.cat "term" rp))) cats) (.cons op tokens) (.mk kind (kid stx 5))
+  --|ex
+  --| .mk cats tokens (.mk "" (kid stx 5))
   --sol>
 def noteFor : List Note → String → Option Syntax
   | .nil, _ => .none
