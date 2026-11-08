@@ -1188,10 +1188,19 @@ program with `gprof` (`WIZ_CFLAGS=-pg`):
   kernel's constants (checked in the empty context, unfolded lazily since 15a), found
   by name in a `StrMap` (`Scope`), and kept in an `Array`.
 
-Now 0.25 s (2.4 s): linear, within 3–4× of the Lean-hosted checker.
+Now 0.25 s (2.4 s): linear, within 3–4× of the Lean-hosted checker. The profile is flat;
+the largest share left is reference counting (about 1.4 billion `inc`/`dec` for the
+3000 definitions). Two things tried and left out:
 
-Next: borrow inference, `ap` of a known partial application, fewer index equations for
-mutual families.
+* *borrow inference* as a pass around `insertRC` (parameters never consumed are
+  borrowed; calls and boxed wrappers fixed up afterwards) removed only 4% of the
+  `inc`s, and cost 12% more allocations, since a borrowed cell can't be reused. The
+  gain needs borrowed *projections* and reuse-aware inference inside `insertRC`
+  itself;
+* `ap` of a known partial application: closures are applied only about a million
+  times here.
+
+Next: fewer index equations for mutual families (elaboration time and code size).
 
 ## Stage 11: tooling
 
