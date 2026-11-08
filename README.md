@@ -1365,7 +1365,18 @@ recursive, and constructors take the parameters implicitly (`Tree`/`Forest A`).
 defined by `match`. `x.f` (and `(e).f`) is `T.f x` for `x : T …`. (A field's type may
 not mention an earlier field yet.)
 
-Next: numerals and strings, `if`, `do`.
+### 18f–g: numerals; `match` as a term ✅
+
+A numeral `n` is `Nat.succ` applied `n` times to `Nat.zero` (the kernel has no number
+literals), and in a pattern `0` is `.zero` and `n + 1` is `.succ n`. `match` can now
+appear anywhere a term is checked: its scrutinees are `let`-bound and its clauses
+compiled against the expected type, by the same compiler (so the elaborator and the
+match compiler are now one mutual block). Only a definition's own match recurses, and
+a recursive call may change only the parameters after the structural one: `lt m' n'`
+inside a nested `match m` under `match n` is rejected, `| succ m, succ n => lt m n`
+is fine.
+
+Next: strings and characters, `if` (a Prelude macro on the Lean side), `do`.
 
 ## Stage 11: tooling
 
