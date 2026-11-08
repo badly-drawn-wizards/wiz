@@ -719,12 +719,81 @@ def mentions (i : Nat) : Tm → Bool
   | .con t => mentions i t
   | .pair a b => Bool.or (mentions i a) (mentions i b)
   | _ => .false
-def solve (es : ES) (cx : Cx) (i k : Nat) (t : Val) : Option ES :=
+-- Pruning (stage 20a): a solution at depth `k` that mentions a metavariable of a deeper
+-- context (`?m := List ?n` with `?n` made under more `let`s) can't be lowered; when that
+-- metavariable's type doesn't depend on the deeper variables, it is solved by a new one
+-- at depth `k`, applied to the first `k` variables, and the solution is lowered again
+def piCod : Nat → Tm → Option Tm
+  | .zero, t => .some t
+  | .succ n, t => match t with
+    | .pi _ b => piCod n b
+    | _ => .none
+def piPrefix : Nat → Tm → Tm → Option Tm
+  | .zero, _, B => .some B
+  | .succ n, t, B => match t with
+    | .pi a b => match piPrefix n b B with
+      | .some r => .some (.pi a r)
+      | .none => .none
+    | _ => .none
+def spineHead : Tm → Tm
+  | .app f _ => spineHead f
+  | t => t
+def spineArgsTm : Tm → List Tm → List Tm
+  | .app f a, acc => spineArgsTm f (.cons a acc)
+  | _, acc => acc
+def appsL : Tm → List Tm → Tm
+  | f, .nil => f
+  | f, .cons a rest => appsL (.app f a) rest
+inductive Pruned where
+  | mk (es : ES) (t : Tm)
+-- prune the deeper metavariables in `t` (applications, Π types and the like)
+partial def pruneTm (k d : Nat) (es : ES) (t : Tm) : Pruned := match spineHead t with
+  | .axiomC n ty => match metaId n with
+    | .some j => match ES.get es j with
+      -- (a solved one is replaced by its solution first)
+      | .mk _ (.some _) => pruneTm k d es (quote d (force es (eval (freshEnv d) t)))
+      | .mk kj .none => match Nat.lt k kj with
+        | .true => match piCod kj ty with
+          | .some A => match lowerTm (kj - k) 0 A with
+            | .some Ak => match piPrefix k ty Ak with
+              | .some nty => match es with
+                | .mk ms ps =>
+                  let id := Array.size ms;
+                  let fresh : Tm := .axiomC (metaName id) nty;
+                  let ms1 := Array.push ms (.mk k .none);
+                  .mk (.mk (Array.set ms1 j (.mk kj (.some (tApps fresh (pvars k kj))))) ps)
+                    (appsL fresh (takeL k (spineArgsTm t .nil)))
+              | .none => .mk es t
+            | .none => .mk es t
+          | .none => .mk es t
+        | .false => .mk es t
+      | _ => .mk es t
+    | .none => .mk es t
+  | _ => match t with
+    | .app f a => match pruneTm k d es f with
+      | .mk es1 f' => match pruneTm k d es1 a with
+        | .mk es2 a' => .mk es2 (.app f' a')
+    | .pi a b => match pruneTm k d es a with
+      | .mk es1 a' => match pruneTm k (d + 1) es1 b with
+        | .mk es2 b' => .mk es2 (.pi a' b')
+    | .lam b => match pruneTm k (d + 1) es b with
+      | .mk es1 b' => .mk es1 (.lam b')
+    | t' => .mk es t'
+def solve (es0 : ES) (cx : Cx) (i k : Nat) (t : Val) : Option ES :=
   let d := Cx.lvl cx;
-  let tm := quote d t;
+  let tm0 := quote d t;
+  let pr := match lowerTm (d - k) 0 tm0 with
+    | .some _ => Pruned.mk es0 tm0
+    | .none => pruneTm k d es0 tm0;
+  match pr with
+  | .mk es tm =>
   match mentions i tm with
   | .true => .none
-  | .false => match lowerTm (d - k) 0 tm with
+  -- (at the metavariable's own depth nothing is lowered: any term will do, like a
+  -- postponed `match` argument's: stage 20a)
+  | .false => match (match Nat.beq d k with
+      | .true => Option.some tm
+      | .false => lowerTm (d - k) 0 tm) with
     | .some sol => match es with
       | .mk ms ps => .some (.mk (Array.set ms i (.mk k (.some sol))) ps)
     | .none => .none
@@ -805,6 +874,7 @@ def appArgs : Tm → List Tm → List Tm
 def tAppsL : Tm → List Tm → Tm
   | f, .nil => f
   | f, .cons a rest => tAppsL (.app f a) rest
+def tms6 (a b c e f g : Tm) : Tms := .tcons a (.tcons b (.tcons c (.tcons e (.tcons f (.tcons g .tnil)))))
 mutual
 def zonk (es : ES) (d : Nat) (t : Tm) : Option Tm := match metaHead t 0 with
   | .mk i _ => match ES.get es i with
@@ -844,7 +914,107 @@ def zonk (es : ES) (d : Nat) (t : Tm) : Option Tm := match metaHead t 0 with
         | .some ty' => .some (.ann x' ty')
         | .none => .none
       | .none => .none
-    | t' => .some t'
+    -- (the other forms a match or a postponed argument leaves: stage 20a)
+    | .sigma a b => match zonk es d a with
+      | .some a' => match zonk es (d + 1) b with
+        | .some b' => .some (.sigma a' b')
+        | .none => .none
+      | .none => .none
+    | .letq q ty v b => match zonk es d ty with
+      | .some ty' => match zonk es d v with
+        | .some v' => match zonk es (d + 1) b with
+          | .some b' => .some (.letq q ty' v' b')
+          | .none => .none
+        | .none => .none
+      | .none => .none
+    | .piq q a b => match zonk es d a with
+      | .some a' => match zonk es (d + 1) b with
+        | .some b' => .some (.piq q a' b')
+        | .none => .none
+      | .none => .none
+    | .sigmaq q a b => match zonk es d a with
+      | .some a' => match zonk es (d + 1) b with
+        | .some b' => .some (.sigmaq q a' b')
+        | .none => .none
+      | .none => .none
+    | .ecase m sc bs => match zonk es (d + 1) m with
+      | .some m' => match zonk es d sc with
+        | .some sc' => match zonkTms es d bs with
+          | .some bs' => .some (.ecase m' sc' bs')
+          | .none => .none
+        | .none => .none
+      | .none => .none
+    | .ind l I D v P m i x => match zonkTms es d (tms6 I D P m i x) with
+      | .some ts => match ts with
+        | .tcons I' (.tcons D' (.tcons P' (.tcons m' (.tcons i' (.tcons x' _))))) => .some (.ind l I' D' v P' m' i' x')
+        | _ => .none
+      | .none => .none
+    | .scase l I D v P m sz i x => match zonkTms es d (.tcons sz (tms6 I D P m i x)) with
+      | .some ts => match ts with
+        | .tcons sz' (.tcons I' (.tcons D' (.tcons P' (.tcons m' (.tcons i' (.tcons x' _)))))) => .some (.scase l I' D' v P' m' sz' i' x')
+        | _ => .none
+      | .none => .none
+    | t' => match zonkSub es d t' with
+      | .some t'' => .some t''
+      | .none => .none
+-- the forms whose parts are all at the same depth
+def zonkSub (es : ES) (d : Nat) (t : Tm) : Option Tm := match t with
+  | .fst x => zonk1 es d x (fun x' => .fst x')
+  | .snd x => zonk1 es d x (fun x' => .snd x')
+  | .con x => zonk1 es d x (fun x' => .con x')
+  | .dret i => zonk1 es d i (fun i' => .dret i')
+  | .tyRefl X => zonk1 es d X (fun X' => .tyRefl X')
+  | .pair a b => zonk2 es d a b (fun a' b' => .pair a' b')
+  | .darg S D => zonk2 es d S D (fun S' D' => .darg S' D')
+  | .drec j D => zonk2 es d j D (fun j' D' => .drec j' D')
+  | .eqTy A B => zonk2 es d A B (fun A' B' => .eqTy A' B')
+  | .eqRefl A a => zonk2 es d A a (fun A' a' => .eqRefl A' a')
+  | .exfalso m x => zonk2 es d m x (fun m' x' => .exfalso m' x')
+  | .eq A a b => match zonkTms es d (.tcons A (.tcons a (.tcons b .tnil))) with
+    | .some (.tcons A' (.tcons a' (.tcons b' _))) => .some (.eq A' a' b')
+    | _ => .none
+  | .mu l I D i => match zonkTms es d (.tcons I (.tcons D (.tcons i .tnil))) with
+    | .some (.tcons I' (.tcons D' (.tcons i' _))) => .some (.mu l I' D' i')
+    | _ => .none
+  | .coe A B e x => match zonkTms es d (.tcons A (.tcons B (.tcons e (.tcons x .tnil)))) with
+    | .some (.tcons A' (.tcons B' (.tcons e' (.tcons x' _)))) => .some (.coe A' B' e' x')
+    | _ => .none
+  | .out x => zonk1 es d x (fun x' => .out x')
+  | .cocon x => zonk1 es d x (fun x' => .cocon x')
+  | .delim v P mr ma mc mh D => match zonkTms es d (tms6 P mr ma mc mh D) with
+    | .some (.tcons P' (.tcons mr' (.tcons ma' (.tcons mc' (.tcons mh' (.tcons D' _)))))) => .some (.delim v P' mr' ma' mc' mh' D')
+    | _ => .none
+  | .nu l I D i sz => match zonkTms es d (.tcons I (.tcons D (.tcons i (.tcons sz .tnil)))) with
+    | .some (.tcons I' (.tcons D' (.tcons i' (.tcons sz' _)))) => .some (.nu l I' D' i' sz')
+    | _ => .none
+  | .szSuc x => zonk1 es d x (fun x' => .szSuc x')
+  | .sizeLt x => zonk1 es d x (fun x' => .sizeLt x')
+  | .descr l I => zonk1 es d I (fun I' => .descr l I')
+  | .dhrec H j D => match zonkTms es d (.tcons H (.tcons j (.tcons D .tnil))) with
+    | .some (.tcons H' (.tcons j' (.tcons D' _))) => .some (.dhrec H' j' D')
+    | _ => .none
+  | .mus l I D i sz => match zonkTms es d (.tcons I (.tcons D (.tcons i (.tcons sz .tnil)))) with
+    | .some (.tcons I' (.tcons D' (.tcons i' (.tcons sz' _)))) => .some (.mus l I' D' i' sz')
+    | _ => .none
+  | .subst A a P p b e => match zonkTms es d (tms6 A a P p b e) with
+    | .some (.tcons A' (.tcons a' (.tcons P' (.tcons p' (.tcons b' (.tcons e' _)))))) => .some (.subst A' a' P' p' b' e')
+    | _ => .none
+  | t' => .some t'
+def zonk1 (es : ES) (d : Nat) (x : Tm) (k : Tm → Tm) : Option Tm := match zonk es d x with
+  | .some x' => .some (k x')
+  | .none => .none
+def zonk2 (es : ES) (d : Nat) (x y : Tm) (k : Tm → Tm → Tm) : Option Tm := match zonk es d x with
+  | .some x' => match zonk es d y with
+    | .some y' => .some (k x' y')
+    | .none => .none
+  | .none => .none
+def zonkTms (es : ES) (d : Nat) : Tms → Option Tms
+  | .tnil => .some .tnil
+  | .tcons t rest => match zonk es d t with
+    | .some t' => match zonkTms es d rest with
+      | .some r => .some (.tcons t' r)
+      | .none => .none
+    | .none => .none
 def zonkAll (es : ES) (d : Nat) : List Tm → Option (List Tm)
   | .nil => .some .nil
   | .cons t rest => match zonk es d t with
@@ -948,11 +1118,17 @@ inductive DR where
 -- a postponed argument: its syntax, type, and the metavariable standing for it
 inductive Post where
   | mk (s : Syntax) (dom : Val) (m : Tm)
+partial def unparen (s : Syntax) : Syntax := match strEq (kindOf s) "term.paren" with
+  | .true => unparen (kid s 1)
+  | .false => s
 partial def isDotStx (s : Syntax) : Bool := match strEq (kindOf s) "term.paren" with
   | .true => isDotStx (kid s 1)
   | .false => match strEq (kindOf s) "term.dotIdent" with
     | .true => .true
     | .false => Bool.and (strEq (kindOf s) "term.app") (strEq (kindOf (kid s 0)) "term.dotIdent")
+-- an argument that needs its expected type: `.c …`, and (stage 20a) a `match` or a `fun`
+def postponable (a : Syntax) : Bool := Bool.or (isDotStx a) (Bool.or (strEq (kindOf (unparen a)) "term.match")
+  (strEq (kindOf (unparen a)) "term.fun"))
 def isMetaApp (es : ES) (ty : Val) : Bool := match metaApp es (force es ty) with
   | .mk _ _ => .true
   | .none => .false
@@ -1131,9 +1307,6 @@ def isParamArg (params : List String) (binds : List Bind) (i : Nat) (a : Syntax)
   | .false => match bindLvl (identOf a) binds with
     | .some l => Nat.beq l i
     | .none => .false
-partial def unparen (s : Syntax) : Syntax := match strEq (kindOf s) "term.paren" with
-  | .true => unparen (kid s 1)
-  | .false => s
 -- the arguments (the explicit parameters': implicit ones are left out, being the same)
 -- before the structural one are the parameters, the structural one a field with a
 -- hypothesis: that hypothesis (the later arguments are its arguments)
@@ -1429,9 +1602,20 @@ def descFn : Tm → Tm
 mutual
 -- infer the type of `s` (an identifier's leading implicit arguments are inserted)
 def inferT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
-  match inferHead gs es cx s with
-  | .ok t ty es' m => insertImplicits gs es' cx t ty m
-  | .err msg => .err msg
+  -- a `match` (or `if`) without an expected type: against a new metavariable, a type
+  -- (stage 20a)
+  match Bool.or (strEq (kindOf s) "term.match") (match ifMatch s with
+    | .some _ => Bool.true
+    | .none => .false) with
+  | .true => match newMeta es cx (.vsort (.lnum 1)) with
+    | .mk mt es1 =>
+      let T := eval (TCtx.env (Cx.c cx)) mt;
+      match checkT gs es1 cx s T with
+      | .ok t _ es2 => .ok t (force es2 T) es2
+      | e => e
+  | .false => match inferHead gs es cx s with
+    | .ok t ty es' m => insertImplicits gs es' cx t ty m
+    | .err msg => .err msg
 -- an application's head: the term, its type and the implicit mask that remains
 def inferHead (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : HE :=
   let k := kindOf s;
@@ -1571,8 +1755,22 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
                   | .err m => .err m
                 | e => e
               | .false => match strEq k "term.fun" with
-                | .true => .err "cannot infer the type of a λ; add a type ascription"
+                | .true => match Nat.beq (lenL (binders (kids (kid s 1)))) (lenL (fieldsOf (kids (kid s 1)))) with
+                  | .true => inferLams gs es cx (fieldsOf (kids (kid s 1))) (kid s 3)
+                  | .false => .err "cannot infer the type of a λ; add a type ascription"
                 | .false => .err (String.append "unsupported syntax " k)
+-- `fun (x : A) … => b` with every binder typed: `(x : A) → B` (stage 20a)
+def inferLams (gs : Globals) (es : ES) (cx : Cx) : List Field → Syntax → TE
+  | .nil, body => inferT gs es cx body
+  | .cons (.mk x aS) rest, body => match strEq (kindOf aS) "" with
+    | .true => .err "cannot infer the type of a λ; add a type ascription"
+    | .false => match inferType gs es cx aS with
+      | .ok A _ es1 =>
+        let cx' := Cx.bind cx x (eval (TCtx.env (Cx.c cx)) A);
+        match inferLams gs es1 cx' rest body with
+        | .ok b bty es2 => .ok (.lam b) (eval (TCtx.env (Cx.c cx)) (.pi A (quote (Cx.lvl cx') (force es2 bty)))) es2
+        | e => e
+      | e => e
 -- a type: its sort is computed again by the kernel later, so any sort is fine here
 def inferType (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE := match inferT gs es cx s with
   | .ok t ty es' => match whnf (force es' ty) with
@@ -1611,7 +1809,7 @@ def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List B
         | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected
       | _ => .err "too many implicit arguments"
     | _ => match whnf (force es fty) with
-      | .vpi _ dom env cod => match Bool.and (isDotStx a) (isMetaApp es dom) with
+      | .vpi _ dom env cod => match Bool.and (postponable a) (isMetaApp es dom) with
         | .true => match newMeta es cx dom with
           | .mk mt es1 => appArgsT gs es1 cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
               (.cons (.mk a dom mt) post) expected
@@ -1687,7 +1885,7 @@ def checkT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (ty : Val) : TE :=
     | .none => match ifMatch s with
     | .some s' => checkT gs es cx s' ty
     | .none => match strEq k "term.match" with
-    | .true => termMatch gs es cx s ty
+    | .true => termMatch gs es cx s (force es ty)
     | .false => match strEq k "term.hole" with
     | .true => match newMeta es cx ty with
       | .mk mt es' => .ok mt ty es'
@@ -2520,8 +2718,18 @@ def permAlts (f g : String) (n i : Nat) : List Syntax → List Syntax
 inductive Reorder where
   | yes (helper main : Syntax)
   | no
-def reorderStructural (gs : Globals) (stx : Syntax) : Reorder := match kid stx 1 with
+-- `(x y : A)` as `(x : A) (y : A)`
+def splitNames (b : Syntax) : List String → List Syntax
+  | .nil => .nil
+  | .cons x rest => .cons (setKid b 2 (mkNull (one (.ident x)))) (splitNames b rest)
+def splitBinders : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons b rest => match strEq (kindOf b) "binder.explicit" with
+    | .true => List.append (splitNames b (binderNames b)) (splitBinders rest)
+    | .false => .cons b (splitBinders rest)
+def reorderStructural (gs : Globals) (stx0 : Syntax) : Reorder := match kid stx0 1 with
   | .ident f =>
+    let stx := setKid stx0 3 (mkNull (splitBinders (kids (kid stx0 3))));
     let bs := kids (kid stx 3);
     let params := fieldNames (fieldsOf bs);
     let n := lenL params;
@@ -2769,19 +2977,25 @@ def doCats (cats : List Cat) : List Cat :=
 inductive Run where
   | mk (out : List String) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)
 -- all the commands of a file, one output line each
-partial def runCommands (cats : List Cat) (tokens : List String) (notes : List Note) (input : Array Nat) (pos : Nat)
-    (gs : Globals) (out : List String) : Run :=
+-- one command: its output line (none for an import or a notation), and the state after
+-- it; `done` at the end of the input
+inductive StepR where
+  | done
+  | next (line : Option String) (stop : Nat) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)
+mutual
+def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (input : Array Nat) (pos : Nat)
+    (gs : Globals) : StepR :=
   match Nat.lt (skipWs input pos) (Array.size input) with
-  | .false => .mk out gs cats tokens notes
+  | .false => .done
   | .true => match parseCommandAt cats tokens input pos with
-    | .err m => .mk (.cons (String.append "parse " m) out) gs cats tokens notes
+    | .err m => .next (.some (String.append "parse " m)) (Array.size input) gs cats tokens notes
     | .ok stx0 stop => match strEq (kindOf stx0) "command.import" with
     -- (only the Prelude: its commands are checked, silently)
     | .true => match runCommands (doCats cats) (.cons "←" (.cons "do" tokens)) notes (String.codes preludeText) 0 gs .nil with
-      | .mk _ gs' cats' tokens' notes' => runCommands cats' tokens' notes' input stop gs' out
+      | .mk _ gs' cats' tokens' notes' => .next .none stop gs' cats' tokens' notes'
     | .false => match strEq (kindOf stx0) "command.infix" with
     | .true => match infixCmd cats tokens stx0 with
-      | .mk cats' tokens' note => runCommands cats' tokens' (.cons note notes) input stop gs out
+      | .mk cats' tokens' note => .next .none stop gs cats' tokens' (.cons note notes)
     | .false =>
       let stx := match notes with
         | .nil => stx0
@@ -2802,7 +3016,15 @@ partial def runCommands (cats : List Cat) (tokens : List String) (notes : List N
                     (.cons (mkNull .nil) (.cons (mkNull .nil) (one (mkNull (.cons (.atom ":") (one (kid stx 5))))))))))
                 | .false => defStep gs stx;
       match step with
-      | .mk line gs' => runCommands cats tokens notes input stop gs' (.cons line out)
+      | .mk line gs' => .next (.some line) stop gs' cats tokens notes
+def runCommands (cats : List Cat) (tokens : List String) (notes : List Note) (input : Array Nat) (pos : Nat)
+    (gs : Globals) (out : List String) : Run :=
+  match stepCommand cats tokens notes input pos gs with
+  | .done => .mk out gs cats tokens notes
+  | .next line stop gs' cats' tokens' notes' => runCommands cats' tokens' notes' input stop gs' (match line with
+    | .some l => .cons l out
+    | .none => out)
+end
 
 def checkFile (cats : List Cat) (tokens : List String) (text : String) : List String :=
   match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with
