@@ -1311,7 +1311,13 @@ in `.cons .zero xs`, before `xs` fixes the list's type) is postponed: a metavari
 stands for it until the other arguments are elaborated, then it is checked and unified
 with that metavariable. `@f` inserts no implicit arguments.
 
-Next: indices, mutual types and `partial`; typed parameter and result types in matches.
+### 17d: `partial` and `mutual` ✅
+
+`partial def` and `mutual … end` blocks of definitions: each function is first an axiom
+of its type (`addAxioms`), so that the bodies may call any of them, as the Lean kernel
+sees partial definitions; then each body is checked as usual and replaces the axiom.
+
+Next: indices and mutual inductive types; typed parameter and result types in matches.
 
 ## Stage 11: tooling
 
