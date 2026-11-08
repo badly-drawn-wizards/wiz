@@ -1240,7 +1240,18 @@ frontend normalises first (`nfAt`: the kernel can't infer the type of an applied
 |------|-------------------------|------------------------------------------|
 | 16.2 | `selfhost/Frontend.wiz` | `branchTm`: one branch of the method      |
 
-Next: parameters (`List A`), then nested patterns and several scrutinees.
+### 16c: parameters ✅
+
+`inductive List (A : Type) where | nil | cons (head : A) (tail : List A)`: the
+description lives under the parameters (`List` is `fun A => μ D[A] tt`), a field of type
+`List A` (the type applied to its own parameters) is recursive, and the constructors take
+the parameters first (the self-hosted frontend has no implicit arguments yet:
+`List.cons Nat x xs`). A match on `l : List A` instantiates the description and the
+field types with the scrutinee type's arguments, again by normalising
+(`(fun ps => D) args`) rather than substituting.
+
+Next: indices, nested patterns and several scrutinees; implicit arguments (which need
+metavariables in the self-hosted frontend).
 
 ## Stage 11: tooling
 
