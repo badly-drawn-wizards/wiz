@@ -1335,8 +1335,17 @@ its result type with it before the postponed `.c` arguments are done, and an arg
 whose type is still unknown at the end of its application waits in the elaboration state
 until the whole definition is elaborated (`drain`).
 
-Next: index equations in the motive (so impossible cases go away), mutual inductive
-types (a family indexed by a tag), typed parameter and result types in matches.
+### 18b: index equations ✅
+
+When the scrutinee's index is closed (`Vec A (Nat.succ Nat.zero)`, or a tag), the motive
+also takes the equation `e :0 i = idx` (and the `ind` gets `refl`). A constructor no
+clause covers is then ruled out if the index makes it impossible: its payload proves
+`i_c = i`, carried along `e` (`subst`) that is `i_c = idx`, which OTT computes to
+`False` (or to `False × …`, projected) when the two differ, so the branch is `exfalso`.
+A hypothesis for a recursive field with that same index is applied to `refl` already.
+The parameter and result types of a match are now elaborated with types too.
+
+Next: mutual inductive types, as a family indexed by a tag.
 
 ## Stage 11: tooling
 
