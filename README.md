@@ -1354,7 +1354,18 @@ Each member is the constant `Tm := Tm_Tms (tag 0)`, and its constructors `Tm.c` 
 the family's values. A match on a `Tm` runs at a closed index, so 18b rules out the
 other members' constructors: a match lists only its own type's.
 
-Next: parameters for mutual types, `structure`, numerals and strings.
+### 18d–e: parameters for mutual types; structures ✅
+
+The members of a mutual block share their parameters (the first member's): the family
+is `fun ps i => μ D i`, a member `A := fun ps => A_B ps (tag j)`, a field `A ps` is
+recursive, and constructors take the parameters implicitly (`Tree`/`Forest A`).
+
+`structure T (ps) where f : A …` is read, on the syntax tree, as the inductive type
+`T (ps) where | mk (f : A) …` and one projection `T.f {ps} (s : T ps) : A` per field,
+defined by `match`. `x.f` (and `(e).f`) is `T.f x` for `x : T …`. (A field's type may
+not mention an earlier field yet.)
+
+Next: numerals and strings, `if`, `do`.
 
 ## Stage 11: tooling
 
