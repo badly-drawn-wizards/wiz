@@ -59,7 +59,9 @@ def identNames : List Syntax → List String
       | _ => "_") (identNames rest)
 def binderNames (b : Syntax) : List String := match b with
   | .ident n => .cons n .nil
-  | _ => identNames (kids (kid b 2))
+  | _ => match strEq (kindOf b) "term.hole" with
+    | .true => .cons "_" .nil
+    | .false => identNames (kids (kid b 2))
 def binderType (b : Syntax) : Option Syntax := match kids (kid b 3) with
   | .cons _ (.cons t _) => .some t
   | _ => .none
@@ -84,7 +86,9 @@ def elab : Scope → Syntax → Elab
   --<sol
   | names, .ident n => match Scope.lookup names n with
     | .some i => .ok (.var i)
-    | .none => .err ("unknown identifier " +++ n)
+    | .none => match strEq n "Unit" with
+      | .true => .ok (.unit 0)
+      | .false => .err ("unknown identifier " +++ n)
   | names, s => match strEq (kindOf s) "term.ident" with
     | .true => elab names (kid s 0)
     | .false => match strEq (kindOf s) "term.paren" with
@@ -1979,9 +1983,28 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
               let cx8 := match top with
                 | .true => Cx.define cx7 "cur✝" (eval env7 curVal) (eval env7 curTy)
                 | .false => cx7;
+              -- with a closed index at the structural split, `cur✝` (at the method's index)
+              -- is moved along `e` to the scrutinee's index: `cur'✝ := coe … cur✝`
+              let De := base + 2;
+              let tyAt := fun (dd : Nat) (ix : Tm) => match col with
+                | .mk L' _ _ => tApps fam (tmsAppend (shiftTms (dd - L') args) (.tcons ix .tnil));
+              let idxE := shiftTm (De - L) 0 idx;
+              let curTyB := tyAt De idxE;
+              -- (`subst` moves propositions: `coe` along `F i = F idx`, from `tyRefl (F i)`)
+              let FiE := tyAt De (.var (De - 1 - d));
+              let tyEq : Tm := .subst (nfAt De (tApps (tLams np I) (shiftTms (De - L) args))) (.var (De - 1 - d))
+                (.lam (.lam (.eqTy (tyAt (De + 2) (.var (De + 1 - d))) (tyAt (De + 2) (.var 1))))) (.tyRefl FiE) idxE (.var 0);
+              let curValB : Tm := .coe FiE curTyB tyEq (.var (De - 1 - base));
               let afterE := match modeB with
                 | .true => match whnf MBi with
-                  | .vpi _ eTy envE codE => Gen.mk (Cx.bind cx8 "e✝" eTy) (eval (.cons (fresh (Cx.lvl cx8)) envE) codE)
+                  | .vpi _ eTy envE codE =>
+                    let cxe := Cx.bind cx8 "e✝" eTy;
+                    let rem := eval (.cons (fresh (Cx.lvl cx8)) envE) codE;
+                    match top with
+                    | .true =>
+                      let enve := TCtx.env (Cx.c cxe);
+                      Gen.mk (Cx.define cxe "cur'✝" (eval enve curValB) (eval enve curTyB)) rem
+                    | .false => Gen.mk cxe rem
                   | t => Gen.mk cx8 t
                 | .false => Gen.mk cx8 (match top with
                   | .true => MBi
@@ -1994,10 +2017,12 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
                 match gen with
                 | .mk cx9 expected' =>
                   let curCol := match top with
-                    | .true => Col.mk base curTy curTy
+                    | .true => match modeB with
+                      | .true => Col.mk (base + 2) curTyB curTyB
+                      | .false => Col.mk base curTy curTy
                     | .false => col;
                   let cols'' := match top with
-                    | .true => regen p n (base + 1 + eB) pts pts cols'
+                    | .true => regen p n (base + 1 + eB + eB) pts pts cols'
                     | .false => cols';
                   match compileM gs mc es cx9 expected' cols'' .false ihLvls' (specialize T c k F curCol cls) with
                   | .err m => .err (match strEq m "missing case" with
@@ -2005,7 +2030,9 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
                     | .false => m)
                   | .ok body es' =>
                     let inE : Tm := match modeB with
-                      | .true => .lam (tLams G body)
+                      | .true => .lam (match top with
+                        | .true => .letE curTyB curValB (tLams G body)
+                        | .false => tLams G body)
                       | .false => tLams G body;
                     let inner : Tm := match top with
                       | .true => .letE curTy curVal inE
@@ -2124,6 +2151,19 @@ def elabParams (gs : Globals) : Cx → List Field → PR
         | .some A => match elabParams gs (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) A)) rest with
           | .ok tys cx' => .ok (.tcons A tys) cx'
           | e => e
+-- does a clause's right-hand side mention `f`?
+mutual
+def mentionsIdent (f : String) (s : Syntax) : Bool := match s with
+  | .ident n => strEq n f
+  | .node _ args => mentionsArgs f args
+  | _ => .false
+def mentionsArgs (f : String) : SyntaxF .false → Bool
+  | .nil => .false
+  | .cons s rest => Bool.or (mentionsIdent f s) (mentionsArgs f rest)
+end
+def clausesMention (f : String) : List Clause → Bool
+  | .nil => .false
+  | .cons (.mk _ _ rhs) rest => Bool.or (mentionsIdent f rhs) (clausesMention f rest)
 def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
   | .ident f => match kids (kid stx 4) with
     | .cons _ (.cons rStx _) =>
@@ -2156,7 +2196,12 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
                     let R := RE;
                     let mc := MatchCtx.mk f params p n v R R pts pts (paramMask (kids (kid stx 3)));
                     let cxP := bindParams (Cx.mk empty (Globals.scope gs)) 0 params pts;
-                    match compileM gs mc ES.empty cxP (eval (TCtx.env (Cx.c cxP)) R) cols .true .nil cls with
+                    -- induction only for a definition that calls itself (a partial one calls
+                    -- its axiom); else every split is case analysis (stage 19e)
+                    let useInd := match Scope.lookup (Globals.scope gs) f with
+                      | .some _ => Bool.false
+                      | .none => clausesMention f cls;
+                    match compileM gs mc ES.empty cxP (eval (TCtx.env (Cx.c cxP)) R) cols useInd .nil cls with
                     | .err m => errStep gs m
                     | .ok t _ =>
                       let fn := tLams n t;
@@ -2239,6 +2284,15 @@ def memberOf (members : List String) (ps : List String) (ty : Syntax) : Option N
     | .yes _ => .some j
     | .no => .none
   | .none => .none
+-- a field `H → B` with `B` a member: higher-order recursive (stage 19e)
+inductive HRec where
+  | yes (H : Syntax) (j : Nat)
+  | no
+def hrecMember (members ps : List String) (ty : Syntax) : HRec := match strEq (kindOf ty) "term.arrow" with
+  | .true => match memberOf members ps (kid ty 2) with
+    | .some j => .yes (kid ty 0) j
+    | .none => .no
+  | .false => .no
 -- a member constructor's fields: as a description (`m` members, this one `j`)
 def mctorDesc (inline : Bool) (gs : Globals) (members ps : List String) (m j : Nat) : Scope → Nat → List Field → Elab
   | _, _, .nil => .ok (.dret (.tag m j))
@@ -2246,7 +2300,13 @@ def mctorDesc (inline : Bool) (gs : Globals) (members ps : List String) (m j : N
     | .some j' => match mctorDesc inline gs members ps m j sc d rest with
       | .ok D => .ok (.drec (.tag m j') D)
       | e => e
-    | .none => match elab sc ty with
+    | .none => match hrecMember members ps ty with
+    | .yes H j' => match elab sc H with
+      | .err m' => .err m'
+      | .ok Ht => match mctorDesc inline gs members ps m j sc d rest with
+        | .ok D => .ok (.dhrec (closeG inline gs d Ht) (.lam (.tag m j')) D)
+        | e => e
+    | .no => match elab sc ty with
       | .err m' => .err m'
       | .ok A => match mctorDesc inline gs members ps m j (Scope.bind sc x) (d + 1) rest with
         | .ok D => .ok (.darg (closeG inline gs d A) (.lam D))
@@ -2532,7 +2592,7 @@ def structCmd (gs : Globals) (stx : Syntax) : Step :=
 
 -- The self-hosted frontend's Prelude (stage 19a), read by `import Prelude`: numbers,
 -- Booleans, lists, options, pairs, characters (by their code) and strings.
-def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.pred : Nat → Nat\n  | .zero => .zero\n  | .succ n => n\ndef Nat.sub : Nat → Nat → Nat\n  | m, .zero => m\n  | m, .succ n => Nat.pred (Nat.sub m n)\ninfixl:65 \" + \" => Nat.add\ninfixl:65 \" - \" => Nat.sub\ninfixl:70 \" * \" => Nat.mul\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Nat.lt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.lt m n\ndef Nat.le (m n : Nat) : Bool := Nat.lt m (.succ n)\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ninfixr:67 \" ++ \" => List.append\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\naxiom Array : Type → Type\naxiom Array.empty {A : Type} : Array A\naxiom Array.push {A : Type} (a : Array A) (x : A) : Array A\naxiom Array.size {A : Type} (a : Array A) : Nat\naxiom Array.getD {A : Type} (a : Array A) (i : Nat) (d : A) : A\naxiom Array.set {A : Type} (a : Array A) (i : Nat) (x : A) : Array A\naxiom World : Type\ndef IO (A : Type) : Type := World → Prod A World\ndef IO.pure {A : Type} (a : A) : IO A := fun w => .mk a w\ndef IO.bind {A B : Type} (x : IO A) (f : A → IO B) : IO B := fun w => f (x w).fst (x w).snd\naxiom IO.println : String → IO Unit\naxiom IO.readFile : String → IO String\naxiom Nat.toString : Nat → String\naxiom Str : Type\naxiom Str.ofString : String → Str\naxiom StrMap : Type → Type\naxiom StrMap.empty {V : Type} : StrMap V\naxiom StrMap.insert {V : Type} (m : StrMap V) (k : Str) (v : V) : StrMap V\naxiom StrMap.findD {V : Type} (m : StrMap V) (k : Str) (d : V) : V\naxiom StrMap.size {V : Type} (m : StrMap V) : Nat\ninductive SyntaxF : Bool → Type where\n  | missing : SyntaxF .true\n  | atom (val : String) : SyntaxF .true\n  | ident (val : String) : SyntaxF .true\n  | node (kind : String) (args : SyntaxF .false) : SyntaxF .true\n  | nil : SyntaxF .false\n  | cons (head : SyntaxF .true) (tail : SyntaxF .false) : SyntaxF .false\ndef Syntax : Type := SyntaxF .true\ndef SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax\n  | .cons x t, n => match n with\n    | .zero => x\n    | .succ m => SyntaxF.nth t m\n  | _, _ => .missing\ndef Syntax.getArg (stx : Syntax) (i : Nat) : Syntax := match stx with\n  | .node _ args => SyntaxF.nth args i\n  | _ => .missing\n"
+def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.pred : Nat → Nat\n  | .zero => .zero\n  | .succ n => n\ndef Nat.sub : Nat → Nat → Nat\n  | m, .zero => m\n  | m, .succ n => Nat.pred (Nat.sub m n)\ninfixl:65 \" + \" => Nat.add\ninfixl:65 \" - \" => Nat.sub\ninfixl:70 \" * \" => Nat.mul\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Nat.lt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.lt m n\ndef Nat.le (m n : Nat) : Bool := Nat.lt m (.succ n)\ndef Nat.max (m n : Nat) : Nat := if Nat.lt m n then n else m\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ninfixr:67 \" ++ \" => List.append\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\naxiom Array : Type → Type\naxiom Array.empty {A : Type} : Array A\naxiom Array.push {A : Type} (a : Array A) (x : A) : Array A\naxiom Array.size {A : Type} (a : Array A) : Nat\naxiom Array.getD {A : Type} (a : Array A) (i : Nat) (d : A) : A\naxiom Array.set {A : Type} (a : Array A) (i : Nat) (x : A) : Array A\naxiom World : Type\ndef IO (A : Type) : Type := World → Prod A World\ndef IO.pure {A : Type} (a : A) : IO A := fun w => .mk a w\ndef IO.bind {A B : Type} (x : IO A) (f : A → IO B) : IO B := fun w => f (x w).fst (x w).snd\naxiom IO.println : String → IO Unit\naxiom IO.readFile : String → IO String\naxiom Nat.toString : Nat → String\naxiom Str : Type\naxiom Str.ofString : String → Str\naxiom StrMap : Type → Type\naxiom StrMap.empty {V : Type} : StrMap V\naxiom StrMap.insert {V : Type} (m : StrMap V) (k : Str) (v : V) : StrMap V\naxiom StrMap.findD {V : Type} (m : StrMap V) (k : Str) (d : V) : V\naxiom StrMap.size {V : Type} (m : StrMap V) : Nat\ninductive SyntaxF : Bool → Type where\n  | missing : SyntaxF .true\n  | atom (val : String) : SyntaxF .true\n  | ident (val : String) : SyntaxF .true\n  | node (kind : String) (args : SyntaxF .false) : SyntaxF .true\n  | nil : SyntaxF .false\n  | cons (head : SyntaxF .true) (tail : SyntaxF .false) : SyntaxF .false\ndef Syntax : Type := SyntaxF .true\ndef SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax\n  | .cons x t, n => match n with\n    | .zero => x\n    | .succ m => SyntaxF.nth t m\n  | _, _ => .missing\ndef Syntax.getArg (stx : Syntax) (i : Nat) : Syntax := match stx with\n  | .node _ args => SyntaxF.nth args i\n  | _ => .missing\n"
 
 -- Infix operators (stage 19b): `infixl:p " op " => f` (also `infixr`, `infix`) adds a
 -- trailing term parser `a op b` (kind `term.infix op`) and the token `op`; each later
