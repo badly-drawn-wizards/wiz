@@ -1632,6 +1632,68 @@ def eqnsToMatch (stx : Syntax) : Option Syntax := match kids (kid stx 4) with
           (.cons (mkNull (.cons colon (one res))) (.cons (.atom ":=") (one body))))))))
   | _ => .none
 
+-- one definition (or inductive type), by its form
+def defStep (gs : Globals) (stx : Syntax) : Step := match strEq (kindOf stx) "command.inductive" with
+  | .true => inductiveCmd gs stx
+  | .false => match Bool.and (strEq (kindOf stx) "command.def") (strEq (kindOf (kid stx 6)) "term.match") with
+    | .true => matchDefCmd gs stx
+    | .false => match strEq (kindOf stx) "command.defEqns" with
+      | .true => match eqnsToMatch stx with
+        | .some d => matchDefCmd gs d
+        | .none => errStep gs "equations need a function type"
+      | .false => command gs stx
+
+-- Partial definitions and mutual blocks (stage 17d): each function is first an axiom of
+-- its type, so that the bodies may call any of them (the kernel sees them so: there is
+-- no termination check); then each body is checked as usual.
+mutual
+def teleT (gs : Globals) (es : ES) (cx : Cx) (bs : List Syntax) (tyS : Syntax) : TE := match bs with
+  | .nil => inferType gs es cx tyS
+  | .cons b rest => match binderType b with
+    | .none => .err "the binders of a definition need types"
+    | .some aS => teleNames gs es cx (binderNames b) aS rest tyS
+def teleNames (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (aS : Syntax) (rest : List Syntax) (tyS : Syntax) : TE :=
+  match xs with
+  | .nil => teleT gs es cx rest tyS
+  | .cons x xs' => match inferType gs es cx aS with
+    | .ok A _ es1 => match teleNames gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) A)) xs' aS rest tyS with
+      | .ok B _ es2 => .ok (.pi A B) (.vsort (.lnum 0)) es2
+      | e => e
+    | e => e
+end
+inductive AxR where
+  | ok (gs : Globals)
+  | err (msg : String)
+def addAxioms : Globals → List Syntax → AxR
+  | gs, .nil => .ok gs
+  | gs, .cons d rest => match kid d 1 with
+    | .ident f => match kids (kid d 4) with
+      | .cons _ (.cons tyS _) => match teleT gs ES.empty (Cx.mk empty (Globals.scope gs)) (kids (kid d 3)) tyS with
+        | .err m => .err m
+        | .ok ty0 _ es => match zonk es 0 ty0 with
+          | .none => .err "could not infer an implicit argument"
+          | .some ty => match inferUniv empty ty with
+            | .err m => .err m
+            | .ok _ _ => addAxioms (Globals.add gs (.mk f ty (.axiomC f ty) (.axiomC f ty) (paramMask (kids (kid d 3))))) rest
+      | _ => .err "a partial definition needs a type"
+    | _ => .err "a definition needs a name"
+def joinLines : List String → String
+  | .nil => ""
+  | .cons l rest => match rest with
+    | .nil => l
+    | .cons _ _ => String.append (String.append l "\n") (joinLines rest)
+-- the bodies, in order, each line for its definition
+def defsSteps : Globals → List Syntax → Step
+  | gs, .nil => .mk "" gs
+  | gs, .cons d rest => match defStep gs d with
+    | .mk line gs' => match defsSteps gs' rest with
+      | .mk lines gs'' => .mk (match rest with
+          | .nil => line
+          | .cons _ _ => String.append (String.append line "\n") lines) gs''
+def partialCmd (gs : Globals) (defs : List Syntax) : Step := match addAxioms gs defs with
+  | .err m => errStep gs m
+  | .ok gs1 => defsSteps gs1 defs
+
 -- all the commands of a file, one output line each
 partial def runCommands (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat)
     (gs : Globals) (out : List String) : List String :=
@@ -1640,15 +1702,11 @@ partial def runCommands (cats : List Cat) (tokens : List String) (input : Array 
   | .true => match parseCommandAt cats tokens input pos with
     | .err m => .cons (String.append "parse " m) out
     | .ok stx stop =>
-      let step := match strEq (kindOf stx) "command.inductive" with
-        | .true => inductiveCmd gs stx
-        | .false => match Bool.and (strEq (kindOf stx) "command.def") (strEq (kindOf (kid stx 6)) "term.match") with
-          | .true => matchDefCmd gs stx
-          | .false => match strEq (kindOf stx) "command.defEqns" with
-            | .true => match eqnsToMatch stx with
-              | .some d => matchDefCmd gs d
-              | .none => errStep gs "equations need a function type"
-            | .false => command gs stx;
+      let step := match strEq (kindOf stx) "command.partial" with
+        | .true => partialCmd gs (one (kid stx 1))
+        | .false => match strEq (kindOf stx) "command.mutual" with
+          | .true => partialCmd gs (nonAtoms (kids (kid stx 1)))
+          | .false => defStep gs stx;
       match step with
       | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
 
