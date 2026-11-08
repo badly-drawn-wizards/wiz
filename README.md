@@ -1446,11 +1446,24 @@ declarations, about 20 s).
   so `| t => t` has the right type.
 * `Unit` in constructor fields, `fun _ => …`, and `Nat.max` in the Prelude.
 
-`Kernel.wiz` still doesn't check: `vCastW` matches two columns of the four-member
-family `Val`/`Env`/`Spine`/`Head` (about 70 constructors) with a catch-all row, which is
-copied into about 70 × 70 leaves (the Lean side shares such a row as a function), and
-`whnf` recurses through a function field (`whnf (v ())`), which needs function
-hypotheses.
+### 19f: the frontend checks `Kernel.wiz` ✅
+
+* **Big numerals**: a numeral is `Nat.succ` applied `n` times, so `quote 100000 A` in
+  the kernel was a term 100000 deep. With `Nat.mul` around, a numeral of 16 or more is
+  built in binary (`2 * (n / 2)`, plus `succ` when odd).
+* **Recursion through a function field**: `whnf (v ())` with `v : Unit → Val`. The
+  hypothesis for such a field is a function, `(h : H) → P (j h) (v h)` (pre-applied to
+  `refl` in mode B), and a recursive call on `v a` becomes `ih a`.
+* **The structural parameter first**: when a recursive call changes a parameter before
+  the structural one (`tApps (.app f a) rest`), `f` is defined through `f✝s`, with the
+  structural parameter moved to the front, so the others are generalised in the motive.
+* **A shared catch-all**: a big last clause of variables in a match that only does
+  case analysis is checked once as a definition `f✝d`, and the leaves call it, instead
+  of copying it into every leaf.
+* `memo` in the Prelude.
+
+The self-hosted frontend now checks `Lex.wiz`, `Parse.wiz` and `Kernel.wiz` (272
+declarations, about two minutes). Next: `Frontend.wiz` itself.
 
 ## Stage 11: tooling
 
