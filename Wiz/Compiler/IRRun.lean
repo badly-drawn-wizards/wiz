@@ -87,6 +87,8 @@ def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
   | "nat.mul" => pure (.num (n 0 * n 1))
   | "nat.beq" => pure (.tag (if n 0 == n 1 then 1 else 0))
   | "nat.blt" => pure (.tag (if n 0 < n 1 then 1 else 0))
+  -- the interpreter doesn't memoise: a suspension is its function
+  | "memo" => pure (args[1]?.getD (.tag 0))
   | "natTag" => pure (.tag (if n 0 == 0 then 0 else 1))
   | "tag" =>
     let t ← match (args[0]? : Option IVal) with

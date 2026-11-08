@@ -152,8 +152,8 @@ inductive Val where
   | vscofix (l : Nat) (I D A f sz i a : Val)
   | vcoit (l : Nat) (I D S step i s : Val)
   -- **glued**: a global definition applied to `sp`, and its unfolding (`Val.unfold` in
-  -- the Lean kernel, computed eagerly here); `whnf` looks through it
-  | vglued (h : Head) (sp : Spine) (v : Val)
+  -- the Lean kernel), computed when `whnf` first looks through it (`memo`)
+  | vglued (h : Head) (sp : Spine) (v : Unit → Val)
   -- a stuck head and the eliminations applied to it
   | vne (head : Head) (spine : Spine)
 inductive Env where
@@ -465,8 +465,10 @@ def sigmaTm (q : Q) (a b : Tm) : Tm := match q with
   | q => .sigmaq q a b
 
 -- unfold glued definitions at the head: do this before matching on a value's shape
-def whnf : Val → Val
-  | .vglued _ _ v => whnf v
+-- (partial: it goes on into the unfolding it forces, which structural recursion can't
+-- see as smaller)
+partial def whnf : Val → Val
+  | .vglued _ _ v => whnf (v ())
   | v => v
 
 
@@ -740,13 +742,13 @@ def eval : Env → Tm → Val
   | env, .ind l I D v P m i x =>
     vInd l (eval env I) (eval env D) v (eval env P) (eval env m) (eval env i) (eval env x)
   | _, .sortL l => .vsort l
-  | _, .const n ps ls v ty => .vglued (.hconst n ps ls v ty) .snil (eval .nil (tmSubst ps ls v))
+  | _, .const n ps ls v ty => .vglued (.hconst n ps ls v ty) .snil (memo (fun _ => eval .nil (tmSubst ps ls v)))
   | _, .axiomC n ty => .vne (.haxiom n ty) .snil
   --|ex
   --| | _, _ => .vsort (.lnum 0)
   --sol>
 def vapp : Val → Val → Val
-  | .vglued h sp v, a => .vglued h (.sapp sp a) (vapp v a)  -- (given) glued stays glued
+  | .vglued h sp v, a => .vglued h (.sapp sp a) (memo (fun _ => vapp (v ()) a))  -- (given) glued stays glued
   --<sol
   | .vlam env b, a => eval (.cons a env) b
   | .vne h sp, a => .vne h (.sapp sp a)
@@ -755,7 +757,7 @@ def vapp : Val → Val → Val
   --| | v, _ => v
   --sol>
 def vfst : Val → Val
-  | .vglued h sp v => .vglued h (.sfst sp) (vfst v)  -- (given)
+  | .vglued h sp v => .vglued h (.sfst sp) (memo (fun _ => vfst (v ())))  -- (given)
   --<sol
   | .vpair a _ => a
   | .vne h sp => .vne h (.sfst sp)
@@ -764,7 +766,7 @@ def vfst : Val → Val
   --| | v => v
   --sol>
 def vsnd : Val → Val
-  | .vglued h sp v => .vglued h (.ssnd sp) (vsnd v)  -- (given)
+  | .vglued h sp v => .vglued h (.ssnd sp) (memo (fun _ => vsnd (v ())))  -- (given)
   --<sol
   | .vpair _ b => b
   | .vne h sp => .vne h (.ssnd sp)
@@ -1284,14 +1286,14 @@ inductive SizeView where
   | inf (k : Nat)
   | var (x : Nat) (k : Nat)
   | other
-def sizeView : Val → SizeView
+partial def sizeView : Val → SizeView
   | .vszInf => .inf 0
   | .vszSuc sz => match sizeView sz with
     | .inf k => .inf (k + 1)
     | .var x k => .var x (k + 1)
     | .other => .other
   | .vne (.hvar x) .snil => .var x 0
-  | .vglued _ _ v => sizeView v
+  | .vglued _ _ v => sizeView (v ())
   | _ => .other
 def sizeEq (a b : Val) : Bool := match sizeView a with
   | .inf _ => match sizeView b with

@@ -1155,8 +1155,26 @@ The Wiz kernel now covers the Lean kernel's calculus.
 The `match` compiler now shares a large catch-all last row of a multi-column match: it
 is elaborated once, as a local function `dflt✝` of the scrutinees, and the row calls it
 (falling back to copying when the right-hand side doesn't check without what the other
-rows learnt). Next: the performance work that self-hosting will need, lazy unfolding
-first.
+rows learnt).
+
+## Stage 15: performance for self-hosting
+
+### 15a: lazy unfolding ✅
+
+`memo : (Unit → A) → Unit → A` (Prelude, `builtin memo`) is a memoised suspension. To
+the kernel and the interpreters it is the identity; compiled code makes it a thunk
+object (`WIZ_TAG_THUNK`) that `wiz_apply` runs at most once, keeping the result. The
+Wiz kernel's glued values now hold their unfolding as `Unit → Val` built with `memo`, as
+the Lean kernel's `Val.unfold` holds a `Thunk`: a global is unfolded only when `whnf`
+looks through it, and once. Checking a term that mentions a large global 300 times
+(without needing its value) went from 206 s to 1 s.
+
+(`whnf` is `partial`: structural recursion through a function field of a mutual family
+gets an induction hypothesis with an index equation that the call doesn't supply, an
+elaborator gap.)
+
+Next: Str/Array instead of `List Char` in the self-hosted code, borrow inference,
+`ap` of a known partial application, fewer index equations for mutual families.
 
 ## Stage 11: tooling
 

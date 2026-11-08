@@ -93,6 +93,10 @@ def Nat.lt : Nat → Nat → Bool
   | .succ _, .zero => .false
   | .succ m, .succ n => Nat.lt m n
 builtin nat.blt := Nat.lt
+-- (stage 15) a memoised suspension: to the kernel it is `f`; compiled code runs `f ()`
+-- at most once and keeps the result
+def memo {A : Type} (f : Unit → A) : Unit → A := f
+builtin memo := memo
 def Nat.le (m n : Nat) : Bool := Nat.lt m (Nat.succ n)
 def Nat.max (m n : Nat) : Nat := match Nat.lt m n with
   | .true => n

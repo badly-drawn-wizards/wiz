@@ -1762,7 +1762,11 @@ def nativeCases (llvm : Bool) : List Case :=
     { name := "type classes and do", run := fun _ =>
         cRun (llvm := llvm) ("import Prelude\ninstance : Monad Option where\n  pure := fun a => Option.some a\n" ++
           "  bind := fun x f => match x with\n    | .none => Option.none\n    | .some a => f a\n" ++
-          "def main : Option Nat := do\n  a ← Option.some 1;\n  b ← Option.some 2;\n  Monad.pure (a + b)") ".some 3" }
+          "def main : Option Nat := do\n  a ← Option.some 1;\n  b ← Option.some 2;\n  Monad.pure (a + b)") ".some 3" },
+    { name := "memoised suspensions (memo)", run := fun _ =>
+        cRun (llvm := llvm) ("import Prelude\ndef twice (t : Unit → Nat) : Nat := t () + t ()\n" ++
+          "def lazyAdd (m n : Nat) : Unit → Nat := memo (fun _ => m + n)\n" ++
+          "def main : Nat := twice (lazyAdd 20 1) + twice (memo (fun _ => 0))") "42" }
   ]
 
 
