@@ -631,7 +631,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let some tyStx := typeOf d | report .error d.info "a partial definition needs a type"; return
       match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) g (elabDeclTerms (d.getArg 3).args (some tyStx) none d.info) levelParams with
       | .ok ((ty, _), _) =>
-        unless inhabitedTy g 0 16 (eval g [] (ty.instLevels levelParams (levelParams.map fun _ => .zero))) do
+        unless inhabitedTy g 0 32 (eval g [] (ty.instLevels levelParams (levelParams.map fun _ => .zero))) do
           report .error (d.getArg 1).info s!"partial definition {name}: its type must be visibly inhabited (the kernel treats {name} as an axiom)"
           return
         g := g.insert { name, levelParams, type := ty, value := none }
