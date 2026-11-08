@@ -1465,6 +1465,24 @@ declarations, about 20 s).
 The self-hosted frontend now checks `Lex.wiz`, `Parse.wiz` and `Kernel.wiz` (272
 declarations, about two minutes). Next: `Frontend.wiz` itself.
 
+### 20a: towards `Frontend.wiz` (in progress)
+
+* A `match` or `fun` argument whose expected type is still a metavariable waits, like
+  a `.c` one (`.cons (match s with …) rest`), and a postponed argument's metavariable
+  takes any term at its own depth (a `match` elaborates to `let`s and `scase`).
+* A `match` or `if` without an expected type (`let x := match …`) is checked against a
+  new metavariable; `fun (x : A) => b` with typed binders infers `(x : A) → B`.
+* `zonk` reaches every form the elaborator makes (`ecase`, `scase`, `delim`, `piq`,
+  …): a solved metavariable inside a match's motive used to reach the kernel.
+* Pruning: a solution at depth `k` that mentions a deeper metavariable whose type
+  doesn't depend on the deeper variables (`?m := List ?n`, `?n` made under more
+  `let`s) solves that one by a new metavariable at depth `k`.
+* The structural parameter can be moved first past grouped binders (`(Tc TcI : Tm)`).
+
+With these, most of `Frontend.wiz` checks (on a stubbed prefix: types kept, functions
+as axioms). What remains: `splitCol`, the largest definition, exhausts memory when
+checked, and the definitions after it are untested.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅
