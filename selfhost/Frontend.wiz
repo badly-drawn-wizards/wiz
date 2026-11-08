@@ -518,8 +518,51 @@ def sigOf (stx : Syntax) : Sig := match kids (kid stx 4) with
           | .none => .bad
         | .false => .bad
   | _ => .plain
-def inductiveCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
+-- in an indexed family `T : I → Type`, an index `.c` (the last argument of `T …` in the
+-- constructors) is `I.c`: the constructors are scope-checked, not typed (stage 19d)
+def takeS : Nat → List Syntax → List Syntax
+  | .zero, _ => .nil
+  | .succ n, xs => match xs with
+    | .nil => .nil
+    | .cons x rest => .cons x (takeS n rest)
+def lastS' : List Syntax → Syntax
+  | .nil => .missing
+  | .cons x rest => match rest with
+    | .nil => x
+    | .cons _ _ => lastS' rest
+def lastIdx : List Syntax → Nat → Nat
+  | .nil, _ => 0
+  | .cons _ rest, i => match rest with
+    | .nil => i
+    | .cons _ _ => lastIdx rest (i + 1)
+mutual
+def fixDots (T I : String) (s : Syntax) : Syntax := match s with
+  | .node k args =>
+    let s' : Syntax := .node k (fixDotsArgs T I args);
+    match Bool.and (strEq k "term.app") (strEq (identOf (kid s' 0)) T) with
+    | .true =>
+      let as := kids (kid s' 1);
+      let n := lastIdx as 0;
+      let a := lastS' as;
+      match strEq (kindOf a) "term.dotIdent" with
+      | .true => match kid a 1 with
+        | .ident c => mkNode "term.app" (.cons (kid s' 0) (one (mkNull (List.append (takeS n as)
+            (one (mkNode "term.ident" (one (.ident (String.append (String.append I ".") c)))))))))
+        | _ => s'
+      | .false => s'
+    | .false => s'
+  | s => s
+def fixDotsArgs (T I : String) : SyntaxF .false → SyntaxF .false
+  | .nil => .nil
+  | .cons s rest => .cons (fixDots T I s) (fixDotsArgs T I rest)
+end
+def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match kid stx0 1 with
   | .ident T =>
+    let stx := match sigOf stx0 with
+      | .indexed I => match strEq (kindOf I) "term.ident" with
+        | .true => fixDots T (identOf I) stx0
+        | .false => stx0
+      | _ => stx0;
     let params := fieldsOf (kids (kid stx 3));
     let ps := fieldNames params;
     let np := List.length ps;
@@ -694,6 +737,21 @@ def lowerTm (k : Nat) : Nat → Tm → Option Tm
       | .some a' => .some (.app f' a')
       | .none => .none
     | .none => .none
+  -- (projections and pairs: the fields of a pattern are projections of its payload)
+  | c, .fst t => match lowerTm k c t with
+    | .some t' => .some (.fst t')
+    | .none => .none
+  | c, .snd t => match lowerTm k c t with
+    | .some t' => .some (.snd t')
+    | .none => .none
+  | c, .con t => match lowerTm k c t with
+    | .some t' => .some (.con t')
+    | .none => .none
+  | c, .pair a b => match lowerTm k c a with
+    | .some a' => match lowerTm k c b with
+      | .some b' => .some (.pair a' b')
+      | .none => .none
+    | .none => .none
   | _, .const n ps ls v ty => .some (.const n ps ls v ty)
   | _, .axiomC n ty => .some (.axiomC n ty)
   | _, .univ n => .some (.univ n)
@@ -712,6 +770,10 @@ def mentions (i : Nat) : Tm → Bool
   | .pi a b => Bool.or (mentions i a) (mentions i b)
   | .lam b => mentions i b
   | .app f a => Bool.or (mentions i f) (mentions i a)
+  | .fst t => mentions i t
+  | .snd t => mentions i t
+  | .con t => mentions i t
+  | .pair a b => Bool.or (mentions i a) (mentions i b)
   | _ => .false
 def solve (es : ES) (cx : Cx) (i k : Nat) (t : Val) : Option ES :=
   let d := Cx.lvl cx;
@@ -737,12 +799,18 @@ def unify (es : ES) (cx : Cx) (a b : Val) : Option ES :=
     | .mk j k => solve es cx j k a'
     | .none => unifyW es cx a' b'
 def unifyW (es : ES) (cx : Cx) (a b : Val) : Option ES := match a with
-  | .vglued h sp _ => match b with
-    | .vglued h' sp' _ => match convHead (Cx.c cx) h h' with
+  | .vglued h sp va => match b with
+    | .vglued h' sp' vb => match convHead (Cx.c cx) h h' with
       | .true => match unifySpine es cx sp sp' with
         | .some es' => .some es'
         | .none => unifyS es cx (whnf a) (whnf b)
-      | .false => unifyS es cx (whnf a) (whnf b)
+      -- different definitions: unfold one step while one side unfolds to another
+      -- definition (`Syntax` is `SyntaxF .true`: stage 19d)
+      | .false => match va () with
+        | .vglued _ _ _ => unifyW es cx (va ()) b
+        | _ => match vb () with
+          | .vglued _ _ _ => unifyW es cx a (vb ())
+          | _ => unifyS es cx (whnf a) (whnf b)
     | _ => unifyS es cx (whnf a) (whnf b)
   | _ => unifyS es cx (whnf a) (whnf b)
 def unifyS (es : ES) (cx : Cx) (a b : Val) : Option ES := match a with
@@ -931,20 +999,25 @@ def isMetaApp (es : ES) (ty : Val) : Bool := match metaApp es (force es ty) with
   | .mk _ _ => .true
   | .none => .false
 -- `.c` (or `.c a …`) against a type `T …`: `T.c`
-def dotName (es : ES) (ty : Val) (c : String) : Option String := match force es ty with
-  | .vglued (.hconst T _ _ _ _) _ _ => .some (String.append (String.append T ".") c)
+-- (a type that is a definition, like `Syntax := SyntaxF .true`, is unfolded: stage 19d)
+partial def dotName (gs : Globals) (es : ES) (ty : Val) (c : String) : Option String := match force es ty with
+  | .vglued (.hconst T _ _ _ _) _ v => match Globals.ind gs T with
+    | .some _ => .some (String.append (String.append T ".") c)
+    | .none => match v () with
+      | .vglued _ _ _ => dotName gs es (v ()) c
+      | _ => .some (String.append (String.append T ".") c)
   | _ => .none
-def dotCtor (es : ES) (ty : Val) (s : Syntax) : Option Syntax :=
+def dotCtor (gs : Globals) (es : ES) (ty : Val) (s : Syntax) : Option Syntax :=
   let ident := fun (n : String) => mkNode "term.ident" (one (.ident n));
   match strEq (kindOf s) "term.dotIdent" with
   | .true => match kid s 1 with
-    | .ident c => match dotName es ty c with
+    | .ident c => match dotName gs es ty c with
       | .some n => .some (ident n)
       | .none => .none
     | _ => .none
   | .false => match Bool.and (strEq (kindOf s) "term.app") (strEq (kindOf (kid s 0)) "term.dotIdent") with
     | .true => match kid (kid s 0) 1 with
-      | .ident c => match dotName es ty c with
+      | .ident c => match dotName gs es ty c with
         | .some n => .some (mkNode "term.app" (.cons (ident n) (one (kid s 1))))
         | .none => .none
       | _ => .none
@@ -1634,7 +1707,7 @@ def checkT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (ty : Val) : TE :=
   let k := kindOf s;
   match strEq k "term.paren" with
   | .true => checkT gs es cx (kid s 1) ty
-  | .false => match dotCtor es ty s with
+  | .false => match dotCtor gs es ty s with
     | .some s' => checkT gs es cx s' ty
     | .none => match ifMatch s with
     | .some s' => checkT gs es cx s' ty
@@ -1727,6 +1800,15 @@ def colIndex (l : Nat) : List Col → Nat → Nat → Nat
   | .cons (.mk l' _ _) rest, i, dflt => match Nat.beq l l' with
     | .true => i
     | .false => colIndex l rest (i + 1) dflt
+-- a type whose head is a definition, unfolded (at depth `d`) until it is an inductive
+-- type's (stage 19d)
+def unfoldTy (gs : Globals) (d : Nat) (ty : Tm) : Tm := match headOf ty .tnil with
+  | .mk T args => match Globals.ind gs T with
+    | .some _ => ty
+    | .none => match headTm ty with
+      | .const _ _ _ v _ => unfoldTy gs d (nfAt d (tApps v args))
+      | _ => ty
+  | .none => ty
 -- the first column with a constructor pattern
 def firstCtorCol : List Syntax → Nat → Option Nat
   | .nil, _ => .none
@@ -1742,7 +1824,9 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
     (top : Bool) (ihLvls : List Nat) (cls : List Clause) (k : Nat) : CE :=
   let d := Cx.lvl cx;
   match nthCol cols k with
-  | .mk L ty tyI => match headOf ty .tnil with
+  | .mk L ty0 tyI =>
+    let ty := unfoldTy gs L ty0;
+    match headOf ty .tnil with
     | .none => .err "a pattern on a value that isn't of an inductive type"
     | .mk T args => match Globals.ind gs T with
       | .none => .err (String.append "not an inductive type: " T)
@@ -2448,7 +2532,7 @@ def structCmd (gs : Globals) (stx : Syntax) : Step :=
 
 -- The self-hosted frontend's Prelude (stage 19a), read by `import Prelude`: numbers,
 -- Booleans, lists, options, pairs, characters (by their code) and strings.
-def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.pred : Nat → Nat\n  | .zero => .zero\n  | .succ n => n\ndef Nat.sub : Nat → Nat → Nat\n  | m, .zero => m\n  | m, .succ n => Nat.pred (Nat.sub m n)\ninfixl:65 \" + \" => Nat.add\ninfixl:65 \" - \" => Nat.sub\ninfixl:70 \" * \" => Nat.mul\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Nat.lt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.lt m n\ndef Nat.le (m n : Nat) : Bool := Nat.lt m (.succ n)\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ninfixr:67 \" ++ \" => List.append\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\naxiom Array : Type → Type\naxiom Array.empty {A : Type} : Array A\naxiom Array.push {A : Type} (a : Array A) (x : A) : Array A\naxiom Array.size {A : Type} (a : Array A) : Nat\naxiom Array.getD {A : Type} (a : Array A) (i : Nat) (d : A) : A\naxiom Array.set {A : Type} (a : Array A) (i : Nat) (x : A) : Array A\naxiom World : Type\ndef IO (A : Type) : Type := World → Prod A World\ndef IO.pure {A : Type} (a : A) : IO A := fun w => .mk a w\ndef IO.bind {A B : Type} (x : IO A) (f : A → IO B) : IO B := fun w => f (x w).fst (x w).snd\naxiom IO.println : String → IO Unit\naxiom IO.readFile : String → IO String\n"
+def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.pred : Nat → Nat\n  | .zero => .zero\n  | .succ n => n\ndef Nat.sub : Nat → Nat → Nat\n  | m, .zero => m\n  | m, .succ n => Nat.pred (Nat.sub m n)\ninfixl:65 \" + \" => Nat.add\ninfixl:65 \" - \" => Nat.sub\ninfixl:70 \" * \" => Nat.mul\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Nat.lt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.lt m n\ndef Nat.le (m n : Nat) : Bool := Nat.lt m (.succ n)\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ninfixr:67 \" ++ \" => List.append\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\naxiom Array : Type → Type\naxiom Array.empty {A : Type} : Array A\naxiom Array.push {A : Type} (a : Array A) (x : A) : Array A\naxiom Array.size {A : Type} (a : Array A) : Nat\naxiom Array.getD {A : Type} (a : Array A) (i : Nat) (d : A) : A\naxiom Array.set {A : Type} (a : Array A) (i : Nat) (x : A) : Array A\naxiom World : Type\ndef IO (A : Type) : Type := World → Prod A World\ndef IO.pure {A : Type} (a : A) : IO A := fun w => .mk a w\ndef IO.bind {A B : Type} (x : IO A) (f : A → IO B) : IO B := fun w => f (x w).fst (x w).snd\naxiom IO.println : String → IO Unit\naxiom IO.readFile : String → IO String\naxiom Nat.toString : Nat → String\naxiom Str : Type\naxiom Str.ofString : String → Str\naxiom StrMap : Type → Type\naxiom StrMap.empty {V : Type} : StrMap V\naxiom StrMap.insert {V : Type} (m : StrMap V) (k : Str) (v : V) : StrMap V\naxiom StrMap.findD {V : Type} (m : StrMap V) (k : Str) (d : V) : V\naxiom StrMap.size {V : Type} (m : StrMap V) : Nat\ninductive SyntaxF : Bool → Type where\n  | missing : SyntaxF .true\n  | atom (val : String) : SyntaxF .true\n  | ident (val : String) : SyntaxF .true\n  | node (kind : String) (args : SyntaxF .false) : SyntaxF .true\n  | nil : SyntaxF .false\n  | cons (head : SyntaxF .true) (tail : SyntaxF .false) : SyntaxF .false\ndef Syntax : Type := SyntaxF .true\ndef SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax\n  | .cons x t, n => match n with\n    | .zero => x\n    | .succ m => SyntaxF.nth t m\n  | _, _ => .missing\ndef Syntax.getArg (stx : Syntax) (i : Nat) : Syntax := match stx with\n  | .node _ args => SyntaxF.nth args i\n  | _ => .missing\n"
 
 -- Infix operators (stage 19b): `infixl:p " op " => f` (also `infixr`, `infix`) adds a
 -- trailing term parser `a op b` (kind `term.infix op`) and the token `op`; each later

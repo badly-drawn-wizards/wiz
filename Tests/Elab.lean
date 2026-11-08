@@ -1658,8 +1658,11 @@ def selfHostGroup : Group where
     { name := "axioms, Unit, Array, IO and do, checked in Wiz", run := fun _ =>
         selfhostCheckFile "import Prelude\naxiom Secret : Type\nextern \"wiz_peek\" peek : Secret → Nat\ndef unit : Unit := ()\ndef twice (s : String) : IO Unit := do\n  IO.println s;\n  let t := String.append s \"!\";\n  IO.println t\ndef readLen (p : String) : IO Nat := do\n  s ← IO.readFile p;\n  IO.pure (String.length s)\ndef push2 (a : Array Nat) : Array Nat := Array.push (Array.push a 1) 2\ndef size2 : Nat := Array.size (push2 Array.empty)\ndef sum3 (n : Nat) : Nat :=\n  let m := n + n;\n  m + n\n#reduce Nat.beq (sum3 2) 6\n"
           "Secret : U0\npeek : (x0 : Secret) → Nat\nunit : Unit0\ntwice : (x0 : String) → (IO Unit0)\nreadLen : (x0 : String) → (IO Nat)\npush2 : (x0 : (Array Nat)) → (Array Nat)\nsize2 : Nat\nsum3 : (x0 : Nat) → Nat\ncon((#1, (tt, tt)))\n" },
-    { name := "the self-hosted frontend checks Lex.wiz", run := fun _ => do
-        let src ← IO.FS.readFile "selfhost/Lex.wiz"
+    { name := "Syntax, StrMap and definitions as types, checked in Wiz", run := fun _ =>
+        selfhostCheckFile "import Prelude\ndef leaf : Syntax := .node \"leaf\" (.cons (.atom \"x\") .nil)\ndef kindOf : Syntax → String\n  | .node k _ => k\n  | _ => \"\"\n#reduce String.length (kindOf leaf)\ndef argCount {b : Bool} : SyntaxF b → Nat\n  | .cons _ t => argCount t + 1\n  | .node _ args => argCount args\n  | _ => 0\n#reduce Nat.beq (argCount leaf) 1\ninductive Cat where\n  | mk (name : String) (n : Nat)\ndef find : List Cat → String → Option Cat\n  | .nil, _ => .none\n  | .cons (.mk m n) rest, name => match Nat.beq (String.length m) (String.length name) with\n    | .true => .some (.mk m n)\n    | .false => find rest name\ndef m : StrMap Nat := StrMap.insert StrMap.empty (Str.ofString \"k\") 1\n"
+          "leaf : Syntax\nkindOf : (x0 : Syntax) → String\ncon((#1, (con((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt))))\nargCount : (x0 : Bool) → (x1 : (SyntaxF x0)) → Nat\ncon((#1, (tt, tt)))\nCat : U0\nfind : (x0 : (List Cat)) → (x1 : String) → (Option Cat)\nm : (StrMap Nat)\n" },
+    { name := "the self-hosted frontend checks Lex.wiz and Parse.wiz", run := fun _ => do
+        let src := (← IO.FS.readFile "selfhost/Lex.wiz") ++ "\n" ++ (← IO.FS.readFile "selfhost/Parse.wiz")
         let body := "\n".intercalate ((src.splitOn "\n").filter (!·.startsWith "import"))
         -- every declaration is reported, none with an error
         let decls := (src.splitOn "\n").filter fun l =>
@@ -1667,7 +1670,7 @@ def selfHostGroup : Group where
         let some out ← selfhostOutput ("import Prelude\n" ++ body) | pure ()
         let lines := (out.splitOn "\n").filter (· != "")
         for l in lines do
-          if l.startsWith "error" || l.startsWith "parse" then throw (IO.userError l)
+          if l.startsWith "error" || l.startsWith "parse error" then throw (IO.userError l)
         unless lines.length == decls.length do
           throw (IO.userError s!"{lines.length} lines for {decls.length} declarations") },
     { name := "the Wiz kernel agrees with the Lean kernel (400 random terms)", run := fun _ => do
