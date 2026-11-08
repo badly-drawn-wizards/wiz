@@ -1376,7 +1376,22 @@ a recursive call may change only the parameters after the structural one: `lt m'
 inside a nested `match m` under `match n` is rejected, `| succ m, succ n => lt m n`
 is fine.
 
-Next: strings and characters, `if` (a Prelude macro on the Lean side), `do`.
+### 19a: a Prelude, `if`, strings ✅
+
+`import Prelude` checks a small Prelude (written in the subset itself, kept as a string
+in `Frontend.wiz`) before the file: `Nat`, `Bool`, `List`, `Option`, `Prod`, `Char`
+(a structure over its code) and `String` (a structure over a `List Char`), with
+arithmetic, comparisons, the Boolean connectives and a few list functions. `if c then a
+else b` is a `match c` with `.true`/`.false` clauses; a string literal is `String.mk`
+of a list of `Char.mk` numerals. A definition whose `match` scrutinises something other
+than its parameters (`match s.data with …`) is compiled as a `match` term.
+
+Only the structural split of a match needs induction; the other splits are now case
+analysis (the kernel's `scase` at `∞`, whose method sees the payload at `μ^j D i` for a
+size `j`). Computing induction hypotheses nobody uses made nested matches exponential:
+`Nat.beq 14 14` took 0.7 s, `Nat.beq 65 65` now takes 0.17 s.
+
+Next: `do`, generalising the parameters before the structural one.
 
 ## Stage 11: tooling
 

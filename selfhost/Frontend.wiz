@@ -787,6 +787,53 @@ end
 inductive HE where
   | ok (t : Tm) (ty : Val) (es : ES) (mask : List Bool)
   | err (msg : String)
+-- the arguments of `if`: before `then`, between `then` and `else`, after `else`
+inductive IfParts where
+  | mk (c a b : List Syntax)
+def isNilS : List Syntax → Bool
+  | .nil => .true
+  | .cons _ _ => .false
+inductive Two where
+  | mk (a b : List Syntax)
+def splitElse : List Syntax → List Syntax → Option Two
+  | .nil, _ => .none
+  | .cons x rest, acc => match strEq (identOf x) "else" with
+    | .true => .some (.mk (List.reverseOf acc .nil) rest)
+    | .false => splitElse rest (.cons x acc)
+def splitIf : List Syntax → List Syntax → Option IfParts
+  | .nil, _ => .none
+  | .cons x rest, acc => match strEq (identOf x) "then" with
+    | .true => match splitElse rest .nil with
+      | .some (.mk a b) => .some (.mk (List.reverseOf acc .nil) a b)
+      | .none => .none
+    | .false => splitIf rest (.cons x acc)
+-- one term, or the application of the first to the rest
+def appOf : List Syntax → Syntax
+  | .nil => .missing
+  | .cons f rest => match rest with
+    | .nil => f
+    | .cons _ _ => mkNode "term.app" (.cons f (one (mkNull rest)))
+-- `if c then a else b` (an application of `if`: the grammar has no `if`) is
+-- `match c with | .true => a | .false => b` (stage 19a)
+def ifMatch (s : Syntax) : Option Syntax := match Bool.and (strEq (kindOf s) "term.app") (strEq (identOf (kid s 0)) "if") with
+  | .false => .none
+  | .true => match splitIf (kids (kid s 1)) .nil with
+    | .some (.mk cs as bs) => match Bool.and (Bool.not (isNilS cs)) (Bool.and (Bool.not (isNilS as)) (Bool.not (isNilS bs))) with
+      | .true =>
+        let c := appOf cs;
+        let a := appOf as;
+        let b := appOf bs;
+        let alt := fun (ctor : String) (rhs : Syntax) => mkNode "match.alt" (.cons (.atom "|")
+          (.cons (mkNull (one (mkNode "term.dotIdent" (.cons (.atom ".") (one (.ident ctor)))))) (.cons (.atom "=>") (one rhs))));
+        .some (mkNode "term.match" (.cons (.atom "match") (.cons (mkNull (one c)) (.cons (.atom "with")
+          (one (mkNull (.cons (alt "true" a) (one (alt "false" b)))))))))
+      | .false => .none
+    | _ => .none
+-- a string literal's text (the first atom inside)
+partial def strValue (s : Syntax) : String := match s with
+  | .atom v => v
+  | .node _ _ => strValue (kid s 0)
+  | _ => ""
 -- a numeral's value (its digits are the first atom inside)
 partial def numValue (s : Syntax) : Nat := match s with
   | .atom d => match d with
@@ -1308,6 +1355,32 @@ def numeral (gs : Globals) (es : ES) (cx : Cx) (n : Nat) : TE := match identHead
     | .ok sc _ _ _ => .ok (iterApp sc n z) zty es
     | .err m => .err m
   | .err _ => .err "numerals need Nat.zero and Nat.succ"
+-- a string literal: `String.mk [Char.mk c₁, …]` (stage 19a)
+def charsTm (lcons lnil ch cmk succ zero : Tm) : List Char → Tm
+  | .nil => .app lnil ch
+  | .cons c rest => .app (.app (.app lcons ch) (.app cmk (iterApp succ (Char.code c) zero))) (charsTm lcons lnil ch cmk succ zero rest)
+def stringLit (gs : Globals) (es : ES) (cx : Cx) (v : String) : TE :=
+  let get := fun (n : String) => match identHead gs es cx n with
+    | .ok t _ _ _ => Option.some t
+    | .err _ => .none;
+  match get "String.mk" with
+  | .some smk => match get "List.cons" with
+    | .some lcons => match get "List.nil" with
+      | .some lnil => match get "Char" with
+        | .some ch => match get "Char.mk" with
+          | .some cmk => match get "Nat.succ" with
+            | .some sc => match get "Nat.zero" with
+              | .some z => match get "String" with
+                | .some st => match v with
+                  | .mk cs => .ok (.app smk (charsTm lcons lnil ch cmk sc z cs)) (eval .nil st) es
+                | .none => .err "strings need the Prelude"
+              | .none => .err "strings need the Prelude"
+            | .none => .err "strings need the Prelude"
+          | .none => .err "strings need the Prelude"
+        | .none => .err "strings need the Prelude"
+      | .none => .err "strings need the Prelude"
+    | .none => .err "strings need the Prelude"
+  | .none => .err "strings need the Prelude"
 -- apply metavariables for the leading implicit parameters
 def insertImplicits (gs : Globals) (es : ES) (cx : Cx) (t : Tm) (ty : Val) (m : List Bool) : TE :=
   match m with
@@ -1323,6 +1396,8 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
   | .true => inferT gs es cx (kid s 1)
   | .false => match strEq k "term.num" with
     | .true => numeral gs es cx (numValue s)
+    | .false => match strEq k "term.str" with
+    | .true => stringLit gs es cx (strValue s)
     | .false => match strEq k "term.type" with
     | .true => .ok (.univ (univLevel s)) (.vsort (.lnum (univLevel s + 2))) es
     | .false => match strEq k "term.app" with
@@ -1466,6 +1541,8 @@ def checkT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (ty : Val) : TE :=
   | .true => checkT gs es cx (kid s 1) ty
   | .false => match dotCtor es ty s with
     | .some s' => checkT gs es cx s' ty
+    | .none => match ifMatch s with
+    | .some s' => checkT gs es cx s' ty
     | .none => match strEq k "term.match" with
     | .true => termMatch gs es cx s ty
     | .false => match strEq k "term.hole" with
@@ -1590,6 +1667,8 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
           let DAt := fun (dd : Nat) => nfAt dd (tApps (tLams np D) (shiftTms (dd - L) pargs));
           let IAt := fun (dd : Nat) => nfAt dd (tApps (tLams np I) (shiftTms (dd - L) pargs));
           let XAt := fun (dd : Nat) => (.lam (.mu 0 (IAt (dd + 1)) (DAt (dd + 1)) (.var 0)) : Tm);
+          -- the family at a size `s` (a term at depth `dd`)
+          let XsAt := fun (dd : Nat) (s : Tm) => (.lam (.mus 0 (IAt (dd + 1)) (DAt (dd + 1)) (.var 0) (shiftTm 1 0 s)) : Tm);
           let DtAt := fun (dd t : Nat) => nfAt dd (.app (descFn (DAt dd)) (.var t));
           -- the motive's body (at depth `d + 2`): `R`, or at the structural split
           -- `(q : …) → R` over the parameters after the structural one
@@ -1610,22 +1689,48 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
             | .false => MB0;
           -- (the motive's own binders `i`, `y` stay: only the context moves)
           let PAt := fun (dd : Nat) => (.lam (.lam (shiftTm (dd - d) 2 MB)) : Tm);
-          let MT : Tm := .pi (nfAt (d + 4) (interpApp 0 (IAt (d + 4)) (DtAt (d + 4) 0) (XAt (d + 4)) (.var 3)))
-            (.pi (nfAt (d + 5) (tApps (allTm 0 v) (args6 (IAt (d + 5)) (DtAt (d + 5) 1) (XAt (d + 5)) (PAt (d + 5)) (.var 4) (.var 0))))
-              (shiftTm 4 0 MB));
-          -- the method's binders `i`, `xs`, `ih`, in the context
+          -- Only the structural split needs induction (its method runs for the hypotheses
+          -- too); the others are case analysis (`scase` at size ∞), whose method has no
+          -- hypotheses but a size `j` first: there the method's binders start at `e = d + 1`
+          -- and `ih` is `tt` (computing hypotheses nobody uses made nested matches
+          -- exponential)
+          let b := match top with
+            | .true => 0
+            | .false => 1;
+          let e := d + b;
+          -- (in case analysis the payload is at `μ^j`, and the motive is applied to
+          -- `y := con (tag, rest) : μ^{↑j} D i`, below `μ D i`)
+          let MT : Tm := match top with
+            | .true => .pi (nfAt (d + 4) (interpApp 0 (IAt (d + 4)) (DtAt (d + 4) 0) (XAt (d + 4)) (.var 3)))
+                (.pi (nfAt (d + 5) (tApps (allTm 0 v) (args6 (IAt (d + 5)) (DtAt (d + 5) 1) (XAt (d + 5)) (PAt (d + 5)) (.var 4) (.var 0))))
+                  (shiftTm 4 0 MB))
+            | .false => .pi (nfAt (e + 4) (interpApp 0 (IAt (e + 4)) (DtAt (e + 4) 0) (XsAt (e + 4) (.var 4)) (.var 3)))
+                (.pi (.unit 0) (.letE (.mus 0 (IAt (e + 6)) (DAt (e + 6)) (.var 5) (.szSuc (.var 6))) (.con (.pair (.var 2) (.var 1)))
+                  (nfAt (e + 7) (.app (.app (PAt (e + 7)) (.var 6)) (.var 0)))));
+          -- the method's binders (`j`), `i`, `xs`, `ih`, in the context
           let env := TCtx.env (Cx.c cx);
-          let cx1 := Cx.bind cx "i✝" (eval env (IAt d));
-          let cx2 := Cx.bind cx1 "xs✝" (eval (TCtx.env (Cx.c cx1)) (interpApp 0 (IAt (d + 1)) (DAt (d + 1)) (XAt (d + 1)) (.var 0)));
-          let cx3 := Cx.bind cx2 "ih✝" (eval (TCtx.env (Cx.c cx2))
-            (tApps (allTm 0 v) (args6 (IAt (d + 2)) (DAt (d + 2)) (XAt (d + 2)) (PAt (d + 2)) (.var 1) (.var 0))));
+          let cxJ := match top with
+            | .true => cx
+            | .false => Cx.bind cx "j✝" (.vsizeLt .vszInf);
+          let cx1 := Cx.bind cxJ "i✝" (eval (TCtx.env (Cx.c cxJ)) (IAt e));
+          let Xm := match top with
+            | .true => XAt (e + 1)
+            | .false => XsAt (e + 1) (.var 1);
+          let cx2 := Cx.bind cx1 "xs✝" (eval (TCtx.env (Cx.c cx1)) (interpApp 0 (IAt (e + 1)) (DAt (e + 1)) Xm (.var 0)));
+          let cx3 := match top with
+            | .true => Cx.bind cx2 "ih✝" (eval (TCtx.env (Cx.c cx2))
+                (tApps (allTm 0 v) (args6 (IAt (d + 2)) (DAt (d + 2)) (XAt (d + 2)) (PAt (d + 2)) (.var 1) (.var 0))))
+            | .false => Cx.define cx2 "ih✝" .vtt (.vunit 0);
           -- the motive's body as a value (it doesn't use `i` and `y`)
           let MBv := eval (.cons .vtt (.cons .vtt env)) MB;
-          match branches gs mc es cx3 expected cols top ihLvls cls k (.mk L ty tyI) T np pargs nidxE I idx fam modeB MB0 MB MBv MT G (lenL ctors) 0 ctors with
+          match branches gs mc es cx3 expected cols top ihLvls cls k (.mk L ty tyI) T np pargs nidxE I idx fam modeB MB0 MB MBv MT G b (lenL ctors) 0 ctors with
           | .err m => .err m
           | .ok bs es' =>
-            let M : Tm := .lam (.lam (.lam (.app (.app (.ecase MT (.fst (.var 1)) bs) (.snd (.var 1))) (.var 0))));
-            let indT : Tm := .ind 0 (IAt d) (DAt d) v (PAt d) M (shiftTm (d - L) 0 idx) (.var (d - 1 - L));
+            let convoy : Tm := .app (.app (.ecase MT (.fst (.var 1)) bs) (.snd (.var 1))) (.var 0);
+            let indT : Tm := match top with
+              | .true => .ind 0 (IAt d) (DAt d) v (PAt d) (.lam (.lam (.lam convoy))) (shiftTm (d - L) 0 idx) (.var (d - 1 - L))
+              | .false => .scase 0 (IAt d) (DAt d) v (PAt d) (.lam (.lam (.lam (.letE (.unit 0) .star convoy)))) .szInf
+                  (shiftTm (d - L) 0 idx) (.var (d - 1 - L));
             let withE : Tm := match modeB with
               | .true => .app indT (.eqRefl (IAt d) (shiftTm (d - L) 0 idx))
               | .false => indT;
@@ -1634,7 +1739,7 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
 -- `d + 3`): `fun rest ih => let fields; (let hyps; let cur✝; fun q =>) …`
 def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val) (cols : List Col)
     (top : Bool) (ihLvls : List Nat) (cls : List Clause) (k : Nat) (col : Col) (T : String) (np : Nat)
-    (args : Tms) (nidx : Nat) (I idx fam : Tm) (modeB : Bool) (MB0 MB : Tm) (MBv : Val) (MT : Tm) (G : Nat) (nc i : Nat) : List Ctor → BE
+    (args : Tms) (nidx : Nat) (I idx fam : Tm) (modeB : Bool) (MB0 MB : Tm) (MBv : Val) (MT : Tm) (G b : Nat) (nc i : Nat) : List Ctor → BE
   | .nil => .ok .tnil es
   | .cons (.mk c fs res) rest =>
     let F := lenL fs;
@@ -1649,9 +1754,10 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
         | .vpi _ ihTy _ _ => Cx.bind cx4 "ihs✝" ihTy
         | _ => Cx.bind cx4 "ihs✝" .vtt
       | _ => Cx.bind (Cx.bind cx3 "rest✝" .vtt) "ihs✝" .vtt;
-    let next := fun (es1 : ES) => branches gs mc es1 cx3 expected cols top ihLvls cls k col T np args nidx I idx fam modeB MB0 MB MBv MT G nc (i + 1) rest;
-    -- the motive's body at the method's `i` (level `d`)
-    let MBi := eval (.cons .vtt (.cons (fresh d) (dropEnv 3 (TCtx.env (Cx.c cx3))))) MB;
+    let next := fun (es1 : ES) => branches gs mc es1 cx3 expected cols top ihLvls cls k col T np args nidx I idx fam modeB MB0 MB MBv MT G b nc (i + 1) rest;
+    -- the motive's body at the method's `i` (level `d`; the motive itself is over the
+    -- context before the method's binders, and `j`)
+    let MBi := eval (.cons .vtt (.cons (fresh d) (dropEnv (3 + b) (TCtx.env (Cx.c cx3))))) MB;
     match col with
     | .mk L _ _ => match fieldCols np L d0 args cx5 0 fs with
       | .mk wrap fcols recs cx6 =>
@@ -1771,6 +1877,7 @@ def inlineTm (gs : Globals) : Tm → Tm
   | .con t => .con (inlineTm gs t)
   | .ecase m sc bs => .ecase m (inlineTm gs sc) (inlineTms gs bs)
   | .ind l I D v P m i x => .ind l I D v P (inlineTm gs m) i (inlineTm gs x)
+  | .scase l I D v P m sz i x => .scase l I D v P (inlineTm gs m) sz i (inlineTm gs x)
   | t => t
 def inlineTms (gs : Globals) : Tms → Tms
   | .tnil => .tnil
@@ -2072,10 +2179,20 @@ def eqnsToMatch (stx : Syntax) : Option Syntax := match kids (kid stx 4) with
           (.cons (mkNull (.cons colon (one res))) (.cons (.atom ":=") (one body))))))))
   | _ => .none
 
+-- (a definition's `match` on its parameters is compiled with recursion; on anything else
+-- it is a term)
+def scrutsAreParams (ps : List String) : List Syntax → Bool
+  | .nil => .true
+  | .cons s rest => match strEq (kindOf s) "term.ident" with
+    | .true => match indexOfName ps (identOf s) 0 with
+      | .some _ => scrutsAreParams ps rest
+      | .none => .false
+    | .false => .false
 -- one definition (or inductive type), by its form
 def defStep (gs : Globals) (stx : Syntax) : Step := match strEq (kindOf stx) "command.inductive" with
   | .true => inductiveCmd gs stx
-  | .false => match Bool.and (strEq (kindOf stx) "command.def") (strEq (kindOf (kid stx 6)) "term.match") with
+  | .false => match Bool.and (strEq (kindOf stx) "command.def") (Bool.and (strEq (kindOf (kid stx 6)) "term.match")
+      (scrutsAreParams (fieldNames (fieldsOf (kids (kid stx 3)))) (nonAtoms (kids (kid (kid stx 6) 1))))) with
     | .true => matchDefCmd gs stx
     | .false => match strEq (kindOf stx) "command.defEqns" with
       | .true => match eqnsToMatch stx with
@@ -2183,14 +2300,25 @@ def structCmd (gs : Globals) (stx : Syntax) : Step :=
   let pat := mkNode "term.app" (.cons (mkNode "term.dotIdent" (.cons (.atom ".") (one (.ident "mk")))) (one (mkNull (fieldIdents fs))));
   defsSteps gs (.cons ind (projections T bs sTy pat fs))
 
+-- The self-hosted frontend's Prelude (stage 19a), read by `import Prelude`: numbers,
+-- Booleans, lists, options, pairs, characters (by their code) and strings.
+def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\n"
+
+-- the output so far, and the globals
+inductive Run where
+  | mk (out : List String) (gs : Globals)
 -- all the commands of a file, one output line each
 partial def runCommands (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat)
-    (gs : Globals) (out : List String) : List String :=
+    (gs : Globals) (out : List String) : Run :=
   match Nat.lt (skipWs input pos) (Array.size input) with
-  | .false => out
+  | .false => .mk out gs
   | .true => match parseCommandAt cats tokens input pos with
-    | .err m => .cons (String.append "parse " m) out
-    | .ok stx stop =>
+    | .err m => .mk (.cons (String.append "parse " m) out) gs
+    | .ok stx stop => match strEq (kindOf stx) "command.import" with
+    -- (only the Prelude: its commands are checked, silently)
+    | .true => match runCommands cats tokens (String.codes preludeText) 0 gs .nil with
+      | .mk _ gs' => runCommands cats tokens input stop gs' out
+    | .false =>
       let step := match strEq (kindOf stx) "command.partial" with
         | .true => partialCmd gs (one (kid stx 1))
         | .false => match strEq (kindOf stx) "command.mutual" with
@@ -2204,4 +2332,5 @@ partial def runCommands (cats : List Cat) (tokens : List String) (input : Array 
       | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
 
 def checkFile (cats : List Cat) (tokens : List String) (text : String) : List String :=
-  List.reverseOf (runCommands cats tokens (String.codes text) 0 Globals.empty .nil) .nil
+  match runCommands cats tokens (String.codes text) 0 Globals.empty .nil with
+  | .mk out _ => List.reverseOf out .nil
