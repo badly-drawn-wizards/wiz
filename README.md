@@ -1413,8 +1413,25 @@ may now leave out its type (the value's inferred type is used).
 With these, the self-hosted frontend checks the first file of its own source,
 `selfhost/Lex.wiz` (every declaration, no errors; about 18 s).
 
-Next: `Parse.wiz` (`mutual` blocks of partial definitions over `PD`, `StrMap`), then
-`Kernel.wiz` and `Frontend.wiz`.
+### 19d: `Syntax`, `StrMap` — the frontend checks `Parse.wiz` ✅
+
+The Prelude adds the syntax trees (`SyntaxF : Bool → Type` and `Syntax := SyntaxF
+.true`, with `getArg`), `Nat.toString`, and `Str`/`StrMap` as axioms. Three gaps
+closed on the way:
+
+* a type that is a definition (`Syntax`) is unfolded where an inductive type is
+  needed: for `.c` (`dotName`), for a match (`unfoldTy`), and in unification, which
+  unfolds one definition at a time before comparing whole values (`SyntaxF ?b =?=
+  Syntax` solves `?b := .true`);
+* in an indexed family, the index `.c` of a constructor's result type is `I.c` (the
+  constructors are scope-checked, not typed);
+* a metavariable's solution may contain projections and pairs (`lowerTm`): the fields
+  of a pattern are projections of its payload, so `.some (.mk n l)` inside a branch
+  needs them.
+
+The self-hosted frontend now checks `Lex.wiz` and `Parse.wiz` together (96
+declarations, about 20 s). Next: `Kernel.wiz` (mutual types `Val`/`Env`/`Spine`/`Head`,
+`Nat.max`, `Unit` in constructor fields).
 
 ## Stage 11: tooling
 
