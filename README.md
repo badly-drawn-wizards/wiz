@@ -1150,9 +1150,13 @@ puzzles (`Sort a : Sort b`, Π's of sorts; the true ones made by rewriting with
 identities), against the Lean kernel's `addDecl`. (The Lean kernel also rejects unknown
 or duplicate level parameter names; this one doesn't look.)
 
-The Wiz kernel now covers the Lean kernel's calculus. Next: the performance work that
-self-hosting will need (lazy unfolding first), and a `match` compiler that shares
-catch-all rows instead of copying them.
+The Wiz kernel now covers the Lean kernel's calculus.
+
+The `match` compiler now shares a large catch-all last row of a multi-column match: it
+is elaborated once, as a local function `dflt✝` of the scrutinees, and the row calls it
+(falling back to copying when the right-hand side doesn't check without what the other
+rows learnt). Next: the performance work that self-hosting will need, lazy unfolding
+first.
 
 ## Stage 11: tooling
 

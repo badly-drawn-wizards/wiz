@@ -762,6 +762,40 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let typeOf (l : Lvl) : VTy R := ctx.types[ctx.lvl - l - 1]!
   let nameOf (l : Lvl) : Name := ctx.names[ctx.lvl - l - 1]!
   let some cl := clauses.head? | throwAt ctx.info "missing cases"
+  -- A catch-all last row of a multi-column match would be copied into every leaf of the
+  -- split (one per pair of constructors, say): elaborate it once, as a local function
+  -- of the scrutinees, and make the row call it. If it doesn't check generically (its
+  -- right-hand side relies on what the other rows learnt), copy it as before.
+  let isCatchAll (c : MClause R) : Bool := c.binds.isEmpty && c.pats.all fun p =>
+    match patView g p with
+    | .ok (.var _) | .ok .wild => true
+    | _ => false
+  if let some last := clauses.getLast? then
+    let n := vars.length
+    -- (a small right-hand side is cheaper to copy than to call)
+    let rec size : Syntax → Nat
+      | .node _ _ args => args.foldl (fun acc a => acc + size a) 1
+      | _ => 1
+    if top && rc.isNone && n ≥ 2 && clauses.length ≥ 2 && isCatchAll last && !isCatchAll cl &&
+        size last.rhs > 24 &&
+        vars == (List.range n).map (ctx.lvl - n + ·) then
+      let shared? ← tryCatch (some <$> do
+        let w : Term R := .qlit QuantitySyntax.explicitDefault
+        let body ← compileMatch ctx vars [last] goal none false
+        let mut fn := body
+        let mut fnTy := q goal
+        for x in vars.reverse do
+          fn := .lam (nameOf x) (fn.abstract (varTm x))
+          fnTy := .pi (nameOf x) .default w (q (typeOf x)) (fnTy.abstract (varTm x))
+        let fnTyV ← evalIn ctx fnTy
+        let ctx' := ctx.define "dflt✝" fnTyV (← evalIn ctx fn)
+        let names := (List.range n).map fun i => s!"a✝{i}"
+        let idStx (x : Name) : Syntax := .node {} "term.ident" #[.ident {} x]
+        let callRhs : Syntax := .node {} "term.app" #[idStx "dflt✝", .node {} "null" (names.map idStx).toArray]
+        let call : MClause R := { pats := names.map idStx, rhs := callRhs }
+        let rest ← compileMatch ctx' vars (clauses.dropLast ++ [call]) goal none true
+        pure (Term.letE "dflt✝" w fnTy fn rest)) (fun _ => pure none)
+      if let some t := shared? then return t
   -- find the first constructor pattern of the first clause
   let views ← cl.pats.mapM fun p => match patView g p with
     | .ok v => pure v
