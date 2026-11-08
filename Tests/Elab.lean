@@ -797,6 +797,67 @@ def leanParse (t : ParserTables) (cat : Name) (input : String) : String :=
   | .ok (stx, _) => stx.toSExpr (atoms := true)
   | .error e => s!"error {e.pos}: expected {", ".intercalate e.expected.toList}"
 
+/-- Level expressions over parameters, for the declaration test. -/
+inductive MLvl where
+  | num (n : Nat)
+  | param (u : String)
+  | succ (l : MLvl)
+  | max (a b : MLvl)
+  | imax (a b : MLvl)
+  deriving Inhabited
+
+def MLvl.toWiz : MLvl → String
+  | num n => s!"(.lnum {n})"
+  | param u => s!"(.lparam \"{u}\")"
+  | succ l => s!"(.lsucc {l.toWiz})"
+  | max a b => s!"(.lmax {a.toWiz} {b.toWiz})"
+  | imax a b => s!"(.limax {a.toWiz} {b.toWiz})"
+
+def MLvl.toLevel : MLvl → Level
+  | num n => Level.ofNat n
+  | param u => .param u
+  | succ l => .succ l.toLevel
+  | max a b => .max a.toLevel b.toLevel
+  | imax a b => .imax a.toLevel b.toLevel
+
+def MLvl.pretty : MLvl → String
+  | num n => toString n
+  | param u => u
+  | succ l => s!"({l.pretty})+1"
+  | max a b => s!"max({a.pretty}, {b.pretty})"
+  | imax a b => s!"imax({a.pretty}, {b.pretty})"
+
+/-- A random level over `u` and `v`. -/
+partial def MLvl.gen (s : Nat) (depth : Nat) : MLvl × Nat :=
+  let s := (s * 1103515245 + 12345) % 2147483648
+  if depth == 0 then
+    match s / 7 % 4 with
+    | 0 => (num (s / 11 % 3), s)
+    | 1 => (param "u", s)
+    | 2 => (param "v", s)
+    | _ => (num 0, s)
+  else match s / 7 % 5 with
+    | 0 => let (l, s) := gen s (depth - 1); (succ l, s)
+    | 1 => let (a, s) := gen s (depth - 1); let (b, s) := gen s (depth - 1); (max a b, s)
+    | 2 => let (a, s) := gen s (depth - 1); let (b, s) := gen s (depth - 1); (imax a b, s)
+    | _ => gen s 0
+
+/-- An equivalent level, by rewriting with identities that hold at every level. -/
+partial def MLvl.rewrite (s : Nat) : MLvl → MLvl × Nat
+  | l =>
+    let s := (s * 1103515245 + 12345) % 2147483648
+    match l, s / 7 % 6 with
+    | max a b, 0 => let (b, s) := rewrite s b; let (a, s) := rewrite s a; (max b a, s)
+    | max a b, 1 => let (a, s) := rewrite s a; (max a (max b a), s)
+    | succ (max a b), 2 => (max (succ a) (succ b), s)
+    | imax a (succ b), 3 => (max a (succ b), s)
+    | imax a b, 4 => let (a, s) := rewrite s a; (imax (max a b) b, s)
+    | succ l, _ => let (l, s) := rewrite s l; (succ l, s)
+    | max a b, _ => let (a, s) := rewrite s a; let (b, s) := rewrite s b; (max a b, s)
+    | imax a b, _ => let (a, s) := rewrite s a; let (b, s) := rewrite s b; (imax a b, s)
+    | l, 5 => (max l (num 0), s)
+    | l, _ => (l, s)
+
 /-- The core calculus of `selfhost/Kernel.wiz`, for differential tests against the
 Lean kernel. -/
 inductive MTm where
@@ -840,6 +901,8 @@ inductive MTm where
   | const (name : String) (levels : List Nat := [])
   /-- `Sort u` for a level parameter (inside universe-polymorphic globals) -/
   | sortParam (u : String)
+  /-- `Sort l` for any level expression -/
+  | sortLv (l : MLvl)
   /-- binders with a quantity other than ω: `0` or `1` -/
   | piq (q : ZeroOneMany) (a b : MTm)
   | sigmaq (q : ZeroOneMany) (a b : MTm)
@@ -928,6 +991,7 @@ partial def toWiz : MTm → String
     | some (_, _, none, ty) => s!"(.axiomC \"{n}\" {ty.toWiz})"
     | none => "(.var 999)"
   | sortParam u => s!"(.sortL (.lparam \"{u}\"))"
+  | sortLv l => s!"(.sortL {l.toWiz})"
   | piq q a b => s!"(.piq {qWiz q} {a.toWiz} {b.toWiz})"
   | sigmaq q a b => s!"(.sigmaq {qWiz q} {a.toWiz} {b.toWiz})"
   | letq q t v b => s!"(.letq {qWiz q} {t.toWiz} {v.toWiz} {b.toWiz})"
@@ -983,6 +1047,7 @@ partial def toTerm : MTm → Term ZeroOneMany
   | ind l I D v P m i x => .ind (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm i.toTerm x.toTerm
   | const n ls => .const n (ls.map Level.ofNat)
   | sortParam u => .sort (.param u)
+  | sortLv l => .sort l.toLevel
   | piq q a b => .pi "x" .default (.qlit q) a.toTerm b.toTerm
   | sigmaq q a b => .sigma "x" (.qlit q) a.toTerm b.toTerm
   | letq q t v b => .letE "x" (.qlit q) t.toTerm v.toTerm b.toTerm
@@ -1097,6 +1162,7 @@ partial def pretty (l : Nat) : MTm → String
   | ind _ _ _ _ P m i x => s!"ind({pretty l P}, {pretty l m}, {pretty l i}, {pretty l x})"
   | const n ls => if ls.isEmpty then n else n ++ ".{" ++ ", ".intercalate (ls.map toString) ++ "}"
   | sortParam u => s!"Sort {u}"
+  | sortLv l => s!"Sort({l.pretty})"
   | piq q a b => s!"(x{l} :{q} {pretty l a}) → {pretty (l + 1) b}"
   | sigmaq q a b => s!"(x{l} :{q} {pretty l a}) × {pretty (l + 1) b}"
   | letq _ _ v b => s!"let x{l} := {pretty l v}; {pretty (l + 1) b}"
@@ -1335,6 +1401,53 @@ partial def gen (seed : Nat) (depth n : Nat) : MTm × Nat :=
       (if s / 3 % 2 == 0 then ann (con x) natTy else ann (dret x) (desc 0 (unit 0)), s)
     | _ => if n > 0 then (var (s / 7 % n), s) else (univ (s / 7 % 3), s)
 
+/-- Declarations `(level params, value, type)` for the declaration test: they are
+checked with their parameters symbolic. -/
+def declSamples : List (List String × Option MTm × MTm) :=
+  let u := MLvl.param "u"
+  let v := MLvl.param "v"
+  [(["u"], some (lam (lam (var 0))), pi (sortParam "u") (pi (var 0) (var 1))),
+   (["u"], some (lam (var 0)), pi (sortParam "u") (sortParam "u")),
+   (["u"], some (lam (sortParam "u")), pi (sortParam "u") (sortLv (.succ u))),
+   (["u"], some (lam (var 0)), pi (sortParam "u") (sortLv (.succ u))),
+   (["u"], some (lam (pi (var 0) (var 1))), pi (sortParam "u") (sortParam "u")),
+   (["u", "v"], some (pi (sortParam "u") (sortParam "v")), sortLv (.max (.succ u) (.succ v))),
+   (["u", "v"], some (pi (sortParam "u") (sortParam "v")), sortLv (.succ (.max u v))),
+   (["u", "v"], some (pi (sortParam "u") (sortParam "v")), sortLv (.max u v)),
+   (["u", "v"], some (pi (sortParam "u") (sortParam "v")), sortLv (.imax (.succ u) v)),
+   -- a type in `Sort (imax u v)`: `Prop` when `v` is
+   (["u", "v"], some (lam (lam (pi (var 1) (var 1)))), pi (sortParam "u") (pi (sortParam "v") (sortLv (.imax u v)))),
+   (["u", "v"], some (lam (lam (pi (var 1) (var 1)))), pi (sortParam "u") (pi (sortParam "v") (sortLv (.max u v)))),
+   (["u"], some (pi (sortParam "u") prop), sortLv (.succ u)),
+   (["u"], none, pi (sortParam "u") (var 0)),
+   -- polymorphic globals at symbolic levels
+   (["u"], some (app (const "idP" [0]) (univ 0)), pi (univ 0) (univ 0)),
+   -- equality needs a level that is never zero
+   (["u"], some (lam (lam (eq (var 1) (var 0) (var 0)))), pi (sortLv (.succ u)) (pi (var 0) prop)),
+   (["u"], some (lam (lam (eq (var 1) (var 0) (var 0)))), pi (sortParam "u") (pi (var 0) prop))]
+
+/-- Random level puzzles: `Sort a : Sort b`, about half of them with `b` a rewriting of
+`a + 1` (so they hold), and `Π`s of sorts. -/
+def levelPuzzles (n : Nat) : List (List String × Option MTm × MTm) := Id.run do
+  let mut out := []
+  let mut s := 7
+  for i in [0:n] do
+    let (a, s1) := MLvl.gen s 2
+    let (b, s2) := MLvl.gen s1 2
+    if i % 2 == 0 then
+      let (a', s3) := MLvl.rewrite s2 (.succ a)
+      out := out ++ [(["u", "v"], some (sortLv a), sortLv a')]
+      s := s3
+    else if i % 4 == 1 then
+      out := out ++ [(["u", "v"], some (sortLv a), sortLv (.succ b))]
+      s := s2
+    else
+      let (c, s3) := MLvl.rewrite s2 (.imax (.succ a) (.succ b))
+      let c := if i % 8 == 3 then c else (MLvl.gen s3 2).1
+      out := out ++ [(["u", "v"], some (pi (sortLv a) (sortLv b)), sortLv c)]
+      s := s3
+  return out
+
 end MTm
 
 /-- The globals of the differential test, in the Lean kernel. (A function, so that it
@@ -1354,9 +1467,16 @@ def leanVerdict (t : MTm) : String :=
     | none => "?"
   | .error _ => "error"
 
+/-- What the Lean kernel says about a declaration: `ok` or `error`. -/
+def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
+  let (ps, v, ty) := d
+  match addDecl (R := ZeroOneMany) (leanGlobals ()) { name := "test", levelParams := ps, type := ty.toTerm, value := v.map MTm.toTerm } with
+  | .ok _ => "ok"
+  | .error _ => "error"
+
 def selfHostGroup : Group where
   name := "selfhost"
-  exercise := "Stages 12b–14c"
+  exercise := "Stages 12b–14q"
   cases := [
     { name := "the lexer in Wiz agrees with the Lean lexer", run := fun _ => do
         let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
@@ -1441,7 +1561,19 @@ def selfHostGroup : Group where
         let main := s!"def main : IO Unit := printAll {wizList calls}\n"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         unless (expected.filter (· != "error")).length ≥ 30 do throw (IO.userError "too few well-typed terms")
-        ioRun (kernel ++ "\n" ++ verdict ++ printAll ++ main) ("\n".intercalate expected ++ "\n") }
+        ioRun (kernel ++ "\n" ++ verdict ++ printAll ++ main) ("\n".intercalate expected ++ "\n") },
+    { name := "the Wiz kernel checks declarations at symbolic levels like the Lean kernel", run := fun _ => do
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let decls := MTm.declSamples ++ MTm.levelPuzzles 200
+        let expected := decls.map leanDeclVerdict
+        unless (expected.filter (· == "ok")).length ≥ 60 do throw (IO.userError "too few valid declarations")
+        unless (expected.filter (· == "error")).length ≥ 30 do throw (IO.userError "too few invalid declarations")
+        let decl := "def declVerdict (ty : Tm) (v : Option Tm) : String := match checkDecl ty v with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n"
+        let calls := decls.map fun (_, v, ty) =>
+          s!"(declVerdict {ty.toWiz} {match v with | some v => s!"(.some {v.toWiz})" | none => ".none"})"
+        let main := s!"def main : IO Unit := printAll {wizList calls}\n"
+        let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
+        ioRun (kernel ++ "\n" ++ decl ++ printAll ++ main) ("\n".intercalate expected ++ "\n") }
   ]
 
 def languageGroup : Group where

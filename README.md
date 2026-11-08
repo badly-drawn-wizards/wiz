@@ -1133,8 +1133,26 @@ The parser got a per-offset token cache (each alternative used to re-lex, scanni
 whole token table) and no longer shares its memo table with candidate states (each
 store copied the table): `Kernel.wiz` now checks in a third of the time.
 
-Next: checking declarations (with symbolic levels), and the performance work that
-self-hosting will need (lazy unfolding first).
+Compiling the kernel (which the self-hosting tests do) had grown to 8 minutes. A
+catch-all row of a multi-column `match` is copied into every leaf of the split, so
+`checkW`'s now calls a helper (`checkByInfer`); and erasure no longer asks the kernel's
+full `infer` for the type of each subterm (which re-checked every subterm once per
+enclosing node) but follows the elimination spine (`Erase.quickType`). Now 37 seconds.
+
+### 14q: declarations at symbolic levels ✅
+
+Values carry symbolic levels (`vsort (l : Lvl)`), compared as in `Level.lean`: normal
+forms are sorted lists of `atom + k` (exercise 14.8, `lvlNorm`), and when an `imax`
+keeps them apart, `lvlEquiv` splits on the parameter it depends on (`p = 0` or
+`p = p + 1`). `checkDecl` checks a declaration with its parameters symbolic, so at
+every level at once. A differential test checks declarations, and 200 random level
+puzzles (`Sort a : Sort b`, Π's of sorts; the true ones made by rewriting with
+identities), against the Lean kernel's `addDecl`. (The Lean kernel also rejects unknown
+or duplicate level parameter names; this one doesn't look.)
+
+The Wiz kernel now covers the Lean kernel's calculus. Next: the performance work that
+self-hosting will need (lazy unfolding first), and a `match` compiler that shares
+catch-all rows instead of copying them.
 
 ## Stage 11: tooling
 
