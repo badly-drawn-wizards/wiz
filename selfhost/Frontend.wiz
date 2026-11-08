@@ -194,7 +194,7 @@ inductive CField where
 inductive Ctor where
   | mk (name : String) (fields : List CField) (res : Tm)
 inductive IndInfo where
-  | mk (np : Nat) (I D DI : Tm) (ctors : List Ctor)
+  | mk (np : Nat) (I D DI : Tm) (ctors : List Ctor) (fixed : Option Tm) (fam : Tm)
 -- the globals so far: by position (the first is `0`), their names in scope, and the
 -- inductive types by name
 inductive Globals where
@@ -564,7 +564,7 @@ def inductiveCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
               match addCtors T ps pts nidx I (.const T .nil .nil val ty) valI k gs1 0 ctors with
               | .err => errStep gs "ill-typed constructor"
               | .ok gs2 cs => .mk (String.append T (String.append " : " (show .nil 0 ty)))
-                  (Globals.addInd gs2 T (.mk np I (mkD ds) (mkD dsI) cs))
+                  (Globals.addInd gs2 T (.mk np I (mkD ds) (mkD dsI) cs .none (.const T .nil .nil val ty)))
   | _ => errStep gs "an inductive type needs a name"
 
 def sndN : Nat → Tm → Tm
@@ -1500,7 +1500,7 @@ def absurdBranch (cx6 : Cx) (np L d d0 F : Nat) (args : Tms) (I idx res : Tm) (M
   | _ => .none
 -- the hypotheses `let ih✝l := fst (snd^r ih)`, one per recursive field `l`; with a closed
 -- index, one whose field has that index is applied to `refl` already
-def ihLetsB (MB0 MB : Tm) (md d0 F np L : Nat) (args : Tms) (I idx : Tm) (modeB : Bool) (fcols : List Col) : Cx → Nat → List Nat → IHL
+def ihLetsB (gs : Globals) (MB0 MB : Tm) (md d0 F np L : Nat) (args : Tms) (I idx : Tm) (modeB : Bool) (fcols : List Col) : Cx → Nat → List Nat → IHL
   | cx, _, .nil => .mk (fun b => b) cx
   | cx, r, .cons l rest =>
     let D := d0 + F + r;
@@ -1509,7 +1509,9 @@ def ihLetsB (MB0 MB : Tm) (md d0 F np L : Nat) (args : Tms) (I idx : Tm) (modeB 
     -- the field's index, at depth `D`
     let jD : Tm := match colTyAt fcols l with
       | .some fty => match headOf fty .tnil with
-        | .mk _ as => lastTm (shiftTms (D - l) as)
+        | .mk nm as => match Globals.ind gs nm with
+          | .some (.mk _ _ _ _ _ (.some f) _) => f
+          | _ => lastTm (shiftTms (D - l) as)
         | .none => .star
       | .none => .star;
     let ID := nfAt D (tApps (tLams np I) (shiftTms (D - L) args));
@@ -1521,7 +1523,7 @@ def ihLetsB (MB0 MB : Tm) (md d0 F np L : Nat) (args : Tms) (I idx : Tm) (modeB 
     let ty := match same with
       | .true => shiftTm (D - md) 0 MB0
       | .false => nfAt D (.app (.app (.lam (.lam (shiftTm (D - (md - 2)) 2 MB))) jD) (.var (D - 1 - l)));
-    match ihLetsB MB0 MB md d0 F np L args I idx modeB fcols (Cx.define cx (String.append "ih✝" (Nat.toString l)) (eval env val) (eval env ty)) (r + 1) rest with
+    match ihLetsB gs MB0 MB md d0 F np L args I idx modeB fcols (Cx.define cx (String.append "ih✝" (Nat.toString l)) (eval env val) (eval env ty)) (r + 1) rest with
     | .mk w cx' => .mk (fun b => .letE ty val (w b)) cx'
 -- the result of compiling a match: the term and the metavariables
 inductive CE where
@@ -1588,13 +1590,18 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
     | .none => .err "a pattern on a value that isn't of an inductive type"
     | .mk T args => match Globals.ind gs T with
       | .none => .err (String.append "not an inductive type: " T)
-      | .some (.mk np I D _ ctors) => match mc with
+      | .some (.mk np I D _ ctors fixed fam) => match mc with
         | .mk _ params p n v R _ pts _ _ =>
           -- the parameters and the index (`tt` without one) of the scrutinee's type
           let pargs := tmsTake np args;
-          let idx := match tmsDrop np args with
-            | .tcons j _ => j
-            | .tnil => (.star : Tm);
+          let idx := match fixed with
+            | .some f => f
+            | .none => match tmsDrop np args with
+              | .tcons j _ => j
+              | .tnil => (.star : Tm);
+          let nidxE := match fixed with
+            | .some _ => 1
+            | .none => tmsLenF (tmsDrop np args);
           -- the description and index type with the parameters, at depth `dd`
           let DAt := fun (dd : Nat) => nfAt dd (tApps (tLams np D) (shiftTms (dd - L) pargs));
           let IAt := fun (dd : Nat) => nfAt dd (tApps (tLams np I) (shiftTms (dd - L) pargs));
@@ -1610,7 +1617,7 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
             | .false => shiftTm (d + 2 - n) 0 R;
           -- a closed index (a tag, say): the motive also takes `e :0 i = idx`, so that the
           -- constructors whose index differs can be ruled out
-          let modeB := Bool.and (Nat.beq (tmsLenF (tmsDrop np args)) 1) (match lowerTm L 0 idx with
+          let modeB := Bool.and (Nat.beq nidxE 1) (match lowerTm L 0 idx with
             | .some _ => .true
             | .none => .false);
           let MB0 := MB;
@@ -1630,7 +1637,7 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
             (tApps (allTm 0 v) (args6 (IAt (d + 2)) (DAt (d + 2)) (XAt (d + 2)) (PAt (d + 2)) (.var 1) (.var 0))));
           -- the motive's body as a value (it doesn't use `i` and `y`)
           let MBv := eval (.cons .vtt (.cons .vtt env)) MB;
-          match branches gs mc es cx3 expected cols top ihLvls cls k (.mk L ty tyI) T np pargs (tmsLenF (tmsDrop np args)) I idx modeB MB0 MB MBv MT G (lenL ctors) 0 ctors with
+          match branches gs mc es cx3 expected cols top ihLvls cls k (.mk L ty tyI) T np pargs nidxE I idx fam modeB MB0 MB MBv MT G (lenL ctors) 0 ctors with
           | .err m => .err m
           | .ok bs es' =>
             let M : Tm := .lam (.lam (.lam (.app (.app (.ecase MT (.fst (.var 1)) bs) (.snd (.var 1))) (.var 0))));
@@ -1643,7 +1650,7 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
 -- `d + 3`): `fun rest ih => let fields; (let hyps; let cur✝; fun q =>) …`
 def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val) (cols : List Col)
     (top : Bool) (ihLvls : List Nat) (cls : List Clause) (k : Nat) (col : Col) (T : String) (np : Nat)
-    (args : Tms) (nidx : Nat) (I idx : Tm) (modeB : Bool) (MB0 MB : Tm) (MBv : Val) (MT : Tm) (G : Nat) (nc i : Nat) : List Ctor → BE
+    (args : Tms) (nidx : Nat) (I idx fam : Tm) (modeB : Bool) (MB0 MB : Tm) (MBv : Val) (MT : Tm) (G : Nat) (nc i : Nat) : List Ctor → BE
   | .nil => .ok .tnil es
   | .cons (.mk c fs res) rest =>
     let F := lenL fs;
@@ -1658,7 +1665,7 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
         | .vpi _ ihTy _ _ => Cx.bind cx4 "ihs✝" ihTy
         | _ => Cx.bind cx4 "ihs✝" .vtt
       | _ => Cx.bind (Cx.bind cx3 "rest✝" .vtt) "ihs✝" .vtt;
-    let next := fun (es1 : ES) => branches gs mc es1 cx3 expected cols top ihLvls cls k col T np args nidx I idx modeB MB0 MB MBv MT G nc (i + 1) rest;
+    let next := fun (es1 : ES) => branches gs mc es1 cx3 expected cols top ihLvls cls k col T np args nidx I idx fam modeB MB0 MB MBv MT G nc (i + 1) rest;
     -- the motive's body at the method's `i` (level `d`)
     let MBi := eval (.cons .vtt (.cons (fresh d) (dropEnv 3 (TCtx.env (Cx.c cx3))))) MB;
     match col with
@@ -1679,7 +1686,7 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
             | .false => .nil;
           let Rc := lenL recsT;
           let ihLvls' := List.append ihLvls recsT;
-          match ihLetsB MB0 MB (d + 2) d0 F np L args I idx modeB fcols cx6 0 recsT with
+          match ihLetsB gs MB0 MB (d + 2) d0 F np L args I idx modeB fcols cx6 0 recsT with
           | .mk wrapIH cx7 => match mc with
             | .mk _ params p n _ _ _ pts ptsI _ =>
               let base := d0 + F + Rc;
@@ -1689,7 +1696,7 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
               -- (its index is the method's `i✝`, at level `d`); then `e` (with a
               -- closed index) and the later parameters are bound again (`fun q => …`)
               let curTy := match col with
-                | .mk L' ty _ => tApps (headTm ty) (tmsAppend (shiftTms (base - L') args) (match nidx with
+                | .mk L' _ _ => tApps fam (tmsAppend (shiftTms (base - L') args) (match nidx with
                   | .zero => .tnil
                   | .succ _ => .tcons (.var (base - 1 - d)) .tnil));
               let curVal : Tm := .con (.pair (.tag nc i) (.var (F + Rc + 1)));
@@ -1900,6 +1907,125 @@ def command (gs : Globals) (stx : Syntax) : Step :=
   --| errStep gs "not implemented"
   --sol>
 
+-- Mutual inductive types (stage 18c): `mutual inductive A … inductive B … end` (without
+-- parameters or indices) is one family `A_B : Enum m → Type` indexed by a tag, with
+-- every member's constructors; a field whose type is a member is recursive at that
+-- member's tag, and member `j`'s constructors end at tag `j`. Each member is the
+-- constant `A := A_B (tag 0)`, so a match on an `A` runs at a closed index: the other
+-- members' constructors are ruled out (18b).
+def indexOfName : List String → String → Nat → Option Nat
+  | .nil, _, _ => .none
+  | .cons y ys, x, i => match strEq x y with
+    | .true => .some i
+    | .false => indexOfName ys x (i + 1)
+-- a member constructor's fields: as a description (`m` members, this one `j`)
+def mctorDesc (inline : Bool) (gs : Globals) (members : List String) (m j : Nat) : Scope → Nat → List Field → Elab
+  | _, _, .nil => .ok (.dret (.tag m j))
+  | sc, d, .cons (.mk x ty) rest => match indexOfName members (identOf ty) 0 with
+    | .some j' => match mctorDesc inline gs members m j sc d rest with
+      | .ok D => .ok (.drec (.tag m j') D)
+      | e => e
+    | .none => match elab sc ty with
+      | .err m' => .err m'
+      | .ok A => match mctorDesc inline gs members m j (Scope.bind sc x) (d + 1) rest with
+        | .ok D => .ok (.darg (closeG inline gs d A) (.lam D))
+        | e => e
+-- a member constructor: the member's index and the syntax
+inductive MCtor where
+  | mk (j : Nat) (c : Syntax)
+def mctorsOf (j : Nat) : List Syntax → List MCtor
+  | .nil => .nil
+  | .cons c rest => .cons (.mk j c) (mctorsOf j rest)
+def memberCtors : List Syntax → Nat → List MCtor
+  | .nil, _ => .nil
+  | .cons d rest, j => List.append (mctorsOf j (kids (kid d 6))) (memberCtors rest (j + 1))
+def mdescs (inline : Bool) (gs : Globals) (members : List String) (m : Nat) : List MCtor → Descs
+  | .nil => .ok .tnil
+  | .cons (.mk j c) rest => match mctorDesc inline gs members m j (Scope.bind (Globals.scope gs) "t✝") 1 (ctorFields c) with
+    | .err e => .err e
+    | .ok D => match mdescs inline gs members m rest with
+      | .ok ds => .ok (.tcons D ds)
+      | e => e
+def identOf' (s : Syntax) : String := match s with
+  | .ident n => n
+  | _ => "_"
+def memberNames : List Syntax → List String
+  | .nil => .nil
+  | .cons d rest => .cons (identOf' (kid d 1)) (memberNames rest)
+def joinUnder : List String → String
+  | .nil => ""
+  | .cons n rest => match rest with
+    | .nil => n
+    | .cons _ _ => String.append (String.append n "_") (joinUnder rest)
+-- the member types `A := F (tag j)`
+def addMembers (F : Tm) (FI : Tm) (m : Nat) : Globals → Nat → List String → Globals
+  | gs, _, .nil => gs
+  | gs, j, .cons n rest => addMembers F FI m (Globals.add gs (.mk n (.univ 0) (.app F (.tag m j)) (.app FI (.tag m j)) .nil)) (j + 1) rest
+-- the member constructors `A.c := fun fields => con (tag, fields…, refl, tt)`
+inductive MAdded where
+  | ok (gs : Globals) (ctors : List Ctor)
+  | err (msg : String)
+def markRec (members : List String) : List Field → List CField → List CField
+  | .cons (.mk _ ty) fs, .cons (.mk x _ A AI) cs => .cons (.mk x (match indexOfName members (identOf ty) 0 with
+      | .some _ => .true
+      | .none => .false) A AI) (markRec members fs cs)
+  | _, _ => .nil
+def addMCtors (members : List String) (m k : Nat) : Globals → Nat → List MCtor → MAdded
+  | gs, _, .nil => .ok gs .nil
+  | gs, ci, .cons (.mk j c) rest =>
+    let fs0 := ctorFields c;
+    let n := List.length fs0;
+    let T := nthName members j;
+    match Scope.lookup (Globals.scope gs) T with
+    | .none => .err T
+    | .some ti =>
+      let Tc := globalTm .false gs ti;
+      match ctorFieldTys gs "" .nil 0 Tc Tc (Globals.scope gs) 0 fs0 with
+      | .err e => .err e
+      | .ok fs1 =>
+        -- (a field typed by a member is recursive)
+        let fs := markRec members fs0 fs1;
+        let ty := ctorType Tc fs;
+        let v := tLams n (.con (.pair (.tag k ci) (payloadP (.eqRefl (.enum m) (.tag m j)) n (n - 1))));
+        match check empty v (eval .nil ty) with
+        | .err e => .err e
+        | .ok _ _ => match addMCtors members m k (Globals.add gs (.mk (String.append (String.append T ".") (ctorName c)) ty v v (falses n))) (ci + 1) rest with
+          | .ok gs' cs => .ok gs' (.cons (.mk (ctorName c) fs (.tag m j)) cs)
+          | e => e
+def addMemberInds (I D DI : Tm) (cs : List Ctor) (fam : Tm) (m : Nat) : Globals → Nat → List String → Globals
+  | gs, _, .nil => gs
+  | gs, j, .cons n rest => addMemberInds I D DI cs fam m (Globals.addInd gs n (.mk 0 I D DI cs (.some (.tag m j)) fam)) (j + 1) rest
+def memberLines : List String → String
+  | .nil => ""
+  | .cons n rest => match rest with
+    | .nil => String.append n " : U0"
+    | .cons _ _ => String.append (String.append n " : U0\n") (memberLines rest)
+def mutualInductiveCmd (gs : Globals) (defs : List Syntax) : Step :=
+  let members := memberNames defs;
+  let m := List.length members;
+  let F := joinUnder members;
+  let mcs := memberCtors defs 0;
+  let k := List.length mcs;
+  let I : Tm := .enum m;
+  let mkD := fun (ds : Tms) => (.darg (.enum k) (.lam (.ecase (.descr 0 I) (.var 0) ds)) : Tm);
+  match mdescs .false gs members m mcs with
+  | .err e => errStep gs e
+  | .ok ds => match mdescs .true gs members m mcs with
+    | .err e => errStep gs e
+    | .ok dsI =>
+      let fty : Tm := .pi I (.univ 0);
+      let fval : Tm := .lam (.mu 0 I (mkD ds) (.var 0));
+      match check empty fval (eval .nil fty) with
+      | .err e => errStep gs e
+      | .ok _ _ =>
+        let fvalI : Tm := .lam (.mu 0 I (mkD dsI) (.var 0));
+        let gs1 := Globals.add gs (.mk F fty fval fvalI .nil);
+        let Fc : Tm := .const F .nil .nil fval fty;
+        let gs2 := addMembers Fc fvalI m gs1 0 members;
+        match addMCtors members m k gs2 0 mcs with
+        | .err e => errStep gs e
+        | .ok gs3 cs => .mk (memberLines members) (addMemberInds I (mkD ds) (mkD dsI) cs Fc m gs3 0 members)
+
 -- Equations (stages 16d–e): `def f (ps) : A₁ → … → Aₘ → R | p₁, …, pₘ => rhs …` is
 -- `def f (ps) (x✝₁ : A₁) … : R := match x✝₁, … with | p₁, …, pₘ => rhs …`
 -- (`(x : A) → B` names its parameter)
@@ -2015,7 +2141,9 @@ partial def runCommands (cats : List Cat) (tokens : List String) (input : Array 
       let step := match strEq (kindOf stx) "command.partial" with
         | .true => partialCmd gs (one (kid stx 1))
         | .false => match strEq (kindOf stx) "command.mutual" with
-          | .true => partialCmd gs (nonAtoms (kids (kid stx 1)))
+          | .true => match strEq (kindOf (nthSyntax (nonAtoms (kids (kid stx 1))) 0)) "command.inductive" with
+            | .true => mutualInductiveCmd gs (nonAtoms (kids (kid stx 1)))
+            | .false => partialCmd gs (nonAtoms (kids (kid stx 1)))
           | .false => defStep gs stx;
       match step with
       | .mk line gs' => runCommands cats tokens input stop gs' (.cons line out)
