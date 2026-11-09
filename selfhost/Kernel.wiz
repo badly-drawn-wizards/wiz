@@ -1368,6 +1368,83 @@ def scofixFunTy (l : Nat) (I D A : Val) : Val :=
     (.pi (.pi (.var 3) (.pi (.app (.var 2) (.var 0)) (.nu l (.var 5) (.var 4) (.var 1) (.var 2))))
       (.pi (.var 4) (.pi (.app (.var 3) (.var 0)) (.nu l (.var 6) (.var 5) (.var 1) (.szSuc (.var 3)))))))
 
+def andSame (a : Option Nat) (k : Nat → Option Nat) : Option Nat := match a with
+  | .some n => k n
+  | .none => .none
+def fuelOk : Option Nat → Bool
+  | .some _ => .true
+  | .none => .false
+-- Are two values the same, structurally, within a budget of nodes (`none` when it runs
+-- out or they differ)? Cheap and allocation-free, unlike `conv`; a closure is the same
+-- when its term and environment are.
+mutual
+def valSame : Nat → Val → Val → Option Nat
+  | .zero, _, _ => .none
+  | .succ n, a, b => match a with
+    | .vne h sp => match b with
+      | .vne h' sp' => andSame (headSame n h h') (fun k => spineSame k sp sp')
+      | _ => .none
+    | .vglued h sp _ => match b with
+      | .vglued h' sp' _ => andSame (headSame n h h') (fun k => spineSame k sp sp')
+      | _ => .none
+    | .vlam e t => match b with
+      | .vlam e' t' => match tmEq t t' with
+        | .true => envSame n e e'
+        | .false => .none
+      | _ => .none
+    | .vpi q x e t => match b with
+      | .vpi q' x' e' t' => match Bool.and (qEq q q') (tmEq t t') with
+        | .true => andSame (valSame n x x') (fun k => envSame k e e')
+        | .false => .none
+      | _ => .none
+    | .vpair x y => match b with
+      | .vpair x' y' => andSame (valSame n x x') (fun k => valSame k y y')
+      | _ => .none
+    | .vcon x => match b with
+      | .vcon x' => valSame n x x'
+      | _ => .none
+    | .vtag k i => match b with
+      | .vtag k' i' => match Bool.and (Nat.beq k k') (Nat.beq i i') with
+        | .true => .some n
+        | .false => .none
+      | _ => .none
+    | .venum k => match b with
+      | .venum k' => match Nat.beq k k' with
+        | .true => .some n
+        | .false => .none
+      | _ => .none
+    | .vtt => match b with
+      | .vtt => .some n
+      | _ => .none
+    | .vszInf => match b with
+      | .vszInf => .some n
+      | _ => .none
+    | _ => .none
+def envSame : Nat → Env → Env → Option Nat
+  | .zero, _, _ => .none
+  | .succ n, .nil, .nil => .some n
+  | .succ n, .cons v r, .cons v' r' => andSame (valSame n v v') (fun k => envSame k r r')
+  | _, _, _ => .none
+def spineSame : Nat → Spine → Spine → Option Nat
+  | .zero, _, _ => .none
+  | .succ n, .snil, .snil => .some n
+  | .succ n, .sapp sp a, .sapp sp' a' => andSame (spineSame n sp sp') (fun k => valSame k a a')
+  | .succ n, .sfst sp, .sfst sp' => spineSame n sp sp'
+  | .succ n, .ssnd sp, .ssnd sp' => spineSame n sp sp'
+  | _, _, _ => .none
+def headSame : Nat → Head → Head → Option Nat
+  | n, .hvar x, .hvar y => match Nat.beq x y with
+    | .true => .some n
+    | .false => .none
+  | n, .hconst a _ _ _ _, .hconst b _ _ _ _ => match kStrEq a b with
+    | .true => .some n
+    | .false => .none
+  | n, .haxiom a _, .haxiom b _ => match kStrEq a b with
+    | .true => .some n
+    | .false => .none
+  | _, _, _ => .none
+end
+
 -- **Exercise 14.6.** Conversion (`conv` and `convTy` in `Conv.lean`): `conv c ty a b`
 -- compares `a` and `b` at type `ty`. All proofs of a proposition are equal; functions
 -- are compared by applying both to a fresh variable and pairs by their projections
@@ -1487,7 +1564,10 @@ def convSpine : TCtx → Head → Spine → Spine → Bool
   | c, x, .ssnd r, .ssnd r' => convSpine c x r r'
   | c, x, .sout r, .sout r' => convSpine c x r r'
   | c, x, .secase r e m bs, .secase r' e' m' bs' => Bool.and (convSpine c x r r')
-      (match whnf (typeOfNe c x r) with
+      -- (the same branches over the same environment: nothing more to compare)
+      (match Bool.and (Bool.and (tmEq m m') (tmsEq bs bs')) (fuelOk (envSame 2000 e e')) with
+      | .true => .true
+      | .false => match whnf (typeOfNe c x r) with
        | .venum k => Bool.and
            (convTy (TCtx.bind c (.venum k)) (eval (.cons (fresh (TCtx.lvl c)) e) m) (eval (.cons (fresh (TCtx.lvl c)) e') m'))
            (convBranches c k e m e' bs bs' 0)
