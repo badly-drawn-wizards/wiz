@@ -244,8 +244,11 @@ These changes landed in stage 1's files. Stage 1's exercises keep their numbers,
 the new constructor cases inside them are labelled 4.3–4.8.
 
 Quantities: `(1 x : A) × B` is a pair whose first field is linear. `p.1` and `p.2`
-each use `p`, so a linear pair is consumed with `let 1 (x, y) := p; …`. An erased
-field (`(0 n : A) × B`) can't be projected at all.
+each use `p`, so a linear pair is consumed with `let 1 (x, y) := p; …`. `p.2` drops the
+first field, so it needs a field that may go unused (`0` or `ω`); `p.1` drops the
+second component, which the projection rule doesn't track. An erased field
+(`(0 n : A) × B`) can't be projected at all. Both projections are allowed in erased
+positions (`Ctx.erased`).
 
 | #   | Where              | What                                                       |
 |-----|--------------------|------------------------------------------------------------|
@@ -266,19 +269,20 @@ of `a` and `b` (Pujet & Tabareau, *Observational Equality: Now for Good*):
 
 | at type          | `a = b` computes to                                  | consequence |
 |------------------|------------------------------------------------------|-------------|
-| `(x : A) → B`    | `(x : A) → a x = b x`                                | funext      |
+| `(x : A) → B`    | `(0 x : A) → a x = b x`                              | funext      |
 | `(x : A) × B`    | `(e : a.1 = b.1) × cast … a.2 = b.2`                  |             |
 | `Unit`, `Empty`  | `True`                                               |             |
 | `Prop`           | `(a → b) × (b → a)`                                  | propext     |
-| `Type u`         | structural equality of types; `False` for different formers | no-confusion |
+| `Type u`         | structural equality of types (propositions inside by equivalence; `μ`, `ν`, `Desc` stuck); `False` for different formers | no-confusion |
 | a type variable  | stuck                                                 |             |
 
 `cast e t : B` (for `e : A = B`, `t : A`) also computes by the two types.
 `transp P p e` transports into propositions, and together they give `J`
 (`examples/equality.wiz` derives `subst` and `sym`). Proofs are **definitionally
 irrelevant**, so conversion at a proposition always succeeds. **Regularity**,
-`cast A A e t ≡ t`, is a conversion rule (not an evaluation rule), which makes `J`
-compute on `refl`.
+`cast A A e t ≡ t`, makes `J` compute on `refl`. It is a conversion rule, and also an
+evaluation rule when it is cheap to see: `vCast` reduces a cast between two types that
+quote equal (see 4e part 1).
 
 **Propositions inside types.** Two propositions are equal when equivalent, whatever
 their shapes: `True = (True → True)` holds. So equality of types can't compare a
@@ -383,7 +387,9 @@ index, and `Enum`s by size. Equality at ν is stuck (a design decision).
 
 A case uses the **join** of its branches' usages (`0 ⊔ 1 = ω`), so a linear variable
 must be used identically in every branch. `ind`'s method is scaled by ω, since it runs
-once per node. Erased fields can be projected in erased positions (`Ctx.erased`).
+once per node (and so are the methods of `Desc.elim`, `sfix`, `scofix` and `coit`). ω
+is the rig's unrestricted quantity (`QRig.many?`); a rig without one, like exact
+counting (`Nat`), only lets a method use local variables in erased positions. Erased fields can be projected in erased positions (`Ctx.erased`).
 
 `examples/data.wiz` defines `Bool`, `Nat`, addition by `ind` (with a hand-written
 "convoy" to branch on the tag, which `match` will generate in stage 4e), and streams.

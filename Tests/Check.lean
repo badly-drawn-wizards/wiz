@@ -97,6 +97,24 @@ def mlttGroup : Group where
         (fun | .cannotInfer .. => true | _ => false) "cannotInfer" }
   ]
 
+/-! ## Methods in a rig without ω (Q2) -/
+
+/-- In the `Nat` rig (exact counting) there is no unrestricted quantity, so a method of
+an eliminator, which runs once per node, may not use a runtime variable. Here `coit`'s
+step uses `y`: `bad` declares `y` linear (rejected: each `out` reruns the step), `good`
+declares it erased and the step only passes it to an erased argument. -/
+def natRigCoit (q : Nat) (name : Name) : List (Decl Nat) :=
+  let pi (x : Name) (q : Nat) (a b : Term Nat) : Term Nat := .pi x .default (.qlit q) a b none
+  let U : Term Nat := .unit 1
+  let D : Term Nat := .dret .tt
+  let S : Term Nat := .lam "_" U
+  -- ⟦ret tt⟧ S i = (0 _ : tt = i) × Unit
+  let stepTy := pi "i" 1 U (pi "s" 1 U (pi "y" q U (.sigma "_" (.qlit 0) (.eq U .tt (.var 2)) (.unit 1) none)))
+  [{ name := s!"{name}Step", type := stepTy },
+   { name, type := pi "y" q U (.nu 0 U D .tt .szInf none),
+     value := some (.lam "y" (.coit 0 U D S
+       (.lam "i" (.lam "s" (.app (.app (.app (.const s!"{name}Step" []) (.var 1)) (.var 0)) (.var 2)))) .tt .tt)) }]
+
 /-! ## Quantities (`ZeroOneMany` rig) -/
 
 abbrev Q := ZeroOneMany
@@ -145,7 +163,10 @@ def qttGroup : Group where
         (lams ["A", "x", "z"] (.letE "y" one "A" "x" "z"))] isQty "a quantity error" },
     { name := "erased let feeding a type",
       run := fun _ => accepts [Raw.defn "l" (forallA (arr one "A" "A"))
-        (lams ["A", "x"] (.letE "B" zero ty "A" (.ann "x" "B")))] }
+        (lams ["A", "x"] (.letE "B" zero ty "A" (.ann "x" "B")))] },
+    { name := "Nat rig: a method may use an erased variable", run := fun _ => accepts (natRigCoit 0 "good") },
+    { name := "Nat rig: a method may not use a linear variable, it runs any number of times (Q2)", run := fun _ =>
+        rejects (natRigCoit 1 "bad") (fun | .other .. => true | _ => false) "a method usage error" }
   ]
 
 /-! ## Structural types -/
