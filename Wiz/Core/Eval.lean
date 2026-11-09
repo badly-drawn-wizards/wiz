@@ -67,8 +67,28 @@ partial def vSnd : Val R → Val R
 /-- The arity of a registered operation on numbers. -/
 def natOpArity : Name → Nat
   | "nat.zero" => 0
-  | "nat.succ" | "nat.pred" => 1
+  | "nat.succ" | "nat.pred" | "nat.log2" => 1
   | _ => 2
+
+/-- The registered operations on numbers that return a number, computed natively. The
+kernel, the interpreters and the native runtime (`runtime/wiz.c`) agree with these, and
+with the Prelude's definitions (`Nat.div`, …): `n / 0 = 0`, `n % 0 = n`, `log2 0 = 0`. -/
+def natNative? : Name → Array Nat → Option Nat
+  | "nat.succ", #[a] => some (a + 1)
+  | "nat.pred", #[a] => some (a - 1)
+  | "nat.add", #[a, b] => some (a + b)
+  | "nat.sub", #[a, b] => some (a - b)
+  | "nat.mul", #[a, b] => some (a * b)
+  | "nat.div", #[a, b] => some (a / b)
+  | "nat.mod", #[a, b] => some (a % b)
+  | "nat.pow", #[a, b] => some (a ^ b)
+  | "nat.land", #[a, b] => some (a &&& b)
+  | "nat.lor", #[a, b] => some (a ||| b)
+  | "nat.xor", #[a, b] => some (a ^^^ b)
+  | "nat.shiftLeft", #[a, b] => some (a <<< b)
+  | "nat.shiftRight", #[a, b] => some (a >>> b)
+  | "nat.log2", #[a] => some a.log2
+  | _, _ => none
 
 /-- The value of a global registered as an operation on numbers (`builtin nat.add := …`):
 `nat.zero` is the literal `0`, and an operation is a closure whose body is a
@@ -387,14 +407,7 @@ partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
   let lits := args.filterMap fun a => match whnf a with
     | .natLit n => some n
     | _ => none
-  let native : Option Nat := if lits.size != args.size then none else
-    match op, lits with
-    | "nat.succ", #[a] => some (a + 1)
-    | "nat.pred", #[a] => some (a - 1)
-    | "nat.add", #[a, b] => some (a + b)
-    | "nat.sub", #[a, b] => some (a - b)
-    | "nat.mul", #[a, b] => some (a * b)
-    | _, _ => none
+  let native : Option Nat := if lits.size != args.size then none else natNative? op lits
   match native with
   | some n => .natLit n
   | none => match (g.builtins.lookup op).bind g.find? with

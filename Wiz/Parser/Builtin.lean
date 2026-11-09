@@ -268,6 +268,9 @@ def commandLeading : List LeadingParser := [
     p := seqs ["attribute", "[", nonReserved "macro", ident, "]", ident] },
   { kind := "command.attrTactic", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "tactic", ident, "]", ident] },
+  -- compiled code calls the first name instead of the second; the kernel keeps the second
+  { kind := "command.attrImplementedBy", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "implemented_by", ident, "]", ident] },
   -- HD8: `deriving`
   { kind := "command.attrDeriver", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "deriver", ident, "]", ident] },
