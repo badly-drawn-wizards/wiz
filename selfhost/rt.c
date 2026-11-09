@@ -397,6 +397,16 @@ NATIVE(Nat_46_beq, 2, return boolv(UNBOX(a[0]) == UNBOX(a[1]));)
 NATIVE(Nat_46_blt, 2, return boolv(UNBOX(a[0]) < UNBOX(a[1]));)
 NATIVE(Nat_46_lt, 2, return boolv(UNBOX(a[0]) < UNBOX(a[1]));)
 NATIVE(Nat_46_le, 2, return boolv(UNBOX(a[0]) <= UNBOX(a[1]));)
+/* as the Prelude defines them: n / 0 = 0, n % 0 = n, log2 0 = 0 (words wrap, as in `mul`) */
+NATIVE(Nat_46_div, 2, return BOX(UNBOX(a[1]) ? UNBOX(a[0]) / UNBOX(a[1]) : 0);)
+NATIVE(Nat_46_mod, 2, return BOX(UNBOX(a[1]) ? UNBOX(a[0]) % UNBOX(a[1]) : UNBOX(a[0]));)
+NATIVE(Nat_46_pow, 2, uintptr_t r = 1, b = UNBOX(a[0]); for (uintptr_t e = UNBOX(a[1]); e; e >>= 1, b *= b) if (e & 1) r *= b; return BOX(r);)
+NATIVE(Nat_46_land, 2, return BOX(UNBOX(a[0]) & UNBOX(a[1]));)
+NATIVE(Nat_46_lor, 2, return BOX(UNBOX(a[0]) | UNBOX(a[1]));)
+NATIVE(Nat_46_xor, 2, return BOX(UNBOX(a[0]) ^ UNBOX(a[1]));)
+NATIVE(Nat_46_shiftLeft, 2, return BOX(UNBOX(a[1]) >= 64 ? 0 : UNBOX(a[0]) << UNBOX(a[1]));)
+NATIVE(Nat_46_shiftRight, 2, return BOX(UNBOX(a[1]) >= 64 ? 0 : UNBOX(a[0]) >> UNBOX(a[1]));)
+NATIVE(Nat_46_log2, 1, uintptr_t x = UNBOX(a[0]); return BOX(x ? 63 - __builtin_clzll((unsigned long long)x) : 0);)
 NATIVE(Nat_46_toString, 1, char b[32]; int n = snprintf(b, sizeof b, "%lu", (unsigned long)UNBOX(a[0])); return wstr(b, (size_t)n);)
 #ifndef WIZ_RC
 /* IO: `String → World → Prod Unit World` */
