@@ -49,6 +49,19 @@ partial def force (v : Val R) : ElabM R (Val R) := do
   | .lazyInd _ _ _ _ _ _ _ _ _ v => force v.get
   | v => pure v
 
+/-- An equation stuck on a metavariable (its type or a side) computes once the
+metavariable is solved: recompute it (`none` if nothing changed). -/
+def recomputeEq? (v : Val R) : ElabM R (Option (Val R)) := do
+  let .neutral (.eq A a b) sp := v | return none
+  let solved (v : Val R) : ElabM R Bool := do
+    match v with
+    | .neutral (.mvar m) _ => return (← lookupMeta m).solution.isSome
+    | _ => return false
+  if (← solved A) || (← solved a) || (← solved b) then
+    let g ← getGlobals
+    return some (vElims g (vEq g (← forceMeta A) (← forceMeta a) (← forceMeta b)) sp)
+  else return none
+
 /-- A partial renaming from context `cod` (size `cod`) to context `dom` (size `dom`):
 `ren` maps the levels of variables in the spine to their new levels. -/
 structure PRen where
@@ -269,6 +282,11 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
     | t@(.natLit _), u@(.con _) => pure (vNatView g t, u)
     | t@(.con _), u@(.natLit _) => pure (t, vNatView g u)
     | t, u => pure (t, u)
+  -- an equation against something that isn't one: it may compute further
+  let isEq (v : Val R) : Bool := v matches .neutral (.eq ..) _
+  if isEq t != isEq u then
+    if let some t' ← recomputeEq? t then return ← unify l t' u
+    if let some u' ← recomputeEq? u then return ← unify l t u'
   --<sol
   match ← force t, ← force u with
   | .sort a, .sort b => unifyLevel a b
