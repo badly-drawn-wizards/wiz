@@ -1763,6 +1763,43 @@ minutes. A `match` was a method applied to the payload, a closure built and call
 time; a lambda applied to arguments is now a `let`: 6 minutes. Reference counting comes
 next.
 
+### 21g: reference counting in the self-hosted backend (first stage)
+
+A second mode of `Backend.wiz` (`genProgramRC`), chosen by a first line `-- wiz: rc` in
+the program (a stand-in for a command-line flag: self-hosted programs can't read their
+arguments yet). The garbage-collected mode is unchanged, byte for byte.
+
+* **Perceus on the erased terms** (`rcE`): the C is in A-normal form, one local per
+  intermediate value, statements in evaluation order (C leaves the order of arguments
+  unspecified, and with reference counts the order of a use and an `inc` matters).
+  Liveness is one backward pass: a term is compiled knowing the variables used after it
+  (by de Bruijn level), and returns those used from its start; arguments are compiled
+  right to left. The last use of a variable moves it, earlier uses `inc` it, and a
+  variable that dies unused is `dec`ed where it dies (after its `let`, at a function's
+  start, at the start of each `case` branch that doesn't use it). A projection path from
+  a variable reads in place and `inc`s only the field; a `case` on a variable's field
+  reads the tag in place.
+* **Runtime** (`rt.c` with `WIZ_RC`): a count in every object's header; functions own
+  their arguments; function closures pass their collected arguments on (moved out when
+  unique); freeing is a worklist (a list a million long frees without recursion);
+  `memo` and the lazy hypotheses of `ind` release their suspension once forced; arrays
+  are updated in place when unique, else copied (Baker's versions would make cycles);
+  map nodes hold their keys. Constants (globals, string literals) are roots, released at
+  exit, after which the program checks that every object was freed.
+
+* **Borrowed parameters** (as in Lean): a parameter of a global function that its body
+  only reads (projections, a `case`'s tag, borrowed arguments of direct calls) is
+  borrowed, found as a greatest fixed point over all functions. A caller lends a
+  variable to it (and releases it after the call if that was its last use); the function
+  neither `inc`s it nor releases it.
+
+**Bootstrap in this mode**: stage 1 compiles the toolchain (with the `-- wiz: rc` line)
+to C, and that program (stage 2, reference counted) compiles it again to the same C,
+freeing every object by the end.
+
+Next: reuse and drop specialisation (as in stages 8c), a faster allocator, keeping tail
+calls when a borrowed argument is lent; then reference counting by default.
+
 ## Stage 22: numbers for hardware and systems code
 
 Prerequisites shared by the HDL and the Rust-style DSL (decisions RD9, RD10/HD3).
