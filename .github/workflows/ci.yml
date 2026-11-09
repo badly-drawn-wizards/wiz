@@ -83,7 +83,7 @@ jobs:
           if [ -d .lake/cache ] && [ "$(du -sm .lake/cache | cut -f1)" -gt 3000 ]; then
             echo "Lake's artifact cache is over 3 GB: building from scratch"; rm -rf .lake
           fi
-          lake build wiz tests
+          lake build wiz grail tests
           du -sh .lake .lake/cache 2>/dev/null || true
       - name: Every test group is in exactly one shard
         run: python3 scripts/ci.py check-shards
