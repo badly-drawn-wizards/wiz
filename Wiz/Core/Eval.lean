@@ -17,9 +17,11 @@ Every eliminator has a semantic version (`vApp`, `vFst`, `vSnd`, `vSplit`,
 `vAbsurd`). Each computes when its argument is a constructor (a β-rule) and otherwise
 pushes itself onto the neutral's spine.
 
-Globals are δ-unfolded eagerly: `const n` evaluates to the value of `n`'s definition.
-Axioms (no definition) become neutrals. (Eager unfolding makes error messages huge and
-is slow; "glued evaluation" is the standard fix, see the optional exercises.)
+Globals are **glued** (stage 7a): `const n` evaluates to `Val.unfold`, which keeps the
+name and computes the unfolding only when `whnf` needs it. Definitions marked `inline`
+(constructors), or all of them when `Globals.eager` is set (as `nf` does), are
+δ-unfolded at once. Axioms (no
+definition) become neutrals.
 
 These are `partial` because the untyped evaluator need not terminate (`Ω = (λx. x x)(λx. x x)`).
 On well-typed terms they do.
@@ -121,6 +123,71 @@ def propSort? : Val R → Option Bool
   | .sort _ | .qty | .enum _ | .desc .. | .mu .. | .nu .. | .size | .sizeLt _ => some false
   | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
   | _ => none
+
+/-! ### A level above every variable of a value
+
+Regularity (`vCast`'s last case) compares two types by quoting them. Quoting at level
+`l` turns the variable at level `x` into the index `l - x - 1`, so `l` must be above
+every variable the values mention, or two different variables could quote to the same
+index. `Val.lvlBound` computes such an `l`. A closure counts only the entries of its
+environment that its body might mention (that is all `quote` can reach). The bound may
+be too large (a `lazyInd`'s whole spine counts), never too small. -/
+
+/-- The free variables of `t` under `depth` binders, as indices into the enclosing
+environment (with repeats). -/
+partial def Term.freeVarsAt (depth : Nat) (t : Term R) : StateM (Array Nat) Unit :=
+  match t with
+  | .var i => if i ≥ depth then modify (·.push (i - depth)) else pure ()
+  | t => t.forChildren (fun _ => pure ()) (fun d c => Term.freeVarsAt (depth + d) c)
+
+mutual
+/-- `1 +` the largest level of a local variable in `v` (`0` if none). -/
+partial def Val.lvlBound : Val R → Nat
+  | .neutral h sp => max h.lvlBound (Elim.spineBound sp)
+  | .unfold _ _ sp _ => Elim.spineBound sp
+  | .lazyInd _ I D _ P m i x sp _ => max (Val.maxBound [I, D, P, m, i, x]) (Elim.spineBound sp)
+  | .pi _ _ q a b _ | .sigma _ q a b _ => max (max q.lvlBound a.lvlBound) (b.lvlBound 1)
+  | .lam _ b => b.lvlBound 1
+  | .pair a b => max a.lvlBound b.lvlBound
+  | .desc _ a | .dret a | .szSuc a | .sizeLt a | .con a | .cocon a => a.lvlBound
+  | .darg q S D => Val.maxBound [q, S, D]
+  | .drec q j D => Val.maxBound [q, j, D]
+  | .dhrec q H j D => Val.maxBound [q, H, j, D]
+  | .mu _ I D i s h | .nu _ I D i s h => max (Val.maxBound [I, D, i, s]) (Val.maxBound ((h.map (·.2.2)).getD []))
+  | .scofix _ I D A f s i a => Val.maxBound [I, D, A, f, s, i, a]
+  | .coit _ I D S st i s => Val.maxBound [I, D, S, st, i, s]
+  | .sort _ | .unit _ | .tt | .empty _ | .qty | .qlit _ | .enum _ | .tag .. | .size | .szInf
+  | .natLit _ => 0
+partial def Val.maxBound (vs : List (Val R)) : Nat := vs.foldl (fun m v => max m v.lvlBound) 0
+partial def Head.lvlBound : Head R → Nat
+  | .local x => x + 1
+  | .global .. | .mvar _ => 0
+  | .eq A a b => Val.maxBound [A, a, b]
+  | .eqTy A B => Val.maxBound [A, B]
+  | .cast A B e t => Val.maxBound [A, B, e, t]
+  | .refl A a => Val.maxBound [A, a]
+  | .reflTy X => X.lvlBound
+  | .transp A a P p b e => Val.maxBound [A, a, P, p, b, e]
+partial def Elim.spineBound (sp : Array (Elim R)) : Nat := sp.foldl (fun m e => max m e.lvlBound) 0
+partial def Elim.lvlBound : Elim R → Nat
+  | .app a => a.lvlBound
+  | .fst | .snd | .out => 0
+  | .split q _ m _ _ b => max q.lvlBound (max (m.lvlBound 1) (b.lvlBound 2))
+  | .absurd m => m.lvlBound
+  | .ecase _ m env bs => max (m.lvlBound 1) (envBound env (bs.foldl (fun acc b => ((Term.freeVarsAt 0 b).run acc).2) #[]))
+  | .delim _ P a b c h => Val.maxBound [P, a, b, c, h]
+  | .ind _ I D _ P m i => Val.maxBound [I, D, P, m, i]
+  | .sfix _ I D _ P f s i => Val.maxBound [I, D, P, f, s, i]
+  | .scase _ I D _ P m s i => Val.maxBound [I, D, P, m, s, i]
+/-- The bound of the entries of `env` at the indices `fv`. -/
+partial def envBound (env : Env R) (fv : Array Nat) : Nat :=
+  (fv.qsort (· < ·)).foldl (init := (0, none)) (fun (m, prev) i =>
+    if prev == some i then (m, prev)
+    else (max m ((env[i]?.map Val.lvlBound).getD 0), some i)) |>.1
+/-- A closure whose body is under `binders` binders. -/
+partial def Closure.lvlBound (binders : Nat) : Closure R → Nat
+  | .mk env body => envBound env ((Term.freeVarsAt binders body).run #[]).2
+end
 
 mutual
 
@@ -644,8 +711,10 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   | .unit u, .unit w => if u.equiv w then .tt else stuck
   | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
   -- regularity, when it is cheap to see: syntactically equal types (quoted at a level
-  -- above any variable in use)
-  | _, _ => if quote g 100000 A == quote g 100000 B then t else stuck
+  -- above every variable in them, `Val.lvlBound`)
+  | _, _ =>
+    let l := max A.lvlBound B.lvlBound
+    if quote g l A == quote g l B then t else stuck
   --|ex
   --| sorry
   --sol>
