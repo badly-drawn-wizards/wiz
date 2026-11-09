@@ -57,17 +57,78 @@ where
     let only := chars.extract 0 stop
     runFrontend.go input only pos s
 
+/-- The innermost entry of the info tree satisfying `p` whose range contains `off`
+(`start ≤ off < stop`, or `≤ stop` if `endIn`); among equal ranges, the last recorded. -/
+def innermost (s : CommandState R) (off : Nat) (p : Info R → Bool) (endIn : Bool := false) : Option (Info R) :=
+  s.infos.foldl (fun acc i =>
+    let r := i.info
+    if p i && r.start ≤ off && (off < r.stop || (endIn && off == r.stop)) then
+      match acc with
+      | some j => if r.stop - r.start ≤ j.info.stop - j.info.start then some i else acc
+      | none => some i
+    else acc) none
+
 /-- The innermost identifier at a character offset: its name and type. -/
-def hoverAt (s : CommandState R) (off : Nat) : Option (Name × String) :=
-  let hits := s.hovers.filter fun (i, _, _) => i.start ≤ off && off < i.stop
-  let best := hits.foldl (fun acc h => match acc with
-    | none => some h
-    | some (i, _, _) => if h.1.stop - h.1.start < i.stop - i.start then some h else acc) none
-  best.map fun (_, n, ty) => (n, ty)
+def identAt (s : CommandState R) (off : Nat) : Option (Info R) :=
+  innermost s off (· matches .ident ..)
+
+def hoverAt (s : CommandState R) (off : Nat) : Option (Name × String) := do
+  let .ident _ n _ names ty ← identAt s off | none
+  pure (n, ty.pretty names)
+
+/-- The tactic state at a character offset: inside a `by` block, the goals after the
+innermost tactic containing `off` (its end included); between tactics, after the last one
+ending before `off`; before the first, the goals the block started with. Returns a key
+for the state (its position in the info tree), the range it belongs to, and the goals. -/
+def goalsAt (s : CommandState R) (off : Nat) : Option (Nat × SourceInfo × Array (GoalView R)) := do
+  let .tactic blk _ before₀ _ ← innermost s off (· matches .tactic _ true ..) (endIn := true) | none
+  let inside := s.infos.zipIdx.filter fun (i, _) => match i with
+    | .tactic r false .. => blk.start ≤ r.start && r.stop ≤ blk.stop && r.stop > r.start
+    | _ => false
+  let size (r : SourceInfo) := r.stop - r.start
+  -- the innermost tactic containing the cursor (the last recorded, among equal ranges)
+  let containing := inside.foldl (fun acc (i, k) =>
+    let r := i.info
+    if r.start ≤ off && off ≤ r.stop then
+      match acc with
+      | some (j, _) => if size r ≤ size j.info then some (i, k) else acc
+      | none => some (i, k)
+    else acc) none
+  -- or the last one before it (the outermost, among those ending at the same place)
+  let before := inside.foldl (fun acc (i, k) =>
+    let r := i.info
+    if r.stop ≤ off then
+      match acc with
+      | some (j, _) => if r.stop > j.info.stop || (r.stop == j.info.stop && size r ≥ size j.info) then some (i, k) else acc
+      | none => some (i, k)
+    else acc) none
+  match (containing.orElse fun _ => before : Option (Info R × Nat)) with
+  | some (.tactic r _ _ after, k) => pure (k, r, after)
+  | _ =>
+    let k := (s.infos.findIdx? fun i => i.info == blk && i matches .tactic _ true ..).getD 0
+    pure (k + s.infos.size, blk, before₀)
+
+/-- The expected type at a character offset: the innermost checked term (or hole) around
+it, else the innermost identifier (its type, without hypotheses). -/
+def termGoalAt (s : CommandState R) (off : Nat) : Option (SourceInfo × GoalView R) :=
+  match innermost s off (· matches .term ..) (endIn := true) with
+  | some (.term r g _) =>
+    -- an identifier strictly inside the term is more precise
+    match identAt s off with
+    | some (.ident r' _ _ names ty) =>
+      if r'.stop - r'.start < r.stop - r.start then some (r', identGoal names ty) else some (r, g)
+    | _ => some (r, g)
+  | _ => match identAt s off with
+    | some (.ident r _ _ names ty) => some (r, identGoal names ty)
+    | _ => none
+where
+  identGoal (names : List Name) (ty : Term R) : GoalView R :=
+    -- the locals it mentions, by name (their types aren't recorded with identifiers)
+    { hyps := #[], target := names.foldl (fun t n => t.instantiateAt 0 (.const n [])) ty }
 
 /-- Where the global at an offset was declared: its range and module (`""` for this file). -/
 def definitionAt (s : CommandState R) (off : Nat) : Option (Name × SourceInfo × String) := do
-  let (n, _) ← hoverAt s off
+  let .ident _ n false _ _ ← identAt s off | none
   let (info, m) ← s.declSites.get? n
   pure (n, info, m)
 
