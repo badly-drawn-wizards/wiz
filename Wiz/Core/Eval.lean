@@ -422,9 +422,11 @@ partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
     match g.builtins.lookup op with
     | some n => .neutral (.global n []) (args.map .app)
     | none => panic! s!"no definition for builtin {op}"
-  else match (g.builtins.lookup op).bind g.find? with
-    | some { value := some v, .. } => args.foldl (vApp g) (eval g [] v)
-    | _ => panic! s!"no definition for builtin {op}"
+  else match g.builtins.lookup op, (g.builtins.lookup op).bind g.find? with
+    -- glued: it keeps its name (`Nat.pred n`, not its unfolding)
+    | some n, some { value := some v, .. } =>
+      .unfold n [] (args.map .app) (Thunk.mk fun _ => args.foldl (vApp g) (eval g [] v))
+    | _, _ => panic! s!"no definition for builtin {op}"
 
 /-- **Exercise 4.19c.** Induction computes on constructors:
 
@@ -539,6 +541,8 @@ it's stuck. -/
 partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   -- numerals: decide directly, or else look one step inside (`vNatView`)
   if let (.natLit n, .natLit m) := (whnf a, whnf b) then (if n == m then .unit 0 else .empty 0) else
+  -- (stuck, it keeps its sides as written: their names, for display and for `match`)
+  let stuck : Val R := .neutral (.eq A a b) #[]
   let A := whnf A
   let a := vNatView g (whnf a)
   let b := vNatView g (whnf b)
@@ -558,17 +562,17 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   | .unit _ | .empty _ => .unit 0
   | .enum _ => match a, b with
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
-    | _, _ => .neutral (.eq A a b) #[]
+    | _, _ => stuck
   | .mu l I D i _ _ => match a, b with
     | .con x, .con y => vEq g (vInterp g l I D (muFamily l I D) i) x y
-    | _, _ => .neutral (.eq A a b) #[]
+    | _, _ => stuck
   | .sort l =>
     if l.equiv 0 then
       -- (a → b) × (b → a)
       vIff a b
     else if l.isNeverZero then vEqType g a b
-    else .neutral (.eq A a b) #[]
-  | _ => .neutral (.eq A a b) #[]
+    else stuck
+  | _ => stuck
   --|ex
   --| sorry
   --sol>

@@ -43,7 +43,29 @@ def group : Group where
         okLib ("import Prelude\ndef f (hi : Nat) : Nat := (hi - 55296) * 2 + 1\n" ++
           "def t : f 55300 = 9 := refl 9\n" ++
           "def u (n : Nat) : Nat.succ (Nat.succ n) - 1 = Nat.succ n := refl (Nat.succ n)\n" ++
-          "def v (n : Nat) : n - 3 = n - 3 := refl (n - 3)") }
+          "def v (n : Nat) : n - 3 = n - 3 := refl (n - 3)") },
+    { name := "holes in an equation-style definition's parameter types are solved", run := fun _ =>
+        okLib ("import Prelude\ndef g {A : Type} (x : A) : A := x\n" ++
+          "def f (n : Nat) (h : (x : Nat) → g x = x) : Bool → Nat\n  | .true => n\n  | .false => n\n" ++
+          "def f2 (n : Nat) (h : (x : Nat) → g x = x) : (b : Bool) → g n = n → Nat\n" ++
+          "  | .true, e => n\n  | .false, e => n") },
+    { name := "@f on the recursive call of an equation-style definition", run := fun _ =>
+        okLib ("import Prelude\ndef len {A : Type} : List A → Nat\n  | .nil => 0\n" ++
+          "  | .cons _ xs => @len A xs + 1\n" ++
+          "def len2 {A : Type} : List A → Nat\n  | .nil => 0\n  | .cons _ xs => @len2 _ xs + 1\n" ++
+          "#eval len2 (List.cons 1 (List.cons 2 List.nil))") ["2"] },
+    { name := "@f on a recursive call must pass the implicit parameters unchanged", run := fun _ =>
+        failsLib ("import Prelude\ndef len {A : Type} : List A → Nat\n  | .nil => 0\n" ++
+          "  | .cons _ xs => @len Nat xs + 1") "must pass the parameter A unchanged" },
+    { name := ".c constructors inside tuple components get the expected type", run := fun _ =>
+        okLib ("import Prelude\ndef p : Option (List Nat × Nat) := .some (.nil, 3)\n" ++
+          "def q : Option (Nat × Bool × List Nat) := .some (1, .true, .cons 2 .nil)") },
+    { name := "match on an expression generalises the hypotheses about it", run := fun _ =>
+        okLib ("import Prelude\ndef t (n : Nat) (h : Nat.pred n = 0) : Nat :=\n" ++
+          "  match Nat.pred n, h with\n  | .zero, _ => 0\n  | .succ m, h' => absurd h'") },
+    { name := "(x).f y is a field access, like x.f y", run := fun _ =>
+        okLib ("import Prelude\ndef a (x y : Nat) : Nat := x.sub y\ndef b (x y : Nat) : Nat := (x).sub y\n" ++
+          "def c (x y : Nat) : Nat := Nat.add (x).succ y\n#eval b 5 2\n#eval c 1 1") ["3", "3"] }
   ]
 
 end Tests.ElabFix
