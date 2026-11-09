@@ -1631,6 +1631,22 @@ minutes. A `match` was a method applied to the payload, a closure built and call
 time; a lambda applied to arguments is now a `let`: 6 minutes. Reference counting comes
 next.
 
+## Stage 22: numbers for hardware and systems code
+
+Prerequisites shared by the HDL and the Rust-style DSL (decisions RD9, RD10/HD3).
+
+### 22a: division, powers and bits ✅
+
+The Prelude defines `Nat.div`, `Nat.mod`, `Nat.pow`, `Nat.land`, `Nat.lor`, `Nat.xor`,
+`Nat.shiftLeft`, `Nat.shiftRight`, `Nat.log2` (and `Nat.testBit`, `a / b`) by structural
+recursion on a fuel argument that bounds the number of steps, so the kernel can unfold
+them. Each is registered with `builtin nat.<op>`: on numerals the kernel computes
+natively (`def t : Nat.mod 300 256 = 44 := refl 44`), as do `#eval`, `#run`, C/LLVM
+(`runtime/wiz.c`: machine words, GMP when big) and the self-hosted backend
+(`selfhost/rt.c`; its Prelude has the same definitions). As in Lean, `n / 0 = 0`,
+`Nat.mod n 0 = n` and `Nat.log2 0 = 0`. One table (`natNative?`, `Wiz/Core/Eval.lean`)
+serves the kernel and both interpreters.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅

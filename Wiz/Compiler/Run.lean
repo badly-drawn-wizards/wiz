@@ -150,7 +150,7 @@ def nativeArity (key : Name) : Nat :=
   | some sig => sig.params.length + (if sig.io then 1 else 0)
   | none => match key with
     | "nat.zero" => 0
-    | "nat.succ" | "nat.pred" => 1
+    | "nat.succ" | "nat.pred" | "nat.log2" => 1
     | _ => 2
 
 end RVal
@@ -204,12 +204,10 @@ partial def apply (code : Code) (f a : RVal) : RVal :=
 /-- Native arithmetic. `nat.beq` returns a tag of the prelude's `Bool` (`false`, `true`). -/
 partial def fireNative (op : Name) (args : Array RVal) : RVal :=
   let n (i : Nat) : Nat := ((args[i]?.getD .erased).toNat?).getD 0
+  match if op.startsWith "nat." then natNative? op (args.map fun a => (a.toNat?).getD 0) else none with
+  | some r => .nat r
+  | none =>
   match op with
-  | "nat.succ" => .nat (n 0 + 1)
-  | "nat.pred" => .nat (n 0 - 1)
-  | "nat.add" => .nat (n 0 + n 1)
-  | "nat.sub" => .nat (n 0 - n 1)
-  | "nat.mul" => .nat (n 0 * n 1)
   | "nat.beq" => .obj (if n 0 == n 1 then 1 else 0) #[]
   | "nat.blt" => .obj (if n 0 < n 1 then 1 else 0) #[]
   -- the interpreter doesn't memoise: a suspension is its function

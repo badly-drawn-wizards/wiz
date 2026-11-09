@@ -316,6 +316,98 @@ WIZ_API wiz_val wiz_nat_blt(wiz_val a, wiz_val b) {
   return WIZ_BOX(lt ? 1 : 0);
 }
 
+/* division, powers and bits; as the Prelude defines them: n / 0 = 0, n % 0 = n,
+   log2 0 = 0 */
+enum { WIZ_OP_DIV, WIZ_OP_MOD, WIZ_OP_AND, WIZ_OP_OR, WIZ_OP_XOR };
+static wiz_val wiz_nat_big_op(int op, wiz_val a, wiz_val b) {
+  mpz_t x, y;
+  wiz_to_mpz(x, a); wiz_to_mpz(y, b);
+  switch (op) {
+  case WIZ_OP_DIV: if (mpz_sgn(y) == 0) mpz_set_ui(x, 0); else mpz_fdiv_q(x, x, y); break;
+  case WIZ_OP_MOD: if (mpz_sgn(y) != 0) mpz_fdiv_r(x, x, y); break;
+  case WIZ_OP_AND: mpz_and(x, x, y); break;
+  case WIZ_OP_OR: mpz_ior(x, x, y); break;
+  default: mpz_xor(x, x, y); break;
+  }
+  mpz_clear(y);
+  wiz_dec(a); wiz_dec(b);
+  return wiz_big_norm(x);
+}
+WIZ_API wiz_val wiz_nat_div(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b))
+    return WIZ_BOX(WIZ_UNBOX(b) ? WIZ_UNBOX(a) / WIZ_UNBOX(b) : 0);
+  return wiz_nat_big_op(WIZ_OP_DIV, a, b);
+}
+WIZ_API wiz_val wiz_nat_mod(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b))
+    return WIZ_BOX(WIZ_UNBOX(b) ? WIZ_UNBOX(a) % WIZ_UNBOX(b) : WIZ_UNBOX(a));
+  return wiz_nat_big_op(WIZ_OP_MOD, a, b);
+}
+WIZ_API wiz_val wiz_nat_land(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) return WIZ_BOX(WIZ_UNBOX(a) & WIZ_UNBOX(b));
+  return wiz_nat_big_op(WIZ_OP_AND, a, b);
+}
+WIZ_API wiz_val wiz_nat_lor(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) return WIZ_BOX(WIZ_UNBOX(a) | WIZ_UNBOX(b));
+  return wiz_nat_big_op(WIZ_OP_OR, a, b);
+}
+WIZ_API wiz_val wiz_nat_xor(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) return WIZ_BOX(WIZ_UNBOX(a) ^ WIZ_UNBOX(b));
+  return wiz_nat_big_op(WIZ_OP_XOR, a, b);
+}
+/* `a * 2^n`; a shift by a big number of a nonzero number has no representation */
+WIZ_API wiz_val wiz_nat_shiftLeft(wiz_val a, wiz_val n) {
+  if (WIZ_IS_SCALAR(a) && WIZ_UNBOX(a) == 0) { wiz_dec(n); return a; }
+  if (!WIZ_IS_SCALAR(n)) wiz_panic("Nat.shiftLeft: the shift is too big");
+  uintptr_t k = WIZ_UNBOX(n);
+  if (WIZ_IS_SCALAR(a) && k < 62 && WIZ_UNBOX(a) <= (WIZ_MAX_SMALL >> k)) return WIZ_BOX(WIZ_UNBOX(a) << k);
+  mpz_t x;
+  wiz_to_mpz(x, a);
+  mpz_mul_2exp(x, x, (mp_bitcnt_t)k);
+  wiz_dec(a);
+  return wiz_big_norm(x);
+}
+WIZ_API wiz_val wiz_nat_shiftRight(wiz_val a, wiz_val n) {
+  if (!WIZ_IS_SCALAR(n)) { wiz_dec(a); wiz_dec(n); return WIZ_BOX(0); }
+  uintptr_t k = WIZ_UNBOX(n);
+  if (WIZ_IS_SCALAR(a)) return WIZ_BOX(k >= 64 ? 0 : WIZ_UNBOX(a) >> k);
+  mpz_t x;
+  wiz_to_mpz(x, a);
+  mpz_fdiv_q_2exp(x, x, (mp_bitcnt_t)k);
+  wiz_dec(a);
+  return wiz_big_norm(x);
+}
+WIZ_API wiz_val wiz_nat_pow(wiz_val b, wiz_val e) {
+  if (WIZ_IS_SCALAR(b) && WIZ_UNBOX(b) <= 1) {
+    /* 0^0 = 1, 0^e = 0, 1^e = 1, even for a big e */
+    int zero = WIZ_IS_SCALAR(e) && WIZ_UNBOX(e) == 0;
+    wiz_dec(e);
+    return WIZ_BOX(zero ? 1 : WIZ_UNBOX(b));
+  }
+  if (!WIZ_IS_SCALAR(e)) wiz_panic("Nat.pow: the exponent is too big");
+  uintptr_t k = WIZ_UNBOX(e);
+  if (WIZ_IS_SCALAR(b)) {
+    uintptr_t r = 1, x = WIZ_UNBOX(b), i = 0;
+    for (; i < k; i++)
+      if (__builtin_mul_overflow(r, x, &r) || r > WIZ_MAX_SMALL) break;
+    if (i == k) return WIZ_BOX(r);
+  }
+  mpz_t x;
+  wiz_to_mpz(x, b);
+  mpz_pow_ui(x, x, (unsigned long)k);
+  wiz_dec(b);
+  return wiz_big_norm(x);
+}
+WIZ_API wiz_val wiz_nat_log2(wiz_val a) {
+  if (WIZ_IS_SCALAR(a)) {
+    uintptr_t x = WIZ_UNBOX(a);
+    return WIZ_BOX(x == 0 ? 0 : 63 - __builtin_clzll((unsigned long long)x));
+  }
+  size_t bits = mpz_sizeinbase(((wiz_big *)a)->z, 2);
+  wiz_dec(a);
+  return WIZ_BOX(bits - 1);
+}
+
 /* ---- flat objects: tags and fields by runtime values (`pack`, `unpack`) ---- */
 
 WIZ_API wiz_val wiz_tag_of(wiz_val v) {

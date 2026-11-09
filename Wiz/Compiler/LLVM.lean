@@ -82,7 +82,8 @@ def expr (arities : Std.HashMap Name Nat) (env : Std.HashMap Var String) (x : St
       | "nat.add" => "wiz_nat_add" | "nat.sub" => "wiz_nat_sub" | "nat.mul" => "wiz_nat_mul"
       | "nat.beq" => "wiz_nat_beq" | "nat.blt" => "wiz_nat_blt" | "lazyTag" => "wiz_lazy_tag" | "memo" => "wiz_memo"
       | "tag" => "wiz_tag_of" | "natTag" => "wiz_nat_tag" | "fieldAt" => "wiz_field_at" | "mkObj" => "wiz_mk_obj"
-      | op => if (RVal.ExternSig.ofKey? op).isSome then C.externWrapper op else "wiz_unknown_prim"
+      | op => if op.startsWith "nat." then "wiz_nat_" ++ (op.drop 4).toString
+        else if (RVal.ExternSig.ofKey? op).isSome then C.externWrapper op else "wiz_unknown_prim"
     emit s!"  {x} = call i64 @{f}({args env as})"
   | .reset y => emit s!"  {x} = call i64 @wiz_reset(i64 {val env y})"
   | .reuse tok t as => do
@@ -165,6 +166,15 @@ declare i64 @wiz_nat_succ(i64)
 declare i64 @wiz_nat_pred(i64)
 declare i64 @wiz_nat_beq(i64, i64)
 declare i64 @wiz_nat_blt(i64, i64)
+declare i64 @wiz_nat_div(i64, i64)
+declare i64 @wiz_nat_mod(i64, i64)
+declare i64 @wiz_nat_pow(i64, i64)
+declare i64 @wiz_nat_land(i64, i64)
+declare i64 @wiz_nat_lor(i64, i64)
+declare i64 @wiz_nat_xor(i64, i64)
+declare i64 @wiz_nat_shiftLeft(i64, i64)
+declare i64 @wiz_nat_shiftRight(i64, i64)
+declare i64 @wiz_nat_log2(i64)
 declare i64 @wiz_memo(i64, i64)
 declare i64 @wiz_lazy_tag(i64)
 declare i64 @wiz_tag_of(i64)
