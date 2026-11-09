@@ -178,7 +178,14 @@ def St.onResponse (s : St) (j : Json) : IO St :=
   | .some e => match Rpc.contentModified e with
     -- the document changed; ask again
     | .true => St.refresh (St.setStatus s1 "document changed")
-    | .false => IO.pure (St.setStatus s1 (Json.getStr e "message"))
+    -- (an error for the goals or the expected type counts as nothing to show)
+    | .false =>
+      let s2 := St.setStatus s1 (Json.getStr e "message");
+      match Nat.beq kind 1 with
+      | .true => IO.pure (St.setStatus (St.setGoals s2 .none s2.session) (Json.getStr e "message"))
+      | .false => match Nat.beq kind 2 with
+        | .true => IO.pure (St.setStatus (St.setTerm s2 .none) (Json.getStr e "message"))
+        | .false => IO.pure s2
   | .none =>
     let r : Json := match Json.get j "result" with
       | .some v => v

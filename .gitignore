@@ -12,3 +12,4 @@ devenv.local.yaml
 # Lean
 .lake
 .wiz-cache/
+web/out/
