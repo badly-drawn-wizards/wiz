@@ -225,7 +225,10 @@ The judgments output usage vectors with these operations [std: Atkey18; McBride1
   enumerations of this form; booleans in Atkey18 require both branches to use the same
   context, which is the `1 ⊔ 1 = 1` instance];
 * **eliminators that run a method once per node** (`ind`, `Desc.elim`, `sfix`, `scofix`,
-  `coit`) scale the method's usage by `explicitDefault` (§9, §10) [wiz].
+  `coit`) scale the method's usage by the rig's unrestricted quantity `QRig.many?` (ω);
+  a rig without one (exact counting, `Nat`) rejects methods that use local variables
+  outside erased positions (`methodUsage`) (§9, §10) [wiz]. (Before `a986c02` the scale
+  was `explicitDefault`, which under-counted in the `Nat` rig: Status.md, Q2.)
 
 ### 5.4 Erased mode, versus Atkey's σ
 
@@ -317,10 +320,11 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
 * Σ with `split` is Atkey's dependent tensor ⊗ [std: Atkey18]. η for pairs holds
   (§11.2).
 * **Projections are [wiz].** Atkey's tensor has only the `let` eliminator. Wiz also allows
-  `t.1` (when the field's quantity allows one use) and `t.2` (always). Each projection
-  uses the whole pair, so using both on a linear pair is rejected, but using **one**
-  silently drops the other component. For a pair `(1 x : A) × B`, `p.2` discards the
-  linear `x`. This is consistent with an *affine* reading of `1`, not with "exactly once"
+  `t.1` (when the field's quantity allows one use) and `t.2` (when it allows zero uses,
+  `0 ≤ q`, since `212aebf`). Each projection uses the whole pair, so using both on a
+  linear pair is rejected. `p.1` still silently drops the second component, which has no
+  quantity of its own. (Before `212aebf`, `p.2` on `(1 x : A) × B` discarded the linear
+  `x`.) This is consistent with an *affine* reading of `1`, not with "exactly once"
   (the rig's stated meaning, `Rig.lean:22–24`). It cannot affect logical consistency or
   erasure (a dropped value is never needed), but it is a gap in the linearity guarantee.
   See Status.md, Q1.
@@ -500,9 +504,10 @@ otherwise                          ⟶  t if quote(A) = quote(B) syntactically, 
 ```
 
 * The last line is **regularity in the evaluator**: a cast between two types that quote
-  to the same term reduces to its argument, **whatever `e` is**. Quotation happens "at
-  level 100000", i.e. assuming fewer than 100 000 variables in scope (with more, two
-  different variables could quote alike: Status.md, Q3).
+  to the same term reduces to its argument, **whatever `e` is**. Quotation happens at
+  `max (lvlBound A) (lvlBound B)`, a level above every variable either type mentions,
+  so different variables never quote alike (before `b7e1736` it was a fixed 100000:
+  Status.md, Q3).
 * Regularity also appears in **conversion** (§11.2, step 2).
 * Regularity with an impredicative `Prop` and proof-irrelevant equality is exactly the
   setting where Abel and Coquand [AC20] show that normalisation fails, and the D1
@@ -630,13 +635,10 @@ never type-checks them, and their Σ types carry hand-written sort annotations
 ```
 
 * `μ` is always in `Sort (l+1)`: there are no inductive propositions.
-* **The size argument of `μ` (and `ν`) is not checked** by the `mu` rule (the pattern
-  ignores it, `Check.lean:527`); the same holds in `Kernel.wiz` (`Kernel.wiz:1918, 1967,
-  2020`). An ill-typed size can therefore appear in a type that the kernel accepts. No
-  exploit is known; it is a gap in the de Bruijn criterion (Status.md, K3).
-* The method's usage is scaled by `explicitDefault` because the method may run once per
-  node (README says "by ω"; for the `Nat` rig the default is `1`, which under-counts:
-  §14).
+* The size argument of `μ` (and `ν`) is checked erased: `Γ⁰ ⊢ s ⇐ Size` (since
+  `4605514`; Status.md, K3).
+* The method's usage is scaled by ω (`QRig.many?`) because the method may run once per
+  node (§5.3; Status.md, Q2).
 * `x` is checked against `μ^∞`; a value of a smaller size is accepted by subtyping.
 
 ### 9.4 Numerals [impl]
@@ -915,9 +917,9 @@ Each item says what the code does; the code is what the kernel checks.
    `absurd M t ⊣ U` (the scrutinee's usage). The code returns `⊣ 0` and checks `t` in
    erased mode (`Check.lean:427–433`).
 3. **Method scaling.** README 4d and the docstring (`Check.lean:116–121`) say methods are
-   scaled by ω. The code scales by the rig's `explicitDefault`, which is ω only for
+   scaled by ω. The code scaled by the rig's `explicitDefault`, which is ω only for
    `ZeroOneMany`; for the `Nat` rig it is `1`, which under-counts a method that runs once
-   per node.
+   per node. **Resolved** in `a986c02`: the code now scales by `QRig.many?` (Q2).
 4. **Linear pairs.** README 4b: "a linear pair is consumed with `let 1 (x, y) := p`". The
    code also lets `p.2` (and `p.1` when the field allows it) consume a linear pair, dropping
    the other component (§7.1).
