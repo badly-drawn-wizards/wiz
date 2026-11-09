@@ -1,0 +1,65 @@
+import Wiz
+import Wiz.Toolchain
+
+/-!
+# Elaborating files for grail
+
+grail elaborates in-process, through the shared elaboration cache (`Wiz/Cache.lean`).
+Modules are found by path under the roots (`Wiz/Module.lean`); C headers are
+preprocessed with the toolchain's compiler (the frontend is pure).
+-/
+
+namespace Grail
+open Wiz
+
+/-- Preprocess the headers (`import_c "h"`) of some sources with the toolchain's C compiler. -/
+def preprocessHeaders (tc : Toolchain) (srcs : List String) : IO (Std.HashMap String String) := do
+  let mut m : Std.HashMap String String := {}
+  for src in srcs do
+    for h in Module.headersOf src do
+      if m.contains h then continue
+      let dir ← IO.FS.createTempDir
+      IO.FS.writeFile (dir / "h.c") s!"#include <{h}>\n"
+      let out ← IO.Process.output { cmd := tc.cc, args := #["-E", "-P", (dir / "h.c").toString] ++ tc.cflags.toArray }
+      IO.FS.removeDirAll dir
+      if out.exitCode == 0 then m := m.insert h out.stdout
+  pure m
+
+/-- A file ready to elaborate: what it can import, its headers, and its key. -/
+structure Loaded where
+  src : String
+  init : CommandState ZeroOneMany
+  /-- the file's key: as for a module (`Cache.moduleKey`), its text, headers and imports -/
+  key : UInt64
+
+/-- The name a file that isn't itself imported goes by in the key computation. -/
+def mainName : Name := "main✝"
+
+def load (tc : Toolchain) (roots : List System.FilePath) (salt : UInt64) (src : String) : IO Loaded := do
+  let lib := (← Module.loadClosure roots src).fold (fun m n (_, s) => m.insert n s) ({} : Std.HashMap Name String)
+  let headers ← preprocessHeaders tc (src :: lib.values)
+  let loader : Name → Option String := (lib[·]?)
+  let init : CommandState ZeroOneMany := { loader, cHeaders := (headers[·]?) }
+  let key := Cache.moduleKey (fun n => if n == mainName then some src else loader n) (headers[·]?) salt mainName
+  pure { src, init, key }
+
+/-- Elaborate a loaded file (through the cache when there is one). -/
+def elaborate (tc : Toolchain) (salt : UInt64) (l : Loaded) : IO (CommandState ZeroOneMany) := do
+  match tc.cacheDir with
+  | none => Cache.elaborateUncached l.src l.init salt
+  | some dir => pure (← Cache.elaborateCached dir l.src l.init l.key salt).1
+
+/-- The messages of a state, rendered `path:line:col: severity: text`. -/
+def render (path : String) (l : Loaded) (s : CommandState ZeroOneMany) : String :=
+  String.join (s.messages.toList.map fun m => s!"{path}:{m.render l.src}\n")
+
+def hasErrors (s : CommandState ZeroOneMany) : Bool := s.messages.any (·.severity == .error)
+
+/-- Evaluate the global `n : String` in the interpreter. -/
+def evalString (s : CommandState ZeroOneMany) (n : Name) : Except String String := do
+  let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+  match (run code [] (.global n)).toString? with
+  | some str => pure str
+  | none => throw s!"{n} did not evaluate to a string"
+
+end Grail

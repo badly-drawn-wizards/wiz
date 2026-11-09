@@ -43,4 +43,6 @@ import Wiz.Query
 import Wiz.Infoview
 import Wiz.Actions
 import Wiz.LSP
+import Wiz.Toolchain
+import Wiz.Module
 import Wiz.Cache
