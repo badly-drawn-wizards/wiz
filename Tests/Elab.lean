@@ -2974,6 +2974,11 @@ def vecGroup : Group where
           "#reduce Vec.foldr Nat.add 0 v3\n#reduce Vec.head v3") ["60", "10"] },
     { name := "rfl at a computed equation between a numeral and a constructor (was a known bug; fixed by equality at μ by constructor, D1)", run := fun _ =>
         okLibs (vecPrelude ++ "def t3 : Vec.length (Vec.map Nat.succ w3) = 3 := rfl") },
+    { name := "a cast between Vec Nat (.succ 2) and Vec Nat 3 computes (numeral vs constructor index; elab-bugs 3)", run := fun _ =>
+        okLibs (vecPrelude ++ "def u3 : Vec Nat (Nat.succ 2) := v3\n" ++
+          "def c3 (e : Vec Nat (Nat.succ 2) = Vec Nat 3) : (cast e u3 : Vec Nat 3) = v3 := rfl\n" ++
+          "#reduce fun (e : Vec Nat (Nat.succ 2) = Vec Nat 3) => Vec.toList (cast e u3 : Vec Nat 3)")
+          ["fun e => .cons 10 (.cons 20 (.cons 30 .nil))"] },
     { name := "known failure: map_map needs regularity at a variable type (D1; wishful: cast-refl)", run := fun _ =>
         -- `Vec.map f (cons x xs)` is `cons (cast B B _ (f x)) …` without regularity; see
         -- drafts/vec-lib/VecProofs.wiz. Turn into an `okLibs` if `castRefl` is added.
