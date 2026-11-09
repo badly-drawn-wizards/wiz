@@ -2843,7 +2843,7 @@ def cRunLibs (src : String) (expected : String) : IO Unit := do
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal s "main" dir with
+  match ← Build.runGlobal (← toolchain) s "main" dir with
   | .ok v => checkEq expected v
   | .error e =>
     if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
