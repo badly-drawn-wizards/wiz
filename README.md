@@ -1879,7 +1879,7 @@ problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` 
 ### 11c: a shared, content-addressed cache ✅
 
 `wiz check`/`build`/`run` keep each command's **effect** (declarations, messages,
-registrations, hovers) in the cache directory (`--cache DIR`, default `~/.cache/wiz`;
+registrations, info trees) in the cache directory (`--cache DIR`, default `~/.cache/wiz`;
 `--no-cache` turns it off), under the command's chained content hash. A shared directory is a shared cache,
 since equal keys mean equal results. Imported modules are cached command by command
 too. Commands that change the grammar or the macros rerun (they are cheap).
@@ -1887,4 +1887,33 @@ too. Commands that change the grammar or the macros rerun (they are cheap).
 literal syntax). Every example gives the same output from the cache as without it.
 
 Next: finer dependencies (re-elaborate only what an edit affects, not everything
-after it), and hovers for declarations that fail.
+after it).
+
+### 11d: the info tree, the infoview and code actions ✅
+
+* **The info tree** (`Elab/Basic.lean`, `Elab/Info.lean`): while elaborating, the
+  elaborator records identifiers, the expected type of every checked term (and of every
+  hole), the open goals before and after each tactic, `match`es and declarations. It
+  keeps values and contexts as it goes (free) and quotes and zonks them at the end of the
+  declaration, into `Term`s, not strings. An error carries the state it was thrown in,
+  so a declaration that fails (unsolved goals, a hole) still has its tree. The tree is
+  memoised and cached with its command; hovers and go to definition read it.
+* **The infoview** (`Wiz/Infoview.lean`): `Term.prettyTagged` prints a term exactly as
+  `Term.pretty` does, as tagged text: every subterm is a tag whose ref points into the
+  document's session table (valid until the next edit). `wiz lsp` answers
+  `wiz/plainGoal`, `wiz/plainTermGoal`, `wiz/interactiveGoals`,
+  `wiz/interactiveTermGoal` and `wiz/subtermInfo` (a subterm's type, from the kernel,
+  and where a constant was declared); the protocol is in
+  `wiz-notes/infoview-protocol.md`.
+* **Code actions** (`Wiz/Actions.lean`): diagnostics carry a code and data; the server
+  offers *did you mean* (edit distance ≤ 2 over locals and globals), *add missing cases*
+  (`| .c x y => ?c` per missing constructor) and *add type ascription* to a `def` without
+  a type, with edits inline or through `codeAction/resolve`.
+
+```
+def k : Nat → Bool → Nat := by
+  intro n         -- wiz/plainGoal here:  n : Nat ⊢ Bool → Nat
+  intro b
+  exact n
+def four : Nat := doubel 2    -- unknown identifier 'doubel'   [Did you mean 'double'?]
+```
