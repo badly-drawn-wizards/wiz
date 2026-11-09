@@ -207,6 +207,8 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
         | _ => pure .erased
       | .reuse tok t as => do
         let vs ← as.mapM get
+        -- without fields the result is the scalar `t`: the token's cell is just freed
+        let fresh : RunM IVal := if vs.isEmpty then pure (.tag t) else alloc (.ctor t vs)
         match ← get tok with
         | .ptr id =>
           match ← getObj id with
@@ -216,9 +218,9 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
               pure (.ptr id)
             else
               modify fun h => { h with objs := h.objs.erase id }
-              alloc (.ctor t vs)
+              fresh
           | _ => throw "reuse of a non-token"
-        | _ => alloc (.ctor t vs)
+        | _ => fresh
     run prog (env.insert x v) joins rest
   | .case x alts =>
     let t ← match ← get x with
