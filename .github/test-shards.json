@@ -1,0 +1,5 @@
+[
+  {"name": "selfhost", "select": ["=selfhost"]},
+  {"name": "backends", "select": ["backend", "=c", "llvm", "ffi", "effects", "tooling", "std", "language"]},
+  {"name": "core", "select": ["rig", "eval", "conv", "check", "lexer", "parser", "elab", "universes", "observational", "quantity", "data", "inductive", "match", "copatterns", "sized", "macros", "builtins", "tactics", "classes", "optic", "deriving"]}
+]

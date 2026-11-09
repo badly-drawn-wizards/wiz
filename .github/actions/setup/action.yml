@@ -1,0 +1,33 @@
+name: Wiz toolchain
+description: >
+  Nix with the flake's dev shell (GMP, Boehm GC, LLVM, cc, elan), the Cachix binary cache
+  if one is configured, and the elan toolchain from lean-toolchain (cached). Later steps
+  run in the dev shell through `shell: nix develop --command bash -eo pipefail {0}`.
+inputs:
+  cachix-name:
+    description: The Cachix cache to pull from (and push to, given a token); empty for none.
+    default: ""
+  cachix-token:
+    description: The Cachix auth token; empty means pull only (e.g. pull requests from forks).
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: cachix/install-nix-action@v31
+    - if: inputs.cachix-name != ''
+      uses: cachix/cachix-action@v16
+      with:
+        name: ${{ inputs.cachix-name }}
+        authToken: ${{ inputs.cachix-token }}
+        skipPush: ${{ inputs.cachix-token == '' }}
+    - name: Dev shell
+      shell: bash
+      run: nix develop --command bash -c 'env | grep "^WIZ_" | sort; cc --version | head -1; elan --version'
+    - name: Cache the Lean toolchain
+      uses: actions/cache@v4
+      with:
+        path: ~/.elan
+        key: elan-${{ runner.os }}-${{ hashFiles('lean-toolchain') }}
+    - name: Lean toolchain
+      shell: bash
+      run: nix develop --command bash -c 'lake --version'

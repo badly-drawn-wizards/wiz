@@ -10,11 +10,38 @@ See [ROADMAP.md](ROADMAP.md) for the stages and the design decisions behind them
 lake build          # the library and the `wiz` executable
 lake test           # all exercise tests; every case runs in its own process
 lake test -- conv   # only the groups whose name starts with "conv"
+lake test -- =c     # only the group named exactly "c"
+lake test -- --list # the group names
 ```
 
 An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)`.
 
 The design decisions taken so far are listed at the top of [ROADMAP.md](ROADMAP.md).
+
+## Continuous integration
+
+`nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
+LLVM's `llc` for the C and LLVM backends, Boehm GC for the self-hosted backend, a C
+compiler, and elan, which installs the Lean in `lean-toolchain`. It sets `$WIZ_CFLAGS`,
+`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
+`solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
+one is configured); the elan toolchain and `.lake` (including Lake's artifact cache) are
+cached between runs.
+
+* **The solution tree** (`solutions`; recognised by its `--<sol` markers) runs the full
+  suite in parallel shards, one job per entry of `.github/test-shards.json` (each entry
+  is a list of `lake test` selectors). The build job checks that every group of
+  `Tests/Main.lean` is in exactly one shard (`scripts/ci.py check-shards`), so **a new
+  test group must be added to `.github/test-shards.json`**. Each shard prints a pass/fail
+  table in its job summary, and the `CI result` job sums them up for the whole suite.
+* **The exercise tree** (`master`) checks that everything builds and that the test driver
+  runs to its summary line; the failures are the exercises.
+* **The bootstrap fixpoint** (`scripts/fixpoint.sh`: the stage-1 C of the toolchain
+  equals its stage-2 C) runs weekly on `solutions`, or from "Run workflow" with
+  `fixpoint` ticked. It takes a long time; run it locally with `nix develop -c
+  scripts/fixpoint.sh`.
 
 ## Stage 1: the core kernel
 
