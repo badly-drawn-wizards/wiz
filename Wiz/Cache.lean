@@ -402,7 +402,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
-def salt : UInt64 := hash "wiz-cache-4"
+def salt : UInt64 := hash "wiz-cache-5-d1"  -- 5: D1, regularity off
 
 /-- Elaborate `input` (like `Query.elaborate`), reading and writing `dir`. Returns the
 final state and how many commands came from the disk cache. -/
