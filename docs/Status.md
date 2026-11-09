@@ -270,8 +270,9 @@ allow `.2` only when the first field's quantity allows zero uses (`0 ≤ q`), an
 only when the pair's second part is not linear; or reserve projections for pairs whose
 quantities admit weakening.
 
-**Fix** (`.2`): `p.2` now requires `0 ≤ q` for the first field's quantity `q`, so `drop`
-above is rejected (both kernels; tests in "check: structural types" and the differential
+**Fix** (`.2`): when the first field's quantity `q` doesn't allow zero uses, `p.2` counts
+`p` as used ω times (only an unrestricted pair, whose field is `ω·q`, may drop it), so
+`drop` above is rejected (both kernels; tests in "check: structural types" and the differential
 samples). `p.1` still drops the second component: the second part of a Σ has no
 quantity of its own, so the rule has nothing to check. Consume a linear pair with
 `let 1 (x, y) := p`.

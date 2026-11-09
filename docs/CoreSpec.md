@@ -320,8 +320,9 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
 * Σ with `split` is Atkey's dependent tensor ⊗ [std: Atkey18]. η for pairs holds
   (§11.2).
 * **Projections are [wiz].** Atkey's tensor has only the `let` eliminator. Wiz also allows
-  `t.1` (when the field's quantity allows one use) and `t.2` (when it allows zero uses,
-  `0 ≤ q`, since `212aebf`). Each projection uses the whole pair, so using both on a
+  `t.1` (when the field's quantity allows one use) and `t.2` (always; since `212aebf`, if the field
+  doesn't allow zero uses, `t.2` uses `t` ω times, so only an unrestricted pair may drop
+  it). Each projection uses the whole pair, so using both on a
   linear pair is rejected. `p.1` still silently drops the second component, which has no
   quantity of its own. (Before `212aebf`, `p.2` on `(1 x : A) × B` discarded the linear
   `x`.) This is consistent with an *affine* reading of `1`, not with "exactly once"
