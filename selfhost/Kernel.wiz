@@ -1527,6 +1527,38 @@ end
 
 def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
 
+-- might `t` mention the variable `i` (at the top: index `i`)? conservative: the forms
+-- not listed might
+def usesVar : Nat → Tm → Bool
+  | i, .var j => Nat.beq i j
+  | i, .pi a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
+  | i, .piq _ a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
+  | i, .sigma a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
+  | i, .sigmaq _ a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
+  | i, .lam b => usesVar (i + 1) b
+  | i, .app f a => Bool.or (usesVar i f) (usesVar i a)
+  | i, .fst p => usesVar i p
+  | i, .snd p => usesVar i p
+  | i, .pair a b => Bool.or (usesVar i a) (usesVar i b)
+  | i, .con x => usesVar i x
+  | i, .mu _ I D x => Bool.or (usesVar i I) (Bool.or (usesVar i D) (usesVar i x))
+  | i, .eq A a b => Bool.or (usesVar i A) (Bool.or (usesVar i a) (usesVar i b))
+  | i, .const _ _ _ _ _ => .false
+  | i, .axiomC _ _ => .false
+  | i, .univ _ => .false
+  | i, .prop => .false
+  | i, .sortL _ => .false
+  | i, .unit _ => .false
+  | i, .empty _ => .false
+  | i, .ptrue => .false
+  | i, .pfalse => .false
+  | i, .star => .false
+  | i, .enum _ => .false
+  | i, .tag _ _ => .false
+  | i, .size => .false
+  | i, .szInf => .false
+  | _, _ => .true
+
 -- **Exercise 14.3.** Bidirectional type checking with usage (`infer` and `check` in
 -- `Check.lean`): each answer comes with the usage of the variables (types and proofs
 -- count nothing); leaving a binder checks its variable's usage against its quantity.
@@ -1546,7 +1578,11 @@ def infer : TCtx → Tm → TyRes
   | c, .app f a => match infer c f with
     | .ok fty uf => match whnf fty with
       | .vpi q dom env cod => match check (erasedIf q c) a dom with
-        | .ok _ ua => .ok (eval (.cons (eval (TCtx.env c) a) env) cod) (uAdd uf (uScale q ua))
+        -- (the argument is evaluated only if the codomain mentions it: `List.cons x rest`
+        -- nested n deep would evaluate the rest at every level)
+        | .ok _ ua => .ok (eval (.cons (match usesVar 0 cod with
+            | .true => eval (TCtx.env c) a
+            | .false => .vtt) env) cod) (uAdd uf (uScale q ua))
         | r => r
       | ty => .err (String.append "not a function: its type is " (showVal c ty))
     | r => r
