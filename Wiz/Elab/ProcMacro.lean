@@ -74,26 +74,60 @@ partial def scopeQuoted (scope : Nat) : Syntax → Syntax
   | .node i k as => .node i k (as.map (scopeQuoted scope))
   | s => s
 
+/-- What a macro may ask about the environment (HD8): the view of an inductive type
+(an `IndView` value) and the type of a declaration (a `Syntax` value), if they exist.
+The command elaborator supplies them (`Elab/Reflect.lean`). -/
+structure MacroEnv where
+  inductive? : String → Option RVal := fun _ => none
+  declType? : String → Option RVal := fun _ => none
+
+/-- Answer a macro's requests until it returns. `v` is a `Tac` value; the result is the
+syntax it returns (scoped with `scope`) and the next free scope. A macro may ask for
+fresh scopes (`fresh`), fail (`fail`), `trace` (ignored here), and read the environment
+(`getInductive`, `getType`). -/
+partial def runMacroTac (code : Code) (env : MacroEnv) (what : String) (info : SourceInfo)
+    (scope : Nat) (v : RVal) (next : Nat) : Except String (Syntax × Nat) :=
+  let str (r : RVal) := (r.toString?).getD ""
+  match v.tag? with
+  | some 1 => -- result
+    match decodeSyntax info (v.conField 0) with
+    | some out => pure (scopeQuoted scope out, next)
+    | none => throw s!"{what} returned a malformed syntax tree"
+  | some 2 => throw (((v.conField 0).toString?).getD "macro failed") -- fail
+  | some 3 => runMacroTac code env what info scope (v.conField 1) next -- trace
+  | some 4 => runMacroTac code env what info scope (apply code (v.conField 0) (.nat next)) (next + 1) -- fresh
+  | some 21 => -- getInductive
+    let ans := (env.inductive? (str (v.conField 0))).map (mkCon 1 [·]) |>.getD (mkCon 0 [])
+    runMacroTac code env what info scope (apply code (v.conField 1) ans) next
+  | some 22 => -- getType
+    let ans := (env.declType? (str (v.conField 0))).map (mkCon 1 [·]) |>.getD (mkCon 0 [])
+    runMacroTac code env what info scope (apply code (v.conField 1) ans) next
+  | some t => throw s!"{what} made a request ({t}) that only tactics can make"
+  | none => throw s!"{what} returned a malformed result"
+
 /-- Run the macro `f` on `stx`: returns the expansion and the next free scope.
 
 `f stx : MacroM Syntax`, and `Macro.run` turns it into a `Tac` request chain ending in
-`result stx'` (see `Elab/Tactic.lean`). A macro may only ask for fresh scopes (`fresh`),
-fail (`fail`), or `trace` (ignored here). -/
-partial def runProcMacro (code : Code) (f : Name) (stx : Syntax) (scope : Nat) :
+`result stx'` (see `Elab/Tactic.lean`). -/
+def runProcMacro (code : Code) (f : Name) (stx : Syntax) (scope : Nat) (env : MacroEnv := {}) :
     Except String (Syntax × Nat) :=
   let m := apply code (run code [] (.global f)) (encodeSyntax stx)
-  go (apply code (run code [] (.global "Macro.run")) m) (scope + 1)
-where
-  go (v : RVal) (next : Nat) : Except String (Syntax × Nat) :=
-    match v.tag? with
-    | some 1 => -- result
-      match decodeSyntax stx.info (v.conField 0) with
-      | some out => pure (scopeQuoted scope out, next)
-      | none => throw s!"macro {f} returned a malformed syntax tree"
-    | some 2 => throw (((v.conField 0).toString?).getD "macro failed") -- fail
-    | some 3 => go (v.conField 1) next -- trace
-    | some 4 => go (apply code (v.conField 0) (.nat next)) (next + 1) -- fresh
-    | some t => throw s!"macro {f} made a request ({t}) that only tactics can make"
-    | none => throw s!"macro {f} returned a malformed result"
+  runMacroTac code env s!"macro {f}" stx.info scope (apply code (run code [] (.global "Macro.run")) m) (scope + 1)
+
+/-- Run the command macro `f : CommandMacro` on `stx`: the commands it expands to. -/
+def runCommandMacro (code : Code) (f : Name) (stx : Syntax) (scope : Nat) (env : MacroEnv := {}) :
+    Except String (Array Syntax × Nat) := do
+  let m := apply code (run code [] (.global f)) (encodeSyntax stx)
+  let (out, next) ← runMacroTac code env s!"macro {f}" stx.info scope
+    (apply code (run code [] (.global "CommandMacro.run")) m) (scope + 1)
+  pure (out.args, next)
+
+/-- Run the deriver `f : Deriver` for the type `T`: the commands it produces. -/
+def runDeriver (code : Code) (f : Name) (T : Name) (info : SourceInfo) (scope : Nat) (env : MacroEnv := {}) :
+    Except String (Array Syntax × Nat) := do
+  let m := apply code (run code [] (.global f)) (encodeString T)
+  let (out, next) ← runMacroTac code env s!"deriver {f}" info scope
+    (apply code (run code [] (.global "CommandMacro.run")) m) (scope + 1)
+  pure (out.args, next)
 
 end Wiz.Elab

@@ -1,22 +1,7 @@
 import Vec
--- Lemmas about `Vec.get` that check once agent/elab-sorts lands (not a missing feature:
--- today the kernel rejects them with "not a pair: transp (fun j e => (Fin 0 → A) = …)",
--- because the match motives the elaborator builds carry no sort, so the cast inside
--- `Vec.get`'s `nil` case gets stuck when the goal computes `Vec.get` on `nil`).
--- Move them to lib/Vec.wiz after that merge.
-
-def Vec.get_set {A : Type} {0 n : Nat} : (v : Vec A n) → (i : Fin n) → (x : A) → Vec.get (Vec.set v i x) i = x
-  | .cons _ _, .mk .zero _, _ => rfl
-  | .cons _ xs, .mk (.succ i) h, y => Vec.get_set xs (@Fin.mk _ i h) y
-  | .nil, .mk .zero h, _ => absurd h.1
-  | .nil, .mk (.succ _) h, _ => absurd h.1
-
-def Vec.get_map {A B : Type} (f : A → B) {0 n : Nat} : (v : Vec A n) → (i : Fin n) →
-    Vec.get (Vec.map f v) i = f (Vec.get v i)
-  | .cons _ _, .mk .zero _ => rfl
-  | .cons _ xs, .mk (.succ i) h => Vec.get_map f xs (@Fin.mk _ i h)
-  | .nil, .mk .zero h => absurd h.1
-  | .nil, .mk (.succ _) h => absurd h.1
+-- `get_set` and `get_map` moved to lib/Vec.wiz once agent/elab-sorts landed (match
+-- motives with sorts). `get_replicate` and the `rfl` facts below are rejected by the
+-- kernel because of the `rfl` shape bug (wishful: unify-computed-equations).
 
 def Vec.get_replicate {A : Type} (x : A) : (n : Nat) → (i : Fin n) → Vec.get (Vec.replicate n x) i = x
   | .succ _, .mk .zero _ => rfl
