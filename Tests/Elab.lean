@@ -2972,9 +2972,8 @@ def vecGroup : Group where
         okLibs (vecPrelude ++ "def t1 : Vec.foldr Nat.add 0 (Vec.replicate 4 5) = 20 := rfl\n" ++
           "def t2 : Vec.toList v3 = .cons 10 (.cons 20 (.cons 30 .nil)) := rfl\n" ++
           "#reduce Vec.foldr Nat.add 0 v3\n#reduce Vec.head v3") ["60", "10"] },
-    { name := "known bug: rfl's proof of a computed equation can differ from the kernel's (wishful: unify-computed-equations)", run := fun _ =>
-        -- today's behaviour: the kernel rejects it. When the bug is fixed, turn this into an `okLibs`.
-        failsLibs (vecPrelude ++ "def t3 : Vec.length (Vec.map Nat.succ w3) = 3 := rfl") "kernel rejected t3" },
+    { name := "rfl at a computed equation between a numeral and a constructor (was a known bug; fixed by equality at μ by constructor, D1)", run := fun _ =>
+        okLibs (vecPrelude ++ "def t3 : Vec.length (Vec.map Nat.succ w3) = 3 := rfl") },
     { name := "known failure: map_map needs regularity at a variable type (D1; wishful: cast-refl)", run := fun _ =>
         -- `Vec.map f (cons x xs)` is `cons (cast B B _ (f x)) …` without regularity; see
         -- drafts/vec-lib/VecProofs.wiz. Turn into an `okLibs` if `castRefl` is added.
