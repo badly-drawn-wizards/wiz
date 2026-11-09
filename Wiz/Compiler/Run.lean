@@ -293,6 +293,7 @@ partial def runPrim (code : Code) : Prim → Array RVal → RVal
     | .coit .. => .obj 1 #[]
     | .scofix .. => .obj 2 #[]
     | _ => .obj 0 #[]
+  | .lazySet, #[_, p] => p
   | .pack, #[D, x] => RVal.packWith (apply code) D x
   | .unpack, #[D, x] | .view .., #[D, x] => RVal.unpackWith (apply code) D x
   | .tag, #[x] => .obj (RVal.tagOf x) #[]

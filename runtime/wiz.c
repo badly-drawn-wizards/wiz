@@ -370,11 +370,39 @@ WIZ_API wiz_val wiz_proj(wiz_val v, uint32_t i) {
   return f;
 }
 
-/* `0` for an observed coinductive value, `1` for coit, `2` for scofix */
+/* `0` for an observed coinductive value, `1` for coit, `2` for scofix, `3` for a lazy
+   cell already observed (tag 1002: its one field is the payload) */
 WIZ_API wiz_val wiz_lazy_tag(wiz_val v) {
   uint32_t t = WIZ_IS_SCALAR(v) ? 0 : ((wiz_hdr *)v)->tag;
   wiz_dec(v);
-  return WIZ_BOX(t == 1000 ? 1 : t == 1001 ? 2 : 0);
+  return WIZ_BOX(t == 1000 ? 1 : t == 1001 ? 2 : t == 1002 ? 3 : 0);
+}
+
+/* Memoised observation: `out` has computed the payload `p` of the lazy cell `x` (both
+   owned) and returns `p`. A shared cell is overwritten in place by an observed cell
+   ⟨1002 p⟩, so its other references don't unfold it again (like a forced `memo`
+   thunk). The payload's corecursive fields are new cells, never `x`: no cycle forms.
+   A unique cell (rc 1) dies here, so there is nothing to keep (the plain-thunk case);
+   an immortal cell (a hoisted constant) is not overwritten, or it would keep its
+   observed prefix for ever.
+   Threads: like `memo`, this assumes one mutator (reference counts are not atomic).
+   With several, only a shared cell needs care: claim it by a CAS of its tag to a
+   blackhole before computing, and make other observers wait for the payload. */
+WIZ_API wiz_val wiz_lazy_set(wiz_val x, wiz_val p) {
+  wiz_hdr *h = (wiz_hdr *)x;
+  if (WIZ_IS_SCALAR(x) || h->rc == 1 || h->rc >= ((int64_t)1 << 40) || (h->tag != 1000 && h->tag != 1001)) {
+    wiz_dec(x);
+    return p;
+  }
+  wiz_ctor *o = (wiz_ctor *)x;
+  uint32_t n = h->size;
+  for (uint32_t i = 0; i < n; i++) wiz_dec(o->fields[i]);
+  h->tag = 1002;
+  h->size = 1;
+  wiz_inc(p);
+  o->fields[0] = p;
+  h->rc--; /* shared: still alive */
+  return p;
 }
 
 /* ---- closures ---- */
