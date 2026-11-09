@@ -1,0 +1,202 @@
+import Prelude
+-- Stand-ins for library features other agents are adding right now. Everything in this
+-- file is a *shim*: it gives the planned surface a (slow, kernel-level) definition so
+-- that the HDL drafts check as far as they can. Delete each section when its feature
+-- lands on `solutions` (a duplicate-definition error is the signal).
+--
+--   section                     wishful entry               landing on
+--   `if … then … else`          prelude-if-bool-ops         (nobody yet)
+--   Nat.div/mod/pow/bitwise     (library work)              agent/vec-lib (lib/NatBits.wiz), natives: agent/natives-ints
+--   Add/Sub/Mul/… classes       numeric-classes-bitvec      (HD9 decided, not scheduled)
+--   Vec, Fin                    (library work)              agent/vec-lib (lib/Vec.wiz)
+--   #v[…]                       vec-literal                 (this shim's macro works today)
+--   Functor/Applicative         prelude-functor-applicative (nobody yet)
+
+------------------------------------------------------------------------------------
+-- `if`, Boolean operators                     -- wishful: prelude-if-bool-ops (shim)
+syntax "if" term "then" term "else" term : term
+macro_rules
+  | `(term| if $c then $t else $e) => `(term| match $c with | .true => $t | .false => $e)
+infixl:35 " && " => Bool.and
+infixl:30 " || " => Bool.or
+def Bool.xor : Bool → Bool → Bool
+  | .true, b => Bool.not b
+  | .false, b => b
+def Bool.beq : Bool → Bool → Bool
+  | .true, b => b
+  | .false, b => Bool.not b
+
+------------------------------------------------------------------------------------
+-- Nat division, powers and bitwise operations  (shim for lib/NatBits.wiz, agent/vec-lib)
+-- The real ones are `builtin nat.<op>` natives (kernel `vNatOp`, Run, IR, C, LLVM).
+-- These are structural (fuel = the dividend) so the kernel accepts them.
+def Nat.modAux : Nat → Nat → Nat → Nat
+  | .zero, x, _ => x
+  | .succ f, x, m => match Nat.lt x m with
+    | .true => x
+    | .false => Nat.modAux f (Nat.sub x m) m
+def Nat.mod (x m : Nat) : Nat := match m with
+  | .zero => x
+  | .succ _ => Nat.modAux x x m
+def Nat.divAux : Nat → Nat → Nat → Nat
+  | .zero, _, _ => 0
+  | .succ f, x, m => match Nat.lt x m with
+    | .true => 0
+    | .false => Nat.succ (Nat.divAux f (Nat.sub x m) m)
+def Nat.div (x m : Nat) : Nat := match m with
+  | .zero => 0
+  | .succ _ => Nat.divAux x x m
+def Nat.pow (b : Nat) : Nat → Nat
+  | .zero => 1
+  | .succ e => Nat.mul b (Nat.pow b e)
+def Nat.testBit (x i : Nat) : Bool := Nat.beq (Nat.mod (Nat.div x (Nat.pow 2 i)) 2) 1
+def Nat.shiftLeft (x k : Nat) : Nat := Nat.mul x (Nat.pow 2 k)
+def Nat.shiftRight (x k : Nat) : Nat := Nat.div x (Nat.pow 2 k)
+def Nat.bitwiseAux (f : Bool → Bool → Bool) : Nat → Nat → Nat → Nat
+  | .zero, _, _ => 0
+  | .succ fuel, x, y =>
+    let low := match f (Nat.testBit x 0) (Nat.testBit y 0) with
+      | .true => 1
+      | .false => 0
+    Nat.add low (Nat.mul 2 (Nat.bitwiseAux f fuel (Nat.div x 2) (Nat.div y 2)))
+def Nat.bitwise (f : Bool → Bool → Bool) (x y : Nat) : Nat := Nat.bitwiseAux f (Nat.succ (Nat.add x y)) x y
+def Nat.land (x y : Nat) : Nat := Nat.bitwise Bool.and x y
+def Nat.lor (x y : Nat) : Nat := Nat.bitwise Bool.or x y
+def Nat.xor (x y : Nat) : Nat := Nat.bitwise Bool.xor x y
+-- ⌈log₂ n⌉, the width of an index into `n` things (`clog2 1 = 0`)
+def Nat.clog2Aux : Nat → Nat → Nat → Nat
+  | .zero, _, k => k
+  | .succ f, n, k => match Nat.lt (Nat.pow 2 k) n with
+    | .true => Nat.clog2Aux f n (Nat.succ k)
+    | .false => k
+def Nat.clog2 (n : Nat) : Nat := Nat.clog2Aux n n 0
+
+------------------------------------------------------------------------------------
+-- Numeric classes                              -- wishful: numeric-classes-bitvec (shim, HD9)
+-- HD9 puts these in the Prelude with `+`/`-`/`*` resolved through them (Nat stays fast:
+-- `instance : Add Nat := ⟨Nat.add⟩` is a builtin). Re-declaring the infixes here makes
+-- the later macro win, which is what the Prelude change will do.
+class Add (A : Type) where
+  add : A → A → A
+class Sub (A : Type) where
+  sub : A → A → A
+class Mul (A : Type) where
+  mul : A → A → A
+class Neg (A : Type) where
+  neg : A → A
+class AndOp (A : Type) where
+  and : A → A → A
+class OrOp (A : Type) where
+  or : A → A → A
+class XorOp (A : Type) where
+  xor : A → A → A
+class Complement (A : Type) where
+  complement : A → A
+class BEq (A : Type) where
+  beq : A → A → Bool
+class Ord (A : Type) where
+  lt : A → A → Bool
+  le : A → A → Bool
+instance : Add Nat := Add.mk Nat.add
+instance : Sub Nat := Sub.mk Nat.sub
+instance : Mul Nat := Mul.mk Nat.mul
+instance : BEq Nat := BEq.mk Nat.beq
+instance : Ord Nat := Ord.mk Nat.lt Nat.le
+instance : BEq Bool := BEq.mk Bool.beq
+infixl:65 " + " => Add.add
+infixl:65 " - " => Sub.sub
+infixl:70 " * " => Mul.mul
+infixl:58 " ^^^ " => XorOp.xor
+infixl:60 " &&& " => AndOp.and
+infixl:55 " ||| " => OrOp.or
+infix:50 " == " => BEq.beq
+infix:50 " < " => Ord.lt
+infix:50 " <= " => Ord.le
+
+------------------------------------------------------------------------------------
+-- Functor / Applicative                        -- wishful: prelude-functor-applicative (shim)
+class Functor (f : Type → Type) where
+  map : {A B : Type} → (A → B) → f A → f B
+class Applicative (f : Type → Type) where
+  pure : {A : Type} → A → f A
+  seq : {A B : Type} → f (A → B) → f A → f B
+infixr:100 " <$> " => Functor.map
+infixl:60 " <*> " => Applicative.seq
+
+------------------------------------------------------------------------------------
+-- Vec and Fin                                  (shim for lib/Vec.wiz, agent/vec-lib)
+-- HD7: the length is erased (quantity 0); functions that need it take `(ω n : Nat)`.
+inductive Vec (A : Type) : Nat → Type where
+  | nil : Vec A .zero
+  | cons {0 n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)
+
+structure Fin (n : Nat) where
+  val : Nat
+  0 isLt : Nat.lt val n = .true
+
+def Vec.map {A B : Type} (f : A → B) {0 n : Nat} : Vec A n → Vec B n
+  | .nil => .nil
+  | .cons x xs => .cons (f x) (Vec.map f xs)
+def Vec.zipWith {A B C : Type} (f : A → B → C) {0 n : Nat} : Vec A n → Vec B n → Vec C n
+  | .nil, .nil => .nil
+  | .cons a as, .cons b bs => .cons (f a b) (Vec.zipWith f as bs)
+def Vec.foldr {A B : Type} (f : A → B → B) (z : B) {0 n : Nat} : Vec A n → B
+  | .nil => z
+  | .cons x xs => f x (Vec.foldr f z xs)
+def Vec.foldl {A B : Type} (f : B → A → B) {0 n : Nat} : B → Vec A n → B
+  | z, .nil => z
+  | z, .cons x xs => Vec.foldl f (f z x) xs
+def Vec.replicate {A : Type} (x : A) : (ω n : Nat) → Vec A n
+  | .zero => .nil
+  | .succ n => .cons x (Vec.replicate x n)
+def Vec.head {A : Type} {0 n : Nat} : Vec A (.succ n) → A
+  | .cons x _ => x
+def Vec.tail {A : Type} {0 n : Nat} : Vec A (.succ n) → Vec A n
+  | .cons _ xs => xs
+def Vec.toList {A : Type} {0 n : Nat} : Vec A n → List A
+  | .nil => .nil
+  | .cons x xs => .cons x (Vec.toList xs)
+-- the element at `i`, or `d` past the end (the shim's `get`; vec-lib proves it in range)
+def Vec.nthD {A : Type} {0 n : Nat} : Vec A n → Nat → A → A
+  | .nil, _, d => d
+  | .cons x xs, i, d => match i with
+    | .zero => x
+    | .succ k => Vec.nthD xs k d
+def Vec.get {A : Type} {0 n : Nat} (v : Vec A (.succ n)) (i : Fin (.succ n)) : A :=
+  Vec.nthD v i.val (Vec.head v)
+def Vec.set {A : Type} {0 n : Nat} : Vec A n → Nat → A → Vec A n
+  | .nil, _, _ => .nil
+  | .cons x xs, i, y => match i with
+    | .zero => .cons y xs
+    | .succ k => .cons x (Vec.set xs k y)
+-- Clash's `+>>`: shift a new element in at the front, dropping the last one
+def Vec.shiftIn {A : Type} {0 n : Nat} : A → Vec A n → Vec A n
+  | _, .nil => .nil
+  | x, .cons y ys => .cons x (Vec.shiftIn y ys)
+-- `x, f x, f (f x), …`
+def Vec.iterate {A : Type} (f : A → A) : (ω n : Nat) → A → Vec A n
+  | .zero, _ => .nil
+  | .succ n, x => .cons x (Vec.iterate f n (f x))
+def Vec.indices : (ω n : Nat) → Vec Nat n := fun n => Vec.iterate Nat.succ n 0
+
+-- `#v[a, b, c]`                                -- wishful: vec-literal (works here)
+syntax (name := vecLit) "#v[" sepBy(term, ",") "]" : term
+def vecLitGo {b : Bool} : SyntaxF b → Syntax
+  | .cons t ts => match t with
+    | .atom _ => vecLitGo ts
+    | _ => let rest := vecLitGo ts; `(term| Vec.cons $t $rest)
+  | _ => `(term| Vec.nil)
+def vecLitMacro : Macro := fun stx => match Syntax.getArg stx 1 with
+  | .node _ ts => MacroM.pure (vecLitGo ts)
+  | _ => MacroM.pure `(term| Vec.nil)
+attribute [macro term.vecLit] vecLitMacro
+
+------------------------------------------------------------------------------------
+-- Integers and numerals at any type            -- wishful: prelude-int, numeric-classes-bitvec
+inductive Int where
+  | ofNat (n : Nat)
+  | negSucc (n : Nat)
+-- HD9: a numeral `5 : A` elaborates to `OfNat.ofNat A 5` when `A` is not `Nat`. The class
+-- and its instances check today; the elaborator change is the gap.
+class OfNat (A : Type) (n : Nat) where
+  ofNat : A

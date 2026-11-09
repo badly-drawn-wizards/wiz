@@ -189,6 +189,23 @@ partial def Closure.lvlBound (binders : Nat) : Closure R → Nat
   | .mk env body => envBound env ((Term.freeVarsAt binders body).run #[]).2
 end
 
+/-- (D1 experiment, `Regularity.refl`) Is this proof visibly a reflexivity: `refl`,
+`reflTy`, `()`, or a `transp` of one along one? Such proofs only prove equations whose
+sides are definitionally equal. -/
+partial def reflProof (e : Val R) : Bool :=
+  match whnf e with
+  | .neutral (.refl ..) #[] | .neutral (.reflTy _) #[] | .tt => true
+  | .neutral (.transp _ _ _ p _ e) #[] => reflProof p && reflProof e
+  | _ => false
+
+/-- (D1 experiment) May `cast A A e t` reduce to `t` under `g.regularity`? -/
+def regularityAllowed (g : Globals R) (A e : Val R) : Bool :=
+  match g.regularity with
+  | .full => true
+  | .nonProp => propSort? A != some true
+  | .refl => reflProof e
+  | .off => false
+
 mutual
 
 /-- **Exercise 1.1.** Evaluate a term in an environment.
@@ -714,7 +731,7 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   -- above every variable in them, `Val.lvlBound`)
   | _, _ =>
     let l := max A.lvlBound B.lvlBound
-    if quote g l A == quote g l B then t else stuck
+    if regularityAllowed g A e && quote g l A == quote g l B then t else stuck
   --|ex
   --| sorry
   --sol>
