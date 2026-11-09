@@ -867,7 +867,7 @@ $ wiz run fact.wiz        # def main : Nat := fact 30
 * `wiz build FILE -o OUT` compiles the definition `main` to C and then to an
   executable; `wiz run FILE` also runs it and reads the printed result back with
   `main`'s type. The C compiler is `--cc X` (default `cc`), with `--cflags "…"` and
-  `--ldflags "…"` for GMP (stage 22a: flags, not environment variables). The C tests
+  `--ldflags "…"` for GMP (stage 23a: flags, not environment variables). The C tests
   skip themselves if GMP isn't found.
 * **Runtime** (`runtime/wiz.c`, embedded in the compiler): a value is a word; scalars
   have the low bit set; objects have a header (reference count, tag, size). Closures
@@ -1958,16 +1958,16 @@ def k : Nat → Bool → Nat := by
 def four : Nat := doubel 2    -- unknown identifier 'doubel'   [Did you mean 'double'?]
 ```
 
-## Stage 22: grail, a build tool
+## Stage 23: grail, a build tool
 
-### 22b: modules by path ✅
+### 23b: modules by path ✅
 
 `import A.B` reads `A/B.wiz` under the first **module root** that has it; `lib/` is a
 root, so `import Prelude` is `lib/Prelude.wiz` as before. The frontend stays pure: the
 caller reads every module a file can reach up front, by scanning its import lines
 (`Wiz/Module.lean`).
 
-### 22c: a key per module, atomic writes ✅
+### 23c: a key per module, atomic writes ✅
 
 A module's key is computed from text alone, before anything is elaborated:
 
@@ -1982,7 +1982,7 @@ keeps the effects in memory for the run; `runFrontend`, which the tests and the 
 server use, still elaborates a module in its importer's state). Cache files are
 written to a temporary name and renamed, so concurrent runs never see half a file.
 
-### 22d: grail v0 ✅
+### 23d: grail v0 ✅
 
 A package is a directory with a `grail.wiz`, written in Wiz against `lib/Grail.wiz`:
 
@@ -2021,7 +2021,7 @@ def settings : Settings := Settings.empty
   |> Settings.set "ldflags" "-L/nix/store/…-gmp-…/lib -Wl,-rpath,/nix/store/…-gmp-…/lib"
 ```
 
-### 22a: the toolchain as flags ✅
+### 23a: the toolchain as flags ✅
 
 `wiz` reads no environment variables: the toolchain record (`Wiz/Toolchain.lean`: C
 compiler and flags, `llc`, the collector's flags, the cache, module roots) comes from
@@ -2030,5 +2030,5 @@ compiler and flags, `llc`, the collector's flags, the cache, module roots) comes
 compiles. Its compiler fields are its `id`, which enters grail's keys.
 
 Next: the self-hosted toolchain as targets
-with a bootstrap check (22e), a test runner (22f), parallel jobs (22g), git
-dependencies and a lock file (22h).
+with a bootstrap check (23e), a test runner (23f), parallel jobs (23g), git
+dependencies and a lock file (23h).

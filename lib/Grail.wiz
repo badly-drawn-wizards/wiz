@@ -1,5 +1,5 @@
 import Prelude
--- grail's build files (stage 22d): `grail.wiz` defines `package`, the uncommitted
+-- grail's build files (stage 23d): `grail.wiz` defines `package`, the uncommitted
 -- `grail.local.wiz` defines `local` (this machine's settings). grail evaluates them and
 -- reads the result as an S-expression (`Package.render`, `Settings.render`).
 

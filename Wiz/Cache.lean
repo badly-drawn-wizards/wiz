@@ -405,7 +405,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
 def salt : UInt64 := hash "wiz-cache-5"
 
-/-! ## Keys and atomic writes (stage 22c)
+/-! ## Keys and atomic writes (stage 23c)
 
 A **module's key** is computed from text alone, before anything is elaborated:
 

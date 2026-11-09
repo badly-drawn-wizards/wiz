@@ -3,8 +3,8 @@ import Wiz
 import Grail
 
 /-!
-Stage 22: modules by path (22b), per-module cache keys and atomic writes (22c), and
-grail, the build tool (22d).
+Stage 23: modules by path (23b), per-module cache keys and atomic writes (23c), and
+grail, the build tool (23d).
 -/
 
 namespace Tests.Grail
@@ -29,7 +29,7 @@ def libFiles : List (String × String) :=
 
 def modulesGroup : Group where
   name := "modules"
-  exercise := "Stage 22b–c"
+  exercise := "Stage 23b–c"
   cases := [
     { name := "dotted names are paths", run := fun _ => do
         checkEq "A/B/C.wiz" (Module.relPath "A.B.C").toString
@@ -145,7 +145,7 @@ partial def leanFiles (dir : System.FilePath) : IO (Array System.FilePath) := do
 
 def toolchainGroup : Group where
   name := "toolchain"
-  exercise := "Stage 22a"
+  exercise := "Stage 23a"
   cases := [
     { name := "wiz and grail read no environment variables", run := fun _ => do
         let files := (← leanFiles "Wiz") ++ (← leanFiles "Grail") ++ #[System.FilePath.mk "Main.lean"]
@@ -178,7 +178,7 @@ def toolchainGroup : Group where
 
 def grailGroup : Group where
   name := "grail"
-  exercise := "Stage 22d"
+  exercise := "Stage 23d"
   cases := [
     { name := "the build file is Wiz", run := fun _ => do
         let dir ← mkTree (pkgFiles ++ [("grail.local.wiz", "import Grail\ndef settings : Settings := Settings.empty |> Settings.set \"cflags\" \"-I \\\"x\\\"\"\n")])

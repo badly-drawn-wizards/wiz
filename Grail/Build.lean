@@ -1,7 +1,7 @@
 import Grail.Config
 
 /-!
-# The build graph (stage 22d: sequential)
+# The build graph (stage 23d: sequential)
 
 A **job** has a key, computed from its inputs before it runs, and an output directory
 `.grail/build/<key>/`. A job whose directory exists is up to date and doesn't run; a job

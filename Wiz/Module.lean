@@ -1,7 +1,7 @@
 import Wiz.Core.Term
 
 /-!
-# Modules by path (stage 22b)
+# Modules by path (stage 23b)
 
 A module name is a dotted path: `import A.B` reads `A/B.wiz` under the first **root**
 that has it. The standard library `lib/` is a root, so `import Prelude` reads

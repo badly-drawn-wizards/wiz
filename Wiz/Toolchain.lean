@@ -1,5 +1,5 @@
 /-!
-# The toolchain record (stage 22a)
+# The toolchain record (stage 23a)
 
 Everything outside Wiz that building needs, passed explicitly instead of read from the
 environment: the C compiler and its flags (where GMP and the Boehm collector live),

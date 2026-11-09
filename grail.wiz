@@ -1,8 +1,8 @@
 import Grail
--- The Wiz repository's build file (stage 22d): `grail build`, or `grail build std`.
+-- The Wiz repository's build file (stage 23d): `grail build`, or `grail build std`.
 -- Machine settings (where GMP lives) go in grail.local.wiz, which isn't committed.
 -- examples/procmacro.wiz and examples/syntax.wiz show errors on purpose: the test
--- runner (22f) will check them against their expected output.
+-- runner (23f) will check them against their expected output.
 def package : Package := Package.new "wiz"
   |> Package.set "libs" "-lm"
   |> Package.lib "std" "lib"
