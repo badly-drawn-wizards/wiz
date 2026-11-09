@@ -1583,8 +1583,30 @@ compiled by the Lean toolchain, compiles itself to C (about 90 000 lines); that 
 and runs a program with the self-hosted compiler (when `$WIZ_GC_CFLAGS`/`$WIZ_GC_LDFLAGS`
 point at the garbage collector).
 
-Next: flat constructors, multi-argument closures and reference counting, to bring
-stage 2 (about 15× slower than stage 1) closer.
+### 21d: faster self-compilation ✅
+
+Measured, not guessed (`perf`, per-global timestamps from a streaming driver):
+
+* Compiling the toolchain took 5 min 43 s, almost all of it in one global: the Prelude's
+  text, a string literal 2600 characters long, i.e. 2600 nested `List.cons`. Two
+  quadratic costs: erasure evaluated each argument to instantiate the next parameter's
+  type even when the codomain doesn't mention it (`usesVar`, as in the kernel), and the
+  C text was built by appending `String`s, lists of characters (now a rope, `Doc`,
+  printed piece by piece). Also `quickType` follows `scase`, `let`, `coe` and the like
+  instead of inferring the whole match again at every nested split. Now 18 s.
+* String literals become their code points in the C code, built once; numerals made of
+  `Nat.succ`/`Nat.mul` are folded. The C went from 19 MB to 9.4 MB.
+* **Multi-argument closures**: a chain of `λ`s is one C function over its captured
+  variables and arguments (`mkfun`), and an application to several arguments calls it
+  at once (`apn`), without the closures of the partial applications. 88 000 lifted
+  functions became 35 000, the C 5.1 MB, and compiling it takes 31 s instead of 3 min.
+  Stage 2 runs about twice as fast.
+
+A note on debugging: under `gdb`, the Boehm collector's stopping of the world hangs,
+because `gdb` intercepts its suspend signals; pass them through (`handle SIGPWR nostop
+noprint pass`, and the same for `SIGXCPU`).
+
+Next: flat constructors and reference counting.
 
 ## Stage 11: tooling
 

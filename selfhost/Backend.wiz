@@ -101,7 +101,10 @@ partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
   | .const _ ps ls _ ty => .some (eval .nil (substIfAny ps ls ty))
   | .app f a => match quickType c f with
     | .some fty => match whnf fty with
-      | .vpi _ _ env cod => .some (eval (.cons (eval (TCtx.env c) a) env) cod)
+      -- (the argument evaluated only if the codomain mentions it, as in the kernel)
+      | .vpi _ _ env cod => .some (eval (.cons (match usesVar 0 cod with
+          | .true => eval (TCtx.env c) a
+          | .false => .vtt) env) cod)
       | _ => inferTy c t
     | .none => .none
   | .fst p => match quickType c p with
@@ -117,6 +120,14 @@ partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
   | .ann _ ty => .some (eval (TCtx.env c) ty)
   | .ecase m s _ => .some (eval (.cons (eval (TCtx.env c) s) (TCtx.env c)) m)
   | .ind _ _ _ _ P _ i x => .some (vapp (vapp (eval (TCtx.env c) P) (eval (TCtx.env c) i)) (eval (TCtx.env c) x))
+  -- (the forms a match leaves: without these, erasing a match inferred the whole match
+  -- again at every nested split)
+  | .scase _ _ _ _ P _ _ i x => .some (vapp (vapp (eval (TCtx.env c) P) (eval (TCtx.env c) i)) (eval (TCtx.env c) x))
+  | .exfalso m _ => .some (eval (TCtx.env c) m)
+  | .coe _ B _ _ => .some (eval (TCtx.env c) B)
+  | .tag k _ => .some (.venum k)
+  | .star => .some (.vunit 1)
+  | .letE A v b => quickType (TCtx.define c (eval (TCtx.env c) v) (eval (TCtx.env c) A)) b
   | _ => inferTy c t
 
 -- the payload of a value of `ty` for a match: unpacked from a number
@@ -298,7 +309,9 @@ def eraseArgs (c : TCtx) (f : ETm) (fty : Val) : List Tm → ER
         | .qz => .ok .erased
         | _ => eraseCheck c a dom;
       match ar with
-      | .ok a' => eraseArgs c (.app f a') (eval (.cons (eval (TCtx.env c) a) env) cod) rest
+      | .ok a' => eraseArgs c (.app f a') (eval (.cons (match usesVar 0 cod with
+          | .true => eval (TCtx.env c) a
+          | .false => .vtt) env) cod) rest
       | e => e
     | _ => .err "erasure: applying a non-function"
 end
@@ -327,9 +340,9 @@ def mangle (n : String) : String := match n with
 def nativeNames : List String :=
   .cons "Nat.zero" (.cons "Nat.succ" (.cons "Nat.add" (.cons "Nat.sub" (.cons "Nat.mul" (.cons "Nat.pred"
   (.cons "Nat.beq" (.cons "Nat.blt" (.cons "Nat.lt" (.cons "Nat.le" (.cons "Nat.toString"
-  (.cons "IO.println" (.cons "IO.readFile" (.cons "Str.ofString"
+  (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "Str.ofString"
   (.cons "Array.empty" (.cons "Array.push" (.cons "Array.size" (.cons "Array.getD" (.cons "Array.set"
-  (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo" .nil)))))))))))))))))))))))
+  (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo" .nil))))))))))))))))))))))))
 def elemStr (x : String) : List String → Bool
   | .nil => .false
   | .cons y rest => Bool.or (strEq x y) (elemStr x rest)
@@ -365,17 +378,28 @@ def mergeVars : List Nat → List Nat → List Nat
   | .cons i rest, acc => mergeVars rest (addVar i acc)
 end
 
+-- Code is built as a rope (`Doc`), printed piece by piece at the end: a `String` is a
+-- list of characters, and appending copies its left side, so building a deep
+-- expression by appending (2600 nested `ap(…)`s for a string literal) was quadratic.
+inductive Doc where
+  | t (s : String)
+  | c (a b : Doc)
+infixl:65 " ⧺ " => Doc.c
+def Doc.nat (n : Nat) : Doc := .t (Nat.toString n)
+
 -- the code so far: the lifted functions (latest first), a counter for names, and the
 -- arity of each global defined by `λ`s (called directly when applied to that many
 -- arguments: through curried closures, a call of `n` arguments made `n` closures, each
 -- copying the arguments before it)
 inductive CG where
-  | mk (fns : List String) (n : Nat) (ar : StrMap Nat)
+  | mk (fns : List Doc) (n : Nat) (ar : StrMap Nat)
 inductive CR where
-  | mk (code : String) (st : CG)
-def CG.fresh (st : CG) (base : String) : CR := match st with
+  | mk (code : Doc) (st : CG)
+inductive FR where
+  | mk (name : String) (st : CG)
+def CG.fresh (st : CG) (base : String) : FR := match st with
   | .mk fns n ar => .mk (String.append base (Nat.toString n)) (.mk fns (n + 1) ar)
-def CG.emit (st : CG) (f : String) : CG := match st with
+def CG.emit (st : CG) (f : Doc) : CG := match st with
   | .mk fns n ar => .mk (.cons f fns) n ar
 def CG.arity (st : CG) (g : String) : Nat := match st with
   | .mk _ _ ar => StrMap.findD ar (Str.ofString g) 0
@@ -420,6 +444,21 @@ def envNames (caps : List Nat) : Nat → Nat → List String
 def capsCode (names : List String) : List Nat → List String
   | .nil => .nil
   | .cons i rest => .cons (nthName' names i) (capsCode names rest)
+-- inside a lifted chain of `k` `λ`s with `nc` captured variables: the parameters
+-- (innermost first) are `a[nc+k-1]`, …, `a[nc]`; the captured ones `a[0]`, …
+def paramNamesA (nc : Nat) : Nat → Nat → List String
+  | _, .zero => .nil
+  | k, .succ j => .cons ("a[" +++ Nat.toString (nc + j) +++ "]") (paramNamesA nc k j)
+def capNamesA (caps : List Nat) : Nat → Nat → List String
+  | _, .zero => .nil
+  | i, .succ m => .cons (match indexOfNat i caps 0 with
+      | .some j => "a[" +++ Nat.toString j +++ "]"
+      | .none => "BOX(0)") (capNamesA caps (i + 1) m)
+def dropBoundK : Nat → List Nat → List Nat
+  | _, .nil => .nil
+  | k, .cons i rest => match Nat.lt i k with
+    | .true => dropBoundK k rest
+    | .false => .cons (i - k) (dropBoundK k rest)
 def maxVar : List Nat → Nat
   | .nil => 0
   | .cons i rest => Nat.max (i + 1) (maxVar rest)
@@ -427,80 +466,164 @@ def maxVar : List Nat → Nat
 def etmsLen : ETms → Nat
   | .nil => 0
   | .cons _ rest => etmsLen rest + 1
+-- **Constants.** A numeral the frontend built from `Nat.zero`, `Nat.succ` and `Nat.mul`
+-- (binary numerals), and a string literal (`String.mk` of a list of `Char.mk` codes),
+-- are recognised: a string becomes its code points in the C code, built once (strings
+-- are immutable). Spelled out, each character was a chain of applications (800 bytes of
+-- C), and the text was built again at every evaluation.
+partial def natConst (t : ETm) : Option Nat := match t with
+  | .nat n => .some n
+  | .glob g => match strEq g "Nat.zero" with
+    | .true => .some 0
+    | .false => .none
+  | .app f a => match f with
+    | .glob g => match strEq g "Nat.succ" with
+      | .true => match natConst a with
+        | .some n => .some (n + 1)
+        | .none => .none
+      | .false => .none
+    | .app h x => match h with
+      | .glob g => match Bool.or (strEq g "Nat.mul") (strEq g "Nat.add") with
+        | .true => match natConst x with
+          | .some m => match natConst a with
+            | .some n => .some (match strEq g "Nat.mul" with
+              | .true => m * n
+              | .false => m + n)
+            | .none => .none
+          | .none => .none
+        | .false => .none
+      | _ => .none
+    | _ => .none
+  | _ => .none
+-- the codes of a constant `List Char`
+partial def charsConst (t : ETm) : Option (List Nat) := match t with
+  | .app f a => match f with
+    | .glob g => match strEq g "List.nil" with
+      | .true => .some .nil
+      | .false => .none
+    | .app h c => match h with
+      | .app k _ => match k with
+        | .glob g => match strEq g "List.cons" with
+          | .true => match c with
+            | .app m code => match m with
+              | .glob ch => match strEq ch "Char.mk" with
+                | .true => match natConst code with
+                  | .some n => match charsConst a with
+                    | .some rest => .some (.cons n rest)
+                    | .none => .none
+                  | .none => .none
+                | .false => .none
+              | _ => .none
+            | _ => .none
+          | .false => .none
+        | _ => .none
+      | _ => .none
+    | _ => .none
+  | _ => .none
+def stringConst (t : ETm) : Option (List Nat) := match t with
+  | .app f a => match f with
+    | .glob g => match strEq g "String.mk" with
+      | .true => charsConst a
+      | .false => .none
+    | _ => .none
+  | _ => .none
+def codesC : List Nat → Doc
+  | .nil => .t ""
+  | .cons n rest => match rest with
+    | .nil => Doc.nat n
+    | .cons _ _ => Doc.nat n ⧺ .t "," ⧺ codesC rest
 mutual
 -- **Exercise 21.2.** The C expression of a term (`names`: the variables in scope).
 def cgE (st : CG) (names : List String) : ETm → CR
   --<sol
-  | .erased => .mk "BOX(0)" st
-  | .var i => .mk (nthName' names i) st
-  | .glob n => .mk ("get_" +++ mangle n +++ "()") st
-  | .nat n => .mk ("BOX(" +++ Nat.toString n +++ "UL)") st
-  | .app f a => match spineE f (.cons a .nil) with
+  | .erased => .mk (.t "BOX(0)") st
+  | .var i => .mk (.t (nthName' names i)) st
+  | .glob n => .mk (.t ("get_" +++ mangle n +++ "()")) st
+  | .nat n => .mk (.t "BOX(" ⧺ Doc.nat n ⧺ .t "UL)") st
+  | .app f a => match stringConst (.app f a) with
+    -- a string literal: `({ static V s; s ? s : (s = wstr_codes(…)); })`
+    | .some cs => match CG.fresh st "str" with
+      | .mk x st1 => .mk (.t ("({ static V " +++ x +++ " = 0; if (!" +++ x +++ ") " +++ x +++ " = wcodes((uint32_t[]){") ⧺ codesC cs ⧺
+          .t ((match cs with
+            | .nil => "0"
+            | .cons _ _ => "") +++ "}, " +++ Nat.toString (lenL cs) +++ "); " +++ x +++ "; })")) st1
+    | .none => match natConst (.app f a) with
+    | .some n => .mk (.t "BOX(" ⧺ Doc.nat n ⧺ .t "UL)") st
+    | .none => match spineE f (.cons a .nil) with
     | .mk h args => match h with
       | .glob g =>
         let k := CG.arity st g;
         match Bool.and (Nat.lt 0 k) (Nat.le k (lenL args)) with
         -- a saturated call: `d_g(…)`, then the rest applied
         | .true => match cgList st names (takeL k args) with
-          | .mk acs st1 => cgApps st1 names ("d_" +++ mangle g +++ "(" +++ acs +++ ")") (dropL k args)
-        | .false => cgApps st names ("get_" +++ mangle g +++ "()") args
+          | .mk acs st1 => cgApps st1 names (.t ("d_" +++ mangle g +++ "(") ⧺ acs ⧺ .t ")") (dropL k args)
+        | .false => cgApps st names (.t ("get_" +++ mangle g +++ "()")) args
       | _ => match cgE st names h with
         | .mk hc st1 => cgApps st1 names hc args
   | .proj i t => match cgE st names t with
-    | .mk tc st1 => .mk ("fld(" +++ tc +++ ", " +++ Nat.toString i +++ ")") st1
+    | .mk tc st1 => .mk (.t "fld(" ⧺ tc ⧺ .t ", " ⧺ Doc.nat i ⧺ .t ")") st1
   | .obj k fs => match fs with
-    | .nil => .mk ("BOX(" +++ Nat.toString k +++ ")") st
+    | .nil => .mk (.t "BOX(" ⧺ Doc.nat k ⧺ .t ")") st
     | .cons _ _ => match cgEs st names fs with
-      | .mk fcs st1 => .mk ("mkobj(" +++ Nat.toString k +++ ", " +++ Nat.toString (etmsLen fs) +++ ", (V[]){" +++ fcs +++ "})") st1
+      | .mk fcs st1 => .mk (.t "mkobj(" ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat (etmsLen fs) ⧺ .t ", (V[]){" ⧺ fcs ⧺ .t "})") st1
   | .letE v b => match cgE st names v with
     | .mk vc st1 => match CG.fresh st1 "l" with
       | .mk x st2 => match cgE st2 (.cons x names) b with
-        | .mk bc st3 => .mk ("({ V " +++ x +++ " = " +++ vc +++ "; " +++ bc +++ "; })") st3
+        | .mk bc st3 => .mk (.t ("({ V " +++ x +++ " = ") ⧺ vc ⧺ .t "; " ⧺ bc ⧺ .t "; })") st3
   | .case s bs => match cgE st names s with
     | .mk sc st1 => match CG.fresh st1 "s" with
       | .mk x st2 => match cgBranches st2 names 0 bs with
-        | .mk bcs st3 => .mk ("({ V " +++ x +++ " = " +++ sc +++ "; V r_; switch (tagof(" +++ x +++ ")) { " +++ bcs +++
-            "default: r_ = unreach(); } r_; })") st3
+        | .mk bcs st3 => .mk (.t ("({ V " +++ x +++ " = ") ⧺ sc ⧺ .t ("; V r_; switch (tagof(" +++ x +++ ")) { ") ⧺ bcs ⧺
+            .t "default: r_ = unreach(); } r_; })") st3
   | .prim op as => match cgEs st names as with
-    | .mk acs st1 => .mk ("p_" +++ mangle op +++ "(" +++ acs +++ ")") st1
-  | .lam b =>
-    -- lifted: `static V lamN(V *env, V a)`, closing over the free variables of the `λ`
-    let caps := dropBound (freeE b .nil);
+    | .mk acs st1 => .mk (.t ("p_" +++ mangle op +++ "(") ⧺ acs ⧺ .t ")") st1
+  | .lam b0 =>
+    -- a chain of `k` `λ`s, lifted to one `static V lamN(V *a)` over the captured
+    -- variables and the `k` arguments: a function closure (`mkfun`) that collects them
+    let k := lamsOf (.lam b0);
+    let body := underLams k (.lam b0);
+    let caps := dropBoundK k (freeE body .nil);
+    let nc := lenL caps;
     match CG.fresh st "lam" with
     | .mk fname st1 =>
-      let inner := envNames caps 0 (maxVar caps);
-      match cgE st1 (.cons "a" inner) b with
+      let inner := List.append (paramNamesA nc k k) (capNamesA caps 0 (maxVar caps));
+      match cgE st1 inner body with
       | .mk bc st2 =>
-        let st3 := CG.emit st2 ("static V " +++ fname +++ "(V *env, V a) { return " +++ bc +++ "; }");
+        let st3 := CG.emit st2 (.t ("static V " +++ fname +++ "(V *a) { return ") ⧺ bc ⧺ .t "; }");
         match caps with
-        | .nil => .mk ("mkclo(" +++ fname +++ ", 0, NULL)") st3
-        | .cons _ _ => .mk ("mkclo(" +++ fname +++ ", " +++ Nat.toString (lenL caps) +++ ", (V[]){" +++ joinC (capsCode names caps) +++ "})") st3
+        | .nil => .mk (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString k +++ ", 0, NULL)")) st3
+        | .cons _ _ => .mk (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString (nc + k) +++ ", " +++ Nat.toString nc +++
+            ", (V[]){" +++ joinC (capsCode names caps) +++ "})")) st3
   --|ex
-  --| | _ => .mk "unreach()" st
+  --| | _ => .mk (.t "unreach()") st
   --sol>
 def cgEs (st : CG) (names : List String) : ETms → CR
-  | .nil => .mk "" st
+  | .nil => .mk (.t "") st
   | .cons t rest => match cgE st names t with
     | .mk tc st1 => match rest with
       | .nil => .mk tc st1
       | .cons _ _ => match cgEs st1 names rest with
-        | .mk rc st2 => .mk (tc +++ ", " +++ rc) st2
+        | .mk rc st2 => .mk (tc ⧺ .t ", " ⧺ rc) st2
 def cgList (st : CG) (names : List String) : List ETm → CR
-  | .nil => .mk "" st
+  | .nil => .mk (.t "") st
   | .cons t rest => match cgE st names t with
     | .mk tc st1 => match rest with
       | .nil => .mk tc st1
       | .cons _ _ => match cgList st1 names rest with
-        | .mk rc st2 => .mk (tc +++ ", " +++ rc) st2
-def cgApps (st : CG) (names : List String) (f : String) : List ETm → CR
+        | .mk rc st2 => .mk (tc ⧺ .t ", " ⧺ rc) st2
+def cgApps (st : CG) (names : List String) (f : Doc) : List ETm → CR
   | .nil => .mk f st
-  | .cons a rest => match cgE st names a with
-    | .mk ac st1 => cgApps st1 names ("ap(" +++ f +++ ", " +++ ac +++ ")") rest
+  | .cons a rest => match rest with
+    | .nil => match cgE st names a with
+      | .mk ac st1 => .mk (.t "ap(" ⧺ f ⧺ .t ", " ⧺ ac ⧺ .t ")") st1
+    -- several arguments at once
+    | .cons _ _ => match cgList st names (.cons a rest) with
+      | .mk acs st1 => .mk (.t "apn(" ⧺ f ⧺ .t (", " +++ Nat.toString (lenL (.cons a rest)) +++ ", (V[]){") ⧺ acs ⧺ .t "})") st1
 def cgBranches (st : CG) (names : List String) (k : Nat) : ETms → CR
-  | .nil => .mk "" st
+  | .nil => .mk (.t "") st
   | .cons b rest => match cgE st names b with
     | .mk bc st1 => match cgBranches st1 names (k + 1) rest with
-      | .mk rc st2 => .mk ("case " +++ Nat.toString k +++ ": r_ = " +++ bc +++ "; break; " +++ rc) st2
+      | .mk rc st2 => .mk (.t "case " ⧺ Doc.nat k ⧺ .t ": r_ = " ⧺ bc ⧺ .t "; break; " ⧺ rc) st2
 end
 
 -- **Lazy `let`s.** The match compiler binds with `let`s things only some branches use:
@@ -614,8 +737,8 @@ def argList : Nat → Nat → String
     | .succ _ => "a[" +++ Nat.toString i +++ "], " +++ argList (i + 1) m
 -- the code of each global: its prototypes and its definitions
 inductive Code where
-  | mk (protos defs : List String) (st : CG)
-def genCode : CG → List String → List String → List Erased → Code
+  | mk (protos defs : List Doc) (st : CG)
+def genCode : CG → List Doc → List Doc → List Erased → Code
   | st, protos, defs, .nil => .mk protos defs st
   | st, protos, defs, .cons (.mk n e) rest =>
     let g := mangle n;
@@ -623,25 +746,37 @@ def genCode : CG → List String → List String → List Erased → Code
     match k with
     | .zero => match cgE st .nil e with
       | .mk code st1 =>
-        genCode st1 (.cons ("V get_" +++ g +++ "(void);") protos)
-          (.cons ("static V g_" +++ g +++ "; static int i_" +++ g +++ "; V get_" +++ g +++
-            "(void) { if (!i_" +++ g +++ ") { g_" +++ g +++ " = " +++ code +++ "; i_" +++ g +++ " = 1; } return g_" +++ g +++ "; }") defs) rest
+        genCode st1 (.cons (.t ("V get_" +++ g +++ "(void);")) protos)
+          (.cons (.t ("static V g_" +++ g +++ "; static int i_" +++ g +++ "; V get_" +++ g +++
+            "(void) { if (!i_" +++ g +++ ") { g_" +++ g +++ " = ") ⧺ code ⧺ .t ("; i_" +++ g +++ " = 1; } return g_" +++ g +++ "; }")) defs) rest
     | .succ _ =>
       -- the parameters: `p0` the first, so the innermost (index 0) is `p(k-1)`
       match cgE st (paramNames k k) (underLams k e) with
       | .mk code st1 =>
         let ps := paramDecls 0 k;
-        genCode st1 (.cons ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);") protos)
-          (.cons ("V d_" +++ g +++ "(" +++ ps +++ ") { return " +++ code +++ "; }") (.cons
-            ("static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
-             "V get_" +++ g +++ "(void) { static V c = 0; if (!c) c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); return c; }") defs)) rest
--- the program's C text, as lines
-def genProgram (gs : Globals) : List String := match gs with
+        genCode st1 (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);")) protos)
+          (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ ") { return ") ⧺ code ⧺ .t "; }") (.cons
+            (.t ("static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
+             "V get_" +++ g +++ "(void) { static V c = 0; if (!c) c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); return c; }")) defs)) rest
+-- the program's C text, one `Doc` per line
+def genProgram (gs : Globals) : List Doc := match gs with
   | .mk all _ _ => match eraseGlobals all .nil .nil (Array.size all) with
-    | .err m => .cons ("#error " +++ m) .nil
+    | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es => match genCode (.mk .nil 0 (arities StrMap.empty es)) .nil .nil es with
       | .mk protos defs st => match st with
         | .mk fns _ _ =>
-          .cons "#include \"rt.c\"" (List.append protos
+          .cons (.t "#include \"rt.c\"") (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs
-              (.cons "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); return 0; }" .nil))))
+              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); return 0; }") .nil))))
+-- printing a program: each line's pieces, then a newline
+def printDoc : Doc → IO Unit
+  | .t s => IO.print s
+  | .c a b => do
+    printDoc a;
+    printDoc b
+def printDocs : List Doc → IO Unit
+  | .nil => IO.pure ()
+  | .cons d rest => do
+    printDoc d;
+    IO.println "";
+    printDocs rest
