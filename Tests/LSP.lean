@@ -150,7 +150,87 @@ def group : Group where
         checkEq cold.infos.size warm.infos.size
         for off in [offAfter src "intro A", offAfter src "intro x", offAfter src "n _" (-1), offAfter src "Nat.add 1"] do
           checkEq (goalsText cold off) (goalsText warm off)
-          checkEq (termGoalText cold off) (termGoalText warm off) }
+          checkEq (termGoalText cold off) (termGoalText warm off) },
+    { name := "tagged printing agrees with the printer", run := fun _ => do
+        let p ← prelude
+        let st := runFrontend (R := ZeroOneMany) "import Prelude" { loader := fun _ => some p }
+        for n in st.globals.order do
+          let some d := st.globals.find? n | continue
+          for t in [d.type] ++ d.value.toList do
+            let (tt, subs) := (t.prettyTagged [] []).run #[]
+            unless tt.flatten == t.pretty do
+              throw (IO.userError s!"{n}: {tt.flatten} ≠ {t.pretty}")
+            check (subs.size > 0) s!"{n}: no tags" }
+  ]
+
+def subtermInfo (srv : LSP.Server) (session ref : Nat) : LSP.Server × Lean.Json :=
+  let (srv, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"wiz/subtermInfo\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"session\":{session},\"ref\":{ref}}}")
+  (srv, (out[0]!.getObjVal? "result").toOption.getD ((out[0]!.getObjVal? "error").toOption.getD Lean.Json.null))
+
+def serverGroup : Group where
+  name := "lsp-server"
+  exercise := "Stage 11 (infoview, code actions)"
+  cases := [
+    { name := "infoview methods are advertised", run := fun _ => do
+        let (_, out) := LSP.handle (← server) (req "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}")
+        for m in ["wiz/plainGoal", "wiz/interactiveGoals", "wiz/subtermInfo", "experimental"] do
+          check (has out[0]! m) s!"no {m}" },
+    { name := "wiz/plainGoal and wiz/plainTermGoal", run := fun _ => do
+        let src := tacticSrc ++ "def f (n : Nat) : Nat := Nat.add n _\n"
+        let (srv, _) ← openDoc src
+        let (srv, r) := ask srv "wiz/plainGoal" src (offAfter src "intro x")
+        checkEq "[\"A : Type\\nx : A\\n⊢ A\"]" (LSP.get? r ["goals"] |>.get!).compress
+        checkEq "```wiz\nA : Type\nx : A\n⊢ A\n```" (LSP.getStr r ["rendered"])
+        let (srv, r) := ask srv "wiz/plainGoal" src (offAfter src "exact x")
+        checkEq "no goals" (LSP.getStr r ["rendered"])
+        let (srv, r) := ask srv "wiz/plainGoal" src 2
+        checkEq Lean.Json.null r
+        let (_, r) := ask srv "wiz/plainTermGoal" src (offAfter src "n _" (-1))
+        checkEq "n : Nat\n⊢ Nat" (LSP.getStr r ["goal"])
+        check (has r "\"range\"") "no range" },
+    { name := "wiz/interactiveGoals: tagged text, refs and wiz/subtermInfo", run := fun _ => do
+        let src := "import Prelude\ndef k : Nat → Bool → Nat := by\n  intro n\n  intro b\n  exact n\n"
+        let (srv, _) ← openDoc src
+        let (srv, r) := ask srv "wiz/interactiveGoals" src (offAfter src "intro n")
+        let session := LSP.getNat r ["session"]
+        let some (.arr #[g]) := LSP.get? r ["goals"] | throw (IO.userError s!"goals: {r.compress}")
+        let some ty := LSP.get? g ["type"] | throw (IO.userError "no type")
+        checkEq "Bool → Nat" (flatten ty)
+        let some (.arr #[h]) := LSP.get? g ["hyps"] | throw (IO.userError "hyps")
+        checkEq "[\"n\"]" (LSP.get? h ["names"]).get!.compress
+        checkEq "Nat" (flatten (LSP.get? h ["type"]).get!)
+        -- the same request again gives the same refs
+        let (srv, r') := ask srv "wiz/interactiveGoals" src (offAfter src "intro n")
+        checkEq r.compress r'.compress
+        -- `Bool`: a constant from the prelude
+        let some (ref, tag) := (refs ty).find? fun (_, t) => LSP.getStr t ["name"] == "Bool"
+          | throw (IO.userError s!"no Bool tag in {ty.compress}")
+        checkEq "const" (LSP.getStr tag ["kind"])
+        let (srv, info) := subtermInfo srv session ref
+        checkEq "Bool" (LSP.getStr info ["text"])
+        checkEq "Type" (flatten (LSP.get? info ["type"]).get!)
+        check ((LSP.getStr info ["definition", "uri"]).endsWith "lib/Prelude.wiz") s!"definition: {info.compress}"
+        -- the whole arrow
+        let (pref, _) := (refs ty).head!
+        let (srv, info) := subtermInfo srv session pref
+        checkEq "pi" (LSP.getStr info ["kind"])
+        checkEq "Type" (flatten (LSP.get? info ["type"]).get!)
+        -- after a change the refs are stale
+        let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\",\"version\":2},\"contentChanges\":[{\"text\":\"import Prelude\\n\"}]}}")
+        let (srv, err) := subtermInfo srv session ref
+        checkEq (-32801 : Int) ((err.getObjValAs? Int "code").toOption.getD 0)
+        let (_, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"wiz/plainGoal\",\"params\":{\"textDocument\":{\"uri\":\"file:///nope.wiz\"},\"position\":{\"line\":0,\"character\":0}}}")
+        check (has out[0]! "-32602") s!"unknown document: {out[0]!.compress}" },
+    { name := "wiz/interactiveTermGoal and the wiz/elaborated notification", run := fun _ => do
+        let src := "import Prelude\ndef f (n : Nat) : Nat := Nat.add n ?x\n"
+        let init := req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"experimental\":{\"wizElaborated\":true}}}}"
+        let (srv, out) ← openDoc src init
+        check (out.any (has · "wiz/elaborated")) "no wiz/elaborated"
+        let (_, r) := ask srv "wiz/interactiveTermGoal" src (offAfter src "?x" (-1))
+        checkEq "Nat" (flatten (LSP.get? r ["goal", "type"]).get!)
+        checkEq "\"x\"" (LSP.get? r ["goal", "userName"]).get!.compress
+        let (_, out) ← openDoc src
+        check (!(out.any (has · "wiz/elaborated"))) "unasked wiz/elaborated" }
   ]
 
 end Tests.LSP
