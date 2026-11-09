@@ -451,6 +451,11 @@ your choice over `Acc`/`termination_by` and guarded recursion. `μ` and `ν` car
 
 * Sizes: `Size`, `∞`, `↑s`, and `Size< s` (sizes below `s`). Comparison uses the
   bounds in the context.
+* `∞` is the top size and `↑∞ = ∞`, but `∞` is not below itself. Since every `↑s ≤ ∞`,
+  that comparison can't decide `s < ∞` (Agda's `∞ < ∞`, issue #3026, gave `False`). So
+  `Size< ∞` holds only sizes built from a bounded variable, `↑ᵏ x` for `x : Size< u`;
+  not `∞`, and not a variable of type `Size` (it may stand for `∞`). Running a sized
+  function at `∞` is fine: `sfix` takes any `s`, and its recursive calls take sizes below it.
 * **Subtyping**: `μ^s ≤ μ^t` when `s ≤ t` (and the reverse for `ν`), applied through Π
   and Σ. The kernel's mode switch checks `inferred ≤ expected` (`subTy`).
 * `con xs : μ^{↑s}` for a payload at `μ^s`; `out : ν^{↑s} → ⟦D⟧ (ν^s)`; `cocon` builds ν

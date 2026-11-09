@@ -275,9 +275,9 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
   | t, .sizeLt s => do
-    -- a size below `s`: `↑t ≤ s`
+    -- a size below `s` (`∞` is not below itself)
     let _ ← check { ctx with erased := true } t .size
-    unless sizeLe ctx.tys (.szSuc (ctx.eval t)) s do
+    unless sizeBelow ctx.tys (ctx.eval t) s do
       throw (.other s!"the size {ctx.showTerm t} is not below {ctx.showVal s}")
     pure (Usage.zeros ctx.lvl)
   | .dret i, .desc _ I => check ctx i I
