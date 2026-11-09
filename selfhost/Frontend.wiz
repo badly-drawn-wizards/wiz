@@ -1724,7 +1724,7 @@ def stringLit (gs : Globals) (es : ES) (cx : Cx) (v : String) : TE :=
               | .some z => match get "String" with
                 | .some st =>
                   -- (the codes in binary, like numerals: stage 20b)
-                  let num := match get "Nat.mul" with
+                  let num : Nat → Tm := match get "Nat.mul" with
                     | .some mul => fun (n : Nat) => binNat sc z mul n
                     | .none => fun (n : Nat) => iterApp sc n z;
                   match v with

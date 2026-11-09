@@ -1500,6 +1500,15 @@ functions become axioms, the self-hosted frontend checks all 650 declarations of
 `Frontend.wiz` without an error, in about a quarter of an hour. So every file of the
 self-hosted frontend is accepted by the self-hosted frontend.
 
+### 20c: the self-check in the test suite ✅
+
+Two more quadratic costs, both found by sampling stacks: the kernel's rule for an
+application evaluated the argument to instantiate the codomain even when the codomain
+doesn't mention it (`List.cons c rest` nested 2000 deep evaluated the rest at every
+level: `usesVar`), and string literals' codes were unary. The whole self-hosted
+frontend (`Lex`, `Parse`, `Kernel` and `Frontend.wiz`, 651 declarations) now checks
+itself, unstubbed, in about 40 s; the test suite runs it.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅
