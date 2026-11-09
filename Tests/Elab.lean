@@ -2905,6 +2905,8 @@ def trustGroup : Group where
            "error: partial definition bad: no witness found for its type; give one with `partial (default := w) def`\n" ++
            "error: partial definition bad2: no witness found for its type; give one with `partial (default := w) def`\n" ++
            "ok1 : (T B.t)\nok2 : (x0 : Nat) → Nat\nok3 : (T B.t)\nerror: type mismatch: expected (T B.f), got (T B.t)\n") }
+  ]
+
 /-- Every `lib/*.wiz`, by module name. -/
 def libLoader : IO (Name → Option String) := do
   let mut m : List (Name × String) := []
