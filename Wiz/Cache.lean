@@ -4,7 +4,7 @@ import Wiz.Query
 # The shared cache
 
 The query engine's memo table, on disk: a command's **effect** (the declarations it
-adds, its messages, and its registrations) is stored in `$WIZ_CACHE/<key>.wizc`, where
+adds, its messages, and its registrations) is stored in `<cache dir>/<key>.wizc` (`wiz --cache DIR`), where
 the key is the chained content hash of the command and everything before it (and a
 version salt). Elaboration is deterministic, so a shared directory is a shared cache:
 two machines elaborating the same text compute the same keys and the same effects.

@@ -2,6 +2,9 @@ name = "wiz"
 version = "0.1.0"
 defaultTargets = ["wiz"]
 testDriver = "tests"
+# compiled modules go to the shared Lake cache (keyed by their inputs), so worktrees
+# reuse each other's builds
+enableArtifactCache = true
 
 [[lean_lib]]
 name = "Wiz"
