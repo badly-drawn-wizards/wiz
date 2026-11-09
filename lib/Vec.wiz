@@ -162,21 +162,3 @@ def Vec.length_toList {A : Type} {0 n : Nat} : (v : Vec A n) → List.length (Ve
 def Vec.toList_fromList {A : Type} : (l : List A) → Vec.toList (Vec.fromList l) = l
   | .nil => rfl
   | .cons x xs => congrArg (List.cons x) (Vec.toList_fromList xs)
-
-def Vec.map_map {A B C : Type} (f : B → C) (g : A → B) {0 n : Nat} : (v : Vec A n) →
-    Vec.map f (Vec.map g v) = Vec.map (fun a => f (g a)) v
-  | .nil => rfl
-  | .cons x xs => congrArg (Vec.cons (f (g x))) (Vec.map_map f g xs)
-
-def Vec.get_set {A : Type} {0 n : Nat} : (v : Vec A n) → (i : Fin n) → (x : A) → Vec.get (Vec.set v i x) i = x
-  | .cons _ _, .mk .zero _, _ => rfl
-  | .cons _ xs, .mk (.succ i) h, y => Vec.get_set xs (@Fin.mk _ i h) y
-  | .nil, .mk .zero h, _ => absurd h.1
-  | .nil, .mk (.succ _) h, _ => absurd h.1
-
-def Vec.get_map {A B : Type} (f : A → B) {0 n : Nat} : (v : Vec A n) → (i : Fin n) →
-    Vec.get (Vec.map f v) i = f (Vec.get v i)
-  | .cons _ _, .mk .zero _ => rfl
-  | .cons _ xs, .mk (.succ i) h => Vec.get_map f xs (@Fin.mk _ i h)
-  | .nil, .mk .zero h => absurd h.1
-  | .nil, .mk (.succ _) h => absurd h.1

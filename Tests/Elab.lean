@@ -2975,6 +2975,12 @@ def vecGroup : Group where
     { name := "known bug: rfl's proof of a computed equation can differ from the kernel's (wishful: unify-computed-equations)", run := fun _ =>
         -- today's behaviour: the kernel rejects it. When the bug is fixed, turn this into an `okLibs`.
         failsLibs (vecPrelude ++ "def t3 : Vec.length (Vec.map Nat.succ w3) = 3 := rfl") "kernel rejected t3" },
+    { name := "known failure: map_map needs regularity at a variable type (D1; wishful: cast-refl)", run := fun _ =>
+        -- `Vec.map f (cons x xs)` is `cons (cast B B _ (f x)) …` without regularity; see
+        -- drafts/vec-lib/VecProofs.wiz. Turn into an `okLibs` if `castRefl` is added.
+        failsLibs (vecPrelude ++ "def Vec.map_map {A B C : Type} (f : B → C) (g : A → B) {0 n : Nat} : (v : Vec A n) →\n" ++
+          "    Vec.map f (Vec.map g v) = Vec.map (fun a => f (g a)) v\n  | .nil => rfl\n" ++
+          "  | .cons x xs => congrArg (Vec.cons (f (g x))) (Vec.map_map f g xs)\n") "type mismatch" },
     { name := "compiled, through the IR and C", run := fun _ => do
         okLibs (vecPrelude ++ "#run Vec.toList (Vec.reverse v3)\n#run Vec.get (Vec.set v3 (Fin.of 3 2 rfl) 7) (Fin.of 3 2 rfl)\n" ++
           "#run Vec.toList (Vec.zipWith Nat.mul v3 w3)")
