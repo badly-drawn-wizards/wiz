@@ -256,7 +256,7 @@ structure Effect (R : Type) where
   coinductives : List (Name × List (Name × Bool)) := []
   foreignTypes : List (Name × String) := []
   cCode : Array String := #[]
-  hovers : Array (SourceInfo × Name × String) := #[]
+  infos : Array (Info R) := #[]
   sites : Array (Name × SourceInfo × String) := #[]
 
 /-- The command kinds whose effect is just the fields of `Effect`. -/
@@ -277,7 +277,7 @@ def effectOf (s s' : CommandState R) : Effect R :=
     coinductives := s'.coinductives.drop s.coinductives.length
     foreignTypes := s'.foreignTypes.take (s'.foreignTypes.length - s.foreignTypes.length)
     cCode := s'.cCode.extract s.cCode.size s'.cCode.size
-    hovers := s'.hovers.extract s.hovers.size s'.hovers.size
+    infos := s'.infos.extract s.infos.size s'.infos.size
     sites := newNames.filterMap fun n => (s'.declSites.get? n).map fun (i, m) => (n, i, m) }
 
 /-- Replay an effect. -/
@@ -288,7 +288,7 @@ def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
   { s with globals, messages := s.messages ++ e.messages, builtins := e.builtins ++ s.builtins,
            classes := e.classes ++ s.classes, instances := s.instances ++ e.instances,
            coinductives := s.coinductives ++ e.coinductives, foreignTypes := e.foreignTypes ++ s.foreignTypes,
-           cCode := s.cCode ++ e.cCode, hovers := s.hovers ++ e.hovers,
+           cCode := s.cCode ++ e.cCode, infos := s.infos ++ e.infos,
            declSites := e.sites.foldl (fun m (n, i, md) => m.insert n (i, md)) s.declSites }
 
 def info (i : SourceInfo) : Sx := list [nat i.start, nat i.stop]
@@ -296,13 +296,68 @@ def dinfo (x : Sx) : Option SourceInfo := do
   let #[a, b] ← items? x | none
   pure { start := ← (← atom? a).toNat?, stop := ← (← atom? b).toNat? }
 
+/-! ## The info tree -/
+
+def optTerm : Option (Term R) → Sx
+  | some t => list [term t]
+  | none => list []
+
+def dOptTerm (x : Sx) : Option (Option (Term R)) := do
+  match ← items? x with
+  | #[t] => some (some (← dterm t))
+  | #[] => some none
+  | _ => none
+
+def names (ns : List Name) : Sx := list (ns.map str)
+def dnames (x : Sx) : Option (List Name) := do (← items? x).toList.mapM atom?
+def bool (b : Bool) : Sx := .a (toString b)
+def dbool (x : Sx) : Option Bool := do pure ((← atom? x) == "true")
+
+def goalSx (g : GoalView R) : Sx :=
+  list [list (g.hyps.toList.map fun (n, t, v) => list [str n, term t, optTerm v]), term g.target,
+        names g.userName.toList]
+
+def dGoal (x : Sx) : Option (GoalView R) := do
+  let #[hs, t, u] ← items? x | none
+  let hyps ← (← items? hs).mapM fun h => do
+    let #[n, ty, v] ← items? h | none
+    pure (← atom? n, ← dterm ty, ← dOptTerm v)
+  pure { hyps, target := ← dterm t, userName := (← dnames u).head? }
+
+def infoSx : Info R → Sx
+  | .ident i n l ns t => node "ident" [info i, str n, bool l, names ns, term t]
+  | .term i g h => node "term" [info i, goalSx g, bool h]
+  | .tactic i b gs gs' => node "tactic" [info i, bool b, list (gs.toList.map goalSx), list (gs'.toList.map goalSx)]
+  | .matchCases i m => node "match" [info i, str m.type, names m.covered, bool m.catchAll, nat m.columns,
+      info m.firstAlt, info m.lastAlt]
+  | .decl i n ns t a at_ => node "decl" [info i, str n, names ns, term t, bool a, nat at_]
+  | .unknownIdent i n ns => node "unknown" [info i, str n, names ns]
+
+def dInfo (x : Sx) : Option (Info R) := do
+  let xs ← items? x
+  let tag ← atom? (← xs[0]?)
+  let a (k : Nat) : Option Sx := xs[k]?
+  match tag with
+  | "ident" => pure (.ident (← dinfo (← a 1)) (← atom? (← a 2)) (← dbool (← a 3)) (← dnames (← a 4)) (← dterm (← a 5)))
+  | "term" => pure (.term (← dinfo (← a 1)) (← dGoal (← a 2)) (← dbool (← a 3)))
+  | "tactic" => pure (.tactic (← dinfo (← a 1)) (← dbool (← a 2)) (← (← items? (← a 3)).mapM dGoal)
+      (← (← items? (← a 4)).mapM dGoal))
+  | "match" =>
+    let m := MatchInfo.mk (← atom? (← a 2)) (← dnames (← a 3)) (← dbool (← a 4)) (← (← atom? (← a 5)).toNat?)
+      (← dinfo (← a 6)) (← dinfo (← a 7))
+    pure (.matchCases (← dinfo (← a 1)) m)
+  | "decl" => pure (.decl (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)) (← dterm (← a 4))
+      (← dbool (← a 5)) (← (← atom? (← a 6)).toNat?))
+  | "unknown" => pure (.unknownIdent (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)))
+  | _ => none
+
 def Effect.toSx (e : Effect R) : Sx :=
   let decl (d : Decl R) : Sx := list [str d.name, list (d.levelParams.map str), term d.type,
     (match d.value with | some v => term v | none => .a "none"), .a (toString d.inline),
     (match d.impl with | some v => term v | none => .a "none"),
     (match d.witness with | some v => term v | none => .a "none")]
   let sev : Severity → Sx | .error => .a "error" | .warning => .a "warning" | .info => .a "info"
-  let msg (m : Msg) : Sx := list [info m.info, sev m.severity, str m.text]
+  let msg (m : Msg) : Sx := list [info m.info, sev m.severity, str m.text, str m.code]
   list [list (e.decls.toList.map decl), list (e.messages.toList.map msg),
     list (e.builtins.map fun (k, n) => list [str k, str n]),
     list (e.assumed.map fun (k, n) => list [str k, str n]),
@@ -311,7 +366,7 @@ def Effect.toSx (e : Effect R) : Sx :=
     list (e.coinductives.map fun (n, obs) => list [str n, list (obs.map fun (o, b) => list [str o, .a (toString b)])]),
     list (e.foreignTypes.map fun (n, f) => list [str n, str f]),
     list (e.cCode.toList.map str),
-    list (e.hovers.toList.map fun (i, n, t) => list [info i, str n, str t]),
+    list (e.infos.toList.map infoSx),
     list (e.sites.toList.map fun (n, i, m) => list [str n, info i, str m])]
 
 def Effect.ofSx? (x : Sx) : Option (Effect R) := do
@@ -324,10 +379,10 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
            impl := ← (match im with | .a "none" => some none | v => (dterm v).map some),
            witness := ← (match w with | .a "none" => some none | v => (dterm v).map some) }
   let msg (x : Sx) : Option Msg := do
-    let #[i, sev, t] ← items? x | none
+    let #[i, sev, t, c] ← items? x | none
     let severity : Severity := match ← atom? sev with
       | "error" => .error | "warning" => .warning | _ => .info
-    pure { info := ← dinfo i, severity, text := ← atom? t }
+    pure { info := ← dinfo i, severity, text := ← atom? t, code := ← atom? c }
   let pair (x : Sx) : Option (String × String) := do
     let #[a, b] ← items? x | none
     pure (← atom? a, ← atom? b)
@@ -350,15 +405,13 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
         pure (← atom? a, (← atom? b) == "true")))
     foreignTypes := (← (← items? fts).toList.mapM pair)
     cCode := (← (← items? cc).mapM atom?)
-    hovers := (← (← items? hs).mapM fun h => do
-      let #[i, n, t] ← items? h | none
-      pure (← dinfo i, ← atom? n, ← atom? t))
+    infos := (← (← items? hs).mapM dInfo)
     sites := (← (← items? ss).mapM fun x => do
       let #[n, i, m] ← items? x | none
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
-def salt : UInt64 := hash "wiz-cache-4"
+def salt : UInt64 := hash "wiz-cache-5"
 
 /-- Elaborate `input` (like `Query.elaborate`), reading and writing `dir`. Returns the
 final state and how many commands came from the disk cache. -/
@@ -368,7 +421,8 @@ partial def elaborateCached (dir : System.FilePath) (input : String) (init : Com
   let chars := input.toList.toArray
   let mut pos := 0
   let mut s := init
-  let mut key := mixHash salt key₀
+  -- recording every term's expected type changes the effects: a different chain
+  let mut key := mixHash (if init.termInfo then mixHash salt 1 else salt) key₀
   let _ : Inhabited (CommandState R) := ⟨init⟩
   let mut hits := 0
   while skipWs chars pos < chars.size do
@@ -393,7 +447,7 @@ partial def elaborateCached (dir : System.FilePath) (input : String) (init : Com
             let msg : Msg := { info := cmd.info, severity := .error,
                                text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
             s := { inner with messages := if errs.isEmpty then s.messages else s.messages.push msg,
-                              module := s.module, hovers := s.hovers }
+                              module := s.module, infos := s.infos }
         pos := stop
         continue
       let file := dir / s!"{key}.wizc"

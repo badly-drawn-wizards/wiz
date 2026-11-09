@@ -3,6 +3,7 @@ import Tests.Eval
 import Tests.Check
 import Tests.Parser
 import Tests.Elab
+import Tests.LSP
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -12,7 +13,7 @@ open Tests
 
 def groups : List Group :=
   [Rig.group, Eval.evalGroup, Eval.convGroup, Eval.structGroup, Check.mlttGroup, Check.qttGroup, Check.structGroup,
-   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group, Elab.levelGroup, Elab.structGroup, Elab.ottGroup, Elab.qtyGroup, Elab.dataGroup, Elab.inductiveGroup, Elab.matchGroup, Elab.coinductiveGroup, Elab.sizedGroup, Elab.runGroup, Elab.macroGroup, Elab.builtinGroup, Elab.tacticGroup, Elab.classGroup, Elab.backendGroup, Elab.cGroup, Elab.llvmGroup, Elab.ffiGroup, Elab.effectsGroup, Elab.toolingGroup, Elab.stdGroup, Elab.wordGroup, Elab.selfHostGroup, Elab.languageGroup, Elab.opticGroup, Elab.derivingGroup, Elab.reuseGroup, Elab.vecGroup, Elab.trustGroup]
+   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group, Elab.levelGroup, Elab.structGroup, Elab.ottGroup, Elab.qtyGroup, Elab.dataGroup, Elab.inductiveGroup, Elab.matchGroup, Elab.coinductiveGroup, Elab.sizedGroup, Elab.runGroup, Elab.macroGroup, Elab.builtinGroup, Elab.tacticGroup, Elab.classGroup, Elab.backendGroup, Elab.cGroup, Elab.llvmGroup, Elab.ffiGroup, Elab.effectsGroup, Elab.toolingGroup, Elab.stdGroup, Elab.wordGroup, Elab.selfHostGroup, Elab.languageGroup, Elab.opticGroup, Elab.derivingGroup, Elab.reuseGroup, Elab.vecGroup, LSP.group, LSP.serverGroup, Elab.trustGroup]
 
 /-- Whether a command-line selector picks a group: `=NAME` exactly, anything else as a
 prefix of the group's name. -/
