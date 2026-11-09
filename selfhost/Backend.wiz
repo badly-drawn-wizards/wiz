@@ -968,9 +968,28 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
           | _ => match rcE re st3 names d u s with
             | .mk sc sa sl st4 => .mk (sc ⧺ .t ("uint32_t " +++ k +++ " = tagof(") ⧺ sa ⧺ .t "); dec(" ⧺ sa ⧺
                 .t ("); V " +++ r +++ "; switch (" +++ k +++ ") { ") ⧺ body) (.t r) sl st4
-  | .prim op as => match rcEs re st names d live as with
-    | .mk ac atoms al st1 => bindTo st1 ac (.t ("p_" +++ mangle op +++ "(") ⧺ joinDocs atoms ⧺ .t ")") al
-  | .lam b0 =>
+  | .prim op as =>
+    -- a suspended `let` (`memo (λ _. v)`, see `lazyLets`): one object, the lifted
+    -- function's captured variables and then its value
+    match strEq op "memo" with
+    | .true => match as with
+      | .cons f rest => match rest with
+        | .nil => match f with
+          | .lam fb => match lamsOf fb with
+            | .zero => rcLam re st names d live f .true
+            | .succ _ => rcPrim re st names d live op as
+          | _ => rcPrim re st names d live op as
+        | .cons _ _ => rcPrim re st names d live op as
+      | .nil => rcPrim re st names d live op as
+    | .false => rcPrim re st names d live op as
+  | .lam _ => rcLam re st names d live t .false
+def rcPrim (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (op : String) (as : ETms) : RR :=
+  match rcEs re st names d live as with
+  | .mk ac atoms al st1 => bindTo st1 ac (.t ("p_" +++ mangle op +++ "(") ⧺ joinDocs atoms ⧺ .t ")") al
+-- a chain of `λ`s, lifted (as in `cgE`): a function closure, or with `thunk` a
+-- suspension (`mkthunk`: a closure computing its value once, then releasing what it
+-- captured)
+def rcLam (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t : ETm) (thunk : Bool) : RR :=
     -- a chain of `k` `λ`s, lifted as in `cgE`; the function owns its captured
     -- variables and arguments (`dec`ing those it doesn't use)
     let k := lamsOf t;
@@ -986,10 +1005,15 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
         let st3 := CG.emit st2 (.t ("static V " +++ fname +++ "(V *a) { ") ⧺ entryDrops inner d2 bl (List.append (rangeL 0 k) (addK k caps)) ⧺
           bc ⧺ .t "return " ⧺ ba ⧺ .t "; }");
         match capUses (RE.bor re) names d live caps with
-        | .mk cc cl => match caps with
-          | .nil => bindTo st3 cc (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString k +++ ", 0, NULL)")) cl
-          | .cons _ _ => bindTo st3 cc (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString (nc + k) +++ ", " +++ Nat.toString nc +++
-              ", (V[]){" +++ joinC (capsCode names caps) +++ "})")) cl
+        | .mk cc cl => match thunk with
+          | .true => match caps with
+            | .nil => bindTo st3 cc (.t ("mkthunk(" +++ fname +++ ", 0, NULL)")) cl
+            | .cons _ _ => bindTo st3 cc (.t ("mkthunk(" +++ fname +++ ", " +++ Nat.toString nc +++
+                ", (V[]){" +++ joinC (capsCode names caps) +++ "})")) cl
+          | .false => match caps with
+            | .nil => bindTo st3 cc (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString k +++ ", 0, NULL)")) cl
+            | .cons _ _ => bindTo st3 cc (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString (nc + k) +++ ", " +++ Nat.toString nc +++
+                ", (V[]){" +++ joinC (capsCode names caps) +++ "})")) cl
 -- a saturated call of `d_g`, then the rest applied: a variable in a borrowed position
 -- is lent (kept alive across the call, released after it if that was its last use),
 -- any other argument there is a temporary released after the call
