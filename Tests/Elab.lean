@@ -2676,8 +2676,10 @@ def derivingGroup : Group where
 def okInfoview (input : String) (infos : List String := []) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let json ← IO.FS.readFile "lib/Json.wiz"
+  let iv ← IO.FS.readFile "lib/Infoview.wiz"
   let loader : Name → Option String := fun m =>
-    if m == "Prelude" then some prelude else if m == "Json" then some json else none
+    if m == "Prelude" then some prelude else if m == "Json" then some json
+    else if m == "Infoview" then some iv else none
   let s := runFrontend (R := ZeroOneMany) input { loader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
@@ -2689,10 +2691,20 @@ def parsed (s : String) : String := match Json.parse s with
   | .error e => e
 "#
 
+/-- Goals built by hand (`A : Type`, `f : Nat → Nat → Nat → Nat` ⊢ `Nat → A`). -/
+def goalPrelude : String := r#"import Infoview
+def nat (r : Nat) : TT := .tag r "const" "Nat" (.text "Nat")
+def arrow (r : Nat) (a b : TT) : TT := .tag r "pi" "" (.append (.cons a (.cons (.text " → ") (.cons b .nil))))
+def hA : Hyp := .mk (.cons "A" .nil) (.tag 1 "sort" "" (.text "Type")) .none
+def hf : Hyp := .mk (.cons "f" .nil) (arrow 2 (nat 3) (arrow 4 (nat 5) (arrow 6 (nat 7) (nat 8)))) .none
+def g : Goal := .mk "" (.cons hA (.cons hf .nil)) (arrow 9 (nat 10) (.tag 11 "var" "A" (.text "A")))
+def v : View := View.ofState 80 (.some (.cons g .nil)) .none
+def esc (s : String) : List Char := .cons (Char.mk 27) (String.chars s)
+"#
 
 def infoviewGroup : Group where
   name := "infoview"
-  exercise := "lib/Json.wiz (stage 11h)"
+  exercise := "lib/Json.wiz, lib/Infoview.wiz (stages 11h, 11k)"
   cases := [
     { name := "JSON: printing escapes quotes, newlines; integers keep their sign", run := fun _ =>
         okInfoview (jsonPrelude ++ r#"#eval Json.render (Json.mkArr (.cons (.int .true 42) (.cons (.str "a\"b\nλ") (.cons .null .nil))))"#)
@@ -2716,7 +2728,36 @@ def infoviewGroup : Group where
   | .error _ => .none
 #eval path "{\"x\": {\"y\": 7}}"
 #eval Nat.repr 1234567890123"#)
-          [".some (.int .false 7)", r#""1234567890123""#] }
+          [".some (.int .false 7)", r#""1234567890123""#] },
+    { name := "tagged text from JSON (the protocol's shape)", run := fun _ =>
+        okInfoview (goalPrelude ++ r#"#eval match Json.parse "{\"tag\": [{\"ref\": 4, \"kind\": \"const\", \"name\": \"Nat\"}, {\"append\": [{\"text\": \"N\"}, {\"text\": \"at\"}]}]}" with
+  | .ok j => TT.toString (TT.ofJson j)
+  | .error e => e"#) [r#""Nat""#] },
+    { name := "goals laid out, and wrapped with a hanging indent", run := fun _ =>
+        okInfoview (goalPrelude ++ "#eval Infoview.plainLines (View.lines v)\n" ++
+          "#eval Infoview.plainLines (View.lines (View.ofState 16 (.some (.cons g .nil)) (.some (.mk \"\" .nil (nat 12)))))")
+          [r#".cons "Tactic state" (.cons "A : Type" (.cons "f : Nat → Nat → Nat → Nat" (.cons "⊢ Nat → A" .nil)))"#,
+           r#".cons "Tactic state" (.cons "A : Type" (.cons "f : Nat → Nat →" (.cons "    Nat → Nat" (.cons "⊢ Nat → A" (.cons "" (.cons "Expected type" (.cons "⊢ Nat" .nil)))))))"#] },
+    { name := "terminal lines: SGR colours by kind, the selection in reverse video", run := fun _ =>
+        okInfoview (goalPrelude ++ "#eval Infoview.ansiLines 3 (View.lines (View.ofState 80 (.some .nil) (.some (.mk \"h\" .nil (arrow 1 (nat 2) (nat 3))))))")
+          [r#".cons "\x1b[0;1;4mTactic state\x1b[0m" (.cons "\x1b[0;1;32mNo goals\x1b[0m" (.cons "\x1b[0m" (.cons "\x1b[0;1;4mExpected type\x1b[0m" (.cons "\x1b[0;1;4mcase h\x1b[0m" (.cons "\x1b[0;1;35m⊢\x1b[0m \x1b[0;34mNat\x1b[0m \x1b[0m→\x1b[0m \x1b[0;34;7mNat\x1b[0m" .nil)))))"#] },
+    { name := "HTML: data-ref and data-idx on every subterm, text escaped", run := fun _ =>
+        okInfoview (goalPrelude ++ "#eval Infoview.htmlState 2 .none (.some (.mk \"\" (.cons (.mk (.cons \"x\" .nil) (nat 1) .none) .nil) (.tag 2 \"var\" \"x<y\" (.text \"a&b\"))))")
+          [r#""<h3>Expected type</h3><div class=\"goal\"><div class=\"hyp\"><span class=\"names\">x</span> : <span class=\"tt k-const\" data-ref=\"1\" data-idx=\"0\" title=\"Nat\">Nat</span></div><div class=\"target\"><span class=\"turnstile\">⊢</span> <span class=\"tt k-var sel\" data-ref=\"2\" data-idx=\"1\" title=\"x&lt;y\">a&amp;b</span></div></div>""#] },
+    { name := "navigation: out, into, previous (wrapping), out at the top", run := fun _ =>
+        okInfoview (goalPrelude ++ "#eval View.navigate v 4 .out\n#eval View.navigate v 2 .into\n#eval View.navigate v 0 .prev\n#eval View.navigate v 1 .out")
+          ["2", "3", "11", "1"] },
+    { name := "framing: Content-Length counts UTF-8 bytes; a partial message waits", run := fun _ =>
+        okInfoview (goalPrelude ++ r#"#eval Rpc.frame "{\"a\":\"λ\"}"
+#eval Rpc.unframe (String.chars (String.append (Rpc.frame "{\"a\":\"λ\"}") "Content-Le"))
+#eval Rpc.unframe (String.chars (String.append "Content-Length: 12" (String.mk (.cons (Char.mk 13) (.cons (Char.mk 10) (.cons (Char.mk 13) (.cons (Char.mk 10) (String.chars "{\"a\":\"λ\"}"))))))))"#)
+          [r#""Content-Length: 10\x0d\n\x0d\n{\"a\":\"λ\"}""#,
+           r#".some ("{\"a\":\"λ\"}", .cons (.mk 67) (.cons (.mk 111) (.cons (.mk 110) (.cons (.mk 116) (.cons (.mk 101) (.cons (.mk 110) (.cons (.mk 116) (.cons (.mk 45) (.cons (.mk 76) (.cons (.mk 101) .nil))))))))))"#,
+           ".none"] },
+    { name := "keys: arrows, SGR mouse reports, page keys; terminal widths", run := fun _ =>
+        okInfoview (goalPrelude ++ "#eval Key.decode (List.append (esc \"[A\") (List.append (String.chars \"\\tq\") (List.append (esc \"[<0;5;3M\") (esc \"[6~\"))))\n" ++
+          "#eval Infoview.width (String.chars \"aλ😀́b\")")
+          [".cons .up (.cons (.char 9) (.cons (.char 113) (.cons (.mouse 0 5 3 .true) (.cons .pageDown .nil))))", "5"] }
   ]
 
 end Tests.Elab
