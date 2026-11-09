@@ -303,11 +303,16 @@ def lvlNorm : Lvl → LNF
   | .lparam n => .ncons (.aparam n) 0 .nnil
   | .lsucc l => nfCleanup (nfShift (lvlNorm l))
   | .lmax a b => nfCleanup (nfMerge (lvlNorm a) (lvlNorm b))
-  | .limax a b => match nfNonZero (lvlNorm b) with
-    | .true => nfCleanup (nfMerge (lvlNorm a) (lvlNorm b))
-    | .false => match nfEq (lvlNorm b) nfZero with
+  -- (`b`'s normal form once: a chain of `imax`es, along a telescope, would be normalised
+  -- exponentially often)
+  | .limax a b =>
+    let na := lvlNorm a;
+    let nb := lvlNorm b;
+    match nfNonZero nb with
+    | .true => nfCleanup (nfMerge na nb)
+    | .false => match nfEq nb nfZero with
       | .true => nfZero
-      | .false => .ncons (.aimax (lvlNorm a) (lvlNorm b)) 0 .nnil
+      | .false => .ncons (.aimax na nb) 0 .nnil
   --|ex
   --| | _ => nfZero
   --sol>
