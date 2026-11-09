@@ -553,7 +553,8 @@ def levels (l l' : Nat) : Val := match Nat.beq l l' with
 def same (l l' : Nat) (yes no : Val) : Val := match Nat.beq l l' with
   | .true => yes
   | .false => no
--- a type former (so different ones are never equal)
+-- a type former (so different ones are never equal); `Size` and `Size< s` are not
+-- (as in `Eval.lean`): an equation between them stays stuck
 def canonical : Val → Bool
   | .vpi _ _ _ _ _ => .true
   | .vsigma _ _ _ _ _ => .true
@@ -564,8 +565,6 @@ def canonical : Val → Bool
   | .vdesc _ _ => .true
   | .vmu _ _ _ _ _ => .true
   | .vnu _ _ _ _ _ => .true
-  | .vsize => .true
-  | .vsizeLt _ => .true
   | _ => .false
 
 -- syntactic equality of terms
