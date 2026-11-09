@@ -53,7 +53,7 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   -- the cache doesn't know the experimental options
   let cache := if regularity == .full && !predicativeProp then tc.cacheDir else none
   match cache with
-  | none => pure (runFrontend input init)
+  | none => Cache.elaborateUncached input init
   | some dir =>
     -- the key starts from the headers the file sees; modules enter it by their own keys
     let key₀ := hash (toString (headers.toList.map (·.2)))

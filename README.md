@@ -1977,7 +1977,9 @@ and a module is elaborated **in isolation**, from the empty state plus its own i
 so what it elaborates to depends only on its key. An importer's chain of command keys
 mixes in `key(M)` at the `import`. Editing a module now invalidates it and what imports
 it, not the whole library, and a module imported by many files is cached once. A module
-that uses a name it doesn't import is an error (with the cache on). Cache files are
+that uses a name it doesn't import is an error, with the cache or without (`--no-cache`
+keeps the effects in memory for the run; `runFrontend`, which the tests and the language
+server use, still elaborates a module in its importer's state). Cache files are
 written to a temporary name and renamed, so concurrent runs never see half a file.
 
 ### 22d: grail v0 ✅
@@ -2009,7 +2011,8 @@ The key also covers the grail binary itself, so a new elaborator rebuilds everyt
 
 There are no environment variables: the C compiler and its flags come from flags
 (`--cc`, `--cflags`, `--ldflags`, `--llc`, `-I DIR`, `--cache DIR`, `--no-cache`) or from
-an uncommitted `grail.local.wiz` with this machine's paths:
+an uncommitted `grail.local.wiz` with this machine's paths (`nix develop` writes it from
+`flake.nix`):
 
 ```
 import Grail

@@ -457,13 +457,41 @@ inductive Mode where
   (their effect could depend on what the importer imported before) -/
   | replay
 
-/-- Elaborate `input` (like `Query.elaborate`), reading and writing `dir`. Returns the
-final state and how many commands came from the disk cache. `key₀` identifies what the
+/-- Where command effects are kept: a directory (the shared cache), or memory (for one
+run without the cache: modules are still elaborated in isolation, so the cache on or off
+gives the same results). -/
+structure Store (R : Type) where
+  get : UInt64 → IO (Option (Effect R))
+  put : UInt64 → Effect R → IO Unit
+  /-- has module `k` been elaborated in isolation? -/
+  seen : UInt64 → IO Bool
+  markSeen : UInt64 → Name → IO Unit
+
+def Store.disk (dir : System.FilePath) : IO (Store R) := do
+  IO.FS.createDirAll dir
+  pure {
+    get := fun k => do
+      let file := dir / s!"{k}.wizc"
+      if ← file.pathExists then pure ((Sx.parse (← IO.FS.readFile file)).bind Effect.ofSx?) else pure none
+    put := fun k e => writeAtomic (dir / s!"{k}.wizc") e.toSx.render
+    seen := fun k => (dir / s!"{k}.wizm").pathExists
+    markSeen := fun k m => writeAtomic (dir / s!"{k}.wizm") m }
+
+def Store.memory : IO (Store R) := do
+  let effects ← IO.mkRef ({} : Std.HashMap UInt64 (Effect R))
+  let seen ← IO.mkRef ({} : Std.HashSet UInt64)
+  pure {
+    get := fun k => return (← effects.get)[k]?
+    put := fun k e => effects.modify (·.insert k e)
+    seen := fun k => return (← seen.get).contains k
+    markSeen := fun k _ => seen.modify (·.insert k) }
+
+/-- Elaborate `input` (like `Query.elaborate`), reading and writing `store`. Returns the
+final state and how many commands came from the store. `key₀` identifies what the
 file can see besides its imports (for example its C headers); `toolchain` is mixed into
 every module's key. -/
-partial def elaborateCached (dir : System.FilePath) (input : String) (init : CommandState R) (key₀ : UInt64)
+partial def elaborateWith (store : Store R) (input : String) (init : CommandState R) (key₀ : UInt64)
     (toolchain : UInt64 := 0) : IO (CommandState R × Nat) := do
-  IO.FS.createDirAll dir
   let keys ← IO.mkRef ({} : Std.HashMap Name UInt64)
   -- recording every term's expected type changes the effects: a different chain
   let salt' := if init.termInfo then mixHash salt 1 else salt
@@ -480,10 +508,9 @@ where
   importModule (keys : IO.Ref (Std.HashMap Name UInt64)) (base : CommandState R) (stack : List Name)
       (s : CommandState R) (m : Name) (src : String) : IO (CommandState R × Nat) := do
     let k ← keyOf keys m
-    let marker := dir / s!"{k}.wizm"
-    let fresh ← if ← marker.pathExists then pure none else do
+    let fresh ← if ← store.seen k then pure none else do
       let (_, h) ← go keys base (m :: stack) src { base with imported := [m], messages := #[], module := m } k .write
-      writeAtomic marker m
+      store.markSeen k m
       pure (some h)
     let (s', h) ← go keys base (m :: stack) src { s with imported := m :: s.imported, messages := #[], module := m } k .replay
     -- after a fresh isolated run, the hits are that run's (the replay reads what it wrote)
@@ -524,11 +551,8 @@ where
                                 module := s.module, infos := s.infos }
           pos := stop
           continue
-        let file := dir / s!"{key}.wizc"
         let cached : Option (Effect R) ←
-          if cacheable.contains cmd.kind && (← file.pathExists) then
-            pure ((Sx.parse (← IO.FS.readFile file)).bind Effect.ofSx?)
-          else pure none
+          if cacheable.contains cmd.kind then store.get key else pure none
         match cached with
         | some e =>
           s := e.apply s
@@ -536,9 +560,18 @@ where
         | none =>
           let s' := Query.elaborate.elabOne input chars pos stop s
           if cacheable.contains cmd.kind && mode matches .write then
-            writeAtomic file (effectOf s s').toSx.render
+            store.put key (effectOf s s')
           s := s'
         pos := stop
     pure (s, hits)
+
+/-- `elaborateWith`, through the cache directory `dir`. -/
+def elaborateCached (dir : System.FilePath) (input : String) (init : CommandState R) (key₀ : UInt64)
+    (toolchain : UInt64 := 0) : IO (CommandState R × Nat) := do
+  elaborateWith (← Store.disk dir) input init key₀ toolchain
+
+/-- `elaborateWith`, without a cache: modules are elaborated in isolation all the same. -/
+def elaborateUncached (input : String) (init : CommandState R) (toolchain : UInt64 := 0) : IO (CommandState R) := do
+  pure (← elaborateWith (← Store.memory) input init 0 toolchain).1
 
 end Wiz.Cache

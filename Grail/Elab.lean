@@ -46,7 +46,7 @@ def load (tc : Toolchain) (roots : List System.FilePath) (salt : UInt64) (src : 
 /-- Elaborate a loaded file (through the cache when there is one). -/
 def elaborate (tc : Toolchain) (salt : UInt64) (l : Loaded) : IO (CommandState ZeroOneMany) := do
   match tc.cacheDir with
-  | none => pure (runFrontend l.src l.init)
+  | none => Cache.elaborateUncached l.src l.init salt
   | some dir => pure (← Cache.elaborateCached dir l.src l.init l.key salt).1
 
 /-- The messages of a state, rendered `path:line:col: severity: text`. -/

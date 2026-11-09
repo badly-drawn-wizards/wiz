@@ -97,6 +97,15 @@ def modulesGroup : Group where
         let (s, _) ← Cache.elaborateCached cache "import Prelude\nimport Sneaky\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany) 0
         check (s.messages.any fun m => (m.text.splitOn "module Sneaky has errors").length > 1)
           s!"Sneaky used Nat without importing Prelude: {s.messages.toList.map (·.text)}" },
+    { name := "without the cache too", run := fun _ => do
+        let dir ← mkTree [("Sneaky.wiz", "def three : Nat := 3\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let s ← Cache.elaborateUncached "import Prelude\nimport Sneaky\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany)
+        check (s.messages.any fun m => (m.text.splitOn "module Sneaky has errors").length > 1)
+          s!"Sneaky used Nat without importing Prelude: {s.messages.toList.map (·.text)}"
+        let ms ← Module.loadAll ["lib"]
+        let s ← Cache.elaborateUncached "import Std\ndef n : Nat := 2 + 2\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany)
+        check s.messages.isEmpty s!"messages: {s.messages.toList.map (·.text)}" },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
         let ms ← Module.loadAll [dir]
