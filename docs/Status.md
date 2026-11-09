@@ -362,10 +362,24 @@ that checks everything. Wiz's situation:
   checked by both kernels, must get the same verdict (the printed type or `error`).
   It compares *verdicts*; it cannot find a bug both kernels share, and its generator does
   not reach every former (it missed O1).
-* **What the kernel does not check** (CoreSpec §16): axioms (including C imports),
-  partial definitions' inhabitedness (O2), `builtin` registrations (O3), the templates
-  and the kernel's own generated types, the size of `μ`/`ν` (K3), and everything after
-  type checking (erasure, the backends).
+* **What the kernel does not check** (CoreSpec §16): axioms (including C imports;
+  `#print axioms d` lists those `d` depends on), the `builtin` registrations of the
+  toolchain's library (below; a registration anywhere else is an axiom, reported by
+  `#print axioms`), the templates and the kernel's own generated types, the size of
+  `μ`/`ν` (K3), and everything after type checking (erasure, the backends). Partial
+  definitions are no longer trusted: each comes with a witness the kernel checks.
+* **Trusted registrations** (`lib/Prelude.wiz`, reviewed once against the native
+  operations `natNative?` in `Eval.lean`, which follow Lean's `Nat`): `nat := Nat`,
+  `nat.zero := Nat.zero`, `nat.succ := Nat.succ` (numerals); `nat.pred := Nat.pred`
+  (`0 ↦ 0`), `nat.add := Nat.add`, `nat.sub := Nat.sub` (truncated: `subFrom m n` is
+  `pred` applied `m` times), `nat.mul := Nat.mul`, `nat.div := Nat.div` (`divGo` with
+  fuel `n`, enough since `n / m ≤ n`; `n / 0 = 0`), `nat.mod := Nat.mod`
+  (`n - m * (n / m)`, so `n % 0 = n`), `nat.pow := Nat.pow`, `nat.land`, `nat.lor`,
+  `nat.xor` (`Nat.bitwise` with fuel `a + b`, at least the number of bits),
+  `nat.shiftLeft` (`a * 2^n`), `nat.shiftRight` (`a / 2^n`), `nat.log2` (`log2Go` with
+  fuel `n`; `log2 0 = 0`). The kernel computes only these natively; `nat.beq :=
+  Nat.beq`, `nat.blt := Nat.lt`, `memo := memo` (`memo f = f` to the kernel) and
+  `string := String` affect only the runtime representation and literals.
 * **Termination** of the kernel is not proved and is known to fail (D1); all evaluation
   functions are `partial` in Lean.
 
