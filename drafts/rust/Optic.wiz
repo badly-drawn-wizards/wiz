@@ -1,0 +1,90 @@
+import Optic
+-- The part of the optics library (RD11) that does not check today. The part that does is
+-- lib/Optic.wiz. Each gap is marked `-- wishful: <slug>` and described in
+-- /workspace/wiz-notes/wishful/<slug>.md.
+
+-- ## 1. Laws with ∃ and ∧ (the statement in borrows-as-optics.md §3.1)
+--
+-- lib/Optic.wiz states partial-lens laws with `Result.All`/`Result.Holds` and Σ types,
+-- because Wiz has no `∃`/`∧`/`¬` yet. The intended statement, which a `progress`-style
+-- tactic would use as rewrite rules:
+
+structure PLens.Lawful' {S A : Type} (f : PLens S A) : Prop where   -- wishful: prop-connectives
+  getPut : ∀ s a k, f s = .ok (a, k) → k a = s
+  putGet : ∀ s a k a', f s = .ok (a, k) → ∃ k', f (k a') = .ok (a', k')                -- wishful: prop-connectives
+  putPut : ∀ s a k a' a'' k', f s = .ok (a, k) → f (k a') = .ok (a', k') → k' a'' = k a''
+
+-- independence of two indices of a vector (`split_at_mut`, `v.swap i j`)
+def List.atL_indep {A : Type} (i j : Nat) (h : ¬ (i = j)) : PIndep (List.atL i) (List.atL j) :=   -- wishful: prop-connectives
+  by induction i generalizing j <;> cases j <;> simp_all                                    -- wishful: prop-connectives
+
+-- ## 2. The rest of `Lens.pair`'s laws
+--
+-- lib/Optic.wiz proves `Lens.pair_getPut`. PutGet below is the proof that should check:
+-- the goal `(x, y) = ab` (stuck: `ab` is a variable) must be compared with the computed
+-- form `(x = ab.1) × (y = ab.2)` of the proof's type, which the elaborator's unifier
+-- doesn't do (it reports a rigid mismatch).
+
+def Lens.pair_putGet {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m)
+    (hi : Lens.Indep l m) : Lens.PutGet (Lens.pair l m) := fun s ab =>
+  ((Optic.trans (hi.2.1 ((l s).2 ab.1) ab.2) (hl.2.1 s ab.1),     -- wishful: unify-computed-equations
+    hm.2.1 ((l s).2 ab.1) ab.2))
+def Lens.pair_putPut {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m)
+    (hi : Lens.Indep l m) : Lens.PutPut (Lens.pair l m) := fun s ab cd =>
+  by rw [hi.2.2, hl.2.2, hm.2.2]                                  -- wishful: unify-computed-equations
+
+-- ## 3. `final(r)` specs (RD11: prophecy notation, desugared over the backward function)
+--
+-- `final(x)` in an `ensures` clause is the value of `x` when its borrow ends. For the
+-- result `r : Mut ρ A S` of a function with lender `v`, `final(r)` is a fresh universally
+-- quantified `fin : A`, and `final(v)` is `r.2 fin`. So
+--
+--   fn get_mut {'a} (v : &'a mut Vec U64) (i : USize) : &'a mut U64
+--     ensures *result = old(v)[i]
+--     ensures final(v) = old(v).set i final(result)
+--
+-- generates (and drafts/rust/lowered/03_get_mut.wiz checks, written by hand):
+--
+--   def get_mut.spec (v : Vec U64) (i : U64) : Prop :=
+--     Result.All (fun r => (Vec.index v i = .ok r.1) × ((fin : U64) → (r.2 fin).items = …)) (get_mut v i)
+--
+-- The library form of the desugaring, once spec clauses exist:
+def Store.Ensures {A S : Type} (st : Store A S) (P : A → A → S → Prop) : Prop :=
+  (fin : A) → P st.1 fin (st.2 fin)
+syntax "final" "(" ident ")" : term                                -- wishful: final-specs
+-- `ensures e` where `e` mentions `final(r)`/`final(v)` ↦ `Store.Ensures r (fun cur fin v' => e[…])`
+
+-- ## 4. Refined backward functions (dependent lenses, §1.4 / §3.4 of the note)
+--
+-- A borrow into a structure with an invariant must give back a value that
+-- re-establishes it: the backward function takes a quantity-0 proof. This checks today
+-- as a type; what is missing is the front end asking for the proof at the end of the
+-- borrow (a proof obligation at the `}` where the borrow dies).
+def RStore (A S : Type) (Inv : A → Prop) : Type := A × ((a : A) → (0 _ : Inv a) → S)
+fn push_sorted (v : &mut SortedVec U64) (x : U64) : Unit := {     -- wishful: command-proc-macros
+  let items := &mut v.items;                                       -- borrow with an invariant
+  items.insert (position items x) x
+} -- obligation here: sorted items                                 -- wishful: spec-clauses
+
+-- ## 5. Traversals: the FunList spec of `iter_mut`
+--
+-- `traverseM` (lib/Optic.wiz) is the run-time form. Its spec form is a polynomial lens:
+-- the shape goes forward, the same number of elements come back.
+def FunList (A S : Type) : Type := (n : Nat) × Vec A n × (Vec A n → S)
+def TraverseMut.spec {S A : Type} [TraverseMut S A] (s : S) : FunList A S := …           -- wishful: implemented-by
+
+-- ## 6. Generated optics
+--
+-- For each `struct`/`enum` the front end emits field lenses, their laws and the
+-- independence of distinct fields (lowered/07_disjoint.wiz has them by hand). As a
+-- command macro over the reflected structure (agent/deriving's IndView):
+deriving instance Lenses for Stats                                   -- wishful: command-proc-macros
+-- ↦ Stats.hitsL, Stats.missesL, Stats.hitsL_lawful, …, Stats.hits_misses_indep
+
+-- ## 7. In place without inlining: constructor contexts
+--
+-- `Store.comp` builds one closure per reborrow. A first-class constructor context
+-- (Koka's `ctx`, a cell with a hole filled in O(1)) would make the backward function of
+-- a field borrow reuse the cell without inlining. A backend feature; noted here because
+-- it changes nothing in the library's types:
+def Tree.leftCtx (key : U64) (right : Tree) : Ctx Tree Tree := ctx Tree.node key _ right   -- wishful: constructor-contexts
