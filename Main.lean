@@ -21,39 +21,33 @@ def parseCmd (path : String) : IO UInt32 := do
     IO.eprintln s!"{path}:{m.render input}"
   pure (if r.messages.isEmpty then 0 else 1)
 
-/-- Read every `lib/*.wiz` (and `$WIZ_PATH/*.wiz`) up front: the frontend is pure. -/
-def loadLibrary : IO (Std.HashMap Name String) := do
-  let dirs := ["lib"] ++ ((← IO.getEnv "WIZ_PATH").map ([·])).getD []
-  let mut m : Std.HashMap Name String := {}
-  for d in dirs do
-    if ← System.FilePath.isDir d then
-      for e in ← System.FilePath.readDir d do
-        if e.path.extension == some "wiz" then
-          m := m.insert (e.path.fileStem.getD "") (← IO.FS.readFile e.path)
-  pure m
+/-- The module roots: `lib/` (the standard library), then `$WIZ_PATH`. -/
+def moduleRoots : IO (List System.FilePath) := do
+  pure (([System.FilePath.mk "lib"] : List System.FilePath) ++ ((← IO.getEnv "WIZ_PATH").map ([System.FilePath.mk ·])).getD [])
+
+/-- Read every module the file can reach (`import A.B` is `A/B.wiz` under a root) up
+front: the frontend is pure. -/
+def loadLibrary (input : String) : IO (Std.HashMap Name String) := do
+  pure ((← Module.loadClosure (← moduleRoots) input).fold (fun m n (_, src) => m.insert n src) {})
 
 /-- Library modules with their paths (for the language server's go-to-definition). -/
 def loadLibraryPaths : IO (Std.HashMap String (String × String)) := do
-  let dirs := ["lib"] ++ ((← IO.getEnv "WIZ_PATH").map ([·])).getD []
   let mut m : Std.HashMap String (String × String) := {}
-  for d in dirs do
-    if ← System.FilePath.isDir d then
-      for e in ← System.FilePath.readDir d do
-        if e.path.extension == some "wiz" then
-          let abs ← IO.FS.realPath e.path
-          m := m.insert (e.path.fileStem.getD "") (abs.toString, ← IO.FS.readFile e.path)
+  for (n, p, src) in (← Module.loadAll (← moduleRoots)).toList do
+    m := m.insert n ((← IO.FS.realPath p).toString, src)
   pure m
 
 /-- Elaborate a file, through the cache in `cache` (none: no cache). -/
 def elaborate (cache : Option String) (input : String) : IO (CommandState ZeroOneMany) := do
-  let lib ← loadLibrary
-  let headers ← Build.preprocessHeaders input
+  let lib ← loadLibrary input
+  -- the C headers of the file and of the modules it imports
+  let headers ← Build.preprocessHeaders (String.join (input :: lib.values))
   let init : CommandState ZeroOneMany := { loader := (lib[·]?), cHeaders := (headers[·]?) }
   match cache with
   | none => pure (runFrontend input init)
   | some dir =>
-    -- the key starts from the libraries and headers the file can see
-    let key₀ := hash (toString (lib.toList.map (·.2)) ++ toString (headers.toList.map (·.2)))
+    -- the key starts from the headers the file sees; modules enter it by their own keys
+    let key₀ := hash (toString (headers.toList.map (·.2)))
     pure (← Cache.elaborateCached dir input init key₀).1
 
 def checkCmd (cache : Option String) (path : String) : IO UInt32 := do

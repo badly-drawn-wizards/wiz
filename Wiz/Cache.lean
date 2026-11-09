@@ -1,4 +1,5 @@
 import Wiz.Query
+import Wiz.Module
 
 /-!
 # The shared cache
@@ -348,59 +349,138 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
-def salt : UInt64 := hash "wiz-cache-3"
+def salt : UInt64 := hash "wiz-cache-4"
+
+/-! ## Keys and atomic writes (stage 22c)
+
+A **module's key** is computed from text alone, before anything is elaborated:
+
+    key(M) = hash(salt, toolchain, text of M, the C headers M imports, key(N) for M's imports N)
+
+so editing one module invalidates it and the modules that (transitively) import it, and
+nothing else. A module is elaborated **in isolation** (from the empty state plus its own
+imports), so what it elaborates to depends only on its key; the commands of `M` chain
+from `key(M)`, and an importer's chain mixes in `key(M)` at the `import`. -/
+
+/-- Write a file atomically: to a temporary name next to it, then rename (another
+process sees the old file, or the whole new one). -/
+def writeAtomic (file : System.FilePath) (content : String) : IO Unit := do
+  let tmp := file.toString ++ s!".tmp{← IO.Process.getPID}-{← IO.monoNanosNow}"
+  IO.FS.writeFile tmp content
+  IO.FS.rename tmp file
+
+/-- The key of every module reachable from `ms` (see above). `headers` gives the
+preprocessed text of a C header. Import cycles get key 0 on the back edge (the frontend
+reports them). -/
+partial def moduleKeys (loader : Name → Option String) (headers : String → Option String) (toolchain : UInt64)
+    (ms : List Name) (memo : Std.HashMap Name UInt64 := {}) : Std.HashMap Name UInt64 :=
+  ms.foldl (fun memo m => (go [] m memo).2) memo
+where
+  go (stack : List Name) (m : Name) (memo : Std.HashMap Name UInt64) : UInt64 × Std.HashMap Name UInt64 :=
+    match memo.get? m with
+    | some k => (k, memo)
+    | none =>
+      if stack.contains m then (0, memo) else
+      match loader m with
+      | none => (0, memo)
+      | some src =>
+        let k₀ := mixHash (mixHash salt toolchain) (hash src)
+        let k₀ := (Module.headersOf src).foldl (fun k h => mixHash k (hash ((headers h).getD ""))) k₀
+        let (k, memo) := (Module.importsOf src).foldl (fun (k, memo) n =>
+          let (kn, memo) := go (m :: stack) n memo
+          (mixHash k kn, memo)) (k₀, memo)
+        (k, memo.insert m k)
+
+/-- The key of one module. -/
+def moduleKey (loader : Name → Option String) (headers : String → Option String) (toolchain : UInt64) (m : Name) : UInt64 :=
+  ((moduleKeys loader headers toolchain [m]).get? m).getD 0
+
+/-- How a file's commands are being elaborated. -/
+inductive Mode where
+  /-- the main file, or a module in isolation: misses are elaborated and written -/
+  | write
+  /-- a module replayed into an importer's state: misses are elaborated, not written
+  (their effect could depend on what the importer imported before) -/
+  | replay
 
 /-- Elaborate `input` (like `Query.elaborate`), reading and writing `dir`. Returns the
-final state and how many commands came from the disk cache. -/
-partial def elaborateCached (dir : System.FilePath) (input : String) (init : CommandState R) (key₀ : UInt64) :
-    IO (CommandState R × Nat) := do
+final state and how many commands came from the disk cache. `key₀` identifies what the
+file can see besides its imports (for example its C headers); `toolchain` is mixed into
+every module's key. -/
+partial def elaborateCached (dir : System.FilePath) (input : String) (init : CommandState R) (key₀ : UInt64)
+    (toolchain : UInt64 := 0) : IO (CommandState R × Nat) := do
   IO.FS.createDirAll dir
-  let chars := input.toList.toArray
-  let mut pos := 0
-  let mut s := init
-  let mut key := mixHash salt key₀
-  let _ : Inhabited (CommandState R) := ⟨init⟩
-  let mut hits := 0
-  while skipWs chars pos < chars.size do
-    match parseCommand chars s.tables pos with
-    | .error _ =>
-      -- report the parse error (and everything after it) without the cache
-      s := runFrontend.go input chars pos s
-      break
-    | .ok (cmd, stop) =>
-      let text := String.ofList (chars.extract pos stop).toList
-      key := mixHash key (hash text)
-      if cmd.isOfKind "command.import" then
-        -- a module: elaborate it through the cache too (its keys continue this chain)
-        let m := ((cmd.getArg 1).getId?).getD "_"
-        if !s.imported.contains m then
-          match s.loader m with
-          | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}" } }
-          | some src =>
-            let (inner, h) ← elaborateCached dir src { s with imported := m :: s.imported, messages := #[], module := m } key
-            hits := hits + h
-            let errs := inner.messages.filter (·.severity == .error)
-            let msg : Msg := { info := cmd.info, severity := .error,
-                               text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
-            s := { inner with messages := if errs.isEmpty then s.messages else s.messages.push msg,
-                              module := s.module, hovers := s.hovers }
+  let keys ← IO.mkRef ({} : Std.HashMap Name UInt64)
+  go keys init [] input init (mixHash salt (mixHash toolchain key₀)) .write
+where
+  keyOf (keys : IO.Ref (Std.HashMap Name UInt64)) (m : Name) : IO UInt64 := do
+    let memo := moduleKeys init.loader init.cHeaders toolchain [m] (← keys.get)
+    keys.set memo
+    pure ((memo.get? m).getD 0)
+  /-- Bring module `m` into `s`: elaborate it in isolation first if the cache has not
+  seen it, then replay it from the cache. -/
+  importModule (keys : IO.Ref (Std.HashMap Name UInt64)) (base : CommandState R) (stack : List Name)
+      (s : CommandState R) (m : Name) (src : String) : IO (CommandState R × Nat) := do
+    let k ← keyOf keys m
+    let marker := dir / s!"{k}.wizm"
+    let fresh ← if ← marker.pathExists then pure false else do
+      let _ ← go keys base (m :: stack) src { base with imported := [m], messages := #[], module := m } k .write
+      writeAtomic marker m
+      pure true
+    let (s', h) ← go keys base (m :: stack) src { s with imported := m :: s.imported, messages := #[], module := m } k .replay
+    -- commands just elaborated in isolation don't count as hits
+    pure (s', if fresh then 0 else h)
+  go (keys : IO.Ref (Std.HashMap Name UInt64)) (base : CommandState R) (stack : List Name) (input : String)
+      (s₀ : CommandState R) (key₀ : UInt64) (mode : Mode) : IO (CommandState R × Nat) := do
+    let chars := input.toList.toArray
+    let mut pos := 0
+    let mut s := s₀
+    let mut key := key₀
+    let _ : Inhabited (CommandState R) := ⟨init⟩
+    let mut hits := 0
+    while skipWs chars pos < chars.size do
+      match parseCommand chars s.tables pos with
+      | .error _ =>
+        -- report the parse error (and everything after it) without the cache
+        s := runFrontend.go input chars pos s
+        break
+      | .ok (cmd, stop) =>
+        let text := String.ofList (chars.extract pos stop).toList
+        key := mixHash key (hash text)
+        if cmd.isOfKind "command.import" then
+          let m := ((cmd.getArg 1).getId?).getD "_"
+          -- what the rest of the file sees depends on the module's text, through its key
+          key := mixHash key (← keyOf keys m)
+          if stack.contains m then
+            s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"import cycle through {m}" } }
+          else if !s.imported.contains m then
+            match s.loader m with
+            | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}" } }
+            | some src =>
+              let (inner, h) ← importModule keys base stack s m src
+              hits := hits + h
+              let errs := inner.messages.filter (·.severity == .error)
+              let msg : Msg := { info := cmd.info, severity := .error,
+                                 text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+              s := { inner with messages := if errs.isEmpty then s.messages else s.messages.push msg,
+                                module := s.module, hovers := s.hovers }
+          pos := stop
+          continue
+        let file := dir / s!"{key}.wizc"
+        let cached : Option (Effect R) ←
+          if cacheable.contains cmd.kind && (← file.pathExists) then
+            pure ((Sx.parse (← IO.FS.readFile file)).bind Effect.ofSx?)
+          else pure none
+        match cached with
+        | some e =>
+          s := e.apply s
+          hits := hits + 1
+        | none =>
+          let s' := Query.elaborate.elabOne input chars pos stop s
+          if cacheable.contains cmd.kind && mode matches .write then
+            writeAtomic file (effectOf s s').toSx.render
+          s := s'
         pos := stop
-        continue
-      let file := dir / s!"{key}.wizc"
-      let cached : Option (Effect R) ←
-        if cacheable.contains cmd.kind && (← file.pathExists) then
-          pure ((Sx.parse (← IO.FS.readFile file)).bind Effect.ofSx?)
-        else pure none
-      match cached with
-      | some e =>
-        s := e.apply s
-        hits := hits + 1
-      | none =>
-        let s' := Query.elaborate.elabOne input chars pos stop s
-        if cacheable.contains cmd.kind then
-          IO.FS.writeFile file (effectOf s s').toSx.render
-        s := s'
-      pos := stop
-  pure (s, hits)
+    pure (s, hits)
 
 end Wiz.Cache

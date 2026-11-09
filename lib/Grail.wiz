@@ -1,0 +1,66 @@
+import Prelude
+-- grail's build files (stage 22d): `grail.wiz` defines `package`, the uncommitted
+-- `grail.local.wiz` defines `local` (this machine's settings). grail evaluates them and
+-- reads the result as an S-expression (`Package.render`, `Settings.render`).
+
+-- What to build: a library (every module under a directory, named by its path), one
+-- file to check, or an executable (a file's `main`, compiled through C).
+inductive Target where
+  | lib (name : String) (root : String)
+  | check (name : String) (file : String)
+  | exe (name : String) (file : String)
+
+-- Settings: `key value` pairs, later ones win. Keys: `cc`, `cflags`, `ldflags`, `llc`,
+-- `gc-cflags`, `gc-ldflags` (the toolchain), `root` (another module root).
+inductive Setting where
+  | mk (key : String) (value : String)
+inductive Settings where
+  | mk (pairs : List Setting)
+
+inductive Package where
+  | mk (name : String) (targets : List Target) (settings : Settings)
+
+def Settings.empty : Settings := .mk .nil
+def Settings.set (key value : String) : Settings → Settings
+  | .mk ps => .mk (List.append ps (.cons (Setting.mk key value) .nil))
+
+def Package.new (name : String) : Package := .mk name .nil Settings.empty
+def Package.add (t : Target) : Package → Package
+  | .mk n ts s => .mk n (List.append ts (.cons t .nil)) s
+def Package.lib (name root : String) (p : Package) : Package := Package.add (.lib name root) p
+def Package.check (name file : String) (p : Package) : Package := Package.add (.check name file) p
+def Package.exe (name file : String) (p : Package) : Package := Package.add (.exe name file) p
+def Package.set (key value : String) : Package → Package
+  | .mk n ts s => .mk n ts (Settings.set key value s)
+
+-- ## Rendering, as S-expressions
+def Grail.cat (a b : String) : String := String.append a b
+def Grail.escape : List Char → List Char
+  | .nil => .nil
+  | .cons c cs => match Bool.or (Nat.beq (Char.code c) 34) (Nat.beq (Char.code c) 92) with
+    | .true => .cons (Char.mk 92) (.cons c (Grail.escape cs))
+    | .false => .cons c (Grail.escape cs)
+def Grail.quote : String → String
+  | .mk cs => .mk (.cons (Char.mk 34) (List.append (Grail.escape cs) (.cons (Char.mk 34) .nil)))
+def Grail.args : List String → String
+  | .nil => ""
+  | .cons a as => Grail.cat " " (Grail.cat a (Grail.args as))
+def Grail.node (tag : String) (args : List String) : String :=
+  Grail.cat "(" (Grail.cat tag (Grail.cat (Grail.args args) ")"))
+def Grail.list : List String → String
+  | xs => Grail.node "list" xs
+
+def Target.render : Target → String
+  | .lib n r => Grail.node "lib" (.cons (Grail.quote n) (.cons (Grail.quote r) .nil))
+  | .check n f => Grail.node "check" (.cons (Grail.quote n) (.cons (Grail.quote f) .nil))
+  | .exe n f => Grail.node "exe" (.cons (Grail.quote n) (.cons (Grail.quote f) .nil))
+def Grail.renderTargets : List Target → List String
+  | .nil => .nil
+  | .cons t ts => .cons (Target.render t) (Grail.renderTargets ts)
+def Grail.renderPairs : List Setting → List String
+  | .nil => .nil
+  | .cons (.mk k v) ps => .cons (Grail.node "set" (.cons (Grail.quote k) (.cons (Grail.quote v) .nil))) (Grail.renderPairs ps)
+def Settings.render : Settings → String
+  | .mk ps => Grail.list (Grail.renderPairs ps)
+def Package.render : Package → String
+  | .mk n ts s => Grail.node "package" (.cons (Grail.quote n) (.cons (Grail.list (Grail.renderTargets ts)) (.cons (Settings.render s) .nil)))

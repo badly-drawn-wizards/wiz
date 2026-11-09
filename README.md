@@ -1732,3 +1732,67 @@ literal syntax). Every example gives the same output from the cache as without i
 
 Next: finer dependencies (re-elaborate only what an edit affects, not everything
 after it), and hovers for declarations that fail.
+
+## Stage 22: grail, a build tool
+
+### 22b: modules by path ✅
+
+`import A.B` reads `A/B.wiz` under the first **module root** that has it; `lib/` is a
+root, so `import Prelude` is `lib/Prelude.wiz` as before. The frontend stays pure: the
+caller reads every module a file can reach up front, by scanning its import lines
+(`Wiz/Module.lean`).
+
+### 22c: a key per module, atomic writes ✅
+
+A module's key is computed from text alone, before anything is elaborated:
+
+    key(M) = hash(salt, toolchain, text of M, M's C headers, key(N) for each import N)
+
+and a module is elaborated **in isolation**, from the empty state plus its own imports,
+so what it elaborates to depends only on its key. An importer's chain of command keys
+mixes in `key(M)` at the `import`. Editing a module now invalidates it and what imports
+it, not the whole library, and a module imported by many files is cached once. A module
+that uses a name it doesn't import is an error (with the cache on). Cache files are
+written to a temporary name and renamed, so concurrent runs never see half a file.
+
+### 22d: grail v0 ✅
+
+A package is a directory with a `grail.wiz`, written in Wiz against `lib/Grail.wiz`:
+
+```
+import Grail
+def package : Package := Package.new "wiz"
+  |> Package.lib "std" "lib"                    -- check every module under lib/
+  |> Package.check "app" "app.wiz"              -- check one file
+  |> Package.exe "io" "examples/io.wiz"         -- compile `main`: .grail/bin/io
+```
+
+```sh
+lake build grail
+.lake/build/bin/grail build          # every target; `grail build std` for one
+.lake/build/bin/grail targets        # list them; `grail config` prints the toolchain
+```
+
+grail evaluates `Package.render package` (an S-expression) in the interpreter and
+builds a graph of **jobs**: `check` per file, and `ir → c → obj → link` per executable.
+A job's key is computed from its inputs before it runs (a check from the file's key, an
+object from the C text and the compiler flags), its output goes to
+`.grail/build/<key>/` through a temporary directory and a rename, and a job whose
+directory exists doesn't run: **a second build runs no jobs**, an edit reruns the checks
+of the files that import what changed, and an edit that leaves the C alone stops there.
+The key also covers the grail binary itself, so a new elaborator rebuilds everything.
+
+There are no environment variables: the C compiler and its flags come from flags
+(`--cc`, `--cflags`, `--ldflags`, `--llc`, `-I DIR`, `--cache DIR`, `--no-cache`) or from
+an uncommitted `grail.local.wiz` with this machine's paths:
+
+```
+import Grail
+def settings : Settings := Settings.empty
+  |> Settings.set "cflags" "-I/nix/store/…-gmp-…-dev/include"
+  |> Settings.set "ldflags" "-L/nix/store/…-gmp-…/lib -Wl,-rpath,/nix/store/…-gmp-…/lib"
+```
+
+Next: the toolchain as flags in `wiz` too (22a), the self-hosted toolchain as targets
+with a bootstrap check (22e), a test runner (22f), parallel jobs (22g), git
+dependencies and a lock file (22h).

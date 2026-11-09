@@ -1,0 +1,73 @@
+/-!
+# The toolchain record (stage 22a)
+
+Everything outside Wiz that building needs, passed explicitly instead of read from the
+environment: the C compiler and its flags (where GMP and the Boehm collector live),
+`llc`, the elaboration cache, and extra module roots. `wiz` fills it from flags, grail
+from `grail.wiz`, `grail.local.wiz` and flags. The fields that change generated code
+enter the build keys (`Toolchain.id`).
+-/
+
+namespace Wiz
+
+structure Toolchain where
+  cc : String := "cc"
+  cflags : List String := []
+  ldflags : List String := []
+  llc : String := "llc"
+  /-- libraries a package links with (`-lm`), after `ldflags` -/
+  libs : List String := []
+  /-- the Boehm collector, for the self-hosted runtime -/
+  gcCflags : List String := []
+  gcLdflags : List String := []
+  /-- the elaboration cache (none: off) -/
+  cacheDir : Option System.FilePath := none
+  /-- module roots searched after the standard library -/
+  searchPath : List System.FilePath := []
+  deriving Repr, Inhabited
+
+namespace Toolchain
+
+def words (s : String) : List String := (s.splitOn " ").filter (· ≠ "")
+
+/-- What identifies the generated code: compilers and flags (not the cache or roots). -/
+def id (t : Toolchain) : UInt64 :=
+  hash (toString [t.cc, " ".intercalate t.cflags, " ".intercalate t.ldflags, " ".intercalate t.libs, t.llc,
+    " ".intercalate t.gcCflags, " ".intercalate t.gcLdflags])
+
+/-- Set one field by its name (as in `grail.local.wiz` and the flags); `false` if unknown.
+Flag lists replace the field's words. -/
+def set (t : Toolchain) (key value : String) : Option Toolchain :=
+  match key with
+  | "cc" => some { t with cc := value }
+  | "cflags" => some { t with cflags := words value }
+  | "ldflags" => some { t with ldflags := words value }
+  | "llc" => some { t with llc := value }
+  | "libs" => some { t with libs := words value }
+  | "gc-cflags" => some { t with gcCflags := words value }
+  | "gc-ldflags" => some { t with gcLdflags := words value }
+  | "cache" => some { t with cacheDir := some (System.FilePath.mk value) }
+  | "root" => some { t with searchPath := t.searchPath ++ [System.FilePath.mk value] }
+  | _ => none
+
+/-- Take the toolchain flags out of the arguments: `--cc X`, `--cflags "…"`,
+`--ldflags "…"`, `--llc X`, `--gc-cflags "…"`, `--gc-ldflags "…"`, `--cache DIR`,
+`--no-cache`, `-I DIR`. -/
+partial def parseFlags (t : Toolchain) : List String → Toolchain × List String
+  | "--no-cache" :: rest => parseFlags { t with cacheDir := none } rest
+  | "-I" :: dir :: rest => parseFlags { t with searchPath := t.searchPath ++ [System.FilePath.mk dir] } rest
+  | flag :: v :: rest =>
+    match (if flag.startsWith "--" then t.set (flag.drop 2).toString v else none) with
+    | some t' => parseFlags t' rest
+    | none => let (t, r) := parseFlags t (v :: rest); (t, flag :: r)
+  | [a] => (t, [a])
+  | [] => (t, [])
+
+/-- `grail config`: one `key value` line per field. -/
+def render (t : Toolchain) : String :=
+  s!"cc {t.cc}\ncflags {" ".intercalate t.cflags}\nldflags {" ".intercalate t.ldflags}\nlibs {" ".intercalate t.libs}\nllc {t.llc}\n" ++
+  s!"gc-cflags {" ".intercalate t.gcCflags}\ngc-ldflags {" ".intercalate t.gcLdflags}\n" ++
+  s!"cache {(t.cacheDir.map toString).getD "(off)"}\nroots {" ".intercalate (t.searchPath.map toString)}\n"
+
+end Toolchain
+end Wiz
