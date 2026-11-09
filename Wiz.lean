@@ -41,5 +41,6 @@ import Wiz.FFI.CParse
 import Wiz.FFI.CGlue
 import Wiz.Query
 import Wiz.Infoview
+import Wiz.Actions
 import Wiz.LSP
 import Wiz.Cache

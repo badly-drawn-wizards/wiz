@@ -163,6 +163,33 @@ def group : Group where
             check (subs.size > 0) s!"{n}: no tags" }
   ]
 
+/-- Apply a `WorkspaceEdit` (for `file:///t.wiz`) to `src`. -/
+def applyEdit (src : String) (edit : Lean.Json) : String :=
+  let edits := match LSP.get? edit ["changes", "file:///t.wiz"] with
+    | some (.arr es) => es
+    | _ => #[]
+  let at_ (e : Lean.Json) (k : String) : Nat :=
+    LSP.ofPos src (LSP.getNat e ["range", k, "line"]) (LSP.getNat e ["range", k, "character"])
+  Actions.apply src (edits.map fun e => { start := at_ e "start", stop := at_ e "end", text := LSP.getStr e ["newText"] })
+
+/-- The code actions at an offset of the open document. -/
+def codeActions (srv : LSP.Server) (src : String) (off : Nat) : LSP.Server × Array Lean.Json :=
+  let p := posJson src off
+  let (srv, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/codeAction\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"range\":\{\"start\":{p},\"end\":{p}},\"context\":\{\"diagnostics\":[]}}}")
+  match (out[0]!.getObjVal? "result").toOption with
+  | some (.arr as) => (srv, as)
+  | _ => (srv, #[])
+
+def titled (as : Array Lean.Json) (t : String) : Option Lean.Json :=
+  as.find? fun a => LSP.getStr a ["title"] == t
+
+/-- The diagnostics' codes after opening `src`. -/
+def codes (src : String) : IO (List String) := do
+  let (_, out) ← openDoc src
+  match LSP.get? out[0]! ["params", "diagnostics"] with
+  | some (.arr ds) => pure (ds.toList.map fun d => LSP.getStr d ["code"])
+  | _ => pure []
+
 def subtermInfo (srv : LSP.Server) (session ref : Nat) : LSP.Server × Lean.Json :=
   let (srv, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"wiz/subtermInfo\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"session\":{session},\"ref\":{ref}}}")
   (srv, (out[0]!.getObjVal? "result").toOption.getD ((out[0]!.getObjVal? "error").toOption.getD Lean.Json.null))
@@ -173,7 +200,7 @@ def serverGroup : Group where
   cases := [
     { name := "infoview methods are advertised", run := fun _ => do
         let (_, out) := LSP.handle (← server) (req "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}")
-        for m in ["wiz/plainGoal", "wiz/interactiveGoals", "wiz/subtermInfo", "experimental"] do
+        for m in ["wiz/plainGoal", "wiz/interactiveGoals", "wiz/subtermInfo", "codeActionProvider", "experimental"] do
           check (has out[0]! m) s!"no {m}" },
     { name := "wiz/plainGoal and wiz/plainTermGoal", run := fun _ => do
         let src := tacticSrc ++ "def f (n : Nat) : Nat := Nat.add n _\n"
@@ -230,7 +257,47 @@ def serverGroup : Group where
         checkEq "Nat" (flatten (LSP.get? r ["goal", "type"]).get!)
         checkEq "\"x\"" (LSP.get? r ["goal", "userName"]).get!.compress
         let (_, out) ← openDoc src
-        check (!(out.any (has · "wiz/elaborated"))) "unasked wiz/elaborated" }
+        check (!(out.any (has · "wiz/elaborated"))) "unasked wiz/elaborated" },
+    { name := "code action: did you mean", run := fun _ => do
+        let src := "import Prelude\ndef double (n : Nat) : Nat := n + n\ndef four : Nat := doubel 2\n"
+        let (srv, out) ← openDoc src
+        check (has out[0]! "\"code\":\"unknown-identifier\"") s!"diagnostic: {out[0]!.compress}"
+        check (has out[0]! "\"suggestions\":[\"double\"]") s!"data: {out[0]!.compress}"
+        let (_, as) := codeActions srv src (offAfter src "doubel" (-2))
+        let some a := titled as "Did you mean 'double'?" | throw (IO.userError s!"actions: {as.map (·.compress)}")
+        let src' := applyEdit src (LSP.get? a ["edit"]).get!
+        checkEq ([] : List String) (← codes src') },
+    { name := "code action: add missing cases (match and equations)", run := fun _ => do
+        let ty := "import Prelude\ninductive T where\n  | a\n  | b (t : T)\n  | c (x y : Nat)\n"
+        for body in ["def f (t : T) : Nat := match t with\n  | .a => 0\n", "def g : T → Nat\n  | .b _ => 1\n"] do
+          let src := ty ++ body
+          check ((← codes src).contains "missing-case") "no missing-case code"
+          let (srv, out) ← openDoc src
+          let some (.arr ds) := LSP.get? out[0]! ["params", "diagnostics"] | throw (IO.userError "no diagnostics")
+          let some d := ds.find? (LSP.getStr · ["code"] == "missing-case") | throw (IO.userError "no missing-case")
+          let off := LSP.ofPos src (LSP.getNat d ["range", "start", "line"]) (LSP.getNat d ["range", "start", "character"])
+          let (_, as) := codeActions srv src off
+          let some a := titled as "Add missing cases" | throw (IO.userError s!"actions: {as.map (·.compress)}")
+          let src' := applyEdit src (LSP.get? a ["edit"]).get!
+          check (!((← codes src').contains "missing-case")) s!"still missing cases:\n{src'}"
+          check ((src'.splitOn "\n  | .c x y => ?c").length > 1) s!"edited:\n{src'}" },
+    { name := "code action: add type ascription (and codeAction/resolve)", run := fun _ => do
+        let src := "import Prelude\ndef h := Nat.add 1 2\n"
+        let init := req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"textDocument\":{\"codeAction\":{\"resolveSupport\":{\"properties\":[\"edit\"]}}}}}}"
+        let (srv, _) ← openDoc src init
+        let (srv, as) := codeActions srv src (offAfter src "def h" (-1))
+        let some a := titled as "Add type ascription" | throw (IO.userError s!"actions: {as.map (·.compress)}")
+        check (LSP.get? a ["edit"]).isNone "edit not deferred"
+        let resolve (srv : LSP.Server) : LSP.Server × Lean.Json :=
+          let (srv, out) := LSP.handle srv (Lean.Json.mkObj [("jsonrpc", "2.0"), ("id", (6 : Nat)), ("method", "codeAction/resolve"), ("params", a)])
+          (srv, out[0]!)
+        let (srv, r) := resolve srv
+        let src' := applyEdit src (LSP.get? r ["result", "edit"]).get!
+        checkEq "import Prelude\ndef h : Nat := Nat.add 1 2\n" src'
+        checkEq ([] : List String) (← codes src')
+        let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\",\"version\":2},\"contentChanges\":[{\"text\":\"import Prelude\\n\"}]}}")
+        let (_, r) := resolve srv
+        check (has r "-32801") s!"stale resolve: {r.compress}" }
   ]
 
 end Tests.LSP
