@@ -582,7 +582,7 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
     | _, _ => .neutral (.eq A a b) #[]
   | .mu l I D i _ _ => match a, b with
-    | .con x, .con y => vEq g (vInterp g l I D (muFamily l I D) i) x y
+    | .con x, .con y => (vEqPayload g l I (muFamily l I D) i D x y).getD (.neutral (.eq A a b) #[])
     | _, _ => .neutral (.eq A a b) #[]
   | .sort l =>
     if l.equiv 0 then
@@ -594,6 +594,39 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   --|ex
   --| sorry
   --sol>
+
+/-- Equality of two payloads `x y : ⟦D⟧ X i`, by the description: constructor by
+constructor, so that `succ m = succ n` is `m = n` (and not, through the Σ rule, an
+equation with a cast along the tags' equation, which without regularity would be stuck):
+
+    ret j          ↦ True                       (the index proofs are irrelevant)
+    arg q (Enum) E ↦ by the tags: equal ↦ the rest at `E tag`; different ↦ False;
+                     not both tags ↦ none (the whole equation is stuck)
+    arg q S E      ↦ `x = y` at the Σ type `⟦arg q S E⟧ X i` (the Σ rule)
+    rec q j E      ↦ (x.1 = y.1 : X j) × (the rest at E)
+    hrec q H j E   ↦ (x.1 = y.1 : (h : H) → X (j h)) × (the rest at E)
+
+The choice between rules depends only on `D` and on whether tags are canonical (computed or
+stuck), so it is stable under substitution. -/
+partial def vEqPayload (g : Globals R) (l : Level) (I X i D x y : Val R) : Option (Val R) :=
+  let pairTy (A B : Val R) : Val R := .sigma "_" (.qlit 0) A (.mk [B] (.var 1)) (some 0)
+  match whnf D with
+  | .dret _ => some (.unit 0)
+  | .darg q S E => match whnf S with
+    | .enum _ => match whnf (vFst x), whnf (vFst y) with
+      | .tag ls a, .tag _ b =>
+        if a == b then vEqPayload g l I X i (vApp g E (.tag ls a)) (vSnd x) (vSnd y) else some (.empty 0)
+      | _, _ => none
+    | _ => some (vEq g (vInterp g l I (.darg q S E) X i) x y)
+  | .drec _ j E => do
+    let r ← vEqPayload g l I X i E (vSnd x) (vSnd y)
+    pure (pairTy (vEq g (vApp g X j) (vFst x) (vFst y)) r)
+  | .dhrec q H j E => do
+    let r ← vEqPayload g l I X i E (vSnd x) (vSnd y)
+    -- h0 j1 X2
+    let F : Val R := .pi "h" .default q H (.mk [j, X] (.app (.var 2) (.app (.var 1) (.var 0)))) none
+    pure (pairTy (vEq g F (vFst x) (vFst y)) r)
+  | _ => none
 
 /-- **Exercise 4.11b.** Equality of types:
 

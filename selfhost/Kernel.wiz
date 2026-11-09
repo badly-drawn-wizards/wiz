@@ -926,7 +926,9 @@ def vEqW : Val → Val → Val → Val
   | .venum k, .vtag _ i, .vtag _ j => match Nat.beq i j with
     | .true => .vunit 0
     | .false => .vempty 0
-  | .vmu l I D i _, .vcon x, .vcon y => vEq (vInterp l I D (muFamily l I D) i) x y
+  | .vmu l I D i s, .vcon x, .vcon y => match eqPayload l I (muFamily l I D) i (whnf D) x y with
+    | .some r => r
+    | .none => .vne (.heq (.vmu l I D i s) (.vcon x) (.vcon y)) .snil
   | .vsort l, a, b => match lvlEquiv l (.lnum 0) with
     -- propositions: equal when equivalent
     | .true => vIff a b
@@ -934,6 +936,29 @@ def vEqW : Val → Val → Val → Val
       | .true => vEqType a b
       | .false => .vne (.heq (.vsort l) a b) .snil
   | A, a, b => .vne (.heq A a b) .snil
+-- equality of two payloads, constructor by constructor (`vEqPayload` in `Eval.lean`):
+-- `.none` when a tag is not known (the equation is stuck)
+def eqPayload (l : Nat) (I X i : Val) : Val → Val → Val → Option Val
+  | .vdret _, _, _ => .some (.vunit 0)
+  | .vdarg S E, x, y => match whnf S with
+    | .venum _ => eqTags l I X i E (whnf (vfst x)) (whnf (vfst y)) x y
+    | S' => .some (vEq (vInterp l I (.vdarg S' E) X i) x y)
+  | .vdrec j E, x, y => match eqPayload l I X i (whnf E) (vsnd x) (vsnd y) with
+    | .some r => .some (pairTy (vEq (vapp X j) (vfst x) (vfst y)) r)
+    | .none => .none
+  | .vdhrec H j E, x, y => match eqPayload l I X i (whnf E) (vsnd x) (vsnd y) with
+    -- h0 j1 X2
+    | .some r => .some (pairTy (vEq (.vpi .qw H (.cons j (.cons X .nil)) (.app (.var 2) (.app (.var 1) (.var 0))) .none)
+        (vfst x) (vfst y)) r)
+    | .none => .none
+  | _, _, _ => .none
+def eqTags (l : Nat) (I X i E : Val) : Val → Val → Val → Val → Option Val
+  | .vtag k a, .vtag _ b, x, y => match Nat.beq a b with
+    | .true => eqPayload l I X i (whnf (vapp E (.vtag k a))) (vsnd x) (vsnd y)
+    | .false => .some (.vempty 0)
+  | _, _, _, _ => .none
+-- `A × B` in `Prop`
+def pairTy (A B : Val) : Val := .vsigma .qz A (.cons B .nil) (.var 1) (.some (.lnum 0))
 -- `A = B` between types (`vEqType`)
 def vEqType (X Y : Val) : Val := vEqTypeP (whnf X) (whnf Y)
 -- propositions are equal when equivalent; a proposition is never a type of another sort

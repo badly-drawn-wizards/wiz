@@ -274,15 +274,31 @@ def ottGroup : Group where
         ok "def peq {A B : Type} (p : A × B) : p = (p.1, p.2) := refl p" },
     { name := "different type formers are unequal", run := fun _ =>
         ok "def noconf (e : Unit = Empty) : False := e" },
-    { name := "cast along a reflexive equation is the identity (regularity)", run := fun _ =>
-        ok "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl" },
+    -- D1: no regularity by default: a cast at a variable type stays a cast
+    { name := "cast along a variable `A = A` is not the identity (no regularity; it is with --regularity full)", run := fun _ => do
+        let reg := "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl"
+        fails reg "type mismatch"
+        okWith .full reg },
     { name := "J from transp and cast", run := fun _ =>
         ok substDef },
-    { name := "J computes on refl", run := fun _ =>
-        ok (substDef ++ "def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl") },
-    { name := "cast computes on function types (and vanishes between equal types)", run := fun _ =>
+    { name := "J computes on refl at a data type, not at a variable family (no regularity)", run := fun _ => do
+        let substRefl := substDef ++ "def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl"
+        fails substRefl "type mismatch"
+        okWith .full substRefl
+        ok (substDef ++ "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def substN {A : Type} (a : A) : subst (fun _ => N) (refl a) (N.s N.z) = N.s N.z := rfl") },
+    { name := "cast computes on function types (and stays stuck at a variable type)", run := fun _ =>
         ok "#reduce fun (A : Type) (e : (A → A) = (A → A)) (f : A → A) => (cast e f : A → A)"
-          ["fun A e f x => f x"] },
+          ["fun A e f x => cast (e.2 x) (f (cast e.1 x))"] },
+    { name := "cast computes on data, constructor by constructor (D1)", run := fun _ =>
+        ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
+          "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
+          "#reduce fun (e : N = N) => (cast e (N.s N.z) : N)\n" ++
+          "#reduce N.s N.z = N.s N.z\n" ++
+          "#reduce fun (n m : N) => (V N n = V N m)\n" ++
+          "#reduce fun (e : V N (.s .z) = V N (.s .z)) => (cast e (V.cons N.z V.nil : V N (.s .z)) : V N (.s .z))")
+          ["fun e => .s .z", "(0 _ : True) × True", "fun n m => (0 e : n = m) × True",
+           "fun e => .cons .z .z .nil"] },
     { name := "type equality", run := fun _ =>
         ok "def t : Type = Type := refl Type" },
     { name := "propositions in a function type's domain compare by equivalence", run := fun _ =>
@@ -307,11 +323,11 @@ def ottGroup : Group where
         ok (tyOfDef ++ "inductive N where\n  | z\n  | s (n : N)\ndef h (x : N) : N := x\n" ++
           "#reduce TyOf h = (N → N)\n" ++
           "#reduce fun (e : TyOf h = (N → N)) (u : TyOf h) => (cast e u : N → N)")
-          ["(0 e : N = N) × ((0 x : N) → N = N)", "fun e u x => u x"] },
+          ["(0 e : True) × ((0 x : N) → True)", "fun e u x => cast (e.2 x) (u (cast e.1 x))"] },
     { name := "a constructor's type carries its sort", run := fun _ =>
         ok (tyOfDef ++ "inductive Box (A : Type) where\n  | mk (a : A)\n" ++
           "#reduce TyOf (@Box.mk Unit) = (Unit → Box Unit)")
-          ["(0 e : True) × ((0 x : Unit) → Box Unit = Box Unit)"] },
+          ["(0 e : True) × ((0 x : Unit) → True)"] },
     { name := "a match on several scrutinees whose types mention a variable", run := fun _ =>
         ok "def pick (A : Type) (x y : A) : A := match x, y with\n  | a, b => b" },
     { name := "equality of proofs is rejected", run := fun _ =>
