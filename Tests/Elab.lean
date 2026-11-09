@@ -1516,7 +1516,7 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
   let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
     s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
     "def commentLines : List String → List String\n  | .nil => .nil\n  | .cons l rest => .cons (String.append \"/* \" (String.append l \" */\")) (commentLines rest)\n" ++
-    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  printAll (match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with\n    | .mk out gs _ _ _ => List.append (commentLines (List.reverseOf out .nil)) (genProgram gs))\n"
+    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with\n    | .mk out gs _ _ _ => do\n      printAll (commentLines (List.reverseOf out .nil));\n      printDocs (genProgram gs)\n"
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "compiler"

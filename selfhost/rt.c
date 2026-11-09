@@ -109,6 +109,13 @@ static V wstr(const char *s, size_t n) {
   return stringv(l);
 }
 
+/* a string literal from its code points */
+static V wcodes(const uint32_t *cps, size_t k) {
+  V l = nilv();
+  while (k > 0) l = consv(charv(cps[--k]), l);
+  return stringv(l);
+}
+
 /* ---- primitives the erased code uses ---- */
 
 static V p_unreachable(void) { return unreach(); }
@@ -124,6 +131,7 @@ static V p_natPack(V p) {
 
 /* `ind D m i x`: `m i payload hyps`, the hypotheses computed by walking the description
    (`⟨0 i⟩` ret, `⟨1 ◾ F⟩` arg, `⟨2 j E⟩` rec, `⟨3 ◾ j E⟩` hrec) along the payload */
+static V apn(V f, uint32_t n, V *args);
 static V p_ind(V nat, V D, V m, V i, V x);
 static V hrecFn(V *env, V h) { return p_ind(env[0], env[1], env[2], ap(env[3], h), ap(env[4], h)); }
 /* the hypothesis of a recursive field, suspended: `p_ind … j y` when first read (eager
@@ -145,7 +153,8 @@ static V hyps(V nat, V D, V m, V d, V pl) {
 }
 static V p_ind(V nat, V D, V m, V i, V x) {
   V pl = UNBOX(nat) ? p_natUnpack(x) : x;
-  return ap(ap(ap(m, i), pl), hyps(nat, D, m, D, pl));
+  V args[3] = {i, pl, hyps(nat, D, m, D, pl)};
+  return apn(m, 3, args);
 }
 
 /* ---- natives: curried functions of `n` arguments ---- */
@@ -166,6 +175,37 @@ static V accFn(V *env, V a) {
   return mkclo(accFn, have + 3, nenv);
 }
 static V native(NF f, int arity) { V env[2] = {(V)f, BOX(arity)}; return mkclo(accFn, 2, env); }
+/* a function of `arity` arguments (captured variables first), `n` of them given */
+static V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
+  V *env = (V *)alloca((n + 2) * sizeof(V));
+  env[0] = (V)f; env[1] = BOX(arity);
+  if (n) memcpy(env + 2, args, n * sizeof(V));
+  return mkclo(accFn, n + 2, env);
+}
+/* `f a₁ … aₙ`: a function that wants that many (or fewer) is called once, without the
+   closures of the partial applications in between */
+static V apn(V f, uint32_t n, V *args) {
+  uint32_t i = 0;
+  while (i < n) {
+    if (!ISBOX(f) && ((Clo *)f)->tag == T_CLO && ((Clo *)f)->fn == accFn) {
+      Clo *c = (Clo *)f;
+      uint32_t have = c->n - 2, ar = (uint32_t)UNBOX(c->env[1]), rem = ar - have;
+      if (n - i >= rem) {
+        V *full = (V *)alloca(ar * sizeof(V));
+        memcpy(full, c->env + 2, have * sizeof(V));
+        memcpy(full + have, args + i, rem * sizeof(V));
+        f = ((NF)c->env[0])(full);
+        i += rem;
+      } else {
+        V *nenv = (V *)alloca((have + (n - i) + 2) * sizeof(V));
+        memcpy(nenv, c->env, (have + 2) * sizeof(V));
+        memcpy(nenv + 2 + have, args + i, (n - i) * sizeof(V));
+        return mkclo(accFn, have + (n - i) + 2, nenv);
+      }
+    } else { f = ap(f, args[i]); i++; }
+  }
+  return f;
+}
 #define NATIVE(name, arity, ...) \
   static V nf_##name(V *a) { __VA_ARGS__ } \
   V get_##name(void) { static V c = 0; if (!c) c = native(nf_##name, arity); return c; }
@@ -183,6 +223,7 @@ NATIVE(Nat_46_le, 2, return boolv(UNBOX(a[0]) <= UNBOX(a[1]));)
 NATIVE(Nat_46_toString, 1, char b[32]; int n = snprintf(b, sizeof b, "%lu", (unsigned long)UNBOX(a[0])); return wstr(b, (size_t)n);)
 /* IO: `String → World → Prod Unit World` */
 NATIVE(IO_46_println, 2, puts(cstr(a[0])); return prodv(BOX(0), a[1]);)
+NATIVE(IO_46_print, 2, fputs(cstr(a[0]), stdout); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_readFile, 2,
   FILE *f = fopen(cstr(a[0]), "rb");
   if (!f) return prodv(wstr("", 0), a[1]);
