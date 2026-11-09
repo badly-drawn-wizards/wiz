@@ -356,7 +356,8 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       let mc : Closure R := .mk ctx.env m
       let bs' ← bs.toArray.mapIdxM fun k b => eraseCheck ctx b (Closure.inst g mc (.tag ls k))
       pure (.case s' bs')
-    | .cast _ _ _ x => pure (← eraseInfer ctx x).1
+    -- (checked against its own type: it may be a function that can't be inferred)
+    | .cast A _ _ x => eraseCheck ctx x (ctx.eval A)
     | .absurd .. => pure (.prim .unreachable #[])
     -- eliminators: their function arguments are erased against the kernel's types
     | .ind l I D v P m i x => do

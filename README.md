@@ -18,6 +18,11 @@ An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)
 
 The design decisions taken so far are listed at the top of [ROADMAP.md](ROADMAP.md).
 
+**Reviewing the core?** [docs/CoreSpec.md](docs/CoreSpec.md) states the kernel's calculus
+as inference rules, with the file and line that implements each rule.
+[docs/Status.md](docs/Status.md) says what is proved, what is conjectured, and which
+soundness issues are known, open and fixed.
+
 ## Continuous integration
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
@@ -1818,6 +1823,46 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   state facts about definitions). A word is still an
   object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
   `implemented_by`.
+## Libraries
+
+### H0c: vectors and bit vectors ✅
+
+`lib/Vec.wiz` (`import Vec`): `Fin n` (a `Nat` with an erased proof `Nat.lt val n = .true`;
+`Fin.of 5 3 rfl`) and `Vec A n`, whose length is an **erased** index: at runtime a
+vector is a list, and `Vec.length` counts it, with `Vec.length_eq : Vec.length v = n`.
+Functions: `head`/`tail`/`last`/`init` on non-empty vectors, `get`/`set` by `Fin`,
+`map`, `zipWith`, `zip`, `foldl`/`foldr`, `replicate`, `ofFn`, `append`, `reverse`
+(linear, with a `cast` along `m + (k+1) = (m+k)+1`), `snoc`, `splitAt`, `shiftIn`,
+`toList`/`fromList` (`fromList l : Vec A (List.length l)`). Theorems: `length_eq`,
+`length_toList`, `toList_fromList`, `map_map`, `get_set` (`get (set v i x) i = x`),
+`get_map`, and the `Nat` lemmas they need
+(`add_zero`, `add_succ`, `add_comm`), all by structural recursion.
+
+`lib/BitVec.wiz` (`import BitVec`): `BitVec n`, a `Nat` below `2^n` by construction
+(every operation reduces mod `2^n`). Wrapping `add`/`sub`/`neg`/`mul`, `udiv`/`umod`,
+`and`/`or`/`xor`/`not`, `shl`/`lshr`/`ashr`, `getBit`, `msb`, `beq`/`ult`/`ule`/`slt`/`sle`,
+`concat`, `extract hi lo`, `zeroExtend`, `signExtend`, and `toVec`/`ofVec` (to and
+from `Vec Bool n`, least significant bit first). Operations that need `2^n` take the
+width at runtime (`{ω n : Nat}`). The arithmetic is the Prelude's native `Nat`
+operations (22a), so the kernel computes on literal bit vectors:
+`(BitVec.add (BitVec.ofNat 8 200) (BitVec.ofNat 8 100)).toNat = 44 := rfl`. (`lib/Word.wiz`'s
+`UIntN w` (22c) is the machine-integer counterpart, with native words in compiled code.)
+
+Along the way the elaborator learned to:
+* keep erased constructor fields and arguments erased when a `match` reverts them, and
+  name a field directly instead of through a `let` at ω (`| .mk i h => … h …` with
+  `0 h`);
+* prove an equation that has already computed with `rfl` (`Nat.succ a = Nat.succ a`
+  is a Σ of `True`s and `a = a`), and recompute an equation stuck on a metavariable
+  once it is solved (`congrArg Nat.succ ih` against such a goal). The proof follows the
+  elaborator's computed form; where the kernel computes the equation to another shape
+  (a numeral on one side, a constructor on the other), the kernel rejects it;
+* erase a `cast` against its source type (the solution rule casts a function, so
+  `head`, `tail` and `zipWith` on vectors failed at runtime).
+
+Not yet: facts like `Vec.get v (Fin.of 3 1 rfl) = 20 := rfl` (the `rfl` shape
+problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` in general, numerals and operators
+(`a + b`) for `BitVec` (decision HD9), and native representations (`implemented_by`).
 
 ### 22d: the trusted base: witnesses and tracked registrations ✅
 

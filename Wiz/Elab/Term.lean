@@ -405,6 +405,24 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     return (.node i k (rs.map (·.1)), rs.toList.flatMap (·.2))
   | s => return (s, [])
 
+/-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
+`True`s and `a = b`, an equation of functions a Π. Build the proof by the same shape
+(pairs, lambdas, `()`), with `refl` at the equations left; the kernel checks them. -/
+partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
+  let g ← getGlobals
+  match ← force ty with
+  | .neutral (.eq A a _) #[] => pure (some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a)))
+  | .neutral (.eqTy X _) #[] => pure (some (.reflTy (quote g ctx.lvl X)))
+  | .unit _ => pure (some .tt)
+  | .sigma _ _ A B _ =>
+    let some a ← rflProof ctx A | pure none
+    let some b ← rflProof ctx (← instM B (← evalIn ctx a)) | pure none
+    pure (some (.pair a b))
+  | .pi x _ _ A B _ =>
+    let some b ← rflProof (ctx.bind x A) (← instM B (Val.var ctx.lvl)) | pure none
+    pure (some (.lam x b))
+  | _ => pure none
+
 mutual
 
 /-- A binder's quantity: the default, a literal (`0`, `1`, `ω`), or (stage 4d)
@@ -511,7 +529,9 @@ where
       | .neutral (.eq A a _) #[] => pure (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
       | .neutral (.eqTy X _) #[] => pure (.reflTy (quote g ctx.lvl X))
       | .unit _ => pure .tt
-      | e => throwAt ctx.info s!"rfl: the expected type is not an equation (it may have computed further): {← showVal ctx e}\n  try `refl x`"
+      | e => match ← rflProof ctx e with
+        | some t => pure t
+        | none => throwAt ctx.info s!"rfl: the expected type is not an equation (it may have computed further): {← showVal ctx e}\n  try `refl x`"
     | "term.cast" =>
       let (t, A) ← infer ctx (stx.getArg 2)
       let e ← check ctx (stx.getArg 1) (vEqType (← getGlobals) A expected)
@@ -1012,12 +1032,15 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let mut ctx' := ctx
     for (n, ty, val) in binds do ctx' := ctx'.define n ty val
     let body ← check ctx' rhs goal
-    -- wrap the lets, innermost last
+    -- wrap the lets, innermost last. A pattern variable that names a variable (a field)
+    -- is substituted instead: a `let` at ω would use an erased field at ω.
     let mut t := body
     let mut lvl := ctx'.lvl
     for (n, ty, val) in binds.reverse do
       lvl := lvl - 1
-      t := .letE n (.qlit QuantitySyntax.explicitDefault) (quote g lvl ty) (quote g lvl val) t
+      match quote g lvl val with
+      | v@(.var _) => t := t.instantiateAt 0 v
+      | v => t := .letE n (.qlit QuantitySyntax.explicitDefault) (quote g lvl ty) v t
     return t
   -- a pair pattern: match the components, as two new (defined) variables
   if views[k]! matches .tuple .. then
@@ -1066,7 +1089,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let w : Term R := .qlit QuantitySyntax.explicitDefault
   let mut G := q goal
   for r in rs.reverse do
-    G := .pi (nameOf r) .default w (q (typeOf r)) (G.abstract (varTm r)) none
+    let wr : Term R := if ctx.erasedLvls.contains r then .qlit 0 else w
+    G := .pi (nameOf r) .default wr (q (typeOf r)) (G.abstract (varTm r)) none
   G := ctx.sortType g G
   -- the motive's universe
   let tys := ctx.types.reverse.toArray
@@ -1133,8 +1157,10 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       ctx' := ctx'.bind "_j" A
     let mut fieldLvls : Array Lvl := #[]
     for (n, _, _) in fieldInfos do
-      let .pi _ _ _ A B _ ← force mt | throwAt ctx.info "internal error: method type"
+      let .pi _ _ fq A B _ ← force mt | throwAt ctx.info "internal error: method type"
       fieldLvls := fieldLvls.push ctx'.lvl
+      if ((Val.toPoly? fq).bind (·.isConst?)) == some 0 then
+        ctx' := { ctx' with erasedLvls := ctx'.lvl :: ctx'.erasedLvls }
       mt ← instM B (Val.var ctx'.lvl)
       -- hidden: the patterns name the fields (`.ok items s1`), and a field's own name
       -- (`s`) must not shadow a variable of the same name in the right-hand side
@@ -1184,6 +1210,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
             let ty' := eval g env tyTm
             subst := subst ++ [(d, Val.var ctx'.lvl)]
             fieldLvls' := fieldLvls'.map fun l => if l == d then ctx'.lvl else l
+            if ctx'.erasedLvls.contains d then
+              ctx' := { ctx' with erasedLvls := ctx'.lvl :: ctx'.erasedLvls }
             ctx' := ctx'.bind ctx'.names[ctx'.lvl - d - 1]! ty'
         let mut rsLvls : Array Lvl := #[]
         -- the motive over the reverted variables (the solution rule casts under them too)
@@ -1248,7 +1276,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           let vt (l : Lvl) : Term R := .var (L - l - 1)
           let mut Gd := quote g L mtRs
           for d in deps.reverse do
-            Gd := .pi ctxBefore.names[L - d - 1]! .default (.qlit QuantitySyntax.explicitDefault)
+            Gd := .pi ctxBefore.names[L - d - 1]! .default
+              (if ctxBefore.erasedLvls.contains d then .qlit 0 else .qlit QuantitySyntax.explicitDefault)
               (quote g L ctxBefore.types[L - d - 1]!) (Gd.abstract (vt d)) none
           Gd := ctxBefore.sortType g Gd
           let Gdz := Gd.abstract (vt y)              -- under a binder for `y`

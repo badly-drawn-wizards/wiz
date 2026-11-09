@@ -9,7 +9,7 @@ name: CI
 
 on:
   push:
-    branches: [solutions, master, integrate, "agent/**"]
+    branches: [solutions, master]  # agent branches are tested through their PRs
   pull_request:
     branches: [solutions, master]
   schedule:
