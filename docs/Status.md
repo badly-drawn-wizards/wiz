@@ -35,8 +35,8 @@ the results of the probes listed in the "Probes" section.
   compared by shape; `∞ < ∞`), each with regression tests in both kernels.
 * **Three proofs of `False` were found while writing this page, and confirmed by
   running them** (see "Open issues" and "Probes"):
-  * **O1**: the self-hosted kernel reduces `Size ≡ Size` to `False`, so `reflTy Size :
-    False` there (the Lean kernel is not affected);
+  * **O1** (fixed in `c079d1b`): the self-hosted kernel reduced `Size ≡ Size` to
+    `False`, so `reflTy Size : False` there (the Lean kernel was not affected);
   * **O2**: a `partial def` at an empty instance of an indexed family passes the
     elaborator's inhabitedness check, and the kernel takes it as an axiom
     (`boom : False`, no axioms written);
@@ -137,7 +137,12 @@ the results of the probes listed in the "Probes" section.
 Ordered by severity. "Reproducer" means a file or term that demonstrates the issue; the
 probe outputs are in the "Probes" section.
 
-### O1. `Kernel.wiz` reduces `Size ≡ Size` to `False` — **open issue (proof of `False` in the self-hosted kernel)**
+### O1. `Kernel.wiz` reduced `Size ≡ Size` to `False` — **fixed** (`c079d1b`; was a proof of `False` in the self-hosted kernel)
+
+Fix: `Size` and `Size< s` are no longer `canonical` in `Kernel.wiz`, matching
+`Eval.lean`; the equation is stuck in both kernels. Regression tests: "Size = Size is
+stuck, not False (and both kernels agree on it below)" (selfhost group) and the
+`MTm.sizeEq` samples in the differential test. The original analysis follows.
 
 `Kernel.wiz`'s `canonical` (`Kernel.wiz:552–565`) counts `Size` and `Size< s` as type
 formers, and `vEqTypeW` (`Kernel.wiz:937–963`) has no case for two sizes, so
