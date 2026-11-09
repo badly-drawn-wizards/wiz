@@ -405,6 +405,28 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     return (.node i k (rs.map (·.1)), rs.toList.flatMap (·.2))
   | s => return (s, [])
 
+/-- (For the language server) a `match` or equations on a value of type `ty` in the first
+column: which constructors have a case, and where the alternatives are. -/
+def recordMatch (info : SourceInfo) (alts : Array Syntax) (clauses : List (MClause R)) (ty : VTy R) :
+    ElabM R Unit := do
+  let .mu _ _ _ _ _ (some (T, _, _)) ← force ty | return
+  let (some first, some last) := (alts[0]?, alts.back?) | return
+  let g ← getGlobals
+  let firsts := clauses.filterMap (·.pats.head?)
+  let views := firsts.map (patView g)
+  let covered := views.filterMap fun v => match v with
+    | .ok (.ctor _ c _) => some c
+    | _ => none
+  let catchAll := views.any fun v => v matches .ok (.var _) || v matches .ok .wild
+  let columns := (clauses.head?.map (·.pats.length)).getD 1
+  pushInfo (.done (.matchCases info { type := T, covered, catchAll, columns, firstAlt := first.info, lastAlt := last.info }))
+
+/-- The open goals of a tactic state, as contexts and types (for the info tree). -/
+def openGoals (st : TacState R) : ElabM R (Array (LocalCtx R × VTy R)) :=
+  st.open.toArray.filterMapM fun i => do
+    let some gl := st.goals[i]? | pure none
+    pure (if ← gl.isOpen then some (gl.ctx, gl.ty) else none)
+
 mutual
 
 /-- A binder's quantity: the default, a literal (`0`, `1`, `ω`), or (stage 4d)
@@ -450,6 +472,7 @@ partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Lev
    `unifyAt` the expected and inferred types. -/
 partial def check (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
   let ctx := ctx.withInfo stx
+  recordExpected ctx stx expected
   if let some stx' ← expand? stx then return ← check ctx stx' expected
   if let some t ← checkData? ctx stx expected then return t
   -- (given, stage 7) against `[x : C A] → B`, bind the instance as a local
@@ -958,7 +981,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let varTm (l : Lvl) : Term R := .var (ctx.lvl - l - 1)
   let typeOf (l : Lvl) : VTy R := ctx.types[ctx.lvl - l - 1]!
   let nameOf (l : Lvl) : Name := ctx.names[ctx.lvl - l - 1]!
-  let some cl := clauses.head? | throwAt ctx.info "missing cases"
+  let some cl := clauses.head? | throwAt ctx.info "missing cases" "missing-case"
   -- A catch-all last row of a multi-column match would be copied into every leaf of the
   -- split (one per pair of constructors, say): elaborate it once, as a local function
   -- of the scrutinees, and make the row call it. If it doesn't check generically (its
@@ -1223,7 +1246,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           | .wild =>
             cls := cls ++ [{ cl' with pats := before ++ (fieldInfos.map fun _ => holeStx) ++ after }]
           | .tuple .. => throwAt (cl'.pats[k]!).info "a tuple pattern needs a pair"
-        if cls.isEmpty then throwAt ctx.info s!"missing case for constructor {c}"
+        if cls.isEmpty then throwAt ctx.info s!"missing case for constructor {c}" "missing-case"
         -- reverted variables are re-introduced at new levels: their hypotheses follow them
         let moved := rs.zip rsLvls.toList
         let rc := rc.map fun r => { r with ihs := r.ihs.map fun (a, b) => ((moved.lookup a).getD a, (moved.lookup b).getD b) }
@@ -1308,6 +1331,7 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
     ctx' := ctx'.bind n vTy
   goalTm := absGoal
   let goal ← evalIn ctx' goalTm
+  if let some x := lvls.head? then recordMatch stx.info alts clauses ctx'.types[ctx'.lvl - x - 1]!
   let body ← compileMatch ctx' lvls clauses goal none true
   let lam := (binders.toList.map (·.1)).foldr .lam body
   let piTy := binders.toList.foldr (fun (n, A) acc => Term.pi n .default (.qlit QuantitySyntax.explicitDefault) A acc none) goalTm
@@ -1351,9 +1375,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
         some ((stx.getArg 2).args.filter (!· matches .atom ..)) else none
     -- (stage 11) remember identifiers and their types, for hovers and go-to-definition
     let record (n : Name) (c : LocalCtx R) (ty : VTy R) : ElabM R Unit := do
-      if stx.info.stop > 0 then
-        let shown ← showVal c ty
-        modify fun s => { s with hovers := s.hovers.push (stx.info, n, shown) }
+      if stx.info.stop > 0 then pushInfo (.ident stx.info n (c.lvl > 0) c ty)
     if explicitLevels.isNone then
       if let some (ix, ty) := lookupLocal ctx x then
         record x ctx ty
@@ -1390,7 +1412,9 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       | base :: f :: fs =>
         let (t, ty) ← infer ctx (.node stx.info "term.ident" #[.ident stx.info base])
         elabFields ctx t ty (f :: fs)
-      | _ => throwAt ctx.info s!"unknown identifier '{x}'"
+      | _ =>
+        pushInfo (.done (.unknownIdent ctx.info x ctx.names))
+        throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
   | "term.type" | "term.sort" =>
     let l ← match (stx.getArg 1).args[0]? with
       | some ls => elabLevel ls
@@ -1544,8 +1568,17 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
 
 /-- Run the tactic syntax `stx`: expand macros, find the Wiz function registered for
 its kind, run it to a `Tac` request chain, and interpret that. -/
-partial def evalTacticStx (code : Code) (st : TacState R) (stx : Syntax) : ElabM R (TacState R) := do
+partial def evalTacticStx (code : Code) (st : TacState R) (stx : Syntax) (record : Bool := true) :
+    ElabM R (TacState R) := do
   if stx matches .atom .. then return st
+  -- (for the language server) the open goals before and after each tactic
+  if record && stx.info.stop > 0 then
+    let before ← openGoals st
+    let st' ← try evalTacticStx code st stx false
+      catch e => throw { e with state? := e.state?.map fun s =>
+        { s with infos := s.infos.push (.tactic stx.info false before before) } }
+    pushInfo (.tactic stx.info false before (← openGoals st'))
+    return st'
   if let some stx' ← expand? stx then return ← evalTacticStx code st stx'
   let some f := (← get).tactics.lookup stx.kind | throwAt stx.info s!"no tactic for syntax kind {stx.kind}"
   let t := apply code (run code [] (.global "TacticM.run")) (apply code (run code [] (.global f)) (encodeSyntax stx))
@@ -1693,12 +1726,17 @@ partial def elabBy (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM 
   let tacs := (stx.getArg 1).args.filterMap fun step => step.args[0]?
   for t in tacs do
     st ← try evalTacticStx code st t
-      catch e => throw (if e.info.stop == 0 then { e with info := (ctx.withInfo t).info } else e)
+      catch e =>
+        -- (for the language server) the block, so the goals before the failing tactic show
+        let e := { e with state? := e.state?.map fun s =>
+          { s with infos := s.infos.push (.tactic stx.info true #[(ctx, expected)] #[]) } }
+        throw (if e.info.stop == 0 then { e with info := (ctx.withInfo t).info } else e)
   let mut rest : Array String := #[]
   for i in st.open do
     if let some gl := st.goals[i]? then
       if ← gl.isOpen then rest := rest.push (← gl.show)
-  unless rest.isEmpty do throwAt ctx.info s!"unsolved goals:\n{"\n\n".intercalate rest.toList}"
+  pushInfo (.tactic stx.info true #[(ctx, expected)] (← openGoals st))
+  unless rest.isEmpty do throwAt ctx.info s!"unsolved goals:\n{"\n\n".intercalate rest.toList}" "unsolved-goals"
   pure m
 
 end

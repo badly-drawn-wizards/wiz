@@ -51,10 +51,6 @@ structure InstanceInfo where
   priority : Nat := 1000
   deriving Inhabited
 
-structure ElabError where
-  info : SourceInfo
-  msg : String
-  deriving Inhabited, Repr
 
 /-- The local context. As in `Ctx`, the lists are aligned and index 0 is innermost. -/
 structure LocalCtx (R : Type) where
@@ -66,6 +62,64 @@ structure LocalCtx (R : Type) where
   lvl : Lvl := 0
   /-- the syntax being elaborated, for error positions -/
   info : SourceInfo := {}
+
+/-! ## The info tree (for the language server)
+
+The elaborator records what it learns about the source as it goes: identifiers and
+their types, the expected type at each checked term, holes, tactic states, `match`es and
+declarations. Types are kept as `Term`s (not strings), so the server prints them at query
+time, plain or tagged. While elaborating, `RawInfo` holds values and contexts as they are;
+at the end of a declaration (`Elab/Info.lean`) they are quoted and zonked into `Info`. -/
+
+/-- A goal as the infoview shows it: the hypotheses, outermost first (the type and value of
+`hyps[k]` live in the context of the hypotheses before it), and the target. -/
+structure GoalView (R : Type) where
+  hyps : Array (Name × Term R × Option (Term R)) := #[]
+  target : Term R
+  /-- the name of a `?x` hole -/
+  userName : Option Name := none
+
+/-- The names in scope of a goal's target, innermost first (as `Term.pretty` wants them). -/
+def GoalView.names (g : GoalView R) : List Name := g.hyps.toList.reverse.map (·.1)
+
+/-- A `match` (or equations) on an inductive type, for "add missing cases". -/
+structure MatchInfo where
+  /-- the inductive type of the first column -/
+  type : Name
+  /-- constructors given a case in the first column (short names) -/
+  covered : List Name
+  /-- a variable or `_` in the first column covers everything -/
+  catchAll : Bool
+  columns : Nat
+  /-- the first and last alternatives: their indentation, and where new ones go -/
+  firstAlt : SourceInfo
+  lastAlt : SourceInfo
+  deriving Inhabited, Repr
+
+inductive Info (R : Type) where
+  /-- an identifier: its name, whether it is a local, and its type (in `names`) -/
+  | ident (info : SourceInfo) (name : Name) (isLocal : Bool) (names : List Name) (type : Term R)
+  /-- a term checked against an expected type (a hole, if `isHole`) -/
+  | term (info : SourceInfo) (goal : GoalView R) (isHole : Bool)
+  /-- a tactic (or a whole `by` block, if `block`) and the open goals before and after it -/
+  | tactic (info : SourceInfo) (block : Bool) (before after : Array (GoalView R))
+  | matchCases (info : SourceInfo) (m : MatchInfo)
+  /-- a definition's type after its binders (in `names`); `insertAt` is where ` : T` goes -/
+  | decl (info : SourceInfo) (name : Name) (names : List Name) (type : Term R) (annotated : Bool) (insertAt : Nat)
+  /-- an unknown identifier, with the locals in scope (for "did you mean") -/
+  | unknownIdent (info : SourceInfo) (name : Name) (locals : List Name)
+
+def Info.info : Info R → SourceInfo
+  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. => i
+
+/-- An `Info` as recorded during elaboration, before quoting and zonking. -/
+inductive RawInfo (R : Type) where
+  | ident (info : SourceInfo) (name : Name) (isLocal : Bool) (ctx : LocalCtx R) (type : VTy R)
+  | term (info : SourceInfo) (ctx : LocalCtx R) (expected : VTy R) (isHole : Bool) (userName : Option Name)
+  | tactic (info : SourceInfo) (block : Bool) (before after : Array (LocalCtx R × VTy R))
+  | decl (info : SourceInfo) (name : Name) (ctx : LocalCtx R) (type : Term R) (annotated : Bool) (insertAt : Nat)
+  /-- nothing to quote -/
+  | done (i : Info R)
 
 structure ElabState (R : Type) where
   globals : Globals R
@@ -97,14 +151,27 @@ structure ElabState (R : Type) where
   /-- type classes and instances in scope (stage 7) -/
   classes : List ClassInfo := []
   instances : Array InstanceInfo := #[]
-  /-- for the language server: identifiers, where they are, and their types (stage 11) -/
-  hovers : Array (SourceInfo × Name × String) := #[]
+  /-- for the language server: the info tree, in the order things were elaborated -/
+  infos : Array (RawInfo R) := #[]
+  /-- record the expected type of every checked term, not only of holes (the language
+  server asks for it; it costs a quote per term) -/
+  termInfo : Bool := false
   /-- instance problems not solved yet: the hole, in its context, and its class type -/
   pendingInsts : Array (LocalCtx R × Term R × VTy R) := #[]
   /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
   kernelInfer : Ctx R → Term R → Except String (VTy R) := fun _ _ => .error "no kernel here"
 
-abbrev ElabM (R : Type) := StateT (ElabState R) (Except ElabError)
+structure ElabError (R : Type) where
+  info : SourceInfo
+  msg : String
+  /-- a stable name for the kind of error (`unknown-identifier`, …), for code actions -/
+  code : String := ""
+  /-- the state where it was thrown: what was recorded up to the error (`throwAt` sets it) -/
+  state? : Option (ElabState R) := none
+
+instance : Inhabited (ElabError R) := ⟨{ info := {}, msg := "" }⟩
+
+abbrev ElabM (R : Type) := StateT (ElabState R) (Except (ElabError R))
 
 namespace LocalCtx
 
@@ -123,7 +190,20 @@ def withInfo (ctx : LocalCtx R) (stx : Syntax) : LocalCtx R :=
 
 end LocalCtx
 
-def throwAt (info : SourceInfo) (msg : String) : ElabM R α := throw { info, msg }
+def throwAt (info : SourceInfo) (msg : String) (code : String := "") : ElabM R α := do
+  throw { info, msg, code, state? := some (← get) }
+
+def pushInfo (i : RawInfo R) : ElabM R Unit :=
+  modify fun s => { s with infos := s.infos.push i }
+
+/-- Record the expected type of a term being checked (always for holes; for every term
+when `termInfo` is on). -/
+def recordExpected (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R Unit := do
+  if stx.info.stop == 0 then return
+  let hole := stx.isOfKind "term.hole" || stx.isOfKind "term.syntheticHole"
+  if hole || (← get).termInfo then
+    let userName := if stx.isOfKind "term.syntheticHole" then (stx.getArg 1).getId? else none
+    pushInfo (.term stx.info ctx expected hole userName)
 
 def getGlobals : ElabM R (Globals R) := return (← get).globals
 

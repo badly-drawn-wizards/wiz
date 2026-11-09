@@ -19,6 +19,7 @@ import Wiz.Frontend.Parse
 import Wiz.Elab.Basic
 import Wiz.Elab.Unify
 import Wiz.Elab.Zonk
+import Wiz.Elab.Info
 import Wiz.Elab.Term
 import Wiz.Elab.ProcMacro
 import Wiz.Elab.Tactic
