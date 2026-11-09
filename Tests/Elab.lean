@@ -2912,9 +2912,8 @@ def vecGroup : Group where
         okLibs (vecPrelude ++ "def t1 : Vec.foldr Nat.add 0 (Vec.replicate 4 5) = 20 := rfl\n" ++
           "def t2 : Vec.toList v3 = .cons 10 (.cons 20 (.cons 30 .nil)) := rfl\n" ++
           "#reduce Vec.foldr Nat.add 0 v3\n#reduce Vec.head v3") ["60", "10"] },
-    { name := "known bug: rfl's proof of a computed equation can differ from the kernel's (wishful: unify-computed-equations)", run := fun _ =>
-        -- today's behaviour: the kernel rejects it. When the bug is fixed, turn this into an `okLibs`.
-        failsLibs (vecPrelude ++ "def t3 : Vec.length (Vec.map Nat.succ w3) = 3 := rfl") "kernel rejected t3" },
+    { name := "rfl at an equation that computed with a numeral on one side (was a known bug)", run := fun _ =>
+        okLibs (vecPrelude ++ "def t3 : Vec.length (Vec.map Nat.succ w3) = 3 := rfl") },
     { name := "compiled, through the IR and C", run := fun _ => do
         okLibs (vecPrelude ++ "#run Vec.toList (Vec.reverse v3)\n#run Vec.get (Vec.set v3 (Fin.of 3 2 rfl) 7) (Fin.of 3 2 rfl)\n" ++
           "#run Vec.toList (Vec.zipWith Nat.mul v3 w3)")

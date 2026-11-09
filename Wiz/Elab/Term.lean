@@ -908,14 +908,23 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
       | _ => freshLevelMeta
     return (.sigma b.name q ty cod (some (.max l₁ l₂)), .sort (.max l₁ l₂))
 
+/-- A tuple component that is a constructor of the expected type (`.c`, `.c args`, or a
+tuple of such). -/
+partial def dotComponent (stx : Syntax) : Bool :=
+  (stx.isOfKind "term.paren" && dotComponent (stx.getArg 1)) ||
+  stx.isOfKind "term.dotIdent" || stx.isOfKind "term.tag" ||
+  (stx.isOfKind "term.app" && (stx.getArg 0).isOfKind "term.dotIdent") ||
+  (stx.isOfKind "term.tuple" && (dotComponent (stx.getArg 1) ||
+    ((stx.getArg 3).args.any fun c => !(c matches .atom ..) && dotComponent c)))
+
 /-- Does elaborating this argument need its expected type to be known? -/
 partial def needsExpected (stx : Syntax) : Bool :=
   (stx.isOfKind "term.paren" && needsExpected (stx.getArg 1)) ||
   stx.isOfKind "term.dotIdent" || stx.isOfKind "term.tag" || stx.isOfKind "term.rfl" ||
   (stx.isOfKind "term.app" && (stx.getArg 0).isOfKind "term.dotIdent") ||
-  -- a tuple with such a component (`.ok (.nil, st)`)
-  (stx.isOfKind "term.tuple" && (needsExpected (stx.getArg 1) ||
-    ((stx.getArg 3).args.any fun c => !(c matches .atom ..) && needsExpected c))) ||
+  -- a tuple with a constructor component (`.ok (.nil, st)`)
+  (stx.isOfKind "term.tuple" && (dotComponent (stx.getArg 1) ||
+    ((stx.getArg 3).args.any fun c => !(c matches .atom ..) && dotComponent c))) ||
   -- check-only forms, also as the body of a `fun` (as in `bind x (fun y => match …)`);
   -- `term.block` is the prelude's `do`
   stx.isOfKind "term.match" || stx.isOfKind "term.by" || stx.isOfKind "term.block" ||

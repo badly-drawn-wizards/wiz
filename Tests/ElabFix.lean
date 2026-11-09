@@ -62,7 +62,7 @@ def group : Group where
           "def q : Option (Nat × Bool × List Nat) := .some (1, .true, .cons 2 .nil)") },
     { name := "match on an expression generalises the hypotheses about it", run := fun _ =>
         okLib ("import Prelude\ndef t (n : Nat) (h : Nat.pred n = 0) : Nat :=\n" ++
-          "  match Nat.pred n, h with\n  | .zero, _ => 0\n  | .succ m, h' => absurd h'") },
+          "  match Nat.pred n, h with\n  | .zero, _ => 0\n  | .succ m, h' => absurd h'.1") },
     { name := "(x).f y is a field access, like x.f y", run := fun _ =>
         okLib ("import Prelude\ndef a (x y : Nat) : Nat := x.sub y\ndef b (x y : Nat) : Nat := (x).sub y\n" ++
           "def c (x y : Nat) : Nat := Nat.add (x).succ y\n#eval b 5 2\n#eval c 1 1") ["3", "3"] }
