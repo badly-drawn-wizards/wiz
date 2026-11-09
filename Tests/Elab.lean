@@ -2122,7 +2122,7 @@ def languageGroup : Group where
           [".true", "0"] },
     { name := "a partial definition needs an inhabited type", run := fun _ =>
         failsLib "import Prelude\ninductive Void where\npartial def loop (n : Nat) : Void := loop n"
-          "must be visibly inhabited" },
+          "no witness found" },
     { name := "match without an expected type", run := fun _ =>
         okLib ("import Prelude\ndef f (b : Bool) (n : Nat) : Nat :=\n  let k := match b with\n    | .true => n\n" ++
           "    | .false => 0;\n  Nat.add k 1\n#eval f .true 4") ["5"] },
@@ -2652,6 +2652,98 @@ def derivingGroup : Group where
         let s ← derivingRun src
         let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}") }
+  ]
+
+/-- Messages of `input` (with `lib/` importable), without positions, errors marked. -/
+def messagesLib (input : String) : IO (List String) := do
+  let loader ← preludeLoader
+  let s := runFrontend (R := ZeroOneMany) input { loader }
+  pure (s.messages.toList.map fun m => (match m.severity with
+    | .error => "error: " | .warning => "warning: " | .info => "") ++ m.text)
+
+/-- Some error mentions `fragment` (others may follow from it). -/
+def failsWith (input : String) (fragment : String) : IO Unit := do
+  let errs := errors input
+  unless errs.any (fun e => (e.splitOn fragment).length > 1) do
+    throw (IO.userError s!"no error mentions '{fragment}': {errs}")
+
+def familyTF : String := "inductive B where\n  | t\n  | f\ninductive T : B → Type where\n  | mk : T .t\n"
+
+/-- A type the witness search can't reach: its only value is five constructors deep. -/
+def deepType : String :=
+  "inductive A5 where\n  | mk\ninductive A4 where\n  | mk (x : A5)\ninductive A3 where\n  | mk (x : A4)\n" ++
+  "inductive A2 where\n  | mk (x : A3)\ninductive A1 where\n  | mk (x : A2)\n"
+
+/-- O3: a registration outside the library that disagrees with native addition. -/
+def badAdd : String :=
+  "inductive N where\n  | zero\n  | succ (n : N)\ndef K (a b : N) : N := a\nbuiltin nat := N\n" ++
+  "builtin nat.zero := N.zero\nbuiltin nat.succ := N.succ\nbuiltin nat.add := K\n" ++
+  "def h (n : N) : K n 3 = n := refl n\ndef bad : False := absurd (h 2)\n#print axioms bad\n"
+
+/-- The trusted base: partial definitions need a kernel-checked witness (O2), and
+`builtin` registrations outside the library are tracked axioms (O3). -/
+def trustGroup : Group where
+  name := "trust"
+  exercise := "—"
+  cases := [
+    { name := "O2: a partial definition at an empty index is rejected", run := fun _ =>
+        fails (familyTF ++ "partial def bad : T .f := bad\ndef boom : False := match bad with\n  | .mk => absurd ()\n")
+          "no witness found" },
+    { name := "O2: a partial function into an empty index is rejected", run := fun _ =>
+        fails (familyTF ++ "partial def bad : T .t → T .f := bad\n") "no witness found" },
+    { name := "O2: a wrong witness is rejected", run := fun _ =>
+        fails (familyTF ++ "partial (default := T.mk) def bad : T .f := bad\n") "" },
+    { name := "partial definitions with inferred witnesses", run := fun _ =>
+        ok (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
+            "inductive List (A : Type) where\n  | nil\n  | cons (x : A) (xs : List A)\n" ++
+            "partial def p1 : T .t := p1\npartial def p2 (b : B) (x : T b) : T b := p2 b x\n" ++
+            "partial def p3 : Nat → List Nat := p3\npartial def p4 : (A : Type) × A := p4\n" ++
+            "partial def p5 (A : Type) : A → Unit × A := p5 A\npartial def p6 : Type := p6\n" ++
+            "axiom World : Type\naxiom w0 : World\npartial def p7 : World × B := p7\n" ++
+            "mutual\ndef ev : Nat → B\n  | .zero => .t\n  | .succ n => od n\ndef od : Nat → B\n  | .zero => .f\n  | .succ n => ev n\nend\n" ++
+            "#print axioms p2\n#print axioms p7\n")
+          ["'p2' does not depend on any axioms", "'p7' depends on axioms: [World, w0]"] },
+    { name := "a witness the search can't find, given with `default`", run := fun _ => do
+        fails (deepType ++ "partial def f : Unit → A1 := f\n") "no witness found"
+        ok (deepType ++ "partial (default := fun _ => A1.mk (A2.mk (A3.mk (A4.mk A5.mk)))) def f : Unit → A1 := f\n" ++
+            "mutual\npartial (default := A1.mk (A2.mk (A3.mk (A4.mk A5.mk)))) def g : A1 := h ()\ndef h (u : Unit) : A1 := g\nend\n") },
+    { name := "the kernel checks a partial definition's witness", run := fun _ => do
+        let ty : Term ZeroOneMany := .unit 1
+        let bad : Term ZeroOneMany := .empty 1
+        check ((addPartialDecl (R := ZeroOneMany) {} { name := "f", type := ty, value := none }) matches .error _)
+          "no witness accepted"
+        check ((addPartialDecl (R := ZeroOneMany) {} { name := "f", type := .empty 1, value := none, witness := some .tt }) matches .error _)
+          "ill-typed witness accepted"
+        check ((addPartialDecl (R := ZeroOneMany) {} { name := "f", type := ty, value := none, witness := some .tt }) matches .ok _)
+          "good witness rejected"
+        check ((addDecl (R := ZeroOneMany) {} { name := "f", type := ty, value := none }) >>= (addPartialImpl · "f" .tt) matches .error _)
+          "an axiom took an implementation"
+        let _ := bad },
+    { name := "O3: an unchecked registration is an axiom", run := fun _ => do
+        let msgs ← messagesLib badAdd
+        let expect := ["warning: builtin nat := N is not checked: it is an axiom of every declaration that depends on N (see `#print axioms`)",
+          "warning: builtin nat.zero := N.zero is not checked: it is an axiom of every declaration that depends on N.zero (see `#print axioms`)",
+          "warning: builtin nat.succ := N.succ is not checked: it is an axiom of every declaration that depends on N.succ (see `#print axioms`)",
+          "warning: builtin nat.add := K is not checked: it is an axiom of every declaration that depends on K (see `#print axioms`)",
+          "'bad' depends on axioms: [builtin nat.add := K, builtin nat := N, builtin nat.zero := N.zero, builtin nat.succ := N.succ]"]
+        checkEq (repr expect).pretty (repr msgs).pretty },
+    { name := "O3: numerals at a registered empty type are an error, not a crash", run := fun _ => do
+        failsWith "def E : Type := Empty\nbuiltin nat := E\ndef bad : False := absurd (0 : E)\n" "inductive type"
+        fails "inductive E where\n  | z\nbuiltin nat := E\ndef x : E := 0\n" "numerals need"
+        fails "inductive N where\n  | z\naxiom Z : N\nbuiltin nat := N\nbuiltin nat.zero := Z\n" "must be a definition"
+        fails "inductive N where\n  | z\ndef f (a : N) : N := a\nbuiltin nat := N\nbuiltin nat.add := f\n" "2 arguments" },
+    { name := "Prelude registrations are trusted and compute natively", run := fun _ =>
+        okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4\n#print axioms t\n#eval 3 * 7 + 2 ^ 10\n"
+          ["'t' does not depend on any axioms", "1045"] },
+    { name := "O2 in the self-hosted frontend", run := fun _ =>
+        selfhostCheckFile (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
+            "partial def bad : T .f := bad\npartial def bad2 : T .t → T .f := bad2\n" ++
+            "partial def ok1 : T .t := ok1\npartial def ok2 (n : Nat) : Nat := ok2 n\n" ++
+            "partial (default := T.mk) def ok3 : T .t := ok3\npartial (default := T.mk) def bad3 : T .f := bad3\n")
+          ("B : U0\nT : (x0 : B) → U0\nNat : U0\n" ++
+           "error: partial definition bad: no witness found for its type; give one with `partial (default := w) def`\n" ++
+           "error: partial definition bad2: no witness found for its type; give one with `partial (default := w) def`\n" ++
+           "ok1 : T B.t\nok2 : (x0 : Nat) → Nat\nok3 : T B.t\nerror: \n") }
   ]
 
 end Tests.Elab

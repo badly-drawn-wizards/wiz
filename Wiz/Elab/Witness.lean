@@ -122,8 +122,8 @@ partial def applyConst (ctx : LocalCtx R) (ty : VTy R) (c : Name) (fuel : Nat) :
       let w ← if bi == .instImplicit then synthInstance ctx dom else witness ctx dom fuel
       let some w := w | return none
       unify ctx.lvl (← evalIn ctx m) (← evalIn ctx w)
-  let t ← zonk ctx.lvl t
-  if t.mvars.isEmpty then return some t else return none
+  let r ← zonk ctx.lvl t
+  if r.mvars.isEmpty then return some r else return none
 end
 
 /-- A witness for a closed type, with the universe levels the search left open set to

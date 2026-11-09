@@ -1531,6 +1531,9 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     match (← get).builtins.lookup "nat" with
     | some N =>
       let ty := eval (← getGlobals) ctx.env (.const N [])
+      -- (`check` comes back here unless the type is the data type `N`: don't loop)
+      unless (← force ty) matches .mu _ _ _ _ _ (some _) do
+        throwAt ctx.info s!"numerals need `builtin nat :=` a data type, and {N} is not one"
       return (← check ctx stx ty, ty)
     | none => throwAt ctx.info "numerals need `builtin nat := …` or a type ascription"
   | "term.str" =>

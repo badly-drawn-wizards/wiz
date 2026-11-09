@@ -632,6 +632,7 @@ attribute [macro term.twice] twiceMacro
   notation (written as macros).
 * `builtin key := name` registers prelude definitions with the kernel and the runtime
   (as Agda's `BUILTIN`): `nat` and its constructors and operations, and `string`.
+  Registrations in `lib/` are trusted (22d); anywhere else each is an axiom.
 * **Literals.** A numeral of the registered `Nat` is a kernel literal `natLit n`. It
   unfolds one step at a time (`0 ↦ zero`, `n+1 ↦ succ (natLit n)`, `vNatView`) when an
   eliminator, `conv`, `unify` or `vEq` looks inside it. Registered operations compute
@@ -1110,7 +1111,7 @@ Writing the lexer and parser in Wiz showed what the language lacked:
 * **Recursion on any argument.** The structural argument is the first one the first
   clause matches; parameters before the colon may be passed unchanged or left out.
 * **`partial def` and `mutual … end`.** General recursion: the kernel treats the
-  definition as an axiom (its type must be visibly inhabited, so no `False`), and its
+  definition as opaque, justified by a witness of its type (22d, so no `False`), and its
   implementation (checked against the type) is what `#eval` and compiled code run. The
   parser's core is a mutual block, with no fuel.
 * **Mutual inductive types.** `mutual inductive A … inductive B … end` becomes one
@@ -1457,8 +1458,9 @@ with that metavariable. `@f` inserts no implicit arguments.
 ### 17d: `partial` and `mutual` ✅
 
 `partial def` and `mutual … end` blocks of definitions: each function is first an axiom
-of its type (`addAxioms`), so that the bodies may call any of them, as the Lean kernel
-sees partial definitions; then each body is checked as usual and replaces the axiom.
+of its type (`addPartials`, justified by a witness the kernel checks, 22d), so that the
+bodies may call any of them, as the Lean kernel sees partial definitions; then each body
+is checked as usual and replaces the axiom.
 
 ## Stage 18: more data in the self-hosted frontend
 
@@ -1816,6 +1818,34 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   state facts about definitions). A word is still an
   object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
   `implemented_by`.
+
+### 22d: the trusted base: witnesses and tracked registrations ✅
+
+Two ways to prove `False` without writing `axiom` are closed.
+
+* **Partial definitions need a witness.** `partial def f : T := …` is opaque to the
+  kernel, so `f : T` is assumed. The kernel now takes it only with a term `w : T` it
+  checks (`Decl.witness`, `addPartialDecl`; erased, so it may ignore a linear argument):
+  `f` then proves nothing `w` doesn't. The elaborator finds the witness
+  (`Elab/Witness.lean`): a variable of the type's `Π`s, `fun x => w`, a pair, `tt`,
+  `Unit` for a sort, `Inhabited.default`, or a constant whose type ends in the type's
+  head (a constructor, `StrMap.empty`) with its conclusion unified against the goal, so
+  the indices must match: `mk : T .t` is no witness of `T .f`. The search proposes, the
+  kernel decides. Otherwise write one: `partial (default := w) def f : T := …`, also
+  inside `mutual`. The self-hosted kernel (`checkPartial`) and frontend (`wit`) do the
+  same, and every partial definition of the self-hosted sources gets its witness found.
+  Before, an elaborator check (`inhabitedTy`) looked only at the type's head, and
+  `partial def bad : T .f := bad` proved `False`.
+* **Registrations are trusted only in the library.** `builtin nat.add := K` makes `K`
+  compute natively on numerals, which nothing checks against `K`'s definition. In
+  `lib/` the registrations are reviewed (they match their definitions); anywhere else
+  a registration is an axiom: recorded (`Globals.assumed`), warned about, and listed by
+  `#print axioms d`, which shows every axiom `d` depends on through its type, value and
+  witness (`axiom`s, foreign functions, `builtin key := name`; a numeral depends on the
+  `nat` registrations). Registrations are also checked for shape (`nat.add : N → N → N`,
+  each operation a definition), and numerals need `nat.zero` and `nat.succ`: `builtin
+  nat := E` for an empty `E` and then `(0 : E)` used to overflow the stack (the kernel
+  unfolded a numeral without a registered `nat.zero`).
 
 ## Stage 11: tooling
 

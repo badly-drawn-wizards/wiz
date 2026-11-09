@@ -590,9 +590,9 @@ def builtinShapeError (g : Globals R) (key : Name) (d : Decl R) : Option String 
     | .const c [] => c == N
     | _ => false
   if key == "nat" || key == "string" then
-    match d.type with
-    | .sort _ => none
-    | _ => some "it must be a type"
+    match d.type, d.value.map (eval g []) with
+    | .sort _, some (.mu _ _ _ _ _ (some (T, _, _))) => if T == d.name then none else some "it must be an inductive type"
+    | _, _ => some "it must be an inductive type"
   else if key == "memo" then none
   else match g.builtins.lookup "nat" with
     | none => some "register `builtin nat := …` first"
@@ -743,7 +743,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             report .error (d.getArg 1).info s!"partial definition {name}: no witness found for its type {ty.pretty}; give one with `partial (default := w) def {name} …` (the kernel takes {name} only if its type is inhabited)"
             return
           | .error e => report .error e.info e.msg; return
-        match addPartialDecl g ({ name, levelParams, type := ty, value := none, witness := some w }.withSorts g) with
+        match addPartialDecl g (Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
