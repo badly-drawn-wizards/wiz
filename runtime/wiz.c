@@ -316,6 +316,98 @@ WIZ_API wiz_val wiz_nat_blt(wiz_val a, wiz_val b) {
   return WIZ_BOX(lt ? 1 : 0);
 }
 
+/* division, powers and bits; as the Prelude defines them: n / 0 = 0, n % 0 = n,
+   log2 0 = 0 */
+enum { WIZ_OP_DIV, WIZ_OP_MOD, WIZ_OP_AND, WIZ_OP_OR, WIZ_OP_XOR };
+static wiz_val wiz_nat_big_op(int op, wiz_val a, wiz_val b) {
+  mpz_t x, y;
+  wiz_to_mpz(x, a); wiz_to_mpz(y, b);
+  switch (op) {
+  case WIZ_OP_DIV: if (mpz_sgn(y) == 0) mpz_set_ui(x, 0); else mpz_fdiv_q(x, x, y); break;
+  case WIZ_OP_MOD: if (mpz_sgn(y) != 0) mpz_fdiv_r(x, x, y); break;
+  case WIZ_OP_AND: mpz_and(x, x, y); break;
+  case WIZ_OP_OR: mpz_ior(x, x, y); break;
+  default: mpz_xor(x, x, y); break;
+  }
+  mpz_clear(y);
+  wiz_dec(a); wiz_dec(b);
+  return wiz_big_norm(x);
+}
+WIZ_API wiz_val wiz_nat_div(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b))
+    return WIZ_BOX(WIZ_UNBOX(b) ? WIZ_UNBOX(a) / WIZ_UNBOX(b) : 0);
+  return wiz_nat_big_op(WIZ_OP_DIV, a, b);
+}
+WIZ_API wiz_val wiz_nat_mod(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b))
+    return WIZ_BOX(WIZ_UNBOX(b) ? WIZ_UNBOX(a) % WIZ_UNBOX(b) : WIZ_UNBOX(a));
+  return wiz_nat_big_op(WIZ_OP_MOD, a, b);
+}
+WIZ_API wiz_val wiz_nat_land(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) return WIZ_BOX(WIZ_UNBOX(a) & WIZ_UNBOX(b));
+  return wiz_nat_big_op(WIZ_OP_AND, a, b);
+}
+WIZ_API wiz_val wiz_nat_lor(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) return WIZ_BOX(WIZ_UNBOX(a) | WIZ_UNBOX(b));
+  return wiz_nat_big_op(WIZ_OP_OR, a, b);
+}
+WIZ_API wiz_val wiz_nat_xor(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) return WIZ_BOX(WIZ_UNBOX(a) ^ WIZ_UNBOX(b));
+  return wiz_nat_big_op(WIZ_OP_XOR, a, b);
+}
+/* `a * 2^n`; a shift by a big number of a nonzero number has no representation */
+WIZ_API wiz_val wiz_nat_shiftLeft(wiz_val a, wiz_val n) {
+  if (WIZ_IS_SCALAR(a) && WIZ_UNBOX(a) == 0) { wiz_dec(n); return a; }
+  if (!WIZ_IS_SCALAR(n)) wiz_panic("Nat.shiftLeft: the shift is too big");
+  uintptr_t k = WIZ_UNBOX(n);
+  if (WIZ_IS_SCALAR(a) && k < 62 && WIZ_UNBOX(a) <= (WIZ_MAX_SMALL >> k)) return WIZ_BOX(WIZ_UNBOX(a) << k);
+  mpz_t x;
+  wiz_to_mpz(x, a);
+  mpz_mul_2exp(x, x, (mp_bitcnt_t)k);
+  wiz_dec(a);
+  return wiz_big_norm(x);
+}
+WIZ_API wiz_val wiz_nat_shiftRight(wiz_val a, wiz_val n) {
+  if (!WIZ_IS_SCALAR(n)) { wiz_dec(a); wiz_dec(n); return WIZ_BOX(0); }
+  uintptr_t k = WIZ_UNBOX(n);
+  if (WIZ_IS_SCALAR(a)) return WIZ_BOX(k >= 64 ? 0 : WIZ_UNBOX(a) >> k);
+  mpz_t x;
+  wiz_to_mpz(x, a);
+  mpz_fdiv_q_2exp(x, x, (mp_bitcnt_t)k);
+  wiz_dec(a);
+  return wiz_big_norm(x);
+}
+WIZ_API wiz_val wiz_nat_pow(wiz_val b, wiz_val e) {
+  if (WIZ_IS_SCALAR(b) && WIZ_UNBOX(b) <= 1) {
+    /* 0^0 = 1, 0^e = 0, 1^e = 1, even for a big e */
+    int zero = WIZ_IS_SCALAR(e) && WIZ_UNBOX(e) == 0;
+    wiz_dec(e);
+    return WIZ_BOX(zero ? 1 : WIZ_UNBOX(b));
+  }
+  if (!WIZ_IS_SCALAR(e)) wiz_panic("Nat.pow: the exponent is too big");
+  uintptr_t k = WIZ_UNBOX(e);
+  if (WIZ_IS_SCALAR(b)) {
+    uintptr_t r = 1, x = WIZ_UNBOX(b), i = 0;
+    for (; i < k; i++)
+      if (__builtin_mul_overflow(r, x, &r) || r > WIZ_MAX_SMALL) break;
+    if (i == k) return WIZ_BOX(r);
+  }
+  mpz_t x;
+  wiz_to_mpz(x, b);
+  mpz_pow_ui(x, x, (unsigned long)k);
+  wiz_dec(b);
+  return wiz_big_norm(x);
+}
+WIZ_API wiz_val wiz_nat_log2(wiz_val a) {
+  if (WIZ_IS_SCALAR(a)) {
+    uintptr_t x = WIZ_UNBOX(a);
+    return WIZ_BOX(x == 0 ? 0 : 63 - __builtin_clzll((unsigned long long)x));
+  }
+  size_t bits = mpz_sizeinbase(((wiz_big *)a)->z, 2);
+  wiz_dec(a);
+  return WIZ_BOX(bits - 1);
+}
+
 /* ---- flat objects: tags and fields by runtime values (`pack`, `unpack`) ---- */
 
 WIZ_API wiz_val wiz_tag_of(wiz_val v) {
@@ -370,11 +462,39 @@ WIZ_API wiz_val wiz_proj(wiz_val v, uint32_t i) {
   return f;
 }
 
-/* `0` for an observed coinductive value, `1` for coit, `2` for scofix */
+/* `0` for an observed coinductive value, `1` for coit, `2` for scofix, `3` for a lazy
+   cell already observed (tag 1002: its one field is the payload) */
 WIZ_API wiz_val wiz_lazy_tag(wiz_val v) {
   uint32_t t = WIZ_IS_SCALAR(v) ? 0 : ((wiz_hdr *)v)->tag;
   wiz_dec(v);
-  return WIZ_BOX(t == 1000 ? 1 : t == 1001 ? 2 : 0);
+  return WIZ_BOX(t == 1000 ? 1 : t == 1001 ? 2 : t == 1002 ? 3 : 0);
+}
+
+/* Memoised observation: `out` has computed the payload `p` of the lazy cell `x` (both
+   owned) and returns `p`. A shared cell is overwritten in place by an observed cell
+   ⟨1002 p⟩, so its other references don't unfold it again (like a forced `memo`
+   thunk). The payload's corecursive fields are new cells, never `x`: no cycle forms.
+   A unique cell (rc 1) dies here, so there is nothing to keep (the plain-thunk case);
+   an immortal cell (a hoisted constant) is not overwritten, or it would keep its
+   observed prefix for ever.
+   Threads: like `memo`, this assumes one mutator (reference counts are not atomic).
+   With several, only a shared cell needs care: claim it by a CAS of its tag to a
+   blackhole before computing, and make other observers wait for the payload. */
+WIZ_API wiz_val wiz_lazy_set(wiz_val x, wiz_val p) {
+  wiz_hdr *h = (wiz_hdr *)x;
+  if (WIZ_IS_SCALAR(x) || h->rc == 1 || h->rc >= ((int64_t)1 << 40) || (h->tag != 1000 && h->tag != 1001)) {
+    wiz_dec(x);
+    return p;
+  }
+  wiz_ctor *o = (wiz_ctor *)x;
+  uint32_t n = h->size;
+  for (uint32_t i = 0; i < n; i++) wiz_dec(o->fields[i]);
+  h->tag = 1002;
+  h->size = 1;
+  wiz_inc(p);
+  o->fields[0] = p;
+  h->rc--; /* shared: still alive */
+  return p;
 }
 
 /* ---- closures ---- */
@@ -452,6 +572,8 @@ WIZ_API wiz_val wiz_reuse(wiz_val tok, uint32_t tag, uint32_t n) {
     wiz_untrack(h);
     free(h);
   }
+  /* without fields the result is a scalar: `reuse w in ctor t` just frees the token */
+  if (n == 0) return WIZ_BOX(tag);
   return wiz_ctor_new(tag, n);
 }
 
@@ -507,6 +629,109 @@ WIZ_API wiz_val wiz_out_nat(uint64_t n) {
   mpz_t z;
   mpz_init_set_ui(z, n);
   return wiz_big_norm(z);
+}
+
+/* ---- machine words (lib/Word.wiz) ----
+   `UIntN w` and `IntN w` are `mk (toNat : Nat)`: an object holding the bits as a number
+   below 2^w (two's complement for `IntN`). The natives below implement the Wiz
+   definitions: in a uint64_t up to 64 bits, with GMP beyond. Each consumes its arguments. */
+enum { WIZ_W_ADD, WIZ_W_SUB, WIZ_W_MUL, WIZ_W_UDIV, WIZ_W_UMOD, WIZ_W_NOT, WIZ_W_SHL,
+       WIZ_W_SDIV, WIZ_W_SREM, WIZ_W_ASHR, WIZ_W_SLT, WIZ_W_SLE };
+/* the object is `⟨0 ◾ bits⟩` (the width is an erased index) */
+static wiz_val wiz_word_bits(wiz_val o) {
+  wiz_val f = ((wiz_ctor *)o)->fields[1];
+  wiz_inc(f); wiz_dec(o);
+  return f;
+}
+static wiz_val wiz_word_mk(wiz_val n) {
+  wiz_val r = wiz_ctor_new(0, 2);
+  WIZ_SET(r, 0, WIZ_BOX(0)); WIZ_SET(r, 1, n);
+  return r;
+}
+/* a number below 2^64, as a uint64_t (without consuming it) */
+static int wiz_word_u64(wiz_val v, uint64_t *out) {
+  if (WIZ_IS_SCALAR(v)) { *out = WIZ_UNBOX(v); return 1; }
+  if (mpz_sizeinbase(((wiz_big *)v)->z, 2) > 64) return 0;
+  *out = mpz_get_ui(((wiz_big *)v)->z);
+  return 1;
+}
+/* bits of width w as a signed number (in place) */
+static void wiz_word_signed(mpz_t x, uint64_t w) {
+  if (w > 0 && mpz_tstbit(x, w - 1)) { mpz_t p; mpz_init(p); mpz_setbit(p, w); mpz_sub(x, x, p); mpz_clear(p); }
+}
+/* op on words of width w with bits x and y (k: a shift); comparisons give 0 or 1 */
+static wiz_val wiz_word_op(int op, uint64_t w, wiz_val a, wiz_val b, uint64_t k) {
+  uint64_t x, y = 0;
+  if (w <= 64 && wiz_word_u64(a, &x) && wiz_word_u64(b, &y)) {
+    uint64_t mask = w == 64 ? ~(uint64_t)0 : (((uint64_t)1 << w) - 1), r;
+    int s = 64 - (int)w;
+    int64_t sx = w ? (int64_t)(x << s) >> s : 0, sy = w ? (int64_t)(y << s) >> s : 0;
+    wiz_dec(a); wiz_dec(b);
+    switch (op) {
+    case WIZ_W_ADD: r = x + y; break;
+    case WIZ_W_SUB: r = x - y; break;
+    case WIZ_W_MUL: r = x * y; break;
+    case WIZ_W_UDIV: r = y ? x / y : 0; break;
+    case WIZ_W_UMOD: r = y ? x % y : x; break;
+    case WIZ_W_NOT: r = ~x; break;
+    case WIZ_W_SHL: r = k >= w ? 0 : x << k; break;
+    case WIZ_W_SDIV: r = y == 0 ? 0 : (sy == -1 ? (uint64_t)0 - x : (uint64_t)(sx / sy)); break;
+    case WIZ_W_SREM: r = y == 0 ? x : (sy == -1 ? 0 : (uint64_t)(sx % sy)); break;
+    case WIZ_W_ASHR: r = (uint64_t)(sx >> (k >= w ? (w ? w - 1 : 0) : k)); break;
+    case WIZ_W_SLT: return WIZ_BOX(sx < sy);
+    default: return WIZ_BOX(sx <= sy);
+    }
+    return wiz_out_nat(r & mask);
+  }
+  mpz_t mx, my;
+  wiz_to_mpz(mx, a); wiz_to_mpz(my, b);
+  wiz_dec(a); wiz_dec(b);
+  int cmp = -2;
+  switch (op) {
+  case WIZ_W_ADD: mpz_add(mx, mx, my); break;
+  case WIZ_W_SUB: mpz_sub(mx, mx, my); break;
+  case WIZ_W_MUL: mpz_mul(mx, mx, my); break;
+  case WIZ_W_UDIV: if (mpz_sgn(my) == 0) mpz_set_ui(mx, 0); else mpz_fdiv_q(mx, mx, my); break;
+  case WIZ_W_UMOD: if (mpz_sgn(my) != 0) mpz_fdiv_r(mx, mx, my); break;
+  case WIZ_W_NOT: mpz_com(mx, mx); break;
+  case WIZ_W_SHL: if (k >= w) mpz_set_ui(mx, 0); else mpz_mul_2exp(mx, mx, k); break;
+  case WIZ_W_SDIV: case WIZ_W_SREM:
+    if (mpz_sgn(my) == 0) { if (op == WIZ_W_SDIV) mpz_set_ui(mx, 0); break; }
+    wiz_word_signed(mx, w); wiz_word_signed(my, w);
+    if (op == WIZ_W_SDIV) mpz_tdiv_q(mx, mx, my); else mpz_tdiv_r(mx, mx, my);
+    break;
+  case WIZ_W_ASHR: wiz_word_signed(mx, w); mpz_fdiv_q_2exp(mx, mx, k >= w ? w : k); break;
+  default: wiz_word_signed(mx, w); wiz_word_signed(my, w); cmp = mpz_cmp(mx, my); break;
+  }
+  mpz_clear(my);
+  if (cmp != -2) { mpz_clear(mx); return WIZ_BOX(op == WIZ_W_SLT ? cmp < 0 : cmp <= 0); }
+  mpz_fdiv_r_2exp(mx, mx, w);
+  return wiz_big_norm(mx);
+}
+#define WIZ_WORD_BIN(name, op) \
+  WIZ_API wiz_val wiz_word_##name(uint64_t w, wiz_val a, wiz_val b) { \
+    return wiz_word_mk(wiz_word_op(op, w, wiz_word_bits(a), wiz_word_bits(b), 0)); }
+WIZ_WORD_BIN(add, WIZ_W_ADD)
+WIZ_WORD_BIN(sub, WIZ_W_SUB)
+WIZ_WORD_BIN(mul, WIZ_W_MUL)
+WIZ_WORD_BIN(udiv, WIZ_W_UDIV)
+WIZ_WORD_BIN(umod, WIZ_W_UMOD)
+WIZ_WORD_BIN(sdiv, WIZ_W_SDIV)
+WIZ_WORD_BIN(srem, WIZ_W_SREM)
+WIZ_API wiz_val wiz_word_not(uint64_t w, wiz_val a) {
+  return wiz_word_mk(wiz_word_op(WIZ_W_NOT, w, wiz_word_bits(a), WIZ_BOX(0), 0));
+}
+WIZ_API wiz_val wiz_word_shl(uint64_t w, wiz_val a, uint64_t k) {
+  return wiz_word_mk(wiz_word_op(WIZ_W_SHL, w, wiz_word_bits(a), WIZ_BOX(0), k));
+}
+WIZ_API wiz_val wiz_word_ashr(uint64_t w, wiz_val a, uint64_t k) {
+  return wiz_word_mk(wiz_word_op(WIZ_W_ASHR, w, wiz_word_bits(a), WIZ_BOX(0), k));
+}
+WIZ_API int wiz_word_slt(uint64_t w, wiz_val a, wiz_val b) {
+  return WIZ_UNBOX(wiz_word_op(WIZ_W_SLT, w, wiz_word_bits(a), wiz_word_bits(b), 0)) != 0;
+}
+WIZ_API int wiz_word_sle(uint64_t w, wiz_val a, wiz_val b) {
+  return WIZ_UNBOX(wiz_word_op(WIZ_W_SLE, w, wiz_word_bits(a), wiz_word_bits(b), 0)) != 0;
 }
 
 /* a constructor value: a flat object ⟨tag f₁ … fₙ⟩, or just the tag without fields */

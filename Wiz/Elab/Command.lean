@@ -443,7 +443,7 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   -- macros and tactics run against the globals as they are when this command starts
   let compileCode (roots : List Name) := match metaCode.get with
     | .ok c => if roots.all c.contains then .ok c
-      else (compileReachable g builtins roots).mapError (s!"cannot compile the environment: {·}")
+      else (compileReachable g builtins roots (externImpls := false)).mapError (s!"cannot compile the environment: {·}")
     | .error e => .error e
   let runProcMacro f stx scope := do Elab.runProcMacro (← compileCode [f, "Macro.run"]) f stx scope (macroEnv g)
   let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
@@ -462,7 +462,7 @@ def mkMetaCode (g : Globals R) (builtins procMacros tactics : List (Name × Name
     Thunk (Except String Code) :=
   Thunk.mk fun _ =>
     let roots := "TacticM.run" :: "Macro.run" :: (procMacros ++ tactics).map (·.2) ++ more
-    (compileReachable g builtins roots).mapError (s!"cannot compile the macros and tactics: {·}")
+    (compileReachable g builtins roots (externImpls := false)).mapError (s!"cannot compile the macros and tactics: {·}")
 
 /-- The method functions of a class `C` (from its structure declaration):
 `C.f : {Δ} → [self : C Δ] → F`, the field `f` of `self`, where earlier fields in `F`
@@ -655,7 +655,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     { s with metaCode := mkMetaCode s.globals s.builtins s.procMacros s.tactics more }
   let metaCodeFor (f : Name) (runner : Name := "CommandMacro.run") : Except String Code := match s.metaCode.get with
     | .ok c => if c.contains f && c.contains runner then .ok c
-      else (compileReachable s.globals s.builtins [f, runner]).mapError (s!"cannot compile {f}: {·}")
+      else (compileReachable s.globals s.builtins [f, runner] (externImpls := false)).mapError (s!"cannot compile {f}: {·}")
     | .error e => .error e
   -- elaborate the commands a command macro or deriver produced
   let elabExpansion (what : String) (r : Except String (Array Syntax × Nat)) (info : SourceInfo) :
@@ -920,7 +920,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.builtin" =>
     let key := ((cmd.getArg 1).getId?).getD "_"
     let n := ((cmd.getArg 3).getId?).getD "_"
-    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo"]
+    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo",
+      "nat.div", "nat.mod", "nat.pow", "nat.land", "nat.lor", "nat.xor", "nat.shiftLeft", "nat.shiftRight", "nat.log2"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
     else if !s.globals.contains n then report .error cmd.info s!"unknown declaration {n}"
     else modify fun s => { s with builtins := (key, n) :: s.builtins,
@@ -1052,7 +1053,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             | .const "Bool" _ => some 'b'
             | .const "Bytes" _ | .const "Array" _ | .const "Str" _ | .const "StrMap" _ => some 'w'
             | .var _ => some 'w'
-            | .const n _ => if s.foreignTypes.any (·.1 == n) then some 'p' else none
+            | .const n _ =>
+              if s.foreignTypes.any (·.1 == n) then some 'p'
+              -- a Wiz data type (`UIntN w`): the value as it is, for runtime natives
+              else if (s.globals.find? n).any (·.value.isSome) then some 'w' else none
             | _ => none
         let rec params : Term R → List (Term R × Term R) × Term R
           | .pi _ _ q A B _ => let (ps, r) := params B; ((q, A) :: ps, r)
@@ -1071,7 +1075,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
                                               globals := { g with builtins := (key, name) :: g.builtins } }
           | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
         | _, _ =>
-          let msg := "a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool or Unit (the result may be in IO)"
+          let msg := "a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit or a Wiz data type (the result may be in IO)"
           report .error cmd.info msg
   | "command.attrMacro" =>
     let k := ((cmd.getArg 3).getId?).getD "_"
@@ -1103,6 +1107,31 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .ok () =>
       modify fun s => { s with tactics := (k, f) :: s.tactics }
       remakeMetaCode
+  | "command.attrImplementedBy" =>
+    -- `attribute [implemented_by g] f`: compiled code runs `g` wherever it would run `f`
+    -- (erasure takes `g`'s code for `f`); the kernel and proofs keep `f`'s definition. So
+    -- `g` must have `f`'s type (up to conversion), at the same universe levels.
+    let impl := ((cmd.getArg 3).getId?).getD "_"
+    let f := ((cmd.getArg 5).getId?).getD "_"
+    match s.globals.find? f, s.globals.find? impl with
+    | none, _ => report .error (cmd.getArg 5).info s!"unknown declaration {f}"
+    | _, none => report .error (cmd.getArg 3).info s!"unknown declaration {impl}"
+    | some df, some di =>
+      if s.builtins.any (·.2 == f) then
+        report .error (cmd.getArg 5).info s!"{f} is a builtin or foreign function: it already has an implementation"
+      else if f == impl then report .error (cmd.getArg 3).info s!"{f} can't be implemented by itself"
+      else if df.levelParams.length != di.levelParams.length then
+        report .error (cmd.getArg 3).info
+          s!"{impl} has {di.levelParams.length} universe parameters, {f} has {df.levelParams.length}"
+      else
+        let us := df.levelParams.map Level.param
+        let tyI := di.type.instLevels di.levelParams us
+        let g := s.globals
+        if !convTy g #[] (eval g [] df.type) (eval g [] tyI) then
+          report .error (cmd.getArg 3).info
+            s!"{impl} can't implement {f}: its type {tyI.pretty} is not {f}'s type {df.type.pretty}"
+        else
+          modify fun s => { s with globals := s.globals.insert { df with impl := some (.const impl us) } }
   | "command.attrDeriver" =>
     let C := ((cmd.getArg 3).getId?).getD "_"
     let f := ((cmd.getArg 5).getId?).getD "_"
@@ -1143,7 +1172,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let result := do
         let (ty, _) ← Wiz.infer ctx t
         let e ← eraseTop ctx t ty
-        let code ← compileReachable s.globals s.builtins (e.globals.toList)
+        let code ← compileReachable s.globals s.builtins (e.globals.toList) (externImpls := false)
         pure (ty, e, code)
       match result with
       | .ok (ty, e, code) =>
@@ -1165,7 +1194,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let result : Except String (VTy R × RVal) := do
         let (ty, _) ← (Wiz.infer ctx t).mapError toString
         let e ← (eraseTop ctx t ty).mapError toString
-        let code ← (compileReachable s.globals s.builtins e.globals.toList).mapError toString
+        let code ← (compileReachable s.globals s.builtins e.globals.toList (externImpls := false)).mapError toString
         let decls ← IR.lowerProgram code e
         let (v, _) ← IR.runProgram (decls.map (·.optimize))
         pure (ty, v)

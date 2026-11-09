@@ -150,7 +150,7 @@ def nativeArity (key : Name) : Nat :=
   | some sig => sig.params.length + (if sig.io then 1 else 0)
   | none => match key with
     | "nat.zero" => 0
-    | "nat.succ" | "nat.pred" => 1
+    | "nat.succ" | "nat.pred" | "nat.log2" => 1
     | _ => 2
 
 end RVal
@@ -182,12 +182,10 @@ partial def apply (code : Code) (f a : RVal) : RVal :=
 /-- Native arithmetic. `nat.beq` returns a tag of the prelude's `Bool` (`false`, `true`). -/
 partial def fireNative (op : Name) (args : Array RVal) : RVal :=
   let n (i : Nat) : Nat := ((args[i]?.getD .erased).toNat?).getD 0
+  match if op.startsWith "nat." then natNative? op (args.map fun a => (a.toNat?).getD 0) else none with
+  | some r => .nat r
+  | none =>
   match op with
-  | "nat.succ" => .nat (n 0 + 1)
-  | "nat.pred" => .nat (n 0 - 1)
-  | "nat.add" => .nat (n 0 + n 1)
-  | "nat.sub" => .nat (n 0 - n 1)
-  | "nat.mul" => .nat (n 0 * n 1)
   | "nat.beq" => .obj (if n 0 == n 1 then 1 else 0) #[]
   | "nat.blt" => .obj (if n 0 < n 1 then 1 else 0) #[]
   -- the interpreter doesn't memoise: a suspension is its function
@@ -240,6 +238,7 @@ partial def runPrim (code : Code) : Prim → Array RVal → RVal
     | .coit .. => .obj 1 #[]
     | .scofix .. => .obj 2 #[]
     | _ => .obj 0 #[]
+  | .lazySet, #[_, p] => p
   | .pack, #[D, x] => RVal.packWith (apply code) D x
   | .unpack, #[D, x] | .view .., #[D, x] => RVal.unpackWith (apply code) D x
   | .tag, #[x] => .obj (RVal.tagOf x) #[]
@@ -348,8 +347,11 @@ partial def ETerm.globals (e : ETerm) (acc : Array Name := #[]) : Array Name :=
   | _ => acc
 
 /-- Erase the definitions reachable from `roots`. (Erasing everything would be wasteful:
-recursors of big types are expensive to erase and rarely run.) -/
-def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : List Name) : TCM Code := do
+recursors of big types are expensive to erase and rarely run.) With `externImpls := false` (the
+interpreters, which can't call C), a definition implemented by a foreign function keeps
+its own code: `#eval` and `#run` run the model, compiled code the native. -/
+def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
+    (externImpls : Bool := true) : TCM Code := do
   let mut code : Code := {}
   let mut todo := roots.toArray
   -- definitions registered as native operations
@@ -358,10 +360,21 @@ def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : L
     let n := todo.back
     todo := todo.pop
     if code.contains n then continue
-    if let some (key, _) := natives.find? (·.2 == n) then
+    -- `attribute [implemented_by m] n`: `n` gets `m`'s code (following chains)
+    let rec target (m : Name) : Nat → Name
+      | 0 => m
+      | fuel + 1 => match (g.find? m).bind (·.impl) with
+        | some (.const m' _) =>
+          if !externImpls && builtins.any (fun (k, x) => x == m' && k.startsWith "extern:") then m
+          else target m' fuel
+        | _ => m
+    let m := target n 100
+    if let some (key, _) := natives.find? (·.2 == m) then
       code := code.insert n (.prim .unreachable #[.global key])
       continue
-    let some d := g.find? n | continue
+    let some d := g.find? m | continue
+    -- (an `implemented_by` not followed: the definition itself)
+    let d := if d.impl matches some (.const ..) then { d with impl := none } else d
     -- a declaration that can't be erased yet becomes a runtime error if it is reached
     let e := match eraseDecl g d with
       | .ok e => e

@@ -114,6 +114,60 @@ def Char.code : Char → Nat
   | .mk n => n
 builtin string := String
 
+-- Division, powers and bits (for bit vectors and machine integers). The kernel sees
+-- these definitions (structural recursion on a fuel argument that bounds the number
+-- of steps); on numerals it computes natively, as compiled code does. As in Lean,
+-- `n / 0 = 0`, `Nat.mod n 0 = n` and `Nat.log2 0 = 0`.
+def Nat.divGo : Nat → Nat → Nat → Nat
+  | .zero, _, _ => .zero
+  | .succ fuel, n, m => match Nat.lt n m with
+    | .true => .zero
+    | .false => .succ (Nat.divGo fuel (Nat.sub n m) m)
+def Nat.div (n m : Nat) : Nat := match m with
+  | .zero => .zero
+  | .succ _ => Nat.divGo n n m
+def Nat.mod (n m : Nat) : Nat := Nat.sub n (Nat.mul m (Nat.div n m))
+-- `b ^ e`, recursing on `e`
+def Nat.powFrom : Nat → Nat → Nat
+  | .zero, _ => .succ .zero
+  | .succ e, b => Nat.mul b (Nat.powFrom e b)
+def Nat.pow (b e : Nat) : Nat := Nat.powFrom e b
+def Bool.xor : Bool → Bool → Bool
+  | .true, b => Bool.not b
+  | .false, b => b
+-- a bitwise operation, bit by bit from the lowest (`fuel` bounds the number of bits)
+def Nat.isOdd (n : Nat) : Bool := Nat.beq (Nat.mod n 2) 1
+def Nat.bitwise (f : Bool → Bool → Bool) : Nat → Nat → Nat → Nat
+  | .zero, _, _ => .zero
+  | .succ fuel, a, b =>
+    let rest := Nat.mul 2 (Nat.bitwise f fuel (Nat.div a 2) (Nat.div b 2));
+    match f (Nat.isOdd a) (Nat.isOdd b) with
+    | .true => .succ rest
+    | .false => rest
+def Nat.land (a b : Nat) : Nat := Nat.bitwise Bool.and (Nat.add a b) a b
+def Nat.lor (a b : Nat) : Nat := Nat.bitwise Bool.or (Nat.add a b) a b
+def Nat.xor (a b : Nat) : Nat := Nat.bitwise Bool.xor (Nat.add a b) a b
+def Nat.shiftLeft (a n : Nat) : Nat := Nat.mul a (Nat.pow 2 n)
+def Nat.shiftRight (a n : Nat) : Nat := Nat.div a (Nat.pow 2 n)
+def Nat.log2Go : Nat → Nat → Nat
+  | .zero, _ => .zero
+  | .succ fuel, n => match Nat.lt n 2 with
+    | .true => .zero
+    | .false => .succ (Nat.log2Go fuel (Nat.div n 2))
+def Nat.log2 (n : Nat) : Nat := Nat.log2Go n n
+builtin nat.div := Nat.div
+builtin nat.mod := Nat.mod
+builtin nat.pow := Nat.pow
+builtin nat.land := Nat.land
+builtin nat.lor := Nat.lor
+builtin nat.xor := Nat.xor
+builtin nat.shiftLeft := Nat.shiftLeft
+builtin nat.shiftRight := Nat.shiftRight
+builtin nat.log2 := Nat.log2
+-- bit `i` of `n`
+def Nat.testBit (n i : Nat) : Bool := Nat.isOdd (Nat.shiftRight n i)
+infixl:70 " / " => Nat.div
+
 -- Errors.
 inductive Except (E A : Type) where
   | error (e : E)

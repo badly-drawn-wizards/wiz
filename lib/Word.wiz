@@ -1,0 +1,174 @@
+import Prelude
+-- Machine integers: `import Word`.
+--
+-- `UIntN w` is a w-bit unsigned integer and `IntN w` a w-bit two's-complement integer.
+-- Both are a number of bits, below `2^w` (normalised by construction: every operation
+-- here reduces mod `2^w`, so arithmetic wraps around). The kernel computes with these
+-- definitions (fast on numerals: `Nat.mod`, `Nat.pow`, … are native), proofs see them,
+-- and compiled code runs native implementations instead (`implemented_by`, at the end).
+-- One width-indexed type serves the HDL's `Unsigned n` (any width: 1, 5, 65, …) and
+-- Rust's `u32` (`U32 := UIntN 32`). Division by zero follows Lean: `a / 0 = 0` and
+-- `a % 0 = a` (Rust panics; a Rust front end checks first).
+
+-- The width is an index, not a parameter: types are structural, so a parameter that no
+-- field mentions would be forgotten (`UIntN 8` and `UIntN 16` would be one type, and
+-- `{w : Nat}` could not be inferred from an argument).
+inductive UIntN : Nat → Type where
+  | mk {0 w : Nat} (toNat : Nat) : UIntN w
+inductive IntN : Nat → Type where
+  | mk {0 w : Nat} (toNat : Nat) : IntN w
+
+-- the bits as a number (for `IntN`, the two's-complement bits: `-1` is `2^w - 1`)
+def UIntN.toNat {w : Nat} : UIntN w → Nat
+  | .mk n => n
+def IntN.toNat {w : Nat} : IntN w → Nat
+  | .mk n => n
+
+def UIntN.ofNat (w n : Nat) : UIntN w := .mk (Nat.mod n (Nat.pow 2 w))
+def UIntN.zero (w : Nat) : UIntN w := .mk 0
+def UIntN.max (w : Nat) : UIntN w := .mk (Nat.pow 2 w - 1)
+
+-- Wrapping arithmetic.
+def UIntN.add {ω w : Nat} (a b : UIntN w) : UIntN w := UIntN.ofNat w (a.toNat + b.toNat)
+def UIntN.sub {ω w : Nat} (a b : UIntN w) : UIntN w := UIntN.ofNat w (a.toNat + (Nat.pow 2 w - b.toNat))
+def UIntN.mul {ω w : Nat} (a b : UIntN w) : UIntN w := UIntN.ofNat w (a.toNat * b.toNat)
+def UIntN.neg {ω w : Nat} (a : UIntN w) : UIntN w := UIntN.sub (UIntN.zero w) a
+def UIntN.div {ω w : Nat} (a b : UIntN w) : UIntN w := .mk (Nat.div a.toNat b.toNat)
+def UIntN.mod {ω w : Nat} (a b : UIntN w) : UIntN w := .mk (Nat.mod a.toNat b.toNat)
+
+-- Comparisons.
+def UIntN.beq {w : Nat} (a b : UIntN w) : Bool := Nat.beq a.toNat b.toNat
+def UIntN.lt {w : Nat} (a b : UIntN w) : Bool := Nat.lt a.toNat b.toNat
+def UIntN.le {w : Nat} (a b : UIntN w) : Bool := Nat.le a.toNat b.toNat
+
+-- Bits. Shifts by `k ≥ w` give `0` (as Lean's `BitVec`; Rust's `<<` panics there and
+-- `wrapping_shl` shifts by `k % w`).
+def UIntN.land {w : Nat} (a b : UIntN w) : UIntN w := .mk (Nat.land a.toNat b.toNat)
+def UIntN.lor {w : Nat} (a b : UIntN w) : UIntN w := .mk (Nat.lor a.toNat b.toNat)
+def UIntN.xor {w : Nat} (a b : UIntN w) : UIntN w := .mk (Nat.xor a.toNat b.toNat)
+def UIntN.not {ω w : Nat} (a : UIntN w) : UIntN w := .mk (Nat.pow 2 w - 1 - a.toNat)
+def UIntN.shiftLeft {ω w : Nat} (a : UIntN w) (k : Nat) : UIntN w := UIntN.ofNat w (Nat.shiftLeft a.toNat k)
+def UIntN.shiftRight {w : Nat} (a : UIntN w) (k : Nat) : UIntN w := .mk (Nat.shiftRight a.toNat k)
+def UIntN.testBit {w : Nat} (a : UIntN w) (i : Nat) : Bool := Nat.testBit a.toNat i
+def UIntN.msb {ω w : Nat} (a : UIntN w) : Bool := Nat.testBit a.toNat (w - 1)
+
+-- Conversions: to another width (zero-extending or truncating), and the same bits as
+-- a signed number (Rust's `as`).
+def UIntN.resize {w : Nat} (ω v : Nat) (a : UIntN w) : UIntN v := UIntN.ofNat v a.toNat
+def UIntN.toIntN {w : Nat} (a : UIntN w) : IntN w := .mk a.toNat
+def IntN.toUIntN {w : Nat} (a : IntN w) : UIntN w := .mk a.toNat
+
+-- Signed numbers: `n` and `-n`, the sign, and the magnitude.
+def IntN.ofNat (w n : Nat) : IntN w := .mk (Nat.mod n (Nat.pow 2 w))
+def IntN.ofNeg (w n : Nat) : IntN w := .mk (Nat.mod (Nat.pow 2 w - Nat.mod n (Nat.pow 2 w)) (Nat.pow 2 w))
+def IntN.isNeg {ω w : Nat} (a : IntN w) : Bool := Nat.testBit a.toNat (w - 1)
+def IntN.natAbs {ω w : Nat} (a : IntN w) : Nat := match IntN.isNeg a with
+  | .true => Nat.pow 2 w - a.toNat
+  | .false => a.toNat
+-- the smallest and largest values: `-2^(w-1)` and `2^(w-1) - 1`
+def IntN.min (w : Nat) : IntN w := .mk (Nat.pow 2 (w - 1))
+def IntN.max (w : Nat) : IntN w := .mk (Nat.pow 2 (w - 1) - 1)
+
+-- The same bits as unsigned arithmetic: wrapping `+ - *`, bits, left shifts.
+def IntN.add {ω w : Nat} (a b : IntN w) : IntN w := (UIntN.add a.toUIntN b.toUIntN).toIntN
+def IntN.sub {ω w : Nat} (a b : IntN w) : IntN w := (UIntN.sub a.toUIntN b.toUIntN).toIntN
+def IntN.mul {ω w : Nat} (a b : IntN w) : IntN w := (UIntN.mul a.toUIntN b.toUIntN).toIntN
+def IntN.neg {ω w : Nat} (a : IntN w) : IntN w := (UIntN.neg a.toUIntN).toIntN
+def IntN.beq {w : Nat} (a b : IntN w) : Bool := Nat.beq a.toNat b.toNat
+def IntN.land {w : Nat} (a b : IntN w) : IntN w := .mk (Nat.land a.toNat b.toNat)
+def IntN.lor {w : Nat} (a b : IntN w) : IntN w := .mk (Nat.lor a.toNat b.toNat)
+def IntN.xor {w : Nat} (a b : IntN w) : IntN w := .mk (Nat.xor a.toNat b.toNat)
+def IntN.not {ω w : Nat} (a : IntN w) : IntN w := (UIntN.not a.toUIntN).toIntN
+def IntN.shiftLeft {ω w : Nat} (a : IntN w) (k : Nat) : IntN w := (UIntN.shiftLeft a.toUIntN k).toIntN
+
+-- Division truncates towards zero and the remainder takes the dividend's sign, as in
+-- Rust: `-7 / 2 = -3`, `-7 % 2 = -1`; `min / -1` wraps to `min` (`wrapping_div`).
+def IntN.div {ω w : Nat} (a b : IntN w) : IntN w := match Nat.beq b.toNat 0 with
+  | .true => .mk 0
+  | .false =>
+    let q := Nat.div (IntN.natAbs a) (IntN.natAbs b);
+    match Bool.xor (IntN.isNeg a) (IntN.isNeg b) with
+    | .true => IntN.ofNeg w q
+    | .false => IntN.ofNat w q
+def IntN.rem {ω w : Nat} (a b : IntN w) : IntN w := match Nat.beq b.toNat 0 with
+  | .true => a
+  | .false =>
+    let r := Nat.mod (IntN.natAbs a) (IntN.natAbs b);
+    match IntN.isNeg a with
+    | .true => IntN.ofNeg w r
+    | .false => IntN.ofNat w r
+def IntN.lt {ω w : Nat} (a b : IntN w) : Bool := match IntN.isNeg a, IntN.isNeg b with
+  | .true, .false => .true
+  | .false, .true => .false
+  | _, _ => Nat.lt a.toNat b.toNat
+def IntN.le {ω w : Nat} (a b : IntN w) : Bool := Bool.not (IntN.lt b a)
+-- arithmetic shift: copies of the sign bit come in
+def IntN.shiftRight {ω w : Nat} (a : IntN w) (k : Nat) : IntN w := match IntN.isNeg a with
+  | .true => IntN.not (.mk (Nat.shiftRight (IntN.not a).toNat k))
+  | .false => .mk (Nat.shiftRight a.toNat k)
+-- to another width: sign-extending or truncating
+def IntN.resize {ω w : Nat} (ω v : Nat) (a : IntN w) : IntN v := match IntN.isNeg a with
+  | .true => IntN.ofNeg v (IntN.natAbs a)
+  | .false => IntN.ofNat v a.toNat
+
+-- Rust's fixed widths. Operations come from the width-indexed types (`x.add y`).
+def U8 : Type := UIntN 8
+def U16 : Type := UIntN 16
+def U32 : Type := UIntN 32
+def U64 : Type := UIntN 64
+def USize : Type := UIntN 64
+def I8 : Type := IntN 8
+def I16 : Type := IntN 16
+def I32 : Type := IntN 32
+def I64 : Type := IntN 64
+def U8.ofNat (n : Nat) : U8 := UIntN.ofNat 8 n
+def U16.ofNat (n : Nat) : U16 := UIntN.ofNat 16 n
+def U32.ofNat (n : Nat) : U32 := UIntN.ofNat 32 n
+def U64.ofNat (n : Nat) : U64 := UIntN.ofNat 64 n
+def USize.ofNat (n : Nat) : USize := UIntN.ofNat 64 n
+def I8.ofNat (n : Nat) : I8 := IntN.ofNat 8 n
+def I16.ofNat (n : Nat) : I16 := IntN.ofNat 16 n
+def I32.ofNat (n : Nat) : I32 := IntN.ofNat 32 n
+def I64.ofNat (n : Nat) : I64 := IntN.ofNat 64 n
+def I8.ofNeg (n : Nat) : I8 := IntN.ofNeg 8 n
+def I16.ofNeg (n : Nat) : I16 := IntN.ofNeg 16 n
+def I32.ofNeg (n : Nat) : I32 := IntN.ofNeg 32 n
+def I64.ofNeg (n : Nat) : I64 := IntN.ofNeg 64 n
+
+-- Native implementations for compiled code (runtime/wiz.c: a uint64_t up to 64 bits,
+-- GMP beyond). `#eval` and `#run` run the definitions above. Operations whose
+-- definition is already one native `Nat` operation (`land`, comparisons, …) need none.
+extern "wiz_word_add" UIntN.addNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
+extern "wiz_word_sub" UIntN.subNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
+extern "wiz_word_mul" UIntN.mulNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
+extern "wiz_word_udiv" UIntN.divNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
+extern "wiz_word_umod" UIntN.modNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
+extern "wiz_word_not" UIntN.notNative : {ω w : Nat} → UIntN w → UIntN w
+extern "wiz_word_shl" UIntN.shiftLeftNative : {ω w : Nat} → UIntN w → Nat → UIntN w
+attribute [implemented_by UIntN.addNative] UIntN.add
+attribute [implemented_by UIntN.subNative] UIntN.sub
+attribute [implemented_by UIntN.mulNative] UIntN.mul
+attribute [implemented_by UIntN.divNative] UIntN.div
+attribute [implemented_by UIntN.modNative] UIntN.mod
+attribute [implemented_by UIntN.notNative] UIntN.not
+attribute [implemented_by UIntN.shiftLeftNative] UIntN.shiftLeft
+extern "wiz_word_add" IntN.addNative : {ω w : Nat} → IntN w → IntN w → IntN w
+extern "wiz_word_sub" IntN.subNative : {ω w : Nat} → IntN w → IntN w → IntN w
+extern "wiz_word_mul" IntN.mulNative : {ω w : Nat} → IntN w → IntN w → IntN w
+extern "wiz_word_sdiv" IntN.divNative : {ω w : Nat} → IntN w → IntN w → IntN w
+extern "wiz_word_srem" IntN.remNative : {ω w : Nat} → IntN w → IntN w → IntN w
+extern "wiz_word_not" IntN.notNative : {ω w : Nat} → IntN w → IntN w
+extern "wiz_word_shl" IntN.shiftLeftNative : {ω w : Nat} → IntN w → Nat → IntN w
+extern "wiz_word_ashr" IntN.shiftRightNative : {ω w : Nat} → IntN w → Nat → IntN w
+extern "wiz_word_slt" IntN.ltNative : {ω w : Nat} → IntN w → IntN w → Bool
+extern "wiz_word_sle" IntN.leNative : {ω w : Nat} → IntN w → IntN w → Bool
+attribute [implemented_by IntN.addNative] IntN.add
+attribute [implemented_by IntN.subNative] IntN.sub
+attribute [implemented_by IntN.mulNative] IntN.mul
+attribute [implemented_by IntN.divNative] IntN.div
+attribute [implemented_by IntN.remNative] IntN.rem
+attribute [implemented_by IntN.notNative] IntN.not
+attribute [implemented_by IntN.shiftLeftNative] IntN.shiftLeft
+attribute [implemented_by IntN.shiftRightNative] IntN.shiftRight
+attribute [implemented_by IntN.ltNative] IntN.lt
+attribute [implemented_by IntN.leNative] IntN.le

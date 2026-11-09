@@ -283,7 +283,9 @@ def nativeNames : List String :=
   (.cons "Nat.beq" (.cons "Nat.blt" (.cons "Nat.lt" (.cons "Nat.le" (.cons "Nat.toString"
   (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "Str.ofString"
   (.cons "Array.empty" (.cons "Array.push" (.cons "Array.size" (.cons "Array.getD" (.cons "Array.set"
-  (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo" .nil))))))))))))))))))))))))
+  (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo"
+  (.cons "Nat.div" (.cons "Nat.mod" (.cons "Nat.pow" (.cons "Nat.land" (.cons "Nat.lor" (.cons "Nat.xor"
+  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))
 def elemStr (x : String) : List String → Bool
   | .nil => .false
   | .cons y rest => Bool.or (strEq x y) (elemStr x rest)

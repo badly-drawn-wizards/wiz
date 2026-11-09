@@ -125,6 +125,7 @@ partial def lower (env : List Binding) (e : ETerm) (k : Cont) : LowerM Body := d
     | .coit => lowerArgs env args.toList fun xs => bind (.ctor 1000 xs.toArray) k
     | .scofix => lowerArgs env args.toList fun xs => bind (.ctor 1001 xs.toArray) k
     | .lazyTag => lowerArgs env args.toList fun xs => bind (.prim "lazyTag" xs.toArray) k
+    | .lazySet => lowerArgs env args.toList fun xs => bind (.prim "lazySet" xs.toArray) k
     | .ind => lowerArgs env args.toList fun xs => bind (.fap "wiz.ind" xs.toArray) k
     | .delim => lowerArgs env args.toList fun xs => bind (.fap "wiz.delim" xs.toArray) k
     | .out => lowerArgs env args.toList fun xs => bind (.fap "wiz.out" xs.toArray) k

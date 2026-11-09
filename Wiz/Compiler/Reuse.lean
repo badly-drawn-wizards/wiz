@@ -15,8 +15,29 @@ allocates if not. Functional updates of unique data (mapping over a list you own
 then happen in place, with no allocation. The constructors of a type often have the same number of fields (the
 `cons` cells of a list always do), so sizes often match.
 
-Only allocations in the same block are paired (not across `case` or join points), so
-each token is used exactly once.
+This pass (`insertReuse`) pairs a drop with an allocation in the same block (not across
+`case` or join points), so each token is used exactly once.
+
+**Across `case`.** Taking a value apart and building the new one often happens
+in different blocks: the node is projected and dropped at once, but the new node is built
+two `case`s later, after comparing keys. `reuseAcross` runs first and follows a dropped
+cell into the branches (as Perceus and Lean 4's `ResetReuse` do):
+
+    drop x; …; case y of | … ctor … | … ctor … | ret z
+      ↦  let w := reset x; …; case y of | … reuse w in ctor … | … reuse w in ctor …
+                                        | let _ := reuse w in ctor 0; ret z
+
+The `reset` stays where the drop was (the fields are released as early as before), and
+each branch either uses the token or frees it at once: `reuse w in ctor t` without fields
+is the scalar `t` and needs no cell, so it frees `w`'s. Every path consumes the token
+exactly once.
+
+The IR has no types, so a dropped variable might be a scalar (a `Bool` returned by a
+function), whose token is always empty: pairing it would waste the allocation. Only
+variables known to be objects go across: projected from (with at least `i + 1` fields
+when field `i` was read) or built by a constructor. They are paired first, outermost
+drop first, with the first allocation on each path with at least that many fields; the
+local pass then pairs what is left.
 -/
 
 namespace Wiz.IR
@@ -39,6 +60,89 @@ partial def insertReuse (b : Body) : Body :=
 where
   tokenBase : Nat := 1000000
 
+/-- `reuse tok in ctor 0`: the scalar `0`, freeing the token's cell (a branch that doesn't
+use a token it was given). -/
+def freeToken (tok : Var) (b : Body) : Body :=
+  .vdecl (tok + insertReuse.tokenBase) (.reuse tok 0 #[]) b
+
+/-- Replace the first allocation with at least `n` fields (and at least one) on every path
+of `b` by a reuse of `tok`, through `case`s and join point continuations; branches without
+one free the token. `none` if no path has one. -/
+partial def claimAcross (tok : Var) (n : Nat) : Body → Option Body
+  | .vdecl y (.ctor t as) rest =>
+    if as.size ≥ max n 1 then some (.vdecl y (.reuse tok t as) rest)
+    else (claimAcross tok n rest).map (.vdecl y (.ctor t as) ·)
+  | .vdecl y e rest => (claimAcross tok n rest).map (.vdecl y e ·)
+  | .dup x rest => (claimAcross tok n rest).map (.dup x ·)
+  | .drop x rest => (claimAcross tok n rest).map (.drop x ·)
+  | .jdecl j ps body k => (claimAcross tok n k).map (.jdecl j ps body ·)
+  | .case x alts =>
+    let rs := alts.map (claimAcross tok n)
+    if rs.any (·.isSome) then
+      some (.case x ((alts.zip rs).map fun (a, r) => r.getD (freeToken tok a)))
+    else none
+  | _ => none
+
+/-- What a binding tells about objects: `proj i y` means `y` has at least `i + 1` fields
+(and is `x`'s parent); a constructor with `k` fields builds an object with `k`. -/
+def noteBinding (size : Std.HashMap Var Nat) (parent : Std.HashMap Var Var) (x : Var) :
+    Expr → Std.HashMap Var Nat × Std.HashMap Var Var
+  | .proj i y => (size.insert y (max (size.getD y 0) (i + 1)), parent.insert x y)
+  | .ctor _ as | .reuse _ _ as => (if as.isEmpty then size else size.insert x as.size, parent)
+  | _ => (size, parent)
+
+/-- `y` was projected (through some fields) from `x`. -/
+partial def descends (parent : Std.HashMap Var Var) (y x : Var) : Bool :=
+  match parent.get? y with
+  | some p => p == x || descends parent p x
+  | none => false
+
+mutual
+/-- Pair `drop x; rest` with an allocation across `case`s, if `x` is a known object:
+`let w := reset x; rest'` and `true`, or `rest` (its parts paired) and `false`.
+Its parts dropped later in the block are paired first: a structure is taken apart from
+the outside in and rebuilt from the inside out, so this puts each cell back in place. -/
+partial def pairDrop (size : Std.HashMap Var Nat) (parent : Std.HashMap Var Var) (x : Var)
+    (rest : Body) : Body × Bool :=
+  let rest := partsFirst size parent x rest
+  let tok := insertReuse.tokenBase + x
+  match size.get? x |>.bind (claimAcross tok · rest) with
+  | some rest' => (.vdecl tok (.reset x) rest', true)
+  | none => (rest, false)
+
+/-- Pair the drops of `x`'s parts in the straight-line prefix of `b`. -/
+partial def partsFirst (size : Std.HashMap Var Nat) (parent : Std.HashMap Var Var) (x : Var) :
+    Body → Body
+  | .vdecl y e rest =>
+    let (size, parent) := noteBinding size parent y e
+    .vdecl y e (partsFirst size parent x rest)
+  | .dup y rest => .dup y (partsFirst size parent x rest)
+  | .drop y rest =>
+    if descends parent y x then
+      match pairDrop size parent y rest with
+      | (.vdecl tok e rest', true) => .vdecl tok e (partsFirst size parent x rest')
+      | (rest', _) => .drop y (partsFirst size parent x rest')
+    else .drop y (partsFirst size parent x rest)
+  | b => b
+end
+
+/-- Pair the drops of known objects with allocations across `case` (see the module
+docstring), outermost first (but parts before the whole). `size` maps the variables
+known to be objects to a lower bound on their number of fields. -/
+partial def reuseAcross (size : Std.HashMap Var Nat := {}) (parent : Std.HashMap Var Var := {}) :
+    Body → Body
+  | .vdecl x e rest =>
+    let (size, parent) := noteBinding size parent x e
+    .vdecl x e (reuseAcross size parent rest)
+  | .drop x rest =>
+    match pairDrop size parent x rest with
+    | (.vdecl tok e rest', true) => .vdecl tok e (reuseAcross size parent rest')
+    | (rest', _) => .drop x (reuseAcross size parent rest')
+  | .dup x rest => .dup x (reuseAcross size parent rest)
+  | .case x alts => .case x (alts.map (reuseAcross size parent))
+  | .jdecl j ps body k => .jdecl j ps (reuseAcross {} {} body) (reuseAcross size parent k)
+  | b => b
+
 /-- Scalars (`◾`, small numbers, constructors without fields) have no reference count:
 remove the `dup`s and `drop`s of variables bound to them, so that they don't become
 `reset`s either. -/
@@ -49,6 +153,8 @@ partial def dropScalars (b : Body) (sc : Std.HashSet Var := {}) : Body :=
       | .erased => true
       | .lit n => n < 2 ^ 62
       | .ctor _ as => as.isEmpty
+      -- tests and tags are scalars too
+      | .prim op _ => op == "nat.beq" || op == "nat.blt" || op == "natTag" || op == "tag"
       | _ => false
     .vdecl x e (dropScalars rest (if scalar then sc.insert x else sc))
   | .dup x rest => if sc.contains x then dropScalars rest sc else .dup x (dropScalars rest sc)
@@ -213,10 +319,11 @@ def hoistConsts (decls : Array Decl) : Array Decl :=
     (st, ds.push { d with body := b })) ({}, #[])
   ds ++ st.decls
 
-/-- The backend's optimisations, in order: dead code, reference counting, then reuse. -/
+/-- The backend's optimisations, in order: dead code, reference counting, then reuse
+(across `case` first, then within blocks). -/
 def Decl.optimize (d : Decl) : Decl :=
   let d := { d with body := (elimDead d.body).1 }
   let d := d.insertRC
-  { d with body := insertReuse (dropScalars d.body) }
+  { d with body := insertReuse (reuseAcross {} {} (dropScalars d.body)) }
 
 end Wiz.IR
