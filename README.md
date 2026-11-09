@@ -262,7 +262,13 @@ whether it is a proposition (`propSort?`): two propositions compare by equivalen
 proposition and another type are different, and only other types compare by shape. A
 `Π` or `Σ` can't tell by itself (`(x : A) → B` is a proposition when `B` is), so it
 carries its sort (the elaborator writes it, the kernel checks it); without one, type
-equality waits. A cast between propositions applies the equivalence.
+equality waits. Surface `Π`/`Σ` get theirs from the levels `checkType` computes; the
+ones the elaborator builds itself (a definition's telescope, constructor, recursor and
+projection types, a structure's or an index's `Σ`, match motives) get theirs from the
+kernel's `typeSort?` in the context they live in (`Sorts` in `Elab/Basic.lean`, applied to
+every declaration before the kernel sees it). Only a `Π`/`Σ` under a `fun` whose
+variable's type isn't written down, or one that still mentions a metavariable, goes
+without. A cast between propositions applies the equivalence.
 
 Stuck equations, casts and proofs are new neutral heads (`Head.eq`, `Head.cast`,
 `Head.refl`, …). Some results of the computation rules need new binders. Values can't

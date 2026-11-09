@@ -193,6 +193,9 @@ def substDef : String :=
   "def subst {A : Type} (P : A → Type) {a b : A} (e : a = b) (pa : P a) : P b :=\n" ++
   "  cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa\n"
 
+/-- `TyOf a` is `a`'s type (as the elaborator built it) -/
+def tyOfDef : String := "def TyOf {ω A : Type} (a : A) : Type := A\n"
+
 def ottGroup : Group where
   name := "observational equality"
   exercise := "Exercises 4.10–4.14"
@@ -232,6 +235,23 @@ def ottGroup : Group where
           "def e : True = (True → True) := ((fun u => fun v => v), (fun f => ()))\n" ++
           "def bad : G True = G (True → True) := apTy Prop G True (True → True) e\n" ++
           "def anyType (A : Type) : A := let (x, y) := bad; absurd x") "absurd expects" },
+    -- the types the elaborator builds (a definition's telescope, constructor types)
+    -- carry their sorts too, so equations between them compute instead of waiting
+    { name := "a definition's type carries its sort: propositions in the domain", run := fun _ =>
+        ok (tyOfDef ++ "def f (x : True) : Unit := ()\ndef g (x : True → True) : Unit := ()\n" ++
+          "#reduce TyOf f = TyOf g")
+          ["(0 e : (0 _ : (0 x : True → True) → True) × ((0 x : True) → True → True)) × ((0 x : True → True) → True)"] },
+    { name := "a definition's type carries its sort: other types", run := fun _ =>
+        ok (tyOfDef ++ "inductive N where\n  | z\n  | s (n : N)\ndef h (x : N) : N := x\n" ++
+          "#reduce TyOf h = (N → N)\n" ++
+          "#reduce fun (e : TyOf h = (N → N)) (u : TyOf h) => (cast e u : N → N)")
+          ["(0 e : N = N) × ((0 x : N) → N = N)", "fun e u x => u x"] },
+    { name := "a constructor's type carries its sort", run := fun _ =>
+        ok (tyOfDef ++ "inductive Box (A : Type) where\n  | mk (a : A)\n" ++
+          "#reduce TyOf (@Box.mk Unit) = (Unit → Box Unit)")
+          ["(0 e : True) × ((0 x : Unit) → Box Unit = Box Unit)"] },
+    { name := "a match on several scrutinees whose types mention a variable", run := fun _ =>
+        ok "def pick (A : Type) (x y : A) : A := match x, y with\n  | a, b => b" },
     { name := "equality of proofs is rejected", run := fun _ =>
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
@@ -1734,6 +1754,21 @@ def selfHostGroup : Group where
         ioRun (kernel ++ "\n" ++ defs ++ main) ("(x0 : U0) → (x1 : x0) → x0\n(x0 : U0) → (x1 : x0) → x0\n" ++
           "error: type mismatch: expected U0, got U1\n(x0 : U0) → (x1 : (x1 : x0) → x0) → (x2 : x0) → x0\n" ++
           "λx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\nerror: not a function: its type is U1\n") },
+    { name := "the frontend gives the types it builds their sorts (sortTy)", run := fun _ => do
+        -- `(True → Unit) = ((True → True) → Unit)` built without sorts waits; with the
+        -- sorts `sortTy` fills in, it computes to the domains' equivalence
+        let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
+        let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
+        let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++
+          "def gTy (X : Tm) : Tm := .pi X (.unit 0)\n" ++
+          "def eqn (s : Bool) : Tm := match s with\n" ++
+          "  | .true => .eqTy (sortTy (gTy .ptrue)) (sortTy (gTy (.pi .ptrue .ptrue)))\n" ++
+          "  | .false => .eqTy (gTy .ptrue) (gTy (.pi .ptrue .ptrue))\n" ++
+          "def main : IO Unit := do\n  IO.println (normalize (eqn .false));\n  IO.println (normalize (eqn .true));\n" ++
+          "  IO.println (typeOf (sortTy (gTy (.pi .ptrue .ptrue))))\n"
+        ioRun prog ("EqTy((x0 : True) → Unit0, (x0 : (x0 : True) → True) → Unit0)\n" ++
+          "(x0 :0 (x0 :0 (x0 :0 (x0 : True) → True) → True) × (x1 :0 True) → (x2 : True) → True) × " ++
+          "(x1 :0 (x1 : True) → True) → True\nU0\n") },
     { name := "text to checked term, all in Wiz", run := fun _ => do
         let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))

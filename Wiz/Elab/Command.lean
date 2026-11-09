@@ -91,6 +91,10 @@ structure CommandState (R : Type) where
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000
 
+/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`). -/
+def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) :=
+  addDecl g (d.withSorts g)
+
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
 and unify its level. -/
@@ -699,7 +703,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         if let some C := c.getId? then derive C T c.info
   let addDeclChecked (name : Name) (levelParams : List Name) (ty : Term R) (val : Option (Term R))
       (impl : Option (Term R) := none) := do
-    match addDecl s.globals { name, levelParams, type := ty, value := val, impl } with
+    match addDeclSorted s.globals { name, levelParams, type := ty, value := val, impl } with
     | .ok g => modify fun s => { s with globals := g }
     | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
   match cmd.kind with
@@ -758,6 +762,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) g body levelParams with
       | .ok (v, hv) =>
         modify fun s => { s with hovers := s.hovers ++ hv }
+        let v := match g.find? name with
+          | some d => Sorts.value g #[] [] v (eval g [] d.type)
+          | none => v
         match addPartialImpl g name v with
         | .ok g' => g := g'
         | .error e => report .error d.info s!"kernel rejected {name}: {e}"; return
@@ -818,7 +825,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .ok (decls, obs) =>
         let mut g := s.globals
         for d in decls do
-          match addDecl g d with
+          match addDeclSorted g d with
           | .ok g' => g := g'
           | .error e =>
             report .error cmd.info s!"kernel rejected {d.name}: {e}"
@@ -837,7 +844,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let decls := decls ++ classMethods (decls[0]!) levelParams
         let mut g := s.globals
         for d in decls do
-          match addDecl g d with
+          match addDeclSorted g d with
           | .ok g' => g := g'
           | .error e =>
             report .error cmd.info s!"kernel rejected {d.name}: {e}"
@@ -915,7 +922,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .ok decls =>
         let mut g := s.globals
         for d in decls do
-          match addDecl g d with
+          match addDeclSorted g d with
           | .ok g' => g := g'
           | .error e =>
             report .error cmd.info s!"kernel rejected {d.name}: {e}"
@@ -927,7 +934,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             match mkRecursor g name ctors withIH sized with
             | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
             | .ok d =>
-              match addDecl g d with
+              match addDeclSorted g d with
               | .ok g' => g := g'
               | .error e =>
                 report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
@@ -946,7 +953,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     -- an opaque C pointer type; values are released with the finalizer
     let name := ((cmd.getArg 1).getId?).getD "_"
     let fin := if (cmd.getArg 2).isNone then "" else (((cmd.getArg 2).getArg 3).getStr?).getD ""
-    match addDecl s.globals { name, type := .sort 1, value := none } with
+    match addDeclSorted s.globals { name, type := .sort 1, value := none } with
     | .ok g => modify fun s => { s with globals := g, foreignTypes := (name, fin) :: s.foreignTypes }
     | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
   | "command.importC" =>
@@ -987,7 +994,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let res := if isPure then tyOf rk else .app (.const "IO" []) (tyOf rk)
         let ty := ks.foldr (fun k acc => .pi "_" .default w (tyOf k) acc none) res
         let key : Name := s!"extern:{f.name}:{String.mk ks}:{rk}:{if isPure then "pure" else "io"}:{header}:"
-        match addDecl (← get).globals { name, type := ty, value := none } with
+        match addDeclSorted (← get).globals { name, type := ty, value := none } with
         | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
                                             globals := { g with builtins := (key, name) :: g.builtins } }
         | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
@@ -1035,7 +1042,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
 {body}
 }"
             let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}::{finOf res}"
-            match addDecl s.globals { name, type := ty, value := none } with
+            match addDeclSorted s.globals { name, type := ty, value := none } with
             | .ok g =>
               modify fun s => { s with builtins := (key, name) :: s.builtins,
                                        globals := { g with builtins := (key, name) :: g.builtins },
@@ -1083,7 +1090,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         match ps.mapM pkind, kind res with
         | some ks, some rk =>
           let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}:{header}:{finOf res}"
-          match addDecl s.globals { name, type := ty, value := none } with
+          match addDeclSorted s.globals { name, type := ty, value := none } with
           | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
                                               globals := { g with builtins := (key, name) :: g.builtins } }
           | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
