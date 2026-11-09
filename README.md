@@ -1631,6 +1631,47 @@ minutes. A `match` was a method applied to the payload, a closure built and call
 time; a lambda applied to arguments is now a `let`: 6 minutes. Reference counting comes
 next.
 
+## Libraries
+
+### H0c: vectors and bit vectors ✅
+
+`lib/Vec.wiz` (`import Vec`): `Fin n` (a `Nat` with an erased proof `Nat.lt val n = .true`;
+`Fin.of 5 3 rfl`) and `Vec A n`, whose length is an **erased** index: at runtime a
+vector is a list, and `Vec.length` counts it, with `Vec.length_eq : Vec.length v = n`.
+Functions: `head`/`tail`/`last`/`init` on non-empty vectors, `get`/`set` by `Fin`,
+`map`, `zipWith`, `zip`, `foldl`/`foldr`, `replicate`, `ofFn`, `append`, `reverse`
+(linear, with a `cast` along `m + (k+1) = (m+k)+1`), `snoc`, `splitAt`, `shiftIn`,
+`toList`/`fromList` (`fromList l : Vec A (List.length l)`). Theorems: `length_eq`,
+`length_toList`, `toList_fromList`, `map_map`, and the `Nat` lemmas they need
+(`add_zero`, `add_succ`, `add_comm`), all by structural recursion.
+
+`lib/BitVec.wiz` (`import BitVec`): `BitVec n`, a `Nat` below `2^n` by construction
+(every operation reduces mod `2^n`). Wrapping `add`/`sub`/`neg`/`mul`, `udiv`/`umod`,
+`and`/`or`/`xor`/`not`, `shl`/`lshr`/`ashr`, `getBit`, `msb`, `beq`/`ult`/`ule`/`slt`/`sle`,
+`concat`, `extract hi lo`, `zeroExtend`, `signExtend`, and `toVec`/`ofVec` (to and
+from `Vec Bool n`, least significant bit first). Operations that need `2^n` take the
+width at runtime (`{ω n : Nat}`). `lib/NatBits.wiz` has `Nat.div`/`mod`/`pow`/`land`/
+`lor`/`xor`/`shiftLeft`/`shiftRight`/`testBit` by recursion on a fuel argument (long
+division on doublings: O(log x) native steps, also in the kernel, so
+`Nat.mod 300 256 = 44 := rfl` checks), until they become natives.
+
+Along the way the elaborator learned to:
+* keep erased constructor fields and arguments erased when a `match` reverts them, and
+  name a field directly instead of through a `let` at ω (`| .mk i h => … h …` with
+  `0 h`);
+* prove an equation that has already computed with `rfl` (`Nat.succ a = Nat.succ a`
+  is a Σ of `True`s and `a = a`), and recompute an equation stuck on a metavariable
+  once it is solved (`congrArg Nat.succ ih` against such a goal). The proof follows the
+  elaborator's computed form; where the kernel computes the equation to another shape
+  (a numeral on one side, a constructor on the other), the kernel rejects it;
+* erase a `cast` against its source type (the solution rule casts a function, so
+  `head`, `tail` and `zipWith` on vectors failed at runtime).
+
+Not yet: theorems about `get` (`get (set v i x) i = x`) and facts like
+`Vec.get v (Fin.of 3 1 rfl) = 20 := rfl` (the kernel gets stuck on match motives
+without sorts), arithmetic facts about `BitVec` in general, numerals and operators
+(`a + b`) for `BitVec` (decision HD9), and native representations (`implemented_by`).
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅

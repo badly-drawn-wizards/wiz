@@ -2115,4 +2115,140 @@ def builtinGroup : Group where
         check (s.messages.any (·.severity == .error)) "expected an error" }
   ]
 
+
+/-- Every `lib/*.wiz`, by module name. -/
+def libLoader : IO (Name → Option String) := do
+  let mut m : List (Name × String) := []
+  for e in ← System.FilePath.readDir "lib" do
+    if e.path.extension == some "wiz" then
+      m := (e.path.fileStem.getD "", ← IO.FS.readFile e.path) :: m
+  pure fun n => m.lookup n
+
+/-- No errors, and these messages, with every library importable. -/
+def okLibs (input : String) (infos : List String := []) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) input { loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
+
+/-- Exactly one error, mentioning `fragment`, with every library importable. -/
+def failsLibs (input : String) (fragment : String) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) input { loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+  unless (errs[0]!.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+/-- Build `main` with the C backend, with every library importable. -/
+def cRunLibs (src : String) (expected : String) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) src { loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let dir ← IO.FS.createTempDir
+  match ← Build.runGlobal s "main" dir with
+  | .ok v => checkEq expected v
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+
+def vecPrelude : String := "import Vec
+def v3 : Vec Nat 3 := .cons 10 (.cons 20 (.cons 30 .nil))
+def w3 : Vec Nat 3 := .cons 1 (.cons 2 (.cons 3 .nil))
+"
+
+def bvPrelude : String := "import BitVec
+def b8 (x : Nat) : BitVec 8 := BitVec.ofNat 8 x
+"
+
+/-- Index-refining matches on a self-contained `Vec` (no lib/Vec.wiz): the solution rule
+casts a function, which erasure used to fail on, and `#eval` then ran a stub. -/
+def refinePrelude : String := "import Prelude
+inductive V (A : Type) : Nat → Type where
+  | nil : V A 0
+  | cons {0 n : Nat} (x : A) (xs : V A n) : V A (Nat.succ n)
+def V.head {A : Type} {0 n : Nat} : V A (Nat.succ n) → A
+  | .cons x _ => x
+def V.zipWith {A B C : Type} (f : A → B → C) {0 n : Nat} : V A n → V B n → V C n
+  | .nil, .nil => .nil
+  | .cons a as, .cons b bs => .cons (f a b) (V.zipWith f as bs)
+def V.sum {0 n : Nat} : V Nat n → Nat
+  | .nil => 0
+  | .cons x xs => x + V.sum xs
+def v3 : V Nat 3 := .cons 10 (.cons 20 (.cons 30 .nil))
+def w3 : V Nat 3 := .cons 1 (.cons 2 (.cons 3 .nil))
+"
+
+def vecGroup : Group where
+  name := "vec"
+  exercise := "Stage H0c"
+  cases := [
+    { name := "index-refining matches run: #eval, #run and C (regression: erasing a cast)", run := fun _ => do
+        okLib (refinePrelude ++ "#eval V.head v3\n#run V.head v3\n#eval V.sum (V.zipWith Nat.mul v3 w3)\n#run V.sum (V.zipWith Nat.mul v3 w3)")
+          ["10", "10", "140", "140"]
+        cRun (refinePrelude ++ "def main : Nat := V.head v3 + V.sum (V.zipWith Nat.mul v3 w3)") "150" },
+    { name := "the libraries check, theorems included", run := fun _ =>
+        okLibs "import Vec\nimport NatBits\nimport BitVec" },
+    { name := "access by Fin, and update", run := fun _ =>
+        okLibs (vecPrelude ++ "#eval Vec.get v3 (Fin.of 3 2 rfl)\n#eval Vec.toList (Vec.set v3 (Fin.of 3 1 rfl) 99)\n" ++
+          "#eval Vec.head v3\n#eval Vec.toList (Vec.tail v3)\n#eval Vec.last v3\n#eval Vec.toList (Vec.init v3)")
+          ["30", ".cons 10 (.cons 99 (.cons 30 .nil))", "10", ".cons 20 (.cons 30 .nil)", "30", ".cons 10 (.cons 20 .nil)"] },
+    { name := "an index out of range is rejected", run := fun _ =>
+        failsLibs (vecPrelude ++ "def bad : Nat := Vec.get v3 (Fin.of 3 3 rfl)") "kernel rejected bad" },
+    { name := "maps, zips and folds", run := fun _ =>
+        okLibs (vecPrelude ++ "#eval Vec.toList (Vec.map Nat.succ v3)\n#eval Vec.toList (Vec.zipWith Nat.add v3 w3)\n" ++
+          "#eval Vec.foldr Nat.add 0 v3\n#eval Vec.foldl (fun acc x => acc * 10 + x) 0 w3\n#eval Vec.toList (Vec.zip v3 w3)")
+          [".cons 11 (.cons 21 (.cons 31 .nil))", ".cons 11 (.cons 22 (.cons 33 .nil))", "60", "123",
+           ".cons (10, 1) (.cons (20, 2) (.cons (30, 3) .nil))"] },
+    { name := "building and reshaping", run := fun _ =>
+        okLibs (vecPrelude ++ "#eval Vec.toList (Vec.append v3 w3)\n#eval Vec.toList (Vec.reverse v3)\n" ++
+          "#eval Vec.toList (Vec.replicate 2 7)\n#eval Vec.toList (Vec.splitAt 1 v3).2\n#eval Vec.toList (Vec.ofFn 4 Fin.val)\n" ++
+          "#eval Vec.toList (Vec.shiftIn 5 v3)\n#eval Vec.toList (Vec.fromList (.cons 4 (.cons 5 .nil)))")
+          [".cons 10 (.cons 20 (.cons 30 (.cons 1 (.cons 2 (.cons 3 .nil)))))", ".cons 30 (.cons 20 (.cons 10 .nil))",
+           ".cons 7 (.cons 7 .nil)", ".cons 20 (.cons 30 .nil)", ".cons 0 (.cons 1 (.cons 2 (.cons 3 .nil)))",
+           ".cons 5 (.cons 10 (.cons 20 .nil))", ".cons 4 (.cons 5 .nil)"] },
+    { name := "the length is erased; Vec.length counts", run := fun _ =>
+        okLibs (vecPrelude ++ "#erase Vec.cons\n#eval Vec.length (Vec.append v3 w3)\n" ++
+          "def lenMap (n : Nat) (v : Vec Nat n) : Vec.length (Vec.map Nat.succ v) = n := Vec.length_eq (Vec.map Nat.succ v)")
+          ["Vec.cons := (λA. (λn. (λx. (λxs. ⟨1 ◾ #1 #0⟩))))", "6"] },
+    { name := "the kernel computes on literal lengths", run := fun _ =>
+        okLibs (vecPrelude ++ "def t1 : Vec.foldr Nat.add 0 (Vec.replicate 4 5) = 20 := rfl\n" ++
+          "def t2 : Vec.toList v3 = .cons 10 (.cons 20 (.cons 30 .nil)) := rfl\n" ++
+          "#reduce Vec.foldr Nat.add 0 v3\n#reduce Vec.head v3") ["60", "10"] },
+    { name := "known bug: rfl's proof of a computed equation can differ from the kernel's (wishful: unify-computed-equations)", run := fun _ =>
+        -- today's behaviour: the kernel rejects it. When the bug is fixed, turn this into an `okLibs`.
+        failsLibs (vecPrelude ++ "def t3 : Vec.length (Vec.map Nat.succ w3) = 3 := rfl") "kernel rejected t3" },
+    { name := "compiled, through the IR and C", run := fun _ => do
+        okLibs (vecPrelude ++ "#run Vec.toList (Vec.reverse v3)\n#run Vec.get (Vec.set v3 (Fin.of 3 2 rfl) 7) (Fin.of 3 2 rfl)\n" ++
+          "#run Vec.toList (Vec.zipWith Nat.mul v3 w3)")
+          [".cons 30 (.cons 20 (.cons 10 .nil))", "7", ".cons 10 (.cons 40 (.cons 90 .nil))"]
+        cRunLibs (vecPrelude ++ "def main : Nat := Vec.foldl Nat.add 0 (Vec.zipWith Nat.mul (Vec.reverse v3) (Vec.init (Vec.snoc w3 9)))") "100" },
+    { name := "Nat division, powers and bits (NatBits)", run := fun _ =>
+        okLibs ("import NatBits\n#eval Nat.div 1000000007 13\n#eval Nat.mod 1000000007 13\n#eval Nat.pow 2 64\n" ++
+          "#eval Nat.land 12 10\n#eval Nat.lor 12 10\n#eval Nat.xor 12 10\n#eval Nat.testBit 5 2\n#eval Nat.div 7 0\n" ++
+          "def t : Nat.mod 300 256 = 44 := rfl\n#run Nat.shiftRight (Nat.pow 2 100) 98")
+          ["76923077", "6", "18446744073709551616", "8", "14", "6", ".true", "0", "4"] },
+    { name := "bit vectors: wrapping arithmetic", run := fun _ =>
+        okLibs (bvPrelude ++ "#eval (b8 300).toNat\n#eval (BitVec.add (b8 200) (b8 100)).toNat\n#eval (BitVec.sub (b8 3) (b8 5)).toNat\n" ++
+          "#eval (BitVec.neg (b8 1)).toNat\n#eval (BitVec.mul (b8 20) (b8 13)).toNat\n#eval (BitVec.udiv (b8 200) (b8 7)).toNat\n" ++
+          "#eval (BitVec.umod (b8 200) (b8 7)).toNat\ndef t : (BitVec.add (b8 200) (b8 100)).toNat = 44 := rfl")
+          ["44", "44", "254", "255", "4", "28", "4"] },
+    { name := "bit vectors: bitwise, shifts, comparisons", run := fun _ =>
+        okLibs (bvPrelude ++ "#eval (BitVec.and (b8 12) (b8 10)).toNat\n#eval (BitVec.or (b8 12) (b8 10)).toNat\n" ++
+          "#eval (BitVec.xor (b8 12) (b8 10)).toNat\n#eval (BitVec.not (b8 12)).toNat\n#eval (BitVec.shl (b8 129) 1).toNat\n" ++
+          "#eval (BitVec.lshr (b8 128) 3).toNat\n#eval (BitVec.ashr (b8 128) 3).toNat\n#eval BitVec.getBit (b8 5) 2\n" ++
+          "#eval BitVec.msb (b8 128)\n#eval BitVec.slt (b8 255) (b8 0)\n#eval BitVec.ult (b8 255) (b8 0)")
+          ["8", "14", "6", "243", "2", "16", "240", ".true", ".true", ".true", ".false"] },
+    { name := "bit vectors: widths and bits as a Vec", run := fun _ =>
+        okLibs (bvPrelude ++ "#eval (BitVec.concat (BitVec.ofNat 4 10) (BitVec.ofNat 4 3)).toNat\n" ++
+          "#eval (BitVec.extract 5 2 (b8 60)).toNat\n#eval (BitVec.zeroExtend 16 (b8 200)).toNat\n" ++
+          "#eval (BitVec.signExtend 16 (b8 200)).toNat\n#eval (BitVec.signExtend 4 (b8 200)).toNat\n" ++
+          "#eval Vec.toList (BitVec.toVec (BitVec.ofNat 4 6))\n#eval (BitVec.ofVec (BitVec.toVec (b8 173))).toNat")
+          ["163", "15", "200", "65480", "8", ".cons .false (.cons .true (.cons .true (.cons .false .nil)))", "173"] },
+    { name := "bit vectors at 63, 64 and 65 bits, compiled", run := fun _ => do
+        okLibs ("import BitVec\n#run (BitVec.mul (BitVec.ofNat 64 18446744073709551615) (BitVec.ofNat 64 3)).toNat\n" ++
+          "#run (BitVec.add (BitVec.ofNat 65 36893488147419103231) (BitVec.ofNat 65 2)).toNat\n" ++
+          "#run (BitVec.sub (BitVec.ofNat 63 0) (BitVec.ofNat 63 1)).toNat")
+          ["18446744073709551613", "1", "9223372036854775807"]
+        cRunLibs "import BitVec\ndef main : Nat := (BitVec.ashr (BitVec.ofNat 64 9223372036854775808) 63).toNat" "18446744073709551615" }
+  ]
+
 end Tests.Elab

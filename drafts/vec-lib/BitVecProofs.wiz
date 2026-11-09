@@ -1,0 +1,20 @@
+import BitVec
+-- Theorems about BitVec that need arithmetic lemmas about the fuel-based division of
+-- lib/NatBits.wiz (or the natives of H0b plus axioms/lemmas about them).
+-- `theorem` is a `def` of a Prop type in today's Wiz.
+
+def Nat.divMod_spec (x m : Nat) (h : Nat.lt 0 m = .true) :
+    (Nat.divMod x m).1 * m + (Nat.divMod x m).2 = x := by
+  induction x; omega                                             -- wishful: nat-arith-proofs
+def Nat.mod_lt (x m : Nat) (h : Nat.lt 0 m = .true) : Nat.lt (Nat.mod x m) m = .true := by
+  omega                                                          -- wishful: nat-arith-proofs
+
+-- the invariant, kept by construction
+def BitVec.ofNat_lt (n x : Nat) : Nat.lt (BitVec.ofNat n x).toNat (Nat.pow 2 n) = .true :=
+  Nat.mod_lt x (Nat.pow 2 n) (Nat.pow_pos 2 n)                   -- wishful: nat-arith-proofs
+
+def BitVec.ofVec_toVec {n : Nat} (a : BitVec n) (h : Nat.lt a.toNat (Nat.pow 2 n) = .true) :
+    BitVec.ofVec (BitVec.toVec a) = a := by
+  induction n; simp [Nat.divMod_spec]                            -- wishful: nat-arith-proofs
+def BitVec.toVec_ofVec {n : Nat} (v : Vec Bool n) : BitVec.toVec (BitVec.ofVec v) = v := by
+  induction v; simp [Nat.divMod_spec]                            -- wishful: nat-arith-proofs
