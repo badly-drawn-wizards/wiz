@@ -423,13 +423,13 @@ where
       (s : CommandState R) (m : Name) (src : String) : IO (CommandState R × Nat) := do
     let k ← keyOf keys m
     let marker := dir / s!"{k}.wizm"
-    let fresh ← if ← marker.pathExists then pure false else do
-      let _ ← go keys base (m :: stack) src { base with imported := [m], messages := #[], module := m } k .write
+    let fresh ← if ← marker.pathExists then pure none else do
+      let (_, h) ← go keys base (m :: stack) src { base with imported := [m], messages := #[], module := m } k .write
       writeAtomic marker m
-      pure true
+      pure (some h)
     let (s', h) ← go keys base (m :: stack) src { s with imported := m :: s.imported, messages := #[], module := m } k .replay
-    -- commands just elaborated in isolation don't count as hits
-    pure (s', if fresh then 0 else h)
+    -- after a fresh isolated run, the hits are that run's (the replay reads what it wrote)
+    pure (s', fresh.getD h)
   go (keys : IO.Ref (Std.HashMap Name UInt64)) (base : CommandState R) (stack : List Name) (input : String)
       (s₀ : CommandState R) (key₀ : UInt64) (mode : Mode) : IO (CommandState R × Nat) := do
     let chars := input.toList.toArray

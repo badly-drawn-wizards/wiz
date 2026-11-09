@@ -41,7 +41,7 @@ def modulesGroup : Group where
         let ms ← Module.loadClosure ["lib", dir] "import Use\n#eval four\n"
         checkEq ["Data.Two", "Prelude", "Use"] (ms.toList.map (·.1) |>.toArray.qsort (· < ·)).toList
         let s := runFrontend (R := ZeroOneMany) "import Use\n#eval four\n" { loader := loaderOf ms }
-        checkEq "[1:1: info: 4]" (toString (s.messages.toList.map (·.render "import Use\n#eval four\n")))
+        checkEq "[2:1: info: 4]" (toString (s.messages.toList.map (·.render "import Use\n#eval four\n")))
         let all ← Module.listRoot dir
         checkEq #["Data.Two", "Other", "Use"] (all.map (·.1)) },
     { name := "a module's key changes with it and with what it imports, only", run := fun _ => do
@@ -77,16 +77,16 @@ def modulesGroup : Group where
     { name := "editing a module re-elaborates only it and what imports it", run := fun _ => do
         let dir ← mkTree libFiles
         let cache ← IO.FS.createTempDir
-        let elab (src : String) : IO Nat := do
+        let elabSrc (src : String) : IO Nat := do
           let ms ← Module.loadAll ["lib", dir]
-          let (s, h) ← Cache.elaborateCached cache src { loader := loaderOf ms } 0
+          let (s, h) ← Cache.elaborateCached cache src ({ loader := loaderOf ms } : CommandState ZeroOneMany) 0
           check (!s.messages.any (·.severity == .error)) s!"messages: {s.messages.toList.map (·.text)}"
           pure h
         let src := "import Use\nimport Other\ndef c : Nat := four + one\n"
-        let _ ← elab src
-        let warm ← elab src
+        let _ ← elabSrc src
+        let warm ← elabSrc src
         IO.FS.writeFile (dir / "Data/Two.wiz") "import Prelude\ndef two : Nat := 1 + 1\n"
-        let after ← elab src
+        let after ← elabSrc src
         -- Prelude and Other still come from the cache; Data.Two, Use and `c` don't
         check (after + 3 ≤ warm) s!"{after} hits after the edit, {warm} before"
         check (after + 10 ≥ warm) s!"{after} hits after the edit, {warm} before: too much was redone" },
@@ -94,14 +94,14 @@ def modulesGroup : Group where
         let dir ← mkTree [("Sneaky.wiz", "def three : Nat := 3\n")]
         let ms ← Module.loadAll ["lib", dir]
         let cache ← IO.FS.createTempDir
-        let (s, _) ← Cache.elaborateCached cache "import Prelude\nimport Sneaky\n" { loader := loaderOf ms } 0
+        let (s, _) ← Cache.elaborateCached cache "import Prelude\nimport Sneaky\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany) 0
         check (s.messages.any fun m => (m.text.splitOn "module Sneaky has errors").length > 1)
           s!"Sneaky used Nat without importing Prelude: {s.messages.toList.map (·.text)}" },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
         let ms ← Module.loadAll [dir]
         let cache ← IO.FS.createTempDir
-        let (s, _) ← Cache.elaborateCached cache "import A\n" { loader := loaderOf ms } 0
+        let (s, _) ← Cache.elaborateCached cache "import A\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany) 0
         check (s.messages.any fun m => (m.text.splitOn "import cycle").length > 1)
           s!"messages: {s.messages.toList.map (·.text)}" }
   ]
@@ -135,10 +135,10 @@ def grailGroup : Group where
         let cache ← IO.FS.createTempDir
         match ← Grail.readConfig { cacheDir := some cache } 7 "lib" dir with
         | .error e => throw (IO.userError e)
-        | .ok (pkg, local) =>
+        | .ok (pkg, localSettings) =>
           checkEq "demo" pkg.name
-          checkEq [Grail.Target.lib "mylib" "src", .check "app" "app.wiz"] pkg.targets
-          checkEq [("cflags", "-I \"x\"")] local },
+          check (pkg.targets == [Grail.Target.lib "mylib" "src", .check "app" "app.wiz"]) s!"targets: {repr pkg.targets}"
+          checkEq [("cflags", "-I \"x\"")] localSettings },
     { name := "a second build runs no jobs", run := fun _ => do
         let dir ← mkTree pkgFiles
         let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
