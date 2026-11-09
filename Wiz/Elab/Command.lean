@@ -174,7 +174,8 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let c1 := ctx.bind x0 vA0
   let q (c : LocalCtx R) (v : Val R) : Term R := quote g c.lvl v
   -- P := fun _ x' => B[x0 := x']   (B is under the x0 binder)
-  let P : Term R := .lam "_" (.lam x0 (B.lift 1 1))
+  -- (in `c1`: `B` lives under `x0`, which becomes the inner binder; the rest shift by 2)
+  let P : Term R := .lam "_" (.lam x0 (B.lift 2 1))
   let vP ← evalIn c1 P
   let some vlev := typeSort? g c1.types.reverse.toArray (← evalIn c1 B)
     | throwAt info "could not determine the universe of the result"
@@ -204,7 +205,8 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let L := ctxX.lvl
   let sT : Term R := .var (L - c1.lvl - 1)
   let recT : Term R := .var (L - ctxS.lvl - 1)
-  let hintT := hint.map fun (n, us, as) => (n, us, as.map (quote g (L + 2)))
+  -- (the hint sits in `y`'s domain, under `j` only)
+  let hintT := hint.map fun (n, us, as) => (n, us, as.map (quote g (L + 1)))
   let fTyTm : Term R := .pi "j" .implicit (.qlit 0) (.sizeLt sT)
     (.pi "y" .default (.qlit w) (.mu l (q ctxX I |>.lift 1) (q ctxX D |>.lift 1) (q ctxX idx |>.lift 1) (.var 0) hintT)
       ((Term.app (Term.app ((P.lift (L - c1.lvl)).lift 2) ((q ctxX idx).lift 2)) (.var 0))) none) none
