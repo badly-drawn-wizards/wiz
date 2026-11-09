@@ -110,7 +110,7 @@ def natRigCoit (q : Nat) (name : Name) : List (Decl Nat) :=
   let S : Term Nat := .lam "_" U
   -- ⟦ret tt⟧ S i = (0 _ : tt = i) × Unit
   let stepTy := pi "i" 1 U (pi "s" 1 U (pi "y" q U (.sigma "_" (.qlit 0) (.eq U .tt (.var 2)) (.unit 1) none)))
-  [{ name := s!"{name}Step", type := stepTy },
+  [{ name := s!"{name}Step", type := stepTy, value := none },
    { name, type := pi "y" q U (.nu 0 U D .tt .szInf none),
      value := some (.lam "y" (.coit 0 U D S
        (.lam "i" (.lam "s" (.app (.app (.app (.const s!"{name}Step" []) (.var 1)) (.var 0)) (.var 2)))) .tt .tt)) }]
@@ -192,7 +192,10 @@ def structGroup : Group where
           (lams ["A", "B", "p"] (.fst "p"))] (fun | .other .. => true | _ => false) "a projection error" },
     { name := "the second projection can't drop a linear first field (Q1)", run := fun _ =>
         rejects [Raw.defn "drop" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" "B") "B")))
-          (lams ["A", "B", "p"] (.snd "p"))] (fun | .other .. => true | _ => false) "a projection error" },
+          (lams ["A", "B", "p"] (.snd "p"))] isQty "a quantity error" },
+    { name := "an unrestricted pair may drop its linear first field (Q1)", run := fun _ =>
+        accepts [Raw.defn "dropMany" (forallA (pi' "B" zero ty (arr many (.sigma "x" one "A" "B") "B")))
+          (lams ["A", "B", "p"] (.snd "p"))] },
     { name := "the second projection may drop an ω or erased first field", run := fun _ =>
         accepts [Raw.defn "dropω" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" "B") "B")))
             (lams ["A", "B", "p"] (.snd "p")),

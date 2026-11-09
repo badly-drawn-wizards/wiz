@@ -1874,10 +1874,11 @@ def infer : TCtx → Tm → TyRes
     | r => r
   | c, .snd p => match infer c p with
     | .ok ty u => match whnf ty with
-      -- `p.2` discards the first field: only allowed if the field may go unused
+      -- `p.2` discards the first field: if it must be used, only an unrestricted pair
+      -- (whose field is ω·q) may drop it, so `p` counts as used ω times
       | .vsigma q _ env b _ => match Bool.or (TCtx.erased c) (qle .qz q) with
         | .true => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
-        | .false => .err "cannot discard a linear field; use let (x, y) := ... instead"
+        | .false => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) (uScale .qw u)
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   | c, .unit n => .ok (.vsort (.lnum (n + 1))) (uZeros (TCtx.lvl c))

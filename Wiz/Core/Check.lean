@@ -66,6 +66,7 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 0 q  (or Γ is erased)
     ──────────────────────────────── snd       (`t.2` drops the first field: it must allow that)
     Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ U
+    (otherwise `t.2 ⊣ ω·U`: only an unrestricted pair, whose field is ω·q, may drop it)
 
     Γ ⊢ s ⇒ (p x : A) × B ⊣ U₁     Γ, z : (p x : A) × B ⊢ M type
     Γ, x :(q·p) A, y :q B ⊢ b ⇐ M[(x, y)/z] ⊣ (u_y :: u_x :: U₂)
@@ -448,9 +449,13 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | .sigma x q _ B _ =>
       -- `t.2` discards the first field: only allowed if the field may go unused
       let q ← qtyPoly ctx q
-      unless ctx.erased || QPoly.le (QPoly.const 0) q do
-        throw (.other s!"cannot discard the field {x}, which has quantity {q}; use let (x, y) := ... instead")
-      pure (Closure.inst ctx.globals B (vFst (ctx.eval t)), u)
+      let ty := Closure.inst ctx.globals B (vFst (ctx.eval t))
+      if ctx.erased || QPoly.le (QPoly.const 0) q then pure (ty, u) else
+      -- a field that must be used can be dropped only from an unrestricted pair (whose
+      -- fields are ω·q): so `t` counts as used ω times
+      match QRig.many? (R := R) with
+      | some m => pure (ty, QPoly.const m • u)
+      | none => throw (.other s!"cannot discard the field {x}, which has quantity {q}; use let (x, y) := ... instead")
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .split q s z m x y b => do
     let q ← checkQty ctx q
