@@ -262,7 +262,13 @@ whether it is a proposition (`propSort?`): two propositions compare by equivalen
 proposition and another type are different, and only other types compare by shape. A
 `Π` or `Σ` can't tell by itself (`(x : A) → B` is a proposition when `B` is), so it
 carries its sort (the elaborator writes it, the kernel checks it); without one, type
-equality waits. A cast between propositions applies the equivalence.
+equality waits. Surface `Π`/`Σ` get theirs from the levels `checkType` computes; the
+ones the elaborator builds itself (a definition's telescope, constructor, recursor and
+projection types, a structure's or an index's `Σ`, match motives) get theirs from the
+kernel's `typeSort?` in the context they live in (`Sorts` in `Elab/Basic.lean`, applied to
+every declaration before the kernel sees it). Only a `Π`/`Σ` under a `fun` whose
+variable's type isn't written down, or one that still mentions a metavariable, goes
+without. A cast between propositions applies the equivalence.
 
 Stuck equations, casts and proofs are new neutral heads (`Head.eq`, `Head.cast`,
 `Head.refl`, …). Some results of the computation rules need new binders. Values can't
@@ -440,6 +446,33 @@ compiles to `coit`: the state is the tuple of the definition's explicit argument
 whose arguments are the next state. This is the guardedness check.
 `(nats .zero).tail.head` uses generalised field notation (`x.f` is `T.f x` for a
 nominal type `T`), which also works on inductives.
+
+A copattern definition with **no corecursive observation** is not recursive at all:
+it compiles to `cocon`, one cell in front of the values given, and `f` may not occur
+on its right-hand sides. That is how a delay is written:
+
+```
+def register {A : Type} (init : A) (s : Stream A) : Stream A
+  | .head => init
+  | .tail => s
+```
+
+The same cell as a term is the **coconstructor** `Stream.mk init s` (or `.mk init s`
+against a coinductive expected type); `cocon` itself is a data primitive like `con`.
+With a sized result type `(Stream Nat)^(↑i)`, the tail is checked at `(Stream Nat)^i`:
+`register` is the size bump that guarded feedback needs.
+Copatterns keep one syntax for every codata definition (Agda's, and the clause form
+Wiz already uses for `match`), so there is no separate `where head := …` notation.
+A mix (one recursive observation a corecursive call, another an existing stream) is
+still rejected: that needs a state that can be either.
+
+At runtime codata is an *unfolding*: nothing is cached, so observing `s.tail` twice
+computes it twice (in every backend). A Mealy machine (`mealy f st i`, state = its
+arguments) costs O(1) per step; feedback through `scofix` recomputes.
+
+| #    | Where               | What                                                |
+|------|---------------------|-----------------------------------------------------|
+| 4.24 | `Elab/Command.lean` | `elabCopatternsCocon`: copatterns without corecursion |
 
 Not yet: course-of-values recursion, and well-founded recursion (`termination_by`).
 

@@ -130,6 +130,77 @@ def getGlobals : ElabM R (Globals R) := return (← get).globals
 def evalIn (ctx : LocalCtx R) (t : Term R) : ElabM R (Val R) :=
   return eval (← getGlobals) ctx.env t
 
+/-! ### Sorts of the `Π`/`Σ` types the elaborator builds
+
+A `Π`/`Σ` carries its sort so that type equality can tell propositions (compared by
+equivalence) from other types (compared by shape); without one, an equation between
+two such types stays stuck. Surface `Π`/`Σ` get theirs from `checkType`'s levels. The
+ones the elaborator builds itself (a definition's telescope, constructor types,
+recursors, match motives, …) get theirs here, from the kernel's `typeSort?` in the
+context where the type lives. A sort is only written when it is known: the kernel
+rejects a wrong one (`checkSortNote`), and an unknown one (a metavariable, or a
+variable whose type isn't known) leaves `none`. -/
+namespace Sorts
+variable (g : Globals R)
+
+mutual
+/-- `t` is a type in the context `tys`/`env` (types by level, values innermost
+first): fill in the missing sorts in it, and return its sort when it is known. -/
+partial def type (tys : Array (VTy R)) (env : Env R) : Term R → Term R × Option Level
+  | .pi x bi q A B s =>
+    let (A, lA) := type tys env A
+    let (B, lB) := type (tys.push (eval g env A)) (Val.var tys.size :: env) B
+    let s := s.orElse fun _ => return .imax (← lA) (← lB)
+    (.pi x bi (term tys env q) A B s, s)
+  | .sigma x q A B s =>
+    let (A, lA) := type tys env A
+    let (B, lB) := type (tys.push (eval g env A)) (Val.var tys.size :: env) B
+    let s := s.orElse fun _ => return .max (← lA) (← lB)
+    (.sigma x (term tys env q) A B s, s)
+  | t =>
+    let t := term tys env t
+    (t, typeSort? g tys (eval g env t))
+
+/-- Fill in the missing sorts of the `Π`/`Σ` types in `t`, as far as the types of the
+variables are known: not under binders other than `Π`, `Σ` and `let` (a `fun`'s
+variable has no type written down; see `value`). -/
+partial def term (tys : Array (VTy R)) (env : Env R) : Term R → Term R
+  | t@(.pi ..) | t@(.sigma ..) => (type tys env t).1
+  | .letE x q T v b =>
+    let T := (type tys env T).1
+    let v := term tys env v
+    .letE x (term tys env q) T v (term (tys.push (eval g env T)) (eval g env v :: env) b)
+  | t => Id.run <| t.mapChildrenM pure fun k c => pure (if k == 0 then term tys env c else c)
+
+/-- `t` has type `ty`: like `term`, also under the `fun`s that `ty` gives types to. -/
+partial def value (tys : Array (VTy R)) (env : Env R) (t : Term R) (ty : VTy R) : Term R :=
+  match t, whnf ty with
+  | .lam x b, .pi _ _ _ A B _ =>
+    let v := Val.var tys.size
+    .lam x (value (tys.push A) (v :: env) b (Closure.inst g B v))
+  | t, _ => term tys env t
+end
+
+end Sorts
+
+/-- `Sorts.type` in a local context. -/
+def LocalCtx.sortType (g : Globals R) (ctx : LocalCtx R) (t : Term R) : Term R :=
+  (Sorts.type g ctx.types.reverse.toArray ctx.env t).1
+
+/-- A `Π`/`Σ` value in a local context with its sort filled in, when it is known. -/
+def LocalCtx.sortVal (g : Globals R) (ctx : LocalCtx R) (v : Val R) : Val R :=
+  match v with
+  | .pi x bi q A B none => .pi x bi q A B (typeSort? g ctx.types.reverse.toArray v)
+  | .sigma x q A B none => .sigma x q A B (typeSort? g ctx.types.reverse.toArray v)
+  | v => v
+
+/-- A declaration with the sorts of its types filled in (`Sorts`). -/
+def Decl.withSorts (g : Globals R) (d : Decl R) : Decl R :=
+  let type := (Sorts.type g #[] [] d.type).1
+  let ty := eval g [] type
+  { d with type, value := d.value.map (Sorts.value g #[] [] · ty),
+           impl := d.impl.map (Sorts.value g #[] [] · ty) }
+
 def instM (c : Closure R) (v : Val R) : ElabM R (Val R) :=
   return Closure.inst (← getGlobals) c v
 
