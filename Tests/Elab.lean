@@ -1311,6 +1311,16 @@ def propShapes : List MTm :=
   let erasedArg (A : MTm) := app (ann (lam star) (piq .zero A (unit 0))) (fst bad)
   [erasedArg pfalse, erasedArg (eqTy T1 ptrue)]
 
+/-- Finding O1: `Size = Size` is not `False`. The self-hosted kernel counted `Size` and
+`Size< s` as type formers, so equations between them (even `Size = Size`) fell through
+to "different formers ⇒ False", and `absurd(Empty, reflTy Size) : Empty` checked. In the
+Lean kernel these equations stay stuck: the three `absurd`s are rejected, and `reflTy`
+has the type `Size = Size` (resp. `Size< ∞ = Size< ∞`). -/
+def sizeEq : List MTm :=
+  [exfalso (empty 0) (reflTy size), exfalso (empty 0) (reflTy (sizeLt szInf)),
+   ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy size (sizeLt szInf)) (empty 0)),
+   reflTy size, reflTy (sizeLt szInf)]
+
 /-- Decision D2: `∞` is not below itself (`↑∞ = ∞` makes `↑s ≤ ∞` true of every `s`).
 The first five are rejected: `∞` (or `↑∞`) as a `Size< ∞`, a variable of type `Size` (it
 may be `∞`), and the loop `sfix (fun s rec i x => rec ∞ i x) ∞ tt 0 : Empty` (its `rec`
@@ -1330,7 +1340,7 @@ def sizeInf : List MTm :=
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ sizeInf ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ sizeInf ++ sizeEq ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -1866,6 +1876,12 @@ def selfHostGroup : Group where
         -- the domains' equation is an equivalence, not `False`
         match MTm.propShapes.map leanVerdict with
         | ["error", ok] => unless ok != "error" do throw (IO.userError "the equivalence was rejected")
+        | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "Size = Size is stuck, not False (and both kernels agree on it below)", run := fun _ => do
+        match MTm.sizeEq.map leanVerdict with
+        | ["error", "error", "error", a, b] =>
+          unless a == "EqTy(Size, Size)" && b == "EqTy(Size<(∞), Size<(∞))" do
+            throw (IO.userError s!"unexpected types {a}, {b}")
         | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "∞ is not below itself (and both kernels agree on it below)", run := fun _ => do
         let vs := MTm.sizeInf.map leanVerdict
