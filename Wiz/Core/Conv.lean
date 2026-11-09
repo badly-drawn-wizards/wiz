@@ -135,6 +135,20 @@ partial def sizeLe (tys : Array (VTy R)) (a b : Val R) : Bool :=
       | _ => false
     | _ => false
 
+/-- `a < b` for sizes (decision D2): `↑a ≤ b`, except at `∞`. Since `↑∞ = ∞`, `↑a ≤ ∞`
+holds for every `a`, including `∞` itself, so it can't say `a < ∞` (Agda's `∞ < ∞`,
+issue #3026). Below `∞` are only the sizes built from a variable with a bound,
+`↑ᵏ x` for `x : Size< u` (`x < u ≤ ∞`, and `∞` is a limit). A variable of type `Size`
+is not: it may stand for `∞`. -/
+partial def sizeBelow (tys : Array (VTy R)) (a b : Val R) : Bool :=
+  match sizeView b with
+  | (none, _) => match sizeView a with
+    | (some (.neutral (.local x) #[]), _) => match tys[x]?.map whnf with
+      | some (.sizeLt _) => true
+      | _ => false
+    | _ => false
+  | _ => sizeLe tys (.szSuc a) b
+
 /-- The predecessor of a size, for `con`/`cocon`/`out`: `↑s ↦ s`, `∞ ↦ ∞`; `none`
 for a size variable, which can't be built from or observed. -/
 partial def sizePred? : Val R → Option (Val R)

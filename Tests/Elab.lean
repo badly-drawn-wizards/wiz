@@ -437,7 +437,9 @@ def sizedGroup : Group where
     { name := "a call at the same size is rejected", run := fun _ =>
         fails (sizedPrelude ++ "def bad {i : Size} : Nat^i → Nat\n  | n => bad n") "mismatch" },
     { name := "a call on a rebuilt value is rejected", run := fun _ =>
-        fails (sizedPrelude ++ "def bad {i : Size} : Nat^i → Nat\n  | .zero => .zero\n  | .succ n => bad (.succ n)") "not below" }
+        fails (sizedPrelude ++ "def bad {i : Size} : Nat^i → Nat\n  | .zero => .zero\n  | .succ n => bad (.succ n)") "not below" },
+    { name := "∞ is not a size below ∞", run := fun _ =>
+        fails (sizedPrelude ++ "def bad : Size< ∞ := ∞") "mismatch" }
   ]
 
 end Tests.Elab
@@ -1240,10 +1242,26 @@ def propShapes : List MTm :=
   let erasedArg (A : MTm) := app (ann (lam star) (piq .zero A (unit 0))) (fst bad)
   [erasedArg pfalse, erasedArg (eqTy T1 ptrue)]
 
+/-- Decision D2: `∞` is not below itself (`↑∞ = ∞` makes `↑s ≤ ∞` true of every `s`).
+The first five are rejected: `∞` (or `↑∞`) as a `Size< ∞`, a variable of type `Size` (it
+may be `∞`), and the loop `sfix (fun s rec i x => rec ∞ i x) ∞ tt 0 : Empty` (its `rec`
+takes sizes below the generic `s`, so it was already rejected). The rest are accepted:
+a bounded variable and its successors are below `∞`. -/
+def sizeInf : List MTm :=
+  let sizeArg (A s : MTm) := app (ann (lam star) (piq .zero A (unit 0))) s
+  [ann szInf (sizeLt szInf), ann (szSuc szInf) (sizeLt szInf), sizeArg (sizeLt szInf) szInf,
+   ann (lam (var 0)) (pi size (sizeLt szInf)),
+   sfix 0 (unit 0) natD 1 (lams 2 (empty 0)) (lams 4 (app (app (app (var 2) szInf) (var 1)) (var 0))) szInf star natZero,
+   ann (lam (var 0)) (pi (sizeLt szInf) (sizeLt szInf)),
+   ann (lam (szSuc (szSuc (var 0)))) (pi (sizeLt szInf) (sizeLt szInf)),
+   ann (lam (lam (var 0))) (pi size (pi (sizeLt (var 0)) (sizeLt szInf))),
+   ann (lam (lam (szSuc (var 0)))) (pi size (pi (sizeLt (var 0)) (sizeLt (szSuc (var 1))))),
+   ann (lam (lam (sizeArg (sizeLt szInf) (var 0)))) (pi size (pi (sizeLt (var 0)) (unit 0)))]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ sizeInf ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -1765,6 +1783,10 @@ def selfHostGroup : Group where
         match MTm.propShapes.map leanVerdict with
         | ["error", ok] => unless ok != "error" do throw (IO.userError "the equivalence was rejected")
         | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "∞ is not below itself (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.sizeInf.map leanVerdict
+        unless vs.take 5 == List.replicate 5 "error" && (vs.drop 5).all (· != "error") do
+          throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "the self-hosted frontend checks itself (Lex, Parse, Kernel and Frontend.wiz)", run := fun _ => do
         let src := (← IO.FS.readFile "selfhost/Lex.wiz") ++ "\n" ++ (← IO.FS.readFile "selfhost/Parse.wiz") ++ "\n" ++
           (← IO.FS.readFile "selfhost/Kernel.wiz") ++ "\n" ++ (← IO.FS.readFile "selfhost/Frontend.wiz")

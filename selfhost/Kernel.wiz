@@ -1267,6 +1267,15 @@ partial def sizeLe (c : TCtx) (a b : Val) : Bool := match sizeView b with
        | .vsizeLt u => sizeLe c (addSucs (k - 1) u) b
        | _ => .false)
     | _ => .false
+-- `a < b`: `↑a ≤ b`, except at `∞` (decision D2): `↑∞ = ∞`, so `↑a ≤ ∞` holds for every
+-- `a`, `∞` included. Below `∞` are only `↑ᵏ x` for a variable `x : Size< u`.
+def sizeBelow (c : TCtx) (a b : Val) : Bool := match sizeView b with
+  | .inf _ => match sizeView a with
+    | .var x _ => match whnf (lookup (TCtx.types c) (TCtx.lvl c - x - 1)) with
+      | .vsizeLt _ => .true
+      | _ => .false
+    | _ => .false
+  | _ => sizeLe c (.vszSuc a) b
 -- the size of a constructor's fields: `↑s ↦ s`, `∞ ↦ ∞`
 def sizePred (sz : Val) : Option Val := match whnf sz with
   | .vszInf => .some .vszInf
