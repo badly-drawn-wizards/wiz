@@ -6,7 +6,7 @@ import Optic
 --     the real one is `{toNat}` with native words via implemented_by.
 --   * `Vec` is a List-backed stand-in for RD10's model + native array (agent/vec-lib):
 --     the real `takeAt`/`fillAt` move the element out of a native array in place.
--- Use: WIZ_PATH=drafts/rust/lib wiz check drafts/rust/lowered/NN_name.wiz
+-- Use: wiz check -I drafts/rust/lib drafts/rust/lowered/NN_name.wiz
 
 -- ## Regions (RD12): lifetimes are quantity-0 indices
 --
