@@ -135,7 +135,7 @@ def levelTrailing : List TrailingParser := [
 | `term.sized` (trailing) | max | T "^" s: an inductive or coinductive type at size `s` |
 
 The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
-`Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out` and `coit` have no syntax of their
+`Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out`, `coit` and `cocon` have no syntax of their
 own: they are names the elaborator recognises when applied (unless shadowed).
 
 Field access by name (`p.x`) needs no syntax: `p.x` lexes as one dotted identifier,
@@ -206,6 +206,9 @@ def termTrailing : List TrailingParser := [
   { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "^", term maxPrec] }
 ]
 
+/-- `deriving C₁, C₂` after an `inductive` or `structure` (HD8) -/
+def derivingClause : ParserDescr := optional (seqs ["deriving", sepBy1 ident ","])
+
 /-- Commands. Each command is parsed inside `withPosition`, so an application can't
 continue onto a line starting at the command's column.
 
@@ -217,8 +220,10 @@ continue onto a line starting at the command's column.
 | `command.reduce`             | "#reduce" term |
 | `command.declareSyntaxCat`   | "declare_syntax_cat" ident |
 | `command.syntax`             | "syntax" [":" prec] [name] [priority] [stx+] ":" ident |
-| `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] |
-| `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] "where" [fields] |
+| `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] ["deriving" C,+] |
+| `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] "where" [fields] ["deriving" C,+] |
+| `command.deriving`           | "deriving" "instance" C,+ "for" T,+ |
+| `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
 | `command.coinductive`        | like `structure`; the fields are observations |
 | `command.defEqns`            | "def" ident [".{" us "}"] [binders] ":" T [alts] |
 | `command.partial`            | "partial" command (a `def`) |
@@ -259,6 +264,11 @@ def commandLeading : List LeadingParser := [
     p := seqs ["attribute", "[", nonReserved "macro", ident, "]", ident] },
   { kind := "command.attrTactic", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "tactic", ident, "]", ident] },
+  -- HD8: `deriving`
+  { kind := "command.attrDeriver", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "deriver", ident, "]", ident] },
+  { kind := "command.deriving", prec := maxPrec,
+    p := seqs ["deriving", "instance", sepBy1 ident ",", nonReserved "for", sepBy1 ident ","] },
   { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
   { kind := "command.syntax", prec := maxPrec,
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
@@ -268,10 +278,11 @@ def commandLeading : List LeadingParser := [
   { kind := "command.inductive", prec := maxPrec,
     p := seqs ["inductive", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
       "where", many (node "inductive.ctor" (seqs ["|", ident, many (bracketedBinder false),
-        optional (seqs [":", term])]))] },
+        optional (seqs [":", term])])), derivingClause] },
   { kind := "command.structure", prec := maxPrec,
     p := seqs ["structure", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
-      "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term])))] },
+      "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term]))),
+      derivingClause] },
   -- stage 7: a class is a structure whose values are found by instance resolution
   { kind := "command.class", prec := maxPrec,
     p := seqs ["class", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
