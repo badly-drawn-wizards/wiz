@@ -242,6 +242,10 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
               [conAt j (pair tag ((fs ++ [e']).foldr pair (closed .tt)))])) d)
           let prf : B R := fun d => .transp (Iv d) (tuple idxB d) (Q d) (.reflTy (A d)) (i d) (e d)
           let inner := app (ms[ci]!) ((jv?.toList) ++ fs ++ (if withIH then ihs else []))
+          -- without indices the two motives agree (`con (tag, r)` is the constructor
+          -- applied to `r`'s fields, by η), so no cast: then the recursor computes on a
+          -- constructor even at a neutral motive, without regularity
+          if nΞ == 0 then inner else
           fun d => .cast (A d) (Bty d) (prf d) (inner d)
       fun d =>
         let e := Term.app (.ecase "z" (motiveZ (d + 1)) (.fst (xs d)) (branches.map (· d))) (.snd (xs d))

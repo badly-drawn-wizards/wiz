@@ -139,6 +139,15 @@ def regularityAllowed (g : Globals R) (A e : Val R) : Bool :=
   | .refl => reflProof e
   | .off => false
 
+/-- The predecessor of a size, for `con`/`cocon`/`out`: `↑s ↦ s`, `∞ ↦ ∞`; `none`
+for a size variable, which can't be built from or observed. -/
+partial def sizePred? : Val R → Option (Val R)
+  | .unfold _ _ _ v => sizePred? v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => sizePred? v.get
+  | .szInf => some .szInf
+  | .szSuc s => some s
+  | _ => none
+
 mutual
 
 /-- **Exercise 1.1.** Evaluate a term in an environment.
@@ -510,6 +519,14 @@ partial def vOut (g : Globals R) (x : Val R) : Val R :=
     let rec_ : Val R := .lam "i" (.mk [f, A, D, I]
       (.lam "a" (.scofix l (.var 5) (.var 4) (.var 3) (.var 2) .szInf (.var 1) (.var 0))))
     vOut g ([.szInf, rec_, i, a].foldl (vApp g) f)
+  -- a cast between two `ν` types of a family is observed through (`vCastData`)
+  | .neutral (.cast A B e t) #[] => match whnf A, sameFamily? g (whnf A) (whnf B) with
+    | .nu .., some (l, I, D, s, i, i') => match sizePred? s with
+      | some s' =>
+        let (Xi, Xi', e') := payloadEq g l I D (nuFamilyAt l I D s') i i' e
+        vCast g Xi Xi' e' (vOut g t)
+      | none => .neutral (.cast A B e t) #[.out]
+    | _, _ => .neutral (.cast A B e t) #[.out]
   | .neutral h sp => .neutral h (sp.push .out)
   | _ => panic! "vOut: ill-typed"
   --|ex
@@ -620,7 +637,10 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
       (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0)))) (some 0))) (some 0)
   | .sort u, .sort w | .unit u, .unit w | .empty u, .empty w => levels u w
   | .enum ls, .enum ls' => if ls.length == ls'.length then .unit 0 else .empty 0
-  | .desc .., .desc .. | .mu .., .mu .. | .nu .., .nu .. => .neutral (.eqTy X Y) #[]
+  | .desc l I, .desc l' I' => if l.equiv l' then vEqType g I I' else .neutral (.eqTy X Y) #[]
+  | .mu .., .mu .. | .nu .., .nu .. => match sameFamily? g X Y with
+    | some (_, I, _, _, i, i') => vEq g I i i'
+    | none => .neutral (.eqTy X Y) #[]
   | _, _ => if canonical X && canonical Y then .empty 0 else .neutral (.eqTy X Y) #[]
   --|ex
   --| sorry
@@ -660,13 +680,92 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   | .sort u, .sort w | .empty u, .empty w => if u.equiv w then t else stuck
   | .unit u, .unit w => if u.equiv w then .tt else stuck
   | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
-  -- regularity, when it is cheap to see: syntactically equal types (quoted at a level
-  -- above any variable in use)
-  | _, _ => if regularityAllowed g A e && quote g 100000 A == quote g 100000 B then t else stuck
+  -- regularity (only when `g.regularity` allows it; off by default): syntactically equal
+  -- types (quoted at a level above any variable in use)
+  | _, _ => if regularityAllowed g A e && sameVal g A B then t else vCastData g A B e t stuck
   --|ex
   --| sorry
   --sol>
 
+
+/-- Syntactic equality of two values, quoted at a level above any variable in use. The
+side condition of the rules below (as it was of regularity): cheap, and stable under
+substitution, since a substitution instance of equal terms is equal. -/
+partial def sameVal (g : Globals R) (a b : Val R) : Bool :=
+  quote g 100000 a == quote g 100000 b
+
+/-- Two `μ` (or two `ν`) types of the same family, `μ^s_l I D i` and `μ^s_l I D i'`:
+the level, index type, description and size agree (`sameVal`), only the indices may
+differ. Returns `(l, I, D, s, i, i')`. -/
+partial def sameFamily? (g : Globals R) (A B : Val R) :
+    Option (Level × Val R × Val R × Val R × Val R × Val R) :=
+  match A, B with
+  | .mu l I D i s _, .mu l' I' D' i' s' _ | .nu l I D i s _, .nu l' I' D' i' s' _ =>
+    if l.equiv l' && sameVal g s s' && sameVal g I I' && sameVal g D D' then
+      some (l, I, D, s, i, i')
+    else none
+  | _, _ => none
+
+/-- The payload types of a family `X` (`muFamilyAt …`/`nuFamilyAt …`) at two indices,
+and the equation between them derived from `e : i = i'`:
+
+    transp I i (fun j _ => ⟦D⟧ X i = ⟦D⟧ X j) (reflTy (⟦D⟧ X i)) i' e
+      : ⟦D⟧ X i = ⟦D⟧ X i' -/
+partial def payloadEq (g : Globals R) (l : Level) (I D X i i' e : Val R) : Val R × Val R × Val R :=
+  let Xi := vInterp g l I D X i
+  let Xi' := vInterp g l I D X i'
+  -- under `j _`: _0 j1 Xi2 X3 D4 I5
+  let P : Val R := .lam "j" (.mk [Xi, X, D, I] (.lam "_"
+    (.eqTy (.var 2) ((Templates.interpTm l).app (.var 5) |>.app (.var 4) |>.app (.var 3) |>.app (.var 1)))))
+  (Xi, Xi', .neutral (.transp I i P (.neutral (.reflTy Xi) #[]) i' e) #[])
+
+/-- `cast` at the data types, by the value (no regularity):
+
+    cast (Desc l I) (Desc l I') e D        by `D` (`e : I = I'`):
+      ret i ↦ ret (cast I I' e i);   arg q S E ↦ arg q S (fun s => cast _ _ e (E s))
+      rec q j E ↦ rec q (cast I I' e j) (cast _ _ e E)
+      hrec q H j E ↦ hrec q H (fun h => cast I I' e (j h)) (cast _ _ e E)
+    cast (μ^s D i) (μ^s D i') e (con x)  ↦ con (cast (⟦D⟧ μ^s' i) (⟦D⟧ μ^s' i') e' x)
+    cast (ν^s D i) (ν^s D i') e (cocon x) ↦ cocon (cast (⟦D⟧ ν^s' i) (⟦D⟧ ν^s' i') e' x)
+
+where `s = ↑s'` (or `∞`), `e : i = i'` (`vEqType` at a family), and `e'` is `payloadEq`'s
+equation. The payload's cast casts every field, so a proof field becomes the
+equivalence applied to it (`vCast` between propositions), and a field at a neutral type
+stays a stuck cast. A numeral is a value of `builtin nat`, a type with an index in
+`Unit` and no proof or neutral fields: its cast is itself (what the rule computes, up
+to proof irrelevance). Otherwise stuck. -/
+partial def vCastData (g : Globals R) (A B e t stuck : Val R) : Val R :=
+  let v (i : Nat) : Term R := .var i
+  match A, B with
+  | .desc l I, .desc l' I' =>
+    if !l.equiv l' then stuck else
+    match whnf t with
+    | .dret i => .dret (vCast g I I' e i)
+    -- s0 E1 e2 I'3 I4
+    | .darg q S E => .darg q S (.lam "s" (.mk [E, e, I', I] (.cast (.desc l (v 4)) (.desc l (v 3)) (v 2) (.app (v 1) (v 0)))))
+    | .drec q j E => .drec q (vCast g I I' e j) (vCast g A B e E)
+    -- h0 j1 e2 I'3 I4
+    | .dhrec q H j E => .dhrec q H (.lam "h" (.mk [j, e, I', I] (.cast (v 4) (v 3) (v 2) (.app (v 1) (v 0)))))
+        (vCast g A B e E)
+    | _ => stuck
+  | .mu .., .mu .. => match sameFamily? g A B with
+    | some (l, I, D, s, i, i') =>
+      let t := whnf t
+      if (match t with | .natLit _ => true | _ => false) && sameVal g i i' then t else
+      match vNatView g t, sizePred? s with
+      | .con x, some s' =>
+        let (Xi, Xi', e') := payloadEq g l I D (muFamilyAt l I D s') i i' e
+        .con (vCast g Xi Xi' e' x)
+      | _, _ => stuck
+    | none => stuck
+  | .nu .., .nu .. => match sameFamily? g A B, whnf t with
+    | some (l, I, D, s, i, i'), .cocon x => match sizePred? s with
+      | some s' =>
+        let (Xi, Xi', e') := payloadEq g l I D (nuFamilyAt l I D s') i i' e
+        .cocon (vCast g Xi Xi' e' x)
+      | none => stuck
+    | _, _ => stuck
+  | _, _ => stuck
 
 /-- **Exercise 1.3.** Read a value back into syntax in a context of `l` local variables.
 To quote under a binder, instantiate the closure with `Val.var l` and quote the
