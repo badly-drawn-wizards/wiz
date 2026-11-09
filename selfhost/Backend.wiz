@@ -1,6 +1,7 @@
 -- The backend, in Wiz (stage 21): from the kernel terms the self-hosted frontend checks
 -- to C. Load it after `Frontend.wiz`. A first, minimal version (21a–b): no reference
--- counting (the runtime collects garbage), payloads stay nested pairs.
+-- counting (the runtime collects garbage); payloads are nested pairs, though the
+-- runtime keeps a chain of them as one object (`chainE`).
 --
 -- **Erasure** (21a) follows `Wiz/Compiler/Erase.lean`: a checked term becomes an
 -- untyped program (`ETm`) without what has no runtime content. Types (anything whose
@@ -406,6 +407,23 @@ def maxVar : List Nat → Nat
 def etmsLen : ETms → Nat
   | .nil => 0
   | .cons _ rest => etmsLen rest + 1
+
+-- a chain of pairs `(e₀, (e₁, … t))` as its elements, at most `k` of them, then its tail
+-- (`[t]` when `t` is not a pair): the runtime keeps a chain as one object
+def chainE : Nat → ETm → ETms
+  | .zero, t => etms1 t
+  | .succ k, t => match t with
+    | .obj tg fs => match tg with
+      | .zero => match fs with
+        | .cons a r => match r with
+          | .cons b r2 => match r2 with
+            | .nil => .cons a (chainE k b)
+            | .cons _ _ => etms1 t
+          | .nil => etms1 t
+        | .nil => etms1 t
+      | .succ _ => etms1 t
+    | _ => etms1 t
+
 -- **Constants.** A numeral the frontend built from `Nat.zero`, `Nat.succ` and `Nat.mul`
 -- (binary numerals), and a string literal (`String.mk` of a list of `Char.mk` codes),
 -- are recognised: a string becomes its code points in the C code, built once (strings
@@ -504,6 +522,7 @@ def cgBranches (st : CG) (names : List String) (k : Nat) : ETms → CR
     | .mk bc st1 => match cgBranches st1 names (k + 1) rest with
       | .mk rc st2 => .mk (.t "case " ⧺ Doc.nat k ⧺ .t ": r_ = " ⧺ bc ⧺ .t "; break; " ⧺ rc) st2
 end
+
 
 -- **Lazy `let`s.** The match compiler binds with `let`s things only some branches use:
 -- a shared catch-all (`dflt✝`), the hypotheses of `ind` (each the result of a recursive

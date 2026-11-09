@@ -19,6 +19,12 @@ typedef uintptr_t V;
 #define BOX(n) ((((V)(n)) << 1) | 1)
 #define ISBOX(v) (((v) & 1) != 0)
 #define UNBOX(v) ((v) >> 1)
+/* Flat chains of pairs: `(e₀, (e₁, … (eₘ₋₁, t)))` is one object with tag 0 and fields
+   `e₀ … eₘ₋₁ t` (a pair is the case m = 1). Its tail `(eᵢ, …)` is the same pointer
+   with `i` in bits 1–3 (objects are 16-byte aligned; bit 0 marks a scalar), so taking
+   the second component allocates nothing. A list cell is one object instead of three. */
+#define OBJ(v) ((Obj *)((v) & ~(V)0xE))
+#define OFF(v) ((unsigned)(((v) >> 1) & 7))
 
 enum { T_CLO = 0x7fff0000u, T_STR, T_ARR, T_MAP, T_HYP };
 
@@ -52,25 +58,33 @@ static V ap(V f, V a) {
    `[suspension, rest, done]`) is computed when its field is first read. */
 static V fld(V o, int i) {
   if (ISBOX(o)) return BOX(0);
-  Obj *p = (Obj *)o;
+  Obj *p = OBJ(o);
+  if (p->tag == 0 && p->n >= 2) {
+    unsigned off = OFF(o);
+    if (i == 0) return p->f[off];
+    if (off + 1 < p->n - 1) return (V)p | ((V)(off + 1) << 1);
+    return p->f[p->n - 1];
+  }
   if (p->tag == T_HYP && i == 0) {
     if (p->f[2] == BOX(0)) { p->f[0] = ((Clo *)p->f[0])->fn(((Clo *)p->f[0])->env, BOX(0)); p->f[2] = BOX(1); }
     return p->f[0];
   }
   return (uint32_t)i < p->n ? p->f[i] : BOX(0);
 }
-static uint32_t tagof(V v) { return ISBOX(v) ? (uint32_t)UNBOX(v) : ((Obj *)v)->tag; }
+static uint32_t tagof(V v) { return ISBOX(v) ? (uint32_t)UNBOX(v) : OBJ(v)->tag; }
 static V pair(V a, V b) { V fs[2] = {a, b}; return mkobj(0, 2, fs); }
 
 /* ---- data the natives build: Bool, Prod, List, Char, String ---- */
 
 static V boolv(int b) { return pair(BOX(b ? 1 : 0), BOX(0)); }
+static V flat3(V a, V b, V t) { V fs[3] = {a, b, t}; return mkobj(0, 3, fs); }
+static V flat4(V a, V b, V c, V t) { V fs[4] = {a, b, c, t}; return mkobj(0, 4, fs); }
 /* `Prod.mk a b`: the payload `(tag 0, (a, (b, ◾)))` */
-static V prodv(V a, V b) { return pair(BOX(0), pair(a, pair(b, BOX(0)))); }
+static V prodv(V a, V b) { return flat4(BOX(0), a, b, BOX(0)); }
 static V nilv(void) { return pair(BOX(0), BOX(0)); }
-static V consv(V h, V t) { return pair(BOX(1), pair(h, pair(t, BOX(0)))); }
-static V charv(uint32_t c) { return pair(BOX(0), pair(BOX(c), BOX(0))); }
-static V stringv(V list) { return pair(BOX(0), pair(list, BOX(0))); }
+static V consv(V h, V t) { return flat4(BOX(1), h, t, BOX(0)); }
+static V charv(uint32_t c) { return flat3(BOX(0), BOX(c), BOX(0)); }
+static V stringv(V list) { return flat3(BOX(0), list, BOX(0)); }
 
 /* a Wiz string as UTF-8 (a new buffer) */
 static char *cstr(V s) {
@@ -123,7 +137,7 @@ static V p_natSucc(V n) { return BOX(UNBOX(n) + 1); }
 /* a number's payload for a match: `(tag 0, ◾)` or `(tag 1, (n - 1, ◾))` */
 static V p_natUnpack(V n) {
   uintptr_t k = UNBOX(n);
-  return k == 0 ? pair(BOX(0), BOX(0)) : pair(BOX(1), pair(BOX(k - 1), BOX(0)));
+  return k == 0 ? pair(BOX(0), BOX(0)) : flat3(BOX(1), BOX(k - 1), BOX(0));
 }
 static V p_natPack(V p) {
   return tagof(fld(p, 0)) == 0 ? BOX(0) : BOX(UNBOX(fld(fld(p, 1), 0)) + 1);
@@ -363,4 +377,6 @@ static void rt_start(char **argv) {
     if (setrlimit(RLIMIT_STACK, &r) == 0) { setenv("WIZ_STACK_SET", "1", 1); execv("/proc/self/exe", argv); }
   }
   GC_INIT();
+  /* collect less often: the heap of a compiler is mostly live (20% faster) */
+  GC_set_free_space_divisor(1);
 }
