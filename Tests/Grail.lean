@@ -240,4 +240,61 @@ def grailGroup : Group where
         checkEq 2 s.upToDate }
   ]
 
+/-- Run `grail test` in-process on a package directory. -/
+def runTests (dir : System.FilePath) (tc : Toolchain) (update : Bool := false) : IO (Array Grail.TestResult × Grail.Stats) := do
+  let std : System.FilePath := "lib"
+  match ← Grail.readConfig tc 7 std dir with
+  | .error e => throw (IO.userError e)
+  | .ok (pkg, _) =>
+    let r : Grail.Runner := { ctx := { dir, std, tc, binId := 7, libRoots := Grail.libRootsOf dir pkg.targets },
+                              stats := ← IO.mkRef {}, memo := ← IO.mkRef {}, log := fun _ => pure () }
+    let res ← r.tests pkg.targets [] update
+    pure (res, ← r.stats.get)
+
+def testPkg : List (String × String) :=
+  [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+   ("tests/two.wiz", "import Prelude\n#eval 1 + 1\n"),
+   ("tests/sub/bad.wiz", "import Prelude\ndef b : Nat := true\n")]
+
+def testRunnerGroup : Group where
+  name := "testrunner"
+  exercise := "Stage 23f"
+  cases := [
+    { name := "tests are files with expected output; --update writes it", run := fun _ => do
+        let dir ← mkTree testPkg
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        let (res, _) ← runTests dir tc
+        checkEq 2 res.size
+        check (res.all (!·.ok)) "a test without .expected passed"
+        let (res, _) ← runTests dir tc (update := true)
+        check (res.all (·.ok)) "--update failed"
+        checkEq "tests/two.wiz:2:1: info: 2\n" (← IO.FS.readFile (dir / "tests/two.expected"))
+        let bad ← IO.FS.readFile (dir / "tests/sub/bad.expected")
+        check ((bad.splitOn "tests/sub/bad.wiz:2:").length > 1 && (bad.splitOn "error").length > 1) s!"bad.expected: {bad}"
+        let (res, _) ← runTests dir tc
+        check (res.all (·.ok)) "the tests failed after --update"
+        -- passes are recorded: nothing runs again
+        let (res, st) ← runTests dir tc
+        check (res.all (·.cached)) "a pass was not recorded"
+        checkEq 0 st.ran },
+    { name := "a wrong output fails, with the first difference", run := fun _ => do
+        let dir ← mkTree (testPkg ++ [("tests/two.expected", "tests/two.wiz:2:1: info: 3\n")])
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        let (res, _) ← runTests dir tc
+        let some two := res.find? (·.file == "tests/two.wiz") | throw (IO.userError "no test two")
+        check (!two.ok) "a wrong output passed"
+        check ((two.message.splitOn "info: 3").length > 1 && (two.message.splitOn "info: 2").length > 1) two.message },
+    { name := "-- test: run compiles and runs main", run := fun _ => do
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/hello.wiz", "-- test: run\nimport IO\ndef main : IO Unit := IO.println \"hi\"\n"),
+          ("tests/hello.expected", "hi\n"),
+          ("tests/value.wiz", "-- test: run\nimport Prelude\ndef main : Nat := 6 * 7\n"),
+          ("tests/value.expected", "42\n")]
+        let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
+        let (res, _) ← runTests dir tc
+        if res.any fun t => (t.message.splitOn "gmp.h").length > 1 then
+          IO.println "    (skipped: no toolchain)"; return
+        for t in res do check t.ok s!"{t.file}: {t.message}" }
+  ]
+
 end Tests.Grail

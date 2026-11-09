@@ -1,4 +1,4 @@
-import Grail.Build
+import Grail.Test
 
 /-!
 # grail, a build tool for Wiz
@@ -11,6 +11,9 @@ open Wiz Grail
 
 def usage : String := "usage:
   grail build [TARGET…]   build the package's targets (all by default)
+  grail test [FILTER…] [--update]
+                          run the tests (of `tests` targets) whose path contains a
+                          filter; --update writes the actual output to .expected
   grail targets           list the targets
   grail config            print the toolchain grail would use
   grail clean             remove .grail/build and .grail/bin
@@ -70,7 +73,7 @@ def main (args : List String) : IO UInt32 := do
     for d in ["build", "bin", "tmp"] do
       if ← (dir / ".grail" / d).pathExists then IO.FS.removeDirAll (dir / ".grail" / d)
     pure 0
-  | "build" :: _ | ["targets"] | ["config"] =>
+  | "build" :: _ | "test" :: _ | ["targets"] | ["config"] =>
     let (pkg, localSettings) ← match ← readConfig flagged binId std dir with
       | .ok r => pure r
       | .error e => do IO.eprintln e; return 1
@@ -86,6 +89,16 @@ def main (args : List String) : IO UInt32 := do
     | ["targets"] =>
       for t in pkg.targets do IO.println s!"{t.name}\t{repr t}"
       pure 0
+    | "test" :: rest =>
+      let update := rest.contains "--update"
+      let filters := rest.filter (· != "--update")
+      let r : Runner := { ctx := { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets },
+                          stats := ← IO.mkRef {}, memo := ← IO.mkRef {} }
+      let results ← r.tests pkg.targets filters update
+      let passed := results.filter (·.ok) |>.size
+      let cached := results.filter (·.cached) |>.size
+      IO.println s!"{passed} passed, {results.size - passed} failed ({cached} recorded passes)"
+      pure (if passed == results.size then 0 else 1)
     | _ =>
       let wanted := args.drop 1
       let targets := if wanted.isEmpty then pkg.targets else pkg.targets.filter (wanted.contains ·.name)

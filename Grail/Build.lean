@@ -127,7 +127,7 @@ def install (src dst : System.FilePath) : IO Unit := do
 
 /-- Build the executable `name` from `file`'s `main`: check → IR → C → object → link,
 installed as `.grail/bin/<name>`. -/
-def Runner.exe (r : Runner) (name file : String) : IO (Except String System.FilePath) := do
+def Runner.link (r : Runner) (name file : String) : IO (Except String System.FilePath) := do
   let ck ← match ← r.check file with | .ok k => pure k | .error e => return .error e
   let tc := r.ctx.tc
   let decls (s : CommandState ZeroOneMany) : Except String (Array IR.Decl × Bool) := do
@@ -157,9 +157,16 @@ def Runner.exe (r : Runner) (name file : String) : IO (Except String System.File
   let lDir ← match ← r.job s!"link {name}" linkKey (fun out =>
       run tc.cc (#["-o", (out / name).toString, (oDir / "main.o").toString, "-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray)) with
     | .ok d => pure d | .error e => return .error e
-  let dst := r.ctx.grailDir / "bin" / name
-  install (lDir / name) dst
-  pure (.ok dst)
+  pure (.ok (lDir / name))
+
+/-- Build the executable `name` from `file`'s `main`, installed as `.grail/bin/<name>`. -/
+def Runner.exe (r : Runner) (name file : String) : IO (Except String System.FilePath) := do
+  match ← r.link name file with
+  | .error e => pure (.error e)
+  | .ok exe =>
+    let dst := r.ctx.grailDir / "bin" / name
+    install exe dst
+    pure (.ok dst)
 
 /-- Build one target. -/
 def Runner.target (r : Runner) : Target → IO Bool
@@ -178,5 +185,7 @@ def Runner.target (r : Runner) : Target → IO Bool
     match ← r.exe name file with
     | .ok _ => pure true
     | .error e => IO.eprintln e; pure false
+  -- tests run with `grail test`
+  | .tests _ _ => pure true
 
 end Grail

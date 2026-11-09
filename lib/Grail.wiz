@@ -4,11 +4,14 @@ import Prelude
 -- reads the result as an S-expression (`Package.render`, `Settings.render`).
 
 -- What to build: a library (every module under a directory, named by its path), one
--- file to check, or an executable (a file's `main`, compiled through C).
+-- file to check, an executable (a file's `main`, compiled through C), or tests (every
+-- `.wiz` file under a directory, with its expected output in `.expected` beside it;
+-- `grail test`).
 inductive Target where
   | lib (name : String) (root : String)
   | check (name : String) (file : String)
   | exe (name : String) (file : String)
+  | tests (name : String) (root : String)
 
 -- Settings: `key value` pairs, later ones win. Keys: `cc`, `cflags`, `ldflags`, `llc`,
 -- `gc-cflags`, `gc-ldflags` (the toolchain), `root` (another module root).
@@ -30,6 +33,7 @@ def Package.add (t : Target) : Package → Package
 def Package.lib (name root : String) (p : Package) : Package := Package.add (.lib name root) p
 def Package.check (name file : String) (p : Package) : Package := Package.add (.check name file) p
 def Package.exe (name file : String) (p : Package) : Package := Package.add (.exe name file) p
+def Package.tests (name root : String) (p : Package) : Package := Package.add (.tests name root) p
 def Package.set (key value : String) : Package → Package
   | .mk n ts s => .mk n ts (Settings.set key value s)
 
@@ -54,6 +58,7 @@ def Target.render : Target → String
   | .lib n r => Grail.node "lib" (.cons (Grail.quote n) (.cons (Grail.quote r) .nil))
   | .check n f => Grail.node "check" (.cons (Grail.quote n) (.cons (Grail.quote f) .nil))
   | .exe n f => Grail.node "exe" (.cons (Grail.quote n) (.cons (Grail.quote f) .nil))
+  | .tests n r => Grail.node "tests" (.cons (Grail.quote n) (.cons (Grail.quote r) .nil))
 def Grail.renderTargets : List Target → List String
   | .nil => .nil
   | .cons t ts => .cons (Target.render t) (Grail.renderTargets ts)
