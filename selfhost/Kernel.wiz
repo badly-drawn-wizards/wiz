@@ -1917,7 +1917,9 @@ def infer : TCtx → Tm → TyRes
   | c, .sizeLt sz => match check (TCtx.erase c) sz .vsize with
     | .ok _ _ => .ok (.vsort (.lnum 1)) (uZeros (TCtx.lvl c))
     | r => r
-  | c, .mus l I D i _ => infer c (.mu l I D i)
+  | c, .mus l I D i sz => match check (TCtx.erase c) sz .vsize with
+    | .ok _ _ => infer c (.mu l I D i)
+    | r => r
   | c, .sfix l I D v P f sz i x => match inferUniv c I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
@@ -1966,7 +1968,9 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .nu l I D i _ => infer c (.mu l I D i)
+  | c, .nu l I D i sz => match check (TCtx.erase c) sz .vsize with
+    | .ok _ _ => infer c (.mu l I D i)
+    | r => r
   | c, .out x => match infer c x with
     | .ok ty u => match whnf ty with
       | .vnu l I D i sz => match sizePred sz with

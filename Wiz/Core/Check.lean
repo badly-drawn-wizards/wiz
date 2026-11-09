@@ -115,6 +115,7 @@ Proofs carry no usage: they are erased, and conversion never looks at them.
     Γ ⊢ μ.{l} I D i ⇒ Type l           Γ ⊢ con x ⇐ μ D i  if  Γ ⊢ x ⇐ ⟦D⟧ (μ D) i
     Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·Uₘ + Uₓ                    (`indMotiveTy`, `indMethodTy`)
     Γ ⊢ ν.{l} I D i ⇒ Type l           Γ ⊢ out x ⇒ ⟦D⟧ (ν D) i
+    (at a size: Γ ⊢ μ^s.{l} I D i ⇒ Type l and Γ ⊢ ν^s.{l} I D i ⇒ Type l if also Γ⁰ ⊢ s ⇐ Size)
     Γ ⊢ coit S step i s ⇒ ν D i ⊣ ω·U_step + U_s
 
 A method may run once per node, so its usage is scaled by ω (the rig's default
@@ -529,7 +530,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let uc ← check ctx c tc
     let uh ← check ctx h th
     pure (vApp ctx.globals vP (ctx.eval D), QPoly.const w • (ua + ub + uc + uh) + uD)
-  | .mu l I D i _ _ | .nu l I D i _ _ => do
+  | .mu l I D i s _ | .nu l I D i s _ => do
+    let _ ← check { ctx with erased := true } s .size
     let lI ← checkType ctx I
     unless lI.equiv (.succ l) do throw (.other "an index type must be in the data type's universe")
     let vI := ctx.eval I
