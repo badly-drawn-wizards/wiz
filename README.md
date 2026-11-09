@@ -1631,6 +1631,33 @@ minutes. A `match` was a method applied to the payload, a closure built and call
 time; a lambda applied to arguments is now a `let`: 6 minutes. Reference counting comes
 next.
 
+### 22a: reference counting in the self-hosted backend (first stage)
+
+A second mode of `Backend.wiz` (`genProgramRC`), chosen by a first line `-- wiz: rc` in
+the program (a stand-in for a command-line flag: self-hosted programs can't read their
+arguments yet). The garbage-collected mode is unchanged, byte for byte.
+
+* **Perceus on the erased terms** (`rcE`): the C is in A-normal form, one local per
+  intermediate value, statements in evaluation order (C leaves the order of arguments
+  unspecified, and with reference counts the order of a use and an `inc` matters).
+  Liveness is one backward pass: a term is compiled knowing the variables used after it
+  (by de Bruijn level), and returns those used from its start; arguments are compiled
+  right to left. The last use of a variable moves it, earlier uses `inc` it, and a
+  variable that dies unused is `dec`ed where it dies (after its `let`, at a function's
+  start, at the start of each `case` branch that doesn't use it). A projection path from
+  a variable reads in place and `inc`s only the field; a `case` on a variable's field
+  reads the tag in place.
+* **Runtime** (`rt.c` with `WIZ_RC`): a count in every object's header; functions own
+  their arguments; function closures pass their collected arguments on (moved out when
+  unique); freeing is a worklist (a list a million long frees without recursion);
+  `memo` and the lazy hypotheses of `ind` release their suspension once forced; arrays
+  are updated in place when unique, else copied (Baker's versions would make cycles);
+  map nodes hold their keys. Constants (globals, string literals) are roots, released at
+  exit, after which the program checks that every object was freed.
+
+Next: the bootstrap in this mode, borrowed parameters, reuse and drop specialisation (as
+in stages 8a–c), a faster allocator; then reference counting by default.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅
