@@ -420,13 +420,25 @@ inductive STm where
   | mk (t : Tm) (s : Option Lvl)
 def STm.tm : STm → Tm
   | .mk t _ => t
-def sortLeaf (c : TCtx) (t : Tm) : STm := .mk t (sortOf c (eval (TCtx.env c) t))
+-- (a defined type's sort comes from its declared type: unfolding it, as `sortOf` does,
+-- would evaluate its whole description)
+def leafSort (c : TCtx) (v : Val) : Option Lvl := match v with
+  | .vglued h sp _ => match whnf (typeOfNe c h sp) with
+    | .vsort l => .some l
+    | _ => sortOf c v
+  | v => sortOf c v
+def sortLeaf (c : TCtx) (t : Tm) : STm := .mk t (leafSort c (eval (TCtx.env c) t))
 def binTm (isPi : Bool) (q : Q) (a b : Tm) : Tm := match isPi with
   | .true => piTm q a b
   | .false => sigmaTm q a b
+-- (a closed level is kept a number: a chain of `imax`es along a telescope would cost
+-- the kernel's level normalization dearly)
+def closedLvl (l : Lvl) : Lvl := match lvlClosed l with
+  | .some n => .lnum n
+  | .none => l
 def binLvl (isPi : Bool) (i j : Lvl) : Lvl := match isPi with
-  | .true => .limax i j
-  | .false => .lmax i j
+  | .true => closedLvl (.limax i j)
+  | .false => closedLvl (.lmax i j)
 def sortJoin (isPi : Bool) (q : Q) (a b : STm) : STm := match a, b with
   | .mk a' (.some i), .mk b' (.some j) => .mk (.sorted (binLvl isPi i j) (binTm isPi q a' b')) (.some (binLvl isPi i j))
   | .mk a' _, .mk b' _ => .mk (binTm isPi q a' b') .none
