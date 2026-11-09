@@ -255,6 +255,9 @@ def checkDiverges (input mode : String) (secs : Nat := 3) : IO Unit := do
   unless out.exitCode == 124 do
     throw (IO.userError s!"expected a timeout, got exit code {out.exitCode}: {out.stderr.take 1000}")
 
+/-- `TyOf a` is `a`'s type (as the elaborator built it) -/
+def tyOfDef : String := "def TyOf {ω A : Type} (a : A) : Type := A\n"
+
 def ottGroup : Group where
   name := "observational equality"
   exercise := "Exercises 4.10–4.14"
@@ -294,6 +297,23 @@ def ottGroup : Group where
           "def e : True = (True → True) := ((fun u => fun v => v), (fun f => ()))\n" ++
           "def bad : G True = G (True → True) := apTy Prop G True (True → True) e\n" ++
           "def anyType (A : Type) : A := let (x, y) := bad; absurd x") "absurd expects" },
+    -- the types the elaborator builds (a definition's telescope, constructor types)
+    -- carry their sorts too, so equations between them compute instead of waiting
+    { name := "a definition's type carries its sort: propositions in the domain", run := fun _ =>
+        ok (tyOfDef ++ "def f (x : True) : Unit := ()\ndef g (x : True → True) : Unit := ()\n" ++
+          "#reduce TyOf f = TyOf g")
+          ["(0 e : (0 _ : (0 x : True → True) → True) × ((0 x : True) → True → True)) × ((0 x : True → True) → True)"] },
+    { name := "a definition's type carries its sort: other types", run := fun _ =>
+        ok (tyOfDef ++ "inductive N where\n  | z\n  | s (n : N)\ndef h (x : N) : N := x\n" ++
+          "#reduce TyOf h = (N → N)\n" ++
+          "#reduce fun (e : TyOf h = (N → N)) (u : TyOf h) => (cast e u : N → N)")
+          ["(0 e : N = N) × ((0 x : N) → N = N)", "fun e u x => u x"] },
+    { name := "a constructor's type carries its sort", run := fun _ =>
+        ok (tyOfDef ++ "inductive Box (A : Type) where\n  | mk (a : A)\n" ++
+          "#reduce TyOf (@Box.mk Unit) = (Unit → Box Unit)")
+          ["(0 e : True) × ((0 x : Unit) → Box Unit = Box Unit)"] },
+    { name := "a match on several scrutinees whose types mention a variable", run := fun _ =>
+        ok "def pick (A : Type) (x y : A) : A := match x, y with\n  | a, b => b" },
     { name := "equality of proofs is rejected", run := fun _ =>
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
@@ -468,9 +488,15 @@ namespace Tests.Elab
 
 def streamPrelude : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\n\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n\ndef nats (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => nats (.succ n)\n\n\ndef repeat {A : Type} (a : A) : Stream A\n  | .head => a\n  | .tail => repeat a\n\n"
 
+/-- `register` (no corecursive observation: `cocon`) and `mealy` (corecursive: `coit`). -/
+def registerSrc : String :=
+  "def register {A : Type} (init : A) (s : Stream A) : Stream A\n  | .head => init\n  | .tail => s\n" ++
+  "def mealy {S I O : Type} (f : S → I → S × O) (st : S) (i : Stream I) : Stream O\n" ++
+  "  | .head => (f st i.head).2\n  | .tail => mealy f (f st i.head).1 i.tail\n"
+
 def coinductiveGroup : Group where
   name := "copatterns"
-  exercise := "stage 4e"
+  exercise := "stage 4e, Exercise 4.24"
   cases := [
     { name := "Stream, nats, repeat", run := fun _ => ok streamPrelude },
     { name := "observations unfold lazily", run := fun _ =>
@@ -481,6 +507,36 @@ def coinductiveGroup : Group where
         fails (streamPrelude ++ "def bad (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => (bad n).tail") "guardedness" },
     { name := "every observation must be defined", run := fun _ =>
         fails (streamPrelude ++ "def bad (n : Nat) : Stream Nat\n  | .head => n") "missing copattern" },
+    { name := "no corecursive observation: a cocon cell (register)", run := fun _ =>
+        ok (streamPrelude ++ registerSrc ++ "#reduce (register Nat.zero (nats (.succ .zero))).tail.head")
+          [".succ .zero"] },
+    { name := "a copattern definition without arguments", run := fun _ =>
+        ok (streamPrelude ++ "def s : Stream Nat\n  | .head => .zero\n  | .tail => nats .zero\n#reduce s.tail.tail.head")
+          [".succ .zero"] },
+    { name := "guardedness: no unguarded call in a cocon definition", run := fun _ =>
+        fails (streamPrelude ++ "def bad (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => repeat (bad n).head") "guardedness" },
+    { name := "guardedness: corecursive and plain recursive observations don't mix", run := fun _ =>
+        fails ("coinductive Tree (A : Type) where\n  label : A\n  left : Tree A\n  right : Tree A\n" ++
+          "def bad {A : Type} (a : A) (t : Tree A) : Tree A\n  | .label => a\n  | .left => bad a t\n  | .right => t") "guardedness" },
+    { name := "the coconstructor T.mk and .mk", run := fun _ =>
+        ok (streamPrelude ++ "#check @Stream.mk\ndef s : Stream Nat := .mk .zero (Stream.mk (.succ .zero) (nats .zero))\n#reduce s.tail.tail.head")
+          ["Stream.mk : {A : Type} → A → Stream A → Stream A", ".zero"] },
+    { name := "cocon, the kernel primitive", run := fun _ =>
+        ok (streamPrelude ++ "def s : Stream Nat := cocon (.zero, nats (.succ .zero), (), ())\n#reduce s.tail.head")
+          [".succ .zero"] },
+    { name := "cocon needs a coinductive expected type", run := fun _ =>
+        fails (streamPrelude ++ "def bad : Nat := cocon (.zero, ())") "cocon builds a coinductive value" },
+    { name := "cocon at a variable size is rejected", run := fun _ =>
+        fails (streamPrelude ++ "def bad (i : Size) (s : (Stream Nat)^i) : (Stream Nat)^i := cocon (.zero, s, (), ())") "size ↑s" },
+    { name := "a sized register: the tail one size down", run := fun _ =>
+        ok (streamPrelude ++ "def register {i : Size} (a : Nat) (s : (Stream Nat)^i) : (Stream Nat)^(↑i)\n  | .head => a\n  | .tail => s") },
+    { name := "a sized register can't keep the size", run := fun _ =>
+        fails (streamPrelude ++ "def bad {i : Size} (a : Nat) (s : (Stream Nat)^i) : (Stream Nat)^i\n  | .head => a\n  | .tail => s") "size ↑s or ∞" },
+    { name := "cocon bumps the size", run := fun _ =>
+        ok (streamPrelude ++ "def delay (i : Size) (s : (Stream Nat)^i) : (Stream Nat)^(↑i) := cocon (.zero, s, (), ())") },
+    { name := "mealy machines by copatterns (coit, state = the arguments)", run := fun _ =>
+        ok (streamPrelude ++ registerSrc ++ "#reduce (mealy (fun (n : Nat) (x : Nat) => (.succ n, n)) .zero (nats .zero)).tail.tail.head")
+          [".succ (.succ .zero)"] },
     { name := "generalised field notation on inductives too", run := fun _ =>
         ok (matchPrelude ++ "def Vec.tail {A : Type} {n : Nat} : Vec A (.succ n) → Vec A n\n  | .cons _ xs => xs\n" ++
             "def tl {A : Type} {n : Nat} (v : Vec A (.succ (.succ n))) : Vec A n := v.tail.tail") }
@@ -695,6 +751,9 @@ def backendGroup : Group where
           ["21"] },
     { name := "codata is lazy", run := fun _ =>
         okLib (streamPrelude ++ "#run (nats .zero).tail.tail.head") [".succ (.succ .zero)"] },
+    { name := "codata built by cocon (register) and coit (mealy)", run := fun _ =>
+        okLib (streamPrelude ++ registerSrc ++ "#run (register Nat.zero (mealy (fun (n : Nat) (x : Nat) => (.succ n, n)) .zero (nats .zero))).tail.tail.head")
+          [".succ .zero"] },
     { name := "sized recursion", run := fun _ =>
         okLib (runPrelude ++ "#run fib (.succ (.succ (.succ (.succ (.succ .zero)))))")
           [".succ (.succ (.succ (.succ (.succ (.succ (.succ (.succ .zero)))))))"] },
@@ -799,6 +858,16 @@ def ffiGroup : Group where
         ioFails "import IO\nglue bad (s : String) : Nat := \"return s[0];\"" "indexing" },
     { name := "glue: only declared functions", run := fun _ =>
         ioFails "import IO\nglue bad (n : Nat) : Nat := \"return system(n);\"" "unknown C function system" },
+    { name := "codata is recomputed on every observation (current behaviour)", run := fun _ =>
+        -- `noisy` prints when it runs. Building `s` unfolds `counter 0` (one step: the
+        -- next state is computed with the payload); each `s.head` unfolds `s` again.
+        -- Memoising `out` would print `step` twice, not three times
+        -- (wiz-notes/wishful/memoised-codata.md).
+        ioRun ("import IO\nimport_c \"stdio.h\" (pure)\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
+          "def noisy (n : Nat) : Nat := n + 0 * C.puts \"step\"\n" ++
+          "def counter (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => counter (noisy (n + 1))\n" ++
+          "def main : IO Unit := do\n  let s := (counter 0).tail;\n  IO.println (Nat.toString s.head);\n  IO.println (Nat.toString s.head)")
+          "step\nstep\n1\nstep\n1\n" },
     { name := "glue: types are checked", run := fun _ =>
         ioFails "import IO\nglue bad (n : Nat) : String := \"return n + 1;\"" "expected a string" },
     { name := "foreign pointers are released by their finalizer", run := fun _ =>
@@ -1811,6 +1880,21 @@ def selfHostGroup : Group where
         ioRun (kernel ++ "\n" ++ defs ++ main) ("(x0 : U0) → (x1 : x0) → x0\n(x0 : U0) → (x1 : x0) → x0\n" ++
           "error: type mismatch: expected U0, got U1\n(x0 : U0) → (x1 : (x1 : x0) → x0) → (x2 : x0) → x0\n" ++
           "λx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\nerror: not a function: its type is U1\n") },
+    { name := "the frontend gives the types it builds their sorts (sortTy)", run := fun _ => do
+        -- `(True → Unit) = ((True → True) → Unit)` built without sorts waits; with the
+        -- sorts `sortTy` fills in, it computes to the domains' equivalence
+        let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
+        let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
+        let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++
+          "def gTy (X : Tm) : Tm := .pi X (.unit 0)\n" ++
+          "def eqn (s : Bool) : Tm := match s with\n" ++
+          "  | .true => .eqTy (sortTy (gTy .ptrue)) (sortTy (gTy (.pi .ptrue .ptrue)))\n" ++
+          "  | .false => .eqTy (gTy .ptrue) (gTy (.pi .ptrue .ptrue))\n" ++
+          "def main : IO Unit := do\n  IO.println (normalize (eqn .false));\n  IO.println (normalize (eqn .true));\n" ++
+          "  IO.println (typeOf (sortTy (gTy (.pi .ptrue .ptrue))))\n"
+        ioRun prog ("EqTy((x0 : True) → Unit0, (x0 : (x0 : True) → True) → Unit0)\n" ++
+          "(x0 :0 (x0 :0 (x0 :0 (x0 : True) → True) → True) × (x1 :0 True) → (x2 : True) → True) × " ++
+          "(x1 :0 (x1 : True) → True) → True\nU0\n") },
     { name := "text to checked term, all in Wiz", run := fun _ => do
         let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
@@ -2160,6 +2244,15 @@ def nativeCases (llvm : Bool) : List Case :=
         cRun (llvm := llvm) "import Prelude\ndef adder (n : Nat) : Nat → Nat := fun x => x + n\ndef twice (f : Nat → Nat) (x : Nat) : Nat := f (f x)\ndef main : Nat := twice (adder 10) 1" "21" },
     { name := "codata", run := fun _ =>
         cRun (llvm := llvm) (streamPrelude ++ "def main : Nat := (nats .zero).tail.tail.head") ".succ (.succ .zero)" },
+    { name := "codata by copatterns: register (cocon) and mealy (coit)", run := fun _ =>
+        cRun (llvm := llvm) ("import Prelude\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
+          "def nats (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => nats (n + 1)\n" ++
+          "def register {A : Type} (init : A) (s : Stream A) : Stream A\n  | .head => init\n  | .tail => s\n" ++
+          "def mealy {S I O : Type} (f : S → I → S × O) (st : S) (i : Stream I) : Stream O\n" ++
+          "  | .head => (f st i.head).2\n  | .tail => mealy f (f st i.head).1 i.tail\n" ++
+          "def take {A : Type} : Nat → Stream A → List A\n  | .zero, _ => .nil\n  | .succ n, s => .cons s.head (take n s.tail)\n" ++
+          "def main : List Nat := take 6 (register 100 (mealy (fun acc x => (acc + x, acc + x)) 0 (Stream.mk 1 (nats 1))))")
+          ".cons 100 (.cons 1 (.cons 2 (.cons 4 (.cons 7 (.cons 11 .nil)))))" },
     { name := "infinitary data", run := fun _ =>
         cRun (llvm := llvm) (treePrelude ++ "def main : Nat := Tree.depthAt (.node (fun i => .node (fun j => .leaf))) 3") "3" },
     { name := "deep recursion (direct recursion, big stack)", run := fun _ =>
@@ -2258,6 +2351,181 @@ def builtinGroup : Group where
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef s : String := 3" { loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" }
+  ]
+
+
+/-- `okLib` with `lib/Optic.wiz` importable too. -/
+def okOptic (input : String) (infos : List String := []) : IO Unit := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let optic ← IO.FS.readFile "lib/Optic.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "Optic" then some optic else none
+  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
+
+def failsOptic (input : String) (fragment : String) : IO Unit := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let optic ← IO.FS.readFile "lib/Optic.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "Optic" then some optic else none
+  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+  unless (errs[0]!.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+def opticGroup : Group where
+  name := "optic"
+  exercise := "lib/Optic.wiz (Rust DSL, RD11)"
+  cases := [
+    { name := "the optics library checks, with its lens laws", run := fun _ =>
+        okOptic "import Optic\n#check List.atL_lawful\n#check Lens.comp_lawful"
+          ["List.atL_lawful : {A : Type} → (i : Nat) → PLens.Lawful (List A) A (List.atL A i)",
+           "Lens.comp_lawful : {S : Type} → {A : Type} → {B : Type} → (l : Lens S A) → (m : Lens A B) → Lens.Lawful S A l → Lens.Lawful A B m → Lens.Lawful S B (Lens.comp S A B l m)"] },
+    { name := "lenses get, put and compose", run := fun _ =>
+        okOptic ("import Optic\n#eval Lens.set Pair2.fstL (Pair2.mk 1 2) 5\n" ++
+          "#eval Lens.over (Lens.comp Pair2.sndL Pair2.fstL) Nat.succ (Pair2.mk 1 (Pair2.mk 10 20))\n" ++
+          "#eval Result.map (fun (st : Store Nat (List Nat)) => st.2 42) (List.atL 1 (List.cons 1 (List.cons 2 (List.cons 3 List.nil))))\n" ++
+          "#eval Result.map Store.extract (List.atL 5 (List.cons 1 List.nil))")
+          ["(5, 2, ())", "(1, (11, 20, ()), ())", ".ok (.cons 1 (.cons 42 (.cons 3 .nil)))", ".err .outOfBounds"] },
+    { name := "zoom, affine borrows and traversals", run := fun _ =>
+        okOptic ("import Optic\n#eval zoom Pair2.fstL (fun (n : Nat) => Result.ok (n, n + 1)) (Pair2.mk 7 8)\n" ++
+          "#eval Affine.over Nat.succ (Affine.comp (Affine.some (Pair2.mk 1 2) (fun p => p)) (fun p => Affine.some p.fst (fun a => Pair2.mk a p.snd)))\n" ++
+          "#eval TraverseMut.traverseM (fun (x : Nat) (acc : Nat) => Result.ok (x * 2, acc + x)) (List.cons 1 (List.cons 2 List.nil)) 0")
+          [".ok (7, 8, 8, ())", "(2, 2, ())", ".ok (.cons 2 (.cons 4 .nil), 3)"] },
+    { name := "an unlawful lens has no GetPut proof", run := fun _ =>
+        failsOptic ("import Optic\ndef bad : Lens (List Nat) Nat := fun s => match s with\n" ++
+          "  | .nil => (0, fun a => List.cons a List.nil)\n  | .cons x xs => (x, fun a => List.cons a (List.cons a xs))\n" ++
+          "def badGP : Lens.GetPut bad := fun s => refl s") "type mismatch" }
+  ]
+
+/-! ## HD8: command macros, reflection, `deriving` -/
+
+/-- Elaborate with `Prelude` and `Deriving` importable; no errors, and these infos. -/
+def derivingRun (input : String) : IO (CommandState ZeroOneMany) := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let derivingLib ← IO.FS.readFile "lib/Deriving.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "Deriving" then some derivingLib else none
+  pure (runFrontend (R := ZeroOneMany) input { loader })
+
+def okDeriving (input : String) (infos : List String := []) : IO Unit := do
+  let s ← derivingRun input
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
+
+def failsDeriving (input : String) (fragment : String) : IO Unit := do
+  let s ← derivingRun input
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+  unless (errs[0]!.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+/-- A command macro that defines `T.shape : List String`: the parameters, then each
+constructor with its fields (`*` marks a recursive one) and indices. -/
+def shapeMacro : String := "import Prelude
+def strs : List String → Syntax
+  | .nil => `(term| List.nil)
+  | .cons s rest => let x := Syntax.mkStr s; let r := strs rest; `(term| List.cons $x $r)
+def mark (f : FieldView) : String := match FieldView.recursive f with
+  | .true => String.append \"*\" (FieldView.name f)
+  | .false => FieldView.name f
+def fieldStrs : List FieldView → List String
+  | .nil => .nil
+  | .cons f fs => .cons (mark f) (fieldStrs fs)
+def idxStrs : List Syntax → List String
+  | .nil => .nil
+  | .cons _ _ => .cons \"(indexed)\" .nil
+def ctorStrs : List CtorView → List String
+  | .nil => .nil
+  | .cons c cs => List.append (.cons (CtorView.name c) (fieldStrs (CtorView.fields c)))
+      (List.append (idxStrs (CtorView.indices c)) (ctorStrs cs))
+def paramStrs : List ParamView → List String
+  | .nil => .nil
+  | .cons p ps => .cons (ParamView.name p) (paramStrs ps)
+syntax (name := shape) \"shape\" ident : command
+def shapeM : CommandMacro := fun stx => do
+  n ← Syntax.identName (Syntax.getArg stx 1);
+  r ← MacroM.getInductive n;
+  match r with
+  | .none => MacroM.throw \"not an inductive type\"
+  | .some v => do
+    let x := Syntax.mkIdent (String.append n \".shape\");
+    let kind := match IndView.isStructure v with
+      | .true => \"structure\"
+      | .false => \"inductive\";
+    let l := strs (.cons kind (List.append (paramStrs (IndView.params v)) (ctorStrs (IndView.ctors v))));
+    MacroM.pure (.cons `(command| def $x : List String := $l) .nil)
+attribute [macro command.shape] shapeM
+"
+
+def derivingGroup : Group where
+  name := "deriving"
+  exercise := "HD8"
+  cases := [
+    { name := "a command macro expands into several commands", run := fun _ =>
+        okLib ("import Prelude\nsyntax (name := two) \"two_defs\" ident ident : command\n" ++
+          "def twoM : CommandMacro := fun stx => do\n  let a := Syntax.getArg stx 1;\n  let b := Syntax.getArg stx 2;\n" ++
+          "  n ← Syntax.identName a;\n  let av := Syntax.mkVar n;\n  MacroM.pure (.cons `(command| def $a : Nat := 1) (.cons `(command| def $b : Nat := Nat.add $av $av) .nil))\n" ++
+          "attribute [macro command.two] twoM\ntwo_defs one two\n#eval two") ["2"] },
+    { name := "a `Macro` for a command kind expands to one command", run := fun _ =>
+        okLib ("import Prelude\nsyntax (name := one) \"one_def\" ident : command\n" ++
+          "def oneM : Macro := fun stx => do\n  let a := Syntax.getArg stx 1;\n  MacroM.pure `(command| def $a : Nat := 7)\n" ++
+          "attribute [macro command.one] oneM\none_def seven\n#eval seven") ["7"] },
+    { name := "a failing command macro is an error at the command", run := fun _ =>
+        failsLib ("import Prelude\nsyntax (name := bad) \"bad_cmd\" : command\n" ++
+          "def badM : CommandMacro := fun _ => MacroM.throw \"nope\"\nattribute [macro command.bad] badM\nbad_cmd") "macro badM: nope" },
+    { name := "reflection: an inductive type's parameters, constructors and fields", run := fun _ =>
+        okLib (shapeMacro ++ "inductive T (A : Type) (n : Nat) where\n  | a\n  | b (x : A) (t : T A n) (k : Nat)\nshape T\n#eval T.shape")
+          [".cons \"inductive\" (.cons \"A\" (.cons \"n\" (.cons \"a\" (.cons \"b\" (.cons \"x\" (.cons \"*t\" (.cons \"k\" .nil)))))))"] },
+    { name := "reflection: a structure, and an indexed family", run := fun _ =>
+        okLib (shapeMacro ++ "structure P where\n  x : Nat\n  y : Bool\nshape P\n#eval P.shape\n" ++
+          "inductive V (A : Type) : Nat → Type where\n  | nil : V A 0\n  | cons {n : Nat} (x : A) (xs : V A n) : V A (.succ n)\nshape V\n#eval V.shape")
+          [".cons \"structure\" (.cons \"mk\" (.cons \"x\" (.cons \"y\" .nil)))",
+           ".cons \"inductive\" (.cons \"A\" (.cons \"nil\" (.cons \"(indexed)\" (.cons \"cons\" (.cons \"n\" (.cons \"x\" (.cons \"*xs\" (.cons \"(indexed)\" .nil))))))))"] },
+    { name := "reflection: a declaration's type as syntax", run := fun _ =>
+        okLib ("import Prelude\nsyntax (name := alias) \"alias\" ident ident : command\n" ++
+          "def aliasM : CommandMacro := fun stx => do\n  let a := Syntax.getArg stx 1;\n  let b := Syntax.getArg stx 2;\n" ++
+          "  n ← Syntax.identName b;\n  t ← MacroM.getType n;\n  match t with\n  | .none => MacroM.throw \"unknown\"\n" ++
+          "  | .some ty => do\n    let bv := Syntax.mkVar n;\n    MacroM.pure (.cons `(command| def $a : $ty := $bv) .nil)\n" ++
+          "attribute [macro command.alias] aliasM\nalias plus Nat.add\n#check plus") ["plus : Nat → Nat → Nat"] },
+    { name := "deriving Repr, BEq, Inhabited for an enumeration", run := fun _ =>
+        okDeriving ("import Deriving\ninductive C where\n  | r\n  | g\n  deriving Repr, BEq, Inhabited\n" ++
+          "#eval Repr.repr C.g\n#eval BEq.beq C.r C.g\n#eval BEq.beq C.g C.g\n#eval Repr.repr (Inhabited.default : C)")
+          ["\"C.g\"", ".false", ".true", "\"C.r\""] },
+    { name := "deriving with parameters and recursion", run := fun _ =>
+        okDeriving ("import Deriving\ninductive Tree (A : Type) where\n  | leaf\n  | node (l : Tree A) (x : A) (r : Tree A)\n" ++
+          "  deriving Repr, BEq, Inhabited\ndef t : Tree Nat := .node .leaf 1 (.node .leaf 2 .leaf)\n" ++
+          "#eval Repr.repr t\n#eval BEq.beq t t\n#eval BEq.beq t (.node .leaf 1 .leaf)\n#check @instReprTreeA")
+          ["\"Tree.node Tree.leaf 1 (Tree.node Tree.leaf 2 Tree.leaf)\"", ".true", ".false",
+           "instReprTreeA : {A : Type} → [inst✝ : Repr A] → Repr (Tree A)"] },
+    { name := "deriving for a structure, and for the prelude's types", run := fun _ =>
+        okDeriving ("import Deriving\nstructure P where\n  x : Nat\n  s : String\n  deriving Repr, BEq, Inhabited\n" ++
+          "#eval Repr.repr (List.cons (P.mk 1 \"a\") List.nil)\n#eval BEq.beq (P.mk 1 \"a\") (P.mk 1 \"b\")\n#eval Repr.repr (Inhabited.default : P)")
+          ["\"List.cons (P.mk 1 \\\"a\\\") List.nil\"", ".false", "\"P.mk 0 \\\"\\\"\""] },
+    { name := "deriving instance … for …, after the fact", run := fun _ =>
+        okDeriving ("import Deriving\ninductive S where\n  | c (r : Nat)\n  | d (o : Option Bool) (w : Nat)\n" ++
+          "deriving instance Repr, BEq for S\n#eval Repr.repr (S.d (Option.some Bool.true) 3)")
+          ["\"S.d (Option.some Bool.true) 3\""] },
+    { name := "Repr for an indexed family (implicit fields are not shown)", run := fun _ =>
+        okDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
+          "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving Repr\n" ++
+          "#eval Repr.repr (Vec.cons 1 (Vec.cons 2 Vec.nil))") ["\"Vec.cons 1 (Vec.cons 2 Vec.nil)\""] },
+    { name := "deriving BEq for an indexed family is an error", run := fun _ =>
+        failsDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
+          "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving BEq") "indexed families are not supported" },
+    { name := "deriving a class without a deriver is an error", run := fun _ =>
+        failsDeriving "import Deriving\ninductive X where\n  | x\n  deriving Frob" "no deriver for Frob" },
+    { name := "Inhabited needs a non-recursive constructor", run := fun _ =>
+        failsDeriving "import Deriving\ninductive I where\n  | more (i : I)\n  deriving Inhabited" "every constructor of I is recursive" },
+    { name := "the example runs", run := fun _ => do
+        let src ← IO.FS.readFile "examples/deriving.wiz"
+        let s ← derivingRun src
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}") }
   ]
 
 end Tests.Elab

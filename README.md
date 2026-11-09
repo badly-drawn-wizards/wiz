@@ -262,7 +262,13 @@ whether it is a proposition (`propSort?`): two propositions compare by equivalen
 proposition and another type are different, and only other types compare by shape. A
 `Π` or `Σ` can't tell by itself (`(x : A) → B` is a proposition when `B` is), so it
 carries its sort (the elaborator writes it, the kernel checks it); without one, type
-equality waits. A cast between propositions applies the equivalence.
+equality waits. Surface `Π`/`Σ` get theirs from the levels `checkType` computes; the
+ones the elaborator builds itself (a definition's telescope, constructor, recursor and
+projection types, a structure's or an index's `Σ`, match motives) get theirs from the
+kernel's `typeSort?` in the context they live in (`Sorts` in `Elab/Basic.lean`, applied to
+every declaration before the kernel sees it). Only a `Π`/`Σ` under a `fun` whose
+variable's type isn't written down, or one that still mentions a metavariable, goes
+without. A cast between propositions applies the equivalence.
 
 Stuck equations, casts and proofs are new neutral heads (`Head.eq`, `Head.cast`,
 `Head.refl`, …). Some results of the computation rules need new binders. Values can't
@@ -440,6 +446,33 @@ compiles to `coit`: the state is the tuple of the definition's explicit argument
 whose arguments are the next state. This is the guardedness check.
 `(nats .zero).tail.head` uses generalised field notation (`x.f` is `T.f x` for a
 nominal type `T`), which also works on inductives.
+
+A copattern definition with **no corecursive observation** is not recursive at all:
+it compiles to `cocon`, one cell in front of the values given, and `f` may not occur
+on its right-hand sides. That is how a delay is written:
+
+```
+def register {A : Type} (init : A) (s : Stream A) : Stream A
+  | .head => init
+  | .tail => s
+```
+
+The same cell as a term is the **coconstructor** `Stream.mk init s` (or `.mk init s`
+against a coinductive expected type); `cocon` itself is a data primitive like `con`.
+With a sized result type `(Stream Nat)^(↑i)`, the tail is checked at `(Stream Nat)^i`:
+`register` is the size bump that guarded feedback needs.
+Copatterns keep one syntax for every codata definition (Agda's, and the clause form
+Wiz already uses for `match`), so there is no separate `where head := …` notation.
+A mix (one recursive observation a corecursive call, another an existing stream) is
+still rejected: that needs a state that can be either.
+
+At runtime codata is an *unfolding*: nothing is cached, so observing `s.tail` twice
+computes it twice (in every backend). A Mealy machine (`mealy f st i`, state = its
+arguments) costs O(1) per step; feedback through `scofix` recomputes.
+
+| #    | Where               | What                                                |
+|------|---------------------|-----------------------------------------------------|
+| 4.24 | `Elab/Command.lean` | `elabCopatternsCocon`: copatterns without corecursion |
 
 Not yet: course-of-values recursion, and well-founded recursion (`termination_by`).
 
@@ -705,6 +738,54 @@ instance {A : Type} [Inhabited A] : Inhabited (List A) where
 Known limitations: no auto-bound implicits (write `{A : Type}`); instance problems
 must have no holes left in their arguments by the end of the command; answers must be
 complete terms; no default instances or coercions yet.
+
+### 7c: command macros, reflection, `deriving` ✅
+
+```
+import Deriving
+inductive Tree (A : Type) where
+  | leaf
+  | node (l : Tree A) (x : A) (r : Tree A)
+  deriving Repr, BEq, Inhabited
+#eval Repr.repr (Tree.node .leaf 1 .leaf)    -- "Tree.node Tree.leaf 1 Tree.leaf"
+deriving instance Repr for Shape             -- after the fact
+```
+
+* **Command macros.** `attribute [macro command.k] f` with `f : CommandMacro :=
+  Syntax → MacroM (List Syntax)` expands one command into any number of commands
+  (`runCommandMacro`), built with `` `(command| …) `` quotations. A `Macro` still works
+  for commands too.
+* **Reflection** (`Elab/Reflect.lean`). `MacroM.getInductive T : MacroM (Option IndView)`
+  describes an inductive type or structure: its parameters and indices
+  (`ParamView`: name, binder kind, type), its constructors (`CtorView`: short name,
+  fields, the indices of its result), each field (`FieldView`: name, kind, type, and
+  whether it is recursive), and whether it is a structure. `MacroM.getType n` is the
+  type of any declaration. Types are **syntax**, printed with binder names and parsed
+  back, so a macro can splice them; the facts come from the kernel's declarations
+  (`T.desc`, `T.c`), so they also hold for declarations replayed from the cache.
+  The requests are two more `Tac` constructors.
+* **Deriving.** `inductive … deriving C₁, C₂` (also `structure`) and
+  `deriving instance C₁, C₂ for T₁, T₂` run C's **deriver**, a Wiz function
+  `Deriver := String → MacroM (List Syntax)` registered with `attribute [deriver C] f`.
+  `lib/Deriving.wiz` defines `Inhabited`, `BEq` and `Repr` (`reprPrec : A → Nat →
+  String`), their derivers, and instances for `Nat`, `String`, `Bool`, `Option`, `List`.
+  A derived instance has type `{A : Type} → [C A] → … → C (T A …)` (an instance argument
+  for each `Type` parameter) and eliminates with `T.rec`, so recursion needs no
+  termination check; a structure uses its projections.
+* Splicing names: `$x` works wherever the grammar expects an identifier
+  (`fun $x => …`, `{$x : $t} → …`, `def $x …`). A name that a quotation introduces
+  gets the expansion's scope; names the deriver builds with `✝` in them (`f✝0`) can't
+  capture the user's.
+
+| #   | Where              | What                                             |
+|-----|--------------------|--------------------------------------------------|
+| 7.2 | `lib/Deriving.wiz` | `Derive.firstPlain`: the constructor `Inhabited` uses |
+
+Limitations: `BEq` and `Inhabited` reject indexed families (`Repr` handles them, and
+so mutual types); no `DecidableEq` (it needs no-confusion proofs); quotations can't
+splice lists (`$xs*`), so derivers fold one-element quotations and use
+`Syntax.mkApp`; the self-hosted frontend has no macros yet. `Repr String` doesn't
+escape.
 
 ## Stage 8: the backend
 

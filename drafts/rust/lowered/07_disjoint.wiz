@@ -1,0 +1,63 @@
+import RsCore
+-- Lowering of drafts/rust/surface/07_disjoint.wiz (rules: drafts/rust/LOWERING.md).
+-- Two `&mut` borrows of disjoint fields of one struct, live at the same time.
+
+-- struct Stats where hits : U64; misses : U64
+structure Stats where
+  hits : U64
+  misses : U64
+
+-- generated for every field: a lens, its laws, and independence of distinct fields
+def Stats.hitsL : Lens Stats U64 := fun s => (s.hits, fun h => Stats.mk h s.misses)
+def Stats.missesL : Lens Stats U64 := fun s => (s.misses, fun m => Stats.mk s.hits m)
+def Stats.hitsL_lawful : Lens.Lawful Stats.hitsL := (fun s => rfl, fun s a => rfl, fun s a b => rfl)
+def Stats.missesL_lawful : Lens.Lawful Stats.missesL := (fun s => rfl, fun s a => rfl, fun s a b => rfl)
+def Stats.hits_misses_indep : Lens.Indep Stats.hitsL Stats.missesL :=
+  (fun s a => rfl, fun s b => rfl, fun s a b => rfl)
+
+-- fn bump2 {'a 'b} (a : &'a mut U64) (b : &'b mut U64) : Unit := { *a += 1; *b += 2 }
+def bump2 {ρ₁ ρ₂ : Region} (a : U64) (b : U64) : Result (Unit × U64 × U64) :=
+  match U64.add a (U64.lit 1) with
+  | .ok a =>
+    (match U64.add b (U64.lit 2) with
+    | .ok b => .ok ((), a, b)
+    | .err e => .err e)
+  | .err e => .err e
+
+-- fn record {'a} (s : &'a mut Stats) : Unit := {
+--   let h := &mut s.hits; let m := &mut s.misses;   -- disjoint: both live
+--   *h += 10; bump2 h m }
+--
+-- (1) What the front end emits (L16): `h` and `m` are borrows of statically known
+-- places, so they are place aliases. The struct is unpacked once, the fields are
+-- updated as local variables, and the struct is rebuilt when the borrows end (in one
+-- block, so the cell is reused).
+def record {ρ : Region} (s : Stats) : Result (Unit × Stats) :=
+  match s with
+  | (h, m, _) =>                                    -- unpack before computing (§5.1)
+    match U64.add h (U64.lit 10) with               -- *h += 10
+    | .ok h =>
+      (match @bump2 Region.static Region.static h m with   -- bump2 h m (reborrows)
+      | .ok r =>
+        let h := r.2.1;
+        let m := r.2.2;
+        let s := Stats.mk h m;                      -- the borrows end: rebuild
+        .ok ((), s)
+      | .err e => .err e)
+    | .err e => .err e
+
+-- (2) The same through the optics library: one borrow of both places, `Lens.pair`
+-- (lawful because the fields are independent), and `zoom` to run `bump2` through it.
+def record_optic {ρ : Region} (s : Stats) : Result (Unit × Stats) :=
+  match zoom Stats.hitsL (fun (h : U64) => Result.map (fun (h : U64) => ((), h)) (U64.add h (U64.lit 10))) s with
+  | .ok r =>
+    let s := r.2;
+    zoom (Lens.pair Stats.hitsL Stats.missesL)
+      (fun (hm : U64 × U64) => Result.map (fun (r : Unit × U64 × U64) => (r.1, r.2.1, r.2.2))
+        (@bump2 Region.static Region.static hm.1 hm.2)) s
+  | .err e => .err e
+
+def show (r : Result (Unit × Stats)) : Result (Nat × Nat) := Result.map (fun (r : Unit × Stats) => (r.2.hits.val, r.2.misses.val)) r
+#eval show (@record Region.static (Stats.mk (U64.lit 1) (U64.lit 2)))
+#eval show (@record_optic Region.static (Stats.mk (U64.lit 1) (U64.lit 2)))
+-- both: .ok (12, 4)

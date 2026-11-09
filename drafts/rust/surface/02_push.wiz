@@ -1,0 +1,17 @@
+import Rust                                          -- wishful: command-proc-macros
+-- Pushing to a vector through `&mut`, in a `for` loop. Lowered: drafts/rust/lowered/02_push.wiz
+-- At run time `v` has rc 1 at every push (moved into push_twice and back): in place.
+
+rust                                                 -- wishful: command-proc-macros
+  fn push_twice (v : &mut Vec U64) (x : U64) : Unit := {   -- elided region: wishful: region-indices
+    v.push x;                                        -- a reborrow of *v (method call auto-ref)
+    v.push x
+  }
+
+  fn fill (n : U64) : Vec U64 := {
+    let mut v := Vec.new;
+    for i in 0..n do                                 -- wishful: machine-int-literals
+      push_twice (&mut v) i;
+    v
+  }
+end
