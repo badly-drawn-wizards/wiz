@@ -1782,8 +1782,18 @@ arguments yet). The garbage-collected mode is unchanged, byte for byte.
   map nodes hold their keys. Constants (globals, string literals) are roots, released at
   exit, after which the program checks that every object was freed.
 
-Next: the bootstrap in this mode, borrowed parameters, reuse and drop specialisation (as
-in stages 8a–c), a faster allocator; then reference counting by default.
+* **Borrowed parameters** (as in Lean): a parameter of a global function that its body
+  only reads (projections, a `case`'s tag, borrowed arguments of direct calls) is
+  borrowed, found as a greatest fixed point over all functions. A caller lends a
+  variable to it (and releases it after the call if that was its last use); the function
+  neither `inc`s it nor releases it.
+
+**Bootstrap in this mode**: stage 1 compiles the toolchain (with the `-- wiz: rc` line)
+to C, and that program (stage 2, reference counted) compiles it again to the same C,
+freeing every object by the end.
+
+Next: reuse and drop specialisation (as in stages 8c), a faster allocator, keeping tail
+calls when a borrowed argument is lent; then reference counting by default.
 
 ## Stage 22: numbers for hardware and systems code
 
