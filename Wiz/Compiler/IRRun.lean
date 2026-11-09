@@ -79,12 +79,9 @@ def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
     | some (.num k) => k
     | some (.tag k) => k
     | _ => 0
+  if op.startsWith "nat." then
+    if let some r := natNative? op ((List.range args.size).toArray.map n) then return .num r
   match op with
-  | "nat.succ" => pure (.num (n 0 + 1))
-  | "nat.pred" => pure (.num (n 0 - 1))
-  | "nat.add" => pure (.num (n 0 + n 1))
-  | "nat.sub" => pure (.num (n 0 - n 1))
-  | "nat.mul" => pure (.num (n 0 * n 1))
   | "nat.beq" => pure (.tag (if n 0 == n 1 then 1 else 0))
   | "nat.blt" => pure (.tag (if n 0 < n 1 then 1 else 0))
   -- the interpreter doesn't memoise: a suspension is its function
@@ -137,10 +134,27 @@ def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
         match (← getObj id).2 with
         | .ctor 1000 _ => pure 1
         | .ctor 1001 _ => pure 2
+        | .ctor 1002 _ => pure 3
         | _ => pure 0
       | _ => pure 0
     args.forM dropV
     pure (.tag t)
+  | "lazySet" =>
+    -- as in the C runtime: a shared lazy cell becomes ⟨1002 p⟩ (memoised `out`)
+    let x := (args[0]?).getD .erased
+    let pv := (args[1]?).getD .erased
+    match x with
+    | .ptr id => do
+      match ← getObj id with
+      | (rc, .ctor t fs) =>
+        if rc > 1 && (t == 1000 || t == 1001) then
+          modify fun h => { h with objs := h.objs.insert id (rc - 1, .ctor 1002 #[pv]) }
+          fs.forM dropV
+          dupV pv
+        else dropV x
+      | _ => dropV x
+    | _ => pure ()
+    pure pv
   | _ => throw s!"{op}: foreign functions only run in compiled code (wiz run)"
 
 mutual
@@ -210,6 +224,8 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
         | _ => pure .erased
       | .reuse tok t as => do
         let vs ← as.mapM get
+        -- without fields the result is the scalar `t`: the token's cell is just freed
+        let fresh : RunM IVal := if vs.isEmpty then pure (.tag t) else alloc (.ctor t vs)
         match ← get tok with
         | .ptr id =>
           match ← getObj id with
@@ -219,9 +235,9 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
               pure (.ptr id)
             else
               modify fun h => { h with objs := h.objs.erase id }
-              alloc (.ctor t vs)
+              fresh
           | _ => throw "reuse of a non-token"
-        | _ => alloc (.ctor t vs)
+        | _ => fresh
     run prog (env.insert x v) joins rest
   | .case x alts =>
     let t ← match ← get x with
@@ -255,6 +271,7 @@ partial def toRVal (h : Heap) : IVal → RVal
   | .ptr id => match h.objs.get? id with
     | some (_, .ctor 1000 _) => .coit .erased .erased .erased .erased
     | some (_, .ctor 1001 _) => .scofix .erased .erased .erased
+    | some (_, .ctor 1002 _) => .coit .erased .erased .erased .erased
     | some (_, .ctor t fs) => .obj t (fs.map (toRVal h))
     | some (_, .clo _ _) => .clo [] .erased
     | some (_, .token _) => .erased
