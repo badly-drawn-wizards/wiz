@@ -293,11 +293,24 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
       pure none
   pure (fullTy, val, impl)
 
-/-- Copatterns: `def f binders : T args | .obs => rhs …` for a coinductive `T`
-compiles to `coit`. The state is the tuple of the explicit binders; a recursive
-observation must be a corecursive call `f e…` (that is the guardedness condition),
-whose arguments become the next state. -/
-def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : ElabM R (Term R × Term R) := do
+/-- Does the identifier `n` occur anywhere in `stx`? -/
+partial def mentionsIdent (n : Name) (stx : Syntax) : Bool :=
+  (stx.isOfKind "term.ident" && (stx.getArg 0).getId? == some n) || stx.args.any (mentionsIdent n)
+
+/-- The copattern alternative for observation `o`, if any. -/
+def copatternAlt? (alts : List Syntax) (o : Name) : Option Syntax :=
+  alts.find? fun a =>
+    match (a.getArg 1).args[0]? with
+    | some p => p.isOfKind "term.dotIdent" && (p.getArg 1).getId? == some o
+    | none => false
+
+/-- Is `rhs` a corecursive call `f e…` (or a bare `f`)? -/
+def isCorecCall (name : Name) (rhs : Syntax) : Bool :=
+  let h := if rhs.isOfKind "term.app" then rhs.getArg 0 else rhs
+  h.isOfKind "term.ident" && (h.getArg 0).getId? == some name
+
+/-- The corecursive case of `elabCopatterns`: `coit`. -/
+def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : ElabM R (Term R × Term R) := do
   let info := cmd.info
   let g ← getGlobals
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
@@ -377,6 +390,68 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
   let val ← zonk 0 val
   ensureNoMVars val info
   pure (fullTy, val)
+
+/-- **Exercise 4.24.** The non-corecursive case of `elabCopatterns`: `cocon` of the
+observations, so `register a s | .head => a | .tail => s` is one cell in front of `s`.
+
+The result type is `ν^sz D i`; its payload is `⟦D⟧ (ν^{s'}) i` for `sz = ↑s'` (or `∞`).
+Walk that Σ type: check each observation's right-hand side against the component (a
+recursive observation against the nominal type one size down, so its hint survives),
+and instantiate the rest with the value. Reject a right-hand side that mentions the
+definition itself (guardedness). The payload ends in `((), ())`. -/
+def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : ElabM R (Term R × Term R) := do
+  let info := cmd.info
+  let g ← getGlobals
+  let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
+  let tyStx := (cmd.getArg 4).getArg 1
+  let (ty, _) ← Elab.checkType ctx tyStx
+  let ty ← zonk ctx.lvl ty
+  ensureNoMVars ty info
+  let .nu l I D i sz hint ← force (← evalIn ctx ty)
+    | throwAt tyStx.info "copatterns need a coinductive result type"
+  let some s' := sizePred? sz
+    | throwAt tyStx.info s!"a copattern definition builds a value of size ↑s or ∞, not {← showVal ctx sz}"
+  --<sol
+  let alts := (cmd.getArg 5).args.toList
+  -- walk the payload's Σ type, one component per observation
+  let mut pty : VTy R := vInterp g l I D (nuFamilyAt l I D s') i
+  let mut comps : List (Term R) := []
+  for (o, isRec) in obs do
+    let some alt := copatternAlt? alts o | throwAt info s!"missing copattern .{o}"
+    let rhs := alt.getArg 3
+    if mentionsIdent name rhs then
+      throwAt rhs.info s!"the observation .{o} must be a corecursive call of {name} (guardedness)"
+    let .sigma _ _ A B _ ← force pty | throwAt info "internal error: observation type"
+    -- a recursive observation: the same nominal type, one size down
+    let A := if isRec then .nu l I D i s' hint else A
+    let c ← Elab.check ctx rhs A
+    comps := comps ++ [c]
+    pty ← instM B (← evalIn ctx c)
+  let payload : Term R := comps.foldr .pair (.pair .tt .tt)
+  let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (Term.cocon payload)
+  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
+  let val ← zonk 0 val
+  ensureNoMVars val info
+  pure (fullTy, val)
+  --|ex
+  --| sorry
+  --sol>
+
+/-- Copatterns: `def f binders : T args | .obs => rhs …` for a coinductive `T`
+compiles to `coit`. The state is the tuple of the explicit binders; a recursive
+observation must be a corecursive call `f e…` (that is the guardedness condition),
+whose arguments become the next state.
+
+When no observation is corecursive (`register a s | .head => a | .tail => s`), the
+definition is not recursive at all: it compiles to `cocon` of the observations, one
+cell in front of the given streams, and `f` may not occur on any right-hand side. -/
+def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : ElabM R (Term R × Term R) := do
+  let alts := (cmd.getArg 5).args.toList
+  for (o, _) in obs do
+    if (copatternAlt? alts o).isNone then throwAt cmd.info s!"missing copattern .{o}"
+  let corecursive := obs.any fun (o, isRec) =>
+    isRec && ((copatternAlt? alts o).map fun a => isCorecCall name (a.getArg 3)).getD false
+  if corecursive then elabCopatternsCoit name cmd obs else elabCopatternsCocon name cmd obs
 
 /-- Run the elaborator; also returns the identifiers it saw (for hovers). -/
 def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])

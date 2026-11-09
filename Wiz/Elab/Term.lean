@@ -124,7 +124,7 @@ partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
 /-- Names the elaborator treats as data primitives when applied (and not shadowed). -/
 def builtinNames : List Name :=
   ["Desc", "Desc.ret", "Desc.arg", "Desc.rec", "Desc.hrec", "Desc.elim", "Desc.interp", "Desc.All",
-   "μ", "ν", "con", "ind", "out", "coit"]
+   "μ", "ν", "con", "ind", "out", "coit", "cocon"]
 
 /-- `f a₁ … aₙ` where `f` is an unshadowed built-in name. -/
 def builtinApp? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Name × Array Syntax)) := do
@@ -577,7 +577,7 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
 
 /-- Stage 4d: data forms that need their expected type: tags, `ecase` (which
 generalises its scrutinee in the expected type), and the constructors `Desc.ret`,
-`Desc.arg`, `Desc.rec`, `Desc.hrec`, `con`, `coit`. -/
+`Desc.arg`, `Desc.rec`, `Desc.hrec`, `con`, `coit`, `cocon`. -/
 partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     ElabM R (Option (Term R)) := do
   let g ← getGlobals
@@ -618,6 +618,13 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
       let ty : Val R := .mu l I D i (.szSuc vm) (some (T, us, args))
       unifyAt ctx stx expected ty
       return some (.ann payload (q ty))
+    | .nu _ _ _ _ _ (some (T, _, _)) =>
+      -- `.mk h t`: the coconstructor of a coinductive type (`T.mk`, a `cocon`)
+      unless (← getGlobals).contains (T ++ "." ++ c) do
+        throwAt h.info s!"{T} has no coconstructor {c}"
+      let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
+      let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
+      return some (← check ctx stx' expected)
     | _ => return ← shapeError s!".{c} needs an expected inductive type"
   match stx.kind with
   | "term.tag" =>
@@ -660,10 +667,16 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     let st' ← check ctx st (coitStepTy g l I D vS w)
     let s' ← check ctx s (vApp g vS i)
     return some (.coit l (q I) (q D) S' st' (q i) s')
+  | "cocon", #[x], .nu l I D i sz _ =>
+    -- `cocon xs : ν^{↑s} D i` for a payload whose recursive fields are at `ν^s`
+    let some s' := sizePred? sz
+      | throwAt ctx.info s!"cocon builds a value of size ↑s, but the expected type is {← showVal ctx expected}"
+    return some (.cocon (← check ctx x (vInterp g l I D (nuFamilyAt l I D s') i)))
   | "Desc.ret", _, _ | "Desc.arg", _, _ | "Desc.rec", _, _ | "Desc.hrec", _, _ =>
     shapeError s!"{n} builds a description"
   | "con", _, _ => shapeError "con builds an inductive value"
   | "coit", _, _ => shapeError "coit builds a coinductive value"
+  | "cocon", _, _ => shapeError "cocon builds a coinductive value"
   | _, _, _ => return none
 
 /-- Stage 4d: data primitives whose type can be inferred. -/

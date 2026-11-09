@@ -231,7 +231,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
 
 /-- Elaborate a `coinductive` command: one "constructor" whose fields are the
 observations. `T.desc`, `T := ν (T.desc Δ) ()`, and an observation function per field
-(`out x` projected). Returns the declarations and the observation names, with
+(`out x` projected), and the coconstructor `T.mk` (a `cocon`). Returns the declarations and the observation names, with
 whether each is recursive. Fields may depend on the parameters only. -/
 def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     ElabM R (List (Decl R) × List (Name × Bool)) := do
@@ -274,6 +274,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
   let implicitΔ := Δ.toList.map fun (x, _, _, A) => (x, BinderInfo.implicit, (.qlit 0 : Term R), A)
   let mut decls := [descDecl, typeDecl]
   let mut obs := []
+  let mut fieldTys : List (Name × Term R) := []
   for (x, _, _, A) in fs'.toList, k in [0:fs'.size] do
     -- `A` lives in [f_{k-1} … f₀, T, Δ]: drop the fields, then replace `T`
     let mut A' := A
@@ -294,6 +295,20 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
         value := some (lamsTm ΔNames (.lam "x" proj)), inline := true }
     decls := decls ++ [d]
     obs := obs ++ [(x, isRec)]
+    fieldTys := fieldTys ++ [(x, F)]
+  -- the coconstructor `T.mk : {Δ} → F₁ → … → Fₙ → T Δ`, a `cocon` of the fields
+  -- (an existing tail is not unfolded: `T.mk h t` is one cell in front of `t`)
+  unless fieldTys.any (·.1 == "mk") do
+    let n := fieldTys.length
+    let w : Term R := .qlit QuantitySyntax.explicitDefault
+    let fsTy := fieldTys.zipIdx.map fun ((x, F), k) => (x, BinderInfo.default, w, F.lift k)
+    let resTy := ((telescopeVars nΔ 0).foldl Term.app (Term.const T us)).lift n
+    let payload : Term R := (telescopeVars n 0).foldr .pair (.pair .tt .tt)
+    let mk : Decl R :=
+      { name := T ++ ".mk", levelParams := levelParams,
+        type := pisTm implicitΔ (pisTm fsTy resTy),
+        value := some (lamsTm ΔNames (lamsTm (fieldTys.map Prod.fst) (.cocon payload))), inline := true }
+    decls := decls ++ [mk]
   pure (decls, obs)
 
 /-- Elaborate a `structure` command to the Σ type and its constructor `S.mk`. -/
