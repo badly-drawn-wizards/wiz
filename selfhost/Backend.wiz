@@ -704,6 +704,15 @@ def cheapE : ETm → Bool
     | .nil => .true
     | .cons _ _ => .false
   | _ => .false
+-- `f a` with `f` a lambda is a let (strict, as the application was), or `a` put in
+-- place when cheap: a `match` is a method applied to the payload (`m ◾ i payload`), and
+-- the closure built and called for every match was most of the allocation
+def betaE : ETm → ETm → ETm
+  | .lam b, a => match cheapE a with
+    | .true => substE a 0 b
+    | .false => .letE a b
+  | .letE v b, a => .letE v (betaE b (liftE 1 0 a))
+  | f, a => .app f a
 mutual
 def lazyLets : ETm → ETm
   | .letE v b =>
@@ -714,7 +723,7 @@ def lazyLets : ETm → ETm
     -- `let x := memo (λ _. v); b[x ◾ / x]`
     | .false => .letE (.prim "memo" (etms1 (.lam (liftE 1 0 v')))) (substE (.app (.var 0) .erased) 0 (liftE 1 1 b'))
   | .lam b => .lam (lazyLets b)
-  | .app f a => .app (lazyLets f) (lazyLets a)
+  | .app f a => betaE (lazyLets f) (lazyLets a)
   | .obj t fs => .obj t (lazyLetsEs fs)
   | .proj i t => .proj i (lazyLets t)
   | .case s bs => .case (lazyLets s) (lazyLetsEs bs)

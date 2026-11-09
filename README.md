@@ -1610,8 +1610,10 @@ noprint pass`, and the same for `SIGXCPU`).
 toolchain to exactly the same C as stage 1 does. It took 15 minutes against stage 1's
 18 s, about 70% of it the collector marking: payloads as nested pairs were about four
 objects per constructor. A chain of pairs `(e₀, (e₁, … t))` is now one object, its tails
-the same pointer with an offset in its low bits (taking one allocates nothing), and stage
-2 takes 8½ minutes. Reference counting comes next.
+the same pointer with an offset in its low bits (taking one allocates nothing): 8½
+minutes. A `match` was a method applied to the payload, a closure built and called each
+time; a lambda applied to arguments is now a `let`: 6 minutes. Reference counting comes
+next.
 
 ## Stage 11: tooling
 
