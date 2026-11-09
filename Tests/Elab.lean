@@ -219,6 +219,18 @@ def abelCoquand (omega : String := "Omega") : String :=
   "def a0 : B2 := 'a\n" ++
   s!"def loopy : (cast ({omega} (P2 = P2) (refl P2)) ab : P2).1 = a0 := refl a0\n"
 
+/-- The same program with the box inside a second box (`Box2 P` has a field of type
+`Box P`): the outer box's field is not inert (it has a `Prop` field inside), so the cast
+at `Box2` stays structural, and the program checks without regularity. -/
+def abelCoquandNested : String :=
+  ((abelCoquand).replace
+    "def omega : Top := fun A a => unbox (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk delta))\n"
+    ("def Box2D (P : Prop) : Desc Unit := Desc.arg 1 ((_ : Enum [u]) × Box P) (fun _ => Desc.ret ())\n" ++
+     "def Box2 (P : Prop) : Type := μ (Box2D P) ()\n" ++
+     "def mk2 {P : Prop} (b : Box P) : Box2 P := con (('u, b), (), ())\n" ++
+     "def unbox2 {P : Prop} (b : Box2 P) : Box P := ind (fun _ _ => Box P) (fun i xs ih => xs.1.2) b\n" ++
+     "def omega : Top := fun A a => unbox (unbox2 (cast (apTy Prop Box2 T2 A (tautext T2 A id2 a)) (mk2 (mk delta))))\n"))
+
 /-- Abel–Coquand's own step `cast T2 T2 e δ ▷ δ` (a cast between propositions): Wiz
 applies the equivalence `e` instead, here `fun _ => id2`, so the step gives `id2`. (Their
 term itself can't be written: `cast` to a variable proposition `A` needs a proof of a
@@ -334,10 +346,26 @@ def ottGroup : Group where
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
         fails "def bad (A : Type) (a b : A) : a = b := rfl" "type mismatch" },
-    -- D1: these document today's behaviour (a known non-termination), not a wish
-    { name := "D1 (Abel–Coquand): checking a closed program does not terminate (regularity at a box type)", run := fun _ => do
-        ok (abelCoquand "omega")  -- the same program without the self-application checks
+    -- D1: regularity is off by default, and the program checks; with `--regularity full`
+    -- (or `nonprop`) checking it does not terminate
+    { name := "D1 (Abel–Coquand): the program checks (no regularity: the box's cast casts its proof field)", run := fun _ => do
+        ok (abelCoquand "omega")
+        ok (abelCoquand) },
+    { name := "D1 (Abel–Coquand): with regularity, checking the program does not terminate", run := fun _ =>
         checkDiverges (abelCoquand) "full" },
+    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks; loops with regularity)", run := fun _ => do
+        unless (abelCoquandNested.splitOn "unbox2").length > 2 do throw (IO.userError "variant not built")
+        ok abelCoquandNested
+        checkDiverges abelCoquandNested "full" },
+    { name := "regularity at inert types: an indexed recursor computes at a data motive (Vec.length)", run := fun _ =>
+        ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
+          "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
+          "def len {A : Type} {0 n : N} : V A n → N\n  | .nil => .z\n  | .cons _ xs => .s (len xs)\n" ++
+          "def lenCons {A : Type} {0 n : N} (x : A) (xs : V A n) : len (V.cons x xs) = N.s (len xs) := rfl\n" ++
+          "def castN (e : N = N) (n : N) : cast e n = n := rfl\n") },
+    { name := "no regularity at a type with a variable parameter", run := fun _ =>
+        fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
+          "def castL (A : Type) (e : L A = L A) (l : L A) : cast e l = l := rfl\n") "type mismatch" },
     { name := "D1: a cast between propositions applies the equivalence, not regularity", run := fun _ =>
         ok abelCoquandLiteral ["fun x => x"] },
     { name := "D1 (R1): regularity only at non-propositions doesn't help (the box is a type)", run := fun _ =>
@@ -2258,8 +2286,8 @@ def selfHostGroup : Group where
         let main := s!"def main : IO Unit := printAll {wizList calls}\n"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ decl ++ printAll ++ main) ("\n".intercalate expected ++ "\n") },
-    -- D1: today's behaviour (a known non-termination), not a wish
-    { name := "D1 (Abel–Coquand): the Wiz kernel does not terminate on the program either (and checks it without regularity)", run := fun _ => do
+    -- D1: regularity is off in both kernels; with it on, the Wiz kernel loops too
+    { name := "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with regularity on)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
         let control := MTm.abelCoquand false
@@ -2268,15 +2296,16 @@ def selfHostGroup : Group where
         ioRun (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {control.toWiz})\n")
           (leanVerdict control ++ "\n")
         let loop := MTm.abelCoquand true
-        ioDiverges (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n")
-        -- without regularity (`vCastW`'s fallback) both kernels check it
-        let reg := "  | A, B, e, t => match tmEq (quote 100000 A) (quote 100000 B) with"
-        unless (kernel.splitOn reg).length == 2 do throw (IO.userError "vCastW's regularity rule not found")
-        let noReg := kernel.replace reg "  | A, B, e, t => match Bool.false with"
-        let expected ← match infer (R := ZeroOneMany) { globals := { leanGlobals () with regularity := .off } } loop.toTerm with
+        -- without regularity (the default) both kernels check it
+        let expected ← match infer (R := ZeroOneMany) { globals := leanGlobals () } loop.toTerm with
           | .ok (ty, _) => pure ((MTm.ofTerm (quote (leanGlobals ()) 0 ty)).map (·.pretty 0) |>.getD "?")
           | .error e => throw (IO.userError s!"the Lean kernel without regularity rejects it: {e}")
-        ioRun (noReg ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n") }
+        ioRun (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n")
+        -- with regularity (`kernelRegularity`) the Wiz kernel loops
+        let off := "def kernelRegularity : Bool := .false"
+        unless (kernel.splitOn off).length == 2 do throw (IO.userError "kernelRegularity not found")
+        let withReg := kernel.replace off "def kernelRegularity : Bool := .true"
+        ioDiverges (withReg ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") }
   ]
 
 def languageGroup : Group where

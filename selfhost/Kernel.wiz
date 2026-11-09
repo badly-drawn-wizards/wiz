@@ -1034,11 +1034,50 @@ def vCastW : Val → Val → Val → Val → Val
   | .vunit l, .vunit l', e, t => same l l' .vtt (.vne (.hcast (.vunit l) (.vunit l') e t) .snil)
   | .venum k, .venum k', e, t => same k k' t (.vne (.hcast (.venum k) (.venum k') e t) .snil)
   -- regularity (off, see `kernelRegularity`): syntactically equal types
-  | A, B, e, t => match kernelRegularity with
+  | A, B, e, t => match Bool.or kernelRegularity (inertTy 0 A) with
     | .true => match sameVal A B with
       | .true => t
       | .false => vCastData A B e t
     | .false => vCastData A B e t
+-- an inert type (`inertTy` in `Eval.lean`): first-order data, where a cast between equal
+-- types is the identity: `Enum`, `Unit`, `Σ`s of inert types, and `μ` types whose index
+-- type and fields are inert (no `Prop` fields, functions or neutral types)
+def inertTy (depth : Nat) (A : Val) : Bool := match Nat.lt depth 8 with
+  | .false => .false
+  | .true => inertW depth (whnf A)
+def inertW (depth : Nat) : Val → Bool
+  | .venum _ => .true
+  | .vunit l => match Nat.beq l 0 with
+    | .true => .false
+    | .false => .true
+  | .vsigma _ a env b s => match s with
+    | .some l => match lvlNeverZero l with
+      | .true => match inertTy (Nat.succ depth) a with
+        | .true => inertTy (Nat.succ depth) (eval (.cons (fresh (Nat.add 100000 depth)) env) b)
+        | .false => .false
+      | .false => .false
+    | .none => .false
+  | .vmu _ I D _ _ => match inertTy (Nat.succ depth) I with
+    | .true => inertDesc (Nat.succ depth) D
+    | .false => .false
+  | _ => .false
+def inertDesc (depth : Nat) (D : Val) : Bool := match Nat.lt depth 8 with
+  | .false => .false
+  | .true => inertDescW depth (whnf D)
+def inertDescW (depth : Nat) : Val → Bool
+  | .vdret _ => .true
+  | .vdrec _ E => inertDesc depth E
+  | .vdarg S E => match whnf S with
+    | .venum k => inertTags depth E k 0
+    | S' => match inertTy (Nat.succ depth) S' with
+      | .true => inertDesc depth (vapp E (fresh (Nat.add 100050 depth)))
+      | .false => .false
+  | _ => .false
+def inertTags (depth : Nat) (E : Val) (k i : Nat) : Bool := match Nat.lt i k with
+  | .false => .true
+  | .true => match inertDesc depth (vapp E (.vtag k i)) with
+    | .true => inertTags depth E k (Nat.succ i)
+    | .false => .false
 -- syntactic equality of values (quoted above any variable in use)
 def sameVal (a b : Val) : Bool := tmEq (quote 100000 a) (quote 100000 b)
 -- two `μ` (or two `ν`) types of one family: the level, index type, description and

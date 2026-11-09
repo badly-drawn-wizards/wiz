@@ -600,8 +600,9 @@ constructor, so that `succ m = succ n` is `m = n` (and not, through the Σ rule,
 equation with a cast along the tags' equation, which without regularity would be stuck):
 
     ret j          ↦ True                       (the index proofs are irrelevant)
-    arg q (Enum) E ↦ by the tags: equal ↦ the rest at `E tag`; different ↦ False;
-                     not both tags ↦ none (the whole equation is stuck)
+    arg q (Enum) E ↦ by the tags: equal ↦ True × (the rest at `E tag`); different ↦ the
+                     Σ rule (a pair whose first component is False); not both tags ↦
+                     none (the whole equation is stuck)
     arg q S E      ↦ `x = y` at the Σ type `⟦arg q S E⟧ X i` (the Σ rule)
     rec q j E      ↦ (x.1 = y.1 : X j) × (the rest at E)
     hrec q H j E   ↦ (x.1 = y.1 : (h : H) → X (j h)) × (the rest at E)
@@ -615,7 +616,9 @@ partial def vEqPayload (g : Globals R) (l : Level) (I X i D x y : Val R) : Optio
   | .darg q S E => match whnf S with
     | .enum _ => match whnf (vFst x), whnf (vFst y) with
       | .tag ls a, .tag _ b =>
-        if a == b then vEqPayload g l I X i (vApp g E (.tag ls a)) (vSnd x) (vSnd y) else some (.empty 0)
+        if a == b then (pairTy (.unit 0) ·) <$> vEqPayload g l I X i (vApp g E (.tag ls a)) (vSnd x) (vSnd y)
+        -- different tags: the Σ rule, whose first component is `False`
+        else some (vEq g (vInterp g l I (.darg q S E) X i) x y)
       | _, _ => none
     | _ => some (vEq g (vInterp g l I (.darg q S E) X i) x y)
   | .drec _ j E => do
@@ -715,7 +718,8 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
   -- regularity (only when `g.regularity` allows it; off by default): syntactically equal
   -- types (quoted at a level above any variable in use)
-  | _, _ => if regularityAllowed g A e && sameVal g A B then t else vCastData g A B e t stuck
+  | _, _ =>
+    if (regularityAllowed g A e || inertTy g 0 A) && sameVal g A B then t else vCastData g A B e t stuck
   --|ex
   --| sorry
   --sol>
@@ -726,6 +730,35 @@ side condition of the rules below (as it was of regularity): cheap, and stable u
 substitution, since a substitution instance of equal terms is equal. -/
 partial def sameVal (g : Globals R) (a b : Val R) : Bool :=
   quote g 100000 a == quote g 100000 b
+
+/-- An **inert** type: first-order data, whose values contain no functions, no proofs
+but index equations at inert types, and no values of a neutral type: `Enum`, `Unit`,
+`Σ`s of inert types, and `μ` types whose index type and fields are inert (`rec` fields;
+`arg` fields at inert types; not `hrec`). At an inert type, a cast between equal types
+is the identity (regularity, restricted): there it never creates a redex, since an inert
+value has no λ to apply, and on a constructor it agrees with `vCastData` up to proof
+irrelevance. (The Abel–Coquand box has a `Prop` field, so it is not inert.) `depth`
+bounds the nesting of `μ`s in fields. -/
+partial def inertTy (g : Globals R) (depth : Nat) (A : Val R) : Bool :=
+  depth < 8 &&
+  match whnf A with
+  | .enum _ => true
+  | .unit l => l.isNeverZero
+  | .sigma _ _ A₁ B (some s) => s.isNeverZero && inertTy g (depth + 1) A₁ &&
+      inertTy g (depth + 1) (Closure.inst g B (Val.var (100000 + depth)))
+  | .mu _ I D _ _ _ => inertTy g (depth + 1) I && inertDesc g (depth + 1) D
+  | _ => false
+
+/-- Every field of the description is inert (`inertTy`). -/
+partial def inertDesc (g : Globals R) (depth : Nat) (D : Val R) : Bool :=
+  depth < 8 &&
+  match whnf D with
+  | .dret _ => true
+  | .drec _ _ E => inertDesc g depth E
+  | .darg _ S E => match whnf S with
+    | .enum ls => (List.range ls.length).all fun k => inertDesc g depth (vApp g E (.tag ls k))
+    | S => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (Val.var (100000 + 50 + depth)))
+  | _ => false
 
 /-- Two `μ` (or two `ν`) types of the same family, `μ^s_l I D i` and `μ^s_l I D i'`:
 the level, index type, description and size agree (`sameVal`), only the indices may
