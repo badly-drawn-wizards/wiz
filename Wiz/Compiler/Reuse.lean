@@ -57,8 +57,34 @@ partial def dropScalars (b : Body) (sc : Std.HashSet Var := {}) : Body :=
   | .jdecl j ps body k => .jdecl j ps (dropScalars body sc) (dropScalars k sc)
   | b => b
 
-/-- The backend's optimisations, in order: reference counting, then reuse. -/
+/-- Dead code: a pure value nobody uses, dropped before reference counting (erasure
+leaves some behind, like a pair of erased proofs, or a field read for a pattern
+variable the branch never mentions; each was an allocation, or an increment and a
+decrement, on every call). Returns the body and its free variables. -/
+partial def elimDead : Body → Body × Std.HashSet Var
+  | .vdecl x e rest =>
+    let (rest', fv) := elimDead rest
+    let pure := match e with
+      | .erased | .lit _ | .ctor _ _ | .proj _ _ | .pap _ _ => true
+      | _ => false
+    if pure && !fv.contains x then (rest', fv)
+    else (.vdecl x e rest', e.args.foldl (·.insert ·) (fv.erase x))
+  | .case x alts =>
+    let rs := alts.map elimDead
+    (.case x (rs.map (·.1)), rs.foldl (fun acc r => r.2.fold (·.insert ·) acc) ({} : Std.HashSet Var) |>.insert x)
+  | .jdecl j ps body k =>
+    let (body', fb) := elimDead body
+    let (k', fk) := elimDead k
+    (.jdecl j ps body' k', (ps.foldl (·.erase ·) fb).fold (·.insert ·) fk)
+  | .ret x => (.ret x, ({} : Std.HashSet Var).insert x)
+  | .jmp j as => (.jmp j as, as.foldl (·.insert ·) {})
+  | .dup x b => let (b', f) := elimDead b; (.dup x b', f.insert x)
+  | .drop x b => let (b', f) := elimDead b; (.drop x b', f.insert x)
+  | .unreachable => (.unreachable, {})
+
+/-- The backend's optimisations, in order: dead code, reference counting, then reuse. -/
 def Decl.optimize (d : Decl) : Decl :=
+  let d := { d with body := (elimDead d.body).1 }
   let d := d.insertRC
   { d with body := insertReuse (dropScalars d.body) }
 

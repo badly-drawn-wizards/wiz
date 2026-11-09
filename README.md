@@ -1521,6 +1521,17 @@ comparison of the bodies or components asks again). The self-check went from 40 
 20 s. What remains is mostly allocation: comparing stuck `ecase`s (the payload types of
 big data types) branch by branch.
 
+### 20e: dead code in the backend ✅
+
+The generated C showed allocations nobody used: `whnf` built a pair of erased values on
+every call, and branches read fields their pattern variables never mentioned (an
+increment and a decrement each). The backend now drops pure values nobody uses
+(`erased`, numbers, constructors, projections, partial applications) before reference
+counting (`elimDead` in `Reuse.lean`). In the kernel, two stuck `ecase`s with the same
+branches over structurally equal environments (checked within a budget of nodes, without
+allocating: `valSame`) are equal without comparing the branches. The self-check: 20 s to
+13 s.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅
