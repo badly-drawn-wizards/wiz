@@ -2670,4 +2670,53 @@ def derivingGroup : Group where
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}") }
   ]
 
+/-! ## 11h–k: JSON and the infoview's layout (lib/Json.wiz, lib/Infoview.wiz) -/
+
+/-- Elaborate with `Prelude`, `Json` and `Infoview` importable; no errors, and these infos. -/
+def okInfoview (input : String) (infos : List String := []) : IO Unit := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let json ← IO.FS.readFile "lib/Json.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "Json" then some json else none
+  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
+
+def jsonPrelude : String := r#"import Json
+def parsed (s : String) : String := match Json.parse s with
+  | .ok j => Json.render j
+  | .error e => e
+"#
+
+
+def infoviewGroup : Group where
+  name := "infoview"
+  exercise := "lib/Json.wiz (stage 11h)"
+  cases := [
+    { name := "JSON: printing escapes quotes, newlines; integers keep their sign", run := fun _ =>
+        okInfoview (jsonPrelude ++ r#"#eval Json.render (Json.mkArr (.cons (.int .true 42) (.cons (.str "a\"b\nλ") (.cons .null .nil))))"#)
+          [r#""[-42,\"a\\\"b\\nλ\",null]""#] },
+    { name := "JSON: parse and print again (numbers, escapes, surrogate pairs, empty containers)", run := fun _ =>
+        okInfoview (jsonPrelude ++ r#"#eval parsed " {\"a\": [1, -2, 3.5e10, -0.25E-3, true, null, {}], \"b\": \"\\u03bb\\ud83d\\ude00\\/\\t\", \"c\": []} ""#)
+          [r#""{\"a\":[1,-2,3.5e10,-0.25E-3,true,null,{}],\"b\":\"λ😀/\\t\",\"c\":[]}""#] },
+    { name := "JSON: ASCII output escapes non-ASCII, as surrogate pairs above U+FFFF", run := fun _ =>
+        okInfoview (jsonPrelude ++ r#"#eval match Json.parse "\"\\u03bb\\ud83d\\ude00\\u0001\"" with
+  | .ok j => Json.renderAscii j
+  | .error e => e
+#eval parsed "\"\\ud800x\"""#)
+          [r#""\"\\u03bb\\ud83d\\ude00\\u0001\"""#, r#""\"�x\"""#] },
+    { name := "JSON: errors say what and where", run := fun _ =>
+        okInfoview (jsonPrelude ++ "#eval parsed \"[1, 2,]\"\n#eval parsed \"01\"\n#eval parsed \"[1] 2\"\n#eval parsed \"\\\"abc\"\n#eval parsed \"1.e5\"")
+          [r#""unexpected character at offset 6""#, r#""bad number at offset 0""#, r#""trailing characters at offset 4""#,
+           r#""unterminated string at offset 4""#, r#""bad number at offset 1""#] },
+    { name := "JSON: paths into objects; decimal printing", run := fun _ =>
+        okInfoview (jsonPrelude ++ r#"def path (s : String) : Option Json := match Json.parse s with
+  | .ok j => Json.getPath j (.cons "x" (.cons "y" .nil))
+  | .error _ => .none
+#eval path "{\"x\": {\"y\": 7}}"
+#eval Nat.repr 1234567890123"#)
+          [".some (.int .false 7)", r#""1234567890123""#] }
+  ]
+
 end Tests.Elab
