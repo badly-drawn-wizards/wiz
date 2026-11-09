@@ -309,7 +309,7 @@ def ottGroup : Group where
           "#reduce N.s N.z = N.s N.z\n" ++
           "#reduce fun (n m : N) => (V N n = V N m)\n" ++
           "#reduce fun (e : V N (.s .z) = V N (.s .z)) => (cast e (V.cons N.z V.nil : V N (.s .z)) : V N (.s .z))")
-          ["fun e => .s .z", "(0 _ : True) × True", "fun n m => (0 e : n = m) × True",
+          ["fun e => .s .z", "(0 _ : True) × (0 _ : (0 _ : True) × True) × True", "fun n m => (0 e : n = m) × True",
            "fun e => .cons .z .z .nil"] },
     { name := "type equality", run := fun _ =>
         ok "def t : Type = Type := refl Type" },
@@ -335,7 +335,7 @@ def ottGroup : Group where
         ok (tyOfDef ++ "inductive N where\n  | z\n  | s (n : N)\ndef h (x : N) : N := x\n" ++
           "#reduce TyOf h = (N → N)\n" ++
           "#reduce fun (e : TyOf h = (N → N)) (u : TyOf h) => (cast e u : N → N)")
-          ["(0 e : True) × ((0 x : N) → True)", "fun e u x => cast (e.2 x) (u (cast e.1 x))"] },
+          ["(0 e : True) × ((0 x : N) → True)", "fun e u x => u x"] },
     { name := "a constructor's type carries its sort", run := fun _ =>
         ok (tyOfDef ++ "inductive Box (A : Type) where\n  | mk (a : A)\n" ++
           "#reduce TyOf (@Box.mk Unit) = (Unit → Box Unit)")
@@ -362,10 +362,10 @@ def ottGroup : Group where
           "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
           "def len {A : Type} {0 n : N} : V A n → N\n  | .nil => .z\n  | .cons _ xs => .s (len xs)\n" ++
           "def lenCons {A : Type} {0 n : N} (x : A) (xs : V A n) : len (V.cons x xs) = N.s (len xs) := rfl\n" ++
-          "def castN (e : N = N) (n : N) : cast e n = n := rfl\n") },
+          "def castN (e : N = N) (n : N) : (cast e n : N) = n := rfl\n") },
     { name := "no regularity at a type with a variable parameter", run := fun _ =>
         fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
-          "def castL (A : Type) (e : L A = L A) (l : L A) : cast e l = l := rfl\n") "type mismatch" },
+          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "type mismatch" },
     { name := "D1: a cast between propositions applies the equivalence, not regularity", run := fun _ =>
         ok abelCoquandLiteral ["fun x => x"] },
     { name := "D1 (R1): regularity only at non-propositions doesn't help (the box is a type)", run := fun _ =>

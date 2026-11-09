@@ -934,8 +934,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- the recursors need the declarations above
         if cmd.isOfKind "command.inductive" then
           let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 1).getId?
-          for (withIH, sized) in [(false, false), (true, false), (false, true)] do
-            match mkRecursor g name ctors withIH sized with
+          -- (indexed families also get `recN`/`casesOnN`, for motives that don't depend
+          -- on the scrutinee)
+          let indexed := isIndexed g name
+          for (withIH, sized, nondep) in [(false, false, false), (true, false, false), (false, true, false)] ++
+              (if indexed then [(false, false, true), (true, false, true)] else []) do
+            match mkRecursor g name ctors withIH sized nondep with
             | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
             | .ok d =>
               match addDeclSorted g d with
