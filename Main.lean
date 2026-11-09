@@ -10,6 +10,8 @@ def usage : String := "usage:
   wiz lsp                          a language server on stdin/stdout
 options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since it is
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
+experimental kernel options (D1, they turn the cache off): --regularity full|nonprop|refl|off,
+--predicative-prop
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --llc X (default llc)"
 
@@ -37,13 +39,20 @@ def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String
     m := m.insert n ((← IO.FS.realPath p).toString, src)
   pure m
 
+/-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
+initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.full, false)
+
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
   let lib ← loadLibrary tc input
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
-  let init : CommandState ZeroOneMany := { loader := (lib[·]?), cHeaders := (headers[·]?) }
-  match tc.cacheDir with
+  let (regularity, predicativeProp) ← kernelOpts.get
+  let init : CommandState ZeroOneMany :=
+    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp } }
+  -- the cache doesn't know the experimental options
+  let cache := if regularity == .full && !predicativeProp then tc.cacheDir else none
+  match cache with
   | none => pure (runFrontend input init)
   | some dir =>
     -- the key starts from the headers the file sees; modules enter it by their own keys
@@ -84,10 +93,29 @@ def runCmd (tc : Toolchain) (path : String) (llvm : Bool) : IO UInt32 := do
   | .error e => IO.eprintln e; pure 1
   | .ok v => IO.print (if v.endsWith "\n" then v else v ++ "\n"); pure 0
 
+/-- The experimental kernel options, taken out of the arguments. -/
+def kernelOpt : List String → Except String (Regularity × Bool × List String)
+  | "--regularity" :: m :: rest => do
+    let r ← match m with
+      | "full" => pure Regularity.full | "nonprop" => pure .nonProp | "refl" => pure .refl
+      | "off" => pure .off | _ => throw s!"unknown regularity mode {m}"
+    let (_, p, rest) ← kernelOpt rest
+    return (r, p, rest)
+  | "--predicative-prop" :: rest => do
+    let (r, _, rest) ← kernelOpt rest
+    return (r, true, rest)
+  | a :: rest => do
+    let (r, p, rest) ← kernelOpt rest
+    return (r, p, a :: rest)
+  | [] => return (.full, false, [])
+
 def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  let args ← match kernelOpt args with
+    | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
+    | .error e => do IO.eprintln e; return 1
   match args with
   | ["parse", path] => parseCmd path
   | ["check", path] => checkCmd tc path
