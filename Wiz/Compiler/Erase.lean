@@ -35,6 +35,46 @@ knows the expected type, `eraseInfer` computes it with the kernel's `infer`.
 
 namespace Wiz
 
+/-- A type with a **native representation** (`attribute [implemented_by mk get] T.mk`,
+stage 22d): compiled code builds its values with `mk` (which has the constructor's type)
+and reads its one runtime field with `get`, so the value itself can be anything the
+natives agree on (a machine word, an array). The model's object would be
+`⟨tag f₀ … fₙ₋₁⟩` with every field but `r` erased; the constructor's argument `p` is that
+field. -/
+structure ReprInfo where
+  mkImpl : Name
+  getImpl : Name
+  tag : Nat
+  nfields : Nat
+  r : Nat
+  mkArity : Nat
+  p : Nat
+  getArity : Nat
+  deriving Repr, BEq, Inhabited
+
+namespace ReprInfo
+
+/-- The registration: a builtin key `repr:T:mk:get:tag:nfields:r:mkArity:p:getArity`
+(registered under the constructor's name), so it is cached with the other builtins. -/
+def key (T : Name) (i : ReprInfo) : Name :=
+  s!"repr:{T}:{i.mkImpl}:{i.getImpl}:{i.tag}:{i.nfields}:{i.r}:{i.mkArity}:{i.p}:{i.getArity}"
+
+def parse? (key : Name) : Option (Name × ReprInfo) :=
+  if !key.startsWith "repr:" then none else
+  match key.splitOn ":" with
+  | ["repr", T, mkI, getI, tag, nf, r, ma, p, ga] => do
+    pure (T, { mkImpl := mkI, getImpl := getI, tag := ← tag.toNat?, nfields := ← nf.toNat?, r := ← r.toNat?,
+               mkArity := ← ma.toNat?, p := ← p.toNat?, getArity := ← ga.toNat? })
+  | _ => none
+
+end ReprInfo
+
+/-- The native representation of the type named `T`, if any. -/
+def reprOf? (builtins : List (Name × Name)) (T : Name) : Option ReprInfo :=
+  builtins.findSome? fun (k, _) => match ReprInfo.parse? k with
+    | some (T', i) => if T' == T then some i else none
+    | none => none
+
 /-- Runtime primitives: the generic eliminators, interpreted by walking descriptions. -/
 inductive Prim where
   /-- `ind D m i x` -/
@@ -59,8 +99,9 @@ inductive Prim where
   | pack
   /-- `unpack D v`: a flat object as its payload of nested pairs -/
   | unpack
-  /-- `view D x`: the payload of `x`, seen through projections (removed by `resolveViews`) -/
-  | view (absorbed nat : Bool)
+  /-- `view D x`: the payload of `x`, seen through projections (removed by `resolveViews`);
+  with `repr`, `x` is a native value (stage 22d) -/
+  | view (absorbed nat : Bool) (repr : Option ReprInfo := none)
   /-- the tag of an object, as a 0-field object -/
   | tag
   /-- the tag (`0` zero, `1` successor) and the field of a number -/
@@ -128,6 +169,22 @@ instance : ToString ETerm := ⟨toString⟩
 
 end ETerm
 
+namespace ReprInfo
+
+/-- `get x` (implicit arguments erased) -/
+def getApp (i : ReprInfo) (x : ETerm) : ETerm :=
+  ETerm.apps (.global i.getImpl) (List.replicate (i.getArity - 1) .erased ++ [x])
+
+/-- `mk ◾ … f … ◾` -/
+def mkApp (i : ReprInfo) (f : ETerm) : ETerm :=
+  ETerm.apps (.global i.mkImpl) ((List.range i.mkArity).map fun k => if k == i.p then f else .erased)
+
+/-- The model's flat object of a native value `x`. -/
+def toModel (i : ReprInfo) (x : ETerm) : ETerm :=
+  .obj i.tag ((List.range i.nfields).toArray.map fun k => if k == i.r then i.getApp x else .erased)
+
+end ReprInfo
+
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
 /-- Values of this type have no runtime content: types, proofs, sizes, quantities. -/
@@ -170,6 +227,12 @@ def isNatTy (g : Globals R) (ty : Val R) : Bool :=
   | .mu _ _ _ _ _ (some (T, _, _)) => g.builtins.lookup "nat" == some T
   | _ => false
 
+/-- The native representation of a `μ` type, if its name has one. -/
+def reprOfTy? (g : Globals R) (ty : Val R) : Option ReprInfo :=
+  match whnf ty with
+  | .mu _ _ _ _ _ (some (T, _, _)) => reprOf? g.builtins T
+  | _ => none
+
 /-- Does a description start with a choice of tag, `Desc.arg (Enum ls) F`? Then the
 tag is the flat object's tag. -/
 def startsWithTag (D : Val R) : Bool :=
@@ -205,6 +268,7 @@ def flatCon (g : Globals R) (ctx : Ctx R) (D : Val R) (x : Term R) (x' : ETerm) 
 
 /-- A use of a value's payload: `view D x` as an argument (see `resolveViews`). -/
 def viewOf (g : Globals R) (D : Val R) (xty : Val R) (D' x' : ETerm) : ETerm :=
+  if let some ri := reprOfTy? g xty then .prim (.view (startsWithTag D) false ri) #[D', x'] else
   let nat := isNatTy g xty
   .prim (.view (startsWithTag D) nat) #[if nat then .obj 5 #[D'] else D', x']
 
@@ -278,6 +342,13 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     return .obj 0 #[a', b']
   | .con x, .mu l I D i s _ =>
     let x' ← eraseCheck ctx x (vInterp g l I D (muFamilyAt l I D ((sizePred? s).getD .szInf)) i)
+    -- a native representation: the native constructor, applied to the runtime field
+    if let some ri := reprOfTy? g ty then
+      match flatCon g ctx D x x' with
+      | some (_, fs) => return ri.mkApp (fs[ri.r]?.getD .erased)
+      | none =>
+        let D' ← eraseCheck ctx (quote g ctx.lvl D) (.desc l I)
+        return .letE "o" (.prim .pack #[D', x']) (ri.mkApp (.proj ri.r (.var 0)))
     let nat := isNatTy g ty
     match flatCon g ctx D x x', nat with
     | some (k, fs), false => return .obj k fs
@@ -373,7 +444,12 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       if isCases then pure (.apps m' [← eraseCheck ctx i vI, viewOf g vD xty D' (← eraseE ctx x), .erased])
       else
         let D' := if isNatTy g xty then .obj 5 #[D'] else D'
-        pure (.prim .ind #[D', m', ← eraseCheck ctx i vI, ← eraseE ctx x])
+        let x' ← eraseE ctx x
+        -- (a native value: the generic eliminator walks the model's object)
+        let x' := match reprOfTy? g xty with
+          | some ri => ri.toModel x'
+          | none => x'
+        pure (.prim .ind #[D', m', ← eraseCheck ctx i vI, x'])
     | .delim v P a b c h D => do
       let dty ← quickType ctx D
       let .desc l I := whnf dty | throw (.other "erasure: Desc.elim on a non-description")
@@ -454,10 +530,16 @@ structure Virt where
   nat : Bool
   D : ETerm
   dLvl : Nat
+  /-- `y` is a native value (stage 22d): its runtime field is read with `get` -/
+  repr : Option ReprInfo := none
 
 /-- The field that `.0` of a view reaches, at depth `d`. -/
 def Virt.field (v : Virt) (d : Nat) : ETerm :=
   let y := ETerm.var (d - 1 - v.y)
+  if let some ri := v.repr then
+    if v.absorbed && v.j == 0 then .obj ri.tag #[]
+    else if (if v.absorbed then v.j - 1 else v.j) == ri.r then ri.getApp y else .erased
+  else
   if v.absorbed then
     if v.j == 0 then .prim (if v.nat then .natTag else .tag) #[y]
     else if v.nat then .prim .natPred #[y] else .proj (v.j - 1) y
@@ -465,7 +547,11 @@ def Virt.field (v : Virt) (d : Nat) : ETerm :=
 
 /-- The view as an ordinary payload, at depth `d`. -/
 def Virt.materialize (v : Virt) (d : Nat) : ETerm :=
-  (List.range v.j).foldl (fun t _ => .proj 1 t) (.prim .unpack #[v.D.lift (d - v.dLvl), .var (d - 1 - v.y)])
+  let y : ETerm := .var (d - 1 - v.y)
+  let y := match v.repr with
+    | some ri => ri.toModel y
+    | none => y
+  (List.range v.j).foldl (fun t _ => .proj 1 t) (.prim .unpack #[v.D.lift (d - v.dLvl), y])
 
 private def isView : ETerm → Bool
   | .prim (.view ..) _ => true
@@ -490,9 +576,9 @@ private partial def rw (d : Nat) (env : List (Option Virt)) (t : ETerm) : ETerm 
   | .proj .. => match rwV d env t with
     | .inl v => v.materialize d
     | .inr t' => t'
-  | .letE x (.prim (.view ab nat) #[D, e]) b =>
+  | .letE x (.prim (.view ab nat repr) #[D, e]) b =>
     -- let y := e; let x := ◾; b   (b lives under x and y: lift past y)
-    let v : Virt := { y := d, j := 0, absorbed := ab, nat, D := rw d env D, dLvl := d }
+    let v : Virt := { y := d, j := 0, absorbed := ab, nat, D := rw d env D, dLvl := d, repr }
     .letE "y" (rw d env e) (.letE x .erased (rw (d + 2) (some v :: none :: env) (b.lift 1 1)))
   | .letE x val b => match rwV d env val with
     | .inl v => .letE x .erased (rw (d + 1) (some v :: env) b)
@@ -520,7 +606,9 @@ private partial def rw (d : Nat) (env : List (Option Virt)) (t : ETerm) : ETerm 
   | .lam x b => .lam x (rw (d + 1) (none :: env) b)
   | .fix x b => .fix x (rw (d + 1) (none :: env) b)
   | .obj tg fs => .obj tg (fs.map (rw d env))
-  | .prim (.view _ _) #[D, e] => .prim .unpack #[rw d env D, rw d env e]
+  | .prim (.view _ _ repr) #[D, e] =>
+    let e := rw d env e
+    .prim .unpack #[rw d env D, match repr with | some ri => ri.toModel e | none => e]
   | .prim op as => .prim op (as.map (rw d env))
   | t => t
 where

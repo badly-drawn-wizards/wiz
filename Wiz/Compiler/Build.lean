@@ -73,7 +73,7 @@ def compileLLVM (ll : String) (exe : System.FilePath) (glue : String := "") : IO
     return .error e
   step cc (#["-o", exe.toString, mainObj.toString, rtObj.toString, "-lgmp"] ++ (words (← IO.getEnv "WIZ_LDFLAGS")).toArray)
 
-/-- Parse the printed result: numbers, `(tag fields…)`, `<fn>`. -/
+/-- Parse the printed result: numbers, `(tag fields…)`, `<fn>`, `#bits`. -/
 partial def parseValue (s : String) : Option RVal :=
   match go s.toList with
   | some (v, rest) => if rest.all (·.isWhitespace) then some v else none
@@ -94,6 +94,8 @@ where
       let (fs, rest) ← fields rest #[]
       return (.obj t fs, rest)
     | '<' :: 'f' :: 'n' :: '>' :: rest => return (.clo [] .erased, rest)
+    -- a raw machine word (a native word of 64 bits, stage 22d)
+    | '#' :: rest => let (n, rest) ← num rest; return (.nat n, rest)
     | cs => let (n, rest) ← num cs; return (.nat n, rest)
 
 /-- Build and run the global `n` (through C, or LLVM); returns its result, read back
