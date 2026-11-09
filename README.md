@@ -1509,6 +1509,18 @@ level: `usesVar`), and string literals' codes were unary. The whole self-hosted
 frontend (`Lex`, `Parse`, `Kernel` and `Frontend.wiz`, 651 declarations) now checks
 itself, unstubbed, in about 40 s; the test suite runs it.
 
+### 20d: a faster kernel ✅
+
+Profiling the self-check by call counts (`gprof`; the work runs on a second thread, so
+its timings are useless but its counts are exact) pointed at universe levels: every
+unfolding of a constant substituted its level parameters even when it had none
+(`substIfAny`), and `conv` computed the full sort of a type at every step to test for
+proof irrelevance. `isProp` now looks only at what decides it (a Π type is a
+proposition when its codomain is), and `conv` doesn't ask at Π and Σ types (the
+comparison of the bodies or components asks again). The self-check went from 40 s to
+20 s. What remains is mostly allocation: comparing stuck `ecase`s (the payload types of
+big data types) branch by branch.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅

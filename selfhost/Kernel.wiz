@@ -455,6 +455,10 @@ def tmsSubst (ps : List String) (ls : List Lvl) : Tms → Tms
   | .tnil => .tnil
   | .tcons t rest => .tcons (tmSubst ps ls t) (tmsSubst ps ls rest)
 end
+-- (a constant without level parameters is used as it is)
+def substIfAny (ps : List String) (ls : List Lvl) (t : Tm) : Tm := match ps with
+  | .nil => t
+  | .cons _ _ => tmSubst ps ls t
 
 -- a Π or Σ with a quantity, as a term (the default ω without one)
 def piTm (q : Q) (a b : Tm) : Tm := match q with
@@ -465,9 +469,11 @@ def sigmaTm (q : Q) (a b : Tm) : Tm := match q with
   | q => .sigmaq q a b
 
 -- unfold glued definitions at the head: do this before matching on a value's shape
-def whnf : Val → Val
-  | .vglued _ _ v => whnf (v ())
-  | v => v
+-- (partial, so that the last case returns the value itself: by structural recursion it
+-- would be rebuilt from its fields, an allocation for every call)
+partial def whnf (v : Val) : Val := match v with
+  | .vglued _ _ g => whnf (g ())
+  | _ => v
 
 
 
@@ -740,7 +746,7 @@ def eval : Env → Tm → Val
   | env, .ind l I D v P m i x =>
     vInd l (eval env I) (eval env D) v (eval env P) (eval env m) (eval env i) (eval env x)
   | _, .sortL l => .vsort l
-  | _, .const n ps ls v ty => .vglued (.hconst n ps ls v ty) .snil (memo (fun _ => eval .nil (tmSubst ps ls v)))
+  | _, .const n ps ls v ty => .vglued (.hconst n ps ls v ty) .snil (memo (fun _ => eval .nil (substIfAny ps ls v)))
   | _, .axiomC n ty => .vne (.haxiom n ty) .snil
   --|ex
   --| | _, _ => .vsort (.lnum 0)
@@ -1240,13 +1246,28 @@ def headType : TCtx → Head → Val
   | _, .hrefl A a => vEq A a a
   | _, .hreflTy X => vEqType X X
   | _, .htransp _ _ P _ b e => vapp (vapp P b) e
-  | _, .hconst _ ps ls _ ty => eval .nil (tmSubst ps ls ty)
+  | _, .hconst _ ps ls _ ty => eval .nil (substIfAny ps ls ty)
   | _, .haxiom _ ty => eval .nil ty
 end
 
-def isProp (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
-  | .some l => lvlEquiv l (.lnum 0)
-  | .none => .false
+-- (without computing the whole sort: a Π type is a proposition when its codomain is,
+-- as `imax i j` is `0` exactly when `j` is; `conv` asks this at every step)
+mutual
+def isProp (c : TCtx) (ty : Val) : Bool := isPropW c (whnf ty)
+def isPropW : TCtx → Val → Bool
+  | c, .vpi _ a env b => isProp (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b)
+  | c, .vsigma _ a env b => Bool.and (isProp c a) (isProp (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b))
+  | _, .vunit l => Nat.beq l 0
+  | _, .vempty l => Nat.beq l 0
+  | _, .vsort _ => .false
+  | _, .vmu _ _ _ _ _ => .false
+  | _, .vnu _ _ _ _ _ => .false
+  | _, .venum _ => .false
+  | _, .vdesc _ _ => .false
+  | c, ty => match sortOfW c ty with
+    | .some l => lvlEquiv l (.lnum 0)
+    | .none => .false
+end
 
 -- the quantity binders of the method types: this kernel has no quantities, so `Unit`
 def qTy : Tm := .unit 0
@@ -1355,7 +1376,13 @@ def scofixFunTy (l : Nat) (I D A : Val) : Val :=
 mutual
 def conv : TCtx → Val → Val → Val → Bool
   --<sol
-  | c, ty, a, b => match isProp c ty with
+  -- (proof irrelevance is checked at the other types only: at a Π type the comparison
+  -- of the bodies, at a Σ type of the components, checks it again, and asking at every
+  -- level made long Π types quadratic)
+  | c, ty, a, b => match (match whnf ty with
+      | .vpi _ _ _ _ => Bool.false
+      | .vsigma _ _ _ _ => Bool.false
+      | w => isPropW c w) with
     | .true => .true
     | .false => match whnf ty with
       | .vpi _ dom env cod =>
@@ -1873,7 +1900,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .const _ ps ls _ ty => .ok (eval .nil (tmSubst ps ls ty)) (uZeros (TCtx.lvl c))
+  | c, .const _ ps ls _ ty => .ok (eval .nil (substIfAny ps ls ty)) (uZeros (TCtx.lvl c))
   | c, .axiomC _ ty => .ok (eval .nil ty) (uZeros (TCtx.lvl c))
   --|ex
   --| | _, _ => .err "not implemented"
