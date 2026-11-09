@@ -1,6 +1,6 @@
 import BitVec
 -- BitVec as it should read once the missing features land; lib/BitVec.wiz has the
--- working equivalents (named functions, Nat helpers from lib/NatBits.wiz).
+-- working equivalents (named functions).
 
 -- Numerals and operators by type class (HD9; lib: `BitVec.add`, `BitVec.ofNat 8 200`).
 instance {n : Nat} : Add (BitVec n) := ⟨BitVec.add⟩              -- wishful: numeric-classes-bitvec

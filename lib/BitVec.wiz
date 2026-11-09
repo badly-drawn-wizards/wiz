@@ -1,5 +1,4 @@
 import Prelude
-import NatBits
 import Vec
 -- Bit vectors of width `n` (`import BitVec`): a `Nat` below `2^n`. The bound is kept by
 -- construction (every operation ends in `BitVec.ofNat`, which reduces mod `2^n`), not
@@ -78,10 +77,13 @@ def BitVec.signExtend {ω n : Nat} (m : Nat) (a : BitVec n) : BitVec m := match 
 -- As vectors of bits, least significant first.
 def BitVec.toVecAux : (n : Nat) → Nat → Vec Bool n
   | .zero, _ => .nil
-  | .succ n, x => let qr := Nat.divMod x 2; .cons (Nat.beq qr.2 1) (BitVec.toVecAux n qr.1)
+  | .succ n, x => .cons (Nat.isOdd x) (BitVec.toVecAux n (Nat.div x 2))
 def BitVec.toVec {ω n : Nat} (a : BitVec n) : Vec Bool n := BitVec.toVecAux n a.toNat
+def BitVec.bitValue : Bool → Nat
+  | .false => 0
+  | .true => 1
 def BitVec.ofVec {0 n : Nat} (v : Vec Bool n) : BitVec n :=
-  @BitVec.mk n (Vec.foldr (fun b acc => Nat.ofBool b + acc + acc) 0 v)
+  @BitVec.mk n (Vec.foldr (fun b acc => BitVec.bitValue b + acc + acc) 0 v)
 
 -- Theorems.
 def BitVec.add_comm {ω n : Nat} (a b : BitVec n) : BitVec.add a b = BitVec.add b a :=

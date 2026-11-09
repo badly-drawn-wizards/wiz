@@ -276,7 +276,12 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   let g ← getGlobals
   let (t, u) ← match ← force t, ← force u with
     | .natLit n, .natLit m => if n == m then return () else throwAt {} s!"{n} ≠ {m}"
-    | t, u => pure (vNatView g t, vNatView g u)
+    -- only against a constructor: a metavariable is solved with the numeral itself (as
+    -- a constructor view it isn't a literal, and native arithmetic on it falls back to
+    -- the unary definitions)
+    | t@(.natLit _), u@(.con _) => pure (vNatView g t, u)
+    | t@(.con _), u@(.natLit _) => pure (t, vNatView g u)
+    | t, u => pure (t, u)
   -- an equation against something that isn't one: it may compute further
   let isEq (v : Val R) : Bool := v matches .neutral (.eq ..) _
   if isEq t != isEq u then
