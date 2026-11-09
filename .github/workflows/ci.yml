@@ -1,0 +1,229 @@
+# Wiz CI. See "Continuous integration" in README.md.
+#
+# The same file is on both branches (master is generated from solutions), and what runs
+# depends on the tree, not the branch name: a tree with solution markers (`--<sol`) runs
+# the full suite, split into shards (.github/test-shards.json); the exercise tree (master,
+# where the solutions are stubs and almost every test fails by design) only builds and
+# checks that the test driver runs to its summary line.
+name: CI
+
+on:
+  push:
+    branches: [solutions, master]
+  pull_request:
+    branches: [solutions, master]
+  schedule:
+    - cron: "23 2 * * 1" # Mondays: the bootstrap fixpoint check
+  workflow_dispatch:
+    inputs:
+      fixpoint:
+        description: Also run the bootstrap fixpoint check (slow)
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}
+  cancel-in-progress: true # a newer push supersedes a running check (saves minutes)
+
+permissions:
+  contents: read
+
+env:
+  # The Cachix binary cache (empty: none, everything comes from cache.nixos.org). Pushing
+  # to it needs the repository secret CACHIX_AUTH_TOKEN; without the secret (pull
+  # requests from forks) it is pull-only.
+  CACHIX_NAME: badlydrawnwizards
+  # Lake's artifact cache (enableArtifactCache in lakefile.toml) inside .lake rather than
+  # under the elan toolchain, so that caching .lake caches the whole build.
+  LAKE_CACHE_DIR: ${{ github.workspace }}/.lake/cache
+
+defaults:
+  run:
+    shell: nix develop --command bash -eo pipefail {0}
+
+jobs:
+  build:
+    name: build
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      tree: ${{ steps.tree.outputs.tree }}
+      matrix: ${{ steps.shards.outputs.matrix }}
+      lake-key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          cachix-name: ${{ env.CACHIX_NAME }}
+          # empty in pull requests from forks: Cachix is then pull-only
+          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Which tree
+        id: tree
+        shell: bash
+        run: |
+          if git grep -q -e '--<sol' -- '*.lean' '*.wiz'; then tree=solutions; else tree=exercises; fi
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          echo "tree: $tree"
+      - name: Cache key
+        id: key
+        shell: bash
+        run: |
+          echo "key=lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
+      - name: Cache the Lake build
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: ${{ steps.key.outputs.key }}
+          restore-keys: lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      - name: lake build
+        run: |
+          # The artifact cache only grows (each commit adds the modules it changed); start
+          # afresh when it gets big.
+          if [ -d .lake/cache ] && [ "$(du -sm .lake/cache | cut -f1)" -gt 3000 ]; then
+            echo "Lake's artifact cache is over 3 GB: building from scratch"; rm -rf .lake
+          fi
+          lake build wiz tests
+          du -sh .lake .lake/cache 2>/dev/null || true
+      - name: Every test group is in exactly one shard
+        run: python3 scripts/ci.py check-shards
+      - name: Shards
+        id: shards
+        run: |
+          echo "matrix=$(python3 scripts/ci.py matrix)" >> "$GITHUB_OUTPUT"
+          python3 scripts/ci.py matrix
+
+  test:
+    name: test (${{ matrix.shard.name }})
+    needs: build
+    if: needs.build.outputs.tree == 'solutions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          cachix-name: ${{ env.CACHIX_NAME }}
+          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Restore the Lake build
+        uses: actions/cache/restore@v4
+        with:
+          path: .lake
+          key: ${{ needs.build.outputs.lake-key }}
+      - name: lake test -- ${{ matrix.shard.name }}
+        env:
+          SELECT: ${{ matrix.shard.select }}
+        run: |
+          mapfile -t sel <<< "$SELECT"
+          mkdir -p logs
+          echo "lake test -- ${sel[*]}"
+          lake test -- "${sel[@]}" 2>&1 | tee "logs/${{ matrix.shard.name }}.log"
+      - name: Summary
+        if: always()
+        run: |
+          [ -f "logs/${{ matrix.shard.name }}.log" ] || exit 0
+          python3 scripts/ci.py summary "shard ${{ matrix.shard.name }}" "logs/${{ matrix.shard.name }}.log" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-log-${{ matrix.shard.name }}
+          path: logs/
+          if-no-files-found: ignore
+
+  # One check for branch protection, and the whole suite's summary.
+  result:
+    name: CI result
+    needs: [build, test, stubs]
+    if: always() && github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: test-log-*
+          path: logs
+          merge-multiple: true
+      - name: Summary
+        shell: bash
+        run: |
+          shopt -s nullglob
+          logs=(logs/*.log)
+          python3 scripts/ci.py summary "Wiz test suite (${{ needs.build.outputs.tree }} tree)" "${logs[@]}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verdict
+        shell: bash
+        run: |
+          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, stubs: ${{ needs.stubs.result }}"
+          [ "${{ needs.build.result }}" = success ] || exit 1
+          for r in "${{ needs.test.result }}" "${{ needs.stubs.result }}"; do
+            [ "$r" = success ] || [ "$r" = skipped ] || exit 1
+          done
+
+  # The exercise tree: it builds, and the stubs run (most tests fail by design).
+  stubs:
+    name: exercise stubs
+    needs: build
+    if: needs.build.outputs.tree == 'exercises'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          cachix-name: ${{ env.CACHIX_NAME }}
+          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Restore the Lake build
+        uses: actions/cache/restore@v4
+        with:
+          path: .lake
+          key: ${{ needs.build.outputs.lake-key }}
+      - name: lake test (failures expected)
+        run: |
+          mkdir -p logs
+          status=0
+          lake test 2>&1 | tee logs/exercises.log || status=$?
+          echo "lake test exited with $status"
+          # Failing tests are the exercises; a crash or a missing summary line is not.
+          grep -Eq '^[0-9]+ passed, [0-9]+ failed$' logs/exercises.log || {
+            echo "::error::the test driver did not reach its summary line"; exit 1; }
+          [ "$status" -le 1 ] || { echo "::error::lake test exited with $status"; exit 1; }
+      - name: Summary
+        if: always()
+        run: |
+          [ -f logs/exercises.log ] || exit 0
+          python3 scripts/ci.py summary "Exercise tree (failures are the exercises)" logs/exercises.log >> "$GITHUB_STEP_SUMMARY"
+
+  # Stage-1 C of the toolchain = stage-2 C (scripts/fixpoint.sh). Scheduled runs use the
+  # default branch's workflow, so they check out solutions explicitly.
+  fixpoint:
+    name: bootstrap fixpoint
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.fixpoint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'solutions' || '' }}
+      - uses: ./.github/actions/setup
+        with:
+          cachix-name: ${{ env.CACHIX_NAME }}
+          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Cache the Lake build and the elaboration cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .lake
+            ~/.cache/wiz
+          key: fixpoint-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean', 'selfhost/*.wiz', 'lib/*.wiz') }}
+          restore-keys: fixpoint-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      - name: Fixpoint
+        run: scripts/fixpoint.sh .lake/fixpoint 2>&1 | tee fixpoint.log
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          { echo "### Bootstrap fixpoint"; echo; echo '```'; grep -E 'FIXPOINT|^==' fixpoint.log || echo "(no result)"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
