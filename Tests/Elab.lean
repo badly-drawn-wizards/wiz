@@ -2292,9 +2292,9 @@ def selfHostGroup : Group where
         let loop := MTm.abelCoquand true
         ioDiverges (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n")
         -- without regularity (`vCastW`'s fallback) both kernels check it
-        let reg := "  | A, B, e, t => match tmEq (quote 100000 A) (quote 100000 B) with"
+        let reg := "  match tmEq (quote l A) (quote l B) with"
         unless (kernel.splitOn reg).length == 2 do throw (IO.userError "vCastW's regularity rule not found")
-        let noReg := kernel.replace reg "  | A, B, e, t => match Bool.false with"
+        let noReg := kernel.replace reg "  match Bool.false with"
         let expected ← match infer (R := ZeroOneMany) { globals := { leanGlobals () with regularity := .off } } loop.toTerm with
           | .ok (ty, _) => pure ((MTm.ofTerm (quote (leanGlobals ()) 0 ty)).map (·.pretty 0) |>.getD "?")
           | .error e => throw (IO.userError s!"the Lean kernel without regularity rejects it: {e}")
