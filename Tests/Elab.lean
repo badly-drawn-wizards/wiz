@@ -521,10 +521,16 @@ def twiceMacro : Macro := fun stx => do
 attribute [macro term.twice] twiceMacro
 "
 
-/-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
-def okLib (input : String) (infos : List String := []) : IO Unit := do
+/-- `import Prelude` and `import Word`. -/
+def preludeLoader : IO (Name → Option String) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let loader : Name → Option String := fun m => if m == "Prelude" then some prelude else none
+  let word ← IO.FS.readFile "lib/Word.wiz"
+  pure fun m => if m == "Prelude" then some prelude else if m == "Word" then some word else none
+
+/-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
+
+def okLib (input : String) (infos : List String := []) : IO Unit := do
+  let loader ← preludeLoader
   let s := runFrontend (R := ZeroOneMany) input { loader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
@@ -647,8 +653,7 @@ def backendGroup : Group where
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
 the C toolchain can't find GMP: set `WIZ_CFLAGS`/`WIZ_LDFLAGS` to run these. -/
 def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
-  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let s := runFrontend (R := ZeroOneMany) src { loader := fun m => if m == "Prelude" then some prelude else none }
+  let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
@@ -1888,6 +1893,40 @@ def languageGroup : Group where
           "inductive B where\n  | b0\n  | b1 (x : A)\nend\n" ++
           "def depthA : A → Nat\n  | .a1 f => Nat.succ (depthA (f ()))\n  | .a0 => 0\n" ++
           "#eval depthA (.a1 (fun _ => .a1 (fun _ => .a0)))") ["2"] }
+  ]
+
+/-- Machine words (`lib/Word.wiz`): one table of operations at widths 8–100, signed and
+unsigned, with its expected values. The kernel and the interpreters compute with the
+definitions; compiled code calls the natives (`implemented_by`). -/
+def wordTable : String := "import Word\ndef b2n : Bool → Nat\n  | .true => 1\n  | .false => 0\ndef m64 : Nat := 18446744073709551615\ndef main : List Nat :=\n  (.cons ((UIntN.add (U8.ofNat 200) (U8.ofNat 100)).toNat)\n    (.cons ((UIntN.sub (U8.ofNat 3) (U8.ofNat 5)).toNat)\n    (.cons ((UIntN.mul (U64.ofNat m64) (U64.ofNat m64)).toNat)\n    (.cons ((UIntN.add (U64.ofNat m64) (U64.ofNat 1)).toNat)\n    (.cons ((UIntN.mul (U64.ofNat m64) (U64.ofNat 3)).toNat)\n    (.cons ((UIntN.shiftLeft (U32.ofNat 5) 40).toNat)\n    (.cons ((UIntN.shiftLeft (U32.ofNat 5) 20).toNat)\n    (.cons ((UIntN.not (U64.ofNat 12345)).toNat)\n    (.cons ((UIntN.add (UIntN.ofNat 65 (Nat.pow 2 65 - 1)) (UIntN.ofNat 65 2)).toNat)\n    (.cons ((UIntN.mul (UIntN.ofNat 100 (Nat.pow 3 60)) (UIntN.ofNat 100 (Nat.pow 3 10))).toNat)\n    (.cons ((UIntN.div (U32.ofNat 1000) (U32.ofNat 7)).toNat)\n    (.cons ((UIntN.mod (U32.ofNat 1000) (U32.ofNat 7)).toNat)\n    (.cons ((UIntN.div (U32.ofNat 1000) (U32.ofNat 0)).toNat)\n    (.cons ((UIntN.mod (U32.ofNat 1000) (U32.ofNat 0)).toNat)\n    (.cons ((IntN.div (I8.ofNeg 7) (I8.ofNat 2)).toNat)\n    (.cons ((IntN.rem (I8.ofNeg 7) (I8.ofNat 2)).toNat)\n    (.cons ((IntN.div (I8.ofNeg 128) (I8.ofNeg 1)).toNat)\n    (.cons ((IntN.shiftRight (I8.ofNeg 100) 3).toNat)\n    (.cons ((IntN.resize 16 (I8.ofNeg 1)).toNat)\n    (.cons ((IntN.div (I64.ofNeg (Nat.pow 2 63)) (I64.ofNeg 1)).toNat)\n    (.cons ((IntN.div (I64.ofNeg 1000000000000) (I64.ofNat 7)).toNat)\n    (.cons ((IntN.rem (I64.ofNeg 1000000000000) (I64.ofNat 7)).toNat)\n    (.cons ((IntN.mul (I64.ofNeg 5) (I64.ofNat (Nat.pow 2 62))).toNat)\n    (.cons ((IntN.shiftRight (I64.ofNeg 123456789) 10).toNat)\n    (.cons (b2n (IntN.lt (I64.ofNeg 1) (I64.ofNat 0)))\n    (.cons (b2n (IntN.lt (I64.ofNat 0) (I64.ofNeg 1)))\n    (.cons (b2n (IntN.le (I8.ofNeg 128) (I8.ofNeg 128)))\n    (.cons (b2n (IntN.lt (I8.ofNat 127) (I8.ofNeg 128)))\n    (.cons (IntN.natAbs (IntN.min 64))\n    (.cons ((IntN.div (IntN.ofNeg 70 (Nat.pow 2 69)) (IntN.ofNeg 70 1)).toNat)\n    (.cons ((IntN.shiftRight (IntN.ofNeg 70 5) 100).toNat)\n    (.cons ((IntN.rem (IntN.ofNeg 70 7) (IntN.ofNeg 70 2)).toNat)\n    (.cons ((UIntN.neg (U8.ofNat 1)).toNat)\n    (.cons ((IntN.sub (I32.ofNat 0) (I32.ofNat 1)).toNat)\n    .nil))))))))))))))))))))))))))))))))))\n"
+def wordTableValue : String := ".cons 44 (.cons 254 (.cons 1 (.cons 0 (.cons 18446744073709551613 (.cons 0 (.cons 5242880 (.cons 18446744073709539270 (.cons 1 (.cons 813220142716762761079858673625 (.cons 142 (.cons 6 (.cons 0 (.cons 1000 (.cons 253 (.cons 255 (.cons 128 (.cons 243 (.cons 65535 (.cons 9223372036854775808 (.cons 18446743930852408759 (.cons 18446744073709551615 (.cons 13835058055282163712 (.cons 18446744073709431052 (.cons 1 (.cons 0 (.cons 1 (.cons 0 (.cons 9223372036854775808 (.cons 590295810358705651712 (.cons 1180591620717411303423 (.cons 1180591620717411303423 (.cons 255 (.cons 4294967295 .nil)))))))))))))))))))))))))))))))))"
+
+def wordGroup : Group where
+  name := "word"
+  exercise := "Stage 22c"
+  cases := [
+    { name := "the definitions compute in the kernel", run := fun _ =>
+        okLib (wordTable ++ s!"def t : main = ({wordTableValue} : List Nat) := refl main") },
+    { name := "#eval runs the definitions", run := fun _ =>
+        okLib (wordTable ++ "#eval main") [wordTableValue] },
+    { name := "#run runs the definitions", run := fun _ =>
+        okLib (wordTable ++ "#run main") [wordTableValue] },
+    { name := "compiled code runs the natives (C)", run := fun _ => cRun wordTable wordTableValue },
+    { name := "compiled code runs the natives (LLVM)", run := fun _ => cRun (llvm := true) wordTable wordTableValue },
+    { name := "compiled code calls the native", run := fun _ => do
+        let loader ← preludeLoader
+        let src := "import Word\ndef f (a b : U32) : U32 := UIntN.add a b\n#ir f"
+        let s := runFrontend (R := ZeroOneMany) src { loader }
+        let out := String.intercalate "\n" (s.messages.toList.map (·.text))
+        check ((out.splitOn "wiz_word_add").length > 1) s!"no native call in:\n{out}" },
+    { name := "the width is part of the type, and is inferred", run := fun _ => do
+        okLib "import Word\ndef w {ω n : Nat} (a : UIntN n) : Nat := n\n#check w (U8.ofNat 3)\n#eval w (U8.ofNat 3)"
+          ["w 8 (U8.ofNat 3) : Nat", "8"]
+        let loader ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) "import Word\ndef bad (x : U8) : U16 := x" { loader }
+        check (s.messages.any (·.severity == .error)) "U8 was accepted as U16" },
+    { name := "field notation through the fixed widths", run := fun _ =>
+        okLib "import Word\ndef f (a b : I16) : Bool := a.lt b\n#eval f (I16.ofNeg 2) (I16.ofNat 1)" [".true"] }
   ]
 
 def stdGroup : Group where

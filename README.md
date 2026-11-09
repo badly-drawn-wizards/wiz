@@ -1662,6 +1662,34 @@ and return Wiz data types, passed as they are (marshalling kind `w`).
 Not yet: a *type* with a native representation (`Vec A` as an array, R0b), and the
 attribute in the self-hosted backend.
 
+### 22c: machine integers ✅
+
+`import Word` (`lib/Word.wiz`): `UIntN w`, a w-bit unsigned integer, and `IntN w`, w-bit
+two's complement, both a number of bits below `2^w` (normalised by construction, so
+arithmetic wraps around), with `ofNat`/`toNat`, wrapping `add`/`sub`/`mul`/`neg`,
+`div`/`mod` (signed: `div` truncates towards zero and `rem` takes the dividend's sign,
+as Rust; `x / 0 = 0` and `x % 0 = x` as Lean, where Rust panics), comparisons, bitwise
+operations, shifts (`shiftLeft` by `k ≥ w` gives `0`; `IntN.shiftRight` is
+arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toUIntN`.
+
+* **One width-indexed type** serves both clients: the HDL's `Unsigned n` needs any
+  width (1, 5, 65, …) and Rust's `u32` is `U32 := UIntN 32` (also `U8 … U64`, `USize`,
+  `I8 … I64`, with `U32.ofNat`, `I32.ofNeg`, …). Operations are named functions
+  (`UIntN.add a b`, or `a.add b`) until the numeric classes (HD9) arrive.
+* **The width is an index** (`mk {0 w : Nat} (toNat : Nat) : UIntN w`): types are
+  structural, and a parameter that no field mentions is forgotten, so `UIntN 8` and
+  `UIntN 16` would be one type and `w` could not be inferred.
+* **Natives.** The kernel computes with the definitions, quickly on numerals (22a), and
+  so do `#eval`/`#run`. Compiled code calls natives (`runtime/wiz.c`, `wiz_word_*`) by
+  `implemented_by`: in a `uint64_t` up to 64 bits, GMP beyond, one function per
+  operation for every width. A table of operations at widths 8 to 100 gives the same
+  values in the kernel (`refl`), both interpreters, C and LLVM (`examples/words.wiz`:
+  an FNV-1a hash, and facts proved by `refl` about named values; an equation whose
+  sides still contain an unsolved implicit width when it is computed gets stuck, so
+  state facts about definitions). A word is still an
+  object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
+  `implemented_by`.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅

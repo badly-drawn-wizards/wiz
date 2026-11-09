@@ -601,6 +601,109 @@ WIZ_API wiz_val wiz_out_nat(uint64_t n) {
   return wiz_big_norm(z);
 }
 
+/* ---- machine words (lib/Word.wiz) ----
+   `UIntN w` and `IntN w` are `mk (toNat : Nat)`: an object holding the bits as a number
+   below 2^w (two's complement for `IntN`). The natives below implement the Wiz
+   definitions: in a uint64_t up to 64 bits, with GMP beyond. Each consumes its arguments. */
+enum { WIZ_W_ADD, WIZ_W_SUB, WIZ_W_MUL, WIZ_W_UDIV, WIZ_W_UMOD, WIZ_W_NOT, WIZ_W_SHL,
+       WIZ_W_SDIV, WIZ_W_SREM, WIZ_W_ASHR, WIZ_W_SLT, WIZ_W_SLE };
+/* the object is `⟨0 ◾ bits⟩` (the width is an erased index) */
+static wiz_val wiz_word_bits(wiz_val o) {
+  wiz_val f = ((wiz_ctor *)o)->fields[1];
+  wiz_inc(f); wiz_dec(o);
+  return f;
+}
+static wiz_val wiz_word_mk(wiz_val n) {
+  wiz_val r = wiz_ctor_new(0, 2);
+  WIZ_SET(r, 0, WIZ_BOX(0)); WIZ_SET(r, 1, n);
+  return r;
+}
+/* a number below 2^64, as a uint64_t (without consuming it) */
+static int wiz_word_u64(wiz_val v, uint64_t *out) {
+  if (WIZ_IS_SCALAR(v)) { *out = WIZ_UNBOX(v); return 1; }
+  if (mpz_sizeinbase(((wiz_big *)v)->z, 2) > 64) return 0;
+  *out = mpz_get_ui(((wiz_big *)v)->z);
+  return 1;
+}
+/* bits of width w as a signed number (in place) */
+static void wiz_word_signed(mpz_t x, uint64_t w) {
+  if (w > 0 && mpz_tstbit(x, w - 1)) { mpz_t p; mpz_init(p); mpz_setbit(p, w); mpz_sub(x, x, p); mpz_clear(p); }
+}
+/* op on words of width w with bits x and y (k: a shift); comparisons give 0 or 1 */
+static wiz_val wiz_word_op(int op, uint64_t w, wiz_val a, wiz_val b, uint64_t k) {
+  uint64_t x, y = 0;
+  if (w <= 64 && wiz_word_u64(a, &x) && wiz_word_u64(b, &y)) {
+    uint64_t mask = w == 64 ? ~(uint64_t)0 : (((uint64_t)1 << w) - 1), r;
+    int s = 64 - (int)w;
+    int64_t sx = w ? (int64_t)(x << s) >> s : 0, sy = w ? (int64_t)(y << s) >> s : 0;
+    wiz_dec(a); wiz_dec(b);
+    switch (op) {
+    case WIZ_W_ADD: r = x + y; break;
+    case WIZ_W_SUB: r = x - y; break;
+    case WIZ_W_MUL: r = x * y; break;
+    case WIZ_W_UDIV: r = y ? x / y : 0; break;
+    case WIZ_W_UMOD: r = y ? x % y : x; break;
+    case WIZ_W_NOT: r = ~x; break;
+    case WIZ_W_SHL: r = k >= w ? 0 : x << k; break;
+    case WIZ_W_SDIV: r = y == 0 ? 0 : (sy == -1 ? (uint64_t)0 - x : (uint64_t)(sx / sy)); break;
+    case WIZ_W_SREM: r = y == 0 ? x : (sy == -1 ? 0 : (uint64_t)(sx % sy)); break;
+    case WIZ_W_ASHR: r = (uint64_t)(sx >> (k >= w ? (w ? w - 1 : 0) : k)); break;
+    case WIZ_W_SLT: return WIZ_BOX(sx < sy);
+    default: return WIZ_BOX(sx <= sy);
+    }
+    return wiz_out_nat(r & mask);
+  }
+  mpz_t mx, my;
+  wiz_to_mpz(mx, a); wiz_to_mpz(my, b);
+  wiz_dec(a); wiz_dec(b);
+  int cmp = -2;
+  switch (op) {
+  case WIZ_W_ADD: mpz_add(mx, mx, my); break;
+  case WIZ_W_SUB: mpz_sub(mx, mx, my); break;
+  case WIZ_W_MUL: mpz_mul(mx, mx, my); break;
+  case WIZ_W_UDIV: if (mpz_sgn(my) == 0) mpz_set_ui(mx, 0); else mpz_fdiv_q(mx, mx, my); break;
+  case WIZ_W_UMOD: if (mpz_sgn(my) != 0) mpz_fdiv_r(mx, mx, my); break;
+  case WIZ_W_NOT: mpz_com(mx, mx); break;
+  case WIZ_W_SHL: if (k >= w) mpz_set_ui(mx, 0); else mpz_mul_2exp(mx, mx, k); break;
+  case WIZ_W_SDIV: case WIZ_W_SREM:
+    if (mpz_sgn(my) == 0) { if (op == WIZ_W_SDIV) mpz_set_ui(mx, 0); break; }
+    wiz_word_signed(mx, w); wiz_word_signed(my, w);
+    if (op == WIZ_W_SDIV) mpz_tdiv_q(mx, mx, my); else mpz_tdiv_r(mx, mx, my);
+    break;
+  case WIZ_W_ASHR: wiz_word_signed(mx, w); mpz_fdiv_q_2exp(mx, mx, k >= w ? w : k); break;
+  default: wiz_word_signed(mx, w); wiz_word_signed(my, w); cmp = mpz_cmp(mx, my); break;
+  }
+  mpz_clear(my);
+  if (cmp != -2) { mpz_clear(mx); return WIZ_BOX(op == WIZ_W_SLT ? cmp < 0 : cmp <= 0); }
+  mpz_fdiv_r_2exp(mx, mx, w);
+  return wiz_big_norm(mx);
+}
+#define WIZ_WORD_BIN(name, op) \
+  WIZ_API wiz_val wiz_word_##name(uint64_t w, wiz_val a, wiz_val b) { \
+    return wiz_word_mk(wiz_word_op(op, w, wiz_word_bits(a), wiz_word_bits(b), 0)); }
+WIZ_WORD_BIN(add, WIZ_W_ADD)
+WIZ_WORD_BIN(sub, WIZ_W_SUB)
+WIZ_WORD_BIN(mul, WIZ_W_MUL)
+WIZ_WORD_BIN(udiv, WIZ_W_UDIV)
+WIZ_WORD_BIN(umod, WIZ_W_UMOD)
+WIZ_WORD_BIN(sdiv, WIZ_W_SDIV)
+WIZ_WORD_BIN(srem, WIZ_W_SREM)
+WIZ_API wiz_val wiz_word_not(uint64_t w, wiz_val a) {
+  return wiz_word_mk(wiz_word_op(WIZ_W_NOT, w, wiz_word_bits(a), WIZ_BOX(0), 0));
+}
+WIZ_API wiz_val wiz_word_shl(uint64_t w, wiz_val a, uint64_t k) {
+  return wiz_word_mk(wiz_word_op(WIZ_W_SHL, w, wiz_word_bits(a), WIZ_BOX(0), k));
+}
+WIZ_API wiz_val wiz_word_ashr(uint64_t w, wiz_val a, uint64_t k) {
+  return wiz_word_mk(wiz_word_op(WIZ_W_ASHR, w, wiz_word_bits(a), WIZ_BOX(0), k));
+}
+WIZ_API int wiz_word_slt(uint64_t w, wiz_val a, wiz_val b) {
+  return WIZ_UNBOX(wiz_word_op(WIZ_W_SLT, w, wiz_word_bits(a), wiz_word_bits(b), 0)) != 0;
+}
+WIZ_API int wiz_word_sle(uint64_t w, wiz_val a, wiz_val b) {
+  return WIZ_UNBOX(wiz_word_op(WIZ_W_SLE, w, wiz_word_bits(a), wiz_word_bits(b), 0)) != 0;
+}
+
 /* a constructor value: a flat object ⟨tag f₁ … fₙ⟩, or just the tag without fields */
 static wiz_val wiz_con(uint32_t tag, uint32_t n, wiz_val *fields) {
   if (n == 0) return WIZ_BOX(tag);
