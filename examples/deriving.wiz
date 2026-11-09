@@ -1,0 +1,57 @@
+import Deriving
+-- Command macros, reflection, and `deriving` (HD8).
+
+-- A command macro: `ctor_names T` defines `T.ctorNames`, the names of T's constructors,
+-- read from the environment with `MacroM.getInductive`.
+syntax (name := ctorNames) "ctor_names" ident : command
+def namesList : List CtorView → Syntax
+  | .nil => `(term| List.nil)
+  | .cons c cs =>
+    let s := Syntax.mkStr (CtorView.name c);
+    let rest := namesList cs;
+    `(term| List.cons $s $rest)
+def ctorNamesMacro : CommandMacro := fun stx => do
+  n ← Syntax.identName (Syntax.getArg stx 1);
+  r ← MacroM.getInductive n;
+  match r with
+  | .none => MacroM.throw "ctor_names: not an inductive type"
+  | .some v => do
+    let x := Syntax.mkIdent (String.append n ".ctorNames");
+    let names := namesList (IndView.ctors v);
+    MacroM.pure (.cons `(command| def $x : List String := $names) .nil)
+attribute [macro command.ctorNames] ctorNamesMacro
+
+inductive Color where
+  | red
+  | green
+  | blue
+  deriving Repr, BEq, Inhabited
+ctor_names Color
+#eval Color.ctorNames
+#eval Repr.repr Color.green
+#eval BEq.beq Color.red Color.blue
+#eval Repr.repr (Inhabited.default : Color)
+
+-- Parameters get instance arguments; recursion goes through the recursor.
+inductive Tree (A : Type) where
+  | leaf
+  | node (l : Tree A) (x : A) (r : Tree A)
+  deriving Repr, BEq, Inhabited
+def t : Tree Nat := .node .leaf 1 (.node .leaf 2 .leaf)
+#eval Repr.repr t
+#eval BEq.beq t t
+#eval BEq.beq t (.node .leaf 1 .leaf)
+
+structure Point where
+  x : Nat
+  y : Nat
+  deriving Repr, BEq, Inhabited
+#eval Repr.repr (Point.mk 3 4)
+#eval Repr.repr (List.cons (Point.mk 1 2) List.nil)
+
+-- Standalone, after the fact.
+inductive Shape where
+  | circle (r : Nat)
+  | rect (corner : Point) (w : Nat) (h : Nat)
+deriving instance Repr, BEq for Shape
+#eval Repr.repr (Shape.rect (Point.mk 0 0) 2 3)

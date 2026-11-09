@@ -55,6 +55,9 @@ def isDefEq := 17
 def inferType := 18
 def evalTactic := 19
 def catch_ := 20
+-- (HD8) reflection, for macros (`Elab/Reflect.lean`)
+def getInductive := 21
+def getType := 22
 end TacTag
 
 structure Goal (R : Type) where
