@@ -216,6 +216,18 @@ static void wiz_free(wiz_val v) {
   free(h);
 }
 
+/* a shared constant: never freed, and not counted as live (so not a leak) */
+static void wiz_immortal(wiz_val v) {
+  if (WIZ_IS_SCALAR(v)) return;
+  wiz_hdr *h = (wiz_hdr *)v;
+  if (h->rc >= ((int64_t)1 << 40)) return;
+  h->rc = (int64_t)1 << 50;
+  wiz_live--;
+  wiz_untrack(h);
+  if (h->tag < WIZ_TAG_FIRST_SPECIAL)
+    for (uint32_t i = 0; i < h->size; i++) wiz_immortal(((wiz_ctor *)v)->fields[i]);
+}
+
 WIZ_API uint32_t wiz_tag(wiz_val v) {
   return WIZ_IS_SCALAR(v) ? (uint32_t)WIZ_UNBOX(v) : ((wiz_hdr *)v)->tag;
 }
