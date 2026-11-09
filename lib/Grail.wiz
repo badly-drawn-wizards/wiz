@@ -12,6 +12,7 @@ inductive Target where
   | check (name : String) (file : String)
   | exe (name : String) (file : String)
   | tests (name : String) (root : String)
+  | selfhost (name : String) (role : String)
 
 -- Settings: `key value` pairs, later ones win. Keys: `cc`, `cflags`, `ldflags`, `llc`,
 -- `gc-cflags`, `gc-ldflags` (the toolchain), `root` (another module root).
@@ -34,6 +35,8 @@ def Package.lib (name root : String) (p : Package) : Package := Package.add (.li
 def Package.check (name file : String) (p : Package) : Package := Package.add (.check name file) p
 def Package.exe (name file : String) (p : Package) : Package := Package.add (.exe name file) p
 def Package.tests (name root : String) (p : Package) : Package := Package.add (.tests name root) p
+-- the self-hosted toolchain (from selfhost/): role `checker`, `compiler` or `bootstrap`
+def Package.selfhost (name role : String) (p : Package) : Package := Package.add (.selfhost name role) p
 def Package.set (key value : String) : Package → Package
   | .mk n ts s => .mk n ts (Settings.set key value s)
 
@@ -59,6 +62,7 @@ def Target.render : Target → String
   | .check n f => Grail.node "check" (.cons (Grail.quote n) (.cons (Grail.quote f) .nil))
   | .exe n f => Grail.node "exe" (.cons (Grail.quote n) (.cons (Grail.quote f) .nil))
   | .tests n r => Grail.node "tests" (.cons (Grail.quote n) (.cons (Grail.quote r) .nil))
+  | .selfhost n r => Grail.node "selfhost" (.cons (Grail.quote n) (.cons (Grail.quote r) .nil))
 def Grail.renderTargets : List Target → List String
   | .nil => .nil
   | .cons t ts => .cons (Target.render t) (Grail.renderTargets ts)

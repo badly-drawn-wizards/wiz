@@ -1,6 +1,7 @@
 import Tests.Harness
 import Wiz
 import Grail
+import Tests.Elab
 
 /-!
 Stage 23: modules by path (23b), per-module cache keys and atomic writes (23c), and
@@ -295,6 +296,35 @@ def testRunnerGroup : Group where
         if res.any fun t => (t.message.splitOn "gmp.h").length > 1 then
           IO.println "    (skipped: no toolchain)"; return
         for t in res do check t.ok s!"{t.file}: {t.message}" }
+  ]
+
+def grailSelfhostGroup : Group where
+  name := "grail-selfhost"
+  exercise := "Stage 23e"
+  cases := [
+    { name := "grail builds the self-hosted checker, the same program as the tests'", run := fun _ => do
+        let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
+        let dir ← IO.FS.realPath "."
+        let stats ← IO.mkRef {}
+        let r : Grail.Runner := { ctx := { dir, std := "lib", tc, binId := 7 }, stats, memo := ← IO.mkRef {},
+                                  log := fun _ => pure () }
+        match ← r.selfhost "selfhost-checker" "checker" with
+        | .error e =>
+          if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"; return
+          throw (IO.userError e)
+        | .ok () => pure ()
+        let mine := dir / ".grail" / "bin" / "selfhost-checker"
+        let .ok theirs ← Tests.Elab.selfhostChecker | throw (IO.userError "the tests' checker failed")
+        let work ← IO.FS.createTempDir
+        IO.FS.writeFile (work / "input.wiz") "import Prelude\ndef two : Nat := 1 + 1\n#check two\n"
+        let a ← IO.Process.output { cmd := mine.toString, cwd := work }
+        let b ← IO.Process.output { cmd := theirs.toString, cwd := work }
+        checkEq b.stdout a.stdout
+        check (!a.stdout.isEmpty) "no output"
+        -- again: nothing runs
+        let r : Grail.Runner := { r with stats := ← IO.mkRef ({} : Grail.Stats), memo := ← IO.mkRef ({} : Grail.Memo) }
+        let .ok () ← r.selfhost "selfhost-checker" "checker" | throw (IO.userError "the second build failed")
+        checkEq 0 (← r.stats.get).ran }
   ]
 
 end Tests.Grail

@@ -1077,49 +1077,9 @@ partial def leanTokens (tokens : Array String) (input : String) : List String :=
     | .error e => (("error:" ++ e) :: acc).reverse
   go 0 []
 
-/-- A Wiz string literal. -/
-def wizLit (s : String) : String :=
-  "\"" ++ String.join (s.toList.map fun c => if c == '"' then "\\\"" else if c == '\\' then "\\\\" else if c == '\n' then "\\n" else c.toString) ++ "\""
-
-/-- A grammar descriptor as a Wiz `PD` (`selfhost/Parse.wiz`): sequences become binary. -/
-partial def wizPD : ParserDescr → String
-  | .atom t => s!"(PD.atom {wizLit t})"
-  | .nonReserved t => s!"(PD.nonReserved {wizLit t})"
-  | .ident => "PD.ident"
-  | .num => "PD.num"
-  | .str => "PD.str"
-  | .cat c p => s!"(PD.cat {wizLit c} {p})"
-  | .seq ps => ps.toList.foldr (fun p acc => if acc == "PD.empty" then wizPD p else s!"(PD.seq {wizPD p} {acc})") "PD.empty"
-  | .many p => s!"(PD.many {wizPD p})"
-  | .many1 p => s!"(PD.many1 {wizPD p})"
-  | .optional p => s!"(PD.optional {wizPD p})"
-  | .sepBy p sep t => s!"(PD.sepBy {wizPD p} {wizLit sep} {if t then ".true" else ".false"})"
-  | .sepBy1 p sep t => s!"(PD.sepBy1 {wizPD p} {wizLit sep} {if t then ".true" else ".false"})"
-  | .orelse p q => s!"(PD.orelse {wizPD p} {wizPD q})"
-  | .node k p => s!"(PD.node {wizLit k} {wizPD p})"
-  | .withPosition p => s!"(PD.withPosition {wizPD p})"
-  | .withoutPosition p => s!"(PD.withoutPosition {wizPD p})"
-  | .colGt => "PD.colGt"
-  | .colGe => "PD.colGe"
-  | .noWs => "PD.noWs"
-  | .checkPrec p => s!"(PD.checkPrec {p})"
-
-/-- A Wiz list literal. -/
-def wizList (xs : List String) : String := xs.foldr (fun x acc => s!"(.cons {x} {acc})") ".nil"
-
-/-- The parser tables as Wiz definitions: one per category, then `cats`. -/
-def wizTables (t : ParserTables) : String := Id.run do
-  let names := (t.cats.toList.map (·.1)).toArray.qsort (· < ·)
-  let mut out := ""
-  let mut i := 0
-  for n in names do
-    let cat := t.cats[n]!
-    let ls := cat.leading.toList.map fun lp => s!"(Leading.mk {wizLit lp.kind} {lp.prec} {lp.priority} {wizPD lp.p})"
-    let ts := cat.trailing.toList.map fun tp => s!"(Trailing.mk {wizLit tp.kind} {tp.prec} {tp.lhsPrec} {tp.priority} {wizPD tp.p})"
-    out := out ++ s!"def cat{i} : Cat := Cat.mk {wizLit n} {wizList ls} {wizList ts}\n"
-    i := i + 1
-  out := out ++ s!"def cats : List Cat := {wizList ((List.range names.size).map (s!"cat{·}"))}\n"
-  pure out
+-- the generators of Wiz source moved to `Wiz/Selfhost.lean` (grail builds the
+-- self-hosted toolchain too); the names stay here for the scripts that use them
+export Wiz.Selfhost (wizLit wizPD wizList wizTables)
 
 /-- What the Lean parser makes of `input`, printed like `parse` in `Parse.wiz`. -/
 def leanParse (t : ParserTables) (cat : Name) (input : String) : String :=
@@ -1887,12 +1847,8 @@ def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
 in its working directory. It is built once and kept (under `/tmp`, keyed by its source
 and this test binary), since every test that uses it would otherwise compile it again. -/
 def selfhostChecker : IO (Except String System.FilePath) := do
-  let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
-  let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
-  let t := Builtin.tables
-  let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
-    s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
-    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  printAll (checkFile cats tokens text)\n"
+  let src ← Selfhost.checkerFiles.mapM (fun (f : String) => IO.FS.readFile f)
+  let prog := Selfhost.checkerSource src
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "checker"
@@ -1918,14 +1874,8 @@ def selfhostChecker : IO (Except String System.FilePath) := do
 /-- The self-hosted compiler (stage 21): the frontend and `Backend.wiz`, printing the C
 program for `input.wiz` (the frontend's own output as comments). -/
 def selfhostCompiler : IO (Except String System.FilePath) := do
-  let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz",
-    "selfhost/Backend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
-  let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
-  let t := Builtin.tables
-  let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
-    s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
-    "def commentLines : List String → List String\n  | .nil => .nil\n  | .cons l rest => .cons (String.append \"/* \" (String.append l \" */\")) (commentLines rest)\n" ++
-    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with\n    | .mk out gs _ _ _ => do\n      printAll (commentLines (List.reverseOf out .nil));\n      printDocs (genProgramFor text gs)\n"
+  let src ← Selfhost.compilerFiles.mapM (fun (f : String) => IO.FS.readFile f)
+  let prog := Selfhost.compilerSource src
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "compiler"

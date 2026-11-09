@@ -2029,6 +2029,25 @@ compiler and flags, `llc`, the collector's flags, the cache, module roots) comes
 `-I DIR` (which replaces `$WIZ_PATH`), and is passed explicitly to everything that
 compiles. Its compiler fields are its `id`, which enters grail's keys.
 
-Next: the self-hosted toolchain as targets
-with a bootstrap check (23e), a test runner (23f), parallel jobs (23g), git
-dependencies and a lock file (23h).
+### 23e: the self-hosted toolchain as targets ✅
+
+`Package.selfhost NAME ROLE` builds the self-hosted programs from `selfhost/*.wiz`
+(`Wiz/Selfhost.lean` generates their sources, parser tables included, for grail and the
+tests alike): `checker`, `compiler`, and `bootstrap`, the fixpoint check of
+`scripts/fixpoint.sh` as jobs (generate the source, build stage 1, `self1.c`, stage 2,
+`self2.c`, compare). `grail build bootstrap` runs it (minutes); run again, it runs
+nothing unless a source, `rt.c`, the toolchain or grail changed. `grail build` alone
+leaves it out.
+
+### 23f: a test runner ✅
+
+`Package.tests NAME DIR` makes every `.wiz` file under `DIR` a test, with its expected
+output beside it in `.expected`. The first line gives the kind: `-- test: check` (the
+default: the messages, as `wiz check` prints them) or `-- test: run` (what `main` prints,
+compiled through C). A pass is a job like any other, keyed by the file (and its
+imports), the kind, the toolchain and the expected output, so `grail test` again runs
+nothing; `grail test FILTER` runs the tests whose path contains it, and
+`grail test --update` writes the actual output. Every example is a test
+(`examples/*.expected`). The Lean tests stay in `lake test`.
+
+Next: parallel jobs (23g), git dependencies and a lock file (23h).

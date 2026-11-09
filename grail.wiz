@@ -12,3 +12,7 @@ def package : Package := Package.new "wiz"
   |> Package.exe "foreign" "examples/foreign.wiz"
   |> Package.exe "glue" "examples/glue.wiz"
   |> Package.exe "import-c" "examples/import_c.wiz"
+  -- the self-hosted toolchain; `grail build bootstrap` is the fixpoint check (minutes)
+  |> Package.selfhost "selfhost-checker" "checker"
+  |> Package.selfhost "selfhost-compiler" "compiler"
+  |> Package.selfhost "bootstrap" "bootstrap"

@@ -1,4 +1,5 @@
 import Grail.Test
+import Grail.Selfhost
 
 /-!
 # grail, a build tool for Wiz
@@ -10,7 +11,8 @@ import Grail.Test
 open Wiz Grail
 
 def usage : String := "usage:
-  grail build [TARGET…]   build the package's targets (all by default)
+  grail build [TARGET…]   build the package's targets (by default all but the
+                          bootstrap check, which takes minutes)
   grail test [FILTER…] [--update]
                           run the tests (of `tests` targets) whose path contains a
                           filter; --update writes the actual output to .expected
@@ -101,13 +103,14 @@ def main (args : List String) : IO UInt32 := do
       pure (if passed == results.size then 0 else 1)
     | _ =>
       let wanted := args.drop 1
-      let targets := if wanted.isEmpty then pkg.targets else pkg.targets.filter (wanted.contains ·.name)
+      let targets := if wanted.isEmpty then pkg.targets.filter (·.isDefault)
+        else pkg.targets.filter (wanted.contains ·.name)
       for w in wanted do
         unless pkg.targets.any (·.name == w) do IO.eprintln s!"no target {w}"; return 1
       let r : Runner := { ctx := { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets }, stats := ← IO.mkRef {}, memo := ← IO.mkRef {} }
       let mut ok := true
       for t in targets do
-        ok := (← r.target t) && ok
+        ok := (← r.buildTarget t) && ok
       let st ← r.stats.get
       IO.println s!"{st.ran} jobs run, {st.upToDate} up to date{if st.failed > 0 then s!", {st.failed} failed" else ""}"
       pure (if ok then 0 else 1)

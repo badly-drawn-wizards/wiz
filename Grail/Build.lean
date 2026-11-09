@@ -187,5 +187,7 @@ def Runner.target (r : Runner) : Target → IO Bool
     | .error e => IO.eprintln e; pure false
   -- tests run with `grail test`
   | .tests _ _ => pure true
+  -- `Grail/Selfhost.lean`
+  | .selfhost _ _ => do IO.eprintln "selfhost targets are built by Runner.buildTarget"; pure false
 
 end Grail
