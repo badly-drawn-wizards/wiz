@@ -51,6 +51,9 @@ inductive Tm where
   | ann (t ty : Tm)
   -- binders with a quantity (`pi`, `sigma`, `letE` are at ω)
   | piq (q : Q) (dom cod : Tm)
+  -- a `Π` or `Σ` with its sort: type equality compares propositions by equivalence and
+  -- other types by their parts, so it needs to know which is which (`infer` checks it)
+  | sorted (s : Lvl) (t : Tm)
   | sigmaq (q : Q) (fst snd : Tm)
   | letq (q : Q) (ty val body : Tm)
   | sigma (fst snd : Tm)
@@ -123,11 +126,12 @@ mutual
 inductive Val where
   -- `Sort l`
   | vsort (l : Lvl)
-  -- `(x : dom) → cod`, `cod` under one binder, closed over `env`
-  | vpi (q : Q) (dom : Val) (env : Env) (cod : Tm)
+  -- `(x : dom) → cod`, `cod` under one binder, closed over `env`; `s` its sort, when
+  -- known (`sorted`)
+  | vpi (q : Q) (dom : Val) (env : Env) (cod : Tm) (s : Option Lvl)
   | vlam (env : Env) (body : Tm)
   -- `(x : fst) × snd`, `snd` under one binder, closed over `env`
-  | vsigma (q : Q) (fst : Val) (env : Env) (snd : Tm)
+  | vsigma (q : Q) (fst : Val) (env : Env) (snd : Tm) (s : Option Lvl)
   | vpair (a b : Val)
   -- the unit and empty types in `Sort l`
   | vunit (l : Nat)
@@ -412,6 +416,7 @@ def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
   | .sigma a b => .sigma (tmSubst ps ls a) (tmSubst ps ls b)
   | .piq q a b => .piq q (tmSubst ps ls a) (tmSubst ps ls b)
   | .sigmaq q a b => .sigmaq q (tmSubst ps ls a) (tmSubst ps ls b)
+  | .sorted l t => .sorted (substLvl ps ls l) (tmSubst ps ls t)
   | .letq q t v b => .letq q (tmSubst ps ls t) (tmSubst ps ls v) (tmSubst ps ls b)
   | .pair a b => .pair (tmSubst ps ls a) (tmSubst ps ls b)
   | .fst p => .fst (tmSubst ps ls p)
@@ -461,6 +466,9 @@ def substIfAny (ps : List String) (ls : List Lvl) (t : Tm) : Tm := match ps with
   | .cons _ _ => tmSubst ps ls t
 
 -- a Π or Σ with a quantity, as a term (the default ω without one)
+def sortedTm : Option Lvl → Tm → Tm
+  | .none, t => t
+  | .some l, t => .sorted l t
 def piTm (q : Q) (a b : Tm) : Tm := match q with
   | .qw => .pi a b
   | q => .piq q a b
@@ -495,6 +503,44 @@ def lookup : Env → Nat → Val
 -- a fresh variable at level `l`
 def fresh (l : Nat) : Val := .vne (.hvar l) .snil
 
+-- a `Π`/`Σ` with its sort (`sorted`); and a sort's verdict: a proposition, not one, or
+-- not known (a level with parameters, or no sort given)
+def withSort (l : Lvl) : Val → Val
+  | .vpi q a env b _ => .vpi q a env b (.some l)
+  | .vsigma q a env b _ => .vsigma q a env b (.some l)
+  | v => v
+def sortProp : Option Lvl → Option Bool
+  | .none => .none
+  | .some l => match lvlEquiv l (.lnum 0) with
+    | .true => .some .true
+    | .false => match lvlNeverZero l with
+      | .true => .some .false
+      | .false => .none
+-- is this type (in weak head normal form) a proposition? (`propSort?` in `Eval.lean`)
+def propSort : Val → Option Bool
+  | .vpi _ _ _ _ s => sortProp s
+  | .vsigma _ _ _ _ s => sortProp s
+  | .vunit l => .some (Nat.beq l 0)
+  | .vempty l => .some (Nat.beq l 0)
+  | .vsort _ => .some .false
+  | .venum _ => .some .false
+  | .vdesc _ _ => .some .false
+  | .vmu _ _ _ _ _ => .some .false
+  | .vnu _ _ _ _ _ => .some .false
+  | .vsize => .some .false
+  | .vsizeLt _ => .some .false
+  | .vne h sp => match sp with
+    | .snil => match h with
+      | .heq _ _ _ => .some .true
+      | .heqTy _ _ => .some .true
+      | _ => .none
+    | _ => .none
+  | _ => .none
+-- `(a → b) × (b → a)`: equality of propositions
+def vIff (a b : Val) : Val :=
+  .vsigma .qz (.vpi .qz a (.cons b .nil) (.var 1) (.some (.lnum 0))) (.cons a (.cons b .nil))
+    (.sorted (.lnum 0) (.piq .qz (.var 2) (.var 2))) (.some (.lnum 0))
+
 -- `True` if the levels are equal, else `False`
 def levels (l l' : Nat) : Val := match Nat.beq l l' with
   | .true => .vunit 0
@@ -504,8 +550,8 @@ def same (l l' : Nat) (yes no : Val) : Val := match Nat.beq l l' with
   | .false => no
 -- a type former (so different ones are never equal)
 def canonical : Val → Bool
-  | .vpi _ _ _ _ => .true
-  | .vsigma _ _ _ _ => .true
+  | .vpi _ _ _ _ _ => .true
+  | .vsigma _ _ _ _ _ => .true
   | .vsort _ => .true
   | .vunit _ => .true
   | .vempty _ => .true
@@ -524,6 +570,7 @@ def tmEq : Tm → Tm → Bool
   | .univ m, .univ n => Nat.beq m n
   | .prop, .prop => .true
   | .pi a b, .pi c d => Bool.and (tmEq a c) (tmEq b d)
+  | .sorted l a, .sorted l' b => Bool.and (lvlEquiv l l') (tmEq a b)
   | .lam a, .lam b => tmEq a b
   | .app f a, .app g b => Bool.and (tmEq f g) (tmEq a b)
   | .sigma a b, .sigma c d => Bool.and (tmEq a c) (tmEq b d)
@@ -685,15 +732,16 @@ def eval : Env → Tm → Val
   | env, .var i => lookup env i
   | _, .univ n => .vsort (.lnum (n + 1))
   | _, .prop => .vsort (.lnum 0)
-  | env, .pi a b => .vpi .qw (eval env a) env b
-  | env, .piq q a b => .vpi q (eval env a) env b
-  | env, .sigmaq q a b => .vsigma q (eval env a) env b
+  | env, .pi a b => .vpi .qw (eval env a) env b .none
+  | env, .piq q a b => .vpi q (eval env a) env b .none
+  | env, .sigmaq q a b => .vsigma q (eval env a) env b .none
   | env, .letq _ _ v b => eval (.cons (eval env v) env) b
   | env, .lam b => .vlam env b
   | env, .app f a => vapp (eval env f) (eval env a)
   | env, .letE _ v b => eval (.cons (eval env v) env) b
   | env, .ann t _ => eval env t
-  | env, .sigma a b => .vsigma .qw (eval env a) env b
+  | env, .sorted l t => withSort l (eval env t)
+  | env, .sigma a b => .vsigma .qw (eval env a) env b .none
   | env, .pair a b => .vpair (eval env a) (eval env b)
   | env, .fst p => vfst (eval env p)
   | env, .snd p => vsnd (eval env p)
@@ -851,14 +899,14 @@ def nuFamilyAt (l : Nat) (I D sz : Val) : Val :=
 -- `a = b` at `A`, by `A` (`vEq` in `Eval.lean`; the closures are the same templates)
 def vEq (A a b : Val) : Val := vEqW (whnf A) (whnf a) (whnf b)
 def vEqW : Val → Val → Val → Val
-  | .vpi _ a1 env b1, a, b => .vpi .qz a1 (.cons b (.cons a (.cons (.vlam env b1) .nil)))
-      (.eq (.app (.var 3) (.var 0)) (.app (.var 2) (.var 0)) (.app (.var 1) (.var 0)))
-  | .vsigma _ a1 env b1, a, b =>
+  | .vpi _ a1 env b1 _, a, b => .vpi .qz a1 (.cons b (.cons a (.cons (.vlam env b1) .nil)))
+      (.eq (.app (.var 3) (.var 0)) (.app (.var 2) (.var 0)) (.app (.var 1) (.var 0))) (.some (.lnum 0))
+  | .vsigma _ a1 env b1 _, a, b =>
     let P : Tm := .lam (.lam (.eqTy (.app (.var 5) (.fst (.var 4))) (.app (.var 5) (.var 1))));
     let apB : Tm := .subst (.var 4) (.fst (.var 2)) P (.tyRefl (.app (.var 3) (.fst (.var 2)))) (.fst (.var 1)) (.var 0);
     .vsigma .qz (vEq a1 (vfst a) (vfst b)) (.cons b (.cons a (.cons (.vlam env b1) (.cons a1 .nil))))
       (.eq (.app (.var 3) (.fst (.var 1)))
-        (.coe (.app (.var 3) (.fst (.var 2))) (.app (.var 3) (.fst (.var 1))) apB (.snd (.var 2))) (.snd (.var 1)))
+        (.coe (.app (.var 3) (.fst (.var 2))) (.app (.var 3) (.fst (.var 1))) apB (.snd (.var 2))) (.snd (.var 1))) (.some (.lnum 0))
   | .vunit _, _, _ => .vunit 0
   | .vempty _, _, _ => .vunit 0
   | .venum k, .vtag _ i, .vtag _ j => match Nat.beq i j with
@@ -867,24 +915,36 @@ def vEqW : Val → Val → Val → Val
   | .vmu l I D i _, .vcon x, .vcon y => vEq (vInterp l I D (muFamily l I D) i) x y
   | .vsort l, a, b => match lvlEquiv l (.lnum 0) with
     -- propositions: equal when equivalent
-    | .true => .vsigma .qz (.vpi .qz a (.cons b .nil) (.var 1)) (.cons a (.cons b .nil)) (.piq .qz (.var 2) (.var 2))
+    | .true => vIff a b
     | .false => match lvlNeverZero l with
       | .true => vEqType a b
       | .false => .vne (.heq (.vsort l) a b) .snil
   | A, a, b => .vne (.heq A a b) .snil
 -- `A = B` between types (`vEqType`)
-def vEqType (X Y : Val) : Val := vEqTypeW (whnf X) (whnf Y)
+def vEqType (X Y : Val) : Val := vEqTypeP (whnf X) (whnf Y)
+-- propositions are equal when equivalent; a proposition is never a type of another sort
+def vEqTypeP (X Y : Val) : Val := match propSort X with
+  | .some px => match propSort Y with
+    | .some py => match px with
+      | .true => match py with
+        | .true => vIff X Y
+        | .false => .vempty 0
+      | .false => match py with
+        | .true => .vempty 0
+        | .false => vEqTypeW X Y
+    | .none => .vne (.heqTy X Y) .snil
+  | .none => .vne (.heqTy X Y) .snil
 def vEqTypeW : Val → Val → Val
-  | .vpi q a env b, .vpi q' a' env' b' => match qEq q q' with
+  | .vpi q a env b _, .vpi q' a' env' b' _ => match qEq q q' with
     | .false => .vempty 0
     | .true => .vsigma .qz (vEqType a' a)
       (.cons (.vlam env' b') (.cons (.vlam env b) (.cons a' (.cons a .nil))))
-      (.piq .qz (.var 3) (.eqTy (.app (.var 3) (.coe (.var 4) (.var 5) (.var 1) (.var 0))) (.app (.var 2) (.var 0))))
-  | .vsigma q a env b, .vsigma q' a' env' b' => match qEq q q' with
+      (.sorted (.lnum 0) (.piq .qz (.var 3) (.eqTy (.app (.var 3) (.coe (.var 4) (.var 5) (.var 1) (.var 0))) (.app (.var 2) (.var 0))))) (.some (.lnum 0))
+  | .vsigma q a env b _, .vsigma q' a' env' b' _ => match qEq q q' with
     | .false => .vempty 0
     | .true => .vsigma .qz (vEqType a a')
       (.cons (.vlam env' b') (.cons (.vlam env b) (.cons a' (.cons a .nil))))
-      (.piq .qz (.var 4) (.eqTy (.app (.var 3) (.var 0)) (.app (.var 2) (.coe (.var 5) (.var 4) (.var 1) (.var 0)))))
+      (.sorted (.lnum 0) (.piq .qz (.var 4) (.eqTy (.app (.var 3) (.var 0)) (.app (.var 2) (.coe (.var 5) (.var 4) (.var 1) (.var 0)))))) (.some (.lnum 0))
   | .vsort l, .vsort l' => match lvlEquiv l l' with
     | .true => .vunit 0
     | .false => match lvlClosed l with
@@ -902,16 +962,26 @@ def vEqTypeW : Val → Val → Val
     | .true => .vempty 0
     | .false => .vne (.heqTy X Y) .snil
 -- `cast A B e t` (`vCast`)
-def vCast (A B e t : Val) : Val := vCastW (whnf A) (whnf B) e t
+def vCast (A B e t : Val) : Val := vCastP (whnf A) (whnf B) e t
+-- between propositions, `e` is an equivalence
+def vCastP (A B e t : Val) : Val := match propSort A with
+  | .some pa => match pa with
+    | .true => match propSort B with
+      | .some pb => match pb with
+        | .true => vapp (vfst e) t
+        | .false => vCastW A B e t
+      | .none => vCastW A B e t
+    | .false => vCastW A B e t
+  | .none => vCastW A B e t
 def vCastW : Val → Val → Val → Val → Val
-  | .vpi q1 a1 env1 b1, .vpi q2 a2 env2 b2, e, t => match qEq q1 q2 with
-    | .false => .vne (.hcast (.vpi q1 a1 env1 b1) (.vpi q2 a2 env2 b2) e t) .snil
+  | .vpi q1 a1 env1 b1 s1, .vpi q2 a2 env2 b2 s2, e, t => match qEq q1 q2 with
+    | .false => .vne (.hcast (.vpi q1 a1 env1 b1 s1) (.vpi q2 a2 env2 b2 s2) e t) .snil
     | .true =>
       let c : Tm := .coe (.var 5) (.var 6) (.fst (.var 2)) (.var 0);
       .vlam (.cons t (.cons e (.cons (.vlam env2 b2) (.cons (.vlam env1 b1) (.cons a2 (.cons a1 .nil))))))
         (.coe (.app (.var 4) c) (.app (.var 3) (.var 0)) (.app (.snd (.var 2)) (.var 0)) (.app (.var 1) c))
-  | .vsigma q1 a1 env1 b1, .vsigma q2 a2 env2 b2, e, t => match qEq q1 q2 with
-    | .false => .vne (.hcast (.vsigma q1 a1 env1 b1) (.vsigma q2 a2 env2 b2) e t) .snil
+  | .vsigma q1 a1 env1 b1 s1, .vsigma q2 a2 env2 b2 s2, e, t => match qEq q1 q2 with
+    | .false => .vne (.hcast (.vsigma q1 a1 env1 b1 s1) (.vsigma q2 a2 env2 b2 s2) e t) .snil
     | .true =>
       let t1 := vfst t;
       let c1 := vCast a1 a2 (vfst e) t1;
@@ -935,9 +1005,9 @@ def quote : Nat → Val → Tm
       | .zero => .prop
       | .succ m => .univ m
     | .none => .sortL l
-  | l, .vpi q a env b => piTm q (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b))
+  | l, .vpi q a env b s => sortedTm s (piTm q (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b)))
   | l, .vlam env b => .lam (quote (l + 1) (eval (.cons (fresh l) env) b))
-  | l, .vsigma q a env b => sigmaTm q (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b))
+  | l, .vsigma q a env b s => sortedTm s (sigmaTm q (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b)))
   | l, .vpair a b => .pair (quote l a) (quote l b)
   | _, .vunit l => match l with
     | .zero => .ptrue
@@ -1030,6 +1100,7 @@ def show (names : List String) : Nat → Tm → String
   | l, .app f a => String.append (String.append "(" (show names l f)) (String.append " " (String.append (show names l a) ")"))
   | l, .letE t v b => String.append (String.append "let " (nameAt names l))
       (String.append (String.append " := " (show names l v)) (String.append "; " (show names (l + 1) b)))
+  | l, .sorted _ t => show names l t
   | l, .ann t ty => String.append (String.append "(" (show names l t)) (String.append " : " (String.append (show names l ty) ")"))
   | l, .piq q a b => String.append (String.append (String.append "(" (nameAt names l))
       (String.append (showQ q) (show names l a))) (String.append ") → " (show names (l + 1) b))
@@ -1194,13 +1265,13 @@ mutual
 def typeOfNe : TCtx → Head → Spine → Val
   | c, h, .snil => headType c h
   | c, x, .sapp sp a => match whnf (typeOfNe c x sp) with
-    | .vpi _ _ env cod => eval (.cons a env) cod
+    | .vpi _ _ env cod _ => eval (.cons a env) cod
     | ty => ty
   | c, x, .sfst sp => match whnf (typeOfNe c x sp) with
-    | .vsigma _ a _ _ => a
+    | .vsigma _ a _ _ _ => a
     | ty => ty
   | c, x, .ssnd sp => match whnf (typeOfNe c x sp) with
-    | .vsigma _ _ env b => eval (.cons (vfst (.vne x sp)) env) b
+    | .vsigma _ _ env b _ => eval (.cons (vfst (.vne x sp)) env) b
     | ty => ty
   | _, x, .secase sp env m _ => eval (.cons (.vne x sp) env) m
   | _, _, .sabsurd _ m => m
@@ -1214,12 +1285,12 @@ def typeOfNe : TCtx → Head → Spine → Val
 -- the level of the universe a type lives in
 def sortOf (c : TCtx) (ty : Val) : Option Lvl := sortOfW c (whnf ty)
 def sortOfW : TCtx → Val → Option Lvl
-  | c, .vpi _ a env b => match sortOf c a with
+  | c, .vpi _ a env b _ => match sortOf c a with
     | .some i => match sortOf (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b) with
       | .some j => .some (.limax i j)
       | .none => .none
     | .none => .none
-  | c, .vsigma _ a env b => match sortOf c a with
+  | c, .vsigma _ a env b _ => match sortOf c a with
     | .some i => match sortOf (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b) with
       | .some j => .some (.lmax i j)
       | .none => .none
@@ -1255,8 +1326,8 @@ end
 mutual
 def isProp (c : TCtx) (ty : Val) : Bool := isPropW c (whnf ty)
 def isPropW : TCtx → Val → Bool
-  | c, .vpi _ a env b => isProp (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b)
-  | c, .vsigma _ a env b => Bool.and (isProp c a) (isProp (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b))
+  | c, .vpi _ a env b _ => isProp (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b)
+  | c, .vsigma _ a env b _ => Bool.and (isProp c a) (isProp (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b))
   | _, .vunit l => Nat.beq l 0
   | _, .vempty l => Nat.beq l 0
   | _, .vsort _ => .false
@@ -1272,7 +1343,7 @@ end
 -- the quantity binders of the method types: this kernel has no quantities, so `Unit`
 def qTy : Tm := .unit 0
 -- `P : Desc I → Sort v`
-def delimMotiveTy (l v : Nat) (I : Val) : Val := .vpi .qw (.vdesc l I) .nil (sortTm v)
+def delimMotiveTy (l v : Nat) (I : Val) : Val := .vpi .qw (.vdesc l I) .nil (sortTm v) .none
 -- the types of `mret`, `marg`, `mrec`, `mhrec` (`delimMethodTys` in `Conv.lean`)
 def delimMret (l : Nat) (I P : Val) : Val :=
   -- i0 P1 I2
@@ -1356,7 +1427,7 @@ def scaseMethodTy (l : Nat) (I D P sz : Val) : Val :=
       (tApps (.var 4) (args2 (.var 1) (.con (.var 0)))))))
 
 -- `S : I → Type l`, the states of a coiteration (and `A`, the seeds of a corecursion)
-def coitStateTy (l : Nat) (I : Val) : Val := .vpi .qw I .nil (.univ l)
+def coitStateTy (l : Nat) (I : Val) : Val := .vpi .qw I .nil (.univ l) .none
 -- `step : (i : I) → S i → ⟦D⟧ S i`
 def coitStepTy (l : Nat) (I D S : Val) : Val :=
   -- i0 S1 D2 I3 ; s0 i1 S2 D3 I4
@@ -1392,8 +1463,8 @@ def valSame : Nat → Val → Val → Option Nat
         | .true => envSame n e e'
         | .false => .none
       | _ => .none
-    | .vpi q x e t => match b with
-      | .vpi q' x' e' t' => match Bool.and (qEq q q') (tmEq t t') with
+    | .vpi q x e t _ => match b with
+      | .vpi q' x' e' t' _ => match Bool.and (qEq q q') (tmEq t t') with
         | .true => andSame (valSame n x x') (fun k => envSame k e e')
         | .false => .none
       | _ => .none
@@ -1457,15 +1528,15 @@ def conv : TCtx → Val → Val → Val → Bool
   -- of the bodies, at a Σ type of the components, checks it again, and asking at every
   -- level made long Π types quadratic)
   | c, ty, a, b => match (match whnf ty with
-      | .vpi _ _ _ _ => Bool.false
-      | .vsigma _ _ _ _ => Bool.false
+      | .vpi _ _ _ _ _ => Bool.false
+      | .vsigma _ _ _ _ _ => Bool.false
       | w => isPropW c w) with
     | .true => .true
     | .false => match whnf ty with
-      | .vpi _ dom env cod =>
+      | .vpi _ dom env cod _ =>
         let x := fresh (TCtx.lvl c);
         conv (TCtx.bind c dom) (eval (.cons x env) cod) (vapp a x) (vapp b x)
-      | .vsigma _ ta env tb =>
+      | .vsigma _ ta env tb _ =>
         Bool.and (conv c ta (vfst a) (vfst b)) (conv c (eval (.cons (vfst a) env) tb) (vsnd a) (vsnd b))
       | .vunit _ => .true
       | .vsort _ => convTy c a b
@@ -1474,14 +1545,14 @@ def conv : TCtx → Val → Val → Val → Bool
           | .vdret j => conv c I i j
           | _ => .false
         | .vdarg S E => match whnf b with
-          | .vdarg S' E' => Bool.and (convTy c S S') (conv c (.vpi .qw S (.cons I .nil) (.descr l (.var 1))) E E')
+          | .vdarg S' E' => Bool.and (convTy c S S') (conv c (.vpi .qw S (.cons I .nil) (.descr l (.var 1)) .none) E E')
           | _ => .false
         | .vdrec j E => match whnf b with
           | .vdrec j' E' => Bool.and (conv c I j j') (conv c (.vdesc l I) E E')
           | _ => .false
         | .vdhrec H j E => match whnf b with
           | .vdhrec H' j' E' => Bool.and (convTy c H H')
-              (Bool.and (conv c (.vpi .qw H (.cons I .nil) (.var 1)) j j') (conv c (.vdesc l I) E E'))
+              (Bool.and (conv c (.vpi .qw H (.cons I .nil) (.var 1) .none) j j') (conv c (.vdesc l I) E E'))
           | _ => .false
         | _ => convNe c a b
       | .vmu l I D i _ => match whnf a with
@@ -1515,9 +1586,9 @@ def lazyDelta : TCtx → Val → Val → Bool
   | _, _, _ => .false
 def convTyW : TCtx → Val → Val → Bool
   --<sol
-  | c, .vpi q a e b, .vpi q' a' e' b' => Bool.and (qEq q q') (Bool.and (convTy c a a')
+  | c, .vpi q a e b _, .vpi q' a' e' b' _ => Bool.and (qEq q q') (Bool.and (convTy c a a')
       (convTy (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) e) b) (eval (.cons (fresh (TCtx.lvl c)) e') b')))
-  | c, .vsigma q a e b, .vsigma q' a' e' b' => Bool.and (qEq q q') (Bool.and (convTy c a a')
+  | c, .vsigma q a e b _, .vsigma q' a' e' b' _ => Bool.and (qEq q q') (Bool.and (convTy c a a')
       (convTy (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) e) b) (eval (.cons (fresh (TCtx.lvl c)) e') b')))
   | _, .vsort l, .vsort l' => lvlEquiv l l'
   | _, .vunit l, .vunit l' => Nat.beq l l'
@@ -1558,7 +1629,7 @@ def convHead : TCtx → Head → Head → Bool
 def convSpine : TCtx → Head → Spine → Spine → Bool
   | _, _, .snil, .snil => .true
   | c, x, .sapp r a, .sapp r' b => Bool.and (convSpine c x r r') (match whnf (typeOfNe c x r) with
-    | .vpi _ dom _ _ => conv c dom a b
+    | .vpi _ dom _ _ _ => conv c dom a b
     | _ => .false)
   | c, x, .sfst r, .sfst r' => convSpine c x r r'
   | c, x, .ssnd r, .ssnd r' => convSpine c x r r'
@@ -1610,18 +1681,18 @@ def subTy (c : TCtx) (A B : Val) : Bool := match whnf A with
     | .vnu l' I' D' i' s' => Bool.and (Bool.and (Nat.beq l l') (sizeLe c s' s))
         (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D') (conv c I i i')))
     | B' => convTy c (.vnu l I D i s) B'
-  | .vpi q a1 e1 b1 => match whnf B with
-    | .vpi q' a2 e2 b2 =>
+  | .vpi q a1 e1 b1 _ => match whnf B with
+    | .vpi q' a2 e2 b2 _ =>
       let x := fresh (TCtx.lvl c);
-      Bool.and (Bool.or (qEq q q') (isProp c (.vpi q a1 e1 b1))) (Bool.and (subTy c a2 a1)
+      Bool.and (Bool.or (qEq q q') (isProp c (.vpi q a1 e1 b1 .none))) (Bool.and (subTy c a2 a1)
         (subTy (TCtx.bind c a2) (eval (.cons x e1) b1) (eval (.cons x e2) b2)))
-    | B' => convTy c (.vpi q a1 e1 b1) B'
-  | .vsigma q a1 e1 b1 => match whnf B with
-    | .vsigma q' a2 e2 b2 =>
+    | B' => convTy c (.vpi q a1 e1 b1 .none) B'
+  | .vsigma q a1 e1 b1 _ => match whnf B with
+    | .vsigma q' a2 e2 b2 _ =>
       let x := fresh (TCtx.lvl c);
       Bool.and (qEq q q') (Bool.and (subTy c a1 a2)
         (subTy (TCtx.bind c a1) (eval (.cons x e1) b1) (eval (.cons x e2) b2)))
-    | B' => convTy c (.vsigma q a1 e1 b1) B'
+    | B' => convTy c (.vsigma q a1 e1 b1 .none) B'
   | .vsizeLt sz => match whnf B with
     | .vsize => .true
     | .vsizeLt t => sizeLe c sz t
@@ -1681,10 +1752,17 @@ def infer : TCtx → Tm → TyRes
   | c, .piq _ a b => former c a b .true
   | c, .sigma a b => former c a b .false
   | c, .sigmaq _ a b => former c a b .false
+  | c, .sorted l t => match infer c t with
+    | .ok ty u => match ty with
+      | .vsort l' => match lvlEquiv l l' with
+        | .true => .ok ty u
+        | .false => .err "internal error: a type marked with the wrong sort"
+      | _ => .err "internal error: a sort given to a term that is not a type"
+    | r => r
   | _, .lam _ => .err "cannot infer the type of a λ; add a type ascription"
   | c, .app f a => match infer c f with
     | .ok fty uf => match whnf fty with
-      | .vpi q dom env cod => match check (erasedIf q c) a dom with
+      | .vpi q dom env cod _ => match check (erasedIf q c) a dom with
         -- (the argument is evaluated only if the codomain mentions it: `List.cons x rest`
         -- nested n deep would evaluate the rest at every level)
         | .ok _ ua => .ok (eval (.cons (match usesVar 0 cod with
@@ -1703,14 +1781,14 @@ def infer : TCtx → Tm → TyRes
   | _, .pair _ _ => .err "cannot infer the type of a pair; add a type ascription"
   | c, .fst p => match infer c p with
     | .ok ty u => match whnf ty with
-      | .vsigma q a _ _ => match Bool.or (TCtx.erased c) (qle .qo q) with
+      | .vsigma q a _ _ _ => match Bool.or (TCtx.erased c) (qle .qo q) with
         | .true => .ok a u
         | .false => .err "cannot project an erased field"
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   | c, .snd p => match infer c p with
     | .ok ty u => match whnf ty with
-      | .vsigma _ _ env b => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
+      | .vsigma _ _ env b _ => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   | c, .unit n => .ok (.vsort (.lnum (n + 1))) (uZeros (TCtx.lvl c))
@@ -1794,7 +1872,7 @@ def infer : TCtx → Tm → TyRes
       | .ok _ _ =>
         let va := eval (TCtx.env c) a;
         -- (b :0 A) → (_ :0 a = b) → Prop
-        let motiveTy : Val := .vpi .qz vA (.cons va (.cons vA .nil)) (.piq .qz (.eq (.var 2) (.var 1) (.var 0)) .prop);
+        let motiveTy : Val := .vpi .qz vA (.cons va (.cons vA .nil)) (.piq .qz (.eq (.var 2) (.var 1) (.var 0)) .prop) .none;
         match check c P motiveTy with
         | .ok _ _ =>
           let vP := eval (TCtx.env c) P;
@@ -2026,18 +2104,18 @@ def check (c : TCtx) (t : Tm) (ty : Val) : TyRes := match checkW c t (whnf ty) w
   | r => r
 def checkW : TCtx → Tm → Val → TyRes
   --<sol
-  | c, .lam b, .vpi q dom env cod =>
+  | c, .lam b, .vpi q dom env cod _ =>
     match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
     | .ok _ u => match popUsage q u with
-      | .some u' => .ok (.vpi q dom env cod) u'
+      | .some u' => .ok (.vpi q dom env cod .none) u'
       | .none => .err "the bound variable is used more than its quantity allows"
     | r => r
   | c, .letE ty v b, T => checkLet c .qw ty v b T
   | c, .letq q ty v b, T => checkLet c q ty v b T
   | c, .star, .vunit n => .ok (.vunit n) (uZeros (TCtx.lvl c))
-  | c, .pair a b, .vsigma q ta env tb => match check c a ta with
+  | c, .pair a b, .vsigma q ta env tb _ => match check c a ta with
     | .ok _ ua => match check c b (eval (.cons (eval (TCtx.env c) a) env) tb) with
-      | .ok _ ub => .ok (.vsigma q ta env tb) (uAdd (uScale q ua) ub)
+      | .ok _ ub => .ok (.vsigma q ta env tb .none) (uAdd (uScale q ua) ub)
       | r => r
     | r => r
   | c, .dret i, .vdesc l I => match check c i I with
@@ -2046,7 +2124,7 @@ def checkW : TCtx → Tm → Val → TyRes
   | c, .darg S E, .vdesc l I => match inferUniv c S with
     | .ok (.vsort lS) _ => match lvlLe lS (.lnum (l + 1)) with
       | .false => .err "a description's field type must fit in its universe"
-      | .true => match check c E (.vpi .qw (eval (TCtx.env c) S) (.cons I .nil) (.descr l (.var 1))) with
+      | .true => match check c E (.vpi .qw (eval (TCtx.env c) S) (.cons I .nil) (.descr l (.var 1)) .none) with
         | .ok _ u => .ok (.vdesc l I) u
         | r => r
     | r => r
@@ -2058,7 +2136,7 @@ def checkW : TCtx → Tm → Val → TyRes
   | c, .dhrec H j E, .vdesc l I => match inferUniv c H with
     | .ok (.vsort lH) _ => match lvlLe lH (.lnum (l + 1)) with
       | .false => .err "a description's branching type must fit in its universe"
-      | .true => match check c j (.vpi .qw (eval (TCtx.env c) H) (.cons I .nil) (.var 1)) with
+      | .true => match check c j (.vpi .qw (eval (TCtx.env c) H) (.cons I .nil) (.var 1) .none) with
         | .ok _ uj => match check c E (.vdesc l I) with
           | .ok _ uE => .ok (.vdesc l I) (uAdd uj uE)
           | r => r

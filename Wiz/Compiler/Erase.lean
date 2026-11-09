@@ -146,7 +146,7 @@ def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   -- the arguments are annotated with their types, so that the kernel can still infer
   -- the places they end up in (the motive applied, a branch under a cast)
   let rec beta : Term R → Term R → List (Term R) → Option (Term R)
-    | .lam _ b, .pi _ _ _ A B, a :: as =>
+    | .lam _ b, .pi _ _ _ A B _, a :: as =>
       let a' := if a matches .var _ | .const .. | .ann .. then a else .ann a A
       beta (b.instantiateAt 0 a') (B.instantiateAt 0 a') as
     | _, _, _ :: _ => none
@@ -231,13 +231,13 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
     | some d => pure (Wiz.eval g [] (d.type.instLevels d.levelParams us))
     | none => throw (.unboundGlobal n)
   | .app f a => match whnf (← quickType ctx f) with
-    | .pi _ _ _ _ cod => pure (Closure.inst g cod (ctx.eval a))
+    | .pi _ _ _ _ cod _ => pure (Closure.inst g cod (ctx.eval a))
     | _ => return (← infer ctx t).1
   | .fst p => match whnf (← quickType ctx p) with
-    | .sigma _ _ A _ => pure A
+    | .sigma _ _ A _ _ => pure A
     | _ => return (← infer ctx t).1
   | .snd p => match whnf (← quickType ctx p) with
-    | .sigma _ _ _ B => pure (Closure.inst g B (vFst (ctx.eval p)))
+    | .sigma _ _ _ B _ => pure (Closure.inst g B (vFst (ctx.eval p)))
     | _ => return (← infer ctx t).1
   | .ann _ ty => pure (ctx.eval ty)
   | .ecase _ m s _ => pure (Closure.inst g (.mk ctx.env m) (ctx.eval s))
@@ -265,11 +265,11 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
   --<sol
   let g := ctx.globals
   match t, whnf ty with
-  | .lam x b, .pi _ _ q dom cod =>
+  | .lam x b, .pi _ _ q dom cod _ =>
     let some p := q.toPoly? | throw (.other "erasure: unknown quantity")
     let b' ← eraseCheck (ctx.bind x p dom) b (Closure.inst g cod (Val.var ctx.lvl))
     return .lam x b'
-  | .pair a b, .sigma _ q A B =>
+  | .pair a b, .sigma _ q A B _ =>
     let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a A
     let b' ← eraseCheck ctx b (Closure.inst g B (ctx.eval a))
     return .obj 0 #[a', b']
@@ -291,13 +291,13 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
   | .dret i, .desc _ I => return .obj 0 #[← eraseCheck ctx i I]
   | .darg _ S D, .desc l I =>
     let D' ← eraseCheck ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S)
-      (.mk [I] (.desc l (.var 1))))
+      (.mk [I] (.desc l (.var 1))) none)
     -- a choice of tag is marked, for `pack`
     return .obj (if whnf (ctx.eval S) matches .enum _ then 4 else 1) #[.erased, D']
   | .drec _ j D, .desc l I =>
     return .obj 2 #[← eraseCheck ctx j I, ← eraseCheck ctx D (.desc l I)]
   | .dhrec _ H j D, .desc l I =>
-    let jTy : VTy R := .pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1))
+    let jTy : VTy R := .pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1)) none
     return .obj 3 #[.erased, ← eraseCheck ctx j jTy, ← eraseCheck ctx D (.desc l I)]
   | .tt, _ => return .erased
   | .letE x q ty' v b, _ =>
@@ -340,7 +340,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
     | .snd p => pure (.proj 1 (← eraseInfer ctx p).1)
     | .split _ s _ _ x y b => do
       let (s', sty) ← eraseInfer ctx s
-      let .sigma _ q A B := whnf sty | throw (.other "erasure: split of a non-pair")
+      let .sigma _ q A B _ := whnf sty | throw (.other "erasure: split of a non-pair")
       let some pq := q.toPoly? | throw (.other "erasure: unknown quantity")
       -- let s := s'; let x := s.0; let y := s.1; b   (b lives under x, y: lift past s)
       let vx := Val.var ctx.lvl
@@ -423,7 +423,7 @@ partial def eraseSpine (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
   let mut fty := hty
   for a in args do
     match whnf fty with
-    | .pi _ _ q dom cod =>
+    | .pi _ _ q dom cod _ =>
       let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a dom
       acc := .app acc a'
       fty := Closure.inst ctx.globals cod (ctx.eval a)

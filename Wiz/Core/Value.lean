@@ -46,9 +46,9 @@ inductive Val (R : Type) where
   /-- `head` followed by the eliminations in `spine`, innermost first -/
   | neutral (head : Head R) (spine : Array (Elim R))
   | sort (level : Level)
-  | pi (x : Name) (bi : BinderInfo) (q : Val R) (dom : Val R) (cod : Closure R)
+  | pi (x : Name) (bi : BinderInfo) (q : Val R) (dom : Val R) (cod : Closure R) (s : Option Level)
   | lam (x : Name) (body : Closure R)
-  | sigma (x : Name) (q : Val R) (fst : Val R) (snd : Closure R)
+  | sigma (x : Name) (q : Val R) (fst : Val R) (snd : Closure R) (s : Option Level)
   | pair (a b : Val R)
   | unit (level : Level)
   | tt

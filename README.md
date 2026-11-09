@@ -253,6 +253,17 @@ irrelevant**, so conversion at a proposition always succeeds. **Regularity**,
 `cast A A e t ≡ t`, is a conversion rule (not an evaluation rule), which makes `J`
 compute on `refl`.
 
+**Propositions inside types.** Two propositions are equal when equivalent, whatever
+their shapes: `True = (True → True)` holds. So equality of types can't compare a
+proposition by its shape either, even as the domain of a function type in `Type`:
+comparing `(True → Unit) = ((True → True) → Unit)` domain by domain once proved `False`
+(`transp` carries the first equation to the second). Type equality first asks each side
+whether it is a proposition (`propSort?`): two propositions compare by equivalence, a
+proposition and another type are different, and only other types compare by shape. A
+`Π` or `Σ` can't tell by itself (`(x : A) → B` is a proposition when `B` is), so it
+carries its sort (the elaborator writes it, the kernel checks it); without one, type
+equality waits. A cast between propositions applies the equivalence.
+
 Stuck equations, casts and proofs are new neutral heads (`Head.eq`, `Head.cast`,
 `Head.refl`, …). Some results of the computation rules need new binders. Values can't
 contain Lean functions, so those are closures over small term templates (see

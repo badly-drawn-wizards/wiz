@@ -90,13 +90,13 @@ partial def term : Term R → Sx
   | .var i => node "var" [nat i]
   | .const n us => node "const" [str n, list (us.map level)]
   | .sort l => node "sort" [level l]
-  | .pi x b q A B => node "pi" [str x, bi b, term q, term A, term B]
+  | .pi x b q A B s => node "pi" [str x, bi b, term q, term A, term B, optLevel s]
   | .lam x b => node "lam" [str x, term b]
   | .app f a => node "app" [term f, term a]
   | .letE x q t v b => node "let" [str x, term q, term t, term v, term b]
   | .ann t ty => node "ann" [term t, term ty]
   | .mvar m => node "mvar" [nat m]
-  | .sigma x q a b => node "sigma" [str x, term q, term a, term b]
+  | .sigma x q a b s => node "sigma" [str x, term q, term a, term b, optLevel s]
   | .pair a b => node "pair" [term a, term b]
   | .fst t => node "fst" [term t]
   | .snd t => node "snd" [term t]
@@ -139,6 +139,9 @@ partial def term : Term R → Sx
   | .natLit n => node "nat" [nat n]
   | .natOp op as => node "natOp" [str op, list (as.toList.map term)]
 where
+  optLevel : Option Level → Sx
+    | none => .a "none"
+    | some l => node "some" [level l]
   hint : Option (Name × List Level × List (Term R)) → Sx
     | none => .a "none"
     | some (n, us, as) => node "hint" [str n, list (us.map level), list (as.map term)]
@@ -184,17 +187,22 @@ partial def dterm : Sx → Option (Term R)
       | .l #[.a "hint", .a nm, us, as] => do
         some (some (nm, ← (← items? us).toList.mapM dlevel, ← (← items? as).toList.mapM dterm))
       | _ => none
+    let olv (i : Nat) : Option (Option Level) :=
+      match x i with
+      | .a "none" => some none
+      | .l #[.a "some", l] => (dlevel l).map some
+      | _ => none
     match tag with
     | "var" => return .var (← n 1)
     | "const" => return .const (← s 1) (← (← items? (x 2)).toList.mapM dlevel)
     | "sort" => return .sort (← lv 1)
-    | "pi" => return .pi (← s 1) (← dbi (x 2)) (← t 3) (← t 4) (← t 5)
+    | "pi" => return .pi (← s 1) (← dbi (x 2)) (← t 3) (← t 4) (← t 5) (← olv 6)
     | "lam" => return .lam (← s 1) (← t 2)
     | "app" => return .app (← t 1) (← t 2)
     | "let" => return .letE (← s 1) (← t 2) (← t 3) (← t 4) (← t 5)
     | "ann" => return .ann (← t 1) (← t 2)
     | "mvar" => return .mvar (← n 1)
-    | "sigma" => return .sigma (← s 1) (← t 2) (← t 3) (← t 4)
+    | "sigma" => return .sigma (← s 1) (← t 2) (← t 3) (← t 4) (← olv 5)
     | "pair" => return .pair (← t 1) (← t 2)
     | "fst" => return .fst (← t 1)
     | "snd" => return .snd (← t 1)
@@ -340,7 +348,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
-def salt : UInt64 := hash "wiz-cache-2"
+def salt : UInt64 := hash "wiz-cache-3"
 
 /-- Elaborate `input` (like `Query.elaborate`), reading and writing `dir`. Returns the
 final state and how many commands came from the disk cache. -/

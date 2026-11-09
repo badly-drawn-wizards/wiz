@@ -85,6 +85,23 @@ def vAbsurd (m : Val R) : Val R → Val R
   | .neutral h sp => .neutral h (sp.push (.absurd m))
   | _ => panic! "vAbsurd: ill-typed"
 
+/-- `(a → b) × (b → a)`: equality of propositions (propositional extensionality) -/
+def vIff (a b : Val R) : Val R :=
+  .sigma "_" (.qlit 0) (.pi "_" .default (.qlit 0) a (.mk [b] (.var 1)) (some 0))
+    (.mk [a, b] (.pi "_" .default (.qlit 0) (.var 2) (.var 2) (some 0))) (some 0)
+
+/-- Is this type (in weak head normal form) a proposition? `none` when its sort can't be
+seen: a neutral, or a `Π`/`Σ` without a sort or with one that depends on a universe
+parameter. Type equality needs to know: two propositions are equal when equivalent,
+whatever their shapes (`True = (True → True)`), and comparing them by shape instead
+proved `False` (a proposition can be the domain of a function type in `Type`). -/
+def propSort? : Val R → Option Bool
+  | .pi _ _ _ _ _ (some s) | .sigma _ _ _ _ (some s) | .unit s | .empty s =>
+    if s.equiv 0 then some true else if s.isNeverZero then some false else none
+  | .sort _ | .qty | .enum _ | .desc .. | .mu .. | .nu .. | .size | .sizeLt _ => some false
+  | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
+  | _ => none
+
 mutual
 
 /-- **Exercise 1.1.** Evaluate a term in an environment.
@@ -119,13 +136,13 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .natLit n => .natLit n
   | .natOp op args => vNatOp g op (args.map (eval g env))
   | .sort l => .sort l
-  | .pi x bi q dom cod => .pi x bi (eval g env q) (eval g env dom) (.mk env cod)
+  | .pi x bi q dom cod s => .pi x bi (eval g env q) (eval g env dom) (.mk env cod) s
   | .lam x body => .lam x (.mk env body)
   | .app f a => vApp g (eval g env f) (eval g env a)
   | .letE _ _ _ val body => eval g (eval g env val :: env) body
   | .ann tm _ => eval g env tm
   | .mvar m => .neutral (.mvar m) #[]
-  | .sigma x q a b => .sigma x (eval g env q) (eval g env a) (.mk env b)
+  | .sigma x q a b s => .sigma x (eval g env q) (eval g env a) (.mk env b) s
   | .pair a b => .pair (eval g env a) (eval g env b)
   | .fst t => vFst (eval g env t)
   | .snd t => vSnd (eval g env t)
@@ -185,14 +202,14 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .natOp op args => vNatOp g op (args.map (eval g env))
   --| | .const n us => if let some v := vBuiltin? g n then v else sorry
   --| | .sort l => sorry
-  --| | .pi x bi q dom cod => sorry
+  --| | .pi x bi q dom cod s => sorry
   --| | .lam x body => sorry
   --| | .app f a => sorry
   --| | .letE _ _ _ val body => sorry
   --| | .ann tm _ => sorry
   --| | .mvar m => .neutral (.mvar m) #[]
   --| -- Exercise 4.3
-  --| | .sigma x q a b => sorry
+  --| | .sigma x q a b s => sorry
   --| | .pair a b => sorry
   --| | .fst t => sorry
   --| | .snd t => sorry
@@ -503,16 +520,16 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   --<sol
   let v (i : Nat) : Term R := .var i
   match A with
-  | .pi x _ _ A₁ B =>
+  | .pi x _ _ A₁ B _ =>
     -- (x :0 A₁) → (B x ∋ a x = b x); env: b, a, B
-    .pi x .default (.qlit 0) A₁ (.mk [b, a, .lam x B] (.eq (.app (v 3) (v 0)) (.app (v 2) (v 0)) (.app (v 1) (v 0))))
-  | .sigma x _ A₁ B =>
+    .pi x .default (.qlit 0) A₁ (.mk [b, a, .lam x B] (.eq (.app (v 3) (v 0)) (.app (v 2) (v 0)) (.app (v 1) (v 0)))) (some 0)
+  | .sigma x _ A₁ B _ =>
     -- env (inside the Σ, after `e`): b, a, B, A₁
     let P : Term R := .lam "y" (.lam "_" (.eqTy (.app (v 5) (.fst (v 4))) (.app (v 5) (v 1))))
     let apB : Term R := .transp (v 4) (.fst (v 2)) P (.reflTy (.app (v 3) (.fst (v 2)))) (.fst (v 1)) (v 0)
     let body : Term R := .eq (.app (v 3) (.fst (v 1)))
       (.cast (.app (v 3) (.fst (v 2))) (.app (v 3) (.fst (v 1))) apB (.snd (v 2))) (.snd (v 1))
-    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁] body)
+    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁] body) (some 0)
   | .unit _ | .empty _ => .unit 0
   | .enum _ => match a, b with
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
@@ -523,7 +540,7 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   | .sort l =>
     if l.equiv 0 then
       -- (a → b) × (b → a)
-      .sigma "_" (.qlit 0) (.pi "_" .default (.qlit 0) a (.mk [b] (v 1))) (.mk [a, b] (.pi "_" .default (.qlit 0) (v 2) (v 2)))
+      vIff a b
     else if l.isNeverZero then vEqType g a b
     else .neutral (.eq A a b) #[]
   | _ => .neutral (.eq A a b) #[]
@@ -555,16 +572,22 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
   let canonical : Val R → Bool
     | .pi .. | .sigma .. | .sort _ | .unit _ | .empty _ | .enum _ | .desc .. | .mu .. | .nu .. => true
     | _ => false
+  -- propositions are equal when equivalent; a proposition is never a type of another sort
+  let pX := propSort? X
+  let pY := propSort? Y
+  if pX == some true && pY == some true then vIff X Y else
+  if pX.isNone || pY.isNone then .neutral (.eqTy X Y) #[] else
+  if pX != pY then .empty 0 else
   match X, Y with
-  | .pi _ _ q A B, .pi _ _ q' A' B' =>
+  | .pi _ _ q A B _, .pi _ _ q' A' B' _ =>
     if sameQty q q' == some false then .empty 0 else if sameQty q q' == none then .neutral (.eqTy X Y) #[] else
     -- env (inside the Σ, after `e`): B', B, A', A; inside the Π add `x`
     .sigma "e" (.qlit 0) (vEqType g A' A) (.mk [.lam "x" B', .lam "x" B, A', A]
-      (.pi "x" .default (.qlit 0) (v 3) (.eqTy (.app (v 3) (.cast (v 4) (v 5) (v 1) (v 0))) (.app (v 2) (v 0)))))
-  | .sigma _ q A B, .sigma _ q' A' B' =>
+      (.pi "x" .default (.qlit 0) (v 3) (.eqTy (.app (v 3) (.cast (v 4) (v 5) (v 1) (v 0))) (.app (v 2) (v 0))) (some 0))) (some 0)
+  | .sigma _ q A B _, .sigma _ q' A' B' _ =>
     if sameQty q q' == some false then .empty 0 else if sameQty q q' == none then .neutral (.eqTy X Y) #[] else
     .sigma "e" (.qlit 0) (vEqType g A A') (.mk [.lam "x" B', .lam "x" B, A', A]
-      (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0))))))
+      (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0)))) (some 0))) (some 0)
   | .sort u, .sort w | .unit u, .unit w | .empty u, .empty w => levels u w
   | .enum ls, .enum ls' => if ls.length == ls'.length then .unit 0 else .empty 0
   | .desc .., .desc .. | .mu .., .mu .. | .nu .., .nu .. => .neutral (.eqTy X Y) #[]
@@ -590,14 +613,16 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   --<sol
   let v (i : Nat) : Term R := .var i
   let stuck : Val R := .neutral (.cast A B e t) #[]
+  -- between propositions, `e` is an equivalence
+  if propSort? A == some true && propSort? B == some true then vApp g (vFst e) t else
   match A, B with
-  | .pi x _ q A₁ B₁, .pi _ _ q' A₂ B₂ =>
+  | .pi x _ q A₁ B₁ _, .pi _ _ q' A₂ B₂ _ =>
     if sameQty q q' != some true then stuck else
     -- env: t, e, B₂, B₁, A₂, A₁; index 0 is the new `x`
     let c : Term R := .cast (v 5) (v 6) (.fst (v 2)) (v 0)
     .lam x (.mk [t, e, .lam x B₂, .lam x B₁, A₂, A₁]
       (.cast (.app (v 4) c) (.app (v 3) (v 0)) (.app (.snd (v 2)) (v 0)) (.app (v 1) c)))
-  | .sigma _ q A₁ B₁, .sigma _ q' A₂ B₂ =>
+  | .sigma _ q A₁ B₁ _, .sigma _ q' A₂ B₂ _ =>
     if sameQty q q' != some true then stuck else
     let t₁ := vFst t
     let c₁ := vCast g A₁ A₂ (vFst e) t₁
@@ -667,9 +692,9 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .sfix lv I D v P f s i =>
         .sfix lv (quote g l I) (quote g l D) v (quote g l P) (quote g l f) (quote g l s) (quote g l i) acc
   | .sort k => .sort k
-  | .pi x bi q a b => .pi x bi (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
+  | .pi x bi q a b s => .pi x bi (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l))) s
   | .lam x b => .lam x (quote g (l + 1) (Closure.inst g b (Val.var l)))
-  | .sigma x q a b => .sigma x (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l)))
+  | .sigma x q a b s => .sigma x (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l))) s
   | .pair a b => .pair (quote g l a) (quote g l b)
   | .unit k => .unit k
   | .tt => .tt

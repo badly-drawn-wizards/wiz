@@ -32,7 +32,7 @@ private def v (i : Nat) : Term R := .var i
 private def apps (f : Term R) (as : List (Term R)) : Term R := as.foldl .app f
 private def lams (xs : List Name) (b : Term R) : Term R := xs.foldr .lam b
 /-- Binders inside templates are unrestricted: the rig's default quantity. -/
-private def pi (x : Name) (a b : Term R) : Term R := .pi x .default (.qlit QuantitySyntax.explicitDefault) a b
+private def pi (x : Name) (a b : Term R) : Term R := .pi x .default (.qlit QuantitySyntax.explicitDefault) a b none
 
 /-- `fun I D X i => ⟦D⟧ X i` for `D : Desc.{l} I`. -/
 def interpTm (l : Level) : Term R :=
@@ -40,14 +40,15 @@ def interpTm (l : Level) : Term R :=
   -- ctx: D0 I1
   let P := .lam "_" (pi "X" (pi "_" (v 2) tyL) (pi "i" (v 3) tyL))
   -- i0 X1 j2 D3 I4
-  let mret := lams ["j", "X", "i"] (.sigma "_" (.qlit 0) (.eq (v 4) (v 2) (v 0)) (.unit (.succ l)))
+  -- (the motive puts every method's result in `Sort (l+1)`: that is each `Σ`'s sort)
+  let mret := lams ["j", "X", "i"] (.sigma "_" (.qlit 0) (.eq (v 4) (v 2) (v 0)) (.unit (.succ l)) (some (.succ l)))
   -- i0 X1 ih2 E3 S4 q5
-  let marg := lams ["q", "S", "E", "ih", "X", "i"] (.sigma "s" (v 5) (v 4) (apps (v 3) [v 0, v 2, v 1]))
+  let marg := lams ["q", "S", "E", "ih", "X", "i"] (.sigma "s" (v 5) (v 4) (apps (v 3) [v 0, v 2, v 1]) (some (.succ l)))
   -- i0 X1 ih2 E3 j4 q5
-  let mrec := lams ["q", "j", "E", "ih", "X", "i"] (.sigma "_" (v 5) (.app (v 1) (v 4)) (apps (v 3) [v 2, v 1]))
+  let mrec := lams ["q", "j", "E", "ih", "X", "i"] (.sigma "_" (v 5) (.app (v 1) (v 4)) (apps (v 3) [v 2, v 1]) (some (.succ l)))
   -- i0 X1 ih2 E3 j4 H5 q6
   let mhrec := lams ["q", "H", "j", "E", "ih", "X", "i"]
-    (.sigma "_" (v 6) (pi "h" (v 5) (.app (v 2) (.app (v 5) (v 0)))) (apps (v 3) [v 2, v 1]))
+    (.sigma "_" (v 6) (pi "h" (v 5) (.app (v 2) (.app (v 5) (v 0)))) (apps (v 3) [v 2, v 1]) (some (.succ l)))
   lams ["I", "D"] (.delim (.succ (.succ l)) P mret marg mrec mhrec (v 0))
 
 private def interpApp (l : Level) (I E X i : Term R) : Term R := apps (interpTm l) [I, E, X, i]
@@ -65,12 +66,13 @@ def allTm (l v' : Level) : Term R :=
   let marg := lams ["q", "S", "E", "ih", "X", "P", "i", "xs"] (apps (v 4) [.fst (v 0), v 3, v 2, v 1, .snd (v 0)])
   -- xs0 i1 P2 X3 ih4 E5 j6 q7
   let mrec := lams ["q", "j", "E", "ih", "X", "P", "i", "xs"]
-    (.sigma "_" (.qlit QuantitySyntax.explicitDefault) (apps (v 2) [v 6, .fst (v 0)]) (apps (v 5) [v 4, v 3, v 2, .snd (v 1)]))
+    (.sigma "_" (.qlit QuantitySyntax.explicitDefault) (apps (v 2) [v 6, .fst (v 0)]) (apps (v 5) [v 4, v 3, v 2, .snd (v 1)])
+      (some (.max (.succ l) v')))
   -- xs0 i1 P2 X3 ih4 E5 j6 H7 q8
   let mhrec := lams ["q", "H", "j", "E", "ih", "X", "P", "i", "xs"]
     (.sigma "_" (.qlit QuantitySyntax.explicitDefault)
       (pi "h" (v 7) (apps (v 3) [.app (v 7) (v 0), .app (.fst (v 1)) (v 0)]))
-      (apps (v 5) [v 4, v 3, v 2, .snd (v 1)]))
+      (apps (v 5) [v 4, v 3, v 2, .snd (v 1)]) (some (.max (.succ l) v')))
   lams ["I", "D"] (.delim (.max (.succ (.succ l)) (.succ v')) P mret marg mrec mhrec (v 0))
   --|ex
   --| sorry

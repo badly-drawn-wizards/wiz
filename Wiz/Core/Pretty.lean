@@ -71,7 +71,7 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .scofix _ _ _ A f s i a => app "scofix" [A, f, s, i, a]
   | .qlit r => QuantitySyntax.display r
   | .sort l => paren (prec > 1022 && !atomicSort l) (showSort l)
-  | .pi x bi q dom cod =>
+  | .pi x bi q dom cod _ =>
     if bi == .default && isDefaultQ .default q && !cod.hasVar 0 then
       paren (prec > 25) s!"{dom.prettyPrec names 26} → {cod.prettyPrec ("_" :: names) 25}"
     else
@@ -94,7 +94,7 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
     paren (prec > 0)
       s!"let {qtyPrefix names .default q}{x'} : {ty.prettyPrec names 0} := {val.prettyPrec names 0}; {body.prettyPrec (x' :: names) 0}"
   | .ann tm ty => s!"({tm.prettyPrec names 0} : {ty.prettyPrec names 0})"
-  | .sigma x q a b =>
+  | .sigma x q a b _ =>
     if isDefaultQ .default q && !b.hasVar 0 then
       paren (prec > 35) s!"{a.prettyPrec names 36} × {b.prettyPrec ("_" :: names) 35}"
     else

@@ -345,7 +345,7 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
       | none => readbackData ty v
     else readbackData ty v
   | .mu .., v => readbackData ty v
-  | .sigma _ _ A B, v =>
+  | .sigma _ _ A B _, v =>
     let a' := readback A (v.field 0)
     .pair a' (readback (Closure.inst g B (eval g [] a')) (v.field 1))
   | .enum ls, .obj t _ => .tag ls t

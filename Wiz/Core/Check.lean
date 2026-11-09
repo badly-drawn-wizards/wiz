@@ -238,6 +238,13 @@ def popUsage (x : Name) (q : QPoly R) : Usage R → TCM (Usage R)
   --| | u => sorry
   --sol>
 
+/-- A `Π`/`Σ`'s sort, when it gives one, must be its sort: type equality trusts it to
+tell propositions from other types. -/
+def checkSortNote (s : Option Level) (l : Level) : TCM Unit := do
+  if let some s := s then
+    unless s.equiv l do
+      throw (.other s!"internal error: a type marked as in sort {s} is in sort {l}")
+
 mutual
 
 /-- **Exercise 1.6.** Check `t` against the type `ty`. Implement the `lam` and `letE`
@@ -249,7 +256,7 @@ of the expected one.)
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, whnf ty with
   --<sol
-  | .lam x body, .pi _ _ q dom cod => do
+  | .lam x body, .pi _ _ q dom cod _ => do
     let q ← qtyPoly ctx q
     let u ← check (ctx.bind x q dom) body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
     popUsage x q u
@@ -261,7 +268,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let ub ← check (ctx.define x q vty (ctx.eval val)) body ty
     let ub ← popUsage x q ub
     pure (q • uv + ub)
-  | .pair a b, .sigma _ q A B => do
+  | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
     let ua ← check ctx a A
     let ub ← check ctx b (Closure.inst ctx.globals B (ctx.eval a))
@@ -279,7 +286,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let lS ← checkType ctx S
     -- fields may live in a smaller universe (the payload Σ takes the max)
     unless Level.le lS (.succ l) do throw (.other "a description's field type must fit in its universe")
-    check ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S) (.mk [I] (.desc l (.var 1))))
+    check ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S) (.mk [I] (.desc l (.var 1))) none)
   | .drec q j D, .desc l I => do
     let _ ← checkQty ctx q
     let uj ← check ctx j I
@@ -290,7 +297,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let _ ← checkQty ctx q
     let lH ← checkType ctx H
     unless Level.le lH (.succ l) do throw (.other "a description's branching type must fit in its universe")
-    let uj ← check ctx j (.pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1)))
+    let uj ← check ctx j (.pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1)) none)
     let uD ← check ctx D (.desc l I)
     pure (uj + uD)
   | .con x, .mu l I D i s _ => do
@@ -307,10 +314,10 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
       throw (.typeMismatch (ctx.showVal ty) (ctx.showVal ty'))
     pure u
   --|ex
-  --| | .lam x body, .pi _ _ q dom cod => sorry
+  --| | .lam x body, .pi _ _ q dom cod _ => sorry
   --| | .letE x q tty val body, _ => sorry
   --| -- Exercise 4.7a
-  --| | .pair a b, .sigma _ q A B => sorry
+  --| | .pair a b, .sigma _ q A B _ => sorry
   --| | .tt, .unit _ => sorry
   --| -- Exercise 4.20
   --| | .dret i, .desc _ I => sorry
@@ -344,23 +351,24 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       pure (Wiz.eval ctx.globals [] (d.type.instLevels d.levelParams us), Usage.zeros ctx.lvl)
     | none => throw (.unboundGlobal n)
   | .sort l => pure (.sort (.succ l), Usage.zeros ctx.lvl)
-  | .pi x _ q dom cod => do
+  | .pi x _ q dom cod s => do
     let q ← checkQty ctx q
     let i ← checkType ctx dom
     let j ← checkType (ctx.bind x q (ctx.eval dom)) cod
+    checkSortNote s (.imax i j)
     pure (.sort (.imax i j), Usage.zeros ctx.lvl)
   --|ex
   --| | .var ix => sorry
   --| | .const n us => sorry
   --| | .sort l => sorry
-  --| | .pi x _ q dom cod => sorry
+  --| | .pi x _ q dom cod s => sorry
   --sol>
   | .lam .. => throw (.cannotInfer (ctx.showTerm t))
   --<sol
   | .app f a => do
     let (fty, uf) ← infer ctx f
     match whnf fty with
-    | .pi _ _ q dom cod =>
+    | .pi _ _ q dom cod _ =>
       let q ← qtyPoly ctx q
       let ua ← check (if q.isConst? == some 0 then { ctx with erased := true } else ctx) a dom
       pure (Closure.inst ctx.globals cod (ctx.eval a), uf + q • ua)
@@ -378,15 +386,16 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let vty := ctx.eval tty
     let u ← check ctx tm vty
     pure (vty, u)
-  | .sigma x q a b => do
+  | .sigma x q a b s => do
     let q ← checkQty ctx q
     let i ← checkType ctx a
     let j ← checkType (ctx.bind x q (ctx.eval a)) b
+    checkSortNote s (.max i j)
     pure (.sort (.max i j), Usage.zeros ctx.lvl)
   | .fst t => do
     let (ty, u) ← infer ctx t
     match whnf ty with
-    | .sigma x q A _ =>
+    | .sigma x q A _ _ =>
       let q ← qtyPoly ctx q
       unless ctx.erased || QPoly.le (QPoly.const 1) q do
         throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
@@ -395,13 +404,13 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .snd t => do
     let (ty, u) ← infer ctx t
     match whnf ty with
-    | .sigma _ _ _ B => pure (Closure.inst ctx.globals B (vFst (ctx.eval t)), u)
+    | .sigma _ _ _ B _ => pure (Closure.inst ctx.globals B (vFst (ctx.eval t)), u)
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .split q s z m x y b => do
     let q ← checkQty ctx q
     let (sty, us) ← infer ctx s
     match whnf sty with
-    | .sigma _ p A B =>
+    | .sigma _ p A B _ =>
       let p ← qtyPoly ctx p
       let _ ← checkType (ctx.bind z [] sty) m
       let mc : Closure R := .mk ctx.env m
@@ -464,7 +473,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let va := ctx.eval a
     -- (b :0 A) → (_ :0 a = b) → Prop, with env [a, A]
     let motiveTy : Val R := .pi "b" .default (.qlit 0) vA
-      (.mk [va, vA] (.pi "_" .default (.qlit 0) (.eq (.var 2) (.var 1) (.var 0)) (.sort 0)))
+      (.mk [va, vA] (.pi "_" .default (.qlit 0) (.eq (.var 2) (.var 1) (.var 0)) (.sort 0) none)) none
     let _ ← check ctx P motiveTy
     let vP := ctx.eval P
     let g := ctx.globals
@@ -601,7 +610,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .letE x q tty val body => sorry
   --| | .ann tm tty => sorry
   --| -- Exercise 4.7b
-  --| | .sigma x q a b => sorry
+  --| | .sigma x q a b s => sorry
   --| | .fst t => sorry
   --| | .snd t => sorry
   --| | .split q s z m x y b => sorry

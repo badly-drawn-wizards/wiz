@@ -130,7 +130,7 @@ partial def applyInstance (ctx : LocalCtx R) (goal : Term R) (goalTy : VTy R) (e
   let mut subgoals := #[]
   repeat
     match ← forceMeta ty with
-    | .pi x bi _ dom cod =>
+    | .pi x bi _ dom cod _ =>
       let m ← freshMeta ctx s!"instance argument {x}"
       if bi == .instImplicit then subgoals := subgoals.push (m, dom)
       t := .app t m

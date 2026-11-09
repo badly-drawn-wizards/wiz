@@ -116,7 +116,7 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
     | some s => pure (← Elab.checkType ctx s).1
     | none => freshMeta ctx "the type of this definition"
   let val ← valStx.mapM fun s => do Elab.check ctx s (← evalIn ctx ty)
-  let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b) ty
+  let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val := val.map fun v => tele.foldr (fun (x, _, _, _) b => Term.lam x b) v
   solveSortConstraints
   let ty ← zonk 0 ty
@@ -141,7 +141,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let info := cmd.info
   let g ← getGlobals
   let w : R := QuantitySyntax.explicitDefault
-  let .pi x0 bi0 q0 A0 B := ty | throwAt info "internal error: sized definition"
+  let .pi x0 bi0 q0 A0 B s0 := ty | throwAt info "internal error: sized definition"
   -- the outer `fun x0 =>`
   let vA0 ← evalIn ctx A0
   let .mu l I D idx _ hint ← force vA0 | throwAt info "internal error: sized argument"
@@ -156,19 +156,19 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
     | throwAt info "could not determine the universe of the result"
   -- F := fun s rec i x' => let f := …; fun rest => tree
   let fty := sfixFunTy g l I D vP w
-  let .pi _ _ _ _ c_s ← force fty | throwAt info "internal error"
+  let .pi _ _ _ _ c_s _ ← force fty | throwAt info "internal error"
   let ctxS := c1.bind "s" .size
   let sv := Val.var c1.lvl
   let afterS ← instM c_s sv
-  let .pi _ _ _ recTy c_rec ← force afterS | throwAt info "internal error"
+  let .pi _ _ _ recTy c_rec _ ← force afterS | throwAt info "internal error"
   let ctxR := ctxS.bind "rec" recTy
   let recV := Val.var ctxS.lvl
   let afterRec ← instM c_rec recV
-  let .pi _ _ _ iTy c_i ← force afterRec | throwAt info "internal error"
+  let .pi _ _ _ iTy c_i _ ← force afterRec | throwAt info "internal error"
   let ctxI := ctxR.bind "i" iTy
   let iV := Val.var ctxR.lvl
   let afterI ← instM c_i iV
-  let .pi _ _ _ xTy c_x ← force afterI | throwAt info "internal error"
+  let .pi _ _ _ xTy c_x _ ← force afterI | throwAt info "internal error"
   -- keep the nominal display (the match compiler finds `T` through it)
   let xTy := match xTy with
     | .mu l' I' D' i' s' _ => Val.mu l' I' D' i' s' hint
@@ -183,7 +183,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let hintT := hint.map fun (n, us, as) => (n, us, as.map (quote g (L + 2)))
   let fTyTm : Term R := .pi "j" .implicit (.qlit 0) (.sizeLt sT)
     (.pi "y" .default (.qlit w) (.mu l (q ctxX I |>.lift 1) (q ctxX D |>.lift 1) (q ctxX idx |>.lift 1) (.var 0) hintT)
-      ((Term.app (Term.app ((P.lift (L - c1.lvl)).lift 2) .tt) (.var 0))))
+      ((Term.app (Term.app ((P.lift (L - c1.lvl)).lift 2) .tt) (.var 0))) none) none
   -- β-reduce `P () y` (the kernel can't infer the type of an applied lambda)
   let fTyTm := quote g L (← evalIn ctxX fTyTm)
   let fValTm : Term R := .lam "j" (.lam "y" (.app (.app (.app (recT.lift 2) (.var 1)) .tt) (.var 0)))
@@ -195,7 +195,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let mut names : List Name := []
   let n := (clauses.head?.map (·.pats.length)).getD 1
   for k in [1:n] do
-    let .pi x _ _ A Bc ← force goal | throwAt info s!"{name} takes fewer than {n} arguments"
+    let .pi x _ _ A Bc _ ← force goal | throwAt info s!"{name} takes fewer than {n} arguments"
     let x := if x == "_" then s!"a{k}" else x
     vars := vars ++ [ctx'.lvl]
     names := names ++ [x]
@@ -208,7 +208,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let sfixT : Term R := .sfix l (q c1 I) (q c1 D) vlev P F sizeVarT .tt (.var 0)
   solveSortConstraints
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (.lam x0 sfixT)
-  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b) (Term.pi x0 bi0 q0 A0 B)
+  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) (Term.pi x0 bi0 q0 A0 B s0)
   let val ← zonk 0 val
   ensureNoMVars val info
   pure (fullTy, val)
@@ -233,7 +233,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let mut vars : List Lvl := []
   let mut names : List Name := []
   for i in [0:n] do
-    let .pi x _ _ A B ← force tyv | throwAt tyStx.info s!"{name} takes fewer than {n} arguments"
+    let .pi x _ _ A B _ ← force tyv | throwAt tyStx.info s!"{name} takes fewer than {n} arguments"
     let x := if x == "_" then s!"a{i}" else x
     vars := vars ++ [ctx'.lvl]
     names := names ++ [x]
@@ -268,7 +268,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let body ← compileMatch ctx' (perm vars) clauses tyv rc true
   solveSortConstraints
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body)
-  let fullTy := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b) ty
+  let fullTy := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val ← zonk 0 val
   ensureNoMVars val info
   -- for the compiler: the same equations with direct recursion (the definition, as an
@@ -307,7 +307,7 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
   let explicit := (tele.toList.zipIdx.filter fun ((_, bi, _, _), _) => bi == .default)
   let w : Term R := .qlit QuantitySyntax.explicitDefault
   let stateTy : Term R := explicit.zipIdx.foldr (fun (((x, _, _, _), k), j) acc =>
-    .sigma x w ((q ctx.lvl ctx.types[ctx.lvl - k - 1]!).lift j) acc) (.unit (.succ l))
+    .sigma x w ((q ctx.lvl ctx.types[ctx.lvl - k - 1]!).lift j) acc none) (.unit (.succ l))
   let vS ← evalIn ctx stateTy
   -- the step function's context: i, s, then the explicit binders re-bound from s
   let mut sctx := (ctx.bind "i" I).bind "s" vS
@@ -342,9 +342,9 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
       -- the observation's type at our parameters: {Δ} → T Δ → F
       let mut oty : VTy R := eval g [] (od.type.instLevels od.levelParams us)
       for a in args do
-        let .pi _ _ _ _ cod ← force oty | throwAt info "internal error: observation type"
+        let .pi _ _ _ _ cod _ ← force oty | throwAt info "internal error: observation type"
         oty ← instM cod a
-      let .pi _ _ _ _ cod ← force oty | throwAt info "internal error: observation type"
+      let .pi _ _ _ _ cod _ ← force oty | throwAt info "internal error: observation type"
       let F ← instM cod (Val.var 0)
       comps := comps ++ [← Elab.check sctx rhs F]
   let payload : Term R := comps.foldr .pair (.pair .tt .tt)
@@ -368,7 +368,7 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
   let init : Term R := (explicit.map fun ((_, _, _, _), k) => (.var (ctx.lvl - k - 1) : Term R)).foldr .pair .tt
   let coit : Term R := .coit l (q ctx.lvl I) (q ctx.lvl D) Sfun step (q ctx.lvl i) init
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) coit
-  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b) ty
+  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
   let val ← zonk 0 val
   ensureNoMVars val info
   pure (fullTy, val)
@@ -417,7 +417,7 @@ def classMethods (sDecl : Decl R) (levelParams : List Name) : List (Decl R) := I
     | n + 1, .lam _ b => stripLams n b
     | _, t => t
   let rec fieldsOf : Term R → List (Name × Term R × Term R)
-    | .sigma x q A rest => (x, q, A) :: fieldsOf rest
+    | .sigma x q A rest _ => (x, q, A) :: fieldsOf rest
     | _ => []
   let fields := fieldsOf (stripLams nΔ (sDecl.value.getD .tt))
   let proj (i : Nat) (t : Term R) : Term R := .fst ((List.range i).foldl (fun t _ => .snd t) t)
@@ -431,7 +431,7 @@ def classMethods (sDecl : Decl R) (levelParams : List Name) : List (Decl R) := I
     let mut A' := A.lift 1 k
     for i in (List.range k).reverse do
       A' := A'.instantiateAt 0 (proj i (.var i))
-    let type := implicitΔ.foldr (fun (y, bi, q, B) acc => .pi y bi q B acc) (.pi "self" .instImplicit w Capp A')
+    let type := implicitΔ.foldr (fun (y, bi, q, B) acc => .pi y bi q B acc none) (.pi "self" .instImplicit w Capp A' none)
     let value := Δ.foldr (fun (y, _, _, _) acc => .lam y acc) (.lam "self" (proj k (.var 0)))
     let d : Decl R := { name := C ++ "." ++ x, levelParams, type, value := some value }
     out := out ++ [d]
@@ -508,12 +508,12 @@ partial def inhabitedTy (g : Globals R) (lvl fuel : Nat) (ty : Val R) (hyps : Li
   -- (the argument types are checked only shallowly: this search runs over all globals)
   let rec witness (T : Name) (n : Nat) (v : Val R) : Bool :=
     match whnf v with
-    | .pi _ _ _ dom cod =>
+    | .pi _ _ _ dom cod _ =>
       inhabitedTy g (lvl + n + 1) (min (fuel - 1) 2) dom hyps && witness T (n + 1) (Closure.inst g cod (Val.var (lvl + n)))
     | v => headOf v == some T
   -- (only constants whose type visibly ends in `T …` are evaluated: this runs often)
   let rec resultHead : Term R → Option Name
-    | .pi _ _ _ _ b => resultHead b
+    | .pi _ _ _ _ b _ => resultHead b
     | t => match t.spine.1 with
       | .const n _ => some n
       | _ => none
@@ -526,11 +526,11 @@ partial def inhabitedTy (g : Globals R) (lvl fuel : Nat) (ty : Val R) (hyps : Li
     | .darg _ S E => inh S && fields (vApp g E (Val.var lvl))
     | _ => false
   match whnf ty with
-  | .pi _ _ _ dom cod =>
+  | .pi _ _ _ dom cod _ =>
     inhabitedTy g (lvl + 1) (fuel - 1) (Closure.inst g cod (Val.var lvl)) ((headOf dom).toList ++ hyps)
   | .sort _ | .unit _ | .qty | .size | .desc .. => true
   | .enum ls => !ls.isEmpty
-  | .sigma _ _ A B => inh A && inh (Closure.inst g B (Val.var lvl))
+  | .sigma _ _ A B _ => inh A && inh (Closure.inst g B (Val.var lvl))
   | .mu _ I D _ _ hint =>
     let byCtor := match whnf I, whnf D with
       | .unit _, .darg _ S F => match whnf S with
@@ -872,7 +872,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         if f.variadic || (← get).globals.contains name then continue
         let (some ks, some rk) := (f.params.mapM (kindOf · false), kindOf f.ret true) | continue
         let res := if isPure then tyOf rk else .app (.const "IO" []) (tyOf rk)
-        let ty := ks.foldr (fun k acc => .pi "_" .default w (tyOf k) acc) res
+        let ty := ks.foldr (fun k acc => .pi "_" .default w (tyOf k) acc none) res
         let key : Name := s!"extern:{f.name}:{String.mk ks}:{rk}:{if isPure then "pure" else "io"}:{header}:"
         match addDecl (← get).globals { name, type := ty, value := none } with
         | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
@@ -899,7 +899,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             | .const n _ => if s.foreignTypes.any (·.1 == n) then some 'p' else none
             | _ => none
         let rec gparams : Term R → List (Term R) × Term R
-          | .pi _ _ _ A B => let (ps, r) := gparams B; (A :: ps, r)
+          | .pi _ _ _ A B _ => let (ps, r) := gparams B; (A :: ps, r)
           | t => ([], t)
         let (ps, res) := gparams ty
         let (io, res) := match Term.spine res with
@@ -959,7 +959,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             | .const n _ => if s.foreignTypes.any (·.1 == n) then some 'p' else none
             | _ => none
         let rec params : Term R → List (Term R × Term R) × Term R
-          | .pi _ _ q A B => let (ps, r) := params B; ((q, A) :: ps, r)
+          | .pi _ _ q A B _ => let (ps, r) := params B; ((q, A) :: ps, r)
           | t => ([], t)
         let (ps, res) := params ty
         let (io, res) := match Term.spine res with

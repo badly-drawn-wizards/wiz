@@ -102,7 +102,7 @@ partial def reflect (t : Term R) (depth : Nat) : StateM (Array (Term R × Nat)) 
   | .sort l => match l.toNat? with
     | some n => pure (mkCon 2 [.nat n])
     | none => mkOpaque
-  | .pi x bi q A B =>
+  | .pi x bi q A B _ =>
     pure (mkCon 3 [encodeString x, encodeBool (bi == .implicit), ← reflect q depth, ← reflect A depth,
       ← reflect B (depth + 1)])
   | .lam x b => pure (mkCon 4 [encodeString x, ← reflect b (depth + 1)])
@@ -143,7 +143,7 @@ partial def reify (handles : Array (Term R × Nat)) (v : RVal) (depth : Nat) : E
   | some 3 =>
     let bi : BinderInfo := if decodeBool (v.conField 1) == some true then .implicit else .default
     return .pi (← str (v.conField 0)) bi (← reify handles (v.conField 2) depth)
-      (← reify handles (v.conField 3) depth) (← reify handles (v.conField 4) (depth + 1))
+      (← reify handles (v.conField 3) depth) (← reify handles (v.conField 4) (depth + 1)) none
   | some 4 => return .lam (← str (v.conField 0)) (← reify handles (v.conField 1) (depth + 1))
   | some 5 => return .app (← reify handles (v.conField 0) depth) (← reify handles (v.conField 1) depth)
   | some 6 => return .natLit (← nat (v.conField 0))

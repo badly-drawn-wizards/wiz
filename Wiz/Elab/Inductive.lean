@@ -96,7 +96,7 @@ def ctorDesc (nΔ : Nat) (fields : List (Name × Term R × Term R)) (target : Li
           | throw s!"the recursive field {name} must use the same parameters"
         D := .drec q (tupleTm js) D'
       else D := .darg q F (.lam name D)
-    | (.pi h _ _ H B, []) =>
+    | (.pi h _ _ H B _, []) =>
       match B.spine with
       | (.var i, args) =>
         if i == k + 1 then
@@ -119,7 +119,7 @@ def ctorDesc (nΔ : Nat) (fields : List (Name × Term R × Term R)) (target : Li
 
 /-- Peel a type signature `(ξ₁ : X₁) → … → Type l` into indices and `l`. -/
 def peelSignature : Term R → Except String (List (Name × BinderInfo × Term R × Term R) × Level)
-  | .pi x bi q X B => do
+  | .pi x bi q X B _ => do
     let (xs, l) ← peelSignature B
     pure ((x, bi, q, X) :: xs, l)
   | .sort l => match l with
@@ -131,7 +131,7 @@ def peelSignature : Term R → Except String (List (Name × BinderInfo × Term R
   | _ => throw "the type of an inductive must be a sequence of arrows ending in Type u"
 
 private def pisTm (bs : List (Name × BinderInfo × Term R × Term R)) (b : Term R) : Term R :=
-  bs.foldr (fun (x, bi, q, A) acc => .pi x bi q A acc) b
+  bs.foldr (fun (x, bi, q, A) acc => .pi x bi q A acc none) b
 
 /-- The variables of an `n`-binder telescope, outermost first, seen from `extra` binders deeper. -/
 private def telescopeVars (n extra : Nat) : List (Term R) :=
@@ -155,7 +155,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     | .error e => fail (cmd.getArg 4) e
   let nΞ := Ξ.length
   -- the index type: (ξ₁ : X₁) × … × Unit
-  let I : Term R := Ξ.foldr (fun (x, _, q, X) acc => .sigma x q X acc) (.unit (.succ l))
+  let I : Term R := Ξ.foldr (fun (x, _, q, X) acc => .sigma x q X acc none) (.unit (.succ l))
   -- constructors, elaborated with `T` bound locally
   -- inside the declaration `T` takes the parameters too: `T : Δ → Ξ → Type l`
   let ctxT := ctxΔ.bind T (eval (← getGlobals) [] (pisTm Δ.toList sig))
@@ -290,7 +290,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     let proj : Term R := .fst ((List.range k).foldl (fun t _ => .snd t) (.out (.var 0)))
     let d : Decl R :=
       { name := T ++ "." ++ x, levelParams := levelParams,
-        type := pisTm implicitΔ (.pi "x" .default (.qlit QuantitySyntax.explicitDefault) Tapp (F.lift 1)),
+        type := pisTm implicitΔ (.pi "x" .default (.qlit QuantitySyntax.explicitDefault) Tapp (F.lift 1) none),
         value := some (lamsTm ΔNames (.lam "x" proj)), inline := true }
     decls := decls ++ [d]
     obs := obs ++ [(x, isRec)]
@@ -334,7 +334,7 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     | .ok ([], l) => pure l
     | .ok _ => throwAt (cmd.getArg 4).info "a structure has no indices"
     | .error e => throwAt (cmd.getArg 4).info e
-  let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc) (.unit (.succ l))
+  let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc none) (.unit (.succ l))
   let ΔNames := Δ.toList.map (·.1)
   let n := fs'.size
   let Sapp : Term R := (telescopeVars Δ.size n).foldl .app (.const S us)

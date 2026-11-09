@@ -153,11 +153,11 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
     else goSp (.mvar m') sp
   | .sort l => pure (.sort l)
-  | .pi x bi q a b =>
-    return .pi x bi (← rename m p q) (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod)))
+  | .pi x bi q a b s =>
+    return .pi x bi (← rename m p q) (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod))) s
   | .lam x b => return .lam x (← rename m p.lift (← instM b (Val.var p.cod)))
-  | .sigma x q a b =>
-    return .sigma x (← rename m p q) (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod)))
+  | .sigma x q a b s =>
+    return .sigma x (← rename m p q) (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod))) s
   | .pair a b => return .pair (← rename m p a) (← rename m p b)
   | .unit l => pure (.unit l)
   | .tt => pure .tt
@@ -267,12 +267,12 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   --<sol
   match ← force t, ← force u with
   | .sort a, .sort b => unifyLevel a b
-  | .pi _ bi q a b, .pi _ bi' q' a' b' =>
+  | .pi _ bi q a b _, .pi _ bi' q' a' b' _ =>
     unless bi == bi' do throwAt {} "implicit vs explicit binder mismatch"
     unify l q q'
     unify l a a'
     unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
-  | .sigma _ q a b, .sigma _ q' a' b' =>
+  | .sigma _ q a b _, .sigma _ q' a' b' _ =>
     unify l q q'
     unify l a a'
     unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))

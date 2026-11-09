@@ -36,6 +36,11 @@ partial def zonk (l : Lvl) (t : Term R) : ElabM R (Term R) := do
     | none => return (← args.mapM (zonk l)).foldl .app (.mvar m)
   | _ =>
     let h' ← h.mapChildrenM instLevel (fun k c => zonk (l + k) c)
+    -- a `Π`/`Σ`'s sort that stays unknown is dropped (type equality then waits)
+    let h' := match h' with
+      | .pi x bi q a b (some s) => if s.hasMVar then .pi x bi q a b none else h'
+      | .sigma x q a b (some s) => if s.hasMVar then .sigma x q a b none else h'
+      | _ => h'
     return (← args.mapM (zonk l)).foldl .app h'
 where
   spine : Term R → Array (Term R) → Term R × Array (Term R)
