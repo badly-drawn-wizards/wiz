@@ -16,6 +16,11 @@ An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)
 
 The design decisions taken so far are listed at the top of [ROADMAP.md](ROADMAP.md).
 
+**Reviewing the core?** [docs/CoreSpec.md](docs/CoreSpec.md) states the kernel's calculus
+as inference rules, with the file and line that implements each rule.
+[docs/Status.md](docs/Status.md) says what is proved, what is conjectured, and which
+soundness issues are known, open and fixed.
+
 ## Stage 1: the core kernel
 
 ```
