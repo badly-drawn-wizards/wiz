@@ -677,6 +677,17 @@ partial def checkType (ctx : Ctx R) (a : Term R) : TCM Level := do
 
 end
 
+/-- (D1 experiment, `predicativeProp`) Check a declaration's type, but not the
+predicativity of its outer `Π`s: a theorem quantifying over types is fine in a predicative
+`Prop` too (in a bigger `Prop` or in `Type`; the theorem itself is never used as a proof
+of a proposition at level 0). -/
+partial def declTypeSpine (ctx : Ctx R) : Term R → TCM Unit
+  | .pi x _ q dom cod _ => do
+    let q ← checkQty ctx q
+    let _ ← checkType ctx dom
+    declTypeSpine (ctx.bind x q (ctx.eval dom)) cod
+  | t => do let _ ← checkType ctx t
+
 /-- Type check a declaration and add it to the global environment. -/
 def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   if g.contains d.name then throw (.duplicateDecl d.name)
@@ -686,7 +697,8 @@ def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   if let some u := used.find? (!d.levelParams.contains ·) then
     throw (.other s!"unknown universe level parameter {u} in {d.name}")
   let ctx : Ctx R := { globals := g }
-  let _ ← checkType ctx d.type
+  if g.predicativeProp then declTypeSpine ctx d.type
+  else discard <| checkType ctx d.type
   if let some v := d.value then
     -- usage is the empty vector: a closed term has no locals to misuse
     let _ ← check ctx v (ctx.eval d.type)
