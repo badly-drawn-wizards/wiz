@@ -410,7 +410,19 @@ partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
   let native : Option Nat := if lits.size != args.size then none else natNative? op lits
   match native with
   | some n => .natLit n
-  | none => match (g.builtins.lookup op).bind g.find? with
+  | none =>
+  -- `a - n` with `a` stuck and `n` a numeral: the definition is `pred` applied `n` times
+  -- to `a` (`Nat.subFrom` recurses on the numeral), a stuck term of size `n` built one
+  -- step at a time (`x - 55296` ran out of memory). It stays the stuck application
+  -- instead, compared by its arguments. (Not on a metavariable: it may still compute.)
+  let stuckSub : Bool := op == "nat.sub" && match args.map whnf with
+    | #[.neutral h _, .natLit (_ + 1)] => !(h matches .mvar _)
+    | _ => false
+  if stuckSub then
+    match g.builtins.lookup op with
+    | some n => .neutral (.global n []) (args.map .app)
+    | none => panic! s!"no definition for builtin {op}"
+  else match (g.builtins.lookup op).bind g.find? with
     | some { value := some v, .. } => args.foldl (vApp g) (eval g [] v)
     | _ => panic! s!"no definition for builtin {op}"
 
