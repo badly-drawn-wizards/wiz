@@ -44,7 +44,7 @@ def closed (t : Term R) : B R := fun _ => t
 def app (f : B R) (as : List (B R)) : B R := fun d => as.foldl (fun acc a => .app acc (a d)) (f d)
 def lam (x : Name) (body : B R → B R) : B R := fun d => .lam x (body (bvar d) (d + 1))
 def pi (x : Name) (bi : BinderInfo) (q : B R) (A : B R) (body : B R → B R) : B R :=
-  fun d => .pi x bi (q d) (A d) (body (bvar d) (d + 1))
+  fun d => .pi x bi (q d) (A d) (body (bvar d) (d + 1)) none
 def fst (t : B R) : B R := fun d => .fst (t d)
 def snd (t : B R) : B R := fun d => .snd (t d)
 def pair (a b : B R) : B R := fun d => .pair (a d) (b d)
@@ -78,7 +78,7 @@ end B
 
 /-- Peel a Π-telescope: binders (each in the context of the previous ones) and body. -/
 def peelPis : Term R → List (Name × BinderInfo × Term R × Term R) × Term R
-  | .pi x bi q A b => let (bs, r) := peelPis b; ((x, bi, q, A) :: bs, r)
+  | .pi x bi q A b _ => let (bs, r) := peelPis b; ((x, bi, q, A) :: bs, r)
   | t => ([], t)
 
 open B in
@@ -119,7 +119,7 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
   let recView (A : Term R) : Option (Option (Name × Term R) × List (Term R)) :=
     match Term.spine A with
     | (.const n _, args) => if n == T then some (none, args.drop nΔ) else none
-    | (.pi h _ _ H Bd, []) => match Term.spine Bd with
+    | (.pi h _ _ H Bd _, []) => match Term.spine Bd with
       | (.const n _, args) => if n == T then some (some (h, H), args.drop nΔ) else none
       | _ => none
     | _ => none

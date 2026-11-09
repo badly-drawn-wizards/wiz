@@ -47,8 +47,10 @@ inductive Term (R : Type) where
   `Sort l : Sort (l+1)` only. -/
   | sort (level : Level)
   /-- `(q x : dom) → cod` (or `{q x : dom} → cod`), where `cod` lives under one extra
-  binder -/
-  | pi (x : Name) (bi : BinderInfo) (q : Term R) (dom cod : Term R)
+  binder. `s`, when given, is the sort of the whole type (`imax` of the parts'): type
+  equality compares propositions by logical equivalence, other types by their parts,
+  and needs to know which is which (the kernel checks `s`) -/
+  | pi (x : Name) (bi : BinderInfo) (q : Term R) (dom cod : Term R) (s : Option Level)
   /-- `λ x. body`, where `body` lives under one extra binder -/
   | lam (x : Name) (body : Term R)
   | app (fn arg : Term R)
@@ -59,8 +61,8 @@ inductive Term (R : Type) where
   /-- metavariable number `id` (elaborator only) -/
   | mvar (id : Nat)
   -- Stage 4: structural types. `sigma` binder names double as field names.
-  /-- `(q x : A) × B`: the first component may be used `q` times -/
-  | sigma (x : Name) (q : Term R) (fst snd : Term R)
+  /-- `(q x : A) × B`: the first component may be used `q` times; `s` as for `pi` -/
+  | sigma (x : Name) (q : Term R) (fst snd : Term R) (s : Option Level)
   | pair (a b : Term R)
   | fst (t : Term R)
   | snd (t : Term R)
@@ -181,14 +183,14 @@ child `c`, where `k` is the number of binders the child is under. Generic traver
 don't need a case per constructor. -/
 @[specialize] def mapChildrenM {m : Type → Type} [Monad m] (fl : Level → m Level)
     (f : Nat → Term R → m (Term R)) : Term R → m (Term R)
-  | .pi x bi q a b => return .pi x bi (← f 0 q) (← f 0 a) (← f 1 b)
+  | .pi x bi q a b s => return .pi x bi (← f 0 q) (← f 0 a) (← f 1 b) (← s.mapM fl)
   | .lam x b => return .lam x (← f 1 b)
   | .app a b => return .app (← f 0 a) (← f 0 b)
   | .letE x q t v b => return .letE x (← f 0 q) (← f 0 t) (← f 0 v) (← f 1 b)
   | .ann a b => return .ann (← f 0 a) (← f 0 b)
   | .sort l => return .sort (← fl l)
   | .const n ls => return .const n (← ls.mapM fl)
-  | .sigma x q a b => return .sigma x (← f 0 q) (← f 0 a) (← f 1 b)
+  | .sigma x q a b s => return .sigma x (← f 0 q) (← f 0 a) (← f 1 b) (← s.mapM fl)
   | .pair a b => return .pair (← f 0 a) (← f 0 b)
   | .fst t => return .fst (← f 0 t)
   | .snd t => return .snd (← f 0 t)

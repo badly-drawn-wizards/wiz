@@ -146,7 +146,7 @@ def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   -- the arguments are annotated with their types, so that the kernel can still infer
   -- the places they end up in (the motive applied, a branch under a cast)
   let rec beta : Term R → Term R → List (Term R) → Option (Term R)
-    | .lam _ b, .pi _ _ _ A B, a :: as =>
+    | .lam _ b, .pi _ _ _ A B _, a :: as =>
       let a' := if a matches .var _ | .const .. | .ann .. then a else .ann a A
       beta (b.instantiateAt 0 a') (B.instantiateAt 0 a') as
     | _, _, _ :: _ => none
@@ -231,13 +231,13 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
     | some d => pure (Wiz.eval g [] (d.type.instLevels d.levelParams us))
     | none => throw (.unboundGlobal n)
   | .app f a => match whnf (← quickType ctx f) with
-    | .pi _ _ _ _ cod => pure (Closure.inst g cod (ctx.eval a))
+    | .pi _ _ _ _ cod _ => pure (Closure.inst g cod (ctx.eval a))
     | _ => return (← infer ctx t).1
   | .fst p => match whnf (← quickType ctx p) with
-    | .sigma _ _ A _ => pure A
+    | .sigma _ _ A _ _ => pure A
     | _ => return (← infer ctx t).1
   | .snd p => match whnf (← quickType ctx p) with
-    | .sigma _ _ _ B => pure (Closure.inst g B (vFst (ctx.eval p)))
+    | .sigma _ _ _ B _ => pure (Closure.inst g B (vFst (ctx.eval p)))
     | _ => return (← infer ctx t).1
   | .ann _ ty => pure (ctx.eval ty)
   | .ecase _ m s _ => pure (Closure.inst g (.mk ctx.env m) (ctx.eval s))
@@ -290,7 +290,7 @@ partial def eraseSpine (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
   let mut fty := hty
   for a in args do
     match whnf fty with
-    | .pi _ _ q dom cod =>
+    | .pi _ _ q dom cod _ =>
       let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a dom
       acc := .app acc a'
       fty := Closure.inst ctx.globals cod (ctx.eval a)

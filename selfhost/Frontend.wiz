@@ -188,6 +188,7 @@ def closeG (inline : Bool) (gs : Globals) : Nat → Tm → Tm
   | d, .app f a => .app (closeG inline gs d f) (closeG inline gs d a)
   | d, .letE ty v b => .letE (closeG inline gs d ty) (closeG inline gs d v) (closeG inline gs (d + 1) b)
   | d, .ann t ty => .ann (closeG inline gs d t) (closeG inline gs d ty)
+  | d, .sorted l t => .sorted l (closeG inline gs d t)
   | _, t => t
 
 -- the output of a command, and the globals after it
@@ -238,6 +239,7 @@ def shiftTm (k : Nat) : Nat → Tm → Tm
   | c, .app f a => .app (shiftTm k c f) (shiftTm k c a)
   | c, .letE ty v b => .letE (shiftTm k c ty) (shiftTm k c v) (shiftTm k (c + 1) b)
   | c, .ann t ty => .ann (shiftTm k c t) (shiftTm k c ty)
+  | c, .sorted l t => .sorted l (shiftTm k c t)
   | c, .piq q a b => .piq q (shiftTm k c a) (shiftTm k (c + 1) b)
   | c, .sigmaq q a b => .sigmaq q (shiftTm k c a) (shiftTm k (c + 1) b)
   | c, .sigma a b => .sigma (shiftTm k c a) (shiftTm k (c + 1) b)
@@ -687,6 +689,9 @@ def lowerTm (k : Nat) : Nat → Tm → Option Tm
   | c, .lam b => match lowerTm k (c + 1) b with
     | .some b' => .some (.lam b')
     | .none => .none
+  | c, .sorted l t => match lowerTm k c t with
+    | .some t' => .some (.sorted l t')
+    | .none => .none
   | c, .app f a => match lowerTm k c f with
     | .some f' => match lowerTm k c a with
       | .some a' => .some (.app f' a')
@@ -724,6 +729,7 @@ def mentions (i : Nat) : Tm → Bool
     | .none => .false
   | .pi a b => Bool.or (mentions i a) (mentions i b)
   | .lam b => mentions i b
+  | .sorted _ t => mentions i t
   | .app f a => Bool.or (mentions i f) (mentions i a)
   | .fst t => mentions i t
   | .snd t => mentions i t
@@ -838,8 +844,8 @@ def unifyW (es : ES) (cx : Cx) (a b : Val) : Option ES := match a with
     | _ => unifyS es cx (whnf a) (whnf b)
   | _ => unifyS es cx (whnf a) (whnf b)
 def unifyS (es : ES) (cx : Cx) (a b : Val) : Option ES := match a with
-  | .vpi q A e B => match b with
-    | .vpi q' A' e' B' => match qEq q q' with
+  | .vpi q A e B _ => match b with
+    | .vpi q' A' e' B' _ => match qEq q q' with
       | .true => match unify es cx A A' with
         | .some es1 =>
           let x := fresh (Cx.lvl cx);
@@ -924,6 +930,9 @@ def zonk (es : ES) (d : Nat) (t : Tm) : Option Tm := match metaHead t 0 with
       | .some x' => match zonk es d ty with
         | .some ty' => .some (.ann x' ty')
         | .none => .none
+      | .none => .none
+    | .sorted l x => match zonk es d x with
+      | .some x' => .some (.sorted l x')
       | .none => .none
     -- (the other forms a match or a postponed argument leaves: stage 20a)
     | .sigma a b => match zonk es d a with
@@ -1171,6 +1180,12 @@ def dotCtor (gs : Globals) (es : ES) (ty : Val) (s : Syntax) : Option Syntax :=
 def sortLvl (es : ES) (ty : Val) : Lvl := match whnf (force es ty) with
   | .vsort l => l
   | _ => .lnum 0
+-- `(x : a) → b` with its sort, when both parts' sorts are known (`sorted`)
+def piSorted (es : ES) (a b : Tm) (la lb : Val) : Tm := match whnf (force es la) with
+  | .vsort l1 => match whnf (force es lb) with
+    | .vsort l2 => .sorted (.limax l1 l2) (.pi a b)
+    | _ => .pi a b
+  | _ => .pi a b
 def tailBools : List Bool → List Bool
   | .nil => .nil
   | .cons _ rest => rest
@@ -1491,7 +1506,7 @@ inductive Gen where
 def genBind (es : ES) : Cx → Val → List String → Gen
   | cx, ty, .nil => .mk cx ty
   | cx, ty, .cons x rest => match whnf ty with
-    | .vpi _ dom env cod => genBind es (Cx.bind cx x dom) (eval (.cons (fresh (Cx.lvl cx)) env) cod) rest
+    | .vpi _ dom env cod _ => genBind es (Cx.bind cx x dom) (eval (.cons (fresh (Cx.lvl cx)) env) cod) rest
     | t => .mk cx t
 def dropEnv : Nat → Env → Env
   | .zero, e => e
@@ -1516,7 +1531,7 @@ def isNilCl : List Clause → Bool
 -- `False` from a proof of an equation that computes to it (or to `False × …`)
 partial def toFalse (ty : Val) (t : Tm) : Option Tm := match whnf ty with
   | .vempty _ => .some t
-  | .vsigma _ A _ _ => toFalse A (.fst t)
+  | .vsigma _ A _ _ _ => toFalse A (.fst t)
   | _ => .none
 -- the field variables (from level `d0`, `F` of them) as arguments at depth `D`
 def fieldVarsAt (D d0 : Nat) : Nat → Nat → Tms
@@ -1528,7 +1543,7 @@ def fieldVarsAt (D d0 : Nat) : Nat → Nat → Tms
 def absurdBranch (cx6 : Cx) (np L d d0 F : Nat) (args : Tms) (I idx res : Tm) (MBv : Val) : Option Tm :=
   let D1 := Cx.lvl cx6;
   match whnf MBv with
-  | .vpi _ eTy envE codE =>
+  | .vpi _ eTy envE codE _ =>
     let cxE := Cx.bind cx6 "e✝" eTy;
     let D := D1 + 1;
     let expected' := eval (.cons (fresh D1) envE) codE;
@@ -1690,7 +1705,7 @@ def projT (gs : Globals) (es : ES) (cx : Cx) (bt : Tm) (bty : Val) (f : String) 
   | .vglued (.hconst T _ _ _ _) _ _ => match identHead gs es cx (String.append (String.append T ".") f) with
     | .ok pt pty es3 pm => match insertImplicits gs es3 cx pt pty pm with
       | .ok pt' pty' es4 => match whnf (force es4 pty') with
-        | .vpi _ dom env cod => match unify es4 cx bty dom with
+        | .vpi _ dom env cod _ => match unify es4 cx bty dom with
           | .some es5 => .ok (.app pt' bt) (eval (.cons (eval (TCtx.env (Cx.c cx)) bt) env) cod) es5 .nil
           | .none => .err (String.append "cannot apply the projection " f)
         | _ => .err (String.append "not a projection: " f)
@@ -1741,7 +1756,7 @@ def stringLit (gs : Globals) (es : ES) (cx : Cx) (v : String) : TE :=
 def insertImplicits (gs : Globals) (es : ES) (cx : Cx) (t : Tm) (ty : Val) (m : List Bool) : TE :=
   match m with
   | .cons .true rest => match whnf ty with
-    | .vpi _ dom env cod => match newMeta es cx dom with
+    | .vpi _ dom env cod _ => match newMeta es cx dom with
       | .mk mt es' => insertImplicits gs es' cx (.app t mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) rest
     | _ => .ok t ty es
   | _ => .ok t ty es
@@ -1765,7 +1780,7 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
       | .false => match strEq k "term.arrow" with
         | .true => match inferType gs es cx (kid s 0) with
           | .ok a la es1 => match inferType gs es1 (Cx.bind cx "_" (eval (TCtx.env (Cx.c cx)) a)) (kid s 2) with
-            | .ok b lb es2 => .ok (.pi a b) (.vsort (.limax (sortLvl es2 la) (sortLvl es2 lb))) es2
+            | .ok b lb es2 => .ok (piSorted es2 a b la lb) (.vsort (.limax (sortLvl es2 la) (sortLvl es2 lb))) es2
             | e => e
           | e => e
         | .false => match strEq k "term.depArrow" with
@@ -1818,7 +1833,7 @@ def depPis (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (aStx body : Sy
   | .nil => inferType gs es cx body
   | .cons x rest => match inferType gs es cx aStx with
     | .ok a la es1 => match depPis gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) a)) rest aStx body with
-      | .ok b lb es2 => .ok (.pi a b) (.vsort (.limax (sortLvl es2 la) (sortLvl es2 lb))) es2
+      | .ok b lb es2 => .ok (piSorted es2 a b la lb) (.vsort (.limax (sortLvl es2 la) (sortLvl es2 lb))) es2
       | e => e
     | e => e
 -- the arguments of an application, inserting implicit ones by the mask. A `.c`
@@ -1841,11 +1856,11 @@ def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List B
     | e => e
   | .cons a rest => match m with
     | .cons .true m' => match whnf fty with
-      | .vpi _ dom env cod => match newMeta es cx dom with
+      | .vpi _ dom env cod _ => match newMeta es cx dom with
         | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected
       | _ => .err "too many implicit arguments"
     | _ => match whnf (force es fty) with
-      | .vpi _ dom env cod => match Bool.and (postponable a) (isMetaApp es dom) with
+      | .vpi _ dom env cod _ => match Bool.and (postponable a) (isMetaApp es dom) with
         | .true => match newMeta es cx dom with
           | .mk mt es1 => appArgsT gs es1 cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
               (.cons (.mk a dom mt) post) expected
@@ -1970,7 +1985,7 @@ def scrutLets (gs : Globals) (es : ES) (cx : Cx) : List Syntax → SL
 def checkLams (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (body : Syntax) (ty : Val) : TE := match xs with
   | .nil => checkT gs es cx body ty
   | .cons x rest => match whnf (force es ty) with
-    | .vpi q dom env cod =>
+    | .vpi q dom env cod _ =>
       let cx' := Cx.bind cx x dom;
       match checkLams gs es cx' rest body (eval (.cons (fresh (Cx.lvl cx)) env) cod) with
       | .ok b _ es' => .ok (.lam b) ty es'
@@ -2162,10 +2177,10 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
     -- `rest` and `ih`: the convoy's motive at this constructor's tag
     let bt := whnf (eval (.cons (.vtag nc i) (TCtx.env (Cx.c cx3))) MT);
     let cx5 := match bt with
-      | .vpi _ restTy e1 c1 =>
+      | .vpi _ restTy e1 c1 _ =>
         let cx4 := Cx.bind cx3 "rest✝" restTy;
         match whnf (eval (.cons (fresh (d + 3)) e1) c1) with
-        | .vpi _ ihTy _ _ => Cx.bind cx4 "ihs✝" ihTy
+        | .vpi _ ihTy _ _ _ => Cx.bind cx4 "ihs✝" ihTy
         | _ => Cx.bind cx4 "ihs✝" .vtt
       | _ => Cx.bind (Cx.bind cx3 "rest✝" .vtt) "ihs✝" .vtt;
     let next := fun (es1 : ES) => branches gs mc es1 cx3 expected cols top ihLvls cls k col T np args nidx I idx fam modeB MB0 MB MBv MT G b nc (i + 1) rest;
@@ -2228,7 +2243,7 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
               let curValB : Tm := .coe FiE curTyB tyEq (.var (De - 1 - base));
               let afterE := match modeB with
                 | .true => match whnf MBi with
-                  | .vpi _ eTy envE codE =>
+                  | .vpi _ eTy envE codE _ =>
                     let cxe := Cx.bind cx8 "e✝" eTy;
                     let rem := eval (.cons (fresh (Cx.lvl cx8)) envE) codE;
                     match top with
@@ -2308,6 +2323,7 @@ def inlineTm (gs : Globals) : Tm → Tm
   | .app f a => .app (inlineTm gs f) (inlineTm gs a)
   | .letE ty v b => .letE (inlineTm gs ty) (inlineTm gs v) (inlineTm gs b)
   | .ann t ty => .ann (inlineTm gs t) (inlineTm gs ty)
+  | .sorted l t => .sorted l (inlineTm gs t)
   | .pair a b => .pair (inlineTm gs a) (inlineTm gs b)
   | .fst t => .fst (inlineTm gs t)
   | .snd t => .snd (inlineTm gs t)
@@ -2327,7 +2343,7 @@ inductive Peeled where
 def peelCtx : Nat → TCtx → Val → Peeled
   | .zero, c, v => .mk c v
   | .succ k, c, v => match whnf v with
-    | .vpi _ dom env cod => peelCtx k (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod)
+    | .vpi _ dom env cod _ => peelCtx k (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod)
     | v' => .mk c v'
 def indexIn : List String → String → Nat → Option Nat
   | .nil, _, _ => .none

@@ -103,19 +103,19 @@ partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
   | .app f a => match quickType c f with
     | .some fty => match whnf fty with
       -- (the argument evaluated only if the codomain mentions it, as in the kernel)
-      | .vpi _ _ env cod => .some (eval (.cons (match usesVar 0 cod with
+      | .vpi _ _ env cod _ => .some (eval (.cons (match usesVar 0 cod with
           | .true => eval (TCtx.env c) a
           | .false => .vtt) env) cod)
       | _ => inferTy c t
     | .none => .none
   | .fst p => match quickType c p with
     | .some pty => match whnf pty with
-      | .vsigma _ A _ _ => .some A
+      | .vsigma _ A _ _ _ => .some A
       | _ => inferTy c t
     | .none => .none
   | .snd p => match quickType c p with
     | .some pty => match whnf pty with
-      | .vsigma _ _ env B => .some (eval (.cons (vfst (eval (TCtx.env c) p)) env) B)
+      | .vsigma _ _ env B _ => .some (eval (.cons (vfst (eval (TCtx.env c) p)) env) B)
       | _ => inferTy c t
     | .none => .none
   | .ann _ ty => .some (eval (TCtx.env c) ty)
@@ -245,7 +245,7 @@ def eraseApp (c : TCtx) (t : Tm) : ER := match quickType c (spineHead t) with
 def eraseArgs (c : TCtx) (f : ETm) (fty : Val) : List Tm → ER
   | .nil => .ok f
   | .cons a rest => match whnf fty with
-    | .vpi q dom env cod =>
+    | .vpi q dom env cod _ =>
       let ar : ER := match q with
         | .qz => .ok .erased
         | _ => eraseCheck c a dom;
@@ -577,6 +577,15 @@ def cheapE : ETm → Bool
     | .nil => .true
     | .cons _ _ => .false
   | _ => .false
+-- `f a` with `f` a lambda is a let (strict, as the application was), or `a` put in
+-- place when cheap: a `match` is a method applied to the payload (`m ◾ i payload`), and
+-- the closure built and called for every match was most of the allocation
+def betaE : ETm → ETm → ETm
+  | .lam b, a => match cheapE a with
+    | .true => substE a 0 b
+    | .false => .letE a b
+  | .letE v b, a => .letE v (betaE b (liftE 1 0 a))
+  | f, a => .app f a
 mutual
 def lazyLets : ETm → ETm
   | .letE v b =>
@@ -587,7 +596,7 @@ def lazyLets : ETm → ETm
     -- `let x := memo (λ _. v); b[x ◾ / x]`
     | .false => .letE (.prim "memo" (etms1 (.lam (liftE 1 0 v')))) (substE (.app (.var 0) .erased) 0 (liftE 1 1 b'))
   | .lam b => .lam (lazyLets b)
-  | .app f a => .app (lazyLets f) (lazyLets a)
+  | .app f a => betaE (lazyLets f) (lazyLets a)
   | .obj t fs => .obj t (lazyLetsEs fs)
   | .proj i t => .proj i (lazyLets t)
   | .case s bs => .case (lazyLets s) (lazyLetsEs bs)

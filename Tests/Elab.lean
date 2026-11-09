@@ -220,6 +220,18 @@ def ottGroup : Group where
           ["fun A e f x => f x"] },
     { name := "type equality", run := fun _ =>
         ok "def t : Type = Type := refl Type" },
+    { name := "propositions in a function type's domain compare by equivalence", run := fun _ =>
+        ok "#reduce (True → Unit) = ((True → True) → Unit)"
+          ["(0 e : (0 _ : (0 x : True → True) → True) × ((0 x : True) → True → True)) × ((0 x : True → True) → True)"] },
+    { name := "equivalent propositions of different shapes don't prove False", run := fun _ =>
+        -- `True = (True → True)` at `Prop`, carried into `Type` by congruence; comparing
+        -- the domains by shape made the equation `False`
+        fails ("def apTy (A : Type) (F : A → Type) (a b : A) (e : a = b) : F a = F b :=\n" ++
+          "  transp (fun b _ => F a = F b) (refl (F a)) e\n" ++
+          "def G : Prop → Type := fun X => X → Unit\n" ++
+          "def e : True = (True → True) := ((fun u => fun v => v), (fun f => ()))\n" ++
+          "def bad : G True = G (True → True) := apTy Prop G True (True → True) e\n" ++
+          "def anyType (A : Type) : A := let (x, y) := bad; absurd x") "absurd expects" },
     { name := "equality of proofs is rejected", run := fun _ =>
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
@@ -919,6 +931,8 @@ inductive MTm where
   | scofix (l : Nat) (I D A f s i a : MTm)
   | coit (l : Nat) (I D S st i s : MTm)
   | scase (l : Nat) (I D : MTm) (v : Nat) (P m s i x : MTm)
+  /-- a `Π`/`Σ` with its sort (level `l`) -/
+  | sorted (l : Nat) (t : MTm)
   deriving Inhabited
 
 namespace MTm
@@ -972,6 +986,7 @@ partial def toWiz : MTm → String
   | eqTy A B => s!"(.eqTy {A.toWiz} {B.toWiz})"
   | refl A a => s!"(.eqRefl {A.toWiz} {a.toWiz})"
   | reflTy X => s!"(.tyRefl {X.toWiz})"
+  | sorted l t => s!"(.sorted (.lnum {l}) {t.toWiz})"
   | cast A B e t => s!"(.coe {A.toWiz} {B.toWiz} {e.toWiz} {t.toWiz})"
   | transp A a P p b e => s!"(.subst {A.toWiz} {a.toWiz} {P.toWiz} {p.toWiz} {b.toWiz} {e.toWiz})"
   | desc l I => s!"(.descr {l} {I.toWiz})"
@@ -1011,12 +1026,12 @@ partial def toWiz : MTm → String
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
   | univ n => .sort (Level.ofNat (n + 1))
-  | pi a b => .pi "x" .default (.qlit .many) a.toTerm b.toTerm
+  | pi a b => .pi "x" .default (.qlit .many) a.toTerm b.toTerm none
   | lam b => .lam "x" b.toTerm
   | app f a => .app f.toTerm a.toTerm
   | letE t v b => .letE "x" (.qlit .many) t.toTerm v.toTerm b.toTerm
   | ann t ty => .ann t.toTerm ty.toTerm
-  | sigma a b => .sigma "x" (.qlit .many) a.toTerm b.toTerm
+  | sigma a b => .sigma "x" (.qlit .many) a.toTerm b.toTerm none
   | pair a b => .pair a.toTerm b.toTerm
   | fst p => .fst p.toTerm
   | snd p => .snd p.toTerm
@@ -1034,6 +1049,10 @@ partial def toTerm : MTm → Term ZeroOneMany
   | eqTy A B => .eqTy A.toTerm B.toTerm
   | refl A a => .refl A.toTerm a.toTerm
   | reflTy X => .reflTy X.toTerm
+  | sorted l t => match t.toTerm with
+    | .pi x bi q a b _ => .pi x bi q a b (some (Level.ofNat l))
+    | .sigma x q a b _ => .sigma x q a b (some (Level.ofNat l))
+    | u => u
   | cast A B e t => .cast A.toTerm B.toTerm e.toTerm t.toTerm
   | transp A a P p b e => .transp A.toTerm a.toTerm P.toTerm p.toTerm b.toTerm e.toTerm
   | desc l I => .desc (Level.ofNat l) I.toTerm
@@ -1048,8 +1067,8 @@ partial def toTerm : MTm → Term ZeroOneMany
   | const n ls => .const n (ls.map Level.ofNat)
   | sortParam u => .sort (.param u)
   | sortLv l => .sort l.toLevel
-  | piq q a b => .pi "x" .default (.qlit q) a.toTerm b.toTerm
-  | sigmaq q a b => .sigma "x" (.qlit q) a.toTerm b.toTerm
+  | piq q a b => .pi "x" .default (.qlit q) a.toTerm b.toTerm none
+  | sigmaq q a b => .sigma "x" (.qlit q) a.toTerm b.toTerm none
   | letq q t v b => .letE "x" (.qlit q) t.toTerm v.toTerm b.toTerm
   | size => .size
   | szInf => .szInf
@@ -1070,12 +1089,12 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
     | some (n + 1) => some (univ n)
     | some 0 => some prop
     | _ => none
-  | .pi _ _ (.qlit .many) a b => return pi (← ofTerm a) (← ofTerm b)
-  | .pi _ _ (.qlit q) a b => return piq q (← ofTerm a) (← ofTerm b)
+  | .pi _ _ (.qlit .many) a b _ => return pi (← ofTerm a) (← ofTerm b)
+  | .pi _ _ (.qlit q) a b _ => return piq q (← ofTerm a) (← ofTerm b)
   | .lam _ b => return lam (← ofTerm b)
   | .app f a => return app (← ofTerm f) (← ofTerm a)
-  | .sigma _ (.qlit .many) a b => return sigma (← ofTerm a) (← ofTerm b)
-  | .sigma _ (.qlit q) a b => return sigmaq q (← ofTerm a) (← ofTerm b)
+  | .sigma _ (.qlit .many) a b _ => return sigma (← ofTerm a) (← ofTerm b)
+  | .sigma _ (.qlit q) a b _ => return sigmaq q (← ofTerm a) (← ofTerm b)
   | .pair a b => return pair (← ofTerm a) (← ofTerm b)
   | .fst p => return fst (← ofTerm p)
   | .snd p => return snd (← ofTerm p)
@@ -1149,6 +1168,7 @@ partial def pretty (l : Nat) : MTm → String
   | eqTy A B => s!"EqTy({pretty l A}, {pretty l B})"
   | refl A a => s!"refl({pretty l A}, {pretty l a})"
   | reflTy X => s!"reflTy({pretty l X})"
+  | sorted _ t => pretty l t
   | cast A B e t => s!"cast({pretty l A}, {pretty l B}, {pretty l e}, {pretty l t})"
   | transp A a P p b e => s!"transp({pretty l A}, {pretty l a}, {pretty l P}, {pretty l p}, {pretty l b}, {pretty l e})"
   | desc k I => s!"Desc{k}({pretty l I})"
@@ -1209,10 +1229,21 @@ def natSucc (n : MTm) : MTm := ann (con (pair (tag 2 1) (pair n (pair star star)
 
 def eqRefl' (A a : MTm) : MTm := refl A a
 
+/-- The proof of `False` from equivalent propositions of different shapes: `True = (True
+→ True)` at `Prop`, carried by `transp` to `(True → Unit) = ((True → True) → Unit)`, whose
+first component (the domains' equation) was `False` when domains were compared by shape. -/
+def propShapes : List MTm :=
+  let T1 := sorted 0 (pi ptrue ptrue)
+  let G (X : MTm) := sorted 1 (pi X (unit 0))
+  let e := ann (pair (lam (lam (var 0))) (lam star)) (eq prop ptrue T1)
+  let bad := transp prop ptrue (lam (lam (eqTy (G ptrue) (G (var 1))))) (reflTy (G ptrue)) T1 e
+  let erasedArg (A : MTm) := app (ann (lam star) (piq .zero A (unit 0))) (fst bad)
+  [erasedArg pfalse, erasedArg (eqTy T1 ptrue)]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -1729,6 +1760,11 @@ def selfHostGroup : Group where
     { name := "the self-hosted backend compiles and runs a program", run := fun _ =>
         selfhostCompileRun "import Prelude\npartial def fib : Nat → Nat\n  | 0 => 0\n  | 1 => 1\n  | n + 2 => fib n + fib (n + 1)\npartial def countdown (n : Nat) (acc : List Nat) : List Nat := match n with\n  | 0 => acc\n  | .succ k => countdown k (List.cons n acc)\ndef sum : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + sum xs\ndef fill (a : Array Nat) : Nat → Array Nat\n  | 0 => a\n  | .succ k => fill (Array.push a k) k\nmutual\ninductive Tree where\n  | leaf (n : Nat)\n  | node (ts : Forest)\ninductive Forest where\n  | nil\n  | cons (t : Tree) (ts : Forest)\nend\nmutual\ndef sizeT (t : Tree) : Nat := match t with\n  | .leaf _ => 1\n  | .node ts => sizeF ts\ndef sizeF (f : Forest) : Nat := match f with\n  | .nil => 0\n  | .cons t ts => sizeT t + sizeF ts\nend\ndef main : IO Unit := do\n  IO.println (Nat.toString (fib 20));\n  IO.println (Nat.toString (sum (countdown 100 .nil)));\n  let a := fill Array.empty 1000;\n  IO.println (Nat.toString (Array.size a + Array.getD a 10 0));\n  let m := StrMap.insert (StrMap.insert StrMap.empty (Str.ofString \"a\") 1) (Str.ofString \"b\") 2;\n  IO.println (Nat.toString (StrMap.findD m (Str.ofString \"b\") 0));\n  IO.println (if Nat.blt 3 4 then String.append \"yes, \" \"ünïcode\" else \"no\");\n  IO.println (Nat.toString (sizeT (Tree.node (Forest.cons (Tree.leaf 1) (Forest.cons (Tree.leaf 2) Forest.nil)))));\n  IO.println (Nat.toString (String.length \"hello\"))\n"
           "6765\n5050\n1989\n2\nyes, ünïcode\n2\n5\n" },
+    { name := "both kernels compare propositions by equivalence (and agree on it below)", run := fun _ => do
+        -- the domains' equation is an equivalence, not `False`
+        match MTm.propShapes.map leanVerdict with
+        | ["error", ok] => unless ok != "error" do throw (IO.userError "the equivalence was rejected")
+        | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "the self-hosted frontend checks itself (Lex, Parse, Kernel and Frontend.wiz)", run := fun _ => do
         let src := (← IO.FS.readFile "selfhost/Lex.wiz") ++ "\n" ++ (← IO.FS.readFile "selfhost/Parse.wiz") ++ "\n" ++
           (← IO.FS.readFile "selfhost/Kernel.wiz") ++ "\n" ++ (← IO.FS.readFile "selfhost/Frontend.wiz")

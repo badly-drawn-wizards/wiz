@@ -73,6 +73,23 @@ def vAbsurd (m : Val R) : Val R → Val R
   | .neutral h sp => .neutral h (sp.push (.absurd m))
   | _ => panic! "vAbsurd: ill-typed"
 
+/-- `(a → b) × (b → a)`: equality of propositions (propositional extensionality) -/
+def vIff (a b : Val R) : Val R :=
+  .sigma "_" (.qlit 0) (.pi "_" .default (.qlit 0) a (.mk [b] (.var 1)) (some 0))
+    (.mk [a, b] (.pi "_" .default (.qlit 0) (.var 2) (.var 2) (some 0))) (some 0)
+
+/-- Is this type (in weak head normal form) a proposition? `none` when its sort can't be
+seen: a neutral, or a `Π`/`Σ` without a sort or with one that depends on a universe
+parameter. Type equality needs to know: two propositions are equal when equivalent,
+whatever their shapes (`True = (True → True)`), and comparing them by shape instead
+proved `False` (a proposition can be the domain of a function type in `Type`). -/
+def propSort? : Val R → Option Bool
+  | .pi _ _ _ _ _ (some s) | .sigma _ _ _ _ (some s) | .unit s | .empty s =>
+    if s.equiv 0 then some true else if s.isNeverZero then some false else none
+  | .sort _ | .qty | .enum _ | .desc .. | .mu .. | .nu .. | .size | .sizeLt _ => some false
+  | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
+  | _ => none
+
 mutual
 
 /-- **Exercise 1.1.** Evaluate a term in an environment.
@@ -103,14 +120,14 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .natOp op args => vNatOp g op (args.map (eval g env))
   | .const n us => if let some v := vBuiltin? g n then v else sorry
   | .sort l => sorry
-  | .pi x bi q dom cod => sorry
+  | .pi x bi q dom cod s => sorry
   | .lam x body => sorry
   | .app f a => sorry
   | .letE _ _ _ val body => sorry
   | .ann tm _ => sorry
   | .mvar m => .neutral (.mvar m) #[]
   -- Exercise 4.3
-  | .sigma x q a b => sorry
+  | .sigma x q a b s => sorry
   | .pair a b => sorry
   | .fst t => sorry
   | .snd t => sorry

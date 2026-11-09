@@ -231,6 +231,13 @@ with `q` (using `QPoly.le`), returning the rest. Throw `quantityMismatch` otherw
 def popUsage (x : Name) (q : QPoly R) : Usage R → TCM (Usage R)
   | u => sorry
 
+/-- A `Π`/`Σ`'s sort, when it gives one, must be its sort: type equality trusts it to
+tell propositions from other types. -/
+def checkSortNote (s : Option Level) (l : Level) : TCM Unit := do
+  if let some s := s then
+    unless s.equiv l do
+      throw (.other s!"internal error: a type marked as in sort {s} is in sort {l}")
+
 mutual
 
 /-- **Exercise 1.6.** Check `t` against the type `ty`. Implement the `lam` and `letE`
@@ -241,10 +248,10 @@ of the expected one.)
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, whnf ty with
-  | .lam x body, .pi _ _ q dom cod => sorry
+  | .lam x body, .pi _ _ q dom cod _ => sorry
   | .letE x q tty val body, _ => sorry
   -- Exercise 4.7a
-  | .pair a b, .sigma _ q A B => sorry
+  | .pair a b, .sigma _ q A B _ => sorry
   | .tt, .unit _ => sorry
   -- Exercise 4.20
   | .dret i, .desc _ I => sorry
@@ -271,13 +278,13 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .var ix => sorry
   | .const n us => sorry
   | .sort l => sorry
-  | .pi x _ q dom cod => sorry
+  | .pi x _ q dom cod s => sorry
   | .lam .. => throw (.cannotInfer (ctx.showTerm t))
   | .app f a => sorry
   | .letE x q tty val body => sorry
   | .ann tm tty => sorry
   -- Exercise 4.7b
-  | .sigma x q a b => sorry
+  | .sigma x q a b s => sorry
   | .fst t => sorry
   | .snd t => sorry
   | .split q s z m x y b => sorry
