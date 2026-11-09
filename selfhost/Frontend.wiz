@@ -636,17 +636,28 @@ def dropL {A : Type} : Nat → List A → List A
 -- in) before the kernel checks them.
 
 -- an elaboration context: the kernel's (values, types) and the names
+-- (and the binders' types quoted, latest first, each when first needed: a new
+-- metavariable's type is a Π over the whole context, and quoting every type again for
+-- each one made big definitions run out of memory: stage 20b)
 inductive Cx where
-  | mk (c : TCtx) (sc : Scope)
+  | mk (c : TCtx) (sc : Scope) (tele : List (Unit → Tm))
 def Cx.c : Cx → TCtx
-  | .mk c _ => c
+  | .mk c _ _ => c
 def Cx.sc : Cx → Scope
-  | .mk _ sc => sc
+  | .mk _ sc _ => sc
+def Cx.tele : Cx → List (Unit → Tm)
+  | .mk _ _ t => t
 def Cx.lvl (cx : Cx) : Nat := TCtx.lvl (Cx.c cx)
 def Cx.bind (cx : Cx) (x : String) (ty : Val) : Cx := match cx with
-  | .mk c sc => .mk (TCtx.bind c ty) (Scope.bind sc x)
+  | .mk c sc t =>
+    let d := TCtx.lvl c;
+    .mk (TCtx.bind c ty) (Scope.bind sc x) (.cons (memo (fun _ => quote d ty)) t)
+-- (a `let`'s variable is glued to its value: it quotes back as the variable, so the
+-- metavariables applied to the context don't carry every `let`'s value along)
 def Cx.define (cx : Cx) (x : String) (v ty : Val) : Cx := match cx with
-  | .mk c sc => .mk (TCtx.define c v ty) (Scope.bind sc x)
+  | .mk c sc t =>
+    let d := TCtx.lvl c;
+    .mk (TCtx.define c (.vglued (.hvar d) .snil (memo (fun _ => v))) ty) (Scope.bind sc x) (.cons (memo (fun _ => quote d ty)) t)
 -- the metavariables: the depth each was made at, and its solution (a term at that depth)
 inductive MetaInfo where
   | mk (depth : Nat) (sol : Option Tm)
@@ -669,9 +680,9 @@ def metaId (n : String) : Option Nat := match n with
       | .false => .none
     | _ => .none
 -- the types of the context's variables as a telescope, from level `l` on
-def ctxTele (c : TCtx) (d : Nat) : Nat → Tms
-  | .zero => .tnil
-  | .succ k => .tcons (quote (d - .succ k) (lookup (TCtx.types c) k)) (ctxTele c d k)
+def teleOf : List (Unit → Tm) → Tms → Tms
+  | .nil, acc => acc
+  | .cons t rest, acc => teleOf rest (.tcons (t ()) acc)
 -- a new metavariable of type `A`, as a term: `?mN x₀ … xₙ₋₁`
 inductive MetaR where
   | mk (t : Tm) (es : ES)
@@ -679,7 +690,7 @@ def newMeta (es : ES) (cx : Cx) (A : Val) : MetaR := match es with
   | .mk ms ps =>
     let d := Cx.lvl cx;
     let id := Array.size ms;
-    let ty := piTele (ctxTele (Cx.c cx) d d) (quote d A);
+    let ty := piTele (teleOf (Cx.tele cx) .tnil) (quote d A);
     .mk (tApps (.axiomC (metaName id) ty) (pvars d d)) (.mk (Array.push ms (.mk d .none)) ps)
 
 -- a spine's arguments, first first (`none` if it isn't only applications)
@@ -1663,6 +1674,26 @@ def clausesOf : List Syntax → List Clause
 inductive CE where
   | ok (t : Tm) (es : ES)
   | err (msg : String)
+def lastClause : List Clause → Option Clause
+  | .nil => .none
+  | .cons c rest => match rest with
+    | .nil => .some c
+    | .cons _ _ => lastClause rest
+def one' (c : Clause) : List Clause := .cons c .nil
+def replaceLastRhs (r : Syntax) : List Clause → List Clause
+  | .nil => .nil
+  | .cons (.mk ps bs rhs) rest => match rest with
+    | .nil => one' (.mk ps bs r)
+    | .cons _ _ => .cons (.mk ps bs rhs) (replaceLastRhs r rest)
+def allVarPatsC : List Syntax → Bool
+  | .nil => .true
+  | .cons p rest => Bool.and (isVarPat p) (allVarPatsC rest)
+-- (worth sharing: two clauses or more, the last of variables, with more than a name)
+def shareableLast (cls : List Clause) : Bool := match cls with
+  | .cons _ (.cons _ _) => match lastClause cls with
+    | .some (.mk ps _ rhs) => Bool.and (allVarPatsC ps) (Bool.not (strEq (kindOf rhs) "term.ident"))
+    | .none => .false
+  | _ => .false
 -- the scrutinees of a term `match`, `let`-bound: the context, the columns, the `let`s
 inductive SL where
   | ok (cx : Cx) (cols : List Col) (wrap : Tm → Tm) (es : ES)
@@ -1752,9 +1783,9 @@ def numeral (gs : Globals) (es : ES) (cx : Cx) (n : Nat) : TE := match identHead
     | .err m => .err m
   | .err _ => .err "numerals need Nat.zero and Nat.succ"
 -- a string literal: `String.mk [Char.mk c₁, …]` (stage 19a)
-def charsTm (lcons lnil ch cmk succ zero : Tm) : List Char → Tm
+def charsTm (lcons lnil ch cmk : Tm) (num : Nat → Tm) : List Char → Tm
   | .nil => .app lnil ch
-  | .cons c rest => .app (.app (.app lcons ch) (.app cmk (iterApp succ (Char.code c) zero))) (charsTm lcons lnil ch cmk succ zero rest)
+  | .cons c rest => .app (.app (.app lcons ch) (.app cmk (num (Char.code c)))) (charsTm lcons lnil ch cmk num rest)
 def stringLit (gs : Globals) (es : ES) (cx : Cx) (v : String) : TE :=
   let get := fun (n : String) => match identHead gs es cx n with
     | .ok t _ _ _ => Option.some t
@@ -1767,8 +1798,13 @@ def stringLit (gs : Globals) (es : ES) (cx : Cx) (v : String) : TE :=
           | .some cmk => match get "Nat.succ" with
             | .some sc => match get "Nat.zero" with
               | .some z => match get "String" with
-                | .some st => match v with
-                  | .mk cs => .ok (.app smk (charsTm lcons lnil ch cmk sc z cs)) (eval .nil st) es
+                | .some st =>
+                  -- (the codes in binary, like numerals: stage 20b)
+                  let num := match get "Nat.mul" with
+                    | .some mul => fun (n : Nat) => binNat sc z mul n
+                    | .none => fun (n : Nat) => iterApp sc n z;
+                  match v with
+                  | .mk cs => .ok (.app smk (charsTm lcons lnil ch cmk num cs)) (eval .nil st) es
                 | .none => .err "strings need the Prelude"
               | .none => .err "strings need the Prelude"
             | .none => .err "strings need the Prelude"
@@ -2036,13 +2072,39 @@ def compileM (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
       | .some es' => match zonk es' (Cx.lvl cx') b with
         | .none => .err "could not infer an implicit argument"
         | .some b' => .ok (bindLetsT b' cx binds') es'
-    | .some k =>
-      -- the first split is on the structural column
-      let k' := match top with
-        | .true => match mc with
-          | .mk _ _ p _ _ _ _ _ _ _ => colIndex p cols 0 k
-        | .false => k;
-      splitCol gs mc es cx expected cols top ihLvls cls k'
+    | .some k => match Bool.and (Bool.not top) (shareableLast cls) with
+      -- a last clause of variables, in case analysis: its body is the same in every
+      -- branch it reaches (a variable on the split column stands for the scrutinee), so
+      -- it is elaborated once, `let dflt✝ := …`, and the clause refers to it (stage 20b;
+      -- a match on a type of 70 constructors copied it 70 times)
+      | .true => match lastClause cls with
+        | .some (.mk lpats lbinds lrhs) =>
+          let binds' := List.append lbinds (varBinds lpats cols);
+          let rhs' := rewriteRec mc binds' (ihNamesOf ihLvls binds') lrhs;
+          let cx' := bindCx cx binds';
+          match checkT gs es cx' rhs' expected with
+          | .err m => .err m
+          | .ok b _ es0 => match drain gs es0 with
+            | .none => .err "could not elaborate a constructor argument"
+            | .some es1 => match zonk es1 (Cx.lvl cx') b with
+              | .none => .err "could not infer an implicit argument"
+              | .some b' =>
+                let dv := bindLetsT b' cx binds';
+                let d := Cx.lvl cx;
+                let nm := String.append "dflt✝" (Nat.toString d);
+                let cxD := Cx.define cx nm (eval (TCtx.env (Cx.c cx)) dv) expected;
+                match splitCol gs mc es1 cxD expected cols top ihLvls
+                    (replaceLastRhs (mkNode "term.ident" (one (.ident nm))) cls) k with
+                | .ok body es2 => .ok (.letE (quote d expected) dv body) es2
+                | e => e
+        | .none => splitCol gs mc es cx expected cols top ihLvls cls k
+      | .false =>
+        -- the first split is on the structural column
+        let k' := match top with
+          | .true => match mc with
+            | .mk _ _ p _ _ _ _ _ _ _ => colIndex p cols 0 k
+          | .false => k;
+        splitCol gs mc es cx expected cols top ihLvls cls k'
 -- the index of the column at level `l` (else `dflt`)
 def colIndex (l : Nat) : List Col → Nat → Nat → Nat
   | .nil, _, dflt => dflt
@@ -2416,7 +2478,7 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
       let params := fieldNames ps;
       let n := lenL params;
       let body := kid stx 6;
-      match elabParams gs (Cx.mk empty (Globals.scope gs)) ps with
+      match elabParams gs (Cx.mk empty (Globals.scope gs) .nil) ps with
       | .err m => errStep gs m
       | .ok pts cxP0 => match scrutCols params pts pts (nonAtoms (kids (kid body 1))) with
         | .err m => errStep gs m
@@ -2440,7 +2502,7 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
                       | .none => 0;
                     let R := RE;
                     let mc := MatchCtx.mk f params p n v R R pts pts (paramMask (kids (kid stx 3)));
-                    let cxP := bindParams (Cx.mk empty (Globals.scope gs)) 0 params pts;
+                    let cxP := bindParams (Cx.mk empty (Globals.scope gs) .nil) 0 params pts;
                     -- induction only for a definition that calls itself (a partial one calls
                     -- its axiom); else every split is case analysis (stage 19e)
                     let useInd := match Scope.lookup (Globals.scope gs) f with
@@ -2462,7 +2524,7 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
 -- context (the globals are constants).
 def command (gs : Globals) (stx : Syntax) : Step :=
   --<sol
-  let cx0 := Cx.mk empty (Globals.scope gs);
+  let cx0 := Cx.mk empty (Globals.scope gs) .nil;
   match strEq (kindOf stx) "command.def" with
   | .true => match kid stx 1 with
     | .ident x => match kids (kid stx 4) with
@@ -2926,7 +2988,7 @@ def addAxioms : Globals → List Syntax → AxR
   | gs, .nil => .ok gs
   | gs, .cons d rest => match kid d 1 with
     | .ident f => match kids (kid d 4) with
-      | .cons _ (.cons tyS _) => match teleT gs ES.empty (Cx.mk empty (Globals.scope gs)) (kids (kid d 3)) tyS with
+      | .cons _ (.cons tyS _) => match teleT gs ES.empty (Cx.mk empty (Globals.scope gs) .nil) (kids (kid d 3)) tyS with
         | .err m => .err m
         | .ok ty0 _ es => match zonk es 0 ty0 with
           | .none => .err "could not infer an implicit argument"
@@ -2939,7 +3001,7 @@ def addAxioms : Globals → List Syntax → AxR
 def axiomCmd (gs : Globals) (stx : Syntax) : Step := match addAxioms gs (one stx) with
   | .err m => errStep gs m
   | .ok gs' => match kid stx 1 with
-    | .ident f => match identHead gs' ES.empty (Cx.mk empty (Globals.scope gs')) f with
+    | .ident f => match identHead gs' ES.empty (Cx.mk empty (Globals.scope gs') .nil) f with
       | .ok _ ty _ _ => .mk (String.append (String.append f " : ") (show .nil 0 (quote 0 ty))) gs'
       | .err m => errStep gs m
     | _ => errStep gs "an axiom needs a name"
