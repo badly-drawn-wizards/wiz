@@ -49,9 +49,12 @@ inductive Prim where
   | out
   /-- reached an absurd case -/
   | unreachable
-  /-- `0` for an observed coinductive value, `1` for a `coit`, `2` for an `scofix` (the
-  backend's `out` is written with it) -/
+  /-- `0` for an observed coinductive value, `1` for a `coit`, `2` for an `scofix`, `3`
+  for a lazy cell already observed (the backend's `out` is written with it) -/
   | lazyTag
+  /-- `lazySet x p`: `p`, after overwriting the lazy cell `x` with its payload `p`, so
+  that `out` is memoised (the backend's `out`; the interpreter just returns `p`) -/
+  | lazySet
   /-- `pack D x`: a payload of nested pairs as a flat object (see below) -/
   | pack
   /-- `unpack D v`: a flat object as its payload of nested pairs -/

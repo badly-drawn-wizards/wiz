@@ -650,10 +650,16 @@ def twiceMacro : Macro := fun stx => do
 attribute [macro term.twice] twiceMacro
 "
 
-/-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
-def okLib (input : String) (infos : List String := []) : IO Unit := do
+/-- `import Prelude` and `import Word`. -/
+def preludeLoader : IO (Name → Option String) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let loader : Name → Option String := fun m => if m == "Prelude" then some prelude else none
+  let word ← IO.FS.readFile "lib/Word.wiz"
+  pure fun m => if m == "Prelude" then some prelude else if m == "Word" then some word else none
+
+/-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
+
+def okLib (input : String) (infos : List String := []) : IO Unit := do
+  let loader ← preludeLoader
   let s := runFrontend (R := ZeroOneMany) input { loader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
@@ -735,6 +741,16 @@ def classGroup : Group where
         okLib "import Prelude\nclass Functor (f : Type → Type) where\n  map : {A B : Type} → (A → B) → f A → f B\n#check Functor" ["Functor : (Type → Type) → Type 1"] }
   ]
 
+/-- Memoised streams, observed twice and dropped part-way (no leaks, `#run` and native). -/
+def memoStreamSrc : String :=
+  "import Prelude\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
+  "def nats (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => nats (n + 1)\n" ++
+  "def sumN : Nat → Stream Nat → Nat\n  | .zero, _ => 0\n  | .succ k, s => s.head + sumN k s.tail\n" ++
+  "def twice (s : Stream Nat) : Nat := sumN 100 s + sumN 100 s\n" ++
+  "def partly (s : Stream Nat) : Nat := sumN 100 s + sumN 10 s + s.tail.head\n" ++
+  "def walk : Nat → Stream Nat → Stream Nat\n  | .zero, s => s\n  | .succ k, s => walk k s.tail\n" ++
+  "def main : Nat := twice (nats 0) + partly (nats 0) + (walk 50 (nats 0)).head\n"
+
 def backendGroup : Group where
   name := "backend"
   exercise := "Exercise 8.1"
@@ -757,6 +773,8 @@ def backendGroup : Group where
     { name := "sized recursion", run := fun _ =>
         okLib (runPrelude ++ "#run fib (.succ (.succ (.succ (.succ (.succ .zero)))))")
           [".succ (.succ (.succ (.succ (.succ (.succ (.succ (.succ .zero)))))))"] },
+    { name := "memoised codata, without leaks (also dropped part-way)", run := fun _ =>
+        okLib (memoStreamSrc ++ "#run main") ["14946"] },
     { name := "infinitary data", run := fun _ =>
         okLib (treePrelude ++ "#run Tree.depthAt (.node (fun i => .node (fun j => .leaf))) 3") ["3"] },
     { name := "type class dictionaries", run := fun _ =>
@@ -776,11 +794,166 @@ def backendGroup : Group where
           ["def k x0 x1 :=\n  drop x1\n  ret x0"] }
   ]
 
+/-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
+or two `case`s on a `Bool` returned by a call; a zipper insertion into a binary tree;
+and a structure updated through calls (`record`, as `drafts/rust/lowered/07`). -/
+def reuseSrc : String := "import Prelude
+inductive T where
+  | a (x : Nat) (y : Nat)
+  | b (x : Nat) (y : Nat)
+def small : Nat → Bool
+  | .zero => .true
+  | .succ _ => .false
+def f (t : T) : T := match t with
+  | .a x y => (match small x with
+    | .true => T.b y x
+    | .false => T.a y x)
+  | .b x y => T.b y x
+def g (t : T) : T := match t with
+  | .a x y => (match small x with
+    | .true => (match small y with
+      | .true => T.b y x
+      | .false => T.a x x)
+    | .false => T.a y x)
+  | .b x y => T.b y x
+def h (t u : T) : T := match t with
+  | .a x y => (match small x with
+    | .true => u
+    | .false => T.a y x)
+  | .b x y => T.b y x
+structure Stats where
+  hits : Nat
+  misses : Nat
+def step (n : Nat) : Option Nat := match small n with
+  | .true => .none
+  | .false => .some (Nat.succ n)
+def bump2 (a b : Nat) : Option (Nat × Nat) := match step a with
+  | .some a => .some (a, Nat.succ (Nat.succ b))
+  | .none => .none
+def record (s : Stats) : Option Stats := match s with
+  | (h, m, _) => match step h with
+    | .some h => (match bump2 h m with
+      | .some r => .some (Stats.mk r.1 r.2)
+      | .none => .none)
+    | .none => .none
+inductive Tree where
+  | leaf
+  | node (key : Nat) (left : Tree) (right : Tree)
+inductive Path where
+  | top
+  | inLeft (key : Nat) (right : Tree) (up : Path)
+  | inRight (key : Nat) (left : Tree) (up : Path)
+def Path.plug : Path → Tree → Tree
+  | .top, t => t
+  | .inLeft key right up, t => Path.plug up (Tree.node key t right)
+  | .inRight key left up, t => Path.plug up (Tree.node key left t)
+def Tree.insert (k : Nat) : Tree → Path → Tree
+  | .node key left right, path => (match Nat.lt k key with
+    | .true => Tree.insert k left (Path.inLeft key right path)
+    | .false => match Nat.lt key k with
+      | .true => Tree.insert k right (Path.inRight key left path)
+      | .false => Path.plug path (Tree.node key left right))
+  | .leaf, path => Path.plug path (Tree.node k .leaf .leaf)
+def spine : Nat → Nat → Tree
+  | i, .zero => Tree.leaf
+  | i, .succ m => Tree.node i Tree.leaf (spine (Nat.succ i) m)
+def ta : T := T.a 1 2
+def fa : T := f (T.a 1 2)
+def fb : T := f (T.a 0 2)
+def ga : T := g (T.a 0 0)
+def gb : T := g (T.a 0 1)
+def gc : T := g (T.a 1 1)
+def ha : T := h (T.a 0 5) (T.b 1 1)
+def hb : T := h (T.a 1 5) (T.b 1 1)
+def s0 : Stats := Stats.mk 1 2
+def r0 : Option Stats := record (Stats.mk 1 2)
+def t10 : Tree := spine 1 10
+def t20 : Tree := spine 1 20
+def z10 : Tree := Tree.insert 11 (spine 1 10) Path.top
+def z20 : Tree := Tree.insert 21 (spine 1 20) Path.top
+"
+
+def reuseState : IO (CommandState ZeroOneMany) := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let s := runFrontend (R := ZeroOneMany) reuseSrc { loader := fun m => if m == "Prelude" then some prelude else none }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render reuseSrc
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  pure s
+
+/-- Run each entry point of `reuseSrc` through the optimised IR on the checked heap: the
+objects allocated (a leak, or using a freed object, is an error). -/
+def reuseAllocs (entries : List Name) : IO (List Nat) := do
+  let s ← reuseState
+  entries.mapM fun n => do
+    let r : Except String Nat := do
+      let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+      let decls ← IR.lowerProgram code (.global n)
+      let (_, a) ← IR.runProgram (decls.map (·.optimize))
+      pure a
+    match r with
+    | .ok a => pure a
+    | .error e => throw (IO.userError s!"{n}: {e}")
+
+/-- The optimised IR of a function of `reuseSrc`, as lines. -/
+def reuseIR (n : Name) : IO (List String) := do
+  let s ← reuseState
+  match (do
+      let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+      IR.lowerProgram code (.global n) : Except String (Array IR.Decl)) with
+  | .ok decls =>
+    let d := (decls.find? (·.name == n)).get!
+    pure ((d.optimize.toString.splitOn "\n").map (·.trimAscii.toString))
+  | .error e => throw (IO.userError e)
+
+/-- Only the parameter `x0` is reset (a `Bool` returned by `small` is never paired). -/
+def onlyParamReset (n : Name) : IO Unit := do
+  let ls ← reuseIR n
+  let resets := ls.filter fun l => (l.splitOn ":= reset").length > 1
+  check (!resets.isEmpty && resets.all (·.endsWith ":= reset x0")) s!"resets: {resets}\n{"\n".intercalate ls}"
+
+def reuseGroup : Group where
+  name := "reuse"
+  exercise := "Stage 8c"
+  cases := [
+    { name := "across one case: the cell is rebuilt in both branches, no allocation", run := fun _ => do
+        checkEq [1, 1, 1] (← reuseAllocs ["ta", "fa", "fb"])
+        onlyParamReset "f" },
+    { name := "across nested cases", run := fun _ => do
+        checkEq [1, 1, 1] (← reuseAllocs ["ga", "gb", "gc"])
+        onlyParamReset "g" },
+    { name := "a branch that doesn't rebuild frees the token (no leak)", run := fun _ => do
+        checkEq [2, 2] (← reuseAllocs ["ha", "hb"])
+        let ls ← reuseIR "h"
+        check (ls.any fun l => l.endsWith ":= reuse x1000000 in ctor 0") s!"no freed token:\n{"\n".intercalate ls}" },
+    { name := "a Bool returned by a call is never reset", run := fun _ => do
+        onlyParamReset "f"; onlyParamReset "g"; onlyParamReset "h" },
+    { name := "a zipper insertion allocates nothing per level", run := fun _ => do
+        let [t10, t20, z10, z20] ← reuseAllocs ["t10", "t20", "z10", "z20"] | throw (IO.userError "?")
+        -- the tree, and the new node
+        checkEq (t10 + 1, t20 + 1) (z10, z20) },
+    { name := "a structure updated through calls reuses its own cells, in place", run := fun _ => do
+        let [s0, r0] ← reuseAllocs ["s0", "r0"] | throw (IO.userError "?")
+        let ls ← reuseIR "record"
+        -- the parameter's cell holds the new outer pair, whose second field is the new inner pair
+        let ctorOf (l : String) : Option (String × List String) :=
+          match l.splitOn " := " with
+          | [lhs, rhs] => some ((lhs.drop 4).toString, rhs.splitOn " ")
+          | _ => none
+        let outer := ls.findSome? fun l => match ctorOf l with
+          | some (_, ["reuse", "x1000000", "in", "ctor", "0", _, b]) => some b
+          | _ => none
+        let inner := outer.bind fun b => ls.find? fun l => match ctorOf l with
+          | some (x, "reuse" :: _ :: "in" :: "ctor" :: _) => x == b
+          | _ => false
+        check inner.isSome s!"the parameter's cell is not rebuilt in place:\n{"\n".intercalate ls}"
+        -- bump2's result (an option and a pair) is the only allocation
+        checkEq (s0 + 4) r0 }
+  ]
+
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
 the C toolchain can't find GMP: set `WIZ_CFLAGS`/`WIZ_LDFLAGS` to run these. -/
 def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
-  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let s := runFrontend (R := ZeroOneMany) src { loader := fun m => if m == "Prelude" then some prelude else none }
+  let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
@@ -858,16 +1031,22 @@ def ffiGroup : Group where
         ioFails "import IO\nglue bad (s : String) : Nat := \"return s[0];\"" "indexing" },
     { name := "glue: only declared functions", run := fun _ =>
         ioFails "import IO\nglue bad (n : Nat) : Nat := \"return system(n);\"" "unknown C function system" },
-    { name := "codata is recomputed on every observation (current behaviour)", run := fun _ =>
+    { name := "observing codata is memoised", run := fun _ =>
         -- `noisy` prints when it runs. Building `s` unfolds `counter 0` (one step: the
-        -- next state is computed with the payload); each `s.head` unfolds `s` again.
-        -- Memoising `out` would print `step` twice, not three times
-        -- (wiz-notes/wishful/memoised-codata.md).
+        -- next state is computed with the payload); the first `s.head` unfolds `s` and
+        -- overwrites it with its payload, so the second doesn't (`wiz_lazy_set`).
         ioRun ("import IO\nimport_c \"stdio.h\" (pure)\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
           "def noisy (n : Nat) : Nat := n + 0 * C.puts \"step\"\n" ++
           "def counter (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => counter (noisy (n + 1))\n" ++
           "def main : IO Unit := do\n  let s := (counter 0).tail;\n  IO.println (Nat.toString s.head);\n  IO.println (Nat.toString s.head)")
-          "step\nstep\n1\nstep\n1\n" },
+          "step\nstep\n1\n1\n" },
+    { name := "a long stream observed twice computes each element once", run := fun _ =>
+        ioRun ("import IO\nimport_c \"stdio.h\" (pure)\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
+          "def noisy (n : Nat) : Nat := n + 0 * C.puts \"step\"\n" ++
+          "def counter (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => counter (noisy (n + 1))\n" ++
+          "def sumN : Nat → Stream Nat → Nat\n  | .zero, _ => 0\n  | .succ k, s => s.head + sumN k s.tail\n" ++
+          "def main : IO Unit := do\n  let s := counter 0;\n  IO.println (Nat.toString (sumN 1000 s));\n  IO.println (Nat.toString (sumN 1000 s))")
+          (String.join (List.replicate 1000 "step\n") ++ "499500\n499500\n") },
     { name := "glue: types are checked", run := fun _ =>
         ioFails "import IO\nglue bad (n : Nat) : String := \"return n + 1;\"" "expected a string" },
     { name := "foreign pointers are released by their finalizer", run := fun _ =>
@@ -1988,6 +2167,16 @@ def selfHostGroup : Group where
     { name := "the self-hosted backend compiles and runs a program", run := fun _ =>
         selfhostCompileRun "import Prelude\npartial def fib : Nat → Nat\n  | 0 => 0\n  | 1 => 1\n  | n + 2 => fib n + fib (n + 1)\npartial def countdown (n : Nat) (acc : List Nat) : List Nat := match n with\n  | 0 => acc\n  | .succ k => countdown k (List.cons n acc)\ndef sum : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + sum xs\ndef fill (a : Array Nat) : Nat → Array Nat\n  | 0 => a\n  | .succ k => fill (Array.push a k) k\nmutual\ninductive Tree where\n  | leaf (n : Nat)\n  | node (ts : Forest)\ninductive Forest where\n  | nil\n  | cons (t : Tree) (ts : Forest)\nend\nmutual\ndef sizeT (t : Tree) : Nat := match t with\n  | .leaf _ => 1\n  | .node ts => sizeF ts\ndef sizeF (f : Forest) : Nat := match f with\n  | .nil => 0\n  | .cons t ts => sizeT t + sizeF ts\nend\ndef main : IO Unit := do\n  IO.println (Nat.toString (fib 20));\n  IO.println (Nat.toString (sum (countdown 100 .nil)));\n  let a := fill Array.empty 1000;\n  IO.println (Nat.toString (Array.size a + Array.getD a 10 0));\n  let m := StrMap.insert (StrMap.insert StrMap.empty (Str.ofString \"a\") 1) (Str.ofString \"b\") 2;\n  IO.println (Nat.toString (StrMap.findD m (Str.ofString \"b\") 0));\n  IO.println (if Nat.blt 3 4 then String.append \"yes, \" \"ünïcode\" else \"no\");\n  IO.println (Nat.toString (sizeT (Tree.node (Forest.cons (Tree.leaf 1) (Forest.cons (Tree.leaf 2) Forest.nil)))));\n  IO.println (Nat.toString (String.length \"hello\"))\n"
           "6765\n5050\n1989\n2\nyes, ünïcode\n2\n5\n" },
+    { name := "the self-hosted backend: division, powers and bits", run := fun _ =>
+        selfhostCompileRun ("import Prelude\ndef show (n : Nat) : IO Unit := IO.println (Nat.toString n)\n" ++
+          "def main : IO Unit := do\n  show (100 / 7);\n  show (Nat.mod 100 7);\n  show (Nat.div 5 0);\n  show (Nat.mod 5 0);\n" ++
+          "  show (Nat.pow 3 20);\n  show (Nat.land 12 10);\n  show (Nat.lor 12 10);\n  show (Nat.xor 12 10);\n" ++
+          "  show (Nat.shiftLeft 3 20);\n  show (Nat.shiftRight 1000 3);\n  show (Nat.log2 1025);\n" ++
+          "  IO.println (if Nat.testBit 5 2 then \"set\" else \"clear\")\n")
+          "14\n2\n0\n5\n3486784401\n8\n14\n6\n3145728\n125\n10\nset\n" },
+    { name := "the self-hosted frontend: the Prelude's division and bits compute", run := fun _ =>
+        selfhostCheckFile "import Prelude\n#reduce Nat.beq (Nat.mod 17 5) 2\n#reduce Nat.beq (Nat.xor 6 3) 5\n#reduce Nat.beq (Nat.log2 9) 3\n"
+          "con((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\n" },
     { name := "both kernels compare propositions by equivalence (and agree on it below)", run := fun _ => do
         -- the domains' equation is an equivalence, not `False`
         match MTm.propShapes.map leanVerdict with
@@ -2107,6 +2296,40 @@ def languageGroup : Group where
           "inductive B where\n  | b0\n  | b1 (x : A)\nend\n" ++
           "def depthA : A → Nat\n  | .a1 f => Nat.succ (depthA (f ()))\n  | .a0 => 0\n" ++
           "#eval depthA (.a1 (fun _ => .a1 (fun _ => .a0)))") ["2"] }
+  ]
+
+/-- Machine words (`lib/Word.wiz`): one table of operations at widths 8–100, signed and
+unsigned, with its expected values. The kernel and the interpreters compute with the
+definitions; compiled code calls the natives (`implemented_by`). -/
+def wordTable : String := "import Word\ndef b2n : Bool → Nat\n  | .true => 1\n  | .false => 0\ndef m64 : Nat := 18446744073709551615\ndef main : List Nat :=\n  (.cons ((UIntN.add (U8.ofNat 200) (U8.ofNat 100)).toNat)\n    (.cons ((UIntN.sub (U8.ofNat 3) (U8.ofNat 5)).toNat)\n    (.cons ((UIntN.mul (U64.ofNat m64) (U64.ofNat m64)).toNat)\n    (.cons ((UIntN.add (U64.ofNat m64) (U64.ofNat 1)).toNat)\n    (.cons ((UIntN.mul (U64.ofNat m64) (U64.ofNat 3)).toNat)\n    (.cons ((UIntN.shiftLeft (U32.ofNat 5) 40).toNat)\n    (.cons ((UIntN.shiftLeft (U32.ofNat 5) 20).toNat)\n    (.cons ((UIntN.not (U64.ofNat 12345)).toNat)\n    (.cons ((UIntN.add (UIntN.ofNat 65 (Nat.pow 2 65 - 1)) (UIntN.ofNat 65 2)).toNat)\n    (.cons ((UIntN.mul (UIntN.ofNat 100 (Nat.pow 3 60)) (UIntN.ofNat 100 (Nat.pow 3 10))).toNat)\n    (.cons ((UIntN.div (U32.ofNat 1000) (U32.ofNat 7)).toNat)\n    (.cons ((UIntN.mod (U32.ofNat 1000) (U32.ofNat 7)).toNat)\n    (.cons ((UIntN.div (U32.ofNat 1000) (U32.ofNat 0)).toNat)\n    (.cons ((UIntN.mod (U32.ofNat 1000) (U32.ofNat 0)).toNat)\n    (.cons ((IntN.div (I8.ofNeg 7) (I8.ofNat 2)).toNat)\n    (.cons ((IntN.rem (I8.ofNeg 7) (I8.ofNat 2)).toNat)\n    (.cons ((IntN.div (I8.ofNeg 128) (I8.ofNeg 1)).toNat)\n    (.cons ((IntN.shiftRight (I8.ofNeg 100) 3).toNat)\n    (.cons ((IntN.resize 16 (I8.ofNeg 1)).toNat)\n    (.cons ((IntN.div (I64.ofNeg (Nat.pow 2 63)) (I64.ofNeg 1)).toNat)\n    (.cons ((IntN.div (I64.ofNeg 1000000000000) (I64.ofNat 7)).toNat)\n    (.cons ((IntN.rem (I64.ofNeg 1000000000000) (I64.ofNat 7)).toNat)\n    (.cons ((IntN.mul (I64.ofNeg 5) (I64.ofNat (Nat.pow 2 62))).toNat)\n    (.cons ((IntN.shiftRight (I64.ofNeg 123456789) 10).toNat)\n    (.cons (b2n (IntN.lt (I64.ofNeg 1) (I64.ofNat 0)))\n    (.cons (b2n (IntN.lt (I64.ofNat 0) (I64.ofNeg 1)))\n    (.cons (b2n (IntN.le (I8.ofNeg 128) (I8.ofNeg 128)))\n    (.cons (b2n (IntN.lt (I8.ofNat 127) (I8.ofNeg 128)))\n    (.cons (IntN.natAbs (IntN.min 64))\n    (.cons ((IntN.div (IntN.ofNeg 70 (Nat.pow 2 69)) (IntN.ofNeg 70 1)).toNat)\n    (.cons ((IntN.shiftRight (IntN.ofNeg 70 5) 100).toNat)\n    (.cons ((IntN.rem (IntN.ofNeg 70 7) (IntN.ofNeg 70 2)).toNat)\n    (.cons ((UIntN.neg (U8.ofNat 1)).toNat)\n    (.cons ((IntN.sub (I32.ofNat 0) (I32.ofNat 1)).toNat)\n    .nil))))))))))))))))))))))))))))))))))\n"
+def wordTableValue : String := ".cons 44 (.cons 254 (.cons 1 (.cons 0 (.cons 18446744073709551613 (.cons 0 (.cons 5242880 (.cons 18446744073709539270 (.cons 1 (.cons 813220142716762761079858673625 (.cons 142 (.cons 6 (.cons 0 (.cons 1000 (.cons 253 (.cons 255 (.cons 128 (.cons 243 (.cons 65535 (.cons 9223372036854775808 (.cons 18446743930852408759 (.cons 18446744073709551615 (.cons 13835058055282163712 (.cons 18446744073709431052 (.cons 1 (.cons 0 (.cons 1 (.cons 0 (.cons 9223372036854775808 (.cons 590295810358705651712 (.cons 1180591620717411303423 (.cons 1180591620717411303423 (.cons 255 (.cons 4294967295 .nil)))))))))))))))))))))))))))))))))"
+
+def wordGroup : Group where
+  name := "word"
+  exercise := "Stage 22c"
+  cases := [
+    { name := "the definitions compute in the kernel", run := fun _ =>
+        okLib (wordTable ++ s!"def t : main = ({wordTableValue} : List Nat) := refl main") },
+    { name := "#eval runs the definitions", run := fun _ =>
+        okLib (wordTable ++ "#eval main") [wordTableValue] },
+    { name := "#run runs the definitions", run := fun _ =>
+        okLib (wordTable ++ "#run main") [wordTableValue] },
+    { name := "compiled code runs the natives (C)", run := fun _ => cRun wordTable wordTableValue },
+    { name := "compiled code runs the natives (LLVM)", run := fun _ => cRun (llvm := true) wordTable wordTableValue },
+    { name := "compiled code calls the native", run := fun _ => do
+        let loader ← preludeLoader
+        let src := "import Word\ndef f (a b : U32) : U32 := UIntN.add a b\n#ir f"
+        let s := runFrontend (R := ZeroOneMany) src { loader }
+        let out := String.intercalate "\n" (s.messages.toList.map (·.text))
+        check ((out.splitOn "wiz_word_add").length > 1) s!"no native call in:\n{out}" },
+    { name := "the width is part of the type, and is inferred", run := fun _ => do
+        okLib "import Word\ndef w {ω n : Nat} (a : UIntN n) : Nat := n\n#check w (U8.ofNat 3)\n#eval w (U8.ofNat 3)"
+          ["w 8 (U8.ofNat 3) : Nat", "8"]
+        let loader ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) "import Word\ndef bad (x : U8) : U16 := x" { loader }
+        check (s.messages.any (·.severity == .error)) "U8 was accepted as U16" },
+    { name := "field notation through the fixed widths", run := fun _ =>
+        okLib "import Word\ndef f (a b : I16) : Bool := a.lt b\n#eval f (I16.ofNeg 2) (I16.ofNat 1)" [".true"] }
   ]
 
 def stdGroup : Group where
@@ -2235,6 +2458,8 @@ def toolingGroup : Group where
 /-- Programs for the native backends (C, or LLVM). -/
 def nativeCases (llvm : Bool) : List Case :=
 [
+    { name := "memoised codata: no leaks, also when dropped part-way", run := fun _ =>
+        cRun (llvm := llvm) memoStreamSrc "14946" },
     { name := "numbers, with GMP for big ones", run := fun _ =>
         cRun (llvm := llvm) "import Prelude\ndef fact : Nat → Nat\n  | .zero => 1\n  | .succ n => (.succ n) * fact n\ndef main : Nat := fact 25"
           "15511210043330985984000000" },
@@ -2262,6 +2487,13 @@ def nativeCases (llvm : Bool) : List Case :=
         cRun (llvm := llvm) ("import Prelude\ninstance : Monad Option where\n  pure := fun a => Option.some a\n" ++
           "  bind := fun x f => match x with\n    | .none => Option.none\n    | .some a => f a\n" ++
           "def main : Option Nat := do\n  a ← Option.some 1;\n  b ← Option.some 2;\n  Monad.pure (a + b)") ".some 3" },
+    { name := "division, powers and bits (small and GMP numbers)", run := fun _ =>
+        cRun (llvm := llvm) ("import Prelude\ndef big : Nat := Nat.pow 3 50\n" ++
+          "def main : List Nat := .cons (Nat.div big 1000007) (.cons (Nat.mod big 1000007) (.cons (Nat.div 100 7) " ++
+          "(.cons (Nat.mod 100 0) (.cons (Nat.land big (Nat.pow 2 70 - 1)) (.cons (Nat.lor 12 10) (.cons (Nat.xor big big) " ++
+          "(.cons (Nat.shiftLeft 3 70) (.cons (Nat.shiftRight big 40) (.cons (Nat.log2 big) (.cons (Nat.log2 0) " ++
+          "(.cons (Nat.pow 0 0) (.cons (Nat.shiftLeft 1 61) (.cons (Nat.shiftLeft 1 62) .nil)))))))))))))")
+          ".cons 717892962441115500 (.cons 961749 (.cons 14 (.cons 100 (.cons 98282295666516288457 (.cons 14 (.cons 0 (.cons 3541774862152233910272 (.cons 652924416219 (.cons 79 (.cons 0 (.cons 1 (.cons 2305843009213693952 (.cons 4611686018427387904 .nil)))))))))))))" },
     { name := "memoised suspensions (memo)", run := fun _ =>
         cRun (llvm := llvm) ("import Prelude\ndef twice (t : Unit → Nat) : Nat := t () + t ()\n" ++
           "def lazyAdd (m n : Nat) : Unit → Nat := memo (fun _ => m + n)\n" ++
@@ -2295,6 +2527,45 @@ def builtinGroup : Group where
         okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4" },
     { name := "native equality", run := fun _ =>
         okLib "import Prelude\n#eval Nat.beq 3 3" [".true"] },
+    { name := "division, powers and bits compute natively (#eval)", run := fun _ =>
+        okLib ("import Prelude\n#eval Nat.div 100 7\n#eval Nat.mod 100 7\n#eval 100 / 0\n#eval Nat.mod 5 0\n" ++
+          "#eval Nat.pow 2 100\n#eval Nat.land 12 10\n#eval Nat.lor 12 10\n#eval Nat.xor 12 10\n" ++
+          "#eval Nat.shiftLeft 3 70\n#eval Nat.shiftRight (Nat.pow 2 100) 98\n#eval Nat.log2 1025\n#eval Nat.log2 0\n#eval Nat.testBit 5 2")
+          ["14", "2", "0", "5", "1267650600228229401496703205376", "8", "14", "6", "3541774862152233910272", "4", "10", "0", ".true"] },
+    { name := "division, powers and bits in the IR interpreter (#run)", run := fun _ =>
+        okLib ("import Prelude\n#run Nat.mod (Nat.pow 3 50) 1000007\n#run Nat.land (Nat.pow 2 70) (Nat.pow 2 70 + 5)\n" ++
+          "#run Nat.log2 (Nat.pow 2 70)\n#run Nat.shiftRight 1000 3\n#run Nat.xor 5 3")
+          ["961749", "1180591620717411303424", "70", "125", "6"] },
+    { name := "division, powers and bits compute natively in the kernel", run := fun _ =>
+        okLib ("import Prelude\ndef t1 : Nat.mod 300 256 = 44 := refl 44\n" ++
+          "def t2 : Nat.xor (Nat.pow 2 64) 1 = 18446744073709551617 := refl 18446744073709551617\n" ++
+          "def t3 : Nat.shiftRight (Nat.shiftLeft 5 200) 199 = 10 := refl 10\n" ++
+          "def t4 : Nat.log2 (Nat.pow 2 300) = 300 := refl 300\n" ++
+          "def t5 : Nat.land (Nat.pow 2 70) (Nat.pow 2 70 + 5) = Nat.pow 2 70 := refl (Nat.pow 2 70)") },
+    { name := "the definitions behind the natives compute too (unfolded)", run := fun _ =>
+        -- the fuel-driven helpers, applied directly, are not registered: the kernel unfolds them
+        okLib ("import Prelude\ndef t1 : Nat.divGo 17 17 5 = 3 := refl 3\n" ++
+          "def t2 : Nat.bitwise Bool.xor 30 12 10 = 6 := refl 6\ndef t3 : Nat.bitwise Bool.and 30 12 10 = 8 := refl 8\n" ++
+          "def t4 : Nat.log2Go 9 9 = 3 := refl 3\ndef t5 : Nat.powFrom 10 2 = 1024 := refl 1024") },
+    { name := "implemented_by: compiled code runs the implementation, the kernel the model", run := fun _ => do
+        -- the implementation is trusted: here it deliberately differs, to show which runs
+        let src := "import Prelude\ndef model (n : Nat) : Nat := n\ndef impl (n : Nat) : Nat := n + 1\n" ++
+          "attribute [implemented_by impl] model\ndef t : model 5 = 5 := refl 5\n"
+        okLib (src ++ "#eval model 5\n#run model 5") ["6", "6"]
+        cRun (src ++ "def main : Nat := model 5") "6" },
+    { name := "implemented_by: a fast implementation of a recursive definition", run := fun _ =>
+        okLib ("import Prelude\ndef sumTo : Nat → Nat\n  | .zero => 0\n  | .succ n => .succ n + sumTo n\n" ++
+          "def sumToFast (n : Nat) : Nat := n * (n + 1) / 2\nattribute [implemented_by sumToFast] sumTo\n" ++
+          "def t : sumTo 4 = 10 := refl 10\n#erase sumTo\n#eval sumTo 1000000") ["sumTo := sumToFast", "500000500000"] },
+    { name := "implemented_by: the types must agree", run := fun _ =>
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := n\ndef g (b : Bool) : Nat := 0\nattribute [implemented_by g] f"
+          "g can't implement f: its type Bool → Nat is not f's type Nat → Nat" },
+    { name := "implemented_by: not on a builtin", run := fun _ =>
+        failsLib "import Prelude\ndef g (m n : Nat) : Nat := m\nattribute [implemented_by g] Nat.add" "already has an implementation" },
+    { name := "the natives agree with the definitions (n / 0 = 0)", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : Nat.div 7 0 = 7 := refl 7" { loader := fun _ => some prelude }
+        check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "kernel arithmetic on literals is native", run := fun _ =>
         okLib "import Prelude\ndef t : 100000 * 100000 = 10000000000 := refl 10000000000" },
     { name := "literals unfold under eliminators", run := fun _ =>
