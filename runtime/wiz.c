@@ -452,6 +452,8 @@ WIZ_API wiz_val wiz_reuse(wiz_val tok, uint32_t tag, uint32_t n) {
     wiz_untrack(h);
     free(h);
   }
+  /* without fields the result is a scalar: `reuse w in ctor t` just frees the token */
+  if (n == 0) return WIZ_BOX(tag);
   return wiz_ctor_new(tag, n);
 }
 

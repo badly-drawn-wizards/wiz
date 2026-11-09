@@ -814,6 +814,16 @@ match), so updating data you own happens in place. Constructor functions are inl
 when fully applied, so user code takes part. The generic eliminators already reuse
 their payload pairs.
 
+A cell is often taken apart in one block and rebuilt in another: a tree node is
+projected and dropped at once, but the new node is built two `case`s later, after
+comparing keys. So `reuseAcross` runs first and follows a dropped cell into the
+branches (as Perceus and Lean 4 do): the `reset` stays where the drop was, each branch
+that builds an object reuses the token, and the others free it at once
+(`reuse w in ctor 0`, which needs no cell). The IR has no types, and a `Bool` returned
+by a function has no cell to give, so only variables known to be objects (projected
+from, or built) go across, outermost first; the local pass pairs what is left. A
+zipper's insertion loop then allocates nothing per level.
+
 | #   | Where                 | What                                          |
 |-----|-----------------------|-----------------------------------------------|
 | 8.3 | `Compiler/Reuse.lean` | `insertReuse`: pair drops with allocations    |
