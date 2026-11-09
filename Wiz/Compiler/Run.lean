@@ -402,10 +402,12 @@ partial def ETerm.globals (e : ETerm) (acc : Array Name := #[]) : Array Name :=
 /-- Erase the definitions reachable from `roots`. (Erasing everything would be wasteful:
 recursors of big types are expensive to erase and rarely run.) With `externImpls := false` (the
 interpreters, which can't call C), a definition implemented by a foreign function keeps
-its own code: `#eval` and `#run` run the model, compiled code the native. -/
-def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
-    (externImpls : Bool := true) : TCM Code := do
+its own code: `#eval` and `#run` run the model, compiled code the native. Also returns
+the definitions that couldn't be erased, with the reasons. -/
+def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
+    (externImpls : Bool := true) : TCM (Code × List (Name × String)) := do
   let mut code : Code := {}
+  let mut failed : List (Name × String) := []
   let mut todo := roots.toArray
   -- definitions registered as native operations
   let natives := builtins.filter fun (key, _) => key != "nat" && key != "string"
@@ -429,12 +431,18 @@ def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : L
     -- (an `implemented_by` not followed: the definition itself)
     let d := if d.impl matches some (.const ..) then { d with impl := none } else d
     -- a declaration that can't be erased yet becomes a runtime error if it is reached
-    let e := match eraseDecl g d with
-      | .ok e => e
-      | .error _ => .prim .unreachable #[]
+    let e ← match eraseDecl g d with
+      | .ok e => pure e
+      | .error err => do failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
     code := code.insert n e
     todo := e.globals todo
-  pure code
+  pure (code, failed.reverse)
+
+/-- The same, ignoring the definitions that couldn't be erased (reaching one is a
+runtime error). -/
+def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
+    (externImpls : Bool := true) : TCM Code :=
+  return (← compileReachableE g builtins roots externImpls).1
 
 /-- Erase every global. -/
 def compileAll (g : Globals R) (builtins : List (Name × Name) := []) : TCM Code :=

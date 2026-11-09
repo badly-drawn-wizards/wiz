@@ -306,7 +306,13 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
 where
   unCast (v : Val R) : Val R :=
     match v with
-    | .neutral (.cast A B _ t) #[] => if convTy g tys A B then unCast t else v
+    | .neutral (.cast A B e t) #[] =>
+      let ok := match g.regularity with
+        | .full => true
+        | .nonProp => !isProp g tys A
+        | .refl => reflProof e
+        | .off => false
+      if ok && convTy g tys A B then unCast t else v
     | v => v
   --|ex
   --| sorry
