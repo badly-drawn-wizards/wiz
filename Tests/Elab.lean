@@ -2757,7 +2757,12 @@ def infoviewGroup : Group where
     { name := "keys: arrows, SGR mouse reports, page keys; terminal widths", run := fun _ =>
         okInfoview (goalPrelude ++ "#eval Key.decode (List.append (esc \"[A\") (List.append (String.chars \"\\tq\") (List.append (esc \"[<0;5;3M\") (esc \"[6~\"))))\n" ++
           "#eval Infoview.width (String.chars \"aλ😀́b\")")
-          [".cons .up (.cons (.char 9) (.cons (.char 113) (.cons (.mouse 0 5 3 .true) (.cons .pageDown .nil))))", "5"] }
+          [".cons .up (.cons (.char 9) (.cons (.char 113) (.cons (.mouse 0 5 3 .true) (.cons .pageDown .nil))))", "5"] },
+    { name := "the terminal infoview against a stub server, as text and in a pty (infoview/test.sh)", run := fun _ => do
+        let out ← IO.Process.output { cmd := "sh", args := #["infoview/test.sh"] }
+        unless out.exitCode == 0 do
+          if ((out.stdout ++ out.stderr).splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"
+          else throw (IO.userError s!"infoview/test.sh failed:\n{out.stdout}{out.stderr}") }
   ]
 
 end Tests.Elab
