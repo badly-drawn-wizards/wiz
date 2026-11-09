@@ -10,11 +10,38 @@ See [ROADMAP.md](ROADMAP.md) for the stages and the design decisions behind them
 lake build          # the library and the `wiz` executable
 lake test           # all exercise tests; every case runs in its own process
 lake test -- conv   # only the groups whose name starts with "conv"
+lake test -- =c     # only the group named exactly "c"
+lake test -- --list # the group names
 ```
 
 An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)`.
 
 The design decisions taken so far are listed at the top of [ROADMAP.md](ROADMAP.md).
+
+## Continuous integration
+
+`nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
+LLVM's `llc` for the C and LLVM backends, Boehm GC for the self-hosted backend, a C
+compiler, and elan, which installs the Lean in `lean-toolchain`. It sets `$WIZ_CFLAGS`,
+`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
+`solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
+one is configured); the elan toolchain and `.lake` (including Lake's artifact cache) are
+cached between runs.
+
+* **The solution tree** (`solutions`; recognised by its `--<sol` markers) runs the full
+  suite in parallel shards, one job per entry of `.github/test-shards.json` (each entry
+  is a list of `lake test` selectors). The build job checks that every group of
+  `Tests/Main.lean` is in exactly one shard (`scripts/ci.py check-shards`), so **a new
+  test group must be added to `.github/test-shards.json`**. Each shard prints a pass/fail
+  table in its job summary, and the `CI result` job sums them up for the whole suite.
+* **The exercise tree** (`master`) checks that everything builds and that the test driver
+  runs to its summary line; the failures are the exercises.
+* **The bootstrap fixpoint** (`scripts/fixpoint.sh`: the stage-1 C of the toolchain
+  equals its stage-2 C) runs weekly on `solutions`, or from "Run workflow" with
+  `fixpoint` ticked. It takes a long time; run it locally with `nix develop -c
+  scripts/fixpoint.sh`.
 
 ## Stage 1: the core kernel
 
@@ -262,7 +289,13 @@ whether it is a proposition (`propSort?`): two propositions compare by equivalen
 proposition and another type are different, and only other types compare by shape. A
 `Π` or `Σ` can't tell by itself (`(x : A) → B` is a proposition when `B` is), so it
 carries its sort (the elaborator writes it, the kernel checks it); without one, type
-equality waits. A cast between propositions applies the equivalence.
+equality waits. Surface `Π`/`Σ` get theirs from the levels `checkType` computes; the
+ones the elaborator builds itself (a definition's telescope, constructor, recursor and
+projection types, a structure's or an index's `Σ`, match motives) get theirs from the
+kernel's `typeSort?` in the context they live in (`Sorts` in `Elab/Basic.lean`, applied to
+every declaration before the kernel sees it). Only a `Π`/`Σ` under a `fun` whose
+variable's type isn't written down, or one that still mentions a metavariable, goes
+without. A cast between propositions applies the equivalence.
 
 Stuck equations, casts and proofs are new neutral heads (`Head.eq`, `Head.cast`,
 `Head.refl`, …). Some results of the computation rules need new binders. Values can't
@@ -460,9 +493,18 @@ Wiz already uses for `match`), so there is no separate `where head := …` notat
 A mix (one recursive observation a corecursive call, another an existing stream) is
 still rejected: that needs a state that can be either.
 
-At runtime codata is an *unfolding*: nothing is cached, so observing `s.tail` twice
-computes it twice (in every backend). A Mealy machine (`mealy f st i`, state = its
-arguments) costs O(1) per step; feedback through `scofix` recomputes.
+At runtime codata is a lazy cell (`coit`, `scofix`), and the compiled backends
+**memoise** observation: `out` on a shared cell overwrites it in place with its payload
+(`wiz_lazy_set`, like a forced `memo` thunk), so observing `s.tail` twice computes it
+once. A unique cell is about to die, so it is just unfolded; a hoisted constant is not
+overwritten. The payload's corecursive fields are always *new* cells built from the
+state, never the cell itself, so no cycle forms and reference counting stays exact;
+the price is that a stream keeps its observed prefix alive while its root is referenced
+(walk it with `s := s.tail` to let the prefix go). A knot is not tied: feedback through
+`scofix` (`Signal.fix`) unfolds a new cell per step and stays quadratic. The runtime has
+one mutator, as for `memo`; with threads, only shared cells would need a blackhole.
+The interpreter (`#eval`) still recomputes. A Mealy machine (`mealy f st i`, state =
+its arguments) costs O(1) per step either way.
 
 | #    | Where               | What                                                |
 |------|---------------------|-----------------------------------------------------|
@@ -840,6 +882,16 @@ its fields are dropped and the new object is written into its cell (if the sizes
 match), so updating data you own happens in place. Constructor functions are inlined
 when fully applied, so user code takes part. The generic eliminators already reuse
 their payload pairs.
+
+A cell is often taken apart in one block and rebuilt in another: a tree node is
+projected and dropped at once, but the new node is built two `case`s later, after
+comparing keys. So `reuseAcross` runs first and follows a dropped cell into the
+branches (as Perceus and Lean 4 do): the `reset` stays where the drop was, each branch
+that builds an object reuses the token, and the others free it at once
+(`reuse w in ctor 0`, which needs no cell). The IR has no types, and a `Bool` returned
+by a function has no cell to give, so only variables known to be objects (projected
+from, or built) go across, outermost first; the local pass pairs what is left. A
+zipper's insertion loop then allocates nothing per level.
 
 | #   | Where                 | What                                          |
 |-----|-----------------------|-----------------------------------------------|
@@ -1705,6 +1757,65 @@ the same pointer with an offset in its low bits (taking one allocates nothing): 
 minutes. A `match` was a method applied to the payload, a closure built and called each
 time; a lambda applied to arguments is now a `let`: 6 minutes. Reference counting comes
 next.
+
+## Stage 22: numbers for hardware and systems code
+
+Prerequisites shared by the HDL and the Rust-style DSL (decisions RD9, RD10/HD3).
+
+### 22a: division, powers and bits ✅
+
+The Prelude defines `Nat.div`, `Nat.mod`, `Nat.pow`, `Nat.land`, `Nat.lor`, `Nat.xor`,
+`Nat.shiftLeft`, `Nat.shiftRight`, `Nat.log2` (and `Nat.testBit`, `a / b`) by structural
+recursion on a fuel argument that bounds the number of steps, so the kernel can unfold
+them. Each is registered with `builtin nat.<op>`: on numerals the kernel computes
+natively (`def t : Nat.mod 300 256 = 44 := refl 44`), as do `#eval`, `#run`, C/LLVM
+(`runtime/wiz.c`: machine words, GMP when big) and the self-hosted backend
+(`selfhost/rt.c`; its Prelude has the same definitions). As in Lean, `n / 0 = 0`,
+`Nat.mod n 0 = n` and `Nat.log2 0 = 0`. One table (`natNative?`, `Wiz/Core/Eval.lean`)
+serves the kernel and both interpreters.
+
+### 22b: `implemented_by` ✅
+
+`attribute [implemented_by g] f` gives a definition `f` a different implementation in
+compiled code: erasure (`compileReachable`) takes `g`'s code for `f`, while the kernel,
+and so every proof, keeps `f`'s definition. `g` is a Wiz definition or an `extern`, and
+must have `f`'s type up to conversion (checked at the attribute; `g` can't implement
+`f` otherwise). The implementation is **trusted**, as in Lean: nothing proves it agrees
+with the model, so tests compare them. `#eval` and `#run` follow the attribute, except
+to an `extern` (the interpreters can't call C): there they run the model, which gives a
+differential test for free. `#erase f` shows `f := g`. Foreign functions may now take
+and return Wiz data types, passed as they are (marshalling kind `w`).
+
+Not yet: a *type* with a native representation (`Vec A` as an array, R0b), and the
+attribute in the self-hosted backend.
+
+### 22c: machine integers ✅
+
+`import Word` (`lib/Word.wiz`): `UIntN w`, a w-bit unsigned integer, and `IntN w`, w-bit
+two's complement, both a number of bits below `2^w` (normalised by construction, so
+arithmetic wraps around), with `ofNat`/`toNat`, wrapping `add`/`sub`/`mul`/`neg`,
+`div`/`mod` (signed: `div` truncates towards zero and `rem` takes the dividend's sign,
+as Rust; `x / 0 = 0` and `x % 0 = x` as Lean, where Rust panics), comparisons, bitwise
+operations, shifts (`shiftLeft` by `k ≥ w` gives `0`; `IntN.shiftRight` is
+arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toUIntN`.
+
+* **One width-indexed type** serves both clients: the HDL's `Unsigned n` needs any
+  width (1, 5, 65, …) and Rust's `u32` is `U32 := UIntN 32` (also `U8 … U64`, `USize`,
+  `I8 … I64`, with `U32.ofNat`, `I32.ofNeg`, …). Operations are named functions
+  (`UIntN.add a b`, or `a.add b`) until the numeric classes (HD9) arrive.
+* **The width is an index** (`mk {0 w : Nat} (toNat : Nat) : UIntN w`): types are
+  structural, and a parameter that no field mentions is forgotten, so `UIntN 8` and
+  `UIntN 16` would be one type and `w` could not be inferred.
+* **Natives.** The kernel computes with the definitions, quickly on numerals (22a), and
+  so do `#eval`/`#run`. Compiled code calls natives (`runtime/wiz.c`, `wiz_word_*`) by
+  `implemented_by`: in a `uint64_t` up to 64 bits, GMP beyond, one function per
+  operation for every width. A table of operations at widths 8 to 100 gives the same
+  values in the kernel (`refl`), both interpreters, C and LLVM (`examples/words.wiz`:
+  an FNV-1a hash, and facts proved by `refl` about named values; an equation whose
+  sides still contain an unsolved implicit width when it is computed gets stuck, so
+  state facts about definitions). A word is still an
+  object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
+  `implemented_by`.
 
 ## Stage 11: tooling
 
