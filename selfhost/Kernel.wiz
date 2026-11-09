@@ -941,7 +941,7 @@ def vEqW : Val → Val → Val → Val
 def eqPayload (l : Nat) (I X i : Val) : Val → Val → Val → Option Val
   | .vdret _, _, _ => .some (.vunit 0)
   | .vdarg S E, x, y => match whnf S with
-    | .venum _ => eqTags l I X i E (whnf (vfst x)) (whnf (vfst y)) x y
+    | .venum k => eqTags l I X i (.venum k) E (whnf (vfst x)) (whnf (vfst y)) x y
     | S' => .some (vEq (vInterp l I (.vdarg S' E) X i) x y)
   | .vdrec j E, x, y => match eqPayload l I X i (whnf E) (vsnd x) (vsnd y) with
     | .some r => .some (pairTy (vEq (vapp X j) (vfst x) (vfst y)) r)
@@ -952,10 +952,13 @@ def eqPayload (l : Nat) (I X i : Val) : Val → Val → Val → Option Val
         (vfst x) (vfst y)) r)
     | .none => .none
   | _, _, _ => .none
-def eqTags (l : Nat) (I X i E : Val) : Val → Val → Val → Val → Option Val
+-- (equal tags: `True × …`; different tags: the Σ rule, whose first component is `False`)
+def eqTags (l : Nat) (I X i S E : Val) : Val → Val → Val → Val → Option Val
   | .vtag k a, .vtag _ b, x, y => match Nat.beq a b with
-    | .true => eqPayload l I X i (whnf (vapp E (.vtag k a))) (vsnd x) (vsnd y)
-    | .false => .some (.vempty 0)
+    | .true => match eqPayload l I X i (whnf (vapp E (.vtag k a))) (vsnd x) (vsnd y) with
+      | .some r => .some (pairTy (.vunit 0) r)
+      | .none => .none
+    | .false => .some (vEq (vInterp l I (.vdarg S E) X i) x y)
   | _, _, _, _ => .none
 -- `A × B` in `Prop`
 def pairTy (A B : Val) : Val := .vsigma .qz A (.cons B .nil) (.var 1) (.some (.lnum 0))
