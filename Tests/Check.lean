@@ -107,13 +107,16 @@ def natRigCoit (q : Nat) (name : Name) : List (Decl Nat) :=
   let pi (x : Name) (q : Nat) (a b : Term Nat) : Term Nat := .pi x .default (.qlit q) a b none
   let U : Term Nat := .unit 1
   let D : Term Nat := .dret .tt
-  let S : Term Nat := .lam "_" U
+  -- a global state family: `fun _ => Unit` would drop its linear argument
+  let S : Term Nat := .const s!"{name}S" []
   -- ⟦ret tt⟧ S i = (0 _ : tt = i) × Unit
-  let stepTy := pi "i" 1 U (pi "s" 1 U (pi "y" q U (.sigma "_" (.qlit 0) (.eq U .tt (.var 2)) (.unit 1) none)))
-  [{ name := s!"{name}Step", type := stepTy, value := none },
+  let stepTy := pi "i" 1 U (pi "s" 1 (.app S (.var 0)) (pi "y" q U (.sigma "_" (.qlit 0) (.eq U .tt (.var 2)) (.unit 1) none)))
+  [{ name := s!"{name}S", type := pi "i" 1 U (.sort 1), value := none },
+   { name := s!"{name}S0", type := .app S .tt, value := none },
+   { name := s!"{name}Step", type := stepTy, value := none },
    { name, type := pi "y" q U (.nu 0 U D .tt .szInf none),
      value := some (.lam "y" (.coit 0 U D S
-       (.lam "i" (.lam "s" (.app (.app (.app (.const s!"{name}Step" []) (.var 1)) (.var 0)) (.var 2)))) .tt .tt)) }]
+       (.lam "i" (.lam "s" (.app (.app (.app (.const s!"{name}Step" []) (.var 1)) (.var 0)) (.var 2)))) .tt (.const s!"{name}S0" []))) }]
 
 /-! ## Quantities (`ZeroOneMany` rig) -/
 
