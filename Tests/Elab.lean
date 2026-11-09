@@ -2094,6 +2094,21 @@ def builtinGroup : Group where
         okLib ("import Prelude\ndef t1 : Nat.divGo 17 17 5 = 3 := refl 3\n" ++
           "def t2 : Nat.bitwise Bool.xor 30 12 10 = 6 := refl 6\ndef t3 : Nat.bitwise Bool.and 30 12 10 = 8 := refl 8\n" ++
           "def t4 : Nat.log2Go 9 9 = 3 := refl 3\ndef t5 : Nat.powFrom 10 2 = 1024 := refl 1024") },
+    { name := "implemented_by: compiled code runs the implementation, the kernel the model", run := fun _ => do
+        -- the implementation is trusted: here it deliberately differs, to show which runs
+        let src := "import Prelude\ndef model (n : Nat) : Nat := n\ndef impl (n : Nat) : Nat := n + 1\n" ++
+          "attribute [implemented_by impl] model\ndef t : model 5 = 5 := refl 5\n"
+        okLib (src ++ "#eval model 5\n#run model 5") ["6", "6"]
+        cRun (src ++ "def main : Nat := model 5") "6" },
+    { name := "implemented_by: a fast implementation of a recursive definition", run := fun _ =>
+        okLib ("import Prelude\ndef sumTo : Nat → Nat\n  | .zero => 0\n  | .succ n => .succ n + sumTo n\n" ++
+          "def sumToFast (n : Nat) : Nat := n * (n + 1) / 2\nattribute [implemented_by sumToFast] sumTo\n" ++
+          "def t : sumTo 4 = 10 := refl 10\n#erase sumTo\n#eval sumTo 1000000") ["sumTo := sumToFast", "500000500000"] },
+    { name := "implemented_by: the types must agree", run := fun _ =>
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := n\ndef g (b : Bool) : Nat := 0\nattribute [implemented_by g] f"
+          "g can't implement f: its type Bool → Nat is not f's type Nat → Nat" },
+    { name := "implemented_by: not on a builtin", run := fun _ =>
+        failsLib "import Prelude\ndef g (m n : Nat) : Nat := m\nattribute [implemented_by g] Nat.add" "already has an implementation" },
     { name := "the natives agree with the definitions (n / 0 = 0)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : Nat.div 7 0 = 7 := refl 7" { loader := fun _ => some prelude }

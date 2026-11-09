@@ -1647,6 +1647,21 @@ natively (`def t : Nat.mod 300 256 = 44 := refl 44`), as do `#eval`, `#run`, C/L
 `Nat.mod n 0 = n` and `Nat.log2 0 = 0`. One table (`natNative?`, `Wiz/Core/Eval.lean`)
 serves the kernel and both interpreters.
 
+### 22b: `implemented_by` ✅
+
+`attribute [implemented_by g] f` gives a definition `f` a different implementation in
+compiled code: erasure (`compileReachable`) takes `g`'s code for `f`, while the kernel,
+and so every proof, keeps `f`'s definition. `g` is a Wiz definition or an `extern`, and
+must have `f`'s type up to conversion (checked at the attribute; `g` can't implement
+`f` otherwise). The implementation is **trusted**, as in Lean: nothing proves it agrees
+with the model, so tests compare them. `#eval` and `#run` follow the attribute, except
+to an `extern` (the interpreters can't call C): there they run the model, which gives a
+differential test for free. `#erase f` shows `f := g`. Foreign functions may now take
+and return Wiz data types, passed as they are (marshalling kind `w`).
+
+Not yet: a *type* with a native representation (`Vec A` as an array, R0b), and the
+attribute in the self-hosted backend.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅

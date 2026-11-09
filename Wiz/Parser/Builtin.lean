@@ -259,6 +259,9 @@ def commandLeading : List LeadingParser := [
     p := seqs ["attribute", "[", nonReserved "macro", ident, "]", ident] },
   { kind := "command.attrTactic", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "tactic", ident, "]", ident] },
+  -- compiled code calls the first name instead of the second; the kernel keeps the second
+  { kind := "command.attrImplementedBy", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "implemented_by", ident, "]", ident] },
   { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
   { kind := "command.syntax", prec := maxPrec,
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
