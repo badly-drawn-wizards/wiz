@@ -289,6 +289,21 @@ where
 
 end Term
 
+/-- Which casts `cast A A e t` reduce to `t` (regularity), for the D1 experiment
+(`wiz-notes/d1-experiment.md`). Regularity, definitional proof irrelevance and an
+impredicative `Prop` together break normalisation (Abel–Coquand, LMCS 2020;
+`Tests/Elab.lean` "D1"). The default is `full`; the others are prototypes. -/
+inductive Regularity where
+  /-- whenever the two types are equal (today's rule) -/
+  | full
+  /-- (R1) only at types that are not propositions -/
+  | nonProp
+  /-- (R2) only along `refl`, `reflTy`, `()` or a `transp` of such proofs along such proofs -/
+  | refl
+  /-- never: a cast computes only by the shapes of its types -/
+  | off
+  deriving BEq, Repr, Inhabited
+
 /-- The global environment. `order` records insertion order so anything that walks
 the environment does so deterministically (never iterate the hash map directly). -/
 structure Globals (R : Type) where
@@ -298,6 +313,11 @@ structure Globals (R : Type) where
   builtins : List (Name × Name) := []
   /-- unfold every definition eagerly (no gluing), for normal forms -/
   eager : Bool := false
+  /-- D1 experiment (default `full`): which casts reduce by regularity -/
+  regularity : Regularity := .full
+  /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
+  domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
+  predicativeProp : Bool := false
 
 namespace Globals
 
