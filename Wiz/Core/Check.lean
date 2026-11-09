@@ -141,7 +141,7 @@ every branch, and an ω variable may be used differently.
 
 `split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
 using both on a linear pair uses it twice, and `snd p` alone would drop a linear first
-field, so it needs `le 0 q`.
+field, so then it uses `p` ω times.
 
 `Γ ⊢ A type@i` means `A ⇒ Sort i`, with its usage **thrown away**: types live in
 the erased (0) fragment, so they may mention 0-quantity variables freely.

@@ -250,8 +250,9 @@ the new constructor cases inside them are labelled 4.3–4.8.
 
 Quantities: `(1 x : A) × B` is a pair whose first field is linear. `p.1` and `p.2`
 each use `p`, so a linear pair is consumed with `let 1 (x, y) := p; …`. `p.2` drops the
-first field, so it needs a field that may go unused (`0` or `ω`); `p.1` drops the
-second component, which the projection rule doesn't track. An erased field
+first field, so if that field is linear it counts `p` as used ω times (only an
+unrestricted pair may drop a linear field); `p.1` drops the second component, which the
+projection rule doesn't track. An erased field
 (`(0 n : A) × B`) can't be projected at all. Both projections are allowed in erased
 positions (`Ctx.erased`).
 
