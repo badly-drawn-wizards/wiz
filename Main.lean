@@ -10,6 +10,8 @@ def usage : String := "usage:
   wiz lsp                          a language server on stdin/stdout
 options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since it is
 content-addressed), --no-cache
+experimental kernel options (D1, they turn the cache off): --regularity full|nonprop|refl|off,
+--predicative-prop
 C compiler: $WIZ_CC (default cc), extra flags in $WIZ_CFLAGS and $WIZ_LDFLAGS (GMP); llc: $WIZ_LLC"
 
 def parseCmd (path : String) : IO UInt32 := do
@@ -44,11 +46,18 @@ def loadLibraryPaths : IO (Std.HashMap String (String × String)) := do
           m := m.insert (e.path.fileStem.getD "") (abs.toString, ← IO.FS.readFile e.path)
   pure m
 
+/-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
+initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.full, false)
+
 /-- Elaborate a file, through the cache in `cache` (none: no cache). -/
 def elaborate (cache : Option String) (input : String) : IO (CommandState ZeroOneMany) := do
   let lib ← loadLibrary
   let headers ← Build.preprocessHeaders input
-  let init : CommandState ZeroOneMany := { loader := (lib[·]?), cHeaders := (headers[·]?) }
+  let (regularity, predicativeProp) ← kernelOpts.get
+  let init : CommandState ZeroOneMany :=
+    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp } }
+  -- the cache doesn't know the experimental options
+  let cache := if regularity == .full && !predicativeProp then cache else none
   match cache with
   | none => pure (runFrontend input init)
   | some dir =>
@@ -97,9 +106,28 @@ def cacheOpt (dflt : Option String) : List String → Option String × List Stri
   | a :: rest => let (c, r) := cacheOpt dflt rest; (c, a :: r)
   | [] => (dflt, [])
 
+/-- The experimental kernel options, taken out of the arguments. -/
+def kernelOpt : List String → Except String (Regularity × Bool × List String)
+  | "--regularity" :: m :: rest => do
+    let r ← match m with
+      | "full" => pure Regularity.full | "nonprop" => pure .nonProp | "refl" => pure .refl
+      | "off" => pure .off | _ => throw s!"unknown regularity mode {m}"
+    let (_, p, rest) ← kernelOpt rest
+    return (r, p, rest)
+  | "--predicative-prop" :: rest => do
+    let (r, _, rest) ← kernelOpt rest
+    return (r, true, rest)
+  | a :: rest => do
+    let (r, p, rest) ← kernelOpt rest
+    return (r, p, a :: rest)
+  | [] => return (.full, false, [])
+
 def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   let (cache, args) := cacheOpt (some (home ++ "/.cache/wiz")) args
+  let args ← match kernelOpt args with
+    | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
+    | .error e => do IO.eprintln e; return 1
   match args with
   | ["parse", path] => parseCmd path
   | ["check", path] => checkCmd cache path

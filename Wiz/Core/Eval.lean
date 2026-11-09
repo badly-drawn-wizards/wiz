@@ -110,6 +110,23 @@ def propSort? : Val R → Option Bool
   | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
   | _ => none
 
+/-- (D1 experiment, `Regularity.refl`) Is this proof visibly a reflexivity: `refl`,
+`reflTy`, `()`, or a `transp` of one along one? Such proofs only prove equations whose
+sides are definitionally equal. -/
+partial def reflProof (e : Val R) : Bool :=
+  match whnf e with
+  | .neutral (.refl ..) #[] | .neutral (.reflTy _) #[] | .tt => true
+  | .neutral (.transp _ _ _ p _ e) #[] => reflProof p && reflProof e
+  | _ => false
+
+/-- (D1 experiment) May `cast A A e t` reduce to `t` under `g.regularity`? -/
+def regularityAllowed (g : Globals R) (A e : Val R) : Bool :=
+  match g.regularity with
+  | .full => true
+  | .nonProp => propSort? A != some true
+  | .refl => reflProof e
+  | .off => false
+
 mutual
 
 /-- **Exercise 1.1.** Evaluate a term in an environment.
