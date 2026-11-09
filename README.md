@@ -706,6 +706,54 @@ Known limitations: no auto-bound implicits (write `{A : Type}`); instance proble
 must have no holes left in their arguments by the end of the command; answers must be
 complete terms; no default instances or coercions yet.
 
+### 7c: command macros, reflection, `deriving` ✅
+
+```
+import Deriving
+inductive Tree (A : Type) where
+  | leaf
+  | node (l : Tree A) (x : A) (r : Tree A)
+  deriving Repr, BEq, Inhabited
+#eval Repr.repr (Tree.node .leaf 1 .leaf)    -- "Tree.node Tree.leaf 1 Tree.leaf"
+deriving instance Repr for Shape             -- after the fact
+```
+
+* **Command macros.** `attribute [macro command.k] f` with `f : CommandMacro :=
+  Syntax → MacroM (List Syntax)` expands one command into any number of commands
+  (`runCommandMacro`), built with `` `(command| …) `` quotations. A `Macro` still works
+  for commands too.
+* **Reflection** (`Elab/Reflect.lean`). `MacroM.getInductive T : MacroM (Option IndView)`
+  describes an inductive type or structure: its parameters and indices
+  (`ParamView`: name, binder kind, type), its constructors (`CtorView`: short name,
+  fields, the indices of its result), each field (`FieldView`: name, kind, type, and
+  whether it is recursive), and whether it is a structure. `MacroM.getType n` is the
+  type of any declaration. Types are **syntax**, printed with binder names and parsed
+  back, so a macro can splice them; the facts come from the kernel's declarations
+  (`T.desc`, `T.c`), so they also hold for declarations replayed from the cache.
+  The requests are two more `Tac` constructors.
+* **Deriving.** `inductive … deriving C₁, C₂` (also `structure`) and
+  `deriving instance C₁, C₂ for T₁, T₂` run C's **deriver**, a Wiz function
+  `Deriver := String → MacroM (List Syntax)` registered with `attribute [deriver C] f`.
+  `lib/Deriving.wiz` defines `Inhabited`, `BEq` and `Repr` (`reprPrec : A → Nat →
+  String`), their derivers, and instances for `Nat`, `String`, `Bool`, `Option`, `List`.
+  A derived instance has type `{A : Type} → [C A] → … → C (T A …)` (an instance argument
+  for each `Type` parameter) and eliminates with `T.rec`, so recursion needs no
+  termination check; a structure uses its projections.
+* Splicing names: `$x` works wherever the grammar expects an identifier
+  (`fun $x => …`, `{$x : $t} → …`, `def $x …`). A name that a quotation introduces
+  gets the expansion's scope; names the deriver builds with `✝` in them (`f✝0`) can't
+  capture the user's.
+
+| #   | Where              | What                                             |
+|-----|--------------------|--------------------------------------------------|
+| 7.2 | `lib/Deriving.wiz` | `Derive.firstPlain`: the constructor `Inhabited` uses |
+
+Limitations: `BEq` and `Inhabited` reject indexed families (`Repr` handles them, and
+so mutual types); no `DecidableEq` (it needs no-confusion proofs); quotations can't
+splice lists (`$xs*`), so derivers fold one-element quotations and use
+`Syntax.mkApp`; the self-hosted frontend has no macros yet. `Repr String` doesn't
+escape.
+
 ## Stage 8: the backend
 
 ### 8a: IR and Perceus reference counting ✅
