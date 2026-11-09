@@ -2013,7 +2013,7 @@ def ioDiverges (src : String) (secs : Nat := 5) : IO Unit := do
   | .ok (decls, _) =>
     let dir ← IO.FS.createTempDir
     let exe := dir / "wiz_main"
-    match ← Build.compileC (C.program decls true (Build.extraC s)) exe with
+    match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) exe with
     | .error e =>
       if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
     | .ok () =>
