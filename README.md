@@ -1465,7 +1465,7 @@ declarations, about 20 s).
 The self-hosted frontend now checks `Lex.wiz`, `Parse.wiz` and `Kernel.wiz` (272
 declarations, about two minutes). Next: `Frontend.wiz` itself.
 
-### 20a: towards `Frontend.wiz` (in progress)
+### 20a: towards `Frontend.wiz` ✅
 
 * A `match` or `fun` argument whose expected type is still a metavariable waits, like
   a `.c` one (`.cons (match s with …) rest`), and a postponed argument's metavariable
@@ -1479,9 +1479,26 @@ declarations, about two minutes). Next: `Frontend.wiz` itself.
   `let`s) solves that one by a new metavariable at depth `k`.
 * The structural parameter can be moved first past grouped binders (`(Tc TcI : Tm)`).
 
-With these, most of `Frontend.wiz` checks (on a stubbed prefix: types kept, functions
-as axioms). What remains: `splitCol`, the largest definition, exhausts memory when
-checked, and the definitions after it are untested.
+### 20b: the frontend checks `Frontend.wiz` ✅
+
+The rest was performance, found by profiling the checker (flat `perf` profiles, and
+stacks sampled by interrupting it under `gdb`):
+
+* **A `let`'s variable is glued to its value** in the elaborator's context: it quotes
+  back as the variable. Every metavariable is applied to the whole context, and each
+  application used to carry the values of all the `let`s before it (`splitCol` ran out
+  of memory).
+* **The binders' types are quoted once**, lazily, for the Π type of every new
+  metavariable, instead of once per metavariable.
+* **A catch-all in case analysis is elaborated once**: the last clause of variables
+  becomes `let dflt✝ := …` before the split, and the branches refer to it (a match on
+  a `Val` with `| t => …` copied the body into some 70 branches).
+* String literals' character codes are binary numerals too.
+
+On a prefix where `Lex.wiz`, `Parse.wiz` and `Kernel.wiz` keep their types and their
+functions become axioms, the self-hosted frontend checks all 650 declarations of
+`Frontend.wiz` without an error, in about a quarter of an hour. So every file of the
+self-hosted frontend is accepted by the self-hosted frontend.
 
 ## Stage 11: tooling
 
