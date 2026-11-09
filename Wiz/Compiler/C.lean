@@ -64,7 +64,7 @@ def expr (arities : Std.HashMap Name Nat) (x : Var) : Expr → String
     let fn := match op with
       | "nat.succ" => "wiz_nat_succ" | "nat.pred" => "wiz_nat_pred"
       | "nat.add" => "wiz_nat_add" | "nat.sub" => "wiz_nat_sub" | "nat.mul" => "wiz_nat_mul"
-      | "nat.beq" => "wiz_nat_beq" | "nat.blt" => "wiz_nat_blt" | "lazyTag" => "wiz_lazy_tag" | "memo" => "wiz_memo"
+      | "nat.beq" => "wiz_nat_beq" | "nat.blt" => "wiz_nat_blt" | "lazyTag" => "wiz_lazy_tag" | "lazySet" => "wiz_lazy_set" | "memo" => "wiz_memo"
       | "tag" => "wiz_tag_of" | "natTag" => "wiz_nat_tag" | "fieldAt" => "wiz_field_at" | "mkObj" => "wiz_mk_obj"
       | op => if op.startsWith "nat." then "wiz_nat_" ++ (op.drop 4).toString
         else if (RVal.ExternSig.ofKey? op).isSome then externWrapper op else "wiz_unknown_prim"

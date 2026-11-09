@@ -123,17 +123,21 @@ def map : ETerm :=
              apps (g "wiz.map") [p 2 (v 2), v 1, p 1 (v 0)]],
     arg])
 
-/-- `out x`: run one step of a lazy coinductive value. -/
+/-- `out x`: run one step of a lazy coinductive value, and remember it: `lazySet`
+overwrites a shared cell with the payload (`⟨1002 p⟩`, lazy tag 3), which later
+observations return. -/
 def out : ETerm :=
   lams ["x"] (.case (.prim .lazyTag #[v 0]) #[
     v 0,
     -- coit D step i s: map D (fun j s => coit D step j s) (step i s);  inside: s0 j1 x2
-    apps (g "wiz.map") [p 0 (v 0),
+    .prim .lazySet #[v 0, apps (g "wiz.map") [p 0 (v 0),
       lams ["j", "s"] (.prim .coit #[p 0 (v 2), p 1 (v 2), v 1, v 0]),
-      apps (p 1 (v 0)) [p 2 (v 0), p 3 (v 0)]],
+      apps (p 1 (v 0)) [p 2 (v 0), p 3 (v 0)]]],
     -- scofix f i a: out (f ◾ (fun j i a => scofix f i a) i a);  inside: a0 i1 j2 x3
-    .app (g "wiz.out") (apps (p 0 (v 0)) [.erased,
-      lams ["j", "i", "a"] (.prim .scofix #[p 0 (v 3), v 1, v 0]), p 1 (v 0), p 2 (v 0)])])
+    .prim .lazySet #[v 0, .app (g "wiz.out") (apps (p 0 (v 0)) [.erased,
+      lams ["j", "i", "a"] (.prim .scofix #[p 0 (v 3), v 1, v 0]), p 1 (v 0), p 2 (v 0)])],
+    -- observed: the payload
+    p 0 (v 0)])
 
 def all : List (Name × ETerm) :=
   [("wiz.ind", ind), ("wiz.hyps", hyps), ("wiz.delim", delim), ("wiz.map", map), ("wiz.out", out),

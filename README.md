@@ -493,9 +493,18 @@ Wiz already uses for `match`), so there is no separate `where head := …` notat
 A mix (one recursive observation a corecursive call, another an existing stream) is
 still rejected: that needs a state that can be either.
 
-At runtime codata is an *unfolding*: nothing is cached, so observing `s.tail` twice
-computes it twice (in every backend). A Mealy machine (`mealy f st i`, state = its
-arguments) costs O(1) per step; feedback through `scofix` recomputes.
+At runtime codata is a lazy cell (`coit`, `scofix`), and the compiled backends
+**memoise** observation: `out` on a shared cell overwrites it in place with its payload
+(`wiz_lazy_set`, like a forced `memo` thunk), so observing `s.tail` twice computes it
+once. A unique cell is about to die, so it is just unfolded; a hoisted constant is not
+overwritten. The payload's corecursive fields are always *new* cells built from the
+state, never the cell itself, so no cycle forms and reference counting stays exact;
+the price is that a stream keeps its observed prefix alive while its root is referenced
+(walk it with `s := s.tail` to let the prefix go). A knot is not tied: feedback through
+`scofix` (`Signal.fix`) unfolds a new cell per step and stays quadratic. The runtime has
+one mutator, as for `memo`; with threads, only shared cells would need a blackhole.
+The interpreter (`#eval`) still recomputes. A Mealy machine (`mealy f st i`, state =
+its arguments) costs O(1) per step either way.
 
 | #    | Where               | What                                                |
 |------|---------------------|-----------------------------------------------------|

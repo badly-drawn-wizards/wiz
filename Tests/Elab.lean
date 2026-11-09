@@ -668,6 +668,16 @@ def classGroup : Group where
         okLib "import Prelude\nclass Functor (f : Type → Type) where\n  map : {A B : Type} → (A → B) → f A → f B\n#check Functor" ["Functor : (Type → Type) → Type 1"] }
   ]
 
+/-- Memoised streams, observed twice and dropped part-way (no leaks, `#run` and native). -/
+def memoStreamSrc : String :=
+  "import Prelude\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
+  "def nats (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => nats (n + 1)\n" ++
+  "def sumN : Nat → Stream Nat → Nat\n  | .zero, _ => 0\n  | .succ k, s => s.head + sumN k s.tail\n" ++
+  "def twice (s : Stream Nat) : Nat := sumN 100 s + sumN 100 s\n" ++
+  "def partly (s : Stream Nat) : Nat := sumN 100 s + sumN 10 s + s.tail.head\n" ++
+  "def walk : Nat → Stream Nat → Stream Nat\n  | .zero, s => s\n  | .succ k, s => walk k s.tail\n" ++
+  "def main : Nat := twice (nats 0) + partly (nats 0) + (walk 50 (nats 0)).head\n"
+
 def backendGroup : Group where
   name := "backend"
   exercise := "Exercise 8.1"
@@ -690,6 +700,8 @@ def backendGroup : Group where
     { name := "sized recursion", run := fun _ =>
         okLib (runPrelude ++ "#run fib (.succ (.succ (.succ (.succ (.succ .zero)))))")
           [".succ (.succ (.succ (.succ (.succ (.succ (.succ (.succ .zero)))))))"] },
+    { name := "memoised codata, without leaks (also dropped part-way)", run := fun _ =>
+        okLib (memoStreamSrc ++ "#run main") ["14946"] },
     { name := "infinitary data", run := fun _ =>
         okLib (treePrelude ++ "#run Tree.depthAt (.node (fun i => .node (fun j => .leaf))) 3") ["3"] },
     { name := "type class dictionaries", run := fun _ =>
@@ -946,16 +958,22 @@ def ffiGroup : Group where
         ioFails "import IO\nglue bad (s : String) : Nat := \"return s[0];\"" "indexing" },
     { name := "glue: only declared functions", run := fun _ =>
         ioFails "import IO\nglue bad (n : Nat) : Nat := \"return system(n);\"" "unknown C function system" },
-    { name := "codata is recomputed on every observation (current behaviour)", run := fun _ =>
+    { name := "observing codata is memoised", run := fun _ =>
         -- `noisy` prints when it runs. Building `s` unfolds `counter 0` (one step: the
-        -- next state is computed with the payload); each `s.head` unfolds `s` again.
-        -- Memoising `out` would print `step` twice, not three times
-        -- (wiz-notes/wishful/memoised-codata.md).
+        -- next state is computed with the payload); the first `s.head` unfolds `s` and
+        -- overwrites it with its payload, so the second doesn't (`wiz_lazy_set`).
         ioRun ("import IO\nimport_c \"stdio.h\" (pure)\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
           "def noisy (n : Nat) : Nat := n + 0 * C.puts \"step\"\n" ++
           "def counter (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => counter (noisy (n + 1))\n" ++
           "def main : IO Unit := do\n  let s := (counter 0).tail;\n  IO.println (Nat.toString s.head);\n  IO.println (Nat.toString s.head)")
-          "step\nstep\n1\nstep\n1\n" },
+          "step\nstep\n1\n1\n" },
+    { name := "a long stream observed twice computes each element once", run := fun _ =>
+        ioRun ("import IO\nimport_c \"stdio.h\" (pure)\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
+          "def noisy (n : Nat) : Nat := n + 0 * C.puts \"step\"\n" ++
+          "def counter (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => counter (noisy (n + 1))\n" ++
+          "def sumN : Nat → Stream Nat → Nat\n  | .zero, _ => 0\n  | .succ k, s => s.head + sumN k s.tail\n" ++
+          "def main : IO Unit := do\n  let s := counter 0;\n  IO.println (Nat.toString (sumN 1000 s));\n  IO.println (Nat.toString (sumN 1000 s))")
+          (String.join (List.replicate 1000 "step\n") ++ "499500\n499500\n") },
     { name := "glue: types are checked", run := fun _ =>
         ioFails "import IO\nglue bad (n : Nat) : String := \"return n + 1;\"" "expected a string" },
     { name := "foreign pointers are released by their finalizer", run := fun _ =>
@@ -2295,6 +2313,8 @@ def toolingGroup : Group where
 /-- Programs for the native backends (C, or LLVM). -/
 def nativeCases (llvm : Bool) : List Case :=
 [
+    { name := "memoised codata: no leaks, also when dropped part-way", run := fun _ =>
+        cRun (llvm := llvm) memoStreamSrc "14946" },
     { name := "numbers, with GMP for big ones", run := fun _ =>
         cRun (llvm := llvm) "import Prelude\ndef fact : Nat → Nat\n  | .zero => 1\n  | .succ n => (.succ n) * fact n\ndef main : Nat := fact 25"
           "15511210043330985984000000" },

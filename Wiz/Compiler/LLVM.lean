@@ -80,7 +80,7 @@ def expr (arities : Std.HashMap Name Nat) (env : Std.HashMap Var String) (x : St
     let f := match op with
       | "nat.succ" => "wiz_nat_succ" | "nat.pred" => "wiz_nat_pred"
       | "nat.add" => "wiz_nat_add" | "nat.sub" => "wiz_nat_sub" | "nat.mul" => "wiz_nat_mul"
-      | "nat.beq" => "wiz_nat_beq" | "nat.blt" => "wiz_nat_blt" | "lazyTag" => "wiz_lazy_tag" | "memo" => "wiz_memo"
+      | "nat.beq" => "wiz_nat_beq" | "nat.blt" => "wiz_nat_blt" | "lazyTag" => "wiz_lazy_tag" | "lazySet" => "wiz_lazy_set" | "memo" => "wiz_memo"
       | "tag" => "wiz_tag_of" | "natTag" => "wiz_nat_tag" | "fieldAt" => "wiz_field_at" | "mkObj" => "wiz_mk_obj"
       | op => if op.startsWith "nat." then "wiz_nat_" ++ (op.drop 4).toString
         else if (RVal.ExternSig.ofKey? op).isSome then C.externWrapper op else "wiz_unknown_prim"
@@ -177,6 +177,7 @@ declare i64 @wiz_nat_shiftRight(i64, i64)
 declare i64 @wiz_nat_log2(i64)
 declare i64 @wiz_memo(i64, i64)
 declare i64 @wiz_lazy_tag(i64)
+declare i64 @wiz_lazy_set(i64, i64)
 declare i64 @wiz_tag_of(i64)
 declare i64 @wiz_nat_tag(i64)
 declare i64 @wiz_field_at(i64, i64)
