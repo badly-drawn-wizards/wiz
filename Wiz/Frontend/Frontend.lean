@@ -33,8 +33,8 @@ where
           let msg : Msg := { info := cmd.info, severity := .error,
                              text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
-          -- hovers are positions in this file: keep only ours
-          go chars stop { inner with messages := msgs, module := s.module, hovers := s.hovers }
+          -- the info tree is positions in this file: keep only ours
+          go chars stop { inner with messages := msgs, module := s.module, infos := s.infos }
       else go chars stop (step cmd s)
     | .error e =>
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate
