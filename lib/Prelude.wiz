@@ -186,6 +186,26 @@ inductive Expr where
   | lit (n : Nat)
   | opaque (id : Nat)
 
+-- Reflection (HD8): a declared inductive type or structure as command macros see it.
+-- Types are syntax, written with the names of the binders in scope (the parameters,
+-- then the earlier fields), not de Bruijn indices.
+inductive BinderKind where
+  | default
+  | implicit
+  | instImplicit
+inductive ParamView where
+  | mk (name : String) (kind : BinderKind) (type : Syntax)
+-- a constructor field; `recursive` if its type is the inductive type itself
+inductive FieldView where
+  | mk (name : String) (kind : BinderKind) (type : Syntax) (recursive : Bool)
+-- a constructor (short name, `cons`), its fields after the parameters, and the indices
+-- of its result type
+inductive CtorView where
+  | mk (name : String) (fields : List FieldView) (indices : List Syntax)
+inductive IndView where
+  | mk (name : String) (levelParams : List String) (params : List ParamView)
+       (indices : List ParamView) (ctors : List CtorView) (isStructure : Bool)
+
 -- Requests to the elaborator, each with what to do with the answer: a free monad (its
 -- continuations are infinitary fields). The elaborator interprets them; the order of
 -- the constructors is fixed (`Elab/Tactic.lean`).
@@ -211,6 +231,8 @@ inductive Tac where
   | inferType (g : Nat) (e : Expr) (k : Expr → Tac)
   | evalTactic (stx : Syntax) (next : Tac)
   | catch (body : Tac) (handler : String → Tac) (next : Tac)
+  | getInductive (n : String) (k : Option IndView → Tac)
+  | getType (n : String) (k : Option Syntax → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -260,6 +282,61 @@ def MacroM.fresh : MacroM Nat := TacticM.fresh
 -- A procedural macro, registered with `attribute [macro kind] f`.
 def Macro : Type := Syntax → MacroM Syntax
 def Macro.run (m : MacroM Syntax) : Tac := m (fun s => Tac.result s)
+-- (HD8) Read the environment: a declared inductive type or structure, and the type of
+-- any declaration, as syntax.
+def MacroM.getInductive (n : String) : MacroM (Option IndView) := fun k => Tac.getInductive n k
+def MacroM.getType (n : String) : MacroM (Option Syntax) := fun k => Tac.getType n k
+def ParamView.name : ParamView → String
+  | .mk n _ _ => n
+def ParamView.kind : ParamView → BinderKind
+  | .mk _ k _ => k
+def ParamView.type : ParamView → Syntax
+  | .mk _ _ t => t
+def FieldView.name : FieldView → String
+  | .mk n _ _ _ => n
+def FieldView.kind : FieldView → BinderKind
+  | .mk _ k _ _ => k
+def FieldView.type : FieldView → Syntax
+  | .mk _ _ t _ => t
+def FieldView.recursive : FieldView → Bool
+  | .mk _ _ _ r => r
+def CtorView.name : CtorView → String
+  | .mk n _ _ => n
+def CtorView.fields : CtorView → List FieldView
+  | .mk _ fs _ => fs
+def CtorView.indices : CtorView → List Syntax
+  | .mk _ _ is => is
+def IndView.name : IndView → String
+  | .mk n _ _ _ _ _ => n
+def IndView.levelParams : IndView → List String
+  | .mk _ us _ _ _ _ => us
+def IndView.params : IndView → List ParamView
+  | .mk _ _ ps _ _ _ => ps
+def IndView.indices : IndView → List ParamView
+  | .mk _ _ _ is _ _ => is
+def IndView.ctors : IndView → List CtorView
+  | .mk _ _ _ _ cs _ => cs
+def IndView.isStructure : IndView → Bool
+  | .mk _ _ _ _ _ b => b
+-- Building syntax: a node, an identifier (`x`, and the term `x`), literals, applications.
+def SyntaxF.ofList : List Syntax → SyntaxF .false
+  | .nil => .nil
+  | .cons x xs => .cons x (SyntaxF.ofList xs)
+def Syntax.mkNode (kind : String) (args : List Syntax) : Syntax := .node kind (SyntaxF.ofList args)
+def Syntax.mkIdent (x : String) : Syntax := .ident x
+def Syntax.mkVar (x : String) : Syntax := Syntax.mkNode "term.ident" (.cons (.ident x) .nil)
+def Syntax.mkStr (s : String) : Syntax :=
+  Syntax.mkNode "term.str" (.cons (Syntax.mkNode "str" (.cons (.atom s) .nil)) .nil)
+def Syntax.mkApp (f : Syntax) : List Syntax → Syntax
+  | .nil => f
+  | .cons a rest => Syntax.mkNode "term.app" (.cons f (.cons (Syntax.mkNode "null" (.cons a rest)) .nil))
+-- A command macro, registered with `attribute [macro command.k] f`: it expands one
+-- command into any number of commands.
+def CommandMacro : Type := Syntax → MacroM (List Syntax)
+def CommandMacro.run (m : MacroM (List Syntax)) : Tac := m (fun cs => Tac.result (Syntax.mkNode "null" cs))
+-- A deriver, registered with `attribute [deriver C] f`: given the name of an inductive
+-- type, the commands that make it an instance of `C` (`deriving C`).
+def Deriver : Type := String → MacroM (List Syntax)
 
 -- `do` notation for any `Monad`, written as macros: `do x ← e; rest`, `do e; rest`, `do e`.
 declare_syntax_cat doSeq

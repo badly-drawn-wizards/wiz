@@ -472,6 +472,34 @@ inductive Added where
 def payloadP (p : Tm) : Nat → Nat → Tm
   | .zero, _ => .pair p .star
   | .succ r, i => .pair (.var i) (payloadP p r (i - 1))
+-- A type with the sorts of the `Π`/`Σ` in its spine filled in where they are known
+-- (`Sorts.type` in the Lean elaborator), and its sort: the types of declarations are
+-- built without them (telescopes, constructor types), and type equality waits on a
+-- `Π`/`Σ` without its sort. A sort is only written when the kernel's `sortOf` knows it.
+inductive STm where
+  | mk (t : Tm) (s : Option Lvl)
+def STm.tm : STm → Tm
+  | .mk t _ => t
+def sortLeaf (c : TCtx) (t : Tm) : STm := .mk t (sortOf c (eval (TCtx.env c) t))
+def binTm (isPi : Bool) (q : Q) (a b : Tm) : Tm := match isPi with
+  | .true => piTm q a b
+  | .false => sigmaTm q a b
+def binLvl (isPi : Bool) (i j : Lvl) : Lvl := match isPi with
+  | .true => .limax i j
+  | .false => .lmax i j
+def sortJoin (isPi : Bool) (q : Q) (a b : STm) : STm := match a, b with
+  | .mk a' (.some i), .mk b' (.some j) => .mk (.sorted (binLvl isPi i j) (binTm isPi q a' b')) (.some (binLvl isPi i j))
+  | .mk a' _, .mk b' _ => .mk (binTm isPi q a' b') .none
+def sortUnder (c : TCtx) (a : STm) : TCtx := TCtx.bind c (eval (TCtx.env c) (STm.tm a))
+def sortSpine : TCtx → Tm → STm
+  | c, .pi a b => let sa := sortSpine c a; sortJoin .true .qw sa (sortSpine (sortUnder c sa) b)
+  | c, .piq q a b => let sa := sortSpine c a; sortJoin .true q sa (sortSpine (sortUnder c sa) b)
+  | c, .sigma a b => let sa := sortSpine c a; sortJoin .false .qw sa (sortSpine (sortUnder c sa) b)
+  | c, .sigmaq q a b => let sa := sortSpine c a; sortJoin .false q sa (sortSpine (sortUnder c sa) b)
+  | _, .sorted l t => .mk (.sorted l t) (.some l)
+  | c, t => sortLeaf c t
+-- a closed type with its sorts (`sortSpine`)
+def sortTy (t : Tm) : Tm := STm.tm (sortSpine empty t)
 def addCtors (T : String) (ps : List String) (pts : Tms) (nidx : Nat) (I : Tm) (Tc TcI : Tm) (k : Nat) : Globals → Nat → List Syntax → Added
   | gs, _, .nil => .ok gs .nil
   | gs, i, .cons c cs =>
@@ -483,7 +511,7 @@ def addCtors (T : String) (ps : List String) (pts : Tms) (nidx : Nat) (I : Tm) (
     | .ok fs => match idxArgs gs scF (np + n) (ctorRes nidx c) with
       | .err _ => .err
       | .ok ics =>
-        let ty := piTele pts (ctorType (tApps Tc (tmsAppend (pvars np (np + n)) ics)) fs);
+        let ty := sortTy (piTele pts (ctorType (tApps Tc (tmsAppend (pvars np (np + n)) ics)) fs));
         let proof : Tm := match ics with
           | .tcons ic _ => .eqRefl (shiftTm n 0 I) ic
           | .tnil => .star;
@@ -601,9 +629,9 @@ def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match kid stx0 1 with
             let body := fun (D : Tm) => (match sig with
               | .indexed _ => .lam (.mu 0 (shiftTm 1 0 I) (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0))
               | _ => .mu 0 (.unit 0) D .star : Tm);
-            let ty := piTele pts (match sig with
+            let ty := sortTy (piTele pts (match sig with
               | .indexed _ => .pi I (.univ 0)
-              | _ => .univ 0);
+              | _ => .univ 0));
             let val := tLams np (body (mkD ds));
             match check empty val (eval .nil ty) with
             | .err m => errStep gs m
@@ -2503,7 +2531,7 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
           | .ok RE0 _ esR => match zonk esR n RE0 with
           | .none => errStep gs "could not infer an implicit argument"
           | .some RE =>
-            let tyT := piTele pts RE;
+            let tyT := sortTy (piTele pts RE);
             let sc := bindAll (Globals.scope gs) params;
             match peelCtx n empty (eval .nil tyT) with
               | .mk c Rv => match sortOf c Rv with
@@ -2550,7 +2578,7 @@ def command (gs : Globals) (stx : Syntax) : Step :=
         | .none => errStep gs "could not elaborate a constructor argument"
         | .some es => match zonk es 0 ty0 with
           | .none => errStep gs "could not infer an implicit argument"
-          | .some tyT => match zonk es 0 v0 with
+          | .some tyZ => let tyT := sortTy tyZ; match zonk es 0 v0 with
             | .none => errStep gs "could not infer an implicit argument"
             | .some v => match inferUniv empty tyT with
               | .err m => errStep gs m
@@ -2666,7 +2694,7 @@ def addMembers (F FI : Tm) (np : Nat) (pts : Tms) (m : Nat) : Globals → Nat �
   | gs, _, .nil => gs
   | gs, j, .cons n rest =>
     let at := fun (f : Tm) => tLams np (.app (tApps f (pvars np np)) (.tag m j));
-    addMembers F FI np pts m (Globals.add gs (.mk n (piTele pts (.univ 0)) (at F) (at FI) .nil)) (j + 1) rest
+    addMembers F FI np pts m (Globals.add gs (.mk n (sortTy (piTele pts (.univ 0))) (at F) (at FI) .nil)) (j + 1) rest
 -- the member constructors `A.c := fun ps fields => con (tag, fields…, refl, tt)`
 inductive MAdded where
   | ok (gs : Globals) (ctors : List Ctor)
@@ -2694,7 +2722,7 @@ def addMCtors (members ps : List String) (pts : Tms) (m k : Nat) : Globals → N
       | .ok fs1 =>
         -- (a field typed by a member is recursive)
         let fs := markRec members ps fs0 fs1;
-        let ty := piTele pts (ctorType (tApps Tc (pvars np (np + n))) fs);
+        let ty := sortTy (piTele pts (ctorType (tApps Tc (pvars np (np + n))) fs));
         let v := tLams (np + n) (.con (.pair (.tag k ci) (payloadP (.eqRefl (.enum m) (.tag m j)) n (n - 1))));
         match check empty v (eval .nil ty) with
         | .err e => .err e
@@ -2730,7 +2758,7 @@ def mutualInductiveCmd (gs : Globals) (defs : List Syntax) : Step :=
       | .ok dsI =>
         -- `fun ps i => μ D i` (the description moved under `i`)
         let body := fun (D : Tm) => tLams np (.lam (.mu 0 I (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0)));
-        let fty := piTele pts (.pi I (.univ 0));
+        let fty := sortTy (piTele pts (.pi I (.univ 0)));
         let fval := body (mkD ds);
         match check empty fval (eval .nil fty) with
         | .err e => errStep gs e
@@ -3008,7 +3036,7 @@ def addAxioms : Globals → List Syntax → AxR
         | .err m => .err m
         | .ok ty0 _ es => match zonk es 0 ty0 with
           | .none => .err "could not infer an implicit argument"
-          | .some ty => match inferUniv empty ty with
+          | .some tyZ => let ty := sortTy tyZ; match inferUniv empty ty with
             | .err m => .err m
             | .ok _ _ => addAxioms (Globals.add gs (.mk f ty (.axiomC f ty) (.axiomC f ty) (paramMask (kids (kid d 3))))) rest
       | _ => .err "a partial definition needs a type"
