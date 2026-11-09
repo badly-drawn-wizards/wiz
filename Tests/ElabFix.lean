@@ -65,7 +65,27 @@ def group : Group where
           "  match Nat.pred n, h with\n  | .zero, _ => 0\n  | .succ m, h' => absurd h'.1") },
     { name := "(x).f y is a field access, like x.f y", run := fun _ =>
         okLib ("import Prelude\ndef a (x y : Nat) : Nat := x.sub y\ndef b (x y : Nat) : Nat := (x).sub y\n" ++
-          "def c (x y : Nat) : Nat := Nat.add (x).succ y\n#eval b 5 2\n#eval c 1 1") ["3", "3"] }
+          "def c (x y : Nat) : Nat := Nat.add (x).succ y\n#eval b 5 2\n#eval c 1 1") ["3", "3"] },
+    { name := "an equation whose sides have holes solved later (eq-pending-metas)", run := fun _ =>
+        okLib ("import Word\n" ++
+          "def wraps : (UIntN.add (U8.ofNat 250) (U8.ofNat 10)).toNat = 4 := refl 4\n" ++
+          "def w {ω n : Nat} (a : UIntN n) : Nat := n\n" ++
+          "def t : w (U8.ofNat 3) = 8 := refl 8\n" ++
+          "def t' : w (U8.ofNat 3) = 8 := rfl") },
+    { name := "an instance problem in a definition's type is solved before its body", run := fun _ =>
+        okLib ("import Prelude\nclass C (A : Type) where\n  f : A → Nat\n" ++
+          "instance : C Bool := C.mk (fun _ => 3)\ndef t5 : C.f Bool.true = 3 := refl 3") },
+    { name := "a definition's implicit widths are solved before its body (elab-solve-type-before-body)", run := fun _ =>
+        okLibs "import BitVec\ndef t : (BitVec.add (BitVec.ofNat 8 200) (BitVec.ofNat 8 100)).toNat = 44 := refl 44" },
+    { name := "the unifier meets an equation with its computed form (unify-computed-equations)", run := fun _ =>
+        okOptic ("import Optic\n" ++
+          "def t3 (x : Nat) (xs ys : List Nat) (h : xs = ys) : List.cons x xs = List.cons x ys :=\n" ++
+          "  Optic.congrArg (List.cons x) h\n" ++
+          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Optic.congrArg Nat.succ h\n" ++
+          "def pg {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m)\n" ++
+          "    (hi : Lens.Indep l m) : Lens.PutGet (Lens.pair l m) := fun s ab =>\n" ++
+          "  ((Optic.trans (hi.2.1 ((l s).2 ab.1) ab.2) (hl.2.1 s ab.1),\n" ++
+          "    hm.2.1 ((l s).2 ab.1) ab.2))") }
   ]
 
 end Tests.ElabFix
