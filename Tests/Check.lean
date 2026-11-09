@@ -164,10 +164,19 @@ def structGroup : Group where
           (lams ["A", "B", "p"] (.split one "p" "z" (.sigma "y" one "B" "A") "x" "y" (.pair "y" "x")))] },
     { name := "linear pair projected twice is rejected", run := fun _ =>
         rejects [Raw.defn "swap" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" "B") (.sigma "y" one "B" "A"))))
-          (lams ["A", "B", "p"] (.pair (.snd "p") (.fst "p")))] isQty "a quantity error" },
+          (lams ["A", "B", "p"] (.pair (.snd "p") (.fst "p")))]
+          (fun e => isQty e || match e with | .other .. => true | _ => false) "a quantity or projection error" },
     { name := "erased field cannot be projected", run := fun _ =>
         rejects [Raw.defn "bad" (forallA (pi' "B" zero ty (arr many (.sigma "x" zero "A" "B") "A")))
           (lams ["A", "B", "p"] (.fst "p"))] (fun | .other .. => true | _ => false) "a projection error" },
+    { name := "the second projection can't drop a linear first field (Q1)", run := fun _ =>
+        rejects [Raw.defn "drop" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" "B") "B")))
+          (lams ["A", "B", "p"] (.snd "p"))] (fun | .other .. => true | _ => false) "a projection error" },
+    { name := "the second projection may drop an ω or erased first field", run := fun _ =>
+        accepts [Raw.defn "dropω" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" "B") "B")))
+            (lams ["A", "B", "p"] (.snd "p")),
+          Raw.defn "drop0" (forallA (pi' "B" zero ty (arr one (.sigma "x" zero "A" "B") "B")))
+            (lams ["A", "B", "p"] (.snd "p"))] },
     { name := "erased field can be bound by split and ignored", run := fun _ =>
         accepts [Raw.defn "ok" (forallA (pi' "B" zero ty (arr one (.sigma "x" zero "A" "B") "B")))
           (lams ["A", "B", "p"] (.split one "p" "z" "B" "x" "y" "y"))] },

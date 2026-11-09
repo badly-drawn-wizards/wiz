@@ -63,8 +63,8 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── fst       (an erased field can't be projected at runtime)
     Γ ⊢ t.1 ⇒ A ⊣ U
 
-    Γ ⊢ t ⇒ (q x : A) × B ⊣ U
-    ──────────────────────────────── snd
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 0 q  (or Γ is erased)
+    ──────────────────────────────── snd       (`t.2` drops the first field: it must allow that)
     Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ U
 
     Γ ⊢ s ⇒ (p x : A) × B ⊣ U₁     Γ, z : (p x : A) × B ⊢ M type
@@ -404,7 +404,12 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .snd t => do
     let (ty, u) ← infer ctx t
     match whnf ty with
-    | .sigma _ _ _ B _ => pure (Closure.inst ctx.globals B (vFst (ctx.eval t)), u)
+    | .sigma x q _ B _ =>
+      -- `t.2` discards the first field: only allowed if the field may go unused
+      let q ← qtyPoly ctx q
+      unless ctx.erased || QPoly.le (QPoly.const 0) q do
+        throw (.other s!"cannot discard the field {x}, which has quantity {q}; use let (x, y) := ... instead")
+      pure (Closure.inst ctx.globals B (vFst (ctx.eval t)), u)
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .split q s z m x y b => do
     let q ← checkQty ctx q
