@@ -289,6 +289,19 @@ where
 
 end Term
 
+/-- The binder name of a **phantom** argument (`Elab/Inductive.lean`): a type whose
+parameters no field mentions ends in `(0 phantom✝ : D) → … → Unit` instead of `Unit`,
+with `D` mentioning the parameter. Such a function type has one inhabitant up to η,
+`fun _ => ()`, so it has no runtime content (`erasable`). The name is inaccessible,
+so only the elaborator writes it. -/
+def phantomName : Name := "phantom✝"
+
+/-- The value of a phantom tail type, `fun _ … _ => ()`. -/
+partial def Term.phantomTailVal? {R : Type} : Term R → Option (Term R)
+  | .pi x _ _ _ b _ => if x == phantomName then (phantomTailVal? b).map (.lam phantomName) else none
+  | .unit _ => some .tt
+  | _ => none
+
 /-- The global environment. `order` records insertion order so anything that walks
 the environment does so deterministically (never iterate the hash map directly). -/
 structure Globals (R : Type) where
