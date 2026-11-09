@@ -1522,10 +1522,19 @@ def sizeArgs : List MTm :=
   [mus 0 (unit 0) natD star star, streamAt (enum 2),
    natAt szInf, ann (lam (natAt (var 0))) (pi size (univ 0)), ann (lam (streamAt (szSuc (var 0)))) (pi size (univ 0))]
 
+/-- Q4 (open): a description field may live in a smaller universe than `Desc.elim`'s
+`marg` expects (`Sort (l+1)`), and universes aren't cumulative, so `Desc.elim` can
+reduce to a term of the wrong type: `getS D : Type` (accepted) reduces to `True`, while
+`True : Type` is rejected. Both kernels agree on all three. -/
+def smallField : List MTm :=
+  let D := ann (darg ptrue (lam (dret star))) (desc 0 (unit 0))
+  let getS := delim 2 (lam (univ 0)) (lam (unit 0)) (lams 4 (var 2)) (lams 4 (unit 0)) (lams 5 (unit 0)) D
+  [ann getS (univ 0), ann ptrue (univ 0), ann star (eq (univ 0) getS (unit 0))]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ sizeInf ++ sizeEq ++ sizeArgs ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
