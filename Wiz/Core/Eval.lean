@@ -440,8 +440,9 @@ partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
     | some n => .neutral (.global n []) (args.map .app)
     | none => panic! s!"no definition for builtin {op}"
   else match g.builtins.lookup op, (g.builtins.lookup op).bind g.find? with
-    -- glued: it keeps its name (`Nat.pred n`, not its unfolding)
+    -- glued: it keeps its name (`Nat.pred n`, not its unfolding); `succ` is a constructor
     | some n, some { value := some v, .. } =>
+      if op == "nat.succ" then args.foldl (vApp g) (eval g [] v) else
       .unfold n [] (args.map .app) (Thunk.mk fun _ => args.foldl (vApp g) (eval g [] v))
     | _, _ => panic! s!"no definition for builtin {op}"
 
