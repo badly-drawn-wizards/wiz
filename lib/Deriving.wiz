@@ -1,0 +1,265 @@
+import Prelude
+-- Deriving (HD8). `inductive T … deriving C` and `deriving instance C for T` run C's
+-- *deriver*: a Wiz function `Deriver := String → MacroM (List Syntax)`, registered with
+-- `attribute [deriver C] f`. It looks the type up (`MacroM.getInductive`) and returns
+-- the commands that make the instance. This module defines three classes, their
+-- derivers, and instances for the prelude's types.
+
+class Inhabited (A : Type) where
+  default : A
+class BEq (A : Type) where
+  beq : A → A → Bool
+-- `reprPrec a p`: `a` as Wiz source, in parentheses if it is an application and `p` is
+-- the precedence of an argument (1024)
+class Repr (A : Type) where
+  reprPrec : A → Nat → String
+
+def Repr.repr {A : Type} [Repr A] (a : A) : String := Repr.reprPrec a 0
+def Repr.addAppParen (s : String) (p : Nat) : String := match Nat.lt p 1024 with
+  | .true => s
+  | .false => String.append "(" (String.append s ")")
+
+-- Decimal numerals (for `Repr Nat`; `Nat.toString` is an extern, so it only runs compiled).
+partial def Nat.powersFrom (n p : Nat) (acc : List Nat) : List Nat := match Nat.lt n p with
+  | .true => acc
+  | .false => Nat.powersFrom n (p * 10) (.cons p acc)
+partial def Nat.digitAt (n p d : Nat) : Nat := match Nat.lt n p with
+  | .true => d
+  | .false => Nat.digitAt (n - p) p (d + 1)
+def Nat.digitsFrom : List Nat → Nat → List Char
+  | .nil, _ => .nil
+  | .cons p ps, n => .cons (Char.mk (Nat.digitAt n p 0 + 48)) (Nat.digitsFrom ps (n - Nat.digitAt n p 0 * p))
+def Nat.repr (n : Nat) : String := match Nat.powersFrom n 1 .nil with
+  | .nil => "0"
+  | .cons p ps => String.mk (Nat.digitsFrom (.cons p ps) n)
+
+def List.beqBy {A : Type} (eq : A → A → Bool) : List A → List A → Bool
+  | .nil, .nil => .true
+  | .cons a xs, .cons b ys => Bool.and (eq a b) (List.beqBy eq xs ys)
+  | _, _ => .false
+def String.beq : String → String → Bool
+  | .mk xs, .mk ys => List.beqBy (fun c d => Nat.beq (Char.code c) (Char.code d)) xs ys
+
+instance : Inhabited Nat := Inhabited.mk 0
+instance : BEq Nat := BEq.mk Nat.beq
+instance : Repr Nat := Repr.mk (fun n _ => Nat.repr n)
+instance : Inhabited String := Inhabited.mk ""
+instance : BEq String := BEq.mk String.beq
+instance : Repr String := Repr.mk (fun s _ =>
+  String.append (String.mk (.cons (Char.mk 34) .nil)) (String.append s (String.mk (.cons (Char.mk 34) .nil))))
+
+-- ## Writing derivers
+-- Names a deriver introduces end in `✝` or contain it, so they can't capture the user's.
+
+def Derive.name (base : String) (i : Nat) : String := String.append base (Nat.repr i)
+def Derive.var (base : String) (i : Nat) : Syntax := Syntax.mkVar (Derive.name base i)
+
+def Derive.isType (t : Syntax) : Bool := match t with
+  | .node k _ => Bool.and (String.beq k "term.type") (match Syntax.getArg t 1 with
+    | .node _ args => match args with
+      | .nil => .true
+      | _ => .false
+    | .missing => .true
+    | _ => .false)
+  | _ => .false
+
+def Derive.lookup (cls n : String) : MacroM IndView := do
+  r ← MacroM.getInductive n;
+  match r with
+  | .none => MacroM.throw (String.append "not an inductive type or structure: " n)
+  | .some v => MacroM.pure v
+
+def Derive.noIndices (cls : String) (v : IndView) : MacroM Unit := match IndView.indices v with
+  | .nil => MacroM.pure ()
+  | _ => MacroM.throw "indexed families are not supported"
+
+-- `{x : T} → [C x] → …` for the parameters (an instance argument for each `Type`
+-- parameter), then `{ξ : I} → …` for the indices, then `concl`.
+def Derive.instBinder (cls : String) (p : ParamView) (rest : Syntax) : Syntax :=
+    let x := Syntax.mkIdent (ParamView.name p);
+    let t := ParamView.type p;
+    match Derive.isType t with
+    | .true =>
+      let c := Syntax.mkApp (Syntax.mkVar cls) (.cons (Syntax.mkVar (ParamView.name p)) .nil);
+      `(term| {$x : $t} → [$c] → $rest)
+    | .false => `(term| {$x : $t} → $rest)
+def Derive.instType (cls : String) (concl : Syntax) : List ParamView → Syntax
+  | .nil => concl
+  | .cons p ps => Derive.instBinder cls p (Derive.instType cls concl ps)
+def Derive.indexBinders (concl : Syntax) : List ParamView → Syntax
+  | .nil => concl
+  | .cons p ps =>
+    let x := Syntax.mkIdent (ParamView.name p);
+    let t := ParamView.type p;
+    let rest := Derive.indexBinders concl ps;
+    `(term| {$x : $t} → $rest)
+
+def Derive.paramVars : List ParamView → List Syntax
+  | .nil => .nil
+  | .cons p ps => .cons (Syntax.mkVar (ParamView.name p)) (Derive.paramVars ps)
+-- `T Δ ξ`
+def Derive.typeApp (v : IndView) : Syntax :=
+  Syntax.mkApp (Syntax.mkVar (IndView.name v)) (List.append (Derive.paramVars (IndView.params v)) (Derive.paramVars (IndView.indices v)))
+-- the type of the instance of `cls` for `v`
+def Derive.instanceType (cls : String) (v : IndView) : Syntax :=
+  Derive.instType cls (Derive.indexBinders (Syntax.mkApp (Syntax.mkVar cls) (.cons (Derive.typeApp v) .nil)) (IndView.indices v)) (IndView.params v)
+-- `instance : ty := val`
+def Derive.instance (ty val : Syntax) : Syntax := `(command| instance : $ty := $val)
+
+-- `fun x => b` or `fun {x} => b`
+def Derive.lam (k : BinderKind) (x : String) (b : Syntax) : Syntax :=
+  let i := Syntax.mkIdent x;
+  match k with
+  | .default => `(term| fun $i => $b)
+  | _ => `(term| fun {$i} => $b)
+-- `fun _ … _ => b` (n binders)
+def Derive.constLams : Nat → Syntax → Syntax
+  | .zero, b => b
+  | .succ n, b => let r := Derive.constLams n b; `(term| fun _ => $r)
+-- the fields of a constructor's recursor method: `f✝0 f✝1 …`, then `ih✝i` for each
+-- recursive field `i`
+def Derive.fieldLams : Nat → List FieldView → Syntax → Syntax
+  | _, .nil, b => b
+  | i, .cons f fs, b => Derive.lam (FieldView.kind f) (Derive.name "f✝" i) (Derive.fieldLams (i + 1) fs b)
+def Derive.ihLams : Nat → List FieldView → Syntax → Syntax
+  | _, .nil, b => b
+  | i, .cons f fs, b => match FieldView.recursive f with
+    | .true => Derive.lam .default (Derive.name "ih✝" i) (Derive.ihLams (i + 1) fs b)
+    | .false => Derive.ihLams (i + 1) fs b
+def Derive.method (fs : List FieldView) (b : Syntax) : Syntax := Derive.fieldLams 0 fs (Derive.ihLams 0 fs b)
+-- the explicit fields as variables with base name `base`
+def Derive.explicitVars (base : String) : Nat → List FieldView → List Syntax
+  | _, .nil => .nil
+  | i, .cons f fs => match FieldView.kind f with
+    | .default => .cons (Derive.var base i) (Derive.explicitVars base (i + 1) fs)
+    | _ => Derive.explicitVars base (i + 1) fs
+def Derive.ctorName (v : IndView) (c : CtorView) : String :=
+  String.append (IndView.name v) (String.append "." (CtorView.name c))
+-- Eliminate `x : T Δ ξ` into `motive`: `m c` is the result for constructor `c`, with
+-- its fields bound as `f✝i` and the recursive results as `ih✝i`. That is `T.rec` for an
+-- inductive type (each method binds them), and the projections `x.f` for a structure.
+def Derive.methods (v : IndView) (m : CtorView → Syntax) : List CtorView → List Syntax
+  | .nil => .nil
+  | .cons c cs => .cons (Derive.method (CtorView.fields c) (m c)) (Derive.methods v m cs)
+-- `x.f`
+def Derive.proj (x : Syntax) (f : String) : Syntax :=
+  Syntax.mkNode "term.field" (.cons x (.cons (.atom ".") (.cons (Syntax.mkIdent f) .nil)))
+-- `let f✝i := x.fᵢ; …; b` for the fields of a structure (`base` is `f✝` here)
+def Derive.lets (base : String) (x : Syntax) : Nat → List FieldView → Syntax → Syntax
+  | _, .nil, b => b
+  | i, .cons f fs, b =>
+    let y := Syntax.mkIdent (Derive.name base i);
+    let e := Derive.proj x (FieldView.name f);
+    let rest := Derive.lets base x (i + 1) fs b;
+    `(term| let $y := $e; $rest)
+def Derive.elim (v : IndView) (motive : Syntax) (m : CtorView → Syntax) (x : Syntax) : Syntax :=
+  match IndView.isStructure v with
+  | .false =>
+    Syntax.mkApp (Syntax.mkVar (String.append (IndView.name v) ".rec"))
+      (.cons motive (List.append (Derive.methods v m (IndView.ctors v)) (.cons x .nil)))
+  | .true => match IndView.ctors v with
+    | .cons c _ => Derive.lets "f✝" x 0 (CtorView.fields c) (m c)
+    | .nil => x
+
+-- ## Inhabited: the first constructor without recursive fields, at `default` values
+
+def Derive.allPlain : List FieldView → Bool
+  | .nil => .true
+  | .cons f fs => match FieldView.recursive f with
+    | .true => .false
+    | .false => Derive.allPlain fs
+def Derive.firstPlain : List CtorView → Option CtorView
+  -- Exercise 7.2: the first constructor none of whose fields is recursive
+  -- (`Derive.allPlain`), so that `default` doesn't need an instance being defined.
+  | .nil => .none
+  | .cons c _ => .some c
+def Derive.defaults : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons _ xs => .cons `(term| Inhabited.default) (Derive.defaults xs)
+
+def deriveInhabited : Deriver := fun n => do
+  v ← Derive.lookup "Inhabited" n;
+  Derive.noIndices "Inhabited" v;
+  match Derive.firstPlain (IndView.ctors v) with
+  | .none => MacroM.throw (String.append "every constructor of " (String.append n " is recursive"))
+  | .some c => do
+    let val := Syntax.mkApp (Syntax.mkVar (Derive.ctorName v c)) (Derive.defaults (Derive.explicitVars "f✝" 0 (CtorView.fields c)));
+    let inst := Derive.instance (Derive.instanceType "Inhabited" v) `(term| Inhabited.mk $val);
+    MacroM.pure (.cons inst .nil)
+attribute [deriver Inhabited] deriveInhabited
+
+-- ## Repr: `T.c a b` (in parentheses at argument position), `T.c` for a constant
+
+def Derive.reprShow (i : Nat) (r : Bool) : Syntax := match r with
+  | .true => let ih := Derive.var "ih✝" i; `(term| $ih 1024)
+  | .false => let x := Derive.var "f✝" i; `(term| Repr.reprPrec $x 1024)
+def Derive.reprField (i : Nat) (f : FieldView) (rest : Syntax) : Syntax := match FieldView.kind f with
+  | .default =>
+    let shown := Derive.reprShow i (FieldView.recursive f);
+    `(term| String.append " " (String.append $shown $rest))
+  | _ => rest
+def Derive.reprArgs : Nat → List FieldView → Syntax
+  | _, .nil => `(term| "")
+  | i, .cons f fs => Derive.reprField i f (Derive.reprArgs (i + 1) fs)
+def Derive.reprMethod (v : IndView) (c : CtorView) : Syntax :=
+  let name := Syntax.mkStr (Derive.ctorName v c);
+  let p := Syntax.mkIdent "p✝";
+  let pv := Syntax.mkVar "p✝";
+  match Derive.explicitVars "f✝" 0 (CtorView.fields c) with
+  | .nil => `(term| fun $p => $name)
+  | _ =>
+    let args := Derive.reprArgs 0 (CtorView.fields c);
+    `(term| fun $p => Repr.addAppParen (String.append $name $args) $pv)
+
+def deriveRepr : Deriver := fun n => do
+  v ← Derive.lookup "Repr" n;
+  let x := Syntax.mkIdent "x✝";
+  let xv := Syntax.mkVar "x✝";
+  let motive := Derive.constLams (List.length (IndView.indices v)) `(term| fun _ => Nat → String);
+  let body := Derive.elim v motive (Derive.reprMethod v) xv;
+  let inst := Derive.instance (Derive.instanceType "Repr" v) `(term| Repr.mk (fun $x => $body));
+  MacroM.pure (.cons inst .nil)
+attribute [deriver Repr] deriveRepr
+
+-- ## BEq: the same constructor, and equal fields
+
+def Derive.beqCmp (i : Nat) (r : Bool) : Syntax :=
+  let y := Derive.var "g✝" i;
+  match r with
+  | .true => let ih := Derive.var "ih✝" i; `(term| $ih $y)
+  | .false => let x := Derive.var "f✝" i; `(term| BEq.beq $x $y)
+def Derive.beqField (i : Nat) (f : FieldView) (rest : Syntax) : Syntax := match FieldView.kind f with
+  | .default =>
+    let here := Derive.beqCmp i (FieldView.recursive f);
+    `(term| Bool.and $here $rest)
+  | _ => rest
+def Derive.beqFields : Nat → List FieldView → Syntax
+  | _, .nil => `(term| Bool.true)
+  | i, .cons f fs => Derive.beqField i f (Derive.beqFields (i + 1) fs)
+def Derive.beqMethod (v : IndView) (c : CtorView) : Syntax :=
+  let y := Syntax.mkIdent "y✝";
+  let yv := Syntax.mkVar "y✝";
+  let pat := Syntax.mkApp (Syntax.mkVar (Derive.ctorName v c)) (Derive.explicitVars "g✝" 0 (CtorView.fields c));
+  let same := Derive.beqFields 0 (CtorView.fields c);
+  match IndView.isStructure v with
+  | .true =>
+    -- compare with the projections of `y`
+    let ys := Derive.lets "g✝" yv 0 (CtorView.fields c) same;
+    `(term| fun $y => $ys)
+  | .false => match IndView.ctors v with
+    | .cons _ .nil => `(term| fun $y => match $yv with | $pat => $same)
+    | _ => `(term| fun $y => match $yv with | $pat => $same | _ => Bool.false)
+
+def deriveBEq : Deriver := fun n => do
+  v ← Derive.lookup "BEq" n;
+  Derive.noIndices "BEq" v;
+  let x := Syntax.mkIdent "x✝";
+  let xv := Syntax.mkVar "x✝";
+  let T := Derive.typeApp v;
+  let body := Derive.elim v `(term| fun _ => $T → Bool) (Derive.beqMethod v) xv;
+  let inst := Derive.instance (Derive.instanceType "BEq" v) `(term| BEq.mk (fun $x => $body));
+  MacroM.pure (.cons inst .nil)
+attribute [deriver BEq] deriveBEq
+
+-- The prelude's types.
+deriving instance Inhabited, BEq, Repr for Bool, Option, List

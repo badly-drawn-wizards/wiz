@@ -6,6 +6,7 @@ import Wiz.FFI.CParse
 import Wiz.FFI.CGlue
 import Wiz.Compiler.C
 import Wiz.Elab.ProcMacro
+import Wiz.Elab.Reflect
 import Wiz.Frontend.Parse
 
 /-!
@@ -62,6 +63,10 @@ structure CommandState (R : Type) where
   procMacros : List (Name × Name) := []
   /-- `attribute [tactic k] f` registrations, latest first -/
   tactics : List (Name × Name) := []
+  /-- (HD8) `attribute [macro k] f` for `f : CommandMacro`, and `attribute [deriver C] f`,
+  latest first -/
+  cmdMacros : List (Name × Name) := []
+  derivers : List (Name × Name) := []
   /-- the erased code of every registered macro and tactic, made on first use (a `Thunk`
   remembers its value) and remade when one is registered -/
   metaCode : Thunk (Except String Code) := Thunk.pure (.ok {})
@@ -385,7 +390,7 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     | .ok c => if roots.all c.contains then .ok c
       else (compileReachable g builtins roots).mapError (s!"cannot compile the environment: {·}")
     | .error e => .error e
-  let runProcMacro f stx scope := do Elab.runProcMacro (← compileCode [f, "Macro.run"]) f stx scope
+  let runProcMacro f stx scope := do Elab.runProcMacro (← compileCode [f, "Macro.run"]) f stx scope (macroEnv g)
   let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
   (x.run { globals := g, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
            kernelInfer, classes, instances }).map fun (a, st) => (a, st.hovers)
@@ -398,10 +403,10 @@ def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   (runElabH g x levelParams macros builtins procMacros tactics metaCode classes instances).map (·.1)
 
 /-- The erased code of the registered macros and tactics (and what they reach), on demand. -/
-def mkMetaCode (g : Globals R) (builtins procMacros tactics : List (Name × Name)) :
+def mkMetaCode (g : Globals R) (builtins procMacros tactics : List (Name × Name)) (more : List Name := []) :
     Thunk (Except String Code) :=
   Thunk.mk fun _ =>
-    let roots := "TacticM.run" :: "Macro.run" :: (procMacros ++ tactics).map (·.2)
+    let roots := "TacticM.run" :: "Macro.run" :: (procMacros ++ tactics).map (·.2) ++ more
     (compileReachable g builtins roots).mapError (s!"cannot compile the macros and tactics: {·}")
 
 /-- The method functions of a class `C` (from its structure declaration):
@@ -588,6 +593,35 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let finOf (t : Term R) : String := match (Term.spine t).1 with
     | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
     | _ => ""
+  -- (HD8) the code of the registered macros, tactics and derivers
+  let remakeMetaCode : StateM (CommandState R) Unit := modify fun s =>
+    let more := if s.cmdMacros.isEmpty && s.derivers.isEmpty then []
+      else "CommandMacro.run" :: (s.cmdMacros ++ s.derivers).map (·.2)
+    { s with metaCode := mkMetaCode s.globals s.builtins s.procMacros s.tactics more }
+  let metaCodeFor (f : Name) (runner : Name := "CommandMacro.run") : Except String Code := match s.metaCode.get with
+    | .ok c => if c.contains f && c.contains runner then .ok c
+      else (compileReachable s.globals s.builtins [f, runner]).mapError (s!"cannot compile {f}: {·}")
+    | .error e => .error e
+  -- elaborate the commands a command macro or deriver produced
+  let elabExpansion (what : String) (r : Except String (Array Syntax × Nat)) (info : SourceInfo) :
+      StateM (CommandState R) Unit := do
+    match r with
+    | .error e => report .error info s!"{what}: {e}"
+    | .ok (cmds, next) =>
+      modify fun s => { s with nextScope := next }
+      for c in cmds do elabCommand c
+  -- `deriving C` for the type `T`: run `C`'s deriver
+  let derive (C T : Name) (info : SourceInfo) : StateM (CommandState R) Unit := do
+    let s ← get
+    match s.derivers.lookup C with
+    | none => report .error info s!"no deriver for {C} (register one with `attribute [deriver {C}] f`)"
+    | some f =>
+      let r := do Elab.runDeriver (← metaCodeFor f) f T info s.nextScope (macroEnv s.globals)
+      elabExpansion s!"deriving {C} for {T}" r info
+  let derivingClause (stx : Syntax) (T : Name) : StateM (CommandState R) Unit := do
+    unless stx.isNone do
+      for c in (stx.getArg 1).args do
+        if let some C := c.getId? then derive C T c.info
   let addDeclChecked (name : Name) (levelParams : List Name) (ty : Term R) (val : Option (Term R))
       (impl : Option (Term R) := none) := do
     match addDecl s.globals { name, levelParams, type := ty, value := val, impl } with
@@ -752,7 +786,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .ident _ n => [n]
       | .node _ _ as => as.toList.flatMap idents
       | _ => []
-    let base := "inst" ++ String.join ((idents typeStx).map fun n => (n.replace "." "").capitalize)
+    -- (HD8) named after the conclusion of a Π-type (as derivers write them), without macro scopes
+    let rec concl (stx : Syntax) : Syntax :=
+      if stx.isOfKind "term.depArrow" then concl (stx.getArg 2) else stx
+    let base := "inst" ++ String.join ((idents (concl typeStx)).map fun n => ((stripScope n).replace "." "").capitalize)
     let name := if !s.globals.contains base then base else
       ((List.range 1000).map (s!"{base}_{·}")).find? (!s.globals.contains ·) |>.getD base
     -- `where f := v …` builds the class's constructor applied to the fields, in order
@@ -821,6 +858,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
                 report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
                 return
         modify fun s => { s with globals := g }
+        derivingClause (cmd.getArg 7) name
   | "command.builtin" =>
     let key := ((cmd.getArg 1).getId?).getD "_"
     let n := ((cmd.getArg 3).getId?).getD "_"
@@ -980,15 +1018,21 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.attrMacro" =>
     let k := ((cmd.getArg 3).getId?).getD "_"
     let f := ((cmd.getArg 5).getId?).getD "_"
-    let ok := runElab s.globals do
+    let hasType (T : Name) := runElab s.globals do
       let (_, ty) ← Elab.infer {} (.node cmd.info "term.ident" #[cmd.getArg 5])
-      let macroTy ← evalIn {} (.const "Macro" [])
+      let macroTy ← evalIn {} (.const T [])
       unifyAt {} cmd macroTy ty
-    match ok with
+    -- (HD8) a command macro expands one command into several
+    let isCommandMacro := k.startsWith "command." && s.globals.contains "CommandMacro" &&
+      (hasType "CommandMacro" matches .ok ())
+    if isCommandMacro then
+      modify fun s => { s with cmdMacros := (k, f) :: s.cmdMacros }
+      remakeMetaCode
+    else match hasType "Macro" with
     | .error e => report .error e.info s!"{f} is not a macro: {e.msg}"
     | .ok () =>
       modify fun s => { s with procMacros := (k, f) :: s.procMacros }
-      modify fun s => { s with metaCode := mkMetaCode s.globals s.builtins s.procMacros s.tactics }
+      remakeMetaCode
   | "command.attrTactic" =>
     let k := ((cmd.getArg 3).getId?).getD "_"
     let f := ((cmd.getArg 5).getId?).getD "_"
@@ -1000,7 +1044,25 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .error e => report .error e.info s!"{f} is not a tactic: {e.msg}"
     | .ok () =>
       modify fun s => { s with tactics := (k, f) :: s.tactics }
-      modify fun s => { s with metaCode := mkMetaCode s.globals s.builtins s.procMacros s.tactics }
+      remakeMetaCode
+  | "command.attrDeriver" =>
+    let C := ((cmd.getArg 3).getId?).getD "_"
+    let f := ((cmd.getArg 5).getId?).getD "_"
+    let ok := runElab s.globals do
+      let (_, ty) ← Elab.infer {} (.node cmd.info "term.ident" #[cmd.getArg 5])
+      let deriverTy ← evalIn {} (.const "Deriver" [])
+      unifyAt {} cmd deriverTy ty
+    match ok with
+    | .error e => report .error e.info s!"{f} is not a deriver: {e.msg}"
+    | .ok () =>
+      modify fun s => { s with derivers := (C, f) :: s.derivers }
+      remakeMetaCode
+  | "command.deriving" =>
+    -- `deriving instance C₁, C₂ for T₁, T₂`
+    let ids (stx : Syntax) := stx.args.toList.filter (·.getId?.isSome)
+    for T in ids (cmd.getArg 4) do
+      for C in ids (cmd.getArg 2) do
+        derive (C.getId?.getD "_") (T.getId?.getD "_") C.info
   | "command.erase" =>
     let n := ((cmd.getArg 1).getId?).getD "_"
     match s.globals.find? n with
@@ -1086,6 +1148,19 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | some cmd' =>
       modify fun s => { s with nextScope := s.nextScope + 1 }
       elabCommand cmd'
-    | none => report .error cmd.info s!"no elaborator for command kind {k}"
+    | none =>
+      -- (HD8) a command macro, written in Wiz
+      match s.cmdMacros.lookup k with
+      | some f =>
+        let r := do Elab.runCommandMacro (← metaCodeFor f) f cmd s.nextScope (macroEnv s.globals)
+        elabExpansion s!"macro {f}" r cmd.info
+      | none => match s.procMacros.lookup k with
+        | some f =>
+          -- a `Macro` for a command kind: one command
+          let r := do
+            let (out, next) ← Elab.runProcMacro (← metaCodeFor f "Macro.run") f cmd s.nextScope (macroEnv s.globals)
+            pure (#[out], next)
+          elabExpansion s!"macro {f}" r cmd.info
+        | none => report .error cmd.info s!"no elaborator for command kind {k}"
 
 end Wiz
