@@ -135,7 +135,7 @@ def levelTrailing : List TrailingParser := [
 | `term.sized` (trailing) | max | T "^" s: an inductive or coinductive type at size `s` |
 
 The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
-`Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out` and `coit` have no syntax of their
+`Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out`, `coit` and `cocon` have no syntax of their
 own: they are names the elaborator recognises when applied (unless shadowed).
 
 Field access by name (`p.x`) needs no syntax: `p.x` lexes as one dotted identifier,

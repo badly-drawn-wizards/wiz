@@ -395,9 +395,15 @@ namespace Tests.Elab
 
 def streamPrelude : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\n\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n\ndef nats (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => nats (.succ n)\n\n\ndef repeat {A : Type} (a : A) : Stream A\n  | .head => a\n  | .tail => repeat a\n\n"
 
+/-- `register` (no corecursive observation: `cocon`) and `mealy` (corecursive: `coit`). -/
+def registerSrc : String :=
+  "def register {A : Type} (init : A) (s : Stream A) : Stream A\n  | .head => init\n  | .tail => s\n" ++
+  "def mealy {S I O : Type} (f : S → I → S × O) (st : S) (i : Stream I) : Stream O\n" ++
+  "  | .head => (f st i.head).2\n  | .tail => mealy f (f st i.head).1 i.tail\n"
+
 def coinductiveGroup : Group where
   name := "copatterns"
-  exercise := "stage 4e"
+  exercise := "stage 4e, Exercise 4.24"
   cases := [
     { name := "Stream, nats, repeat", run := fun _ => ok streamPrelude },
     { name := "observations unfold lazily", run := fun _ =>
@@ -408,6 +414,36 @@ def coinductiveGroup : Group where
         fails (streamPrelude ++ "def bad (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => (bad n).tail") "guardedness" },
     { name := "every observation must be defined", run := fun _ =>
         fails (streamPrelude ++ "def bad (n : Nat) : Stream Nat\n  | .head => n") "missing copattern" },
+    { name := "no corecursive observation: a cocon cell (register)", run := fun _ =>
+        ok (streamPrelude ++ registerSrc ++ "#reduce (register Nat.zero (nats (.succ .zero))).tail.head")
+          [".succ .zero"] },
+    { name := "a copattern definition without arguments", run := fun _ =>
+        ok (streamPrelude ++ "def s : Stream Nat\n  | .head => .zero\n  | .tail => nats .zero\n#reduce s.tail.tail.head")
+          [".succ .zero"] },
+    { name := "guardedness: no unguarded call in a cocon definition", run := fun _ =>
+        fails (streamPrelude ++ "def bad (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => repeat (bad n).head") "guardedness" },
+    { name := "guardedness: corecursive and plain recursive observations don't mix", run := fun _ =>
+        fails ("coinductive Tree (A : Type) where\n  label : A\n  left : Tree A\n  right : Tree A\n" ++
+          "def bad {A : Type} (a : A) (t : Tree A) : Tree A\n  | .label => a\n  | .left => bad a t\n  | .right => t") "guardedness" },
+    { name := "the coconstructor T.mk and .mk", run := fun _ =>
+        ok (streamPrelude ++ "#check @Stream.mk\ndef s : Stream Nat := .mk .zero (Stream.mk (.succ .zero) (nats .zero))\n#reduce s.tail.tail.head")
+          ["Stream.mk : {A : Type} → A → Stream A → Stream A", ".zero"] },
+    { name := "cocon, the kernel primitive", run := fun _ =>
+        ok (streamPrelude ++ "def s : Stream Nat := cocon (.zero, nats (.succ .zero), (), ())\n#reduce s.tail.head")
+          [".succ .zero"] },
+    { name := "cocon needs a coinductive expected type", run := fun _ =>
+        fails (streamPrelude ++ "def bad : Nat := cocon (.zero, ())") "cocon builds a coinductive value" },
+    { name := "cocon at a variable size is rejected", run := fun _ =>
+        fails (streamPrelude ++ "def bad (i : Size) (s : (Stream Nat)^i) : (Stream Nat)^i := cocon (.zero, s, (), ())") "size ↑s" },
+    { name := "a sized register: the tail one size down", run := fun _ =>
+        ok (streamPrelude ++ "def register {i : Size} (a : Nat) (s : (Stream Nat)^i) : (Stream Nat)^(↑i)\n  | .head => a\n  | .tail => s") },
+    { name := "a sized register can't keep the size", run := fun _ =>
+        fails (streamPrelude ++ "def bad {i : Size} (a : Nat) (s : (Stream Nat)^i) : (Stream Nat)^i\n  | .head => a\n  | .tail => s") "size ↑s or ∞" },
+    { name := "cocon bumps the size", run := fun _ =>
+        ok (streamPrelude ++ "def delay (i : Size) (s : (Stream Nat)^i) : (Stream Nat)^(↑i) := cocon (.zero, s, (), ())") },
+    { name := "mealy machines by copatterns (coit, state = the arguments)", run := fun _ =>
+        ok (streamPrelude ++ registerSrc ++ "#reduce (mealy (fun (n : Nat) (x : Nat) => (.succ n, n)) .zero (nats .zero)).tail.tail.head")
+          [".succ (.succ .zero)"] },
     { name := "generalised field notation on inductives too", run := fun _ =>
         ok (matchPrelude ++ "def Vec.tail {A : Type} {n : Nat} : Vec A (.succ n) → Vec A n\n  | .cons _ xs => xs\n" ++
             "def tl {A : Type} {n : Nat} (v : Vec A (.succ (.succ n))) : Vec A n := v.tail.tail") }
@@ -622,6 +658,9 @@ def backendGroup : Group where
           ["21"] },
     { name := "codata is lazy", run := fun _ =>
         okLib (streamPrelude ++ "#run (nats .zero).tail.tail.head") [".succ (.succ .zero)"] },
+    { name := "codata built by cocon (register) and coit (mealy)", run := fun _ =>
+        okLib (streamPrelude ++ registerSrc ++ "#run (register Nat.zero (mealy (fun (n : Nat) (x : Nat) => (.succ n, n)) .zero (nats .zero))).tail.tail.head")
+          [".succ .zero"] },
     { name := "sized recursion", run := fun _ =>
         okLib (runPrelude ++ "#run fib (.succ (.succ (.succ (.succ (.succ .zero)))))")
           [".succ (.succ (.succ (.succ (.succ (.succ (.succ (.succ .zero)))))))"] },
@@ -726,6 +765,16 @@ def ffiGroup : Group where
         ioFails "import IO\nglue bad (s : String) : Nat := \"return s[0];\"" "indexing" },
     { name := "glue: only declared functions", run := fun _ =>
         ioFails "import IO\nglue bad (n : Nat) : Nat := \"return system(n);\"" "unknown C function system" },
+    { name := "codata is recomputed on every observation (current behaviour)", run := fun _ =>
+        -- `noisy` prints when it runs. Building `s` unfolds `counter 0` (one step: the
+        -- next state is computed with the payload); each `s.head` unfolds `s` again.
+        -- Memoising `out` would print `step` twice, not three times
+        -- (wiz-notes/wishful/memoised-codata.md).
+        ioRun ("import IO\nimport_c \"stdio.h\" (pure)\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
+          "def noisy (n : Nat) : Nat := n + 0 * C.puts \"step\"\n" ++
+          "def counter (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => counter (noisy (n + 1))\n" ++
+          "def main : IO Unit := do\n  let s := (counter 0).tail;\n  IO.println (Nat.toString s.head);\n  IO.println (Nat.toString s.head)")
+          "step\nstep\n1\nstep\n1\n" },
     { name := "glue: types are checked", run := fun _ =>
         ioFails "import IO\nglue bad (n : Nat) : String := \"return n + 1;\"" "expected a string" },
     { name := "foreign pointers are released by their finalizer", run := fun _ =>
@@ -2015,6 +2064,15 @@ def nativeCases (llvm : Bool) : List Case :=
         cRun (llvm := llvm) "import Prelude\ndef adder (n : Nat) : Nat → Nat := fun x => x + n\ndef twice (f : Nat → Nat) (x : Nat) : Nat := f (f x)\ndef main : Nat := twice (adder 10) 1" "21" },
     { name := "codata", run := fun _ =>
         cRun (llvm := llvm) (streamPrelude ++ "def main : Nat := (nats .zero).tail.tail.head") ".succ (.succ .zero)" },
+    { name := "codata by copatterns: register (cocon) and mealy (coit)", run := fun _ =>
+        cRun (llvm := llvm) ("import Prelude\ncoinductive Stream (A : Type) where\n  head : A\n  tail : Stream A\n" ++
+          "def nats (n : Nat) : Stream Nat\n  | .head => n\n  | .tail => nats (n + 1)\n" ++
+          "def register {A : Type} (init : A) (s : Stream A) : Stream A\n  | .head => init\n  | .tail => s\n" ++
+          "def mealy {S I O : Type} (f : S → I → S × O) (st : S) (i : Stream I) : Stream O\n" ++
+          "  | .head => (f st i.head).2\n  | .tail => mealy f (f st i.head).1 i.tail\n" ++
+          "def take {A : Type} : Nat → Stream A → List A\n  | .zero, _ => .nil\n  | .succ n, s => .cons s.head (take n s.tail)\n" ++
+          "def main : List Nat := take 6 (register 100 (mealy (fun acc x => (acc + x, acc + x)) 0 (Stream.mk 1 (nats 1))))")
+          ".cons 100 (.cons 1 (.cons 2 (.cons 4 (.cons 7 (.cons 11 .nil)))))" },
     { name := "infinitary data", run := fun _ =>
         cRun (llvm := llvm) (treePrelude ++ "def main : Nat := Tree.depthAt (.node (fun i => .node (fun j => .leaf))) 3") "3" },
     { name := "deep recursion (direct recursion, big stack)", run := fun _ =>
