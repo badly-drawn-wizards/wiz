@@ -16,7 +16,7 @@ namespace Wiz.C
 open IR
 
 /-- The runtime, embedded in the compiler. (Lake does not track `include_str`: after
-editing `runtime/wiz.c`, change this file too, e.g. this counter: 17.) -/
+editing `runtime/wiz.c`, change this file too, e.g. this counter: 18.) -/
 def runtime : String := include_str "../../runtime/wiz.c"
 
 /-- A C identifier for a Wiz name: letters and digits stay, anything else is `_xx`. -/
@@ -158,6 +158,13 @@ def decl (arities : Std.HashMap Name Nat) (d : IR.Decl) : String :=
   let locals := ((bound d.body).filter (!d.params.contains ·)).toList.eraseDups.toArray
   let decls := if locals.isEmpty then "" else s!"  wiz_val {", ".intercalate (locals.toList.map var)};\n"
   let boxedArgs := ", ".intercalate ((List.range d.params.size).map (s!"a[{·}]"))
+  -- (a hoisted constant is built once, made immortal, and shared)
+  if d.name.startsWith "wiz.const." && d.params.isEmpty then
+    s!"static wiz_val {mangle d.name}_build(void) {lb}\n{decls}{body arities {} d.body}{rb}\n" ++
+    s!"{signature d} {lb} static wiz_val c = 0; if (!c) {lb} c = {mangle d.name}_build(); wiz_immortal(c); {rb} " ++
+    s!"wiz_inc(c); return c; {rb}\n" ++
+    s!"static wiz_val {mangle d.name}_boxed(wiz_val *a) {lb} return {mangle d.name}(); {rb}\n"
+  else
   s!"{signature d} {lb}\n{decls}{body arities {} d.body}{rb}\n" ++
   s!"static wiz_val {mangle d.name}_boxed(wiz_val *a) {lb} return {mangle d.name}({boxedArgs}); {rb}\n"
 where

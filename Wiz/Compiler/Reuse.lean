@@ -82,6 +82,137 @@ partial def elimDead : Body → Body × Std.HashSet Var
   | .drop x b => let (b', f) := elimDead b; (.drop x b', f.insert x)
   | .unreachable => (.unreachable, {})
 
+/-- A closed constant: built from numbers, `◾` and constructors only. A constructor node
+caches its hash, computed from its children's (so hashing is O(1) and interning every
+node of a constant is linear in its size); build one only with `Const.mkCtor`, which
+computes it. -/
+inductive Const where
+  | erased
+  | lit (n : Nat)
+  | ctor (tag : Nat) (args : Array Const) (cachedHash : UInt64)
+  deriving Inhabited
+
+namespace Const
+
+def hash : Const → UInt64
+  | erased => 7
+  | lit n => mixHash 13 (Hashable.hash n)
+  | ctor _ _ h => h
+
+/-- The only way to build a constructor node: its hash from its tag and its children's. -/
+def mkCtor (t : Nat) (args : Array Const) : Const :=
+  .ctor t args (args.foldl (fun h a => mixHash h a.hash) (mixHash 17 (Hashable.hash t)))
+
+instance : Hashable Const := ⟨Const.hash⟩
+
+/-- Equal constants: the cached hashes first (unequal ones differ at once), then the
+structure. -/
+partial def beq (a b : Const) : Bool :=
+  a.hash == b.hash && match a, b with
+    | erased, erased => true
+    | lit m, lit n => m == n
+    | ctor t as _, ctor u bs _ => t == u && as.size == bs.size && (as.zip bs).all fun (x, y) => beq x y
+    | _, _ => false
+
+instance : BEq Const := ⟨Const.beq⟩
+
+end Const
+
+/-- Constants hoisted out of the functions (a string literal is a list of characters,
+and was built again at every use): each closed constant constructor becomes a call of a
+function `wiz.const.k` without parameters, which the C backend runs once (other
+backends just call it). The constants are numbered in a table, equal ones once. -/
+structure Hoist where
+  table : Std.HashMap Const Name := {}
+  decls : Array Decl := #[]
+
+/-- The body that builds a constant, in A-normal form, from variable `next` on. -/
+partial def Const.build (c : Const) (next : Var) : Body × Var × Var :=
+  match c with
+  | .erased => (.vdecl next .erased (.ret next), next, next + 1)
+  | .lit n => (.vdecl next (.lit n) (.ret next), next, next + 1)
+  | .ctor t args _ =>
+    -- the arguments first, then the constructor
+    let (wrap, vs, n) := args.foldl (fun (acc : (Body → Body) × Array Var × Var) a =>
+      let (w, vs, n) := acc
+      let (b, v, n') := a.build n
+      (fun k => w (splice b k), vs.push v, n')) ((fun k => k), #[], next)
+    (wrap (.vdecl n (.ctor t vs) (.ret n)), n, n + 1)
+where
+  -- replace the final `ret` of a straight-line body by `k`
+  splice : Body → Body → Body
+    | .vdecl x e b, k => match b with
+      | .ret _ => .vdecl x e k
+      | _ => .vdecl x e (splice b k)
+    | b, _ => b
+
+/-- The variables a body uses other than as the field of a constant constructor (`roots`
+are the constants needed as values: only those are hoisted, so a string's suffixes don't
+each get a function, and each constant is hashed and built once). -/
+partial def valueUses (consts : Std.HashSet Var) : Body → Std.HashSet Var → Std.HashSet Var
+  | .vdecl x e rest, acc =>
+    let acc := valueUses consts rest acc
+    match e with
+    | .ctor _ _ => if consts.contains x then acc else e.args.foldl (·.insert ·) acc
+    | _ => e.args.foldl (·.insert ·) acc
+  | .case x alts, acc => alts.foldl (fun acc a => valueUses consts a acc) (acc.insert x)
+  | .jdecl _ _ body k, acc => valueUses consts k (valueUses consts body acc)
+  | .ret x, acc => acc.insert x
+  | .jmp _ as, acc => as.foldl (·.insert ·) acc
+  | .dup x b, acc | .drop x b, acc => valueUses consts b (acc.insert x)
+  | .unreachable, acc => acc
+
+/-- The constant variables of a body, and their trees. -/
+partial def constVars (consts : Std.HashMap Var Const) : Body → Std.HashMap Var Const
+  | .vdecl x e rest =>
+    let c? : Option Const := match e with
+      | .erased => some .erased
+      | .lit n => some (.lit n)
+      | .ctor t as => if as.all consts.contains then some (Const.mkCtor t (as.map (consts.getD · .erased))) else none
+      | _ => none
+    constVars (match c? with | some c => consts.insert x c | none => consts) rest
+  | .case _ alts => alts.foldl (fun acc a => constVars acc a) consts
+  | .jdecl _ _ body k => constVars (constVars consts body) k
+  | _ => consts
+
+partial def hoistBody (st : Hoist) (consts : Std.HashMap Var Const) (roots : Std.HashSet Var) : Body → Hoist × Body
+  | .vdecl x e rest =>
+    let (st, e') := match e with
+      | .ctor _ as =>
+        if as.isEmpty || !roots.contains x then (st, e) else
+        match consts.get? x with
+        | none => (st, e)
+        | some c => match st.table.get? c with
+          | some n => (st, Expr.fap n #[])
+          | none =>
+            let n := s!"wiz.const.{st.decls.size}"
+            let (b, _, _) := c.build 0
+            ({ table := st.table.insert c n, decls := st.decls.push { name := n, params := #[], body := b } },
+              Expr.fap n #[])
+      | _ => (st, e)
+    let (st, rest') := hoistBody st consts roots rest
+    (st, .vdecl x e' rest')
+  | .case x alts =>
+    let (st, alts') := alts.foldl (fun (acc : Hoist × Array Body) a =>
+      let (st, bs) := acc
+      let (st, a') := hoistBody st consts roots a
+      (st, bs.push a')) (st, #[])
+    (st, .case x alts')
+  | .jdecl j ps body k =>
+    let (st, body') := hoistBody st consts roots body
+    let (st, k') := hoistBody st consts roots k
+    (st, .jdecl j ps body' k')
+  | b => (st, b)
+
+def hoistConsts (decls : Array Decl) : Array Decl :=
+  let (st, ds) := decls.foldl (fun (acc : Hoist × Array Decl) d =>
+    let (st, ds) := acc
+    let consts := constVars {} d.body
+    let roots := valueUses (consts.fold (fun acc x _ => acc.insert x) {}) d.body {}
+    let (st, b) := hoistBody st consts roots d.body
+    (st, ds.push { d with body := b })) ({}, #[])
+  ds ++ st.decls
+
 /-- The backend's optimisations, in order: dead code, reference counting, then reuse. -/
 def Decl.optimize (d : Decl) : Decl :=
   let d := { d with body := (elimDead d.body).1 }

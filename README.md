@@ -1532,6 +1532,24 @@ branches over structurally equal environments (checked within a budget of nodes,
 allocating: `valSame`) are equal without comparing the branches. The self-check: 20 s to
 13 s.
 
+### 20f: sparse usages, shared constants ✅
+
+* The kernel's usage lists (how often each variable is used, for quantities) may stop
+  early, the variables after the end unused: no usage is the empty list, instead of a
+  list as long as the context for every term (a third of the kernel's allocations).
+* **Constants are hoisted** (`hoistConsts` in `Reuse.lean`): a string literal is a list
+  of characters, and was built again at every use (`strEq (kindOf s) "term.ident"`:
+  about twenty allocations). A closed constant used as a value becomes a function
+  `wiz.const.k` without parameters, which the C backend runs once, marking the result
+  immortal (never freed, not counted as a leak); the other backends just call it.
+  Constants are interned in a table: each constructor node caches its hash, computed
+  from its children's by the smart constructor `Const.mkCtor`, so interning is linear in
+  their size, and only the constants used as values (not every suffix of a string) get
+  a function.
+
+The self-check: 13 s to 11 s. Since the start of stage 20 it went from about 17
+minutes (on a stubbed prefix) to 11 s.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅

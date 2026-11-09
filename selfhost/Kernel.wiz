@@ -1012,15 +1012,15 @@ def qle (u d : Q) : Bool := Bool.or (qEq u d) (qEq d .qw)
 def qjoin (a b : Q) : Q := match qEq a b with
   | .true => a
   | .false => .qw
-def uZeros : Nat → List Q
-  | .zero => .nil
-  | .succ n => .cons .qz (uZeros n)
+-- (a usage list may stop early: the variables after its end are unused, so no usage at
+-- all is the empty list, and building one as long as the context for every term was a
+-- third of the kernel's allocations)
+def uZeros (_ : Nat) : List Q := .nil
 -- `n` variables, the one at index `i` used once
-def uSingle : Nat → Nat → List Q
-  | .zero, _ => .nil
-  | .succ n, i => match i with
-    | .zero => .cons .qo (uZeros n)
-    | .succ j => .cons .qz (uSingle n j)
+def uOne : Nat → List Q
+  | .zero => .cons .qo .nil
+  | .succ j => .cons .qz (uOne j)
+def uSingle (_ i : Nat) : List Q := uOne i
 def uAdd : List Q → List Q → List Q
   | .cons a r, .cons b r' => .cons (qadd a b) (uAdd r r')
   | u, .nil => u
