@@ -1550,6 +1550,42 @@ allocating: `valSame`) are equal without comparing the branches. The self-check:
 The self-check: 13 s to 11 s. Since the start of stage 20 it went from about 17
 minutes (on a stubbed prefix) to 11 s.
 
+## Stage 21: bootstrap
+
+### 21a–c: a self-hosted backend ✅
+
+`selfhost/Backend.wiz` compiles what the self-hosted frontend checked to C, and
+`selfhost/rt.c` is its runtime. A minimal first version:
+
+* **Erasure** (`eraseCheck`, **exercise 21.1**; `eraseInfer`), type directed through the
+  self-hosted kernel (`quickType` follows elimination spines, else `infer`): types,
+  proofs, sizes and quantity-`0` arguments become `◾`. A value of `μ D i` stays its
+  payload, nested pairs, except for a type shaped like the natural numbers, whose
+  values are native numbers (unpacked for a match). Descriptions become objects, which
+  the runtime's `ind` walks to build the induction hypotheses, **lazily**: a hypothesis
+  is computed when the method first reads it (eagerly, every structural function walked
+  its whole argument).
+* **Lazy `let`s**: the match compiler's `let`s (a shared catch-all, the hypotheses) are
+  substituted when cheap (variables, projections) and else suspended with `memo`;
+  evaluated eagerly they made the self-compiled compiler thousands of times slower.
+* **C** (`cgE`, **exercise 21.2**): each term one C expression (GNU statement
+  expressions for `let` and `case`), `λ`s lifted to C functions over their captured
+  variables; a global defined by `k` `λ`s is a C function of `k` arguments, called
+  directly when applied to as many (else through a curried closure); other globals are
+  values built on first use. Natives by name: `Nat` arithmetic, `IO`, `Str`, arrays
+  (persistent: Baker's trick), `StrMap` (a persistent treap), `memo`.
+* **Runtime**: tagged words, objects collected by the Boehm garbage collector (no
+  reference counts yet); the program re-executes itself once with a large stack.
+
+**Bootstrap**: the self-hosted compiler (frontend and backend, about 6500 lines of Wiz),
+compiled by the Lean toolchain, compiles itself to C (about 90 000 lines); that program
+(stage 2) produces the same C as stage 1 on the inputs tried. The test suite compiles
+and runs a program with the self-hosted compiler (when `$WIZ_GC_CFLAGS`/`$WIZ_GC_LDFLAGS`
+point at the garbage collector).
+
+Next: flat constructors, multi-argument closures and reference counting, to bring
+stage 2 (about 15× slower than stage 1) closer.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅

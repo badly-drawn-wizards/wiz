@@ -1,0 +1,647 @@
+-- The backend, in Wiz (stage 21): from the kernel terms the self-hosted frontend checks
+-- to C. Load it after `Frontend.wiz`. A first, minimal version (21a–b): no reference
+-- counting (the runtime collects garbage), payloads stay nested pairs.
+--
+-- **Erasure** (21a) follows `Wiz/Compiler/Erase.lean`: a checked term becomes an
+-- untyped program (`ETm`) without what has no runtime content. Types (anything whose
+-- type is a sort), proofs (anything whose type is a proposition) and sizes become `◾`,
+-- and so do the arguments and the first components of quantity `0`. Binders are kept
+-- (an erased argument is passed as `◾`), so de Bruijn indices don't change. Erasure is
+-- type directed: `eraseCheck` knows the expected type, `eraseInfer` computes it.
+--
+-- **Data.** A value of `μ D i` is its payload, nested pairs `(tag, (f₁, … ◾))`, except
+-- for a type shaped like the natural numbers (two constructors, the second with one
+-- recursive field, no index): its values are native numbers, and a match on one first
+-- unpacks it (`natUnpack`). Descriptions are runtime data (`ret i` is `⟨0 i⟩`, `arg S F`
+-- is `⟨1 ◾ F⟩`, `rec j E` is `⟨2 j E⟩`, `hrec H j E` is `⟨3 ◾ j E⟩`): the runtime's `ind`
+-- walks them to compute the induction hypotheses.
+
+mutual
+inductive ETm where
+  | erased
+  | var (i : Nat)
+  | glob (name : String)
+  | lam (body : ETm)
+  | app (f a : ETm)
+  | letE (val body : ETm)
+  -- an object: a tag and fields (a pair is `obj 0 [a, b]`, a tag `obj k []`)
+  | obj (tag : Nat) (fields : ETms)
+  | proj (i : Nat) (t : ETm)
+  -- branch on the tag of a value
+  | case (scrut : ETm) (branches : ETms)
+  | nat (n : Nat)
+  -- a runtime operation: `ind`, `natSucc`, `natUnpack`, `natPack`, `unreachable`
+  | prim (op : String) (args : ETms)
+inductive ETms where
+  | nil
+  | cons (t : ETm) (rest : ETms)
+end
+
+def etms1 (a : ETm) : ETms := .cons a .nil
+def etms2 (a b : ETm) : ETms := .cons a (etms1 b)
+def etms4 (a b c d : ETm) : ETms := .cons a (.cons b (etms2 c d))
+def epair (a b : ETm) : ETm := .obj 0 (etms2 a b)
+def eapps : ETm → ETms → ETm
+  | f, .nil => f
+  | f, .cons a rest => eapps (.app f a) rest
+
+mutual
+def showE : ETm → String
+  | .erased => "◾"
+  | .var i => String.append "#" (Nat.toString i)
+  | .glob n => n
+  | .lam b => String.append "(λ " (String.append (showE b) ")")
+  | .app f a => String.append "(" (String.append (showE f) (String.append " " (String.append (showE a) ")")))
+  | .letE v b => String.append "(let " (String.append (showE v) (String.append "; " (String.append (showE b) ")")))
+  | .obj t fs => String.append "⟨" (String.append (Nat.toString t) (String.append (showEs fs) "⟩"))
+  | .proj i t => String.append (showE t) (String.append "." (Nat.toString i))
+  | .case s bs => String.append "(case " (String.append (showE s) (String.append " [" (String.append (showEs bs) "])")))
+  | .nat n => Nat.toString n
+  | .prim op as => String.append "(" (String.append op (String.append (showEs as) ")"))
+def showEs : ETms → String
+  | .nil => ""
+  | .cons t rest => String.append " " (String.append (showE t) (showEs rest))
+end
+
+-- Has a value of this type no runtime content? (types, proofs, sizes)
+def erasable (c : TCtx) (ty : Val) : Bool := match whnf ty with
+  | .vsort _ => .true
+  | .vsize => .true
+  | .vsizeLt _ => .true
+  | t => isProp c t
+
+-- Is this `μ` shaped like the natural numbers? Its values are numbers at runtime.
+def isNatDesc (D : Val) : Bool := match whnf D with
+  | .vdarg S F => match whnf S with
+    | .venum k => match Nat.beq k 2 with
+      | .true => match whnf (vapp F (.vtag 2 0)) with
+        | .vdret _ => match whnf (vapp F (.vtag 2 1)) with
+          | .vdrec _ E => match whnf E with
+            | .vdret _ => .true
+            | _ => .false
+          | _ => .false
+        | _ => .false
+      | .false => .false
+    | _ => .false
+  | _ => .false
+def isNatTy (ty : Val) : Bool := match whnf ty with
+  | .vmu _ I D _ _ => match whnf I with
+    | .vunit _ => isNatDesc D
+    | _ => .false
+  | _ => .false
+
+def inferTy (c : TCtx) (t : Tm) : Option Val := match infer c t with
+  | .ok ty _ => .some ty
+  | .err _ => .none
+-- the type of a term already known to be well typed, without checking it again: along
+-- an elimination spine, else by the kernel's `infer` (erasure asks for the type of
+-- every subterm; a full `infer` at each would be quadratic in the nesting depth)
+partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
+  | .var i => .some (lookup (TCtx.types c) i)
+  | .const _ ps ls _ ty => .some (eval .nil (substIfAny ps ls ty))
+  | .app f a => match quickType c f with
+    | .some fty => match whnf fty with
+      | .vpi _ _ env cod => .some (eval (.cons (eval (TCtx.env c) a) env) cod)
+      | _ => inferTy c t
+    | .none => .none
+  | .fst p => match quickType c p with
+    | .some pty => match whnf pty with
+      | .vsigma _ A _ _ => .some A
+      | _ => inferTy c t
+    | .none => .none
+  | .snd p => match quickType c p with
+    | .some pty => match whnf pty with
+      | .vsigma _ _ env B => .some (eval (.cons (vfst (eval (TCtx.env c) p)) env) B)
+      | _ => inferTy c t
+    | .none => .none
+  | .ann _ ty => .some (eval (TCtx.env c) ty)
+  | .ecase m s _ => .some (eval (.cons (eval (TCtx.env c) s) (TCtx.env c)) m)
+  | .ind _ _ _ _ P _ i x => .some (vapp (vapp (eval (TCtx.env c) P) (eval (TCtx.env c) i)) (eval (TCtx.env c) x))
+  | _ => inferTy c t
+
+-- the payload of a value of `ty` for a match: unpacked from a number
+def payloadOf (ty : Val) (x : ETm) : ETm := match isNatTy ty with
+  | .true => .prim "natUnpack" (etms1 x)
+  | .false => x
+
+-- the result of erasing: the term, or why it failed
+inductive ER where
+  | ok (t : ETm)
+  | err (msg : String)
+inductive ERs where
+  | ok (ts : ETms)
+  | err (msg : String)
+
+-- a literal payload `(tag k, rest)` of a natural number: `0` or the successor of the
+-- field in `rest` (else the generic `natPack`)
+def natOf (x : Tm) (x' : ETm) : ETm := match x' with
+  | .obj _ fs => match fs with
+    | .cons tg rest => match tg with
+      | .obj k _ => match k with
+        | .zero => .nat 0
+        | .succ _ => match rest with
+          | .cons r _ => match r with
+            | .obj _ gs => match gs with
+              | .cons f _ => .prim "natSucc" (etms1 f)
+              | .nil => .prim "natPack" (etms1 x')
+            | _ => .prim "natPack" (etms1 x')
+          | .nil => .prim "natPack" (etms1 x')
+      | _ => .prim "natPack" (etms1 x')
+    | .nil => .prim "natPack" (etms1 x')
+  | _ => .prim "natPack" (etms1 x')
+
+mutual
+-- **Exercise 21.1.** Erase `t`, checking it against `ty` (`eraseCheck` in `Erase.lean`):
+-- an erasable type gives `◾`; `fun` against a Π erases the body under the binder; a
+-- pair against a Σ is `⟨0 a b⟩` (`a` erased for quantity `0`); `con x` against `μ D i`
+-- is the erased payload (a number for a type shaped like the naturals: `natOf`); the
+-- descriptions are objects (see above); `tt` is `◾`; a `let` keeps its binder;
+-- anything else is inferred (`eraseInfer`).
+def eraseCheck (c : TCtx) (t : Tm) (ty : Val) : ER := match erasable c ty with
+  | .true => .ok .erased
+  | .false =>
+  --<sol
+  match t with
+  | .lam b => match whnf ty with
+    | .vpi _ dom env cod => match eraseCheck (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
+      | .ok b' => .ok (.lam b')
+      | e => e
+    | _ => eraseInfer c t
+  | .pair a b => match whnf ty with
+    | .vsigma q A env B =>
+      let ar : ER := match q with
+        | .qz => .ok .erased
+        | _ => eraseCheck c a A;
+      match ar with
+      | .ok a' => match eraseCheck c b (eval (.cons (eval (TCtx.env c) a) env) B) with
+        | .ok b' => .ok (epair a' b')
+        | e => e
+      | e => e
+    | _ => eraseInfer c t
+  | .con x => match whnf ty with
+    | .vmu l I D i sz => match eraseCheck c x (vInterp l I D (muFamilyAt l I D (sizePredOrInf sz)) i) with
+      | .ok x' => match isNatTy ty with
+        | .true => .ok (natOf x x')
+        | .false => .ok x'
+      | e => e
+    | _ => eraseInfer c t
+  | .dret i => match whnf ty with
+    | .vdesc _ I => match eraseCheck c i I with
+      | .ok i' => .ok (.obj 0 (etms1 i'))
+      | e => e
+    | _ => eraseInfer c t
+  | .darg S D => match whnf ty with
+    | .vdesc l I => match eraseCheck c D (.vpi .qw (eval (TCtx.env c) S) (.cons I .nil) (.descr l (.var 1))) with
+      | .ok D' => .ok (.obj 1 (etms2 .erased D'))
+      | e => e
+    | _ => eraseInfer c t
+  | .drec j D => match whnf ty with
+    | .vdesc _ I => match eraseCheck c j I with
+      | .ok j' => match eraseCheck c D ty with
+        | .ok D' => .ok (.obj 2 (etms2 j' D'))
+        | e => e
+      | e => e
+    | _ => eraseInfer c t
+  | .dhrec H j D => match whnf ty with
+    | .vdesc _ I => match eraseCheck c j (.vpi .qw (eval (TCtx.env c) H) (.cons I .nil) (.var 1)) with
+      | .ok j' => match eraseCheck c D ty with
+        | .ok D' => .ok (.obj 3 (.cons .erased (etms2 j' D')))
+        | e => e
+      | e => e
+    | _ => eraseInfer c t
+  | .star => .ok .erased
+  | .letE A v b =>
+    let vA := eval (TCtx.env c) A;
+    match eraseCheck c v vA with
+    | .ok v' => match eraseCheck (TCtx.define c (eval (TCtx.env c) v) vA) b ty with
+      | .ok b' => .ok (.letE v' b')
+      | e => e
+    | e => e
+  | _ => eraseInfer c t
+  --|ex
+  --| .err "not implemented"
+  --sol>
+-- erase `t`, computing its type
+def eraseInfer (c : TCtx) (t : Tm) : ER := match quickType c t with
+  | .none => .err "erasure: an ill-typed term"
+  | .some ty => match erasable c ty with
+    | .true => .ok .erased
+    | .false => match t with
+      | .var i => .ok (.var i)
+      | .const n _ _ _ _ => .ok (.glob n)
+      | .app _ _ => eraseApp c t
+      | .ann x A => eraseCheck c x (eval (TCtx.env c) A)
+      | .letE _ _ _ => eraseCheck c t ty
+      | .fst p => match eraseInfer c p with
+        | .ok p' => .ok (.proj 0 p')
+        | e => e
+      | .snd p => match eraseInfer c p with
+        | .ok p' => .ok (.proj 1 p')
+        | e => e
+      | .tag _ i => .ok (.obj i .nil)
+      | .ecase m s bs => match eraseInfer c s with
+        | .ok s' => match eraseBranches c m 0 bs with
+          | .ok bs' => .ok (.case s' bs')
+          | .err msg => .err msg
+        | e => e
+      | .coe _ _ _ x => eraseInfer c x
+      | .exfalso _ _ => .ok (.prim "unreachable" .nil)
+      | .ind l I D v P m i x =>
+        let vI := eval (TCtx.env c) I;
+        let vD := eval (TCtx.env c) D;
+        let vP := eval (TCtx.env c) P;
+        match eraseCheck c m (indMethodTy l v vI vD vP) with
+        | .ok m' => match eraseCheck c D (.vdesc l vI) with
+          | .ok D' => match eraseCheck c i vI with
+            | .ok i' => match eraseInfer c x with
+              | .ok x' =>
+                let nat := match isNatTy (.vmu l vI vD (eval (TCtx.env c) i) .vszInf) with
+                  | .true => 1
+                  | .false => 0;
+                .ok (.prim "ind" (.cons (.nat nat) (etms4 D' m' i' x')))
+              | e => e
+            | e => e
+          | e => e
+        | e => e
+      | .scase l I D v P m sz i x =>
+        -- `m ◾ i payload`
+        let vI := eval (TCtx.env c) I;
+        let vD := eval (TCtx.env c) D;
+        match eraseCheck c m (scaseMethodTy l vI vD (eval (TCtx.env c) P) (eval (TCtx.env c) sz)) with
+        | .ok m' => match eraseCheck c i vI with
+          | .ok i' => match eraseInfer c x with
+            | .ok x' => .ok (eapps m' (.cons .erased (etms2 i' (payloadOf (.vmu l vI vD (eval (TCtx.env c) i) .vszInf) x'))))
+            | e => e
+          | e => e
+        | e => e
+      | _ => .err "erasure: unsupported term"
+-- the branches of an `ecase` with motive `m` (under the tag's binder), from tag `k`
+def eraseBranches (c : TCtx) (m : Tm) (k : Nat) : Tms → ERs
+  | .tnil => .ok .nil
+  | .tcons b rest => match eraseCheck c b (eval (.cons (.vtag (k + 1 + tmsLen rest) k) (TCtx.env c)) m) with
+    | .ok b' => match eraseBranches c m (k + 1) rest with
+      | .ok bs => .ok (.cons b' bs)
+      | e => e
+    | .err msg => .err msg
+-- an application: the head and the arguments, each erased against the head's type (an
+-- argument of quantity `0`, or of an erasable type, is `◾`)
+def eraseApp (c : TCtx) (t : Tm) : ER := match quickType c (spineHead t) with
+  | .none => .err "erasure: an ill-typed head"
+  | .some hty => match eraseInfer c (spineHead t) with
+    | .ok h' => eraseArgs c h' hty (spineArgsTm t .nil)
+    | e => e
+def eraseArgs (c : TCtx) (f : ETm) (fty : Val) : List Tm → ER
+  | .nil => .ok f
+  | .cons a rest => match whnf fty with
+    | .vpi q dom env cod =>
+      let ar : ER := match q with
+        | .qz => .ok .erased
+        | _ => eraseCheck c a dom;
+      match ar with
+      | .ok a' => eraseArgs c (.app f a') (eval (.cons (eval (TCtx.env c) a) env) cod) rest
+      | e => e
+    | _ => .err "erasure: applying a non-function"
+end
+
+
+-- **C generation** (21b). Each erased term becomes one C expression (GNU statement
+-- expressions `({ … })` for `let` and `case`); a `λ` is lifted to a C function of its
+-- captured variables and its argument, and becomes a closure. A global is a value built
+-- the first time it is used (`get_g()`), named by its name, so the recursive calls of
+-- a partial definition (to its axiom) reach the definition. Some globals are native
+-- (`isNative`): the runtime provides them, their Wiz definitions are not compiled.
+
+-- the C name of a global: letters and digits kept, any other character as `_code_`
+def mangleChars : List Char → List Char
+  | .nil => .nil
+  | .cons c rest =>
+    let k := Char.code c;
+    match Bool.or (Bool.or (between k 48 57) (between k 65 90)) (between k 97 122) with
+    | .true => .cons c (mangleChars rest)
+    | .false => match Nat.toString k with
+      | .mk ds => .cons (Char.mk 95) (List.append ds (.cons (Char.mk 95) (mangleChars rest)))
+def mangle (n : String) : String := match n with
+  | .mk cs => .mk (mangleChars cs)
+
+-- the globals the runtime provides
+def nativeNames : List String :=
+  .cons "Nat.zero" (.cons "Nat.succ" (.cons "Nat.add" (.cons "Nat.sub" (.cons "Nat.mul" (.cons "Nat.pred"
+  (.cons "Nat.beq" (.cons "Nat.blt" (.cons "Nat.lt" (.cons "Nat.le" (.cons "Nat.toString"
+  (.cons "IO.println" (.cons "IO.readFile" (.cons "Str.ofString"
+  (.cons "Array.empty" (.cons "Array.push" (.cons "Array.size" (.cons "Array.getD" (.cons "Array.set"
+  (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo" .nil)))))))))))))))))))))))
+def elemStr (x : String) : List String → Bool
+  | .nil => .false
+  | .cons y rest => Bool.or (strEq x y) (elemStr x rest)
+def isNative (n : String) : Bool := elemStr n nativeNames
+
+-- the free variables of a term (indices at its top, each once)
+def addVar (i : Nat) : List Nat → List Nat
+  | .nil => .cons i .nil
+  | .cons j rest => match Nat.beq i j with
+    | .true => .cons j rest
+    | .false => .cons j (addVar i rest)
+def dropBound : List Nat → List Nat
+  | .nil => .nil
+  | .cons i rest => match i with
+    | .zero => dropBound rest
+    | .succ j => .cons j (dropBound rest)
+mutual
+def freeE : ETm → List Nat → List Nat
+  | .var i, acc => addVar i acc
+  | .lam b, acc => mergeVars (dropBound (freeE b .nil)) acc
+  | .app f a, acc => freeE a (freeE f acc)
+  | .letE v b, acc => mergeVars (dropBound (freeE b .nil)) (freeE v acc)
+  | .obj _ fs, acc => freeEs fs acc
+  | .proj _ t, acc => freeE t acc
+  | .case s bs, acc => freeEs bs (freeE s acc)
+  | .prim _ as, acc => freeEs as acc
+  | _, acc => acc
+def freeEs : ETms → List Nat → List Nat
+  | .nil, acc => acc
+  | .cons t rest, acc => freeEs rest (freeE t acc)
+def mergeVars : List Nat → List Nat → List Nat
+  | .nil, acc => acc
+  | .cons i rest, acc => mergeVars rest (addVar i acc)
+end
+
+-- the code so far: the lifted functions (latest first), a counter for names, and the
+-- arity of each global defined by `λ`s (called directly when applied to that many
+-- arguments: through curried closures, a call of `n` arguments made `n` closures, each
+-- copying the arguments before it)
+inductive CG where
+  | mk (fns : List String) (n : Nat) (ar : StrMap Nat)
+inductive CR where
+  | mk (code : String) (st : CG)
+def CG.fresh (st : CG) (base : String) : CR := match st with
+  | .mk fns n ar => .mk (String.append base (Nat.toString n)) (.mk fns (n + 1) ar)
+def CG.emit (st : CG) (f : String) : CG := match st with
+  | .mk fns n ar => .mk (.cons f fns) n ar
+def CG.arity (st : CG) (g : String) : Nat := match st with
+  | .mk _ _ ar => StrMap.findD ar (Str.ofString g) 0
+-- an application's head and arguments
+inductive ESpine where
+  | mk (head : ETm) (args : List ETm)
+def spineE : ETm → List ETm → ESpine
+  | .app f a, acc => spineE f (.cons a acc)
+  | t, acc => .mk t acc
+def lamsOf : ETm → Nat
+  | .lam b => lamsOf b + 1
+  | _ => 0
+def underLams : Nat → ETm → ETm
+  | .zero, t => t
+  | .succ k, t => match t with
+    | .lam b => underLams k b
+    | _ => t
+
+-- the C expression of variable `i`: `names` are the C names of the variables in scope,
+-- innermost first
+def nthName' : List String → Nat → String
+  | .nil, _ => "BOX(0)"
+  | .cons x rest, i => match i with
+    | .zero => x
+    | .succ j => nthName' rest j
+def joinC : List String → String
+  | .nil => ""
+  | .cons x rest => match rest with
+    | .nil => x
+    | .cons _ _ => x +++ ", " +++ joinC rest
+def indexOfNat : Nat → List Nat → Nat → Option Nat
+  | _, .nil, _ => .none
+  | x, .cons y rest, i => match Nat.beq x y with
+    | .true => .some i
+    | .false => indexOfNat x rest (i + 1)
+-- the captured variables' names inside a lifted function: `env[0]`, `env[1]`, …
+def envNames (caps : List Nat) : Nat → Nat → List String
+  | _, .zero => .nil
+  | k, .succ m => .cons (match indexOfNat k caps 0 with
+      | .some j => "env[" +++ Nat.toString j +++ "]"
+      | .none => "BOX(0)") (envNames caps (k + 1) m)
+def capsCode (names : List String) : List Nat → List String
+  | .nil => .nil
+  | .cons i rest => .cons (nthName' names i) (capsCode names rest)
+def maxVar : List Nat → Nat
+  | .nil => 0
+  | .cons i rest => Nat.max (i + 1) (maxVar rest)
+
+def etmsLen : ETms → Nat
+  | .nil => 0
+  | .cons _ rest => etmsLen rest + 1
+mutual
+-- **Exercise 21.2.** The C expression of a term (`names`: the variables in scope).
+def cgE (st : CG) (names : List String) : ETm → CR
+  --<sol
+  | .erased => .mk "BOX(0)" st
+  | .var i => .mk (nthName' names i) st
+  | .glob n => .mk ("get_" +++ mangle n +++ "()") st
+  | .nat n => .mk ("BOX(" +++ Nat.toString n +++ "UL)") st
+  | .app f a => match spineE f (.cons a .nil) with
+    | .mk h args => match h with
+      | .glob g =>
+        let k := CG.arity st g;
+        match Bool.and (Nat.lt 0 k) (Nat.le k (lenL args)) with
+        -- a saturated call: `d_g(…)`, then the rest applied
+        | .true => match cgList st names (takeL k args) with
+          | .mk acs st1 => cgApps st1 names ("d_" +++ mangle g +++ "(" +++ acs +++ ")") (dropL k args)
+        | .false => cgApps st names ("get_" +++ mangle g +++ "()") args
+      | _ => match cgE st names h with
+        | .mk hc st1 => cgApps st1 names hc args
+  | .proj i t => match cgE st names t with
+    | .mk tc st1 => .mk ("fld(" +++ tc +++ ", " +++ Nat.toString i +++ ")") st1
+  | .obj k fs => match fs with
+    | .nil => .mk ("BOX(" +++ Nat.toString k +++ ")") st
+    | .cons _ _ => match cgEs st names fs with
+      | .mk fcs st1 => .mk ("mkobj(" +++ Nat.toString k +++ ", " +++ Nat.toString (etmsLen fs) +++ ", (V[]){" +++ fcs +++ "})") st1
+  | .letE v b => match cgE st names v with
+    | .mk vc st1 => match CG.fresh st1 "l" with
+      | .mk x st2 => match cgE st2 (.cons x names) b with
+        | .mk bc st3 => .mk ("({ V " +++ x +++ " = " +++ vc +++ "; " +++ bc +++ "; })") st3
+  | .case s bs => match cgE st names s with
+    | .mk sc st1 => match CG.fresh st1 "s" with
+      | .mk x st2 => match cgBranches st2 names 0 bs with
+        | .mk bcs st3 => .mk ("({ V " +++ x +++ " = " +++ sc +++ "; V r_; switch (tagof(" +++ x +++ ")) { " +++ bcs +++
+            "default: r_ = unreach(); } r_; })") st3
+  | .prim op as => match cgEs st names as with
+    | .mk acs st1 => .mk ("p_" +++ mangle op +++ "(" +++ acs +++ ")") st1
+  | .lam b =>
+    -- lifted: `static V lamN(V *env, V a)`, closing over the free variables of the `λ`
+    let caps := dropBound (freeE b .nil);
+    match CG.fresh st "lam" with
+    | .mk fname st1 =>
+      let inner := envNames caps 0 (maxVar caps);
+      match cgE st1 (.cons "a" inner) b with
+      | .mk bc st2 =>
+        let st3 := CG.emit st2 ("static V " +++ fname +++ "(V *env, V a) { return " +++ bc +++ "; }");
+        match caps with
+        | .nil => .mk ("mkclo(" +++ fname +++ ", 0, NULL)") st3
+        | .cons _ _ => .mk ("mkclo(" +++ fname +++ ", " +++ Nat.toString (lenL caps) +++ ", (V[]){" +++ joinC (capsCode names caps) +++ "})") st3
+  --|ex
+  --| | _ => .mk "unreach()" st
+  --sol>
+def cgEs (st : CG) (names : List String) : ETms → CR
+  | .nil => .mk "" st
+  | .cons t rest => match cgE st names t with
+    | .mk tc st1 => match rest with
+      | .nil => .mk tc st1
+      | .cons _ _ => match cgEs st1 names rest with
+        | .mk rc st2 => .mk (tc +++ ", " +++ rc) st2
+def cgList (st : CG) (names : List String) : List ETm → CR
+  | .nil => .mk "" st
+  | .cons t rest => match cgE st names t with
+    | .mk tc st1 => match rest with
+      | .nil => .mk tc st1
+      | .cons _ _ => match cgList st1 names rest with
+        | .mk rc st2 => .mk (tc +++ ", " +++ rc) st2
+def cgApps (st : CG) (names : List String) (f : String) : List ETm → CR
+  | .nil => .mk f st
+  | .cons a rest => match cgE st names a with
+    | .mk ac st1 => cgApps st1 names ("ap(" +++ f +++ ", " +++ ac +++ ")") rest
+def cgBranches (st : CG) (names : List String) (k : Nat) : ETms → CR
+  | .nil => .mk "" st
+  | .cons b rest => match cgE st names b with
+    | .mk bc st1 => match cgBranches st1 names (k + 1) rest with
+      | .mk rc st2 => .mk ("case " +++ Nat.toString k +++ ": r_ = " +++ bc +++ "; break; " +++ rc) st2
+end
+
+-- **Lazy `let`s.** The match compiler binds with `let`s things only some branches use:
+-- a shared catch-all (`dflt✝`), the hypotheses of `ind` (each the result of a recursive
+-- call). Evaluated eagerly they cost every call a full walk of its argument, or worse.
+-- A cheap value (a variable, a global, projections of a variable) is substituted at its
+-- uses; any other is suspended (`memo`) and forced where it is used.
+mutual
+def liftE (k c : Nat) : ETm → ETm
+  | .var i => match Nat.lt i c with
+    | .true => .var i
+    | .false => .var (i + k)
+  | .lam b => .lam (liftE k (c + 1) b)
+  | .app f a => .app (liftE k c f) (liftE k c a)
+  | .letE v b => .letE (liftE k c v) (liftE k (c + 1) b)
+  | .obj t fs => .obj t (liftEs k c fs)
+  | .proj i t => .proj i (liftE k c t)
+  | .case s bs => .case (liftE k c s) (liftEs k c bs)
+  | .prim op as => .prim op (liftEs k c as)
+  | t => t
+def liftEs (k c : Nat) : ETms → ETms
+  | .nil => .nil
+  | .cons t rest => .cons (liftE k c t) (liftEs k c rest)
+end
+mutual
+-- the body of `let` with variable `c` (at this depth) replaced by `v` (a term at the
+-- `let`'s depth), and the variables above it moved down
+def substE (v : ETm) (c : Nat) : ETm → ETm
+  | .var i => match Nat.lt i c with
+    | .true => .var i
+    | .false => match Nat.beq i c with
+      | .true => liftE c 0 v
+      | .false => .var (i - 1)
+  | .lam b => .lam (substE v (c + 1) b)
+  | .app f a => .app (substE v c f) (substE v c a)
+  | .letE x b => .letE (substE v c x) (substE v (c + 1) b)
+  | .obj t fs => .obj t (substEs v c fs)
+  | .proj i t => .proj i (substE v c t)
+  | .case s bs => .case (substE v c s) (substEs v c bs)
+  | .prim op as => .prim op (substEs v c as)
+  | t => t
+def substEs (v : ETm) (c : Nat) : ETms → ETms
+  | .nil => .nil
+  | .cons t rest => .cons (substE v c t) (substEs v c rest)
+end
+def cheapE : ETm → Bool
+  | .var _ => .true
+  | .glob _ => .true
+  | .erased => .true
+  | .nat _ => .true
+  | .proj _ t => cheapE t
+  | .obj _ fs => match fs with
+    | .nil => .true
+    | .cons _ _ => .false
+  | _ => .false
+mutual
+def lazyLets : ETm → ETm
+  | .letE v b =>
+    let v' := lazyLets v;
+    let b' := lazyLets b;
+    match cheapE v' with
+    | .true => substE v' 0 b'
+    -- `let x := memo (λ _. v); b[x ◾ / x]`
+    | .false => .letE (.prim "memo" (etms1 (.lam (liftE 1 0 v')))) (substE (.app (.var 0) .erased) 0 (liftE 1 1 b'))
+  | .lam b => .lam (lazyLets b)
+  | .app f a => .app (lazyLets f) (lazyLets a)
+  | .obj t fs => .obj t (lazyLetsEs fs)
+  | .proj i t => .proj i (lazyLets t)
+  | .case s bs => .case (lazyLets s) (lazyLetsEs bs)
+  | .prim op as => .prim op (lazyLetsEs as)
+  | t => t
+def lazyLetsEs : ETms → ETms
+  | .nil => .nil
+  | .cons t rest => .cons (lazyLets t) (lazyLetsEs rest)
+end
+
+-- a whole program: every non-native global (the last of each name), erased; then the
+-- code, a global of arity `k` as a C function `d_g` of `k` arguments (and `get_g()`
+-- its curried closure), any other as a value built the first time it is used; then
+-- `main` run on the world. The runtime is `#include`d.
+inductive Erased where
+  | mk (name : String) (e : ETm)
+inductive EraseR where
+  | ok (gs : List Erased)
+  | err (msg : String)
+partial def eraseGlobals (all : Array Global) (seen : List String) (acc : List Erased) : Nat → EraseR
+  | .zero => .ok acc
+  | .succ k => match Array.getD all k (.mk "?" .star .star .star .nil) with
+    | .mk n ty v _ _ => match Bool.or (elemStr n seen) (isNative n) with
+      | .true => eraseGlobals all seen acc k
+      | .false => match v with
+        | .axiomC _ _ => eraseGlobals all (.cons n seen) acc k
+        | _ => match eraseCheck empty v (eval .nil ty) with
+          | .err m => .err (n +++ ": " +++ m)
+          | .ok e => eraseGlobals all (.cons n seen) (.cons (.mk n (lazyLets e)) acc) k
+def arities : StrMap Nat → List Erased → StrMap Nat
+  | ar, .nil => ar
+  | ar, .cons (.mk n e) rest => arities (StrMap.insert ar (Str.ofString n) (lamsOf e)) rest
+def paramNames (k : Nat) : Nat → List String
+  | .zero => .nil
+  | .succ i => .cons ("p" +++ Nat.toString i) (paramNames k i)
+def paramDecls : Nat → Nat → String
+  | _, .zero => ""
+  | i, .succ m => match m with
+    | .zero => "V p" +++ Nat.toString i
+    | .succ _ => "V p" +++ Nat.toString i +++ ", " +++ paramDecls (i + 1) m
+def argList : Nat → Nat → String
+  | _, .zero => ""
+  | i, .succ m => match m with
+    | .zero => "a[" +++ Nat.toString i +++ "]"
+    | .succ _ => "a[" +++ Nat.toString i +++ "], " +++ argList (i + 1) m
+-- the code of each global: its prototypes and its definitions
+inductive Code where
+  | mk (protos defs : List String) (st : CG)
+def genCode : CG → List String → List String → List Erased → Code
+  | st, protos, defs, .nil => .mk protos defs st
+  | st, protos, defs, .cons (.mk n e) rest =>
+    let g := mangle n;
+    let k := lamsOf e;
+    match k with
+    | .zero => match cgE st .nil e with
+      | .mk code st1 =>
+        genCode st1 (.cons ("V get_" +++ g +++ "(void);") protos)
+          (.cons ("static V g_" +++ g +++ "; static int i_" +++ g +++ "; V get_" +++ g +++
+            "(void) { if (!i_" +++ g +++ ") { g_" +++ g +++ " = " +++ code +++ "; i_" +++ g +++ " = 1; } return g_" +++ g +++ "; }") defs) rest
+    | .succ _ =>
+      -- the parameters: `p0` the first, so the innermost (index 0) is `p(k-1)`
+      match cgE st (paramNames k k) (underLams k e) with
+      | .mk code st1 =>
+        let ps := paramDecls 0 k;
+        genCode st1 (.cons ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);") protos)
+          (.cons ("V d_" +++ g +++ "(" +++ ps +++ ") { return " +++ code +++ "; }") (.cons
+            ("static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
+             "V get_" +++ g +++ "(void) { static V c = 0; if (!c) c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); return c; }") defs)) rest
+-- the program's C text, as lines
+def genProgram (gs : Globals) : List String := match gs with
+  | .mk all _ _ => match eraseGlobals all .nil .nil (Array.size all) with
+    | .err m => .cons ("#error " +++ m) .nil
+    | .ok es => match genCode (.mk .nil 0 (arities StrMap.empty es)) .nil .nil es with
+      | .mk protos defs st => match st with
+        | .mk fns _ _ =>
+          .cons "#include \"rt.c\"" (List.append protos
+            (List.append (List.reverseOf fns .nil) (List.append defs
+              (.cons "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); return 0; }" .nil))))
