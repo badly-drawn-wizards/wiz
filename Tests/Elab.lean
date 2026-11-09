@@ -577,10 +577,16 @@ def twiceMacro : Macro := fun stx => do
 attribute [macro term.twice] twiceMacro
 "
 
-/-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
-def okLib (input : String) (infos : List String := []) : IO Unit := do
+/-- `import Prelude` and `import Word`. -/
+def preludeLoader : IO (Name → Option String) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let loader : Name → Option String := fun m => if m == "Prelude" then some prelude else none
+  let word ← IO.FS.readFile "lib/Word.wiz"
+  pure fun m => if m == "Prelude" then some prelude else if m == "Word" then some word else none
+
+/-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
+
+def okLib (input : String) (infos : List String := []) : IO Unit := do
+  let loader ← preludeLoader
   let s := runFrontend (R := ZeroOneMany) input { loader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
@@ -706,8 +712,7 @@ def backendGroup : Group where
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
 the C toolchain can't find GMP: set `WIZ_CFLAGS`/`WIZ_LDFLAGS` to run these. -/
 def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
-  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let s := runFrontend (R := ZeroOneMany) src { loader := fun m => if m == "Prelude" then some prelude else none }
+  let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
@@ -1862,6 +1867,16 @@ def selfHostGroup : Group where
     { name := "the self-hosted backend compiles and runs a program", run := fun _ =>
         selfhostCompileRun "import Prelude\npartial def fib : Nat → Nat\n  | 0 => 0\n  | 1 => 1\n  | n + 2 => fib n + fib (n + 1)\npartial def countdown (n : Nat) (acc : List Nat) : List Nat := match n with\n  | 0 => acc\n  | .succ k => countdown k (List.cons n acc)\ndef sum : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + sum xs\ndef fill (a : Array Nat) : Nat → Array Nat\n  | 0 => a\n  | .succ k => fill (Array.push a k) k\nmutual\ninductive Tree where\n  | leaf (n : Nat)\n  | node (ts : Forest)\ninductive Forest where\n  | nil\n  | cons (t : Tree) (ts : Forest)\nend\nmutual\ndef sizeT (t : Tree) : Nat := match t with\n  | .leaf _ => 1\n  | .node ts => sizeF ts\ndef sizeF (f : Forest) : Nat := match f with\n  | .nil => 0\n  | .cons t ts => sizeT t + sizeF ts\nend\ndef main : IO Unit := do\n  IO.println (Nat.toString (fib 20));\n  IO.println (Nat.toString (sum (countdown 100 .nil)));\n  let a := fill Array.empty 1000;\n  IO.println (Nat.toString (Array.size a + Array.getD a 10 0));\n  let m := StrMap.insert (StrMap.insert StrMap.empty (Str.ofString \"a\") 1) (Str.ofString \"b\") 2;\n  IO.println (Nat.toString (StrMap.findD m (Str.ofString \"b\") 0));\n  IO.println (if Nat.blt 3 4 then String.append \"yes, \" \"ünïcode\" else \"no\");\n  IO.println (Nat.toString (sizeT (Tree.node (Forest.cons (Tree.leaf 1) (Forest.cons (Tree.leaf 2) Forest.nil)))));\n  IO.println (Nat.toString (String.length \"hello\"))\n"
           "6765\n5050\n1989\n2\nyes, ünïcode\n2\n5\n" },
+    { name := "the self-hosted backend: division, powers and bits", run := fun _ =>
+        selfhostCompileRun ("import Prelude\ndef show (n : Nat) : IO Unit := IO.println (Nat.toString n)\n" ++
+          "def main : IO Unit := do\n  show (100 / 7);\n  show (Nat.mod 100 7);\n  show (Nat.div 5 0);\n  show (Nat.mod 5 0);\n" ++
+          "  show (Nat.pow 3 20);\n  show (Nat.land 12 10);\n  show (Nat.lor 12 10);\n  show (Nat.xor 12 10);\n" ++
+          "  show (Nat.shiftLeft 3 20);\n  show (Nat.shiftRight 1000 3);\n  show (Nat.log2 1025);\n" ++
+          "  IO.println (if Nat.testBit 5 2 then \"set\" else \"clear\")\n")
+          "14\n2\n0\n5\n3486784401\n8\n14\n6\n3145728\n125\n10\nset\n" },
+    { name := "the self-hosted frontend: the Prelude's division and bits compute", run := fun _ =>
+        selfhostCheckFile "import Prelude\n#reduce Nat.beq (Nat.mod 17 5) 2\n#reduce Nat.beq (Nat.xor 6 3) 5\n#reduce Nat.beq (Nat.log2 9) 3\n"
+          "con((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\n" },
     { name := "both kernels compare propositions by equivalence (and agree on it below)", run := fun _ => do
         -- the domains' equation is an equivalence, not `False`
         match MTm.propShapes.map leanVerdict with
@@ -1962,6 +1977,40 @@ def languageGroup : Group where
           "inductive B where\n  | b0\n  | b1 (x : A)\nend\n" ++
           "def depthA : A → Nat\n  | .a1 f => Nat.succ (depthA (f ()))\n  | .a0 => 0\n" ++
           "#eval depthA (.a1 (fun _ => .a1 (fun _ => .a0)))") ["2"] }
+  ]
+
+/-- Machine words (`lib/Word.wiz`): one table of operations at widths 8–100, signed and
+unsigned, with its expected values. The kernel and the interpreters compute with the
+definitions; compiled code calls the natives (`implemented_by`). -/
+def wordTable : String := "import Word\ndef b2n : Bool → Nat\n  | .true => 1\n  | .false => 0\ndef m64 : Nat := 18446744073709551615\ndef main : List Nat :=\n  (.cons ((UIntN.add (U8.ofNat 200) (U8.ofNat 100)).toNat)\n    (.cons ((UIntN.sub (U8.ofNat 3) (U8.ofNat 5)).toNat)\n    (.cons ((UIntN.mul (U64.ofNat m64) (U64.ofNat m64)).toNat)\n    (.cons ((UIntN.add (U64.ofNat m64) (U64.ofNat 1)).toNat)\n    (.cons ((UIntN.mul (U64.ofNat m64) (U64.ofNat 3)).toNat)\n    (.cons ((UIntN.shiftLeft (U32.ofNat 5) 40).toNat)\n    (.cons ((UIntN.shiftLeft (U32.ofNat 5) 20).toNat)\n    (.cons ((UIntN.not (U64.ofNat 12345)).toNat)\n    (.cons ((UIntN.add (UIntN.ofNat 65 (Nat.pow 2 65 - 1)) (UIntN.ofNat 65 2)).toNat)\n    (.cons ((UIntN.mul (UIntN.ofNat 100 (Nat.pow 3 60)) (UIntN.ofNat 100 (Nat.pow 3 10))).toNat)\n    (.cons ((UIntN.div (U32.ofNat 1000) (U32.ofNat 7)).toNat)\n    (.cons ((UIntN.mod (U32.ofNat 1000) (U32.ofNat 7)).toNat)\n    (.cons ((UIntN.div (U32.ofNat 1000) (U32.ofNat 0)).toNat)\n    (.cons ((UIntN.mod (U32.ofNat 1000) (U32.ofNat 0)).toNat)\n    (.cons ((IntN.div (I8.ofNeg 7) (I8.ofNat 2)).toNat)\n    (.cons ((IntN.rem (I8.ofNeg 7) (I8.ofNat 2)).toNat)\n    (.cons ((IntN.div (I8.ofNeg 128) (I8.ofNeg 1)).toNat)\n    (.cons ((IntN.shiftRight (I8.ofNeg 100) 3).toNat)\n    (.cons ((IntN.resize 16 (I8.ofNeg 1)).toNat)\n    (.cons ((IntN.div (I64.ofNeg (Nat.pow 2 63)) (I64.ofNeg 1)).toNat)\n    (.cons ((IntN.div (I64.ofNeg 1000000000000) (I64.ofNat 7)).toNat)\n    (.cons ((IntN.rem (I64.ofNeg 1000000000000) (I64.ofNat 7)).toNat)\n    (.cons ((IntN.mul (I64.ofNeg 5) (I64.ofNat (Nat.pow 2 62))).toNat)\n    (.cons ((IntN.shiftRight (I64.ofNeg 123456789) 10).toNat)\n    (.cons (b2n (IntN.lt (I64.ofNeg 1) (I64.ofNat 0)))\n    (.cons (b2n (IntN.lt (I64.ofNat 0) (I64.ofNeg 1)))\n    (.cons (b2n (IntN.le (I8.ofNeg 128) (I8.ofNeg 128)))\n    (.cons (b2n (IntN.lt (I8.ofNat 127) (I8.ofNeg 128)))\n    (.cons (IntN.natAbs (IntN.min 64))\n    (.cons ((IntN.div (IntN.ofNeg 70 (Nat.pow 2 69)) (IntN.ofNeg 70 1)).toNat)\n    (.cons ((IntN.shiftRight (IntN.ofNeg 70 5) 100).toNat)\n    (.cons ((IntN.rem (IntN.ofNeg 70 7) (IntN.ofNeg 70 2)).toNat)\n    (.cons ((UIntN.neg (U8.ofNat 1)).toNat)\n    (.cons ((IntN.sub (I32.ofNat 0) (I32.ofNat 1)).toNat)\n    .nil))))))))))))))))))))))))))))))))))\n"
+def wordTableValue : String := ".cons 44 (.cons 254 (.cons 1 (.cons 0 (.cons 18446744073709551613 (.cons 0 (.cons 5242880 (.cons 18446744073709539270 (.cons 1 (.cons 813220142716762761079858673625 (.cons 142 (.cons 6 (.cons 0 (.cons 1000 (.cons 253 (.cons 255 (.cons 128 (.cons 243 (.cons 65535 (.cons 9223372036854775808 (.cons 18446743930852408759 (.cons 18446744073709551615 (.cons 13835058055282163712 (.cons 18446744073709431052 (.cons 1 (.cons 0 (.cons 1 (.cons 0 (.cons 9223372036854775808 (.cons 590295810358705651712 (.cons 1180591620717411303423 (.cons 1180591620717411303423 (.cons 255 (.cons 4294967295 .nil)))))))))))))))))))))))))))))))))"
+
+def wordGroup : Group where
+  name := "word"
+  exercise := "Stage 22c"
+  cases := [
+    { name := "the definitions compute in the kernel", run := fun _ =>
+        okLib (wordTable ++ s!"def t : main = ({wordTableValue} : List Nat) := refl main") },
+    { name := "#eval runs the definitions", run := fun _ =>
+        okLib (wordTable ++ "#eval main") [wordTableValue] },
+    { name := "#run runs the definitions", run := fun _ =>
+        okLib (wordTable ++ "#run main") [wordTableValue] },
+    { name := "compiled code runs the natives (C)", run := fun _ => cRun wordTable wordTableValue },
+    { name := "compiled code runs the natives (LLVM)", run := fun _ => cRun (llvm := true) wordTable wordTableValue },
+    { name := "compiled code calls the native", run := fun _ => do
+        let loader ← preludeLoader
+        let src := "import Word\ndef f (a b : U32) : U32 := UIntN.add a b\n#ir f"
+        let s := runFrontend (R := ZeroOneMany) src { loader }
+        let out := String.intercalate "\n" (s.messages.toList.map (·.text))
+        check ((out.splitOn "wiz_word_add").length > 1) s!"no native call in:\n{out}" },
+    { name := "the width is part of the type, and is inferred", run := fun _ => do
+        okLib "import Word\ndef w {ω n : Nat} (a : UIntN n) : Nat := n\n#check w (U8.ofNat 3)\n#eval w (U8.ofNat 3)"
+          ["w 8 (U8.ofNat 3) : Nat", "8"]
+        let loader ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) "import Word\ndef bad (x : U8) : U16 := x" { loader }
+        check (s.messages.any (·.severity == .error)) "U8 was accepted as U16" },
+    { name := "field notation through the fixed widths", run := fun _ =>
+        okLib "import Word\ndef f (a b : I16) : Bool := a.lt b\n#eval f (I16.ofNeg 2) (I16.ofNat 1)" [".true"] }
   ]
 
 def stdGroup : Group where
@@ -2117,6 +2166,13 @@ def nativeCases (llvm : Bool) : List Case :=
         cRun (llvm := llvm) ("import Prelude\ninstance : Monad Option where\n  pure := fun a => Option.some a\n" ++
           "  bind := fun x f => match x with\n    | .none => Option.none\n    | .some a => f a\n" ++
           "def main : Option Nat := do\n  a ← Option.some 1;\n  b ← Option.some 2;\n  Monad.pure (a + b)") ".some 3" },
+    { name := "division, powers and bits (small and GMP numbers)", run := fun _ =>
+        cRun (llvm := llvm) ("import Prelude\ndef big : Nat := Nat.pow 3 50\n" ++
+          "def main : List Nat := .cons (Nat.div big 1000007) (.cons (Nat.mod big 1000007) (.cons (Nat.div 100 7) " ++
+          "(.cons (Nat.mod 100 0) (.cons (Nat.land big (Nat.pow 2 70 - 1)) (.cons (Nat.lor 12 10) (.cons (Nat.xor big big) " ++
+          "(.cons (Nat.shiftLeft 3 70) (.cons (Nat.shiftRight big 40) (.cons (Nat.log2 big) (.cons (Nat.log2 0) " ++
+          "(.cons (Nat.pow 0 0) (.cons (Nat.shiftLeft 1 61) (.cons (Nat.shiftLeft 1 62) .nil)))))))))))))")
+          ".cons 717892962441115500 (.cons 961749 (.cons 14 (.cons 100 (.cons 98282295666516288457 (.cons 14 (.cons 0 (.cons 3541774862152233910272 (.cons 652924416219 (.cons 79 (.cons 0 (.cons 1 (.cons 2305843009213693952 (.cons 4611686018427387904 .nil)))))))))))))" },
     { name := "memoised suspensions (memo)", run := fun _ =>
         cRun (llvm := llvm) ("import Prelude\ndef twice (t : Unit → Nat) : Nat := t () + t ()\n" ++
           "def lazyAdd (m n : Nat) : Unit → Nat := memo (fun _ => m + n)\n" ++
@@ -2150,6 +2206,45 @@ def builtinGroup : Group where
         okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4" },
     { name := "native equality", run := fun _ =>
         okLib "import Prelude\n#eval Nat.beq 3 3" [".true"] },
+    { name := "division, powers and bits compute natively (#eval)", run := fun _ =>
+        okLib ("import Prelude\n#eval Nat.div 100 7\n#eval Nat.mod 100 7\n#eval 100 / 0\n#eval Nat.mod 5 0\n" ++
+          "#eval Nat.pow 2 100\n#eval Nat.land 12 10\n#eval Nat.lor 12 10\n#eval Nat.xor 12 10\n" ++
+          "#eval Nat.shiftLeft 3 70\n#eval Nat.shiftRight (Nat.pow 2 100) 98\n#eval Nat.log2 1025\n#eval Nat.log2 0\n#eval Nat.testBit 5 2")
+          ["14", "2", "0", "5", "1267650600228229401496703205376", "8", "14", "6", "3541774862152233910272", "4", "10", "0", ".true"] },
+    { name := "division, powers and bits in the IR interpreter (#run)", run := fun _ =>
+        okLib ("import Prelude\n#run Nat.mod (Nat.pow 3 50) 1000007\n#run Nat.land (Nat.pow 2 70) (Nat.pow 2 70 + 5)\n" ++
+          "#run Nat.log2 (Nat.pow 2 70)\n#run Nat.shiftRight 1000 3\n#run Nat.xor 5 3")
+          ["961749", "1180591620717411303424", "70", "125", "6"] },
+    { name := "division, powers and bits compute natively in the kernel", run := fun _ =>
+        okLib ("import Prelude\ndef t1 : Nat.mod 300 256 = 44 := refl 44\n" ++
+          "def t2 : Nat.xor (Nat.pow 2 64) 1 = 18446744073709551617 := refl 18446744073709551617\n" ++
+          "def t3 : Nat.shiftRight (Nat.shiftLeft 5 200) 199 = 10 := refl 10\n" ++
+          "def t4 : Nat.log2 (Nat.pow 2 300) = 300 := refl 300\n" ++
+          "def t5 : Nat.land (Nat.pow 2 70) (Nat.pow 2 70 + 5) = Nat.pow 2 70 := refl (Nat.pow 2 70)") },
+    { name := "the definitions behind the natives compute too (unfolded)", run := fun _ =>
+        -- the fuel-driven helpers, applied directly, are not registered: the kernel unfolds them
+        okLib ("import Prelude\ndef t1 : Nat.divGo 17 17 5 = 3 := refl 3\n" ++
+          "def t2 : Nat.bitwise Bool.xor 30 12 10 = 6 := refl 6\ndef t3 : Nat.bitwise Bool.and 30 12 10 = 8 := refl 8\n" ++
+          "def t4 : Nat.log2Go 9 9 = 3 := refl 3\ndef t5 : Nat.powFrom 10 2 = 1024 := refl 1024") },
+    { name := "implemented_by: compiled code runs the implementation, the kernel the model", run := fun _ => do
+        -- the implementation is trusted: here it deliberately differs, to show which runs
+        let src := "import Prelude\ndef model (n : Nat) : Nat := n\ndef impl (n : Nat) : Nat := n + 1\n" ++
+          "attribute [implemented_by impl] model\ndef t : model 5 = 5 := refl 5\n"
+        okLib (src ++ "#eval model 5\n#run model 5") ["6", "6"]
+        cRun (src ++ "def main : Nat := model 5") "6" },
+    { name := "implemented_by: a fast implementation of a recursive definition", run := fun _ =>
+        okLib ("import Prelude\ndef sumTo : Nat → Nat\n  | .zero => 0\n  | .succ n => .succ n + sumTo n\n" ++
+          "def sumToFast (n : Nat) : Nat := n * (n + 1) / 2\nattribute [implemented_by sumToFast] sumTo\n" ++
+          "def t : sumTo 4 = 10 := refl 10\n#erase sumTo\n#eval sumTo 1000000") ["sumTo := sumToFast", "500000500000"] },
+    { name := "implemented_by: the types must agree", run := fun _ =>
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := n\ndef g (b : Bool) : Nat := 0\nattribute [implemented_by g] f"
+          "g can't implement f: its type Bool → Nat is not f's type Nat → Nat" },
+    { name := "implemented_by: not on a builtin", run := fun _ =>
+        failsLib "import Prelude\ndef g (m n : Nat) : Nat := m\nattribute [implemented_by g] Nat.add" "already has an implementation" },
+    { name := "the natives agree with the definitions (n / 0 = 0)", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : Nat.div 7 0 = 7 := refl 7" { loader := fun _ => some prelude }
+        check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "kernel arithmetic on literals is native", run := fun _ =>
         okLib "import Prelude\ndef t : 100000 * 100000 = 10000000000 := refl 10000000000" },
     { name := "literals unfold under eliminators", run := fun _ =>

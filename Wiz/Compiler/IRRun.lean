@@ -79,12 +79,9 @@ def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
     | some (.num k) => k
     | some (.tag k) => k
     | _ => 0
+  if op.startsWith "nat." then
+    if let some r := natNative? op ((List.range args.size).toArray.map n) then return .num r
   match op with
-  | "nat.succ" => pure (.num (n 0 + 1))
-  | "nat.pred" => pure (.num (n 0 - 1))
-  | "nat.add" => pure (.num (n 0 + n 1))
-  | "nat.sub" => pure (.num (n 0 - n 1))
-  | "nat.mul" => pure (.num (n 0 * n 1))
   | "nat.beq" => pure (.tag (if n 0 == n 1 then 1 else 0))
   | "nat.blt" => pure (.tag (if n 0 < n 1 then 1 else 0))
   -- the interpreter doesn't memoise: a suspension is its function

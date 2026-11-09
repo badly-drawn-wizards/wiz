@@ -1739,6 +1739,65 @@ minutes. A `match` was a method applied to the payload, a closure built and call
 time; a lambda applied to arguments is now a `let`: 6 minutes. Reference counting comes
 next.
 
+## Stage 22: numbers for hardware and systems code
+
+Prerequisites shared by the HDL and the Rust-style DSL (decisions RD9, RD10/HD3).
+
+### 22a: division, powers and bits ✅
+
+The Prelude defines `Nat.div`, `Nat.mod`, `Nat.pow`, `Nat.land`, `Nat.lor`, `Nat.xor`,
+`Nat.shiftLeft`, `Nat.shiftRight`, `Nat.log2` (and `Nat.testBit`, `a / b`) by structural
+recursion on a fuel argument that bounds the number of steps, so the kernel can unfold
+them. Each is registered with `builtin nat.<op>`: on numerals the kernel computes
+natively (`def t : Nat.mod 300 256 = 44 := refl 44`), as do `#eval`, `#run`, C/LLVM
+(`runtime/wiz.c`: machine words, GMP when big) and the self-hosted backend
+(`selfhost/rt.c`; its Prelude has the same definitions). As in Lean, `n / 0 = 0`,
+`Nat.mod n 0 = n` and `Nat.log2 0 = 0`. One table (`natNative?`, `Wiz/Core/Eval.lean`)
+serves the kernel and both interpreters.
+
+### 22b: `implemented_by` ✅
+
+`attribute [implemented_by g] f` gives a definition `f` a different implementation in
+compiled code: erasure (`compileReachable`) takes `g`'s code for `f`, while the kernel,
+and so every proof, keeps `f`'s definition. `g` is a Wiz definition or an `extern`, and
+must have `f`'s type up to conversion (checked at the attribute; `g` can't implement
+`f` otherwise). The implementation is **trusted**, as in Lean: nothing proves it agrees
+with the model, so tests compare them. `#eval` and `#run` follow the attribute, except
+to an `extern` (the interpreters can't call C): there they run the model, which gives a
+differential test for free. `#erase f` shows `f := g`. Foreign functions may now take
+and return Wiz data types, passed as they are (marshalling kind `w`).
+
+Not yet: a *type* with a native representation (`Vec A` as an array, R0b), and the
+attribute in the self-hosted backend.
+
+### 22c: machine integers ✅
+
+`import Word` (`lib/Word.wiz`): `UIntN w`, a w-bit unsigned integer, and `IntN w`, w-bit
+two's complement, both a number of bits below `2^w` (normalised by construction, so
+arithmetic wraps around), with `ofNat`/`toNat`, wrapping `add`/`sub`/`mul`/`neg`,
+`div`/`mod` (signed: `div` truncates towards zero and `rem` takes the dividend's sign,
+as Rust; `x / 0 = 0` and `x % 0 = x` as Lean, where Rust panics), comparisons, bitwise
+operations, shifts (`shiftLeft` by `k ≥ w` gives `0`; `IntN.shiftRight` is
+arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toUIntN`.
+
+* **One width-indexed type** serves both clients: the HDL's `Unsigned n` needs any
+  width (1, 5, 65, …) and Rust's `u32` is `U32 := UIntN 32` (also `U8 … U64`, `USize`,
+  `I8 … I64`, with `U32.ofNat`, `I32.ofNeg`, …). Operations are named functions
+  (`UIntN.add a b`, or `a.add b`) until the numeric classes (HD9) arrive.
+* **The width is an index** (`mk {0 w : Nat} (toNat : Nat) : UIntN w`): types are
+  structural, and a parameter that no field mentions is forgotten, so `UIntN 8` and
+  `UIntN 16` would be one type and `w` could not be inferred.
+* **Natives.** The kernel computes with the definitions, quickly on numerals (22a), and
+  so do `#eval`/`#run`. Compiled code calls natives (`runtime/wiz.c`, `wiz_word_*`) by
+  `implemented_by`: in a `uint64_t` up to 64 bits, GMP beyond, one function per
+  operation for every width. A table of operations at widths 8 to 100 gives the same
+  values in the kernel (`refl`), both interpreters, C and LLVM (`examples/words.wiz`:
+  an FNV-1a hash, and facts proved by `refl` about named values; an equation whose
+  sides still contain an unsolved implicit width when it is computed gets stuck, so
+  state facts about definitions). A word is still an
+  object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
+  `implemented_by`.
+
 ## Stage 11: tooling
 
 ### 11a–b: queries and a language server ✅
