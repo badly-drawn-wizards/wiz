@@ -53,6 +53,13 @@ jobs:
       lake-key: ${{ steps.key.outputs.key }}
     steps:
       - uses: actions/checkout@v5
+      - name: Embedded files (include_str) changed with their .lean files
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          # the checkout is the PR merged into its base: compare it with the base's tip
+          git fetch --depth=1 origin "${{ github.base_ref }}"
+          python3 scripts/ci.py check-include-str FETCH_HEAD
       - uses: ./.github/actions/setup
         with:
           cachix-name: ${{ env.CACHIX_NAME }}
