@@ -226,8 +226,9 @@ continue onto a line starting at the command's column.
 | `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
 | `command.coinductive`        | like `structure`; the fields are observations |
 | `command.defEqns`            | "def" ident [".{" us "}"] [binders] ":" T [alts] |
-| `command.partial`            | "partial" command (a `def`) |
-| `command.mutual`             | "mutual" [command+] "end" (`def`s, all partial) |
+| `command.partial`            | "partial" ["(" "default" ":=" w ")"] command (a `def`) |
+| `command.mutual`             | "mutual" [command+] "end" (`def`s, all partial; or `partial (default := w) def`s) |
+| `command.printAxioms`        | "#print" "axioms" ident |
 
 A constructor is `inductive.ctor`: "|" ident [binders] [":" T]. A field is
 `structure.field`: [quantity] ident ":" T, on its own line.
@@ -238,11 +239,14 @@ def commandLeading : List LeadingParser := [
   { kind := "command.defEqns", prec := maxPrec,
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec true, many1 matchAlt] },
   -- stage 13: general recursion; a `mutual` block's definitions are partial too
-  { kind := "command.partial", prec := maxPrec, p := seqs ["partial", cat "command" 0] },
+  -- (a partial definition's type needs a witness: found, or given with `(default := w)`)
+  { kind := "command.partial", prec := maxPrec,
+    p := seqs ["partial", optional (seqs ["(", nonReserved "default", ":=", term, ")"]), cat "command" 0] },
   { kind := "command.mutual", prec := maxPrec, p := seqs ["mutual", many1 (cat "command" 0), "end"] },
   { kind := "command.axiom", prec := maxPrec,
     p := seqs ["axiom", ident, univParams, many (bracketedBinder false), typeSpec true] },
   { kind := "command.check", prec := maxPrec, p := seqs ["#check", term] },
+  { kind := "command.printAxioms", prec := maxPrec, p := seqs ["#print", nonReserved "axioms", ident] },
   { kind := "command.reduce", prec := maxPrec, p := seqs ["#reduce", term] },
   { kind := "command.eval", prec := maxPrec, p := seqs ["#eval", term] },
   { kind := "command.erase", prec := maxPrec, p := seqs ["#erase", ident] },

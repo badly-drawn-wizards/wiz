@@ -3028,19 +3028,195 @@ end
 inductive AxR where
   | ok (gs : Globals)
   | err (msg : String)
+
+-- Witnesses for partial definitions (`Witness.lean`): the kernel takes a partial
+-- definition `f : T` only with a term of `T` it checks (`checkPartial`), found here by a
+-- search over the shape of `T`: a variable of the type's `Π`s, `fun x => w`, a pair,
+-- `tt`, a tag, `∞`, `Unit` for a sort, or a global whose type ends in `T`'s head (a
+-- constructor, `StrMap.empty`), with the arguments its conclusion fixes taken from `T`
+-- and the others found again, to a bounded depth. Each candidate is checked: so `T.mk :
+-- T .t` is no witness of `T .f`.
+inductive Peel where
+  | bind (dom cod : Tm)
+  | done
+partial def peel : Tm → Peel
+  | .pi a b => .bind a b
+  | .piq _ a b => .bind a b
+  | .sorted _ t => peel t
+  | _ => .done
+-- a global type's conclusion and its number of binders
+inductive Concl where
+  | mk (t : Tm) (k : Nat)
+partial def tmConcl (t : Tm) (k : Nat) : Concl := match peel t with
+  | .bind _ b => tmConcl b (k + 1)
+  | .done => match t with
+    | .sorted _ u => .mk u k
+    | _ => .mk t k
+partial def tmHeadName : Tm → Option String
+  | .app f _ => tmHeadName f
+  | .const n _ _ _ _ => .some n
+  | .axiomC n _ => .some n
+  | _ => .none
+partial def tmArgs : Tm → List Tm → List Tm
+  | .app f a, acc => tmArgs f (.cons a acc)
+  | _, acc => acc
+-- the names a type is known by, each with its arguments: the definitions it unfolds
+-- through, then its head
+inductive HeadArgs where
+  | mk (name : String) (args : List Val)
+partial def spineArgs : Spine → List Val → List Val
+  | .sapp sp a, acc => spineArgs sp (.cons a acc)
+  | _, acc => acc
+partial def headsOf (v : Val) : List HeadArgs := match v with
+  | .vglued h sp u => match h with
+    | .hconst n _ _ _ _ => .cons (.mk n (spineArgs sp .nil)) (headsOf (u ()))
+    | _ => headsOf (u ())
+  | .vne h sp => match h with
+    | .haxiom n _ => .cons (.mk n (spineArgs sp .nil)) .nil
+    | _ => .nil
+  | _ => .nil
+partial def headArgs (n : String) : List HeadArgs → Option (List Val)
+  | .nil => .none
+  | .cons h rest => match h with
+    | .mk m as => match strEq n m with
+      | .true => .some as
+      | .false => headArgs n rest
+partial def noneList : Nat → List (Option Val)
+  | .zero => .nil
+  | .succ k => .cons .none (noneList k)
+partial def setNth : List (Option Val) → Nat → Val → List (Option Val)
+  | .nil, _, _ => .nil
+  | .cons x rest, i, v => match i with
+    | .zero => .cons (.some v) rest
+    | .succ j => .cons x (setNth rest j v)
+-- the binders a global's conclusion fixes: an argument that is one of its own binders
+partial def matchArgs (k : Nat) (as : List Tm) (vs : List Val) (asg : List (Option Val)) : List (Option Val) :=
+  match as with
+  | .nil => asg
+  | .cons a as' => match vs with
+    | .nil => asg
+    | .cons v vs' => matchArgs k as' vs' (match a with
+      | .var j => match Nat.lt j k with
+        | .true => setNth asg (k - 1 - j) v
+        | .false => asg
+      | _ => asg)
+-- a variable of the context of this type
+partial def hypWit (c : TCtx) (ty : Val) (tys : Env) (i : Nat) : Option Tm := match tys with
+  | .nil => .none
+  | .cons t rest => match convTy c t ty with
+    | .true => .some (.var i)
+    | .false => hypWit c ty rest (i + 1)
+def sortWit (l : Lvl) : Option Tm := match l with
+  | .lnum n => match n with
+    | .zero => .some .ptrue
+    | .succ m => .some (.unit m)
+  | _ => .none
+mutual
+def wit (gs : Globals) (c : TCtx) (ty : Val) (fuel : Nat) : Option Tm := match fuel with
+  | .zero => .none
+  | .succ f => match hypWit c ty (TCtx.types c) 0 with
+    | .some t => .some t
+    | .none => witShape gs c ty (whnf ty) fuel f
+def witShape (gs : Globals) (c : TCtx) (ty w : Val) (fuel f : Nat) : Option Tm := match w with
+  | .vpi _ dom env cod _ => match wit gs (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod) fuel with
+    | .some b => .some (.lam b)
+    | .none => .none
+  | .vsort l => sortWit l
+  | .vunit _ => .some .star
+  | .venum k => match k with
+    | .zero => .none
+    | .succ _ => .some (.tag k 0)
+  | .vsize => .some .szInf
+  | .vsigma _ a env b _ => match wit gs c a fuel with
+    | .none => .none
+    | .some x => match wit gs c (eval (.cons (eval (TCtx.env c) x) env) b) fuel with
+      | .none => .none
+      | .some y => .some (.pair x y)
+  | _ => match gs with
+    | .mk all _ _ => byGlobals gs c ty (headsOf ty) f all 0
+def byGlobals (gs : Globals) (c : TCtx) (ty : Val) (hs : List HeadArgs) (f : Nat) (all : Array Global) (i : Nat) : Option Tm :=
+  match Nat.lt i (Array.size all) with
+  | .false => .none
+  | .true => match tryGlobal gs c ty hs f (Array.getD all i (.mk "?" .star .star .star .nil)) with
+    | .some t => .some t
+    | .none => byGlobals gs c ty hs f all (i + 1)
+def tryGlobal (gs : Globals) (c : TCtx) (ty : Val) (hs : List HeadArgs) (f : Nat) (g : Global) : Option Tm :=
+  match g with
+  | .mk n gty v _ _ => match tmConcl gty 0 with
+    | .mk concl k => match tmHeadName concl with
+      | .none => .none
+      | .some h => match headArgs h hs with
+        | .none => .none
+        | .some vs => applyGlobal gs c ty f (matchArgs k (tmArgs concl .nil) vs (noneList k)) gty .nil (.const n .nil .nil v gty)
+def applyGlobal (gs : Globals) (c : TCtx) (ty : Val) (f : Nat) (asg : List (Option Val)) (gty : Tm) (env : Env) (acc : Tm) : Option Tm :=
+  match peel gty with
+  | .bind dom cod => match asg with
+    | .cons a rest => match a with
+      | .some v => applyGlobal gs c ty f rest cod (.cons v env) (.app acc (quote (TCtx.lvl c) v))
+      | .none => applyFound gs c ty f rest dom cod env acc
+    | .nil => applyFound gs c ty f .nil dom cod env acc
+  | .done => match check (TCtx.erase c) acc ty with
+    | .ok _ _ => .some acc
+    | .err _ => .none
+-- an argument the conclusion doesn't fix: found by the search
+def applyFound (gs : Globals) (c : TCtx) (ty : Val) (f : Nat) (asg : List (Option Val)) (dom cod : Tm) (env : Env) (acc : Tm) : Option Tm :=
+  match wit gs c (eval env dom) f with
+  | .none => .none
+  | .some w => applyGlobal gs c ty f asg cod (.cons (eval (TCtx.env c) w) env) (.app acc w)
+end
+inductive SigR where
+  | ok (f : String) (ty : Tm)
+  | err (msg : String)
+-- the type of `axiom f (bs) : T` or of a partial `def f (bs) : T`
+def sigType (gs : Globals) (d : Syntax) : SigR := match kid d 1 with
+  | .ident f => match kids (kid d 4) with
+    | .cons _ (.cons tyS _) => match teleT gs ES.empty (Cx.mk empty (Globals.scope gs) .nil) (kids (kid d 3)) tyS with
+      | .err m => .err m
+      | .ok ty0 _ es => match zonk es 0 ty0 with
+        | .none => .err "could not infer an implicit argument"
+        | .some tyZ => let ty := sortTy tyZ; match inferUniv empty ty with
+          | .err m => .err m
+          | .ok _ _ => .ok f ty
+    | _ => .err "a partial definition needs a type"
+  | _ => .err "a definition needs a name"
 def addAxioms : Globals → List Syntax → AxR
   | gs, .nil => .ok gs
-  | gs, .cons d rest => match kid d 1 with
-    | .ident f => match kids (kid d 4) with
-      | .cons _ (.cons tyS _) => match teleT gs ES.empty (Cx.mk empty (Globals.scope gs) .nil) (kids (kid d 3)) tyS with
-        | .err m => .err m
-        | .ok ty0 _ es => match zonk es 0 ty0 with
-          | .none => .err "could not infer an implicit argument"
-          | .some tyZ => let ty := sortTy tyZ; match inferUniv empty ty with
-            | .err m => .err m
-            | .ok _ _ => addAxioms (Globals.add gs (.mk f ty (.axiomC f ty) (.axiomC f ty) (paramMask (kids (kid d 3))))) rest
-      | _ => .err "a partial definition needs a type"
-    | _ => .err "a definition needs a name"
+  | gs, .cons d rest => match sigType gs d with
+    | .err m => .err m
+    | .ok f ty => addAxioms (Globals.add gs (.mk f ty (.axiomC f ty) (.axiomC f ty) (paramMask (kids (kid d 3))))) rest
+-- a member of a partial group: `def …`, or `partial (default := w) def …`
+def unwrapDef (d : Syntax) : Syntax := match strEq (kindOf d) "command.partial" with
+  | .true => kid d 2
+  | .false => d
+def unwrapDefs : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons d rest => .cons (unwrapDef d) (unwrapDefs rest)
+-- the witness of a partial definition's type: the one written, or one found
+def findWit (gs : Globals) (f : String) (ty : Tm) : SigR := match wit gs empty (eval .nil ty) 4 with
+  | .some w => .ok f w
+  | .none => .err (String.append (String.append "partial definition " f)
+      ": no witness found for its type; give one with `partial (default := w) def`")
+def witnessOf (gs : Globals) (d : Syntax) (f : String) (ty : Tm) : SigR := match strEq (kindOf d) "command.partial" with
+  | .true => match kids (kid d 1) with
+    | .nil => findWit gs f ty
+    | .cons _ _ => match checkT gs ES.empty (Cx.mk empty (Globals.scope gs) .nil) (kid (kid d 1) 3) (eval .nil ty) with
+      | .err m => .err m
+      | .ok w0 _ es0 => match drain gs es0 with
+        | .none => .err "could not elaborate the witness"
+        | .some es => match zonk es 0 w0 with
+          | .none => .err "could not infer an implicit argument of the witness"
+          | .some w => .ok f w
+  | .false => findWit gs f ty
+-- the signatures of a partial group, each with its witness checked by the kernel
+def addPartials : Globals → List Syntax → AxR
+  | gs, .nil => .ok gs
+  | gs, .cons d rest => match sigType gs (unwrapDef d) with
+    | .err m => .err m
+    | .ok f ty => match witnessOf gs d f ty with
+      | .err m => .err m
+      | .ok _ w => match checkPartial ty w with
+        | .err m => .err (String.append (String.append "the witness of " f) (String.append ": " m))
+        | .ok _ _ => addPartials (Globals.add gs (.mk f ty (.axiomC f ty) (.axiomC f ty) (paramMask (kids (kid (unwrapDef d) 3))))) rest
 -- `axiom f (bs) : T` (stage 19c), printed like a definition
 def axiomCmd (gs : Globals) (stx : Syntax) : Step := match addAxioms gs (one stx) with
   | .err m => errStep gs m
@@ -3062,9 +3238,9 @@ def defsSteps : Globals → List Syntax → Step
       | .mk lines gs'' => .mk (match rest with
           | .nil => line
           | .cons _ _ => String.append (String.append line "\n") lines) gs''
-def partialCmd (gs : Globals) (defs : List Syntax) : Step := match addAxioms gs defs with
+def partialCmd (gs : Globals) (defs : List Syntax) : Step := match addPartials gs defs with
   | .err m => errStep gs m
-  | .ok gs1 => defsSteps gs1 defs
+  | .ok gs1 => defsSteps gs1 (unwrapDefs defs)
 
 -- Structures (stage 18e): `structure T (ps) where f₁ : A₁ …` is the inductive type
 -- `T (ps) where | mk (f₁ : A₁) …` and a projection `T.fᵢ {ps} (s : T ps) : Aᵢ` for each
@@ -3242,7 +3418,7 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
         | .nil => stx0
         | _ => expandNotes notes stx0;
       let step := match strEq (kindOf stx) "command.partial" with
-        | .true => partialCmd gs (one (kid stx 1))
+        | .true => partialCmd gs (one stx)
         | .false => match strEq (kindOf stx) "command.mutual" with
           | .true => match strEq (kindOf (nthSyntax (nonAtoms (kids (kid stx 1))) 0)) "command.inductive" with
             | .true => mutualInductiveCmd gs (nonAtoms (kids (kid stx 1)))

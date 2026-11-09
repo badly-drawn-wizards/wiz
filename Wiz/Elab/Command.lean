@@ -8,6 +8,7 @@ import Wiz.Compiler.C
 import Wiz.Elab.ProcMacro
 import Wiz.Elab.Reflect
 import Wiz.Frontend.Parse
+import Wiz.Elab.Witness
 
 /-!
 # Elaborating commands
@@ -35,6 +36,7 @@ variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 inductive Severity where
   | info
   | error
+  | warning
   deriving BEq, Repr, Inhabited
 
 structure Msg where
@@ -45,7 +47,7 @@ structure Msg where
 
 def Msg.render (input : String) (m : Msg) : String :=
   let (l, c) := lineCol input m.info.start
-  let sev := if m.severity == .error then "error" else "info"
+  let sev := match m.severity with | .error => "error" | .warning => "warning" | .info => "info"
   s!"{l + 1}:{c + 1}: {sev}: {m.text}"
 
 structure CommandState (R : Type) where
@@ -87,6 +89,9 @@ structure CommandState (R : Type) where
   declSites : Std.HashMap Name (SourceInfo × String) := {}
   /-- the module being elaborated (`""` for the main file) -/
   module : String := ""
+  /-- the modules whose `builtin` registrations are trusted: the toolchain's library
+  (`lib/`). The main file never is; `wiz` leaves out modules from `$WIZ_PATH`. -/
+  trustedModule : String → Bool := fun m => m != ""
   /-- macro rules, latest first -/
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000
@@ -572,61 +577,33 @@ def notationRule (tables : ParserTables) (cmd : Syntax) :
     let tables := tables.addLeading "term" { kind, prec, p }
     pure (tables, (kind, .node {} kind (items.map pat).toArray, rhs, vars))
 
-/-- Can the elaborator see that a type is inhabited? A partial definition is an axiom
-to the kernel, and this keeps such axioms from proving `False`. Conservative: Π types
-with an inhabited codomain, sorts, `Unit`, nonempty enumerations, pairs, data types with
-a constructor whose fields are inhabited (not indexed, no recursive fields), and types
-that some declared constant inhabits (`StrMap.empty : StrMap V`). -/
-partial def inhabitedTy (g : Globals R) (lvl fuel : Nat) (ty : Val R) (hyps : List Name := []) : Bool :=
-  if fuel == 0 then false else
-  let headOf (v : Val R) : Option Name := match whnf v with
-    | .neutral (.global n _) _ => some n
-    | .mu _ _ _ _ _ (some (n, _, _)) => some n
-    | _ => none
-  -- the variables bound so far inhabit their types (`IO A := (w : World) → A × World`)
-  let inh (v : Val R) : Bool :=
-    (match headOf v with
-     | some n => hyps.contains n
-     | none => false) || inhabitedTy g (lvl + 1) (fuel - 1) v hyps
-  -- a constant whose type ends in `T …`, with inhabited argument types
-  -- (the argument types are checked only shallowly: this search runs over all globals)
-  let rec witness (T : Name) (n : Nat) (v : Val R) : Bool :=
-    match whnf v with
-    | .pi _ _ _ dom cod _ =>
-      inhabitedTy g (lvl + n + 1) (min (fuel - 1) 2) dom hyps && witness T (n + 1) (Closure.inst g cod (Val.var (lvl + n)))
-    | v => headOf v == some T
-  -- (only constants whose type visibly ends in `T …` are evaluated: this runs often)
-  let rec resultHead : Term R → Option Name
-    | .pi _ _ _ _ b _ => resultHead b
-    | t => match t.spine.1 with
-      | .const n _ => some n
-      | _ => none
-  let byConstant (T : Name) : Bool := g.order.any fun c => match g.find? c with
-    | some d => c != T && resultHead d.type == some T &&
-        witness T 0 (eval g [] (d.type.instLevels d.levelParams (d.levelParams.map fun _ => .zero)))
-    | none => false
-  let rec fields (d : Val R) : Bool := match whnf d with
-    | .dret _ => true
-    | .darg _ S E => inh S && fields (vApp g E (Val.var lvl))
+/-- Is a `builtin key := d` registration well formed? Numerals and the native operations
+need the shapes they assume: `nat` a type, `nat.zero : N`, `nat.succ : N → N`, the
+operations `N → N → N` (or `N → N → B` for the comparisons), each a definition (when an
+argument isn't a literal, the definition computes). Otherwise the kernel's numerals
+would be ill-typed or stuck (`builtin nat := E` for an empty `E` crashed the checker). -/
+def builtinShapeError (g : Globals R) (key : Name) (d : Decl R) : Option String :=
+  let rec doms : Term R → List (Term R) × Term R
+    | .pi _ _ _ a b _ => let (as, r) := doms b; (a :: as, r)
+    | t => ([], t)
+  let isN (N : Name) : Term R → Bool
+    | .const c [] => c == N
     | _ => false
-  match whnf ty with
-  | .pi _ _ _ dom cod _ =>
-    inhabitedTy g (lvl + 1) (fuel - 1) (Closure.inst g cod (Val.var lvl)) ((headOf dom).toList ++ hyps)
-  | .sort _ | .unit _ | .qty | .size | .desc .. => true
-  | .enum ls => !ls.isEmpty
-  | .sigma _ _ A B _ => inh A && inh (Closure.inst g B (Val.var lvl))
-  | .mu _ I D _ _ hint =>
-    let byCtor := match whnf I, whnf D with
-      | .unit _, .darg _ S F => match whnf S with
-        | .enum ls => (List.range ls.length).any fun i => fields (vApp g F (.tag ls i))
-        | _ => fields D
-      | .unit _, _ => fields D
-      | _, _ => false
-    byCtor || (match hint with
-      | some (T, _, _) => byConstant T
-      | none => false)
-  | .neutral (.global T _) _ => byConstant T
-  | _ => false
+  if key == "nat" || key == "string" then
+    match d.type with
+    | .sort _ => none
+    | _ => some "it must be a type"
+  else if key == "memo" then none
+  else match g.builtins.lookup "nat" with
+    | none => some "register `builtin nat := …` first"
+    | some N =>
+      let (as, r) := doms d.type
+      let arity := natOpArity key
+      if d.value.isNone then some "it must be a definition"
+      else if as.length != arity || !as.all (isN N) then
+        some s!"it must take {arity} argument{if arity == 1 then "" else "s"} of type {N}"
+      else if !(key == "nat.beq" || key == "nat.blt") && !isN N r then some s!"its result must have type {N}"
+      else none
 
 /-- Mutual inductive types (stage 13) as one family indexed by a tag type:
 
@@ -721,7 +698,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         addDeclChecked name levelParams ty val
       | .error e => report .error e.info e.msg
   | "command.partial" | "command.mutual" =>
-    let defs := if cmd.isOfKind "command.partial" then #[cmd.getArg 1] else (cmd.getArg 1).args
+    -- each definition, with the witness written for it (`partial (default := w) def …`)
+    let unwrap (d : Syntax) : Syntax × Option Syntax :=
+      if d.isOfKind "command.partial" then
+        (d.getArg 2, if (d.getArg 1).isNone then none else some ((d.getArg 1).getArg 3))
+      else (d, none)
+    let members := if cmd.isOfKind "command.partial" then #[unwrap cmd] else (cmd.getArg 1).args.map unwrap
+    let defs := members.map (·.1)
     if cmd.isOfKind "command.mutual" && defs.all (·.isOfKind "command.inductive") then
       match mutualInductive s.tables defs with
       | .ok cmds => for c in cmds do elabCommand c
@@ -732,7 +715,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     -- the signatures first, as axioms (so the bodies can call each other)
     let mut g := s.globals
     let mut sigs : Array (Syntax × Name × List Name) := #[]
-    for d in defs do
+    for (d, wStx) in members do
       unless d.isOfKind "command.def" || d.isOfKind "command.defEqns" do
         report .error d.info "only definitions can be partial"
         return
@@ -744,10 +727,25 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let some tyStx := typeOf d | report .error d.info "a partial definition needs a type"; return
       match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) g (elabDeclTerms (d.getArg 3).args (some tyStx) none d.info) levelParams with
       | .ok ((ty, _), _) =>
-        unless inhabitedTy g 0 32 (eval g [] (ty.instLevels levelParams (levelParams.map fun _ => .zero))) do
-          report .error (d.getArg 1).info s!"partial definition {name}: its type must be visibly inhabited (the kernel treats {name} as an axiom)"
-          return
-        g := g.insert { name, levelParams, type := ty, value := none }
+        -- the kernel takes `name : ty` only with a witness of `ty`: the one written, or
+        -- one the elaborator finds
+        let findW : ElabM R (Option (Term R)) := match wStx with
+          | some w => do
+            let t ← Elab.check {} w (← evalIn {} ty)
+            solveSortConstraints
+            let t ← zonk 0 t
+            ensureNoMVars t w.info
+            pure (some t)
+          | none => findWitness ty
+        let w ← match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) g findW levelParams with
+          | .ok (some w) => pure w
+          | .ok none =>
+            report .error (d.getArg 1).info s!"partial definition {name}: no witness found for its type {ty.pretty}; give one with `partial (default := w) def {name} …` (the kernel takes {name} only if its type is inhabited)"
+            return
+          | .error e => report .error e.info e.msg; return
+        match addPartialDecl g ({ name, levelParams, type := ty, value := none, witness := some w }.withSorts g) with
+        | .ok g' => g := g'
+        | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
       | .error e => report .error e.info e.msg; return
     -- then the bodies, checked by the kernel and kept as the implementations
@@ -946,9 +944,28 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let n := ((cmd.getArg 3).getId?).getD "_"
     let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
-    else if !s.globals.contains n then report .error cmd.info s!"unknown declaration {n}"
-    else modify fun s => { s with builtins := (key, n) :: s.builtins,
-                                  globals := { s.globals with builtins := (key, n) :: s.globals.builtins } }
+    else match s.globals.find? n with
+    | none => report .error cmd.info s!"unknown declaration {n}"
+    | some d =>
+      match builtinShapeError s.globals key d with
+      | some e => report .error cmd.info s!"builtin {key} := {n}: {e}"
+      | none =>
+        -- the toolchain's library is trusted (its registrations are reviewed: README,
+        -- "Trusted base"); anywhere else, nothing checks that `n` computes like the native
+        -- operation, so the registration is an axiom of whatever depends on `n`
+        let trusted := s.trustedModule s.module
+        modify fun s => { s with builtins := (key, n) :: s.builtins,
+                                 globals := { s.globals with builtins := (key, n) :: s.globals.builtins,
+                                                             assumed := if trusted then s.globals.assumed
+                                                                        else (key, n) :: s.globals.assumed } }
+        unless trusted do
+          report .warning cmd.info s!"builtin {key} := {n} is not checked: it is an axiom of every declaration that depends on {n} (see `#print axioms`)"
+  | "command.printAxioms" =>
+    let n := ((cmd.getArg 2).getId?).getD "_"
+    if !s.globals.contains n then report .error (cmd.getArg 2).info s!"unknown declaration {n}"
+    else match s.globals.axiomsOf n with
+      | [] => report .info cmd.info s!"'{n}' does not depend on any axioms"
+      | as => report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]"
   | "command.foreignType" =>
     -- an opaque C pointer type; values are released with the finalizer
     let name := ((cmd.getArg 1).getId?).getD "_"

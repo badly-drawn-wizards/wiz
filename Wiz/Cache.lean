@@ -250,6 +250,7 @@ structure Effect (R : Type) where
   decls : Array (Decl R) := #[]
   messages : Array Msg := #[]
   builtins : List (Name × Name) := []
+  assumed : List (Name × Name) := []
   classes : List ClassInfo := []
   instances : Array InstanceInfo := #[]
   coinductives : List (Name × List (Name × Bool)) := []
@@ -263,13 +264,14 @@ def cacheable : List Name :=
   ["command.def", "command.axiom", "command.defEqns", "command.inductive", "command.structure",
    "command.class", "command.instance", "command.coinductive", "command.builtin", "command.extern",
    "command.glue", "command.foreignType", "command.check", "command.reduce", "command.eval",
-   "command.erase", "command.run", "command.ir"]
+   "command.erase", "command.run", "command.ir", "command.printAxioms"]
 
 def effectOf (s s' : CommandState R) : Effect R :=
   let newNames := s'.globals.order.extract s.globals.order.size s'.globals.order.size
   { decls := newNames.filterMap s'.globals.find?
     messages := s'.messages.extract s.messages.size s'.messages.size
     builtins := s'.builtins.take (s'.builtins.length - s.builtins.length)
+    assumed := s'.globals.assumed.take (s'.globals.assumed.length - s.globals.assumed.length)
     classes := s'.classes.take (s'.classes.length - s.classes.length)
     instances := s'.instances.extract s.instances.size s'.instances.size
     coinductives := s'.coinductives.drop s.coinductives.length
@@ -281,7 +283,8 @@ def effectOf (s s' : CommandState R) : Effect R :=
 /-- Replay an effect. -/
 def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
   let globals := e.decls.foldl (·.insert ·) s.globals
-  let globals := { globals with builtins := e.builtins ++ globals.builtins }
+  let globals := { globals with builtins := e.builtins ++ globals.builtins,
+                                assumed := e.assumed ++ globals.assumed }
   { s with globals, messages := s.messages ++ e.messages, builtins := e.builtins ++ s.builtins,
            classes := e.classes ++ s.classes, instances := s.instances ++ e.instances,
            coinductives := s.coinductives ++ e.coinductives, foreignTypes := e.foreignTypes ++ s.foreignTypes,
@@ -296,10 +299,13 @@ def dinfo (x : Sx) : Option SourceInfo := do
 def Effect.toSx (e : Effect R) : Sx :=
   let decl (d : Decl R) : Sx := list [str d.name, list (d.levelParams.map str), term d.type,
     (match d.value with | some v => term v | none => .a "none"), .a (toString d.inline),
-    (match d.impl with | some v => term v | none => .a "none")]
-  let msg (m : Msg) : Sx := list [info m.info, .a (if m.severity == .error then "error" else "info"), str m.text]
+    (match d.impl with | some v => term v | none => .a "none"),
+    (match d.witness with | some v => term v | none => .a "none")]
+  let sev : Severity → Sx | .error => .a "error" | .warning => .a "warning" | .info => .a "info"
+  let msg (m : Msg) : Sx := list [info m.info, sev m.severity, str m.text]
   list [list (e.decls.toList.map decl), list (e.messages.toList.map msg),
     list (e.builtins.map fun (k, n) => list [str k, str n]),
+    list (e.assumed.map fun (k, n) => list [str k, str n]),
     list (e.classes.map fun c => list [str c.name, list (c.outParams.map (.a ∘ toString)), list (c.fields.map str)]),
     list (e.instances.toList.map fun i => list [str i.name, str i.cls, nat i.priority]),
     list (e.coinductives.map fun (n, obs) => list [str n, list (obs.map fun (o, b) => list [str o, .a (toString b)])]),
@@ -309,16 +315,19 @@ def Effect.toSx (e : Effect R) : Sx :=
     list (e.sites.toList.map fun (n, i, m) => list [str n, info i, str m])]
 
 def Effect.ofSx? (x : Sx) : Option (Effect R) := do
-  let #[ds, ms, bs, cs, is, cos, fts, cc, hs, ss] ← items? x | none
+  let #[ds, ms, bs, as, cs, is, cos, fts, cc, hs, ss] ← items? x | none
   let decl (x : Sx) : Option (Decl R) := do
-    let #[n, ps, ty, v, inl, im] ← items? x | none
+    let #[n, ps, ty, v, inl, im, w] ← items? x | none
     pure { name := ← atom? n, levelParams := ← (← items? ps).toList.mapM atom?, type := ← dterm ty,
            value := ← (match v with | .a "none" => some none | v => (dterm v).map some),
            inline := (← atom? inl) == "true",
-           impl := ← (match im with | .a "none" => some none | v => (dterm v).map some) }
+           impl := ← (match im with | .a "none" => some none | v => (dterm v).map some),
+           witness := ← (match w with | .a "none" => some none | v => (dterm v).map some) }
   let msg (x : Sx) : Option Msg := do
     let #[i, sev, t] ← items? x | none
-    pure { info := ← dinfo i, severity := if (← atom? sev) == "error" then .error else .info, text := ← atom? t }
+    let severity : Severity := match ← atom? sev with
+      | "error" => .error | "warning" => .warning | _ => .info
+    pure { info := ← dinfo i, severity, text := ← atom? t }
   let pair (x : Sx) : Option (String × String) := do
     let #[a, b] ← items? x | none
     pure (← atom? a, ← atom? b)
@@ -326,6 +335,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
     decls := (← (← items? ds).mapM decl)
     messages := (← (← items? ms).mapM msg)
     builtins := (← (← items? bs).toList.mapM pair)
+    assumed := (← (← items? as).toList.mapM pair)
     classes := (← (← items? cs).toList.mapM fun c => do
       let #[n, os, fs] ← items? c | none
       pure { name := ← atom? n, outParams := ← (← items? os).toList.mapM fun o => do pure ((← atom? o) == "true"),
@@ -348,7 +358,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
-def salt : UInt64 := hash "wiz-cache-3"
+def salt : UInt64 := hash "wiz-cache-4"
 
 /-- Elaborate `input` (like `Query.elaborate`), reading and writing `dir`. Returns the
 final state and how many commands came from the disk cache. -/

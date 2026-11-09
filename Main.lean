@@ -32,6 +32,17 @@ def loadLibrary : IO (Std.HashMap Name String) := do
           m := m.insert (e.path.fileStem.getD "") (← IO.FS.readFile e.path)
   pure m
 
+/-- The modules of the toolchain's own `lib/` that `$WIZ_PATH` doesn't replace. -/
+def libraryOwn : IO (List String) := do
+  let names (d : String) : IO (List String) := do
+    if !(← System.FilePath.isDir d) then return []
+    return (← System.FilePath.readDir d).toList.filterMap fun e =>
+      if e.path.extension == some "wiz" then e.path.fileStem else none
+  let other ← match ← IO.getEnv "WIZ_PATH" with
+    | some d => names d
+    | none => pure []
+  return (← names "lib").filter (!other.contains ·)
+
 /-- Library modules with their paths (for the language server's go-to-definition). -/
 def loadLibraryPaths : IO (Std.HashMap String (String × String)) := do
   let dirs := ["lib"] ++ ((← IO.getEnv "WIZ_PATH").map ([·])).getD []
@@ -48,7 +59,10 @@ def loadLibraryPaths : IO (Std.HashMap String (String × String)) := do
 def elaborate (cache : Option String) (input : String) : IO (CommandState ZeroOneMany) := do
   let lib ← loadLibrary
   let headers ← Build.preprocessHeaders input
-  let init : CommandState ZeroOneMany := { loader := (lib[·]?), cHeaders := (headers[·]?) }
+  -- `builtin` registrations are trusted only in the toolchain's own library
+  let own ← libraryOwn
+  let init : CommandState ZeroOneMany := { loader := (lib[·]?), cHeaders := (headers[·]?),
+                                           trustedModule := own.contains }
   match cache with
   | none => pure (runFrontend input init)
   | some dir =>

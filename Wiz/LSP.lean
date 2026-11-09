@@ -63,7 +63,7 @@ def elaborate (srv : Server) (doc : Doc) : Doc :=
 def diagnostics (uri : String) (doc : Doc) : Json :=
   let ds := doc.state.messages.toList.map fun m =>
     Json.mkObj [("range", range doc.text m.info),
-                ("severity", (if m.severity == .error then 1 else 3 : Nat)),
+                ("severity", (match m.severity with | .error => 1 | .warning => 2 | .info => 3 : Nat)),
                 ("source", "wiz"), ("message", m.text)]
   Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/publishDiagnostics"),
               ("params", Json.mkObj [("uri", uri), ("diagnostics", Json.arr ds.toArray)])]
