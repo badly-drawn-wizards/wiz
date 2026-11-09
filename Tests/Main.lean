@@ -21,10 +21,6 @@ prefix of the group's name. -/
 def selects (g : Group) (arg : String) : Bool :=
   if arg.startsWith "=" then "=" ++ g.name == arg else g.name.startsWith arg
 
-/-- `lake test` runs everything; `lake test -- conv rig` runs only groups whose name
-starts with one of the arguments, and `lake test -- =c` only the group named `c`.
-`lake test -- --list` prints the group names, one per line (CI checks its shards
-against them). -/
 /-- The suite's toolchain: what the dev shell exports (`flake.nix`, `wiz-env.sh`: the one
 place the environment is read, so that `lake test` works in it), then the toolchain flags
 given to `lake test -- …`, which win. The flags are passed on to each case's process. -/
@@ -37,6 +33,10 @@ def suiteToolchain (args : List String) : IO (Wiz.Toolchain × List String) := d
   let (tc, rest) := fromEnv.parseFlags args
   pure (tc, rest)
 
+/-- `lake test` runs everything; `lake test -- conv rig` runs only groups whose name
+starts with one of the arguments, and `lake test -- =c` only the group named `c`.
+`lake test -- --list` prints the group names, one per line (CI checks its shards
+against them). -/
 def main (args : List String) : IO UInt32 := do
   let (tc, args') ← suiteToolchain args
   toolchainRef.set tc
