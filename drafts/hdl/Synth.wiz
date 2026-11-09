@@ -1,6 +1,6 @@
 import Signal
 -- HD5 (a static synthesisability discipline) and HD6 (our own netlist IR, Verilog out),
--- in Wiz types, as far as they go today. `WIZ_PATH=drafts/hdl wiz check drafts/hdl/Synth.wiz`
+-- in Wiz types, as far as they go today. `wiz check -I drafts/hdl drafts/hdl/Synth.wiz`
 --
 -- The question HD5 asks: how do the library's *types* say "this is a circuit"? The plan's
 -- answer (§4) is dynamic: the symbolic evaluator defines the fragment. The proposal here

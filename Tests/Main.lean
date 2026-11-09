@@ -13,7 +13,7 @@ open Tests
 
 def groups : List Group :=
   [Rig.group, Eval.evalGroup, Eval.convGroup, Eval.structGroup, Check.mlttGroup, Check.qttGroup, Check.structGroup,
-   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group, Elab.levelGroup, Elab.structGroup, Elab.ottGroup, Elab.qtyGroup, Elab.dataGroup, Elab.inductiveGroup, Elab.matchGroup, Elab.coinductiveGroup, Elab.sizedGroup, Elab.runGroup, Elab.macroGroup, Elab.builtinGroup, Elab.tacticGroup, Elab.classGroup, Elab.backendGroup, Elab.cGroup, Elab.llvmGroup, Elab.ffiGroup, Elab.effectsGroup, Elab.toolingGroup, Elab.stdGroup, Elab.wordGroup, Elab.selfHostGroup, Elab.languageGroup, Elab.opticGroup, Elab.derivingGroup, Elab.reuseGroup, Grail.modulesGroup, Grail.grailGroup]
+   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group, Elab.levelGroup, Elab.structGroup, Elab.ottGroup, Elab.qtyGroup, Elab.dataGroup, Elab.inductiveGroup, Elab.matchGroup, Elab.coinductiveGroup, Elab.sizedGroup, Elab.runGroup, Elab.macroGroup, Elab.builtinGroup, Elab.tacticGroup, Elab.classGroup, Elab.backendGroup, Elab.cGroup, Elab.llvmGroup, Elab.ffiGroup, Elab.effectsGroup, Elab.toolingGroup, Elab.stdGroup, Elab.wordGroup, Elab.selfHostGroup, Elab.languageGroup, Elab.opticGroup, Elab.derivingGroup, Elab.reuseGroup, Grail.modulesGroup, Grail.toolchainGroup, Grail.grailGroup]
 
 /-- Whether a command-line selector picks a group: `=NAME` exactly, anything else as a
 prefix of the group's name. -/
@@ -24,7 +24,23 @@ def selects (g : Group) (arg : String) : Bool :=
 starts with one of the arguments, and `lake test -- =c` only the group named `c`.
 `lake test -- --list` prints the group names, one per line (CI checks its shards
 against them). -/
-def main : List String → IO UInt32
+/-- The suite's toolchain: what the dev shell exports (`flake.nix`, `wiz-env.sh`: the one
+place the environment is read, so that `lake test` works in it), then the toolchain flags
+given to `lake test -- …`, which win. The flags are passed on to each case's process. -/
+def suiteToolchain (args : List String) : IO (Wiz.Toolchain × List String) := do
+  let ws (v : String) : IO (List String) := do pure (Wiz.Toolchain.words ((← IO.getEnv v).getD ""))
+  let fromEnv : Wiz.Toolchain := {
+    cc := (← IO.getEnv "WIZ_CC").getD "cc", llc := (← IO.getEnv "WIZ_LLC").getD "llc",
+    cflags := ← ws "WIZ_CFLAGS", ldflags := ← ws "WIZ_LDFLAGS",
+    gcCflags := ← ws "WIZ_GC_CFLAGS", gcLdflags := ← ws "WIZ_GC_LDFLAGS" }
+  let (tc, rest) := fromEnv.parseFlags args
+  pure (tc, rest)
+
+def main (args : List String) : IO UInt32 := do
+  let (tc, args') ← suiteToolchain args
+  toolchainRef.set tc
+  flagsRef.set tc.toFlags
+  match args' with
   | ["--run", group, ix] =>
     match groups.find? (·.name == group) >>= (·.cases[ix.toNat!]?) with
     | some c => c.runHere

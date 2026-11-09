@@ -40,5 +40,6 @@ import Wiz.FFI.CParse
 import Wiz.FFI.CGlue
 import Wiz.Query
 import Wiz.LSP
+import Wiz.Toolchain
 import Wiz.Module
 import Wiz.Cache

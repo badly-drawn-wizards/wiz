@@ -1,5 +1,5 @@
 import Signal
--- E4-: a toy CPU (HD12: toy ISA first, RV32I later). `WIZ_PATH=drafts/hdl wiz check drafts/hdl/Cpu.wiz`
+-- E4-: a toy CPU (HD12: toy ISA first, RV32I later). `wiz check -I drafts/hdl drafts/hdl/Cpu.wiz`
 --
 -- An 8-bit accumulator machine with 16 bytes of data memory and a 16-word instruction
 -- ROM. Instructions are one byte: opcode in bits 7..5, operand in bits 3..0.

@@ -878,13 +878,13 @@ def reuseGroup : Group where
   ]
 
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
-the C toolchain can't find GMP: set `WIZ_CFLAGS`/`WIZ_LDFLAGS` to run these. -/
+the C toolchain can't find GMP: give the suite a toolchain (`Tests/Main.lean`) to run these. -/
 def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
   let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal s "main" dir llvm with
+  match ← Build.runGlobal (← toolchain) s "main" dir llvm with
   | .ok v => checkEq expected v
   | .error e =>
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
@@ -899,12 +899,12 @@ def ioRun (src : String) (expected : String) : IO Unit := do
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
     else if m == "Std" then some stdLib else none
-  let headers ← Build.preprocessHeaders src
+  let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal s "main" dir (timeout := some 120) with
+  match ← Build.runGlobal (← toolchain) s "main" dir (timeout := some 120) with
   | .ok v => checkEq expected v
   | .error e =>
     if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
@@ -1809,7 +1809,7 @@ def selfhostChecker : IO (Except String System.FilePath) := do
   | .ok (decls, _) =>
     -- built under another name and renamed: tests may run at the same time
     let tmp := dir / s!"checker-{← IO.monoNanosNow}"
-    match ← Build.compileC (C.program decls true (Build.extraC s)) tmp with
+    match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
     | .ok () => IO.FS.rename tmp exe; return .ok exe
 
@@ -1841,16 +1841,16 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
   | .error e => return .error e
   | .ok (decls, _) =>
     let tmp := dir / s!"compiler-{← IO.monoNanosNow}"
-    match ← Build.compileC (C.program decls true (Build.extraC s)) tmp with
+    match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
     | .ok () => IO.FS.rename tmp exe; return .ok exe
 
 /-- Compile a program with the self-hosted compiler, then the C it prints with the
-self-hosted runtime (`selfhost/rt.c`, with the garbage collector given by
-`$WIZ_GC_CFLAGS`/`$WIZ_GC_LDFLAGS`), run it, and compare its output. -/
+self-hosted runtime (`selfhost/rt.c`, with the garbage collector given by the
+toolchain's `gcCflags`/`gcLdflags`), run it, and compare its output. -/
 def selfhostCompileRun (file expected : String) : IO Unit := do
-  let some gcc ← IO.getEnv "WIZ_GC_CFLAGS" | IO.println "    (skipped: no garbage collector, $WIZ_GC_CFLAGS)"
-  let gcl := (← IO.getEnv "WIZ_GC_LDFLAGS").getD ""
+  let tc ← toolchain
+  if tc.gcCflags.isEmpty then IO.println "    (skipped: no garbage collector, --gc-cflags)"; return
   match ← selfhostCompiler with
   | .error e =>
     if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
@@ -1861,9 +1861,8 @@ def selfhostCompileRun (file expected : String) : IO Unit := do
     unless out.exitCode == 0 do throw (IO.userError s!"the compiler failed ({out.exitCode}): {out.stderr}")
     IO.FS.writeFile (dir / "out.c") out.stdout
     let rt := (← IO.currentDir) / "selfhost"
-    let args := #["-O1", "-w", s!"-I{rt}"] ++ (gcc.splitOn " ").toArray ++ #["out.c", "-o", "prog"] ++
-      ((gcl.splitOn " ").filter (· != "")).toArray
-    let cc ← IO.Process.output { cmd := "cc", args, cwd := dir }
+    let args := #["-O1", "-w", s!"-I{rt}"] ++ tc.gcCflags.toArray ++ #["out.c", "-o", "prog"] ++ tc.gcLdflags.toArray
+    let cc ← IO.Process.output { cmd := tc.cc, args, cwd := dir }
     unless cc.exitCode == 0 do throw (IO.userError s!"cc failed: {cc.stderr.take 2000}")
     let run ← IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString], cwd := dir }
     unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
@@ -2377,7 +2376,7 @@ def cGroup : Group where
   exercise := "Exercise 8.2"
   cases := nativeCases false
 
-/-- The same programs, through LLVM (`$WIZ_LLC`). -/
+/-- The same programs, through LLVM (the toolchain's `llc`). -/
 def llvmGroup : Group where
   name := "llvm"
   exercise := "Stage 8d"

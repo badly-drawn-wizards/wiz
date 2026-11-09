@@ -28,7 +28,9 @@ soundness issues are known, open and fixed.
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
 LLVM's `llc` for the C and LLVM backends, Boehm GC for the self-hosted backend, a C
 compiler, and elan, which installs the Lean in `lean-toolchain`. It sets `$WIZ_CFLAGS`,
-`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`.
+`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`, which only the test
+driver reads (`Tests/Main.lean`; flags to `lake test -- …` win); `wiz` and `grail` take
+flags.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
 `solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
@@ -632,7 +634,7 @@ attribute [macro term.twice] twiceMacro
 #eval twice! 21                     -- 42
 ```
 
-* `import M` loads `lib/M.wiz` (and `$WIZ_PATH`). `lib/Prelude.wiz` defines `Bool`,
+* `import M` loads `lib/M.wiz` (and the `-I DIR` roots; `import A.B` is `A/B.wiz`). `lib/Prelude.wiz` defines `Bool`,
   `Nat`, `List`, `Option`, `Char`, `String`, `Except`, `Syntax`, `MacroM`, and `do`
   notation (written as macros).
 * `builtin key := name` registers prelude definitions with the kernel and the runtime
@@ -864,8 +866,9 @@ $ wiz run fact.wiz        # def main : Nat := fact 30
 
 * `wiz build FILE -o OUT` compiles the definition `main` to C and then to an
   executable; `wiz run FILE` also runs it and reads the printed result back with
-  `main`'s type. The C compiler is `$WIZ_CC` (default `cc`), with `$WIZ_CFLAGS` and
-  `$WIZ_LDFLAGS` for GMP. The C tests skip themselves if GMP isn't found.
+  `main`'s type. The C compiler is `--cc X` (default `cc`), with `--cflags "…"` and
+  `--ldflags "…"` for GMP (stage 22a: flags, not environment variables). The C tests
+  skip themselves if GMP isn't found.
 * **Runtime** (`runtime/wiz.c`, embedded in the compiler): a value is a word; scalars
   have the low bit set; objects have a header (reference count, tag, size). Closures
   point to a boxed entry and share or move their captured arguments when applied.
@@ -1909,6 +1912,14 @@ def settings : Settings := Settings.empty
   |> Settings.set "ldflags" "-L/nix/store/…-gmp-…/lib -Wl,-rpath,/nix/store/…-gmp-…/lib"
 ```
 
-Next: the toolchain as flags in `wiz` too (22a), the self-hosted toolchain as targets
+### 22a: the toolchain as flags ✅
+
+`wiz` reads no environment variables: the toolchain record (`Wiz/Toolchain.lean`: C
+compiler and flags, `llc`, the collector's flags, the cache, module roots) comes from
+`--cc`, `--cflags`, `--ldflags`, `--libs`, `--llc`, `--cache DIR`/`--no-cache` and
+`-I DIR` (which replaces `$WIZ_PATH`), and is passed explicitly to everything that
+compiles. Its compiler fields are its `id`, which enters grail's keys.
+
+Next: the self-hosted toolchain as targets
 with a bootstrap check (22e), a test runner (22f), parallel jobs (22g), git
 dependencies and a lock file (22h).

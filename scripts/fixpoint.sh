@@ -19,7 +19,7 @@ cp "$out/self.wiz" "$out/run/input.wiz"
 done_
 
 step "stage 1: the Lean wiz build of the self-hosted compiler"
-.lake/build/bin/wiz build "$out/compiler.wiz" -o "$out/compiler"
+.lake/build/bin/wiz build "$out/compiler.wiz" -o "$out/compiler" --cflags "$WIZ_CFLAGS" --ldflags "$WIZ_LDFLAGS"
 done_
 
 step "stage 1 compiles the toolchain (self1.c)"

@@ -63,6 +63,14 @@ partial def parseFlags (t : Toolchain) : List String → Toolchain × List Strin
   | [a] => (t, [a])
   | [] => (t, [])
 
+/-- Flags that give this toolchain (its compilers, flags and cache) to another process. -/
+def toFlags (t : Toolchain) : List String :=
+  ["--cc", t.cc, "--cflags", " ".intercalate t.cflags, "--ldflags", " ".intercalate t.ldflags,
+   "--libs", " ".intercalate t.libs, "--llc", t.llc, "--gc-cflags", " ".intercalate t.gcCflags,
+   "--gc-ldflags", " ".intercalate t.gcLdflags] ++
+  (match t.cacheDir with | some d => ["--cache", d.toString] | none => ["--no-cache"]) ++
+  t.searchPath.flatMap fun d => ["-I", d.toString]
+
 /-- `grail config`: one `key value` line per field. -/
 def render (t : Toolchain) : String :=
   s!"cc {t.cc}\ncflags {" ".intercalate t.cflags}\nldflags {" ".intercalate t.ldflags}\nlibs {" ".intercalate t.libs}\nllc {t.llc}\n" ++

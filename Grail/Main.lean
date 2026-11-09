@@ -15,7 +15,7 @@ def usage : String := "usage:
   grail config            print the toolchain grail would use
   grail clean             remove .grail/build and .grail/bin
 options: -C DIR (the package directory), --std DIR (the standard library),
-  --cc X --cflags \"…\" --ldflags \"…\" --llc X --gc-cflags \"…\" --gc-ldflags \"…\" -I DIR,
+  --cc X --cflags \"…\" --ldflags \"…\" --libs \"…\" --llc X --gc-cflags \"…\" --gc-ldflags \"…\" -I DIR,
   --cache DIR (the elaboration cache, default ~/.cache/wiz), --no-cache
 Machine settings (where GMP lives) go in an uncommitted grail.local.wiz:
   import Grail

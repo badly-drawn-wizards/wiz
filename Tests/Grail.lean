@@ -126,6 +126,47 @@ def build (dir : System.FilePath) (tc : Toolchain) (only : List String := []) : 
       if only.isEmpty || only.contains t.name then ok := (← r.target t) && ok
     pure (← r.stats.get, ok)
 
+/-- Every `.lean` file under a directory. -/
+partial def leanFiles (dir : System.FilePath) : IO (Array System.FilePath) := do
+  let mut out := #[]
+  for e in ← dir.readDir do
+    if ← e.path.isDir then out := out ++ (← leanFiles e.path)
+    else if e.path.extension == some "lean" then out := out.push e.path
+  pure out
+
+def toolchainGroup : Group where
+  name := "toolchain"
+  exercise := "Stage 22a"
+  cases := [
+    { name := "wiz and grail read no environment variables", run := fun _ => do
+        let files := (← leanFiles "Wiz") ++ (← leanFiles "Grail") ++ #[System.FilePath.mk "Main.lean"]
+        for f in files do
+          let text ← IO.FS.readFile f
+          check ((text.splitOn "getEnv \"WIZ").length == 1) s!"{f} reads a WIZ_ variable" },
+    { name := "flags fill the toolchain record", run := fun _ => do
+        let (tc, rest) := ({} : Toolchain).parseFlags
+          ["check", "--cc", "clang", "--cflags", "-I/a  -I/b", "-I", "src", "x.wiz", "--no-cache", "--llvm"]
+        checkEq ["check", "x.wiz", "--llvm"] rest
+        checkEq "clang" tc.cc
+        checkEq ["-I/a", "-I/b"] tc.cflags
+        checkEq ["src"] (tc.searchPath.map toString)
+        check tc.cacheDir.isNone "the cache is on"
+        -- and back to flags, for another process
+        let tc := { tc with ldflags := ["-L/x"], cacheDir := some "/c" }
+        let (tc', rest) := ({} : Toolchain).parseFlags tc.toFlags
+        checkEq [] rest
+        checkEq (repr tc).pretty (repr tc').pretty
+        check (tc.id != ({ tc with cflags := [] } : Toolchain).id) "cflags are not in the id"
+        checkEq tc.id ({ tc with cacheDir := none } : Toolchain).id },
+    { name := "-I DIR adds a module root", run := fun _ => do
+        let dir ← mkTree [("Pkg/Three.wiz", "import Prelude\ndef three : Nat := 3\n")]
+        let (tc, _) := ({} : Toolchain).parseFlags ["check", "main.wiz", "-I", dir.toString]
+        let src := "import Pkg.Three\n#eval three\n"
+        let ms ← Module.loadClosure ("lib" :: tc.searchPath) src
+        let s := runFrontend (R := ZeroOneMany) src { loader := loaderOf ms }
+        checkEq "[2:1: info: 3]" (toString (s.messages.toList.map (·.render src))) }
+  ]
+
 def grailGroup : Group where
   name := "grail"
   exercise := "Stage 22d"
@@ -171,10 +212,7 @@ def grailGroup : Group where
         let tmp := dir / ".grail" / "tmp"
         if ← tmp.pathExists then checkEq 0 (← tmp.readDir).size },
     { name := "an executable: check, IR, C, object, link", run := fun _ => do
-        -- the C toolchain comes from the environment here until stage 22a
-        let words (v : Option String) := Toolchain.words (v.getD "")
-        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir), cflags := words (← IO.getEnv "WIZ_CFLAGS"),
-                                ldflags := words (← IO.getEnv "WIZ_LDFLAGS"), cc := (← IO.getEnv "WIZ_CC").getD "cc" }
+        let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
         let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"p\" |> Package.exe \"hello\" \"hello.wiz\"\n"),
                           ("hello.wiz", "import IO\ndef main : IO Unit := IO.println \"hello from grail\"\n")]
         let (s, ok) ← build dir tc
