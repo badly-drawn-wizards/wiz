@@ -2703,12 +2703,12 @@ def trustGroup : Group where
   exercise := "—"
   cases := [
     { name := "O2: a partial definition at an empty index is rejected", run := fun _ =>
-        fails (familyTF ++ "partial def bad : T .f := bad\ndef boom : False := match bad with\n  | .mk => absurd ()\n")
+        failsWith (familyTF ++ "partial def bad : T .f := bad\ndef boom : False := match bad with\n  | .mk => absurd ()\n")
           "no witness found" },
     { name := "O2: a partial function into an empty index is rejected", run := fun _ =>
         fails (familyTF ++ "partial def bad : T .t → T .f := bad\n") "no witness found" },
     { name := "O2: a wrong witness is rejected", run := fun _ =>
-        fails (familyTF ++ "partial (default := T.mk) def bad : T .f := bad\n") "" },
+        fails (familyTF ++ "partial (default := T.mk) def bad : T .f := bad\n") "type mismatch" },
     { name := "partial definitions with inferred witnesses", run := fun _ =>
         ok (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
             "inductive List (A : Type) where\n  | nil\n  | cons (x : A) (xs : List A)\n" ++
@@ -2718,7 +2718,7 @@ def trustGroup : Group where
             "axiom World : Type\naxiom w0 : World\npartial def p7 : World × B := p7\n" ++
             "mutual\ndef ev : Nat → B\n  | .zero => .t\n  | .succ n => od n\ndef od : Nat → B\n  | .zero => .f\n  | .succ n => ev n\nend\n" ++
             "#print axioms p2\n#print axioms p7\n")
-          ["'p2' does not depend on any axioms", "'p7' depends on axioms: [World, w0]"] },
+          ["'p2' does not depend on any axioms", "'p7' depends on axioms: [w0, World]"] },
     { name := "a witness the search can't find, given with `default`", run := fun _ => do
         fails (deepType ++ "partial def f : Unit → A1 := f\n") "no witness found"
         ok (deepType ++ "partial (default := fun _ => A1.mk (A2.mk (A3.mk (A4.mk A5.mk)))) def f : Unit → A1 := f\n" ++
@@ -2749,7 +2749,7 @@ def trustGroup : Group where
         fails "inductive N where\n  | z\naxiom Z : N\nbuiltin nat := N\nbuiltin nat.zero := Z\n" "must be a definition"
         fails "inductive N where\n  | z\ndef f (a : N) : N := a\nbuiltin nat := N\nbuiltin nat.add := f\n" "2 arguments" },
     { name := "Prelude registrations are trusted and compute natively", run := fun _ =>
-        okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4\n#print axioms t\n#eval 3 * 7 + 2 ^ 10\n"
+        okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4\n#print axioms t\n#eval 3 * 7 + Nat.pow 2 10\n"
           ["'t' does not depend on any axioms", "1045"] },
     { name := "O2 in the self-hosted frontend", run := fun _ =>
         selfhostCheckFile (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
@@ -2759,7 +2759,7 @@ def trustGroup : Group where
           ("B : U0\nT : (x0 : B) → U0\nNat : U0\n" ++
            "error: partial definition bad: no witness found for its type; give one with `partial (default := w) def`\n" ++
            "error: partial definition bad2: no witness found for its type; give one with `partial (default := w) def`\n" ++
-           "ok1 : T B.t\nok2 : (x0 : Nat) → Nat\nok3 : T B.t\nerror: \n") }
+           "ok1 : (T B.t)\nok2 : (x0 : Nat) → Nat\nok3 : (T B.t)\nerror: type mismatch: expected (T B.f), got (T B.t)\n") }
   ]
 
 end Tests.Elab

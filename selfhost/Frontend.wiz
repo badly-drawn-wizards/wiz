@@ -3036,18 +3036,18 @@ inductive AxR where
 -- constructor, `StrMap.empty`), with the arguments its conclusion fixes taken from `T`
 -- and the others found again, to a bounded depth. Each candidate is checked: so `T.mk :
 -- T .t` is no witness of `T .f`.
-inductive Peel where
+inductive WPeel where
   | bind (dom cod : Tm)
   | done
-partial def peel : Tm → Peel
+partial def wPeel : Tm → WPeel
   | .pi a b => .bind a b
   | .piq _ a b => .bind a b
-  | .sorted _ t => peel t
+  | .sorted _ t => wPeel t
   | _ => .done
 -- a global type's conclusion and its number of binders
 inductive Concl where
   | mk (t : Tm) (k : Nat)
-partial def tmConcl (t : Tm) (k : Nat) : Concl := match peel t with
+partial def tmConcl (t : Tm) (k : Nat) : Concl := match wPeel t with
   | .bind _ b => tmConcl b (k + 1)
   | .done => match t with
     | .sorted _ u => .mk u k
@@ -3064,15 +3064,15 @@ partial def tmArgs : Tm → List Tm → List Tm
 -- through, then its head
 inductive HeadArgs where
   | mk (name : String) (args : List Val)
-partial def spineArgs : Spine → List Val → List Val
-  | .sapp sp a, acc => spineArgs sp (.cons a acc)
+partial def wSpineArgs : Spine → List Val → List Val
+  | .sapp sp a, acc => wSpineArgs sp (.cons a acc)
   | _, acc => acc
 partial def headsOf (v : Val) : List HeadArgs := match v with
   | .vglued h sp u => match h with
-    | .hconst n _ _ _ _ => .cons (.mk n (spineArgs sp .nil)) (headsOf (u ()))
+    | .hconst n _ _ _ _ => .cons (.mk n (wSpineArgs sp .nil)) (headsOf (u ()))
     | _ => headsOf (u ())
   | .vne h sp => match h with
-    | .haxiom n _ => .cons (.mk n (spineArgs sp .nil)) .nil
+    | .haxiom n _ => .cons (.mk n (wSpineArgs sp .nil)) .nil
     | _ => .nil
   | _ => .nil
 partial def headArgs (n : String) : List HeadArgs → Option (List Val)
@@ -3149,7 +3149,7 @@ def tryGlobal (gs : Globals) (c : TCtx) (ty : Val) (hs : List HeadArgs) (f : Nat
         | .none => .none
         | .some vs => applyGlobal gs c ty f (matchArgs k (tmArgs concl .nil) vs (noneList k)) gty .nil (.const n .nil .nil v gty)
 def applyGlobal (gs : Globals) (c : TCtx) (ty : Val) (f : Nat) (asg : List (Option Val)) (gty : Tm) (env : Env) (acc : Tm) : Option Tm :=
-  match peel gty with
+  match wPeel gty with
   | .bind dom cod => match asg with
     | .cons a rest => match a with
       | .some v => applyGlobal gs c ty f rest cod (.cons v env) (.app acc (quote (TCtx.lvl c) v))
