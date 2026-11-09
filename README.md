@@ -1888,3 +1888,49 @@ literal syntax). Every example gives the same output from the cache as without i
 
 Next: finer dependencies (re-elaborate only what an edit affects, not everything
 after it), and hovers for declarations that fail.
+
+### 11h, 11k: the infoview, in a terminal and in a browser ✅
+
+```
+wiz lsp --infoview /tmp/wiz.sock          # the editor's server (see infoview-protocol)
+wiz-infoview /tmp/wiz.sock                # in a tmux split: the goals at the cursor
+wiz-infoview --file t.wiz --at 4:5        # or on its own: starts `wiz lsp` itself
+web/build.sh && web/bridge.sh             # the same infoview in a browser
+```
+
+Both clients are Wiz programs, and they share their logic:
+
+* `lib/Json.wiz`: JSON values (mutual inductive types: Wiz has no nested ones), a
+  parser and a printer. Strings are code points; `\uXXXX` escapes and surrogate pairs
+  are decoded, and the printer escapes control characters (or everything non-ASCII,
+  `Json.renderAscii`).
+* `lib/Infoview.wiz`: the protocol's tagged text and goals; a **layout** that flattens
+  tagged text into styled pieces (numbering the tags in reading order), word-wraps them
+  to a width with hanging indents, and renders lines with SGR colours by kind; the same
+  goals as **HTML** with a `data-ref` and `data-idx` on every subterm's `<span>`;
+  navigation (next, previous, enclosing, first inside); `Content-Length` framing
+  (counting UTF-8 bytes); and the decoding of terminal keys and SGR mouse reports.
+* `infoview/Tui.wiz` (`infoview/build.sh`): the terminal program. The alternate screen,
+  raw mode, `poll` over the keyboard, the socket and a `SIGWINCH` self-pipe, and Unix
+  sockets are `infoview/term.c`, bound with `extern` (Wiz has no callbacks or
+  structs in its FFI, so the event loop is Wiz around a blocking `iv_wait`). ←/→ select
+  a subterm, ↑/↓ go out of and into it, and the bottom line says what it is
+  (`wiz/subtermInfo`); a mouse click selects too.
+* `web/Web.wiz` (`web/build.sh`): the page's language client, compiled to C and then to
+  WebAssembly by Emscripten: wasm64 keeps the runtime's 62-bit small numbers, mini-gmp
+  stands in for GMP, and Asyncify lets `js_next_event` wait for the page. The page
+  (`web/infoview.html`, `web/infoview.js`, about 100 lines of JavaScript) only moves events
+  in and HTML out. `web/bridge.sh` puts `websocat` in front of `wiz lsp` until the server
+  speaks WebSocket itself.
+
+Running it in tmux, next to an editor whose language server is `wiz lsp --infoview
+/tmp/wiz.sock` (the socket is the server's job, infoview-protocol.md §8):
+
+```
+infoview/build.sh                                   # → .lake/build/bin/wiz-infoview
+tmux split-window -h -l 60 '.lake/build/bin/wiz-infoview /tmp/wiz.sock'
+```
+
+The pane waits for the server, then follows the editor's cursor. Without an editor:
+`wiz-infoview --file examples/tactics.wiz --at 6:3` (`[` and `]` move the line).
+`infoview/test.sh` and `web/test.sh` run both clients against `infoview/stub_server.py`.
