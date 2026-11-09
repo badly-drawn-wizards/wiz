@@ -28,6 +28,14 @@ def main : List String → IO UInt32
     match groups.find? (·.name == group) >>= (·.cases[ix.toNat!]?) with
     | some c => c.runHere
     | none => do IO.eprintln s!"no such case: {group} #{ix}"; pure 2
+  -- (D1) check a file with the given regularity mode, in a child process that the test
+  -- can time out: `Elab.checkDiverges`
+  | ["--check", mode, file] => do
+    let input ← IO.FS.readFile file
+    let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { globals := { regularity := Elab.regularityMode mode } }
+    let errs := s.messages.filter (·.severity == .error)
+    for m in errs do IO.eprintln (m.render input)
+    pure (if errs.isEmpty then 0 else 1)
   | ["--list"] => do
     for g in groups do IO.println g.name
     pure 0

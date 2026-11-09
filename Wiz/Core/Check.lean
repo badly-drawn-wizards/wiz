@@ -245,6 +245,14 @@ def checkSortNote (s : Option Level) (l : Level) : TCM Unit := do
     unless s.equiv l do
       throw (.other s!"internal error: a type marked as in sort {s} is in sort {l}")
 
+/-- (D1 experiment) Is this type a universe, or a function type ending in one? A `Π`
+into `Prop` over such a domain is impredicative. -/
+partial def largeDomain (ctx : Ctx R) (A : Val R) (l : Nat) : Bool :=
+  match whnf A with
+  | .sort _ => true
+  | .pi _ _ _ _ B _ => largeDomain ctx (Closure.inst ctx.globals B (Val.var l)) (l + 1)
+  | _ => false
+
 mutual
 
 /-- **Exercise 1.6.** Check `t` against the type `ty`. Implement the `lam` and `letE`
@@ -355,6 +363,10 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let q ← checkQty ctx q
     let i ← checkType ctx dom
     let j ← checkType (ctx.bind x q (ctx.eval dom)) cod
+    -- (D1 experiment, off by default) predicative `Prop`: no quantifying over a universe
+    -- into `Prop`
+    if ctx.globals.predicativeProp && j.equiv 0 && largeDomain ctx (ctx.eval dom) ctx.lvl then
+      throw (.other s!"impredicative Π (into Prop over {ctx.showTerm dom}) under predicative Prop")
     checkSortNote s (.imax i j)
     pure (.sort (.imax i j), Usage.zeros ctx.lvl)
   --|ex
@@ -665,6 +677,17 @@ partial def checkType (ctx : Ctx R) (a : Term R) : TCM Level := do
 
 end
 
+/-- (D1 experiment, `predicativeProp`) Check a declaration's type, but not the
+predicativity of its outer `Π`s: a theorem quantifying over types is fine in a predicative
+`Prop` too (in a bigger `Prop` or in `Type`; the theorem itself is never used as a proof
+of a proposition at level 0). -/
+partial def declTypeSpine (ctx : Ctx R) : Term R → TCM Unit
+  | .pi x _ q dom cod _ => do
+    let q ← checkQty ctx q
+    let _ ← checkType ctx dom
+    declTypeSpine (ctx.bind x q (ctx.eval dom)) cod
+  | t => do let _ ← checkType ctx t
+
 /-- Type check a declaration and add it to the global environment. -/
 def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   if g.contains d.name then throw (.duplicateDecl d.name)
@@ -674,7 +697,8 @@ def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   if let some u := used.find? (!d.levelParams.contains ·) then
     throw (.other s!"unknown universe level parameter {u} in {d.name}")
   let ctx : Ctx R := { globals := g }
-  let _ ← checkType ctx d.type
+  if g.predicativeProp then declTypeSpine ctx d.type
+  else discard <| checkType ctx d.type
   if let some v := d.value then
     -- usage is the empty vector: a closed term has no locals to misuse
     let _ ← check ctx v (ctx.eval d.type)
