@@ -39,6 +39,7 @@ def Runner.selfhostSource (r : Runner) (role : String) : IO (Except String Strin
 /-- Run `exe` in a fresh directory with `input` as `input.wiz`; its output goes to `file`. -/
 def runOn (exe : System.FilePath) (input : String) (out : System.FilePath) (file : String) :
     IO (Except String Unit) := do
+  let exe ← IO.FS.realPath exe  -- it runs in another directory
   let work := out / "work"
   IO.FS.createDirAll work
   IO.FS.writeFile (work / "input.wiz") input
