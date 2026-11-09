@@ -218,11 +218,13 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let mut names : List Name := []
   let n := (clauses.head?.map (·.pats.length)).getD 1
   for k in [1:n] do
-    let .pi x _ _ A Bc _ ← force goal | throwAt info s!"{name} takes fewer than {n} arguments"
+    let .pi x _ xq A Bc _ ← force goal | throwAt info s!"{name} takes fewer than {n} arguments"
     let x := if x == "_" then s!"a{k}" else x
     vars := vars ++ [ctx'.lvl]
     names := names ++ [x]
     goal ← instM Bc (Val.var ctx'.lvl)
+    if ((Val.toPoly? xq).bind (·.isConst?)) == some 0 then
+      ctx' := { ctx' with erasedLvls := ctx'.lvl :: ctx'.erasedLvls }
     ctx' := ctx'.bind x A
   let tree ← compileMatch ctx' vars clauses goal none true
   let body := Term.letE name (.qlit w) fTyTm fValTm (names.foldr .lam tree)
@@ -256,11 +258,13 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let mut vars : List Lvl := []
   let mut names : List Name := []
   for i in [0:n] do
-    let .pi x _ _ A B _ ← force tyv | throwAt tyStx.info s!"{name} takes fewer than {n} arguments"
+    let .pi x _ xq A B _ ← force tyv | throwAt tyStx.info s!"{name} takes fewer than {n} arguments"
     let x := if x == "_" then s!"a{i}" else x
     vars := vars ++ [ctx'.lvl]
     names := names ++ [x]
     tyv ← instM B (Val.var ctx'.lvl)
+    if ((Val.toPoly? xq).bind (·.isConst?)) == some 0 then
+      ctx' := { ctx' with erasedLvls := ctx'.lvl :: ctx'.erasedLvls }
     ctx' := ctx'.bind x A
   let mentions (stx : Syntax) : Bool := syntaxMentions name stx
   -- (a partial definition calls itself as a declared constant instead)
@@ -1217,10 +1221,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let result := do
         let (ty, _) ← Wiz.infer ctx t
         let e ← eraseTop ctx t ty
-        let code ← compileReachable s.globals s.builtins (e.globals.toList) (externImpls := false)
-        pure (ty, e, code)
+        let (code, failed) ← compileReachableE s.globals s.builtins (e.globals.toList) (externImpls := false)
+        pure (ty, e, code, failed)
       match result with
-      | .ok (ty, e, code) =>
+      | .ok (_, _, _, (n, err) :: _) =>
+        -- the interpreter can't fail: running a stub would print a wrong value
+        report .error cmd.info s!"cannot run this: cannot erase {n}: {err}"
+      | .ok (ty, e, code, []) =>
         let v := run code [] e
         report .info cmd.info (readback s.globals s.builtins ty v).pretty
       | .error err => report .error cmd.info s!"cannot run this: {err}"

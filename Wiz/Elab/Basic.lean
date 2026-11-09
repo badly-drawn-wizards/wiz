@@ -62,6 +62,9 @@ structure LocalCtx (R : Type) where
   lvl : Lvl := 0
   /-- the syntax being elaborated, for error positions -/
   info : SourceInfo := {}
+  /-- variables known to be erased (constructor fields of quantity 0): a `match` that
+  reverts one binds it at quantity 0 again -/
+  erasedLvls : List Lvl := []
 
 /-! ## The info tree (for the language server)
 
