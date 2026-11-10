@@ -1,0 +1,123 @@
+import IO
+-- Prototype (conc-seplogic, plan C3): dependent binary session types as a library.
+-- Plan: /workspace/wiz-notes/concurrency-seplogic-plan.md, §3 C3.
+-- Check: `sh drafts/conc/check.sh` (this file, drafts/seplogic/HProp.wiz, and negatives).
+--
+-- Two halves:
+--  1. A protocol language `Proto` (dependent: what comes next may depend on the value
+--     just exchanged, as in Toninho–Caires–Pfenning's ∀/∃ sessions), its `dual`, and a
+--     *pure* reference semantics: a process following `p` is a `Proc R p`, and `link`
+--     runs a process against its dual to completion. `link` is total (structural on
+--     `p`), which is cut elimination in Wadler's CP: two processes on the two ends of
+--     one channel can't deadlock.
+--  2. The linear channel API a native runtime would provide, as axioms: endpoints are
+--     used exactly once (quantity 1), in continuation-passing style so that no linear
+--     value has to sit in a Σ field (Wiz's Σ fields default to ω and `match` can't split
+--     linearly yet, plan C2). `fork` is the only way to make a channel, and it hands the
+--     two ends to two different threads, so the channel graph stays a forest (the
+--     acyclicity argument of Jacobs, Balzer & Krebbers, POPL 2022).
+
+-- ## 1. Protocols and their pure semantics
+
+inductive Proto : Type 1 where
+  | send (A : Type) (k : A → Proto)
+  | recv (A : Type) (k : A → Proto)
+  | done
+
+-- the other end's view
+def Proto.dual : Proto → Proto
+  | .send A k => .recv A (fun a => Proto.dual (k a))
+  | .recv A k => .send A (fun a => Proto.dual (k a))
+  | .done => .done
+
+-- A process that follows `p` and returns `R`: sending is choosing a value (Σ), receiving
+-- is being ready for any value (Π). This is the "propositions as sessions" reading.
+def Proc (R : Type) : Proto → Type
+  | .send A k => (a : A) × Proc R (k a)
+  | .recv A k => (a : A) → Proc R (k a)
+  | .done => R
+
+-- Run two processes on the two ends of one channel. Total: every exchange moves both to
+-- the continuation of the same constructor. (Deadlock freedom of one channel, as a
+-- program; the general statement over many threads is plan C7.)
+def link {A B : Type} : (p : Proto) → Proc A p → Proc B (Proto.dual p) → A × B
+  | .send T k => fun x f => link (k x.1) x.2 (f x.1)
+  | .recv T k => fun f y => link (k y.1) (f y.1) y.2
+  | .done => fun a b => (a, b)
+
+-- A dependent protocol: send a length, then exactly that many numbers, receive the sum.
+inductive N where
+  | zero
+  | succ (n : N)
+def N.add : N → N → N
+  | .zero, m => m
+  | .succ n, m => .succ (N.add n m)
+def sendMany (k : Proto) : N → Proto
+  | .zero => k
+  | .succ n => .send N (fun _ => sendMany k n)
+def ack : Proto := .recv N (fun _ => .done)
+def sumProto : Proto := .send N (fun n => sendMany ack n)
+
+-- the client: three numbers, then wait for the sum
+def client : Proc N sumProto :=
+  (.succ (.succ (.succ .zero)),
+   (.succ .zero, (.succ (.succ .zero), (.succ .zero, fun s => s))))
+
+-- the server must accept *any* length, so it is defined by recursion on the length it
+-- received; its type is computed from the protocol (`dual` of `sendMany`)
+def serverMany : (n : N) → (acc : N) → Proc Unit (Proto.dual (sendMany ack n))
+  | .zero, acc => (acc, ())
+  | .succ n, acc => fun x => serverMany n (N.add acc x)
+def server : Proc Unit (Proto.dual sumProto) := fun n => serverMany n .zero
+
+#reduce (link sumProto client server).1
+
+-- ## 2. The linear channel API (axioms here; natives in plan C3)
+
+-- an endpoint of a channel whose remaining protocol is `p`; no constructor, no ω producer
+axiom Chan : Proto → Type
+axiom Chan.send : {A : Type} → {k : A → Proto} → {B : Type} →
+  (1 c : Chan (Proto.send A k)) → (a : A) → ((1 c' : Chan (k a)) → IO B) → IO B
+axiom Chan.recv : {A : Type} → {k : A → Proto} → {B : Type} →
+  (1 c : Chan (Proto.recv A k)) → ((a : A) → (1 c' : Chan (k a)) → IO B) → IO B
+-- a finished channel must be closed: quantity 1 is exact, so it can't be dropped
+axiom Chan.close : (1 c : Chan Proto.done) → IO Unit
+-- the only producer: a new channel, the dual end to a new thread, the other to the caller
+axiom Chan.fork : {B : Type} → (p : Proto) →
+  ((1 c : Chan (Proto.dual p)) → IO Unit) → ((1 c : Chan p) → IO B) → IO B
+
+-- `IO.bind` takes its action at ω, so an action that consumes a linear endpoint can't be
+-- its first argument; a sequencing with the action at quantity 1 (gap in lib/IO.wiz)
+def IO.then1 {A B : Type} (1 x : IO A) (y : IO B) : IO B := fun w =>
+  let 1 (a, w') := x w; y w'
+
+-- the server again, now over a real channel; its type is checked against the protocol.
+-- The axioms' implicit continuation `k` is given by name: the elaborator does not
+-- unfold `Proto.dual (sendMany …)` to a constructor while solving `?k` (an elaboration
+-- gap, not a kernel one; plan §2.2 note).
+def serveMany : (n : N) → (acc : N) → (1 c : Chan (Proto.dual (sendMany ack n))) → IO Unit
+  | .zero, acc => fun c => Chan.send (k := fun _ => Proto.dual .done) c acc (fun c' => Chan.close c')
+  | .succ n, acc => fun c =>
+      Chan.recv (k := fun _ => Proto.dual (sendMany ack n)) c (fun x c' => serveMany n (N.add acc x) c')
+def serve (1 c : Chan (Proto.dual sumProto)) : IO Unit :=
+  Chan.recv (k := fun n => Proto.dual (sendMany ack n)) c (fun n c' => serveMany n .zero c')
+
+-- the client: a length `n`, then `n` numbers (by recursion on `n`), then the sum
+def sendNums (x : N) : (n : N) → (1 c : Chan (sendMany ack n)) → IO N
+  | .zero => fun c => Chan.recv (k := fun _ => Proto.done) c
+      (fun s c' => IO.then1 (Chan.close c') (IO.pure s))
+  | .succ n => fun c => Chan.send (k := fun _ => sendMany ack n) c x (fun c' => sendNums x n c')
+def three : N := .succ (.succ (.succ .zero))
+def one : N := .succ .zero
+def runClient (1 c : Chan sumProto) : IO N :=
+  Chan.send (k := fun n => sendMany ack n) c three (fun c' => sendNums one three c')
+
+-- Negative examples, each rejected by the kernel, are in drafts/conc/check.sh: an
+-- endpoint used twice, dropped (quantity 1 is exact), closed twice, and a closure that
+-- captured an endpoint called twice.
+
+-- the server in a new thread, the client here. The other way round needs
+-- `Chan (Proto.dual (Proto.dual p))` to be `Chan p`, which is only propositional
+-- (`dual` is an involution up to funext under the binders, not by computation), and a
+-- cast of a linear value: a gap recorded in the plan (C2, "linear cast")
+def main' : IO N := Chan.fork sumProto serve runClient

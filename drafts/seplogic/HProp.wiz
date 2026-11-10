@@ -1,0 +1,81 @@
+import Prelude
+-- Prototype (conc-seplogic, plan S0–S1): a shallow separation logic, CFML / Software
+-- Foundations vol. 6 ("Separation Logic Foundations") style, over a model heap.
+-- Plan: /workspace/wiz-notes/concurrency-seplogic-plan.md, §3 S0–S2.
+--
+-- What it shows: the assertion language needs no kernel support. Impredicative `Prop`
+-- gives ∃/∧/∨ by their Church encodings (until native inductive props, D4), and OTT
+-- makes heap predicates extensional for free: `P = Q` at `Heap → Prop` *computes* to
+-- pointwise `↔`, so SLF's `himpl_antisym` (which needs propext + funext axioms in Coq)
+-- is a pair of lambdas here.
+
+-- ## S0: connectives (lib/Logic.wiz in the plan)
+def And (P Q : Prop) : Prop := (0 R : Prop) → (P → Q → R) → R
+def And.intro {P Q : Prop} (p : P) (q : Q) : And P Q := fun R k => k p q
+def And.left {P Q : Prop} (h : And P Q) : P := h P (fun p _ => p)
+def And.right {P Q : Prop} (h : And P Q) : Q := h Q (fun _ q => q)
+def Or (P Q : Prop) : Prop := (0 R : Prop) → (P → R) → (Q → R) → R
+def Ex {A : Type} (P : A → Prop) : Prop := (0 R : Prop) → ((a : A) → P a → R) → R
+def Ex.intro {A : Type} (P : A → Prop) (a : A) (p : P a) : Ex P := fun R k => k a p
+
+-- ## S1: heaps and heap predicates
+-- A heap maps locations to optional values; `Val` is a parameter (SLF uses one value type).
+def Heap (Val : Type) : Type := Nat → Option Val
+def Heap.empty {Val : Type} : Heap Val := fun _ => .none
+def Heap.single {Val : Type} (l : Nat) (v : Val) : Heap Val :=
+  fun l' => match Nat.beq l l' with
+    | .true => .some v
+    | .false => .none
+def Option.isNone {A : Type} : Option A → Bool
+  | .none => .true
+  | .some _ => .false
+-- disjoint: every location is free in at least one of the two
+def Heap.Disj {Val : Type} (h₁ h₂ : Heap Val) : Prop :=
+  (l : Nat) → Or (Option.isNone (h₁ l) = .true) (Option.isNone (h₂ l) = .true)
+def Heap.union {Val : Type} (h₁ h₂ : Heap Val) : Heap Val :=
+  fun l => match h₁ l with
+    | .some v => .some v
+    | .none => h₂ l
+
+def HProp (Val : Type) : Type := Heap Val → Prop
+
+-- entailment `P ⊢ Q`
+def Entails {Val : Type} (P Q : HProp Val) : Prop := (0 h : Heap Val) → P h → Q h
+
+def emp {Val : Type} : HProp Val := fun h => h = Heap.empty
+def pts {Val : Type} (l : Nat) (v : Val) : HProp Val := fun h => h = Heap.single l v
+def pure {Val : Type} (P : Prop) : HProp Val := fun h => And P (h = Heap.empty)
+def hexists {Val A : Type} (J : A → HProp Val) : HProp Val := fun h => Ex (fun a => J a h)
+def star {Val : Type} (P Q : HProp Val) : HProp Val := fun h =>
+  Ex (fun (h₁ : Heap Val) => Ex (fun (h₂ : Heap Val) =>
+    And (Heap.Disj h₁ h₂) (And (h = Heap.union h₁ h₂) (And (P h₁) (Q h₂)))))
+-- the magic wand (the backward function of a borrow, borrows-as-optics.md §3.3)
+def wand {Val : Type} (P Q : HProp Val) : HProp Val := fun h =>
+  (h' : Heap Val) → Heap.Disj h h' → P h' → Q (Heap.union h h')
+
+-- ## Laws (a few; SLF ch. 2–3 has the full list)
+def Entails.refl {Val : Type} (P : HProp Val) : Entails P P := fun h p => p
+def Entails.trans {Val : Type} {P Q R : HProp Val} (pq : Entails P Q) (qr : Entails Q R) :
+    Entails P R := fun h p => qr h (pq h p)
+
+-- extensionality is computation: `P = Q` is `(h : Heap) → (P h → Q h) × (Q h → P h)`
+def Entails.antisym {Val : Type} (P Q : HProp Val) (pq : Entails P Q) (qp : Entails Q P) :
+    P = Q := fun h => (pq h, qp h)
+
+-- the frame rule's core: ⋆ is monotone
+def star.monoL {Val : Type} (P P' Q : HProp Val) (pp : Entails P P') :
+    Entails (star P Q) (star P' Q) := fun h s =>
+  s (star P' Q h) (fun h₁ s₁ => s₁ (star P' Q h) (fun h₂ s₂ =>
+    Ex.intro (fun (a : Heap Val) => Ex (fun (b : Heap Val) =>
+        And (Heap.Disj a b) (And (h = Heap.union a b) (And (P' a) (Q b))))) h₁
+      (Ex.intro (fun (b : Heap Val) =>
+          And (Heap.Disj h₁ b) (And (h = Heap.union h₁ b) (And (P' h₁) (Q b)))) h₂
+        (And.intro (And.left s₂) (And.intro (And.left (And.right s₂))
+          (And.intro (pp h₁ (And.left (And.right (And.right s₂))))
+                     (And.right (And.right (And.right s₂)))))))))
+
+-- extracting a pure fact
+def pure.elim {Val : Type} (P : Prop) (h : Heap Val) (p : pure P h) : P := And.left p
+
+-- modus ponens for the wand: `P ⋆ (P -∗ Q) ⊢ Q` needs `Heap.union` commutativity under
+-- disjointness (pointwise case analysis); left to plan S1.
