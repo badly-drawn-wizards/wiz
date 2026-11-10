@@ -2303,6 +2303,27 @@ def phantomHeader : String :=
   "structure S (w : Nat) where\n  x : Nat\ninductive N (w : Nat) where\n  | z\n  | s (n : N w)\n" ++
   "def width (w : Nat) (a : UIntN w) : Nat := w\ndef u8 : UIntN 8 := .mk 3\n"
 
+/-- Finding Y4 (audit 2): the probe (`def T` twice, with `Box T` in between), and the
+other ways a command could declare a name again. -/
+def dupNames : String :=
+  "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Empty where\ninductive Box (A : Type) where\n  | mk (a : A)\n" ++
+  "def unbox {A : Type} (x : Box A) : A := match x with\n  | .mk a => a\n" ++
+  "def T : Type := Nat\ndef a : Box T := Box.mk Nat.zero\ndef T : Type := Empty\ndef c : Box Empty := a\n" ++
+  "inductive Nat where\n  | zero\ninductive Two where\n  | a\n  | a\ndef Box.mk : Nat := Nat.zero\n" ++
+  "inductive Fresh where\n  | mk\ndef Fresh.mk : Nat := Nat.zero\naxiom T : Type\naxiom Ax : Type\ndef Ax : Type := Nat\n" ++
+  "partial def loop (n : Nat) : Nat := loop n\npartial def loop (n : Nat) : Nat := loop n\ndef loop : Nat := Nat.zero\n" ++
+  "structure P where\n  mk : Nat\nstructure Q where\n  fst : Nat\ndef Q.fst : Nat := Nat.zero\n" ++
+  "mutual\ndef ev : Nat → Nat\n  | .zero => .zero\n  | .succ n => ev n\ndef ev : Nat → Nat\n  | .zero => .zero\n  | .succ n => ev n\nend\n" ++
+  "def fine : Nat := loop Nat.zero\n"
+def dupNamesExpected : String :=
+  "Nat : U0\nEmpty : U0\nBox : (x0 : U0) → U0\nunbox : (x0 : U0) → (x1 : (Box x0)) → x0\nT : U0\na : (Box T)\n" ++
+  "error: 'T' has already been declared\nerror: type mismatch: expected (Box Empty), got (Box T)\n" ++
+  "error: 'Nat' has already been declared\nerror: 'Two.a' has already been declared\nerror: 'Box.mk' has already been declared\n" ++
+  "Fresh : U0\nerror: 'Fresh.mk' has already been declared\nerror: 'T' has already been declared\nAx : U0\n" ++
+  "error: 'Ax' has already been declared\nloop : (x0 : Nat) → Nat\nerror: 'loop' has already been declared\n" ++
+  "error: 'loop' has already been declared\nerror: 'P.mk' has already been declared\nQ : U0\nQ.fst : (x0 : Q) → Nat\n" ++
+  "error: 'Q.fst' has already been declared\nerror: 'ev' has already been declared\nfine : Nat\n"
+
 def selfHostGroup : Group where
   name := "selfhost"
   exercise := "Stages 12b–14q"
@@ -2345,10 +2366,13 @@ def selfHostGroup : Group where
           "def viaId : Tm := .ann (.lam (.lam (.app (.app idTm (.var 1)) (.var 0)))) idTy\n"
         let main := "def main : IO Unit := do\n  IO.println (typeOf idTm);\n  IO.println (typeOf viaId);\n" ++
           "  IO.println (typeOf (.app idTm cnat));\n  IO.println (typeOf (.app (.app add two) two));\n" ++
-          "  IO.println (normalize (.app (.app add two) two));\n  IO.println (typeOf (.app (.univ 0) (.univ 0)))\n"
+          "  IO.println (normalize (.app (.app add two) two));\n  IO.println (typeOf (.app (.univ 0) (.univ 0)));\n" ++
+          -- a variable out of scope is an error (it was `Sort 0`, as a type and as a value: `Prop : Prop`)
+          "  IO.println (typeOf (.var 0));\n  IO.println (typeOf (.ann (.lam (.var 3)) (.pi (.unit 0) .prop)))\n"
         ioRun (kernel ++ "\n" ++ defs ++ main) ("(x0 : U0) → (x1 : x0) → x0\n(x0 : U0) → (x1 : x0) → x0\n" ++
           "error: type mismatch: expected U0, got U1\n(x0 : U0) → (x1 : (x1 : x0) → x0) → (x2 : x0) → x0\n" ++
-          "λx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\nerror: not a function: its type is U1\n") },
+          "λx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\nerror: not a function: its type is U1\n" ++
+          "error: internal error: a variable out of scope\nerror: internal error: a variable out of scope\n") },
     { name := "the frontend gives the types it builds their sorts (sortTy)", run := fun _ => do
         -- `(True → Unit) = ((True → True) → Unit)` built without sorts waits; with the
         -- sorts `sortTy` fills in, it computes to the domains' equivalence
@@ -2364,6 +2388,9 @@ def selfHostGroup : Group where
         ioRun prog ("EqTy((x0 : True) → Unit0, (x0 : (x0 : True) → True) → Unit0)\n" ++
           "(x0 :0 (x0 :0 (x0 :0 (x0 : True) → True) → True) × (x1 :0 True) → (x2 : True) → True) × " ++
           "(x1 :0 (x1 : True) → True) → True\nU0\n") },
+    -- Y4: `Kernel.wiz` compares two constants by name, so a name has one declaration
+    { name := "a name is declared once: a second declaration is an error (it proved an empty type inhabited)", run := fun _ =>
+        selfhostCheckFile dupNames dupNamesExpected },
     { name := "text to checked term, all in Wiz", run := fun _ => do
         let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))

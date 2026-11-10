@@ -277,7 +277,9 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .up a => .up (eval g env a)
   | .down t => vDown (eval g env t)
   --<sol
-  | .var ix => env[ix]!
+  -- (the checker rejects a variable out of scope before anything evaluates it; if one
+  -- gets here it is a stuck unknown, not a panic's default value, `Sort 0`)
+  | .var ix => env[ix]?.getD (.neutral (.global "out of scope✝" []) #[])
   | .const n us => if let some v := vBuiltin? g n then v else match g.find? n with
     | some { value := some v, levelParams, inline, .. } =>
       if inline || g.eager then eval g [] (v.instLevels levelParams us)
