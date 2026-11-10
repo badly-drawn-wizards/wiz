@@ -21,9 +21,14 @@ on:
         type: boolean
         default: false
 
+# A newer push to a pull request supersedes its running check (saves minutes). Runs on
+# the branches themselves (push events) are never cancelled: pull requests are merged
+# on green without being up to date, so the run of each merge commit is what tells
+# which merge broke something. They get a group per commit, since a shared group with
+# cancel-in-progress off would still drop a queued run when a newer one arrives.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}
-  cancel-in-progress: true # a newer push supersedes a running check (saves minutes)
+  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   contents: read
