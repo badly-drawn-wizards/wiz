@@ -410,6 +410,15 @@ structure Globals (R : Type) where
   eager : Bool := false
   /-- which casts reduce by regularity (D1: `off`, so that checking terminates) -/
   regularity : Regularity := .off
+  /-- P2 (the default; `--eager-proofs` turns it off while the transition lasts): proofs
+  are never evaluated. The positions the syntax marks as proofs (`cast`'s equation,
+  `transp`'s two proofs) are suspended; a cast between propositions is stuck instead of
+  applying the equivalence; `split` on a proof is η. See `docs/CoreSpec.md` and
+  `wiz-notes/p2-proofs.md`. -/
+  lazyProofs : Bool := true
+  /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
+  it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
+  quoteErasesProofs : Bool := false
   /-- (P1) regularity at inert types: `ground` (stable) by default -/
   inertReg : InertReg := .ground
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose

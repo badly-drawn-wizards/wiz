@@ -43,3 +43,16 @@ root = "Tower.Main"
 [[input_file]]
 name = "sockets"
 path = "c/sockets.c"
+
+# The C runtime as text (`include_str`, runtime/WizRuntime.lean), a library of its own so
+# that only it depends on runtime/wiz.c: `needs` mixes the file's hash into its modules'
+# traces, so editing wiz.c rebuilds it and its importers (Lake doesn't track include_str)
+[[lean_lib]]
+name = "WizRuntime"
+srcDir = "runtime"
+needs = ["wizRuntimeC"]
+
+[[input_file]]
+name = "wizRuntimeC"
+path = "runtime/wiz.c"
+text = true

@@ -159,7 +159,7 @@ gc-ldflags "-lgc -lpthread"`).
 directory, so the shim picks that project's `wiz-toolchain`. `share/wiz/editors/nvim`
 (release and source toolchains) is the plugin that matches the toolchain:
 `vim.opt.rtp:append(vim.fn.trim(vim.fn.system 'tower which wiz'):gsub('/bin/wiz$', '') .. '/share/wiz/editors/nvim')`.
-The plugin's root markers would be worth extending with `wiz-toolchain`.
+`wiz-toolchain` is one of the plugin's root markers.
 
 **Tests** (`lake test -- tower`, all offline). The upstream is a local bare repository
 holding a tiny Lake project whose `wiz` and `grail` print their arguments, with a tag

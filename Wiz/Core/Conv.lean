@@ -41,6 +41,7 @@ def headType (g : Globals R) (tys : Array (VTy R)) : Head R → Option (VTy R)
   | .refl A a => some (vEq g A a a)
   | .reflTy X => some (vEqType g X X)
   | .transp _ _ P _ b e => some (vApp g (vApp g P b) e)
+  | .prf ty _ _ _ => some ty.get
 
 /-! ### Types of the data eliminators' arguments (stage 4d)
 
@@ -242,6 +243,8 @@ mutual
 `true`. Then **regularity**: a stuck `cast A B e t` with an empty spine and
 `convTy A B` is replaced by `t` (on either side) before comparing. -/
 partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R) : Bool :=
+  -- (P2, `lazyProofs`) proof irrelevance first, so that a glued proof is never unfolded
+  if g.lazyProofs && isProp g tys ty then true else
   -- glued values with the same head: compare the spines first, unfold if that fails
   if let some r := convGlued g tys a b then r || conv g tys ty (whnf a) (whnf b) else
   let a := whnf a
@@ -367,7 +370,10 @@ partial def convGlued (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Opti
       some (convNe g tys (.neutral (.global n us) sp) (.neutral (.global n' us') sp')).isSome
     else none
   -- the same induction on a numeral: compare the folded forms
-  | a@(.lazyInd ..), b@(.lazyInd ..) => some (quote g tys.size a == quote g tys.size b)
+  | a@(.lazyInd ..), b@(.lazyInd ..) =>
+    -- (P2: the kernel's comparisons don't evaluate proofs)
+    let g := { g with quoteErasesProofs := true }
+    some (quote g tys.size a == quote g tys.size b)
   | _, _ => none
 
 /-- **Exercise 1.4c.** Compare two neutrals. On success return their (common) type.
@@ -396,7 +402,7 @@ partial def convNe (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option 
   let .neutral h' sp' := b | none
   unless sp.size == sp'.size do none
   let isProof : Head R → Bool
-    | .refl .. | .reflTy _ | .transp .. => true
+    | .refl .. | .reflTy _ | .transp .. | .prf .. => true
     | _ => false
   let headsEq := match h, h' with
     | .eq A x y, .eq A' x' y' => convTy g tys A A' && conv g tys A x x' && conv g tys A y y'
