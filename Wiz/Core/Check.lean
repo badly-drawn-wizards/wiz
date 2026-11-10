@@ -118,24 +118,27 @@ Proofs carry no usage: they are erased, and conversion never looks at them.
     Γ ⊢ ecase t [b…] ⇒ M[t] ⊣ U + (V₀ ⊔ … ⊔ Vₙ)
 
     Γ ⊢ I type@(l+1) ⇒ Γ ⊢ Desc.{l} I ⇒ Type (l+1); ret/arg/rec/hrec check against it
-    Γ ⊢ Desc.elim P mret marg mrec mhrec D ⇒ P D                 (method types: `delimMethodTys`)
+    Γ ⊢ Desc.elim P mret marg mrec mhrec D ⇒ P D ⊣ ω·(Uₘ + U_D)   (method types: `delimMethodTys`)
     Γ ⊢ μ.{l} I D i ⇒ Type l           Γ ⊢ con x ⇐ μ D i  if  Γ ⊢ x ⇐ ⟦D⟧ (μ D) i
-    Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·Uₘ + Uₓ                    (`indMotiveTy`, `indMethodTy`)
+    Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·(Uₘ + Uₓ)                  (`indMotiveTy`, `indMethodTy`)
     Γ ⊢ ν.{l} I D i ⇒ Type l           Γ ⊢ out x ⇒ ⟦D⟧ (ν D) i
     (at a size: Γ ⊢ μ^s.{l} I D i ⇒ Type l and Γ ⊢ ν^s.{l} I D i ⇒ Type l if also Γ⁰ ⊢ s ⇐ Size)
-    Γ ⊢ coit S step i s ⇒ ν D i ⊣ ω·U_step + U_s
+    Γ ⊢ coit S step i s ⇒ ν D i ⊣ ω·(U_step + U_s)
 
 ## Sizes (stage 4f)
 
     Γ ⊢ Size, Size< s ⇒ Type      Γ ⊢ ∞, ↑s ⇒ Size      (s is checked erased: Γ⁰ ⊢ s ⇐ Size)
     Γ⁰ ⊢ t ⇐ Size   t is below s (`sizeBelow`; ∞ is not below itself)  ⇒  Γ ⊢ t ⇐ Size< s ⊣ 0ₙ
     Γ ⊢ con x ⇐ μ^s D i  if  s = ↑s' and Γ ⊢ x ⇐ ⟦D⟧ (μ^s' D) i;  cocon x ⇐ ν^s D i likewise
-    Γ ⊢ sfix P f s i x ⇒ P i x ⊣ ω·U_f + Uₓ        (`sfixFunTy`; x ⇐ μ^s D i)
-    Γ ⊢ scase P m s i x ⇒ P i x ⊣ Uₘ + Uₓ          (`scaseMethodTy`: the method runs once)
-    Γ ⊢ scofix A f s i a ⇒ ν^s D i ⊣ ω·U_f + Uₐ    (`scofixFunTy`)
+    Γ ⊢ sfix P f s i x ⇒ P i x ⊣ ω·(U_f + Uₓ)      (`sfixFunTy`; x ⇐ μ^s D i)
+    Γ ⊢ scase P m s i x ⇒ P i x ⊣ Uₘ + ω·Uₓ        (`scaseMethodTy`: the method runs once)
+    Γ ⊢ scofix A f s i a ⇒ ν^s D i ⊣ ω·(U_f + Uₐ)  (`scofixFunTy`)
 
 A `Π`/`Σ` may carry its sort; if it does, the sort must be the one the rule computes
 (`checkSortNote`).
+
+The scrutinee `x` (the seed `s`, `a`) of these eliminators is scaled by ω as well: the
+methods bind its payload at ω, so they may copy or ignore it.
 
 A method may run once per node, so its usage is scaled by ω (`QRig.many?`, the rig's
 unrestricted quantity; a rig without one, like exact counting, rejects methods that use
@@ -279,7 +282,11 @@ def checkSortNote (s : Option Level) (l : Level) : TCM Unit := do
       throw (.other s!"internal error: a type marked as in sort {s} is in sort {l}")
 
 /-- The usage of an eliminator's methods (`ind`, `Desc.elim`, `sfix`, `scofix`, `coit`),
-which run once per node: any number of times. Scaled by the rig's unrestricted quantity
+which run once per node: any number of times. Also the usage of what these eliminators
+(and `scase`) take apart or unfold, the scrutinee or the seed: its payload reaches the
+method as an ω variable, so it counts ω times too (charging it once let a method
+duplicate or drop the content of a linear scrutinee; a value held at 1 can't be
+eliminated by them until there is a case at a quantity). Scaled by the rig's unrestricted quantity
 (`QRig.many?`, ω); a rig without one (exact counting) only lets methods use local
 variables in erased positions. -/
 def methodUsage (ctx : Ctx R) (u : Usage R) : TCM (Usage R) :=
@@ -334,9 +341,10 @@ def projUsage (ctx : Ctx R) (t : Term R) (ty : Val R) (field : String) (u : Usag
     | none => pure u
 
 /-- A position whose usage is scaled by `q`: when `q` is the constant 0 it is erased (the
-value is never computed), so it is checked as an erased position. -/
+value is never computed), so it is checked as an erased position. The test is
+`QPoly.isErased`, the same one erasure uses to drop the position. -/
 def Ctx.erasedAt (ctx : Ctx R) (q : QPoly R) : Ctx R :=
-  if q.isConst? == some 0 then { ctx with erased := true } else ctx
+  if q.isErased then { ctx with erased := true } else ctx
 
 /-- (D1 experiment) Is this type a universe, or a function type ending in one? A `Π`
 into `Prop` over such a domain is impredicative. -/
@@ -660,7 +668,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let ub ← check ctx b tb
     let uc ← check ctx c tc
     let uh ← check ctx h th
-    pure (vApp ctx.globals vP (ctx.eval D), (← methodUsage ctx (ua + ub + uc + uh)) + uD)
+    pure (vApp ctx.globals vP (ctx.eval D), ← methodUsage ctx (ua + ub + uc + uh + uD))
   | .mu l I D i s _ | .nu l I D i s _ => do
     let _ ← check { ctx with erased := true } s .size
     let lI ← checkType ctx I
@@ -681,7 +689,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let vi := ctx.eval i
     let ux ← check ctx x (.mu l vI vD vi .szInf none)
-    pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), (← methodUsage ctx um) + ux)
+    pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), ← methodUsage ctx (um + ux))
   | .out x => do
     let (ty, u) ← infer ctx x
     let .nu l I D i s _ := whnf ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
@@ -700,7 +708,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check { ctx with erased := true } s .size
     let _ ← check ctx i vI
     let ux ← check ctx x (.mu l vI vD (ctx.eval i) (ctx.eval s) none)
-    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), (← methodUsage ctx uf) + ux)
+    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), ← methodUsage ctx (uf + ux))
   | .scofix l I D A f s i a => do
     let _ ← checkType ctx I
     let vI := ctx.eval I
@@ -713,7 +721,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check { ctx with erased := true } s .size
     let _ ← check ctx i vI
     let ua ← check ctx a (vApp ctx.globals vA (ctx.eval i))
-    pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, (← methodUsage ctx uf) + ua)
+    pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, ← methodUsage ctx (uf + ua))
   | .scase l I D v P m s i x => do
     let _ ← checkType ctx I
     let vI := ctx.eval I
@@ -727,7 +735,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let um ← check ctx m (scaseMethodTy ctx.globals l vI vD vP vs w)
     let _ ← check ctx i vI
     let ux ← check ctx x (.mu l vI vD (ctx.eval i) vs none)
-    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + ux)
+    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + (← methodUsage ctx ux))
   | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   | .coit l I D S st i s => do
     let _ ← checkType ctx I
@@ -741,7 +749,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let vi := ctx.eval i
     let us ← check ctx s (vApp ctx.globals vS vi)
-    pure (.nu l vI vD vi .szInf none, (← methodUsage ctx ust) + us)
+    pure (.nu l vI vD vi .szInf none, ← methodUsage ctx (ust + us))
   | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --|ex
   --| | .app f a => sorry

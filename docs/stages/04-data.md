@@ -72,6 +72,13 @@ be read, `match` doesn't take it apart, and a nested `let 1 (x, y)` leaves the
 structure's marker tail unconsumed. Use a tuple for linear data, e.g. `Nat × Tok`
 instead of `structure Guard where n : Nat; tok : Tok`. (Linear matching is not there
 yet: `/workspace/wiz-notes/wishful/linear-case.md`.)
+This includes a one-field wrapper (`structure Coin where value : Nat`, read with
+`c.value` at 1), which worked before: write it as `def Coin : Type := Nat`. The planned
+form is `let 1 (.mk a b) := s`, compiled to nested splits
+(`/workspace/wiz-notes/linear-case-design.md`). The eliminators follow the same rule:
+`ind`, `sfix`, `scase` (and `coit`/`scofix` for their seed) bind what they take apart at
+ω, so their scrutinee counts ω times and a value of an inductive type held at 1 can be
+passed on but not eliminated; `match` already took its scrutinee at ω.
 
 | #   | Where              | What                                                       |
 |-----|--------------------|------------------------------------------------------------|

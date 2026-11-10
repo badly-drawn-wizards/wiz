@@ -1172,8 +1172,22 @@ def borrowGroup : Group where
         cRun (borrowSrc ++ "def main : Nat := Nat.add (both (.cons 1 (.cons 2 .nil))) (len (mapL len (.cons .nil .nil)))\n") "5" }
   ]
 
-/-- Build `main : IO _` with the C backend (and the `IO` library) and compare its output. -/
-def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm : Bool := false) : IO Unit := do
+/-- (L-1) Diverging terms in 0 positions the kernel checks erased: a constructor field at
+0 (`Tagged.mk`, and the implicit one of `L.cons`), and a 0 field of a structure, with other fields
+(`S`) and alone (`S1`; whatever the structure's layout, boxed or not). -/
+def zeroFieldDecls : String :=
+  "partial def loop (u : Unit) : Nat := loop u\n" ++
+  "inductive L where\n  | nil\n  | cons {0 ghost : Nat} (x : Nat) (xs : L)\n" ++
+  "def len : L → Nat\n  | .nil => 0\n  | .cons x xs => len xs + 1\n" ++
+  "inductive Tagged where\n  | mk (0 ghost : Nat) (val : Nat)\ndef Tagged.get : Tagged → Nat\n  | .mk _ v => v\n" ++
+  "structure S where\n  0 ghost : Nat\n  val : Nat\nstructure S1 where\n  0 ghost : Nat\n" ++
+  "def e1 : Nat := Tagged.get (Tagged.mk (loop ()) 7)\ndef e2 : Nat := (S.mk (loop ()) 8).val\n" ++
+  "def e3 : Nat := match S1.mk (loop ()) with\n  | _ => 9\n" ++
+  "def e4 : Nat := len (L.cons (ghost := loop ()) 1 (L.cons (ghost := loop ()) 2 L.nil))\n"
+
+/-- Build `main : IO _` with the C backend (and the `IO` library), run it, and hand its
+output to `k`. -/
+def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[]) (llvm : Bool := false) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
@@ -1187,10 +1201,14 @@ def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm 
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
   match ← Build.runGlobal (← toolchain) s "main" dir llvm (timeout := some 120) (args := args) with
-  | .ok v => checkEq expected v
+  | .ok v => k v
   | .error e =>
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+
+/-- Build `main : IO _` with the C backend (and the `IO` library) and compare its output. -/
+def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm : Bool := false) : IO Unit :=
+  ioRunWith src (checkEq expected ·) args llvm
 
 def ioFails (src : String) (fragment : String) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
@@ -1233,6 +1251,22 @@ def ffiGroup : Group where
           "def a : Nat := let 0 x : Nat := (loop ()).1; 1\ndef b : (0 x : Nat) × Nat := ((loop ()).1, 2)\n" ++
           "def c : Nat := let 0 (x, y) := loop (); 3\ndef d (f : (0 x : Nat) → Nat) : Nat := f (loop ()).1\n" ++
           "def main : IO Unit := IO.println (Nat.toString (a + b.2 + c + d (fun _ => 4)))") "10\n" },
+    -- erasure used to bind `let s := <scrutinee>` for every split, so the action below ran
+    -- (its usage of `w` is multiplied by 0, so the kernel accepted the second use of `w`)
+    { name := "... nor performs an effect in the scrutinee of a split at 0 (C and LLVM)", run := fun _ => do
+        let src := "import IO\ndef main : IO Unit := fun w =>\n  let 0 (a, w0) := IO.println \"ghost\" w;\n  IO.println \"real\" w"
+        ioRun src "real\n"
+        ioRun src "real\n" (llvm := true)
+        let loop := "import IO\npartial def loop (u : Unit) : Nat × Nat := loop u\n" ++
+          "def c : Nat := let 0 (x, y) := loop (); 3\ndef main : IO Unit := IO.println (Nat.toString c)"
+        ioRun loop "3\n" (llvm := true) },
+    { name := "... nor a constructor field at 0, a 0 field of a structure, a 0 argument of an extern (C and LLVM)", run := fun _ => do
+        let src := "import IO\n" ++ zeroFieldDecls ++
+          "extern \"strlen\" (header := \"string.h\") slen : (0 ghost : Nat) → String → Nat\n" ++
+          "def e5 : Nat := slen (loop ()) \"abc\"\n" ++
+          "def main : IO Unit := IO.println (Nat.toString (e1 + e2 + e3 + e4 + e5))"
+        ioRun src "29\n"
+        ioRun src "29\n" (llvm := true) },
     { name := "machine integers and floats", run := fun _ =>
         ioRun ("import IO\ndef main : IO Unit := do\n" ++
           "  IO.println (Nat.toString (UInt64.toNat (UInt64.mul (UInt64.ofNat 1000000) (UInt64.ofNat 1000000))));\n" ++
@@ -1880,10 +1914,24 @@ def projRule : List (MTm × Bool) := [
    (ann (lam (letq .zero (univ 0) (fst (var 0)) (var 0))) (piq .many (sigma (univ 0) (univ 0)) (univ 0)), false),
    (ann (lam (letq .zero (univ 0) (fst (var 0)) (enum 2))) (piq .one (sigma (univ 0) (univ 0)) (univ 0)), false)]
 
+/-- The eliminators bind what they take apart at ω, so the scrutinee (the seed) counts ω
+times: at 1 it is rejected (the method below ignores it: a linear value would be
+dropped), at ω accepted. `ind`, `scase`, `sfix`, `coit`, `scofix`. -/
+def elimRule : List (MTm × Bool) :=
+  let step := lams 2 (pair (var 0) (pair (ecase (enum 2) (var 0) [tag 2 1, tag 2 0]) (pair star star)))
+  let zerosF := lams 4 (cocon (pair (tag 2 0) (pair (app (app (var 2) (var 1)) (var 0)) (pair star star))))
+  [ZeroOneMany.one, ZeroOneMany.many].flatMap fun q =>
+    let ok := q == ZeroOneMany.many
+    [(ann (lam (ind 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (tag 2 0)) star (var 0))) (piq q natTy (enum 2)), ok),
+     (ann (lam (scase 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 3 (tag 2 0)) szInf star (var 0))) (piq q natTy (enum 2)), ok),
+     (ann (lam (sfix 0 (unit 0) natD 1 (lams 2 (enum 2)) (lams 4 (tag 2 0)) szInf star (var 0))) (piq q natTy (enum 2)), ok),
+     (ann (lam (coit 0 (unit 0) streamD (lam (enum 2)) step star (var 0))) (piq q (enum 2) streamTy), ok),
+     (ann (lam (scofix 0 (unit 0) streamD (lam (unit 0)) zerosF szInf star (var 0))) (piq q (unit 0) streamTy), ok)]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ elimRule.map (·.1) ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -2566,8 +2614,8 @@ def selfHostGroup : Group where
           unless a == "EqTy(Size, Size)" && b == "EqTy(Size<(∞), Size<(∞))" do
             throw (IO.userError s!"unexpected types {a}, {b}")
         | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
-    { name := "projections need an unrestricted pair; positions at 0 are erased (R1; and both kernels agree on it below)", run := fun _ => do
-        for (t, ok) in MTm.projRule do
+    { name := "projections need an unrestricted pair; positions at 0 are erased; eliminators use their scrutinee ω times (R1; and both kernels agree on it below)", run := fun _ => do
+        for (t, ok) in MTm.projRule ++ MTm.elimRule do
           let v := leanVerdict t
           unless (v != "error") == ok do
             throw (IO.userError s!"expected {if ok then "accepted" else "rejected"}, got {v}: {MTm.pretty 0 t}") },
@@ -2632,6 +2680,21 @@ def selfHostGroup : Group where
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ decl ++ printAll ++ main) ("\n".intercalate expected ++ "\n") },
     -- D1: regularity is off in both kernels; with it on, the Wiz kernel loops too
+    -- (L-2) the kernel checks the value of a `let` at 0 as an erased position, so the
+    -- backend must not compile it (the frontend doesn't produce `letq` today)
+    { name := "Backend.wiz erases the value of a let at 0, and keeps it at 1 and ω", run := fun _ => do
+        let src ← Selfhost.compilerFiles.mapM (fun (f : String) => IO.FS.readFile f)
+        let show1 (q : String) := s!"(match eraseCheck empty (.letq {q} (.enum 2) (.tag 2 0) (.tag 2 1)) (.venum 2) with\n    | .ok e => showE e\n    | .err m => String.append \"error: \" m)"
+        let prog := "import IO\nimport Std\n" ++ "\n".intercalate (src.map Selfhost.strip) ++ "\n" ++
+          s!"def main : IO Unit := do\n  IO.println {show1 ".qz"};\n  IO.println {show1 ".qo"};\n  IO.println {show1 ".qw"}\n"
+        let kept := "(let " ++ "#0" ++ "; "
+        ioRunWith prog fun out => do
+          match out.splitOn "\n" with
+          | z :: o :: w :: _ =>
+            unless z.startsWith "(let ◾; " do throw (IO.userError s!"a let at 0 keeps its value: {z}")
+            unless !o.startsWith "(let ◾; " && o.startsWith "(let " && o == w do
+              throw (IO.userError s!"unexpected erasure at 1 / ω: {o} / {w} (expected like {kept}…)")
+          | _ => throw (IO.userError s!"unexpected output: {out}") },
     { name := "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with regularity on)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
@@ -2730,6 +2793,17 @@ def languageGroup : Group where
           "variable tail declared with quantity 1 but used 0"
         -- a tuple pattern in `match` is two projections: not for a linear pair
         failsLib (r1Header ++ "def m1 (1 p : Nat × Tok) : (1 t : Tok) × Nat := match p with\n  | (n, t) => (t, n)") "quantity 1 but used ω" },
+    -- (linear-case p05) raw `ind` binds the payload at ω, so its scrutinee counts ω times
+    { name := "ind on a linear scrutinee is rejected: it could duplicate or drop the payload", run := fun _ => do
+        let box := r1Header ++ "def BoxD : Desc Unit := Desc.arg 1 Tok (fun _ => Desc.ret ())\ndef Box : Type := μ BoxD ()\n" ++
+          "def box (1 t : Tok) : Box := con (t, (), ())\n"
+        failsLib (box ++ "def dup (1 b : Box) : Tok × Tok := ind (fun _ _ => Tok × Tok) (fun i xs ih => (xs.1, xs.1)) b")
+          "variable b declared with quantity 1 but used ω"
+        failsLib (box ++ "def dropTok (1 t : Tok) : Unit := ind (fun _ _ => Unit) (fun i xs ih => ()) (box t)")
+          "variable t declared with quantity 1 but used ω"
+        okLib (box ++ "def dupω (b : Box) : Tok × Tok := ind (fun _ _ => Tok × Tok) (fun i xs ih => (xs.1, xs.1)) b") },
+    { name := "a 0 position is never evaluated: a constructor field at 0, a 0 field of a structure (#eval)", run := fun _ =>
+        okLib ("import Prelude\n" ++ zeroFieldDecls ++ "#eval e1\n#eval e2\n#eval e3\n#eval e4") ["7", "8", "9", "2"] },
     { name := "castRefl: a propositional regularity axiom in the Prelude; it doesn't compute (D1)", run := fun _ =>
         okLib ("import Prelude\ndef r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n" ++
           "#reduce fun (A : Type) (e : A = A) (a : A) => castRefl e a")
@@ -2894,9 +2968,9 @@ def effectsGroup : Group where
           "counting\n100\n"
         ioRun (prog ++ "def main : IO Unit := do\n  p ← (prog : StateT Nat IO Nat) 0;\n  report p") "counting\n100\n" },
     { name := "one-shot effects: a continuation may hold a linear value; Eff programs run under one-shot handlers", run := fun _ =>
-        ioRun "import Eff\nstructure Coin where\n  value : Nat\ndef Coin.spend (1 c : Coin) : Nat := c.value\ndef prog {R : Type} (1 c : Coin) : Eff1 1 (Row.cons (State Nat) Row.nil) R Coin :=\n  Eff1.bind (do1 n ← get1; put1 (n + 1)) (fun u => Eff1.pure c)\ndef spent : Nat := Coin.spend (Eff1.run1 (evalState1 (prog (Coin.mk 5)) 10))\ndef count {R : Type} : Eff1 ω (Row.cons (State Nat) (Row.cons Console Row.nil)) R Nat := do1\n  n ← get1;\n  println1 \"counting\";\n  put1 (n + 1);\n  get1\ndef old : Eff (Row.cons (State Nat) Row.nil) Nat := do\n  n ← get;\n  put (n * 2);\n  get\ndef runOld : Nat := (Eff1.run (runState1 (Eff.toEff1 old) 21)).1\ndef main : IO Unit := do1\n  p ← runConsole1 (runState1 count 10);\n  IO.println (Nat.toString p.1);\n  IO.println (Nat.toString spent);\n  IO.println (Nat.toString runOld)" "counting\n11\n5\n42\n" },
+        ioRun "import Eff\ndef Coin : Type := Nat\ndef Coin.mk (n : Nat) : Coin := n\ndef Coin.spend (1 c : Coin) : Nat := c\ndef prog {R : Type} (1 c : Coin) : Eff1 1 (Row.cons (State Nat) Row.nil) R Coin :=\n  Eff1.bind (do1 n ← get1; put1 (n + 1)) (fun u => Eff1.pure c)\ndef spent : Nat := Coin.spend (Eff1.run1 (evalState1 (prog (Coin.mk 5)) 10))\ndef count {R : Type} : Eff1 ω (Row.cons (State Nat) (Row.cons Console Row.nil)) R Nat := do1\n  n ← get1;\n  println1 \"counting\";\n  put1 (n + 1);\n  get1\ndef old : Eff (Row.cons (State Nat) Row.nil) Nat := do\n  n ← get;\n  put (n * 2);\n  get\ndef runOld : Nat := (Eff1.run (runState1 (Eff.toEff1 old) 21)).1\ndef main : IO Unit := do1\n  p ← runConsole1 (runState1 count 10);\n  IO.println (Nat.toString p.1);\n  IO.println (Nat.toString spent);\n  IO.println (Nat.toString runOld)" "counting\n11\n5\n42\n" },
     { name := "... which a multi-shot continuation can't", run := fun _ =>
-        ioFails "import Eff\nstructure Coin where\n  value : Nat\ndef Coin.spend (1 c : Coin) : Nat := c.value\ndef prog (1 c : Coin) : Eff (Row.cons (State Nat) Row.nil) Coin :=\n  Eff.bind (do n ← get; put (n + 1)) (fun u => Eff.pure c)" "quantity 1 but used ω" },
+        ioFails "import Eff\ndef Coin : Type := Nat\ndef Coin.mk (n : Nat) : Coin := n\ndef Coin.spend (1 c : Coin) : Nat := c\ndef prog (1 c : Coin) : Eff (Row.cons (State Nat) Row.nil) Coin :=\n  Eff.bind (do n ← get; put (n + 1)) (fun u => Eff.pure c)" "quantity 1 but used ω" },
     { name := "a one-shot handler resumes exactly once: not twice, not never", run := fun _ => do
         ioFails "import Eff\ndef twice {r : Row} {R A : Type} (1 m : Eff1 ω (Row.cons Console r) (Eff1 ω r R A) A) : Eff1 ω r R A :=\n  Eff1.handle (fun a => Eff1.pure a) (fun o k => Eff1.bind (k ()) (fun x => k ())) m" "variable k declared with quantity 1 but used ω"
         ioFails "import Eff\ndef abort {r : Row} {R A : Type} (d : A) (1 m : Eff1 ω (Row.cons (Exn String) r) (Eff1 ω r R A) A) : Eff1 ω r R A :=\n  Eff1.handle (fun a => Eff1.pure a) (fun o k => Eff1.pure d) m" "variable k declared with quantity 1 but used 0"

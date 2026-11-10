@@ -474,6 +474,24 @@ What it costs:
 * Nothing in `lib/`, `examples/` or `selfhost/` needed a change: `lib/IO.wiz` already
   split the result of an action with `let 1 (a, w') := x w`.
 
+**The same hole in the eliminators** (found by the linear-case design, probe `p05`):
+`ind` charged its scrutinee once but binds the payload at ω, so raw `ind` on a scrutinee
+held at 1 could duplicate or drop a linear token (`(1 t : Tok) → Tok × Tok` was
+accepted); `sfix`, `scase`, `Desc.elim` and the seeds of `coit`/`scofix` had the same
+shape. **Fixed** with the same rule: these eliminators use their scrutinee (seed) ω times
+(CoreSpec §7.1, §9, §10; both kernels). `match` was not affected. Nothing in `lib/`,
+`examples/` or `selfhost/` eliminated a linear scrutinee.
+
+**Positions at 0** are checked erased and never evaluated; erasure used to evaluate the
+scrutinee of a split at 0 (fixed), and the kernel and erasure now share the test for
+"constant 0" (`QPoly.isErased`). `selfhost/Backend.wiz` erases the value of a `let` at 0.
+
+**Usability regression, and what follows.** A one-field structure held at 1 could be read
+soundly before (`structure Coin where value : Nat`; `c.value` dropped only the marker
+tail); it can't now. Write such a wrapper as a definition (`def Coin : Type := Nat`) or a
+tuple. The follow-up is a destructuring `let 1 (.mk a b) := s` compiled to nested splits
+(`/workspace/wiz-notes/linear-case-design.md`).
+
 Tests: "check: structural types" (kernel rules), "language" and "ffi" (surface programs,
 the three audit probes, structures, erased positions and their erasure), and the
 differential samples.

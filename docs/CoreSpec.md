@@ -136,7 +136,9 @@ is the zero vector, `𝟙ₓ` is "x used once" (`Usage.single`), `U + V` is poin
 type positions, proofs and sizes, and for every position whose usage is scaled by a
 constant 0 (`Ctx.erasedAt`): an argument to a `0`-quantity binder, the value of a `let` at
 0, the first part of a pair checked at a 0 field, the scrutinee of a `split` at 0. Such a
-position is never computed (erasure replaces it by `◾`, `Erase.lean`). Its effect is on
+position is never computed (erasure replaces it by `◾`, `Erase.lean`); the kernel and
+erasure decide "constant 0" with one predicate, `QPoly.isErased`, because a term in such a
+position may be valid *only* erased. Its effect is on
 projections only (§7.1): in `Γ⁰` any field of any pair may be read, erased fields
 included, and a projection counts its pair's usage unscaled (which the position then
 multiplies by 0, or discards).
@@ -464,11 +466,39 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
   these positions compiles to `◾` and is never evaluated (`Erase.lean`: `pair`, `letE`,
   `split`, the application spine).
 
+* **The eliminators use what they take apart ω times** (§9, §10; found by the
+  linear-case design, probe `p05`). `ind`, `sfix` and `scase` hand the scrutinee's
+  payload to the method as an ω variable (`ω xs`), `coit` and `scofix` hand the seed to
+  the step function as an ω variable, and `Desc.elim` the description's parts. Charging
+  the scrutinee once (`ω·U_m + U_x`, as before) let a method copy or ignore the content
+  of a scrutinee held at 1: `ind (fun _ _ => Tok × Tok) (fun i xs ih => (xs.1, xs.1)) b`
+  for `1 b : Box` was accepted. The rules now scale the scrutinee (seed) by ω:
+  `ω·(U_m + U_x)`, and `U_m + ω·U_x` for `scase`, whose method runs once. This is the
+  same statement as the projection rule: an eliminator that binds at ω needs an
+  unrestricted value. `match` was never affected (the generated `casesOn`/`rec` take the
+  scrutinee as an ω argument). Until there is a case at a quantity (the linear-case
+  design), a value of an inductive type held at 1 can be passed along but not taken
+  apart.
+* **Usability, and the follow-up.** After R1, linear data is a Σ tuple taken apart with
+  `let 1 (x, y) := …`. What stopped working: reading the single field of a one-field
+  structure held at 1 (`structure Coin where value : Nat`, `c.value`: it dropped only
+  the marker tail, so it was sound; such a wrapper is now written as a definition,
+  `def Coin : Type := Nat`), besides the unsound reads of one field among several.
+  Follow-up (not in the kernel): a destructuring `let 1 (.mk a b) := s` for structures,
+  compiled to nested splits, and tuple patterns in `match` compiled to `split`; both in
+  `/workspace/wiz-notes/linear-case-design.md`.
+
 *Kernel.wiz* has no `split` (no `let (x, y)` in its term syntax). Its `fst`/`snd` rules
 are the ones above (usage scaled by ω outside erased positions; no check at the
 projection, so the error surfaces when the variable's binder is left), and its `let` and
 `pair` rules use the same erased positions (`erasedIf`). Without `split`, **a pair held at
-quantity 1 cannot be consumed inside Kernel.wiz's fragment** (§15).
+quantity 1 cannot be consumed inside Kernel.wiz's fragment** (§15). The same holds
+for the self-hosted *language* (what `Frontend.wiz` elaborates): it has no
+`let (x, y) := …`, its `Prod` is a structure whose `.fst`/`.snd` are ω functions, and its
+`IO` is `World → Prod A World` at ω. So a linear pair cannot be consumed at all in the
+self-hosted language; programs that need one are checked by the Lean kernel only.
+`Backend.wiz` erases the value of a `letq .qz` (and of a 0 argument and a 0 field) as
+`Erase.lean` does; the frontend does not produce `letq` today.
 
 ### 7.2 Unit, Empty, True, False
 
@@ -971,7 +1001,7 @@ The eliminator:
      Γ ⊢ mrec ⇐ (q : Qty) → (j : I) → (E : Desc I) → (ih : P E) → P (rec q j E)                               ⊣ U₃
      Γ ⊢ mhrec ⇐ (q : Qty) → (H : Sort (l+1)) → (j : H → I) → (E : Desc I) → (ih : P E) → P (hrec q H j E)   ⊣ U₄
      ─────────────────────────────────────────────── Desc.elim     [wiz]        Check.lean:515–526
-     Γ ⊢ Desc.elim.{v} P mret marg mrec mhrec D ⇒ P D ⊣ ω·(U₁+U₂+U₃+U₄) + U_D
+     Γ ⊢ Desc.elim.{v} P mret marg mrec mhrec D ⇒ P D ⊣ ω·(U₁+U₂+U₃+U₄ + U_D)
 
      Desc.elim P m… (ret i)       ⟶ mret i                                                   vDelim, Eval.lean:355–371
      Desc.elim P m… (arg q S E)   ⟶ marg q S E (λs. Desc.elim P m… (E s))
@@ -1018,7 +1048,7 @@ never type-checks them, and their Σ types carry hand-written sort annotations
      Γ ⊢ m ⇐ (0 i : I) → (ω xs : ⟦D⟧ (μ D) i) → (ω ih : All D (μ D) P i xs) → P i (con xs)   ⊣ U_m
      Γ ⊢ i ⇐ I    Γ ⊢ x ⇐ μ D i ^∞ ⊣ U_x
      ───────────────────────────────────── ind                                               Check.lean:534–546
-     Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·U_m + U_x
+     Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·(U_m + U_x)
 
      ind P m i (con xs)  ⟶  m i xs (hyps D (μ D) P (λj y. ind P m j y) i xs)                vIndStep, Eval.lean:409–423
 ```
@@ -1091,7 +1121,7 @@ a < ∞                       ⇔ a = ↑ᵏ x for a variable x : Size< u       
                          → (ω i : I) → (ω x : μ^s D i) → P i x                        ⊣ U_f
      Γ⁰ ⊢ s ⇐ Size    Γ ⊢ i ⇐ I    Γ ⊢ x ⇐ μ^s D i ⊣ U_x
      ───────────────────────────────────── sfix                     Check.lean:553–565, sfixFunTy Conv.lean:162
-     Γ ⊢ sfix P f s i x ⇒ P i x ⊣ ω·U_f + U_x
+     Γ ⊢ sfix P f s i x ⇒ P i x ⊣ ω·(U_f + U_x)
 
      sfix P f s i (con xs)  ⟶  f ∞ (λj i y. sfix P f j i y) i (con xs)                     vSfix, Eval.lean:436–449
 
@@ -1099,7 +1129,7 @@ a < ∞                       ⇔ a = ↑ᵏ x for a variable x : Size< u       
      Γ ⊢ m ⇐ (0 j : Size< s) → (0 i : I) → (ω xs : ⟦D⟧ (λj'. μ^j D j') i) → P i (con xs)   ⊣ U_m
      Γ ⊢ i ⇐ I    Γ ⊢ x ⇐ μ^s D i ⊣ U_x
      ───────────────────────────────────── scase                    Check.lean:579–592, scaseMethodTy Conv.lean:172
-     Γ ⊢ scase P m s i x ⇒ P i x ⊣ U_m + U_x
+     Γ ⊢ scase P m s i x ⇒ P i x ⊣ U_m + ω·U_x
 
      scase P m s i (con xs)  ⟶  m ∞ i xs                                                   vScase, Eval.lean:453–462
 ```
@@ -1129,13 +1159,13 @@ a < ∞                       ⇔ a = ↑ᵏ x for a variable x : Size< u       
      Γ ⊢ S ⇐ (ω i : I) → Sort (l+1)
      Γ ⊢ step ⇐ (ω i : I) → (ω s : S i) → ⟦D⟧ S i ⊣ U_st     Γ ⊢ i ⇐ I    Γ ⊢ t ⇐ S i ⊣ U_t
      ───────────────────────────────────── coit                                              Check.lean:594–606
-     Γ ⊢ coit S step i t ⇒ ν D i ^∞ ⊣ ω·U_st + U_t
+     Γ ⊢ coit S step i t ⇒ ν D i ^∞ ⊣ ω·(U_st + U_t)
 
      Γ ⊢ A ⇐ (ω i : I) → Sort (l+1)
      Γ ⊢ f ⇐ (0 s : Size) → (ω rec : (ω i : I) → A i → ν^s D i) → (ω i : I) → A i → ν^{↑s} D i   ⊣ U_f
      Γ⁰ ⊢ s ⇐ Size    Γ ⊢ i ⇐ I    Γ ⊢ a ⇐ A i ⊣ U_a
      ───────────────────────────────────── scofix                     Check.lean:566–578, scofixFunTy Conv.lean:180
-     Γ ⊢ scofix A f s i a ⇒ ν D i ^s ⊣ ω·U_f + U_a
+     Γ ⊢ scofix A f s i a ⇒ ν D i ^s ⊣ ω·(U_f + U_a)
 
      out (cocon xs)               ⟶  xs                                                     vOut, Eval.lean:468–487
      out (coit S step i t)        ⟶  map D S (ν D) (λj s. coit S step j s) i (step i t)
@@ -1349,7 +1379,7 @@ Each item says what the code does; the code is what the kernel checks.
 |---|---|---|
 | quantities | any `QRig`, quantity variables, `Qty` | literals `0, 1, ω` only (`Q`, `Kernel.wiz:19`); no `Qty` type |
 | description fields | carry a quantity | carry none; the methods receive `tt` (`Kernel.wiz:830–845`) |
-| `split` (`let (x, y)`) | yes | **no**. Projections need an unrestricted pair in both kernels (§7.1, R1), so a pair held at quantity 1 cannot be consumed in Kernel.wiz's fragment: every term that projects one is rejected by both kernels, and terms with `split` are outside the fragment (the differential test's term type `MTm` has no `split`) |
+| `split` (`let (x, y)`) | yes | **no**. Projections need an unrestricted pair in both kernels (§7.1, R1), so a pair held at quantity 1 cannot be consumed in Kernel.wiz's fragment, nor at all in the self-hosted language (no `let (x, y)`; its `IO` and `Prod` are at ω): every term that projects one is rejected by both kernels, and terms with `split` are outside the fragment (the differential test's term type `MTm` has no `split`) |
 | numerals, `natOp` | yes | no |
 | levels of data | `Level` | closed numerals (`descr l`, `mu l`, `ulift l`) |
 | `ULift` (Q4) | `ulift`/`up`/`down`, `cast` needs a level never `0` | `ulift`/`up`/`down` at closed levels (`vulift`, `vup`, `sdown`); the same rules |

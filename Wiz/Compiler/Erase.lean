@@ -197,7 +197,11 @@ partial def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
   | .pi x .. => isPhantomName x || isProp ctx.globals ctx.tys ty
   | _ => isProp ctx.globals ctx.tys ty
 
-private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
+/-- Is a position at quantity `q` erased? The kernel's own test (`QPoly.isErased`, used by
+`Ctx.erasedAt`): a position the kernel checked in erased mode must become `◾` here. -/
+private def isZeroQ (q : Val R) : Bool := match q.toPoly? with
+  | some p => p.isErased
+  | none => false
 
 /-- Is `ty` the tail of a structure with fields, `(0 _ : D) → … → (0 _ : Enum [fields✝]) → Unit`
 (`structTailName`, stage 22i)? -/
@@ -318,7 +322,12 @@ partial def Wiz.IR.freeIdx' (t : Term R) (depth : Nat := 0) (acc : Std.HashSet N
     acc := acc'
     pure acc
 
-/-- The type of a term that is already known to be well typed, without checking it
+/-- (The fallback runs the kernel's `infer` in erased mode: it wants the type only, and
+this context's quantities are approximate. **Erasure is not the checker**: in erased mode
+`infer` does not notice a relevant misuse (a projection of a linear pair, a read of an
+erased field), so nothing here may be taken as a second check of the term.)
+
+The type of a term that is already known to be well typed, without checking it
 again: along an elimination spine only (heads, applications, projections, annotations,
 `ecase`, `ind`), else by the kernel's `infer`. Erasure asks for the type of every
 subterm, so a full `infer` at each would re-check each subterm once per enclosing node:
@@ -424,7 +433,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
   | .letE x q ty' v b, _ =>
     let vTy := ctx.eval ty'
     let some p := (ctx.eval q).toPoly? | throw (.other "erasure: unknown quantity")
-    let v' ← if p == [] then pure .erased else eraseCheck ctx v vTy
+    let v' ← if p.isErased then pure .erased else eraseCheck ctx v vTy
     let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty
     return .letE x v' b'
   -- the type is known (and not erasable), so don't infer the whole application again
