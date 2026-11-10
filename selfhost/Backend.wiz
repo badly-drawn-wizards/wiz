@@ -572,12 +572,12 @@ def etmsList : ETms → List ETm
 def etmsOfList : List ETm → ETms
   | .nil => .nil
   | .cons t rest => .cons t (etmsOfList rest)
-def selfTemps (i : Nat) : List Doc → Doc
-  | .nil => .t ""
-  | .cons a rest => .t ("V tc_" +++ Nat.toString i +++ " = ") ⧺ a ⧺ .t "; " ⧺ selfTemps (i + 1) rest
-def selfSets (i : Nat) : Nat → String
-  | .zero => ""
-  | .succ m => "p" +++ Nat.toString i +++ " = tc_" +++ Nat.toString i +++ "; " +++ selfSets (i + 1) m
+def selfTemps : Nat → List Doc → Doc
+  | _, .nil => .t ""
+  | i, .cons a rest => .t ("V tc_" +++ Nat.toString i +++ " = ") ⧺ a ⧺ .t "; " ⧺ selfTemps (i + 1) rest
+def selfSets : Nat → Nat → String
+  | _, .zero => ""
+  | i, .succ m => "p" +++ Nat.toString i +++ " = tc_" +++ Nat.toString i +++ "; " +++ selfSets (i + 1) m
 def selfJumpDoc (atoms : List Doc) : Doc := selfTemps 0 atoms ⧺ .t (selfSets 0 (lenL atoms) +++ "goto top_; ")
 def codesC : List Nat → Doc
   | .nil => .t ""
