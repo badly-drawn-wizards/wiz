@@ -6,6 +6,18 @@ the planned surface. Check a file with (through `heavy`):
     .lake/build/bin/wiz check -I drafts/hdl drafts/hdl/<File>.wiz
 
 Import chain: `Shim` ← `Bits` ← `Signal` ← {`Counter`, `Fir`, `Uart`, `Cpu`, `Synth`} ← `Staged`.
+`Synth` also imports `Hdl.Core` (lib/Hdl/Core.wiz): since stage S0 (2026-11-10) the L2 layer
+(`HwTy`, `Hw`, the El and Wire instances, the hash-consing netlist builder, `Circuit`, the
+netlist interpreter, Verilog) is library code, checked and tested (`lake test -- =hdl`,
+examples in `examples/hdl.wiz`); `Synth.wiz` keeps the design notes and `Circuit.sim` over
+`Signal`.
+
+**Drift (2026-11-10):** the drafts predate lib/BitVec.wiz (H0c, 22h) and the 22a Nat natives:
+`Shim.wiz` now redeclares `Nat.mod`, `Nat.div`, … (errors), and `Bits.wiz` declares its own
+`BitVec`, which clashes with lib's once `Synth` imports `Hdl.Core`. The fix is to drop the
+stand-ins from `Shim` and build `Bits` on lib/BitVec (`Unsigned n` can alias `UIntN n`);
+not done in S0. `crossDomain` in Signal.wiz is now rejected, as intended (phantom
+parameters, PR #10).
 An error in an imported file makes every importer exit 1 ("module X has errors"); the
 importer's own definitions are still checked. Wishful entries are in
 `/workspace/wiz-notes/wishful/<slug>.md`; uses are marked `-- wishful: <slug>`.

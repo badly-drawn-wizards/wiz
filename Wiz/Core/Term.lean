@@ -409,6 +409,13 @@ def elabView (g : Globals R) : Globals R :=
     | some d => { g' with decls := g'.decls.insert n { d with value := none } }
     | none => g'
 
+/-- (13b) Is `T` opaque here (a structure, inductive or coinductive type with private
+constructors, fields or observations, of another module)? Its module, if so. -/
+def opaqueTo? (g : Globals R) (T : Name) : Option String :=
+  match g.opaques[T]? with
+  | some m => if m == g.module then none else some m
+  | none => none
+
 /-- (13b) The module `n` is private to, if that is not the one being elaborated. -/
 def privateTo? (g : Globals R) (n : Name) : Option String :=
   match g.privates[n]? with
