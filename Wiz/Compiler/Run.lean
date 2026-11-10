@@ -303,7 +303,12 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
 where
   readbackData (ty : VTy R) (v : RVal) : Term R :=
     match whnf ty with
-    | .mu l I D i _ _ =>
+    | .mu l I D i _ hint =>
+      -- a native value (stage 22d), printed as a number: the model's object around it
+      let v := match v, hint.bind fun (T, _, _) => reprOf? builtins T with
+        | .nat n, some ri => RVal.obj ri.tag ((List.range ri.nfields).toArray.map fun k =>
+            if k == ri.r then .nat n else .erased)
+        | v, _ => v
       let v := match v with
         | .nat n => if builtins.lookup "nat" == (match whnf ty with
             | .mu _ _ _ _ _ (some (T, _, _)) => some T
@@ -357,7 +362,14 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
   let mut failed : List (Name × String) := []
   let mut todo := roots.toArray
   -- definitions registered as native operations
-  let natives := builtins.filter fun (key, _) => key != "nat" && key != "string"
+  let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && !key.startsWith "repr:"
+  -- native representations (stage 22d): the interpreters keep the model's objects when
+  -- the conversions are foreign functions
+  let isExtern (f : Name) := builtins.any fun (k, x) => x == f && k.startsWith "extern:"
+  let g := if externImpls then g else
+    { g with builtins := g.builtins.filter fun (k, _) => match ReprInfo.parse? k with
+      | some (_, ri) => !isExtern ri.mkImpl && !isExtern ri.getImpl
+      | none => true }
   while h : todo.size > 0 do
     let n := todo.back
     todo := todo.pop
