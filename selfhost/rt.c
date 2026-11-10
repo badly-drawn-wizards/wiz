@@ -36,7 +36,8 @@ typedef uintptr_t V;
 #define OBJ(v) ((Obj *)((v) & ~(V)0xE))
 #define OFF(v) ((unsigned)(((v) >> 1) & 7))
 
-enum { T_CLO = 0x7fff0000u, T_STR, T_ARR, T_MAP, T_HYP };
+/* (T_EXT: a foreign pointer `[ptr, finalizer]`; T_RAW: a machine word `[bits]`, stage 21l) */
+enum { T_CLO = 0x7fff0000u, T_STR, T_ARR, T_MAP, T_HYP, T_EXT, T_RAW };
 
 /* every object starts with `RCF`: its reference count (nothing under the collector) */
 #ifdef WIZ_RC
@@ -897,6 +898,9 @@ static void rt_drain(void) {
     } else if (t == T_MAP) {
       Node *n = (Node *)x;
       rt_decChild(n->key); rt_decChild(n->val); rt_decChild((V)n->l); rt_decChild((V)n->r);
+    } else if (t == T_EXT) {
+      /* a foreign pointer: its finalizer runs with the last reference */
+      if (x->f[0] && x->f[1]) ((void (*)(void *))x->f[1])((void *)x->f[0]);
     }
     rt_freeShell(x);
   }
@@ -964,6 +968,93 @@ static void rt_finish(void) {
   if (rt_live) { fflush(stdout); fprintf(stderr, "wiz: %zu objects leaked\n", rt_live); exit(4); }
 }
 #endif
+
+/* ---- the C FFI (stage 21l): what the wrappers of `extern` functions call ----
+   The wrappers own their arguments (`rt_drop` releases one under reference counting).
+   `Nat` is a scalar of 63 bits (a bigger C result is cut to them); `UInt64` and
+   `Float64` (its bits) are scalars when the top bit is clear, else a `T_RAW` object; a
+   foreign pointer is a `T_EXT` object whose finalizer runs when it is freed (under the
+   collector: when it is collected; `rt_finishGC` collects once more at exit). */
+INLINE void rt_drop(V v) {
+#ifdef WIZ_RC
+  dec(v);
+#else
+  (void)v;
+#endif
+}
+static uint64_t rt_in_nat(V v) { return ISBOX(v) ? (uint64_t)UNBOX(v) : 0; }
+static V rt_out_nat(uint64_t n) { return BOX(n); }
+static uint64_t rt_in_u64(V v) {
+  if (ISBOX(v)) return (uint64_t)UNBOX(v);
+  uint64_t b = (uint64_t)OBJ(v)->f[0];
+  rt_drop(v);
+  return b;
+}
+static V rt_out_u64(uint64_t b) {
+  if (!(b >> 63)) return BOX(b);
+  V fs[1] = {(V)b};
+  return mkobj(T_RAW, 1, fs);
+}
+static double rt_in_f64(V v) { uint64_t b = rt_in_u64(v); double d; memcpy(&d, &b, 8); return d; }
+static V rt_out_f64(double d) { uint64_t b; memcpy(&b, &d, 8); return rt_out_u64(b); }
+static int rt_in_bool(V v) {
+  int b = ISBOX(v) ? UNBOX(v) != 0 : tagof(fld(v, 0)) != 0;
+  rt_drop(v);
+  return b;
+}
+static char *rt_in_str(V v) {
+  char *s = cstr(v);
+  rt_drop(v);
+  return s;
+}
+static void rt_free_cstr(char *s) {
+#ifdef WIZ_RC
+  free(s);
+#else
+  (void)s;
+#endif
+}
+static V rt_out_str(const char *s) { return s ? wstr(s, strlen(s)) : wstr("", 0); }
+static void *rt_in_ptr(V v) { return ISBOX(v) ? NULL : (void *)OBJ(v)->f[0]; }
+#ifndef WIZ_RC
+static size_t rt_nfin;
+static void rt_extFin(void *o, void *cd) {
+  (void)cd;
+  Obj *x = (Obj *)o;
+  if (x->f[0] && x->f[1]) ((void (*)(void *))x->f[1])((void *)x->f[0]);
+}
+#endif
+static V rt_out_ptr(void *p, void (*fin)(void *)) {
+  V fs[2] = {(V)p, (V)fin};
+  V o = mkobj(T_EXT, 2, fs);
+#ifndef WIZ_RC
+  if (fin) { GC_register_finalizer((void *)o, rt_extFin, NULL, NULL, NULL); rt_nfin++; }
+#endif
+  return o;
+}
+#ifndef WIZ_RC
+/* at exit (the collector): finalize the foreign pointers nothing reaches any more */
+static void rt_finishGC(void) {
+  if (rt_nfin) { GC_gcollect(); GC_invoke_finalizers(); }
+  fflush(stdout);
+}
+#endif
+/* the runtime functions `lib/IO.wiz` binds (as in `runtime/wiz.c`) */
+static uint64_t wiz_u64_id(uint64_t a) { return a; }
+static uint64_t wiz_u64_add(uint64_t a, uint64_t b) { return a + b; }
+static uint64_t wiz_u64_sub(uint64_t a, uint64_t b) { return a - b; }
+static uint64_t wiz_u64_mul(uint64_t a, uint64_t b) { return a * b; }
+static uint64_t wiz_u64_div(uint64_t a, uint64_t b) { return b ? a / b : 0; }
+static uint64_t wiz_u64_mod(uint64_t a, uint64_t b) { return b ? a % b : a; }
+static int wiz_u64_lt(uint64_t a, uint64_t b) { return a < b; }
+static int wiz_u64_eq(uint64_t a, uint64_t b) { return a == b; }
+static double wiz_f64_of_nat(uint64_t a) { return (double)a; }
+static double wiz_f64_add(double a, double b) { return a + b; }
+static double wiz_f64_sub(double a, double b) { return a - b; }
+static double wiz_f64_mul(double a, double b) { return a * b; }
+static double wiz_f64_div(double a, double b) { return a / b; }
+static int wiz_f64_lt(double a, double b) { return a < b; }
+static const char *wiz_f64_show(double a) { static char buf[64]; snprintf(buf, sizeof buf, "%.17g", a); return buf; }
 
 /* the program needs a big stack (deep recursion): raise the limit and start again (a
    thread with a big stack would do, but the collector's stopping of the world lost
