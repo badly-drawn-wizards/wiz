@@ -82,6 +82,7 @@ def expr (arities : Std.HashMap Name Nat) (env : Std.HashMap Var String) (x : St
       | "nat.add" => "wiz_nat_add" | "nat.sub" => "wiz_nat_sub" | "nat.mul" => "wiz_nat_mul"
       | "nat.beq" => "wiz_nat_beq" | "nat.blt" => "wiz_nat_blt" | "lazyTag" => "wiz_lazy_tag" | "lazySet" => "wiz_lazy_set" | "memo" => "wiz_memo"
       | "tag" => "wiz_tag_of" | "natTag" => "wiz_nat_tag" | "fieldAt" => "wiz_field_at" | "mkObj" => "wiz_mk_obj"
+      | "dropMoved" => "wiz_drop_moved"
       | op => if op.startsWith "nat." then "wiz_nat_" ++ (op.drop 4).toString
         else if (RVal.ExternSig.ofKey? op).isSome then C.externWrapper op else "wiz_unknown_prim"
     emit s!"  {x} = call i64 @{f}({args env as})"
@@ -185,6 +186,7 @@ declare i64 @wiz_mk_obj(i64, i64)
 declare i64 @wiz_clo_new(ptr, i32, i32, ptr)
 declare i64 @wiz_apply(i64, i32, ptr)
 declare i64 @wiz_reset(i64)
+declare i64 @wiz_drop_moved(i64, i64)
 declare i64 @wiz_reuse(i64, i32, i32)
 declare void @wiz_unreachable()
 declare i32 @wiz_finish(i64)
@@ -201,8 +203,8 @@ def program (decls : Array IR.Decl) (io : Bool := false) : String :=
     let n := RVal.nativeArity key
     s!"declare i64 @{C.externWrapper key}({", ".intercalate (List.replicate n "i64")})\n"
   let io' := if io then 1 else 0
-  runtimeDecls ++ "declare i32 @wiz_run_main(ptr, i32)\n" ++ String.join externDecls ++
+  runtimeDecls ++ "declare i32 @wiz_run_main(ptr, i32)\ndeclare void @wiz_set_args(i32, ptr)\n" ++ String.join externDecls ++
     "\n".intercalate globals.toList ++ "\n" ++ "\n".intercalate fns.toList ++
-    s!"\ndefine i32 @main() \{\n  %c = call i32 @wiz_run_main(ptr {fn "wiz.entry"}, i32 {io'})\n  ret i32 %c\n}\n"
+    s!"\ndefine i32 @main(i32 %argc, ptr %argv) \{\n  call void @wiz_set_args(i32 %argc, ptr %argv)\n  %c = call i32 @wiz_run_main(ptr {fn "wiz.entry"}, i32 {io'})\n  ret i32 %c\n}\n"
 
 end Wiz.LLVM

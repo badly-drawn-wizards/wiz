@@ -339,6 +339,17 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
 partial def mentionsIdent (n : Name) (stx : Syntax) : Bool :=
   (stx.isOfKind "term.ident" && (stx.getArg 0).getId? == some n) || stx.args.any (mentionsIdent n)
 
+/-- How the fields of the coinductive type `T` sit in its payload (Q4: a small field is
+lifted, `descFieldLifts`), read off `T.desc`. -/
+def coinductiveLifts (g : Globals R) (T : Name) : List FieldLift :=
+  match g.find? (T ++ ".desc") with
+  | some { value := some v, type, .. } =>
+    let rec strip : Nat → Term R → Term R
+      | n + 1, .lam _ b => strip n b
+      | _, t => t
+    descFieldLifts (strip (peelPis type).1.length v)
+  | _ => []
+
 /-- The copattern alternative for observation `o`, if any. -/
 def copatternAlt? (alts : List Syntax) (o : Name) : Option Syntax :=
   alts.find? fun a =>
@@ -378,8 +389,9 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
     sv := vSnd sv
   -- one component per observation, in order
   let alts := (cmd.getArg 5).args.toList
+  let lifts := coinductiveLifts g T
   let mut comps : List (Term R) := []
-  for (o, isRec) in obs do
+  for (o, isRec) in obs, k in [0:obs.length] do
     let some alt := alts.find? fun a =>
         match (a.getArg 1).args[0]? with
         | some p => p.isOfKind "term.dotIdent" && (p.getArg 1).getId? == some o
@@ -406,7 +418,7 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
         oty ← instM cod a
       let .pi _ _ _ _ cod _ ← force oty | throwAt info "internal error: observation type"
       let F ← instM cod (Val.var 0)
-      comps := comps ++ [← Elab.check sctx rhs F]
+      comps := comps ++ [(lifts[k]?.getD .none).wrap (← Elab.check sctx rhs F)]
   -- the index equation: `()` at `Unit`; for a phantom tail (`phantomTail`), `refl`
   let e : Term R ← match ← force I with
     | .unit _ => pure .tt
@@ -472,7 +484,13 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
     let .sigma _ _ A B _ ← force pty | throwAt info "internal error: observation type"
     -- a recursive observation: the same nominal type, one size down
     let A := if isRec then .nu l I D i s' hint else A
+    -- (Q4) a lifted field (`ULift A'`, made by the elaborator): check against the
+    -- field's own type, and box it
+    let (A, lifted) ← match isRec, ← force A with
+      | false, .ulift _ A' => pure (A', true)
+      | _, _ => pure (A, false)
     let c ← Elab.check ctx rhs A
+    let c := if lifted then .up c else c
     comps := comps ++ [c]
     pty ← instM B (← evalIn ctx c)
   -- the index equation: `()` at `Unit`; for a phantom tail (`phantomTail`), `refl`
@@ -521,7 +539,8 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     | .error e => .error e
   let runProcMacro f stx scope := do Elab.runProcMacro (← compileCode [f, "Macro.run"]) f stx scope (macroEnv g)
   let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
-  match x.run { globals := g, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
+  -- (13b) structures with a constructor private to another module don't unfold here
+  match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
                 kernelInfer, classes, instances, termInfo } with
   | .ok (a, st) => (.ok a, finishInfos st)
   | .error e => (.error e, (e.state?.map finishInfos).getD #[])
@@ -669,12 +688,14 @@ partial def inhabitedTy (g : Globals R) (lvl fuel : Nat) (ty : Val R) (hyps : Li
     inhabitedTy g (lvl + 1) (fuel - 1) (Closure.inst g cod (Val.var lvl)) ((headOf dom).toList ++ hyps)
   | .sort _ | .unit _ | .qty | .size | .desc .. => true
   | .enum ls => !ls.isEmpty
+  | .ulift _ A => inh A
   | .sigma _ _ A B _ => inh A && inh (Closure.inst g B (Val.var lvl))
   | .mu _ I D _ _ hint =>
     let byCtor := match whnf I, whnf D with
-      | .unit _, .darg _ S F => match whnf S with
-        | .enum ls => (List.range ls.length).any fun i => fields (vApp g F (.tag ls i))
-        | _ => fields D
+      | .unit _, .darg _ S F => match tagField? S with
+        | some (ls, lifted) => (List.range ls.length).any fun i =>
+          fields (vApp g F (if lifted then .up (.tag ls i) else .tag ls i))
+        | none => fields D
       | .unit _, _ => fields D
       | _, _ => false
     byCtor || (match hint with
@@ -713,13 +734,26 @@ partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Exce
     | s => s
   let ctors := (defs.zip substs).flatMap fun (d, (_, self)) => (d.getArg 6).args.map fun c =>
     let c := subst c
-    if (c.getArg 3).args.isEmpty then c.setArg 3 (.node {} "null" #[.atom {} ":", self]) else c
+    if (c.getArg 4).args.isEmpty then c.setArg 4 (.node {} "null" #[.atom {} ":", self]) else c
   let famCmd := famFrame.setArg 6 (.node {} "null" ctors)
   let typeDefs ← names.mapM fun n => parse s!"def {n} : Type := {fam} {fam}.Tag.{n}"
   pure ([tagCmd, famCmd] ++ typeDefs.toList)
 
+/-- (13b) Does a `structure` command say `private mk ::` after `where`? -/
+def structurePrivateMk (cmd : Syntax) : Bool :=
+  let spec := (cmd.getArg 5).getArg 1
+  !spec.args.isEmpty && !(spec.getArg 0).args.isEmpty
+
+/-- (13b) The fields (observations) of a `structure` or `coinductive` command marked
+`private`. -/
+def privateFields (cmd : Syntax) : List Name :=
+  (cmd.getArg 6).args.toList.filterMap fun f =>
+    if (f.getArg 0).args.isEmpty then none else (f.getArg 2).getId?
+
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
+  -- (13b) privacy is per module: the globals know which one is being elaborated
+  modify fun s => if s.globals.module == s.module then s else { s with globals := { s.globals with module := s.module } }
   let s ← get
   let report (sev : Severity) (info : SourceInfo) (text : String) : StateM (CommandState R) Unit :=
     modify fun s => { s with messages := s.messages.push { info, severity := sev, text } }
@@ -766,6 +800,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .ok g => modify fun s => { s with globals := g }
     | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
   match cmd.kind with
+  | "command.private" =>
+    -- (13b) every name the command declares is private to this module
+    let before := s.globals.order.size
+    elabCommand (cmd.getArg 1)
+    modify fun s =>
+      let added := s.globals.order.extract before s.globals.order.size
+      { s with globals := { s.globals with
+          privates := added.foldl (fun m n => m.insert n s.module) s.globals.privates } }
   | "command.def" | "command.axiom" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
@@ -860,12 +902,18 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
       let pats := (cmd.getArg 5).args.toList.filterMap fun a => (a.getArg 1).args[0]?
-      let coinductiveOf? : Option (List (Name × Bool)) :=
+      let coinductiveOf? : Option (Name × List (Name × Bool)) :=
         if pats.all (·.isOfKind "term.dotIdent") then
-          s.coinductives.findSome? fun (_, obs) =>
-            if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some obs else none
+          s.coinductives.findSome? fun (T, obs) =>
+            if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some (T, obs) else none
         else none
-      let r := match coinductiveOf? with
+      -- (13b) copatterns define every observation: not outside the module of a private one
+      if let some (T, obs) := coinductiveOf? then
+        if let some (o, m) := obs.findSome? fun (o, _) => (s.globals.privateTo? (T ++ "." ++ o)).map (o, ·) then
+          report .error cmd.info (s!"'{T}.{o}' is private to module {m}: a {T} can't be defined by " ++
+            "copatterns outside it")
+          return
+      let r := match coinductiveOf?.map (·.2) with
         | some obs => runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (do let (t, v) ← elabCopatterns name cmd obs; pure (t, v, none)) levelParams
         | none => runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDefEqns name cmd) levelParams
       match r with
@@ -889,12 +937,22 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | .error e =>
             report .error cmd.info s!"kernel rejected {d.name}: {e}"
             return
+        -- (13b) private observations: private to this module with the coconstructor
+        -- `T.mk`, and elsewhere `T` is opaque (`Globals.elabView`), so a value of it is
+        -- neither observed nor built except through the module's own definitions
+        let privObs := privateFields cmd
+        unless privObs.isEmpty do
+          let names := privObs.map (name ++ "." ++ ·) ++ [name ++ ".mk"]
+          g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
+                        opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g, coinductives := s.coinductives ++ [(name, obs)] }
   | "command.class" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
+    else if let some f := (cmd.getArg 6).args.find? fun f => !(f.getArg 0).args.isEmpty then
+      report .error f.info "a class's methods can't be private (make the class private instead)"
     else
       match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
           (elabStructure cmd levelParams) levelParams with
@@ -912,7 +970,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let outParams := Δ.map fun (_, _, _, A) => match (Term.spine A).1 with
           | .const n _ => n == "outParam"
           | _ => false
-        let fields := (cmd.getArg 6).args.toList.filterMap fun f => (f.getArg 1).getId?
+        let fields := (cmd.getArg 6).args.toList.filterMap fun f => (f.getArg 2).getId?
         modify fun s => { s with globals := g, classes := { name, outParams, fields } :: s.classes }
   | "command.instance" =>
     let prioOpt := cmd.getArg 1
@@ -971,8 +1029,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.inductive" | "command.structure" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
+    let ctorSpec := ((cmd.getArg 5).getArg 1)
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
+    else if cmd.isOfKind "command.structure" && !ctorSpec.args.isEmpty &&
+        (ctorSpec.getArg 1).getId? != some "mk" then
+      report .error (ctorSpec.getArg 1).info s!"a structure's constructor is `mk` (only `private mk ::` can be written)"
     else
       let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
         else elabStructure cmd levelParams
@@ -993,20 +1055,43 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
         -- the recursors need the declarations above
         if cmd.isOfKind "command.inductive" then
-          let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 1).getId?
+          let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 2).getId?
           -- (indexed families also get `recN`/`casesOnN`, for motives that don't depend
           -- on the scrutinee)
           let indexed := isIndexed g name
+          let mut recNames : List Name := []
           for (withIH, sized, nondep) in [(false, false, false), (true, false, false), (false, true, false)] ++
               (if indexed then [(false, false, true), (true, false, true)] else []) do
             match mkRecursor g name ctors withIH sized nondep with
             | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
             | .ok d =>
+              recNames := recNames ++ [d.name]
               match addDeclSorted g d with
               | .ok g' => g := g'
               | .error e =>
                 report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
                 return
+          -- (13b) `| private c`: the constructor is private to this module, and so are the
+          -- recursors (their cases would hand out a private constructor's fields, and
+          -- they are what a `match` compiles to); elsewhere `T` is opaque
+          -- (`Globals.elabView`): it isn't matched there, and nothing else converts to it
+          let privCtors := (cmd.getArg 6).args.toList.filterMap fun c =>
+            if (c.getArg 1).args.isEmpty then none else (c.getArg 2).getId?
+          unless privCtors.isEmpty do
+            let names := privCtors.map (name ++ "." ++ ·) ++ recNames
+            g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
+                          opaques := g.opaques.insert name s.module }
+        -- (13b) `private mk ::`: the constructor is private to this module, and elsewhere
+        -- the type is opaque (`Globals.elabView`): only its projections read it
+        if cmd.isOfKind "command.structure" && structurePrivateMk cmd then
+          g := { g with privates := g.privates.insert (name ++ ".mk") s.module,
+                        opaques := g.opaques.insert name s.module }
+        -- (13b) `private f : A`: the projection `S.f` is private, and elsewhere `S` is
+        -- opaque, so the field isn't read through the Σ (`p.1`) either
+        let privFields := if cmd.isOfKind "command.structure" then privateFields cmd else []
+        unless privFields.isEmpty do
+          g := { g with privates := privFields.foldl (fun m f => m.insert (name ++ "." ++ f) s.module) g.privates,
+                        opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g }
         derivingClause (cmd.getArg 7) name
   | "command.builtin" =>
@@ -1158,6 +1243,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | (.const "IO" _, [A]) => (true, A)
           | _ => (false, res)
         -- erased parameters (`{A : Type}`) are passed as ◾ and ignored
+        -- a runtime native (`wiz_…`, runtime/wiz.c) takes and returns any other Wiz value
+        -- as it is: an opaque type's (`Chan p`, `MVar A`), a closure, a Σ pair (25a)
+        let kind (t : Term R) : Option Char :=
+          match kind t with
+          | some k => some k
+          | none => if cname.startsWith "wiz_" then some 'w' else none
         let pkind (qa : Term R × Term R) : Option Char := if qa.1 == .qlit 0 then some 'e' else kind qa.2
         match ps.mapM pkind, kind res with
         | some ks, some rk =>
@@ -1265,7 +1356,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             let key := ReprInfo.key T { mkImpl := impl, getImpl := get, tag, nfields, r, mkArity, p, getArity }
             modify fun s => { s with builtins := (key, f) :: s.builtins,
                                      globals := { s.globals with builtins := (key, f) :: s.globals.builtins } }
-      else if s.builtins.any (·.2 == f) then
+      else if s.builtins.any (fun (k, x) => x == f && k != inlineKey) then
         report .error fStx.info s!"{f} is a builtin or foreign function: it already has an implementation"
       else if f == impl then report .error (cmd.getArg 3).info s!"{f} can't be implemented by itself"
       else if df.levelParams.length != di.levelParams.length then
@@ -1280,6 +1371,21 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             s!"{impl} can't implement {f}: its type {tyI.pretty} is not {f}'s type {df.type.pretty}"
         else
           modify fun s => { s with globals := s.globals.insert { df with impl := some (.const impl us) } }
+  | "command.attrInline" =>
+    -- `attribute [inline] f` (22i): compiled code substitutes `f`'s body where `f` is
+    -- applied to all its arguments, so a lambda argument is applied directly (no
+    -- closure). Registered as the builtin key `inline`; the kernel doesn't see it.
+    let fStx := cmd.getArg 4
+    let f := (fStx.getId?).getD "_"
+    match s.globals.find? f with
+    | none => report .error fStx.info s!"unknown declaration {f}"
+    | some d =>
+      if d.value.isNone then report .error fStx.info s!"{f} has no definition to inline"
+      else if s.builtins.any (·.2 == f) then
+        report .error fStx.info s!"{f} is a builtin, foreign or inline function already"
+      else
+        modify fun s => { s with builtins := s.builtins ++ [(inlineKey, f)],
+                                 globals := { s.globals with builtins := s.globals.builtins ++ [(inlineKey, f)] } }
   | "command.attrDeriver" =>
     let C := ((cmd.getArg 3).getId?).getD "_"
     let f := ((cmd.getArg 5).getId?).getD "_"
@@ -1347,7 +1453,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let e ← (eraseTop ctx t ty).mapError toString
         let code ← (compileReachable s.globals s.builtins e.globals.toList (externImpls := false)).mapError toString
         let decls ← IR.lowerProgram code e
-        let (v, _) ← IR.runProgram (decls.map (·.optimize))
+        let (v, _) ← IR.runProgram (IR.optimizeProgram decls)
         pure (ty, v)
       match result with
       | .ok (ty, v) => report .info cmd.info (readback s.globals s.builtins ty v).pretty
@@ -1359,8 +1465,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       IR.lowerProgram code (.global n)
     match result with
     | .ok decls =>
-      let mine := decls.filter fun d => d.name == n || d.name.startsWith (n ++ ".")
-      report .info cmd.info ("\n".intercalate (mine.toList.map (·.optimize.toString)))
+      -- (not the owned wrappers for closures, stage 8e)
+      let mine := (IR.optimizeProgram decls).filter fun d =>
+        d.name == n || (d.name.startsWith (n ++ ".") && !d.name.endsWith "._owned")
+      report .info cmd.info ("\n".intercalate (mine.toList.map (·.toString)))
     | .error err => report .error cmd.info s!"#ir: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with

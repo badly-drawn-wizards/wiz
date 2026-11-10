@@ -20,7 +20,7 @@ The format is S-expressions; quantities are written with the rig's literal synta
 
 namespace Wiz.Cache
 
-variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
+variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R] [IsoCache R]
 
 inductive Sx where
   | a (s : String)
@@ -139,6 +139,9 @@ partial def term : Term R → Sx
   | .coit l I D S st i s => node "coit" [level l, term I, term D, term S, term st, term i, term s]
   | .natLit n => node "nat" [nat n]
   | .natOp op as => node "natOp" [str op, list (as.toList.map term)]
+  | .ulift l A => node "ulift" [level l, term A]
+  | .up a => node "up" [term a]
+  | .down t => node "down" [term t]
 where
   optLevel : Option Level → Sx
     | none => .a "none"
@@ -237,6 +240,9 @@ partial def dterm : Sx → Option (Term R)
     | "sfix" => return .sfix (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
     | "scase" => return .scase (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
     | "cocon" => return .cocon (← t 1)
+    | "ulift" => return .ulift (← lv 1) (← t 2)
+    | "up" => return .up (← t 1)
+    | "down" => return .down (← t 1)
     | "scofix" => return .scofix (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7) (← t 8)
     | "coit" => return .coit (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7)
     | "nat" => return .natLit (← n 1)
@@ -258,13 +264,16 @@ structure Effect (R : Type) where
   cCode : Array String := #[]
   infos : Array (Info R) := #[]
   sites : Array (Name × SourceInfo × String) := #[]
+  /-- (13b) names made private, and structures made opaque, with their module -/
+  privates : Array (Name × String) := #[]
+  opaques : Array (Name × String) := #[]
 
 /-- The command kinds whose effect is just the fields of `Effect`. -/
 def cacheable : List Name :=
   ["command.def", "command.axiom", "command.defEqns", "command.inductive", "command.structure",
    "command.class", "command.instance", "command.coinductive", "command.builtin", "command.extern",
    "command.glue", "command.foreignType", "command.check", "command.reduce", "command.eval",
-   "command.erase", "command.run", "command.ir"]
+   "command.erase", "command.run", "command.ir", "command.private"]
 
 def effectOf (s s' : CommandState R) : Effect R :=
   let newNames := s'.globals.order.extract s.globals.order.size s'.globals.order.size
@@ -277,12 +286,21 @@ def effectOf (s s' : CommandState R) : Effect R :=
     foreignTypes := s'.foreignTypes.take (s'.foreignTypes.length - s.foreignTypes.length)
     cCode := s'.cCode.extract s.cCode.size s'.cCode.size
     infos := s'.infos.extract s.infos.size s'.infos.size
-    sites := newNames.filterMap fun n => (s'.declSites.get? n).map fun (i, m) => (n, i, m) }
+    sites := newNames.filterMap fun n => (s'.declSites.get? n).map fun (i, m) => (n, i, m)
+    privates := newEntries s.globals.privates s'.globals.privates
+    opaques := newEntries s.globals.opaques s'.globals.opaques }
+where
+  newEntries (old new : Std.HashMap Name String) : Array (Name × String) :=
+    if old.size == new.size then #[] else
+    ((new.fold (init := #[]) fun acc n m => if old.contains n then acc else acc.push (n, m)).qsort
+      (fun a b => a.1 < b.1))
 
 /-- Replay an effect. -/
 def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
   let globals := e.decls.foldl (·.insert ·) s.globals
-  let globals := { globals with builtins := e.builtins ++ globals.builtins }
+  let globals := { globals with builtins := e.builtins ++ globals.builtins,
+                                privates := e.privates.foldl (fun m (n, md) => m.insert n md) globals.privates,
+                                opaques := e.opaques.foldl (fun m (n, md) => m.insert n md) globals.opaques }
   { s with globals, messages := s.messages ++ e.messages, builtins := e.builtins ++ s.builtins,
            classes := e.classes ++ s.classes, instances := s.instances ++ e.instances,
            coinductives := s.coinductives ++ e.coinductives, foreignTypes := e.foreignTypes ++ s.foreignTypes,
@@ -363,10 +381,12 @@ def Effect.toSx (e : Effect R) : Sx :=
     list (e.foreignTypes.map fun (n, f) => list [str n, str f]),
     list (e.cCode.toList.map str),
     list (e.infos.toList.map infoSx),
-    list (e.sites.toList.map fun (n, i, m) => list [str n, info i, str m])]
+    list (e.sites.toList.map fun (n, i, m) => list [str n, info i, str m]),
+    list (e.privates.toList.map fun (n, m) => list [str n, str m]),
+    list (e.opaques.toList.map fun (n, m) => list [str n, str m])]
 
 def Effect.ofSx? (x : Sx) : Option (Effect R) := do
-  let #[ds, ms, bs, cs, is, cos, fts, cc, hs, ss] ← items? x | none
+  let #[ds, ms, bs, cs, is, cos, fts, cc, hs, ss, ps, os] ← items? x | none
   let decl (x : Sx) : Option (Decl R) := do
     let #[n, ps, ty, v, inl, im] ← items? x | none
     pure { name := ← atom? n, levelParams := ← (← items? ps).toList.mapM atom?, type := ← dterm ty,
@@ -401,12 +421,14 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
     infos := (← (← items? hs).mapM dInfo)
     sites := (← (← items? ss).mapM fun x => do
       let #[n, i, m] ← items? x | none
-      pure (← atom? n, ← dinfo i, ← atom? m)) }
+      pure (← atom? n, ← dinfo i, ← atom? m))
+    privates := (← (← items? ps).mapM pair)
+    opaques := (← (← items? os).mapM pair) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-6-d1"  -- 6: D1, regularity off (after grail's 5)
+def salt : UInt64 := hash "wiz-cache-12-private-ctors"  -- 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 

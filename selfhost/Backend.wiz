@@ -64,11 +64,12 @@ def showEs : ETms → String
   | .cons t rest => String.append " " (String.append (showE t) (showEs rest))
 end
 
--- Has a value of this type no runtime content? (types, proofs, sizes)
-def erasable (c : TCtx) (ty : Val) : Bool := match whnf ty with
+-- Has a value of this type no runtime content? (types, proofs, sizes, and their lifts)
+partial def erasable (c : TCtx) (ty : Val) : Bool := match whnf ty with
   | .vsort _ => .true
   | .vsize => .true
   | .vsizeLt _ => .true
+  | .vulift _ A => erasable c A
   | t => isProp c t
 
 -- Is this `μ` shaped like the natural numbers? Its values are numbers at runtime.
@@ -129,6 +130,11 @@ partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
   | .tag k _ => .some (.venum k)
   | .star => .some (.vunit 1)
   | .letE A v b => quickType (TCtx.define c (eval (TCtx.env c) v) (eval (TCtx.env c) A)) b
+  | .down x => match quickType c x with
+    | .some xty => match whnf xty with
+      | .vulift _ A => .some A
+      | _ => inferTy c t
+    | .none => .none
   | _ => inferTy c t
 
 -- the payload of a value of `ty` for a match: unpacked from a number
@@ -222,6 +228,10 @@ def eraseCheck (c : TCtx) (t : Tm) (ty : Val) : ER := match erasable c ty with
       | e => e
     | _ => eraseInfer c t
   | .star => .ok .erased
+  -- (Q4) `ULift` has no runtime content
+  | .up a => match whnf ty with
+    | .vulift _ A => eraseCheck c a A
+    | _ => eraseInfer c t
   | .letE A v b =>
     let vA := eval (TCtx.env c) A;
     match eraseCheck c v vA with
@@ -258,6 +268,7 @@ def eraseInfer (c : TCtx) (t : Tm) : ER := match quickType c t with
         | e => e
       | .coe A _ _ x => eraseCheck c x (eval (TCtx.env c) A)   -- (a function under a cast is checked)
       | .exfalso _ _ => .ok (.prim "unreachable" .nil)
+      | .down x => eraseInfer c x
       | .ind l I D v P m i x =>
         let vI := eval (TCtx.env c) I;
         let vD := eval (TCtx.env c) D;
@@ -341,11 +352,11 @@ def mangle (n : String) : String := match n with
 def nativeNames : List String :=
   .cons "Nat.zero" (.cons "Nat.succ" (.cons "Nat.add" (.cons "Nat.sub" (.cons "Nat.mul" (.cons "Nat.pred"
   (.cons "Nat.beq" (.cons "Nat.blt" (.cons "Nat.lt" (.cons "Nat.le" (.cons "Nat.toString"
-  (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "Str.ofString"
+  (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "IO.argCount" (.cons "IO.arg" (.cons "Str.ofString"
   (.cons "Array.empty" (.cons "Array.push" (.cons "Array.size" (.cons "Array.getD" (.cons "Array.set"
   (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo"
   (.cons "Nat.div" (.cons "Nat.mod" (.cons "Nat.pow" (.cons "Nat.land" (.cons "Nat.lor" (.cons "Nat.xor"
-  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))
+  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))))
 def elemStr (x : String) : List String → Bool
   | .nil => .false
   | .cons y rest => Bool.or (strEq x y) (elemStr x rest)
@@ -1644,6 +1655,16 @@ def genProgramFor (text : String) (gs : Globals) : List Doc := match wantsRC tex
     | .mk cs => match "-- wiz: rc-owned" with
       | .mk ps => Bool.not (charsPrefix ps cs)) gs
   | .false => genProgram gs
+-- (stage 21k) the backend the command line asks for: `--rc` (reference counting),
+-- `--rc-owned` (every parameter owned, no borrowing) or `--gc`; without one, the first
+-- line's pragma (`genProgramFor`, kept as a fallback for one release)
+def genProgramArgs (args : List String) (text : String) (gs : Globals) : List Doc := match elemStr "--rc-owned" args with
+  | .true => genProgramRC .false gs
+  | .false => match elemStr "--rc" args with
+    | .true => genProgramRC .true gs
+    | .false => match elemStr "--gc" args with
+      | .true => genProgram gs
+      | .false => genProgramFor text gs
 
 -- printing a program: each line's pieces, then a newline
 def printDoc : Doc → IO Unit

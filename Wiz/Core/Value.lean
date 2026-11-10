@@ -76,6 +76,9 @@ inductive Val (R : Type) where
   | coit (l : Level) (I D S step i s : Val R)
   /-- a numeral of the `builtin nat` type (see `Term.natLit`) -/
   | natLit (n : Nat)
+  /-- `ULift.{l} A` and its constructor (Q4) -/
+  | ulift (l : Level) (A : Val R)
+  | up (a : Val R)
   /-- **glued**: the global `name` applied to the eliminations `sp`, together with its
   unfolding, computed only when needed (a `Thunk` remembers it). Keeping the head
   lets conversion compare `f a` with `f b` without unfolding `f`, keeps names in error
@@ -103,6 +106,8 @@ inductive Elim (R : Type) where
   | sfix (l : Level) (I D : Val R) (v : Level) (P f s i : Val R)
   | scase (l : Level) (I D : Val R) (v : Level) (P m s i : Val R)
   | out
+  /-- `down` (Q4) -/
+  | down
 
 /-- A body waiting for the values of its bound variables. `env` gives the values of
 the body's free variables, with the most recent binder at the head of the list. -/
@@ -135,5 +140,10 @@ def Head.equiv {R : Type} : Head R → Head R → Bool
     n == m && us.length == vs.length && (us.zip vs).all fun (u, v) => u.equiv v
   | .mvar a, .mvar b => a == b
   | _, _ => false
+
+/-- (13b) A type that is opaque here (`Globals.opaqueTo?`): its head and module. -/
+def Globals.opaqueHere? {R : Type} (g : Globals R) : Val R → Option (Name × String)
+  | .neutral (.global T _) _ => (g.opaqueTo? T).map (T, ·)
+  | _ => none
 
 end Wiz

@@ -1,4 +1,4 @@
-import Wiz.Compiler.Reuse
+import Wiz.Compiler.Borrow
 import Wiz.Compiler.Run
 
 /-!
@@ -9,9 +9,8 @@ the output of `RC.lean` can be tested: using a freed object, freeing twice, or e
 with objects still allocated (a leak) are errors. `#run e` compiles `e` through the
 whole backend pipeline and runs it here.
 
-Numbers are scalars here (the C runtime adds big numbers). As in the interpreter, a
-number looks like its unary payload when projected (`natView`); the objects that
-creates are fresh references.
+Numbers are scalars here (the C runtime adds big numbers). Field 0 of a number is its
+constructor tag; any other field of one is an error (see `natField`).
 -/
 
 namespace Wiz.IR
@@ -67,12 +66,13 @@ partial def dropV : IVal → RunM Unit
       | .token _ => pure ()
   | _ => pure ()
 
-/-- The `natView` of a number, as fresh objects. -/
+/-- Field `i` of a number's unary view (`natView`): field 0 is its constructor tag. The
+other fields would be fresh objects, which a borrowed `proj` (stage 8e) never frees: the
+lowering takes numbers apart with `natTag`/`nat.pred`, so projecting one is a compiler
+bug, reported here rather than as a leak at the end (the C runtime stops too). -/
 def natField (n : Nat) (i : Nat) : RunM IVal := do
   if i == 0 then return .tag (if n == 0 then 0 else 1)
-  let unitPair ← alloc (.ctor 0 #[.erased, .erased])
-  if n == 0 then return unitPair
-  alloc (.ctor 0 #[.num (n - 1), unitPair])
+  throw s!"internal error: proj {i} of the number {n} (use natTag/nat.pred)"
 
 def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
   let n (i : Nat) : Nat := match args[i]? with
@@ -128,6 +128,26 @@ def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
         l := rest
       | _ => break
     if fs.isEmpty then pure (.tag t) else alloc (.ctor t fs)
+  | "dropMoved" =>
+    -- (drop specialisation) unique: the fields in the mask move out, the cell is freed;
+    -- shared: the moved fields get a reference each, and `x` is decremented
+    match (args[0]? : Option IVal), (args[1]? : Option IVal) with
+    | some (.ptr id), some (.num m) => do
+      match ← getObj id with
+      | (rc, .ctor _ fs) =>
+        let moved (i : Nat) : Bool := i < 62 && (m >>> i) % 2 == 1
+        if rc == 1 then
+          modify fun h => { h with objs := h.objs.erase id }
+          for (f, i) in fs.zipIdx do
+            if !moved i then dropV f
+        else
+          for (f, i) in fs.zipIdx do
+            if moved i then dupV f
+          dropV (.ptr id)
+        pure (.tag 0)
+      | _ => throw "dropMoved of a closure or token"
+    | some _, some (.num _) => pure (.tag 0)
+    | _, _ => throw "dropMoved: bad arguments"
   | "lazyTag" =>
     let t ← match (args[0]? : Option IVal) with
       | some (.ptr id) => do
@@ -201,9 +221,8 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
         match ← get y with
         | .ptr id => do
           let .ctor _ fs := (← getObj id).2 | throw "projection from a closure or token"
-          let fv := fs[i]?.getD .erased
-          dupV fv
-          pure fv
+          -- borrowed: no new reference
+          pure (fs[i]?.getD .erased)
         | .num n => natField n i
         | .tag 0 => natField 0 i
         | v => throw s!"projection from a scalar {repr v}"

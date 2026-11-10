@@ -278,6 +278,21 @@ second component's type with the first projection. Throw if the field isn't foun
 Returns the projected term and its type. -/
 partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : List Name) :
     ElabM R (Term R × VTy R) := do
+  -- (given, 13b) a structure with a constructor private to another module is opaque
+  -- here: `t.f` is its projection function `S.f t`
+  if let f :: rest := fields then
+    if let .neutral (.global S us) _ ← force ty then
+      let g ← getGlobals
+      if g.opaques.contains S then
+        let some d := g.find? (S ++ "." ++ f)
+          | throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty}"
+        if let some m := g.privateTo? (S ++ "." ++ f) then
+          throwAt ctx.info s!"'{S}.{f}' is private to module {m}" "private"
+        let fty : VTy R := eval g [] (d.type.instLevels d.levelParams us)
+        let (tm, fty) ← insertImplicits ctx (.const (S ++ "." ++ f) us) fty
+        let .pi _ _ _ dom cod _ ← force fty | throwAt ctx.info s!"{S}.{f} is not a function of {S}"
+        unifyAt ctx (.missing) dom ty
+        return ← elabFields ctx (Term.app tm t) (← instM cod (← evalIn ctx t)) rest
   --<sol
   match fields with
   | [] => pure (t, ty)
@@ -288,6 +303,8 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
       | _ => none
     if let some (T, us, args) := hint? then
       if let some d := (← getGlobals).find? (T ++ "." ++ f) then
+        if let some m := (← getGlobals).privateTo? (T ++ "." ++ f) then
+          throwAt ctx.info s!"'{T}.{f}' is private to module {m}" "private"
         -- `T.f : {…} → T … → F`: insert the implicits as metavariables, then unify
         let fty : VTy R := eval (← getGlobals) [] (d.type.instLevels d.levelParams us)
         let (tm, fty) ← insertImplicits ctx (.const (T ++ "." ++ f) us) fty
@@ -548,6 +565,10 @@ partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R))
     pure (some (.lam x b))
   | _ => pure none
 
+/-- (13a) Does an application have a named argument `(x := e)`? -/
+def hasNamedArgs (stx : Syntax) : Bool :=
+  stx.isOfKind "term.app" && (stx.getArg 1).args.any (·.isOfKind "term.namedArg")
+
 mutual
 
 /-- A binder's quantity: the default, a literal (`0`, `1`, `ω`), or (stage 4d)
@@ -624,7 +645,7 @@ where
       -- `()` also fills a structure's phantom tail (`phantomTail`)
       | e@(.pi x ..) => do
         let g ← getGlobals
-        match (if x == phantomName then (quote g ctx.lvl e).phantomTailVal? else none) with
+        match (if isPhantomName x then (quote g ctx.lvl e).phantomTailVal? else none) with
         | some t => pure t
         | none => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
@@ -770,6 +791,14 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
       let ty : Val R := .mu l I D i (.szSuc vm) (some (T, us, args))
       unifyAt ctx stx expected ty
       return some (.ann payload (q ty))
+    | .neutral (.global T _) _ =>
+      -- (13b) a type with private constructors (fields, observations) of another module:
+      -- opaque here, so `.c` is `T.c` (which may be private)
+      unless (g.opaqueHere? expected).isSome && g.contains (T ++ "." ++ c) do
+        return ← shapeError s!".{c} needs an expected inductive type"
+      let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
+      let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
+      return some (← check ctx stx' expected)
     | .nu _ _ _ _ _ (some (T, _, _)) =>
       -- `.mk h t`: the coconstructor of a coinductive type (`T.mk`, a `cocon`)
       unless (← getGlobals).contains (T ++ "." ++ c) do
@@ -954,6 +983,18 @@ partial def inferFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     let g ← getGlobals
     return (.lam b.name t, ctx.sortVal g (.pi b.name b.bi (← evalIn ctx q) vty (.mk ctx.env (quote g ctx'.lvl bty)) none))
 
+/-- `ShareLet.share A B inst` if the class `ShareLet` is declared, `A` and `B` have no
+holes, and an instance `ShareLet A B` is found (auto-share for `let`, HDL stage S0). -/
+partial def autoShare? (ctx : LocalCtx R) (A B : VTy R) : ElabM R (Option (Term R)) := do
+  unless (← get).classes.any (·.name == "ShareLet") do return none
+  let g ← getGlobals
+  let At ← zonk ctx.lvl (quote g ctx.lvl A)
+  let Bt ← zonk ctx.lvl (quote g ctx.lvl B)
+  unless At.mvars.isEmpty && Bt.mvars.isEmpty do return none
+  let goalTy := vApp g (vApp g (eval g [] (.const "ShareLet" [])) A) B
+  let some inst ← (try synthInstance ctx goalTy catch _ => pure none) | return none
+  return some (.app (.app (.app (.const "ShareLet.share" []) At) Bt) inst)
+
 /-- `let` in either mode. -/
 partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)) :
     ElabM R (Term R × VTy R) := do
@@ -969,7 +1010,15 @@ partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)
   let ctx' := ctx.define x (← evalIn ctx ty) (← evalIn ctx val)
   let body := stx.getArg 7
   match expected with
-  | some e => return (.letE x q ty val (← check ctx' body e), e)
+  | some e =>
+    -- auto-share (HDL stage S0): with no explicit quantity, a `let` whose value type `A`
+    -- and body type `B` have an instance `ShareLet A B` becomes `ShareLet.share v (fun x
+    -- => body)`; the body sees `x` as a variable, not a definition.
+    if (stx.getArg 1).args.isEmpty then
+      if let some share ← autoShare? ctx (← evalIn ctx ty) e then
+        let b ← check (ctx.bind x (← evalIn ctx ty)) body e
+        return (.app (.app share val) (.lam x b), e)
+    return (.letE x q ty val (← check ctx' body e), e)
   | none =>
     let (b, bty) ← infer ctx' body
     return (.letE x q ty val b, bty)
@@ -1057,6 +1106,10 @@ expected type (failure is fine here), and only then are the arguments elaborated
 against domains that are now usually known. That is what lets `.cons .zero .nil` find
 its constructors. Each placeholder is then unified with its argument. -/
 partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
+  if hasNamedArgs stx then
+    let (t, ty) ← inferAppNamed ctx stx
+    unifyAt ctx stx expected ty
+    return t
   let (f, fty) ← infer ctx (stx.getArg 0)
   let mut f := f
   let mut fty := fty
@@ -1097,9 +1150,16 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
           -- leaves the pattern fragment)
           let vm ← evalIn ctx m
           let va ← evalIn ctx a
+          -- (the value may mention a `let`-bound variable, such as a pattern variable
+          -- standing for a component `fst✝ := p.1` of a tuple pattern: the hole can't,
+          -- so try again with such variables replaced by their values)
           let solved ← match vm with
             | .neutral (.mvar mid') sp =>
-              tryCatch (do solve ctx.lvl mid' sp va; pure true) (fun _ => pure false)
+              tryCatch (do solve ctx.lvl mid' sp va; pure true) fun _ =>
+                tryCatch (do
+                    let va' ← evalIn ctx (quote (← getGlobals) ctx.lvl va)
+                    solve ctx.lvl mid' sp va'; pure true)
+                  (fun _ => pure false)
             | _ => pure false
           unless solved do unifyAt ctx arg vm va
       | none => unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
@@ -1121,6 +1181,8 @@ unify it with a fresh Π `(x : ?A) → ?B x` first. Anything else is "not a func
 
 With `@f`, each argument fills the next Π whether implicit or explicit. -/
 partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true) : ElabM R (Term R × VTy R) := do
+  -- (given, 13a) named arguments `(x := e)`
+  if hasNamedArgs stx then return ← inferAppNamed ctx stx
   --<sol
   let fStx := stx.getArg 0
   let explicitMode := fStx.isOfKind "term.explicit"
@@ -1168,6 +1230,79 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   --|ex
   --| sorry
   --sol>
+
+/-- (13a) The binder names of a Π telescope. -/
+partial def binderNames (lvl : Lvl) (ty : VTy R) : ElabM R (List Name) := do
+  match ← force ty with
+  | .pi x _ _ _ cod _ => return x :: (← binderNames (lvl + 1) (← instM cod (Val.var lvl)))
+  | _ => return []
+
+/-- (13a) An application with named arguments `f a (x := e) b`, as in Lean. Walk `f`'s
+type: a binder whose name has a named argument takes it, wherever it is (implicit,
+instance or explicit); otherwise an explicit binder takes the next positional argument,
+and an implicit or instance binder gets a metavariable or an instance problem (with
+`@f`, every binder takes the next positional argument). Once the positional arguments
+run out, the walk continues only while named arguments are left, so a named argument
+after the last positional one fills its binder, inserting implicits before it; an
+explicit binder before it, with no positional argument, is an error (Lean would
+abstract it). Trailing instance arguments are inserted as for `inferApp`. -/
+partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) := do
+  let fStx := stx.getArg 0
+  let explicitMode := fStx.isOfKind "term.explicit"
+  let args := (stx.getArg 1).args
+  let mut named : Array (Name × Syntax × Syntax) := #[]
+  let mut positional : Array Syntax := #[]
+  for a in args do
+    if a.isOfKind "term.namedArg" then
+      let x := ((a.getArg 1).getId?).getD "_"
+      if named.any (·.1 == x) then
+        throwAt (ctx.withInfo a).info s!"argument '{x}' was already given"
+      named := named.push (x, a.getArg 3, a)
+    else positional := positional.push a
+  let (f, fty) ← infer ctx fStx
+  let mut f := f
+  let mut fty := fty
+  let mut pos := 0
+  while pos < positional.size || !named.isEmpty do
+    let .pi x bi _ dom cod _ ← force fty
+      | if let some (y, _, a) := named[0]? then
+          throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})"
+        else
+          throwAt (ctx.withInfo fStx).info s!"function expected\n  {showTerm ctx f} : {← showVal ctx fty}"
+    let a ← match named.findIdx? (·.1 == x) with
+      | some i =>
+        let (_, e, _) := named[i]!
+        named := named.eraseIdx! i
+        check ctx e dom
+      | none =>
+        if bi == .default || explicitMode then
+          match positional[pos]? with
+          | some e =>
+            pos := pos + 1
+            if explicitMode && bi == .instImplicit && e.isOfKind "term.hole" then do
+              let m ← freshMeta (ctx.withInfo e) s!"instance {x}"
+              addInstProblem ctx m dom
+              pure m
+            else check ctx e dom
+          | none =>
+            let later ← binderNames ctx.lvl fty
+            let (y, _, a) := named[0]!
+            if let some (y, _, a) := named.find? (!later.contains ·.1) then
+              throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})"
+            throwAt (ctx.withInfo a).info s!"named argument '{y}' comes after the explicit parameter '{x}', which has no argument"
+        else if bi == .instImplicit then do
+          let m ← freshMeta ctx s!"instance {x}"
+          addInstProblem ctx m dom
+          pure m
+        else do
+          let m ← freshMeta ctx s!"implicit argument {x}"
+          if let .sort l ← force dom then addSortConstraint ctx m l
+          pure m
+    f := .app f a
+    fty ← instM cod (← evalIn ctx a)
+  if !explicitMode && (← trailingInst ctx.lvl fty) then
+    (f, fty) ← insertImplicits ctx f fty
+  pure (f, fty)
 
 /-- Compile clauses over the variables `vars` (levels) against `goal`. -/
 partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (MClause R))
@@ -1269,8 +1404,14 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let rs := vars.drop (k + 1)
   let xty ← force (typeOf x)
   let .mu _ _ _ ξi xsz (some (T, us, args)) := xty
-    | throwAt (cl.pats[k]!).info s!"cannot match on a value of type {← showVal ctx xty}"
+    | if let some (T, m) := g.opaqueHere? xty then
+        throwAt (cl.pats[k]!).info (s!"cannot match on a value of type {← showVal ctx xty}: {T} is opaque " ++
+          s!"outside module {m} (it has private constructors or fields)") "private"
+      else throwAt (cl.pats[k]!).info s!"cannot match on a value of type {← showVal ctx xty}"
   let some descD := g.find? (T ++ ".desc") | throwAt ctx.info s!"{T} is not an inductive type"
+  -- (13b) a type declared `private` in another module: its recursors are private too
+  if let some m := g.privateTo? (T ++ ".casesOn") then
+    throwAt (cl.pats[k]!).info s!"cannot match on a value of type {T} here: its constructors are private to module {m}" "private"
   let nΔ := (piInfos descD.type).length
   let Δargs := args.take nΔ
   let ξ := args.drop nΔ
@@ -1298,8 +1439,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let ctors : List Name := match descD.value.map (fun v => (piInfos descD.type).foldl (fun t _ => match t with
       | .lam _ b => b
       | t => t) v) with
-    | some (.darg _ (.enum ls) _) => ls
-    | _ => []
+    | some t => (t.descTag?.map (·.1)).getD []
+    | none => []
   let nΞ := ξ.length
   -- a motive that depends on neither the indices nor the scrutinee: the non-dependent
   -- eliminator (`T.recN`), whose branches need no cast along the index equation
@@ -1609,6 +1750,9 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let x := stripScope x
     match (← getGlobals).find? x with
     | some d =>
+      -- (13b) a private name of another module
+      if let some m := (← getGlobals).privateTo? x then
+        throwAt ctx.info s!"'{x}' is private to module {m}" "private"
       let us ← match explicitLevels with
         | some ls =>
           unless ls.size == d.levelParams.length do
@@ -1648,6 +1792,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     return (.sort l, .sort (.succ l))
   | "term.prop" => return (.sort .zero, .sort (.succ .zero))
   | "term.paren" => infer ctx (stx.getArg 1)
+  | "term.namedArg" => throwAt ctx.info "a named argument `(x := e)` is only allowed as an argument of an application"
   | "term.ascription" =>
     let (ty, _) ← checkType ctx (stx.getArg 3)
     let vty ← evalIn ctx ty

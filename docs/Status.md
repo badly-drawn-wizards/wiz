@@ -32,9 +32,11 @@ the results of the probes listed in the "Probes" section.
   experiment produced a closed program on which both kernels looped. Decision D1 (a):
   regularity is off in both kernels, `cast` computes on data constructor by constructor,
   and the program now checks. One departure from the published "off" theory remains, a
-  **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below).
-* **Two proofs of `False` in the kernel have been found and fixed** (propositions
-  compared by shape; `∞ < ∞`), each with regression tests in both kernels.
+  **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below; now argued relative to the system without regularity, with one incompleteness found).
+* **Three proofs of `False` in the kernel have been found and fixed** (propositions
+  compared by shape; `∞ < ∞`; quantities that differ only by a variable, F6), each with
+  regression tests. A failure of
+  subject reduction for small description fields (Q4) is fixed too (F5, `ULift`).
 * **Three proofs of `False` were found while writing this page, and confirmed by
   running them** (see "Open issues" and "Probes"):
   * **O1** (fixed in `c079d1b`): the self-hosted kernel reduced `Size ≡ Size` to
@@ -61,13 +63,13 @@ the results of the probes listed in the "Probes" section.
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
 | Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs treats `Prop` (per the review `xtt-cubical-attacks.md` A0; not re-checked in [PT22]). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture**; propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; algorithmically incomplete, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
-| Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. See also Q4 (subject reduction). |
+| Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
-| QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed for `.2`), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
+| QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
 | Quantity polymorphism (`Qty`, polynomial usages, `≤` by trying every assignment) | **conjecture** | Sound for finite rigs if each assignment is a valid instance (it checks them all). No paper. |
 | Numerals and native arithmetic | **folklore**, conditional on correct `builtin` registrations | See K2: the registrations are trusted. |
 | Glued (lazy) unfolding, `lazyInd` | **folklore** | An implementation technique; it must give the same answers as eager unfolding. Not proved. |
@@ -80,7 +82,7 @@ the results of the probes listed in the "Probes" section.
 | QTT + observational equality | **conjecture** | No published system combines them. Proofs and types are erased (usage 0), `cast` passes its argument's usage through. Erasure soundness (a 0-quantity value is never needed at run time) is what QTT should give; it is not proved for Wiz. |
 | QTT + descriptions | **conjecture** | Fields carry quantities; the payload Σ uses them; methods are scaled. No paper. |
 | QTT + sized types + coinduction | **conjecture** | Sizes are erased (always quantity 0). No paper. |
-| Observational equality + impredicative `Prop` + regularity | **resolved by D1 (a)**: regularity off; at inert types **conjecture** | D1, below. |
+| Observational equality + impredicative `Prop` + regularity | **resolved by D1 (a)**: regularity off; at inert types **conjecture** (argued, see D1) | D1, below. |
 | Observational equality + descriptions (`eq` at `μ`, `cast` between `μ` types) | **conjecture** | `cast` between two `μ` types of one family computes on constructors (PT22/CIC-obs style, CoreSpec §8.4). Different parameters (`List A ≡ List B`) stay stuck. |
 | Observational equality + sized types | **conjecture** | Subtyping is not reflected in type equality (`μ^s ≡ μ^t` stuck). |
 | Sized types + `∞` | **fixed** (D2) for `∞ < ∞`; **conjecture** otherwise | F2 below. |
@@ -131,6 +133,72 @@ the results of the probes listed in the "Probes" section.
 * **Status of sizes otherwise:** conjecture. The atlas still lists `sized-types`,
   `sized-recursion`, `sized-corecursion`, `sh-kernel-sizes` and `sh-kernel-coinduction` as
   "known-issue" for `∞ < ∞`; that is out of date.
+
+### F5. Description fields in smaller universes (Q4, decision (a)) — **fixed**
+
+* **The bug.** `arg q S D` accepted `S : Sort k` with `k ≤ l+1`, but `Desc.elim`'s `marg`
+  takes `S : Sort (l+1)`, and universes are not cumulative. So `Desc.elim` on a small field
+  reduced to an ill-typed term: `getS (arg True (λ _. ret ())) : Type` reduced to
+  `True : Prop`. No proof of `False` was known from it. Small fields were common: every
+  proof field of a datatype in `Type`, every field `A : Type u` of a type in `Type (max u v)`
+  (`Prod.{u,v}`), and the tag of every type above `Type`.
+* **The fix** (CoreSpec §4.1, §9.1). A kernel former `ULift.{l} A : Sort l` for `A : Sort k`,
+  `k ≤ l`, with `up`/`down`, β and η; equality `a =_{ULift A} b` is `down a =_A down b`
+  (`True` for a lifted proposition, whose boxed proofs are all equal by η and proof
+  irrelevance), `ULift A ≡ ULift B` is `A ≡ B` (and `ULift` is a former of its own:
+  `ULift A ≡ B` is `False` for another former), `cast` goes through `down` (at a level that
+  is never `0`; between lifted propositions it is the equivalence, as for any
+  propositions). Then `arg` and `hrec` require the field level to be **exactly** `l+1`
+  (`Level.equiv` in `Check.lean`; `lvlEquiv` in `Kernel.wiz`), which gives subject
+  reduction for `Desc.elim` (CoreSpec §9.1). The elaborator (`Elab/Inductive.lean`,
+  `Elab/Recursor.lean`) lifts small fields, small infinitary domains and the tag of a type
+  above `Type`, invisibly: constructors take the fields themselves, recursors and patterns
+  hand out `down` of them, printing hides `up`/`down`. `ULift` is erased (`#ir` unchanged).
+  `Frontend.wiz` builds only `Desc.{0}` descriptions from a surface without `Prop`, so its
+  fields are always in `Type` and need no lifting. Branch `agent/q4-lift`.
+* **Regression tests.**
+  * group *selfhost*: "Q4: a small description field is rejected, a lifted one works (and
+    both kernels agree on it below)" (`MTm.smallField`: the old `getS` counterexample and
+    its description are rejected; the lifted description, `getS` of it (`ULift True :
+    Type`), boxed proofs, η, type equality and casts at `ULift` are accepted); the terms are
+    in `MTm.samples`, so the differential test runs them through `Kernel.wiz`;
+  * group *inductive*: "Q4: …" cases for a proof field, the fields of `Prod.{u,v}`, a type
+    in `Type 1` with an infinitary field over `Type` and with a lifted tag, and `#ir`
+    unchanged by lifting.
+* **What remains.** Derived instances (`deriving`) for universe-polymorphic types are not
+  supported (unrelated to Q4). The subject-reduction argument is on paper (CoreSpec §4.1,
+  §9.1), not mechanised; the OTT rules for `ULift` are the standard ones for a one-field
+  former and are **conjecture** in Wiz's combination like the rest of §8.
+
+### F6. Quantities that differ only by a variable made two types unequal — **fixed**
+
+* **The bug.** Type equality between two Π (or two Σ) types computed to `False` when the
+  binder quantities were different *as polynomials* (`sameQty q q' == some false`). A
+  quantity variable `q` and the literal `1` are different polynomials, so
+  `((%q x : N) → N) = ((1 x : N) → N)` computed to `False` for a variable `q`, and the
+  instance `q := 1` made it provable:
+
+  ```
+  def flip {q : Qty} (e : ((%q x : N) → N) = ((1 x : N) → N)) : False := e
+  def boom : False := flip (q := 1) rfl
+  ```
+
+  A closed proof of `False`, accepted by the Lean kernel. The decision "False" was not
+  stable under substitution (a rule fired that a substitution turns into a different
+  rule). It was found by the P1 inventory of syntactic side conditions
+  (`/workspace/wiz-notes/p1-stable.md`), and independently by the theory agent (the same
+  attack at `Unit`). The self-hosted kernel was not affected: its quantities are literals
+  only.
+* **The fix.** `qtyApart` (`Eval.lean`). The equation is `False` only when both
+  quantities are closed (constant polynomials) and differ (`QPoly.equiv`, so the test is
+  invariant under conversion). It is the Σ rule when they are equivalent polynomials. In
+  every other case it is stuck. Branch `agent/p1-qty`.
+* **Regression tests.**
+  * group *quantity polymorphism*: "F6: types whose quantities differ only by a variable
+    are not unequal" (the attack, the `Unit` variant and a Σ variant, all must fail) and
+    "F6: types with two different literal quantities are unequal";
+  * group *selfhost*: "F6: literal quantities that differ make types unequal" (Lean kernel
+    verdicts on `MTm.qtyApart`), and `MTm.qtyApart` is in the differential samples.
 
 ---
 
@@ -254,6 +322,36 @@ simpler).
   stays decidable. No normalisation proof covers it. A nested box (a `μ` whose field is
   the Abel–Coquand box) is not inert and checks (test "a box in a box is not inert
   either").
+
+  **Argued, relative to the system without regularity**
+  (`/workspace/wiz-notes/inert-regularity.md`, 2026-11-10; it stays a conjecture: the
+  argument has not been reviewed). That note corrects the argument above and gives a
+  sketch of three properties.
+  * **Consistency.** The rule holds in any model where `μ` is an initial algebra and
+    `Prop` is proof-irrelevant.
+  * **Normalisation of relevant terms.** The rule adds one trivial case to a
+    Pujet–Tabareau-style logical relation, provided its side condition is judgmental.
+  * **Normalisation of proofs.** Inert types are *rigid*: their reducibility candidate
+    does not depend on `Prop` or on type variables. So Girard's candidates argument
+    survives a rule that returns its argument unchanged at them, using environments that
+    agree at inert types. Abel–Coquand needs a non-rigid type. This property matters
+    because Wiz's strict evaluator reduces proofs (it forces `e` inside `cast`), and
+    Pujet–Tabareau's decidability proof for CCobs deliberately never reduces proofs.
+
+  All three assume the same property of the system without regularity, which is itself
+  unproved for Wiz. That system already has two identity casts that inspect types: at
+  `Enum` on any argument, and at `Sort`.
+
+  **Found gap (incompleteness, not unsoundness).** The side condition is syntactic
+  (`sameVal`), so algorithmic conversion is not a congruence and is not stable under
+  substitution.
+  * `cast (Fin (f p)) (Fin (f q)) e k` stays stuck for a variable `k`, although
+    `Fin (f p) ≡ Fin (f q)` by irrelevance, while the reflexive cast reduces to `k`.
+  * Two stuck casts that are convertible before a substitution stop being convertible
+    after one of them becomes syntactically reflexive.
+
+  `sameFamily?` has the same defect. The fix is to decide the side condition with
+  conversion. Confirmed by a probe (the note, §10): `h p q p` is well typed, but its δβ-reduct is rejected, so subject reduction fails for the algorithmic typing.
 * **What it costs (known failures).** Without regularity a cast at a **type variable**
   is stuck (TTobs behaviour): `cast e a = a` for `e : A = A`, "`J` computes on `refl`"
   at a variable family, and the definitional equations of functions defined by `match`
@@ -279,7 +377,7 @@ check `Γ⁰ ⊢ s ⇐ Size` (one line in each kernel).
 `MTm.sizeArgs` (`tt` and `Enum 2` as sizes are rejected) in the Lean verdicts and the
 differential samples.
 
-### Q1. Projections drop linear components — **fixed for `.2`** (`212aebf`, both kernels); `.1` still drops the second component
+### Q1. Projections drop linear components — **fixed** (`.2`: `212aebf`; `.1`: lin-fixes; both kernels)
 
 `p.2` on `p : (1 x : A) × B` uses `p` once and discards `x` (§7.1); `p.1` discards the
 second component. In the `{0, 1, ω}` rig, `1` is documented as "exactly once"
@@ -295,9 +393,18 @@ quantities admit weakening.
 **Fix** (`.2`): when the first field's quantity `q` doesn't allow zero uses, `p.2` counts
 `p` as used ω times (only an unrestricted pair, whose field is `ω·q`, may drop it), so
 `drop` above is rejected (both kernels; tests in "check: structural types" and the differential
-samples). `p.1` still drops the second component: the second part of a Σ has no
-quantity of its own, so the rule has nothing to check. Consume a linear pair with
-`let 1 (x, y) := p`.
+samples).
+
+**Fix** (`.1`, CS11 (a)): `p.1` discards `p.2`. The second part of a Σ has no quantity of
+its own, so the rule asks whether the second part *holds a field that must be used*
+(`mustUse`: its type is a Σ with a field whose quantity doesn't allow zero uses, in its
+first field or, recursively, its second part). If so, `p.1` counts `p` as used ω times,
+like `.2` above: `def dropFst {A B : Type} (1 p : (x : A) × (1 y : B) × B) : A := p.1` is
+rejected, the same on an unrestricted `p` is accepted, and projecting a linear field out
+of the middle of a linear tuple (`p.2.1`) is rejected too (both kernels; tests in "check:
+structural types" and the differential samples). A bare second component (`A × World`)
+counts as droppable: it is linear only through the pair's own quantity, which `.1`
+cannot see. Consume a linear pair with `let 1 (x, y) := p`.
 
 ### Q2. Methods are scaled by the rig's default, not by ω — **fixed** (`a986c02`, Lean kernel)
 
@@ -327,77 +434,13 @@ the largest variable level `quote` can reach in either value (`Val.lvlBound` in
 its body mentions). The bound can be too large, never too small. Cost: one extra walk of
 the two values per `sameVal` (a perf measurement of the self-check is wanted).
 
-### Q4. Description fields in smaller universes: subject reduction fails — **open issue (no exploit known)**
+### Q4. Description fields in smaller universes: subject reduction failed — **fixed** (see F5)
 
-**Decision** (owner, 2026-11-09): option **(a)**, a kernel `Lift` former, with the
-elaborator lifting small fields; the kernel then requires `k ≡ l+1` for `arg` (and `hrec`).
-Decided but **not yet implemented**. It lands after `agent/d1-off`, which touches the same
-`vEq`/`vCast` cases at `Desc`/`μ`.
-
-`arg q S D` accepts `S : Sort k` with `k ≤ l+1`, but `Desc.elim`'s `marg` expects
-`S : Sort (l+1)`, and universes are not cumulative (§9.1). So `Desc.elim` on such a
-description produces a term that is not well typed, e.g. a `getS : Desc Unit → Type` that
-returns `True : Prop`. **Not reproduced**: the surface elaborator rejects
-`Desc.arg 1 True …` (it expects the field in `Type ?u`), so building it needs a core term;
-this finding is from reading the code only. No proof of `False` is known from it. A model with cumulativity would justify it; Wiz has none.
-Options: require `k ≡ l+1` (lift small fields), or quantify `marg` over the field's level.
-
-**Regression test**: `MTm.smallField` (`Tests/Elab.lean`, in the differential samples)
-builds `D := Desc.arg True (λ _. ret ())` as a core term and records today's behaviour:
-both kernels accept `getS D : Type`, which reduces to `True`, and reject `True : Type`.
-
-**How common.** Small fields are not rare. The elaborator emits each field at its own
-level (`Inductive.lean`, `ctorDesc`), and `k ≤ l+1` is decided symbolically. So a proof
-field in a `Type` datatype is small, and so is every field of a level-polymorphic
-structure whose level is a `max`: in `Prod.{u,v} A B : Type (max u v)` the field
-`A : Type u` is small. The usual inductive types are therefore affected at symbolic
-levels. Only the tag field (`Enum`, at `Type`) stands in the way of a surface `getS`.
-Some rule has to change for subject reduction to hold.
-
-**Options and their costs** (both kernels in every case):
-
-* **(a) Lift small fields; the kernel requires `k ≡ l+1`** (with the same rule for
-  `hrec`'s `H`). The kernel change is one line in each kernel (`Level.le` becomes
-  `Level.equiv`, at `Check.lean` `darg`/`dhrec` and the matching rows of `Kernel.wiz`).
-  The elaborator then has to wrap every small field. Without a new former, the wrapper
-  is `(q x : S) × Unit_{l+1}`. Constructors build `(x, ())` and patterns project `.1`.
-  That touches `Inductive.lean`, `Recursor.lean`, `Match.lean` (patterns and
-  copatterns), deriving, and printing. The backends either erase the extra `Unit`
-  or pay for a field. With a kernel `Lift` former (`lift`/`lower`, η both ways, erased
-  at run time) the representation stays clean. The price is a new former in `Term`,
-  `Value`, `Eval` (OTT: `Lift A = Lift B ↦ A = B`, cast through `lower`), `Conv`,
-  `Check` and `Pretty`. **Selfhost: yes.** `Frontend.wiz` builds descriptions (≈line 410)
-  and compiles matches the same way, and `Kernel.wiz` needs the one-line rule (plus the
-  former, if there is one). Because of `max` levels, most polymorphic structures get
-  wrapped fields. Size: medium to large (a few hundred lines on each side).
-* **(b) Cumulativity** (`S : Sort k` is accepted where `Sort m` is expected, `k ≤ m`):
-  this is the textbook justification. In Wiz it is a subsumption step in `check` (as
-  sizes already have), plus `≤` constraints in level unification
-  (`Elab/Unify.lean`, `Frontend.wiz`). `Prop ≤ Type` needs care with definitional proof
-  irrelevance: Coq's `SProp` is not cumulative. Whether a type is a proposition must stay
-  a property of the type itself (`propSort?` on its own annotation), not of the sort it
-  is used at. That restores subject reduction for `Desc.elim` without changing the data
-  representation. Size: large and cross-cutting (both kernels' checkers, both
-  elaborators' level solvers). It also widens what OTT's type equality has to be sound
-  for.
-* **(d) `arg` records the field's level `k` and `marg` quantifies over it** (Agda- or
-  Lean-style). This does not fit Wiz's core. Levels are prenex parameters of globals
-  (`const n us`), and no term binds a level. `marg` is one term-level method for every
-  `arg` node of a description, and different nodes have different `k`. So its type would be
-  `(k : Level) → (S : Sort k) → …`. That is a Π over levels, which lives in a sort above
-  every finite level (Agda's `Setω`). `Desc.elim`'s motive and method types, and the
-  templates built with `Desc.elim` (`Templates.lean`: `interp`, `All`, `map`), would
-  all live there. Lean avoids this because it has no generic eliminator over
-  descriptions (recursors are per inductive, so field levels are fixed). Agda's levitated
-  descriptions fix the field level and use `Lift`, which is (a). Exposing `k` statically
-  (a `Level` in the `arg` node, not a variable) does not help, since `marg` must accept
-  every node. A restricted variant has two constructors, `arg` at exactly `l+1` and
-  `parg` for `Prop` fields with its own method. It covers proof fields but not the `max`
-  case above, so it still needs (a) or (b) there.
-
-Interaction with the constructor-wise cast on `μ`/`Desc` (`agent/d1-off`): all three
-options touch `vEq`/`vCast` at `Desc`/`μ` (for (a) only with a `Lift` former), so they
-should be sequenced after that branch lands.
+Decision (a), a kernel `ULift` former with the elaborator lifting small fields, is
+implemented in both kernels: see **F5** in "Fixed issues" for the rules, the tests and the
+costs that remain. The options that were weighed: (a) `ULift`, chosen; (b) cumulativity,
+large and cross-cutting; (d) `marg` quantifying over the field's level, which needs a Π over
+levels (`Setω`) that Wiz's core has no place for (levels are prenex parameters of globals).
 
 ---
 
@@ -411,7 +454,7 @@ equations are not provable by computation. They are incompleteness, not unsoundn
   the elaborator leaves several internally built Π/Σ without one. The branch
   `agent/elab-sorts` (commit `31395a2`, not merged at `9717950`) annotates them using the
   kernel's `typeSort?`, except "a Π/Σ under a `fun` whose variable's type isn't written
-  down, or one that still mentions a metavariable" (its README 4c text).
+  down, or one that still mentions a metavariable" (its README 4c text, now in [stages/04-data.md](stages/04-data.md)).
 * **Neutral types**: `a =_X b` and `cast X Y e t` for a variable `X` are stuck.
 * **`μ ≡ μ`, `ν ≡ ν`, `Desc ≡ Desc`** are always stuck (no structural comparison of
   descriptions; a design decision to avoid committing to injectivity of `μ`, see
@@ -476,6 +519,14 @@ that checks everything. Wiz's situation:
   type checking (erasure, the backends).
 * **Termination** of the kernel is not proved and is known to fail (D1); all evaluation
   functions are `partial` in Lean.
+* **The evaluator reduces proofs.** `eval` is strict, and `vCast` forces `e` (through
+  `vFst`/`vSnd`, and by applying `e.1`). So the kernel terminates only if the proofs it
+  forces normalise. Pujet–Tabareau's decidability result for impredicative OTT (CCobs,
+  POPL 2023) is proved *without* normalising proofs: in their words, the Abel–Coquand
+  loop "is not a problem if we don't reduce irrelevant proofs" (Pujet, HoTTEST 2023). So
+  even a Wiz version of their theorem would not cover this kernel as written. An
+  evaluator that never forces proof positions would close that gap.
+  (`/workspace/wiz-notes/inert-regularity.md` §2.)
 
 ## 8. Testing evidence
 
@@ -514,7 +565,8 @@ as a test yet (each should become one when its issue is fixed).
 | wrong `builtin nat.add` (O3) | accepted: `bad : False` |
 | `builtin nat := E` (empty) + `(0 : E)` (O3) | `wiz check` crashes (stack overflow) |
 | `p.2` on a linear pair (Q1) | rejected since `212aebf` (was accepted) |
-| `Desc.arg 1 True …` (Q4) | rejected by the elaborator (field must be in `Type ?u`); the kernel path is `MTm.smallField`: `getS D : Type` accepted, reduces to `True` |
+| `p.1` on a linear pair whose second part holds a linear field (Q1) | rejected (lin-fixes; was accepted) |
+| `Desc.arg 1 True …` (Q4, fixed: F5) | rejected by the elaborator (field must be in `Type ?u`) and now by both kernels (`MTm.smallField`: `D` and `getS D` rejected; the lifted `D'` accepted, `getS D'` is `ULift True : Type`) |
 
 ## How to report a soundness bug
 

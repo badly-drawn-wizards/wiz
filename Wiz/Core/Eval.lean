@@ -35,6 +35,17 @@ variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 def sameQty (a b : Val R) : Option Bool := do
   return QPoly.equiv (← a.toPoly?) (← b.toPoly?)
 
+/-- Are two quantities certainly different: both literals (no variables), and different?
+`False` between two types is decided only then. Polynomials with variables that differ
+(`q` and `1`) can become equal under a substitution (`q := 1`), so the equation must stay
+stuck there: computing it to `False` proved `False` (P1, `wiz-notes/p1-stable.md`). -/
+def qtyApart (a b : Val R) : Bool :=
+  match a.toPoly?, b.toPoly? with
+  | some p, some q => match p.isConst?, q.isConst? with
+    | some _, some _ => !QPoly.equiv p q
+    | _, _ => false
+  | _, _ => false
+
 /-- Unfold glued values (`Val.unfold`) until the head is not a definition: do this before
 matching on a value's shape. -/
 partial def whnf : Val R → Val R
@@ -65,6 +76,24 @@ partial def vSnd : Val R → Val R
   --|ex
   --| | v => sorry
   --sol>
+
+/-- `down` (Q4): `down (up a) ↦ a`; stuck on a neutral. -/
+partial def vDown : Val R → Val R
+  | .unfold _ _ _ v => vDown v.get
+  | .lazyInd l I D w P m i x sp v => .lazyInd l I D w P m i x (sp.push .down) (Thunk.mk fun _ => vDown v.get)
+  | .up a => a
+  | .neutral h sp => .neutral h (sp.push .down)
+  | _ => panic! "vDown: ill-typed"
+
+/-- A description's tag field (Q4): `Enum ls`, or `ULift (Enum ls)` in a data type whose
+universe is above `Type` (the tag is then lifted, `true`). -/
+def tagField? (S : Val R) : Option (List Name × Bool) :=
+  match whnf S with
+  | .enum ls => some (ls, false)
+  | .ulift _ A => match whnf A with
+    | .enum ls => some (ls, true)
+    | _ => none
+  | _ => none
 
 /-- The arity of a registered operation on numbers. -/
 def natOpArity : Name → Nat
@@ -118,7 +147,7 @@ parameter. Type equality needs to know: two propositions are equal when equivale
 whatever their shapes (`True = (True → True)`), and comparing them by shape instead
 proved `False` (a proposition can be the domain of a function type in `Type`). -/
 def propSort? : Val R → Option Bool
-  | .pi _ _ _ _ _ (some s) | .sigma _ _ _ _ (some s) | .unit s | .empty s =>
+  | .pi _ _ _ _ _ (some s) | .sigma _ _ _ _ (some s) | .unit s | .empty s | .ulift s _ =>
     if s.equiv 0 then some true else if s.isNeverZero then some false else none
   | .sort _ | .qty | .enum _ | .desc .. | .mu .. | .nu .. | .size | .sizeLt _ => some false
   | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
@@ -149,7 +178,7 @@ partial def Val.lvlBound : Val R → Nat
   | .pi _ _ q a b _ | .sigma _ q a b _ => max (max q.lvlBound a.lvlBound) (b.lvlBound 1)
   | .lam _ b => b.lvlBound 1
   | .pair a b => max a.lvlBound b.lvlBound
-  | .desc _ a | .dret a | .szSuc a | .sizeLt a | .con a | .cocon a => a.lvlBound
+  | .desc _ a | .dret a | .szSuc a | .sizeLt a | .con a | .cocon a | .ulift _ a | .up a => a.lvlBound
   | .darg q S D => Val.maxBound [q, S, D]
   | .drec q j D => Val.maxBound [q, j, D]
   | .dhrec q H j D => Val.maxBound [q, H, j, D]
@@ -171,7 +200,7 @@ partial def Head.lvlBound : Head R → Nat
 partial def Elim.spineBound (sp : Array (Elim R)) : Nat := sp.foldl (fun m e => max m e.lvlBound) 0
 partial def Elim.lvlBound : Elim R → Nat
   | .app a => a.lvlBound
-  | .fst | .snd | .out => 0
+  | .fst | .snd | .out | .down => 0
   | .split q _ m _ _ b => max q.lvlBound (max (m.lvlBound 1) (b.lvlBound 2))
   | .absurd m => m.lvlBound
   | .ecase _ m env bs => max (m.lvlBound 1) (envBound env (bs.foldl (fun acc b => ((Term.freeVarsAt 0 b).run acc).2) #[]))
@@ -239,6 +268,10 @@ compute).
 `sigma` captures its second component in a closure, and eliminators use `vFst`,
 `vSnd`, `vSplit` and `vAbsurd`. -/
 partial def eval (g : Globals R) (env : Env R) : Term R → Val R
+  -- (given) Q4: lifting
+  | .ulift l A => .ulift l (eval g env A)
+  | .up a => .up (eval g env a)
+  | .down t => vDown (eval g env t)
   --<sol
   | .var ix => env[ix]!
   | .const n us => if let some v := vBuiltin? g n then v else match g.find? n with
@@ -659,6 +692,14 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   let A := whnf A
   let a := vNatView g (whnf a)
   let b := vNatView g (whnf b)
+  -- (given) Q4: at `ULift A`, by `A`: the boxed values are equal when their contents are;
+  -- a lifted proposition has one inhabitant up to η, so the equation is `True`
+  if let .ulift _ A₁ := A then
+    match propSort? (whnf A₁) with
+    | some true => .unit 0
+    | some false => vEq g A₁ (vDown a) (vDown b)
+    | none => .neutral (.eq A a b) #[]
+  else
   --<sol
   let v (i : Nat) : Term R := .var i
   match A with
@@ -715,10 +756,13 @@ partial def vEqPayload (g : Globals R) (l : Level) (I X i D x y : Val R) : Optio
     | _ => pairTy A r
   match whnf D with
   | .dret _ => some (.unit 0)
-  | .darg q S E => match whnf S with
-    | .enum _ => match whnf (vFst x), whnf (vFst y) with
+  | .darg q S E => match tagField? S with
+    | some (_, lifted) =>
+      let tagOf (v : Val R) : Val R := whnf (if lifted then vDown (vFst v) else vFst v)
+      match tagOf x, tagOf y with
       | .tag ls a, .tag _ b =>
-        if a == b then vEqPayload g l I X i (vApp g E (.tag ls a)) (vSnd x) (vSnd y)
+        let t : Val R := if lifted then .up (.tag ls a) else .tag ls a
+        if a == b then vEqPayload g l I X i (vApp g E t) (vSnd x) (vSnd y)
         -- different tags: the Σ rule, whose first component is `False`
         else some (vEq g (vInterp g l I (.darg q S E) X i) x y)
       | _, _ => none
@@ -740,7 +784,7 @@ partial def vEqPayload (g : Globals R) (l : Level) (I X i D x y : Val R) : Optio
     Sort u = Sort v, Unit = Unit, …     ↦  True if the levels are equivalent; False if
                                            both are closed and differ; stuck otherwise
     different type formers, or
-    different quantities                ↦  False
+    different quantities (two literals) ↦  False; a quantity variable on either side ↦ stuck
     a neutral on either side            ↦  stuck: neutral (Head.eqTy X Y)
 
 Why can't `Sort u = Sort v` be `False` when `u` and `v` are different parameters?
@@ -748,6 +792,14 @@ Why can't `Sort u = Sort v` be `False` when `u` and `v` are different parameters
 partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
   let X := whnf X
   let Y := whnf Y
+  -- (given) Q4: `ULift A = ULift B ↦ A = B` (at the same level); `ULift` is a type former
+  -- of its own, so `ULift A = B` for any other former `B` is `False` (see `canonical`)
+  if let (.ulift u A, .ulift w B) := (X, Y) then
+    if propSort? X == some true && propSort? Y == some true then vIff X Y
+    else if u.equiv w then vEqType g A B
+    else if u.toNat?.isSome && w.toNat?.isSome then .empty 0
+    else .neutral (.eqTy X Y) #[]
+  else
   --<sol
   let v (i : Nat) : Term R := .var i
   let levels (u w : Level) : Val R :=
@@ -755,7 +807,7 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
     else if u.toNat?.isSome && w.toNat?.isSome then .empty 0
     else .neutral (.eqTy X Y) #[]
   let canonical : Val R → Bool
-    | .pi .. | .sigma .. | .sort _ | .unit _ | .empty _ | .enum _ | .desc .. | .mu .. | .nu .. => true
+    | .pi .. | .sigma .. | .sort _ | .unit _ | .empty _ | .enum _ | .desc .. | .mu .. | .nu .. | .ulift .. => true
     | _ => false
   -- propositions are equal when equivalent; a proposition is never a type of another sort
   let pX := propSort? X
@@ -765,12 +817,12 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
   if pX != pY then .empty 0 else
   match X, Y with
   | .pi _ _ q A B _, .pi _ _ q' A' B' _ =>
-    if sameQty q q' == some false then .empty 0 else if sameQty q q' == none then .neutral (.eqTy X Y) #[] else
+    if qtyApart q q' then .empty 0 else if sameQty q q' != some true then .neutral (.eqTy X Y) #[] else
     -- env (inside the Σ, after `e`): B', B, A', A; inside the Π add `x`
     .sigma "e" (.qlit 0) (vEqType g A' A) (.mk [.lam "x" B', .lam "x" B, A', A]
       (.pi "x" .default (.qlit 0) (v 3) (.eqTy (.app (v 3) (.cast (v 4) (v 5) (v 1) (v 0))) (.app (v 2) (v 0))) (some 0))) (some 0)
   | .sigma _ q A B _, .sigma _ q' A' B' _ =>
-    if sameQty q q' == some false then .empty 0 else if sameQty q q' == none then .neutral (.eqTy X Y) #[] else
+    if qtyApart q q' then .empty 0 else if sameQty q q' != some true then .neutral (.eqTy X Y) #[] else
     .sigma "e" (.qlit 0) (vEqType g A A') (.mk [.lam "x" B', .lam "x" B, A', A]
       (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0)))) (some 0))) (some 0)
   | .sort u, .sort w | .unit u, .unit w | .empty u, .empty w => levels u w
@@ -798,6 +850,13 @@ directly. Quantities must match, or it's stuck. -/
 partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   let A := whnf A
   let B := whnf B
+  -- (given) Q4: through `down`, at a level that is never `0` (a lifted type that is a
+  -- proposition is cast by the equivalence, below)
+  if let (.ulift u A₁, .ulift w B₁) := (A, B) then
+    if u.isNeverZero && u.equiv w then .up (vCast g A₁ B₁ e (vDown t))
+    else if propSort? A == some true && propSort? B == some true then vApp g (vFst e) t
+    else .neutral (.cast A B e t) #[]
+  else
   --<sol
   let v (i : Nat) : Term R := .var i
   let stuck : Val R := .neutral (.cast A B e t) #[]
@@ -847,6 +906,7 @@ partial def inertTy (g : Globals R) (depth : Nat) (A : Val R) : Bool :=
   match whnf A with
   | .enum _ => true
   | .unit l => l.isNeverZero
+  | .ulift l A₁ => l.isNeverZero && inertTy g (depth + 1) A₁
   | .sigma _ _ A₁ B (some s) => s.isNeverZero && inertTy g (depth + 1) A₁ &&
       inertTy g (depth + 1) (Closure.inst g B (Val.var (100000 + depth)))
   | .mu _ I D _ _ _ => inertTy g (depth + 1) I && inertDesc g (depth + 1) D
@@ -858,9 +918,10 @@ partial def inertDesc (g : Globals R) (depth : Nat) (D : Val R) : Bool :=
   match whnf D with
   | .dret _ => true
   | .drec _ _ E => inertDesc g depth E
-  | .darg _ S E => match whnf S with
-    | .enum ls => (List.range ls.length).all fun k => inertDesc g depth (vApp g E (.tag ls k))
-    | S => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (Val.var (100000 + 50 + depth)))
+  | .darg _ S E => match tagField? S with
+    | some (ls, lifted) => (List.range ls.length).all fun k =>
+      inertDesc g depth (vApp g E (if lifted then .up (.tag ls k) else .tag ls k))
+    | none => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (Val.var (100000 + 50 + depth)))
   | _ => false
 
 /-- Two `μ` (or two `ν`) types of the same family, `μ^s_l I D i` and `μ^s_l I D i'`:
@@ -956,6 +1017,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .app a => .app t (quote g l a)
       | .fst => .fst t
       | .snd => .snd t
+      | .down => .down t
       | _ => t)
       (.ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) (quote g l x))
   --<sol
@@ -985,6 +1047,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .delim v P a b c h => .delim v (quote g l P) (quote g l a) (quote g l b) (quote g l c) (quote g l h) acc
       | .ind lv I D v P m i => .ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) acc
       | .out => .out acc
+      | .down => .down acc
       | .scase lv I D v P m s i =>
         .scase lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l s) (quote g l i) acc
       | .sfix lv I D v P f s i =>
@@ -1009,6 +1072,8 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | .mu k I D i s h => .mu k (quote g l I) (quote g l D) (quote g l i) (quote g l s) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .con x => .con (quote g l x)
   | .natLit n => .natLit n
+  | .ulift k A => .ulift k (quote g l A)
+  | .up a => .up (quote g l a)
   | .nu k I D i s h => .nu k (quote g l I) (quote g l D) (quote g l i) (quote g l s) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .size => .size
   | .szInf => .szInf
@@ -1038,6 +1103,7 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .delim lv P a b c h => vDelim g lv P a b c h v
     | .ind l I D lv P m i => vInd g l I D lv P m i v
     | .out => vOut g v
+    | .down => vDown v
     | .sfix l I D lv P f s i => vSfix g l I D lv P f s i v
     | .scase l I D lv P m s i => vScase g l I D lv P m s i v
 

@@ -62,6 +62,8 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q  (or Γ is erased)
     ──────────────────────────────── fst       (an erased field can't be projected at runtime)
     Γ ⊢ t.1 ⇒ A ⊣ U
+    (`t.1` drops `t.2`: if `B` holds a field that must be used (`mustUse`), `t.1 ⊣ ω·U`,
+    so only an unrestricted pair may drop it)
 
     Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 0 q  (or Γ is erased)
     ──────────────────────────────── snd       (`t.2` drops the first field: it must allow that)
@@ -275,6 +277,19 @@ def methodUsage (ctx : Ctx R) (u : Usage R) : TCM (Usage R) :=
     | some (p, x) => throw (.other s!"a method may run any number of times, so it can't use {x} ({p} times): the rig has no unrestricted quantity")
     | none => pure u
 
+/-- (Q1) Must a value `v` of type `A` be used, i.e. is `A` a `Σ` with a field whose
+quantity doesn't allow zero uses (`¬ le 0 q`), here or in its second part? `t.1` discards
+`t.2`, so it may do that only when this is false (or the pair is unrestricted). The second
+part of a `Σ` has no quantity of its own: a bare `A × World` counts as droppable; a
+resource is "linear" here when it sits in a field declared linear. -/
+partial def mustUse (ctx : Ctx R) (A : Val R) (v : Val R) : Bool :=
+  match whnf A with
+  | .sigma _ q _ B _ =>
+    match q.toPoly? with
+    | some p => !QPoly.le (QPoly.const 0) p || mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v)
+    | none => true
+  | _ => false
+
 /-- (D1 experiment) Is this type a universe, or a function type ending in one? A `Π`
 into `Prop` over such a domain is impredicative. -/
 partial def largeDomain (ctx : Ctx R) (A : Val R) (l : Nat) : Bool :=
@@ -293,6 +308,8 @@ of the expected one.)
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, whnf ty with
+  -- (given) Q4
+  | .up a, .ulift _ A => check ctx a A
   --<sol
   | .lam x body, .pi _ _ q dom cod _ => do
     let q ← qtyPoly ctx q
@@ -322,8 +339,10 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .darg q S D, .desc l I => do
     let _ ← checkQty ctx q
     let lS ← checkType ctx S
-    -- fields may live in a smaller universe (the payload Σ takes the max)
-    unless Level.le lS (.succ l) do throw (.other "a description's field type must fit in its universe")
+    -- a field lives exactly in `Sort (l+1)`, the universe `Desc.elim`'s `marg` takes it
+    -- from (Q4: universes aren't cumulative; the elaborator lifts smaller fields)
+    unless lS.equiv (.succ l) do
+      throw (.other s!"a description's field type must be in Sort {(Level.succ l).format}, not Sort {lS.format} (lift it with ULift)")
     check ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S) (.mk [I] (.desc l (.var 1))) none)
   | .drec q j D, .desc l I => do
     let _ ← checkQty ctx q
@@ -334,7 +353,8 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     -- strict positivity is automatic: `H` can't mention the type being defined
     let _ ← checkQty ctx q
     let lH ← checkType ctx H
-    unless Level.le lH (.succ l) do throw (.other "a description's branching type must fit in its universe")
+    unless lH.equiv (.succ l) do
+      throw (.other s!"a description's branching type must be in Sort {(Level.succ l).format}, not Sort {lH.format} (lift it with ULift)")
     let uj ← check ctx j (.pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1)) none)
     let uD ← check ctx D (.desc l I)
     pure (uj + uD)
@@ -380,6 +400,18 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | some N => pure (ctx.eval (.const N []), Usage.zeros ctx.lvl)
     | none => throw (.other "numerals need `builtin nat := …`")
   | .natOp .. => throw (.cannotInfer (ctx.showTerm t))
+  -- (given) Q4: lifting
+  | .ulift l A => do
+    let k ← checkType ctx A
+    unless Level.le k l do
+      throw (.other s!"ULift.{l.format} can't lift {ctx.showTerm A}, which is in Sort {k.format}")
+    pure (.sort l, Usage.zeros ctx.lvl)
+  | .up _ => throw (.cannotInfer (ctx.showTerm t))
+  | .down x => do
+    let (ty, u) ← infer ctx x
+    match whnf ty with
+    | .ulift _ A => pure (A, u)
+    | _ => throw (.typeMismatch "a lifted type (ULift)" (ctx.showVal ty))
   --<sol
   | .var ix => pure (ctx.types[ix]!, Usage.single ctx.lvl ix)
   | .const n us => match ctx.globals.find? n with
@@ -437,11 +469,17 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .fst t => do
     let (ty, u) ← infer ctx t
     match whnf ty with
-    | .sigma x q A _ _ =>
+    | .sigma x q A B _ =>
       let q ← qtyPoly ctx q
       unless ctx.erased || QPoly.le (QPoly.const 1) q do
         throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
-      pure (A, u)
+      -- `t.1` discards the second part (Q1): if that holds a field that must be used,
+      -- only an unrestricted pair may drop it, so `t` counts as used ω times
+      let v := ctx.eval t
+      if ctx.erased || !mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v) then pure (A, u) else
+      match QRig.many? (R := R) with
+      | some m => pure (A, QPoly.const m • u)
+      | none => throw (.other s!"cannot discard the second part of {ctx.showTerm t}, which holds a linear field; use let (x, y) := ... instead")
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .snd t => do
     let (ty, u) ← infer ctx t

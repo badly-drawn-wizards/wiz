@@ -156,6 +156,17 @@ inductive Term (R : Type) where
   `nat.add`: compute natively when the arguments (variables) are literals, else apply
   the definition -/
   | natOp (op : Name) (args : Array (Term R))
+  -- Q4: lifting a type to a bigger universe
+  /-- `ULift.{l} A : Sort l` for `A : Sort k` with `k ≤ l`: a copy of `A` one or more
+  universes up. Description fields must live exactly in `Sort (l+1)`, so the elaborator
+  wraps smaller ones (proof fields, and fields of a level-polymorphic type whose level
+  is a `max`). A lifted proposition (`l ≠ 0`) is not a proposition: its inhabitants are
+  boxed proofs, all equal by η. Erased at run time. -/
+  | ulift (l : Level) (A : Term R)
+  /-- `up a : ULift A` for `a : A` (checked only) -/
+  | up (a : Term R)
+  /-- `down t : A` for `t : ULift A`; `down (up a) ↦ a`, and `t ≡ up (down t)` (η) -/
+  | down (t : Term R)
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/
@@ -228,6 +239,9 @@ don't need a case per constructor. -/
     return .scofix (← fl l) (← f 0 I) (← f 0 D) (← f 0 A) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 a)
   | .coit l I D S st i s =>
     return .coit (← fl l) (← f 0 I) (← f 0 D) (← f 0 S) (← f 0 st) (← f 0 i) (← f 0 s)
+  | .ulift l A => return .ulift (← fl l) (← f 0 A)
+  | .up a => return .up (← f 0 a)
+  | .down t => return .down (← f 0 t)
   | t => pure t
 where
   hintM (fl : Level → m Level) (f : Nat → Term R → m (Term R)) :
@@ -289,6 +303,14 @@ where
 
 end Term
 
+/-- A description that starts with a choice of tag, `Desc.arg q (Enum ls) F`, or, in a
+data type above `Type`, `Desc.arg q (ULift (Enum ls)) F` (Q4: the tag is lifted to the
+type's universe). Returns the labels, whether the tag is lifted, and `F`. -/
+def Term.descTag? {R : Type} : Term R → Option (List Name × Bool × Term R)
+  | .darg _ (.enum ls) F => some (ls, false, F)
+  | .darg _ (.ulift _ (.enum ls)) F => some (ls, true, F)
+  | _ => none
+
 /-- The binder name of a **phantom** argument (`Elab/Inductive.lean`): a type whose
 parameters no field mentions ends in `(0 phantom✝ : D) → … → Unit` instead of `Unit`,
 with `D` mentioning the parameter. Such a function type has one inhabitant up to η,
@@ -296,9 +318,26 @@ with `D` mentioning the parameter. Such a function type has one inhabitant up to
 so only the elaborator writes it. -/
 def phantomName : Name := "phantom✝"
 
+/-- The **structure marker** (stage 22i): a structure with at least one field ends in
+`(0 phantom✝ : D) → … → (0 fields✝ : Enum [fields✝]) → Unit` (its phantom tail, 22e, then
+the marker), so `structure S where val : A` is `(val : A) × ((0 fields✝ : Enum [fields✝]) → Unit)`.
+Erasure recognises the marker and unboxes the Σ whose second component it ends (the
+structure's last field): at run time that pair is just the field. The marker is in the
+*type*, not only in a name, because the representation must be a function of the type up
+to conversion: conversion ignores binder names but compares domains, and no user-written
+type has the domain `Enum [fields✝]` (the label is inaccessible), so nothing convertible
+to a structure lacks the marker, and nothing else has it. -/
+def structTailName : Name := "fields✝"
+
+/-- The marker's domain, `Enum [fields✝]`. -/
+def structTailDom {R : Type} : Term R := .enum [structTailName]
+
+/-- A binder name of a phantom tail (`phantomName` or `structTailName`). -/
+def isPhantomName (x : Name) : Bool := x == phantomName || x == structTailName
+
 /-- The value of a phantom tail type, `fun _ … _ => ()`. -/
 partial def Term.phantomTailVal? {R : Type} : Term R → Option (Term R)
-  | .pi x _ _ _ b _ => if x == phantomName then (phantomTailVal? b).map (.lam phantomName) else none
+  | .pi x _ _ _ b _ => if isPhantomName x then (phantomTailVal? b).map (.lam x) else none
   | .unit _ => some .tt
   | _ => none
 
@@ -331,6 +370,14 @@ structure Globals (R : Type) where
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false
+  /-- (13b) names private to a module (`private def …`, `private mk ::`), with the
+  module: the elaborator rejects them elsewhere. The kernel ignores this. -/
+  privates : Std.HashMap Name String := {}
+  /-- (13b) structures with a private constructor, with their module: elsewhere the
+  elaborator sees them as opaque (`Globals.elabView`). The kernel ignores this. -/
+  opaques : Std.HashMap Name String := {}
+  /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
+  module : String := ""
 
 namespace Globals
 
@@ -349,6 +396,31 @@ def insert (g : Globals R) (d : Decl R) : Globals R :=
   { g with
     decls := g.decls.insert d.name d
     order := if g.decls.contains d.name then g.order else g.order.push d.name }
+
+/-- (13b) The environment as the elaborator sees it in `g.module`: a structure whose
+constructor is private to another module has no definition (it doesn't unfold), so
+values of it can't be built from a tuple or a look-alike structure; its fields are read
+through its projection functions. The kernel still checks against `g` itself. -/
+def elabView (g : Globals R) : Globals R :=
+  if g.opaques.isEmpty then g else
+  g.opaques.fold (init := g) fun g' n m =>
+    if m == g.module then g' else
+    match g'.decls[n]? with
+    | some d => { g' with decls := g'.decls.insert n { d with value := none } }
+    | none => g'
+
+/-- (13b) Is `T` opaque here (a structure, inductive or coinductive type with private
+constructors, fields or observations, of another module)? Its module, if so. -/
+def opaqueTo? (g : Globals R) (T : Name) : Option String :=
+  match g.opaques[T]? with
+  | some m => if m == g.module then none else some m
+  | none => none
+
+/-- (13b) The module `n` is private to, if that is not the one being elaborated. -/
+def privateTo? (g : Globals R) (n : Name) : Option String :=
+  match g.privates[n]? with
+  | some m => if m == g.module then none else some m
+  | none => none
 
 end Globals
 

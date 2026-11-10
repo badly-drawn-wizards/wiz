@@ -185,7 +185,7 @@ where
       if as.isEmpty then pure head else app head as
     | .mu _ _ D i s none =>
       app (← if s matches .szInf then pure (txt "μ") else pure (cat [txt "μ^", ← sub 1024 s])) [D, i]
-    | .con (.pair (.tag ls i) rest) =>
+    | .con (.pair (.tag ls i) rest) | .con (.pair (.up (.tag ls i)) rest) =>
       let fields := (tuple rest #[]).toList
       let fields := fields.take (fields.length - 2)
       let c := txt s!".{ls[i]?.getD s!"#{i}"}"
@@ -197,6 +197,8 @@ where
     | .out x => app (txt "out") [x]
     | .coit _ _ _ S st i s => app (txt "coit") [S, st, i, s]
     | .natLit n => pure (txt (toString n))
+    | .ulift _ A => app (txt "ULift") [A]
+    | .up a | .down a => sub prec a
     | .natOp op args => app (txt s!"<{op}>") args.toList
     | .transp _ _ P p _ e =>
       pure (paren (prec > 1022) (cat [txt "transp ", ← sub 1023 P, txt " ", ← sub 1023 p, txt " ", ← sub 1023 e]))
