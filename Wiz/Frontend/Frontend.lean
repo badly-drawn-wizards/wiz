@@ -52,7 +52,8 @@ where
               (errs, iso.checked.insert m (some errs), some iso, memo.insert m iso)
           let s := { s with checked }
           let (inner, memo) := match iso? with
-            | some iso => if s.pristine then ({ iso with checked }, memo) else
+            -- (a pristine state may still list imports, of modules without commands)
+            | some iso => if s.pristine then ({ iso with checked, imported := iso.imported.filter (!s.imported.contains ·) ++ s.imported }, memo) else
                 go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
             | none => go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
           let errs := if isoErrs.isEmpty then inner.messages.filter (·.severity == .error) else isoErrs
