@@ -6,14 +6,12 @@
 # are; Asyncify lets `js_next_event` wait for the page without callbacks into Wiz.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# without emcc on the PATH, run again with Emscripten from nixpkgs
+if ! command -v emcc >/dev/null; then exec nix shell nixpkgs#emscripten -c "$0" "$@"; fi
 OUT=$(mkdir -p "${1:-$ROOT/web/out}" && cd "${1:-$ROOT/web/out}" && pwd)
 WIZ=${WIZ:-$ROOT/.lake/build/bin/wiz}
-if command -v emcc >/dev/null; then EMCC=emcc; else EMCC="nix shell nixpkgs#emscripten -c emcc"; fi
 
-# 1. Wiz → C: `wiz build` writes OUT/web.c, then runs the C compiler, here a no-op.
-(cd "$ROOT" && "$WIZ" --cc true build web/Web.wiz -o "$OUT/web")
-
-# 2. mini-gmp from GMP's source tarball, behind a <gmp.h>
+# 1. mini-gmp from GMP's source tarball, behind a <gmp.h>
 if [ ! -f "$OUT/gmp/mini-gmp.c" ]; then
   mkdir -p "$OUT/gmp"
   SRC=$(nix build --no-link --print-out-paths nixpkgs#gmp.src)
@@ -21,11 +19,13 @@ if [ ! -f "$OUT/gmp/mini-gmp.c" ]; then
   printf '#include "mini-gmp.h"\n' > "$OUT/gmp/gmp.h"
 fi
 
-# 3. C → wasm, as an ES module that web/infoview.js imports
-$EMCC -O2 -w -I"$OUT/gmp" "$OUT/web.c" "$OUT/gmp/mini-gmp.c" "$ROOT/web/js.c" \
-  -sMEMORY64=1 -sASYNCIFY -sASYNCIFY_STACK_SIZE=4194304 -sSTACK_SIZE=33554432 \
-  -sALLOW_MEMORY_GROWTH -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web,node \
-  '-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=$setValue,$stringToNewUTF8,$UTF8ToString' \
-  -o "$OUT/wiz-infoview.mjs"
+# 2. Wiz → C → wasm, as an ES module that web/infoview.js imports: `wiz build` with emcc
+# as the C compiler, mini-gmp in place of -lgmp (--gmp), and web/js.c by Web.wiz's
+# `link_c "js.c"` (stage 9f). It writes OUT/wiz-infoview.c beside the module.
+(cd "$ROOT" && "$WIZ" --cc emcc --cflags "-I$OUT/gmp" --gmp "$OUT/gmp/mini-gmp.c" \
+  --ldflags "-sMEMORY64=1 -sASYNCIFY -sASYNCIFY_STACK_SIZE=4194304 -sSTACK_SIZE=33554432 \
+-sALLOW_MEMORY_GROWTH -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web,node \
+-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=\$setValue,\$stringToNewUTF8,\$UTF8ToString" \
+  build web/Web.wiz -o "$OUT/wiz-infoview.mjs")
 cp "$ROOT/web/infoview.html" "$ROOT/web/infoview.js" "$OUT/"
 echo "built $OUT/wiz-infoview.mjs"

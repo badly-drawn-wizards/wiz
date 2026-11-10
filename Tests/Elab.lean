@@ -1324,6 +1324,43 @@ def ioFails (src : String) (fragment : String) : IO Unit := do
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
 
+/-- (9f) Elaborate `main.wiz` in a fresh directory holding `files` (modules under it are
+importable), resolving `link_c` files as `wiz` does, relative to each file. -/
+def elabTree (files : List (String × String)) : IO (CommandState ZeroOneMany × String × System.FilePath) := do
+  let dir ← IO.FS.createTempDir
+  for (p, text) in files do
+    let f := dir / p
+    if let some d := f.parent then IO.FS.createDirAll d
+    IO.FS.writeFile f text
+  let src ← IO.FS.readFile (dir / "main.wiz")
+  let mods ← Module.loadClosure ["lib", dir] src
+  let sources ← Module.cSourceTable dir src mods
+  let s := runFrontend (R := ZeroOneMany) src
+    { loader := fun m => (mods[m]?).map (·.2), cSources := some (Module.cSourceResolver sources) }
+  pure (s, src, dir)
+
+/-- `elabTree`, then build and run `main` (through C, or LLVM) and compare its output. -/
+def linkRun (files : List (String × String)) (expected : String) (llvm : Bool := false) : IO Unit := do
+  let (s, src, dir) ← elabTree files
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  match ← Build.runGlobal (← toolchain) s "main" dir llvm (timeout := some 120) with
+  | .ok v => checkEq expected v
+  | .error e =>
+    let missing := ["gmp.h", "llc:"].any fun m => (e.splitOn m).length > 1
+    if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+
+/-- A program that links a C file (with a static helper and a header the FFI can't bind)
+and the maths library. -/
+def linkFiles : List (String × String) :=
+  [("main.wiz", "import IO\nlink_c \"c/twice.c\"\nlink_lib \"m\"\n" ++
+      "extern \"twice\" twice : Nat → Nat\nextern \"root_of\" rootOf : Nat → IO Nat\n" ++
+      "def main : IO Unit := do\n  IO.println (Nat.toString (twice 21));\n  r ← rootOf 1764;\n  IO.println (Nat.toString r)\n"),
+   ("c/twice.c", "#include <stdint.h>\n#include <math.h>\nstruct box { uint64_t v; };\n" ++
+      "static uint64_t unbox(struct box *b) { return b->v; }\n" ++
+      "uint64_t twice(uint64_t n) { struct box b = { 2 * n }; return unbox(&b); }\n" ++
+      "uint64_t root_of(uint64_t n) { volatile double d = (double)n; return (uint64_t)sqrt(d); }\n")]
+
 def ffiGroup : Group where
   name := "ffi"
   exercise := "Stage 9a"
@@ -1402,7 +1439,26 @@ def ffiGroup : Group where
           "def main : IO Unit := do\n  IO.println (Bytes.toString (fill 3 Bytes.empty));\n" ++
           "  IO.println (Nat.toString (Bytes.size (Bytes.ofString \"λx\")))") "ABC\n3\n" },
     { name := "foreign types are checked", run := fun _ =>
-        ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
+        ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" },
+    { name := "link_c: a C file and a library linked with the program (C backend)", run := fun _ =>
+        linkRun linkFiles "42\n42\n" },
+    { name := "link_c: the same with the LLVM backend", run := fun _ =>
+        linkRun linkFiles "42\n42\n" (llvm := true) },
+    { name := "link_c: a module's file is relative to the module", run := fun _ =>
+        linkRun [("main.wiz", "import IO\nimport Lib.Glue\ndef main : IO Unit := IO.println (Nat.toString (three 0))\n"),
+                 ("Lib/Glue.wiz", "import Prelude\nlink_c \"glue.c\"\nextern \"three\" three : Nat → Nat\n"),
+                 ("Lib/glue.c", "#include <stdint.h>\nuint64_t three(uint64_t n) { return n + 3; }\n")] "3\n" },
+    { name := "link_c: a missing file is an error at the command", run := fun _ => do
+        let (s, src, _) ← elabTree [("main.wiz", "import IO\nlink_c \"nowhere.c\"\ndef main : IO Unit := IO.println \"x\"\n")]
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        checkEq #["2:8: error: link_c: no file nowhere.c (paths are relative to the .wiz file)"] errs
+        let (s, src, _) ← elabTree [("main.wiz", "import Prelude\nlink_lib \"-lm\"\n")]
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        checkEq 1 errs.size },
+    { name := "link_c: a file is linked once, however often it is named", run := fun _ => do
+        let (s, _, _) ← elabTree [("main.wiz", "import Prelude\nlink_c \"a.c\"\nlink_c \"./a.c\"\nlink_lib \"m\"\nlink_lib \"m\"\n"), ("a.c", "")]
+        checkEq 1 s.linkC.size
+        checkEq #["m"] s.linkLibs }
   ]
 
 /-- A `Sys` program, on the C backend and on the LLVM backend: `body` is the lines of an
