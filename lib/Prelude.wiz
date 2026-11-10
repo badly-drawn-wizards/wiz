@@ -7,6 +7,17 @@
 -- (`Vec.map_cons` in lib/Vec.wiz).
 axiom castRefl.{u} {0 A : Type u} (0 e : A = A) (0 a : A) : (cast e a : A) = a
 
+-- Transport along an equation, for linear values too (L4). The transported value is a
+-- quantity-1 parameter: a linear value (a channel endpoint, a token) can be passed,
+-- and so can an unrestricted one (an ω variable may be used once). `cast` itself passes
+-- its argument's usage through; these just state it in their types.
+def Eq.cast.{u} {A B : Type u} (0 e : A = B) (1 a : A) : B := cast e a
+def Eq.subst.{u, v} {A : Type u} (0 P : A → Type v) {0 a b : A} (0 e : a = b) (1 pa : P a) : P b :=
+  cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa
+-- ... and backwards, without `Eq.symm`
+def Eq.substBack.{u, v} {A : Type u} (0 P : A → Type v) {0 a b : A} (0 e : a = b) (1 pb : P b) : P a :=
+  cast (transp (fun b _ => P b = P a) (refl (P a)) e) pb
+
 inductive Bool where
   | false
   | true
@@ -276,6 +287,10 @@ def outParam.{u} (A : Sort u) : Sort u := A
 class Monad (m : Type → Type) where
   pure : {A : Type} → A → m A
   bind : {A B : Type} → m A → (A → m B) → m B
+-- A bind that takes the action and the continuation at quantity 1 (L6), so the
+-- continuation may capture linear resources; `do1` is `do` notation over it.
+class Monad1 (m : Type → Type) where
+  bind1 : {A B : Type} → (1 x : m A) → (1 f : A → m B) → m B
 
 instance : Monad TacticM where
   pure := TacticM.pure
@@ -361,6 +376,18 @@ macro_rules
 syntax (name := letBind) "let" ident ":=" term ";" doSeq : doSeq
 macro_rules
   | `(term| do let $x := $e; $rest) => `(term| let $x := $e; do $rest)
+-- `do1`: the same over `Monad1.bind1`, for linear sequencing (L6). The action of each
+-- step and the rest of the block are used once, so the rest may use a linear variable
+-- (and an action may consume one); the bound results are unrestricted.
+syntax (name := block1) "do1" doSeq : term
+macro_rules
+  | `(term| do1 $e:term) => `(term| $e)
+macro_rules
+  | `(term| do1 $e:term; $rest) => `(term| Monad1.bind1 $e (fun _ => do1 $rest))
+macro_rules
+  | `(term| do1 $x ← $e; $rest) => `(term| Monad1.bind1 $e (fun $x => do1 $rest))
+macro_rules
+  | `(term| do1 let $x := $e; $rest) => `(term| let $x := $e; do1 $rest)
 
 -- Taking syntax apart.
 def SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax
