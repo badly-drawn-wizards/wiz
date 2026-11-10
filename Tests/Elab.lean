@@ -198,8 +198,25 @@ in Wiz. Their `cast` is between propositions, where Wiz applies the equivalence 
 regularity, so it goes through a box type: a `μ` type, where `cast` falls back to
 regularity (`vCast`: equal types ⇒ `t`). `Omega` has no normal form, and the cast
 between Σ types in `loopy` projects its proof, so checking `loopy` evaluates it. See
-`wiz-notes/d1-experiment.md`. -/
-def abelCoquand (omega : String := "Omega") : String :=
+`wiz-notes/d1-experiment.md`.
+
+`loopy` writes `Omega` out inline (`acOmega`: `δ ω` as lambdas, `unbox` as `ind`), not as
+the global: a projection of a glued global stays glued until it is needed (`vFst`), and
+the proof is never needed (the cast at `B2` doesn't look at it), so `(Omega …).1` would
+never be unfolded. Inline, evaluating the proof is β-reduction and `ind` on the cast,
+which loops with regularity. -/
+def acDelta : String := "(fun (z : Top) => z T2 id2 z)"
+
+/-- `ω`'s body inline (for `A : Prop`, `a : A`): `unbox (cast … (mk δ))` -/
+def acOmegaBody : String :=
+  s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk {acDelta}))"
+
+/-- `Ω = δ ω`, inline -/
+def acOmega (body : String := acOmegaBody) : String :=
+  s!"({acDelta} (fun (A : Prop) (a : A) => {body}))"
+
+def abelCoquand (omega : String := "Omega") (body : String := acOmegaBody) : String :=
+  let omegaTm := if omega == "Omega" then acOmega body else omega
   "def Top : Prop := (A : Prop) → A → A\n" ++
   "def T2 : Prop := Top → Top\n" ++
   "def id2 : T2 := fun x => x\n" ++
@@ -217,13 +234,14 @@ def abelCoquand (omega : String := "Omega") : String :=
   "def P2 : Type := B2 × B2\n" ++
   "def ab : P2 := ('a, 'b)\n" ++
   "def a0 : B2 := 'a\n" ++
-  s!"def loopy : (cast ({omega} (P2 = P2) (refl P2)) ab : P2).1 = a0 := refl a0\n"
+  s!"def loopy : (cast ({omegaTm} (P2 = P2) (refl P2)) ab : P2).1 = a0 := refl a0\n"
 
 /-- The same program with the box inside a second box (`Box2 P` has a field of type
 `Box P`): the outer box's field is not inert (it has a `Prop` field inside), so the cast
 at `Box2` stays structural, and the program checks without regularity. -/
 def abelCoquandNested : String :=
-  ((abelCoquand).replace
+  ((abelCoquand (body := s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (ind (fun _ _ => Box A) (fun i xs ih => xs.1.2) " ++
+      s!"(cast (apTy Prop Box2 T2 A (tautext T2 A id2 a)) (mk2 (mk {acDelta}))))")).replace
     "def omega : Top := fun A a => unbox (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk delta))\n"
     ("def Box2D (P : Prop) : Desc Unit := Desc.arg 1 ((_ : Enum [u]) × Box P) (fun _ => Desc.ret ())\n" ++
      "def Box2 (P : Prop) : Type := μ (Box2D P) ()\n" ++
