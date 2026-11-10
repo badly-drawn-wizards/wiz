@@ -156,6 +156,9 @@ where
           let msg : Msg := { info := cmd.info, severity := .error,
                              text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
+          -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
+          let msgs := msgs ++ (inner.messages.filter (·.severity == .warning)).map fun w =>
+            { info := cmd.info, severity := .warning, text := s!"module {m}: {w.render src}" }
           -- the info tree is positions in this file: keep only ours
           go' input base chars stop { inner with messages := msgs, module := s.module, infos := s.infos } memo
       else go' input base chars stop (step cmd s) memo

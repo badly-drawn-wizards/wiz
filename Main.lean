@@ -15,7 +15,8 @@ options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
 (default off),
---predicative-prop
+--predicative-prop,
+--inert syntactic|ground|conv (P1: regularity at inert types; default ground)
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
 
@@ -30,6 +31,11 @@ def parseCmd (path : String) : IO UInt32 := do
 
 /-- The module roots: `lib/` (the standard library), then the `-I` directories. -/
 def moduleRoots (tc : Toolchain) : List System.FilePath := "lib" :: tc.searchPath
+
+/-- The library modules from the toolchain's own `lib/` (the first root): their
+`builtin` registrations are trusted. -/
+def libTrusted (tc : Toolchain) : IO (List String) := do
+  return Module.fromFirstRoot (moduleRoots tc) (← Module.loadAll (moduleRoots tc))
 
 /-- Library modules with their paths (for the language server's go-to-definition). -/
 def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String)) := do
@@ -57,22 +63,41 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
+/-- (P1) `--inert MODE`: regularity at inert types. -/
+initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
+
+/-- Take `--inert MODE` out of the arguments. -/
+def takeInertOpt : List String → Except String (Option InertReg × List String)
+  | "--inert" :: m :: rest => do
+    let r ← match m with
+      | "syntactic" => pure InertReg.syntactic | "ground" => pure .ground | "conv" => pure .conv
+      | _ => throw s!"unknown inert mode {m}"
+    let (_, rest) ← takeInertOpt rest
+    return (some r, rest)
+  | a :: rest => do
+    let (r, rest) ← takeInertOpt rest
+    return (r, a :: rest)
+  | [] => return (none, [])
+
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandState ZeroOneMany) := do
   -- every module the file can reach (`import A.B` is `A/B.wiz` under a root), read up
   -- front: the frontend is pure
-  let mods ← Module.loadClosure (moduleRoots tc) input
-  let lib := mods.fold (fun m n (_, src) => m.insert n src) ({} : Std.HashMap Name String)
+  let closure ← Module.loadClosure (moduleRoots tc) input
+  let lib : Std.HashMap Name String := closure.fold (fun m n (_, src) => m.insert n src) {}
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
   -- (9f) the `link_c` files, each relative to its own file
-  let sources ← Module.cSourceTable ((System.FilePath.mk path).parent.getD ".") input mods
+  let sources ← Module.cSourceTable ((System.FilePath.mk path).parent.getD ".") input closure
   let (regularity, predicativeProp) ← kernelOpts.get
+  let inertReg ← inertOpt.get
+  -- `builtin` registrations are trusted only in the toolchain's own library
+  let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
-      globals := { regularity, predicativeProp } }
+      globals := { regularity, predicativeProp, inertReg }, trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && inertReg == .ground then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -134,6 +159,10 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  let args ← match takeInertOpt args with
+    | .ok (r, a) => do if let some r := r then inertOpt.set r
+                       pure a
+    | .error e => do IO.eprintln e; return 1
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1
@@ -144,12 +173,12 @@ def main (args : List String) : IO UInt32 := do
   | ["build", path, "-o", out, "--llvm"] => buildCmd tc path out true
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
-  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc); pure 0
+  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc); pure 0
   | "lsp" :: opts => do
     match lspOptions opts with
     | none => IO.println usage; pure 2
     | some (listen, stdio) =>
-      LSP.serve (← loadLibraryPaths tc) listen stdio
+      LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc)
       -- (an infoview's reader thread may still be blocked: don't wait for it)
       IO.Process.exit 0
   | _ => do IO.println usage; pure 0

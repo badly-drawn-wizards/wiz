@@ -1,7 +1,7 @@
 # Wiz documentation
 
 * [building.md](building.md)
-* [exercises.md](exercises.md)
+* [exercises.md](exercises.md): generating the exercise tree from this one
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
 * [ROADMAP.md](../ROADMAP.md)
@@ -51,3 +51,7 @@ topic below, so the numbers are not in order.
 
 * [Stage 22: numbers for hardware and systems code](stages/22-numbers.md)
 * [Libraries](libraries.md)
+
+### Verification
+
+* [Stage 24: separation logic](stages/24-separation-logic.md)

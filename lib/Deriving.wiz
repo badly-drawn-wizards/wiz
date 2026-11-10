@@ -5,16 +5,16 @@ import Prelude
 -- the commands that make the instance. This module defines three classes, their
 -- derivers, and instances for the prelude's types.
 
-class Inhabited (A : Type) where
+class Inhabited.{u} (A : Type u) where
   default : A
-class BEq (A : Type) where
+class BEq.{u} (A : Type u) where
   beq : A → A → Bool
 -- `reprPrec a p`: `a` as Wiz source, in parentheses if it is an application and `p` is
 -- the precedence of an argument (1024)
-class Repr (A : Type) where
+class Repr.{u} (A : Type u) where
   reprPrec : A → Nat → String
 
-def Repr.repr {A : Type} [Repr A] (a : A) : String := Repr.reprPrec a 0
+def Repr.repr.{u} {A : Type u} [Repr A] (a : A) : String := Repr.reprPrec a 0
 def Repr.addAppParen (s : String) (p : Nat) : String := match Nat.lt p 1024 with
   | .true => s
   | .false => String.append "(" (String.append s ")")
@@ -54,13 +54,9 @@ instance : Repr String := Repr.mk (fun s _ =>
 def Derive.name (base : String) (i : Nat) : String := String.append base (Nat.repr i)
 def Derive.var (base : String) (i : Nat) : Syntax := Syntax.mkVar (Derive.name base i)
 
+-- `Type` or `Type u` (any level): the classes take a type in any universe
 def Derive.isType (t : Syntax) : Bool := match t with
-  | .node k _ => Bool.and (String.beq k "term.type") (match Syntax.getArg t 1 with
-    | .node _ args => match args with
-      | .nil => .true
-      | _ => .false
-    | .missing => .true
-    | _ => .false)
+  | .node k _ => String.beq k "term.type"
   | _ => .false
 
 def Derive.lookup (cls n : String) : MacroM IndView := do
@@ -74,7 +70,7 @@ def Derive.noIndices (cls : String) (v : IndView) : MacroM Unit := match IndView
   | _ => MacroM.throw "indexed families are not supported"
 
 -- `{x : T} → [C x] → …` for the parameters (an instance argument for each `Type`
--- parameter), then `{ξ : I} → …` for the indices, then `concl`.
+-- or `Type u` parameter), then `{ξ : I} → …` for the indices, then `concl`.
 def Derive.instBinder (cls : String) (p : ParamView) (rest : Syntax) : Syntax :=
     let x := Syntax.mkIdent (ParamView.name p);
     let t := ParamView.type p;
@@ -128,6 +124,11 @@ def Derive.ihLams : Nat → List FieldView → Syntax → Syntax
     | .false => Derive.ihLams (i + 1) fs b
 def Derive.method (fs : List FieldView) (b : Syntax) : Syntax := Derive.fieldLams 0 fs (Derive.ihLams 0 fs b)
 -- the explicit fields as variables with base name `base`
+-- a field that `Repr` shows and `BEq` compares: explicit, and not a proof (proofs of a
+-- proposition are all equal, and have no `Repr`)
+def Derive.isData (f : FieldView) : Bool := match FieldView.kind f with
+  | .default => Bool.not (FieldView.proof f)
+  | _ => .false
 def Derive.explicitVars (base : String) : Nat → List FieldView → List Syntax
   | _, .nil => .nil
   | i, .cons f fs => match FieldView.kind f with
@@ -163,9 +164,10 @@ def Derive.elim (v : IndView) (motive : Syntax) (m : CtorView → Syntax) (x : S
 
 -- ## Inhabited: the first constructor without recursive fields, at `default` values
 
+-- no recursive fields and no proof fields (there is no `default` proof)
 def Derive.allPlain : List FieldView → Bool
   | .nil => .true
-  | .cons f fs => match FieldView.recursive f with
+  | .cons f fs => match Bool.or (FieldView.recursive f) (FieldView.proof f) with
     | .true => .false
     | .false => Derive.allPlain fs
 def Derive.firstPlain : List CtorView → Option CtorView
@@ -175,7 +177,7 @@ def Derive.firstPlain : List CtorView → Option CtorView
     | .true => .some c
     | .false => Derive.firstPlain cs
   --|ex
-  --| -- Exercise 7.2: the first constructor none of whose fields is recursive
+  --| -- Exercise 7.2: the first constructor none of whose fields is recursive or a proof
   --| -- (`Derive.allPlain`), so that `default` doesn't need an instance being defined.
   --| | .nil => .none
   --| | .cons c _ => .some c
@@ -188,7 +190,7 @@ def deriveInhabited : Deriver := fun n => do
   v ← Derive.lookup "Inhabited" n;
   Derive.noIndices "Inhabited" v;
   match Derive.firstPlain (IndView.ctors v) with
-  | .none => MacroM.throw (String.append "every constructor of " (String.append n " is recursive"))
+  | .none => MacroM.throw (String.append "every constructor of " (String.append n " is recursive or has a proof field"))
   | .some c => do
     let val := Syntax.mkApp (Syntax.mkVar (Derive.ctorName v c)) (Derive.defaults (Derive.explicitVars "f✝" 0 (CtorView.fields c)));
     let inst := Derive.instance (Derive.instanceType "Inhabited" v) `(term| Inhabited.mk $val);
@@ -200,11 +202,13 @@ attribute [deriver Inhabited] deriveInhabited
 def Derive.reprShow (i : Nat) (r : Bool) : Syntax := match r with
   | .true => let ih := Derive.var "ih✝" i; `(term| $ih 1024)
   | .false => let x := Derive.var "f✝" i; `(term| Repr.reprPrec $x 1024)
-def Derive.reprField (i : Nat) (f : FieldView) (rest : Syntax) : Syntax := match FieldView.kind f with
-  | .default =>
+def Derive.reprField (i : Nat) (f : FieldView) (rest : Syntax) : Syntax := match Derive.isData f with
+  | .true =>
     let shown := Derive.reprShow i (FieldView.recursive f);
     `(term| String.append " " (String.append $shown $rest))
-  | _ => rest
+  | .false => match FieldView.kind f with
+    | .default => `(term| String.append " _" $rest)
+    | _ => rest
 def Derive.reprArgs : Nat → List FieldView → Syntax
   | _, .nil => `(term| "")
   | i, .cons f fs => Derive.reprField i f (Derive.reprArgs (i + 1) fs)
@@ -235,11 +239,11 @@ def Derive.beqCmp (i : Nat) (r : Bool) : Syntax :=
   match r with
   | .true => let ih := Derive.var "ih✝" i; `(term| $ih $y)
   | .false => let x := Derive.var "f✝" i; `(term| BEq.beq $x $y)
-def Derive.beqField (i : Nat) (f : FieldView) (rest : Syntax) : Syntax := match FieldView.kind f with
-  | .default =>
+def Derive.beqField (i : Nat) (f : FieldView) (rest : Syntax) : Syntax := match Derive.isData f with
+  | .true =>
     let here := Derive.beqCmp i (FieldView.recursive f);
     `(term| Bool.and $here $rest)
-  | _ => rest
+  | .false => rest
 def Derive.beqFields : Nat → List FieldView → Syntax
   | _, .nil => `(term| Bool.true)
   | i, .cons f fs => Derive.beqField i f (Derive.beqFields (i + 1) fs)

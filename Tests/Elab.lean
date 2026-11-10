@@ -198,8 +198,25 @@ in Wiz. Their `cast` is between propositions, where Wiz applies the equivalence 
 regularity, so it goes through a box type: a `μ` type, where `cast` falls back to
 regularity (`vCast`: equal types ⇒ `t`). `Omega` has no normal form, and the cast
 between Σ types in `loopy` projects its proof, so checking `loopy` evaluates it. See
-`wiz-notes/d1-experiment.md`. -/
-def abelCoquand (omega : String := "Omega") : String :=
+`wiz-notes/d1-experiment.md`.
+
+`loopy` writes `Omega` out inline (`acOmega`: `δ ω` as lambdas, `unbox` as `ind`), not as
+the global: a projection of a glued global stays glued until it is needed (`vFst`), and
+the proof is never needed (the cast at `B2` doesn't look at it), so `(Omega …).1` would
+never be unfolded. Inline, evaluating the proof is β-reduction and `ind` on the cast,
+which loops with regularity. -/
+def acDelta : String := "(fun (z : Top) => z T2 id2 z)"
+
+/-- `ω`'s body inline (for `A : Prop`, `a : A`): `unbox (cast … (mk δ))` -/
+def acOmegaBody : String :=
+  s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk {acDelta}))"
+
+/-- `Ω = δ ω`, inline -/
+def acOmega (body : String := acOmegaBody) : String :=
+  s!"({acDelta} (fun (A : Prop) (a : A) => {body}))"
+
+def abelCoquand (omega : String := "Omega") (body : String := acOmegaBody) : String :=
+  let omegaTm := if omega == "Omega" then acOmega body else omega
   "def Top : Prop := (A : Prop) → A → A\n" ++
   "def T2 : Prop := Top → Top\n" ++
   "def id2 : T2 := fun x => x\n" ++
@@ -217,13 +234,14 @@ def abelCoquand (omega : String := "Omega") : String :=
   "def P2 : Type := B2 × B2\n" ++
   "def ab : P2 := ('a, 'b)\n" ++
   "def a0 : B2 := 'a\n" ++
-  s!"def loopy : (cast ({omega} (P2 = P2) (refl P2)) ab : P2).1 = a0 := refl a0\n"
+  s!"def loopy : (cast ({omegaTm} (P2 = P2) (refl P2)) ab : P2).1 = a0 := refl a0\n"
 
 /-- The same program with the box inside a second box (`Box2 P` has a field of type
 `Box P`): the outer box's field is not inert (it has a `Prop` field inside), so the cast
 at `Box2` stays structural, and the program checks without regularity. -/
 def abelCoquandNested : String :=
-  ((abelCoquand).replace
+  ((abelCoquand (body := s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (ind (fun _ _ => Box A) (fun i xs ih => xs.1.2) " ++
+      s!"(cast (apTy Prop Box2 T2 A (tautext T2 A id2 a)) (mk2 (mk {acDelta}))))")).replace
     "def omega : Top := fun A a => unbox (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk delta))\n"
     ("def Box2D (P : Prop) : Desc Unit := Desc.arg 1 ((_ : Enum [u]) × Box P) (fun _ => Desc.ret ())\n" ++
      "def Box2 (P : Prop) : Type := μ (Box2D P) ()\n" ++
@@ -267,6 +285,41 @@ def checkDiverges (input mode : String) (secs : Nat := 3) : IO Unit := do
   unless out.exitCode == 124 do
     throw (IO.userError s!"expected a timeout, got exit code {out.exitCode}: {out.stderr.take 1000}")
 
+/-- (P1) The probe of `wiz-notes/inert-regularity-probe.wiz`: an inert indexed family
+whose index can hide a proof (`f p`), and statements that need InReg (regularity at inert
+types). Each declaration is checked on its own. -/
+def p1Prelude : String :=
+  "inductive N where\n  | z\n  | s (n : N)\n" ++
+  "inductive Fin2 : N → Type where\n  | fz {0 n : N} : Fin2 (.s n)\n  | fs {0 n : N} (k : Fin2 n) : Fin2 (.s n)\n" ++
+  "def two : N := .s (.s .z)\n"
+
+def p1Decls : List (String × String) := [
+  -- control: no regularity at a type variable
+  ("t5", "def t5 (A : Type) (k : A) (e : A = A) : (cast e k : A) = k := rfl"),
+  -- InReg at an open index (`f p`)
+  ("t1", "def t1 (P : Prop) (f : (0 _ : P) → N) (p : P) (k : Fin2 (f p)) (e : Fin2 (f p) = Fin2 (f p)) : (cast e k : Fin2 (f p)) = k := rfl"),
+  -- the same, at convertible but not syntactically equal types
+  ("t2", "def t2 (P : Prop) (f : (0 _ : P) → N) (p q : P) (k : Fin2 (f p)) (e : Fin2 (f p) = Fin2 (f q)) : (cast e k : Fin2 (f q)) = k := rfl"),
+  -- two casts at convertible types
+  ("h", "def h (P : Prop) (f : (0 _ : P) → N) (p q r : P) (k : Fin2 (f p)) (e1 : Fin2 (f p) = Fin2 (f r)) (e2 : Fin2 (f p) = Fin2 (f q)) : (cast e1 k : Fin2 (f r)) = (cast e2 k : Fin2 (f q)) := rfl"),
+  -- h's instance r := p, by rfl: the δβ-reduct of h3 (P1: it was rejected)
+  ("h2", "def h2 (P : Prop) (f : (0 _ : P) → N) (p q : P) (k : Fin2 (f p)) (e1 : Fin2 (f p) = Fin2 (f p)) (e2 : Fin2 (f p) = Fin2 (f q)) : (cast e1 k : Fin2 (f p)) = (cast e2 k : Fin2 (f q)) := rfl"),
+  ("h3", "def h (P : Prop) (f : (0 _ : P) → N) (p q r : P) (k : Fin2 (f p)) (e1 : Fin2 (f p) = Fin2 (f r)) (e2 : Fin2 (f p) = Fin2 (f q)) : (cast e1 k : Fin2 (f r)) = (cast e2 k : Fin2 (f q)) := rfl\n" ++
+    "def h3 (P : Prop) (f : (0 _ : P) → N) (p q : P) (k : Fin2 (f p)) (e1 : Fin2 (f p) = Fin2 (f p)) (e2 : Fin2 (f p) = Fin2 (f q)) : (cast e1 k : Fin2 (f p)) = (cast e2 k : Fin2 (f q)) := h P f p q p k e1 e2"),
+  -- InReg at a closed index, on a variable
+  ("g1", "def g1 (k : Fin2 (.s (.s .z))) (e : Fin2 (.s (.s .z)) = Fin2 (.s (.s .z))) : (cast e k : Fin2 (.s (.s .z))) = k := rfl"),
+  -- ... through a definition (a glued name and its unfolding)
+  ("g2", "def g2 (k : Fin2 two) (e : Fin2 two = Fin2 (.s (.s .z))) : (cast e k : Fin2 (.s (.s .z))) = k := rfl"),
+  -- a generic statement at an open index, and its closed instance (by rfl)
+  ("g3", "def g3 (n : N) (k : Fin2 n) (e1 e2 : Fin2 n = Fin2 n) : (cast e1 k : Fin2 n) = (cast e2 k : Fin2 n) := rfl\n" ++
+    "def g3i (k : Fin2 two) (e1 e2 : Fin2 two = Fin2 two) : (cast e1 k : Fin2 two) = (cast e2 k : Fin2 two) := rfl")]
+
+/-- The declarations of `p1Decls` that check under the given InReg mode. -/
+def p1Accepted (m : InertReg) : List String :=
+  p1Decls.filterMap fun (n, d) =>
+    let s := runFrontend (R := ZeroOneMany) (p1Prelude ++ d ++ "\n") { globals := { inertReg := m } }
+    if s.messages.any (·.severity == .error) then none else some n
+
 /-- `TyOf a` is `a`'s type (as the elaborator built it) -/
 def tyOfDef : String := "def TyOf {ω A : Type} (a : A) : Type := A\n"
 
@@ -286,6 +339,12 @@ def ottGroup : Group where
         ok "def peq {A B : Type} (p : A × B) : p = (p.1, p.2) := refl p" },
     { name := "different type formers are unequal", run := fun _ =>
         ok "def noconf (e : Unit = Empty) : False := e" },
+    -- F2 (`wiz-notes/soundness-audit.md`): `vAbsurd` had no case for a glued value, so
+    -- `absurd (lem h)` panicked and evaluated to `Sort 0`: `g h` was `Prop`
+    { name := "F2: absurd on a lemma's result is stuck, not Prop", run := fun _ => do
+        let p := "def lem (h : False) : False := h\ndef g (h : False) : Type := absurd (lem h)\n"
+        ok (p ++ "def r (h : False) (x : g h) : g h := x\n#reduce fun (h : False) => g h") ["fun h => absurd h"]
+        fails (p ++ "def u (h : False) : g h := True\n") "mismatch" },
     -- D1: no regularity by default: a cast at a variable type stays a cast
     { name := "cast along a variable `A = A` is not the identity (no regularity; it is with --regularity full)", run := fun _ => do
         let reg := "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl"
@@ -366,6 +425,13 @@ def ottGroup : Group where
     { name := "no regularity at a type with a variable parameter", run := fun _ =>
         fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
           "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "type mismatch" },
+    -- P1: InReg decided by ground equality is stable (h3 checks, and so does its reduct h2)
+    { name := "P1: InReg is stable under substitution (the probe's reduct checks iff the term does)", run := fun _ =>
+        checkEq (repr ["h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .ground)).pretty },
+    { name := "P1: with InReg_conv (decided by conversion), open indices too", run := fun _ =>
+        checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .conv)).pretty },
+    { name := "P1: the old syntactic InReg rejects the reduct h2 of h3 (documents the bug)", run := fun _ =>
+        checkEq (repr ["t1", "h", "h3", "g1", "g3"]).pretty (repr (p1Accepted .syntactic)).pretty },
     { name := "D1: a cast between propositions applies the equivalence, not regularity", run := fun _ =>
         ok abelCoquandLiteral ["fun x => x"] },
     { name := "D1 (R1): regularity only at non-propositions doesn't help (the box is a type)", run := fun _ =>
@@ -683,7 +749,7 @@ def macroGroup : Group where
 /-- Exactly one error (with `lib/` importable), mentioning `fragment`. -/
 def failsLib (input : String) (fragment : String) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let s := runFrontend (R := ZeroOneMany) input { loader := fun m => if m == "Prelude" then some prelude else none }
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do
@@ -716,7 +782,7 @@ def preludeLoader : IO (Name → Option String) := do
 
 def okLib (input : String) (infos : List String := []) : IO Unit := do
   let loader ← preludeLoader
-  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
@@ -841,7 +907,7 @@ def backendGroup : Group where
     { name := "reuse: a dead cell is reused for a new one (Exercise 8.3)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let src := "import Prelude\ndef inc : List Nat → List Nat\n  | .nil => .nil\n  | .cons x xs => .cons (x + 1) (inc xs)\n#ir inc\n#run inc (.cons 1 (.cons 2 .nil))"
-        let s := runFrontend (R := ZeroOneMany) src { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         let texts := s.messages.toList.map (·.text)
         check (texts.any fun t => (t.splitOn "reuse").length > 1) s!"no reuse in {texts}"
         check (texts.contains ".cons 2 (.cons 3 .nil)") s!"wrong result: {texts}" },
@@ -931,7 +997,7 @@ def z20 : Tree := Tree.insert 21 (spine 1 20) Path.top
 
 def reuseState : IO (CommandState ZeroOneMany) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let s := runFrontend (R := ZeroOneMany) reuseSrc { loader := fun m => if m == "Prelude" then some prelude else none }
+  let s := runFrontend (R := ZeroOneMany) reuseSrc { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render reuseSrc
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   pure s
@@ -1035,7 +1101,7 @@ def t3 : Tree := Tree.node 2 (Tree.node 1 .leaf .leaf) (Tree.node 3 .leaf .leaf)
 
 /-- The optimised IR of a function of `borrowSrc`, as lines. -/
 def borrowIR (n : Name) : IO (List String) := do
-  let s := runFrontend (R := ZeroOneMany) borrowSrc { loader := ← preludeLoader }
+  let s := runFrontend (R := ZeroOneMany) borrowSrc { trustedModule := Tests.libModule, loader := ← preludeLoader }
   match (do
       let code ← (compileReachable s.globals s.builtins [n]).mapError toString
       IR.lowerProgram code (.global n) : Except String (Array IR.Decl)) with
@@ -1054,7 +1120,7 @@ def borrowedUncounted (n : Name) (i : Nat) : IO Unit := do
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
 the C toolchain can't find GMP: give the suite a toolchain (`Tests/Main.lean`) to run these. -/
 def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← preludeLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
@@ -1094,7 +1160,7 @@ def borrowGroup : Group where
           ["2", "3", ".true", ".false"] },
     { name := "a closure over a borrowing function goes through an owned wrapper", run := fun _ => do
         okLib (borrowSrc ++ "#run mapL len (.cons (.cons 1 .nil) (.cons .nil .nil))") [".cons 1 (.cons 0 .nil)"]
-        let s := runFrontend (R := ZeroOneMany) (borrowSrc ++ "def lens : List Nat := mapL len (.cons .nil .nil)\n") { loader := ← preludeLoader }
+        let s := runFrontend (R := ZeroOneMany) (borrowSrc ++ "def lens : List Nat := mapL len (.cons .nil .nil)\n") { trustedModule := Tests.libModule, loader := ← preludeLoader }
         match (do
             let code ← (compileReachable s.globals s.builtins ["lens"]).mapError toString
             IR.lowerProgram code (.global "lens") : Except String (Array IR.Decl)) with
@@ -1134,7 +1200,7 @@ def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm 
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
     else if m == "Std" then some stdLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
-  let s := runFrontend (R := ZeroOneMany) src { loader, cHeaders := (headers[·]?) }
+  let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
@@ -1150,7 +1216,7 @@ def ioFails (src : String) (fragment : String) : IO Unit := do
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib else none
-  let s := runFrontend (R := ZeroOneMany) src { loader }
+  let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
@@ -2154,14 +2220,16 @@ def selfhostChecker : IO (Except String System.FilePath) := do
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "checker"
+  note "uses checker"
   if ← exe.pathExists then return .ok exe
+  let start ← IO.monoMsNow
   IO.FS.createDirAll dir
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib else none
-  let s := runFrontend (R := ZeroOneMany) prog { loader }
+  let s := runFrontend (R := ZeroOneMany) prog { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render prog
   unless errs.isEmpty do return .error s!"unexpected errors:\n{"\n".intercalate errs.toList}"
   match Build.irProgram s "main" with
@@ -2171,7 +2239,10 @@ def selfhostChecker : IO (Except String System.FilePath) := do
     let tmp := dir / s!"checker-{← IO.monoNanosNow}"
     match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
-    | .ok () => IO.FS.rename tmp exe; return .ok exe
+    | .ok () =>
+      IO.FS.rename tmp exe
+      note s!"built checker {showMs ((← IO.monoMsNow) - start)}"
+      return .ok exe
 
 /-- The self-hosted compiler (stage 21): the frontend and `Backend.wiz`, printing the C
 program for `input.wiz` (the frontend's own output as comments). -/
@@ -2181,14 +2252,16 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "compiler"
+  note "uses compiler"
   if ← exe.pathExists then return .ok exe
+  let start ← IO.monoMsNow
   IO.FS.createDirAll dir
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib else none
-  let s := runFrontend (R := ZeroOneMany) prog { loader }
+  let s := runFrontend (R := ZeroOneMany) prog { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render prog
   unless errs.isEmpty do return .error s!"unexpected errors:\n{"\n".intercalate errs.toList}"
   match Build.irProgram s "main" with
@@ -2197,7 +2270,10 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
     let tmp := dir / s!"compiler-{← IO.monoNanosNow}"
     match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
-    | .ok () => IO.FS.rename tmp exe; return .ok exe
+    | .ok () =>
+      IO.FS.rename tmp exe
+      note s!"built compiler {showMs ((← IO.monoMsNow) - start)}"
+      return .ok exe
 
 /-- A program for the self-hosted backend (recursion, lists, arrays, maps, strings, mutual
 types), printing `6765 5050 1989 2 yes, ünïcode 2 5`. -/
@@ -2209,6 +2285,12 @@ def selfhostProgram1 : String :=
 (copied), closures applied twice, a parameter never used, a key inserted twice. -/
 def selfhostProgram2 : String :=
   "import Prelude\ndef len : List Nat → Nat\n  | .nil => 0\n  | .cons _ t => len t + 1\npartial def build (n : Nat) (acc : List Nat) : List Nat := match n with\n  | 0 => acc\n  | .succ k => build k (List.cons k acc)\ndef firstOr (d : Nat) : List Nat → Nat\n  | .nil => d\n  | .cons x _ => x\ndef twice (f : Nat → Nat) (x : Nat) : Nat := f (f x)\ndef adder (n : Nat) : Nat → Nat := fun x => x + n\ndef pick (b : Bool) (x y : List Nat) : List Nat := if b then x else y\ndef ignore (x : List Nat) (y : Nat) : Nat := y\ndef main : IO Unit := do\n  let big := build 1000000 .nil;\n  IO.println (Nat.toString (len big));\n  IO.println (Nat.toString (firstOr 7 big));\n  let a := Array.push (Array.push Array.empty 1) 2;\n  let b := Array.set a 0 5;\n  IO.println (Nat.toString (Array.getD a 0 0 + Array.getD b 0 0));\n  let add3 := adder 3;\n  IO.println (Nat.toString (twice add3 1 + twice add3 2));\n  IO.println (Nat.toString (len (pick .false big (List.cons 1 .nil)) + ignore big 4));\n  let m := StrMap.insert (StrMap.insert StrMap.empty (Str.ofString \"k\") 1) (Str.ofString \"k\") 2;\n  IO.println (Nat.toString (StrMap.findD m (Str.ofString \"k\") 0 + StrMap.size m))\n"
+
+/-- A program for reuse under reference counting: a list mapped while shared (copied)
+and unique (its cells reused), a tree rebuilt twice, a pair taken apart and rebuilt;
+prints `1000000 9900 18 4`. -/
+def selfhostProgram3 : String :=
+  "import Prelude\ndef mapL (f : Nat → Nat) : List Nat → List Nat\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (mapL f xs)\ndef sumL : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + sumL xs\npartial def build (n : Nat) (acc : List Nat) : List Nat := match n with\n  | 0 => acc\n  | .succ k => build k (List.cons k acc)\ninductive T where\n  | leaf (n : Nat)\n  | node (l : T) (r : T)\ndef incT : T → T\n  | .leaf n => .leaf (n + 1)\n  | .node l r => .node (incT l) (incT r)\ndef sumT : T → Nat\n  | .leaf n => n\n  | .node l r => sumT l + sumT r\ndef t0 : T := T.node (T.node (T.leaf 1) (T.leaf 2)) (T.leaf 3)\ndef swapP (p : Prod Nat (List Nat)) : Prod (List Nat) Nat := .mk p.snd p.fst\ndef main : IO Unit := do\n  let xs := build 1000 .nil;\n  let ys := mapL (fun x => x + 1) xs;\n  IO.println (Nat.toString (sumL xs + sumL ys));\n  IO.println (Nat.toString (sumL (mapL (fun x => x * 2) (build 100 .nil))));\n  IO.println (Nat.toString (sumT (incT (incT t0)) + sumT t0));\n  IO.println (Nat.toString (Prod.snd (swapP (.mk 4 xs))))\n"
 
 /-- Compile a program with the self-hosted compiler, then the C it prints with the
 self-hosted runtime (`selfhost/rt.c`, with the garbage collector given by the
@@ -2268,7 +2350,7 @@ def ioDiverges (src : String) (secs : Nat := 5) : IO Unit := do
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
-  let s := runFrontend (R := ZeroOneMany) src { loader }
+  let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   match Build.irProgram s "main" with
@@ -2291,7 +2373,7 @@ def selfhostAgrees (header : String) (decls : List (String × Bool)) : IO Unit :
   let loader ← preludeLoader
   for (d, ok) in decls do
     let src := "import Prelude\n" ++ header ++ d
-    let s := runFrontend (R := ZeroOneMany) src { loader }
+    let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
     let leanOk := (s.messages.filter (·.severity == .error)).isEmpty
     unless leanOk == ok do throw (IO.userError s!"the Lean frontend {if leanOk then "accepts" else "rejects"}:\n{d}")
     let some out ← selfhostOutput src | return
@@ -2473,6 +2555,8 @@ def selfHostGroup : Group where
         selfhostCompileRun selfhostProgram2 "1000000\n0\n6\n15\n5\n3\n" (flags := #["--rc"]) },
     { name := "the first-line pragma `-- wiz: rc` still selects reference counting (a fallback, 21k)", run := fun _ =>
         selfhostCompileRun ("-- wiz: rc\n" ++ selfhostProgram2) "1000000\n0\n6\n15\n5\n3\n" },
+    { name := "reference counting: cells reused (shared and unique lists, trees, pairs)", run := fun _ =>
+        selfhostCompileRun selfhostProgram3 "1000000\n9900\n18\n4\n" (flags := #["--rc"]) },
     { name := "self-hosted programs read their command-line arguments (IO.args, 21k), with either collector", run := fun _ => do
         let prog := "import Prelude\ndef printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s rest => do\n    IO.println s;\n    printAll rest\n" ++
           "def main : IO Unit := do\n  n ← IO.argCount;\n  IO.println (Nat.toString n);\n  args ← IO.args;\n  printAll args\n"
@@ -2665,7 +2749,7 @@ def languageGroup : Group where
           [".true", "0"] },
     { name := "a partial definition needs an inhabited type", run := fun _ =>
         failsLib "import Prelude\ninductive Void where\npartial def loop (n : Nat) : Void := loop n"
-          "must be visibly inhabited" },
+          "no witness found" },
     { name := "match without an expected type", run := fun _ =>
         okLib ("import Prelude\ndef f (b : Bool) (n : Nat) : Nat :=\n  let k := match b with\n    | .true => n\n" ++
           "    | .false => 0;\n  Nat.add k 1\n#eval f .true 4") ["5"] },
@@ -2723,14 +2807,14 @@ def wordGroup : Group where
     { name := "compiled code calls the native", run := fun _ => do
         let loader ← preludeLoader
         let src := "import Word\ndef f (a b : U32) : U32 := UIntN.add a b\n#ir f"
-        let s := runFrontend (R := ZeroOneMany) src { loader }
+        let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "wiz_word_add").length > 1) s!"no native call in:\n{out}" },
     { name := "the width is part of the type, and is inferred", run := fun _ => do
         okLib "import Word\ndef w {ω n : Nat} (a : UIntN n) : Nat := n\n#check w (U8.ofNat 3)\n#eval w (U8.ofNat 3)"
           ["w 8 (U8.ofNat 3) : Nat", "8"]
         let loader ← preludeLoader
-        let s := runFrontend (R := ZeroOneMany) "import Word\ndef bad (x : U8) : U16 := x" { loader }
+        let s := runFrontend (R := ZeroOneMany) "import Word\ndef bad (x : U8) : U16 := x" { loader, trustedModule := Tests.libModule }
         check (s.messages.any (·.severity == .error)) "U8 was accepted as U16" },
     { name := "field notation through the fixed widths", run := fun _ =>
         okLib "import Word\ndef f (a b : I16) : Bool := a.lt b\n#eval f (I16.ofNeg 2) (I16.ofNat 1)" [".true"] },
@@ -2744,7 +2828,7 @@ def wordGroup : Group where
         let loader ← preludeLoader
         let src := "import Word\ndef f (a b : U64) : U64 := UIntN.add (UIntN.xor a b) (U64.ofNat 3)\n" ++
           "def g : U64 → Nat\n  | .mk n => n\n#ir f\n#ir g"
-        let s := runFrontend (R := ZeroOneMany) src { loader }
+        let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
         check ((out.splitOn "wiz_word_to_bits").length > 1) s!"match doesn't read the bits natively:\n{out}" },
@@ -2829,7 +2913,7 @@ def toolingGroup : Group where
   cases := [
     { name := "queries: an edit re-elaborates only what follows it", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         let v1 := "import Prelude\ndef a : Nat := 1\ndef b : Nat := a + 1\ndef c : Nat := b + 1\n"
         let (s1, eng) := Query.elaborate {} v1 init
         checkEq 4 eng.elaborated
@@ -2842,7 +2926,7 @@ def toolingGroup : Group where
         checkEq 5 eng.elaborated },
     { name := "queries: hover, definition, completion", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         let src := "import Prelude\ndef double (n : Nat) : Nat := n + n\ndef four : Nat := double 2\n"
         let (s, _) := Query.elaborate {} src init
         let off := (src.splitOn "double 2")[0]!.length
@@ -2855,7 +2939,7 @@ def toolingGroup : Group where
         checkEq "#[double]" (toString (Query.completionsAt s' pre pre.length)) },
     { name := "the shared cache gives the same results", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         let src := "import Prelude\ninductive T where\n  | a\n  | b (t : T)\ndef size : T → Nat\n  | .a => 1\n  | .b t => size t + 1\n#eval size (.b (.b .a))\ndef bad : Nat := true\n"
         let plain := runFrontend src init
         let dir ← IO.FS.createTempDir
@@ -2869,7 +2953,7 @@ def toolingGroup : Group where
         checkEq plain.globals.order.size warm.globals.order.size },
     { name := "another build of wiz misses the shared cache (its binary is in the key)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         let src := "import Prelude\ndef two : Nat := 1 + 1\n#eval two\n"
         let dir ← IO.FS.createTempDir
         let (_, h1) ← Cache.elaborateCached dir src init 0 (binary := some 1)
@@ -2888,7 +2972,7 @@ def toolingGroup : Group where
         check (h5 > 0) "the default is not this binary's hash" },
     { name := "terms survive the cache's format", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let st := runFrontend (R := ZeroOneMany) "import Prelude" { loader := fun _ => some prelude }
+        let st := runFrontend (R := ZeroOneMany) "import Prelude" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         for n in ["List.append", "Nat.rec", "SyntaxF.casesOn", "Tac.rec", "Monad.bind"] do
           let some d := st.globals.find? n | throw (IO.userError s!"no {n}")
           let text := (Cache.term d.type).render
@@ -2897,7 +2981,7 @@ def toolingGroup : Group where
           | none => throw (IO.userError s!"{n}: could not read back {text.take 200}") },
     { name := "the language server answers requests", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let srv : LSP.Server := { libs := ({} : Std.HashMap String (String × String)).insert "Prelude" ("lib/Prelude.wiz", prelude) }
+        let srv : LSP.Server := { libs := ({} : Std.HashMap String (String × String)).insert "Prelude" ("lib/Prelude.wiz", prelude), trusted := ["Prelude"] }
         let req (s : String) : Lean.Json := (Lean.Json.parse s).toOption.get!
         let (srv, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}")
         check ((out[0]!.compress.splitOn "hoverProvider").length > 1) "no capabilities"
@@ -3027,7 +3111,7 @@ def builtinGroup : Group where
         failsLib "import Prelude\ndef g (m n : Nat) : Nat := m\nattribute [implemented_by g] Nat.add" "already has an implementation" },
     { name := "the natives agree with the definitions (n / 0 = 0)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : Nat.div 7 0 = 7 := refl 7" { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : Nat.div 7 0 = 7 := refl 7" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "kernel arithmetic on literals is native", run := fun _ =>
         okLib "import Prelude\ndef t : 100000 * 100000 = 10000000000 := refl 10000000000" },
@@ -3036,7 +3120,7 @@ def builtinGroup : Group where
           "def t : isZero 3 = Bool.false := refl Bool.false\ndef u : Nat.succ 4 = 5 := refl 5") },
     { name := "different literals are not equal", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : 2 + 2 = 5 := refl 4" { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : 2 + 2 = 5 := refl 4" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "non-ASCII strings are cheap", run := fun _ =>
         okLib "import Prelude\n#eval \"λ✝\"" ["\"λ✝\""] },
@@ -3055,11 +3139,11 @@ def builtinGroup : Group where
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let src := procPrelude ++ "syntax (name := boom) \"boom!\" : term\n" ++
           "def boomMacro : Macro := fun _ => MacroM.throw \"kaboom\"\nattribute [macro term.boom] boomMacro\n#eval (boom! : Nat)"
-        let s := runFrontend (R := ZeroOneMany) src { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.text == "kaboom")) s!"expected kaboom, got {s.messages.map (·.text)}" },
     { name := "only a Macro can be a macro", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\nattribute [macro term.app] Nat.add" { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\nattribute [macro term.app] Nat.add" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "infinitary inductive: recursor", run := fun _ =>
         okLib (treePrelude ++ "#check Tree.rec")
@@ -3072,7 +3156,7 @@ def builtinGroup : Group where
           "#check W.sup") ["W.sup : {A : Type} → (n : Nat) → ((i : Nat) → W A i) → W A (.succ n)"] },
     { name := "infinitary inductive: the domain may not mention the type", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\ninductive Bad where\n  | mk (k : Bad → Bad)" { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ninductive Bad where\n  | mk (k : Bad → Bad)" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "a match does not shadow the user's variables", run := fun _ =>
         okLib "import Prelude\ndef e (x : Bool) (n : Nat) : Bool := match n with\n  | .zero => x\n  | .succ _ => x" },
@@ -3083,8 +3167,24 @@ def builtinGroup : Group where
         okLib "import Prelude\n#eval String.append \"ab\" \"cd\"" ["\"abcd\""] },
     { name := "a numeral is not a string", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef s : String := 3" { loader := fun _ => some prelude }
-        check (s.messages.any (·.severity == .error)) "expected an error" }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef s : String := 3" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
+        check (s.messages.any (·.severity == .error)) "expected an error" },
+    -- S1 (`wiz-notes/soundness-audit.md`): `Term.mapChildrenM` had no case for `natOp`, so
+    -- the variable captured by `Nat.add x` was invisible to `Val.lvlBound`, `sameVal` quoted
+    -- below it, and `μ D_x () = μ D_y ()` computed to `() = ()`. With `T (Nat.add 0)`
+    -- inhabited and `T (Nat.add 1)` empty, `cast (e 0 1)` then gave a closed proof of False.
+    { name := "S1: a variable captured by a native operation counts in syntactic equality (it proved False)", run := fun _ => do
+        let t := "import Prelude\ndef T (f : Nat → Nat) : Type := match f 0 with\n  | .zero => Unit\n  | .succ _ => Empty\n"
+        failsLib (t ++ "def Box (x : Nat) : Type := μ (Desc.arg 1 (T (Nat.add x)) (fun _ => Desc.ret ()) : Desc Unit) ()\n" ++
+          "def e (x y : Nat) : Box x = Box y := ()\n") "mismatch"
+        failsLib (t ++ "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x y : Nat) : Box (Nat.add x) = Box (Nat.add y) := ()\n") "mismatch"
+        failsLib (t ++ "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x y : Nat) : Box (Nat.mul x) = Box (Nat.sub y) := ()\n") "mismatch" },
+    { name := "S1: the same family at the same partial application is still one family", run := fun _ =>
+        okLib ("import Prelude\ndef T (f : Nat → Nat) : Type := match f 0 with\n  | .zero => Unit\n  | .succ _ => Empty\n" ++
+          "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x : Nat) : Box (Nat.add x) = Box (Nat.add x) := rfl\n") }
   ]
 
 
@@ -3094,7 +3194,7 @@ def okOptic (input : String) (infos : List String := []) : IO Unit := do
   let optic ← IO.FS.readFile "lib/Optic.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "Optic" then some optic else none
-  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
@@ -3104,7 +3204,7 @@ def failsOptic (input : String) (fragment : String) : IO Unit := do
   let optic ← IO.FS.readFile "lib/Optic.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "Optic" then some optic else none
-  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do
@@ -3143,7 +3243,7 @@ def derivingRun (input : String) : IO (CommandState ZeroOneMany) := do
   let derivingLib ← IO.FS.readFile "lib/Deriving.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "Deriving" then some derivingLib else none
-  pure (runFrontend (R := ZeroOneMany) input { loader })
+  pure (runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule })
 
 def okDeriving (input : String) (infos : List String := []) : IO Unit := do
   let s ← derivingRun input
@@ -3255,11 +3355,161 @@ def derivingGroup : Group where
         failsDeriving "import Deriving\ninductive X where\n  | x\n  deriving Frob" "no deriver for Frob" },
     { name := "Inhabited needs a non-recursive constructor", run := fun _ =>
         failsDeriving "import Deriving\ninductive I where\n  | more (i : I)\n  deriving Inhabited" "every constructor of I is recursive" },
+    { name := "deriving with proof fields: not shown, not compared, no default (F5)", run := fun _ =>
+        okDeriving ("import Deriving\nstructure Pos where\n  n : Nat\n  h : Nat.lt 0 n = Bool.true\n  deriving Repr, BEq\n" ++
+          "#eval Repr.repr (Pos.mk 3 (refl Bool.true))\n#eval BEq.beq (Pos.mk 3 (refl Bool.true)) (Pos.mk 4 (refl Bool.true))\n" ++
+          "inductive W where\n  | a (n : Nat) (h : n = n)\n  | b\n  deriving Repr, BEq, Inhabited\n" ++
+          "#eval Repr.repr (W.a 2 (refl 2))\n#eval BEq.beq (W.a 2 (refl 2)) (W.a 2 (refl 2))\n#eval Repr.repr (Inhabited.default : W)")
+          ["\"Pos.mk 3 _\"", ".false", "\"W.a 2 _\"", ".true", "\"W.b\""] },
+    { name := "Inhabited skips a constructor with a proof field", run := fun _ =>
+        failsDeriving "import Deriving\ninductive I where\n  | p (h : 0 = 0)\n  deriving Inhabited" "every constructor of I is recursive or has a proof field" },
+    { name := "deriving for a universe-polymorphic type (no signature: Type u is inferred)", run := fun _ =>
+        okDeriving ("import Deriving\ninductive Box.{u} (A : Type u) where\n  | mk (x : A)\n  deriving Repr, BEq, Inhabited\n" ++
+          "structure P.{u} (A : Type u) where\n  x : A\n  n : Nat\n  deriving Repr, BEq, Inhabited\n" ++
+          "#eval Repr.repr (Box.mk (P.mk 1 2))\n#eval BEq.beq (Box.mk 1) (Box.mk 2)\n#eval Repr.repr (Inhabited.default : P Nat)\n" ++
+          "#check @instReprBoxA")
+          ["\"Box.mk (P.mk 1 2)\"", ".false", "\"P.mk 0 0\"",
+           "instReprBoxA : {A : Type ?u0} → [inst✝ : Repr A] → Repr (Box A)"] },
+    { name := "deriving for a type above Type: lifted fields are seen through down (F5)", run := fun _ =>
+        okDeriving ("import Deriving\ninstance : Repr Type := Repr.mk (fun _ _ => \"<type>\")\n" ++
+          "instance : Inhabited Type := Inhabited.mk Nat\n" ++
+          "inductive Big where\n  | b (n : Nat) (h : n = n)\n  | c (T : Type)\n  deriving Repr, Inhabited\n" ++
+          "#eval Repr.repr (Big.b 3 (refl 3))\n#eval Repr.repr (Big.c Nat)\n#eval Repr.repr (Inhabited.default : Big)")
+          ["\"Big.b 3 _\"", "\"Big.c <type>\"", "\"Big.c <type>\""] },
     { name := "the example runs", run := fun _ => do
         let src ← IO.FS.readFile "examples/deriving.wiz"
         let s ← derivingRun src
         let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}") }
+  ]
+
+/-- Messages of `input` (with `lib/` importable), without positions, errors marked. -/
+def messagesLib (input : String) : IO (List String) := do
+  let loader ← preludeLoader
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
+  pure (s.messages.toList.map fun m => (match m.severity with
+    | .error => "error: " | .warning => "warning: " | .info => "") ++ m.text)
+
+/-- Some error mentions `fragment` (others may follow from it). -/
+def failsWith (input : String) (fragment : String) : IO Unit := do
+  let errs := errors input
+  unless errs.any (fun e => (e.splitOn fragment).length > 1) do
+    throw (IO.userError s!"no error mentions '{fragment}': {errs}")
+
+def familyTF : String := "inductive B where\n  | t\n  | f\ninductive T : B → Type where\n  | mk : T .t\n"
+
+/-- A type the witness search can't reach: its only value is five constructors deep. -/
+def deepType : String :=
+  "inductive A5 where\n  | mk\ninductive A4 where\n  | mk (x : A5)\ninductive A3 where\n  | mk (x : A4)\n" ++
+  "inductive A2 where\n  | mk (x : A3)\ninductive A1 where\n  | mk (x : A2)\n"
+
+/-- O3: a registration outside the library that disagrees with native addition. -/
+def badAdd : String :=
+  "inductive N where\n  | zero\n  | succ (n : N)\ndef K (a b : N) : N := a\nbuiltin nat := N\n" ++
+  "builtin nat.zero := N.zero\nbuiltin nat.succ := N.succ\nbuiltin nat.add := K\n" ++
+  "def h (n : N) : K n 3 = n := refl n\ndef bad : False := absurd (h 2)\n#print axioms bad\n"
+
+/-- The trusted base: partial definitions need a kernel-checked witness (O2), and
+`builtin` registrations outside the library are tracked axioms (O3). -/
+def trustGroup : Group where
+  name := "trust"
+  exercise := "—"
+  cases := [
+    { name := "O2: a partial definition at an empty index is rejected", run := fun _ =>
+        failsWith (familyTF ++ "partial def bad : T .f := bad\ndef boom : False := match bad with\n  | .mk => absurd ()\n")
+          "no witness found" },
+    { name := "O2: a partial function into an empty index is rejected", run := fun _ =>
+        fails (familyTF ++ "partial def bad : T .t → T .f := bad\n") "no witness found" },
+    { name := "O2: a wrong witness is rejected", run := fun _ =>
+        fails (familyTF ++ "partial (default := T.mk) def bad : T .f := bad\n") "type mismatch" },
+    { name := "partial definitions with inferred witnesses", run := fun _ =>
+        ok (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
+            "inductive List (A : Type) where\n  | nil\n  | cons (x : A) (xs : List A)\n" ++
+            "partial def p1 : T .t := p1\npartial def p2 (b : B) (x : T b) : T b := p2 b x\n" ++
+            "partial def p3 : Nat → List Nat := p3\npartial def p4 : (A : Type) × A := p4\n" ++
+            "partial def p5 (A : Type) : A → Unit × A := p5 A\npartial def p6 : Type := p6\n" ++
+            "axiom World : Type\naxiom w0 : World\npartial def p7 : World × B := p7\n" ++
+            "mutual\ndef ev : Nat → B\n  | .zero => .t\n  | .succ n => od n\ndef od : Nat → B\n  | .zero => .f\n  | .succ n => ev n\nend\n" ++
+            "#print axioms p2\n#print axioms p7\n")
+          ["'p2' does not depend on any axioms", "'p7' depends on axioms: [w0, World]"] },
+    { name := "a witness the search can't find, given with `default`", run := fun _ => do
+        fails (deepType ++ "partial def f : Unit → A1 := f\n") "no witness found"
+        ok (deepType ++ "partial (default := fun _ => A1.mk (A2.mk (A3.mk (A4.mk A5.mk)))) def f : Unit → A1 := f\n" ++
+            "mutual\npartial (default := A1.mk (A2.mk (A3.mk (A4.mk A5.mk)))) def g : A1 := h ()\ndef h (u : Unit) : A1 := g\nend\n") },
+    { name := "the kernel checks a partial definition's witness", run := fun _ => do
+        let ty : Term ZeroOneMany := .unit 1
+        let bad : Term ZeroOneMany := .empty 1
+        check ((addPartialDecl (R := ZeroOneMany) {} { name := "f", type := ty, value := none }) matches .error _)
+          "no witness accepted"
+        check ((addPartialDecl (R := ZeroOneMany) {} { name := "f", type := .empty 1, value := none, witness := some .tt }) matches .error _)
+          "ill-typed witness accepted"
+        check ((addPartialDecl (R := ZeroOneMany) {} { name := "f", type := ty, value := none, witness := some .tt }) matches .ok _)
+          "good witness rejected"
+        check ((addDecl (R := ZeroOneMany) {} { name := "f", type := ty, value := none }) >>= (addPartialImpl · "f" .tt) matches .error _)
+          "an axiom took an implementation"
+        let _ := bad },
+    { name := "O3: an unchecked registration is an axiom", run := fun _ => do
+        let msgs ← messagesLib badAdd
+        let expect := ["warning: builtin nat := N is not checked: it is an axiom of every declaration that depends on N (see `#print axioms`)",
+          "warning: builtin nat.zero := N.zero is not checked: it is an axiom of every declaration that depends on N.zero (see `#print axioms`)",
+          "warning: builtin nat.succ := N.succ is not checked: it is an axiom of every declaration that depends on N.succ (see `#print axioms`)",
+          "warning: builtin nat.add := K is not checked: it is an axiom of every declaration that depends on K (see `#print axioms`)",
+          "'bad' depends on axioms: [builtin nat.add := K, builtin nat := N, builtin nat.zero := N.zero, builtin nat.succ := N.succ]"]
+        checkEq (repr expect).pretty (repr msgs).pretty },
+    { name := "O3: numerals at a registered empty type are an error, not a crash", run := fun _ => do
+        failsWith "def E : Type := Empty\nbuiltin nat := E\ndef bad : False := absurd (0 : E)\n" "inductive type"
+        fails "inductive E where\n  | z\nbuiltin nat := E\ndef x : E := 0\n" "numerals need"
+        fails "inductive N where\n  | z\naxiom Z : N\nbuiltin nat := N\nbuiltin nat.zero := Z\n" "must be a definition"
+        fails "inductive N where\n  | z\ndef f (a : N) : N := a\nbuiltin nat := N\nbuiltin nat.add := f\n" "2 arguments" },
+    { name := "O3: a registration in a module from an -I directory is an axiom", run := fun _ => do
+        let dir : System.FilePath := s!"/tmp/wiz-trust-{← IO.monoNanosNow}"
+        IO.FS.createDirAll dir
+        IO.FS.writeFile (dir / "Mine.wiz") "import Prelude\ndef Nat.k (a b : Nat) : Nat := a\nbuiltin nat.add := Nat.k\n"
+        -- a `Prelude` in the directory doesn't replace the library's
+        IO.FS.writeFile (dir / "Prelude.wiz") "builtin nat := Nat\n"
+        let src := "import Prelude\nimport Mine\ndef x : Nat := Nat.k 1 2\n#print axioms x\n"
+        let roots : List System.FilePath := ["lib", dir]
+        let cl ← Wiz.Module.loadClosure roots src
+        let own := Wiz.Module.fromFirstRoot roots cl
+        check (own.contains "Prelude" && !own.contains "Mine") s!"trusted modules: {own}"
+        let s := runFrontend (R := ZeroOneMany) src { loader := fun m => (cl.get? m).map (·.2), trustedModule := own.contains }
+        let msgs := s.messages.toList.map fun m => (m.severity == .warning, m.text)
+        IO.FS.removeDirAll dir
+        let expect := [(true, "module Mine: 3:1: warning: builtin nat.add := Nat.k is not checked: it is an axiom of every declaration that depends on Nat.k (see `#print axioms`)"),
+          (false, "'x' depends on axioms: [builtin nat.add := Nat.k]")]
+        checkEq (repr expect).pretty (repr msgs).pretty },
+    { name := "Prelude registrations are trusted and compute natively", run := fun _ =>
+        okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4\n#print axioms t\n#eval 3 * 7 + Nat.pow 2 10\n"
+          ["'t' does not depend on any axioms", "1045"] },
+    { name := "#print axioms: the Prelude's castRefl", run := fun _ =>
+        okLib ("import Prelude\n#print axioms castRefl\n" ++
+            "def r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n#print axioms r\n")
+          ["'castRefl' depends on axioms: [castRefl]", "'r' depends on axioms: [castRefl]"] },
+    { name := "#print axioms lists native implementations (implemented_by)", run := fun _ => do
+        let note := "\n(native: an implementation that compiled code runs, trusted to agree with its definition)"
+        okLib ("import Prelude\ndef slow (n : Nat) : Nat := n + 0\ndef fast (n : Nat) : Nat := n\n" ++
+            "attribute [implemented_by fast] slow\ndef use (n : Nat) : Nat := slow n\n" ++
+            "#print axioms use\n#print axioms fast\n" ++
+            -- a recursive definition's own compiled equations and a partial one's body are not natives
+            "def len : List Nat → Nat\n  | .nil => 0\n  | .cons _ t => len t + 1\n#print axioms len\n" ++
+            "partial def spin (n : Nat) : Nat := fast n\n#print axioms spin\n")
+          ["'use' depends on axioms: [native slow := fast]" ++ note, "'fast' does not depend on any axioms",
+           "'len' does not depend on any axioms", "'spin' does not depend on any axioms"]
+        -- the library's are listed too: words run natively, in a native representation
+        okLib ("import Prelude\nimport Word\ndef idW (x : UIntN 8) : UIntN 8 := x\n#print axioms idW\n" ++
+            "def w : UIntN 8 := UIntN.add (UIntN.ofNat 8 3) (UIntN.ofNat 8 4)\n#print axioms w\n")
+          ["'idW' depends on axioms: [native UIntN := UIntN.ofBits/UIntN.toBits]" ++ note,
+           "'w' depends on axioms: [native UIntN.ofNat := UIntN.ofNatNative, native UIntN := UIntN.ofBits/UIntN.toBits, " ++
+             "native UIntN.add := UIntN.addNative, native UIntN.toNat := UIntN.toBits]" ++ note] },
+    { name := "O2 in the self-hosted frontend", run := fun _ =>
+        selfhostCheckFile (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
+            "partial def bad : T .f := bad\npartial def bad2 : T .t → T .f := bad2\n" ++
+            "partial def ok1 : T .t := ok1\npartial def ok2 (n : Nat) : Nat := ok2 n\n" ++
+            "partial (default := T.mk) def ok3 : T .t := ok3\npartial (default := T.mk) def bad3 : T .f := bad3\n")
+          ("B : U0\nT : (x0 : B) → U0\nNat : U0\n" ++
+           "error: partial definition bad: no witness found for its type; give one with `partial (default := w) def`\n" ++
+           "error: partial definition bad2: no witness found for its type; give one with `partial (default := w) def`\n" ++
+           "ok1 : (T B.t)\nok2 : (x0 : Nat) → Nat\nok3 : (T B.t)\nerror: type mismatch: expected (T B.f), got (T B.t)\n") }
   ]
 
 /-- Every `lib/*.wiz` and `lib/D/*.wiz` (as `D.X`), by module name. -/
@@ -3276,14 +3526,14 @@ def libLoader : IO (Name → Option String) := do
 
 /-- No errors, and these messages, with every library importable. -/
 def okLibs (input : String) (infos : List String := []) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) input { loader := ← libLoader }
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
 
 /-- Exactly one error, mentioning `fragment`, with every library importable. -/
 def failsLibs (input : String) (fragment : String) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) input { loader := ← libLoader }
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do
@@ -3291,7 +3541,7 @@ def failsLibs (input : String) (fragment : String) : IO Unit := do
 
 /-- Build `main` with the C backend, with every library importable. -/
 def cRunLibs (src : String) (expected : String) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) src { loader := ← libLoader }
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
@@ -3417,10 +3667,74 @@ def vecGroup : Group where
         let src := "import BitVec\ndef f (a b : BitVec 64) : BitVec 64 := BitVec.add (BitVec.xor a b) (BitVec.ashr a 3)\n" ++
           "def g (a : BitVec 64) : Bool := BitVec.slt a (BitVec.signExtend 64 (BitVec.extract 7 0 a))\n#ir f\n#ir g\n" ++
           "#ir BitVec.add\n#ir BitVec.ashr\n#ir BitVec.slt\n#ir BitVec.extract\n#ir BitVec.signExtend\n#ir BitVec.concat"
-        let s := runFrontend (R := ZeroOneMany) src { loader := ← libLoader }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
         check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }
+  ]
+
+/-! ## Stage 24: separation logic (lib/Logic.wiz, lib/HProp.wiz, lib/Hoare.wiz) -/
+
+def seplogicGroup : Group where
+  name := "seplogic"
+  exercise := "Stage 24"
+  cases := [
+    { name := "the connectives; propext and funext are definitional", run := fun _ => do
+        okLibs ("import Logic\n" ++
+          "def t1 (P Q : Prop) (h : P ∧ Q) : Q ∧ P := And.symm h\n" ++
+          "def t2 (P Q : Prop) (h : P ∨ Q) : Q ∨ P := Or.symm h\n" ++
+          "def t3 : Ex (fun (n : Nat) => n = 3) := Ex.intro (fun (n : Nat) => n = 3) 3 rfl\n" ++
+          "def t4 (P Q : Prop) (h : P ↔ Q) : P = Q := propext h\n" ++
+          "def t5 (f : Nat → Nat) : (fun x => f x) = f := funext (fun x => rfl)\n" ++
+          "def t6 (P : Prop) (n : Not P) (h : P ∨ False) : False := n (Or.resolveRight h (fun f => f))\n" ++
+          "def t7 : Not (Nat.succ 0 = 0) := fun e => e")
+        failsLibs "import Logic\ndef bad (P Q : Prop) (h : P ∨ Q) : P := h P (fun p => p) (fun q => q)" "mismatch" },
+    { name := "heap predicates: ⋆ is commutative, associative, with unit emp (equations, no axioms)", run := fun _ =>
+        okLibs ("import HProp\n" ++
+          "def t1 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂) ⋆ H₃ = H₁ ⋆ (H₂ ⋆ H₃) := star.assoc H₁ H₂ H₃\n" ++
+          "def t2 (H₁ H₂ : HProp Nat) : H₁ ⋆ H₂ = H₂ ⋆ H₁ := star.comm H₁ H₂\n" ++
+          "def t3 (H : HProp Nat) : emp ⋆ H = H := star.emp_l H\n" ++
+          "def t4 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂) ⋆ H₃ ⊢ H₃ ⋆ (H₂ ⋆ H₁) :=\n" ++
+          "  Entails.trans (star.comm_entails (H₁ ⋆ H₂) H₃) (star.mono_r H₃ (star.comm_entails H₁ H₂))") },
+    { name := "the frame property and the wand adjunction", run := fun _ =>
+        okLibs ("import HProp\n" ++
+          "def t1 (H₁ H₁' H₂ : HProp Nat) (m : H₁ ⊢ H₁') : H₁ ⋆ H₂ ⊢ H₁' ⋆ H₂ := star.mono_l H₂ m\n" ++
+          "def t2 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂ ⊢ H₃) ↔ (H₁ ⊢ H₂ −∗ H₃) := wand.adjoint H₁ H₂ H₃\n" ++
+          "def t3 (H₁ H₂ : HProp Nat) : H₁ ⋆ (H₁ −∗ H₂) ⊢ H₂ := wand.cancel H₁ H₂\n" ++
+          "def t4 : (1 ↦ 5) ⋆ (1 ↦ 6) ⊢ @hpure Nat False := pts.same_loc 1 5 6") },
+    { name := "a law that doesn't hold has no proof", run := fun _ => do
+        -- (small ones: a wrong law about `⋆` is rejected too, but only after minutes of
+        -- unfolding; wishful slow-failing-unification)
+        failsLibs "import HProp\ndef bad : (1 ↦ 5) ⊢ (1 ↦ 6) := Entails.refl (1 ↦ 5)" "mismatch"
+        failsLibs "import HProp\ndef bad : @emp Nat ⊢ hpure False := Entails.refl emp" "mismatch" },
+    { name := "wp is a monotone, frame-preserving monad morphism; the triple rules", run := fun _ =>
+        okLibs ("import Hoare\n" ++
+          "def t1 (c : Prog Nat Nat) (f : Nat → Prog Nat Nat) : wp (Prog.bind c f) = W.bind (wp c) (fun a => wp (f a)) := wp.bind c f\n" ++
+          "def t2 (c : Prog Nat Nat) : W.Frame (wp c) := wp.frame c\n" ++
+          "def t3 (P H : HProp Nat) (c : Prog Nat Nat) (Q : Nat → HProp Nat) (t : Triple P c Q) :\n" ++
+          "  Triple (P ⋆ H) c (fun a => Q a ⋆ H) := Triple.frame H t\n" ++
+          "def t4 (l : Nat) : Triple (l ↦ 1) (Prog.bind (Prog.read l) (fun v => Prog.write l (Nat.succ v))) (fun _ => l ↦ 2) :=\n" ++
+          "  Triple.bind (Triple.read l 1) (fun r => Triple.pure (fun e =>\n" ++
+          "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
+    { name := "swap and in-place list reversal are verified", run := fun _ =>
+        okLibs ("import Hoare\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
+          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (star Nat (pts Nat p a) (pts Nat q b)) (Prog.swap p q) (fun _ => star Nat (pts Nat p b) (pts Nat q a))",
+           "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
+    { name := "a faulting program has no triple from a satisfiable precondition", run := fun _ =>
+        failsLibs ("import Hoare\ndef bad : Triple (@emp Nat) (@Prog.fail Nat Unit) (fun (_ : Unit) => @emp Nat) :=\n" ++
+          "  Triple.ret () (fun (_ : Unit) => @emp Nat)") "mismatch" },
+    { name := "the programs run on concrete heaps, as adequacy says", run := fun _ =>
+        okLibs ("import Hoare\n" ++
+          "#eval Prog.show (Prog.swap 1 2) (Heap.ofList (.cons 10 (.cons 20 .nil)) 1) 3 3\n" ++
+          -- the list 1, 2, 3 in cells at 1, 3, 5
+          "#eval Prog.show (Prog.reverse 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 7\n" ++
+          "#eval Prog.show (Prog.reverse 2 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 7\n" ++
+          "#eval Prog.show (Prog.bind (Prog.ref 7) (fun l => Prog.read l)) Heap.empty 0 2")
+          [".some ((), .cons .none (.cons (.some 20) (.cons (.some 10) .nil)))",
+           -- reversed: the cell at 5 (value 3) points to 3 (value 2), which points to 1 (value 1)
+           ".some (5, .cons .none (.cons (.some 1) (.cons (.some 0) (.cons (.some 2) (.cons (.some 1) (.cons (.some 3) (.cons (.some 3) .nil)))))))",
+           -- not enough fuel: a fault
+           ".none", ".some (7, .cons (.some 7) (.cons .none .nil))"] }
   ]
 
 
@@ -3519,7 +3833,7 @@ def liftGroup : Group where
           "inductive Pos where\n  | mk (n : Nat) (h : n = n)\ninductive Pos0 where\n  | mk (n : Nat)\n" ++
           "def Pos.val (p : Pos) : Nat := match p with\n  | .mk n _ => n\ndef Pos0.val (p : Pos0) : Nat := match p with\n  | .mk n => n\n" ++
           "#ir Pos.val\n#ir Pos0.val\n"
-        let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
+        let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader, trustedModule := Tests.libModule }
         match s.messages.toList.map (·.text) with
         | [a, b, c, d] =>
           checkEq (b.replace "unbox0" "unbox") a
@@ -3591,7 +3905,7 @@ def phantomGroup : Group where
         let loader ← preludeLoader
         let run (phantom : Bool) : IO (List String × String) := do
           let src := phantomPair phantom
-          let s := runFrontend (R := ZeroOneMany) src { loader }
+          let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
           let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
           unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
           match Build.cProgram s "main" with
@@ -3613,7 +3927,7 @@ def phantomGroup : Group where
           "def unW (v : W) : List Nat := v.val\ndef swap (v : P 3) : P 3 := (v.x, v.y, ())\n" ++
           "#eval w\n#run w\n#run p\n#eval swap p\n#run swap p\n" ++
           "def wl : List W := List.cons w List.nil\n#run wl\n"
-        let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← preludeLoader }
         let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
         checkEq ["(.cons 1 .nil, ())", "(.cons 1 .nil, ())", "(2, .cons 1 .nil, ())",
@@ -3678,7 +3992,7 @@ def regionsLongest : String :=
 
 /-- The front end's state for `src`, with every library importable. -/
 def libsState (src : String) : IO (CommandState ZeroOneMany) := do
-  let s := runFrontend (R := ZeroOneMany) src { loader := ← libLoader }
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   pure s
@@ -3783,7 +4097,7 @@ def okInfoview (input : String) (infos : List String := []) : IO Unit := do
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "Json" then some json
     else if m == "Infoview" then some iv else none
-  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
@@ -3869,5 +4183,48 @@ def infoviewGroup : Group where
           if ((out.stdout ++ out.stderr).splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"
           else throw (IO.userError s!"infoview/test.sh failed:\n{out.stdout}{out.stderr}") }
   ]
+
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  backendGroup ::
+  borrowGroup ::
+  builtinGroup ::
+  cGroup ::
+  classGroup ::
+  coinductiveGroup ::
+  dataGroup ::
+  derivingGroup ::
+  effectsGroup ::
+  ffiGroup ::
+  group ::
+  hdlGroup ::
+  inductiveGroup ::
+  infoviewGroup ::
+  languageGroup ::
+  levelGroup ::
+  liftGroup ::
+  llvmGroup ::
+  macroGroup ::
+  matchGroup ::
+  opticGroup ::
+  ottGroup ::
+  phantomGroup ::
+  qtyGroup ::
+  regionsGroup ::
+  reuseGroup ::
+  runGroup ::
+  selfHostGroup ::
+  seplogicGroup ::
+  sizedGroup ::
+  stdGroup ::
+  structGroup ::
+  tacticGroup ::
+  toolingGroup ::
+  trustGroup ::
+  vecGroup ::
+  wordGroup ::
+  []
 
 end Tests.Elab

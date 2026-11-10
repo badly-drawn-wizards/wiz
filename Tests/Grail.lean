@@ -41,7 +41,7 @@ def modulesGroup : Group where
         let dir ← mkTree libFiles
         let ms ← Module.loadClosure ["lib", dir] "import Use\n#eval four\n"
         checkEq ["Data.Two", "Prelude", "Use"] (ms.toList.map (·.1) |>.toArray.qsort (· < ·)).toList
-        let s := runFrontend (R := ZeroOneMany) "import Use\n#eval four\n" { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) "import Use\n#eval four\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         checkEq "[2:1: info: 4]" (toString (s.messages.toList.map (·.render "import Use\n#eval four\n")))
         let all ← Module.listRoot dir
         checkEq #["Data.Two", "Other", "Use"] (all.map (·.1)) },
@@ -65,7 +65,7 @@ def modulesGroup : Group where
         let dir ← mkTree libFiles
         let cache ← IO.FS.createTempDir
         let ms ← Module.loadAll ["lib", dir]
-        let init : CommandState ZeroOneMany := { loader := loaderOf ms }
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
         let (_, h1) ← Cache.elaborateCached cache "import Data.Two\ndef a : Nat := two\n" init 0
         checkEq 0 h1
         -- another file: the modules come from the cache (Prelude's commands, and `two`)
@@ -80,7 +80,7 @@ def modulesGroup : Group where
         let cache ← IO.FS.createTempDir
         let elabSrc (src : String) : IO Nat := do
           let ms ← Module.loadAll ["lib", dir]
-          let (s, h) ← Cache.elaborateCached cache src ({ loader := loaderOf ms } : CommandState ZeroOneMany) 0
+          let (s, h) ← Cache.elaborateCached cache src ({ trustedModule := Tests.libModule, loader := loaderOf ms } : CommandState ZeroOneMany) 0
           check (!s.messages.any (·.severity == .error)) s!"messages: {s.messages.toList.map (·.text)}"
           pure h
         let src := "import Use\nimport Other\ndef c : Nat := four + one\n"
@@ -95,17 +95,17 @@ def modulesGroup : Group where
         let dir ← mkTree [("Sneaky.wiz", "def three : Nat := 3\n")]
         let ms ← Module.loadAll ["lib", dir]
         let cache ← IO.FS.createTempDir
-        let (s, _) ← Cache.elaborateCached cache "import Prelude\nimport Sneaky\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany) 0
+        let (s, _) ← Cache.elaborateCached cache "import Prelude\nimport Sneaky\n" ({ trustedModule := Tests.libModule, loader := loaderOf ms } : CommandState ZeroOneMany) 0
         check (s.messages.any fun m => (m.text.splitOn "module Sneaky has errors").length > 1)
           s!"Sneaky used Nat without importing Prelude: {s.messages.toList.map (·.text)}" },
     { name := "without the cache too", run := fun _ => do
         let dir ← mkTree [("Sneaky.wiz", "def three : Nat := 3\n")]
         let ms ← Module.loadAll ["lib", dir]
-        let s ← Cache.elaborateUncached "import Prelude\nimport Sneaky\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany)
+        let s ← Cache.elaborateUncached "import Prelude\nimport Sneaky\n" ({ trustedModule := Tests.libModule, loader := loaderOf ms } : CommandState ZeroOneMany)
         check (s.messages.any fun m => (m.text.splitOn "module Sneaky has errors").length > 1)
           s!"Sneaky used Nat without importing Prelude: {s.messages.toList.map (·.text)}"
         let ms ← Module.loadAll ["lib"]
-        let s ← Cache.elaborateUncached "import Std\ndef n : Nat := 2 + 2\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany)
+        let s ← Cache.elaborateUncached "import Std\ndef n : Nat := 2 + 2\n" ({ trustedModule := Tests.libModule, loader := loaderOf ms } : CommandState ZeroOneMany)
         check s.messages.isEmpty s!"messages: {s.messages.toList.map (·.text)}" },
     { name := "a module sees only what it imports (the frontend and the language server too)", run := fun _ => do
         let dir ← mkTree [("Sneaky.wiz", "def three : Nat := 3\n"), ("Fine.wiz", "import Prelude\ndef three : Nat := 3\n")]
@@ -113,28 +113,28 @@ def modulesGroup : Group where
         let sneaky (s : CommandState ZeroOneMany) : Bool :=
           s.messages.any fun m => (m.text.splitOn "module Sneaky has errors").length > 1
         let src := "import Prelude\nimport Sneaky\n"
-        let s := runFrontend (R := ZeroOneMany) src { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := loaderOf ms }
         check (sneaky s) s!"runFrontend: Sneaky used Nat without importing Prelude: {s.messages.toList.map (·.text)}"
-        let s := runFrontend (R := ZeroOneMany) ("import Prelude\ndef two : Nat := 2\nimport Sneaky\n") { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) ("import Prelude\ndef two : Nat := 2\nimport Sneaky\n") { trustedModule := Tests.libModule, loader := loaderOf ms }
         check (sneaky s) s!"runFrontend, after a definition: {s.messages.toList.map (·.text)}"
-        let (s, _) := Query.elaborate (R := ZeroOneMany) {} src { loader := loaderOf ms, termInfo := true }
+        let (s, _) := Query.elaborate (R := ZeroOneMany) {} src { trustedModule := Tests.libModule, loader := loaderOf ms, termInfo := true }
         check (sneaky s) s!"the language server's engine: {s.messages.toList.map (·.text)}"
         -- through the server: the diagnostic is at the import
-        let srv : LSP.Server := { libs := ms.fold (fun m k (p, t) => m.insert k (p.toString, t)) {} }
+        let srv : LSP.Server := { libs := ms.fold (fun m k (p, t) => m.insert k (p.toString, t)) {}, trusted := ["Prelude"] }
         let (_, out) := LSP.handle srv (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
           ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("text", src)])])])
         check ((out[0]!.compress.splitOn "module Sneaky has errors").length > 1) s!"diagnostics: {out[0]!.compress}"
         -- a module that imports what it uses is fine, and its declarations are seen
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\nimport Fine\n#eval three\n" { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\nimport Fine\n#eval three\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         checkEq "[3:1: info: 3]" (toString (s.messages.toList.map (·.render "import Prelude\nimport Fine\n#eval three\n"))) },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
         let ms ← Module.loadAll [dir]
         let cache ← IO.FS.createTempDir
-        let (s, _) ← Cache.elaborateCached cache "import A\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany) 0
+        let (s, _) ← Cache.elaborateCached cache "import A\n" ({ trustedModule := Tests.libModule, loader := loaderOf ms } : CommandState ZeroOneMany) 0
         check (s.messages.any fun m => (m.text.splitOn "import cycle").length > 1)
           s!"messages: {s.messages.toList.map (·.text)}"
-        let s := runFrontend (R := ZeroOneMany) "import A\n" { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) "import A\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         check (s.messages.any fun m => (m.text.splitOn "import cycle").length > 1)
           s!"runFrontend: {s.messages.toList.map (·.text)}" }
   ]
@@ -212,7 +212,7 @@ def toolchainGroup : Group where
         let (tc, _) := ({} : Toolchain).parseFlags ["check", "main.wiz", "-I", dir.toString]
         let src := "import Pkg.Three\n#eval three\n"
         let ms ← Module.loadClosure ("lib" :: tc.searchPath) src
-        let s := runFrontend (R := ZeroOneMany) src { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := loaderOf ms }
         checkEq "[2:1: info: 3]" (toString (s.messages.toList.map (·.render src))) }
   ]
 
@@ -586,5 +586,18 @@ def grailSelfhostGroup : Group where
         check (← r.build [target] [target]) "the second build failed"
         checkEq 0 (← r.stats.get).ran }
   ]
+
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  grailDepsGroup ::
+  grailGroup ::
+  grailJobsGroup ::
+  grailSelfhostGroup ::
+  modulesGroup ::
+  testRunnerGroup ::
+  toolchainGroup ::
+  []
 
 end Tests.Grail
