@@ -1,0 +1,27 @@
+import Feral                                          -- wishful: command-proc-macros
+-- Lifetimes that matter: an outlives bound, a reference stored into a longer-lived
+-- place, and nested borrow scopes. Lowered: drafts/feral/lowered/10_regions.wiz.
+-- The programs Rust rejects (and the lowering rejects as type errors) are in
+-- drafts/feral/rejected/.
+
+feral                                                 -- wishful: command-proc-macros
+  fn longest {'a 'b} {'a : 'b} (x : &'a U64) (y : &'b U64) : &'b U64 :=   -- wishful: region-indices
+    if *x < *y then y else x                         -- x : &'a U64 is a &'b U64 because 'a : 'b
+
+  fn remember {'a 'b 'm} {'a : 'b} (slot : &'m mut Option (&'b U64)) (x : &'a U64) : Unit := {
+    *slot := .some x                                 -- x : &'a U64 stored where &'b U64 live
+  }
+
+  fn main () : U64 := {
+    let a := 3;                                      -- wishful: machine-int-literals
+    let ra := &a;
+    let b := 5;
+    let rb := &b;                                    -- b's borrow is shorter than a's
+    let m := longest ra rb;                          -- 'a : 'b holds: a outlives b
+    let mut slot : Option (&U64) := .none;           -- holds references of b's region
+    remember (&mut slot) ra;
+    match slot with
+    | .some s => *s + *m
+    | .none => *m
+  }
+end

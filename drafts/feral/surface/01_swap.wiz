@@ -1,0 +1,21 @@
+import Feral                                          -- wishful: command-proc-macros
+-- Swap through two mutable borrows. Lowered: drafts/feral/lowered/01_swap.wiz
+
+feral                                                 -- wishful: command-proc-macros
+  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {   -- wishful: region-indices
+    let t := *x;                                     -- U64 is Copy: a copy, not a move
+    *x := *y;
+    *y := t
+  }
+
+  -- moving out of a borrow needs mem.swap / mem.replace / mem.take
+  fn mem_swap {'a 'b} {T : Type} (x : &'a mut T) (y : &'b mut T) : Unit :=   -- wishful: region-indices
+    mem.swap x y
+
+  fn main () : U64 × U64 := {
+    let mut a : U64 := 1;                            -- wishful: machine-int-literals
+    let mut b : U64 := 2;                            -- wishful: machine-int-literals
+    swap (&mut a) (&mut b);                          -- two disjoint borrows, then a and b are usable again
+    (a, b)
+  }
+end

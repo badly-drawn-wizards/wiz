@@ -1,7 +1,7 @@
 import Optic
--- Regions (Rust lifetimes) and borrow handles for the Rust DSL's lowering (RD12).
--- Plan: /workspace/wiz-notes/rust-dsl-plan.md; rules: drafts/rust/LOWERING.md (L1, L3,
--- L4, L12, L17, L20–L22); hand-lowered programs: drafts/rust/lowered/.
+-- Regions (Rust lifetimes) and borrow handles for Feral's lowering (RD12).
+-- Plan: /workspace/wiz-notes/rust-dsl-plan.md; rules: drafts/feral/LOWERING.md (L1, L3,
+-- L4, L12, L17, L20–L22); hand-lowered programs: drafts/feral/lowered/.
 --
 -- A lifetime `'a` lowers to an erased variable `ρ : Region`. Every handle type below is a
 -- `structure` (or `inductive`) with `ρ` as a parameter, so `ρ` is part of the type's

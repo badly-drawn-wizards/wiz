@@ -1,0 +1,119 @@
+import Optic
+import Region
+-- The runtime of lowered DSL code, beyond `lib/Optic.wiz` (which has `Result`, `Error`
+-- and the optics). This file CHECKS today, but it holds stand-ins for work owned by other
+-- tracks, so it lives in drafts/ until they land:
+--   * `U64` is a Nat-backed stand-in for RD9's machine integers (agent/natives-ints):
+--     the real one is `{toNat}` with native words via implemented_by.
+--   * `Vec` is a List-backed stand-in for RD10's model + native array (agent/vec-lib):
+--     the real `takeAt`/`fillAt` move the element out of a native array in place.
+-- Use: wiz check -I drafts/feral/lib drafts/feral/lowered/NN_name.wiz
+
+-- ## Regions (RD12): lib/Region.wiz
+--
+-- `Region`, `Outlives`, the handles `Shr`/`Uniq`/`Mut`/`MutOpt`/`Lent` (structures, so the
+-- region is part of their type) and the borrow scopes live in the library.
+
+-- ## Machine integers (stand-in for RD9)
+
+-- `u64`/`usize`: invariant `val < 2^64`, kept by every operation.
+structure U64 where
+  val : Nat
+def U64.size : Nat := 18446744073709551616
+def USize : Type := U64
+
+-- a literal (wishful: machine-int-literals; the front end checks the range)
+def U64.lit (n : Nat) : U64 := U64.mk n
+def U64.toNat (x : U64) : Nat := x.val
+def U64.checked (n : Nat) : Result U64 := match Nat.lt n U64.size with
+  | .true => .ok (U64.mk n)
+  | .false => .err .overflow
+-- `a + b`, `a - b`, `a * b` panic on overflow (debug-mode Rust; RD7)
+def U64.add (a b : U64) : Result U64 := U64.checked (Nat.add a.val b.val)
+def U64.mul (a b : U64) : Result U64 := U64.checked (Nat.mul a.val b.val)
+def U64.sub (a b : U64) : Result U64 := match Nat.lt a.val b.val with
+  | .true => .err .overflow
+  | .false => .ok (U64.mk (Nat.sub a.val b.val))
+-- `a.checked_add(b)`: no panic, an `Option`
+def U64.checkedAdd (a b : U64) : Option U64 := match U64.add a b with
+  | .ok c => .some c
+  | .err _ => .none
+def U64.lt (a b : U64) : Bool := Nat.lt a.val b.val
+def U64.le (a b : U64) : Bool := Nat.le a.val b.val
+def U64.eq (a b : U64) : Bool := Nat.beq a.val b.val
+-- `n / 2`
+def Nat.halfGo : Nat → Bool → Nat
+  | .zero, _ => .zero
+  | .succ n, .false => Nat.halfGo n .true
+  | .succ n, .true => .succ (Nat.halfGo n .false)
+def Nat.half (n : Nat) : Nat := Nat.halfGo n .false
+-- `(a + b) / 2` without overflow, for binary search: `a + (b - a) / 2` with `a ≤ b`
+def U64.midpoint (a b : U64) : U64 := U64.mk (Nat.add a.val (Nat.half (Nat.sub b.val a.val)))
+
+-- ## Vec (stand-in for RD10)
+
+structure Vec (A : Type) where
+  items : List A
+
+def Vec.new {A : Type} : Vec A := Vec.mk List.nil
+def Vec.len {ρ : Region} {A : Type} (v : Shr ρ (Vec A)) : U64 := U64.mk (List.length v.val.items)
+def List.snoc {A : Type} : List A → A → List A
+  | .nil, x => .cons x .nil
+  | .cons y ys, x => .cons y (List.snoc ys x)
+-- `v.push(x)`: `&mut self` is handed back. (Natively: in place when unique.)
+def Vec.push {ρ : Region} {A : Type} (v : Uniq ρ (Vec A)) (x : A) : Result (Unit × Uniq ρ (Vec A)) :=
+  .ok ((), Uniq.set v (Vec.mk (List.snoc v.val.items x)))
+def List.getOpt {A : Type} : Nat → List A → Option A
+  | _, .nil => .none
+  | .zero, .cons x _ => .some x
+  | .succ i, .cons _ xs => List.getOpt i xs
+-- `v[i]` (a read through `&self`; the element is shared)
+def Option.okOr {A : Type} (e : Error) : Option A → Result A
+  | .some x => .ok x
+  | .none => .err e
+def Vec.index {A : Type} (v : Vec A) (i : U64) : Result A := Option.okOr .outOfBounds (List.getOpt i.val v.items)
+def Vec.mkL {A : Type} (items : List A) : Vec A := Vec.mk items
+-- the place `v.items` (a field lens), and `&mut v[i]`, as a lawful partial lens: in the
+-- model it is `List.atL`; natively it is `takeAt`/`fillAt` (the hole is a scalar)
+def Vec.itemsL {A : Type} : Lens (Vec A) (List A) := fun v =>
+  (v.items, Vec.mkL)
+def Vec.indexMut {A : Type} (i : U64) : PLens (Vec A) A :=
+  PLens.comp (Lens.toP Vec.itemsL) (List.atL i.val)
+-- its laws (what the front end generates for a place function): the composite's laws
+-- are `List.atL`'s, because putting into the `items` field and reading it back is
+-- definitional
+def Vec.indexMut_lawful {A : Type} (i : U64) : PLens.Lawful (@Vec.indexMut A i) :=
+  (fun v => Store.underR_gp Vec.mkL v.items v rfl (List.atL i.val v.items) (List.atL_gp i.val v.items),
+   fun v => Store.underR_pg Vec.mkL (List.atL i.val) (Vec.indexMut i) (fun x => rfl)
+     (List.atL i.val v.items) (List.atL_pg i.val v.items),
+   fun v => Store.underR_pp Vec.mkL (List.atL i.val) (Vec.indexMut i) (fun x => rfl)
+     (List.atL i.val v.items) (List.atL_pp i.val v.items))
+-- `v.get_mut(i)`: `Option<&mut A>`, a borrow of the element or the vector back
+def Vec.getMut {ρ : Region} {A : Type} (i : U64) (v : Uniq ρ (Vec A)) : MutOpt ρ A (Vec A) :=
+  match Mut.ofPLens v (Vec.indexMut i) with
+  | .ok m => .some m
+  | .err _ => .none v
+def List.map {A B : Type} (f : A → B) : List A → List B
+  | .nil => .nil
+  | .cons x xs => .cons (f x) (List.map f xs)
+def Vec.ofList {A : Type} (xs : List A) : Vec A := Vec.mk xs
+
+-- ## Control flow
+
+-- how a loop ends: normally (`brk`, with the loop's live variables) or by a `return`
+-- from inside it (`ret`, with the function's result: its value and its `&mut`
+-- arguments, all borrows ended)
+inductive Flow (B R : Type) where
+  | brk (b : B)
+  | ret (r : R)
+
+-- ## Running lowered code from Wiz (RD16 helpers)
+
+-- the value of a lowered `main`, or the panic
+def Result.show {A : Type} (sh : A → String) : Result A → String
+  | .ok a => sh a
+  | .err .overflow => "panicked: attempt to add with overflow"
+  | .err .outOfBounds => "panicked: index out of bounds"
+  | .err .unwrapNone => "panicked: called `Option::unwrap()` on a `None` value"
+  | .err .divZero => "panicked: attempt to divide by zero"
+  | .err (.panic m) => m

@@ -1,0 +1,23 @@
+import Feral                                          -- wishful: command-proc-macros
+-- In-place list reversal: every cell is reused. Lowered: drafts/feral/lowered/04_reverse.wiz
+
+feral                                                 -- wishful: command-proc-macros
+  enum List where
+    | nil
+    | cons (head : U64) (tail : Box List)
+
+  fn reverse (l : List) : List := {
+    let mut l := l;
+    let mut acc := List.nil;
+    while let .cons x tail := l do {                 -- moves the cell out of l
+      acc := .cons x acc;
+      l := *tail                                     -- moves out of the box
+    };
+    acc
+  }
+
+  fn reverse_in_place (l : &mut List) : Unit := {
+    let old := mem.take l;                           -- leaves List.nil (the Default) behind
+    *l := reverse old
+  }
+end

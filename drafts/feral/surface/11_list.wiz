@@ -1,0 +1,32 @@
+import Feral                                          -- wishful: command-proc-macros
+-- Traversing a linked list through mutable borrows. Lowered: drafts/feral/lowered/11_list.wiz
+
+feral                                                 -- wishful: command-proc-macros
+  enum List where
+    | nil
+    | cons (head : U64) (tail : Box List)
+
+  -- recursion through a reborrow of each tail
+  fn incr_all {'a} (l : &'a mut List) : Result Unit Overflow := {   -- wishful: region-indices
+    match l with
+    | .nil => .ok ()
+    | .cons head tail => {                           -- head : &mut U64, tail : &mut List
+      *head := (head.checked_add 1).ok_or Overflow ?;
+      incr_all tail
+    }
+  }
+
+  -- a cursor that moves down the list: `cur := tail` shortens nothing, it reborrows
+  fn push_back {'a} (l : &'a mut List) (x : U64) : Unit := {      -- wishful: region-indices
+    let mut cur := l;
+    while let .cons _ tail := cur do { cur := tail };
+    *cur := .cons x .nil
+  }
+
+  fn main () : List := {
+    let mut l := .cons 1 (.cons 2 .nil);
+    incr_all (&mut l) ?;
+    push_back (&mut l) 7;
+    l                                                -- [2, 3, 7]
+  }
+end

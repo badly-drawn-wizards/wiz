@@ -858,7 +858,7 @@ def backendGroup : Group where
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
 or two `case`s on a `Bool` returned by a call; a zipper insertion into a binary tree;
-and a structure updated through calls (`record`, as `drafts/rust/lowered/07`). -/
+and a structure updated through calls (`record`, as `drafts/feral/lowered/07`). -/
 def reuseSrc : String := "import Prelude
 inductive T where
   | a (x : Nat) (y : Nat)
@@ -3086,7 +3086,7 @@ def failsOptic (input : String) (fragment : String) : IO Unit := do
 
 def opticGroup : Group where
   name := "optic"
-  exercise := "lib/Optic.wiz (Rust DSL, RD11)"
+  exercise := "lib/Optic.wiz (Feral, RD11)"
   cases := [
     { name := "the optics library checks, with its lens laws", run := fun _ =>
         okOptic "import Optic\n#check List.atL_lawful\n#check Lens.comp_lawful"
@@ -3815,7 +3815,7 @@ def hdlGroup : Group where
            "g := (λr. (λinst✝. (λx. (λk. (let j := (Nat.succ #0); ((((Hw.lit ◾) #3) 8) #0))))))"] }
   ]
 
-/-! ## Regions: borrow checking as typing (lib/Region.wiz, Rust DSL RD12) -/
+/-! ## Regions: borrow checking as typing (lib/Region.wiz, Feral RD12) -/
 
 def regionsPush : String :=
   "def push1 {ρ : Region} (v : Uniq ρ (List Nat)) : Result (Unit × Uniq ρ (List Nat)) :=\n  .ok ((), Uniq.set v (List.cons 1 v.val))\n"
@@ -3906,7 +3906,7 @@ def libsAllocs (s : CommandState ZeroOneMany) (n : Name) : IO Nat := do
 
 def regionsGroup : Group where
   name := "regions"
-  exercise := "lib/Region.wiz (Rust DSL lifetimes)"
+  exercise := "lib/Region.wiz (Feral lifetimes)"
   cases := [
     { name := "handles in different regions are different types; regions are inferred", run := fun _ => do
         okLibs ("import Region\ndef same {ρ : Region} (m : Mut ρ Nat (List Nat)) : Mut ρ Nat (List Nat) := m\n" ++

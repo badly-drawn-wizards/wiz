@@ -1,0 +1,43 @@
+import FeralCore
+-- Lowering of drafts/feral/surface/06_count.wiz (rules: drafts/feral/LOWERING.md).
+-- A Feral `Result T E` is a value, `Except E T`, inside the panic monad: `Result (Except E
+-- T)` (L9). `?` is a direct match; inside a loop it leaves the loop with `Flow.ret`.
+
+-- struct Overflow where   (no fields)
+structure Overflow where
+
+-- the loop `while i < n do { s := (s.checked_add i).ok_or Overflow ?; i += 1 }`
+partial def sum_from.loop0 (n : U64) (i : U64) (s : U64) :
+    Result (Flow (U64 × U64) (Except Overflow U64)) :=
+  match U64.lt i n with
+  | .true =>
+    (match U64.checkedAdd s i with                  -- s.checked_add i
+    | .some s' =>                                   -- .ok_or Overflow ? : the .ok case
+      let s := s';
+      (match U64.add i (U64.lit 1) with             -- i += 1 (a panic if it overflows)
+      | .ok i => sum_from.loop0 n i s
+      | .err e => .err e)
+    | .none => .ok (.ret (Except.error Overflow.mk)))  -- the `?` returns `.error Overflow`
+  | .false => .ok (.brk (i, s))
+
+-- fn sum_from (s0 : U64) (n : U64) : Result U64 Overflow
+def sum_from (s0 : U64) (n : U64) : Result (Except Overflow U64) :=
+  let i := U64.lit 0;
+  let s := s0;
+  match sum_from.loop0 n i s with
+  | .ok fl => (match fl with
+    | .brk is =>
+      let (i, s) := is;
+      .ok (Except.ok s)
+    | .ret r => .ok r)
+  | .err e => .err e
+
+def show (r : Result (Except Overflow U64)) : Result (Except String Nat) := match r with
+  | .ok (.ok s) => .ok (.ok s.val)
+  | .ok (.error _) => .ok (.error "Overflow")
+  | .err e => .err e
+
+#eval show (sum_from (U64.lit 0) (U64.lit 5))
+-- .ok (.ok 10)
+#eval show (sum_from (U64.lit 18446744073709551610) (U64.lit 5))
+-- .ok (.error "Overflow")    (a returned error, not a panic)

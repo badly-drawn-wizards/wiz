@@ -1,0 +1,20 @@
+import Feral                                          -- wishful: command-proc-macros
+-- Two mutable borrows of disjoint fields, live at once. Lowered: drafts/feral/lowered/07_disjoint.wiz
+
+feral                                                 -- wishful: command-proc-macros
+  struct Stats where
+    hits : U64
+    misses : U64
+
+  fn bump2 (a : &mut U64) (b : &mut U64) : Unit := {
+    *a += 1;                                         -- wishful: machine-int-literals
+    *b += 2
+  }
+
+  fn record (s : &mut Stats) : Unit := {
+    let h := &mut s.hits;                            -- NLL-lite: s.hits and s.misses are disjoint places
+    let m := &mut s.misses;
+    *h += 10;
+    bump2 h m                                        -- reborrows; h and m die here
+  }
+end

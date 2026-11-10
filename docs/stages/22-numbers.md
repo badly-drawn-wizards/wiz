@@ -1,6 +1,6 @@
 # Stage 22: numbers for hardware and systems code
 
-Prerequisites shared by the HDL and the Rust-style DSL (decisions RD9, RD10/HD3).
+Prerequisites shared by the HDL and Feral (decisions RD9, RD10/HD3).
 
 ## 22a: division, powers and bits ✅
 
@@ -174,8 +174,8 @@ def bad {ρ : Region} (x : Shr ρ U64) : Result (Shr ρ U64) :=
   Shr.borrow ρ (U64.lit 5) (fun ρy hy y => .ok y)         -- E0515: type mismatch
 ```
 
-`lib/Region.wiz` (`import Region`) is the lifetime layer of the Rust DSL's lowering
-(`drafts/rust/`, RD12). A lifetime is an erased `ρ : Region`, and the borrow handles are
+`lib/Region.wiz` (`import Region`) is the lifetime layer of Feral's lowering
+(`drafts/feral/`, RD12). A lifetime is an erased `ρ : Region`, and the borrow handles are
 declared types, so with phantom parameters (22e) the region is part of their identity
 and is inferred: `Shr ρ A` (`&'a A`), `Uniq ρ A` (`&'a mut A` passed in and handed back),
 `Mut ρ A S` (a returned `&'a mut A` with its backward function to the lender `S`),
@@ -197,11 +197,11 @@ typing:
   `'a : 'b` bounds (erased proof arguments); `Outlives` is opaque, so there is no other
   way to get one. A function returning one of two `&mut` arguments moves both into a
   `Mut ρb A (Uniq ρa A × Uniq ρb A)` (`Mut.ofUniq`, `Mut.mapBack`, `Mut.finish`) and
-  needs `'a : 'b` for the first (`drafts/rust/lowered/12_pick.wiz`).
+  needs `'a : 'b` for the first (`drafts/feral/lowered/12_pick.wiz`).
 
 Scopes run their body at the enclosing region (regions are erased, so this is sound);
-the separation comes from parametricity alone. `drafts/rust/rejected/` has the classic
-errors, lowered, each rejected (`sh drafts/rust/check.sh`); test group `regions`.
+the separation comes from parametricity alone. `drafts/feral/rejected/` has the classic
+errors, lowered, each rejected (`sh drafts/feral/check.sh`); test group `regions`.
 The constructors of the handles are private to the module ([13b](13-language.md)), so
 hand-written Wiz can't forge a handle either.
 
@@ -212,7 +212,7 @@ are *accepted* today; wishful: linear-case). Regions are enforced by the type ch
 body that names the token differently reads the lender while it is borrowed (E0502).
 A handle can also leave its scope packed with its region (`B := (0 r : Region) × Shr r A`
 is a closed type) and still be used. All three are rejected only because the lowering
-(`drafts/rust/LOWERING.md`, L20) always rebinds the lender's name, uses each handle
+(`drafts/feral/LOWERING.md`, L20) always rebinds the lender's name, uses each handle
 once and never packs a region. Making the handles linear would
 reject them in the kernel, but a linear variable can't be used inside a `match`
 alternative today (`match` is built on `ind`, whose methods are scaled by ω) and
@@ -249,7 +249,7 @@ def w (x : U32) : BitVec 32 := BitVec.add x (BitVec.ofNat 32 1)   -- no conversi
   `IntN n`, a free cast). The alias is enough because the width counts through
   `UIntN`'s phantom parameter (a `def` alias's own parameters never count, 22e):
   `BitVec 8` is not `U16`. The reverse (a `BitVec` structure `implemented_by` words)
-  would need a second representation registration and conversions at every Rust/HDL
+  would need a second representation registration and conversions at every Feral/HDL
   boundary.
 * **Proofs** see the definitions, which unfold to Word's model, so the BitVec lemmas
   are stated as before (`BitVec.add_comm` is `congrArg (UIntN.ofNat n)
@@ -305,7 +305,7 @@ The region discipline of 22g used to cost at run time: every handle was a cell
 Objects allocated on `#run`'s checked heap (`tests --allocs FILE ENTRY…`, a measuring
 mode of the test driver), before → after:
 
-| program (`drafts/rust/lowered`) | before | unboxed | + inline |
+| program (`drafts/feral/lowered`) | before | unboxed | + inline |
 |---|---|---|---|
 | 01 `main` (swap two `U64`s) | 12 | 6 | 4 |
 | 01 `swapLists` | 11 | 7 | 5 |
