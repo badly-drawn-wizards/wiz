@@ -539,7 +539,8 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     | .error e => .error e
   let runProcMacro f stx scope := do Elab.runProcMacro (← compileCode [f, "Macro.run"]) f stx scope (macroEnv g)
   let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
-  match x.run { globals := g, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
+  -- (13b) structures with a constructor private to another module don't unfold here
+  match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
                 kernelInfer, classes, instances, termInfo } with
   | .ok (a, st) => (.ok a, finishInfos st)
   | .error e => (.error e, (e.state?.map finishInfos).getD #[])
@@ -738,8 +739,15 @@ partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Exce
   let typeDefs ← names.mapM fun n => parse s!"def {n} : Type := {fam} {fam}.Tag.{n}"
   pure ([tagCmd, famCmd] ++ typeDefs.toList)
 
+/-- (13b) Does a `structure` command say `private mk ::` after `where`? -/
+def structurePrivateMk (cmd : Syntax) : Bool :=
+  let spec := (cmd.getArg 5).getArg 1
+  !spec.args.isEmpty && !(spec.getArg 0).args.isEmpty
+
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
+  -- (13b) privacy is per module: the globals know which one is being elaborated
+  modify fun s => if s.globals.module == s.module then s else { s with globals := { s.globals with module := s.module } }
   let s ← get
   let report (sev : Severity) (info : SourceInfo) (text : String) : StateM (CommandState R) Unit :=
     modify fun s => { s with messages := s.messages.push { info, severity := sev, text } }
@@ -786,6 +794,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .ok g => modify fun s => { s with globals := g }
     | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
   match cmd.kind with
+  | "command.private" =>
+    -- (13b) every name the command declares is private to this module
+    let before := s.globals.order.size
+    elabCommand (cmd.getArg 1)
+    modify fun s =>
+      let added := s.globals.order.extract before s.globals.order.size
+      { s with globals := { s.globals with
+          privates := added.foldl (fun m n => m.insert n s.module) s.globals.privates } }
   | "command.def" | "command.axiom" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
@@ -991,8 +1007,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.inductive" | "command.structure" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
+    let ctorSpec := ((cmd.getArg 5).getArg 1)
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
+    else if cmd.isOfKind "command.structure" && !ctorSpec.args.isEmpty &&
+        (ctorSpec.getArg 1).getId? != some "mk" then
+      report .error (ctorSpec.getArg 1).info s!"a structure's constructor is `mk` (only `private mk ::` can be written)"
     else
       let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
         else elabStructure cmd levelParams
@@ -1027,6 +1047,11 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
               | .error e =>
                 report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
                 return
+        -- (13b) `private mk ::`: the constructor is private to this module, and elsewhere
+        -- the type is opaque (`Globals.elabView`): only its projections read it
+        if cmd.isOfKind "command.structure" && structurePrivateMk cmd then
+          g := { g with privates := g.privates.insert (name ++ ".mk") s.module,
+                        opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g }
         derivingClause (cmd.getArg 7) name
   | "command.builtin" =>
