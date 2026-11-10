@@ -109,6 +109,41 @@ def finish (1 t : Tok) : IO Nat := do1
   passes its argument's usage through), e.g. `Chan (dual (dual p))` to `Chan p` given
   a proof (Prelude; plan L4).
 
+## 9f: C source files and libraries ✅
+
+```
+link_c "term.c"                       -- relative to this .wiz file
+link_lib "m"                          -- -lm
+extern "iv_term_open" Term.open : IO Nat
+```
+
+* `link_c "f.c"` names a C file to compile and link with any program that imports the
+  module (or is the file). The path is relative to the `.wiz` file that says it (a
+  module's to the module's file), or absolute. It is the **unchecked** counterpart of
+  `glue`: the file may use pointers, structs, system headers and static helpers; Wiz
+  sees only the functions it binds with `extern`. A file named twice is linked once.
+* `link_lib "m"` links a library (`-lm`), after the toolchain's `--libs`.
+* `wiz build`/`wiz run` compile the files with the program, with the same compiler and
+  `--cflags` (`-O2 -w`, like the generated C), through either backend (with `--llvm` the
+  linking step compiles them). The frontend is pure, so the command line resolves the
+  paths first (`Module.cSourceTable`, like the headers of `import_c`); a file that
+  doesn't exist is an error at its `link_c`. The commands aren't cached (they rerun on
+  every elaboration; they are cheap), so a file deleted later is still noticed. In the
+  language server the paths aren't checked.
+* grail (stage 23): `c F` lists the files and libraries in `link.txt` beside `main.c`;
+  `link E` compiles and links them, and its key covers their paths, their contents and
+  the `cflags`, so editing a C file reruns only the link (and the `run` tests that use
+  the program). Which of the files exist enters `check F`'s key, so a deleted file is
+  reported by the check.
+* `--gmp "…"` (a toolchain field, default `-lgmp`; also `gmp` in `grail.local.wiz`) says
+  how GMP is linked. For WebAssembly it is mini-gmp's C file, so `web/build.sh` is one
+  `wiz --cc emcc --gmp ".../mini-gmp.c" build web/Web.wiz -o wiz-infoview.mjs`, with
+  `web/js.c` (Emscripten's `EM_JS`) from `link_c "js.c"`. The terminal infoview links
+  `infoview/term.c` (termios, poll, sockets) the same way.
+
+Not done: `pkg-config` names (`link_pkg "gtk+-3.0"`) — for now, give their flags with
+`--cflags`/`--ldflags`.
+
 ## 9g: callbacks and exported functions ✅
 
 ```
@@ -151,7 +186,11 @@ extern "on_tick" onTick : Callback (Nat → IO Unit) → IO Unit
   during that call, in order.
 * `wiz build FILE -o OUT.o --lib [--llvm]` compiles the exports (no `main`) to an object
   file with the runtime, and writes `OUT.h` with their prototypes and the handle
-  functions; a C program links it with `-lgmp`. A program with a `main` exports its
+  functions; a C program links it with `-lgmp` (and with the file's `link_c` sources
+  and `link_lib` libraries, 9f, which an object file doesn't carry).
+  `wiz build FILE -o OUT --no-main` links the exports like a program, `link_c` files
+  included, but without a `main`: what that makes is the toolchain's business (with
+  `--cc emcc --ldflags "--no-entry …"`, a Wasm module). A program with a `main` exports its
   functions too (C code linked with it, here through `--libs`, can call them).
   Exported functions run on the caller's thread and stack (not `main`'s big stack);
   a handle is used from the thread that got it (only 25a's shared objects cross
@@ -167,7 +206,8 @@ extern "on_tick" onTick : Callback (Nat → IO Unit) → IO Unit
   State, the actions — messages to the server, HTML for the page — done through the
   `js_send`/`js_set_html` imports during the step). `web/infoview.js` keeps the state
   and calls the step on every event, so there is no Wasm main loop waiting in
-  `js_next_event` and the build no longer needs Asyncify.
+  `js_next_event` and the build (`wiz --cc emcc … build web/Web.wiz --no-main`, with
+  `web/js.c` by `link_c`) no longer needs Asyncify.
 
 Known limits: a project built by grail doesn't get its export wrappers yet (only
 `wiz build` and `wiz run` emit them); a callback's or an export's signature can't
@@ -176,6 +216,69 @@ contain a `c_struct` (9i) or another callback; the self-hosted compiler has no `
 Tests: `callbacks` (qsort with Wiz comparators, a closure kept by C and called later
 in `IO`, the leak when it isn't released, C calling an export from a program, a C
 program linked with a `--lib` build, both backends), `web/test.sh`.
+
+## 9h: system interfaces: processes, environment, files ✅
+
+```
+import Sys
+def main : IO Unit := EIO.toIO (do
+  o ← Process.output "cat" .nil "piped through cat\n";
+  EIO.lift (IO.print o.stdout);
+  Env.set "GREETING" "hi";
+  d ← FS.createTempDir;
+  FS.writeFile (Path.join d "a.txt") "alpha\n";
+  names ← FS.listDir d;
+  FS.removeAll d)
+```
+
+`lib/Sys.wiz` binds the POSIX interfaces a program needs to drive other programs
+(what the toolchain manager and grail need, see stages 23 and 26), with C in the
+runtime's section "system interfaces" (`runtime/wiz.c`, so both backends have it).
+
+* **Errors.** Anything that can fail returns `EIO A := IO (Except String A)`, a monad of
+  its own, so a `do` block stops at the first error; `EIO.lift` runs an `IO` action in
+  it and `EIO.toIO` runs it as `main`, printing the error to stderr and exiting with 1.
+  An error reads `"<path or call>: <strerror(errno)>"`. Underneath there are two
+  shapes of foreign function: a call that only succeeds or fails returns the errno
+  (0 for success, `Sys.lift`), and a call that returns a value records its errno per
+  thread, read back by `Sys.errno` right after it (`Sys.check`; the linear world
+  token keeps the two calls together and in order). Results that are lists (directory
+  entries, the environment, a `stat`) are built by the runtime as Wiz lists.
+* **Environment.** `Env.get : String → IO (Option String)`, `Env.set`, `Env.unset`,
+  `Env.list : IO (List (String × String))` (sorted by name). Setting variables isn't
+  thread-safe in C: set them before starting threads.
+* **Files and directories** (`FS.`). `currentDir`, `setCurrentDir`, `createDir`,
+  `removeDir`, `removeFile`, `removeAll` (recursive, doesn't follow links), `rename`,
+  `symlink target link`, `readLink`, `setMode`, `listDir` (sorted, without `.` and
+  `..`), `stat` and `linkStat` (a `FileStat`: kind, size, modification time, mode),
+  `exists`, `isDir`, `isFile`, `tempRoot` (`$TMPDIR` or `/tmp`), `createTempDir`
+  (`mkdtemp`), and whole files: `readFile`, `writeFile`, `appendFile`, and `readBytes`,
+  `writeBytes` for binary data (text stops at a NUL byte). `Path.join` puts a `/`
+  between two paths.
+* **File handles.** `foreign_type File` (closed by its finalizer, or `File.close`):
+  `File.open path mode` (`fopen` modes), `File.stdin`/`stdout`/`stderr`,
+  `readLine` (`none` at the end), `readAll`, `write`, `flush`. `IO.ePrintln` prints
+  to stderr.
+* **Processes.** `Process.spawn cmd args stdin stdout stderr` starts `cmd` (searched in
+  `PATH`, `posix_spawnp`) with each stream `.inherit`, `.piped` or `.null`, giving a
+  `Child` (a foreign type: its pipes close and a finished child is reaped when it
+  goes). `Child.write`, `closeStdin`, `readStdout`/`readStderr` (to the end),
+  `communicate input` (writes stdin while collecting stdout and stderr with `poll`, so
+  a child that fills one pipe doesn't deadlock), `wait` (an `ExitStatus`: `exited code`
+  or `signaled n`), `kill`, `pid`. `Process.output cmd args input` runs a command to the
+  end and returns its status and output; `Process.run` runs one with this program's
+  streams; `Process.exec` replaces the program; `Process.exit`, `Process.id`. The
+  runtime ignores `SIGPIPE` once a child has been started (a write to a closed pipe is
+  then an `EPIPE` error), and the pipes are close-on-exec, so other children don't keep
+  them open.
+* `#eval` and `#run` can't do any of this (they are pure and can't call C): there are
+  no models for system calls, since a model of the file system or of processes would
+  give answers the real program wouldn't. The pure helpers (`Path.join`,
+  `ExitStatus.ofNat`, `FS.statOf`, `Env.pairs`) run anywhere.
+
+Tests: the `sys` group (spawning `echo`, a pipe through `cat`, exit codes and spawn
+errors, the environment, a temporary directory's life: files, links, stat, listing,
+removal, handles), on both backends.
 
 ## 9i: C structs by value; header pointer types as foreign types ✅
 

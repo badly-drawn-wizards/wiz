@@ -288,6 +288,9 @@ def commandLeading : List LeadingParser := [
   { kind := "command.cStruct", prec := maxPrec,
     p := seqs ["c_struct", optional str, optional (seqs ["(", nonReserved "header", ":=", str, ")"]), ident,
       "where", many structureField, derivingClause] },
+  -- 9f: C source files and libraries linked with the program
+  { kind := "command.linkC", prec := maxPrec, p := seqs ["link_c", str] },
+  { kind := "command.linkLib", prec := maxPrec, p := seqs ["link_lib", str] },
   { kind := "command.extern", prec := maxPrec,
     p := seqs ["extern", str, optional (seqs ["(", nonReserved "header", ":=", str, ")"]), ident, ":", term] },
   -- stage 9g: a C symbol for a Wiz function

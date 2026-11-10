@@ -41,6 +41,18 @@ def irProgram (s : CommandState R) (n : Name) (lib : Bool := false) : Except Str
 /-- Header includes and glue functions, in order. -/
 def extraC (s : CommandState R) : String := "\n".intercalate s.cCode.toList
 
+/-- (9f) What a program links besides the runtime: C source files (`link_c`, absolute
+paths) and libraries (`link_lib "m"`: `-lm`). -/
+structure Link where
+  sources : Array String := #[]
+  libs : Array String := #[]
+  deriving Inhabited, Repr
+
+def linkOf (s : CommandState R) : Link := { sources := s.linkC, libs := s.linkLibs }
+
+/-- The linker arguments of the libraries. -/
+def Link.libFlags (l : Link) : Array String := l.libs.map ("-l" ++ ·)
+
 /-- Is this the type `IO A`? Then `main` is run, not printed. -/
 def isIO (ty : Term R) : Bool := match (Term.spine ty).1 with
   | .const "IO" _ => true
@@ -49,26 +61,30 @@ def isIO (ty : Term R) : Bool := match (Term.spine ty).1 with
 /-- The C program that computes the global `n`, and `n`'s type. -/
 def cProgram (s : CommandState R) (n : Name) : Except String (String × Term R) := do
   let (decls, ty) ← irProgram s n
-  pure (C.program decls (isIO ty) (extraC s) ((exports s).map (·.1)), ty)
+  pure (C.program decls (isIO ty) (extraC s) s.globals.unboxStructs ((exports s).map (·.1)), ty)
 
 def words (s : Option String) : List String :=
   ((s.getD "").splitOn " ").filter (· ≠ "")
 
 /-- Compile C source to an executable. -/
-def compileC (tc : Toolchain) (src : String) (exe : System.FilePath) (lib : Bool := false) : IO (Except String Unit) := do
+def compileC (tc : Toolchain) (src : String) (exe : System.FilePath) (link : Link := {}) (lib : Bool := false) : IO (Except String Unit) := do
   let cFile := exe.withExtension "c"
   IO.FS.writeFile cFile src
   let cc := tc.cc
-  -- (a library is an object file, linked by the C program that uses it)
+  -- (9f) the `link_c` files are compiled with the program, with the same flags
+  -- (9g: a library is an object file, linked by the C program that uses it, which
+  -- also brings the `link_c` files and libraries)
   let args := if lib then #["-O2", "-w", "-c", "-o", exe.toString, cFile.toString] ++ tc.cflags.toArray else
-    #["-O2", "-w", "-o", exe.toString, cFile.toString] ++ tc.cflags.toArray ++
-    #["-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray
-  let out ← IO.Process.output { cmd := cc, args }
-  if out.exitCode == 0 then pure (.ok ()) else pure (.error s!"{cc} failed:\n{out.stderr}")
+    #["-O2", "-w", "-o", exe.toString, cFile.toString] ++ link.sources ++ tc.cflags.toArray ++
+    tc.gmp.toArray ++ tc.ldflags.toArray ++ tc.libs.toArray ++ link.libFlags
+  try
+    let out ← IO.Process.output { cmd := cc, args }
+    if out.exitCode == 0 then pure (.ok ()) else pure (.error s!"{cc} failed:\n{out.stderr}")
+  catch e => pure (.error s!"{cc}: {e}")
 
 /-- Compile an LLVM module to an executable: `llc` (the toolchain's) for the module, the C
 compiler for the runtime (exported with `-DWIZ_API=`), and the C compiler to link. -/
-def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : String := "") (lib : Bool := false) : IO (Except String Unit) := do
+def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : String := "") (link : Link := {}) (lib : Bool := false) : IO (Except String Unit) := do
   let llFile := exe.withExtension "ll"
   let rtFile := exe.withFileName "wiz_runtime.c"
   IO.FS.writeFile llFile ll
@@ -87,23 +103,31 @@ def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : S
     return .error e
   if let .error e ← step llc #["-O2", "-filetype=obj", "-relocation-model=pic", "-o", mainObj.toString, llFile.toString] then
     return .error e
-  -- (a library: the two objects as one, `-r`)
+  -- (9g: a library is the two objects as one, `-r`)
   if lib then return ← step cc #["-r", "-o", exe.toString, mainObj.toString, rtObj.toString]
-  step cc (#["-o", exe.toString, mainObj.toString, rtObj.toString, "-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray)
+  -- (9f) the `link_c` files are compiled by the linking step, with the C flags
+  let srcArgs := if link.sources.isEmpty then #[] else #["-O2", "-w"] ++ link.sources ++ cflags
+  step cc (#["-o", exe.toString, mainObj.toString, rtObj.toString] ++ srcArgs ++ tc.gmp.toArray ++
+    tc.ldflags.toArray ++ tc.libs.toArray ++ link.libFlags)
 
-/-- Build the program computing `main` (or, `lib`, an object file of the exports, with
-a header `OUT.h` for them), through C or LLVM. -/
-def build (tc : Toolchain) (s : CommandState R) (n : Name) (out : System.FilePath) (llvm lib : Bool) :
-    IO (Except String (Term R)) := do
-  match irProgram s n lib with
+/-- Build the program computing `main`, through C or LLVM. With `lib`, the exports as
+an object file, with a header `OUT.h` for them; with `noMain`, the exports linked like
+a program but without a `main` (a Wasm module, a shared library: the toolchain's flags
+say which). -/
+def build (tc : Toolchain) (s : CommandState R) (n : Name) (out : System.FilePath) (llvm lib : Bool)
+    (noMain : Bool := false) : IO (Except String (Term R)) := do
+  let bare := lib || noMain
+  match irProgram s n bare with
   | .error e => pure (.error e)
   | .ok (decls, ty) =>
     let io := isIO ty
     let ex := (exports s).map (·.1)
+    let unbox := s.globals.unboxStructs
     if lib then IO.FS.writeFile (out.withExtension "h") (C.exportHeader ex)
     let r ← if llvm then
-        compileLLVM tc (LLVM.program decls io lib) out (extraC s ++ "\n" ++ C.glue (C.externs decls) (extraC s) ++ "\n" ++ C.exportWrappers ex true) lib
-      else compileC tc (C.program decls io (extraC s) ex lib) out lib
+        compileLLVM tc (LLVM.program decls io bare) out
+          (extraC s ++ "\n" ++ C.glue (C.externs decls) (extraC s) unbox ++ "\n" ++ C.exportWrappers ex true) (linkOf s) lib
+      else compileC tc (C.program decls io (extraC s) unbox ex bare) out (linkOf s) lib
     pure (r.map fun () => ty)
 
 /-- Parse the printed result: numbers, `(tag fields…)`, `<fn>`, `#bits`. -/

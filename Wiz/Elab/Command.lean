@@ -88,6 +88,14 @@ structure CommandState (R : Type) where
   cCode : Array String := #[]
   /-- foreign pointer types and their finalizers -/
   foreignTypes : List (Name × String) := []
+  /-- (9f) where the `link_c "f.c"` files are: by module (`""`: the main file) and the path
+  as written, the file's absolute path, or `none` if it doesn't exist (the command line
+  resolves them, relative to each module's file: the frontend is pure). Without a
+  resolver (the language server), paths are kept as written and not checked. -/
+  cSources : Option (String → String → Option String) := none
+  /-- (9f) the C files to compile and link with the program, and the libraries (`link_lib`) -/
+  linkC : Array String := #[]
+  linkLibs : Array String := #[]
   /-- for the language server (stage 11): the info tree of this file (identifiers, expected
   types, tactic states, …), and where each global was declared (its command's range, and
   module; `""` is the main file) -/
@@ -1475,6 +1483,21 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           modify fun s => { s with builtins := (s!"cstruct:{k.toKey}", name) :: s.builtins,
                                    globals := { s.globals with builtins := (s!"cstruct:{k.toKey}", name) :: s.globals.builtins },
                                    cCode := if s.cCode.contains code then s.cCode else s.cCode.push code }
+  | "command.linkC" =>
+    -- (9f) an unchecked C source file, compiled and linked with the program
+    let rel := ((cmd.getArg 1).getStr?).getD ""
+    let file ← match s.cSources with
+      | none => pure (some rel)
+      | some resolve => pure (resolve s.module rel)
+    match file with
+    | none => report .error (cmd.getArg 1).info s!"link_c: no file {rel} (paths are relative to the .wiz file)"
+    | some f => unless s.linkC.contains f do modify fun s => { s with linkC := s.linkC.push f }
+  | "command.linkLib" =>
+    -- (9f) a library to link with (`-lNAME`)
+    let lib := ((cmd.getArg 1).getStr?).getD ""
+    if lib.isEmpty || lib.startsWith "-" || lib.any Char.isWhitespace then
+      report .error (cmd.getArg 1).info s!"link_lib: give the library's name, as in link_lib \"m\" for -lm"
+    else unless s.linkLibs.contains lib do modify fun s => { s with linkLibs := s.linkLibs.push lib }
   | "command.extern" =>
     -- an axiom, bound to a C function: the marshalling follows the Wiz type
     let cname := ((cmd.getArg 1).getStr?).getD "_"

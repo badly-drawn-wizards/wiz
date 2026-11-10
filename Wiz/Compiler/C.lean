@@ -107,21 +107,21 @@ def structDefinition (ctype : String) (fields : List (String × FKind)) : String
   if ctype.startsWith "struct " then s!"{ctype} \{\n{String.join fs}};\n"
   else s!"typedef struct \{\n{String.join fs}} {ctype};\n"
 
-/-- The Wiz value of a structure's field `i` of `n`, borrowed from `v`: a structure is
-nested pairs whose last pair is unboxed (`Erase.lean`, 22i), so one field is the value
-itself. -/
-def fieldPath (v : String) (i n : Nat) : String :=
-  if n ≤ 1 then v else
+/-- The Wiz value of a structure's field `i` of `n`, borrowed from `v`. A structure is
+nested pairs ending in `◾` (its tail): field `i` is the first component after `i`
+seconds. With `unbox` (`--unbox-structs`, 22i) the last pair is unboxed, so the last
+field is the value left after `n - 1` seconds, and a one-field structure is its field. -/
+def fieldPath (v : String) (i n : Nat) (unbox : Bool := false) : String :=
   let rec seconds : Nat → String → String
     | 0, e => e
     | k + 1, e => seconds k s!"wiz_field_ref({e}, 1)"
-  if i + 1 == n then seconds i v else s!"wiz_field_ref({seconds i v}, 0)"
+  if unbox && i + 1 == n then seconds i v else s!"wiz_field_ref({seconds i v}, 0)"
 
 /-- (9i) Marshalling helpers for the structs a program passes by value: `wiz_sin_N(&c, v)`
 fills `c` from the (borrowed) Wiz value `v`, `wiz_sfree_N(&c)` frees what that allocated
 (strings), `wiz_sout_N(c)` makes a Wiz value. Nested structs get their own helpers,
 defined first. Returns the helpers and the number of each struct (by its key). -/
-partial def structHelpers (ks : List FKind) : String × List (String × Nat) := Id.run do
+partial def structHelpers (ks : List FKind) (unbox : Bool := false) : String × List (String × Nat) := Id.run do
   let mut out := ""
   let mut seen : List (String × Nat) := []
   let rec collect : FKind → List FKind
@@ -137,7 +137,7 @@ partial def structHelpers (ks : List FKind) : String × List (String × Nat) := 
     let mut sfree := ""
     let mut sout := ""
     for (f, fk) in fs, i in [0:n] do
-      let path := fieldPath "v" i n
+      let path := fieldPath "v" i n unbox
       let lhs := s!"c->{f}"
       match fk with
       | .k 'n' => sin := sin ++ s!"  {lb} wiz_val t = {path}; wiz_inc(t); {lhs} = wiz_in_nat(t); {rb}\n"
@@ -165,7 +165,10 @@ partial def structHelpers (ks : List FKind) : String × List (String × Nat) := 
         sfree := sfree ++ s!"  wiz_sfree_{num fk}(&{lhs});\n"
         sout := sout ++ s!"  fs[{i}] = wiz_sout_{num fk}(c.{f});\n"
       | _ => sout := sout ++ s!"  fs[{i}] = WIZ_BOX(0);\n"
-    let build := if n ≤ 1 then "  return fs[0];\n" else
+    -- (boxed: every field in a pair, the innermost second component the erased tail)
+    let build := if !unbox then
+      s!"  wiz_val r = WIZ_BOX(0);\n  for (int i = {n - 1}; i >= 0; i--) {lb} wiz_val p = wiz_ctor_new(0, 2); WIZ_SET(p, 0, fs[i]); WIZ_SET(p, 1, r); r = p; {rb}\n  return r;\n"
+      else if n ≤ 1 then "  return fs[0];\n" else
       s!"  wiz_val r = fs[{n - 1}];\n  for (int i = {n - 2}; i >= 0; i--) {lb} wiz_val p = wiz_ctor_new(0, 2); WIZ_SET(p, 0, fs[i]); WIZ_SET(p, 1, r); r = p; {rb}\n  return r;\n"
     out := out ++
       s!"static void wiz_sin_{id}({c} *c, wiz_val v) {lb}\n  memset(c, 0, sizeof *c);\n{sin}{rb}\n" ++
@@ -279,14 +282,14 @@ partial def structHeaders : FKind → List String
 /-- C glue for the foreign functions: their headers (or prototypes), and a marshalling
 wrapper for each (`WIZ_API`, so the LLVM backend can call them). Headers already
 included by `before` (the program's own C code) aren't included again. -/
-def glue (keys : Array Name) (before : String := "") : String := Id.run do
+def glue (keys : Array Name) (before : String := "") (unbox : Bool := false) : String := Id.run do
   let mut includes : Array String := #[]
   let mut out := ""
   let sigs := keys.toList.filterMap fun key => (RVal.ExternSig.ofKey? key).map (key, ·)
   for (_, sig) in sigs do
     for h in (if sig.header == "" then [] else [sig.header]) ++ (sig.result :: sig.params).flatMap structHeaders do
       unless includes.contains h || (before.splitOn s!"#include <{h}>").length > 1 do includes := includes.push h
-  let (helpers, nums) := structHelpers (sigs.flatMap fun (_, sig) => sig.result :: sig.params)
+  let (helpers, nums) := structHelpers (sigs.flatMap fun (_, sig) => sig.result :: sig.params) unbox
   let num (k : FKind) : Nat := ((nums.find? (·.1 == k.toKey)).map (·.2)).getD 0
   out := out ++ helpers
   -- (9g) the trampolines of the callbacks
@@ -412,13 +415,13 @@ where
 /-- A whole C program: the runtime, the foreign glue, the functions, and a `main` that
 prints the result of the Wiz `main` (or, for `main : IO A`, runs it) and checks for
 leaks. -/
-def program (decls : Array IR.Decl) (io : Bool := false) (extra : String := "")
+def program (decls : Array IR.Decl) (io : Bool := false) (extra : String := "") (unbox : Bool := false)
     (exports : List RVal.ExternSig := []) (lib : Bool := false) : String :=
   let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
   let protos := decls.toList.map fun d =>
     s!"{signature d};\nstatic wiz_val {mangle d.name}_boxed(wiz_val *a);\n"
   let finish := if io then "1" else "0"
-  runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ extra ++ "\n" ++ glue (externs decls) extra ++
+  runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ extra ++ "\n" ++ glue (externs decls) extra unbox ++
     "\n/* ---- generated ---- */\n\n" ++ String.join protos ++ "\n" ++
     String.join (decls.toList.map (decl arities ·)) ++
     (if exports.isEmpty then "" else "\n/* ---- exported functions ---- */\n\n" ++ exportWrappers exports) ++

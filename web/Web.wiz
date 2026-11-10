@@ -8,6 +8,8 @@ import Infoview
 -- and returns the next state (a Wiz value the page holds). The protocol and the HTML
 -- are `lib/Infoview.wiz`, shared with the terminal infoview.
 
+-- (9f) the JavaScript side, as Emscripten C (EM_JS)
+link_c "js.c"
 extern "js_send" Js.send : String → IO Unit
 extern "js_set_html" Js.setHtml : String → String → IO Unit
 
