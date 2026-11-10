@@ -294,6 +294,8 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
   | .sigma _ _ A B _, v =>
     let a' := readback A (v.field 0)
     .pair a' (readback (Closure.inst g B (eval g [] a')) (v.field 1))
+  -- Q4: a lifted value is the value itself at run time
+  | .ulift _ A, v => .up (readback A v)
   | .enum ls, .obj t _ => .tag ls t
   | .enum ls, .nat t => .tag ls t
   | .unit _, _ => .tt
@@ -333,11 +335,11 @@ where
       | _ => .obj 0 #[.erased, .erased]
     match whnf D with
     | .darg _ S F =>
-      match whnf S with
-      | .enum ls =>
+      match tagField? S with
+      | some (ls, lifted) =>
         let t := (v.tag?).getD 0
-        .obj 0 #[.obj t #[], rest (vApp g F (.tag ls t)) 0 10000]
-      | _ => rest D 0 10000
+        .obj 0 #[.obj t #[], rest (vApp g F (if lifted then .up (.tag ls t) else .tag ls t)) 0 10000]
+      | none => rest D 0 10000
     | _ => rest D 0 10000
 
 /-- The globals an erased term mentions. -/

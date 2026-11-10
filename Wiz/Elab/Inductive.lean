@@ -102,6 +102,64 @@ def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R �
   let val := doms.foldr (fun _ acc => .lam phantomName acc) (Term.tt : Term R)
   pure (ty, val, names)
 
+/-! ### Lifted fields (Q4)
+
+A description field must live exactly in `Sort (l+1)`, where `Desc.elim`'s `marg` takes
+it from (universes aren't cumulative). A field in a smaller universe is wrapped in
+`ULift.{l+1}`: a proof field of a datatype in `Type`, or a field `A : Type u` of a type in
+`Type (max u v)`; so is the domain `H` of an infinitary field, and the tag of a type
+above `Type`. The wrapping is invisible: constructors take the field itself (and put
+`up x` in the payload), recursors and patterns hand out `down x`, and the printer hides
+`up`/`down`. At run time `ULift` is erased. -/
+
+/-- How a field sits in the payload. -/
+inductive FieldLift where
+  /-- as itself -/
+  | none
+  /-- an `arg` field, lifted: `up x` -/
+  | arg
+  /-- an infinitary field with a lifted domain: `fun h => f (down h)` -/
+  | hrec
+  deriving BEq, Inhabited, Repr
+
+/-- Replace `var 0` by `down (var 0)`: the body of an `arg` whose field is now lifted. -/
+def downVar0 (t : Term R) : Term R := (t.lift 1 1).instantiateAt 0 (.down (.var 0))
+
+/-- The fields of one constructor's description, and how each sits in the payload. -/
+partial def descFieldLifts : Term R → List FieldLift
+  | .darg _ S (.lam _ D) => (if S matches .ulift .. then .arg else .none) :: descFieldLifts D
+  | .drec _ _ D => .none :: descFieldLifts D
+  | .dhrec _ H _ D => (if H matches .ulift .. then .hrec else .none) :: descFieldLifts D
+  | _ => []
+
+/-- A field's value as a payload component. -/
+def FieldLift.wrap : FieldLift → Term R → Term R
+  | .none, t => t
+  | .arg, t => .up t
+  | .hrec, t => .lam "h" (.app (t.lift 1) (.down (.var 0)))
+
+/-- A payload component as the field's value. -/
+def FieldLift.unwrap : FieldLift → Term R → Term R
+  | .none, t => t
+  | .arg, t => .down t
+  | .hrec, t => .lam "h" (.app (t.lift 1) (.up (.var 0)))
+
+/-- The levels of constructor fields, for `ctorDesc`: for the field of type `A` (in the
+context of `ctx` and the fields before it), `A`'s level and, if `A` is a function type,
+its domain's. -/
+def fieldLevels (ctx : LocalCtx R) (base : Nat) (fs : List (Term R)) : ElabM R (List (Option Level × Option Level)) := do
+  let g ← getGlobals
+  let allTys := ctx.types.reverse.toArray
+  fs.zipIdx.mapM fun (A, k) => do
+    let n := base + k
+    let tys := allTys.extract 0 n
+    let env : Env R := (List.range n).reverse.map Val.var
+    let lA := typeSort? g tys (eval g env A)
+    let lH := match A with
+      | .pi _ _ _ H _ _ => typeSort? g tys (eval g env H)
+      | _ => none
+    pure (lA, lH)
+
 /-- `T`'s arguments at a position where `T` is `var k`: the first `nΔ` must be the
 parameters themselves (`var (k + nΔ - j)` for the `j`-th); returns the rest. -/
 def paramArgs? (nΔ k : Nat) (args : List (Term R)) : Option (List (Term R)) :=
@@ -132,9 +190,23 @@ Build the description from the end:
 
 The result lives in the parameter context `Δ`. Index tuples end in `tail` (a term in
 `Δ`: `()`, or the phantom tail's value, see `phantomTail`) instead of `()`: lift it to
-the context it is used in. -/
+the context it is used in.
+
+(Q4) `levels[k]` is the level of field `k`'s type, and of its domain if it is a function
+type (`fieldLevels`). An `arg` field not in `Sort (l+1)` is lifted with `liftArg`, the
+domain of an infinitary field with `liftHrec`. -/
 def ctorDesc (nΔ : Nat) (fields : List (Name × Term R × Term R)) (target : List (Term R))
-    (tail : Term R := .tt) : Except String (Term R) := do
+    (tail : Term R := .tt) (l : Level := .zero) (levels : List (Option Level × Option Level) := []) :
+    Except String (Term R) := do
+  let small (lv : Option Level) : Bool := match lv with
+    | some k => !k.equiv (.succ l)
+    | none => false
+  let mkArg (k : Nat) (q F : Term R) (name : Name) (D : Term R) : Term R :=
+    if small (levels[k]?.bind (·.1)) then .darg q (.ulift (.succ l) F) (.lam name (downVar0 D))
+    else .darg q F (.lam name D)
+  let mkHrec (k : Nat) (q H : Term R) (h : Name) (js D : Term R) : Term R :=
+    if small (levels[k]?.bind (·.2)) then .dhrec q (.ulift (.succ l) H) (.lam h (downVar0 js)) D
+    else .dhrec q H (.lam h js) D
   sorry
 
 /-- Peel a type signature `(ξ₁ : X₁) → … → Type l` into indices and `l`. -/
@@ -183,6 +255,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let mut names : List Name := []
   let mut descs : List (Term R) := []
   let mut ctorInfo : List (Name × List (Name × BinderInfo × Term R × Term R) × List (Term R)) := []
+  let mut ctorLevels : List (List (Option Level × Option Level)) := []
   for c in ctors do
     let cname := ((c.getArg 1).getId?).getD "_"
     let (ctxF, fs) ← elabTelescope ctxT ((c.getArg 2).args.flatMap binderViews).toList
@@ -203,9 +276,11 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
       | fail c s!"constructor {cname} must return {T} applied to its parameters and {nΞ} indices"
     unless head == .var n && js.length == nΞ do
       fail c s!"constructor {cname} must return {T} applied to its parameters and {nΞ} indices"
-    let D ← match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) js with
+    let lvs ← fieldLevels ctxF ctxT.lvl (fs'.toList.map (·.2.2.2))
+    let D ← match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) js .tt l lvs with
       | .ok D => pure D
       | .error e => fail c s!"constructor {cname}: {e}"
+    ctorLevels := ctorLevels ++ [lvs]
     names := names ++ [cname]
     descs := descs ++ [D]
     ctorInfo := ctorInfo ++ [(cname, fs'.toList, js)]
@@ -213,13 +288,16 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let (tailTy, tailV, _) ← phantomTail ctxΔ Δ (fun k => descs.any (·.hasVar k) || I.hasVar k) (.succ l)
   let I : Term R := Ξ.foldr (fun (x, _, q, X) acc => .sigma x q X acc none) (tailTy.lift nΞ)
   if !(tailV matches .tt) then
-    descs ← ctorInfo.mapM fun (cname, fs, js) => match ctorDesc nΔ (fs.map fun (x, _, q, A) => (x, q, A)) js tailV with
+    descs ← (ctorInfo.zip ctorLevels).mapM fun ((cname, fs, js), lvs) => match ctorDesc nΔ (fs.map fun (x, _, q, A) => (x, q, A)) js tailV l lvs with
       | .ok D => pure D
       | .error e => fail cmd s!"constructor {cname}: {e}"
   -- the whole description: a tag, then the constructor's description
   let w : Term R := .qlit QuantitySyntax.explicitDefault
-  let desc : Term R := .darg w (.enum names)
-    (.lam "t" (.ecase "z" ((Term.desc l I).lift 2) (.var 0) (descs.map (·.lift 1))))
+  -- (Q4) the tag is in `Type`: lifted when the type is in a bigger universe
+  let tagLifted := !(Level.succ l).equiv (Level.ofNat 1)
+  let desc : Term R := .darg w (if tagLifted then .ulift (.succ l) (.enum names) else .enum names)
+    (.lam "t" (.ecase "z" ((Term.desc l I).lift 2) (if tagLifted then .down (.var 0) else .var 0)
+      (descs.map (·.lift 1))))
   let ΔNames := Δ.toList.map (·.1)
   let ΔBinders := Δ.toList
   let descName := T ++ ".desc"
@@ -238,8 +316,9 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   -- constructors
   let implicitΔ := ΔBinders.map fun (x, _, _, A) => (x, BinderInfo.implicit, (.qlit 0 : Term R), A)
   let mut ctorDecls := []
-  for (cname, fs, js) in ctorInfo, tagIx in [0:ctorInfo.length] do
+  for (cname, fs, js) in ctorInfo, tagIx in [0:ctorInfo.length], D in descs do
     let n := fs.length
+    let lifts := descFieldLifts D
     -- occurrences of the local `T` (already applied to the parameters) become the global
     let Tc : Term R := .const T us
     let fsTy := fs.zipIdx.map fun ((x, bi, q, A), k) => (x, bi, q, A.instantiateAt k Tc)
@@ -247,8 +326,10 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     let some js' := js.mapM (·.strengthen? n)
       | fail cmd s!"constructor {cname}: its indices may not mention {T}"
     let fieldVars := telescopeVars n 0
-    let payload := Term.pair (.tag names tagIx)
-      (fieldVars.foldr .pair (.pair (.refl (I.lift n) (tupleWith (tailV.lift n) js')) .tt))
+    let tag : Term R := if tagLifted then .up (.tag names tagIx) else .tag names tagIx
+    let fieldVals := fieldVars.zipIdx.map fun (f, k) => (lifts[k]?.getD .none).wrap f
+    let payload := Term.pair tag
+      (fieldVals.foldr .pair (.pair (.refl (I.lift n) (tupleWith (tailV.lift n) js')) .tt))
     let d : Decl R :=
       { name := T ++ "." ++ cname, levelParams := levelParams,
         type := pisTm implicitΔ (pisTm fsTy resTy),
@@ -278,20 +359,21 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
   let views : List BinderView := (cmd.getArg 6).args.toList.map fun f =>
     { name := ((f.getArg 1).getId?).getD "_", info := f.info, bi := .default,
       qty := (f.getArg 0).args[0]?, type := some (f.getArg 3) }
-  let (_, fs) ← elabTelescope ctxT views
+  let (ctxF, fs) ← elabTelescope ctxT views
   let mut fs' := #[]
   for (x, bi, q, A) in fs, k in [0:fs.size] do
     let q ← zonk (ctxT.lvl + k) q
     let A ← zonk (ctxT.lvl + k) A
     ensureNoMVars q cmd.info; ensureNoMVars A cmd.info
     fs' := fs'.push (x, bi, q, A)
-  let D ← match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) [] with
+  let lvs ← fieldLevels ctxF ctxT.lvl (fs'.toList.map (·.2.2.2))
+  let D ← match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) [] .tt l lvs with
     | .ok D => pure D
     | .error e => throwAt cmd.info e
   -- phantom parameters (see `phantomTail`): the index type is the tail
   let (I, tailV, _) ← phantomTail ctxΔ Δ (fun k => D.hasVar k) (.succ l)
   let D ← if tailV matches .tt then pure D else
-    match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) [] tailV with
+    match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) [] tailV l lvs with
     | .ok D => pure D
     | .error e => throwAt cmd.info e
   let ΔNames := Δ.toList.map (·.1)
@@ -307,6 +389,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
   let mut decls := [descDecl, typeDecl]
   let mut obs := []
   let mut fieldTys : List (Name × Term R) := []
+  let lifts := descFieldLifts D
   for (x, _, _, A) in fs'.toList, k in [0:fs'.size] do
     -- `A` lives in [f_{k-1} … f₀, T, Δ]: drop the fields, then replace `T`
     let mut A' := A
@@ -320,7 +403,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     let F := A'.instantiateAt 0 (.const T us)
     let Tapp : Term R := (telescopeVars nΔ 0).foldl .app (.const T us)
     -- (out x).2…2.1 in context [x, Δ]
-    let proj : Term R := .fst ((List.range k).foldl (fun t _ => .snd t) (.out (.var 0)))
+    let proj : Term R := (lifts[k]?.getD .none).unwrap (.fst ((List.range k).foldl (fun t _ => .snd t) (.out (.var 0))))
     let d : Decl R :=
       { name := T ++ "." ++ x, levelParams := levelParams,
         type := pisTm implicitΔ (.pi "x" .default (.qlit QuantitySyntax.explicitDefault) Tapp (F.lift 1) none),
@@ -336,7 +419,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     let fsTy := fieldTys.zipIdx.map fun ((x, F), k) => (x, BinderInfo.default, w, F.lift k)
     let resTy := ((telescopeVars nΔ 0).foldl Term.app (Term.const T us)).lift n
     let e : Term R := if tailV matches .tt then .tt else .refl (I.lift n) tailV
-    let payload : Term R := (telescopeVars n 0).foldr .pair (.pair e .tt)
+    let payload : Term R := ((telescopeVars n 0).zipIdx.map fun (f, k) => (lifts[k]?.getD .none).wrap f).foldr .pair (.pair e .tt)
     let mk : Decl R :=
       { name := T ++ ".mk", levelParams := levelParams,
         type := pisTm implicitΔ (pisTm fsTy resTy),

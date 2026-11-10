@@ -94,6 +94,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | .app a => return .app t (← rename m p a)
       | .fst => pure (.fst t)
       | .snd => pure (.snd t)
+      | .down => pure (.down t)
       | _ => pure t) t
   if let .natLit n ← force v then return .natLit n
   sorry
@@ -307,7 +308,7 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
     | .ind u I D v P mt i, .ind u' I' D' v' P' mt' i' =>
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (mt, mt'), (i, i')] do unify l x y
-    | .out, .out => pure ()
+    | .out, .out | .down, .down => pure ()
     | .scase u I D v P f s i, .scase u' I' D' v' P' f' s' i' =>
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (f, f'), (s, s'), (i, i')] do unify l x y

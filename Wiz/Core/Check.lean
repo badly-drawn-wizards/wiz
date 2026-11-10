@@ -286,6 +286,8 @@ of the expected one.)
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, whnf ty with
+  -- (given) Q4
+  | .up a, .ulift _ A => check ctx a A
   | .lam x body, .pi _ _ q dom cod _ => sorry
   | .letE x q tty val body, _ => sorry
   -- Exercise 4.7a
@@ -313,6 +315,18 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | some N => pure (ctx.eval (.const N []), Usage.zeros ctx.lvl)
     | none => throw (.other "numerals need `builtin nat := …`")
   | .natOp .. => throw (.cannotInfer (ctx.showTerm t))
+  -- (given) Q4: lifting
+  | .ulift l A => do
+    let k ← checkType ctx A
+    unless Level.le k l do
+      throw (.other s!"ULift.{l.format} can't lift {ctx.showTerm A}, which is in Sort {k.format}")
+    pure (.sort l, Usage.zeros ctx.lvl)
+  | .up _ => throw (.cannotInfer (ctx.showTerm t))
+  | .down x => do
+    let (ty, u) ← infer ctx x
+    match whnf ty with
+    | .ulift _ A => pure (A, u)
+    | _ => throw (.typeMismatch "a lifted type (ULift)" (ctx.showVal ty))
   | .var ix => sorry
   | .const n us => sorry
   | .sort l => sorry

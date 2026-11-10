@@ -339,6 +339,17 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
 partial def mentionsIdent (n : Name) (stx : Syntax) : Bool :=
   (stx.isOfKind "term.ident" && (stx.getArg 0).getId? == some n) || stx.args.any (mentionsIdent n)
 
+/-- How the fields of the coinductive type `T` sit in its payload (Q4: a small field is
+lifted, `descFieldLifts`), read off `T.desc`. -/
+def coinductiveLifts (g : Globals R) (T : Name) : List FieldLift :=
+  match g.find? (T ++ ".desc") with
+  | some { value := some v, type, .. } =>
+    let rec strip : Nat → Term R → Term R
+      | n + 1, .lam _ b => strip n b
+      | _, t => t
+    descFieldLifts (strip (peelPis type).1.length v)
+  | _ => []
+
 /-- The copattern alternative for observation `o`, if any. -/
 def copatternAlt? (alts : List Syntax) (o : Name) : Option Syntax :=
   alts.find? fun a =>
@@ -378,8 +389,9 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
     sv := vSnd sv
   -- one component per observation, in order
   let alts := (cmd.getArg 5).args.toList
+  let lifts := coinductiveLifts g T
   let mut comps : List (Term R) := []
-  for (o, isRec) in obs do
+  for (o, isRec) in obs, k in [0:obs.length] do
     let some alt := alts.find? fun a =>
         match (a.getArg 1).args[0]? with
         | some p => p.isOfKind "term.dotIdent" && (p.getArg 1).getId? == some o
@@ -406,7 +418,7 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
         oty ← instM cod a
       let .pi _ _ _ _ cod _ ← force oty | throwAt info "internal error: observation type"
       let F ← instM cod (Val.var 0)
-      comps := comps ++ [← Elab.check sctx rhs F]
+      comps := comps ++ [(lifts[k]?.getD .none).wrap (← Elab.check sctx rhs F)]
   -- the index equation: `()` at `Unit`; for a phantom tail (`phantomTail`), `refl`
   let e : Term R ← match ← force I with
     | .unit _ => pure .tt
@@ -639,12 +651,14 @@ partial def inhabitedTy (g : Globals R) (lvl fuel : Nat) (ty : Val R) (hyps : Li
     inhabitedTy g (lvl + 1) (fuel - 1) (Closure.inst g cod (Val.var lvl)) ((headOf dom).toList ++ hyps)
   | .sort _ | .unit _ | .qty | .size | .desc .. => true
   | .enum ls => !ls.isEmpty
+  | .ulift _ A => inh A
   | .sigma _ _ A B _ => inh A && inh (Closure.inst g B (Val.var lvl))
   | .mu _ I D _ _ hint =>
     let byCtor := match whnf I, whnf D with
-      | .unit _, .darg _ S F => match whnf S with
-        | .enum ls => (List.range ls.length).any fun i => fields (vApp g F (.tag ls i))
-        | _ => fields D
+      | .unit _, .darg _ S F => match tagField? S with
+        | some (ls, lifted) => (List.range ls.length).any fun i =>
+          fields (vApp g F (if lifted then .up (.tag ls i) else .tag ls i))
+        | none => fields D
       | .unit _, _ => fields D
       | _, _ => false
     byCtor || (match hint with

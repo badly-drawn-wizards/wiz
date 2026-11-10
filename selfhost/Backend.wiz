@@ -64,11 +64,12 @@ def showEs : ETms → String
   | .cons t rest => String.append " " (String.append (showE t) (showEs rest))
 end
 
--- Has a value of this type no runtime content? (types, proofs, sizes)
-def erasable (c : TCtx) (ty : Val) : Bool := match whnf ty with
+-- Has a value of this type no runtime content? (types, proofs, sizes, and their lifts)
+partial def erasable (c : TCtx) (ty : Val) : Bool := match whnf ty with
   | .vsort _ => .true
   | .vsize => .true
   | .vsizeLt _ => .true
+  | .vulift _ A => erasable c A
   | t => isProp c t
 
 -- Is this `μ` shaped like the natural numbers? Its values are numbers at runtime.
@@ -129,6 +130,11 @@ partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
   | .tag k _ => .some (.venum k)
   | .star => .some (.vunit 1)
   | .letE A v b => quickType (TCtx.define c (eval (TCtx.env c) v) (eval (TCtx.env c) A)) b
+  | .down x => match quickType c x with
+    | .some xty => match whnf xty with
+      | .vulift _ A => .some A
+      | _ => inferTy c t
+    | .none => .none
   | _ => inferTy c t
 
 -- the payload of a value of `ty` for a match: unpacked from a number
@@ -198,6 +204,7 @@ def eraseInfer (c : TCtx) (t : Tm) : ER := match quickType c t with
         | e => e
       | .coe A _ _ x => eraseCheck c x (eval (TCtx.env c) A)   -- (a function under a cast is checked)
       | .exfalso _ _ => .ok (.prim "unreachable" .nil)
+      | .down x => eraseInfer c x
       | .ind l I D v P m i x =>
         let vI := eval (TCtx.env c) I;
         let vD := eval (TCtx.env c) D;

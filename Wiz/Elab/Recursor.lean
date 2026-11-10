@@ -127,7 +127,12 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
     | 0, t => t
     | n + 1, .lam _ b => stripLams n b
     | _, t => t
-  let .darg _ (.enum ls) F := stripLams nΔ descVal | throw "unexpected description shape"
+  let some (ls, tagLifted, F) := (stripLams nΔ descVal).descTag? | throw "unexpected description shape"
+  -- (Q4) lifted fields: the payload holds `up x` (or `fun h => f (down h)`)
+  let ctorLifts : Array (List FieldLift) := match F with
+    | .lam _ (.ecase _ _ _ bs) => (bs.map descFieldLifts).toArray
+    | _ => #[]
+  let upTag (t : B R) : B R := if tagLifted then fun d => .up (t d) else t
   let w : R := QuantitySyntax.explicitDefault
   -- constructor signatures: fields after the Δ binders, and the result's index args
   let mut cinfo : Array (Name × List (Name × BinderInfo × Term R × Term R) × List (Term R)) := #[]
@@ -243,29 +248,34 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
       let motiveZ : B R := fun d =>
         -- under the ecase binder `z`, which is variable `d - 1` at depth `d`
         let z := bvar (d - 1)
-        let Dz := app Fv [z]
+        let Dz := app Fv [upTag z]
         -- normalise only the template parts: evaluation would drop `conAt`'s annotation
         (B.pi "rest" .default (qlit w) (norm g (interpOf Dz)) fun r =>
-          let goal := motApp mot (unpack i ++ [conAt i (pair z r)])
+          let goal := motApp mot (unpack i ++ [conAt i (pair (upTag z) r)])
           if ih?.isSome then B.pi "h" .default (qlit w) (norm g (allOf Dz r)) fun _ => goal else goal) d
       let branches : List (B R) := cinfo.toList.zipIdx.map fun ((c, fields, idx), ci) =>
         let withH (k : B R → B R) : B R := if ih?.isSome then B.lam "h" k else k (closed .tt)
         B.lam "rest" fun r => withH fun h =>
           let n := fields.length
-          let fs := (List.range n).map (proj r)
+          let lifts := ctorLifts[ci]?.getD []
+          let rawFs := (List.range n).map (proj r)
+          let fs : List (B R) := rawFs.zipIdx.map fun (f, k) => fun d => (lifts[k]?.getD .none).unwrap (f d)
           let e := proj r n
           let recIx := (fields.zipIdx.filter fun ((_, _, _, A), _) => isRec A).length
-          let ihs := (List.range recIx).map (proj h)
+          -- (an infinitary field's hypotheses take the lifted domain too)
+          let recLifts := (fields.zip lifts).filterMap fun ((_, _, _, A), fl) => if isRec A then some fl else none
+          let ihs : List (B R) := (List.range recIx).map fun k => fun d =>
+            (if recLifts[k]? == some .hrec then FieldLift.hrec else FieldLift.none).unwrap (proj h k d)
           let σ := Δv ++ fs.toArray
           let idxB := idx.map (ofTele · σ)
           let ctorApp := app (closed (.const (T ++ "." ++ c) us)) (Δv.toList ++ fs)
           let A := norm g (motApp mot (idxB ++ [ctorApp]))
-          let tag : B R := closed (.tag ls ci)
+          let tag : B R := upTag (closed (.tag ls ci))
           let Bty := motApp mot (unpack i ++ [conAt i (pair tag r)])
           -- Q j e' := A = motive j (con (tag, f…, e', ()))
           let Q := B.lam "j" fun j => B.lam "e" fun e' => fun d =>
             .eqTy (A d) ((motApp mot (unpack j ++
-              [conAt j (pair tag ((fs ++ [e']).foldr pair (closed .tt)))])) d)
+              [conAt j (pair tag ((rawFs ++ [e']).foldr pair (closed .tt)))])) d)
           let prf : B R := fun d => .transp (Iv d) (tuple idxB d) (Q d) (.reflTy (A d)) (i d) (e d)
           let inner := app (ms[ci]!) ((jv?.toList) ++ fs ++ (if withIH then ihs else []))
           -- without indices the two motives agree (`con (tag, r)` is the constructor
@@ -274,7 +284,8 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
           if nΞ == 0 || nondep then inner else
           fun d => .cast (A d) (Bty d) (prf d) (inner d)
       fun d =>
-        let e := Term.app (.ecase "z" (motiveZ (d + 1)) (.fst (xs d)) (branches.map (· d))) (.snd (xs d))
+        let scrut : Term R := if tagLifted then .down (.fst (xs d)) else .fst (xs d)
+        let e := Term.app (.ecase "z" (motiveZ (d + 1)) scrut (branches.map (· d))) (.snd (xs d))
         match ih? with
         | some ih => .app e (ih d)
         | none => e

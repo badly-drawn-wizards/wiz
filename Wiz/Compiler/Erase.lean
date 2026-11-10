@@ -188,10 +188,11 @@ end ReprInfo
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
 /-- Values of this type have no runtime content: types, proofs, sizes, quantities, phantom
-tails. -/
-def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
+tails, and lifts of these (`ULift`, Q4: a lifted proof is still a proof at run time). -/
+partial def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
   match whnf ty with
   | .sort _ | .size | .sizeLt _ | .qty => true
+  | .ulift _ A => erasable ctx A
   -- a phantom tail `(0 phantom✝ : D) → … → Unit` (only `fun _ => ()` inhabits it)
   | .pi x .. => x == phantomName || isProp ctx.globals ctx.tys ty
   | _ => isProp ctx.globals ctx.tys ty
@@ -240,7 +241,7 @@ def reprOfTy? (g : Globals R) (ty : Val R) : Option ReprInfo :=
 tag is the flat object's tag. -/
 def startsWithTag (D : Val R) : Bool :=
   match whnf D with
-  | .darg _ S _ => (whnf S matches .enum _)
+  | .darg _ S _ => (tagField? S).isSome
   | _ => false
 
 private def stripAnn : Term R → Term R
@@ -268,6 +269,14 @@ def flatCon (g : Globals R) (ctx : Ctx R) (D : Val R) (x : Term R) (x' : ETerm) 
     | .darg _ _ F, .pair a r, .obj 0 #[.obj k #[], r'] => (flatFields g ctx (vApp g F (ctx.eval a)) r r').map (k, ·)
     | _, _, _ => none
   else (flatFields g ctx D x x').map (0, ·)
+
+/-- `f` without the binder it is under, if it is a variable or a projection of one
+(then `fun x => f x` is `f`: evaluating `f` has no effect and terminates). -/
+partial def etaHead? : ETerm → Option ETerm
+  | .var 0 => none
+  | .var i => some (.var (i - 1))
+  | .proj k t => (etaHead? t).map (.proj k)
+  | _ => none
 
 /-- A use of a value's payload: `view D x` as an argument (see `resolveViews`). -/
 def viewOf (g : Globals R) (D : Val R) (xty : Val R) (D' x' : ETerm) : ETerm :=
@@ -310,6 +319,9 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
     | .sigma _ _ _ B _ => pure (Closure.inst g B (vFst (ctx.eval p)))
     | _ => return (← infer ctx t).1
   | .ann _ ty => pure (ctx.eval ty)
+  | .down p => match whnf (← quickType ctx p) with
+    | .ulift _ A => pure A
+    | _ => return (← infer ctx t).1
   | .ecase _ m s _ => pure (Closure.inst g (.mk ctx.env m) (ctx.eval s))
   | .ind _ _ _ _ P _ i x => pure (vApp g (vApp g (ctx.eval P) (ctx.eval i)) (ctx.eval x))
   | _ => return (← infer ctx t).1
@@ -332,6 +344,8 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
 * everything else: `eraseInfer`. -/
 partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
   if erasable ctx ty then return .erased
+  -- (given) Q4: `ULift` has no runtime content: `up a` is `a`
+  if let (.up a, .ulift _ A) := (t, whnf ty) then return ← eraseCheck ctx a A
   sorry
 
 /-- **Exercise 5.1b.** Erase `t`, computing its type with the kernel's `infer`.
@@ -345,6 +359,8 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
   let ty ← quickType ctx t
   if erasable ctx ty then return (.erased, ty)
   if let .natLit n := t then return (.natLit n, ty)
+  -- (given) Q4: `down t` is `t`
+  if let .down x := t then return (← eraseE ctx x, ty)
   sorry
 
 /-- Erase a term in inference mode, keeping only the program. -/

@@ -32,7 +32,7 @@ Each rule is tagged:
 1. [Reading guide](#1-reading-guide)
 2. [Syntax](#2-syntax)
 3. [Judgment forms](#3-judgment-forms)
-4. [Universes and levels](#4-universes-and-levels)
+4. [Universes and levels](#4-universes-and-levels) (4.1 [Lifting](#41-lifting-ulift-q4))
 5. [Quantities](#5-quantities)
 6. [Variables, Π, λ, application, let](#6-variables-π-λ-application-let)
 7. [Σ, Unit, Empty, True, False, enumerations](#7-σ-unit-empty-true-false-enumerations)
@@ -88,6 +88,7 @@ t, A, B ::=
   (q x : A) × B  [σ] | (t, u) | t.1 | t.2         Σ (optional sort annotation σ)
   let q (x, y) := t as z. M; u                    Σ elimination (`split`)
   Unit_l | tt | Empty_l | absurd M t              Unit_0 = True, Empty_0 = False
+  ULift.{l} A | up t | down t                     lifting to a bigger universe (§4.1, Q4)
   t = u   (written eq A t u)                      observational equality of elements
   A ≡ B   (written eqTy A B)                      equality of types
   refl A t | reflTy A | cast A B e t | transp A a P p b e
@@ -165,6 +166,81 @@ metavariables (elaborator only).
 Level metavariables never reach the kernel in a checked declaration (the elaborator
 solves or defaults them). The kernel does not reject them explicitly; it treats them as
 opaque atoms.
+
+### 4.1 Lifting: `ULift` (Q4)
+
+Universes are not cumulative, so a type in a small universe is moved up explicitly.
+`ULift.{l} A` (`Term.ulift`) is a copy of `A : Sort k` in `Sort l`, for `k ≤ l`. Its only
+use in the core is in descriptions: a description field must be in exactly `Sort (l+1)`
+(§9.1), and the elaborator wraps smaller fields. [std: Agda's `Lift`, Lean's `ULift`;
+the levitated descriptions of [CDMM10] fix the field level and use `Lift` the same way]
+
+```
+     Γ ⊢ A type@k    k ≤ l                Γ ⊢ a ⇐ A ⊣ U                 Γ ⊢ t ⇒ ULift.{l} A ⊣ U
+     ─────────────────────── ulift        ──────────────────── up        ─────────────────────── down
+     Γ ⊢ ULift.{l} A ⇒ Sort l ⊣ 0         Γ ⊢ up a ⇐ ULift.{l} A ⊣ U     Γ ⊢ down t ⇒ A ⊣ U
+
+     down (up a) ⟶ a                                                       (β)      vDown, Eval.lean
+     t ≡ t' : ULift A   iff   down t ≡ down t' : A                         (η)      conv, Conv.lean
+     ULift.{l} A ≡ ULift.{l'} A'   iff   l ≡ l' and A ≡ A'                           convTy
+```
+
+`up` is checked only (its type can't be inferred). `down` is an elimination: it is stuck on
+a neutral and quotes back as `down t`. Usages pass through (`up a` and `down t` use what `a`
+and `t` use).
+
+**Propositions.** `ULift.{l} P` for a proposition `P` is a proposition only when `l ≡ 0`
+(then `P : Sort 0`, and `ULift.{0} P` is equivalent to `P`). For `l` never `0` it is not a
+proposition: its inhabitants are **boxed proofs**. They are not all convertible by proof
+irrelevance at their own type (`typeSort? (ULift.{l} P) = l`), but they are by η, since
+`down t ≡ down t' : P` by proof irrelevance at `P`. So a lifted proposition has one
+inhabitant up to conversion, like `Unit`. Whether a type is a proposition stays a property of
+the type itself (its sort, `propSort?`), never of the sort it is used at.
+
+**Observational equality** (`vEq`, `vEqType`, `vCast`; the given lines at the top of each):
+
+```
+a =_{ULift.{l} A} b    ⟶  True                         if A is a proposition (propSort? A = true)
+                       ⟶  down a =_A down b            if A is not one (propSort? A = false)
+                       ⟶  stuck                        if unknown
+ULift.{u} A ≡ ULift.{w} B ⟶  (X → Y) × (Y → X)         if both are propositions (u ≡ w ≡ 0)
+                       ⟶  A ≡ B                        if u ≡ w
+                       ⟶  False                        if u, w are closed and different; else stuck
+ULift A ≡ B, B another canonical former  ⟶  False      (ULift is in `canonical`: no confusion)
+cast (ULift.{u} A) (ULift.{w} B) e t
+                       ⟶  up (cast A B e (down t))     if u ≡ w and u is never 0
+                       ⟶  e.1 t                        if both are propositions
+                       ⟶  stuck                        otherwise
+```
+
+These follow the pattern of the other formers [std: PT22's rules for a type former with
+one constructor]: the code equation is injective (`ULift A ≡ ULift B` iff `A ≡ B`) and
+the cast goes through the eliminator. They agree with the casts on data (§8.4, D1): the
+payload cast of a constructor casts each field, and a lifted field `up x` is cast to
+`up (cast S S' ê₁ x)`, so a lifted proof field becomes the equivalence applied to the
+proof (a stuck proof), exactly as an unlifted proof field did: the D1 argument (no proof
+returned unchanged) still holds. `ULift A` is inert when `A` is (`inertTy`), and a lifted
+proposition is not. The rule for `cast` requires `u` never `0` (not merely "not known to
+be 0"), so the choice between the two rules is stable under level substitution.
+
+**Subject reduction for the new rules.** *β*: `down (up a)` has type `A` because `up a ⇐
+ULift A` needs `a ⇐ A`. *η* only adds conversions between terms of the same type.
+*`vEq`*: `a =_{ULift A} b` is formed when `ULift A` is in a never-zero sort, and `down a`,
+`down b : A`, so `down a =_A down b` is a well-formed proposition when `A` is not a
+proposition; when `A` is one, the equation is about boxed proofs, which are all equal
+(η + irrelevance), so `True` is its value. *`vEqType`*: `ULift.{l} A ≡ ULift.{l} B` is
+formed at one level `l`; `A ≡ B` may relate types at different levels `k, k' ≤ l`, which
+`eqTy` would not form directly, but (as with the Π/Σ decomposition, §8.3) it then
+computes to `False` or stays stuck: the levels of `A` and `B` are visible in their
+shapes. *`vCast`*: with `e : ULift A ≡ ULift B`, which computes to `A ≡ B`, `cast A B e
+(down t) : B` and `up` of it is a `ULift B`.
+
+**Erasure.** `ULift` has no runtime content: `up a` erases to `a`, `down t` to `t`, and
+`ULift A` is erasable exactly when `A` is (a lifted proof is still erased). A description
+whose tag is lifted (`arg q (ULift (Enum ls)) F`) is still marked as starting with a tag.
+So lifting changes no runtime representation (`#ir` is unchanged). A field of an
+infinitary constructor with a lifted domain is read as `fun h => f (up h)`, which erases to
+`f` (an η-step in `eraseCheck`).
 
 ---
 
@@ -431,6 +507,7 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
 | `μ D i`, with `a = con x`, `b = con y` | `x =_{⟦D⟧ (μ D) i} y`, **by the description** (`vEqPayload`, below) | [wiz: OTT for descriptions] | `vEqPayload` |
 | `Sort l`, `l ≡ 0` | `(a → b) × (b → a)` (**propext**) | [std: PT22] | 540–543 |
 | `Sort l`, `isNeverZero l` | `a ≡ b` (type equality, §8.3) | [std: PT22] | 544 |
+| `ULift A` | `True` if `A` is a proposition; `down a =_A down b` if it is not; else stuck | [std; Q4] | §4.1 |
 | anything else (a neutral type, `ν`, `Sort u` with `u` possibly 0, a non-constructor element of `μ`/`Enum`) | stuck: the neutral `a =_A b` | | 545–546 |
 | numerals `n`, `m` (any `A`) | `True` if `n = m`, else `False` | [impl] | 516 |
 
@@ -441,6 +518,7 @@ equation (which, without regularity, would be stuck at the field's type):
 ```
 x = y  at ⟦ret j⟧ X i         ⟶  True                      (the payload is an index proof and ())
 x = y  at ⟦arg q (Enum ls) E⟧ ⟶  x.1, y.1 both tags: equal ⟶ x.2 = y.2 at ⟦E tag⟧
+       (or ULift (Enum ls): the tags are down x.1, down y.1, and E gets up tag)
                                                       different ⟶ the Σ rule (first component False)
                                  not both tags ⟶ the whole equation a =_μ b is stuck
 x = y  at ⟦arg q S E⟧, S not an Enum  ⟶  the Σ rule
@@ -468,7 +546,7 @@ annotation `0` (`some 0`), which is correct because each is built from propositi
 ```
 propSort?(T) (Eval.lean:98–103) =
   Π/Σ with annotation σ:  true if σ ≡ 0, false if isNeverZero σ, else unknown
-  Unit_l, Empty_l:        true if l ≡ 0, false if isNeverZero l, else unknown
+  Unit_l, Empty_l, ULift.{l} A:   true if l ≡ 0, false if isNeverZero l, else unknown
   Sort, Qty, Enum, Desc, μ, ν, Size, Size<:   false
   a stuck eq / eqTy (empty spine):   true
   anything else (neutral, Π/Σ with no annotation):   unknown
@@ -488,9 +566,10 @@ both false, by shape:
                                   ⟶  True if u ≡ w; False if both closed and different; else stuck
   Enum ls ≡ Enum ls'              ⟶  True if |ls| = |ls'|, else False
   Desc_l I ≡ Desc_l' I'          ⟶  I ≡ I' if l ≡ l', else stuck                          [wiz]
+  ULift.{u} A ≡ ULift.{w} B      ⟶  A ≡ B if u ≡ w; False if both closed and different; else stuck   [Q4, §4.1]
   μ^s_l I D i ≡ μ^s'_l' I' D' i'  ⟶  i =_I i' if l ≡ l' and s, I, D are syntactically equal  [wiz, D1]
   (the same for ν)                    to s', I', D' (quoted, as `sameVal`); else stuck
-  two different canonical formers (Π, Σ, Sort, Unit, Empty, Enum, Desc, μ, ν)
+  two different canonical formers (Π, Σ, Sort, Unit, Empty, Enum, Desc, μ, ν, ULift)
                                   ⟶  False                        (no-confusion of type formers)
   otherwise                       ⟶  stuck
 ```
@@ -526,6 +605,7 @@ propSort? A = propSort? B = true   ⟶  e.1 t                          (apply th
 Sort u/Sort w, Empty_u/Empty_w     ⟶  t if u ≡ w, else stuck                                         630
 Unit_u/Unit_w                      ⟶  tt if u ≡ w, else stuck                                        631
 Enum/Enum, same number of tags     ⟶  t                                                             632
+ULift.{u}/ULift.{u}, u never 0     ⟶  up (cast A B e (down t))                                        [Q4, §4.1]
 A inert, quote(A) = quote(B)       ⟶  t                         (regularity at inert types)   CONJECTURE [wiz, D1]
 Desc_l I / Desc_l I'               ⟶  by the description (below)                                  [wiz, D1]
 μ^s D i / μ^s D i', t = con x      ⟶  con (cast (⟦D⟧ μ^s' i) (⟦D⟧ μ^s' i') ê x)                  [std: PT22, D1]
@@ -667,7 +747,7 @@ itself is not `μ` of a description).
      ───────────────────────────────── ret                                           Check.lean:283
      Γ ⊢ ret i ⇐ Desc.{l} I ⊣ U
 
-     Γ ⊢ q qty   Γ ⊢ S type@k   k ≤ l+1   Γ ⊢ D ⇐ (ω s : S) → Desc.{l} I ⊣ U
+     Γ ⊢ q qty   Γ ⊢ S type@k   ⊢ k ≡ l+1   Γ ⊢ D ⇐ (ω s : S) → Desc.{l} I ⊣ U
      ───────────────────────────────── arg                                           Check.lean:284–289
      Γ ⊢ arg q S D ⇐ Desc.{l} I ⊣ U
 
@@ -675,7 +755,7 @@ itself is not `μ` of a description).
      ───────────────────────────────── rec                                           Check.lean:290–294
      Γ ⊢ rec q j D ⇐ Desc.{l} I ⊣ U₁ + U₂
 
-     Γ ⊢ q qty   Γ ⊢ H type@k   k ≤ l+1   Γ ⊢ j ⇐ (ω h : H) → I ⊣ U₁   Γ ⊢ D ⇐ Desc.{l} I ⊣ U₂
+     Γ ⊢ q qty   Γ ⊢ H type@k   ⊢ k ≡ l+1   Γ ⊢ j ⇐ (ω h : H) → I ⊣ U₁   Γ ⊢ D ⇐ Desc.{l} I ⊣ U₂
      ───────────────────────────────── hrec                                          Check.lean:295–302
      Γ ⊢ hrec q H j D ⇐ Desc.{l} I ⊣ U₁ + U₂
 ```
@@ -687,11 +767,39 @@ holds by construction: there is no way to mention the type being defined except 
 constructors [std: CDMM10]; `hrec` is the usual infinitary extension (unverified which
 paper; Dagand's thesis has `Π`-fields).
 
-**Note.** `arg` and `hrec` accept a field type in a *smaller* universe (`k ≤ l+1`), but the
-eliminator's method types (`delimMethodTys`, `Conv.lean:59–73`) quantify over
-`S : Sort (l+1)`. With non-cumulative universes, `Desc.elim` on such a description
-passes `S : Sort k` where `Sort (l+1)` is expected. The reduct is then not well typed in
-the non-cumulative system (subject reduction fails). No exploit is known (Status.md, Q4).
+**Field levels (Q4, fixed).** A field type (and the domain `H` of an infinitary field) must
+be in **exactly** `Sort (l+1)`. The eliminator's method types (`delimMethodTys`) quantify
+over `S : Sort (l+1)` and `H : Sort (l+1)`, and universes are not cumulative. Until Q4 the
+rule was `k ≤ l+1`, and `Desc.elim` on a description with a smaller field passed `S :
+Sort k` where `Sort (l+1)` was expected, so the reduct was not well typed (`getS D : Type`
+reduced to `True : Prop`). With `k ≡ l+1`:
+
+* **Subject reduction for `Desc.elim`.** `arg q S E ⇐ Desc.{l} I` gives `S : Sort (l+1)`
+  and `E ⇐ (ω s : S) → Desc.{l} I`. The reduct `marg q S E (λ s. Desc.elim P m… (E s))` is
+  then well typed against `marg`'s type: `q : Qty`, `S : Sort (l+1)` (now exactly the
+  binder's sort), `E : S → Desc I`, and the hypothesis has type `(s : S) → P (E s)`, by the
+  rule for `Desc.elim` at `E s : Desc I`; the result `P (arg q S E)` is the redex's type.
+  `hrec` is the same with `H`. `ret` and `rec` were already fine. The templates of §9.2
+  are closed terms typed by these rules, so `⟦D⟧`, `All`, `hyps` and `map` are well typed
+  on every description; `ind`, `scase`, `sfix` and `coit`, whose reducts are built from
+  them, inherit subject reduction (as far as it held before; their own arguments are
+  unchanged).
+* **Small fields are lifted by the elaborator** (§4.1, `Elab/Inductive.lean`: `ctorDesc`,
+  `fieldLevels`, `FieldLift`). A field `x : S` with `S : Sort k`, `k ≢ l+1`, becomes
+  `arg q (ULift.{l+1} S) (λ x. D[down x / x])`, the domain of an infinitary field
+  `hrec q (ULift.{l+1} H) (λ h. js[down h / h]) D`, and the tag of a type above `Type`
+  (`Enum ls : Type`, when `l+1 ≢ 1`) `arg ω (ULift.{l+1} (Enum ls)) (λ t. ecase (down t) …)`.
+  So a proof field of a datatype in `Type` is lifted, and so is every field `A : Type u`
+  of a type in `Type (max u v)` (`Prod.{u,v}`), and the tag of every level-polymorphic
+  inductive type. Constructors take the field itself and put `up x` (or `fun h => f
+  (down h)`) in the payload; recursors (`casesOn`, `rec`), and so patterns and structural
+  recursion, receive `down` of it (or `fun h => f (up h)`), with the induction hypotheses
+  of a lifted infinitary field read the same way. The printer hides `up` and `down`.
+  The surface `Desc.arg` already required `S : Sort (l+1)` exactly.
+* `Kernel.wiz` has the same rule (`lvlEquiv`), and the same `ULift` (§15). Its frontend
+  (`Frontend.wiz`) builds descriptions at `Desc.{0}` from a surface language without
+  `Prop`, equations or universe polymorphism, so every field it can build is in `Type`
+  and needs no lifting.
 
 The eliminator:
 
@@ -916,6 +1024,7 @@ directly:
    Π   η:  a x ≡ b x  at B x, for a fresh x : A                                         267–269  [std]
    Σ   η:  a.1 ≡ b.1 : A  and  a.2 ≡ b.2 : B a.1                                        270–272  [std]
    Unit_l:  always                                                                       273      [std: η for unit]
+   ULift A:  η:  down a ≡ down b : A                                                       [std; Q4]
    Qty:   as polynomials (equivalent under all assignments), else neutral comparison    274–276  [wiz]
    Enum:  same tag index, else neutral comparison                                        277–279
    Size, Size< s:  sizeEq                                                                280      [wiz]
@@ -947,6 +1056,7 @@ Enum ls ≡ Enum ls'               |ls| = |ls'|
 Desc l I ≡ Desc l' I'            l ≡ l', I ≡ I'
 μ/μ, ν/ν                         l ≡ l', sizeEq, I ≡ I', D ≡ D' : Desc, i ≡ i' : I
 Unit_u ≡ Unit_u', Empty_u ≡ Empty_u'   u ≡ u'
+ULift.{u} A ≡ ULift.{u'} A'      u ≡ u', A ≡ A'
 two neutrals                     convNe
 ```
 
@@ -1079,7 +1189,8 @@ Each item says what the code does; the code is what the kernel checks.
 | description fields | carry a quantity | carry none; the methods receive `tt` (`Kernel.wiz:830–845`) |
 | `split` (`let (x, y)`) | yes | **no** |
 | numerals, `natOp` | yes | no |
-| levels of data | `Level` | closed numerals (`descr l`, `mu l`) |
+| levels of data | `Level` | closed numerals (`descr l`, `mu l`, `ulift l`) |
+| `ULift` (Q4) | `ulift`/`up`/`down`, `cast` needs a level never `0` | `ulift`/`up`/`down` at closed levels (`vulift`, `vup`, `sdown`); the same rules |
 | globals | table, by name | inline `const` terms carrying value and type (trusted) |
 | **`Size ≡ Size`, `Size< s ≡ Size< t`** | **stuck** (`Eval.lean:572`) | **`False`**: `canonical` includes `vsize`/`vsizeLt` (`Kernel.wiz:552–565`) and `vEqTypeW` has no case for two sizes, so it falls through to "different formers ⇒ False" (`Kernel.wiz:961–963`). **Unsound** (Status.md, O1). |
 | regularity in conversion (`unCast`) | off by default (`Conv.lean:264`, only under `--regularity`) | no: stuck casts are compared structurally |
