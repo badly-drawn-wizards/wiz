@@ -74,6 +74,21 @@ def privMod : String :=
   "def Pos.pair (p : Pos Nat) : Nat × Nat := (p.val, p.1)\n" ++
   "private structure Hidden where\n  x : Nat\n"
 
+/-- (13b) A module with a private constructor of an inductive, private observations of a
+coinductive, a private field of a structure, and a private inductive type. -/
+def privMod2 : String :=
+  "import Prelude\ninductive Tok where\n  | num (n : Nat)\n  | private secret (n : Nat)\n" ++
+  "def Tok.hide (n : Nat) : Tok := Tok.secret n\n" ++
+  "def Tok.value (t : Tok) : Nat := match t with\n  | .num n => n\n  | .secret n => Nat.add n 100\n" ++
+  "coinductive Sig (A : Type) where\n  private head : A\n  private tail : Sig A\n  name : Nat\n" ++
+  "def Sig.const {A : Type} (a : A) : Sig A\n  | .head => a\n  | .tail => Sig.const a\n  | .name => 7\n" ++
+  "def Sig.sample {A : Type} (s : Sig A) : A := s.head\n" ++
+  "def Sig.next {A : Type} (s : Sig A) : Sig A := s.tail\n" ++
+  "structure Acct where\n  owner : Nat\n  private bal : Nat\n" ++
+  "def Acct.balance (a : Acct) : Nat := a.bal\n" ++
+  "private inductive Color where\n  | red\n  | blue\n" ++
+  "def fav : Color := .red\n"
+
 def group : Group where
   name := "elabfix"
   exercise := "elaborator bugs"
@@ -201,6 +216,42 @@ def group : Group where
         failsPriv privMod "import Priv\ndef x : Pos Nat := (5, ())" "Pos"
         failsPriv privMod "import Priv\nstructure Fake (A : Type) where\n  val : A\ndef x : Pos Nat := Fake.mk 5" "mismatch"
         failsPriv privMod "import Priv\ndef x (p : Pos Nat) : Nat := p.1" "cannot project" },
+    { name := "private constructors, observations and fields: the public API (13b)", run := fun _ => do
+        okPriv privMod2 ("import Priv\n#eval Tok.value (Tok.num 3)\n#eval Tok.value (Tok.hide 4)\n#eval Tok.value (.num 5)\n" ++
+          "#eval Sig.sample (Sig.next (Sig.const 3))\n#eval (Sig.const 2).name\n" ++
+          "#eval Acct.balance (Acct.mk 1 50)\n#eval (Acct.mk 1 50).owner")
+          ["3", "104", "5", "3", "7", "50", "1"]
+        -- in their own module everything is ordinary
+        okPriv "" (privMod2 ++ "#eval Tok.value (.secret 1)\n#eval (Sig.const 4).tail.head\n#eval (Acct.mk 1 2).bal\n" ++
+          "def f (t : Tok) : Nat := match t with\n  | .num _ => 0\n  | .secret _ => 1\n#eval f (Tok.hide 0)")
+          ["101", "4", "2", "1"] },
+    { name := "a private constructor of an inductive: no forging, no matching (13b)", run := fun _ => do
+        failsPriv privMod2 "import Priv\ndef x : Tok := Tok.secret 1" "'Tok.secret' is private to module Priv"
+        failsPriv privMod2 "import Priv\ndef x : Tok := .secret 1" "'Tok.secret' is private to module Priv"
+        -- opaque here: a look-alike doesn't convert, and `match` (even on the public
+        -- constructor, with a catch-all) would see the representation
+        failsPriv privMod2 "import Priv\ninductive Fake where\n  | num (n : Nat)\n  | secret (n : Nat)\ndef x : Tok := Fake.secret 1" "mismatch"
+        failsPriv privMod2 "import Priv\ndef f (t : Tok) : Nat := match t with\n  | .num n => n\n  | _ => 0" "opaque outside module Priv"
+        failsPriv privMod2 "import Priv\ndef f (t : Tok) : Nat := match t with\n  | .secret n => n\n  | _ => 0" "opaque"
+        -- the recursors would hand out the private constructor's fields
+        failsPriv privMod2 "import Priv\ndef f := @Tok.casesOn" "'Tok.casesOn' is private to module Priv"
+        failsPriv privMod2 "import Priv\ndef f := @Tok.rec" "private"
+        -- a type declared private: values of it can't be matched elsewhere either
+        failsPriv privMod2 "import Priv\ndef f : Nat := match fav with\n  | .red => 1\n  | .blue => 2" "private to module Priv" },
+    { name := "private observations of a coinductive: no observing, no building (13b)", run := fun _ => do
+        failsPriv privMod2 "import Priv\ndef f (s : Sig Nat) : Nat := s.head" "'Sig.head' is private to module Priv"
+        failsPriv privMod2 "import Priv\ndef f (s : Sig Nat) : Sig Nat := Sig.tail s" "'Sig.tail' is private to module Priv"
+        failsPriv privMod2 "import Priv\ndef s : Sig Nat := Sig.mk 1 (Sig.const 1) 2" "'Sig.mk' is private to module Priv"
+        failsPriv privMod2 "import Priv\ndef s : Sig Nat := .mk 1 (Sig.const 1) 2" "private"
+        failsPriv privMod2 "import Priv\ndef s : Sig Nat\n  | .head => 1\n  | .tail => Sig.const 1\n  | .name => 0"
+          "'Sig.head' is private to module Priv: a Sig can't be defined by copatterns"
+        -- opaque here: the primitives don't see a `ν` either
+        failsPriv privMod2 "import Priv\ndef f (s : Sig Nat) : Nat := (out s).1" "out expects a coinductive value"
+        failsPriv privMod2 "import Priv\ndef s : Sig Nat := cocon (1, Sig.const 1, 2, ())" "cocon builds a coinductive value" },
+    { name := "a private field of a structure (13b)", run := fun _ => do
+        failsPriv privMod2 "import Priv\ndef f (a : Acct) : Nat := a.bal" "'Acct.bal' is private to module Priv"
+        failsPriv privMod2 "import Priv\ndef f (a : Acct) : Nat := a.2.1" "project"
+        failsLib "import Prelude\nclass C (A : Type) where\n  private m : A" "can't be private" },
     { name := "`private def` right after a structure (13b)", run := fun _ =>
         okLib "import Prelude\nstructure P where\n  x : Nat\nprivate def q : P := P.mk 1\n#eval q.x" ["1"] },
     { name := "a projection of an inline application doesn't run it (elab-bugs-from-hdl 2)", run := fun _ =>
