@@ -2069,6 +2069,52 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     -- names are not part of terms: the same hole, in a context that differs in a name
     let (st, id) := addGoal st { gl with ctx := { gl.ctx with names := gl.ctx.names.set i (← str (fld 2)) } }
     return ← runTac code info st (apply code (fld 3) (.nat id))
+  if tag == TacTag.change then
+    let ty ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
+    try unify lvl gl.ty ty
+    catch e => throwAt info s!"change: the new goal is not convertible with the old one ({e.msg})"
+    let m ← freshMeta gl.ctx "goal"
+    unifyGoal gl m
+    let (st, id) := addGoal st { ctx := gl.ctx, ty, tm := m }
+    return ← runTac code info st (apply code (fld 2) (.nat id))
+  if tag == TacTag.whnf then
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let (r, st) ← refl st gl (← whnfTerm gl.ctx t)
+    return ← runTac code info st (apply code (fld 2) r)
+  if tag == TacTag.unfold then
+    let n ← str (fld 1)
+    match g.find? n with
+    | some { value := some _, inline := false, .. } => pure ()
+    | some _ => throwAt info s!"unfold: {n} is not a definition"
+    | none => throwAt info s!"unfold: unknown constant {n}"
+    let t ← zonk lvl (← reify st.handles (fld 2) lvl)
+    let (r, st) ← refl st gl (← unfoldIn gl.ctx n t)
+    return ← runTac code info st (apply code (fld 3) r)
+  if tag == TacTag.rewrite then
+    let h ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let rtl := decodeBool (fld 2) == some true
+    unless h.mvars.isEmpty do throwAt info "rewrite: the equation has holes"
+    let hty ← match (← get).kernelInfer (gl.kernelCtx g) h with
+      | .ok ty => pure ty
+      | .error e => throwAt info s!"rewrite: {e}"
+    let (A, a, b) ← match ← force hty with
+      | .neutral (.eq A a b) #[] => pure (quote g lvl A, quote g lvl a, quote g lvl b)
+      | v => throwAt info s!"rewrite: not an equation between two terms: {← showVal gl.ctx v}"
+    let goalT ← zonk lvl (quote g lvl gl.ty)
+    -- the side to replace, and its replacement
+    let (old, new) := if rtl then (b, a) else (a, b)
+    let (body, found) := (abstractOcc old goalT).run false
+    unless found do throwAt info s!"rewrite: the goal does not mention {showTerm gl.ctx old}"
+    let newT := body.instantiateAt 0 new
+    -- `P x _ := G[x] = G[a]` (or `G[a] = G[x]`, right to left), transported along `h : a = b`
+    let Ga := body.instantiateAt 0 a
+    let eqn (x y : Term R) : Term R := if rtl then .eqTy y x else .eqTy x y
+    let P : Term R := .lam "x" (.lam "_" (eqn (body.lift 1) (Ga.lift 2)))
+    let pf : Term R := .transp A a P (.reflTy Ga) b h
+    let m ← freshMeta gl.ctx "goal"
+    unifyGoal gl (.cast newT goalT pf m)
+    let (st, id) := addGoal st { ctx := gl.ctx, ty := ← evalIn gl.ctx newT, tm := m }
+    return ← runTac code info st (apply code (fld 3) (.nat id))
   if tag == TacTag.exact then
     let stx ← stxOf (fld 1)
     let t ← check (gl.ctx.withInfo stx) stx gl.ty

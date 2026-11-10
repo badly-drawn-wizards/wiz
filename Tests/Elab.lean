@@ -828,6 +828,23 @@ def tacticLsp (src : String) : IO (LSP.Server × Array Lean.Json) := do
   pure (LSP.handle srv (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
     ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])]))
 
+/-- A recursive representation predicate in the style of separation logic, for `unfold`. -/
+def unfoldPrelude : String := "import Prelude
+def len : List Nat → Nat
+  | .nil => 0
+  | .cons _ xs => Nat.succ (len xs)
+def Wrap (n : Nat) : Prop := n = n
+def And' (A B : Prop) : Prop := (R : Prop) → (A → B → R) → R
+def Pred : Type := Nat → Prop
+def ex (J : Nat → Pred) : Pred := fun h => (R : Prop) → ((n : Nat) → J n h → R) → R
+def cell (p x n : Nat) : Pred := fun h => h = Nat.add p (Nat.add x n)
+def star (A B : Pred) : Pred := fun h => And' (A h) (B h)
+def MList : List Nat → Nat → Pred
+  | .nil, p => fun h => p = 0
+  | .cons x L, p => ex (fun n => star (cell p x n) (MList L n))
+def Ent (A B : Pred) : Prop := (h : Nat) → A h → B h
+"
+
 def tacticGroup : Group where
   name := "tactics"
   exercise := "Exercises 6.4–6.6"
@@ -908,6 +925,35 @@ def tacticGroup : Group where
           "def t (e : Ex (fun (n : Nat) => n = 0)) : Ex (fun (m : Nat) => m = 0) := by\n  apply Ex.elim _ e\n  intros\n  trace_state\n" ++
           "  rename_i w, h\n  exact (fun R k => k w h)")
           ["ap0 (fun k => List Nat) g0 : List Nat", "e : Ex Nat (fun n => n = 0)\na✝ : Nat\nh✝ : a✝ = 0\n⊢ Ex Nat (fun m => m = 0)"] },
+    -- unfolding and rewriting (docs/stages/06-macros.md, 6f)
+    { name := "unfold: a definition once, its match computed, the recursive call folded back", run := fun _ =>
+        okLib (unfoldPrelude ++
+          "def t2 (x : Nat) (L : List Nat) (p : Nat) : Ent (MList (.cons x L) p) (MList (.cons x L) p) := by\n  unfold MList\n  trace_state\n  unfold Ent\n  intros\n  assumption\n" ++
+          "def t (x : Nat) (xs : List Nat) : Wrap (len (.cons x xs)) := by\n  unfold len\n  trace_state\n  unfold Wrap\n  rfl")
+          ["x : Nat\nL : List Nat\np : Nat\n⊢ Ent (ex (fun n => star (cell p x n) (MList L n))) (ex (fun n => star (cell p x n) (MList L n)))",
+           "x : Nat\nxs : List Nat\n⊢ Wrap (.succ (len xs))"] },
+    { name := "unfold: a stuck application stays folded; several names; not a definition", run := fun _ => do
+        okLib (unfoldPrelude ++
+          "def t3 (L : List Nat) (p : Nat) : Ent (MList L p) (MList L p) := by\n  unfold MList\n  trace_state\n  unfold Ent, star\n  trace_state\n  intros\n  assumption")
+          ["L : List Nat\np : Nat\n⊢ Ent (MList L p) (MList L p)", "L : List Nat\np : Nat\n⊢ (h : Nat) → MList L p h → MList L p h"]
+        failsLib "import Prelude\ndef t : Nat := by\n  unfold List.cons\n  exact 0" "unfold: List.cons is not a definition"
+        failsLib "import Prelude\ndef t : Nat := by\n  unfold nope\n  exact 0" "unfold: unknown constant nope" },
+    { name := "whnf computes the goal's head; change restates it (checked by conversion)", run := fun _ => do
+        okLib (unfoldPrelude ++
+          "def t4 (x : Nat) (L : List Nat) (p : Nat) : Ent (MList (.cons x L) p) (MList (.cons x L) p) := by\n  whnf\n  trace_state\n" ++
+          "  change Ent (MList (.cons x L) p) (ex (fun n => star (cell p x n) (MList L n)))\n  trace_state\n  unfold Ent\n  intros\n  assumption")
+          ["x : Nat\nL : List Nat\np : Nat\n⊢ (h : Nat) → MList (.cons x L) p h → MList (.cons x L) p h",
+           "x : Nat\nL : List Nat\np : Nat\n⊢ Ent (MList (.cons x L) p) (ex (fun n => star (cell p x n) (MList L n)))"]
+        failsLib "import Prelude\ndef t : Nat := by\n  change Bool\n  exact 0" "change: the new goal is not convertible with the old one" },
+    { name := "rw: rewrite with an equation, left to right and back; the kernel checks the cast", run := fun _ => do
+        okLib ("import Prelude\ndef r (a b : Nat) (h : a = b) (P : Nat → Prop) (pb : P b) : P a := by\n  rw h\n  trace_state\n  exact pb\n" ++
+          "def r2 (a b : Nat) (h : a = b) (P : Nat → Type) (pa : P a) : P b := by\n  rw ← h\n  exact pa\n" ++
+          "def r3 (f : Nat → Nat) (a b : Nat) (h : f a = b) (Q : Nat → Nat → Prop) (q : Q b b) : Q (f a) (f a) := by\n  rw h\n  exact q\n" ++
+          "#check r2")
+          ["a : Nat\nb : Nat\nh : a = b\nP : Nat → Prop\npb : P b\n⊢ P b",
+           "r2 : (a : Nat) → (b : Nat) → a = b → (P : Nat → Type) → P a → P b"]
+        failsLib "import Prelude\ndef r (a b c : Nat) (h : a = b) (P : Nat → Prop) (pc : P c) : P c := by\n  rw h\n  exact pc" "rewrite: the goal does not mention a"
+        failsLib "import Prelude\ndef r (a : Nat) (P : Nat → Prop) (pa : P a) : P a := by\n  rw pa\n  exact pa" "rewrite: not an equation" },
     { name := "traces reach the language server (a diagnostic) and the infoview (wiz/plainGoal)", run := fun _ => do
         let src := "import Prelude\ndef k : Nat → Nat := by\n  intro n\n  trace_state\n  exact n\n"
         let (srv, out) ← tacticLsp src

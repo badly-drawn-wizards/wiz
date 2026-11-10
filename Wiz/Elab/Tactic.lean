@@ -63,6 +63,10 @@ def ppGoal := 23
 def ppExpr := 24
 def introFresh := 25
 def rename := 26
+def change := 27
+def whnf := 28
+def unfold := 29
+def rewrite := 30
 end TacTag
 
 structure Goal (R : Type) where
@@ -221,5 +225,137 @@ def Goal.show (gl : Goal R) : ElabM R String := do
     lines := lines.push s!"{ctx.names[j]!} : {showTerm sub (← zonk sub.lvl (quote (← getGlobals) sub.lvl ctx.types[j]!))}"
   lines := lines.push s!"⊢ {showTerm ctx (← zonk ctx.lvl (quote (← getGlobals) ctx.lvl gl.ty))}"
   pure ("\n".intercalate lines.toList)
+
+/-! ## Unfolding (stage 6f)
+
+`normalize` evaluates and quotes, but definitions are glued (`Val.unfold` keeps the
+name), so it never shows what a definition unfolds to. Two requests do:
+
+* `unfold n e` replaces every application of the constant `n` in `e` by its unfolding,
+  **once**: the definition's body with the arguments in place and the `match` on them
+  computed, but the definitions it mentions still folded.
+* `whnf e` unfolds the head of `e` until it is not a definition (a constructor, a
+  binder, a variable, …).
+
+A structurally recursive definition is an eliminator, so what unfolding leaves for its
+recursive calls is a raw `ind … L n`, which nobody wrote. `foldRec` finds these stuck
+eliminators and folds each back into `f a₁ … aₙ` when that unifies with it (for the `f`s
+that were unfolded): the user sees `MList L n` again. The result is only ever a
+*candidate*: the elaborator checks it against what it replaces by conversion
+(`change`), and the kernel checks the finished proof. -/
+
+private def stripLams : Term R → Nat × Term R
+  | .lam _ b => let (n, t) := stripLams b; (n + 1, t)
+  | t => (0, t)
+
+/-- `ctx` under `k` more binders (of types the caller doesn't know or need). -/
+def bindAnon (ctx : LocalCtx R) : Nat → LocalCtx R
+  | 0 => ctx
+  | k + 1 => bindAnon (ctx.bind "x" (.unit .zero)) k
+
+/-- `t` as an application of the definition `n`, if `n ?a₁ … ?aₖ` (`k` its number of
+`fun`s) unifies with it and that solves every `?aᵢ`. -/
+def foldAs? (ctx : LocalCtx R) (n : Name) (t : Term R) : ElabM R (Option (Term R)) := do
+  let some d := (← getGlobals).find? n | return none
+  let some v := d.value | return none
+  let arity := (stripLams v).1
+  if arity == 0 then return none
+  try
+    let us ← d.levelParams.mapM fun _ => freshLevelMeta
+    let mut cand : Term R := .const n us
+    for _ in [0:arity] do cand := .app cand (← freshMeta ctx "fold")
+    let cv ← evalIn ctx cand
+    let tv ← force (← evalIn ctx t)
+    -- `n ?a₁ … ?aₖ` is itself stuck, on the hole it recurses on: `?aᵢ` followed by the
+    -- eliminator and the rest. That is no pattern for the unifier, so first solve the
+    -- hole with what `t`'s eliminator is stuck on (once per nested `match`)
+    for _ in [0:arity] do
+      match ← force cv, tv with
+      | .neutral (.mvar a) sp, .neutral h' sp' =>
+        let some j := sp.findIdx? (fun e => !(e matches .app _)) | break
+        let rest := sp.size - j
+        if sp'.size < rest then throwAt {} "no match"
+        unify ctx.lvl (.neutral (.mvar a) (sp.extract 0 j)) (.neutral h' (sp'.extract 0 (sp'.size - rest)))
+      | _, _ => break
+    unify ctx.lvl cv tv
+    let t' ← zonk ctx.lvl cand
+    if t'.mvars.isEmpty then return some t'
+    throwAt {} "not determined"
+  catch _ => return none
+
+/-- Fold the stuck eliminators in `t` back into applications of the definitions `names`
+(see above). An eliminator applied to more arguments than the definition takes, or to
+fewer, is tried at each prefix of its arguments. -/
+partial def foldRec (ctx : LocalCtx R) (names : List Name) (t : Term R) : ElabM R (Term R) := do
+  if names.isEmpty then return t
+  if (Term.spine t).1 matches .ind .. then
+    for n in names do
+      if let some t' ← foldAs? ctx n t then return t'
+  t.mapChildrenM pure fun k c => foldRec (bindAnon ctx k) names c
+
+/-- Is `n` an eliminator of an inductive type (`T.rec`, `T.casesOn`, …)? A definition by
+cases or by structural recursion is `fun x => T.rec … x`: unfolding it means unfolding the recursor too (which
+is where the `match` computes), and nobody wants a recursive call folded into `T.rec`. -/
+def isRecursor (g : Globals R) (n : Name) : Bool :=
+  match (n.splitOn ".").reverse with
+  | e :: rest => ["rec", "recN", "casesOn", "casesOnN", "scasesOn", "scasesOnN"].contains e &&
+      !rest.isEmpty && g.contains (".".intercalate rest.reverse ++ ".desc")
+  | _ => false
+
+/-- Unfold the recursors at the head of a value. -/
+partial def forceRecursors (v : Val R) : ElabM R (Val R) := do
+  match ← forceMeta v with
+  | .unfold n us sp w => if isRecursor (← getGlobals) n then forceRecursors w.get else pure (.unfold n us sp w)
+  | v => pure v
+
+/-- Unfold the head of a value until it is not a definition; also the definitions
+unfolded on the way, innermost last. -/
+partial def forceNames (v : Val R) (names : List Name := []) : ElabM R (Val R × List Name) := do
+  match ← forceMeta v with
+  | .unfold n _ _ v =>
+    forceNames v.get (if names.contains n || isRecursor (← getGlobals) n then names else names ++ [n])
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => forceNames v.get names
+  | v => pure (v, names)
+
+/-- The weak head normal form of `t`, with recursive calls folded back. -/
+def whnfTerm (ctx : LocalCtx R) (t : Term R) : ElabM R (Term R) := do
+  let (v, names) ← forceNames (← evalIn ctx t)
+  foldRec ctx names.reverse (← zonk ctx.lvl (quote (← getGlobals) ctx.lvl v))
+
+/-- `t` with every application of the definition `n` unfolded once (innermost first). -/
+partial def unfoldIn (ctx : LocalCtx R) (n : Name) (t : Term R) : ElabM R (Term R) := do
+  let inside (t : Term R) := t.mapChildrenM pure fun k c => unfoldIn (bindAnon ctx k) n c
+  match t with
+  | .app .. | .const .. =>
+    -- the whole application at once: `f a` in `f a b` is not an occurrence of its own
+    let (h, args) := Term.spine t
+    let args ← args.mapM (unfoldIn ctx n)
+    match h with
+    | .const m _ =>
+      let t' := args.foldl .app h
+      if m != n then return t'
+      match ← forceMeta (← evalIn ctx t') with
+      | .unfold _ _ _ v =>
+        foldRec ctx [n] (← zonk ctx.lvl (quote (← getGlobals) ctx.lvl (← forceRecursors v.get)))
+      | _ => pure t'
+    | h => return args.foldl .app (← inside h)
+  | t => inside t
+
+/-! ## Rewriting with an equation
+
+`rewrite h` for `h : a = b` replaces the occurrences of `a` in the goal `G[a]` by `b`:
+the new goal is `G[b]`, and the old one is solved by a cast along `G[b] = G[a]`, which
+`transp` gets from `h` (as `Eq.substBack` in the prelude does). Occurrences are found
+syntactically, on the normal forms the elaborator prints; the kernel checks the cast. -/
+
+/-- `t` (under `depth` binders more than `a`) with the occurrences of `a` replaced by
+the variable `depth`, the other variables making room for it; and whether there were any. -/
+partial def abstractOcc (a : Term R) (t : Term R) (depth : Nat := 0) : StateM Bool (Term R) := do
+  if t == a.lift depth then
+    set true
+    return .var depth
+  match t with
+  | .var i => pure (.var (if i ≥ depth then i + 1 else i))
+  | t => t.mapChildrenM pure fun k c => abstractOcc a c (depth + k)
 
 end Wiz.Elab

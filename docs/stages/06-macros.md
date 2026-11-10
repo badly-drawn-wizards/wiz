@@ -190,3 +190,49 @@ def k : (n : Nat) → (b : Bool) → Nat → Nat := by
   `ap0 (fun k => List Nat) g0`, not `ap0 (fun x0 => List Nat) g0`. Names are not part of
   conversion, so nothing else changes.
 
+## 6f: `unfold`, `whnf`, `change`, `rw` ✅
+
+```
+def MList : List Nat → Nat → Pred
+  | .nil, p => fun h => p = 0
+  | .cons x L, p => ex (fun n => star (cell p x n) (MList L n))
+
+def t (x : Nat) (L : List Nat) (p : Nat) : Ent (MList (.cons x L) p) … := by
+  unfold MList     -- ⊢ Ent (ex (fun n => star (cell p x n) (MList L n))) …
+```
+
+`normalize` evaluates and quotes, and since values are glued (7a) it hands a definition
+back folded: no request showed what a definition unfolds to, and tactics found out by
+unifying with every shape they knew. Four requests (and the tactics of the same names):
+
+* `TacticM.unfold g n e` (`unfold f, g`): every application of the definition `n` in `e`,
+  unfolded **once**. "Once" is what a person means by it: the definition's body with
+  the arguments in place and the `match` on them computed (a definition by cases or
+  structural recursion is `fun x => T.rec … x`, so the eliminator at its head is
+  unfolded with it, `isRecursor`), but the definitions the body mentions still folded
+  (`ex`, `star` above). An application that is stuck (`MList L p`, `L` a variable) stays
+  as it is. Unlike Lean's `unfold`, it does not fail when nothing changes.
+* `TacticM.whnf g e` (`whnf`): the head unfolded until it is not a definition.
+* **Recursive calls are folded back.** A structurally recursive definition is an
+  eliminator, so what unfolding leaves for `MList L n` is `ind … L n`, with the whole
+  definition inlined in it. `foldRec` looks for stuck eliminators in the result and
+  replaces each by `f ?a₁ … ?aₖ` when that unifies with it, for the `f`s just unfolded
+  (`foldAs?`: the candidate is itself stuck on the hole it recurses on, which is not a
+  pattern, so that hole is first solved with what the eliminator is stuck on). What
+  cannot be folded is left raw; it is still correct.
+* `TacticM.change g ty` (`change t`): the goal restated as a convertible type, checked
+  by unification at once (a tactic that assigned a new goal's hole itself got its
+  error from the kernel, at the end of the declaration). `unfold` and `whnf` end with it.
+* `TacticM.rewrite g h rtl` (`rw h`, `rw ← h`): for `h : a = b`, a complete term, the
+  occurrences of `a` in the goal `G[a]` become `b`. The old goal is solved with
+  `cast (transp (fun x _ => G[x] = G[a]) (refl G[a]) h) ?new`, as `Eq.substBack` does,
+  so it works for goals in any universe. Occurrences are found syntactically in the
+  normal form the goal is printed in (no unification: instantiate a quantified
+  equation yourself, `rw (h x)`), and the equation must still be one: an equation at a
+  data type that has computed (`succ a = succ b` is `a = b`) is rewritten as what it
+  computed to.
+
+None of this is trusted: the unfolded or rewritten type is a candidate that `change`
+checks by conversion, and the kernel checks the finished term (it does not evaluate the
+`transp` proof: nothing here depends on proofs computing).
+
