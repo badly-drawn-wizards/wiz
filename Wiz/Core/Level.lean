@@ -163,6 +163,16 @@ where
 /-- `a ≤ b` for every instantiation (as far as `equiv` can tell). -/
 def le (a b : Level) : Bool := equiv (max a b) b
 
+/-- The least upper bound, kept small: `a` or `b` when one is below the other. -/
+def join (a b : Level) : Level := if b.le a then a else if a.le b then b else max a b
+
+/-- A small `k` with `l ≤ k + 1`: `k` for `succ k`, `u` for a parameter `u`. -/
+def predBound : Level → Level
+  | zero => zero
+  | succ l => l
+  | max a b => join (predBound a) (predBound b)
+  | imax a b => join (predBound a) (predBound b)
+  | l => l
 
 /-- The level as a number, if it is closed. -/
 def toNat? : Level → Option Nat

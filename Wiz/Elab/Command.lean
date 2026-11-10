@@ -83,6 +83,8 @@ structure CommandState (R : Type) where
   cHeaders : String → Option String := fun _ => none
   /-- the C functions glue code may call: from imported headers, and earlier glue -/
   cFuncs : List (String × List FFI.GTy × FFI.GTy) := []
+  /-- (9i) the structs of imported headers, for glue code: fields by spelling -/
+  cStructs : List (String × List (String × FFI.GTy)) := []
   /-- C code to emit: header includes and the glue functions -/
   cCode : Array String := #[]
   /-- foreign pointer types and their finalizers -/
@@ -676,9 +678,17 @@ def builtinShapeError (g : Globals R) (key : Name) (d : Decl R) : Option String 
     | some N =>
       let (as, r) := doms d.type
       let arity := natOpArity key
+      -- numerals unfold through `nat.zero` and `nat.succ`: they must be `N`'s own
+      -- constructors, not definitions that only have their types
+      let rec isCtor : Term R → Bool
+        | .lam _ b => isCtor b
+        | .con _ => true
+        | _ => false
       if d.value.isNone then some "it must be a definition"
       else if as.length != arity || !as.all (isN N) then
         some s!"it must take {arity} argument{if arity == 1 then "" else "s"} of type {N}"
+      else if (key == "nat.zero" || key == "nat.succ") && !(d.inline && (d.value.map isCtor).getD false) then
+        some s!"it must be a constructor of {N}"
       else if !(key == "nat.beq" || key == "nat.blt") && !isN N r then some s!"its result must have type {N}"
       else none
 
@@ -743,6 +753,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let finOf (t : Term R) : String := match (Term.spine t).1 with
     | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
     | _ => ""
+  -- (9i) the C struct a Wiz structure stands for (`c_struct`), as a marshalling kind
+  let structKind? (n : Name) : Option RVal.FKind :=
+    (s.builtins.find? fun (k, x) => x == n && k.startsWith "cstruct:").bind fun (k, _) =>
+      (RVal.FKind.parseOne (k.drop 8).toString.toList).map (·.1)
   -- (HD8) the code of the registered macros, tactics and derivers
   let remakeMetaCode : StateM (CommandState R) Unit := modify fun s =>
     let more := if s.cmdMacros.isEmpty && s.derivers.isEmpty then []
@@ -1012,19 +1026,27 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | none => throw s!"missing field {x}"
         let head := Syntax.node cmd.info "term.ident" #[.ident cmd.info (C ++ ".mk")]
         pure (if args.isEmpty then head else .node cmd.info "term.app" #[head, .node {} "null" args.toArray])
+    -- the universe names in the binders and the type are the instance's universe
+    -- parameters (an instance has no `.{u}` of its own; derivers write `Type u`)
+    let rec levelNames (stx : Syntax) : List Name := match stx with
+      | .node _ k as =>
+        if k == "level.param" then ((stx.getArg 0).getId?).toList
+        else as.toList.flatMap levelNames
+      | _ => []
+    let levelParams := (binders.toList.flatMap levelNames ++ levelNames typeStx).eraseDups
     match valStx with
     | .error e => report .error cmd.info e
     | .ok valStx =>
       match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics)
           (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
-          (elabDeclTerms binders (some typeStx) (some valStx) cmd.info) [] with
+          (elabDeclTerms binders (some typeStx) (some valStx) cmd.info) levelParams with
       | .error e => report .error e.info e.msg
       | .ok (ty, val) =>
         let (_, concl) := peelPis ty
         match (Term.spine concl).1 with
         | .const C _ =>
           if s.classes.any (·.name == C) then
-            addDeclChecked name [] ty val
+            addDeclChecked name levelParams ty val
             modify fun s => { s with instances := s.instances.push { name, cls := C, priority } }
           else report .error cmd.info s!"{C} is not a class"
         | _ => report .error cmd.info "an instance's type must be an application of a class"
@@ -1102,6 +1124,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo",
       "nat.div", "nat.mod", "nat.pow", "nat.land", "nat.lor", "nat.xor", "nat.shiftLeft", "nat.shiftRight", "nat.log2"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
+    -- one registration per key, and one key per constant: a second `builtin nat.add := K`
+    -- would redirect how the first one's constant unfolds (the kernel finds the definition
+    -- by key), an assumption that no declaration using it would show
+    else if let some m := s.globals.builtins.lookup key then
+      report .error cmd.info s!"builtin {key} is already registered (as {m}); a builtin can be registered only once"
+    else if let some (k, _) := s.globals.builtins.find? fun (k, m) => m == n && known.contains k then
+      report .error cmd.info s!"{n} is already registered as builtin {k}"
     else match s.globals.find? n with
     | none => report .error cmd.info s!"unknown declaration {n}"
     | some d =>
@@ -1133,48 +1162,170 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     -- an opaque C pointer type; values are released with the finalizer
     let name := ((cmd.getArg 1).getId?).getD "_"
     let fin := if (cmd.getArg 2).isNone then "" else (((cmd.getArg 2).getArg 3).getStr?).getD ""
+    -- (9i) `(c := "T")`: `T *` in an imported header is this type
+    let cty := if (cmd.getArg 3).isNone then [] else [(s!"ctype:{(((cmd.getArg 3).getArg 3).getStr?).getD ""}", name)]
     match addDeclSorted s.globals { name, type := .sort 1, value := none } with
-    | .ok g => modify fun s => { s with globals := g, foreignTypes := (name, fin) :: s.foreignTypes }
+    | .ok g => modify fun s => { s with globals := { g with builtins := cty ++ g.builtins }, builtins := cty ++ s.builtins,
+                                        foreignTypes := (name, fin) :: s.foreignTypes }
     | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
   | "command.importC" =>
     -- bind every function of a C header whose types we can marshal
     let header := ((cmd.getArg 1).getStr?).getD "_"
     let isPure := !(cmd.getArg 2).isNone
+    -- (9i) opt-outs: `(no_auto)`, `(skip := "names")`
+    let opts := (cmd.getArg 3).args
+    let noAuto := opts.any (·.args.size == 3)
+    let skips := opts.toList.flatMap fun o => match (o.getArg 3).getStr? with
+      | some str => (str.splitOn " ").filter (· ≠ "")
+      | none => []
     match s.cHeaders header with
     | none => report .error cmd.info s!"{header} was not preprocessed (run through `wiz check` or `wiz run`)"
     | some src =>
-      let rec kindOf (t : FFI.CType) (isResult : Bool) : Option Char := match t with
-        | .const t => kindOf t isResult
-        | .int "_Bool" => some 'b'
-        | .int _ => some 'n'
-        | .float _ => some 'f'
-        | .void => if isResult then some 'v' else none
-        | .ptr t => match t with
-          | .int "char" | .const (.int "char") => some 's'
-          | _ => none
-        | .other _ => none
-      let tyOf (k : Char) : Term R := match k with
-        | 'n' => .const "Nat" []
-        | 'f' => .const "Float64" []
-        | 's' => .const "String" []
-        | 'b' => .const "Bool" []
+      let tyOf (k : RVal.FKind) (st : CommandState R) : Term R := match k with
+        | .k 'n' => .const "Nat" []
+        | .k 'f' => .const "Float64" []
+        | .k 's' => .const "String" []
+        | .k 'b' => .const "Bool" []
+        | .k 'y' => .const "Bytes" []
+        | .k 'p' => .const "_" []
+        | .struct c h fs =>
+          let key := s!"cstruct:{(RVal.FKind.struct c h fs).toKey}"
+          .const (((st.builtins.find? (·.1 == key)).map (·.2)).getD "_") []
         | _ => .unit 1
       let w : Term R := .qlit QuantitySyntax.explicitDefault
-      let funcs := FFI.parseHeader src
+      let (funcs, structs) := FFI.parseHeaderFull src
       -- glue code may call these, and needs the header
       let usable := funcs.toList.filterMap fun f => do
         if f.variadic then none
         let ps ← f.params.mapM FFI.GTy.ofC
         pure (f.name, ps, ← FFI.GTy.ofC f.ret)
-      modify fun s => { s with cFuncs := usable ++ s.cFuncs, cCode := s.cCode.push s!"#include <{header}>" }
+      -- (a field glue can't use is `void`: it can't be read, and a local of the struct must be initialised)
+      let hstructs := structs.toList.filterMap fun st => st.fields.map fun fs =>
+        (st.spelling, fs.map fun (f, t) => (f, (FFI.GTy.ofC t).getD .void))
+      let hstructs := hstructs.flatMap fun (sp, fs) => (sp, fs) :: (((structs.find? (·.spelling == sp)).map (·.aliases)).getD []).map (·, fs)
+      modify fun s => { s with cFuncs := usable ++ s.cFuncs, cCode := s.cCode.push s!"#include <{header}>",
+                               cStructs := hstructs ++ s.cStructs }
+      let structOf (sp : String) : Option FFI.CStruct := structs.find? (·.spelling == sp)
+      let spellings (sp : String) : List String := sp :: ((structOf sp).map (·.aliases)).getD []
+      let skipped (sp : String) : Bool := (spellings sp).any skips.contains
+      -- the Wiz name of a C struct: its typedef name if it has one
+      let wizName (sp : String) : Name :=
+        "C." ++ (match ((structOf sp).map (·.aliases)).getD [] with
+          | a :: _ => a
+          | [] => sp.replace "struct " "struct_")
+      -- (9i) a C struct by value, as a Wiz structure: a `c_struct` declared for it, or one
+      -- made here (`C.div_t`, `C.struct_timespec`) when every field can be marshalled
+      let rec structFor (sp : String) (fuel : Nat) : StateM (CommandState R) (Option RVal.FKind) := do
+        if fuel == 0 || noAuto || skipped (sp) then return none
+        let st ← get
+        let mine := st.builtins.find? fun (k, _) => k.startsWith "cstruct:" &&
+          match RVal.FKind.parseOne (k.drop 8).toString.toList with
+          | some (.struct c _ _, _) => (spellings sp).contains c
+          | _ => false
+        if let some (k, _) := mine then return (RVal.FKind.parseOne (k.drop 8).toString.toList).map (·.1)
+        let some { fields := some fs, .. } := structOf sp | return none
+        let mut lines : Array String := #[]
+        for (f, t) in fs do
+          let t := match t with | .const t => t | t => t
+          let fty ← match t with
+            | .int "_Bool" => pure (some "Bool")
+            | .int _ => pure (some "Nat")
+            | .float _ => pure (some "Float64")
+            | .ptr (.int "char") | .ptr (.const (.int "char")) => pure (some "String")
+            | .array (.int c) (some _) | .array (.const (.int c)) (some _) =>
+              pure (if c == "char" || c == "unsigned char" || c == "signed char" then some "Bytes" else none)
+            | .struct sp' => do
+              match ← structFor sp' (fuel - 1) with
+              | some k => pure ((← get).builtins.find? (·.1 == s!"cstruct:{k.toKey}") |>.map (·.2))
+              | none => pure none
+            | _ => pure none
+          let some fty := fty | return none
+          lines := lines.push s!"  {f} : {fty}"
+        let text := s!"c_struct \"{sp}\" (header := \"{header}\") {wizName sp} where\n{"\n".intercalate lines.toList}\n"
+        let st ← get
+        let some (stx, _) := (parseCommand text.toList.toArray st.tables 0).toOption | return none
+        let n0 := st.messages.size
+        elabCommand stx
+        let st' ← get
+        if (st'.messages.extract n0 st'.messages.size).any (·.severity == .error) then
+          -- (a field name Wiz can't take, say): leave the struct out
+          set { st' with messages := st'.messages.extract 0 n0 }
+          return none
+        let k := st'.builtins.find? fun (k, x) => x == wizName sp && k.startsWith "cstruct:"
+        return k.bind fun (k, _) => (RVal.FKind.parseOne (k.drop 8).toString.toList).map (·.1)
+      -- (9i) a pointer to a struct (or to an opaque typedef): a foreign type, the user's
+      -- (`foreign_type T (c := "FILE")`) or one made here (no finalizer)
+      let ptrFor (sp : String) : StateM (CommandState R) (Option Name) := do
+        if noAuto || skipped sp then return none
+        let st ← get
+        if let some (_, n) := st.builtins.find? fun (k, _) => k.startsWith "ctype:" && (spellings sp).contains (k.drop 6).toString then
+          return some n
+        let n := wizName sp
+        if st.foreignTypes.any (·.1 == n) then return some n
+        if st.globals.contains n then return none
+        match addDeclSorted st.globals { name := n, type := .sort 1, value := none } with
+        | .ok g =>
+          let key := s!"ctype:{sp}"
+          modify fun s => { s with globals := { g with builtins := (key, n) :: g.builtins }, builtins := (key, n) :: s.builtins,
+                                   foreignTypes := (n, "") :: s.foreignTypes }
+          return some n
+        | .error _ => return none
+      let rec kindOf (t : FFI.CType) (isResult : Bool) : StateM (CommandState R) (Option (RVal.FKind × Option Name)) := match t with
+        | .const t => kindOf t isResult
+        | .int "_Bool" => pure (some (.k 'b', none))
+        | .int _ => pure (some (.k 'n', none))
+        | .float _ => pure (some (.k 'f', none))
+        | .void => pure (if isResult then some (.k 'v', none) else none)
+        | .struct sp => do pure ((← structFor sp 8).map (·, none))
+        | .ptr t => match t with
+          | .int "char" | .const (.int "char") => pure (some (.k 's', none))
+          | .struct sp | .const (.struct sp) => do pure ((← ptrFor sp).map fun n => (RVal.FKind.k 'p', some n))
+          | _ => pure none
+        | _ => pure none
+      -- (9i) a read-only buffer and its length (`const void *buf, size_t n`): `Bytes`
+      let lenNames := ["n", "__n", "len", "__len", "nbytes", "__nbytes", "length", "__length"]
+      let isBuf (t : FFI.CType) : Bool := match t with
+        | .ptr (.const .void) | .ptr (.const (.int "unsigned char")) => true
+        | _ => false
       for f in funcs do
         let name : Name := "C." ++ f.name
-        if f.variadic || (← get).globals.contains name then continue
-        let (some ks, some rk) := (f.params.mapM (kindOf · false), kindOf f.ret true) | continue
-        let res := if isPure then tyOf rk else .app (.const "IO" []) (tyOf rk)
-        let ty := ks.foldr (fun k acc => .pi "_" .default w (tyOf k) acc none) res
-        let key : Name := s!"extern:{f.name}:{String.mk ks}:{rk}:{if isPure then "pure" else "io"}:{header}:"
-        match addDeclSorted (← get).globals { name, type := ty, value := none } with
+        if f.variadic || (← get).globals.contains name || skips.contains f.name then continue
+        -- the parameters, with buffers and their lengths as one
+        let names := f.paramNames ++ List.replicate (f.params.length - f.paramNames.length) ""
+        let arr := (f.params.zip names).toArray
+        let mut ps : Array (Option FFI.CType) := #[]
+        let mut i := 0
+        while i < arr.size do
+          let t := arr[i]!.1
+          let isLen := match arr[i + 1]? with
+            | some (l, ln) => (match l with | .int _ | .const (.int _) => true | _ => false) && lenNames.contains ln
+            | none => false
+          if !noAuto && isBuf t && isLen then
+            ps := ps.push none; i := i + 2
+          else
+            ps := ps.push (some t); i := i + 1
+        let mut ks : Array (RVal.FKind × Option Name) := #[]
+        let mut ok := true
+        for p in ps do
+          match p with
+          | none => ks := ks.push (.k 'y', none)
+          | some t => match ← kindOf t false with
+            | some k => ks := ks.push k
+            | none => ok := false; break
+        if !ok then continue
+        let some (rk, rn) ← kindOf f.ret true | continue
+        let st ← get
+        let ty1 (k : RVal.FKind × Option Name) : Term R := match k.2 with
+          | some n => .const n []
+          | none => tyOf k.1 st
+        let res := if isPure then ty1 (rk, rn) else .app (.const "IO" []) (ty1 (rk, rn))
+        -- (9i) a foreign pointer result gets its type's finalizer (`foreign_type … (c := …)`)
+        let fin := match rn with
+          | some n => (List.lookup n (st.foreignTypes : List (Name × String))).getD ""
+          | none => ""
+        let ty := ks.toList.foldr (fun k acc => .pi "_" .default w (ty1 k) acc none) res
+        let key : Name := s!"extern:{f.name}:{String.join (ks.toList.map (·.1.toKey))}:{rk.toKey}:{if isPure then "pure" else "io"}:{header}:{fin}"
+        match addDeclSorted st.globals { name, type := ty, value := none } with
         | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
                                             globals := { g with builtins := (key, name) :: g.builtins } }
         | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
@@ -1191,12 +1342,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error e => report .error e.info e.msg
       | .ok (ty, _) =>
         let names := (binders.flatMap Elab.binderViews).toList.map (·.name)
-        let kind (t : Term R) : Option Char := match t with
-          | .unit _ => some 'v'
+        let kind (t : Term R) : Option RVal.FKind := match t with
+          | .unit _ => some (.k 'v')
           | t => match (Term.spine t).1 with
-            | .const "Nat" _ => some 'n' | .const "UInt64" _ => some 'u' | .const "Float64" _ => some 'f'
-            | .const "String" _ => some 's' | .const "Bool" _ => some 'b'
-            | .const n _ => if s.foreignTypes.any (·.1 == n) then some 'p' else none
+            | .const "Nat" _ => some (.k 'n') | .const "UInt64" _ => some (.k 'u') | .const "Float64" _ => some (.k 'f')
+            | .const "String" _ => some (.k 's') | .const "Bool" _ => some (.k 'b')
+            | .const n _ => if s.foreignTypes.any (·.1 == n) then some (.k 'p') else structKind? n
             | _ => none
         let rec gparams : Term R → List (Term R) × Term R
           | .pi _ _ _ A B _ => let (ps, r) := gparams B; (A :: ps, r)
@@ -1208,12 +1359,21 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         match ps.mapM kind, kind res with
         | some ks, some rk =>
           if names.length != ks.length then report .error cmd.info "glue: every parameter needs a name" else
-          let gty (k : Char) : FFI.GTy := match k with
-            | 'f' => .dbl | 's' => .str | 'v' => .void | 'p' => .ptr | _ => .int
-          let cty (k : Char) : String := match k with
-            | 'f' => "double" | 's' => "const char *" | 'v' => "void" | 'b' => "int" | 'p' => "void *" | _ => "uint64_t"
-          let pairs := (names.zip ks).filter (·.2 != 'v')
-          match FFI.checkGlue body (pairs.map fun (x, k) => (x, gty k)) s.cFuncs (gty rk) with
+          let gty (k : RVal.FKind) : FFI.GTy := match k with
+            | .k 'f' => .dbl | .k 's' => .str | .k 'v' => .void | .k 'p' => .ptr | .struct c _ _ => .struct c | _ => .int
+          let cty (k : RVal.FKind) : String := match k with
+            | .k 'f' => "double" | .k 's' => "const char *" | .k 'v' => "void" | .k 'b' => "int" | .k 'p' => "void *"
+            | .struct c _ _ => c | _ => "uint64_t"
+          let pairs := (names.zip ks).filter (·.2 != .k 'v')
+          -- (9i) the structs in scope: the `c_struct`s (their declared fields), and the headers'
+          let declared := s.builtins.filterMap fun (key, _) =>
+            if !key.startsWith "cstruct:" then none else
+            match RVal.FKind.parseOne (key.drop 8).toString.toList with
+            | some (.struct c _ fs, _) => some (c, fs.filterMap fun (f, k) => match k with
+                | .k 'e' | .k 'y' => none
+                | k => some (f, gty k))
+            | _ => none
+          match FFI.checkGlue body (pairs.map fun (x, k) => (x, gty k)) s.cFuncs (gty rk) (s.cStructs ++ declared) with
           | .error e => report .error (cmd.getArg 6).info s!"glue: {e}"
           | .ok () =>
             let cname := "wiz_glue_" ++ ((C.mangle name).drop 2).toString
@@ -1221,7 +1381,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             let code := s!"static {cty rk} {cname}({if cparams.isEmpty then "void" else cparams}) \{
 {body}
 }"
-            let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}::{finOf res}"
+            let key : Name := s!"extern:{cname}:{String.join (ks.map (·.toKey))}:{rk.toKey}:{if io then "io" else "pure"}::{finOf res}"
             match addDeclSorted s.globals { name, type := ty, value := none } with
             | .ok g =>
               modify fun s => { s with builtins := (key, name) :: s.builtins,
@@ -1230,8 +1390,59 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
                                        cFuncs := (cname, pairs.map (gty ·.2), gty rk) :: s.cFuncs }
             | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
         | _, _ =>
-          let msg := "a glue function's arguments and result must be Nat, UInt64, Float64, String, Bool or Unit (the result may be in IO)"
+          let msg := "a glue function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit, a foreign type or a c_struct (the result may be in IO)"
           report .error cmd.info msg
+  | "command.cStruct" =>
+    -- (9i) a Wiz structure standing for a C struct, passed to and from C by value
+    let name := ((cmd.getArg 3).getId?).getD "_"
+    let header := if (cmd.getArg 2).isNone then "" else (((cmd.getArg 2).getArg 3).getStr?).getD ""
+    let ctype := if (cmd.getArg 1).isNone then "wiz_s" ++ ((C.mangle name).drop 1).toString
+      else (((cmd.getArg 1).getArg 0).getStr?).getD "_"
+    let fields := (cmd.getArg 5).args
+    if s.globals.contains name then report .error (cmd.getArg 3).info s!"'{name}' has already been declared"
+    else if fields.isEmpty then report .error cmd.info "a c_struct needs at least one field"
+    else if ctype.contains ':' || ctype.contains '|' || ctype.contains '<' || header.contains ':' || header.contains '|' then
+      report .error cmd.info "c_struct: unexpected characters in the C type or header"
+    else
+      -- each field's type, on its own (fields may not depend on each other)
+      let fieldKind (f : Syntax) : Except (SourceInfo × String) (String × RVal.FKind) := do
+        let fname := ((f.getArg 2).getId?).getD "_"
+        let q0 := !(f.getArg 1).isNone && ((f.getArg 1).getArg 0 |>.getArg 0).getNat? == some 0
+        if q0 then return (fname, .k 'e')
+        match runElab (macros := s.macros) (builtins := s.builtins) (classes := s.classes) (instances := s.instances) s.globals
+            (elabDeclTerms #[] (some (f.getArg 4)) none f.info) [] with
+        | .error e => throw (e.info, s!"c_struct field {fname}: {e.msg} (fields may not depend on other fields)")
+        | .ok (ty, _) =>
+          let k : Option RVal.FKind := match (Term.spine ty).1 with
+            | .const "Nat" _ => some (.k 'n')
+            | .const "UInt64" _ => some (.k 'u')
+            | .const "Float64" _ => some (.k 'f')
+            | .const "String" _ => some (.k 's')
+            | .const "Bool" _ => some (.k 'b')
+            -- a byte array `char f[N]`: its size comes from the header
+            | .const "Bytes" _ => if header != "" then some (.k 'y') else none
+            | .const n _ => if s.foreignTypes.any (·.1 == n) then some (.k 'p') else structKind? n
+            | _ => none
+          match k with
+          | some k => pure (fname, k)
+          | none => throw (f.info, s!"c_struct field {fname}: a field must be Nat, UInt64, Float64, String, Bool, a foreign type, another c_struct or (with a header) Bytes")
+      match fields.toList.mapM fieldKind with
+      | .error (info, e) => report .error info e
+      | .ok kinds =>
+        let parse (text : String) : Option Syntax := match parseCommand text.toList.toArray s.tables 0 with
+          | .ok (stx, _) => some stx
+          | .error _ => none
+        match parse s!"structure {name} where" with
+        | none => report .error cmd.info "internal error: c_struct"
+        | some frame =>
+          let n0 := (← get).messages.size
+          elabCommand ((frame.setArg 6 (Syntax.mkNull fields)).setArg 7 (cmd.getArg 6))
+          if (← get).messages.extract n0 (← get).messages.size |>.any (·.severity == .error) then return
+          let k : RVal.FKind := .struct ctype header kinds
+          let code := if header == "" then C.structDefinition ctype kinds else s!"#include <{header}>"
+          modify fun s => { s with builtins := (s!"cstruct:{k.toKey}", name) :: s.builtins,
+                                   globals := { s.globals with builtins := (s!"cstruct:{k.toKey}", name) :: s.globals.builtins },
+                                   cCode := if s.cCode.contains code then s.cCode else s.cCode.push code }
   | "command.extern" =>
     -- an axiom, bound to a C function: the marshalling follows the Wiz type
     let cname := ((cmd.getArg 1).getStr?).getD "_"
@@ -1244,22 +1455,24 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       match elabTy with
       | .error e => report .error e.info e.msg
       | .ok (ty, _) =>
-        let kind (t : Term R) : Option Char := match t with
-          | .unit _ => some 'v'
+        let kind (t : Term R) : Option RVal.FKind := match t with
+          | .unit _ => some (.k 'v')
           -- a type variable: any Wiz value, passed as it is
-          | .var _ => some 'w'
+          | .var _ => some (.k 'w')
           | t => match (Term.spine t).1 with
-            | .const "Nat" _ => some 'n'
-            | .const "UInt64" _ => some 'u'
-            | .const "Float64" _ => some 'f'
-            | .const "String" _ => some 's'
-            | .const "Bool" _ => some 'b'
-            | .const "Bytes" _ | .const "Array" _ | .const "Str" _ | .const "StrMap" _ => some 'w'
-            | .var _ => some 'w'
+            | .const "Nat" _ => some (.k 'n')
+            | .const "UInt64" _ => some (.k 'u')
+            | .const "Float64" _ => some (.k 'f')
+            | .const "String" _ => some (.k 's')
+            | .const "Bool" _ => some (.k 'b')
+            | .const "Bytes" _ | .const "Array" _ | .const "Str" _ | .const "StrMap" _ => some (.k 'w')
+            | .var _ => some (.k 'w')
             | .const n _ =>
-              if s.foreignTypes.any (·.1 == n) then some 'p'
+              if s.foreignTypes.any (·.1 == n) then some (.k 'p')
+              -- (9i) a structure declared with `c_struct`: the C struct, by value
+              else if let some k := structKind? n then some k
               -- a Wiz data type (`UIntN w`): the value as it is, for runtime natives
-              else if (s.globals.find? n).any (·.value.isSome) then some 'w' else none
+              else if (s.globals.find? n).any (·.value.isSome) then some (.k 'w') else none
             | _ => none
         let rec params : Term R → List (Term R × Term R) × Term R
           | .pi _ _ q A B _ => let (ps, r) := params B; ((q, A) :: ps, r)
@@ -1271,20 +1484,20 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- erased parameters (`{A : Type}`) are passed as ◾ and ignored
         -- a runtime native (`wiz_…`, runtime/wiz.c) takes and returns any other Wiz value
         -- as it is: an opaque type's (`Chan p`, `MVar A`), a closure, a Σ pair (25a)
-        let kind (t : Term R) : Option Char :=
+        let kind (t : Term R) : Option RVal.FKind :=
           match kind t with
           | some k => some k
-          | none => if cname.startsWith "wiz_" then some 'w' else none
-        let pkind (qa : Term R × Term R) : Option Char := if qa.1 == .qlit 0 then some 'e' else kind qa.2
+          | none => if cname.startsWith "wiz_" then some (.k 'w') else none
+        let pkind (qa : Term R × Term R) : Option RVal.FKind := if qa.1 == .qlit 0 then some (.k 'e') else kind qa.2
         match ps.mapM pkind, kind res with
         | some ks, some rk =>
-          let key : Name := s!"extern:{cname}:{String.mk ks}:{rk}:{if io then "io" else "pure"}:{header}:{finOf res}"
+          let key : Name := s!"extern:{cname}:{String.join (ks.map (·.toKey))}:{rk.toKey}:{if io then "io" else "pure"}:{header}:{finOf res}"
           match addDeclSorted s.globals { name, type := ty, value := none } with
           | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
                                               globals := { g with builtins := (key, name) :: g.builtins } }
           | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
         | _, _ =>
-          let msg := "a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit or a Wiz data type (the result may be in IO)"
+          let msg := "a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit, a c_struct or a Wiz data type (the result may be in IO)"
           report .error cmd.info msg
   | "command.attrMacro" =>
     let k := ((cmd.getArg 3).getId?).getD "_"

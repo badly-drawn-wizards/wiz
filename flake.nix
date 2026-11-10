@@ -7,7 +7,8 @@
   #
   # The packages: `wiz` (the default; it has `grail` too), built with Lake and the Lean
   # of nixpkgs (which must be the version in `lean-toolchain`), and wrapped with this
-  # toolchain as flags. CI pushes them to the Cachix cache `badlydrawnwizards`; see
+  # toolchain as flags; `wiz-nvim`, the Neovim plugin, and `nvim-wiz`, Neovim with it
+  # and wiz (`nix run .#nvim-wiz`). CI pushes them to the Cachix cache `badlydrawnwizards`; see
   # docs/building.md for `nix run`.
   description = "Wiz: a didactic dependently typed language";
 
@@ -48,7 +49,7 @@
                 fileset = fs.unions [
                   ./lakefile.toml ./lake-manifest.json ./lean-toolchain
                   ./Main.lean ./Wiz.lean ./Wiz ./Grail.lean ./Grail
-                  ./runtime # embedded with include_str
+                  ./runtime # wiz.c and WizRuntime.lean, which embeds it (include_str)
                   ./c # linked into the executables (moreLinkObjs)
                 ];
               };
@@ -104,7 +105,43 @@
               platforms = systems;
             };
           };
-        in { inherit wiz unwrapped; default = wiz; };
+
+          # The Neovim plugin (editors/nvim, docs/stages/11-tooling.md 11p), without its tests.
+          wiz-nvim = pkgs.vimUtils.buildVimPlugin {
+            pname = "wiz-nvim";
+            inherit (unwrapped) version;
+            src = fs.toSource {
+              root = ./editors/nvim;
+              fileset = fs.difference ./editors/nvim ./editors/nvim/tests;
+            };
+            meta = {
+              description = "Wiz in Neovim: wiz lsp, Lean-style unicode input, and an infoview";
+              platforms = lib.platforms.all;
+            };
+          };
+
+          # Neovim with wiz.nvim and this wiz on PATH (`nix run .#nvim-wiz -- file.wiz`).
+          # Its own configuration: your init.lua is not read.
+          nvim-wiz =
+            let
+              nvim = pkgs.neovim.override {
+                configure = {
+                  packages.wiz.start = [ wiz-nvim ];
+                  customRC = "";
+                };
+              };
+            in
+            pkgs.writeShellApplication {
+              name = "nvim-wiz";
+              runtimeInputs = [ wiz ];
+              text = ''exec ${nvim}/bin/nvim "$@"'';
+              meta = {
+                description = "Neovim with wiz.nvim and wiz";
+                mainProgram = "nvim-wiz";
+                platforms = systems;
+              };
+            };
+        in { inherit wiz unwrapped wiz-nvim nvim-wiz; default = wiz; };
     in {
       packages = forAll packagesFor;
 
@@ -112,11 +149,16 @@
         let
           pkg = self.packages.${pkgs.stdenv.hostPlatform.system}.wiz;
           app = name: { type = "app"; program = "${pkg}/bin/${name}"; meta = pkg.meta; };
-        in { wiz = app "wiz"; grail = app "grail"; default = app "wiz"; });
+          nvim = self.packages.${pkgs.stdenv.hostPlatform.system}.nvim-wiz;
+        in {
+          wiz = app "wiz"; grail = app "grail"; default = app "wiz";
+          nvim-wiz = { type = "app"; program = "${nvim}/bin/nvim-wiz"; meta = nvim.meta; };
+        });
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = [ pkgs.elan pkgs.gmp pkgs.boehmgc pkgs.llvm pkgs.python3 pkgs.git ];
+          # neovim: the `nvim` test group (editors/nvim)
+          packages = [ pkgs.elan pkgs.gmp pkgs.boehmgc pkgs.llvm pkgs.python3 pkgs.git pkgs.neovim ];
           # `wiz` and `grail` take the toolchain as flags (stage 23a); grail and the test
           # driver read this machine's paths from the uncommitted grail.local.wiz written
           # here (when run from the repository root). Nothing reads the environment.

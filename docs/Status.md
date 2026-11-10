@@ -173,9 +173,23 @@ the results of the probes listed in the "Probes" section.
   Registrations are checked for shape (`nat` an inductive type, each operation a
   definition `N → … → N`), numerals need `nat.zero` and `nat.succ`, and a numeral at a
   type that isn't the registered data type is an error. PR #5 (`agent/trust-gaps`).
+* **A hole in that accounting, closed** (soundness audit, T14). A second registration of
+  a key was accepted: after `import Prelude`, `builtin nat.add := K` made the Prelude's
+  `Nat.add n 1` unfold through `K` on a variable (the kernel finds the definition by key)
+  while numerals stayed native, so `boom : False` followed, and `#print axioms boom`
+  showed nothing, since `boom` never mentions `K`. Now **a key is registered once and a
+  constant has one key**: a second registration is an error at the command, and also when
+  a module elaborated on its own is replayed from the cache next to another registration.
+  `nat.zero` and `nat.succ` must be constructors of the registered type (numerals unfold
+  through them), and a constant registered under a `nat.` key depends on the numerals'
+  registrations as a literal does (`P z z` with `nat.pow := P` is the numeral `1` with no
+  literal in the term). So with the Prelude imported nothing more can be registered, and
+  without it every registration is an axiom of whatever uses its constant or a numeral.
 * **Regression tests.** Group *trust*: the probe's warnings and `#print axioms` output, a
   registration in a module from an `-I` directory, the crash and the shape errors, and the
-  Prelude's numerals still computing natively with no axioms.
+  Prelude's numerals still computing natively with no axioms; the T14 probe and second
+  registrations of `nat`, `nat.zero`, `nat.succ` (rejected, also through the cache),
+  non-constructors as `nat.zero`/`nat.succ` (rejected).
 
 ### F5. Description fields in smaller universes (Q4, decision (a)) — **fixed**
 
@@ -208,8 +222,18 @@ the results of the probes listed in the "Probes" section.
   * group *inductive*: "Q4: …" cases for a proof field, the fields of `Prod.{u,v}`, a type
     in `Type 1` with an infinitary field over `Type` and with a lifted tag, and `#ir`
     unchanged by lifting.
-* **What remains.** Derived instances (`deriving`) for universe-polymorphic types are not
-  supported (unrelated to Q4). The subject-reduction argument is on paper (CoreSpec §4.1,
+* **Deriving** (stage 7d, docs/stages/07-type-classes.md). `deriving` used to fail on a
+  type with a proof field (it showed, compared and defaulted the proof: a unification
+  error at `BEq`, no `Repr`/`Inhabited` of a proposition) and on universe-polymorphic
+  types (an `inductive Box.{u} (A : Type u)` without a signature was put in `Type`, so its
+  field was lifted to a level below its own and the kernel rejected `Box.desc`; the
+  classes and instances were in `Type` only). Now reflection marks proof fields, the
+  derivers skip them, the classes take `Type u`, instances have universe parameters, and
+  a missing signature is the smallest `Type l` that holds the fields. Derivers see a
+  lifted field through `down` (the recursor's method gets the field at its own type).
+  Tests: group *deriving*, "deriving with proof fields …", "… universe-polymorphic type
+  …", "… a type above Type: lifted fields are seen through down (F5)".
+* **What remains.** The subject-reduction argument is on paper (CoreSpec §4.1,
   §9.1), not mechanised; the OTT rules for `ULift` are the standard ones for a one-field
   former and are **conjecture** in Wiz's combination like the rest of §8.
 
