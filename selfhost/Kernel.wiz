@@ -202,10 +202,16 @@ inductive Head where
   | hconst (name : String) (params : List String) (levels : List Lvl) (value ty : Tm)
   | haxiom (name : String) (ty : Tm)
 end
+-- the payload types of a cast between two data types and their equation (4g)
+inductive PayEq where
+  | mk (Xi Xi' e : Val)
 
 def kCharsEq : List Char → List Char → Bool
   | .nil, .nil => .true
-  | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (kCharsEq as bs)
+  -- (the heads first: `Bool.and` would evaluate the rest anyway, call by value)
+  | .cons a as, .cons b bs => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => kCharsEq as bs
+    | .false => .false
   | _, _ => .false
 def kStrEq (a b : String) : Bool := match a with
   | .mk x => match b with
@@ -514,8 +520,10 @@ def tmsLen : Tms → Nat
   | .tnil => 0
   | .tcons _ rest => Nat.succ (tmsLen rest)
 
+-- (past the end: a stuck unknown. The checker rejects a variable out of scope, so
+-- nothing well typed gets here; `Sort 0` here made such a variable a term `Prop : Prop`)
 def lookup : Env → Nat → Val
-  | .nil, _ => .vsort (.lnum 0)
+  | .nil, _ => .vne (.haxiom " out of scope" .star) .snil
   | .cons v rest, i => match i with
     | .zero => v
     | .succ j => lookup rest j
@@ -1150,6 +1158,8 @@ def vEqW : Val → Val → Val → Val
     | .false => match lvlNeverZero l with
       | .true => vEqType a b
       | .false => .vne (.heq (.vsort l) a b) .snil
+  -- (4g) equality of description codes, structurally
+  | .vdesc l I, a, b => vEqDesc l I a b
   | A, a, b => .vne (.heq A a b) .snil
 -- equality of two payloads, constructor by constructor (`vEqPayload` in `Eval.lean`):
 -- `.none` when a tag is not known (the equation is stuck)
@@ -1222,10 +1232,10 @@ def vEqTypeW : Val → Val → Val
   | .vdesc l I, .vdesc l' I' => match Nat.beq l l' with
     | .true => vEqType I I'
     | .false => .vne (.heqTy (.vdesc l I) (.vdesc l' I')) .snil
-  | .vmu l I D i s, .vmu l' I' D' i' s' => famEqTy (.vmu l I D i s) (.vmu l' I' D' i' s') I i i'
+  | .vmu l I D i s, .vmu l' I' D' i' s' => famEqTy (.vmu l I D i s) (.vmu l' I' D' i' s')
   -- (Q4) `ULift A = ULift B ↦ A = B`
   | .vulift l A, .vulift l' B => same l l' (vEqType A B) (.vempty 0)
-  | .vnu l I D i s, .vnu l' I' D' i' s' => famEqTy (.vnu l I D i s) (.vnu l' I' D' i' s') I i i'
+  | .vnu l I D i s, .vnu l' I' D' i' s' => famEqTy (.vnu l I D i s) (.vnu l' I' D' i' s')
   | X, Y => match Bool.and (canonical X) (canonical Y) with
     | .true => .vempty 0
     | .false => .vne (.heqTy X Y) .snil
@@ -1411,29 +1421,75 @@ def groundValW : Val → Val → Val → Bool
   | .vmu l I D i _, .vcon x, .vcon y => groundEqVal (vInterp l I D (muFamily l I D) i) x y
   | .vmu _ _ _ _ _, a, b => groundAtomEq a b
   | _, _, _ => .false
--- two `μ` (or two `ν`) types of one family: the level, index type, description and
--- size agree, only the indices may differ (`sameFamily?` in `Eval.lean`)
-def sameFamily : Val → Val → Bool
-  | .vmu l I D _ sz, .vmu l' I' D' _ sz' => famEq l I D sz l' I' D' sz'
-  | .vnu l I D _ sz, .vnu l' I' D' _ sz' => famEq l I D sz l' I' D' sz'
-  | _, _ => .false
-def famEq (l : Nat) (I D sz : Val) (l' : Nat) (I' D' sz' : Val) : Bool := match Nat.beq l l' with
-  | .false => .false
-  | .true => match sameVal sz sz' with
-    | .false => .false
-    | .true => match sameVal I I' with
-      | .false => .false
-      | .true => sameVal D D'
--- `μ D i = μ D i'` is `i = i'`; other equations between data types are stuck
-def famEqTy (X Y I i i' : Val) : Val := match sameFamily X Y with
-  | .true => vEq I i i'
+-- (4g) sizes equal as conversion decides it (`sizeEqTrue` in `Eval.lean`, `sizeEq`
+-- below): any `↑ᵏ ∞` is `∞`, and `↑ᵏ x = ↑ᵐ y` when `k = m` and `x`, `y` are one variable
+def szIsInf (s : Val) : Bool := match whnf s with
+  | .vszInf => .true
+  | .vszSuc t => szIsInf t
+  | _ => .false
+def szVar (s : Val) : Option Nat := match whnf s with
+  | .vszSuc t => szVar t
+  | .vne h sp => match h with
+    | .hvar x => match sp with
+      | .snil => .some x
+      | _ => .none
+    | _ => .none
+  | _ => .none
+def szSucs (s : Val) : Nat := match whnf s with
+  | .vszSuc t => Nat.succ (szSucs t)
+  | _ => 0
+def sizeEqTrue (s s' : Val) : Bool := match Bool.and (szIsInf s) (szIsInf s') with
+  | .true => .true
+  | .false => match szVar s with
+    | .some x => match szVar s' with
+      | .some y => Bool.and (Nat.beq x y) (Nat.beq (szSucs s) (szSucs s'))
+      | .none => .false
+    | .none => .false
+-- (4g) equality of description codes, by the constructors (`vEqDesc` in `Eval.lean`):
+-- `ret j = ret j'` is `j = j'`; `arg S E = arg S' E'` is
+-- `(e : S = S') × ((s : S) → E s = E' (cast e s))`; `rec`, `hrec` likewise with the rests
+-- `E = E'`; different constructors `False`; a neutral stuck
+def vEqDesc (l : Nat) (I D D' : Val) : Val := vEqDescW l I (whnf D) (whnf D')
+def isDescCon : Val → Bool
+  | .vdret _ => .true
+  | .vdarg _ _ => .true
+  | .vdrec _ _ => .true
+  | .vdhrec _ _ _ => .true
+  | _ => .false
+-- `(e :0 S = S') × ((x :0 S) → F x = F' (cast S S' e x))` at type `T`
+-- (inside `e`: e0 S1 S'2 F3 F'4 T5; inside `x`: one more)
+def eqAlong (S S' F F' T : Val) : Val :=
+  .vsigma .qz (vEqType S S') (.cons S (.cons S' (.cons F (.cons F' (.cons T .nil)))))
+    (.sorted (.lnum 0) (.piq .qz (.var 1) (.eq (.var 6) (.app (.var 4) (.var 0)) (.app (.var 5) (.coe (.var 2) (.var 3) (.var 1) (.var 0)))))) (.some (.lnum 0))
+-- `A × (E = E')` (inside `_`: _0 E1 E'2 I3)
+def andRest (l : Nat) (I A E E' : Val) : Val :=
+  .vsigma .qz A (.cons E (.cons E' (.cons I .nil))) (.eq (.descr l (.var 3)) (.var 1) (.var 2)) (.some (.lnum 0))
+def vEqDescW (l : Nat) (I : Val) : Val → Val → Val
+  | .vdret j, .vdret j' => vEq I j j'
+  | .vdarg S E, .vdarg S' E' => eqAlong S S' E E' (.vdesc l I)
+  | .vdrec j E, .vdrec j' E' => andRest l I (vEq I j j') E E'
+  | .vdhrec H j E, .vdhrec H' j' E' => andRest l I (eqAlong H H' j j' I) E E'
+  | D, D' => match Bool.and (isDescCon D) (isDescCon D') with
+    | .true => .vempty 0
+    | .false => .vne (.heq (.vdesc l I) D D') .snil
+-- `(J : Sort (l+1)) × (D : Desc_l J) × J`, the type of a family's code (`famCodeTy`)
+def famCodeTy (l : Nat) : Val :=
+  .vsigma .qw (.vsort (.lnum (Nat.succ l))) .nil
+    (.sorted (.lnum (Nat.succ (Nat.succ l))) (.sigmaq .qw (.descr l (.var 0)) (.var 1))) (.some (.lnum (Nat.succ (Nat.succ l))))
+-- `μ I D i = μ I' D' i'` is `(I, D, i) = (I', D', i')` at `famCodeTy l` when the levels
+-- agree and the sizes are equal by their heads; else stuck (`vEqType` in `Eval.lean`)
+def famEqTy (X Y : Val) : Val := match X with
+  | .vmu l I D i s => match Y with
+    | .vmu l' I' D' i' s' => famEqW X Y l I D i s l' I' D' i' s'
+    | _ => .vne (.heqTy X Y) .snil
+  | .vnu l I D i s => match Y with
+    | .vnu l' I' D' i' s' => famEqW X Y l I D i s l' I' D' i' s'
+    | _ => .vne (.heqTy X Y) .snil
+  | _ => .vne (.heqTy X Y) .snil
+def famEqW (X Y : Val) (l : Nat) (I D i s : Val) (l' : Nat) (I' D' i' s' : Val) : Val :=
+  match Bool.and (Nat.beq l l') (sizeEqTrue s s') with
   | .false => .vne (.heqTy X Y) .snil
--- `transp I i (fun j _ => ⟦D⟧ X i = ⟦D⟧ X j) (reflTy _) i' e : ⟦D⟧ X i = ⟦D⟧ X i'`
-def payloadPrf (l : Nat) (I D X i i' e : Val) : Val :=
-  let Xi := vInterp l I D X i;
-  -- under `j _`: _0 j1 Xi2 X3 D4 I5
-  .vne (.htransp I i (.vlam (.cons Xi (.cons X (.cons D (.cons I .nil))))
-    (.lam (.eqTy (.var 2) (interpApp l (.var 5) (.var 4) (.var 3) (.var 1))))) (.vne (.hreflTy Xi) .snil) i' e) .snil
+  | .true => vEq (famCodeTy l) (.vpair I (.vpair D i)) (.vpair I' (.vpair D' i'))
 -- `cast` at the data types, by the value (`vCastData` in `Eval.lean`)
 def vCastData : Val → Val → Val → Val → Val
   | .vdesc l I, .vdesc l' I', e, t => match Nat.beq l l' with
@@ -1452,50 +1508,58 @@ def castDesc (l : Nat) (I I' e : Val) : Val → Val
   | .vdhrec H j E => .vdhrec H (.vlam (.cons j (.cons e (.cons I' (.cons I .nil))))
       (.coe (.var 4) (.var 3) (.var 2) (.app (.var 1) (.var 0)))) (castDesc l I I' e (whnf E))
   | d => .vne (.hcast (.vdesc l I) (.vdesc l I') e d) .snil
-def castMu (A B e t : Val) : Val := match sameFamily A B with
-  | .false => .vne (.hcast A B e t) .snil
-  | .true => match A with
-    | .vmu l I D i sz => match B with
-      | .vmu _ _ _ i' _ => castCon l I D i i' sz A B e t
-      | _ => .vne (.hcast A B e t) .snil
-    | _ => .vne (.hcast A B e t) .snil
-def castCon (l : Nat) (I D i i' sz A B e t : Val) : Val := match whnf t with
-  | .vcon x => match sizePred sz with
-    | .some s' =>
-      let X := muFamilyAt l I D s';
-      .vcon (vCast (vInterp l I D X i) (vInterp l I D X i') (payloadPrf l I D X i i' e) x)
+-- the payload types of a cast between two `μ` (or `ν`) types and their equation
+-- (`famPayloadEq?` in `Eval.lean`)
+def famAt (nu : Bool) (l : Nat) (I D sz : Val) : Val := match nu with
+  | .true => nuFamilyAt l I D sz
+  | .false => muFamilyAt l I D sz
+def famTm (nu : Bool) (l : Nat) (I D i sz : Tm) : Tm := match nu with
+  | .true => .nu l I D i sz
+  | .false => .mus l I D i sz
+def famPayload (A B e : Val) : Option PayEq := match A with
+  | .vmu l I D i s => match B with
+    | .vmu l' I' D' i' s' => famPayloadW .false l I D i s l' I' D' i' s' e
+    | _ => .none
+  | .vnu l I D i s => match B with
+    | .vnu l' I' D' i' s' => famPayloadW .true l I D i s l' I' D' i' s' e
+    | _ => .none
+  | _ => .none
+def famPayloadW (nu : Bool) (l : Nat) (I D i s : Val) (l' : Nat) (I' D' i' s' e : Val) : Option PayEq :=
+  match Bool.and (Nat.beq l l') (sizeEqTrue s s') with
+  | .false => .none
+  | .true => match sizePred s with
+    | .none => .none
+    | .some sp =>
+      let Xi := vInterp l I D (famAt nu l I D sp) i;
+      let Xi' := vInterp l I' D' (famAt nu l I' D' sp) i';
+      -- under `t _`: _0 t1 Xi2 sp3; under `k`: k0 _1 t2 Xi3 sp4
+      let P : Val := .vlam (.cons Xi (.cons sp .nil))
+        (.lam (.eqTy (.var 2) (interpApp l (.fst (.var 1)) (.fst (.snd (.var 1)))
+          (.lam (famTm nu l (.fst (.var 2)) (.fst (.snd (.var 2))) (.var 0) (.var 4))) (.snd (.snd (.var 1))))));
+      .some (.mk Xi Xi' (.vne (.htransp (famCodeTy l) (.vpair I (.vpair D i)) P (.vne (.hreflTy Xi) .snil) (.vpair I' (.vpair D' i')) e) .snil))
+def castMu (A B e t : Val) : Val := match whnf t with
+  | .vcon x => match famPayload A B e with
+    | .some p => match p with
+      | .mk Xi Xi' e' => .vcon (vCast Xi Xi' e' x)
     | .none => .vne (.hcast A B e t) .snil
   | _ => .vne (.hcast A B e t) .snil
-def castNu (A B e t : Val) : Val := match sameFamily A B with
-  | .false => .vne (.hcast A B e t) .snil
-  | .true => match A with
-    | .vnu l I D i sz => match B with
-      | .vnu _ _ _ i' _ => castCocon l I D i i' sz A B e t
-      | _ => .vne (.hcast A B e t) .snil
-    | _ => .vne (.hcast A B e t) .snil
-def castCocon (l : Nat) (I D i i' sz A B e t : Val) : Val := match whnf t with
-  | .vcocon x => match sizePred sz with
-    | .some s' =>
-      let X := nuFamilyAt l I D s';
-      .vcocon (vCast (vInterp l I D X i) (vInterp l I D X i') (payloadPrf l I D X i i' e) x)
+def castNu (A B e t : Val) : Val := match whnf t with
+  | .vcocon x => match famPayload A B e with
+    | .some p => match p with
+      | .mk Xi Xi' e' => .vcocon (vCast Xi Xi' e' x)
     | .none => .vne (.hcast A B e t) .snil
   | _ => .vne (.hcast A B e t) .snil
--- observing a cast between two `ν` types of a family observes its argument
+-- observing a cast between two `ν` types observes its argument
 def outNe (h : Head) (sp : Spine) : Val := match sp with
   | .snil => match h with
     | .hcast A B e t => outCast A B e t
     | _ => .vne h (.sout sp)
   | _ => .vne h (.sout sp)
 def outCast (A B e t : Val) : Val := match A with
-  | .vnu l I D i sz => match B with
-    | .vnu _ _ _ i' _ => match sameFamily A B with
-      | .true => match sizePred sz with
-        | .some s' =>
-          let X := nuFamilyAt l I D s';
-          vCast (vInterp l I D X i) (vInterp l I D X i') (payloadPrf l I D X i i' e) (vOut t)
-        | .none => .vne (.hcast A B e t) (.sout .snil)
-      | .false => .vne (.hcast A B e t) (.sout .snil)
-    | _ => .vne (.hcast A B e t) (.sout .snil)
+  | .vnu _ _ _ _ _ => match famPayload A B e with
+    | .some p => match p with
+      | .mk Xi Xi' e' => vCast Xi Xi' e' (vOut t)
+    | .none => .vne (.hcast A B e t) (.sout .snil)
   | _ => .vne (.hcast A B e t) (.sout .snil)
 
 -- **Exercise 14.2.** Quotation (`quote` in `Eval.lean`): back to a term at depth `l`.
@@ -2259,7 +2323,9 @@ partial def mustUse (a v : Val) : Bool := match whnf a with
 mutual
 def infer : TCtx → Tm → TyRes
   --<sol
-  | c, .var i => .ok (lookup (TCtx.types c) i) (uSingle (TCtx.lvl c) i)
+  | c, .var i => match Nat.lt i (TCtx.lvl c) with
+    | .true => .ok (lookup (TCtx.types c) i) (uSingle (TCtx.lvl c) i)
+    | .false => .err "internal error: a variable out of scope"
   | c, .univ n => .ok (.vsort (.lnum (n + 2))) (uZeros (TCtx.lvl c))
   | c, .prop => .ok (.vsort (.lnum 1)) (uZeros (TCtx.lvl c))
   | c, .sortL l => .ok (.vsort (.lsucc l)) (uZeros (TCtx.lvl c))

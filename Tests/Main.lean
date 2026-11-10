@@ -9,6 +9,7 @@ import Tests.LSP
 import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
+import Tests.Tower
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -29,6 +30,7 @@ def groups : List Group :=
   Parser.groups ++
   Rig.groups ++
   Scaling.groups ++
+  Tower.groups ++
   []
 
 /-- Whether a command-line selector picks a group: `=NAME` exactly, anything else as a
@@ -109,6 +111,8 @@ def main (args : List String) : IO UInt32 := do
   -- a `panic!` fails the case that hits it (each case runs in its own process), as it
   -- fails `wiz check`; `--panic-probe continue` turns it off again
   Wiz.exitOnPanic
+  -- tower, as the shims of the tower tests call it (`Tests/Tower.lean`)
+  if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
     | "--run" :: _ | "--check" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
@@ -138,7 +142,7 @@ def main (args : List String) : IO UInt32 := do
   -- (kernel hygiene, `Tests/Lint.lean`) hit a `panic!` of the evaluator, with or without
   -- `exitOnPanic`
   | ["--panic-probe", mode, site] => Lint.panicProbe mode site
-  | ["--probe-checker"] => do Scaling.probeChecker; pure 0
+  | "--probe-checker" :: opts => do Scaling.probeChecker opts; pure 0
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
   | ["--list"] => do
