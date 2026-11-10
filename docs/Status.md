@@ -461,8 +461,11 @@ that checks everything. Wiz's situation:
   (`n - m * (n / m)`, so `n % 0 = n`), `nat.pow := Nat.pow`, `nat.land`, `nat.lor`,
   `nat.xor` (`Nat.bitwise` with fuel `a + b`, at least the number of bits),
   `nat.shiftLeft` (`a * 2^n`), `nat.shiftRight` (`a / 2^n`), `nat.log2` (`log2Go` with
-  fuel `n`; `log2 0 = 0`). The kernel computes only these natively; `nat.beq :=
-  Nat.beq`, `nat.blt := Nat.lt`, `memo := memo` (`memo f = f` to the kernel) and
+  fuel `n`; `log2 0 = 0`); `nat.beq := Nat.beq` and `nat.blt := Nat.lt` (the kernel
+  decides `a == b` or `a < b` natively, then evaluates the definition at `0` and `0` or
+  `1`, so the result is the definition's own `Bool`: correct exactly when the definition
+  is equality, resp. `<`, which `Nat.beq` and `Nat.lt` are, by their equations). The
+  kernel computes only these natively; `memo := memo` (`memo f = f` to the kernel) and
   `string := String` affect only the runtime representation and literals.
 * **Termination** of the kernel is not proved and is known to fail (D1); all evaluation
   functions are `partial` in Lean.
