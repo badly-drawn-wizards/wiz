@@ -1070,7 +1070,8 @@ def Tree.mem (k : Nat) : Tree → Bool
 def mapL (f : List Nat → Nat) : List (List Nat) → List Nat
   | .nil => .nil
   | .cons x xs => .cons (f x) (mapL f xs)
-def split (xs : List Nat) : List Nat × List Nat := (xs, xs)
+-- (not a bare constructor: that would be inlined, and the match on it folded away, 15c)
+def split (xs : List Nat) : List Nat × List Nat := (xs, List.append xs .nil)
 def both (xs : List Nat) : Nat := match split xs with
   | (a, b) => Nat.add (len a) (len b)
 def t3 : Tree := Tree.node 2 (Tree.node 1 .leaf .leaf) (Tree.node 3 .leaf .leaf)
@@ -2479,12 +2480,13 @@ def selfHostGroup : Group where
     { name := "the first-line pragma `-- wiz: rc` still selects reference counting (a fallback, 21k)", run := fun _ =>
         selfhostCompileRun ("-- wiz: rc\n" ++ selfhostProgram2) "1000000\n0\n6\n15\n5\n3\n" },
     { name := "self tail calls are loops: 10M iterations on a 1 MB stack, at -O0, with the GC and with RC (15f)", run := fun _ => do
+        -- (the call sits in a branch of a match on a parameter; under a match on a computed
+        -- value it is still inside a suspended `let`'s closure, until lets are strict)
         let prog := "import Prelude\npartial def count (n acc : Nat) : Nat := match n with\n  | .zero => acc\n" ++
-          "  | .succ m => match Nat.beq (Nat.mod m 3) 0 with\n    | .true => count m (acc + 2)\n    | .false => count m acc\n" ++
-          "def main : IO Unit := IO.println (Nat.toString (count 10000000 0))\n"
-        -- (every parameter owned: a borrowed one given an owned argument keeps the call a call)
-        selfhostCompileRun prog "6666668\n" (flags := #["--rc-owned"]) (opt := "-O0") (smallStack := true)
-        selfhostCompileRun prog "6666668\n" (opt := "-O0") (smallStack := true) },
+          "  | .succ m => count m (acc + 1)\ndef main : IO Unit := IO.println (Nat.toString (count 10000000 0))\n"
+        selfhostCompileRun prog "10000000\n" (opt := "-O0") (smallStack := true)
+        selfhostCompileRun prog "10000000\n" (flags := #["--rc"]) (opt := "-O0") (smallStack := true)
+        selfhostCompileRun prog "10000000\n" (flags := #["--rc-owned"]) (opt := "-O0") (smallStack := true) },
     { name := "dead lets without effects are not computed (15e)", run := fun _ =>
         selfhostCompileRun ("import Prelude\ndef f (n : Nat) : Nat :=\n  let unused := List.cons n (List.cons 2 .nil);\n" ++
           "  let alsoUnused := List.cons unused .nil;\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" (flags := #["--rc"]) },

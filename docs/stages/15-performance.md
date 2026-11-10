@@ -85,4 +85,6 @@ collected mode, out of the statement expressions; that mode now pushes applicati
 into `case`s too, as reference counting did, so a match builds no closure and the calls
 in its branches are in tail position). Under reference counting a borrowed
 parameter must be passed a borrowed parameter (else the argument would be released
-after the call): otherwise the call stays a call.
+after the call): otherwise the call stays a call. A call under a match on a computed
+value (`match Nat.beq … with`) is not yet in tail position there: the match's payload is
+a suspended `let`, and its branches are closures.
