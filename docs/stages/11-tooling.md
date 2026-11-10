@@ -102,8 +102,8 @@ Both clients are Wiz programs, and they share their logic:
   WebAssembly by Emscripten: wasm64 keeps the runtime's 62-bit small numbers, mini-gmp
   stands in for GMP, and Asyncify lets `js_next_event` wait for the page. The page
   (`web/infoview.html`, `web/infoview.js`, about 100 lines of JavaScript) only moves events
-  in and HTML out. `web/bridge.sh` puts `websocat` in front of `wiz lsp` until the server
-  speaks WebSocket itself.
+  in and HTML out. It talks to `wiz lsp --ws PORT` (11o) directly; `web/bridge.sh`
+  starts that server and serves the page.
 
 Running it in tmux, next to an editor whose language server is `wiz lsp --infoview
 /tmp/wiz.sock` (11l):
@@ -118,5 +118,23 @@ The pane waits for the server, then follows the editor's cursor. Without an edit
 `infoview/test.sh` (in the `infoview` test group) runs the terminal infoview against
 `infoview/stub_server.py` (canned goals; as text and in a pseudo-terminal) and against
 the real `wiz lsp --infoview`, with `infoview/editor_stub.py` as the editor.
-`web/test.sh` (needs nix: Emscripten, websocat, Chromium; not in CI) runs the Wasm
-module under Node, then the page in headless Chromium over the DevTools protocol.
+`web/test.sh` (needs nix: Emscripten, Chromium; not in CI) runs the Wasm module under
+Node (against the stub), then the page in headless Chromium over the DevTools protocol,
+against the real `wiz lsp --ws`.
+
+### 11o: the infoview over a WebSocket ✅
+
+A browser can't open a Unix socket, so `wiz lsp --ws PORT` also listens on a WebSocket
+(RFC 6455), on `127.0.0.1` only unless an address is given (`--ws ADDR:PORT`; with
+`--no-stdio` there is no editor on stdin). `Wiz/WebSocket.lean` is the protocol: the
+HTTP upgrade (the answer proves the server understood it: base64 of the SHA-1 of the
+client's key and a fixed GUID, both written here), an `Origin` check (any web page may
+open a WebSocket to `127.0.0.1`, so only local pages are let in), and frames (a length
+in 7, 16 or 64 bits; the client's payload XORed with a mask; fragments; ping and close).
+One JSON-RPC message travels per text frame. A WebSocket client is an infoview (it is
+told where the cursor is and pulls goals) and may also edit documents of its own, so the
+web infoview, which is its own editor, needs no bridge. `c/sockets.c` gained TCP
+listen/accept/connect, with connections again as plain Lean handles; the server loop
+(`serveWith`) handles messages from every connection in order, as before. Protocol §8.2;
+tested in-process (the `lsp-server` group: frames of each length class, the handshake's
+RFC example, foreign origins refused, an editor on a socket pair and two pages).
