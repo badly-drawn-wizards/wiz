@@ -54,7 +54,7 @@ static void die(const char *m) { fprintf(stderr, "wiz: %s\n", m); exit(3); }
 /* (`-DWIZ_STATS`: count allocations, reused cells and the peak of live objects, printed
    at exit under reference counting) */
 #ifdef WIZ_STATS
-static size_t rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced;
+static size_t rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced, rt_nfun0;
 #define STAT(x) (x)
 static size_t hypSlot(V m);
 #define HYPT 8192
@@ -449,7 +449,7 @@ static V accFn(V *env, V a) { (void)env; (void)a; die("accFn"); return BOX(0); }
 static V native(NF f, int arity) { V env[2] = {(V)f, BOX(arity)}; return mkclo(accFn, 2, env); }
 /* a function of `arity` arguments (captured variables first), `n` of them given */
 INLINE V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
-  STAT(rt_nfun++);
+  STAT(rt_nfun++); STAT(rt_nfun0 += n == 0);
   Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + (n + 2) * sizeof(V));
   if (!c) die("out of memory");
   c->tag = T_CLO; c->n = n + 2; c->fn = accFn;
@@ -956,8 +956,8 @@ INLINE void dropTake(V x, V r) { (void)resetTake(x, 0, r); }
 static void rt_finish(void) {
   for (size_t i = rt_nroots; i > 0; i--) dec(*rt_roots[i - 1]);
 #ifdef WIZ_STATS
-  fprintf(stderr, "wiz stats: %zu allocations, %zu reused, peak %zu live (mkobj %zu, mkclo %zu, mkfun %zu, mkthunk %zu; hypotheses %zu, forced %zu)\n",
-          rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced);
+  fprintf(stderr, "wiz stats: %zu allocations, %zu reused, peak %zu live (mkobj %zu, mkclo %zu, mkfun %zu, mkthunk %zu; hypotheses %zu, forced %zu; capture-free mkfun %zu)\n",
+          rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced, rt_nfun0);
   fprintf(stderr, "wiz hyp base rt_finish %p\n", (void *)rt_finish);
   for (size_t i = 0; i < HYPT; i++) if (hypMade[i] > 1000000) fprintf(stderr, "wiz hyp %p: %zu made, %zu forced\n", (void *)hypKey[i], hypMade[i], hypForced[i]);
 #endif
