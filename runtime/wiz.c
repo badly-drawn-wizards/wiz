@@ -1453,7 +1453,11 @@ static char *wiz_sys_read_fd(int fd, size_t *len) {
   size_t cap = 4096, n = 0;
   char *b = (char *)malloc(cap);
   for (;;) {
-    if (n + 1 >= cap) { cap *= 2; b = (char *)realloc(b, cap); }
+    if (n + 1 >= cap) {
+      char *nb = (char *)realloc(b, cap * 2);
+      if (!nb) { free(b); errno = ENOMEM; return NULL; }
+      cap *= 2; b = nb;
+    }
     ssize_t k = read(fd, b + n, cap - n - 1);
     if (k < 0) { if (errno == EINTR) continue; free(b); return NULL; }
     if (k == 0) break;
@@ -1665,6 +1669,8 @@ WIZ_API uint64_t wiz_sys_child_communicate(void *p, const char *input) {
   size_t cap[2] = {0, 0}, len[2] = {0, 0};
   char *buf[2] = {NULL, NULL};
   int r = 0;
+  /* the streams that are pipes get a buffer, even if nothing comes */
+  for (int i = 1; i < 3; i++) if (c->fd[i] >= 0) { cap[i - 1] = 8192; buf[i - 1] = (char *)malloc(cap[i - 1]); }
   if (c->fd[0] >= 0 && inlen == 0) wiz_sys_close_fd(&c->fd[0]);
   while (c->fd[0] >= 0 || c->fd[1] >= 0 || c->fd[2] >= 0) {
     struct pollfd pf[3];
@@ -1677,14 +1683,20 @@ WIZ_API uint64_t wiz_sys_child_communicate(void *p, const char *input) {
     }
     for (int i = 1; i < 3; i++) {
       if (!(pf[i].revents & (POLLIN | POLLERR | POLLHUP))) continue;
-      if (cap[i - 1] - len[i - 1] < 4097) { cap[i - 1] = cap[i - 1] * 2 + 8192; buf[i - 1] = (char *)realloc(buf[i - 1], cap[i - 1]); }
+      if (cap[i - 1] - len[i - 1] < 4097) {
+        char *nb = (char *)realloc(buf[i - 1], cap[i - 1] * 2);
+        if (!nb) { r = ENOMEM; break; }
+        cap[i - 1] *= 2; buf[i - 1] = nb;
+      }
       ssize_t k = read(c->fd[i], buf[i - 1] + len[i - 1], cap[i - 1] - len[i - 1] - 1);
       if (k > 0) len[i - 1] += (size_t)k;
       else if (k == 0 || (errno != EINTR && errno != EAGAIN)) wiz_sys_close_fd(&c->fd[i]);
     }
+    if (r) break;
   }
   for (int i = 0; i < 2; i++) {
     if (!buf[i]) continue;
+    if (r) { free(buf[i]); continue; }
     buf[i][len[i]] = 0;
     free(c->buf[i]);
     c->buf[i] = buf[i];

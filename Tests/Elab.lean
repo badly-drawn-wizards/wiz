@@ -1267,8 +1267,8 @@ def sysGroup : Group where
           "say (ExitStatus.toString e.status)"]
           "piped through cat\nline two\nstdout: out\n\nstderr: err\n\nexit code 3\n" sysShow },
     { name := "communicate doesn't deadlock on big output", run := fun _ =>
-        -- 200 KB through cat: more than a pipe buffer each way
-        sysRun ["o ← Process.output \"sh\" (.cons \"-c\" (.cons \"yes abcdefghi | head -c 200000; yes x >&2 | head -c 100000 >&2\" .nil)) \"\"",
+        -- 200 KB on stdout and 100 KB on stderr: more than a pipe buffer each
+        sysRun ["o ← Process.output \"sh\" (.cons \"-c\" (.cons \"yes abcdefghi | head -c 200000; yes x | head -c 100000 >&2\" .nil)) \"\"",
           "say (Nat.toString (strLen o.stdout))", "say (Nat.toString (strLen o.stderr))"]
           "200000\n100000\n" (sysShow ++ "def strLen : String → Nat\n  | .mk cs => List.length cs\n") },
     { name := "a child, step by step", run := fun _ =>
