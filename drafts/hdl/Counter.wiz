@@ -1,5 +1,5 @@
 import Signal
--- E1: counters (HDL plan §6). `WIZ_PATH=drafts/hdl wiz check drafts/hdl/Counter.wiz`
+-- E1: counters (HDL plan §6). `wiz check -I drafts/hdl drafts/hdl/Counter.wiz`
 
 -- An 8-bit counter, Moore style: the state is the count and is also the output.
 def counter {ω d : Domain} : Signal d (Unsigned 8) :=

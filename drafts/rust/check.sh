@@ -5,8 +5,7 @@
 # don't check by design.
 set -e
 WIZ=${WIZ:-./.lake/build/bin/wiz}
-export WIZ_PATH=drafts/rust/lib
 for f in drafts/rust/lib/RsCore.wiz drafts/rust/lowered/*.wiz; do
   echo "== $f"
-  "$WIZ" check --no-cache "$f"
+  "$WIZ" check --no-cache -I drafts/rust/lib "$f"
 done

@@ -2,13 +2,15 @@ import Wiz.Elab.Command
 import Wiz.Compiler.C
 import Wiz.Compiler.LLVM
 import Wiz.Compiler.Lower
+import Wiz.Toolchain
 
 /-!
 # Building executables
 
 `wiz build FILE -o OUT` compiles the definition `main` of a file to C (`C.lean`) and
-then to an executable with a C compiler: `$WIZ_CC` (default `cc`), with extra flags
-from `$WIZ_CFLAGS` and `$WIZ_LDFLAGS` (for example where GMP lives). The executable
+then to an executable with the C compiler of the **toolchain** (`Wiz/Toolchain.lean`:
+`--cc`, `--cflags`, `--ldflags`, for example where GMP lives), passed explicitly; nothing
+is read from the environment. The executable
 prints its result as a generic tree (`(tag fields…)` and numbers); `wiz run` reads
 that back with `main`'s type, like `#eval`.
 -/
@@ -41,25 +43,25 @@ def words (s : Option String) : List String :=
   ((s.getD "").splitOn " ").filter (· ≠ "")
 
 /-- Compile C source to an executable. -/
-def compileC (src : String) (exe : System.FilePath) : IO (Except String Unit) := do
+def compileC (tc : Toolchain) (src : String) (exe : System.FilePath) : IO (Except String Unit) := do
   let cFile := exe.withExtension "c"
   IO.FS.writeFile cFile src
-  let cc := (← IO.getEnv "WIZ_CC").getD "cc"
-  let args := #["-O2", "-w", "-o", exe.toString, cFile.toString] ++ (words (← IO.getEnv "WIZ_CFLAGS")).toArray ++
-    #["-lgmp"] ++ (words (← IO.getEnv "WIZ_LDFLAGS")).toArray
+  let cc := tc.cc
+  let args := #["-O2", "-w", "-o", exe.toString, cFile.toString] ++ tc.cflags.toArray ++
+    #["-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray
   let out ← IO.Process.output { cmd := cc, args }
   if out.exitCode == 0 then pure (.ok ()) else pure (.error s!"{cc} failed:\n{out.stderr}")
 
-/-- Compile an LLVM module to an executable: `llc` (`$WIZ_LLC`) for the module, the C
+/-- Compile an LLVM module to an executable: `llc` (the toolchain's) for the module, the C
 compiler for the runtime (exported with `-DWIZ_API=`), and the C compiler to link. -/
-def compileLLVM (ll : String) (exe : System.FilePath) (glue : String := "") : IO (Except String Unit) := do
+def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : String := "") : IO (Except String Unit) := do
   let llFile := exe.withExtension "ll"
   let rtFile := exe.withFileName "wiz_runtime.c"
   IO.FS.writeFile llFile ll
   IO.FS.writeFile rtFile (C.runtime ++ "\n" ++ glue)
-  let cc := (← IO.getEnv "WIZ_CC").getD "cc"
-  let llc := (← IO.getEnv "WIZ_LLC").getD "llc"
-  let cflags := (words (← IO.getEnv "WIZ_CFLAGS")).toArray
+  let cc := tc.cc
+  let llc := tc.llc
+  let cflags := tc.cflags.toArray
   let step (cmd : String) (args : Array String) : IO (Except String Unit) := do
     try
       let out ← IO.Process.output { cmd, args }
@@ -71,7 +73,7 @@ def compileLLVM (ll : String) (exe : System.FilePath) (glue : String := "") : IO
     return .error e
   if let .error e ← step llc #["-O2", "-filetype=obj", "-relocation-model=pic", "-o", mainObj.toString, llFile.toString] then
     return .error e
-  step cc (#["-o", exe.toString, mainObj.toString, rtObj.toString, "-lgmp"] ++ (words (← IO.getEnv "WIZ_LDFLAGS")).toArray)
+  step cc (#["-o", exe.toString, mainObj.toString, rtObj.toString, "-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray)
 
 /-- Parse the printed result: numbers, `(tag fields…)`, `<fn>`, `#bits`. -/
 partial def parseValue (s : String) : Option RVal :=
@@ -101,7 +103,7 @@ where
 /-- Build and run the global `n` (through C, or LLVM); returns its result, read back
 with its type. With `timeout`, the program is stopped after that many seconds (by
 coreutils' `timeout`). -/
-def runGlobal (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bool := false)
+def runGlobal (tc : Toolchain) (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bool := false)
     (timeout : Option Nat := none) :
     IO (Except String String) := do
   match irProgram s n with
@@ -109,8 +111,8 @@ def runGlobal (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bo
   | .ok (decls, ty) =>
     let exe := dir / "wiz_main"
     let io := isIO ty
-    let built ← if llvm then compileLLVM (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls))
-      else compileC (C.program decls io (extraC s)) exe
+    let built ← if llvm then compileLLVM tc (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls))
+      else compileC tc (C.program decls io (extraC s)) exe
     match built with
     | .error e => pure (.error e)
     | .ok () =>
@@ -126,16 +128,15 @@ def runGlobal (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bo
       | some v => pure (.ok (readback s.globals s.builtins (eval s.globals [] ty) v).pretty)
 
 /-- Preprocess the headers a file imports (`import_c "h"`), since the frontend is pure. -/
-def preprocessHeaders (input : String) : IO (Std.HashMap String String) := do
+def preprocessHeaders (tc : Toolchain) (input : String) : IO (Std.HashMap String String) := do
   let mut m : Std.HashMap String String := {}
   for part in (input.splitOn "import_c \"").drop 1 do
     let h := (part.splitOn "\"").headD ""
     if h.isEmpty || m.contains h then continue
-    let cc := (← IO.getEnv "WIZ_CC").getD "cc"
+    let cc := tc.cc
     let dir ← IO.FS.createTempDir
     IO.FS.writeFile (dir / "h.c") s!"#include <{h}>\n"
-    let out ← IO.Process.output { cmd := cc, args := #["-E", "-P", (dir / "h.c").toString] ++
-      (words (← IO.getEnv "WIZ_CFLAGS")).toArray }
+    let out ← IO.Process.output { cmd := cc, args := #["-E", "-P", (dir / "h.c").toString] ++ tc.cflags.toArray }
     if out.exitCode == 0 then m := m.insert h out.stdout
   pure m
 

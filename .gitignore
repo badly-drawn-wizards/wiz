@@ -12,3 +12,7 @@ devenv.local.yaml
 # Lean
 .lake
 .wiz-cache/
+
+# grail
+.grail/
+grail.local.wiz
