@@ -187,6 +187,8 @@ partial def elimDead : Body → Body × Std.HashSet Var
     let (rest', fv) := elimDead rest
     let pure := match e with
       | .erased | .lit _ | .ctor _ _ | .proj _ _ | .pap _ _ => true
+      -- operations on numbers, tests and tags (often left unused by constant folding)
+      | .prim op _ => op.startsWith "nat." || op == "natTag" || op == "tag"
       | _ => false
     if pure && !fv.contains x then (rest', fv)
     else (.vdecl x e rest', e.args.foldl (·.insert ·) (fv.erase x))

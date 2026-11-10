@@ -795,6 +795,28 @@ def memoStreamSrc : String :=
   "def walk : Nat → Stream Nat → Stream Nat\n  | .zero, s => s\n  | .succ k, s => walk k s.tail\n" ++
   "def main : Nat := twice (nats 0) + partly (nats 0) + (walk 50 (nats 0)).head\n"
 
+/-- (15c) Folded at compile time: arithmetic on literals (truncated subtraction, `n / 0 = 0`,
+a power past 64 bits), a match on a constructor built in place, a test on a known number,
+a second match on the same list. -/
+def foldSrc : String := "import Prelude
+def known (b : Bool) : Nat := match (List.cons 5 List.nil : List Nat) with
+  | .nil => 0
+  | .cons x _ => x + 1
+def isTen (n : Nat) : Nat := match Nat.beq n 10 with
+  | .true => n + 1
+  | .false => 0
+def again (xs : List Nat) : Nat := match xs with
+  | .nil => 0
+  | .cons x _ => match xs with
+    | .nil => 7
+    | .cons _ _ => x
+def main : List Nat := .cons (3 * 4 + 10 - 20) (.cons (Nat.div 7 0) (.cons (Nat.sub 3 5) (.cons (known .true)
+  (.cons (isTen 10) (.cons (isTen 3) (.cons (again (.cons 4 .nil)) (.cons (Nat.pow 2 70) (.cons (Nat.mod 7 0) .nil))))))))
+"
+
+def foldExpected : String :=
+  ".cons 2 (.cons 0 (.cons 0 (.cons 6 (.cons 11 (.cons 0 (.cons 4 (.cons 1180591620717411303424 (.cons 7 .nil))))))))"
+
 def backendGroup : Group where
   name := "backend"
   exercise := "Exercise 8.1"
@@ -835,7 +857,19 @@ def backendGroup : Group where
         check (texts.contains ".cons 2 (.cons 3 .nil)") s!"wrong result: {texts}" },
     { name := "unused parameters are dropped at once", run := fun _ =>
         okLib "import Prelude\ndef k (x y : List Nat) : List Nat := x\n#ir k"
-          ["def k x0 x1 :=\n  drop x1\n  ret x0"] }
+          ["def k x0 x1 :=\n  drop x1\n  ret x0"] },
+    { name := "constant folding and known constructors in the IR (15c)", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) (foldSrc ++ "#ir known\n#ir isTen\n#ir again\n#run main\n") { loader := ← preludeLoader }
+        match s.messages.toList.map (·.text) with
+        | [known, isTen, again, run] =>
+          -- a match on a constructor built in place: its field, plus one
+          check ((known.splitOn "case").length == 1 && (known.splitOn ":= 6\n").length == 2) known
+          -- in the `true` branch `n` is `10`, so `n + 1` is `11`
+          check ((isTen.splitOn ":= 11\n").length == 2 && (isTen.splitOn "nat.add").length == 1) isTen
+          -- the second match on the same list is gone
+          checkEq 2 (again.splitOn "case").length
+          checkEq foldExpected run
+        | ms => throw (IO.userError s!"unexpected messages {ms}") }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
@@ -2651,6 +2685,8 @@ def nativeCases (llvm : Bool) : List Case :=
           "(.cons (Nat.shiftLeft 3 70) (.cons (Nat.shiftRight big 40) (.cons (Nat.log2 big) (.cons (Nat.log2 0) " ++
           "(.cons (Nat.pow 0 0) (.cons (Nat.shiftLeft 1 61) (.cons (Nat.shiftLeft 1 62) .nil)))))))))))))")
           ".cons 717892962441115500 (.cons 961749 (.cons 14 (.cons 100 (.cons 98282295666516288457 (.cons 14 (.cons 0 (.cons 3541774862152233910272 (.cons 652924416219 (.cons 79 (.cons 0 (.cons 1 (.cons 2305843009213693952 (.cons 4611686018427387904 .nil)))))))))))))" },
+    { name := "constant folding and known constructors behave as before (15c)", run := fun _ =>
+        cRun (llvm := llvm) foldSrc foldExpected },
     { name := "memoised suspensions (memo)", run := fun _ =>
         cRun (llvm := llvm) ("import Prelude\ndef twice (t : Unit → Nat) : Nat := t () + t ()\n" ++
           "def lazyAdd (m n : Nat) : Unit → Nat := memo (fun _ => m + n)\n" ++
