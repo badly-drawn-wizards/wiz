@@ -1223,6 +1223,9 @@ def borSig (used : List Nat) : Nat → Nat → List Bool
 def allTrue : Nat → List Bool
   | .zero => .nil
   | .succ m => .cons .true (allTrue m)
+def allFalse : Nat → List Bool
+  | .zero => .nil
+  | .succ m => .cons .false (allFalse m)
 def countTrue : List Bool → Nat
   | .nil => 0
   | .cons b rest => match b with
@@ -1280,7 +1283,10 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
             "(); i_" +++ g +++ " = 1; rt_root(&g_" +++ g +++ "); } inc(g_" +++ g +++ "); return g_" +++ g +++ "; }")) defs) rest
     | .succ _ =>
       let names := paramNames k k;
-      let sig := StrMap.findD sigs (Str.ofString n) .nil;
+      -- (no signature: every parameter owned)
+      let sig := match StrMap.findD sigs (Str.ofString n) .nil with
+        | .nil => allFalse k
+        | sg => sg;
       match rcE (.mk (borLevels 0 sig) sigs) st names k .nil (underLams k e) with
       | .mk code atom live st1 =>
         let ps := paramDecls 0 k;
@@ -1289,12 +1295,14 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
             (.t ("static V w_" +++ g +++ "(V *a) { V r = d_" +++ g +++ "(" +++ argList 0 k +++ "); " +++ wrapDecs 0 sig +++ "return r; } " +++
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++
              "); rt_root(&c); } inc(c); return c; }")) defs)) rest
-def genProgramRC (gs : Globals) : List Doc := match gs with
+def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
   | .mk all _ _ => match eraseGlobals all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       let es := pushGlobals es0;
-      let sigs := sigsFix (sigsInit StrMap.empty es) 0 es;
+      let sigs : StrMap (List Bool) := match borrow with
+        | .true => sigsFix (sigsInit StrMap.empty es) 0 es
+        | .false => StrMap.empty;
       match genCodeRC sigs (.mk .nil 0 (arities StrMap.empty es)) .nil .nil es with
       | .mk protos defs st => match st with
         | .mk fns _ _ =>
@@ -1315,8 +1323,11 @@ def charsPrefix : List Char → List Char → Bool
 def wantsRC (text : String) : Bool := match text with
   | .mk cs => match "-- wiz: rc" with
     | .mk ps => charsPrefix ps cs
+-- (`-- wiz: rc-owned`: every parameter owned, no borrowing; for comparisons)
 def genProgramFor (text : String) (gs : Globals) : List Doc := match wantsRC text with
-  | .true => genProgramRC gs
+  | .true => genProgramRC (match text with
+    | .mk cs => match "-- wiz: rc-owned" with
+      | .mk ps => Bool.not (charsPrefix ps cs)) gs
   | .false => genProgram gs
 
 -- printing a program: each line's pieces, then a newline
