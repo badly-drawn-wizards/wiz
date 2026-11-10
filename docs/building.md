@@ -68,3 +68,8 @@ github:badly-drawn-wizards/wiz/solutions#wiz -- …` (`#grail` for grail; `wiz b
 is the exercise tree, whose `wiz` is mostly stubs. The `--option`s count only for a
 trusted Nix user (or with the cache in `nix.conf`); otherwise Nix builds wiz from source,
 which takes a few minutes.
+
+`#nvim-wiz` is Neovim with the Wiz plugin (editors/nvim, docs/stages/11-tooling.md
+11p) and this wiz on `PATH`: `nix run github:badly-drawn-wizards/wiz/solutions#nvim-wiz
+-- file.wiz`. `packages.<system>.wiz-nvim` is the plugin alone, for a Neovim
+configuration in Nix.
