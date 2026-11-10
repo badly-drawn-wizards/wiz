@@ -127,9 +127,11 @@ partial def normalize : Level → NF
   | zero => [(.const, 0)]
   | succ l => cleanup ((normalize l).map fun (a, k) => (a, k + 1))
   | max a b => cleanup (mergeNF (normalize a) (normalize b))
+  -- (`b`'s normal form once: `normalize (max a b)` would normalise it again, and a chain
+  -- of `imax`es along a telescope (a structure's constructor, say) exponentially often)
   | imax a b =>
     let nb := normalize b
-    if nfNonZero nb then normalize (max a b)
+    if nfNonZero nb then cleanup (mergeNF (normalize a) nb)
     else if nb == [(.const, 0)] then [(.const, 0)]
     else [(.imax (normalize a) nb, 0)]
   | param n => [(.param n, 0)]
