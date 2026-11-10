@@ -1699,7 +1699,11 @@ def globalDefs : List (String × List String × Option MTm × MTm) :=
    -- universe-polymorphic
    ("idP", ["u"], some (lam (lam (var 0))), pi (sortParam "u") (pi (var 0) (var 1))),
    ("constP", ["u", "v"], some (lam (lam (lam (lam (var 1))))),
-     pi (sortParam "u") (pi (sortParam "v") (pi (var 1) (pi (var 1) (var 3)))))]
+     pi (sortParam "u") (pi (sortParam "v") (pi (var 1) (pi (var 1) (var 3))))),
+   -- a proposition whose value depends on its level and whose type does not: `polyK.{0}`
+   -- is `Prop → True`, `polyK.{1}` is `Type → True` (two instances of one constant must
+   -- not be identified by their name: the property harness compares them, `Tests/Prop.lean`)
+   ("polyK", ["u"], some (sorted 0 (pi (sortParam "u") ptrue)), prop)]
 
 def qWiz : ZeroOneMany → String
   | .zero => ".qz"

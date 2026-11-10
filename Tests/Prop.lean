@@ -321,7 +321,7 @@ structure World where
   them is not reflexive on a stuck size (finding Sz1, `prop-harness.md`). -/
   sizeTypes : Bool := false
   /-- sizes at all: size variables, `μ`/`ν` at a size, `scase`, `sfix`, `scofix`
-  (`WIZ_PROP_NO_SIZES=1` turns them off: Sz1, Sz2) -/
+  (`tests --prop-no-sizes` turns them off: Sz1, Sz2) -/
   sizes : Bool := true
   /-- the types of the gadgets, with their sorts: leaves of the type generator -/
   gadgetTys : List (Tm × Tm) := []
@@ -360,7 +360,7 @@ def sharedWorld (_ : Unit) : World :=
       fixed := [#[], #[.qty, .qty], #[nat, nat], #[.sort 1, .sort 0, .var 1, .var 1],
         #[E2, piS E2 (.sort 1) 2], #[.sort 1, .sort 1, .eqTy (.var 1) (.var 0), .var 2],
         #[.size, .sizeLt (.var 0)], #[.empty 0, .sort 1]] }
-  withGadgets w [.const "zero" [], .const "one" [], .const "a" [], .const "A" [],
+  withGadgets w [.const "zero" [], .const "one" [], .const "a" [], .const "A" [], .const "polyK" [0],
     m MTm.alt, m MTm.zeros, m (MTm.shead MTm.alt), m (MTm.stail MTm.alt), m MTm.natZero,
     m (MTm.natSucc MTm.natZero), .ann (m MTm.natD) (.desc 0 (.unit 1))]
 
@@ -499,6 +499,13 @@ where
     | .one => .zero
     | .zero => .many
 
+/-- Every constant's levels raised by one: a polymorphic constant at two instances (the
+result is well typed only when the constant's type does not depend on the level). -/
+partial def bumpLevels (t : Tm) : Tm :=
+  match t with
+  | .const n ls => .const n (ls.map .succ)
+  | t => mapKids id (fun _ c => bumpLevels c) t
+
 def hasBinder (t : Tm) : Bool := stripSorts t != t || (match t with | .pi .. | .sigma .. => true | _ => false)
 
 /-- Fill in the sort of every `Π`/`Σ` of a type's skeleton that lacks one (the kernel
@@ -571,7 +578,11 @@ partial def genTy (cx : Cx) (l : Level) (fuel : Nat) : Gen Tm := do
     -- data: `μ`/`ν` over a small code, at a size
     if let .succ l' := l then
       let data (isMu : Bool) : Gen Tm := do
-        let I : Tm := if levelIs l 1 && (← choose 2) == 1 then E2 else .unit l
+        -- (indexed by a tag when the context has one: the index is then a variable, and
+        -- casts between two instances go by the constructor rule)
+        let tagFirst := !(cx.varsOfTy E2).isEmpty
+        let other := levelIs l 1 && (← choose 2) == 1
+        let I : Tm := if levelIs l 1 && (other != tagFirst) then E2 else .unit l
         let D ← genDesc cx l' I f
         let i ← genTm cx I 0
         let sizes : Array Tm := if !w.sizes then #[.szInf] else #[.szInf, .szSuc .szInf] ++
@@ -592,6 +603,14 @@ partial def genTy (cx : Cx) (l : Level) (fuel : Nat) : Gen Tm := do
       let a ← genTy cx l f
       let b ← genTy cx l f
       return .ecase "z" (.sort l) (mkInf s E2) [a, b])
+    -- a stuck case whose environment holds a type: `(fun T => ecase s [T, T]) G` (compared
+    -- with its variants, the two environments are compared: W1 of the kernel lint)
+    if levelIs l 1 || levelIs l 0 then
+      alts := alts.push (do
+        let s ← genTm cx E2 0
+        let G ← genTy cx l 0
+        return .app (.ann (.lam "T" (.ecase "z" (.sort l) (liftT 1 (mkInf s E2)) [.var 0, .var 0]))
+          (.pi "T" .default (.qlit .many) (.sort l) (.sort l) (some (.succ l)))) G)
     alts := alts ++ (← headAlts cx (.sort l) f)
     if levelIs l 1 then alts := alts.push (leaf .qty)
     if levelIs l 1 && w.sizeTypes then alts := alts ++ #[leaf .size, leaf (.sizeLt .szInf)]
@@ -613,6 +632,7 @@ partial def variantTy (cx : Cx) (l : Level) (A : Tm) (fuel : Nat) : Gen Tm := do
         alts := alts ++ #[pure (replT A i (.qlit .one)), pure (replT A i (.qlit .many))]
   if hasBinder A then alts := alts.push (pure (if cx.w.strict then A else stripSorts A))
   if let some B := flipQ A then alts := alts.push (pure B)
+  if bumpLevels A != A then alts := alts.push (pure (bumpLevels A))
   pick alts (pure A)
 
 partial def variantTm (cx : Cx) (T : Tm) (t : Tm) (fuel : Nat) : Gen Tm := do
@@ -737,8 +757,9 @@ partial def genTm (cx : Cx) (T : Tm) (fuel : Nat) : Gen Tm := do
          #[do return .cocon (← genTm cx P f)]
        | none => #[]) ++ (if fuel > 0 then viaCoit ++ (if w.sizes then viaScofix else #[]) else #[])
     | _ => #[]
+  -- (at data and tags a variable comes first: open terms by default)
   let mut alts : Array (Gen Tm) := match Tw with
-    | .mu .. | .nu .. => leaves ++ intro
+    | .mu .. | .nu .. | .enum _ => leaves ++ intro
     | _ => intro ++ leaves
   -- (a size is a variable, `∞` or `↑s`: conversion at `Size` knows no other stuck size, Sz1)
   let elims := match Tw with
@@ -913,6 +934,15 @@ structure Acc where
   wizCap : Nat := 0
   /-- how many of the queries ask for a normal form -/
   wizNf : Nat := 0
+  /-- queries are distinct (by hash); those about a pair of different types are always
+  taken (up to half the cap), the others from one sample in `wizStride` -/
+  wizSeen : Std.HashSet UInt64 := {}
+  wizPairs : Nat := 0
+  wizOn : Bool := false
+  /-- the pair under test is a type against itself at other levels: always asked -/
+  wizLv : Bool := false
+  wizLvN : Nat := 0
+  samples : Nat := 0
 
 abbrev M := StateM Acc
 
@@ -938,11 +968,19 @@ def convJd (ctx : Array Tm) (T a b : Tm) : Tm :=
   close ctx (.lam "P" (.lam "p" (.var 0)))
     (piW (piW T (.sort 1)) (piW (.app (.var 0) (liftT 1 a)) (.app (.var 1) (liftT 2 b))))
 
-def wq (w : World) (role : String) (closed : Tm) (nf : Bool := false) : M Unit := do
+def wq (w : World) (role : String) (closed : Tm) (nf : Bool := false) (pair : Bool := false) : M Unit := do
   let a ← get
-  if w.wiz && a.wiz.size < a.wizCap && (!nf || a.wizNf * 6 < a.wizCap) then
+  -- (a cap for each class: level pairs 300, other pairs half of `wizCap`, the rest half)
+  let room := if pair && a.wizLv then a.wizLvN < 300
+    else if pair then a.wizPairs * 2 < a.wizCap && a.samples % 3 == 0 else a.wizOn && (a.wiz.size - a.wizPairs) * 2 < a.wizCap
+  if w.wiz && room && (!nf || a.wizNf * 8 < a.wizCap) then
     if let some m := toM closed then
-      set { a with wiz := a.wiz.push (m, role, nf), wizNf := a.wizNf + (if nf then 1 else 0) }
+      let h := hash (m.toWiz, nf)
+      unless a.wizSeen.contains h do
+        set { a with wiz := a.wiz.push (m, role, nf), wizNf := a.wizNf + (if nf then 1 else 0),
+                     wizSeen := a.wizSeen.insert h,
+                     wizPairs := a.wizPairs + (if pair && !a.wizLv then 1 else 0),
+                     wizLvN := a.wizLvN + (if pair && a.wizLv then 1 else 0) }
 
 def V (w : World) (role : String) (j : Jd) : M Bool := do
   let c := close j.ctx j.t j.T
@@ -1246,9 +1284,13 @@ def tyPair (w : World) (ctx : Array Tm) (A B : Tm) (subs : List (Nat × Tm)) : M
   unless sv == (quote ge k.lvl vA == quote ge k.lvl vB) do
     bad "P6 sameVal is not syntactic equality" fun _ => s!"sameVal says {sv} of\n  " ++ pr ()
   if sv && !c then bad "P6 sameVal identifies inconvertible values" pr
-  -- (for `Kernel.wiz`: the same two facts as judgments)
-  wq w "P4: does (A = B) compute to False?" (close ctx (.lam "e" (.var 0)) (piW (.eqTy A B) (.empty 0)))
-  wq w "P4: does (A = B) compute to True?" (close ctx .tt (.eqTy A B))
+  -- (for `Kernel.wiz`: conversion of the two types, and the same two facts, as judgments)
+  modify fun a => { a with wizLv := B == bumpLevels A && A != B }
+  -- (not a pair that differs in a quantity only: at a proposition that is K1, pinned)
+  if A != B && flipQ A != some B then
+    if let some l := cx.lvlOf A then wq w "P2: A ≡ B (two types)" (convJd ctx (.sort l) A B) (pair := true)
+    wq w "P4: does (A = B) compute to False?" (close ctx (.lam "e" (.var 0)) (piW (.eqTy A B) (.empty 0))) (pair := true)
+    wq w "P4: does (A = B) compute to True?" (close ctx .tt (.eqTy A B)) (pair := true)
   for (kk, a) in subs do
     let ctx' := instCtx ctx kk a
     let A' := instTm n kk a A
@@ -1446,6 +1488,9 @@ structure Budget where
   wizCap : Nat := 0
 
 initialize startRef : IO.Ref Nat ← IO.mkRef 0
+/-- `tests --prop-no-sizes`, `tests --prop-trace` -/
+initialize noSizesRef : IO.Ref Bool ← IO.mkRef false
+initialize traceRef : IO.Ref Bool ← IO.mkRef false
 
 def Plan.ctxArg (p : Plan) : String := match p.fixed with
   | some c => toString ((p.w.fixed.findIdx? (· == c)).getD 0)
@@ -1453,11 +1498,11 @@ def Plan.ctxArg (p : Plan) : String := match p.fixed with
 
 /-- Run one sequence; report (shrunk) the first finding of each law. -/
 def runOne (p : Plan) (pre : Array Nat) (iseed : Nat) (acc : Acc) (seen : List String) : IO (Acc × List String) := do
-  -- (`WIZ_PROP_TRACE=1`: each sample before it is checked, to find the one that panics)
-  if (← IO.getEnv "WIZ_PROP_TRACE").isSome then
+  -- (`tests --prop-trace`: each sample before it is checked, to find the one that panics)
+  if ← traceRef.get then
     IO.eprintln s!"@ tests --prop-replay {p.w.name} {p.ctxArg} {p.modeArg} {p.fuel} {iseed} {" ".intercalate (pre.toList.map toString)}"
     IO.eprintln (p.gen pre none).1.show
-  let r := runSeq p pre iseed { acc with findings := #[] }
+  let r := runSeq p pre iseed { acc with findings := #[], samples := acc.samples + 1, wizOn := acc.samples % 12 == 0 }
   let fs := findingsOf p pre iseed r.findings
   let mut seen := seen
   for (issue, law, _) in fs do
@@ -1563,7 +1608,14 @@ def sizedCtors : List String := ["size", "szSuc", "sizeLt", "sfix", "scase", "sc
 
 def worlds : IO (List World) := do
   let ws := [sharedWorld (), ← nativeWorld]
-  return if (← IO.getEnv "WIZ_PROP_NO_SIZES").isSome then ws.map World.noSizes else ws
+  -- (`leanGlobals` skips a declaration the kernel rejects: a query about it would vanish)
+  for (n, _, _, _) in MTm.globalDefs do
+    unless (ws.head?.map (·.g.contains n)).getD false do
+      throw (IO.userError s!"the differential test's global {n} is rejected by the Lean kernel")
+  for w in ws do
+    for h in w.heads do
+      if (typeOfClosed w.g h).isNone then throw (IO.userError s!"world {w.name}: a head is ill typed: {h.pretty}")
+  return if ← noSizesRef.get then ws.map World.noSizes else ws
 
 
 def runLean (b : Budget) : IO Acc := do
@@ -1597,7 +1649,7 @@ def replayMain (args : List String) : IO UInt32 := do
 
 def leanCase (b : Budget) : IO Unit := do
   let acc ← runLean b
-  let failed ← coverage acc 10 (sizes := (← IO.getEnv "WIZ_PROP_NO_SIZES").isNone)
+  let failed ← coverage acc 10 (sizes := !(← noSizesRef.get))
   summarize acc
   unless acc.findings.isEmpty do
     throw (IO.userError s!"{(acc.findings.toList.map (·.1)).eraseDups.length} laws violated ({acc.findings.size} instances)")
@@ -1638,12 +1690,57 @@ def wizRun (src : String) : IO (Option String) := do
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then pure none else throw (IO.userError e)
 
+/-- Pinned queries, asked first: what each probes, whether its normal form is asked, the
+term, and whether the two kernels' answers **differ** today (after reading `↑∞` as `∞`).
+The test fails when one flips: a fixed difference is then removed from here.
+
+* W1 (kernel lint): `Kernel.wiz`'s `headSame` compared two constants without their levels,
+  so two stuck cases whose environments hold one constant at two levels were convertible.
+  Pinned as it must be (both reject): the case fails on a `Kernel.wiz` without the fix.
+* PH-K1: `Kernel.wiz` keeps `↑∞` where a size variable under `↑` is instantiated with `∞`
+  (the Lean kernel's `eval` gives `∞`), and its syntactic tests then see two sizes: it is
+  stuck or stricter, never more permissive.
+* K1 (first audit): quantities at a proposition Σ are ignored by the Lean kernel's
+  conversion and compared by `Kernel.wiz`'s.
+* PH-K3: under a stuck cast between propositions, `Kernel.wiz`'s normal form keeps a
+  glued application that the Lean kernel's unfolds. -/
+def pinned : List (String × Bool × MTm × Bool) :=
+  let G : MTm := .ann (.lam (.mus 0 (.unit 0) MTm.natD .star (.szSuc (.var 0)))) (.pi .size (.univ 0))
+  let Gi : MTm := .app G .szInf
+  let N := MTm.natTy
+  let SL : MTm := .app (.ann (.lam (.sizeLt (.szSuc (.var 0)))) (.pi .size (.univ 0))) .szInf
+  let conv (T a b : MTm) : MTm :=
+    .ann (.lam (.lam (.var 0))) (.pi (.pi T (.univ 0)) (.pi (.app (.var 0) a) (.app (.var 1) b)))
+  let L : MTm := .ulift 1 .ptrue
+  -- W1 (kernel lint): `F A x := ecase x [A]` at `polyK.{0}` and at `polyK.{1}`, stuck on `x`
+  let F (a x : MTm) : MTm :=
+    .app (.app (.ann (.lam (.lam (.ecase .prop (.var 0) [.var 1]))) (.pi .prop (.pi (.enum 1) .prop))) a) x
+  let w1 (l l' : Nat) : MTm := .ann (.lam (.lam (.var 0)))
+    (.pi (.enum 1) (.pi (F (.const "polyK" [l]) (.var 0)) (F (.const "polyK" [l']) (.var 1))))
+  [("W1: (x : Enum 1) → F polyK.{0} x → F polyK.{1} x (both must reject)", false, w1 0 1, false),
+   ("W1 control: (x : Enum 1) → F polyK.{0} x → F polyK.{0} x", false, w1 0 0, false),
+   ("PH-K1: conversion of μ^(↑∞) with μ^∞ (under a variable's spine)", false, conv (.univ 0) Gi N, false),
+   ("PH-K1: regularity, cast from μ^(↑∞) to μ^∞ of zero, normal form", true,
+     .ann (.lam (.cast Gi N (.var 0) MTm.natZero)) (.pi (.eqTy Gi N) N), true),
+   ("PH-K1: type equality μ^(↑∞) = μ^∞, normal form", true, .eqTy Gi N, true),
+   ("PH-K1: () : μ^(↑∞) = μ^∞", false, .ann .star (.eqTy Gi N), true),
+   ("PH-K1: ∞ : Size< ↑∞ (D2: rejected)", false, .ann .szInf SL, false),
+   ("PH-K1: Size< ↑∞ ≤ Size< ∞", false, .ann (.lam (.var 0)) (.pi SL (.sizeLt .szInf)), false),
+   ("PH-K1: Size< ∞ ≤ Size< ↑∞", false, .ann (.lam (.var 0)) (.pi (.sizeLt .szInf) SL), false),
+   ("PH-K1: zero : μ^(↑∞)", false, .ann (.con (.pair (.tag 2 0) (.pair .star .star))) Gi, false),
+   ("K1: (0 x : False) × False ≡ (x : False) × False", false,
+     conv .prop (.sorted 0 (.sigmaq .zero .pfalse .pfalse)) (.sorted 0 (.sigma .pfalse .pfalse)), true),
+   ("PH-K3: a glued application under a stuck cast between propositions, normal form", true,
+     .ann (.lam (.cast L L (.var 0) (.app (.app (.const "idP" [1]) L) (.up .star)))) (.pi (.eqTy L L) L), true)]
+
 /-- P5: `Kernel.wiz` gives the Lean kernel's verdict on every recorded query (the
 judgments, their substitution instances, their normal forms, and conversions written as
 judgments). With P1–P3 holding in the Lean kernel on the same queries, they hold in
 `Kernel.wiz` on them too. -/
 def wizCase (b : Budget) : IO Unit := do
   let acc ← runLean b
+  -- (the pinned queries first)
+  let acc := { acc with wiz := (pinned.map fun ((r, nf, m, _) : String × Bool × MTm × Bool) => (m, "pinned " ++ r, nf)).toArray ++ acc.wiz }
   let g := Elab.leanGlobals ()
   let qs := acc.wiz.toList
   -- (a normal form is asked only of a term the Lean kernel accepts)
@@ -1652,6 +1749,11 @@ def wizCase (b : Budget) : IO Unit := do
   let verdicts := (qs.zip expected).filter fun ((_, _, nf), _) => !nf
   let accepted := (verdicts.filter (·.2 != "error")).length
   IO.println s!"    ({qs.length} queries: {verdicts.length} verdicts, {accepted} accepted by the Lean kernel; {qs.length - verdicts.length} normal forms)"
+  let w1 := qs.filter fun (m, _, _) => (m.toWiz.splitOn "polyK").length > 1
+  let has (x frag : String) : Bool := (x.splitOn frag).length > 1
+  let two := w1.filter fun (m, _, _) => has m.toWiz "(.lnum 1) .nil" && has m.toWiz "(.lnum 0) .nil"
+  let w1Line := s!"{w1.length} queries mention polyK, {two.length} at two levels, {(two.filter fun (m, r, _) => has m.toWiz ".ecase" && !r.startsWith "pinned").length} of those generated with a case (W1's shape)"
+  IO.println s!"    ({w1Line})"
   let roles := (qs.map (·.2.1)).eraseDups
   for r in roles do
     let mine := (qs.zip expected).filter (·.1.2.1 == r)
@@ -1665,14 +1767,46 @@ def wizCase (b : Budget) : IO Unit := do
   let prog := kernel ++ "\n" ++ verdict ++ printAll ++ defs ++ s!"def main : IO Unit := printAll {Elab.wizList calls}\n"
   let some out ← wizRun prog | IO.println "    (skipped: no toolchain)"
   let got := (out.splitOn "\n").take qs.length
-  let mut diffs := 0
+  let norm (x : String) : String := (x.replace "↑(∞)" "∞").replace ", ∞)" ")"
+  let mut verdictDiffs := 0
+  let mut other := 0
+  let mut phk1 := 0
+  let mut flipped : List String := []
+  let mut shown : List String := []
+  -- (a passing case's output is not shown: the answers that matter are also kept in a file)
+  let mut report := ""
   for (m, role, _) in qs, e in expected, o in got do
+    if role.startsWith "pinned " then
+      report := report ++ s!"{role}\n  Lean: {e}\n  Wiz:  {o}\n"
+      IO.println s!"    {role}\n      Lean: {e}\n      Wiz:  {o}"
+      let expectDiff := (pinned.find? fun (r, _, _, _) => "pinned " ++ r == role).map (·.2.2.2) |>.getD false
+      if (norm e != norm o) != expectDiff then flipped := role :: flipped
+      continue
+    if (m.toWiz.splitOn "polyK").length > 1 then
+      report := report ++ s!"(W1) {role}: Lean {e.take 60} / Wiz {o.take 60} / {(m.pretty 0).take 300}\n"
+      IO.println s!"    (W1) {role}: Lean {e.take 60} / Wiz {o.take 60} / {(m.pretty 0).take 300}"
     if e != o then
-      diffs := diffs + 1
-      if diffs ≤ 8 then
-        IO.println s!"\n✗ P5 the kernels disagree on {role}:\n  Lean: {e}\n  Wiz:  {o}\n  term: {m.pretty 0}\n  as a term of Kernel.wiz: {m.toWiz}"
+      -- PH-K1: the answers differ only by `↑∞` against `∞`
+      if norm o == norm e then
+        phk1 := phk1 + 1
+        continue
+      let verdict := (e == "error") != (o == "error")
+      if verdict then verdictDiffs := verdictDiffs + 1 else other := other + 1
+      -- (one in full for each kind of query, the rest in brief)
+      let key := s!"{role}/{verdict}"
+      if !shown.contains key then
+        shown := key :: shown
+        IO.println s!"\n{if verdict then "✗ P5 one kernel accepts and the other rejects" else "(not gated) P5 the answers differ"}: {role}\n  Lean: {e}\n  Wiz:  {o}\n  term: {m.pretty 0}\n  as a term of Kernel.wiz: {m.toWiz}"
+      else
+        IO.println s!"{if verdict then "✗" else "(not gated)"} P5 {role}: Lean {e.take 80} / Wiz {o.take 80} / {(m.pretty 0).take 200}"
+  IO.println s!"    ({phk1} answers differ only by ↑∞ against ∞ (PH-K1); {other} accepted by both with different normal forms or printed types (not gated: PH-K2, PH-K3); {verdictDiffs} accept/reject differences)"
+  report := report ++ s!"{qs.length} queries; {phk1} PH-K1; {other} different normal forms; {verdictDiffs} accept/reject differences\n"
+  -- (in the worktree's scratch directory, when there is one)
+  if ← System.FilePath.isDir ".scratch" then
+    IO.FS.writeFile ".scratch/prop-kernels-report.txt" (w1Line ++ "\n" ++ report)
   unless got.length == qs.length do throw (IO.userError s!"{got.length} answers for {qs.length} queries")
-  unless diffs == 0 do throw (IO.userError s!"P5: the kernels disagree on {diffs} of {qs.length} queries")
+  unless flipped.isEmpty do throw (IO.userError s!"pinned differences changed (update `pinned`): {flipped}")
+  unless verdictDiffs == 0 do throw (IO.userError s!"P5: one kernel accepts and the other rejects on {verdictDiffs} of {qs.length} queries")
   Tests.check (accepted * 4 ≥ verdicts.length) "too few accepted queries"
 
 def group : Group where
@@ -1687,7 +1821,7 @@ def kernelGroup : Group where
   exercise := "property harness"
   cases := [
     { name := "P5: Kernel.wiz agrees with the Lean kernel on judgments, substitution instances and conversions",
-      run := fun _ => wizCase { perCtx := 60, random := 150, wizCap := 1200 } }]
+      run := fun _ => wizCase { random := 300, wizCap := 2000 } }]
 
 /-- `tests --prop-long [SAMPLES] [SEED]`: the long run (no `Kernel.wiz`). -/
 def longMain (args : List String) : IO UInt32 := do
@@ -1695,6 +1829,18 @@ def longMain (args : List String) : IO UInt32 := do
   let seed := (args[1]? >>= String.toNat?).getD 1
   try
     leanCase { dev := 3, perCtx := n / 8, random := n, fuel := 3, seed }
+    pure 0
+  catch e =>
+    IO.eprintln e
+    pure 1
+
+/-- `tests --prop-no-sizes` (the default run without sizes) and `tests --prop-trace` (it
+prints each sample before checking it; with `LEAN_ABORT_ON_PANIC=1`, the one that panics). -/
+def flagMain (noSizes trace : Bool) : IO UInt32 := do
+  noSizesRef.set noSizes
+  traceRef.set trace
+  try
+    leanCase {}
     pure 0
   catch e =>
     IO.eprintln e

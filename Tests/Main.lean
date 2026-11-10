@@ -108,7 +108,7 @@ FILE (its group, index, name, wall time in seconds, whether it passed, and its n
 def main (args : List String) : IO UInt32 := do
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | ["--prop-no-sizes"] | ["--prop-trace"] | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -136,6 +136,8 @@ def main (args : List String) : IO UInt32 := do
   -- the property harness's long run (`Tests/Prop.lean`)
   | "--prop-long" :: rest => Prop.longMain rest
   | "--prop-replay" :: rest => Prop.replayMain rest
+  | ["--prop-no-sizes"] => Prop.flagMain true false
+  | ["--prop-trace"] => Prop.flagMain false true
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
   | ["--list"] => do
