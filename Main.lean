@@ -9,6 +9,8 @@ def usage : String := "usage:
   wiz run FILE [--llvm]            build and run `main`, printing its value
   wiz lsp                          a language server on stdin/stdout
   wiz lsp --infoview SOCK          … and for infoviews on the Unix socket SOCK
+  wiz lsp --ws [ADDR:]PORT         … and on a WebSocket (127.0.0.1 unless ADDR is given;
+                                   both flags may be given; --no-stdio: no editor on stdin)
 options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since it is
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
@@ -40,6 +42,22 @@ def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String
   for (n, p, src) in (← Module.loadAll (moduleRoots tc)).toList do
     m := m.insert n ((← IO.FS.realPath p).toString, src)
   pure m
+
+/-- `wiz lsp`'s options: `--infoview SOCK`, `--ws [ADDR:]PORT`, `--no-stdio`. -/
+def lspOptions : List String → Option (LSP.Listen × Bool)
+  | [] => some ({}, true)
+  | "--infoview" :: sock :: rest => do let (l, io) ← lspOptions rest; pure ({ l with infoview := some sock }, io)
+  | "--ws" :: spec :: rest => do
+    let (l, io) ← lspOptions rest
+    let (addr, port) ← match spec.splitOn ":" with
+      | [p] => pure (Socket.loopback, p)
+      | [a, p] => do pure (← Socket.parseIPv4 a, p)
+      | _ => none
+    let port ← port.toNat?
+    if port ≥ 65536 then none
+    pure ({ l with ws := some (addr, port.toUInt16) }, io)
+  | "--no-stdio" :: rest => do let (l, _) ← lspOptions rest; pure (l, false)
+  | _ => none
 
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
@@ -126,8 +144,11 @@ def main (args : List String) : IO UInt32 := do
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
   | ["lsp"] => do LSP.serve (← loadLibraryPaths tc); pure 0
-  | ["lsp", "--infoview", sock] => do
-    LSP.serve (← loadLibraryPaths tc) (some sock)
-    -- (an infoview's reader thread may still be blocked: don't wait for it)
-    IO.Process.exit 0
+  | "lsp" :: opts => do
+    match lspOptions opts with
+    | none => IO.println usage; pure 2
+    | some (listen, stdio) =>
+      LSP.serve (← loadLibraryPaths tc) listen stdio
+      -- (an infoview's reader thread may still be blocked: don't wait for it)
+      IO.Process.exit 0
   | _ => do IO.println usage; pure 0

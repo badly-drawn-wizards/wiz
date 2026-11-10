@@ -30,7 +30,7 @@ def clampedInc (x : ⇑(Unsigned 8)) : ⇑(Unsigned 8) :=
 -- `Nat` is not in Hw).
 def popCount {n : Nat} : (ω m : Nat) → ⇑(BitVec n) → ⇑(Unsigned 8)
   | .zero, _ => ⟨0⟩
-  | .succ i, x => ⟨(if BitVec.getBit ~i ~x then 1 else 0) + ~(popCount i x)⟩
+  | .succ i, x => ⟨(if BitVec.getBit ~x ~i then 1 else 0) + ~(popCount i x)⟩
 
 -- Sequential code: signals are object values; `register` is the only feedback; mealy
 -- steps are object functions written as meta functions on ⇑ types.

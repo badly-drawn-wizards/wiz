@@ -1,6 +1,7 @@
 // Drive headless Chromium over the DevTools protocol (Node's built-in WebSocket): open
-// the page, wait (in real time) until the infoview shows the goals, click a subterm, and
-// print the goals' and info's HTML, the status line and any console errors.
+// the page, put the cursor before `exact x` in its proof, wait (in real time) until the
+// infoview shows the goals, click the first `Nat` in them, and print the goals' and
+// info's HTML, the status line and any console errors.
 //   usage: node web/chrome_test.mjs CHROMIUM URL
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -36,8 +37,11 @@ const evaluate = async (expr) => (await call("Runtime.evaluate", { expression: e
 await call("Runtime.enable");
 await call("Page.navigate", { url });
 const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`);
+for (let i = 0; i < 100 && !(await has("#editor")); i++) await sleep(200);
+await evaluate(`(() => { const e = document.getElementById("editor"); const at = e.value.indexOf("exact x");
+  e.focus(); e.setSelectionRange(at, at); e.dispatchEvent(new Event("keyup")); })()`);
 for (let i = 0; i < 100 && !(await has("#goals .tt")); i++) await sleep(200);
-await evaluate(`document.querySelectorAll("#goals .tt")[3]?.click()`);
+await evaluate(`[...document.querySelectorAll("#goals .tt")].find((t) => t.textContent === "Nat")?.click()`);
 for (let i = 0; i < 50 && !(await has("#info .kind")); i++) await sleep(200);
 console.log("status: " + await evaluate(`document.getElementById("status").textContent`));
 console.log("goals: " + await evaluate(`document.getElementById("goals").innerHTML`));
