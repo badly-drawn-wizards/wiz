@@ -1614,6 +1614,52 @@ def consMap : StrMap ETm → List Erased → StrMap ETm
     | .succ _ => match leafE (underLams (lamsOf e) e) with
       | .true => consMap (StrMap.insert m (Str.ofString n) e) rest
       | .false => consMap m rest
+-- **Small branching functions inlined, their arguments suspended** (reference counting
+-- mode): a global whose body, under its `λ`s, is a `case` on (a field of) a parameter
+-- with cheap branches (`Bool.and`, `Bool.or`, `pick b x y`) is put in place where it is
+-- applied to all its arguments, each bound by a marked `let` (`lazy`), so the demand
+-- analysis evaluates an argument only in the branches that use it: `Bool.and a b` no
+-- longer evaluates `b` when `a` is false (call by value did; `b` is pure, so this only
+-- changes the cost). Marked in the constructor map as `lazyInl body`.
+def smallBranchE : ETm → Bool
+  | .glob _ => .true
+  | t => leafE t
+def smallBranches : ETms → Bool
+  | .nil => .true
+  | .cons t rest => match smallBranchE t with
+    | .true => smallBranches rest
+    | .false => .false
+def lazyInlOf : ETm → Option ETm
+  | .prim op as => match strEq op "lazyInl" with
+    | .true => match as with
+      | .cons b rest => match rest with
+        | .nil => .some b
+        | .cons _ _ => .none
+      | .nil => .none
+    | .false => .none
+  | _ => .none
+def caseShaped (k : Nat) (b : ETm) : Bool := match b with
+  | .case s bs => match projRoot s with
+    | .var i => Bool.and (Nat.lt i k) (smallBranches bs)
+    | _ => .false
+  | _ => .false
+def caseMap : StrMap ETm → List Erased → StrMap ETm
+  | m, .nil => m
+  | m, .cons (.mk n e) rest => match lamsOf e with
+    | .zero => caseMap m rest
+    | .succ _ => match caseShaped (lamsOf e) (underLams (lamsOf e) e) with
+      | .true => caseMap (StrMap.insert m (Str.ofString n) (.prim "lazyInl" (etms1 e))) rest
+      | .false => caseMap m rest
+-- `f a` with `f` a lambda: `a` put in place when cheap, else bound by a marked `let`
+def betaLz : ETm → ETm → ETm
+  | .lam b, a => match cheapE a with
+    | .true => substE a 0 b
+    | .false => .letE (.prim "lazy" (etms1 a)) b
+  | .letE v b, a => .letE v (betaLz b (liftE 1 0 a))
+  | f, a => .app f a
+def betaLzL : ETm → List ETm → ETm
+  | f, .nil => f
+  | f, .cons a rest => betaLzL (betaLz f a) rest
 def eappsL : ETm → List ETm → ETm
   | f, .nil => f
   | f, .cons a rest => eappsL (.app f a) rest
@@ -1625,11 +1671,17 @@ def inlConst (t body : ETm) : ETm := match isNulE body with
   | .true => body
   | .false => t
 -- `h args`, `h` a global and `body` its definition if it is put in place (else `◾`)
-def inlApp (h : ETm) (args : List ETm) (body : ETm) : ETm :=
+def inlApp (h : ETm) (args : List ETm) (body0 : ETm) : ETm :=
+  let lz := lazyInlOf body0;
+  let body := match lz with
+    | .some b => b
+    | .none => body0;
   let k := lamsOf body;
   match Nat.lt 0 k with
   | .true => match Nat.le k (lenL args) with
-    | .true => eappsL (betaL body (takeL k args)) (dropL k args)
+    | .true => eappsL (match lz with
+      | .some _ => betaLzL body (takeL k args)
+      | .none => betaL body (takeL k args)) (dropL k args)
     | .false => eappsL h args
   | .false => eappsL h args
 mutual
@@ -1866,7 +1918,7 @@ def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       let es1 := pushGlobals es0;
-      let es := decideGlobals (inlGlobals (consMap StrMap.empty es1) es1);
+      let es := decideGlobals (inlGlobals (caseMap (consMap StrMap.empty es1) es1) es1);
       let sigs : StrMap (List Bool) := match borrow with
         | .true => sigsFix (sigsInit StrMap.empty es) 0 es
         | .false => StrMap.empty;
