@@ -187,6 +187,10 @@ partial def call (prog : Std.HashMap Name Decl) (f : Name) (args : Array IVal) :
   run prog env {} d.body
 
 partial def apply (prog : Std.HashMap Name Decl) (f : IVal) (args : Array IVal) : RunM IVal := do
+  -- `◾` applied is `◾` (as in the runtime's `wiz_apply`)
+  if f matches .erased then
+    args.forM dropV
+    return .erased
   let .ptr id := f | throw "applying a non-closure"
   let (rc, o) ← getObj id
   let .clo g captured := o | throw "applying a non-closure"
@@ -225,6 +229,8 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
           pure (fs[i]?.getD .erased)
         | .num n => natField n i
         | .tag 0 => natField 0 i
+        -- a projection of `◾` is `◾` (as in the runtime's `wiz_proj`)
+        | .erased => pure .erased
         | v => throw s!"projection from a scalar {repr v}"
       | .fap f as => call prog f (← as.mapM get)
       | .pap f as => alloc (.clo f (← as.mapM get))

@@ -208,7 +208,10 @@ inductive PayEq where
 
 def kCharsEq : List Char → List Char → Bool
   | .nil, .nil => .true
-  | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (kCharsEq as bs)
+  -- (the heads first: `Bool.and` would evaluate the rest anyway, call by value)
+  | .cons a as, .cons b bs => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => kCharsEq as bs
+    | .false => .false
   | _, _ => .false
 def kStrEq (a b : String) : Bool := match a with
   | .mk x => match b with
@@ -517,8 +520,10 @@ def tmsLen : Tms → Nat
   | .tnil => 0
   | .tcons _ rest => Nat.succ (tmsLen rest)
 
+-- (past the end: a stuck unknown. The checker rejects a variable out of scope, so
+-- nothing well typed gets here; `Sort 0` here made such a variable a term `Prop : Prop`)
 def lookup : Env → Nat → Val
-  | .nil, _ => .vsort (.lnum 0)
+  | .nil, _ => .vne (.haxiom " out of scope" .star) .snil
   | .cons v rest, i => match i with
     | .zero => v
     | .succ j => lookup rest j
@@ -2312,7 +2317,9 @@ partial def mustUse (a v : Val) : Bool := match whnf a with
 mutual
 def infer : TCtx → Tm → TyRes
   --<sol
-  | c, .var i => .ok (lookup (TCtx.types c) i) (uSingle (TCtx.lvl c) i)
+  | c, .var i => match Nat.lt i (TCtx.lvl c) with
+    | .true => .ok (lookup (TCtx.types c) i) (uSingle (TCtx.lvl c) i)
+    | .false => .err "internal error: a variable out of scope"
   | c, .univ n => .ok (.vsort (.lnum (n + 2))) (uZeros (TCtx.lvl c))
   | c, .prop => .ok (.vsort (.lnum 1)) (uZeros (TCtx.lvl c))
   | c, .sortL l => .ok (.vsort (.lsucc l)) (uZeros (TCtx.lvl c))

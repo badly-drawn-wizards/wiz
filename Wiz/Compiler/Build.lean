@@ -37,7 +37,7 @@ def isIO (ty : Term R) : Bool := match (Term.spine ty).1 with
 /-- The C program that computes the global `n`, and `n`'s type. -/
 def cProgram (s : CommandState R) (n : Name) : Except String (String × Term R) := do
   let (decls, ty) ← irProgram s n
-  pure (C.program decls (isIO ty) (extraC s), ty)
+  pure (C.program decls (isIO ty) (extraC s) s.globals.unboxStructs, ty)
 
 def words (s : Option String) : List String :=
   ((s.getD "").splitOn " ").filter (· ≠ "")
@@ -111,8 +111,8 @@ def runGlobal (tc : Toolchain) (s : CommandState R) (n : Name) (dir : System.Fil
   | .ok (decls, ty) =>
     let exe := dir / "wiz_main"
     let io := isIO ty
-    let built ← if llvm then compileLLVM tc (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls) (extraC s))
-      else compileC tc (C.program decls io (extraC s)) exe
+    let built ← if llvm then compileLLVM tc (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls) (extraC s) s.globals.unboxStructs)
+      else compileC tc (C.program decls io (extraC s) s.globals.unboxStructs) exe
     match built with
     | .error e => pure (.error e)
     | .ok () =>
