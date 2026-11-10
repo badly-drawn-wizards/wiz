@@ -851,6 +851,18 @@ partial def inferFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     let g ← getGlobals
     return (.lam b.name t, ctx.sortVal g (.pi b.name b.bi (← evalIn ctx q) vty (.mk ctx.env (quote g ctx'.lvl bty)) none))
 
+/-- `ShareLet.share A B inst` if the class `ShareLet` is declared, `A` and `B` have no
+holes, and an instance `ShareLet A B` is found (auto-share for `let`, HDL stage S0). -/
+partial def autoShare? (ctx : LocalCtx R) (A B : VTy R) : ElabM R (Option (Term R)) := do
+  unless (← get).classes.any (·.name == "ShareLet") do return none
+  let g ← getGlobals
+  let At ← zonk ctx.lvl (quote g ctx.lvl A)
+  let Bt ← zonk ctx.lvl (quote g ctx.lvl B)
+  unless At.mvars.isEmpty && Bt.mvars.isEmpty do return none
+  let goalTy := vApp g (vApp g (eval g [] (.const "ShareLet" [])) A) B
+  let some inst ← (try synthInstance ctx goalTy catch _ => pure none) | return none
+  return some (.app (.app (.app (.const "ShareLet.share" []) At) Bt) inst)
+
 /-- `let` in either mode. -/
 partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)) :
     ElabM R (Term R × VTy R) := do
@@ -866,7 +878,15 @@ partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)
   let ctx' := ctx.define x (← evalIn ctx ty) (← evalIn ctx val)
   let body := stx.getArg 7
   match expected with
-  | some e => return (.letE x q ty val (← check ctx' body e), e)
+  | some e =>
+    -- auto-share (HDL stage S0): with no explicit quantity, a `let` whose value type `A`
+    -- and body type `B` have an instance `ShareLet A B` becomes `ShareLet.share v (fun x
+    -- => body)`; the body sees `x` as a variable, not a definition.
+    if (stx.getArg 1).args.isEmpty then
+      if let some share ← autoShare? ctx (← evalIn ctx ty) e then
+        let b ← check (ctx.bind x (← evalIn ctx ty)) body e
+        return (.app (.app share val) (.lam x b), e)
+    return (.letE x q ty val (← check ctx' body e), e)
   | none =>
     let (b, bty) ← infer ctx' body
     return (.letE x q ty val b, bty)
