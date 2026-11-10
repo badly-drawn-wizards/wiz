@@ -187,10 +187,13 @@ end ReprInfo
 
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
-/-- Values of this type have no runtime content: types, proofs, sizes, quantities. -/
+/-- Values of this type have no runtime content: types, proofs, sizes, quantities, phantom
+tails. -/
 def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
   match whnf ty with
   | .sort _ | .size | .sizeLt _ | .qty => true
+  -- a phantom tail `(0 phantom✝ : D) → … → Unit` (only `fun _ => ()` inhabits it)
+  | .pi x .. => x == phantomName || isProp ctx.globals ctx.tys ty
   | _ => isProp ctx.globals ctx.tys ty
 
 private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []

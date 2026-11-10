@@ -168,12 +168,14 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   -- the outer `fun x0 =>`
   let vA0 ← evalIn ctx A0
   let .mu l I D idx _ hint ← force vA0 | throwAt info "internal error: sized argument"
-  unless (← force I) matches .unit _ do
+  -- (an index type that is only a phantom tail, `phantomTail`, has one value too)
+  unless (← force I) matches .unit _ | .pi .. do
     throwAt info "sized recursion is only supported on non-indexed types (for now)"
   let c1 := ctx.bind x0 vA0
   let q (c : LocalCtx R) (v : Val R) : Term R := quote g c.lvl v
   -- P := fun _ x' => B[x0 := x']   (B is under the x0 binder)
-  let P : Term R := .lam "_" (.lam x0 (B.lift 1 1))
+  -- (in `c1`: `B` lives under `x0`, which becomes the inner binder; the rest shift by 2)
+  let P : Term R := .lam "_" (.lam x0 (B.lift 2 1))
   let vP ← evalIn c1 P
   let some vlev := typeSort? g c1.types.reverse.toArray (← evalIn c1 B)
     | throwAt info "could not determine the universe of the result"
@@ -203,13 +205,14 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let L := ctxX.lvl
   let sT : Term R := .var (L - c1.lvl - 1)
   let recT : Term R := .var (L - ctxS.lvl - 1)
-  let hintT := hint.map fun (n, us, as) => (n, us, as.map (quote g (L + 2)))
+  -- (the hint sits in `y`'s domain, under `j` only)
+  let hintT := hint.map fun (n, us, as) => (n, us, as.map (quote g (L + 1)))
   let fTyTm : Term R := .pi "j" .implicit (.qlit 0) (.sizeLt sT)
     (.pi "y" .default (.qlit w) (.mu l (q ctxX I |>.lift 1) (q ctxX D |>.lift 1) (q ctxX idx |>.lift 1) (.var 0) hintT)
-      ((Term.app (Term.app ((P.lift (L - c1.lvl)).lift 2) .tt) (.var 0))) none) none
+      ((Term.app (Term.app ((P.lift (L - c1.lvl)).lift 2) ((q ctxX idx).lift 2)) (.var 0))) none) none
   -- β-reduce `P () y` (the kernel can't infer the type of an applied lambda)
   let fTyTm := quote g L (← evalIn ctxX fTyTm)
-  let fValTm : Term R := .lam "j" (.lam "y" (.app (.app (.app (recT.lift 2) (.var 1)) .tt) (.var 0)))
+  let fValTm : Term R := .lam "j" (.lam "y" (.app (.app (.app (recT.lift 2) (.var 1)) ((q ctxX idx).lift 2)) (.var 0)))
   let ctxL := ctxX.define name (← evalIn ctxX fTyTm) (← evalIn ctxX fValTm)
   -- introduce the remaining arguments
   let mut ctx' := ctxL
@@ -230,7 +233,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let body := Term.letE name (.qlit w) fTyTm fValTm (names.foldr .lam tree)
   let F : Term R := .lam "s" (.lam "rec" (.lam "i" (.lam x0 body)))
   let sizeVarT : Term R := .var (c1.lvl - si - 1)
-  let sfixT : Term R := .sfix l (q c1 I) (q c1 D) vlev P F sizeVarT .tt (.var 0)
+  let sfixT : Term R := .sfix l (q c1 I) (q c1 D) vlev P F sizeVarT (q c1 idx) (.var 0)
   solveSortConstraints
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (.lam x0 sfixT)
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) (Term.pi x0 bi0 q0 A0 B s0)
@@ -388,7 +391,11 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
       let .pi _ _ _ _ cod _ ← force oty | throwAt info "internal error: observation type"
       let F ← instM cod (Val.var 0)
       comps := comps ++ [← Elab.check sctx rhs F]
-  let payload : Term R := comps.foldr .pair (.pair .tt .tt)
+  -- the index equation: `()` at `Unit`; for a phantom tail (`phantomTail`), `refl`
+  let e : Term R ← match ← force I with
+    | .unit _ => pure .tt
+    | _ => pure (.refl (q sctx.lvl I) (q sctx.lvl i))
+  let payload : Term R := comps.foldr .pair (.pair e .tt)
   -- wrap the lets for the re-bound binders
   let mut stepBody := payload
   let mut lvl := sctx.lvl
@@ -450,7 +457,11 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
     let c ← Elab.check ctx rhs A
     comps := comps ++ [c]
     pty ← instM B (← evalIn ctx c)
-  let payload : Term R := comps.foldr .pair (.pair .tt .tt)
+  -- the index equation: `()` at `Unit`; for a phantom tail (`phantomTail`), `refl`
+  let e : Term R ← match ← force I with
+    | .unit _ => pure .tt
+    | _ => pure (.refl (quote g ctx.lvl I) (quote g ctx.lvl i))
+  let payload : Term R := comps.foldr .pair (.pair e .tt)
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (Term.cocon payload)
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
   let val ← zonk 0 val
