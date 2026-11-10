@@ -133,6 +133,11 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
     | none => freshMeta ctx "the type of this definition"
   -- (for the language server) the type after the binders, and where ` : T` would go
   if let some (n, ni, at_) := declName? then pushInfo (.decl ni n ctx ty typeStx.isSome at_)
+  -- the type's instance problems that are already determined, solved before the body is
+  -- checked: an equation stuck on such a hole then computes when it meets the body's type
+  -- (`unifyAt`). (The type isn't zonked here: an equation that stays as written lets
+  -- `rfl` be `refl` of its sides.)
+  while ← synthPending do pure ()
   let val ← valStx.mapM fun s => do Elab.check ctx s (← evalIn ctx ty)
   let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val := val.map fun v => tele.foldr (fun (x, _, _, _) b => Term.lam x b) v
@@ -239,6 +244,8 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) (Term.pi x0 bi0 q0 A0 B s0)
   let val ← zonk 0 val
   ensureNoMVars val info
+  let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
+  ensureNoMVars fullTy info
   pure (fullTy, val)
 
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
@@ -286,7 +293,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
     | x :: rest => if pos == 0 then xs else x :: (xs.take pos ++ rest)
     | [] => xs
   let params := (tele.filterMap fun (x, bi, _, _) => if bi == .default then some x else none).toList
-  let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n } else none
+  let allParams := (tele.map fun (x, bi, _, _) => (x, bi == .default)).toList
+  let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n, allParams } else none
   if let some x := vars.head? then recordMatch cmd.info alts clauses ctx'.types[ctx'.lvl - x - 1]!
   -- a recursive definition whose first argument has a size-variable size: compile to `sfix`
   if rc.isSome && pos == 0 then
@@ -302,6 +310,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let fullTy := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val ← zonk 0 val
   ensureNoMVars val info
+  let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
+  ensureNoMVars fullTy info
   -- for the compiler: the same equations with direct recursion (the definition, as an
   -- axiom for the moment, is called like any function) and case analysis, so that only
   -- the recursive calls the program makes are computed
@@ -419,6 +429,8 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
   let val ← zonk 0 val
   ensureNoMVars val info
+  let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
+  ensureNoMVars fullTy info
   pure (fullTy, val)
 
 /-- **Exercise 4.24.** The non-corecursive case of `elabCopatterns`: `cocon` of the
@@ -466,6 +478,8 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
   let val ← zonk 0 val
   ensureNoMVars val info
+  let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
+  ensureNoMVars fullTy info
   pure (fullTy, val)
   --|ex
   --| sorry
