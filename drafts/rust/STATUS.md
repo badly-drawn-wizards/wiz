@@ -11,7 +11,7 @@ and `lake test -- regions`.
 |---|---|---|
 | `lib/Optic.wiz` | `Error`, `Result` (+ `bind`, `map`, `Monad`, `All`, `Holds`); `Store` (`comp`, `compP`, `underR`, `extract`, `put`); `Lens`, `PLens`, `ALens`; `Lens.comp`, `PLens.comp`, `Lens.toP`; `zoom`, `zoomP`; `Affine` (`comp`, `over`, `extract`); `TraverseMut` + `List` instance; laws `GetPut`/`PutGet`/`PutPut`/`Lawful` (total and partial), `Lens.Indep`, `Lens.pair` | `lake test -- optic` (4 cases) |
 | | **proofs:** structure-field lenses lawful and independent (`rfl`); head of a list (`List.headL`) and **index of a list (`List.atL i`) lawful partial lenses** (all three laws, by induction on the index through generic `Store.underR_*` lemmas); **composition of lawful lenses is lawful** (`Lens.comp_lawful`); `Lens.pair_getPut`; `Store.final` (the `final(r)` desugaring equation) | kernel-checked; a negative test shows an unlawful lens's GetPut is rejected |
-| `lib/Region.wiz` | `Region`, `Outlives` (opaque; `refl`/`trans`/`static`); handles as structures `Shr`, `Uniq`, `Mut`, `MutOpt`, `Lent` (the region is part of the type and inferred); borrow scopes `Region.scope`, `Shr.borrow`, `Uniq.borrow`, `Uniq.reborrow`, `Uniq.share`, `Uniq.zoom`, `Uniq.both`; `Shr.weaken`; `Mut.ofLens`/`ofPLens`/`whole`/`get`/`set`/`close`/`release`/`comp` | `lake test -- regions` (7 cases: distinct regions, inference, scopes run, outlives, E0515, E0597, E0499/E0502) |
+| `lib/Region.wiz` | `Region`, `Outlives` (opaque; `refl`/`trans`/`static`); handles as structures `Shr`, `Uniq`, `Mut`, `MutOpt`, `Lent` (the region is part of the type and inferred; constructors private to the module, so handles can't be forged); borrow scopes `Region.scope`, `Shr.borrow`, `Uniq.borrow`, `Uniq.reborrow`, `Uniq.share`, `Uniq.zoom`, `Uniq.both`; `Shr.weaken`; `Mut.ofLens`/`ofPLens`/`whole`/`get`/`set`/`close`/`release`/`comp` | `lake test -- regions` (8 cases: distinct regions, inference, scopes run, outlives, E0515, E0597, E0499/E0502, forging) |
 | `drafts/rust/lib/RsCore.wiz` | `Flow`; Nat-backed `U64` (checked `add`/`sub`/`mul`, `checkedAdd`, `midpoint`); List-backed `Vec` (`push` on a `Uniq`, `len` on a `Shr`, `index`, `indexMut` as a lawful `PLens` with proof, `getMut` as `MutOpt`) | `check.sh` |
 | `drafts/rust/lowered/01_swap.wiz` | `swap` through two `&mut` (`Uniq ρ₁`, `Uniq ρ₂`), `mem.swap`; nested borrow scopes at the call site | `#eval` .ok (2, 1) |
 | `…/02_push.wiz` | `push_twice (v : &mut Vec U64)`, `for` loop as structural recursion | 10 elements |
@@ -23,7 +23,7 @@ and `lake test -- regions`.
 | `…/08_first_mut.wiz` | `Option (&mut U64)` as `MutOpt` | some / none cases |
 | `…/09_bsearch.wiz` | `&'a Vec U64` as `Shr ρ`, `while` with early `return` | found / not found |
 | `…/10_regions.wiz` | `'a : 'b` bounds as erased `Outlives` arguments (`longest`, `remember` storing a `&'a` into a `&'b` slot), nested scopes handing out evidence | `.ok 8` |
-| `drafts/rust/rejected/*.wiz` | E0515 (return a local's borrow), E0597 (borrow outlives its scope; short reference stored into a long slot), E0499 (two `&mut`), E0502 (lender used while borrowed), missing `'a : 'b` | each rejected with a type mismatch (`check.sh`) |
+| `drafts/rust/rejected/*.wiz` | E0515 (return a local's borrow), E0597 (borrow outlives its scope; short reference stored into a long slot), E0499 (two `&mut`), E0502 (lender used while borrowed), missing `'a : 'b`; a forged handle (`forge_handle`: the handles' constructors are private to `lib/Region.wiz`, README 13b) | each rejected with a type mismatch, the forgery as private (`check.sh`) |
 
 ## Doesn't check (wishful), and why
 
@@ -31,7 +31,6 @@ and `lake test -- regions`.
 |---|---|---|
 | every `drafts/rust/surface/*.wiz` | the `rust … end` command macro and grammar (the front end itself), with positions, coded diagnostics, environment queries | `command-proc-macros` (+ existing `quotation-splices`) |
 | `{'a}`, `{'a : 'b}`, `&'a mut T` in the surface | region tokens (local regions and inference are done: scopes and phantom parameters) | `region-indices` |
-| forging handles (`Shr.mk`, `Uniq.mk`, `Lent.mk` in hand-written code) | private constructors: today the region discipline holds for code that follows the lowering rules | `private-decls` |
 | structural recursion through a field reborrow (05 `insert` is `partial`) | the termination checker seeing a recursive call on a scope's handle of a pattern variable | `reborrow-recursion` |
 | `requires`/`ensures`/`invariant` | spec clauses → quantity-0 spec defs | `spec-clauses` |
 | `final(x)`, `old(x)` | desugaring over the backward function | `final-specs` |

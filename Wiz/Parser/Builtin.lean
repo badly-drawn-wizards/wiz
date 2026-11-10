@@ -106,6 +106,7 @@ def levelTrailing : List TrailingParser := [
 | `term.syntheticHole` | max  | "?" ident |
 | `term.paren`         | max  | "(" term ")" |
 | `term.ascription`    | max  | "(" term ":" term ")" |
+| `term.namedArg`      | max  | "(" ident ":=" term ")" (an argument of an application) |
 | `term.explicit`      | max  | "@" ident |
 | `term.fun`           | max  | "fun" [binder+] "=>" term |
 | `term.let`           | lead | "let" [quantity] ident [":" T] ":=" term [";"] term |
@@ -155,6 +156,8 @@ def termLeading : List LeadingParser := [
   { kind := "term.hole", prec := maxPrec, p := "_" },
   { kind := "term.syntheticHole", prec := maxPrec, p := seqs ["?", noWs, ident] },
   { kind := "term.paren", prec := maxPrec, p := seqs ["(", withoutPosition term, ")"] },
+  -- 13a: a named argument, only as an argument of an application
+  { kind := "term.namedArg", prec := maxPrec, p := seqs ["(", withoutPosition (seqs [ident, ":=", term]), ")"] },
   { kind := "term.ascription", prec := maxPrec,
     p := seqs ["(", withoutPosition (seqs [term, ":", term]), ")"] },
   { kind := "term.explicit", prec := maxPrec, p := seqs ["@", noWs, ident] },
@@ -206,6 +209,10 @@ def termTrailing : List TrailingParser := [
   { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "^", term maxPrec] }
 ]
 
+/-- `where`, then optionally `private mk ::` (13b: a constructor private to the module) -/
+def structureWhere : ParserDescr :=
+  node "structure.where" (seqs ["where", optional (seqs [optional (atom "private"), ident, "::"])])
+
 /-- `deriving C₁, C₂` after an `inductive` or `structure` (HD8) -/
 def derivingClause : ParserDescr := optional (seqs ["deriving", sepBy1 ident ","])
 
@@ -221,7 +228,8 @@ continue onto a line starting at the command's column.
 | `command.declareSyntaxCat`   | "declare_syntax_cat" ident |
 | `command.syntax`             | "syntax" [":" prec] [name] [priority] [stx+] ":" ident |
 | `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] ["deriving" C,+] |
-| `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] "where" [fields] ["deriving" C,+] |
+| `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] where [fields] ["deriving" C,+] (where: `structure.where`, "where" [["private"] ident "::"]) |
+| `command.private`            | "private" command (every name it declares is private to the module) |
 | `command.deriving`           | "deriving" "instance" C,+ "for" T,+ |
 | `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
 | `command.coinductive`        | like `structure`; the fields are observations |
@@ -237,6 +245,8 @@ def commandLeading : List LeadingParser := [
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec false, ":=", term] },
   { kind := "command.defEqns", prec := maxPrec,
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec true, many1 matchAlt] },
+  -- 13b: every name the command declares is visible only in this module
+  { kind := "command.private", prec := maxPrec, p := seqs ["private", cat "command" 0] },
   -- stage 13: general recursion; a `mutual` block's definitions are partial too
   { kind := "command.partial", prec := maxPrec, p := seqs ["partial", cat "command" 0] },
   { kind := "command.mutual", prec := maxPrec, p := seqs ["mutual", many1 (cat "command" 0), "end"] },
@@ -285,7 +295,7 @@ def commandLeading : List LeadingParser := [
         optional (seqs [":", term])])), derivingClause] },
   { kind := "command.structure", prec := maxPrec,
     p := seqs ["structure", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
-      "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term]))),
+      structureWhere, many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term]))),
       derivingClause] },
   -- stage 7: a class is a structure whose values are found by instance resolution
   { kind := "command.class", prec := maxPrec,
