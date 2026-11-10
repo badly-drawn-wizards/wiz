@@ -382,6 +382,20 @@ inductive Regularity where
   | off
   deriving BEq, Repr, Inhabited
 
+/-- Regularity at inert types (InReg, D1/P1): when `cast A B e t ↦ t` at an inert `A`.
+See `wiz-notes/p1-stable.md`. -/
+inductive InertReg where
+  /-- the old rule: `A` and `B` quote alike (`sameVal`). Not stable under substitution
+  (P1): kept only to measure what the stable rules lose -/
+  | syntactic
+  /-- (default) `A` and `B` are equal by `groundEqTy`: no free variable in a relevant
+  position, so the decision is invariant under conversion and stable under substitution -/
+  | ground
+  /-- `ground`, and conversion also identifies `cast A B e t` with `t` at an inert `A`
+  when `A ≡ B` (InReg_conv, decided by `convTy`) -/
+  | conv
+  deriving BEq, Repr, Inhabited
+
 /-- The global environment. `order` records insertion order so anything that walks
 the environment does so deterministically (never iterate the hash map directly). -/
 structure Globals (R : Type) where
@@ -396,6 +410,8 @@ structure Globals (R : Type) where
   eager : Bool := false
   /-- which casts reduce by regularity (D1: `off`, so that checking terminates) -/
   regularity : Regularity := .off
+  /-- (P1) regularity at inert types: `ground` (stable) by default -/
+  inertReg : InertReg := .ground
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false
