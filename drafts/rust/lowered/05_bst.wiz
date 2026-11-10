@@ -11,56 +11,61 @@ inductive Tree where
 
 -- fn insert {'a} (t : &'a mut Tree) (k : U64) : Unit := match t with ...
 -- Matching on `&mut Tree` binds `left`, `right` as `&mut Tree` reborrows of the fields
--- (and `key` as `&U64`): the node is unpacked, the reborrow is handed back, the node is
--- rebuilt in the same block (so Perceus reuses the cell).
-def insert {ρ : Region} : Tree → U64 → Result (Unit × Tree)
-  | .leaf, k =>
-    let t := Tree.node k .leaf .leaf;           -- *t := .node k .leaf .leaf
-    .ok ((), t)
-  | .node key left right, k => match U64.lt k key with
-    | .true => (match insert left k with      -- insert left k
-      | .ok r =>
-        let left := r.2;
-        .ok ((), Tree.node key left right)
-      | .err e => .err e)
-    | .false => match U64.lt key k with
-      | .true => (match insert right k with   -- insert right k
-        | .ok r =>
-          let right := r.2;
-          .ok ((), Tree.node key left right)
+-- (and `key` as `&U64`, L15): the node is unpacked inside a reborrow scope of `t` (so `t`
+-- is a `Lent` token while its fields are out), each field reborrow is a borrow of the
+-- unpacked local (a fresh region inside ρ'), and the node is rebuilt in the same block
+-- (so Perceus reuses the cell).
+-- `partial`: the recursive call is on the handle of a field, made inside a scope's
+-- lambda, which structural recursion doesn't see through (wishful: reborrow-recursion).
+partial def insert {ρ : Region} (t : Uniq ρ Tree) (k : U64) : Result (Unit × Uniq ρ Tree) :=
+  Uniq.reborrow t (fun ρ' h t r =>
+    match r.val with
+    | .leaf => .ok ((), Uniq.set r (Tree.node k .leaf .leaf))   -- *t := .node k .leaf .leaf
+    | .node key left right => match U64.lt k key with
+      | .true => (match Uniq.borrow ρ' left (fun ρl hl left rl => insert rl k) with   -- insert left k
+        | .ok q =>
+          let left := q.2;
+          .ok ((), Uniq.set r (Tree.node key left right))
         | .err e => .err e)
-      | .false => .ok ((), Tree.node key left right)
+      | .false => match U64.lt key k with
+        | .true => (match Uniq.borrow ρ' right (fun ρr hr right rr => insert rr k) with   -- insert right k
+          | .ok q =>
+            let right := q.2;
+            .ok ((), Uniq.set r (Tree.node key left right))
+          | .err e => .err e)
+        | .false => .ok ((), Uniq.set r (Tree.node key left right)))
 
 -- fn insert_loop {'a} (t : &'a mut Tree) (k : U64) : Unit := {
 --   let mut cur := t;                                        -- cur : &'a mut Tree
 --   while let .node key left right := cur do {
 --     if k < *key then cur := left else if *key < k then cur := right else return () };
 --   *cur := .node k .leaf .leaf }
--- `cur` is a borrow of the whole tree (`Mut ρ Tree Tree`, starting as `Lens.id`); each
+-- `cur` is a borrow of the whole tree (`Mut ρ Tree Tree`, starting as `Mut.whole t`); each
 -- step composes it with a borrow of a child, whose backward function rebuilds the node.
+-- The region stays `ρ`: `t` is moved into the cursor, and the cursor's release gives it back.
 partial def insert_loop.loop0 {ρ : Region} (k : U64) (cur : Mut ρ Tree Tree) :
-    Result (Flow (Mut ρ Tree Tree) (Unit × Tree)) :=
-  match cur.1 with
+    Result (Flow (Mut ρ Tree Tree) (Unit × Uniq ρ Tree)) :=
+  match Mut.get cur with
   | .node key left right => (match U64.lt k key with
     | .true =>
-      let cur := Store.comp cur (fun (_ : Tree) => (left, fun (l : Tree) => Tree.node key l right));
-      @insert_loop.loop0 ρ k cur
+      let cur := Mut.comp cur (fun (_ : Tree) => (left, fun (l : Tree) => Tree.node key l right));
+      insert_loop.loop0 k cur
     | .false => match U64.lt key k with
       | .true =>
-        let cur := Store.comp cur (fun (_ : Tree) => (right, fun (r : Tree) => Tree.node key left r));
-        @insert_loop.loop0 ρ k cur
+        let cur := Mut.comp cur (fun (_ : Tree) => (right, fun (r : Tree) => Tree.node key left r));
+        insert_loop.loop0 k cur
       | .false =>
-        let t := Store.extract cur;            -- return (): every borrow ends unchanged
+        let t := Mut.release cur;              -- return (): every borrow ends unchanged
         .ok (.ret ((), t)))
   | .leaf => .ok (.brk cur)
 
-def insert_loop {ρ : Region} (t : Tree) (k : U64) : Result (Unit × Tree) :=
-  let cur := Lens.id t;
-  match @insert_loop.loop0 ρ k cur with
+def insert_loop {ρ : Region} (t : Uniq ρ Tree) (k : U64) : Result (Unit × Uniq ρ Tree) :=
+  let cur := Mut.whole t;
+  match insert_loop.loop0 k cur with
   | .ok fl => (match fl with
     | .brk cur =>
-      let cur := Store.mk (Tree.node k .leaf .leaf) cur.2;  -- *cur := .node k .leaf .leaf
-      let t := Store.extract cur;                           -- the borrow of t ends
+      let cur := Mut.set cur (Tree.node k .leaf .leaf);    -- *cur := .node k .leaf .leaf
+      let t := Mut.release cur;                            -- the borrow of t ends
       .ok ((), t)
     | .ret r => .ok r)
   | .err e => .err e
@@ -87,25 +92,25 @@ partial def insert_zip.loop0 (k : U64) (cur : Tree) (path : Path) : Result (Flow
       | .false => .ok (.ret ((), Path.plug path (Tree.node key left right))))
   | .leaf => .ok (.brk (cur, path))
 
-def insert_zip {ρ : Region} (t : Tree) (k : U64) : Result (Unit × Tree) :=
-  match insert_zip.loop0 k t Path.top with
+def insert_zip {ρ : Region} (t : Uniq ρ Tree) (k : U64) : Result (Unit × Uniq ρ Tree) :=
+  match insert_zip.loop0 k t.val Path.top with
   | .ok fl => (match fl with
-    | .brk cp => .ok ((), Path.plug cp.2 (Tree.node k .leaf .leaf))
-    | .ret r => .ok r)
+    | .brk cp => .ok ((), Uniq.set t (Path.plug cp.2 (Tree.node k .leaf .leaf)))
+    | .ret r => .ok ((), Uniq.set t r.2))
   | .err e => .err e
 
 -- running them
 def Tree.toNats : Tree → List Nat
   | .leaf => .nil
   | .node k l r => List.append (Tree.toNats l) (.cons k.val (Tree.toNats r))
-def build (ins : Tree → U64 → Result (Unit × Tree)) : List Nat → Tree → Result Tree
+def build (ins : (0 ρ : Region) → Uniq ρ Tree → U64 → Result (Unit × Uniq ρ Tree)) : List Nat → Tree → Result Tree
   | .nil, t => .ok t
-  | .cons k ks, t => match ins t (U64.mk k) with
+  | .cons k ks, t => match Uniq.borrow Region.static t (fun ρ h t r => ins ρ r (U64.mk k)) with
     | .ok r => build ins ks r.2
     | .err e => .err e
 def keys : List Nat := .cons 5 (.cons 2 (.cons 8 (.cons 2 (.cons 7 (.cons 1 .nil)))))
 
-#eval Result.map Tree.toNats (build (@insert Region.static) keys .leaf)
-#eval Result.map Tree.toNats (build (@insert_loop Region.static) keys .leaf)
-#eval Result.map Tree.toNats (build (@insert_zip Region.static) keys .leaf)
+#eval Result.map Tree.toNats (build (fun ρ => @insert ρ) keys .leaf)
+#eval Result.map Tree.toNats (build (fun ρ => @insert_loop ρ) keys .leaf)
+#eval Result.map Tree.toNats (build (fun ρ => @insert_zip ρ) keys .leaf)
 -- all three: .ok [1, 2, 5, 7, 8]

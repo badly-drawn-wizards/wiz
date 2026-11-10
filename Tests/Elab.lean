@@ -2522,6 +2522,25 @@ def toolingGroup : Group where
         checkEq (msgs plain) (msgs cold)
         checkEq (msgs plain) (msgs warm)
         checkEq plain.globals.order.size warm.globals.order.size },
+    { name := "another build of wiz misses the shared cache (its binary is in the key)", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let src := "import Prelude\ndef two : Nat := 1 + 1\n#eval two\n"
+        let dir ← IO.FS.createTempDir
+        let (_, h1) ← Cache.elaborateCached dir src init 0 (binary := some 1)
+        let (_, h2) ← Cache.elaborateCached dir src init 0 (binary := some 1)
+        let (_, h3) ← Cache.elaborateCached dir src init 0 (binary := some 2)
+        checkEq 0 h1
+        check (h2 > 0) "the same binary got nothing from the cache"
+        checkEq 0 h3
+        -- by default, the key is this test driver's own hash, remembered by its stamp
+        let me ← Cache.binaryId (some dir)
+        checkEq me (← Cache.binaryId (some dir))
+        checkEq me (hash (← IO.FS.readBinFile (← IO.appPath)))
+        let (_, h4) ← Cache.elaborateCached dir src init 0
+        let (_, h5) ← Cache.elaborateCached dir src init 0 (binary := some me)
+        checkEq 0 h4
+        check (h5 > 0) "the default is not this binary's hash" },
     { name := "terms survive the cache's format", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let st := runFrontend (R := ZeroOneMany) "import Prelude" { loader := fun _ => some prelude }
@@ -3180,6 +3199,50 @@ def phantomGroup : Group where
         | some (a, b) => throw (IO.userError s!"the C differs:\n  without: {a}\n  with:    {b}")
         | none => check (l0.length == l1.length) "the C differs in length" },
     { name := "and it runs", run := fun _ => cRun (phantomPair true) "6" }
+  ]
+
+/-! ## Regions: borrow checking as typing (lib/Region.wiz, Rust DSL RD12) -/
+
+def regionsPush : String :=
+  "def push1 {ρ : Region} (v : Uniq ρ (List Nat)) : Result (Unit × Uniq ρ (List Nat)) :=\n  .ok ((), Uniq.set v (List.cons 1 v.val))\n"
+def regionsLongest : String :=
+  "def longest {ρa ρb : Region} (0 h : Outlives ρa ρb) (x : Shr ρa Nat) (y : Shr ρb Nat) : Result (Shr ρb Nat) :=\n" ++
+  "  match Nat.lt x.val y.val with\n  | .true => .ok y\n  | .false => .ok (Shr.weaken h x)\n"
+
+def regionsGroup : Group where
+  name := "regions"
+  exercise := "lib/Region.wiz (Rust DSL lifetimes)"
+  cases := [
+    { name := "handles in different regions are different types; regions are inferred", run := fun _ => do
+        okLibs ("import Region\ndef same {ρ : Region} (m : Mut ρ Nat (List Nat)) : Mut ρ Nat (List Nat) := m\n" ++
+          "def get {ρ : Region} (x : Shr ρ Nat) : Nat := x.val\n#eval get (Shr.mk 4 : Shr Region.static Nat)") ["4"]
+        failsLibs "import Region\ndef bad {ρ ρ' : Region} (m : Mut ρ Nat (List Nat)) : Mut ρ' Nat (List Nat) := m" "mismatch"
+        failsLibs "import Region\ndef bad {ρ ρ' : Region} (x : Shr ρ Nat) : Shr ρ' Nat := x" "mismatch" },
+    { name := "a mutable borrow scope hands the lender back", run := fun _ =>
+        okLibs ("import Region\n" ++ regionsPush ++
+          "#eval Uniq.borrow Region.static List.nil (fun ρ h v r => push1 r)") [".ok ((), .cons 1 .nil)"] },
+    { name := "outlives evidence from nested scopes lets a reference flow outward", run := fun _ =>
+        okLibs ("import Region\n" ++ regionsLongest ++
+          "#eval Shr.borrow Region.static 3 (fun ρa ha a => Shr.borrow ρa 5 (fun ρb hb b =>\n" ++
+          "  match longest hb a b with\n  | .ok r => .ok r.val\n  | .err e => .err e))") [".ok 5"] },
+    { name := "without the bound, a &'a is not a &'b", run := fun _ =>
+        failsLibs ("import Region\ndef longest {ρa ρb : Region} (x : Shr ρa Nat) (y : Shr ρb Nat) : Result (Shr ρb Nat) :=\n" ++
+          "  match Nat.lt x.val y.val with\n  | .true => .ok y\n  | .false => .ok x") "mismatch" },
+    { name := "returning a borrow of a local is a type error (E0515)", run := fun _ =>
+        failsLibs ("import Region\ndef bad {ρ : Region} (x : Shr ρ Nat) : Result (Shr ρ Nat) :=\n" ++
+          "  Shr.borrow ρ 5 (fun ρy hy y => .ok y)") "mismatch" },
+    { name := "a borrow can't outlive its scope (E0597)", run := fun _ =>
+        failsLibs ("import Region\n" ++ regionsLongest ++
+          "def bad : Result Nat := Shr.borrow Region.static 3 (fun ρa ha a =>\n" ++
+          "  match Shr.borrow ρa 5 (fun ρb hb b => longest hb a b) with\n  | .ok r => .ok r.val\n  | .err e => .err e)")
+          "escapes the scope" },
+    { name := "using the lender while it is mutably borrowed is a type error (E0499/E0502)", run := fun _ => do
+        failsLibs ("import Region\n" ++ regionsPush ++
+          "def bad : Result (Nat × List Nat) := Uniq.borrow Region.static List.nil (fun ρ h v r =>\n" ++
+          "  match push1 r with\n  | .ok q => .ok (List.length v, q.2)\n  | .err e => .err e)") "mismatch"
+        failsLibs ("import Region\n" ++ regionsPush ++
+          "def bad : Result (Unit × List Nat) := Uniq.borrow Region.static List.nil (fun ρ1 h1 v r1 =>\n" ++
+          "  match Uniq.borrow ρ1 v (fun ρ2 h2 v r2 => push1 r2) with\n  | .ok q => .ok ((), r1)\n  | .err e => .err e)") "mismatch" }
   ]
 
 end Tests.Elab
