@@ -182,6 +182,10 @@ structure Decl (R : Type) where
   /-- an implementation for the compiler, not checked by the kernel: a structurally
   recursive definition, with direct recursion instead of the recursor -/
   impl : Option (Term R) := none
+  /-- a partial definition's witness: a term of its type that the kernel checks
+  (`addPartialDecl`). The definition stays opaque (`value = none`) but is not an axiom:
+  its type is inhabited, so assuming `f : T` proves nothing that `w : T` doesn't. -/
+  witness : Option (Term R) := none
   deriving Repr, Inhabited
 
 namespace Term
@@ -375,6 +379,9 @@ structure Globals (R : Type) where
   order : Array Name := #[]
   /-- `builtin key := name` registrations, such as `("nat", Nat)` and `("nat.add", Nat.add)` -/
   builtins : List (Name × Name) := []
+  /-- the registrations made outside the toolchain's library, which nothing checks: each
+  is an axiom of the declarations that depend on it (`#print axioms`) -/
+  assumed : List (Name × Name) := []
   /-- unfold every definition eagerly (no gluing), for normal forms -/
   eager : Bool := false
   /-- which casts reduce by regularity (D1: `off`, so that checking terminates) -/
