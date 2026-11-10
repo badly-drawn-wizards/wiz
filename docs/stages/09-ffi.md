@@ -144,6 +144,69 @@ extern "iv_term_open" Term.open : IO Nat
 Not done: `pkg-config` names (`link_pkg "gtk+-3.0"`) — for now, give their flags with
 `--cflags`/`--ldflags`.
 
+## 9h: system interfaces: processes, environment, files ✅
+
+```
+import Sys
+def main : IO Unit := EIO.toIO (do
+  o ← Process.output "cat" .nil "piped through cat\n";
+  EIO.lift (IO.print o.stdout);
+  Env.set "GREETING" "hi";
+  d ← FS.createTempDir;
+  FS.writeFile (Path.join d "a.txt") "alpha\n";
+  names ← FS.listDir d;
+  FS.removeAll d)
+```
+
+`lib/Sys.wiz` binds the POSIX interfaces a program needs to drive other programs
+(what the toolchain manager and grail need, see stages 23 and 26), with C in the
+runtime's section "system interfaces" (`runtime/wiz.c`, so both backends have it).
+
+* **Errors.** Anything that can fail returns `EIO A := IO (Except String A)`, a monad of
+  its own, so a `do` block stops at the first error; `EIO.lift` runs an `IO` action in
+  it and `EIO.toIO` runs it as `main`, printing the error to stderr and exiting with 1.
+  An error reads `"<path or call>: <strerror(errno)>"`. Underneath there are two
+  shapes of foreign function: a call that only succeeds or fails returns the errno
+  (0 for success, `Sys.lift`), and a call that returns a value records its errno per
+  thread, read back by `Sys.errno` right after it (`Sys.check`; the linear world
+  token keeps the two calls together and in order). Results that are lists (directory
+  entries, the environment, a `stat`) are built by the runtime as Wiz lists.
+* **Environment.** `Env.get : String → IO (Option String)`, `Env.set`, `Env.unset`,
+  `Env.list : IO (List (String × String))` (sorted by name). Setting variables isn't
+  thread-safe in C: set them before starting threads.
+* **Files and directories** (`FS.`). `currentDir`, `setCurrentDir`, `createDir`,
+  `removeDir`, `removeFile`, `removeAll` (recursive, doesn't follow links), `rename`,
+  `symlink target link`, `readLink`, `setMode`, `listDir` (sorted, without `.` and
+  `..`), `stat` and `linkStat` (a `FileStat`: kind, size, modification time, mode),
+  `exists`, `isDir`, `isFile`, `tempRoot` (`$TMPDIR` or `/tmp`), `createTempDir`
+  (`mkdtemp`), and whole files: `readFile`, `writeFile`, `appendFile`, and `readBytes`,
+  `writeBytes` for binary data (text stops at a NUL byte). `Path.join` puts a `/`
+  between two paths.
+* **File handles.** `foreign_type File` (closed by its finalizer, or `File.close`):
+  `File.open path mode` (`fopen` modes), `File.stdin`/`stdout`/`stderr`,
+  `readLine` (`none` at the end), `readAll`, `write`, `flush`. `IO.ePrintln` prints
+  to stderr.
+* **Processes.** `Process.spawn cmd args stdin stdout stderr` starts `cmd` (searched in
+  `PATH`, `posix_spawnp`) with each stream `.inherit`, `.piped` or `.null`, giving a
+  `Child` (a foreign type: its pipes close and a finished child is reaped when it
+  goes). `Child.write`, `closeStdin`, `readStdout`/`readStderr` (to the end),
+  `communicate input` (writes stdin while collecting stdout and stderr with `poll`, so
+  a child that fills one pipe doesn't deadlock), `wait` (an `ExitStatus`: `exited code`
+  or `signaled n`), `kill`, `pid`. `Process.output cmd args input` runs a command to the
+  end and returns its status and output; `Process.run` runs one with this program's
+  streams; `Process.exec` replaces the program; `Process.exit`, `Process.id`. The
+  runtime ignores `SIGPIPE` once a child has been started (a write to a closed pipe is
+  then an `EPIPE` error), and the pipes are close-on-exec, so other children don't keep
+  them open.
+* `#eval` and `#run` can't do any of this (they are pure and can't call C): there are
+  no models for system calls, since a model of the file system or of processes would
+  give answers the real program wouldn't. The pure helpers (`Path.join`,
+  `ExitStatus.ofNat`, `FS.statOf`, `Env.pairs`) run anywhere.
+
+Tests: the `sys` group (spawning `echo`, a pipe through `cat`, exit codes and spawn
+errors, the environment, a temporary directory's life: files, links, stat, listing,
+removal, handles), on both backends.
+
 ## 9i: C structs by value; header pointer types as foreign types ✅
 
 ```

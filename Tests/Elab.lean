@@ -1292,9 +1292,10 @@ def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm 
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
+  let sysLib ← IO.FS.readFile "lib/Sys.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
-    else if m == "Std" then some stdLib else none
+    else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -1452,6 +1453,105 @@ def ffiGroup : Group where
         let (s, _, _) ← elabTree [("main.wiz", "import Prelude\nlink_c \"a.c\"\nlink_c \"./a.c\"\nlink_lib \"m\"\nlink_lib \"m\"\n"), ("a.c", "")]
         checkEq 1 s.linkC.size
         checkEq #["m"] s.linkLibs }
+  ]
+
+/-- A `Sys` program, on the C backend and on the LLVM backend: `body` is the lines of an
+`EIO` do block. -/
+def sysRun (body : List String) (expected : String) (defs : String := "") : IO Unit := do
+  let src := "import Sys\n" ++ defs ++ "def main : IO Unit := EIO.toIO (do\n" ++
+    ";\n".intercalate (body.map ("  " ++ ·)) ++ ")"
+  ioRun src expected
+  ioRun src expected (llvm := true)
+
+def sysShow : String :=
+  "def showList : List String → String\n  | .nil => \"\"\n  | .cons x xs => String.append x (String.append \";\" (showList xs))\n" ++
+  "def say (s : String) : EIO Unit := EIO.lift (IO.println s)\n" ++
+  "def yesNo : Bool → String\n  | .true => \"yes\"\n  | .false => \"no\"\n" ++
+  "def orUnset : Option String → String\n  | .some s => s\n  | .none => \"(unset)\"\n"
+
+def sysGroup : Group where
+  name := "sys"
+  exercise := "Stage 9h"
+  cases := [
+    { name := "spawn echo and collect its output", run := fun _ =>
+        sysRun ["o ← Process.output \"echo\" (.cons \"hello\" (.cons \"world\" .nil)) \"\"",
+          "EIO.lift (IO.print o.stdout)", "say (ExitStatus.toString o.status)",
+          "say (yesNo (ExitStatus.success o.status))"]
+          "hello world\nexit code 0\nyes\n" sysShow },
+    { name := "a pipe through cat, and stderr apart", run := fun _ =>
+        sysRun ["o ← Process.output \"cat\" .nil \"piped through cat\\nline two\\n\"", "EIO.lift (IO.print o.stdout)",
+          "e ← Process.output \"sh\" (.cons \"-c\" (.cons \"echo out; echo err >&2; exit 3\" .nil)) \"\"",
+          "say (String.append \"stdout: \" e.stdout)", "say (String.append \"stderr: \" e.stderr)",
+          "say (ExitStatus.toString e.status)"]
+          "piped through cat\nline two\nstdout: out\n\nstderr: err\n\nexit code 3\n" sysShow },
+    { name := "communicate doesn't deadlock on big output", run := fun _ =>
+        -- 200 KB on stdout and 100 KB on stderr: more than a pipe buffer each
+        sysRun ["o ← Process.output \"sh\" (.cons \"-c\" (.cons \"yes abcdefghi | head -c 200000; yes x | head -c 100000 >&2\" .nil)) \"\"",
+          "say (Nat.toString (strLen o.stdout))", "say (Nat.toString (strLen o.stderr))"]
+          "200000\n100000\n" (sysShow ++ "def strLen : String → Nat\n  | .mk cs => List.length cs\n") },
+    { name := "a child, step by step", run := fun _ =>
+        sysRun ["c ← Process.spawn \"cat\" .nil .piped .piped .inherit", "Child.write c \"one\\n\"",
+          "Child.write c \"two\\n\"", "Child.closeStdin c", "out ← Child.readStdout c", "EIO.lift (IO.print out)",
+          "st ← Child.wait c", "say (ExitStatus.toString st)",
+          "k ← Process.spawn \"sleep\" (.cons \"10\" .nil) .null .null .null", "Child.kill k 9",
+          "ks ← Child.wait k", "say (ExitStatus.toString ks)",
+          "r ← Process.run \"true\" .nil", "say (ExitStatus.toString r)"]
+          "one\ntwo\nexit code 0\nsignal 9\nexit code 0\n" sysShow },
+    { name := "spawning a missing program is an error", run := fun _ =>
+        sysRun ["r ← EIO.lift (Process.spawn \"wiz-no-such-program\" .nil .null .null .null)",
+          "say (match r with | .ok c => \"spawned\" | .error e => e)"]
+          "wiz-no-such-program: No such file or directory\n" sysShow },
+    { name := "environment variables round-trip", run := fun _ =>
+        sysRun ["Env.set \"WIZ_SYS_TEST\" \"v1\"", "a ← EIO.lift (Env.get \"WIZ_SYS_TEST\")", "say (orUnset a)",
+          "Env.set \"WIZ_SYS_TEST\" \"v2 = λ\"", "b ← EIO.lift (Env.get \"WIZ_SYS_TEST\")", "say (orUnset b)",
+          "all ← EIO.lift Env.list", "say (orUnset (lookup all))",
+          "o ← Process.output \"sh\" (.cons \"-c\" (.cons \"echo $WIZ_SYS_TEST\" .nil)) \"\"", "EIO.lift (IO.print o.stdout)",
+          "Env.unset \"WIZ_SYS_TEST\"", "c ← EIO.lift (Env.get \"WIZ_SYS_TEST\")", "say (orUnset c)",
+          "r ← EIO.lift (Env.set \"A=B\" \"x\")", "say (match r with | .ok u => \"set\" | .error e => e)"]
+          "v1\nv2 = λ\nv2 = λ\nv2 = λ\n(unset)\nsetenv A=B: Invalid argument\n"
+          (sysShow ++ "def chEq : List Char → List Char → Bool\n  | .nil, .nil => .true\n  | .cons a xs, .cons b ys => Bool.and (Nat.beq (Char.code a) (Char.code b)) (chEq xs ys)\n  | _, _ => .false\n" ++
+            "def strEq : String → String → Bool\n  | .mk a, .mk b => chEq a b\n" ++ "def lookup : List (String × String) → Option String\n  | .nil => .none\n" ++
+            "  | .cons (k, v) rest => match strEq k \"WIZ_SYS_TEST\" with\n    | .true => .some v\n    | .false => lookup rest\n") },
+    { name := "a temporary directory: files, links, stat, listing, removal", run := fun _ =>
+        sysRun ["d ← FS.createTempDir", "FS.createDir (Path.join d \"sub\")",
+          "FS.writeFile (Path.join d \"a.txt\") \"alpha\\n\"", "FS.appendFile (Path.join d \"a.txt\") \"beta\\n\"",
+          "FS.rename (Path.join d \"a.txt\") (Path.join d \"b.txt\")", "FS.symlink \"b.txt\" (Path.join d \"link\")",
+          "FS.writeFile (Path.join (Path.join d \"sub\") \"deep\") \"x\"",
+          "t ← FS.readLink (Path.join d \"link\")", "say t",
+          "xs ← FS.listDir d", "say (showList xs)",
+          "s ← FS.stat (Path.join d \"link\")", "say (Nat.toString s.size)",
+          "l ← FS.linkStat (Path.join d \"link\")", "say (match l.kind with | .symlink => \"link\" | _ => \"not a link\")",
+          "say (yesNo (Nat.lt 1600000000 s.mtime))",
+          "txt ← FS.readFile (Path.join d \"link\")", "EIO.lift (IO.print txt)",
+          "a ← EIO.lift (FS.isDir (Path.join d \"sub\"))", "b ← EIO.lift (FS.isFile (Path.join d \"sub\"))",
+          "say (String.append (yesNo a) (yesNo b))",
+          "r ← EIO.lift (FS.removeDir (Path.join d \"sub\"))", "say (match r with | .ok u => \"removed\" | .error e => \"not empty\")",
+          "FS.setMode (Path.join d \"b.txt\") 384", "m ← FS.stat (Path.join d \"b.txt\")", "say (Nat.toString m.mode)",
+          "FS.removeFile (Path.join d \"link\")", "ys ← FS.listDir d", "say (showList ys)",
+          "FS.removeAll d", "e ← EIO.lift (FS.exists d)", "say (yesNo e)"]
+          "b.txt\nb.txt;link;sub;\n11\nlink\nyes\nalpha\nbeta\nyesno\nnot empty\n384\nb.txt;sub;\nno\n" sysShow },
+    { name := "the working directory", run := fun _ =>
+        sysRun ["d ← FS.createTempDir", "FS.setCurrentDir d", "FS.writeFile \"here.txt\" \"hi\"",
+          "c ← FS.currentDir", "x ← FS.readFile (Path.join c \"here.txt\")", "say x",
+          "o ← Process.output \"ls\" .nil \"\"", "EIO.lift (IO.print o.stdout)",
+          "FS.setCurrentDir \"/\"", "FS.removeAll d"]
+          "hi\nhere.txt\n" sysShow },
+    { name := "errors carry errno messages", run := fun _ =>
+        sysRun ["r ← EIO.lift (FS.readFile \"/nonexistent/x\")", "say (match r with | .ok s => s | .error m => m)",
+          "q ← EIO.lift (FS.listDir \"/nonexistent\")", "say (match q with | .ok s => \"listed\" | .error m => m)",
+          "w ← EIO.lift (FS.createDir \"/\")", "say (match w with | .ok s => \"made\" | .error m => m)"]
+          "/nonexistent/x: No such file or directory\n/nonexistent: No such file or directory\n/: File exists\n" sysShow },
+    { name := "file handles and bytes", run := fun _ =>
+        sysRun ["d ← FS.createTempDir", "let p := Path.join d \"f.txt\"",
+          "f ← File.open p \"w\"", "File.write f \"first\\n\"", "File.write f \"second\\n\"", "File.close f",
+          "g ← File.open p \"r\"", "a ← File.readLine g", "b ← File.readLine g", "c ← File.readLine g",
+          "say (String.append (orUnset a) (String.append \",\" (String.append (orUnset b) (String.append \",\" (orUnset c)))))",
+          "FS.writeBytes (Path.join d \"bin\") (Bytes.push (Bytes.push (Bytes.push Bytes.empty 0) 255) 7)",
+          "bs ← FS.readBytes (Path.join d \"bin\")",
+          "say (String.append (Nat.toString (Bytes.size bs)) (String.append \" \" (Nat.toString (Bytes.get bs 1))))",
+          "o ← EIO.lift File.stdout", "File.write o \"to stdout\\n\"", "File.flush o",
+          "FS.removeAll d"]
+          "first,second,(unset)\n3 255\nto stdout\n" sysShow }
   ]
 
 /-- (9i) A header of our own: structs by value (nested, with a string and a byte array),
@@ -2514,6 +2614,12 @@ prints `1000000 9900 18 4`. -/
 def selfhostProgram3 : String :=
   "import Prelude\ndef mapL (f : Nat → Nat) : List Nat → List Nat\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (mapL f xs)\ndef sumL : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + sumL xs\npartial def build (n : Nat) (acc : List Nat) : List Nat := match n with\n  | 0 => acc\n  | .succ k => build k (List.cons k acc)\ninductive T where\n  | leaf (n : Nat)\n  | node (l : T) (r : T)\ndef incT : T → T\n  | .leaf n => .leaf (n + 1)\n  | .node l r => .node (incT l) (incT r)\ndef sumT : T → Nat\n  | .leaf n => n\n  | .node l r => sumT l + sumT r\ndef t0 : T := T.node (T.node (T.leaf 1) (T.leaf 2)) (T.leaf 3)\ndef swapP (p : Prod Nat (List Nat)) : Prod (List Nat) Nat := .mk p.snd p.fst\ndef main : IO Unit := do\n  let xs := build 1000 .nil;\n  let ys := mapL (fun x => x + 1) xs;\n  IO.println (Nat.toString (sumL xs + sumL ys));\n  IO.println (Nat.toString (sumL (mapL (fun x => x * 2) (build 100 .nil))));\n  IO.println (Nat.toString (sumT (incT (incT t0)) + sumT t0));\n  IO.println (Nat.toString (Prod.snd (swapP (.mk 4 xs))))\n"
 
+/-- A program for the demand analysis of `let`s under reference counting: a `let` used
+in one branch only (moved into it), a dead one (dropped), one under a `λ` (suspended),
+one used on every path (strict); prints `110 0 7 23 13`. -/
+def selfhostProgram4 : String :=
+  "import Prelude\ndef sumTo : Nat → Nat\n  | .zero => 0\n  | .succ k => sumTo k + k + 1\ndef onlyIf (b : Bool) (n : Nat) : Nat :=\n  let s := sumTo n;\n  match b with\n  | .true => s + s\n  | .false => 0\ndef dead (n : Nat) : Nat :=\n  let unused := sumTo n;\n  n\ndef later (n : Nat) : Nat → Nat :=\n  let s := sumTo n;\n  fun x => x + s\ndef both (b : Bool) (n : Nat) : Nat :=\n  let s := sumTo n;\n  match b with\n  | .true => s\n  | .false => s + 1\ndef main : IO Unit := do\n  IO.println (Nat.toString (onlyIf .true 10));\n  IO.println (Nat.toString (onlyIf .false 10));\n  IO.println (Nat.toString (dead 7));\n  let f := later 4;\n  IO.println (Nat.toString (f 1 + f 2));\n  IO.println (Nat.toString (both .false 3 + both .true 3))\n"
+
 /-- Compile a program with the self-hosted compiler, then the C it prints with the
 self-hosted runtime (`selfhost/rt.c`, with the garbage collector given by the
 toolchain's `gcCflags`/`gcLdflags`), run it, and compare its output. -/
@@ -2800,6 +2906,9 @@ def selfHostGroup : Group where
           "  let alsoUnused := List.cons unused .nil;\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" (flags := #["--rc"]) },
     { name := "reference counting: cells reused (shared and unique lists, trees, pairs)", run := fun _ =>
         selfhostCompileRun selfhostProgram3 "1000000\n9900\n18\n4\n" (flags := #["--rc"]) },
+    { name := "reference counting: lets strict, dropped, moved into a branch or suspended by their demand", run := fun _ => do
+        selfhostCompileRun selfhostProgram4 "110\n0\n7\n23\n13\n" (flags := #["--rc"])
+        selfhostCompileRun selfhostProgram4 "110\n0\n7\n23\n13\n" },
     { name := "self-hosted programs read their command-line arguments (IO.args, 21k), with either collector", run := fun _ => do
         let prog := "import Prelude\ndef printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s rest => do\n    IO.println s;\n    printAll rest\n" ++
           "def main : IO Unit := do\n  n ← IO.argCount;\n  IO.println (Nat.toString n);\n  args ← IO.args;\n  printAll args\n"
@@ -4737,6 +4846,7 @@ def groups : List Group :=
   sizedGroup ::
   stdGroup ::
   structGroup ::
+  sysGroup ::
   tacticGroup ::
   toolingGroup ::
   trustGroup ::

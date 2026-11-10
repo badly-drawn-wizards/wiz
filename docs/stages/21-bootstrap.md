@@ -111,6 +111,17 @@ fallback). The garbage-collected mode is unchanged, byte for byte.
   is evaluated where it stands instead of suspended (a thunk gains nothing when the
   value is needed anyway). Stage 2 on mid.wiz: 10.9% fewer allocations (thunks −30%,
   closures −23%), and the generated C is 17% smaller.
+* **Demand analysis for `let`s** (replacing "used on every path"): a source `let` is
+  only marked during erasure and decided after pushing and inlining, by a backwards
+  analysis (`dmdA`) of how its body uses the variable: bottom (every path ends in
+  `unreachable`), strict (evaluated on every path), lazy (on some), or absent, with a
+  use count. Strict `let`s are evaluated where they stand, absent ones dropped, and a
+  `let` that only one branch of a `case` uses (not its scrutinee) moves into that branch
+  and is decided again there; the rest are suspended as before. Application is call by
+  value, so only a suspended value and a `λ`'s body are lazy. Stage 2 compiling the
+  toolchain: thunks −68%, allocations −10%, peak live objects −8%, C 6% smaller.
+  (Absent parameters, found as a fixed point over signatures and passed `◾`, were tried
+  and dropped: the analysis cost as much as it saved.)
 * **Static objects**: a constructor without fields is `(k, ◾)` every time; the runtime
   keeps one object per `k < 64` with a count that starts high (never freed, not counted
   as allocated), used for constant constructors in the generated code (also the
@@ -125,7 +136,7 @@ fallback). The garbage-collected mode is unchanged, byte for byte.
 to C, and that program (stage 2, reference counted) compiles it again to the same C,
 freeing every object by the end.
 
-Next: demand analysis for `let`s; then reference counting by default.
+Next: the hypotheses of `ind` computed eagerly when the method demands them; then reference counting by default.
 
 ## 21i: phantom parameters in the self-hosted frontend ✅
 
