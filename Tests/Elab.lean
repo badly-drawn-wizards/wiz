@@ -4812,6 +4812,20 @@ def t3 : Nat := let y := 1; y
 #eval t3
 "
 
+/-- Circuits whose Verilog the `hdl` group looks at: a counter (non-zero initial value), a
+64-bit state (an initial value above 2^32) and a circuit with an input and a pair state. -/
+def hdlVerilogSrc : String := "import Hdl.Core
+def u8 : HwTy := HwTy.bits 8
+def c1 : Circuit (HwTy.bits 1) u8 := Circuit.mk u8 (BitVec.ofNat 8 250) (fun s u => Hw.pair (Hw.add s (Hw.lit 8 1)) s)
+def v1 : String := Verilog.emit (Circuit.netlist \"counter\" c1)
+def u64 : HwTy := HwTy.bits 64
+def c2 : Circuit u8 u64 := Circuit.mk u64 (BitVec.ofNat 64 13835062455471964160) (fun s x => Hw.pair (Hw.add s (Hw.lit 64 1)) s)
+def v2 : String := Verilog.emit (Circuit.netlist \"wide\" c2)
+def c3 : Circuit u8 u8 := Circuit.mk (HwTy.prod u8 u8) (BitVec.ofNat 8 1, BitVec.ofNat 8 2)
+  (fun s x => Hw.pair (Hw.pair x (Hw.fst s)) (Hw.mux (Hw.ult x (Hw.snd s)) (Hw.fst s) (Hw.sub x (Hw.snd s))))
+def v3 : String := Verilog.emit (Circuit.netlist \"pairs\" c3)
+"
+
 def hdlGroup : Group where
   name := "hdl"
   exercise := "HDL stage S0 (hdl-plan H14)"
@@ -4828,7 +4842,25 @@ def hdlGroup : Group where
         okLibs ("import Hdl.Core\ndef f {r : HwTy → Type} [Hw r] (x : r (HwTy.bits 8)) : r (HwTy.bits 8) := let y := Hw.add x x; Hw.add y y\n" ++
           "def g {r : HwTy → Type} [Hw r] (x : r (HwTy.bits 8)) (k : Nat) : r (HwTy.bits 8) := let j := Nat.succ k; Hw.lit 8 j\n#erase f\n#erase g")
           ["f := (λr. (λinst✝. (λx. (((((ShareLet.share ◾) ◾) ((((instShareLetRARB ◾) #1) ⟨0 8⟩) ⟨0 8⟩)) (((((Hw.add ◾) #1) 8) #0) #0)) (λy. (((((Hw.add ◾) #2) 8) #0) #0))))))",
-           "g := (λr. (λinst✝. (λx. (λk. (let j := (Nat.succ #0); ((((Hw.lit ◾) #3) 8) #0))))))"] }
+           "g := (λr. (λinst✝. (λx. (λk. (let j := (Nat.succ #0); ((((Hw.lit ◾) #3) 8) #0))))))"] },
+    { name := "Verilog: declarations before use (regs, wires, then the updates), sized initial values", run := fun _ =>
+        okLibs (hdlVerilogSrc ++ "#eval v1\n")
+          ["\"module counter(input clk, input [0:0] x, output [7:0] y);\\n  reg [7:0] r0; initial r0 = 8'd250;\\n  wire [0:0] n0 = x;\\n  wire [7:0] n1 = r0;\\n  wire [7:0] n2 = 8'd1;\\n  wire [7:0] n3 = n1 + n2;\\n  wire [15:0] n4 = {n3 , n1};\\n  wire [7:0] n5 = n4[15:8];\\n  wire [7:0] n6 = n4[7:0];\\n  always @(posedge clk) r0 <= n5;\\n  assign y = n6;\\nendmodule\\n\""] },
+    { name := "Verilog: Icarus Verilog accepts the emitted modules (skipped without iverilog on PATH)", run := fun _ => do
+        let found ← (do let o ← IO.Process.output { cmd := "iverilog", args := #["-V"] }; pure (o.exitCode == 0)) <|> pure false
+        unless found do IO.println "    (no iverilog: skipped)"; return
+        let s := runFrontend (R := ZeroOneMany) (hdlVerilogSrc ++ "#eval v1\n#eval v2\n#eval v3\n")
+          { trustedModule := Tests.libModule, loader := ← libLoader }
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render ""
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors: {errs}")
+        IO.FS.withTempDir fun dir => do
+          for m in s.messages.toList, i in [0:3] do
+            -- the message is the string as `#eval` prints it: quoted, newlines escaped
+            let text := ((m.text.drop 1).dropRight 1).replace "\\n" "\n"
+            let file := dir / s!"m{i}.v"
+            IO.FS.writeFile file text
+            let o ← IO.Process.output { cmd := "iverilog", args := #["-g2005", "-o", (dir / "out.vvp").toString, file.toString] }
+            unless o.exitCode == 0 do throw (IO.userError s!"iverilog rejects module {i}:\n{o.stderr}\n{text}") }
   ]
 
 /-! ## Regions: borrow checking as typing (lib/Region.wiz, Rust DSL RD12) -/
