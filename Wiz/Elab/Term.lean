@@ -1097,9 +1097,16 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
           -- leaves the pattern fragment)
           let vm ← evalIn ctx m
           let va ← evalIn ctx a
+          -- (the value may mention a `let`-bound variable, such as a pattern variable
+          -- standing for a component `fst✝ := p.1` of a tuple pattern: the hole can't,
+          -- so try again with such variables replaced by their values)
           let solved ← match vm with
             | .neutral (.mvar mid') sp =>
-              tryCatch (do solve ctx.lvl mid' sp va; pure true) (fun _ => pure false)
+              tryCatch (do solve ctx.lvl mid' sp va; pure true) fun _ =>
+                tryCatch (do
+                    let va' ← evalIn ctx (quote (← getGlobals) ctx.lvl va)
+                    solve ctx.lvl mid' sp va'; pure true)
+                  (fun _ => pure false)
             | _ => pure false
           unless solved do unifyAt ctx arg vm va
       | none => unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
