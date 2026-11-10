@@ -363,6 +363,65 @@ static V p_ind(V nat, V D, V m, V i, V x) {
   V args[3] = {i, pl, h};
   return apn(m, 3, args);
 }
+/* Unmemoised hypotheses (`indv`, see Backend.wiz): the method gets a view
+   `[nat, D, m, payload]` instead of the chain, and reads the `j`-th hypothesis with
+   `p_hypAt`, computed there (the backend uses this only for methods that read each at
+   most once on a path, or whose result is a function) */
+static V p_indv(V nat, V D, V m, V i, V x) {
+  V pl = UNBOX(nat) ? p_natUnpack(x) : x;
+  inc(m); inc(pl);
+  V vw = mkobj(0, 4, (V[]){nat, D, m, pl});
+  V args[3] = {i, pl, vw};
+  return apn(m, 3, args);
+}
+static V hrecFnV(V *env, V h) {
+  inc(env[1]); inc(env[2]); inc(env[3]); inc(env[4]); inc(h);
+  V j = ap(env[3], h);
+  return p_indv(env[0], env[1], env[2], j, ap(env[4], h));
+}
+/* (the view is owned and released; the description is walked along the payload as
+   `hyps` does, keeping the descriptions it computes alive until the end) */
+static V p_hypAt(V vw, V jj) {
+  Obj *o = OBJ(vw);
+  V nat = o->f[0], D = o->f[1], m = o->f[2], p = o->f[3], d = D, own = BOX(0), r = BOX(0);
+  uintptr_t k = UNBOX(jj);
+  for (;;) {
+    switch (tagof(d)) {
+    case 1: {
+      V F = fld(d, 1), a = fld(p, 0);
+      inc(F); inc(a);
+      V d2 = ap(F, a);
+      dec(own); own = d2; d = d2; p = fld(p, 1);
+      continue;
+    }
+    case 2:
+      if (k == 0) {
+        V j = fld(d, 0), y = fld(p, 0);
+        inc(D); inc(m); inc(j); inc(y);
+        r = p_indv(nat, D, m, j, y);
+        goto done;
+      }
+      k--; d = fld(d, 1); p = fld(p, 1);
+      continue;
+    case 3:
+      if (k == 0) {
+        V env[5] = {nat, D, m, fld(d, 1), fld(p, 0)};
+        inc(D); inc(m); inc(env[3]); inc(env[4]);
+        r = mkclo(hrecFnV, 5, env);
+        goto done;
+      }
+      k--; d = fld(d, 2); p = fld(p, 1);
+      continue;
+    default:
+      r = unreach();
+      goto done;
+    }
+  }
+done:
+  dec(own);
+  dec(vw);
+  return r;
+}
 #endif
 
 /* ---- natives: curried functions of `n` arguments ---- */

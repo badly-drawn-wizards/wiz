@@ -1885,6 +1885,178 @@ def wrapDecs : Nat → List Bool → String
     | .true => "dec(a[" +++ Nat.toString i +++ "]); " +++ wrapDecs (i + 1) rest
     | .false => wrapDecs (i + 1) rest
 
+-- **Unmemoised hypotheses** (reference counting mode). The method of an `ind` receives
+-- its hypotheses as a chain of suspensions (`T_HYP`: a cell and a closure per recursive
+-- field, each computed once when first read). When the method reads them only as
+-- hypotheses (paths `hs.1ʲ.0`, never `hs` or a tail passed on) and either reads each at
+-- most once on every path, not under a `λ`, or is itself a `λ` (a function-valued
+-- motive: a read then only rebuilds a closure), memoising buys nothing: `indv` passes
+-- a view of the payload instead (one object per call) and a read `hypAt hs j` computes
+-- the `j`-th hypothesis where it stands (rt.c `p_hypAt`).
+-- `proj 1ʲ (var c)`: `j`
+def hypTail (c : Nat) : ETm → Option Nat
+  | .var i => match Nat.beq i c with
+    | .true => .some 0
+    | .false => .none
+  | .proj k t => match Nat.beq k 1 with
+    | .true => match hypTail c t with
+      | .some j => .some (j + 1)
+      | .none => .none
+    | .false => .none
+  | _ => .none
+def hypRead (c j : Nat) : ETm := .prim "hypAt" (etms2 (.var c) (.nat j))
+-- a read `hypAt (var c) j`: `j`
+def hypReadOf (c : Nat) (t : ETm) : Option Nat := match t with
+  | .prim op as => match strEq op "hypAt" with
+    | .true => match as with
+      | .cons v rest => match v with
+        | .var i => match Nat.beq i c with
+          | .true => match rest with
+            | .cons n _ => match n with
+              | .nat j => .some j
+              | _ => .none
+            | .nil => .none
+          | .false => .none
+        | _ => .none
+      | .nil => .none
+    | .false => .none
+  | _ => .none
+mutual
+-- the reads of the hypotheses `hs` (the variable `c`) rewritten, if `hs` is used only so
+def hypRw (c : Nat) (t : ETm) : Option ETm := match t with
+  | .var i => match Nat.beq i c with
+    | .true => .none
+    | .false => .some t
+  | .proj k x => match Nat.beq k 0 with
+    | .true => match hypTail c x with
+      | .some j => .some (hypRead c j)
+      | .none => match hypRw c x with
+        | .some x' => .some (.proj k x')
+        | .none => .none
+    | .false => match hypRw c x with
+      | .some x' => .some (.proj k x')
+      | .none => .none
+  | .lam b => match hypRw (c + 1) b with
+    | .some b' => .some (.lam b')
+    | .none => .none
+  | .app f a => match hypRw c f with
+    | .some f' => match hypRw c a with
+      | .some a' => .some (.app f' a')
+      | .none => .none
+    | .none => .none
+  | .letE v b => match hypRw c v with
+    | .some v' => match hypRw (c + 1) b with
+      | .some b' => .some (.letE v' b')
+      | .none => .none
+    | .none => .none
+  | .obj k fs => match hypRwEs c fs with
+    | .some fs' => .some (.obj k fs')
+    | .none => .none
+  | .case s bs => match hypRw c s with
+    | .some s' => match hypRwEs c bs with
+      | .some bs' => .some (.case s' bs')
+      | .none => .none
+    | .none => .none
+  | .prim op as => match hypRwEs c as with
+    | .some as' => .some (.prim op as')
+    | .none => .none
+  | _ => .some t
+def hypRwEs (c : Nat) (ts : ETms) : Option ETms := match ts with
+  | .nil => .some .nil
+  | .cons t rest => match hypRw c t with
+    | .some t' => match hypRwEs c rest with
+      | .some r' => .some (.cons t' r')
+      | .none => .none
+    | .none => .none
+end
+mutual
+-- the hypotheses read (`j`s, with repeats)
+def hypJs (c : Nat) (t : ETm) (acc : List Nat) : List Nat := match hypReadOf c t with
+  | .some j => .cons j acc
+  | .none => match t with
+    | .lam b => hypJs (c + 1) b acc
+    | .app f a => hypJs c f (hypJs c a acc)
+    | .letE v b => hypJs c v (hypJs (c + 1) b acc)
+    | .obj _ fs => hypJsEs c fs acc
+    | .proj _ x => hypJs c x acc
+    | .case s bs => hypJs c s (hypJsEs c bs acc)
+    | .prim _ as => hypJsEs c as acc
+    | _ => acc
+def hypJsEs (c : Nat) (ts : ETms) (acc : List Nat) : List Nat := match ts with
+  | .nil => acc
+  | .cons t rest => hypJs c t (hypJsEs c rest acc)
+end
+mutual
+-- the reads of hypothesis `j` as the variable `c` itself, the other reads `◾` (to count
+-- them with `dmdA`)
+def hypOnly (c j : Nat) (t : ETm) : ETm := match hypReadOf c t with
+  | .some j' => match Nat.beq j j' with
+    | .true => .var c
+    | .false => .erased
+  | .none => match t with
+    | .lam b => .lam (hypOnly (c + 1) j b)
+    | .app f a => .app (hypOnly c j f) (hypOnly c j a)
+    | .letE v b => .letE (hypOnly c j v) (hypOnly (c + 1) j b)
+    | .obj k fs => .obj k (hypOnlyEs c j fs)
+    | .proj k x => .proj k (hypOnly c j x)
+    | .case s bs => .case (hypOnly c j s) (hypOnlyEs c j bs)
+    | .prim op as => .prim op (hypOnlyEs c j as)
+    | _ => t
+def hypOnlyEs (c j : Nat) (ts : ETms) : ETms := match ts with
+  | .nil => .nil
+  | .cons t rest => .cons (hypOnly c j t) (hypOnlyEs c j rest)
+end
+-- each hypothesis read at most once on every path, not under a `λ` (`body` under the
+-- method's three `λ`s: `hs` is level 2)
+def hypsOnce (body : ETm) : List Nat → Bool
+  | .nil => .true
+  | .cons j rest => match Nat.lt 1 (Dmd.n (denvAt 2 (dmdA StrMap.empty 3 (hypOnly 0 j body)))) with
+    | .true => .false
+    | .false => hypsOnce body rest
+-- the method `λ i pl hs. body` with its reads rewritten, if it may take a view
+def viewMethod (m : ETm) : Option ETm := match m with
+  | .lam m1 => match m1 with
+    | .lam m2 => match m2 with
+      | .lam body => match hypRw 0 body with
+        | .some body' =>
+          let ok := match body with
+            | .lam _ => .true
+            | _ => hypsOnce body' (hypJs 0 body' .nil);
+          match ok with
+          | .true => .some (.lam (.lam (.lam body')))
+          | .false => .none
+        | .none => .none
+      | _ => .none
+    | _ => .none
+  | _ => .none
+mutual
+def indvE (t : ETm) : ETm := match t with
+  | .prim op as => match strEq op "ind" with
+    | .true => match indvEs as with
+      | .cons nat r1 => match r1 with
+        | .cons D r2 => match r2 with
+          | .cons m r3 => match viewMethod m with
+            | .some m' => .prim "indv" (.cons nat (.cons D (.cons m' r3)))
+            | .none => .prim op (.cons nat r1)
+          | .nil => .prim op (.cons nat r1)
+        | .nil => .prim op (.cons nat r1)
+      | .nil => .prim op .nil
+    | .false => .prim op (indvEs as)
+  | .lam b => .lam (indvE b)
+  | .app f a => .app (indvE f) (indvE a)
+  | .letE v b => .letE (indvE v) (indvE b)
+  | .obj k fs => .obj k (indvEs fs)
+  | .proj i x => .proj i (indvE x)
+  | .case s bs => .case (indvE s) (indvEs bs)
+  | _ => t
+def indvEs (ts : ETms) : ETms := match ts with
+  | .nil => .nil
+  | .cons t rest => .cons (indvE t) (indvEs rest)
+end
+def indvGlobals : List Erased → List Erased
+  | .nil => .nil
+  | .cons (.mk n e) rest => .cons (.mk n (indvE e)) (indvGlobals rest)
+
 -- the same under reference counting: a constant global is built by `init_g` and kept
 -- (a root, released at exit); `get_g()` returns a new reference
 def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → List Erased → Code
@@ -1918,7 +2090,7 @@ def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       let es1 := pushGlobals es0;
-      let es := decideGlobals (inlGlobals (caseMap (consMap StrMap.empty es1) es1) es1);
+      let es := indvGlobals (decideGlobals (inlGlobals (caseMap (consMap StrMap.empty es1) es1) es1));
       let sigs : StrMap (List Bool) := match borrow with
         | .true => sigsFix (sigsInit StrMap.empty es) 0 es
         | .false => StrMap.empty;
