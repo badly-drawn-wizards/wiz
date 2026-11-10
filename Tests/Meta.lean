@@ -250,8 +250,11 @@ def group : Group where
         rejects v
         check (!kernelAccepts v) "the kernel has regularity at a type variable" },
     { name := "the level premise of ind (audit F3): the index type is in Sort (l+1)", run := fun _ => do
-        let bad := ann (lam (ind 1 (unit 0) (ann (dret star) (desc 1 (unit 0))) 0 (lam (lam (enum 2))) (lam (lam (lam (tag 2 0)))) star (var 0))) (pi (univ 0) (enum 2))
+        -- `ind.{1}` at an index type in `Sort 1`; `D` and the scrutinee are checked against values
+        -- the rule builds, so no former sees the level (the Lean kernel at a143052 accepts this)
+        let bad := ind 1 (unit 0) (dret star) 1 (lam (lam (enum 2))) (lam (lam (lam (tag 2 0)))) star (con (pair star star))
         rejects bad
+        accepts (ind 0 (unit 0) (dret star) 1 (lam (lam (enum 2))) (lam (lam (lam (tag 2 0)))) star (con (pair star star)))
         rejects (desc 1 (unit 0))
         accepts (desc 0 (unit 0)) },
     { name := "audit probes in the fragment: K6 (a variable out of scope), Y4 (a name declared twice), W1 (a constant at two levels)", run := fun _ => do
