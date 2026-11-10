@@ -2631,6 +2631,13 @@ def checkDecl (ty : Tm) (value : Option Tm) : TyRes := match inferUniv empty ty 
     | .some v => check empty v (eval .nil ty)
   | r => r
 
+-- a partial definition's signature (`addPartialDecl`): its type is a type and the
+-- witness, a term of that type, checks (erased: it is evidence, never run). The
+-- definition stays opaque, an axiom whose type is inhabited.
+def checkPartial (ty w : Tm) : TyRes := match inferUniv empty ty with
+  | .ok _ _ => check (TCtx.erase empty) w (eval .nil ty)
+  | r => r
+
 -- type check a closed term: its type, or the error
 def typeOf (t : Tm) : String := match infer empty t with
   | .ok ty _ => show .nil 0 (quote 0 ty)
