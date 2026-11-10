@@ -112,3 +112,28 @@ checks with it unfolded. The self-hosted frontend parses the `private` markers a
 ignores them. The motivating use is the HDL's signals (`drafts/hdl/Signal.wiz`): user
 code builds and observes them only through the library's combinators and `sample`
 (`drafts/hdl/rejected/observe_signal.wiz`). Tests: group `elabfix`.
+
+## 13c: `if`, `&&`, `||`, `!` in the Prelude ✅
+
+```
+import Prelude
+def clamp (n : Nat) : Nat := if Nat.lt n 10 then n else 10
+#eval Nat.beq 1 1 && !(Nat.beq 2 3) || Bool.false    -- .true
+```
+
+`lib/Prelude.wiz` now declares `if c then a else b` (a macro for
+`match c with | .true => a | .false => b`), and `a && b`, `a || b` as macros for
+`match a with | .true => b | .false => .false` and `match a with | .true => .true | .false => b`,
+so both **short-circuit**: compiled code (and `#eval`) evaluates `b` only when `a` doesn't
+decide. `!b` is `Bool.not b`. Precedences are Lean's: `if` is a leading term like `match`,
+`||` 30, `&&` 35 (right-associative), `!` binds tightest. The kernel sees the `match`, so
+`Bool.true && b` reduces to `b`, as `Bool.and Bool.true b` does, but a stuck `a && b` is a
+`match` on `a` and not convertible to `Bool.and a b` (state lemmas about `Bool.and` by
+cases on `a`). `if`, `then` and `else` are now reserved words in every program; `not` is
+not (constructors and class fields named `not` exist in `lib/Hdl`).
+
+The self-hosted frontend doesn't read `lib/Prelude.wiz`: it embeds its own prelude
+(`preludeText`, selfhost/Frontend.wiz) and has had `if` since 19a (an application of `if`,
+rewritten to a `match`). It has no `&&`, `||` or `!`, so `selfhost/*.wiz` don't use them.
+Tests: group `language`.
+

@@ -191,6 +191,25 @@ inductive Except (E A : Type) where
   | error (e : E)
   | ok (a : A)
 
+-- ## Booleans: `if`, `&&`, `||`, `!` (stage 13c)
+--
+-- `if c then a else b` is `match c with | .true => a | .false => b`, so only the branch
+-- taken is evaluated (compiled code too). `a && b` and `a || b` are `if`s as well, so they
+-- short-circuit: `b` is not evaluated when `a` decides. They compute like `Bool.and a b`
+-- and `Bool.or a b` once `a` is a constructor (but a stuck `a && b` is a `match`, not a
+-- `Bool.and`). `!b` is `Bool.not b`. Precedences as in Lean: `||` 30, `&&` 35, `!` max.
+syntax:lead (name := ite) "if" term "then" term "else" term : term
+macro_rules
+  | `(term| if $c then $t else $e) => `(term| match $c with | .true => $t | .false => $e)
+syntax:35 (name := boolAnd) term:36 " && " term:35 : term
+macro_rules
+  | `(term| $a && $b) => `(term| match $a with | .true => $b | .false => Bool.false)
+syntax:30 (name := boolOr) term:31 " || " term:30 : term
+macro_rules
+  | `(term| $a || $b) => `(term| match $a with | .true => Bool.true | .false => $b)
+notation:max "!" b:max => Bool.not b
+-- (end of the Boolean section)
+
 -- Reflected terms, for tactics. Variables are de Bruijn indices, relative to the goal's
 -- context. Kernel forms with no constructor here (μ, descriptions, equality, sizes, …)
 -- are `opaque` handles, held by the elaborator.

@@ -2651,7 +2651,18 @@ def languageGroup : Group where
         okLib ("import Prelude\nmutual\ninductive A where\n  | a0\n  | a1 (f : Unit → A)\n" ++
           "inductive B where\n  | b0\n  | b1 (x : A)\nend\n" ++
           "def depthA : A → Nat\n  | .a1 f => Nat.succ (depthA (f ()))\n  | .a0 => 0\n" ++
-          "#eval depthA (.a1 (fun _ => .a1 (fun _ => .a0)))") ["2"] }
+          "#eval depthA (.a1 (fun _ => .a1 (fun _ => .a0)))") ["2"] },
+    { name := "13c: if, &&, || and ! in the Prelude", run := fun _ =>
+        okLib ("import Prelude\ndef f (b : Bool) (n : Nat) : Nat := if b then n + 1 else 0\n#eval f .true 3\n" ++
+          "#eval if Nat.beq 1 1 && !(Nat.beq 2 3) then \"yes\" else \"no\"\n" ++
+          "#eval Nat.beq 1 1 && !(Nat.beq 2 3) || Bool.false\n#eval (Bool.false || Bool.true) && Bool.false\n" ++
+          "def nested (n : Nat) : Nat := match n with\n  | .zero => if Nat.beq n 0 then 1 else 2\n  | .succ m => m\n#eval nested 0\n" ++
+          "def t1 (b : Bool) : (Bool.true && b) = b := rfl\ndef t2 (b : Bool) : (Bool.false || b) = b := rfl\n")
+          ["4", "\"yes\"", ".true", ".false", "1"] },
+    { name := "13c: && and || short-circuit in compiled code", run := fun _ =>
+        ioRun ("import IO\npartial def spin (n : Nat) : Bool := spin n\n" ++
+          "def main : IO Unit := IO.println (if Bool.false && spin 0 then \"bad\" else if Bool.true || spin 1 then \"lazy ok\" else \"bad\")")
+          "lazy ok\n" }
   ]
 
 /-- Machine words (`lib/Word.wiz`): one table of operations at widths 8–100, signed and
