@@ -252,6 +252,10 @@ inductive Tac where
   | catch (body : Tac) (handler : String → Tac) (next : Tac)
   | getInductive (n : String) (k : Option IndView → Tac)
   | getType (n : String) (k : Option Syntax → Tac)
+  -- tactic framework (tactic-fw): printing; new requests are appended, the numbers above
+  -- don't change
+  | ppGoal (g : Nat) (k : String → Tac)
+  | ppExpr (g : Nat) (e : Expr) (k : String → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -278,6 +282,10 @@ def TacticM.instantiate (g : Nat) (body arg : Expr) : TacticM Expr := fun k => T
 def TacticM.isDefEq (g : Nat) (a b : Expr) : TacticM Bool := fun k => Tac.isDefEq g a b k
 def TacticM.inferType (g : Nat) (e : Expr) : TacticM Expr := fun k => Tac.inferType g e k
 def TacticM.evalTactic (stx : Syntax) : TacticM Unit := fun k => Tac.evalTactic stx (k ())
+-- goal `g` as the elaborator shows it (hypotheses, then `⊢ type`), and a term in goal
+-- `g`'s context: for `trace` and for error messages
+def TacticM.ppGoal (g : Nat) : TacticM String := fun k => Tac.ppGoal g k
+def TacticM.ppExpr (g : Nat) (e : Expr) : TacticM String := fun k => Tac.ppExpr g e k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
@@ -521,3 +529,18 @@ def Tactic.trace : Tactic := fun stx => match Syntax.getArg (Syntax.getArg stx 1
   | .atom s => TacticM.trace s
   | _ => TacticM.pure ()
 attribute [tactic tactic.trace] Tactic.trace
+
+-- `trace_state`: the open goals, as an info message (as `trace`, at the tactic)
+def TacticM.ppGoals : List Nat → TacticM String
+  | .nil => TacticM.pure "no goals"
+  | .cons g .nil => TacticM.ppGoal g
+  | .cons g gs => do
+    a ← TacticM.ppGoal g;
+    rest ← TacticM.ppGoals gs;
+    TacticM.pure (String.append a (String.append "\n\n" rest))
+syntax (name := traceState) "trace_state" : tactic
+def Tactic.traceState : Tactic := fun _ => do
+  gs ← TacticM.getGoals;
+  s ← TacticM.ppGoals gs;
+  TacticM.trace s
+attribute [tactic tactic.traceState] Tactic.traceState

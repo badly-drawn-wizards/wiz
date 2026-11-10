@@ -121,3 +121,38 @@ without quoting.
 | 6.6 | `lib/Prelude.wiz`     | `TacticM.findHyp`, for `assumption` (in Wiz!)      |
 
 Next: typeclasses with tabled resolution (stage 7), which also make `do` generic.
+
+## 6d: `trace` and `trace_state` ✅
+
+```
+def k : Nat → Bool → Nat := by
+  intro n
+  trace "hello"          -- t.wiz:3:3: info: hello
+  trace_state            -- t.wiz:4:3: info: n : Nat
+  intro b                --                  ⊢ Bool → Nat
+  exact n
+```
+
+* `TacticM.trace msg` (the `trace "…"` tactic, or any tactic or macro written in Wiz)
+  adds an **info message** at the tactic (for a macro: at the syntax it expands). It goes
+  through the same channel as every other message, so `wiz check` prints it, the
+  language server publishes it as a diagnostic of severity 3, and it is cached and
+  replayed with the declaration's other messages.
+* `trace_state` prints the open goals as the "unsolved goals" error does (hypotheses,
+  then `⊢ type`; goals separated by a blank line; `no goals`). For tactic authors:
+  `TacticM.ppGoal g : TacticM String` and `TacticM.ppExpr g e : TacticM String` print a
+  goal and a reflected term in a goal's context, for traces and error messages (no
+  hand-written `Expr` printer needed).
+* **The infoview.** `wiz/plainGoal` and `wiz/interactiveGoals` answer with a `messages`
+  field as well: the texts of the info messages of the tactic the state belongs to, in
+  order (`rendered` has them after the goals).
+* **Deterministic.** Traces are recorded in the elaborator's state (as entries of the
+  info tree that the command elaborator turns into messages), in the order they were
+  made. So a trace in a branch that fails and is caught (`try`, `first`, `catch`) is
+  dropped with the rest of that branch, as in Lean, and the traces made before an
+  uncaught error are still shown, before the error. Type mismatch errors now carry the
+  state they were raised in too (they used to lose the info tree recorded so far).
+* Commands that keep no info tree (`#check`, `#eval`, `instance`, …) still show their
+  traces (`withTraces`). A macro's traces come back with its result (`runMacroTac`
+  returns them also when the macro fails).
+

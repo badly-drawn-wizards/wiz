@@ -58,6 +58,9 @@ def catch_ := 20
 -- (HD8) reflection, for macros (`Elab/Reflect.lean`)
 def getInductive := 21
 def getType := 22
+-- the tactic framework's requests (a block of their own in the prelude's `Tac`)
+def ppGoal := 23
+def ppExpr := 24
 end TacTag
 
 structure Goal (R : Type) where
@@ -185,8 +188,8 @@ def Goal.show (gl : Goal R) : ElabM R String := do
     let sub : LocalCtx R :=
       { ctx with env := ctx.env.drop k, names := ctx.names.drop k, types := ctx.types.drop k,
                  bound := ctx.bound.drop k, lvl := ctx.lvl - k }
-    lines := lines.push s!"{ctx.names[j]!} : {← showVal sub ctx.types[j]!}"
-  lines := lines.push s!"⊢ {← showVal ctx gl.ty}"
+    lines := lines.push s!"{ctx.names[j]!} : {showTerm sub (← zonk sub.lvl (quote (← getGlobals) sub.lvl ctx.types[j]!))}"
+  lines := lines.push s!"⊢ {showTerm ctx (← zonk ctx.lvl (quote (← getGlobals) ctx.lvl gl.ty))}"
   pure ("\n".intercalate lines.toList)
 
 end Wiz.Elab

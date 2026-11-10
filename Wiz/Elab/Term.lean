@@ -221,7 +221,9 @@ def expand? (stx : Syntax) : ElabM R (Option Syntax) := do
   | some stx' => modify (fun s => { s with nextScope := s.nextScope + 1 }); pure (some stx')
   | none =>
     let some f := s.procMacros.lookup stx.kind | pure none
-    match s.runProcMacro f stx s.nextScope with
+    let (traces, r) := s.runProcMacro f stx s.nextScope
+    for t in traces do pushTrace stx.info t
+    match r with
     | .ok (stx', next) => modify (fun s => { s with nextScope := next }); pure (some stx')
     | .error e => throwAt stx.info e
 
@@ -237,7 +239,9 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
       if subTy s.globals ctx.types.reverse.toArray inferred expected then .ok ((), s) else
       let show' (v : VTy R) := (quote s.globals ctx.lvl v).pretty ctx.names
       .error { info := (ctx.withInfo stx).info,
-               msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})" }
+               msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})",
+               -- what was recorded up to here (the info tree, `trace`s)
+               state? := some s }
 
 /-- A type evaluated while some of its holes were unsolved: an equation in it computed
 (or got stuck) on the holes, and stays so after they are solved (`w ?n = 8`). Evaluate it
@@ -1998,7 +2002,9 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   if tag == TacTag.done then return st
   if tag == TacTag.result then throwAt info "a tactic may not return syntax"
   if tag == TacTag.fail then throwAt info (((fld 0).toString?).getD "tactic failed")
-  if tag == TacTag.trace then return ← runTac code info st (fld 1)
+  if tag == TacTag.trace then
+    pushTrace info (((fld 0).toString?).getD "")
+    return ← runTac code info st (fld 1)
   if tag == TacTag.fresh then
     let n := (← get).nextScope
     modify fun s => { s with nextScope := n + 1 }
@@ -2021,6 +2027,11 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
+  if tag == TacTag.ppGoal then
+    return ← runTac code info st (apply code (fld 1) (encodeString (← gl.show)))
+  if tag == TacTag.ppExpr then
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    return ← runTac code info st (apply code (fld 2) (encodeString (showTerm gl.ctx t)))
   if tag == TacTag.goalType then
     let (r, st) ← refl st gl (quote g lvl gl.ty)
     return ← runTac code info st (apply code (fld 1) r)

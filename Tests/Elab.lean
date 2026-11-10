@@ -811,6 +811,23 @@ def okLib (input : String) (infos : List String := []) : IO Unit := do
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
 
+/-- Every message of `input` (with `lib/` importable), as `severity: text`, in order. -/
+def msgsLib (input : String) : IO (List String) := do
+  let loader ← preludeLoader
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
+  pure (s.messages.toList.map fun m =>
+    s!"{match m.severity with | .error => "error" | .warning => "warning" | .info => "info"}: {m.text}")
+
+/-- A language server with `src` open: the server and what it sent (the diagnostics). -/
+def tacticLsp (src : String) : IO (LSP.Server × Array Lean.Json) := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let srv : LSP.Server :=
+    { libs := ({} : Std.HashMap String (String × String)).insert "Prelude" ("lib/Prelude.wiz", prelude), trusted := ["Prelude"] }
+  let json (s : String) : Lean.Json := (Lean.Json.parse s).toOption.get!
+  let (srv, _) := LSP.handle srv (json "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+  pure (LSP.handle srv (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+    ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])]))
+
 def tacticGroup : Group where
   name := "tactics"
   exercise := "Exercises 6.4–6.6"
@@ -838,7 +855,46 @@ def tacticGroup : Group where
         okLib ("import Prelude\nsyntax (name := intros2) \"intros2\" : tactic\n" ++
           "def myIntros : Tactic := fun _ => do\n  g ← TacticM.mainGoal;\n  g1 ← TacticM.intro g \"a\";\n  g2 ← TacticM.intro g1 \"b\";\n" ++
           "  TacticM.replaceMainGoal (.cons g2 .nil)\nattribute [tactic tactic.intros2] myIntros\n" ++
-          "def k : Nat → Nat → Nat := by intros2; exact b") }
+          "def k : Nat → Nat → Nat := by intros2; exact b") },
+    -- trace (docs/stages/06-macros.md, 6d)
+    { name := "trace is an info message at the tactic; trace_state shows the goals", run := fun _ => do
+        let src := "import Prelude\ndef k : Nat → Bool → Nat := by\n  intro n\n  trace \"hello\"\n  trace_state\n  intro b\n  exact n"
+        okLib src ["hello", "n : Nat\n⊢ Bool → Nat"]
+        let loader ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
+        checkEq ["4:3: info: hello"] ((s.messages.toList.take 1).map (·.render src)) },
+    { name := "trace_state: several goals, and none", run := fun _ =>
+        okLib ("import Prelude\ndef ap : (A B : Type) → (A → B) → A → B := by\n  intro A; intro B; intro f; intro a\n" ++
+          "  apply f\n  trace_state\n  assumption\n  trace_state")
+          ["A : Type\nB : Type\nf : A → B\na : A\n⊢ A", "no goals"] },
+    { name := "a trace in a branch that fails is dropped with it", run := fun _ =>
+        okLib "import Prelude\ndef t : Nat := by\n  try (trace \"dropped\"; exact Bool.true)\n  first | (trace \"dropped too\"; assumption) | (trace \"kept\"; exact 3)"
+          ["kept"] },
+    { name := "the traces before an error are still shown", run := fun _ => do
+        checkEq ["info: one", "error: assumption: no hypothesis matches the goal"]
+          (← msgsLib "import Prelude\ndef bad : Nat := by\n  trace \"one\"\n  assumption\n  trace \"never\"")
+        let ms ← msgsLib "import Prelude\ndef bad : Nat := by\n  trace \"one\"\n  exact Bool.true"
+        checkEq "info: one" (ms.headD "")
+        checkEq 2 ms.length },
+    { name := "TacticM.trace from a user tactic and from a macro; #check keeps traces", run := fun _ =>
+        okLib ("import Prelude\nsyntax (name := say) \"say\" : tactic\n" ++
+          "def sayTac : Tactic := fun _ => do\n  g ← TacticM.mainGoal;\n  s ← TacticM.ppGoal g;\n  t ← TacticM.goalType g;\n  u ← TacticM.ppExpr g t;\n" ++
+          "  TacticM.trace (String.append \"goal: \" (String.append s (String.append \" / \" u)))\nattribute [tactic tactic.say] sayTac\n" ++
+          "def k : Nat → Nat := by intro n; say; exact n\n" ++
+          "syntax (name := tw) \"tw!\" term : term\ndef twMacro : Macro := fun stx => do\n  u ← TacticM.trace \"expanding\";\n  MacroM.pure (Syntax.getArg stx 1)\n" ++
+          "attribute [macro term.tw] twMacro\ndef z : Nat := tw! 3\n#check (by trace \"checking\"; exact 1 : Nat)")
+          ["goal: n : Nat\n⊢ Nat / Nat", "expanding", "checking", "1 : Nat"] },
+    { name := "traces reach the language server (a diagnostic) and the infoview (wiz/plainGoal)", run := fun _ => do
+        let src := "import Prelude\ndef k : Nat → Nat := by\n  intro n\n  trace_state\n  exact n\n"
+        let (srv, out) ← tacticLsp src
+        let ds := match LSP.get? out[0]! ["params", "diagnostics"] with
+          | some (.arr ds) => ds.toList
+          | _ => []
+        checkEq ["3: n : Nat\n⊢ Nat"] (ds.map fun d => s!"{LSP.getNat d ["severity"]}: {LSP.getStr d ["message"]}")
+        checkEq [3] (ds.map fun d => LSP.getNat d ["range", "start", "line"])
+        let (_, r) := LSP.handle srv ((Lean.Json.parse "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"wiz/plainGoal\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\"},\"position\":{\"line\":3,\"character\":5}}}").toOption.get!)
+        checkEq "```wiz\nn : Nat\n⊢ Nat\n```\n\nn : Nat\n⊢ Nat" (LSP.getStr r[0]! ["result", "rendered"])
+        checkEq "[\"n : Nat\\n⊢ Nat\"]" (((LSP.get? r[0]! ["result", "messages"]).map (·.compress)).getD "") }
   ]
 
 def classPrelude : String := "import Prelude
