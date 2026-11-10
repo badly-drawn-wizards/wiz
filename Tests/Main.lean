@@ -8,6 +8,7 @@ import Tests.Grail
 import Tests.LSP
 import Tests.Allocs
 import Tests.Scaling
+import Tests.Prop
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -25,6 +26,7 @@ def groups : List Group :=
   Grail.groups ++
   LSP.groups ++
   Parser.groups ++
+  Prop.groups ++
   Rig.groups ++
   Scaling.groups ++
   []
@@ -106,7 +108,7 @@ FILE (its group, index, name, wall time in seconds, whether it passed, and its n
 def main (args : List String) : IO UInt32 := do
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -131,6 +133,9 @@ def main (args : List String) : IO UInt32 := do
   -- a job of a grail build that a test runs (`Grail/Graph.lean`)
   | ["--grail-job", job] => Grail.jobMain tc job
   | ["--probe-checker"] => do Scaling.probeChecker; pure 0
+  -- the property harness's long run (`Tests/Prop.lean`)
+  | "--prop-long" :: rest => Prop.longMain rest
+  | "--prop-replay" :: rest => Prop.replayMain rest
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
   | ["--list"] => do
