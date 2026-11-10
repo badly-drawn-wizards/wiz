@@ -16,10 +16,19 @@ inductive Target where
   | lib (name : String) (root : String)
   | check (name : String) (file : String)
   | exe (name : String) (file : String)
+  /-- every `.wiz` file under a directory is a test, its expected output beside it -/
+  | tests (name : String) (root : String)
+  /-- the self-hosted toolchain: `checker`, `compiler`, or the `bootstrap` check -/
+  | selfhost (name : String) (role : String)
   deriving Repr, Inhabited, BEq
 
 def Target.name : Target → String
-  | .lib n _ | .check n _ | .exe n _ => n
+  | .lib n _ | .check n _ | .exe n _ | .tests n _ | .selfhost n _ => n
+
+/-- Built by `grail build` without naming it? Not the bootstrap check (it takes minutes). -/
+def Target.isDefault : Target → Bool
+  | .selfhost _ "bootstrap" => false
+  | _ => true
 
 structure Package where
   name : String
@@ -42,6 +51,8 @@ def decodePackage (x : Sx) : Except String Package := do
     | .l #[.a "lib", .a n, .a r] => pure (Target.lib n r)
     | .l #[.a "check", .a n, .a f] => pure (.check n f)
     | .l #[.a "exe", .a n, .a f] => pure (.exe n f)
+    | .l #[.a "tests", .a n, .a r] => pure (.tests n r)
+    | .l #[.a "selfhost", .a n, .a r] => pure (.selfhost n r)
     | t => throw s!"unknown target {t.render}"
   pure { name, targets, settings := ← decodeSettings ss }
 

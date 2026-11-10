@@ -1,0 +1,5 @@
+examples/run.wiz:9:1: info: .succ (.succ (.succ .zero))
+examples/run.wiz:14:1: info: .succ (.succ (.succ (.succ (.succ (.succ (.succ (.succ .zero)))))))
+examples/run.wiz:21:1: info: .succ (.succ .zero)
+examples/run.wiz:23:1: info: (.succ .zero, .zero)
+examples/run.wiz:29:1: info: Vec.cons := (λA. (λn. (λx. (λxs. ⟨1 ◾ #1 #0⟩))))
