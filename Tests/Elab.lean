@@ -983,8 +983,9 @@ def reuseGroup : Group where
         check (ls.any fun l => (l.splitOn ":= reuse x1000000 in ctor 0 ").length > 1 &&
             ((l.splitOn ":= reuse x1000000 in ctor 0 ")[1]!.splitOn " ").length == 2)
           s!"the parameter's cell is not rebuilt in place:\n{"\n".intercalate ls}"
-        -- step's and bump2's results (an option, and an option and a pair) are the only allocations
-        checkEq (s0 + 3) r0 }
+        -- the two `step`s' options and bump2's result (an option and a pair) are the only
+        -- allocations: the new `Stats` takes the parameter's cell
+        checkEq (s0 + 4) r0 }
   ]
 
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
