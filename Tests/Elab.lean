@@ -3005,7 +3005,7 @@ def selfHostGroup : Group where
           if nTerms > 0 then
             unless t.lift 1 != t do throw (IO.userError s!"{c}: lift misses the children")
             unless (List.range 3).any (fun d => t.instantiateAt (5 - d) .tt != t) do throw (IO.userError s!"{c}: instantiateAt misses the children")
-            unless (List.range 3).any (fun d => t.hasVar (5 + d)) do throw (IO.userError s!"{c}: hasVar misses the children")
+            unless (List.range 3).any (fun d => t.hasVar (5 - d)) do throw (IO.userError s!"{c}: hasVar misses the children")
           if nLevels > 0 then
             unless t.instLevels ["pw"] [.zero] != t do throw (IO.userError s!"{c}: instLevels misses a level")
             unless (t.levelParamsUsed.filter (· == "pw")).length == nLevels do

@@ -514,6 +514,13 @@ structure Globals (R : Type) where
   budget : Option Budget := none
   /-- (P2, `--trace-proof-steps`) print the steps each read-back of a proof took (stderr) -/
   traceProofSteps : Bool := false
+  /-- (for the step to mandatory sorts; off) the marking pass also writes the sort of
+  every `Π`/`Σ` it can compute. **Off, because it is only safe when it is complete**: the
+  pass does not go inside proofs, and a type with its sort and the same type without are
+  not interchangeable in an equation between types (`propSort?`, U5): with the endpoints
+  of a `cast` annotated and the `reflTy` that proves them equal not, a valid term was
+  rejected (found by the differential test). -/
+  fillSorts : Bool := false
   /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
   it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
   quoteErasesProofs : Bool := false

@@ -20,9 +20,10 @@ checks: it only needs the type of each subterm, to see its sort.
 * It does not go inside a proof (a term it marks at level `0`): proofs are the bulk of a
   library, and nothing in them needs a marker.
 * It evaluates the terms it has already marked, so it never runs a proof either.
-* It fills in the sort of every `Π`/`Σ` it passes through and can compute the sort of
-  (`Sorts` in `Basic.lean` stops at a `fun`, whose variable has no type written down;
-  this pass knows it).
+* With `Globals.fillSorts` (off) it also writes the sort of every `Π`/`Σ` it passes through
+  and can compute the sort of (`Sorts` in `Basic.lean` stops at a `fun`, whose variable
+  has no type written down; this pass knows it). Off, because writing some sorts and not
+  others is worse than writing none: see `Globals.fillSorts`.
 -/
 
 namespace Wiz
@@ -128,13 +129,13 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
   | .pi x bi q A B s =>
     let (A, lA) := type ctx A
     let (B, lB) := type (ctx.bind x [] (ctx.eval A)) B
-    let s := s.orElse fun _ => return .imax (← lA) (← lB)
-    (.pi x bi q A B s, s.map .sort)
+    let lvl := s.orElse fun _ => return .imax (← lA) (← lB)
+    (.pi x bi q A B (if g.fillSorts then lvl else s), lvl.map .sort)
   | .sigma x q A B s =>
     let (A, lA) := type ctx A
     let (B, lB) := type (ctx.bind x [] (ctx.eval A)) B
-    let s := s.orElse fun _ => return .max (← lA) (← lB)
-    (.sigma x q A B s, s.map .sort)
+    let lvl := s.orElse fun _ => return .max (← lA) (← lB)
+    (.sigma x q A B (if g.fillSorts then lvl else s), lvl.map .sort)
   | .app f a =>
     let (f, fty) := infer ctx f
     match fty.map whnf with
