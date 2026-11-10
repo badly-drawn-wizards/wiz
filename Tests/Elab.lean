@@ -2751,7 +2751,7 @@ def languageGroup : Group where
         okLib ("import Logic\ndef t1 : ∃ n, n = 3 := Ex.intro (fun n => n = 3) 3 rfl\n" ++
           "def t2 : ∃ n : Nat, n + n = 4 := Ex.intro _ 2 rfl\ndef t3 : ∃ (n : Nat), n = 3 := Ex.intro _ 3 rfl\n" ++
           "def t5 : ∃ (n : Nat) m, n = m ∧ m = n := Ex.intro (fun n => ∃ m, n = m ∧ m = n) 3 (Ex.intro (fun m => 3 = m ∧ m = 3) 3 (rfl, rfl))\n" ++
-          "def same {A : Type} (P : A → A → Prop) : (∃ x y : A, P x y) = Ex (fun (x : A) => Ex (fun (y : A) => P x y)) := rfl\n" ++
+          "def same {A : Type} (P : A → A → Prop) : (∃ x y : A, P x y) → @Ex A (fun x => @Ex A (fun y => P x y)) := fun h => h\n" ++
           "def swap {A : Type} {P : A → A → Prop} (h : ∃ x y, P x y) : ∃ y x, P x y :=\n" ++
           "  Ex.elim h (fun x h' => Ex.elim h' (fun y p => Ex.intro (fun y => ∃ x, P x y) y (Ex.intro (fun x => P x y) x p)))\n" ++
           "def nope : ¬ (exists (b : Bool), b = .true ∧ b = .false) :=\n  fun h => Ex.elim h (fun b p => Bool.trueNeFalse (Eq.trans (Eq.symm p.1) p.2))\n" ++
