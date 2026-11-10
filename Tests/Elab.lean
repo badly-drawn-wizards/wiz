@@ -1063,6 +1063,15 @@ def borrowGroup : Group where
         let ls ← borrowIR "sumAcc"
         check (ls.any fun l => l.startsWith "let " && (l.splitOn ":= sumAcc").length > 1) s!"no call:\n{"\n".intercalate ls}" },
     { name := "a lookup in a tree borrows the tree", run := fun _ => borrowedUncounted "Tree.mem" 1 },
+    { name := "comparisons borrow: the key and the keys it meets are not counted", run := fun _ => do
+        borrowedUncounted "Tree.mem" 0
+        let ls ← borrowIR "Tree.mem"
+        check (!ls.any fun l => l.startsWith "dup " || l.startsWith "drop ") s!"counted:\n{"\n".intercalate ls}"
+        -- big numbers are objects: a borrowing comparison must neither free nor leak them
+        let big := "1180591620717411303424"
+        cRun (borrowSrc ++ s!"def tb : Tree := Tree.node (Nat.add {big} 2) (Tree.node {big} .leaf .leaf) .leaf\n" ++
+          s!"def b2n : Bool → Nat\n  | .true => 1\n  | .false => 0\n" ++
+          s!"def main : Nat := Nat.add (b2n (Tree.mem {big} tb)) (Nat.add (b2n (Tree.mem (Nat.add {big} 1) tb)) (b2n (Tree.mem (Nat.add {big} 2) tb)))\n") "2" },
     { name := "borrowing functions run without leaks", run := fun _ =>
         okLib (borrowSrc ++ "#run len (.cons 1 (.cons 2 .nil))\n#run sumAcc 0 (.cons 1 (.cons 2 .nil))\n#run Tree.mem 3 t3\n#run Tree.mem 4 t3")
           ["2", "3", ".true", ".false"] },
