@@ -1833,69 +1833,6 @@ def wrapDecs : Nat → List Bool → String
     | .true => "dec(a[" +++ Nat.toString i +++ "]); " +++ wrapDecs (i + 1) rest
     | .false => wrapDecs (i + 1) rest
 
--- **Absent parameters** (reference counting mode): a parameter of a global function
--- that no path of its body uses (by the demand analysis, `dmdA`), given only to absent
--- parameters of the calls it makes, is absent; a saturated call passes `◾` there, so the
--- argument is neither computed nor kept alive (and a `let` used only there is dead).
--- Found as a greatest fixed point: every parameter absent, then each round analyses the
--- bodies with the previous round's arguments erased, until the count stays the same.
--- (The functions keep their arity, so closures and the wrappers are unchanged.)
-def absArgs : List Bool → List ETm → List ETm
-  | _, .nil => .nil
-  | .nil, .cons a rest => .cons a rest
-  | .cons b sr, .cons a rest => .cons (match b with
-    | .true => .erased
-    | .false => a) (absArgs sr rest)
-mutual
-def absE (ab : StrMap (List Bool)) (t : ETm) : ETm := match t with
-  | .app f a => match stringConst t with
-    | .some _ => t
-    | .none => match spineE f (.cons a .nil) with
-      | .mk h args =>
-        let args2 := absL ab args;
-        match h with
-        | .glob g =>
-          let sig := StrMap.findD ab (Str.ofString g) .nil;
-          match Nat.le (lenL sig) (lenL args2) with
-          | .true => eappsL h (absArgs sig args2)
-          | .false => eappsL h args2
-        | _ => eappsL (absE ab h) args2
-  | .lam b => .lam (absE ab b)
-  | .letE v b => .letE (absE ab v) (absE ab b)
-  | .obj k fs => .obj k (absEs ab fs)
-  | .proj i x => .proj i (absE ab x)
-  | .case s bs => .case (absE ab s) (absEs ab bs)
-  | .prim op as => .prim op (absEs ab as)
-  | _ => t
-def absEs (ab : StrMap (List Bool)) (ts : ETms) : ETms := match ts with
-  | .nil => .nil
-  | .cons t rest => .cons (absE ab t) (absEs ab rest)
-def absL (ab : StrMap (List Bool)) (ts : List ETm) : List ETm := match ts with
-  | .nil => .nil
-  | .cons t rest => .cons (absE ab t) (absL ab rest)
-end
--- the absent parameters `i … k-1` in the demands `e` of a body
-def absSig (e : DEnv) : Nat → Nat → List Bool
-  | _, .zero => .nil
-  | i, .succ m => .cons (Nat.beq (Dmd.u (denvAt i e)) 3) (absSig e (i + 1) m)
-def absInit : StrMap (List Bool) → List Erased → StrMap (List Bool)
-  | m, .nil => m
-  | m, .cons (.mk n e) rest => absInit (StrMap.insert m (Str.ofString n) (allTrue (lamsOf e))) rest
-def absRound (old : StrMap (List Bool)) : StrMap (List Bool) → Nat → List Erased → SigR
-  | m, c, .nil => .mk m c
-  | m, c, .cons (.mk n e) rest =>
-    let k := lamsOf e;
-    let sig := absSig (dmdA k (underLams k (absE old e))) 0 k;
-    absRound old (StrMap.insert m (Str.ofString n) sig) (c + countTrue sig) rest
-partial def absFix (ab : StrMap (List Bool)) (count : Nat) (es : List Erased) : StrMap (List Bool) :=
-  match absRound ab ab 0 es with
-  | .mk a2 c2 => match Nat.beq c2 count with
-    | .true => a2
-    | .false => absFix a2 c2 es
-def absGlobals (ab : StrMap (List Bool)) : List Erased → List Erased
-  | .nil => .nil
-  | .cons (.mk n e) rest => .cons (.mk n (absE ab e)) (absGlobals ab rest)
-
 -- the same under reference counting: a constant global is built by `init_g` and kept
 -- (a root, released at exit); `get_g()` returns a new reference
 def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → List Erased → Code
@@ -1929,9 +1866,7 @@ def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       let es1 := pushGlobals es0;
-      let es2 := inlGlobals (consMap StrMap.empty es1) es1;
-      let ab := absFix (absInit StrMap.empty es2) 1000000000 es2;
-      let es := decideGlobals (absGlobals ab es2);
+      let es := decideGlobals (inlGlobals (consMap StrMap.empty es1) es1);
       let sigs : StrMap (List Bool) := match borrow with
         | .true => sigsFix (sigsInit StrMap.empty es) 0 es
         | .false => StrMap.empty;
