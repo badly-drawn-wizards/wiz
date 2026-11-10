@@ -873,6 +873,28 @@ def memoStreamSrc : String :=
   "def walk : Nat → Stream Nat → Stream Nat\n  | .zero, s => s\n  | .succ k, s => walk k s.tail\n" ++
   "def main : Nat := twice (nats 0) + partly (nats 0) + (walk 50 (nats 0)).head\n"
 
+/-- (15c) Folded at compile time: arithmetic on literals (truncated subtraction, `n / 0 = 0`,
+a power past 64 bits), a match on a constructor built in place, a test on a known number,
+a second match on the same list. -/
+def foldSrc : String := "import Prelude
+def known (b : Bool) : Nat := match (List.cons 5 List.nil : List Nat) with
+  | .nil => 0
+  | .cons x _ => x + 1
+def isTen (n : Nat) : Nat := match Nat.beq n 10 with
+  | .true => n + 1
+  | .false => 0
+def again (xs : List Nat) : Nat := match xs with
+  | .nil => 0
+  | .cons x _ => match xs with
+    | .nil => 7
+    | .cons _ _ => x
+def main : List Nat := .cons (3 * 4 + 10 - 20) (.cons (Nat.div 7 0) (.cons (Nat.sub 3 5) (.cons (known .true)
+  (.cons (isTen 10) (.cons (isTen 3) (.cons (again (.cons 4 .nil)) (.cons (Nat.pow 2 70) (.cons (Nat.mod 7 0) .nil))))))))
+"
+
+def foldExpected : String :=
+  ".cons 2 (.cons 0 (.cons 0 (.cons 6 (.cons 11 (.cons 0 (.cons 4 (.cons 1180591620717411303424 (.cons 7 .nil))))))))"
+
 def backendGroup : Group where
   name := "backend"
   exercise := "Exercise 8.1"
@@ -913,7 +935,28 @@ def backendGroup : Group where
         check (texts.contains ".cons 2 (.cons 3 .nil)") s!"wrong result: {texts}" },
     { name := "unused parameters are borrowed (the caller drops them)", run := fun _ =>
         okLib "import Prelude\ndef k (x y : List Nat) : List Nat := x\n#ir k"
-          ["def k x0 @&x1 :=\n  ret x0"] }
+          ["def k x0 @&x1 :=\n  ret x0"] },
+    { name := "constant folding and known constructors in the IR (15c)", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) (foldSrc ++ "#ir known\n#ir isTen\n#ir again\n#run main\n") { loader := ← preludeLoader }
+        match (s.messages.toList.filter (·.severity == .info)).map (·.text) with
+        | [known, isTen, again, run] =>
+          -- a match on a constructor built in place: its field, plus one
+          check ((known.splitOn "case").length == 1 && (known.splitOn ":= 6\n").length == 2) known
+          -- in the `true` branch `n` is `10`, so `n + 1` is `11`
+          check ((isTen.splitOn ":= 11\n").length == 2 && (isTen.splitOn "nat.add").length == 1) isTen
+          -- the second match on the same list is gone
+          checkEq 2 (again.splitOn "case").length
+          checkEq foldExpected run
+        | ms => throw (IO.userError s!"unexpected messages {ms}") },
+    { name := "a self tail call is a jump to a join point (15f)", run := fun _ => do
+        let src := "import Prelude\npartial def count (n acc : Nat) : Nat := match n with\n  | .zero => acc\n" ++
+          "  | .succ m => count m (acc + 1)\n#ir count\n#run count 100000 0\n"
+        let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
+        match (s.messages.toList.filter (·.severity == .info)).map (·.text) with
+        | [ir, run] =>
+          check ((ir.splitOn "join").length > 1 && (ir.splitOn "jmp").length > 2) ir
+          checkEq "100000" run
+        | ms => throw (IO.userError s!"unexpected messages {ms}") }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
@@ -1093,7 +1136,8 @@ def Tree.mem (k : Nat) : Tree → Bool
 def mapL (f : List Nat → Nat) : List (List Nat) → List Nat
   | .nil => .nil
   | .cons x xs => .cons (f x) (mapL f xs)
-def split (xs : List Nat) : List Nat × List Nat := (xs, xs)
+-- (not a bare constructor: that would be inlined, and the match on it folded away, 15c)
+def split (xs : List Nat) : List Nat × List Nat := (xs, List.append xs .nil)
 def both (xs : List Nat) : Nat := match split xs with
   | (a, b) => Nat.add (len a) (len b)
 def t3 : Tree := Tree.node 2 (Tree.node 1 .leaf .leaf) (Tree.node 3 .leaf .leaf)
@@ -1130,6 +1174,33 @@ def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := 
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
 
+/-- (15f) Build `main` with the C compiler's optimiser off (`-O0`: it does no tail calls of
+its own) and run it on a 1 MB stack (`WIZ_STACK_MB`): deep recursion overflows it, a loop
+doesn't. -/
+def cRunSmallStack (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let tc ← toolchain
+  let tc := { tc with cflags := tc.cflags ++ ["-O0"] }
+  let dir ← IO.FS.createTempDir
+  let exe := dir / "wiz_main"
+  let (decls, ty) ← match Build.irProgram s "main" with
+    | .ok r => pure r
+    | .error e => throw (IO.userError e)
+  let built ← if llvm then Build.compileLLVM tc (LLVM.program decls false) exe (Build.extraC s ++ "\n" ++ C.glue (C.externs decls))
+    else Build.compileC tc (C.program decls false (Build.extraC s)) exe
+  match built with
+  | .error e =>
+    let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
+    if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+  | .ok () =>
+    let out ← IO.Process.output { cmd := exe.toString, env := #[("WIZ_STACK_MB", some "1")] }
+    unless out.exitCode == 0 do throw (IO.userError s!"the program failed ({out.exitCode}): {out.stderr.take 500}")
+    match Build.parseValue out.stdout with
+    | none => throw (IO.userError s!"could not read the result: {out.stdout}")
+    | some v => checkEq expected (readback s.globals s.builtins (eval s.globals [] ty) v).pretty
+
 /-- A program that projects field 1 of a number (the old unary-view fallback: since
 `proj` is borrowed, the objects it made would leak). Lowering never emits this. -/
 def projOfNumber : Array IR.Decl :=
@@ -1141,10 +1212,11 @@ def borrowGroup : Group where
   exercise := "Stage 8e"
   cases := [
     { name := "the length of a list borrows it", run := fun _ => borrowedUncounted "len" 0 },
-    { name := "a left fold borrows the list (and keeps its tail call)", run := fun _ => do
+    { name := "a left fold borrows the list (and its tail call is a loop)", run := fun _ => do
         borrowedUncounted "sumAcc" 1
         let ls ← borrowIR "sumAcc"
-        check (ls.any fun l => l.startsWith "let " && (l.splitOn ":= sumAcc").length > 1) s!"no call:\n{"\n".intercalate ls}" },
+        -- (a self tail call is a jump to a loop, 15f)
+        check (ls.any fun l => l.startsWith "jmp ") s!"no loop:\n{"\n".intercalate ls}" },
     { name := "a lookup in a tree borrows the tree", run := fun _ => borrowedUncounted "Tree.mem" 1 },
     { name := "comparisons borrow: the key and the keys it meets are not counted", run := fun _ => do
         borrowedUncounted "Tree.mem" 0
@@ -2239,7 +2311,8 @@ def selfhostProgram3 : String :=
 /-- Compile a program with the self-hosted compiler, then the C it prints with the
 self-hosted runtime (`selfhost/rt.c`, with the garbage collector given by the
 toolchain's `gcCflags`/`gcLdflags`), run it, and compare its output. -/
-def selfhostCompileRun (file expected : String) (flags : Array String := #[]) (progArgs : Array String := #[]) : IO Unit := do
+def selfhostCompileRun (file expected : String) (flags : Array String := #[]) (progArgs : Array String := #[])
+    (opt : String := "-O2") (smallStack : Bool := false) : IO Unit := do
   let tc ← toolchain
   if tc.gcCflags.isEmpty then IO.println "    (skipped: no garbage collector, --gc-cflags)"; return
   match ← selfhostCompiler with
@@ -2252,10 +2325,14 @@ def selfhostCompileRun (file expected : String) (flags : Array String := #[]) (p
     unless out.exitCode == 0 do throw (IO.userError s!"the compiler failed ({out.exitCode}): {out.stderr}")
     IO.FS.writeFile (dir / "out.c") out.stdout
     let rt := (← IO.currentDir) / "selfhost"
-    let args := #["-O1", "-w", s!"-I{rt}"] ++ tc.gcCflags.toArray ++ #["out.c", "-o", "prog"] ++ tc.gcLdflags.toArray
+    let args := #[opt, "-w", s!"-I{rt}"] ++ tc.gcCflags.toArray ++ #["out.c", "-o", "prog"] ++ tc.gcLdflags.toArray
     let cc ← IO.Process.output { cmd := tc.cc, args, cwd := dir }
     unless cc.exitCode == 0 do throw (IO.userError s!"cc failed: {cc.stderr.take 2000}")
-    let run ← IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString] ++ progArgs, cwd := dir }
+    -- (a small stack: 1 MB, and the runtime told not to raise it)
+    let run ← if smallStack then
+        let env : Array (String × Option String) := #[("WIZ_STACK_SET", some "1")]
+        IO.Process.output { cmd := "sh", args := #["-c", "ulimit -s 1024; exec timeout 60 ./prog \"$@\"", "sh"] ++ progArgs, cwd := dir, env }
+      else IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString] ++ progArgs, cwd := dir }
     unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
     checkEq expected run.stdout
 
@@ -2499,6 +2576,22 @@ def selfHostGroup : Group where
         selfhostCompileRun selfhostProgram2 "1000000\n0\n6\n15\n5\n3\n" (flags := #["--rc"]) },
     { name := "the first-line pragma `-- wiz: rc` still selects reference counting (a fallback, 21k)", run := fun _ =>
         selfhostCompileRun ("-- wiz: rc\n" ++ selfhostProgram2) "1000000\n0\n6\n15\n5\n3\n" },
+    { name := "self tail calls are loops: 10M iterations on a 1 MB stack, at -O0, with the GC and with RC (15f)", run := fun _ => do
+        -- (in a branch of a match on a parameter: in the GC mode a call under a match on a
+        -- computed value is still inside a suspended `let`'s closure)
+        let prog := "import Prelude\npartial def count (n acc : Nat) : Nat := match n with\n  | .zero => acc\n" ++
+          "  | .succ m => count m (acc + 1)\ndef main : IO Unit := IO.println (Nat.toString (count 10000000 0))\n"
+        selfhostCompileRun prog "10000000\n" (opt := "-O0") (smallStack := true)
+        selfhostCompileRun prog "10000000\n" (flags := #["--rc"]) (opt := "-O0") (smallStack := true)
+        selfhostCompileRun prog "10000000\n" (flags := #["--rc-owned"]) (opt := "-O0") (smallStack := true)
+        -- under reference counting lets are strict: a call under a match on a computed value loops too
+        let nested := "import Prelude\npartial def count (n acc : Nat) : Nat := match n with\n  | .zero => acc\n" ++
+          "  | .succ m => match Nat.beq (Nat.mod m 3) 0 with\n    | .true => count m (acc + 2)\n    | .false => count m acc\n" ++
+          "def main : IO Unit := IO.println (Nat.toString (count 10000000 0))\n"
+        selfhostCompileRun nested "6666668\n" (flags := #["--rc"]) (opt := "-O0") (smallStack := true) },
+    { name := "dead lets without effects are not computed (15e)", run := fun _ =>
+        selfhostCompileRun ("import Prelude\ndef f (n : Nat) : Nat :=\n  let unused := List.cons n (List.cons 2 .nil);\n" ++
+          "  let alsoUnused := List.cons unused .nil;\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" (flags := #["--rc"]) },
     { name := "reference counting: cells reused (shared and unique lists, trees, pairs)", run := fun _ =>
         selfhostCompileRun selfhostProgram3 "1000000\n9900\n18\n4\n" (flags := #["--rc"]) },
     { name := "self-hosted programs read their command-line arguments (IO.args, 21k), with either collector", run := fun _ => do
@@ -2976,6 +3069,12 @@ def nativeCases (llvm : Bool) : List Case :=
           "(.cons (Nat.shiftLeft 3 70) (.cons (Nat.shiftRight big 40) (.cons (Nat.log2 big) (.cons (Nat.log2 0) " ++
           "(.cons (Nat.pow 0 0) (.cons (Nat.shiftLeft 1 61) (.cons (Nat.shiftLeft 1 62) .nil)))))))))))))")
           ".cons 717892962441115500 (.cons 961749 (.cons 14 (.cons 100 (.cons 98282295666516288457 (.cons 14 (.cons 0 (.cons 3541774862152233910272 (.cons 652924416219 (.cons 79 (.cons 0 (.cons 1 (.cons 2305843009213693952 (.cons 4611686018427387904 .nil)))))))))))))" },
+    { name := "self tail calls are loops: 10M iterations on a 1 MB stack, at -O0 (15f)", run := fun _ =>
+        cRunSmallStack (llvm := llvm) ("import Prelude\npartial def count (n acc : Nat) : Nat := match n with\n  | .zero => acc\n" ++
+          "  | .succ m => match Nat.beq (Nat.mod m 3) 0 with\n    | .true => count m (acc + 2)\n    | .false => count m acc\n" ++
+          "def main : Nat := count 10000000 0") "6666668" },
+    { name := "constant folding and known constructors behave as before (15c)", run := fun _ =>
+        cRun (llvm := llvm) foldSrc foldExpected },
     { name := "memoised suspensions (memo)", run := fun _ =>
         cRun (llvm := llvm) ("import Prelude\ndef twice (t : Unit → Nat) : Nat := t () + t ()\n" ++
           "def lazyAdd (m n : Nat) : Unit → Nat := memo (fun _ => m + n)\n" ++
