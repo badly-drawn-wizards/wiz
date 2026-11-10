@@ -273,6 +273,10 @@ def group : Group where
         failsLib "import Prelude\ndef w (r a : Nat) : r = Nat.succ a := rfl" "rfl: the two sides are not definitionally equal"
         failsLib "import Prelude\ndef z (a : Nat) : a = a + 0 := rfl" "rfl: the two sides are not definitionally equal"
         okLib "import Prelude\ndef k (a : Nat) : 0 + a = a := rfl\ndef m (xs : List Nat) : List.append List.nil xs = xs := rfl"
+        -- (agent elab-whnf's case) under a constructor whose motive is a hole: the kernel
+        -- used to answer "expected False, inferred True"
+        failsLibs "import Logic\ndef t : Ex (fun (m : Nat) => 3 = m) := Ex.intro _ 4 rfl" "rfl: the two sides are not definitionally equal"
+        okLibs "import Logic\ndef t : Ex (fun (m : Nat) => 3 = m) := Ex.intro _ 3 rfl"
         -- so a tactic can try it: `rfl` fails, and the alternative runs
         okLib "import Prelude\ndef a (r x : Nat) (h : r = Nat.succ x) : r = Nat.succ x := by first | rfl | exact h"
         failsLib "import Prelude\ndef c (r x : Nat) : r = Nat.succ x := by rfl" "rfl: the two sides are not definitionally equal"
