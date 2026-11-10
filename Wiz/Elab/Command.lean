@@ -452,6 +452,8 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let coit : Term R := .coit l (q ctx.lvl I) (q ctx.lvl D) Sfun step (q ctx.lvl i) init
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) coit
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
+  -- (7e) the right-hand sides' instance problems (`nats (n + 1)`)
+  finishInstances
   let val ← zonk 0 val
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
@@ -508,6 +510,8 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
   let payload : Term R := comps.foldr .pair (.pair e .tt)
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (Term.cocon payload)
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
+  -- (7e) the right-hand sides' instance problems (`nats (n + 1)`)
+  finishInstances
   let val ← zonk 0 val
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)

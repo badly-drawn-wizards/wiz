@@ -908,7 +908,7 @@ def classGroup : Group where
     { name := "compiled: a method of a class with several methods", run := fun _ =>
         okLib ("import Prelude\nclass Ring (A : Type) where\n  zero : A\n  plus : A → A → A\n" ++
           "instance : Ring Nat where\n  zero := 0\n  plus := Nat.add\ndef f (a : Nat) : Nat := Ring.plus a Ring.zero\n#ir f\n#run f 4")
-          ["def f x0 :=\n  let x2 := 0\n  let x3 := prim nat.add x0 x2\n  ret x3", "4"] }
+          ["def f x0 :=\n  let x1 := 0\n  let x2 := prim nat.add x0 x1\n  ret x2", "4"] }
   ]
 
 /-- Memoised streams, observed twice and dropped part-way (no leaks, `#run` and native). -/
