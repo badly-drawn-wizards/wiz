@@ -11,13 +11,13 @@ def twice {ω w : Nat} (a : UIntN w) : UIntN w := UIntN.add a a
 def bits : U64 → Nat
   | .mk n => n
 def bump (a : I64) : I64 := match a with
-  | .mk n => .mk (Nat.mod (Nat.add n 1) (Nat.pow 2 64))
+  | .mk n => IntN.ofNat 64 (Nat.add n 1)
 def main : List Nat :=
   (.cons ((U64.ofNat p63).toNat)
     (.cons ((UIntN.add (U64.ofNat p63) (U64.ofNat p63)).toNat)
     (.cons ((UIntN.sub (U64.ofNat 0) (U64.ofNat 1)).toNat)
-    (.cons (b2n (UIntN.beq (U64.ofNat p63) (UIntN.add (U64.ofNat 4611686018427387904) (U64.ofNat 4611686018427387904))))
-    (.cons (b2n (UIntN.lt (U64.ofNat (p63 - 1)) (U64.ofNat p63)))
+    (.cons (b2n (UIntN.beq (U64.ofNat 0) (UIntN.add (U64.ofNat p63) (U64.ofNat p63))))
+    (.cons (b2n (UIntN.lt (U64.ofNat 5) (U64.ofNat p63)))
     (.cons (b2n (UIntN.le (U64.ofNat m64) (U64.ofNat 5)))
     (.cons ((UIntN.land (U64.ofNat m64) (U64.ofNat (p63 + 5))).toNat)
     (.cons ((UIntN.xor (U64.ofNat m64) (U64.ofNat 1)).toNat)
@@ -26,7 +26,7 @@ def main : List Nat :=
     (.cons ((UIntN.shiftRight (U64.ofNat m64) 64).toNat)
     (.cons ((UIntN.shiftLeft (U64.ofNat 1) 63).toNat)
     (.cons ((UIntN.shiftLeft (U64.ofNat 1) 64).toNat)
-    (.cons ((UIntN.shiftLeft (U64.ofNat 1) (Nat.pow 2 70)).toNat)
+    (.cons ((UIntN.shiftLeft (U64.ofNat 1) 1000).toNat)
     (.cons (b2n (UIntN.testBit (U64.ofNat p63) 63))
     (.cons (b2n (UIntN.testBit (U64.ofNat m64) 64))
     (.cons (b2n (UIntN.msb (U64.ofNat p63)))
@@ -49,7 +49,7 @@ def main : List Nat :=
     (.cons ((UIntN.div (U64.ofNat m64) (U64.ofNat p63)).toNat)
     (.cons ((UIntN.mod (U64.ofNat m64) (U64.ofNat p63)).toNat)
     (.cons ((UIntN.not (U64.ofNat 0)).toNat)
-    (.cons (b2n (IntN.beq (I64.ofNeg 1) (IntN.not (I64.ofNat 0))))
+    (.cons (b2n (IntN.beq (I64.ofNat 0) (IntN.add (I64.ofNeg 1) (I64.ofNat 1))))
     (.cons ((fnv64 (.cons 104 (.cons 105 .nil)) (U64.ofNat 14695981039346656037)).toNat)
     (.cons ((twice (U64.ofNat p63)).toNat)
     (.cons ((twice (UIntN.ofNat 70 p63)).toNat)
