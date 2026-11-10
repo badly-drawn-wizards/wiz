@@ -65,9 +65,9 @@ next.
 
 ## 21g: reference counting in the self-hosted backend (first stage)
 
-A second mode of `Backend.wiz` (`genProgramRC`), chosen by a first line `-- wiz: rc` in
-the program (a stand-in for a command-line flag: self-hosted programs can't read their
-arguments yet). The garbage-collected mode is unchanged, byte for byte.
+A second mode of `Backend.wiz` (`genProgramRC`), chosen by the compiler's flag `--rc`
+(21k; before that, a first line `-- wiz: rc` in the program, which still works as a
+fallback). The garbage-collected mode is unchanged, byte for byte.
 
 * **Perceus on the erased terms** (`rcE`): the C is in A-normal form, one local per
   intermediate value, statements in evaluation order (C leaves the order of arguments
@@ -124,3 +124,14 @@ result type with the expected one. The arguments are then checked as before, aga
 types that mention the solved parameters (`Tagged.mk 3 : Tagged .true` where the field
 is `Code b`); the placeholders are dropped. If that unification fails the arguments come
 first, as before.
+
+## 21k: command-line arguments; `--rc` ✅
+
+`IO.argCount : IO Nat` and `IO.arg : Nat → IO String` (externs `wiz_io_arg_count`,
+`wiz_io_arg`; the C and LLVM `main`s save `argc`/`argv` with `wiz_set_args`), and
+`IO.args : IO (List String)` built from them, in `lib/IO.wiz` and in the self-hosted
+Prelude (`selfhost/rt.c`'s natives read the `argv` that `rt_start` saves). The arguments
+exclude the program's name; `#eval`/`#run` can't call them (they are C). With them the
+self-hosted compiler takes its backend mode as a flag: `--rc`, `--rc-owned` or `--gc`
+(`genProgramArgs`). The first-line pragma `-- wiz: rc` still works when no flag is
+given, for one release. `scripts/fixpoint.sh --rc` runs the bootstrap in that mode.

@@ -1154,6 +1154,13 @@ WIZ_API const char *wiz_io_read_file(const char *path) {
   return wiz_scratch;
 }
 
+/* the program's arguments (without its name), saved by `main` (stage 21k) */
+static int wiz_argc;
+static char **wiz_argv;
+WIZ_API void wiz_set_args(int argc, char **argv) { wiz_argc = argc; wiz_argv = argv; }
+WIZ_API uint64_t wiz_io_arg_count(void) { return wiz_argc > 1 ? (uint64_t)(wiz_argc - 1) : 0; }
+WIZ_API const char *wiz_io_arg(uint64_t i) { return i + 1 < (uint64_t)wiz_argc ? wiz_argv[i + 1] : ""; }
+
 /* functions for the library to bind */
 WIZ_API void wiz_io_println(const char *s) { puts(s); fflush(stdout); }
 WIZ_API void wiz_io_print(const char *s) { fputs(s, stdout); fflush(stdout); }

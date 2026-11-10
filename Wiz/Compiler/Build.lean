@@ -104,7 +104,7 @@ where
 with its type. With `timeout`, the program is stopped after that many seconds (by
 coreutils' `timeout`). -/
 def runGlobal (tc : Toolchain) (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bool := false)
-    (timeout : Option Nat := none) :
+    (timeout : Option Nat := none) (args : Array String := #[]) :
     IO (Except String String) := do
   match irProgram s n with
   | .error e => pure (.error e)
@@ -117,8 +117,8 @@ def runGlobal (tc : Toolchain) (s : CommandState R) (n : Name) (dir : System.Fil
     | .error e => pure (.error e)
     | .ok () =>
       let out ← match timeout with
-        | some t => IO.Process.output { cmd := "timeout", args := #[toString t, exe.toString] }
-        | none => IO.Process.output { cmd := exe.toString }
+        | some t => IO.Process.output { cmd := "timeout", args := #[toString t, exe.toString] ++ args }
+        | none => IO.Process.output { cmd := exe.toString, args }
       if out.exitCode == 124 && timeout.isSome then return .error "the program timed out"
       if out.exitCode != 0 then return .error s!"the program failed ({out.exitCode}): {out.stderr}"
       -- an `IO` program prints for itself
