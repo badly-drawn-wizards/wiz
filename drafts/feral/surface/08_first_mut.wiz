@@ -1,10 +1,20 @@
-import Feral                                          -- wishful: command-proc-macros
--- Option (&mut T): a borrow that may not exist. Lowered: drafts/feral/lowered/08_first_mut.wiz
+import FeralCore
+import Feral
+-- Option (&mut T): a borrow that may not exist. Hand-lowered: drafts/feral/lowered/08_first_mut.wiz
 
-feral                                                 -- wishful: command-proc-macros
-  fn first_mut {'a} (v : &'a mut Vec U64) : Option (&'a mut U64) :=   -- wishful: region-indices
+feral
+  fn first_mut {'a} (v : &'a mut Vec U64) : Option (&'a mut U64) :=
     v.get_mut 0
 
   fn zero_first (v : &mut Vec U64) : Bool :=
     if let .some x := first_mut v then { *x := 0; true } else false
 end
+
+def show (r : Result (Bool × Vec U64)) : Result (Bool × List Nat) :=
+  Result.map (fun (r : Bool × Vec U64) => (r.1, List.map U64.toNat r.2.items)) r
+def run (v : Vec U64) : Result (Bool × List Nat) :=
+  show (Uniq.borrow Region.static v (fun ρ h v r => zero_first r))
+#eval run (Vec.ofList (.cons (U64.lit 7) (.cons (U64.lit 8) .nil)))
+-- .ok (.true, [0, 8])
+#eval run Vec.new
+-- .ok (.false, [])

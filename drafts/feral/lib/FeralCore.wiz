@@ -117,3 +117,16 @@ def Result.show {A : Type} (sh : A → String) : Result A → String
   | .err .unwrapNone => "panicked: called `Option::unwrap()` on a `None` value"
   | .err .divZero => "panicked: attempt to divide by zero"
   | .err (.panic m) => m
+
+-- ## Library entries under the names Feral's method table uses (lib/Feral.wiz, `Fe.libSigs`)
+
+-- `a / b` (a panic on division by zero, RD7)
+def U64.div (a b : U64) : Result U64 := match Nat.beq b.val 0 with
+  | .true => .err .divZero
+  | .false => .ok (U64.mk (Nat.div a.val b.val))
+-- `v.get_mut i` with the receiver first
+def Vec.get_mut {ρ : Region} {A : Type} (v : Uniq ρ (Vec A)) (i : U64) : MutOpt ρ A (Vec A) := Vec.getMut i v
+-- `o.ok_or e`: a Feral `Result T E` is `Except E T` (L2)
+def Option.ok_or {A E : Type} (o : Option A) (e : E) : Except E A := match o with
+  | .some a => .ok a
+  | .none => .error e

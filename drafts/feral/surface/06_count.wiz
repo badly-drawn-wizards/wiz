@@ -1,15 +1,16 @@
-import Feral                                          -- wishful: command-proc-macros
--- A counter loop with `?` on a user-level Result. Lowered: drafts/feral/lowered/06_count.wiz
+import FeralCore
+import Feral
+-- A counter loop with `?` on a user-level Result. Hand-lowered: drafts/feral/lowered/06_count.wiz
 
-feral                                                 -- wishful: command-proc-macros
+feral
   struct Overflow where
 
   fn sum_from (s0 : U64) (n : U64) : Result U64 Overflow := {
-    let mut i : U64 := 0;                            -- wishful: machine-int-literals
+    let mut i : U64 := 0;
     let mut s := s0;
     while i < n
-      invariant s0.val + i.val * (i.val - 1) / 2 = s.val   -- wishful: spec-clauses
-      decreases n - i                                -- wishful: decreases-loops
+      -- invariant s0.val + i.val * (i.val - 1) / 2 = s.val   -- wishful: spec-clauses
+      -- decreases n - i                                      -- wishful: decreases-loops
     do {
       s := (s.checked_add i).ok_or Overflow ?;       -- a returned error, not a panic
       i += 1                                         -- a panic on overflow (can't happen: i < n)
@@ -17,3 +18,13 @@ feral                                                 -- wishful: command-proc-m
     .ok s
   }
 end
+
+def show (r : Result (Except Overflow U64)) : Result (Except String Nat) := match r with
+  | .ok (.ok s) => .ok (.ok s.val)
+  | .ok (.error _) => .ok (.error "Overflow")
+  | .err e => .err e
+
+#eval show (sum_from (U64.lit 0) (U64.lit 5))
+-- .ok (.ok 10)
+#eval show (sum_from (U64.lit 18446744073709551610) (U64.lit 5))
+-- .ok (.error "Overflow")    (a returned error, not a panic)

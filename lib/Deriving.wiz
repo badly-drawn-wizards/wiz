@@ -19,19 +19,7 @@ def Repr.addAppParen (s : String) (p : Nat) : String := match Nat.lt p 1024 with
   | .true => s
   | .false => String.append "(" (String.append s ")")
 
--- Decimal numerals (for `Repr Nat`; `Nat.toString` is an extern, so it only runs compiled).
-partial def Nat.powersFrom (n p : Nat) (acc : List Nat) : List Nat := match Nat.lt n p with
-  | .true => acc
-  | .false => Nat.powersFrom n (p * 10) (.cons p acc)
-partial def Nat.digitAt (n p d : Nat) : Nat := match Nat.lt n p with
-  | .true => d
-  | .false => Nat.digitAt (n - p) p (d + 1)
-def Nat.digitsFrom : List Nat → Nat → List Char
-  | .nil, _ => .nil
-  | .cons p ps, n => .cons (Char.mk (Nat.digitAt n p 0 + 48)) (Nat.digitsFrom ps (n - Nat.digitAt n p 0 * p))
-def Nat.repr (n : Nat) : String := match Nat.powersFrom n 1 .nil with
-  | .nil => "0"
-  | .cons p ps => String.mk (Nat.digitsFrom (.cons p ps) n)
+-- (`Nat.repr`, decimal numerals, is in the prelude.)
 
 def List.beqBy {A : Type} (eq : A → A → Bool) : List A → List A → Bool
   | .nil, .nil => .true

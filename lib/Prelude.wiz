@@ -518,3 +518,35 @@ def Tactic.trace : Tactic := fun stx => match Syntax.getArg (Syntax.getArg stx 1
   | .atom s => TacticM.trace s
   | _ => TacticM.pure ()
 attribute [tactic tactic.trace] Tactic.trace
+
+-- Decimal numerals (`Nat.toString` is an extern, so it only runs compiled; this one runs
+-- in macros and `#eval` too).
+partial def Nat.powersFrom (n p : Nat) (acc : List Nat) : List Nat := match Nat.lt n p with
+  | .true => acc
+  | .false => Nat.powersFrom n (p * 10) (.cons p acc)
+partial def Nat.digitAt (n p d : Nat) : Nat := match Nat.lt n p with
+  | .true => d
+  | .false => Nat.digitAt (n - p) p (d + 1)
+def Nat.digitsFrom : List Nat → Nat → List Char
+  | .nil, _ => .nil
+  | .cons p ps, n => .cons (Char.mk (Nat.digitAt n p 0 + 48)) (Nat.digitsFrom ps (n - Nat.digitAt n p 0 * p))
+def Nat.repr (n : Nat) : String := match Nat.powersFrom n 1 .nil with
+  | .nil => "0"
+  | .cons p ps => String.mk (Nat.digitsFrom (.cons p ps) n)
+
+-- ## Located output of command macros
+-- Runtime `Syntax` has no positions. A command macro names a node of its input by its
+-- *path*: the child indices from the macro's input node down to it. Its output may
+-- contain these pseudo-commands, which the command elaborator interprets
+-- (Elab/ProcMacro.lean): an error or an info message at the node at `path`, and Wiz
+-- source text, parsed as commands and positioned at that node.
+def Syntax.pathAtoms : List Nat → SyntaxF .false
+  | .nil => .nil
+  | .cons i is => .cons (.atom (Nat.repr i)) (Syntax.pathAtoms is)
+def Syntax.pathNode (path : List Nat) : Syntax := .node "null" (Syntax.pathAtoms path)
+def Syntax.errorAt (path : List Nat) (msg : String) : Syntax :=
+  Syntax.mkNode "macro.error" (.cons (Syntax.pathNode path) (.cons (.atom msg) .nil))
+def Syntax.infoAt (path : List Nat) (msg : String) : Syntax :=
+  Syntax.mkNode "macro.info" (.cons (Syntax.pathNode path) (.cons (.atom msg) .nil))
+def Syntax.sourceAt (path : List Nat) (src : String) : Syntax :=
+  Syntax.mkNode "macro.source" (.cons (Syntax.pathNode path) (.cons (.atom src) .nil))
