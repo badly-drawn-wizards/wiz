@@ -3176,11 +3176,11 @@ def applyFound (gs : Globals) (c : TCtx) (ty : Val) (f : Nat) (asg : List (Optio
   | .none => .none
   | .some w => applyGlobal gs c ty f asg cod (.cons (eval (TCtx.env c) w) env) (.app acc w)
 end
-inductive SigR where
+inductive PSigR where
   | ok (f : String) (ty : Tm)
   | err (msg : String)
 -- the type of `axiom f (bs) : T` or of a partial `def f (bs) : T`
-def sigType (gs : Globals) (d : Syntax) : SigR := match kid d 1 with
+def sigType (gs : Globals) (d : Syntax) : PSigR := match kid d 1 with
   | .ident f => match kids (kid d 4) with
     | .cons _ (.cons tyS _) => match teleT gs ES.empty (Cx.mk empty (Globals.scope gs) .nil) (kids (kid d 3)) tyS with
       | .err m => .err m
@@ -3204,11 +3204,11 @@ def unwrapDefs : List Syntax → List Syntax
   | .nil => .nil
   | .cons d rest => .cons (unwrapDef d) (unwrapDefs rest)
 -- the witness of a partial definition's type: the one written, or one found
-def findWit (gs : Globals) (f : String) (ty : Tm) : SigR := match wit gs empty (eval .nil ty) 4 with
+def findWit (gs : Globals) (f : String) (ty : Tm) : PSigR := match wit gs empty (eval .nil ty) 4 with
   | .some w => .ok f w
   | .none => .err (String.append (String.append "partial definition " f)
       ": no witness found for its type; give one with `partial (default := w) def`")
-def witnessOf (gs : Globals) (d : Syntax) (f : String) (ty : Tm) : SigR := match strEq (kindOf d) "command.partial" with
+def witnessOf (gs : Globals) (d : Syntax) (f : String) (ty : Tm) : PSigR := match strEq (kindOf d) "command.partial" with
   | .true => match kids (kid d 1) with
     | .nil => findWit gs f ty
     | .cons _ _ => match checkT gs ES.empty (Cx.mk empty (Globals.scope gs) .nil) (kid (kid d 1) 3) (eval .nil ty) with
