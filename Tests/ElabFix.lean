@@ -31,6 +31,34 @@ def okLibBounded (mb : Nat) (input : String) (infos : List String := []) : IO Un
   let peak ← peakMB
   unless peak ≤ mb do throw (IO.userError s!"used {peak} MB (bound: {mb} MB)")
 
+/-- (13b) The messages of `input`, with `lib/Prelude.wiz` and the module `Priv` (`priv`)
+importable: privacy is per module. -/
+def runPriv (priv input : String) : IO (Array String × Array String) := do
+  let lib ← preludeLoader
+  let s := runFrontend (R := ZeroOneMany) input { loader := fun m => if m == "Priv" then some priv else lib m }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  pure (errs, (s.messages.filter (·.severity != .error)).map (·.text))
+
+def okPriv (priv input : String) (infos : List String := []) : IO Unit := do
+  let (errs, msgs) ← runPriv priv input
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  checkEq (repr infos).pretty (repr msgs.toList).pretty
+
+def failsPriv (priv input fragment : String) : IO Unit := do
+  let (errs, _) ← runPriv priv input
+  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+  unless (errs[0]!.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+/-- A module with private names: a definition, a structure with a private constructor
+(and a smart constructor), a private structure. -/
+def privMod : String :=
+  "import Prelude\nprivate def secret : Nat := 42\ndef reveal : Nat := secret\n" ++
+  "structure Pos (A : Type) where\n  private mk ::\n  val : A\n" ++
+  "def Pos.one : Pos Nat := Pos.mk 1\ndef Pos.dbl (p : Pos Nat) : Pos Nat := Pos.mk (Nat.add p.val p.val)\n" ++
+  "def Pos.pair (p : Pos Nat) : Nat × Nat := (p.val, p.1)\n" ++
+  "private structure Hidden where\n  x : Nat\n"
+
 def group : Group where
   name := "elabfix"
   exercise := "elaborator bugs"
@@ -129,7 +157,37 @@ def group : Group where
         okLib ("import Prelude\nstructure P where\n  a : Nat\n  b : Nat\n" ++
           "def app {S B : Type} (s : S) (k : S → B) : B := k s\n" ++
           "def f (p : P) : Nat := match p with\n  | (x, y, _) => app x (fun x => Nat.add x y)\n" ++
-          "#eval f (P.mk 2 3)") ["5"] }
+          "#eval f (P.mk 2 3)") ["5"] },
+    { name := "named arguments: explicit, implicit and instance parameters (13a)", run := fun _ =>
+        okLib ("import Prelude\nclass BitPack (A : Type) where\n  width : Nat\ninstance : BitPack Bool := BitPack.mk 1\n" ++
+          "def bitWidth (0 A : Type) [BitPack A] : Nat := BitPack.width (A := A)\n" ++
+          "def sub (a b : Nat) : Nat := Nat.sub a b\ndef ident {A : Type} (x : A) : A := x\n" ++
+          "def pick {A : Type} (x y : A) (b : Bool) : A := match b with\n  | .true => x\n  | .false => y\n" ++
+          "#eval bitWidth Bool\n#eval sub (b := 1) 5\n#eval sub (a := 7) (b := 2)\n#eval ident (A := Nat) 3\n" ++
+          "#eval @ident (A := Nat) 4\n#eval @ident (x := 5) Nat\n#eval pick (b := .false) 1 2\n" ++
+          "#eval BitPack.width (A := Bool)\n#eval @BitPack.width (A := Bool) _\ndef n : Nat := sub (b := 1) (Nat.succ 5)\n#eval n")
+          ["1", "4", "5", "3", "4", "5", "2", "1", "1", "5"] },
+    { name := "named arguments: errors (13a)", run := fun _ => do
+        failsLib "import Prelude\ndef sub (a b : Nat) : Nat := Nat.sub a b\ndef x := sub (c := 1) 2" "no parameter named 'c'"
+        failsLib "import Prelude\ndef sub (a b : Nat) : Nat := Nat.sub a b\ndef x := sub (b := 1) (b := 2)" "already given"
+        failsLib "import Prelude\ndef sub (a b : Nat) : Nat := Nat.sub a b\ndef x : Nat := sub (b := 1)" "has no argument"
+        failsLib "import Prelude\ndef x : Nat := (b := 1)" "only allowed as an argument" },
+    { name := "private names are visible only in their module (13b)", run := fun _ => do
+        okPriv privMod "import Priv\n#eval reveal\n#eval Pos.dbl Pos.one\n#eval (Pos.dbl Pos.one).val\n#eval Pos.val Pos.one\n#eval Pos.pair Pos.one"
+          ["42", "(2, ())", "2", "1", "(1, 1)"]
+        failsPriv privMod "import Priv\ndef x : Nat := secret" "'secret' is private to module Priv"
+        failsPriv privMod "import Priv\ndef x : Nat := Hidden.mk 1" "private to module Priv"
+        -- in their own module (the main file) private names are ordinary
+        okPriv "" (privMod ++ "#eval secret\n#eval (Pos.mk 3 : Pos Nat).val\ndef h : Hidden := Hidden.mk 2\n#eval h.x") ["42", "3", "2"] },
+    { name := "a private constructor: no forging from another module (13b)", run := fun _ => do
+        failsPriv privMod "import Priv\ndef x : Pos Nat := Pos.mk 5" "'Pos.mk' is private to module Priv"
+        failsPriv privMod "import Priv\ndef x : Pos Nat := @Pos.mk Nat 5" "private"
+        -- the type is opaque here: no tuple, no look-alike structure
+        failsPriv privMod "import Priv\ndef x : Pos Nat := (5, ())" "Pos"
+        failsPriv privMod "import Priv\nstructure Fake (A : Type) where\n  val : A\ndef x : Pos Nat := Fake.mk 5" "mismatch"
+        failsPriv privMod "import Priv\ndef x (p : Pos Nat) : Nat := p.1" "cannot project" },
+    { name := "`private def` right after a structure (13b)", run := fun _ =>
+        okLib "import Prelude\nstructure P where\n  x : Nat\nprivate def q : P := P.mk 1\n#eval q.x" ["1"] }
   ]
 
 end Tests.ElabFix
