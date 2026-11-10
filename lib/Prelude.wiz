@@ -265,6 +265,8 @@ inductive Tac where
   | whnf (g : Nat) (e : Expr) (k : Expr → Tac)
   | unfold (g : Nat) (n : String) (e : Expr) (k : Expr → Tac)
   | rewrite (g : Nat) (h : Expr) (rtl : Bool) (k : Nat → Tac)
+  -- reflection: is `n` a constructor? its type, number of parameters, number of fields
+  | ctorInfo (n : String) (k : Option (String × Nat × Nat) → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -318,6 +320,10 @@ def TacticM.unfold (g : Nat) (n : String) (e : Expr) : TacticM Expr := fun k => 
 -- Rewrite goal `g` with `h : a = b` (a complete term): every `a` in it becomes `b` (or
 -- every `b` becomes `a`, if `rtl`). The new goal.
 def TacticM.rewrite (g : Nat) (h : Expr) (rtl : Bool) : TacticM Nat := fun k => Tac.rewrite g h rtl k
+-- Is the constant `n` a constructor of an inductive type? Then the type's name, its
+-- number of parameters and the constructor's number of fields: `List.cons` is
+-- `("List", 1, 2)`, and `List.cons A x L` has the fields `x` and `L` after one parameter.
+def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := fun k => Tac.ctorInfo n k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
@@ -690,3 +696,91 @@ def Tactic.rwBack : Tactic := fun stx => do
   g' ← TacticM.rewrite g p.1 .true;
   TacticM.replaceMainGoal (.cons g' .nil)
 attribute [tactic tactic.rwBack] Tactic.rwBack
+
+-- ## Reading and building terms (stage 6g)
+--
+-- A reflected term is an application spine: a head (a constant, a variable, …) and its
+-- arguments. Constructor applications are reflected by name (`List.cons A x L`,
+-- `Nat.succ n`), so data in a goal is read like any other application.
+def Expr.charsEq : List Char → List Char → Bool
+  | .nil, .nil => .true
+  | .cons a xs, .cons b ys => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => Expr.charsEq xs ys
+    | .false => .false
+  | _, _ => .false
+def Expr.nameEq : String → String → Bool
+  | .mk a, .mk b => Expr.charsEq a b
+-- the head of an application and its arguments, in order (in front of `acc`)
+def Expr.spineOnto : Expr → List Expr → Expr × List Expr
+  | .app f a, acc => Expr.spineOnto f (.cons a acc)
+  | e, acc => (e, acc)
+def Expr.getAppFn (e : Expr) : Expr := (Expr.spineOnto e .nil).1
+def Expr.getAppArgs (e : Expr) : List Expr := (Expr.spineOnto e .nil).2
+def Expr.mkApp : Expr → List Expr → Expr
+  | f, .nil => f
+  | f, .cons a rest => Expr.mkApp (.app f a) rest
+-- the name of the constant at the head, and the arguments
+def Expr.constApp (e : Expr) : Option (String × List Expr) := match Expr.spineOnto e .nil with
+  | (.const n, args) => .some (n, args)
+  | _ => .none
+def Expr.headName (e : Expr) : Option String := match Expr.getAppFn e with
+  | .const n => .some n
+  | _ => .none
+-- the arguments of `e`, if it is the constant `n` applied to some
+def Expr.appOf (n : String) (e : Expr) : Option (List Expr) := match Expr.spineOnto e .nil with
+  | (.const m, args) => (match Expr.nameEq m n with
+    | .true => .some args
+    | .false => .none)
+  | _ => .none
+def Expr.isAppOf (n : String) (e : Expr) : Bool := match Expr.appOf n e with
+  | .some _ => .true
+  | .none => .false
+-- Syntactic equality (binder names don't matter; an opaque handle only equals itself).
+-- Constructor applications are compared like any application.
+def Expr.beq : Expr → Expr → Bool
+  | .var i, .var j => Nat.beq i j
+  | .const a, .const b => Expr.nameEq a b
+  | .sort u, .sort v => Nat.beq u v
+  | .pi _ _ q₁ d₁ c₁, .pi _ _ q₂ d₂ c₂ => Bool.and (Expr.beq q₁ q₂) (Bool.and (Expr.beq d₁ d₂) (Expr.beq c₁ c₂))
+  | .lam _ b₁, .lam _ b₂ => Expr.beq b₁ b₂
+  | .app f a, .app g b => Bool.and (Expr.beq f g) (Expr.beq a b)
+  | .lit n, .lit m => Nat.beq n m
+  | .opaque i, .opaque j => Nat.beq i j
+  | _, _ => .false
+-- One level of a term, as a tactic wants to match on it: the head with all its
+-- arguments (after Ltac2's `Constr.Unsafe.kind` and Lean's `getAppFn`/`getAppArgs`).
+inductive ExprView where
+  | const (name : String) (args : List Expr)
+  | var (i : Nat) (args : List Expr)
+  | lit (n : Nat)
+  | sort (u : Nat)
+  | pi (x : String) (implicit : Bool) (q : Expr) (dom : Expr) (body : Expr)
+  | lam (x : String) (body : Expr)
+  -- an opaque head (a kernel form with no `Expr` constructor), or a redex
+  | other (head : Expr) (args : List Expr)
+def Expr.view (e : Expr) : ExprView := match Expr.spineOnto e .nil with
+  | (.const n, args) => .const n args
+  | (.var i, args) => .var i args
+  | (.lit n, .nil) => .lit n
+  | (.sort u, .nil) => .sort u
+  | (.pi x i q d b, .nil) => .pi x i q d b
+  | (.lam x b, .nil) => .lam x b
+  | (h, args) => .other h args
+def List.dropN {A : Type} : Nat → List A → List A
+  | .zero, xs => xs
+  | .succ n, .nil => .nil
+  | .succ n, .cons _ xs => List.dropN n xs
+-- `e` as a constructor application: the constructor's name and its fields (the
+-- arguments after the type's parameters). `List.cons A x L` is `("List.cons", [x, L])`.
+def TacticM.ctorApp (e : Expr) : TacticM (Option (String × List Expr)) := match Expr.constApp e with
+  | .none => TacticM.pure .none
+  | .some p => do
+    i ← TacticM.ctorInfo p.1;
+    match i with
+    | .none => TacticM.pure .none
+    | .some info => TacticM.pure (.some (p.1, List.dropN info.2.1 p.2))
+-- … after computing `e`'s head (`Prog.swap p q` is read as the `Prog.get p …` it
+-- computes to)
+def TacticM.whnfCtorApp (g : Nat) (e : Expr) : TacticM (Option (String × List Expr)) := do
+  e' ← TacticM.whnf g e;
+  TacticM.ctorApp e'

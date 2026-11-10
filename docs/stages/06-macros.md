@@ -236,3 +236,51 @@ None of this is trusted: the unfolded or rewritten type is a candidate that `cha
 checks by conversion, and the kernel checks the finished term (it does not evaluate the
 `transp` proof: nothing here depends on proofs computing).
 
+## 6g: reflection of constructors, and reading terms ✅
+
+```
+-- the goal  P (x :: Nat.succ x :: L)  as a tactic reads it (TacticM.goalType):
+--   before:  app (const "P") (opaque 0)
+--   now:     P (List.cons Nat x (List.cons Nat (Nat.succ x) L))
+```
+
+Data types are descriptions (stage 4), and a constructor application, once evaluated,
+is `con ('cons, x, L, refl, ())`: a tagged payload that says nothing of its type or the
+type's parameters. `reflect` could only hand tactics an opaque handle, so a tactic
+could not look inside `x :: L` or tell `Prog.get l k` from `Prog.ret v` except by
+unifying with every constructor in turn, and two reflections of the same term were two
+different handles.
+
+* **Type-directed reflection** (`reflectT`, `Elab/Tactic.lean`). The payload does not
+  say which constructor of which type it is, but its *type* does: a `con` with tag
+  `cons` at the nominal type `List A` is `List.cons A x L`. So reflection follows the
+  types down the term: the head of an application (a constant, a variable of the goal's
+  context) gives the types of its arguments, a `fun` at a `Π` type the type of its
+  body, a constructor the types of its fields. A `con` at a known nominal type is
+  reflected as `const "T.c"` applied to the type's parameters (read off the type) and
+  the fields (read off the payload by the shape of the constructor's own declaration,
+  `ctorShape?`, which also undoes the universe lifting of Q4). The kernel's numeric
+  operations are reflected by their registered names (`Nat.succ n`).
+* **Building terms back needs nothing new**: constructors are globals, so `reify`
+  already turns `List.cons A x L` into the term that evaluates to the same `con`. The
+  **trusted base is unchanged**. Reflection is only what a tactic reads; whatever it
+  builds is elaborated, unified with the goal and checked by the kernel as before.
+* **Where it applies.** The goal's type and hypotheses, a goal's hole, the results of
+  `elabInfer`, `normalize`, `whnf`, `unfold` and `instantiate` (for these the type is
+  computed from the term's head, `RCtx.typeOf?`, which works with holes in the term).
+  A `con` whose type is not known (an argument of an unsolved metavariable, the inside
+  of another opaque kernel form, a structure's tuple) is still an opaque handle. A
+  term without data is reflected exactly as before (`hasData`).
+* **Handles are interned**: a term that stays opaque (a quantity, an equation, a raw
+  eliminator) gets the handle it got before, so two reflections of a goal are equal
+  `Expr`s and `Expr.beq` can compare them.
+* **Reading terms** (the prelude; after Lean's `getAppFn`/`getAppArgs` and Ltac2's
+  one-level `Constr.Unsafe.kind`): `Expr.view e : ExprView` is the head with all its
+  arguments (`const name args`, `var i args`, `pi`, `lam`, `lit`, `sort`, `other`);
+  `Expr.getAppFn`, `Expr.getAppArgs`, `Expr.mkApp`, `Expr.headName`, `Expr.appOf n e`
+  (the arguments, if `e` is `n` applied to some), `Expr.beq` (syntactic equality, now
+  meaningful for data), `Expr.nameEq`.
+* **Constructors.** `TacticM.ctorInfo n` says whether the constant `n` is a
+  constructor (its type, number of parameters and of fields), `TacticM.ctorApp e` gives
+  a constructor application's name and fields, and `TacticM.whnfCtorApp g e` computes
+  first: `Prog.swap p q` is read as the `Prog.get p …` it computes to, in one request.

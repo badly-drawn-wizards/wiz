@@ -25,7 +25,9 @@ application, and numerals. Every other kernel form becomes an `opaque` handle in
 `TacState.handles`, remembering how many variables were in scope where it was made;
 when it is used deeper inside binders, it is lifted. Nominal inductive types (`μ`
 with a display hint) are reflected as their names applied to their arguments, so
-tactics see `Vec A n`.
+tactics see `Vec A n`; and constructor applications, which evaluate to tagged payloads,
+are reflected by name too, `Vec.cons A n x xs`, by following the types
+("Typed reflection" below).
 -/
 
 namespace Wiz.Elab
@@ -67,6 +69,7 @@ def change := 27
 def whnf := 28
 def unfold := 29
 def rewrite := 30
+def ctorInfo := 31
 end TacTag
 
 structure Goal (R : Type) where
@@ -99,13 +102,22 @@ def decodeBool (v : RVal) : Option Bool := v.tag?.map (· == 1)
 
 /-! ## Reflection -/
 
+/-- The handle for the opaque term `t` at `depth`: the one it already has, if it was
+reflected before (among the last 256 handles), so that two reflections of a term are
+the same `Expr` and tactics can compare them syntactically. -/
+def internHandle (hs : Array (Term R × Nat)) (t : Term R) (depth : Nat) : Array (Term R × Nat) × Nat :=
+  let n := min hs.size 256
+  match (List.range n).find? fun k => let (t', d) := hs[hs.size - 1 - k]!; d == depth && t' == t with
+  | some k => (hs, hs.size - 1 - k)
+  | none => (hs.push (t, depth), hs.size)
+
 /-- **Exercise 6.4a.** Reflect a term (with `depth` variables in scope) as an `Expr`
 value (constructors, in order: `var i`, `const n`, `sort u`, `pi x implicit q dom body`,
 `lam x body`, `app f a`, `lit n`, `opaque id`; use `mkCon`, `encodeString`,
 `encodeBool`). Levels are dropped from constants (`reify` makes fresh ones), a sort
 is reflected only if its level is a numeral, and a `μ`/`ν` with a display hint
-`(T, us, args)` becomes `T` applied to `args`. Anything else is `opaque`: push
-`(t, depth)` onto the handles and use its index. -/
+`(T, us, args)` becomes `T` applied to `args`. Anything else is `opaque`: its handle is
+the index `internHandle` gives `(t, depth)` among the handles. -/
 partial def reflect (t : Term R) (depth : Nat) : StateM (Array (Term R × Nat)) RVal := do
   --<sol
   match t with
@@ -125,9 +137,9 @@ partial def reflect (t : Term R) (depth : Nat) : StateM (Array (Term R × Nat)) 
   | _ => mkOpaque
 where
   mkOpaque : StateM (Array (Term R × Nat)) RVal := do
-    let hs ← get
-    set (hs.push (t, depth))
-    pure (mkCon 7 [.nat hs.size])
+    let (hs, i) := internHandle (← get) t depth
+    set hs
+    pure (mkCon 7 [.nat i])
   --|ex
   --| sorry
   --sol>
@@ -169,6 +181,227 @@ partial def reify (handles : Array (Term R × Nat)) (v : RVal) (depth : Nat) : E
   --|ex
   --| sorry
   --sol>
+
+/-! ## Typed reflection: constructors by name (stage 6g)
+
+Data types are descriptions, and a constructor application `List.cons A x L` is, once
+evaluated, `con ('cons, x, L, refl, ())`: a tagged payload with no trace of the type or
+its parameters. `reflect` alone can only make that an opaque handle. But the **type**
+tells: a `con` whose type is the nominal `List A` with tag `cons` is `List.cons A x L`.
+So reflection is type-directed where it matters: `reflectT` follows the types down a
+term (the head of an application gives the types of its arguments, a `fun` checked
+against a `Π` the type of its body) and shows a `con` at a known nominal type as its
+constructor applied to the type's parameters and the fields, which is exactly what
+`reify` turns back into that `con` (constructors are globals). A registered operation
+on numbers (`Nat.succ n`, the kernel's `natOp`) is shown as its global, too.
+
+Nothing here is trusted: a reflected term is only what a tactic *reads*; what it builds
+from it is elaborated and checked as before. Where the type is not known (an argument of
+a metavariable, the inside of another opaque form) a `con` stays an opaque handle. -/
+
+/-- How a constructor's declaration places a field in the payload (`Elab/Inductive.lean`,
+Q4): as itself, lifted (`up x`), or an infinitary field with a lifted domain. -/
+inductive FieldPos where
+  | plain | up | hrec
+  deriving BEq, Inhabited
+
+/-- A constructor declaration's shape: the number of parameters, and its fields. -/
+structure CtorShape where
+  nParams : Nat
+  fields : List FieldPos
+
+private def lamsBody : Term R → Nat × Term R
+  | .lam _ b => let (n, t) := lamsBody b; (n + 1, t)
+  | t => (0, t)
+
+private def tupleParts : Term R → List (Term R)
+  | .pair a b => a :: tupleParts b
+  | t => [t]
+
+/-- The tag of a payload: its labels and index (the tag is lifted above `Type`). -/
+def payloadTag? : Term R → Option (List Name × Nat)
+  | .tag ls i | .up (.tag ls i) => some (ls, i)
+  | _ => none
+
+/-- Read a constructor's shape off its declaration,
+`fun Δ fields => con (tag, field₁, …, fieldₙ, refl …, ())`. -/
+def ctorShape? (d : Decl R) : Option CtorShape := do
+  guard d.inline
+  let (n, body) := lamsBody (← d.value)
+  let .con (.pair tag rest) := body | none
+  let _ ← payloadTag? tag
+  let parts := tupleParts rest
+  guard (parts.length ≥ 2)
+  let comps := parts.take (parts.length - 2)
+  let nF := comps.length
+  guard (nF ≤ n)
+  let fields ← comps.zipIdx.mapM fun (c, k) =>
+    let j := nF - 1 - k
+    match c with
+    | .var i => if i == j then some FieldPos.plain else none
+    | .up (.var i) => if i == j then some FieldPos.up else none
+    | .lam _ (.app (.var i) (.down (.var 0))) => if i == j + 1 then some FieldPos.hrec else none
+    | _ => none
+  pure { nParams := n - nF, fields }
+
+/-- A payload component as the field the constructor was given. -/
+def FieldPos.field : FieldPos → Term R → Term R
+  | .plain, c => c
+  | .up, .up a => a
+  | .up, c => .down c
+  | .hrec, c =>
+    let eta : Term R := .lam "h" (.app (c.lift 1) (.up (.var 0)))
+    match c with
+    | .lam _ (.app f (.down (.var 0))) => (f.strengthen? 0).getD eta
+    | _ => eta
+
+/-- Does a term contain data that only typed reflection shows (a `con`, a `natOp`)? -/
+partial def hasData (t : Term R) : Bool :=
+  match t with
+  | .con _ | .natOp .. => true
+  | t => (Id.run <| (t.mapChildrenM (m := StateM Bool) pure fun _ c => do
+      if !(← get) && hasData c then set true
+      pure c).run false).2
+
+/-- What typed reflection knows about the variables in scope (innermost first). -/
+structure RCtx (R : Type) where
+  env : Env R
+  types : List (Option (VTy R))
+  lvl : Nat
+
+def RCtx.ofLocal (ctx : LocalCtx R) : RCtx R :=
+  { env := ctx.env, types := ctx.types.map some, lvl := ctx.lvl }
+
+def RCtx.bind (rc : RCtx R) (ty : Option (VTy R)) : RCtx R :=
+  { env := Val.var rc.lvl :: rc.env, types := ty :: rc.types, lvl := rc.lvl + 1 }
+
+abbrev ReflM (R : Type) := StateT (Array (Term R × Nat)) (ElabM R)
+
+def forceR (v : Val R) : ReflM R (Val R) := fun s => do pure (← force v, s)
+def globalsR : ReflM R (Globals R) := fun s => do pure (← getGlobals, s)
+def zonkR (l : Lvl) (t : Term R) : ReflM R (Term R) := fun s => do pure (← zonk l t, s)
+
+/-- The type of a function's result at the argument `a`, evaluating `a` only if the
+type depends on it. -/
+def RCtx.instArg (rc : RCtx R) (g : Globals R) (c : Closure R) (a : Term R) : VTy R :=
+  match c with
+  | .mk env body => eval g ((if body.hasVar 0 then eval g rc.env a else .unit .zero) :: env) body
+
+/-- The type of a constant or a variable (the head of an application). -/
+def RCtx.headType? (rc : RCtx R) (g : Globals R) : Term R → Option (VTy R)
+  | .const n us => (g.find? n).map fun d => eval g [] (d.type.instLevels d.levelParams us)
+  | .var i => (rc.types[i]?).join
+  | _ => none
+
+/-- The type of an application of a constant or a variable, without the kernel (it may
+have holes): for the terms a request is handed, whose type nobody states. -/
+def RCtx.typeOf? (rc : RCtx R) (t : Term R) : ElabM R (Option (VTy R)) := do
+  let g ← getGlobals
+  let (h, args) := Term.spine t
+  let mut ty? := rc.headType? g h
+  for a in args do
+    let some ty := ty? | return none
+    match ← force ty with
+    | .pi _ _ _ _ cod _ => ty? := some (rc.instArg g cod a)
+    | _ => return none
+  pure ty?
+
+mutual
+
+/-- Reflect `t` of type `ty?` (when it is known). As `reflect`, but type-directed. -/
+partial def reflectT (rc : RCtx R) (t : Term R) (ty? : Option (VTy R)) : ReflM R RVal := do
+  let mkOpq : ReflM R RVal := do
+    let (hs, i) := internHandle (← get) t rc.lvl
+    set hs
+    pure (mkCon 7 [.nat i])
+  match t with
+  | .var i => pure (mkCon 0 [.nat i])
+  | .const n _ => pure (mkCon 1 [encodeString n])
+  | .sort l => match l.toNat? with
+    | some n => pure (mkCon 2 [.nat n])
+    | none => mkOpq
+  | .natLit n => pure (mkCon 6 [.nat n])
+  | .pi x bi q A B _ =>
+    let g ← globalsR
+    pure (mkCon 3 [encodeString x, encodeBool (bi == .implicit), ← reflectT rc q none, ← reflectT rc A none,
+      ← reflectT (rc.bind (some (eval g rc.env A))) B none])
+  | .lam x b =>
+    let pi? ← match ty? with
+      | some ty => (match ← forceR ty with
+        | .pi _ _ _ dom cod _ => pure (some (dom, cod))
+        | _ => pure none)
+      | none => pure none
+    match pi? with
+    | some (dom, cod) =>
+      pure (mkCon 4 [encodeString x, ← reflectT (rc.bind (some dom)) b (some (Closure.inst (← globalsR) cod (Val.var rc.lvl)))])
+    | none => pure (mkCon 4 [encodeString x, ← reflectT (rc.bind none) b none])
+  | .app .. =>
+    let (h, args) := Term.spine t
+    let g ← globalsR
+    let rh ← match h with
+      | .app .. => mkOpq  -- (not reached: `spine` strips every application)
+      | h => reflectT rc h none
+    reflectArgs rc rh (rc.headType? g h) args
+  | .mu _ _ _ _ .szInf (some (T, us, args)) | .nu _ _ _ _ .szInf (some (T, us, args)) =>
+    reflectArgs rc (mkCon 1 [encodeString T]) (rc.headType? (← globalsR) (.const T us)) args
+  | .natOp op args =>
+    let g ← globalsR
+    match g.builtins.find? (·.1 == op) with
+    | some (_, n) => reflectArgs rc (mkCon 1 [encodeString n]) (rc.headType? g (.const n [])) args.toList
+    | none => mkOpq
+  | .con (.pair tag rest) =>
+    match ← reflectCtor rc tag rest ty? with
+    | some r => pure r
+    | none => mkOpq
+  | _ => mkOpq
+
+/-- Reflect the arguments of an application whose head (reflected as `acc`) has type `ty?`. -/
+partial def reflectArgs (rc : RCtx R) (acc : RVal) (ty? : Option (VTy R)) : List (Term R) → ReflM R RVal
+  | [] => pure acc
+  | a :: as => do
+    let pi? ← match ty? with
+      | some ty => (match ← forceR ty with
+        | .pi _ _ _ dom cod _ => pure (some (dom, cod))
+        | _ => pure none)
+      | none => pure none
+    let ra ← reflectT rc a (pi?.map (·.1))
+    let g ← globalsR
+    reflectArgs rc (mkCon 5 [acc, ra]) (pi?.map fun (_, cod) => rc.instArg g cod a) as
+
+/-- A payload at the nominal type `T Δ ξ`: `T.c Δ fields`. -/
+partial def reflectCtor (rc : RCtx R) (tag rest : Term R) (ty? : Option (VTy R)) : ReflM R (Option RVal) := do
+  let some ty := ty? | return none
+  let some (ls, i) := payloadTag? tag | return none
+  let (T, us, targs) ← match ← forceR ty with
+    | .mu _ _ _ _ _ (some h) => pure h
+    | _ => return none
+  let some c := ls[i]? | return none
+  let g ← globalsR
+  let cname := T ++ "." ++ c
+  let some d := g.find? cname | return none
+  let some sh := ctorShape? d | return none
+  let parts := tupleParts rest
+  unless parts.length == sh.fields.length + 2 && targs.length ≥ sh.nParams do return none
+  let fields := ((parts.take sh.fields.length).zip sh.fields).map fun ((c : Term R), (pos : FieldPos)) => pos.field c
+  -- the parameters come from the type; they give the fields their types
+  let mut acc := mkCon 1 [encodeString cname]
+  let mut cty := eval g [] (d.type.instLevels d.levelParams us)
+  for p in targs.take sh.nParams do
+    let .pi _ _ _ dom cod _ ← forceR cty | return none
+    acc := mkCon 5 [acc, ← reflectT rc (← zonkR rc.lvl (quote g rc.lvl p)) (some dom)]
+    cty := Closure.inst g cod p
+  some <$> reflectArgs rc acc (some cty) fields
+
+end
+
+/-- A constructor's type, number of parameters and number of fields, for tactics
+(`TacticM.ctorInfo`): `none` if `n` is not a constructor of an inductive type. -/
+def ctorInfo? (g : Globals R) (n : Name) : Option (Name × Nat × Nat) := do
+  let d ← g.find? n
+  let sh ← ctorShape? d
+  let T := ".".intercalate ((n.splitOn ".").dropLast)
+  guard (g.contains (T ++ ".desc"))
+  pure (T, sh.nParams, sh.fields.length)
 
 /-! ## Names for introduced variables
 

@@ -1988,11 +1988,20 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let some gl := st.goals[← num r]? | throwAt info "tactic: unknown goal"
     pure gl
   -- reflect a term (zonked first) in a goal's context
-  let refl (st : TacState R) (gl : Goal R) (t : Term R) (depth : Nat := gl.ctx.lvl) :
+  -- (constructor applications by name, where the type `ty?` and the types inside `t` tell:
+  -- `reflectT`; a term with no data in it takes the plain `reflect`)
+  let refl (st : TacState R) (gl : Goal R) (t : Term R) (ty? : Option (VTy R) := none) :
       ElabM R (RVal × TacState R) := do
-    let t ← zonk depth t
-    let (r, hs) := (reflect t depth).run st.handles
-    pure (r, { st with handles := hs })
+    let t ← zonk gl.ctx.lvl t
+    if hasData t then
+      let (r, hs) ← (reflectT (RCtx.ofLocal gl.ctx) t ty?).run st.handles
+      pure (r, { st with handles := hs })
+    else
+      let (r, hs) := (reflect t gl.ctx.lvl).run st.handles
+      pure (r, { st with handles := hs })
+  -- the type of a term a request was handed, as far as its head tells
+  let typeOf? (gl : Goal R) (t : Term R) : ElabM R (Option (VTy R)) :=
+    (RCtx.ofLocal gl.ctx).typeOf? t
   let addGoal (st : TacState R) (gl : Goal R) : TacState R × Nat :=
     ({ st with goals := st.goals.push gl }, st.goals.size)
   let unifyGoal (gl : Goal R) (t : Term R) : ElabM R Unit := do
@@ -2024,6 +2033,11 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let st' ← try runTac code info st (fld 0)
       catch e => runTac code info st (apply code (fld 1) (encodeString e.msg))
     return ← runTac code info st' (fld 2)
+  if tag == TacTag.ctorInfo then
+    let ans := match ctorInfo? g (← str (fld 0)) with
+      | some (T, nParams, nFields) => mkCon 1 [encodePair (encodeString T) (encodePair (.nat nParams) (.nat nFields))]
+      | none => mkCon 0 []
+    return ← runTac code info st (apply code (fld 1) ans)
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
@@ -2036,7 +2050,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let (r, st) ← refl st gl (quote g lvl gl.ty)
     return ← runTac code info st (apply code (fld 1) r)
   if tag == TacTag.goalExpr then
-    let (r, st) ← refl st gl gl.tm
+    let (r, st) ← refl st gl gl.tm (some gl.ty)
     return ← runTac code info st (apply code (fld 1) r)
   if tag == TacTag.goalHyps then
     let mut st := st
@@ -2079,7 +2093,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (apply code (fld 2) (.nat id))
   if tag == TacTag.whnf then
     let t ← zonk lvl (← reify st.handles (fld 1) lvl)
-    let (r, st) ← refl st gl (← whnfTerm gl.ctx t)
+    let (r, st) ← refl st gl (← whnfTerm gl.ctx t) (← typeOf? gl t)
     return ← runTac code info st (apply code (fld 2) r)
   if tag == TacTag.unfold then
     let n ← str (fld 1)
@@ -2088,7 +2102,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     | some _ => throwAt info s!"unfold: {n} is not a definition"
     | none => throwAt info s!"unfold: unknown constant {n}"
     let t ← zonk lvl (← reify st.handles (fld 2) lvl)
-    let (r, st) ← refl st gl (← unfoldIn gl.ctx n t)
+    let (r, st) ← refl st gl (← unfoldIn gl.ctx n t) (← typeOf? gl t)
     return ← runTac code info st (apply code (fld 3) r)
   if tag == TacTag.rewrite then
     let h ← zonk lvl (← reify st.handles (fld 1) lvl)
@@ -2122,7 +2136,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (fld 2)
   if tag == TacTag.elabInfer then
     let (t, ty) ← infer gl.ctx (← stxOf (fld 1))
-    let (r₁, st) ← refl st gl t
+    let (r₁, st) ← refl st gl t (some ty)
     let (r₂, st) ← refl st gl (quote g lvl ty)
     return ← runTac code info st (apply code (fld 2) (encodePair r₁ r₂))
   if tag == TacTag.assign then
@@ -2139,13 +2153,15 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let (st, id) := addGoal st { ctx := gl.ctx, ty, tm := m }
     return ← runTac code info st (apply code (fld 2) (.nat id))
   if tag == TacTag.normalize then
-    let v' ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
-    let (r, st) ← refl st gl (quote g lvl v')
+    let t ← reify st.handles (fld 1) lvl
+    let v' ← evalIn gl.ctx t
+    let (r, st) ← refl st gl (quote g lvl v') (← typeOf? gl (← zonk lvl t))
     return ← runTac code info st (apply code (fld 2) r)
   if tag == TacTag.instantiate then
     let body ← reify st.handles (fld 1) (lvl + 1)
     let arg ← reify st.handles (fld 2) lvl
-    let (r, st) ← refl st gl (body.instantiateAt 0 arg)
+    let t := body.instantiateAt 0 arg
+    let (r, st) ← refl st gl t (← typeOf? gl (← zonk lvl t))
     return ← runTac code info st (apply code (fld 3) r)
   if tag == TacTag.isDefEq then
     let a ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)

@@ -845,6 +845,40 @@ def MList : List Nat → Nat → Pred
 def Ent (A B : Pred) : Prop := (h : Nat) → A h → B h
 "
 
+/-- Data in goals, and a tactic `dump` that traces the goal as a tree of head names. -/
+def reflectPrelude : String := "import Prelude
+inductive Vec (A : Type) : Nat → Type where
+  | nil : Vec A 0
+  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (Nat.succ n)
+inductive Prog : Type where
+  | ret (n : Nat)
+  | get (l : Nat) (k : Nat → Prog)
+def swap (p : Nat) : Prog := Prog.get p (fun v => Prog.ret v)
+def P (xs : List Nat) : Prop := True
+def Q (c : Prog) : Prop := True
+def V {n : Nat} (v : Vec Bool n) : Prop := True
+def Expr.dumpL : Nat → List Expr → String
+  | .zero, _ => \"…\"
+  | _, .nil => \"\"
+  | .succ f, .cons e es => String.append \" \" (String.append (match Expr.view e with
+      | .const n .nil => n
+      | .const n args => String.append \"(\" (String.append n (String.append (Expr.dumpL f args) \")\"))
+      | .var i .nil => \"#\"
+      | .var i args => String.append \"(#\" (String.append (Expr.dumpL f args) \")\")
+      | .lit n => \"lit\"
+      | .sort u => \"Sort\"
+      | .pi _ _ _ _ _ => \"Π\"
+      | .lam x b => String.append \"(λ\" (String.append x (String.append \".\" (String.append (Expr.dumpL f (.cons b .nil)) \")\")))
+      | .other _ _ => \"?\") (Expr.dumpL f es))
+def Expr.dump (e : Expr) : String := Expr.dumpL 1000 (.cons e .nil)
+syntax (name := dump) \"dump\" : tactic
+def dumpTac : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  ty ← TacticM.goalType g;
+  TacticM.trace (Expr.dump ty)
+attribute [tactic tactic.dump] dumpTac
+"
+
 def tacticGroup : Group where
   name := "tactics"
   exercise := "Exercises 6.4–6.6"
@@ -954,6 +988,34 @@ def tacticGroup : Group where
            "r2 : (a : Nat) → (b : Nat) → a = b → (P : Nat → Type) → P a → P b"]
         failsLib "import Prelude\ndef r (a b c : Nat) (h : a = b) (P : Nat → Prop) (pc : P c) : P c := by\n  rw h\n  exact pc" "rewrite: the goal does not mention a"
         failsLib "import Prelude\ndef r (a : Nat) (P : Nat → Prop) (pa : P a) : P a := by\n  rw pa\n  exact pa" "rewrite: not an equation" },
+    -- typed reflection (docs/stages/06-macros.md, 6g)
+    { name := "constructor applications are reflected by name, with the type's parameters", run := fun _ =>
+        okLib (reflectPrelude ++
+          "def t1 (x : Nat) (L : List Nat) : P (.cons x (.cons (Nat.succ x) L)) := by\n  dump\n  exact ()\n" ++
+          "def t2 : P (.cons 3 .nil) := by\n  dump\n  exact ()\n" ++
+          "def t3 (b : Bool) : V (Vec.cons b (Vec.cons .true Vec.nil)) := by\n  dump\n  exact ()\n" ++
+          "def t4 (p : Nat) : Q (Prog.get p (fun v => Prog.ret (Nat.succ v))) := by\n  dump\n  exact ()")
+          [" (P (List.cons Nat # (List.cons Nat (Nat.succ #) #)))",
+           " (P (List.cons Nat lit (List.nil Nat)))",
+           " (V (Nat.succ (Nat.succ lit)) (Vec.cons Bool (Nat.succ lit) # (Vec.cons Bool lit Bool.true (Vec.nil Bool))))",
+           " (Q (Prog.get # (λv. (Prog.ret (Nat.succ #)))))"] },
+    { name := "a reflected goal reifies to the same goal; two reflections are syntactically equal", run := fun _ =>
+        okLib (reflectPrelude ++ "syntax (name := again) \"again\" : tactic\n" ++
+          "def againTac : Tactic := fun _ => do\n  g ← TacticM.mainGoal;\n  ty ← TacticM.goalType g;\n  ty2 ← TacticM.goalType g;\n" ++
+          "  u ← TacticM.trace (match Expr.beq ty ty2 with\n    | .true => \"equal\"\n    | .false => \"different\");\n" ++
+          "  g' ← TacticM.change g ty;\n  TacticM.replaceMainGoal (.cons g' .nil)\nattribute [tactic tactic.again] againTac\n" ++
+          "def t (b : Bool) (x : Nat) : (V (Vec.cons b Vec.nil) → P (.cons x .nil)) := by\n  again\n  trace_state\n  intros\n  exact ()")
+          ["equal", "b : Bool\nx : Nat\n⊢ V 1 (.cons 0 b .nil) → P (.cons x .nil)"] },
+    { name := "whnf, then the constructor: a program is read off by its head (no unification)", run := fun _ =>
+        okLib (reflectPrelude ++ "syntax (name := shape) \"shape\" : tactic\n" ++
+          "def shapeArg : List Expr → TacticM Unit\n  | .cons c _ => do\n    g ← TacticM.mainGoal;\n    c' ← TacticM.whnf g c;\n    r ← TacticM.ctorApp c';\n" ++
+          "    (match r with\n    | .some p => do\n      i ← TacticM.ctorInfo p.1;\n      TacticM.trace (String.append p.1 (String.append \" with fields\" (Expr.dumpL 100 p.2)))\n    | .none => TacticM.trace \"not a constructor\")\n" ++
+          "  | .nil => TacticM.fail \"no argument\"\n" ++
+          "def shapeTac : Tactic := fun _ => do\n  g ← TacticM.mainGoal;\n  ty ← TacticM.goalType g;\n  match Expr.appOf \"Q\" ty with\n  | .some args => shapeArg args\n  | .none => TacticM.fail \"not Q\"\n" ++
+          "attribute [tactic tactic.shape] shapeTac\n" ++
+          "def t (p : Nat) : Q (swap p) := by\n  shape\n  exact ()\n" ++
+          "def t' (c : Prog) : Q c := by\n  shape\n  exact ()")
+          ["Prog.get with fields # (λv. (Prog.ret #))", "not a constructor"] },
     { name := "traces reach the language server (a diagnostic) and the infoview (wiz/plainGoal)", run := fun _ => do
         let src := "import Prelude\ndef k : Nat → Nat := by\n  intro n\n  trace_state\n  exact n\n"
         let (srv, out) ← tacticLsp src
