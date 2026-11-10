@@ -5,7 +5,7 @@ import Optic
 --
 -- A lifetime `'a` lowers to an erased variable `ρ : Region`. Every handle type below is a
 -- `structure` (or `inductive`) with `ρ` as a parameter, so `ρ` is part of the type's
--- identity (phantom parameters, README 22e): `Shr ρ A` and `Shr ρ' A` are different
+-- identity (phantom parameters, docs/stages/22-numbers.md, 22e): `Shr ρ A` and `Shr ρ' A` are different
 -- types, and `ρ` is inferred from a handle's type. Nothing of it reaches run time.
 --
 -- Borrow checking is typing: a borrow scope (`Shr.borrow`, `Uniq.borrow`,
@@ -53,7 +53,7 @@ structure Lent (ρ : Region) (S : Type) where
   lent : Unit
 
 -- The constructors `Shr.mk`, `Uniq.mk`, `Mut.mk` and `Lent.mk` are private to this
--- module (`private mk ::`, README 13b): other modules get handles only from the scopes
+-- module (`private mk ::`, docs/stages/13-language.md, 13b): other modules get handles only from the scopes
 -- and operations below, and see the handle types as opaque (no tuple or look-alike
 -- structure converts to one), reading them through `.val`/`.store`/`.lent`. `MutOpt`'s
 -- constructors stay public: their fields are handles already, so they forge nothing.

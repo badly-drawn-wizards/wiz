@@ -24,7 +24,7 @@ coinductive Signal (d : Domain) (A : Type) where
   private head : A
   private tail : Signal d A
 -- `head`/`tail` are simulation-only: synthesis rejects them on a symbolic signal. They
--- are private to this module (docs/stages/13-*.md, 13b), with the coconstructor
+-- are private to this module (docs/stages/13-language.md, 13b), with the coconstructor
 -- `Signal.mk`, and elsewhere `Signal` is opaque: other modules build and observe signals
 -- only through the combinators below and `sample`/`Signal.at` (and can't define one by
 -- copatterns). drafts/hdl/rejected/observe_signal.wiz.

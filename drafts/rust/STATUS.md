@@ -23,7 +23,7 @@ and `lake test -- regions`.
 | `…/08_first_mut.wiz` | `Option (&mut U64)` as `MutOpt` | some / none cases |
 | `…/09_bsearch.wiz` | `&'a Vec U64` as `Shr ρ`, `while` with early `return` | found / not found |
 | `…/10_regions.wiz` | `'a : 'b` bounds as erased `Outlives` arguments (`longest`, `remember` storing a `&'a` into a `&'b` slot), nested scopes handing out evidence | `.ok 8` |
-| `drafts/rust/rejected/*.wiz` | E0515 (return a local's borrow), E0597 (borrow outlives its scope; short reference stored into a long slot), E0499 (two `&mut`), E0502 (lender used while borrowed), missing `'a : 'b`; a forged handle (`forge_handle`: the handles' constructors are private to `lib/Region.wiz`, README 13b) | each rejected with a type mismatch, the forgery as private (`check.sh`) |
+| `drafts/rust/rejected/*.wiz` | E0515 (return a local's borrow), E0597 (borrow outlives its scope; short reference stored into a long slot), E0499 (two `&mut`), E0502 (lender used while borrowed), missing `'a : 'b`; a forged handle (`forge_handle`: the handles' constructors are private to `lib/Region.wiz`, docs/stages/13-language.md, 13b) | each rejected with a type mismatch, the forgery as private (`check.sh`) |
 
 ## Doesn't check (wishful), and why
 

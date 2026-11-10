@@ -181,7 +181,7 @@ whose frames reuse the nodes, `plug` as the backward function) is what the front
 should emit for performance (05, `insert_zip`), proven equal to the closure form later.
 
 **L17. Regions at call sites.** Region arguments are inferred from the handles' types
-(phantom parameters, README 22e): `swap ra rb`, never `@swap ρ₁ ρ₂`. Outlives arguments
+(phantom parameters, docs/stages/22-numbers.md, 22e): `swap ra rb`, never `@swap ρ₁ ρ₂`. Outlives arguments
 are passed explicitly (the evidence a scope handed out, L22). A call that only hands
 `&mut` arguments back moves the handles in and rebinds them (no scope: the handed-back
 handle is the same borrow). A call that **returns a borrow** of a `&mut` argument

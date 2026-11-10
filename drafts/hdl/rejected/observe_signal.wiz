@@ -1,6 +1,6 @@
 import Signal
 -- REJECTED (hand-written Wiz outside the library): a signal's observations are private
--- to Signal.wiz (docs/stages/13-*.md, 13b), so user code can't read the current cycle's
+-- to Signal.wiz (docs/stages/13-language.md, 13b), so user code can't read the current cycle's
 -- value of a wire (that would be a combinational function of a *value*, not a circuit),
 -- nor build a signal from a value and a tail. Each definition below is an error.
 def peek {d : Domain} (s : Signal d Nat) : Nat := s.head

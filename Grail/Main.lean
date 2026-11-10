@@ -5,7 +5,7 @@ import Grail.Deps
 # grail, a build tool for Wiz
 
 `grail build [TARGET…]` builds the targets of the package in the current directory
-(all of them by default), as described by its `grail.wiz`. See the README.
+(all of them by default), as described by its `grail.wiz`. See docs/stages/23-grail.md.
 -/
 
 open Wiz Grail
