@@ -3446,10 +3446,20 @@ def deepType : String :=
   "inductive A5 where\n  | mk\ninductive A4 where\n  | mk (x : A5)\ninductive A3 where\n  | mk (x : A4)\n" ++
   "inductive A2 where\n  | mk (x : A3)\ninductive A1 where\n  | mk (x : A2)\n"
 
+/-- A number type of one's own, with an addition that disagrees with the native one. -/
+def ownNat : String :=
+  "inductive N where\n  | zero\n  | succ (n : N)\ndef K (a b : N) : N := a\nbuiltin nat := N\n" ++
+  "builtin nat.zero := N.zero\nbuiltin nat.succ := N.succ\nbuiltin nat.add := K\n"
+
+/-- Some error (with `lib/` importable) mentions `fragment`. -/
+def failsWithLib (input : String) (fragment : String) : IO Unit := do
+  let errs := (← messagesLib input).filter (·.startsWith "error: ")
+  unless errs.any (fun e => (e.splitOn fragment).length > 1) do
+    throw (IO.userError s!"no error mentions '{fragment}': {errs}")
+
 /-- O3: a registration outside the library that disagrees with native addition. -/
 def badAdd : String :=
-  "inductive N where\n  | zero\n  | succ (n : N)\ndef K (a b : N) : N := a\nbuiltin nat := N\n" ++
-  "builtin nat.zero := N.zero\nbuiltin nat.succ := N.succ\nbuiltin nat.add := K\n" ++
+  ownNat ++
   "def h (n : N) : K n 3 = n := refl n\ndef bad : False := absurd (h 2)\n#print axioms bad\n"
 
 /-- The trusted base: partial definitions need a kernel-checked witness (O2), and
@@ -3507,20 +3517,60 @@ def trustGroup : Group where
     { name := "O3: a registration in a module from an -I directory is an axiom", run := fun _ => do
         let dir : System.FilePath := s!"/tmp/wiz-trust-{← IO.monoNanosNow}"
         IO.FS.createDirAll dir
-        IO.FS.writeFile (dir / "Mine.wiz") "import Prelude\ndef Nat.k (a b : Nat) : Nat := a\nbuiltin nat.add := Nat.k\n"
+        IO.FS.writeFile (dir / "Mine.wiz") ownNat
         -- a `Prelude` in the directory doesn't replace the library's
         IO.FS.writeFile (dir / "Prelude.wiz") "builtin nat := Nat\n"
-        let src := "import Prelude\nimport Mine\ndef x : Nat := Nat.k 1 2\n#print axioms x\n"
         let roots : List System.FilePath := ["lib", dir]
-        let cl ← Wiz.Module.loadClosure roots src
+        let cl ← Wiz.Module.loadClosure roots "import Prelude\nimport Mine\n"
         let own := Wiz.Module.fromFirstRoot roots cl
         check (own.contains "Prelude" && !own.contains "Mine") s!"trusted modules: {own}"
-        let s := runFrontend (R := ZeroOneMany) src { loader := fun m => (cl.get? m).map (·.2), trustedModule := own.contains }
-        let msgs := s.messages.toList.map fun m => (m.severity == .warning, m.text)
-        IO.FS.removeDirAll dir
-        let expect := [(true, "module Mine: 3:1: warning: builtin nat.add := Nat.k is not checked: it is an axiom of every declaration that depends on Nat.k (see `#print axioms`)"),
-          (false, "'x' depends on axioms: [builtin nat.add := Nat.k]")]
-        checkEq (repr expect).pretty (repr msgs).pretty },
+        let init : CommandState ZeroOneMany := { loader := fun m => (cl.get? m).map (·.2), trustedModule := own.contains }
+        let s := runFrontend (R := ZeroOneMany) "import Mine\ndef x : N := K 1 2\n#print axioms x\n" init
+        let warns := (s.messages.toList.filter (·.severity == .warning)).map (·.text)
+        let infos := (s.messages.toList.filter (·.severity == .info)).map (·.text)
+        check (s.messages.all (·.severity != .error)) s!"errors: {s.messages.toList.map (·.text)}"
+        checkEq 4 warns.length
+        check (warns.all (·.startsWith "module Mine: ")) s!"warnings: {warns}"
+        checkEq 1 infos.length
+        for r in ["builtin nat.add := K", "builtin nat := N", "builtin nat.zero := N.zero", "builtin nat.succ := N.succ"] do
+          check (infos.any fun l => (l.splitOn r).length > 1) s!"{r} is not listed: {infos}"
+        -- the module and the Prelude both register `nat`: an error at the import, also
+        -- when the module's commands are replayed from the cache
+        let both := "import Prelude\nimport Mine\n"
+        let once (s : CommandState ZeroOneMany) : Bool :=
+          s.messages.any fun m => m.severity == .error && (m.text.splitOn "already registered").length > 1
+        check (once (runFrontend (R := ZeroOneMany) both init)) "the frontend took a second `builtin nat`"
+        let cache ← IO.FS.createTempDir
+        for _ in [0:2] do
+          let (s, _) ← Cache.elaborateCached cache both init 0
+          check (once s) s!"the cache took a second `builtin nat`: {s.messages.toList.map (·.text)}"
+          check (s.globals.builtins.lookup "nat" == some "Nat") "`nat` was redirected"
+        IO.FS.removeDirAll dir },
+    { name := "a builtin key is registered once (soundness audit T14)", run := fun _ => do
+        -- the probe: a second `nat.add` redirected how the Prelude's `Nat.add` unfolds, and
+        -- `boom : False` showed no axioms
+        failsWithLib ("import Prelude\ndef K (a b : Nat) : Nat := a\nbuiltin nat.add := K\n" ++
+          "def h (n : Nat) : Nat.add n 1 = n := refl n\ndef boom : False := absurd (h 0)\n") "builtin nat.add is already registered (as Nat.add)"
+        -- the same for the numerals' constructors and type
+        failsWithLib "import Prelude\ndef Z : Nat := 1\nbuiltin nat.zero := Z\n" "builtin nat.zero is already registered"
+        failsWithLib "import Prelude\ndef S (n : Nat) : Nat := n\nbuiltin nat.succ := S\n" "builtin nat.succ is already registered"
+        failsWithLib "import Prelude\ninductive M where\n  | z\nbuiltin nat := M\n" "builtin nat is already registered"
+        -- one key per constant too
+        failsWith (ownNat ++ "builtin nat.sub := K\n") "K is already registered as builtin nat.add"
+        -- numerals unfold through `nat.zero` and `nat.succ`: constructors only
+        failsWith ("inductive N where\n  | zero\n  | succ (n : N)\ndef S (n : N) : N := .zero\n" ++
+          "builtin nat := N\nbuiltin nat.zero := N.zero\nbuiltin nat.succ := S\n") "must be a constructor of N"
+        failsWith ("inductive N where\n  | zero\n  | succ (n : N)\ndef Z : N := .succ .zero\n" ++
+          "builtin nat := N\nbuiltin nat.zero := Z\n") "must be a constructor of N" },
+    { name := "a registered operation depends on the numerals' registrations", run := fun _ => do
+        -- `P z z` is the numeral `1` (0 ^ 0) with no literal in the term: it unfolds
+        -- through `nat.succ`
+        let msgs ← messagesLib ("inductive N where\n  | zero\n  | succ (n : N)\ndef P (a b : N) : N := a\n" ++
+          "builtin nat := N\nbuiltin nat.zero := N.zero\nbuiltin nat.succ := N.succ\nbuiltin nat.pow := P\n" ++
+          "def x : N := P .zero .zero\n#print axioms x\n")
+        let some l := msgs.getLast? | throw (IO.userError "no output")
+        for r in ["builtin nat.pow := P", "builtin nat := N", "builtin nat.zero := N.zero", "builtin nat.succ := N.succ"] do
+          check ((l.splitOn r).length > 1) s!"{r} is not listed: {l}" },
     { name := "Prelude registrations are trusted and compute natively", run := fun _ =>
         okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4\n#print axioms t\n#eval 3 * 7 + Nat.pow 2 10\n"
           ["'t' does not depend on any axioms", "1045"] },

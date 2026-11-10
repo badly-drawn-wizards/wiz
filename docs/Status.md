@@ -166,9 +166,23 @@ the results of the probes listed in the "Probes" section.
   Registrations are checked for shape (`nat` an inductive type, each operation a
   definition `N → … → N`), numerals need `nat.zero` and `nat.succ`, and a numeral at a
   type that isn't the registered data type is an error. PR #5 (`agent/trust-gaps`).
+* **A hole in that accounting, closed** (soundness audit, T14). A second registration of
+  a key was accepted: after `import Prelude`, `builtin nat.add := K` made the Prelude's
+  `Nat.add n 1` unfold through `K` on a variable (the kernel finds the definition by key)
+  while numerals stayed native, so `boom : False` followed, and `#print axioms boom`
+  showed nothing, since `boom` never mentions `K`. Now **a key is registered once and a
+  constant has one key**: a second registration is an error at the command, and also when
+  a module elaborated on its own is replayed from the cache next to another registration.
+  `nat.zero` and `nat.succ` must be constructors of the registered type (numerals unfold
+  through them), and a constant registered under a `nat.` key depends on the numerals'
+  registrations as a literal does (`P z z` with `nat.pow := P` is the numeral `1` with no
+  literal in the term). So with the Prelude imported nothing more can be registered, and
+  without it every registration is an axiom of whatever uses its constant or a numeral.
 * **Regression tests.** Group *trust*: the probe's warnings and `#print axioms` output, a
   registration in a module from an `-I` directory, the crash and the shape errors, and the
-  Prelude's numerals still computing natively with no axioms.
+  Prelude's numerals still computing natively with no axioms; the T14 probe and second
+  registrations of `nat`, `nat.zero`, `nat.succ` (rejected, also through the cache),
+  non-constructors as `nat.zero`/`nat.succ` (rejected).
 
 ### F5. Description fields in smaller universes (Q4, decision (a)) — **fixed**
 

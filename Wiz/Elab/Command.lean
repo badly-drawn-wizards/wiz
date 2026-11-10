@@ -673,9 +673,17 @@ def builtinShapeError (g : Globals R) (key : Name) (d : Decl R) : Option String 
     | some N =>
       let (as, r) := doms d.type
       let arity := natOpArity key
+      -- numerals unfold through `nat.zero` and `nat.succ`: they must be `N`'s own
+      -- constructors, not definitions that only have their types
+      let rec isCtor : Term R → Bool
+        | .lam _ b => isCtor b
+        | .con _ => true
+        | _ => false
       if d.value.isNone then some "it must be a definition"
       else if as.length != arity || !as.all (isN N) then
         some s!"it must take {arity} argument{if arity == 1 then "" else "s"} of type {N}"
+      else if (key == "nat.zero" || key == "nat.succ") && !(d.inline && (d.value.map isCtor).getD false) then
+        some s!"it must be a constructor of {N}"
       else if !(key == "nat.beq" || key == "nat.blt") && !isN N r then some s!"its result must have type {N}"
       else none
 
@@ -1104,6 +1112,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo",
       "nat.div", "nat.mod", "nat.pow", "nat.land", "nat.lor", "nat.xor", "nat.shiftLeft", "nat.shiftRight", "nat.log2"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
+    -- one registration per key, and one key per constant: a second `builtin nat.add := K`
+    -- would redirect how the first one's constant unfolds (the kernel finds the definition
+    -- by key), an assumption that no declaration using it would show
+    else if let some m := s.globals.builtins.lookup key then
+      report .error cmd.info s!"builtin {key} is already registered (as {m}); a builtin can be registered only once"
+    else if let some (k, _) := s.globals.builtins.find? fun (k, m) => m == n && known.contains k then
+      report .error cmd.info s!"{n} is already registered as builtin {k}"
     else match s.globals.find? n with
     | none => report .error cmd.info s!"unknown declaration {n}"
     | some d =>
