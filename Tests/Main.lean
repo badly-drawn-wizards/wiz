@@ -106,6 +106,9 @@ against them), and `lake test -- --list-cases SELECTOR…` the selected cases, a
 FILE (its group, index, name, wall time in seconds, whether it passed, and its notes:
 `Tests.note`), labelled with `--shard NAME`. -/
 def main (args : List String) : IO UInt32 := do
+  -- a `panic!` fails the case that hits it (each case runs in its own process), as it
+  -- fails `wiz check`; `--panic-probe continue` turns it off again
+  Wiz.exitOnPanic
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
     | "--run" :: _ | "--check" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true

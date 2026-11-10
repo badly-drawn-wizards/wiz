@@ -910,7 +910,7 @@ def hintCarrier (X : Term R) : Decl R :=
 evaluate `fst ()` and print the constructor of the value), after `exitOnPanic` when MODE
 is `exit`. Prints the verdict. -/
 def panicProbe (mode site : String) : IO UInt32 := do
-  if mode == "exit" then Wiz.exitOnPanic
+  Wiz.exitOnPanic (mode == "exit")
   if site == "eval" then
     IO.println (valCtorName (Wiz.eval (R := R) {} [] (.fst .tt)))
     return 0
@@ -978,6 +978,24 @@ def lintGroup : Group where
           -- each elimination to a lazyInd, as the evaluator does, and read the result back.
           let lz : Val R := .lazyInd .zero plainV plainV .zero plainV plainV plainV plainV #[] (thunk stuck)
           checkValRows "Elim (applied to a lazyInd)" (elimTable.map (·.toValRow fun e => vElims (semGlobals false) lz #[e])) },
+    { name := "type equality: `T = T` never computes to False, for any value constructor", run := fun _ =>
+        -- (`vEqType`'s last case answers `False` for two canonical types that no case
+        -- above it matched: right only while every former it calls canonical has its own
+        -- case. A former added to that list without one would make `T = T` false.)
+        report "T = T" do
+          let g := semGlobals false
+          let one : Level := .succ .zero
+          let mut types := 0
+          for row in valTable ++ headTable do
+            let w := row.build (fun _ => .unit one) (fun _ => .mk [] (.unit one)) (fun _ => one)
+            if propSort? (whnf w) == some false then types := types + 1
+            match whnf (vEqType g w w) with
+            | .empty _ => fail s!"Val.{row.name}: `T = T` computes to False for T := {repr (quote g 0 w)}"
+            | _ => pure ()
+          -- the witnesses that are types above `Prop` (pi, sigma, sort, unit, empty, enum,
+          -- desc, mu, nu, ulift, qty, size, sizeLt): if this drops, the witnesses no longer
+          -- reach the cases under test
+          expect (types ≥ 13) s!"only {types} witnesses are types above Prop: the property no longer tests the canonical formers" },
     { name := "Level: every constructor has a row; instParams, instMVars, params, hasMVar, normalize, equiv, toNat?, format reach every child", run := fun _ => do
         let ctors ← readCtors "Wiz/Core/Level.lean" "Level"
         report "Level" do
