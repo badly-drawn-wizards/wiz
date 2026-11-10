@@ -68,7 +68,7 @@ def txStep (clksPerBit : Nat) (s : TxState) (inp : Option (BitVec 8)) : TxState 
     let phase' := if tick then (if s.bit == 7 then TxPhase.stop else TxPhase.data) else TxPhase.data
     let bit' := if tick then s.bit + 1 else s.bit
     let shift' := if tick then BitVec.lshr s.shift 1 else s.shift
-    (TxState.mk phase' bit' baud' shift', (BitVec.getBit 0 s.shift, Bool.true))
+    (TxState.mk phase' bit' baud' shift', (BitVec.getBit s.shift 0, Bool.true))
   | .stop => (TxState.mk (if tick then .idle else .stop) 0 baud' s.shift, (Bool.true, Bool.true))
 
 def txInit : TxState := TxState.mk .idle 0 0 0                            -- wishful: numeric-classes-bitvec
