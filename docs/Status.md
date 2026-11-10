@@ -519,6 +519,8 @@ that checks everything. Wiz's situation:
   so they can't prove anything; they are trusted to agree with the definitions, as in
   Lean, and the tests compare the two (`#eval` runs the definitions, compiled code the
   natives). They are not `builtin` commands, so the registration checks don't apply.
+  `#print axioms d` lists the ones `d` depends on, the library's too, marked `native`
+  (`native f := g`, `native T := mk/get`).
 * **Termination** of the kernel is not proved and is known to fail (D1); all evaluation
   functions are `partial` in Lean.
 * **The evaluator reduces proofs.** `eval` is strict, and `vCast` forces `e` (through

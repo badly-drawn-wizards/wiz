@@ -1,0 +1,115 @@
+── builtins (Stage 6b)
+  ✓ import the prelude
+  ✓ a stuck number times a big numeral, in a type (nat-pow-blowup)
+  ✓ Nat.beq and Nat.lt compute natively on numerals
+  ✓ numerals and native arithmetic
+  ✓ recursion over native numbers
+  ✓ numerals reduce in the kernel
+  ✓ native equality
+  ✓ division, powers and bits compute natively (#eval)
+  ✓ division, powers and bits in the IR interpreter (#run)
+  ✓ division, powers and bits compute natively in the kernel
+  ✓ the definitions behind the natives compute too (unfolded)
+  ✓ implemented_by: compiled code runs the implementation, the kernel the model
+  ✓ implemented_by: a fast implementation of a recursive definition
+  ✓ implemented_by: the types must agree
+  ✓ implemented_by: not on a builtin
+  ✓ the natives agree with the definitions (n / 0 = 0)
+  ✓ kernel arithmetic on literals is native
+  ✓ literals unfold under eliminators
+  ✓ different literals are not equal
+  ✓ non-ASCII strings are cheap
+  ✓ do notation (a macro)
+  ✓ quotations build Syntax (Exercise 6.2)
+  ✓ a procedural macro (Exercise 6.3)
+  ✓ procedural macros are hygienic
+  ✓ a procedural macro can fail
+  ✓ only a Macro can be a macro
+  ✓ infinitary inductive: recursor
+  ✓ infinitary inductive: structural recursion through k n
+  ✓ infinitary inductive: indexed, dependent branching
+  ✓ infinitary inductive: the domain may not mention the type
+  ✓ a match does not shadow the user's variables
+  ✓ nested match alternatives line up (colGe)
+  ✓ string literals
+  ✓ a numeral is not a string
+  (builtins: 6 s)
+── backend (Exercise 8.1)
+  ✓ numbers through the IR
+  ✓ recursion, without leaks
+  ✓ lists and strings
+  ✓ closures capture their variables
+  ✓ codata is lazy
+  ✓ codata built by cocon (register) and coit (mealy)
+  ✓ sized recursion
+  ✓ memoised codata, without leaks (also dropped part-way)
+  ✓ infinitary data
+  ✓ type class dictionaries
+  ✓ the IR, with reference counting (Exercise 8.1)
+  ✓ reuse: a dead cell is reused for a new one (Exercise 8.3)
+  ✓ unused parameters are borrowed (the caller drops them)
+  (backend: 1 s)
+── tooling (Stage 11)
+  ✓ queries: an edit re-elaborates only what follows it
+  ✓ queries: hover, definition, completion
+  ✓ the shared cache gives the same results
+  ✓ another build of wiz misses the shared cache (its binary is in the key)
+  ✓ terms survive the cache's format
+  ✓ the language server answers requests
+  (tooling: 2 s)
+── word (Stage 22c)
+  ✓ the definitions compute in the kernel
+  ✓ #eval runs the definitions
+  ✓ #run runs the definitions
+  ✓ compiled code runs the natives (C)
+  ✓ compiled code runs the natives (LLVM)
+  ✓ compiled code calls the native
+  ✓ the width is part of the type, and is inferred
+  ✓ field notation through the fixed widths
+  ✓ 64-bit edges: the kernel
+  ✓ 64-bit edges: #eval
+  ✓ 64-bit edges: #run
+  ✓ 64-bit edges: C
+  ✓ 64-bit edges: LLVM
+  ✓ a word is not an object: no constructor in the IR
+  ✓ a U64 result is read back from a raw box
+  (word: 6 s)
+── lsp (Stage 11 (infoview))
+  ✓ modules in isolation are elaborated once per process
+  ✓ info tree: hovers are unchanged
+  ✓ info tree: tactic states before, between and after tactics
+  ✓ info tree: goals survive an error (unsolved goals, a failing tactic)
+  ✓ info tree: holes and expected types
+  ✓ info tree: matches, unknown identifiers and declarations
+  ✓ info tree: through the shared cache
+  ✓ tagged printing agrees with the printer
+  (lsp: 3 s)
+── lsp-server (Stage 11 (infoview, code actions))
+  ✓ infoview methods are advertised
+  ✓ wiz/plainGoal and wiz/plainTermGoal
+  ✓ wiz/interactiveGoals: tagged text, refs and wiz/subtermInfo
+  ✓ wiz/interactiveTermGoal and the wiz/elaborated notification
+  ✓ code action: did you mean
+  ✓ code action: add missing cases (match and equations)
+  ✓ code action: add type ascription (and codeAction/resolve)
+  ✓ infoview socket: cursor notifications, requests answered on the socket
+  ✓ WebSocket: handshake (RFC 6455's example), frames
+  ✓ WebSocket transport (--ws): infoview requests, editing, origins
+  (lsp-server: 2 s)
+── trust (—)
+  ✓ O2: a partial definition at an empty index is rejected
+  ✓ O2: a partial function into an empty index is rejected
+  ✓ O2: a wrong witness is rejected
+  ✓ partial definitions with inferred witnesses
+  ✓ a witness the search can't find, given with `default`
+  ✓ the kernel checks a partial definition's witness
+  ✓ O3: an unchecked registration is an axiom
+  ✓ O3: numerals at a registered empty type are an error, not a crash
+  ✓ O3: a registration in a module from an -I directory is an axiom
+  ✓ Prelude registrations are trusted and compute natively
+  ✓ #print axioms: the Prelude's castRefl
+  ✓ #print axioms lists native implementations (implemented_by)
+  ✓ O2 in the self-hosted frontend
+  (trust: 111 s)
+
+99 passed, 0 failed

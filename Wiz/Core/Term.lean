@@ -188,6 +188,16 @@ structure Decl (R : Type) where
   witness : Option (Term R) := none
   deriving Repr, Inhabited
 
+/-- The native implementation of a definition (`attribute [implemented_by g] f`): compiled
+code runs `g` for `f`, while the kernel keeps `f`'s definition. It is the `impl` that is
+just another constant (a recursive definition's `impl` is its own equations, a partial
+definition's is its body, which has a witness). -/
+def Decl.nativeImpl? {R : Type} (d : Decl R) : Option Name :=
+  if d.witness.isSome then none else
+  match d.impl with
+  | some (.const g _) => if g == d.name then none else some g
+  | _ => none
+
 namespace Term
 
 variable {R : Type}
