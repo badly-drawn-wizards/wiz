@@ -267,6 +267,41 @@ def checkDiverges (input mode : String) (secs : Nat := 3) : IO Unit := do
   unless out.exitCode == 124 do
     throw (IO.userError s!"expected a timeout, got exit code {out.exitCode}: {out.stderr.take 1000}")
 
+/-- (P1) The probe of `wiz-notes/inert-regularity-probe.wiz`: an inert indexed family
+whose index can hide a proof (`f p`), and statements that need InReg (regularity at inert
+types). Each declaration is checked on its own. -/
+def p1Prelude : String :=
+  "inductive N where\n  | z\n  | s (n : N)\n" ++
+  "inductive Fin2 : N → Type where\n  | fz {0 n : N} : Fin2 (.s n)\n  | fs {0 n : N} (k : Fin2 n) : Fin2 (.s n)\n" ++
+  "def two : N := .s (.s .z)\n"
+
+def p1Decls : List (String × String) := [
+  -- control: no regularity at a type variable
+  ("t5", "def t5 (A : Type) (k : A) (e : A = A) : (cast e k : A) = k := rfl"),
+  -- InReg at an open index (`f p`)
+  ("t1", "def t1 (P : Prop) (f : (0 _ : P) → N) (p : P) (k : Fin2 (f p)) (e : Fin2 (f p) = Fin2 (f p)) : (cast e k : Fin2 (f p)) = k := rfl"),
+  -- the same, at convertible but not syntactically equal types
+  ("t2", "def t2 (P : Prop) (f : (0 _ : P) → N) (p q : P) (k : Fin2 (f p)) (e : Fin2 (f p) = Fin2 (f q)) : (cast e k : Fin2 (f q)) = k := rfl"),
+  -- two casts at convertible types
+  ("h", "def h (P : Prop) (f : (0 _ : P) → N) (p q r : P) (k : Fin2 (f p)) (e1 : Fin2 (f p) = Fin2 (f r)) (e2 : Fin2 (f p) = Fin2 (f q)) : (cast e1 k : Fin2 (f r)) = (cast e2 k : Fin2 (f q)) := rfl"),
+  -- h's instance r := p, by rfl: the δβ-reduct of h3 (P1: it was rejected)
+  ("h2", "def h2 (P : Prop) (f : (0 _ : P) → N) (p q : P) (k : Fin2 (f p)) (e1 : Fin2 (f p) = Fin2 (f p)) (e2 : Fin2 (f p) = Fin2 (f q)) : (cast e1 k : Fin2 (f p)) = (cast e2 k : Fin2 (f q)) := rfl"),
+  ("h3", "def h (P : Prop) (f : (0 _ : P) → N) (p q r : P) (k : Fin2 (f p)) (e1 : Fin2 (f p) = Fin2 (f r)) (e2 : Fin2 (f p) = Fin2 (f q)) : (cast e1 k : Fin2 (f r)) = (cast e2 k : Fin2 (f q)) := rfl\n" ++
+    "def h3 (P : Prop) (f : (0 _ : P) → N) (p q : P) (k : Fin2 (f p)) (e1 : Fin2 (f p) = Fin2 (f p)) (e2 : Fin2 (f p) = Fin2 (f q)) : (cast e1 k : Fin2 (f p)) = (cast e2 k : Fin2 (f q)) := h P f p q p k e1 e2"),
+  -- InReg at a closed index, on a variable
+  ("g1", "def g1 (k : Fin2 (.s (.s .z))) (e : Fin2 (.s (.s .z)) = Fin2 (.s (.s .z))) : (cast e k : Fin2 (.s (.s .z))) = k := rfl"),
+  -- ... through a definition (a glued name and its unfolding)
+  ("g2", "def g2 (k : Fin2 two) (e : Fin2 two = Fin2 (.s (.s .z))) : (cast e k : Fin2 (.s (.s .z))) = k := rfl"),
+  -- a generic statement at an open index, and its closed instance (by rfl)
+  ("g3", "def g3 (n : N) (k : Fin2 n) (e1 e2 : Fin2 n = Fin2 n) : (cast e1 k : Fin2 n) = (cast e2 k : Fin2 n) := rfl\n" ++
+    "def g3i (k : Fin2 two) (e1 e2 : Fin2 two = Fin2 two) : (cast e1 k : Fin2 two) = (cast e2 k : Fin2 two) := rfl")]
+
+/-- The declarations of `p1Decls` that check under the given InReg mode. -/
+def p1Accepted (m : InertReg) : List String :=
+  p1Decls.filterMap fun (n, d) =>
+    let s := runFrontend (R := ZeroOneMany) (p1Prelude ++ d ++ "\n") { globals := { inertReg := m } }
+    if s.messages.any (·.severity == .error) then none else some n
+
 /-- `TyOf a` is `a`'s type (as the elaborator built it) -/
 def tyOfDef : String := "def TyOf {ω A : Type} (a : A) : Type := A\n"
 
@@ -286,6 +321,12 @@ def ottGroup : Group where
         ok "def peq {A B : Type} (p : A × B) : p = (p.1, p.2) := refl p" },
     { name := "different type formers are unequal", run := fun _ =>
         ok "def noconf (e : Unit = Empty) : False := e" },
+    -- F2 (`wiz-notes/soundness-audit.md`): `vAbsurd` had no case for a glued value, so
+    -- `absurd (lem h)` panicked and evaluated to `Sort 0`: `g h` was `Prop`
+    { name := "F2: absurd on a lemma's result is stuck, not Prop", run := fun _ => do
+        let p := "def lem (h : False) : False := h\ndef g (h : False) : Type := absurd (lem h)\n"
+        ok (p ++ "def r (h : False) (x : g h) : g h := x\n#reduce fun (h : False) => g h") ["fun h => absurd h"]
+        fails (p ++ "def u (h : False) : g h := True\n") "mismatch" },
     -- D1: no regularity by default: a cast at a variable type stays a cast
     { name := "cast along a variable `A = A` is not the identity (no regularity; it is with --regularity full)", run := fun _ => do
         let reg := "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl"
@@ -366,6 +407,13 @@ def ottGroup : Group where
     { name := "no regularity at a type with a variable parameter", run := fun _ =>
         fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
           "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "type mismatch" },
+    -- P1: InReg decided by ground equality is stable (h3 checks, and so does its reduct h2)
+    { name := "P1: InReg is stable under substitution (the probe's reduct checks iff the term does)", run := fun _ =>
+        checkEq (repr ["h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .ground)).pretty },
+    { name := "P1: with InReg_conv (decided by conversion), open indices too", run := fun _ =>
+        checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .conv)).pretty },
+    { name := "P1: the old syntactic InReg rejects the reduct h2 of h3 (documents the bug)", run := fun _ =>
+        checkEq (repr ["t1", "h", "h3", "g1", "g3"]).pretty (repr (p1Accepted .syntactic)).pretty },
     { name := "D1: a cast between propositions applies the equivalence, not regularity", run := fun _ =>
         ok abelCoquandLiteral ["fun x => x"] },
     { name := "D1 (R1): regularity only at non-propositions doesn't help (the box is a type)", run := fun _ =>
@@ -3135,7 +3183,23 @@ def builtinGroup : Group where
     { name := "a numeral is not a string", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef s : String := 3" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
-        check (s.messages.any (·.severity == .error)) "expected an error" }
+        check (s.messages.any (·.severity == .error)) "expected an error" },
+    -- S1 (`wiz-notes/soundness-audit.md`): `Term.mapChildrenM` had no case for `natOp`, so
+    -- the variable captured by `Nat.add x` was invisible to `Val.lvlBound`, `sameVal` quoted
+    -- below it, and `μ D_x () = μ D_y ()` computed to `() = ()`. With `T (Nat.add 0)`
+    -- inhabited and `T (Nat.add 1)` empty, `cast (e 0 1)` then gave a closed proof of False.
+    { name := "S1: a variable captured by a native operation counts in syntactic equality (it proved False)", run := fun _ => do
+        let t := "import Prelude\ndef T (f : Nat → Nat) : Type := match f 0 with\n  | .zero => Unit\n  | .succ _ => Empty\n"
+        failsLib (t ++ "def Box (x : Nat) : Type := μ (Desc.arg 1 (T (Nat.add x)) (fun _ => Desc.ret ()) : Desc Unit) ()\n" ++
+          "def e (x y : Nat) : Box x = Box y := ()\n") "mismatch"
+        failsLib (t ++ "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x y : Nat) : Box (Nat.add x) = Box (Nat.add y) := ()\n") "mismatch"
+        failsLib (t ++ "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x y : Nat) : Box (Nat.mul x) = Box (Nat.sub y) := ()\n") "mismatch" },
+    { name := "S1: the same family at the same partial application is still one family", run := fun _ =>
+        okLib ("import Prelude\ndef T (f : Nat → Nat) : Type := match f 0 with\n  | .zero => Unit\n  | .succ _ => Empty\n" ++
+          "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x : Nat) : Box (Nat.add x) = Box (Nat.add x) := rfl\n") }
   ]
 
 
@@ -3411,6 +3475,26 @@ def trustGroup : Group where
     { name := "Prelude registrations are trusted and compute natively", run := fun _ =>
         okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4\n#print axioms t\n#eval 3 * 7 + Nat.pow 2 10\n"
           ["'t' does not depend on any axioms", "1045"] },
+    { name := "#print axioms: the Prelude's castRefl", run := fun _ =>
+        okLib ("import Prelude\n#print axioms castRefl\n" ++
+            "def r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n#print axioms r\n")
+          ["'castRefl' depends on axioms: [castRefl]", "'r' depends on axioms: [castRefl]"] },
+    { name := "#print axioms lists native implementations (implemented_by)", run := fun _ => do
+        let note := "\n(native: an implementation that compiled code runs, trusted to agree with its definition)"
+        okLib ("import Prelude\ndef slow (n : Nat) : Nat := n + 0\ndef fast (n : Nat) : Nat := n\n" ++
+            "attribute [implemented_by fast] slow\ndef use (n : Nat) : Nat := slow n\n" ++
+            "#print axioms use\n#print axioms fast\n" ++
+            -- a recursive definition's own compiled equations and a partial one's body are not natives
+            "def len : List Nat → Nat\n  | .nil => 0\n  | .cons _ t => len t + 1\n#print axioms len\n" ++
+            "partial def spin (n : Nat) : Nat := fast n\n#print axioms spin\n")
+          ["'use' depends on axioms: [native slow := fast]" ++ note, "'fast' does not depend on any axioms",
+           "'len' does not depend on any axioms", "'spin' does not depend on any axioms"]
+        -- the library's are listed too: words run natively, in a native representation
+        okLib ("import Prelude\nimport Word\ndef idW (x : UIntN 8) : UIntN 8 := x\n#print axioms idW\n" ++
+            "def w : UIntN 8 := UIntN.add (UIntN.ofNat 8 3) (UIntN.ofNat 8 4)\n#print axioms w\n")
+          ["'idW' depends on axioms: [native UIntN := UIntN.ofBits/UIntN.toBits]" ++ note,
+           "'w' depends on axioms: [native UIntN.ofNat := UIntN.ofNatNative, native UIntN := UIntN.ofBits/UIntN.toBits, " ++
+             "native UIntN.add := UIntN.addNative, native UIntN.toNat := UIntN.toBits]" ++ note] },
     { name := "O2 in the self-hosted frontend", run := fun _ =>
         selfhostCheckFile (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
             "partial def bad : T .f := bad\npartial def bad2 : T .t → T .f := bad2\n" ++
@@ -3581,6 +3665,70 @@ def vecGroup : Group where
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
         check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }
+  ]
+
+/-! ## Stage 24: separation logic (lib/Logic.wiz, lib/HProp.wiz, lib/Hoare.wiz) -/
+
+def seplogicGroup : Group where
+  name := "seplogic"
+  exercise := "Stage 24"
+  cases := [
+    { name := "the connectives; propext and funext are definitional", run := fun _ => do
+        okLibs ("import Logic\n" ++
+          "def t1 (P Q : Prop) (h : P ∧ Q) : Q ∧ P := And.symm h\n" ++
+          "def t2 (P Q : Prop) (h : P ∨ Q) : Q ∨ P := Or.symm h\n" ++
+          "def t3 : Ex (fun (n : Nat) => n = 3) := Ex.intro (fun (n : Nat) => n = 3) 3 rfl\n" ++
+          "def t4 (P Q : Prop) (h : P ↔ Q) : P = Q := propext h\n" ++
+          "def t5 (f : Nat → Nat) : (fun x => f x) = f := funext (fun x => rfl)\n" ++
+          "def t6 (P : Prop) (n : Not P) (h : P ∨ False) : False := n (Or.resolveRight h (fun f => f))\n" ++
+          "def t7 : Not (Nat.succ 0 = 0) := fun e => e")
+        failsLibs "import Logic\ndef bad (P Q : Prop) (h : P ∨ Q) : P := h P (fun p => p) (fun q => q)" "mismatch" },
+    { name := "heap predicates: ⋆ is commutative, associative, with unit emp (equations, no axioms)", run := fun _ =>
+        okLibs ("import HProp\n" ++
+          "def t1 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂) ⋆ H₃ = H₁ ⋆ (H₂ ⋆ H₃) := star.assoc H₁ H₂ H₃\n" ++
+          "def t2 (H₁ H₂ : HProp Nat) : H₁ ⋆ H₂ = H₂ ⋆ H₁ := star.comm H₁ H₂\n" ++
+          "def t3 (H : HProp Nat) : emp ⋆ H = H := star.emp_l H\n" ++
+          "def t4 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂) ⋆ H₃ ⊢ H₃ ⋆ (H₂ ⋆ H₁) :=\n" ++
+          "  Entails.trans (star.comm_entails (H₁ ⋆ H₂) H₃) (star.mono_r H₃ (star.comm_entails H₁ H₂))") },
+    { name := "the frame property and the wand adjunction", run := fun _ =>
+        okLibs ("import HProp\n" ++
+          "def t1 (H₁ H₁' H₂ : HProp Nat) (m : H₁ ⊢ H₁') : H₁ ⋆ H₂ ⊢ H₁' ⋆ H₂ := star.mono_l H₂ m\n" ++
+          "def t2 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂ ⊢ H₃) ↔ (H₁ ⊢ H₂ −∗ H₃) := wand.adjoint H₁ H₂ H₃\n" ++
+          "def t3 (H₁ H₂ : HProp Nat) : H₁ ⋆ (H₁ −∗ H₂) ⊢ H₂ := wand.cancel H₁ H₂\n" ++
+          "def t4 : (1 ↦ 5) ⋆ (1 ↦ 6) ⊢ @hpure Nat False := pts.same_loc 1 5 6") },
+    { name := "a law that doesn't hold has no proof", run := fun _ => do
+        -- (small ones: a wrong law about `⋆` is rejected too, but only after minutes of
+        -- unfolding; wishful slow-failing-unification)
+        failsLibs "import HProp\ndef bad : (1 ↦ 5) ⊢ (1 ↦ 6) := Entails.refl (1 ↦ 5)" "mismatch"
+        failsLibs "import HProp\ndef bad : @emp Nat ⊢ hpure False := Entails.refl emp" "mismatch" },
+    { name := "wp is a monotone, frame-preserving monad morphism; the triple rules", run := fun _ =>
+        okLibs ("import Hoare\n" ++
+          "def t1 (c : Prog Nat Nat) (f : Nat → Prog Nat Nat) : wp (Prog.bind c f) = W.bind (wp c) (fun a => wp (f a)) := wp.bind c f\n" ++
+          "def t2 (c : Prog Nat Nat) : W.Frame (wp c) := wp.frame c\n" ++
+          "def t3 (P H : HProp Nat) (c : Prog Nat Nat) (Q : Nat → HProp Nat) (t : Triple P c Q) :\n" ++
+          "  Triple (P ⋆ H) c (fun a => Q a ⋆ H) := Triple.frame H t\n" ++
+          "def t4 (l : Nat) : Triple (l ↦ 1) (Prog.bind (Prog.read l) (fun v => Prog.write l (Nat.succ v))) (fun _ => l ↦ 2) :=\n" ++
+          "  Triple.bind (Triple.read l 1) (fun r => Triple.pure (fun e =>\n" ++
+          "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
+    { name := "swap and in-place list reversal are verified", run := fun _ =>
+        okLibs ("import Hoare\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
+          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (star Nat (pts Nat p a) (pts Nat q b)) (Prog.swap p q) (fun _ => star Nat (pts Nat p b) (pts Nat q a))",
+           "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
+    { name := "a faulting program has no triple from a satisfiable precondition", run := fun _ =>
+        failsLibs ("import Hoare\ndef bad : Triple (@emp Nat) (@Prog.fail Nat Unit) (fun (_ : Unit) => @emp Nat) :=\n" ++
+          "  Triple.ret () (fun (_ : Unit) => @emp Nat)") "mismatch" },
+    { name := "the programs run on concrete heaps, as adequacy says", run := fun _ =>
+        okLibs ("import Hoare\n" ++
+          "#eval Prog.show (Prog.swap 1 2) (Heap.ofList (.cons 10 (.cons 20 .nil)) 1) 3 3\n" ++
+          -- the list 1, 2, 3 in cells at 1, 3, 5
+          "#eval Prog.show (Prog.reverse 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 7\n" ++
+          "#eval Prog.show (Prog.reverse 2 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 7\n" ++
+          "#eval Prog.show (Prog.bind (Prog.ref 7) (fun l => Prog.read l)) Heap.empty 0 2")
+          [".some ((), .cons .none (.cons (.some 20) (.cons (.some 10) .nil)))",
+           -- reversed: the cell at 5 (value 3) points to 3 (value 2), which points to 1 (value 1)
+           ".some (5, .cons .none (.cons (.some 1) (.cons (.some 0) (.cons (.some 2) (.cons (.some 1) (.cons (.some 3) (.cons (.some 3) .nil)))))))",
+           -- not enough fuel: a fault
+           ".none", ".some (7, .cons (.some 7) (.cons .none .nil))"] }
   ]
 
 
