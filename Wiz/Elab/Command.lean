@@ -1243,6 +1243,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | (.const "IO" _, [A]) => (true, A)
           | _ => (false, res)
         -- erased parameters (`{A : Type}`) are passed as ◾ and ignored
+        -- a runtime native (`wiz_…`, runtime/wiz.c) takes and returns any other Wiz value
+        -- as it is: an opaque type's (`Chan p`, `MVar A`), a closure, a Σ pair (25a)
+        let kind (t : Term R) : Option Char :=
+          match kind t with
+          | some k => some k
+          | none => if cname.startsWith "wiz_" then some 'w' else none
         let pkind (qa : Term R × Term R) : Option Char := if qa.1 == .qlit 0 then some 'e' else kind qa.2
         match ps.mapM pkind, kind res with
         | some ks, some rk =>
