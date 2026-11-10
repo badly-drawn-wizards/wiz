@@ -286,6 +286,12 @@ def ottGroup : Group where
         ok "def peq {A B : Type} (p : A × B) : p = (p.1, p.2) := refl p" },
     { name := "different type formers are unequal", run := fun _ =>
         ok "def noconf (e : Unit = Empty) : False := e" },
+    -- F2 (`wiz-notes/soundness-audit.md`): `vAbsurd` had no case for a glued value, so
+    -- `absurd (lem h)` panicked and evaluated to `Sort 0`: `g h` was `Prop`
+    { name := "F2: absurd on a lemma's result is stuck, not Prop", run := fun _ => do
+        let p := "def lem (h : False) : False := h\ndef g (h : False) : Type := absurd (lem h)\n"
+        ok (p ++ "def r (h : False) (x : g h) : g h := x\n#reduce fun (h : False) => g h") ["fun h => absurd h"]
+        fails (p ++ "def u (h : False) : g h := True\n") "mismatch" },
     -- D1: no regularity by default: a cast at a variable type stays a cast
     { name := "cast along a variable `A = A` is not the identity (no regularity; it is with --regularity full)", run := fun _ => do
         let reg := "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl"
@@ -3162,7 +3168,23 @@ def builtinGroup : Group where
     { name := "a numeral is not a string", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef s : String := 3" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
-        check (s.messages.any (·.severity == .error)) "expected an error" }
+        check (s.messages.any (·.severity == .error)) "expected an error" },
+    -- S1 (`wiz-notes/soundness-audit.md`): `Term.mapChildrenM` had no case for `natOp`, so
+    -- the variable captured by `Nat.add x` was invisible to `Val.lvlBound`, `sameVal` quoted
+    -- below it, and `μ D_x () = μ D_y ()` computed to `() = ()`. With `T (Nat.add 0)`
+    -- inhabited and `T (Nat.add 1)` empty, `cast (e 0 1)` then gave a closed proof of False.
+    { name := "S1: a variable captured by a native operation counts in syntactic equality (it proved False)", run := fun _ => do
+        let t := "import Prelude\ndef T (f : Nat → Nat) : Type := match f 0 with\n  | .zero => Unit\n  | .succ _ => Empty\n"
+        failsLib (t ++ "def Box (x : Nat) : Type := μ (Desc.arg 1 (T (Nat.add x)) (fun _ => Desc.ret ()) : Desc Unit) ()\n" ++
+          "def e (x y : Nat) : Box x = Box y := ()\n") "mismatch"
+        failsLib (t ++ "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x y : Nat) : Box (Nat.add x) = Box (Nat.add y) := ()\n") "mismatch"
+        failsLib (t ++ "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x y : Nat) : Box (Nat.mul x) = Box (Nat.sub y) := ()\n") "mismatch" },
+    { name := "S1: the same family at the same partial application is still one family", run := fun _ =>
+        okLib ("import Prelude\ndef T (f : Nat → Nat) : Type := match f 0 with\n  | .zero => Unit\n  | .succ _ => Empty\n" ++
+          "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x : Nat) : Box (Nat.add x) = Box (Nat.add x) := rfl\n") }
   ]
 
 
@@ -3608,6 +3630,70 @@ def vecGroup : Group where
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
         check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }
+  ]
+
+/-! ## Stage 24: separation logic (lib/Logic.wiz, lib/HProp.wiz, lib/Hoare.wiz) -/
+
+def seplogicGroup : Group where
+  name := "seplogic"
+  exercise := "Stage 24"
+  cases := [
+    { name := "the connectives; propext and funext are definitional", run := fun _ => do
+        okLibs ("import Logic\n" ++
+          "def t1 (P Q : Prop) (h : P ∧ Q) : Q ∧ P := And.symm h\n" ++
+          "def t2 (P Q : Prop) (h : P ∨ Q) : Q ∨ P := Or.symm h\n" ++
+          "def t3 : Ex (fun (n : Nat) => n = 3) := Ex.intro (fun (n : Nat) => n = 3) 3 rfl\n" ++
+          "def t4 (P Q : Prop) (h : P ↔ Q) : P = Q := propext h\n" ++
+          "def t5 (f : Nat → Nat) : (fun x => f x) = f := funext (fun x => rfl)\n" ++
+          "def t6 (P : Prop) (n : Not P) (h : P ∨ False) : False := n (Or.resolveRight h (fun f => f))\n" ++
+          "def t7 : Not (Nat.succ 0 = 0) := fun e => e")
+        failsLibs "import Logic\ndef bad (P Q : Prop) (h : P ∨ Q) : P := h P (fun p => p) (fun q => q)" "mismatch" },
+    { name := "heap predicates: ⋆ is commutative, associative, with unit emp (equations, no axioms)", run := fun _ =>
+        okLibs ("import HProp\n" ++
+          "def t1 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂) ⋆ H₃ = H₁ ⋆ (H₂ ⋆ H₃) := star.assoc H₁ H₂ H₃\n" ++
+          "def t2 (H₁ H₂ : HProp Nat) : H₁ ⋆ H₂ = H₂ ⋆ H₁ := star.comm H₁ H₂\n" ++
+          "def t3 (H : HProp Nat) : emp ⋆ H = H := star.emp_l H\n" ++
+          "def t4 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂) ⋆ H₃ ⊢ H₃ ⋆ (H₂ ⋆ H₁) :=\n" ++
+          "  Entails.trans (star.comm_entails (H₁ ⋆ H₂) H₃) (star.mono_r H₃ (star.comm_entails H₁ H₂))") },
+    { name := "the frame property and the wand adjunction", run := fun _ =>
+        okLibs ("import HProp\n" ++
+          "def t1 (H₁ H₁' H₂ : HProp Nat) (m : H₁ ⊢ H₁') : H₁ ⋆ H₂ ⊢ H₁' ⋆ H₂ := star.mono_l H₂ m\n" ++
+          "def t2 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂ ⊢ H₃) ↔ (H₁ ⊢ H₂ −∗ H₃) := wand.adjoint H₁ H₂ H₃\n" ++
+          "def t3 (H₁ H₂ : HProp Nat) : H₁ ⋆ (H₁ −∗ H₂) ⊢ H₂ := wand.cancel H₁ H₂\n" ++
+          "def t4 : (1 ↦ 5) ⋆ (1 ↦ 6) ⊢ @hpure Nat False := pts.same_loc 1 5 6") },
+    { name := "a law that doesn't hold has no proof", run := fun _ => do
+        -- (small ones: a wrong law about `⋆` is rejected too, but only after minutes of
+        -- unfolding; wishful slow-failing-unification)
+        failsLibs "import HProp\ndef bad : (1 ↦ 5) ⊢ (1 ↦ 6) := Entails.refl (1 ↦ 5)" "mismatch"
+        failsLibs "import HProp\ndef bad : @emp Nat ⊢ hpure False := Entails.refl emp" "mismatch" },
+    { name := "wp is a monotone, frame-preserving monad morphism; the triple rules", run := fun _ =>
+        okLibs ("import Hoare\n" ++
+          "def t1 (c : Prog Nat Nat) (f : Nat → Prog Nat Nat) : wp (Prog.bind c f) = W.bind (wp c) (fun a => wp (f a)) := wp.bind c f\n" ++
+          "def t2 (c : Prog Nat Nat) : W.Frame (wp c) := wp.frame c\n" ++
+          "def t3 (P H : HProp Nat) (c : Prog Nat Nat) (Q : Nat → HProp Nat) (t : Triple P c Q) :\n" ++
+          "  Triple (P ⋆ H) c (fun a => Q a ⋆ H) := Triple.frame H t\n" ++
+          "def t4 (l : Nat) : Triple (l ↦ 1) (Prog.bind (Prog.read l) (fun v => Prog.write l (Nat.succ v))) (fun _ => l ↦ 2) :=\n" ++
+          "  Triple.bind (Triple.read l 1) (fun r => Triple.pure (fun e =>\n" ++
+          "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
+    { name := "swap and in-place list reversal are verified", run := fun _ =>
+        okLibs ("import Hoare\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
+          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (star Nat (pts Nat p a) (pts Nat q b)) (Prog.swap p q) (fun _ => star Nat (pts Nat p b) (pts Nat q a))",
+           "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
+    { name := "a faulting program has no triple from a satisfiable precondition", run := fun _ =>
+        failsLibs ("import Hoare\ndef bad : Triple (@emp Nat) (@Prog.fail Nat Unit) (fun (_ : Unit) => @emp Nat) :=\n" ++
+          "  Triple.ret () (fun (_ : Unit) => @emp Nat)") "mismatch" },
+    { name := "the programs run on concrete heaps, as adequacy says", run := fun _ =>
+        okLibs ("import Hoare\n" ++
+          "#eval Prog.show (Prog.swap 1 2) (Heap.ofList (.cons 10 (.cons 20 .nil)) 1) 3 3\n" ++
+          -- the list 1, 2, 3 in cells at 1, 3, 5
+          "#eval Prog.show (Prog.reverse 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 7\n" ++
+          "#eval Prog.show (Prog.reverse 2 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 7\n" ++
+          "#eval Prog.show (Prog.bind (Prog.ref 7) (fun l => Prog.read l)) Heap.empty 0 2")
+          [".some ((), .cons .none (.cons (.some 20) (.cons (.some 10) .nil)))",
+           -- reversed: the cell at 5 (value 3) points to 3 (value 2), which points to 1 (value 1)
+           ".some (5, .cons .none (.cons (.some 1) (.cons (.some 0) (.cons (.some 2) (.cons (.some 1) (.cons (.some 3) (.cons (.some 3) .nil)))))))",
+           -- not enough fuel: a fault
+           ".none", ".some (7, .cons (.some 7) (.cons .none .nil))"] }
   ]
 
 
