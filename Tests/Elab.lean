@@ -256,6 +256,17 @@ def okWith (r : Regularity) (input : String) : IO Unit := do
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
 
+/-- (P2) Checking `input` under `mode` (`full+lazy`: with `lazyProofs`) finishes, without
+errors, within `secs` seconds (in a child process, as `checkDiverges`). -/
+def checkTerminates (input mode : String) (secs : Nat := 20) : IO Unit := do
+  let dir ← IO.FS.createTempDir
+  IO.FS.writeFile (dir / "input.wiz") input
+  let self ← IO.appPath
+  let out ← IO.Process.output { cmd := "sh", cwd := dir, args := #["-c",
+    s!"ulimit -v 8000000; exec timeout {secs} \"$0\" --check {mode} input.wiz", self.toString] }
+  unless out.exitCode == 0 do
+    throw (IO.userError s!"expected success, got exit code {out.exitCode}: {out.stderr.take 1000}")
+
 /-- Checking `input` (with the Lean kernel, in a child process: `tests --check`) doesn't
 finish within `secs` seconds. Memory is capped, as the loop allocates. -/
 def checkDiverges (input mode : String) (secs : Nat := 3) : IO Unit := do
@@ -372,7 +383,17 @@ def ottGroup : Group where
         checkDiverges (abelCoquand) "nonprop" },
     { name := "D1 (R2, off): regularity only along refl, or none, checks the program", run := fun _ => do
         okWith .refl (abelCoquand)
-        okWith .off (abelCoquand) }
+        okWith .off (abelCoquand) },
+    -- P2 (`--lazy-proofs`, off by default): proofs are never evaluated, so the loop, which
+    -- lives in a proof, is never run, even with full regularity
+    { name := "P2: with lazy proofs, Abel–Coquand checks even with full regularity (and nested)", run := fun _ => do
+        checkTerminates (abelCoquand) "full+lazy"
+        checkTerminates abelCoquandNested "full+lazy"
+        checkTerminates (abelCoquand) "off+lazy" },
+    { name := "P2: with lazy proofs, a cast between propositions is stuck, not the equivalence", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral { globals := { lazyProofs := true } }
+        let out := (s.messages.map (·.render abelCoquandLiteral)).toList
+        unless out.any (·.contains "cast") do throw (IO.userError s!"expected a stuck cast, got {out}") }
   ]
 
 end Tests.Elab

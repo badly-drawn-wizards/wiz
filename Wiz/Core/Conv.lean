@@ -41,6 +41,7 @@ def headType (g : Globals R) (tys : Array (VTy R)) : Head R → Option (VTy R)
   | .refl A a => some (vEq g A a a)
   | .reflTy X => some (vEqType g X X)
   | .transp _ _ P _ b e => some (vApp g (vApp g P b) e)
+  | .prf ty _ _ _ => some ty.get
 
 /-! ### Types of the data eliminators' arguments (stage 4d)
 
@@ -393,7 +394,7 @@ partial def convNe (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option 
   let .neutral h' sp' := b | none
   unless sp.size == sp'.size do none
   let isProof : Head R → Bool
-    | .refl .. | .reflTy _ | .transp .. => true
+    | .refl .. | .reflTy _ | .transp .. | .prf .. => true
     | _ => false
   let headsEq := match h, h' with
     | .eq A x y, .eq A' x' y' => convTy g tys A A' && conv g tys A x x' && conv g tys A y y'

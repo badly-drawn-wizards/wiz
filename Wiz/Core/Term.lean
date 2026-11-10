@@ -258,6 +258,12 @@ partial def lift (k : Nat) (cut : Nat := 0) : Term R → Term R
   | .var i => if i ≥ cut then .var (i + k) else .var i
   | t => Id.run <| t.mapChildrenM pure (fun d c => pure (lift k (cut + d) c))
 
+/-- Substitute `f i` (a term in the outer context) for each free variable `i`, under
+`depth` binders. -/
+partial def substFree (f : Nat → Term R) (depth : Nat := 0) : Term R → Term R
+  | .var i => if i < depth then .var i else (f (i - depth)).lift depth
+  | t => Id.run <| t.mapChildrenM pure (fun d c => pure (substFree f (depth + d) c))
+
 /-- Abstract every occurrence of `target` (a term in the same context) as a new
 variable `var 0`, shifting the other free variables up. This is how the elaborator
 generalises a scrutinee in the expected type of a case (Lean's `kabstract`). -/
@@ -350,6 +356,11 @@ structure Globals (R : Type) where
   eager : Bool := false
   /-- which casts reduce by regularity (D1: `off`, so that checking terminates) -/
   regularity : Regularity := .off
+  /-- P2 experiment (default off, `--lazy-proofs`): proofs at the positions the syntax marks
+  as proofs (`cast`'s equation, `transp`'s two proofs) are suspended, never evaluated; a
+  cast between propositions is stuck instead of applying the equivalence; `split` on a
+  proof is η. See `wiz-notes/p2-proofs.md`. -/
+  lazyProofs : Bool := false
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false

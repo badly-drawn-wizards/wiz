@@ -186,6 +186,7 @@ partial def Head.lvlBound : Head R → Nat
   | .refl A a => Val.maxBound [A, a]
   | .reflTy X => X.lvlBound
   | .transp A a P p b e => Val.maxBound [A, a, P, p, b, e]
+  | .prf _ env t _ => Closure.lvlBound 0 (.mk env t)
 partial def Elim.spineBound (sp : Array (Elim R)) : Nat := sp.foldl (fun m e => max m e.lvlBound) 0
 partial def Elim.lvlBound : Elim R → Nat
   | .app a => a.lvlBound
@@ -214,6 +215,16 @@ partial def reflProof (e : Val R) : Bool :=
   match whnf e with
   | .neutral (.refl ..) #[] | .neutral (.reflTy _) #[] | .tt => true
   | .neutral (.transp _ _ _ p _ e) #[] => reflProof p && reflProof e
+  -- (P2) the one rule that inspects a proof: force the suspension
+  | .neutral (.prf _ _ _ v) #[] => reflProof v.get
+  | _ => false
+
+/-- (P2) Is this neutral head a proof? Suspended proofs, the proof heads, and (with
+`lazyProofs`) a stuck cast between propositions. -/
+def proofHead (h : Head R) : Bool :=
+  match h with
+  | .prf .. | .refl .. | .reflTy _ | .transp .. => true
+  | .cast A B _ _ => propSort? (whnf A) == some true && propSort? (whnf B) == some true
   | _ => false
 
 /-- (D1 experiment) May `cast A A e t` reduce to `t` under `g.regularity`? -/
@@ -288,12 +299,20 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .absurd m t => vAbsurd (eval g env m) (eval g env t)
   | .eq A a b => vEq g (eval g env A) (eval g env a) (eval g env b)
   | .eqTy A B => vEqType g (eval g env A) (eval g env B)
-  | .cast A B e t => vCast g (eval g env A) (eval g env B) (eval g env e) (eval g env t)
+  | .cast A B e t =>
+    let vA := eval g env A
+    let vB := eval g env B
+    vCast g vA vB (suspend g env e (Thunk.mk fun _ => vEqType g vA vB)) (eval g env t)
   | .refl A a => .neutral (.refl (eval g env A) (eval g env a)) #[]
   | .reflTy X => .neutral (.reflTy (eval g env X)) #[]
   | .transp A a P p b e =>
-    .neutral (.transp (eval g env A) (eval g env a) (eval g env P) (eval g env p)
-      (eval g env b) (eval g env e)) #[]
+    let vA := eval g env A
+    let va := eval g env a
+    let vP := eval g env P
+    let vb := eval g env b
+    .neutral (.transp vA va vP
+      (suspend g env p (Thunk.mk fun _ => vApp g (vApp g vP va) (.neutral (.refl vA va) #[])))
+      vb (suspend g env e (Thunk.mk fun _ => vEq g vA va vb))) #[]
   | .qty => .qty
   | .qlit r => .qlit r
   | .enum ls => .enum ls
@@ -392,6 +411,12 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .scofix l I D A f s i a => sorry
   --sol>
 
+/-- (P2) A proof position: with `g.lazyProofs`, a suspended proof of type `ty`
+(`Head.prf`), never evaluated; otherwise evaluated as usual. -/
+partial def suspend (g : Globals R) (env : Env R) (t : Term R) (ty : Thunk (Val R)) : Val R :=
+  if g.lazyProofs then .neutral (.prf ty env t (Thunk.mk fun _ => eval g env t)) #[]
+  else eval g env t
+
 /-- Evaluate a display hint's arguments. -/
 partial def evalHint (g : Globals R) (env : Env R) :
     Option (Name × List Level × List (Term R)) → Option (Name × List Level × List (Val R))
@@ -433,7 +458,10 @@ partial def vSplit (g : Globals R) (q : Val R) (s : Val R) (z : Name) (m : Closu
   --<sol
   match s with
   | .pair a b => Closure.inst2 g body a b
-  | .neutral h sp => .neutral h (sp.push (.split q z m x y body))
+  -- (P2) a proof is never evaluated to a pair: split it by η (`Σ` has η)
+  | .neutral h sp =>
+    if g.lazyProofs && proofHead h then Closure.inst2 g body (vFst s) (vSnd s)
+    else .neutral h (sp.push (.split q z m x y body))
   | _ => panic! "vSplit: ill-typed"
   --|ex
   --| sorry
@@ -843,14 +871,17 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   -- proposition is cast by the equivalence, below)
   if let (.ulift u A₁, .ulift w B₁) := (A, B) then
     if u.isNeverZero && u.equiv w then .up (vCast g A₁ B₁ e (vDown t))
-    else if propSort? A == some true && propSort? B == some true then vApp g (vFst e) t
+    else if propSort? A == some true && propSort? B == some true then
+      if g.lazyProofs then .neutral (.cast A B e t) #[] else vApp g (vFst e) t
     else .neutral (.cast A B e t) #[]
   else
   --<sol
   let v (i : Nat) : Term R := .var i
   let stuck : Val R := .neutral (.cast A B e t) #[]
   -- between propositions, `e` is an equivalence
-  if propSort? A == some true && propSort? B == some true then vApp g (vFst e) t else
+  -- (P2, `lazyProofs`) the cast is a proof itself, so nothing ever needs its value: stuck
+  if propSort? A == some true && propSort? B == some true then
+    if g.lazyProofs then stuck else vApp g (vFst e) t else
   match A, B with
   | .pi x _ q A₁ B₁ _, .pi _ _ q' A₂ B₂ _ =>
     if sameQty q q' != some true then stuck else
@@ -1022,6 +1053,10 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .reflTy X => .reflTy (quote g l X)
       | .transp A a P p b e =>
         .transp (quote g l A) (quote g l a) (quote g l P) (quote g l p) (quote g l b) (quote g l e)
+      -- (P2) a suspended proof: substitute, don't reduce
+      | .prf _ env t _ => t.substFree fun i => match env[i]? with
+        | some v => quote g l v
+        | none => .var (i + l)  -- (ill-scoped: not reached on well-scoped terms)
     sp.foldl (init := hd) fun acc e => match e with
       | .app v => .app acc (quote g l v)
       | .fst => .fst acc
