@@ -1696,6 +1696,10 @@ def samples : List MTm :=
    ann (lam (snd (var 0))) (piq .one (sigmaq .one (univ 0) (univ 0)) (univ 0)),
    ann (lam (snd (var 0))) (piq .one (sigmaq .many (univ 0) (univ 0)) (univ 0)),
    snd (ann (pair (enum 2) (enum 2)) (sigmaq .one (univ 0) (univ 0))),
+   -- `p.1` drops `p.2`: not if that holds a linear field (Q1)
+   ann (lam (fst (var 0))) (piq .one (sigma (univ 0) (sigmaq .one (univ 0) (univ 0))) (univ 0)),
+   ann (lam (fst (var 0))) (piq .many (sigma (univ 0) (sigmaq .one (univ 0) (univ 0))) (univ 0)),
+   ann (lam (fst (var 0))) (piq .one (sigma (univ 0) (sigma (univ 0) (univ 0))) (univ 0)),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, var 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, univ 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    -- sizes and subtyping
