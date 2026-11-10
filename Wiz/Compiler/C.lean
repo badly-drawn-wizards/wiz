@@ -16,7 +16,7 @@ namespace Wiz.C
 open IR
 
 /-- The runtime, embedded in the compiler. (Lake does not track `include_str`: after
-editing `runtime/wiz.c`, change this file too, e.g. this counter: 22.) -/
+editing `runtime/wiz.c`, change this file too, e.g. this counter: 24.) -/
 def runtime : String := include_str "../../runtime/wiz.c"
 
 /-- A C identifier for a Wiz name: letters and digits stay, anything else is `_xx`. -/

@@ -284,7 +284,7 @@ def Lens.pair_putGet {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Law
 def Store.underR_gp {A B S : Type} (k : A → S) (a : A) (s : S) (hk : k a = s) : (r : Result (Store B A)) →
     Result.All (fun (st : Store B A) => st.2 st.1 = a) r →
     Result.All (fun (st : Store B S) => st.2 st.1 = s) (Store.underR k r)
-  | .ok st, h => Optic.trans (@Optic.congrArg A S k (st.2 st.1) a h) hk
+  | .ok st, h => Optic.trans (Optic.congrArg k h) hk
   | .err e, h => ()
 def Store.underR_get {A B S : Type} (k : A → S) (b : B) : (r : Result (Store B A)) →
     Result.Holds (fun (st : Store B A) => st.1 = b) r →
@@ -309,7 +309,7 @@ def Store.underR_pg {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B)
 def Store.underR_put {A B S : Type} (k : A → S) (b : B) (t : A) : (r : Result (Store B A)) →
     Result.Holds (fun (st : Store B A) => st.2 b = t) r →
     Result.Holds (fun (st : Store B S) => st.2 b = k t) (Store.underR k r)
-  | .ok st, h => @Optic.congrArg A S k (st.2 b) t h
+  | .ok st, h => Optic.congrArg k h
   | .err e, h => h
 def Store.underR_pp1 {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B)
     (hC : (x : A) → @Store.underR A B S k (m x) = C (k x)) (st : Store B A) (a b : B)
