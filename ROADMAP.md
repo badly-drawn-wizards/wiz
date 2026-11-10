@@ -46,8 +46,8 @@ The reasons for this order:
 
 ## Stage 1: Core kernel ✅ scaffolded
 
-NbE kernel with bidirectional QTT checking, parametric in the rig. See README.md for
-the exercises.
+NbE kernel with bidirectional QTT checking, parametric in the rig. See
+[docs/stages/01-kernel.md](docs/stages/01-kernel.md) for the exercises.
 
 **Design question: how general should "arbitrary rigs" be?** Right now the kernel is
 parametric in `R` at the Lean level, so each program uses one fixed rig. There are three

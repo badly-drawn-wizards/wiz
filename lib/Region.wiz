@@ -5,7 +5,7 @@ import Optic
 --
 -- A lifetime `'a` lowers to an erased variable `ρ : Region`. Every handle type below is a
 -- `structure` (or `inductive`) with `ρ` as a parameter, so `ρ` is part of the type's
--- identity (phantom parameters, README 22e): `Shr ρ A` and `Shr ρ' A` are different
+-- identity (phantom parameters, docs/stages/22-numbers.md, 22e): `Shr ρ A` and `Shr ρ' A` are different
 -- types, and `ρ` is inferred from a handle's type. Nothing of it reaches run time.
 --
 -- Borrow checking is typing: a borrow scope (`Shr.borrow`, `Uniq.borrow`,

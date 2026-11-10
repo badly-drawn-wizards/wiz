@@ -384,7 +384,7 @@ equations are not provable by computation. They are incompleteness, not unsoundn
   the elaborator leaves several internally built Π/Σ without one. The branch
   `agent/elab-sorts` (commit `31395a2`, not merged at `9717950`) annotates them using the
   kernel's `typeSort?`, except "a Π/Σ under a `fun` whose variable's type isn't written
-  down, or one that still mentions a metavariable" (its README 4c text).
+  down, or one that still mentions a metavariable" (its README 4c text, now in [stages/04-data.md](stages/04-data.md)).
 * **Neutral types**: `a =_X b` and `cast X Y e t` for a variable `X` are stuck.
 * **`μ ≡ μ`, `ν ≡ ν`, `Desc ≡ Desc`** are always stuck (no structural comparison of
   descriptions; a design decision to avoid committing to injectivity of `μ`, see
