@@ -121,6 +121,19 @@ def literalProgram (n : Nat) : String :=
   let text := String.ofList ((List.range n).map fun i => Char.ofNat (97 + i % 26))
   s!"import IO\ndef s : String := \"{text}\"\ndef main : IO Unit := IO.println s\n"
 
+/-- Milliseconds to erase `f`, a match on a constructor with `n` fields (returning the
+last one): elaboration is not counted. -/
+def eraseMatchMs (n : Nat) : IO Nat := do
+  let fields := " ".intercalate ((List.range n).map (s!"x{·}"))
+  let src := s!"import Prelude\ninductive T where\n  | mk {" ".intercalate ((List.range n).map (s!"(x{·} : Nat)"))}\n" ++
+    s!"def f (t : T) : Nat := match t with\n  | .mk {fields} => x{n - 1}\n"
+  let st ← elabOk src
+  let start ← IO.monoMsNow
+  match compileReachable st.globals st.builtins ["f"] with
+  | .ok code => check (code.contains "f") "f was not erased"
+  | .error e => throw (IO.userError (toString e))
+  pure ((← IO.monoMsNow) - start)
+
 def group : Group where
   name := "scaling"
   exercise := "super-linear time and memory"
@@ -167,21 +180,14 @@ def group : Group where
     { name := "a 16000-element list written out is elaborated in linear time and space", run := fun _ => do
         let _ ← within 30 1000 fun _ => elabOk s!"import Prelude\ndef l : List Nat := {listSource 16000}\n"
         pure () },
-    -- erasure re-inferred the body of each `split` with the kernel: a match's tree of
-    -- nested splits (one per field of a matched constructor) was checked again once per
-    -- level, quadratic in its depth; and `erasable` recomputed the sort of the rest of the
-    -- telescope at each field. (300 fields: 16 s before, 6.7 s after, under load; the
-    -- bound is loose, and some super-linear cost remains: see the PR)
-    { name := "a match on a 300-field constructor is erased in linear time", run := fun _ => do
-        let n := 300
-        let fields := " ".intercalate ((List.range n).map (s!"x{·}"))
-        let src := s!"import Prelude\ninductive T where\n  | mk {" ".intercalate ((List.range n).map (s!"(x{·} : Nat)"))}\n" ++
-          s!"def f (t : T) : Nat := match t with\n  | .mk {fields} => x{n - 1}\n"
-        let st ← elabOk src
-        let r ← within 20 1000 fun _ => pure (compileReachable st.globals st.builtins ["f"])
-        match r with
-        | .ok code => check (code.contains "f") "f was not erased"
-        | .error e => throw (IO.userError (toString e)) },
+    -- erasure re-inferred the body of each `split` with the kernel (a match's tree of
+    -- nested splits was checked again once per level), `erasable` recomputed the sort of
+    -- the rest of the telescope at each field, and each step of a field's projection chain
+    -- `p.2.2.….1` asked for the type of the rest of the chain, evaluating `p` each time.
+    -- 400 fields: 46 s before, under 1 s now (still super-linear: about ×6 per doubling)
+    { name := "a match on a 400-field constructor is erased within 10 s (was 46 s)", run := fun _ => do
+        let ms ← eraseMatchMs 400
+        unless ms ≤ 10000 do throw (IO.userError s!"took {ms} ms (bound: 10 s)") },
     { name := "one-pass reference counting agrees with the specification (insertRC)", run := fun _ => do
         let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         for p in examples ++ [literalProgram 300] do
@@ -221,7 +227,7 @@ def probeChecker : IO Unit := do
   let opt := IR.optimizeProgram hoisted
   say s!"optimizeProgram ({opt.size} declarations)"
   let c := C.program opt true (Build.extraC st)
-  say s!"C ({c.length} characters)"
+  say s!"C ({c.length} characters, hash {hash c})"
   let bad ← rcMismatches st "main"
   say s!"reference counting: one pass and specification differ on {bad.length} declarations {bad.take 10}"
 

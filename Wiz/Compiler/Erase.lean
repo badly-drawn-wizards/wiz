@@ -329,6 +329,15 @@ partial def Wiz.IR.freeIdx' (t : Term R) (depth : Nat := 0) (acc : Std.HashSet N
     acc := acc'
     pure acc
 
+/-- The type of `p.2`, for `p` a pair whose second component has type `B`: `B` at
+`p.1`, evaluating `p` only if `B` mentions it (as `Ctx.instArg`: along a chain of
+projections `p.2.2.….1`, a structure's field, evaluating `p` at every step would be
+quadratic in the chain's length). -/
+partial def sndType (ctx : Ctx R) (B : Closure R) (p : Term R) : VTy R :=
+  match B with
+  | .mk env body =>
+    Wiz.eval ctx.globals ((if body.hasVar 0 then vFst (ctx.eval p) else .unit .zero) :: env) body
+
 /-- The type of a term that is already known to be well typed, without checking it
 again: along an elimination spine only (heads, applications, projections, annotations,
 `ecase`, `ind`), else by the kernel's `infer`. Erasure asks for the type of every
@@ -348,7 +357,8 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
     | .sigma _ _ A _ _ => pure A
     | _ => return (← infer ctx t).1
   | .snd p => match whnf (← quickType ctx p) with
-    | .sigma _ _ _ B _ => pure (Closure.inst g B (vFst (ctx.eval p)))
+    -- (`p` is evaluated only if the type of the second component mentions the first)
+    | .sigma _ _ _ B _ => pure (sndType ctx B p)
     | _ => return (← infer ctx t).1
   | .ann _ ty => pure (ctx.eval ty)
   | .down p => match whnf (← quickType ctx p) with
@@ -459,6 +469,21 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
   -- (`known`: the type, when the caller has it. Otherwise `quickType`, which off the
   -- elimination spine asks the kernel's `infer`: that checks the whole term again, once
   -- per enclosing node, quadratic in the depth of a `match`'s tree of `split`s)
+  --<sol
+  -- a projection: the pair first, and the projection's type from the pair's. (Asking
+  -- `quickType` here and again at each projection below would walk the rest of a chain
+  -- `p.2.2.….1`, a structure's field, once per step: quadratic in its length.) If the
+  -- pair can't be erased, the general path below decides (the projection may still be
+  -- erasable).
+  if let some (p, isFst) := (match t with | .fst p => some (p, true) | .snd p => some (p, false) | _ => none) then
+    if let .ok (p', pty) := eraseInfer ctx p then
+      if let .sigma _ _ A B _ := whnf pty then
+        let ty := known.getD (if isFst then A else sndType ctx B p)
+        if erasable ctx ty then return (.erased, ty)
+        let unboxed := unboxedSigma ctx.globals ctx.lvl pty
+        return (if isFst then (if unboxed then p' else .proj 0 p') else (if unboxed then .erased else .proj 1 p'), ty)
+  --|ex
+  --sol>
   let ty ← match known with
     | some ty => pure ty
     | none => quickType ctx t
