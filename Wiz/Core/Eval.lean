@@ -918,7 +918,7 @@ partial def inertDesc (g : Globals R) (depth : Nat) (D : Val R) : Bool :=
     | none => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (Val.var (100000 + 50 + depth)))
   | _ => false
 
-/-! ### Ground equality at inert types (P1)
+/- ### Ground equality at inert types (P1)
 
 InReg's side condition must not flip under substitution, and must give the same answer
 for convertible inputs: otherwise `cast A B e t` fires on one side of a conversion and is
@@ -944,10 +944,10 @@ by a constructor): that is stuck ⟶ fires, which is allowed. -/
 
 /-- Atoms of `groundEqTy`: variables at levels from here on (above every real context, and
 above `inertTy`'s fresh variables at `100000`). -/
-def groundAtomBase : Nat := 200000
+partial def groundAtomBase : Nat := 200000
 
 /-- Two neutrals that are the same atom, with the same projections. -/
-def groundAtomEq : Val R → Val R → Bool
+partial def groundAtomEq : Val R → Val R → Bool
   | .neutral (.local x) sp, .neutral (.local y) sp' =>
     x ≥ groundAtomBase && x == y && sp.size == sp'.size &&
       (sp.zip sp').all fun
