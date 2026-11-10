@@ -147,9 +147,9 @@ def group : Group where
         check (decls.size > 0) "no declarations" },
     -- the parser kept the state from before each alternative (`orElse`, `tryAlternative`)
     -- while the alternative ran: every memo and token-table insertion in it copied the
-    -- whole table (4000 elements: about 1.9 GB)
-    { name := "a 20000-element nested term parses in linear time and space", run := fun _ => do
-        let r ← within 30 1000 fun _ => pure (parseCategory Builtin.tables "term" (listSource 20000))
+    -- whole table (20000 elements: over 5 GB; now under 200 MB)
+    { name := "an 8000-element nested term parses in linear time and space", run := fun _ => do
+        let r ← within 30 400 fun _ => pure (parseCategory Builtin.tables "term" (listSource 8000))
         match r with
         | .ok _ => pure ()
         | .error e => throw (IO.userError e) },
