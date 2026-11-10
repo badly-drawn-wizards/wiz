@@ -739,7 +739,8 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
     compared under an atom, a variable bound by the comparison);
   * values are compared by their inert type: tags, numerals and constructors; `Unit` and
     propositions skipped; `Σ` by projections;
-  * a neutral equals only the same atom.
+  * a neutral equals only the same atom (atoms have a reserved head, so they can't
+    collide with a variable of the context).
   At an inert type, convertible values have the same canonical skeleton and neutrals in
   the same places, so S1 holds. A ground type has nothing to substitute, so S2 holds.
   What is lost: regularity at inert types whose indices are open (`cast (Fin n) (Fin n) e
@@ -1257,7 +1258,8 @@ Each item says what the code does; the code is what the kernel checks.
 | globals | table, by name | inline `const` terms carrying value and type (trusted) |
 | **`Size ≡ Size`, `Size< s ≡ Size< t`** | **stuck** (`Eval.lean:572`) | **`False`**: `canonical` includes `vsize`/`vsizeLt` (`Kernel.wiz:552–565`) and `vEqTypeW` has no case for two sizes, so it falls through to "different formers ⇒ False" (`Kernel.wiz:961–963`). **Unsound** (Status.md, O1). |
 | regularity in conversion (`unCast`) | off by default (`Conv.lean:264`, only under `--regularity`) | no: stuck casts are compared structurally |
-| regularity in evaluation | off; at inert types only (`inertTy`) | the same (`kernelRegularity := .false`; `inertTy`) |
+| regularity in evaluation | off; at inert types only, decided by `groundEqTy` (P1) | the same (`kernelRegularity := .false`; `groundEqTy`) |
+| InReg in conversion (`--inert conv`, experimental) | `unCast` at an inert type with `convTy A B` | not implemented |
 | convTy at Π/Σ propositions | quantities may differ | quantities must be equal (`Kernel.wiz:1598`) |
 | proof irrelevance at Π/Σ | asked at the Π/Σ | asked at the codomain/components only (`Kernel.wiz:1537–1541`); equivalent |
 | `isProp` | `typeSort? ≡ 0` | Π: codomain is a proposition; Σ: both parts (`Kernel.wiz:1328`) |

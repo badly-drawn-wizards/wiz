@@ -1256,8 +1256,8 @@ def sameVal (a b : Val) : Bool :=
 -- Ground equality at inert types (`groundEqTy` in `Eval.lean`, P1): two inert types that
 -- are equal and have no free variable in a relevant position. Values are compared by
 -- their type (tags, constructors; `Unit` and propositions skipped; `Σ` by projections);
--- a neutral equals only itself, and only if it is an atom (a variable bound inside the
--- comparison, from level 200000, with projections). So the answer is the same for
+-- a neutral equals only itself, and only if it is an atom (a fresh constant for a variable
+-- bound inside the comparison, with projections). So the answer is the same for
 -- convertible inputs and doesn't flip from `true` under a substitution.
 def groundAtomSp : Spine → Spine → Bool
   | .snil, .snil => .true
@@ -1265,9 +1265,16 @@ def groundAtomSp : Spine → Spine → Bool
   | .ssnd a, .ssnd b => groundAtomSp a b
   | .sdown a, .sdown b => groundAtomSp a b
   | _, _ => .false
+-- the `d`-th atom: a neutral with a reserved head (an axiom whose name starts with a
+-- space, so it is no declaration), which can't collide with a variable of the context
+def groundAtom (d : Nat) : Val := .vne (.haxiom (String.append " atom" (Nat.toString d)) .star) .snil
+def isAtomName (n : String) : Bool := match n with
+  | .mk cs => match cs with
+    | .cons c _ => Nat.beq (Char.code c) 32
+    | .nil => .false
 def groundAtomEq : Val → Val → Bool
-  | .vne (.hvar x) sp, .vne (.hvar y) sp' => match Nat.lt 199999 x with
-    | .true => Bool.and (Nat.beq x y) (groundAtomSp sp sp')
+  | .vne (.haxiom x _) sp, .vne (.haxiom y _) sp' => match isAtomName x with
+    | .true => Bool.and (kStrEq x y) (groundAtomSp sp sp')
     | .false => .false
   | _, _ => .false
 def groundSizeEq (s s' : Val) : Bool := groundSizeW (whnf s) (whnf s')
@@ -1283,7 +1290,7 @@ def groundTyW (d : Nat) : Val → Val → Bool
   | .vunit l, .vunit l' => Bool.and (Nat.lt 0 l) (Nat.beq l l')
   | .vulift l A, .vulift l' B => Bool.and (Bool.and (Nat.lt 0 l) (Nat.beq l l')) (groundEqTy (Nat.succ d) A B)
   | .vsigma q a env b _, .vsigma q' a' env' b' _ => match Bool.and (qEq q q') (groundEqTy (Nat.succ d) a a') with
-    | .true => groundEqTy (Nat.succ d) (eval (.cons (fresh (Nat.add 200000 d)) env) b) (eval (.cons (fresh (Nat.add 200000 d)) env') b')
+    | .true => groundEqTy (Nat.succ d) (eval (.cons (groundAtom d) env) b) (eval (.cons (groundAtom d) env') b')
     | .false => .false
   | .vmu l I D i sz, .vmu l' I' D' i' sz' => match Bool.and (Nat.beq l l') (groundSizeEq sz sz') with
     | .true => match groundEqTy (Nat.succ d) I I' with
@@ -1308,8 +1315,8 @@ def groundArg (d : Nat) (I S E E' : Val) : Bool := match S with
   | .venum k => groundTags d I E E' .false k 0
   | .vulift n A => match whnf A with
     | .venum k => groundTags d I E E' .true k 0
-    | _ => groundEqDesc (Nat.succ d) I (vapp E (fresh (Nat.add 200000 d))) (vapp E' (fresh (Nat.add 200000 d)))
-  | _ => groundEqDesc (Nat.succ d) I (vapp E (fresh (Nat.add 200000 d))) (vapp E' (fresh (Nat.add 200000 d)))
+    | _ => groundEqDesc (Nat.succ d) I (vapp E (groundAtom d)) (vapp E' (groundAtom d))
+  | _ => groundEqDesc (Nat.succ d) I (vapp E (groundAtom d)) (vapp E' (groundAtom d))
 def groundTags (d : Nat) (I E E' : Val) (lifted : Bool) (k i : Nat) : Bool := match Nat.lt i k with
   | .false => .true
   | .true => match groundEqDesc (Nat.succ d) I (vapp E (upIf lifted (.vtag k i))) (vapp E' (upIf lifted (.vtag k i))) with

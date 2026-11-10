@@ -363,8 +363,10 @@ simpler).
     `h`, `h2` and `h3` check, so the reduct checks iff the term does. `t1` and `t2`
     (InReg at an open index `f p`) are rejected, consistently.
   * **What it costs.** InReg on a variable at an inert type whose index is open
-    (`cast (Fin n) (Fin n) e k`). Casts at closed inert types still reduce, and so do
-    casts of constructors at open ones. The measurements are in the note.
+    (`cast (Fin n) (Fin n) e k`). Casts at closed inert types still reduce, and casts of
+    constructors at open ones compute structurally. Measured: every test, library file
+    and example checks as before, and no cast in `lib/` or `examples/` is decided
+    differently from the old rule (the note, §5). The loss shows only on the probe.
   * **Option** (a decision for the user). `--inert conv` adds InReg_conv: conversion
     identifies the cast with its argument when the types are convertible (`convTy`). It
     is congruent, and it accepts `t1` and `t2` too. It is Lean kernel only so far.
@@ -472,6 +474,15 @@ equations are not provable by computation. They are incompleteness, not unsoundn
 * **Π/Σ types whose quantities are not literals** (quantity variables that can't be
   compared): type equality is stuck.
 * **Casts at a level `u` that might be 0**, `Sort u ≡ Sort v` for different parameters.
+* **Regularity at an inert type with an open index** (P1): `cast (Fin n) (Fin n) e k` for
+  variables `n`, `k` is stuck. The rule fires only at ground types, so that its firing is
+  stable under substitution (D1). `castRefl` proves the equation propositionally;
+  `--inert conv` is an experiment that recovers it in conversion.
+* **The sort annotation decides between rules** (P1 inventory, U5). `propSort?` reads a
+  Π/Σ's optional annotation, so an unannotated type and a convertible annotated one are
+  treated differently by type equality and `cast` (stuck against computing). That is a
+  side condition which is not invariant under conversion. No bad consequence is known
+  (the stuck side proves nothing); it is listed in `/workspace/wiz-notes/p1-stable.md`.
 * **Conversion is incomplete** where proof irrelevance meets computation (e.g. a `split`
   stuck on one proof and computing on another). Incompleteness only.
 

@@ -942,8 +942,9 @@ are equal and have **no free variable in a relevant position**:
 * values at an inert type, by the type: tags, numerals and constructors by their parts;
   `Unit` and propositions (the index equations at `ret`) are skipped, `Σ` is compared by
   projections (η);
-* a neutral is equal only to itself, and only if it is an **atom**: a variable bound
-  *inside* the comparison (under a `Σ` or an `arg`), with projections. Every other
+* a neutral is equal only to itself, and only if it is an **atom**: a fresh constant
+  standing for a variable bound *inside* the comparison (under a `Σ` or an `arg`),
+  with projections. Every other
   neutral (a free variable, `f p`, a stuck cast) gives `false`: the cast is stuck.
 
 Why it is stable: a value of an inert type is convertible only to values with the same
@@ -953,14 +954,15 @@ convertible inputs, and a substitution doesn't change a ground value (atoms are 
 substituted). A `false` may become `true` after a substitution (a free variable replaced
 by a constructor): that is stuck ⟶ fires, which is allowed. -/
 
-/-- Atoms of `groundEqTy`: variables at levels from here on (above every real context, and
-above `inertTy`'s fresh variables at `100000`). -/
-partial def groundAtomBase : Nat := 200000
+/-- The `d`-th atom of `groundEqTy`: a neutral whose head is a reserved global name (it
+starts with a space, so it is no identifier and no declaration). Unlike a variable at a
+large level, it can't collide with a variable of the context, however deep. -/
+partial def groundAtom (d : Nat) : Val R := .neutral (.global s!" atom{d}" []) #[]
 
 /-- Two neutrals that are the same atom, with the same projections. -/
 partial def groundAtomEq : Val R → Val R → Bool
-  | .neutral (.local x) sp, .neutral (.local y) sp' =>
-    x ≥ groundAtomBase && x == y && sp.size == sp'.size &&
+  | .neutral (.global x _) sp, .neutral (.global y _) sp' =>
+    x.startsWith " atom" && x == y && sp.size == sp'.size &&
       (sp.zip sp').all fun
         | (.fst, .fst) | (.snd, .snd) | (.down, .down) => true
         | _ => false
@@ -983,7 +985,7 @@ partial def groundEqTy (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
   | .ulift l A₁, .ulift l' B₁ => l.isNeverZero && l.equiv l' && groundEqTy g (d + 1) A₁ B₁
   | .sigma _ q A₁ B₁ _, .sigma _ q' A₂ B₂ _ =>
     sameQty q q' == some true && groundEqTy g (d + 1) A₁ A₂ &&
-      let x := Val.var (groundAtomBase + d)
+      let x := groundAtom d
       groundEqTy g (d + 1) (Closure.inst g B₁ x) (Closure.inst g B₂ x)
   | .mu l I D i s _, .mu l' I' D' i' s' _ =>
     l.equiv l' && groundSizeEq s s' && groundEqTy g (d + 1) I I' &&
@@ -1005,7 +1007,7 @@ partial def groundEqDesc (g : Globals R) (d : Nat) (I D D' : Val R) : Bool :=
         let t : Val R := if lifted then .up (.tag ls k) else .tag ls k
         groundEqDesc g (d + 1) I (vApp g E t) (vApp g E' t)
       | none =>
-        let x := Val.var (groundAtomBase + d)
+        let x := groundAtom d
         groundEqDesc g (d + 1) I (vApp g E x) (vApp g E' x)
   | _, _ => false
 
