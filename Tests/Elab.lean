@@ -985,7 +985,12 @@ def reuseGroup : Group where
           s!"the parameter's cell is not rebuilt in place:\n{"\n".intercalate ls}"
         -- the two `step`s' options and bump2's result (an option and a pair) are the only
         -- allocations: the new `Stats` takes the parameter's cell
-        checkEq (s0 + 4) r0 }
+        checkEq (s0 + 4) r0 },
+    { name := "renaming a body renames reset and reuse", run := fun _ => do
+        let b : IR.Body := .vdecl 5 (.reset 1) (.vdecl 6 (.reuse 5 0 #[2, 3]) (.ret 6))
+        let σ : Std.HashMap IR.Var IR.Var := ({} : Std.HashMap _ _).insert 1 10 |>.insert 2 20 |>.insert 3 30
+        let ls := ((IR.Body.rename σ b).toString.splitOn "\n").map (·.trimAscii.toString)
+        checkEq ["let x5 := reset x10", "let x6 := reuse x5 in ctor 0 x20 x30", "ret x6"] ls }
   ]
 
 /-- Programs for the borrowing tests (stage 8e): functions that only look at their
