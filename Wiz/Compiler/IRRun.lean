@@ -229,6 +229,8 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
           pure (fs[i]?.getD .erased)
         | .num n => natField n i
         | .tag 0 => natField 0 i
+        -- a projection of `◾` is `◾` (as in the runtime's `wiz_proj`)
+        | .erased => pure .erased
         | v => throw s!"projection from a scalar {repr v}"
       | .fap f as => call prog f (← as.mapM get)
       | .pap f as => alloc (.clo f (← as.mapM get))
