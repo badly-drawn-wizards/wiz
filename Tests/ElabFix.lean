@@ -284,6 +284,9 @@ def group : Group where
         -- the recursors would hand out the private constructor's fields
         failsPriv privMod2 "import Priv\ndef f := @Tok.casesOn" "'Tok.casesOn' is private to module Priv"
         failsPriv privMod2 "import Priv\ndef f := @Tok.rec" "private"
+        -- the description is private too: `μ Tok.desc ()` is the type with nothing hidden
+        failsPriv privMod2 "import Priv\ndef raw : μ Tok.desc () := con ('secret, 7, (), ())" "'Tok.desc' is private to module Priv"
+        failsPriv privMod2 "import Priv\ndef D := @Sig.desc" "'Sig.desc' is private to module Priv"
         -- a type declared private: values of it can't be matched elsewhere either
         failsPriv privMod2 "import Priv\ndef f : Nat := match fav with\n  | .red => 1\n  | .blue => 2" "private to module Priv" },
     { name := "private observations of a coinductive: no observing, no building (13b)", run := fun _ => do

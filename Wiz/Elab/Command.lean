@@ -984,7 +984,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- neither observed nor built except through the module's own definitions
         let privObs := privateFields cmd
         unless privObs.isEmpty do
-          let names := privObs.map (name ++ "." ++ ·) ++ [name ++ ".mk"]
+          -- (and the description: `ν T.desc i` written out is the type with nothing hidden)
+          let names := privObs.map (name ++ "." ++ ·) ++ [name ++ ".mk", name ++ ".desc"]
           g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
                         opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g, coinductives := s.coinductives ++ [(name, obs)] }
@@ -1120,7 +1121,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           let privCtors := (cmd.getArg 6).args.toList.filterMap fun c =>
             if (c.getArg 1).args.isEmpty then none else (c.getArg 2).getId?
           unless privCtors.isEmpty do
-            let names := privCtors.map (name ++ "." ++ ·) ++ recNames
+            -- (and the description: `μ T.desc i` written out is the type with nothing
+            -- hidden; a raw `con` builds a value of it, and it lists the private fields)
+            let names := privCtors.map (name ++ "." ++ ·) ++ recNames ++ [name ++ ".desc"]
             g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
                           opaques := g.opaques.insert name s.module }
         -- (13b) `private mk ::`: the constructor is private to this module, and elsewhere
