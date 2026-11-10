@@ -286,6 +286,12 @@ def ottGroup : Group where
         ok "def peq {A B : Type} (p : A × B) : p = (p.1, p.2) := refl p" },
     { name := "different type formers are unequal", run := fun _ =>
         ok "def noconf (e : Unit = Empty) : False := e" },
+    -- F2 (`wiz-notes/soundness-audit.md`): `vAbsurd` had no case for a glued value, so
+    -- `absurd (lem h)` panicked and evaluated to `Sort 0`: `g h` was `Prop`
+    { name := "F2: absurd on a lemma's result is stuck, not Prop", run := fun _ => do
+        let p := "def lem (h : False) : False := h\ndef g (h : False) : Type := absurd (lem h)\n"
+        ok (p ++ "def r (h : False) (x : g h) : g h := x\n#reduce fun (h : False) => g h") ["fun h => absurd h"]
+        fails (p ++ "def u (h : False) : g h := True\n") "mismatch" },
     -- D1: no regularity by default: a cast at a variable type stays a cast
     { name := "cast along a variable `A = A` is not the identity (no regularity; it is with --regularity full)", run := fun _ => do
         let reg := "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl"
@@ -3020,7 +3026,23 @@ def builtinGroup : Group where
     { name := "a numeral is not a string", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef s : String := 3" { loader := fun _ => some prelude }
-        check (s.messages.any (·.severity == .error)) "expected an error" }
+        check (s.messages.any (·.severity == .error)) "expected an error" },
+    -- S1 (`wiz-notes/soundness-audit.md`): `Term.mapChildrenM` had no case for `natOp`, so
+    -- the variable captured by `Nat.add x` was invisible to `Val.lvlBound`, `sameVal` quoted
+    -- below it, and `μ D_x () = μ D_y ()` computed to `() = ()`. With `T (Nat.add 0)`
+    -- inhabited and `T (Nat.add 1)` empty, `cast (e 0 1)` then gave a closed proof of False.
+    { name := "S1: a variable captured by a native operation counts in syntactic equality (it proved False)", run := fun _ => do
+        let t := "import Prelude\ndef T (f : Nat → Nat) : Type := match f 0 with\n  | .zero => Unit\n  | .succ _ => Empty\n"
+        failsLib (t ++ "def Box (x : Nat) : Type := μ (Desc.arg 1 (T (Nat.add x)) (fun _ => Desc.ret ()) : Desc Unit) ()\n" ++
+          "def e (x y : Nat) : Box x = Box y := ()\n") "mismatch"
+        failsLib (t ++ "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x y : Nat) : Box (Nat.add x) = Box (Nat.add y) := ()\n") "mismatch"
+        failsLib (t ++ "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x y : Nat) : Box (Nat.mul x) = Box (Nat.sub y) := ()\n") "mismatch" },
+    { name := "S1: the same family at the same partial application is still one family", run := fun _ =>
+        okLib ("import Prelude\ndef T (f : Nat → Nat) : Type := match f 0 with\n  | .zero => Unit\n  | .succ _ => Empty\n" ++
+          "inductive Box (f : Nat → Nat) where\n  | mk (t : T f)\n" ++
+          "def e (x : Nat) : Box (Nat.add x) = Box (Nat.add x) := rfl\n") }
   ]
 
 
