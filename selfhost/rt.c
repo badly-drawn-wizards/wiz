@@ -436,6 +436,13 @@ NATIVE(Nat_46_shiftLeft, 2, return BOX(UNBOX(a[1]) >= 64 ? 0 : UNBOX(a[0]) << UN
 NATIVE(Nat_46_shiftRight, 2, return BOX(UNBOX(a[1]) >= 64 ? 0 : UNBOX(a[0]) >> UNBOX(a[1]));)
 NATIVE(Nat_46_log2, 1, uintptr_t x = UNBOX(a[0]); return BOX(x ? 63 - __builtin_clzll((unsigned long long)x) : 0);)
 NATIVE(Nat_46_toString, 1, char b[32]; int n = snprintf(b, sizeof b, "%lu", (unsigned long)UNBOX(a[0])); return wstr(b, (size_t)n);)
+/* the program's arguments, without its name (stage 21k; `rt_start` saves them) */
+static int rt_argc; static char **rt_argv;
+NATIVE(IO_46_argCount, 1, return prodv(BOX((uintptr_t)(rt_argc > 1 ? rt_argc - 1 : 0)), a[0]);)
+NATIVE(IO_46_arg, 2,
+  uintptr_t i = UNBOX(a[0]);
+  const char *s = i + 1 < (uintptr_t)rt_argc ? rt_argv[i + 1] : "";
+  return prodv(wstr(s, strlen(s)), a[1]);)
 #ifndef WIZ_RC
 /* IO: `String → World → Prod Unit World` */
 NATIVE(IO_46_println, 2, puts(cstr(a[0])); return prodv(BOX(0), a[1]);)
@@ -791,6 +798,8 @@ static void rt_finish(void) {
    thread with a big stack would do, but the collector's stopping of the world lost
    its signals) */
 static void rt_start(char **argv) {
+  rt_argv = argv;
+  for (rt_argc = 0; argv[rt_argc]; rt_argc++) ;
   struct rlimit r;
   rlim_t want = (rlim_t)8 << 30;
   if (getrlimit(RLIMIT_STACK, &r) == 0 && r.rlim_cur != RLIM_INFINITY && r.rlim_cur < want && !getenv("WIZ_STACK_SET")) {

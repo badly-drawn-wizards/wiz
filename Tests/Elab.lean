@@ -402,7 +402,19 @@ def qtyGroup : Group where
     { name := "products of quantity variables", run := fun _ =>
         ok ("def twice {A B : Type} {q r : Qty} (f : (%q x : A) → B) (g : (%r y : B) → B) (%(r) a : B) : B := g a\n") },
     { name := "quantity literals as terms", run := fun _ =>
-        ok "def one : Qty := 1\ndef many : Qty := ω\ndef f {A : Type} (%one x : A) : A := x" }
+        ok "def one : Qty := 1\ndef many : Qty := ω\ndef f {A : Type} (%one x : A) : A := x" },
+    -- F6: `(%q x : A) → B = (1 x : A) → B` computed to `False` (the quantities differ as
+    -- polynomials), and `q := 1` made it provable: a closed proof of `False`
+    { name := "F6: types whose quantities differ only by a variable are not unequal (it proved False)", run := fun _ => do
+        fails ("inductive N where\n  | z\n  | s (n : N)\n" ++
+          -- (then `def boom : False := flip (q := 1) rfl` was a closed proof of False)
+          "def flip {q : Qty} (e : ((%q x : N) → N) = ((1 x : N) → N)) : False := e\n") "mismatch"
+        -- (then `bad 1 (refl …)`)
+        fails "def bad (q : Qty) (e : ((%q x : Unit) → Unit) = ((1 x : Unit) → Unit)) : False := e\n" "mismatch"
+        fails "def bad (q : Qty) (e : ((%q x : Unit) × Unit) = ((1 x : Unit) × Unit)) : False := e\n" "mismatch" },
+    { name := "F6: types with two different literal quantities are unequal", run := fun _ =>
+        ok ("def apart (e : ((0 x : Unit) → Unit) = ((1 x : Unit) → Unit)) : False := e\n" ++
+          "def apart2 (e : ((ω x : Unit) × Unit) = ((1 x : Unit) × Unit)) : False := e\n") }
   ]
 
 end Tests.Elab
@@ -1028,7 +1040,12 @@ def reuseGroup : Group where
           s!"the parameter's cell is not rebuilt in place:\n{"\n".intercalate ls}"
         -- the two `step`s' options and bump2's result (an option and a pair) are the only
         -- allocations: the new `Stats` takes the parameter's cell
-        checkEq (s0 + 4) r0 }
+        checkEq (s0 + 4) r0 },
+    { name := "renaming a body renames reset and reuse", run := fun _ => do
+        let b : IR.Body := .vdecl 5 (.reset 1) (.vdecl 6 (.reuse 5 0 #[2, 3]) (.ret 6))
+        let σ : Std.HashMap IR.Var IR.Var := ({} : Std.HashMap _ _).insert 1 10 |>.insert 2 20 |>.insert 3 30
+        let ls := ((IR.Body.rename σ b).toString.splitOn "\n").map (·.trimAscii.toString)
+        checkEq ["let x5 := reset x10", "let x6 := reuse x5 in ctor 0 x20 x30", "ret x6"] ls }
   ]
 
 /-- Programs for the borrowing tests (stage 8e): functions that only look at their
@@ -1117,6 +1134,12 @@ def cRunSmallStack (src : String) (expected : String) (llvm : Bool := false) : I
     | none => throw (IO.userError s!"could not read the result: {out.stdout}")
     | some v => checkEq expected (readback s.globals s.builtins (eval s.globals [] ty) v).pretty
 
+/-- A program that projects field 1 of a number (the old unary-view fallback: since
+`proj` is borrowed, the objects it made would leak). Lowering never emits this. -/
+def projOfNumber : Array IR.Decl :=
+  #[{ name := "wiz.entry", params := #[],
+      body := .vdecl 0 (.lit 5) (.vdecl 1 (.proj 1 0) (.ret 1)) }]
+
 def borrowGroup : Group where
   name := "borrow"
   exercise := "Stage 8e"
@@ -1128,6 +1151,15 @@ def borrowGroup : Group where
         -- (a self tail call is a jump to a loop, 15f)
         check (ls.any fun l => l.startsWith "jmp ") s!"no loop:\n{"\n".intercalate ls}" },
     { name := "a lookup in a tree borrows the tree", run := fun _ => borrowedUncounted "Tree.mem" 1 },
+    { name := "comparisons borrow: the key and the keys it meets are not counted", run := fun _ => do
+        borrowedUncounted "Tree.mem" 0
+        let ls ← borrowIR "Tree.mem"
+        check (!ls.any fun l => l.startsWith "dup " || l.startsWith "drop ") s!"counted:\n{"\n".intercalate ls}"
+        -- big numbers are objects: a borrowing comparison must neither free nor leak them
+        let big := "1180591620717411303424"
+        cRun (borrowSrc ++ s!"def tb : Tree := Tree.node (Nat.add {big} 2) (Tree.node {big} .leaf .leaf) .leaf\n" ++
+          s!"def b2n : Bool → Nat\n  | .true => 1\n  | .false => 0\n" ++
+          s!"def main : Nat := Nat.add (b2n (Tree.mem {big} tb)) (Nat.add (b2n (Tree.mem (Nat.add {big} 1) tb)) (b2n (Tree.mem (Nat.add {big} 2) tb)))\n") "2" },
     { name := "borrowing functions run without leaks", run := fun _ =>
         okLib (borrowSrc ++ "#run len (.cons 1 (.cons 2 .nil))\n#run sumAcc 0 (.cons 1 (.cons 2 .nil))\n#run Tree.mem 3 t3\n#run Tree.mem 4 t3")
           ["2", "3", ".true", ".false"] },
@@ -1146,12 +1178,25 @@ def borrowGroup : Group where
         let ls ← borrowIR "both"
         check (ls.any fun l => (l.splitOn "prim dropMoved").length > 1) s!"no specialised drop:\n{"\n".intercalate ls}"
         okLib (borrowSrc ++ "#run both (.cons 1 (.cons 2 .nil))") ["4"] },
+    { name := "proj of a field of a number stops the IR interpreter and the C runtime", run := fun _ => do
+        match IR.runProgram projOfNumber with
+        | .ok _ => throw (IO.userError "the IR interpreter projected a number")
+        | .error e => check ((e.splitOn "internal error: proj 1 of the number 5").length > 1) e
+        let dir ← IO.FS.createTempDir
+        let exe := dir / "proj"
+        match ← Build.compileC (← toolchain) (C.program projOfNumber) exe with
+        | .error e =>
+          if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+        | .ok () =>
+          let out ← IO.Process.output { cmd := exe.toString }
+          checkEq 3 out.exitCode
+          check ((out.stderr.splitOn "internal error: proj").length > 1) out.stderr },
     { name := "borrowing and drop specialisation in C", run := fun _ =>
         cRun (borrowSrc ++ "def main : Nat := Nat.add (both (.cons 1 (.cons 2 .nil))) (len (mapL len (.cons .nil .nil)))\n") "5" }
   ]
 
 /-- Build `main : IO _` with the C backend (and the `IO` library) and compare its output. -/
-def ioRun (src : String) (expected : String) : IO Unit := do
+def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm : Bool := false) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
@@ -1164,10 +1209,11 @@ def ioRun (src : String) (expected : String) : IO Unit := do
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal (← toolchain) s "main" dir (timeout := some 120) with
+  match ← Build.runGlobal (← toolchain) s "main" dir llvm (timeout := some 120) (args := args) with
   | .ok v => checkEq expected v
   | .error e =>
-    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+    let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
+    if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
 
 def ioFails (src : String) (fragment : String) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
@@ -1791,10 +1837,20 @@ def smallField : List MTm :=
    -- rejected: boxed different tags are different
    ann star (eq (L (enum 2)) (liftedTag 0) (liftedTag 1))]
 
+/-- F6: two types whose binder quantities are different literals are unequal (`False`, so
+the `absurd` checks), and equal literals give the Σ rule. (`MTm` has no quantity variables,
+the case F6 was about: its Lean test is in the group *quantity polymorphism*.) -/
+def qtyApart : List MTm :=
+  let F (q : ZeroOneMany) := sorted 1 (piq q (enum 2) (enum 2))
+  [ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (F .zero) (F .one)) (empty 0)),
+   ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (sorted 1 (sigmaq .one (enum 2) (enum 2))) (sorted 1 (sigma (enum 2) (enum 2)))) (empty 0)),
+   ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (F .one) (F .one)) (empty 0)),
+   reflTy (F .one)]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -2157,7 +2213,8 @@ def selfhostProgram2 : String :=
 /-- Compile a program with the self-hosted compiler, then the C it prints with the
 self-hosted runtime (`selfhost/rt.c`, with the garbage collector given by the
 toolchain's `gcCflags`/`gcLdflags`), run it, and compare its output. -/
-def selfhostCompileRun (file expected : String) (opt : String := "-O2") (smallStack : Bool := false) : IO Unit := do
+def selfhostCompileRun (file expected : String) (flags : Array String := #[]) (progArgs : Array String := #[])
+    (opt : String := "-O2") (smallStack : Bool := false) : IO Unit := do
   let tc ← toolchain
   if tc.gcCflags.isEmpty then IO.println "    (skipped: no garbage collector, --gc-cflags)"; return
   match ← selfhostCompiler with
@@ -2166,7 +2223,7 @@ def selfhostCompileRun (file expected : String) (opt : String := "-O2") (smallSt
   | .ok exe =>
     let dir ← IO.FS.createTempDir
     IO.FS.writeFile (dir / "input.wiz") file
-    let out ← IO.Process.output { cmd := "timeout", args := #["300", exe.toString], cwd := dir }
+    let out ← IO.Process.output { cmd := "timeout", args := #["300", exe.toString] ++ flags, cwd := dir }
     unless out.exitCode == 0 do throw (IO.userError s!"the compiler failed ({out.exitCode}): {out.stderr}")
     IO.FS.writeFile (dir / "out.c") out.stdout
     let rt := (← IO.currentDir) / "selfhost"
@@ -2176,8 +2233,8 @@ def selfhostCompileRun (file expected : String) (opt : String := "-O2") (smallSt
     -- (a small stack: 1 MB, and the runtime told not to raise it)
     let run ← if smallStack then
         let env : Array (String × Option String) := #[("WIZ_STACK_SET", some "1")]
-        IO.Process.output { cmd := "sh", args := #["-c", "ulimit -s 1024; exec timeout 60 ./prog"], cwd := dir, env }
-      else IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString], cwd := dir }
+        IO.Process.output { cmd := "sh", args := #["-c", "ulimit -s 1024; exec timeout 60 ./prog \"$@\"", "sh"] ++ progArgs, cwd := dir, env }
+      else IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString] ++ progArgs, cwd := dir }
     unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
     checkEq expected run.stdout
 
@@ -2232,6 +2289,26 @@ def ioDiverges (src : String) (secs : Nat := 5) : IO Unit := do
         s!"ulimit -v 8000000; exec timeout {secs} \"$0\"", exe.toString] }
       unless out.exitCode == 124 do
         throw (IO.userError s!"expected a timeout, got exit code {out.exitCode}: {(out.stdout ++ out.stderr).take 1500}")
+
+/-- (stages 21i–j) Differential: each declaration after `header` is accepted (`true`) or
+rejected by the Lean frontend and by the self-hosted one alike, as `expected` says. -/
+def selfhostAgrees (header : String) (decls : List (String × Bool)) : IO Unit := do
+  let loader ← preludeLoader
+  for (d, ok) in decls do
+    let src := "import Prelude\n" ++ header ++ d
+    let s := runFrontend (R := ZeroOneMany) src { loader }
+    let leanOk := (s.messages.filter (·.severity == .error)).isEmpty
+    unless leanOk == ok do throw (IO.userError s!"the Lean frontend {if leanOk then "accepts" else "rejects"}:\n{d}")
+    let some out ← selfhostOutput src | return
+    let errs := (out.splitOn "\n").filter (·.startsWith "error")
+    unless errs.isEmpty == ok do
+      throw (IO.userError s!"the self-hosted frontend {if errs.isEmpty then "accepts" else "rejects"}:\n{d}\n{out}")
+
+/-- (stage 21i) Phantom parameters, for both frontends. -/
+def phantomHeader : String :=
+  "inductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\ninductive Proxy (A : Type) where\n  | mk\n" ++
+  "structure S (w : Nat) where\n  x : Nat\ninductive N (w : Nat) where\n  | z\n  | s (n : N w)\n" ++
+  "def width (w : Nat) (a : UIntN w) : Nat := w\ndef u8 : UIntN 8 := .mk 3\n"
 
 def selfHostGroup : Group where
   name := "selfhost"
@@ -2396,19 +2473,27 @@ def selfHostGroup : Group where
         selfhostCompileRun selfhostProgram1
           "6765\n5050\n1989\n2\nyes, ünïcode\n2\n5\n" },
     { name := "the self-hosted backend compiles and runs a program with reference counting (no leaks)", run := fun _ =>
-        selfhostCompileRun ("-- wiz: rc\n" ++ selfhostProgram1) "6765\n5050\n1989\n2\nyes, ünïcode\n2\n5\n" },
+        selfhostCompileRun selfhostProgram1 "6765\n5050\n1989\n2\nyes, ünïcode\n2\n5\n" (flags := #["--rc"]) },
     { name := "reference counting: deep lists, unused parameters and hypotheses, shared arrays, closures", run := fun _ =>
+        selfhostCompileRun selfhostProgram2 "1000000\n0\n6\n15\n5\n3\n" (flags := #["--rc"]) },
+    { name := "the first-line pragma `-- wiz: rc` still selects reference counting (a fallback, 21k)", run := fun _ =>
         selfhostCompileRun ("-- wiz: rc\n" ++ selfhostProgram2) "1000000\n0\n6\n15\n5\n3\n" },
     { name := "self tail calls are loops: 10M iterations on a 1 MB stack, at -O0, with the GC and with RC (15f)", run := fun _ => do
         let prog := "import Prelude\npartial def count (n acc : Nat) : Nat := match n with\n  | .zero => acc\n" ++
           "  | .succ m => match Nat.beq (Nat.mod m 3) 0 with\n    | .true => count m (acc + 2)\n    | .false => count m acc\n" ++
           "def main : IO Unit := IO.println (Nat.toString (count 10000000 0))\n"
         -- (every parameter owned: a borrowed one given an owned argument keeps the call a call)
-        selfhostCompileRun ("-- wiz: rc-owned\n" ++ prog) "6666668\n" (opt := "-O0") (smallStack := true)
+        selfhostCompileRun prog "6666668\n" (flags := #["--rc-owned"]) (opt := "-O0") (smallStack := true)
         selfhostCompileRun prog "6666668\n" (opt := "-O0") (smallStack := true) },
     { name := "dead lets without effects are not computed (15e)", run := fun _ =>
-        selfhostCompileRun ("-- wiz: rc\nimport Prelude\ndef f (n : Nat) : Nat :=\n  let unused := List.cons n (List.cons 2 .nil);\n" ++
-          "  let alsoUnused := List.cons unused .nil;\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" },
+        selfhostCompileRun ("import Prelude\ndef f (n : Nat) : Nat :=\n  let unused := List.cons n (List.cons 2 .nil);\n" ++
+          "  let alsoUnused := List.cons unused .nil;\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" (flags := #["--rc"]) },
+    { name := "self-hosted programs read their command-line arguments (IO.args, 21k), with either collector", run := fun _ => do
+        let prog := "import Prelude\ndef printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s rest => do\n    IO.println s;\n    printAll rest\n" ++
+          "def main : IO Unit := do\n  n ← IO.argCount;\n  IO.println (Nat.toString n);\n  args ← IO.args;\n  printAll args\n"
+        selfhostCompileRun prog "0\n"
+        selfhostCompileRun prog "2\n--rc\nünï code\n" (progArgs := #["--rc", "ünï code"])
+        selfhostCompileRun prog "1\nx\n" (flags := #["--rc"]) (progArgs := #["x"]) },
     { name := "the self-hosted backend: division, powers and bits", run := fun _ =>
         selfhostCompileRun ("import Prelude\ndef show (n : Nat) : IO Unit := IO.println (Nat.toString n)\n" ++
           "def main : IO Unit := do\n  show (100 / 7);\n  show (Nat.mod 100 7);\n  show (Nat.div 5 0);\n  show (Nat.mod 5 0);\n" ++
@@ -2419,6 +2504,35 @@ def selfHostGroup : Group where
     { name := "the self-hosted frontend: the Prelude's division and bits compute", run := fun _ =>
         selfhostCheckFile "import Prelude\n#reduce Nat.beq (Nat.mod 17 5) 2\n#reduce Nat.beq (Nat.xor 6 3) 5\n#reduce Nat.beq (Nat.log2 9) 3\n"
           "con((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\n" },
+    { name := "the self-hosted frontend: phantom parameters count, as in the Lean frontend (21i)", run := fun _ =>
+        selfhostAgrees phantomHeader [
+          ("def same (x : UIntN 8) : UIntN 8 := x\n", true),
+          ("def bad (x : UIntN 8) : UIntN 16 := x\n", false),
+          ("def badP (x : Proxy Nat) : Proxy Bool := x\n", false),
+          ("def badS (x : S 8) : S 16 := x\n", false),
+          ("def badN (x : N 1) : N 2 := x\n", false),
+          ("def w8 : Nat := width _ u8\ndef get {w : Nat} : UIntN w → Nat\n  | .mk n => n\ndef sx {w : Nat} (a : S w) : Nat := a.x\n" ++
+            "def N.add {w : Nat} : N w → N w → N w\n  | .z, m => m\n  | .s n, m => .s (N.add n m)\n", true)] },
+    { name := "the self-hosted frontend: phantom parameters are inferred, and computation is unchanged (21i)", run := fun _ =>
+        selfhostCheckFile ("import Prelude\n" ++ phantomHeader ++
+          "#reduce Nat.beq (width _ u8) 8\n#reduce Nat.beq (S.x (S.mk 5 : S 16)) 5\n" ++
+          "def N.toNat {w : Nat} : N w → Nat\n  | .z => 0\n  | .s n => N.toNat n + 1\n#reduce Nat.beq (N.toNat (.s (.s .z) : N 3)) 2\n" ++
+          "inductive V (w : Nat) (A : Type) : Nat → Type where\n  | nil : V w A .zero\n")
+          ("UIntN : (x0 : Nat) → U0\nProxy : (x0 : U0) → U0\nS : (x0 : Nat) → U0\nS.x : (x0 : Nat) → (x1 : (S x0)) → Nat\nN : (x0 : Nat) → U0\n" ++
+          "width : (x0 : Nat) → (x1 : (UIntN x0)) → Nat\nu8 : (UIntN (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ Nat.zero)))))))))\n" ++
+          "con((#1, (tt, tt)))\ncon((#1, (tt, tt)))\nN.toNat : (x0 : Nat) → (x1 : (N x0)) → Nat\ncon((#1, (tt, tt)))\n" ++
+          "error: a parameter that no constructor mentions (a phantom parameter) of an indexed family is not supported by the self-hosted frontend\n") },
+    { name := "the self-hosted backend: phantom parameters are erased (21i)", run := fun _ =>
+        selfhostCompileRun ("import Prelude\ninductive Box (w : Nat) where\n  | mk (n : Nat)\nstructure Pt (w : Nat) where\n  x : Nat\n  y : Nat\n" ++
+          "def get {w : Nat} : Box w → Nat\n  | .mk n => n\ndef sum {w : Nat} (p : Pt w) : Nat := p.x + p.y\n" ++
+          "def b : Box 8 := .mk 3\ndef p : Pt 8 := .mk 1 2\n" ++
+          "def main : IO Unit := IO.println (Nat.toString (get b + sum p))\n") "6\n" },
+    { name := "the self-hosted frontend: constructor parameters from the expected type (21j)", run := fun _ =>
+        selfhostAgrees ("def Code : Bool → Type\n  | .true => Nat\n  | .false => Bool\n" ++
+          "structure Tagged (b : Bool) where\n  val : Code b\n")
+          [("def t : Tagged .true := Tagged.mk 3\ndef f : Tagged .false := Tagged.mk .true\n" ++
+              "def g (x : Nat) : Tagged .true := Tagged.mk (Nat.succ x)\n", true),
+           ("def bad : Tagged .false := Tagged.mk 3\n", false)] },
     { name := "both kernels compare propositions by equivalence (and agree on it below)", run := fun _ => do
         -- the domains' equation is an equivalence, not `False`
         match MTm.propShapes.map leanVerdict with
@@ -2438,6 +2552,10 @@ def selfHostGroup : Group where
         let vs := MTm.sizeInf.map leanVerdict
         unless vs.take 5 == List.replicate 5 "error" && (vs.drop 5).all (· != "error") do
           throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "F6: literal quantities that differ make types unequal (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.qtyApart.map leanVerdict
+        unless vs.take 2 |>.all (· != "error") do throw (IO.userError s!"unexpected verdicts {vs}")
+        unless vs[2]? == some "error" && vs[3]? != some "error" do throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "Q4: a small description field is rejected, a lifted one works (and both kernels agree on it below)", run := fun _ => do
         let vs := MTm.smallField.map leanVerdict
         let body := (vs.drop 4).dropLast
@@ -2650,6 +2768,12 @@ def effectsGroup : Group where
   name := "effects"
   exercise := "Stage 10a"
   cases := [
+    { name := "a program reads its command-line arguments (IO.args, 21k), C and LLVM", run := fun _ => do
+        let src := "import IO\ndef printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s rest => do\n    IO.println s;\n    printAll rest\n" ++
+          "def main : IO Unit := do\n  n ← IO.argCount;\n  IO.println (Nat.toString n);\n  args ← IO.args;\n  printAll args\n"
+        ioRun src "0\n"
+        ioRun src "2\n--rc\na b\n" (args := #["--rc", "a b"])
+        ioRun src "1\nx\n" (args := #["x"]) (llvm := true) },
     { name := "state, exceptions and output, handled in turn", run := fun _ =>
         ioRun ("import Eff\ndef prog : Eff (Row.cons (State Nat) (Row.cons (Exn String) (Row.cons Console Row.nil))) Nat := do\n" ++
           "  n ← get;\n  println \"starting\";\n  put (n + 1);\n  m ← get;\n  Monad.pure (m * 10)\n" ++

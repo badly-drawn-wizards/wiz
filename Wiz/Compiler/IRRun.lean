@@ -9,9 +9,8 @@ the output of `RC.lean` can be tested: using a freed object, freeing twice, or e
 with objects still allocated (a leak) are errors. `#run e` compiles `e` through the
 whole backend pipeline and runs it here.
 
-Numbers are scalars here (the C runtime adds big numbers). As in the interpreter, a
-number looks like its unary payload when projected (`natView`); the objects that
-creates are fresh references.
+Numbers are scalars here (the C runtime adds big numbers). Field 0 of a number is its
+constructor tag; any other field of one is an error (see `natField`).
 -/
 
 namespace Wiz.IR
@@ -67,12 +66,13 @@ partial def dropV : IVal → RunM Unit
       | .token _ => pure ()
   | _ => pure ()
 
-/-- The `natView` of a number, as fresh objects. -/
+/-- Field `i` of a number's unary view (`natView`): field 0 is its constructor tag. The
+other fields would be fresh objects, which a borrowed `proj` (stage 8e) never frees: the
+lowering takes numbers apart with `natTag`/`nat.pred`, so projecting one is a compiler
+bug, reported here rather than as a leak at the end (the C runtime stops too). -/
 def natField (n : Nat) (i : Nat) : RunM IVal := do
   if i == 0 then return .tag (if n == 0 then 0 else 1)
-  let unitPair ← alloc (.ctor 0 #[.erased, .erased])
-  if n == 0 then return unitPair
-  alloc (.ctor 0 #[.num (n - 1), unitPair])
+  throw s!"internal error: proj {i} of the number {n} (use natTag/nat.pred)"
 
 def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
   let n (i : Nat) : Nat := match args[i]? with

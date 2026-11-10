@@ -352,11 +352,11 @@ def mangle (n : String) : String := match n with
 def nativeNames : List String :=
   .cons "Nat.zero" (.cons "Nat.succ" (.cons "Nat.add" (.cons "Nat.sub" (.cons "Nat.mul" (.cons "Nat.pred"
   (.cons "Nat.beq" (.cons "Nat.blt" (.cons "Nat.lt" (.cons "Nat.le" (.cons "Nat.toString"
-  (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "Str.ofString"
+  (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "IO.argCount" (.cons "IO.arg" (.cons "Str.ofString"
   (.cons "Array.empty" (.cons "Array.push" (.cons "Array.size" (.cons "Array.getD" (.cons "Array.set"
   (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo"
   (.cons "Nat.div" (.cons "Nat.mod" (.cons "Nat.pow" (.cons "Nat.land" (.cons "Nat.lor" (.cons "Nat.xor"
-  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))
+  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))))
 def elemStr (x : String) : List String → Bool
   | .nil => .false
   | .cons y rest => Bool.or (strEq x y) (elemStr x rest)
@@ -1445,6 +1445,16 @@ def genProgramFor (text : String) (gs : Globals) : List Doc := match wantsRC tex
     | .mk cs => match "-- wiz: rc-owned" with
       | .mk ps => Bool.not (charsPrefix ps cs)) gs
   | .false => genProgram gs
+-- (stage 21k) the backend the command line asks for: `--rc` (reference counting),
+-- `--rc-owned` (every parameter owned, no borrowing) or `--gc`; without one, the first
+-- line's pragma (`genProgramFor`, kept as a fallback for one release)
+def genProgramArgs (args : List String) (text : String) (gs : Globals) : List Doc := match elemStr "--rc-owned" args with
+  | .true => genProgramRC .false gs
+  | .false => match elemStr "--rc" args with
+    | .true => genProgramRC .true gs
+    | .false => match elemStr "--gc" args with
+      | .true => genProgram gs
+      | .false => genProgramFor text gs
 
 -- printing a program: each line's pieces, then a newline
 def printDoc : Doc → IO Unit

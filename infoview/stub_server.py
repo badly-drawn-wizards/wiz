@@ -2,7 +2,7 @@
 """A stand-in for `wiz lsp --infoview SOCK` (infoview-protocol.md §8), for testing the
 infoviews before the server has these methods: it listens on SOCK, sends one
 `wiz/infoview/cursor`, and answers the infoview's requests with canned goals. With
---stdio it is a language server on stdin/stdout instead (for web/bridge.sh).
+--stdio it is a language server on stdin/stdout instead (for web/node_test.mjs).
     usage: stub_server.py SOCK [--once] | stub_server.py --stdio"""
 import json, os, socket, sys
 
