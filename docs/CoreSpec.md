@@ -897,6 +897,12 @@ type by a case split, `λ t. transp Unit () (λ _ _. G t) (ecase t [p₀, …]) 
 `transp` along `() = ()` is there because the binder has quantity 0 and its premises are
 checked erased (§8.1). This is an ordinary kernel-checked term; the kernel rules are not
 involved, and are deliberately not specialised to tag fields (above).
+**Expected limit of `rfl`** (not observed in `lib/` or the tests). At a non-tag field the
+equation is `(0 s : S) → cast e (E s) = E (cast S S ê s)`. When `S` is a type *variable*,
+`cast S S ê s` is stuck (no regularity), so if a later index of the type depends on that
+field (`E s` mentions `s` in a `ret`/`rec` index) the two sides differ by a stuck cast and
+`rfl` cannot close the goal: that needs `castRefl` (§8.4a). `refl T` still proves `T = T`
+there, since it is `reflTy T`, whose type is the same computed equation.
 
 **Soundness: the setoid model.** We interpret the theory in the setoid (observational)
 model of TTobs/CCobs [PT22, PT23], extended as follows. This is an argument, not a

@@ -422,7 +422,9 @@ compare by equivalence. What this costs, and why:
   index equations. `refl (Vec A n)` and `rfl` both prove `Vec A n = Vec A n`: the
   equation's part over the constructor tags, `(t : Enum ls) → …`, is stuck under its
   binder, so `rfl` proves it tag by tag (a case split, wrapped in a `transp` because the
-  binder is erased; `rflProof` in `Elab/Term.lean`).
+  binder is erased; `rflProof` in `Elab/Term.lean`). One expected limit: if a later
+  index of the type depends on a field at a type *variable*, `rfl` is left with a stuck
+  cast at that variable and fails; `refl T` still works.
 * `μ` is now injective in its description, a large-into-small map (Hur's paradox has
   this shape). It is the same shape as the injectivity of Π that observational equality
   already has, and a description can't range over its own universe (fields are exactly in
