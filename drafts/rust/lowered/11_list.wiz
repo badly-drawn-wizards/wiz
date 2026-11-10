@@ -1,0 +1,56 @@
+import RsCore
+-- Lowering of drafts/rust/surface/11_list.wiz (rules: drafts/rust/LOWERING.md, L15–L17, L20).
+-- Every borrow has its own region: the reborrow of `l` at ρ' (nested in ρ), and the borrow
+-- of the tail at ρt (nested in ρ'). Pairs that carry handles are destructured with
+-- `let (x, y) := p`, never projected (L6).
+
+inductive LList where
+  | nil
+  | cons (head : U64) (tail : LList)
+
+-- fn incr_all {'a} (l : &'a mut List) : Result Unit Overflow
+-- (the overflow is a panic here, L2; `partial`: wishful: reborrow-recursion)
+partial def incr_all {ρ : Region} (l : Uniq ρ LList) : Result (Unit × Uniq ρ LList) :=
+  Uniq.reborrow l (fun ρ' h l r =>                   -- match l (fields as reborrows, L15)
+    match r.val with
+    | .nil => .ok ((), r)
+    | .cons head tail => (match U64.add head (U64.lit 1) with   -- *head += 1
+      | .ok head =>
+        (match Uniq.borrow ρ' tail (fun ρt ht tail rt => incr_all rt) with   -- incr_all tail
+        | .ok q =>
+          let (u, tail) := q;
+          .ok ((), Uniq.set r (LList.cons head tail))  -- the reborrows end: rebuild the cell
+        | .err e => .err e)
+      | .err e => .err e))
+
+-- fn push_back {'a} (l : &'a mut List) (x : U64) : Unit
+-- `cur : &'a mut List` is a `Mut ρ LList LList` (L16): each step composes the backward
+-- function with the cell's; the region stays ρ.
+partial def push_back.loop0 {ρ : Region} (cur : Mut ρ LList LList) : Mut ρ LList LList :=
+  match Mut.get cur with
+  | .cons head tail =>
+    push_back.loop0 (Mut.comp cur (fun (_ : LList) => (tail, fun (t : LList) => LList.cons head t)))
+  | .nil => cur
+
+def push_back {ρ : Region} (l : Uniq ρ LList) (x : U64) : Result (Unit × Uniq ρ LList) :=
+  let cur := push_back.loop0 (Mut.whole l);
+  let cur := Mut.set cur (LList.cons x LList.nil);   -- *cur := .cons x .nil
+  .ok ((), Mut.release cur)                          -- the cursor's last use: l comes back
+
+def LList.toNats : LList → List Nat
+  | .nil => .nil
+  | .cons h t => .cons h.val (LList.toNats t)
+
+def main : Result LList :=
+  let l := LList.cons (U64.lit 1) (LList.cons (U64.lit 2) LList.nil);
+  match Uniq.borrow Region.static l (fun ρ h l r =>  -- incr_all (&mut l)
+    incr_all r) with
+  | .ok p =>
+    let (u, l) := p;
+    (match Uniq.borrow Region.static l (fun ρ h l r => push_back r (U64.lit 7)) with   -- push_back (&mut l) 7
+    | .ok p => let (u, l) := p; .ok l
+    | .err e => .err e)
+  | .err e => .err e
+
+#eval Result.map LList.toNats main
+-- .ok [2, 3, 7]

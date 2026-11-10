@@ -7,10 +7,10 @@ import RsCore
 def push_twice {ρ : Region} (v : Uniq ρ (Vec U64)) (x : U64) : Result (Unit × Uniq ρ (Vec U64)) :=
   match Vec.push v x with             -- v.push x   (the handle goes in and comes back)
   | .ok r =>
-    let v := r.2;
+    let (u, v) := r;
     match Vec.push v x with           -- v.push x
     | .ok r =>
-      let v := r.2;
+      let (u, v) := r;
       .ok ((), v)
     | .err e => .err e
   | .err e => .err e
@@ -21,7 +21,7 @@ def fill.loop0 : Nat → U64 → Vec U64 → Result (Vec U64)
   | .zero, _, v => .ok v
   | .succ k, i, v => match Uniq.borrow Region.static v (fun ρ h v r => push_twice r i) with   -- push_twice (&mut v) i
     | .ok r =>
-      let v := r.2;
+      let (u, v) := r;
       fill.loop0 k (U64.mk (Nat.succ i.val)) v     -- i < n ≤ 2^64 - 1: no overflow check
     | .err e => .err e
 

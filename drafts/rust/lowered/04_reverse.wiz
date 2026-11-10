@@ -24,8 +24,7 @@ def reverse (l : LList) : Result LList :=
   let acc := LList.nil;
   match reverse.loop0 l acc with
   | .ok r =>
-    let l := r.1;            -- (dead: dropped)
-    let acc := r.2;
+    let (l, acc) := r;       -- (l is dead: dropped)
     .ok acc
   | .err e => .err e
 

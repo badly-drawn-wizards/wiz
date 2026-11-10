@@ -14,7 +14,8 @@ Files:
 | `drafts/rust/lib/RsCore.wiz` | `Flow`, Nat-backed `U64` and List-backed `Vec` stand-ins | yes (stand-ins for agent/natives-ints and agent/vec-lib) |
 | `drafts/rust/surface/NN_*.wiz` | the programs in the DSL's surface syntax | no (wishful) |
 | `drafts/rust/lowered/NN_*.wiz` | the same programs, hand-lowered | yes, with `#eval`s |
-| `drafts/rust/rejected/*.wiz` | lowerings of programs Rust rejects (E0499, E0502, E0515, E0597 ×2, a missing bound) | each must fail with a type mismatch (`check.sh`) |
+| `drafts/rust/rejected/*.wiz` | lowerings of programs Rust rejects (E0499, E0502, E0515 ×2, E0597 ×2, missing bounds for `&` and `&mut`, a bound pointing the wrong way, a lengthened borrow) | each must fail with a type mismatch (`check.sh`) |
+| `drafts/rust/linear/*.wiz` | the same scopes with handles at quantity 1 | no (wishful: linear-case) |
 | `drafts/rust/Optic.wiz` | the part of the optics library that doesn't check yet | no (wishful) |
 
 ## 1. The surface, sketched (RD5: closer to Wiz than to Rust; Rust's semantics)
@@ -94,7 +95,13 @@ that rebuilds the lender from the borrow's final value. The lender is *not* also
 back (it is inside the closure); `Mut.release m` (the borrow's last use) or
 `Mut.close m fin` gives back the `Uniq ρ S`. `*m` is `Mut.get m`, `*m := e` is
 `Mut.set m e`; `&mut v.p` is `Mut.ofLens v l`/`Mut.ofPLens v l` for the place's lens.
-`&mut` arguments in other regions are handed back as in L3. `Option (&'a mut A)`
+`&mut` arguments in other regions are handed back as in L3. A returned borrow that may
+be one of several `&mut` arguments (`if c then x else y`) moves all of them into the
+result: `Mut.ofUniq x : Mut ρ A (Uniq ρ A)` (the whole argument, its backward function
+giving the handle back), `Mut.mapBack m f` to give the other handles back too, so the
+result is `R (Mut ρb A (Uniq ρa A × Uniq ρb A))`, and `Mut.finish m` at the borrow's last
+use gives the handles back (12). An argument of a longer region is used at the
+result's through `Mut.weaken h` (L22). `Option (&'a mut A)`
 returns `R (MutOpt ρ A S)`: `.some m` (a `Mut`) or `.none r` (the lender) (L12). (03, 08)
 
 **L5. Sequencing.** A call or primitive that may fail is a direct `match`:
@@ -105,7 +112,11 @@ parenthesised. (all)
 
 **L6. Mutable locals are SSA.** `let mut x := e` is `let x := e`; each assignment
 `x := e` rebinds `x` (`let x := …`), shadowing the old one. After a call that hands back
-`&mut` arguments, each is rebound from the result tuple (`let v := r.2`). (all)
+`&mut` arguments, each is rebound by destructuring the result tuple
+(`let (u, v) := r`; three components as `let (u, xy) := r; let (x, y) := xy`, wishful:
+let-tuple-patterns), never by projections (`r.2`): a tuple that carries a borrow is a
+resource, and projections will be allowed only on unrestricted pairs (the linear-pair
+decision of 2026-11-10). (all)
 
 **L7. Joins.** An `if`/`match` whose branches assign variables that are live afterwards
 returns those variables from each branch (as a tuple) and the continuation rebinds them.
@@ -170,7 +181,7 @@ Lowered: in a reborrow scope of `t`, match `r.val`, borrow the field variables
 (`Uniq.borrow ρ' left …`) to recurse on them, rebuild the constructor in each branch
 with `Uniq.set r` and hand the whole back (05, `insert`; `partial` until structural
 recursion sees through the scope's lambda, wishful: reborrow-recursion). A `&T` scrutinee binds fields by
-value (shared).
+value (shared). (05, 11: `incr_all`)
 
 **L16. A borrow that moves (cursor loops, R6c).** `cur := left` inside a loop, where
 `cur : &'a mut Tree`, composes the cursor's backward function with the child's:
@@ -178,7 +189,7 @@ value (shared).
 starts as `Mut.whole t` (region `ρ`: `t` moves into it), and when the loop ends,
 `*cur := e; t := Mut.release cur` puts the whole tree back (05, `insert_loop`). The defunctionalised alternative (a zipper `Path`
 whose frames reuse the nodes, `plug` as the backward function) is what the front end
-should emit for performance (05, `insert_zip`), proven equal to the closure form later.
+should emit for performance (05, `insert_zip`), proven equal to the closure form later. (05, 11: `push_back`)
 
 **L17. Regions at call sites.** Region arguments are inferred from the handles' types
 (phantom parameters, docs/stages/22-numbers.md, 22e): `swap ra rb`, never `@swap ρ₁ ρ₂`. Outlives arguments
@@ -229,14 +240,31 @@ chosen outside, where `ρ` doesn't exist, so a handle of region `ρ` can't leave
   is allowed but useless: no operation takes a `Uniq ρ (Lent …)`);
 * a reference stored into a longer-lived place, or returned as a longer-lived one,
   without an `'a : 'b` bound (E0597, "lifetime may not live long enough"): `Shr.weaken`
-  needs evidence that isn't in scope.
+  or `Mut.weaken` needs evidence that isn't in scope; evidence pointing the other way
+  (a scope's `Outlives σ ρ` used to lengthen a borrow, or a callee's bound the caller's
+  nesting doesn't give) is a mismatch too;
+* two borrows of different regions passed where one region is expected (`Uniq ρ A` and
+  `Uniq ρ' A` are different types).
+
+What is **not** rejected by the type checker, only by the lowering's shape (known gaps,
+test group `regions`, cases marked KNOWN GAP; wishful: linear-case): handles are ω
+values, so the body of a scope can duplicate one (`swap r r`, E0499), and the lender's
+outer name is only *shadowed* by the `Lent` token: a body that names the token
+differently can read the lender while it is borrowed (E0502); and a handle packed with
+its region (`(0 r : Region) × Uniq r A`) is a closed type, so it can leave its scope.
+The front end must emit
+the rebinding of L20 and never use a handle twice. Making handles linear needs a `match`
+whose alternatives use captured variables once and a `Result` with a linear payload
+(R9a, a kernel change).
 
 **L22. Outlives.** `'a : 'b` is `(0 h : Outlives ρa ρb)` (an opaque `Prop`: proofs come
 from `Outlives.refl`/`trans`/`static` and from scopes). A scope nested in `σ` hands
-out `Outlives σ ρ`. A shared reference of region `ρa` is used at `ρb` through
-`Shr.weaken h x` wherever it flows to a place of type `Shr ρb _` (a return value, a
-field, a slot behind `&mut`). Mutable borrows are not weakened: a shorter one is a
-reborrow (L17). (10)
+out `Outlives σ ρ`, so evidence only ever shortens a region. A shared reference of
+region `ρa` is used at `ρb` through `Shr.weaken h x` wherever it flows to a place of
+type `Shr ρb _` (a return value, a field, a slot behind `&mut`). A returned mutable
+borrow (`Mut ρa A S`) is used at `ρb` through `Mut.weaken h m` (`&'a mut T` is
+covariant in `'a`) (12). A `&mut` *argument* handed back keeps its region: a shorter
+borrow of it is a reborrow scope (L17). (10, 12)
 
 ## 3. What the lowering guarantees about in-place execution (informal)
 

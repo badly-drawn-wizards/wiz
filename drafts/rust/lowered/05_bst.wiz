@@ -24,13 +24,13 @@ partial def insert {ρ : Region} (t : Uniq ρ Tree) (k : U64) : Result (Unit × 
     | .node key left right => match U64.lt k key with
       | .true => (match Uniq.borrow ρ' left (fun ρl hl left rl => insert rl k) with   -- insert left k
         | .ok q =>
-          let left := q.2;
+          let (u, left) := q;
           .ok ((), Uniq.set r (Tree.node key left right))
         | .err e => .err e)
       | .false => match U64.lt key k with
         | .true => (match Uniq.borrow ρ' right (fun ρr hr right rr => insert rr k) with   -- insert right k
           | .ok q =>
-            let right := q.2;
+            let (u, right) := q;
             .ok ((), Uniq.set r (Tree.node key left right))
           | .err e => .err e)
         | .false => .ok ((), Uniq.set r (Tree.node key left right)))
@@ -95,8 +95,8 @@ partial def insert_zip.loop0 (k : U64) (cur : Tree) (path : Path) : Result (Flow
 def insert_zip {ρ : Region} (t : Uniq ρ Tree) (k : U64) : Result (Unit × Uniq ρ Tree) :=
   match insert_zip.loop0 k t.val Path.top with
   | .ok fl => (match fl with
-    | .brk cp => .ok ((), Uniq.set t (Path.plug cp.2 (Tree.node k .leaf .leaf)))
-    | .ret r => .ok ((), Uniq.set t r.2))
+    | .brk cp => let (cur, path) := cp; .ok ((), Uniq.set t (Path.plug path (Tree.node k .leaf .leaf)))
+    | .ret r => let (u, t2) := r; .ok ((), Uniq.set t t2))
   | .err e => .err e
 
 -- running them
@@ -106,7 +106,7 @@ def Tree.toNats : Tree → List Nat
 def build (ins : (0 ρ : Region) → Uniq ρ Tree → U64 → Result (Unit × Uniq ρ Tree)) : List Nat → Tree → Result Tree
   | .nil, t => .ok t
   | .cons k ks, t => match Uniq.borrow Region.static t (fun ρ h t r => ins ρ r (U64.mk k)) with
-    | .ok r => build ins ks r.2
+    | .ok r => let (u, t) := r; build ins ks t
     | .err e => .err e
 def keys : List Nat := .cons 5 (.cons 2 (.cons 8 (.cons 2 (.cons 7 (.cons 1 .nil)))))
 

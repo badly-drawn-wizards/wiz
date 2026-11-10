@@ -77,7 +77,7 @@ def Uniq.borrow {S B : Type} (0 σ : Region) (s : S)
     (body : (0 ρ : Region) → (0 h : Outlives σ ρ) → Lent ρ S → Uniq ρ S → Result (B × Uniq ρ S)) :
     Result (B × S) :=
   match body σ (Outlives.refl σ) (Lent.mk ()) (Uniq.mk s) with
-  | .ok r => .ok (r.1, r.2.val)
+  | .ok r => let (b, r) := r; .ok (b, r.val)
   | .err e => .err e
 
 -- `&mut *r`, a reborrow at a shorter region (needed when a call returns a borrow of
@@ -100,17 +100,18 @@ def Uniq.share {ρ : Region} {S B : Type} (r : Uniq ρ S)
 def Uniq.zoom {ρ : Region} {S X B : Type} (l : Lens S X) (r : Uniq ρ S)
     (body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → Lent ρ' S → Uniq ρ' X → Result (B × Uniq ρ' X)) :
     Result (B × Uniq ρ S) :=
-  let st := l r.val;
-  match body ρ (Outlives.refl ρ) (Lent.mk ()) (Uniq.mk st.1) with
-  | .ok p => .ok (p.1, Uniq.mk (st.2 p.2.val))
+  let (x, back) := l r.val;
+  match body ρ (Outlives.refl ρ) (Lent.mk ()) (Uniq.mk x) with
+  | .ok p => let (b, x) := p; .ok (b, Uniq.mk (back x.val))
   | .err e => .err e
 
 -- a borrow of a pair is two borrows of its components, live at the same time
 def Uniq.both {ρ : Region} {A B C : Type} (p : Uniq ρ (A × B))
     (body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → Uniq ρ' A → Uniq ρ' B → Result (C × Uniq ρ' A × Uniq ρ' B)) :
     Result (C × Uniq ρ (A × B)) :=
-  match body ρ (Outlives.refl ρ) (Uniq.mk p.val.1) (Uniq.mk p.val.2) with
-  | .ok r => .ok (r.1, Uniq.mk (r.2.1.val, r.2.2.val))
+  let (a, b) := p.val;
+  match body ρ (Outlives.refl ρ) (Uniq.mk a) (Uniq.mk b) with
+  | .ok r => let (c, rarb) := r; let (ra, rb) := rarb; .ok (c, Uniq.mk (ra.val, rb.val))
   | .err e => .err e
 
 -- The scopes are inlined in compiled code (22i): with the handles unboxed, a scope is
@@ -160,6 +161,23 @@ def Mut.close {ρ : Region} {A S : Type} (m : Mut ρ A S) (fin : A) : Uniq ρ S 
 -- `m := &mut (*m).p` (a cursor moves down, L16): compose the backward functions
 def Mut.comp {ρ : Region} {A B S : Type} (m : Mut ρ A S) (k : A → Store B A) : Mut ρ B S :=
   Mut.mk (Store.comp m.store k)
+-- a `&'a mut A` argument returned as it is (the whole borrow moves into the result): the
+-- borrow's final value, written back, gives the handle back
+def Mut.ofUniq {ρ : Region} {A : Type} (r : Uniq ρ A) : Mut ρ A (Uniq ρ A) :=
+  Mut.mk (r.val, fun (a : A) => Uniq.mk a)
+-- `&'a mut A` is a `&'b mut A` when `'a : 'b` (mutable borrows are covariant in the
+-- region, invariant in `A`). The evidence comes from a bound or a scope, as for
+-- `Shr.weaken`; a scope only hands out `Outlives σ ρ` (outer to inner), so a borrow can
+-- be shortened, never lengthened.
+def Mut.weaken {ρ ρ' : Region} {A S : Type} (0 h : Outlives ρ ρ') (m : Mut ρ A S) : Mut ρ' A S :=
+  Mut.mk m.store
+-- what the backward function gives back, mapped (to hand back several lenders)
+def Mut.mapBack {ρ : Region} {A S T : Type} (m : Mut ρ A S) (f : S → T) : Mut ρ A T :=
+  let (a, back) := m.store;
+  Mut.mk (a, fun (x : A) => f (back x))
+-- the borrow's last use, when its lender is not one place (`Mut.ofUniq`, `Mut.mapBack`):
+-- whatever the backward function gives back, from the final value
+def Mut.finish {ρ : Region} {A S : Type} (m : Mut ρ A S) : S := Store.extract m.store
 -- `Option (&mut A)` from an affine optic on `r`
 def MutOpt.ofAffine {ρ : Region} {A S : Type} : Affine A S → MutOpt ρ A S
   | .some a k => .some (Mut.mk (a, k))

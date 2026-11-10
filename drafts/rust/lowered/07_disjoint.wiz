@@ -43,13 +43,12 @@ def record {ρ : Region} (s : Uniq ρ Stats) : Result (Unit × Uniq ρ Stats) :=
         (match Uniq.borrow ρ' h (fun ρh hh h rh =>  -- bump2 h m (reborrows of the aliases)
           match Uniq.borrow ρh m (fun ρm hm m rm =>
             match bump2 rh rm with
-            | .ok q => .ok (q.2.1, q.2.2)
+            | .ok q => let (u, rhrm) := q; let (rh, rm) := rhrm; .ok (rh, rm)
             | .err e => .err e) with
-          | .ok q => .ok (q.2, q.1)
+          | .ok q => let (rh, m) := q; .ok (m, rh)
           | .err e => .err e) with
         | .ok q =>
-          let m := q.1;
-          let h := q.2;
+          let (m, h) := q;
           .ok ((), Uniq.set r (Stats.mk h m))      -- the borrows end: rebuild
         | .err e => .err e)
       | .err e => .err e)
@@ -61,7 +60,7 @@ def record_optic {ρ : Region} (s : Uniq ρ Stats) : Result (Unit × Uniq ρ Sta
   match Uniq.zoom Stats.hitsL s (fun ρ' h s x =>
     Result.map (fun (y : U64) => ((), Uniq.set x y)) (U64.add x.val (U64.lit 10))) with
   | .ok r =>
-    let s := r.2;
+    let (u, s) := r;
     Uniq.zoom (Lens.pair Stats.hitsL Stats.missesL) s (fun ρ' h s hm =>
       Uniq.both hm (fun ρ'' h' a b => bump2 a b))
   | .err e => .err e

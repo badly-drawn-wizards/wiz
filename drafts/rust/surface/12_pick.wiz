@@ -1,0 +1,15 @@
+import Rust                                          -- wishful: command-proc-macros
+-- Returning one of two mutable borrows. Lowered: drafts/rust/lowered/12_pick.wiz
+
+rust                                                 -- wishful: command-proc-macros
+  -- `&'a mut` is covariant in `'a`: with `'a : 'b`, `x` is a `&'b mut U64` too
+  fn pick {'a 'b} {'a : 'b} (c : Bool) (x : &'a mut U64) (y : &'b mut U64) : &'b mut U64 :=   -- wishful: region-indices
+    if c then x else y
+
+  fn main () : U64 × U64 := {
+    let mut a : U64 := 1;                            -- wishful: machine-int-literals
+    let mut b : U64 := 2;                            -- wishful: machine-int-literals
+    *pick true (&mut a) (&mut b) := 10;              -- both borrows live until here
+    (a, b)                                           -- (10, 2)
+  }
+end

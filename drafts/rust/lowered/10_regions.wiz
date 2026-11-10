@@ -34,7 +34,7 @@ def main : Result U64 :=
         let slot := (Option.none : Option (Shr ρb U64));   -- let mut slot := .none
         (match Uniq.borrow ρb slot (fun ρm hm slot rs => remember hb rs ra) with   -- remember (&mut slot) ra
         | .ok q =>
-          let slot := q.2;
+          let (u, slot) := q;
           (match slot with
           | .some s => U64.add s.val m.val                 -- *s + *m
           | .none => .ok m.val)

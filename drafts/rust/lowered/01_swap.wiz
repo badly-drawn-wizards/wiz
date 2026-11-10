@@ -30,11 +30,11 @@ def main : Result (U64 × U64) :=
   match Uniq.borrow Region.static a (fun ρa ha a ra =>       -- &mut a
     match Uniq.borrow ρa b (fun ρb hb b rb =>                -- &mut b
       match swap ra rb with                                  -- swap {ρa ρb}
-      | .ok r => .ok (r.2.1, r.2.2)                          -- (ra, rb) handed back
+      | .ok r => let (u, rarb) := r; let (ra, rb) := rarb; .ok (ra, rb)          -- (ra, rb) handed back
       | .err e => .err e) with
-    | .ok q => .ok (q.2, q.1)                                -- the borrow of b ended: (b, ra)
+    | .ok q => let (ra, b) := q; .ok (b, ra)                -- the borrow of b ended: (b, ra)
     | .err e => .err e) with
-  | .ok p => .ok (p.2, p.1)                                  -- the borrow of a ended: (a, b)
+  | .ok p => let (b, a) := p; .ok (a, b)                    -- the borrow of a ended: (a, b)
   | .err e => .err e
 
 #eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) main
@@ -44,11 +44,11 @@ def swapLists (xs ys : List Nat) : Result (List Nat × List Nat) :=
   match Uniq.borrow Region.static xs (fun ρx hx xs rx =>
     match Uniq.borrow ρx ys (fun ρy hy ys ry =>
       match mem_swap rx ry with
-      | .ok r => .ok (r.2.1, r.2.2)
+      | .ok r => let (u, rxry) := r; let (rx, ry) := rxry; .ok (rx, ry)
       | .err e => .err e) with
-    | .ok q => .ok (q.2, q.1)
+    | .ok q => let (rx, ys) := q; .ok (ys, rx)
     | .err e => .err e) with
-  | .ok p => .ok (p.2, p.1)
+  | .ok p => let (ys, xs) := p; .ok (xs, ys)
   | .err e => .err e
 #eval swapLists (List.cons 1 List.nil) List.nil
 -- .ok (.nil, .cons 1 .nil)

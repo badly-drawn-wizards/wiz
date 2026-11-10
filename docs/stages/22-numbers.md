@@ -190,16 +190,45 @@ typing:
 * Inside a mutable borrow, the lender's name is rebound to a `Lent` token, which nothing
   accepts: using the lender, or borrowing it again, while the borrow lives (E0499,
   E0502) is a type mismatch.
-* A reference flows to a place of a shorter region only through `Shr.weaken`, which
-  takes an `Outlives ρ ρ'` proof (erased). Proofs come from scopes (a scope nested in `σ`
-  hands out `Outlives σ ρ`) and from a function's `'a : 'b` bounds (erased proof
-  arguments); `Outlives` is opaque, so there is no other way to get one.
+* A reference flows to a place of a shorter region only through `Shr.weaken` (shared)
+  or `Mut.weaken` (a returned `&mut`, covariant in its region), which take an
+  `Outlives ρ ρ'` proof (erased). Proofs come from scopes (a scope nested in `σ` hands
+  out `Outlives σ ρ`, so a borrow is shortened, never lengthened) and from a function's
+  `'a : 'b` bounds (erased proof arguments); `Outlives` is opaque, so there is no other
+  way to get one. A function returning one of two `&mut` arguments moves both into a
+  `Mut ρb A (Uniq ρa A × Uniq ρb A)` (`Mut.ofUniq`, `Mut.mapBack`, `Mut.finish`) and
+  needs `'a : 'b` for the first (`drafts/rust/lowered/12_pick.wiz`).
 
 Scopes run their body at the enclosing region (regions are erased, so this is sound);
 the separation comes from parametricity alone. `drafts/rust/rejected/` has the classic
 errors, lowered, each rejected (`sh drafts/rust/check.sh`); test group `regions`.
-The constructors of the handles are private to the module ([13b](13-language.md)), so the guarantee
-holds for hand-written Wiz too: a handle can't be forged.
+The constructors of the handles are private to the module ([13b](13-language.md)), so
+hand-written Wiz can't forge a handle either.
+
+**Known gaps** (test group `regions`, the case marked KNOWN GAP, which checks that they
+are *accepted* today; wishful: linear-case). Regions are enforced by the type checker;
+*aliasing* is not. The handles are ω values, so a scope's body can use one twice
+(`swap r r`: Rust's E0499), and the `Lent` token only shadows the lender's name, so a
+body that names the token differently reads the lender while it is borrowed (E0502).
+A handle can also leave its scope packed with its region (`B := (0 r : Region) × Shr r A`
+is a closed type) and still be used. All three are rejected only because the lowering
+(`drafts/rust/LOWERING.md`, L20) always rebinds the lender's name, uses each handle
+once and never packs a region. Making the handles linear would
+reject them in the kernel, but a linear variable can't be used inside a `match`
+alternative today (`match` is built on `ind`, whose methods are scaled by ω) and
+`Result`'s payload is ω, so it needs a case whose alternatives run once (R9a, a kernel
+change). Linearity would still not be uniqueness: in-place updates stay with RC.
+
+Linearity closes the escape for `Uniq` (the body has one handle and must hand it back,
+so it can't also pack it) but not for `Shr`, which is a copy. The scope is already rank-2
+(`(0 ρ : Region) → … → Result B`, `B` bound outside); what's missing is that `B` may
+still *quantify* over regions. Two ways to forbid that: put regions in a universe a
+scope's `B : Type` can't quantify over (`Region : Type 1`; that needs phantom
+parameters to count for a parameter whose phantom would raise the universe, which they
+don't today, 22e), or give each scope an erased `[RegionFree B]` instance, derived
+structurally and with no instance for `Σ (r : Region)` or `Π (r : Region)`. Either way
+the lowering only has to state each scope's result type (it does: the variables that
+live on after the borrow), and with the second it also has to request the instance.
 
 ## 22h: one bit-vector family ✅
 

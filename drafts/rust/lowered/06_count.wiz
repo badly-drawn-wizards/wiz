@@ -27,8 +27,7 @@ def sum_from (s0 : U64) (n : U64) : Result (Except Overflow U64) :=
   match sum_from.loop0 n i s with
   | .ok fl => (match fl with
     | .brk is =>
-      let i := is.1;
-      let s := is.2;
+      let (i, s) := is;
       .ok (Except.ok s)
     | .ret r => .ok r)
   | .err e => .err e
