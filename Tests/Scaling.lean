@@ -121,6 +121,14 @@ def group : Group where
     -- the kernel's application and pair rules, and erasure's spines, evaluated every
     -- argument for the codomain, which a non-dependent Π doesn't mention: O(n²) on a
     -- nested spine (4000 characters: 32 s to build)
+    -- the kernel's `.1` rule (Q1) evaluated the pair to find the second part's fields,
+    -- so `(Circuit.netlistS c).1` (lib/Hdl/Core.wiz) ran the netlist builder at check time
+    -- and overflowed the stack; here the second part takes 2^40 steps to evaluate
+    { name := "p.1 decides from the type whether p.2 may be dropped, without evaluating p", run := fun _ =>
+        checksWithin 60 (natDecl ++
+          "def blow : N → N × N\n  | .z => (N.z, N.z)\n  | .s n => let (a, b) := blow n; let (c, d) := blow n; (a, d)\n" ++
+          s!"def big : N × (N × N) := (N.z, blow {String.join ((List.range 40).map fun _ => "(N.s ")}N.z{String.mk (List.replicate 40 ')')})\n" ++
+          "def y : N := big.1\n") },
     { name := "a 20000-character string literal is checked and erased in linear time", run := fun _ =>
         longLiteral 20000 60 },
     -- `insertRC` recomputed the free variables of the rest of the body at each binding

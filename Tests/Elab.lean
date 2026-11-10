@@ -2584,6 +2584,14 @@ def languageGroup : Group where
           "def substω (0 P : Nat → Type) {0 a b : Nat} (0 e : a = b) (pa : P a) : P b := cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa\n" ++
           "def closeAt (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit := Tok.close (substω Tok e t)")
           "quantity 1 but used ω" },
+    -- `p.1` with a second part whose shape depends on the first: decided from the type
+    -- with a placeholder, it is stuck, so the kernel decides with the value (Q1)
+    { name := "p.1 drops p.2 only if p.2 holds no linear field, also when that depends on p.1 (Q1)", run := fun _ => do
+        okLib ("import Prelude\naxiom W : Type\ndef T (b : Bool) : Type := match b with\n  | .true => (1 w : W) × Unit\n  | .false => Unit\n" ++
+          "def h : Bool := let 1 p : (b : Bool) × T b := (Bool.false, ()); p.1\n")
+        failsLib ("import Prelude\naxiom W : Type\ndef T (b : Bool) : Type := match b with\n  | .true => (1 w : W) × Unit\n  | .false => Unit\n" ++
+          "def g (1 w : W) : Bool := let 1 p : (b : Bool) × T b := (Bool.true, (w, ())); p.1\n")
+          "quantity 1 but used ω" },
     { name := "castRefl: a propositional regularity axiom in the Prelude; it doesn't compute (D1)", run := fun _ =>
         okLib ("import Prelude\ndef r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n" ++
           "#reduce fun (A : Type) (e : A = A) (a : A) => castRefl e a")
