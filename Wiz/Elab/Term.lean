@@ -795,6 +795,14 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
       let ty : Val R := .mu l I D i (.szSuc vm) (some (T, us, args))
       unifyAt ctx stx expected ty
       return some (.ann payload (q ty))
+    | .neutral (.global T _) _ =>
+      -- (13b) a type with private constructors (fields, observations) of another module:
+      -- opaque here, so `.c` is `T.c` (which may be private)
+      unless (g.opaqueHere? expected).isSome && g.contains (T ++ "." ++ c) do
+        return ← shapeError s!".{c} needs an expected inductive type"
+      let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
+      let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
+      return some (← check ctx stx' expected)
     | .nu _ _ _ _ _ (some (T, _, _)) =>
       -- `.mk h t`: the coconstructor of a coinductive type (`T.mk`, a `cocon`)
       unless (← getGlobals).contains (T ++ "." ++ c) do
@@ -979,6 +987,18 @@ partial def inferFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     let g ← getGlobals
     return (.lam b.name t, ctx.sortVal g (.pi b.name b.bi (← evalIn ctx q) vty (.mk ctx.env (quote g ctx'.lvl bty)) none))
 
+/-- `ShareLet.share A B inst` if the class `ShareLet` is declared, `A` and `B` have no
+holes, and an instance `ShareLet A B` is found (auto-share for `let`, HDL stage S0). -/
+partial def autoShare? (ctx : LocalCtx R) (A B : VTy R) : ElabM R (Option (Term R)) := do
+  unless (← get).classes.any (·.name == "ShareLet") do return none
+  let g ← getGlobals
+  let At ← zonk ctx.lvl (quote g ctx.lvl A)
+  let Bt ← zonk ctx.lvl (quote g ctx.lvl B)
+  unless At.mvars.isEmpty && Bt.mvars.isEmpty do return none
+  let goalTy := vApp g (vApp g (eval g [] (.const "ShareLet" [])) A) B
+  let some inst ← (try synthInstance ctx goalTy catch _ => pure none) | return none
+  return some (.app (.app (.app (.const "ShareLet.share" []) At) Bt) inst)
+
 /-- `let` in either mode. -/
 partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)) :
     ElabM R (Term R × VTy R) := do
@@ -994,7 +1014,15 @@ partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)
   let ctx' := ctx.define x (← evalIn ctx ty) (← evalIn ctx val)
   let body := stx.getArg 7
   match expected with
-  | some e => return (.letE x q ty val (← check ctx' body e), e)
+  | some e =>
+    -- auto-share (HDL stage S0): with no explicit quantity, a `let` whose value type `A`
+    -- and body type `B` have an instance `ShareLet A B` becomes `ShareLet.share v (fun x
+    -- => body)`; the body sees `x` as a variable, not a definition.
+    if (stx.getArg 1).args.isEmpty then
+      if let some share ← autoShare? ctx (← evalIn ctx ty) e then
+        let b ← check (ctx.bind x (← evalIn ctx ty)) body e
+        return (.app (.app share val) (.lam x b), e)
+    return (.letE x q ty val (← check ctx' body e), e)
   | none =>
     let (b, bty) ← infer ctx' body
     return (.letE x q ty val b, bty)
@@ -1380,8 +1408,14 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let rs := vars.drop (k + 1)
   let xty ← force (typeOf x)
   let .mu _ _ _ ξi xsz (some (T, us, args)) := xty
-    | throwAt (cl.pats[k]!).info s!"cannot match on a value of type {← showVal ctx xty}"
+    | if let some (T, m) := g.opaqueHere? xty then
+        throwAt (cl.pats[k]!).info (s!"cannot match on a value of type {← showVal ctx xty}: {T} is opaque " ++
+          s!"outside module {m} (it has private constructors or fields)") "private"
+      else throwAt (cl.pats[k]!).info s!"cannot match on a value of type {← showVal ctx xty}"
   let some descD := g.find? (T ++ ".desc") | throwAt ctx.info s!"{T} is not an inductive type"
+  -- (13b) a type declared `private` in another module: its recursors are private too
+  if let some m := g.privateTo? (T ++ ".casesOn") then
+    throwAt (cl.pats[k]!).info s!"cannot match on a value of type {T} here: its constructors are private to module {m}" "private"
   let nΔ := (piInfos descD.type).length
   let Δargs := args.take nΔ
   let ξ := args.drop nΔ

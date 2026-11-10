@@ -146,4 +146,9 @@ def Head.equiv {R : Type} : Head R → Head R → Bool
   | .mvar a, .mvar b => a == b
   | _, _ => false
 
+/-- (13b) A type that is opaque here (`Globals.opaqueTo?`): its head and module. -/
+def Globals.opaqueHere? {R : Type} (g : Globals R) : Val R → Option (Name × String)
+  | .neutral (.global T _) _ => (g.opaqueTo? T).map (T, ·)
+  | _ => none
+
 end Wiz
