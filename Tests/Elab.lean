@@ -407,10 +407,10 @@ def qtyGroup : Group where
     -- polynomials), and `q := 1` made it provable: a closed proof of `False`
     { name := "F6: types whose quantities differ only by a variable are not unequal (it proved False)", run := fun _ => do
         fails ("inductive N where\n  | z\n  | s (n : N)\n" ++
-          "def flip {q : Qty} (e : ((%q x : N) → N) = ((1 x : N) → N)) : False := e\n" ++
-          "def boom : False := flip (q := 1) rfl\n") "mismatch"
-        fails ("def bad (q : Qty) (e : ((%q x : Unit) → Unit) = ((1 x : Unit) → Unit)) : False := e\n" ++
-          "def boom : False := bad 1 (refl ((1 x : Unit) → Unit))\n") "mismatch"
+          -- (then `def boom : False := flip (q := 1) rfl` was a closed proof of False)
+          "def flip {q : Qty} (e : ((%q x : N) → N) = ((1 x : N) → N)) : False := e\n") "mismatch"
+        -- (then `bad 1 (refl …)`)
+        fails "def bad (q : Qty) (e : ((%q x : Unit) → Unit) = ((1 x : Unit) → Unit)) : False := e\n" "mismatch"
         fails "def bad (q : Qty) (e : ((%q x : Unit) × Unit) = ((1 x : Unit) × Unit)) : False := e\n" "mismatch" },
     { name := "F6: types with two different literal quantities are unequal", run := fun _ =>
         ok ("def apart (e : ((0 x : Unit) → Unit) = ((1 x : Unit) → Unit)) : False := e\n" ++
@@ -1660,8 +1660,6 @@ def smallField : List MTm :=
    -- rejected: boxed different tags are different
    ann star (eq (L (enum 2)) (liftedTag 0) (liftedTag 1))]
 
-/-- Terms the differential test always checks (well-typed ones the generator rarely
-builds whole), before the random ones. -/
 /-- F6: two types whose binder quantities are different literals are unequal (`False`, so
 the `absurd` checks), and equal literals give the Σ rule. (`MTm` has no quantity variables,
 the case F6 was about: its Lean test is in the group *quantity polymorphism*.) -/
@@ -1672,6 +1670,8 @@ def qtyApart : List MTm :=
    ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (F .one) (F .one)) (empty 0)),
    reflTy (F .one)]
 
+/-- Terms the differential test always checks (well-typed ones the generator rarely
+builds whole), before the random ones. -/
 def samples : List MTm :=
   propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
