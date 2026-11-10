@@ -3,7 +3,7 @@
 Optimistic Wiz for the Clash-style HDL (`/workspace/wiz-notes/hdl-plan.md`), written against
 the planned surface. Check a file with (through `heavy`):
 
-    WIZ_PATH=drafts/hdl .lake/build/bin/wiz check drafts/hdl/<File>.wiz
+    .lake/build/bin/wiz check -I drafts/hdl drafts/hdl/<File>.wiz
 
 Import chain: `Shim` ← `Bits` ← `Signal` ← {`Counter`, `Fir`, `Uart`, `Cpu`, `Synth`} ← `Staged`.
 An error in an imported file makes every importer exit 1 ("module X has errors"); the

@@ -28,7 +28,9 @@ soundness issues are known, open and fixed.
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
 LLVM's `llc` for the C and LLVM backends, Boehm GC for the self-hosted backend, a C
 compiler, and elan, which installs the Lean in `lean-toolchain`. It sets `$WIZ_CFLAGS`,
-`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`.
+`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`, which only the test
+driver reads (`Tests/Main.lean`; flags to `lake test -- …` win); `wiz` and `grail` take
+flags.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
 `solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
@@ -285,10 +287,19 @@ of `a` and `b` (Pujet & Tabareau, *Observational Equality: Now for Good*):
 `cast e t : B` (for `e : A = B`, `t : A`) also computes by the two types.
 `transp P p e` transports into propositions, and together they give `J`
 (`examples/equality.wiz` derives `subst` and `sym`). Proofs are **definitionally
-irrelevant**, so conversion at a proposition always succeeds. **Regularity**,
-`cast A A e t ≡ t`, makes `J` compute on `refl`. It is a conversion rule, and also an
-evaluation rule when it is cheap to see: `vCast` reduces a cast between two types that
-quote equal (see 4e part 1).
+irrelevant**, so conversion at a proposition always succeeds.
+
+**No regularity (D1).** Regularity, `cast A A e t ≡ t` for *any* proof `e`, would make
+`J` compute on `refl` everywhere, but together with an impredicative `Prop` and
+irrelevant proofs it makes type checking loop (Abel–Coquand; `Tests/Elab.lean` "D1"). So
+it is off (`wiz check --regularity full` turns it back on, for experiments). Instead
+`cast` computes on data, constructor by constructor: `μ D i = μ D i'` is `i = i'`, and
+`cast (μ D i) (μ D i') e (con x)` casts each field of `x` along it (so a proof field is
+cast between propositions, which applies the equivalence: that is what stops the loop).
+At **inert** types (first-order data: `Nat`, `Bool`, `List Nat`, … — no `Prop` fields,
+functions or type variables) regularity is kept: there a cast between equal types is the
+identity. A cast at a type variable (`cast e a` for `e : A = A`) stays stuck, as in
+TTobs: `J` computes on `refl` at data types, not at a variable family (docs/CoreSpec.md §8.4).
 
 **Propositions inside types.** Two propositions are equal when equivalent, whatever
 their shapes: `True = (True → True)` holds. So equality of types can't compare a
@@ -429,9 +440,13 @@ other occurrence is an error. A `structure` is a Σ ending in `Unit` with constr
 
 Every `inductive` also gets Lean-style eliminators `T.rec` (with induction
 hypotheses) and `T.casesOn` (`Elab/Recursor.lean`). They are built on `ind`: a
-"convoy" `ecase` on the tag, then a `cast` along the constructor's index equation.
-In evaluation, `cast A B e t` reduces to `t` whenever `A` and `B` quote to the same
-term (cheap regularity), so normal forms stay readable.
+"convoy" `ecase` on the tag, then a `cast` along the constructor's index equation
+(none for a type without indices). Indexed families also get `T.recN` and `T.casesOnN`,
+whose motive is a plain type: they need no cast, and `match` uses them when its result
+type depends on neither the indices nor the scrutinee. Without regularity (D1) the cast
+in `T.rec` computes on a constructor only through the motive's type: at an inert type
+(`Vec.length`) it vanishes, at a type variable (`Vec.map : … → Vec B n`) the fields stay
+cast (`cons (cast B B _ (f x)) …`).
 
 `.c` (with or without arguments) is a constructor of the expected type. Applications
 containing such arguments are elaborated *expected type first* (`checkApp`), so
@@ -639,7 +654,7 @@ attribute [macro term.twice] twiceMacro
 #eval twice! 21                     -- 42
 ```
 
-* `import M` loads `lib/M.wiz` (and `$WIZ_PATH`). `lib/Prelude.wiz` defines `Bool`,
+* `import M` loads `lib/M.wiz` (and the `-I DIR` roots; `import A.B` is `A/B.wiz`). `lib/Prelude.wiz` defines `Bool`,
   `Nat`, `List`, `Option`, `Char`, `String`, `Except`, `Syntax`, `MacroM`, and `do`
   notation (written as macros).
 * `builtin key := name` registers prelude definitions with the kernel and the runtime
@@ -871,8 +886,9 @@ $ wiz run fact.wiz        # def main : Nat := fact 30
 
 * `wiz build FILE -o OUT` compiles the definition `main` to C and then to an
   executable; `wiz run FILE` also runs it and reads the printed result back with
-  `main`'s type. The C compiler is `$WIZ_CC` (default `cc`), with `$WIZ_CFLAGS` and
-  `$WIZ_LDFLAGS` for GMP. The C tests skip themselves if GMP isn't found.
+  `main`'s type. The C compiler is `--cc X` (default `cc`), with `--cflags "…"` and
+  `--ldflags "…"` for GMP (stage 23a: flags, not environment variables). The C tests
+  skip themselves if GMP isn't found.
 * **Runtime** (`runtime/wiz.c`, embedded in the compiler): a value is a word; scalars
   have the low bit set; objects have a header (reference count, tag, size). Closures
   point to a boxed entry and share or move their captured arguments when applied.
@@ -1876,9 +1892,10 @@ Functions: `head`/`tail`/`last`/`init` on non-empty vectors, `get`/`set` by `Fin
 `map`, `zipWith`, `zip`, `foldl`/`foldr`, `replicate`, `ofFn`, `append`, `reverse`
 (linear, with a `cast` along `m + (k+1) = (m+k)+1`), `snoc`, `splitAt`, `shiftIn`,
 `toList`/`fromList` (`fromList l : Vec A (List.length l)`). Theorems: `length_eq`,
-`length_toList`, `toList_fromList`, `map_map`, `get_set` (`get (set v i x) i = x`),
-`get_map`, and the `Nat` lemmas they need
-(`add_zero`, `add_succ`, `add_comm`), all by structural recursion.
+`length_toList`, `toList_fromList`, and the `Nat` lemmas they need
+(`add_zero`, `add_succ`, `add_comm`), all by structural recursion. (`map_map`, `get_set`
+and `get_map` are in `drafts/vec-lib/VecProofs.wiz` since D1: without regularity they would
+need `cast B B e b = b` at a type variable, which is not provable; see docs/Status.md.)
 
 `lib/BitVec.wiz` (`import BitVec`): `BitVec n`, a `Nat` below `2^n` by construction
 (every operation reduces mod `2^n`). Wrapping `add`/`sub`/`neg`/`mul`, `udiv`/`umod`,
@@ -1961,3 +1978,97 @@ def k : Nat → Bool → Nat := by
   exact n
 def four : Nat := doubel 2    -- unknown identifier 'doubel'   [Did you mean 'double'?]
 ```
+
+## Stage 23: grail, a build tool
+
+### 23b: modules by path ✅
+
+`import A.B` reads `A/B.wiz` under the first **module root** that has it; `lib/` is a
+root, so `import Prelude` is `lib/Prelude.wiz` as before. The frontend stays pure: the
+caller reads every module a file can reach up front, by scanning its import lines
+(`Wiz/Module.lean`).
+
+### 23c: a key per module, atomic writes ✅
+
+A module's key is computed from text alone, before anything is elaborated:
+
+    key(M) = hash(salt, toolchain, text of M, M's C headers, key(N) for each import N)
+
+and a module is elaborated **in isolation**, from the empty state plus its own imports,
+so what it elaborates to depends only on its key. An importer's chain of command keys
+mixes in `key(M)` at the `import`. Editing a module now invalidates it and what imports
+it, not the whole library, and a module imported by many files is cached once. A module
+that uses a name it doesn't import is an error, with the cache or without (`--no-cache`
+keeps the effects in memory for the run; `runFrontend`, which the tests and the language
+server use, still elaborates a module in its importer's state). Cache files are
+written to a temporary name and renamed, so concurrent runs never see half a file.
+
+### 23d: grail v0 ✅
+
+A package is a directory with a `grail.wiz`, written in Wiz against `lib/Grail.wiz`:
+
+```
+import Grail
+def package : Package := Package.new "wiz"
+  |> Package.lib "std" "lib"                    -- check every module under lib/
+  |> Package.check "app" "app.wiz"              -- check one file
+  |> Package.exe "io" "examples/io.wiz"         -- compile `main`: .grail/bin/io
+```
+
+```sh
+lake build grail
+.lake/build/bin/grail build          # every target; `grail build std` for one
+.lake/build/bin/grail targets        # list them; `grail config` prints the toolchain
+```
+
+grail evaluates `Package.render package` (an S-expression) in the interpreter and
+builds a graph of **jobs**: `check` per file, and `ir → c → obj → link` per executable.
+A job's key is computed from its inputs before it runs (a check from the file's key, an
+object from the C text and the compiler flags), its output goes to
+`.grail/build/<key>/` through a temporary directory and a rename, and a job whose
+directory exists doesn't run: **a second build runs no jobs**, an edit reruns the checks
+of the files that import what changed, and an edit that leaves the C alone stops there.
+The key also covers the grail binary itself, so a new elaborator rebuilds everything.
+
+There are no environment variables: the C compiler and its flags come from flags
+(`--cc`, `--cflags`, `--ldflags`, `--llc`, `-I DIR`, `--cache DIR`, `--no-cache`) or from
+an uncommitted `grail.local.wiz` with this machine's paths (`nix develop` writes it from
+`flake.nix`):
+
+```
+import Grail
+def settings : Settings := Settings.empty
+  |> Settings.set "cflags" "-I/nix/store/…-gmp-…-dev/include"
+  |> Settings.set "ldflags" "-L/nix/store/…-gmp-…/lib -Wl,-rpath,/nix/store/…-gmp-…/lib"
+```
+
+### 23a: the toolchain as flags ✅
+
+`wiz` reads no environment variables: the toolchain record (`Wiz/Toolchain.lean`: C
+compiler and flags, `llc`, the collector's flags, the cache, module roots) comes from
+`--cc`, `--cflags`, `--ldflags`, `--libs`, `--llc`, `--cache DIR`/`--no-cache` and
+`-I DIR` (which replaces `$WIZ_PATH`), and is passed explicitly to everything that
+compiles. Its compiler fields are its `id`, which enters grail's keys.
+
+### 23e: the self-hosted toolchain as targets ✅
+
+`Package.selfhost NAME ROLE` builds the self-hosted programs from `selfhost/*.wiz`
+(`Wiz/Selfhost.lean` generates their sources, parser tables included, for grail and the
+tests alike): `checker`, `compiler`, and `bootstrap`, the fixpoint check of
+`scripts/fixpoint.sh` as jobs (generate the source, build stage 1, `self1.c`, stage 2,
+`self2.c`, compare). `grail build bootstrap` runs it (minutes); run again, it runs
+nothing unless a source, `rt.c`, the toolchain or grail changed. `grail build` alone
+leaves it out.
+
+### 23f: a test runner ✅
+
+`Package.tests NAME DIR` makes every `.wiz` file under `DIR` a test, with its expected
+output beside it in `.expected`. The first line gives the kind: `-- test: check` (the
+default: the messages, as `wiz check` prints them) or `-- test: run` (what `main` prints,
+compiled through C). A pass is a job like any other, keyed by the file (and its
+imports), the kind, the toolchain and the expected output, so `grail test` again runs
+nothing; `grail test FILTER` runs the tests whose path contains it, and
+`grail test --update` writes the actual output. Every example is a test
+(`examples/*.expected`). The Lean tests stay in `lake test`.
+
+Next: parallel jobs (23g), git dependencies and a lock file (23h).

@@ -27,10 +27,12 @@ the results of the probes listed in the "Probes" section.
   no mechanised proof. The individual ingredients (QTT, observational equality with an
   impredicative `Prop`, sized types, descriptions) each have published metatheory for
   *their own* systems. Wiz's combination of them has **no published model**.
-* **Type checking can fail to terminate.** Definitional regularity together with an
-  impredicative `Prop` and proof-irrelevant equality is the Abel–Coquand setting [AC20],
-  and the D1 experiment produced a closed program on which both kernels loop. This is an
-  open issue (decision D1).
+* **Regularity is off (D1).** Definitional regularity together with an impredicative
+  `Prop` and proof-irrelevant equality is the Abel–Coquand setting [AC20], and the D1
+  experiment produced a closed program on which both kernels looped. Decision D1 (a):
+  regularity is off in both kernels, `cast` computes on data constructor by constructor,
+  and the program now checks. One departure from the published "off" theory remains, a
+  **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below).
 * **Two proofs of `False` in the kernel have been found and fixed** (propositions
   compared by shape; `∞ < ∞`), each with regression tests in both kernels.
 * **Three proofs of `False` were found while writing this page, and confirmed by
@@ -59,10 +61,10 @@ the results of the probes listed in the "Probes" section.
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
 | Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs treats `Prop` (per the review `xtt-cubical-attacks.md` A0; not re-checked in [PT22]). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` (evaluation, by syntactic equality; conversion, `unCast`) | **open issue** for normalisation; **folklore** for consistency | [AC20]: with impredicative `Prop` and irrelevant equality, normalisation fails. Our notes say TTobs/CCobs do **not** have definitional regularity (unverified against the papers). See D1. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. See also Q4 (subject reduction). |
-| Observational equality at `μ` (`con x = con y ↦ x = y`) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ ≡ μ` as types is deliberately stuck. |
+| Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
 | QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed for `.2`), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
@@ -78,8 +80,8 @@ the results of the probes listed in the "Probes" section.
 | QTT + observational equality | **conjecture** | No published system combines them. Proofs and types are erased (usage 0), `cast` passes its argument's usage through. Erasure soundness (a 0-quantity value is never needed at run time) is what QTT should give; it is not proved for Wiz. |
 | QTT + descriptions | **conjecture** | Fields carry quantities; the payload Σ uses them; methods are scaled. No paper. |
 | QTT + sized types + coinduction | **conjecture** | Sizes are erased (always quantity 0). No paper. |
-| Observational equality + impredicative `Prop` + regularity | **open issue** (normalisation) | D1, below. Consistency is not known to fail. |
-| Observational equality + descriptions (`eq` at `μ`, `cast` between `μ` types by regularity only) | **conjecture** | `μ ≡ μ` stuck; `cast` between μ types computes only by regularity. The D1 loop uses exactly this. |
+| Observational equality + impredicative `Prop` + regularity | **resolved by D1 (a)**: regularity off; at inert types **conjecture** | D1, below. |
+| Observational equality + descriptions (`eq` at `μ`, `cast` between `μ` types) | **conjecture** | `cast` between two `μ` types of one family computes on constructors (PT22/CIC-obs style, CoreSpec §8.4). Different parameters (`List A ≡ List B`) stay stuck. |
 | Observational equality + sized types | **conjecture** | Subtyping is not reflected in type equality (`μ^s ≡ μ^t` stuck). |
 | Sized types + `∞` | **fixed** (D2) for `∞ < ∞`; **conjecture** otherwise | F2 below. |
 | Sort annotations + level polymorphism | **conjecture** | Annotations are checked symbolically (`Level.equiv`), so they stay right under instantiation if `Level.equiv` is sound (it is designed to be). |
@@ -223,28 +225,47 @@ restricted to the Prelude, or checked (the native operations can be checked agai
 definitions on the registration's own terms only by proof, so restricting them is
 simpler).
 
-### D1. Regularity + impredicative `Prop` + irrelevant equality: type checking loops — **open issue (normalisation)**
+### D1. Regularity + impredicative `Prop` + irrelevant equality: type checking looped — **fixed** by decision D1 (a); regularity at inert types is a **conjecture**
 
 * **Question.** Abel and Coquand [AC20] show that an impredicative `Prop`, a
   proof-irrelevant equality and a cast that reduces whenever the two types are
-  definitionally equal (regularity) break normalisation. Wiz has all three.
-* **Result** (`agent/d1-regularity`, notes in `/workspace/wiz-notes/d1-experiment.md`,
-  not merged at `9717950`): their literal term does **not** loop in Wiz (a cast between
-  two visible propositions applies the equivalence instead of using regularity), but
-  wrapping the proposition in a one-field `μ` type does: regularity then fires at a type,
-  and **both kernels loop while type checking a closed, axiom-free program**. The tests on
-  that branch are "D1 (Abel–Coquand): checking a closed program does not terminate" and
-  "D1 (Abel–Coquand): the Wiz kernel does not terminate on the program either (and checks
-  it without regularity)" (group *observational equality* / *selfhost*).
-* **What this means.** Non-termination of the checker, not a known proof of `False`.
-  Consistency is not known to fail, but the usual route to consistency (normalisation)
-  is unavailable while regularity is on.
-* **Options under evaluation** (prototype flags on that branch, off by default):
-  R1 regularity only at non-propositions (no effect: already so); **R2** regularity only
-  along visible reflexivity proofs (blocks the loop); **off** (TTobs; blocks the loop);
-  R3 predicative `Prop` (only a measurement; whether it restores normalisation is
-  Abel–Coquand's open question). Fallout on examples, `lib` and selfhost was 0 errors for
-  R1, R2 and off. The decision is the owner's (D1).
+  definitionally equal (regularity) break normalisation. Wiz had all three.
+* **Experiment** (`agent/d1-regularity`, `/workspace/wiz-notes/d1-experiment.md`): their
+  literal term does not loop in Wiz (a cast between two visible propositions applies the
+  equivalence), but wrapping the proposition in a one-field `μ` type did: regularity
+  fired at the box type, and **both kernels looped while type checking a closed,
+  axiom-free program**.
+* **Decision D1 (a), `agent/d1-off`.** Regularity is off in both kernels
+  (`Globals.regularity := .off`, `kernelRegularity := .false`). In its place `cast`
+  computes on data (CoreSpec §8.3, §8.4): `μ D i ≡ μ D i'` computes to `i = i'` and a
+  cast between them casts each field of a constructor along the derived payload equation;
+  `Desc` and `ν` likewise; equality at `μ` follows the description constructor by
+  constructor, so `succ m = succ n` is `m = n` without a cast. The Abel–Coquand box now
+  yields a stuck proof, and the program checks (tests "D1 (Abel–Coquand): the program
+  checks …", "… the Wiz kernel checks the program …"; with `--regularity full`, resp.
+  `kernelRegularity := .true`, both kernels still loop, which the tests also check).
+* **Departure from the published theory (conjecture).** Regularity is kept at **inert**
+  types: `Enum`, `Unit`, Σs of inert types, and `μ` types whose fields are all inert (no
+  `Prop` field, function, neutral type or type variable), decided by a syntactic,
+  conservative walk (`inertTy` in both kernels). Argument (CoreSpec §8.4): on a neutral
+  argument the rule rewrites a neutral to a neutral, so it enables no reduction; on a
+  constructor it agrees with the structural rule up to proof irrelevance, and inert
+  values contain no λ, so nothing can tell the two apart; conversion is unchanged and
+  stays decidable. No normalisation proof covers it. A nested box (a `μ` whose field is
+  the Abel–Coquand box) is not inert and checks (test "a box in a box is not inert
+  either").
+* **What it costs (known failures).** Without regularity a cast at a **type variable**
+  is stuck (TTobs behaviour): `cast e a = a` for `e : A = A`, "`J` computes on `refl`"
+  at a variable family, and the definitional equations of functions defined by `match`
+  on an *indexed* family whose result type is dependent and mentions a type variable:
+  `Vec.map f (cons x xs)` is `cons (cast B B _ (f x)) (cast … (Vec.map f xs))`. So
+  `Vec.map_map`, `Vec.get_set` and `Vec.get_map` no longer check; they moved to
+  `drafts/vec-lib/VecProofs.wiz` (test "known failure: map_map needs regularity at a
+  variable type"). They are not provable without some regularity. A propositional
+  `castRefl : cast A A e a = a` (an axiom, which doesn't compute) would recover them;
+  that is a pending decision (wishful: cast-refl). Non-indexed types and constant
+  motives are unaffected: recursors of non-indexed types have no cast, and indexed
+  families get `T.recN`/`T.casesOnN` for motives independent of the scrutinee.
 
 ### K3. The size argument of `μ`/`ν` is never type-checked — **fixed** (`4605514`, both kernels)
 
@@ -293,17 +314,17 @@ captures an erased variable is accepted, a linear one rejected).
 
 ### Q3. Regularity by quotation assumes fewer than 100 000 variables — **fixed** (`b7e1736`, both kernels)
 
-`vCast` compares `quote 100000 A` and `quote 100000 B` (`Eval.lean:635`;
-`Kernel.wiz:996`). With more than 100 000 variables in scope, `100000 - x - 1` truncates
+`sameVal` compares `quote 100000 A` and `quote 100000 B` (`Eval.lean`, `Kernel.wiz`); since
+D1 it decides regularity at inert types and whether two `μ` types are of one family. With more than 100 000 variables in scope, `100000 - x - 1` truncates
 to 0 for several variables, and two different types could quote equal. Unreachable in
 practice; easy to fix (quote at the actual context size, which `vCast` doesn't have, or
 compare with `conv`).
 
-**Fix**: both kernels quote at `max (lvlBound A) (lvlBound B)`, one above the largest
-variable level `quote` can reach in either type (`Val.lvlBound` in `Eval.lean`,
-`lvlBound` in `Kernel.wiz`; a closure counts only the environment entries its body
-mentions). The bound can be too large, never too small. Cost: one extra walk of the two
-types, only in `vCast`'s last case (a perf measurement of the self-check is wanted).
+**Fix**: `sameVal` (both kernels) quotes at `max (lvlBound A) (lvlBound B)`, one above
+the largest variable level `quote` can reach in either value (`Val.lvlBound` in
+`Eval.lean`, `lvlBound` in `Kernel.wiz`; a closure counts only the environment entries
+its body mentions). The bound can be too large, never too small. Cost: one extra walk of
+the two values per `sameVal` (a perf measurement of the self-check is wanted).
 
 ### Q4. Description fields in smaller universes: subject reduction fails — **open issue (no exploit known)**
 
@@ -464,7 +485,8 @@ that checks everything. Wiz's situation:
 * **Attacks that are regression tests**: F1 and F2 above (both kernels).
 * **Adversarial review**: `xtt-cubical-attacks.md` (it found F1). Its "negative tests to
   add" list concerns the planned tiers.
-* **D1 experiment**: the Abel–Coquand programs, on `agent/d1-regularity`.
+* **D1**: the Abel–Coquand programs (direct and nested box) are regression tests in both
+  kernels: they check without regularity and loop with it.
 * **Self-check**: the self-hosted frontend checks its own source (group *selfhost*). This
   shows the kernels accept a large realistic program; it is not evidence against
   unsoundness.
