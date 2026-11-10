@@ -27,10 +27,10 @@ soundness issues are known, open and fixed.
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
 LLVM's `llc` for the C and LLVM backends, Boehm GC for the self-hosted backend, a C
-compiler, and elan, which installs the Lean in `lean-toolchain`. It sets `$WIZ_CFLAGS`,
-`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`, which only the test
-driver reads (`Tests/Main.lean`; flags to `lake test -- …` win); `wiz` and `grail` take
-flags.
+compiler, and elan, which installs the Lean in `lean-toolchain`. Entered at the
+repository root, it writes this machine's paths to the uncommitted `grail.local.wiz`,
+which grail and the test driver read (`Tests/Main.lean`; flags to `lake test -- …` win);
+`wiz` takes flags. Nothing reads environment variables.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
 `solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
@@ -928,7 +928,7 @@ zipper's insertion loop then allocates nothing per level.
 ### 8d: LLVM ✅
 
 `wiz build FILE -o OUT --llvm` and `wiz run FILE --llvm` go through textual LLVM IR
-(`Compiler/LLVM.lean`) and `llc` (`$WIZ_LLC`). The runtime is the same C file,
+(`Compiler/LLVM.lean`) and `llc` (`--llc X`). The runtime is the same C file,
 compiled separately with `-DWIZ_API=` so that its functions are exported. In SSA form,
 join point parameters live in stack slots, and a variable bound in several branches
 gets one name per branch. The LLVM tests are the C tests, through LLVM.
@@ -1880,7 +1880,45 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   sides still contain an unsolved implicit width when it is computed gets stuck, so
   state facts about definitions). A word is still an
   object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
-  `implemented_by`.
+  `implemented_by` (22d).
+
+### 22d: native representations: unboxed words ✅
+
+`attribute [implemented_by mk get] T.mk` gives a type a **native representation** in
+compiled code. `T.mk` is a constructor with one runtime field (the others erased);
+`mk` has the constructor's type and `get` reads the field back. Erasure then never
+builds the model's object: a constructor becomes `mk`, and `match` (and the generic
+eliminators, which get the model's object back from `get`) reads the field with `get`.
+The kernel and every proof keep the model. As with function-level `implemented_by`,
+the natives are trusted, and the interpreters (`#eval`, `#run`) keep the model's
+objects when `mk` or `get` is foreign, so the tables below compare the two.
+
+`lib/Word.wiz` uses it for `UIntN w` and `IntN w` (and `NatObj`, a `Nat` passed to C
+as the runtime number itself, possibly big). **A word is its bits**:
+
+| bits b | representation | allocation |
+|---|---|---|
+| `b < 2^63` | a tagged scalar | none |
+| `2^63 ≤ b < 2^64` | a raw 64-bit box (`WIZ_TAG_RAW`) | one cell |
+| `b ≥ 2^64` (widths above 64) | a GMP number | as `Nat` |
+
+* **Width-independent.** The representation depends only on b, so generic code over
+  `UIntN w` (unknown `w`, any width: `BitVec n`, the HDL's `Unsigned n`) needs no width
+  to build or read a word, and each value has exactly one representation (equality is
+  a comparison of bits). `ofBits`/`toBits` convert from and to `Nat` (free below
+  `2^62`).
+* **Operations** are natives on that representation (`wiz_word_*` in `runtime/wiz.c`):
+  `ofNat`/`ofNeg`, `+ - *`, `div`/`mod`/`rem`, comparisons, `land`/`lor`/`xor`/`not`,
+  shifts and `testBit` (a shift or index of `2^64` or more counts as infinite),
+  `resize` (zero- or sign-extending), `toIntN`/`toUIntN` (free). Up to 64 bits each is
+  a few instructions on a `uint64_t`; the C backend pastes the runtime into the program,
+  so `cc -O2` inlines them.
+* **What is not unboxed.** A 64-bit value with the top bit set still takes a cell (the
+  uniform representation has 63 bits of payload). Unboxing those too needs per-variable
+  representations in the IR (raw `uint64_t` locals and parameters, boxed at polymorphic
+  boundaries, as Lean's `UInt64`): the next step, once a measurement says it pays.
+* **Self-hosted backend:** not yet (it runs the model; see the wishful note).
+
 ### 22e: phantom parameters ✅
 
 ```
@@ -2150,4 +2188,19 @@ nothing; `grail test FILTER` runs the tests whose path contains it, and
 `grail test --update` writes the actual output. Every example is a test
 (`examples/*.expected`). The Lean tests stay in `lake test`.
 
-Next: parallel jobs (23g), git dependencies and a lock file (23h).
+### 23g: parallel jobs ✅
+
+The jobs form an explicit graph (`Grail/Graph.lean`): `ir F` depends on `check F`, …,
+`link E` on `obj F`, a check on the checks of the package modules it imports, a `run` test
+on its executable, the bootstrap steps on each other. A node's key is computed when its
+dependencies are done (an object's key hashes the C its `c` node wrote); a node whose
+output exists is up to date, the rest are jobs in a ready queue. `grail build -j N`
+(default: the cores, at most 4) runs up to `N` jobs at a time, each as a separate process
+(`grail --grail-job …` with the toolchain as flags, or the C compiler) under `timeout`
+(`--timeout SECS`, default 1800; tests `--test-timeout SECS`, default 300, so a test that
+hangs fails instead of hanging the run). A failed job is reported and the jobs that depend
+on it are skipped; the others still run. Each job's output is buffered and printed in the
+graph's order, so `-j 1` and `-j 8` print the same report, and a second build still runs
+no jobs.
+
+Next: git dependencies and a lock file (23h).
