@@ -55,9 +55,31 @@ static void die(const char *m) { fprintf(stderr, "wiz: %s\n", m); exit(3); }
 /* ---- reference counting ---- */
 
 static size_t rt_live; /* objects allocated and not freed yet */
+/* Small objects come from free lists, one per size class of 16 bytes (up to 256),
+   carved from big blocks (malloc's per-object header and bookkeeping were 15% of a
+   compiler's time); bigger ones from malloc. Blocks are never given back. */
+#define RT_NCLS 16
+static void *rt_fl[RT_NCLS + 1];
+static char *rt_blk, *rt_blkEnd;
 static void *rt_alloc(size_t sz) {
-  Obj *o = (Obj *)malloc(sz);
-  if (!o) die("out of memory");
+  size_t c = (sz + 15) >> 4;
+  Obj *o;
+  if (c <= RT_NCLS) {
+    o = (Obj *)rt_fl[c];
+    if (o) rt_fl[c] = *(void **)o;
+    else {
+      size_t b = c << 4;
+      if (rt_blk + b > rt_blkEnd) {
+        rt_blk = (char *)malloc(1 << 20);
+        if (!rt_blk) die("out of memory");
+        rt_blkEnd = rt_blk + (1 << 20);
+      }
+      o = (Obj *)rt_blk; rt_blk += b;
+    }
+  } else {
+    o = (Obj *)malloc(sz);
+    if (!o) die("out of memory");
+  }
   o->rc = 1;
   rt_live++;
   return o;
@@ -75,18 +97,22 @@ static inline void dec(V v) { if (!ISBOX(v)) { Obj *o = OBJ(v); if (--o->rc == 0
 #define FREE_BUF(b) ((void)0)
 #endif
 
-static V mkobj(uint32_t t, uint32_t n, V *fs) {
+/* (copies of a few words: inlined loops, not `memcpy` calls of a variable length,
+   which were half of a compiler's time) */
+#define INLINE static inline __attribute__((always_inline))
+INLINE void copyV(V *d, const V *s, uint32_t n) { for (uint32_t i = 0; i < n; i++) d[i] = s[i]; }
+INLINE V mkobj(uint32_t t, uint32_t n, V *fs) {
   Obj *o = (Obj *)MALLOC_OBJ(sizeof(Obj) + n * sizeof(V));
   if (!o) die("out of memory");
   o->tag = t; o->n = n;
-  memcpy(o->f, fs, n * sizeof(V));
+  copyV(o->f, fs, n);
   return (V)o;
 }
-static V mkclo(Fn fn, uint32_t n, V *env) {
+INLINE V mkclo(Fn fn, uint32_t n, V *env) {
   Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + n * sizeof(V));
   if (!c) die("out of memory");
   c->tag = T_CLO; c->n = n; c->fn = fn;
-  if (n) memcpy(c->env, env, n * sizeof(V));
+  copyV(c->env, env, n);
   return (V)c;
 }
 #ifndef WIZ_RC
@@ -299,12 +325,12 @@ static V accFn(V *env, V a) {
   Clo *self = (Clo *)((char *)env - offsetof(Clo, env));
   uint32_t have = self->n - 2;
   V *args = (V *)alloca((have + 1) * sizeof(V));
-  memcpy(args, env + 2, have * sizeof(V));
+  copyV(args, env + 2, have);
   args[have] = a;
   if (have + 1 == arity) return ((NF)env[0])(args);
   V *nenv = (V *)alloca((have + 3) * sizeof(V));
   nenv[0] = env[0]; nenv[1] = env[1];
-  memcpy(nenv + 2, args, (have + 1) * sizeof(V));
+  copyV(nenv + 2, args, have + 1);
   return mkclo(accFn, have + 3, nenv);
 }
 #else
@@ -313,11 +339,13 @@ static V accFn(V *env, V a) { (void)env; (void)a; die("accFn"); return BOX(0); }
 #endif
 static V native(NF f, int arity) { V env[2] = {(V)f, BOX(arity)}; return mkclo(accFn, 2, env); }
 /* a function of `arity` arguments (captured variables first), `n` of them given */
-static V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
-  V *env = (V *)alloca((n + 2) * sizeof(V));
-  env[0] = (V)f; env[1] = BOX(arity);
-  if (n) memcpy(env + 2, args, n * sizeof(V));
-  return mkclo(accFn, n + 2, env);
+INLINE V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
+  Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + (n + 2) * sizeof(V));
+  if (!c) die("out of memory");
+  c->tag = T_CLO; c->n = n + 2; c->fn = accFn;
+  c->env[0] = (V)f; c->env[1] = BOX(arity);
+  copyV(c->env + 2, args, n);
+  return (V)c;
 }
 #ifdef WIZ_RC
 /* the collected arguments of a function closure being used up: moved out of a unique
@@ -325,7 +353,7 @@ static V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
 static void rt_freeShell(Obj *o);
 static void takeArgs(Clo *c, V *to) {
   uint32_t have = c->n - 2;
-  memcpy(to, c->env + 2, have * sizeof(V));
+  copyV(to, c->env + 2, have);
   if (c->rc == 1) rt_freeShell((Obj *)c);
   else { for (uint32_t j = 0; j < have; j++) inc(to[j]); c->rc--; }
 }
@@ -341,25 +369,25 @@ static V apn(V f, uint32_t n, V *args) {
       if (n - i >= rem) {
         V *full = (V *)alloca(ar * sizeof(V));
 #ifndef WIZ_RC
-        memcpy(full, c->env + 2, have * sizeof(V));
-        memcpy(full + have, args + i, rem * sizeof(V));
+        copyV(full, c->env + 2, have);
+        copyV(full + have, args + i, rem);
         f = ((NF)c->env[0])(full);
 #else
         NF fn = (NF)c->env[0];
         takeArgs(c, full);
-        memcpy(full + have, args + i, rem * sizeof(V));
+        copyV(full + have, args + i, rem);
         f = fn(full);
 #endif
         i += rem;
       } else {
         V *nenv = (V *)alloca((have + (n - i) + 2) * sizeof(V));
 #ifndef WIZ_RC
-        memcpy(nenv, c->env, (have + 2) * sizeof(V));
+        copyV(nenv, c->env, have + 2);
 #else
         nenv[0] = c->env[0]; nenv[1] = c->env[1];
         takeArgs(c, nenv + 2);
 #endif
-        memcpy(nenv + 2 + have, args + i, (n - i) * sizeof(V));
+        copyV(nenv + 2 + have, args + i, n - i);
         return mkclo(accFn, have + (n - i) + 2, nenv);
       }
     } else { f = ap(f, args[i]); i++; }
@@ -462,6 +490,33 @@ static V memoFn(V *env, V u) {
   return env[0];
 }
 static V p_memo(V f) { V env[2] = {f, BOX(0)}; return mkclo(memoFn, 2, env); }
+/* the backend's suspended `let`s, one object each: env `[code, state, value,
+   captured…]`, the state `◾`, then 2 while being forced, then 1 (the captured variables
+   moved into the call, the value kept) */
+static V thunkFn(V *env, V u) {
+  if (env[1] == BOX(0)) {
+    Clo *self = (Clo *)((char *)env - offsetof(Clo, env));
+    uint32_t nc = self->n - 3;
+    V *a = (V *)alloca((nc + 1) * sizeof(V));
+    for (uint32_t i = 0; i < nc; i++) { a[i] = env[3 + i]; env[3 + i] = BOX(0); }
+    a[nc] = u;
+    env[1] = BOX(2);
+    env[2] = ((NF)env[0])(a);
+    env[1] = BOX(1);
+  } else {
+    if (env[1] == BOX(2)) die("a suspension forced while being forced");
+    dec(u);
+  }
+  inc(env[2]);
+  return env[2];
+}
+INLINE V mkthunk(NF f, uint32_t nc, V *caps) {
+  Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + (nc + 3) * sizeof(V));
+  c->tag = T_CLO; c->n = nc + 3; c->fn = thunkFn;
+  c->env[0] = (V)f; c->env[1] = BOX(0); c->env[2] = BOX(0);
+  copyV(c->env + 3, caps, nc);
+  return (V)c;
+}
 NATIVE(memo, 2, V env[2] = {a[1], BOX(0)}; return mkclo(memoFn, 2, env);)
 #endif
 
@@ -686,7 +741,21 @@ static void rt_push(Obj *o) {
 static inline void rt_decChild(V v) {
   if (v && !ISBOX(v)) { Obj *o = OBJ(v); if (--o->rc == 0) rt_push(o); }
 }
-static void rt_freeShell(Obj *o) { free(o); rt_live--; }
+/* an object's size, as allocated */
+static size_t rt_size(Obj *o) {
+  switch (o->tag) {
+  case T_CLO: return sizeof(Clo) + o->n * sizeof(V);
+  case T_STR: return sizeof(Str) + o->n + 1;
+  case T_ARR: return sizeof(Arr);
+  case T_MAP: return sizeof(Node);
+  default: return sizeof(Obj) + o->n * sizeof(V);
+  }
+}
+static void rt_freeShell(Obj *o) {
+  size_t c = (rt_size(o) + 15) >> 4;
+  if (c <= RT_NCLS) { *(void **)o = rt_fl[c]; rt_fl[c] = o; } else free(o);
+  rt_live--;
+}
 static int rt_freeing;
 static void rt_free(Obj *o) {
   rt_push(o);
@@ -698,7 +767,7 @@ static void rt_free(Obj *o) {
     if (t < T_CLO || t == T_HYP) { for (uint32_t i = 0; i < x->n; i++) rt_decChild(x->f[i]); }
     else if (t == T_CLO) {
       Clo *c = (Clo *)x;
-      for (uint32_t i = c->fn == accFn ? 2 : 0; i < c->n; i++) rt_decChild(c->env[i]);
+      for (uint32_t i = c->fn == accFn ? 2 : c->fn == thunkFn ? 1 : 0; i < c->n; i++) rt_decChild(c->env[i]);
     } else if (t == T_ARR) {
       Arr *a = (Arr *)x;
       for (size_t i = 0; i < a->len; i++) rt_decChild(a->data[i]);

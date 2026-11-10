@@ -1,0 +1,4 @@
+examples/match.wiz:14:1: info: .succ .zero
+examples/match.wiz:19:1: info: .succ (.succ (.succ .zero))
+examples/match.wiz:27:1: info: .zero
+examples/match.wiz:37:1: info: .cons .zero (.zero, .succ .zero) .nil

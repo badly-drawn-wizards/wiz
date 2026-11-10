@@ -1,0 +1,1 @@
+examples/syntax.wiz:13:19: error: no elaborator for syntax kind term.if_then_else
