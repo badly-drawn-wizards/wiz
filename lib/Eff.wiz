@@ -178,3 +178,70 @@ instance {E : Type} {m : Type → Type} [c : MonadConsole m] : MonadConsole (Rea
   MonadConsole.mk (fun str => fun _ => @MonadConsole.printLn m c str)
 
 instance : MonadConsole IO := MonadConsole.mk IO.println
+
+-- One-shot effects (CS4–6). The continuations of `Eff` are ω fields, so a computation
+-- can't keep a linear resource (a channel endpoint, a token) in one: the resource would
+-- be used any number of times. `Eff1 q r R A` is the same computations, Church-encoded
+-- over an answer type `R`, whose handler gets each continuation at quantity 1: it must
+-- resume exactly once (one-shot, as in OCaml 5), and in exchange a continuation may
+-- capture linear resources. The result is used `q` times: `ω` for ordinary results,
+-- `1` for a computation that hands back a linear resource. Handlers that resume twice
+-- (backtracking) or never (exceptions) need `Eff`. (Church-encoded rather than a tree:
+-- a linear field can't be matched back out of data yet, plan L2.) The effects, rows and
+-- `Member` are those of `Eff`.
+def Eff1 (q : Qty) (r : Row) (R A : Type) : Type :=
+  (1 ret : (%q a : A) → R) → (h : (o : Union r) → (1 k : RetU r o → R) → R) → R
+def Eff1.pure {q : Qty} {r : Row} {R A : Type} (%q a : A) : Eff1 q r R A := fun ret h => ret a
+-- the continuation is used once; its argument as often as the first result allows
+def Eff1.bind {q p : Qty} {r : Row} {R A B : Type} (1 x : Eff1 q r R A) (1 f : (%q a : A) → Eff1 p r R B) : Eff1 p r R B :=
+  fun ret h => x (fun a => f a ret h) h
+-- perform an operation of the row, then continue (once) with `k`
+def Eff1.op {q : Qty} {r : Row} {R A : Type} (o : Union r) (1 k : RetU r o → Eff1 q r R A) : Eff1 q r R A :=
+  fun ret h => h o (fun x => k x ret h)
+instance {r : Row} {R : Type} : Monad (Eff1 ω r R) where
+  pure := fun a => Eff1.pure a
+  bind := fun x f => Eff1.bind x f
+instance {r : Row} {R : Type} : Monad1 (Eff1 ω r R) where
+  bind1 := fun x f => Eff1.bind x f
+def send1 (0 e : Effect) {r : Row} {R : Type} [i : Member e r] (o : e.op) : Eff1 ω r R (e.ret o) :=
+  fun ret h => h (@Member.inj e r i o) (fun x => ret (@Member.prj e r i o x))
+-- A computation with no effects left (the continuation of an impossible operation is
+-- still used once: `k (absurd o)`), with an unrestricted or a linear result.
+def Eff1.run {A : Type} (1 m : Eff1 ω Row.nil A A) : A := m (fun a => a) (fun o k => k (absurd o))
+def Eff1.run1 {A : Type} (1 m : Eff1 1 Row.nil A A) : A := m (fun a => a) (fun o k => k (absurd o))
+-- Every multi-shot computation is a one-shot one (it captures no linear resource).
+def Eff.toEff1 {r : Row} {R A : Type} : Eff r A → Eff1 ω r R A
+  | .pure a => Eff1.pure a
+  | .op o k => Eff1.op o (fun x => Eff.toEff1 (k x))
+
+-- A one-shot handler of the first effect of the row: `ret` for the result, `h` for each
+-- operation, given the rest of the computation (`k`) to run exactly once.
+def Eff1.handle {q p : Qty} {e : Effect} {r : Row} {R A B : Type} (1 ret : (%q a : A) → Eff1 p r R B)
+    (h : (o : e.op) → (1 k : e.ret o → Eff1 p r R B) → Eff1 p r R B)
+    (1 m : Eff1 q (Row.cons e r) (Eff1 p r R B) A) : Eff1 p r R B :=
+  m ret (fun o => match o with
+    | .inl o' => fun k => h o' k
+    | .inr o' => fun k => @Eff1.op p r R B o' k)
+
+-- State, one-shot: the handler threads the state through the continuation.
+def get1 {S : Type} {r : Row} {R : Type} [Member (State S) r] : Eff1 ω r R S := send1 (State S) StateOp.get
+def put1 {S : Type} {r : Row} {R : Type} [Member (State S) r] (s : S) : Eff1 ω r R Unit := send1 (State S) (StateOp.put s)
+-- the result and the final state
+def runState1 {S : Type} {r : Row} {R A : Type} (1 m : Eff1 ω (Row.cons (State S) r) (S → Eff1 ω r R (A × S)) A) : S → Eff1 ω r R (A × S) :=
+  m (fun a s => Eff1.pure (a, s)) (fun o => match o with
+    | .inl .get => fun k s => k s s
+    | .inl (.put s') => fun k _ => k () s'
+    | .inr o' => fun k s => @Eff1.op ω r R (A × S) o' (fun x => k x s))
+-- the result only, which may be linear
+def evalState1 {q : Qty} {S : Type} {r : Row} {R A : Type} (1 m : Eff1 q (Row.cons (State S) r) (S → Eff1 q r R A) A) : S → Eff1 q r R A :=
+  m (fun a _ => Eff1.pure a) (fun o => match o with
+    | .inl .get => fun k s => k s s
+    | .inl (.put s') => fun k _ => k () s'
+    | .inr o' => fun k s => @Eff1.op q r R A o' (fun x => k x s))
+
+-- Output, handled by `IO` (whose bind takes its continuation at quantity 1).
+def println1 {r : Row} {R : Type} [Member Console r] (s : String) : Eff1 ω r R Unit := send1 Console (ConsoleOp.println s)
+def runConsole1 {A : Type} (1 m : Eff1 ω (Row.cons Console Row.nil) (IO A) A) : IO A :=
+  m IO.pure (fun o => match o with
+    | .inl (.println s) => fun k => IO.bind (IO.println s) k
+    | .inr o' => fun k => k (absurd o'))
