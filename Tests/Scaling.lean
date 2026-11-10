@@ -1,5 +1,4 @@
-import Tests.Harness
-import Wiz
+import Tests.Elab
 
 /-!
 # Scaling (agent/mem-hunt)
@@ -48,6 +47,25 @@ def wideClass (n : Nat) : String :=
   "def K (n : N) : Type := N\ninstance : C K where\n" ++
   String.join ((List.range n).map (s!"  op{·} := fun a b => a\n"))
 
+/-- A definition `s : String` of an `n`-character literal (`String.mk [Char.mk …, …]`: a
+spine of `n` nested applications), checked by the kernel and then erased, within `secs`
+seconds. -/
+def longLiteral (n secs : Nat) : IO Unit := do
+  let text := String.mk ((List.range n).map fun i => Char.ofNat (97 + i % 26))
+  let input := s!"import Prelude\ndef s : String := \"{text}\"\n"
+  let start ← IO.monoMsNow
+  let loader ← Tests.Elab.preludeLoader
+  let st := runFrontend (R := ZeroOneMany) input { loader }
+  let errs := (st.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let checked := (← IO.monoMsNow) - start
+  match compileReachable st.globals st.builtins ["s"] with
+  | .ok code => check (code.contains "s") "s was not erased"
+  | .error e => throw (IO.userError (toString e))
+  let ms := (← IO.monoMsNow) - start
+  unless ms ≤ secs * 1000 do
+    throw (IO.userError s!"took {ms} ms ({checked} ms to check; bound: {secs} s)")
+
 def group : Group where
   name := "scaling"
   exercise := "super-linear time and memory"
@@ -57,7 +75,12 @@ def group : Group where
     { name := "a structure with 64 fields (Level.normalize was exponential: 24 took 49 s)", run := fun _ =>
         checksWithin 60 (wideStructure 64) },
     { name := "a class with 48 Hw-like methods and an instance (was exponential: 16 took 4 s)", run := fun _ =>
-        checksWithin 60 (wideClass 48) }]
+        checksWithin 60 (wideClass 48) },
+    -- the kernel's application and pair rules, and erasure's spines, evaluated every
+    -- argument for the codomain, which a non-dependent Π doesn't mention: O(n²) on a
+    -- nested spine (4000 characters: 32 s to build)
+    { name := "a 20000-character string literal is checked and erased in linear time", run := fun _ =>
+        longLiteral 20000 60 }]
 
 end Tests.Scaling
 
