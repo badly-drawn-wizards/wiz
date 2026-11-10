@@ -659,7 +659,7 @@ attribute [macro term.twice] twiceMacro
   notation (written as macros).
 * `builtin key := name` registers prelude definitions with the kernel and the runtime
   (as Agda's `BUILTIN`): `nat` and its constructors and operations, and `string`.
-  Registrations in `lib/` are trusted (22d); anywhere else each is an axiom.
+  Registrations in `lib/` are trusted (22f); anywhere else each is an axiom.
 * **Literals.** A numeral of the registered `Nat` is a kernel literal `natLit n`. It
   unfolds one step at a time (`0 ↦ zero`, `n+1 ↦ succ (natLit n)`, `vNatView`) when an
   eliminator, `conv`, `unify` or `vEq` looks inside it. Registered operations compute
@@ -1139,7 +1139,7 @@ Writing the lexer and parser in Wiz showed what the language lacked:
 * **Recursion on any argument.** The structural argument is the first one the first
   clause matches; parameters before the colon may be passed unchanged or left out.
 * **`partial def` and `mutual … end`.** General recursion: the kernel treats the
-  definition as opaque, justified by a witness of its type (22d, so no `False`), and its
+  definition as opaque, justified by a witness of its type (22f, so no `False`), and its
   implementation (checked against the type) is what `#eval` and compiled code run. The
   parser's core is a mutual block, with no fuel.
 * **Mutual inductive types.** `mutual inductive A … inductive B … end` becomes one
@@ -1486,7 +1486,7 @@ with that metavariable. `@f` inserts no implicit arguments.
 ### 17d: `partial` and `mutual` ✅
 
 `partial def` and `mutual … end` blocks of definitions: each function is first an axiom
-of its type (`addPartials`, justified by a witness the kernel checks, 22d), so that the
+of its type (`addPartials`, justified by a witness the kernel checks, 22f), so that the
 bodies may call any of them, as the Lean kernel sees partial definitions; then each body
 is checked as usual and replaces the axiom.
 
@@ -1965,7 +1965,7 @@ Not yet: facts like `Vec.get v (Fin.of 3 1 rfl) = 20 := rfl` (the `rfl` shape
 problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` in general, numerals and operators
 (`a + b`) for `BitVec` (decision HD9), and native representations (`implemented_by`).
 
-### 22d: the trusted base: witnesses and tracked registrations ✅
+### 22f: the trusted base: witnesses and tracked registrations ✅
 
 Two ways to prove `False` without writing `axiom` are closed.
 
