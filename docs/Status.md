@@ -6,7 +6,7 @@ mean what they claim. It is meant to be honest first: if something is not proved
 so. The calculus itself is specified in [CoreSpec.md](CoreSpec.md); section numbers
 written "§n" refer to it.
 
-The state described here is the `solutions` branch at commit `9717950` (2026-11-09), plus
+The state described here is `master` at commit `9717950` (2026-11-09), plus
 the results of the probes listed in the "Probes" section.
 
 ## Status values
@@ -102,8 +102,8 @@ the results of the probes listed in the "Probes" section.
   adversarial review (`/workspace/wiz-notes/xtt-cubical-attacks.md`, A0).
 * **The fix.** Π and Σ carry their sort; the kernel checks it; type equality and `cast`
   treat two propositions by equivalence, and a proposition is never equal to a
-  non-proposition (§8.3, §8.4). Commit **`1b6dc00`** on `solutions` ("Fix a proof of
-  False: type equality compares propositions by equivalence"; `cfac255` on `master`).
+  non-proposition (§8.3, §8.4). Commit **`1b6dc00`** ("Fix a proof of
+  False: type equality compares propositions by equivalence"; `cfac255` in the old exercise tree, now `exercises-archive`).
 * **Regression tests.**
   * group *observational equality*: "equivalent propositions of different shapes don't
     prove False" (the attack, must fail) and "propositions in a function type's domain
@@ -123,8 +123,8 @@ the results of the probes listed in the "Probes" section.
   proof of `False` was built in Wiz (the attack review, D2, could not build one, since
   Wiz has no user-level recursion on `Size`), but the rule was the known-bad one.
 * **The fix.** `sizeBelow` (`Conv.lean:143`, `Kernel.wiz:1413`): below `∞` are only
-  `↑ᵏ x` for a variable `x : Size< u`. Commit **`fb9074d`** on `solutions` ("Decision D2:
-  ∞ is not below itself (both kernels)"; `d521cfa` on `master`).
+  `↑ᵏ x` for a variable `x : Size< u`. Commit **`fb9074d`** ("Decision D2:
+  ∞ is not below itself (both kernels)"; `d521cfa` in `exercises-archive`).
 * **Regression tests.**
   * group *sized types*: "∞ is not a size below ∞";
   * group *selfhost*: "∞ is not below itself (and both kernels agree on it below)"

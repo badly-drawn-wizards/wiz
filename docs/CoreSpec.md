@@ -12,7 +12,7 @@ disagreement. What is proved about the calculus, and what is not, is in
   `Templates.lean` (the generic operations on descriptions).
 * **Mirror:** `selfhost/Kernel.wiz`, the same kernel written in Wiz. It covers a fragment
   (§15) and differs in places, listed per rule and in §15.
-* **Line numbers** refer to the `solutions` branch at commit `9717950`. They drift as the
+* **Line numbers** refer to commit `9717950` (on `master`). They drift as the
   code changes. The function names are the stable reference.
 
 Each rule is tagged:
@@ -1210,7 +1210,7 @@ Each item says what the code does; the code is what the kernel checks.
    equivalence, and `μ`/`ν`/`Desc` are stuck. (The prose below the table says the first
    part.)
 9. **Sort annotations.** Stage 4c ([stages/04-data.md](stages/04-data.md)) says a Π/Σ "carries its sort (the elaborator writes
-   it)". On `solutions` at `9717950`, several Π/Σ the elaborator builds carry none
+   it)". At `9717950`, several Π/Σ the elaborator builds carry none
    (the stage docs themselves list them only on the unmerged `agent/elab-sorts` branch, commit
    `31395a2`). After that branch merges, the remaining unannotated cases are "a Π/Σ under
    a `fun` whose variable's type isn't written down, or one that still mentions a
