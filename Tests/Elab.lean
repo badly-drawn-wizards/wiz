@@ -3522,6 +3522,25 @@ def descEqGroup : Group where
         fails (descEqTypes ++
           "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
           "def bad (A : Type) (n m : N) (h : n = m) : V A n = V A m := h\n") "type mismatch" },
+    -- (soundness-audit) `rfl : T = T` at a data type: the equation of the codes has a part
+    -- `(t : Enum ls) → …` that is stuck under the binder; `rfl` proves it tag by tag
+    { name := "rfl proves T = T for data types: N, an indexed family, a coinductive type", run := fun _ =>
+        ok (descEqTypes ++
+          "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
+          "coinductive S (A : Type) where\n  head : A\n  tail : S A\n" ++
+          "def r1 : N = N := rfl\n" ++
+          "def r2 (A : Type) : L A = L A := rfl\n" ++
+          "def r3 (A : Type) (n : N) : V A n = V A n := rfl\n" ++
+          "def r4 (A : Type) : S A = S A := rfl\n" ++
+          "def c1 (n : N) : (cast (rfl : N = N) n : N) = n := rfl\n" ++
+          "def c2 (A : Type) (l : L A) : L A := cast (rfl : L A = L A) l\n") },
+    { name := "rfl proves T = T with the Prelude: Bool, Nat, List A, Option A, a structure", run := fun _ =>
+        okLib ("import Prelude\nstructure Pt where\n  x : Nat\n  y : Bool\n" ++
+          "def r1 : Bool = Bool := rfl\ndef r2 : Nat = Nat := rfl\n" ++
+          "def r3 (A : Type) : List A = List A := rfl\ndef r4 (A : Type) : Option A = Option A := rfl\n" ++
+          "def r5 : Pt = Pt := rfl\n") },
+    { name := "rfl still can't prove an equation between different data types", run := fun _ =>
+        fails (descEqTypes ++ "def bad : L N = L B := rfl\n") "rfl" },
     { name := "different description constructors are unequal; quantities count", run := fun _ =>
         ok ("#reduce (Desc.ret () : Desc Unit) = Desc.rec 1 () (Desc.ret ())\n" ++
           "#reduce (Desc.rec 1 () (Desc.ret ()) : Desc Unit) = Desc.rec 0 () (Desc.ret ())\n" ++

@@ -846,9 +846,14 @@ A cast between `L A` and `L B` along `e` computes to the list of the casts of it
 **User-facing change.** A proof of `i = i'` no longer inhabits `μ D i ≡ μ D i'` directly:
 `Vec A n = Vec A m` is a Σ now. Build such proofs by congruence (`congrArg (Vec A) h`, or
 `transp` with `reflTy`, which is what the elaborator does for index equations and
-pattern matching); `refl (Vec A n)` proves `Vec A n = Vec A n`. `rfl` against an equation
-between data types that has already computed may fail (its components `cast e D = D` are
-not syntactic reflexivities); write `refl T` instead.
+pattern matching). `refl (Vec A n)` proves `Vec A n = Vec A n`, and so does `rfl`. The
+computed equation has a part over the constructor tags, `(0 t : Enum ls) → cast e (E t) =
+E t`, which is stuck under the binder (`E t` is a stuck `ecase t`) and computes at each
+tag. The elaborator's `rfl` (`rflProof`, `Elab/Term.lean`) therefore proves a Π over a tag
+type by a case split, `λ t. transp Unit () (λ _ _. G t) (ecase t [p₀, …]) () ()`: the
+`transp` along `() = ()` is there because the binder has quantity 0 and its premises are
+checked erased (§8.1). This is an ordinary kernel-checked term; the kernel rules are not
+involved, and are deliberately not specialised to tag fields (above).
 
 **Soundness: the setoid model.** We interpret the theory in the setoid (observational)
 model of TTobs/CCobs [PT22, PT23], extended as follows. This is an argument, not a

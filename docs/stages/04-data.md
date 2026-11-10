@@ -419,9 +419,10 @@ compare by equivalence. What this costs, and why:
   `True` component: so the equations print with `True`s in them.
 * So a proof of `n = m` is not a proof of `Vec A n = Vec A m` any more. Use congruence
   (`congrArg (Vec A) h`, or `transp` from `refl`), which is what the elaborator does for
-  index equations; `refl (Vec A n)` proves `Vec A n = Vec A n`; and write `refl T`, not
-  `rfl`, where an equation between data types has already computed (its pieces such as
-  `cast e D = D` are not syntactic reflexivities).
+  index equations. `refl (Vec A n)` and `rfl` both prove `Vec A n = Vec A n`: the
+  equation's part over the constructor tags, `(t : Enum ls) → …`, is stuck under its
+  binder, so `rfl` proves it tag by tag (a case split, wrapped in a `transp` because the
+  binder is erased; `rflProof` in `Elab/Term.lean`).
 * `μ` is now injective in its description, a large-into-small map (Hur's paradox has
   this shape). It is the same shape as the injectivity of Π that observational equality
   already has, and a description can't range over its own universe (fields are exactly in
