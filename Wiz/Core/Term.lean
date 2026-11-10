@@ -361,6 +361,9 @@ structure Globals (R : Type) where
   cast between propositions is stuck instead of applying the equivalence; `split` on a
   proof is η. See `wiz-notes/p2-proofs.md`. -/
   lazyProofs : Bool := false
+  /-- (P2, internal) `quote` writes every suspended proof as `()`: `sameVal` with
+  `lazyProofs` compares types modulo proofs (proof irrelevance) -/
+  quoteErasesProofs : Bool := false
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false

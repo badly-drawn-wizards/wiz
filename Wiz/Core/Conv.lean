@@ -243,6 +243,8 @@ mutual
 `true`. Then **regularity**: a stuck `cast A B e t` with an empty spine and
 `convTy A B` is replaced by `t` (on either side) before comparing. -/
 partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R) : Bool :=
+  -- (P2, `lazyProofs`) proof irrelevance first, so that a glued proof is never unfolded
+  if g.lazyProofs && isProp g tys ty then true else
   -- glued values with the same head: compare the spines first, unfold if that fails
   if let some r := convGlued g tys a b then r || conv g tys ty (whnf a) (whnf b) else
   let a := whnf a

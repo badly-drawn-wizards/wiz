@@ -910,6 +910,8 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
 side condition of the rules below (as it was of regularity): cheap, and stable under
 substitution, since a substitution instance of equal terms is equal. -/
 partial def sameVal (g : Globals R) (a b : Val R) : Bool :=
+  -- (P2) with `lazyProofs`, modulo the suspended proofs
+  let g := if g.lazyProofs then { g with quoteErasesProofs := true } else g
   let l := max a.lvlBound b.lvlBound
   quote g l a == quote g l b
 
@@ -1054,7 +1056,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .transp A a P p b e =>
         .transp (quote g l A) (quote g l a) (quote g l P) (quote g l p) (quote g l b) (quote g l e)
       -- (P2) a suspended proof: substitute, don't reduce
-      | .prf _ env t _ => t.substFree fun i => match env[i]? with
+      | .prf _ env t _ => if g.quoteErasesProofs then .tt else t.substFree fun i => match env[i]? with
         | some v => quote g l v
         | none => .var (i + l)  -- (ill-scoped: not reached on well-scoped terms)
     sp.foldl (init := hd) fun acc e => match e with
