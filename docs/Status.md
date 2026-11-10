@@ -33,9 +33,9 @@ the results of the probes listed in the "Probes" section.
   regularity is off in both kernels, `cast` computes on data constructor by constructor,
   and the program now checks. One departure from the published "off" theory remains, a
   **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below; now argued relative to the system without regularity, with one incompleteness found).
-* **Three proofs of `False` in the kernel have been found and fixed** (propositions
-  compared by shape; `∞ < ∞`; quantities that differ only by a variable, F6), each with
-  regression tests. A failure of
+* **Four proofs of `False` in the kernel have been found and fixed** (propositions
+  compared by shape; `∞ < ∞`; quantities that differ only by a variable, F6; a syntactic
+  comparison that missed a variable, F7), each with regression tests. A failure of
   subject reduction for small description fields (Q4) is fixed too (F5, `ULift`).
 * **Three proofs of `False` were found while writing this page, and confirmed by
   running them** (see "Open issues" and "Probes"):
@@ -235,6 +235,40 @@ the results of the probes listed in the "Probes" section.
     "F6: types with two different literal quantities are unequal";
   * group *selfhost*: "F6: literal quantities that differ make types unequal" (Lean kernel
     verdicts on `MTm.qtyApart`), and `MTm.qtyApart` is in the differential samples.
+
+### F7. Syntactic equality missed a variable captured by a native operation — **fixed**
+
+* **The bug.** `Term.mapChildrenM` had no case for `natOp`, so `Term.freeVarsAt` saw no
+  variable in the body of a native operation's closure, and `Val.lvlBound` of the partial
+  application `Nat.add x` was `0`. `sameVal` then quoted below `x`, where every variable
+  truncates to index `0`: `T (Nat.add x)` and `T (Nat.add y)` quoted alike, `sameFamily?`
+  took `μ D_x ()` and `μ D_y ()` for one family, and their equation computed to `() = ()`.
+  With `T (Nat.add 0)` inhabited and `T (Nat.add 1)` empty, a cast along the instance at
+  `0`, `1` was a closed proof of `False` (Prelude only, no axiom). Found by the soundness
+  audit (`/workspace/wiz-notes/soundness-audit.md`, S1; the probe is
+  `soundness-probes/s1-natop-samefamily.wiz`). The self-hosted kernel was not affected: it
+  has no native operations, and its `usesVar` is conservative.
+* **The fix.** The `natOp` case in `mapChildrenM` (`Term.lean`). The constructor list of
+  `Term` was compared with the traversal's cases: it was the only one missing.
+* **Regression tests.** Group *builtins*: "S1: a variable captured by a native operation
+  counts in syntactic equality (it proved False)" (three attacks, must fail) and "S1: the
+  same family at the same partial application is still one family".
+* **What remains.** `quote` still turns a variable at or above its level into index `0`
+  silently (truncated subtraction). An explicit failure there would have made this a crash.
+
+### F8. `absurd` on a glued value evaluated to `Sort 0` — **fixed**
+
+* **The bug.** `vAbsurd` matched only a neutral. For `absurd (lem h)` with `lem` a global
+  definition the scrutinee is a glued value, the `panic!` branch ran, and Lean's `panic!`
+  returns the default value, `Sort 0`. So `def g (h : False) : Type := absurd (lem h)`
+  evaluated to `Prop`, and `def u (h : False) : g h := True` was accepted. Reachable only
+  under an inconsistent hypothesis, so no closed proof of `False`. `Kernel.wiz` takes the
+  weak head normal form first and was not affected (audit, F2).
+* **The fix.** `vAbsurd` unfolds glued values first (`Eval.lean`).
+* **Regression test.** Group *observational equality*: "F2: absurd on a lemma's result is
+  stuck, not Prop".
+* **What remains.** Every other `panic!` in `Eval.lean` also returns `Sort 0` and lets the
+  check go on. None is known to be reachable from a well-typed term.
 
 ---
 
@@ -494,7 +528,10 @@ that checks everything. Wiz's situation:
 * **Size.** The Lean kernel is `Wiz/Core/{Term,Value,Level,QPoly,Usage,Eval,Conv,Check,
   Templates}.lean` plus `Wiz/Rig.lean` and `Wiz/Rig/Instances.lean`: about **3 200
   lines**, about 2 500 without blank lines and line comments. (`Pretty.lean` and
-  `Raw.lean` are not trusted.) This includes the computation rules of OTT, descriptions
+  `Raw.lean` are not trusted. `Term.hasVar`, which `Ctx.instArg` relies on, and the
+  traversal `Term.mapChildrenM`/`forChildren`, which `hasVar` and `Val.lvlBound` rely on,
+  are in `Term.lean`: `hasVar` was moved there from `Pretty.lean` when the kernel started
+  to depend on it. A constructor missing from `mapChildrenM` is a kernel bug: see F7.) This includes the computation rules of OTT, descriptions
   and sizes, so it is larger than a Lean-4-style kernel per feature.
 * **Two kernels.** `selfhost/Kernel.wiz` (about 2 200 lines) is an independent
   reimplementation in Wiz of a fragment (CoreSpec §15). It was written from the Lean
