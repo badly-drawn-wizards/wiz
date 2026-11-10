@@ -1,5 +1,4 @@
-import Grail.Test
-import Grail.Selfhost
+import Grail.Graph
 
 /-!
 # grail, a build tool for Wiz
@@ -18,8 +17,10 @@ def usage : String := "usage:
                           filter; --update writes the actual output to .expected
   grail targets           list the targets
   grail config            print the toolchain grail would use
-  grail clean             remove .grail/build and .grail/bin
+  grail clean             remove .grail/build, .grail/bin and .grail/tmp
 options: -C DIR (the package directory), --std DIR (the standard library),
+  -j N (jobs at once; default: the number of cores, at most 4),
+  --timeout SECS (a job's time limit, default 1800), --test-timeout SECS (default 300),
   --cc X --cflags \"…\" --ldflags \"…\" --libs \"…\" --llc X --gc-cflags \"…\" --gc-ldflags \"…\" -I DIR,
   --cache DIR (the elaboration cache, default ~/.cache/wiz), --no-cache
 Machine settings (where GMP lives) go in an uncommitted grail.local.wiz:
@@ -44,12 +45,24 @@ def binaryId (cacheDir : Option System.FilePath) : IO UInt64 := do
     Cache.writeAtomic f s!"{stamp}\n{h.toNat}"
   pure h
 
-/-- `-C DIR` and `--std DIR`, taken out of the arguments. -/
-partial def dirOpts (dir : Option String) (std : Option String) : List String → Option String × Option String × List String
-  | "-C" :: d :: rest => dirOpts (some d) std rest
-  | "--std" :: d :: rest => dirOpts dir (some d) rest
-  | a :: rest => let (d, s, r) := dirOpts dir std rest; (d, s, a :: r)
-  | [] => (dir, std, [])
+structure Opts where
+  dir : Option String := none
+  std : Option String := none
+  jobs : Option Nat := none
+  timeout : Option Nat := none
+  testTimeout : Option Nat := none
+
+/-- `-C DIR`, `--std DIR`, `-j N`, `--timeout SECS`, `--test-timeout SECS`, taken out of the arguments. -/
+partial def grailOpts (o : Opts) : List String → Opts × List String
+  | "-C" :: d :: rest => grailOpts { o with dir := some d } rest
+  | "--std" :: d :: rest => grailOpts { o with std := some d } rest
+  | "-j" :: n :: rest => grailOpts { o with jobs := n.toNat? } rest
+  | "--timeout" :: n :: rest => grailOpts { o with timeout := n.toNat? } rest
+  | "--test-timeout" :: n :: rest => grailOpts { o with testTimeout := n.toNat? } rest
+  | a :: rest =>
+    if a.startsWith "-j" && (a.drop 2).toString.toNat?.isSome then grailOpts { o with jobs := (a.drop 2).toString.toNat? } rest
+    else let (o, r) := grailOpts o rest; (o, a :: r)
+  | [] => (o, [])
 
 /-- The standard library: `--std`, else `lib/` of the checkout this binary was built in
 (`.lake/build/bin/grail`), else `./lib`. -/
@@ -61,11 +74,18 @@ def findStd (opt : Option String) : IO System.FilePath := do
   pure "lib"
 
 def main (args : List String) : IO UInt32 := do
-  let (dir, std, args) := dirOpts none none args
-  let dir : System.FilePath := dir.getD "."
-  let std ← findStd std
   let home := (← IO.getEnv "HOME").getD "."
   let defaults : Toolchain := { cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") }
+  -- a job of a build, in its own process (`Grail/Graph.lean`)
+  if let "--grail-job" :: job :: flags := args then
+    return ← jobMain (defaults.parseFlags flags).1 job
+  let (opts, args) := grailOpts {} args
+  let dir : System.FilePath := opts.dir.getD "."
+  let std ← findStd opts.std
+  let jobs := opts.jobs.getD (max 1 (min 4 (System.Platform.Internal.getHardwareConcurrency ()).toNat))
+  let mkRunner (ctx : Ctx) : IO Runner := do
+    pure { ctx, stats := ← IO.mkRef {}, memo := ← IO.mkRef {}, jobs, self := ← IO.appPath,
+           timeoutMs := 1000 * opts.timeout.getD 1800, testTimeoutMs := 1000 * opts.testTimeout.getD 300 }
   -- the flags win over the build files; read them now, apply them last
   let raw := args
   let (flagged, args) := defaults.parseFlags args
@@ -94,8 +114,7 @@ def main (args : List String) : IO UInt32 := do
     | "test" :: rest =>
       let update := rest.contains "--update"
       let filters := rest.filter (· != "--update")
-      let r : Runner := { ctx := { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets },
-                          stats := ← IO.mkRef {}, memo := ← IO.mkRef {} }
+      let r ← mkRunner { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets }
       let results ← r.tests pkg.targets filters update
       let passed := results.filter (·.ok) |>.size
       let cached := results.filter (·.cached) |>.size
@@ -107,11 +126,9 @@ def main (args : List String) : IO UInt32 := do
         else pkg.targets.filter (wanted.contains ·.name)
       for w in wanted do
         unless pkg.targets.any (·.name == w) do IO.eprintln s!"no target {w}"; return 1
-      let r : Runner := { ctx := { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets }, stats := ← IO.mkRef {}, memo := ← IO.mkRef {} }
-      let mut ok := true
-      for t in targets do
-        ok := (← r.buildTarget t) && ok
+      let r ← mkRunner { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets }
+      let ok ← r.build pkg.targets targets
       let st ← r.stats.get
-      IO.println s!"{st.ran} jobs run, {st.upToDate} up to date{if st.failed > 0 then s!", {st.failed} failed" else ""}"
+      IO.println s!"{st.ran} jobs run, {st.upToDate} up to date{if st.failed > 0 then s!", {st.failed} failed" else ""}{if st.skipped > 0 then s!", {st.skipped} skipped" else ""}"
       pure (if ok then 0 else 1)
   | _ => IO.println usage; pure 0

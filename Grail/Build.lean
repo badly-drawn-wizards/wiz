@@ -1,7 +1,7 @@
 import Grail.Config
 
 /-!
-# The build graph (stage 23d: sequential)
+# Jobs (stages 23d, 23g)
 
 A **job** has a key, computed from its inputs before it runs, and an output directory
 `.grail/build/<key>/`. A job whose directory exists is up to date and doesn't run; a job
@@ -15,7 +15,8 @@ succeeds, so an interrupted build leaves nothing half-written. Keys:
 * `link E` from `obj F` and the compiler and `ldflags`.
 
 So editing a module reruns the checks of the files that import it, and an edit that
-doesn't change the generated C stops at `obj`.
+doesn't change the generated C stops at `obj`. The jobs form a graph (`Grail/Graph.lean`)
+whose ready jobs run as separate processes, up to `-j N` at a time.
 -/
 
 namespace Grail
@@ -42,6 +43,8 @@ structure Stats where
   ran : Nat := 0
   upToDate : Nat := 0
   failed : Nat := 0
+  /-- not run because a job they depend on failed -/
+  skipped : Nat := 0
 
 def hex (k : UInt64) : String :=
   let s := String.ofList (Nat.toDigits 16 k.toNat)
@@ -56,31 +59,16 @@ structure Runner where
   ctx : Ctx
   stats : IO.Ref Stats
   memo : IO.Ref Memo
-  /-- print each job as it runs -/
-  log : String → IO Unit := IO.println
-
-/-- Run a job unless its output directory exists. `act` writes into a fresh directory. -/
-def Runner.job (r : Runner) (label : String) (key : UInt64) (act : System.FilePath → IO (Except String Unit)) :
-    IO (Except String System.FilePath) := do
-  let out := r.ctx.grailDir / "build" / hex key
-  if ← out.pathExists then
-    r.stats.modify fun s => { s with upToDate := s.upToDate + 1 }
-    return .ok out
-  r.log s!"[{label}]"
-  let tmp : System.FilePath := r.ctx.grailDir / "tmp" / s!"{hex key}-{← IO.Process.getPID}-{← IO.monoNanosNow}"
-  IO.FS.createDirAll tmp
-  let res ← try act tmp catch e => pure (.error (toString e))
-  match res with
-  | .error e =>
-    IO.FS.removeDirAll tmp
-    r.stats.modify fun s => { s with failed := s.failed + 1 }
-    pure (.error e)
-  | .ok () =>
-    IO.FS.createDirAll (r.ctx.grailDir / "build")
-    try IO.FS.rename tmp out
-    catch _ => IO.FS.removeDirAll tmp   -- someone else made it first
-    r.stats.modify fun s => { s with ran := s.ran + 1 }
-    pure (.ok out)
+  /-- where the build's report goes (stdout and stderr), in a fixed order -/
+  out : String → IO Unit := IO.print
+  err : String → IO Unit := IO.eprint
+  /-- how many jobs run at once -/
+  jobs : Nat := 1
+  /-- the program that runs a job (`<self> --grail-job …`): grail, or the test driver -/
+  self : System.FilePath := "grail"
+  /-- a job's time limit, in milliseconds; tests have their own -/
+  timeoutMs : Nat := 1800000
+  testTimeoutMs : Nat := 300000
 
 def Runner.load (r : Runner) (file : String) : IO Loaded := do
   if let some l := (← r.memo.get).loaded[file]? then return l
@@ -94,18 +82,14 @@ def Runner.elab (r : Runner) (file : String) : IO (CommandState ZeroOneMany) := 
   r.memo.modify fun m => { m with states := m.states.insert file s }
   pure s
 
-/-- Check a file (relative to the package directory). -/
-def Runner.check (r : Runner) (file : String) : IO (Except String UInt64) := do
-  let l ← r.load file
-  let key := mixHash (hash "check") (mixHash r.ctx.binId l.key)
-  let res ← r.job s!"check {file}" key fun out => do
-    let s ← r.elab file
-    let msgs := render file l s
-    if hasErrors s then return .error msgs
-    IO.print msgs
-    IO.FS.writeFile (out / "messages.txt") msgs
-    pure (.ok ())
-  pure (res.map fun _ => key)
+/-- The key of `check F`. -/
+def Runner.checkKey (r : Runner) (file : String) : IO UInt64 := do
+  pure (mixHash (hash "check") (mixHash r.ctx.binId (← r.load file).key))
+
+/-- `main`'s IR, and whether it is an `IO` program. -/
+def mainDecls (s : CommandState ZeroOneMany) : Except String (Array IR.Decl × Bool) := do
+  let (ds, ty) ← Build.irProgram s "main"
+  pure (ds, Build.isIO ty)
 
 def run (cmd : String) (args : Array String) : IO (Except String Unit) := do
   try
@@ -124,70 +108,5 @@ def install (src dst : System.FilePath) : IO Unit := do
   IO.setAccessRights tmp { user := { read := true, write := true, execution := true },
                            group := { read := true, execution := true }, other := { read := true, execution := true } }
   IO.FS.rename tmp dst
-
-/-- Build the executable `name` from `file`'s `main`: check → IR → C → object → link,
-installed as `.grail/bin/<name>`. -/
-def Runner.link (r : Runner) (name file : String) : IO (Except String System.FilePath) := do
-  let ck ← match ← r.check file with | .ok k => pure k | .error e => return .error e
-  let tc := r.ctx.tc
-  let decls (s : CommandState ZeroOneMany) : Except String (Array IR.Decl × Bool) := do
-    let (ds, ty) ← Build.irProgram s "main"
-    pure (ds, Build.isIO ty)
-  let irKey := mixHash (hash "ir") ck
-  let _ ← match ← r.job s!"ir {file}" irKey (fun out => do
-      match decls (← r.elab file) with
-      | .error e => pure (.error e)
-      | .ok (ds, _) =>
-        IO.FS.writeFile (out / "main.ir") ("\n".intercalate (ds.toList.map (·.toString)))
-        pure (.ok ())) with | .ok d => pure d | .error e => return .error e
-  let cKey := mixHash (hash "c") irKey
-  let cDir ← match ← r.job s!"c {file}" cKey (fun out => do
-      let s ← r.elab file
-      match decls s with
-      | .error e => pure (.error e)
-      | .ok (ds, io) =>
-        IO.FS.writeFile (out / "main.c") (C.program ds io (Build.extraC s))
-        pure (.ok ())) with | .ok d => pure d | .error e => return .error e
-  let cText ← IO.FS.readFile (cDir / "main.c")
-  let objKey := mixHash (hash "obj") (hash (toString [cText, tc.cc, " ".intercalate tc.cflags]))
-  let oDir ← match ← r.job s!"obj {file}" objKey (fun out =>
-      run tc.cc (#["-O2", "-w", "-c", "-o", (out / "main.o").toString, (cDir / "main.c").toString] ++ tc.cflags.toArray)) with
-    | .ok d => pure d | .error e => return .error e
-  let linkKey := mixHash (hash "link") (hash (toString [toString objKey, tc.cc, " ".intercalate tc.ldflags, " ".intercalate tc.libs]))
-  let lDir ← match ← r.job s!"link {name}" linkKey (fun out =>
-      run tc.cc (#["-o", (out / name).toString, (oDir / "main.o").toString, "-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray)) with
-    | .ok d => pure d | .error e => return .error e
-  pure (.ok (lDir / name))
-
-/-- Build the executable `name` from `file`'s `main`, installed as `.grail/bin/<name>`. -/
-def Runner.exe (r : Runner) (name file : String) : IO (Except String System.FilePath) := do
-  match ← r.link name file with
-  | .error e => pure (.error e)
-  | .ok exe =>
-    let dst := r.ctx.grailDir / "bin" / name
-    install exe dst
-    pure (.ok dst)
-
-/-- Build one target. -/
-def Runner.target (r : Runner) : Target → IO Bool
-  | .check _ file => do
-    match ← r.check file with
-    | .ok _ => pure true
-    | .error e => IO.eprint e; pure false
-  | .lib _ root => do
-    let mut ok := true
-    for (m, _) in ← Module.listRoot (r.ctx.dir / root) do
-      match ← r.check (System.FilePath.mk root / Module.relPath m).toString with
-      | .ok _ => pure ()
-      | .error e => IO.eprint e; ok := false
-    pure ok
-  | .exe name file => do
-    match ← r.exe name file with
-    | .ok _ => pure true
-    | .error e => IO.eprintln e; pure false
-  -- tests run with `grail test`
-  | .tests _ _ => pure true
-  -- `Grail/Selfhost.lean`
-  | .selfhost _ _ => do IO.eprintln "selfhost targets are built by Runner.buildTarget"; pure false
 
 end Grail
