@@ -1,0 +1,9 @@
+import FeralCore
+import Feral
+-- REJECTED (Rust: "lifetime may not live long enough": a `&'a mut` returned as a
+-- `&'b mut` without `'a : 'b`).
+-- expect: lifetime may not live long enough at 8
+feral
+  fn pick {'a 'b} (c : Bool) (x : &'a mut U64) (y : &'b mut U64) : &'b mut U64 :=
+    if c then x else y
+end

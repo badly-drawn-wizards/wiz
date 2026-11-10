@@ -1,9 +1,14 @@
-# Feral: surface sketch and lowering rules (hand-lowering, before the front end exists)
+# Feral: the surface language and its lowering rules
 
 Plan: `/workspace/wiz-notes/rust-dsl-plan.md`, `borrows-as-optics.md`, `uniqueness.md`.
 Decisions RD1–RD16 are the user's (roadmap memory). This file pins down what the front end
-(a Wiz command macro, RD4) must emit; `lowered/NN_*.wiz` were written by following these
-rules literally, and they check (`sh drafts/feral/check.sh`).
+emits. The front end exists: `lib/Feral.wiz`, a command macro written in Wiz (RD4;
+docs/stages/22-numbers.md, 22j), whose comments cite the rule numbers below.
+`lowered/NN_*.wiz` were written by hand following these rules before it existed; the test
+group `feral` checks that each `surface/NN_*.wiz` lowers to something that checks and
+evaluates like its hand-lowered counterpart (they are not textually equal; `#lower feral …
+end` shows what the front end emits). Where writing the front end showed a rule to be
+ambiguous or wrong, the rule was changed here and is marked **(changed, 22j)**.
 
 Files:
 
@@ -12,13 +17,22 @@ Files:
 | `lib/Optic.wiz` | `Result`/`Error` (RD7), `Store`, `Lens`, `PLens`, `Affine`, `zoom`, `TraverseMut`, laws, proofs | yes, tested (`lake test -- optic`) |
 | `lib/Region.wiz` | regions, `Outlives`, the handles `Shr`/`Uniq`/`Mut`/`MutOpt`/`Lent` (structures: the region is part of the type) and the borrow scopes | yes, tested (`lake test -- regions`) |
 | `drafts/feral/lib/FeralCore.wiz` | `Flow`, Nat-backed `U64` and List-backed `Vec` stand-ins | yes (stand-ins for agent/natives-ints and agent/vec-lib) |
-| `drafts/feral/surface/NN_*.wiz` | the programs in the DSL's surface syntax | no (wishful) |
+| `lib/Feral.wiz` | the front end: grammar, a checker whose types carry regions, the lowering | yes, tested (`lake test -- '=feral'`) |
+| `drafts/feral/surface/NN_*.wiz` | the programs in Feral, with the `#eval`s of their hand-lowered counterparts | yes (`feral`) |
 | `drafts/feral/lowered/NN_*.wiz` | the same programs, hand-lowered | yes, with `#eval`s |
-| `drafts/feral/rejected/*.wiz` | lowerings of programs Rust rejects (E0499, E0502, E0515 ×2, E0597 ×2, missing bounds for `&` and `&mut`, a bound pointing the wrong way, a lengthened borrow) | each must fail with a type mismatch (`check.sh`) |
+| `drafts/feral/rejected/surface/*.wiz` | the rejected programs in Feral, each with the error class and line it must be reported at (`-- expect:`) | rejected by the front end, and by the kernel on their `#unchecked` lowering (`feral`) |
+| `drafts/feral/rejected/*.wiz` | hand-written lowerings of programs Rust rejects (E0499, E0502, E0515 ×2, E0597 ×2, missing bounds for `&` and `&mut`, a bound pointing the wrong way, a lengthened borrow) | each must fail with a type mismatch (`check.sh`) |
 | `drafts/feral/linear/*.wiz` | the same scopes with handles at quantity 1 | no (wishful: linear-case) |
 | `drafts/feral/Optic.wiz` | the part of the optics library that doesn't check yet | no (wishful) |
 
-## 1. The surface, sketched (RD5: closer to Wiz than to Rust; Rust's semantics)
+## 1. The surface (RD5: closer to Wiz than to Rust; Rust's semantics)
+
+What `lib/Feral.wiz` parses and lowers today is the fragment of §1a. The sketch below is
+the wider design; in it, `struct`/`enum`/`fn`, `let`/`let mut`, borrows, `match`, `if`,
+`if let`, `while`, `while let`, `for`, `return`, `?` and the library calls of the table
+are real, while `requires`/`ensures`/`invariant`/`decreases`, `loop`, `break`/`continue`,
+`impl`/`trait`, field and index assignment, closures and tuples of more than two
+components are not parsed yet (spec clauses are comments in `surface/`).
 
 ```
 import Feral
@@ -63,6 +77,32 @@ Why Wiz-like: Feral is a teaching device for Rust's *semantics* (moves, borrows,
 in-place mutation), read next to its lowering; sharing Wiz's binders, `match` and
 constructor syntax keeps the two side by side readable (RD1, RD5).
 
+### 1a. The implemented fragment (22j)
+
+```
+import FeralCore                  -- the runtime stand-ins (drafts/feral/lib), until natives-ints and vec-lib replace them
+import Feral
+feral                             -- `#lower feral … end` also shows the generated Wiz;
+  items                           -- `#unchecked feral … end` lowers without the front end's borrow verdict (tests)
+end
+```
+* items: `fn f {'a 'b} {'a : 'b} {T : Type} (x : τ) … : τ := e`, `struct S where f : τ …`,
+  `enum E where | c (x : τ) …`;
+* types: names, `Vec τ`, `Option τ`, `Result τ ε`, `Box τ`, `τ × τ`, `&'a τ`, `&'a mut τ`
+  (the region may be elided: a fresh one per parameter; in a result, the first
+  reference parameter's; in a local annotation, inferred), `USize` = `U64`;
+* expressions: variables, numerals (at `U64`), `true`/`false`, `()`, pairs, blocks
+  `{ s; …; e }`, calls `f a b` (saturated), methods `x.m a` and `(e).m a` of the library
+  table (`push`, `len`, `get_mut`, `checked_add`, `ok_or`), `mem.swap`/`take`/`replace`,
+  `Vec.new`, constructors `.c a b` and `E.c a b`, a struct without fields by its name,
+  `&e`, `&mut e`, `*e`, `v[i]`, `x.f`, `e ?`, `return e`, `+ - * / <` on `U64`,
+  `p := e`, `p += e` (places: a variable, `*r`), `if c then a else b`,
+  `if let pat := e then a else b`, `match e with | pat => e …`, `while c do e`,
+  `while let pat := e do e`, `for i in a..b do e`;
+* patterns: `x`, `_`, `.c x _ …`;
+* keywords `if then else while for in return mut fn struct enum` are reserved in a file
+  that imports `Feral` (wishful: syntax-reserved-keywords).
+
 ## 2. Lowering rules
 
 Notation: `⟦e⟧` the lowering; `R A` is `Result A` (lib/Optic.wiz).
@@ -73,7 +113,9 @@ so quantity 0, RD12), then outlives bounds `'a : 'b` as erased proof arguments
 `(0 h : Outlives ρa ρb)` (L22), then type parameters, then instance arguments, then values.
 `struct S where f : T` ↦ `structure S where f : ⟦T⟧` (fields at ω, RD2).
 `enum E where | c (x : T)` ↦ `inductive E where | c (x : ⟦T⟧)`. Names are unchanged
-(no `Rs.` namespace yet: Wiz has no namespaces). (01, 04, 05, 07)
+(no `Rs.` namespace yet: Wiz has no namespaces, so a Feral type can't be called `List`:
+04 and 11 say `LList`). A recursive `fn` is a `partial def` (the recursive call is usually
+inside a scope's lambda: reborrow-recursion). (01, 04, 05, 07)
 
 **L2. Results and panics (RD7).** Every lowered function returns `R _`, even when it
 can't panic (a later optimisation may drop it, R7c). Every panic — overflow,
@@ -100,11 +142,21 @@ be one of several `&mut` arguments (`if c then x else y`) moves all of them into
 result: `Mut.ofUniq x : Mut ρ A (Uniq ρ A)` (the whole argument, its backward function
 giving the handle back), `Mut.mapBack m f` to give the other handles back too, so the
 result is `R (Mut ρb A (Uniq ρa A × Uniq ρb A))`, and `Mut.finish m` at the borrow's last
-use gives the handles back (12). An argument of a longer region is used at the
+use gives the handles back (12). **(changed, 22j)** The lenders are decided from the
+signature alone: the `&mut` parameters of the result's region `'r`, and those of a region
+with a bound `'x : 'r`. One lender `&'r mut S` gives `Mut ρ A S` (`Mut.release`), several
+give the tuple of handles (`Mut.finish`); returning the single lender itself is
+`Mut.whole x`. The other `&mut` parameters are handed back next to the borrow:
+`R (Mut … × Uniq …)`. So `pick` *without* its bound has the one lender `y`, and
+returning `x` is a missing-evidence error (rejected/surface/lifetime_bound_missing_mut). An argument of a longer region is used at the
 result's through `Mut.weaken h` (L22). `Option (&'a mut A)`
 returns `R (MutOpt ρ A S)`: `.some m` (a `Mut`) or `.none r` (the lender) (L12). (03, 08)
 
-**L5. Sequencing.** A call or primitive that may fail is a direct `match`:
+**L5. Sequencing.** **(changed, 22j: layout)** The front end parenthesises every `match`
+it emits and writes `Result.ok`/`Flow.brk` qualified (a `.c` inside a tuple gets no
+expected type); a join's scrutinee carries its type, `((…) : Result T)`, and a scope its
+type arguments, `@Uniq.borrow S B σ s (fun …)`, so that a region escaping through `B` is
+an error at `B`. A call or primitive that may fail is a direct `match`:
 `match ⟦e⟧ with | .ok x => ⟦rest⟧ | .err e => .err e` — never `Monad.bind`, never a
 closure around an owner (plan §5.1 req. 2). Pure steps are `let`. Each nested match
 is laid out with its alternatives on their own lines; a non-final nested match is
@@ -118,19 +170,30 @@ let-tuple-patterns), never by projections (`r.2`): a tuple that carries a borrow
 resource, and projections will be allowed only on unrestricted pairs (the linear-pair
 decision of 2026-11-10). (all)
 
-**L7. Joins.** An `if`/`match` whose branches assign variables that are live afterwards
-returns those variables from each branch (as a tuple) and the continuation rebinds them.
-When the continuation is short, it is duplicated into the branches instead (05).
+**L7. Joins.** **(changed, 22j: "when the continuation is short" was not a rule.)** An
+`if`/`match` in *tail position* (of a function, a loop body, or a joined branch) is
+lowered into its branches: each ends with the function's result, the loop's recursive
+call, or the join's tuple. Anywhere else it is a *join*: each branch returns
+`(value, x₁, …, xₙ)` for the outer variables `xᵢ` it mentions that can change (mutable
+locals and handles), and the continuation rebinds them. A join whose branches contain a
+`return` or a `?` returns `Flow (value × xs) (Ret × xs)`: `.ret` carries the function's
+value out, and the continuation passes it on to the enclosing join, scope or loop until
+the function's own result (L3) is built. The same tuple-or-`Flow` protocol is used by
+scopes (L20) and loops (L8).
 
 **L8. Loops (RD8).**
 * `for i in a..b do body` ↦ a function `f.loopN` structural on the number of iterations
   left, taking the counter and the live mutable variables, returning the variables.
   The increment can't overflow (`i < b`), so it is unchecked (02).
-* `while`/`while let`/`loop` ↦ `partial def f.loopN (params…) (live vars…) : R (Flow (vars) (Ret × &mut args))`,
-  tail recursive. Normal exit (`brk`) returns the loop's live variables; a `return e`
-  inside the loop ends every borrow and exits with `.ret (e, &mut args)`, which the
-  caller returns as is (05, 06, 09). Loop invariants (parameters not assigned in the
-  loop) are passed unchanged. `break` = `brk`; `continue` = the recursive call.
+* `while`/`while let` ↦ `partial def f.loopN (params…) (vars…) : R (Unit × vars)`, tail
+  recursive; with a `return` or `?` in the body, `R (Flow (Unit × vars) (Ret × vars))`
+  **(changed, 22j: `.ret` carries the value and the same variables, not the function's
+  `&mut` arguments; the function's result is built where the function returns, after
+  every cursor has been released, L16)**. The parameters are the variables in scope that
+  the loop mentions: first those it cannot change, then `vars` (mutable locals, handles,
+  cursors). The loop function also takes, explicitly and erased, the innermost region
+  when it is a local one, and the outlives evidence in scope (L22). `break`/`continue`
+  are not implemented (05, 06, 09).
 * `decreases m` stays a comment until well-founded recursion exists (decreases-loops);
   then `partial` goes and `termination_by` comes in.
 
@@ -148,7 +211,12 @@ lens, and the front end emits its lawfulness (03: `get_mut.lawful`, from library
 `Vec.indexMut i : PLens (Vec A) A` (in place natively via takeAt/fillAt); for reading it
 is `Vec.index v i : R A` (shared).
 
-**L11. Borrows of statically known places are aliases.** `let h := &mut s.hits` where
+**L11. Borrows of statically known places are aliases.** **(changed, 22j)** The front end
+does this for `let h := &mut s.f` with `s` a `&mut` struct: a reborrow scope of `s` whose
+body first projects *every* field (`let s_f := r.val.f; …`, not a tuple pattern), `h` is a
+name for the field's local, a second `let m := &mut s.g` inside the scope names another
+(the same field twice is E0499), and the scope's end rebuilds `Uniq.set r (S.mk …)`.
+Elsewhere (`&mut r.f` as a value) it is `Mut.ofLens r S.fL`. `let h := &mut s.hits` where
 the place is known at compile time does not create a value: inside a reborrow scope of
 `s` (so `s` is a `Lent` token meanwhile, L20), the struct is unpacked
 **once, before any new field value is computed** (tuple pattern `(h, m, _)`, plan §5.1
@@ -181,9 +249,17 @@ Lowered: in a reborrow scope of `t`, match `r.val`, borrow the field variables
 (`Uniq.borrow ρ' left …`) to recurse on them, rebuild the constructor in each branch
 with `Uniq.set r` and hand the whole back (05, `insert`; `partial` until structural
 recursion sees through the scope's lambda, wishful: reborrow-recursion). A `&T` scrutinee binds fields by
-value (shared). (05, 11: `incr_all`)
+value (shared). **(changed, 22j)** The field variables are place aliases (as L11): `*key`
+is `key`, `*head := e` rebinds `head`, passing `left` where a `&mut` is expected borrows
+the local. An alternative that binds no field (`.leaf`, `_`) has the borrow itself: `t`
+is rebound to the scope's handle, so `*t := e` works there. Every alternative — and every
+`return`/`?` inside one — rebuilds or hands back before the scope ends. (05, 11: `incr_all`)
 
-**L16. A borrow that moves (cursor loops, R6c).** `cur := left` inside a loop, where
+**L16. A borrow that moves (cursor loops, R6c).** **(changed, 22j)** `let cur := r` for a
+`&mut` handle `r` makes the cursor (`Mut.whole r`; `r` is unusable until the cursor's
+release). `match`/`while let` on a cursor matches `Mut.get cur`; assigning one of the
+bound fields to the cursor is the `Mut.comp` step. The release (`let r := Mut.release
+cur`) is emitted where the function returns (also on `return`/`?`), not after the loop. `cur := left` inside a loop, where
 `cur : &'a mut Tree`, composes the cursor's backward function with the child's:
 `cur := Mut.comp cur (fun _ => (left, fun l => Tree.node key l right))`; the cursor
 starts as `Mut.whole t` (region `ρ`: `t` moves into it), and when the loop ends,
@@ -191,7 +267,11 @@ starts as `Mut.whole t` (region `ρ`: `t` moves into it), and when the loop ends
 whose frames reuse the nodes, `plug` as the backward function) is what the front end
 should emit for performance (05, `insert_zip`), proven equal to the closure form later. (05, 11: `push_back`)
 
-**L17. Regions at call sites.** Region arguments are inferred from the handles' types
+**L17. Regions at call sites.** **(changed, 22j)** The reborrow scope is opened for a
+handle (or `&mut` of one) passed at a *lender* position of a callee that returns a borrow
+— except in the tail position of a function that itself returns a borrow, where the
+handle moves into the result (03 `get_mut`, 08 `first_mut`). `&x` of a `&mut` handle is
+`Uniq.share`. Region arguments are inferred from the handles' types
 (phantom parameters, docs/stages/22-numbers.md, 22e): `swap ra rb`, never `@swap ρ₁ ρ₂`. Outlives arguments
 are passed explicitly (the evidence a scope handed out, L22). A call that only hands
 `&mut` arguments back moves the handles in and rebinds them (no scope: the handed-back
@@ -223,6 +303,16 @@ Uniq.share r (fun ρ' h r => …)                      -- `&*r`
 Uniq.zoom l r (fun ρ' h r x => … .ok (b, x))        -- `&mut r.p`, p's lens l
 Region.scope σ (fun ρ h => …)                       -- a block with its own region
 ```
+**(changed, 22j: extents, and what a scope hands out.)** Which statements a scope
+covers: the statement that borrows, and then every following statement of the block for
+as long as a later statement mentions a variable tied to the scope's region (its type
+mentions the region, or it is a place alias of it) — NLL for straight-line code. The
+borrows of one statement nest in argument order. What leaves a scope is the tuple of L7:
+the value, the outer variables the covered statements mention that can change, and the
+variables declared inside that are used afterwards; with a `return`/`?` inside, a
+`Flow`. `Uniq.borrow`/`Shr.borrow` hand out `Outlives σ ρ`; `Uniq.reborrow`, `Uniq.share`
+and `Uniq.zoom` hand out `Outlives ρ ρ'` for the *handle's* region `ρ` (the rule used to
+say `σ` for all of them; lib/Region.wiz never did).
 `σ` is the innermost enclosing region: the enclosing scope's, else the function's
 first region parameter, else `Region.static`. The lambda rebinds the lender's own name
 (`s`, `r`): to a `Lent ρ S` token for a mutable borrow, to the `Shr ρ S` for a shared
@@ -230,7 +320,22 @@ one. Variables that live on after the scope leave it in its result `B`; `B` is
 chosen outside, where `ρ` doesn't exist, so a handle of region `ρ` can't leave (as
 `runST`). Each scope's body hands its borrow back last.
 
-**L21. What is rejected, and how** (drafts/feral/rejected/, each a type mismatch):
+**L21. What is rejected, and how** (drafts/feral/rejected/, each a type mismatch).
+**(22j)** The front end's checker has the same types (regions included), so it meets each
+mismatch at the Feral node and names it; `#unchecked feral` shows the kernel rejecting the
+lowering of the same program, and the `feral` tests require both verdicts:
+
+| in the front end | reported |
+|---|---|
+| `&mut x`, a `&mut self` method or a `&mut` argument on a lender that is a `Lent` token | E0499 |
+| any other use of a `Lent` lender; `&mut x` while `x` is its own shared borrow | E0502 |
+| assignment to a `Lent` lender | E0506 |
+| the value of the function's body tied to a scope's region | E0515 |
+| anything else tied to a scope's region leaving the scope (a block's value, a variable used later) | E0597 |
+| evidence `Outlives ρ ρ'` missing, `ρ` a scope's region | E0597 |
+| the same between parameters' regions | "lifetime may not live long enough" |
+| one local under two `&mut` in one call | E0499 (front end only: see below) |
+
 * returning a borrow of a local (E0515): the scope's handle has the fresh region, the
   function returns a handle of a parameter's region;
 * a borrow used after its lender's scope (E0597): the handle would have to leave the
@@ -252,8 +357,9 @@ values, so the body of a scope can duplicate one (`swap r r`, E0499), and the le
 outer name is only *shadowed* by the `Lent` token: a body that names the token
 differently can read the lender while it is borrowed (E0502); and a handle packed with
 its region (`(0 r : Region) × Uniq r A`) is a closed type, so it can leave its scope.
-The front end must emit
-the rebinding of L20 and never use a handle twice. Making handles linear needs a `match`
+The front end emits the rebinding of L20 and never uses a handle twice in what it accepts;
+`swap (&mut a) (&mut a)` is the one Feral program whose `#unchecked` lowering the kernel
+accepts (a KNOWN GAP case of the `feral` group). Making handles linear needs a `match`
 whose alternatives use captured variables once and a `Result` with a linear payload
 (R9a, a kernel change).
 
@@ -264,7 +370,17 @@ region `ρa` is used at `ρb` through `Shr.weaken h x` wherever it flows to a pl
 type `Shr ρb _` (a return value, a field, a slot behind `&mut`). A returned mutable
 borrow (`Mut ρa A S`) is used at `ρb` through `Mut.weaken h m` (`&'a mut T` is
 covariant in `'a`) (12). A `&mut` *argument* handed back keeps its region: a shorter
-borrow of it is a reborrow scope (L17). (10, 12)
+borrow of it is a reborrow scope (L17). (10, 12) **(22j)** The front end finds evidence by
+search (`refl`, `static`, the evidence in scope, `trans` chains); a region that is still
+to be inferred is unified with the other side. Because a `&mut` argument keeps its
+region, Feral is stricter than rustc here: rejected/surface/outlives_wrong_way is accepted
+by rustc (which reborrows the outer `&mut` at a shorter lifetime) and rejected by Feral.
+
+**L23. Diagnostics and modes (22j).** Errors are reported at the Feral node (a command
+macro names a node of its input by path; docs/stages/22-numbers.md, 22j), the first
+borrow error of each function. If any item has an error nothing is emitted. A lowered
+item that the kernel rejects is reported at the item with the generated text: for an
+accepted program that is a bug of the front end (and a test failure).
 
 ## 3. What the lowering guarantees about in-place execution (informal)
 

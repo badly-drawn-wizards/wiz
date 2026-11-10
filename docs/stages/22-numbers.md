@@ -320,3 +320,78 @@ constructor, so the `.ok (q.2, q.1)` re-wrapping around each scope is still rebu
 the same cells, by reuse); a recursive call through a scope's lambda is still not seen
 as structural (`05_bst` `insert` stays `partial`; wishful: reborrow-recursion has a
 design). The self-hosted toolchain doesn't have phantom tails at all yet.
+
+## 22j: Feral, the surface language ✅
+
+```
+import FeralCore
+import Feral
+feral
+  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {
+    let t := *x;
+    *x := *y;
+    *y := t
+  }
+  fn main () : U64 × U64 := {
+    let mut a : U64 := 1;
+    let mut b : U64 := 2;
+    swap (&mut a) (&mut b);
+    (a, b)
+  }
+end
+#eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) main     -- .ok (2, 1)
+```
+
+**Feral** is the Rust-like language of the plan (it was "the Rust DSL"; its syntax is
+Wiz's, its semantics Rust's). Until now it was a design, with programs lowered by hand
+(22g). `lib/Feral.wiz` makes the surface real for the fragment the lowering rules cover:
+functions with lifetime parameters and `'a : 'b` bounds, `let`/`let mut`, `&`/`&mut`
+borrows and reborrows, structs and enums, `match`/`if let`, calls and library methods,
+loops, `?`, `U64`, and functions that return borrows.
+
+* **A command macro written in Wiz.** `feral … end` is ordinary `syntax` (categories
+  `feral_item`, `feral_expr`, `feral_ty`, …) with a `CommandMacro` (7c) that runs in the
+  interpreter: it checks the items and lowers each to Wiz **source text**, which is parsed
+  and elaborated like anything else. `#lower feral … end` also shows that text: the
+  function above becomes
+
+  ```
+  def swap {ρa ρb : Region} (x : (Uniq ρa U64)) (y : (Uniq ρb U64)) : Result (Unit × ((Uniq ρa U64) × (Uniq ρb U64))) :=
+    let t := x.val;
+    let x := (Uniq.set x y.val);
+    let y := (Uniq.set y t);
+    Result.ok ((), (x, y))
+  ```
+  and `main` is two nested `Uniq.borrow` scopes around the call. The rules are
+  `drafts/feral/LOWERING.md` (L1–L23), cited in the code.
+* **The checker's types carry regions.** The lowering is type-directed (`*x` is `x.val`
+  on an argument borrow and `Mut.get` on a returned one), so the front end infers types,
+  with regions as part of them, exactly as lib/Region.wiz has them: a borrow opens a
+  scope with a fresh region, the lender becomes a `Lent` token inside, and what leaves
+  the scope may not mention the region. A scope lasts from the borrow to the last
+  statement that mentions something tied to its region.
+* **Borrow errors, twice.** The front end reports E0499, E0502, E0506, E0515, E0597 and
+  "lifetime may not live long enough" at the Feral expression. They are also type errors
+  of the lowered program: `#unchecked feral … end` lowers without the front end's
+  verdict, and the kernel rejects the result. The tests run every rejected program both
+  ways, so the two can't drift apart.
+* **What Feral is and isn't.** A Feral program *is* the Wiz program `#lower` shows;
+  soundness never depends on the front end. But aliasing — one live `&mut`, no use of a
+  lender while it is lent — is enforced by the **shape** of the lowering (scopes that
+  rebind the lender's name, handles never emitted twice), not by linearity: handles are
+  ω values (22g, known gaps). One Feral program shows it: `swap (&mut a) (&mut a)` is
+  E0499 in the front end, yet its `#unchecked` lowering checks. The surface language
+  never names handles, scopes or tokens, so when handles become linear only the text
+  emitted for scopes changes.
+* **Located output for command macros.** Runtime `Syntax` has no positions. A command
+  macro now names a node of its input by **path** (child indices), and its output may
+  contain `Syntax.errorAt path msg`, `Syntax.infoAt path msg` and
+  `Syntax.sourceAt path text` (`Elab/ProcMacro.lean`, `pathInfo`): diagnostics at that
+  node, and Wiz source parsed as commands and positioned there. Generated source that
+  fails to check is reported at the node with its text.
+
+Limitations: the fragment (LOWERING.md §1a); spec clauses are not parsed; `U64` and `Vec`
+are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; keywords such as `if` and `mut`
+are reserved in a file that imports `Feral`; errors inside generated code point at the
+whole item; one borrow error per function; stricter than rustc where a `&mut` would be
+implicitly reborrowed at a shorter lifetime.

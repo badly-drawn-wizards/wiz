@@ -5,6 +5,39 @@ should check, and that the rejected programs fail, with `sh drafts/feral/check.s
 the worktree root, after `lake build`); the libraries' tests are `lake test -- optic`
 and `lake test -- regions`.
 
+## The front end (22j, branch agent/feral-surface)
+
+`lib/Feral.wiz` (about 2400 lines of Wiz) implements `feral … end` for the fragment of
+LOWERING.md §1a. Test group `feral`: the twelve `surface/` programs lower, check and
+evaluate like `lowered/`; the nine `rejected/surface/` programs are rejected by the front
+end (error class and line) and by the kernel on their `#unchecked` lowering.
+
+What Feral is and isn't: Feral is Rust's ownership discipline for a small first-order
+language, explained by translation — a Feral program *is* the Wiz program `#lower` shows,
+and the borrow errors are that program's type errors, reported early and in Rust's terms
+by a front-end checker with the same region-carrying types. It is not a borrow checker
+in the kernel: aliasing (one live `&mut`, no use of a lender while it is lent) is enforced
+by the *shape* of the lowering — every borrow is a scope that rebinds the lender's name to
+a `Lent` token, and the front end never emits a handle twice — not by linearity. Handles
+are ordinary ω values, so hand-written Wiz against lib/Region.wiz can duplicate one (the
+KNOWN GAP cases of `regions` and `feral`). The surface never mentions handles, scopes,
+tokens or handed-back tuples, and the generated code already destructures (never
+projects) tuples that carry a handle and uses each handle once; when handles become
+linear (/workspace/wiz-notes/linear-case-design.md, stage 2; D8: error alternatives must
+hand the handle back) what changes is the text emitted for scopes and for `match` on
+`Result` (L5, L20) and the types of lib/Region.wiz's scopes, not the grammar or the
+checker's rules.
+
+Not in the fragment (each is an error "not supported yet", never a silent miscompile):
+spec clauses, `loop`/`break`/`continue`, `impl`/`trait`, closures, struct literals with
+fields, assignment to `x.f`/`v[i]`, `while let` directly through a `&mut` (use a cursor),
+more than two lenders, `From.from` in `?`, integer types other than `U64`.
+Differences from rustc: a `&mut` argument is never implicitly reborrowed at a shorter
+region (rejected/surface/outlives_wrong_way; rustc accepts it); a borrow's extent is
+NLL only for straight-line code (a borrow taken in a branch or a loop body ends with that
+statement or block); a block-local `let` that shadows an outer variable stays visible
+after the block when the block is in tail position.
+
 ## Checks today
 
 | file | contents | evidence |
@@ -31,15 +64,15 @@ and `lake test -- regions`.
 
 | file / feature | missing | wishful entry |
 |---|---|---|
-| every `drafts/feral/surface/*.wiz` | the `feral … end` command macro and grammar (the front end itself), with positions, coded diagnostics, environment queries | `command-proc-macros` (+ existing `quotation-splices`) |
+| spec clauses in `drafts/feral/surface/*.wiz` (now comments) | `requires`/`ensures`/`invariant`/`decreases` in the grammar and their lowering | `spec-clauses`, `final-specs`, `decreases-loops` |
+| positions inside macro-generated code, state across `feral` blocks, calling Wiz functions from Feral | positions in runtime `Syntax`, a macro environment, `getType` used for interop | `command-proc-macros` (located output by path is done, 22j) |
 | `let (u, ra, rb) := r` (L6) | `let` tuple patterns of more than two components (nested binary lets today) | `let-tuple-patterns` |
-| `{'a}`, `{'a : 'b}`, `&'a mut T` in the surface | region tokens (local regions and inference are done: scopes and phantom parameters) | `region-indices` |
 | E0499/E0502 and no escape through `(0 r : Region) × Uniq r A`, enforced by the type checker (today: by the lowering's shape, `Lent` rebinding; handles are ω; drafts/feral/linear/) | a `match` whose alternatives use a captured linear variable once, linear constructor fields (R9a) | `linear-case` |
 | structural recursion through a field reborrow (05 `insert`, 11 `incr_all` are `partial`) | the termination checker seeing a recursive call on a scope's handle of a pattern variable | `reborrow-recursion` |
 | `requires`/`ensures`/`invariant` | spec clauses → quantity-0 spec defs | `spec-clauses` |
 | `final(x)`, `old(x)` | desugaring over the backward function | `final-specs` |
 | `decreases` on loops | well-founded recursion; loops stay `partial def` (unverifiable) | `decreases-loops` |
-| `let i : U64 := 0` | numerals at machine-int types | `machine-int-literals` |
+| numerals at integer types other than `U64` (the front end writes `U64.lit n`) | numerals at machine-int types | `machine-int-literals` |
 | `∃`, `∧`, `¬`, `∈` in laws/specs (`drafts/feral/Optic.wiz` §1, surface 09) | Prop connectives | `prop-connectives` |
 | `Lens.pair_putPut` (`drafts/feral/Optic.wiz` §2; `pair_putGet` is in lib/Optic.wiz since `castRefl`) | the unifier comparing an equation with its computed form | `unify-computed-equations` |
 | native `Vec` with `takeAt`/`fillAt` (FeralCore uses a List model) | `implemented_by` | `implemented-by` |

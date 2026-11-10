@@ -519,20 +519,19 @@ def Tactic.trace : Tactic := fun stx => match Syntax.getArg (Syntax.getArg stx 1
   | _ => TacticM.pure ()
 attribute [tactic tactic.trace] Tactic.trace
 
--- Decimal numerals (`Nat.toString` is an extern, so it only runs compiled; this one runs
--- in macros and `#eval` too).
-partial def Nat.powersFrom (n p : Nat) (acc : List Nat) : List Nat := match Nat.lt n p with
+-- A decimal numeral as text, for macros (`Nat.toString` is an extern: it only runs compiled).
+partial def Syntax.decPowers (n p : Nat) (acc : List Nat) : List Nat := match Nat.lt n p with
   | .true => acc
-  | .false => Nat.powersFrom n (p * 10) (.cons p acc)
-partial def Nat.digitAt (n p d : Nat) : Nat := match Nat.lt n p with
+  | .false => Syntax.decPowers n (p * 10) (.cons p acc)
+partial def Syntax.decDigit (n p d : Nat) : Nat := match Nat.lt n p with
   | .true => d
-  | .false => Nat.digitAt (n - p) p (d + 1)
-def Nat.digitsFrom : List Nat → Nat → List Char
+  | .false => Syntax.decDigit (n - p) p (d + 1)
+def Syntax.decDigits : List Nat → Nat → List Char
   | .nil, _ => .nil
-  | .cons p ps, n => .cons (Char.mk (Nat.digitAt n p 0 + 48)) (Nat.digitsFrom ps (n - Nat.digitAt n p 0 * p))
-def Nat.repr (n : Nat) : String := match Nat.powersFrom n 1 .nil with
+  | .cons p ps, n => .cons (Char.mk (Syntax.decDigit n p 0 + 48)) (Syntax.decDigits ps (n - Syntax.decDigit n p 0 * p))
+def Syntax.decimal (n : Nat) : String := match Syntax.decPowers n 1 .nil with
   | .nil => "0"
-  | .cons p ps => String.mk (Nat.digitsFrom (.cons p ps) n)
+  | .cons p ps => String.mk (Syntax.decDigits (.cons p ps) n)
 
 -- ## Located output of command macros
 -- Runtime `Syntax` has no positions. A command macro names a node of its input by its
@@ -542,7 +541,7 @@ def Nat.repr (n : Nat) : String := match Nat.powersFrom n 1 .nil with
 -- source text, parsed as commands and positioned at that node.
 def Syntax.pathAtoms : List Nat → SyntaxF .false
   | .nil => .nil
-  | .cons i is => .cons (.atom (Nat.repr i)) (Syntax.pathAtoms is)
+  | .cons i is => .cons (.atom (Syntax.decimal i)) (Syntax.pathAtoms is)
 def Syntax.pathNode (path : List Nat) : Syntax := .node "null" (Syntax.pathAtoms path)
 def Syntax.errorAt (path : List Nat) (msg : String) : Syntax :=
   Syntax.mkNode "macro.error" (.cons (Syntax.pathNode path) (.cons (.atom msg) .nil))
