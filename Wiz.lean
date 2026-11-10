@@ -45,4 +45,5 @@ import Wiz.Actions
 import Wiz.LSP
 import Wiz.Toolchain
 import Wiz.Module
+import Wiz.Selfhost
 import Wiz.Cache

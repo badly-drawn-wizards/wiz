@@ -219,6 +219,18 @@ def abelCoquand (omega : String := "Omega") : String :=
   "def a0 : B2 := 'a\n" ++
   s!"def loopy : (cast ({omega} (P2 = P2) (refl P2)) ab : P2).1 = a0 := refl a0\n"
 
+/-- The same program with the box inside a second box (`Box2 P` has a field of type
+`Box P`): the outer box's field is not inert (it has a `Prop` field inside), so the cast
+at `Box2` stays structural, and the program checks without regularity. -/
+def abelCoquandNested : String :=
+  ((abelCoquand).replace
+    "def omega : Top := fun A a => unbox (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk delta))\n"
+    ("def Box2D (P : Prop) : Desc Unit := Desc.arg 1 ((_ : Enum [u]) × Box P) (fun _ => Desc.ret ())\n" ++
+     "def Box2 (P : Prop) : Type := μ (Box2D P) ()\n" ++
+     "def mk2 {P : Prop} (b : Box P) : Box2 P := con (('u, b), (), ())\n" ++
+     "def unbox2 {P : Prop} (b : Box2 P) : Box P := ind (fun _ _ => Box P) (fun i xs ih => xs.1.2) b\n" ++
+     "def omega : Top := fun A a => unbox (unbox2 (cast (apTy Prop Box2 T2 A (tautext T2 A id2 a)) (mk2 (mk delta))))\n"))
+
 /-- Abel–Coquand's own step `cast T2 T2 e δ ▷ δ` (a cast between propositions): Wiz
 applies the equivalence `e` instead, here `fun _ => id2`, so the step gives `id2`. (Their
 term itself can't be written: `cast` to a variable proposition `A` needs a proof of a
@@ -274,15 +286,31 @@ def ottGroup : Group where
         ok "def peq {A B : Type} (p : A × B) : p = (p.1, p.2) := refl p" },
     { name := "different type formers are unequal", run := fun _ =>
         ok "def noconf (e : Unit = Empty) : False := e" },
-    { name := "cast along a reflexive equation is the identity (regularity)", run := fun _ =>
-        ok "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl" },
+    -- D1: no regularity by default: a cast at a variable type stays a cast
+    { name := "cast along a variable `A = A` is not the identity (no regularity; it is with --regularity full)", run := fun _ => do
+        let reg := "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl"
+        fails reg "type mismatch"
+        okWith .full reg },
     { name := "J from transp and cast", run := fun _ =>
         ok substDef },
-    { name := "J computes on refl", run := fun _ =>
-        ok (substDef ++ "def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl") },
-    { name := "cast computes on function types (and vanishes between equal types)", run := fun _ =>
+    { name := "J computes on refl at a data type, not at a variable family (no regularity)", run := fun _ => do
+        let substRefl := substDef ++ "def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl"
+        fails substRefl "type mismatch"
+        okWith .full substRefl
+        ok (substDef ++ "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def substN {A : Type} (a : A) : subst (fun _ => N) (refl a) (N.s N.z) = N.s N.z := rfl") },
+    { name := "cast computes on function types (and stays stuck at a variable type)", run := fun _ =>
         ok "#reduce fun (A : Type) (e : (A → A) = (A → A)) (f : A → A) => (cast e f : A → A)"
-          ["fun A e f x => f x"] },
+          ["fun A e f x => cast (e.2 x) (f (cast e.1 x))"] },
+    { name := "cast computes on data, constructor by constructor (D1)", run := fun _ =>
+        ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
+          "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
+          "#reduce fun (e : N = N) => (cast e (N.s N.z) : N)\n" ++
+          "#reduce N.s N.z = N.s N.z\n" ++
+          "#reduce fun (n m : N) => (V N n = V N m)\n" ++
+          "#reduce fun (e : V N (.s .z) = V N (.s .z)) => (cast e (V.cons N.z V.nil : V N (.s .z)) : V N (.s .z))")
+          ["fun e => .s .z", "(0 _ : True) × (0 _ : (0 _ : True) × True) × True", "fun n m => (0 e : n = m) × True",
+           "fun e => .cons .z .z .nil"] },
     { name := "type equality", run := fun _ =>
         ok "def t : Type = Type := refl Type" },
     { name := "propositions in a function type's domain compare by equivalence", run := fun _ =>
@@ -307,21 +335,37 @@ def ottGroup : Group where
         ok (tyOfDef ++ "inductive N where\n  | z\n  | s (n : N)\ndef h (x : N) : N := x\n" ++
           "#reduce TyOf h = (N → N)\n" ++
           "#reduce fun (e : TyOf h = (N → N)) (u : TyOf h) => (cast e u : N → N)")
-          ["(0 e : N = N) × ((0 x : N) → N = N)", "fun e u x => u x"] },
+          ["(0 e : True) × ((0 x : N) → True)", "fun e u x => u x"] },
     { name := "a constructor's type carries its sort", run := fun _ =>
         ok (tyOfDef ++ "inductive Box (A : Type) where\n  | mk (a : A)\n" ++
           "#reduce TyOf (@Box.mk Unit) = (Unit → Box Unit)")
-          ["(0 e : True) × ((0 x : Unit) → Box Unit = Box Unit)"] },
+          ["(0 e : True) × ((0 x : Unit) → True)"] },
     { name := "a match on several scrutinees whose types mention a variable", run := fun _ =>
         ok "def pick (A : Type) (x y : A) : A := match x, y with\n  | a, b => b" },
     { name := "equality of proofs is rejected", run := fun _ =>
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
         fails "def bad (A : Type) (a b : A) : a = b := rfl" "type mismatch" },
-    -- D1: these document today's behaviour (a known non-termination), not a wish
-    { name := "D1 (Abel–Coquand): checking a closed program does not terminate (regularity at a box type)", run := fun _ => do
-        ok (abelCoquand "omega")  -- the same program without the self-application checks
+    -- D1: regularity is off by default, and the program checks; with `--regularity full`
+    -- (or `nonprop`) checking it does not terminate
+    { name := "D1 (Abel–Coquand): the program checks (no regularity: the box's cast casts its proof field)", run := fun _ => do
+        ok (abelCoquand "omega")
+        ok (abelCoquand) },
+    { name := "D1 (Abel–Coquand): with regularity, checking the program does not terminate", run := fun _ =>
         checkDiverges (abelCoquand) "full" },
+    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks; loops with regularity)", run := fun _ => do
+        unless (abelCoquandNested.splitOn "unbox2").length > 2 do throw (IO.userError "variant not built")
+        ok abelCoquandNested
+        checkDiverges abelCoquandNested "full" },
+    { name := "regularity at inert types: an indexed recursor computes at a data motive (Vec.length)", run := fun _ =>
+        ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
+          "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
+          "def len {A : Type} {0 n : N} : V A n → N\n  | .nil => .z\n  | .cons _ xs => .s (len xs)\n" ++
+          "def lenCons {A : Type} {0 n : N} (x : A) (xs : V A n) : len (V.cons x xs) = N.s (len xs) := rfl\n" ++
+          "def castN (e : N = N) (n : N) : (cast e n : N) = n := rfl\n") },
+    { name := "no regularity at a type with a variable parameter", run := fun _ =>
+        fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
+          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "type mismatch" },
     { name := "D1: a cast between propositions applies the equivalence, not regularity", run := fun _ =>
         ok abelCoquandLiteral ["fun x => x"] },
     { name := "D1 (R1): regularity only at non-propositions doesn't help (the box is a type)", run := fun _ =>
@@ -1077,49 +1121,9 @@ partial def leanTokens (tokens : Array String) (input : String) : List String :=
     | .error e => (("error:" ++ e) :: acc).reverse
   go 0 []
 
-/-- A Wiz string literal. -/
-def wizLit (s : String) : String :=
-  "\"" ++ String.join (s.toList.map fun c => if c == '"' then "\\\"" else if c == '\\' then "\\\\" else if c == '\n' then "\\n" else c.toString) ++ "\""
-
-/-- A grammar descriptor as a Wiz `PD` (`selfhost/Parse.wiz`): sequences become binary. -/
-partial def wizPD : ParserDescr → String
-  | .atom t => s!"(PD.atom {wizLit t})"
-  | .nonReserved t => s!"(PD.nonReserved {wizLit t})"
-  | .ident => "PD.ident"
-  | .num => "PD.num"
-  | .str => "PD.str"
-  | .cat c p => s!"(PD.cat {wizLit c} {p})"
-  | .seq ps => ps.toList.foldr (fun p acc => if acc == "PD.empty" then wizPD p else s!"(PD.seq {wizPD p} {acc})") "PD.empty"
-  | .many p => s!"(PD.many {wizPD p})"
-  | .many1 p => s!"(PD.many1 {wizPD p})"
-  | .optional p => s!"(PD.optional {wizPD p})"
-  | .sepBy p sep t => s!"(PD.sepBy {wizPD p} {wizLit sep} {if t then ".true" else ".false"})"
-  | .sepBy1 p sep t => s!"(PD.sepBy1 {wizPD p} {wizLit sep} {if t then ".true" else ".false"})"
-  | .orelse p q => s!"(PD.orelse {wizPD p} {wizPD q})"
-  | .node k p => s!"(PD.node {wizLit k} {wizPD p})"
-  | .withPosition p => s!"(PD.withPosition {wizPD p})"
-  | .withoutPosition p => s!"(PD.withoutPosition {wizPD p})"
-  | .colGt => "PD.colGt"
-  | .colGe => "PD.colGe"
-  | .noWs => "PD.noWs"
-  | .checkPrec p => s!"(PD.checkPrec {p})"
-
-/-- A Wiz list literal. -/
-def wizList (xs : List String) : String := xs.foldr (fun x acc => s!"(.cons {x} {acc})") ".nil"
-
-/-- The parser tables as Wiz definitions: one per category, then `cats`. -/
-def wizTables (t : ParserTables) : String := Id.run do
-  let names := (t.cats.toList.map (·.1)).toArray.qsort (· < ·)
-  let mut out := ""
-  let mut i := 0
-  for n in names do
-    let cat := t.cats[n]!
-    let ls := cat.leading.toList.map fun lp => s!"(Leading.mk {wizLit lp.kind} {lp.prec} {lp.priority} {wizPD lp.p})"
-    let ts := cat.trailing.toList.map fun tp => s!"(Trailing.mk {wizLit tp.kind} {tp.prec} {tp.lhsPrec} {tp.priority} {wizPD tp.p})"
-    out := out ++ s!"def cat{i} : Cat := Cat.mk {wizLit n} {wizList ls} {wizList ts}\n"
-    i := i + 1
-  out := out ++ s!"def cats : List Cat := {wizList ((List.range names.size).map (s!"cat{·}"))}\n"
-  pure out
+-- the generators of Wiz source moved to `Wiz/Selfhost.lean` (grail builds the
+-- self-hosted toolchain too); the names stay here for the scripts that use them
+export Wiz.Selfhost (wizLit wizPD wizList wizTables)
 
 /-- What the Lean parser makes of `input`, printed like `parse` in `Parse.wiz`. -/
 def leanParse (t : ParserTables) (cat : Name) (input : String) : String :=
@@ -1887,12 +1891,8 @@ def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
 in its working directory. It is built once and kept (under `/tmp`, keyed by its source
 and this test binary), since every test that uses it would otherwise compile it again. -/
 def selfhostChecker : IO (Except String System.FilePath) := do
-  let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
-  let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
-  let t := Builtin.tables
-  let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
-    s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
-    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  printAll (checkFile cats tokens text)\n"
+  let src ← Selfhost.checkerFiles.mapM (fun (f : String) => IO.FS.readFile f)
+  let prog := Selfhost.checkerSource src
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "checker"
@@ -1918,14 +1918,8 @@ def selfhostChecker : IO (Except String System.FilePath) := do
 /-- The self-hosted compiler (stage 21): the frontend and `Backend.wiz`, printing the C
 program for `input.wiz` (the frontend's own output as comments). -/
 def selfhostCompiler : IO (Except String System.FilePath) := do
-  let src ← ["selfhost/Lex.wiz", "selfhost/Parse.wiz", "selfhost/Kernel.wiz", "selfhost/Frontend.wiz",
-    "selfhost/Backend.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
-  let body := "\n".intercalate (src.map fun f => "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import")))
-  let t := Builtin.tables
-  let prog := "import IO\nimport Std\n" ++ body ++ "\n" ++ wizTables t ++
-    s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
-    "def commentLines : List String → List String\n  | .nil => .nil\n  | .cons l rest => .cons (String.append \"/* \" (String.append l \" */\")) (commentLines rest)\n" ++
-    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with\n    | .mk out gs _ _ _ => do\n      printAll (commentLines (List.reverseOf out .nil));\n      printDocs (genProgramFor text gs)\n"
+  let src ← Selfhost.compilerFiles.mapM (fun (f : String) => IO.FS.readFile f)
+  let prog := Selfhost.compilerSource src
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "compiler"
@@ -2179,8 +2173,8 @@ def selfHostGroup : Group where
         selfhostCheckFile "import Prelude\nmutual\ninductive Tm where\n  | lit (n : Nat)\n  | app (f : Tm) (a : Tm)\n  | many (ts : Tms)\ninductive Tms where\n  | nil\n  | cons (t : Tm) (ts : Tms)\nend\ndef litOr : Tm → Tm\n  | .lit n => .lit (n + 1)\n  | t => t\n#reduce litOr (.lit 1)\n#reduce litOr (.many .nil)\nmutual\ninductive Val where\n  | vnat (n : Nat)\n  | vlazy (v : Unit → Val)\n  | vbox (b : Box)\ninductive Box where\n  | mk (v : Val)\nend\npartial def force : Val → Val\n  | .vlazy v => force (v ())\n  | v => v\ndef unwrap : Val → Val\n  | .vlazy v => v ()\n  | v => v\n#reduce unwrap (Val.vlazy (fun _ => Val.vnat 3))\ndef big (n : Nat) : Nat := Nat.max n 3\n#reduce Nat.beq (big 1) 3\n"
           "Tm : U0\nTms : U0\nlitOr : (x0 : Tm) → Tm\ncon((#0, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (refl(Enum2, #0), tt))))\ncon((#2, (con((#3, (refl(Enum2, #1), tt))), (refl(Enum2, #0), tt))))\nVal : U0\nBox : U0\nforce : (x0 : Val) → Val\nunwrap : (x0 : Val) → Val\ncon((#0, (con((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (refl(Enum2, #0), tt))))\nbig : (x0 : Nat) → Nat\ncon((#1, (tt, tt)))\n" },
     { name := "recursion through function fields, reordered parameters, big numerals, checked in Wiz", run := fun _ =>
-        selfhostCheckFile "import Prelude\nmutual\ninductive Val where\n  | vnat (n : Nat)\n  | vsuc (v : Val)\n  | vlazy (v : Unit → Val)\n  | vbox (b : Box)\ninductive Box where\n  | mk (v : Val)\nend\ndef whnf : Val → Val\n  | .vlazy v => whnf (v ())\n  | v => v\ndef depth : Val → Nat\n  | .vsuc v => depth v + 1\n  | .vlazy v => depth (v ())\n  | _ => 0\n#reduce whnf (Val.vlazy (fun _ => Val.vlazy (fun _ => Val.vnat 3)))\n#reduce Nat.beq (depth (Val.vsuc (Val.vlazy (fun _ => Val.vsuc (Val.vnat 0))))) 2\ndef apps : Nat → List Nat → Nat\n  | f, .nil => f\n  | f, .cons a rest => apps (f + a) rest\n#reduce Nat.beq (apps 1 (List.cons 2 (List.cons 3 .nil))) 6\ndef big : Nat := 100000\n#check big\n#reduce Nat.beq (Nat.sub 1000 999) 1\n"
-          "Val : U0\nBox : U0\nwhnf : (x0 : Val) → Val\ndepth : (x0 : Val) → Nat\ncon((#0, (con((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (refl(Enum2, #0), tt))))\ncon((#1, (tt, tt)))\napps : (x0 : Nat) → (x1 : (List Nat)) → Nat\ncon((#1, (tt, tt)))\nbig : Nat\nNat\ncon((#1, (tt, tt)))\n" },
+        selfhostCheckFile "import Prelude\nmutual\ninductive Val where\n  | vnat (n : Nat)\n  | vsuc (v : Val)\n  | vlazy (v : Unit → Val)\n  | vbox (b : Box)\ninductive Box where\n  | mk (v : Val)\nend\ndef whnf : Val → Val\n  | .vlazy v => whnf (v ())\n  | v => v\ndef depth : Val → Nat\n  | .vsuc v => depth v + 1\n  | .vlazy v => depth (v ())\n  | _ => 0\n#reduce Nat.beq (depth (whnf (Val.vlazy (fun _ => Val.vlazy (fun _ => Val.vnat 3))))) 0\n#reduce Nat.beq (depth (Val.vsuc (Val.vlazy (fun _ => Val.vsuc (Val.vnat 0))))) 2\ndef apps : Nat → List Nat → Nat\n  | f, .nil => f\n  | f, .cons a rest => apps (f + a) rest\n#reduce Nat.beq (apps 1 (List.cons 2 (List.cons 3 .nil))) 6\ndef big : Nat := 100000\n#check big\n#reduce Nat.beq (Nat.sub 1000 999) 1\n"
+          "Val : U0\nBox : U0\nwhnf : (x0 : Val) → Val\ndepth : (x0 : Val) → Nat\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\napps : (x0 : Nat) → (x1 : (List Nat)) → Nat\ncon((#1, (tt, tt)))\nbig : Nat\nNat\ncon((#1, (tt, tt)))\n" },
     { name := "postponed and inferred matches, pruning, checked in Wiz", run := fun _ =>
         selfhostCheckFile "import Prelude\ndef h1 : List Syntax → List String\n  | .nil => .nil\n  | .cons s rest => .cons (match s with\n      | .ident n => n\n      | _ => \"_\") .nil\ndef h2 (s : Syntax) : List String := .cons (match s with\n      | .ident n => n\n      | _ => \"_\") .nil\ndef h3 (s : List Nat) : List Nat := .cons (match s with\n      | .nil => 0\n      | _ => 1) .nil\ndef h4 (s : List Nat) : List Nat := List.cons (match s with\n      | .nil => 0\n      | _ => 1) .nil\ndef k1 (s : List Nat) : Nat :=\n  let x := match s with\n    | .nil => 0\n    | _ => 1;\n  x + 1\ndef k2 (b : Bool) : Nat :=\n  let y := if b then 2 else 3;\n  y\n#reduce Nat.beq (k1 .nil) 1\n#reduce Nat.beq (k2 .false) 3\ndef genTys (p base : Nat) : Nat → List Nat → List Nat\n  | _, .nil => .nil\n  | m, .cons t rest => .cons (t + m + p) (genTys p base (m + 1) rest)\n#reduce Nat.beq (List.length (genTys 1 2 0 (List.cons 1 (List.cons 2 .nil)))) 2\ndef kw (stx : Syntax) (p : Nat) : String :=\n  let kw := match stx with\n    | .atom v => v\n    | _ => \"infix\";\n  kw\ndef g2 (xs : List Nat) : Nat := match xs with\n    | .cons _ t => match List.append t t with\n      | .nil => 0\n      | later => List.length later\n    | .nil => 0\n#reduce Nat.beq (g2 (List.cons 1 (List.cons 2 .nil))) 2\ndef takeL {A : Type} : Nat → List A → List A\n  | .zero, _ => .nil\n  | .succ n, xs => match xs with\n    | .nil => .nil\n    | .cons x rest => .cons x (takeL n rest)\ndef sp (k : Nat) : List (List Nat) → List (List Nat)\n  | .nil => .nil\n  | .cons pats rest =>\n    let before := takeL k pats;\n    match List.length pats with\n    | .zero => .cons (List.append before .nil) (sp k rest)\n    | .succ _ => sp k rest\ndef sp2 (k : Nat) (pats : List Nat) : List (List Nat) :=\n    let before := takeL k pats;\n    .cons (List.append before .nil) .nil\ninductive Cl where\n  | mk (pats : List Nat) (binds : List Nat) (rhs : Nat)\ndef sp3 (k : Nat) : List Cl → List Cl\n  | .nil => .nil\n  | .cons (.mk pats binds rhs) rest =>\n    let before := takeL k pats;\n    let after := takeL k pats;\n    match List.length pats with\n    | .zero => .cons (.mk (List.append before (List.append pats after)) binds rhs) (sp3 k rest)\n    | .succ _ => sp3 k rest\ndef sp4 (T : String) (k : Nat) : List Cl → List Cl\n  | .nil => .nil\n  | .cons (.mk pats binds rhs) rest =>\n    let before := takeL k pats;\n    match List.length pats with\n    | .zero => .cons (.mk (List.append before pats) binds rhs) (sp4 T k rest)\n    | .succ _ =>\n      let binds' := match Nat.beq k 0 with\n        | .true => binds\n        | .false => List.append binds (.cons k .nil);\n      .cons (.mk before binds' rhs) (sp4 T k rest)\n"
           "h1 : (x0 : (List Syntax)) → (List String)\nh2 : (x0 : Syntax) → (List String)\nh3 : (x0 : (List Nat)) → (List Nat)\nh4 : (x0 : (List Nat)) → (List Nat)\nk1 : (x0 : (List Nat)) → Nat\nk2 : (x0 : Bool) → Nat\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ngenTys : (x0 : Nat) → (x1 : Nat) → (x2 : Nat) → (x3 : (List Nat)) → (List Nat)\ncon((#1, (tt, tt)))\nkw : (x0 : Syntax) → (x1 : Nat) → String\ng2 : (x0 : (List Nat)) → Nat\ncon((#1, (tt, tt)))\ntakeL : (x0 : U0) → (x1 : Nat) → (x2 : (List x0)) → (List x0)\nsp : (x0 : Nat) → (x1 : (List (List Nat))) → (List (List Nat))\nsp2 : (x0 : Nat) → (x1 : (List Nat)) → (List (List Nat))\nCl : U0\nsp3 : (x0 : Nat) → (x1 : (List Cl)) → (List Cl)\nsp4 : (x0 : String) → (x1 : Nat) → (x2 : (List Cl)) → (List Cl)\n" },
@@ -2256,8 +2250,8 @@ def selfHostGroup : Group where
         let main := s!"def main : IO Unit := printAll {wizList calls}\n"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ decl ++ printAll ++ main) ("\n".intercalate expected ++ "\n") },
-    -- D1: today's behaviour (a known non-termination), not a wish
-    { name := "D1 (Abel–Coquand): the Wiz kernel does not terminate on the program either (and checks it without regularity)", run := fun _ => do
+    -- D1: regularity is off in both kernels; with it on, the Wiz kernel loops too
+    { name := "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with regularity on)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
         let control := MTm.abelCoquand false
@@ -2266,15 +2260,16 @@ def selfHostGroup : Group where
         ioRun (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {control.toWiz})\n")
           (leanVerdict control ++ "\n")
         let loop := MTm.abelCoquand true
-        ioDiverges (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n")
-        -- without regularity (`vCastW`'s fallback) both kernels check it
-        let reg := "  | A, B, e, t => match tmEq (quote 100000 A) (quote 100000 B) with"
-        unless (kernel.splitOn reg).length == 2 do throw (IO.userError "vCastW's regularity rule not found")
-        let noReg := kernel.replace reg "  | A, B, e, t => match Bool.false with"
-        let expected ← match infer (R := ZeroOneMany) { globals := { leanGlobals () with regularity := .off } } loop.toTerm with
+        -- without regularity (the default) both kernels check it
+        let expected ← match infer (R := ZeroOneMany) { globals := leanGlobals () } loop.toTerm with
           | .ok (ty, _) => pure ((MTm.ofTerm (quote (leanGlobals ()) 0 ty)).map (·.pretty 0) |>.getD "?")
           | .error e => throw (IO.userError s!"the Lean kernel without regularity rejects it: {e}")
-        ioRun (noReg ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n") }
+        ioRun (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n")
+        -- with regularity (`kernelRegularity`) the Wiz kernel loops
+        let off := "def kernelRegularity : Bool := .false"
+        unless (kernel.splitOn off).length == 2 do throw (IO.userError "kernelRegularity not found")
+        let withReg := kernel.replace off "def kernelRegularity : Bool := .true"
+        ioDiverges (withReg ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") }
   ]
 
 def languageGroup : Group where
@@ -2950,9 +2945,19 @@ def vecGroup : Group where
         okLibs (vecPrelude ++ "def t1 : Vec.foldr Nat.add 0 (Vec.replicate 4 5) = 20 := rfl\n" ++
           "def t2 : Vec.toList v3 = .cons 10 (.cons 20 (.cons 30 .nil)) := rfl\n" ++
           "#reduce Vec.foldr Nat.add 0 v3\n#reduce Vec.head v3") ["60", "10"] },
-    { name := "known bug: rfl's proof of a computed equation can differ from the kernel's (wishful: unify-computed-equations)", run := fun _ =>
-        -- today's behaviour: the kernel rejects it. When the bug is fixed, turn this into an `okLibs`.
-        failsLibs (vecPrelude ++ "def t3 : Vec.length (Vec.map Nat.succ w3) = 3 := rfl") "kernel rejected t3" },
+    { name := "rfl at a computed equation between a numeral and a constructor (was a known bug; fixed by equality at μ by constructor, D1)", run := fun _ =>
+        okLibs (vecPrelude ++ "def t3 : Vec.length (Vec.map Nat.succ w3) = 3 := rfl") },
+    { name := "a cast between Vec Nat (.succ 2) and Vec Nat 3 computes (numeral vs constructor index; elab-bugs 3)", run := fun _ =>
+        okLibs (vecPrelude ++ "def u3 : Vec Nat (Nat.succ 2) := v3\n" ++
+          "def c3 (e : Vec Nat (Nat.succ 2) = Vec Nat 3) : (cast e u3 : Vec Nat 3) = v3 := rfl\n" ++
+          "#reduce fun (e : Vec Nat (Nat.succ 2) = Vec Nat 3) => Vec.toList (cast e u3 : Vec Nat 3)")
+          ["fun e => .cons 10 (.cons 20 (.cons 30 .nil))"] },
+    { name := "known failure: map_map needs regularity at a variable type (D1; wishful: cast-refl)", run := fun _ =>
+        -- `Vec.map f (cons x xs)` is `cons (cast B B _ (f x)) …` without regularity; see
+        -- drafts/vec-lib/VecProofs.wiz. Turn into an `okLibs` if `castRefl` is added.
+        failsLibs (vecPrelude ++ "def Vec.map_map {A B C : Type} (f : B → C) (g : A → B) {0 n : Nat} : (v : Vec A n) →\n" ++
+          "    Vec.map f (Vec.map g v) = Vec.map (fun a => f (g a)) v\n  | .nil => rfl\n" ++
+          "  | .cons x xs => congrArg (Vec.cons (f (g x))) (Vec.map_map f g xs)\n") "type mismatch" },
     { name := "compiled, through the IR and C", run := fun _ => do
         okLibs (vecPrelude ++ "#run Vec.toList (Vec.reverse v3)\n#run Vec.get (Vec.set v3 (Fin.of 3 2 rfl) 7) (Fin.of 3 2 rfl)\n" ++
           "#run Vec.toList (Vec.zipWith Nat.mul v3 w3)")
