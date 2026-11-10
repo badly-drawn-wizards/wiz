@@ -1427,6 +1427,13 @@ Stage 2 of the bootstrap (`scripts/fixpoint.sh`, grail's `stage2` target) and th
 self-hosted compile-and-run tests compile the self-hosted backend's C with `-O2`
 instead of `-O1`, like `wiz build`.
 
+### 15e: dead code in the self-hosted backend ✅
+
+The reference counting mode compiles a `let`'s body first, so it knows whether the
+variable is live: a dead `let` whose value has no effects (variables, globals, numbers,
+objects and projections of such, closures, suspensions; no applications) is not
+compiled at all. Before, it was computed and released at once.
+
 ## Stage 16: data in the self-hosted frontend
 
 ### 16a: inductive types ✅

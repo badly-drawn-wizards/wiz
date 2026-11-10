@@ -2286,6 +2286,9 @@ def selfHostGroup : Group where
         selfhostCompileRun ("-- wiz: rc\n" ++ selfhostProgram1) "6765\n5050\n1989\n2\nyes, ünïcode\n2\n5\n" },
     { name := "reference counting: deep lists, unused parameters and hypotheses, shared arrays, closures", run := fun _ =>
         selfhostCompileRun ("-- wiz: rc\n" ++ selfhostProgram2) "1000000\n0\n6\n15\n5\n3\n" },
+    { name := "dead lets without effects are not computed (15e)", run := fun _ =>
+        selfhostCompileRun ("-- wiz: rc\nimport Prelude\ndef f (n : Nat) : Nat :=\n  let unused := List.cons n (List.cons 2 .nil);\n" ++
+          "  let alsoUnused := (n, n);\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" },
     { name := "the self-hosted backend: division, powers and bits", run := fun _ =>
         selfhostCompileRun ("import Prelude\ndef show (n : Nat) : IO Unit := IO.println (Nat.toString n)\n" ++
           "def main : IO Unit := do\n  show (100 / 7);\n  show (Nat.mod 100 7);\n  show (Nat.div 5 0);\n  show (Nat.mod 5 0);\n" ++

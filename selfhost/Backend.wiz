@@ -894,6 +894,32 @@ def branchesC (names : List String) (d : Nat) (u : List Nat) (r : String) : Nat 
     | .mk bc ba bl => .t "case " ⧺ Doc.nat k ⧺ .t ": { " ⧺ decsOf names d (lvDiff u bl) ⧺ bc ⧺ .t (r +++ " = ") ⧺ ba ⧺
         .t "; break; } " ⧺ branchesC names d u r (k + 1) rest
 
+-- **Dead code** (stage 15e). A value without effects (no application, no `ind`, no
+-- `unreachable`), so when its variable is dead it need not be computed: liveness is
+-- known when a `let` is compiled (its body first), and such a `let` is skipped.
+mutual
+def pureE : ETm → Bool
+  | .erased => .true
+  | .var _ => .true
+  | .glob _ => .true
+  | .nat _ => .true
+  | .lam _ => .true
+  | .obj _ fs => pureEs fs
+  | .proj _ t => pureE t
+  | .letE v b => Bool.and (pureE v) (pureE b)
+  | .case s bs => Bool.and (pureE s) (pureEs bs)
+  | .prim op as => Bool.and (Bool.or (strEq op "memo") (Bool.or (strEq op "natSucc")
+      (Bool.or (strEq op "natPack") (strEq op "natUnpack")))) (pureEs as)
+  | .app f a => match natConst (.app f a) with
+    | .some _ => .true
+    | .none => match stringConst (.app f a) with
+      | .some _ => .true
+      | .none => .false
+def pureEs : ETms → Bool
+  | .nil => .true
+  | .cons t rest => Bool.and (pureE t) (pureEs rest)
+end
+
 mutual
 -- the code of `t` in a scope of `d` variables (`names`), `live` used after it
 def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t : ETm) : RR := match t with
@@ -955,10 +981,12 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
         | .mk fc atoms fl st1 => bindTo st1 fc (.t "mkobj(" ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat (etmsLen fs) ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})") fl
   | .letE v b => match CG.fresh st "l" with
     | .mk x st1 => match rcE re st1 (.cons x names) (d + 1) live b with
-      | .mk bc ba bl st2 => match rcE re st2 names d (lvDel d bl) v with
-        | .mk vc va vl st3 => .mk (vc ⧺ .t ("V " +++ x +++ " = ") ⧺ va ⧺ .t "; " ⧺ (match lvMem d bl with
-            | .true => .t ""
-            | .false => .t ("dec(" +++ x +++ "); ")) ⧺ bc) ba vl st3
+      | .mk bc ba bl st2 => match lvMem d bl with
+        -- a dead value without effects: not computed at all (stage 15e)
+        | .false => match pureE v with
+          | .true => .mk bc ba bl st2
+          | .false => rcLet re st2 names d x v bc ba bl
+        | .true => rcLet re st2 names d x v bc ba bl
   | .case s bs => match rcBranches re st names d live bs with
     | .mk rbs u st1 => match CG.fresh st1 "r" with
       | .mk r st2 => match CG.fresh st2 "k" with
@@ -994,6 +1022,12 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
       | .nil => rcPrim re st names d live op as
     | .false => rcPrim re st names d live op as
   | .lam _ => rcLam re st names d live t .false
+-- `let x := v` before the body's code `bc` (whose value is `ba`, which uses `bl`)
+def rcLet (re : RE) (st : CG) (names : List String) (d : Nat) (x : String) (v : ETm) (bc ba : Doc) (bl : List Nat) : RR :=
+  match rcE re st names d (lvDel d bl) v with
+  | .mk vc va vl st3 => .mk (vc ⧺ .t ("V " +++ x +++ " = ") ⧺ va ⧺ .t "; " ⧺ (match lvMem d bl with
+      | .true => .t ""
+      | .false => .t ("dec(" +++ x +++ "); ")) ⧺ bc) ba vl st3
 def rcPrim (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (op : String) (as : ETms) : RR :=
   match rcEs re st names d live as with
   | .mk ac atoms al st1 => bindTo st1 ac (.t ("p_" +++ mangle op +++ "(") ⧺ joinDocs atoms ⧺ .t ")") al
