@@ -207,9 +207,15 @@ never be unfolded. Inline, evaluating the proof is β-reduction and `ind` on the
 which loops with regularity. -/
 def acDelta : String := "(fun (z : Top) => z T2 id2 z)"
 
-/-- `ω`'s body inline (for `A : Prop`, `a : A`): `unbox (cast … (mk δ))` -/
+/-- `ω`'s body inline (for `A : Prop`, `a : A`): `unbox (cast … (mk δ))`. The cast is
+ascribed on both sides: since 4g `Box T2 = Box A` computes (to the equation of the codes),
+so the elaborator can't read the two types off the proof's type. The target is `Box A`;
+the source must be written `Box T2`, with the *name* `T2`: the inferred type of `mk δ` is
+`Box (Top → Top)`, and the D1 regularity modes compare the two types syntactically
+(`sameVal`), so with the inferred type regularity would not fire at `A := T2` and the
+program would terminate for a reason that has nothing to do with the loop. -/
 def acOmegaBody : String :=
-  s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk {acDelta}))"
+  s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk {acDelta} : Box T2) : Box A)"
 
 /-- `Ω = δ ω`, inline -/
 def acOmega (body : String := acOmegaBody) : String :=
@@ -241,7 +247,7 @@ def abelCoquand (omega : String := "Omega") (body : String := acOmegaBody) : Str
 at `Box2` stays structural, and the program checks without regularity. -/
 def abelCoquandNested : String :=
   ((abelCoquand (body := s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (ind (fun _ _ => Box A) (fun i xs ih => xs.1.2) " ++
-      s!"(cast (apTy Prop Box2 T2 A (tautext T2 A id2 a)) (mk2 (mk {acDelta}))))")).replace
+      s!"(cast (apTy Prop Box2 T2 A (tautext T2 A id2 a)) (mk2 (mk {acDelta}) : Box2 T2) : Box2 A))")).replace
     "def omega : Top := fun A a => unbox (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk delta))\n"
     ("def Box2D (P : Prop) : Desc Unit := Desc.arg 1 ((_ : Enum [u]) × Box P) (fun _ => Desc.ret ())\n" ++
      "def Box2 (P : Prop) : Type := μ (Box2D P) ()\n" ++
@@ -379,7 +385,7 @@ def ottGroup : Group where
           "#reduce N.s N.z = N.s N.z\n" ++
           "#reduce fun (n m : N) => (V N n = V N m)\n" ++
           "#reduce fun (e : V N (.s .z) = V N (.s .z)) => (cast e (V.cons N.z V.nil : V N (.s .z)) : V N (.s .z))")
-          ["fun e => .s .z", "True", "fun n m => (0 e : n = m) × True",
+          ["fun e => .s .z", "True", "fun n m => (0 e : (0 e : (0 e : True) × (0 e' : (0 e' : True) × ((0 x : Enum [z, s]) → cast (transp (fun y _ => (0 e'' : Unit = y) × ((0 x' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e).1 (ecase x [Desc.ret (), Desc.rec ω () (Desc.ret ())]) = ecase x [Desc.ret (), Desc.rec ω () (Desc.ret ())])) × True) × ((0 x : N) → True)) × (0 e' : (0 e' : True) × ((0 x : Enum [nil, cons]) → cast (transp (fun y _ => (0 e'' : (N × Unit) = y) × ((0 x' : Desc (N × Unit)) → (N × Unit) = y)) (refl (Desc (N × Unit) × N × Unit)) e).1 (ecase x [Desc.ret (.z, ()), Desc.arg 0 N (fun n' => Desc.arg ω N (fun x' => Desc.rec ω (n', ()) (Desc.ret (.s n', ()))))]) = ecase x [Desc.ret (.z, ()), Desc.arg 0 N (fun n' => Desc.arg ω N (fun x' => Desc.rec ω (n', ()) (Desc.ret (.s n', ()))))])) × (0 e'' : n = m) × True",
            "fun e => .cons .z .z .nil"] },
     { name := "type equality", run := fun _ =>
         ok "def t : Type = Type := refl Type" },
@@ -405,11 +411,11 @@ def ottGroup : Group where
         ok (tyOfDef ++ "inductive N where\n  | z\n  | s (n : N)\ndef h (x : N) : N := x\n" ++
           "#reduce TyOf h = (N → N)\n" ++
           "#reduce fun (e : TyOf h = (N → N)) (u : TyOf h) => (cast e u : N → N)")
-          ["(0 e : True) × ((0 x : N) → True)", "fun e u x => u x"] },
+          ["(0 e : (0 e : True) × (0 e' : (0 e' : True) × ((0 x : Enum [z, s]) → cast (transp (fun y _ => (0 e'' : Unit = y) × ((0 x' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e).1 (ecase x [Desc.ret (), Desc.rec ω () (Desc.ret ())]) = ecase x [Desc.ret (), Desc.rec ω () (Desc.ret ())])) × True) × ((0 x : N) → (0 e' : True) × (0 e'' : (0 e'' : True) × ((0 x' : Enum [z, s]) → cast (transp (fun y _ => (0 e''' : Unit = y) × ((0 x'' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e').1 (ecase x' [Desc.ret (), Desc.rec ω () (Desc.ret ())]) = ecase x' [Desc.ret (), Desc.rec ω () (Desc.ret ())])) × True)", "fun e u x => u x"] },
     { name := "a constructor's type carries its sort", run := fun _ =>
         ok (tyOfDef ++ "inductive Box (A : Type) where\n  | mk (a : A)\n" ++
           "#reduce TyOf (@Box.mk Unit) = (Unit → Box Unit)")
-          ["(0 e : True) × ((0 x : Unit) → True)"] },
+          ["(0 e : True) × ((0 x : Unit) → (0 e' : True) × (0 e'' : (0 e'' : True) × ((0 x' : Enum [mk]) → cast (transp (fun y _ => (0 e''' : Unit = y) × ((0 x'' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e').1 (ecase x' [Desc.arg ω Unit (fun a => Desc.ret ())]) = ecase x' [Desc.arg ω Unit (fun a => Desc.ret ())])) × True)"] },
     { name := "a match on several scrutinees whose types mention a variable", run := fun _ =>
         ok "def pick (A : Type) (x y : A) : A := match x, y with\n  | a, b => b" },
     { name := "equality of proofs is rejected", run := fun _ =>
@@ -1318,6 +1324,43 @@ def ioFails (src : String) (fragment : String) : IO Unit := do
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
 
+/-- (9f) Elaborate `main.wiz` in a fresh directory holding `files` (modules under it are
+importable), resolving `link_c` files as `wiz` does, relative to each file. -/
+def elabTree (files : List (String × String)) : IO (CommandState ZeroOneMany × String × System.FilePath) := do
+  let dir ← IO.FS.createTempDir
+  for (p, text) in files do
+    let f := dir / p
+    if let some d := f.parent then IO.FS.createDirAll d
+    IO.FS.writeFile f text
+  let src ← IO.FS.readFile (dir / "main.wiz")
+  let mods ← Module.loadClosure ["lib", dir] src
+  let sources ← Module.cSourceTable dir src mods
+  let s := runFrontend (R := ZeroOneMany) src
+    { loader := fun m => (mods[m]?).map (·.2), cSources := some (Module.cSourceResolver sources) }
+  pure (s, src, dir)
+
+/-- `elabTree`, then build and run `main` (through C, or LLVM) and compare its output. -/
+def linkRun (files : List (String × String)) (expected : String) (llvm : Bool := false) : IO Unit := do
+  let (s, src, dir) ← elabTree files
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  match ← Build.runGlobal (← toolchain) s "main" dir llvm (timeout := some 120) with
+  | .ok v => checkEq expected v
+  | .error e =>
+    let missing := ["gmp.h", "llc:"].any fun m => (e.splitOn m).length > 1
+    if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+
+/-- A program that links a C file (with a static helper and a header the FFI can't bind)
+and the maths library. -/
+def linkFiles : List (String × String) :=
+  [("main.wiz", "import IO\nlink_c \"c/twice.c\"\nlink_lib \"m\"\n" ++
+      "extern \"twice\" twice : Nat → Nat\nextern \"root_of\" rootOf : Nat → IO Nat\n" ++
+      "def main : IO Unit := do\n  IO.println (Nat.toString (twice 21));\n  r ← rootOf 1764;\n  IO.println (Nat.toString r)\n"),
+   ("c/twice.c", "#include <stdint.h>\n#include <math.h>\nstruct box { uint64_t v; };\n" ++
+      "static uint64_t unbox(struct box *b) { return b->v; }\n" ++
+      "uint64_t twice(uint64_t n) { struct box b = { 2 * n }; return unbox(&b); }\n" ++
+      "uint64_t root_of(uint64_t n) { volatile double d = (double)n; return (uint64_t)sqrt(d); }\n")]
+
 def ffiGroup : Group where
   name := "ffi"
   exercise := "Stage 9a"
@@ -1396,7 +1439,26 @@ def ffiGroup : Group where
           "def main : IO Unit := do\n  IO.println (Bytes.toString (fill 3 Bytes.empty));\n" ++
           "  IO.println (Nat.toString (Bytes.size (Bytes.ofString \"λx\")))") "ABC\n3\n" },
     { name := "foreign types are checked", run := fun _ =>
-        ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
+        ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" },
+    { name := "link_c: a C file and a library linked with the program (C backend)", run := fun _ =>
+        linkRun linkFiles "42\n42\n" },
+    { name := "link_c: the same with the LLVM backend", run := fun _ =>
+        linkRun linkFiles "42\n42\n" (llvm := true) },
+    { name := "link_c: a module's file is relative to the module", run := fun _ =>
+        linkRun [("main.wiz", "import IO\nimport Lib.Glue\ndef main : IO Unit := IO.println (Nat.toString (three 0))\n"),
+                 ("Lib/Glue.wiz", "import Prelude\nlink_c \"glue.c\"\nextern \"three\" three : Nat → Nat\n"),
+                 ("Lib/glue.c", "#include <stdint.h>\nuint64_t three(uint64_t n) { return n + 3; }\n")] "3\n" },
+    { name := "link_c: a missing file is an error at the command", run := fun _ => do
+        let (s, src, _) ← elabTree [("main.wiz", "import IO\nlink_c \"nowhere.c\"\ndef main : IO Unit := IO.println \"x\"\n")]
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        checkEq #["2:8: error: link_c: no file nowhere.c (paths are relative to the .wiz file)"] errs
+        let (s, src, _) ← elabTree [("main.wiz", "import Prelude\nlink_lib \"-lm\"\n")]
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        checkEq 1 errs.size },
+    { name := "link_c: a file is linked once, however often it is named", run := fun _ => do
+        let (s, _, _) ← elabTree [("main.wiz", "import Prelude\nlink_c \"a.c\"\nlink_c \"./a.c\"\nlink_lib \"m\"\nlink_lib \"m\"\n"), ("a.c", "")]
+        checkEq 1 s.linkC.size
+        checkEq #["m"] s.linkLibs }
   ]
 
 /-- A `Sys` program, on the C backend and on the LLVM backend: `body` is the lines of an
@@ -2784,6 +2846,42 @@ def selfHostGroup : Group where
           "error: type mismatch: expected U0, got U1\n(x0 : U0) → (x1 : (x1 : x0) → x0) → (x2 : x0) → x0\n" ++
           "λx0. λx1. λx2. (x1 (x1 (x1 (x1 x2))))\nerror: not a function: its type is U1\n" ++
           "error: internal error: a variable out of scope\nerror: internal error: a variable out of scope\n") },
+    -- W1 (`wiz-notes/kernel-lint.md`): the structural fast path (`valSame`) compared two
+    -- constants by name, without their universe levels, so two stuck cases whose
+    -- environments held `d.{0}` and `d.{1}` were convertible: a closed term of type `False`
+    { name := "W1: a constant at two universe levels is not the same value (the fast path for stuck cases)", run := fun _ => do
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let probe :=
+          "def dVal : Tm := .pi (.sortL (.lparam \"u\")) (.pi (.var 0) (.pi (.var 1) (.pi (.pi (.var 2) .prop)\n" ++
+          "  (.pi (.app (.var 0) (.var 2)) (.app (.var 1) (.var 2))))))\n" ++
+          "def dAt (l : Lvl) : Tm := .const \"d\" (.cons \"u\" .nil) (.cons l .nil) dVal .prop\n" ++
+          "def d0 : Tm := dAt (.lnum 0)\n" ++
+          "def d1 : Tm := dAt (.lnum 1)\n" ++
+          "def d0Proof : Tm := .ann (.lam (.lam (.lam (.lam (.lam (.var 0)))))) d0\n" ++
+          "def fTy : Tm := .pi .prop (.pi (.enum 1) .prop)\n" ++
+          "def fVal : Tm := .lam (.lam (.ecase .prop (.var 0) (.tcons (.var 1) .tnil)))\n" ++
+          "def fC : Tm := .const \"F\" .nil .nil fVal fTy\n" ++
+          "def fAt (a x : Tm) : Tm := .app (.app fC a) x\n" ++
+          "def h (a b : Tm) : Tm := .ann (.lam (.lam (.var 0))) (.pi (.enum 1) (.pi (fAt a (.var 0)) (fAt b (.var 1))))\n" ++
+          "def isFirst : Tm := .ann (.lam (.ecase .prop (.var 0) (.tcons .ptrue (.tcons .pfalse .tnil)))) (.pi (.enum 2) .prop)\n" ++
+          "def refute (p : Tm) : Tm := .app (.app (.app (.app (.app p (.enum 2)) (.tag 2 0)) (.tag 2 1)) isFirst) .star\n" ++
+          "def bad (a b : Tm) : Tm := .ann (refute (.app (.app (h a b) (.tag 1 0)) d0Proof)) .pfalse\n" ++
+          "def verdict (r : TyRes) : String := match r with\n" ++
+          "  | .ok _ _ => \"ok\"\n" ++
+          "  | .err _ => \"error\"\n" ++
+          "def typeOk (t : Tm) : String := verdict (infer empty t)\n" ++
+          "def main : IO Unit := do\n" ++
+          "  IO.println (String.append \"d's declaration, at every level: \" (verdict (checkDecl .prop (.some dVal))));\n" ++
+          "  IO.println (String.append \"F's declaration: \" (verdict (checkDecl fTy (.some fVal))));\n" ++
+          "  IO.println (String.append \"the proof of d.{0}: \" (typeOk d0Proof));\n" ++
+          "  IO.println (String.append \"control, d.{0} used as d.{1} directly (want error): \" (typeOk (.ann d0Proof d1)));\n" ++
+          "  IO.println (String.append \"control, F d.{0} x → F d.{0} x (want ok): \" (typeOk (h d0 d0)));\n" ++
+          "  IO.println (String.append \"F d.{0} x → F d.{1} x (want error): \" (typeOk (h d0 d1)));\n" ++
+          "  IO.println (String.append \"a closed term of type False (want error): \" (typeOf (bad d0 d1)))\n"
+        ioRun (kernel ++ "\n" ++ probe) ("d's declaration, at every level: ok\nF's declaration: ok\nthe proof of d.{0}: ok\n" ++
+          "control, d.{0} used as d.{1} directly (want error): error\ncontrol, F d.{0} x → F d.{0} x (want ok): ok\n" ++
+          "F d.{0} x → F d.{1} x (want error): error\n" ++
+          "a closed term of type False (want error): error: type mismatch: expected case(Prop, x0, d.{1}), got ((F d.{0}) x0)\n") },
     { name := "the frontend gives the types it builds their sorts (sortTy)", run := fun _ => do
         -- `(True → Unit) = ((True → True) → Unit)` built without sorts waits; with the
         -- sorts `sortTy` fills in, it computes to the domains' equivalence
@@ -4315,6 +4413,119 @@ def liftGroup : Group where
         failsLib "import Prelude\ndef D : Desc Unit := Desc.arg 1 True (fun _ => Desc.ret ())" "type mismatch" }
   ]
 
+/-! ## Equality of descriptions (4g) -/
+
+/-- Small data types without the Prelude. -/
+def descEqTypes : String :=
+  "inductive N where\n  | z\n  | s (n : N)\n" ++
+  "inductive B where\n  | f\n  | t\n" ++
+  "inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
+  "def len {A : Type} : L A → N\n  | .nil => .z\n  | .cons _ xs => .s (len xs)\n"
+
+/-- The Abel–Coquand program with the box cast between two *different* descriptions
+(`BoxD` and `BoxD'`, whose tags differ in name), along a proof of the computed equation
+built by hand from `tautext`. -/
+def abelCoquandTwoBoxes : String :=
+  ((abelCoquand).replace
+    "def omega : Top := fun A a => unbox (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk delta))\n"
+    ("def BoxD' (P : Prop) : Desc Unit := Desc.arg 1 ((_ : Enum [v]) × P) (fun _ => Desc.ret ())\n" ++
+     "def Box' (P : Prop) : Type := μ (BoxD' P) ()\n" ++
+     "def unbox' {P : Prop} (b : Box' P) : P := ind (fun _ _ => P) (fun i xs ih => xs.1.2) b\n" ++
+     "def boxEq : Box T2 = Box' T2 := ((), (((), fun _ => (fun _ => id2, fun _ => id2)), fun _ => ()), ())\n" ++
+     "def omega : Top := fun A a => unbox' (cast (apTy Prop Box' T2 A (tautext T2 A id2 a)) (cast boxEq (mk delta) : Box' T2))\n"))
+
+def descEqGroup : Group where
+  name := "desceq"
+  exercise := "Equality of descriptions (4g)"
+  cases := [
+    { name := "List Nat = List Bool computes through the codes, and gives Nat = Bool", run := fun _ =>
+        ok (descEqTypes ++ "#reduce L N = L B\n")
+          ["(0 e : True) × (0 e' : (0 e' : True) × ((0 x : Enum [nil, cons]) → cast (transp (fun y _ => (0 e'' : Unit = y) × ((0 x' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e).1 (ecase x [Desc.ret (), Desc.arg ω N (fun x' => Desc.rec ω () (Desc.ret ()))]) = ecase x [Desc.ret (), Desc.arg ω B (fun x' => Desc.rec ω () (Desc.ret ()))])) × True"] },
+    { name := "List Nat = List Bool is refutable (at the tag cons, Nat = Bool; at succ, rec against ret)", run := fun _ =>
+        ok (descEqTypes ++ "def refute (e : L N = L B) : Empty := absurd (((e.2.1.2 'cons).1).2.1.2 's)\n") },
+    { name := "List A = List C contains A = C (the cons field's equation)", run := fun _ =>
+        ok (descEqTypes ++ "def ac (A C : Type) (e : L A = L C) (P : Type → Type) (p : P A) (q : (0 _ : A = C) → P A → P C) : P C :=\n" ++
+          "  q (e.2.1.2 'cons).1 p\n") },
+    { name := "UIntN 8 = UIntN 16 is refutable (the phantom is in the index type)", run := fun _ =>
+        okLib ("import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\n" ++
+          "def ne (e : UIntN 8 = UIntN 16) : Empty := absurd ((e.1.1.2 16).1 (refl 16))\n") },
+    { name := "casts between List A and List C compute, element by element", run := fun _ =>
+        ok (descEqTypes ++
+          "def lenCast (A C : Type) (h : L A = L C) (x y : A) : len (cast h (L.cons x (L.cons y L.nil)) : L C) = N.s (N.s N.z) := rfl\n" ++
+          "def nilCast (A C : Type) (h : L A = L C) : (cast h (L.nil : L A) : L C) = L.nil := rfl\n" ++
+          "def numCast (h : L N = L N) : (cast h (L.cons N.z L.nil) : L N) = L.cons N.z L.nil := rfl\n") },
+    { name := "a cast at a variable element type stays a cast (no regularity)", run := fun _ =>
+        fails (descEqTypes ++
+          "def reg (A C : Type) (h : L A = L C) (x : A) (y : C) : (cast h (L.cons x L.nil) : L C) = L.cons y L.nil := rfl\n") "type mismatch" },
+    { name := "reflexivity: refl T proves T = T for a data type; i = i' alone does not", run := fun _ => do
+        ok (descEqTypes ++ "def r (A : Type) : L A = L A := refl (L A)\n")
+        fails (descEqTypes ++
+          "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
+          "def bad (A : Type) (n m : N) (h : n = m) : V A n = V A m := h\n") "type mismatch" },
+    -- (soundness-audit) `rfl : T = T` at a data type: the equation of the codes has a part
+    -- `(t : Enum ls) → …` that is stuck under the binder; `rfl` proves it tag by tag
+    { name := "rfl proves T = T for data types: N, an indexed family, a coinductive type", run := fun _ =>
+        ok (descEqTypes ++
+          "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
+          "coinductive S (A : Type) where\n  head : A\n  tail : S A\n" ++
+          "def r1 : N = N := rfl\n" ++
+          "def r2 (A : Type) : L A = L A := rfl\n" ++
+          "def r3 (A : Type) (n : N) : V A n = V A n := rfl\n" ++
+          "def r4 (A : Type) : S A = S A := rfl\n" ++
+          "def c1 (n : N) : (cast (rfl : N = N) n : N) = n := rfl\n" ++
+          "def c2 (A : Type) (l : L A) : L A := cast (rfl : L A = L A) l\n") },
+    { name := "rfl proves T = T with the Prelude: Bool, Nat, List A, Option A, a structure", run := fun _ =>
+        okLib ("import Prelude\nstructure Pt where\n  x : Nat\n  y : Bool\n" ++
+          "def r1 : Bool = Bool := rfl\ndef r2 : Nat = Nat := rfl\n" ++
+          "def r3 (A : Type) : List A = List A := rfl\ndef r4 (A : Type) : Option A = Option A := rfl\n" ++
+          "def r5 : Pt = Pt := rfl\n") },
+    { name := "an un-ascribed cast between two data types asks for an ascription (the equation computed)", run := fun _ => do
+        fails (descEqTypes ++ "#check fun (A C : Type) (h : L A = L C) (l : L A) => cast h l\n") "has computed"
+        ok (descEqTypes ++ "def f (A C : Type) (h : L A = L C) (l : L A) : N := len (cast h l : L C)\n") },
+    { name := "rfl still can't prove an equation between different data types", run := fun _ =>
+        fails (descEqTypes ++ "def bad : L N = L B := rfl\n") "rfl" },
+    { name := "different description constructors are unequal; quantities count", run := fun _ =>
+        ok ("#reduce (Desc.ret () : Desc Unit) = Desc.rec 1 () (Desc.ret ())\n" ++
+          "#reduce (Desc.rec 1 () (Desc.ret ()) : Desc Unit) = Desc.rec 0 () (Desc.ret ())\n" ++
+          "#reduce (Desc.rec 1 () (Desc.ret ()) : Desc Unit) = Desc.rec 1 () (Desc.ret ())\n")
+          ["False", "False", "(0 _ : True) × True"] },
+    { name := "a quantity variable against a literal at an arg field is stuck too", run := fun _ =>
+        ok ("#reduce fun (q : Qty) => (Desc.arg q Unit (fun _ => Desc.ret ()) : Desc Unit) = Desc.arg 1 Unit (fun _ => Desc.ret ())\n")
+          ["fun q => Desc.arg q Unit (fun _ => Desc.ret ()) = Desc.arg 1 Unit (fun _ => Desc.ret ())"] },
+    { name := "sizes compare as conversion does: μ^{↑∞} ≡ μ^∞ computes like μ^∞ ≡ μ^∞", run := fun _ => do
+        let g : Globals ZeroOneMany := {}
+        let mu (s : Val ZeroOneMany) : Val ZeroOneMany := .mu 0 (.unit 1) (.dret .tt) .tt s none
+        let q (v : Val ZeroOneMany) : Term ZeroOneMany := quote g 0 v
+        let inf := q (vEqType g (mu .szInf) (mu .szInf))
+        check (match inf with | .eqTy .. => false | _ => true) "μ^∞ ≡ μ^∞ should compute"
+        check (inf == q (vEqType g (mu (.szSuc .szInf)) (mu .szInf))) "μ^{↑∞} ≡ μ^∞ should compute like μ^∞ ≡ μ^∞" },
+    { name := "a quantity variable against a literal is not unequal (stuck: substituting can make them equal)", run := fun _ =>
+        ok ("#reduce fun (q : Qty) => (Desc.rec q () (Desc.ret ()) : Desc Unit) = Desc.rec 1 () (Desc.ret ())\n")
+          ["fun q => Desc.rec q () (Desc.ret ()) = Desc.rec 1 () (Desc.ret ())"] },
+    -- the Desc analogue of wiz-notes/qty-false-probe.wiz (F6): if the equation computed to
+    -- `False`, `bad 1 (refl _)` would be a closed proof of `False`
+    { name := "a quantity variable against a literal does not prove False (rec and arg)", run := fun _ => do
+        fails "def bad (q : Qty) (e : (Desc.rec q () (Desc.ret ()) : Desc Unit) = Desc.rec 1 () (Desc.ret ())) : False := e\n" "type mismatch"
+        fails "def bad (q : Qty) (e : (Desc.arg q Unit (fun _ => Desc.ret ()) : Desc Unit) = Desc.arg 1 Unit (fun _ => Desc.ret ())) : False := e\n" "type mismatch" },
+    { name := "lifted proof fields compare by equivalence, not by shape", run := fun _ =>
+        okLib ("import Prelude\ninductive PB (P : Prop) where\n  | mk (p : P)\n" ++
+          "def pbne (e : PB True = PB False) : Empty := absurd ((e.2.1.2 'mk).1.1 ())\n") },
+    -- Hur-style: injectivity of μ in its description must not inject `Type → Prop` into `Type`
+    { name := "Hur-style: a description over Type at level 0 is rejected (fields are exactly in Sort (l+1))", run := fun _ =>
+        fails ("def HT (F : Type → Prop) : Desc Unit := Desc.arg 1 Type (fun X => Desc.ret ())\n") "universe level mismatch" },
+    { name := "Hur-style: over Prop at level 0 it is allowed; injectivity gives the lifted propositions' equation", run := fun _ =>
+        okLib ("import Prelude\ninductive H (F : Prop → Prop) where\n  | mk (P : Prop) (p : F P)\n" ++
+          "#reduce fun (F G : Prop → Prop) (e : H F = H G) (P : Prop) => ((e.2.1.2 'mk).2 P).1\n")
+          ["fun F G e P => ((e.2.1.2 'mk).2 P).1"] },
+    { name := "D1 (Abel–Coquand) with two different box descriptions: checks", run := fun _ => do
+        unless (abelCoquandTwoBoxes.splitOn "boxEq").length > 2 do throw (IO.userError "variant not built")
+        ok abelCoquandTwoBoxes },
+    -- with regularity on, the cast between the two descriptions is still structural (they
+    -- are not syntactically equal), so it applies `boxEq`'s equivalence: `id2`, no loop
+    { name := "D1 (Abel–Coquand) with two different box descriptions: checks with regularity too", run := fun _ =>
+        okWith .full abelCoquandTwoBoxes }
+  ]
+
 def phantomGroup : Group where
   name := "phantom"
   exercise := "Phantom parameters"
@@ -4323,13 +4534,13 @@ def phantomGroup : Group where
         failsLib "import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\ndef f (x : UIntN 8) : UIntN 16 := x" "mismatch" },
     { name := "so rfl can't prove UIntN 8 = UIntN 16", run := fun _ =>
         failsLib "import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\ndef e : UIntN 8 = UIntN 16 := rfl" "mismatch" },
-    { name := "μ equality: UIntN 8 = UIntN 8 computes, UIntN 8 = UIntN 16 stays stuck", run := fun _ => do
-        -- equality at μ computes to the index equation only when the descriptions agree,
-        -- and a phantom parameter is part of the description, so the inequality is not
-        -- refutable for an inductive (it is for a structure, below)
+    { name := "μ equality: UIntN 8 = UIntN 8 holds, UIntN 8 = UIntN 16 is refutable (4g)", run := fun _ => do
+        -- equality of μ types compares the codes (4g): the phantom is in the index type,
+        -- whose equation is `e.1`, and at the phantom it is `(x = 16) ↔ (x = 8)`
         let ty := "import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\n"
-        okLib (ty ++ "def same : UIntN 8 = UIntN 8 := fun _ => ()")
-        failsLib (ty ++ "def stuck (e : UIntN 8 = UIntN 16) : Nat := e") "inferred: UIntN 8 = UIntN 16" },
+        okLib (ty ++ "def same : UIntN 8 = UIntN 8 := refl (UIntN 8)")
+        okLib (ty ++ "def ne (e : UIntN 8 = UIntN 16) : Empty := absurd ((e.1.1.2 16).1 (refl 16))")
+        failsLib (ty ++ "def bad : UIntN 8 = UIntN 16 := refl (UIntN 8)") "mismatch" },
     { name := "the width is inferred from the type", run := fun _ =>
         okLib ("import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\nstructure S (w : Nat) where\n  x : Nat\n" ++
           "def width {ω w : Nat} (a : UIntN w) : Nat := w\ndef swidth {ω w : Nat} (a : S w) : Nat := w\n" ++
@@ -5064,6 +5275,7 @@ def groups : List Group :=
   coinductiveGroup ::
   concGroup ::
   dataGroup ::
+  descEqGroup ::
   derivingGroup ::
   effectsGroup ::
   ffiGroup ::

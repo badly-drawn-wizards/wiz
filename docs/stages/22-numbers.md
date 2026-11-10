@@ -132,11 +132,11 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
   `D` lives in a higher universe than the type also gets none, since the tail would
   raise the type's universe; it stays forgotten.
 * For structures, `S 8 = S 16` computes through the Σ to `(x = 8) ↔ (x = 16)` under
-  a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). Equality of two
-  `μ` types computes to the index equation only when their descriptions agree (so
-  `UIntN 8 = UIntN 8` does), and the phantom is part of the description. So for an
-  `inductive`, `UIntN 8 = UIntN 16` stays stuck: it is neither provable nor refutable,
-  and a `cast` between such types gets stuck too.
+  a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). For an
+  `inductive` the phantom is in the index type, and since 4g equality of two `μ` types
+  compares their codes, index types first: `UIntN 8 = UIntN 16` is refutable too
+  (`e.1` is the index types' equation, which at the phantom is `(x = 16) ↔ (x = 8)`), and
+  a `cast` between them computes.
 * A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
   parameters never count. Declare a `structure` instead.
 

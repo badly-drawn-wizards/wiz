@@ -72,7 +72,7 @@ def decodePackage (x : Sx) : Except String Package := do
 def evalBuildFile (tc : Toolchain) (salt : UInt64) (roots : List System.FilePath) (path : System.FilePath)
     (expr : String) : IO (Except String Cache.Sx) := do
   let src := (← IO.FS.readFile path) ++ s!"\ndef grailOut : String := {expr}\n"
-  let l ← load tc roots salt src
+  let l ← load tc roots salt src (path.parent.getD ".")
   let s ← elaborate tc salt l
   if hasErrors s then return .error (render path.toString l s)
   match evalString s "grailOut" with
