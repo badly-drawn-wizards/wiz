@@ -73,6 +73,7 @@ def main (args : List String) : IO UInt32 := do
     pure (if errs.isEmpty then 0 else 1)
   -- a job of a grail build that a test runs (`Grail/Graph.lean`)
   | ["--grail-job", job] => Grail.jobMain tc job
+  | ["--probe-checker"] => do Scaling.probeChecker; pure 0
   | ["--list"] => do
     for g in groups do IO.println g.name
     pure 0

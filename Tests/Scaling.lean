@@ -60,3 +60,79 @@ def group : Group where
         checksWithin 60 (wideClass 48) }]
 
 end Tests.Scaling
+
+namespace Tests.Scaling
+open Wiz
+
+/-- (temporary probe, mem-hunt) the resident set size now and at its peak, in MB -/
+def rss : IO String := do
+  let s ← IO.FS.readFile "/proc/self/status"
+  let get (k : String) : String := ((s.splitOn "\n").find? (·.startsWith k)).getD "" |>.drop k.length |>.trimAscii.toString
+  pure s!"rss {get "VmRSS:"} peak {get "VmHWM:"}"
+
+def probeChecker : IO Unit := do
+  let t0 ← IO.monoMsNow
+  let say (what : String) : IO Unit := do IO.eprintln s!"[{((← IO.monoMsNow) - t0) / 1000} s] {what}: {← rss}"
+  let src ← Selfhost.checkerFiles.mapM (fun (f : String) => IO.FS.readFile f)
+  let prog := Selfhost.checkerSource src
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let ioLib ← IO.FS.readFile "lib/IO.wiz"
+  let stdLib ← IO.FS.readFile "lib/Std.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib else none
+  say "start"
+  let s := runFrontend (R := ZeroOneMany) prog { loader }
+  say s!"frontend ({s.messages.size} messages, {s.globals.decls.size} globals)"
+  let some _ := s.globals.find? "main" | throw (IO.userError "no main")
+  let code ← match compileReachable s.globals s.builtins ["main"] with
+    | .ok c => pure c
+    | .error e => throw (IO.userError (toString e))
+  say s!"erasure ({code.size} definitions)"
+  let mut est : Array (Nat × String) := #[]
+  for (n, _) in code.toList do
+    if let some d := s.globals.find? n then
+      let a ← IO.monoNanosNow
+      let r := eraseDecl s.globals d
+      let ok := match r with | .ok e => (e.globals #[]).size | .error _ => 0
+      let b ← IO.monoNanosNow
+      est := est.push ((b - a) / 1000000, s!"erase {n}: {(b - a) / 1000000} ms ({ok} globals, value {(d.value.map (·.pretty.length)).getD 0} chars)")
+  for (_, l) in (est.qsort (fun x y => x.1 > y.1)).toList.take 15 do IO.eprintln l
+  let decls ← match IR.lowerProgram code (.global "main") with
+    | .ok d => pure d
+    | .error e => throw (IO.userError e)
+  say s!"lowering ({decls.size} decls)"
+  let hoisted := IR.hoistConsts decls
+  say s!"hoist ({hoisted.size} decls)"
+  -- per declaration: the time of each pass, and the size of its body
+  let rec size : IR.Body → Nat
+    | .vdecl _ _ b | .dup _ b | .drop _ b => size b + 1
+    | .case _ alts => alts.foldl (fun n a => n + size a) 1
+    | .jdecl _ _ b k => size b + size k + 1
+    | _ => 1
+  let rec depth : IR.Body → Nat
+    | .vdecl _ _ b | .dup _ b | .drop _ b => depth b + 1
+    | .case _ alts => alts.foldl (fun n a => max n (depth a)) 0 + 1
+    | .jdecl _ _ b k => max (depth b) (depth k) + 1
+    | _ => 1
+  let mut stats : Array (Nat × String) := #[]
+  for d in hoisted do
+    try IO.FS.writeFile "/proc/self/clear_refs" "5" catch _ => pure ()
+    let a ← IO.monoNanosNow
+    let d1 := { d with body := (IR.elimDead d.body).1 }
+    let n1 := size d1.body
+    let b ← IO.monoNanosNow
+    let d2 := d1.insertRC
+    let n2 := size d2.body
+    let c ← IO.monoNanosNow
+    let d3 := { d2 with body := IR.insertReuse (IR.reuseAcross {} {} (IR.dropScalars d2.body)) }
+    let n3 := size d3.body
+    let e ← IO.monoNanosNow
+    let hwm ← rss
+    stats := stats.push ((e - a) / 1000000, s!"{d.name} [{hwm}]: size {size d.body} depth {depth d.body} -> {n1}/{n2}/{n3}; elimDead {(b-a)/1000000} ms, insertRC {(c-b)/1000000} ms, reuse {(e-c)/1000000} ms")
+  for (_, l) in (stats.qsort (fun x y => x.1 > y.1)).toList.take 15 do IO.eprintln l
+  let opt := hoisted.map (·.optimize)
+  say s!"optimize ({opt.size} decls)"
+  let c := C.program opt true (Build.extraC s)
+  say s!"C ({c.length} chars)"
+
+end Tests.Scaling
