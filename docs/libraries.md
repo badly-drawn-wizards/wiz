@@ -40,3 +40,27 @@ Along the way the elaborator learned to:
 Not yet: facts like `Vec.get v (Fin.of 3 1 rfl) = 20 := rfl` (the `rfl` shape
 problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` in general, numerals and operators
 (`a + b`) for `BitVec` (decision HD9).
+
+## H14 S0: hardware as tagless-final code, with sharing ✅
+
+`lib/Hdl/Core.wiz` (`import Hdl.Core`) is the L2 layer of the HDL plan: combinational
+logic is code polymorphic in its representation, `{r : HwTy → Type} → [Hw r] → r a → r b`,
+over hardware type codes `HwTy` (`bits n`, `prod a b`). `Hw` has the operations (`lit`,
+`add`, `sub`, `mul`, `and`, `or`, `xor`, `not`, `eq`, `ult`, `mux`, `cat`, `slice`, `pair`,
+`fst`, `snd`, `share`); such code can only combine wires with them, so it is synthesisable
+by construction. Two instances: `HwTy.El` (values: simulation) and `Wire` (a netlist
+builder). A `Circuit i o` is a Mealy machine whose step is such code: `Circuit.run`
+simulates it on values, `Circuit.netlist` builds its netlist, `Netlist.simulate` runs the
+netlist, and `Verilog.emit` prints Verilog-2005. `examples/hdl.wiz` has a counter, a
+saturating counter, a popcount, a 4-tap sum and a doubling chain.
+
+Sharing has two parts:
+* the netlist builder **hash-conses**: emitting a node whose operation, width and
+  arguments (sorted, for commutative operations) are already present returns the existing
+  node, so identical subterms are one node however they were reached;
+* **auto-share**: in check mode, a `let x := v; body` with no explicit quantity becomes
+  `ShareLet.share v (fun x => body)` when the class `ShareLet` is declared and an instance
+  `ShareLet A B` exists for the value's type `A` and the body's type `B`. `Hdl.Core`'s one
+  instance is `[Hw r] → ShareLet (r a) (r b)` (through `Hw.share`), so a meta-level `let`
+  of an object value names one wire: the doubling chain `let y := x + x` at depth 20
+  emits 20 adders in 25 builder steps. Write `let ω x := …` to opt out.
