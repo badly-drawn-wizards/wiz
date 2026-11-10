@@ -9,10 +9,12 @@
     "backend",
     "borrow",
     "=c",
+    "conc",
     "effects",
     "ffi",
     "llvm",
-    "reuse"
+    "reuse",
+    "sys"
   ]},
   {"name": "library", "select": [
     "builtins",
@@ -27,6 +29,7 @@
     "lsp",
     "macros",
     "modules",
+    "=nvim",
     "optic",
     "phantom",
     "regions",
@@ -37,6 +40,7 @@
     "testrunner",
     "toolchain",
     "tooling",
+    "=tower",
     "trust",
     "vec",
     "word"

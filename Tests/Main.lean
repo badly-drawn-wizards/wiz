@@ -8,6 +8,7 @@ import Tests.Grail
 import Tests.LSP
 import Tests.Allocs
 import Tests.Scaling
+import Tests.Tower
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -27,6 +28,7 @@ def groups : List Group :=
   Parser.groups ++
   Rig.groups ++
   Scaling.groups ++
+  Tower.groups ++
   []
 
 /-- Whether a command-line selector picks a group: `=NAME` exactly, anything else as a
@@ -104,6 +106,8 @@ against them), and `lake test -- --list-cases SELECTOR…` the selected cases, a
 FILE (its group, index, name, wall time in seconds, whether it passed, and its notes:
 `Tests.note`), labelled with `--shard NAME`. -/
 def main (args : List String) : IO UInt32 := do
+  -- tower, as the shims of the tower tests call it (`Tests/Tower.lean`)
+  if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
     | "--run" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
@@ -120,7 +124,11 @@ def main (args : List String) : IO UInt32 := do
   -- can time out: `Elab.checkDiverges`
   | ["--check", mode, file] => do
     let input ← IO.FS.readFile file
-    let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { globals := { regularity := Elab.regularityMode mode } }
+    -- `MODE+eager`: without `lazyProofs` (P2: the evaluator runs proofs, as before)
+    let (mode, lazyProofs) := match mode.splitOn "+" with
+      | [m, "eager"] => (m, false)
+      | _ => (mode, true)
+    let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { globals := { regularity := Elab.regularityMode mode, lazyProofs } }
     let errs := s.messages.filter (·.severity == .error)
     for m in errs do IO.eprintln (m.render input)
     pure (if errs.isEmpty then 0 else 1)
