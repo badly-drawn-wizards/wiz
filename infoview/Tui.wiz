@@ -6,7 +6,7 @@ import Infoview
 -- (`wiz/infoview/cursor`) and the infoview asks for the goals there, or directly to a
 -- `wiz lsp` it starts itself, for a file and position given on the command line.
 -- The layout, colours, navigation and protocol are `lib/Infoview.wiz`; the terminal
--- and socket system calls are `infoview/term.c`. Running it: the README, stage 11m.
+-- and socket system calls are `infoview/term.c`. Running it: docs/stages/11-tooling.md, 11m.
 
 -- ## Foreign functions (infoview/term.c)
 extern "iv_term_open" Term.open : IO Nat
