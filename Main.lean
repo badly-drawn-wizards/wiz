@@ -67,6 +67,24 @@ initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 /-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
 initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
 
+/-- (P2) `--proof-steps N`: the step budget for reading one proof back, outside the kernel
+(`Budget`); and `--trace-proof-steps`, which prints what each read-back took. -/
+initialize proofStepsOpt : IO.Ref (Nat × Bool) ← IO.mkRef (Budget.defaultSteps, false)
+
+/-- Take `--proof-steps N` and `--trace-proof-steps` out of the arguments. -/
+def takeProofSteps : List String → Except String (Option Nat × Bool × List String)
+  | "--proof-steps" :: n :: rest => do
+    let some k := n.toNat? | throw s!"--proof-steps needs a number, not {n}"
+    let (_, t, rest) ← takeProofSteps rest
+    return (some k, t, rest)
+  | "--trace-proof-steps" :: rest => do
+    let (k, _, rest) ← takeProofSteps rest
+    return (k, true, rest)
+  | a :: rest => do
+    let (k, t, rest) ← takeProofSteps rest
+    return (k, t, a :: rest)
+  | [] => return (none, false, [])
+
 /-- (P1) `--inert MODE`: regularity at inert types. -/
 initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
 
@@ -92,13 +110,15 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   let (regularity, predicativeProp) ← kernelOpts.get
   let lazyProofs ← lazyProofsOpt.get
   let inertReg ← inertOpt.get
+  let (proofSteps, traceProofSteps) ← proofStepsOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, lazyProofs, inertReg },
+    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, lazyProofs, inertReg, proofSteps, traceProofSteps },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground &&
+      proofSteps == Budget.defaultSteps && !traceProofSteps then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -162,6 +182,9 @@ def main (args : List String) : IO UInt32 := do
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
   lazyProofsOpt.set (!args.contains "--eager-proofs")
   let args := args.filter (· != "--eager-proofs")
+  let args ← match takeProofSteps args with
+    | .ok (k, t, a) => do proofStepsOpt.set (k.getD Budget.defaultSteps, t); pure a
+    | .error e => do IO.eprintln e; return 1
   let args ← match takeInertOpt args with
     | .ok (r, a) => do if let some r := r then inertOpt.set r
                        pure a

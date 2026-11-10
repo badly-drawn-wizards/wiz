@@ -163,6 +163,7 @@ where
 /-- `a ≤ b` for every instantiation (as far as `equiv` can tell). -/
 def le (a b : Level) : Bool := equiv (max a b) b
 
+
 /-- The level as a number, if it is closed. -/
 def toNat? : Level → Option Nat
   | zero => some 0
@@ -172,6 +173,15 @@ def toNat? : Level → Option Nat
     let b' ← toNat? b
     if b' == 0 then return 0 else return Nat.max (← toNat? a) b'
   | _ => none
+
+/-- Is the level `0`? A closed level is computed (`toNat?`, exact: after a constant's
+level parameters are instantiated the levels in its body are closed); otherwise `equiv`
+decides (it answers `false` when it does not know). The proof marker `prf.{l}` suspends
+its term exactly when this holds. -/
+def isZero (l : Level) : Bool :=
+  match toNat? l with
+  | some n => n == 0
+  | none => equiv l zero
 
 /-- `l` as `base + k` with `k` maximal. -/
 def toOffset : Level → Level × Nat

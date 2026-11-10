@@ -166,7 +166,18 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       (← rename m p b) (← rename m p e)) sp
   -- (P2) a suspended proof is evaluated for a solution (a normal form, which the kernel
   -- can check)
-  | .neutral (.prf _ _ _ pv) sp => do rename m p (vElims (← getGlobals) pv.get sp)
+  -- within a step budget (`Budget`): a proof need not have one
+  | .neutral (.prf env t) sp => do
+    let g ← getGlobals
+    match g.budget with
+    | some _ => rename m p (vElims g (eval g env t) sp)
+    | none =>
+      let b := Budget.new g.proofSteps
+      let g' := { g with budget := some b }
+      modify fun s => { s with globals := g' }
+      let tm ← rename m p (vElims g' (eval g' env t) sp)
+      modify fun s => { s with globals := { s.globals with budget := none } }
+      if b.leftAfter tm == 0 then throwAt {} (Budget.message g.proofSteps) else pure tm
   | .neutral (.mvar m') sp =>
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
     else goSp (.mvar m') sp

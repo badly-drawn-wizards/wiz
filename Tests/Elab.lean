@@ -1465,6 +1465,8 @@ inductive MTm where
   | ulift (l : Nat) (A : MTm)
   | up (a : MTm)
   | down (t : MTm)
+  /-- (P2) the proof marker, at a level -/
+  | prf (l : MLvl) (t : MTm)
   deriving Inhabited
 
 namespace MTm
@@ -1534,7 +1536,8 @@ partial def toWiz : MTm → String
     | some (_, ps, some v, ty) =>
       let psW := ps.foldr (fun p acc => s!"(.cons \"{p}\" {acc})") ".nil"
       let lsW := ls.foldr (fun l acc => s!"(.cons (.lnum {l}) {acc})") ".nil"
-      s!"(.const \"{n}\" {psW} {lsW} {v.toWiz} {ty.toWiz})"
+      -- (the value with its proof markers, as the frontend stores it)
+      s!"(.const \"{n}\" {psW} {lsW} (markClosed {v.toWiz} {ty.toWiz}) {ty.toWiz})"
     | some (_, _, none, ty) => s!"(.axiomC \"{n}\" {ty.toWiz})"
     | none => "(.var 999)"
   | sortParam u => s!"(.sortL (.lparam \"{u}\"))"
@@ -1557,6 +1560,7 @@ partial def toWiz : MTm → String
   | ulift l A => s!"(.ulift {l} {A.toWiz})"
   | up a => s!"(.up {a.toWiz})"
   | down t => s!"(.down {t.toWiz})"
+  | prf l t => s!"(.prf {l.toWiz} {t.toWiz})"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -1620,6 +1624,7 @@ partial def toTerm : MTm → Term ZeroOneMany
   | ulift l A => .ulift (Level.ofNat l) A.toTerm
   | up a => .up a.toTerm
   | down t => .down t.toTerm
+  | prf l t => .prf l.toLevel t.toTerm
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -1680,6 +1685,8 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .ulift l A => return ulift (← l.toNat?) (← ofTerm A)
   | .up a => return up (← ofTerm a)
   | .down t => return down (← ofTerm t)
+  -- (the marker is not printed)
+  | .prf _ t => ofTerm t
   | _ => none
 
 /-- Printed like `show .nil` in `Kernel.wiz`. -/
@@ -1742,6 +1749,7 @@ partial def pretty (l : Nat) : MTm → String
   | ulift k A => s!"ULift{k}({pretty l A})"
   | up a => pretty l a
   | down t => pretty l t
+  | prf _ t => pretty l t
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -2135,29 +2143,117 @@ def abelCoquand (selfApp : Bool) : MTm :=
   ann (refl (enum 2) (tag 2 0))
     (eq (enum 2) (fst (cast p2 p2 (app (app (var 0) (eqTy p2 p2)) (reflTy p2)) (pair (tag 2 0) (tag 2 1)))) (tag 2 0))
 
+/-- (P2) The proof marker, on terms that are *not* run through the marking pass: is the
+term accepted? `T2` is `True → True`, a proposition. -/
+def markerSamples : List (MTm × Bool) :=
+  let T2 := pi ptrue ptrue
+  let z : MLvl := .num 0
+  [ -- a λ at a proposition must be marked
+    (ann (lam (var 0)) T2, false),
+    (ann (prf z (lam (var 0))) T2, true),
+    -- a `let`-bound proof, and a proof in a pair
+    (letE T2 (lam (var 0)) (univ 0), false),
+    (letE T2 (prf z (lam (var 0))) (univ 0), true),
+    (ann (pair (tag 2 0) (lam (var 0))) (sigma (enum 2) T2), false),
+    (ann (pair (tag 2 0) (prf z (lam (var 0)))) (sigma (enum 2) T2), true),
+    -- the kernel verifies the marker: not at a data type, and at the right level
+    (ann (prf z (tag 2 0)) (enum 2), false),
+    (ann (prf (.num 1) (tag 2 0)) (enum 2), true),
+    (ann (prf (.num 1) (lam (var 0))) T2, false),
+    -- a neutral-shaped proof (a variable, here applied) needs no marker; `tt` neither
+    (ann (lam (pair (tag 2 0) (var 0))) (pi ptrue (sigma (enum 2) ptrue)), true),
+    (ann (lam (lam (pair (tag 2 0) (app (var 1) (var 0))))) (pi T2 (pi ptrue (sigma (enum 2) ptrue))), true),
+    (ann (pair (tag 2 0) star) (sigma (enum 2) ptrue), true),
+    -- a marker inside a marked proof is allowed
+    (ann (prf z (lam (prf z (var 0)))) T2, true),
+    -- `absurd` on a proof that is not neutral-shaped: marked
+    (ann (lam (exfalso (enum 2) (letE pfalse (var 0) (var 0)))) (pi pfalse (enum 2)), false),
+    (ann (lam (exfalso (enum 2) (prf z (letE pfalse (var 0) (var 0))))) (pi pfalse (enum 2)), true),
+    -- conversion: a marked proof against a hypothesis, under `absurd` (a proof is not compared)
+    (ann (prf z (lam (refl (enum 2) (exfalso (enum 2) (var 0)))))
+      (pi pfalse (eq (enum 2) (exfalso (enum 2) (var 0)) (exfalso (enum 2) (prf z (letE pfalse (var 0) (var 0)))))), true),
+    -- but the motives are
+    (ann (prf z (lam (refl (univ 0) (exfalso (univ 0) (var 0)))))
+      (pi pfalse (eq (univ 0) (exfalso (univ 0) (var 0)) (app (exfalso (pi (enum 2) (univ 0)) (var 0)) (tag 2 0)))), false),
+    -- and so is what follows the `absurd`
+    (ann (prf z (lam (refl (univ 0) (app (exfalso (pi (enum 2) (univ 0)) (var 0)) (tag 2 0)))))
+      (pi pfalse (eq (univ 0) (app (exfalso (pi (enum 2) (univ 0)) (var 0)) (tag 2 0))
+        (app (exfalso (pi (enum 2) (univ 0)) (prf z (letE pfalse (var 0) (var 0)))) (tag 2 1)))), false),
+    (ann (prf z (lam (refl (univ 0) (app (exfalso (pi (enum 2) (univ 0)) (var 0)) (tag 2 0)))))
+      (pi pfalse (eq (univ 0) (app (exfalso (pi (enum 2) (univ 0)) (var 0)) (tag 2 0))
+        (app (exfalso (pi (enum 2) (univ 0)) (prf z (letE pfalse (var 0) (var 0)))) (tag 2 0)))), true) ]
+
 end MTm
+
+/-- (audit S1, audit-2 P-1) The name of a term's constructor. **No wildcard**: a new
+constructor of `Term` does not compile here until it is given a name, and then the test
+"every constructor of Term is covered by the traversals" fails until it has a sample in
+`termSamples`. A constructor missing from `Term.mapChildrenM` proved `False` once. -/
+def termCtor : Term ZeroOneMany → String
+  | .var _ => "var" | .const .. => "const" | .sort _ => "sort" | .pi .. => "pi" | .lam .. => "lam"
+  | .app .. => "app" | .letE .. => "letE" | .ann .. => "ann" | .mvar _ => "mvar" | .sigma .. => "sigma"
+  | .pair .. => "pair" | .fst _ => "fst" | .snd _ => "snd" | .split .. => "split" | .unit _ => "unit"
+  | .tt => "tt" | .empty _ => "empty" | .absurd .. => "absurd" | .eq .. => "eq" | .eqTy .. => "eqTy"
+  | .refl .. => "refl" | .reflTy _ => "reflTy" | .cast .. => "cast" | .transp .. => "transp"
+  | .qty => "qty" | .qlit _ => "qlit" | .enum _ => "enum" | .tag .. => "tag" | .ecase .. => "ecase"
+  | .desc .. => "desc" | .dret _ => "dret" | .darg .. => "darg" | .drec .. => "drec" | .dhrec .. => "dhrec"
+  | .delim .. => "delim" | .mu .. => "mu" | .con _ => "con" | .ind .. => "ind" | .nu .. => "nu"
+  | .out _ => "out" | .size => "size" | .szInf => "szInf" | .szSuc _ => "szSuc" | .sizeLt _ => "sizeLt"
+  | .sfix .. => "sfix" | .scase .. => "scase" | .cocon _ => "cocon" | .scofix .. => "scofix"
+  | .coit .. => "coit" | .natLit _ => "natLit" | .natOp .. => "natOp" | .ulift .. => "ulift"
+  | .up _ => "up" | .down _ => "down" | .prf .. => "prf"
+
+/-- How many constructors `Term` has (the arms of `termCtor`). -/
+def termCtorCount : Nat := 55
+
+/-- One term per constructor of `Term`, with `c` in every term position and `w` in every
+level position, and how many of each there are. -/
+def termSamples (c : Term ZeroOneMany) (w : Level) : List (Term ZeroOneMany × Nat × Nat) :=
+  [(.var 3, 0, 0), (.const "k" [w], 0, 1), (.sort w, 0, 1), (.pi "x" .default c c c (some w), 3, 1),
+   (.lam "x" c, 1, 0), (.app c c, 2, 0), (.letE "x" c c c c, 4, 0), (.ann c c, 2, 0), (.mvar 0, 0, 0),
+   (.sigma "x" c c c (some w), 3, 1), (.pair c c, 2, 0), (.fst c, 1, 0), (.snd c, 1, 0),
+   (.split c c "z" c "x" "y" c, 4, 0), (.unit w, 0, 1), (.tt, 0, 0), (.empty w, 0, 1), (.absurd c c, 2, 0),
+   (.eq c c c, 3, 0), (.eqTy c c, 2, 0), (.refl c c, 2, 0), (.reflTy c, 1, 0), (.cast c c c c, 4, 0),
+   (.transp c c c c c c, 6, 0), (.qty, 0, 0), (.qlit .one, 0, 0), (.enum ["a"], 0, 0), (.tag ["a"] 0, 0, 0),
+   (.ecase "z" c c [c, c], 4, 0), (.desc w c, 1, 1), (.dret c, 1, 0), (.darg c c c, 3, 0), (.drec c c c, 3, 0),
+   (.dhrec c c c c, 4, 0), (.delim w c c c c c c, 6, 1), (.mu w c c c c (some ("h", [w], [c])), 5, 2),
+   (.con c, 1, 0), (.ind w c c w c c c c, 6, 2), (.nu w c c c c (some ("h", [w], [c])), 5, 2), (.out c, 1, 0),
+   (.size, 0, 0), (.szInf, 0, 0), (.szSuc c, 1, 0), (.sizeLt c, 1, 0), (.sfix w c c w c c c c c, 7, 2),
+   (.scase w c c w c c c c c, 7, 2), (.cocon c, 1, 0), (.scofix w c c c c c c c, 7, 1), (.coit w c c c c c c, 6, 1),
+   (.natLit 3, 0, 0), (.natOp "nat.add" #[c, c], 2, 0), (.ulift w c, 1, 1), (.up c, 1, 0), (.down c, 1, 0),
+   (.prf w c, 1, 1)]
 
 /-- The globals of the differential test, in the Lean kernel. (A function, so that it
 is computed in the test, not when the module starts.) -/
 def leanGlobals (_ : Unit := ()) : Globals ZeroOneMany :=
-  MTm.globalDefs.foldl (fun g (n, ps, v, ty) => match addDecl g { name := n, levelParams := ps, type := ty.toTerm, value := v.map MTm.toTerm } with
+  MTm.globalDefs.foldl (fun g (n, ps, v, ty) => match addDecl g (Decl.withMarks g { name := n, levelParams := ps, type := ty.toTerm, value := v.map MTm.toTerm }) with
     | .ok g' => g'
     | .error _ => g) {}
 
 /-- What the Lean kernel says about a closed term: its type (printed like the Wiz
 kernel prints) or `error`. -/
-def leanVerdict (t : MTm) : String :=
+def leanVerdict (t : MTm) (mark : Bool := true) : String :=
   let g := leanGlobals ()
-  match infer (R := ZeroOneMany) { globals := g } t.toTerm with
+  -- (the proof markers the kernel requires, from the marking pass; `mark := false`: the
+  -- term as it is)
+  let tm := if mark then (Mark.infer (R := ZeroOneMany) { globals := g } t.toTerm).1 else t.toTerm
+  match infer (R := ZeroOneMany) { globals := g } tm with
   | .ok (ty, _) => match MTm.ofTerm (quote g 0 ty) with
     | some m => m.pretty 0
     | none => "?"
   | .error _ => "error"
 
+/-- The Wiz kernel's verdict on a closed term, as a Wiz definition: the term gets its proof
+markers from the Wiz marking pass first (`rawVerdict`: the term as it is). -/
+def wizVerdict : String :=
+  "def rawVerdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n" ++
+  "def verdict (t : Tm) : String := rawVerdict (MR.tm (markInfer empty t))\n"
+
 /-- What the Lean kernel says about a declaration: `ok` or `error`. -/
 def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
   let (ps, v, ty) := d
-  match addDecl (R := ZeroOneMany) (leanGlobals ()) { name := "test", levelParams := ps, type := ty.toTerm, value := v.map MTm.toTerm } with
+  let g := leanGlobals ()
+  match addDecl (R := ZeroOneMany) g (Decl.withMarks g { name := "test", levelParams := ps, type := ty.toTerm, value := v.map MTm.toTerm }) with
   | .ok _ => "ok"
   | .error _ => "error"
 
@@ -2595,7 +2691,7 @@ def selfHostGroup : Group where
           terms := terms.push t
           seed := s
         let expected := terms.toList.map leanVerdict
-        let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
+        let verdict := wizVerdict
         let calls := terms.toList.map fun t => s!"(verdict {t.toWiz})"
         let main := s!"def main : IO Unit := printAll {wizList calls}\n"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
@@ -2609,62 +2705,150 @@ def selfHostGroup : Group where
         let ls : List Name := ["a", "b"]
         let E : Val ZeroOneMany := .enum ls
         let pf (sp : Array (Elim ZeroOneMany)) : Val ZeroOneMany :=
-          .neutral (.prf (Thunk.mk fun _ => .empty 0) [] .tt (Thunk.mk fun _ => .tt)) sp
+          .neutral (.prf [] .tt) sp
         -- two proofs are equal, whatever was projected
         checkEq "true" (toString (sameVal g (pf #[.fst]) (pf #[.snd])))
         -- `absurd E p` is a value of `E`, not a proof: what is done with it is compared
         checkEq "false" (toString (sameVal g (pf #[.absurd E, .app (.tag ls 0)]) (pf #[.absurd E, .app (.tag ls 1)])))
         -- and what was done before the `absurd` is not
         checkEq "true" (toString (sameVal g (pf #[.fst, .absurd E, .app (.tag ls 0)]) (pf #[.snd, .absurd E, .app (.tag ls 0)])))
-        -- conversion, a suspended proof against a `refl`, both under `absurd`: the Lean kernel
-        -- takes any two proof heads as equal, the Wiz kernel only two of the same kind (it
-        -- is the stricter one: CoreSpec §15)
+        -- conversion, a suspended proof against a `refl`, both under `absurd`: a proof under
+        -- `absurd` is not compared, in either kernel (they differed before the marker)
         let refl : Val ZeroOneMany := .neutral (.refl E (.tag ls 0)) #[.absurd E]
         checkEq "true" (toString (conv g #[] E (pf #[.absurd E]) refl))
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let main := "def b2s : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\n" ++
-          "def pf : Head := .hprf (fun _ => .vempty 0) .nil .star\n" ++
+          "def pf : Head := .hprf .nil .star\n" ++
           "def ab (sp : Spine) : Spine := .sabsurd sp (.venum 2)\n" ++
           "def main : IO Unit := do\n" ++
           "  IO.println (b2s (sameVal (.vne pf (.sfst .snil)) (.vne pf (.ssnd .snil))));\n" ++
           "  IO.println (b2s (sameVal (.vne pf (.sapp (ab .snil) (.vtag 2 0))) (.vne pf (.sapp (ab .snil) (.vtag 2 1)))));\n" ++
           "  IO.println (b2s (sameVal (.vne pf (.sapp (ab (.sfst .snil)) (.vtag 2 0))) (.vne pf (.sapp (ab (.ssnd .snil)) (.vtag 2 0)))));\n" ++
           "  IO.println (b2s (conv empty (.venum 2) (.vne pf (ab .snil)) (.vne (.hrefl (.venum 2) (.vtag 2 0)) (ab .snil))))\n"
-        ioRun (kernel ++ "\n" ++ main) "true\nfalse\ntrue\nfalse\n" },
+        ioRun (kernel ++ "\n" ++ main) "true\nfalse\ntrue\ntrue\n" },
+    { name := "every constructor of Term is covered by the traversals (S1: a missed one proved False)", run := fun _ => do
+        let samples := termSamples (.var 5) (.param "pw")
+        -- a sample for every constructor
+        let names := (samples.map (termCtor ·.1)).eraseDups
+        unless names.length == termCtorCount && samples.length == termCtorCount do
+          throw (IO.userError s!"{names.length} constructors have a sample, of {termCtorCount}")
+        for (t, nTerms, nLevels) in samples do
+          let c := termCtor t
+          -- `mapChildrenM` visits every term child and every level
+          let (_, (ts, ls)) := (t.forChildren (m := StateM (Nat × Nat))
+            (fun _ => modify fun (a, b) => (a, b + 1)) (fun _ _ => modify fun (a, b) => (a + 1, b))).run (0, 0)
+          unless (ts, ls) == (nTerms, nLevels) do
+            throw (IO.userError s!"{c}: mapChildrenM visits {ts} terms and {ls} levels, expected {nTerms} and {nLevels}")
+          -- so do the traversals built on it: the free variables (`lvlBound`, `sameVal`),
+          -- shifting, substitution, and the levels
+          let fv := if c == "var" then 1 else nTerms
+          unless ((Term.freeVarsAt 0 t).run #[]).2.size == fv do throw (IO.userError s!"{c}: freeVarsAt misses a child")
+          if nTerms > 0 then
+            unless t.lift 1 != t do throw (IO.userError s!"{c}: lift misses the children")
+            unless t.instantiateAt 5 .tt != t do throw (IO.userError s!"{c}: instantiateAt misses the children")
+            unless (List.range 3).any (fun d => t.hasVar (5 + d)) do throw (IO.userError s!"{c}: hasVar misses the children")
+          if nLevels > 0 then
+            unless t.instLevels ["pw"] [.zero] != t do throw (IO.userError s!"{c}: instLevels misses a level")
+            unless (t.levelParamsUsed.filter (· == "pw")).length == nLevels do
+              throw (IO.userError s!"{c}: levelParamsUsed misses a level")
+        -- the marker's level is instantiated: `prf.{u} t` is a suspended proof at `u := 0`
+        let g : Globals ZeroOneMany := {}
+        let m : Term ZeroOneMany := (Term.prf (.param "u") .tt).instLevels ["u"] [.zero]
+        unless (eval g [] m) matches .neutral (.prf ..) #[] do throw (IO.userError "prf.{u} at u := 0 is not suspended")
+        -- and a suspended proof's environment counts for `lvlBound`, as a closure's does
+        checkEq "8" (toString (Val.lvlBound (eval g [Val.var 7] (.prf .zero (.var 0)) : Val ZeroOneMany)))
+        -- the Wiz kernel's traversals
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def b2s : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\n" ++
+          "def z : Lvl := .lnum 0\n" ++
+          "def main : IO Unit := do\n" ++
+          "  IO.println (b2s (usesVar 0 (.prf z (.var 0))));\n" ++
+          "  IO.println (b2s (usesVar 0 (.prf z .star)));\n" ++
+          "  IO.println (b2s (tmEq (.prf z (.var 0)) (.prf z (.var 1))));\n" ++
+          "  IO.println (b2s (tmEq (.prf z .star) (.prf (.lnum 1) .star)));\n" ++
+          "  IO.println (b2s (tmEq (tmSubst (.cons \"u\" .nil) (.cons z .nil) (.prf (.lparam \"u\") .star)) (.prf z .star)));\n" ++
+          "  IO.println (Nat.toString (lvlBound (eval (.cons (fresh 7) .nil) (.prf z (.var 0)))));\n" ++
+          "  IO.println (b2s (tmEq (quote 1 (eval (.cons (fresh 0) .nil) (.prf z (.var 0)))) (.prf z (.var 0))))\n"
+        ioRun (kernel ++ "\n" ++ main) "true\nfalse\nfalse\nfalse\ntrue\n8\ntrue\n" },
+    { name := "P2: the proof marker is required and verified, by both kernels (terms without the marking pass)", run := fun _ => do
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let samples := MTm.markerSamples
+        let show' (b : Bool) : String := if b then "ok" else "error"
+        for (t, ok) in samples, i in [0:samples.length] do
+          let v := leanVerdict t (mark := false)
+          unless (v != "error") == ok do
+            throw (IO.userError s!"sample {i}: the Lean kernel says {v}, expected {show' ok}")
+        let okV := "def okVerdict (t : Tm) : String := match infer empty t with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n"
+        let calls := samples.map fun (t, _) => s!"(okVerdict {t.toWiz})"
+        let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
+        ioRun (kernel ++ "\n" ++ okV ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n")
+          ("\n".intercalate (samples.map fun (_, ok) => show' ok) ++ "\n") },
+    { name := "P2 (R1): a level-generic term is marked at its level, and is a suspended proof at the instance 0 (both kernels)", run := fun _ => do
+        -- k.{u} (A : Sort u) (a : A) : A := (fun x => x : A → A) a
+        let ty : MTm := .pi (.sortParam "u") (.pi (.var 0) (.var 1))
+        let v : MTm := .lam (.lam (.app (.ann (.lam (.var 0)) (.pi (.var 1) (.var 2))) (.var 0)))
+        let g0 : Globals ZeroOneMany := {}
+        let d := Decl.withMarks g0 { name := "k", levelParams := ["u"], type := ty.toTerm, value := some v.toTerm }
+        -- unmarked it is rejected: the inner λ is at a type in `Sort (imax u u)`, which may be 0
+        if let .ok _ := addDecl g0 { name := "k", levelParams := ["u"], type := ty.toTerm, value := some v.toTerm } then
+          throw (IO.userError "the unmarked level-generic term was accepted")
+        let g ← match addDecl g0 d with
+          | .ok g => pure g
+          | .error e => throw (IO.userError s!"the marked term is rejected: {e}")
+        let inst (l : Nat) (A a : Term ZeroOneMany) : Val ZeroOneMany :=
+          whnf (eval g [] (.app (.app (.const "k" [Level.ofNat l]) A) a))
+        -- at `u := 1` it computes; at `u := 0` the whole of `k` is a proof (of
+        -- `(A : Prop) → A → A`): suspended, and applying it only grows its spine
+        unless (inst 1 (.enum ["a", "b"]) (.tag ["a", "b"] 1)) matches .tag _ 1 do throw (IO.userError "k.{1} did not compute")
+        unless (inst 0 (.unit 0) .tt) matches .neutral (.prf ..) #[.app _, .app _] do throw (IO.userError "k.{0} was evaluated")
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def kTy : Tm := " ++ ty.toWiz ++ "\ndef kV : Tm := markClosed " ++ v.toWiz ++ " kTy\n" ++
+          "def kAt (l : Nat) (A a : Tm) : Val := whnf (eval .nil (.app (.app (.const \"k\" (.cons \"u\" .nil) (.cons (.lnum l) .nil) kV kTy) A) a))\n" ++
+          "def shape : Val → String\n  | .vtag _ _ => \"tag\"\n  | .vne (.hprf _ _) (.sapp (.sapp .snil _) _) => \"suspended\"\n  | _ => \"other\"\n" ++
+          "def okD (v : Tm) : String := match checkDecl kTy (.some v) with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n" ++
+          "def main : IO Unit := do\n  IO.println (okD " ++ v.toWiz ++ ");\n  IO.println (okD kV);\n" ++
+          "  IO.println (shape (kAt 1 (.enum 2) (.tag 2 1)));\n  IO.println (shape (kAt 0 .ptrue .star))\n"
+        ioRun (kernel ++ "\n" ++ main) "error\nok\ntag\nsuspended\n" },
     { name := "the Wiz kernel checks declarations at symbolic levels like the Lean kernel", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let decls := MTm.declSamples ++ MTm.levelPuzzles 200
         let expected := decls.map leanDeclVerdict
         unless (expected.filter (· == "ok")).length ≥ 60 do throw (IO.userError "too few valid declarations")
         unless (expected.filter (· == "error")).length ≥ 30 do throw (IO.userError "too few invalid declarations")
-        let decl := "def declVerdict (ty : Tm) (v : Option Tm) : String := match checkDecl ty v with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n"
+        let decl := "def declVerdict (ty0 : Tm) (v0 : Option Tm) : String :=\n  let ty := markTy empty ty0;\n  match checkDecl ty (match v0 with\n    | .some v => .some (markClosed v ty)\n    | .none => .none) with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n"
         let calls := decls.map fun (_, v, ty) =>
           s!"(declVerdict {ty.toWiz} {match v with | some v => s!"(.some {v.toWiz})" | none => ".none"})"
         let main := s!"def main : IO Unit := printAll {wizList calls}\n"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ decl ++ printAll ++ main) ("\n".intercalate expected ++ "\n") },
     -- D1: regularity is off in both kernels; with it on, the Wiz kernel loops too
-    { name := "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with regularity on: its proofs are let-bound)", run := fun _ => do
+    { name := "D1 (Abel–Coquand): both kernels check the let-encoded program, with regularity on too (P2: its let-bound proofs are marked, and never evaluated)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
-        let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
         let control := MTm.abelCoquand false
-        if let .error e := infer (R := ZeroOneMany) { globals := leanGlobals () } control.toTerm then
-          throw (IO.userError s!"the Lean kernel rejects the control: {e}")
-        ioRun (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {control.toWiz})\n")
+        unless leanVerdict control != "error" do throw (IO.userError "the Lean kernel rejects the control")
+        ioRun (kernel ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (verdict {control.toWiz})\n")
           (leanVerdict control ++ "\n")
         let loop := MTm.abelCoquand true
         -- without regularity (the default) both kernels check it
-        let expected ← match infer (R := ZeroOneMany) { globals := leanGlobals () } loop.toTerm with
-          | .ok (ty, _) => pure ((MTm.ofTerm (quote (leanGlobals ()) 0 ty)).map (·.pretty 0) |>.getD "?")
-          | .error e => throw (IO.userError s!"the Lean kernel without regularity rejects it: {e}")
-        ioRun (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n")
-        -- with regularity (`kernelRegularity`) the Wiz kernel loops. Proofs in `cast` and
-        -- `transp` are never evaluated (P2), but this program binds its proofs with `let`,
-        -- and a `let`-bound proof is still evaluated (Status.md, D1: the remaining gap)
+        let expected := leanVerdict loop
+        unless expected != "error" do throw (IO.userError "the Lean kernel without regularity rejects it")
+        ioRun (kernel ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n")
+        -- unmarked, both kernels reject it: its `let`-bound proofs are λs (the marker is
+        -- required, not a convention of the elaborator)
+        checkEq "error" (leanVerdict loop (mark := false))
+        ioRun (kernel ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (rawVerdict {loop.toWiz})\n") "error\n"
+        -- with regularity (`kernelRegularity`; `--regularity full` in the Lean kernel) the
+        -- program used to loop in the Wiz kernel: `Omega := delta omega` was evaluated by
+        -- the `let`. Marked, `delta` is a suspended proof, and `delta omega` only grows its
+        -- spine: both kernels answer.
         let off := "def kernelRegularity : Bool := .false"
         unless (kernel.splitOn off).length == 2 do throw (IO.userError "kernelRegularity not found")
         let withReg := kernel.replace off "def kernelRegularity : Bool := .true"
-        ioDiverges (withReg ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") }
+        ioRun (withReg ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n")
+        let g : Globals ZeroOneMany := { leanGlobals () with regularity := .full }
+        match infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } loop.toTerm).1 with
+        | .ok _ => pure ()
+        | .error e => throw (IO.userError s!"the Lean kernel with full regularity rejects it: {e}") }
   ]
 
 def languageGroup : Group where

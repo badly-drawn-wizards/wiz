@@ -149,6 +149,8 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   -- Q4: the elaborator lifts small fields; `up`/`down` are invisible
   | .ulift _ A => app "ULift" [A]
   | .up a | .down a => a.prettyPrec names prec
+  -- (P2) the proof marker is invisible too
+  | .prf _ a => a.prettyPrec names prec
   | .natOp op args => app s!"<{op}>" args.toList
   | .transp _ _ P p _ e =>
     paren (prec > 1022)

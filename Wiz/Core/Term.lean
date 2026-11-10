@@ -167,6 +167,14 @@ inductive Term (R : Type) where
   | up (a : Term R)
   /-- `down t : A` for `t : ULift A`; `down (up a) ↦ a`, and `t ≡ up (down t)` (η) -/
   | down (t : Term R)
+  /-- (P2) **the proof marker**: `prf.{l} t : T` for `t : T`, where `l` must be the sort
+  of `T` (`T : Sort l`; the kernel verifies it). When `l` is `0`, `t` is a proof: the
+  evaluator suspends it and never looks at it (`Head.prf`); otherwise it evaluates `t`.
+  A level-generic term is marked at its level `u` and becomes a suspended proof at the
+  instance `u := 0`. Outside a proof, the kernel requires every term whose sort may be
+  `0` to be marked or neutral-shaped (`Check.lean`, "the proof marker"): so it never
+  evaluates a proof. The elaborator's marking pass (`Wiz/Elab/Mark.lean`) inserts it. -/
+  | prf (l : Level) (t : Term R)
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/
@@ -256,6 +264,7 @@ don't need a case per constructor. -/
   | .ulift l A => return .ulift (← fl l) (← f 0 A)
   | .up a => return .up (← f 0 a)
   | .down t => return .down (← f 0 t)
+  | .prf l t => return .prf (← fl l) (← f 0 t)
   -- (the arguments are children like any others: `Val.lvlBound` reads a closure's free
   -- variables through this traversal, and missing them here made `sameVal` identify
   -- `Nat.add x` with `Nat.add y`, which proved `False`; `wiz-notes/soundness-audit.md`, S1)
@@ -302,6 +311,13 @@ partial def instantiateAt (t : Term R) (k : Nat) (s : Term R) (depth : Nat := 0)
     else if i == k + depth then s.lift depth
     else .var (i - 1)
   | t => Id.run <| t.mapChildrenM pure (fun d c => pure (instantiateAt c k s (depth + d)))
+
+/-- (P2) Remove the proof markers that mark nothing: `prf.{l} t` at a level that is not
+`0` is `t` (a level-generic term, at an instance that is not `Prop`). A proof (`l = 0`)
+is kept as it is. For the compiler, which looks at the shapes of terms. -/
+partial def stripMarks : Term R → Term R
+  | .prf l t => if l.isZero then .prf l t else stripMarks t
+  | t => Id.run <| t.mapChildrenM pure (fun _ c => pure (stripMarks c))
 
 /-- The head and arguments of an application spine. -/
 def spine : Term R → Term R × List (Term R)
@@ -367,6 +383,68 @@ partial def Term.phantomTailVal? {R : Type} : Term R → Option (Term R)
   | .unit _ => some .tt
   | _ => none
 
+/-! ### The step budget for reading proofs back (P2)
+
+The kernel never evaluates a proof. The elaborator does, when it reads a value that
+holds a suspended proof back into a term (`quote` outside the kernel: metavariable
+solutions, `#reduce`, hover, messages), and a proof need not have a normal form
+(Abel–Coquand). So that evaluation runs within a **budget of steps**, counted, not
+timed: the same on every machine and in every run. A step is one instantiation of a
+closure (a β-step, or going under a binder to read it back); every loop of the evaluator
+takes one. When the budget runs out the evaluator stops computing (a closure's
+instantiation is a stuck constant from then on), and the proof reads back as a constant
+whose name is the message.
+
+The counter is a mutable cell behind a pure interface (`unsafeBaseIO`). It is made for
+one read-back, used only by the evaluation that read-back starts, and dropped with it,
+so nothing else can observe it. The kernel's own evaluation never has one
+(`Globals.budget = none`): it does not evaluate proofs, so it needs no bound. -/
+
+/-- A step budget: the steps left, plus one (`0`: it ran out). -/
+structure Budget where
+  ref : IO.Ref Nat
+
+namespace Budget
+
+instance : Nonempty Budget := ⟨⟨Classical.choice inferInstance⟩⟩
+
+@[never_extract, noinline] unsafe def newImpl (steps : Nat) : Budget :=
+  match unsafeBaseIO (IO.mkRef (steps + 1)) with
+  | r => ⟨r⟩
+
+/-- A fresh budget of `steps` steps. -/
+@[implemented_by newImpl] opaque new (steps : Nat) : Budget
+
+@[never_extract, noinline] unsafe def tickImpl (b : Budget) : Bool :=
+  unsafeBaseIO do
+    let n ← b.ref.get
+    if n ≤ 1 then do b.ref.set 0; pure false
+    else do b.ref.set (n - 1); pure true
+
+/-- Take one step: `false` when the budget has run out. -/
+@[implemented_by tickImpl] opaque tick (b : Budget) : Bool
+
+@[never_extract, noinline] unsafe def leftAfterImpl {α : Type} (b : Budget) (_ : α) : Nat :=
+  unsafeBaseIO b.ref.get
+
+/-- What is left (plus one; `0`: it ran out) once `x` has been computed. (Taking `x` makes
+the read come after the computation.) -/
+@[implemented_by leftAfterImpl] opaque leftAfter {α : Type} (b : Budget) (x : α) : Nat
+
+/-- What a proof reads back as when its budget ran out: a constant with this name. No
+declaration has it, so the kernel rejects a term that contains it, with this text. -/
+def message (steps : Nat) : String :=
+  s!"‹a proof was not read back: it needs more than {steps} evaluation steps (raise the bound with --proof-steps N)›"
+
+/-- Is this the name of `message`'s constant? -/
+def isMessage (n : String) : Bool := n.startsWith "‹a proof was not read back"
+
+/-- The default: far above what any proof in the library needs to be read back (the
+largest measured is noted in `wiz-notes/prf-marker.md`), and small enough to answer at once. -/
+def defaultSteps : Nat := 1000000
+
+end Budget
+
 /-- Which casts `cast A A e t` reduce to `t` (regularity), for the D1 experiment
 (`wiz-notes/d1-experiment.md`). Regularity, definitional proof irrelevance and an
 impredicative `Prop` together break normalisation (Abel–Coquand, LMCS 2020;
@@ -416,6 +494,18 @@ structure Globals (R : Type) where
   applying the equivalence; `split` on a proof is η. See `docs/CoreSpec.md` and
   `wiz-notes/p2-proofs.md`. -/
   lazyProofs : Bool := true
+  /-- (P2, for the later step to relevance marks; off by default) the strict form of the
+  marker's requirement: outside a proof, *every* term of a proposition must be `prf t`,
+  variables and applications too (by default a neutral-shaped proof needs no marker).
+  With it, "this argument is a proof" is readable from the syntax alone. -/
+  strictProofs : Bool := false
+  /-- (P2) how many evaluation steps reading one suspended proof back may take, outside
+  the kernel (`Budget`; `--proof-steps N`) -/
+  proofSteps : Nat := Budget.defaultSteps
+  /-- (P2, internal) the budget of the read-back in progress. Never set in the kernel. -/
+  budget : Option Budget := none
+  /-- (P2, `--trace-proof-steps`) print the steps each read-back of a proof took (stderr) -/
+  traceProofSteps : Bool := false
   /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
   it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
   quoteErasesProofs : Bool := false

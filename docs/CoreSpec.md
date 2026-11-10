@@ -89,6 +89,7 @@ t, A, B ::=
   let q (x, y) := t as z. M; u                    Σ elimination (`split`)
   Unit_l | tt | Empty_l | absurd M t              Unit_0 = True, Empty_0 = False
   ULift.{l} A | up t | down t                     lifting to a bigger universe (§4.1, Q4)
+  prf.{l} t                                       the proof marker (§8.6): `t`, whose type is in `Sort l`
   t = u   (written eq A t u)                      observational equality of elements
   A ≡ B   (written eqTy A B)                      equality of types
   refl A t | reflTy A | cast A B e t | transp A a P p b e
@@ -854,8 +855,9 @@ let q (x, y) := p as z. M; u,  p a proof   ⟶  u[p.1/x, p.2/y]        (η for �
 conv at a proposition       true, before either side is unfolded
 ```
 
-* **A suspended proof** is a neutral head (`Head.prf`, `hprf`) holding the term, its
-  environment and its type. Projections and applications of it grow its spine. The
+* **A suspended proof** is a neutral head (`Head.prf`, `hprf`) holding the term and its
+  environment. It has no type of its own (§8.6a). Projections and applications of it grow
+  its spine. The
   rules of §8.4 only project the equation (`e.1`, `e.2 x`) and pass the parts on, so no
   rule needs a proof's value.
 * **Why no rule needs it.** Every elimination of a proof yields a proof: Σ is
@@ -869,10 +871,12 @@ conv at a proposition       true, before either side is unfolded
   `quoteM .false` in `Kernel.wiz`). Regularity at inert types, by default, does not read
   values back at all (`groundEqTy`, §8.4), and it skips propositions.
   Reading a value back into a term *outside* the kernel (the elaborator's `quote`,
-  messages, `#reduce`) evaluates the suspended proof, so that the term is a normal form.
-  It has to: a proof read back by substitution alone can be `(p, q).1`, and the
-  bidirectional checker cannot infer a type for that when the elaborated term is checked
-  again. So the elaborator may still run a proof. The kernel does not.
+  `#reduce`, hover, the elaborator's messages) evaluates the suspended proof, so that the
+  term is a normal form, and writes it back marked. It has to evaluate: a proof read back
+  by substitution alone can be `(p, q).1`, and the bidirectional checker cannot infer a
+  type for that when the elaborated term is checked again. So the elaborator may still
+  run a proof, within a **step budget** (below). The kernel does not, in its error
+  messages either: they read a suspended proof back as `()`.
   - *Erasure stops at `absurd`.* `absurd M p : M` for any `M`, so what is done to a
     proof after an `absurd` need not be a proof. The erased reading keeps the
     eliminations from the last `absurd` on, applied to `()`: two different values of a
@@ -880,24 +884,28 @@ conv at a proposition       true, before either side is unfolded
     a checked term (it only sits in the proof positions of `cast` and `transp`); the
     rule is there so that this does not have to be argued (test "P2: comparing types
     erases suspended proofs, but not what follows an absurd").
-* **Consequence: what can still loop.** The reading that evaluates proofs is outside the
-  path by which the kernel accepts a term, but it is used. An error message, `#reduce`,
-  hover information, or the elaborator reading a value back can evaluate a proof, and on
-  a proof without a normal form (Abel–Coquand's, under `--regularity full`) that does
-  not terminate. So the guarantee is about *acceptance by the kernel*, not about every
-  run of `wiz check`.
-* **P2 is reduced, not closed.** Together with the next point: the kernel no longer runs
-  the proofs in `cast` and `transp`, which is where D1's loop ran. It still runs proofs
-  in two kinds of position.
-* **What is not covered [gap].** Only the positions the syntax marks as proofs are
-  suspended. A proof bound by `let`, or passed as an ordinary argument, is still
-  evaluated strictly, because `eval` does not know the type of what it evaluates. A
-  definition is glued (§12), so a proof that is a global name is not unfolded. The gap
-  is real: with regularity switched on, the let-encoded Abel–Coquand term still makes
-  `Kernel.wiz` loop (Status.md, D1). Closing it needs the elaborator to mark such
-  positions, or an evaluator that knows types.
+* **The step budget** (`Budget` in `Term.lean`; `--proof-steps N`, default 1 000 000).
+  A proof need not have a normal form (Abel–Coquand's, under `--regularity full`). So
+  each read-back of a suspended proof outside the kernel runs within a budget of
+  *steps*, counted and not timed: the same on every machine and in every run, so a file
+  that checks once always checks.
+  - A step is one instantiation of a closure: a β-step, or going under a binder to read
+    it back. Every loop of the evaluator takes one.
+  - When the budget runs out the evaluator stops computing, and the proof reads back as
+    a constant whose name is the message ("a proof was not read back: it needs more than
+    N evaluation steps …"). No declaration has that name, so a term that contains it is
+    rejected by the kernel with that message; in `#reduce`, hover and messages it is
+    what is printed.
+  - The kernel's own evaluation has no budget and needs none: it never evaluates a proof.
+  - Not covered: the elaborator's own evaluation of a term it has not marked yet (a
+    `let`-bound proof while its body is elaborated). A proof without a normal form there
+    still makes elaboration loop. Nothing is accepted by a loop.
+* **The other positions: the proof marker** (`wiz-notes/prf-marker.md`). Only `cast`'s
+  equation and `transp`'s proofs are marked by the syntax. A proof bound by `let`, passed
+  as an argument, or stored in a pair or a constructor would be evaluated, because `eval`
+  has no types. The marker closes that, and the kernel checks it: see §8.6a.
 * **`--regularity refl`** (a D1 experiment) is the one rule that inspects a proof (is it
-  visibly `refl`?). It forces the suspension.
+  visibly `refl`?). It looks at a suspended proof's term, without evaluating it.
 * **What the literature proves, and for what.** [PLT25] Theorem 5.6 is decidability of
   conversion for a system whose algorithm never reduces proofs, with full regularity
   (Cast-Refl) decided when two neutrals are compared. It is mechanised for a fragment:
@@ -905,6 +913,79 @@ conv at a proposition       true, before either side is unfolded
   `cast`, with two universe levels and no general inductive types. Wiz's descriptions,
   `μ`/`ν`, sizes, quantities, `ULift` and its computing equality type are outside that
   theorem (§8.4, "Related work"; `/workspace/wiz-notes/plt-vs-inert.md`).
+
+### 8.6a The proof marker
+
+`Term.prf` / `Tm.prf`; "the proof marker" in `Check.lean` and `Kernel.wiz`;
+`wiz-notes/prf-marker.md`.
+
+```
+eval (prf.{l} t)   =  neutral (prf ⟨env, t⟩)     if l is 0          (never looks at t)
+eval (prf.{l} t)   =  eval t                      otherwise
+
+Γ ⊢ T : Sort s    s ≡ l    Γ ⊢ t ⇐ T  (as a proof if l is 0; else t itself is exempt)
+──────────────────────────────────────────────────────────────────────────────────────  Prf
+Γ ⊢ prf.{l} t ⇐ T                                      (and the same for ⇒)
+```
+
+* **The level.** `l` is the sort of the type. "`l` is 0" is `Level.isZero` (`lvlIsZero`):
+  a closed level is computed, and a level with parameters is `0` only if `Level.equiv`
+  says so. Instantiating a constant's level parameters instantiates `l`, so a
+  level-generic term, marked at `Sort u`, is a suspended proof at the instance `u := 0`
+  and an ordinary term elsewhere. While the declaration itself is checked, `u` is a
+  parameter and the term is evaluated: that is the generic computation.
+* **Verified.** A marker at the wrong level is rejected. A marker at level `0` on a term
+  of a data type would be unsound (a neutral where a constructor is expected, and any two
+  suspended proofs are convertible), so the kernel does not trust the elaborator's
+  marking. The test is the computation of the type's sort (`typeSort?`, `sortOf`), the one
+  proof irrelevance in conversion relies on; if the sort cannot be computed the term is
+  rejected.
+* **Required.** The checker has two modes. *Proof mode*: under a marker at level `0`, and
+  in `cast`'s equation and `transp`'s proofs. *Relevant mode*: everywhere else, including
+  a declaration's body. In relevant mode a term whose type is in a sort that may be `0`
+  (`Sort l` with `l` not never-zero: `Prop`, or `Sort u` for a level parameter `u`) must be
+
+  ```
+  marked:          prf.{l} t
+  neutral-shaped:  x | c | () | n a | n.1 | n.2 | down n | (n : T)      (n any term accepted here)
+  ```
+
+  Anything else there (a `fun`, a pair, a `let`, `refl`, `transp`, a cast, `absurd`, a case
+  analysis or an induction with such a motive, `up`) is the kernel error "unmarked
+  proof". The body of a marked `fun` is exempt: `Sort (imax a l)` is `0` exactly when
+  `Sort l` is, so where the body's sort is `0` the whole `fun` is suspended.
+* **The invariant.** Call a value *proof-safe* if it is a neutral, `()`, or a glued
+  constant that unfolds to one. Every value the kernel's evaluator builds at a
+  proposition is proof-safe: a variable of proposition type is only ever bound (by a
+  `let`, a β-step, a field of a pair or constructor, a fresh variable) to the value of a
+  term that was checked in relevant mode, or put there by one of the kernel's templates;
+  and applying or projecting a proof-safe value grows a spine. So **the kernel never
+  performs a β, projection or ι step inside a proof**, and a term that would make it do
+  so is rejected. `Globals.strictProofs` (off) asks for the marker on neutral-shaped
+  proofs too.
+* **Who writes the marker.** The elaborator's marking pass (`Wiz/Elab/Mark.lean`; in
+  `Kernel.wiz`, outside the kernel proper, `markCheck`/`markInfer`), a typed traversal run
+  on every declaration before the kernel. It is untrusted: a missing or wrong marker is a
+  kernel error. `quote` outside the kernel writes proofs back marked.
+* **Conversion.** At a proposition, conversion answers before it looks (§8.5). A proof
+  can sit inside a neutral that is compared at a relevant type only under `absurd`:
+
+  ```
+  a = h · sp · absurd M · sp₂     b = h' · sp' · absurd M' · sp₂'     (the same number of eliminations after the absurd)
+  h · sp and h' · sp' are proofs of False     M ≡ M'     sp₂ ≡ sp₂' (typed by M)
+  ───────────────────────────────────────────────────────────────────────────────
+  a ≡ b
+  ```
+
+  The proofs and their heads are not compared (a suspended proof on one side, a
+  hypothesis on the other). "A proof of `False`": it starts at a proof head and has
+  passed through no `absurd`, or its type is computed to be `Empty_0`. So a suspended
+  proof needs no type: what follows an `absurd` is typed by the motive.
+* **Erasure** is unchanged (by type). A marker at level `0` is erased; one at another
+  level is transparent.
+* **Open.** A `Π`/`Σ` built by the kernel's own templates carries no sort annotation in
+  places, and its sort is computed from its parts each time (U5, §8.3); mandatory sorts
+  and relevance marks on binders are a later step (`wiz-notes/prf-marker.md` §8).
 
 ---
 
@@ -1272,8 +1353,9 @@ observational equality (`μ^s ≡ μ^t` as types is stuck, §8.3).
 
 `eval` (`Eval.lean:128`) is call-by-value on an environment, with closures for binders.
 Lazy places: glued globals and `ind` on numerals (thunks); `coit`/`scofix` values (until
-`out`); `ecase` branches (evaluated only when the tag is known); and the proof positions
-of `cast` and `transp`, which are never evaluated (§8.6). Ill-typed situations
+`out`); `ecase` branches (evaluated only when the tag is known); and proofs, which are
+never evaluated: the proof positions of `cast` and `transp`, and marked proofs (§8.6,
+§8.6a). Ill-typed situations
 (applying a non-function) `panic!` and are meant to be unreachable on checked terms. All
 functions are `partial` in Lean: **termination of evaluation and of type checking is not
 proved**, and the D1 experiment shows checking can loop (Status.md).
@@ -1377,8 +1459,10 @@ Each item says what the code does; the code is what the kernel checks.
 | regularity in conversion (`unCast`) | off by default (`Conv.lean:264`, only under `--regularity`) | no: stuck casts are compared structurally |
 | regularity in evaluation | off; at inert types only, decided by `groundEqTy` (P1) | the same (`kernelRegularity := .false`; `groundEqTy`) |
 | InReg in conversion (`--inert conv`, experimental) | `unCast` at an inert type with `convTy A B` | not implemented |
-| proofs (P2, §8.6) | never evaluated (`Globals.lazyProofs`, `--eager-proofs` for the old behaviour); `quote` forces a suspended proof unless `quoteErasesProofs` | the same (`kernelLazyProofs := .true`); `quote` forces, `quoteM .false` (in `sameVal`) erases |
-| two proof heads in `convNe` | any two of `refl`, `reflTy`, `transp`, `prf` are equal (`isProof`) | only two of the same kind (`convHead`): **stricter**, so it can reject where the Lean kernel accepts, never the reverse. Reached only under an `absurd` (elsewhere proof irrelevance answers first); pinned by the test "P2: comparing types erases suspended proofs …" |
+| proofs (P2, §8.6) | never evaluated (`Globals.lazyProofs`, `--eager-proofs` for the old behaviour); `quote` outside the kernel evaluates a suspended proof within a step budget, the kernel's (`quoteErasesProofs`) never | the same (`kernelLazyProofs := .true`); `quote` evaluates (no budget: it is the frontend's), `quoteM .false` (in `sameVal`, `showVal`) erases |
+| the proof marker (§8.6a) | `Term.prf`, required and verified; `Globals.strictProofs` for the strict form | `Tm.prf`, the same rules; no strict form |
+| a proof under `absurd` in conversion | not compared (§8.6a) | the same. (Before the marker: any two proof heads in the Lean kernel, only two of the same kind in `Kernel.wiz`.) |
+| two proof heads with no `absurd`, at a type not seen to be a proposition | equal (`isProof`) | equal only if of the same kind (`convHead`): stricter |
 | convTy at Π/Σ propositions | quantities may differ | quantities must be equal (`Kernel.wiz:1598`) |
 | proof irrelevance at Π/Σ | asked at the Π/Σ | asked at the codomain/components only (`Kernel.wiz:1537–1541`); equivalent |
 | `isProp` | `typeSort? ≡ 0` | Π: codomain is a proposition; Σ: both parts (`Kernel.wiz:1328`) |

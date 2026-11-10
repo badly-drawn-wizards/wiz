@@ -1,4 +1,5 @@
 import Wiz.Elab.Recursor
+import Wiz.Elab.Mark
 import Wiz.Compiler.Run
 import Wiz.Compiler.IRRun
 import Wiz.Compiler.Lower
@@ -108,9 +109,10 @@ structure CommandState (R : Type) where
   messages and the info tree) -/
   pristine : Bool := true
 
-/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`). -/
+/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and
+the proof markers the kernel requires (`Mark`). -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) :=
-  addDecl g (d.withSorts g)
+  addDecl g ((d.withSorts g).withMarks g)
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
@@ -129,7 +131,7 @@ def solveSortConstraints : ElabM R Unit := do
       if !t.mvars.isEmpty then continue
       let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
                             qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
-                            types := ctx.types, lvl := ctx.lvl }
+                            types := ctx.types, lvl := ctx.lvl, proof := true }
       if let .ok (ty, _) := Wiz.infer kctx t then
         if let .sort l' ← force ty then
           try unifyLevel l l' catch e => throwAt ctx.info e.msg
@@ -543,7 +545,8 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
       else (compileReachable g builtins roots (externImpls := false)).mapError (s!"cannot compile the environment: {·}")
     | .error e => .error e
   let runProcMacro f stx scope := do Elab.runProcMacro (← compileCode [f, "Macro.run"]) f stx scope (macroEnv g)
-  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
+  -- (the elaborator's terms carry no proof markers yet: `proof`)
+  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer { ctx with proof := true } t).map (·.1) |>.mapError toString
   -- (13b) structures with a constructor private to another module don't unfold here
   match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
                 kernelInfer, classes, instances, termInfo } with
@@ -842,7 +845,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             report .error (d.getArg 1).info s!"partial definition {name}: no witness found for its type {ty.pretty}; give one with `partial (default := w) def {name} …` (the kernel takes {name} only if its type is inhabited)"
             return
           | .error e => report .error e.info e.msg; return
-        match addPartialDecl g (Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }) with
+        match addPartialDecl g ((Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }).withMarks g) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
@@ -860,7 +863,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | (.ok v, hv) =>
         addInfos hv
         let v := match g.find? name with
-          | some d => Sorts.value g #[] [] v (eval g [] d.type)
+          | some d => Mark.check { globals := g } (Sorts.value g #[] [] v (eval g [] d.type)) (eval g [] d.type)
           | none => v
         match addPartialImpl g name v with
         | .ok g' => g := g'
@@ -887,7 +890,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       solveSortConstraints
       let t ← zonk 0 t
       ensureNoMVars t
-      pure (nf (← getGlobals) t).pretty
+      -- (P2) with its proofs marked: `nf` suspends them, and reads each back within the
+      -- step budget (a proof need not have a normal form)
+      let g ← getGlobals
+      pure (nf g (Mark.infer { globals := g } t).1).pretty
     match r with
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
@@ -1442,7 +1448,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result := do
         let (ty, _) ← Wiz.infer ctx t
         let e ← eraseTop ctx t ty
@@ -1467,7 +1473,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result : Except String (VTy R × RVal) := do
         let (ty, _) ← (Wiz.infer ctx t).mapError toString
         let e ← (eraseTop ctx t ty).mapError toString

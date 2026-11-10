@@ -92,7 +92,8 @@ def isNatTy (ty : Val) : Bool := match whnf ty with
     | _ => .false
   | _ => .false
 
-def inferTy (c : TCtx) (t : Tm) : Option Val := match infer c t with
+-- (the kernel has accepted the term: nothing to require of its proof markers, `inProof`)
+def inferTy (c : TCtx) (t : Tm) : Option Val := match infer (TCtx.inProof c) t with
   | .ok ty _ => .some ty
   | .err _ => .none
 -- the type of a term already known to be well typed, without checking it again: along
@@ -228,6 +229,10 @@ def eraseCheck (c : TCtx) (t : Tm) (ty : Val) : ER := match erasable c ty with
       | e => e
     | _ => eraseInfer c t
   | .star => .ok .erased
+  -- (P2) a marked proof is erased; a marker at another level is transparent
+  | .prf l x => match lvlIsZero l with
+    | .true => .ok .erased
+    | .false => eraseCheck c x ty
   -- (Q4) `ULift` has no runtime content
   | .up a => match whnf ty with
     | .vulift _ A => eraseCheck c a A
@@ -269,6 +274,7 @@ def eraseInfer (c : TCtx) (t : Tm) : ER := match quickType c t with
       | .coe A _ _ x => eraseCheck c x (eval (TCtx.env c) A)   -- (a function under a cast is checked)
       | .exfalso _ _ => .ok (.prim "unreachable" .nil)
       | .down x => eraseInfer c x
+      | .prf _ x => eraseInfer c x
       | .ind l I D v P m i x =>
         let vI := eval (TCtx.env c) I;
         let vD := eval (TCtx.env c) D;

@@ -41,12 +41,13 @@ inductive Head (R : Type) where
   | refl (A a : Val R)
   | reflTy (X : Val R)
   | transp (A a P p b e : Val R)
-  /-- (P2, `Globals.lazyProofs`) a **suspended proof**: the term `t` in `env`,
-  never evaluated by the kernel. `v` computes it: for reading the proof back outside the
-  kernel (`quote`, unless `quoteErasesProofs`), and for the proof-inspecting
-  `--regularity refl`. `ty` is its type, for conversion (which never compares two
-  proofs). -/
-  | prf (ty : Thunk (Val R)) (env : List (Val R)) (t : Term R) (v : Thunk (Val R))
+  /-- (P2, `Globals.lazyProofs`) a **suspended proof**: the term `t` in `env`, never
+  evaluated by the kernel. It comes from a marked proof (`Term.prf`) or from a position
+  the syntax marks (`cast`'s equation, `transp`'s two proofs). Outside the kernel it is
+  evaluated to be read back (`quote`, unless `quoteErasesProofs`), within a step budget
+  (`Budget`). It carries no type: conversion never compares two proofs, and what follows
+  an `absurd` is typed by the motive. -/
+  | prf (env : List (Val R)) (t : Term R)
 
 inductive Val (R : Type) where
   /-- `head` followed by the eliminations in `spine`, innermost first -/

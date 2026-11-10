@@ -201,7 +201,7 @@ partial def Head.lvlBound : Head R → Nat
   | .refl A a => Val.maxBound [A, a]
   | .reflTy X => X.lvlBound
   | .transp A a P p b e => Val.maxBound [A, a, P, p, b, e]
-  | .prf _ env t _ => Closure.lvlBound 0 (.mk env t)
+  | .prf env t => Closure.lvlBound 0 (.mk env t)
 partial def Elim.spineBound (sp : Array (Elim R)) : Nat := sp.foldl (fun m e => max m e.lvlBound) 0
 partial def Elim.lvlBound : Elim R → Nat
   | .app a => a.lvlBound
@@ -223,6 +223,13 @@ partial def Closure.lvlBound (binders : Nat) : Closure R → Nat
   | .mk env body => envBound env ((Term.freeVarsAt binders body).run #[]).2
 end
 
+/-- The position of the last `absurd` in a spine. What comes before it is a term of an
+empty type; what comes after is typed by its motive. -/
+def lastAbsurd? (sp : Array (Elim R)) : Option Nat :=
+  (List.range sp.size).reverse.find? fun i => match sp[i]? with
+    | some (.absurd _) => true
+    | _ => false
+
 /-- (D1 experiment, `Regularity.refl`) Is this proof visibly a reflexivity: `refl`,
 `reflTy`, `()`, or a `transp` of one along one? Such proofs only prove equations whose
 sides are definitionally equal. -/
@@ -230,9 +237,16 @@ partial def reflProof (e : Val R) : Bool :=
   match whnf e with
   | .neutral (.refl ..) #[] | .neutral (.reflTy _) #[] | .tt => true
   | .neutral (.transp _ _ _ p _ e) #[] => reflProof p && reflProof e
-  -- (P2) the one rule that inspects a proof: force the suspension
-  | .neutral (.prf _ _ _ v) #[] => reflProof v.get
+  -- (P2) the one rule that inspects a proof, by its term: a suspended `refl`, `reflTy`
+  -- or `()` (it is not evaluated)
+  | .neutral (.prf _ t) #[] => (match t with
+    | .refl .. | .reflTy _ | .tt => true
+    | _ => false)
   | _ => false
+
+/-- (P2) What a closure's instantiation is once a read-back's step budget has run out
+(`Budget`): stuck. -/
+def outOfSteps : Val R := .neutral (.global " out of steps" []) #[]
 
 /-- (P2) Is this neutral head a proof? Suspended proofs, the proof heads, and (with
 `lazyProofs`) a stuck cast between propositions. -/
@@ -287,6 +301,9 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .ulift l A => .ulift l (eval g env A)
   | .up a => .up (eval g env a)
   | .down t => vDown (eval g env t)
+  -- (given) P2: a marked term whose sort is `0` is a proof: suspended, never looked into.
+  -- (At another level, or one that is still a parameter, it is an ordinary term.)
+  | .prf l t => if l.isZero then suspend g env t else eval g env t
   --<sol
   | .var ix => env[ix]!
   | .const n us => if let some v := vBuiltin? g n then v else match g.find? n with
@@ -317,7 +334,7 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .cast A B e t =>
     let vA := eval g env A
     let vB := eval g env B
-    vCast g vA vB (suspend g env e (Thunk.mk fun _ => vEqType g vA vB)) (eval g env t)
+    vCast g vA vB (suspend g env e) (eval g env t)
   | .refl A a => .neutral (.refl (eval g env A) (eval g env a)) #[]
   | .reflTy X => .neutral (.reflTy (eval g env X)) #[]
   | .transp A a P p b e =>
@@ -325,9 +342,7 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
     let va := eval g env a
     let vP := eval g env P
     let vb := eval g env b
-    .neutral (.transp vA va vP
-      (suspend g env p (Thunk.mk fun _ => vApp g (vApp g vP va) (.neutral (.refl vA va) #[])))
-      vb (suspend g env e (Thunk.mk fun _ => vEq g vA va vb))) #[]
+    .neutral (.transp vA va vP (suspend g env p) vb (suspend g env e)) #[]
   | .qty => .qty
   | .qlit r => .qlit r
   | .enum ls => .enum ls
@@ -426,11 +441,15 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .scofix l I D A f s i a => sorry
   --sol>
 
-/-- (P2) A proof position: with `g.lazyProofs`, a suspended proof of type `ty`
-(`Head.prf`), never evaluated; otherwise evaluated as usual. -/
-partial def suspend (g : Globals R) (env : Env R) (t : Term R) (ty : Thunk (Val R)) : Val R :=
-  if g.lazyProofs then .neutral (.prf ty env t (Thunk.mk fun _ => eval g env t)) #[]
-  else eval g env t
+/-- (P2) A proof: a marked one (`Term.prf`), or a position the syntax marks (`cast`'s
+equation, `transp`'s proofs). With `g.lazyProofs`, a suspended proof (`Head.prf`), never
+evaluated; otherwise evaluated as usual. (A marker on a marker is one suspension.) -/
+partial def suspend (g : Globals R) (env : Env R) (t : Term R) : Val R :=
+  match t with
+  | .prf _ t => suspend g env t
+  | t =>
+    if g.lazyProofs then .neutral (.prf env t) #[]
+    else eval g env t
 
 /-- Evaluate a display hint's arguments. -/
 partial def evalHint (g : Globals R) (env : Env R) :
@@ -456,14 +475,19 @@ partial def vApp (g : Globals R) : Val R → Val R → Val R
 /-- **Exercise 1.2b.** Instantiate a closure with a value for its bound variable. -/
 partial def Closure.inst (g : Globals R) : Closure R → Val R → Val R
   --<sol
-  | .mk env body, a => eval g (a :: env) body
+  | .mk env body, a => match g.budget with
+    | none => eval g (a :: env) body
+    -- (P2, outside the kernel) reading a proof back, within its step budget
+    | some b => if b.tick then eval g (a :: env) body else outOfSteps
   --|ex
   --| | .mk env body, a => sorry
   --sol>
 
 /-- Instantiate a closure over two binders (`a` first, then `b`). -/
 partial def Closure.inst2 (g : Globals R) : Closure R → Val R → Val R → Val R
-  | .mk env body, a, b => eval g (b :: a :: env) body
+  | .mk env body, a, b => match g.budget with
+    | none => eval g (b :: a :: env) body
+    | some bud => if bud.tick then eval g (b :: a :: env) body else outOfSteps
 
 /-- **Exercise 4.4a.** `let (x, y) := s; body`: β-reduces on a `pair`, gets stuck on a
 neutral. -/
@@ -1159,23 +1183,6 @@ two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   -- (given) a glued value keeps its name
   | .unfold n us sp _ => quote g l (.neutral (.global n us) sp)
-  -- (P2) a suspended proof, with the eliminations applied to it. The kernel's own
-  -- comparisons (`sameVal`) never evaluate it: every proof reads back as `()`. Readback
-  -- outside the kernel (the elaborator, messages) evaluates it, so that the term read
-  -- back is a normal form, which the kernel can check again (a substituted `(p, q).1`
-  -- has no inferable type).
-  | .neutral (.prf _ _ _ v) sp =>
-    if !g.quoteErasesProofs then quote g l (vElims g v.get sp) else
-    -- erased: `()`. Past an `absurd` the value need not be a proof (`absurd M p : M`, for
-    -- any `M`), so the eliminations from the last `absurd` on are kept, on `()`: two
-    -- different values of a data type must not read back alike. (Read back at `l + 1`
-    -- with a fresh variable for the head, then `()` for it.)
-    let isAbsurd (i : Nat) : Bool := match sp[i]? with
-      | some (.absurd _) => true
-      | _ => false
-    match (List.range sp.size).reverse.find? isAbsurd with
-    | none => .tt
-    | some k => (quote g (l + 1) (.neutral (.local l) (sp.extract k sp.size))).instantiateAt 0 .tt
   | .lazyInd lv I D v P m i x sp _ =>
     sp.foldl (fun t e => match e with
       | .app a => .app t (quote g l a)
@@ -1186,7 +1193,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       (.ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) (quote g l x))
   --<sol
   | .neutral h sp =>
-    let hd : Term R := match h with
+    let hd : Unit → Term R := fun _ => match h with
       | .local x => .var (l - x - 1)
       | .global n us => .const n us
       | .mvar m => .mvar m
@@ -1197,8 +1204,8 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .reflTy X => .reflTy (quote g l X)
       | .transp A a P p b e =>
         .transp (quote g l A) (quote g l a) (quote g l P) (quote g l p) (quote g l b) (quote g l e)
-      | .prf _ _ _ v => quote g l v.get  -- (not reached: the case above)
-    sp.foldl (init := hd) fun acc e => match e with
+      | .prf env t => quote g l (eval g env t)
+    let elims (acc : Term R) (sp : Array (Elim R)) : Term R := sp.foldl (init := acc) fun acc e => match e with
       | .app v => .app acc (quote g l v)
       | .fst => .fst acc
       | .snd => .snd acc
@@ -1217,6 +1224,43 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
         .scase lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l s) (quote g l i) acc
       | .sfix lv I D v P f s i =>
         .sfix lv (quote g l I) (quote g l D) v (quote g l P) (quote g l f) (quote g l s) (quote g l i) acc
+    -- (P2) a proof head (a suspended proof, `refl`, `transp`, a stuck cast between
+    -- propositions) is a proof up to its last `absurd`: past it the value need not be one
+    -- (`absurd M p : M`, for any `M`), so those eliminations are always read back.
+    if !(g.lazyProofs && proofHead h) then elims (hd ()) sp else
+    let k := (lastAbsurd? sp).getD sp.size
+    let pre := sp.extract 0 k
+    let post := sp.extract k sp.size
+    if g.quoteErasesProofs then
+      -- the kernel's own comparisons never evaluate a suspended proof, and never compare
+      -- two: it reads back as `()`
+      match h with
+      | .prf .. => elims .tt post
+      | _ => elims (hd ()) sp
+    else
+      -- outside the kernel (the elaborator, `#reduce`): a suspended proof is evaluated, so
+      -- that the term read back is a normal form, which the kernel can check again (a
+      -- substituted `(p, q).1` has no inferable type). The proof is read back *marked*:
+      -- in a relevant position the kernel requires the marker.
+      let p : Term R := match h with
+        | .prf env t => match g.budget with
+          -- (inside a read-back: on its budget)
+          | some _ => quote g l (vElims g (eval g env t) pre)
+          -- a read-back starts: the proof is evaluated and read back within a budget of
+          -- steps. If it runs out, the proof reads back as a constant that says so (and
+          -- that the kernel rejects).
+          | none =>
+            let b := Budget.new g.proofSteps
+            let g' := { g with budget := some b }
+            let tm := quote g' l (vElims g' (eval g' env t) pre)
+            let left := b.leftAfter tm
+            let tm : Term R := if left == 0 then .const (Budget.message g.proofSteps) [] else tm
+            if g.traceProofSteps then dbgTrace s!"proof-steps {g.proofSteps + 1 - left}" fun _ => tm else tm
+        | _ => elims (hd ()) pre
+      let p : Term R := match p with
+        | .prf .. => p
+        | p => .prf .zero p
+      elims p post
   | .sort k => .sort k
   | .pi x bi q a b s => .pi x bi (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l))) s
   | .lam x b => .lam x (quote g (l + 1) (Closure.inst g b (Val.var l)))
