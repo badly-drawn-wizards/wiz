@@ -418,6 +418,12 @@ structure Globals (R : Type) where
   (`unboxedSigma` in `Compiler/Erase.lean`). Off by default: it is not stable under
   substitution. -/
   unboxStructs : Bool := false
+  /-- a compiler setting, not read by the kernel: may erasure read the sort a `Π`/`Σ`
+  carries instead of recomputing it (`erasable` in `Compiler/Erase.lean`)? The kernel
+  validates those sorts (`checkSortNote`) in the terms it checks; `eraseDecl` turns this
+  off while it erases a term the kernel has not checked (a structurally recursive
+  definition's `impl`; `wiz-notes/impl-unchecked.md`). -/
+  sortNotesChecked : Bool := true
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false

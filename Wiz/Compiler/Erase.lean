@@ -218,10 +218,13 @@ where
   one: `typeSort?` recomputes it from every component, which along a structure's
   telescope of `n` fields, asked once per field, is quadratic. (The annotation is
   optional; without it the sort is computed, and the two agree, so the answer is the
-  same on both sides of a conversion: `wiz-notes/repr-shape.md`.) -/
+  same on both sides of a conversion: `wiz-notes/repr-shape.md`.) Only where the kernel
+  has validated the annotations (`Globals.sortNotesChecked`): a wrong "erasable" is a
+  miscompilation, so an unchecked term's annotations are not believed. -/
   isPropTy (ctx : Ctx R) (ty : VTy R) : Bool :=
     match whnf ty with
-    | .pi _ _ _ _ _ (some l) | .sigma _ _ _ _ (some l) => l.equiv 0
+    | .pi _ _ _ _ _ (some l) | .sigma _ _ _ _ (some l) =>
+      if ctx.globals.sortNotesChecked then l.equiv 0 else isProp ctx.globals ctx.tys ty
     | _ => isProp ctx.globals ctx.tys ty
 
 /-- **Unboxed newtypes** (stage 22i), behind `--unbox-structs` (`Globals.unboxStructs`;
@@ -817,7 +820,11 @@ where
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- the compiler's version (direct recursion), if the elaborator made one
   let some v := d.impl <|> d.value | return .prim .unreachable #[]
-  let ctx : Ctx R := { globals := g }
+  -- the kernel checks a definition's value and a partial definition's implementation
+  -- (it has a witness), but not the implementation the elaborator makes for a
+  -- structurally recursive definition: the sorts written in that one are not believed
+  let unchecked := d.impl.isSome && d.witness.isNone
+  let ctx : Ctx R := { globals := { g with sortNotesChecked := !unchecked } }
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
   let us := d.levelParams.map fun _ => Level.succ .zero

@@ -188,6 +188,15 @@ def group : Group where
     { name := "a match on a 400-field constructor is erased within 10 s (was 46 s)", run := fun _ => do
         let ms ← eraseMatchMs 400
         unless ms ≤ 10000 do throw (IO.userError s!"took {ms} ms (bound: 10 s)") },
+    -- (the price of the shortcut: it believes the sort a Π/Σ carries, which the kernel
+    -- validates only in the terms it checks; `wiz-notes/impl-unchecked.md`)
+    { name := "erasure believes a Π's sort only where the kernel validated it (sortNotesChecked)", run := fun _ => do
+        -- `Type → Type` marked as a proposition: wrong, as only an unchecked term could be
+        let w : Val ZeroOneMany := .qlit QuantitySyntax.explicitDefault
+        let ty : Val ZeroOneMany := .pi "x" .default w (.sort 1) (.mk [] (.sort 1)) (some 0)
+        check (erasable { globals := {} } ty) "with validated sorts, the annotation is read"
+        check (!erasable { globals := { sortNotesChecked := false } } ty)
+          "in an unchecked term the sort is recomputed: Type → Type is not a proposition" },
     { name := "one-pass reference counting agrees with the specification (insertRC)", run := fun _ => do
         let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         for p in examples ++ [literalProgram 300] do
