@@ -50,11 +50,11 @@ jobs:
           key: release-lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean', 'runtime/**', 'c/**') }}
           restore-keys: release-lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
       - name: lake build wiz grail tower
-        # Lean's clang has a sysroot with libraries but no headers (neither libc's nor
-        # its own stddef.h): c/sockets.c (linked into wiz and grail) takes the runner's
-        # gcc and libc headers (it uses nothing newer than the sysroot's glibc has)
+        # Lean's clang has a sysroot with libraries but no libc headers, and the link
+        # step that compiles c/sockets.c (linked into wiz and grail) doesn't pass Lean's
+        # own include/clang: give it both (it uses nothing newer than the sysroot's glibc)
         run: |
-          export C_INCLUDE_PATH="$(gcc -print-file-name=include):/usr/include/x86_64-linux-gnu:/usr/include"
+          export C_INCLUDE_PATH="$(lean --print-prefix)/include/clang:/usr/include/x86_64-linux-gnu:/usr/include"
           lake build wiz grail tower
       - name: The binaries don't depend on the build machine
         run: |
