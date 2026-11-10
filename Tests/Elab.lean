@@ -2978,6 +2978,18 @@ def languageGroup : Group where
           "#eval sum3 (1, 2, 3)\n#eval firstZero (0, 5)\n#eval firstZero (2, 5)") ["6", ".true", ".false"] },
     { name := "the pipe operator", run := fun _ =>
         okLib "import Prelude\n#eval 3 |> Nat.succ |> Nat.succ" ["5"] },
+    -- 13g
+    { name := "as-patterns: x@p binds the matched value, and recursion on it is structural", run := fun _ =>
+        okLib ("import Prelude\ndef last (A : Type) (d : A) : List A → A\n  | .nil => d\n  | .cons x .nil => x\n" ++
+          "  | .cons _ xs@(.cons _ _) => last A d xs\n#eval last Nat 0 (.cons 1 (.cons 2 (.cons 3 .nil)))\n" ++
+          "def dup : List Nat → List Nat\n  | .nil => .nil\n  | l@(.cons x _) => .cons x l\n#eval dup (.cons 1 (.cons 2 .nil))\n" ++
+          "def both (p : Nat × Nat) : Nat := match p with\n  | q@(a, b) => Nat.add (Nat.add a b) q.1\n#eval both (1, 2)\n" ++
+          "def nm : Nat → Nat\n  | n@m@(.succ _) => Nat.add n m\n  | z@_ => z\n#eval nm 3\n#eval nm 0")
+          ["3", ".cons 1 (.cons 1 (.cons 2 .nil))", "4", "6", "0"] },
+    { name := "as-patterns: the name must be a variable; not a term", run := fun _ => do
+        failsLib "import Prelude\ndef f : Nat → Nat\n  | (.succ k)@n => n\n  | _ => 0" "an as-pattern is `x@p` with a variable"
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := n@n" "only allowed in a pattern"
+        failsLib "import Prelude\ndef f : List Nat → Nat\n  | l@(.cons x) => x\n  | _ => 0" "cons expects 2 explicit arguments" },
     { name := "recursion over a family at a concrete index", run := fun _ =>
         okLib ("import Prelude\ndef len : SyntaxF .false → Nat\n  | .nil => 0\n  | .cons _ xs => Nat.succ (len xs)\n" ++
           "#eval len (.cons .missing (.cons .missing .nil))") ["2"] },

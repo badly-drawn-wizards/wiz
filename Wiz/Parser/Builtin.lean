@@ -134,6 +134,7 @@ def levelTrailing : List TrailingParser := [
 | `term.match`         | lead | "match" [terms] "with" [alts] |
 | `term.szInf`, `term.szSuc`, `term.sizeLt` | | "∞", "↑" s, "Size<" s |
 | `term.sized` (trailing) | max | T "^" s: an inductive or coinductive type at size `s` |
+| `term.asPat` (trailing) | max | x "@" p, without spaces: an as-pattern (13g; patterns only) |
 
 The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
 `Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out`, `coit` and `cocon` have no syntax of their
@@ -206,7 +207,9 @@ def termTrailing : List TrailingParser := [
   { kind := "term.eq", prec := 50, lhsPrec := 51, p := seqs ["=", term 51] },
   { kind := "term.proj", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, num] },
   { kind := "term.field", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, ident] },
-  { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "^", term maxPrec] }
+  { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "^", term maxPrec] },
+  -- 13g: an as-pattern `x@p` (no space around `@`; only in patterns)
+  { kind := "term.asPat", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "@", noWs, term maxPrec] }
 ]
 
 /-- A field of a `structure`, `class` or `coinductive` (an observation), on its own line;

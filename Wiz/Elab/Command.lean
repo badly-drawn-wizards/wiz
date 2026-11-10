@@ -297,9 +297,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let g ← getGlobals
   let pos : Nat := if !recursive then 0 else
     match clauses.head? with
-    | some c => (c.pats.findIdx? fun p => match patView g p with
-        | .ok (.ctor ..) => true
-        | _ => false).getD 0
+    | some c => (c.pats.findIdx? (patIsCtor g)).getD 0
     | none => 0
   let perm {α : Type} (xs : List α) : List α :=
     match xs.drop pos with

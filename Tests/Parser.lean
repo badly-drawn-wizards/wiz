@@ -105,6 +105,11 @@ def termGroup : Group where
           "(term.let [] x [] (term.app (term.ident f) [(term.ident a)]) [] (term.ident x))" },
     { name := "holes and explicit", run := fun _ =>
         parses "@f _ ?m" "(term.app (term.explicit f) [(term.hole) (term.syntheticHole m)])" },
+    -- 13g
+    { name := "as-pattern x@p: no space around @; f @g is still an explicit argument", run := fun _ => do
+        parses "f xs@(.cons _ _)" "(term.app (term.ident f) [(term.asPat (term.ident xs) (term.paren (term.app (term.dotIdent cons) [(term.hole) (term.hole)])))])"
+        parses "f @g x" "(term.app (term.ident f) [(term.explicit g) (term.ident x)])"
+        parses "f@g x" "(term.app (term.ident f) [(term.explicit g) (term.ident x)])" },
     { name := "comments are whitespace", run := fun _ =>
         parses "f /- a /- nested -/ -/ b -- c" "(term.app (term.ident f) [(term.ident b)])" },
     { name := "error: missing body", run := fun _ => fails "fun x =>" "term" },

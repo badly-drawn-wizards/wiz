@@ -358,6 +358,8 @@ inductive PatView where
   | ctor (T : Option Name) (c : Name) (args : List Syntax)
   /-- a pair pattern `(a, b)` (`(a, b, c)` is `(a, (b, c))`) -/
   | tuple (a b : Syntax)
+  /-- (13g) an as-pattern `x@p`: `p`, with `x` bound to the matched value -/
+  | as (n : Name) (p : Syntax)
   deriving Inhabited
 
 def holeStx : Syntax := .node {} "term.hole" #[.atom {} "_"]
@@ -393,6 +395,10 @@ partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
         .node stx.info "term.tuple" #[.atom {} "(", b, .atom {} ",", .node {} "null" (rest.extract 1 rest.size), .atom {} ")"]
       pure (.tuple (stx.getArg 1) b)
   | "term.hole" => pure .wild
+  | "term.asPat" =>
+    let x := stx.getArg 0
+    if x.isOfKind "term.ident" then pure (.as ((x.getArg 0).getId?.getD "_") (stx.getArg 2))
+    else .error "an as-pattern is `x@p` with a variable `x`"
   | "term.dotIdent" => pure (.ctor none ((stx.getArg 1).getId?.getD "_") [])
   | "term.ident" =>
     let n := (stx.getArg 0).getId?.getD "_"
@@ -409,6 +415,18 @@ partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
       | none => .error "only constructors may be applied in patterns"
     | _ => .error "invalid pattern"
   | k => .error s!"invalid pattern ({k})"
+
+/-- (13g) A pattern without its as-names: `x@y@p` is `([x, y], p)`. -/
+partial def patViewAs (g : Globals R) (stx : Syntax) : Except String (List Name × PatView) := do
+  match ← patView g stx with
+  | .as n p => let (ns, v) ← patViewAs g p; pure (n :: ns, v)
+  | v => pure ([], v)
+
+/-- Is the pattern a constructor pattern (under as-names)? -/
+def patIsCtor (g : Globals R) (stx : Syntax) : Bool :=
+  match patViewAs g stx with
+  | .ok (_, .ctor ..) => true
+  | _ => false
 
 /-- Find a component of type `False`/`Empty` inside a (Σ-nested) proof `e : ty`. -/
 partial def findAbsurd (g : Globals R) (ty e : Val R) : Option (Val R) :=
@@ -533,7 +551,7 @@ def recordMatch (info : SourceInfo) (alts : Array Syntax) (clauses : List (MClau
   let (some first, some last) := (alts[0]?, alts.back?) | return
   let g ← getGlobals
   let firsts := clauses.filterMap (·.pats.head?)
-  let views := firsts.map (patView g)
+  let views : List (Except String PatView) := firsts.map fun p => (patViewAs g p).map (·.2)
   let covered := views.filterMap fun v => match v with
     | .ok (.ctor _ c _) => some c
     | _ => none
@@ -1324,8 +1342,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- of the scrutinees, and make the row call it. If it doesn't check generically (its
   -- right-hand side relies on what the other rows learnt), copy it as before.
   let isCatchAll (c : MClause R) : Bool := c.binds.isEmpty && c.pats.all fun p =>
-    match patView g p with
-    | .ok (.var _) | .ok .wild => true
+    match patViewAs g p with
+    | .ok (_, .var _) | .ok (_, .wild) => true
     | _ => false
   if let some last := clauses.getLast? then
     let n := vars.length
@@ -1355,13 +1373,17 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
         pure (Term.letE "dflt✝" w fnTy fn rest)) (fun _ => pure none)
       if let some t := shared? then return t
   -- find the first constructor pattern of the first clause
-  let views ← cl.pats.mapM fun p => match patView g p with
+  -- (13g) a pattern is its as-names and the pattern under them
+  let pview (p : Syntax) : ElabM R (List Name × PatView) := match patViewAs g p with
     | .ok v => pure v
     | .error e => throwAt p.info e
+  let asViews ← cl.pats.mapM pview
+  let views := asViews.map (·.2)
   let some k := views.findIdx? (fun v => v matches .ctor .. || v matches .tuple ..) | do
     -- all variables: bind them and elaborate the right-hand side
     let mut binds := cl.binds
-    for v in views, x in vars do
+    for (ns, v) in asViews, x in vars do
+      for n in ns do binds := binds ++ [(n, typeOf x, Val.var x)]
       if let .var n := v then binds := binds ++ [(n, typeOf x, Val.var x)]
     let mut rhs := cl.rhs
     if let some rc := rc then
@@ -1395,12 +1417,14 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let vars' := vars.take k ++ [ctx.lvl, ctx.lvl + 1] ++ vars.drop (k + 1)
     let clauses' ← clauses.mapM fun c => do
       let p := c.pats[k]!
-      let (ps, binds) ← match patView g p with
-        | .ok (.tuple a b) => pure ([a, b], c.binds)
-        | .ok (.var n) => pure ([holeStx, holeStx], c.binds ++ [(n, typeOf x, xv)])
-        | .ok .wild => pure ([holeStx, holeStx], c.binds)
+      let (ns, pv) ← pview p
+      let asBinds := ns.map fun n => (n, typeOf x, xv)
+      let (ps, binds) ← match pv with
+        | .tuple a b => pure ([a, b], c.binds)
+        | .var n => pure ([holeStx, holeStx], c.binds ++ [(n, typeOf x, xv)])
+        | .wild => pure ([holeStx, holeStx], c.binds)
         | _ => throwAt p.info "expected a tuple pattern"
-      pure { c with pats := c.pats.take k ++ ps ++ c.pats.drop (k + 1), binds }
+      pure { c with pats := c.pats.take k ++ ps ++ c.pats.drop (k + 1), binds := binds ++ asBinds }
     let body ← compileMatch ctx2 vars' clauses' goal rc top
     let w : Term R := .qlit QuantitySyntax.explicitDefault
     return .letE "fst✝" w (q A) (q v1) (.letE "snd✝" w (quote g (ctx.lvl + 1) ty2) (quote g (ctx.lvl + 1) v2) body)
@@ -1579,10 +1603,15 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           (fun l => (.var (ctx'.lvl - l - 1) : Term R))).foldl .app (.const (T ++ "." ++ c) us))
         let explicitIdx := fieldInfos.zipIdx.filter (fun ((_, bi, _), _) => bi == .default) |>.map (·.2)
         let mut cls : List (MClause R) := []
+        -- a variable pattern is `x` itself (no object is rebuilt from its fields), unless
+        -- the goal depends on `x` (then only the constructor has the refined type) or
+        -- this is the recursor's split: its method also runs for the hypotheses,
+        -- where the value at hand is the constructor, not `x`
+        let xVal := if useRec || G.hasVar (ctx.lvl - x - 1) then ctorVal else Val.var x
         for cl' in clauses do
-          let pv ← match patView g (cl'.pats[k]!) with
-            | .ok v => pure v
-            | .error e => throwAt (cl'.pats[k]!).info e
+          let (asNames, pv) ← pview (cl'.pats[k]!)
+          -- (13g) the names of an as-pattern are bound like a variable pattern
+          let cl' := { cl' with binds := cl'.binds ++ asNames.map fun n => (n, xty, xVal) }
           let before := cl'.pats.take k
           let after := cl'.pats.drop (k + 1)
           match pv with
@@ -1597,15 +1626,11 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
               cls := cls ++ [{ cl' with pats := before ++ sub ++ after }]
           | .var n =>
             let sub := fieldInfos.map fun _ => holeStx
-            -- the variable is `x` itself (no object is rebuilt from its fields), unless
-            -- the goal depends on `x` (then only the constructor has the refined type) or
-            -- this is the recursor's split: its method also runs for the hypotheses,
-            -- where the value at hand is the constructor, not `x`
-            let xVal := if useRec || G.hasVar (ctx.lvl - x - 1) then ctorVal else Val.var x
             let binds := cl'.binds ++ [(n, xty, xVal)]
             cls := cls ++ [{ cl' with pats := before ++ sub ++ after, binds := binds }]
           | .wild =>
             cls := cls ++ [{ cl' with pats := before ++ (fieldInfos.map fun _ => holeStx) ++ after }]
+          | .as .. => throwAt (cl'.pats[k]!).info "internal error: as-pattern"
           | .tuple .. => throwAt (cl'.pats[k]!).info "a tuple pattern needs a pair"
         if cls.isEmpty then throwAt ctx.info s!"missing case for constructor {c}" "missing-case"
         -- reverted variables are re-introduced at new levels: their hypotheses follow them
@@ -1919,6 +1944,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     return (← check ctx stx ty, ty)
   | "term.letPair" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
+  -- (13g) as-patterns
+  | "term.asPat" => throwAt ctx.info "an as-pattern `x@p` is only allowed in a pattern"
   | "term.omega" => return (← elabQtyLit ctx stx "ω", .qty)
   | "term.num" =>
     -- an unannotated numeral is a `builtin nat`

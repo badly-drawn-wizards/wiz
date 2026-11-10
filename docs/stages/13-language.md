@@ -112,3 +112,45 @@ checks with it unfolded. The self-hosted frontend parses the `private` markers a
 ignores them. The motivating use is the HDL's signals (`drafts/hdl/Signal.wiz`): user
 code builds and observes them only through the library's combinators and `sample`
 (`drafts/hdl/rejected/observe_signal.wiz`). Tests: group `elabfix`.
+
+## 13g: as-patterns `x@p` ✅
+
+```
+def last (A : Type) (d : A) : List A → A
+  | .nil => d
+  | .cons x .nil => x
+  | .cons _ xs@(.cons _ _) => last A d xs     -- `xs` is the tail that was matched
+def dup : List Nat → List Nat
+  | .nil => .nil
+  | l@(.cons x _) => .cons x l
+```
+
+`x@p` (no space around the `@`; `p` an atomic pattern, so a constructor with arguments
+goes in parentheses) matches `p` and binds `x` to the value that was matched. It may be
+nested anywhere a pattern may, on any kind of pattern (`q@(a, b)`, `n@m@(.succ _)`).
+
+`x` is bound exactly as a variable pattern in that position would be (`compileMatch`,
+`Elab/Term.lean`): to the scrutinised variable itself, so no constructor is rebuilt,
+unless the goal depends on that variable; then it is the constructor applied to the
+fields, which is what has the refined type. Because `x` *is* the matched variable, an
+as-pattern on a recursive field is structurally smaller: `last A d xs` above is the
+induction hypothesis of the tail. (Without the as-pattern one had to write a helper
+that takes the head and the tail separately: "recursive call must be on a variable".)
+
+Limits: when the goal depends on the matched variable, `x` is the rebuilt constructor,
+and a recursive call on it is not recognised ("not a recursive field"). In a term,
+`x@p` is an error ("only allowed in a pattern").
+
+Not solved by as-patterns: recursion over a family at an index that is not a variable.
+`Vec.last : Vec A (Nat.succ n) → A` with `| .cons _ xs@(.cons _ _) => Vec.last xs` now
+gets as far as the kernel, which rejects it ("expected: n = .succ (.succ n)"): the
+induction hypothesis of a definition matched at the index `succ n` is for that same `n`
+(the parameters before the colon are fixed), and the tail is a `Vec A n`. `lib/Vec.wiz`
+keeps its helper `Vec.lastFrom`, whose index is a variable that the motive generalises.
+
+Syntax: `term.asPat`, a trailing parser at the highest precedence, `x "@" p` with no
+whitespace on either side of the `@`. Explicit application is unchanged, `f @g` and
+also `f@g`: where both readings are as long, the application wins, so an as-pattern
+whose pattern is a bare name (`x@y`, a second name for the same value) is not available;
+`x@_` and `x@(y)` are. Tests: `language` ("as-patterns …"),
+`parser: terms`.
