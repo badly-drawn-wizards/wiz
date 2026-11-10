@@ -51,6 +51,7 @@ jobs:
       tree: ${{ steps.tree.outputs.tree }}
       matrix: ${{ steps.shards.outputs.matrix }}
       lake-key: ${{ steps.key.outputs.key }}
+      compiler-key: ${{ steps.key.outputs.compiler }}
     steps:
       - uses: actions/checkout@v5
       - name: Embedded files (include_str) changed with their .lean files
@@ -77,6 +78,8 @@ jobs:
         shell: bash
         run: |
           echo "key=lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
+          # what identifies the compiler and test driver (and the C toolchain they use)
+          echo "compiler=${{ hashFiles('flake.lock', 'flake.nix', 'lean-toolchain', 'lake-manifest.json', 'lakefile.toml', '**/*.lean', 'runtime/**') }}" >> "$GITHUB_OUTPUT"
       - name: Cache the Lake build
         uses: actions/cache@v4
         with:
@@ -120,14 +123,42 @@ jobs:
         with:
           path: .lake
           key: ${{ needs.build.outputs.lake-key }}
+      # What the suite builds from Wiz programs, kept between runs: the elaboration cache
+      # (`--cache`, which the grail-selfhost test uses), grail's `.grail` (the test's
+      # build of the self-hosted checker) and the self-hosted checker and compiler that
+      # Tests/Elab.lean compiles under /tmp. None of them knows which elaborator made its
+      # entries (wiz's keys have a hand-bumped salt, the test runner's grail key is a
+      # constant), so the key starts with the compiler's inputs and restore-keys never
+      # cross compilers; within one compiler, entries are content-addressed, so a partial
+      # hit (other Wiz files) is safe.
+      - name: Restore the Wiz build caches
+        id: wiz-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cache/wiz
+            .grail
+            /tmp/wiz-selfhost-*
+          key: wiz-${{ runner.os }}-${{ matrix.shard.name }}-${{ needs.build.outputs.compiler-key }}-${{ hashFiles('**/*.wiz') }}
+          restore-keys: wiz-${{ runner.os }}-${{ matrix.shard.name }}-${{ needs.build.outputs.compiler-key }}-
       - name: lake test -- ${{ matrix.shard.name }}
         env:
           SELECT: ${{ matrix.shard.select }}
         run: |
           mapfile -t sel <<< "$SELECT"
-          mkdir -p logs
-          echo "lake test -- ${sel[*]}"
-          lake test -- "${sel[@]}" 2>&1 | tee "logs/${{ matrix.shard.name }}.log"
+          mkdir -p logs ~/.cache/wiz
+          du -sh ~/.cache/wiz .grail /tmp/wiz-selfhost-* 2>/dev/null || true
+          echo "lake test -- --cache ~/.cache/wiz ${sel[*]}"
+          lake test -- --cache "$HOME/.cache/wiz" "${sel[@]}" 2>&1 | tee "logs/${{ matrix.shard.name }}.log"
+      - name: Save the Wiz build caches
+        if: always() && steps.wiz-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/wiz
+            .grail
+            /tmp/wiz-selfhost-*
+          key: wiz-${{ runner.os }}-${{ matrix.shard.name }}-${{ needs.build.outputs.compiler-key }}-${{ hashFiles('**/*.wiz') }}
       - name: Summary
         if: always()
         run: |
@@ -140,10 +171,44 @@ jobs:
           path: logs/
           if-no-files-found: ignore
 
+  # The Nix package (flake.nix: wiz and grail, wrapped with the toolchain), pushed to
+  # Cachix when the token is there (pushes, and pull requests from this repository), so
+  # that `nix run github:badly-drawn-wizards/wiz` downloads it. It is a pure Nix build
+  # without Lake's artifact cache, so it rebuilds every module when a .lean file changes;
+  # the tests keep using Lake (incremental) and don't wait for it.
+  package:
+    name: nix package
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: ${{ env.CACHIX_NAME }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ secrets.CACHIX_AUTH_TOKEN == '' }}
+      - name: nix build .#wiz
+        shell: bash
+        run: nix build .#wiz -L --print-out-paths
+      - name: The package checks, builds and runs a program outside the checkout
+        shell: bash
+        run: |
+          # (the exercise tree's wiz is mostly stubs)
+          git grep -q -e '--<sol' -- '*.lean' || { echo "exercise tree: skipped"; exit 0; }
+          dir=$(mktemp -d)
+          cp examples/io.wiz "$dir/"
+          cd "$dir"
+          nix run "$GITHUB_WORKSPACE#wiz" -- check io.wiz
+          nix run "$GITHUB_WORKSPACE#wiz" -- build io.wiz -o io
+          ./io | head -3
+          nix run "$GITHUB_WORKSPACE#grail" -- 2>&1 | head -2
+
   # One check for branch protection, and the whole suite's summary.
   result:
     name: CI result
-    needs: [build, test, stubs]
+    needs: [build, test, stubs, package]
     if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -164,8 +229,9 @@ jobs:
       - name: Verdict
         shell: bash
         run: |
-          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, stubs: ${{ needs.stubs.result }}"
+          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, stubs: ${{ needs.stubs.result }}, package: ${{ needs.package.result }}"
           [ "${{ needs.build.result }}" = success ] || exit 1
+          [ "${{ needs.package.result }}" = success ] || exit 1
           for r in "${{ needs.test.result }}" "${{ needs.stubs.result }}"; do
             [ "$r" = success ] || [ "$r" = skipped ] || exit 1
           done

@@ -374,7 +374,9 @@ def grailSelfhostGroup : Group where
   exercise := "Stage 23e"
   cases := [
     { name := "grail builds the self-hosted checker, the same program as the tests'", run := fun _ => do
-        let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
+        -- the suite's elaboration cache (`lake test -- --cache DIR`, as CI does), else a fresh one
+        let tc ← toolchain
+        let tc : Toolchain := { tc with cacheDir := some (← tc.cacheDir.getDM IO.FS.createTempDir) }
         let dir ← IO.FS.realPath "."
         let log ← IO.mkRef ""
         let target := Grail.Target.selfhost "selfhost-checker" "checker"
