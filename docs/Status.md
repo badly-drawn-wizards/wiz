@@ -33,6 +33,10 @@ the results of the probes listed in the "Probes" section.
   regularity is off in both kernels, `cast` computes on data constructor by constructor,
   and the program now checks. One departure from the published "off" theory remains, a
   **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below; now argued relative to the system without regularity, with one incompleteness found).
+* **Proofs are never evaluated (P2).** Both kernels suspend the proof positions of `cast`
+  and `transp`, and a cast between propositions is stuck. That is the algorithm the
+  published decidability results are about ([PT23], [PLT25]). One gap remains: proofs
+  bound by `let` or passed as ordinary arguments are still evaluated (D1 below, §7).
 * **Three proofs of `False` in the kernel have been found and fixed** (propositions
   compared by shape; `∞ < ∞`; quantities that differ only by a variable, F6), each with
   regression tests. A failure of
@@ -310,8 +314,10 @@ simpler).
   `Desc` and `ν` likewise; equality at `μ` follows the description constructor by
   constructor, so `succ m = succ n` is `m = n` without a cast. The Abel–Coquand box now
   yields a stuck proof, and the program checks (tests "D1 (Abel–Coquand): the program
-  checks …", "… the Wiz kernel checks the program …"; with `--regularity full`, resp.
-  `kernelRegularity := .true`, both kernels still loop, which the tests also check).
+  checks …", "… the Wiz kernel checks the program …"; with `--regularity full
+  --eager-proofs`, resp. `kernelRegularity := .true`, the kernels still loop, which the
+  tests also check; since P2, below, `--regularity full` alone no longer loops in the
+  Lean kernel).
 * **Departure from the published theory (conjecture).** Regularity is kept at **inert**
   types: `Enum`, `Unit`, Σs of inert types, and `μ` types whose fields are all inert (no
   `Prop` field, function, neutral type or type variable), decided by a syntactic,
@@ -334,9 +340,11 @@ simpler).
   * **Normalisation of proofs.** Inert types are *rigid*: their reducibility candidate
     does not depend on `Prop` or on type variables. So Girard's candidates argument
     survives a rule that returns its argument unchanged at them, using environments that
-    agree at inert types. Abel–Coquand needs a non-rigid type. This property matters
-    because Wiz's strict evaluator reduces proofs (it forces `e` inside `cast`), and
-    Pujet–Tabareau's decidability proof for CCobs deliberately never reduces proofs.
+    agree at inert types. Abel–Coquand needs a non-rigid type. This property mattered
+    while Wiz's evaluator ran proofs (it forced `e` inside `cast`). Since P2 it does not,
+    at the positions the syntax marks as proofs (next item), so this third property is
+    needed only for the proofs that are still evaluated: those bound by `let` or passed
+    as arguments.
 
   All three assume the same property of the system without regularity, which is itself
   unproved for Wiz. That system already has two identity casts that inspect types: at
@@ -352,6 +360,32 @@ simpler).
 
   `sameFamily?` has the same defect. The fix is to decide the side condition with
   conversion. Confirmed by a probe (the note, §10): `h p q p` is well typed, but its δβ-reduct is rejected, so subject reduction fails for the algorithmic typing.
+* **P2: proofs are never evaluated** (CoreSpec §8.6; `Globals.lazyProofs`,
+  `kernelLazyProofs`; the user's decision, 2026-11-10).
+  * Pujet–Tabareau's and Pujet–Leray–Tabareau's algorithms never reduce a proof, and
+    their theorems are about those algorithms. Wiz's kernels ran proofs, so those
+    theorems could not cover them even in principle.
+  * Now the equation of a `cast` and the two proofs of a `transp` are suspended, a cast
+    between propositions is stuck, and conversion decides proof irrelevance before it
+    unfolds either side.
+  * Effect on D1: with `--regularity full`, the Lean kernel checks the Abel–Coquand
+    program and its nested variant (test "P2: proofs are never evaluated, so
+    Abel–Coquand checks even with full regularity"). The loop is inside a proof, and
+    nothing runs it. With `--regularity full --eager-proofs` it loops as before.
+  * **What [PLT25] proves** (Theorem 5.6): decidability of conversion with full
+    regularity, for the fragment with Π, ℕ, ⊥, `Ω`, a proof-irrelevant ∃, the
+    observational equality and `cast`, at two universe levels, mechanised in Agda. It
+    does not cover general inductive types, and so not Wiz's descriptions, `μ`/`ν`,
+    sizes, quantities or `ULift`. Wiz's statement stays "the published algorithm,
+    extended; unproved for the extension".
+  * **Remaining gap.** A proof bound by `let`, or passed as an ordinary argument, is
+    still evaluated: the evaluator does not know which arguments are proofs. The test
+    "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with
+    regularity on: its proofs are let-bound)" shows it: that term binds its proofs with
+    `let`, and with `kernelRegularity := .true` the Wiz kernel still loops on it.
+    Regularity is off by default, so this is not reachable in the default configuration.
+  * The elaborator still evaluates a suspended proof when it reads a value back into a
+    term, because the kernel must be able to check that term again (CoreSpec §8.6).
 * **What it costs (known failures).** Without regularity a cast at a **type variable**
   is stuck (TTobs behaviour): `cast e a = a` for `e : A = A`, "`J` computes on `refl`"
   at a variable family, and the definitional equations of functions defined by `match`
@@ -517,16 +551,18 @@ that checks everything. Wiz's situation:
   partial definitions' inhabitedness (O2), `builtin` registrations (O3), the templates
   and the kernel's own generated types, and everything after
   type checking (erasure, the backends).
-* **Termination** of the kernel is not proved and is known to fail (D1); all evaluation
-  functions are `partial` in Lean.
-* **The evaluator reduces proofs.** `eval` is strict, and `vCast` forces `e` (through
-  `vFst`/`vSnd`, and by applying `e.1`). So the kernel terminates only if the proofs it
-  forces normalise. Pujet–Tabareau's decidability result for impredicative OTT (CCobs,
-  POPL 2023) is proved *without* normalising proofs: in their words, the Abel–Coquand
-  loop "is not a problem if we don't reduce irrelevant proofs" (Pujet, HoTTEST 2023). So
-  even a Wiz version of their theorem would not cover this kernel as written. An
-  evaluator that never forces proof positions would close that gap.
-  (`/workspace/wiz-notes/inert-regularity.md` §2.)
+* **Termination** of the kernel is not proved; all evaluation functions are `partial` in
+  Lean. With non-default options it is known to fail (D1: `--regularity full
+  --eager-proofs`).
+* **The evaluator does not run proofs (P2, resolved for the marked positions).** `eval`
+  suspends the equation of a `cast` and the proofs of a `transp`, and `vCast` only
+  projects them. Pujet–Tabareau's decidability result for impredicative OTT (CCobs,
+  [PT23]) and Pujet–Leray–Tabareau's with regularity ([PLT25], Theorem 5.6, for Π, ℕ, ⊥,
+  `Ω`, ∃) are proved for algorithms that never normalise proofs, so a Wiz version of
+  those theorems can now be about this kernel. Two things are still outside it:
+  proofs bound by `let` or passed as arguments are evaluated strictly, and Wiz's data
+  types are not in the fragment those theorems cover (D1, P2).
+  (`/workspace/wiz-notes/p2-proofs.md`, `/workspace/wiz-notes/plt-vs-inert.md`.)
 
 ## 8. Testing evidence
 
@@ -588,4 +624,5 @@ as a test yet (each should become one when its issue is fixed).
 ## References
 
 As in [CoreSpec.md §17](CoreSpec.md#17-references): [Atkey18], [AC20], [CDMM10], [AVW17],
-[PT22], [PT23], Agda #3026 (checked); [ML84], [AMS07], Gilbert et al. (not re-checked).
+[PT22], [PT23], Agda #3026 (checked); [ML84], [AMS07], Gilbert et al. (not re-checked);
+[PLT25] (read by another agent, `/workspace/wiz-notes/plt-vs-inert.md`; not re-read here).
