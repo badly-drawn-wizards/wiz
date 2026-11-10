@@ -124,7 +124,12 @@ def group : Group where
         okLib ("import Prelude\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A .zero\n" ++
           "  | cons {0 n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n" ++
           "def zip {A B : Type} {n : Nat} : Vec A n → Vec B n → Vec (A × B) n\n" ++
-          "  | .nil, .nil => .nil\n  | .cons a as, .cons b bs => .cons (a, b) (zip as bs)") }
+          "  | .nil, .nil => .nil\n  | .cons a as, .cons b bs => .cons (a, b) (zip as bs)") },
+    { name := "an argument naming a tuple pattern's component, before a postponed lambda (no scope escape)", run := fun _ =>
+        okLib ("import Prelude\nstructure P where\n  a : Nat\n  b : Nat\n" ++
+          "def app {S B : Type} (s : S) (k : S → B) : B := k s\n" ++
+          "def f (p : P) : Nat := match p with\n  | (x, y, _) => app x (fun x => Nat.add x y)\n" ++
+          "#eval f (P.mk 2 3)") ["5"] }
   ]
 
 end Tests.ElabFix
