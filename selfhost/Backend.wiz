@@ -1255,6 +1255,22 @@ def staticNul (tag : Nat) (items : ETms) : Option Nat := match tag with
     | .nil => .none
   | .succ _ => .none
 -- an object: in a reuse context with no wish open, it wishes for a cell (`w`)
+-- a term built only from constants (numbers, `◾`, closed `λ`s, such objects)
+mutual
+def closedConstE (t : ETm) : Bool := match t with
+  | .nat _ => .true
+  | .erased => .true
+  | .lam _ => match freeE t .nil with
+    | .nil => .true
+    | .cons _ _ => .false
+  | .obj _ fs => closedConstEs fs
+  | _ => .false
+def closedConstEs (ts : ETms) : Bool := match ts with
+  | .nil => .true
+  | .cons t rest => match closedConstE t with
+    | .true => closedConstEs rest
+    | .false => .false
+end
 def objC (w : String) (k n : Nat) (atoms : List Doc) : Doc := match strEq w "" with
   | .true => .t "mkobj(" ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat n ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})"
   | .false => .t ("reuseobj(" +++ w +++ ", ") ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat n ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})"
@@ -1331,9 +1347,15 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
       match staticNul tag items with
       -- (a constant `(k, ◾)`: the runtime's static object, `nul(k)`)
       | .some kk => .mk (.t "") (.t ("nul(" +++ Nat.toString kk +++ ")")) live st
-      | .none => match wish with
-        | .mk w st0 => match rcEs re st0 names d live items with
-          | .mk fc atoms fl st1 => bindTo st1 fc (objC w tag n atoms) fl
+      | .none => match closedConstEs items with
+        -- (built only from constants: built once, a constant)
+        | .true => match CG.fresh st "cst" with
+          | .mk x st0 => match rcEs (RE.inner re) st0 .nil 0 .nil items with
+            | .mk fc atoms _ st1 => .mk (.t ("static V " +++ x +++ " = 0; if (!" +++ x +++ ") { ") ⧺ fc ⧺ .t (x +++ " = ") ⧺ objC "" tag n atoms ⧺
+                .t ("; rt_root(&" +++ x +++ "); } inc(" +++ x +++ "); ")) (.t x) live st1
+        | .false => match wish with
+          | .mk w st0 => match rcEs re st0 names d live items with
+            | .mk fc atoms fl st1 => bindTo st1 fc (objC w tag n atoms) fl
   | .letE v b => match CG.fresh st "l" with
     | .mk x st1 => match rcE re st1 (.cons x names) (d + 1) live b with
       | .mk bc ba bl st2 => match rcE re st2 names d (lvDel d bl) v with
@@ -1411,7 +1433,10 @@ def rcLam (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) 
             | .cons _ _ => bindTo st3 cc (.t ("mkthunk(" +++ fname +++ ", " +++ Nat.toString nc +++
                 ", (V[]){" +++ joinC (capsCode names caps) +++ "})")) cl
           | .false => match caps with
-            | .nil => bindTo st3 cc (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString k +++ ", 0, NULL)")) cl
+            -- (capturing nothing: one closure, built once, a constant)
+            | .nil => match CG.fresh st3 "clo" with
+              | .mk x st4 => .mk (cc ⧺ .t ("static V " +++ x +++ " = 0; if (!" +++ x +++ ") { " +++ x +++ " = mkfun(" +++ fname +++ ", " +++
+                  Nat.toString k +++ ", 0, NULL); rt_root(&" +++ x +++ "); } inc(" +++ x +++ "); ")) (.t x) cl st4
             | .cons _ _ => bindTo st3 cc (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString (nc + k) +++ ", " +++ Nat.toString nc +++
                 ", (V[]){" +++ joinC (capsCode names caps) +++ "})")) cl
 -- a saturated call of `d_g`, then the rest applied: a variable in a borrowed position
