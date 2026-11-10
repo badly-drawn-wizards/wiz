@@ -2065,6 +2065,14 @@ end
 
 def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
 
+-- (Q1) must a value `v` of type `a` be used: is `a` a Σ with a field whose quantity
+-- doesn't allow zero uses, here or in its second part? (`p.1` drops `p.2`)
+partial def mustUse (a v : Val) : Bool := match whnf a with
+  | .vsigma q _ env b _ => match qle .qz q with
+    | .true => mustUse (eval (.cons (vfst v) env) b) (vsnd v)
+    | .false => .true
+  | _ => .false
+
 -- **Exercise 14.3.** Bidirectional type checking with usage (`infer` and `check` in
 -- `Check.lean`): each answer comes with the usage of the variables (types and proofs
 -- count nothing); leaving a binder checks its variable's usage against its quantity.
@@ -2109,8 +2117,16 @@ def infer : TCtx → Tm → TyRes
   | _, .pair _ _ => .err "cannot infer the type of a pair; add a type ascription"
   | c, .fst p => match infer c p with
     | .ok ty u => match whnf ty with
-      | .vsigma q a _ _ _ => match Bool.or (TCtx.erased c) (qle .qo q) with
-        | .true => .ok a u
+      | .vsigma q a env b _ => match Bool.or (TCtx.erased c) (qle .qo q) with
+        -- `p.1` drops `p.2` (Q1): if that holds a field that must be used, only an
+        -- unrestricted pair may drop it, so `p` counts as used ω times
+        | .true => match TCtx.erased c with
+          | .true => .ok a u
+          | .false =>
+            let pv := eval (TCtx.env c) p;
+            match mustUse (eval (.cons (vfst pv) env) b) (vsnd pv) with
+            | .true => .ok a (uScale .qw u)
+            | .false => .ok a u
         | .false => .err "cannot project an erased field"
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
