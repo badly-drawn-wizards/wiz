@@ -35,7 +35,7 @@ the results of the probes listed in the "Probes" section.
   **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below).
 * **Two proofs of `False` in the kernel have been found and fixed** (propositions
   compared by shape; `∞ < ∞`), each with regression tests in both kernels. A failure of
-  subject reduction for small description fields (Q4) is fixed too (F3, `ULift`).
+  subject reduction for small description fields (Q4) is fixed too (F5, `ULift`).
 * **Three proofs of `False` were found while writing this page, and confirmed by
   running them** (see "Open issues" and "Probes"):
   * **O1** (fixed in `c079d1b`): the self-hosted kernel reduced `Size ≡ Size` to
@@ -62,9 +62,9 @@ the results of the probes listed in the "Probes" section.
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
 | Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs treats `Prop` (per the review `xtt-cubical-attacks.md` A0; not re-checked in [PT22]). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture**; propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
-| Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F3, was Q4). |
+| Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
@@ -133,7 +133,7 @@ the results of the probes listed in the "Probes" section.
   `sized-recursion`, `sized-corecursion`, `sh-kernel-sizes` and `sh-kernel-coinduction` as
   "known-issue" for `∞ < ∞`; that is out of date.
 
-### F3. Description fields in smaller universes (Q4, decision (a)) — **fixed**
+### F5. Description fields in smaller universes (Q4, decision (a)) — **fixed**
 
 * **The bug.** `arg q S D` accepted `S : Sort k` with `k ≤ l+1`, but `Desc.elim`'s `marg`
   takes `S : Sort (l+1)`, and universes are not cumulative. So `Desc.elim` on a small field
@@ -296,11 +296,12 @@ simpler).
   at a variable family, and the definitional equations of functions defined by `match`
   on an *indexed* family whose result type is dependent and mentions a type variable:
   `Vec.map f (cons x xs)` is `cons (cast B B _ (f x)) (cast … (Vec.map f xs))`. So
-  `Vec.map_map`, `Vec.get_set` and `Vec.get_map` no longer check; they moved to
-  `drafts/vec-lib/VecProofs.wiz` (test "known failure: map_map needs regularity at a
-  variable type"). They are not provable without some regularity. A propositional
-  `castRefl : cast A A e a = a` (an axiom, which doesn't compute) would recover them;
-  that is a pending decision (wishful: cast-refl). Non-indexed types and constant
+  `Vec.map_map`, `Vec.get_set` and `Vec.get_map` can't be proved by computation.
+  Decision (the user's): a propositional **`castRefl : cast A A e a = a`**, an axiom in
+  the Prelude (CoreSpec §8.4a). It is consistent in the setoid model, doesn't compute,
+  and is listed by `#print axioms`. With it the three theorems are back in `lib/Vec.wiz`
+  (through `Vec.map_cons`, `get_cons_*` and `set_cons_*`), and so is `Lens.pair_putGet`
+  in `lib/Optic.wiz`. Non-indexed types and constant
   motives are unaffected: recursors of non-indexed types have no cast, and indexed
   families get `T.recN`/`T.casesOnN` for motives independent of the scrutinee.
 
@@ -363,10 +364,10 @@ the largest variable level `quote` can reach in either value (`Val.lvlBound` in
 its body mentions). The bound can be too large, never too small. Cost: one extra walk of
 the two values per `sameVal` (a perf measurement of the self-check is wanted).
 
-### Q4. Description fields in smaller universes: subject reduction failed — **fixed** (see F3)
+### Q4. Description fields in smaller universes: subject reduction failed — **fixed** (see F5)
 
 Decision (a), a kernel `ULift` former with the elaborator lifting small fields, is
-implemented in both kernels: see **F3** in "Fixed issues" for the rules, the tests and the
+implemented in both kernels: see **F5** in "Fixed issues" for the rules, the tests and the
 costs that remain. The options that were weighed: (a) `ULift`, chosen; (b) cumulativity,
 large and cross-cutting; (d) `marg` quantifying over the field's level, which needs a Π over
 levels (`Setω`) that Wiz's core has no place for (levels are prenex parameters of globals).
@@ -486,7 +487,7 @@ as a test yet (each should become one when its issue is fixed).
 | wrong `builtin nat.add` (O3) | accepted: `bad : False` |
 | `builtin nat := E` (empty) + `(0 : E)` (O3) | `wiz check` crashes (stack overflow) |
 | `p.2` on a linear pair (Q1) | rejected since `212aebf` (was accepted) |
-| `Desc.arg 1 True …` (Q4, fixed: F3) | rejected by the elaborator (field must be in `Type ?u`) and now by both kernels (`MTm.smallField`: `D` and `getS D` rejected; the lifted `D'` accepted, `getS D'` is `ULift True : Type`) |
+| `Desc.arg 1 True …` (Q4, fixed: F5) | rejected by the elaborator (field must be in `Type ?u`) and now by both kernels (`MTm.smallField`: `D` and `getS D` rejected; the lifted `D'` accepted, `getS D'` is `ULift True : Type`) |
 
 ## How to report a soundness bug
 

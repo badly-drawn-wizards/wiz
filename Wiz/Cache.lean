@@ -293,7 +293,8 @@ def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
            classes := e.classes ++ s.classes, instances := s.instances ++ e.instances,
            coinductives := s.coinductives ++ e.coinductives, foreignTypes := e.foreignTypes ++ s.foreignTypes,
            cCode := s.cCode ++ e.cCode, infos := s.infos ++ e.infos,
-           declSites := e.sites.foldl (fun m (n, i, md) => m.insert n (i, md)) s.declSites }
+           declSites := e.sites.foldl (fun m (n, i, md) => m.insert n (i, md)) s.declSites,
+           pristine := false }
 
 def info (i : SourceInfo) : Sx := list [nat i.start, nat i.stop]
 def dinfo (x : Sx) : Option SourceInfo := do
@@ -409,7 +410,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
-def salt : UInt64 := hash "wiz-cache-7-q4-lift"  -- 7: Q4, lifted description fields (after D1's 6)
+def salt : UInt64 := hash "wiz-cache-8-q4-lift"  -- 8: Q4, lifted description fields (after D1's 6)
 
 /-! ## Keys and atomic writes (stage 23c)
 
@@ -533,7 +534,7 @@ where
       match parseCommand chars s.tables pos with
       | .error _ =>
         -- report the parse error (and everything after it) without the cache
-        s := runFrontend.go input chars pos s
+        s := runFrontend.go input base chars pos s
         break
       | .ok (cmd, stop) =>
         let text := String.ofList (chars.extract pos stop).toList
@@ -564,7 +565,7 @@ where
           s := e.apply s
           hits := hits + 1
         | none =>
-          let s' := Query.elaborate.elabOne input chars pos stop s
+          let s' := Query.elaborate.elabOne input base chars pos stop s
           if cacheable.contains cmd.kind && mode matches .write then
             store.put key (effectOf s s')
           s := s'

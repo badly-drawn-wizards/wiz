@@ -444,7 +444,22 @@ partial def unifyHead (l : Lvl) (h h' : Head R) : ElabM R Unit := do
   | .global n us, .global n' us' =>
     unless n == n' && us.length == us'.length do throwAt {} "rigid mismatch"
     for a in us, b in us' do unifyLevel a b
-  | .eq A a b, .eq A' a' b' => unify l A A'; unify l a a'; unify l b b'
+  | .eq A a b, .eq A' a' b' =>
+    unify l A A'
+    let s ← get
+    try unify l a a'; unify l b b'
+    catch err =>
+      -- an equation that was stuck on a metavariable (its type, say) may compute now:
+      -- `succ ?a = succ ?b` at a solved `Nat` is `?a = ?b`. Compare the computed forms,
+      -- if either changed.
+      set s
+      let g ← getGlobals
+      let v := vEq g (← force A) a b
+      let v' := vEq g (← force A') a' b'
+      let same (w : Val R) (A a b : Val R) : Bool :=
+        quote g l w == quote g l (.neutral (.eq A a b) #[])
+      if same v A a b && same v' A' a' b' then throw err
+      unify l v v'
   | .eqTy A B, .eqTy A' B' => unify l A A'; unify l B B'
   | .cast A B _ t, .cast A' B' _ t' => unify l A A'; unify l B B'; unify l t t'
   | _, _ =>
