@@ -187,37 +187,66 @@ end ReprInfo
 
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
-/-- Values of this type have no runtime content: types, proofs, sizes, quantities, phantom
-tails, and lifts of these (`ULift`, Q4: a lifted proof is still a proof at run time). -/
+private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
+
+/-- Is `ty` an **erased function into `Unit`**, `(0 x₁ : D₁) → … → (0 xₙ : Dₙ) → Unit` with
+`n ≥ 1` (`n ≥ 0` with `allowUnit`)? Such a type has one inhabitant up to η,
+`fun _ … _ => ()`, and nothing can be learnt from applying it, so its values have no
+runtime content. This is the shape of a phantom tail (22e) and of a structure's marker
+(22i), but the test is on the **shape of the type** only: the quantities and the final
+`Unit`, which conversion and type equality compare, and never a binder name or an `Enum`
+label, which they ignore (R3 of the soundness audit). A neutral type (a type variable, a
+stuck match) is not of this shape: generic code keeps the value, and applies it with the
+runtime's `ap`, which answers `◾` for `◾`. -/
+partial def erasedFunTy (g : Globals R) (ty : VTy R) (lvl : Nat) (allowUnit : Bool := false) : Bool :=
+  match whnf ty with
+  | .unit _ => allowUnit
+  | .pi _ _ q _ cod _ => isZeroQ q && erasedFunTy g (Closure.inst g cod (.var lvl)) (lvl + 1) true
+  | _ => false
+
+/-- Values of this type have no runtime content: types, proofs, sizes, quantities, erased
+functions into `Unit` (`erasedFunTy`: phantom tails), and lifts of these (`ULift`, Q4: a
+lifted proof is still a proof at run time). -/
 partial def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
   match whnf ty with
   | .sort _ | .size | .sizeLt _ | .qty => true
   | .ulift _ A => erasable ctx A
-  -- a phantom tail `(0 phantom✝ : D) → … → Unit` (only `fun _ => ()` inhabits it)
-  | .pi x .. => isPhantomName x || isProp ctx.globals ctx.tys ty
-  | _ => isProp ctx.globals ctx.tys ty
+  | .pi .. => erasedFunTy ctx.globals ty ctx.lvl || isPropTy ctx ty
+  | _ => isPropTy ctx ty
+where
+  /-- `isProp`, but from the sort a `Π`/`Σ` carries (checked by the kernel) when it has
+  one: `typeSort?` recomputes it from every component, which along a structure's
+  telescope of `n` fields, asked once per field, is quadratic. (The annotation is
+  optional; without it the sort is computed, and the two agree, so the answer is the
+  same on both sides of a conversion: `wiz-notes/repr-shape.md`.) -/
+  isPropTy (ctx : Ctx R) (ty : VTy R) : Bool :=
+    match whnf ty with
+    | .pi _ _ _ _ _ (some l) | .sigma _ _ _ _ (some l) => l.equiv 0
+    | _ => isProp ctx.globals ctx.tys ty
 
-private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
+/-- **Unboxed newtypes** (stage 22i), behind `--unbox-structs` (`Globals.unboxStructs`;
+off by default). Is `ty` a Σ whose second component is an erased function into `Unit`
+(`erasedFunTy`), as the last field of a structure is (its second component is the
+structure's tail)? Then a value of it is represented by its first component alone:
+building it is the identity, `.1` is the identity, `.2` is `◾`. A one-field structure
+(`Shr ρ A`, a newtype) is then its field, and an `n`-field one is `n - 1` pairs instead
+of `n`.
 
-/-- Is `ty` the tail of a structure with fields, `(0 _ : D) → … → (0 _ : Enum [fields✝]) → Unit`
-(`structTailName`, stage 22i)? -/
-partial def isStructTail (g : Globals R) (ty : VTy R) (lvl : Nat := 1000000) : Bool :=
-  match whnf ty with
-  | .pi _ _ _ dom cod _ =>
-    match whnf dom with
-    | .enum [l] => l == structTailName
-    | _ => isStructTail g (Closure.inst g cod (.var lvl)) (lvl + 1)
-  | _ => false
-
-/-- **Unboxed newtypes** (stage 22i). Is `ty` a Σ whose second component is a structure's
-tail, that is, the last field of a structure? Then a value of it is represented by its
-first component alone: building it is the identity, `.1` is the identity, `.2` is `◾`.
-A one-field structure (`Shr ρ A`, a newtype) is then its field, and an `n`-field one is
-`n - 1` pairs instead of `n`. The decision depends only on the binder name of the tail,
-which substitution can't create or remove, so generic and specialised code agree. -/
+The decision is a function of the Σ type alone, with its second component taken at a
+**variable** (never at the pair's actual first component: building, projecting and
+reading back must agree), and by shape, so that two convertible types get one
+representation (R3). But it is **not stable under substitution**: generic code over
+`A × B` sees a neutral `B` and keeps the pair, and `B` can be instantiated with a
+structure's tail (`first (S.mk 5)` with `first : A × B → A`), so the caller's value and
+the callee's code disagree. No test on the second component can be stable, hence the
+default: every pair is a pair (`wiz-notes/repr-shape.md`). -/
 def unboxedSigma (g : Globals R) (lvl : Nat) (ty : VTy R) : Bool :=
+  g.unboxStructs &&
   match whnf ty with
-  | .sigma _ _ _ B _ => isStructTail g (Closure.inst g B (.var lvl)) (lvl + 1)
+  -- (a second component that is itself a `Σ`, the next field, is not a tail: don't
+  -- evaluate the rest of the telescope to find out)
+  | .sigma _ _ _ (.mk _ (.sigma ..)) _ => false
+  | .sigma _ _ _ B _ => erasedFunTy g (Closure.inst g B (.var lvl)) (lvl + 1)
   | _ => false
 
 /-- A call of a generated `T.casesOn`, unfolded and beta-reduced: as a function, its
@@ -246,17 +275,56 @@ def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   let b ← beta v (d.type.instLevels d.levelParams us) (args.take k)
   pure ((args.drop k).foldl .app b)
 
-/-- Is `ty` (a `μ`) the registered `nat` type? Its values are numbers at runtime. -/
-def isNatTy (g : Globals R) (ty : Val R) : Bool :=
-  match whnf ty with
-  | .mu _ _ _ _ _ (some (T, _, _)) => g.builtins.lookup "nat" == some T
+/-- Is this description shaped like the natural numbers' (over the index type `Unit`: a
+choice between two tags, the first with no field, the second with one recursive field)? -/
+def natShaped (g : Globals R) (I D : Val R) : Bool :=
+  let isRet (d : Val R) : Bool := match whnf d with
+    | .dret _ => true
+    | _ => false
+  let isUnit : Bool := match whnf I with
+    | .unit _ => true
+    | _ => false
+  isUnit &&
+  match whnf D with
+  | .darg _ S F => match whnf S with
+    | .enum [a, b] =>
+      isRet (vApp g F (.tag [a, b] 0)) &&
+      (match whnf (vApp g F (.tag [a, b] 1)) with
+        | .drec _ _ E => isRet E
+        | _ => false)
+    | _ => false
   | _ => false
+
+/-- Are the values of `ty` (a `μ`) numbers at runtime? Yes for the registered `nat` type
+and for every type of its shape (`natShaped`): the name on a `μ` is display metadata,
+which conversion ignores, so a type convertible to `Nat` (a copy of its declaration, or
+the `μ` written out) must get `Nat`'s representation (R3). The name is only a shortcut. -/
+def isNatTy (g : Globals R) (ty : Val R) : Bool :=
+  match g.builtins.lookup "nat", whnf ty with
+  | some N, .mu _ I D _ _ hint =>
+    (match hint with | some (T, _, _) => T == N | none => false) || natShaped g I D
+  | _, _ => false
 
 /-- The native representation of a `μ` type, if its name has one. -/
 def reprOfTy? (g : Globals R) (ty : Val R) : Option ReprInfo :=
   match whnf ty with
   | .mu _ _ _ _ _ (some (T, _, _)) => reprOf? g.builtins T
   | _ => none
+
+/-- The start of the message with which erasure refuses a description whose first field
+has an abstract type (`neutralFieldTy`). Unlike a term erasure can't handle yet, this is
+never turned into a run-time error (`compileReachableE`). -/
+def abstractFieldMsg : String := "cannot compile a description whose first field has a type that is not known here"
+
+/-- Is this field type not known yet: a neutral (a type variable, a stuck match), or a
+lift of one? Then `tagField?` could change its answer under substitution. -/
+def neutralFieldTy (S : Val R) : Bool :=
+  match whnf S with
+  | .neutral .. => true
+  | .ulift _ A => match whnf A with
+    | .neutral .. => true
+    | _ => false
+  | _ => false
 
 /-- Does a description start with a choice of tag, `Desc.arg (Enum ls) F`? Then the
 tag is the flat object's tag. -/
@@ -352,7 +420,7 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
 * if `ty` is `erasable`, the result is `◾`;
 * `lam` against a Π: erase the body under the binder;
 * `pair` against a Σ: an object `obj 0 #[a, b]`, with `a` erased if the Σ's quantity
-  is `0`; if the second component ends in a structure's marker (`isStructTail`, 22i),
+  is `0`; at an `unboxedSigma` (the second component is a structure's tail, 22i),
   just `a` (the last field of a structure is unboxed);
 * `con x` against `μ D i`: erase the payload `x` against `⟦D⟧ (μ D) i`, then make it
   flat: `flatCon` gives the tag and fields of a literal payload (`obj k fs`; for the
@@ -364,7 +432,7 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
   and `obj 3 #[◾, j, D]`;
 * `tt` is `◾`; `letE` keeps the binder (with `◾` for a `0` let);
 * everything else: `eraseInfer`. -/
-partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
+partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool := false) : TCM ETerm := do
   if erasable ctx ty then return .erased
   -- (given) Q4: `ULift` has no runtime content: `up a` is `a`
   if let (.up a, .ulift _ A) := (t, whnf ty) then return ← eraseCheck ctx a A
@@ -373,7 +441,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
   match t, whnf ty with
   | .lam x b, .pi _ _ q dom cod _ =>
     let some p := q.toPoly? | throw (.other "erasure: unknown quantity")
-    let b' ← eraseCheck (ctx.bind x p dom) b (Closure.inst g cod (Val.var ctx.lvl))
+    let b' ← eraseCheck (ctx.bind x p dom) b (Closure.inst g cod (Val.var ctx.lvl)) inDesc
     -- η for an infinitary field with a lifted domain (Q4): `fun h => f (up h)` (reading
     -- it) and `fun h => f (down h)` (building it) are `f` at run time
     if b matches .app _ (.up (.var 0)) || b matches .app _ (.down (.var 0)) then
@@ -382,10 +450,9 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     return .lam x b'
   | .pair a b, .sigma _ q A B _ =>
     let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a A
-    let Bv := ctx.instArg B a
     -- the last field of a structure: the pair is its first component (22i)
-    if isStructTail g Bv ctx.lvl then return a'
-    let b' ← eraseCheck ctx b Bv
+    if unboxedSigma g ctx.lvl ty then return a'
+    let b' ← eraseCheck ctx b (ctx.instArg B a)
     return .obj 0 #[a', b']
   | .con x, .mu l I D i s _ =>
     let x' ← eraseCheck ctx x (vInterp g l I D (muFamilyAt l I D ((sizePred? s).getD .szInf)) i)
@@ -411,27 +478,36 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     eraseCheck ctx x (vInterp g l I D (nuFamilyAt l I D ((sizePred? s).getD .szInf)) i)
   | .dret i, .desc _ I => return .obj 0 #[← eraseCheck ctx i I]
   | .darg _ S D, .desc l I =>
-    let D' ← eraseCheck ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S)
-      (.mk [I] (.desc l (.var 1))) none)
+    let vS := ctx.eval S
+    -- The mark below is this description's whole run-time knowledge of `S`, and code at
+    -- a known type decides the same thing from the type (`startsWithTag`). At the head of
+    -- a description they must agree for every instance, so `S` must be known here.
+    if !inDesc && neutralFieldTy vS then
+      throw (.other (abstractFieldMsg ++ " " ++
+        s!"(`Desc.arg` at `{ctx.showTerm S}`, a type variable or a stuck term): whether its values carry a " ++
+        "constructor tag would depend on how that type is instantiated. Give the first field a known type " ++
+        "(for a choice of constructors, `Enum […]`)"))
+    let D' ← eraseCheck ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) vS
+      (.mk [I] (.desc l (.var 1))) none) true
     -- a choice of tag is marked, for `pack`
-    return .obj (if (tagField? (ctx.eval S)).isSome then 4 else 1) #[.erased, D']
+    return .obj (if (tagField? vS).isSome then 4 else 1) #[.erased, D']
   | .drec _ j D, .desc l I =>
-    return .obj 2 #[← eraseCheck ctx j I, ← eraseCheck ctx D (.desc l I)]
+    return .obj 2 #[← eraseCheck ctx j I, ← eraseCheck ctx D (.desc l I) true]
   | .dhrec _ H j D, .desc l I =>
     let jTy : VTy R := .pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1)) none
-    return .obj 3 #[.erased, ← eraseCheck ctx j jTy, ← eraseCheck ctx D (.desc l I)]
+    return .obj 3 #[.erased, ← eraseCheck ctx j jTy, ← eraseCheck ctx D (.desc l I) true]
   | .tt, _ => return .erased
   | .letE x q ty' v b, _ =>
     let vTy := ctx.eval ty'
     let some p := (ctx.eval q).toPoly? | throw (.other "erasure: unknown quantity")
     let v' ← if p == [] then pure .erased else eraseCheck ctx v vTy
-    let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty
+    let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty inDesc
     return .letE x v' b'
   -- the type is known (and not erasable), so don't infer the whole application again
   | .app .., _ => match unfoldCases? g t with
-    | some t' => eraseCheck ctx t' ty
+    | some t' => eraseCheck ctx t' ty inDesc
     | none => return (← eraseSpine ctx t).1
-  | _, _ => return (← eraseInfer ctx t).1
+  | _, _ => return (← eraseInfer ctx t ty inDesc).1
   --|ex
   --| sorry
   --sol>
@@ -444,8 +520,14 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
 * `ecase` on a tag is `case`; `cast` is its argument; `ann` is its term;
 * the eliminators `ind`, `Desc.elim`, `out`, `coit`, `scofix` become primitives;
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
-partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
-  let ty ← quickType ctx t
+partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := none) (inDesc : Bool := false) :
+    TCM (ETerm × VTy R) := do
+  -- (`known`: the type, when the caller has it. Otherwise `quickType`, which off the
+  -- elimination spine asks the kernel's `infer`: that checks the whole term again, once
+  -- per enclosing node, quadratic in the depth of a `match`'s tree of `split`s)
+  let ty ← match known with
+    | some ty => pure ty
+    | none => quickType ctx t
   if erasable ctx ty then return (.erased, ty)
   if let .natLit n := t then return (.natLit n, ty)
   -- (given) Q4: `down t` is `t`
@@ -456,24 +538,25 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
     | .var ix => pure (.var ix)
     | .const n _ => pure (.global n)
     | .app .. => match unfoldCases? g t with
-      | some t' => pure (← eraseInfer ctx t').1
+      | some t' => pure (← eraseInfer ctx t' ty inDesc).1
       | none => pure (← eraseSpine ctx t).1
-    | .ann tm ty' => eraseCheck ctx tm (ctx.eval ty')
-    | .letE .. => eraseCheck ctx t ty
+    | .ann tm ty' => eraseCheck ctx tm (ctx.eval ty') inDesc
+    | .letE .. => eraseCheck ctx t ty inDesc
     | .fst p => do
       let (p', pty) ← eraseInfer ctx p
       pure (if unboxedSigma g ctx.lvl pty then p' else .proj 0 p')
     | .snd p => do
       let (p', pty) ← eraseInfer ctx p
       pure (if unboxedSigma g ctx.lvl pty then .erased else .proj 1 p')
-    | .split _ s _ _ x y b => do
+    | .split _ s _ m x y b => do
       let (s', sty) ← eraseInfer ctx s
       let .sigma _ q A B _ := whnf sty | throw (.other "erasure: split of a non-pair")
       let some pq := q.toPoly? | throw (.other "erasure: unknown quantity")
       -- let s := s'; let x := s.0; let y := s.1; b   (b lives under x, y: lift past s)
       let vx := Val.var ctx.lvl
       let ctx₂ := (ctx.bind x pq A).bind y [] (Closure.inst g B vx)
-      let (b', _) ← eraseInfer ctx₂ b
+      -- the body's type, as the kernel checks it: the motive at the pair
+      let b' ← eraseCheck ctx₂ b (Closure.inst g (.mk ctx.env m) (.pair vx (Val.var (ctx.lvl + 1)))) inDesc
       if unboxedSigma g ctx.lvl sty then
         pure (.letE "s" s' (.letE x (.var 0) (.letE y .erased (b'.lift 1 2))))
       else
@@ -482,7 +565,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       let (s', sty) ← eraseInfer ctx s
       let .enum ls := whnf sty | throw (.other "erasure: case on a non-tag")
       let mc : Closure R := .mk ctx.env m
-      let bs' ← bs.toArray.mapIdxM fun k b => eraseCheck ctx b (Closure.inst g mc (.tag ls k))
+      let bs' ← bs.toArray.mapIdxM fun k b => eraseCheck ctx b (Closure.inst g mc (.tag ls k)) inDesc
       pure (.case s' bs')
     -- (checked against its own type: it may be a function that can't be inferred)
     | .cast A _ _ x => eraseCheck ctx x (ctx.eval A)
@@ -565,7 +648,8 @@ partial def eraseSpine (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       acc := .app acc a'
       fty := ctx.instArg cod a
     | _ => throw (.other "erasure: application of a non-function")
-  pure (acc, fty)
+  -- an erased head (a function into `Unit`, `erasedFunTy`) applied: nothing to run
+  pure (if h' matches .erased then .erased else acc, fty)
 
 end
 
@@ -685,9 +769,24 @@ end
 /-- Resolve the views of a closed erased term. -/
 def resolveViews (e : ETerm) : ETerm := rw 0 [] e
 
-/-- Erase a closed term against its type, with views resolved. -/
-def eraseTop (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm :=
-  return resolveViews (← eraseCheck ctx t ty)
+/-- Erase a closed term against its type, with views resolved. (`inDesc`: see `eraseDecl`.) -/
+def eraseTop (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool := false) : TCM ETerm :=
+  return resolveViews (← eraseCheck ctx t ty inDesc)
+
+/-- Is `d` the description that `coinductive T` generated (`T.desc`, with `T` a `ν`)? The
+tag mark is read only for data (`pack`, `unpack`, `ind`); a `ν`'s payload is nested
+pairs whatever its description starts with, and a parameterised `coinductive` type's
+description does start with a field of an abstract type (`Signal A`: `Desc.arg A …`). -/
+def isNuDesc (g : Globals R) (d : Decl R) : Bool :=
+  d.name.endsWith ".desc" &&
+  match (g.find? (String.ofList (d.name.toList.take (d.name.length - 5)))).bind (·.value) with
+  | some v => underLams v
+  | none => false
+where
+  underLams : Term R → Bool
+    | .lam _ b => underLams b
+    | .nu .. => true
+    | _ => false
 
 /-- Erase a global definition. -/
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
@@ -697,6 +796,6 @@ def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
   let us := d.levelParams.map fun _ => Level.succ .zero
-  eraseTop ctx (v.instLevels d.levelParams us) (ctx.eval (d.type.instLevels d.levelParams us))
+  eraseTop ctx (v.instLevels d.levelParams us) (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
 
 end Wiz

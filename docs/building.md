@@ -22,6 +22,15 @@ kept under `/tmp`).
 
 An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)`.
 
+**Embedded files.** Lake does not track files a module reads with `include_str`, so each
+embedded file gets a library of its own whose `needs` names the file as an
+`input_file` (`lakefile.toml`): Lake mixes the file's content hash into that library's
+module traces, so editing the file rebuilds the embedding module and its importers, and
+the artifact cache never serves a stale one. The only one today is the C runtime:
+`runtime/wiz.c`, embedded by `runtime/WizRuntime.lean` (library `WizRuntime`, imported by
+`Wiz/Compiler/C.lean`). A new `include_str` goes in such a library too, not in `Wiz`
+(a `needs` on `Wiz` would rebuild all of it); `scripts/test-embed.sh` checks the setup (CI runs it in the build job).
+
 ## Continuous integration
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
@@ -96,3 +105,8 @@ works out of the box). Without a branch the flake reference means the default br
 `master`, whose binaries are on Cachix once its `nix package` job has run. The
 `--option`s count only for a trusted Nix user (or with the cache in `nix.conf`);
 otherwise Nix builds wiz from source, which takes a few minutes.
+
+`#nvim-wiz` is Neovim with the Wiz plugin (editors/nvim, docs/stages/11-tooling.md
+11p) and this wiz on `PATH`: `nix run github:badly-drawn-wizards/wiz#nvim-wiz --
+file.wiz`. `packages.<system>.wiz-nvim` is the plugin alone, for a Neovim
+configuration in Nix.

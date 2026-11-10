@@ -459,7 +459,11 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | .ulift _ A => pure (A, u)
     | _ => throw (.typeMismatch "a lifted type (ULift)" (ctx.showVal ty))
   --<sol
-  | .var ix => pure (ctx.types[ix]!, Usage.single ctx.lvl ix)
+  -- (an index beyond the context is an error: `[ix]!` would panic and go on with the
+  -- default value `Sort 0`, as the variable's type and as its value: a term `Prop : Prop`)
+  | .var ix => match ctx.types[ix]? with
+    | some ty => pure (ty, Usage.single ctx.lvl ix)
+    | none => throw (.other s!"variable #{ix} is out of scope ({ctx.lvl} in scope)")
   | .const n us => match ctx.globals.find? n with
     | some d => do
       unless d.levelParams.length == us.length do
@@ -904,6 +908,10 @@ partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run 
             out := out.push s!"native {T} := {mkImpl}/{getImpl}"
       let (cs, lit) := ([d.type] ++ d.value.toList ++ d.witness.toList).foldl
         (fun (acc : List Name × Bool) t => (consts t acc.1, acc.2 || hasNatLit t)) ([], false)
+      -- a registered operation or constructor makes numerals without a literal in the
+      -- term (`Nat.zero` is `0`, `Nat.pow 0 0` is `1`), and numerals unfold through the
+      -- registered `nat.zero` and `nat.succ`: it depends on them like a literal does
+      let lit := lit || g.builtins.any fun (k, m) => m == c && k.startsWith "nat."
       todo := cs ++ (if lit then numeral else []) ++ todo
   return out.toList
 where
