@@ -403,7 +403,9 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       let #[n, i, m] ← items? x | none
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
-/-- The cache's version: change it whenever the format or the elaborator's output changes. -/
+/-- The cache's version: change it whenever the format or the elaborator's output changes.
+(The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
+wiz never share entries; the salt is for invalidating by hand.) -/
 def salt : UInt64 := hash "wiz-cache-6-d1"  -- 6: D1, regularity off (after grail's 5)
 
 /-! ## Keys and atomic writes (stage 23c)
@@ -423,6 +425,27 @@ def writeAtomic (file : System.FilePath) (content : String) : IO Unit := do
   let tmp := file.toString ++ s!".tmp{← IO.Process.getPID}-{← IO.monoNanosNow}"
   IO.FS.writeFile tmp content
   IO.FS.rename tmp file
+
+/-- What identifies the running binary, and so its elaborator and kernel: the hash of the
+executable. Hashing it takes a moment, so the result is remembered in `dir/bin/`, by the
+executable's path, size and modification time. Without it, a cache directory shared by
+several builds (worktrees on different branches, CI runs) would serve one kernel's
+verdicts to another whenever a change forgot to bump `salt`. -/
+def binaryId (dir : Option System.FilePath) : IO UInt64 := do
+  let exe ← IO.appPath
+  let md ← exe.metadata
+  let stamp := s!"{exe} {md.byteSize} {md.modified.sec} {md.modified.nsec}"
+  let file := dir.map (· / "bin" / s!"{hash stamp}")
+  if let some f := file then
+    if ← f.pathExists then
+      match (← IO.FS.readFile f).splitOn "\n" with
+      | [st, k] => if st == stamp then if let some n := k.toNat? then return n.toUInt64
+      | _ => pure ()
+  let h := hash (← IO.FS.readBinFile exe)
+  if let some f := file then
+    IO.FS.createDirAll (f.parent.getD ".")
+    writeAtomic f s!"{stamp}\n{h.toNat}"
+  pure h
 
 /-- The key of every module reachable from `ms` (see above). `headers` gives the
 preprocessed text of a C header. Import cycles get key 0 on the back edge (the frontend
@@ -468,15 +491,18 @@ structure Store (R : Type) where
   seen : UInt64 → IO Bool
   markSeen : UInt64 → Name → IO Unit
 
-def Store.disk (dir : System.FilePath) : IO (Store R) := do
+/-- The store in directory `dir`, for the binary `binary` (`binaryId`): its files are
+named by the key mixed with the binary, so another build of wiz finds none of them. -/
+def Store.disk (dir : System.FilePath) (binary : UInt64) : IO (Store R) := do
   IO.FS.createDirAll dir
+  let name (k : UInt64) := toString (mixHash binary k)
   pure {
     get := fun k => do
-      let file := dir / s!"{k}.wizc"
+      let file := dir / s!"{name k}.wizc"
       if ← file.pathExists then pure ((Sx.parse (← IO.FS.readFile file)).bind Effect.ofSx?) else pure none
-    put := fun k e => writeAtomic (dir / s!"{k}.wizc") e.toSx.render
-    seen := fun k => (dir / s!"{k}.wizm").pathExists
-    markSeen := fun k m => writeAtomic (dir / s!"{k}.wizm") m }
+    put := fun k e => writeAtomic (dir / s!"{name k}.wizc") e.toSx.render
+    seen := fun k => (dir / s!"{name k}.wizm").pathExists
+    markSeen := fun k m => writeAtomic (dir / s!"{name k}.wizm") m }
 
 def Store.memory : IO (Store R) := do
   let effects ← IO.mkRef ({} : Std.HashMap UInt64 (Effect R))
@@ -566,10 +592,12 @@ where
         pos := stop
     pure (s, hits)
 
-/-- `elaborateWith`, through the cache directory `dir`. -/
+/-- `elaborateWith`, through the cache directory `dir`, as this binary (`binaryId`) unless
+`binary` says otherwise (tests). -/
 def elaborateCached (dir : System.FilePath) (input : String) (init : CommandState R) (key₀ : UInt64)
-    (toolchain : UInt64 := 0) : IO (CommandState R × Nat) := do
-  elaborateWith (← Store.disk dir) input init key₀ toolchain
+    (toolchain : UInt64 := 0) (binary : Option UInt64 := none) : IO (CommandState R × Nat) := do
+  let binary ← match binary with | some b => pure b | none => binaryId (some dir)
+  elaborateWith (← Store.disk dir binary) input init key₀ toolchain
 
 /-- `elaborateWith`, without a cache: modules are elaborated in isolation all the same. -/
 def elaborateUncached (input : String) (init : CommandState R) (toolchain : UInt64 := 0) : IO (CommandState R) := do

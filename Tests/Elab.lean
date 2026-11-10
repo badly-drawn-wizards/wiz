@@ -2522,6 +2522,25 @@ def toolingGroup : Group where
         checkEq (msgs plain) (msgs cold)
         checkEq (msgs plain) (msgs warm)
         checkEq plain.globals.order.size warm.globals.order.size },
+    { name := "another build of wiz misses the shared cache (its binary is in the key)", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let src := "import Prelude\ndef two : Nat := 1 + 1\n#eval two\n"
+        let dir ← IO.FS.createTempDir
+        let (_, h1) ← Cache.elaborateCached dir src init 0 (binary := some 1)
+        let (_, h2) ← Cache.elaborateCached dir src init 0 (binary := some 1)
+        let (_, h3) ← Cache.elaborateCached dir src init 0 (binary := some 2)
+        checkEq 0 h1
+        check (h2 > 0) "the same binary got nothing from the cache"
+        checkEq 0 h3
+        -- by default, the key is this test driver's own hash, remembered by its stamp
+        let me ← Cache.binaryId (some dir)
+        checkEq me (← Cache.binaryId (some dir))
+        checkEq me (hash (← IO.FS.readBinFile (← IO.appPath)))
+        let (_, h4) ← Cache.elaborateCached dir src init 0
+        let (_, h5) ← Cache.elaborateCached dir src init 0 (binary := some me)
+        checkEq 0 h4
+        check (h5 > 0) "the default is not this binary's hash" },
     { name := "terms survive the cache's format", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let st := runFrontend (R := ZeroOneMany) "import Prelude" { loader := fun _ => some prelude }
