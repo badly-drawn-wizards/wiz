@@ -12,6 +12,12 @@ name = "Wiz"
 [[lean_lib]]
 name = "Tests"
 
+# The spec of the core theory and its reference checker (see
+# WizMeta.lean). Not a default target: only the test driver imports it, so `lake build`
+# and `wiz` don't build it.
+[[lean_lib]]
+name = "WizMeta"
+
 [[lean_exe]]
 name = "wiz"
 moreLinkObjs = ["sockets"]
