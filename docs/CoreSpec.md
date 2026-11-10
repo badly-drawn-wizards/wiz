@@ -928,6 +928,30 @@ type by a case split, `λ t. transp Unit () (λ _ _. G t) (ecase t [p₀, …]) 
 `transp` along `() = ()` is there because the binder has quantity 0 and its premises are
 checked erased (§8.1). This is an ordinary kernel-checked term; the kernel rules are not
 involved, and are deliberately not specialised to tag fields (above).
+**The payload equation is not shape-stable (known, pre-4g; kernel-lint, 2026-11-10).**
+The rule for `con x = con y` (`vEqPayload`, §8.2) is *not* head-directed in the sense used
+above. At an `arg` field whose type `S` is neutral it gives the Σ rule, `(0 e : x.1 = y.1)
+× (cast … x.2 = y.2)`; once `S` is instantiated by an `Enum` and the two tags are equal it
+gives the rest's equation alone. So `Box.mk x = Box.mk y` at a variable `A` has one shape
+and its instance at `A := Enum [a, b]` another, and the two are not convertible. A proof
+term checked at the first shape (`h.1`) can therefore meet a value of the second.
+
+* *Consequence.* None for consistency: both shapes are equivalent propositions, the
+  mismatch is confined to proofs, and with lazy proofs (the default, §12) proofs are never
+  run. With `--eager-proofs`, evaluating such an `h.1` reaches `vFst ()`: a failure of
+  subject reduction for proof terms, i.e. a crash, not a proof of `False`.
+* *Why the code equation refuses the same shortcut but this rule keeps it.* Both uniform
+  alternatives cost what the rule exists for. The Σ rule everywhere makes `succ m = succ n`
+  (and every `cons x xs = cons y ys`) an equation with a cast along the tags' equation;
+  that cast is the identity only at ground inert payloads (§8.4), so at `List A` it leaves
+  `cast A A _ x = y`, usable only through `castRefl`. Making a neutral `S` stuck instead
+  gives up injectivity of constructors by computation at every polymorphic type.
+* *Decision.* Not changed in 4g. The uniform Σ rule becomes right once a cast along a
+  reflexive equation is the identity up to conversion (regularity decided by conversion,
+  the direction chosen for later); until then the instability is recorded here and is
+  unobservable under the default. (A cheaper partial fix, should eager proofs matter:
+  make `vFst`/`vSnd` total on proofs of `True`.)
+
 **Casts need their target type.** `cast e t` with no expected type is elaborated by
 reading `X = Y` off the type of `e`, which works only while that equation is stuck. An
 equation between two data types now always computes (to the equation of the codes), so
