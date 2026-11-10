@@ -63,12 +63,12 @@ the results of the probes listed in the "Probes" section.
 | Universes `Sort l`, `imax`, impredicative `Prop`, non-cumulative, universe-polymorphic declarations | **published** for CIC-like systems; **folklore** for Wiz's exact algorithm | Lean 4's universe design; Wiz's level normaliser (§4) is sound by construction (it case-splits) and incomplete for `imax`, as in Lean (unverified against Lean's source). |
 | Definitional proof irrelevance for `Prop` | **published** | [PT22], [PT23] (TTobs, CCobs); Gilbert et al. POPL 2019 (unverified). Wiz has no inductive propositions, so the Lean 4 `Acc` problem does not arise. |
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
-| Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs treats `Prop` (per the review `xtt-cubical-attacks.md` A0; not re-checked in [PT22]). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
+| Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs and CCobs treat propositions (rule Eq-Ω: `A ∼ B ⇒ (A → B) ∧ (B → A)`; checked in [PT22] §2.3 and [PT23] Fig. 4). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; algorithmically incomplete, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; algorithmically incomplete, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation *of proofs*. TTobs and CCobs do not have definitional regularity; they have the proof term `castrefl`, which is Wiz's `castRefl` ([PT22] §2.2, [PT23] §2.2; checked). CICobs [PLT25] has definitional regularity at **all** types (rule Cast-Refl, side condition by conversion) and proves conversion decidable for a fragment, with an algorithm that never reduces proofs. So regularity at inert types (CoreSpec §8.4) is a special case of a published rule; what is Wiz's own is the restriction, which a proof-reducing evaluator needs. See D1 and `/workspace/wiz-notes/plt-vs-inert.md`. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
-| Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
+| Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] and [PT23] give ℕ equality rules by constructor (Eq-zero, Eq-Suc); CICobs [PLT25 §2.1, §4.1] gives inductive types *no* rule for equality of elements (it is derivable from the eliminator) and a weaker, non-injective equation between instances. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
 | QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
@@ -317,7 +317,22 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
 
   All three assume the same property of the system without regularity, which is itself
   unproved for Wiz. That system already has two identity casts that inspect types: at
-  `Enum` on any argument, and at `Sort`.
+  `Enum` on any argument, and at `Sort` (the latter is rule Cast-Univ of [PT22], [PT23]
+  and [PLT25]).
+
+  **Related published work** (`/workspace/wiz-notes/plt-vs-inert.md`). CICobs [PLT25] has
+  regularity at every type as a *conversion* rule (Cast-Refl: `cast A B e t ≡ t` when
+  `A ≡ B`, any `e`), with an impredicative proof-irrelevant sort. Its Agda proof gives
+  normalisation of relevant terms and decidability of conversion ([PLT25] Theorem 5.6) for
+  a fragment with Π and ℕ and no general inductive types. Two points of method matter
+  here:
+  * the rule is decided by the conversion checker when it compares neutrals, with a
+    conversion test on the cast's two types, never by a syntactic test in the evaluator;
+  * proofs are never reduced, which is how Abel–Coquand's term stays harmless.
+
+  So the inert rule is not new, and no counterexample in [AC20], [PT23] or [PLT25]
+  applies to it. Their theorem does not cover Wiz: not the kernel as written (it reduces
+  proofs), and not descriptions, sizes, `ν`, quantities or `ULift`.
 
   **Found gap (incompleteness, not unsoundness).** The side condition is syntactic
   (`sameVal`), so algorithmic conversion is not a congruence and is not stable under
@@ -453,7 +468,8 @@ None of these is implemented. Their status is **design and conjecture**:
 
 * **XTT and univalent cubical type theory as tiers** (`Pre ⊇ K ⊇ Set`):
   `/workspace/wiz-notes/xtt-cubical-fragments.md`. XTT has a **canonicity** proof only
-  (Sterling, Angiuli, Gratzer, FSCD 2019 and LMCS 2022, as reported in the note); no
+  (Sterling, Angiuli, Gratzer, FSCD 2019 and *A Cubical Language for Bishop Sets*, LMCS
+  18(1), 2022; venue checked); no
   normalisation or decidability proof exists for XTT. The combined three-tier model is a
   **conjecture**.
 * **Adversarial review** of that design: `/workspace/wiz-notes/xtt-cubical-attacks.md`.
@@ -525,10 +541,12 @@ that checks everything. Wiz's situation:
   `vFst`/`vSnd`, and by applying `e.1`). So the kernel terminates only if the proofs it
   forces normalise. Pujet–Tabareau's decidability result for impredicative OTT (CCobs,
   POPL 2023) is proved *without* normalising proofs: in their words, the Abel–Coquand
-  loop "is not a problem if we don't reduce irrelevant proofs" (Pujet, HoTTEST 2023). So
+  loop "is not a problem if we don't reduce irrelevant proofs" (Pujet, HoTTEST 2023), and
+  "we never perform reduction in the proof-irrelevant layer" ([PT23] §6.1). The same holds
+  for CICobs [PLT25], whose decidability theorem includes regularity at all types. So
   even a Wiz version of their theorem would not cover this kernel as written. An
   evaluator that never forces proof positions would close that gap.
-  (`/workspace/wiz-notes/inert-regularity.md` §2.)
+  (`/workspace/wiz-notes/inert-regularity.md` §2, `p2-proofs.md`, `plt-vs-inert.md` §6.)
 
 ## 8. Testing evidence
 
@@ -590,4 +608,5 @@ as a test yet (each should become one when its issue is fixed).
 ## References
 
 As in [CoreSpec.md §17](CoreSpec.md#17-references): [Atkey18], [AC20], [CDMM10], [AVW17],
-[PT22], [PT23], Agda #3026 (checked); [ML84], [AMS07], Gilbert et al. (not re-checked).
+[PT22], [PT23], [PLT25], Agda #3026 (checked); [ML84], [AMS07], Gilbert et al. (not
+re-checked).

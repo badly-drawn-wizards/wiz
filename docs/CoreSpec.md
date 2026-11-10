@@ -579,7 +579,8 @@ both false, by shape:
   quantities. A variable `q` and `1` are different polynomials, but `q := 1` makes them
   equal. Deciding `False` there proved `False` (Status.md, F6).
 * The Π/Σ decomposition and "different formers ⇒ False" are TTobs's [std: PT22]. The
-  Π case puts the domain equation backwards (`A' ≡ A`), as in PT22 (unverified detail).
+  Π case puts the domain equation backwards (`A' ≡ A`), as in CCobs ([PT23] Fig. 4, rule
+  Eq-Π). TTobs has it forwards and casts along the inverse ([PT22] Fig. 4).
 * **Propositions compared by equivalence, and the sort annotation** are [wiz]. They exist
   because comparing propositions by shape proved `False` (Status.md, issue F1). A Π or Σ
   can't tell by its parts alone whether it is a proposition, so it carries its sort `σ`,
@@ -649,9 +650,14 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   `λ j _. ⟦D⟧ X i ≡ ⟦D⟧ X j` at `i` is `⟦D⟧ X i ≡ ⟦D⟧ X i`, proved by `reflTy`, and at `i'`
   is the goal. `x : ⟦D⟧ X i` (rule *con*, `X` at the predecessor size), so the inner cast
   has type `⟦D⟧ X i'` and `con` of it has type `μ^s D i'`. The rule uses nothing but
-  `e`. The type equation is the code equation of PT22/CIC-obs for an inductive family
-  with the parameters fixed: `μ D i ≡ μ D i'` iff `i = i'`. It is injective in the index,
-  which holds in the setoid/inductive-recursive model where `μ D i` is a code. The
+  `e`. The type equation `μ D i ≡ μ D i'` iff `i = i'` is **stronger** than the one
+  of CICobs [PLT25 §4]: there, an equation between two instances of an inductive type
+  gives only the equations between the *types of the constructor arguments* (for a
+  forded family, `(j = i) ≡ (j = i')` at each constructor), not `i = i'`, because CIC lets
+  an inductive type live in a universe smaller than its indices, where injectivity gives
+  Russell's paradox [PLT25 §2.3]. Wiz's rule is injective in the index. That holds in a
+  setoid/inductive-recursive model where `μ D i` is a code, and it relies on the level
+  rule of §9.3: the index type is in the family's own universe (`I : Sort (l+1)`). The
   equation computes only when `I`, `D`, the level and the size agree syntactically;
   otherwise it stays stuck, and the stuck form quotes back to the equation itself. So the
   rule's *result* is stable under substitution: syntactic equality is preserved by
@@ -689,8 +695,10 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   that terminate (the inertness walk is bounded by the nesting depth 8 and by the finite
   enumerations; the payload cast follows the finite constructor value), and conversion
   is unchanged (proof irrelevance, η, structural comparison; `unCast` applies only under
-  `--regularity full|nonprop|refl`). It is a conjecture: there is no normalisation proof
-  for TTobs with this rule, though the argument above suggests it is admissible.
+  `--regularity full|nonprop|refl`). It is a conjecture for Wiz. A published system has
+  the rule at *every* type, with a proof that conversion stays decidable, but for an
+  algorithm that never reduces proofs and for a fragment without general inductive types
+  (CICobs [PLT25]; see "Related work" below).
 
   **A more careful argument** (`/workspace/wiz-notes/inert-regularity.md`) corrects the
   one above in three places:
@@ -725,6 +733,34 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   All three are **relative to the same property of the system without regularity**, which
   is itself unproved for Wiz. No counterexample was found. The note lists what one would
   need.
+* **Related work: cast on reflexivity in CICobs** (`/workspace/wiz-notes/plt-vs-inert.md`).
+  Pujet, Leray and Tabareau's CICobs [PLT25] has the conversion rule *Cast-Refl*:
+  `cast A B e t ≡ t` whenever `Γ ⊢ A ≡ B`, for any proof `e` and **any** type `A`, next to
+  an impredicative proof-irrelevant sort. So regularity at inert types, read with a
+  judgmental side condition, is a special case of a published rule, and is not new.
+  - *What they prove* (Agda): weak-head normalisation of proof-relevant terms and
+    decidability of conversion ([PLT25] Theorem 5.6), for a fragment with Π, ℕ, ⊥, the
+    impredicative sort and two universe levels. General inductive types are covered by
+    their rules and by a set model (consistency, Theorem 6.5), not by the decidability
+    proof.
+  - *How.* Cast-Refl is not a reduction rule. On a canonical argument the structural
+    rules compute. A stuck cast is removed by the conversion checker when it compares
+    two neutrals, if the cast's two types are convertible (as η is decided). And **proofs
+    are never reduced**: there is no weak-head normal form for a proof, so
+    Abel–Coquand's term, which exists in CICobs, is never run. This answers open
+    problem (2) of [AC20].
+  - *What this means here.* The restriction to inert types is needed in Wiz only because
+    the evaluator reduces proofs (§12; Status.md §7). The side condition they use is
+    conversion, not syntactic equality (Status.md, D1, on the incompleteness of
+    `sameVal`). Their indexed families are elaborated to parametrised ones with an
+    equation in each constructor (Fordism), which is the encoding of §9.2; their
+    equality of two instances of an inductive type is deliberately *not* injective in
+    parameters or indices, because CIC allows an inductive type in a universe smaller
+    than its indices. Wiz's `μ D i ≡ μ D i' ⟶ i = i'` is injective, and is kept from
+    Russell's paradox by the level rule of §9.3 (`I : Sort (l+1)`).
+  - *Not covered by their proofs*: descriptions as first-class codes, `μ`/`ν` over them,
+    sizes, quantities, `ULift`, an equality type that computes together with Cast-Refl,
+    and any evaluator that reduces proofs.
 * **Cost.** Casting a constructor of a non-inert type walks the whole value (each field
   is cast). At inert types the cast is the identity.
 * **Syntactic equality** (`sameVal`, both kernels) quotes at `max (lvlBound A)
@@ -741,7 +777,9 @@ axiom castRefl.{u} {0 A : Type u} (0 e : A = A) (0 a : A) : (cast e a : A) = a
 
 It is an **axiom**: a proof, so it is a stuck neutral and never computes (`#reduce`
 leaves `castRefl e a` alone), and `#print axioms` lists it for any declaration that uses it.
-It is the propositional form of regularity that §8.4 removed from conversion. Proofs use it to
+It is the propositional form of regularity that §8.4 removed from conversion, and it is a
+primitive of TTobs and CCobs (`castrefl`, rule Cast-Refl in Fig. 2 of [PT22] and of
+[PT23]). Proofs use it to
 get rid of a stuck cast at a type variable: `Vec.map f (cons x xs)` is
 `cons (cast B B _ (f x)) …`, and `Vec.map_cons` (`lib/Vec.wiz`) proves it equal to
 `cons (f x) (Vec.map f xs)` by one `castRefl` at `Vec B (n+1)`. The cast in its type
@@ -1304,12 +1342,20 @@ Checked for this document (title, authors, venue):
 * **[AVW17]** A. Abel, A. Vezzosi, T. Winterhalter. *Normalization by Evaluation for Sized
   Dependent Types.* PACMPL 1 (ICFP), 2017. doi:10.1145/3110277.
 * **[PT22]** L. Pujet, N. Tabareau. *Observational Equality: Now for Good.* PACMPL 6
-  (POPL), 2022. doi:10.1145/3498693. (TTobs.) The details of its rules quoted above
-  (orientation of the Π domain equation, whether it has definitional regularity) were
-  **not** re-checked against the paper.
+  (POPL), Article 32, 2022. doi:10.1145/3498693. (TTobs.) Checked against the paper: it
+  has no definitional regularity, only the proof term `castrefl` (§2.2, Fig. 2); its Π
+  domain equation is forwards (Fig. 4).
 * **[PT23]** L. Pujet, N. Tabareau. *Impredicative Observational Equality.* PACMPL 7
-  (POPL), 2023, pp. 2171–2196. (CCobs: TTobs with an impredicative universe of
-  definitionally proof-irrelevant propositions; decidability of conversion.)
+  (POPL), Article 74, 2023. doi:10.1145/3571739. (CCobs: TTobs with an impredicative
+  universe of definitionally proof-irrelevant propositions; decidability of conversion,
+  Theorem 3.2, without reducing proofs; undecidability with a proof-relevant impredicative
+  universe, Theorem 6.1.)
+* **[PLT25]** L. Pujet, Y. Leray, N. Tabareau. *Observational Equality Meets CIC.* ACM
+  TOPLAS 47(2), Article 6, 2025. doi:10.1145/3719342. (CICobs: CCobs with the conversion
+  rule Cast-Refl, `cast A B e t ≡ t` when `A ≡ B`, and Coq's inductive types by Fordism;
+  decidability of conversion for a fragment, Theorem 5.6. Read in full; the comparison
+  with Wiz is `/workspace/wiz-notes/plt-vs-inert.md`. An earlier version appeared at
+  ESOP 2024, which we did not obtain.)
 * **Agda issue #3026**, "Well-founded induction on Size is inconsistent"
   (github.com/agda/agda/issues/3026).
 
