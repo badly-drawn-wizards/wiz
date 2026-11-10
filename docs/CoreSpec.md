@@ -508,6 +508,7 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
 | `Sort l`, `l ≡ 0` | `(a → b) × (b → a)` (**propext**) | [std: PT22] | 540–543 |
 | `Sort l`, `isNeverZero l` | `a ≡ b` (type equality, §8.3) | [std: PT22] | 544 |
 | `ULift A` | `True` if `A` is a proposition; `down a =_A down b` if it is not; else stuck | [std; Q4] | §4.1 |
+| `Desc_l I` | **by the constructors** (`vEqDesc`, §8.4b): `ret j = ret j' ⟶ j =_I j'`, `arg`/`rec`/`hrec` componentwise, different constructors `False` | [wiz: 4g] | `vEqDesc` |
 | anything else (a neutral type, `ν`, `Sort u` with `u` possibly 0, a non-constructor element of `μ`/`Enum`) | stuck: the neutral `a =_A b` | | 545–546 |
 | numerals `n`, `m` (any `A`) | `True` if `n = m`, else `False` | [impl] | 516 |
 
@@ -567,8 +568,8 @@ both false, by shape:
   Enum ls ≡ Enum ls'              ⟶  True if |ls| = |ls'|, else False
   Desc_l I ≡ Desc_l' I'          ⟶  I ≡ I' if l ≡ l', else stuck                          [wiz]
   ULift.{u} A ≡ ULift.{w} B      ⟶  A ≡ B if u ≡ w; False if both closed and different; else stuck   [Q4, §4.1]
-  μ^s_l I D i ≡ μ^s'_l' I' D' i'  ⟶  i =_I i' if l ≡ l' and s, I, D are syntactically equal  [wiz, D1]
-  (the same for ν)                    to s', I', D' (quoted, as `sameVal`); else stuck
+  μ^s_l I D i ≡ μ^s'_l' I' D' i'  ⟶  (I, D, i) =_T (I', D', i'),  T = (J : Sort (l+1)) × Desc_l J × J
+  (the same for ν)                    if l ≡ l' and s, s' are equal by their heads; else stuck   [wiz, 4g, §8.4b]
   two different canonical formers (Π, Σ, Sort, Unit, Empty, Enum, Desc, μ, ν, ULift)
                                   ⟶  False                        (no-confusion of type formers)
   otherwise                       ⟶  stuck
@@ -608,22 +609,28 @@ Enum/Enum, same number of tags     ⟶  t                                       
 ULift.{u}/ULift.{u}, u never 0     ⟶  up (cast A B e (down t))                                        [Q4, §4.1]
 A inert, quote(A) = quote(B)       ⟶  t                         (regularity at inert types)   CONJECTURE [wiz, D1]
 Desc_l I / Desc_l I'               ⟶  by the description (below)                                  [wiz, D1]
-μ^s D i / μ^s D i', t = con x      ⟶  con (cast (⟦D⟧ μ^s' i) (⟦D⟧ μ^s' i') ê x)                  [std: PT22, D1]
-μ, t a numeral, i, i' syntactically equal ⟶ t                                                   [impl]
-ν^s D i / ν^s D i', t = cocon x    ⟶  cocon (cast (⟦D⟧ ν^s' i) (⟦D⟧ ν^s' i') ê x)                [wiz, D1]
+μ^s I D i / μ^s I' D' i', t = con x ⟶ con (cast (⟦D⟧ μ^s' i) (⟦D'⟧ μ^s' i') ê x)               [std: PT22, D1, 4g]
+μ, t a numeral, A, B syntactically equal ⟶ t                                                   [impl]
+ν^s I D i / ν^s I' D' i', t = cocon x ⟶ cocon (cast (⟦D⟧ ν^s' i) (⟦D'⟧ ν^s' i') ê x)           [wiz, D1, 4g]
 otherwise                          ⟶  stuck
 ```
 
-and `out (cast (ν^s D i) (ν^s D i') e t) ⟶ cast (⟦D⟧ ν^s' i) (⟦D⟧ ν^s' i') ê (out t)`
-(an unfolding is cast as it is observed). Here `μ^s D i / μ^s D i'` means two `μ` types
-of **one family**: equal levels, and index type, description and size syntactically
-equal (`sameFamily?`); `s = ↑s'` or `s = s' = ∞`; and
+and `out (cast (ν^s D i) (ν^s D' i') e t) ⟶ cast (⟦D⟧ ν^s' i) (⟦D'⟧ ν^s' i') ê (out t)`
+(an unfolding is cast as it is observed). The μ/ν rules apply to **any** two μ (ν) types
+with equivalent levels and sizes equal by their heads (`sizeEqTrue`: `∞ = ∞`,
+`↑s = ↑s'` when `s = s'`, a size variable equals itself); `s = ↑s'` or `s = s' = ∞`.
+Since 4g there is no syntactic test (`sameFamily?` is gone): `e : μ I D i ≡ μ I' D' i'`
+is a proof of `(I, D, i) =_T (I', D', i')` (§8.3), and the payload equation is one `transp`
+along it:
 
 ```
-ê := transp I i (λ j _. ⟦D⟧ X i ≡ ⟦D⟧ X j) (reflTy (⟦D⟧ X i)) i' e  :  ⟦D⟧ X i ≡ ⟦D⟧ X i'
+ê := transp T (I, D, i) (λ t _. ⟦D⟧ (λj. μ^s' I D j) i ≡ ⟦t.2.1⟧ (λj. μ^s' t.1 t.2.1 j) t.2.2)
+       (reflTy (⟦D⟧ (λj. μ^s' I D j) i)) (I', D', i') e
+     :  ⟦D⟧ (λ j. μ^s' I D j) i ≡ ⟦D'⟧ (λ j. μ^s' I' D' j) i'
 ```
 
-with `X = λ j. μ^s' D j`. Descriptions are cast along `e : I ≡ I'` (`Desc_l I ≡ Desc_l I'`
+At `t = (I, D, i)` the motive is reflexive, so `ê` is well typed (the kernel quotes it
+into terms it checks again, so this matters). Descriptions are cast along `e : I ≡ I'` (`Desc_l I ≡ Desc_l I'`
 computes to `I ≡ I'`):
 
 ```
@@ -640,19 +647,12 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
 (`Globals.regularity := .off`; `kernelRegularity` in `Kernel.wiz`); `wiz check
 --regularity full` restores it for experiments. In its place, `cast` computes on data:
 
-* **Why the μ rule is sound (subject reduction).** `e : μ D i ≡ μ D i'` computes to
-  `i =_I i'`, so `ê` is a well-typed proof of the payload equation: `transp`'s motive
-  `λ j _. ⟦D⟧ X i ≡ ⟦D⟧ X j` at `i` is `⟦D⟧ X i ≡ ⟦D⟧ X i`, proved by `reflTy`, and at `i'`
-  is the goal. `x : ⟦D⟧ X i` (rule *con*, `X` at the predecessor size), so the inner cast
-  has type `⟦D⟧ X i'` and `con` of it has type `μ^s D i'`. The rule uses nothing but
-  `e`. The type equation is the code equation of PT22/CIC-obs for an inductive family
-  with the parameters fixed: `μ D i ≡ μ D i'` iff `i = i'`. It is injective in the index,
-  which holds in the setoid/inductive-recursive model where `μ D i` is a code. The
-  equation computes only when `I`, `D`, the level and the size agree syntactically;
-  otherwise it stays stuck, and the stuck form quotes back to the equation itself, so the
-  rule is stable under substitution (syntactic equality is preserved by substitution).
-  Families with different parameters (`List A ≡ List B`) stay stuck: their equation would
-  need equality of descriptions, which is future work.
+* **Why the μ rule is sound (subject reduction).** `x : ⟦D⟧ X i` (rule *con*, `X` at
+  the predecessor size), and `ê : ⟦D⟧ X i ≡ ⟦D'⟧ X' i'` is well typed (its motive is
+  reflexive at `(I, D, i)` and `e` proves the code equation), so the inner cast has type
+  `⟦D'⟧ X' i'` and `con` of it has type `μ^s I' D' i'`. The rule uses nothing but `e`, the
+  levels and the sizes' heads, so it is stable under substitution: no syntactic test
+  decides whether it fires (§8.4b).
 * **Why it blocks the D1 loop.** The rule casts *every* field, along the components of
   `ê`. A `Prop` field is cast between propositions, which applies the equivalence (`ê`'s
   component `.1`), a stuck proof. Abel–Coquand's box therefore yields `(… ).1 δ`, not `δ`,
@@ -713,6 +713,152 @@ conversion ignores.
   Abel–Coquand loop needs the *definitional* rule.
 * **Canonicity.** As with any axiom, closed proofs mentioning it are not canonical, which
   is harmless because proofs are irrelevant and erased.
+
+### 8.4b Equality of descriptions (4g)
+
+Decision (2026-11-10): the kernel computes equality between *different* descriptions, so
+that `List A = List B` computes down to `A = B`, and `UIntN 8 = UIntN 16` is refutable.
+Before, `μ ≡ μ` computed only for one family (`sameFamily?`, syntactic) and stayed stuck
+otherwise. `vEqDesc`, `vEqType`, `famPayloadEq?` in `Eval.lean`; `vEqDesc`, `famEqTy`,
+`famPayload` in `Kernel.wiz`.
+
+**Rules.** Equality *at* `Desc_l I`, by the two heads:
+
+```
+ret j          = ret j'            ⟶  j =_I j'
+arg q S E      = arg q' S' E'      ⟶  (0 e : S ≡ S') × ((0 s : S) → E s =_{Desc I} E' (cast S S' e s))
+rec q j E      = rec q' j' E'      ⟶  (0 _ : j =_I j') × (E =_{Desc I} E')
+hrec q H j E   = hrec q' H' j' E'  ⟶  (0 _ : (0 e : H ≡ H') × ((0 h : H) → j h =_I j' (cast H H' e h))) × (E = E')
+q, q' different constants          ⟶  False;  not comparable (a quantity variable) ⟶ stuck
+two different constructors         ⟶  False
+a neutral on either side           ⟶  stuck
+```
+
+Equality *of* `μ`/`ν` types (§8.3), for any two families, is equality of their codes:
+
+```
+μ^s_l I D i ≡ μ^s'_l' I' D' i'  ⟶  (I, D, i) =_T (I', D', i'),   T := (J : Sort (l+1)) × (D : Desc_l J) × J
+     if l ≡ l' and s, s' are equal by their heads (∞ = ∞, ↑s = ↑s' if s = s', a variable itself); else stuck
+```
+
+which the Σ rule (§8.2) computes to
+
+```
+(0 e : I ≡ I') × ((0 e' : cast (Desc I) (Desc I') ê₁ D = D') × (cast I' I' ê₂ (cast I I' ê₃ i) = i'))
+```
+
+(the `ê`s are `transp`s of `e`, `e'`; the outer cast at `I'` is the identity when `I'` is
+inert).
+and `cast` between them computes constructor by constructor (§8.4), generalising D1's
+one-family rule. The tail of each Σ is a closure: `D = D'` computes only when it is looked
+at, so a big description costs nothing until a proof is projected.
+
+**No shortcut, nothing simplified (stability).** The shape of every result is decided by
+the heads of the two sides (and literal quantities), never by syntactic equality or by
+what a component computes to. In particular:
+
+* `μ D i ≡ μ D i'` is **no longer** `i = i'`. It is the general form, whose components
+  are `I ≡ I`, `cast _ D = D` and `cast _ i = i'`. Keeping `i = i'` for one family and
+  the general form for two would not be stable: a substitution can make `List A` and
+  `List B` one family (`B := A`), and the general form's instance `(0 e : A ≡ A) × …` is
+  not convertible to `i = i'` without regularity. Then a proof `e : List A ≡ List B` that
+  was projected (`e.1`) would be ill-typed after the substitution. For the same reason a
+  `True` component is not dropped: a stuck component (`A ≡ B`) may become `True` after a
+  substitution, and `(0 e : True) × P` is not convertible to `P`. (Theory review,
+  2026-11-10: a rule that fires on syntactic equality and is stuck otherwise also breaks
+  the congruence of conversion: two convertible but syntactically different stuck terms
+  can stop being convertible after a substitution makes one of them fire.)
+* The sizes are compared by their heads; two size variables are equal only if they are
+  the same variable. A size has no proofs and no definitions in it, so this is conversion
+  on sizes. Otherwise (`∞` against `↑s`, two different variables) the equation is stuck.
+* Tag fields are not special: `arg (Enum ls) E = arg (Enum ls') E'` is the general rule,
+  `(0 e : Enum ls ≡ Enum ls') × ((0 t : Enum ls) → E t = E' (cast … t))`, and the cast at
+  `Enum` is the identity. Applying the Π to a tag computes that constructor's equation.
+  (Expanding the Π into a product over the tags would depend on the field type being a
+  literal `Enum`, which a substitution can create.)
+* What stays syntactic is unchanged and outside these rules: regularity at inert types
+  (`inertTy A && sameVal A B`, §8.4, a conjecture; the theory notes analyse it), and the
+  numeral shortcut (`cast` of a literal between syntactically equal types is the literal,
+  which the structural rule computes too, up to the index proofs).
+
+**What it gives.** For `inductive L (A : Type) | nil | cons (x : A) (xs : L A)`
+(`I = Unit`, `D = arg ω (Enum [nil, cons]) E`), `e : L A ≡ L B` has
+
+```
+e.1                 : Unit ≡ Unit                                  (True)
+e.2.1               : cast e.1 D = D'
+e.2.1.2 'cons       : E 'cons = E' 'cons          (after the cast at Enum and at Desc compute)
+(e.2.1.2 'cons).1   : A ≡ B
+```
+
+so `List Nat ≡ List Bool` is refuted through `Nat ≡ Bool` (by their descriptions: at the
+tag `succ`, `rec` against `ret` is `False`). For `UIntN w` the width is in the index type
+(phantom tails, README 22e), so `e.1 : I₈ ≡ I₁₆` already refutes `UIntN 8 ≡ UIntN 16`.
+A cast between `L A` and `L B` along `e` computes to the list of the casts of its elements
+(`cast A B _ x`, stuck at type variables as always).
+
+**User-facing change.** A proof of `i = i'` no longer inhabits `μ D i ≡ μ D i'` directly:
+`Vec A n = Vec A m` is a Σ now. Build such proofs by congruence (`congrArg (Vec A) h`, or
+`transp` with `reflTy`, which is what the elaborator does for index equations and
+pattern matching); `refl (Vec A n)` proves `Vec A n = Vec A n`. `rfl` against an equation
+between data types that has already computed may fail (its components `cast e D = D` are
+not syntactic reflexivities); write `refl T` instead.
+
+**Soundness: the setoid model.** We interpret the theory in the setoid (observational)
+model of TTobs/CCobs [PT22, PT23], extended as follows. This is an argument, not a
+proof; the obligations are recorded in Status.md ("Description equality", 4g).
+
+1. *Codes.* Each `Type l` is an inductive-recursive universe `U_l` of codes with
+   decoding `El`, as in [PT22]. Descriptions over an index code are a *nested* inductive
+   `Desc(U_l, I)` with constructors `ret (i : El I)`, `arg (q) (S : U_l) (E : El S →
+   Desc)`, `rec (q) (j : El I) (E : Desc)`, `hrec (q) (H : U_l) (j : El H → El I) (E :
+   Desc)`, and `U_l` gets a code `μ (I : U_l) (D : Desc(U_l, I)) (i : El I)` (likewise
+   `ν`). `Desc` is positive in `U_l` and uses `El` only in domains, as Π-codes do, so the
+   simultaneous definition is a standard IR definition with a nested inductive (field
+   types are *exactly* in `Sort (l+1)`, §9.1, so every field is a code of `U_l`).
+2. *Equality of codes* is the structural relation, defined by recursion on both codes:
+   for μ it is the relation on `(I, D, i)` above, and on descriptions it is the table
+   above (heterogeneous through `cast`, as for Π-codes). Different code constructors are
+   unrelated (`False`). Quantities are part of a code, so different quantities are
+   unrelated, as for Π (§8.3). This relation is what `vEqType`/`vEqDesc` compute.
+3. *Cast* between `El (μ I D i)` and `El (μ I' D' i')` along a proof of the relation is
+   defined by recursion on the (well-founded) element, field by field, along the
+   components; this is what `vCastData` computes, with the payload equation obtained by
+   one `transp` along the code equation.
+4. *Propositions inside codes.* A field type is never a proposition (it is in `Sort
+   (l+1)`), and a proof field is a lifted proposition `ULift P`, whose code equality is
+   `P ↔ Q` (`ULift P ≡ ULift Q ⟶ P ≡ Q`, both propositions). So the A0 issue (comparing
+   propositions by shape) does not arise: codes see propositions only up to equivalence,
+   which is what the model's `Prop` (proof-irrelevant, with propext) identifies.
+
+**Large-into-small injectivity (Hur, D4).** The rule makes `μ` injective in its
+description: from `μ D i ≡ μ D' i'` one gets `D = D'` with `D : Desc_l I : Type (l+1)` and
+`μ D i : Type l`. Hur's paradox needs an injection of `Type l → Type l` (or `Type l →
+Prop`) into `Type l`. Here:
+
+* the shape is the same as Π-injectivity, which TTobs already has (`(x : A) → B ≡ (x :
+  A') → B'` gives `B x ≡ B' x`, an injection of `A → Type l` into `Type l`), and the code
+  model above validates both, because `Desc(U_l, I)` only mentions codes of `U_l`, never
+  families over `U_l` itself;
+* a description can't quantify over `Type l`: a field type must be in exactly `Sort
+  (l+1)`, and `Type l : Sort (l+2)`. So the encoding `D_F := arg (Type l) (λ X. arg (F X) …)`
+  of `F : Type l → Prop` is rejected at level `l`; at level `l+1` it is accepted and
+  `μ D_F : Type (l+1)`, which is not a paradox (the adversarial test in
+  `Tests/Elab.lean`, group `desceq`, checks both);
+* **the `l = 0` case with `Prop`.** `Prop : Sort 1`, so `Prop` *is* a valid field type of
+  a `Desc.{0}`, and `D_F := arg Prop (λ P. arg (ULift (F P)) (λ _. ret ()))` gives an
+  injection `(Prop → Prop) ↪ Type` (and, with `F : Prop → Type`, `(Prop → Type) ↪ Type`
+  up to the field level). That is the shape of CCobs's Π-injectivity over a `Prop`
+  domain, which has a model [PT23]: classically `Prop ≅ 2`, so a tagged pairing realises
+  it. It is not Hur's `(Type → Type) ↪ Type`. (`hrec` with `H := Prop` is the same.)
+
+**Termination, D1.** The new rules are evaluation rules: each step looks at two heads,
+and the rests are closures, so evaluating an equation terminates when the descriptions'
+evaluation does. A cast walks the constructor value as before. The Abel–Coquand programs
+still check: the box's cast still casts its proof field along an equivalence (now a
+component of `ê` built from the *user's* proof of the type equation when the two box
+descriptions differ; with `tautext` that equivalence is `λ _. a`, and `Ω` normalises).
+Tests: the D1 group, plus the box written with two different (equal) descriptions.
 
 ### 8.5 Proof irrelevance
 
@@ -1202,6 +1348,7 @@ Each item says what the code does; the code is what the kernel checks.
 | `app` | evaluates the argument | only if the codomain may mention it (`usesVar`) |
 | conversion fast path | none | `valSame`: bounded structural equality (`Kernel.wiz:1461`) |
 | μ/ν size argument | unchecked | unchecked (`Kernel.wiz:1918, 1967`) |
+| equality of descriptions, `μ ≡ μ` (4g, §8.4b) | `vEqDesc`, `vEqType`, `famPayloadEq?` | the same rules without quantities (`vEqDesc`, `famEqTy`, `famPayload`); levels are numerals |
 
 ---
 

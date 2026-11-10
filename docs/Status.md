@@ -65,7 +65,7 @@ the results of the probes listed in the "Probes" section.
 | Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture**; propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
-| Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
+| Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. Since 4g every `μ ≡ μ` computes by the codes, to `(I, D, i) = (I', D', i')` at `(J : Sort (l+1)) × Desc J × J`, and equality at `Desc` is structural (CoreSpec §8.4b); see E1. |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
 | QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed for `.2`), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
@@ -82,7 +82,7 @@ the results of the probes listed in the "Probes" section.
 | QTT + descriptions | **conjecture** | Fields carry quantities; the payload Σ uses them; methods are scaled. No paper. |
 | QTT + sized types + coinduction | **conjecture** | Sizes are erased (always quantity 0). No paper. |
 | Observational equality + impredicative `Prop` + regularity | **resolved by D1 (a)**: regularity off; at inert types **conjecture** | D1, below. |
-| Observational equality + descriptions (`eq` at `μ`, `cast` between `μ` types) | **conjecture** | `cast` between two `μ` types of one family computes on constructors (PT22/CIC-obs style, CoreSpec §8.4). Different parameters (`List A ≡ List B`) stay stuck. |
+| Observational equality + descriptions (`eq` at `μ` and at `Desc`, `cast` between `μ` types) | **conjecture** (model obligation E1) | `cast` between any two `μ` types computes on constructors along the decomposed equation (PT22/CIC-obs style, CoreSpec §8.4, §8.4b). `List A ≡ List B` computes, and gives `A ≡ B`; `UIntN 8 ≡ UIntN 16` is refutable. Makes `μ` injective in its description (Hur's shape, D4): argued in §8.4b. |
 | Observational equality + sized types | **conjecture** | Subtyping is not reflected in type equality (`μ^s ≡ μ^t` stuck). |
 | Sized types + `∞` | **fixed** (D2) for `∞ < ∞`; **conjecture** otherwise | F2 below. |
 | Sort annotations + level polymorphism | **conjecture** | Annotations are checked symbolically (`Level.equiv`), so they stay right under instantiation if `Level.equiv` is sound (it is designed to be). |
@@ -374,6 +374,43 @@ levels (`Setω`) that Wiz's core has no place for (levels are prenex parameters 
 
 ---
 
+### E1. Equality of descriptions (4g): `μ` injective in its description — **conjecture** (model obligation)
+
+**What.** `vEqDesc` compares two description codes by their constructors, and `μ I D i ≡
+μ I' D' i'` computes to `(I, D, i) = (I', D', i')` at the type of codes for every
+pair of families (CoreSpec §8.4b), with `cast` between them computing constructor by
+constructor. This makes `μ` injective in `D : Desc_l I : Type (l+1)`, with `μ D i : Type l`:
+the shape of Hur's paradox (`xtt-cubical-attacks.md` D4).
+
+**Argument (not a proof).** The setoid model of [PT22]/[PT23] with `Type l` as an
+inductive-recursive universe of codes `U_l`, extended with a *nested* inductive
+`Desc(U_l, I)` of description codes (fields are codes of `U_l`, `E : El S → Desc`) and a
+code `μ (I : U_l) (D : Desc(U_l, I)) (i : El I)`. Code equality is the structural
+relation the kernel computes; different constructors are unrelated; cast is by recursion
+on the element. `Desc(U_l, I)` mentions only codes of `U_l` and never families over `U_l`
+(field types are exactly in `Sort (l+1)`, F5/Q4), as for Π-codes, whose injectivity TTobs
+already has. At `l = 0`, `Prop : Sort 1` is a valid field type, which gives an injection
+`(Prop → Prop) ↪ Type`; that is the shape of CCobs's Π-injectivity over a `Prop` domain
+(model: [PT23]; classically `Prop ≅ 2`), not Hur's `(Type → Type) ↪ Type`. Proof fields
+are lifted propositions compared by equivalence, so the A0 issue doesn't return.
+
+**Obligations.** (1) The nested IR definition of `U_l` with `Desc(U_l, -)` and the
+structural relation, in the presence of impredicative `Prop` (as in [PT23]); (2) that
+equality of `μ` codes is equality of `(I, D, i)` at `(J : Sort (l+1)) × Desc J × J`, so
+the cast's payload equation is one `transp` (well typed); (3) quantities as part of
+codes (as for Π).
+
+**Stability.** The rules decide the shape of the result by the heads of the two codes
+only: no syntactic equality, and no simplification of `True` components (a theory review
+on 2026-11-10 showed both are unstable under substitution). The cost is that `μ D i ≡ μ D
+i'` is no longer `i = i'` (README 4g).
+
+**Tests.** `Tests/Elab.lean`, group `desceq` (both kernels where the self-hosted kernel
+is reachable): `List Nat ≡ List Bool` refuted through `Nat ≡ Bool`; `UIntN 8 ≡ UIntN 16`
+refuted; casts between `List A` and `List B` compute elementwise; the Abel–Coquand box
+with two different but equal descriptions checks; the Hur-style encoding over `Type` at
+`l = 0` is rejected by the field-level rule.
+
 ## 5. Stuck but sound
 
 These are places where the kernel deliberately does **not** compute, so some true
@@ -386,9 +423,9 @@ equations are not provable by computation. They are incompleteness, not unsoundn
   kernel's `typeSort?`, except "a Π/Σ under a `fun` whose variable's type isn't written
   down, or one that still mentions a metavariable" (its README 4c text).
 * **Neutral types**: `a =_X b` and `cast X Y e t` for a variable `X` are stuck.
-* **`μ ≡ μ`, `ν ≡ ν`, `Desc ≡ Desc`** are always stuck (no structural comparison of
-  descriptions; a design decision to avoid committing to injectivity of `μ`, see
-  `xtt-cubical-attacks.md` D4).
+* **`μ ≡ μ`, `ν ≡ ν`** are stuck when the levels are not known equivalent or the sizes
+  are not equal by their heads (`∞` against `↑s`, two different size variables). Since 4g
+  they compute otherwise (E1).
 * **Equality at `ν`** is stuck (no bisimulation).
 * **`Size ≡ Size`, `Qty ≡ Qty`** are stuck in the Lean kernel (in `Kernel.wiz`, `Size`
   is wrongly `False`: O1).

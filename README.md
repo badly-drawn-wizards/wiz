@@ -311,7 +311,7 @@ of `a` and `b` (Pujet & Tabareau, *Observational Equality: Now for Good*):
 | `(x : A) × B`    | `(e : a.1 = b.1) × cast … a.2 = b.2`                  |             |
 | `Unit`, `Empty`  | `True`                                               |             |
 | `Prop`           | `(a → b) × (b → a)`                                  | propext     |
-| `Type u`         | structural equality of types (propositions inside by equivalence; `μ`, `ν`, `Desc` stuck); `False` for different formers | no-confusion |
+| `Type u`         | structural equality of types (propositions inside by equivalence; `μ`, `ν` by their codes, 4g); `False` for different formers | no-confusion |
 | a type variable  | stuck                                                 |             |
 
 `cast e t : B` (for `e : A = B`, `t : A`) also computes by the two types.
@@ -323,8 +323,9 @@ irrelevant**, so conversion at a proposition always succeeds.
 `J` compute on `refl` everywhere, but together with an impredicative `Prop` and
 irrelevant proofs it makes type checking loop (Abel–Coquand; `Tests/Elab.lean` "D1"). So
 it is off (`wiz check --regularity full` turns it back on, for experiments). Instead
-`cast` computes on data, constructor by constructor: `μ D i = μ D i'` is `i = i'`, and
-`cast (μ D i) (μ D i') e (con x)` casts each field of `x` along it (so a proof field is
+`cast` computes on data, constructor by constructor: `cast (μ D i) (μ D' i') e (con x)`
+casts each field of `x` along the pieces of `e` (since 4g `μ D i = μ D' i'` compares the
+codes) (so a proof field is
 cast between propositions, which applies the equivalence: that is what stops the loop).
 At **inert** types (first-order data: `Nat`, `Bool`, `List Nat`, … — no `Prop` fields,
 functions or type variables) regularity is kept: there a cast between equal types is the
@@ -618,6 +619,49 @@ size metavariables default to `∞`.
 
 Limitations: non-indexed types only, recursion on the first argument, and no
 as-patterns (size-preserving functions like `minus` want `x@.zero`).
+
+### 4g: equality of descriptions
+
+```
+def refute (e : List Nat = List Bool) : Empty := absurd (((e.2.1.2 'cons).1).2.1.2 'succ)
+def ne (e : UIntN 8 = UIntN 16) : Empty := absurd ((e.1.1.2 16).1 (refl 16))
+#reduce fun (h : List A = List B) (x y : A) => (cast h [x, y] : List B)   -- [cast _ x, cast _ y]
+```
+
+Until now `μ D i = μ D' i'` computed only for one family (the same description,
+compared syntactically) and was stuck otherwise, so `List Nat = List Bool` could be
+neither proved nor refuted, and neither could `UIntN 8 = UIntN 16`. Now the kernel
+compares the **codes** (as in Pujet–Tabareau's universe of codes), in both kernels:
+
+| equation | computes to |
+|---|---|
+| `μ I D i = μ I' D' i'` | `(I, D, i) = (I', D', i')` (the codes, at `(J : Type) × Desc J × J`): `(e :0 I = I') × ((cast _ D = D') × (cast _ i = i'))` |
+| `ret j = ret j'` (at `Desc I`) | `j = j'` |
+| `arg q S E = arg q S' E'` | `(e :0 S = S') × ((s :0 S) → E s = E' (cast e s))` |
+| `rec q j E = rec q j' E'` | `(j = j') × (E = E')` |
+| `hrec q H j E = hrec q H' j' E'` | `((e :0 H = H') × ((h :0 H) → j h = j' (cast e h))) × (E = E')` |
+| different constructors, or different quantities | `False` |
+
+A cast between two `μ` (or `ν`) types computes constructor by constructor along the pieces
+of the equation, as it did for one family. Proof fields are lifted propositions, which
+compare by equivalence. What this costs, and why:
+
+* **`μ D i = μ D i'` is no longer `i = i'`.** It is the general form, whose components
+  are `I = I`, `cast _ D = D` and `cast _ i = i'`. Keeping the old answer for one family
+  would not be stable under substitution: `List A = List B` becomes one family when
+  `B := A`, and its general form would not be convertible to the old one (that needs
+  regularity, which is off, 4c). For the same reason nothing is simplified, not even a
+  `True` component: so the equations print with `True`s in them.
+* So a proof of `n = m` is not a proof of `Vec A n = Vec A m` any more. Use congruence
+  (`congrArg (Vec A) h`, or `transp` from `refl`), which is what the elaborator does for
+  index equations; `refl (Vec A n)` proves `Vec A n = Vec A n`; and write `refl T`, not
+  `rfl`, where an equation between data types has already computed (its pieces such as
+  `cast e D = D` are not syntactic reflexivities).
+* `μ` is now injective in its description, a large-into-small map (Hur's paradox has
+  this shape). It is the same shape as the injectivity of Π that observational equality
+  already has, and a description can't range over its own universe (fields are exactly in
+  `Sort (l+1)`), so the model of codes covers it. That is an argument, not a proof:
+  docs/CoreSpec.md §8.4b, docs/Status.md E1.
 
 ## Stage 5: erasure and the interpreter
 
@@ -1985,11 +2029,11 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
   `D` lives in a higher universe than the type also gets none, since the tail would
   raise the type's universe; it stays forgotten.
 * For structures, `S 8 = S 16` computes through the Σ to `(x = 8) ↔ (x = 16)` under
-  a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). Equality of two
-  `μ` types computes to the index equation only when their descriptions agree (so
-  `UIntN 8 = UIntN 8` does), and the phantom is part of the description. So for an
-  `inductive`, `UIntN 8 = UIntN 16` stays stuck: it is neither provable nor refutable,
-  and a `cast` between such types gets stuck too.
+  a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). For an
+  `inductive` the phantom is in the index type, and since 4g equality of two `μ` types
+  compares their codes, index types first: `UIntN 8 = UIntN 16` is refutable too
+  (`e.1` is the index types' equation, which at the phantom is `(x = 16) ↔ (x = 8)`), and
+  a `cast` between them computes.
 * A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
   parameters never count. Declare a `structure` instead.
 
