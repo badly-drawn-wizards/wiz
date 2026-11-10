@@ -261,7 +261,9 @@ partial def lift (k : Nat) (cut : Nat := 0) : Term R → Term R
 /-- Substitute `f i` (a term in the outer context) for each free variable `i`, under
 `depth` binders. -/
 partial def substFree (f : Nat → Term R) (depth : Nat := 0) : Term R → Term R
-  | .var i => if i < depth then .var i else (f (i - depth)).lift depth
+  | .var i => if i < depth then .var i else
+    -- (at depth 0 the substituted term is shared, not copied)
+    if depth == 0 then f i else (f (i - depth)).lift depth
   | t => Id.run <| t.mapChildrenM pure (fun d c => pure (substFree f (depth + d) c))
 
 /-- Abstract every occurrence of `target` (a term in the same context) as a new
