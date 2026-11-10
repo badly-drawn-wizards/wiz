@@ -900,8 +900,9 @@ escape.
   join points for non-tail `case`s (closed over their variables). The generic
   eliminators are written in the erased language (`Compiler/PrimCode.lean`) and
   compiled like user code. The output is sorted by name, so it's deterministic.
-* **Perceus** (`Compiler/RC.lean`): every variable is owned; `dup` an argument that
-  is still needed, and `drop` a variable as soon as it's dead (garbage free).
+* **Perceus** (`Compiler/RC.lean`): every variable is owned (until stage 8e's borrowed
+  parameters); `dup` an argument that is still needed, and `drop` a variable as soon as
+  it's dead (garbage free).
 * **Checked heap** (`Compiler/IRRun.lean`): `#run` runs the IR with explicit reference
   counts and fails on use after free, double free, or leaks. All the examples give the
   same results under `#run` as under `#eval`.
@@ -968,7 +969,34 @@ gets one name per branch. The LLVM tests are the C tests, through LLVM.
 
 Still to do in the backend: specialise the eliminators for known descriptions (flat
 constructor objects instead of nested pairs, direct recursion instead of walking the
-description), borrowed parameters, and drop specialisation.
+description).
+
+### 8e: borrowed parameters and drop specialisation ✅
+
+```
+#ir len            -- def len @&x0 :=  case x0 of | 0 => … | 1 => let x2 := proj 1 x0;  let x3 := len x2; …
+```
+
+* **Borrowed parameters** (`Compiler/Borrow.lean`, Lean 4's borrow inference): a
+  parameter the function never consumes is borrowed (`@&` in `#ir`): the caller keeps its
+  reference and lends it for the call, and the fields read from it are borrowed too, so
+  the length of a list, a left fold or a lookup in a tree count nothing on the structure
+  they walk. Consumed means returned, stored, captured, applied, passed to a native
+  operation or to an owned parameter. A parameter whose cell (or a field's cell) is
+  reused stays owned (no lost in-place updates), and so does one that receives an owned
+  value in a tail call within its recursive group (loops stay loops); a greatest fixed
+  point over the whole program, join points included.
+* `proj` now reads a field without a new reference; `RC.lean` `dup`s the field of an
+  owned object, lends arguments in borrowed positions, and `dup`s a variable that is
+  both lent and passed to an owned position of the same call.
+* **Closures** call with owned arguments: a partially applied function with borrowed
+  parameters goes through a wrapper `f._owned`, which drops them after the call.
+* **Drop specialisation** (`Compiler/DropSpec.lean`, Perceus §2.3): `dup`ing the fields
+  of an object and then dropping it becomes one runtime operation, `dropMoved x mask`:
+  if `x` is unique the fields move out and only its cell is freed, otherwise the fields
+  get their references and `x` is decremented. A pair returned by a call and taken
+  apart costs no reference counting when it is unique.
+
 
 ## Stage 9: the C FFI
 

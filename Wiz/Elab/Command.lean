@@ -1367,7 +1367,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let e ← (eraseTop ctx t ty).mapError toString
         let code ← (compileReachable s.globals s.builtins e.globals.toList (externImpls := false)).mapError toString
         let decls ← IR.lowerProgram code e
-        let (v, _) ← IR.runProgram (decls.map (·.optimize))
+        let (v, _) ← IR.runProgram (IR.optimizeProgram decls)
         pure (ty, v)
       match result with
       | .ok (ty, v) => report .info cmd.info (readback s.globals s.builtins ty v).pretty
@@ -1379,8 +1379,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       IR.lowerProgram code (.global n)
     match result with
     | .ok decls =>
-      let mine := decls.filter fun d => d.name == n || d.name.startsWith (n ++ ".")
-      report .info cmd.info ("\n".intercalate (mine.toList.map (·.optimize.toString)))
+      -- (not the owned wrappers for closures, stage 8e)
+      let mine := (IR.optimizeProgram decls).filter fun d =>
+        d.name == n || (d.name.startsWith (n ++ ".") && !d.name.endsWith "._owned")
+      report .info cmd.info ("\n".intercalate (mine.toList.map (·.toString)))
     | .error err => report .error cmd.info s!"#ir: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with
