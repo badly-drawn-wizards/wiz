@@ -167,6 +167,21 @@ def group : Group where
     { name := "a 16000-element list written out is elaborated in linear time and space", run := fun _ => do
         let _ ← within 30 1000 fun _ => elabOk s!"import Prelude\ndef l : List Nat := {listSource 16000}\n"
         pure () },
+    -- erasure re-inferred the body of each `split` with the kernel: a match's tree of
+    -- nested splits (one per field of a matched constructor) was checked again once per
+    -- level, quadratic in its depth; and `erasable` recomputed the sort of the rest of the
+    -- telescope at each field. (300 fields: 16 s before, 6.7 s after, under load; the
+    -- bound is loose, and some super-linear cost remains: see the PR)
+    { name := "a match on a 300-field constructor is erased in linear time", run := fun _ => do
+        let n := 300
+        let fields := " ".intercalate ((List.range n).map (s!"x{·}"))
+        let src := s!"import Prelude\ninductive T where\n  | mk {" ".intercalate ((List.range n).map (s!"(x{·} : Nat)"))}\n" ++
+          s!"def f (t : T) : Nat := match t with\n  | .mk {fields} => x{n - 1}\n"
+        let st ← elabOk src
+        let r ← within 20 1000 fun _ => pure (compileReachable st.globals st.builtins ["f"])
+        match r with
+        | .ok code => check (code.contains "f") "f was not erased"
+        | .error e => throw (IO.userError (toString e)) },
     { name := "one-pass reference counting agrees with the specification (insertRC)", run := fun _ => do
         let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         for p in examples ++ [literalProgram 300] do

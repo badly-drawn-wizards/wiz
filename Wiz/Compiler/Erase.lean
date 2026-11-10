@@ -194,8 +194,16 @@ partial def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
   | .sort _ | .size | .sizeLt _ | .qty => true
   | .ulift _ A => erasable ctx A
   -- a phantom tail `(0 phantom✝ : D) → … → Unit` (only `fun _ => ()` inhabits it)
-  | .pi x .. => isPhantomName x || isProp ctx.globals ctx.tys ty
-  | _ => isProp ctx.globals ctx.tys ty
+  | .pi x .. => isPhantomName x || isPropTy ctx ty
+  | _ => isPropTy ctx ty
+where
+  /-- `isProp`, but from the sort a `Π`/`Σ` carries (checked by the kernel) when it has
+  one: `typeSort?` recomputes it from every component, which along a structure's
+  telescope of `n` fields, asked once per field, is quadratic. -/
+  isPropTy (ctx : Ctx R) (ty : VTy R) : Bool :=
+    match whnf ty with
+    | .pi _ _ _ _ _ (some l) | .sigma _ _ _ _ (some l) => l.equiv 0
+    | _ => isProp ctx.globals ctx.tys ty
 
 private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
 
@@ -217,6 +225,9 @@ A one-field structure (`Shr ρ A`, a newtype) is then its field, and an `n`-fiel
 which substitution can't create or remove, so generic and specialised code agree. -/
 def unboxedSigma (g : Globals R) (lvl : Nat) (ty : VTy R) : Bool :=
   match whnf ty with
+  -- (a second component that is itself a `Σ`, the next field, is not a tail: don't
+  -- evaluate the rest of the telescope to find out)
+  | .sigma _ _ _ (.mk _ (.sigma ..)) _ => false
   | .sigma _ _ _ B _ => isStructTail g (Closure.inst g B (.var lvl)) (lvl + 1)
   | _ => false
 
