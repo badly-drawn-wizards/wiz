@@ -7,6 +7,8 @@ import Infoview
 -- `js_set_html` (a part of the page). The protocol and the HTML are
 -- `lib/Infoview.wiz`, shared with the terminal infoview.
 
+-- (9f) the JavaScript side, as Emscripten C (EM_JS)
+link_c "js.c"
 extern "js_next_event" Js.nextEvent : IO String
 extern "js_send" Js.send : String → IO Unit
 extern "js_set_html" Js.setHtml : String → String → IO Unit

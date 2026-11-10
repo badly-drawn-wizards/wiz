@@ -27,6 +27,19 @@ done, so `-j 1` and `-j 8` print the same.
 namespace Grail
 open Wiz Cache
 
+/-- (9f) `link.txt`, beside `main.c`: one line per `link_c` file (`src PATH`) and
+`link_lib` library (`lib NAME`). -/
+def renderLink (l : Build.Link) : String :=
+  String.join (l.sources.toList.map (s!"src {·}\n")) ++ String.join (l.libs.toList.map (s!"lib {·}\n"))
+
+def readLink (f : System.FilePath) : IO Build.Link := do
+  if !(← f.pathExists) then return {}
+  let mut l : Build.Link := {}
+  for line in (← IO.FS.readFile f).splitOn "\n" do
+    if line.startsWith "src " then l := { l with sources := l.sources.push (line.drop 4).toString }
+    else if line.startsWith "lib " then l := { l with libs := l.libs.push (line.drop 4).toString }
+  pure l
+
 /-- What a node of the build graph does. -/
 inductive Action where
   | check (file : String)
@@ -94,7 +107,8 @@ def addLink (dir : System.FilePath) (libs : List String) (name file : String) (b
   let some ir ← GraphM.add s!"ir {file}" (pure (.ir file, #[ck], false)) | return none
   let some c ← GraphM.add s!"c {file}" (pure (.c file, #[ir], false)) | return none
   let some o ← GraphM.add s!"obj {file}" (pure (.obj file, #[c], false)) | return none
-  GraphM.add s!"link {name}" (pure (.link name file bin, #[o], false))
+  -- (the link reads the `link_c` files and libraries that `c` lists)
+  GraphM.add s!"link {name}" (pure (.link name file bin, #[o, c], false))
 
 def testExe (file : String) : String := s!"test-{hash file}"
 
@@ -243,11 +257,20 @@ def Runner.prep (r : Runner) (update : Bool) (results : TestResults) (n : Node)
       #["-O2", "-w", "-c", "-o", (out / "main.o").toString, cFile.toString] ++ tc.cflags.toArray })
   | .link name _ bin =>
     let o := d 0
-    let key := mixHash (hash "link") (hash (toString [toString o.key, tc.cc, " ".intercalate tc.ldflags, " ".intercalate tc.libs]))
+    -- (9f) the `link_c` files (compiled here, with `cflags`) and `link_lib` libraries
+    let link ← readLink ((d 1).out / "link.txt")
+    let mut contents : Array String := #[]
+    for f in link.sources do
+      contents := contents.push (← try pure (toString (hash (← IO.FS.readBinFile f))) catch _ => pure "missing")
+    let srcArgs := if link.sources.isEmpty then #[] else #["-O2", "-w"] ++ link.sources ++ tc.cflags.toArray
+    let key := mixHash (hash "link") (hash (toString [toString o.key, tc.cc, " ".intercalate tc.ldflags, " ".intercalate tc.libs,
+      " ".intercalate tc.gmp, toString link.sources.toList, toString contents.toList, toString link.libs.toList,
+      if link.sources.isEmpty then "" else " ".intercalate tc.cflags]))
     pure (.job {
       key := key, timeoutMs := r.timeoutMs,
       how := .cmd tc.cc fun out =>
-        #["-o", (out / name).toString, (o.out / "main.o").toString, "-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray,
+        #["-o", (out / name).toString, (o.out / "main.o").toString] ++ srcArgs ++ tc.gmp.toArray ++
+          tc.ldflags.toArray ++ tc.libs.toArray ++ link.libFlags,
       onOk := fun _ out => do
         if bin then install (out / name) (r.ctx.grailDir / "bin" / name)
         pure "" })
@@ -259,6 +282,8 @@ def Runner.prep (r : Runner) (update : Bool) (results : TestResults) (n : Node)
         return .fail e f.log
     let (_, expected) ← expectedOf r.ctx.dir file
     let key ← r.testKey file kind expected
+    -- (9f) a `run` test also depends on its executable's link (its `link_c` files' contents)
+    let key := if kind == .run then mixHash key (d 0).key else key
     let force := update || expected.isNone
     let onOk (cached : Bool) (_ : System.FilePath) : IO String := do
       if !cached then return ""
@@ -515,6 +540,7 @@ def Runner.runJob (r : Runner) (out : System.FilePath) : Sx → IO (Except Strin
     | .error e => pure (.error e)
     | .ok (ds, io) =>
       IO.FS.writeFile (out / "main.c") (C.program ds io (Build.extraC s))
+      IO.FS.writeFile (out / "link.txt") (renderLink (Build.linkOf s))
       pure (.ok ())
   | .l #[.a "run-on", .a exe, .a input, .a file] => do
     runOn exe (← IO.FS.readFile input) out file

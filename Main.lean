@@ -17,7 +17,7 @@ experimental kernel options (D1, they turn the cache off): --regularity off|full
 (default off),
 --predicative-prop
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
-  --libs \"…\" (say -lm), --llc X (default llc)"
+  --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
 
 def parseCmd (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
@@ -30,11 +30,6 @@ def parseCmd (path : String) : IO UInt32 := do
 
 /-- The module roots: `lib/` (the standard library), then the `-I` directories. -/
 def moduleRoots (tc : Toolchain) : List System.FilePath := "lib" :: tc.searchPath
-
-/-- Read every module the file can reach (`import A.B` is `A/B.wiz` under a root) up
-front: the frontend is pure. -/
-def loadLibrary (tc : Toolchain) (input : String) : IO (Std.HashMap Name String) := do
-  pure ((← Module.loadClosure (moduleRoots tc) input).fold (fun m n (_, src) => m.insert n src) {})
 
 /-- Library modules with their paths (for the language server's go-to-definition). -/
 def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String)) := do
@@ -63,13 +58,19 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
 /-- Elaborate a file, through the toolchain's cache (if any). -/
-def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
-  let lib ← loadLibrary tc input
+def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandState ZeroOneMany) := do
+  -- every module the file can reach (`import A.B` is `A/B.wiz` under a root), read up
+  -- front: the frontend is pure
+  let mods ← Module.loadClosure (moduleRoots tc) input
+  let lib := mods.fold (fun m n (_, src) => m.insert n src) ({} : Std.HashMap Name String)
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
+  -- (9f) the `link_c` files, each relative to its own file
+  let sources ← Module.cSourceTable ((System.FilePath.mk path).parent.getD ".") input mods
   let (regularity, predicativeProp) ← kernelOpts.get
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp } }
+    { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
+      globals := { regularity, predicativeProp } }
   -- the cache doesn't know the experimental options
   let cache := if regularity == .off && !predicativeProp then tc.cacheDir else none
   match cache with
@@ -81,7 +82,7 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
 
 def checkCmd (tc : Toolchain) (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
-  let s ← elaborate tc input
+  let s ← elaborate tc path input
   for m in s.messages do
     let line := s!"{path}:{m.render input}"
     if m.severity == .error then IO.eprintln line else IO.println line
@@ -89,7 +90,7 @@ def checkCmd (tc : Toolchain) (path : String) : IO UInt32 := do
 
 def elabFile (tc : Toolchain) (path : String) : IO (Option (CommandState ZeroOneMany)) := do
   let input ← IO.FS.readFile path
-  let s ← elaborate tc input
+  let s ← elaborate tc path input
   for m in s.messages do
     if m.severity == .error then IO.eprintln s!"{path}:{m.render input}"
   pure (if s.messages.any (·.severity == .error) then none else some s)
@@ -100,8 +101,8 @@ def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) : IO UInt32 := d
   | .error e => IO.eprintln e; pure 1
   | .ok (decls, ty) =>
     let io := Build.isIO ty
-    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls))
-      else Build.compileC tc (C.program decls io (Build.extraC s)) out
+    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls)) (Build.linkOf s)
+      else Build.compileC tc (C.program decls io (Build.extraC s)) out (Build.linkOf s)
     match r with
     | .error e => IO.eprintln e; pure 1
     | .ok () => pure 0

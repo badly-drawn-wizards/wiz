@@ -84,3 +84,38 @@ extern "fputs" (header := "stdio.h") fputs : String → FILE → IO Nat
 
 The FFI is complete for now. Not done yet: callbacks (C calling Wiz closures), structs
 by value, and mapping more of a header's pointer types onto foreign types automatically.
+
+## 9f: C source files and libraries ✅
+
+```
+link_c "term.c"                       -- relative to this .wiz file
+link_lib "m"                          -- -lm
+extern "iv_term_open" Term.open : IO Nat
+```
+
+* `link_c "f.c"` names a C file to compile and link with any program that imports the
+  module (or is the file). The path is relative to the `.wiz` file that says it (a
+  module's to the module's file), or absolute. It is the **unchecked** counterpart of
+  `glue`: the file may use pointers, structs, system headers and static helpers; Wiz
+  sees only the functions it binds with `extern`. A file named twice is linked once.
+* `link_lib "m"` links a library (`-lm`), after the toolchain's `--libs`.
+* `wiz build`/`wiz run` compile the files with the program, with the same compiler and
+  `--cflags` (`-O2 -w`, like the generated C), through either backend (with `--llvm` the
+  linking step compiles them). The frontend is pure, so the command line resolves the
+  paths first (`Module.cSourceTable`, like the headers of `import_c`); a file that
+  doesn't exist is an error at its `link_c`. The commands aren't cached (they rerun on
+  every elaboration; they are cheap), so a file deleted later is still noticed. In the
+  language server the paths aren't checked.
+* grail (stage 23): `c F` lists the files and libraries in `link.txt` beside `main.c`;
+  `link E` compiles and links them, and its key covers their paths, their contents and
+  the `cflags`, so editing a C file reruns only the link (and the `run` tests that use
+  the program). Which of the files exist enters `check F`'s key, so a deleted file is
+  reported by the check.
+* `--gmp "…"` (a toolchain field, default `-lgmp`; also `gmp` in `grail.local.wiz`) says
+  how GMP is linked. For WebAssembly it is mini-gmp's C file, so `web/build.sh` is one
+  `wiz --cc emcc --gmp ".../mini-gmp.c" build web/Web.wiz -o wiz-infoview.mjs`, with
+  `web/js.c` (Emscripten's `EM_JS`) from `link_c "js.c"`. The terminal infoview links
+  `infoview/term.c` (termios, poll, sockets) the same way.
+
+Not done: `pkg-config` names (`link_pkg "gtk+-3.0"`) — for now, give their flags with
+`--cflags`/`--ldflags`.

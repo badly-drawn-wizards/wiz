@@ -275,6 +275,9 @@ def commandLeading : List LeadingParser := [
     p := seqs ["foreign_type", ident, optional (seqs ["(", nonReserved "finalizer", ":=", str, ")"])] },
   { kind := "command.importC", prec := maxPrec,
     p := seqs ["import_c", str, optional (seqs ["(", nonReserved "pure", ")"])] },
+  -- 9f: C source files and libraries linked with the program
+  { kind := "command.linkC", prec := maxPrec, p := seqs ["link_c", str] },
+  { kind := "command.linkLib", prec := maxPrec, p := seqs ["link_lib", str] },
   { kind := "command.extern", prec := maxPrec,
     p := seqs ["extern", str, optional (seqs ["(", nonReserved "header", ":=", str, ")"]), ident, ":", term] },
   { kind := "command.attrMacro", prec := maxPrec,

@@ -29,6 +29,18 @@ def irProgram (s : CommandState R) (n : Name) : Except String (Array IR.Decl × 
 /-- Header includes and glue functions, in order. -/
 def extraC (s : CommandState R) : String := "\n".intercalate s.cCode.toList
 
+/-- (9f) What a program links besides the runtime: C source files (`link_c`, absolute
+paths) and libraries (`link_lib "m"`: `-lm`). -/
+structure Link where
+  sources : Array String := #[]
+  libs : Array String := #[]
+  deriving Inhabited, Repr
+
+def linkOf (s : CommandState R) : Link := { sources := s.linkC, libs := s.linkLibs }
+
+/-- The linker arguments of the libraries. -/
+def Link.libFlags (l : Link) : Array String := l.libs.map ("-l" ++ ·)
+
 /-- Is this the type `IO A`? Then `main` is run, not printed. -/
 def isIO (ty : Term R) : Bool := match (Term.spine ty).1 with
   | .const "IO" _ => true
@@ -43,18 +55,21 @@ def words (s : Option String) : List String :=
   ((s.getD "").splitOn " ").filter (· ≠ "")
 
 /-- Compile C source to an executable. -/
-def compileC (tc : Toolchain) (src : String) (exe : System.FilePath) : IO (Except String Unit) := do
+def compileC (tc : Toolchain) (src : String) (exe : System.FilePath) (link : Link := {}) : IO (Except String Unit) := do
   let cFile := exe.withExtension "c"
   IO.FS.writeFile cFile src
   let cc := tc.cc
-  let args := #["-O2", "-w", "-o", exe.toString, cFile.toString] ++ tc.cflags.toArray ++
-    #["-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray
-  let out ← IO.Process.output { cmd := cc, args }
-  if out.exitCode == 0 then pure (.ok ()) else pure (.error s!"{cc} failed:\n{out.stderr}")
+  -- (9f) the `link_c` files are compiled with the program, with the same flags
+  let args := #["-O2", "-w", "-o", exe.toString, cFile.toString] ++ link.sources ++ tc.cflags.toArray ++
+    tc.gmp.toArray ++ tc.ldflags.toArray ++ tc.libs.toArray ++ link.libFlags
+  try
+    let out ← IO.Process.output { cmd := cc, args }
+    if out.exitCode == 0 then pure (.ok ()) else pure (.error s!"{cc} failed:\n{out.stderr}")
+  catch e => pure (.error s!"{cc}: {e}")
 
 /-- Compile an LLVM module to an executable: `llc` (the toolchain's) for the module, the C
 compiler for the runtime (exported with `-DWIZ_API=`), and the C compiler to link. -/
-def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : String := "") : IO (Except String Unit) := do
+def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : String := "") (link : Link := {}) : IO (Except String Unit) := do
   let llFile := exe.withExtension "ll"
   let rtFile := exe.withFileName "wiz_runtime.c"
   IO.FS.writeFile llFile ll
@@ -73,7 +88,10 @@ def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : S
     return .error e
   if let .error e ← step llc #["-O2", "-filetype=obj", "-relocation-model=pic", "-o", mainObj.toString, llFile.toString] then
     return .error e
-  step cc (#["-o", exe.toString, mainObj.toString, rtObj.toString, "-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray)
+  -- (9f) the `link_c` files are compiled by the linking step, with the C flags
+  let srcArgs := if link.sources.isEmpty then #[] else #["-O2", "-w"] ++ link.sources ++ cflags
+  step cc (#["-o", exe.toString, mainObj.toString, rtObj.toString] ++ srcArgs ++ tc.gmp.toArray ++
+    tc.ldflags.toArray ++ tc.libs.toArray ++ link.libFlags)
 
 /-- Parse the printed result: numbers, `(tag fields…)`, `<fn>`, `#bits`. -/
 partial def parseValue (s : String) : Option RVal :=
@@ -111,8 +129,8 @@ def runGlobal (tc : Toolchain) (s : CommandState R) (n : Name) (dir : System.Fil
   | .ok (decls, ty) =>
     let exe := dir / "wiz_main"
     let io := isIO ty
-    let built ← if llvm then compileLLVM tc (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls))
-      else compileC tc (C.program decls io (extraC s)) exe
+    let built ← if llvm then compileLLVM tc (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls)) (linkOf s)
+      else compileC tc (C.program decls io (extraC s)) exe (linkOf s)
     match built with
     | .error e => pure (.error e)
     | .ok () =>
