@@ -18,6 +18,8 @@ experimental kernel options (D1, they turn the cache off): --regularity off|full
 --predicative-prop, --eager-proofs (P2: the evaluator runs proofs, as it did before; the
 default never evaluates them),
 --inert syntactic|ground|conv (P1: regularity at inert types; default ground)
+compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
+unboxed; not stable under substitution, so off by default)
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
 
@@ -70,6 +72,10 @@ initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
 /-- (P1) `--inert MODE`: regularity at inert types. -/
 initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
 
+/-- `--unbox-structs` (22i): the last field of a structure is unboxed. Off by default: the
+representation is not stable under substitution (`unboxedSigma` in `Erase.lean`). -/
+initialize unboxOpt : IO.Ref Bool ← IO.mkRef false
+
 /-- Take `--inert MODE` out of the arguments. -/
 def takeInertOpt : List String → Except String (Option InertReg × List String)
   | "--inert" :: m :: rest => do
@@ -96,13 +102,16 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let (regularity, predicativeProp) ← kernelOpts.get
   let lazyProofs ← lazyProofsOpt.get
   let inertReg ← inertOpt.get
+  let unboxStructs ← unboxOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
-      globals := { regularity, predicativeProp, lazyProofs, inertReg }, trustedModule := own.contains }
+      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs },
+      trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs
+    then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -131,8 +140,8 @@ def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) : IO UInt32 := d
   | .error e => IO.eprintln e; pure 1
   | .ok (decls, ty) =>
     let io := Build.isIO ty
-    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls) (Build.extraC s)) (Build.linkOf s)
-      else Build.compileC tc (C.program decls io (Build.extraC s)) out (Build.linkOf s)
+    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls) (Build.extraC s) s.globals.unboxStructs) (Build.linkOf s)
+      else Build.compileC tc (C.program decls io (Build.extraC s) s.globals.unboxStructs) out (Build.linkOf s)
     match r with
     | .error e => IO.eprintln e; pure 1
     | .ok () => pure 0
@@ -164,6 +173,8 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  if args.contains "--unbox-structs" then unboxOpt.set true
+  let args := args.filter (· != "--unbox-structs")
   lazyProofsOpt.set (!args.contains "--eager-proofs")
   let args := args.filter (· != "--eager-proofs")
   let args ← match takeInertOpt args with

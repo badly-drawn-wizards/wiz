@@ -539,7 +539,7 @@ def Runner.runJob (r : Runner) (out : System.FilePath) : Sx → IO (Except Strin
     match mainDecls s with
     | .error e => pure (.error e)
     | .ok (ds, io) =>
-      IO.FS.writeFile (out / "main.c") (C.program ds io (Build.extraC s))
+      IO.FS.writeFile (out / "main.c") (C.program ds io (Build.extraC s) s.globals.unboxStructs)
       IO.FS.writeFile (out / "link.txt") (renderLink (Build.linkOf s))
       pure (.ok ())
   | .l #[.a "run-on", .a exe, .a input, .a file] => do

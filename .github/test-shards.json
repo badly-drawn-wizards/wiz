@@ -33,6 +33,7 @@
     "optic",
     "phantom",
     "regions",
+    "repr",
     "seplogic",
     "std",
     "tactics",

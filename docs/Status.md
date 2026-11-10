@@ -553,6 +553,32 @@ levels (`Setω`) that Wiz's core has no place for (levels are prenex parameters 
 
 ---
 
+### R3. A representation chosen by what conversion ignores — **partly fixed; two parts open**
+
+* **What.** Erasure chose representations by a binder name (`phantom✝`: erased), an
+  `Enum` label (`fields✝`: the Σ before it unboxed) and the display name on a `μ` (`Nat`:
+  a number; a type with `implemented_by` on its constructor: a native value). Conversion
+  ignores all three, so the kernel accepted conversions between types with different
+  representations and `#eval` and compiled code gave wrong values (soundness audit, R3;
+  not a proof of `False`: the kernel is not involved).
+* **Fixed, in erasure only** (`Compiler/Erase.lean`, `Run.lean`'s readback, `◾` applied
+  is `◾` in `runtime/wiz.c` and the IR interpreter): erased functions into `Unit` by
+  quantities (`erasedFunTy`), `Nat` by the description's shape (`natShaped`), one function
+  deciding unboxing at every site. Group `repr`.
+* **Refused instead of miscompiled:** a description whose first field has an abstract type
+  (`def mkD (S : Type) F := Desc.arg 1 S F`, later used at `S := Enum …`). Whether a
+  value's object carries the constructor tag is decided from the type at a known type and
+  from a mark in the run-time description in generic code, and the two disagreed
+  (a wrong value in `#eval`, a crash compiled). Erasure now reports an error.
+* **Open 1: Σ unboxing is not stable under substitution**, with the marker or by shape:
+  generic code over `A × B` meets a structure's bare field. It is off by default
+  (`--unbox-structs`, 22i); the layout needs a new structure encoding to come back.
+* **Open 2: native representations** (`attribute [implemented_by mk get] T.mk`, 22d) are
+  still found by the `μ`'s display name: a copy of `UIntN`'s declaration is convertible to
+  it and has the model's object, and compiled code then computes wrong values. Shape
+  cannot decide this one (it needs the registration attached to something conversion
+  compares). `/workspace/wiz-notes/repr-shape.md`, §4.
+
 ## 5. Stuck but sound
 
 These are places where the kernel deliberately does **not** compute, so some true
