@@ -99,3 +99,18 @@ freeing every object by the end.
 
 Next: reuse and drop specialisation (as in [stage 8c](08-backend.md)), a faster allocator, keeping tail
 calls when a borrowed argument is lent; then reference counting by default.
+
+## 21i: phantom parameters in the self-hosted frontend ✅
+
+Parity with 22e. `inductiveCmd` (`Frontend.wiz`) finds the parameters that no
+constructor (nor the index type) mentions (`occurs` on the elaborated descriptions) and
+gives each `p : P` a phantom domain (`phantomDom`): `D := p` for a type, `(0 x : P) ×
+(x = p)` otherwise, none for a proof, a size, or a `D` that would raise the index type's
+universe. The index type `Unit` becomes `(0 _ : D₁) → … → Unit`, and every index (the
+descriptions' `ret`/`rec`, the type's `μ`, a match's `ind`) its value `fun _ … => tt`
+(`phantomVal`); a constructor's index proof is `refl` there. Structures are inductive
+types in this frontend, so they get the same. Erasure needs nothing new: in this kernel a
+function into `Unit` is a proposition, so the tail is erased already. Not mirrored: an
+indexed family with such a parameter (the Lean frontend pairs the index with the tail) is
+rejected with an error, rather than accepted with the parameter forgotten. Tests:
+`selfhostAgrees` runs the same declarations through both frontends.

@@ -512,6 +512,113 @@ def sortSpine : TCtx → Tm → STm
   | c, t => sortLeaf c t
 -- a closed type with its sorts (`sortSpine`)
 def sortTy (t : Tm) : Tm := STm.tm (sortSpine empty t)
+-- **Phantom parameters** (stage 21i; `phantomTail` in `Elab/Inductive.lean`, README
+-- 22e). Types are structural, so a parameter no constructor mentions would be forgotten
+-- (`UIntN 8` and `UIntN 16` one type, `w` never inferred). For each such parameter
+-- `p : P` the index type `Unit` becomes `(0 _ : D) → … → Unit`, with `D := p` for a
+-- type and `D := (0 x : P) × (x = p)` otherwise; the indices are its one value
+-- `fun _ => tt`. Proofs and sizes get none, nor does a parameter whose `D` would raise
+-- the index type's universe. Erasure drops the tail (a function into `Unit` is a
+-- proposition here: `erasable`). An indexed family with such a parameter is rejected
+-- (the Lean frontend pairs the index with the tail; not mirrored yet).
+mutual
+-- does `t` mention the variable `i`? (exact on the forms of field types and
+-- descriptions; any other form counts as a mention)
+def occurs : Nat → Tm → Bool
+  | i, .var j => Nat.beq i j
+  | i, .pi a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .piq _ a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .sigma a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .sigmaq _ a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .lam b => occurs (i + 1) b
+  | i, .app f a => Bool.or (occurs i f) (occurs i a)
+  | i, .letE ty v b => Bool.or (occurs i ty) (Bool.or (occurs i v) (occurs (i + 1) b))
+  | i, .ann t ty => Bool.or (occurs i t) (occurs i ty)
+  | i, .sorted _ t => occurs i t
+  | i, .pair a b => Bool.or (occurs i a) (occurs i b)
+  | i, .fst t => occurs i t
+  | i, .snd t => occurs i t
+  | i, .con t => occurs i t
+  | i, .eq A a b => Bool.or (occurs i A) (Bool.or (occurs i a) (occurs i b))
+  | i, .eqRefl A a => Bool.or (occurs i A) (occurs i a)
+  | i, .descr _ I => occurs i I
+  | i, .dret x => occurs i x
+  | i, .darg S D => Bool.or (occurs i S) (occurs i D)
+  | i, .drec j D => Bool.or (occurs i j) (occurs i D)
+  | i, .dhrec H j D => Bool.or (occurs i H) (Bool.or (occurs i j) (occurs i D))
+  | i, .ecase m s bs => Bool.or (occurs (i + 1) m) (Bool.or (occurs i s) (occursTms i bs))
+  | i, .mu _ I D x => Bool.or (occurs i I) (Bool.or (occurs i D) (occurs i x))
+  | _, .const _ _ _ _ _ => .false
+  | _, .axiomC _ _ => .false
+  | _, .univ _ => .false
+  | _, .prop => .false
+  | _, .sortL _ => .false
+  | _, .unit _ => .false
+  | _, .star => .false
+  | _, .empty _ => .false
+  | _, .enum _ => .false
+  | _, .tag _ _ => .false
+  | _, _ => .true
+def occursTms : Nat → Tms → Bool
+  | _, .tnil => .false
+  | i, .tcons t rest => Bool.or (occurs i t) (occursTms i rest)
+end
+-- the context of the parameters (their types, each over the ones before)
+def paramCtx : TCtx → Tms → TCtx
+  | c, .tnil => c
+  | c, .tcons A rest => paramCtx (TCtx.bind c (eval (TCtx.env c) A)) rest
+-- the phantom domain `D` of the parameter `k` of `np` (its type `A` over the ones
+-- before), at depth `np` in the parameters' context `c`; `none` if it gets none
+def phantomDom (c : TCtx) (np k : Nat) (A : Tm) : Option Tm :=
+  let P := shiftTm (np - k) 0 A;
+  let p : Tm := .var (np - 1 - k);
+  let vP := eval (TCtx.env c) P;
+  let D : Option Tm := match whnf vP with
+    | .vsort _ => .some p
+    | .vsize => .none
+    | .vsizeLt _ => .none
+    | _ => match isProp c vP with
+      | .true => .none
+      | .false => .some (.sigmaq .qz P (.eq (shiftTm 1 0 P) (.var 0) (shiftTm 1 0 p)));
+  match D with
+  | .none => .none
+  | .some D' => match inferUniv c (.piq .qz D' (.unit 0)) with
+    | .ok ty _ => match ty with
+      | .vsort l => match lvlEquiv l (.lnum 1) with
+        | .true => .some D'
+        | .false => .none
+      | _ => .none
+    | .err _ => .none
+-- the phantom domains of the parameters from the `k`th on that `used` doesn't mention
+def phantomDoms (c : TCtx) (np : Nat) (used : Nat → Bool) : Nat → Tms → Tms
+  | _, .tnil => .tnil
+  | k, .tcons A rest =>
+    let more := phantomDoms c np used (k + 1) rest;
+    match used k with
+    | .true => more
+    | .false => match phantomDom c np k A with
+      | .some D => .tcons D more
+      | .none => more
+-- the tail `(0 _ : D₁) → … → Unit` (the `i` domains before already bound)
+def phantomTy : Nat → Tms → Tm
+  | _, .tnil => .unit 0
+  | i, .tcons D rest => .piq .qz (shiftTm i 0 D) (phantomTy (i + 1) rest)
+-- the index of a type without indices: the tail's value `fun _ … _ => tt` (`tt` for `Unit`)
+partial def phantomVal (I : Tm) : Tm := match I with
+  | .sorted _ t => phantomVal t
+  | .piq _ _ b => .lam (phantomVal b)
+  | _ => .star
+-- a constructor's description with the indices (all `tt`) replaced by the tail's value
+partial def retail (v : Tm) (D : Tm) : Tm := match D with
+  | .darg S F => match F with
+    | .lam B => .darg S (.lam (retail v B))
+    | _ => D
+  | .drec _ E => .drec v (retail v E)
+  | .dret _ => .dret v
+  | _ => D
+def retailTms (v : Tm) : Tms → Tms
+  | .tnil => .tnil
+  | .tcons D rest => .tcons (retail v D) (retailTms v rest)
 def addCtors (T : String) (ps : List String) (pts : Tms) (nidx : Nat) (I : Tm) (Tc TcI : Tm) (k : Nat) : Globals → Nat → List Syntax → Added
   | gs, _, .nil => .ok gs .nil
   | gs, i, .cons c cs =>
@@ -524,9 +631,12 @@ def addCtors (T : String) (ps : List String) (pts : Tms) (nidx : Nat) (I : Tm) (
       | .err _ => .err
       | .ok ics =>
         let ty := sortTy (piTele pts (ctorType (tApps Tc (tmsAppend (pvars np (np + n)) ics)) fs));
+        -- (without an index: `tt`, or `refl` at a phantom tail)
         let proof : Tm := match ics with
           | .tcons ic _ => .eqRefl (shiftTm n 0 I) ic
-          | .tnil => .star;
+          | .tnil => match I with
+            | .unit _ => .star
+            | _ => .eqRefl (shiftTm n 0 I) (phantomVal I);
         let v := tLams (np + n) (.con (.pair (.tag k i) (payloadP proof n (n - 1))));
         match check empty v (eval .nil ty) with
         | .err _ => .err
@@ -630,30 +740,48 @@ def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match kid stx0 1 with
         | .bad => .err "an inductive type's signature must be Type or I → Type";
       match Ir with
       | .err m => errStep gs m
-      | .ok I =>
-        let mkD := fun (ds : Tms) => (.darg (.enum k) (.lam (.ecase (.descr 0 (shiftTm 1 0 I)) (.var 0) ds)) : Tm);
+      | .ok I0 =>
         match ctorDescs .false gs T ps nidx ctors with
         | .err m => errStep gs m
-        | .ok ds => match ctorDescs .true gs T ps nidx ctors with
+        | .ok ds0 => match ctorDescs .true gs T ps nidx ctors with
           | .err m => errStep gs m
-          | .ok dsI =>
-            -- `fun ps => μ D tt`, or `fun ps i => μ D i`
-            let body := fun (D : Tm) => (match sig with
-              | .indexed _ => .lam (.mu 0 (shiftTm 1 0 I) (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0))
-              | _ => .mu 0 (.unit 0) D .star : Tm);
-            let ty := sortTy (piTele pts (match sig with
-              | .indexed _ => .pi I (.univ 0)
-              | _ => .univ 0));
-            let val := tLams np (body (mkD ds));
-            match check empty val (eval .nil ty) with
-            | .err m => errStep gs m
-            | .ok _ _ =>
-              let valI := tLams np (body (mkD dsI));
-              let gs1 := Globals.add gs (.mk T ty val valI .nil);
-              match addCtors T ps pts nidx I (.const T .nil .nil val ty) valI k gs1 0 ctors with
-              | .err => errStep gs "ill-typed constructor"
-              | .ok gs2 cs => .mk (String.append T (String.append " : " (show .nil 0 ty)))
-                  (Globals.addInd gs2 T (.mk np I (mkD ds) (mkD dsI) cs .none (.const T .nil .nil val ty)))
+          | .ok dsI0 =>
+            -- phantom parameters: those that neither a constructor nor the index type
+            -- mentions (in the descriptions, under `t✝`, the parameter `k` is `np - k`)
+            let cP := paramCtx empty pts;
+            let doms := phantomDoms cP np (fun (j : Nat) => Bool.or (occursTms (np - j) ds0) (occurs (np - 1 - j) I0)) 0 pts;
+            let I : Tm := match doms with
+              | .tnil => I0
+              | .tcons _ _ => STm.tm (sortSpine cP (phantomTy 0 doms));
+            let tl := phantomVal I;
+            let ds := match doms with
+              | .tnil => ds0
+              | .tcons _ _ => retailTms tl ds0;
+            let dsI := match doms with
+              | .tnil => dsI0
+              | .tcons _ _ => retailTms tl dsI0;
+            -- (the motive is under the tag's binder and its own)
+            let mkD := fun (ds : Tms) => (.darg (.enum k) (.lam (.ecase (.descr 0 (shiftTm 2 0 I)) (.var 0) ds)) : Tm);
+            match Bool.and (Nat.beq nidx 1) (Bool.not (Nat.beq (tmsLenF doms) 0)) with
+            | .true => errStep gs "a parameter that no constructor mentions (a phantom parameter) of an indexed family is not supported by the self-hosted frontend"
+            | .false =>
+              -- `fun ps => μ D tt`, or `fun ps i => μ D i`
+              let body := fun (D : Tm) => (match sig with
+                | .indexed _ => .lam (.mu 0 (shiftTm 1 0 I) (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0))
+                | _ => .mu 0 I D tl : Tm);
+              let ty := sortTy (piTele pts (match sig with
+                | .indexed _ => .pi I (.univ 0)
+                | _ => .univ 0));
+              let val := tLams np (body (mkD ds));
+              match check empty val (eval .nil ty) with
+              | .err m => errStep gs m
+              | .ok _ _ =>
+                let valI := tLams np (body (mkD dsI));
+                let gs1 := Globals.add gs (.mk T ty val valI .nil);
+                match addCtors T ps pts nidx I (.const T .nil .nil val ty) valI k gs1 0 ctors with
+                | .err => errStep gs "ill-typed constructor"
+                | .ok gs2 cs => .mk (String.append T (String.append " : " (show .nil 0 ty)))
+                    (Globals.addInd gs2 T (.mk np I (mkD ds) (mkD dsI) cs .none (.const T .nil .nil val ty)))
   | _ => errStep gs "an inductive type needs a name"
 
 def sndN : Nat → Tm → Tm
@@ -2211,7 +2339,8 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
             | .some f => f
             | .none => match tmsDrop np args with
               | .tcons j _ => j
-              | .tnil => (.star : Tm);
+              -- (`tt`, or a phantom tail's value)
+              | .tnil => phantomVal I;
           let nidxE := match fixed with
             | .some _ => 1
             | .none => tmsLenF (tmsDrop np args);
