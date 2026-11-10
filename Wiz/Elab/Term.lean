@@ -1125,8 +1125,12 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     | some (.darg _ (.enum ls) _) => ls
     | _ => []
   let nΞ := ξ.length
+  -- a motive that depends on neither the indices nor the scrutinee: the non-dependent
+  -- eliminator (`T.recN`), whose branches need no cast along the index equation
+  let nondep := modeA && !sized && nΞ > 0 && !((ξLvls ++ [x]).any fun l => G.hasVar (ctx.lvl - l - 1))
   let motive : Term R ←
-    if modeA then
+    if nondep then pure G
+    else if modeA then
       -- each abstraction puts `body` under one more binder, so later targets are lifted
       let mut body := G
       for l in ξLvls, i in [0:ξLvls.length] do body := body.abstract ((varTm l).lift i)
@@ -1146,7 +1150,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     | _ => false
   let some v := vG.orElse fun _ => if unknown then some (.succ .zero) else none
     | throwAt ctx.info "could not determine the universe of the match's type"
-  let elimName := T ++ (if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn")
+  let elimName := T ++ (if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn") ++
+    (if nondep then "N" else "")
   let some ed := g.find? elimName | throwAt ctx.info s!"{elimName} is missing"
   let elimHead : Term R := .const elimName (us ++ [v])
   let sizeArgs : List (Val R) := if sized then [xsz] else []

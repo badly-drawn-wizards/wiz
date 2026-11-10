@@ -412,7 +412,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
-def salt : UInt64 := hash "wiz-cache-5"
+def salt : UInt64 := hash "wiz-cache-6-d1"  -- 6: D1, regularity off (after grail's 5)
 
 /-! ## Keys and atomic writes (stage 23c)
 

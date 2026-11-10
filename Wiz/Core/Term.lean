@@ -320,8 +320,8 @@ structure Globals (R : Type) where
   assumed : List (Name × Name) := []
   /-- unfold every definition eagerly (no gluing), for normal forms -/
   eager : Bool := false
-  /-- D1 experiment (default `full`): which casts reduce by regularity -/
-  regularity : Regularity := .full
+  /-- which casts reduce by regularity (D1: `off`, so that checking terminates) -/
+  regularity : Regularity := .off
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false

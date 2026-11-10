@@ -1,0 +1,2 @@
+examples/church.wiz:13:1: info: fun A s z => s (s (s (s z)))
+examples/church.wiz:23:1: info: lid : {A : Type} → (1 x : A) → A
