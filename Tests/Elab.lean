@@ -2590,6 +2590,15 @@ def builtinGroup : Group where
   cases := [
     { name := "import the prelude", run := fun _ =>
         okLib "import Prelude\n#check List.append" ["List.append : {A : Type} → List A → List A → List A"] },
+    { name := "a stuck number times a big numeral, in a type (nat-pow-blowup)", run := fun _ =>
+        okLib ("import Word\naxiom Q : Nat → Type\naxiom y : (n : Nat) → Q (Nat.mod n 18446744073709551616)\n" ++
+          "def bump (a : I64) : I64 := match a with\n  | .mk n => .mk (Nat.mod (Nat.add n 1) (Nat.pow 2 64))") },
+    { name := "Nat.beq and Nat.lt compute natively on numerals", run := fun _ =>
+        okLib ("import Word\ndef t : Nat.beq 9223372036854775808 9223372036854775808 = Bool.true := rfl\n" ++
+          "def u : Nat.lt 9223372036854775807 9223372036854775808 = Bool.true := rfl\n" ++
+          "def v : Nat.lt 9223372036854775808 9223372036854775807 = Bool.false := rfl\n" ++
+          "def w : UIntN.beq (U64.ofNat 9223372036854775808) (U64.ofNat 9223372036854775809) = .false := rfl\n" ++
+          "#reduce Nat.beq 3 4\n#reduce Nat.lt 3 4") [".false", ".true"] },
     { name := "numerals and native arithmetic", run := fun _ =>
         okLib "import Prelude\n#eval 100 * 100 * 100 - 1" ["999999"] },
     { name := "recursion over native numbers", run := fun _ =>
