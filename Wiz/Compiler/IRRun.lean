@@ -1,4 +1,4 @@
-import Wiz.Compiler.Reuse
+import Wiz.Compiler.Borrow
 import Wiz.Compiler.Run
 
 /-!
@@ -128,6 +128,26 @@ def nativeOp (op : Name) (args : Array IVal) : RunM IVal := do
         l := rest
       | _ => break
     if fs.isEmpty then pure (.tag t) else alloc (.ctor t fs)
+  | "dropMoved" =>
+    -- (drop specialisation) unique: the fields in the mask move out, the cell is freed;
+    -- shared: the moved fields get a reference each, and `x` is decremented
+    match (args[0]? : Option IVal), (args[1]? : Option IVal) with
+    | some (.ptr id), some (.num m) => do
+      match ← getObj id with
+      | (rc, .ctor _ fs) =>
+        let moved (i : Nat) : Bool := i < 62 && (m >>> i) % 2 == 1
+        if rc == 1 then
+          modify fun h => { h with objs := h.objs.erase id }
+          for (f, i) in fs.zipIdx do
+            if !moved i then dropV f
+        else
+          for (f, i) in fs.zipIdx do
+            if moved i then dupV f
+          dropV (.ptr id)
+        pure (.tag 0)
+      | _ => throw "dropMoved of a closure or token"
+    | some _, some (.num _) => pure (.tag 0)
+    | _, _ => throw "dropMoved: bad arguments"
   | "lazyTag" =>
     let t ← match (args[0]? : Option IVal) with
       | some (.ptr id) => do
@@ -201,9 +221,8 @@ partial def run (prog : Std.HashMap Name Decl) (env : Std.HashMap Var IVal)
         match ← get y with
         | .ptr id => do
           let .ctor _ fs := (← getObj id).2 | throw "projection from a closure or token"
-          let fv := fs[i]?.getD .erased
-          dupV fv
-          pure fv
+          -- borrowed: no new reference
+          pure (fs[i]?.getD .erased)
         | .num n => natField n i
         | .tag 0 => natField 0 i
         | v => throw s!"projection from a scalar {repr v}"

@@ -113,8 +113,19 @@ def Uniq.both {ρ : Region} {A B C : Type} (p : Uniq ρ (A × B))
   | .ok r => .ok (r.1, Uniq.mk (r.2.1.val, r.2.2.val))
   | .err e => .err e
 
+-- The scopes are inlined in compiled code (22i): with the handles unboxed, a scope is
+-- its body run in place, with no closure and no handle allocated.
+attribute [inline] Region.scope
+attribute [inline] Shr.borrow
+attribute [inline] Uniq.borrow
+attribute [inline] Uniq.reborrow
+attribute [inline] Uniq.share
+attribute [inline] Uniq.zoom
+attribute [inline] Uniq.both
+
 -- `*r := a` through a mutable borrow argument
 def Uniq.set {ρ : Region} {A : Type} (r : Uniq ρ A) (a : A) : Uniq ρ A := Uniq.mk a
+attribute [inline] Uniq.set
 
 -- ## Subtyping by evidence
 
@@ -122,6 +133,7 @@ def Uniq.set {ρ : Region} {A : Type} (r : Uniq ρ A) (a : A) : Uniq ρ A := Uni
 -- Mutable borrows are not weakened: a shorter mutable borrow is a reborrow.
 def Shr.weaken {ρ ρ' : Region} {A : Type} (0 h : Outlives ρ ρ') (x : Shr ρ A) : Shr ρ' A :=
   Shr.mk x.val
+attribute [inline] Shr.weaken
 
 -- ## Returned mutable borrows
 
