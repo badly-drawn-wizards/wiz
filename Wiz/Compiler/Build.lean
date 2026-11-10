@@ -19,12 +19,24 @@ namespace Wiz.Build
 
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
-/-- The optimised IR of a program computing the global `n`, and `n`'s type. -/
-def irProgram (s : CommandState R) (n : Name) : Except String (Array IR.Decl × Term R) := do
-  let some d := s.globals.find? n | throw s!"no definition {n}"
-  let code ← (compileReachable s.globals s.builtins [n]).mapError toString
-  let decls ← IR.lowerProgram code (.global n)
-  pure (IR.optimizeProgram (IR.hoistConsts decls), d.type)
+/-- The exported functions (`export "c" f`, stage 9g), in order: their C signatures and
+definitions. -/
+def exports (s : CommandState R) : List (RVal.ExternSig × Name) :=
+  s.builtins.reverse.filterMap fun (k, f) => (RVal.ExternSig.ofExportKey? k).map (·, f)
+
+/-- The optimised IR of a program computing the global `n`, and `n`'s type, with the
+exported functions. A library (`lib`) has only the exports. -/
+def irProgram (s : CommandState R) (n : Name) (lib : Bool := false) : Except String (Array IR.Decl × Term R) := do
+  let ex := exports s
+  let (roots, main, ty) ← if lib then
+      if ex.isEmpty then throw "a library must export something (`export \"name\" f`)"
+      pure ([], ETerm.erased, (Term.unit 1 : Term R))
+    else do
+      let some d := s.globals.find? n | throw s!"no definition {n}"
+      pure ([n], ETerm.global n, d.type)
+  let code ← (compileReachable s.globals s.builtins (roots ++ ex.map (·.2))).mapError toString
+  let decls ← IR.lowerProgram code main (ex.toArray.map fun (sig, f) => (C.exportEntry sig.cname, .global f))
+  pure (IR.optimizeProgram (IR.hoistConsts decls), ty)
 
 /-- Header includes and glue functions, in order. -/
 def extraC (s : CommandState R) : String := "\n".intercalate s.cCode.toList
@@ -37,24 +49,26 @@ def isIO (ty : Term R) : Bool := match (Term.spine ty).1 with
 /-- The C program that computes the global `n`, and `n`'s type. -/
 def cProgram (s : CommandState R) (n : Name) : Except String (String × Term R) := do
   let (decls, ty) ← irProgram s n
-  pure (C.program decls (isIO ty) (extraC s), ty)
+  pure (C.program decls (isIO ty) (extraC s) ((exports s).map (·.1)), ty)
 
 def words (s : Option String) : List String :=
   ((s.getD "").splitOn " ").filter (· ≠ "")
 
 /-- Compile C source to an executable. -/
-def compileC (tc : Toolchain) (src : String) (exe : System.FilePath) : IO (Except String Unit) := do
+def compileC (tc : Toolchain) (src : String) (exe : System.FilePath) (lib : Bool := false) : IO (Except String Unit) := do
   let cFile := exe.withExtension "c"
   IO.FS.writeFile cFile src
   let cc := tc.cc
-  let args := #["-O2", "-w", "-o", exe.toString, cFile.toString] ++ tc.cflags.toArray ++
+  -- (a library is an object file, linked by the C program that uses it)
+  let args := if lib then #["-O2", "-w", "-c", "-o", exe.toString, cFile.toString] ++ tc.cflags.toArray else
+    #["-O2", "-w", "-o", exe.toString, cFile.toString] ++ tc.cflags.toArray ++
     #["-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray
   let out ← IO.Process.output { cmd := cc, args }
   if out.exitCode == 0 then pure (.ok ()) else pure (.error s!"{cc} failed:\n{out.stderr}")
 
 /-- Compile an LLVM module to an executable: `llc` (the toolchain's) for the module, the C
 compiler for the runtime (exported with `-DWIZ_API=`), and the C compiler to link. -/
-def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : String := "") : IO (Except String Unit) := do
+def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : String := "") (lib : Bool := false) : IO (Except String Unit) := do
   let llFile := exe.withExtension "ll"
   let rtFile := exe.withFileName "wiz_runtime.c"
   IO.FS.writeFile llFile ll
@@ -68,12 +82,29 @@ def compileLLVM (tc : Toolchain) (ll : String) (exe : System.FilePath) (glue : S
       pure (if out.exitCode == 0 then .ok () else .error s!"{cmd} failed:\n{out.stderr}")
     catch e => pure (.error s!"{cmd}: {e}")
   let rtObj := exe.withFileName "wiz_runtime.o"
-  let mainObj := exe.withExtension "o"
+  let mainObj := if lib then exe.withFileName ((exe.fileStem.getD "wiz") ++ "_module.o") else exe.withExtension "o"
   if let .error e ← step cc (#["-O2", "-w", "-c", "-DWIZ_API=", "-o", rtObj.toString, rtFile.toString] ++ cflags) then
     return .error e
   if let .error e ← step llc #["-O2", "-filetype=obj", "-relocation-model=pic", "-o", mainObj.toString, llFile.toString] then
     return .error e
+  -- (a library: the two objects as one, `-r`)
+  if lib then return ← step cc #["-r", "-o", exe.toString, mainObj.toString, rtObj.toString]
   step cc (#["-o", exe.toString, mainObj.toString, rtObj.toString, "-lgmp"] ++ tc.ldflags.toArray ++ tc.libs.toArray)
+
+/-- Build the program computing `main` (or, `lib`, an object file of the exports, with
+a header `OUT.h` for them), through C or LLVM. -/
+def build (tc : Toolchain) (s : CommandState R) (n : Name) (out : System.FilePath) (llvm lib : Bool) :
+    IO (Except String (Term R)) := do
+  match irProgram s n lib with
+  | .error e => pure (.error e)
+  | .ok (decls, ty) =>
+    let io := isIO ty
+    let ex := (exports s).map (·.1)
+    if lib then IO.FS.writeFile (out.withExtension "h") (C.exportHeader ex)
+    let r ← if llvm then
+        compileLLVM tc (LLVM.program decls io lib) out (extraC s ++ "\n" ++ C.glue (C.externs decls) ++ "\n" ++ C.exportWrappers ex true) lib
+      else compileC tc (C.program decls io (extraC s) ex lib) out lib
+    pure (r.map fun () => ty)
 
 /-- Parse the printed result: numbers, `(tag fields…)`, `<fn>`, `#bits`. -/
 partial def parseValue (s : String) : Option RVal :=
@@ -106,16 +137,11 @@ coreutils' `timeout`). -/
 def runGlobal (tc : Toolchain) (s : CommandState R) (n : Name) (dir : System.FilePath) (llvm : Bool := false)
     (timeout : Option Nat := none) (args : Array String := #[]) :
     IO (Except String String) := do
-  match irProgram s n with
-  | .error e => pure (.error e)
-  | .ok (decls, ty) =>
-    let exe := dir / "wiz_main"
-    let io := isIO ty
-    let built ← if llvm then compileLLVM tc (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls))
-      else compileC tc (C.program decls io (extraC s)) exe
-    match built with
+  let exe := dir / "wiz_main"
+  match ← build tc s n exe llvm false with
     | .error e => pure (.error e)
-    | .ok () =>
+    | .ok ty =>
+      let io := isIO ty
       let out ← match timeout with
         | some t => IO.Process.output { cmd := "timeout", args := #[toString t, exe.toString] ++ args }
         | none => IO.Process.output { cmd := exe.toString, args }

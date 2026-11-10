@@ -131,6 +131,35 @@ where
 /-- A foreign function's key: `extern:cname:kinds:result:io:header:finalizer` (see
 `extern`). Kinds: `n` Nat, `u` UInt64, `f` Float64, `s` String, `b` Bool, `v` Unit,
 `p` a foreign pointer (the finalizer is for a pointer result), `w` a Wiz value passed as is. -/
+structure CallbackSig where
+  params : List Char
+  result : Char
+  io : Bool
+  deriving Inhabited
+
+/-- `k[nn>b]`: a callback's signature, after its kind (stage 9g): the parameters, `>`,
+then the result, with `!` before it for a result in `IO`. -/
+def CallbackSig.toKey (c : CallbackSig) : String :=
+  s!"[{String.mk c.params}>{if c.io then "!" else ""}{c.result}]"
+
+def CallbackSig.ofKey (s : List Char) : CallbackSig :=
+  let ps := s.takeWhile (· != '>')
+  let r := (s.dropWhile (· != '>')).drop 1
+  let (io, r) := match r with | '!' :: r => (true, r) | r => (false, r)
+  { params := ps, result := r.headD 'v', io }
+
+/-- The kinds of a key's parameters, with the signatures of its callbacks (in order). -/
+partial def parseKinds : List Char → List Char × List CallbackSig
+  | [] => ([], [])
+  | '[' :: rest =>
+    let inner := rest.takeWhile (· != ']')
+    let (ks, cbs) := parseKinds ((rest.dropWhile (· != ']')).drop 1)
+    (ks, CallbackSig.ofKey inner :: cbs)
+  | k :: rest => let (ks, cbs) := parseKinds rest; (k :: ks, cbs)
+
+/-- Parameter kinds `k` and `K` are Wiz closures passed to C as a callback: a function
+pointer and a context pointer (`k`: borrowed for the call; `K`: the C side owns a
+reference and gives it back with `wiz_release`). -/
 structure ExternSig where
   cname : String
   params : List Char
@@ -138,12 +167,23 @@ structure ExternSig where
   io : Bool
   header : String
   fin : String := ""
+  callbacks : List CallbackSig := []
 
 def ExternSig.ofKey? (key : Name) : Option ExternSig :=
   match key.splitOn ":" with
   | ["extern", c, ps, r, io, h, fin] =>
-    some { cname := c, params := ps.toList, result := (r.toList.headD 'v'), io := io == "io", header := h, fin }
+    let (params, callbacks) := parseKinds ps.toList
+    some { cname := c, params, result := (r.toList.headD 'v'), io := io == "io", header := h, fin, callbacks }
   | _ => none
+
+/-- An exported function (stage 9g), `export:cname:kinds:result:io`: C calls `cname`. -/
+def ExternSig.ofExportKey? (key : Name) : Option ExternSig :=
+  match key.splitOn ":" with
+  | ["export", c, ps, r, io] =>
+    some { cname := c, params := ps.toList, result := (r.toList.headD 'v'), io := io == "io", header := "" }
+  | _ => none
+
+def exportPrefix : String := "export:"
 
 def nativeArity (key : Name) : Nat :=
   match ExternSig.ofKey? key with
@@ -424,6 +464,7 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
   let mut todo := roots.toArray
   -- definitions registered as native operations
   let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && !key.startsWith "repr:" &&
+    !key.startsWith RVal.exportPrefix &&
     key != inlineKey
   -- native representations (stage 22d): the interpreters keep the model's objects when
   -- the conversions are foreign functions

@@ -258,14 +258,14 @@ partial def ctorShaped : ETerm → Bool
 /-- Lower a whole program: the reachable definitions, the eliminators of `PrimCode`,
 wrappers for native operations, and `main`. The result is sorted by name, so the
 output doesn't depend on hash order (deterministic builds). -/
-def lowerProgram (code : Code) (main : ETerm) : Except String (Array Decl) := do
+def lowerProgram (code : Code) (main : ETerm) (extra : Array (Name × ETerm) := #[]) : Except String (Array Decl) := do
   let mut defs : Array (Name × ETerm) := #[]
   let mut natives : Std.HashMap Name Name := {}
   for (n, e) in code.toList do
     match e with
     | .prim .unreachable #[.global key] => natives := natives.insert n key
     | e => defs := defs.push (n, e)
-  defs := (defs.qsort (·.1 < ·.1)) ++ PrimCode.all.toArray ++ #[("wiz.entry", main)]
+  defs := (defs.qsort (·.1 < ·.1)) ++ PrimCode.all.toArray ++ #[("wiz.entry", main)] ++ extra
   let arities : Std.HashMap Name Nat := defs.foldl (fun m (n, e) => m.insert n (peelLams e).1.length) {}
   -- constructors: inline them, so allocations can meet drops (and reuse)
   let inlines : Std.HashMap Name ETerm := defs.foldl (fun m (n, e) =>
