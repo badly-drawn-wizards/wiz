@@ -81,7 +81,8 @@ def group : Group where
         checkEq s.render ((Tower.Settings.parse s.render).toOption.get!).render
         checkEq [("/a b", "v1")] s.overrides
         let proj ← IO.FS.realPath (← mkTree [("wiz-toolchain", "-- the toolchain\nv1\n"), ("sub/deep/x.wiz", ""), ("other/y", "")])
-        checkEq none (← Tower.active e proj)
+        -- nothing anywhere: no toolchain
+        checkEq none (← Tower.active e (← IO.FS.createTempDir))
         tower e ["set", "default", "nightly"]
         checkEq (some ("v1", (proj / "wiz-toolchain").toString)) (← Tower.active e (proj / "sub/deep"))
         tower e ["override", "set", "branch-x", (proj / "sub").toString]
