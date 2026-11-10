@@ -121,6 +121,15 @@ partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
   --| sorry
   --sol>
 
+/-- Does this (function) type take only implicit and instance arguments before its
+explicit ones, and at least one instance argument (`{B} → [C B] → T`)? Such trailing
+instance arguments are inserted after an application. -/
+partial def trailingInst (lvl : Lvl) (ty : VTy R) : ElabM R Bool := do
+  match ← force ty with
+  | .pi _ .instImplicit .. => pure true
+  | .pi _ .implicit _ _ cod _ => trailingInst (lvl + 1) (← instM cod (Val.var lvl))
+  | _ => pure false
+
 /-- Names the elaborator treats as data primitives when applied (and not shadowed). -/
 def builtinNames : List Name :=
   ["Desc", "Desc.ret", "Desc.arg", "Desc.rec", "Desc.hrec", "Desc.elim", "Desc.interp", "Desc.All",
@@ -989,11 +998,20 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy 
         let msg := s!"function expected\n  {showTerm ctx f} : {← showVal ctx ty}"
         throwAt (ctx.withInfo fStx).info msg
     match fty' with
-    | .pi _ _ _ dom cod _ =>
-      let a ← check ctx arg dom
+    | .pi x bi _ dom cod _ =>
+      -- `@f … _ …` at an instance argument: a problem for instance resolution
+      let a ← if explicitMode && bi == .instImplicit && arg.isOfKind "term.hole" then do
+          let m ← freshMeta (ctx.withInfo arg) s!"instance {x}"
+          addInstProblem ctx m dom
+          pure m
+        else check ctx arg dom
       f := .app f a
       fty ← instM cod (← evalIn ctx a)
     | _ => throwAt {} "unreachable"
+  -- trailing instance arguments are inserted (`bitWidth A : Nat` for
+  -- `bitWidth (0 A : Type) [BitPack A] : Nat`), as are implicits before them
+  if !explicitMode && (← trailingInst ctx.lvl fty) then
+    (f, fty) ← insertImplicits ctx f fty
   pure (f, fty)
   --|ex
   --| sorry
