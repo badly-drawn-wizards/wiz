@@ -96,6 +96,12 @@ structure CommandState (R : Type) where
   /-- macro rules, latest first -/
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000
+  /-- (`runFrontend`) the modules already checked in isolation, with their errors
+  (`none` while one is being checked: an import cycle) -/
+  checked : Std.HashMap Name (Option (Array Msg)) := {}
+  /-- no command has been elaborated into this state yet (it is the initial state, up to
+  messages and the info tree) -/
+  pristine : Bool := true
 
 /-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`). -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) :=
