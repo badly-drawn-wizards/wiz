@@ -607,7 +607,9 @@ def tmEq : Tm → Tm → Bool
   | .pfalse, .pfalse => .true
   | .exfalso a b, .exfalso c d => Bool.and (tmEq a c) (tmEq b d)
   | .enum k, .enum k' => Nat.beq k k'
-  | .tag _ i, .tag _ j => Nat.beq i j
+  -- (the enumeration's size too: `valSame` compares it, and "the same term" must not
+  -- depend on both sides having one type)
+  | .tag k i, .tag k' j => Bool.and (Nat.beq k k') (Nat.beq i j)
   | .ecase a b bs, .ecase c d bs' => Bool.and (tmEq a c) (Bool.and (tmEq b d) (tmsEq bs bs'))
   | .eq a b c, .eq d e f => Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f))
   | .eqTy a b, .eqTy c d => Bool.and (tmEq a c) (tmEq b d)
@@ -2035,7 +2037,11 @@ def headSame : Nat → Head → Head → Option Nat
   | n, .hvar x, .hvar y => match Nat.beq x y with
     | .true => .some n
     | .false => .none
-  | n, .hconst a _ _ _ _, .hconst b _ _ _ _ => match kStrEq a b with
+  -- (the same constant at the same levels: by name alone, `d.{0}` and `d.{1}` were "the
+  -- same", `convSpine`'s shortcut for a stuck `ecase` then identified two cases whose
+  -- environments differed in a level instance, and that proved `False`:
+  -- `wiz-notes/kernel-lint.md`, W1)
+  | n, .hconst a _ ls _ _, .hconst b _ ls' _ _ => match Bool.and (kStrEq a b) (lvlsEq ls ls') with
     | .true => .some n
     | .false => .none
   | n, .haxiom a _, .haxiom b _ => match kStrEq a b with

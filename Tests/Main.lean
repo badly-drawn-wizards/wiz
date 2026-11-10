@@ -6,6 +6,7 @@ import Tests.Elab
 import Tests.ElabFix
 import Tests.Grail
 import Tests.LSP
+import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
 
@@ -23,6 +24,7 @@ def groups : List Group :=
   ElabFix.groups ++
   Eval.groups ++
   Grail.groups ++
+  Lint.groups ++
   LSP.groups ++
   Parser.groups ++
   Rig.groups ++
@@ -106,7 +108,7 @@ FILE (its group, index, name, wall time in seconds, whether it passed, and its n
 def main (args : List String) : IO UInt32 := do
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run" :: _ | "--check" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -130,6 +132,9 @@ def main (args : List String) : IO UInt32 := do
     pure (if errs.isEmpty then 0 else 1)
   -- a job of a grail build that a test runs (`Grail/Graph.lean`)
   | ["--grail-job", job] => Grail.jobMain tc job
+  -- (kernel hygiene, `Tests/Lint.lean`) hit a `panic!` of the evaluator, with or without
+  -- `exitOnPanic`
+  | ["--panic-probe", mode, site] => Lint.panicProbe mode site
   | ["--probe-checker"] => do Scaling.probeChecker; pure 0
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
