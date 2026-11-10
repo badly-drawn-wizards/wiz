@@ -2305,6 +2305,12 @@ def selfHostGroup : Group where
           "def get {w : Nat} : Box w → Nat\n  | .mk n => n\ndef sum {w : Nat} (p : Pt w) : Nat := p.x + p.y\n" ++
           "def b : Box 8 := .mk 3\ndef p : Pt 8 := .mk 1 2\n" ++
           "def main : IO Unit := IO.println (Nat.toString (get b + sum p))\n") "6\n" },
+    { name := "the self-hosted frontend: constructor parameters from the expected type (21j)", run := fun _ =>
+        selfhostAgrees ("def Code : Bool → Type\n  | .true => Nat\n  | .false => Bool\n" ++
+          "structure Tagged (b : Bool) where\n  val : Code b\n")
+          [("def t : Tagged .true := Tagged.mk 3\ndef f : Tagged .false := Tagged.mk .true\n" ++
+              "def g (x : Nat) : Tagged .true := Tagged.mk (Nat.succ x)\n", true),
+           ("def bad : Tagged .false := Tagged.mk 3\n", false)] },
     { name := "both kernels compare propositions by equivalence (and agree on it below)", run := fun _ => do
         -- the domains' equation is an equivalence, not `False`
         match MTm.propShapes.map leanVerdict with

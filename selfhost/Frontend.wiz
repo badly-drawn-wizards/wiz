@@ -1893,6 +1893,39 @@ inductive BE where
   | err (msg : String)
 def noBE : BE := .ok .tnil ES.empty
 -- `fun t => ecase t [D₁, …]`, the description after its tag
+-- (stage 21j) the implicit arguments' metavariables and the result type of `f a…`
+-- with a placeholder for each explicit argument (`appExpected`)
+inductive PreR where
+  | mk (implicits : List Tm) (ty : Val) (es : ES)
+partial def preArgs (es : ES) (cx : Cx) (fty : Val) (m : List Bool) (args : List Syntax) : Option PreR :=
+  match m with
+  | .cons .true m' => match whnf (force es fty) with
+    | .vpi _ dom env cod _ => match newMeta es cx dom with
+      | .mk mt es1 => match preArgs es1 cx (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args with
+        | .some (.mk ims rty es2) => .some (.mk (.cons mt ims) rty es2)
+        | .none => .none
+    | _ => .none
+  | _ => match args with
+    | .nil => .some (.mk .nil fty es)
+    | .cons _ rest => match whnf (force es fty) with
+      | .vpi _ dom env cod _ => match newMeta es cx dom with
+        | .mk mt es1 => preArgs es1 cx (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
+      | _ => .none
+-- is the head a constructor (`T.c` of an inductive type `T`, not shadowed)?
+def ctorHead (gs : Globals) (cx : Cx) (h : Syntax) : Bool := match strEq (kindOf h) "term.ident" with
+  | .true => match Scope.lookup (Cx.sc cx) (identOf h) with
+    | .some i => match Nat.lt i (Cx.lvl cx) with
+      | .true => .false
+      | .false => match splitLast (identOf h) with
+        | .some (.mk T _) => match Globals.ind gs T with
+          | .some _ => .true
+          | .none => .false
+        | .none => .false
+    | .none => .false
+  | .false => .false
+def headImplicit : List Bool → Bool
+  | .cons b _ => b
+  | .nil => .false
 def descFn : Tm → Tm
   | .darg _ f => f
   | t => t
@@ -2026,7 +2059,7 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
     | .true => .ok (.univ (univLevel s)) (.vsort (.lnum (univLevel s + 2))) es
     | .false => match strEq k "term.app" with
       | .true => match inferHead gs es cx (kid s 0) with
-        | .ok f fty es' m => appArgsT gs es' cx f fty m (kids (kid s 1)) .nil .none
+        | .ok f fty es' m => appArgsT gs es' cx f fty m (kids (kid s 1)) .nil .none .nil
         | .err msg => .err msg
       | .false => match strEq k "term.arrow" with
         | .true => match inferType gs es cx (kid s 0) with
@@ -2091,7 +2124,7 @@ def depPis (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (aStx body : Sy
 -- argument whose type isn't known yet is postponed: a metavariable stands for it until
 -- the other arguments are done
 def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List Bool) (args : List Syntax) (post : List Post)
-    (expected : Option Val) : TE :=
+    (expected : Option Val) (pre : List Tm) : TE :=
   match args with
   | .nil => match insertImplicits gs es cx f fty m with
     | .ok f' fty' es1 =>
@@ -2107,18 +2140,42 @@ def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List B
     | e => e
   | .cons a rest => match m with
     | .cons .true m' => match whnf fty with
-      | .vpi _ dom env cod _ => match newMeta es cx dom with
-        | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected
+      | .vpi _ dom env cod _ => match pre with
+        -- (an implicit argument's metavariable made by `preArgs`, as its solution: a
+        -- solved metavariable in a later argument's type would not compute there)
+        | .cons mt0 pre' =>
+          let mt := match zonk es (Cx.lvl cx) mt0 with
+            | .some z => z
+            | .none => mt0;
+          appArgsT gs es cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected pre'
+        | .nil => match newMeta es cx dom with
+          | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected .nil
       | _ => .err "too many implicit arguments"
     | _ => match whnf (force es fty) with
       | .vpi _ dom env cod _ => match Bool.and (postponable a) (Bool.or (isMetaApp es dom) (funDomMeta es a dom)) with
         | .true => match newMeta es cx dom with
           | .mk mt es1 => appArgsT gs es1 cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
-              (.cons (.mk a dom mt) post) expected
+              (.cons (.mk a dom mt) post) expected pre
         | .false => match checkT gs es cx a dom with
-          | .ok ta _ es1 => appArgsT gs es1 cx (.app f ta) (eval (.cons (eval (TCtx.env (Cx.c cx)) ta) env) cod) (tailBools m) rest post expected
+          | .ok ta _ es1 => appArgsT gs es1 cx (.app f ta) (eval (.cons (eval (TCtx.env (Cx.c cx)) ta) env) cod) (tailBools m) rest post expected pre
           | e => e
       | ty => .err (String.append "not a function: its type is " (show .nil (Cx.lvl cx) (quote (Cx.lvl cx) ty)))
+-- (stage 21j) An application of a constructor with implicit parameters, checked
+-- against `ty`: the expected type first (`checkApp` in the Lean elaborator). `preArgs`
+-- makes the implicit arguments' metavariables and a placeholder for each explicit
+-- argument, and the result type is unified with `ty`, which solves the parameters the
+-- arguments' types mention (`Fin.mk 3 rfl : Fin 5`: `rfl` is then checked against
+-- `Nat.lt 3 5 = .true`). The placeholders are dropped: `appArgsT` checks the
+-- arguments, with the implicit metavariables made here. Without a solution, the
+-- arguments come first, as before.
+def appExpected (gs : Globals) (es : ES) (cx : Cx) (h : Syntax) (f : Tm) (fty : Val) (m : List Bool) (args : List Syntax) (ty : Val) : TE :=
+  match Bool.and (ctorHead gs cx h) (headImplicit m) with
+  | .false => appArgsT gs es cx f fty m args .nil (.some ty) .nil
+  | .true => match preArgs es cx fty m args with
+    | .some (.mk ims rty es1) => match unify es1 cx rty ty with
+      | .some es2 => appArgsT gs es2 cx f fty m args .nil (.some ty) ims
+      | .none => appArgsT gs es cx f fty m args .nil (.some ty) .nil
+    | .none => appArgsT gs es cx f fty m args .nil (.some ty) .nil
 -- the postponed arguments, each unified with its metavariable (one whose type is
 -- still unknown waits longer: `drain`)
 def resolvePosts (gs : Globals) (es : ES) (cx : Cx) : List Post → Option ES
@@ -2197,7 +2254,7 @@ def checkT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (ty : Val) : TE :=
         | .true => letT gs es cx s (.some ty)
         | .false => match (match strEq k "term.app" with
           | .true => match inferHead gs es cx (kid s 0) with
-            | .ok f fty es1 m => appArgsT gs es1 cx f fty m (kids (kid s 1)) .nil (.some ty)
+            | .ok f fty es1 m => appExpected gs es1 cx (kid s 0) f fty m (kids (kid s 1)) ty
             | .err msg => TE.err msg
           | .false => inferT gs es cx s) with
           | .ok t ty' es' => match unify es' cx ty' ty with

@@ -114,3 +114,13 @@ function into `Unit` is a proposition, so the tail is erased already. Not mirror
 indexed family with such a parameter (the Lean frontend pairs the index with the tail) is
 rejected with an error, rather than accepted with the parameter forgotten. Tests:
 `selfhostAgrees` runs the same declarations through both frontends.
+
+## 21j: constructor parameters from the expected type, self-hosted ✅
+
+Parity with the Lean elaborator's `checkApp`: a constructor with implicit parameters
+applied in check mode (`appExpected`) first makes the implicit arguments'
+metavariables and a placeholder for each explicit argument (`preArgs`), and unifies the
+result type with the expected one. The arguments are then checked as before, against
+types that mention the solved parameters (`Tagged.mk 3 : Tagged .true` where the field
+is `Code b`); the placeholders are dropped. If that unification fails the arguments come
+first, as before.
