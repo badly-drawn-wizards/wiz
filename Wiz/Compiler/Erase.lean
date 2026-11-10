@@ -199,10 +199,14 @@ partial def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
 
 private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
 
-/-- Is `ty` the tail of a structure with fields (`structTailName`, stage 22i)? -/
-def isStructTail (ty : VTy R) : Bool :=
+/-- Is `ty` the tail of a structure with fields, `(0 _ : D) → … → (0 _ : Enum [fields✝]) → Unit`
+(`structTailName`, stage 22i)? -/
+partial def isStructTail (g : Globals R) (ty : VTy R) (lvl : Nat := 1000000) : Bool :=
   match whnf ty with
-  | .pi x .. => x == structTailName
+  | .pi _ _ _ dom cod _ =>
+    match whnf dom with
+    | .enum [l] => l == structTailName
+    | _ => isStructTail g (Closure.inst g cod (.var lvl)) (lvl + 1)
   | _ => false
 
 /-- **Unboxed newtypes** (stage 22i). Is `ty` a Σ whose second component is a structure's
@@ -213,7 +217,7 @@ A one-field structure (`Shr ρ A`, a newtype) is then its field, and an `n`-fiel
 which substitution can't create or remove, so generic and specialised code agree. -/
 def unboxedSigma (g : Globals R) (lvl : Nat) (ty : VTy R) : Bool :=
   match whnf ty with
-  | .sigma _ _ _ B _ => isStructTail (Closure.inst g B (.var lvl))
+  | .sigma _ _ _ B _ => isStructTail g (Closure.inst g B (.var lvl)) (lvl + 1)
   | _ => false
 
 /-- A call of a generated `T.casesOn`, unfolded and beta-reduced: as a function, its
@@ -379,7 +383,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a A
     let Bv := Closure.inst g B (ctx.eval a)
     -- the last field of a structure: the pair is its first component (22i)
-    if isStructTail Bv then return a'
+    if isStructTail g Bv ctx.lvl then return a'
     let b' ← eraseCheck ctx b Bv
     return .obj 0 #[a', b']
   | .con x, .mu l I D i s _ =>

@@ -346,7 +346,7 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
   | .mu .., v => readbackData ty v
   | .sigma _ _ A B _, v =>
     -- the last field of a structure is unboxed (22i): `v` is the field itself
-    if isStructTail (Closure.inst g B (.var 0)) then
+    if isStructTail g (Closure.inst g B (.var 1000000)) then
       let a' := readback A v
       .pair a' (readback (Closure.inst g B (eval g [] a')) .erased)
     else
@@ -357,7 +357,8 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
   | .enum ls, .obj t _ => .tag ls t
   | .enum ls, .nat t => .tag ls t
   | .unit _, _ => .tt
-  | .pi .., _ => .const "<function>" []
+  -- a phantom tail or structure marker (22e, 22i): its one inhabitant
+  | .pi x .., _ => if isPhantomName x then .tt else .const "<function>" []
   | .nu .., _ => .const "<codata>" []
   | _, _ => .tt
 where

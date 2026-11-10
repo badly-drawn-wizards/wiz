@@ -75,7 +75,7 @@ the type's universe `lvl` (the tail would raise it).
 Given `used k` (whether the parameter `var k` of the context `Δ` is mentioned), returns
 the tail type and its value in `Δ`, and the names of the phantom parameters. -/
 def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R × Term R))
-    (used : Nat → Bool) (lvl : Level) (binder : Name := phantomName) : ElabM R (Term R × Term R × List Name) := do
+    (used : Nat → Bool) (lvl : Level) (markTail : Bool := false) : ElabM R (Term R × Term R × List Name) := do
   let g ← getGlobals
   let nΔ := Δ.size
   let tys := ctxΔ.types.reverse.toArray
@@ -97,12 +97,14 @@ def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R �
     unless u.le lvl do continue
     doms := doms.push D
     names := names ++ [x]
-  -- a structure with fields always ends in a marked tail (22i), with `Unit` as the
-  -- domain when no parameter is phantom
-  if binder == structTailName && doms.isEmpty then doms := doms.push (.unit (.succ .zero))
-  let ty := (doms.toList.zipIdx).foldr (fun (D, i) acc => .pi binder .default (.qlit 0) (D.lift i) acc none)
+  -- a structure with fields ends in the marker `(0 fields✝ : Enum [fields✝]) → Unit` (22i)
+  let nPh := doms.size
+  let mark := markTail
+  if mark then doms := doms.push (structTailDom : Term R)
+  let bname (i : Nat) : Name := if mark && i == nPh then structTailName else phantomName
+  let ty := (doms.toList.zipIdx).foldr (fun (D, i) acc => .pi (bname i) .default (.qlit 0) (D.lift i) acc none)
     (Term.unit lvl : Term R)
-  let val := doms.foldr (fun _ acc => .lam binder acc) (Term.tt : Term R)
+  let val := (doms.toList.zipIdx).foldr (fun (_, i) acc => .lam (bname i) acc) (Term.tt : Term R)
   pure (ty, val, names)
 
 /-! ### Lifted fields (Q4)
@@ -504,7 +506,7 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   -- phantom parameters (see `phantomTail`): the final `Unit` becomes the phantom tail
   -- (a structure with fields marks its tail, so that erasure unboxes the last field, 22i)
   let (tailTy, tailV, _) ← phantomTail ctxΔ Δ (fun k => body.hasVar k) (.succ l)
-    (if fs'.isEmpty then phantomName else structTailName)
+    (markTail := !fs'.isEmpty)
   let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc none) (tailTy.lift fs'.size)
   let ΔNames := Δ.toList.map (·.1)
   let n := fs'.size

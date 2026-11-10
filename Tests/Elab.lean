@@ -3315,8 +3315,8 @@ def phantomGroup : Group where
         let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
         let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
-        checkEq ["(.cons 1 .nil, <function>)", "(.cons 1 .nil, <function>)", "(2, .cons 1 .nil, <function>)",
-          "(2, .cons 1 .nil, <function>)", "(2, .cons 1 .nil, <function>)", ".cons (.cons 1 .nil, <function>) .nil"]
+        checkEq ["(.cons 1 .nil, ())", "(.cons 1 .nil, ())", "(2, .cons 1 .nil, ())",
+          "(2, .cons 1 .nil, ())", "(2, .cons 1 .nil, ())", ".cons (.cons 1 .nil, ()) .nil"]
           (s.messages.toList.map (·.text))
         let allocs (n : Name) : IO Nat := match (do
             let code ← (compileReachable s.globals s.builtins [n]).mapError toString
@@ -3415,7 +3415,7 @@ def regionsGroup : Group where
           "def t2 : Result (List Nat × List Nat) := nested List.nil List.nil\n#run t1\n#eval t1\n#run t2\n" ++
           "#run (Shr.mk 4 : Shr Region.static Nat)\n#eval (Shr.mk 4 : Shr Region.static Nat)")
         let msgs := s.messages.toList.map (·.text)
-        checkEq [".ok ((), .cons 1 .nil)", ".ok ((), .cons 1 .nil)", ".ok (.nil, .cons 1 .nil)", "(4, <function>)", "(4, <function>)"] msgs
+        checkEq [".ok ((), .cons 1 .nil)", ".ok ((), .cons 1 .nil)", ".ok (.nil, .cons 1 .nil)", "(4, ())", "(4, ())"] msgs
         -- `x.val` is `x`: no projection
         let getIR ← libsIR s "get"
         check (getIR.all fun d => (d.splitOn "proj").length == 1) s!"a projection:\n{"\n".intercalate getIR}"
