@@ -13,7 +13,8 @@
     "effects",
     "ffi",
     "llvm",
-    "reuse"
+    "reuse",
+    "sys"
   ]},
   {"name": "library", "select": [
     "builtins",
