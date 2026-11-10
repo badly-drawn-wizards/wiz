@@ -121,6 +121,49 @@ partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
   --| sorry
   --sol>
 
+/-- Does this (function) type take only implicit and instance arguments before its
+explicit ones, and at least one instance argument (`{B} → [C B] → T`)? Such trailing
+instance arguments are inserted after an application. -/
+partial def trailingInst (lvl : Lvl) (ty : VTy R) : ElabM R Bool := do
+  match ← force ty with
+  | .pi _ .instImplicit .. => pure true
+  | .pi _ .implicit _ _ cod _ => trailingInst (lvl + 1) (← instM cod (Val.var lvl))
+  | _ => pure false
+
+/-- Is `h` (not shadowed) a constructor with implicit parameters (`Fin.mk : {n} → …`)?
+Applied in check mode, it takes them from the expected type first (`checkApp`), so that
+an argument whose type mentions them (`.mk (Nat.succ i) h`) is checked against
+instantiated types. (Constructors are the inline declarations.) -/
+def ctorWithParams (ctx : LocalCtx R) (h : Syntax) : ElabM R Bool := do
+  unless h.isOfKind "term.ident" do return false
+  let some n := (h.getArg 0).getId? | return false
+  if (lookupLocal ctx n).isSome then return false
+  let some d := (← getGlobals).find? (stripScope n) | return false
+  return d.inline && d.type matches .pi _ .implicit ..
+
+def isOwnVar (v : Val R) (l : Lvl) : Bool := match v with
+  | .neutral (.local l') #[] => l' == l
+  | _ => false
+
+/-- Is every variable of the context its own value (none substituted away by a `match`
+on an index)? -/
+def placeholderFull (ctx : LocalCtx R) : Bool :=
+  (ctx.env.zip (List.range ctx.lvl).reverse).all fun (v, l) => isOwnVar v l
+
+/-- A placeholder metavariable for an argument (`checkApp`): like `freshMeta`, but
+applied only to the bound variables that are their own values, so that unifying it with
+the argument stays in the pattern fragment in a `match` branch whose context has
+variables replaced by others (index unification). -/
+def freshPlaceholder (ctx : LocalCtx R) : ElabM R (Term R) := do
+  let m := (← get).metas.size
+  let live := (ctx.bound.zip (ctx.env.zip (List.range ctx.lvl).reverse)).reverse.map fun (b, v, l) =>
+    b && isOwnVar v l
+  modify fun s => { s with metas := s.metas.push { info := ctx.info, desc := "an argument", arity := (live.filter id).length } }
+  let mut t : Term R := .mvar m
+  for b in live, lvl in [0:ctx.lvl] do
+    if b then t := .app t (.var (ctx.lvl - lvl - 1))
+  pure t
+
 /-- Names the elaborator treats as data primitives when applied (and not shadowed). -/
 def builtinNames : List Name :=
   ["Desc", "Desc.ret", "Desc.arg", "Desc.rec", "Desc.hrec", "Desc.elim", "Desc.interp", "Desc.All",
@@ -636,7 +679,7 @@ where
     | "term.paren" => check ctx (stx.getArg 1) expected
     | "term.app" =>
       if (stx.getArg 0).isOfKind "term.explicit" || (← builtinApp? ctx stx).isSome ||
-          !(stx.getArg 1).args.any needsExpected then
+          !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0))) then
         let (t, ty) ← infer ctx stx
         unifyAt ctx stx expected ty
         pure t
@@ -982,6 +1025,29 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
       | _ => freshLevelMeta
     return (.sigma b.name q ty cod (some (.max l₁ l₂)), .sort (.max l₁ l₂))
 
+/-- A `fun` with a binder whose type isn't given: as an argument, it is elaborated after
+the others (`checkApp`). -/
+partial def postponable (stx : Syntax) : Bool :=
+  (stx.isOfKind "term.paren" && postponable (stx.getArg 1)) ||
+  (stx.isOfKind "term.fun" && ((stx.getArg 1).args.flatMap binderViews).any (·.type.isNone))
+
+/-- The number of binders of a (parenthesised) `fun`. -/
+partial def lambdaArity (stx : Syntax) : Nat :=
+  if stx.isOfKind "term.paren" then lambdaArity (stx.getArg 1)
+  else ((stx.getArg 1).args.flatMap binderViews).size
+
+/-- Is the type (of a lambda argument) an unsolved hole, or is one of its first `k`
+domains? Then the lambda is postponed (`postponable`). -/
+partial def unknownDomains (lvl : Lvl) (ty : VTy R) : Nat → ElabM R Bool
+  | 0 => pure false
+  | k + 1 => do
+    match ← force ty with
+    | .neutral (.mvar _) _ => pure true
+    | .pi _ _ _ dom cod _ =>
+      if (← force dom) matches .neutral (.mvar _) _ then pure true
+      else unknownDomains (lvl + 1) (← instM cod (Val.var lvl)) k
+    | _ => pure false
+
 /-- A tuple component that is a constructor of the expected type (`.c`, `.c args`, or a
 tuple of such). -/
 partial def dotComponent (stx : Syntax) : Bool :=
@@ -1019,28 +1085,44 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
     (f, fty) ← insertImplicits ctx f fty
     match ← force fty with
     | .pi _ _ _ dom cod _ =>
-      let m ← freshMeta (ctx.withInfo arg) "an argument"
+      let m ← freshPlaceholder (ctx.withInfo arg)
       pending := pending.push (arg, m, dom)
       f := .app f m
       fty ← instM cod (← evalIn ctx m)
-    | _ => return ← (do let (t, ty) ← inferApp ctx stx; unifyAt ctx stx expected ty; pure t)
+    | _ => return ← (do let (t, ty) ← inferApp ctx stx (postpone := false); unifyAt ctx stx expected ty; pure t)
   (f, fty) ← insertImplicits ctx f fty
   let _ ← tryCatch (unify ctx.lvl expected fty) (fun _ => pure ())
   let mut args : Array (Term R × Term R) := #[]
-  for (arg, m, dom) in pending do
-    let a ← check ctx arg dom
-    args := args.push (m, a)
-    -- solve the placeholder with `fun Γ => a` directly when we can: unification would
-    -- quote `a`'s value, which can be expensive (normalising under binders)
-    let unsolved ← match (Term.spine m).1 with
-      | .mvar id => pure (if (← lookupMeta id).solution.isNone then some id else none)
-      | _ => pure none
-    match unsolved with
-    | some mid =>
-      if ctx.bound.all (· == true) then
-        solveMeta mid (eval (← getGlobals) [] (ctx.names.reverse.foldr (fun x b => Term.lam x b) a))
-      else unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
-    | none => unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
+  -- a lambda with unannotated binders whose domains aren't known yet waits for the other
+  -- arguments, which may fix them (`zipWith3 (fun b x y => if b then x else y) c t e`)
+  let mut postponed : Array (Syntax × Term R × VTy R) := #[]
+  for pass in [0:2] do
+    for (arg, m, dom) in (if pass == 0 then pending else postponed) do
+      if pass == 0 && postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg)) then
+        postponed := postponed.push (arg, m, dom)
+        continue
+      let a ← check ctx arg dom
+      args := args.push (m, a)
+      -- solve the placeholder with `fun Γ => a` directly when we can: unification would
+      -- quote `a`'s value, which can be expensive (normalising under binders)
+      let unsolved ← match (Term.spine m).1 with
+        | .mvar id => pure (if (← lookupMeta id).solution.isNone then some id else none)
+        | _ => pure none
+      match unsolved with
+      | some mid =>
+        if ctx.bound.all (· == true) && placeholderFull ctx then
+          solveMeta mid (eval (← getGlobals) [] (ctx.names.reverse.foldr (fun x b => Term.lam x b) a))
+        else
+          -- solve it directly (unification would first try η for a pair, say, which
+          -- leaves the pattern fragment)
+          let vm ← evalIn ctx m
+          let va ← evalIn ctx a
+          let solved ← match vm with
+            | .neutral (.mvar mid') sp =>
+              tryCatch (do solve ctx.lvl mid' sp va; pure true) (fun _ => pure false)
+            | _ => pure false
+          unless solved do unifyAt ctx arg vm va
+      | none => unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
   unifyAt ctx stx expected fty
   -- the application itself takes the arguments as written, not the placeholders (whose
   -- solutions would zonk to normal forms)
@@ -1058,10 +1140,17 @@ the codomain with the argument's value. If the function type is an unsolved meta
 unify it with a fresh Π `(x : ?A) → ?B x` first. Anything else is "not a function".
 
 With `@f`, each argument fills the next Π whether implicit or explicit. -/
-partial def inferApp (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) := do
+partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true) : ElabM R (Term R × VTy R) := do
   --<sol
   let fStx := stx.getArg 0
   let explicitMode := fStx.isOfKind "term.explicit"
+  -- (a lambda argument with unannotated binders is postponed: `checkApp` against an
+  -- unknown type does that)
+  if postpone && !explicitMode && (stx.getArg 1).args.any postponable then
+    let T ← freshMeta ctx "the type of an application"
+    let vT ← evalIn ctx T
+    let t ← checkApp ctx stx vT
+    return (t, vT)
   let (f, fty) ← infer ctx fStx
   let mut f := f
   let mut fty := fty
@@ -1081,11 +1170,20 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy 
         let msg := s!"function expected\n  {showTerm ctx f} : {← showVal ctx ty}"
         throwAt (ctx.withInfo fStx).info msg
     match fty' with
-    | .pi _ _ _ dom cod _ =>
-      let a ← check ctx arg dom
+    | .pi x bi _ dom cod _ =>
+      -- `@f … _ …` at an instance argument: a problem for instance resolution
+      let a ← if explicitMode && bi == .instImplicit && arg.isOfKind "term.hole" then do
+          let m ← freshMeta (ctx.withInfo arg) s!"instance {x}"
+          addInstProblem ctx m dom
+          pure m
+        else check ctx arg dom
       f := .app f a
       fty ← instM cod (← evalIn ctx a)
     | _ => throwAt {} "unreachable"
+  -- trailing instance arguments are inserted (`bitWidth A : Nat` for
+  -- `bitWidth (0 A : Type) [BitPack A] : Nat`), as are implicits before them
+  if !explicitMode && (← trailingInst ctx.lvl fty) then
+    (f, fty) ← insertImplicits ctx f fty
   pure (f, fty)
   --|ex
   --| sorry
