@@ -729,7 +729,7 @@ ret j          = ret j'            ⟶  j =_I j'
 arg q S E      = arg q' S' E'      ⟶  (0 e : S ≡ S') × ((0 s : S) → E s =_{Desc I} E' (cast S S' e s))
 rec q j E      = rec q' j' E'      ⟶  (0 _ : j =_I j') × (E =_{Desc I} E')
 hrec q H j E   = hrec q' H' j' E'  ⟶  (0 _ : (0 e : H ≡ H') × ((0 h : H) → j h =_I j' (cast H H' e h))) × (E = E')
-q, q' different constants          ⟶  False;  not comparable (a quantity variable) ⟶ stuck
+q, q' two different literals        ⟶  False;  otherwise unequal or not comparable (a variable) ⟶ stuck
 two different constructors         ⟶  False
 a neutral on either side           ⟶  stuck
 ```

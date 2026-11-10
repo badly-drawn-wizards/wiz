@@ -930,7 +930,7 @@ partial def sizeEqTrue (s s' : Val R) : Bool :=
     rec q j E = rec q' j' E'        ↦  (j =_I j') × (E = E')
     hrec q H j E = hrec q' H' j' E' ↦  ((e :0 H ≡ H') × ((h :0 H) → j h =_I j' (cast H H' e h))) × (E = E')
     different constructors          ↦  False
-    quantities different constants  ↦  False;  not comparable (a variable) ↦ stuck
+    quantities two different literals ↦  False;  otherwise unequal (a variable) ↦ stuck
     a neutral on either side        ↦  stuck
 
 The shape of the result depends only on the two heads (and the quantities), never on
@@ -943,9 +943,14 @@ partial def vEqDesc (g : Globals R) (l : Level) (I D D' : Val R) : Val R :=
   let D := whnf D
   let D' := whnf D'
   let stuck : Val R := .neutral (.eq (.desc l I) D D') #[]
+  -- quantities: equal ↦ go on; two different *literals* ↦ `False`; anything else (a
+  -- quantity variable against a literal or another variable) ↦ stuck, since a
+  -- substitution could make them equal
   let qty (q q' : Val R) (k : Unit → Val R) : Val R := match sameQty q q' with
     | some true => k ()
-    | some false => .empty 0
+    | some false => match whnf q, whnf q' with
+      | .qlit _, .qlit _ => .empty 0
+      | _, _ => stuck
     | none => stuck
   -- `(e :0 S ≡ S') × ((x :0 S) → F x = F' (cast S S' e x))` at type `T`
   -- (inside `e`: e0 S1 S'2 F3 F'4 T5; inside `x`: one more)

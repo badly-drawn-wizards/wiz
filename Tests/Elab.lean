@@ -3282,6 +3282,9 @@ def descEqGroup : Group where
           "#reduce (Desc.rec 1 () (Desc.ret ()) : Desc Unit) = Desc.rec 0 () (Desc.ret ())\n" ++
           "#reduce (Desc.rec 1 () (Desc.ret ()) : Desc Unit) = Desc.rec 1 () (Desc.ret ())\n")
           ["False", "False", "(0 _ : True) × True"] },
+    { name := "a quantity variable against a literal is not unequal (stuck: substituting can make them equal)", run := fun _ =>
+        ok ("#reduce fun (q : Qty) => (Desc.rec q () (Desc.ret ()) : Desc Unit) = Desc.rec 1 () (Desc.ret ())\n")
+          ["fun q => Desc.rec q () (Desc.ret ()) = Desc.rec 1 () (Desc.ret ())"] },
     { name := "lifted proof fields compare by equivalence, not by shape", run := fun _ =>
         okLib ("import Prelude\ninductive PB (P : Prop) where\n  | mk (p : P)\n" ++
           "def pbne (e : PB True = PB False) : Empty := absurd ((e.2.1.2 'mk).1.1 ())\n") },
