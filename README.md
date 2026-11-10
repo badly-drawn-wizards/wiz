@@ -1434,6 +1434,20 @@ variable is live: a dead `let` whose value has no effects (variables, globals, n
 objects and projections of such, closures, suspensions; no applications) is not
 compiled at all. Before, it was computed and released at once.
 
+### 15f: self tail calls are loops ✅
+
+A function that calls itself in tail position runs in constant stack, whatever the C
+compiler does (tested at `-O0` on a 1 MB stack, 10 million iterations). In the Lean
+compiler (`Decl.loopify`), `f ps` whose body has `let r := f as; ret r` (in a branch, a
+join point's body, …) becomes `join J(ps) := body[f as ↦ jmp J as]; jmp J ps'`; join
+points are labels and `goto`s in C and branches in LLVM, and reference counting treats
+the jump's arguments as owned, like a call's. In the self-hosted backend (`markSelf`),
+such a call becomes `wiz.self`: the arguments are computed, the parameters reassigned
+and control goes back to the label `top_` at the function's start (in the garbage
+collected mode, out of the statement expressions). Under reference counting a borrowed
+parameter must be passed a borrowed parameter (else the argument would be released
+after the call): otherwise the call stays a call.
+
 ## Stage 16: data in the self-hosted frontend
 
 ### 16a: inductive types ✅

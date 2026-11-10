@@ -22,6 +22,11 @@ reference counting (so variables can still be renamed freely):
 The results that become unused are removed by `elimDead` (`Reuse.lean`), which counts
 these operations as pure.
 
+* **Self tail calls as loops** (stage 15f). A function `f ps` whose body calls `f`
+  in tail position (`let r := f as; ret r`) becomes a join point
+  `join J(ps) := body[f as ↦ jmp J as]; jmp J ps'` (with fresh parameters `ps'`): the
+  backends emit join points as labels and jumps (C `goto`, LLVM `br`), so the
+  recursion is a loop and uses constant stack, whatever the C compiler does.
 -/
 
 namespace Wiz.IR
@@ -137,7 +142,48 @@ partial def Body.simp (env : SimpEnv) : Body → Body
   | .drop x b => .drop (env.r x) (Body.simp env b)
   | .unreachable => .unreachable
 
+/-- The largest variable and join point bound or used in a body. -/
+partial def Body.maxIds : Body → Nat × Nat
+  | .vdecl x e b => let (v, j) := b.maxIds; (e.args.foldl max (max v x), j)
+  | .case x alts => alts.foldl (fun (v, j) a => let (v', j') := a.maxIds; (max v v', max j j')) (x, 0)
+  | .ret x => (x, 0)
+  | .jdecl j ps body k =>
+    let (v1, j1) := body.maxIds
+    let (v2, j2) := k.maxIds
+    (ps.foldl max (max v1 v2), max j (max j1 j2))
+  | .jmp j as => (as.foldl max 0, j)
+  | .dup x b | .drop x b => let (v, j) := b.maxIds; (max v x, j)
+  | .unreachable => (0, 0)
+
+/-- Replace the self tail calls of `f` (with `n` arguments) by jumps to `J`. -/
+partial def Body.selfTail (f : Name) (n : Nat) (J : JoinId) : Body → Body × Bool
+  | .vdecl r (.fap g as) (.ret r') =>
+    if g == f && r == r' && as.size == n then (.jmp J as, true) else (.vdecl r (.fap g as) (.ret r'), false)
+  | .vdecl x e b => let (b, c) := b.selfTail f n J; (.vdecl x e b, c)
+  | .case x alts =>
+    let rs := alts.map (Body.selfTail f n J)
+    (.case x (rs.map (·.1)), rs.any (·.2))
+  -- a join body's `ret` returns from the function: its tail calls are tail calls too
+  | .jdecl j ps body k =>
+    let (body, c1) := body.selfTail f n J
+    let (k, c2) := k.selfTail f n J
+    (.jdecl j ps body k, c1 || c2)
+  | .dup x b => let (b, c) := b.selfTail f n J; (.dup x b, c)
+  | .drop x b => let (b, c) := b.selfTail f n J; (.drop x b, c)
+  | b => (b, false)
+
+/-- A function calling itself in tail position becomes a loop (see the module docstring). -/
+def Decl.loopify (d : Decl) : Decl :=
+  let (v, j) := d.body.maxIds
+  let v := d.params.foldl max v
+  let J := j + 1
+  match d.body.selfTail d.name d.params.size J with
+  | (body, true) =>
+    let fresh := (List.range d.params.size).toArray.map (v + 1 + ·)
+    { d with params := fresh, body := .jdecl J d.params body (.jmp J fresh) }
+  | _ => d
+
 def Decl.simplify (d : Decl) : Decl :=
-  { d with body := Body.simp {} d.body }
+  ({ d with body := Body.simp {} d.body } : Decl).loopify
 
 end Wiz.IR

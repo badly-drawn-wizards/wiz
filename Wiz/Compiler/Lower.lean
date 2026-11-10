@@ -282,7 +282,7 @@ def lowerProgram (code : Code) (main : ETerm) : Except String (Array Decl) := do
     let env := params.toList.reverse.map Binding.var
     let (b, (_, _, lifted)) ← (lower env body .ret).run ctx |>.run (xs.length, 0, #[])
     out := out ++ lifted.push { name := n, params, body := b }
-  -- constant folding and known constructors (`Simp.lean`)
+  -- constant folding, known constructors, self tail calls as loops (`Simp.lean`)
   pure (out.map (·.simplify))
 
 end Wiz.IR
