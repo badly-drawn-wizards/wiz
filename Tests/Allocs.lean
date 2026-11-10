@@ -26,7 +26,7 @@ def allocsMain (args : List String) : IO UInt32 := do
     let parts := e.splitOn ":="
     s!"def {parts[0]!.trimAscii} := {parts[1]!.trimAscii}")
   let src := src ++ extra
-  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun n => m.lookup n }
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := (· != ""), loader := fun n => m.lookup n }
   for msg in s.messages do
     if msg.severity == .error then IO.eprintln (msg.render src)
   for e in entries do
