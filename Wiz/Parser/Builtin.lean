@@ -268,9 +268,10 @@ def commandLeading : List LeadingParser := [
     p := seqs ["attribute", "[", nonReserved "macro", ident, "]", ident] },
   { kind := "command.attrTactic", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "tactic", ident, "]", ident] },
-  -- compiled code calls the first name instead of the second; the kernel keeps the second
+  -- compiled code calls the first name instead of the second; the kernel keeps the second.
+  -- On a constructor, two names: the native constructor and the native field (22d).
   { kind := "command.attrImplementedBy", prec := maxPrec,
-    p := seqs ["attribute", "[", nonReserved "implemented_by", ident, "]", ident] },
+    p := seqs ["attribute", "[", nonReserved "implemented_by", ident, optional ident, "]", ident] },
   -- HD8: `deriving`
   { kind := "command.attrDeriver", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "deriver", ident, "]", ident] },

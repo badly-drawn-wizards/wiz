@@ -467,6 +467,14 @@ that checks everything. Wiz's situation:
   is equality, resp. `<`, which `Nat.beq` and `Nat.lt` are, by their equations). The
   kernel computes only these natively; `memo := memo` (`memo f = f` to the kernel) and
   `string := String` affect only the runtime representation and literals.
+* **Implementations for compiled code** are outside the kernel: `attribute
+  [implemented_by g] f` (stage 22b), including the native representations it registers
+  for a type (`attribute [implemented_by mk get] T.mk`, builtin keys `repr:T:…`, used by
+  `UIntN`/`IntN` in `lib/Word.wiz`) and the word natives (`UIntN.addNative` …,
+  `runtime/wiz.c`). The kernel never sees them (`vBuiltin?` acts only on `nat.*` keys),
+  so they can't prove anything; they are trusted to agree with the definitions, as in
+  Lean, and the tests compare the two (`#eval` runs the definitions, compiled code the
+  natives). They are not `builtin` commands, so the registration checks don't apply.
 * **Termination** of the kernel is not proved and is known to fail (D1); all evaluation
   functions are `partial` in Lean.
 
