@@ -133,6 +133,11 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
     | none => freshMeta ctx "the type of this definition"
   -- (for the language server) the type after the binders, and where ` : T` would go
   if let some (n, ni, at_) := declName? then pushInfo (.decl ni n ctx ty typeStx.isSome at_)
+  -- the type's instance problems that are already determined, solved before the body is
+  -- checked: an equation stuck on such a hole then computes when it meets the body's type
+  -- (`unifyAt`). (The type isn't zonked here: an equation that stays as written lets
+  -- `rfl` be `refl` of its sides.)
+  while ← synthPending do pure ()
   let val ← valStx.mapM fun s => do Elab.check ctx s (← evalIn ctx ty)
   let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val := val.map fun v => tele.foldr (fun (x, _, _, _) b => Term.lam x b) v
@@ -239,6 +244,8 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) (Term.pi x0 bi0 q0 A0 B s0)
   let val ← zonk 0 val
   ensureNoMVars val info
+  let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
+  ensureNoMVars fullTy info
   pure (fullTy, val)
 
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
@@ -286,7 +293,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
     | x :: rest => if pos == 0 then xs else x :: (xs.take pos ++ rest)
     | [] => xs
   let params := (tele.filterMap fun (x, bi, _, _) => if bi == .default then some x else none).toList
-  let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n } else none
+  let allParams := (tele.map fun (x, bi, _, _) => (x, bi == .default)).toList
+  let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n, allParams } else none
   if let some x := vars.head? then recordMatch cmd.info alts clauses ctx'.types[ctx'.lvl - x - 1]!
   -- a recursive definition whose first argument has a size-variable size: compile to `sfix`
   if rc.isSome && pos == 0 then
@@ -302,6 +310,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let fullTy := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val ← zonk 0 val
   ensureNoMVars val info
+  let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
+  ensureNoMVars fullTy info
   -- for the compiler: the same equations with direct recursion (the definition, as an
   -- axiom for the moment, is called like any function) and case analysis, so that only
   -- the recursive calls the program makes are computed
@@ -419,6 +429,8 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
   let val ← zonk 0 val
   ensureNoMVars val info
+  let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
+  ensureNoMVars fullTy info
   pure (fullTy, val)
 
 /-- **Exercise 4.24.** The non-corecursive case of `elabCopatterns`: `cocon` of the
@@ -466,6 +478,8 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
   let val ← zonk 0 val
   ensureNoMVars val info
+  let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
+  ensureNoMVars fullTy info
   pure (fullTy, val)
   --|ex
   --| sorry
@@ -1184,13 +1198,69 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     -- (erasure takes `g`'s code for `f`); the kernel and proofs keep `f`'s definition. So
     -- `g` must have `f`'s type (up to conversion), at the same universe levels.
     let impl := ((cmd.getArg 3).getId?).getD "_"
-    let f := ((cmd.getArg 5).getId?).getD "_"
+    let getStx? := (cmd.getArg 4).args[0]?
+    let fStx := cmd.getArg 6
+    let f := (fStx.getId?).getD "_"
+    -- the constructor's erased code `λ…. ⟨t f₀ … fₙ₋₁⟩`, with one runtime field `var j`
+    let ctorShape? (d : Decl R) : Option (Nat × Nat × Nat × Nat × Nat) := do
+      let .ok e := eraseDecl s.globals d | none
+      let rec peel : ETerm → Nat × ETerm
+        | .lam _ b => let (n, b) := peel b; (n + 1, b)
+        | t => (0, t)
+      let (n, .obj t fs) := peel e | none
+      let live := (List.range fs.size).filter fun k => !(fs[k]! matches .erased)
+      let [r] := live | none
+      let .var j := fs[r]! | none
+      pure (t, fs.size, r, n, n - 1 - j)
+    -- the name of the `μ` type at the end of a Π type, and the number of its binders
+    let rec target (g : Globals R) (lvl : Nat) : Val R → Nat → Option Name × Nat
+      | ty, fuel + 1 => match whnf ty with
+        | .pi _ _ _ _ cod _ => let (T, n) := target g (lvl + 1) (Closure.inst g cod (.var lvl)) fuel; (T, n + 1)
+        | .mu _ _ _ _ _ (some (T, _, _)) => (some T, 0)
+        | _ => (none, 0)
+      | _, 0 => (none, 0)
+    let rec lastDom (g : Globals R) (lvl : Nat) : Val R → Nat → Option Name
+      | ty, fuel + 1 => match whnf ty with
+        | .pi _ _ _ dom cod _ => match whnf (Closure.inst g cod (.var lvl)) with
+          | .pi .. => lastDom g (lvl + 1) (Closure.inst g cod (.var lvl)) fuel
+          | _ => match whnf dom with
+            | .mu _ _ _ _ _ (some (T, _, _)) => some T
+            | _ => none
+        | _ => none
+      | _, 0 => none
     match s.globals.find? f, s.globals.find? impl with
-    | none, _ => report .error (cmd.getArg 5).info s!"unknown declaration {f}"
+    | none, _ => report .error fStx.info s!"unknown declaration {f}"
     | _, none => report .error (cmd.getArg 3).info s!"unknown declaration {impl}"
     | some df, some di =>
-      if s.builtins.any (·.2 == f) then
-        report .error (cmd.getArg 5).info s!"{f} is a builtin or foreign function: it already has an implementation"
+      if let some getStx := getStx? then
+        -- `attribute [implemented_by mk get] T.mk` (stage 22d): values of `T` are native.
+        -- `mk` builds one from the constructor's arguments (it has the constructor's
+        -- type), `get` reads its one runtime field back; the kernel keeps the model.
+        let get := (getStx.getId?).getD "_"
+        let g := s.globals
+        let (T?, _) := target g 0 (eval g [] df.type) 1000
+        match s.globals.find? get, ctorShape? df, T? with
+        | none, _, _ => report .error getStx.info s!"unknown declaration {get}"
+        | _, none, _ | _, _, none =>
+          report .error fStx.info s!"{f} is not a constructor with exactly one runtime field"
+        | some dg, some (tag, nfields, r, mkArity, p), some T =>
+          let us := df.levelParams.map Level.param
+          if di.levelParams.length != df.levelParams.length || dg.levelParams.length != df.levelParams.length then
+            report .error (cmd.getArg 3).info s!"{impl} and {get} must have {f}'s universe parameters"
+          else if !convTy g #[] (eval g [] df.type) (eval g [] (di.type.instLevels di.levelParams us)) then
+            report .error (cmd.getArg 3).info
+              s!"{impl} can't implement {f}: its type {di.type.pretty} is not {f}'s type {df.type.pretty}"
+          else if lastDom g 0 (eval g [] dg.type) 1000 != some T then
+            report .error getStx.info s!"{get} must take a value of {T} as its last argument"
+          else if (reprOf? s.builtins T).isSome then
+            report .error fStx.info s!"{T} already has a native representation"
+          else
+            let (_, getArity) := target g 0 (eval g [] dg.type) 1000
+            let key := ReprInfo.key T { mkImpl := impl, getImpl := get, tag, nfields, r, mkArity, p, getArity }
+            modify fun s => { s with builtins := (key, f) :: s.builtins,
+                                     globals := { s.globals with builtins := (key, f) :: s.globals.builtins } }
+      else if s.builtins.any (·.2 == f) then
+        report .error fStx.info s!"{f} is a builtin or foreign function: it already has an implementation"
       else if f == impl then report .error (cmd.getArg 3).info s!"{f} can't be implemented by itself"
       else if df.levelParams.length != di.levelParams.length then
         report .error (cmd.getArg 3).info
