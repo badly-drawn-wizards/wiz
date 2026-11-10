@@ -65,9 +65,9 @@ next.
 
 ## 21g: reference counting in the self-hosted backend (first stage)
 
-A second mode of `Backend.wiz` (`genProgramRC`), chosen by a first line `-- wiz: rc` in
-the program (a stand-in for a command-line flag: self-hosted programs can't read their
-arguments yet). The garbage-collected mode is unchanged, byte for byte.
+A second mode of `Backend.wiz` (`genProgramRC`), chosen by the compiler's flag `--rc`
+(21k; before that, a first line `-- wiz: rc` in the program, which still works as a
+fallback). The garbage-collected mode is unchanged, byte for byte.
 
 * **Perceus on the erased terms** (`rcE`): the C is in A-normal form, one local per
   intermediate value, statements in evaluation order (C leaves the order of arguments
@@ -99,3 +99,39 @@ freeing every object by the end.
 
 Next: reuse and drop specialisation (as in [stage 8c](08-backend.md)), a faster allocator, keeping tail
 calls when a borrowed argument is lent; then reference counting by default.
+
+## 21i: phantom parameters in the self-hosted frontend ✅
+
+Parity with 22e. `inductiveCmd` (`Frontend.wiz`) finds the parameters that no
+constructor (nor the index type) mentions (`occurs` on the elaborated descriptions) and
+gives each `p : P` a phantom domain (`phantomDom`): `D := p` for a type, `(0 x : P) ×
+(x = p)` otherwise, none for a proof, a size, or a `D` that would raise the index type's
+universe. The index type `Unit` becomes `(0 _ : D₁) → … → Unit`, and every index (the
+descriptions' `ret`/`rec`, the type's `μ`, a match's `ind`) its value `fun _ … => tt`
+(`phantomVal`); a constructor's index proof is `refl` there. Structures are inductive
+types in this frontend, so they get the same. Erasure needs nothing new: in this kernel a
+function into `Unit` is a proposition, so the tail is erased already. Not mirrored: an
+indexed family with such a parameter (the Lean frontend pairs the index with the tail) is
+rejected with an error, rather than accepted with the parameter forgotten. Tests:
+`selfhostAgrees` runs the same declarations through both frontends.
+
+## 21j: constructor parameters from the expected type, self-hosted ✅
+
+Parity with the Lean elaborator's `checkApp`: a constructor with implicit parameters
+applied in check mode (`appExpected`) first makes the implicit arguments'
+metavariables and a placeholder for each explicit argument (`preArgs`), and unifies the
+result type with the expected one. The arguments are then checked as before, against
+types that mention the solved parameters (`Tagged.mk 3 : Tagged .true` where the field
+is `Code b`); the placeholders are dropped. If that unification fails the arguments come
+first, as before.
+
+## 21k: command-line arguments; `--rc` ✅
+
+`IO.argCount : IO Nat` and `IO.arg : Nat → IO String` (externs `wiz_io_arg_count`,
+`wiz_io_arg`; the C and LLVM `main`s save `argc`/`argv` with `wiz_set_args`), and
+`IO.args : IO (List String)` built from them, in `lib/IO.wiz` and in the self-hosted
+Prelude (`selfhost/rt.c`'s natives read the `argv` that `rt_start` saves). The arguments
+exclude the program's name; `#eval`/`#run` can't call them (they are C). With them the
+self-hosted compiler takes its backend mode as a flag: `--rc`, `--rc-owned` or `--gc`
+(`genProgramArgs`). The first-line pragma `-- wiz: rc` still works when no flag is
+given, for one release. `scripts/fixpoint.sh --rc` runs the bootstrap in that mode.

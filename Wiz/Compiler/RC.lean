@@ -25,7 +25,8 @@ borrowed variable is simply one that is not owned: it is `dup`ed when it is cons
 never dropped. At a call, an argument in a borrowed position is lent (not consumed); a
 variable lent to a call and also passed to an owned position of the same call is
 `dup`ed for the owned one (the callee might free it while the borrow is still used).
-Join points have borrowed parameters too.
+Join points have borrowed parameters too. The comparisons `nat.beq` and `nat.blt` borrow
+their arguments the same way (`Expr.primBorrows`).
 
 Join point bodies only use their parameters (see `Lower.lean`), so they start from
 their own parameters.
@@ -60,6 +61,7 @@ def splitArgs (σ : BorrowSigs) : Expr → Array Var × Array Var
   | .fap f as =>
     (as.zipIdx.filterMap fun (a, i) => if σ.fn f i then none else some a,
      as.zipIdx.filterMap fun (a, i) => if σ.fn f i then some a else none)
+  | .prim op as => if Expr.primBorrows op then (#[], as) else (as, #[])
   | e => (e.args, #[])
 
 /-- **Exercise 8.1.** Insert reference counting operations into `b`, where `owned` are
