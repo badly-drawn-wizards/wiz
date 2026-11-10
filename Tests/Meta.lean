@@ -20,7 +20,7 @@ open WizMeta (Tm Lvl Sig Opts Err)
 
 /-- The rules as today's kernels have them, where the spec differs on purpose: a `Π`/`Σ`
 may come without its sort, and equations are formed only above `Prop`. -/
-def kernelOpts : Opts := { sortsOptional := true, kernelEqFormation := true }
+def kernelOpts : Opts := { sortsOptional := true, kernelEqFormation := true, payload := .kernel }
 
 def has (s pat : String) : Bool := (s.splitOn pat).length > 1
 
@@ -270,13 +270,29 @@ def group : Group where
         accepts (w1 1 1) kernelOpts (some sg1)
         let g1 ← match addDecl (leanGlobals ()) w1Decl with | .ok g => pure g | .error e => throw (IO.userError s!"{e}")
         check (!kernelAccepts (w1 0 1) g1 && kernelAccepts (w1 1 1) g1) "the Lean kernel's verdicts on W1 changed" },
-    { name := "E5b: a payload equation at a neutral field type is stuck (the kernels take the Σ rule there, which a substitution invalidates)", run := fun _ => do
-        rejects e5b
-        -- at a canonical field type that is not a tag type, the Σ rule
+    { name := "E5b: a payload equation at a neutral field type, in the three variants (the kernels' rule is not stable under substitution)", run := fun _ => do
+        let stuck := { kernelOpts with payload := .stuck }
+        let uniform := { kernelOpts with payload := .uniform }
+        -- the instance of `e5b` at `A := Enum 2`, `a = b = #0`, and `e5b` applied to them
+        let two := enum 2
+        let inst := erased (lam (fst (var 0))) (pi (eq (wrapTy two) (wrap two (tag 2 0)) (wrap two (tag 2 0))) (eq two (tag 2 0) (tag 2 0)))
+        -- the kernels' rule: the generic term is accepted and its instance is not
+        accepts e5b
+        rejects inst
+        check (kernelAccepts e5b && !kernelAccepts inst) "the Lean kernel's verdicts on E5b changed: update the note"
+        -- stuck at a neutral field type: the generic term is rejected
+        rejects e5b stuck
+        rejects inst stuck
+        -- no shortcut: both accepted
+        accepts e5b uniform
+        accepts inst uniform
+        -- at a canonical field type that is not a tag type, all three take the Σ rule
         let F := pi (enum 2) (enum 2)
         let idf := ann (lam (var 0)) F
         let t := erased (lam (fst (var 0))) (pi (eq (wrapTy F) (wrap F idf) (wrap F idf)) (eq F idf idf))
         accepts t
+        accepts t stuck
+        accepts t uniform
         check (kernelAccepts t) "the kernel rejects the Σ rule at a canonical field" },
     { name := "T4: an equation between Π types with domains in different universes (accepted by the kernels' rule, stuck with the levelled one)", run := fun _ => do
         accepts crossLevel

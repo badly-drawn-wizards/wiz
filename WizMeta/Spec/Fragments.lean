@@ -12,6 +12,9 @@ import WizMeta.Spec.InReg
 import WizMeta.Spec.ULift
 import WizMeta.Spec.Desc
 import WizMeta.Spec.Mu
+import WizMeta.Spec.PayloadKernel
+import WizMeta.Spec.PayloadStuck
+import WizMeta.Spec.PayloadUniform
 
 /-!
 # The fragments
@@ -21,7 +24,8 @@ import WizMeta.Spec.Mu
     Tprog  T1 + ULift, Qty, descriptions, μ          (levels are prenex in all three)
 
 each in two variants, by the rule for an equation between two `Π`/`Σ` types
-(`EqTyCross`: what the kernels implement; `EqTyLevelled`: CCobs's).
+(`EqTyCross`: what the kernels implement; `EqTyLevelled`: CCobs's), and Tprog with one of
+three rule sets for equations between constructors (`Payload*.lean`).
 
 Missing from Tprog as the plan defines it: `ν` and its operations, equality and casts
 at `μ`/`Desc` by codes. Sizes and usage checking are left out on purpose.
@@ -42,11 +46,14 @@ def T0 (sg : Sig) (var : EqTyVariant := .cross) : Rules :=
 
 def T1 (sg : Sig) (var : EqTyVariant := .cross) : Rules := T0 sg var ∪ InReg
 
-def Tprog (sg : Sig) (var : EqTyVariant := .cross) : Rules := T1 sg var ∪ ULift ∪ Desc ∪ Mu
+/-- Tprog, with one of the three rule sets for equations between constructors
+(`PayloadStuck`, `PayloadUniform`, or `PayloadKernel whnfTy`). -/
+def Tprog (sg : Sig) (var : EqTyVariant := .cross) (payload : Rules := PayloadStuck) : Rules :=
+  T1 sg var ∪ ULift ∪ Desc ∪ Mu ∪ payload
 
 theorem T0_sub_T1 {sg var j} (d : Derivable (T0 sg var) j) : Derivable (T1 sg var) j := d.union_left
-theorem T1_sub_Tprog {sg var j} (d : Derivable (T1 sg var) j) : Derivable (Tprog sg var) j :=
-  d.union_left.union_left.union_left
+theorem T1_sub_Tprog {sg var payload j} (d : Derivable (T1 sg var) j) : Derivable (Tprog sg var payload) j :=
+  d.union_left.union_left.union_left.union_left
 
 /-- A well-formed signature for a system `T`: each declaration has a fresh name, mentions
 only its own level parameters, and is typed in the signature before it. -/

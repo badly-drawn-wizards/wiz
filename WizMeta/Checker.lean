@@ -40,6 +40,18 @@ inductive Err where
 
 instance : ToString Err := ⟨fun | .fuel => "out of fuel" | .fail m => m⟩
 
+/-- The rule for an equation between two constructors `con x =_{μ D i} con y`
+(`Spec/Payload*.lean`). -/
+inductive PayloadRule where
+  /-- by the description, with the shortcut at a tag field; at any other field, the `Σ`
+  rule, also when the field's type is neutral (both kernels) -/
+  | kernel
+  /-- as `kernel`, but stuck at a neutral field type -/
+  | stuck
+  /-- no shortcut: the equation of the payloads at `⟦D⟧ X i` -/
+  | uniform
+  deriving Repr, Inhabited, BEq
+
 /-- Which variant of the rules to check. The defaults are the spec's (T1 and up). -/
 structure Opts where
   /-- accept a `Π`/`Σ` without a sort (the spec does not: mandatory sorts). The rules never
@@ -56,6 +68,9 @@ structure Opts where
   equation decomposes only if the two domains are in one sort and the two codomains
   are; otherwise it is stuck. Off: `EqTyCross`, what the kernels implement. -/
   eqTyLevelled : Bool := false
+  /-- equations between constructors: undecided (see `Spec/PayloadStuck.lean`); the default
+  is the variant that equates least -/
+  payload : PayloadRule := .stuck
   /-- regularity at inert types as a conversion rule (T1). Off: T0. -/
   inertReg : Bool := true
   deriving Repr, Inhabited
@@ -207,6 +222,7 @@ def whnfEq (E : Env) : Nat → Ctx → Tm → Tm → Tm → M Tm
         let b' ← whnf E n Γ b
         match a', b' with
         | .con x, .con y =>
+          if E.opts.payload == .uniform then whnf E n Γ (.eq (.interp l I D (muFamily l I D) i) x y) else
           match ← eqPayload E n Γ l I (muFamily l I D) i D x y with
           | some r => whnf E n Γ r
           | none => pure (.eq A' a' b')
@@ -228,8 +244,8 @@ def eqPayload (E : Env) : Nat → Ctx → Lvl → Tm → Tm → Tm → Tm → Tm
     | .dret _ => pure (some True')
     | .darg _ S D₁ =>
       match ← tagField E n Γ S with
-      -- a neutral field type: stuck (a substitution may make it a tag type)
-      | none => pure none
+      -- a neutral field type (a substitution may make it a tag type)
+      | none => pure (if E.opts.payload == .kernel then some (.eq (.interp l I D' X i) x y) else none)
       | some (some (k, lifted)) => do
         let tagOf (p : Tm) : Tm := if lifted then .down (.fst p) else .fst p
         match ← whnf E n Γ (tagOf x), ← whnf E n Γ (tagOf y) with

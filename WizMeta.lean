@@ -3,6 +3,7 @@ import WizMeta.Syntax
 import WizMeta.Templates
 import WizMeta.Reducts
 import WizMeta.Spec.Fragments
+import WizMeta.Spec.Laws
 import WizMeta.Checker
 import WizMeta.Translate
 
