@@ -15,7 +15,7 @@
   join points for non-tail `case`s (closed over their variables). The generic
   eliminators are written in the erased language (`Compiler/PrimCode.lean`) and
   compiled like user code. The output is sorted by name, so it's deterministic.
-* **Perceus** (`Compiler/RC.lean`): every variable is owned (until stage 8e's borrowed
+* **Perceus** (`Compiler/RC.lean`): every variable is owned (until 8e's borrowed
   parameters); `dup` an argument that is still needed, and `drop` a variable as soon as
   it's dead (garbage free).
 * **Checked heap** (`Compiler/IRRun.lean`): `#run` runs the IR with explicit reference
@@ -111,3 +111,4 @@ description).
   if `x` is unique the fields move out and only its cell is freed, otherwise the fields
   get their references and `x` is decremented. A pair returned by a call and taken
   apart costs no reference counting when it is unique.
+
