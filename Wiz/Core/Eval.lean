@@ -125,9 +125,9 @@ def natNative? : Name → Array Nat → Option Nat
 `nat.zero` is the literal `0`, and an operation is a closure whose body is a
 `Term.natOp` on its arguments, so it computes natively when they are literals. -/
 def vBuiltin? (g : Globals R) (n : Name) : Option (Val R) := do
-  let k ← g.builtinKey? n
-  if !k.startsWith "nat." then none
-  else if k == "nat.zero" then some (.natLit 0)
+  -- (its `nat.` key: other registrations on `n`, such as `inline`, don't hide it)
+  let (k, _) ← g.builtins.find? fun (k, m) => m == n && k.startsWith "nat."
+  if k == "nat.zero" then some (.natLit 0)
   else if natOpArity k == 1 then some (.lam "a" (.mk [] (.natOp k #[.var 0])))
   else some (.lam "a" (.mk [] (.lam "b" (.natOp k #[.var 1, .var 0]))))
 
