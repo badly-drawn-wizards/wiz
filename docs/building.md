@@ -105,3 +105,8 @@ works out of the box). Without a branch the flake reference means the default br
 `master`, whose binaries are on Cachix once its `nix package` job has run. The
 `--option`s count only for a trusted Nix user (or with the cache in `nix.conf`);
 otherwise Nix builds wiz from source, which takes a few minutes.
+
+`#nvim-wiz` is Neovim with the Wiz plugin (editors/nvim, docs/stages/11-tooling.md
+11p) and this wiz on `PATH`: `nix run github:badly-drawn-wizards/wiz#nvim-wiz --
+file.wiz`. `packages.<system>.wiz-nvim` is the plugin alone, for a Neovim
+configuration in Nix.
