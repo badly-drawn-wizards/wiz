@@ -311,6 +311,11 @@ def reprOfTy? (g : Globals R) (ty : Val R) : Option ReprInfo :=
   | .mu _ _ _ _ _ (some (T, _, _)) => reprOf? g.builtins T
   | _ => none
 
+/-- The start of the message with which erasure refuses a description whose first field
+has an abstract type (`neutralFieldTy`). Unlike a term erasure can't handle yet, this is
+never turned into a run-time error (`compileReachableE`). -/
+def abstractFieldMsg : String := "cannot compile a description whose first field has a type that is not known here"
+
 /-- Is this field type not known yet: a neutral (a type variable, a stuck match), or a
 lift of one? Then `tagField?` could change its answer under substitution. -/
 def neutralFieldTy (S : Val R) : Bool :=
@@ -478,7 +483,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
     -- a known type decides the same thing from the type (`startsWithTag`). At the head of
     -- a description they must agree for every instance, so `S` must be known here.
     if !inDesc && neutralFieldTy vS then
-      throw (.other ("cannot compile a description whose first field has a type that is not known here " ++
+      throw (.other (abstractFieldMsg ++ " " ++
         s!"(`Desc.arg` at `{ctx.showTerm S}`, a type variable or a stuck term): whether its values carry a " ++
         "constructor tag would depend on how that type is instantiated. Give the first field a known type " ++
         "(for a choice of constructors, `Enum […]`)"))
@@ -764,9 +769,24 @@ end
 /-- Resolve the views of a closed erased term. -/
 def resolveViews (e : ETerm) : ETerm := rw 0 [] e
 
-/-- Erase a closed term against its type, with views resolved. -/
-def eraseTop (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm :=
-  return resolveViews (← eraseCheck ctx t ty)
+/-- Erase a closed term against its type, with views resolved. (`inDesc`: see `eraseDecl`.) -/
+def eraseTop (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool := false) : TCM ETerm :=
+  return resolveViews (← eraseCheck ctx t ty inDesc)
+
+/-- Is `d` the description that `coinductive T` generated (`T.desc`, with `T` a `ν`)? The
+tag mark is read only for data (`pack`, `unpack`, `ind`); a `ν`'s payload is nested
+pairs whatever its description starts with, and a parameterised `coinductive` type's
+description does start with a field of an abstract type (`Signal A`: `Desc.arg A …`). -/
+def isNuDesc (g : Globals R) (d : Decl R) : Bool :=
+  d.name.endsWith ".desc" &&
+  match (g.find? (String.ofList (d.name.toList.take (d.name.length - 5)))).bind (·.value) with
+  | some v => underLams v
+  | none => false
+where
+  underLams : Term R → Bool
+    | .lam _ b => underLams b
+    | .nu .. => true
+    | _ => false
 
 /-- Erase a global definition. -/
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
@@ -776,6 +796,6 @@ def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
   let us := d.levelParams.map fun _ => Level.succ .zero
-  eraseTop ctx (v.instLevels d.levelParams us) (ctx.eval (d.type.instLevels d.levelParams us))
+  eraseTop ctx (v.instLevels d.levelParams us) (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
 
 end Wiz

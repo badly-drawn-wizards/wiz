@@ -459,7 +459,11 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     -- a declaration that can't be erased yet becomes a runtime error if it is reached
     let e ← match eraseDecl g d with
       | .ok e => pure e
-      | .error err => do failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
+      | .error err => do
+        -- (a refusal, not a gap: running on would give a wrong value)
+        if ((toString err).splitOn abstractFieldMsg).length > 1 then
+          throw (.other s!"cannot erase {n}: {err}")
+        failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
     let e := if e.globals.any inlines.contains then
       let inl := inlines
       e.inlineSimp fun f => if f == n then none else inl.get? f
