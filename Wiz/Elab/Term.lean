@@ -791,6 +791,14 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
       let ty : Val R := .mu l I D i (.szSuc vm) (some (T, us, args))
       unifyAt ctx stx expected ty
       return some (.ann payload (q ty))
+    | .neutral (.global T _) _ =>
+      -- (13b) a type with private constructors (fields, observations) of another module:
+      -- opaque here, so `.c` is `T.c` (which may be private)
+      unless (g.opaqueHere? expected).isSome && g.contains (T ++ "." ++ c) do
+        return ← shapeError s!".{c} needs an expected inductive type"
+      let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
+      let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
+      return some (← check ctx stx' expected)
     | .nu _ _ _ _ _ (some (T, _, _)) =>
       -- `.mk h t`: the coconstructor of a coinductive type (`T.mk`, a `cocon`)
       unless (← getGlobals).contains (T ++ "." ++ c) do
@@ -1376,8 +1384,14 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let rs := vars.drop (k + 1)
   let xty ← force (typeOf x)
   let .mu _ _ _ ξi xsz (some (T, us, args)) := xty
-    | throwAt (cl.pats[k]!).info s!"cannot match on a value of type {← showVal ctx xty}"
+    | if let some (T, m) := g.opaqueHere? xty then
+        throwAt (cl.pats[k]!).info (s!"cannot match on a value of type {← showVal ctx xty}: {T} is opaque " ++
+          s!"outside module {m} (it has private constructors or fields)") "private"
+      else throwAt (cl.pats[k]!).info s!"cannot match on a value of type {← showVal ctx xty}"
   let some descD := g.find? (T ++ ".desc") | throwAt ctx.info s!"{T} is not an inductive type"
+  -- (13b) a type declared `private` in another module: its recursors are private too
+  if let some m := g.privateTo? (T ++ ".casesOn") then
+    throwAt (cl.pats[k]!).info s!"cannot match on a value of type {T} here: its constructors are private to module {m}" "private"
   let nΔ := (piInfos descD.type).length
   let Δargs := args.take nΔ
   let ξ := args.drop nΔ

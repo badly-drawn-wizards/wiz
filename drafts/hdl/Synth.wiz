@@ -7,9 +7,8 @@ import Signal
 -- has three layers, each checkable earlier than the last:
 --
 -- L1  (types, today) Everything that crosses a port or sits in a register has `[BitPack A]`;
---     feedback only through `register`/`mealy`/`moore`. Missing: hiding `Signal.head/tail`
---     from user code (`private`), so observation can't be written outside simulation.
---                                                             -- wishful: private-decls
+--     feedback only through `register`/`mealy`/`moore`. `Signal.head/tail` are private
+--     to Signal.wiz (13b), so observation can't be written outside simulation.
 -- L2  (types, today; this file) A circuit's *combinational logic* is a function polymorphic
 --     in its representation: `{r : HwTy → Type} → [Hw r] → r a → r b` (tagless final).
 --     Such a function can only combine wires with `Hw`'s operations, so it is
