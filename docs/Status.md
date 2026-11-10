@@ -329,7 +329,8 @@ the results of the probes listed in the "Probes" section.
      already declared (`checkImpl`, as `addPartialImpl` does for partial definitions):
      typing, quantities, level parameters and sort notes. `attribute [implemented_by g] f`
      stores its constant through the kernel too (`setImpl`). So every term erasure sees
-     has been checked. **A declaration whose implementation fails is rejected**, not
+     has been checked, and erasure reads the sort a `Π`/`Σ` carries everywhere (the
+     exception it made for these implementations, `sortNotesChecked`, is removed). **A declaration whose implementation fails is rejected**, not
      compiled from its value with a warning: the implementation is the elaborator's own
      output, so a failure is a bug in Wiz, and falling back would hide it behind a
      program that is correct but computes every recursive call through the recursor (a
