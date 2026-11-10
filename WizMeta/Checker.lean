@@ -1,5 +1,4 @@
-import WizMeta.Syntax
-import WizMeta.Templates
+import WizMeta.Reducts
 
 /-!
 # The reference checker
@@ -46,10 +45,17 @@ structure Opts where
   /-- accept a `Π`/`Σ` without a sort (the spec does not: mandatory sorts). The rules never
   read the annotation except to verify it, so this only skips that verification. -/
   sortsOptional : Bool := false
-  /-- form `a =_A b`, `refl`, `transp` only at a sort that is never `Prop` (the kernels'
-  rule). The spec forms them at any sort, where `a =_A b ⟶ True` at a proposition `A`:
-  the kernels' own reducts contain such equations. -/
-  eqNeverZero : Bool := false
+  /-- the kernels' formation rules for equations: `a =_A b`, `refl`, `transp` only at a
+  sort that is never `Prop`, and `A ≡ B` only between types of one sort. The spec forms
+  them at any sorts (`a =_A b ⟶ True` at a proposition, `A ≡ B ⟶ False` between a
+  proposition and a type that is not one): the reducts of the kernels' own rules contain
+  such equations, so with the restriction a reduct of a well-formed type is not well
+  formed. -/
+  kernelEqFormation : Bool := false
+  /-- the variant `EqTyLevelled` of the rule for `Π ≡ Π`, `Σ ≡ Σ` (and `ULift ≡ ULift`): the
+  equation decomposes only if the two domains are in one sort and the two codomains
+  are; otherwise it is stuck. Off: `EqTyCross`, what the kernels implement. -/
+  eqTyLevelled : Bool := false
   /-- regularity at inert types as a conversion rule (T1). Off: T0. -/
   inertReg : Bool := true
   deriving Repr, Inhabited
@@ -61,29 +67,6 @@ structure Env where
 abbrev M := Except Err
 
 def fail {α : Type} (msg : String) : M α := throw (.fail msg)
-
-namespace Tm
-
-def True' : Tm := .unit 0
-def False' : Tm := .empty 0
-
-/-- `(a → b) × (b → a)`: what an equation between two propositions means. -/
-def iff (a b : Tm) : Tm :=
-  .sigma .zero (some 0) (.pi .zero (some 0) a b.shift) (.pi .zero (some 0) b.shift (a.shiftN 2))
-
-/-- The canonical type formers: two different ones are never equal. -/
-def canonical : Tm → Bool
-  | .pi .. | .sigma .. | .sort _ | .unit _ | .empty _ | .enum _ | .ulift .. | .desc .. | .mu .. => true
-  | _ => false
-
-end Tm
-
-/-- `Sort u ≡ Sort w` and the like: `True` for equal levels, `False` for two different
-closed levels, stuck otherwise (the answer must survive a level substitution). -/
-def eqLevels (u w : Lvl) (stuck : Tm) : Tm :=
-  if u.equiv w then Tm.True'
-  else if u.toNat?.isSome && w.toNat?.isSome then Tm.False'
-  else stuck
 
 open Tm in
 mutual
@@ -139,39 +122,49 @@ def whnf (E : Env) : Nat → Ctx → Tm → M Tm
     -- ⟦D⟧ X i, by the description
     | .interp l I D X i => do
       let D' ← whnf E n Γ D
-      let l1 := l.succ
-      let rest (D₁ : Tm) : Tm := .interp l I.shift D₁ X.shift i.shift
       match D' with
-      | .dret j => pure (.sigma .zero (some l1) (.eq I j i) (.unit l1))
+      | .dret j => pure (interpRet l I j i)
       | .darg q S D₁ =>
         match ← whnf E n Γ q with
-        | .qlit q => pure (.sigma q (some l1) S (rest (.app D₁.shift (.var 0))))
+        | .qlit q => pure (interpArg l q I S D₁ X i)
         | q' => pure (.interp l I (.darg q' S D₁) X i)
       | .drec q j D₁ =>
         match ← whnf E n Γ q with
-        | .qlit q => pure (.sigma q (some l1) (.app X j) (rest D₁.shift))
+        | .qlit q => pure (interpRec l q I j D₁ X i)
         | q' => pure (.interp l I (.drec q' j D₁) X i)
       | .dhrec q H j D₁ =>
         match ← whnf E n Γ q with
-        | .qlit q =>
-          pure (.sigma q (some l1) (.pi .many (some l1) H (.app X.shift (.app j.shift (.var 0)))) (rest D₁.shift))
+        | .qlit q => pure (interpHrec l q I H j D₁ X i)
         | q' => pure (.interp l I (.dhrec q' H j D₁) X i)
       | _ => pure (.interp l I D' X i)
     | .delim v P mret marg mrec mhrec D => do
       let D' ← whnf E n Γ D
-      let again (D₁ : Tm) : Tm := .delim v P mret marg mrec mhrec D₁
       match D' with
       | .dret i => whnf E n Γ (.app mret i)
-      | .darg q S D₁ =>
-        whnf E n Γ (apps marg [q, S, D₁,
-          .lam (.delim v P.shift mret.shift marg.shift mrec.shift mhrec.shift (.app D₁.shift (.var 0)))])
-      | .drec q j D₁ => whnf E n Γ (apps mrec [q, j, D₁, again D₁])
-      | .dhrec q H j D₁ => whnf E n Γ (apps mhrec [q, H, j, D₁, again D₁])
-      | _ => pure (again D')
+      | .darg q S D₁ => whnf E n Γ (delimArg v P mret marg mrec mhrec q S D₁)
+      | .drec q j D₁ => whnf E n Γ (delimRec v P mret marg mrec mhrec q j D₁)
+      | .dhrec q H j D₁ => whnf E n Γ (delimHrec v P mret marg mrec mhrec q H j D₁)
+      | _ => pure (.delim v P mret marg mrec mhrec D')
+    | .dall l v I D X P i xs => do
+      let D' ← whnf E n Γ D
+      match D' with
+      | .dret _ => pure (.unit (allSort l v))
+      | .darg _ _ D₁ => whnf E n Γ (allArg l v I D₁ X P i xs)
+      | .drec _ j D₁ => pure (allRec l v I j D₁ X P i xs)
+      | .dhrec _ H j D₁ => pure (allHrec l v I H j D₁ X P i xs)
+      | _ => pure (.dall l v I D' X P i xs)
+    | .dhyps l v I D X P f i xs => do
+      let D' ← whnf E n Γ D
+      match D' with
+      | .dret _ => pure .tt
+      | .darg _ _ D₁ => whnf E n Γ (hypsArg l v I D₁ X P f i xs)
+      | .drec _ j D₁ => pure (hypsRec l v I j D₁ X P f i xs)
+      | .dhrec _ _ j D₁ => pure (hypsHrec l v I j D₁ X P f i xs)
+      | _ => pure (.dhyps l v I D' X P f i xs)
     | .ind l I D v P m i x => do
       let x' ← whnf E n Γ x
       match x' with
-      | .con xs => whnf E n Γ (apps m [i, xs, indHyps l v I D P m i xs])
+      | .con xs => whnf E n Γ (indCon l v I D P m i xs)
       | _ => pure (.ind l I D v P m i x')
     | _ => pure t
 
@@ -186,22 +179,8 @@ def whnfEq (E : Env) : Nat → Ctx → Tm → Tm → Tm → M Tm
     | none => pure stuck
     | some false =>
       match A' with
-      | .pi _ _ A₁ B =>
-        -- funext: (0 x : A₁) → a x =_{B x} b x
-        pure (.pi .zero (some 0) A₁ (.eq B (.app a.shift (.var 0)) (.app b.shift (.var 0))))
-      | .sigma _ _ A₁ B =>
-        -- (0 e : a.1 =_{A₁} b.1) × (cast (B a.1) (B b.1) ê a.2 =_{B b.1} b.2)
-        -- ê = transp A₁ a.1 (λy _. B a.1 ≡ B y) (reflTy (B a.1)) b.1 e
-        let a1 : Tm := .fst a
-        let b1 : Tm := .fst b
-        let Ba := B.inst a1
-        let Bb := B.inst b1
-        -- under y, _ : `B y` is `B` with its variable replaced by `y` (index 1)
-        let By := (B.ren (upRen (· + 2))).inst (.var 1)
-        let P : Tm := .lam (.lam (.eqTy (Ba.shiftN 2) By))
-        let ê : Tm := .transp A₁.shift a1.shift P.shift (.reflTy Ba.shift) b1.shift (.var 0)
-        pure (.sigma .zero (some 0) (.eq A₁ a1 b1)
-          (.eq Bb.shift (.cast Ba.shift Bb.shift ê (Tm.snd a).shift) (Tm.snd b).shift))
+      | .pi _ _ A₁ B => pure (eqPi A₁ B a b)
+      | .sigma _ _ A₁ B => pure (eqSigma A₁ B a b)
       | .unit _ => pure True'
       | .empty _ => pure True'
       | .enum _ => do
@@ -249,7 +228,9 @@ def eqPayload (E : Env) : Nat → Ctx → Lvl → Tm → Tm → Tm → Tm → Tm
     | .dret _ => pure (some True')
     | .darg _ S D₁ =>
       match ← tagField E n Γ S with
-      | some (k, lifted) => do
+      -- a neutral field type: stuck (a substitution may make it a tag type)
+      | none => pure none
+      | some (some (k, lifted)) => do
         let tagOf (p : Tm) : Tm := if lifted then .down (.fst p) else .fst p
         match ← whnf E n Γ (tagOf x), ← whnf E n Γ (tagOf y) with
         | .tag _ a, .tag _ b =>
@@ -258,27 +239,29 @@ def eqPayload (E : Env) : Nat → Ctx → Lvl → Tm → Tm → Tm → Tm → Tm
             eqPayload E n Γ l I X i (.app D₁ t) (.snd x) (.snd y)
           else pure (some (.eq (.interp l I D' X i) x y))
         | _, _ => pure none
-      | none => pure (some (.eq (.interp l I D' X i) x y))
+      | some none => pure (some (.eq (.interp l I D' X i) x y))
     | .drec _ j D₁ => do
       let some r ← eqPayload E n Γ l I X i D₁ (.snd x) (.snd y) | pure none
       pure (some (← withRest (.eq (.app X j) (.fst x) (.fst y)) D₁ r))
     | .dhrec _ H j D₁ => do
       let some r ← eqPayload E n Γ l I X i D₁ (.snd x) (.snd y) | pure none
-      let F : Tm := .pi .many (some l.succ) H (.app X.shift (.app j.shift (.var 0)))
-      pure (some (← withRest (.eq F (.fst x) (.fst y)) D₁ r))
+      pure (some (← withRest (.eq (hrecFieldTy l H j X) (.fst x) (.fst y)) D₁ r))
     | _ => pure none
 
-/-- Is this field type an enumeration of constructor tags, possibly lifted? -/
-def tagField (E : Env) : Nat → Ctx → Tm → M (Option (Nat × Bool))
+/-- A field type: a tag type (`Enum k`, or a lift of one: `some (some (k, lifted))`),
+another canonical type (`some none`), or neutral (`none`). -/
+def tagField (E : Env) : Nat → Ctx → Tm → M (Option (Option (Nat × Bool)))
   | 0, _, _ => throw .fuel
   | n + 1, Γ, S => do
-    match ← whnf E n Γ S with
-    | .enum k => pure (some (k, false))
-    | .ulift _ A =>
-      match ← whnf E n Γ A with
-      | .enum k => pure (some (k, true))
-      | _ => pure none
-    | _ => pure none
+    let S' ← whnf E n Γ S
+    match S' with
+    | .enum k => pure (some (some (k, false)))
+    | .ulift _ A => do
+      let A' ← whnf E n Γ A
+      match A' with
+      | .enum k => pure (some (some (k, true)))
+      | _ => pure (if A'.former?.isSome then some none else none)
+    | _ => pure (if S'.former?.isSome then some none else none)
 
 /-- `A ≡ B` for two types: propositions are equal when equivalent, other types by their
 formers. -/
@@ -299,32 +282,37 @@ def whnfEqTy (E : Env) : Nat → Ctx → Tm → Tm → M Tm
     | some false, some false =>
       match A', B' with
       | .pi q _ A₁ B₁, .pi q' _ A₂ B₂ =>
-        if q != q' then pure False' else
-        -- (0 e : A₂ ≡ A₁) × ((0 x : A₂) → B₁ (cast A₂ A₁ e x) ≡ B₂ x)
-        let c : Tm := .cast (A₂.shiftN 2) (A₁.shiftN 2) (.var 1) (.var 0)
-        pure (.sigma .zero (some 0) (.eqTy A₂ A₁)
-          (.pi .zero (some 0) A₂.shift
-            (.eqTy ((B₁.ren (upRen (· + 2))).inst c) (B₂.ren (upRen (· + 1))))))
+        if q != q' then pure False'
+        else if ← sameSorts E n Γ A₁ B₁ A₂ B₂ then pure (eqTyPi A₁ B₁ A₂ B₂) else pure stuck
       | .sigma q _ A₁ B₁, .sigma q' _ A₂ B₂ =>
-        if q != q' then pure False' else
-        -- (0 e : A₁ ≡ A₂) × ((0 x : A₁) → B₁ x ≡ B₂ (cast A₁ A₂ e x))
-        let c : Tm := .cast (A₁.shiftN 2) (A₂.shiftN 2) (.var 1) (.var 0)
-        pure (.sigma .zero (some 0) (.eqTy A₁ A₂)
-          (.pi .zero (some 0) A₁.shift
-            (.eqTy (B₁.ren (upRen (· + 1))) ((B₂.ren (upRen (· + 2))).inst c))))
-      | .sort u, .sort w => pure (eqLevels u w stuck)
-      | .unit u, .unit w => pure (eqLevels u w stuck)
-      | .empty u, .empty w => pure (eqLevels u w stuck)
+        if q != q' then pure False'
+        else if ← sameSorts E n Γ A₁ B₁ A₂ B₂ then pure (eqTySigma A₁ B₁ A₂ B₂) else pure stuck
+      | .sort u, .sort w => pure ((eqLevels? u w).getD stuck)
+      | .unit u, .unit w => pure ((eqLevels? u w).getD stuck)
+      | .empty u, .empty w => pure ((eqLevels? u w).getD stuck)
       | .enum k, .enum k' => pure (if k == k' then True' else False')
       | .ulift u A₀, .ulift w B₀ =>
-        if u.equiv w then whnfEqTy E n Γ A₀ B₀
+        if u.equiv w then
+          if E.opts.eqTyLevelled && !(← sortOfTy E n Γ A₀).equiv (← sortOfTy E n Γ B₀) then pure stuck
+          else whnfEqTy E n Γ A₀ B₀
         else if u.toNat?.isSome && w.toNat?.isSome then pure False'
         else pure stuck
       | .desc l I, .desc l' I' =>
         if l.equiv l' then whnfEqTy E n Γ I I' else pure stuck
       -- (by codes, as in PR #40: not implemented)
       | .mu .., .mu .. => pure stuck
-      | _, _ => pure (if A'.canonical && B'.canonical then False' else stuck)
+      | _, _ =>
+        -- two different canonical formers are never equal
+        pure (if A'.former?.isSome && B'.former?.isSome && A'.former? != B'.former? then False' else stuck)
+
+/-- The level premise of the variant `EqTyLevelled`: the two domains in one sort, the two
+codomains in one sort. Always true in the variant `EqTyCross`. -/
+def sameSorts (E : Env) : Nat → Ctx → Tm → Tm → Tm → Tm → M Bool
+  | 0, _, _, _, _, _ => throw .fuel
+  | n + 1, Γ, A₁, B₁, A₂, B₂ => do
+    if !E.opts.eqTyLevelled then pure true
+    else if !(← sortOfTy E n Γ A₁).equiv (← sortOfTy E n Γ A₂) then pure false
+    else pure ((← sortOfTy E n (A₁ :: Γ) B₁).equiv (← sortOfTy E n (A₂ :: Γ) B₂))
 
 /-- `cast A B e t`, by the weak-head normal forms of `A` and `B`. The proof `e` is only
 ever projected, never looked at. -/
@@ -341,16 +329,9 @@ def whnfCast (E : Env) : Nat → Ctx → Tm → Tm → Tm → Tm → M Tm
     if !(pa == some false && pb == some false) then pure stuck else
     match A', B' with
     | .pi q _ A₁ B₁, .pi q' _ A₂ B₂ =>
-      if q != q' then pure stuck else
-      -- λx. cast (B₁ x̂) (B₂ x) (e.2 x) (t x̂),  x̂ = cast A₂ A₁ e.1 x
-      let x' : Tm := .cast A₂.shift A₁.shift (.fst e.shift) (.var 0)
-      pure (.lam (.cast ((B₁.ren (upRen (· + 1))).inst x') B₂ (.app (.snd e.shift) (.var 0)) (.app t.shift x')))
+      pure (if q != q' then stuck else castPi A₁ B₁ A₂ B₂ e t)
     | .sigma q _ A₁ B₁, .sigma q' _ A₂ B₂ =>
-      if q != q' then pure stuck else
-      -- (c₁, cast (B₁ t.1) (B₂ c₁) (e.2 t.1) t.2),  c₁ = cast A₁ A₂ e.1 t.1
-      let t1 : Tm := .fst t
-      let c1 : Tm := .cast A₁ A₂ (.fst e) t1
-      pure (.pair c1 (.cast (B₁.inst t1) (B₂.inst c1) (.app (.snd e) t1) (.snd t)))
+      pure (if q != q' then stuck else castSigma A₁ B₁ A₂ B₂ e t)
     | .sort u, .sort w => if u.equiv w then whnf E n Γ t else pure stuck
     | .empty u, .empty w => if u.equiv w then whnf E n Γ t else pure stuck
     | .unit u, .unit w => if u.equiv w then pure .tt else pure stuck
@@ -393,6 +374,7 @@ def sortOf (E : Env) : Nat → Ctx → Tm → M Lvl
     | .desc l _ => pure l.succ.succ
     | .mu l _ _ _ => pure l.succ
     | .interp l _ _ _ _ => pure l.succ
+    | .dall l v .. => pure (allSort l v)
     | _ => do
       let T ← typeOfNe E n Γ A
       match ← whnf E n Γ T with
@@ -442,6 +424,8 @@ def typeOfNe (E : Env) : Nat → Ctx → Tm → M Tm
     | .delim _ P _ _ _ _ D => pure (.app P D)
     | .ind _ _ _ _ P _ i x => pure (apps P [i, x])
     | .interp l _ _ _ _ => pure (.sort l.succ)
+    | .dall l v .. => pure (.sort (allSort l v))
+    | .dhyps l v I D X P _ i xs => pure (.dall l v I D X P i xs)
     | _ => fail "typeOfNe: not a neutral term"
 
 /-- Weak-head normal form up to regularity at inert types (T1): a stuck cast at the head
@@ -472,6 +456,8 @@ def strip (E : Env) : Nat → Ctx → Tm → M (Option Tm)
     | .delim v P a b c h D => do pure ((← strip E n Γ D).map (.delim v P a b c h ·))
     | .ind l I D v P m i x => do pure ((← strip E n Γ x).map (.ind l I D v P m i ·))
     | .interp l I D X i => do pure ((← strip E n Γ D).map (.interp l I · X i))
+    | .dall l v I D X P i xs => do pure ((← strip E n Γ D).map (.dall l v I · X P i xs))
+    | .dhyps l v I D X P f i xs => do pure ((← strip E n Γ D).map (.dhyps l v I · X P f i xs))
     | _ => pure none
 
 /-- An inert type: first-order data. `Enum`, `Unit` above `Prop`, lifts and `Σ`s of inert
@@ -502,8 +488,8 @@ def inertDesc (E : Env) : Nat → Ctx → Lvl → Tm → Tm → M Bool
     | .drec _ _ D₁ => inertDesc E n Γ l I D₁
     | .darg _ S D₁ =>
       match ← tagField E n Γ S with
-      | some (k, lifted) => inertTags E n Γ l I D₁ k lifted k
-      | none =>
+      | some (some (k, lifted)) => inertTags E n Γ l I D₁ k lifted k
+      | _ =>
         if ← inert E n Γ S then inertDesc E n (S :: Γ) l I.shift (.app D₁.shift (.var 0)) else pure false
     | _ => pure false
 
@@ -540,7 +526,7 @@ def conv (E : Env) : Nat → Ctx → Tm → Tm → Tm → M Bool
       | .desc l I, .darg q S D, .darg q' S' D' =>
         if !(← conv E n Γ .qty q q') then pure false
         else if !(← convTy E n Γ S S') then pure false
-        else conv E n Γ (.pi .many (some l.succ.succ) S (.desc l I.shift)) D D'
+        else conv E n Γ (argContTy l I S) D D'
       | .desc l I, .drec q j D, .drec q' j' D' =>
         if !(← conv E n Γ .qty q q') then pure false
         else if !(← conv E n Γ I j j') then pure false
@@ -548,7 +534,7 @@ def conv (E : Env) : Nat → Ctx → Tm → Tm → Tm → M Bool
       | .desc l I, .dhrec q H j D, .dhrec q' H' j' D' =>
         if !(← conv E n Γ .qty q q') then pure false
         else if !(← convTy E n Γ H H') then pure false
-        else if !(← conv E n Γ (.pi .many (some l.succ) H I.shift) j j') then pure false
+        else if !(← conv E n Γ (hrecIndexTy l I H) j j') then pure false
         else conv E n Γ (.desc l I) D D'
       | .mu l I D i, .con x, .con y => conv E n Γ (.interp l I D (muFamily l I D) i) x y
       | _, _, _ => do pure (← convNe E n Γ t' u').isSome
@@ -592,8 +578,16 @@ def convTy (E : Env) : Nat → Ctx → Tm → Tm → M Bool
       if !l.equiv l' then pure false
       else if !(← convTy E n Γ I I') then pure false
       else if !(← conv E n Γ (.desc l I) D D') then pure false
-      else if !(← conv E n Γ (.pi .many (some l.succ.succ) I (.sort l.succ)) X X') then pure false
+      else if !(← conv E n Γ (familyTy l I) X X') then pure false
       else conv E n Γ I i i'
+    | .dall l v I D X P i xs, .dall l' v' I' D' X' P' i' xs' =>
+      if !l.equiv l' || !v.equiv v' then pure false
+      else if !(← convTy E n Γ I I') then pure false
+      else if !(← conv E n Γ (.desc l I) D D') then pure false
+      else if !(← conv E n Γ (familyTy l I) X X') then pure false
+      else if !(← conv E n Γ (predTy l v I X) P P') then pure false
+      else if !(← conv E n Γ I i i') then pure false
+      else conv E n Γ (.interp l I D X i) xs xs'
     | _, _ => do pure (← convNe E n Γ A' B').isSome
 
 /-- Two neutral terms in weak-head normal form: equal heads and convertible arguments.
@@ -662,6 +656,10 @@ def convNe (E : Env) : Nat → Ctx → Tm → Tm → M (Option Tm)
         else if !(← conv E n Γ th h h') then pure none
         else pure (some (.app P D))
       | _ => fail "convNe: not a description"
+    | .dhyps l v I D X P f i xs, .dhyps l' v' I' D' X' P' f' i' xs' => do
+      -- stuck on a neutral description; the type arguments first
+      if !(← convTy E n Γ (.dall l v I D X P i xs) (.dall l' v' I' D' X' P' i' xs')) then pure none
+      else if ← conv E n Γ (sectionTy l v I X P) f f' then pure (some (.dall l v I D X P i xs)) else pure none
     | .ind _ _ _ v P m _ x, .ind _ _ _ v' P' m' _ x' => do
       let some T ← convNe E n Γ x x' | pure none
       match ← whnfS E n Γ T with
@@ -698,7 +696,7 @@ def inferEqDomain (E : Env) : Nat → Ctx → Tm → M Unit
   | 0, _, _ => throw .fuel
   | n + 1, Γ, A => do
     let l ← inferSort E n Γ A
-    if E.opts.eqNeverZero && !l.neverZero then fail "an equation at a type that may be a proposition"
+    if E.opts.kernelEqFormation && !l.neverZero then fail "an equation at a type that may be a proposition"
 
 /-- `Γ ⊢ t ⇒ T`. -/
 def infer (E : Env) : Nat → Ctx → Tm → M Tm
@@ -776,7 +774,8 @@ def infer (E : Env) : Nat → Ctx → Tm → M Tm
     | .eqTy A B => do
       let l ← inferSort E n Γ A
       let l' ← inferSort E n Γ B
-      if l.equiv l' then pure (.sort 0) else fail "type equation between different universes"
+      if E.opts.kernelEqFormation && !l.equiv l' then fail "type equation between different universes"
+      else pure (.sort 0)
     | .refl A a => do
       inferEqDomain E n Γ A
       check E n Γ a A
@@ -795,8 +794,7 @@ def infer (E : Env) : Nat → Ctx → Tm → M Tm
       inferEqDomain E n Γ A
       check E n Γ a A
       check E n Γ b A
-      -- P : (0 b : A) → (0 _ : a =_A b) → Prop
-      check E n Γ P (.pi .zero (some 1) A (.pi .zero (some 1) (.eq A.shift a.shift (.var 0)) (.sort 0)))
+      check E n Γ P (transpMotiveTy A a)
       check E n Γ p (.app (.app P a) (.refl A a))
       check E n Γ e (.eq A a b)
       pure (.app (.app P b) e)
@@ -820,9 +818,21 @@ def infer (E : Env) : Nat → Ctx → Tm → M Tm
     | .interp l I D X i => do
       checkIndexLevel E n Γ l I
       check E n Γ D (.desc l I)
-      check E n Γ X (.pi .many (some l.succ.succ) I (.sort l.succ))
+      check E n Γ X (familyTy l I)
       check E n Γ i I
       pure (.sort l.succ)
+    | .dall l v I D X P i xs => do
+      checkIndexLevel E n Γ l I
+      check E n Γ D (.desc l I)
+      check E n Γ X (familyTy l I)
+      check E n Γ P (predTy l v I X)
+      check E n Γ i I
+      check E n Γ xs (.interp l I D X i)
+      pure (.sort (allSort l v))
+    | .dhyps l v I D X P f i xs => do
+      let _ ← infer E n Γ (.dall l v I D X P i xs)
+      check E n Γ f (sectionTy l v I X P)
+      pure (.dall l v I D X P i xs)
     | .delim v P mret marg mrec mhrec D => do
       match ← whnfS E n Γ (← infer E n Γ D) with
       | .desc l I => do
@@ -874,7 +884,7 @@ def check (E : Env) : Nat → Ctx → Tm → Tm → M Unit
       check E n Γ q .qty
       -- a field is in exactly Sort (l+1)
       checkIndexLevel E n Γ l S
-      check E n Γ D (.pi .many (some l.succ.succ) S (.desc l I.shift))
+      check E n Γ D (argContTy l I S)
     | .drec q j D, .desc l I => do
       check E n Γ q .qty
       check E n Γ j I
@@ -882,7 +892,7 @@ def check (E : Env) : Nat → Ctx → Tm → Tm → M Unit
     | .dhrec q H j D, .desc l I => do
       check E n Γ q .qty
       checkIndexLevel E n Γ l H
-      check E n Γ j (.pi .many (some l.succ) H I.shift)
+      check E n Γ j (hrecIndexTy l I H)
       check E n Γ D (.desc l I)
     | .con x, .mu l I D i => check E n Γ x (.interp l I D (muFamily l I D) i)
     | _, _ => do

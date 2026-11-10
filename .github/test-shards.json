@@ -55,6 +55,7 @@
     "lexer",
     "lift",
     "match",
+    "=meta",
     "observational",
     "parser",
     "quantity",

@@ -3,17 +3,15 @@ import WizMeta.Syntax
 /-!
 # The types the rules for descriptions build
 
-The motive and method types of `Desc.elim` and `ind`, and the generic operations `All`
-and `hyps` (closed `Desc.elim` terms, as in the kernel's `Templates.lean`), written with
-every sort annotation. `⟦D⟧ X i` is the former `Tm.interp` (see `Syntax.lean`), with its
-own rules.
+The motive and method types of `Desc.elim` and `ind`, written with every sort annotation.
+Each is written over a small context of named parameters and then closed (`Tm.close`);
+the comments give that context, innermost first (`xs0 i1` means `xs` is `var 0`, `i` is
+`var 1`).
 
-Each template is written over a small context of named parameters and then closed
-(`Tm.close`); the comments give that context, innermost first (`xs0 i1` means `xs` is
-`var 0`, `i` is `var 1`).
-
-Nothing here is proved well typed. `Tests/Meta.lean` checks `allTm` and `hypsTm` with the
-reference checker at several levels.
+The generic operations `⟦D⟧ X i`, `All` and `hyps` are formers of the syntax with their own
+rules (`Reducts.lean`), not closed `Desc.elim` terms as in the kernel's `Templates.lean`:
+those terms abstract over a field's quantity and put it on a `Σ`, which a quantity
+*label* cannot express.
 -/
 
 namespace WizMeta
@@ -76,76 +74,15 @@ def indMotiveTy (l v' : Lvl) (I D : Tm) : Tm :=
   -- i0 D1 I2 ; x0 i1 D2 I3
   (pis [(ω, l.succ, v 1), (ω, l.succ, .mu l (v 2) (v 1) (v 0))] (v'.succ, .sort v')).2.close [D, I]
 
-/-- `fun I D X P i xs => All D X P i xs`: one `P`-proof per recursive field of the payload
-`xs : ⟦D⟧ X i`. In `Sort (max (l+1) v)`. -/
-def allTm (l v' : Lvl) : Tm :=
-  let l1 := l.succ
-  let r := Lvl.max l1 v'
-  -- E0 D1 I2, then X, P, i, xs
-  let mot := Tm.lam (pis [
-      (ω, .imax l1 l1.succ, (pis [(ω, l1, v 2)] (l1.succ, .sort l1)).2),
-      (ω, .imax l1 (.imax l1 v'.succ), (pis [(ω, l1, v 3), (ω, l1, .app (v 1) (v 0))] (v'.succ, .sort v')).2),
-      (ω, l1, v 4),
-      (ω, l1, .interp l (v 5) (v 3) (v 2) (v 0))]
-    (r.succ, .sort r)).2
-  let mret := lams 5 (.unit r)
-  -- xs0 i1 P2 X3 ih4 E5 S6 q7
-  let marg := lams 8 (apps (v 4) [.fst (v 0), v 3, v 2, v 1, .snd (v 0)])
-  -- xs0 i1 P2 X3 ih4 E5 j6 q7
-  let mrec := lams 8 (.sigma ω (some r) (apps (v 2) [v 6, .fst (v 0)]) (apps (v 5) [v 4, v 3, v 2, .snd (v 1)]))
-  -- xs0 i1 P2 X3 ih4 E5 j6 H7 q8
-  let mhrec := lams 9 (.sigma ω (some r)
-    (pis [(ω, l1, v 7)] (v', apps (v 3) [.app (v 7) (v 0), .app (.fst (v 1)) (v 0)])).2
-    (apps (v 5) [v 4, v 3, v 2, .snd (v 1)]))
-  lams 2 (.delim (.max l1.succ v'.succ) mot mret marg mrec mhrec (v 0))
+/-- `(i : I) → (_ : X i) → Sort v`, the type of a predicate over a family `X`. -/
+def predTy (l v' : Lvl) (I X : Tm) : Tm :=
+  -- i0 X1 I2
+  (pis [(ω, l.succ, v 1), (ω, l.succ, .app (v 1) (v 0))] (v'.succ, .sort v')).2.close [X, I]
 
-/-- The type of `allTm`. -/
-def allTy (l v' : Lvl) : Tm :=
-  let l1 := l.succ
-  let r := Lvl.max l1 v'
-  -- I0 ; D0 I1 ; X0 D1 I2 ; P0 X1 D2 I3 ; i0 P1 X2 D3 I4 ; xs0 i1 P2 X3 D4 I5
-  (pis [(ω, l1.succ, .sort l1), (ω, l1.succ, .desc l (v 0)),
-      (ω, .imax l1 l1.succ, (pis [(ω, l1, v 1)] (l1.succ, .sort l1)).2),
-      (ω, .imax l1 (.imax l1 v'.succ), (pis [(ω, l1, v 2), (ω, l1, .app (v 1) (v 0))] (v'.succ, .sort v')).2),
-      (ω, l1, v 3),
-      (ω, l1, .interp l (v 4) (v 3) (v 2) (v 0))]
-    (r.succ, .sort r)).2
-
-/-- `fun I D X P f i xs => hyps …`: `f` applied to every recursive field, a proof of
-`All D X P i xs`. -/
-def hypsTm (l v' : Lvl) : Tm :=
-  let l1 := l.succ
-  let r := Lvl.max l1 v'
-  -- E0 D1 I2, then X, P, f, i, xs
-  let mot := Tm.lam (pis [
-      (ω, .imax l1 l1.succ, (pis [(ω, l1, v 2)] (l1.succ, .sort l1)).2),
-      (ω, .imax l1 (.imax l1 v'.succ), (pis [(ω, l1, v 3), (ω, l1, .app (v 1) (v 0))] (v'.succ, .sort v')).2),
-      (ω, .imax l1 (.imax l1 v'), (pis [(ω, l1, v 4), (ω, l1, .app (v 2) (v 0))] (v', apps (v 2) [v 1, v 0])).2),
-      (ω, l1, v 5),
-      (ω, l1, .interp l (v 6) (v 4) (v 3) (v 0))]
-    (r, apps (allTm l v') [v 7, v 5, v 4, v 3, v 1, v 0])).2
-  let mret := lams 6 .tt
-  -- xs0 i1 f2 P3 X4 ih5 E6 S7 q8
-  let marg := lams 9 (apps (v 5) [.fst (v 0), v 4, v 3, v 2, v 1, .snd (v 0)])
-  -- xs0 i1 f2 P3 X4 ih5 E6 j7 q8
-  let mrec := lams 9 (.pair (apps (v 2) [v 7, .fst (v 0)]) (apps (v 5) [v 4, v 3, v 2, v 1, .snd (v 0)]))
-  -- xs0 i1 f2 P3 X4 ih5 E6 j7 H8 q9
-  let mhrec := lams 10 (.pair (.lam (apps (v 3) [.app (v 8) (v 0), .app (.fst (v 1)) (v 0)]))
-    (apps (v 5) [v 4, v 3, v 2, v 1, .snd (v 0)]))
-  lams 2 (.delim (.max l1.succ v'.succ) mot mret marg mrec mhrec (v 0))
-
-/-- The type of `hypsTm`. -/
-def hypsTy (l v' : Lvl) : Tm :=
-  let l1 := l.succ
-  let r := Lvl.max l1 v'
-  -- I0 ; D0 I1 ; X0 D1 I2 ; P0 X1 D2 I3 ; f0 P1 X2 D3 I4 ; i0 f1 P2 X3 D4 I5 ; xs0 i1 f2 P3 X4 D5 I6
-  (pis [(ω, l1.succ, .sort l1), (ω, l1.succ, .desc l (v 0)),
-      (ω, .imax l1 l1.succ, (pis [(ω, l1, v 1)] (l1.succ, .sort l1)).2),
-      (ω, .imax l1 (.imax l1 v'.succ), (pis [(ω, l1, v 2), (ω, l1, .app (v 1) (v 0))] (v'.succ, .sort v')).2),
-      (ω, .imax l1 (.imax l1 v'), (pis [(ω, l1, v 3), (ω, l1, .app (v 2) (v 0))] (v', apps (v 2) [v 1, v 0])).2),
-      (ω, l1, v 4),
-      (ω, l1, .interp l (v 5) (v 4) (v 3) (v 0))]
-    (r, apps (allTm l v') [v 6, v 5, v 4, v 3, v 1, v 0])).2
+/-- `(i : I) → (x : X i) → P i x`, the type of a section of a predicate. -/
+def sectionTy (l v' : Lvl) (I X P : Tm) : Tm :=
+  -- i0 P1 X2 I3 ; x0 i1 P2 X3 I4
+  (pis [(ω, l.succ, v 2), (ω, l.succ, .app (v 2) (v 0))] (v', apps (v 2) [v 1, v 0])).2.close [P, X, I]
 
 /-- `(0 i : I) → (xs : ⟦D⟧ (μ D) i) → (ih : All D (μ D) P i xs) → P i (con xs)`, the type of
 `ind`'s method. -/
@@ -154,13 +91,13 @@ def indMethodTy (l v' : Lvl) (I D P : Tm) : Tm :=
   -- i0 P1 D2 I3 ; xs0 i1 P2 D3 I4 ; ih0 xs1 i2 P3 D4 I5
   (pis [(.zero, l1, v 2),
       (ω, l1, .interp l (v 3) (v 2) (muFamily l (v 3) (v 2)) (v 0)),
-      (ω, .max l1 v', apps (allTm l v') [v 4, v 3, muFamily l (v 4) (v 3), v 2, v 1, v 0])]
+      (ω, .max l1 v', .dall l v' (v 4) (v 3) (muFamily l (v 4) (v 3)) (v 2) (v 1) (v 0))]
     (v', apps (v 3) [v 2, .con (v 1)])).2.close [P, D, I]
 
 /-- The induction hypotheses of `ind P m i (con xs)`. -/
 def indHyps (l v' : Lvl) (I D P m i xs : Tm) : Tm :=
   let f : Tm := .lam (.lam (.ind l (I.shiftN 2) (D.shiftN 2) v' (P.shiftN 2) (m.shiftN 2) (v 1) (v 0)))
-  apps (hypsTm l v') [I, D, muFamily l I D, P, f, i, xs]
+  .dhyps l v' I D (muFamily l I D) P f i xs
 
 end Tm
 end WizMeta

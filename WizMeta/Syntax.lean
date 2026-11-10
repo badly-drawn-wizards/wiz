@@ -79,6 +79,11 @@ inductive Tm where
   it is a closed `Desc.elim` term whose `Σ`s take the field's quantity as a variable,
   which a label cannot be) -/
   | interp (l : Lvl) (I D X i : Tm)
+  /-- `All D X P i xs`: one `P`-proof per recursive field of the payload `xs : ⟦D⟧ X i`
+  (the type of `ind`'s induction hypotheses), and `hyps D X P f i xs`, its element built
+  by applying `f` to every recursive field. Formers of their own, like `interp` -/
+  | dall (l v : Lvl) (I D X P i xs : Tm)
+  | dhyps (l v : Lvl) (I D X P f i xs : Tm)
   | mu (l : Lvl) (I D i : Tm)
   | con (x : Tm)
   | ind (l : Lvl) (I D : Tm) (v : Lvl) (P m i x : Tm)
@@ -147,6 +152,9 @@ def ren (ρ : Nat → Nat) : Tm → Tm
   | drec q j D => drec (ren ρ q) (ren ρ j) (ren ρ D)
   | dhrec q H j D => dhrec (ren ρ q) (ren ρ H) (ren ρ j) (ren ρ D)
   | interp l I D X i => interp l (ren ρ I) (ren ρ D) (ren ρ X) (ren ρ i)
+  | dall l v I D X P i xs => dall l v (ren ρ I) (ren ρ D) (ren ρ X) (ren ρ P) (ren ρ i) (ren ρ xs)
+  | dhyps l v I D X P g i xs =>
+    dhyps l v (ren ρ I) (ren ρ D) (ren ρ X) (ren ρ P) (ren ρ g) (ren ρ i) (ren ρ xs)
   | delim v P a b c h D => delim v (ren ρ P) (ren ρ a) (ren ρ b) (ren ρ c) (ren ρ h) (ren ρ D)
   | mu l I D i => mu l (ren ρ I) (ren ρ D) (ren ρ i)
   | con x => con (ren ρ x)
@@ -200,6 +208,9 @@ def sub (σ : Nat → Tm) : Tm → Tm
   | drec q j D => drec (sub σ q) (sub σ j) (sub σ D)
   | dhrec q H j D => dhrec (sub σ q) (sub σ H) (sub σ j) (sub σ D)
   | interp l I D X i => interp l (sub σ I) (sub σ D) (sub σ X) (sub σ i)
+  | dall l v I D X P i xs => dall l v (sub σ I) (sub σ D) (sub σ X) (sub σ P) (sub σ i) (sub σ xs)
+  | dhyps l v I D X P g i xs =>
+    dhyps l v (sub σ I) (sub σ D) (sub σ X) (sub σ P) (sub σ g) (sub σ i) (sub σ xs)
   | delim v P a b c h D => delim v (sub σ P) (sub σ a) (sub σ b) (sub σ c) (sub σ h) (sub σ D)
   | mu l I D i => mu l (sub σ I) (sub σ D) (sub σ i)
   | con x => con (sub σ x)
@@ -254,6 +265,11 @@ def instL (us : List Lvl) : Tm → Tm
   | drec q j D => drec (instL us q) (instL us j) (instL us D)
   | dhrec q H j D => dhrec (instL us q) (instL us H) (instL us j) (instL us D)
   | interp l I D X i => interp (l.inst us) (instL us I) (instL us D) (instL us X) (instL us i)
+  | dall l v I D X P i xs =>
+    dall (l.inst us) (v.inst us) (instL us I) (instL us D) (instL us X) (instL us P) (instL us i) (instL us xs)
+  | dhyps l v I D X P g i xs =>
+    dhyps (l.inst us) (v.inst us) (instL us I) (instL us D) (instL us X) (instL us P) (instL us g) (instL us i)
+      (instL us xs)
   | delim v P a b c h D =>
     delim (v.inst us) (instL us P) (instL us a) (instL us b) (instL us c) (instL us h) (instL us D)
   | mu l I D i => mu (l.inst us) (instL us I) (instL us D) (instL us i)
@@ -283,6 +299,12 @@ def lvlBound : Tm → Nat
     Nat.max v.bound (Nat.max (Nat.max (lvlBound a) (lvlBound b))
       (Nat.max (Nat.max (lvlBound c) (lvlBound d)) (Nat.max (lvlBound e) (lvlBound f))))
   | mu l a b c => Nat.max l.bound (Nat.max (lvlBound a) (Nat.max (lvlBound b) (lvlBound c)))
+  | dall l v a b c d e f =>
+    Nat.max (Nat.max l.bound v.bound) (Nat.max (Nat.max (lvlBound a) (lvlBound b))
+      (Nat.max (Nat.max (lvlBound c) (lvlBound d)) (Nat.max (lvlBound e) (lvlBound f))))
+  | dhyps l v a b c d e f g =>
+    Nat.max (Nat.max l.bound v.bound) (Nat.max (Nat.max (lvlBound a) (Nat.max (lvlBound b) (lvlBound g)))
+      (Nat.max (Nat.max (lvlBound c) (lvlBound d)) (Nat.max (lvlBound e) (lvlBound f))))
   | ind l a b v c d e f =>
     Nat.max (Nat.max l.bound v.bound) (Nat.max (Nat.max (lvlBound a) (lvlBound b))
       (Nat.max (Nat.max (lvlBound c) (lvlBound d)) (Nat.max (lvlBound e) (lvlBound f))))
