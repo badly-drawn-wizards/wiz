@@ -377,6 +377,10 @@ structure Globals (R : Type) where
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false
+  /-- (13b, `wiz --strict-privacy`, off by default) check every declaration a second time
+  against the elaborator's view, where another module's types with private parts have no
+  definition (`privacyCheck`, `Elab/Command.lean`). The kernel ignores this. -/
+  strictPrivacy : Bool := false
   /-- (13b) names private to a module (`private def …`, `private mk ::`), with the
   module: the elaborator rejects them elsewhere. The kernel ignores this. -/
   privates : Std.HashMap Name String := {}

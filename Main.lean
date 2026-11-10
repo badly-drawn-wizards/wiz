@@ -16,6 +16,8 @@ content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
 (default off),
 --predicative-prop
+--strict-privacy (13b, an experiment; turns the cache off): check each declaration again with
+  the definitions of other modules' types with private parts hidden
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --llc X (default llc)"
 
@@ -62,6 +64,10 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
+/-- `--strict-privacy` (13b, an experiment): the second check of every declaration against
+the elaborator's view. Off by default. -/
+initialize strictPrivacyOpt : IO.Ref Bool ← IO.mkRef false
+
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
   let closure ← Module.loadClosure (moduleRoots tc) input
@@ -72,10 +78,11 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp },
+    { loader := (lib[·]?), cHeaders := (headers[·]?),
+      globals := { regularity, predicativeProp, strictPrivacy := ← strictPrivacyOpt.get },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && !(← strictPrivacyOpt.get) then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -137,6 +144,8 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  if args.contains "--strict-privacy" then strictPrivacyOpt.set true
+  let args := args.filter (· != "--strict-privacy")
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1

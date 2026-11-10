@@ -86,9 +86,25 @@ would still be accepted:
 | `refl X`, `cast e x`, `transp`, a tuple or look-alike against the type, `p.1` | closed (their types are unified in the elaborator's view) |
 | `exact`, `rfl` and other tactics that elaborate syntax; macros (they produce syntax) | closed (they go through the same rules) |
 | the tactic request `assign` with a term that still has holes | closed: such a term is kept in the tactic state and its type is inferred and compared with its goal at the end of the `by` block (it was a real bypass: `K x ?n : Look Nat` for a goal `Pos Nat`) |
-| a hole solved by unification, whose solution is not type-checked by the elaborator | not audited |
-| the self-hosted frontend (`selfhost/Frontend.wiz`) | **open**: it parses `private` and ignores it |
+| a hole solved by unification: the solution is never type-checked by the elaborator | **OPEN, with a forgery**: `def sel {F : Pos Nat → Type} (p : Pos Nat) (w : F p) : Pos Nat := p` and `sel _ (G.mk x)` for `G : Look Nat → Type` solve `?F := G`, `?p := x`, and the kernel accepts `x : Look Nat` as a `Pos Nat` (test `elabfix`, "OPEN"; `/workspace/wiz-notes/structural-probes/priv/forge-unify-first-order.wiz`) |
+| the self-hosted frontend (`selfhost/Frontend.wiz`) | open, tracked as a parity item: it parses `private` and ignores it |
 | inside the declaring module | by design: there the look-alike is the same type |
+
+So privacy is **not sealed**: it holds against the rules listed as closed, not against
+every term the elaborator can produce. Closing it for good needs the kernel to tell a
+type from its look-alike (`/workspace/wiz-notes/structural-vs-nominal.md`, §6a).
+
+**`wiz --strict-privacy`** (off by default; an experiment to measure). Every declaration
+of a module that sees a type opaque to it is checked a second time, by the kernel's
+checker, against the elaborator's view (`privacyCheck`, `Elab/Command.lean`). A
+declaration that passes used no hidden shape, so this closes the open path too: the
+forgery above is rejected with "forge depends on the definition of Pos (module Priv),
+which is hidden outside its module". It is not the default because it also rejects
+legitimate proofs that compute through a library operation on such a type: the
+elaborator quotes evaluated values into terms, and a raw pair or projection at a type
+without a definition does not type-check (`drafts/rust/lowered/03_get_mut.wiz`,
+`get_mut.is_place` and `get_mut.spec_under`). With the flag a type with private parts is
+abstract for proofs as well.
 
 The motivating use is `lib/Region.wiz` ([22g](22-numbers.md)): the constructors of the borrow handles
 `Shr`, `Uniq`, `Mut` and `Lent` are private, so a handle at a region comes only from a

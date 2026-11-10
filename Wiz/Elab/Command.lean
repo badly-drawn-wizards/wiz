@@ -113,7 +113,8 @@ module with a private constructor, field or observation. Sorted, for stable mess
 def foreignOpaques (g : Globals R) : List Name :=
   (g.opaques.toList.filterMap fun (n, m) => if m == g.module then none else some n).mergeSort
 
-/-- (13b) **The privacy check.** The kernel compares types by shape, so it takes a
+/-- (13b) **The strict privacy check** (`wiz --strict-privacy`; off by default, an
+experiment). The kernel compares types by shape, so it takes a
 look-alike for a type whose constructor is private to another module, and every
 comparison the elaborator leaves to it is answered that way (`rfl`, a term assigned by a
 tactic while it had holes, the solutions of untyped unification). So when such a type is
@@ -122,9 +123,16 @@ the elaborator's view of the environment (`Globals.elabView`), where those types
 definition. A declaration that passes used no hidden shape. The first check, against the
 real environment, is the one soundness rests on; this one only rejects.
 
+It is off by default because it also rejects legitimate declarations: the elaborator
+quotes evaluated values into terms, so a proof that computes through a library operation
+on such a type contains a raw pair or projection at it, which has no type with the
+definition hidden (`drafts/rust/lowered/03_get_mut.wiz`: `get_mut.is_place`,
+`get_mut.spec_under`). With it on, a type with private parts is abstract for proofs too.
+
 On a failure, the types whose shape was used are those that make the check fail when
 hidden alone. `kind` chooses the kernel entry (`addDecl`, or `addPartialDecl`). -/
 def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → TCM (Globals R) := addDecl) : TCM Unit := do
+  unless g.strictPrivacy do return
   let ops := foreignOpaques g
   if ops.isEmpty then return
   match kind g.elabView d with
