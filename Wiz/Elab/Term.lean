@@ -1086,11 +1086,21 @@ partial def dotComponent (stx : Syntax) : Bool :=
   (stx.isOfKind "term.tuple" && (dotComponent (stx.getArg 1) ||
     ((stx.getArg 3).args.any fun c => !(c matches .atom ..) && dotComponent c)))
 
+/-- A (parenthesised) `fun`. -/
+partial def isFun (stx : Syntax) : Bool :=
+  stx.isOfKind "term.fun" || (stx.isOfKind "term.paren" && isFun (stx.getArg 1))
+
 /-- Does elaborating this argument need its expected type to be known? -/
 partial def needsExpected (stx : Syntax) : Bool :=
   (stx.isOfKind "term.paren" && needsExpected (stx.getArg 1)) ||
   stx.isOfKind "term.dotIdent" || stx.isOfKind "term.tag" || stx.isOfKind "term.rfl" ||
   (stx.isOfKind "term.app" && (stx.getArg 0).isOfKind "term.dotIdent") ||
+  -- an application that is checked against its type itself (`Ex.intro _ 3 rfl` as an
+  -- argument): the outer application's type must be known first, or its implicit
+  -- motive meets the argument's expected type unsolved (`?P 3`). (Not for a lambda
+  -- argument: its domains come from the inner function's type.)
+  (stx.isOfKind "term.app" && !(stx.getArg 0).isOfKind "term.explicit" &&
+    (stx.getArg 1).args.any fun a => needsExpected a && !isFun a) ||
   -- a tuple with a constructor component (`.ok (.nil, st)`)
   (stx.isOfKind "term.tuple" && (dotComponent (stx.getArg 1) ||
     ((stx.getArg 3).args.any fun c => !(c matches .atom ..) && dotComponent c))) ||

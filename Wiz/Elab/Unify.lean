@@ -63,25 +63,34 @@ def recomputeEq? (v : Val R) : ElabM R (Option (Val R)) := do
   else return none
 
 /-- A partial renaming from context `cod` (size `cod`) to context `dom` (size `dom`):
-`ren` maps the levels of variables in the spine to their new levels. -/
+`ren` maps the levels of variables in the spine to their new levels; `downs` maps the
+variables that occur in the spine lowered, as `down x` (see `invert`). -/
 structure PRen where
   dom : Lvl
   cod : Lvl
   ren : Std.HashMap Lvl Lvl
+  downs : Std.HashMap Lvl Lvl := {}
 
 /-- Go under a binder on both sides. -/
 def PRen.lift (p : PRen) : PRen :=
-  { dom := p.dom + 1, cod := p.cod + 1, ren := p.ren.insert p.cod p.dom }
+  { p with dom := p.dom + 1, cod := p.cod + 1, ren := p.ren.insert p.cod p.dom }
 
 /-- **Exercise 3.2.** Invert a spine into a partial renaming. `gamma` is the size of the
 current context. Every spine entry must be an application (`Elim.app v`) whose
 argument forces to a bound variable with an empty spine (`.neutral (.local x) #[]`),
 and a variable that occurs twice is left out of the renaming (the solution may not use
 it). Otherwise throw (at `{}`), saying the problem is outside the pattern fragment.
-The i-th spine variable maps to level i. -/
+The i-th spine variable maps to level i.
+
+(Given) A lowered variable `down x` (`x : ULift A`) counts as a variable too: the
+solution's i-th parameter `y` stands for `down x`, and `x` itself for `up y` (η for
+`ULift`). Constructor fields with a lifted domain (`k : A → Proto` with `A : Type` in a
+`Type 1` inductive) are stored as `fun h => k (down h)`, so unifying two such fields
+meets `?k … (down h)`. -/
 def invert (gamma : Lvl) (sp : Array (Elim R)) : ElabM R PRen := do
   --<sol
   let mut ren : Std.HashMap Lvl Lvl := {}
+  let mut downs : Std.HashMap Lvl Lvl := {}
   let mut repeated : Array Lvl := #[]
   let mut dom := 0
   for e in sp do
@@ -89,11 +98,16 @@ def invert (gamma : Lvl) (sp : Array (Elim R)) : ElabM R PRen := do
     match ← force v with
     | .neutral (.local x) #[] =>
       -- a repeated variable can't be used by the solution (which occurrence?)
-      if ren.contains x then repeated := repeated.push x
+      if ren.contains x || downs.contains x then repeated := repeated.push x
       ren := ren.insert x dom
       dom := dom + 1
+    | .neutral (.local x) #[.down] =>
+      if ren.contains x || downs.contains x then repeated := repeated.push x
+      downs := downs.insert x dom
+      dom := dom + 1
     | _ => throwAt {} "unification problem is outside the pattern fragment"
-  pure { dom, cod := gamma, ren := repeated.foldl (·.erase ·) ren }
+  pure { dom, cod := gamma, ren := repeated.foldl (·.erase ·) ren,
+         downs := repeated.foldl (·.erase ·) downs }
   --|ex
   --| sorry
   --sol>
@@ -153,7 +167,12 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .neutral (.local x) sp =>
     match p.ren[x]? with
     | some x' => goSp (.var (p.dom - x' - 1)) sp
-    | none => throwAt {} "a variable escapes the scope of the hole being solved"
+    | none => match p.downs[x]? with
+      -- (given) `down x` is the parameter `y`; a bare `x` is `up y`
+      | some x' =>
+        let y : Term R := .var (p.dom - x' - 1)
+        if sp[0]? matches some Elim.down then goSp y (sp.extract 1 sp.size) else goSp (.up y) sp
+      | none => throwAt {} "a variable escapes the scope of the hole being solved"
   | .neutral (.global n us) sp => goSp (.const n us) sp
   | .neutral (.eq A a b) sp => do goSp (.eq (← rename m p A) (← rename m p a) (← rename m p b)) sp
   | .neutral (.eqTy A B) sp => do goSp (.eqTy (← rename m p A) (← rename m p B)) sp
@@ -397,7 +416,9 @@ where
   isPattern (sp : Array (Elim R)) : ElabM R Bool := do
     for e in sp do
       match e with
-      | .app a => unless (← forceMeta a) matches .neutral (.local _) #[] do return false
+      | .app a => match ← forceMeta a with
+        | .neutral (.local _) #[] | .neutral (.local _) #[.down] => pure ()
+        | _ => return false
       | _ => return false
     pure true
 
@@ -423,6 +444,12 @@ partial def unifyFirstOrder (l : Lvl) (m : Nat) (sp : Array (Elim R)) (v : Val R
     if (← forceMeta a) matches .neutral (.local _) #[] then k := k + 1 else break
   let j := args.size - k
   if j == 0 || j > args'.size then return false
+  -- a rigid argument on the hole's side against an unsolved hole on the other is a guess,
+  -- and an untyped one: `?P 3 =?= Ex ?A ?Q` would solve `?Q := 3` (and `?P := Ex ?A`),
+  -- ill-typed, and applying `?Q` later panics. Leave such problems to the caller.
+  let flex (v : Val R) : ElabM R Bool := return (← forceMeta v) matches .neutral (.mvar _) _
+  for a in args.extract k args.size, b in args'.extract (args'.size - j) args'.size do
+    if (← flex b) && !(← flex a) then return false
   let s ← get
   try
     for a in args.extract k args.size, b in args'.extract (args'.size - j) args'.size do

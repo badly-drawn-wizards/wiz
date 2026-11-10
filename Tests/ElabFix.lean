@@ -74,6 +74,15 @@ def privMod2 : String :=
   "private inductive Color where\n  | red\n  | blue\n" ++
   "def fav : Color := .red\n"
 
+/-- A `Type 1` inductive with a function field over a `Type` (stored lifted, as
+`fun h => k (down h)`), and an abstract channel type indexed by it (lib/Session.wiz's
+`Proto` and `Chan`, in small). -/
+def protoLike : String :=
+  "import Prelude\ninductive P : Type 1 where\n  | step (A : Type) (k : A → P)\n  | stop\n" ++
+  "def P.flip : P → P\n  | .step A k => .step A (fun a => P.flip (k a))\n  | .stop => .stop\n" ++
+  "axiom Ch : P → Type\n" ++
+  "axiom Ch.next : {A : Type} → {k : A → P} → Ch (P.step A k) → (a : A) → Ch (k a)\n"
+
 def group : Group where
   name := "elabfix"
   exercise := "elaborator bugs"
@@ -238,7 +247,28 @@ def group : Group where
         failsPriv privMod2 "import Priv\ndef f (a : Acct) : Nat := a.2.1" "project"
         failsLib "import Prelude\nclass C (A : Type) where\n  private m : A" "can't be private" },
     { name := "`private def` right after a structure (13b)", run := fun _ =>
-        okLib "import Prelude\nstructure P where\n  x : Nat\nprivate def q : P := P.mk 1\n#eval q.x" ["1"] }
+        okLib "import Prelude\nstructure P where\n  x : Nat\nprivate def q : P := P.mk 1\n#eval q.x" ["1"] },
+    -- agent/elab-whnf
+    { name := "a constructor field with a lifted domain: `?k (down h)` is a pattern (gap 7)", run := fun _ =>
+        okLib (protoLike ++
+          "def Q : P := .step Nat (fun _ => .step Bool (fun _ => .stop))\n" ++
+          "def many : Nat → P\n  | .zero => .stop\n  | .succ n => .step Nat (fun _ => many n)\n" ++
+          -- the inferred index is a definition that computes to a constructor
+          "def t1 (c : Ch (P.flip Q)) : Ch (P.flip (.step Bool (fun _ => .stop))) := Ch.next c 3\n" ++
+          "def t2 (c : Ch (P.flip Q)) : Ch P.stop := Ch.next (Ch.next c 3) Bool.true\n" ++
+          -- in a match branch, with the scrutinee replaced by a constructor
+          "def t3 : (n : Nat) → Ch (many n) → Nat\n  | .zero, c => 0\n  | .succ n, c => t3 n (Ch.next c 5)\n" ++
+          "def t4 (c : Ch Q) := Ch.next c 1") },
+    { name := "... and still fails at once on different constructors or a wrong message", run := fun _ => do
+        failsLib (protoLike ++ "def bad (c : Ch P.stop) : Ch P.stop := Ch.next c 3") "tag mismatch"
+        failsLib (protoLike ++ "def Q : P := .step Nat (fun _ => .stop)\n" ++
+          "def bad (c : Ch Q) : Ch P.stop := Ch.next c Bool.true") "mismatch" },
+    { name := "nested Ex.intro with motive holes: no ill-typed first-order solution (vApp panic)", run := fun _ => do
+        okLibs ("import Logic\n" ++
+          "def t : Ex (fun (n : Nat) => Ex (fun (m : Nat) => n = m)) := Ex.intro _ 3 (Ex.intro _ 3 rfl)\n" ++
+          "def t' : Ex (fun (n : Nat) => Ex (fun (m : Nat) => n = m)) := Ex.intro _ 3 (Ex.intro (fun (m : Nat) => 3 = m) 3 rfl)")
+        -- without an expected type the motives can't be inferred: an error, not a panic
+        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl" }
   ]
 
 end Tests.ElabFix
