@@ -210,4 +210,11 @@ def probeChecker : IO Unit := do
   let bad ← rcMismatches st "main"
   say s!"reference counting: one pass and specification differ on {bad.length} declarations {bad.take 10}"
 
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  group ::
+  []
+
 end Tests.Scaling
