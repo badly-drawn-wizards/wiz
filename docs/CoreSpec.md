@@ -691,7 +691,7 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   one above in three places:
   1. The first bullet is too strong. Removing a stuck cast can make two types syntactically
      equal, and that *does* enable rules with syntactic side conditions (`sameFamily?`,
-     the μ case of `vEqType`). Those are rules of the system without regularity, so
+     the μ case of `vEqType`, before 4g removed them). Those are rules of the system without regularity, so
      termination is not at risk, but "no new redex" does not prove it.
   2. Inert values do contain proofs (the index equations). Convertible proofs can *reduce*
      differently, and the evaluator reduces proofs, so "no reduction can tell them apart"

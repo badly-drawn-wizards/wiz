@@ -1027,11 +1027,11 @@ partial def famPayloadEq? (g : Globals R) (A B e : Val R) : Option (Val R × Val
       ret i ↦ ret (cast I I' e i);   arg q S E ↦ arg q S (fun s => cast _ _ e (E s))
       rec q j E ↦ rec q (cast I I' e j) (cast _ _ e E)
       hrec q H j E ↦ hrec q H (fun h => cast I I' e (j h)) (cast _ _ e E)
-    cast (μ^s D i) (μ^s D i') e (con x)  ↦ con (cast (⟦D⟧ μ^s' i) (⟦D⟧ μ^s' i') e' x)
-    cast (ν^s D i) (ν^s D i') e (cocon x) ↦ cocon (cast (⟦D⟧ ν^s' i) (⟦D⟧ ν^s' i') e' x)
+    cast (μ^s I D i) (μ^s I' D' i') e (con x)  ↦ con (cast (⟦D⟧ μ^s' i) (⟦D'⟧ μ^s' i') e' x)
+    cast (ν^s I D i) (ν^s I' D' i') e (cocon x) ↦ cocon (cast (⟦D⟧ ν^s' i) (⟦D'⟧ ν^s' i') e' x)
 
-where `s = ↑s'` (or `∞`), `e : i = i'` (`vEqType` at a family), and `e'` is `payloadEq`'s
-equation. The payload's cast casts every field, so a proof field becomes the
+where `s = ↑s'` (or `∞`), `e` proves the code equation (`vEqType` at μ/ν, 4g), and `e'`
+is `famPayloadEq?`'s equation (one `transp` along `e`). The payload's cast casts every field, so a proof field becomes the
 equivalence applied to it (`vCast` between propositions), and a field at a neutral type
 stays a stuck cast. A numeral is a value of `builtin nat`, a type with an index in
 `Unit` and no proof or neutral fields: its cast is itself (what the rule computes, up
