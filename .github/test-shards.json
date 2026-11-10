@@ -50,6 +50,7 @@
     "conv",
     "copatterns",
     "data",
+    "desceq",
     "elab",
     "eval",
     "inductive",
