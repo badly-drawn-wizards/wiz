@@ -606,7 +606,7 @@ Sort u/Sort w, Empty_u/Empty_w     ⟶  t if u ≡ w, else stuck                
 Unit_u/Unit_w                      ⟶  tt if u ≡ w, else stuck                                        631
 Enum/Enum, same number of tags     ⟶  t                                                             632
 ULift.{u}/ULift.{u}, u never 0     ⟶  up (cast A B e (down t))                                        [Q4, §4.1]
-A inert, quote(A) = quote(B)       ⟶  t                         (regularity at inert types)   CONJECTURE [wiz, D1]
+A inert, quote(A) = quote(B)       ⟶  t                         (regularity at inert types)   CONJECTURE (argued) [wiz, D1]
 Desc_l I / Desc_l I'               ⟶  by the description (below)                                  [wiz, D1]
 μ^s D i / μ^s D i', t = con x      ⟶  con (cast (⟦D⟧ μ^s' i) (⟦D⟧ μ^s' i') ê x)                  [std: PT22, D1]
 μ, t a numeral, i, i' syntactically equal ⟶ t                                                   [impl]
@@ -649,8 +649,12 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   with the parameters fixed: `μ D i ≡ μ D i'` iff `i = i'`. It is injective in the index,
   which holds in the setoid/inductive-recursive model where `μ D i` is a code. The
   equation computes only when `I`, `D`, the level and the size agree syntactically;
-  otherwise it stays stuck, and the stuck form quotes back to the equation itself, so the
-  rule is stable under substitution (syntactic equality is preserved by substitution).
+  otherwise it stays stuck, and the stuck form quotes back to the equation itself. So the
+  rule's *result* is stable under substitution: syntactic equality is preserved by
+  substitution. Syntactic *inequality* is not. Two stuck casts at convertible but
+  syntactically different families can stop being convertible after a substitution
+  makes only one of them fire. That is incompleteness, not unsoundness (Status.md, D1;
+  the same holds for regularity at inert types, below).
   Families with different parameters (`List A ≡ List B`) stay stuck: their equation would
   need equality of descriptions, which is future work.
 * **Why it blocks the D1 loop.** The rule casts *every* field, along the components of
@@ -683,6 +687,40 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   is unchanged (proof irrelevance, η, structural comparison; `unCast` applies only under
   `--regularity full|nonprop|refl`). It is a conjecture: there is no normalisation proof
   for TTobs with this rule, though the argument above suggests it is admissible.
+
+  **A more careful argument** (`/workspace/wiz-notes/inert-regularity.md`) corrects the
+  one above in three places:
+  1. The first bullet is too strong. Removing a stuck cast can make two types syntactically
+     equal, and that *does* enable rules with syntactic side conditions (`sameFamily?`,
+     the μ case of `vEqType`). Those are rules of the system without regularity, so
+     termination is not at risk, but "no new redex" does not prove it.
+  2. Inert values do contain proofs (the index equations). Convertible proofs can *reduce*
+     differently, and the evaluator reduces proofs, so "no reduction can tell them apart"
+     is not the reason. The reason is that inert types are **rigid**: their reducibility
+     candidate does not depend on the interpretation of `Prop` or of type variables. At
+     such a type, a rule that returns its argument unchanged keeps Girard's candidates
+     argument valid, provided environments must agree at inert types, and that
+     restriction is not circular because inert types mention no `Prop`. Abel–Coquand's
+     construction needs a non-rigid type: one whose candidate is an impredicative
+     intersection (`⊤ → ⊤`), or depends on a `Prop` variable (the box).
+  3. The side condition is syntactic (`sameVal`), so algorithmic conversion is not a
+     congruence for the rule. For example, `cast (Fin (f p)) (Fin (f q)) e k` stays stuck
+     for a variable `k`, although `Fin (f p) ≡ Fin (f q)` by irrelevance and the reflexive
+     cast reduces to `k`. So conversion is not stable under substitution (Status.md, D1).
+     That is incompleteness, not unsoundness. The fix is to decide the side condition with
+     conversion.
+
+  The note sketches three arguments:
+  * consistency: the rule holds wherever `μ` is an initial algebra and `Prop` is
+    proof-irrelevant;
+  * normalisation of relevant terms: one trivial new case in a Pujet–Tabareau-style
+    logical relation;
+  * normalisation of proofs, which the evaluator needs because it reduces them: the
+    candidates argument above.
+
+  All three are **relative to the same property of the system without regularity**, which
+  is itself unproved for Wiz. No counterexample was found. The note lists what one would
+  need.
 * **Cost.** Casting a constructor of a non-inert type walks the whole value (each field
   is cast). At inert types the cast is the identity.
 * **Syntactic equality** (`sameVal`, both kernels) quotes at `max (lvlBound A)
