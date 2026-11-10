@@ -6,6 +6,10 @@
    numbers (GMP) are objects with reserved tags. Reference counts follow the IR's
    `dup`/`drop` (Perceus): every function owns its arguments. */
 
+/* POSIX.1-2008 and the usual extensions, for the system interfaces (9h) */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <alloca.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -1198,6 +1202,466 @@ WIZ_API double wiz_f64_div(double a, double b) { return a / b; }
 WIZ_API int wiz_f64_lt(double a, double b) { return a < b; }
 WIZ_API const char *wiz_f64_show(double a) { static char buf[64]; snprintf(buf, sizeof buf, "%.17g", a); return buf; }
 WIZ_API const char *wiz_nat_show(uint64_t a) { static char buf[32]; snprintf(buf, sizeof buf, "%llu", (unsigned long long)a); return buf; }
+
+/* ---- system interfaces (stage 9h, lib/Sys.wiz): processes, environment, files ----
+
+   POSIX calls, with errors as errno numbers. A call that returns a status gives 0 or
+   the errno; a call that returns a value records its error per thread, read back with
+   `wiz_sys_errno` (the IO token orders the two calls). Lists come back as Wiz lists
+   (`List String`, `List Nat`), built like `wiz_out_string`. */
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char **environ;
+
+#define WIZ_SYS_EOF 100000 /* not an errno: the end of a file (`File.readLine`) */
+static _Thread_local int wiz_sys_err = 0;
+static _Thread_local char *wiz_sys_scratch = NULL;
+
+/* a result string, kept until the next one (the wrapper copies it) */
+static const char *wiz_sys_keep(char *s) {
+  free(wiz_sys_scratch);
+  wiz_sys_scratch = s ? s : (char *)calloc(1, 1);
+  return wiz_sys_scratch;
+}
+static uint64_t wiz_sys_status(int r) { return r < 0 ? (uint64_t)errno : 0; }
+
+WIZ_API uint64_t wiz_sys_errno(void) { return (uint64_t)wiz_sys_err; }
+WIZ_API const char *wiz_sys_strerror(uint64_t e) {
+  if (e == WIZ_SYS_EOF) return "end of file";
+  return strerror((int)e);
+}
+
+/* Wiz lists, from C */
+static wiz_val wiz_sys_cons(wiz_val h, wiz_val t) { wiz_val fs[2] = {h, t}; return wiz_con(1, 2, fs); }
+/* a `List String` as a NULL-terminated array of C strings (consumes the list) */
+static char **wiz_sys_strings(wiz_val l, const char *first) {
+  size_t n = 0, cap = 8;
+  char **v = (char **)malloc(cap * sizeof(char *));
+  if (first) v[n++] = strdup(first);
+  for (wiz_val c = l; wiz_tag(c) == 1; c = wiz_field_ref(c, 1)) {
+    if (n + 2 > cap) { cap *= 2; v = (char **)realloc(v, cap * sizeof(char *)); }
+    wiz_val s = wiz_field_ref(c, 0);
+    wiz_inc(s);
+    v[n++] = wiz_in_string(s);
+  }
+  v[n] = NULL;
+  wiz_dec(l);
+  return v;
+}
+static void wiz_sys_free_strings(char **v) { for (char **p = v; *p; p++) free(*p); free(v); }
+static int wiz_sys_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+/* ---- environment ---- */
+
+/* the value of a variable; error ENOENT when it is unset */
+WIZ_API const char *wiz_sys_getenv(const char *k) {
+  const char *v = getenv(k);
+  wiz_sys_err = v ? 0 : ENOENT;
+  return wiz_sys_keep(strdup(v ? v : ""));
+}
+WIZ_API uint64_t wiz_sys_setenv(const char *k, const char *v) { return wiz_sys_status(setenv(k, v, 1)); }
+WIZ_API uint64_t wiz_sys_unsetenv(const char *k) { return wiz_sys_status(unsetenv(k)); }
+/* every variable, sorted by name, as a flat list name₁, value₁, name₂, … */
+WIZ_API wiz_val wiz_sys_environ(void) {
+  size_t n = 0;
+  for (char **e = environ; e && *e; e++) n++;
+  char **v = (char **)malloc((n + 1) * sizeof(char *));
+  for (size_t i = 0; i < n; i++) v[i] = environ[i];
+  qsort(v, n, sizeof(char *), wiz_sys_cmp);
+  wiz_val l = WIZ_BOX(0);
+  for (size_t i = n; i > 0; i--) {
+    char *kv = strdup(v[i - 1]), *eq = strchr(kv, '=');
+    const char *val = "";
+    if (eq) { *eq = 0; val = eq + 1; }
+    l = wiz_sys_cons(wiz_out_string(kv), wiz_sys_cons(wiz_out_string(val), l));
+    free(kv);
+  }
+  free(v);
+  return l;
+}
+
+/* ---- files and directories ---- */
+
+WIZ_API const char *wiz_sys_getcwd(void) {
+  char *b = getcwd(NULL, 0);
+  wiz_sys_err = b ? 0 : errno;
+  return wiz_sys_keep(b);
+}
+WIZ_API uint64_t wiz_sys_chdir(const char *p) { return wiz_sys_status(chdir(p)); }
+WIZ_API uint64_t wiz_sys_mkdir(const char *p, uint64_t mode) { return wiz_sys_status(mkdir(p, (mode_t)mode)); }
+WIZ_API uint64_t wiz_sys_rmdir(const char *p) { return wiz_sys_status(rmdir(p)); }
+WIZ_API uint64_t wiz_sys_unlink(const char *p) { return wiz_sys_status(unlink(p)); }
+WIZ_API uint64_t wiz_sys_rename(const char *a, const char *b) { return wiz_sys_status(rename(a, b)); }
+WIZ_API uint64_t wiz_sys_symlink(const char *target, const char *link) { return wiz_sys_status(symlink(target, link)); }
+WIZ_API uint64_t wiz_sys_chmod(const char *p, uint64_t mode) { return wiz_sys_status(chmod(p, (mode_t)mode)); }
+WIZ_API const char *wiz_sys_readlink(const char *p) {
+  size_t cap = 256;
+  for (;;) {
+    char *b = (char *)malloc(cap);
+    ssize_t n = readlink(p, b, cap);
+    if (n < 0) { wiz_sys_err = errno; free(b); return wiz_sys_keep(NULL); }
+    if ((size_t)n < cap) { b[n] = 0; wiz_sys_err = 0; return wiz_sys_keep(b); }
+    free(b);
+    cap *= 2;
+  }
+}
+/* a new directory `<prefix>XXXXXX` */
+WIZ_API const char *wiz_sys_mkdtemp(const char *prefix) {
+  size_t n = strlen(prefix);
+  char *t = (char *)malloc(n + 7);
+  memcpy(t, prefix, n);
+  memcpy(t + n, "XXXXXX", 7);
+  if (!mkdtemp(t)) { wiz_sys_err = errno; free(t); return wiz_sys_keep(NULL); }
+  wiz_sys_err = 0;
+  return wiz_sys_keep(t);
+}
+/* [kind, size, mtime seconds, mtime nanoseconds, mode] (kind: 0 file, 1 directory,
+   2 symbolic link, 3 other), or [] with the error; `follow` follows a final link */
+WIZ_API wiz_val wiz_sys_stat(const char *p, int follow) {
+  struct stat st;
+  if ((follow ? stat(p, &st) : lstat(p, &st)) < 0) { wiz_sys_err = errno; return WIZ_BOX(0); }
+  wiz_sys_err = 0;
+  uint64_t kind = S_ISREG(st.st_mode) ? 0 : S_ISDIR(st.st_mode) ? 1 : S_ISLNK(st.st_mode) ? 2 : 3;
+  uint64_t fs[5] = {kind, (uint64_t)st.st_size, (uint64_t)st.st_mtim.tv_sec, (uint64_t)st.st_mtim.tv_nsec,
+                    (uint64_t)(st.st_mode & 07777)};
+  wiz_val l = WIZ_BOX(0);
+  for (int i = 4; i >= 0; i--) l = wiz_sys_cons(wiz_out_nat(fs[i]), l);
+  return l;
+}
+/* the names in a directory (without . and ..), sorted */
+WIZ_API wiz_val wiz_sys_list_dir(const char *p) {
+  DIR *d = opendir(p);
+  if (!d) { wiz_sys_err = errno; return WIZ_BOX(0); }
+  size_t n = 0, cap = 16;
+  char **v = (char **)malloc(cap * sizeof(char *));
+  struct dirent *e;
+  while ((e = readdir(d))) {
+    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    if (n == cap) { cap *= 2; v = (char **)realloc(v, cap * sizeof(char *)); }
+    v[n++] = strdup(e->d_name);
+  }
+  closedir(d);
+  qsort(v, n, sizeof(char *), wiz_sys_cmp);
+  wiz_val l = WIZ_BOX(0);
+  for (size_t i = n; i > 0; i--) { l = wiz_sys_cons(wiz_out_string(v[i - 1]), l); free(v[i - 1]); }
+  free(v);
+  wiz_sys_err = 0;
+  return l;
+}
+/* remove a file, or a directory and everything in it (links are not followed) */
+static int wiz_sys_rm_rf(const char *p) {
+  struct stat st;
+  if (lstat(p, &st) < 0) return -1;
+  if (!S_ISDIR(st.st_mode)) return unlink(p);
+  DIR *d = opendir(p);
+  if (!d) return -1;
+  struct dirent *e;
+  int r = 0;
+  size_t n = strlen(p);
+  while (r == 0 && (e = readdir(d))) {
+    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    char *q = (char *)malloc(n + strlen(e->d_name) + 2);
+    sprintf(q, "%s/%s", p, e->d_name);
+    r = wiz_sys_rm_rf(q);
+    free(q);
+  }
+  int saved = errno;
+  closedir(d);
+  if (r < 0) { errno = saved; return -1; }
+  return rmdir(p);
+}
+WIZ_API uint64_t wiz_sys_remove_all(const char *p) { return wiz_sys_status(wiz_sys_rm_rf(p)); }
+
+static int wiz_sys_write_all(int fd, const char *s, size_t n) {
+  while (n > 0) {
+    ssize_t k = write(fd, s, n);
+    if (k < 0) { if (errno == EINTR) continue; return -1; }
+    s += k; n -= (size_t)k;
+  }
+  return 0;
+}
+static int wiz_sys_write_path(const char *p, const char *s, size_t n, int append) {
+  int fd = open(p, O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC), 0666);
+  if (fd < 0) return -1;
+  int r = wiz_sys_write_all(fd, s, n);
+  int saved = errno;
+  if (close(fd) < 0 && r == 0) return -1;
+  errno = saved;
+  return r;
+}
+/* read everything from a descriptor into a NUL-terminated buffer */
+static char *wiz_sys_read_fd(int fd, size_t *len) {
+  size_t cap = 4096, n = 0;
+  char *b = (char *)malloc(cap);
+  for (;;) {
+    if (n + 1 >= cap) { cap *= 2; b = (char *)realloc(b, cap); }
+    ssize_t k = read(fd, b + n, cap - n - 1);
+    if (k < 0) { if (errno == EINTR) continue; free(b); return NULL; }
+    if (k == 0) break;
+    n += (size_t)k;
+  }
+  b[n] = 0;
+  if (len) *len = n;
+  return b;
+}
+WIZ_API const char *wiz_sys_read_file(const char *p) {
+  int fd = open(p, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) { wiz_sys_err = errno; return wiz_sys_keep(NULL); }
+  char *b = wiz_sys_read_fd(fd, NULL);
+  wiz_sys_err = b ? 0 : errno;
+  close(fd);
+  return wiz_sys_keep(b);
+}
+WIZ_API uint64_t wiz_sys_write_file(const char *p, const char *s, int append) {
+  return wiz_sys_status(wiz_sys_write_path(p, s, strlen(s), append));
+}
+WIZ_API wiz_val wiz_sys_read_bytes(const char *p) {
+  wiz_val v = wiz_bytes_empty();
+  int fd = open(p, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) { wiz_sys_err = errno; return v; }
+  size_t n = 0;
+  char *b = wiz_sys_read_fd(fd, &n);
+  wiz_sys_err = b ? 0 : errno;
+  close(fd);
+  if (b) { wiz_bytes *y = (wiz_bytes *)v; y->data = (unsigned char *)b; y->len = n; y->cap = n + 1; }
+  return v;
+}
+WIZ_API uint64_t wiz_sys_write_bytes(const char *p, wiz_val v, int append) {
+  wiz_bytes *b = (wiz_bytes *)v;
+  uint64_t r = wiz_sys_status(wiz_sys_write_path(p, (const char *)b->data, b->len, append));
+  wiz_dec(v);
+  return r;
+}
+
+/* ---- file handles: `foreign_type File (finalizer := "wiz_sys_file_free")` ---- */
+
+typedef struct { FILE *f; int owned; } wiz_sys_file;
+WIZ_API void wiz_sys_file_free(void *p) {
+  wiz_sys_file *h = (wiz_sys_file *)p;
+  if (h->f && h->owned) fclose(h->f);
+  free(h);
+}
+/* fopen modes ("r", "w", "a", "r+", …); NULL with the error */
+WIZ_API void *wiz_sys_file_open(const char *p, const char *mode) {
+  FILE *f = fopen(p, mode);
+  if (!f) { wiz_sys_err = errno; return NULL; }
+  wiz_sys_err = 0;
+  wiz_sys_file *h = (wiz_sys_file *)malloc(sizeof *h);
+  h->f = f; h->owned = 1;
+  return h;
+}
+/* 0 stdin, 1 stdout, 2 stderr (never closed) */
+WIZ_API void *wiz_sys_file_std(uint64_t i) {
+  wiz_sys_file *h = (wiz_sys_file *)malloc(sizeof *h);
+  h->f = i == 0 ? stdin : i == 1 ? stdout : stderr;
+  h->owned = 0;
+  return h;
+}
+/* a line without its newline; error WIZ_SYS_EOF at the end */
+WIZ_API const char *wiz_sys_file_read_line(void *p) {
+  wiz_sys_file *h = (wiz_sys_file *)p;
+  if (!h->f) { wiz_sys_err = EBADF; return wiz_sys_keep(NULL); }
+  char *line = NULL;
+  size_t cap = 0;
+  errno = 0;
+  ssize_t n = getline(&line, &cap, h->f);
+  if (n < 0) { wiz_sys_err = errno ? errno : WIZ_SYS_EOF; free(line); return wiz_sys_keep(NULL); }
+  if (n > 0 && line[n - 1] == '\n') line[n - 1] = 0;
+  wiz_sys_err = 0;
+  return wiz_sys_keep(line);
+}
+WIZ_API const char *wiz_sys_file_read_all(void *p) {
+  wiz_sys_file *h = (wiz_sys_file *)p;
+  if (!h->f) { wiz_sys_err = EBADF; return wiz_sys_keep(NULL); }
+  size_t cap = 4096, n = 0, k;
+  char *b = (char *)malloc(cap);
+  while ((k = fread(b + n, 1, cap - n - 1, h->f)) > 0) {
+    n += k;
+    if (n + 1 >= cap) { cap *= 2; b = (char *)realloc(b, cap); }
+  }
+  b[n] = 0;
+  wiz_sys_err = ferror(h->f) ? EIO : 0;
+  return wiz_sys_keep(b);
+}
+WIZ_API uint64_t wiz_sys_file_write(void *p, const char *s) {
+  wiz_sys_file *h = (wiz_sys_file *)p;
+  if (!h->f) return EBADF;
+  size_t n = strlen(s);
+  return fwrite(s, 1, n, h->f) == n ? 0 : (errno ? (uint64_t)errno : EIO);
+}
+WIZ_API uint64_t wiz_sys_file_flush(void *p) {
+  wiz_sys_file *h = (wiz_sys_file *)p;
+  if (!h->f) return EBADF;
+  return wiz_sys_status(fflush(h->f) == 0 ? 0 : -1);
+}
+WIZ_API uint64_t wiz_sys_file_close(void *p) {
+  wiz_sys_file *h = (wiz_sys_file *)p;
+  if (!h->f) return EBADF;
+  int r = h->owned ? fclose(h->f) : fflush(h->f);
+  h->f = NULL;
+  return wiz_sys_status(r == 0 ? 0 : -1);
+}
+
+/* ---- processes: `foreign_type Child (finalizer := "wiz_sys_child_free")` ---- */
+
+typedef struct {
+  pid_t pid;
+  int fd[3];      /* our ends of the pipes to stdin, stdout, stderr, or -1 */
+  int waited;     /* the status is known */
+  int status;     /* exit code, or 256 + signal */
+  char *buf[2];   /* stdout and stderr, once collected by `communicate` */
+} wiz_sys_child;
+
+WIZ_API void wiz_sys_child_free(void *p) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  for (int i = 0; i < 3; i++) if (c->fd[i] >= 0) close(c->fd[i]);
+  /* reap it if it has finished (otherwise it is left to init when we exit) */
+  if (!c->waited) waitpid(c->pid, NULL, WNOHANG);
+  free(c->buf[0]); free(c->buf[1]);
+  free(c);
+}
+static void wiz_sys_close_fd(int *fd) { if (*fd >= 0) { close(*fd); *fd = -1; } }
+
+/* spawn `cmd` (searched in PATH) with arguments; each stream is 0 inherited,
+   1 a pipe, 2 /dev/null. NULL with the error. */
+WIZ_API void *wiz_sys_spawn(const char *cmd, wiz_val args, uint64_t in, uint64_t out, uint64_t err) {
+  static int sigpipe_ignored = 0;
+  if (!sigpipe_ignored) { signal(SIGPIPE, SIG_IGN); sigpipe_ignored = 1; }
+  char **argv = wiz_sys_strings(args, cmd);
+  uint64_t modes[3] = {in, out, err};
+  int pipes[3][2] = {{-1, -1}, {-1, -1}, {-1, -1}};
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  int r = 0;
+  for (int i = 0; i < 3 && r == 0; i++) {
+    if (modes[i] == 1) {
+      if (pipe(pipes[i]) < 0) { r = errno; break; }
+      fcntl(pipes[i][0], F_SETFD, FD_CLOEXEC); fcntl(pipes[i][1], F_SETFD, FD_CLOEXEC);
+      int child_end = i == 0 ? pipes[i][0] : pipes[i][1];
+      posix_spawn_file_actions_adddup2(&fa, child_end, i);
+    } else if (modes[i] == 2) {
+      posix_spawn_file_actions_addopen(&fa, i, "/dev/null", i == 0 ? O_RDONLY : O_WRONLY, 0);
+    }
+  }
+  pid_t pid = 0;
+  if (r == 0) {
+    fflush(stdout); fflush(stderr);
+    r = posix_spawnp(&pid, cmd, &fa, NULL, argv, environ);
+  }
+  posix_spawn_file_actions_destroy(&fa);
+  wiz_sys_free_strings(argv);
+  wiz_sys_child *c = NULL;
+  if (r == 0) {
+    c = (wiz_sys_child *)calloc(1, sizeof *c);
+    c->pid = pid;
+  }
+  for (int i = 0; i < 3; i++) {
+    if (pipes[i][0] < 0) { if (c) c->fd[i] = -1; continue; }
+    int ours = i == 0 ? pipes[i][1] : pipes[i][0], theirs = i == 0 ? pipes[i][0] : pipes[i][1];
+    close(theirs);
+    if (c) c->fd[i] = ours; else close(ours);
+  }
+  wiz_sys_err = r;
+  return c;
+}
+WIZ_API uint64_t wiz_sys_child_pid(void *p) { return (uint64_t)((wiz_sys_child *)p)->pid; }
+WIZ_API uint64_t wiz_sys_child_write(void *p, const char *s) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  if (c->fd[0] < 0) return EBADF;
+  return wiz_sys_status(wiz_sys_write_all(c->fd[0], s, strlen(s)));
+}
+WIZ_API uint64_t wiz_sys_child_close_stdin(void *p) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  if (c->fd[0] < 0) return EBADF;
+  int r = close(c->fd[0]);
+  c->fd[0] = -1;
+  return wiz_sys_status(r);
+}
+/* the rest of stdout (1) or stderr (2): what `communicate` collected, or read to the end */
+WIZ_API const char *wiz_sys_child_read(void *p, uint64_t i) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  if (i != 1 && i != 2) { wiz_sys_err = EINVAL; return wiz_sys_keep(NULL); }
+  if (c->buf[i - 1]) { char *b = c->buf[i - 1]; c->buf[i - 1] = NULL; wiz_sys_err = 0; return wiz_sys_keep(b); }
+  if (c->fd[i] < 0) { wiz_sys_err = EBADF; return wiz_sys_keep(NULL); }
+  char *b = wiz_sys_read_fd(c->fd[i], NULL);
+  wiz_sys_err = b ? 0 : errno;
+  wiz_sys_close_fd(&c->fd[i]);
+  return wiz_sys_keep(b);
+}
+/* write `input` to stdin and close it, while collecting stdout and stderr (whichever are
+   pipes) to their ends, without deadlocking on full pipes */
+WIZ_API uint64_t wiz_sys_child_communicate(void *p, const char *input) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  size_t inlen = strlen(input), inpos = 0;
+  size_t cap[2] = {0, 0}, len[2] = {0, 0};
+  char *buf[2] = {NULL, NULL};
+  int r = 0;
+  if (c->fd[0] >= 0 && inlen == 0) wiz_sys_close_fd(&c->fd[0]);
+  while (c->fd[0] >= 0 || c->fd[1] >= 0 || c->fd[2] >= 0) {
+    struct pollfd pf[3];
+    for (int i = 0; i < 3; i++) { pf[i].fd = c->fd[i]; pf[i].events = i == 0 ? POLLOUT : POLLIN; pf[i].revents = 0; }
+    if (poll(pf, 3, -1) < 0) { if (errno == EINTR) continue; r = errno; break; }
+    if (pf[0].revents & (POLLOUT | POLLERR | POLLHUP)) {
+      ssize_t k = write(c->fd[0], input + inpos, inlen - inpos);
+      if (k < 0 && errno != EINTR && errno != EAGAIN) wiz_sys_close_fd(&c->fd[0]); /* EPIPE: it stopped reading */
+      else if (k > 0 && (inpos += (size_t)k) == inlen) wiz_sys_close_fd(&c->fd[0]);
+    }
+    for (int i = 1; i < 3; i++) {
+      if (!(pf[i].revents & (POLLIN | POLLERR | POLLHUP))) continue;
+      if (cap[i - 1] - len[i - 1] < 4097) { cap[i - 1] = cap[i - 1] * 2 + 8192; buf[i - 1] = (char *)realloc(buf[i - 1], cap[i - 1]); }
+      ssize_t k = read(c->fd[i], buf[i - 1] + len[i - 1], cap[i - 1] - len[i - 1] - 1);
+      if (k > 0) len[i - 1] += (size_t)k;
+      else if (k == 0 || (errno != EINTR && errno != EAGAIN)) wiz_sys_close_fd(&c->fd[i]);
+    }
+  }
+  for (int i = 0; i < 2; i++) {
+    if (!buf[i]) continue;
+    buf[i][len[i]] = 0;
+    free(c->buf[i]);
+    c->buf[i] = buf[i];
+  }
+  return (uint64_t)r;
+}
+/* wait for it to finish: its exit code, or 256 + the signal that stopped it */
+WIZ_API uint64_t wiz_sys_child_wait(void *p) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  if (!c->waited) {
+    int st;
+    pid_t r;
+    while ((r = waitpid(c->pid, &st, 0)) < 0 && errno == EINTR) {}
+    if (r < 0) { wiz_sys_err = errno; return 0; }
+    c->waited = 1;
+    c->status = WIFEXITED(st) ? WEXITSTATUS(st) : WIFSIGNALED(st) ? 256 + WTERMSIG(st) : 512;
+  }
+  wiz_sys_err = 0;
+  return (uint64_t)c->status;
+}
+WIZ_API uint64_t wiz_sys_child_kill(void *p, uint64_t sig) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  if (c->waited) return ESRCH;
+  return wiz_sys_status(kill(c->pid, (int)sig));
+}
+/* replace this program (returns only with an error) */
+WIZ_API uint64_t wiz_sys_exec(const char *cmd, wiz_val args) {
+  char **argv = wiz_sys_strings(args, cmd);
+  fflush(stdout); fflush(stderr);
+  execvp(cmd, argv);
+  int e = errno;
+  wiz_sys_free_strings(argv);
+  return (uint64_t)e;
+}
+WIZ_API void wiz_sys_exit(uint64_t code) { exit((int)code); }
+WIZ_API uint64_t wiz_sys_getpid(void) { return (uint64_t)getpid(); }
 
 /* ---- output: a generic tree, read back by the compiler using the type ---- */
 

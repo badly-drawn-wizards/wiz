@@ -1130,9 +1130,10 @@ def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm 
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
+  let sysLib ← IO.FS.readFile "lib/Sys.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
-    else if m == "Std" then some stdLib else none
+    else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -1223,6 +1224,105 @@ def ffiGroup : Group where
           "  IO.println (Nat.toString (Bytes.size (Bytes.ofString \"λx\")))") "ABC\n3\n" },
     { name := "foreign types are checked", run := fun _ =>
         ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
+  ]
+
+/-- A `Sys` program, on the C backend and on the LLVM backend: `body` is the lines of an
+`EIO` do block. -/
+def sysRun (body : List String) (expected : String) (defs : String := "") : IO Unit := do
+  let src := "import Sys\n" ++ defs ++ "def main : IO Unit := EIO.toIO (do\n" ++
+    ";\n".intercalate (body.map ("  " ++ ·)) ++ ")"
+  ioRun src expected
+  ioRun src expected (llvm := true)
+
+def sysShow : String :=
+  "def showList : List String → String\n  | .nil => \"\"\n  | .cons x xs => String.append x (String.append \";\" (showList xs))\n" ++
+  "def say (s : String) : EIO Unit := EIO.lift (IO.println s)\n" ++
+  "def yesNo : Bool → String\n  | .true => \"yes\"\n  | .false => \"no\"\n" ++
+  "def orUnset : Option String → String\n  | .some s => s\n  | .none => \"(unset)\"\n"
+
+def sysGroup : Group where
+  name := "sys"
+  exercise := "Stage 9h"
+  cases := [
+    { name := "spawn echo and collect its output", run := fun _ =>
+        sysRun ["o ← Process.output \"echo\" (.cons \"hello\" (.cons \"world\" .nil)) \"\"",
+          "EIO.lift (IO.print o.stdout)", "say (ExitStatus.toString o.status)",
+          "say (yesNo (ExitStatus.success o.status))"]
+          "hello world\nexit code 0\nyes\n" sysShow },
+    { name := "a pipe through cat, and stderr apart", run := fun _ =>
+        sysRun ["o ← Process.output \"cat\" .nil \"piped through cat\\nline two\\n\"", "EIO.lift (IO.print o.stdout)",
+          "e ← Process.output \"sh\" (.cons \"-c\" (.cons \"echo out; echo err >&2; exit 3\" .nil)) \"\"",
+          "say (String.append \"stdout: \" e.stdout)", "say (String.append \"stderr: \" e.stderr)",
+          "say (ExitStatus.toString e.status)"]
+          "piped through cat\nline two\nstdout: out\n\nstderr: err\n\nexit code 3\n" sysShow },
+    { name := "communicate doesn't deadlock on big output", run := fun _ =>
+        -- 200 KB through cat: more than a pipe buffer each way
+        sysRun ["o ← Process.output \"sh\" (.cons \"-c\" (.cons \"yes abcdefghi | head -c 200000; yes x >&2 | head -c 100000 >&2\" .nil)) \"\"",
+          "say (Nat.toString (strLen o.stdout))", "say (Nat.toString (strLen o.stderr))"]
+          "200000\n100000\n" (sysShow ++ "def strLen : String → Nat\n  | .mk cs => List.length cs\n") },
+    { name := "a child, step by step", run := fun _ =>
+        sysRun ["c ← Process.spawn \"cat\" .nil .piped .piped .inherit", "Child.write c \"one\\n\"",
+          "Child.write c \"two\\n\"", "Child.closeStdin c", "out ← Child.readStdout c", "EIO.lift (IO.print out)",
+          "st ← Child.wait c", "say (ExitStatus.toString st)",
+          "k ← Process.spawn \"sleep\" (.cons \"10\" .nil) .null .null .null", "Child.kill k 9",
+          "ks ← Child.wait k", "say (ExitStatus.toString ks)",
+          "r ← Process.run \"true\" .nil", "say (ExitStatus.toString r)"]
+          "one\ntwo\nexit code 0\nsignal 9\nexit code 0\n" sysShow },
+    { name := "spawning a missing program is an error", run := fun _ =>
+        sysRun ["r ← EIO.lift (Process.spawn \"wiz-no-such-program\" .nil .null .null .null)",
+          "say (match r with | .ok c => \"spawned\" | .error e => e)"]
+          "wiz-no-such-program: No such file or directory\n" sysShow },
+    { name := "environment variables round-trip", run := fun _ =>
+        sysRun ["Env.set \"WIZ_SYS_TEST\" \"v1\"", "a ← EIO.lift (Env.get \"WIZ_SYS_TEST\")", "say (orUnset a)",
+          "Env.set \"WIZ_SYS_TEST\" \"v2 = λ\"", "b ← EIO.lift (Env.get \"WIZ_SYS_TEST\")", "say (orUnset b)",
+          "all ← EIO.lift Env.list", "say (orUnset (lookup all))",
+          "o ← Process.output \"sh\" (.cons \"-c\" (.cons \"echo $WIZ_SYS_TEST\" .nil)) \"\"", "EIO.lift (IO.print o.stdout)",
+          "Env.unset \"WIZ_SYS_TEST\"", "c ← EIO.lift (Env.get \"WIZ_SYS_TEST\")", "say (orUnset c)",
+          "r ← EIO.lift (Env.set \"A=B\" \"x\")", "say (match r with | .ok u => \"set\" | .error e => e)"]
+          "v1\nv2 = λ\nv2 = λ\nv2 = λ\n(unset)\nsetenv A=B: Invalid argument\n"
+          (sysShow ++ "def chEq : List Char → List Char → Bool\n  | .nil, .nil => .true\n  | .cons a xs, .cons b ys => Bool.and (Nat.beq (Char.code a) (Char.code b)) (chEq xs ys)\n  | _, _ => .false\n" ++
+            "def strEq : String → String → Bool\n  | .mk a, .mk b => chEq a b\n" ++ "def lookup : List (String × String) → Option String\n  | .nil => .none\n" ++
+            "  | .cons (k, v) rest => match strEq k \"WIZ_SYS_TEST\" with\n    | .true => .some v\n    | .false => lookup rest\n") },
+    { name := "a temporary directory: files, links, stat, listing, removal", run := fun _ =>
+        sysRun ["d ← FS.createTempDir", "FS.createDir (Path.join d \"sub\")",
+          "FS.writeFile (Path.join d \"a.txt\") \"alpha\\n\"", "FS.appendFile (Path.join d \"a.txt\") \"beta\\n\"",
+          "FS.rename (Path.join d \"a.txt\") (Path.join d \"b.txt\")", "FS.symlink \"b.txt\" (Path.join d \"link\")",
+          "FS.writeFile (Path.join (Path.join d \"sub\") \"deep\") \"x\"",
+          "t ← FS.readLink (Path.join d \"link\")", "say t",
+          "xs ← FS.listDir d", "say (showList xs)",
+          "s ← FS.stat (Path.join d \"link\")", "say (Nat.toString s.size)",
+          "l ← FS.linkStat (Path.join d \"link\")", "say (match l.kind with | .symlink => \"link\" | _ => \"not a link\")",
+          "say (yesNo (Nat.lt 1600000000 s.mtime))",
+          "txt ← FS.readFile (Path.join d \"link\")", "EIO.lift (IO.print txt)",
+          "a ← EIO.lift (FS.isDir (Path.join d \"sub\"))", "b ← EIO.lift (FS.isFile (Path.join d \"sub\"))",
+          "say (String.append (yesNo a) (yesNo b))",
+          "r ← EIO.lift (FS.removeDir (Path.join d \"sub\"))", "say (match r with | .ok u => \"removed\" | .error e => \"not empty\")",
+          "FS.setMode (Path.join d \"b.txt\") 384", "m ← FS.stat (Path.join d \"b.txt\")", "say (Nat.toString m.mode)",
+          "FS.removeFile (Path.join d \"link\")", "ys ← FS.listDir d", "say (showList ys)",
+          "FS.removeAll d", "e ← EIO.lift (FS.exists d)", "say (yesNo e)"]
+          "b.txt\nb.txt;link;sub;\n11\nlink\nyes\nalpha\nbeta\nyesno\nnot empty\n384\nb.txt;sub;\nno\n" sysShow },
+    { name := "the working directory", run := fun _ =>
+        sysRun ["d ← FS.createTempDir", "FS.setCurrentDir d", "FS.writeFile \"here.txt\" \"hi\"",
+          "c ← FS.currentDir", "x ← FS.readFile (Path.join c \"here.txt\")", "say x",
+          "o ← Process.output \"ls\" .nil \"\"", "EIO.lift (IO.print o.stdout)",
+          "FS.setCurrentDir \"/\"", "FS.removeAll d"]
+          "hi\nhere.txt\n" sysShow },
+    { name := "errors carry errno messages", run := fun _ =>
+        sysRun ["r ← EIO.lift (FS.readFile \"/nonexistent/x\")", "say (match r with | .ok s => s | .error m => m)",
+          "q ← EIO.lift (FS.listDir \"/nonexistent\")", "say (match q with | .ok s => \"listed\" | .error m => m)",
+          "w ← EIO.lift (FS.createDir \"/\")", "say (match w with | .ok s => \"made\" | .error m => m)"]
+          "/nonexistent/x: No such file or directory\n/nonexistent: No such file or directory\n/: File exists\n" sysShow },
+    { name := "file handles and bytes", run := fun _ =>
+        sysRun ["d ← FS.createTempDir", "let p := Path.join d \"f.txt\"",
+          "f ← File.open p \"w\"", "File.write f \"first\\n\"", "File.write f \"second\\n\"", "File.close f",
+          "g ← File.open p \"r\"", "a ← File.readLine g", "b ← File.readLine g", "c ← File.readLine g",
+          "say (String.append (orUnset a) (String.append \",\" (String.append (orUnset b) (String.append \",\" (orUnset c)))))",
+          "FS.writeBytes (Path.join d \"bin\") (Bytes.push (Bytes.push (Bytes.push Bytes.empty 0) 255) 7)",
+          "bs ← FS.readBytes (Path.join d \"bin\")",
+          "say (String.append (Nat.toString (Bytes.size bs)) (String.append \" \" (Nat.toString (Bytes.get bs 1))))",
+          "o ← EIO.lift File.stdout", "File.write o \"to stdout\\n\"", "File.flush o",
+          "FS.removeAll d"]
+          "first,second,(unset)\n3 255\nto stdout\n" sysShow }
   ]
 
 /-- Tokens as the Lean lexer reads them, as `kind:text` lines. -/
