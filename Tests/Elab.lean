@@ -3704,7 +3704,7 @@ def onMsg (n acc : Nat) (serve : (acc : Nat) → (1 c : Chan (Proto.dual (items 
 def serveItems : (n : Nat) → (acc : Nat) → (1 c : Chan (Proto.dual (items n))) → IO Unit
   | .zero, acc => fun c => Chan.close c (IO.println (String.append \"all: \" (Nat.toString acc)))
   | .succ n, acc => fun c =>
-      Chan.recv (k := fun m => Proto.dual (Msg.next (fun _ => items n) m)) c (fun m c' => onMsg n acc (serveItems n) m c')
+      Chan.recv (A := Msg Nat) (k := fun m => Proto.dual (Msg.next (fun _ => items n) m)) c (fun m c' => onMsg n acc (serveItems n) m c')
 def client (1 c : Chan (items 3)) : IO Unit :=
   Chan.send (k := Msg.next (fun _ => items 2)) c (.val 10) (fun c1 =>
     Chan.send (k := Msg.next (fun _ => items 1)) c1 (.val 20) (fun c2 =>
@@ -3791,7 +3791,7 @@ def concGroup : Group where
           "def dupf (1 c : Chan Proto.done) : IO Unit := let f := capture c; IO.seq1 (f ()) (fun _ => f ())") "quantity" },
     { name := "the protocol is checked: wrong message type, wrong step", run := fun _ => do
         failsLibs (concSum ++ "def bad (1 c : Chan sumProto) : IO Unit :=\n" ++
-          "  Chan.send (k := fun n => sendMany ack n) c true (fun c' => Chan.close c' (IO.pure ()))") "mismatch"
+          "  Chan.send (k := fun n => sendMany ack n) c Bool.true (fun c' => Chan.close c' (IO.pure ()))") "mismatch"
         failsLibs (concSum ++ "def bad (1 c : Chan sumProto) : IO Unit := Chan.close c (IO.pure ())") "mismatch" },
     { name := "endpoints can't be forged, retyped, sent, or stored", run := fun _ => do
         failsLibs "import IO\nimport Session\ndef bad (1 c : Chan Proto.done) : Chan (.send Nat (fun _ => .done)) := c" "mismatch"
