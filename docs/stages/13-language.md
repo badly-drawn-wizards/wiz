@@ -65,6 +65,50 @@ The motivating use is `lib/Region.wiz` ([22g](22-numbers.md)): the constructors 
 `Shr`, `Uniq`, `Mut` and `Lent` are private, so a handle at a region comes only from a
 scope or an operation of the library, and hand-written Wiz can't forge one
 (`drafts/rust/rejected/forge_handle.wiz`; test group `regions`). `MutOpt`'s constructors
-stay public: their fields are handles already. Not yet: private constructors of an
-`inductive` (`| private c …`) and private observations of a `coinductive`. Tests: group
-`elabfix`.
+stay public: their fields are handles already.
+
+```
+inductive Tok where
+  | num (n : Nat)
+  | private secret (n : Nat)            -- only this module makes a `.secret`
+coinductive Signal (d : Domain) (A : Type) where
+  private head : A                      -- only this module observes a signal
+  private tail : Signal d A
+structure Acct where
+  owner : Nat
+  private bal : Nat                     -- `Acct.bal` is private; `Acct.mk` isn't
+```
+
+The same opacity covers the other declarations with private parts. In each case the
+private names are private to the module, and **elsewhere the type is opaque**: it is a
+type constant that equals only itself, so the primitives (`con`, `cocon`, `out`, `.1`),
+tuples and look-alike types don't convert to it.
+
+* `| private c …` (an `inductive`): `T.c` is private, and so are the recursors `T.rec`,
+  `T.casesOn` (and `scasesOn`, `recN`, `casesOnN`). The public constructors stay usable,
+  also as `.c` against an expected `T`. Outside the module a `T` can't be **matched**,
+  not even on its public constructors with a catch-all: a `match` compiles to
+  `T.casesOn`, whose case for `c` hands out `c`'s fields, and the case tree needs `T`'s
+  description, which is what the opacity hides. So exhaustiveness never comes up
+  there; the module exports the eliminators it wants (`Tok.value`, or a fold). In a
+  `mutual` block the types are one indexed family, so a private constructor makes the
+  whole family opaque.
+* `private f : A` (an observation of a `coinductive`): `T.f` is private, and so is the
+  coconstructor `T.mk` (it would build a value from the private observation's value).
+  Outside the module a `T` isn't observed through `f` (`s.f`, `T.f s`, `out s`) and
+  isn't defined by **copatterns**, which give every observation ("'Signal.head' is
+  private to module Signal: a Signal can't be defined by copatterns outside it"); public
+  observations are read through their functions, `s.g`.
+* `private f : A` (a field of a `structure`): `S.f` is private and `S` is opaque
+  elsewhere, as with `private mk ::`; the constructor stays public unless it is
+  `private mk ::` too. A class's methods can't be private.
+* A type declared `private` (`private inductive T`) is not opaque, but its recursors are
+  private, so a value of it that reaches another module (through a public definition)
+  isn't matched there either.
+
+All of this is elaboration only, as above: the kernel checks against the full
+environment, and whatever the elaborator accepts with `T`'s definition hidden also
+checks with it unfolded. The self-hosted frontend parses the `private` markers and
+ignores them. The motivating use is the HDL's signals (`drafts/hdl/Signal.wiz`): user
+code builds and observes them only through the library's combinators and `sample`
+(`drafts/hdl/rejected/observe_signal.wiz`). Tests: group `elabfix`.
