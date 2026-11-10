@@ -1505,12 +1505,57 @@ inductive SigR where
 def sigsInit : StrMap (List Bool) → List Erased → StrMap (List Bool)
   | m, .nil => m
   | m, .cons (.mk n e) rest => sigsInit (StrMap.insert m (Str.ofString n) (allTrue (lamsOf e))) rest
+-- **Tail calls kept** (as Lean's `preserveTailCall`): a function calling itself in tail
+-- position with a borrowed parameter given something it would release after the call
+-- (a variable it owns, or a temporary) makes that parameter owned, so that nothing
+-- follows the call. `sig`: the function's signature from this round's `consumed` (not
+-- the previous round's, which would make the fixed point oscillate); `k` its arity;
+-- the result: the positions to make owned.
+def nthB : List Bool → Nat → Bool
+  | .nil, _ => .false
+  | .cons b rest, n => match n with
+    | .zero => b
+    | .succ m => nthB rest m
+-- the borrowed positions given anything but one of the function's borrowed parameters
+def tailArgPos (sig : List Bool) (k d : Nat) : Nat → List ETm → List Nat → List Nat
+  | _, .nil, acc => acc
+  | i, .cons a rest, acc => tailArgPos sig k d (i + 1) rest (match nthB sig i with
+    | .true => match a with
+      | .var j => match Bool.and (Nat.lt j d) (Nat.lt (d - 1 - j) k) with
+        | .true => match nthB sig (d - 1 - j) with
+          | .true => acc
+          | .false => lvIns i acc
+        | .false => lvIns i acc
+      | _ => lvIns i acc
+    | .false => acc)
+mutual
+def tailOwned (sig : List Bool) (f : String) (k : Nat) : Nat → ETm → List Nat → List Nat
+  | d, .letE _ b, acc => tailOwned sig f k (d + 1) b acc
+  | d, .case _ bs, acc => tailOwnedEs sig f k d bs acc
+  | d, .app g0 a0, acc => match spineE (.app g0 a0) .nil with
+    | .mk h args => match h with
+      | .glob g => match Bool.and (strEq g f) (Nat.beq (lenL args) k) with
+        | .true => tailArgPos sig k d 0 args acc
+        | .false => acc
+      | _ => acc
+  | _, _, acc => acc
+def tailOwnedEs (sig : List Bool) (f : String) (k : Nat) : Nat → ETms → List Nat → List Nat
+  | _, .nil, acc => acc
+  | d, .cons t rest, acc => tailOwnedEs sig f k d rest (tailOwned sig f k d t acc)
+end
+-- `sig` with the positions in `ps` owned
+def ownAt : List Bool → Nat → List Nat → List Bool
+  | .nil, _, _ => .nil
+  | .cons b rest, i, ps => .cons (match lvMem i ps with
+      | .true => .false
+      | .false => b) (ownAt rest (i + 1) ps)
 -- one round: every function's parameters, from the current signatures
 def sigsRound (old : StrMap (List Bool)) : StrMap (List Bool) → Nat → List Erased → SigR
   | m, c, .nil => .mk m c
   | m, c, .cons (.mk n e) rest =>
     let k := lamsOf e;
-    let sig := borSig (consumed old k (underLams k e) .nil) 0 k;
+    let sig0 := borSig (consumed old k (underLams k e) .nil) 0 k;
+    let sig := ownAt sig0 0 (tailOwned sig0 n k k (underLams k e) .nil);
     sigsRound old (StrMap.insert m (Str.ofString n) sig) (c + countTrue sig) rest
 partial def sigsFix (sigs : StrMap (List Bool)) (count : Nat) (es : List Erased) : StrMap (List Bool) :=
   match sigsRound sigs sigs 0 es with

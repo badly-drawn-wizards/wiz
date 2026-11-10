@@ -1872,13 +1872,16 @@ arguments yet). The garbage-collected mode is unchanged, byte for byte.
   as allocated), used for constant constructors in the generated code (also the
   globals that are one, put in place) and for the Bools, `nil` and `0`'s payload the
   natives make. Stage 2 on mid.wiz: 9.4% fewer allocations.
+* **Tail calls kept** (Lean's `preserveTailCall`): a function calling itself in tail
+  position with a borrowed parameter given something it would release after the call
+  (a variable it owns, or a temporary) makes that parameter owned, so nothing follows
+  the call (17 of 228 borrowed parameters of the toolchain).
 
 **Bootstrap in this mode**: stage 1 compiles the toolchain (with the `-- wiz: rc` line)
 to C, and that program (stage 2, reference counted) compiles it again to the same C,
 freeing every object by the end.
 
-Next: keeping tail calls when a borrowed argument
-is lent; then reference counting by default.
+Next: demand analysis for `let`s; then reference counting by default.
 
 ## Stage 22: numbers for hardware and systems code
 
