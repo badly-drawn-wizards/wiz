@@ -31,5 +31,6 @@ with that metavariable. `@f` inserts no implicit arguments.
 ## 17d: `partial` and `mutual` ✅
 
 `partial def` and `mutual … end` blocks of definitions: each function is first an axiom
-of its type (`addAxioms`), so that the bodies may call any of them, as the Lean kernel
-sees partial definitions; then each body is checked as usual and replaces the axiom.
+of its type (`addPartials`, justified by a witness the kernel checks, 22f), so that the
+bodies may call any of them, as the Lean kernel sees partial definitions; then each body
+is checked as usual and replaces the axiom.

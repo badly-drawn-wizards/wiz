@@ -282,7 +282,8 @@ def Decl.withSorts (g : Globals R) (d : Decl R) : Decl R :=
   let type := (Sorts.type g #[] [] d.type).1
   let ty := eval g [] type
   { d with type, value := d.value.map (Sorts.value g #[] [] · ty),
-           impl := d.impl.map (Sorts.value g #[] [] · ty) }
+           impl := d.impl.map (Sorts.value g #[] [] · ty),
+           witness := d.witness.map (Sorts.value g #[] [] · ty) }
 
 def instM (c : Closure R) (v : Val R) : ElabM R (Val R) :=
   return Closure.inst (← getGlobals) c v

@@ -32,10 +32,10 @@ def parseCmd (path : String) : IO UInt32 := do
 /-- The module roots: `lib/` (the standard library), then the `-I` directories. -/
 def moduleRoots (tc : Toolchain) : List System.FilePath := "lib" :: tc.searchPath
 
-/-- Read every module the file can reach (`import A.B` is `A/B.wiz` under a root) up
-front: the frontend is pure. -/
-def loadLibrary (tc : Toolchain) (input : String) : IO (Std.HashMap Name String) := do
-  pure ((← Module.loadClosure (moduleRoots tc) input).fold (fun m n (_, src) => m.insert n src) {})
+/-- The library modules from the toolchain's own `lib/` (the first root): their
+`builtin` registrations are trusted. -/
+def libTrusted (tc : Toolchain) : IO (List String) := do
+  return Module.fromFirstRoot (moduleRoots tc) (← Module.loadAll (moduleRoots tc))
 
 /-- Library modules with their paths (for the language server's go-to-definition). -/
 def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String)) := do
@@ -68,13 +68,17 @@ initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
 
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
-  let lib ← loadLibrary tc input
+  let closure ← Module.loadClosure (moduleRoots tc) input
+  let lib : Std.HashMap Name String := closure.fold (fun m n (_, src) => m.insert n src) {}
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
   let (regularity, predicativeProp) ← kernelOpts.get
   let lazyProofs ← lazyProofsOpt.get
+  -- `builtin` registrations are trusted only in the toolchain's own library
+  let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, lazyProofs } }
+    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, lazyProofs },
+      trustedModule := own.contains }
   -- the cache doesn't know the experimental options
   let cache := if regularity == .off && !predicativeProp && lazyProofs then tc.cacheDir else none
   match cache with
@@ -150,12 +154,12 @@ def main (args : List String) : IO UInt32 := do
   | ["build", path, "-o", out, "--llvm"] => buildCmd tc path out true
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
-  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc); pure 0
+  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc); pure 0
   | "lsp" :: opts => do
     match lspOptions opts with
     | none => IO.println usage; pure 2
     | some (listen, stdio) =>
-      LSP.serve (← loadLibraryPaths tc) listen stdio
+      LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc)
       -- (an infoview's reader thread may still be blocked: don't wait for it)
       IO.Process.exit 0
   | _ => do IO.println usage; pure 0
