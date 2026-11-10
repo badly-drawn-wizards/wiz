@@ -352,7 +352,8 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
 * if `ty` is `erasable`, the result is `◾`;
 * `lam` against a Π: erase the body under the binder;
 * `pair` against a Σ: an object `obj 0 #[a, b]`, with `a` erased if the Σ's quantity
-  is `0`;
+  is `0`; if the second component ends in a structure's marker (`isStructTail`, 22i),
+  just `a` (the last field of a structure is unboxed);
 * `con x` against `μ D i`: erase the payload `x` against `⟦D⟧ (μ D) i`, then make it
   flat: `flatCon` gives the tag and fields of a literal payload (`obj k fs`; for the
   `nat` type, `natLit 0` or the successor applied to the field); otherwise
@@ -438,7 +439,8 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
 /-- **Exercise 5.1b.** Erase `t`, computing its type with the kernel's `infer`.
 
 * variables, globals, applications (an argument to a `0`-quantity Π is `◾`);
-* `fst`/`snd` are `proj 0`/`proj 1`; `split` binds the projections with `let`s;
+* `fst`/`snd` are `proj 0`/`proj 1`; `split` binds the projections with `let`s; but
+  at an `unboxedSigma` (22i) `fst` is the value itself, `snd` is `◾`;
 * `ecase` on a tag is `case`; `cast` is its argument; `ann` is its term;
 * the eliminators `ind`, `Desc.elim`, `out`, `coit`, `scofix` become primitives;
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
