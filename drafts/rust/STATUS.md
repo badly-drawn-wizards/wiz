@@ -32,7 +32,7 @@ tests are `lake test -- optic`.
 | `decreases` on loops | well-founded recursion; loops stay `partial def` (unverifiable) | `decreases-loops` |
 | `let i : U64 := 0` | numerals at machine-int types | `machine-int-literals` |
 | `∃`, `∧`, `¬`, `∈` in laws/specs (`drafts/rust/Optic.wiz` §1, surface 09) | Prop connectives | `prop-connectives` |
-| `Lens.pair_putGet`/`putPut` (`drafts/rust/Optic.wiz` §2) | the unifier comparing an equation with its computed form | `unify-computed-equations` |
+| `Lens.pair_putPut` (`drafts/rust/Optic.wiz` §2; `pair_putGet` is in lib/Optic.wiz since `castRefl`) | the unifier comparing an equation with its computed form | `unify-computed-equations` |
 | native `Vec` with `takeAt`/`fillAt` (RsCore uses a List model) | `implemented_by` | `implemented-by` |
 | backward functions that reuse cells without inlining (`drafts/rust/Optic.wiz` §7) | constructor contexts | `constructor-contexts` |
 | `transp` with a Prop motive using its variable | quantity-0 variables used in types count as ω | `erased-use-in-types` (worked around in `Optic.subst`) |

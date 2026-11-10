@@ -195,6 +195,74 @@ def subtermInfo (srv : LSP.Server) (session ref : Nat) : LSP.Server × Lean.Json
   let (srv, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"wiz/subtermInfo\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"session\":{session},\"ref\":{ref}}}")
   (srv, (out[0]!.getObjVal? "result").toOption.getD ((out[0]!.getObjVal? "error").toOption.getD Lean.Json.null))
 
+/-- The body of the infoview socket case. -/
+def socketCase : IO Unit := do
+        let dir ← IO.FS.createTempDir
+        let sock := (dir / "iv.sock").toString
+        -- the editor's end of an in-process pipe, and the server on the other end
+        let ((srvIn, srvOut), (edIn, edOut)) ← Socket.pair
+        let (ed, edW) := (IO.FS.Stream.ofHandle edIn, IO.FS.Stream.ofHandle edOut)
+        let done ← IO.asTask (prio := .dedicated)
+          (LSP.serveInfoview (← server).libs (IO.FS.Stream.ofHandle srvIn) (IO.FS.Stream.ofHandle srvOut) sock)
+        let next (h : IO.FS.Stream) : IO Lean.Json := do
+          let some j ← LSP.readMessage h | throw (IO.userError "the stream ended")
+          pure j
+        let src := "import Prelude\ndef k : Nat → Bool → Nat := by\n  intro n\n  intro b\n  exact n\n"
+        LSP.writeMessage edW (req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+        check (has (← next ed) "documentHighlightProvider") "documentHighlight not asked for"
+        LSP.writeMessage edW (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])])
+        check (has (← next ed) "publishDiagnostics") "no diagnostics"
+        -- an infoview connects (retrying, like the clients) and is told where the cursor is
+        let rec conn : Nat → IO (IO.FS.Handle × IO.FS.Handle)
+          | 0 => Socket.connect sock
+          | n + 1 => do try Socket.connect sock catch _ => do IO.sleep 50; conn n
+        let (ivIn, ivOut) ← conn 100
+        let (iv, ivW) := (IO.FS.Stream.ofHandle ivIn, IO.FS.Stream.ofHandle ivOut)
+        let c ← next iv
+        checkEq "wiz/infoview/cursor" (LSP.getStr c ["method"])
+        checkEq "{\"character\":0,\"line\":0}" (LSP.get? c ["params", "position"]).get!.compress
+        let session := LSP.getNat c ["params", "session"]
+        -- the editor's cursor moves: a documentHighlight (answered null), then a hover at the same place
+        let pos := posJson src (offAfter src "intro n")
+        LSP.writeMessage edW (req s!"\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"textDocument/documentHighlight\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{pos}}}")
+        checkEq "null" ((← next ed).getObjVal? "result" |>.toOption.get!).compress
+        LSP.writeMessage edW (req s!"\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{pos}}}")
+        let _ ← next ed
+        let c ← next iv
+        checkEq (req pos).compress (LSP.get? c ["params", "position"]).get!.compress
+        checkEq session (LSP.getNat c ["params", "session"])
+        -- the infoview pulls the goals there, on the socket, and asks about a subterm
+        LSP.writeMessage ivW (req s!"\{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"wiz/interactiveGoals\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{pos}}}")
+        let r ← next iv
+        checkEq "7" (LSP.get? r ["id"]).get!.compress
+        let some (.arr #[g]) := LSP.get? r ["result", "goals"] | throw (IO.userError s!"goals: {r.compress}")
+        let ty := (LSP.get? g ["type"]).get!
+        checkEq "Bool → Nat" (flatten ty)
+        let some (ref, _) := (refs ty).find? fun (_, t) => LSP.getStr t ["name"] == "Bool" | throw (IO.userError "no Bool")
+        LSP.writeMessage ivW (Lean.Json.mkObj [("jsonrpc", "2.0"), ("id", (8 : Nat)), ("method", "wiz/subtermInfo"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz")]), ("session", session), ("ref", ref)])])
+        checkEq "Bool" (LSP.getStr (← next iv) ["result", "text"])
+        -- other methods are refused on the socket
+        LSP.writeMessage ivW (req "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"textDocument/hover\",\"params\":{}}")
+        check (has (← next iv) "-32601") "hover answered on the socket"
+        -- an edit: the infoview hears of the new session at the same cursor
+        LSP.writeMessage edW (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didChange"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (2 : Nat))]),
+                                      ("contentChanges", Lean.Json.arr #[Lean.Json.mkObj [("text", src ++ "\n")]])])])
+        let _ ← next ed
+        let c ← next iv
+        checkEq (req pos).compress (LSP.get? c ["params", "position"]).get!.compress
+        check (LSP.getNat c ["params", "session"] != session) "same session after an edit"
+        -- `exit`: the server stops and removes the socket
+        LSP.writeMessage edW (req "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
+        match ← IO.wait done with
+        | .ok () => pure ()
+        | .error e => throw e
+        check (!(← System.FilePath.pathExists sock)) "the socket file is still there"
+        check ((← LSP.readMessage iv).isNone) "the infoview's connection is still open"
+
+
 def serverGroup : Group where
   name := "lsp-server"
   exercise := "Stage 11 (infoview, code actions)"
@@ -298,7 +366,13 @@ def serverGroup : Group where
         checkEq ([] : List String) (← codes src')
         let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\",\"version\":2},\"contentChanges\":[{\"text\":\"import Prelude\\n\"}]}}")
         let (_, r) := resolve srv
-        check (has r "-32801") s!"stale resolve: {r.compress}" }
+        check (has r "-32801") s!"stale resolve: {r.compress}" },
+    { name := "infoview socket: cursor notifications, requests answered on the socket", run := fun _ => do
+        -- a watchdog: a broken server must fail the case, not hang the suite (and since
+        -- the process would wait for it, the case ends with an explicit exit)
+        let _ ← IO.asTask (prio := .dedicated) (do IO.sleep 60000; IO.eprintln "timed out"; IO.Process.exit 3 : IO Unit)
+        try socketCase; IO.Process.exit 0
+        catch e => IO.eprintln e; IO.Process.exit 1 }
   ]
 
 end Tests.LSP

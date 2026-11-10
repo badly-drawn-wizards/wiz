@@ -8,6 +8,7 @@ def usage : String := "usage:
   wiz build FILE -o OUT [--llvm]   compile the definition `main` to an executable (via C or LLVM)
   wiz run FILE [--llvm]            build and run `main`, printing its value
   wiz lsp                          a language server on stdin/stdout
+  wiz lsp --infoview SOCK          … and for infoviews on the Unix socket SOCK
 options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since it is
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
@@ -27,6 +28,11 @@ def parseCmd (path : String) : IO UInt32 := do
 
 /-- The module roots: `lib/` (the standard library), then the `-I` directories. -/
 def moduleRoots (tc : Toolchain) : List System.FilePath := "lib" :: tc.searchPath
+
+/-- The library modules from the toolchain's own `lib/` (the first root): their
+`builtin` registrations are trusted. -/
+def libTrusted (tc : Toolchain) : IO (List String) := do
+  return Module.fromFirstRoot (moduleRoots tc) (← Module.loadAll (moduleRoots tc))
 
 /-- Library modules with their paths (for the language server's go-to-definition). -/
 def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String)) := do
@@ -124,6 +130,10 @@ def main (args : List String) : IO UInt32 := do
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
   | ["lsp"] => do
-    LSP.serve (← loadLibraryPaths tc) (Module.fromFirstRoot (moduleRoots tc) (← Module.loadAll (moduleRoots tc)))
+    LSP.serve (← loadLibraryPaths tc) none (← libTrusted tc)
     pure 0
+  | ["lsp", "--infoview", sock] => do
+    LSP.serve (← loadLibraryPaths tc) (some sock) (← libTrusted tc)
+    -- (an infoview's reader thread may still be blocked: don't wait for it)
+    IO.Process.exit 0
   | _ => do IO.println usage; pure 0

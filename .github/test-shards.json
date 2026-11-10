@@ -2,6 +2,6 @@
   {"name": "selfhost", "select": ["=selfhost"]},
   {"name": "grail-selfhost", "select": ["=grail-selfhost"]},
   {"name": "backends", "select": ["backend", "=c", "llvm", "ffi", "effects", "reuse"]},
-  {"name": "library", "select": ["tooling", "std", "language", "optic", "deriving", "macros", "builtins", "tactics", "classes", "word", "vec", "lsp", "modules", "toolchain", "=grail", "=grail-jobs", "testrunner", "phantom", "trust"]},
+  {"name": "library", "select": ["tooling", "std", "language", "optic", "deriving", "macros", "builtins", "tactics", "classes", "word", "vec", "lsp", "modules", "toolchain", "=grail", "=grail-jobs", "=grail-deps", "testrunner", "phantom", "trust"]},
   {"name": "core", "select": ["rig", "eval", "conv", "check", "lexer", "parser", "elab", "universes", "observational", "quantity", "data", "inductive", "match", "copatterns", "sized"]}
 ]

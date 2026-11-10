@@ -3,6 +3,8 @@ import Wiz.Query
 import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Socket
+import Std.Sync.Channel
 
 /-!
 # The language server
@@ -15,6 +17,7 @@ under the cursor), go to definition (also into libraries), completion of global 
 and the infoview's requests (`wiz/plainGoal`, `wiz/interactiveGoals`, …; the protocol is
 in `wiz-notes/infoview-protocol.md`): goals and expected types read from the info tree,
 printed as tagged text whose tags are refs into the document's **session table**.
+With `--infoview SOCK` it also serves infoviews on a Unix socket (`serveInfoview`).
 
 Positions: LSP counts lines and UTF-16 code units; we count Unicode characters, which
 agree except for characters outside the Basic Multilingual Plane.
@@ -51,6 +54,10 @@ structure Server where
   elaboratedNotes : Bool := false
   /-- the client resolves code actions' edits lazily (`codeAction/resolve`) -/
   resolveEdits : Bool := false
+  /-- (`--infoview`) the editor's cursor, as far as its requests tell: (uri, position) -/
+  cursor : Option (String × Json) := none
+  /-- (`--infoview`) the last `wiz/infoview/cursor` sent, so the same one is not sent twice -/
+  lastCursor : Option Json := none
 
 /-- Line and column (0-based) of a character offset. -/
 def toPos (text : String) (off : Nat) : Json :=
@@ -102,6 +109,8 @@ def infoviewMethods : List String :=
 def capabilities : Json :=
   Json.mkObj [("capabilities", Json.mkObj [
     ("textDocumentSync", (1 : Nat)), ("hoverProvider", true), ("definitionProvider", true),
+    -- (answered with null; asked for so that editors report cursor moves, for `--infoview`)
+    ("documentHighlightProvider", true),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
@@ -314,6 +323,68 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
       (srv, #[reply (Json.arr items)])
   | _ => (srv, if id.isSome then #[reply Json.null] else #[])
 
+/-! ## The infoview socket (`wiz lsp --infoview SOCK`, protocol §8)
+
+Besides stdio, the server listens on a Unix socket; infoviews (agent/infoview-clients'
+terminal and web clients) connect to it. The editor never tells the server where its
+cursor is, so the server infers it from the editor's requests: any request with a
+`position` (hover, `documentHighlight`, definition, completion, the `wiz/*` methods…)
+and a `codeAction` (at its range's start; editors ask for code actions on every cursor
+move). On a move, and after each elaboration of the cursor's document, every connected
+infoview gets the notification `wiz/infoview/cursor` `{textDocument: {uri}, position,
+session}`, then pulls with ordinary `wiz/*` requests on the socket. -/
+
+/-- The cursor an editor message reveals, if any: (uri, position). -/
+def cursorOf (msg : Json) : Option (String × Json) := do
+  let uri := getStr msg ["params", "textDocument", "uri"]
+  if uri.isEmpty || (msg.getObjVal? "id").toOption.isNone then none
+  match get? msg ["params", "position"], get? msg ["params", "range", "start"] with
+  | some p, _ => pure (uri, p)
+  | none, some p => if getStr msg ["method"] == "textDocument/codeAction" then pure (uri, p) else none
+  | none, none => none
+
+/-- The `wiz/infoview/cursor` notification for a cursor (with its document's session). -/
+def cursorNote (srv : Server) (uri : String) (pos : Json) : Json :=
+  let session : Json := match srv.docs.get? uri with
+    | some d => d.session
+    | none => Json.null
+  Json.mkObj [("jsonrpc", "2.0"), ("method", "wiz/infoview/cursor"),
+    ("params", Json.mkObj [("textDocument", Json.mkObj [("uri", uri)]), ("position", pos), ("session", session)])]
+
+/-- After the editor's message `msg` was handled: the cursor note to send infoviews, if
+the cursor moved or its document was elaborated again. The first document opened
+before any cursor move puts the cursor at its start. -/
+def infoviewCursor (srv : Server) (msg : Json) : Server × Option Json :=
+  let method := getStr msg ["method"]
+  let uri := getStr msg ["params", "textDocument", "uri"]
+  let cur : Option (String × Json) :=
+    if method == "textDocument/didOpen" || method == "textDocument/didChange" then
+      match srv.cursor with
+      | some (u, p) => if u == uri then some (u, p) else none
+      | none => some (uri, Json.mkObj [("line", (0 : Nat)), ("character", (0 : Nat))])
+    else match cursorOf msg with
+      | some (u, p) => if srv.docs.contains u then some (u, p) else none
+      | none => none
+  match cur with
+  | none => (srv, none)
+  | some (u, p) =>
+    let note := cursorNote srv u p
+    let srv := { srv with cursor := some (u, p) }
+    if srv.lastCursor == some note then (srv, none) else ({ srv with lastCursor := some note }, some note)
+
+/-- Handle a message from an infoview: the `wiz/*` requests (sessions and refs are the
+editor's), `initialize` (answered, changing nothing), and nothing else. -/
+def handleInfoview (srv : Server) (msg : Json) : Server × Array Json :=
+  let method := getStr msg ["method"]
+  match (msg.getObjVal? "id").toOption with
+  | none => (srv, #[])
+  | some id =>
+    if infoviewMethods.contains method then handle srv msg
+    else if method == "initialize" || method == "shutdown" then
+      (srv, #[Json.mkObj [("jsonrpc", "2.0"), ("id", id), ("result", if method == "initialize" then capabilities else Json.null)]])
+    else (srv, #[Json.mkObj [("jsonrpc", "2.0"), ("id", id),
+      ("error", Json.mkObj [("code", (-32601 : Int)), ("message", s!"{method} is not available on the infoview socket")])]])
+
 /-- Read one message: headers, a blank line, then `Content-Length` bytes of JSON. -/
 partial def readMessage (stdin : IO.FS.Stream) : IO (Option Json) := do
   let mut len := 0
@@ -333,10 +404,84 @@ def writeMessage (stdout : IO.FS.Stream) (j : Json) : IO Unit := do
   stdout.putStr s!"Content-Length: {body.utf8ByteSize}\r\n\r\n{body}"
   stdout.flush
 
-/-- Serve until `exit`. -/
-partial def serve (libs : Std.HashMap String (String × String)) (trusted : List String := []) : IO Unit := do
+/-- What the server waits for in `--infoview` mode: messages from either side. -/
+inductive Event where
+  | editor (msg : Json)
+  /-- the editor's stream ended (or it sent `exit`) -/
+  | editorDone
+  | connected (k : Nat) (fd : UInt32) (out : IO.FS.Stream)
+  | infoview (k : Nat) (msg : Json)
+  | disconnected (k : Nat)
+
+instance : Inhabited Event := ⟨.editorDone⟩
+
+/-- Serve the editor on `input`/`output` until `exit`, and infoviews on the socket
+`sock`: three kinds of threads (the editor's reader, the socket's acceptor, one reader
+per infoview) feed one channel, and this loop handles the messages in order, so the
+server's state is never shared. -/
+partial def serveInfoview (libs : Std.HashMap String (String × String)) (input output : IO.FS.Stream)
+    (sock : String) (trusted : List String := []) : IO Unit := do
+  let ch ← Std.Channel.Sync.new (α := Event)
+  let lfd ← Socket.listen sock
+  let rec readEditor : IO Unit := do
+    match ← readMessage input with
+    | none => ch.send .editorDone
+    | some m => ch.send (.editor m); if getStr m ["method"] == "exit" then pure () else readEditor
+  let rec readInfoview (k : Nat) (h : IO.FS.Stream) : IO Unit := do
+    match ← (try readMessage h catch _ => pure none) with
+    | none => ch.send (.disconnected k)
+    | some m => ch.send (.infoview k m); readInfoview k h
+  let rec acceptLoop (k : Nat) : IO Unit := do
+    match ← (try some <$> Socket.accept lfd catch _ => pure none) with
+    | none => pure ()
+    | some (fd, r, w) =>
+      ch.send (.connected k fd (IO.FS.Stream.ofHandle w))
+      let _ ← IO.asTask (prio := .dedicated) (readInfoview k (IO.FS.Stream.ofHandle r))
+      acceptLoop (k + 1)
+  let _ ← IO.asTask (prio := .dedicated) readEditor
+  let _ ← IO.asTask (prio := .dedicated) (acceptLoop 0)
+  let rec loop (srv : Server) (conns : Std.HashMap Nat (UInt32 × IO.FS.Stream)) : IO (Std.HashMap Nat (UInt32 × IO.FS.Stream)) := do
+    -- send to one infoview; a failed write drops it
+    let sendTo (conns : Std.HashMap Nat (UInt32 × IO.FS.Stream)) (k : Nat) (js : Array Json) := do
+      let some (fd, out) := conns.get? k | pure conns
+      try for j in js do writeMessage out j
+          pure conns
+      catch _ => Socket.shutdown fd; pure (conns.erase k)
+    match ← ch.recv with
+    | .editorDone => pure conns
+    | .editor msg =>
+      if getStr msg ["method"] == "exit" then return conns
+      let (srv, out) := handle srv msg
+      for j in out do writeMessage output j
+      let (srv, note) := infoviewCursor srv msg
+      let mut conns := conns
+      if let some n := note then
+        for k in conns.keys do conns ← sendTo conns k #[n]
+      loop srv conns
+    | .connected k fd out =>
+      let conns := conns.insert k (fd, out)
+      let conns ← match srv.cursor with
+        | some (u, p) => sendTo conns k #[cursorNote srv u p]
+        | none => pure conns
+      loop srv conns
+    | .infoview k msg =>
+      let (srv, out) := handleInfoview srv msg
+      loop srv (← sendTo conns k out)
+    | .disconnected k =>
+      if let some (fd, _) := conns.get? k then Socket.shutdown fd
+      loop srv (conns.erase k)
+  let conns ← loop { libs, trusted } {}
+  -- stop the other threads: the acceptor and every infoview's reader see the end
+  Socket.close lfd sock
+  for (_, (fd, _)) in conns do Socket.shutdown fd
+
+/-- Serve until `exit`: on stdin/stdout, and with `infoview := some SOCK` also on the
+infoview socket `SOCK`. -/
+partial def serve (libs : Std.HashMap String (String × String)) (infoview : Option String := none)
+    (trusted : List String := []) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
+  if let some sock := infoview then return ← serveInfoview libs stdin stdout sock trusted
   let rec loop (srv : Server) : IO Unit := do
     let some msg ← readMessage stdin | return
     if getStr msg ["method"] == "exit" then return

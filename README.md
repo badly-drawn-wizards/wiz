@@ -300,6 +300,9 @@ At **inert** types (first-order data: `Nat`, `Bool`, `List Nat`, … — no `Pro
 functions or type variables) regularity is kept: there a cast between equal types is the
 identity. A cast at a type variable (`cast e a` for `e : A = A`) stays stuck, as in
 TTobs: `J` computes on `refl` at data types, not at a variable family (docs/CoreSpec.md §8.4).
+What regularity said definitionally is available as a proof: the Prelude's axiom
+`castRefl : (cast e a : A) = a` (for `e : A = A`). It doesn't compute, it is consistent
+(the setoid model), and `#print axioms` shows where it is used.
 
 **Propositions inside types.** Two propositions are equal when equivalent, whatever
 their shapes: `True = (True → True)` holds. So equality of types can't compare a
@@ -1870,9 +1873,10 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   width (1, 5, 65, …) and Rust's `u32` is `U32 := UIntN 32` (also `U8 … U64`, `USize`,
   `I8 … I64`, with `U32.ofNat`, `I32.ofNeg`, …). Operations are named functions
   (`UIntN.add a b`, or `a.add b`) until the numeric classes (HD9) arrive.
-* **The width is an index** (`mk {0 w : Nat} (toNat : Nat) : UIntN w`): types are
-  structural, and a parameter that no field mentions is forgotten, so `UIntN 8` and
-  `UIntN 16` would be one type and `w` could not be inferred.
+* **The width is a phantom parameter** (`inductive UIntN (w : Nat) where | mk (toNat :
+  Nat)`, since 22e/22h): no field mentions it, yet `UIntN 8` and `UIntN 16` are different
+  types and `w` is inferred. (Before 22e it had to be an index, `mk {0 w : Nat} …`,
+  leaving an erased slot in the object.)
 * **Natives.** The kernel computes with the definitions, quickly on numerals (22a), and
   so do `#eval`/`#run`. Compiled code calls natives (`runtime/wiz.c`, `wiz_word_*`) by
   `implemented_by`: in a `uint64_t` up to 64 bits, GMP beyond, one function per
@@ -1961,6 +1965,39 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
 * A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
   parameters never count. Declare a `structure` instead.
 
+### 22h: one bit-vector family ✅
+
+`BitVec n` (`lib/BitVec.wiz`) and `UIntN n` (`lib/Word.wiz`) are one type:
+
+```
+inductive UIntN (w : Nat) where | mk (toNat : Nat)   -- lib/Word.wiz: the model + natives
+def BitVec (n : Nat) : Type := UIntN n               -- lib/BitVec.wiz: the HDL/proof names
+def BitVec.add {ω n : Nat} (a b : BitVec n) : BitVec n := UIntN.add a b
+def w (x : U32) : BitVec 32 := BitVec.add x (BitVec.ofNat 32 1)   -- no conversion
+```
+
+* **Design.** `UIntN` is the implementation: one model (a number below `2^w`), one set
+  of natives (22c-d), one runtime representation (a word is its bits). `BitVec` is a
+  view of it: a `def` alias plus the hardware vocabulary (`udiv`, `and`, `shl`, `lshr`,
+  `ashr`, `slt`, `concat`, `extract`, `zeroExtend`, `signExtend`, `toVec`/`ofVec`, …),
+  each defined as the `UIntN`/`IntN` operation it is (signed ones read the bits as
+  `IntN n`, a free cast). The alias is enough because the width counts through
+  `UIntN`'s phantom parameter (a `def` alias's own parameters never count, 22e):
+  `BitVec 8` is not `U16`. The reverse (a `BitVec` structure `implemented_by` words)
+  would need a second representation registration and conversions at every Rust/HDL
+  boundary.
+* **Proofs** see the definitions, which unfold to Word's model, so the BitVec lemmas
+  are stated as before (`BitVec.add_comm` is `congrArg (UIntN.ofNat n)
+  (Nat.add_comm …)`); `BitVec.add_eq : BitVec.add a b = UIntN.add a b` is `refl`.
+  The literal tables (group `vec`) and the 34-operation and 64-bit word tables (group
+  `word`) agree in the kernel, `#eval`, `#run`, C and LLVM.
+* **Compiled**, a bit vector is a native word: no constructor or projection in the IR
+  (group `vec`), no allocation below `2^63`. The model's object is now `⟨0 bits⟩`
+  (the width no longer takes a slot), so a word read back prints as `.mk 18446744073709551613`.
+* **For the HDL**: `Unsigned n`/`Signed n` (hdl-plan §2.2) can reuse the same
+  representation as aliases (`def Unsigned (n : Nat) := UIntN n`, `Signed n := IntN n`);
+  a `structure` wrapper would instead need its own `implemented_by mk get` to avoid a box.
+
 ## Libraries
 
 ### H0c: vectors and bit vectors ✅
@@ -1972,20 +2009,21 @@ Functions: `head`/`tail`/`last`/`init` on non-empty vectors, `get`/`set` by `Fin
 `map`, `zipWith`, `zip`, `foldl`/`foldr`, `replicate`, `ofFn`, `append`, `reverse`
 (linear, with a `cast` along `m + (k+1) = (m+k)+1`), `snoc`, `splitAt`, `shiftIn`,
 `toList`/`fromList` (`fromList l : Vec A (List.length l)`). Theorems: `length_eq`,
-`length_toList`, `toList_fromList`, and the `Nat` lemmas they need
-(`add_zero`, `add_succ`, `add_comm`), all by structural recursion. (`map_map`, `get_set`
-and `get_map` are in `drafts/vec-lib/VecProofs.wiz` since D1: without regularity they would
-need `cast B B e b = b` at a type variable, which is not provable; see docs/Status.md.)
+`length_toList`, `toList_fromList`, `map_map`, `get_set` (`get (set v i x) i = x`),
+`get_map`, and the `Nat` lemmas they need (`add_zero`, `add_succ`, `add_comm`), all by
+structural recursion. `map_map`, `get_set` and `get_map` go through equations such as
+`Vec.map_cons : map f (cons x xs) = cons (f x) (map f xs)`, which hold only up to casts at
+the element type and are proved with the Prelude's axiom `castRefl` (below).
 
-`lib/BitVec.wiz` (`import BitVec`): `BitVec n`, a `Nat` below `2^n` by construction
+`lib/BitVec.wiz` (`import BitVec`): `BitVec n` (since 22h, `UIntN n` under another name), a `Nat` below `2^n` by construction
 (every operation reduces mod `2^n`). Wrapping `add`/`sub`/`neg`/`mul`, `udiv`/`umod`,
 `and`/`or`/`xor`/`not`, `shl`/`lshr`/`ashr`, `getBit`, `msb`, `beq`/`ult`/`ule`/`slt`/`sle`,
 `concat`, `extract hi lo`, `zeroExtend`, `signExtend`, and `toVec`/`ofVec` (to and
 from `Vec Bool n`, least significant bit first). Operations that need `2^n` take the
 width at runtime (`{ω n : Nat}`). The arithmetic is the Prelude's native `Nat`
 operations (22a), so the kernel computes on literal bit vectors:
-`(BitVec.add (BitVec.ofNat 8 200) (BitVec.ofNat 8 100)).toNat = 44 := rfl`. (`lib/Word.wiz`'s
-`UIntN w` (22c) is the machine-integer counterpart, with native words in compiled code.)
+`(BitVec.add (BitVec.ofNat 8 200) (BitVec.ofNat 8 100)).toNat = 44 := rfl`. Compiled code
+runs `lib/Word.wiz`'s native words (22h).
 
 Along the way the elaborator learned to:
 * keep erased constructor fields and arguments erased when a `match` reverts them, and
@@ -2001,7 +2039,7 @@ Along the way the elaborator learned to:
 
 Not yet: facts like `Vec.get v (Fin.of 3 1 rfl) = 20 := rfl` (the `rfl` shape
 problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` in general, numerals and operators
-(`a + b`) for `BitVec` (decision HD9), and native representations (`implemented_by`).
+(`a + b`) for `BitVec` (decision HD9).
 
 ### 22f: the trusted base: witnesses and tracked registrations ✅
 
@@ -2087,6 +2125,23 @@ def k : Nat → Bool → Nat := by
 def four : Nat := doubel 2    -- unknown identifier 'doubel'   [Did you mean 'double'?]
 ```
 
+### 11l: the infoview socket ✅
+
+`wiz lsp --infoview SOCK` also listens on the Unix socket `SOCK`, for infoviews that run
+beside the editor (the terminal infoview connects there). The editor never says where
+its cursor is, so the server infers it from the editor's requests: any request with a
+position (hover, `documentHighlight`, which the server now advertises so that editors
+send it on every move, go to definition, completion, …) and code actions (at the
+range's start). When the cursor moves, and after each elaboration of its document,
+every connected infoview gets `wiz/infoview/cursor` (uri, position, session) and pulls
+with the ordinary `wiz/*` requests on the socket; sessions and refs are the editor's.
+Lean's library has no Unix sockets, so `c/sockets.c` (compiled into the executables by
+the linker, `moreLinkObjs` in the lakefile) listens, accepts, and turns a connection
+into two ordinary Lean handles. The server's state stays single-threaded: a reader
+thread per connection feeds one channel, and one loop answers in order. Protocol §8 of
+`wiz-notes/infoview-protocol.md`; tested in-process (the `lsp-server` group: the editor
+on a socket pair, an infoview on the socket).
+
 ## Stage 23: grail, a build tool
 
 ### 23b: modules by path ✅
@@ -2107,8 +2162,11 @@ so what it elaborates to depends only on its key. An importer's chain of command
 mixes in `key(M)` at the `import`. Editing a module now invalidates it and what imports
 it, not the whole library, and a module imported by many files is cached once. A module
 that uses a name it doesn't import is an error, with the cache or without (`--no-cache`
-keeps the effects in memory for the run; `runFrontend`, which the tests and the language
-server use, still elaborates a module in its importer's state). Cache files are
+keeps the effects in memory for the run), and in `runFrontend`, which the tests and the
+language server use: it checks each module once in isolation (errors are reported at
+the `import`) and then elaborates it into the importer's state, unless that state is
+still the initial one and the isolated result serves as it is. So the editor rejects
+what `wiz check` rejects. Cache files are
 written to a temporary name and renamed, so concurrent runs never see half a file.
 
 ### 23d: grail v0 ✅
@@ -2194,4 +2252,22 @@ on it are skipped; the others still run. Each job's output is buffered and print
 graph's order, so `-j 1` and `-j 8` print the same report, and a second build still runs
 no jobs.
 
-Next: git dependencies and a lock file (23h).
+### 23h: git dependencies and a lock file ✅
+
+`Package.dep NAME URL REV` depends on the package at a git URL (a path, `file://`,
+`https://`) and revision (tag, branch or commit). `grail update` resolves each
+dependency, and theirs (from their own `grail.wiz`), to a commit, clones it to
+`.grail/packages/NAME`, and writes `grail.lock`, which is committed:
+
+```
+(lock
+  (dep greet "https://example.org/greet.git" v1 88bef64fe0c79f190976221e57f65d6b17a1866c 89d8a320ea2473de))
+```
+
+(name, URL, revision, commit, and a hash of the checked-out files). Builds use the lock
+only: each dependency is checked out at its locked commit (fetched if missing), files
+that don't match the hash are refused, and a `REV` changed in `grail.wiz` stays at the
+locked commit, with a note, until `grail update`. The roots of a dependency's `lib`
+targets become module roots, so `import Greet.Hello` finds
+`.grail/packages/greet/src/Greet/Hello.wiz`; module keys already hash module texts.
+Two different commits of one dependency name are refused (no version resolution yet).
