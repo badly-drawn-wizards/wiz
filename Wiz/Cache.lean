@@ -20,7 +20,7 @@ The format is S-expressions; quantities are written with the rig's literal synta
 
 namespace Wiz.Cache
 
-variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
+variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R] [IsoCache R]
 
 inductive Sx where
   | a (s : String)
