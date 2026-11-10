@@ -174,10 +174,54 @@ def qttGroup : Group where
 
 /-! ## Structural types -/
 
+/-! ## The index type's level in the eliminators (audit F3) -/
+
+/-- The five eliminators that name the index type, with index type `Unit.{k}` and the data
+type at level `l`, on the descriptions `ret tt` (and `rec tt (ret tt)` for `ν`). They are
+well typed exactly when `k = l+1`. The surface language can't write the others (the
+elaborator builds the eliminator from a checked type), so these are core terms. -/
+def elimsAt (l k : Nat) : List (String × Term Q) :=
+  let l' : Level := Level.ofNat l
+  let I : Term Q := .unit (Level.ofNat k)
+  let uD : Term Q := .dret .tt
+  let sD : Term Q := .drec (.qlit .many) .tt (.dret .tt)
+  let x : Term Q := .con (.pair .tt .tt)
+  let lams (xs : List Name) (b : Term Q) : Term Q := xs.foldr .lam b
+  let P := lams ["i", "x"] (.unit 1)
+  let S := lams ["i"] (.unit (Level.ofNat (l + 1)))
+  [("ind", .ind l' I uD 1 P (lams ["i", "xs", "ih"] .tt) .tt x),
+   ("sfix", .sfix l' I uD 1 P (lams ["s", "rec", "i", "x"] .tt) .szInf .tt x),
+   ("scase", .scase l' I uD 1 P (lams ["j", "i", "xs"] .tt) .szInf .tt x),
+   ("coit", .coit l' I sD S (lams ["i", "s"] (.pair .tt (.pair .tt .tt))) .tt .tt),
+   ("scofix", .scofix l' I sD S
+      (lams ["s", "rec", "i", "a"] (.cocon (.pair (.app (.app (.var 2) (.var 1)) (.var 0)) (.pair .tt .tt)))) .szInf .tt .tt)]
+
+/-- Every eliminator of `elimsAt l k` is rejected with the index-level error. -/
+def elimsRejected (l k : Nat) : IO Unit :=
+  for (n, t) in elimsAt l k do
+    match infer (R := Q) { globals := {} } t with
+    | .ok _ => throw (IO.userError s!"{n} at level {l} with an index type in Sort {k} was accepted")
+    | .error e =>
+      let frag := s!"an index type must be in the data type's universe: Sort {l + 1}, not Sort {k}"
+      unless ((toString e).splitOn frag).length > 1 do
+        throw (IO.userError s!"{n}: expected the index-level error, got: {e}")
+
+def elimsAccepted (l : Nat) : IO Unit :=
+  for (n, t) in elimsAt l (l + 1) do
+    match infer (R := Q) { globals := {} } t with
+    | .ok _ => pure ()
+    | .error e => throw (IO.userError s!"{n} at level {l} with its index type in Sort {l + 1} was rejected: {e}")
+
 def structGroup : Group where
   name := "check: structural types"
   exercise := "Exercise 4.7"
   cases := [
+    { name := "F3: ind, sfix, scase, coit, scofix accept an index type in Sort (l+1)", run := fun _ => do
+        elimsAccepted 0; elimsAccepted 1 },
+    { name := "F3: ind, sfix, scase, coit, scofix reject an index type one level too high", run := fun _ => do
+        elimsRejected 0 2; elimsRejected 1 3 },
+    { name := "F3: ind, sfix, scase, coit, scofix reject an index type one level too low", run := fun _ => do
+        elimsRejected 1 1; elimsRejected 2 1 },
     { name := "swap with projections", run := fun _ =>
         accepts [Raw.defn "swap" (pi' "A" () ty (pi' "B" () ty (arr () (.sigma "_" () "A" "B") (.sigma "_" () "B" "A"))))
           (lams ["A", "B", "p"] (.pair (.snd "p") (.fst "p")))] },

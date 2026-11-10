@@ -672,7 +672,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     pure (.sort (.succ l), Usage.zeros ctx.lvl)
   | .ind l I D v P m i x => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -691,7 +691,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       | throw (.other s!"only a value of size ↑s or ∞ can be observed, not {ctx.showVal s}")
     pure (vInterp ctx.globals l I D (nuFamilyAt l I D s') i, u)
   | .sfix l I D v P f s i x => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -704,7 +704,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let ux ← check ctx x (.mu l vI vD (ctx.eval i) (ctx.eval s) none)
     pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), (← methodUsage ctx uf) + ux)
   | .scofix l I D A f s i a => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -717,7 +717,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let ua ← check ctx a (vApp ctx.globals vA (ctx.eval i))
     pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, (← methodUsage ctx uf) + ua)
   | .scase l I D v P m s i x => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -732,7 +732,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + ux)
   | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   | .coit l I D S st i s => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -788,6 +788,18 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   --| | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --sol>
+
+/-- The index type of a data type at level `l` lives exactly in `Sort (l+1)`: the premise
+`Γ ⊢ I type@k`, `k ≡ l+1` of `μ`/`ν`, repeated by every eliminator that names `I` (`ind`,
+`sfix`, `scase`, `coit`, `scofix`). The eliminators need it as much as the type formers:
+they check their scrutinee against `μ.{l} I D i` (or return `ν.{l} I D i`) without going
+through the type former, so without this premise a term could have a type that is not a
+type (soundness audit F3; it is the "index level ≤ family level" condition that injective
+type formers need). -/
+partial def checkIndexLevel (ctx : Ctx R) (l : Level) (I : Term R) : TCM Unit := do
+  let lI ← checkType ctx I
+  unless lI.equiv (.succ l) do
+    throw (.other s!"an index type must be in the data type's universe: Sort {(Level.succ l).format}, not Sort {lI.format} (lift it with ULift)")
 
 /-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as
 for types), returned as a polynomial. -/

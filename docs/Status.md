@@ -270,6 +270,37 @@ the results of the probes listed in the "Probes" section.
 * **What remains.** Every other `panic!` in `Eval.lean` also returns `Sort 0` and lets the
   check go on. None is known to be reachable from a well-typed term.
 
+### F9. The eliminators did not check the index type's level (audit F3) — **fixed**
+
+* **The gap.** `μ.{l} I D i`, `ν.{l} I D i` and `Desc.{l} I` require `I` in exactly
+  `Sort (l+1)`. The five eliminators that take `I` as an argument (`ind`, `sfix`, `scase`,
+  `coit`, `scofix`) only required `I` to be a type, in both kernels, and they build the
+  types `μ.{l} I D i`, `ν.{l} I D i`, `Desc.{l} I` as values, without the type former's
+  rule. So `coit.{0} (Unit.{2}) …` was accepted with the type `ν.{0} (Unit.{2}) D i`,
+  which is not a type, and the method of an ill-levelled `ind` bound variables at such a
+  type. The surface language can't write this (the elaborator builds every eliminator from
+  a type it has checked); a core term can.
+* **Not a proof of `False`**, as far as two attempts could tell (the soundness audit's, and
+  a second one with the unchecked positions listed,
+  `/workspace/wiz-notes/elim-levels.md`). The ill-levelled type exists only as a value:
+  every position that takes a type *term* checks it with the type former, a description
+  checked against `Desc.{l} I` at such an `I` can't branch (the motive of a `case` would
+  have to name `Desc.{l} I`), and its fields are still small. Semantically such a type is
+  a small family with a large index, harmless as long as nothing can state its
+  injectivity. But "index level ≤ family level" is the side condition for injective type
+  formers ([PLT25 §2.3]: without it, Russell's paradox by Hur's argument), and Wiz's `μ`
+  equation is injective in the index (in `(I, D, i)` with PR #40), so the kernel should
+  not depend on "nobody can write that type down".
+* **The fix.** `checkIndexLevel` in both kernels (`Check.lean`, `Kernel.wiz`): the five
+  rules have the premise `Γ ⊢ I type@k`, `k ≡ l+1` (CoreSpec §9.3). No other rule had the
+  omission: `con`, `cocon`, `out` take their type from the context, `Desc.elim` infers its
+  description, `cast`/`transp`/`=` take type terms.
+* **Regression tests.** Group *check: structural types*: three "F3: ind, sfix, scase,
+  coit, scofix …" cases (accepted at `Sort (l+1)`; rejected one level too high and one too
+  low, with the error text). Group *selfhost*: "F3 (audit): the eliminators check the
+  index type's level", and `MTm.elimLevels` (22 terms) is in the differential samples, so
+  `Kernel.wiz` must give the same verdicts.
+
 ---
 
 ## 4. Open issues
