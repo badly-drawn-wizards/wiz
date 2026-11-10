@@ -111,9 +111,11 @@ inductive Info (R : Type) where
   | decl (info : SourceInfo) (name : Name) (names : List Name) (type : Term R) (annotated : Bool) (insertAt : Nat)
   /-- an unknown identifier, with the locals in scope (for "did you mean") -/
   | unknownIdent (info : SourceInfo) (name : Name) (locals : List Name)
+  /-- (7e) a warning for the command's messages (a numeral that doesn't fit its type) -/
+  | warning (info : SourceInfo) (msg : String)
 
 def Info.info : Info R → SourceInfo
-  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. => i
+  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. | .warning i .. => i
 
 /-- An `Info` as recorded during elaboration, before quoting and zonking. -/
 inductive RawInfo (R : Type) where

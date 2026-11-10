@@ -404,7 +404,7 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
       | some s => .const s.quote []
       | none => readbackData ty v
     -- (7e) an integer of the registered `int` type, `ofNat n` or `negSucc n`: `n`, `-(n+1)`
-    else if builtins.lookup "int" == some T then
+    else if hint.map (·.1) == builtins.lookup "int" && hint.isSome then
       match v.tag?, (v.field 0).toNat? with
       | some 0, some n => .const (toString n) []
       | some 1, some n => .const s!"-{n + 1}" []

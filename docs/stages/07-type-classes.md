@@ -194,6 +194,11 @@ with instances for `Nat` that are the natively computed functions (`Add.mk Nat.a
 * **Instances** (docs/libraries.md, "Numbers"): `Int` (lib/Int.wiz, printed `-10` through
   `builtin int`), `UIntN w`/`IntN w` and their aliases (lib/Word.wiz), `UInt64`,
   `Float64` (lib/IO.wiz).
+* **Literals that don't fit.** A numeral at `UIntN w` above `2^w - 1`, or at `IntN w`
+  above `2^(w-1)` (so `-128 : I8` is fine), still wraps around (`OfNat (UIntN w) n` is
+  `UIntN.ofNat`), but with a warning: "the numeral 300 does not fit in UIntN 8 (at most
+  255): it wraps around to 44" (the elaborator knows these two families by name; an
+  `Info.warning` carries it to the command's messages).
 * **Errors.** `"a" + 1`: "failed to synthesize an instance of Add String"; `(1 : Bool)`:
   "failed to synthesize an instance of OfNat Bool 1"; `-1 : Nat`: "… Neg Nat".
 * **The self-hosted toolchain** has no type classes: its own prelude

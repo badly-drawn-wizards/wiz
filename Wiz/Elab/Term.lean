@@ -209,6 +209,17 @@ def ofNatLit? (ctx : LocalCtx R) (n : Nat) (A : VTy R) : ElabM R (Option (Term R
   let .pi x .instImplicit _ dom _ _ ← force (← instM codN (.natLit n)) | return none
   let m ← freshMeta ctx s!"instance {x}"
   addInstProblem ctx m dom
+  -- a numeral that doesn't fit a fixed-width word of lib/Word.wiz wraps around: say so
+  if let .mu _ _ _ _ _ (some (T, _, w :: _)) ← force A then
+    if T == "UIntN" || T == "IntN" then
+      if let .natLit w := whnf w then
+        if w ≤ 4096 then
+          let limit := if T == "UIntN" then 2 ^ w - 1 else 2 ^ (w - 1)
+          if n > limit then
+            let bits := n % 2 ^ w
+            let wrapped := if T == "IntN" && bits ≥ 2 ^ (w - 1) then s!"-{2 ^ w - bits}" else toString bits
+            pushInfo (.done (.warning ctx.info
+              s!"the numeral {n} does not fit in {T} {w} (at most {limit}): it wraps around to {wrapped}"))
   pure (some (.app (.app (.app (.const "OfNat.ofNat" us) qA) (.natLit n)) m))
 
 /-- `(x).f y` parses as `(x)` applied to `.f` and `y` (an argument `.f` is a constructor

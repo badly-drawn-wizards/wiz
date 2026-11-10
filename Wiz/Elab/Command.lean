@@ -752,7 +752,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let reportErr (e : ElabError R) : StateM (CommandState R) Unit :=
     modify fun s => { s with messages := s.messages.push { info := e.info, severity := .error, text := e.msg, code := e.code } }
   let addInfos (is : Array (Info R)) : StateM (CommandState R) Unit :=
-    unless is.isEmpty do modify fun s => { s with infos := s.infos ++ is }
+    unless is.isEmpty do
+      modify fun s => { s with infos := s.infos ++ is }
+      -- (7e) warnings recorded during elaboration
+      for i in is do
+        if let .warning info text := i then
+          modify fun s => { s with messages := s.messages.push { info, severity := .warning, text } }
   -- the finalizer of a foreign pointer type (for a foreign function's result)
   let finOf (t : Term R) : String := match (Term.spine t).1 with
     | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
