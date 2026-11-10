@@ -1,0 +1,101 @@
+# Stage 21: bootstrap
+
+## 21a–c: a self-hosted backend ✅
+
+`selfhost/Backend.wiz` compiles what the self-hosted frontend checked to C, and
+`selfhost/rt.c` is its runtime. A minimal first version:
+
+* **Erasure** (`eraseCheck`, **exercise 21.1**; `eraseInfer`), type directed through the
+  self-hosted kernel (`quickType` follows elimination spines, else `infer`): types,
+  proofs, sizes and quantity-`0` arguments become `◾`. A value of `μ D i` stays its
+  payload, nested pairs, except for a type shaped like the natural numbers, whose
+  values are native numbers (unpacked for a match). Descriptions become objects, which
+  the runtime's `ind` walks to build the induction hypotheses, **lazily**: a hypothesis
+  is computed when the method first reads it (eagerly, every structural function walked
+  its whole argument).
+* **Lazy `let`s**: the match compiler's `let`s (a shared catch-all, the hypotheses) are
+  substituted when cheap (variables, projections) and else suspended with `memo`;
+  evaluated eagerly they made the self-compiled compiler thousands of times slower.
+* **C** (`cgE`, **exercise 21.2**): each term one C expression (GNU statement
+  expressions for `let` and `case`), `λ`s lifted to C functions over their captured
+  variables; a global defined by `k` `λ`s is a C function of `k` arguments, called
+  directly when applied to as many (else through a curried closure); other globals are
+  values built on first use. Natives by name: `Nat` arithmetic, `IO`, `Str`, arrays
+  (persistent: Baker's trick), `StrMap` (a persistent treap), `memo`.
+* **Runtime**: tagged words, objects collected by the Boehm garbage collector (no
+  reference counts yet); the program re-executes itself once with a large stack.
+
+**Bootstrap**: the self-hosted compiler (frontend and backend, about 6500 lines of Wiz),
+compiled by the Lean toolchain, compiles itself to C (about 90 000 lines); that program
+(stage 2) produces the same C as stage 1 on the inputs tried. The test suite compiles
+and runs a program with the self-hosted compiler (when `$WIZ_GC_CFLAGS`/`$WIZ_GC_LDFLAGS`
+point at the garbage collector).
+
+## 21d: faster self-compilation ✅
+
+Measured, not guessed (`perf`, per-global timestamps from a streaming driver):
+
+* Compiling the toolchain took 5 min 43 s, almost all of it in one global: the Prelude's
+  text, a string literal 2600 characters long, i.e. 2600 nested `List.cons`. Two
+  quadratic costs: erasure evaluated each argument to instantiate the next parameter's
+  type even when the codomain doesn't mention it (`usesVar`, as in the kernel), and the
+  C text was built by appending `String`s, lists of characters (now a rope, `Doc`,
+  printed piece by piece). Also `quickType` follows `scase`, `let`, `coe` and the like
+  instead of inferring the whole match again at every nested split. Now 18 s.
+* String literals become their code points in the C code, built once; numerals made of
+  `Nat.succ`/`Nat.mul` are folded. The C went from 19 MB to 9.4 MB.
+* **Multi-argument closures**: a chain of `λ`s is one C function over its captured
+  variables and arguments (`mkfun`), and an application to several arguments calls it
+  at once (`apn`), without the closures of the partial applications. 88 000 lifted
+  functions became 35 000, the C 5.1 MB, and compiling it takes 31 s instead of 3 min.
+  Stage 2 runs about twice as fast.
+
+A note on debugging: under `gdb`, the Boehm collector's stopping of the world hangs,
+because `gdb` intercepts its suspend signals; pass them through (`handle SIGPWR nostop
+noprint pass`, and the same for `SIGXCPU`).
+
+**Fixpoint.** Stage 2 (the self-hosted compiler compiled by itself) compiles the whole
+toolchain to exactly the same C as stage 1 does. It took 15 minutes against stage 1's
+18 s, about 70% of it the collector marking: payloads as nested pairs were about four
+objects per constructor. A chain of pairs `(e₀, (e₁, … t))` is now one object, its tails
+the same pointer with an offset in its low bits (taking one allocates nothing): 8½
+minutes. A `match` was a method applied to the payload, a closure built and called each
+time; a lambda applied to arguments is now a `let`: 6 minutes. Reference counting comes
+next.
+
+## 21g: reference counting in the self-hosted backend (first stage)
+
+A second mode of `Backend.wiz` (`genProgramRC`), chosen by a first line `-- wiz: rc` in
+the program (a stand-in for a command-line flag: self-hosted programs can't read their
+arguments yet). The garbage-collected mode is unchanged, byte for byte.
+
+* **Perceus on the erased terms** (`rcE`): the C is in A-normal form, one local per
+  intermediate value, statements in evaluation order (C leaves the order of arguments
+  unspecified, and with reference counts the order of a use and an `inc` matters).
+  Liveness is one backward pass: a term is compiled knowing the variables used after it
+  (by de Bruijn level), and returns those used from its start; arguments are compiled
+  right to left. The last use of a variable moves it, earlier uses `inc` it, and a
+  variable that dies unused is `dec`ed where it dies (after its `let`, at a function's
+  start, at the start of each `case` branch that doesn't use it). A projection path from
+  a variable reads in place and `inc`s only the field; a `case` on a variable's field
+  reads the tag in place.
+* **Runtime** (`rt.c` with `WIZ_RC`): a count in every object's header; functions own
+  their arguments; function closures pass their collected arguments on (moved out when
+  unique); freeing is a worklist (a list a million long frees without recursion);
+  `memo` and the lazy hypotheses of `ind` release their suspension once forced; arrays
+  are updated in place when unique, else copied (Baker's versions would make cycles);
+  map nodes hold their keys. Constants (globals, string literals) are roots, released at
+  exit, after which the program checks that every object was freed.
+
+* **Borrowed parameters** (as in Lean): a parameter of a global function that its body
+  only reads (projections, a `case`'s tag, borrowed arguments of direct calls) is
+  borrowed, found as a greatest fixed point over all functions. A caller lends a
+  variable to it (and releases it after the call if that was its last use); the function
+  neither `inc`s it nor releases it.
+
+**Bootstrap in this mode**: stage 1 compiles the toolchain (with the `-- wiz: rc` line)
+to C, and that program (stage 2, reference counted) compiles it again to the same C,
+freeing every object by the end.
+
+Next: reuse and drop specialisation (as in [stage 8c](08-backend.md)), a faster allocator, keeping tail
+calls when a borrowed argument is lent; then reference counting by default.
