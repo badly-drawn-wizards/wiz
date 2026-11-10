@@ -28,7 +28,9 @@ soundness issues are known, open and fixed.
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
 LLVM's `llc` for the C and LLVM backends, Boehm GC for the self-hosted backend, a C
 compiler, and elan, which installs the Lean in `lean-toolchain`. It sets `$WIZ_CFLAGS`,
-`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`.
+`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`, which only the test
+driver reads (`Tests/Main.lean`; flags to `lake test -- …` win); `wiz` and `grail` take
+flags.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
 `solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
@@ -646,7 +648,7 @@ attribute [macro term.twice] twiceMacro
 #eval twice! 21                     -- 42
 ```
 
-* `import M` loads `lib/M.wiz` (and `$WIZ_PATH`). `lib/Prelude.wiz` defines `Bool`,
+* `import M` loads `lib/M.wiz` (and the `-I DIR` roots; `import A.B` is `A/B.wiz`). `lib/Prelude.wiz` defines `Bool`,
   `Nat`, `List`, `Option`, `Char`, `String`, `Except`, `Syntax`, `MacroM`, and `do`
   notation (written as macros).
 * `builtin key := name` registers prelude definitions with the kernel and the runtime
@@ -878,8 +880,9 @@ $ wiz run fact.wiz        # def main : Nat := fact 30
 
 * `wiz build FILE -o OUT` compiles the definition `main` to C and then to an
   executable; `wiz run FILE` also runs it and reads the printed result back with
-  `main`'s type. The C compiler is `$WIZ_CC` (default `cc`), with `$WIZ_CFLAGS` and
-  `$WIZ_LDFLAGS` for GMP. The C tests skip themselves if GMP isn't found.
+  `main`'s type. The C compiler is `--cc X` (default `cc`), with `--cflags "…"` and
+  `--ldflags "…"` for GMP (stage 23a: flags, not environment variables). The C tests
+  skip themselves if GMP isn't found.
 * **Runtime** (`runtime/wiz.c`, embedded in the compiler): a value is a word; scalars
   have the low bit set; objects have a header (reference count, tag, size). Closures
   point to a boxed entry and share or move their captured arguments when applied.
@@ -1969,3 +1972,78 @@ def k : Nat → Bool → Nat := by
   exact n
 def four : Nat := doubel 2    -- unknown identifier 'doubel'   [Did you mean 'double'?]
 ```
+
+## Stage 23: grail, a build tool
+
+### 23b: modules by path ✅
+
+`import A.B` reads `A/B.wiz` under the first **module root** that has it; `lib/` is a
+root, so `import Prelude` is `lib/Prelude.wiz` as before. The frontend stays pure: the
+caller reads every module a file can reach up front, by scanning its import lines
+(`Wiz/Module.lean`).
+
+### 23c: a key per module, atomic writes ✅
+
+A module's key is computed from text alone, before anything is elaborated:
+
+    key(M) = hash(salt, toolchain, text of M, M's C headers, key(N) for each import N)
+
+and a module is elaborated **in isolation**, from the empty state plus its own imports,
+so what it elaborates to depends only on its key. An importer's chain of command keys
+mixes in `key(M)` at the `import`. Editing a module now invalidates it and what imports
+it, not the whole library, and a module imported by many files is cached once. A module
+that uses a name it doesn't import is an error, with the cache or without (`--no-cache`
+keeps the effects in memory for the run; `runFrontend`, which the tests and the language
+server use, still elaborates a module in its importer's state). Cache files are
+written to a temporary name and renamed, so concurrent runs never see half a file.
+
+### 23d: grail v0 ✅
+
+A package is a directory with a `grail.wiz`, written in Wiz against `lib/Grail.wiz`:
+
+```
+import Grail
+def package : Package := Package.new "wiz"
+  |> Package.lib "std" "lib"                    -- check every module under lib/
+  |> Package.check "app" "app.wiz"              -- check one file
+  |> Package.exe "io" "examples/io.wiz"         -- compile `main`: .grail/bin/io
+```
+
+```sh
+lake build grail
+.lake/build/bin/grail build          # every target; `grail build std` for one
+.lake/build/bin/grail targets        # list them; `grail config` prints the toolchain
+```
+
+grail evaluates `Package.render package` (an S-expression) in the interpreter and
+builds a graph of **jobs**: `check` per file, and `ir → c → obj → link` per executable.
+A job's key is computed from its inputs before it runs (a check from the file's key, an
+object from the C text and the compiler flags), its output goes to
+`.grail/build/<key>/` through a temporary directory and a rename, and a job whose
+directory exists doesn't run: **a second build runs no jobs**, an edit reruns the checks
+of the files that import what changed, and an edit that leaves the C alone stops there.
+The key also covers the grail binary itself, so a new elaborator rebuilds everything.
+
+There are no environment variables: the C compiler and its flags come from flags
+(`--cc`, `--cflags`, `--ldflags`, `--llc`, `-I DIR`, `--cache DIR`, `--no-cache`) or from
+an uncommitted `grail.local.wiz` with this machine's paths (`nix develop` writes it from
+`flake.nix`):
+
+```
+import Grail
+def settings : Settings := Settings.empty
+  |> Settings.set "cflags" "-I/nix/store/…-gmp-…-dev/include"
+  |> Settings.set "ldflags" "-L/nix/store/…-gmp-…/lib -Wl,-rpath,/nix/store/…-gmp-…/lib"
+```
+
+### 23a: the toolchain as flags ✅
+
+`wiz` reads no environment variables: the toolchain record (`Wiz/Toolchain.lean`: C
+compiler and flags, `llc`, the collector's flags, the cache, module roots) comes from
+`--cc`, `--cflags`, `--ldflags`, `--libs`, `--llc`, `--cache DIR`/`--no-cache` and
+`-I DIR` (which replaces `$WIZ_PATH`), and is passed explicitly to everything that
+compiles. Its compiler fields are its `id`, which enters grail's keys.
+
+Next: the self-hosted toolchain as targets
+with a bootstrap check (23e), a test runner (23f), parallel jobs (23g), git
+dependencies and a lock file (23h).
