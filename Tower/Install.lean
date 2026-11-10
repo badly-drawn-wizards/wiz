@@ -5,7 +5,7 @@ import Tower.Basic
 
 A **spec** names a toolchain: a channel (`nightly`: the branch `nightly-ref`, `stable`:
 the highest `vX.Y.Z` tag), a ref (a tag, a branch, a commit), or `REF@COMMIT` (a commit,
-with the ref it came from as documentation; `solutions@<sha>`). Installing resolves the
+with the ref it came from as documentation; `master@<sha>`). Installing resolves the
 spec to a commit with `git ls-remote` on the `git` setting, then realises it from one
 source:
 

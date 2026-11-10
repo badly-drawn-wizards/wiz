@@ -32,7 +32,7 @@ structure Settings where
   /-- release tarballs: `BASE/TAG/wiz-ARCH-linux.tar.gz` (a URL or a directory) -/
   releases : String := "https://github.com/badly-drawn-wizards/wiz/releases/download"
   /-- the branch `nightly` follows -/
-  nightlyRef : String := "solutions"
+  nightlyRef : String := "master"
   /-- shims install a missing toolchain on first use -/
   autoInstall : Bool := true
   /-- toolchain flags for the wrappers of non-Nix toolchains (`cc`, `cflags`, …) -/

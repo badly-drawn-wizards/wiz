@@ -43,7 +43,7 @@ Or install toolchains with **tower** (like elan/rustup: `wiz` and `grail` shims 
 `PATH`, a `wiz-toolchain` file per project; [docs/stages/26-tower.md](docs/stages/26-tower.md)):
 
 ```sh
-nix profile install github:badly-drawn-wizards/wiz/solutions#tower
+nix profile install github:badly-drawn-wizards/wiz#tower
 tower --self ~/.nix-profile/bin/tower self install   # shims in ~/.tower/bin: put it on PATH
 tower default nightly
 ```

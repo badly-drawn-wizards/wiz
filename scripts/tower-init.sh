@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install tower and a default Wiz toolchain from a release tarball (stage 26d):
 #
-#   curl -sSfL https://raw.githubusercontent.com/badly-drawn-wizards/wiz/solutions/scripts/tower-init.sh | sh -s -- [CHANNEL]
+#   curl -sSfL https://raw.githubusercontent.com/badly-drawn-wizards/wiz/master/scripts/tower-init.sh | sh -s -- [CHANNEL]
 #
 # CHANNEL is nightly (the default) or a release tag. tower goes to ~/.tower/bin with the
 # shims; add that directory to PATH. Needs curl and tar; `wiz build` needs cc and GMP.

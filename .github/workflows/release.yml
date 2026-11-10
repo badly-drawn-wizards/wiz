@@ -2,7 +2,7 @@
 # you can untar by hand (scripts/release-tarball.sh describes the layout).
 #
 # * a tag vX.Y.Z: a GitHub release of that tag with wiz-x86_64-linux.tar.gz (+ .sha256);
-# * a push to solutions: the moving pre-release `nightly`, its assets replaced;
+# * a push to master: the moving pre-release `nightly`, its assets replaced;
 # * a pull request that touches the packaging: builds and tests the tarball, uploads nothing.
 #
 # The build is outside Nix, with elan's Lean, whose bundled clang and sysroot make the
@@ -13,10 +13,10 @@ name: release
 
 on:
   push:
-    branches: [solutions]
+    branches: [master]
     tags: ["v*"]
   pull_request:
-    branches: [solutions]
+    branches: [master]
     paths:
       - scripts/release-tarball.sh
       - .github/workflows/release.yml
@@ -100,13 +100,13 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" dist/* --title "Wiz ${GITHUB_REF_NAME}" --notes "Wiz ${GITHUB_REF_NAME}: install with tower (docs/stages/26-tower.md)" ||
             gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
-      - name: Publish (nightly, from solutions)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/solutions'
+      - name: Publish (nightly, from master)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view nightly >/dev/null 2>&1 ||
-            gh release create nightly --prerelease --title "Wiz nightly" --notes "Wiz built from the solutions branch; moves with it." --target "$GITHUB_SHA"
+            gh release create nightly --prerelease --title "Wiz nightly" --notes "Wiz built from the master branch; moves with it." --target "$GITHUB_SHA"
           gh release upload nightly dist/* --clobber
           # the release's tag follows the branch
           git tag -f nightly "$GITHUB_SHA"

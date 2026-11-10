@@ -12,10 +12,10 @@ A **spec** names a toolchain:
 
 | spec | means |
 |---|---|
-| `nightly` | the tip of the branch `nightly-ref` (default `solutions`) |
+| `nightly` | the tip of the branch `nightly-ref` (default `master`) |
 | `stable` | the highest `vX.Y.Z` tag |
 | `v0.2.0`, `my-branch`, a commit | that tag, branch or commit |
-| `REF@COMMIT` | that commit (`solutions@6f29a0a…`); the ref is a label |
+| `REF@COMMIT` | that commit (`master@6f29a0a…`); the ref is a label |
 | a linked name | a toolchain made by `tower toolchain link` |
 
 A project names its toolchain in a file **`wiz-toolchain`** at its root (one line, a
@@ -121,7 +121,7 @@ compiler you are working on.
 
 ## 26d: installing tower, release tarballs ✅
 
-**With Nix**: `nix profile install github:badly-drawn-wizards/wiz/solutions#tower`, then
+**With Nix**: `nix profile install github:badly-drawn-wizards/wiz#tower`, then
 `tower --self ~/.nix-profile/bin/tower self install`. The shims call the profile's
 tower, which stays valid when the profile is updated. After that, `tower default
 nightly`. (`nix run …#tower -- …` works for single commands, but shims written from
@@ -129,7 +129,7 @@ it point into a store path that nothing keeps alive.) The package (`packages.tow
 `apps.tower`) adds git, tar and curl to `PATH`; `nix` and `lake` are yours.
 
 **With the install script** (no Nix):
-`curl -sSfL https://raw.githubusercontent.com/badly-drawn-wizards/wiz/solutions/scripts/tower-init.sh | sh`
+`curl -sSfL https://raw.githubusercontent.com/badly-drawn-wizards/wiz/master/scripts/tower-init.sh | sh`
 (or `| sh -s -- v0.2.0` for a tag). It downloads the tarball, runs `tower self install`
 and then `tower default nightly`.
 
@@ -144,7 +144,7 @@ runtime, as Lean's own releases do, and the job checks that no `/nix/store` path
 linked in. It runs on:
 
 * tags `vX.Y.Z`: a GitHub release with the tarball and its `.sha256`;
-* pushes to `solutions`: the pre-release `nightly`, whose assets and tag move with the
+* pushes to `master`: the pre-release `nightly`, whose assets and tag move with the
   branch;
 * pull requests that touch the packaging: the tarball is built and tested, but nothing
   is uploaded.
