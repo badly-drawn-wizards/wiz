@@ -110,6 +110,13 @@ def termGroup : Group where
         parses "f xs@(.cons _ _)" "(term.app (term.ident f) [(term.asPat (term.ident xs) (term.paren (term.app (term.dotIdent cons) [(term.hole) (term.hole)])))])"
         parses "f @g x" "(term.app (term.ident f) [(term.explicit g) (term.ident x)])"
         parses "f@g x" "(term.app (term.ident f) [(term.explicit g) (term.ident x)])" },
+    -- 13h
+    { name := "anonymous constructor ⟨…⟩ and let with a pattern", run := fun _ => do
+        parses "⟨a, b⟩" "(term.anon [(term.ident a) (term.ident b)])"
+        parses "⟨⟩" "(term.anon [])"
+        parses "let ⟨a, b⟩ := s; a" "(term.letPat [] (term.anon [(term.ident a) (term.ident b)]) (term.ident s) [] (term.ident a))"
+        parses "let 1 (.mk a b) := s; a" "(term.letPat [(quantity 1)] (term.paren (term.app (term.dotIdent mk) [(term.ident a) (term.ident b)])) (term.ident s) [] (term.ident a))"
+        fails "⟨a, b" "'⟩'" },
     { name := "comments are whitespace", run := fun _ =>
         parses "f /- a /- nested -/ -/ b -- c" "(term.app (term.ident f) [(term.ident b)])" },
     { name := "error: missing body", run := fun _ => fails "fun x =>" "term" },

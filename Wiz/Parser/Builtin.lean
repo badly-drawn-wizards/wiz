@@ -92,6 +92,9 @@ def levelTrailing : List TrailingParser := [
   { kind := "level.add", prec := 65, lhsPrec := 65, p := seqs ["+", num] }
 ]
 
+/-- `⟨t₁, …, tₙ⟩` (13h) -/
+def anonCtor : ParserDescr := seqs ["⟨", withoutPosition (sepBy term ","), "⟩"]
+
 /-- Term syntax.
 
 | kind                 | prec | children |
@@ -135,6 +138,8 @@ def levelTrailing : List TrailingParser := [
 | `term.szInf`, `term.szSuc`, `term.sizeLt` | | "∞", "↑" s, "Size<" s |
 | `term.sized` (trailing) | max | T "^" s: an inductive or coinductive type at size `s` |
 | `term.asPat` (trailing) | max | x "@" p, without spaces: an as-pattern (13g; patterns only) |
+| `term.anon`          | max  | "⟨" [terms] "⟩": the constructor of the expected structure (13h; also a pattern) |
+| `term.letPat`        | lead | "let" [quantity] (`term.anon` / `term.paren`) ":=" term [";"] term (13h) |
 
 The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
 `Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out`, `coit` and `cocon` have no syntax of their
@@ -185,6 +190,12 @@ def termLeading : List LeadingParser := [
   { kind := "term.enum", prec := maxPrec, p := seqs [nonReserved "Enum", "[", sepBy ident ",", "]"] },
   { kind := "term.tag", prec := maxPrec, p := seqs ["'", noWs, ident] },
   { kind := "term.dotIdent", prec := maxPrec, p := seqs [".", noWs, ident] },
+  -- 13h: the anonymous constructor (also a pattern), and `let` with a pattern
+  { kind := "term.anon", prec := maxPrec, p := anonCtor },
+  { kind := "term.letPat", prec := leadPrec,
+    p := withPosition <| seqs ["let", optional quantity,
+      orelse (node "term.anon" anonCtor) (node "term.paren" (seqs ["(", withoutPosition term, ")"])),
+      ":=", term, optional ";", term] },
   { kind := "term.szInf", prec := maxPrec, p := "∞" },
   { kind := "term.szSuc", prec := maxPrec, p := seqs ["↑", term maxPrec] },
   { kind := "term.sizeLt", prec := leadPrec, p := seqs ["Size<", term maxPrec] },

@@ -154,3 +154,65 @@ also `f@g`: where both readings are as long, the application wins, so an as-patt
 whose pattern is a bare name (`x@y`, a second name for the same value) is not available;
 `x@_` and `x@(y)` are. Tests: `language` ("as-patterns …"),
 `parser: terms`.
+
+## 13h: patterns on structures, `⟨…⟩` ✅
+
+```
+structure Stats where
+  hits : Nat
+  misses : Nat
+def total (s : Stats) : Nat := match s with
+  | .mk h m => Nat.add h m                 -- also `Stats.mk h m` and `⟨h, m⟩`
+def total' (s : Stats) : Nat :=
+  let ⟨h, m⟩ := s                           -- or `let (.mk h m) := s`
+  Nat.add h m
+def stats : Stats := ⟨3, 4⟩                 -- `Stats.mk 3 4`, from the expected type
+```
+
+A structure is a Σ type, not a data type, so there is no eliminator to split it with
+("cannot match on a value of type Nat × Nat × …" before). A constructor pattern on a
+scrutinee whose type is a structure `S` (`.mk p…`, `S.mk p…` or `⟨p…⟩`) is now
+rewritten to the **tuple pattern** over the components of `S`'s Σ, which binds every
+field as a projection of the scrutinee (`let h := s.1; let m := s.2.1; …`); the
+sub-patterns are ordinary patterns, so structure patterns nest in constructor and tuple
+patterns and the other way round, and mix with as-patterns.
+
+**One place knows the encoding.** How the Σ of a structure is laid out (which
+component is which field, and which are not fields at all: today the tail
+`(0 fields✝ : …) → Unit` after the last field, 22i) is read from the declaration by
+`structLayout?` (`Elab/Struct.lean`), as a list of components, each a field or a marker;
+structure patterns, the pattern `let` and structure update (13i) go through it and
+nothing else there looks at the Σ. It classifies the components by what the
+declaration says (a Σ binder with a phantom name is a marker, the final component is a
+field exactly if `S.mk` has a field left for it), so moving the marker to a 0-quantity
+component before the last field needs no change here; any other re-encoding is a change
+to that one function.
+
+The anonymous constructor `⟨e₁, …, eₙ⟩` is new syntax (`term.anon`), as a term and as a
+pattern. Against a structure it is `S.mk e₁ … eₙ`; against a pair, the tuple
+`(e₁, …, eₙ)`; against a data type with exactly one constructor, that constructor. It
+needs an expected type ("cannot infer the type of an anonymous constructor").
+
+`let pat := e; body` with `pat` an anonymous constructor or any pattern in parentheses
+(`term.letPat`) is `match e with | pat => body`, so it also works without an expected
+type.
+
+**Linear structures.** A `match` is a case at ω and projections need an unrestricted
+pair, so neither takes apart a structure held at quantity 1. With a quantity,
+`let 1 ⟨a, b⟩ := s; body` (or `let 1 (.mk a b) := s`) therefore elaborates to nested
+splits at that quantity, one per component of the layout, as `let 1 (a, b, c) := t`
+does for a tuple (and `let 1 ⟨a, b, c⟩ := t` is accepted on a tuple too); the components
+are then names or `_`, and the form is check-mode only. **Today this is rejected for
+every structure**: the Σ ends in the marker tail, which is not a field, and the last
+split would bind it at quantity 1 and never use it. The elaborator reports that itself
+("cannot take a value of the structure Stats apart at quantity 1: the Σ type of a
+structure ends in a component that is not a field …") instead of leaving it to the
+kernel's usage count. The check is on the layout (a marker that the Σ does not bind at
+quantity 0), so once the marker is an erased component the same `let` goes through with
+no change here. At quantity ω (`let ω ⟨a, b⟩ := s`) the splits are accepted today.
+
+A structure whose constructor or fields are private to another module (13b) is opaque
+there and can't be matched or taken apart ("its constructor is private to module M").
+
+Tests: `language` ("structure patterns …", "anonymous constructors …", "let with a
+structure pattern …"), `parser: terms`.
