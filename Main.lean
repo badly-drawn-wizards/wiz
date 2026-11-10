@@ -10,7 +10,8 @@ def usage : String := "usage:
   wiz lsp                          a language server on stdin/stdout
 options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since it is
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
-experimental kernel options (D1, they turn the cache off): --regularity full|nonprop|refl|off,
+experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
+(default off),
 --predicative-prop
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --llc X (default llc)"
@@ -40,7 +41,7 @@ def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String
   pure m
 
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
-initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.full, false)
+initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
@@ -51,7 +52,7 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp } }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .full && !predicativeProp then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -107,7 +108,7 @@ def kernelOpt : List String → Except String (Regularity × Bool × List String
   | a :: rest => do
     let (r, p, rest) ← kernelOpt rest
     return (r, p, a :: rest)
-  | [] => return (.full, false, [])
+  | [] => return (.off, false, [])
 
 def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."

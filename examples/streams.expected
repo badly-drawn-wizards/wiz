@@ -1,0 +1,5 @@
+examples/streams.wiz:15:1: info: .succ (.succ .zero)
+examples/streams.wiz:16:1: info: .succ .zero
+examples/streams.wiz:21:1: info: .zero
+examples/streams.wiz:28:1: info: .succ .zero
+examples/streams.wiz:37:1: info: .succ (.succ .zero)
