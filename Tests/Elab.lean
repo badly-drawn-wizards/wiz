@@ -365,13 +365,13 @@ def ottGroup : Group where
     -- D1: no regularity by default: a cast at a variable type stays a cast
     { name := "cast along a variable `A = A` is not the identity (no regularity; it is with --regularity full)", run := fun _ => do
         let reg := "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl"
-        fails reg "type mismatch"
+        fails reg "rfl: the two sides are not definitionally equal"
         okWith .full reg },
     { name := "J from transp and cast", run := fun _ =>
         ok substDef },
     { name := "J computes on refl at a data type, not at a variable family (no regularity)", run := fun _ => do
         let substRefl := substDef ++ "def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl"
-        fails substRefl "type mismatch"
+        fails substRefl "rfl: the two sides are not definitionally equal"
         okWith .full substRefl
         ok (substDef ++ "inductive N where\n  | z\n  | s (n : N)\n" ++
           "def substN {A : Type} (a : A) : subst (fun _ => N) (refl a) (N.s N.z) = N.s N.z := rfl") },
@@ -421,7 +421,7 @@ def ottGroup : Group where
     { name := "equality of proofs is rejected", run := fun _ =>
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
-        fails "def bad (A : Type) (a b : A) : a = b := rfl" "type mismatch" },
+        fails "def bad (A : Type) (a b : A) : a = b := rfl" "rfl: the two sides are not definitionally equal" },
     -- D1: regularity is off by default, and the program checks; with `--regularity full`
     -- (or `nonprop`) and an evaluator that runs proofs (`--eager-proofs`, the behaviour
     -- before P2) checking it does not terminate
@@ -442,7 +442,7 @@ def ottGroup : Group where
           "def castN (e : N = N) (n : N) : (cast e n : N) = n := rfl\n") },
     { name := "no regularity at a type with a variable parameter", run := fun _ =>
         fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
-          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "type mismatch" },
+          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "rfl: the two sides are not definitionally equal" },
     -- P1: InReg decided by ground equality is stable (h3 checks, and so does its reduct h2)
     { name := "P1: InReg is stable under substitution (the probe's reduct checks iff the term does)", run := fun _ =>
         checkEq (repr ["h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .ground)).pretty },
@@ -4355,7 +4355,7 @@ def descEqGroup : Group where
           "def numCast (h : L N = L N) : (cast h (L.cons N.z L.nil) : L N) = L.cons N.z L.nil := rfl\n") },
     { name := "a cast at a variable element type stays a cast (no regularity)", run := fun _ =>
         fails (descEqTypes ++
-          "def reg (A C : Type) (h : L A = L C) (x : A) (y : C) : (cast h (L.cons x L.nil) : L C) = L.cons y L.nil := rfl\n") "type mismatch" },
+          "def reg (A C : Type) (h : L A = L C) (x : A) (y : C) : (cast h (L.cons x L.nil) : L C) = L.cons y L.nil := rfl\n") "rfl: the two sides are not definitionally equal" },
     { name := "reflexivity: refl T proves T = T for a data type; i = i' alone does not", run := fun _ => do
         ok (descEqTypes ++ "def r (A : Type) : L A = L A := refl (L A)\n")
         fails (descEqTypes ++
