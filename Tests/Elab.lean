@@ -2330,11 +2330,12 @@ def selfHostGroup : Group where
         let prog := "import Prelude\npartial def count (n acc : Nat) : Nat := match n with\n  | .zero => acc\n" ++
           "  | .succ m => match Nat.beq (Nat.mod m 3) 0 with\n    | .true => count m (acc + 2)\n    | .false => count m acc\n" ++
           "def main : IO Unit := IO.println (Nat.toString (count 10000000 0))\n"
-        selfhostCompileRun ("-- wiz: rc\n" ++ prog) "6666668\n" (opt := "-O0") (smallStack := true)
+        -- (every parameter owned: a borrowed one given an owned argument keeps the call a call)
+        selfhostCompileRun ("-- wiz: rc-owned\n" ++ prog) "6666668\n" (opt := "-O0") (smallStack := true)
         selfhostCompileRun prog "6666668\n" (opt := "-O0") (smallStack := true) },
     { name := "dead lets without effects are not computed (15e)", run := fun _ =>
         selfhostCompileRun ("-- wiz: rc\nimport Prelude\ndef f (n : Nat) : Nat :=\n  let unused := List.cons n (List.cons 2 .nil);\n" ++
-          "  let alsoUnused := (n, n);\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" },
+          "  let alsoUnused := List.cons unused .nil;\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" },
     { name := "the self-hosted backend: division, powers and bits", run := fun _ =>
         selfhostCompileRun ("import Prelude\ndef show (n : Nat) : IO Unit := IO.println (Nat.toString n)\n" ++
           "def main : IO Unit := do\n  show (100 / 7);\n  show (Nat.mod 100 7);\n  show (Nat.div 5 0);\n  show (Nat.mod 5 0);\n" ++
