@@ -3282,6 +3282,16 @@ def descEqGroup : Group where
           "#reduce (Desc.rec 1 () (Desc.ret ()) : Desc Unit) = Desc.rec 0 () (Desc.ret ())\n" ++
           "#reduce (Desc.rec 1 () (Desc.ret ()) : Desc Unit) = Desc.rec 1 () (Desc.ret ())\n")
           ["False", "False", "(0 _ : True) × True"] },
+    { name := "a quantity variable against a literal at an arg field is stuck too", run := fun _ =>
+        ok ("#reduce fun (q : Qty) => (Desc.arg q Unit (fun _ => Desc.ret ()) : Desc Unit) = Desc.arg 1 Unit (fun _ => Desc.ret ())\n")
+          ["fun q => Desc.arg q Unit (fun x => Desc.ret ()) = Desc.arg 1 Unit (fun x => Desc.ret ())"] },
+    { name := "sizes compare as conversion does: μ^{↑∞} ≡ μ^∞ computes like μ^∞ ≡ μ^∞", run := fun _ => do
+        let g : Globals ZeroOneMany := {}
+        let mu (s : Val ZeroOneMany) : Val ZeroOneMany := .mu 0 (.unit 1) (.dret .tt) .tt s none
+        let q (v : Val ZeroOneMany) : Term ZeroOneMany := quote g 0 v
+        let inf := q (vEqType g (mu .szInf) (mu .szInf))
+        check (match inf with | .eqTy .. => false | _ => true) "μ^∞ ≡ μ^∞ should compute"
+        check (inf == q (vEqType g (mu (.szSuc .szInf)) (mu .szInf))) "μ^{↑∞} ≡ μ^∞ should compute like μ^∞ ≡ μ^∞" },
     { name := "a quantity variable against a literal is not unequal (stuck: substituting can make them equal)", run := fun _ =>
         ok ("#reduce fun (q : Qty) => (Desc.rec q () (Desc.ret ()) : Desc Unit) = Desc.rec 1 () (Desc.ret ())\n")
           ["fun q => Desc.rec q () (Desc.ret ()) = Desc.rec 1 () (Desc.ret ())"] },

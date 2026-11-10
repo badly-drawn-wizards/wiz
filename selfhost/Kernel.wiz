@@ -1259,23 +1259,8 @@ def sameVal (a b : Val) : Bool :=
 def spNil : Spine → Bool
   | .snil => .true
   | _ => .false
--- (4g) sizes equal by their heads (`sizeEqTrue` in `Eval.lean`): `∞ = ∞`, `↑s = ↑s'`, a
--- variable itself; anything else is unknown (the rules are stuck)
-def sizeEqTrue (s s' : Val) : Bool := match whnf s with
-  | .vszInf => match whnf s' with
-    | .vszInf => .true
-    | _ => .false
-  | .vszSuc a => match whnf s' with
-    | .vszSuc b => sizeEqTrue a b
-    | _ => .false
-  | .vne h sp => match whnf s' with
-    | .vne h' sp' => match h with
-      | .hvar x => match h' with
-        | .hvar y => Bool.and (Nat.beq x y) (Bool.and (spNil sp) (spNil sp'))
-        | _ => .false
-      | _ => .false
-    | _ => .false
-  | _ => .false
+-- (4g) sizes equal as conversion decides it (`sizeEqTrue` in `Eval.lean`): `sizeEq`
+def sizeEqTrue (s s' : Val) : Bool := sizeEq (whnf s) (whnf s')
 -- (4g) equality of description codes, by the constructors (`vEqDesc` in `Eval.lean`):
 -- `ret j = ret j'` is `j = j'`; `arg S E = arg S' E'` is
 -- `(e : S = S') × ((s : S) → E s = E' (cast e s))`; `rec`, `hrec` likewise with the rests

@@ -913,14 +913,25 @@ partial def inertDesc (g : Globals R) (depth : Nat) (D : Val R) : Bool :=
     | none => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (Val.var (100000 + 50 + depth)))
   | _ => false
 
-/-- Two sizes are equal by their heads (4g): `∞ = ∞`, `↑s = ↑s'` if `s = s'`, and a
-variable equals itself. Anything else is unknown (`false`: the μ/ν rules are stuck). Sizes
-contain no proofs and no definitions, so this is conversion on sizes. -/
+/-- A size as conversion sees it (`sizeView` in `Conv.lean`): `∞` (any `↑ᵏ ∞`, `none`), or a
+base with a number of `↑`s. -/
+partial def sizeViewE : Val R → Option (Val R) × Nat
+  | .unfold _ _ _ v => sizeViewE v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => sizeViewE v.get
+  | .szInf => (none, 0)
+  | .szSuc s => let (b, k) := sizeViewE s; (b, k + 1)
+  | v => (some v, 0)
+
+/-- Two sizes are equal (4g), decided as conversion decides it (`sizeEq` in `Conv.lean`):
+`↑ᵏ ∞ = ↑ᵐ ∞`, and `↑ᵏ x = ↑ᵐ y` when `k = m` and `x`, `y` are the same variable or
+metavariable. Anything else is unknown (`false`: the μ/ν rules are stuck). -/
 partial def sizeEqTrue (s s' : Val R) : Bool :=
-  match whnf s, whnf s' with
-  | .szInf, .szInf => true
-  | .szSuc a, .szSuc b => sizeEqTrue a b
-  | .neutral (.local x) #[], .neutral (.local y) #[] => x == y
+  match sizeViewE s, sizeViewE s' with
+  | (none, _), (none, _) => true
+  | (some x, k), (some y, m) => k == m && (match x, y with
+    | .neutral (.local a) #[], .neutral (.local b) #[] => a == b
+    | .neutral (.mvar a) #[], .neutral (.mvar b) #[] => a == b
+    | _, _ => false)
   | _, _ => false
 
 /-- **Equality of description codes** (4g), `D =_{Desc l I} D'`, by the constructors:
@@ -930,7 +941,7 @@ partial def sizeEqTrue (s s' : Val R) : Bool :=
     rec q j E = rec q' j' E'        ↦  (j =_I j') × (E = E')
     hrec q H j E = hrec q' H' j' E' ↦  ((e :0 H ≡ H') × ((h :0 H) → j h =_I j' (cast H H' e h))) × (E = E')
     different constructors          ↦  False
-    quantities two different literals ↦  False;  otherwise unequal (a variable) ↦ stuck
+    quantities two different constants ↦  False;  otherwise unequal (a variable) ↦ stuck
     a neutral on either side        ↦  stuck
 
 The shape of the result depends only on the two heads (and the quantities), never on
@@ -943,14 +954,16 @@ partial def vEqDesc (g : Globals R) (l : Level) (I D D' : Val R) : Val R :=
   let D := whnf D
   let D' := whnf D'
   let stuck : Val R := .neutral (.eq (.desc l I) D D') #[]
-  -- quantities: equal ↦ go on; two different *literals* ↦ `False`; anything else (a
+  -- quantities: equal ↦ go on; two different *constant* polynomials ↦ `False`; anything else (a
   -- quantity variable against a literal or another variable) ↦ stuck, since a
   -- substitution could make them equal
   let qty (q q' : Val R) (k : Unit → Val R) : Val R := match sameQty q q' with
     | some true => k ()
-    | some false => match whnf q, whnf q' with
-      | .qlit _, .qlit _ => .empty 0
-      | _, _ => stuck
+    | some false =>
+      let isConst (v : Val R) : Bool := match v.toPoly? with
+        | some p => p.isConst?.isSome
+        | none => false
+      if isConst q && isConst q' then .empty 0 else stuck
     | none => stuck
   -- `(e :0 S ≡ S') × ((x :0 S) → F x = F' (cast S S' e x))` at type `T`
   -- (inside `e`: e0 S1 S'2 F3 F'4 T5; inside `x`: one more)

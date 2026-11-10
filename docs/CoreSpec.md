@@ -569,7 +569,7 @@ both false, by shape:
   Desc_l I ≡ Desc_l' I'          ⟶  I ≡ I' if l ≡ l', else stuck                          [wiz]
   ULift.{u} A ≡ ULift.{w} B      ⟶  A ≡ B if u ≡ w; False if both closed and different; else stuck   [Q4, §4.1]
   μ^s_l I D i ≡ μ^s'_l' I' D' i'  ⟶  (I, D, i) =_T (I', D', i'),  T = (J : Sort (l+1)) × Desc_l J × J
-  (the same for ν)                    if l ≡ l' and s, s' are equal by their heads; else stuck   [wiz, 4g, §8.4b]
+  (the same for ν)                    if l ≡ l' and s ≡ s' as sizes (sizeEq); else stuck        [wiz, 4g, §8.4b]
   two different canonical formers (Π, Σ, Sort, Unit, Empty, Enum, Desc, μ, ν, ULift)
                                   ⟶  False                        (no-confusion of type formers)
   otherwise                       ⟶  stuck
@@ -775,7 +775,7 @@ Equality *of* `μ`/`ν` types (§8.3), for any two families, is equality of thei
 
 ```
 μ^s_l I D i ≡ μ^s'_l' I' D' i'  ⟶  (I, D, i) =_T (I', D', i'),   T := (J : Sort (l+1)) × (D : Desc_l J) × J
-     if l ≡ l' and s, s' are equal by their heads (∞ = ∞, ↑s = ↑s' if s = s', a variable itself); else stuck
+     if l ≡ l' and s ≡ s' as sizes (`sizeEq`: any ↑ᵏ∞ is ∞; ↑ᵏx = ↑ᵏx); else stuck
 ```
 
 which the Σ rule (§8.2) computes to
@@ -784,8 +784,12 @@ which the Σ rule (§8.2) computes to
 (0 e : I ≡ I') × ((0 e' : cast (Desc I) (Desc I') ê₁ D = D') × (cast I' I' ê₂ (cast I I' ê₃ i) = i'))
 ```
 
-(the `ê`s are `transp`s of `e`, `e'`; the outer cast at `I'` is the identity when `I'` is
-inert).
+(the `ê`s are `transp`s of `e`, `e'`). The outer cast at `I'` is the identity when `I'`
+is inert, but only through regularity at inert types (§8.4), whose side condition is
+syntactic (`sameVal`). So the *computed form* of a μ equation inherits that rule's
+non-congruence (an index type written in two convertible but syntactically different
+ways can leave the cast stuck in one case and not in the other). The decomposition itself
+is head-directed.
 and `cast` between them computes constructor by constructor (§8.4), generalising D1's
 one-family rule. The tail of each Σ is a closure: `D = D'` computes only when it is looked
 at, so a big description costs nothing until a proof is projected.
@@ -805,9 +809,10 @@ what a component computes to. In particular:
   2026-11-10: a rule that fires on syntactic equality and is stuck otherwise also breaks
   the congruence of conversion: two convertible but syntactically different stuck terms
   can stop being convertible after a substitution makes one of them fire.)
-* The sizes are compared by their heads; two size variables are equal only if they are
-  the same variable. A size has no proofs and no definitions in it, so this is conversion
-  on sizes. Otherwise (`∞` against `↑s`, two different variables) the equation is stuck.
+* The sizes are compared as conversion compares them (`sizeEqTrue`, the normal form of
+  `sizeEq` in `Conv.lean`): any `↑ᵏ ∞` is `∞`, and `↑ᵏ x = ↑ᵐ y` when `k = m` and `x`, `y`
+  are the same variable. So the gate is invariant under conversion of the sizes.
+  Otherwise (`∞` against `↑s`, two different variables) the equation is stuck.
 * Tag fields are not special: `arg (Enum ls) E = arg (Enum ls') E'` is the general rule,
   `(0 e : Enum ls ≡ Enum ls') × ((0 t : Enum ls) → E t = E' (cast … t))`, and the cast at
   `Enum` is the identity. Applying the Π to a tag computes that constructor's equation.
@@ -850,9 +855,14 @@ proof; the obligations are recorded in Status.md ("Description equality", 4g).
    `Desc(U_l, I)` with constructors `ret (i : El I)`, `arg (q) (S : U_l) (E : El S →
    Desc)`, `rec (q) (j : El I) (E : Desc)`, `hrec (q) (H : U_l) (j : El H → El I) (E :
    Desc)`, and `U_l` gets a code `μ (I : U_l) (D : Desc(U_l, I)) (i : El I)` (likewise
-   `ν`). `Desc` is positive in `U_l` and uses `El` only in domains, as Π-codes do, so the
-   simultaneous definition is a standard IR definition with a nested inductive (field
-   types are *exactly* in `Sort (l+1)`, §9.1, so every field is a code of `U_l`).
+   `ν`). `Desc` is positive in `U_l`; it uses `El` in domains (as Π-codes do) and as a
+   field type (`ret`, `rec`; as Σ-codes do). This is **not plain IR**: `El (μ I D i)` is
+   itself an inductive family, the initial algebra of `⟦D⟧`, defined inside the recursive
+   definition of `El`: an inductive definition nested in an IR decoding. That exists in a
+   classical set-theoretic metatheory (well-founded trees), and it is what generic
+   universe constructions provide (Gratzer 2022, *An inductive-recursive universe generic
+   for small families*, used by Pujet's CIC^obs model; unverified detail). Field types are
+   *exactly* in `Sort (l+1)` (§9.1), so every field is a code of `U_l`.
 2. *Equality of codes* is the structural relation, defined by recursion on both codes:
    for μ it is the relation on `(I, D, i)` above, and on descriptions it is the table
    above (heterogeneous through `cast`, as for Π-codes). Different code constructors are

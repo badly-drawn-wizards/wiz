@@ -425,8 +425,11 @@ already has. At `l = 0`, `Prop : Sort 1` is a valid field type, which gives an i
 (model: [PT23]; classically `Prop ≅ 2`), not Hur's `(Type → Type) ↪ Type`. Proof fields
 are lifted propositions compared by equivalence, so the A0 issue doesn't return.
 
-**Obligations.** (1) The nested IR definition of `U_l` with `Desc(U_l, -)` and the
-structural relation, in the presence of impredicative `Prop` (as in [PT23]); (2) that
+**Obligations.** (1) The definition of `U_l` with `Desc(U_l, -)` and the structural
+relation: not plain IR, since `El (μ I D i)` is an inductive family (the initial algebra
+of `⟦D⟧`) defined inside the recursive definition of `El` (as in generic-universe
+constructions, Gratzer 2022, which Pujet's CIC^obs model uses), with impredicative `Prop`
+(as in [PT23]); (2) that
 equality of `μ` codes is equality of `(I, D, i)` at `(J : Sort (l+1)) × Desc J × J`, so
 the cast's payload equation is one `transp` (well typed); (3) quantities as part of
 codes (as for Π).
@@ -455,7 +458,7 @@ equations are not provable by computation. They are incompleteness, not unsoundn
   down, or one that still mentions a metavariable" (its README 4c text, now in [stages/04-data.md](stages/04-data.md)).
 * **Neutral types**: `a =_X b` and `cast X Y e t` for a variable `X` are stuck.
 * **`μ ≡ μ`, `ν ≡ ν`** are stuck when the levels are not known equivalent or the sizes
-  are not equal by their heads (`∞` against `↑s`, two different size variables). Since 4g
+  are not equal as conversion sees them (`∞` against `↑s`, two different size variables). Since 4g
   they compute otherwise (E1).
 * **Equality at `ν`** is stuck (no bisimulation).
 * **`Size ≡ Size`, `Qty ≡ Qty`** are stuck in the Lean kernel (in `Kernel.wiz`, `Size`
