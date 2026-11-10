@@ -232,9 +232,10 @@ inductive BinderKind where
   | instImplicit
 inductive ParamView where
   | mk (name : String) (kind : BinderKind) (type : Syntax)
--- a constructor field; `recursive` if its type is the inductive type itself
+-- a constructor field; `recursive` if its type is the inductive type itself, `proof` if
+-- its type is a proposition
 inductive FieldView where
-  | mk (name : String) (kind : BinderKind) (type : Syntax) (recursive : Bool)
+  | mk (name : String) (kind : BinderKind) (type : Syntax) (recursive : Bool) (proof : Bool)
 -- a constructor (short name, `cons`), its fields after the parameters, and the indices
 -- of its result type
 inductive CtorView where
@@ -334,13 +335,15 @@ def ParamView.kind : ParamView → BinderKind
 def ParamView.type : ParamView → Syntax
   | .mk _ _ t => t
 def FieldView.name : FieldView → String
-  | .mk n _ _ _ => n
+  | .mk n _ _ _ _ => n
 def FieldView.kind : FieldView → BinderKind
-  | .mk _ k _ _ => k
+  | .mk _ k _ _ _ => k
 def FieldView.type : FieldView → Syntax
-  | .mk _ _ t _ => t
+  | .mk _ _ t _ _ => t
 def FieldView.recursive : FieldView → Bool
-  | .mk _ _ _ r => r
+  | .mk _ _ _ r _ => r
+def FieldView.proof : FieldView → Bool
+  | .mk _ _ _ _ p => p
 def CtorView.name : CtorView → String
   | .mk n _ _ => n
 def CtorView.fields : CtorView → List FieldView

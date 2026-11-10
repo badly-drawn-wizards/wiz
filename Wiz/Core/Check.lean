@@ -870,11 +870,18 @@ value and (for a partial definition) its witness: the declarations without a val
 witness (`axiom`s, foreign functions), and the `builtin` registrations made outside the
 toolchain's library (`Globals.assumed`), shown as `builtin key := name`. A numeral
 depends on the declarations registered as `nat`, `nat.zero` and `nat.succ`. A partial
-definition's implementation is not looked at: it is only run, never unfolded in a proof. -/
+definition's implementation is not looked at: it is only run, never unfolded in a proof.
+
+Also listed, marked `native`: the **native implementations** the declaration's compiled
+code runs, wherever they are registered (the library's too). `native f := g` is
+`attribute [implemented_by g] f`, and `native T := mk/get` a native representation of the
+type `T` (`attribute [implemented_by mk get] T.mk`, a `repr:` registration). The kernel
+never runs them, so they prove nothing: they are trusted to agree with the definitions. -/
 partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run do
   let mut seen : Std.HashSet Name := {}
   let mut todo := [n]
   let mut out : Array String := #[]
+  let mut reprs : List Name := []
   let numeral := ["nat", "nat.zero", "nat.succ"].filterMap (List.lookup · g.builtins)
   while true do
     match todo with
@@ -887,6 +894,14 @@ partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run 
       if d.value.isNone && d.witness.isNone then out := out.push c
       for (k, m) in g.assumed.reverse do
         if m == c then out := out.push s!"builtin {k} := {c}"
+      if let some i := d.nativeImpl? then out := out.push s!"native {c} := {i}"
+      -- (a `repr:T:mk:get:…` registration is on `T`'s constructor: it concerns whatever
+      -- mentions the type or the constructor)
+      for (k, m) in g.builtins.reverse do
+        if let "repr" :: T :: mkImpl :: getImpl :: _ := k.splitOn ":" then
+          if (c == m || c == T) && !reprs.contains T then
+            reprs := T :: reprs
+            out := out.push s!"native {T} := {mkImpl}/{getImpl}"
       let (cs, lit) := ([d.type] ++ d.value.toList ++ d.witness.toList).foldl
         (fun (acc : List Name × Bool) t => (consts t acc.1, acc.2 || hasNatLit t)) ([], false)
       todo := cs ++ (if lit then numeral else []) ++ todo
