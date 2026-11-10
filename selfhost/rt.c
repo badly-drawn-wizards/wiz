@@ -51,6 +51,15 @@ typedef struct { RCF uint32_t tag, n; Fn fn; V env[]; } Clo;
 static V unreach(void) { fprintf(stderr, "wiz: unreachable\n"); exit(3); }
 static void die(const char *m) { fprintf(stderr, "wiz: %s\n", m); exit(3); }
 
+/* (`-DWIZ_STATS`: count allocations, reused cells and the peak of live objects, printed
+   at exit under reference counting) */
+#ifdef WIZ_STATS
+static size_t rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk;
+#define STAT(x) (x)
+#else
+#define STAT(x) ((void)0)
+#endif
+
 #ifdef WIZ_RC
 /* ---- reference counting ---- */
 
@@ -82,6 +91,7 @@ static void *rt_alloc(size_t sz) {
   }
   o->rc = 1;
   rt_live++;
+  STAT((rt_nalloc++, rt_live > rt_peak ? rt_peak = rt_live : 0));
   return o;
 }
 #define MALLOC_OBJ(sz) rt_alloc(sz)
@@ -102,6 +112,7 @@ static inline void dec(V v) { if (!ISBOX(v)) { Obj *o = OBJ(v); if (--o->rc == 0
 #define INLINE static inline __attribute__((always_inline))
 INLINE void copyV(V *d, const V *s, uint32_t n) { for (uint32_t i = 0; i < n; i++) d[i] = s[i]; }
 INLINE V mkobj(uint32_t t, uint32_t n, V *fs) {
+  STAT(rt_nobj++);
   Obj *o = (Obj *)MALLOC_OBJ(sizeof(Obj) + n * sizeof(V));
   if (!o) die("out of memory");
   o->tag = t; o->n = n;
@@ -109,6 +120,7 @@ INLINE V mkobj(uint32_t t, uint32_t n, V *fs) {
   return (V)o;
 }
 INLINE V mkclo(Fn fn, uint32_t n, V *env) {
+  STAT(rt_nclo++);
   Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + n * sizeof(V));
   if (!c) die("out of memory");
   c->tag = T_CLO; c->n = n; c->fn = fn;
@@ -340,6 +352,7 @@ static V accFn(V *env, V a) { (void)env; (void)a; die("accFn"); return BOX(0); }
 static V native(NF f, int arity) { V env[2] = {(V)f, BOX(arity)}; return mkclo(accFn, 2, env); }
 /* a function of `arity` arguments (captured variables first), `n` of them given */
 INLINE V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
+  STAT(rt_nfun++);
   Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + (n + 2) * sizeof(V));
   if (!c) die("out of memory");
   c->tag = T_CLO; c->n = n + 2; c->fn = accFn;
@@ -511,6 +524,7 @@ static V thunkFn(V *env, V u) {
   return env[2];
 }
 INLINE V mkthunk(NF f, uint32_t nc, V *caps) {
+  STAT(rt_nthunk++);
   Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + (nc + 3) * sizeof(V));
   c->tag = T_CLO; c->n = nc + 3; c->fn = thunkFn;
   c->env[0] = (V)f; c->env[1] = BOX(0); c->env[2] = BOX(0);
@@ -757,8 +771,12 @@ static void rt_freeShell(Obj *o) {
   rt_live--;
 }
 static int rt_freeing;
+static void rt_drain(void);
 static void rt_free(Obj *o) {
   rt_push(o);
+  rt_drain();
+}
+static void rt_drain(void) {
   if (rt_freeing) return;
   rt_freeing = 1;
   while (rt_nwork) {
@@ -780,9 +798,63 @@ static void rt_free(Obj *o) {
   }
   rt_freeing = 0;
 }
+/* ---- reuse (Perceus' reuse tokens) and drop specialisation ---- */
+
+/* the size class of a constructor of `n` fields (0: too big for reuse) */
+static inline size_t rt_cls(uint32_t n) { size_t c = (sizeof(Obj) + n * sizeof(V) + 15) >> 4; return c <= RT_NCLS ? c : 0; }
+/* `x` dies, and an allocation of `n` fields follows: if `x` is a unique constructor
+   (offset 0) of the same size class, its fields are released and its cell is the token,
+   else `x` is released and the token is 0 */
+static V reset(V x, uint32_t n) {
+  if (ISBOX(x)) return 0;
+  Obj *o = OBJ(x);
+  if (o->rc == 1 && OFF(x) == 0 && o->tag < T_CLO && rt_cls(o->n) == rt_cls(n) && rt_cls(n)) {
+    for (uint32_t i = 0; i < o->n; i++) rt_decChild(o->f[i]);
+    rt_drain();
+    return x;
+  }
+  dec(x);
+  return 0;
+}
+/* a constructor in the token's cell, or a new one */
+INLINE V reuseobj(V w, uint32_t t, uint32_t n, V *fs) {
+  if (!w) return mkobj(t, n, fs);
+  Obj *o = (Obj *)w;
+  o->tag = t; o->n = n;
+  copyV(o->f, fs, n);
+  STAT(rt_nreuse++);
+  return w;
+}
+/* `x` dies at its projection `r` (borrowed): a unique `x` gives its reference to `r`
+   (if `r` is one of its fields) and releases the others; its cell is kept as the token
+   when `n` (> 0) fits; otherwise `r` is `inc`ed and `x` released. (`r` is a field of `x`,
+   or a part of one, or a tail of `x`'s own chain.) */
+static V resetTakeU(V x, uint32_t n, V r) {
+  Obj *o = OBJ(x);
+  uint32_t k = o->n;
+  if (!ISBOX(r)) { for (k = 0; k < o->n && o->f[k] != r; k++) {} if (k == o->n) inc(r); }
+  for (uint32_t i = 0; i < o->n; i++) if (i != k) rt_decChild(o->f[i]);
+  if (n && OFF(x) == 0 && rt_cls(o->n) == rt_cls(n) && rt_cls(n)) { rt_drain(); return x; }
+  rt_freeShell(o);
+  rt_drain();
+  return 0;
+}
+INLINE V resetTake(V x, uint32_t n, V r) {
+  if (ISBOX(x)) return 0;
+  Obj *o = OBJ(x);
+  if (OBJ(r) == o && !ISBOX(r)) return 0; /* (a tail of `x`'s chain: `x`'s reference is `r`'s) */
+  if (o->rc != 1 || o->tag >= T_CLO) { inc(r); if (--o->rc == 0) rt_free(o); return 0; }
+  return resetTakeU(x, n, r);
+}
+INLINE void dropTake(V x, V r) { (void)resetTake(x, 0, r); }
+
 /* at exit: release the constants; then every object must have been freed */
 static void rt_finish(void) {
   for (size_t i = rt_nroots; i > 0; i--) dec(*rt_roots[i - 1]);
+#ifdef WIZ_STATS
+  fprintf(stderr, "wiz stats: %zu allocations, %zu reused, peak %zu live (mkobj %zu, mkclo %zu, mkfun %zu, mkthunk %zu)\n",
+          rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk);
+#endif
   if (rt_live) { fflush(stdout); fprintf(stderr, "wiz: %zu objects leaked\n", rt_live); exit(4); }
 }
 #endif
