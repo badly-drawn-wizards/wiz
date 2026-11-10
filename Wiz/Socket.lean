@@ -1,8 +1,9 @@
 /-!
-# Unix-domain sockets
+# Unix-domain and TCP sockets
 
-Lean's library has TCP and UDP sockets but no Unix-domain ones, which
-`wiz lsp --infoview SOCK` needs. The few calls it uses are in `c/sockets.c` (which the
+Lean's library has no Unix-domain sockets, which `wiz lsp --infoview SOCK` needs, and its
+TCP sockets are asynchronous (libuv) where the server wants blocking handles
+(`wiz lsp --ws PORT`, `Wiz/WebSocket.lean`). The few calls they use are in `c/sockets.c` (which the
 linker compiles into every executable, see the lakefile); a connection comes back as a
 pair of ordinary handles, one to read and one to write. The C side cannot read Lean
 objects (it is compiled without Lean's headers), so paths go to it a byte at a time and
@@ -35,11 +36,33 @@ def setPath (path : String) : IO Unit := do
 /-- Listen on the socket file `path` (replacing a stale one); the listening descriptor. -/
 def listen (path : String) : IO UInt32 := do setPath path; listenRaw
 
-/-- Wait for a connection: its descriptor (for `shutdown`), and its read and write handles. -/
+/-- Wait for a connection (on a Unix or TCP socket): its descriptor (for `shutdown`), and its read and write handles. -/
 @[extern "wiz_unix_accept"] opaque accept (fd : UInt32) : IO (UInt32 × IO.FS.Handle × IO.FS.Handle)
 
 /-- Connect to the socket file `path`: read and write handles. -/
 def connect (path : String) : IO (IO.FS.Handle × IO.FS.Handle) := do setPath path; connectRaw
+
+@[extern "wiz_tcp_listen"] opaque tcpListenRaw (addr : UInt32) (port : UInt16) : IO UInt32
+@[extern "wiz_tcp_port"] opaque tcpPortRaw (fd : UInt32) : IO UInt32
+@[extern "wiz_tcp_connect"] opaque tcpConnect (addr : UInt32) (port : UInt16) : IO (IO.FS.Handle × IO.FS.Handle)
+/-- Stop listening on a TCP socket. -/
+@[extern "wiz_fd_close"] opaque closeFd (fd : UInt32) : IO Unit
+
+/-- 127.0.0.1, as `tcpListen` takes addresses (host byte order). -/
+def loopback : UInt32 := 0x7f000001
+
+/-- An IPv4 address `a.b.c.d`, as `tcpListen` takes it. -/
+def parseIPv4 (s : String) : Option UInt32 :=
+  match s.splitOn "." |>.mapM (·.toNat?) with
+  | some [a, b, c, d] =>
+    if [a, b, c, d].all (· < 256) then some (((a * 256 + b) * 256 + c) * 256 + d).toUInt32 else none
+  | _ => none
+
+/-- Listen on TCP `addr`:`port` (`port` 0: a free one): the listening descriptor and the
+port. -/
+def tcpListen (addr : UInt32) (port : UInt16) : IO (UInt32 × UInt16) := do
+  let fd ← tcpListenRaw addr port
+  pure (fd, (← tcpPortRaw fd).toUInt16)
 
 /-- Two connected sockets, each as (read, write) handles. -/
 @[extern "wiz_socket_pair"] opaque pair : IO ((IO.FS.Handle × IO.FS.Handle) × (IO.FS.Handle × IO.FS.Handle))
