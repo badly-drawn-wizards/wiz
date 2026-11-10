@@ -3284,7 +3284,7 @@ def descEqGroup : Group where
           ["False", "False", "(0 _ : True) × True"] },
     { name := "a quantity variable against a literal at an arg field is stuck too", run := fun _ =>
         ok ("#reduce fun (q : Qty) => (Desc.arg q Unit (fun _ => Desc.ret ()) : Desc Unit) = Desc.arg 1 Unit (fun _ => Desc.ret ())\n")
-          ["fun q => Desc.arg q Unit (fun x => Desc.ret ()) = Desc.arg 1 Unit (fun x => Desc.ret ())"] },
+          ["fun q => Desc.arg q Unit (fun _ => Desc.ret ()) = Desc.arg 1 Unit (fun _ => Desc.ret ())"] },
     { name := "sizes compare as conversion does: μ^{↑∞} ≡ μ^∞ computes like μ^∞ ≡ μ^∞", run := fun _ => do
         let g : Globals ZeroOneMany := {}
         let mu (s : Val ZeroOneMany) : Val ZeroOneMany := .mu 0 (.unit 1) (.dret .tt) .tt s none
