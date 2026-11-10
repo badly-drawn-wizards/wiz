@@ -145,7 +145,10 @@ def k : Nat → Bool → Nat := by
   hand-written `Expr` printer needed).
 * **The infoview.** `wiz/plainGoal` and `wiz/interactiveGoals` answer with a `messages`
   field as well: the texts of the info messages of the tactic the state belongs to, in
-  order (`rendered` has them after the goals).
+  order (`rendered` has them after the goals). The clients show them in a "Messages"
+  section under the goals: the terminal and web infoviews (`TacView`,
+  `View.ofTacState`, `Infoview.htmlTacState` in `lib/Infoview.wiz`) and the Neovim
+  plugin (`editors/nvim/lua/wiz/infoview.lua`).
 * **Deterministic.** Traces are recorded in the elaborator's state (as entries of the
   info tree that the command elaborator turns into messages), in the order they were
   made. So a trace in a branch that fails and is caught (`try`, `first`, `catch`) is

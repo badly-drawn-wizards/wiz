@@ -4802,6 +4802,14 @@ def infoviewGroup : Group where
           "#eval Infoview.plainLines (View.lines (View.ofState 16 (.some (.cons g .nil)) (.some (.mk \"\" .nil (nat 12)))))")
           [r#".cons "Tactic state" (.cons "A : Type" (.cons "f : Nat → Nat → Nat → Nat" (.cons "⊢ Nat → A" .nil)))"#,
            r#".cons "Tactic state" (.cons "A : Type" (.cons "f : Nat → Nat →" (.cons "    Nat → Nat" (.cons "⊢ Nat → A" (.cons "" (.cons "Expected type" (.cons "⊢ Nat" .nil)))))))"#] },
+    { name := "the messages of the tactic at the cursor (trace, trace_state), under the goals", run := fun _ =>
+        okInfoview (goalPrelude ++ "#eval Infoview.plainLines (View.lines (View.ofTacState 30 (.some (.mk (.cons g .nil) (.cons \"hello\" (.cons \"n : Nat\\n⊢ Nat\" .nil)))) .none))\n" ++
+          "#eval Infoview.htmlTacState 0 (.some (.mk .nil (.cons \"a<b\" .nil))) .none\n" ++
+          "def msgsOf : TacView → List String\n  | .mk _ ms => ms\n" ++
+          "#eval match Json.parse \"{\\\"goals\\\": [], \\\"messages\\\": [\\\"one\\\", \\\"two\\\"]}\" with\n  | .ok j => msgsOf (TacView.ofJson j)\n  | .error e => List.cons e List.nil")
+          [r#".cons "Tactic state" (.cons "A : Type" (.cons "f : Nat → Nat → Nat → Nat" (.cons "⊢ Nat → A" (.cons "" (.cons "Messages" (.cons "hello" (.cons "" (.cons "n : Nat" (.cons "⊢ Nat" .nil)))))))))"#,
+           r#""<h3>Tactic state</h3><div class=\"no-goals\">No goals</div><h3>Messages</h3><pre class=\"message\">a&lt;b</pre>""#,
+           r#".cons "one" (.cons "two" .nil)"#] },
     { name := "terminal lines: SGR colours by kind, the selection in reverse video", run := fun _ =>
         okInfoview (goalPrelude ++ "#eval Infoview.ansiLines 3 (View.lines (View.ofState 80 (.some .nil) (.some (.mk \"h\" .nil (arrow 1 (nat 2) (nat 3))))))")
           [r#".cons "\x1b[0;1;4mTactic state\x1b[0m" (.cons "\x1b[0;1;32mNo goals\x1b[0m" (.cons "\x1b[0m" (.cons "\x1b[0;1;4mExpected type\x1b[0m" (.cons "\x1b[0;1;4mcase h\x1b[0m" (.cons "\x1b[0;1;35m⊢\x1b[0m \x1b[0;34mNat\x1b[0m \x1b[0m→\x1b[0m \x1b[0;34;7mNat\x1b[0m" .nil)))))"#] },
