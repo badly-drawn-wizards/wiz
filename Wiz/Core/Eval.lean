@@ -970,11 +970,7 @@ partial def vEqDesc (g : Globals R) (l : Level) (I D D' : Val R) : Val R :=
   -- substitution could make them equal
   let qty (q q' : Val R) (k : Unit → Val R) : Val R := match sameQty q q' with
     | some true => k ()
-    | some false =>
-      let isConst (v : Val R) : Bool := match v.toPoly? with
-        | some p => p.isConst?.isSome
-        | none => false
-      if isConst q && isConst q' then .empty 0 else stuck
+    | some false => if qtyApart q q' then .empty 0 else stuck
     | none => stuck
   -- `(e :0 S ≡ S') × ((x :0 S) → F x = F' (cast S S' e x))` at type `T`
   -- (inside `e`: e0 S1 S'2 F3 F'4 T5; inside `x`: one more)
