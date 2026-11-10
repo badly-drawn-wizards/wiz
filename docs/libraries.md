@@ -71,3 +71,11 @@ Sharing has two parts:
 `lib/HProp.wiz` (model heaps, `emp`, `↦`, `⋆`, `−∗`, entailment and the separation-logic
 laws) and `lib/Hoare.wiz` (`wp`, triples, the frame rule, verified swap and list reversal,
 adequacy for an interpreter). See [stage 24](stages/24-separation-logic.md).
+
+## Functors and Booleans
+
+`lib/Functor.wiz` (`import Functor`): `Functor`, `Applicative`, `<$>`, `<*>`; every `Monad`
+is an `Applicative` and every `Applicative` a `Functor`; `Monad`/`Functor` instances for
+`Option`, `Except E` and `List`, and `Option.map`/`bind`, `Except.map`/`bind`,
+`List.map`/`flatMap`. See [13d](stages/13-language.md). The Prelude itself has `if … then …
+else`, short-circuiting `&&` and `||`, and `!` ([13c](stages/13-language.md)).

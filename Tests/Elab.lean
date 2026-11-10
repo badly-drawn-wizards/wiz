@@ -712,11 +712,14 @@ def twiceMacro : Macro := fun stx => do
 attribute [macro term.twice] twiceMacro
 "
 
-/-- `import Prelude` and `import Word`. -/
+/-- `import Prelude`, `import Word`, `import Functor` and `import Logic`. -/
 def preludeLoader : IO (Name → Option String) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let word ← IO.FS.readFile "lib/Word.wiz"
-  pure fun m => if m == "Prelude" then some prelude else if m == "Word" then some word else none
+  let functor ← IO.FS.readFile "lib/Functor.wiz"
+  let logic ← IO.FS.readFile "lib/Logic.wiz"
+  pure fun m => if m == "Prelude" then some prelude else if m == "Word" then some word
+    else if m == "Functor" then some functor else if m == "Logic" then some logic else none
 
 /-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
 
@@ -1136,9 +1139,10 @@ def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm 
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
+  let functorLib ← IO.FS.readFile "lib/Functor.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
-    else if m == "Std" then some stdLib else none
+    else if m == "Std" then some stdLib else if m == "Functor" then some functorLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -2662,7 +2666,17 @@ def languageGroup : Group where
     { name := "13c: && and || short-circuit in compiled code", run := fun _ =>
         ioRun ("import IO\npartial def spin (n : Nat) : Bool := spin n\n" ++
           "def main : IO Unit := IO.println (if Bool.false && spin 0 then \"bad\" else if Bool.true || spin 1 then \"lazy ok\" else \"bad\")")
-          "lazy ok\n" }
+          "lazy ok\n" },
+    { name := "13d: Functor and Applicative (import Functor)", run := fun _ =>
+        okLib ("import Functor\n#eval Nat.add <$> Option.some 1 <*> Option.some 2\n" ++
+          "#eval (fun (a b : Nat) => (a, b)) <$> List.cons 1 (List.cons 2 .nil) <*> List.cons 3 .nil\n" ++
+          "#eval Nat.succ <$> List.cons 1 (List.cons 2 .nil)\n#eval Nat.succ <$> (Except.error \"e\" : Except String Nat)\n" ++
+          "def addOpt (x y : Option Nat) : Option Nat := do\n  a ← x;\n  b ← y;\n  Monad.pure (a + b)\n#eval addOpt (.some 1) (.some 2)\n" ++
+          "def pairT : TacticM (Nat × Nat) := (fun (a b : Nat) => (a, b)) <$> TacticM.pure 1 <*> TacticM.pure 2\n")
+          [".some 3", ".cons (1, 3) (.cons (2, 3) .nil)", ".cons 2 (.cons 3 .nil)", ".error \"e\"", ".some 3"] },
+    { name := "13d: <$> and <*> for IO, from its Monad instance", run := fun _ =>
+        ioRun ("import IO\nimport Functor\ndef main : IO Unit := do\n  n ← Nat.add <$> IO.pure 40 <*> IO.pure 2;\n" ++
+          "  IO.println (Nat.toString n)") "42\n" }
   ]
 
 /-- Machine words (`lib/Word.wiz`): one table of operations at widths 8–100, signed and

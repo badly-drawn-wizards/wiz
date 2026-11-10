@@ -137,3 +137,30 @@ The self-hosted frontend doesn't read `lib/Prelude.wiz`: it embeds its own prelu
 rewritten to a `match`). It has no `&&`, `||` or `!`, so `selfhost/*.wiz` don't use them.
 Tests: group `language`.
 
+## 13d: `Functor` and `Applicative` (`import Functor`) ✅
+
+```
+import Functor
+#eval Nat.add <$> Option.some 1 <*> Option.some 2          -- .some 3
+#eval (fun (a b : Nat) => (a, b)) <$> List.cons 1 (List.cons 2 .nil) <*> List.cons 3 .nil
+                                        -- .cons (1, 3) (.cons (2, 3) .nil)
+def both : IO (String × String) := (fun (a b : String) => (a, b)) <$> IO.readFile "a" <*> IO.readFile "b"
+```
+
+`lib/Functor.wiz` has `class Functor f` (`map`), `class Applicative f` (`pure`, `seq`),
+`f <$> x` (`Functor.map`, infixr 100) and `mf <*> x` (`Applicative.seq`, infixl 60), as in
+Lean. Two generic instances make **every `Monad` an `Applicative`** (`seq` by two binds)
+and **every `Applicative` a `Functor`** (`map g x = pure g <*> x`), so `IO`, `Eff r`,
+`Eff1 ω r R`, `StateT`, `ReaderT`, `TacticM` and user monads get `<$>`/`<*>` with no more
+declarations. The module also gives `Monad` instances for `Option`, `Except E` and `List`
+(nondeterminism: `<*>` takes every combination), with direct `Functor` instances
+(`Option.map`, `Except.map`, `List.map`). An instance declared later wins over the
+generic ones (7b), which is how a type that isn't a monad (an HDL signal) declares its own
+`Applicative`.
+
+`Monad` itself is unchanged (it doesn't extend `Applicative`: classes have no `extends`
+yet), so `do`, `Monad1` and `do1` are as before. The module is separate from the Prelude
+because programs that import only the Prelude already define `List.map`, a class
+`Functor` and `Monad Option` instances of their own (`lib/Hdl/Core.wiz`, the tests).
+Tests: group `language`.
+
