@@ -1073,7 +1073,6 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .reflTy X => .reflTy (quote g l X)
       | .transp A a P p b e =>
         .transp (quote g l A) (quote g l a) (quote g l P) (quote g l p) (quote g l b) (quote g l e)
-      -- (P2) a suspended proof: substitute, don't reduce
       | .prf _ _ _ v => quote g l v.get  -- (not reached: the case above)
     sp.foldl (init := hd) fun acc e => match e with
       | .app v => .app acc (quote g l v)
