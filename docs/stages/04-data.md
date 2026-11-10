@@ -76,7 +76,7 @@ of `a` and `b` (Pujet & Tabareau, *Observational Equality: Now for Good*):
 | `(x : A) × B`    | `(e : a.1 = b.1) × cast … a.2 = b.2`                  |             |
 | `Unit`, `Empty`  | `True`                                               |             |
 | `Prop`           | `(a → b) × (b → a)`                                  | propext     |
-| `Type u`         | structural equality of types (propositions inside by equivalence; `μ`, `ν`, `Desc` stuck); `False` for different formers | no-confusion |
+| `Type u`         | structural equality of types (propositions inside by equivalence; `μ`, `ν` by their codes, 4g); `False` for different formers | no-confusion |
 | a type variable  | stuck                                                 |             |
 
 `cast e t : B` (for `e : A = B`, `t : A`) also computes by the two types.
@@ -88,9 +88,10 @@ irrelevant**, so conversion at a proposition always succeeds.
 `J` compute on `refl` everywhere, but together with an impredicative `Prop` and
 irrelevant proofs it makes type checking loop (Abel–Coquand; `Tests/Elab.lean` "D1"). So
 it is off (`wiz check --regularity full` turns it back on, for experiments). Instead
-`cast` computes on data, constructor by constructor: `μ D i = μ D i'` is `i = i'`, and
-`cast (μ D i) (μ D i') e (con x)` casts each field of `x` along it (so a proof field is
-cast between propositions, which applies the equivalence: that is what stops the loop).
+`cast` computes on data, constructor by constructor: `cast (μ D i) (μ D' i') e (con x)`
+casts each field of `x` along the pieces of `e` (since 4g `μ D i = μ D' i'` compares the
+codes) (so a proof field is
+cast between propositions, which is a stuck proof: that is what stops the loop).
 At **inert** types (first-order data: `Nat`, `Bool`, `List Nat`, … — no `Prop` fields,
 functions or type variables) regularity is kept: there a cast between equal types is the
 identity. A cast at a type variable (`cast e a` for `e : A = A`) stays stuck, as in
@@ -114,7 +115,10 @@ projection types, a structure's or an index's `Σ`, match motives) get theirs fr
 kernel's `typeSort?` in the context they live in (`Sorts` in `Elab/Basic.lean`, applied to
 every declaration before the kernel sees it). Only a `Π`/`Σ` under a `fun` whose
 variable's type isn't written down, or one that still mentions a metavariable, goes
-without. A cast between propositions applies the equivalence.
+without. A cast between propositions is itself a proof, so it stays stuck: **proofs are
+never evaluated** (the equation of a `cast` and the proofs of a `transp` are kept as
+written; `wiz check --eager-proofs` restores the older evaluator that ran them;
+docs/CoreSpec.md §8.6).
 
 Stuck equations, casts and proofs are new neutral heads (`Head.eq`, `Head.cast`,
 `Head.refl`, …). Some results of the computation rules need new binders. Values can't
@@ -383,3 +387,52 @@ size metavariables default to `∞`.
 
 Limitations: non-indexed types only, recursion on the first argument, and no
 as-patterns (size-preserving functions like `minus` want `x@.zero`).
+
+## 4g: equality of descriptions
+
+```
+def refute (e : List Nat = List Bool) : Empty := absurd (((e.2.1.2 'cons).1).2.1.2 'succ)
+def ne (e : UIntN 8 = UIntN 16) : Empty := absurd ((e.1.1.2 16).1 (refl 16))
+#reduce fun (h : List A = List B) (x y : A) => (cast h [x, y] : List B)   -- [cast _ x, cast _ y]
+```
+
+Until now `μ D i = μ D' i'` computed only for one family (the same description,
+compared syntactically) and was stuck otherwise, so `List Nat = List Bool` could be
+neither proved nor refuted, and neither could `UIntN 8 = UIntN 16`. Now the kernel
+compares the **codes** (as in Pujet–Tabareau's universe of codes), in both kernels:
+
+| equation | computes to |
+|---|---|
+| `μ I D i = μ I' D' i'` | `(I, D, i) = (I', D', i')` (the codes, at `(J : Type) × Desc J × J`): `(e :0 I = I') × ((cast _ D = D') × (cast _ i = i'))` |
+| `ret j = ret j'` (at `Desc I`) | `j = j'` |
+| `arg q S E = arg q S' E'` | `(e :0 S = S') × ((s :0 S) → E s = E' (cast e s))` |
+| `rec q j E = rec q j' E'` | `(j = j') × (E = E')` |
+| `hrec q H j E = hrec q H' j' E'` | `((e :0 H = H') × ((h :0 H) → j h = j' (cast e h))) × (E = E')` |
+| different constructors, or different quantities | `False` |
+
+A cast between two `μ` (or `ν`) types computes constructor by constructor along the pieces
+of the equation, as it did for one family. Proof fields are lifted propositions, which
+compare by equivalence. What this costs, and why:
+
+* **`μ D i = μ D i'` is no longer `i = i'`.** It is the general form, whose components
+  are `I = I`, `cast _ D = D` and `cast _ i = i'`. Keeping the old answer for one family
+  would not be stable under substitution: `List A = List B` becomes one family when
+  `B := A`, and its general form would not be convertible to the old one (that needs
+  regularity, which is off, 4c). For the same reason nothing is simplified, not even a
+  `True` component: so the equations print with `True`s in them.
+* So a proof of `n = m` is not a proof of `Vec A n = Vec A m` any more. Use congruence
+  (`congrArg (Vec A) h`, or `transp` from `refl`), which is what the elaborator does for
+  index equations. `refl (Vec A n)` and `rfl` both prove `Vec A n = Vec A n`: the
+  equation's part over the constructor tags, `(t : Enum ls) → …`, is stuck under its
+  binder, so `rfl` proves it tag by tag (a case split, wrapped in a `transp` because the
+  binder is erased; `rflProof` in `Elab/Term.lean`). One expected limit: if a later
+  index of the type depends on a field at a type *variable*, `rfl` is left with a stuck
+  cast at that variable and fails; `refl T` still works.
+* A `cast e t` with no expected type reads its target off the type of `e`, which works
+  only while that equation is stuck. Equations between data types now compute, so write
+  `(cast e t : T)` (or use the cast where its type is expected); the error says so.
+* `μ` is now injective in its description, a large-into-small map (Hur's paradox has
+  this shape). It is the same shape as the injectivity of Π that observational equality
+  already has, and a description can't range over its own universe (fields are exactly in
+  `Sort (l+1)`), so the model of codes covers it. That is an argument, not a proof:
+  docs/CoreSpec.md §8.4b, docs/Status.md E1.

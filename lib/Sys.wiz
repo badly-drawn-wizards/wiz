@@ -1,0 +1,281 @@
+import IO
+-- System interfaces (stage 9h): the environment, files and directories, processes.
+--
+-- Everything here is POSIX underneath (`runtime/wiz.c`, section "system interfaces").
+-- An operation that can fail returns `IO (Except String A)`: the error is the C
+-- library's message for `errno`, after what was being done (`"/x: No such file or
+-- directory"`). `EIO A` is that type as a monad, for `do` blocks that stop at the first
+-- error. Like every foreign function, these only run in compiled code (`wiz run`).
+
+-- Errors.
+
+-- The error of the last value-returning call on this thread (0: none), and its message.
+extern "wiz_sys_errno" Sys.errno : IO Nat
+extern "wiz_sys_strerror" Sys.errorMessage : Nat → String
+
+def Sys.message (what : String) (e : Nat) : String :=
+  String.append what (String.append ": " (Sys.errorMessage e))
+-- an errno status (0 is success) as a result
+def Sys.status (what : String) (e : Nat) : Except String Unit :=
+  match Nat.beq e 0 with
+  | .true => .ok ()
+  | .false => .error (Sys.message what e)
+def Sys.lift (what : String) (x : IO Nat) : IO (Except String Unit) :=
+  IO.bind x (fun e => IO.pure (Sys.status what e))
+-- a value, unless the call that made it set an error
+def Sys.check {A : Type} (what : String) (x : IO A) : IO (Except String A) :=
+  IO.bind x (fun a => IO.bind Sys.errno (fun e => IO.pure (match Nat.beq e 0 with
+    | .true => .ok a
+    | .false => .error (Sys.message what e))))
+
+-- IO that can fail, as a monad.
+def EIO (A : Type) : Type := IO (Except String A)
+def EIO.pure {A : Type} (a : A) : EIO A := IO.pure (.ok a)
+def EIO.bind {A B : Type} (x : EIO A) (f : A → EIO B) : EIO B :=
+  IO.bind x (fun r => match r with
+    | .error e => IO.pure (.error e)
+    | .ok a => f a)
+instance : Monad EIO where
+  pure := EIO.pure
+  bind := EIO.bind
+def EIO.fail {A : Type} (e : String) : EIO A := IO.pure (.error e)
+def EIO.lift {A : Type} (x : IO A) : EIO A := IO.bind x (fun a => IO.pure (.ok a))
+
+-- Environment variables. (Setting them is not thread-safe in C: set them before
+-- starting threads.)
+
+extern "wiz_sys_getenv" Env.getRaw : String → IO String
+extern "wiz_sys_setenv" Env.setRaw : String → String → IO Nat
+extern "wiz_sys_unsetenv" Env.unsetRaw : String → IO Nat
+extern "wiz_sys_environ" Env.listRaw : IO (List String)
+
+def Env.get (k : String) : IO (Option String) :=
+  IO.bind (Sys.check k (Env.getRaw k)) (fun r => IO.pure (match r with
+    | .ok v => .some v
+    | .error e => .none))
+def Env.set (k v : String) : EIO Unit := Sys.lift (String.append "setenv " k) (Env.setRaw k v)
+def Env.unset (k : String) : EIO Unit := Sys.lift (String.append "unsetenv " k) (Env.unsetRaw k)
+-- a flat list name₁, value₁, name₂, … as pairs
+def Env.pairsFrom : List String → Option String → List (String × String)
+  | .nil, _ => .nil
+  | .cons x rest, .none => Env.pairsFrom rest (.some x)
+  | .cons x rest, .some k => .cons (k, x) (Env.pairsFrom rest .none)
+def Env.pairs (l : List String) : List (String × String) := Env.pairsFrom l .none
+-- every variable, sorted by name
+def Env.list : IO (List (String × String)) := IO.bind Env.listRaw (fun l => IO.pure (Env.pairs l))
+
+-- Paths.
+
+def Path.join (a b : String) : String := String.append a (String.append "/" b)
+
+-- Files and directories.
+
+inductive FileKind where
+  | file
+  | dir
+  | symlink
+  | other
+
+structure FileStat where
+  kind : FileKind
+  size : Nat
+  -- modification time: seconds since the epoch, and nanoseconds
+  mtime : Nat
+  mtimeNs : Nat
+  -- permission bits (`0o755` is 493)
+  mode : Nat
+
+def FileKind.ofNat : Nat → FileKind
+  | .zero => .file
+  | .succ .zero => .dir
+  | .succ (.succ .zero) => .symlink
+  | _ => .other
+
+extern "wiz_sys_getcwd" FS.getcwdRaw : IO String
+extern "wiz_sys_chdir" FS.chdirRaw : String → IO Nat
+extern "wiz_sys_mkdir" FS.mkdirRaw : String → Nat → IO Nat
+extern "wiz_sys_rmdir" FS.rmdirRaw : String → IO Nat
+extern "wiz_sys_unlink" FS.unlinkRaw : String → IO Nat
+extern "wiz_sys_remove_all" FS.removeAllRaw : String → IO Nat
+extern "wiz_sys_rename" FS.renameRaw : String → String → IO Nat
+extern "wiz_sys_symlink" FS.symlinkRaw : String → String → IO Nat
+extern "wiz_sys_chmod" FS.chmodRaw : String → Nat → IO Nat
+extern "wiz_sys_readlink" FS.readlinkRaw : String → IO String
+extern "wiz_sys_mkdtemp" FS.mkdtempRaw : String → IO String
+extern "wiz_sys_stat" FS.statRaw : String → Bool → IO (List Nat)
+extern "wiz_sys_list_dir" FS.listDirRaw : String → IO (List String)
+extern "wiz_sys_read_file" FS.readFileRaw : String → IO String
+extern "wiz_sys_write_file" FS.writeFileRaw : String → String → Bool → IO Nat
+extern "wiz_sys_read_bytes" FS.readBytesRaw : String → IO Bytes
+extern "wiz_sys_write_bytes" FS.writeBytesRaw : String → Bytes → Bool → IO Nat
+
+def FS.currentDir : EIO String := Sys.check "getcwd" FS.getcwdRaw
+def FS.setCurrentDir (p : String) : EIO Unit := Sys.lift p (FS.chdirRaw p)
+-- a directory, with permissions `0o755` (less the umask)
+def FS.createDir (p : String) : EIO Unit := Sys.lift p (FS.mkdirRaw p 493)
+-- an empty directory
+def FS.removeDir (p : String) : EIO Unit := Sys.lift p (FS.rmdirRaw p)
+-- a file or a link
+def FS.removeFile (p : String) : EIO Unit := Sys.lift p (FS.unlinkRaw p)
+-- a file, or a directory with everything in it (links are removed, not followed)
+def FS.removeAll (p : String) : EIO Unit := Sys.lift p (FS.removeAllRaw p)
+def FS.rename (src dst : String) : EIO Unit := Sys.lift src (FS.renameRaw src dst)
+-- `FS.symlink target link` makes `link` point to `target`
+def FS.symlink (target link : String) : EIO Unit := Sys.lift link (FS.symlinkRaw target link)
+def FS.readLink (p : String) : EIO String := Sys.check p (FS.readlinkRaw p)
+def FS.setMode (p : String) (mode : Nat) : EIO Unit := Sys.lift p (FS.chmodRaw p mode)
+-- the names in a directory, sorted, without `.` and `..`
+def FS.listDir (p : String) : EIO (List String) := Sys.check p (FS.listDirRaw p)
+
+def FS.statOf : List Nat → FileStat
+  | .cons k (.cons s (.cons t (.cons ns (.cons m _)))) =>
+    FileStat.mk (FileKind.ofNat k) s t ns m
+  | _ => FileStat.mk .other 0 0 0 0
+-- what a path names (following links), and the path itself (`lstat`)
+def FS.stat (p : String) : EIO FileStat :=
+  EIO.bind (Sys.check p (FS.statRaw p .true)) (fun l => EIO.pure (FS.statOf l))
+def FS.linkStat (p : String) : EIO FileStat :=
+  EIO.bind (Sys.check p (FS.statRaw p .false)) (fun l => EIO.pure (FS.statOf l))
+def FS.exists (p : String) : IO Bool :=
+  IO.bind (FS.stat p) (fun r => IO.pure (match r with
+    | .ok s => .true
+    | .error e => .false))
+def FS.kindIs (k : FileKind) (p : String) : IO Bool :=
+  IO.bind (FS.stat p) (fun r => IO.pure (match r with
+    | .ok s => match s.kind, k with
+      | .file, .file => .true
+      | .dir, .dir => .true
+      | _, _ => .false
+    | .error e => .false))
+def FS.isDir (p : String) : IO Bool := FS.kindIs .dir p
+def FS.isFile (p : String) : IO Bool := FS.kindIs .file p
+
+-- the directory for temporary files: `$TMPDIR`, or `/tmp`
+def FS.tempRoot : IO String := IO.bind (Env.get "TMPDIR") (fun r => IO.pure (match r with
+  | .some d => d
+  | .none => "/tmp"))
+-- a new, empty directory under `FS.tempRoot` (remove it with `FS.removeAll`)
+def FS.createTempDir : EIO String :=
+  IO.bind FS.tempRoot (fun root => Sys.check root (FS.mkdtempRaw (Path.join root "wiz-")))
+
+-- Whole files. (Text stops at a NUL byte: use `Bytes` for binary data.)
+def FS.readFile (p : String) : EIO String := Sys.check p (FS.readFileRaw p)
+def FS.writeFile (p text : String) : EIO Unit := Sys.lift p (FS.writeFileRaw p text .false)
+def FS.appendFile (p text : String) : EIO Unit := Sys.lift p (FS.writeFileRaw p text .true)
+def FS.readBytes (p : String) : EIO Bytes := Sys.check p (FS.readBytesRaw p)
+def FS.writeBytes (p : String) (b : Bytes) : EIO Unit := Sys.lift p (FS.writeBytesRaw p b .false)
+
+-- File handles, closed when the last reference goes (or by `File.close`).
+foreign_type File (finalizer := "wiz_sys_file_free")
+extern "wiz_sys_file_open" File.openRaw : String → String → IO File
+extern "wiz_sys_file_std" File.std : Nat → IO File
+extern "wiz_sys_file_read_line" File.readLineRaw : File → IO String
+extern "wiz_sys_file_read_all" File.readAllRaw : File → IO String
+extern "wiz_sys_file_write" File.writeRaw : File → String → IO Nat
+extern "wiz_sys_file_flush" File.flushRaw : File → IO Nat
+extern "wiz_sys_file_close" File.closeRaw : File → IO Nat
+
+-- `mode` as for `fopen`: "r", "w", "a", "r+", …
+def File.open (p mode : String) : EIO File := Sys.check p (File.openRaw p mode)
+def File.stdin : IO File := File.std 0
+def File.stdout : IO File := File.std 1
+def File.stderr : IO File := File.std 2
+-- the next line, without its newline; `none` at the end of the file
+def File.readLine (f : File) : EIO (Option String) :=
+  IO.bind (File.readLineRaw f) (fun l => IO.bind Sys.errno (fun e => IO.pure (match Nat.beq e 0 with
+    | .true => .ok (.some l)
+    | .false => match Nat.beq e 100000 with
+      | .true => .ok .none
+      | .false => .error (Sys.message "readLine" e))))
+def File.readAll (f : File) : EIO String := Sys.check "read" (File.readAllRaw f)
+def File.write (f : File) (s : String) : EIO Unit := Sys.lift "write" (File.writeRaw f s)
+def File.flush (f : File) : EIO Unit := Sys.lift "flush" (File.flushRaw f)
+def File.close (f : File) : EIO Unit := Sys.lift "close" (File.closeRaw f)
+-- a line on standard error
+def IO.ePrintln (s : String) : IO Unit :=
+  IO.bind File.stderr (fun f => IO.bind (File.write f (String.append s "\n")) (fun r => IO.pure ()))
+
+-- end this program with an exit code (without the leak check)
+extern "wiz_sys_exit" Process.exit : Nat → IO Unit
+-- run it, printing an error to stderr (with exit code 1)
+def EIO.toIO (x : EIO Unit) : IO Unit := IO.bind x (fun r => match r with
+  | .ok u => IO.pure u
+  | .error e => IO.bind (IO.ePrintln e) (fun u => Process.exit 1))
+
+-- Processes.
+
+-- What a child's standard stream is connected to.
+inductive Stdio where
+  | inherit
+  | piped
+  | null
+def Stdio.toNat : Stdio → Nat
+  | .inherit => 0
+  | .piped => 1
+  | .null => 2
+
+-- How a process ended: its exit code, or the signal that stopped it.
+inductive ExitStatus where
+  | exited (code : Nat)
+  | signaled (signal : Nat)
+def ExitStatus.ofNat (n : Nat) : ExitStatus :=
+  match Nat.lt n 256 with
+  | .true => .exited n
+  | .false => .signaled (n - 256)
+def ExitStatus.success : ExitStatus → Bool
+  | .exited c => Nat.beq c 0
+  | .signaled s => .false
+def ExitStatus.toString : ExitStatus → String
+  | .exited c => String.append "exit code " (Nat.toString c)
+  | .signaled s => String.append "signal " (Nat.toString s)
+
+-- A running (or finished) child process. Its pipes close when the last reference goes.
+foreign_type Child (finalizer := "wiz_sys_child_free")
+extern "wiz_sys_spawn" Process.spawnRaw : String → List String → Nat → Nat → Nat → IO Child
+extern "wiz_sys_child_pid" Child.pid : Child → IO Nat
+extern "wiz_sys_child_write" Child.writeRaw : Child → String → IO Nat
+extern "wiz_sys_child_close_stdin" Child.closeStdinRaw : Child → IO Nat
+extern "wiz_sys_child_read" Child.readRaw : Child → Nat → IO String
+extern "wiz_sys_child_communicate" Child.communicateRaw : Child → String → IO Nat
+extern "wiz_sys_child_wait" Child.waitRaw : Child → IO Nat
+extern "wiz_sys_child_kill" Child.killRaw : Child → Nat → IO Nat
+extern "wiz_sys_exec" Process.execRaw : String → List String → IO Nat
+extern "wiz_sys_getpid" Process.id : IO Nat
+
+-- Start `cmd` (looked up in `PATH`) with arguments, and its streams connected as given.
+def Process.spawn (cmd : String) (args : List String) (stdin stdout stderr : Stdio) : EIO Child :=
+  Sys.check cmd (Process.spawnRaw cmd args (Stdio.toNat stdin) (Stdio.toNat stdout) (Stdio.toNat stderr))
+-- write to its stdin (a pipe)
+def Child.write (c : Child) (s : String) : EIO Unit := Sys.lift "write to child" (Child.writeRaw c s)
+-- close its stdin, so it sees the end of its input
+def Child.closeStdin (c : Child) : EIO Unit := Sys.lift "close child stdin" (Child.closeStdinRaw c)
+-- the rest of its stdout or stderr (pipes), to the end
+def Child.readStdout (c : Child) : EIO String := Sys.check "read child stdout" (Child.readRaw c 1)
+def Child.readStderr (c : Child) : EIO String := Sys.check "read child stderr" (Child.readRaw c 2)
+-- give it `input` on stdin while collecting stdout and stderr (`readStdout` and
+-- `readStderr` then return them): no deadlock when the pipes fill up
+def Child.communicate (c : Child) (input : String) : EIO Unit := Sys.lift "communicate" (Child.communicateRaw c input)
+def Child.wait (c : Child) : EIO ExitStatus :=
+  EIO.bind (Sys.check "wait" (Child.waitRaw c)) (fun n => EIO.pure (ExitStatus.ofNat n))
+-- send a signal (15 is SIGTERM, 9 SIGKILL)
+def Child.kill (c : Child) (signal : Nat) : EIO Unit := Sys.lift "kill" (Child.killRaw c signal)
+
+structure Output where
+  status : ExitStatus
+  stdout : String
+  stderr : String
+
+-- Run `cmd` to the end with `input` on stdin, collecting its stdout and stderr.
+def Process.output (cmd : String) (args : List String) (input : String) : EIO Output := do
+  c ← Process.spawn cmd args .piped .piped .piped;
+  Child.communicate c input;
+  out ← Child.readStdout c;
+  err ← Child.readStderr c;
+  st ← Child.wait c;
+  EIO.pure (Output.mk st out err)
+-- Run `cmd` to the end, with this program's streams.
+def Process.run (cmd : String) (args : List String) : EIO ExitStatus := do
+  c ← Process.spawn cmd args .inherit .inherit .inherit;
+  Child.wait c
+-- Replace this program by `cmd` (returns only if that fails).
+def Process.exec (cmd : String) (args : List String) : EIO Unit := Sys.lift cmd (Process.execRaw cmd args)

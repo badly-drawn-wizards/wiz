@@ -11,7 +11,8 @@ prelude). The answers are runtime values of the prelude's types:
 
     inductive BinderKind where | default | implicit | instImplicit
     inductive ParamView where | mk (name : String) (kind : BinderKind) (type : Syntax)
-    inductive FieldView where | mk (name : String) (kind : BinderKind) (type : Syntax) (recursive : Bool)
+    inductive FieldView where
+      | mk (name : String) (kind : BinderKind) (type : Syntax) (recursive : Bool) (proof : Bool)
     inductive CtorView where | mk (name : String) (fields : List FieldView) (indices : List Syntax)
     inductive IndView where
       | mk (name : String) (levelParams : List String) (params : List ParamView)
@@ -75,6 +76,14 @@ private def piBinders : Term R → List (Name × BinderInfo × Term R) × Term R
   | .pi x bi _ A b _ => let (bs, r) := piBinders b; ((x, bi, A) :: bs, r)
   | t => ([], t)
 
+/-- For each binder of a telescope, whether its type is a proposition (a proof field:
+derivers skip it, since all its inhabitants are equal and none is shown). -/
+private def propBinders (g : Globals R) : Array (VTy R) → Env R → List (Name × BinderInfo × Term R) → List Bool
+  | _, _, [] => []
+  | tys, env, (_, _, A) :: bs =>
+    let v := eval g env A
+    isProp g tys v :: propBinders g (tys.push v) (Val.var tys.size :: env) bs
+
 private def encodeParam (p : Name × BinderInfo × Syntax) : RVal :=
   mkCon 0 [encodeString p.1, encodeBinderKind p.2.1, encodeSyntax p.2.2]
 
@@ -111,10 +120,11 @@ def inductiveView (g : Globals R) (T : Name) : Option RVal := do
     let recursive := fieldBs.map fun (_, _, A) => match (Term.spine A).1 with
       | .const n _ => n == T
       | _ => false
+    let proofs := (propBinders g #[] [] bs).drop nΔ
     let idx := ((Term.spine res).2.drop nΔ).map (termSyntax scope')
     pure (mkCon 0 [encodeString c,
-      encodeList ((fields.zip recursive).map fun ((x, bi, A), r) =>
-        mkCon 0 [encodeString x, encodeBinderKind bi, encodeSyntax A, encodeBool r]),
+      encodeList (((fields.zip recursive).zip proofs).map fun (((x, bi, A), r), pr) =>
+        mkCon 0 [encodeString x, encodeBinderKind bi, encodeSyntax A, encodeBool r, encodeBool pr]),
       encodeList (idx.map encodeSyntax)])
   pure (mkCon 0 [encodeString T, encodeList (Td.levelParams.map encodeString),
     encodeList (params.map encodeParam), encodeList (indices.map encodeParam),

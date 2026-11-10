@@ -551,4 +551,27 @@ def serverGroup : Group where
         catch e => IO.eprintln e; IO.Process.exit 1 }
   ]
 
+/-- The Neovim plugin (editors/nvim, stage 11p): abbreviations and the infoview, in a
+headless nvim against the real `wiz lsp`. Skipped when there is no `nvim` (the dev shell
+has one). -/
+def nvimGroup : Group where
+  name := "nvim"
+  exercise := "editors/nvim (stage 11p)"
+  cases := [
+    { name := "wiz.nvim: abbreviations, and the infoview against wiz lsp (editors/nvim/tests/run.sh)", run := fun _ => do
+        let out ← IO.Process.output { cmd := "sh", args := #["editors/nvim/tests/run.sh"] }
+        if out.stdout.startsWith "skipped" then IO.println s!"    ({out.stdout.trimAsciiEnd})"
+        else unless out.exitCode == 0 do
+          throw (IO.userError s!"editors/nvim/tests/run.sh failed:\n{out.stdout}{out.stderr}") }
+  ]
+
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  group ::
+  nvimGroup ::
+  serverGroup ::
+  []
+
 end Tests.LSP

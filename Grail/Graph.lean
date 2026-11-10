@@ -300,12 +300,12 @@ def Runner.prep (r : Runner) (update : Bool) (results : TestResults) (n : Node)
   | .stage2 =>
     let self1 := (d 0).out / "self1.c"
     let rt ← IO.FS.readFile (r.ctx.dir / "selfhost" / "rt.c")
-    let key := mixHash (hash "stage2") (hash (toString [← IO.FS.readFile self1, rt, tc.cc,
+    let key := mixHash (hash "stage2 -O2") (hash (toString [← IO.FS.readFile self1, rt, tc.cc,
       " ".intercalate tc.gcCflags, " ".intercalate tc.gcLdflags]))
     let rtDir ← IO.FS.realPath (r.ctx.dir / "selfhost")
     pure (.job {
       key := key, timeoutMs := r.timeoutMs, how := .cmd tc.cc fun out =>
-      #["-O1", "-w", s!"-I{rtDir}"] ++ tc.gcCflags.toArray ++
+      #["-O2", "-w", s!"-I{rtDir}"] ++ tc.gcCflags.toArray ++
         #[self1.toString, "-o", (out / "stage2").toString] ++ tc.gcLdflags.toArray })
   | .self2 =>
     let input := r.ctx.dir / genSelf "compiler"
@@ -514,7 +514,7 @@ def Runner.runJob (r : Runner) (out : System.FilePath) : Sx → IO (Except Strin
     match mainDecls s with
     | .error e => pure (.error e)
     | .ok (ds, io) =>
-      IO.FS.writeFile (out / "main.c") (C.program ds io (Build.extraC s))
+      IO.FS.writeFile (out / "main.c") (C.program ds io (Build.extraC s) s.globals.unboxStructs)
       pure (.ok ())
   | .l #[.a "run-on", .a exe, .a input, .a file] => do
     runOn exe (← IO.FS.readFile input) out file
