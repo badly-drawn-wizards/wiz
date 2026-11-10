@@ -3160,12 +3160,16 @@ def derivingGroup : Group where
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}") }
   ]
 
-/-- Every `lib/*.wiz`, by module name. -/
+/-- Every `lib/*.wiz` and `lib/D/*.wiz` (as `D.X`), by module name. -/
 def libLoader : IO (Name → Option String) := do
   let mut m : List (Name × String) := []
   for e in ← System.FilePath.readDir "lib" do
     if e.path.extension == some "wiz" then
       m := (e.path.fileStem.getD "", ← IO.FS.readFile e.path) :: m
+    else if ← e.path.isDir then
+      for f in ← System.FilePath.readDir e.path do
+        if f.path.extension == some "wiz" then
+          m := (e.fileName ++ "." ++ f.path.fileStem.getD "", ← IO.FS.readFile f.path) :: m
   pure fun n => m.lookup n
 
 /-- No errors, and these messages, with every library importable. -/
@@ -3524,6 +3528,42 @@ def phantomGroup : Group where
         checkEq (← allocs "l") (← allocs "w")
         checkEq ((← allocs "l") + 1) (← allocs "p")
         checkEq ((← allocs "l") + 2) (← allocs "q") }
+  ]
+
+/-- A user-declared `ShareLet` (no HDL library): the hook fires on a `let` in check mode
+with no explicit quantity, and only when an instance exists. -/
+def shareLetHook : String := "import Prelude
+structure W where
+  n : Nat
+class ShareLet (A B : Type) where
+  share : A → (A → B) → B
+instance : ShareLet W W where
+  share := fun x f => f (W.mk (x.n + 100))
+def t1 : W := let y := W.mk 1; y
+def t2 : W := let ω y := W.mk 1; y
+def t3 : Nat := let y := 1; y
+#eval t1.n
+#eval t2.n
+#eval t3
+"
+
+def hdlGroup : Group where
+  name := "hdl"
+  exercise := "HDL stage S0 (hdl-plan H14)"
+  cases := [
+    { name := "auto-share: a let becomes ShareLet.share when an instance exists", run := fun _ =>
+        okLibs shareLetHook ["101", "1", "1"] },
+    { name := "L2 examples: hash-consed netlists are no bigger, three simulations agree; the doubling chain is linear", run := fun _ => do
+        -- r1–r4: (nodes hash-consed, nodes naive), then the value simulation and the netlist
+        -- simulations (hash-consed, naive). q1: the chain at k = 20 (nodes, adders, builder
+        -- work). q2: the chain at k = 3 simulated. q3: the chain without sharing (`let ω`) at
+        -- k = 10 (nodes, work, naive nodes). Last: (x + y) * (y + x) has one adder.
+        okLibs (← IO.FS.readFile "examples/hdl.wiz") ["((7, 7), .cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))), .cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))), .cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))))", "((10, 10), .cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 .nil))))), .cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 .nil))))), .cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 .nil))))))", "((31, 38), .cons 1 (.cons 1 (.cons 2 (.cons 1 (.cons 3 (.cons 3 .nil))))), .cons 1 (.cons 1 (.cons 2 (.cons 1 (.cons 3 (.cons 3 .nil))))), .cons 1 (.cons 1 (.cons 2 (.cons 1 (.cons 3 (.cons 3 .nil))))))", "((15, 17), .cons 1 (.cons 4 (.cons 9 (.cons 15 (.cons 216 (.cons 162 .nil))))), .cons 1 (.cons 4 (.cons 9 (.cons 15 (.cons 216 (.cons 162 .nil))))), .cons 1 (.cons 4 (.cons 9 (.cons 15 (.cons 216 (.cons 162 .nil))))))", "(25, 20, 25)", "(.cons 8 (.cons 16 (.cons 24 (.cons 32 (.cons 64 (.cons 56 .nil))))), .cons 8 (.cons 16 (.cons 24 (.cons 32 (.cons 64 (.cons 56 .nil))))))", "(11, 2047, 2047)", "4"] },
+    { name := "auto-share elaborates an object let to ShareLet.share; an erased or meta let stays a let", run := fun _ =>
+        okLibs ("import Hdl.Core\ndef f {r : HwTy → Type} [Hw r] (x : r (HwTy.bits 8)) : r (HwTy.bits 8) := let y := Hw.add x x; Hw.add y y\n" ++
+          "def g {r : HwTy → Type} [Hw r] (x : r (HwTy.bits 8)) (k : Nat) : r (HwTy.bits 8) := let j := Nat.succ k; Hw.lit 8 j\n#erase f\n#erase g")
+          ["f := (λr. (λinst✝. (λx. (((((ShareLet.share ◾) ◾) ((((instShareLetRARB ◾) #1) ⟨0 8⟩) ⟨0 8⟩)) (((((Hw.add ◾) #1) 8) #0) #0)) (λy. (((((Hw.add ◾) #2) 8) #0) #0))))))",
+           "g := (λr. (λinst✝. (λx. (λk. (let j := (Nat.succ #0); ((((Hw.lit ◾) #3) 8) #0))))))"] }
   ]
 
 /-! ## Regions: borrow checking as typing (lib/Region.wiz, Rust DSL RD12) -/
