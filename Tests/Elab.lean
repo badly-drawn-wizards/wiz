@@ -274,6 +274,17 @@ def okWith (r : Regularity) (input : String) : IO Unit := do
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
 
+/-- (P2) Checking `input` under `mode` (`full+eager`: without `lazyProofs`) finishes, without
+errors, within `secs` seconds (in a child process, as `checkDiverges`). -/
+def checkTerminates (input mode : String) (secs : Nat := 20) : IO Unit := do
+  let dir ← IO.FS.createTempDir
+  IO.FS.writeFile (dir / "input.wiz") input
+  let self ← IO.appPath
+  let out ← IO.Process.output { cmd := "sh", cwd := dir, args := #["-c",
+    s!"ulimit -v 8000000; exec timeout {secs} \"$0\" --check {mode} input.wiz", self.toString] }
+  unless out.exitCode == 0 do
+    throw (IO.userError s!"expected success, got exit code {out.exitCode}: {out.stderr.take 1000}")
+
 /-- Checking `input` (with the Lean kernel, in a child process: `tests --check`) doesn't
 finish within `secs` seconds. Memory is capped, as the loop allocates. -/
 def checkDiverges (input mode : String) (secs : Nat := 3) : IO Unit := do
@@ -406,16 +417,17 @@ def ottGroup : Group where
     { name := "wrong equation", run := fun _ =>
         fails "def bad (A : Type) (a b : A) : a = b := rfl" "type mismatch" },
     -- D1: regularity is off by default, and the program checks; with `--regularity full`
-    -- (or `nonprop`) checking it does not terminate
+    -- (or `nonprop`) and an evaluator that runs proofs (`--eager-proofs`, the behaviour
+    -- before P2) checking it does not terminate
     { name := "D1 (Abel–Coquand): the program checks (no regularity: the box's cast casts its proof field)", run := fun _ => do
         ok (abelCoquand "omega")
         ok (abelCoquand) },
-    { name := "D1 (Abel–Coquand): with regularity, checking the program does not terminate", run := fun _ =>
-        checkDiverges (abelCoquand) "full" },
-    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks; loops with regularity)", run := fun _ => do
+    { name := "D1 (Abel–Coquand): with regularity and eager proofs, checking the program does not terminate", run := fun _ =>
+        checkDiverges (abelCoquand) "full+eager" },
+    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks; loops with regularity and eager proofs)", run := fun _ => do
         unless (abelCoquandNested.splitOn "unbox2").length > 2 do throw (IO.userError "variant not built")
         ok abelCoquandNested
-        checkDiverges abelCoquandNested "full" },
+        checkDiverges abelCoquandNested "full+eager" },
     { name := "regularity at inert types: an indexed recursor computes at a data motive (Vec.length)", run := fun _ =>
         ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
           "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
@@ -432,13 +444,25 @@ def ottGroup : Group where
         checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .conv)).pretty },
     { name := "P1: the old syntactic InReg rejects the reduct h2 of h3 (documents the bug)", run := fun _ =>
         checkEq (repr ["t1", "h", "h3", "g1", "g3"]).pretty (repr (p1Accepted .syntactic)).pretty },
-    { name := "D1: a cast between propositions applies the equivalence, not regularity", run := fun _ =>
-        ok abelCoquandLiteral ["fun x => x"] },
-    { name := "D1 (R1): regularity only at non-propositions doesn't help (the box is a type)", run := fun _ =>
-        checkDiverges (abelCoquand) "nonprop" },
+    { name := "D1: with eager proofs, a cast between propositions applies the equivalence, not regularity", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral { globals := { lazyProofs := false } }
+        checkEq (repr ["fun x => x"]).pretty (repr (s.messages.toList.map (·.text))).pretty },
+    { name := "D1 (R1): regularity only at non-propositions doesn't help with eager proofs (the box is a type)", run := fun _ =>
+        checkDiverges (abelCoquand) "nonprop+eager" },
     { name := "D1 (R2, off): regularity only along refl, or none, checks the program", run := fun _ => do
         okWith .refl (abelCoquand)
-        okWith .off (abelCoquand) }
+        okWith .off (abelCoquand) },
+    -- P2 (the default): proofs are never evaluated, so the loop, which lives in a proof,
+    -- is never run, even with full regularity
+    { name := "P2: proofs are never evaluated, so Abel–Coquand checks even with full regularity (and nested)", run := fun _ => do
+        checkTerminates (abelCoquand) "full"
+        checkTerminates abelCoquandNested "full"
+        checkTerminates (abelCoquand) "nonprop"
+        checkTerminates (abelCoquand) "off" },
+    { name := "P2: a cast between propositions is stuck (a proof), not the equivalence applied", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral
+        let out := (s.messages.map (·.render abelCoquandLiteral)).toList
+        unless out.any (·.contains "cast") do throw (IO.userError s!"expected a stuck cast, got {out}") }
   ]
 
 end Tests.Elab
@@ -2698,6 +2722,36 @@ def selfHostGroup : Group where
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         unless (expected.filter (· != "error")).length ≥ 30 do throw (IO.userError "too few well-typed terms")
         ioRun (kernel ++ "\n" ++ verdict ++ printAll ++ main) ("\n".intercalate expected ++ "\n") },
+    -- P2 (soundness review of PR #61). A suspended proof never reaches these positions from
+    -- a checked term (it only sits in the proof positions of `cast` and `transp`), so the
+    -- values are built by hand, in both kernels.
+    { name := "P2: comparing types erases suspended proofs, but not what follows an absurd (both kernels)", run := fun _ => do
+        let g : Globals ZeroOneMany := {}
+        let ls : List Name := ["a", "b"]
+        let E : Val ZeroOneMany := .enum ls
+        let pf (sp : Array (Elim ZeroOneMany)) : Val ZeroOneMany :=
+          .neutral (.prf (Thunk.mk fun _ => .empty 0) [] .tt (Thunk.mk fun _ => .tt)) sp
+        -- two proofs are equal, whatever was projected
+        checkEq "true" (toString (sameVal g (pf #[.fst]) (pf #[.snd])))
+        -- `absurd E p` is a value of `E`, not a proof: what is done with it is compared
+        checkEq "false" (toString (sameVal g (pf #[.absurd E, .app (.tag ls 0)]) (pf #[.absurd E, .app (.tag ls 1)])))
+        -- and what was done before the `absurd` is not
+        checkEq "true" (toString (sameVal g (pf #[.fst, .absurd E, .app (.tag ls 0)]) (pf #[.snd, .absurd E, .app (.tag ls 0)])))
+        -- conversion, a suspended proof against a `refl`, both under `absurd`: the Lean kernel
+        -- takes any two proof heads as equal, the Wiz kernel only two of the same kind (it
+        -- is the stricter one: CoreSpec §15)
+        let refl : Val ZeroOneMany := .neutral (.refl E (.tag ls 0)) #[.absurd E]
+        checkEq "true" (toString (conv g #[] E (pf #[.absurd E]) refl))
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def b2s : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\n" ++
+          "def pf : Head := .hprf (fun _ => .vempty 0) .nil .star\n" ++
+          "def ab (sp : Spine) : Spine := .sabsurd sp (.venum 2)\n" ++
+          "def main : IO Unit := do\n" ++
+          "  IO.println (b2s (sameVal (.vne pf (.sfst .snil)) (.vne pf (.ssnd .snil))));\n" ++
+          "  IO.println (b2s (sameVal (.vne pf (.sapp (ab .snil) (.vtag 2 0))) (.vne pf (.sapp (ab .snil) (.vtag 2 1)))));\n" ++
+          "  IO.println (b2s (sameVal (.vne pf (.sapp (ab (.sfst .snil)) (.vtag 2 0))) (.vne pf (.sapp (ab (.ssnd .snil)) (.vtag 2 0)))));\n" ++
+          "  IO.println (b2s (conv empty (.venum 2) (.vne pf (ab .snil)) (.vne (.hrefl (.venum 2) (.vtag 2 0)) (ab .snil))))\n"
+        ioRun (kernel ++ "\n" ++ main) "true\nfalse\ntrue\nfalse\n" },
     { name := "the Wiz kernel checks declarations at symbolic levels like the Lean kernel", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let decls := MTm.declSamples ++ MTm.levelPuzzles 200
@@ -2711,7 +2765,7 @@ def selfHostGroup : Group where
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ decl ++ printAll ++ main) ("\n".intercalate expected ++ "\n") },
     -- D1: regularity is off in both kernels; with it on, the Wiz kernel loops too
-    { name := "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with regularity on)", run := fun _ => do
+    { name := "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with regularity on: its proofs are let-bound)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
         let control := MTm.abelCoquand false
@@ -2725,7 +2779,9 @@ def selfHostGroup : Group where
           | .ok (ty, _) => pure ((MTm.ofTerm (quote (leanGlobals ()) 0 ty)).map (·.pretty 0) |>.getD "?")
           | .error e => throw (IO.userError s!"the Lean kernel without regularity rejects it: {e}")
         ioRun (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n")
-        -- with regularity (`kernelRegularity`) the Wiz kernel loops
+        -- with regularity (`kernelRegularity`) the Wiz kernel loops. Proofs in `cast` and
+        -- `transp` are never evaluated (P2), but this program binds its proofs with `let`,
+        -- and a `let`-bound proof is still evaluated (Status.md, D1: the remaining gap)
         let off := "def kernelRegularity : Bool := .false"
         unless (kernel.splitOn off).length == 2 do throw (IO.userError "kernelRegularity not found")
         let withReg := kernel.replace off "def kernelRegularity : Bool := .true"
