@@ -1191,12 +1191,18 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .fst => .fst t
       | .snd => .snd t
       | .down => .down t
-      | _ => t)
+      -- (the spine of a glued induction only ever takes applications and projections:
+      -- `vApp`, `vFst`, `vSnd`, `vDown`. Anything else here is a bug, not something to drop.)
+      | .split .. | .absurd _ | .ecase .. | .delim .. | .ind .. | .sfix .. | .scase .. | .out =>
+        panic! "quote: an elimination that a glued induction cannot carry")
       (.ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) (quote g l x))
   --<sol
   | .neutral h sp =>
     let hd : Unit → Term R := fun _ => match h with
-      | .local x => .var (l - x - 1)
+      -- (a variable at or above the level read back at has no index: truncated
+      -- subtraction would name another variable, which once proved `False` (S1). It reads
+      -- back as a stuck unknown, which no term is equal to and the kernel rejects.)
+      | .local x => if x < l then .var (l - x - 1) else .const "kernel panic✝" []
       | .global n us => .const n us
       | .mvar m => .mvar m
       | .eq A a b => .eq (quote g l A) (quote g l a) (quote g l b)

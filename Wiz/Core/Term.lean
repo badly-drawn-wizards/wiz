@@ -269,7 +269,10 @@ don't need a case per constructor. -/
   -- variables through this traversal, and missing them here made `sameVal` identify
   -- `Nat.add x` with `Nat.add y`, which proved `False`; `wiz-notes/soundness-audit.md`, S1)
   | .natOp op args => return .natOp op (← args.mapM (f 0))
-  | t => pure t
+  -- the leaves, by name: with a default arm a new constructor would be skipped silently
+  -- (S1), and this way it does not compile until it has a case
+  | t@(.var _) | t@(.mvar _) | t@.tt | t@.qty | t@(.qlit _) | t@(.enum _) | t@(.tag ..) | t@.size | t@.szInf
+  | t@(.natLit _) => pure t
 where
   hintM (fl : Level → m Level) (f : Nat → Term R → m (Term R)) :
       Name × List Level × List (Term R) → m (Name × List Level × List (Term R))

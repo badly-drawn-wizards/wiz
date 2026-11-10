@@ -775,11 +775,11 @@ def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match kid stx0 1 with
               let ty := sortTy (piTele pts (match sig with
                 | .indexed _ => .pi I (.univ 0)
                 | _ => .univ 0));
-              let val := tLams np (body (mkD ds));
+              let val := markClosed (tLams np (body (mkD ds))) ty;
               match check empty val (eval .nil ty) with
               | .err m => errStep gs m
               | .ok _ _ =>
-                let valI := tLams np (body (mkD dsI));
+                let valI := markClosed (tLams np (body (mkD dsI))) ty;
                 let gs1 := Globals.add gs (.mk T ty val valI .nil);
                 match addCtors T ps pts nidx I (.const T .nil .nil val ty) valI k gs1 0 ctors with
                 | .err => errStep gs "ill-typed constructor"
@@ -2971,11 +2971,11 @@ def mutualInductiveCmd (gs : Globals) (defs : List Syntax) : Step :=
         -- `fun ps i => μ D i` (the description moved under `i`)
         let body := fun (D : Tm) => tLams np (.lam (.mu 0 I (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0)));
         let fty := sortTy (piTele pts (.pi I (.univ 0)));
-        let fval := body (mkD ds);
+        let fval := markClosed (body (mkD ds)) fty;
         match check empty fval (eval .nil fty) with
         | .err e => errStep gs e
         | .ok _ _ =>
-          let fvalI := body (mkD dsI);
+          let fvalI := markClosed (body (mkD dsI)) fty;
           let gs1 := Globals.add gs (.mk F fty fval fvalI .nil);
           let Fc : Tm := .const F .nil .nil fval fty;
           let gs2 := addMembers Fc fvalI np pts m gs1 0 members;

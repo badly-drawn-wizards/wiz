@@ -1035,7 +1035,16 @@ def forceSp : Val → Spine → Val
   | v, .sabsurd sp m => match whnf (forceSp v sp) with
     | .vne h sp' => .vne h (.sabsurd sp' m)
     | w => w
-  | v, _ => v
+  -- (every elimination, by name: a default arm would drop one silently)
+  | v, .secase sp env m bs => match whnf (forceSp v sp) with
+    | .vtag _ i => eval env (tmsNth bs i)
+    | .vne h sp' => .vne h (.secase sp' env m bs)
+    | w => w
+  | v, .sdelim sp k P a b c d => vDelim k P a b c d (forceSp v sp)
+  | v, .sind sp l I D k P m i => vInd l I D k P m i (forceSp v sp)
+  | v, .ssfix sp l I D k P f sz i => vSfix l I D k P f sz i (forceSp v sp)
+  | v, .sscase sp l I D k P m sz i => vScase l I D k P m sz i (forceSp v sp)
+  | v, .sout sp => vOut (forceSp v sp)
 -- (P2) the eliminations of a proof from its last `absurd` on (`.none`: there is none).
 -- Past an `absurd` the value need not be a proof (`exfalso M p : M`, for any `M`).
 def fromAbsurd : Spine → Option Spine

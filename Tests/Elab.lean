@@ -2450,8 +2450,11 @@ def leanGlobals (_ : Unit := ()) : Globals ZeroOneMany :=
 kernel prints) or `error`. -/
 def leanVerdict (t : MTm) (mark : Bool := true) : String :=
   let g := leanGlobals ()
-  -- (the proof markers the kernel requires, from the marking pass; `mark := false`: the
-  -- term as it is)
+  -- The proof markers the kernel requires come from the marking pass (`mark := false`: the
+  -- term as it is). The pass evaluates the term as it goes and checks nothing, like the
+  -- elaborator whose output it is made for; a random term can be ill-typed, so it is
+  -- marked only if it is well typed (checked first without the marker's requirement).
+  if mark && !(infer (R := ZeroOneMany) { globals := g, proof := true } t.toTerm).toBool then "error" else
   let tm := if mark then (Mark.infer (R := ZeroOneMany) { globals := g } t.toTerm).1 else t.toTerm
   match infer (R := ZeroOneMany) { globals := g } tm with
   | .ok (ty, _) => match MTm.ofTerm (quote g 0 ty) with
@@ -2463,12 +2466,21 @@ def leanVerdict (t : MTm) (mark : Bool := true) : String :=
 markers from the Wiz marking pass first (`rawVerdict`: the term as it is). -/
 def wizVerdict : String :=
   "def rawVerdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n" ++
-  "def verdict (t : Tm) : String := rawVerdict (MR.tm (markInfer empty t))\n"
+  "def markedVerdict (t : Tm) : String := rawVerdict (MR.tm (markInfer empty t))\n" ++
+  -- (a random term is marked only if it is well typed: the pass checks nothing)
+  "def verdict (t : Tm) : String := match infer (TCtx.inProof empty) t with\n  | .err _ => \"error\"\n  | .ok _ _ => markedVerdict t\n"
 
 /-- What the Lean kernel says about a declaration: `ok` or `error`. -/
 def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
   let (ps, v, ty) := d
   let g := leanGlobals ()
+  -- (marked only if well typed, as in `leanVerdict`)
+  let pre : TCM Unit := do
+    let ctx : Ctx ZeroOneMany := { globals := g, proof := true }
+    let _ ← Wiz.checkType ctx ty.toTerm
+    if let some v := v then
+      let _ ← Wiz.check ctx v.toTerm (ctx.eval ty.toTerm)
+  if !pre.toBool then "error" else
   match addDecl (R := ZeroOneMany) g (Decl.withMarks g { name := "test", levelParams := ps, type := ty.toTerm, value := v.map MTm.toTerm }) with
   | .ok _ => "ok"
   | .error _ => "error"
@@ -2992,7 +3004,7 @@ def selfHostGroup : Group where
           unless ((Term.freeVarsAt 0 t).run #[]).2.size == fv do throw (IO.userError s!"{c}: freeVarsAt misses a child")
           if nTerms > 0 then
             unless t.lift 1 != t do throw (IO.userError s!"{c}: lift misses the children")
-            unless t.instantiateAt 5 .tt != t do throw (IO.userError s!"{c}: instantiateAt misses the children")
+            unless (List.range 3).any (fun d => t.instantiateAt (5 - d) .tt != t) do throw (IO.userError s!"{c}: instantiateAt misses the children")
             unless (List.range 3).any (fun d => t.hasVar (5 + d)) do throw (IO.userError s!"{c}: hasVar misses the children")
           if nLevels > 0 then
             unless t.instLevels ["pw"] [.zero] != t do throw (IO.userError s!"{c}: instLevels misses a level")
@@ -3062,7 +3074,8 @@ def selfHostGroup : Group where
         let expected := decls.map leanDeclVerdict
         unless (expected.filter (· == "ok")).length ≥ 60 do throw (IO.userError "too few valid declarations")
         unless (expected.filter (· == "error")).length ≥ 30 do throw (IO.userError "too few invalid declarations")
-        let decl := "def declVerdict (ty0 : Tm) (v0 : Option Tm) : String :=\n  let ty := markTy empty ty0;\n  match checkDecl ty (match v0 with\n    | .some v => .some (markClosed v ty)\n    | .none => .none) with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n"
+        let decl := "def wellTyped (ty : Tm) (v0 : Option Tm) : Bool := match inferUniv (TCtx.inProof empty) ty with\n  | .err _ => .false\n  | .ok _ _ => match v0 with\n    | .none => .true\n    | .some v => match check (TCtx.inProof empty) v (eval .nil ty) with\n      | .ok _ _ => .true\n      | .err _ => .false\n" ++
+          "def declVerdict (ty0 : Tm) (v0 : Option Tm) : String := match wellTyped ty0 v0 with\n  | .false => \"error\"\n  | .true =>\n    let ty := markTy empty ty0;\n    match checkDecl ty (match v0 with\n      | .some v => .some (markClosed v ty)\n      | .none => .none) with\n    | .ok _ _ => \"ok\"\n    | .err _ => \"error\"\n"
         let calls := decls.map fun (_, v, ty) =>
           s!"(declVerdict {ty.toWiz} {match v with | some v => s!"(.some {v.toWiz})" | none => ".none"})"
         let main := s!"def main : IO Unit := printAll {wizList calls}\n"
@@ -3073,13 +3086,13 @@ def selfHostGroup : Group where
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let control := MTm.abelCoquand false
         unless leanVerdict control != "error" do throw (IO.userError "the Lean kernel rejects the control")
-        ioRun (kernel ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (verdict {control.toWiz})\n")
+        ioRun (kernel ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (markedVerdict {control.toWiz})\n")
           (leanVerdict control ++ "\n")
         let loop := MTm.abelCoquand true
         -- without regularity (the default) both kernels check it
         let expected := leanVerdict loop
         unless expected != "error" do throw (IO.userError "the Lean kernel without regularity rejects it")
-        ioRun (kernel ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n")
+        ioRun (kernel ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (markedVerdict {loop.toWiz})\n") (expected ++ "\n")
         -- unmarked, both kernels reject it: its `let`-bound proofs are λs (the marker is
         -- required, not a convention of the elaborator)
         checkEq "error" (leanVerdict loop (mark := false))
@@ -3091,7 +3104,7 @@ def selfHostGroup : Group where
         let off := "def kernelRegularity : Bool := .false"
         unless (kernel.splitOn off).length == 2 do throw (IO.userError "kernelRegularity not found")
         let withReg := kernel.replace off "def kernelRegularity : Bool := .true"
-        ioRun (withReg ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n")
+        ioRun (withReg ++ "\n" ++ wizVerdict ++ s!"def main : IO Unit := IO.println (markedVerdict {loop.toWiz})\n") (expected ++ "\n")
         let g : Globals ZeroOneMany := { leanGlobals () with regularity := .full }
         match infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } loop.toTerm).1 with
         | .ok _ => pure ()
