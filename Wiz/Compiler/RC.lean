@@ -121,9 +121,123 @@ where
   --| sorry
   --sol>
 
+--<sol
+/-! ### Reference counting in one pass
+
+`insertRC` asks for the free variables of the rest of the body at every binding, and
+keeps them alive while it handles the rest: quadratic in time and space along a chain
+of `n` bindings (a 15 000-binding constant took 9 s and 4 GB). The same result in one
+pass, bottom-up, from two observations:
+
+* the set `owned` that `insertRC` passes to a node is always the node's free variables
+  that hold a reference, and whether a variable holds one is fixed where it is bound
+  (a reference only moves at a variable's last use, so a variable still live hasn't
+  lost it): bound by `vdecl`, or an owned parameter, or the field of an owned object
+  (`proj`; an owned field that is never used is not owned, but then it is not live
+  either);
+* so each node's `dup`s and `drop`s only need the free variables of its continuation,
+  which the bottom-up pass returns (threaded through, so each set is updated in place).
+-/
+
+namespace RCFast
+
+/-- The variables that hold a reference where they are bound (see above). -/
+partial def ownedVars (σ : BorrowSigs) (b : Body) (acc : Std.HashSet Var) : Std.HashSet Var :=
+  match b with
+  | .vdecl x (.proj _ y) rest => ownedVars σ rest (if acc.contains y then acc.insert x else acc)
+  | .vdecl x _ rest => ownedVars σ rest (acc.insert x)
+  | .case _ alts => alts.foldl (fun acc a => ownedVars σ a acc) acc
+  | .jdecl j ps body k =>
+    let acc := ps.zipIdx.foldl (fun s (p, i) => if σ.jp j i then s else s.insert p) acc
+    ownedVars σ k (ownedVars σ body acc)
+  | .dup _ b | .drop _ b => ownedVars σ b acc
+  | _ => acc
+
+/-- Prefix `b` with drops of `xs` (sorted, as `dropDead` orders them). -/
+def drops (xs : Array Var) (b : Body) : Body :=
+  (xs.qsort (· < ·)).foldr (fun x acc => .drop x acc) b
+
+/-- `insertRC.consume` with `owned` = the owned variables among `as` (all of them free at
+the node): the variables to `dup` first, and which of `as` moved into the call. -/
+def consume (own : Std.HashSet Var) (live : Var → Bool) (as : Array Var) : Array Var × Std.HashSet Var :=
+  Id.run do
+    let mut moved : Std.HashSet Var := {}
+    let mut dups := #[]
+    for a in as, i in [0:as.size] do
+      let usedLater := live a || (as.extract (i + 1) as.size).contains a
+      if own.contains a && !moved.contains a && !usedLater then moved := moved.insert a
+      else dups := dups.push a
+    pure (dups, moved)
+
+/-- `insertRC σ (owned vars free in b) b`, and the free variables of `b`. -/
+partial def go (σ : BorrowSigs) (own : Std.HashSet Var) (b : Body) : Body × Std.HashSet Var :=
+  match b with
+  | .vdecl x (.proj i y) rest =>
+    let (rest', fv) := go σ own rest
+    let mine := own.contains y && fv.contains x
+    let rest' := if own.contains y && !fv.contains y then .drop y rest' else rest'
+    let fv := (fv.erase x).insert y
+    (.vdecl x (.proj i y) (if mine then .dup x rest' else rest'), fv)
+  | .vdecl x e rest =>
+    let (rest', fv) := go σ own rest
+    let (consumed, lent) := splitArgs σ e
+    let (dups, moved) := consume own (fun v => fv.contains v || lent.contains v) consumed
+    -- dead after this binding: `x` and the owned arguments that didn't move
+    let dead := ((e.args.push x).filter fun v => own.contains v && !fv.contains v && !moved.contains v)
+    let dead := dead.foldl (fun (acc : Array Var) v => if acc.contains v then acc else acc.push v) #[]
+    let rest' := drops dead rest'
+    let fv := e.args.foldl (·.insert ·) (fv.erase x)
+    (dups.foldr (fun y acc => .dup y acc) (.vdecl x e rest'), fv)
+  | .case x alts =>
+    let rs := alts.map (go σ own)
+    -- the free variables of the whole `case` (merged into the largest set)
+    let big := (rs.zipIdx.foldl (fun (best : Nat × Nat) (r, i) => if r.2.size > best.1 then (r.2.size, i) else best) (0, 0)).2
+    let fv := rs.zipIdx.foldl (fun acc (r, i) => if i == big then acc else r.2.fold (·.insert ·) acc)
+      ((rs[big]?.map (·.2)).getD {})
+    let fv := fv.insert x
+    let ownedHere := fv.toArray.filter own.contains
+    (.case x (rs.map fun (alt', fvA) => drops (ownedHere.filter (!fvA.contains ·)) alt'), fv)
+  | .ret x =>
+    (if own.contains x then .ret x else .dup x (.ret x), ({} : Std.HashSet Var).insert x)
+  | .jdecl j ps body k =>
+    let (body', fvB) := go σ own body
+    let ownedPs := ps.zipIdx.filterMap fun (p, i) => if σ.jp j i then none else some p
+    let body' := drops (ownedPs.filter (!fvB.contains ·)) body'
+    let (k', fv) := go σ own k
+    -- (`body` only uses its parameters)
+    let fv := fvB.fold (fun acc v => if ps.contains v then acc else acc.insert v) fv
+    (.jdecl j ps body' k', fv)
+  | .jmp j as =>
+    let consumed := as.zipIdx.filterMap fun (a, i) => if σ.jp j i then none else some a
+    let lent : Std.HashSet Var := as.zipIdx.foldl (fun s (a, i) => if σ.jp j i then s.insert a else s) {}
+    let (dups, moved) := consume own lent.contains consumed
+    -- owned arguments that stay owned and aren't lent are dropped before the jump
+    let dead := as.filter fun v => own.contains v && !moved.contains v && !lent.contains v
+    let dead := dead.foldl (fun (acc : Array Var) v => if acc.contains v then acc else acc.push v) #[]
+    (dups.foldr (fun y acc => .dup y acc) (drops dead (.jmp j as)), as.foldl (·.insert ·) {})
+  | b => (b, b.freeVars)
+
+end RCFast
+--|ex
+--sol>
+
 /-- Reference counting for a function: its parameters are owned, except those `σ` says
 are borrowed. -/
 def Decl.insertRC (d : Decl) (σ : BorrowSigs := {}) : Decl :=
+  let owned : Std.HashSet Var :=
+    d.params.zipIdx.foldl (fun s (p, i) => if σ.fn d.name i then s else s.insert p) {}
+  --<sol
+  -- (`RCFast`: the same as `insertRC`, in linear time)
+  let (body, fv) := RCFast.go σ (RCFast.ownedVars σ d.body owned) d.body
+  let body := RCFast.drops (d.params.filter fun p => owned.contains p && !fv.contains p) body
+  --|ex
+  --| let live := d.body.freeVars
+  --| let (body, _) := dropDead owned live (Wiz.IR.insertRC σ (owned.filter live.contains) d.body)
+  --sol>
+  { d with body, borrow := d.params.zipIdx.map fun (_, i) => σ.fn d.name i }
+
+/-- `Decl.insertRC` by the specification `insertRC` (quadratic; for differential tests). -/
+def Decl.insertRCSpec (d : Decl) (σ : BorrowSigs := {}) : Decl :=
   let owned : Std.HashSet Var :=
     d.params.zipIdx.foldl (fun s (p, i) => if σ.fn d.name i then s else s.insert p) {}
   let live := d.body.freeVars
