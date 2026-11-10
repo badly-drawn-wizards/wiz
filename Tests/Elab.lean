@@ -2958,6 +2958,27 @@ def derivingGroup : Group where
         failsDeriving "import Deriving\ninductive X where\n  | x\n  deriving Frob" "no deriver for Frob" },
     { name := "Inhabited needs a non-recursive constructor", run := fun _ =>
         failsDeriving "import Deriving\ninductive I where\n  | more (i : I)\n  deriving Inhabited" "every constructor of I is recursive" },
+    { name := "deriving with proof fields: not shown, not compared, no default (F5)", run := fun _ =>
+        okDeriving ("import Deriving\nstructure Pos where\n  n : Nat\n  h : Nat.lt 0 n = Bool.true\n  deriving Repr, BEq\n" ++
+          "#eval Repr.repr (Pos.mk 3 (refl Bool.true))\n#eval BEq.beq (Pos.mk 3 (refl Bool.true)) (Pos.mk 4 (refl Bool.true))\n" ++
+          "inductive W where\n  | a (n : Nat) (h : n = n)\n  | b\n  deriving Repr, BEq, Inhabited\n" ++
+          "#eval Repr.repr (W.a 2 (refl 2))\n#eval BEq.beq (W.a 2 (refl 2)) (W.a 2 (refl 2))\n#eval Repr.repr (Inhabited.default : W)")
+          ["\"Pos.mk 3 _\"", ".false", "\"W.a 2 _\"", ".true", "\"W.b\""] },
+    { name := "Inhabited skips a constructor with a proof field", run := fun _ =>
+        failsDeriving "import Deriving\ninductive I where\n  | p (h : 0 = 0)\n  deriving Inhabited" "every constructor of I is recursive or has a proof field" },
+    { name := "deriving for a universe-polymorphic type (no signature: Type u is inferred)", run := fun _ =>
+        okDeriving ("import Deriving\ninductive Box.{u} (A : Type u) where\n  | mk (x : A)\n  deriving Repr, BEq, Inhabited\n" ++
+          "structure P.{u} (A : Type u) where\n  x : A\n  n : Nat\n  deriving Repr, BEq, Inhabited\n" ++
+          "#eval Repr.repr (Box.mk (P.mk 1 2))\n#eval BEq.beq (Box.mk 1) (Box.mk 2)\n#eval Repr.repr (Inhabited.default : P Nat)\n" ++
+          "#check @instReprBoxA")
+          ["\"Box.mk (P.mk 1 2)\"", ".false", "\"P.mk 0 0\"",
+           "instReprBoxA : {A : Type u} → [inst✝ : Repr A] → Repr (Box A)"] },
+    { name := "deriving for a type above Type: lifted fields are seen through down (F5)", run := fun _ =>
+        okDeriving ("import Deriving\ninstance : Repr Type := Repr.mk (fun _ _ => \"<type>\")\n" ++
+          "instance : Inhabited Type := Inhabited.mk Nat\n" ++
+          "inductive Big where\n  | b (n : Nat) (h : n = n)\n  | c (T : Type)\n  deriving Repr, Inhabited\n" ++
+          "#eval Repr.repr (Big.b 3 (refl 3))\n#eval Repr.repr (Big.c Nat)\n#eval Repr.repr (Inhabited.default : Big)")
+          ["\"Big.b 3 _\"", "\"Big.c <type>\"", "\"Big.c <type>\""] },
     { name := "the example runs", run := fun _ => do
         let src ← IO.FS.readFile "examples/deriving.wiz"
         let s ← derivingRun src

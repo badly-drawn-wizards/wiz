@@ -295,11 +295,17 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
         unifyAt ctx (.missing) dom ty
         let tm' := Term.app tm t
         return ← elabFields ctx tm' (← instM cod (← evalIn ctx t)) rest
+    -- the first component, kept glued: `(f a).2`'s type only needs `(f a).1` if it
+    -- depends on it, and unfolding `f a` here would run it in the evaluator (a big
+    -- computation, as a netlist, overflowed the stack)
+    let gluedFst : Val R → Val R
+      | .unfold n us sp v => .unfold n us (sp.push .fst) (Thunk.mk fun _ => vFst v.get)
+      | v => vFst v
     let rec walk (t : Term R) (ty : VTy R) : ElabM R (Term R × VTy R) := do
       match ← force ty with
       | .sigma x _ A B _ =>
         if x == f then pure (.fst t, A)
-        else walk (.snd t) (← instM B (vFst (← evalIn ctx t)))
+        else walk (.snd t) (← instM B (gluedFst (← evalIn ctx t)))
       | ty => throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty}"
     let (t, ty) ← walk t ty
     elabFields ctx t ty rest
