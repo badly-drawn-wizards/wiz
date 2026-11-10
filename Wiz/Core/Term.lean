@@ -156,6 +156,17 @@ inductive Term (R : Type) where
   `nat.add`: compute natively when the arguments (variables) are literals, else apply
   the definition -/
   | natOp (op : Name) (args : Array (Term R))
+  -- Q4: lifting a type to a bigger universe
+  /-- `ULift.{l} A : Sort l` for `A : Sort k` with `k ≤ l`: a copy of `A` one or more
+  universes up. Description fields must live exactly in `Sort (l+1)`, so the elaborator
+  wraps smaller ones (proof fields, and fields of a level-polymorphic type whose level
+  is a `max`). A lifted proposition (`l ≠ 0`) is not a proposition: its inhabitants are
+  boxed proofs, all equal by η. Erased at run time. -/
+  | ulift (l : Level) (A : Term R)
+  /-- `up a : ULift A` for `a : A` (checked only) -/
+  | up (a : Term R)
+  /-- `down t : A` for `t : ULift A`; `down (up a) ↦ a`, and `t ≡ up (down t)` (η) -/
+  | down (t : Term R)
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/
@@ -228,6 +239,9 @@ don't need a case per constructor. -/
     return .scofix (← fl l) (← f 0 I) (← f 0 D) (← f 0 A) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 a)
   | .coit l I D S st i s =>
     return .coit (← fl l) (← f 0 I) (← f 0 D) (← f 0 S) (← f 0 st) (← f 0 i) (← f 0 s)
+  | .ulift l A => return .ulift (← fl l) (← f 0 A)
+  | .up a => return .up (← f 0 a)
+  | .down t => return .down (← f 0 t)
   | t => pure t
 where
   hintM (fl : Level → m Level) (f : Nat → Term R → m (Term R)) :
@@ -288,6 +302,14 @@ where
     t.forChildren (fun l => modify (l.params ++ ·)) (fun _ c => go c)
 
 end Term
+
+/-- A description that starts with a choice of tag, `Desc.arg q (Enum ls) F`, or, in a
+data type above `Type`, `Desc.arg q (ULift (Enum ls)) F` (Q4: the tag is lifted to the
+type's universe). Returns the labels, whether the tag is lifted, and `F`. -/
+def Term.descTag? {R : Type} : Term R → Option (List Name × Bool × Term R)
+  | .darg _ (.enum ls) F => some (ls, false, F)
+  | .darg _ (.ulift _ (.enum ls)) F => some (ls, true, F)
+  | _ => none
 
 /-- The binder name of a **phantom** argument (`Elab/Inductive.lean`): a type whose
 parameters no field mentions ends in `(0 phantom✝ : D) → … → Unit` instead of `Unit`,
