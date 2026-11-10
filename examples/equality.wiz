@@ -16,8 +16,13 @@ def noConfusion (e : Unit = Empty) : False := e
 def subst {A : Type} (P : A → Type) {a b : A} (e : a = b) (pa : P a) : P b :=
   cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa
 
--- ... and it computes on refl (cast along `X = X` is the identity).
-def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl
+-- ... and it computes on refl at a data type: there a cast between equal types is the
+-- identity. Not at a variable family `P`: Wiz has no regularity (`cast A A e t ≡ t` for
+-- any `e`), which with an impredicative `Prop` would make checking loop (D1).
+inductive Bit where
+  | o
+  | i
+def substRefl {A : Type} (a : A) (b : Bit) : subst (fun _ => Bit) (refl a) b = b := rfl
 
 def sym {A : Type} {a b : A} (e : a = b) : b = a :=
   transp (fun b _ => b = a) (refl a) e

@@ -283,9 +283,19 @@ of `a` and `b` (Pujet & Tabareau, *Observational Equality: Now for Good*):
 `cast e t : B` (for `e : A = B`, `t : A`) also computes by the two types.
 `transp P p e` transports into propositions, and together they give `J`
 (`examples/equality.wiz` derives `subst` and `sym`). Proofs are **definitionally
-irrelevant**, so conversion at a proposition always succeeds. **Regularity**,
-`cast A A e t ≡ t`, is a conversion rule (not an evaluation rule), which makes `J`
-compute on `refl`.
+irrelevant**, so conversion at a proposition always succeeds.
+
+**No regularity (D1).** Regularity, `cast A A e t ≡ t` for *any* proof `e`, would make
+`J` compute on `refl` everywhere, but together with an impredicative `Prop` and
+irrelevant proofs it makes type checking loop (Abel–Coquand; `Tests/Elab.lean` "D1"). So
+it is off (`wiz check --regularity full` turns it back on, for experiments). Instead
+`cast` computes on data, constructor by constructor: `μ D i = μ D i'` is `i = i'`, and
+`cast (μ D i) (μ D i') e (con x)` casts each field of `x` along it (so a proof field is
+cast between propositions, which applies the equivalence: that is what stops the loop).
+At **inert** types (first-order data: `Nat`, `Bool`, `List Nat`, … — no `Prop` fields,
+functions or type variables) regularity is kept: there a cast between equal types is the
+identity. A cast at a type variable (`cast e a` for `e : A = A`) stays stuck, as in
+TTobs: `J` computes on `refl` at data types, not at a variable family (docs/CoreSpec.md §8.4).
 
 **Propositions inside types.** Two propositions are equal when equivalent, whatever
 their shapes: `True = (True → True)` holds. So equality of types can't compare a
@@ -424,9 +434,13 @@ other occurrence is an error. A `structure` is a Σ ending in `Unit` with constr
 
 Every `inductive` also gets Lean-style eliminators `T.rec` (with induction
 hypotheses) and `T.casesOn` (`Elab/Recursor.lean`). They are built on `ind`: a
-"convoy" `ecase` on the tag, then a `cast` along the constructor's index equation.
-In evaluation, `cast A B e t` reduces to `t` whenever `A` and `B` quote to the same
-term (cheap regularity), so normal forms stay readable.
+"convoy" `ecase` on the tag, then a `cast` along the constructor's index equation
+(none for a type without indices). Indexed families also get `T.recN` and `T.casesOnN`,
+whose motive is a plain type: they need no cast, and `match` uses them when its result
+type depends on neither the indices nor the scrutinee. Without regularity (D1) the cast
+in `T.rec` computes on a constructor only through the motive's type: at an inert type
+(`Vec.length`) it vanishes, at a type variable (`Vec.map : … → Vec B n`) the fields stay
+cast (`cons (cast B B _ (f x)) …`).
 
 `.c` (with or without arguments) is a constructor of the expected type. Applications
 containing such arguments are elaborated *expected type first* (`checkApp`), so
@@ -1872,9 +1886,10 @@ Functions: `head`/`tail`/`last`/`init` on non-empty vectors, `get`/`set` by `Fin
 `map`, `zipWith`, `zip`, `foldl`/`foldr`, `replicate`, `ofFn`, `append`, `reverse`
 (linear, with a `cast` along `m + (k+1) = (m+k)+1`), `snoc`, `splitAt`, `shiftIn`,
 `toList`/`fromList` (`fromList l : Vec A (List.length l)`). Theorems: `length_eq`,
-`length_toList`, `toList_fromList`, `map_map`, `get_set` (`get (set v i x) i = x`),
-`get_map`, and the `Nat` lemmas they need
-(`add_zero`, `add_succ`, `add_comm`), all by structural recursion.
+`length_toList`, `toList_fromList`, and the `Nat` lemmas they need
+(`add_zero`, `add_succ`, `add_comm`), all by structural recursion. (`map_map`, `get_set`
+and `get_map` are in `drafts/vec-lib/VecProofs.wiz` since D1: without regularity they would
+need `cast B B e b = b` at a type variable, which is not provable; see docs/Status.md.)
 
 `lib/BitVec.wiz` (`import BitVec`): `BitVec n`, a `Nat` below `2^n` by construction
 (every operation reduces mod `2^n`). Wrapping `add`/`sub`/`neg`/`mul`, `udiv`/`umod`,
