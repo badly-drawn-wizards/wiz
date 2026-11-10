@@ -566,6 +566,27 @@ def stringConst (t : ETm) : Option (List Nat) := match t with
       | .false => .none
     | _ => .none
   | _ => .none
+-- **Self tail calls** (stage 15f). A function's call of itself in tail position (the
+-- body, under `let`s and in `case` branches), with all its arguments, is a jump: the
+-- arguments are computed, the parameters `p0 …` reassigned (through temporaries, since
+-- an argument may be a parameter) and control goes back to the label `top_` at the
+-- function's start. Recursion that only calls itself in tail position runs in constant
+-- stack, whatever the C compiler does. Under reference counting, an argument in a
+-- borrowed position must be a borrowed parameter (else it would need releasing after
+-- the call); otherwise the call stays a call.
+def etmsList : ETms → List ETm
+  | .nil => .nil
+  | .cons t rest => .cons t (etmsList rest)
+def etmsOfList : List ETm → ETms
+  | .nil => .nil
+  | .cons t rest => .cons t (etmsOfList rest)
+def selfTemps : Nat → List Doc → Doc
+  | _, .nil => .t ""
+  | i, .cons a rest => .t ("V tc_" +++ Nat.toString i +++ " = ") ⧺ a ⧺ .t "; " ⧺ selfTemps (i + 1) rest
+def selfSets : Nat → Nat → String
+  | _, .zero => ""
+  | i, .succ m => "p" +++ Nat.toString i +++ " = tc_" +++ Nat.toString i +++ "; " +++ selfSets (i + 1) m
+def selfJumpDoc (atoms : List Doc) : Doc := selfTemps 0 atoms ⧺ .t (selfSets 0 (lenL atoms) +++ "goto top_; ")
 def codesC : List Nat → Doc
   | .nil => .t ""
   | .cons n rest => match rest with
@@ -620,8 +641,14 @@ def cgE (st : CG) (names : List String) : ETm → CR
       | .mk x st2 => match cgBranches st2 names 0 bs with
         | .mk bcs st3 => .mk (.t ("({ V " +++ x +++ " = ") ⧺ sc ⧺ .t ("; V r_; switch (tagof(" +++ x +++ ")) { ") ⧺ bcs ⧺
             .t "default: r_ = unreach(); } r_; })") st3
-  | .prim op as => match cgEs st names as with
-    | .mk acs st1 => .mk (.t ("p_" +++ mangle op +++ "(") ⧺ acs ⧺ .t ")") st1
+  | .prim op as => match strEq op "wiz.self" with
+    -- a self tail call (`markSelf`): out of the statement expressions, to the start
+    | .true => match as with
+      | .cons _ rest => match cgTemps st names 0 (etmsList rest) with
+        | .mk tcs st1 => .mk (.t "({ " ⧺ tcs ⧺ .t (selfSets 0 (lenL (etmsList rest)) +++ "goto top_; BOX(0); })")) st1
+      | .nil => .mk (.t "unreach()") st
+    | .false => match cgEs st names as with
+      | .mk acs st1 => .mk (.t ("p_" +++ mangle op +++ "(") ⧺ acs ⧺ .t ")") st1
   | .lam b0 =>
     -- a chain of `k` `λ`s, lifted to one `static V lamN(V *a)` over the captured
     -- variables and the `k` arguments: a function closure (`mkfun`) that collects them
@@ -664,6 +691,11 @@ def cgApps (st : CG) (names : List String) (f : Doc) : List ETm → CR
     -- several arguments at once
     | .cons _ _ => match cgList st names (.cons a rest) with
       | .mk acs st1 => .mk (.t "apn(" ⧺ f ⧺ .t (", " +++ Nat.toString (lenL (.cons a rest)) +++ ", (V[]){") ⧺ acs ⧺ .t "})") st1
+def cgTemps (st : CG) (names : List String) (i : Nat) : List ETm → CR
+  | .nil => .mk (.t "") st
+  | .cons t rest => match cgE st names t with
+    | .mk tc st1 => match cgTemps st1 names (i + 1) rest with
+      | .mk rc st2 => .mk (.t ("V tc_" +++ Nat.toString i +++ " = ") ⧺ tc ⧺ .t "; " ⧺ rc) st2
 def cgBranches (st : CG) (names : List String) (k : Nat) : ETms → CR
   | .nil => .mk (.t "") st
   | .cons b rest => match cgE st names b with
@@ -1260,6 +1292,32 @@ def objC (w : String) (k n : Nat) (atoms : List Doc) : Doc := match strEq w "" w
   | .false => .t ("reuseobj(" +++ w +++ ", ") ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat n ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})"
 
 
+-- **Dead code** (stage 15e). A value without effects (no application, no `ind`, no
+-- `unreachable`), so when its variable is dead it need not be computed: liveness is
+-- known when a `let` is compiled (its body first), and such a `let` is skipped.
+mutual
+def pureE : ETm → Bool
+  | .erased => .true
+  | .var _ => .true
+  | .glob _ => .true
+  | .nat _ => .true
+  | .lam _ => .true
+  | .obj _ fs => pureEs fs
+  | .proj _ t => pureE t
+  | .letE v b => Bool.and (pureE v) (pureE b)
+  | .case s bs => Bool.and (pureE s) (pureEs bs)
+  | .prim op as => Bool.and (Bool.or (strEq op "memo") (Bool.or (strEq op "natSucc")
+      (Bool.or (strEq op "natPack") (strEq op "natUnpack")))) (pureEs as)
+  | .app f a => match natConst (.app f a) with
+    | .some _ => .true
+    | .none => match stringConst (.app f a) with
+      | .some _ => .true
+      | .none => .false
+def pureEs : ETms → Bool
+  | .nil => .true
+  | .cons t rest => Bool.and (pureE t) (pureEs rest)
+end
+
 mutual
 -- the code of `t` in a scope of `d` variables (`names`), `live` used after it
 def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t : ETm) : RR := match t with
@@ -1336,10 +1394,12 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
           | .mk fc atoms fl st1 => bindTo st1 fc (objC w tag n atoms) fl
   | .letE v b => match CG.fresh st "l" with
     | .mk x st1 => match rcE re st1 (.cons x names) (d + 1) live b with
-      | .mk bc ba bl st2 => match rcE re st2 names d (lvDel d bl) v with
-        | .mk vc va vl st3 => .mk (vc ⧺ .t ("V " +++ x +++ " = ") ⧺ va ⧺ .t "; " ⧺ (match lvMem d bl with
-            | .true => .t ""
-            | .false => .t ("dec(" +++ x +++ "); ")) ⧺ bc) ba vl st3
+      | .mk bc ba bl st2 => match lvMem d bl with
+        -- a dead value without effects: not computed at all (stage 15e)
+        | .false => match pureE v with
+          | .true => .mk bc ba bl st2
+          | .false => rcLet re st2 names d x v bc ba bl
+        | .true => rcLet re st2 names d x v bc ba bl
   | .case s bs =>
     let re2 := caseRE re d s;
     match rcBranches re2 st names d live bs with
@@ -1383,9 +1443,25 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
       | .nil => rcPrim re st names d live op as
     | .false => rcPrim re st names d live op as
   | .lam _ => rcLam re st names d live t .false
+-- `let x := v` before the body's code `bc` (whose value is `ba`, which uses `bl`)
+def rcLet (re : RE) (st : CG) (names : List String) (d : Nat) (x : String) (v : ETm) (bc ba : Doc) (bl : List Nat) : RR :=
+  match rcE re st names d (lvDel d bl) v with
+  | .mk vc va vl st3 => .mk (vc ⧺ .t ("V " +++ x +++ " = ") ⧺ va ⧺ .t "; " ⧺ (match lvMem d bl with
+      | .true => .t ""
+      | .false => .t ("dec(" +++ x +++ "); ")) ⧺ bc) ba vl st3
 def rcPrim (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (op : String) (as : ETms) : RR :=
-  match rcEs re st names d live as with
-  | .mk ac atoms al st1 => bindTo st1 ac (.t ("p_" +++ mangle op +++ "(") ⧺ joinDocs atoms ⧺ .t ")") al
+  match strEq op "wiz.self" with
+  | .true => rcSelf re st names d live as
+  | .false => match rcEs re st names d live as with
+    | .mk ac atoms al st1 => bindTo st1 ac (.t ("p_" +++ mangle op +++ "(") ⧺ joinDocs atoms ⧺ .t ")") al
+-- a self tail call (`markSelf`, its function first): the arguments, then the parameters
+-- reassigned and a jump back to the function's start
+def rcSelf (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (as : ETms) : RR := match as with
+  | .cons h rest => match h with
+    | .glob g => match rcArgs re st names d live (RE.sig re g) (etmsList rest) with
+      | .mk ac atoms _ al st1 => .mk (ac ⧺ .t "{ " ⧺ selfJumpDoc atoms ⧺ .t "} ") (.t "BOX(0)") al st1
+    | _ => .mk (.t "") (.t "unreach()") live st
+  | .nil => .mk (.t "") (.t "unreach()") live st
 -- a chain of `λ`s, lifted (as in `cgE`): a function closure, or with `thunk` a
 -- suspension (`mkthunk`: a closure computing its value once, then releasing what it
 -- captured)
@@ -1470,6 +1546,31 @@ end
 -- code, a global of arity `k` as a C function `d_g` of `k` arguments (and `get_g()`
 -- its curried closure), any other as a value built the first time it is used; then
 -- `main` run on the world. The runtime is `#include`d.
+-- the self tail calls of `g` (arity `k`, borrowed parameters `bor` by level, its
+-- signature `sig`) in a body at depth `d`, as `wiz.self` (see `etmsList`)
+def selfArgsOk (bor : List Nat) (d : Nat) : List Bool → List ETm → Bool
+  | _, .nil => .true
+  | sig, .cons t rest => match headB sig with
+    | .true => match t with
+      | .var i => Bool.and (Bool.and (Nat.lt i d) (lvMem (d - 1 - i) bor)) (selfArgsOk bor d (tailB sig) rest)
+      | _ => .false
+    | .false => selfArgsOk bor d (tailB sig) rest
+mutual
+def markSelf (g : String) (k : Nat) (sig : List Bool) (bor : List Nat) (d : Nat) (t : ETm) : ETm := match t with
+  | .letE v b => .letE v (markSelf g k sig bor (d + 1) b)
+  | .case s bs => .case s (markSelfEs g k sig bor d bs)
+  | .app f a => match spineE f (.cons a .nil) with
+    | .mk h args => match h with
+      | .glob g2 => match Bool.and (strEq g g2) (Bool.and (Nat.beq (lenL args) k) (selfArgsOk bor d sig args)) with
+        | .true => .prim "wiz.self" (.cons (.glob g) (etmsOfList args))
+        | .false => t
+      | _ => t
+  | _ => t
+def markSelfEs (g : String) (k : Nat) (sig : List Bool) (bor : List Nat) (d : Nat) : ETms → ETms
+  | .nil => .nil
+  | .cons t rest => .cons (markSelf g k sig bor d t) (markSelfEs g k sig bor d rest)
+end
+
 inductive Erased where
   | mk (name : String) (e : ETm)
 inductive EraseR where
@@ -1521,23 +1622,13 @@ def genCode : CG → List Doc → List Doc → List Erased → Code
             "(void) { if (!i_" +++ g +++ ") { g_" +++ g +++ " = ") ⧺ code ⧺ .t ("; i_" +++ g +++ " = 1; } return g_" +++ g +++ "; }")) defs) rest
     | .succ _ =>
       -- the parameters: `p0` the first, so the innermost (index 0) is `p(k-1)`
-      match cgE st (paramNames k k) (underLams k e) with
+      match cgE st (paramNames k k) (markSelf n k .nil .nil k (underLams k e)) with
       | .mk code st1 =>
         let ps := paramDecls 0 k;
         genCode st1 (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);")) protos)
-          (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ ") { return ") ⧺ code ⧺ .t "; }") (.cons
+          (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ ") { top_: return ") ⧺ code ⧺ .t "; }") (.cons
             (.t ("static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); return c; }")) defs)) rest
--- the program's C text, one `Doc` per line
-def genProgram (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ => match eraseGlobals .false all .nil .nil (Array.size all) with
-    | .err m => .cons (.t ("#error " +++ m)) .nil
-    | .ok es => match genCode (.mk .nil 0 (arities StrMap.empty es) .idle) .nil .nil es with
-      | .mk protos defs st => match st with
-        | .mk fns _ _ _ =>
-          .cons (.t "#include \"rt.c\"") (List.append protos
-            (List.append (List.reverseOf fns .nil) (List.append defs
-              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); return 0; }") .nil))))
 -- **Applications pushed into `case`s** (reference counting mode). A match is a method
 -- applied to the payload, and the method is chosen by a `case`: `(case s [bᵢ]) a⃗`
 -- built a closure for the chosen branch and applied it. With cheap arguments
@@ -1580,6 +1671,20 @@ def pushGlobals : List Erased → List Erased
 def decideGlobals : List Erased → List Erased
   | .nil => .nil
   | .cons (.mk n e) rest => .cons (.mk n (decideLets 0 e)) (decideGlobals rest)
+-- the program's C text, one `Doc` per line
+def genProgram (gs : Globals) : List Doc := match gs with
+  | .mk all _ _ => match eraseGlobals .false all .nil .nil (Array.size all) with
+    | .err m => .cons (.t ("#error " +++ m)) .nil
+    | .ok es0 =>
+      -- (applications pushed into `case`s, as under reference counting: a match is then
+      -- no closure, and its recursive calls are in tail position)
+      let es := pushGlobals es0;
+      match genCode (.mk .nil 0 (arities StrMap.empty es) .idle) .nil .nil es with
+      | .mk protos defs st => match st with
+        | .mk fns _ _ _ =>
+          .cons (.t "#include \"rt.c\"") (List.append protos
+            (List.append (List.reverseOf fns .nil) (List.append defs
+              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); return 0; }") .nil))))
 
 -- **Constructors inlined** (reference counting mode): a global whose body, under its
 -- `λ`s, only builds an object from its parameters and constants (a constructor, as
@@ -1853,11 +1958,11 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
       let sig := match StrMap.findD sigs (Str.ofString n) .nil with
         | .nil => allFalse k
         | sg => sg;
-      match rcE (.mk (borLevels 0 sig) sigs .nil) st names k .nil (underLams k e) with
+      match rcE (.mk (borLevels 0 sig) sigs .nil) st names k .nil (markSelf n k sig (borLevels 0 sig) k (underLams k e)) with
       | .mk code atom live st1 =>
         let ps := paramDecls 0 k;
         genCodeRC sigs st1 (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);")) protos)
-          (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ ") { ") ⧺ entryDrops names k live (ownedIdx k 0 sig) ⧺ code ⧺ .t "return " ⧺ atom ⧺ .t "; }") (.cons
+          (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ ") { top_: ; ") ⧺ entryDrops names k live (ownedIdx k 0 sig) ⧺ code ⧺ .t "return " ⧺ atom ⧺ .t "; }") (.cons
             (.t ("static V w_" +++ g +++ "(V *a) { V r = d_" +++ g +++ "(" +++ argList 0 k +++ "); " +++ wrapDecs 0 sig +++ "return r; } " +++
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++
              "); rt_root(&c); } inc(c); return c; }")) defs)) rest

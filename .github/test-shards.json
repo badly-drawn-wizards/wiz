@@ -1,7 +1,63 @@
 [
-  {"name": "selfhost", "select": ["=selfhost"]},
-  {"name": "grail-selfhost", "select": ["=grail-selfhost"]},
-  {"name": "backends", "select": ["backend", "=c", "llvm", "ffi", "effects", "reuse", "borrow"]},
-  {"name": "library", "select": ["tooling", "std", "language", "optic", "deriving", "macros", "builtins", "tactics", "classes", "word", "vec", "lsp", "modules", "toolchain", "=grail", "=grail-jobs", "=grail-deps", "testrunner", "phantom", "regions", "hdl", "infoview", "trust"]},
-  {"name": "core", "select": ["rig", "eval", "conv", "check", "lexer", "parser", "elab", "universes", "observational", "quantity", "data", "inductive", "match", "copatterns", "sized", "lift", "scaling"]}
+  {"name": "selfhost", "split": 4, "select": [
+    "=selfhost"
+  ]},
+  {"name": "grail-selfhost", "select": [
+    "=grail-selfhost"
+  ]},
+  {"name": "backends", "select": [
+    "backend",
+    "borrow",
+    "=c",
+    "conc",
+    "effects",
+    "ffi",
+    "llvm",
+    "reuse"
+  ]},
+  {"name": "library", "select": [
+    "builtins",
+    "classes",
+    "deriving",
+    "=grail",
+    "=grail-deps",
+    "=grail-jobs",
+    "hdl",
+    "infoview",
+    "language",
+    "lsp",
+    "macros",
+    "modules",
+    "optic",
+    "phantom",
+    "regions",
+    "seplogic",
+    "std",
+    "tactics",
+    "testrunner",
+    "toolchain",
+    "tooling",
+    "trust",
+    "vec",
+    "word"
+  ]},
+  {"name": "core", "select": [
+    "check",
+    "conv",
+    "copatterns",
+    "data",
+    "elab",
+    "eval",
+    "inductive",
+    "lexer",
+    "lift",
+    "match",
+    "observational",
+    "parser",
+    "quantity",
+    "rig",
+    "scaling",
+    "sized",
+    "universes"
+  ]}
 ]
