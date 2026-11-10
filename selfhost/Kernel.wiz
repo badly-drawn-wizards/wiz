@@ -117,6 +117,11 @@ inductive Tm where
   -- terms are shared, so there is no table of globals to pass around
   | const (name : String) (params : List String) (levels : List Lvl) (value ty : Tm)
   | axiomC (name : String) (ty : Tm)
+  -- (Q4) `ULift A : Sort l` for `A : Sort k`, `k ≤ l`: a description field must be in
+  -- exactly `Sort (l+1)`, so smaller ones are lifted; `up a : ULift A`, `down t : A`
+  | ulift (l : Nat) (A : Tm)
+  | up (a : Tm)
+  | down (t : Tm)
 inductive Tms where
   | tnil
   | tcons (t : Tm) (rest : Tms)
@@ -158,6 +163,9 @@ inductive Val where
   -- **glued**: a global definition applied to `sp`, and its unfolding (`Val.unfold` in
   -- the Lean kernel), computed when `whnf` first looks through it (`memo`)
   | vglued (h : Head) (sp : Spine) (v : Unit → Val)
+  -- `ULift A` in `Sort l`, and its constructor (Q4)
+  | vulift (l : Nat) (A : Val)
+  | vup (a : Val)
   -- a stuck head and the eliminations applied to it
   | vne (head : Head) (spine : Spine)
 inductive Env where
@@ -177,6 +185,7 @@ inductive Spine where
   | ssfix (sp : Spine) (l : Nat) (I D : Val) (v : Nat) (P f s i : Val)
   | sscase (sp : Spine) (l : Nat) (I D : Val) (v : Nat) (P m s i : Val)
   | sout (sp : Spine)
+  | sdown (sp : Spine)
 -- what a neutral is stuck on: a variable (by level), or an equality, cast or proof
 -- that doesn't compute
 inductive Head where
@@ -460,6 +469,9 @@ def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
       (tmSubst ps ls i) (tmSubst ps ls x)
   | .ind l I D v P m i x => .ind l (tmSubst ps ls I) (tmSubst ps ls D) v (tmSubst ps ls P) (tmSubst ps ls m)
       (tmSubst ps ls i) (tmSubst ps ls x)
+  | .ulift l A => .ulift l (tmSubst ps ls A)
+  | .up a => .up (tmSubst ps ls a)
+  | .down t => .down (tmSubst ps ls t)
   | t => t
 def tmsSubst (ps : List String) (ls : List Lvl) : Tms → Tms
   | .tnil => .tnil
@@ -534,6 +546,7 @@ def propSort : Val → Option Bool
   | .vnu _ _ _ _ _ => .some .false
   | .vsize => .some .false
   | .vsizeLt _ => .some .false
+  | .vulift l _ => .some (Nat.beq l 0)
   | .vne h sp => match sp with
     | .snil => match h with
       | .heq _ _ _ => .some .true
@@ -565,6 +578,7 @@ def canonical : Val → Bool
   | .vdesc _ _ => .true
   | .vmu _ _ _ _ _ => .true
   | .vnu _ _ _ _ _ => .true
+  | .vulift _ _ => .true
   | _ => .false
 
 -- syntactic equality of terms
@@ -626,6 +640,9 @@ def tmEq : Tm → Tm → Bool
   | .const n _ ls _ _, .const n' _ ls' _ _ => Bool.and (kStrEq n n') (lvlsEq ls ls')
   | .sortL l, .sortL l' => lvlEquiv l l'
   | .axiomC n _, .axiomC n' _ => kStrEq n n'
+  | .ulift l a, .ulift l' b => Bool.and (Nat.beq l l') (tmEq a b)
+  | .up a, .up b => tmEq a b
+  | .down a, .down b => tmEq a b
   | .ind l a b v c d e f, .ind l' a' b' v' c' d' e' f' => Bool.and (Nat.beq l l') (Bool.and (Nat.beq v v')
       (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f')))))))
   | _, _ => .false
@@ -754,6 +771,9 @@ def usesVar : Nat → Tm → Bool
   | i, .snd p => usesVar i p
   | i, .pair a b => Bool.or (usesVar i a) (usesVar i b)
   | i, .con x => usesVar i x
+  | i, .ulift _ A => usesVar i A
+  | i, .up a => usesVar i a
+  | i, .down t => usesVar i t
   | i, .mu _ I D x => Bool.or (usesVar i I) (Bool.or (usesVar i D) (usesVar i x))
   | i, .eq A a b => Bool.or (usesVar i A) (Bool.or (usesVar i a) (usesVar i b))
   | i, .const _ _ _ _ _ => .false
@@ -806,6 +826,8 @@ def lvlBound : Val → Nat
       (Nat.max (lvlBound i) (lvlBound s))
   | .vglued h sp _ => Nat.max (headBound h) (spineBound sp)
   | .vne h sp => Nat.max (headBound h) (spineBound sp)
+  | .vulift _ A => lvlBound A
+  | .vup a => lvlBound a
 -- the entries of `env` (the first at index `i` of `b`) that `b` might mention
 def envBound : Nat → Env → Tm → Nat
   | _, .nil, _ => 0
@@ -842,6 +864,7 @@ def spineBound : Spine → Nat
   | .sscase sp _ I D _ P m sz i => Nat.max (spineBound sp)
       (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (Nat.max (lvlBound P) (lvlBound m)) (Nat.max (lvlBound sz) (lvlBound i))))
   | .sout sp => spineBound sp
+  | .sdown sp => spineBound sp
 end
 
 mutual
@@ -914,6 +937,9 @@ def eval : Env → Tm → Val
   | _, .sortL l => .vsort l
   | _, .const n ps ls v ty => .vglued (.hconst n ps ls v ty) .snil (memo (fun _ => eval .nil (substIfAny ps ls v)))
   | _, .axiomC n ty => .vne (.haxiom n ty) .snil
+  | env, .ulift l A => .vulift l (eval env A)
+  | env, .up a => .vup (eval env a)
+  | env, .down t => vdown (eval env t)
   --|ex
   --| | _, _ => .vsort (.lnum 0)
   --sol>
@@ -944,6 +970,16 @@ def vsnd : Val → Val
   --|ex
   --| | v => v
   --sol>
+-- (Q4) `down (up a) ↦ a`
+def vdown : Val → Val
+  | .vglued h sp v => .vglued h (.sdown sp) (memo (fun _ => vdown (v ())))
+  | .vup a => a
+  | .vne h sp => .vne h (.sdown sp)
+  | v => v
+-- `up` when `lifted` (a lifted tag, Q4)
+def upIf (lifted : Bool) (v : Val) : Val := match lifted with
+  | .true => .vup v
+  | .false => v
 -- `Desc.elim` (`vDelim` in `Eval.lean`): the methods get `tt` for the quantity
 def vDelim (v : Nat) (P mret marg mrec mhrec D : Val) : Val := vDelimW v P mret marg mrec mhrec (whnf D)
 def vDelimW : Nat → Val → Val → Val → Val → Val → Val → Val
@@ -1027,6 +1063,12 @@ def vEqW : Val → Val → Val → Val
         (.coe (.app (.var 3) (.fst (.var 2))) (.app (.var 3) (.fst (.var 1))) apB (.snd (.var 2))) (.snd (.var 1))) (.some (.lnum 0))
   | .vunit _, _, _ => .vunit 0
   | .vempty _, _, _ => .vunit 0
+  -- (Q4) by the lifted type; a lifted proposition has one inhabitant
+  | .vulift l A, a, b => match propSort (whnf A) with
+    | .some p => match p with
+      | .true => .vunit 0
+      | .false => vEq A (vdown a) (vdown b)
+    | .none => .vne (.heq (.vulift l A) a b) .snil
   | .venum k, .vtag _ i, .vtag _ j => match Nat.beq i j with
     | .true => .vunit 0
     | .false => .vempty 0
@@ -1045,7 +1087,11 @@ def vEqW : Val → Val → Val → Val
 def eqPayload (l : Nat) (I X i : Val) : Val → Val → Val → Option Val
   | .vdret _, _, _ => .some (.vunit 0)
   | .vdarg S E, x, y => match whnf S with
-    | .venum k => eqTags l I X i (.venum k) E (whnf (vfst x)) (whnf (vfst y)) x y
+    | .venum k => eqTags l I X i (.venum k) E .false (whnf (vfst x)) (whnf (vfst y)) x y
+    -- (a lifted tag, Q4)
+    | .vulift n A => match whnf A with
+      | .venum k => eqTags l I X i (.vulift n (.venum k)) E .true (whnf (vdown (vfst x))) (whnf (vdown (vfst y))) x y
+      | A' => .some (vEq (vInterp l I (.vdarg (.vulift n A') E) X i) x y)
     | S' => .some (vEq (vInterp l I (.vdarg S' E) X i) x y)
   | .vdrec j E, x, y => match eqPayload l I X i (whnf E) (vsnd x) (vsnd y) with
     | .some r => .some (withRest (vEq (vapp X j) (vfst x) (vfst y)) (whnf E) r)
@@ -1056,10 +1102,11 @@ def eqPayload (l : Nat) (I X i : Val) : Val → Val → Val → Option Val
         (vfst x) (vfst y)) (whnf E) r)
     | .none => .none
   | _, _, _ => .none
--- (equal tags: the rest; different tags: the Σ rule, whose first component is `False`)
-def eqTags (l : Nat) (I X i S E : Val) : Val → Val → Val → Val → Option Val
+-- (equal tags: the rest; different tags: the Σ rule, whose first component is `False`;
+-- a lifted tag (Q4) is read through `down`, and `E` gets `up tag`)
+def eqTags (l : Nat) (I X i S E : Val) (lifted : Bool) : Val → Val → Val → Val → Option Val
   | .vtag k a, .vtag _ b, x, y => match Nat.beq a b with
-    | .true => eqPayload l I X i (whnf (vapp E (.vtag k a))) (vsnd x) (vsnd y)
+    | .true => eqPayload l I X i (whnf (vapp E (upIf lifted (.vtag k a)))) (vsnd x) (vsnd y)
     | .false => .some (vEq (vInterp l I (.vdarg S E) X i) x y)
   | _, _, _, _ => .none
 -- `A × B` in `Prop`
@@ -1107,6 +1154,8 @@ def vEqTypeW : Val → Val → Val
     | .true => vEqType I I'
     | .false => .vne (.heqTy (.vdesc l I) (.vdesc l' I')) .snil
   | .vmu l I D i s, .vmu l' I' D' i' s' => famEqTy (.vmu l I D i s) (.vmu l' I' D' i' s') I i i'
+  -- (Q4) `ULift A = ULift B ↦ A = B`
+  | .vulift l A, .vulift l' B => same l l' (vEqType A B) (.vempty 0)
   | .vnu l I D i s, .vnu l' I' D' i' s' => famEqTy (.vnu l I D i s) (.vnu l' I' D' i' s') I i i'
   | X, Y => match Bool.and (canonical X) (canonical Y) with
     | .true => .vempty 0
@@ -1142,6 +1191,8 @@ def vCastW : Val → Val → Val → Val → Val
   | .vempty l, .vempty l', e, t => same l l' t (.vne (.hcast (.vempty l) (.vempty l') e t) .snil)
   | .vunit l, .vunit l', e, t => same l l' .vtt (.vne (.hcast (.vunit l) (.vunit l') e t) .snil)
   | .venum k, .venum k', e, t => same k k' t (.vne (.hcast (.venum k) (.venum k') e t) .snil)
+  -- (Q4) through `down` (a lifted proposition is cast by the equivalence, in `vCastP`)
+  | .vulift l A, .vulift l' B, e, t => same l l' (.vup (vCast A B e (vdown t))) (.vne (.hcast (.vulift l A) (.vulift l' B) e t) .snil)
   -- regularity (off, see `kernelRegularity`): syntactically equal types
   | A, B, e, t => match Bool.or kernelRegularity (inertTy 0 A) with
     | .true => match sameVal A B with
@@ -1156,6 +1207,9 @@ def inertTy (depth : Nat) (A : Val) : Bool := match Nat.lt depth 8 with
   | .true => inertW depth (whnf A)
 def inertW (depth : Nat) : Val → Bool
   | .venum _ => .true
+  | .vulift l A => match Nat.beq l 0 with
+    | .true => .false
+    | .false => inertTy (Nat.succ depth) A
   | .vunit l => match Nat.beq l 0 with
     | .true => .false
     | .false => .true
@@ -1177,15 +1231,20 @@ def inertDescW (depth : Nat) : Val → Bool
   | .vdret _ => .true
   | .vdrec _ E => inertDesc depth E
   | .vdarg S E => match whnf S with
-    | .venum k => inertTags depth E k 0
+    | .venum k => inertTags depth E .false k 0
+    | .vulift n A => match whnf A with
+      | .venum k => inertTags depth E .true k 0
+      | _ => match inertTy (Nat.succ depth) (.vulift n A) with
+        | .true => inertDesc depth (vapp E (fresh (Nat.add 100050 depth)))
+        | .false => .false
     | S' => match inertTy (Nat.succ depth) S' with
       | .true => inertDesc depth (vapp E (fresh (Nat.add 100050 depth)))
       | .false => .false
   | _ => .false
-def inertTags (depth : Nat) (E : Val) (k i : Nat) : Bool := match Nat.lt i k with
+def inertTags (depth : Nat) (E : Val) (lifted : Bool) (k i : Nat) : Bool := match Nat.lt i k with
   | .false => .true
-  | .true => match inertDesc depth (vapp E (.vtag k i)) with
-    | .true => inertTags depth E k (Nat.succ i)
+  | .true => match inertDesc depth (vapp E (upIf lifted (.vtag k i))) with
+    | .true => inertTags depth E lifted k (Nat.succ i)
     | .false => .false
 -- syntactic equality of values, quoted at a level above every variable in them
 -- (`lvlBound`), so that different variables never quote alike
@@ -1320,6 +1379,8 @@ def quote : Nat → Val → Tm
   | l, .vcoit k I D S st i s => .coit k (quote l I) (quote l D) (quote l S) (quote l st) (quote l i) (quote l s)
   | l, .vne h sp => quoteSpine l (quoteHead l h) sp
   | l, .vglued h sp _ => quoteSpine l (quoteHead l h) sp
+  | l, .vulift k A => .ulift k (quote l A)
+  | l, .vup a => .up (quote l a)
   --|ex
   --| | _, _ => .univ 0
   --sol>
@@ -1340,6 +1401,7 @@ def quoteSpine : Nat → Tm → Spine → Tm
   | l, h, .sscase sp k I D v P m sz i =>
     .scase k (quote l I) (quote l D) v (quote l P) (quote l m) (quote l sz) (quote l i) (quoteSpine l h sp)
   | l, h, .sout sp => .out (quoteSpine l h sp)
+  | l, h, .sdown sp => .down (quoteSpine l h sp)
 def quoteHead : Nat → Head → Tm
   | l, .hvar x => .var (l - x - 1)
   | l, .heq A a b => .eq (quote l A) (quote l a) (quote l b)
@@ -1453,6 +1515,9 @@ def show (names : List String) : Nat → Tm → String
         (String.append (String.append ", " (show names l b)) (String.append ", " (String.append (show names l e) ")"))))
   | l, .exfalso m t => String.append (String.append "absurd(" (show names l m)) (String.append ", " (String.append (show names l t) ")"))
   | _, .enum k => String.append "Enum" (Nat.toString k)
+  | l, .ulift k A => String.append (String.append (String.append "ULift" (Nat.toString k)) "(") (String.append (show names l A) ")")
+  | l, .up a => show names l a
+  | l, .down t => show names l t
   | _, .tag _ i => String.append "#" (Nat.toString i)
   | l, .ecase m s bs => String.append (String.append (String.append "case(" (show names (l + 1) m))
       (String.append ", " (show names l s))) (String.append (showBranches names l bs) ")")
@@ -1564,6 +1629,9 @@ def typeOfNe : TCtx → Head → Spine → Val
   | c, x, .sout sp => match whnf (typeOfNe c x sp) with
     | .vnu l I D i sz => vInterp l I D (nuFamilyAt l I D (sizePredOrInf sz)) i
     | ty => ty
+  | c, x, .sdown sp => match whnf (typeOfNe c x sp) with
+    | .vulift _ A => A
+    | ty => ty
 -- the level of the universe a type lives in
 def sortOf (c : TCtx) (ty : Val) : Option Lvl := sortOfW c (whnf ty)
 def sortOfW : TCtx → Val → Option Lvl
@@ -1586,6 +1654,7 @@ def sortOfW : TCtx → Val → Option Lvl
   | _, .vnu l _ _ _ _ => .some (.lnum (l + 1))
   | _, .vsize => .some (.lnum 1)
   | _, .vsizeLt _ => .some (.lnum 1)
+  | _, .vulift l _ => .some (.lnum l)
   | c, .vne x sp => match whnf (typeOfNe c x sp) with
     | .vsort l => .some l
     | _ => .none
@@ -1617,6 +1686,7 @@ def isPropW : TCtx → Val → Bool
   | _, .vnu _ _ _ _ _ => .false
   | _, .venum _ => .false
   | _, .vdesc _ _ => .false
+  | _, .vulift l _ => Nat.beq l 0
   | c, ty => match sortOfW c ty with
     | .some l => lvlEquiv l (.lnum 0)
     | .none => .false
@@ -1825,6 +1895,8 @@ def conv : TCtx → Val → Val → Val → Bool
       | .vsigma _ ta env tb _ =>
         Bool.and (conv c ta (vfst a) (vfst b)) (conv c (eval (.cons (vfst a) env) tb) (vsnd a) (vsnd b))
       | .vunit _ => .true
+      -- (Q4) η: compare the contents
+      | .vulift _ A => conv c A (vdown a) (vdown b)
       | .vsort _ => convTy c a b
       | .vdesc l I => match whnf a with
         | .vdret i => match whnf b with
@@ -1881,6 +1953,7 @@ def convTyW : TCtx → Val → Val → Bool
   | _, .vempty l, .vempty l' => Nat.beq l l'
   | _, .venum k, .venum k' => Nat.beq k k'
   | c, .vdesc l I, .vdesc l' I' => Bool.and (Nat.beq l l') (convTy c I I')
+  | c, .vulift l A, .vulift l' A' => Bool.and (Nat.beq l l') (convTy c A A')
   | _, .vsize, .vsize => .true
   | c, .vsizeLt s, .vsizeLt s' => sizeEq s s'
   | c, .vmu l I D i s, .vmu l' I' D' i' s' => Bool.and (Bool.and (Nat.beq l l') (sizeEq s s')) (Bool.and (convTy c I I')
@@ -1920,6 +1993,7 @@ def convSpine : TCtx → Head → Spine → Spine → Bool
   | c, x, .sfst r, .sfst r' => convSpine c x r r'
   | c, x, .ssnd r, .ssnd r' => convSpine c x r r'
   | c, x, .sout r, .sout r' => convSpine c x r r'
+  | c, x, .sdown r, .sdown r' => convSpine c x r r'
   | c, x, .secase r e m bs, .secase r' e' m' bs' => Bool.and (convSpine c x r r')
       -- (the same branches over the same environment: nothing more to compare)
       (match Bool.and (Bool.and (tmEq m m') (tmsEq bs bs')) (fuelOk (envSame 2000 e e')) with
@@ -2322,6 +2396,17 @@ def infer : TCtx → Tm → TyRes
     | r => r
   | c, .const _ ps ls _ ty => .ok (eval .nil (substIfAny ps ls ty)) (uZeros (TCtx.lvl c))
   | c, .axiomC _ ty => .ok (eval .nil ty) (uZeros (TCtx.lvl c))
+  | c, .ulift l A => match inferUniv c A with
+    | .ok (.vsort k) _ => match lvlLe k (.lnum l) with
+      | .true => .ok (.vsort (.lnum l)) (uZeros (TCtx.lvl c))
+      | .false => .err "ULift can only lift a type to a universe at least as big"
+    | r => r
+  | _, .up _ => .err "cannot infer the type of up; add a type ascription"
+  | c, .down t => match infer c t with
+    | .ok ty u => match whnf ty with
+      | .vulift _ A => .ok A u
+      | ty' => .err (String.append "not a lifted type: " (showVal c ty'))
+    | r => r
   --|ex
   --| | _, _ => .err "not implemented"
   --sol>
@@ -2375,6 +2460,9 @@ def checkW : TCtx → Tm → Val → TyRes
   | c, .letE ty v b, T => checkLet c .qw ty v b T
   | c, .letq q ty v b, T => checkLet c q ty v b T
   | c, .star, .vunit n => .ok (.vunit n) (uZeros (TCtx.lvl c))
+  | c, .up a, .vulift n A => match check c a A with
+    | .ok _ u => .ok (.vulift n A) u
+    | r => r
   | c, .pair a b, .vsigma q ta env tb _ => match check c a ta with
     | .ok _ ua => match check c b (eval (.cons (eval (TCtx.env c) a) env) tb) with
       | .ok _ ub => .ok (.vsigma q ta env tb .none) (uAdd (uScale q ua) ub)
@@ -2384,8 +2472,9 @@ def checkW : TCtx → Tm → Val → TyRes
     | .ok _ u => .ok (.vdesc l I) u
     | r => r
   | c, .darg S E, .vdesc l I => match inferUniv c S with
-    | .ok (.vsort lS) _ => match lvlLe lS (.lnum (l + 1)) with
-      | .false => .err "a description's field type must fit in its universe"
+    -- (Q4) exactly the universe `Desc.elim`'s `marg` takes fields from (smaller ones are lifted)
+    | .ok (.vsort lS) _ => match lvlEquiv lS (.lnum (l + 1)) with
+      | .false => .err "a description's field type must be in its universe (lift it with ULift)"
       | .true => match check c E (.vpi .qw (eval (TCtx.env c) S) (.cons I .nil) (.descr l (.var 1)) .none) with
         | .ok _ u => .ok (.vdesc l I) u
         | r => r
@@ -2396,8 +2485,8 @@ def checkW : TCtx → Tm → Val → TyRes
       | r => r
     | r => r
   | c, .dhrec H j E, .vdesc l I => match inferUniv c H with
-    | .ok (.vsort lH) _ => match lvlLe lH (.lnum (l + 1)) with
-      | .false => .err "a description's branching type must fit in its universe"
+    | .ok (.vsort lH) _ => match lvlEquiv lH (.lnum (l + 1)) with
+      | .false => .err "a description's branching type must be in its universe (lift it with ULift)"
       | .true => match check c j (.vpi .qw (eval (TCtx.env c) H) (.cons I .nil) (.var 1) .none) with
         | .ok _ uj => match check c E (.vdesc l I) with
           | .ok _ uE => .ok (.vdesc l I) (uAdd uj uE)

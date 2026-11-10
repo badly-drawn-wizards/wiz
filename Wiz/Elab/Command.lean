@@ -344,6 +344,17 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
 partial def mentionsIdent (n : Name) (stx : Syntax) : Bool :=
   (stx.isOfKind "term.ident" && (stx.getArg 0).getId? == some n) || stx.args.any (mentionsIdent n)
 
+/-- How the fields of the coinductive type `T` sit in its payload (Q4: a small field is
+lifted, `descFieldLifts`), read off `T.desc`. -/
+def coinductiveLifts (g : Globals R) (T : Name) : List FieldLift :=
+  match g.find? (T ++ ".desc") with
+  | some { value := some v, type, .. } =>
+    let rec strip : Nat → Term R → Term R
+      | n + 1, .lam _ b => strip n b
+      | _, t => t
+    descFieldLifts (strip (peelPis type).1.length v)
+  | _ => []
+
 /-- The copattern alternative for observation `o`, if any. -/
 def copatternAlt? (alts : List Syntax) (o : Name) : Option Syntax :=
   alts.find? fun a =>
@@ -383,8 +394,9 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
     sv := vSnd sv
   -- one component per observation, in order
   let alts := (cmd.getArg 5).args.toList
+  let lifts := coinductiveLifts g T
   let mut comps : List (Term R) := []
-  for (o, isRec) in obs do
+  for (o, isRec) in obs, k in [0:obs.length] do
     let some alt := alts.find? fun a =>
         match (a.getArg 1).args[0]? with
         | some p => p.isOfKind "term.dotIdent" && (p.getArg 1).getId? == some o
@@ -411,7 +423,7 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
         oty ← instM cod a
       let .pi _ _ _ _ cod _ ← force oty | throwAt info "internal error: observation type"
       let F ← instM cod (Val.var 0)
-      comps := comps ++ [← Elab.check sctx rhs F]
+      comps := comps ++ [(lifts[k]?.getD .none).wrap (← Elab.check sctx rhs F)]
   -- the index equation: `()` at `Unit`; for a phantom tail (`phantomTail`), `refl`
   let e : Term R ← match ← force I with
     | .unit _ => pure .tt
@@ -477,7 +489,13 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
     let .sigma _ _ A B _ ← force pty | throwAt info "internal error: observation type"
     -- a recursive observation: the same nominal type, one size down
     let A := if isRec then .nu l I D i s' hint else A
+    -- (Q4) a lifted field (`ULift A'`, made by the elaborator): check against the
+    -- field's own type, and box it
+    let (A, lifted) ← match isRec, ← force A with
+      | false, .ulift _ A' => pure (A', true)
+      | _, _ => pure (A, false)
     let c ← Elab.check ctx rhs A
+    let c := if lifted then .up c else c
     comps := comps ++ [c]
     pty ← instM B (← evalIn ctx c)
   -- the index equation: `()` at `Unit`; for a phantom tail (`phantomTail`), `refl`

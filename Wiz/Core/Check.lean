@@ -293,6 +293,8 @@ of the expected one.)
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   match t, whnf ty with
+  -- (given) Q4
+  | .up a, .ulift _ A => check ctx a A
   --<sol
   | .lam x body, .pi _ _ q dom cod _ => do
     let q ← qtyPoly ctx q
@@ -322,8 +324,10 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .darg q S D, .desc l I => do
     let _ ← checkQty ctx q
     let lS ← checkType ctx S
-    -- fields may live in a smaller universe (the payload Σ takes the max)
-    unless Level.le lS (.succ l) do throw (.other "a description's field type must fit in its universe")
+    -- a field lives exactly in `Sort (l+1)`, the universe `Desc.elim`'s `marg` takes it
+    -- from (Q4: universes aren't cumulative; the elaborator lifts smaller fields)
+    unless lS.equiv (.succ l) do
+      throw (.other s!"a description's field type must be in Sort {(Level.succ l).format}, not Sort {lS.format} (lift it with ULift)")
     check ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S) (.mk [I] (.desc l (.var 1))) none)
   | .drec q j D, .desc l I => do
     let _ ← checkQty ctx q
@@ -334,7 +338,8 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     -- strict positivity is automatic: `H` can't mention the type being defined
     let _ ← checkQty ctx q
     let lH ← checkType ctx H
-    unless Level.le lH (.succ l) do throw (.other "a description's branching type must fit in its universe")
+    unless lH.equiv (.succ l) do
+      throw (.other s!"a description's branching type must be in Sort {(Level.succ l).format}, not Sort {lH.format} (lift it with ULift)")
     let uj ← check ctx j (.pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1)) none)
     let uD ← check ctx D (.desc l I)
     pure (uj + uD)
@@ -387,6 +392,18 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       else throw (.other "numerals need `builtin nat.zero := …` and `builtin nat.succ := …`")
     | none => throw (.other "numerals need `builtin nat := …`")
   | .natOp .. => throw (.cannotInfer (ctx.showTerm t))
+  -- (given) Q4: lifting
+  | .ulift l A => do
+    let k ← checkType ctx A
+    unless Level.le k l do
+      throw (.other s!"ULift.{l.format} can't lift {ctx.showTerm A}, which is in Sort {k.format}")
+    pure (.sort l, Usage.zeros ctx.lvl)
+  | .up _ => throw (.cannotInfer (ctx.showTerm t))
+  | .down x => do
+    let (ty, u) ← infer ctx x
+    match whnf ty with
+    | .ulift _ A => pure (A, u)
+    | _ => throw (.typeMismatch "a lifted type (ULift)" (ctx.showVal ty))
   --<sol
   | .var ix => pure (ctx.types[ix]!, Usage.single ctx.lvl ix)
   | .const n us => match ctx.globals.find? n with
