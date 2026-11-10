@@ -55,7 +55,9 @@ partial def whnf : Val R → Val R
 
 /-- **Exercise 4.4b.** First projection. -/
 partial def vFst : Val R → Val R
-  | .unfold _ _ _ v => vFst v.get  -- (given) unfold glued values
+  -- (given) a projection of a glued value stays glued, like an application (`vApp`):
+  -- `(f a).1` is computed only when needed (`f a` may be a big computation)
+  | .unfold n us sp v => .unfold n us (sp.push .fst) (Thunk.mk fun _ => vFst v.get)
   | .lazyInd l I D w P m i x sp v => .lazyInd l I D w P m i x (sp.push .fst) (Thunk.mk fun _ => vFst v.get)  -- (given)
   --<sol
   | .pair a _ => a
@@ -67,7 +69,7 @@ partial def vFst : Val R → Val R
 
 /-- **Exercise 4.4c.** Second projection. -/
 partial def vSnd : Val R → Val R
-  | .unfold _ _ _ v => vSnd v.get  -- (given)
+  | .unfold n us sp v => .unfold n us (sp.push .snd) (Thunk.mk fun _ => vSnd v.get)  -- (given)
   | .lazyInd l I D w P m i x sp v => .lazyInd l I D w P m i x (sp.push .snd) (Thunk.mk fun _ => vSnd v.get)  -- (given)
   --<sol
   | .pair _ b => b

@@ -198,8 +198,25 @@ in Wiz. Their `cast` is between propositions, where Wiz applies the equivalence 
 regularity, so it goes through a box type: a `μ` type, where `cast` falls back to
 regularity (`vCast`: equal types ⇒ `t`). `Omega` has no normal form, and the cast
 between Σ types in `loopy` projects its proof, so checking `loopy` evaluates it. See
-`wiz-notes/d1-experiment.md`. -/
-def abelCoquand (omega : String := "Omega") : String :=
+`wiz-notes/d1-experiment.md`.
+
+`loopy` writes `Omega` out inline (`acOmega`: `δ ω` as lambdas, `unbox` as `ind`), not as
+the global: a projection of a glued global stays glued until it is needed (`vFst`), and
+the proof is never needed (the cast at `B2` doesn't look at it), so `(Omega …).1` would
+never be unfolded. Inline, evaluating the proof is β-reduction and `ind` on the cast,
+which loops with regularity. -/
+def acDelta : String := "(fun (z : Top) => z T2 id2 z)"
+
+/-- `ω`'s body inline (for `A : Prop`, `a : A`): `unbox (cast … (mk δ))` -/
+def acOmegaBody : String :=
+  s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk {acDelta}))"
+
+/-- `Ω = δ ω`, inline -/
+def acOmega (body : String := acOmegaBody) : String :=
+  s!"({acDelta} (fun (A : Prop) (a : A) => {body}))"
+
+def abelCoquand (omega : String := "Omega") (body : String := acOmegaBody) : String :=
+  let omegaTm := if omega == "Omega" then acOmega body else omega
   "def Top : Prop := (A : Prop) → A → A\n" ++
   "def T2 : Prop := Top → Top\n" ++
   "def id2 : T2 := fun x => x\n" ++
@@ -217,13 +234,14 @@ def abelCoquand (omega : String := "Omega") : String :=
   "def P2 : Type := B2 × B2\n" ++
   "def ab : P2 := ('a, 'b)\n" ++
   "def a0 : B2 := 'a\n" ++
-  s!"def loopy : (cast ({omega} (P2 = P2) (refl P2)) ab : P2).1 = a0 := refl a0\n"
+  s!"def loopy : (cast ({omegaTm} (P2 = P2) (refl P2)) ab : P2).1 = a0 := refl a0\n"
 
 /-- The same program with the box inside a second box (`Box2 P` has a field of type
 `Box P`): the outer box's field is not inert (it has a `Prop` field inside), so the cast
 at `Box2` stays structural, and the program checks without regularity. -/
 def abelCoquandNested : String :=
-  ((abelCoquand).replace
+  ((abelCoquand (body := s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (ind (fun _ _ => Box A) (fun i xs ih => xs.1.2) " ++
+      s!"(cast (apTy Prop Box2 T2 A (tautext T2 A id2 a)) (mk2 (mk {acDelta}))))")).replace
     "def omega : Top := fun A a => unbox (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk delta))\n"
     ("def Box2D (P : Prop) : Desc Unit := Desc.arg 1 ((_ : Enum [u]) × Box P) (fun _ => Desc.ret ())\n" ++
      "def Box2 (P : Prop) : Type := μ (Box2D P) ()\n" ++
@@ -2146,7 +2164,9 @@ def selfhostChecker : IO (Except String System.FilePath) := do
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "checker"
+  note "uses checker"
   if ← exe.pathExists then return .ok exe
+  let start ← IO.monoMsNow
   IO.FS.createDirAll dir
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
@@ -2163,7 +2183,10 @@ def selfhostChecker : IO (Except String System.FilePath) := do
     let tmp := dir / s!"checker-{← IO.monoNanosNow}"
     match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
-    | .ok () => IO.FS.rename tmp exe; return .ok exe
+    | .ok () =>
+      IO.FS.rename tmp exe
+      note s!"built checker {showMs ((← IO.monoMsNow) - start)}"
+      return .ok exe
 
 /-- The self-hosted compiler (stage 21): the frontend and `Backend.wiz`, printing the C
 program for `input.wiz` (the frontend's own output as comments). -/
@@ -2173,7 +2196,9 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "compiler"
+  note "uses compiler"
   if ← exe.pathExists then return .ok exe
+  let start ← IO.monoMsNow
   IO.FS.createDirAll dir
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
@@ -2189,7 +2214,10 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
     let tmp := dir / s!"compiler-{← IO.monoNanosNow}"
     match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
-    | .ok () => IO.FS.rename tmp exe; return .ok exe
+    | .ok () =>
+      IO.FS.rename tmp exe
+      note s!"built compiler {showMs ((← IO.monoMsNow) - start)}"
+      return .ok exe
 
 /-- A program for the self-hosted backend (recursion, lists, arrays, maps, strings, mutual
 types), printing `6765 5050 1989 2 yes, ünïcode 2 5`. -/
@@ -3298,6 +3326,27 @@ def derivingGroup : Group where
         failsDeriving "import Deriving\ninductive X where\n  | x\n  deriving Frob" "no deriver for Frob" },
     { name := "Inhabited needs a non-recursive constructor", run := fun _ =>
         failsDeriving "import Deriving\ninductive I where\n  | more (i : I)\n  deriving Inhabited" "every constructor of I is recursive" },
+    { name := "deriving with proof fields: not shown, not compared, no default (F5)", run := fun _ =>
+        okDeriving ("import Deriving\nstructure Pos where\n  n : Nat\n  h : Nat.lt 0 n = Bool.true\n  deriving Repr, BEq\n" ++
+          "#eval Repr.repr (Pos.mk 3 (refl Bool.true))\n#eval BEq.beq (Pos.mk 3 (refl Bool.true)) (Pos.mk 4 (refl Bool.true))\n" ++
+          "inductive W where\n  | a (n : Nat) (h : n = n)\n  | b\n  deriving Repr, BEq, Inhabited\n" ++
+          "#eval Repr.repr (W.a 2 (refl 2))\n#eval BEq.beq (W.a 2 (refl 2)) (W.a 2 (refl 2))\n#eval Repr.repr (Inhabited.default : W)")
+          ["\"Pos.mk 3 _\"", ".false", "\"W.a 2 _\"", ".true", "\"W.b\""] },
+    { name := "Inhabited skips a constructor with a proof field", run := fun _ =>
+        failsDeriving "import Deriving\ninductive I where\n  | p (h : 0 = 0)\n  deriving Inhabited" "every constructor of I is recursive or has a proof field" },
+    { name := "deriving for a universe-polymorphic type (no signature: Type u is inferred)", run := fun _ =>
+        okDeriving ("import Deriving\ninductive Box.{u} (A : Type u) where\n  | mk (x : A)\n  deriving Repr, BEq, Inhabited\n" ++
+          "structure P.{u} (A : Type u) where\n  x : A\n  n : Nat\n  deriving Repr, BEq, Inhabited\n" ++
+          "#eval Repr.repr (Box.mk (P.mk 1 2))\n#eval BEq.beq (Box.mk 1) (Box.mk 2)\n#eval Repr.repr (Inhabited.default : P Nat)\n" ++
+          "#check @instReprBoxA")
+          ["\"Box.mk (P.mk 1 2)\"", ".false", "\"P.mk 0 0\"",
+           "instReprBoxA : {A : Type ?u0} → [inst✝ : Repr A] → Repr (Box A)"] },
+    { name := "deriving for a type above Type: lifted fields are seen through down (F5)", run := fun _ =>
+        okDeriving ("import Deriving\ninstance : Repr Type := Repr.mk (fun _ _ => \"<type>\")\n" ++
+          "instance : Inhabited Type := Inhabited.mk Nat\n" ++
+          "inductive Big where\n  | b (n : Nat) (h : n = n)\n  | c (T : Type)\n  deriving Repr, Inhabited\n" ++
+          "#eval Repr.repr (Big.b 3 (refl 3))\n#eval Repr.repr (Big.c Nat)\n#eval Repr.repr (Inhabited.default : Big)")
+          ["\"Big.b 3 _\"", "\"Big.c <type>\"", "\"Big.c <type>\""] },
     { name := "the example runs", run := fun _ => do
         let src ← IO.FS.readFile "examples/deriving.wiz"
         let s ← derivingRun src
@@ -4105,5 +4154,48 @@ def infoviewGroup : Group where
           if ((out.stdout ++ out.stderr).splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"
           else throw (IO.userError s!"infoview/test.sh failed:\n{out.stdout}{out.stderr}") }
   ]
+
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  backendGroup ::
+  borrowGroup ::
+  builtinGroup ::
+  cGroup ::
+  classGroup ::
+  coinductiveGroup ::
+  dataGroup ::
+  derivingGroup ::
+  effectsGroup ::
+  ffiGroup ::
+  group ::
+  hdlGroup ::
+  inductiveGroup ::
+  infoviewGroup ::
+  languageGroup ::
+  levelGroup ::
+  liftGroup ::
+  llvmGroup ::
+  macroGroup ::
+  matchGroup ::
+  opticGroup ::
+  ottGroup ::
+  phantomGroup ::
+  qtyGroup ::
+  regionsGroup ::
+  reuseGroup ::
+  runGroup ::
+  selfHostGroup ::
+  seplogicGroup ::
+  sizedGroup ::
+  stdGroup ::
+  structGroup ::
+  tacticGroup ::
+  toolingGroup ::
+  trustGroup ::
+  vecGroup ::
+  wordGroup ::
+  []
 
 end Tests.Elab
