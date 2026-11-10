@@ -165,7 +165,10 @@ Two ways to prove `False` without writing `axiom` are closed.
   trusted to agree with the definitions. Registrations are also checked for shape
   (`nat.add : N → N → N`, each operation a definition), and numerals need `nat.zero` and `nat.succ`: `builtin
   nat := E` for an empty `E` and then `(0 : E)` used to overflow the stack (the kernel
-  unfolded a numeral without a registered `nat.zero`).
+  unfolded a numeral without a registered `nat.zero`). A key is registered once and a
+  constant has one key (`nat.zero` and `nat.succ` must be constructors): a second
+  `builtin nat.add := K` changed how the Prelude's `Nat.add` unfolds without any user of
+  it showing the assumption, and proved `False` with no axioms listed.
 
 ## 22g: regions: borrow checking as typing ✅
 
