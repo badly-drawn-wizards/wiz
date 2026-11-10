@@ -29,6 +29,66 @@ namespace Wiz
 
 variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 
+/-! ### Experiment `--nominal-heads` (structural-vs-nominal.md §6.3)
+
+Only with `g.nominalHeads`, which only the elaborator's view sets. A *declared type* is
+the wrapper definition of an `inductive`/`coinductive` (its body is a `μ`/`ν` whose
+display hint names it) or of a `structure`/`class` (its body is a Σ or `Unit`, and
+`T.mk` exists). -/
+
+private def lamBody : Term R → Term R
+  | .lam _ b => lamBody b
+  | t => t
+
+private def piResult : Term R → Term R
+  | .pi _ _ _ _ b _ => piResult b
+  | t => t
+
+/-- Is `n` the wrapper of a declared type? -/
+def Globals.isDataWrapper (g : Globals R) (n : Name) : Bool :=
+  match g.decls[n]? with
+  | some d => match d.value.map lamBody with
+    | some (.mu _ _ _ _ _ (some (m, _, _))) | some (.nu _ _ _ _ _ (some (m, _, _))) => m == n
+    | some (.sigma ..) | some (.unit _) => g.decls.contains (n ++ ".mk")
+    | _ => false
+  | none => false
+
+/-- Is `n` a definition of a type or type family (its type ends in a sort)? -/
+def Globals.isTypeDef (g : Globals R) (n : Name) : Bool :=
+  match g.decls[n]? with
+  | some d => (match piResult d.type with
+    | .sort _ => true
+    | _ => false)
+  | none => false
+
+/-- Unfold type definitions that are not declared types (aliases such as
+`BitVec n := UIntN n`); definitions of terms are left alone. -/
+partial def peelAliases (g : Globals R) : Val R → Val R
+  | v@(.unfold n _ _ t) =>
+    if g.isTypeDef n && !g.isDataWrapper n then peelAliases g t.get else v
+  | v => v
+
+/-- The declared type at the head, if any (a wrapper, or a `μ`/`ν` carrying its hint);
+`some none` for any other canonical type former; `none` when undetermined (neutrals). -/
+def nominalHead? (g : Globals R) : Val R → Option (Option Name)
+  | .unfold n _ _ _ => if g.isDataWrapper n then some (some n) else none
+  -- a `μ`/`ν` without a hint is undetermined: the evaluator itself drops the hint when it
+  -- unfolds a declared type (`muFamily`, in the equation of two constructors), so calling
+  -- it "another former" reports the elaborator's own bookkeeping (first sweep: the only
+  -- two failures, lib/Hoare.wiz:390 and :393, were of this kind)
+  | .mu _ _ _ _ _ h | .nu _ _ _ _ _ h => h.map (fun x => some x.1)
+  | .sigma .. | .pi .. | .sort _ | .unit _ | .empty _ | .enum _ | .desc .. | .ulift .. => some none
+  | _ => none
+
+/-- Do the two values have different declared types at their heads, or a declared type
+against another type former? Then the elaborator does not unfold (the experiment). -/
+def nominalClash (g : Globals R) (a b : Val R) : Bool :=
+  g.nominalHeads &&
+  match nominalHead? g (peelAliases g a), nominalHead? g (peelAliases g b) with
+  | some (some n), some (some m) => n != m
+  | some (some _), some none | some none, some (some _) => true
+  | _, _ => false
+
 /-- The type of a neutral's head: a local's type from `tys`, a global's declared type
 with its level parameters instantiated, or (stage 4c) the type of a stuck
 observational construct. -/
@@ -242,6 +302,7 @@ mutual
 `true`. Then **regularity**: a stuck `cast A B e t` with an empty spine and
 `convTy A B` is replaced by `t` (on either side) before comparing. -/
 partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R) : Bool :=
+  if nominalClash g a b then false else
   -- glued values with the same head: compare the spines first, unfold if that fails
   if let some r := convGlued g tys a b then r || conv g tys ty (whnf a) (whnf b) else
   let a := whnf a
@@ -324,6 +385,7 @@ where
 **Exercise 4.6b** (stage 4b): `sigma`/`sigma` like `pi`; `unit`/`unit` and
 `empty`/`empty` by `Level.equiv`. -/
 partial def convTy (g : Globals R) (tys : Array (VTy R)) (a b : VTy R) : Bool :=
+  if nominalClash g a b then false else
   if let some r := convGlued g tys a b then r || convTy g tys (whnf a) (whnf b) else
   let a := whnf a
   let b := whnf b
@@ -477,6 +539,7 @@ end
 (`μ^s ≤ μ^t` when `s ≤ t`), coinductive ones contravariant, functions contravariant in
 the domain, and everything else is conversion. -/
 partial def subTy (g : Globals R) (tys : Array (VTy R)) (A B : VTy R) : Bool :=
+  if nominalClash g A B then false else
   let v := Val.var tys.size
   match whnf A, whnf B with
   | .mu l I D i s _, .mu l' I' D' i' s' _ =>

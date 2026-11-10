@@ -275,6 +275,9 @@ failure. Force both sides first, then:
 `t.1` and `b` with `t.2`), `unit`, `tt`, `empty`; and the other eliminations in
 `unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
+  -- experiment `--nominal-heads`: a declared type is not unfolded against another head
+  if nominalClash (← getGlobals) (← forceMeta t) (← forceMeta u) then
+    throwAt {} "different declared types (--nominal-heads)"
   if ← unifyGlued l (← forceMeta t) (← forceMeta u) then return ()
   -- numerals: compare two directly, or else look one step inside (`vNatView`)
   let g ← getGlobals

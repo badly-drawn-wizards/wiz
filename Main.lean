@@ -62,6 +62,10 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
+/-- The experiment `--nominal-heads` (structural-vs-nominal.md §6.3): the elaborator
+refuses to unfold a declared type against a different head. The kernel is not affected. -/
+initialize nominalOpt : IO.Ref Bool ← IO.mkRef false
+
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
   let closure ← Module.loadClosure (moduleRoots tc) input
@@ -72,10 +76,11 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp },
+    { loader := (lib[·]?), cHeaders := (headers[·]?),
+      globals := { regularity, predicativeProp, nominalElab := ← nominalOpt.get },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && !(← nominalOpt.get) then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -137,6 +142,8 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  if args.contains "--nominal-heads" then nominalOpt.set true
+  let args := args.filter (· != "--nominal-heads")
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1

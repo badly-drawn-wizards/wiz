@@ -389,6 +389,12 @@ structure Globals (R : Type) where
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false
+  /-- experiment `--nominal-heads` (structural-vs-nominal.md §6.3): asked for on the
+  command line. The kernel ignores it; `elabView` turns it into `nominalHeads`. -/
+  nominalElab : Bool := false
+  /-- set only in the elaborator's view (`elabView`): conversion and unification refuse
+  to unfold a declared type against a different head (`nominalClash`, `Conv.lean`) -/
+  nominalHeads : Bool := false
   /-- (13b) names private to a module (`private def …`, `private mk ::`), with the
   module: the elaborator rejects them elsewhere. The kernel ignores this. -/
   privates : Std.HashMap Name String := {}
@@ -421,6 +427,7 @@ constructor is private to another module has no definition (it doesn't unfold), 
 values of it can't be built from a tuple or a look-alike structure; its fields are read
 through its projection functions. The kernel still checks against `g` itself. -/
 def elabView (g : Globals R) : Globals R :=
+  let g := if g.nominalElab then { g with nominalHeads := true } else g
   if g.opaques.isEmpty then g else
   g.opaques.fold (init := g) fun g' n m =>
     if m == g.module then g' else
