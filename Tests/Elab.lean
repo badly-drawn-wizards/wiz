@@ -2524,7 +2524,7 @@ def toolingGroup : Group where
         checkEq plain.globals.order.size warm.globals.order.size },
     { name := "another build of wiz misses the shared cache (its binary is in the key)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         let src := "import Prelude\ndef two : Nat := 1 + 1\n#eval two\n"
         let dir ← IO.FS.createTempDir
         let (_, h1) ← Cache.elaborateCached dir src init 0 (binary := some 1)
@@ -3177,7 +3177,7 @@ def vecGroup : Group where
         let src := "import BitVec\ndef f (a b : BitVec 64) : BitVec 64 := BitVec.add (BitVec.xor a b) (BitVec.ashr a 3)\n" ++
           "def g (a : BitVec 64) : Bool := BitVec.slt a (BitVec.signExtend 64 (BitVec.extract 7 0 a))\n#ir f\n#ir g\n" ++
           "#ir BitVec.add\n#ir BitVec.ashr\n#ir BitVec.slt\n#ir BitVec.extract\n#ir BitVec.signExtend\n#ir BitVec.concat"
-        let s := runFrontend (R := ZeroOneMany) src { loader := ← libLoader }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
         check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }

@@ -113,19 +113,19 @@ def modulesGroup : Group where
         let sneaky (s : CommandState ZeroOneMany) : Bool :=
           s.messages.any fun m => (m.text.splitOn "module Sneaky has errors").length > 1
         let src := "import Prelude\nimport Sneaky\n"
-        let s := runFrontend (R := ZeroOneMany) src { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := loaderOf ms }
         check (sneaky s) s!"runFrontend: Sneaky used Nat without importing Prelude: {s.messages.toList.map (·.text)}"
-        let s := runFrontend (R := ZeroOneMany) ("import Prelude\ndef two : Nat := 2\nimport Sneaky\n") { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) ("import Prelude\ndef two : Nat := 2\nimport Sneaky\n") { trustedModule := Tests.libModule, loader := loaderOf ms }
         check (sneaky s) s!"runFrontend, after a definition: {s.messages.toList.map (·.text)}"
-        let (s, _) := Query.elaborate (R := ZeroOneMany) {} src { loader := loaderOf ms, termInfo := true }
+        let (s, _) := Query.elaborate (R := ZeroOneMany) {} src { trustedModule := Tests.libModule, loader := loaderOf ms, termInfo := true }
         check (sneaky s) s!"the language server's engine: {s.messages.toList.map (·.text)}"
         -- through the server: the diagnostic is at the import
-        let srv : LSP.Server := { libs := ms.fold (fun m k (p, t) => m.insert k (p.toString, t)) {} }
+        let srv : LSP.Server := { libs := ms.fold (fun m k (p, t) => m.insert k (p.toString, t)) {}, trusted := ["Prelude"] }
         let (_, out) := LSP.handle srv (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
           ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("text", src)])])])
         check ((out[0]!.compress.splitOn "module Sneaky has errors").length > 1) s!"diagnostics: {out[0]!.compress}"
         -- a module that imports what it uses is fine, and its declarations are seen
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\nimport Fine\n#eval three\n" { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\nimport Fine\n#eval three\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         checkEq "[3:1: info: 3]" (toString (s.messages.toList.map (·.render "import Prelude\nimport Fine\n#eval three\n"))) },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
@@ -134,7 +134,7 @@ def modulesGroup : Group where
         let (s, _) ← Cache.elaborateCached cache "import A\n" ({ trustedModule := Tests.libModule, loader := loaderOf ms } : CommandState ZeroOneMany) 0
         check (s.messages.any fun m => (m.text.splitOn "import cycle").length > 1)
           s!"messages: {s.messages.toList.map (·.text)}"
-        let s := runFrontend (R := ZeroOneMany) "import A\n" { loader := loaderOf ms }
+        let s := runFrontend (R := ZeroOneMany) "import A\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         check (s.messages.any fun m => (m.text.splitOn "import cycle").length > 1)
           s!"runFrontend: {s.messages.toList.map (·.text)}" }
   ]
