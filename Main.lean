@@ -13,7 +13,8 @@ options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
 (default off),
---predicative-prop
+--predicative-prop,
+--inert syntactic|ground|conv (P1: regularity at inert types; default ground)
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --llc X (default llc)"
 
@@ -44,16 +45,33 @@ def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
+/-- (P1) `--inert MODE`: regularity at inert types. -/
+initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
+
+/-- Take `--inert MODE` out of the arguments. -/
+def takeInertOpt : List String → Except String (Option InertReg × List String)
+  | "--inert" :: m :: rest => do
+    let r ← match m with
+      | "syntactic" => pure InertReg.syntactic | "ground" => pure .ground | "conv" => pure .conv
+      | _ => throw s!"unknown inert mode {m}"
+    let (_, rest) ← takeInertOpt rest
+    return (some r, rest)
+  | a :: rest => do
+    let (r, rest) ← takeInertOpt rest
+    return (r, a :: rest)
+  | [] => return (none, [])
+
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
   let lib ← loadLibrary tc input
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
   let (regularity, predicativeProp) ← kernelOpts.get
+  let inertReg ← inertOpt.get
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp } }
+    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, inertReg } }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && inertReg == .ground then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -115,6 +133,10 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  let args ← match takeInertOpt args with
+    | .ok (r, a) => do if let some r := r then inertOpt.set r
+                       pure a
+    | .error e => do IO.eprintln e; return 1
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1
