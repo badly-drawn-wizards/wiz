@@ -54,8 +54,11 @@ static void die(const char *m) { fprintf(stderr, "wiz: %s\n", m); exit(3); }
 /* (`-DWIZ_STATS`: count allocations, reused cells and the peak of live objects, printed
    at exit under reference counting) */
 #ifdef WIZ_STATS
-static size_t rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk;
+static size_t rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced;
 #define STAT(x) (x)
+static size_t hypSlot(V m);
+#define HYPT 8192
+static uintptr_t hypKey[HYPT]; static size_t hypMade[HYPT], hypForced[HYPT];
 #else
 #define STAT(x) ((void)0)
 #endif
@@ -165,7 +168,7 @@ static V fld(V o, int i) {
     if (p->f[2] == BOX(0)) { p->f[0] = ((Clo *)p->f[0])->fn(((Clo *)p->f[0])->env, BOX(0)); p->f[2] = BOX(1); }
 #else
     /* (a hypothesis being forced is `◾`: forcing it again fails rather than loops) */
-    if (p->f[2] == BOX(0)) { V s = p->f[0]; p->f[0] = BOX(0); p->f[0] = ap(s, BOX(0)); p->f[2] = BOX(1); }
+    if (p->f[2] == BOX(0)) { STAT(rt_nforced++); STAT(hypForced[hypSlot(((Clo *)p->f[0])->env[2])]++); V s = p->f[0]; p->f[0] = BOX(0); p->f[0] = ap(s, BOX(0)); p->f[2] = BOX(1); }
 #endif
     return p->f[0];
   }
@@ -304,6 +307,17 @@ static V p_ind(V nat, V D, V m, V i, V x) {
   return apn(m, 3, args);
 }
 #else
+#ifdef WIZ_STATS
+/* (per method of `ind`: hypotheses created and forced, keyed by the method's code) */
+static size_t hypSlot(V m) {
+  uintptr_t k = 0;
+  if (!ISBOX(m) && ((Clo *)m)->tag == T_CLO) { Clo *c = (Clo *)m; k = c->fn == accFn ? (uintptr_t)c->env[0] : (uintptr_t)c->fn; }
+  size_t h = (size_t)((k >> 4) * 2654435761u) % HYPT;
+  while (hypKey[h] && hypKey[h] != k) h = (h + 1) % HYPT;
+  hypKey[h] = k ? k : 1;
+  return h;
+}
+#endif
 /* (the closures' environments are lent: what is passed on is `inc`ed) */
 static V hrecFn(V *env, V h) {
   inc(env[1]); inc(env[2]); inc(env[3]); inc(env[4]); inc(h);
@@ -320,6 +334,7 @@ static V lazyHyp(V nat, V D, V m, V j, V y, V rest) {
   inc(D); inc(m); inc(j); inc(y);
   V env[5] = {nat, D, m, j, y};
   V fs[3] = {mkclo(recFn, 5, env), rest, BOX(0)};
+  STAT(rt_nhyp++); STAT(hypMade[hypSlot(m)]++);
   return mkobj(T_HYP, 3, fs);
 }
 /* (`D`, `m`, `d`, `pl` borrowed) */
@@ -882,8 +897,10 @@ INLINE void dropTake(V x, V r) { (void)resetTake(x, 0, r); }
 static void rt_finish(void) {
   for (size_t i = rt_nroots; i > 0; i--) dec(*rt_roots[i - 1]);
 #ifdef WIZ_STATS
-  fprintf(stderr, "wiz stats: %zu allocations, %zu reused, peak %zu live (mkobj %zu, mkclo %zu, mkfun %zu, mkthunk %zu)\n",
-          rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk);
+  fprintf(stderr, "wiz stats: %zu allocations, %zu reused, peak %zu live (mkobj %zu, mkclo %zu, mkfun %zu, mkthunk %zu; hypotheses %zu, forced %zu)\n",
+          rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced);
+  fprintf(stderr, "wiz hyp base rt_finish %p\n", (void *)rt_finish);
+  for (size_t i = 0; i < HYPT; i++) if (hypMade[i] > 1000000) fprintf(stderr, "wiz hyp %p: %zu made, %zu forced\n", (void *)hypKey[i], hypMade[i], hypForced[i]);
 #endif
   if (rt_live) { fflush(stdout); fprintf(stderr, "wiz: %zu objects leaked\n", rt_live); exit(4); }
 }
