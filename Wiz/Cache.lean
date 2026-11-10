@@ -412,7 +412,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-8-q4-lift"  -- 8: Q4, lifted description fields (after D1's 6)
+def salt : UInt64 := hash "wiz-cache-10-struct-tails"  -- 10: 22i, marked structure tails (after Q4's 8)
 
 /-! ## Keys and atomic writes (stage 23c)
 

@@ -224,6 +224,7 @@ continue onto a line starting at the command's column.
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] "where" [fields] ["deriving" C,+] |
 | `command.deriving`           | "deriving" "instance" C,+ "for" T,+ |
 | `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
+| `command.attrInline`         | "attribute" "[" "inline" "]" ident |
 | `command.coinductive`        | like `structure`; the fields are observations |
 | `command.defEqns`            | "def" ident [".{" us "}"] [binders] ":" T [alts] |
 | `command.partial`            | "partial" command (a `def`) |
@@ -268,6 +269,9 @@ def commandLeading : List LeadingParser := [
   -- On a constructor, two names: the native constructor and the native field (22d).
   { kind := "command.attrImplementedBy", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "implemented_by", ident, optional ident, "]", ident] },
+  -- 22i: compiled code inlines the definition where it is applied (to all its arguments)
+  { kind := "command.attrInline", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "inline", "]", ident] },
   -- HD8: `deriving`
   { kind := "command.attrDeriver", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "deriver", ident, "]", ident] },

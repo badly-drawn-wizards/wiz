@@ -97,6 +97,9 @@ def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R �
     unless u.le lvl do continue
     doms := doms.push D
     names := names ++ [x]
+  -- a structure with fields always ends in a marked tail (22i), with `Unit` as the
+  -- domain when no parameter is phantom
+  if binder == structTailName && doms.isEmpty then doms := doms.push (.unit (.succ .zero))
   let ty := (doms.toList.zipIdx).foldr (fun (D, i) acc => .pi binder .default (.qlit 0) (D.lift i) acc none)
     (Term.unit lvl : Term R)
   let val := doms.foldr (fun _ acc => .lam binder acc) (Term.tt : Term R)
