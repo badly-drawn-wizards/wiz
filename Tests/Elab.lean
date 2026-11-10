@@ -2646,8 +2646,11 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
+  -- (the driver ends with `Process.exit` on a frontend error)
+  let sysLib ← IO.FS.readFile "lib/Sys.wiz"
   let loader : Name → Option String := fun m =>
-    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib else none
+    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib
+    else if m == "Sys" then some sysLib else none
   let s := runFrontend (R := ZeroOneMany) prog { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render prog
   unless errs.isEmpty do return .error s!"unexpected errors:\n{"\n".intercalate errs.toList}"
@@ -2712,6 +2715,20 @@ def selfhostCompileRun (file expected : String) (flags : Array String := #[]) (p
       else IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString] ++ progArgs, cwd := dir }
     unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
     checkEq expected run.stdout
+
+/-- The self-hosted compiler rejects a program: exit code 1, the errors on standard
+error, and no C (15g). -/
+def selfhostCompileFails (file : String) (errors : String) : IO Unit := do
+  match ← selfhostCompiler with
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+  | .ok exe =>
+    let dir ← IO.FS.createTempDir
+    IO.FS.writeFile (dir / "input.wiz") file
+    let out ← IO.Process.output { cmd := "timeout", args := #["300", exe.toString], cwd := dir }
+    checkEq (1 : UInt32) out.exitCode
+    checkEq errors out.stderr
+    checkEq "" out.stdout
 
 /-- Check a file of commands with the whole self-hosted pipeline (compiled), and compare
 its output. -/
@@ -2969,6 +2986,10 @@ def selfHostGroup : Group where
     { name := "big numerals with the self-hosted compiler: no deep recursion, 63-bit words (15g)", run := fun _ => do
         selfhostCompileRun selfhostBigLits selfhostBigLitsExpected
         selfhostCompileRun selfhostBigLits selfhostBigLitsExpected (flags := #["--rc"]) },
+    { name := "the self-hosted compiler stops at a frontend error: exit code 1, the errors on stderr, no C (15g)", run := fun _ =>
+        selfhostCompileFails ("import Prelude\ndef a : Nat := 9223372036854775808\ndef b : Nat := nope\n" ++
+          "def main : IO Unit := IO.println (Nat.toString 1)\n")
+          ("error: the numeral does not fit in 63 bits (numbers are 63-bit words here)\nerror: unknown identifier nope\n") },
     { name := "a numeral from 2^63 is an error in the self-hosted frontend, not a wrapped number (15g)", run := fun _ =>
         selfhostCheckFile ("import Prelude\ndef a : Nat := 9223372036854775807\ndef b : Nat := 9223372036854775808\n" ++
           "def c : Nat := 18446744073709551616\ndef d : Nat := 18446744073709551617\ndef e : Nat := 1000000000000000000000000000000\n" ++

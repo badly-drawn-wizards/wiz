@@ -112,10 +112,16 @@ What each compiler does with a numeral:
   (a limit of that runtime, not changed here), so a numeral from `2^63` could only be
   its value modulo `2^63` (`2^64 + 1` would be `1`). It is now an error in the frontend
   ("the numeral does not fit in 63 bits"), decided on the digits: when the compiler
-  runs on words itself, the value has wrapped before anyone can look at it. The
-  definition is then missing, as for any elaboration error: the message is in the
-  comments at the top of the C, and the C compiler fails where the definition is used.
-  The backend recognises the binary term and emits `BOX(n)` (`natConst`, which also
+  runs on words itself, the value has wrapped before anyone can look at it.
+* **The self-hosted compiler stops at a frontend error.** Its driver
+  (`Selfhost.compilerSource`) printed the frontend's messages as comments at the top
+  of the C and went on: a definition with an error was just missing, and the program
+  compiled anyway if nothing used it. Now, if any line of the frontend's output starts
+  with `error`, the errors go to standard error, no C is printed, and the exit code is
+  1. For this the self-hosted prelude and `selfhost/rt.c` have two more natives, with
+  the names and types of `lib/Sys.wiz`: `IO.ePrintln : String → IO Unit` and
+  `Process.exit : Nat → IO Unit`.
+* **Folded constants.** The backend recognises the binary term and emits `BOX(n)` (`natConst`, which also
   folds `+` and `*` of constants): it now wraps like the runtime does. Built by the Lean
   compiler its own numbers are unbounded, and a folded product could print a constant
   like `BOX(18446744073709551616UL)`, which gcc truncates with a warning and other C
@@ -124,7 +130,8 @@ What each compiler does with a numeral:
 Tests: numerals at `2^31`, `2^32`, `2^62 - 1`, `2^62`, `2^63`, `2^64`, `2^64 + 1` and
 `10^30` with `#eval`, `#run`, C and LLVM (groups `backend`, `c`, `llvm`); with the
 self-hosted compiler (group `selfhost`), numerals up to `2^63 - 1` compiled and run
-with both collectors, and the error from `2^63`.
+with both collectors, the error from `2^63`, and the compiler's exit code and
+standard error for a program with errors.
 
 ### 15h: case-shaped calls (`Bool.and` and `Bool.or` short-circuit) ✅
 
