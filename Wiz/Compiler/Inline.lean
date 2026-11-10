@@ -68,6 +68,12 @@ private def toLets : ETerm → List ETerm → Nat → ETerm
   | lam x b, a :: as, k => letE x (a.lift k) (toLets b as (k + 1))
   | b, as, k => apps b (as.map (·.lift k))
 
+/-- An application of variables, globals and `◾` (no work but the call itself). -/
+private def atomApp : ETerm → Bool
+  | app f a => atomApp f && (a matches var _ | global _ | erased | natLit _)
+  | global _ | var _ => true
+  | _ => false
+
 /-- `t a…` with the arguments moved under the `let`s of `t`. -/
 private def pushArgs : ETerm → List ETerm → ETerm
   | letE x v b, as => letE x v (pushArgs b (as.map (·.lift 1)))
@@ -106,12 +112,18 @@ partial def inlineSimp (body? : Name → Option ETerm) (fuel : Nat := 8)
       | h'@(letE ..) => inlineSimp body? fuel dict? (pushArgs h' args)
       | h' => apps h' args
   | letE x v b =>
-    let v := inlineSimp body? fuel dict? v
+    match inlineSimp body? fuel dict? v with
+    -- (`let x := (let y := u; v); b` is `let y := u; let x := v; b`: an inlined
+    -- definition's arguments float out, so its result can meet its use)
+    | letE y u v' => inlineSimp body? fuel dict? (letE y u (letE x v' (b.lift 1 1)))
+    | v =>
     let substitutable := match v with
-      | var _ | erased => true
+      | var _ | erased | natLit _ => true
       -- (a dictionary or an inline function: a name, free to copy)
       | global n => (dict? n).isSome || (body? n).isSome || uses 0 b == (1, false)
       | lam .. => uses 0 b == (1, false)
+      -- (a partial application of atoms used once: it meets its arguments there)
+      | app .. => atomApp v && uses 0 b == (1, false)
       | _ => false
     if substitutable then inlineSimp body? fuel dict? (subst 0 v b)
     else letE x v (inlineSimp body? fuel dict? b)

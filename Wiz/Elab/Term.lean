@@ -730,7 +730,8 @@ where
     | "term.paren" => check ctx (stx.getArg 1) expected
     | "term.app" =>
       if (stx.getArg 0).isOfKind "term.explicit" || (← builtinApp? ctx stx).isSome ||
-          !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0))) then
+          !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0)) ||
+            (← numOperands ctx stx)) then
         let (t, ty) ← infer ctx stx
         unifyAt ctx stx expected ty
         pure t
@@ -1084,6 +1085,22 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
       | _ => freshLevelMeta
     return (.sigma b.name q ty cod (some (.max l₁ l₂)), .sort (.max l₁ l₂))
 
+/-- (7e) A numeral, possibly negated or in parentheses (`3`, `-3`, `(3)`). -/
+partial def numLike (stx : Syntax) : Bool :=
+  stx.isOfKind "term.num" ||
+  ((stx.isOfKind "term.paren" || stx.isOfKind "term.neg") && numLike (stx.getArg 1))
+
+/-- (7e) An application of a class method to a numeral (`Add.add x 1`, `1 + x`, `-3`):
+its numerals are elaborated after its other arguments and the expected type, which may
+fix their type (`0 + a` with `a : Int`, `(-3 : Int)`), as Lean's `binop%` does. -/
+partial def numOperands (ctx : LocalCtx R) (stx : Syntax) : ElabM R Bool := do
+  unless stx.isOfKind "term.app" && (stx.getArg 1).args.any numLike do return false
+  let h := stx.getArg 0
+  unless h.isOfKind "term.ident" do return false
+  let x := stripScope (((h.getArg 0).getId?).getD "_")
+  if (lookupLocal ctx x).isSome then return false
+  return (← get).classes.any fun c => c.fields.any fun f => c.name ++ "." ++ f == x
+
 /-- A `fun` with a binder whose type isn't given: as an argument, it is elaborated after
 the others (`checkApp`). -/
 partial def postponable (stx : Syntax) : Bool :=
@@ -1164,7 +1181,8 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   let mut postponed : Array (Syntax × Term R × VTy R × Bool) := #[]
   for pass in [0:2] do
     for (arg, m, dom, used) in (if pass == 0 then pending else postponed) do
-      if pass == 0 && postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg)) then
+      if pass == 0 && ((postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg))) ||
+          (numLike arg && (← force dom) matches .neutral (.mvar _) _)) then
         postponed := postponed.push (arg, m, dom, used)
         continue
       let a ← check ctx arg dom
@@ -1224,7 +1242,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   let explicitMode := fStx.isOfKind "term.explicit"
   -- (a lambda argument with unannotated binders is postponed: `checkApp` against an
   -- unknown type does that)
-  if postpone && !explicitMode && (stx.getArg 1).args.any postponable then
+  if postpone && !explicitMode && ((stx.getArg 1).args.any postponable || (← numOperands ctx stx)) then
     let T ← freshMeta ctx "the type of an application"
     let vT ← evalIn ctx T
     let t ← checkApp ctx stx vT

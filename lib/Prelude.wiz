@@ -214,7 +214,7 @@ infixl:65 " - " => Sub.sub
 infixl:70 " * " => Mul.mul
 infixl:70 " / " => Div.div
 infixl:70 " % " => Mod.mod
-syntax:75 "-" term:75 : term
+syntax:75 (name := neg) "-" term:75 : term
 macro_rules
   | `(term| - $x) => `(term| Neg.neg $x)
 -- (end of the numeric classes)

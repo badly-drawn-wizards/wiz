@@ -2798,13 +2798,82 @@ def wordGroup : Group where
         check ((out.splitOn "wiz_word_to_bits").length > 1) s!"match doesn't read the bits natively:\n{out}" },
     { name := "a U64 result is read back from a raw box", run := fun _ =>
         cRun "import Word\ndef main : U64 := UIntN.mul (U64.ofNat 18446744073709551615) (U64.ofNat 3)"
-          ".mk 18446744073709551613" }
+          ".mk 18446744073709551613" },
+    -- (7e) numeric classes at the words
+    { name := "numerals and operators at word types wrap around", run := fun _ =>
+        okLib ("import Word\ndef s : U8 := 250 + 10\n#eval s.toNat\ndef t : s = 4 := rfl\n#eval (300 : U8).toNat\n" ++
+          "def mac {ω w : Nat} (a b c : UIntN w) : UIntN w := a * b + c\n#eval (mac (16 : U8) 16 3).toNat\n#eval (1 - 2 : U16).toNat")
+          ["4", "44", "3", "65535"] },
+    { name := "signed and unsigned division are told apart (one shape, two types)", run := fun _ =>
+        okLib "import Word\n#eval (-7 / 2 : I32).toNat\n#eval (-7 % 2 : I32).toNat\n#eval ((4294967289 : U32) / 2).toNat"
+          ["4294967293", "4294967295", "2147483644"] },
+    { name := "compiled: a + b at a word type calls the native", run := fun _ => do
+        let loader ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) "import Word\ndef f (a b : U32) : U32 := a + b * 3\n#ir f" { loader, trustedModule := Tests.libModule }
+        let out := String.intercalate "\n" (s.messages.toList.map (·.text))
+        check ((out.splitOn "wiz_word_add").length > 1 && (out.splitOn "wiz_word_mul").length > 1 &&
+          (out.splitOn "proj").length == 1) s!"no native call (or a dictionary) in:\n{out}" },
+    { name := "compiled: operators at words run natively (C)", run := fun _ =>
+        cRun "import Word\ndef main : Nat := ((250 : U8) + 10 * 2).toNat + (-1 / 2 : I8).toNat" "14" }
   ]
+
+/-- Every `lib/*.wiz` and `lib/D/*.wiz` (as `D.X`), by module name. -/
+def libLoader : IO (Name → Option String) := do
+  let mut m : List (Name × String) := []
+  for e in ← System.FilePath.readDir "lib" do
+    if e.path.extension == some "wiz" then
+      m := (e.path.fileStem.getD "", ← IO.FS.readFile e.path) :: m
+    else if ← e.path.isDir then
+      for f in ← System.FilePath.readDir e.path do
+        if f.path.extension == some "wiz" then
+          m := (e.fileName ++ "." ++ f.path.fileStem.getD "", ← IO.FS.readFile f.path) :: m
+  pure fun n => m.lookup n
+
+/-- No errors, and these messages, with every library importable. -/
+def okLibs (input : String) (infos : List String := []) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
+
+/-- Exactly one error, mentioning `fragment`, with every library importable. -/
+def failsLibs (input : String) (fragment : String) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+  unless (errs[0]!.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+/-- Build `main` with the C backend, with every library importable. -/
+def cRunLibs (src : String) (expected : String) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let dir ← IO.FS.createTempDir
+  match ← Build.runGlobal (← toolchain) s "main" dir with
+  | .ok v => checkEq expected v
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
 
 def stdGroup : Group where
   name := "std"
   exercise := "Stage 12a"
   cases := [
+    -- (7e) integers
+    { name := "integers: arithmetic, literals, printing", run := fun _ =>
+        okLibs ("import Int\n#eval (-3 : Int) * 4 + 2\n#eval (5 : Int) - 8\n#eval (-7 : Int) / 2\n#eval (-7 : Int) % 2\n" ++
+          "def t : (-3 : Int) * 4 + 2 = -10 := rfl\ndef u (a : Int) : 0 + a = a := Int.zero_add a\n#run (2 : Int) - 3 * 4\n#eval Int.natAbs (-5)\n" ++
+          "#eval Int.lt (-2) 1\n#eval Int.toNat (-4)")
+          ["-10", "-3", "-3", "-1", "-10", "5", ".true", "0"] },
+    { name := "integers: lemmas, and printing needs no axiom", run := fun _ =>
+        okLibs ("import Int\n#check Int.neg_neg\n#check Int.add_zero\n#print axioms Int.add_zero")
+          ["Int.neg_neg : (a : Int) → Neg.neg Int instNegInt (Neg.neg Int instNegInt a) = a",
+           "Int.add_zero : (a : Int) → Add.add Int instAddInt a (OfNat.ofNat Int 0 (instOfNatIntN 0)) = a",
+           "'Int.add_zero' does not depend on any axioms"] },
+    { name := "integers: compiled (C)", run := fun _ =>
+        cRunLibs "import Int\ndef main : Int := (-3 : Int) * 4 + 2" "-10" },
+    { name := "machine types: operators at UInt64 and Float64", run := fun _ =>
+        okLibs "import IO\ndef f (a b : UInt64) : UInt64 := a * b + 1\ndef g (x : Float64) : Float64 := x * x - 2 / 3" },
     { name := "arrays, updated in place", run := fun _ =>
         ioRun ("import Std\ndef fill : Nat → Array Nat → Array Nat\n  | .zero, a => a\n  | .succ n, a => Array.push (fill n a) (n * n)\n" ++
           "def main : IO Unit := do\n  let a := fill 10 Array.empty;\n  IO.println (Nat.toString (Array.getD a 9 0));\n" ++
@@ -3454,44 +3523,6 @@ def trustGroup : Group where
            "error: partial definition bad2: no witness found for its type; give one with `partial (default := w) def`\n" ++
            "ok1 : (T B.t)\nok2 : (x0 : Nat) → Nat\nok3 : (T B.t)\nerror: type mismatch: expected (T B.f), got (T B.t)\n") }
   ]
-
-/-- Every `lib/*.wiz` and `lib/D/*.wiz` (as `D.X`), by module name. -/
-def libLoader : IO (Name → Option String) := do
-  let mut m : List (Name × String) := []
-  for e in ← System.FilePath.readDir "lib" do
-    if e.path.extension == some "wiz" then
-      m := (e.path.fileStem.getD "", ← IO.FS.readFile e.path) :: m
-    else if ← e.path.isDir then
-      for f in ← System.FilePath.readDir e.path do
-        if f.path.extension == some "wiz" then
-          m := (e.fileName ++ "." ++ f.path.fileStem.getD "", ← IO.FS.readFile f.path) :: m
-  pure fun n => m.lookup n
-
-/-- No errors, and these messages, with every library importable. -/
-def okLibs (input : String) (infos : List String := []) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
-  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
-  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
-  checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
-
-/-- Exactly one error, mentioning `fragment`, with every library importable. -/
-def failsLibs (input : String) (fragment : String) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
-  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
-  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
-  unless (errs[0]!.splitOn fragment).length > 1 do
-    throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
-
-/-- Build `main` with the C backend, with every library importable. -/
-def cRunLibs (src : String) (expected : String) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
-  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
-  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
-  let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal (← toolchain) s "main" dir with
-  | .ok v => checkEq expected v
-  | .error e =>
-    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
 
 def vecPrelude : String := "import Vec
 def v3 : Vec Nat 3 := .cons 10 (.cons 20 (.cons 30 .nil))

@@ -666,7 +666,7 @@ def builtinShapeError (g : Globals R) (key : Name) (d : Decl R) : Option String 
   let isN (N : Name) : Term R → Bool
     | .const c [] => c == N
     | _ => false
-  if key == "nat" || key == "string" then
+  if key == "nat" || key == "string" || key == "int" then
     match d.type, d.value.map (eval g []) with
     | .sort _, some (.mu _ _ _ _ _ (some (T, _, _))) => if T == d.name then none else some "it must be an inductive type"
     | _, _ => some "it must be an inductive type"
@@ -1096,7 +1096,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.builtin" =>
     let key := ((cmd.getArg 1).getId?).getD "_"
     let n := ((cmd.getArg 3).getId?).getD "_"
-    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo",
+    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo", "int",
       "nat.div", "nat.mod", "nat.pow", "nat.land", "nat.lor", "nat.xor", "nat.shiftLeft", "nat.shiftRight", "nat.log2"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
     else match s.globals.find? n with
@@ -1108,7 +1108,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- the toolchain's library is trusted (its registrations are reviewed: README,
         -- "Trusted base"); anywhere else, nothing checks that `n` computes like the native
         -- operation, so the registration is an axiom of whatever depends on `n`
-        let trusted := s.trustedModule s.module
+        -- (`builtin int` only says how values print: nothing to trust)
+        let trusted := s.trustedModule s.module || key == "int"
         modify fun s => { s with builtins := (key, n) :: s.builtins,
                                  globals := { s.globals with builtins := (key, n) :: s.globals.builtins,
                                                              assumed := if trusted then s.globals.assumed

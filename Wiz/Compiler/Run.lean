@@ -342,6 +342,12 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
       match v.toString? with
       | some s => .const s.quote []
       | none => readbackData ty v
+    -- (7e) an integer of the registered `int` type, `ofNat n` or `negSucc n`: `n`, `-(n+1)`
+    else if builtins.lookup "int" == some T then
+      match v.tag?, (v.field 0).toNat? with
+      | some 0, some n => .const (toString n) []
+      | some 1, some n => .const s!"-{n + 1}" []
+      | _, _ => readbackData ty v
     else readbackData ty v
   | .mu .., v => readbackData ty v
   | .sigma _ _ A B _, v =>
@@ -413,24 +419,21 @@ partial def ETerm.globals (e : ETerm) (acc : Array Name := #[]) : Array Name :=
   | _ => acc
 
 /-- (HD9) An erased body that compiled code substitutes wherever its definition is
-applied, at no cost in code size: under its lambdas, a variable, a projection of one, a
-global, `◾`, a numeral, or a global or variable applied to such atoms (a forwarder).
+applied, at little cost in code size: under its lambdas, a small application (at most 16
+nodes) of variables, projections, globals, `◾` and numerals: a forwarder.
 Class methods (`Add.add` is `λ A self. self`: a one-method dictionary is the method
 itself), instances (`instAddNat` is `Nat.add`), structure projections and aliases are
 of this shape, so `a + b` at `Nat` compiles to the native addition. -/
 partial def ETerm.trivialBody : ETerm → Bool
   | .lam _ b => b.trivialBody
-  | t => atom t || (match spineOf t [] with
-    | (.global _, as@(_ :: _)) | (.var _, as@(_ :: _)) => as.all atom
-    | _ => false)
+  | t => (size t).any (· ≤ 16)
 where
-  atom : ETerm → Bool
-    | .var _ | .erased | .global _ | .natLit _ => true
-    | .proj _ t => atom t
-    | _ => false
-  spineOf : ETerm → List ETerm → ETerm × List ETerm
-    | .app f a, acc => spineOf f (a :: acc)
-    | t, acc => (t, acc)
+  /-- the number of nodes of an application of atoms (`none` for anything else) -/
+  size : ETerm → Option Nat
+    | .var _ | .erased | .global _ | .natLit _ => some 1
+    | .proj _ t => (size t).map (· + 1)
+    | .app f a => do let m ← size f; let n ← size a; pure (m + n + 1)
+    | _ => none
 
 /-- (HD9) An erased body that builds an object (under its lambdas): an instance of a class
 with several methods. Inlined only where a field of it is projected. -/
@@ -450,7 +453,7 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
   let mut failed : List (Name × String) := []
   let mut todo := roots.toArray
   -- definitions registered as native operations
-  let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && !key.startsWith "repr:" &&
+  let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && key != "int" && !key.startsWith "repr:" &&
     key != inlineKey
   -- native representations (stage 22d): the interpreters keep the model's objects when
   -- the conversions are foreign functions

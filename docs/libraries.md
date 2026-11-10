@@ -71,3 +71,33 @@ Sharing has two parts:
 `lib/HProp.wiz` (model heaps, `emp`, `↦`, `⋆`, `−∗`, entailment and the separation-logic
 laws) and `lib/Hoare.wiz` (`wp`, triples, the frame rule, verified swap and list reversal,
 adequacy for an interpreter). See [stage 24](stages/24-separation-logic.md).
+
+## Numbers: classes, integers, words ✅
+
+(Stage doc: docs/stages/07-type-classes.md, 7e.) The Prelude's `Add`, `Sub`, `Mul`,
+`Div`, `Mod`, `Neg` and `OfNat` give `+ - * / %`, prefix `-` and numerals at every
+numeric type:
+
+| type | where | numerals | operators |
+|------|-------|----------|-----------|
+| `Nat` | Prelude | native literals | `+ - * / %` (natural subtraction: `2 - 3 = 0`) |
+| `Int` | `lib/Int.wiz` | `5`, `-5` | `+ - * / %`, prefix `-` |
+| `UIntN w` (`U8` … `U64`, `USize`, `BitVec n`) | `lib/Word.wiz` | wrap around: `(300 : U8) = 44` | `+ - * / %`, `-` (wrapping) |
+| `IntN w` (`I8` … `I64`) | `lib/Word.wiz` | `-7 : I32` | `+ - * -`, signed `/ %` (truncating, as Rust) |
+| `UInt64`, `Float64` | `lib/IO.wiz` | through `ofNat` | `+ - * /` (and `%` for `UInt64`) |
+
+* **`Int`** is `ofNat n | negSucc n`, as in Lean. Arithmetic is defined by cases on the
+  natively computed Nat operations, so the kernel computes on numerals
+  (`rfl : (-3 : Int) * 4 + 2 = -10`) and compiled code runs Nat's natives on the
+  magnitudes (an `Int` is a small object holding a number; no native signed numbers
+  yet). `builtin int := Int` makes `#eval`, `#run` and compiled `main` print `-10`
+  instead of `.negSucc 9` (a printing hint, not an axiom: `#print axioms` lists nothing
+  for it). Division truncates (`-7 / 2 = -3`, `-7 % 2 = -1`), like `IntN` and C. Also
+  `Int.natAbs`, `Int.toNat` (negatives to 0), `Int.lt`/`le`/`beq`, and lemmas
+  `Int.neg_neg`, `Int.add_zero`, `Int.zero_add`, `Int.natAbs_neg`, `Int.lt_irrefl`.
+* **Words.** One set of instances at `UIntN w` serves `U8 … U64` and `BitVec n` (aliases
+  are seen through). `UIntN w` and `IntN w` have the same shape (types are structural),
+  so resolution compares the declared type names of a class's arguments and skips an
+  instance for a different type: `-7 / 2 : I32` is signed division, `x / 2 : U32`
+  unsigned. Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
+  inlined away), as `UIntN.add a b` was.
