@@ -40,6 +40,8 @@ def elimsChecked (m : Nat) (sol : Val R) (sp : Array (Elim R)) : ElabM R (Val R)
       | .pair .., .fst | .pair .., .snd => true
       | _, .app _ | _, .fst | _, .snd => false
       | _, _ => true
+    -- (merge note: with agent/slow-unify's fast failure, set `unifySawMeta := true` here
+    -- before throwing, so this failure is never taken as final)
     unless fits do
       throwAt {} s!"the solution found for the hole ?m{m} is ill-typed (a guess that didn't fit)"
     v := vElims g v #[e]
