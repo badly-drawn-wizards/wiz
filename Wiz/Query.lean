@@ -49,13 +49,13 @@ where
         go chars stop s' key' { eng with memo := eng.memo.insert key' s', elaborated := eng.elaborated + 1 }
     | .error _ =>
       -- let the frontend report the parse error and recover
-      let s' := runFrontend.go input chars pos s
+      let s' := runFrontend.go input init chars pos s
       (s', eng)
   /-- Elaborate the single command in `[pos, stop)`. -/
   elabOne (chars : Array Char) (pos stop : Nat) (s : CommandState R) : CommandState R :=
     -- run the frontend on exactly this command's text, at its position
     let only := chars.extract 0 stop
-    runFrontend.go input only pos s
+    runFrontend.go input init only pos s
 
 /-- The innermost entry of the info tree satisfying `p` whose range contains `off`
 (`start ≤ off < stop`, or `≤ stop` if `endIn`); among equal ranges, the last recorded. -/
