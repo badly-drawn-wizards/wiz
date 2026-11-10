@@ -1,4 +1,5 @@
 import Grail.Graph
+import Grail.Deps
 
 /-!
 # grail, a build tool for Wiz
@@ -15,6 +16,8 @@ def usage : String := "usage:
   grail test [FILTER…] [--update]
                           run the tests (of `tests` targets) whose path contains a
                           filter; --update writes the actual output to .expected
+  grail update            resolve the git dependencies again and write grail.lock
+                          (builds use the lock only)
   grail targets           list the targets
   grail config            print the toolchain grail would use
   grail clean             remove .grail/build, .grail/bin and .grail/tmp
@@ -95,7 +98,7 @@ def main (args : List String) : IO UInt32 := do
     for d in ["build", "bin", "tmp"] do
       if ← (dir / ".grail" / d).pathExists then IO.FS.removeDirAll (dir / ".grail" / d)
     pure 0
-  | "build" :: _ | "test" :: _ | ["targets"] | ["config"] =>
+  | "build" :: _ | "test" :: _ | ["targets"] | ["config"] | ["update"] =>
     let (pkg, localSettings) ← match ← readConfig flagged binId std dir with
       | .ok r => pure r
       | .error e => do IO.eprintln e; return 1
@@ -106,15 +109,29 @@ def main (args : List String) : IO UInt32 := do
       | none => IO.eprintln s!"unknown setting {k}"; return 1
     -- the flags again, over the build files
     tc := (tc.parseFlags raw).1
+    -- a dependency's build file
+    let readPkg (d : System.FilePath) : IO (Except String Package) := do
+      pure ((← readConfig tc binId std d).map (·.1))
+    let depRoots : IO (Option (List System.FilePath)) := do
+      match ← lockedRoots readPkg dir pkg IO.eprint with
+      | .ok rs => pure (some rs)
+      | .error e => IO.eprintln e; pure none
     match args with
     | ["config"] => IO.print tc.render; pure 0
+    | ["update"] =>
+      match ← update readPkg dir pkg with
+      | .error e => IO.eprintln e; pure 1
+      | .ok ls =>
+        for l in ls do IO.println s!"{l.name}\t{l.url} {l.rev}\t{l.commit}"
+        pure 0
     | ["targets"] =>
       for t in pkg.targets do IO.println s!"{t.name}\t{repr t}"
       pure 0
     | "test" :: rest =>
       let update := rest.contains "--update"
       let filters := rest.filter (· != "--update")
-      let r ← mkRunner { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets }
+      let some roots ← depRoots | return 1
+      let r ← mkRunner { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets ++ roots }
       let results ← r.tests pkg.targets filters update
       let passed := results.filter (·.ok) |>.size
       let cached := results.filter (·.cached) |>.size
@@ -126,7 +143,8 @@ def main (args : List String) : IO UInt32 := do
         else pkg.targets.filter (wanted.contains ·.name)
       for w in wanted do
         unless pkg.targets.any (·.name == w) do IO.eprintln s!"no target {w}"; return 1
-      let r ← mkRunner { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets }
+      let some roots ← depRoots | return 1
+      let r ← mkRunner { dir, std, tc, binId, libRoots := libRootsOf dir pkg.targets ++ roots }
       let ok ← r.build pkg.targets targets
       let st ← r.stats.get
       IO.println s!"{st.ran} jobs run, {st.upToDate} up to date{if st.failed > 0 then s!", {st.failed} failed" else ""}{if st.skipped > 0 then s!", {st.skipped} skipped" else ""}"

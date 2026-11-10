@@ -2218,4 +2218,22 @@ on it are skipped; the others still run. Each job's output is buffered and print
 graph's order, so `-j 1` and `-j 8` print the same report, and a second build still runs
 no jobs.
 
-Next: git dependencies and a lock file (23h).
+### 23h: git dependencies and a lock file ✅
+
+`Package.dep NAME URL REV` depends on the package at a git URL (a path, `file://`,
+`https://`) and revision (tag, branch or commit). `grail update` resolves each
+dependency, and theirs (from their own `grail.wiz`), to a commit, clones it to
+`.grail/packages/NAME`, and writes `grail.lock`, which is committed:
+
+```
+(lock
+  (dep greet "https://example.org/greet.git" v1 88bef64fe0c79f190976221e57f65d6b17a1866c 89d8a320ea2473de))
+```
+
+(name, URL, revision, commit, and a hash of the checked-out files). Builds use the lock
+only: each dependency is checked out at its locked commit (fetched if missing), files
+that don't match the hash are refused, and a `REV` changed in `grail.wiz` stays at the
+locked commit, with a note, until `grail update`. The roots of a dependency's `lib`
+targets become module roots, so `import Greet.Hello` finds
+`.grail/packages/greet/src/Greet/Hello.wiz`; module keys already hash module texts.
+Two different commits of one dependency name are refused (no version resolution yet).
