@@ -404,19 +404,27 @@ def Doc.nat (n : Nat) : Doc := .t (Nat.toString n)
 -- the code so far: the lifted functions (latest first), a counter for names, and the
 -- arity of each global defined by `λ`s (called directly when applied to that many
 -- arguments: through curried closures, a call of `n` arguments made `n` closures, each
--- copying the arguments before it)
+-- copying the arguments before it), and (reference counting mode) a reuse token wanted
+-- by an allocation not yet given one (`Wish`, see `rcE`)
+inductive Wish where
+  | idle
+  | want (w : String) (n : Nat)
 inductive CG where
-  | mk (fns : List Doc) (n : Nat) (ar : StrMap Nat)
+  | mk (fns : List Doc) (n : Nat) (ar : StrMap Nat) (pend : Wish)
 inductive CR where
   | mk (code : Doc) (st : CG)
 inductive FR where
   | mk (name : String) (st : CG)
 def CG.fresh (st : CG) (base : String) : FR := match st with
-  | .mk fns n ar => .mk (String.append base (Nat.toString n)) (.mk fns (n + 1) ar)
+  | .mk fns n ar p => .mk (String.append base (Nat.toString n)) (.mk fns (n + 1) ar p)
 def CG.emit (st : CG) (f : Doc) : CG := match st with
-  | .mk fns n ar => .mk (.cons f fns) n ar
+  | .mk fns n ar p => .mk (.cons f fns) n ar p
 def CG.arity (st : CG) (g : String) : Nat := match st with
-  | .mk _ _ ar => StrMap.findD ar (Str.ofString g) 0
+  | .mk _ _ ar _ => StrMap.findD ar (Str.ofString g) 0
+def CG.pend (st : CG) : Wish := match st with
+  | .mk _ _ _ p => p
+def CG.setPend (st : CG) (p : Wish) : CG := match st with
+  | .mk fns n ar _ => .mk fns n ar p
 -- an application's head and arguments
 inductive ESpine where
   | mk (head : ETm) (args : List ETm)
@@ -758,25 +766,63 @@ def betaE : ETm → ETm → ETm
     | .false => .letE a b
   | .letE v b, a => .letE v (betaE b (liftE 1 0 a))
   | f, a => .app f a
+-- **Strict `let`s** (reference counting mode): a `let` whose variable every path of its
+-- body evaluates (not under a `λ`) is evaluated where it stands: suspending it costs a
+-- thunk and gains nothing. (`unreachable` counts as using everything.)
 mutual
-def lazyLets : ETm → ETm
+def neededE (c : Nat) : ETm → Bool
+  | .var i => Nat.beq i c
+  | .app f a => match neededE c f with
+    | .true => .true
+    | .false => neededE c a
+  | .letE v b => match neededE c v with
+    | .true => .true
+    | .false => neededE (c + 1) b
+  | .obj _ fs => neededAny c fs
+  | .proj _ t => neededE c t
+  | .case s bs => match neededE c s with
+    | .true => .true
+    | .false => neededAll c bs
+  | .prim op as => match strEq op "unreachable" with
+    | .true => .true
+    | .false => neededAny c as
+  | _ => .false
+def neededAny (c : Nat) : ETms → Bool
+  | .nil => .false
+  | .cons t rest => match neededE c t with
+    | .true => .true
+    | .false => neededAny c rest
+def neededAll (c : Nat) : ETms → Bool
+  | .nil => .true
+  | .cons t rest => match neededE c t with
+    | .true => neededAll c rest
+    | .false => .false
+end
+-- (`sl`: strict `let`s, in the reference counting mode)
+def strictLet (sl : Bool) (b : ETm) : Bool := match sl with
+  | .true => neededE 0 b
+  | .false => .false
+mutual
+def lazyLets (sl : Bool) : ETm → ETm
   | .letE v b =>
-    let v' := lazyLets v;
-    let b' := lazyLets b;
+    let v' := lazyLets sl v;
+    let b' := lazyLets sl b;
     match cheapE v' with
     | .true => substE v' 0 b'
-    -- `let x := memo (λ _. v); b[x ◾ / x]`
-    | .false => .letE (.prim "memo" (etms1 (.lam (liftE 1 0 v')))) (substE (.app (.var 0) .erased) 0 (liftE 1 1 b'))
-  | .lam b => .lam (lazyLets b)
-  | .app f a => betaE (lazyLets f) (lazyLets a)
-  | .obj t fs => .obj t (lazyLetsEs fs)
-  | .proj i t => .proj i (lazyLets t)
-  | .case s bs => .case (lazyLets s) (lazyLetsEs bs)
-  | .prim op as => .prim op (lazyLetsEs as)
+    | .false => match strictLet sl b' with
+      | .true => .letE v' b'
+      -- `let x := memo (λ _. v); b[x ◾ / x]`
+      | .false => .letE (.prim "memo" (etms1 (.lam (liftE 1 0 v')))) (substE (.app (.var 0) .erased) 0 (liftE 1 1 b'))
+  | .lam b => .lam (lazyLets sl b)
+  | .app f a => betaE (lazyLets sl f) (lazyLets sl a)
+  | .obj t fs => .obj t (lazyLetsEs sl fs)
+  | .proj i t => .proj i (lazyLets sl t)
+  | .case s bs => .case (lazyLets sl s) (lazyLetsEs sl bs)
+  | .prim op as => .prim op (lazyLetsEs sl as)
   | t => t
-def lazyLetsEs : ETms → ETms
+def lazyLetsEs (sl : Bool) : ETms → ETms
   | .nil => .nil
-  | .cons t rest => .cons (lazyLets t) (lazyLetsEs rest)
+  | .cons t rest => .cons (lazyLets sl t) (lazyLetsEs sl rest)
 end
 
 -- **Reference counting** (stage 22, the `rc` mode; see `rt.c`). The C is in A-normal
@@ -837,7 +883,7 @@ inductive RR where
 inductive RRs where
   | mk (code : Doc) (atoms : List Doc) (live : List Nat) (st : CG)
 inductive RB where
-  | mk (code atom : Doc) (live : List Nat)
+  | mk (code atom : Doc) (live : List Nat) (pend : Wish)
 -- the branches of a `case`, and the variables any of them uses
 inductive RBs where
   | mk (bs : List RB) (live : List Nat) (st : CG)
@@ -868,15 +914,64 @@ def entryDrops (names : List String) (d : Nat) (live : List Nat) : List Nat → 
 -- the context: the **borrowed** variables (by level: parameters of the function being
 -- compiled that it never consumes, so its callers keep them alive and it neither
 -- releases them nor counts them as live), and each global function's borrowed
--- parameters (`true`: borrowed, first parameter first)
+-- parameters (`true`: borrowed, first parameter first); and the variables whose cells
+-- may be reused here (the owned variables matched on by the enclosing `case`s)
 inductive RE where
-  | mk (bor : List Nat) (sigs : StrMap (List Bool))
+  | mk (bor : List Nat) (sigs : StrMap (List Bool)) (cands : List Nat)
 def RE.bor : RE → List Nat
-  | .mk b _ => b
+  | .mk b _ _ => b
 def RE.inner : RE → RE
-  | .mk _ s => .mk .nil s
+  | .mk _ s _ => .mk .nil s .nil
 def RE.sig (re : RE) (g : String) : List Bool := match re with
-  | .mk _ s => StrMap.findD s (Str.ofString g) .nil
+  | .mk _ s _ => StrMap.findD s (Str.ofString g) .nil
+def RE.cands : RE → List Nat
+  | .mk _ _ c => c
+def RE.withCand (re : RE) (x : Nat) : RE := match re with
+  | .mk b s c => .mk b s (lvIns x c)
+-- **Reuse** (Perceus' reuse tokens). In a `case` branch on an owned variable `x`, an
+-- allocation is compiled first (backwards) and leaves a wish for a cell of its size
+-- (`CG.pend`); the place where `x` then dies (going on backwards: its last projection,
+-- a lending call, the branch's start) grants it: `w = reset(x, n)` frees `x`'s fields
+-- and keeps its cell if `x` was unique and of the same size class, and the allocation
+-- `reuseobj(w, …)` writes there (else allocates). A wish not granted by the start of
+-- the branch is `w = 0`. Branches and functions are separate: a token never crosses
+-- into another branch.
+inductive DropR where
+  | mk (code : Doc) (st : CG)
+-- `x` (C name `nm`) dies here
+def dropC (re : RE) (st : CG) (nm : String) (x : Nat) : DropR := match lvMem x (RE.cands re) with
+  | .true => match CG.pend st with
+    | .want w n => .mk (.t ("V " +++ w +++ " = reset(" +++ nm +++ ", " +++ Nat.toString n +++ "); ")) (CG.setPend st .idle)
+    | .idle => .mk (.t ("dec(" +++ nm +++ "); ")) st
+  | .false => .mk (.t ("dec(" +++ nm +++ "); ")) st
+def dropsCs (re : RE) (names : List String) (d : Nat) : CG → List Nat → DropR
+  | st, .nil => .mk (.t "") st
+  | st, .cons x rest => match dropC re st (nthName' names (d - 1 - x)) x with
+    | .mk c st1 => match dropsCs re names d st1 rest with
+      | .mk cs st2 => .mk (c ⧺ cs) st2
+def dropsC (re : RE) (st : CG) (names : List String) (d : Nat) (xs : List Nat) : DropR := dropsCs re names d st xs
+-- **Drop specialisation**: `x` dies at its projection `r` (a borrowed field): if `x` is
+-- unique, `r` takes over `x`'s reference to it and the rest is released (`dropTake`;
+-- `resetTake` also keeps the cell for a wish), else `r` is `inc`ed and `x` released
+def takeC (re : RE) (st : CG) (nm r : String) (x : Nat) : DropR :=
+  let plain : DropR := .mk (.t ("dropTake(" +++ nm +++ ", " +++ r +++ "); ")) st;
+  match lvMem x (RE.cands re) with
+  | .true => match CG.pend st with
+    | .want w n => .mk (.t ("V " +++ w +++ " = resetTake(" +++ nm +++ ", " +++ Nat.toString n +++ ", " +++ r +++ "); ")) (CG.setPend st .idle)
+    | .idle => plain
+  | .false => plain
+-- a branch's drops (`x` in `cands` may grant its wish `p`); a wish left is `w = 0`
+def branchDrops (cands : List Nat) (names : List String) (d : Nat) : Wish → List Nat → Doc
+  | p, .nil => match p with
+    | .want w _ => .t ("V " +++ w +++ " = 0; ")
+    | .idle => .t ""
+  | p, .cons x rest =>
+    let nm := nthName' names (d - 1 - x);
+    match p with
+    | .want w n => match lvMem x cands with
+      | .true => .t ("V " +++ w +++ " = reset(" +++ nm +++ ", " +++ Nat.toString n +++ "); ") ⧺ branchDrops cands names d .idle rest
+      | .false => .t ("dec(" +++ nm +++ "); ") ⧺ branchDrops cands names d p rest
+    | .idle => .t ("dec(" +++ nm +++ "); ") ⧺ branchDrops cands names d p rest
 -- the captured variables (indices) put in a closure: each `inc`ed if used after (or
 -- borrowed)
 def capUses (bor : List Nat) (names : List String) (d : Nat) (live : List Nat) : List Nat → RU
@@ -920,11 +1015,49 @@ def callC (f : Doc) (atoms : List Doc) : Doc := match atoms with
 -- `code`, then the value of `e` in a new local
 def bindTo (st : CG) (code e : Doc) (live : List Nat) : RR := match CG.fresh st "t" with
   | .mk x st1 => .mk (code ⧺ .t ("V " +++ x +++ " = ") ⧺ e ⧺ .t "; ") (.t x) live st1
-def branchesC (names : List String) (d : Nat) (u : List Nat) (r : String) : Nat → List RB → Doc
+def branchesC (cands : List Nat) (names : List String) (d : Nat) (u : List Nat) (r : String) : Nat → List RB → Doc
   | _, .nil => .t ""
   | k, .cons b rest => match b with
-    | .mk bc ba bl => .t "case " ⧺ Doc.nat k ⧺ .t ": { " ⧺ decsOf names d (lvDiff u bl) ⧺ bc ⧺ .t (r +++ " = ") ⧺ ba ⧺
-        .t "; break; } " ⧺ branchesC names d u r (k + 1) rest
+    | .mk bc ba bl bp => .t "case " ⧺ Doc.nat k ⧺ .t ": { " ⧺ branchDrops cands names d bp (lvDiff u bl) ⧺ bc ⧺ .t (r +++ " = ") ⧺ ba ⧺
+        .t "; break; } " ⧺ branchesC cands names d u r (k + 1) rest
+-- the context of a `case`'s branches: the scrutinee's variable, if owned, may be reused
+def caseRE (re : RE) (d : Nat) (s : ETm) : RE := match projRoot s with
+  | .var j => match Nat.lt j d with
+    | .true => match lvMem (d - 1 - j) (RE.bor re) with
+      | .true => re
+      | .false => RE.withCand re (d - 1 - j)
+    | .false => re
+  | _ => re
+-- **Static objects**: a value of a constructor without fields is `(k, ◾)`, the same
+-- every time: the runtime keeps one for each `k < 64` (`nul(k)`, never freed), as for
+-- the Bools its natives return
+def scalarOf : ETm → Option Nat
+  | .nat n => .some n
+  | .erased => .some 0
+  | .obj k fs => match fs with
+    | .nil => .some k
+    | .cons _ _ => .none
+  | _ => .none
+def staticNul (tag : Nat) (items : ETms) : Option Nat := match tag with
+  | .zero => match items with
+    | .cons a rest => match rest with
+      | .cons b more => match more with
+        | .nil => match scalarOf a with
+          | .some k => match scalarOf b with
+            | .some z => match Bool.and (Nat.beq z 0) (Nat.lt k 64) with
+              | .true => .some k
+              | .false => .none
+            | .none => .none
+          | .none => .none
+        | .cons _ _ => .none
+      | .nil => .none
+    | .nil => .none
+  | .succ _ => .none
+-- an object: in a reuse context with no wish open, it wishes for a cell (`w`)
+def objC (w : String) (k n : Nat) (atoms : List Doc) : Doc := match strEq w "" with
+  | .true => .t "mkobj(" ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat n ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})"
+  | .false => .t ("reuseobj(" +++ w +++ ", ") ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat n ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})"
+
 
 -- **Dead code** (stage 15e). A value without effects (no application, no `ind`, no
 -- `unreachable`), so when its variable is dead it need not be computed: liveness is
@@ -993,10 +1126,10 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
         match CG.fresh st "t" with
         | .mk r st1 => match lvMem x (RE.bor re) with
           | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) live st1
-          | .false => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t ("; inc(" +++ r +++ "); ") ⧺
-            (match lvMem x live with
-              | .true => .t ""
-              | .false => .t ("dec(" +++ nm +++ "); "))) (.t r) (lvIns x live) st1
+          | .false => match lvMem x live with
+            | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) (lvIns x live) st1
+            | .false => match takeC re st1 nm r x with
+              | .mk tc st2 => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t "; " ⧺ tc) (.t r) (lvIns x live) st2
       | .false => .mk (.t "") (.t "BOX(0)") live st
     | root => match rcE re st names d live root with
       | .mk oc oa ol st1 => match CG.fresh st1 "t" with
@@ -1006,11 +1139,26 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
     | .cons _ _ =>
       -- a chain of pairs is one object, its elements and then its tail
       let cs : ETms := chainE 8 t;
-      match Nat.lt 1 (etmsLen cs) with
-      | .true => match rcEs re st names d live cs with
-        | .mk fc atoms fl st1 => bindTo st1 fc (.t "mkobj(0, " ⧺ Doc.nat (etmsLen cs) ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})") fl
-      | .false => match rcEs re st names d live fs with
-        | .mk fc atoms fl st1 => bindTo st1 fc (.t "mkobj(" ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat (etmsLen fs) ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})") fl
+      let isChain := Nat.lt 1 (etmsLen cs);
+      let items : ETms := match isChain with
+        | .true => cs
+        | .false => fs;
+      let tag := match isChain with
+        | .true => 0
+        | .false => k;
+      let n := etmsLen items;
+      let wish : FR := match RE.cands re with
+        | .nil => .mk "" st
+        | .cons _ _ => match CG.pend st with
+          | .idle => match CG.fresh st "w" with
+            | .mk w st0 => .mk w (CG.setPend st0 (.want w n))
+          | .want _ _ => .mk "" st;
+      match staticNul tag items with
+      -- (a constant `(k, ◾)`: the runtime's static object, `nul(k)`)
+      | .some kk => .mk (.t "") (.t ("nul(" +++ Nat.toString kk +++ ")")) live st
+      | .none => match wish with
+        | .mk w st0 => match rcEs re st0 names d live items with
+          | .mk fc atoms fl st1 => bindTo st1 fc (objC w tag n atoms) fl
   | .letE v b => match CG.fresh st "l" with
     | .mk x st1 => match rcE re st1 (.cons x names) (d + 1) live b with
       | .mk bc ba bl st2 => match lvMem d bl with
@@ -1019,20 +1167,28 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
           | .true => .mk bc ba bl st2
           | .false => rcLet re st2 names d x v bc ba bl
         | .true => rcLet re st2 names d x v bc ba bl
-  | .case s bs => match rcBranches re st names d live bs with
+  | .case s bs =>
+    let re2 := caseRE re d s;
+    match rcBranches re2 st names d live bs with
     | .mk rbs u st1 => match CG.fresh st1 "r" with
       | .mk r st2 => match CG.fresh st2 "k" with
         | .mk k st3 =>
-          let body := branchesC names d u r 0 rbs ⧺ .t ("default: " +++ r +++ " = unreach(); } ");
+          -- (an owned variable matched on and used by no branch dies in each branch)
+          let ux := match projRoot s with
+            | .var j => match Nat.lt j d with
+              | .true => match lvMem (d - 1 - j) (RE.bor re) with
+                | .true => u
+                | .false => lvIns (d - 1 - j) u
+              | .false => u
+            | _ => u;
+          let body := branchesC (RE.cands re2) names d ux r 0 rbs ⧺ .t ("default: " +++ r +++ " = unreach(); } ");
           match projRoot s with
           -- (the tag of a variable's field: read in place)
           | .var j => match Nat.lt j d with
             | .true =>
               let nm := nthName' names j;
               let isB := lvMem (d - 1 - j) (RE.bor re);
-              .mk (.t ("uint32_t " +++ k +++ " = tagof(") ⧺ projC (.t nm) s ⧺ .t "); " ⧺ (match Bool.or isB (lvMem (d - 1 - j) u) with
-                | .true => .t ""
-                | .false => .t ("dec(" +++ nm +++ "); ")) ⧺ .t ("V " +++ r +++ "; switch (" +++ k +++ ") { ") ⧺ body) (.t r) (match isB with
+              .mk (.t ("uint32_t " +++ k +++ " = tagof(") ⧺ projC (.t nm) s ⧺ .t ("); V " +++ r +++ "; switch (" +++ k +++ ") { ") ⧺ body) (.t r) (match isB with
                   | .true => u
                   | .false => lvIns (d - 1 - j) u) st3
             | .false => .mk (.t ("V " +++ r +++ "; switch (0) { ") ⧺ body) (.t r) u st3
@@ -1107,13 +1263,15 @@ def rcLam (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) 
 def rcCall (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (g : String) (k : Nat) (args : List ETm) : RR :=
   let sig := RE.sig re g;
   let lent := lentVars (RE.bor re) d sig args;
-  match rcArgs re st names d (lvUnion lent live) sig args with
-  | .mk ac atoms posts al st1 => match bindTo st1 ac (.t ("d_" +++ mangle g +++ "(") ⧺ joinDocs (takeL k atoms) ⧺ .t ")") al with
-    | .mk cc ca cl st2 =>
-      let cc2 := cc ⧺ decsOf names d (lvDiff lent live) ⧺ posts;
-      match dropL k atoms with
-      | .nil => .mk cc2 ca cl st2
-      | .cons _ _ => bindTo st2 cc2 (callC ca (dropL k atoms)) cl
+  -- (the lent variables dying after the call are released first: compiled backwards)
+  match dropsC re st names d (lvDiff lent live) with
+  | .mk dc st0 => match rcArgs re st0 names d (lvUnion lent live) sig args with
+    | .mk ac atoms posts al st1 => match bindTo st1 ac (.t ("d_" +++ mangle g +++ "(") ⧺ joinDocs (takeL k atoms) ⧺ .t ")") al with
+      | .mk cc ca cl st2 =>
+        let cc2 := cc ⧺ dc ⧺ posts;
+        match dropL k atoms with
+        | .nil => .mk cc2 ca cl st2
+        | .cons _ _ => bindTo st2 cc2 (callC ca (dropL k atoms)) cl
 def rcArgs (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (sig : List Bool) (ts : List ETm) : RRp := match ts with
   | .nil => .mk (.t "") .nil (.t "") live st
   | .cons t rest => match rcArgs re st names d live (tailB sig) rest with
@@ -1145,8 +1303,10 @@ def rcEs (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (
 def rcBranches (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (bs : ETms) : RBs := match bs with
   | .nil => .mk .nil live st
   | .cons b rest => match rcBranches re st names d live rest with
-    | .mk rbs u st1 => match rcE re st1 names d live b with
-      | .mk bc ba bl st2 => .mk (.cons (.mk bc ba bl) rbs) (lvUnion bl u) st2
+    -- (each branch starts with no wish and keeps its own; the one from after the `case`
+    -- is put back)
+    | .mk rbs u st1 => match rcE re (CG.setPend st1 .idle) names d live b with
+      | .mk bc ba bl st2 => .mk (.cons (.mk bc ba bl (CG.pend st2)) rbs) (lvUnion bl u) (CG.setPend st2 (CG.pend st1))
 end
 
 -- a whole program: every non-native global (the last of each name), erased; then the
@@ -1183,16 +1343,16 @@ inductive Erased where
 inductive EraseR where
   | ok (gs : List Erased)
   | err (msg : String)
-partial def eraseGlobals (all : Array Global) (seen : List String) (acc : List Erased) : Nat → EraseR
+partial def eraseGlobals (sl : Bool) (all : Array Global) (seen : List String) (acc : List Erased) : Nat → EraseR
   | .zero => .ok acc
   | .succ k => match Array.getD all k (.mk "?" .star .star .star .nil) with
     | .mk n ty v _ _ => match Bool.or (elemStr n seen) (isNative n) with
-      | .true => eraseGlobals all seen acc k
+      | .true => eraseGlobals sl all seen acc k
       | .false => match v with
-        | .axiomC _ _ => eraseGlobals all (.cons n seen) acc k
+        | .axiomC _ _ => eraseGlobals sl all (.cons n seen) acc k
         | _ => match eraseCheck empty v (eval .nil ty) with
           | .err m => .err (n +++ ": " +++ m)
-          | .ok e => eraseGlobals all (.cons n seen) (.cons (.mk n (lazyLets e)) acc) k
+          | .ok e => eraseGlobals sl all (.cons n seen) (.cons (.mk n (lazyLets sl e)) acc) k
 def arities : StrMap Nat → List Erased → StrMap Nat
   | ar, .nil => ar
   | ar, .cons (.mk n e) rest => arities (StrMap.insert ar (Str.ofString n) (lamsOf e)) rest
@@ -1272,18 +1432,99 @@ def pushGlobals : List Erased → List Erased
   | .cons (.mk n e) rest => .cons (.mk n (pushE e)) (pushGlobals rest)
 -- the program's C text, one `Doc` per line
 def genProgram (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ => match eraseGlobals all .nil .nil (Array.size all) with
+  | .mk all _ _ => match eraseGlobals .false all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       -- (applications pushed into `case`s, as under reference counting: a match is then
       -- no closure, and its recursive calls are in tail position)
       let es := pushGlobals es0;
-      match genCode (.mk .nil 0 (arities StrMap.empty es)) .nil .nil es with
+      match genCode (.mk .nil 0 (arities StrMap.empty es) .idle) .nil .nil es with
       | .mk protos defs st => match st with
-        | .mk fns _ _ =>
+        | .mk fns _ _ _ =>
           .cons (.t "#include \"rt.c\"") (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs
               (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); return 0; }") .nil))))
+
+-- **Constructors inlined** (reference counting mode): a global whose body, under its
+-- `λ`s, only builds an object from its parameters and constants (a constructor, as
+-- `ETm.app`) is put in place where it is applied to all its arguments (the arguments
+-- bound by `let`s, or put in place when cheap: `betaE`), so that the object is built
+-- where reuse can see it.
+mutual
+def leafE : ETm → Bool
+  | .var _ => .true
+  | .erased => .true
+  | .nat _ => .true
+  | .obj _ fs => leafEs fs
+  | _ => .false
+def leafEs : ETms → Bool
+  | .nil => .true
+  | .cons t rest => match leafE t with
+    | .true => leafEs rest
+    | .false => .false
+end
+def isNulE : ETm → Bool
+  | .obj k fs => match staticNul k fs with
+    | .some _ => .true
+    | .none => .false
+  | _ => .false
+def consMap : StrMap ETm → List Erased → StrMap ETm
+  | m, .nil => m
+  | m, .cons (.mk n e) rest => match lamsOf e with
+    -- (a constant constructor: when it is a static object)
+    | .zero => match isNulE e with
+      | .true => consMap (StrMap.insert m (Str.ofString n) e) rest
+      | .false => consMap m rest
+    | .succ _ => match leafE (underLams (lamsOf e) e) with
+      | .true => consMap (StrMap.insert m (Str.ofString n) e) rest
+      | .false => consMap m rest
+def eappsL : ETm → List ETm → ETm
+  | f, .nil => f
+  | f, .cons a rest => eappsL (.app f a) rest
+def betaL : ETm → List ETm → ETm
+  | f, .nil => f
+  | f, .cons a rest => betaL (betaE f a) rest
+-- a global standing alone: a static object put in place
+def inlConst (t body : ETm) : ETm := match isNulE body with
+  | .true => body
+  | .false => t
+-- `h args`, `h` a global and `body` its definition if it is put in place (else `◾`)
+def inlApp (h : ETm) (args : List ETm) (body : ETm) : ETm :=
+  let k := lamsOf body;
+  match Nat.lt 0 k with
+  | .true => match Nat.le k (lenL args) with
+    | .true => eappsL (betaL body (takeL k args)) (dropL k args)
+    | .false => eappsL h args
+  | .false => eappsL h args
+mutual
+def inlE (m : StrMap ETm) (t : ETm) : ETm := match t with
+  -- (a string literal stays one, for `rcE`)
+  | .app f a => match stringConst t with
+    | .some _ => t
+    | .none => match spineE f (.cons a .nil) with
+      | .mk h args =>
+        let args2 := inlL m args;
+        match h with
+        | .glob g => inlApp h args2 (StrMap.findD m (Str.ofString g) .erased)
+        | _ => eappsL (inlE m h) args2
+  | .lam b => .lam (inlE m b)
+  | .letE v b => .letE (inlE m v) (inlE m b)
+  | .obj k fs => .obj k (inlEs m fs)
+  | .proj i x => .proj i (inlE m x)
+  | .case s bs => .case (inlE m s) (inlEs m bs)
+  | .prim op as => .prim op (inlEs m as)
+  | .glob g => inlConst t (StrMap.findD m (Str.ofString g) .erased)
+  | _ => t
+def inlEs (m : StrMap ETm) (ts : ETms) : ETms := match ts with
+  | .nil => .nil
+  | .cons t rest => .cons (inlE m t) (inlEs m rest)
+def inlL (m : StrMap ETm) (ts : List ETm) : List ETm := match ts with
+  | .nil => .nil
+  | .cons t rest => .cons (inlE m t) (inlL m rest)
+end
+def inlGlobals (m : StrMap ETm) : List Erased → List Erased
+  | .nil => .nil
+  | .cons (.mk n e) rest => .cons (.mk n (inlE m e)) (inlGlobals m rest)
 
 -- **Borrowed parameters** (as in Lean): a parameter of a global function that its body
 -- only reads (projections, a `case`'s tag, borrowed arguments of direct calls) is
@@ -1291,6 +1532,30 @@ def genProgram (gs : Globals) : List Doc := match gs with
 -- nor releases it. Found as a greatest fixed point: everything borrowed, then a
 -- parameter the body consumes (passes to an owned position, returns, stores, captures)
 -- made owned, until nothing changes.
+-- does `t` build an object (not inside a `λ`)?
+mutual
+def buildsE : ETm → Bool
+  | .obj _ fs => match fs with
+    | .nil => .false
+    | .cons _ _ => .true
+  | .app f a => match buildsE f with
+    | .true => .true
+    | .false => buildsE a
+  | .letE v b => match buildsE v with
+    | .true => .true
+    | .false => buildsE b
+  | .proj _ t => buildsE t
+  | .case s bs => match buildsE s with
+    | .true => .true
+    | .false => buildsEs bs
+  | .prim _ as => buildsEs as
+  | _ => .false
+def buildsEs : ETms → Bool
+  | .nil => .false
+  | .cons t rest => match buildsE t with
+    | .true => .true
+    | .false => buildsEs rest
+end
 mutual
 -- the variables (levels) `t` consumes, added to `acc`
 def consumed (sigs : StrMap (List Bool)) (d : Nat) (t : ETm) (acc : List Nat) : List Nat := match t with
@@ -1308,8 +1573,12 @@ def consumed (sigs : StrMap (List Bool)) (d : Nat) (t : ETm) (acc : List Nat) : 
   | .proj _ _ => match projRoot t with
     | .var _ => acc
     | root => consumed sigs d root acc
+  -- (a variable matched on where a branch builds an object is owned: its cell may be
+  -- reused, as Lean's borrow inference counts a `reset`)
   | .case s bs => consumedEs sigs d bs (match projRoot s with
-    | .var _ => acc
+    | .var j => match Bool.and (Nat.lt j d) (buildsEs bs) with
+      | .true => lvIns (d - 1 - j) acc
+      | .false => acc
     | _ => consumed sigs d s acc)
   | .letE v b => consumed sigs (d + 1) b (consumed sigs d v acc)
   | .lam _ => capLevels d (freeE t .nil) acc
@@ -1352,12 +1621,57 @@ inductive SigR where
 def sigsInit : StrMap (List Bool) → List Erased → StrMap (List Bool)
   | m, .nil => m
   | m, .cons (.mk n e) rest => sigsInit (StrMap.insert m (Str.ofString n) (allTrue (lamsOf e))) rest
+-- **Tail calls kept** (as Lean's `preserveTailCall`): a function calling itself in tail
+-- position with a borrowed parameter given something it would release after the call
+-- (a variable it owns, or a temporary) makes that parameter owned, so that nothing
+-- follows the call. `sig`: the function's signature from this round's `consumed` (not
+-- the previous round's, which would make the fixed point oscillate); `k` its arity;
+-- the result: the positions to make owned.
+def nthB : List Bool → Nat → Bool
+  | .nil, _ => .false
+  | .cons b rest, n => match n with
+    | .zero => b
+    | .succ m => nthB rest m
+-- the borrowed positions given anything but one of the function's borrowed parameters
+def tailArgPos (sig : List Bool) (k d : Nat) : Nat → List ETm → List Nat → List Nat
+  | _, .nil, acc => acc
+  | i, .cons a rest, acc => tailArgPos sig k d (i + 1) rest (match nthB sig i with
+    | .true => match a with
+      | .var j => match Bool.and (Nat.lt j d) (Nat.lt (d - 1 - j) k) with
+        | .true => match nthB sig (d - 1 - j) with
+          | .true => acc
+          | .false => lvIns i acc
+        | .false => lvIns i acc
+      | _ => lvIns i acc
+    | .false => acc)
+mutual
+def tailOwned (sig : List Bool) (f : String) (k : Nat) : Nat → ETm → List Nat → List Nat
+  | d, .letE _ b, acc => tailOwned sig f k (d + 1) b acc
+  | d, .case _ bs, acc => tailOwnedEs sig f k d bs acc
+  | d, .app g0 a0, acc => match spineE (.app g0 a0) .nil with
+    | .mk h args => match h with
+      | .glob g => match Bool.and (strEq g f) (Nat.beq (lenL args) k) with
+        | .true => tailArgPos sig k d 0 args acc
+        | .false => acc
+      | _ => acc
+  | _, _, acc => acc
+def tailOwnedEs (sig : List Bool) (f : String) (k : Nat) : Nat → ETms → List Nat → List Nat
+  | _, .nil, acc => acc
+  | d, .cons t rest, acc => tailOwnedEs sig f k d rest (tailOwned sig f k d t acc)
+end
+-- `sig` with the positions in `ps` owned
+def ownAt : List Bool → Nat → List Nat → List Bool
+  | .nil, _, _ => .nil
+  | .cons b rest, i, ps => .cons (match lvMem i ps with
+      | .true => .false
+      | .false => b) (ownAt rest (i + 1) ps)
 -- one round: every function's parameters, from the current signatures
 def sigsRound (old : StrMap (List Bool)) : StrMap (List Bool) → Nat → List Erased → SigR
   | m, c, .nil => .mk m c
   | m, c, .cons (.mk n e) rest =>
     let k := lamsOf e;
-    let sig := borSig (consumed old k (underLams k e) .nil) 0 k;
+    let sig0 := borSig (consumed old k (underLams k e) .nil) 0 k;
+    let sig := ownAt sig0 0 (tailOwned sig0 n k k (underLams k e) .nil);
     sigsRound old (StrMap.insert m (Str.ofString n) sig) (c + countTrue sig) rest
 partial def sigsFix (sigs : StrMap (List Bool)) (count : Nat) (es : List Erased) : StrMap (List Bool) :=
   match sigsRound sigs sigs 0 es with
@@ -1391,7 +1705,7 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
     let g := mangle n;
     let k := lamsOf e;
     match k with
-    | .zero => match rcE (.mk .nil sigs) st .nil 0 .nil e with
+    | .zero => match rcE (.mk .nil sigs .nil) st .nil 0 .nil e with
       | .mk code atom _ st1 =>
         genCodeRC sigs st1 (.cons (.t ("V get_" +++ g +++ "(void);")) protos)
           (.cons (.t ("static V g_" +++ g +++ "; static int i_" +++ g +++ "; static V init_" +++ g +++ "(void) { ") ⧺ code ⧺
@@ -1403,7 +1717,7 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
       let sig := match StrMap.findD sigs (Str.ofString n) .nil with
         | .nil => allFalse k
         | sg => sg;
-      match rcE (.mk (borLevels 0 sig) sigs) st names k .nil (markSelf n k sig (borLevels 0 sig) k (underLams k e)) with
+      match rcE (.mk (borLevels 0 sig) sigs .nil) st names k .nil (markSelf n k sig (borLevels 0 sig) k (underLams k e)) with
       | .mk code atom live st1 =>
         let ps := paramDecls 0 k;
         genCodeRC sigs st1 (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);")) protos)
@@ -1412,16 +1726,17 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++
              "); rt_root(&c); } inc(c); return c; }")) defs)) rest
 def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ => match eraseGlobals all .nil .nil (Array.size all) with
+  | .mk all _ _ => match eraseGlobals .true all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
-      let es := pushGlobals es0;
+      let es1 := pushGlobals es0;
+      let es := inlGlobals (consMap StrMap.empty es1) es1;
       let sigs : StrMap (List Bool) := match borrow with
         | .true => sigsFix (sigsInit StrMap.empty es) 0 es
         | .false => StrMap.empty;
-      match genCodeRC sigs (.mk .nil 0 (arities StrMap.empty es)) .nil .nil es with
+      match genCodeRC sigs (.mk .nil 0 (arities StrMap.empty es) .idle) .nil .nil es with
       | .mk protos defs st => match st with
-        | .mk fns _ _ =>
+        | .mk fns _ _ _ =>
           .cons (.t "#define WIZ_RC 1") (.cons (.t "#include \"rt.c\"") (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs
               (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }") .nil)))))
