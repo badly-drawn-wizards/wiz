@@ -89,9 +89,9 @@ def inductiveView (g : Globals R) (T : Name) : Option RVal := do
       let body := (List.range nΔ).foldl (fun t _ => match t with
         | .lam _ b => b
         | t => t) (descD.value.getD .tt)
-      match body with
-      | .darg _ (.enum ls) _ => some (nΔ, ls, false)
-      | _ => none
+      match body.descTag? with
+      | some (ls, _, _) => some (nΔ, ls, false)
+      | none => none
     | none =>
       let isSigma := match (Td.value.map fun v => (List.range tBinders.length).foldl (fun t _ => match t with
           | .lam _ b => b

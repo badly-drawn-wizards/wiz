@@ -196,6 +196,7 @@ partial def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VT
         ty := vInterp g l I D (nuFamilyAt l I D ((sizePred? s).getD .szInf)) i; acc := vOut g acc
       | .sfix l I D v P f s i, _ => ty := vApp g (vApp g P i) acc; acc := vSfix g l I D v P f s i acc
       | .scase l I D v P m s i, _ => ty := vApp g (vApp g P i) acc; acc := vScase g l I D v P m s i acc
+      | .down, .ulift _ A => ty := A; acc := vDown acc
       | _, _ => none
     pure ty
   | _ => none
@@ -209,7 +210,7 @@ partial def typeSort? (g : Globals R) (tys : Array (VTy R)) : VTy R → Option L
     return .imax (← typeSort? g tys A) (← typeSort? g (tys.push A) (Closure.inst g B (Val.var tys.size)))
   | .sigma _ _ A B _ => do
     return .max (← typeSort? g tys A) (← typeSort? g (tys.push A) (Closure.inst g B (Val.var tys.size)))
-  | .unit l | .empty l => some l
+  | .unit l | .empty l | .ulift l _ => some l
   | .qty | .enum _ | .size | .sizeLt _ => some 1
   | .desc l _ => some (.succ (.succ l))
   | .mu l .. | .nu l .. => some (.succ l)
@@ -250,6 +251,8 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
   let a := vNatView g a
   let b := vNatView g b
   let ty := whnf ty
+  -- (given) Q4: η at `ULift A` (a lifted proposition has one inhabitant)
+  if let .ulift l A := ty then l.equiv 0 || conv g tys A (vDown a) (vDown b) else
   --<sol
   if isProp g tys ty then true else
   let a := unCast a
@@ -324,6 +327,8 @@ partial def convTy (g : Globals R) (tys : Array (VTy R)) (a b : VTy R) : Bool :=
   if let some r := convGlued g tys a b then r || convTy g tys (whnf a) (whnf b) else
   let a := whnf a
   let b := whnf b
+  -- (given) Q4
+  if let (.ulift l A, .ulift l' A') := (a, b) then l.equiv l' && convTy g tys A A' else
   --<sol
   let v := Val.var tys.size
   match a, b with
@@ -457,6 +462,9 @@ partial def convNe (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option 
     | .out, .out, .nu l I D i s _ =>
       ty := vInterp g l I D (nuFamilyAt l I D ((sizePred? s).getD .szInf)) i
       acc := vOut g acc
+    | .down, .down, .ulift _ A =>
+      ty := A
+      acc := vDown acc
     | _, _, _ => none
   pure ty
   --|ex
