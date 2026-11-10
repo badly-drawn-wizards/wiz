@@ -223,6 +223,14 @@ def define (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) (val : Val R) : C
 
 def eval (ctx : Ctx R) (t : Term R) : Val R := Wiz.eval ctx.globals ctx.env t
 
+/-- `Closure.inst c (ctx.eval a)`, evaluating `a` only if `c`'s body mentions it.
+Evaluation is strict, and the codomain of a non-dependent Π (`List.cons : A → List A →
+List A`) doesn't need its argument: evaluating it anyway, at every application along a
+nested spine (a long list or string literal), would be quadratic in its length. -/
+def instArg (ctx : Ctx R) (c : Closure R) (a : Term R) : Val R :=
+  match c with
+  | .mk env body => Wiz.eval ctx.globals ((if body.hasVar 0 then ctx.eval a else .unit .zero) :: env) body
+
 /-- The types of the locals indexed by level, as `conv` wants them. -/
 def tys (ctx : Ctx R) : Array (VTy R) := ctx.types.reverse.toArray
 
@@ -326,7 +334,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
     let ua ← check ctx a A
-    let ub ← check ctx b (Closure.inst ctx.globals B (ctx.eval a))
+    let ub ← check ctx b (ctx.instArg B a)
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
   | t, .sizeLt s => do
@@ -445,7 +453,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | .pi _ _ q dom cod _ =>
       let q ← qtyPoly ctx q
       let ua ← check (if q.isConst? == some 0 then { ctx with erased := true } else ctx) a dom
-      pure (Closure.inst ctx.globals cod (ctx.eval a), uf + q • ua)
+      pure (ctx.instArg cod a, uf + q • ua)
     | _ => throw (.notAFunction (ctx.showTerm f) (ctx.showVal fty))
   | .letE x q tty val body => do
     let q ← checkQty ctx q
