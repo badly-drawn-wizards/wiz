@@ -85,7 +85,7 @@ would still be accepted:
 | `rfl` at a type or value equation, also under pairs, functions and data types | closed |
 | `refl X`, `cast e x`, `transp`, a tuple or look-alike against the type, `p.1` | closed (their types are unified in the elaborator's view) |
 | `exact`, `rfl` and other tactics that elaborate syntax; macros (they produce syntax) | closed (they go through the same rules) |
-| the tactic request `assign` with a term that still has holes | **open**: its type is inferred only when it has no holes |
+| the tactic request `assign` with a term that still has holes | closed: such a term is kept in the tactic state and its type is inferred and compared with its goal at the end of the `by` block (it was a real bypass: `K x ?n : Look Nat` for a goal `Pos Nat`) |
 | a hole solved by unification, whose solution is not type-checked by the elaborator | not audited |
 | the self-hosted frontend (`selfhost/Frontend.wiz`) | **open**: it parses `private` and ignores it |
 | inside the declaring module | by design: there the look-alike is the same type |

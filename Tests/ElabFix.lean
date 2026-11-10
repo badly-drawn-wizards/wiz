@@ -232,6 +232,19 @@ def group : Group where
         okPriv privMod2 "import Priv\ndef e : Tok = Tok := rfl\ndef j : Sig Nat = Sig Nat := rfl\ndef k : Acct = Acct := rfl"
         okPriv "" (privMod ++ "structure Look (A : Type) where\n  val : A\ndef e : Look Nat = Pos Nat := rfl\n" ++
           "def forge (x : Look Nat) : Pos Nat := cast e x\n#eval (forge (Look.mk 4)).val") ["4"] },
+    { name := "the tactic request assign: a term with holes is type-checked at the end of the block (13b)", run := fun _ => do
+        let tac (body : String) := "syntax (name := viaHole) \"viaHole\" : tactic\ndef Tactic.viaHole : Tactic := fun _ => do\n" ++
+          "  g ← TacticM.mainGoal;\n  ng ← TacticM.newGoal g (.const \"Nat\");\n  e ← TacticM.goalExpr ng;\n" ++
+          "  TacticM.assign g (" ++ body ++ ");\n  TacticM.replaceMainGoal (.cons ng .nil)\n" ++
+          "attribute [tactic tactic.viaHole] Tactic.viaHole\n"
+        -- `K x ?n : Look Nat` given to a goal `Pos Nat`: with the hole the type was never
+        -- inferred, and the kernel takes the look-alike for the private type
+        failsPriv privMod ("import Priv\nstructure Look (A : Type) where\n  val : A\n" ++
+          "def K (x : Look Nat) (n : Nat) : Look Nat := x\n" ++ tac "Expr.app (.app (.const \"K\") (.var 0)) e" ++
+          "def forge (x : Look Nat) : Pos Nat := by\n  viaHole\n  exact 0") "mismatch"
+        -- control: a term with a hole of the goal's type (what `apply` does)
+        okLib ("import Prelude\n" ++ tac "Expr.app (.const \"Nat.succ\") e" ++ "def three : Nat := by\n  viaHole\n  exact 2\n#eval three") ["3"]
+        okLib ("import Prelude\ndef ap : (A B : Type) → (A → B) → A → B := by\n  intro A; intro B; intro f; intro a\n  apply f\n  assumption") },
     { name := "rfl is checked by the elaborator, not left to the kernel (wishful: elab-rfl-unchecked)", run := fun _ => do
         failsLib "import Prelude\ndef w (r a : Nat) : r = Nat.succ a := rfl" "rfl: the two sides are not definitionally equal"
         failsLib "import Prelude\ndef z (a : Nat) : a = a + 0 := rfl" "rfl: the two sides are not definitionally equal"

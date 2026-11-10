@@ -2122,10 +2122,14 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (apply code (fld 2) (encodePair r₁ r₂))
   if tag == TacTag.assign then
     let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let mut st := st
     if t.mvars.isEmpty then
       match (← get).kernelInfer (gl.kernelCtx g) t with
       | .ok ty => unifyAt gl.ctx .missing gl.ty ty
       | .error e => throwAt info s!"assign: {e}"
+    else
+      -- with holes its type can't be inferred yet: at the end of the block (`elabBy`)
+      st := { st with unchecked := st.unchecked.push (gl, t) }
     unifyGoal gl t
     return ← runTac code info st (fld 2)
   if tag == TacTag.newGoal then
@@ -2183,6 +2187,15 @@ partial def elabBy (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM 
       if ← gl.isOpen then rest := rest.push (← gl.show)
   pushInfo (.tactic stx.info true #[(ctx, expected)] (← openGoals st))
   unless rest.isEmpty do throwAt ctx.info s!"unsolved goals:\n{"\n\n".intercalate rest.toList}" "unsolved-goals"
+  -- (13b) the terms `assign` took with holes: now that the holes are solved, their types
+  -- are inferred and compared with their goals here, in the elaborator's view (where a
+  -- type with a private constructor is opaque), not left to the kernel
+  for (gl, t) in st.unchecked do
+    let t ← zonk gl.ctx.lvl t
+    unless t.mvars.isEmpty do throwAt ctx.info "assign: the assigned term still has holes at the end of the tactic block"
+    match (← get).kernelInfer (gl.kernelCtx (← getGlobals)) t with
+    | .ok ty => unifyAt gl.ctx stx gl.ty ty
+    | .error e => throwAt ctx.info s!"assign: {e}"
   pure m
 
 end
