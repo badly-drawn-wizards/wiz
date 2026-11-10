@@ -20,15 +20,9 @@ def List.atL_indep {A : Type} (i j : Nat) (h : ¬ (i = j)) : PIndep (List.atL i)
 
 -- ## 2. The rest of `Lens.pair`'s laws
 --
--- lib/Optic.wiz proves `Lens.pair_getPut`. PutGet below is the proof that should check:
--- the goal `(x, y) = ab` (stuck: `ab` is a variable) must be compared with the computed
--- form `(x = ab.1) × (y = ab.2)` of the proof's type, which the elaborator's unifier
--- doesn't do (it reports a rigid mismatch).
+-- lib/Optic.wiz proves `Lens.pair_getPut` and `Lens.pair_putGet` (the latter with
+-- `castRefl`, through `Optic.pairEq`). PutPut below needs rewriting under the pair:
 
-def Lens.pair_putGet {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m)
-    (hi : Lens.Indep l m) : Lens.PutGet (Lens.pair l m) := fun s ab =>
-  ((Optic.trans (hi.2.1 ((l s).2 ab.1) ab.2) (hl.2.1 s ab.1),     -- wishful: unify-computed-equations
-    hm.2.1 ((l s).2 ab.1) ab.2))
 def Lens.pair_putPut {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m)
     (hi : Lens.Indep l m) : Lens.PutPut (Lens.pair l m) := fun s ab cd =>
   by rw [hi.2.2, hl.2.2, hm.2.2]                                  -- wishful: unify-computed-equations
