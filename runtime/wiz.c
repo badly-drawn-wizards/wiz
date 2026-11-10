@@ -457,9 +457,8 @@ WIZ_API wiz_val wiz_proj(wiz_val v, uint32_t i) {
     WIZ_SET(r, 0, wiz_nat_pred(v)); WIZ_SET(r, 1, u);
     return r;
   }
-  wiz_val f = ((wiz_ctor *)v)->fields[i];
-  wiz_inc(f);
-  return f;
+  /* borrowed: no new reference (the IR `dup`s it if it needs one) */
+  return ((wiz_ctor *)v)->fields[i];
 }
 
 /* `0` for an observed coinductive value, `1` for coit, `2` for scofix, `3` for a lazy
@@ -561,6 +560,29 @@ WIZ_API wiz_val wiz_reset(wiz_val x) {
     }
   }
   wiz_dec(x);
+  return WIZ_BOX(0);
+}
+
+/* drop specialisation (stage 8e): drop `x`, whose fields in `mask` were read and are
+   still needed. Unique: they move out (the others are dropped) and the cell is freed;
+   shared: they get a reference each and `x` is decremented. */
+WIZ_API wiz_val wiz_drop_moved(wiz_val x, wiz_val mask) {
+  if (WIZ_IS_SCALAR(x)) return WIZ_BOX(0);
+  wiz_hdr *h = (wiz_hdr *)x;
+  uint64_t m = WIZ_UNBOX(mask);
+  if (h->tag >= WIZ_TAG_FIRST_SPECIAL) { wiz_dec(x); return WIZ_BOX(0); }
+  wiz_val *fs = ((wiz_ctor *)x)->fields;
+  if (h->rc == 1) {
+    for (uint32_t i = 0; i < h->size; i++)
+      if (i >= 62 || !((m >> i) & 1)) wiz_dec(fs[i]);
+    wiz_live--;
+    wiz_untrack(h);
+    free(h);
+  } else {
+    for (uint32_t i = 0; i < h->size && i < 62; i++)
+      if ((m >> i) & 1) wiz_inc(fs[i]);
+    h->rc--;
+  }
   return WIZ_BOX(0);
 }
 
