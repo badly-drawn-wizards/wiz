@@ -2,8 +2,10 @@ import RsCore
 -- Lowering of drafts/rust/surface/02_push.wiz (rules: drafts/rust/LOWERING.md).
 
 -- fn push_twice {'a} (v : &'a mut Vec U64) (x : U64) : Unit
-def push_twice {ρ : Region} (v : Vec U64) (x : U64) : Result (Unit × Vec U64) :=
-  match Vec.push v x with             -- v.push x   (a reborrow of *v, handed back)
+-- (a call that only hands `&mut` arguments back moves the handle in and rebinds it,
+-- L17: no reborrow scope is needed)
+def push_twice {ρ : Region} (v : Uniq ρ (Vec U64)) (x : U64) : Result (Unit × Uniq ρ (Vec U64)) :=
+  match Vec.push v x with             -- v.push x   (the handle goes in and comes back)
   | .ok r =>
     let v := r.2;
     match Vec.push v x with           -- v.push x
@@ -17,7 +19,7 @@ def push_twice {ρ : Region} (v : Vec U64) (x : U64) : Result (Unit × Vec U64) 
 -- number of iterations left; the live mutable variable `v` is threaded)
 def fill.loop0 : Nat → U64 → Vec U64 → Result (Vec U64)
   | .zero, _, v => .ok v
-  | .succ k, i, v => match @push_twice Region.static v i with
+  | .succ k, i, v => match Uniq.borrow Region.static v (fun ρ h v r => push_twice r i) with   -- push_twice (&mut v) i
     | .ok r =>
       let v := r.2;
       fill.loop0 k (U64.mk (Nat.succ i.val)) v     -- i < n ≤ 2^64 - 1: no overflow check

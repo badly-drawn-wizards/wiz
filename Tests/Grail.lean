@@ -146,18 +146,23 @@ def pkgFiles : List (String × String) :=
    ("src/Demo/Three.wiz", "import Prelude\ndef three : Nat := 3\n"),
    ("app.wiz", "import Demo.Two\n#eval two + two\n")]
 
+/-- The binary id of the grail the tests run: this test driver (its jobs run as
+`<this test driver> --grail-job …`), by its hash, so a rebuilt driver doesn't reuse a
+package's `.grail/build` from an older one. -/
+def binId (tc : Toolchain) : IO UInt64 := Cache.binaryId tc.cacheDir
+
 /-- A runner for a package directory; its jobs run as `<this test driver> --grail-job …`,
 and its report goes to `log`. -/
 def runner (dir : System.FilePath) (tc : Toolchain) (pkg : Grail.Package) (jobs : Nat := 1)
     (log : IO.Ref String) : IO Grail.Runner := do
-  pure { ctx := { dir, std := "lib", tc, binId := 7, libRoots := Grail.libRootsOf dir pkg.targets },
+  pure { ctx := { dir, std := "lib", tc, binId := ← binId tc, libRoots := Grail.libRootsOf dir pkg.targets },
          stats := ← IO.mkRef {}, memo := ← IO.mkRef {}, jobs, self := ← IO.appPath,
          out := fun s => log.modify (· ++ s), err := fun s => log.modify (· ++ s) }
 
 /-- Run grail's build on a package directory; also returns the report. -/
 def buildLog (dir : System.FilePath) (tc : Toolchain) (only : List String := []) (jobs : Nat := 1)
     (timeoutMs : Option Nat := none) : IO (Grail.Stats × Bool × String) := do
-  match ← Grail.readConfig tc 7 "lib" dir with
+  match ← Grail.readConfig tc (← binId tc) "lib" dir with
   | .error e => throw (IO.userError e)
   | .ok (pkg, _) =>
     let log ← IO.mkRef ""
@@ -218,7 +223,7 @@ def grailGroup : Group where
     { name := "the build file is Wiz", run := fun _ => do
         let dir ← mkTree (pkgFiles ++ [("grail.local.wiz", "import Grail\ndef settings : Settings := Settings.empty |> Settings.set \"cflags\" \"-I \\\"x\\\"\"\n")])
         let cache ← IO.FS.createTempDir
-        match ← Grail.readConfig { cacheDir := some cache } 7 "lib" dir with
+        match ← Grail.readConfig { cacheDir := some cache } (← binId { cacheDir := some cache }) "lib" dir with
         | .error e => throw (IO.userError e)
         | .ok (pkg, localSettings) =>
           checkEq "demo" pkg.name
@@ -369,17 +374,17 @@ def setGrailWiz (dir : System.FilePath) (url rev : String) : IO Unit :=
 
 /-- `grail update`, in-process. -/
 def updateDeps (dir : System.FilePath) (tc : Toolchain) : IO (Except String (List Grail.Locked)) := do
-  match ← Grail.readConfig tc 7 "lib" dir with
+  match ← Grail.readConfig tc (← binId tc) "lib" dir with
   | .error e => pure (.error e)
-  | .ok (pkg, _) => Grail.update (fun d => do pure ((← Grail.readConfig tc 7 "lib" d).map (·.1))) dir pkg
+  | .ok (pkg, _) => Grail.update (fun d => do pure ((← Grail.readConfig tc (← binId tc) "lib" d).map (·.1))) dir pkg
 
 /-- `grail build`, with the dependencies' roots; also the notes. -/
 def buildDeps (dir : System.FilePath) (tc : Toolchain) : IO (Except String (Grail.Stats × Bool × String)) := do
-  match ← Grail.readConfig tc 7 "lib" dir with
+  match ← Grail.readConfig tc (← binId tc) "lib" dir with
   | .error e => pure (.error e)
   | .ok (pkg, _) =>
     let log ← IO.mkRef ""
-    match ← Grail.lockedRoots (fun d => do pure ((← Grail.readConfig tc 7 "lib" d).map (·.1))) dir pkg
+    match ← Grail.lockedRoots (fun d => do pure ((← Grail.readConfig tc (← binId tc) "lib" d).map (·.1))) dir pkg
         (fun s => log.modify (· ++ s)) with
     | .error e => pure (.error e)
     | .ok roots =>
@@ -530,7 +535,9 @@ def grailSelfhostGroup : Group where
   exercise := "Stage 23e"
   cases := [
     { name := "grail builds the self-hosted checker, the same program as the tests'", run := fun _ => do
-        let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
+        -- the suite's elaboration cache (`lake test -- --cache DIR`, as CI does), else a fresh one
+        let tc ← toolchain
+        let tc : Toolchain := { tc with cacheDir := some (← tc.cacheDir.getDM IO.FS.createTempDir) }
         let dir ← IO.FS.realPath "."
         let log ← IO.mkRef ""
         let target := Grail.Target.selfhost "selfhost-checker" "checker"

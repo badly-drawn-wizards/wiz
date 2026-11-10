@@ -49,6 +49,36 @@ cached between runs.
   equals its stage-2 C) runs weekly on `solutions`, or from "Run workflow" with
   `fixpoint` ticked. It takes a long time; run it locally with `nix develop -c
   scripts/fixpoint.sh`.
+* **The Nix package** (the `nix package` job): `nix build .#wiz` builds `wiz` and
+  `grail` with Lake and nixpkgs' Lean (the flake checks that it is the version in
+  `lean-toolchain`), and wraps them with the toolchain as flags (`--cc`, `--cflags`,
+  `--ldflags`, `--llc`, `--gc-cflags`, `--gc-ldflags`; flags you pass come later and
+  win) and, for `wiz`, the packaged standard library as a module root after `./lib`. CI
+  pushes it to the public Cachix cache `badlydrawnwizards` on pushes and on pull
+  requests from this repository (which have the token). The tests still use Lake, whose
+  artifact cache rebuilds only what changed.
+* **The Wiz build caches.** Each test shard keeps what the suite builds from Wiz
+  programs between runs: the elaboration cache (`lake test -- --cache ~/.cache/wiz …`),
+  `.grail`, and the self-hosted checker and compiler that the tests compile
+  (`/tmp/wiz-selfhost-*`). The cache key starts with a hash of everything the compiler
+  is made of (the `.lean` files, Lean, `flake.lock`), and partial hits only come from the
+  same compiler (the elaboration cache's own keys include the wiz binary's hash, but the
+  test driver's grail runs use a fixed binary id and the `/tmp` programs a timestamp).
+
+To run Wiz without a checkout or a Lean toolchain, with the binaries from Cachix:
+
+```
+nix run --option extra-substituters https://badlydrawnwizards.cachix.org \
+  --option extra-trusted-public-keys badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI= \
+  github:badly-drawn-wizards/wiz/solutions#wiz -- check hello.wiz
+```
+
+or `cachix use badlydrawnwizards` once and then `nix run
+github:badly-drawn-wizards/wiz/solutions#wiz -- …` (`#grail` for grail; `wiz build FILE
+-o OUT` works out of the box). Name the `solutions` branch: the default branch, `master`,
+is the exercise tree, whose `wiz` is mostly stubs. The `--option`s count only for a
+trusted Nix user (or with the cache in `nix.conf`); otherwise Nix builds wiz from source,
+which takes a few minutes.
 
 ## Stage 1: the core kernel
 
@@ -1986,6 +2016,45 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
   and a `cast` between such types gets stuck too.
 * A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
   parameters never count. Declare a `structure` instead.
+
+### 22g: regions: borrow checking as typing ✅
+
+```
+def longest {ρa ρb : Region} (0 h : Outlives ρa ρb) (x : Shr ρa U64) (y : Shr ρb U64) : Result (Shr ρb U64) :=
+  match U64.lt x.val y.val with
+  | .true => .ok y
+  | .false => .ok (Shr.weaken h x)                       -- without `h`: type mismatch
+def bad {ρ : Region} (x : Shr ρ U64) : Result (Shr ρ U64) :=
+  Shr.borrow ρ (U64.lit 5) (fun ρy hy y => .ok y)         -- E0515: type mismatch
+```
+
+`lib/Region.wiz` (`import Region`) is the lifetime layer of the Rust DSL's lowering
+(`drafts/rust/`, RD12). A lifetime is an erased `ρ : Region`, and the borrow handles are
+declared types, so with phantom parameters (22e) the region is part of their identity
+and is inferred: `Shr ρ A` (`&'a A`), `Uniq ρ A` (`&'a mut A` passed in and handed back),
+`Mut ρ A S` (a returned `&'a mut A` with its backward function to the lender `S`),
+`MutOpt ρ A S`, and `Lent ρ S`, the lender while it is borrowed. Borrow checking is
+typing:
+
+* A borrow scope (`Shr.borrow`, `Uniq.borrow`, `Uniq.reborrow`, `Uniq.share`,
+  `Uniq.zoom`, `Region.scope`) takes a body polymorphic in a fresh region, whose result
+  type is chosen outside it (as `runST`), so no handle of the scope's region can leave
+  it: returning a borrow of a local (E0515) or keeping one past its lender's scope
+  (E0597) is a type mismatch.
+* Inside a mutable borrow, the lender's name is rebound to a `Lent` token, which nothing
+  accepts: using the lender, or borrowing it again, while the borrow lives (E0499,
+  E0502) is a type mismatch.
+* A reference flows to a place of a shorter region only through `Shr.weaken`, which
+  takes an `Outlives ρ ρ'` proof (erased). Proofs come from scopes (a scope nested in `σ`
+  hands out `Outlives σ ρ`) and from a function's `'a : 'b` bounds (erased proof
+  arguments); `Outlives` is opaque, so there is no other way to get one.
+
+Scopes run their body at the enclosing region (regions are erased, so this is sound);
+the separation comes from parametricity alone. `drafts/rust/rejected/` has the classic
+errors, lowered, each rejected (`sh drafts/rust/check.sh`); test group `regions`.
+Not yet: the constructors of the handles are public (private-decls), so the guarantee
+holds for code that follows the lowering rules (the DSL front end), not for hand-written
+Wiz that forges a handle.
 
 ### 22h: one bit-vector family ✅
 
