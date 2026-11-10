@@ -1880,7 +1880,45 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   sides still contain an unsolved implicit width when it is computed gets stuck, so
   state facts about definitions). A word is still an
   object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
-  `implemented_by`.
+  `implemented_by` (22d).
+
+### 22d: native representations: unboxed words ✅
+
+`attribute [implemented_by mk get] T.mk` gives a type a **native representation** in
+compiled code. `T.mk` is a constructor with one runtime field (the others erased);
+`mk` has the constructor's type and `get` reads the field back. Erasure then never
+builds the model's object: a constructor becomes `mk`, and `match` (and the generic
+eliminators, which get the model's object back from `get`) reads the field with `get`.
+The kernel and every proof keep the model. As with function-level `implemented_by`,
+the natives are trusted, and the interpreters (`#eval`, `#run`) keep the model's
+objects when `mk` or `get` is foreign, so the tables below compare the two.
+
+`lib/Word.wiz` uses it for `UIntN w` and `IntN w` (and `NatObj`, a `Nat` passed to C
+as the runtime number itself, possibly big). **A word is its bits**:
+
+| bits b | representation | allocation |
+|---|---|---|
+| `b < 2^63` | a tagged scalar | none |
+| `2^63 ≤ b < 2^64` | a raw 64-bit box (`WIZ_TAG_RAW`) | one cell |
+| `b ≥ 2^64` (widths above 64) | a GMP number | as `Nat` |
+
+* **Width-independent.** The representation depends only on b, so generic code over
+  `UIntN w` (unknown `w`, any width: `BitVec n`, the HDL's `Unsigned n`) needs no width
+  to build or read a word, and each value has exactly one representation (equality is
+  a comparison of bits). `ofBits`/`toBits` convert from and to `Nat` (free below
+  `2^62`).
+* **Operations** are natives on that representation (`wiz_word_*` in `runtime/wiz.c`):
+  `ofNat`/`ofNeg`, `+ - *`, `div`/`mod`/`rem`, comparisons, `land`/`lor`/`xor`/`not`,
+  shifts and `testBit` (a shift or index of `2^64` or more counts as infinite),
+  `resize` (zero- or sign-extending), `toIntN`/`toUIntN` (free). Up to 64 bits each is
+  a few instructions on a `uint64_t`; the C backend pastes the runtime into the program,
+  so `cc -O2` inlines them.
+* **What is not unboxed.** A 64-bit value with the top bit set still takes a cell (the
+  uniform representation has 63 bits of payload). Unboxing those too needs per-variable
+  representations in the IR (raw `uint64_t` locals and parameters, boxed at polymorphic
+  boundaries, as Lean's `UInt64`): the next step, once a measurement says it pays.
+* **Self-hosted backend:** not yet (it runs the model; see the wishful note).
+
 ### 22e: phantom parameters ✅
 
 ```
