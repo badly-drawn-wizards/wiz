@@ -607,6 +607,9 @@ both false, by shape:
 propSort? A = propSort? B = true   ⟶  stuck (the cast is itself a proof, §8.6)                             [std: PT23, PLT25]
 Π/Π, quantities equal              ⟶  λx. cast (B₁ x̂) (B₂ x) (e.2 x) (t x̂),  x̂ = cast A₂ A₁ e.1 x  619–624 [std: PT22]
 Π/Π or Σ/Σ, quantities not known equal ⟶  stuck
+Π/Π or Σ/Σ, a sort not known (U5b)  ⟶  stuck: `propSort?` of either side is unknown (no annotation, or a
+                                       level with parameters), so the equation `e` proves is stuck (§8.3)
+                                       and is no pair to project
 Σ/Σ, quantities equal              ⟶  (c₁, cast (B₁ t.1) (B₂ c₁) (e.2 t.1) t.2),  c₁ = cast A₁ A₂ e.1 t.1   625–629 [std: PT22]
 Sort u/Sort w, Empty_u/Empty_w     ⟶  t if u ≡ w, else stuck                                         630
 Unit_u/Unit_w                      ⟶  tt if u ≡ w, else stuck                                        631

@@ -3095,6 +3095,41 @@ def selfHostGroup : Group where
         | .ok _ => throw (IO.userError "an ill-typed declaration was accepted")
         | .error (.unmarkedProof ..) => throw (IO.userError "the error of the first check was reported")
         | .error _ => pure () },
+    { name := "U5b: a cast at a Π/Σ whose sort is not known is stuck, as the equation it goes along is (both kernels)", run := fun _ => do
+        -- (prop-harness, `wiz-notes/soundness-probes/ph-u5b-cast-at-unknown-sort.txt`) the cast
+        -- used to compute, projecting a proof whose type is a stuck equation and no pair
+        let g : Globals ZeroOneMany := {}
+        let ω : Term ZeroOneMany := .qlit .many
+        let stuck (v : Val ZeroOneMany) : Bool := (whnf v) matches .neutral (.cast ..) #[]
+        -- (a) a level variable: T := True × Unit.{u}
+        let T : Term ZeroOneMany := .sigma "x" ω (.unit 0) (.unit (.param "u")) (some (.max .zero (.param "u")))
+        unless stuck (eval g [] (.cast T T (.reflTy T) (.pair .tt .tt))) do throw (IO.userError "(a) the cast computed")
+        -- at an instance it computes: `u := 1`
+        let T1 := T.instLevels ["u"] [Level.ofNat 1]
+        unless (whnf (eval g [] (.cast T1 T1 (.reflTy T1) (.pair .tt .tt)))) matches .pair .. do throw (IO.userError "(a) at u := 1 the cast is stuck")
+        -- (b) no annotation, on one side or on both: Unit → True
+        let F (s : Option Level) : Term ZeroOneMany := .pi "x" .default ω (.unit 1) (.unit 0) s
+        let e : Val ZeroOneMany := Val.var 0
+        let f : Val ZeroOneMany := Val.var 1
+        unless stuck (vCast g (eval g [] (F (some 0))) (eval g [] (F none)) e f) do throw (IO.userError "(b) the cast computed")
+        unless stuck (vCast g (eval g [] (F none)) (eval g [] (F none)) e f) do throw (IO.userError "(b') the cast computed")
+        -- with both sorts known and not propositions it computes (a λ), as before
+        let G : Term ZeroOneMany := .pi "x" .default ω (.unit 1) (.unit 1) (some 1)
+        unless (vCast g (eval g [] G) (eval g [] G) e f) matches .lam .. do throw (IO.userError "an annotated Π cast is stuck")
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def shape (v : Val) : String := match whnf v with\n  | .vne (.hcast _ _ _ _) .snil => \"stuck\"\n  | .vlam _ _ => \"lam\"\n  | .vpair _ _ => \"pair\"\n  | _ => \"other\"\n" ++
+          "def F : Val := eval .nil (.pi (.unit 0) .ptrue)\n" ++
+          "def FP : Val := eval .nil (.sorted (.lnum 0) (.pi (.unit 0) .ptrue))\n" ++
+          "def U : Val := eval .nil (.sorted (.lparam \"u\") (.pi (.unit 0) (.unit 0)))\n" ++
+          "def G : Val := eval .nil (.sorted (.lnum 1) (.pi (.unit 0) (.unit 0)))\n" ++
+          "def S : Val := eval .nil (.sigma .ptrue (.unit 0))\n" ++
+          "def main : IO Unit := do\n" ++
+          "  IO.println (shape (vCast FP F (fresh 0) (fresh 1)));\n" ++
+          "  IO.println (shape (vCast F F (fresh 0) (fresh 1)));\n" ++
+          "  IO.println (shape (vCast U U (fresh 0) (fresh 1)));\n" ++
+          "  IO.println (shape (vCast S S (fresh 0) (.vpair .vtt .vtt)));\n" ++
+          "  IO.println (shape (vCast G G (fresh 0) (fresh 1)))\n"
+        ioRun (kernel ++ "\n" ++ main) "stuck\nstuck\nstuck\nstuck\nlam\n" },
     { name := "P2 (R1): a level-generic term is marked at its level, and is a suspended proof at the instance 0 (both kernels)", run := fun _ => do
         -- k.{u} (A : Sort u) (a : A) : A := (fun x => x : A → A) a
         let ty : MTm := .pi (.sortParam "u") (.pi (.var 0) (.var 1))

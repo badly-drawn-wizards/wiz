@@ -482,6 +482,14 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
     an annotated convertible type computes. Options: mandatory sorts (the marking pass
     already fills in every sort it can compute, and the templates need theirs written),
     then relevance marks on binders (`prf-marker.md` §8).
+  * **U5b (found by the property harness, fixed).** `cast` at a `Π`/`Σ` whose sort is not
+    known (no annotation, or a level with parameters) used to compute by the `Π`/`Σ` rule,
+    projecting a proof `e` whose own type, the equation between the two types, is stuck
+    there and is no pair: the result was a term the kernel rejects, and at the level
+    instance `0` evaluation did not commute with instantiation. Now the cast is stuck
+    exactly when the equation is, in both kernels (test "U5b: …"); `Kernel.wiz`'s payload
+    types and the `hrec` field's `Π` carry their sorts so that casts on data compute as
+    before. No verdict in `lib/`, `examples/` or `selfhost/` changes.
   * **Open gap 2: the elaborator.** It evaluates terms it has not marked yet, and it
     evaluates a suspended proof when it reads a value back into a term (the kernel must
     be able to check that term again). The read-back runs within a **step budget**
