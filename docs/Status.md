@@ -164,8 +164,18 @@ the results of the probes listed in the "Probes" section.
   * group *inductive*: "Q4: …" cases for a proof field, the fields of `Prod.{u,v}`, a type
     in `Type 1` with an infinitary field over `Type` and with a lifted tag, and `#ir`
     unchanged by lifting.
-* **What remains.** Derived instances (`deriving`) for universe-polymorphic types are not
-  supported (unrelated to Q4). The subject-reduction argument is on paper (CoreSpec §4.1,
+* **Deriving** (README 7d, branch `agent/deriving-fix`). `deriving` used to fail on a
+  type with a proof field (it showed, compared and defaulted the proof: a unification
+  error at `BEq`, no `Repr`/`Inhabited` of a proposition) and on universe-polymorphic
+  types (an `inductive Box.{u} (A : Type u)` without a signature was put in `Type`, so its
+  field was lifted to a level below its own and the kernel rejected `Box.desc`; the
+  classes and instances were in `Type` only). Now reflection marks proof fields, the
+  derivers skip them, the classes take `Type u`, instances have universe parameters, and
+  a missing signature is the smallest `Type l` that holds the fields. Derivers see a
+  lifted field through `down` (the recursor's method gets the field at its own type).
+  Tests: group *deriving*, "deriving with proof fields …", "… universe-polymorphic type
+  …", "… a type above Type: lifted fields are seen through down (F5)".
+* **What remains.** The subject-reduction argument is on paper (CoreSpec §4.1,
   §9.1), not mechanised; the OTT rules for `ULift` are the standard ones for a one-field
   former and are **conjecture** in Wiz's combination like the rest of §8.
 

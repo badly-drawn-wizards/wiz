@@ -854,8 +854,8 @@ deriving instance Repr for Shape             -- after the fact
 * **Reflection** (`Elab/Reflect.lean`). `MacroM.getInductive T : MacroM (Option IndView)`
   describes an inductive type or structure: its parameters and indices
   (`ParamView`: name, binder kind, type), its constructors (`CtorView`: short name,
-  fields, the indices of its result), each field (`FieldView`: name, kind, type, and
-  whether it is recursive), and whether it is a structure. `MacroM.getType n` is the
+  fields, the indices of its result), each field (`FieldView`: name, kind, type,
+  whether it is recursive, and whether it is a proof), and whether it is a structure. `MacroM.getType n` is the
   type of any declaration. Types are **syntax**, printed with binder names and parsed
   back, so a macro can splice them; the facts come from the kernel's declarations
   (`T.desc`, `T.c`), so they also hold for declarations replayed from the cache.
@@ -909,9 +909,10 @@ inductive Box.{u} (A : Type u) where          -- Box : Type u → Type u (inferr
   the smallest `Type l` that holds its fields: `Box.{u} (A : Type u)` is in `Type u`
   (before, it was put in `Type` and rejected).
 * **Through `ULift`.** A field smaller than its type's universe is lifted in the
-  description (CoreSpec §4.1, F5 in docs/Status.md); the recursor a deriver eliminates with hands out `down`
-  of it, whose type is the field's own, so instance resolution sees `Nat`, not
-  `ULift Nat` (tested on a type in `Type 1` with a `Nat` field and a proof field).
+  description (CoreSpec §4.1, F5 in docs/Status.md); the recursor a deriver eliminates
+  with hands out `down` of it, whose type is the field's own, so instance resolution
+  sees `Nat`, not `ULift Nat` (tested on a type in `Type 1` with a `Nat` field and a
+  proof field).
 
 ## Stage 8: the backend
 
