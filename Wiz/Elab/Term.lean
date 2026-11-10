@@ -130,6 +130,17 @@ partial def trailingInst (lvl : Lvl) (ty : VTy R) : ElabM R Bool := do
   | .pi _ .implicit _ _ cod _ => trailingInst (lvl + 1) (← instM cod (Val.var lvl))
   | _ => pure false
 
+/-- Is `h` (not shadowed) a constructor with implicit parameters (`Fin.mk : {n} → …`)?
+Applied in check mode, it takes them from the expected type first (`checkApp`), so that
+an argument whose type mentions them (`.mk (Nat.succ i) h`) is checked against
+instantiated types. (Constructors are the inline declarations.) -/
+def ctorWithParams (ctx : LocalCtx R) (h : Syntax) : ElabM R Bool := do
+  unless h.isOfKind "term.ident" do return false
+  let some n := (h.getArg 0).getId? | return false
+  if (lookupLocal ctx n).isSome then return false
+  let some d := (← getGlobals).find? (stripScope n) | return false
+  return d.inline && d.type matches .pi _ .implicit ..
+
 /-- Names the elaborator treats as data primitives when applied (and not shadowed). -/
 def builtinNames : List Name :=
   ["Desc", "Desc.ret", "Desc.arg", "Desc.rec", "Desc.hrec", "Desc.elim", "Desc.interp", "Desc.All",
@@ -585,7 +596,7 @@ where
     | "term.paren" => check ctx (stx.getArg 1) expected
     | "term.app" =>
       if (stx.getArg 0).isOfKind "term.explicit" || (← builtinApp? ctx stx).isSome ||
-          !(stx.getArg 1).args.any needsExpected then
+          !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0))) then
         let (t, ty) ← infer ctx stx
         unifyAt ctx stx expected ty
         pure t
