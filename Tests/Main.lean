@@ -54,7 +54,7 @@ against them). -/
 def main (args : List String) : IO UInt32 := do
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--allocs" :: _ => true
+    | "--run" :: _ | "--check" :: _ | "--check-libs" :: _ | "--grail-job" :: _ | ["--list"] | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -69,6 +69,14 @@ def main (args : List String) : IO UInt32 := do
   | ["--check", mode, file] => do
     let input ← IO.FS.readFile file
     let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { globals := { regularity := Elab.regularityMode mode } }
+    let errs := s.messages.filter (·.severity == .error)
+    for m in errs do IO.eprintln (m.render input)
+    pure (if errs.isEmpty then 0 else 1)
+  -- check a file with every library importable, in a child process that the test can
+  -- time out: `Elab.failsLibsWithin`
+  | ["--check-libs", file] => do
+    let input ← IO.FS.readFile file
+    let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { trustedModule := libModule, loader := ← Elab.libLoader }
     let errs := s.messages.filter (·.severity == .error)
     for m in errs do IO.eprintln (m.render input)
     pure (if errs.isEmpty then 0 else 1)

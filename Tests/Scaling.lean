@@ -39,6 +39,14 @@ def wideStructure (n : Nat) : String :=
   s!"def x : S := S.mk {" ".intercalate ((List.range n).map fun _ => "N.z")}\n" ++
   s!"def y : N := x.f{n - 1}\n"
 
+/-- `H₁ ⋆ (… ⋆ (Hₙ ⋆ (p ↦ a))) ⊢ H₁ ⋆ (… ⋆ (Hₙ ⋆ (p ↦ b)))` "proved" by reflexivity: the
+mismatch is at the far end of the chain. -/
+def wrongStarChain (n : Nat) : String :=
+  let hs := (List.range n).map (s!"H{·}")
+  let chain (last : String) := hs.foldr (fun h acc => s!"{h} ⋆ ({acc})") last
+  s!"import HProp\ndef bad (p a b : Nat) ({" ".intercalate hs} : HProp Nat) :\n  {chain "p ↦ a"} ⊢ {chain "p ↦ b"} :=\n" ++
+  s!"  Entails.refl ({chain "p ↦ a"})\n"
+
 /-- A class with `n` methods shaped like the HDL's `Hw` (an implicit index, two
 arguments), and an instance given by `where`. -/
 def wideClass (n : Nat) : String :=
@@ -131,6 +139,11 @@ def group : Group where
         checksWithin 60 (wideStructure 64) },
     { name := "a class with 48 Hw-like methods and an instance (was exponential: 16 took 4 s)", run := fun _ =>
         checksWithin 60 (wideClass 48) },
+    -- a failed unification of glued definitions tried every order of unfolding, and the
+    -- same comparisons again under the fresh variables of each unfolded `Ex`: a wrong
+    -- `⋆` law took minutes to be rejected
+    { name := "a wrong law about a chain of 16 ⋆ is rejected (was exponential: one ⋆ took over 120 s)", run := fun _ =>
+        Tests.Elab.failsLibsWithin 60 (wrongStarChain 16) "mismatch" },
     -- the kernel's application and pair rules, and erasure's spines, evaluated every
     -- argument for the codomain, which a non-dependent Π doesn't mention: O(n²) on a
     -- nested spine (4000 characters: 32 s to build)

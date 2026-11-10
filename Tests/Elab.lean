@@ -3372,6 +3372,23 @@ def failsLibs (input : String) (fragment : String) : IO Unit := do
   unless (errs[0]!.splitOn fragment).length > 1 do
     throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
 
+/-- Rejected within `secs` seconds, with an error mentioning `fragment`, with every library
+importable: checked in a child process (`tests --check-libs`) that a regression times out
+instead of hanging the suite (address space capped at 8 GB, like `Scaling.checksWithin`). -/
+def failsLibsWithin (secs : Nat) (input : String) (fragment : String) : IO Unit := do
+  let dir ← IO.FS.createTempDir
+  let file := dir / "input.wiz"
+  IO.FS.writeFile file input
+  let self ← IO.appPath
+  let out ← IO.Process.output { cmd := "sh", args := #["-c",
+    s!"ulimit -v 8000000; exec timeout {secs} \"$0\" --check-libs \"$1\"", self.toString, file.toString] }
+  IO.FS.removeDirAll dir
+  if out.exitCode == 124 then throw (IO.userError s!"not rejected within {secs} s")
+  unless out.exitCode == 1 do
+    throw (IO.userError s!"expected an error; exit code {out.exitCode}: {(out.stdout ++ out.stderr).take 1500}")
+  unless (out.stderr.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{out.stderr.take 1500}")
+
 /-- Build `main` with the C backend, with every library importable. -/
 def cRunLibs (src : String) (expected : String) : IO Unit := do
   let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
@@ -3536,10 +3553,22 @@ def seplogicGroup : Group where
           "def t3 (H₁ H₂ : HProp Nat) : H₁ ⋆ (H₁ −∗ H₂) ⊢ H₂ := wand.cancel H₁ H₂\n" ++
           "def t4 : (1 ↦ 5) ⋆ (1 ↦ 6) ⊢ @hpure Nat False := pts.same_loc 1 5 6") },
     { name := "a law that doesn't hold has no proof", run := fun _ => do
-        -- (small ones: a wrong law about `⋆` is rejected too, but only after minutes of
-        -- unfolding; wishful slow-failing-unification)
         failsLibs "import HProp\ndef bad : (1 ↦ 5) ⊢ (1 ↦ 6) := Entails.refl (1 ↦ 5)" "mismatch"
-        failsLibs "import HProp\ndef bad : @emp Nat ⊢ hpure False := Entails.refl emp" "mismatch" },
+        failsLibs "import HProp\ndef bad : @emp Nat ⊢ hpure False := Entails.refl emp" "mismatch"
+        -- a wrong rearrangement of a `⋆` chain, the mismatch at the far end (each `⋆` is
+        -- four definitions deep: this used to unfold for minutes before failing)
+        failsLibsWithin 60 ("import Hoare\n" ++
+          "def bad (p a b : Nat) (H K J : HProp Nat) : H ⋆ (K ⋆ (J ⋆ (p ↦ a))) ⊢ K ⋆ (H ⋆ (J ⋆ (p ↦ b))) :=\n" ++
+          "  star.swap H K (J ⋆ (p ↦ a))") "mismatch" },
+    { name := "a wrong specification is rejected, quickly", run := fun _ => do
+        -- swap's specification with the postcondition of the identity
+        failsLibsWithin 60 ("import Hoare\n" ++
+          "def bad (p q a b : Nat) : Triple ((p ↦ a) ⋆ (q ↦ b)) (Prog.swap p q) (fun _ => (p ↦ a) ⋆ (q ↦ b)) :=\n" ++
+          "  Prog.swap_spec p q a b") "mismatch"
+        -- a wrong value read back
+        failsLibsWithin 60 ("import Hoare\n" ++
+          "def bad (l : Nat) : Triple (l ↦ 1) (Prog.read l) (fun r => hpure (r = 2) ⋆ (l ↦ 1)) :=\n" ++
+          "  Triple.read l 1") "mismatch" },
     { name := "wp is a monotone, frame-preserving monad morphism; the triple rules", run := fun _ =>
         okLibs ("import Hoare\n" ++
           "def t1 (c : Prog Nat Nat) (f : Nat → Prog Nat Nat) : wp (Prog.bind c f) = W.bind (wp c) (fun a => wp (f a)) := wp.bind c f\n" ++
