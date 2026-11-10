@@ -149,15 +149,6 @@ partial def sizeBelow (tys : Array (VTy R)) (a b : Val R) : Bool :=
     | _ => false
   | _ => sizeLe tys (.szSuc a) b
 
-/-- The predecessor of a size, for `con`/`cocon`/`out`: `↑s ↦ s`, `∞ ↦ ∞`; `none`
-for a size variable, which can't be built from or observed. -/
-partial def sizePred? : Val R → Option (Val R)
-  | .unfold _ _ _ v => sizePred? v.get
-  | .lazyInd _ _ _ _ _ _ _ _ _ v => sizePred? v.get
-  | .szInf => some .szInf
-  | .szSuc s => some s
-  | _ => none
-
 /-- `f : (s : Size) → ((j : Size< s) → (i : I) → (y : μ^j D i) → P i y) → (i : I) → (x : μ^s D i) → P i x` -/
 def sfixFunTy (g : Globals R) (l : Level) (I D P : Val R) (w : R) : VTy R :=
   let pi (x : Name) (a b : Term R) : Term R := .pi x .default (.qlit w) a b none
