@@ -49,6 +49,7 @@
                   ./lakefile.toml ./lake-manifest.json ./lean-toolchain
                   ./Main.lean ./Wiz.lean ./Wiz ./Grail.lean ./Grail
                   ./runtime # embedded with include_str
+                  ./c # linked into the executables (moreLinkObjs)
                 ];
               };
               nativeBuildInputs = [ lean ];
@@ -92,8 +93,9 @@
               makeWrapper $share/.lake/build/bin/wiz $out/bin/wiz \
                 --prefix PATH : ${lib.makeBinPath [ pkgs.coreutils ]} \
                 --add-flags ${addFlags (tcFlags ++ [ "-I" "${placeholder "out"}/share/wiz/lib" ])}
+              # grail: git fetches dependencies (stage 23h)
               makeWrapper $share/.lake/build/bin/grail $out/bin/grail \
-                --prefix PATH : ${lib.makeBinPath [ pkgs.coreutils ]} \
+                --prefix PATH : ${lib.makeBinPath [ pkgs.coreutils pkgs.git ]} \
                 --add-flags ${addFlags tcFlags}
             '';
             meta = {

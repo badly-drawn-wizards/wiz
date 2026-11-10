@@ -62,8 +62,8 @@ cached between runs.
   `.grail`, and the self-hosted checker and compiler that the tests compile
   (`/tmp/wiz-selfhost-*`). The cache key starts with a hash of everything the compiler
   is made of (the `.lean` files, Lean, `flake.lock`), and partial hits only come from the
-  same compiler: wiz's own keys are content hashes plus a hand-bumped salt, so they
-  can't tell two elaborators apart.
+  same compiler (the elaboration cache's own keys include the wiz binary's hash, but the
+  test driver's grail runs use a fixed binary id and the `/tmp` programs a timestamp).
 
 To run Wiz without a checkout or a Lean toolchain, with the binaries from Cachix:
 

@@ -79,7 +79,7 @@ jobs:
         run: |
           echo "key=lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
           # what identifies the compiler and test driver (and the C toolchain they use)
-          echo "compiler=${{ hashFiles('flake.lock', 'flake.nix', 'lean-toolchain', 'lake-manifest.json', 'lakefile.toml', '**/*.lean', 'runtime/**') }}" >> "$GITHUB_OUTPUT"
+          echo "compiler=${{ hashFiles('flake.lock', 'flake.nix', 'lean-toolchain', 'lake-manifest.json', 'lakefile.toml', '**/*.lean', 'runtime/**', 'c/**') }}" >> "$GITHUB_OUTPUT"
       - name: Cache the Lake build
         uses: actions/cache@v4
         with:
@@ -126,11 +126,11 @@ jobs:
       # What the suite builds from Wiz programs, kept between runs: the elaboration cache
       # (`--cache`, which the grail-selfhost test uses), grail's `.grail` (the test's
       # build of the self-hosted checker) and the self-hosted checker and compiler that
-      # Tests/Elab.lean compiles under /tmp. None of them knows which elaborator made its
-      # entries (wiz's keys have a hand-bumped salt, the test runner's grail key is a
-      # constant), so the key starts with the compiler's inputs and restore-keys never
-      # cross compilers; within one compiler, entries are content-addressed, so a partial
-      # hit (other Wiz files) is safe.
+      # Tests/Elab.lean compiles under /tmp. The elaboration cache's keys include the wiz
+      # binary's hash, but the test runner's grail key has a constant binary id and the
+      # /tmp programs a timestamp, so the key starts with the compiler's inputs and
+      # restore-keys never cross compilers; within one compiler, entries are
+      # content-addressed, so a partial hit (other Wiz files) is safe.
       - name: Restore the Wiz build caches
         id: wiz-cache
         uses: actions/cache/restore@v4
