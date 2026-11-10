@@ -8,7 +8,7 @@
   # The packages: `wiz` (the default; it has `grail` too), built with Lake and the Lean
   # of nixpkgs (which must be the version in `lean-toolchain`), and wrapped with this
   # toolchain as flags. CI pushes them to the Cachix cache `badlydrawnwizards`; see
-  # "Continuous integration" in README.md for `nix run`.
+  # docs/building.md for `nix run`.
   description = "Wiz: a didactic dependently typed language";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
