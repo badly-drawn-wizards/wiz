@@ -483,7 +483,7 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
   let mut todo := roots.toArray
   -- definitions registered as native operations
   let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && !key.startsWith "repr:" &&
-    !key.startsWith "cstruct:" &&
+    !key.startsWith "cstruct:" && !key.startsWith "seal:" &&
     key != inlineKey
   -- native representations (stage 22d): the interpreters keep the model's objects when
   -- the conversions are foreign functions

@@ -797,6 +797,30 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let added := s.globals.order.extract before s.globals.order.size
       { s with globals := { s.globals with
           privates := added.foldl (fun m n => m.insert n s.module) s.globals.privates } }
+  | "command.sealed" =>
+    -- (22j) `sealed inductive T …`: declare the seal, an axiom `T.seal✝ : Type` private to
+    -- this module; `elabInductive` then puts it in `T`'s index tail. Only this
+    -- declaration can write the name, and a constant is compared by name, so no other
+    -- declaration is convertible to `T`.
+    let inner := cmd.getArg 1
+    if !inner.isOfKind "command.inductive" then
+      report .error cmd.info "`sealed` applies to an `inductive` declaration"
+    else
+      let T := ((inner.getArg 1).getId?).getD "_"
+      if s.globals.contains T then
+        report .error (inner.getArg 1).info s!"'{T}' has already been declared"
+      else
+        match addDeclSorted s.globals { name := sealName T, levelParams := [], type := .sort 1, value := none } with
+        | .error e => report .error cmd.info s!"kernel rejected {sealName T}: {e}"
+        | .ok g =>
+          let g := { g with privates := g.privates.insert (sealName T) s.module,
+                            builtins := (sealKey T, sealName T) :: g.builtins }
+          modify fun s => { s with globals := g, builtins := (sealKey T, sealName T) :: s.builtins }
+          elabCommand inner
+          -- the description mentions the seal: written out elsewhere (`μ (T.desc …) i`)
+          -- it would hand the name to unification, so it is private too
+          modify fun s => { s with globals := { s.globals with
+            privates := s.globals.privates.insert (T ++ ".desc") s.module } }
   | "command.def" | "command.axiom" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?

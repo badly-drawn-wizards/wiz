@@ -359,6 +359,15 @@ def structTailName : Name := "fields✝"
 /-- The marker's domain, `Enum [fields✝]`. -/
 def structTailDom {R : Type} : Term R := .enum [structTailName]
 
+/-- The **seal** of a `sealed inductive T` (stage 22j): an axiom `T.seal✝ : Type`, private
+to `T`'s module, that `T`'s index tail mentions (`(0 phantom✝ : T.seal✝) → … → Unit`,
+like a phantom type parameter, 22e). A constant without a value is compared by name, so
+a declaration of the same shape that can't write the name is not convertible to `T`. -/
+def sealName (T : Name) : Name := T ++ ".seal✝"
+
+/-- The registration of a seal, `seal:T` (with the seal's name), among the builtins. -/
+def sealKey (T : Name) : Name := "seal:" ++ T
+
 /-- A binder name of a phantom tail (`phantomName` or `structTailName`). -/
 def isPhantomName (x : Name) : Bool := x == phantomName || x == structTailName
 
