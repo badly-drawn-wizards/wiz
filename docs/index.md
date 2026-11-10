@@ -51,3 +51,7 @@ topic below, so the numbers are not in order.
 
 * [Stage 22: numbers for hardware and systems code](stages/22-numbers.md)
 * [Libraries](libraries.md)
+
+### Verification
+
+* [Stage 24: separation logic](stages/24-separation-logic.md)

@@ -221,6 +221,10 @@ def star.emp_l_intro {V : Type} (0 H : HProp V) : H ⊢ emp ⋆ H := fun h p =>
   star.intro emp H h Heap.empty h (Heap.disj_empty_l h, (Heap.symm (Heap.union_empty_l h), (rfl, p)))
 def star.emp_l {V : Type} (0 H : HProp V) : emp ⋆ H = H :=
   Entails.antisym (star.emp_l_entails H) (star.emp_l_intro H)
+def star.emp_r_intro {V : Type} (0 H : HProp V) : H ⊢ H ⋆ emp :=
+  Entails.trans (star.emp_l_intro H) (star.comm_entails emp H)
+def star.emp_r_entails {V : Type} (0 H : HProp V) : H ⋆ emp ⊢ H :=
+  Entails.trans (star.comm_entails H emp) (star.emp_l_entails H)
 def star.emp_r {V : Type} (0 H : HProp V) : H ⋆ emp = H :=
   @Eq.trans (HProp V) (star H (@emp V)) (star (@emp V) H) H (star.comm H (@emp V)) (star.emp_l H)
 

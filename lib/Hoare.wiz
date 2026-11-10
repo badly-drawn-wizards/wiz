@@ -1,0 +1,519 @@
+import HProp
+-- Hoare triples over a model heap, with the frame rule (stage 24c).
+--
+-- The presentation is SLF's (Software Foundations vol. 6, chapters WPsem and WPgen): a
+-- weakest precondition `wp c Q` for each command, triples defined from it, and the
+-- structural rules derived. It is shaped as an instance of *Dijkstra monads for all*
+-- (Maillard et al., ICFP 2019), so that other effects can be added later without changing
+-- the logic:
+--
+-- * the computational monad is `Prog V`, a tree of heap operations (a free monad: an
+--   action tree in the sense of SteelCore, Swamy et al., ICFP 2020, with the
+--   continuations in the nodes);
+-- * the specification monad is `W V A := (A → HProp V) → HProp V`, predicate transformers
+--   over heap predicates, ordered by `w₁ ≤ w₂ := ∀ Q, w₂ Q ⊢ w₁ Q` (DM4All §3.1: `w₂` is
+--   the weaker specification), restricted to monotone ones (`W.Mono`), and for separation
+--   logic also to frame-preserving ones (`W.Frame`, SteelCore §3.2's `preserves_frame`
+--   at the level of transformers);
+-- * the effect observation `wp : Prog V A → W V A` is a monad morphism (DM4All
+--   Definition 1): `wp.ret` holds by computation, `wp.bind_l`/`wp.bind_r` by induction;
+-- * a triple is `{P} c {Q} := P ⊢ wp c Q`, i.e. `c` lies in the Dijkstra monad at the
+--   specification `fun Q' => P ⋆ …` (we don't build `D A w` as a type: the triples are
+--   all the examples need).
+--
+-- The structural rules follow from the monad laws, monotonicity and frame preservation.
+-- `adequacy` ties `wp` to an interpreter `Prog.run` on concrete heaps: if `wp c Q` holds
+-- of the heap, running `c` doesn't fault and ends in a heap satisfying `Q`. Every proof is
+-- checked by the kernel; nothing here is an axiom.
+--
+-- Programs are total, so a loop takes fuel; running out is a fault (`Prog.fail`), and
+-- `wp Prog.fail Q = \[False]`, so a proved triple also proves there was enough fuel.
+
+-- ## The computational monad: a tree of heap operations
+
+inductive Prog (V A : Type) where
+  | ret (a : A)
+  | get (l : Nat) (k : V → Prog V A)
+  | set (l : Nat) (v : V) (k : Prog V A)
+  | alloc (v : V) (k : Nat → Prog V A)
+  | free (l : Nat) (k : Prog V A)
+  | fail
+
+def Prog.bind {V A B : Type} : Prog V A → (A → Prog V B) → Prog V B
+  | .ret a, f => f a
+  | .get l k, f => .get l (fun v => Prog.bind (k v) f)
+  | .set l v k, f => .set l v (Prog.bind k f)
+  | .alloc v k, f => .alloc v (fun l => Prog.bind (k l) f)
+  | .free l k, f => .free l (Prog.bind k f)
+  | .fail, f => .fail
+instance {V : Type} : Monad (Prog V) where
+  pure := fun a => Prog.ret a
+  bind := Prog.bind
+
+-- the operations, each returning its answer
+def Prog.read {V : Type} (l : Nat) : Prog V V := .get l (fun v => .ret v)
+def Prog.write {V : Type} (l : Nat) (v : V) : Prog V Unit := .set l v (.ret ())
+def Prog.ref {V : Type} (v : V) : Prog V Nat := .alloc v (fun l => .ret l)
+def Prog.dispose {V : Type} (l : Nat) : Prog V Unit := .free l (.ret ())
+
+-- ## The specification monad: predicate transformers over heap predicates
+
+def W (V A : Type) : Type := (A → HProp V) → HProp V
+def W.ret {V A : Type} (a : A) : W V A := fun Q => Q a
+def W.bind {V A B : Type} (w : W V A) (f : A → W V B) : W V B := fun Q => w (fun a => f a Q)
+-- `w₁ ≤ w₂`: `w₂` is weaker (asks more of the initial heap)
+def W.le {V A : Type} (w₁ w₂ : W V A) : Prop := (0 Q : A → HProp V) → (w₂ Q ⊢ w₁ Q)
+-- monotone: a weaker postcondition needs a weaker precondition
+def W.Mono {V A : Type} (w : W V A) : Prop :=
+  (0 Q Q' : A → HProp V) → ((a : A) → (Q a ⊢ Q' a)) → (w Q ⊢ w Q')
+-- frame-preserving: whatever is separate from the precondition survives to the post
+def W.Frame {V A : Type} (w : W V A) : Prop :=
+  (0 Q : A → HProp V) → (0 H : HProp V) → (w Q ⋆ H ⊢ w (fun a => Q a ⋆ H))
+
+-- The monad laws hold by computation.
+def W.ret_bind {V A B : Type} (a : A) (f : A → W V B) : @W.bind V A B (@W.ret V A a) f = f a := refl (f a)
+def W.bind_ret {V A : Type} (w : W V A) : @W.bind V A A w (fun a => @W.ret V A a) = w := refl w
+def W.bind_assoc {V A B C : Type} (w : W V A) (f : A → W V B) (g : B → W V C) :
+    @W.bind V B C (@W.bind V A B w f) g = @W.bind V A C w (fun a => @W.bind V B C (f a) g) :=
+  refl (@W.bind V A C w (fun a => @W.bind V B C (f a) g))
+-- `bind` is monotone in both arguments (DM4All §3.1), given a monotone first argument
+def W.bind_le {V A B : Type} (0 w₁ w₁' : W V A) (0 f f' : A → W V B) (mw : W.Mono w₁)
+    (l₁ : W.le w₁ w₁') (l₂ : (a : A) → W.le (f a) (f' a)) : W.le (W.bind w₁ f) (W.bind w₁' f') :=
+  fun Q => Entails.trans (l₁ (fun a => f' a Q)) (mw (fun a => f' a Q) (fun a => f a Q) (fun a => l₂ a Q))
+
+-- ## The operations' predicate transformers (SLF, WPsem: wp_get, wp_set, wp_ref, wp_free)
+
+def W.get {V : Type} (l : Nat) (X : V → HProp V) : HProp V :=
+  hexists (fun (v : V) => (l ↦ v) ⋆ ((l ↦ v) −∗ X v))
+def W.set {V : Type} (l : Nat) (v : V) (X : HProp V) : HProp V :=
+  hexists (fun (w : V) => (l ↦ w) ⋆ ((l ↦ v) −∗ X))
+def W.alloc {V : Type} (v : V) (X : Nat → HProp V) : HProp V :=
+  hforall (fun (l : Nat) => (l ↦ v) −∗ X l)
+def W.free {V : Type} (l : Nat) (X : HProp V) : HProp V :=
+  hexists (fun (w : V) => (l ↦ w) ⋆ X)
+
+-- each is monotone in its continuation
+def W.get_mono {V : Type} (l : Nat) {0 X Y : V → HProp V} (m : (v : V) → (X v ⊢ Y v)) : W.get l X ⊢ W.get l Y :=
+  hexists.elim (fun v => hexists.intro (fun (w : V) => (l ↦ w) ⋆ ((l ↦ w) −∗ Y w)) v
+    (star.mono_r (l ↦ v) (wand.mono (Entails.refl (l ↦ v)) (m v))))
+def W.set_mono {V : Type} (l : Nat) (v : V) {0 X Y : HProp V} (m : X ⊢ Y) : W.set l v X ⊢ W.set l v Y :=
+  hexists.elim (fun w => hexists.intro (fun (w' : V) => (l ↦ w') ⋆ ((l ↦ v) −∗ Y)) w
+    (star.mono_r (l ↦ w) (wand.mono (Entails.refl (l ↦ v)) m)))
+def W.alloc_mono {V : Type} (v : V) {0 X Y : Nat → HProp V} (m : (l : Nat) → (X l ⊢ Y l)) : W.alloc v X ⊢ W.alloc v Y :=
+  hforall.intro (fun l => Entails.trans (hforall.elim (fun (l' : Nat) => (l' ↦ v) −∗ X l') l)
+    (wand.mono (Entails.refl (l ↦ v)) (m l)))
+def W.free_mono {V : Type} (l : Nat) {0 X Y : HProp V} (m : X ⊢ Y) : W.free l X ⊢ W.free l Y :=
+  hexists.elim (fun w => hexists.intro (fun (w' : V) => (l ↦ w') ⋆ Y) w (star.mono_r (l ↦ w) m))
+
+-- and each lets a frame in
+def W.get_frame {V : Type} (l : Nat) (0 X : V → HProp V) (0 H : HProp V) :
+    W.get l X ⋆ H ⊢ W.get l (fun v => X v ⋆ H) :=
+  Entails.trans (star.exists_l_entails (fun (v : V) => (l ↦ v) ⋆ ((l ↦ v) −∗ X v)) H)
+    (hexists.elim (fun v => hexists.intro (fun (w : V) => (l ↦ w) ⋆ ((l ↦ w) −∗ X w ⋆ H)) v
+      (Entails.trans (star.assoc_l (l ↦ v) ((l ↦ v) −∗ X v) H)
+        (star.mono_r (l ↦ v) (wand.frame (l ↦ v) (X v) H)))))
+def W.set_frame {V : Type} (l : Nat) (v : V) (0 X : HProp V) (0 H : HProp V) :
+    W.set l v X ⋆ H ⊢ W.set l v (X ⋆ H) :=
+  Entails.trans (star.exists_l_entails (fun (w : V) => (l ↦ w) ⋆ ((l ↦ v) −∗ X)) H)
+    (hexists.elim (fun w => hexists.intro (fun (w' : V) => (l ↦ w') ⋆ ((l ↦ v) −∗ X ⋆ H)) w
+      (Entails.trans (star.assoc_l (l ↦ w) ((l ↦ v) −∗ X) H)
+        (star.mono_r (l ↦ w) (wand.frame (l ↦ v) X H)))))
+def W.alloc_frame {V : Type} (v : V) (0 X : Nat → HProp V) (0 H : HProp V) :
+    W.alloc v X ⋆ H ⊢ W.alloc v (fun l => X l ⋆ H) :=
+  Entails.trans (star.forall_l (fun (l : Nat) => (l ↦ v) −∗ X l) H)
+    (hforall.intro (fun l => Entails.trans (hforall.elim (fun (l' : Nat) => ((l' ↦ v) −∗ X l') ⋆ H) l)
+      (wand.frame (l ↦ v) (X l) H)))
+def W.free_frame {V : Type} (l : Nat) (0 X : HProp V) (0 H : HProp V) :
+    W.free l X ⋆ H ⊢ W.free l (X ⋆ H) :=
+  Entails.trans (star.exists_l_entails (fun (w : V) => (l ↦ w) ⋆ X) H)
+    (hexists.elim (fun w => hexists.intro (fun (w' : V) => (l ↦ w') ⋆ (X ⋆ H)) w
+      (star.assoc_l (l ↦ w) X H)))
+
+-- ## The effect observation
+
+def wp {V A : Type} : Prog V A → W V A
+  | .ret a, Q => Q a
+  | .get l k, Q => W.get l (fun v => wp (k v) Q)
+  | .set l v k, Q => W.set l v (wp k Q)
+  | .alloc v k, Q => W.alloc v (fun l => wp (k l) Q)
+  | .free l k, Q => W.free l (wp k Q)
+  | .fail, Q => hpure False
+
+-- `wp c` is monotone and frame-preserving: it is in the restricted specification monad
+def wp.mono {V A : Type} : (c : Prog V A) → W.Mono (wp c)
+  | .ret a, Q, Q', m => m a
+  | .get l k, Q, Q', m => W.get_mono l (fun v => wp.mono (k v) Q Q' m)
+  | .set l v k, Q, Q', m => W.set_mono l v (wp.mono k Q Q' m)
+  | .alloc v k, Q, Q', m => W.alloc_mono v (fun l => wp.mono (k l) Q Q' m)
+  | .free l k, Q, Q', m => W.free_mono l (wp.mono k Q Q' m)
+  | .fail, Q, Q', m => Entails.refl (hpure False)
+def wp.frame {V A : Type} : (c : Prog V A) → W.Frame (wp c)
+  | .ret a, Q, H => Entails.refl (Q a ⋆ H)
+  | .get l k, Q, H => Entails.trans (W.get_frame l (fun v => wp (k v) Q) H)
+      (W.get_mono l (fun v => wp.frame (k v) Q H))
+  | .set l v k, Q, H => Entails.trans (W.set_frame l v (wp k Q) H) (W.set_mono l v (wp.frame k Q H))
+  | .alloc v k, Q, H => Entails.trans (W.alloc_frame v (fun l => wp (k l) Q) H)
+      (W.alloc_mono v (fun l => wp.frame (k l) Q H))
+  | .free l k, Q, H => Entails.trans (W.free_frame l (wp k Q) H) (W.free_mono l (wp.frame k Q H))
+  | .fail, Q, H => hpure.elim_l (fun f => absurd f)
+
+-- `wp` is a monad morphism (DM4All, Definition 1): it preserves `ret` by computation …
+def wp.ret {V A : Type} (a : A) : wp (@Prog.ret V A a) = @W.ret V A a := refl (@W.ret V A a)
+-- … and `bind`, as an equation of predicate transformers (both directions by induction)
+def wp.bind_l {V A B : Type} : (c : Prog V A) → (f : A → Prog V B) → (Q : B → HProp V) →
+    (wp (Prog.bind c f) Q ⊢ W.bind (wp c) (fun a => wp (f a)) Q)
+  | .ret a, f, Q => Entails.refl (wp (f a) Q)
+  | .get l k, f, Q => W.get_mono l (fun v => wp.bind_l (k v) f Q)
+  | .set l v k, f, Q => W.set_mono l v (wp.bind_l k f Q)
+  | .alloc v k, f, Q => W.alloc_mono v (fun l => wp.bind_l (k l) f Q)
+  | .free l k, f, Q => W.free_mono l (wp.bind_l k f Q)
+  | .fail, f, Q => Entails.refl (hpure False)
+def wp.bind_r {V A B : Type} : (c : Prog V A) → (f : A → Prog V B) → (Q : B → HProp V) →
+    (W.bind (wp c) (fun a => wp (f a)) Q ⊢ wp (Prog.bind c f) Q)
+  | .ret a, f, Q => Entails.refl (wp (f a) Q)
+  | .get l k, f, Q => W.get_mono l (fun v => wp.bind_r (k v) f Q)
+  | .set l v k, f, Q => W.set_mono l v (wp.bind_r k f Q)
+  | .alloc v k, f, Q => W.alloc_mono v (fun l => wp.bind_r (k l) f Q)
+  | .free l k, f, Q => W.free_mono l (wp.bind_r k f Q)
+  | .fail, f, Q => Entails.refl (hpure False)
+def wp.bind {V A B : Type} (c : Prog V A) (f : A → Prog V B) :
+    wp (Prog.bind c f) = W.bind (wp c) (fun a => wp (f a)) :=
+  @funext (B → HProp V) (HProp V) (wp (Prog.bind c f)) (W.bind (wp c) (fun a => wp (f a)))
+    (fun Q => Entails.antisym (wp.bind_l c f Q) (wp.bind_r c f Q))
+
+-- ## Triples and their rules
+
+-- `{P} c {Q}`
+def Triple {V A : Type} (P : HProp V) (c : Prog V A) (Q : A → HProp V) : Prop := P ⊢ wp c Q
+
+-- consequence
+def Triple.conseq {V A : Type} {0 P P' : HProp V} {c : Prog V A} {0 Q Q' : A → HProp V}
+    (t : Triple P c Q) (mp : P' ⊢ P) (mq : (a : A) → (Q a ⊢ Q' a)) : Triple P' c Q' :=
+  Entails.trans mp (Entails.trans t (wp.mono c Q Q' mq))
+-- the frame rule
+def Triple.frame {V A : Type} {0 P : HProp V} {c : Prog V A} {0 Q : A → HProp V} (0 H : HProp V)
+    (t : Triple P c Q) : Triple (P ⋆ H) c (fun a => Q a ⋆ H) :=
+  Entails.trans (star.mono_l H t) (wp.frame c Q H)
+-- sequencing
+def Triple.ret {V A : Type} (a : A) (0 Q : A → HProp V) : Triple (Q a) (Prog.ret a) Q := Entails.refl (Q a)
+def Triple.bind {V A B : Type} {0 P : HProp V} {c : Prog V A} {f : A → Prog V B} {0 Q : A → HProp V}
+    {0 R : B → HProp V} (t : Triple P c Q) (k : (a : A) → Triple (Q a) (f a) R) : Triple P (Prog.bind c f) R :=
+  Entails.trans t (Entails.trans (wp.mono c Q (fun a => wp (f a) R) k) (wp.bind_r c f R))
+-- extracting existentials and pure facts from the precondition
+def Triple.exists {V A X : Type} {0 J : X → HProp V} {c : Prog V A} {0 Q : A → HProp V}
+    (k : (x : X) → Triple (J x) c Q) : Triple (hexists J) c Q := hexists.elim k
+def Triple.pure {V A : Type} {P : Prop} {0 H : HProp V} {c : Prog V A} {0 Q : A → HProp V}
+    (k : P → Triple H c Q) : Triple (hpure P ⋆ H) c Q := hpure.elim_l k
+
+-- the small-footprint specifications of the operations (SLF, WPsem: triple_get, …)
+def Triple.read {V : Type} (l : Nat) (v : V) :
+    Triple (l ↦ v) (Prog.read l) (fun r => hpure (r = v) ⋆ (l ↦ v)) :=
+  hexists.intro (fun (w : V) => (l ↦ w) ⋆ ((l ↦ w) −∗ hpure (w = v) ⋆ (l ↦ w))) v
+    (Entails.trans (star.emp_r_intro (l ↦ v))
+      (star.mono_r (l ↦ v) (wand.intro (Entails.trans (star.emp_l_entails (l ↦ v))
+        (hpure.intro_r (refl v) (Entails.refl (l ↦ v)))))))
+def Triple.write {V : Type} (l : Nat) (v w : V) : Triple (l ↦ w) (Prog.write l v) (fun _ => l ↦ v) :=
+  hexists.intro (fun (w' : V) => (l ↦ w') ⋆ ((l ↦ v) −∗ (l ↦ v))) w
+    (Entails.trans (star.emp_r_intro (l ↦ w))
+      (star.mono_r (l ↦ w) (wand.intro (star.emp_l_entails (l ↦ v)))))
+def Triple.ref {V : Type} (v : V) : Triple emp (Prog.ref v) (fun l => l ↦ v) :=
+  hforall.intro (fun l => wand.intro (star.emp_l_entails (l ↦ v)))
+def Triple.dispose {V : Type} (l : Nat) (w : V) : Triple (l ↦ w) (Prog.dispose l) (fun _ => emp) :=
+  hexists.intro (fun (w' : V) => (l ↦ w') ⋆ emp) w (star.emp_r_intro (l ↦ w))
+
+-- ## Reasoning rules in weakest-precondition form (SLF's `xapp`), with a frame `H`
+
+def wp.get_intro {V : Type} (l : Nat) (v : V) (0 H : HProp V) (0 X : V → HProp V)
+    (m : (l ↦ v) ⋆ H ⊢ X v) : (l ↦ v) ⋆ H ⊢ W.get l X :=
+  hexists.intro (fun (w : V) => (l ↦ w) ⋆ ((l ↦ w) −∗ X w)) v
+    (star.mono_r (l ↦ v) (wand.intro (Entails.trans (star.comm_entails H (l ↦ v)) m)))
+def wp.set_intro {V : Type} (l : Nat) (w v : V) (0 H : HProp V) (0 X : HProp V)
+    (m : (l ↦ v) ⋆ H ⊢ X) : (l ↦ w) ⋆ H ⊢ W.set l v X :=
+  hexists.intro (fun (w' : V) => (l ↦ w') ⋆ ((l ↦ v) −∗ X)) w
+    (star.mono_r (l ↦ w) (wand.intro (Entails.trans (star.comm_entails H (l ↦ v)) m)))
+def wp.alloc_intro {V : Type} (v : V) (0 H : HProp V) (0 X : Nat → HProp V)
+    (m : (l : Nat) → ((l ↦ v) ⋆ H ⊢ X l)) : H ⊢ W.alloc v X :=
+  hforall.intro (fun l => wand.intro (Entails.trans (star.comm_entails H (l ↦ v)) (m l)))
+def wp.free_intro {V : Type} (l : Nat) (w : V) (0 H : HProp V) (0 X : HProp V)
+    (m : H ⊢ X) : (l ↦ w) ⋆ H ⊢ W.free l X :=
+  hexists.intro (fun (w' : V) => (l ↦ w') ⋆ X) w (star.mono_r (l ↦ w) m)
+
+-- rearranging a `⋆` chain: `A ⋆ (B ⋆ C) ⊢ B ⋆ (A ⋆ C)`
+def star.swap {V : Type} (0 A B C : HProp V) : A ⋆ (B ⋆ C) ⊢ B ⋆ (A ⋆ C) :=
+  Entails.trans (star.assoc_r A B C)
+    (Entails.trans (star.mono_l C (star.comm_entails A B)) (star.assoc_l B A C))
+
+-- ## Example: swapping two cells
+
+def Prog.swap (p q : Nat) : Prog Nat Unit :=
+  .get p (fun a => .get q (fun b => .set p b (.set q a (.ret ()))))
+
+def Prog.swap_spec (p q a b : Nat) : Triple ((p ↦ a) ⋆ (q ↦ b)) (Prog.swap p q) (fun _ => (p ↦ b) ⋆ (q ↦ a)) :=
+  wp.get_intro p a (q ↦ b) (fun a' => W.get q (fun b' => W.set p b' (W.set q a' ((p ↦ b') ⋆ (q ↦ a')))))
+    (Entails.trans (star.comm_entails (p ↦ a) (q ↦ b))
+    (wp.get_intro q b (p ↦ a) (fun b' => W.set p b' (W.set q a ((p ↦ b') ⋆ (q ↦ a))))
+    (Entails.trans (star.comm_entails (q ↦ b) (p ↦ a))
+    (wp.set_intro p a b (q ↦ b) (W.set q a ((p ↦ b) ⋆ (q ↦ a)))
+    (Entails.trans (star.comm_entails (p ↦ b) (q ↦ b))
+    (wp.set_intro q b a (p ↦ b) ((p ↦ b) ⋆ (q ↦ a))
+      (star.comm_entails (q ↦ a) (p ↦ b))))))))
+
+-- ## Example: in-place list reversal
+--
+-- A list cell at `p` is two cells: the value at `p`, the next pointer at `p + 1`; `0` is
+-- the null pointer. `MList L p`: the cells from `p` hold `L` (SLF, Repr: `MList`).
+
+def MList : List Nat → Nat → HProp Nat
+  | .nil, p => hpure (p = 0)
+  | .cons x L, p => hexists (fun (n : Nat) =>
+      hpure (Not (p = 0)) ⋆ ((p ↦ x) ⋆ ((Nat.succ p ↦ n) ⋆ MList L n)))
+
+-- `revApp L acc` is `reverse L ++ acc`
+def List.revApp {A : Type} : List A → List A → List A
+  | .nil, acc => acc
+  | .cons x xs, acc => List.revApp xs (.cons x acc)
+def List.reverse {A : Type} (l : List A) : List A := List.revApp l .nil
+
+-- the loop: `q` is the reversed prefix, `p` the rest; each step turns one pointer round
+def Prog.revLoop : Nat → Nat → Nat → Prog Nat Nat
+  | .zero, p, q => .fail
+  | .succ f, .zero, q => .ret q
+  | .succ f, .succ p, q =>
+      .get (Nat.succ (Nat.succ p)) (fun n => .set (Nat.succ (Nat.succ p)) q (Prog.revLoop f n (Nat.succ p)))
+def Prog.reverse (fuel p : Nat) : Prog Nat Nat := Prog.revLoop fuel p 0
+
+def Nat.succ_ne_zero (n : Nat) : Not (Nat.succ n = 0) := fun e => absurd e.1
+
+-- one step of the loop: the rearrangement of the cells around the pointer update
+def Prog.revLoop.step (p x n q : Nat) (0 L L₂ : List Nat) (0 X : HProp Nat)
+    (k : MList L n ⋆ MList (.cons x L₂) (Nat.succ p) ⊢ X) :
+    (Nat.succ (Nat.succ p) ↦ q) ⋆ ((Nat.succ p ↦ x) ⋆ (MList L n ⋆ MList L₂ q)) ⊢ X :=
+  Entails.trans (star.swap (Nat.succ (Nat.succ p) ↦ q) (Nat.succ p ↦ x) (MList L n ⋆ MList L₂ q))
+  (Entails.trans (star.mono_r (Nat.succ p ↦ x) (star.swap (Nat.succ (Nat.succ p) ↦ q) (MList L n) (MList L₂ q)))
+  (Entails.trans (star.swap (Nat.succ p ↦ x) (MList L n) ((Nat.succ (Nat.succ p) ↦ q) ⋆ MList L₂ q))
+  (Entails.trans (star.mono_r (MList L n)
+     (hexists.intro (fun (n' : Nat) => hpure (Not (Nat.succ p = 0)) ⋆ ((Nat.succ p ↦ x) ⋆ ((Nat.succ (Nat.succ p) ↦ n') ⋆ MList L₂ n'))) q
+       (hpure.intro_r (Nat.succ_ne_zero p)
+         (Entails.refl ((Nat.succ p ↦ x) ⋆ ((Nat.succ (Nat.succ p) ↦ q) ⋆ MList L₂ q))))))
+  k)))
+
+-- the invariant: with more fuel than cells, `MList L p ⋆ MList L₂ q` becomes `MList (revApp L L₂)`
+def Prog.revLoop.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length L) f = .true → (p q : Nat) → (L₂ : List Nat) →
+    Triple (MList L p ⋆ MList L₂ q) (Prog.revLoop f p q) (fun r => MList (List.revApp L L₂) r)
+  | L, .zero, h, p, q, L₂ => absurd h.1
+  | .nil, .succ f, h, .zero, q, L₂ => hpure.elim_l (fun _ => Entails.refl (MList L₂ q))
+  | .nil, .succ f, h, .succ p, q, L₂ => hpure.elim_l (fun e => absurd (Nat.succ_ne_zero p e))
+  | .cons x L, .succ f, h, .zero, q, L₂ =>
+      Entails.trans (star.exists_l_entails (fun (n : Nat) => hpure (Not (0 = 0)) ⋆ ((0 ↦ x) ⋆ ((Nat.succ 0 ↦ n) ⋆ MList L n))) (MList L₂ q))
+        (hexists.elim (fun n => Entails.trans (star.assoc_l (hpure (Not (0 = 0))) ((0 ↦ x) ⋆ ((Nat.succ 0 ↦ n) ⋆ MList L n)) (MList L₂ q))
+          (hpure.elim_l (fun ne => absurd (ne rfl)))))
+  | .cons x L, .succ f, h, .succ p, q, L₂ =>
+      Entails.trans (star.exists_l_entails (fun (n : Nat) => hpure (Not (Nat.succ p = 0)) ⋆ ((Nat.succ p ↦ x) ⋆ ((Nat.succ (Nat.succ p) ↦ n) ⋆ MList L n))) (MList L₂ q))
+        (hexists.elim (fun n => Entails.trans (star.assoc_l (hpure (Not (Nat.succ p = 0))) ((Nat.succ p ↦ x) ⋆ ((Nat.succ (Nat.succ p) ↦ n) ⋆ MList L n)) (MList L₂ q))
+          (hpure.elim_l (fun ne =>
+            -- (p+1 ↦ x ⋆ (p+2 ↦ n ⋆ MList L n)) ⋆ MList L₂ q  ⊢  p+2 ↦ n ⋆ (p+1 ↦ x ⋆ (MList L n ⋆ MList L₂ q))
+            Entails.trans (star.assoc_l (Nat.succ p ↦ x) ((Nat.succ (Nat.succ p) ↦ n) ⋆ MList L n) (MList L₂ q))
+            (Entails.trans (star.mono_r (Nat.succ p ↦ x) (star.assoc_l (Nat.succ (Nat.succ p) ↦ n) (MList L n) (MList L₂ q)))
+            (Entails.trans (star.swap (Nat.succ p ↦ x) (Nat.succ (Nat.succ p) ↦ n) (MList L n ⋆ MList L₂ q))
+            (wp.get_intro (Nat.succ (Nat.succ p)) n ((Nat.succ p ↦ x) ⋆ (MList L n ⋆ MList L₂ q))
+              (fun n' => W.set (Nat.succ (Nat.succ p)) q (wp (Prog.revLoop f n' (Nat.succ p)) (fun r => MList (List.revApp L (.cons x L₂)) r)))
+            (wp.set_intro (Nat.succ (Nat.succ p)) n q ((Nat.succ p ↦ x) ⋆ (MList L n ⋆ MList L₂ q))
+              (wp (Prog.revLoop f n (Nat.succ p)) (fun r => MList (List.revApp L (.cons x L₂)) r))
+            (Prog.revLoop.step p x n q L L₂ (wp (Prog.revLoop f n (Nat.succ p)) (fun r => MList (List.revApp L (.cons x L₂)) r))
+              (Prog.revLoop.spec L f h n (Nat.succ p) (.cons x L₂)))))))))))
+
+def Prog.reverse_spec (L : List Nat) (fuel p : Nat) (h : Nat.lt (List.length L) fuel = .true) :
+    Triple (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse L) r) :=
+  Entails.trans (hpure.intro_r (refl 0) (Entails.refl (MList L p)))
+    (Entails.trans (star.comm_entails (hpure (0 = 0)) (MList L p))
+      (Prog.revLoop.spec L fuel h p 0 .nil))
+
+-- ## Adequacy: `wp` is sound for an interpreter on concrete heaps
+--
+-- `Prog.run c h n` runs `c` on the heap `h`, where every location from `n` on is free
+-- (`Bounded h n`); `alloc` hands out `n`. It returns `none` on a fault (reading, writing
+-- or freeing an unallocated cell, or `fail`).
+
+-- the cases of an option, as a function (so that a proof can rewrite the scrutinee)
+def Option.caseOf {A R : Type} (o : Option A) (n : R) (s : A → R) : R := match o with
+  | .none => n
+  | .some a => s a
+-- `o` unless the test holds
+def Option.unless {A : Type} (b : Bool) (o : Option A) : Option A := match b with
+  | .true => .none
+  | .false => o
+
+-- `l := v` (the new cell shadows the old one)
+def Heap.update {V : Type} (h : Heap V) (l : Nat) (v : V) : Heap V := Heap.union (Heap.single l v) h
+def Heap.remove {V : Type} (h : Heap V) (l : Nat) : Heap V := fun l' => Option.unless (Nat.beq l l') (h l')
+-- every location from `n` on is free
+def Heap.Bounded {V : Type} (h : Heap V) (n : Nat) : Prop := (k : Nat) → Option.Free (h (k + n))
+
+def Prog.run {V A : Type} : Prog V A → Heap V → Nat → Option (A × Heap V × Nat)
+  | .ret a, h, n => .some (a, h, n)
+  | .get l k, h, n => Option.caseOf (h l) .none (fun v => Prog.run (k v) h n)
+  | .set l v k, h, n => Option.caseOf (h l) .none (fun _ => Prog.run k (Heap.update h l v) n)
+  | .alloc v k, h, n => Prog.run (k n) (Heap.union h (Heap.single n v)) (Nat.succ n)
+  | .free l k, h, n => Option.caseOf (h l) .none (fun _ => Prog.run k (Heap.remove h l) n)
+  | .fail, h, n => .none
+
+-- the run succeeded, in a heap satisfying `Q`, with the bound kept
+def Prog.Post {V A : Type} (Q : A → HProp V) : Option (A × Heap V × Nat) → Prop
+  | .none => False
+  | .some r => Q r.1 r.2.1 ∧ Heap.Bounded r.2.1 r.2.2
+
+-- ### Arithmetic and pointwise lemmas
+
+def Nat.beq_eq : (a b : Nat) → Nat.beq a b = .true → a = b
+  | .zero, .zero, e => rfl
+  | .zero, .succ b, e => absurd e.1
+  | .succ a, .zero, e => absurd e.1
+  | .succ a, .succ b, e => Nat.beq_eq a b e
+def Nat.add_succ_r : (m n : Nat) → m + Nat.succ n = Nat.succ (m + n)
+  | .zero, n => rfl
+  | .succ m, n => Nat.add_succ_r m n
+-- a location above `n` is not `n`
+def Nat.beq_succ_add : (n m : Nat) → Nat.beq n (Nat.succ (m + n)) = .false
+  | .zero, m => rfl
+  | .succ n, m => Eq.subst (fun (x : Nat) => Nat.beq n x = .false) (Eq.symm (Nat.add_succ_r m n)) (Nat.beq_succ_add n m)
+
+def Option.free_none_eq {A : Type} : (o : Option A) → Option.Free o → Option.none = o
+  | .none, f => rfl
+  | .some a, f => absurd f.1
+def Option.free_when {A : Type} : (b : Bool) → (v w : A) → Option.Free (Option.when b w) → Option.Free (Option.when b v)
+  | .true, v, w, f => absurd f.1
+  | .false, v, w, f => rfl
+def Option.shadow {A : Type} : (b : Bool) → (v w : A) → (o : Option A) →
+    Option.orElse (Option.when b v) (Option.orElse (Option.when b w) o) = Option.orElse (Option.when b v) o
+  | .true, v, w, o => rfl
+  | .false, v, w, o => rfl
+def Option.free_orElse_when {A : Type} : (b : Bool) → (v : A) → (o : Option A) → Option.Free o →
+    Not (b = .true) → Option.Free (Option.orElse (Option.when b v) o)
+  | .true, v, o, f, nb => absurd (nb rfl)
+  | .false, v, o, f, nb => f
+def Option.unless_free {A : Type} : (b : Bool) → (o : Option A) → Option.Free o → Option.Free (Option.unless b o)
+  | .true, o, f => rfl
+  | .false, o, f => f
+def Option.unless_when {A : Type} : (b : Bool) → (w : A) → (o : Option A) →
+    Option.Free (Option.when b w) ∨ Option.Free o → Option.unless b (Option.orElse (Option.when b w) o) = o
+  | .true, w, o, d => Option.free_none_eq o (Or.resolveLeft d (fun f => absurd f.1))
+  | .false, w, o, d => rfl
+-- the cell `l` of `single l v ⊎ h₂` holds `v`
+def Heap.union_single_at {V : Type} (h h₁ h₂ : Heap V) (l : Nat) (v : V)
+    (e : h = Heap.union h₁ h₂) (e₁ : h₁ = Heap.single l v) : h l = Option.some v :=
+  Eq.trans (e l) (@Eq.congrArg (Option V) (Option V) (fun (o : Option V) => Option.orElse o (h₂ l))
+    (h₁ l) (Option.some v) (Eq.trans (e₁ l) (Heap.single_at l v)))
+-- an allocated cell is below the bound
+def Heap.bounded_ne {V : Type} (h : Heap V) (n l : Nat) (v : V) (b : Heap.Bounded h n) (hl : h l = Option.some v)
+    (k : Nat) : Not (Nat.beq l (k + n) = .true) := fun eb =>
+  absurd (Eq.subst (fun (o : Option V) => Option.Free o) hl
+    (Eq.subst (fun (x : Nat) => Option.Free (h x)) (Eq.symm (Nat.beq_eq l (k + n) eb)) (b k))).1
+
+-- ### The cases
+
+def adequacy.get {V A : Type} (l : Nat) (k : V → Prog V A) (0 Q : A → HProp V) (h : Heap V) (n : Nat)
+    (b : Heap.Bounded h n) (w : wp (Prog.get l k) Q h)
+    (ih : (v : V) → wp (k v) Q h → Prog.Post Q (Prog.run (k v) h n)) :
+    Prog.Post Q (Prog.run (Prog.get l k) h n) :=
+  w (Prog.Post Q (Prog.run (Prog.get l k) h n)) (fun v s => star.elim s (Prog.Post Q (Prog.run (Prog.get l k) h n))
+    (fun h₁ h₂ a =>
+      Eq.subst (fun (o : Option V) => Prog.Post Q (Option.caseOf o Option.none (fun v' => Prog.run (k v') h n)))
+        (Eq.symm (Heap.union_single_at h h₁ h₂ l v a.2.1 a.2.2.1))
+        (ih v (Heap.subst (wp (k v) Q)
+          (Heap.trans (Heap.union_comm h₂ h₁ (Heap.disj_symm a.1)) (Heap.symm a.2.1))
+          (a.2.2.2 h₁ (Heap.disj_symm a.1) a.2.2.1)))))
+
+def adequacy.set {V A : Type} (l : Nat) (v : V) (k : Prog V A) (0 Q : A → HProp V) (h : Heap V) (n : Nat)
+    (b : Heap.Bounded h n) (w : wp (Prog.set l v k) Q h)
+    (ih : (h' : Heap V) → Heap.Bounded h' n → wp k Q h' → Prog.Post Q (Prog.run k h' n)) :
+    Prog.Post Q (Prog.run (Prog.set l v k) h n) :=
+  w (Prog.Post Q (Prog.run (Prog.set l v k) h n)) (fun u s => star.elim s (Prog.Post Q (Prog.run (Prog.set l v k) h n))
+    (fun h₁ h₂ a =>
+      let hl := Heap.union_single_at h h₁ h₂ l u a.2.1 a.2.2.1;
+      -- the new cell is disjoint from the rest, as the old one was
+      let d : Heap.Disj (Heap.single l v) h₂ := fun l' => Or.imp
+        (fun f => Option.free_when (Nat.beq l l') v u (Eq.subst (fun (o : Option V) => Option.Free o) (a.2.2.1 l') f))
+        (fun f => f) (a.1 l');
+      -- `update h l v` is `h₂ ⊎ single l v`
+      let eu : Heap.update h l v = Heap.union h₂ (Heap.single l v) :=
+        Heap.trans (Heap.ext (fun l' => Eq.trans
+          (@Eq.congrArg (Option V) (Option V) (fun (o : Option V) => Option.orElse (Heap.single l v l') o)
+            (h l') (Option.orElse (Heap.single l u l') (h₂ l'))
+            (Eq.trans (a.2.1 l') (@Eq.congrArg (Option V) (Option V) (fun (o : Option V) => Option.orElse o (h₂ l'))
+              (h₁ l') (Heap.single l u l') (a.2.2.1 l'))))
+          (Option.shadow (Nat.beq l l') v u (h₂ l'))))
+          (Heap.union_comm (Heap.single l v) h₂ d);
+      let bu : Heap.Bounded (Heap.update h l v) n := fun j =>
+        Option.free_orElse_when (Nat.beq l (j + n)) v (h (j + n)) (b j) (Heap.bounded_ne h n l u b hl j);
+      Eq.subst (fun (o : Option V) => Prog.Post Q (Option.caseOf o Option.none (fun _ => Prog.run k (Heap.update h l v) n)))
+        (Eq.symm hl)
+        (ih (Heap.update h l v) bu (Heap.subst (wp k Q) (Heap.symm eu)
+          (a.2.2.2 (Heap.single l v) (Heap.disj_symm d) rfl)))))
+
+def adequacy.alloc {V A : Type} (v : V) (k : Nat → Prog V A) (0 Q : A → HProp V) (h : Heap V) (n : Nat)
+    (b : Heap.Bounded h n) (w : wp (Prog.alloc v k) Q h)
+    (ih : Heap.Bounded (Heap.union h (Heap.single n v)) (Nat.succ n) →
+          wp (k n) Q (Heap.union h (Heap.single n v)) →
+          Prog.Post Q (Prog.run (k n) (Heap.union h (Heap.single n v)) (Nat.succ n))) :
+    Prog.Post Q (Prog.run (Prog.alloc v k) h n) :=
+  let d : Heap.Disj h (Heap.single n v) := fun l' => Or.elim (Bool.cases (Nat.beq n l'))
+    (fun eb => Or.inl (Eq.subst (fun (x : Nat) => Option.Free (h x)) (Nat.beq_eq n l' eb) (b 0)))
+    (fun eb => Or.inr (Eq.subst (fun (c : Bool) => Option.Free (Option.when c v)) (Eq.symm eb) rfl));
+  let bu : Heap.Bounded (Heap.union h (Heap.single n v)) (Nat.succ n) := fun j =>
+    (Option.free_orElse (h (j + Nat.succ n)) (Heap.single n v (j + Nat.succ n))).2
+      (Eq.subst (fun (x : Nat) => Option.Free (h x)) (Eq.symm (Nat.add_succ_r j n)) (b (Nat.succ j)),
+       Eq.subst (fun (c : Bool) => Option.Free (Option.when c v))
+         (Eq.symm (Eq.subst (fun (x : Nat) => Nat.beq n x = .false) (Eq.symm (Nat.add_succ_r j n)) (Nat.beq_succ_add n j)))
+         rfl);
+  ih bu (w n (Heap.single n v) d rfl)
+
+def adequacy.free {V A : Type} (l : Nat) (k : Prog V A) (0 Q : A → HProp V) (h : Heap V) (n : Nat)
+    (b : Heap.Bounded h n) (w : wp (Prog.free l k) Q h)
+    (ih : (h' : Heap V) → Heap.Bounded h' n → wp k Q h' → Prog.Post Q (Prog.run k h' n)) :
+    Prog.Post Q (Prog.run (Prog.free l k) h n) :=
+  w (Prog.Post Q (Prog.run (Prog.free l k) h n)) (fun u s => star.elim s (Prog.Post Q (Prog.run (Prog.free l k) h n))
+    (fun h₁ h₂ a =>
+      let hl := Heap.union_single_at h h₁ h₂ l u a.2.1 a.2.2.1;
+      -- removing `l` leaves `h₂`
+      let er : Heap.remove h l = h₂ := Heap.ext (fun l' => Eq.trans
+        (@Eq.congrArg (Option V) (Option V) (fun (o : Option V) => Option.unless (Nat.beq l l') o)
+          (h l') (Option.orElse (Heap.single l u l') (h₂ l'))
+          (Eq.trans (a.2.1 l') (@Eq.congrArg (Option V) (Option V) (fun (o : Option V) => Option.orElse o (h₂ l'))
+            (h₁ l') (Heap.single l u l') (a.2.2.1 l'))))
+        (Option.unless_when (Nat.beq l l') u (h₂ l')
+          (Or.imp (fun f => Eq.subst (fun (o : Option V) => Option.Free o) (a.2.2.1 l') f) (fun f => f) (a.1 l'))));
+      let br : Heap.Bounded (Heap.remove h l) n := fun j => Option.unless_free (Nat.beq l (j + n)) (h (j + n)) (b j);
+      Eq.subst (fun (o : Option V) => Prog.Post Q (Option.caseOf o Option.none (fun _ => Prog.run k (Heap.remove h l) n)))
+        (Eq.symm hl)
+        (ih (Heap.remove h l) br (Heap.subst (wp k Q) (Heap.symm er) a.2.2.2))))
+
+-- If `wp c Q` holds of a bounded heap, `c` runs without a fault to a heap satisfying `Q`.
+def adequacy {V A : Type} : (c : Prog V A) → (0 Q : A → HProp V) → (h : Heap V) → (n : Nat) →
+    Heap.Bounded h n → wp c Q h → Prog.Post Q (Prog.run c h n)
+  | .ret a, Q, h, n, b, w => (w, b)
+  | .get l k, Q, h, n, b, w => adequacy.get l k Q h n b w (fun v => adequacy (k v) Q h n b)
+  | .set l v k, Q, h, n, b, w => adequacy.set l v k Q h n b w (fun h' => adequacy k Q h' n)
+  | .alloc v k, Q, h, n, b, w => adequacy.alloc v k Q h n b w (adequacy (k n) Q (Heap.union h (Heap.single n v)) (Nat.succ n))
+  | .free l k, Q, h, n, b, w => adequacy.free l k Q h n b w (fun h' => adequacy k Q h' n)
+  | .fail, Q, h, n, b, w => absurd w.1
+
+-- the triple form: a proved triple, run from any heap satisfying its precondition (with
+-- anything else alongside, by the frame rule), doesn't fault
+def Triple.run {V A : Type} {0 P : HProp V} {c : Prog V A} {0 Q : A → HProp V} (t : Triple P c Q)
+    (0 H : HProp V) (h : Heap V) (n : Nat) (b : Heap.Bounded h n) (p : (P ⋆ H) h) :
+    Prog.Post (fun a => Q a ⋆ H) (Prog.run c h n) :=
+  adequacy c (fun a => Q a ⋆ H) h n b (Triple.frame H t h p)
+
+-- ## Running programs on concrete heaps
+
+-- the heap holding `vs` from location `1` on (location `0` is null)
+def Heap.ofList {V : Type} : List V → Nat → Heap V
+  | .nil, l => Heap.empty
+  | .cons v vs, l => Heap.union (Heap.single l v) (Heap.ofList vs (Nat.succ l))
+-- the cells `l … l + k - 1`
+def Heap.toList {V : Type} (h : Heap V) : Nat → Nat → List (Option V)
+  | .zero, l => .nil
+  | .succ k, l => .cons (h l) (Heap.toList h k (Nat.succ l))
+-- run, and show the result and the first `k` cells
+def Prog.show {V A : Type} (c : Prog V A) (h : Heap V) (n k : Nat) : Option (A × List (Option V)) :=
+  Option.caseOf (Prog.run c h n) .none (fun r => .some (r.1, Heap.toList r.2.1 k 0))

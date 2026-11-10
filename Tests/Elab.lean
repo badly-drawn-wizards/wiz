@@ -3194,6 +3194,64 @@ def vecGroup : Group where
         check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }
   ]
 
+/-! ## Stage 24: separation logic (lib/Logic.wiz, lib/HProp.wiz, lib/Hoare.wiz) -/
+
+def seplogicGroup : Group where
+  name := "seplogic"
+  exercise := "Stage 24"
+  cases := [
+    { name := "the connectives; propext and funext are definitional", run := fun _ => do
+        okLibs ("import Logic\n" ++
+          "def t1 (P Q : Prop) (h : P ∧ Q) : Q ∧ P := And.symm h\n" ++
+          "def t2 (P Q : Prop) (h : P ∨ Q) : Q ∨ P := Or.symm h\n" ++
+          "def t3 : Ex (fun (n : Nat) => n = 3) := Ex.intro (fun (n : Nat) => n = 3) 3 rfl\n" ++
+          "def t4 (P Q : Prop) (h : P ↔ Q) : P = Q := propext h\n" ++
+          "def t5 (f : Nat → Nat) : (fun x => f x) = f := funext (fun x => rfl)\n" ++
+          "def t6 (P : Prop) (n : Not P) (h : P ∨ False) : False := n (Or.resolveRight h (fun f => f))\n" ++
+          "def t7 : Not (Nat.succ 0 = 0) := fun e => absurd e.1")
+        failsLibs "import Logic\ndef bad (P Q : Prop) (h : P ∨ Q) : P := h P (fun p => p) (fun q => q)" "mismatch" },
+    { name := "heap predicates: ⋆ is commutative, associative, with unit emp (equations, no axioms)", run := fun _ =>
+        okLibs ("import HProp\n" ++
+          "def t1 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂) ⋆ H₃ = H₁ ⋆ (H₂ ⋆ H₃) := star.assoc H₁ H₂ H₃\n" ++
+          "def t2 (H₁ H₂ : HProp Nat) : H₁ ⋆ H₂ = H₂ ⋆ H₁ := star.comm H₁ H₂\n" ++
+          "def t3 (H : HProp Nat) : emp ⋆ H = H := star.emp_l H\n" ++
+          "def t4 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂) ⋆ H₃ ⊢ H₃ ⋆ (H₂ ⋆ H₁) :=\n" ++
+          "  Entails.trans (star.comm_entails (H₁ ⋆ H₂) H₃) (star.mono_r H₃ (star.comm_entails H₁ H₂))") },
+    { name := "the frame property and the wand adjunction", run := fun _ =>
+        okLibs ("import HProp\n" ++
+          "def t1 (H₁ H₁' H₂ : HProp Nat) (m : H₁ ⊢ H₁') : H₁ ⋆ H₂ ⊢ H₁' ⋆ H₂ := star.mono_l H₂ m\n" ++
+          "def t2 (H₁ H₂ H₃ : HProp Nat) : (H₁ ⋆ H₂ ⊢ H₃) ↔ (H₁ ⊢ H₂ −∗ H₃) := wand.adjoint H₁ H₂ H₃\n" ++
+          "def t3 (H₁ H₂ : HProp Nat) : H₁ ⋆ (H₁ −∗ H₂) ⊢ H₂ := wand.cancel H₁ H₂\n" ++
+          "def t4 : (1 ↦ 5) ⋆ (1 ↦ 6) ⊢ @hpure Nat False := pts.same_loc 1 5 6") },
+    { name := "a law that doesn't hold has no proof", run := fun _ => do
+        failsLibs "import HProp\ndef bad : (1 ↦ 5) ⋆ (2 ↦ 6) ⊢ @hpure Nat False := pts.same_loc 1 5 6" "mismatch"
+        failsLibs "import HProp\ndef bad (H : HProp Nat) : H ⋆ H = H := star.emp_l H" "mismatch" },
+    { name := "wp is a monotone, frame-preserving monad morphism; the triple rules", run := fun _ =>
+        okLibs ("import Hoare\n" ++
+          "def t1 (c : Prog Nat Nat) (f : Nat → Prog Nat Nat) : wp (Prog.bind c f) = W.bind (wp c) (fun a => wp (f a)) := wp.bind c f\n" ++
+          "def t2 (c : Prog Nat Nat) : W.Frame (wp c) := wp.frame c\n" ++
+          "def t3 (P H : HProp Nat) (c : Prog Nat Nat) (Q : Nat → HProp Nat) (t : Triple P c Q) :\n" ++
+          "  Triple (P ⋆ H) c (fun a => Q a ⋆ H) := Triple.frame H t\n" ++
+          "def t4 (l : Nat) : Triple (l ↦ 1) (Prog.bind (Prog.read l) (fun v => Prog.write l (Nat.succ v))) (fun _ => l ↦ 2) :=\n" ++
+          "  Triple.bind (Triple.read l 1) (fun r => Triple.pure (fun e =>\n" ++
+          "    Eq.subst (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) (Eq.symm e) (Triple.write l 2 1)))") },
+    { name := "swap and in-place list reversal are verified", run := fun _ =>
+        okLibs ("import Hoare\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
+          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (star Nat (pts Nat p a) (pts Nat q b)) (Prog.swap p q) (fun x => star Nat (pts Nat p b) (pts Nat q a))",
+           "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = Bool.true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
+    { name := "a wrong specification is rejected", run := fun _ =>
+        failsLibs ("import Hoare\ndef bad (p q a b : Nat) : Triple ((p ↦ a) ⋆ (q ↦ b)) (Prog.swap p q) (fun _ => (p ↦ a) ⋆ (q ↦ b)) :=\n" ++
+          "  Prog.swap_spec p q a b") "mismatch" },
+    { name := "the programs run on concrete heaps, as adequacy says", run := fun _ =>
+        okLibs ("import Hoare\n" ++
+          "#eval Prog.show (Prog.swap 1 2) (Heap.ofList (.cons 10 (.cons 20 .nil)) 1) 3 3\n" ++
+          -- the list 1, 2, 3 in cells at 1, 3, 5
+          "#eval Prog.show (Prog.reverse 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 7\n" ++
+          "#eval Prog.show (Prog.reverse 2 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 7\n" ++
+          "#eval Prog.show (Prog.bind (Prog.ref 7) (fun l => Prog.read l)) Heap.empty 0 2")
+          ["RESULTS"] }
+  ]
+
 
 /-! ### Phantom parameters
 
