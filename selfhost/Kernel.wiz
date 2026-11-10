@@ -202,7 +202,10 @@ end
 
 def kCharsEq : List Char → List Char → Bool
   | .nil, .nil => .true
-  | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (kCharsEq as bs)
+  -- (the heads first: `Bool.and` would evaluate the rest anyway, call by value)
+  | .cons a as, .cons b bs => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => kCharsEq as bs
+    | .false => .false
   | _, _ => .false
 def kStrEq (a b : String) : Bool := match a with
   | .mk x => match b with
