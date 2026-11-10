@@ -1181,6 +1181,60 @@ Writing the lexer and parser in Wiz showed what the language lacked:
 * Keywords of tactic syntax (`first`, `exact` …) are no longer reserved words.
 * The prelude has `Nat.lt` (native at runtime), `Nat.le`, `Nat.max`, `Bool.and/or/not`.
 
+### 13a: named arguments ✅
+
+```
+class BitPack (A : Type) where
+  width : Nat
+def bitWidth (0 A : Type) [BitPack A] : Nat := BitPack.width (A := A)
+def sub (a b : Nat) : Nat := Nat.sub a b
+#eval sub (b := 1) 5                    -- 4
+#eval @BitPack.width (A := Bool) _
+```
+
+As in Lean, an argument `(x := e)` fills the parameter named `x`, wherever it is:
+implicit, instance or explicit. The other arguments fill the explicit parameters in
+order (with `@f`, every parameter), and implicit and instance parameters before a named
+one get metavariables and instance problems. A named argument after the last positional
+one fills its parameter; an explicit parameter before it with no argument is an error
+(Lean would abstract it). Unknown and repeated names are errors (`inferAppNamed`,
+`Elab/Term.lean`; test group `elabfix`).
+
+### 13b: private declarations and private constructors ✅
+
+```
+private def secret : Nat := 42          -- visible only in this module
+structure Shr (ρ : Region) (A : Type) where
+  private mk ::                         -- only this module makes a `Shr`
+  val : A
+```
+
+`private` before a command makes every name it declares (a definition, an axiom, a
+structure with its constructor and projections, an inductive type with its
+constructors and recursors) private to its **module**: other modules get "'x' is
+private to module M"; the module itself, including its later declarations, uses the
+names as usual. Privacy is per module (23c: each module is elaborated in isolation and
+under its own name), and the main file is a module of its own.
+
+`private mk ::` right after a structure's `where` keeps the type and its projections
+public but makes the constructor private. Types are structural, so a private name
+alone would not stop another module from building a value: a tuple `(5, ())`, or a
+structure of its own with the same fields, converts to the type. So outside its module
+such a structure is also **opaque** to the elaborator: its definition doesn't unfold
+(`Globals.elabView`), it is equal only to itself, and `p.val` reads it through the
+projection function `S.val` (`p.1` doesn't work). Within the module nothing changes.
+Like Lean's, privacy is enforced by the elaborator: the kernel checks every declaration
+against the full environment, where an opaque structure is its Σ again (which is sound:
+whatever converts with the definition hidden converts with it unfolded).
+
+The motivating use is `lib/Region.wiz` (22g): the constructors of the borrow handles
+`Shr`, `Uniq`, `Mut` and `Lent` are private, so a handle at a region comes only from a
+scope or an operation of the library, and hand-written Wiz can't forge one
+(`drafts/rust/rejected/forge_handle.wiz`; test group `regions`). `MutOpt`'s constructors
+stay public: their fields are handles already. Not yet: private constructors of an
+`inductive` (`| private c …`) and private observations of a `coinductive`. Tests: group
+`elabfix`.
+
 ## Stage 14: the kernel in Wiz
 
 ### 14a: a type checker ✅
@@ -2028,9 +2082,8 @@ typing:
 Scopes run their body at the enclosing region (regions are erased, so this is sound);
 the separation comes from parametricity alone. `drafts/rust/rejected/` has the classic
 errors, lowered, each rejected (`sh drafts/rust/check.sh`); test group `regions`.
-Not yet: the constructors of the handles are public (private-decls), so the guarantee
-holds for code that follows the lowering rules (the DSL front end), not for hand-written
-Wiz that forges a handle.
+The constructors of the handles are private to the module (13b), so the guarantee
+holds for hand-written Wiz too: a handle can't be forged.
 
 ### 22h: one bit-vector family ✅
 
@@ -2180,56 +2233,6 @@ into two ordinary Lean handles. The server's state stays single-threaded: a read
 thread per connection feeds one channel, and one loop answers in order. Protocol §8 of
 `wiz-notes/infoview-protocol.md`; tested in-process (the `lsp-server` group: the editor
 on a socket pair, an infoview on the socket).
-
-### 11m–n: the infoview, in a terminal and in a browser ✅
-
-```
-wiz lsp --infoview /tmp/wiz.sock          # the editor's server (11l)
-wiz-infoview /tmp/wiz.sock                # in a tmux split: the goals at the cursor
-wiz-infoview --file t.wiz --at 4:5        # or on its own: starts `wiz lsp` itself
-web/build.sh && web/bridge.sh             # the same infoview in a browser
-```
-
-Both clients are Wiz programs, and they share their logic:
-
-* `lib/Json.wiz`: JSON values (mutual inductive types: Wiz has no nested ones), a
-  parser and a printer. Strings are code points; `\uXXXX` escapes and surrogate pairs
-  are decoded, and the printer escapes control characters (or everything non-ASCII,
-  `Json.renderAscii`).
-* `lib/Infoview.wiz`: the protocol's tagged text and goals; a **layout** that flattens
-  tagged text into styled pieces (numbering the tags in reading order), word-wraps them
-  to a width with hanging indents, and renders lines with SGR colours by kind; the same
-  goals as **HTML** with a `data-ref` and `data-idx` on every subterm's `<span>`;
-  navigation (next, previous, enclosing, first inside); `Content-Length` framing
-  (counting UTF-8 bytes); and the decoding of terminal keys and SGR mouse reports.
-* `infoview/Tui.wiz` (`infoview/build.sh`): the terminal program. The alternate screen,
-  raw mode, `poll` over the keyboard, the socket and a `SIGWINCH` self-pipe, and Unix
-  sockets are `infoview/term.c`, bound with `extern` (Wiz has no callbacks or
-  structs in its FFI, so the event loop is Wiz around a blocking `iv_wait`). ←/→ select
-  a subterm, ↑/↓ go out of and into it, and the bottom line says what it is
-  (`wiz/subtermInfo`); a mouse click selects too.
-* `web/Web.wiz` (`web/build.sh`): the page's language client, compiled to C and then to
-  WebAssembly by Emscripten: wasm64 keeps the runtime's 62-bit small numbers, mini-gmp
-  stands in for GMP, and Asyncify lets `js_next_event` wait for the page. The page
-  (`web/infoview.html`, `web/infoview.js`, about 100 lines of JavaScript) only moves events
-  in and HTML out. `web/bridge.sh` puts `websocat` in front of `wiz lsp` until the server
-  speaks WebSocket itself.
-
-Running it in tmux, next to an editor whose language server is `wiz lsp --infoview
-/tmp/wiz.sock` (11l):
-
-```
-infoview/build.sh                                   # → .lake/build/bin/wiz-infoview
-tmux split-window -h -l 60 '.lake/build/bin/wiz-infoview /tmp/wiz.sock'
-```
-
-The pane waits for the server, then follows the editor's cursor. Without an editor:
-`wiz-infoview --file examples/tactics.wiz --at 6:3` (`[` and `]` move the line).
-`infoview/test.sh` (in the `infoview` test group) runs the terminal infoview against
-`infoview/stub_server.py` (canned goals; as text and in a pseudo-terminal) and against
-the real `wiz lsp --infoview`, with `infoview/editor_stub.py` as the editor.
-`web/test.sh` (needs nix: Emscripten, websocat, Chromium; not in CI) runs the Wasm
-module under Node, then the page in headless Chromium over the DevTools protocol.
 
 ## Stage 23: grail, a build tool
 

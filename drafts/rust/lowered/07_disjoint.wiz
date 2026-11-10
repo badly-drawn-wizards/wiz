@@ -41,7 +41,7 @@ def record {ρ : Region} (s : Uniq ρ Stats) : Result (Unit × Uniq ρ Stats) :=
       match U64.add h (U64.lit 10) with             -- *h += 10
       | .ok h =>
         (match Uniq.borrow ρ' h (fun ρh hh h rh =>  -- bump2 h m (reborrows of the aliases)
-          match Uniq.borrow ρh m (fun ρm hm m rm =>
+          match @Uniq.borrow U64 _ ρh m (fun ρm hm m rm =>   -- @: see STATUS.md issue 9
             match bump2 rh rm with
             | .ok q => .ok (q.2.1, q.2.2)
             | .err e => .err e) with
