@@ -129,7 +129,7 @@ def Heap.disj_eq_l {V : Type} {h h' : Heap V} (h₂ : Heap V) (e : h = h') (d : 
 def Heap.disj_eq_r {V : Type} (h₁ : Heap V) {h h' : Heap V} (e : h = h') (d : Heap.Disj h₁ h) : Heap.Disj h₁ h' :=
   @Heap.subst V (fun (x : Heap V) => Heap.Disj h₁ x) h h' e d
 -- two singletons at one location overlap
-def Heap.disj_single {V : Type} (l : Nat) (v w : V) : Not (Heap.Disj (Heap.single l v) (Heap.single l w)) :=
+def Heap.disj_single {V : Type} (l : Nat) (v w : V) : ¬ Heap.Disj (Heap.single l v) (Heap.single l w) :=
   fun d => Or.elim (d l)
     (fun f => absurd (@Eq.substProp (Option V) (fun (o : Option V) => Option.Free o) (Heap.single l v l) (Option.some v) (Heap.single_at l v) f).1)
     (fun f => absurd (@Eq.substProp (Option V) (fun (o : Option V) => Option.Free o) (Heap.single l w l) (Option.some w) (Heap.single_at l w) f).1)
@@ -150,13 +150,13 @@ infix:60 " ↦ " => pts
 def hpure {V : Type} (P : Prop) : HProp V := fun h => P ∧ h = Heap.empty
 -- anything at all (SLF's `\GC`, the garbage collector's predicate)
 def htop {V : Type} : HProp V := fun h => True
-def hexists {V A : Type} (J : A → HProp V) : HProp V := fun h => Ex (fun (a : A) => J a h)
+def hexists {V A : Type} (J : A → HProp V) : HProp V := fun h => ∃ a : A, J a h
 def hforall {V A : Type} (J : A → HProp V) : HProp V := fun h => (a : A) → J a h
 -- the separating conjunction: the heap splits into two disjoint parts
 def StarAt {V : Type} (H₁ H₂ : HProp V) (h h₁ h₂ : Heap V) : Prop :=
   Heap.Disj h₁ h₂ ∧ h = Heap.union h₁ h₂ ∧ H₁ h₁ ∧ H₂ h₂
 def star {V : Type} (H₁ H₂ : HProp V) : HProp V := fun h =>
-  Ex (fun (h₁ : Heap V) => Ex (fun (h₂ : Heap V) => StarAt H₁ H₂ h h₁ h₂))
+  ∃ h₁ h₂ : Heap V, StarAt H₁ H₂ h h₁ h₂
 infixr:55 " ⋆ " => star
 -- the magic wand: whatever disjoint heap satisfies `H₁`, adding it gives `H₂`
 def wand {V : Type} (H₁ H₂ : HProp V) : HProp V := fun h =>
@@ -165,7 +165,7 @@ infixr:52 " −∗ " => wand
 
 -- introducing and eliminating `⋆` (the two `Ex` are the only awkward part)
 def star.intro {V : Type} (0 H₁ H₂ : HProp V) (h h₁ h₂ : Heap V) (s : StarAt H₁ H₂ h h₁ h₂) : star H₁ H₂ h :=
-  Ex.intro (fun (a : Heap V) => Ex (fun (b : Heap V) => StarAt H₁ H₂ h a b)) h₁
+  Ex.intro (fun (a : Heap V) => ∃ b : Heap V, StarAt H₁ H₂ h a b) h₁
     (Ex.intro (fun (b : Heap V) => StarAt H₁ H₂ h h₁ b) h₂ s)
 def star.elim {V : Type} {0 H₁ H₂ : HProp V} {h : Heap V} (s : star H₁ H₂ h) (0 R : Prop)
     (k : (h₁ h₂ : Heap V) → StarAt H₁ H₂ h h₁ h₂ → R) : R :=

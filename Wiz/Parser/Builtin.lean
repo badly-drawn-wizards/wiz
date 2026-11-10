@@ -110,7 +110,7 @@ def levelTrailing : List TrailingParser := [
 | `term.explicit`      | max  | "@" ident |
 | `term.fun`           | max  | "fun" [binder+] "=>" term |
 | `term.let`           | lead | "let" [quantity] ident [":" T] ":=" term [";"] term |
-| `term.forall`        | lead | "∀" [binder+] "," term |
+| `term.forall`        | lead | ("∀" / "forall") [binder+] "," term |
 | `term.depArrow`      | 25   | binder "→" term |
 | `term.app` (trailing)| lead | f [args+] |
 | `term.arrow` (trailing)| 25 | A "→" B |
@@ -167,7 +167,7 @@ def termLeading : List LeadingParser := [
     p := withPosition <| seqs ["let", optional quantity, ident, typeSpec false, ":=", term,
       optional ";", term] },
   { kind := "term.forall", prec := leadPrec,
-    p := seqs ["∀", many1 simpleBinder, ",", term] },
+    p := seqs [orelse "∀" "forall", many1 simpleBinder, ",", term] },
   { kind := "term.depArrow", prec := 25, p := seqs [bracketedBinder true, arrow, term 25] },
   { kind := "term.depSigma", prec := 35, p := seqs [explicitBinder true, "×", term 35] },
   { kind := "term.tuple", prec := maxPrec,

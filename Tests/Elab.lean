@@ -2676,7 +2676,18 @@ def languageGroup : Group where
           [".some 3", ".cons (1, 3) (.cons (2, 3) .nil)", ".cons 2 (.cons 3 .nil)", ".error \"e\"", ".some 3"] },
     { name := "13d: <$> and <*> for IO, from its Monad instance", run := fun _ =>
         ioRun ("import IO\nimport Functor\ndef main : IO Unit := do\n  n ← Nat.add <$> IO.pure 40 <*> IO.pure 2;\n" ++
-          "  IO.println (Nat.toString n)") "42\n" }
+          "  IO.println (Nat.toString n)") "42\n" },
+    { name := "13e: ∃ binders, ¬, and ASCII spellings (import Logic)", run := fun _ =>
+        okLib ("import Logic\ndef t1 : ∃ n, n = 3 := Ex.intro (fun n => n = 3) 3 rfl\n" ++
+          "def t2 : ∃ n : Nat, n + n = 4 := Ex.intro _ 2 rfl\ndef t3 : ∃ (n : Nat), n = 3 := Ex.intro _ 3 rfl\n" ++
+          "def t5 : ∃ (n : Nat) m, n = m ∧ m = n := Ex.intro (fun n => ∃ m, n = m ∧ m = n) 3 (Ex.intro (fun m => 3 = m ∧ m = 3) 3 (rfl, rfl))\n" ++
+          "def same {A : Type} (P : A → A → Prop) : (∃ x y : A, P x y) = Ex (fun (x : A) => Ex (fun (y : A) => P x y)) := rfl\n" ++
+          "def swap {A : Type} {P : A → A → Prop} (h : ∃ x y, P x y) : ∃ y x, P x y :=\n" ++
+          "  Ex.elim h (fun x h' => Ex.elim h' (fun y p => Ex.intro (fun y => ∃ x, P x y) y (Ex.intro (fun x => P x y) x p)))\n" ++
+          "def nope : ¬ (exists (b : Bool), b = .true ∧ b = .false) :=\n  fun h => Ex.elim h (fun b p => Bool.trueNeFalse (Eq.trans (Eq.symm p.1) p.2))\n" ++
+          "def t7 : forall (n : Nat), n = n := fun n => rfl\n" ++
+          "def t8 {P Q : Prop} (h : P <-> Q) (p : P) : (Q /\\ P) \\/ False := Or.inl (h.1 p, p)\n#check t5")
+          ["t5 : Ex Nat (fun n => Ex Nat (fun m => And (n = m) (m = n)))"] }
   ]
 
 /-- Machine words (`lib/Word.wiz`): one table of operations at widths 8–100, signed and

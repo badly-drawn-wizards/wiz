@@ -67,7 +67,8 @@ Sharing has two parts:
 
 ## Logic, heap predicates and Hoare triples ✅
 
-`lib/Logic.wiz` (`∧`, `∨`, `∃`, `↔`, `Not`, equality lemmas, `funext`, `propext`),
+`lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
+`/\`, `\/`, `exists`, `<->`, equality lemmas, `funext`, `propext`; [13e](stages/13-language.md)),
 `lib/HProp.wiz` (model heaps, `emp`, `↦`, `⋆`, `−∗`, entailment and the separation-logic
 laws) and `lib/Hoare.wiz` (`wp`, triples, the frame rule, verified swap and list reversal,
 adequacy for an interpreter). See [stage 24](stages/24-separation-logic.md).

@@ -164,3 +164,26 @@ because programs that import only the Prelude already define `List.map`, a class
 `Functor` and `Monad Option` instances of their own (`lib/Hdl/Core.wiz`, the tests).
 Tests: group `language`.
 
+## 13e: `∃ x, P`, `¬`, and ASCII spellings ✅
+
+```
+import Logic
+def two : ∃ n : Nat, n + n = 4 := Ex.intro _ 2 rfl
+def swap {A : Type} {P : A → A → Prop} (h : ∃ x y, P x y) : ∃ y x, P x y :=
+  Ex.elim h (fun x h' => Ex.elim h' (fun y p =>
+    Ex.intro (fun y => ∃ x, P x y) y (Ex.intro (fun x => P x y) x p)))
+def nope : ¬ (exists (b : Bool), b = .true ∧ b = .false) :=
+  fun h => Ex.elim h (fun b p => Bool.trueNeFalse (Eq.trans (Eq.symm p.1) p.2))
+```
+
+`lib/Logic.wiz` has binder notation for its Church-encoded `Ex`: `∃ x, P` is
+`Ex (fun x => P)`, with binders as in `fun` and an optional type for all of them
+(`∃ x y : A, P`, `∃ (x : A) (y : B), P`, `∃ x (y : B), P`). The body extends as far as
+possible, as `∀`'s does. A nested `Ex.intro` wants its motive (`Ex.intro (fun y => ∃ x, P x y) y …`):
+with holes for both motives the elaborator can't solve them from the expected type. A procedural macro (`Ex.binderMacro`) builds the nested `Ex`s,
+since quotations can't splice lists. `¬ P` is `Not P` (Lean's precedence: `¬ a = b` is
+`¬ (a = b)`). ASCII spellings follow `->` for `→`, `fun` for `λ`, `=>` for `↦`:
+`forall` for `∀` (built in, so `forall` is a reserved word now), `exists` for `∃`, `/\`
+for `∧`, `\/` for `∨`, `<->` for `↔`. `lib/Logic.wiz` and `lib/HProp.wiz` state their
+lemmas with them (`hexists J h` is `∃ a : A, J a h`; `star` is
+`∃ h₁ h₂ : Heap V, StarAt …`). Tests: group `language`.
