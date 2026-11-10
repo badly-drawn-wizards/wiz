@@ -1,5 +1,6 @@
 import Wiz.Compiler.IR
 import Wiz.Compiler.Run
+import Std.Data.TreeMap
 
 /-!
 # Simplification of the IR (stage 15c)
@@ -31,16 +32,18 @@ these operations as pure.
 
 namespace Wiz.IR
 
-/-- What is known about the variables in scope. -/
+/-- What is known about the variables in scope. Persistent trees, not hash maps: the
+branches of a `case` each extend the same environment, and a shared hash map is copied
+whole on insertion (quadratic memory in the nesting depth). -/
 structure SimpEnv where
   /-- renamings (a projection of a known constructor is its field) -/
-  σ : Std.HashMap Var Var := {}
+  σ : Std.TreeMap Var Var := ∅
   /-- the (simplified) bindings -/
-  defs : Std.HashMap Var Expr := {}
+  defs : Std.TreeMap Var Expr := ∅
   /-- variables known to be these numbers -/
-  lits : Std.HashMap Var Nat := {}
+  lits : Std.TreeMap Var Nat := ∅
   /-- variables already tested by an enclosing `case`: the branch taken -/
-  tags : Std.HashMap Var Nat := {}
+  tags : Std.TreeMap Var Nat := ∅
   deriving Inhabited
 
 /-- Lazy objects (`coit`, `scofix`: tags from 1000) are overwritten when observed
