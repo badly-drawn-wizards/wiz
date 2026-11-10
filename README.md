@@ -1833,11 +1833,16 @@ arguments yet). The garbage-collected mode is unchanged, byte for byte.
   with no `inc`/`dec` of the field); an owned variable a `case` matches on and no branch
   uses dies at each branch's start, where the tag is known.
 
+* **Strict `let`s**: a `let` that every path of its body evaluates (not under a `λ`)
+  is evaluated where it stands instead of suspended (a thunk gains nothing when the
+  value is needed anyway). Stage 2 on mid.wiz: 10.9% fewer allocations (thunks −30%,
+  closures −23%), and the generated C is 17% smaller.
+
 **Bootstrap in this mode**: stage 1 compiles the toolchain (with the `-- wiz: rc` line)
 to C, and that program (stage 2, reference counted) compiles it again to the same C,
 freeing every object by the end.
 
-Next: strict `let`s, static Bool objects, keeping tail calls when a borrowed argument
+Next: static Bool objects, keeping tail calls when a borrowed argument
 is lent; then reference counting by default.
 
 ## Stage 22: numbers for hardware and systems code

@@ -723,25 +723,63 @@ def betaE : ETm → ETm → ETm
     | .false => .letE a b
   | .letE v b, a => .letE v (betaE b (liftE 1 0 a))
   | f, a => .app f a
+-- **Strict `let`s** (reference counting mode): a `let` whose variable every path of its
+-- body evaluates (not under a `λ`) is evaluated where it stands: suspending it costs a
+-- thunk and gains nothing. (`unreachable` counts as using everything.)
 mutual
-def lazyLets : ETm → ETm
+def neededE (c : Nat) : ETm → Bool
+  | .var i => Nat.beq i c
+  | .app f a => match neededE c f with
+    | .true => .true
+    | .false => neededE c a
+  | .letE v b => match neededE c v with
+    | .true => .true
+    | .false => neededE (c + 1) b
+  | .obj _ fs => neededAny c fs
+  | .proj _ t => neededE c t
+  | .case s bs => match neededE c s with
+    | .true => .true
+    | .false => neededAll c bs
+  | .prim op as => match strEq op "unreachable" with
+    | .true => .true
+    | .false => neededAny c as
+  | _ => .false
+def neededAny (c : Nat) : ETms → Bool
+  | .nil => .false
+  | .cons t rest => match neededE c t with
+    | .true => .true
+    | .false => neededAny c rest
+def neededAll (c : Nat) : ETms → Bool
+  | .nil => .true
+  | .cons t rest => match neededE c t with
+    | .true => neededAll c rest
+    | .false => .false
+end
+-- (`sl`: strict `let`s, in the reference counting mode)
+def strictLet (sl : Bool) (b : ETm) : Bool := match sl with
+  | .true => neededE 0 b
+  | .false => .false
+mutual
+def lazyLets (sl : Bool) : ETm → ETm
   | .letE v b =>
-    let v' := lazyLets v;
-    let b' := lazyLets b;
+    let v' := lazyLets sl v;
+    let b' := lazyLets sl b;
     match cheapE v' with
     | .true => substE v' 0 b'
-    -- `let x := memo (λ _. v); b[x ◾ / x]`
-    | .false => .letE (.prim "memo" (etms1 (.lam (liftE 1 0 v')))) (substE (.app (.var 0) .erased) 0 (liftE 1 1 b'))
-  | .lam b => .lam (lazyLets b)
-  | .app f a => betaE (lazyLets f) (lazyLets a)
-  | .obj t fs => .obj t (lazyLetsEs fs)
-  | .proj i t => .proj i (lazyLets t)
-  | .case s bs => .case (lazyLets s) (lazyLetsEs bs)
-  | .prim op as => .prim op (lazyLetsEs as)
+    | .false => match strictLet sl b' with
+      | .true => .letE v' b'
+      -- `let x := memo (λ _. v); b[x ◾ / x]`
+      | .false => .letE (.prim "memo" (etms1 (.lam (liftE 1 0 v')))) (substE (.app (.var 0) .erased) 0 (liftE 1 1 b'))
+  | .lam b => .lam (lazyLets sl b)
+  | .app f a => betaE (lazyLets sl f) (lazyLets sl a)
+  | .obj t fs => .obj t (lazyLetsEs sl fs)
+  | .proj i t => .proj i (lazyLets sl t)
+  | .case s bs => .case (lazyLets sl s) (lazyLetsEs sl bs)
+  | .prim op as => .prim op (lazyLetsEs sl as)
   | t => t
-def lazyLetsEs : ETms → ETms
+def lazyLetsEs (sl : Bool) : ETms → ETms
   | .nil => .nil
-  | .cons t rest => .cons (lazyLets t) (lazyLetsEs rest)
+  | .cons t rest => .cons (lazyLets sl t) (lazyLetsEs sl rest)
 end
 
 -- **Reference counting** (stage 22, the `rc` mode; see `rt.c`). The C is in A-normal
@@ -1165,16 +1203,16 @@ inductive Erased where
 inductive EraseR where
   | ok (gs : List Erased)
   | err (msg : String)
-partial def eraseGlobals (all : Array Global) (seen : List String) (acc : List Erased) : Nat → EraseR
+partial def eraseGlobals (sl : Bool) (all : Array Global) (seen : List String) (acc : List Erased) : Nat → EraseR
   | .zero => .ok acc
   | .succ k => match Array.getD all k (.mk "?" .star .star .star .nil) with
     | .mk n ty v _ _ => match Bool.or (elemStr n seen) (isNative n) with
-      | .true => eraseGlobals all seen acc k
+      | .true => eraseGlobals sl all seen acc k
       | .false => match v with
-        | .axiomC _ _ => eraseGlobals all (.cons n seen) acc k
+        | .axiomC _ _ => eraseGlobals sl all (.cons n seen) acc k
         | _ => match eraseCheck empty v (eval .nil ty) with
           | .err m => .err (n +++ ": " +++ m)
-          | .ok e => eraseGlobals all (.cons n seen) (.cons (.mk n (lazyLets e)) acc) k
+          | .ok e => eraseGlobals sl all (.cons n seen) (.cons (.mk n (lazyLets sl e)) acc) k
 def arities : StrMap Nat → List Erased → StrMap Nat
   | ar, .nil => ar
   | ar, .cons (.mk n e) rest => arities (StrMap.insert ar (Str.ofString n) (lamsOf e)) rest
@@ -1216,7 +1254,7 @@ def genCode : CG → List Doc → List Doc → List Erased → Code
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); return c; }")) defs)) rest
 -- the program's C text, one `Doc` per line
 def genProgram (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ => match eraseGlobals all .nil .nil (Array.size all) with
+  | .mk all _ _ => match eraseGlobals .false all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es => match genCode (.mk .nil 0 (arities StrMap.empty es) .idle) .nil .nil es with
       | .mk protos defs st => match st with
@@ -1486,7 +1524,7 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++
              "); rt_root(&c); } inc(c); return c; }")) defs)) rest
 def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ => match eraseGlobals all .nil .nil (Array.size all) with
+  | .mk all _ _ => match eraseGlobals .true all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       let es1 := pushGlobals es0;
