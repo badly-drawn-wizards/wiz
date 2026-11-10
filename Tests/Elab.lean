@@ -274,6 +274,17 @@ def okWith (r : Regularity) (input : String) : IO Unit := do
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
 
+/-- (P2) Checking `input` under `mode` (`full+eager`: without `lazyProofs`) finishes, without
+errors, within `secs` seconds (in a child process, as `checkDiverges`). -/
+def checkTerminates (input mode : String) (secs : Nat := 20) : IO Unit := do
+  let dir ← IO.FS.createTempDir
+  IO.FS.writeFile (dir / "input.wiz") input
+  let self ← IO.appPath
+  let out ← IO.Process.output { cmd := "sh", cwd := dir, args := #["-c",
+    s!"ulimit -v 8000000; exec timeout {secs} \"$0\" --check {mode} input.wiz", self.toString] }
+  unless out.exitCode == 0 do
+    throw (IO.userError s!"expected success, got exit code {out.exitCode}: {out.stderr.take 1000}")
+
 /-- Checking `input` (with the Lean kernel, in a child process: `tests --check`) doesn't
 finish within `secs` seconds. Memory is capped, as the loop allocates. -/
 def checkDiverges (input mode : String) (secs : Nat := 3) : IO Unit := do
@@ -406,16 +417,17 @@ def ottGroup : Group where
     { name := "wrong equation", run := fun _ =>
         fails "def bad (A : Type) (a b : A) : a = b := rfl" "type mismatch" },
     -- D1: regularity is off by default, and the program checks; with `--regularity full`
-    -- (or `nonprop`) checking it does not terminate
+    -- (or `nonprop`) and an evaluator that runs proofs (`--eager-proofs`, the behaviour
+    -- before P2) checking it does not terminate
     { name := "D1 (Abel–Coquand): the program checks (no regularity: the box's cast casts its proof field)", run := fun _ => do
         ok (abelCoquand "omega")
         ok (abelCoquand) },
-    { name := "D1 (Abel–Coquand): with regularity, checking the program does not terminate", run := fun _ =>
-        checkDiverges (abelCoquand) "full" },
-    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks; loops with regularity)", run := fun _ => do
+    { name := "D1 (Abel–Coquand): with regularity and eager proofs, checking the program does not terminate", run := fun _ =>
+        checkDiverges (abelCoquand) "full+eager" },
+    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks; loops with regularity and eager proofs)", run := fun _ => do
         unless (abelCoquandNested.splitOn "unbox2").length > 2 do throw (IO.userError "variant not built")
         ok abelCoquandNested
-        checkDiverges abelCoquandNested "full" },
+        checkDiverges abelCoquandNested "full+eager" },
     { name := "regularity at inert types: an indexed recursor computes at a data motive (Vec.length)", run := fun _ =>
         ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
           "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
@@ -432,13 +444,25 @@ def ottGroup : Group where
         checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .conv)).pretty },
     { name := "P1: the old syntactic InReg rejects the reduct h2 of h3 (documents the bug)", run := fun _ =>
         checkEq (repr ["t1", "h", "h3", "g1", "g3"]).pretty (repr (p1Accepted .syntactic)).pretty },
-    { name := "D1: a cast between propositions applies the equivalence, not regularity", run := fun _ =>
-        ok abelCoquandLiteral ["fun x => x"] },
-    { name := "D1 (R1): regularity only at non-propositions doesn't help (the box is a type)", run := fun _ =>
-        checkDiverges (abelCoquand) "nonprop" },
+    { name := "D1: with eager proofs, a cast between propositions applies the equivalence, not regularity", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral { globals := { lazyProofs := false } }
+        checkEq (repr ["fun x => x"]).pretty (repr (s.messages.toList.map (·.text))).pretty },
+    { name := "D1 (R1): regularity only at non-propositions doesn't help with eager proofs (the box is a type)", run := fun _ =>
+        checkDiverges (abelCoquand) "nonprop+eager" },
     { name := "D1 (R2, off): regularity only along refl, or none, checks the program", run := fun _ => do
         okWith .refl (abelCoquand)
-        okWith .off (abelCoquand) }
+        okWith .off (abelCoquand) },
+    -- P2 (the default): proofs are never evaluated, so the loop, which lives in a proof,
+    -- is never run, even with full regularity
+    { name := "P2: proofs are never evaluated, so Abel–Coquand checks even with full regularity (and nested)", run := fun _ => do
+        checkTerminates (abelCoquand) "full"
+        checkTerminates abelCoquandNested "full"
+        checkTerminates (abelCoquand) "nonprop"
+        checkTerminates (abelCoquand) "off" },
+    { name := "P2: a cast between propositions is stuck (a proof), not the equivalence applied", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral
+        let out := (s.messages.map (·.render abelCoquandLiteral)).toList
+        unless out.any (·.contains "cast") do throw (IO.userError s!"expected a stuck cast, got {out}") }
   ]
 
 end Tests.Elab
@@ -1372,6 +1396,132 @@ def ffiGroup : Group where
           "  IO.println (Nat.toString (Bytes.size (Bytes.ofString \"λx\")))") "ABC\n3\n" },
     { name := "foreign types are checked", run := fun _ =>
         ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" }
+  ]
+
+/-- (9i) A header of our own: structs by value (nested, with a string and a byte array),
+an opaque pointer type with a constructor and a finalizer, and a buffer function. -/
+def pointHeader : String := "#ifndef WIZ_POINT_H
+#define WIZ_POINT_H
+#include <stdio.h>
+#include <stddef.h>
+struct point { double x; double y; };
+typedef struct { struct point lo; struct point hi; const char *name; unsigned char tag[4]; int flags; } box;
+struct packed { unsigned a : 3; unsigned b : 5; };
+static inline struct point point_add(struct point a, struct point b) { struct point r = { a.x + b.x, a.y + b.y }; return r; }
+static inline double box_area(box b) { return (b.hi.x - b.lo.x) * (b.hi.y - b.lo.y); }
+static inline box box_make(struct point lo, struct point hi) {
+  box b; b.lo = lo; b.hi = hi; b.name = \"made in C\"; b.tag[0] = 'w'; b.tag[1] = 'i'; b.tag[2] = 'z'; b.tag[3] = '!'; b.flags = 7; return b;
+}
+static inline size_t box_name_len(box b) { size_t n = 0; while (b.name[n]) n++; return n + b.tag[0]; }
+static inline int packed_sum(struct packed p) { return p.a + p.b; }
+typedef struct counter counter;
+struct counter { int n; };
+static struct counter wiz_the_counter;
+static inline counter *counter_new(void) { wiz_the_counter.n = 0; return &wiz_the_counter; }
+static inline int counter_bump(counter *c) { return ++c->n; }
+static inline void counter_free(counter *c) { printf(\"freed at %d\\n\", c->n); fflush(stdout); }
+static inline size_t sum_bytes(const void *buf, size_t n) { const unsigned char *p = buf; size_t s = 0; for (size_t i = 0; i < n; i++) s += p[i]; return s; }
+#endif
+"
+
+/-- Write `pointHeader` to a fresh directory; its absolute path. -/
+def writePointHeader : IO String := do
+  let dir ← IO.FS.createTempDir
+  let h := dir / "wiz_point.h"
+  IO.FS.writeFile h pointHeader
+  pure h.toString
+
+/-- The errors of a program that imports headers (preprocessed like `ioRun` does). -/
+def ffiErrors (src : String) : IO (Array String) := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let ioLib ← IO.FS.readFile "lib/IO.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
+  let headers ← Build.preprocessHeaders (← toolchain) src
+  let s := runFrontend (R := ZeroOneMany) src { loader, cHeaders := (headers[·]?) }
+  pure ((s.messages.filter (·.severity == .error)).map fun m => m.render src)
+
+def divSrc : String :=
+  "import IO\nc_struct \"div_t\" (header := \"stdlib.h\") DivT where\n  quot : Nat\n  rem : Nat\n" ++
+  "extern \"div\" (header := \"stdlib.h\") cdiv : Nat → Nat → DivT\n" ++
+  "def main : IO Unit := do\n  let d := cdiv 17 5;\n  IO.println (Nat.toString d.quot);\n  IO.println (Nat.toString d.rem)"
+
+def ffiStructGroup : Group where
+  name := "ffi-structs"
+  exercise := "Stage 9i"
+  cases := [
+    { name := "a C struct by value: div_t from div()", run := fun _ => ioRun divSrc "3\n2\n" },
+    { name := "a C struct by value, LLVM backend", run := fun _ => ioRun divSrc "3\n2\n" (llvm := true) },
+    { name := "a struct argument: inet_ntoa (struct in_addr)", run := fun _ =>
+        ioRun ("import IO\nc_struct \"struct in_addr\" (header := \"arpa/inet.h\") InAddr where\n  s_addr : Nat\n" ++
+          "extern \"inet_ntoa\" (header := \"arpa/inet.h\") ntoa : InAddr → String\n" ++
+          "def main : IO Unit := IO.println (ntoa (InAddr.mk 16777343))") "127.0.0.1\n" },
+    { name := "struct timespec from clock_gettime, through glue", run := fun _ =>
+        ioRun ("import IO\nimport_c \"time.h\"\nc_struct \"struct timespec\" (header := \"time.h\") Timespec where\n  tv_sec : Nat\n  tv_nsec : Nat\n" ++
+          "glue monotonic : IO Timespec := \"struct timespec t; clock_gettime(1, &t); return t;\"\n" ++
+          "def showB : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\nglue later (t : Timespec) : Timespec := \"t.tv_sec = t.tv_sec + 1; return t;\"\n" ++
+          "def main : IO Unit := do\n  t ← monotonic;\n  let u := later t;\n" ++
+          "  IO.println (showB (Nat.lt t.tv_nsec 1000000000));\n" ++
+          "  IO.println (Nat.toString (u.tv_sec - t.tv_sec))") "true\n1\n" },
+    { name := "a struct defined in Wiz (generated C definition)", run := fun _ =>
+        ioRun ("import IO\nc_struct \"struct pair\" Pair where\n  a : Nat\n  b : Float64\n  ok : Bool\n" ++
+          "def showB : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\nglue bump (p : Pair) : Pair := \"p.a = p.a + 1; p.b = p.b * 2; p.ok = !p.ok; return p;\"\n" ++
+          "def main : IO Unit := do\n  let p := bump (Pair.mk 41 (Float64.ofNat 3) .false);\n" ++
+          "  IO.println (Nat.toString p.a);\n  IO.println (Float64.toString p.b);\n" ++
+          "  IO.println (showB p.ok)") "42\n6\ntrue\n" },
+    { name := "import_c binds functions on structs: div, ldiv", run := fun _ =>
+        ioRun ("import IO\nimport_c \"stdlib.h\" (pure)\n" ++
+          "def main : IO Unit := do\n  let d := C.div 100 7;\n  IO.println (Nat.toString d.quot);\n" ++
+          "  IO.println (Nat.toString (C.ldiv 100 7).rem)") "14\n2\n" },
+    { name := "a header's structs: nested, strings, byte arrays, pointers, buffers", run := fun _ => do
+        let h ← writePointHeader
+        ioRun (s!"import IO\nimport_c \"{h}\"\n" ++
+          "def pt (x y : Nat) : C.struct_point := C.struct_point.mk (Float64.ofNat x) (Float64.ofNat y)\n" ++
+          "def main : IO Unit := do\n  p ← C.point_add (pt 1 2) (pt 10 20);\n" ++
+          "  IO.println (Float64.toString p.x);\n  IO.println (Float64.toString p.y);\n" ++
+          "  b ← C.box_make (pt 0 0) (pt 3 4);\n  a ← C.box_area b;\n  IO.println (Float64.toString a);\n" ++
+          "  IO.println b.name;\n  IO.println (Bytes.toString b.tag);\n  IO.println (Nat.toString b.flags);\n" ++
+          "  n ← C.box_name_len (C.box.mk (pt 0 0) (pt 1 1) \"four\" (Bytes.ofString \"A\") 0);\n  IO.println (Nat.toString n);\n" ++
+          "  c ← C.counter_new;\n  k ← C.counter_bump c;\n  k ← C.counter_bump c;\n  IO.println (Nat.toString k);\n" ++
+          "  s ← C.sum_bytes (Bytes.ofString \"AB\");\n  IO.println (Nat.toString s)")
+          "11\n22\n12\nmade in C\nwiz!\n7\n69\n2\n131\n" },
+    { name := "foreign_type (c := …) takes over a header's pointer type, with a finalizer", run := fun _ => do
+        let h ← writePointHeader
+        ioRun (s!"import IO\nforeign_type Counter (finalizer := \"counter_free\") (c := \"counter\")\nimport_c \"{h}\"\n" ++
+          "def main : IO Unit := do\n  c ← C.counter_new;\n  k ← C.counter_bump c;\n  k ← C.counter_bump c;\n  k ← C.counter_bump c;\n" ++
+          "  IO.println (Nat.toString k)") "freed at 3\n3\n" },
+    { name := "c_struct takes over a header's struct (only the fields it names)", run := fun _ => do
+        let h ← writePointHeader
+        ioRun (s!"import IO\nc_struct \"box\" (header := \"{h}\") Box where\n  name : String\n  flags : Nat\nimport_c \"{h}\"\n" ++
+          "def main : IO Unit := do\n  b ← C.box_make (C.struct_point.mk (Float64.ofNat 0) (Float64.ofNat 0)) (C.struct_point.mk (Float64.ofNat 1) (Float64.ofNat 1));\n" ++
+          "  IO.println b.name;\n  IO.println (Nat.toString b.flags)") "made in C\n7\n" },
+    { name := "opt-outs: no_auto and skip", run := fun _ => do
+        let h ← writePointHeader
+        let errs ← ffiErrors s!"import IO\nimport_c \"{h}\" (no_auto)\n#check C.point_add"
+        check (errs.size == 1) s!"{errs}"
+        let errs ← ffiErrors s!"import IO\nimport_c \"{h}\" (skip := \"counter box_area\")\n#check C.counter_new\n#check C.box_area\n#check C.point_add"
+        check (errs.size == 2) s!"{errs}"
+        -- a struct with bit fields isn't mapped
+        let errs ← ffiErrors s!"import IO\nimport_c \"{h}\"\n#check C.packed_sum"
+        check (errs.size == 1) s!"{errs}" },
+    { name := "glue: struct addresses only for struct pointer parameters", run := fun _ => do
+        let errs ← ffiErrors ("import IO\nimport_c \"time.h\"\nc_struct \"struct timespec\" (header := \"time.h\") Timespec where\n  tv_sec : Nat\n  tv_nsec : Nat\n" ++
+          "glue bad (n : Nat) : Nat := \"return clock_gettime(1, &n);\"")
+        check (errs.size == 1 && (errs[0]!.splitOn "struct variable").length > 1) s!"{errs}"
+        let errs ← ffiErrors ("import IO\nimport_c \"string.h\"\nc_struct \"struct timespec\" (header := \"time.h\") Timespec where\n  tv_sec : Nat\n  tv_nsec : Nat\n" ++
+          "glue bad (n : Nat) : Nat := \"struct timespec t; return strlen(&t);\"")
+        check (errs.size == 1 && (errs[0]!.splitOn "address").length > 1) s!"{errs}"
+        let errs ← ffiErrors ("import IO\nc_struct \"struct named\" Named where\n  s : String\n" ++
+          "glue bad (n : Nat) : Named := \"struct named t; return t;\"")
+        check (errs.size == 1 && (errs[0]!.splitOn "initialised").length > 1) s!"{errs}" },
+    { name := "c_struct fields are checked", run := fun _ =>
+        ioFails "import IO\nc_struct Bad where\n  f : Nat → Nat" "c_struct field f" },
+    { name := "the C subset parser reads struct definitions", run := fun _ => do
+        let (_, sts) := FFI.parseHeaderFull "struct a { int x; double y[3]; char n[8]; };\ntypedef struct { struct a in; const char *s; } b_t;\ntypedef struct a a_t;\nstruct c { unsigned f : 1; };\nstruct d;"
+        checkEq "[struct a, b_t, struct c]" (toString (sts.toList.map (·.spelling)))
+        checkEq "[a_t]" (toString (sts[0]!.aliases))
+        checkEq "true" (toString (sts[2]!.fields.isNone))
+        checkEq "true" (toString ((sts[0]!.fields.getD []).map (·.2) == [.int "int", .array (.float "double") (some 3), .array (.int "char") (some 8)])) }
   ]
 
 /-- Tokens as the Lean lexer reads them, as `kind:text` lines. -/
@@ -2698,6 +2848,36 @@ def selfHostGroup : Group where
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         unless (expected.filter (· != "error")).length ≥ 30 do throw (IO.userError "too few well-typed terms")
         ioRun (kernel ++ "\n" ++ verdict ++ printAll ++ main) ("\n".intercalate expected ++ "\n") },
+    -- P2 (soundness review of PR #61). A suspended proof never reaches these positions from
+    -- a checked term (it only sits in the proof positions of `cast` and `transp`), so the
+    -- values are built by hand, in both kernels.
+    { name := "P2: comparing types erases suspended proofs, but not what follows an absurd (both kernels)", run := fun _ => do
+        let g : Globals ZeroOneMany := {}
+        let ls : List Name := ["a", "b"]
+        let E : Val ZeroOneMany := .enum ls
+        let pf (sp : Array (Elim ZeroOneMany)) : Val ZeroOneMany :=
+          .neutral (.prf (Thunk.mk fun _ => .empty 0) [] .tt (Thunk.mk fun _ => .tt)) sp
+        -- two proofs are equal, whatever was projected
+        checkEq "true" (toString (sameVal g (pf #[.fst]) (pf #[.snd])))
+        -- `absurd E p` is a value of `E`, not a proof: what is done with it is compared
+        checkEq "false" (toString (sameVal g (pf #[.absurd E, .app (.tag ls 0)]) (pf #[.absurd E, .app (.tag ls 1)])))
+        -- and what was done before the `absurd` is not
+        checkEq "true" (toString (sameVal g (pf #[.fst, .absurd E, .app (.tag ls 0)]) (pf #[.snd, .absurd E, .app (.tag ls 0)])))
+        -- conversion, a suspended proof against a `refl`, both under `absurd`: the Lean kernel
+        -- takes any two proof heads as equal, the Wiz kernel only two of the same kind (it
+        -- is the stricter one: CoreSpec §15)
+        let refl : Val ZeroOneMany := .neutral (.refl E (.tag ls 0)) #[.absurd E]
+        checkEq "true" (toString (conv g #[] E (pf #[.absurd E]) refl))
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def b2s : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\n" ++
+          "def pf : Head := .hprf (fun _ => .vempty 0) .nil .star\n" ++
+          "def ab (sp : Spine) : Spine := .sabsurd sp (.venum 2)\n" ++
+          "def main : IO Unit := do\n" ++
+          "  IO.println (b2s (sameVal (.vne pf (.sfst .snil)) (.vne pf (.ssnd .snil))));\n" ++
+          "  IO.println (b2s (sameVal (.vne pf (.sapp (ab .snil) (.vtag 2 0))) (.vne pf (.sapp (ab .snil) (.vtag 2 1)))));\n" ++
+          "  IO.println (b2s (sameVal (.vne pf (.sapp (ab (.sfst .snil)) (.vtag 2 0))) (.vne pf (.sapp (ab (.ssnd .snil)) (.vtag 2 0)))));\n" ++
+          "  IO.println (b2s (conv empty (.venum 2) (.vne pf (ab .snil)) (.vne (.hrefl (.venum 2) (.vtag 2 0)) (ab .snil))))\n"
+        ioRun (kernel ++ "\n" ++ main) "true\nfalse\ntrue\nfalse\n" },
     { name := "the Wiz kernel checks declarations at symbolic levels like the Lean kernel", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let decls := MTm.declSamples ++ MTm.levelPuzzles 200
@@ -2711,7 +2891,7 @@ def selfHostGroup : Group where
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ decl ++ printAll ++ main) ("\n".intercalate expected ++ "\n") },
     -- D1: regularity is off in both kernels; with it on, the Wiz kernel loops too
-    { name := "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with regularity on)", run := fun _ => do
+    { name := "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with regularity on: its proofs are let-bound)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
         let control := MTm.abelCoquand false
@@ -2725,7 +2905,9 @@ def selfHostGroup : Group where
           | .ok (ty, _) => pure ((MTm.ofTerm (quote (leanGlobals ()) 0 ty)).map (·.pretty 0) |>.getD "?")
           | .error e => throw (IO.userError s!"the Lean kernel without regularity rejects it: {e}")
         ioRun (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") (expected ++ "\n")
-        -- with regularity (`kernelRegularity`) the Wiz kernel loops
+        -- with regularity (`kernelRegularity`) the Wiz kernel loops. Proofs in `cast` and
+        -- `transp` are never evaluated (P2), but this program binds its proofs with `let`,
+        -- and a `let`-bound proof is still evaluated (Status.md, D1: the remaining gap)
         let off := "def kernelRegularity : Bool := .false"
         unless (kernel.splitOn off).length == 2 do throw (IO.userError "kernelRegularity not found")
         let withReg := kernel.replace off "def kernelRegularity : Bool := .true"
@@ -4241,7 +4423,9 @@ def reprGroup : Group where
         check ((run { inertReg := .conv }).inertReg == .conv) "inertReg := conv was lost"
         check ((run {}).inertReg == .ground) "inertReg leaked"
         check ((run { predicativeProp := true }).predicativeProp) "predicativeProp was lost"
-        check (!(run {}).predicativeProp) "predicativeProp leaked" },
+        check (!(run {}).predicativeProp) "predicativeProp leaked"
+        check (!(run { lazyProofs := false }).lazyProofs) "lazyProofs := false was lost"
+        check ((run {}).lazyProofs) "lazyProofs leaked" },
     { name := "structures and the Σ of their shape: values converted back and forth", run := fun _ => do
         let (src, total) := r3RoundTrips
         reprAll src (toString total)
@@ -4686,6 +4870,7 @@ def groups : List Group :=
   derivingGroup ::
   effectsGroup ::
   ffiGroup ::
+  ffiStructGroup ::
   group ::
   hdlGroup ::
   inductiveGroup ::

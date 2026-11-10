@@ -15,7 +15,8 @@ options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
 (default off),
---predicative-prop,
+--predicative-prop, --eager-proofs (P2: the evaluator runs proofs, as it did before; the
+default never evaluates them),
 --inert syntactic|ground|conv (P1: regularity at inert types; default ground)
 compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
 unboxed; not stable under substitution, so off by default)
@@ -65,6 +66,9 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
+/-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
+initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
+
 /-- (P1) `--inert MODE`: regularity at inert types. -/
 initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
 
@@ -92,15 +96,18 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
   let (regularity, predicativeProp) ← kernelOpts.get
+  let lazyProofs ← lazyProofsOpt.get
   let inertReg ← inertOpt.get
   let unboxStructs ← unboxOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, inertReg, unboxStructs },
+    { loader := (lib[·]?), cHeaders := (headers[·]?),
+      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && inertReg == .ground && !unboxStructs then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs
+    then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -129,7 +136,7 @@ def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) : IO UInt32 := d
   | .error e => IO.eprintln e; pure 1
   | .ok (decls, ty) =>
     let io := Build.isIO ty
-    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls))
+    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls) (Build.extraC s))
       else Build.compileC tc (C.program decls io (Build.extraC s)) out
     match r with
     | .error e => IO.eprintln e; pure 1
@@ -164,6 +171,8 @@ def main (args : List String) : IO UInt32 := do
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
   if args.contains "--unbox-structs" then unboxOpt.set true
   let args := args.filter (· != "--unbox-structs")
+  lazyProofsOpt.set (!args.contains "--eager-proofs")
+  let args := args.filter (· != "--eager-proofs")
   let args ← match takeInertOpt args with
     | .ok (r, a) => do if let some r := r then inertOpt.set r
                        pure a
