@@ -30,10 +30,18 @@ def Target.isDefault : Target → Bool
   | .selfhost _ "bootstrap" => false
   | _ => true
 
+/-- A package from git (stage 23h, `Grail/Deps.lean`) -/
+structure Dep where
+  name : String
+  url : String
+  rev : String
+  deriving Repr, Inhabited, BEq
+
 structure Package where
   name : String
   targets : List Target
   settings : List (String × String)
+  deps : List Dep := []
   deriving Repr, Inhabited
 
 open Cache in
@@ -45,7 +53,7 @@ def decodeSettings (x : Sx) : Except String (List (String × String)) := do
 
 open Cache in
 def decodePackage (x : Sx) : Except String Package := do
-  let .l #[.a "package", .a name, ts, ss] := x | throw "expected (package name targets settings)"
+  let .l #[.a "package", .a name, ts, ss, ds] := x | throw "expected (package name targets settings deps)"
   let some ts := items? ts | throw "targets: expected a list"
   let targets ← ts.toList.drop 1 |>.mapM fun
     | .l #[.a "lib", .a n, .a r] => pure (Target.lib n r)
@@ -54,7 +62,11 @@ def decodePackage (x : Sx) : Except String Package := do
     | .l #[.a "tests", .a n, .a r] => pure (.tests n r)
     | .l #[.a "selfhost", .a n, .a r] => pure (.selfhost n r)
     | t => throw s!"unknown target {t.render}"
-  pure { name, targets, settings := ← decodeSettings ss }
+  let some ds := items? ds | throw "deps: expected a list"
+  let deps ← ds.toList.drop 1 |>.mapM fun
+    | .l #[.a "dep", .a name, .a url, .a rev] => pure { name, url, rev : Dep }
+    | d => throw s!"bad dependency {d.render}"
+  pure { name, targets, settings := ← decodeSettings ss, deps }
 
 /-- Evaluate `expr` (a `String`) in the build file `path`. -/
 def evalBuildFile (tc : Toolchain) (salt : UInt64) (roots : List System.FilePath) (path : System.FilePath)

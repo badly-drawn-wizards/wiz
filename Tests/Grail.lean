@@ -107,13 +107,36 @@ def modulesGroup : Group where
         let ms ← Module.loadAll ["lib"]
         let s ← Cache.elaborateUncached "import Std\ndef n : Nat := 2 + 2\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany)
         check s.messages.isEmpty s!"messages: {s.messages.toList.map (·.text)}" },
+    { name := "a module sees only what it imports (the frontend and the language server too)", run := fun _ => do
+        let dir ← mkTree [("Sneaky.wiz", "def three : Nat := 3\n"), ("Fine.wiz", "import Prelude\ndef three : Nat := 3\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let sneaky (s : CommandState ZeroOneMany) : Bool :=
+          s.messages.any fun m => (m.text.splitOn "module Sneaky has errors").length > 1
+        let src := "import Prelude\nimport Sneaky\n"
+        let s := runFrontend (R := ZeroOneMany) src { loader := loaderOf ms }
+        check (sneaky s) s!"runFrontend: Sneaky used Nat without importing Prelude: {s.messages.toList.map (·.text)}"
+        let s := runFrontend (R := ZeroOneMany) ("import Prelude\ndef two : Nat := 2\nimport Sneaky\n") { loader := loaderOf ms }
+        check (sneaky s) s!"runFrontend, after a definition: {s.messages.toList.map (·.text)}"
+        let (s, _) := Query.elaborate (R := ZeroOneMany) {} src { loader := loaderOf ms, termInfo := true }
+        check (sneaky s) s!"the language server's engine: {s.messages.toList.map (·.text)}"
+        -- through the server: the diagnostic is at the import
+        let srv : LSP.Server := { libs := ms.fold (fun m k (p, t) => m.insert k (p.toString, t)) {} }
+        let (_, out) := LSP.handle srv (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("text", src)])])])
+        check ((out[0]!.compress.splitOn "module Sneaky has errors").length > 1) s!"diagnostics: {out[0]!.compress}"
+        -- a module that imports what it uses is fine, and its declarations are seen
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\nimport Fine\n#eval three\n" { loader := loaderOf ms }
+        checkEq "[3:1: info: 3]" (toString (s.messages.toList.map (·.render "import Prelude\nimport Fine\n#eval three\n"))) },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
         let ms ← Module.loadAll [dir]
         let cache ← IO.FS.createTempDir
         let (s, _) ← Cache.elaborateCached cache "import A\n" ({ loader := loaderOf ms } : CommandState ZeroOneMany) 0
         check (s.messages.any fun m => (m.text.splitOn "import cycle").length > 1)
-          s!"messages: {s.messages.toList.map (·.text)}" }
+          s!"messages: {s.messages.toList.map (·.text)}"
+        let s := runFrontend (R := ZeroOneMany) "import A\n" { loader := loaderOf ms }
+        check (s.messages.any fun m => (m.text.splitOn "import cycle").length > 1)
+          s!"runFrontend: {s.messages.toList.map (·.text)}" }
   ]
 
 /-- A package: a library with two modules, and a file that checks against it. -/
@@ -311,6 +334,139 @@ def grailJobsGroup : Group where
         check (!ok) "the build succeeded"
         checkEq 0 s.ran
         check ((log.splitOn "timed out after 0.001 s").length > 1) log }
+  ]
+
+/-- Run git in `dir` (with an identity, for commits); fails the test if git fails. -/
+def gitIn (dir : System.FilePath) (args : List String) : IO String := do
+  let o ← IO.Process.output {
+    cmd := "git", cwd := dir,
+    args := #["-c", "user.name=grail", "-c", "user.email=grail@example.com", "-c", "init.defaultBranch=main",
+              "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"] ++ args.toArray }
+  if o.exitCode != 0 then throw (IO.userError s!"git {args}: {o.stderr}")
+  pure o.stdout.trimAscii.toString
+
+/-- A dependency as a bare repository (no network): a package with a library, tagged
+`v1`; returns the bare repository and the work tree it was pushed from. -/
+def depRepo : IO (System.FilePath × System.FilePath) := do
+  let work ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"greet\"\n  |> Package.lib \"greet\" \"src\"\n"),
+                     ("src/Greet/Hello.wiz", "import Prelude\ndef hello : Nat := 1\n")]
+  let bare ← IO.FS.createTempDir
+  let _ ← gitIn bare ["init", "--quiet", "--bare"]
+  let _ ← gitIn work ["init", "--quiet"]
+  let _ ← gitIn work ["add", "."]
+  let _ ← gitIn work ["commit", "--quiet", "-m", "v1"]
+  let _ ← gitIn work ["tag", "v1"]
+  let _ ← gitIn work ["push", "--quiet", bare.toString, "HEAD:refs/heads/main", "v1"]
+  pure (bare, work)
+
+/-- A package that depends on `greet` at `rev`. -/
+def depPkg (url rev : String) : List (String × String) :=
+  [("grail.wiz", s!"import Grail\ndef package : Package := Package.new \"app\"\n  |> Package.dep \"greet\" \"{url}\" \"{rev}\"\n  |> Package.check \"app\" \"app.wiz\"\n"),
+   ("app.wiz", "import Greet.Hello\n#eval hello + 1\n")]
+
+def setGrailWiz (dir : System.FilePath) (url rev : String) : IO Unit :=
+  IO.FS.writeFile (dir / "grail.wiz") ((depPkg url rev).head!.2)
+
+/-- `grail update`, in-process. -/
+def updateDeps (dir : System.FilePath) (tc : Toolchain) : IO (Except String (List Grail.Locked)) := do
+  match ← Grail.readConfig tc 7 "lib" dir with
+  | .error e => pure (.error e)
+  | .ok (pkg, _) => Grail.update (fun d => do pure ((← Grail.readConfig tc 7 "lib" d).map (·.1))) dir pkg
+
+/-- `grail build`, with the dependencies' roots; also the notes. -/
+def buildDeps (dir : System.FilePath) (tc : Toolchain) : IO (Except String (Grail.Stats × Bool × String)) := do
+  match ← Grail.readConfig tc 7 "lib" dir with
+  | .error e => pure (.error e)
+  | .ok (pkg, _) =>
+    let log ← IO.mkRef ""
+    match ← Grail.lockedRoots (fun d => do pure ((← Grail.readConfig tc 7 "lib" d).map (·.1))) dir pkg
+        (fun s => log.modify (· ++ s)) with
+    | .error e => pure (.error e)
+    | .ok roots =>
+      let r ← runner dir tc pkg 2 log
+      let r := { r with ctx := { r.ctx with libRoots := r.ctx.libRoots ++ roots } }
+      let ok ← r.build pkg.targets pkg.targets
+      pure (.ok (← r.stats.get, ok, ← log.get))
+
+def grailDepsGroup : Group where
+  name := "grail-deps"
+  exercise := "Stage 23h"
+  cases := [
+    { name := "a git dependency: grail update writes the lock, builds use it", run := fun _ => do
+        let (bare, work) ← depRepo
+        let url := bare.toString
+        let dir ← mkTree (depPkg url "v1")
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        -- no lock yet
+        match ← buildDeps dir tc with
+        | .error e => check ((e.splitOn "grail update").length > 1) e
+        | .ok _ => throw (IO.userError "built without grail.lock")
+        let .ok [l] ← updateDeps dir tc | throw (IO.userError "grail update failed")
+        let v1 ← gitIn work ["rev-parse", "v1"]
+        checkEq v1 l.commit
+        let lock ← IO.FS.readFile (dir / "grail.lock")
+        check ((Grail.parseLock lock |>.toOption) == some [l]) s!"grail.lock: {lock}"
+        check ((lock.splitOn v1).length == 2) lock
+        check (← (dir / ".grail/packages/greet/src/Greet/Hello.wiz").pathExists) "not fetched"
+        let .ok (s, ok, log) ← buildDeps dir tc | throw (IO.userError "the build failed")
+        check ok log
+        checkEq 1 s.ran
+        check ((log.splitOn "app.wiz:2:1: info: 2").length == 2) log
+        -- again: nothing runs
+        let .ok (s, _, _) ← buildDeps dir tc | throw (IO.userError "the second build failed")
+        checkEq 0 s.ran
+        -- a new tag upstream; grail.wiz asks for it, but the lock still has v1
+        IO.FS.writeFile (work / "src/Greet/Hello.wiz") "import Prelude\ndef hello : Nat := 41\n"
+        let _ ← gitIn work ["commit", "--quiet", "-am", "v2"]
+        let _ ← gitIn work ["tag", "v2"]
+        let _ ← gitIn work ["push", "--quiet", url, "HEAD:refs/heads/main", "v2"]
+        setGrailWiz dir url "v2"
+        let .ok (s, ok, log) ← buildDeps dir tc | throw (IO.userError "the build failed")
+        check ok log
+        checkEq 0 s.ran
+        check ((log.splitOn "grail update").length > 1) s!"no note: {log}"
+        checkEq v1 (← gitIn (dir / ".grail/packages/greet") ["rev-parse", "HEAD"])
+        checkEq lock (← IO.FS.readFile (dir / "grail.lock"))
+        -- grail update moves it
+        let .ok [l2] ← updateDeps dir tc | throw (IO.userError "grail update failed")
+        checkEq (← gitIn work ["rev-parse", "v2"]) l2.commit
+        check (l2.content != l.content) "the content hash did not change"
+        let .ok (s, ok, log) ← buildDeps dir tc | throw (IO.userError "the build failed")
+        check ok log
+        checkEq 1 s.ran
+        check ((log.splitOn "app.wiz:2:1: info: 42").length == 2) log },
+    { name := "a fresh checkout fetches the locked commit; edited files are refused", run := fun _ => do
+        let (bare, _) ← depRepo
+        let dir ← mkTree (depPkg bare.toString "main")
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        let .ok [l] ← updateDeps dir tc | throw (IO.userError "grail update failed")
+        -- as if the package were cloned elsewhere: no .grail
+        IO.FS.removeDirAll (dir / ".grail")
+        let .ok (_, ok, log) ← buildDeps dir tc | throw (IO.userError "the build failed")
+        check ok log
+        checkEq l.commit (← gitIn (dir / ".grail/packages/greet") ["rev-parse", "HEAD"])
+        IO.FS.writeFile (dir / ".grail/packages/greet/src/Greet/Hello.wiz") "import Prelude\ndef hello : Nat := 5\n"
+        match ← buildDeps dir tc with
+        | .error e => check ((e.splitOn "differs from").length > 1) e
+        | .ok _ => throw (IO.userError "built with edited dependency files") },
+    { name := "two commits of one dependency are refused", run := fun _ => do
+        -- `mid` depends on greet at v1; the app on greet at main (a later commit) and on mid
+        let (bare, work) ← depRepo
+        IO.FS.writeFile (work / "src/Greet/Hello.wiz") "import Prelude\ndef hello : Nat := 2\n"
+        let _ ← gitIn work ["commit", "--quiet", "-am", "later"]
+        let _ ← gitIn work ["push", "--quiet", bare.toString, "HEAD:refs/heads/main"]
+        let midWork ← mkTree [("grail.wiz", s!"import Grail\ndef package : Package := Package.new \"mid\"\n  |> Package.dep \"greet\" \"{bare}\" \"v1\"\n")]
+        let midBare ← IO.FS.createTempDir
+        let _ ← gitIn midBare ["init", "--quiet", "--bare"]
+        let _ ← gitIn midWork ["init", "--quiet"]
+        let _ ← gitIn midWork ["add", "."]
+        let _ ← gitIn midWork ["commit", "--quiet", "-m", "mid"]
+        let _ ← gitIn midWork ["push", "--quiet", midBare.toString, "HEAD:refs/heads/main"]
+        let dir ← mkTree [("grail.wiz", s!"import Grail\ndef package : Package := Package.new \"app\"\n  |> Package.dep \"greet\" \"{bare}\" \"main\"\n  |> Package.dep \"mid\" \"{midBare}\" \"main\"\n")]
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        match ← updateDeps dir tc with
+        | .error e => check ((e.splitOn "two commits of greet").length > 1) e
+        | .ok ls => throw (IO.userError s!"resolved: {repr ls}") }
   ]
 
 /-- Run `grail test` in-process on a package directory. -/
