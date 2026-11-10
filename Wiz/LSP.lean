@@ -4,6 +4,7 @@ import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
 import Wiz.Socket
+import Wiz.WebSocket
 import Std.Sync.Channel
 
 /-!
@@ -17,7 +18,8 @@ under the cursor), go to definition (also into libraries), completion of global 
 and the infoview's requests (`wiz/plainGoal`, `wiz/interactiveGoals`, …; the protocol is
 in `wiz-notes/infoview-protocol.md`): goals and expected types read from the info tree,
 printed as tagged text whose tags are refs into the document's **session table**.
-With `--infoview SOCK` it also serves infoviews on a Unix socket (`serveInfoview`).
+With `--infoview SOCK` it also serves infoviews on a Unix socket, and with `--ws PORT` on
+a WebSocket (`serveWith`).
 
 Positions: LSP counts lines and UTF-16 code units; we count Unicode characters, which
 agree except for characters outside the Basic Multilingual Plane.
@@ -400,83 +402,156 @@ def writeMessage (stdout : IO.FS.Stream) (j : Json) : IO Unit := do
   stdout.putStr s!"Content-Length: {body.utf8ByteSize}\r\n\r\n{body}"
   stdout.flush
 
-/-- What the server waits for in `--infoview` mode: messages from either side. -/
+/-- An infoview's connection, as the server's loop sees it. -/
+structure Conn where
+  /-- its socket (to shut it down) -/
+  fd : UInt32
+  send : Json → IO Unit
+  /-- a WebSocket client, which may also open and edit documents and ask anything an
+  editor may (the web infoview is its own editor); the Unix socket's infoviews only pull -/
+  editing : Bool := false
+  /-- (a WebSocket client) it asked for `wiz/elaborated` notifications -/
+  elaborated : Bool := false
+
+/-- What the server waits for in `--infoview`/`--ws` mode: messages from every side. -/
 inductive Event where
   | editor (msg : Json)
   /-- the editor's stream ended (or it sent `exit`) -/
   | editorDone
-  | connected (k : Nat) (fd : UInt32) (out : IO.FS.Stream)
+  | connected (k : Nat) (conn : Conn)
   | infoview (k : Nat) (msg : Json)
   | disconnected (k : Nat)
 
 instance : Inhabited Event := ⟨.editorDone⟩
 
-/-- Serve the editor on `input`/`output` until `exit`, and infoviews on the socket
-`sock`: three kinds of threads (the editor's reader, the socket's acceptor, one reader
+/-- Where the server listens besides stdio. -/
+structure Listen where
+  /-- `--infoview SOCK`: a Unix socket for infoviews (§8.1) -/
+  infoview : Option String := none
+  /-- `--ws [ADDR:]PORT`: a WebSocket (§8.2) on (address, port); port 0 takes a free one -/
+  ws : Option (UInt32 × UInt16) := none
+
+/-- Handle a message from a WebSocket client: like an infoview's, but documents may be
+opened and edited, and every request is answered. Its `initialize` changes only its own
+settings: `wizElaborated` (`wants`, returned updated) asks for `wiz/elaborated` after each
+elaboration of a document it opened or changed. -/
+def handleWs (srv : Server) (wants : Bool) (msg : Json) : Server × Array Json × Bool :=
+  if getStr msg ["method"] == "initialize" then
+    let (srv, out) := handleInfoview srv msg
+    (srv, out, get? msg ["params", "capabilities", "experimental", "wizElaborated"] == some (Json.bool true))
+  else
+    let (srv', out) := handle { srv with elaboratedNotes := wants } msg
+    ({ srv' with elaboratedNotes := srv.elaboratedNotes }, out, wants)
+
+/-- Serve the editor on `stdio` (if any) until `exit`, and infoviews on the sockets of
+`listen`: several kinds of threads (the editor's reader, an acceptor per socket, a reader
 per infoview) feed one channel, and this loop handles the messages in order, so the
-server's state is never shared. -/
-partial def serveInfoview (libs : Std.HashMap String (String × String)) (input output : IO.FS.Stream)
-    (sock : String) : IO Unit := do
+server's state is never shared. `ready` gets the WebSocket's port once it listens.
+Without `stdio`, the server runs until it is killed. -/
+partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Option (IO.FS.Stream × IO.FS.Stream))
+    (listen : Listen) (ready : UInt16 → IO Unit := fun _ => pure ()) : IO Unit := do
   let ch ← Std.Channel.Sync.new (α := Event)
-  let lfd ← Socket.listen sock
-  let rec readEditor : IO Unit := do
+  let next ← IO.mkRef 0
+  let fresh : IO Nat := next.modifyGet fun k => (k, k + 1)
+  let rec readEditor (input : IO.FS.Stream) : IO Unit := do
     match ← readMessage input with
     | none => ch.send .editorDone
-    | some m => ch.send (.editor m); if getStr m ["method"] == "exit" then pure () else readEditor
-  let rec readInfoview (k : Nat) (h : IO.FS.Stream) : IO Unit := do
-    match ← (try readMessage h catch _ => pure none) with
+    | some m => ch.send (.editor m); if getStr m ["method"] == "exit" then pure () else readEditor input
+  let rec readLoop (k : Nat) (recv : IO (Option Json)) : IO Unit := do
+    match ← (try recv catch _ => pure none) with
     | none => ch.send (.disconnected k)
-    | some m => ch.send (.infoview k m); readInfoview k h
-  let rec acceptLoop (k : Nat) : IO Unit := do
+    | some m => ch.send (.infoview k m); readLoop k recv
+  -- the Unix socket: Content-Length framing, as on stdio
+  let unixConn (fd : UInt32) (r w : IO.FS.Handle) : IO Unit := do
+    let k ← fresh
+    let out := IO.FS.Stream.ofHandle w
+    ch.send (.connected k { fd, send := writeMessage out })
+    readLoop k (readMessage (IO.FS.Stream.ofHandle r))
+  -- a WebSocket: the handshake (on this connection's own thread), then a message per frame
+  let wsConn (fd : UInt32) (r w : IO.FS.Handle) : IO Unit := do
+    let (r, w) := (IO.FS.Stream.ofHandle r, IO.FS.Stream.ofHandle w)
+    unless ← (try WebSocket.accept r w catch _ => pure false) do Socket.shutdown fd; return
+    let k ← fresh
+    ch.send (.connected k { fd, send := fun j => WebSocket.sendText w j.compress, editing := true })
+    readLoop k do
+      let some text ← WebSocket.recvText r w | return none
+      pure (some ((Json.parse text).toOption.getD Json.null))
+  let rec acceptLoop (lfd : UInt32) (serveConn : UInt32 → IO.FS.Handle → IO.FS.Handle → IO Unit) : IO Unit := do
     match ← (try some <$> Socket.accept lfd catch _ => pure none) with
     | none => pure ()
     | some (fd, r, w) =>
-      ch.send (.connected k fd (IO.FS.Stream.ofHandle w))
-      let _ ← IO.asTask (prio := .dedicated) (readInfoview k (IO.FS.Stream.ofHandle r))
-      acceptLoop (k + 1)
-  let _ ← IO.asTask (prio := .dedicated) readEditor
-  let _ ← IO.asTask (prio := .dedicated) (acceptLoop 0)
-  let rec loop (srv : Server) (conns : Std.HashMap Nat (UInt32 × IO.FS.Stream)) : IO (Std.HashMap Nat (UInt32 × IO.FS.Stream)) := do
+      let _ ← IO.asTask (prio := .dedicated) (serveConn fd r w)
+      acceptLoop lfd serveConn
+  let unixFd ← listen.infoview.mapM Socket.listen
+  if let (some fd, some _) := (unixFd, listen.infoview) then
+    let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd unixConn)
+  let wsFd ← listen.ws.mapM fun (addr, port) => Socket.tcpListen addr port
+  if let some (fd, port) := wsFd then
+    let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd wsConn)
+    ready port
+  if let some (input, _) := stdio then
+    let _ ← IO.asTask (prio := .dedicated) (readEditor input)
+  let rec loop (srv : Server) (conns : Std.HashMap Nat Conn) : IO (Std.HashMap Nat Conn) := do
     -- send to one infoview; a failed write drops it
-    let sendTo (conns : Std.HashMap Nat (UInt32 × IO.FS.Stream)) (k : Nat) (js : Array Json) := do
-      let some (fd, out) := conns.get? k | pure conns
-      try for j in js do writeMessage out j
+    let sendTo (conns : Std.HashMap Nat Conn) (k : Nat) (js : Array Json) := do
+      let some c := conns.get? k | pure conns
+      try for j in js do c.send j
           pure conns
-      catch _ => Socket.shutdown fd; pure (conns.erase k)
+      catch _ => Socket.shutdown c.fd; pure (conns.erase k)
+    let broadcast (conns : Std.HashMap Nat Conn) (note : Option Json) := do
+      let mut conns := conns
+      if let some n := note then
+        for k in conns.keys do conns ← sendTo conns k #[n]
+      pure conns
     match ← ch.recv with
     | .editorDone => pure conns
     | .editor msg =>
       if getStr msg ["method"] == "exit" then return conns
       let (srv, out) := handle srv msg
-      for j in out do writeMessage output j
+      if let some (_, output) := stdio then
+        for j in out do writeMessage output j
       let (srv, note) := infoviewCursor srv msg
-      let mut conns := conns
-      if let some n := note then
-        for k in conns.keys do conns ← sendTo conns k #[n]
-      loop srv conns
-    | .connected k fd out =>
-      let conns := conns.insert k (fd, out)
+      loop srv (← broadcast conns note)
+    | .connected k c =>
+      let conns := conns.insert k c
       let conns ← match srv.cursor with
         | some (u, p) => sendTo conns k #[cursorNote srv u p]
         | none => pure conns
       loop srv conns
     | .infoview k msg =>
-      let (srv, out) := handleInfoview srv msg
-      loop srv (← sendTo conns k out)
+      let some c := conns.get? k | loop srv conns
+      if !c.editing then
+        let (srv, out) := handleInfoview srv msg
+        return ← loop srv (← sendTo conns k out)
+      -- a WebSocket client: its `exit` closes its connection only
+      if getStr msg ["method"] == "exit" then
+        Socket.shutdown c.fd
+        return ← loop srv (conns.erase k)
+      let (srv, out, wants) := handleWs srv c.elaborated msg
+      let conns ← sendTo (conns.insert k { c with elaborated := wants }) k out
+      let (srv, note) := infoviewCursor srv msg
+      loop srv (← broadcast conns note)
     | .disconnected k =>
-      if let some (fd, _) := conns.get? k then Socket.shutdown fd
+      if let some c := conns.get? k then Socket.shutdown c.fd
       loop srv (conns.erase k)
   let conns ← loop { libs } {}
-  -- stop the other threads: the acceptor and every infoview's reader see the end
-  Socket.close lfd sock
-  for (_, (fd, _)) in conns do Socket.shutdown fd
+  -- stop the other threads: the acceptors and every infoview's reader see the end
+  if let (some fd, some sock) := (unixFd, listen.infoview) then Socket.close fd sock
+  if let some (fd, _) := wsFd then Socket.closeFd fd
+  for (_, c) in conns do Socket.shutdown c.fd
 
-/-- Serve until `exit`: on stdin/stdout, and with `infoview := some SOCK` also on the
-infoview socket `SOCK`. -/
-partial def serve (libs : Std.HashMap String (String × String)) (infoview : Option String := none) : IO Unit := do
+/-- `serveWith` for the editor on `input`/`output` and infoviews on the Unix socket `sock`. -/
+def serveInfoview (libs : Std.HashMap String (String × String)) (input output : IO.FS.Stream) (sock : String) : IO Unit :=
+  serveWith libs (some (input, output)) { infoview := some sock }
+
+/-- Serve until `exit`: on stdin/stdout (unless `stdio := false`), and on the sockets of
+`listen`. -/
+partial def serve (libs : Std.HashMap String (String × String)) (listen : Listen := {}) (stdio : Bool := true) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
-  if let some sock := infoview then return ← serveInfoview libs stdin stdout sock
+  if listen.infoview.isSome || listen.ws.isSome || !stdio then
+    let ready (port : UInt16) := IO.eprintln s!"wiz lsp: WebSocket on port {port}"
+    return ← serveWith libs (if stdio then some (stdin, stdout) else none) listen ready
   let rec loop (srv : Server) : IO Unit := do
     let some msg ← readMessage stdin | return
     if getStr msg ["method"] == "exit" then return

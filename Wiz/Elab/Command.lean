@@ -734,7 +734,7 @@ partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Exce
     | s => s
   let ctors := (defs.zip substs).flatMap fun (d, (_, self)) => (d.getArg 6).args.map fun c =>
     let c := subst c
-    if (c.getArg 3).args.isEmpty then c.setArg 3 (.node {} "null" #[.atom {} ":", self]) else c
+    if (c.getArg 4).args.isEmpty then c.setArg 4 (.node {} "null" #[.atom {} ":", self]) else c
   let famCmd := famFrame.setArg 6 (.node {} "null" ctors)
   let typeDefs ← names.mapM fun n => parse s!"def {n} : Type := {fam} {fam}.Tag.{n}"
   pure ([tagCmd, famCmd] ++ typeDefs.toList)
@@ -743,6 +743,12 @@ partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Exce
 def structurePrivateMk (cmd : Syntax) : Bool :=
   let spec := (cmd.getArg 5).getArg 1
   !spec.args.isEmpty && !(spec.getArg 0).args.isEmpty
+
+/-- (13b) The fields (observations) of a `structure` or `coinductive` command marked
+`private`. -/
+def privateFields (cmd : Syntax) : List Name :=
+  (cmd.getArg 6).args.toList.filterMap fun f =>
+    if (f.getArg 0).args.isEmpty then none else (f.getArg 2).getId?
 
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
@@ -896,12 +902,18 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
       let pats := (cmd.getArg 5).args.toList.filterMap fun a => (a.getArg 1).args[0]?
-      let coinductiveOf? : Option (List (Name × Bool)) :=
+      let coinductiveOf? : Option (Name × List (Name × Bool)) :=
         if pats.all (·.isOfKind "term.dotIdent") then
-          s.coinductives.findSome? fun (_, obs) =>
-            if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some obs else none
+          s.coinductives.findSome? fun (T, obs) =>
+            if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some (T, obs) else none
         else none
-      let r := match coinductiveOf? with
+      -- (13b) copatterns define every observation: not outside the module of a private one
+      if let some (T, obs) := coinductiveOf? then
+        if let some (o, m) := obs.findSome? fun (o, _) => (s.globals.privateTo? (T ++ "." ++ o)).map (o, ·) then
+          report .error cmd.info (s!"'{T}.{o}' is private to module {m}: a {T} can't be defined by " ++
+            "copatterns outside it")
+          return
+      let r := match coinductiveOf?.map (·.2) with
         | some obs => runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (do let (t, v) ← elabCopatterns name cmd obs; pure (t, v, none)) levelParams
         | none => runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDefEqns name cmd) levelParams
       match r with
@@ -925,12 +937,22 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | .error e =>
             report .error cmd.info s!"kernel rejected {d.name}: {e}"
             return
+        -- (13b) private observations: private to this module with the coconstructor
+        -- `T.mk`, and elsewhere `T` is opaque (`Globals.elabView`), so a value of it is
+        -- neither observed nor built except through the module's own definitions
+        let privObs := privateFields cmd
+        unless privObs.isEmpty do
+          let names := privObs.map (name ++ "." ++ ·) ++ [name ++ ".mk"]
+          g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
+                        opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g, coinductives := s.coinductives ++ [(name, obs)] }
   | "command.class" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
+    else if let some f := (cmd.getArg 6).args.find? fun f => !(f.getArg 0).args.isEmpty then
+      report .error f.info "a class's methods can't be private (make the class private instead)"
     else
       match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
           (elabStructure cmd levelParams) levelParams with
@@ -948,7 +970,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let outParams := Δ.map fun (_, _, _, A) => match (Term.spine A).1 with
           | .const n _ => n == "outParam"
           | _ => false
-        let fields := (cmd.getArg 6).args.toList.filterMap fun f => (f.getArg 1).getId?
+        let fields := (cmd.getArg 6).args.toList.filterMap fun f => (f.getArg 2).getId?
         modify fun s => { s with globals := g, classes := { name, outParams, fields } :: s.classes }
   | "command.instance" =>
     let prioOpt := cmd.getArg 1
@@ -1033,24 +1055,42 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
         -- the recursors need the declarations above
         if cmd.isOfKind "command.inductive" then
-          let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 1).getId?
+          let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 2).getId?
           -- (indexed families also get `recN`/`casesOnN`, for motives that don't depend
           -- on the scrutinee)
           let indexed := isIndexed g name
+          let mut recNames : List Name := []
           for (withIH, sized, nondep) in [(false, false, false), (true, false, false), (false, true, false)] ++
               (if indexed then [(false, false, true), (true, false, true)] else []) do
             match mkRecursor g name ctors withIH sized nondep with
             | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
             | .ok d =>
+              recNames := recNames ++ [d.name]
               match addDeclSorted g d with
               | .ok g' => g := g'
               | .error e =>
                 report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
                 return
+          -- (13b) `| private c`: the constructor is private to this module, and so are the
+          -- recursors (their cases would hand out a private constructor's fields, and
+          -- they are what a `match` compiles to); elsewhere `T` is opaque
+          -- (`Globals.elabView`): it isn't matched there, and nothing else converts to it
+          let privCtors := (cmd.getArg 6).args.toList.filterMap fun c =>
+            if (c.getArg 1).args.isEmpty then none else (c.getArg 2).getId?
+          unless privCtors.isEmpty do
+            let names := privCtors.map (name ++ "." ++ ·) ++ recNames
+            g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
+                          opaques := g.opaques.insert name s.module }
         -- (13b) `private mk ::`: the constructor is private to this module, and elsewhere
         -- the type is opaque (`Globals.elabView`): only its projections read it
         if cmd.isOfKind "command.structure" && structurePrivateMk cmd then
           g := { g with privates := g.privates.insert (name ++ ".mk") s.module,
+                        opaques := g.opaques.insert name s.module }
+        -- (13b) `private f : A`: the projection `S.f` is private, and elsewhere `S` is
+        -- opaque, so the field isn't read through the Σ (`p.1`) either
+        let privFields := if cmd.isOfKind "command.structure" then privateFields cmd else []
+        unless privFields.isEmpty do
+          g := { g with privates := privFields.foldl (fun m f => m.insert (name ++ "." ++ f) s.module) g.privates,
                         opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g }
         derivingClause (cmd.getArg 7) name

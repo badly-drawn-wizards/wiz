@@ -211,6 +211,6 @@ def program (decls : Array IR.Decl) (io : Bool := false) (extra : String := "") 
   runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ extra ++ "\n" ++ glue (externs decls) ++
     "\n/* ---- generated ---- */\n\n" ++ String.join protos ++ "\n" ++
     String.join (decls.toList.map (decl arities ·)) ++
-    s!"\nint main(void) \{ return wiz_run_main({mangle "wiz.entry"}, {finish}); }\n"
+    s!"\nint main(int argc, char **argv) \{ wiz_set_args(argc, argv); return wiz_run_main({mangle "wiz.entry"}, {finish}); }\n"
 
 end Wiz.C

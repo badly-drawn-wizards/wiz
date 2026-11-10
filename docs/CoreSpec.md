@@ -559,7 +559,8 @@ both true                         ⟶  (X → Y) × (Y → X)          propositi
 either unknown                    ⟶  stuck
 one true, one false               ⟶  False
 both false, by shape:
-  ((q x:A)→B) ≡ ((q' x:A')→B')    ⟶  False if q, q' are different constants; stuck if not comparable;
+  ((q x:A)→B) ≡ ((q' x:A')→B')    ⟶  False if q, q' are different constants (both closed: F6);
+                                     stuck if either has a variable and they are not equivalent;
                                      else (0 e : A' ≡ A) × ((0 x : A') → B (cast A' A e x) ≡ B' x)
   ((q x:A)×B) ≡ ((q' x:A')×B')    ⟶  (same quantity test)  (0 e : A ≡ A') × ((0 x : A) → B x ≡ B' (cast A A' e x))
   Sort u ≡ Sort w, Unit_u ≡ Unit_w, Empty_u ≡ Empty_w
@@ -574,6 +575,9 @@ both false, by shape:
   otherwise                       ⟶  stuck
 ```
 
+* **The quantity test** must be stable under substitution. `False` needs two *closed*
+  quantities. A variable `q` and `1` are different polynomials, but `q := 1` makes them
+  equal. Deciding `False` there proved `False` (Status.md, F6).
 * The Π/Σ decomposition and "different formers ⇒ False" are TTobs's [std: PT22]. The
   Π case puts the domain equation backwards (`A' ≡ A`), as in PT22 (unverified detail).
 * **Propositions compared by equivalence, and the sort annotation** are [wiz]. They exist

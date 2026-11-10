@@ -12,7 +12,8 @@ increments nor decrements it, and the fields it reads from it are borrowed too.
 A parameter is **owned** if it is
 
 * consumed: returned, stored in a constructor, captured by a closure (`pap`), applied or
-  passed to a closure (`ap`), passed to a native operation, or passed to an owned
+  passed to a closure (`ap`), passed to a native operation (except the comparisons `nat.beq` and `nat.blt`, which
+  borrow), or passed to an owned
   parameter of a function or join point;
 * reused (`reset`): its cell, or the cell of a field read from it, is reused for a new
   object when everything is owned (`Reuse.lean`). Borrowing it would lose the in-place
@@ -80,6 +81,10 @@ partial def collectBorrow (f : Name) (sameGroup : Name → Bool) (bor : Std.Hash
         if r == x && sameGroup g then
           for (a, i) in as.zipIdx do
             if borrowedAt i && !bor.getD a false then ownFn g i
+      collectBorrow f sameGroup bor pref rest
+    -- comparisons only look at their arguments
+    | .prim op _ =>
+      if !Expr.primBorrows op then e.args.forM consume
       collectBorrow f sameGroup bor pref rest
     | e =>
       e.args.forM consume
