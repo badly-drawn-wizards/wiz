@@ -24,7 +24,7 @@ def irProgram (s : CommandState R) (n : Name) : Except String (Array IR.Decl × 
   let some d := s.globals.find? n | throw s!"no definition {n}"
   let code ← (compileReachable s.globals s.builtins [n]).mapError toString
   let decls ← IR.lowerProgram code (.global n)
-  pure ((IR.hoistConsts decls).map (·.optimize), d.type)
+  pure (IR.optimizeProgram (IR.hoistConsts decls), d.type)
 
 /-- Header includes and glue functions, in order. -/
 def extraC (s : CommandState R) : String := "\n".intercalate s.cCode.toList
