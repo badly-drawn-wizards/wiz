@@ -85,7 +85,7 @@ def natNative? : Name → Array Nat → Option Nat
 `Term.natOp` on its arguments, so it computes natively when they are literals. -/
 def vBuiltin? (g : Globals R) (n : Name) : Option (Val R) := do
   let k ← g.builtinKey? n
-  if !k.startsWith "nat." || k == "nat.beq" || k == "nat.blt" then none
+  if !k.startsWith "nat." then none
   else if k == "nat.zero" then some (.natLit 0)
   else if natOpArity k == 1 then some (.lam "a" (.mk [] (.natOp k #[.var 0])))
   else some (.lam "a" (.mk [] (.lam "b" (.natOp k #[.var 1, .var 0]))))
@@ -376,15 +376,25 @@ partial def vNatView (g : Globals R) : Val R → Val R
 /-- A registered operation applied to all its arguments: native arithmetic on literals,
 otherwise the operation's definition. -/
 partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
-  let lits := args.filterMap fun a => match whnf a with
-    | .natLit n => some n
+  -- the arguments as numerals, stopping at the first that isn't one: forcing the rest
+  -- could run a numeral's recursion all the way down (`d * 2^64` is `d + d * (2^64 - 1)`,
+  -- whose second argument is the next step, and so on)
+  let lits : Option (Array Nat) := args.foldlM (init := #[]) fun acc a => match whnf a with
+    | .natLit n => some (acc.push n)
     | _ => none
-  let native : Option Nat := if lits.size != args.size then none else natNative? op lits
-  match native with
-  | some n => .natLit n
-  | none => match (g.builtins.lookup op).bind g.find? with
-    | some { value := some v, .. } => args.foldl (vApp g) (eval g [] v)
+  let d : Val R := match (g.builtins.lookup op).bind g.find? with
+    | some { value := some v, .. } => eval g [] v
     | _ => panic! s!"no definition for builtin {op}"
+  match lits with
+  | some ns => match natNative? op ns, op, ns with
+    | some n, _, _ => .natLit n
+    -- comparisons return a `Bool`: the definition's own result on small numerals
+    | none, "nat.beq", #[a, b] =>
+      whnf (vApp g (vApp g d (.natLit 0)) (.natLit (if a == b then 0 else 1)))
+    | none, "nat.blt", #[a, b] =>
+      whnf (vApp g (vApp g d (.natLit 0)) (.natLit (if a < b then 1 else 0)))
+    | none, _, _ => args.foldl (vApp g) d
+  | none => args.foldl (vApp g) d
 
 /-- **Exercise 4.19c.** Induction computes on constructors:
 
