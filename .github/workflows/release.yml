@@ -1,0 +1,108 @@
+# Release tarballs (stage 26d): what `tower` installs with `--source release`, and what
+# you can untar by hand (scripts/release-tarball.sh describes the layout).
+#
+# * a tag vX.Y.Z: a GitHub release of that tag with wiz-x86_64-linux.tar.gz (+ .sha256);
+# * a push to solutions: the moving pre-release `nightly`, its assets replaced;
+# * a pull request that touches the packaging: builds and tests the tarball, uploads nothing.
+#
+# The build is outside Nix, with elan's Lean, whose bundled clang and sysroot make the
+# binaries depend only on glibc (>= 2.27) and the C runtime libraries, as Lean's own
+# releases do: no /nix/store paths. `wiz build` and grail still need a C compiler and
+# GMP (`apt install gcc libgmp-dev`; the self-hosted toolchain needs libgc-dev too).
+name: release
+
+on:
+  push:
+    branches: [solutions]
+    tags: ["v*"]
+  pull_request:
+    branches: [solutions]
+    paths:
+      - scripts/release-tarball.sh
+      - .github/workflows/release.yml
+      - Tower/**
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # creating releases and uploading assets
+
+jobs:
+  tarball:
+    name: release tarball (x86_64-linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      LAKE_CACHE_DIR: ${{ github.workspace }}/.lake/cache
+    steps:
+      - uses: actions/checkout@v5
+      - name: elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Cache the Lake build
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: release-lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean', 'runtime/**', 'c/**') }}
+          restore-keys: release-lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      - name: lake build wiz grail tower
+        run: lake build wiz grail tower
+      - name: The binaries don't depend on the build machine
+        run: |
+          for b in wiz grail tower; do
+            ldd .lake/build/bin/$b
+            ! ldd .lake/build/bin/$b | grep -q /nix/store
+          done
+      - name: Tarball
+        run: |
+          mkdir -p dist
+          scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz
+          ls -l dist
+      - name: The tarball works on a plain Ubuntu (with gcc and GMP), and tower installs it
+        run: |
+          sudo apt-get install -y -q gcc libgmp-dev >/dev/null
+          t=$(mktemp -d)
+          tar -xzf dist/wiz-x86_64-linux.tar.gz -C "$t"
+          d=$(mktemp -d); cp examples/io.wiz "$d/"; cd "$d"
+          "$t/wiz-x86_64-linux/bin/wiz" check io.wiz
+          "$t/wiz-x86_64-linux/bin/wiz" build io.wiz -o io
+          ./io | head -3
+          # tower: install this tarball as a toolchain from a local release directory
+          rel=$(mktemp -d); mkdir -p "$rel/nightly"
+          cp "$GITHUB_WORKSPACE"/dist/* "$rel/nightly/"
+          tower="$t/wiz-x86_64-linux/bin/tower --home $d/.tower"
+          $tower set git "$GITHUB_WORKSPACE"
+          $tower set nightly-ref HEAD
+          $tower set releases "$rel"
+          $tower set source release
+          $tower self install
+          $tower default nightly
+          echo "$d/.tower/bin" >> "$GITHUB_PATH"
+          PATH="$d/.tower/bin:$PATH" wiz check io.wiz
+          PATH="$d/.tower/bin:$PATH" tower toolchain list
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wiz-x86_64-linux
+          path: dist/
+      - name: Publish (a tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* --title "Wiz ${GITHUB_REF_NAME}" --notes "Wiz ${GITHUB_REF_NAME}: install with tower (docs/stages/26-tower.md)" ||
+            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+      - name: Publish (nightly, from solutions)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/solutions'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view nightly >/dev/null 2>&1 ||
+            gh release create nightly --prerelease --title "Wiz nightly" --notes "Wiz built from the solutions branch; moves with it." --target "$GITHUB_SHA"
+          gh release upload nightly dist/* --clobber
+          # the release's tag follows the branch
+          git tag -f nightly "$GITHUB_SHA"
+          git push -f origin refs/tags/nightly

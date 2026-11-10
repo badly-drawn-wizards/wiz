@@ -104,7 +104,46 @@
               platforms = systems;
             };
           };
-        in { inherit wiz unwrapped; default = wiz; };
+          # tower, the toolchain manager (stage 26): its own small build (it doesn't
+          # import Wiz), wrapped with the programs it runs (git, tar, curl; `nix` and
+          # `lake` are the user's), and told its own path for the shims it writes.
+          tower-unwrapped = pkgs.stdenv.mkDerivation {
+            pname = "tower-unwrapped";
+            inherit (unwrapped) version;
+            src = fs.toSource {
+              root = ./.;
+              fileset = fs.unions [ ./lakefile.toml ./lake-manifest.json ./lean-toolchain ./Tower.lean ./Tower ];
+            };
+            nativeBuildInputs = [ lean ];
+            buildPhase = ''
+              runHook preBuild
+              export HOME=$TMPDIR LAKE_CACHE_DIR=$TMPDIR/lake-cache
+              lake build tower
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 .lake/build/bin/tower $out/bin/tower
+              runHook postInstall
+            '';
+          };
+          tower = pkgs.stdenv.mkDerivation {
+            pname = "tower";
+            inherit (unwrapped) version;
+            dontUnpack = true;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            installPhase = ''
+              makeWrapper ${tower-unwrapped}/bin/tower $out/bin/tower \
+                --suffix PATH : ${lib.makeBinPath [ pkgs.coreutils pkgs.git pkgs.gnutar pkgs.gzip pkgs.curl ]} \
+                --add-flags ${addFlags [ "--self" "${placeholder "out"}/bin/tower" ]}
+            '';
+            meta = {
+              description = "tower, the Wiz toolchain manager: installs toolchains and puts wiz and grail shims on PATH";
+              mainProgram = "tower";
+              platforms = systems;
+            };
+          };
+        in { inherit wiz unwrapped tower; default = wiz; };
     in {
       packages = forAll packagesFor;
 
@@ -112,7 +151,11 @@
         let
           pkg = self.packages.${pkgs.stdenv.hostPlatform.system}.wiz;
           app = name: { type = "app"; program = "${pkg}/bin/${name}"; meta = pkg.meta; };
-        in { wiz = app "wiz"; grail = app "grail"; default = app "wiz"; });
+          towerPkg = self.packages.${pkgs.stdenv.hostPlatform.system}.tower;
+        in {
+          wiz = app "wiz"; grail = app "grail"; default = app "wiz";
+          tower = { type = "app"; program = "${towerPkg}/bin/tower"; meta = towerPkg.meta; };
+        });
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
