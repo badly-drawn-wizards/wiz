@@ -997,7 +997,12 @@ def reuseGroup : Group where
           s!"the parameter's cell is not rebuilt in place:\n{"\n".intercalate ls}"
         -- the two `step`s' options and bump2's result (an option and a pair) are the only
         -- allocations: the new `Stats` takes the parameter's cell
-        checkEq (s0 + 4) r0 }
+        checkEq (s0 + 4) r0 },
+    { name := "renaming a body renames reset and reuse", run := fun _ => do
+        let b : IR.Body := .vdecl 5 (.reset 1) (.vdecl 6 (.reuse 5 0 #[2, 3]) (.ret 6))
+        let σ : Std.HashMap IR.Var IR.Var := ({} : Std.HashMap _ _).insert 1 10 |>.insert 2 20 |>.insert 3 30
+        let ls := ((IR.Body.rename σ b).toString.splitOn "\n").map (·.trimAscii.toString)
+        checkEq ["let x5 := reset x10", "let x6 := reuse x5 in ctor 0 x20 x30", "ret x6"] ls }
   ]
 
 /-- Programs for the borrowing tests (stage 8e): functions that only look at their
@@ -1059,6 +1064,12 @@ def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := 
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
 
+/-- A program that projects field 1 of a number (the old unary-view fallback: since
+`proj` is borrowed, the objects it made would leak). Lowering never emits this. -/
+def projOfNumber : Array IR.Decl :=
+  #[{ name := "wiz.entry", params := #[],
+      body := .vdecl 0 (.lit 5) (.vdecl 1 (.proj 1 0) (.ret 1)) }]
+
 def borrowGroup : Group where
   name := "borrow"
   exercise := "Stage 8e"
@@ -1069,6 +1080,15 @@ def borrowGroup : Group where
         let ls ← borrowIR "sumAcc"
         check (ls.any fun l => l.startsWith "let " && (l.splitOn ":= sumAcc").length > 1) s!"no call:\n{"\n".intercalate ls}" },
     { name := "a lookup in a tree borrows the tree", run := fun _ => borrowedUncounted "Tree.mem" 1 },
+    { name := "comparisons borrow: the key and the keys it meets are not counted", run := fun _ => do
+        borrowedUncounted "Tree.mem" 0
+        let ls ← borrowIR "Tree.mem"
+        check (!ls.any fun l => l.startsWith "dup " || l.startsWith "drop ") s!"counted:\n{"\n".intercalate ls}"
+        -- big numbers are objects: a borrowing comparison must neither free nor leak them
+        let big := "1180591620717411303424"
+        cRun (borrowSrc ++ s!"def tb : Tree := Tree.node (Nat.add {big} 2) (Tree.node {big} .leaf .leaf) .leaf\n" ++
+          s!"def b2n : Bool → Nat\n  | .true => 1\n  | .false => 0\n" ++
+          s!"def main : Nat := Nat.add (b2n (Tree.mem {big} tb)) (Nat.add (b2n (Tree.mem (Nat.add {big} 1) tb)) (b2n (Tree.mem (Nat.add {big} 2) tb)))\n") "2" },
     { name := "borrowing functions run without leaks", run := fun _ =>
         okLib (borrowSrc ++ "#run len (.cons 1 (.cons 2 .nil))\n#run sumAcc 0 (.cons 1 (.cons 2 .nil))\n#run Tree.mem 3 t3\n#run Tree.mem 4 t3")
           ["2", "3", ".true", ".false"] },
@@ -1087,6 +1107,19 @@ def borrowGroup : Group where
         let ls ← borrowIR "both"
         check (ls.any fun l => (l.splitOn "prim dropMoved").length > 1) s!"no specialised drop:\n{"\n".intercalate ls}"
         okLib (borrowSrc ++ "#run both (.cons 1 (.cons 2 .nil))") ["4"] },
+    { name := "proj of a field of a number stops the IR interpreter and the C runtime", run := fun _ => do
+        match IR.runProgram projOfNumber with
+        | .ok _ => throw (IO.userError "the IR interpreter projected a number")
+        | .error e => check ((e.splitOn "internal error: proj 1 of the number 5").length > 1) e
+        let dir ← IO.FS.createTempDir
+        let exe := dir / "proj"
+        match ← Build.compileC (← toolchain) (C.program projOfNumber) exe with
+        | .error e =>
+          if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+        | .ok () =>
+          let out ← IO.Process.output { cmd := exe.toString }
+          checkEq 3 out.exitCode
+          check ((out.stderr.splitOn "internal error: proj").length > 1) out.stderr },
     { name := "borrowing and drop specialisation in C", run := fun _ =>
         cRun (borrowSrc ++ "def main : Nat := Nat.add (both (.cons 1 (.cons 2 .nil))) (len (mapL len (.cons .nil .nil)))\n") "5" }
   ]
