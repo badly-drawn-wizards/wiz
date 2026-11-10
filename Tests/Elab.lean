@@ -3273,8 +3273,8 @@ def infoviewGroup : Group where
           [".cons .up (.cons (.char 9) (.cons (.char 113) (.cons (.mouse 0 5 3 .true) (.cons .pageDown .nil))))", "5"] },
     { name := "the terminal infoview against a stub server, as text and in a pty (infoview/test.sh)", run := fun _ => do
         let tc ← toolchain
-        let out ← IO.Process.output { cmd := "sh", args := #["infoview/test.sh"],
-          env := #[("WIZ_CFLAGS", some (" ".intercalate tc.cflags)), ("WIZ_LDFLAGS", some (" ".intercalate tc.ldflags))] }
+        let env := #[("WIZ_CFLAGS", some (" ".intercalate tc.cflags)), ("WIZ_LDFLAGS", some (" ".intercalate tc.ldflags))]
+        let out ← IO.Process.output { cmd := "sh", args := #["infoview/test.sh"], env := env }
         unless out.exitCode == 0 do
           if ((out.stdout ++ out.stderr).splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"
           else throw (IO.userError s!"infoview/test.sh failed:\n{out.stdout}{out.stderr}") }

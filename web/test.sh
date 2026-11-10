@@ -2,7 +2,8 @@
 # Smoke tests of the web infoview: build the page (web/build.sh); run its Wasm module
 # under Node with infoview/stub_server.py (canned goals) as the server
 # (web/node_test.mjs); then serve it with web/bridge.sh in front of the stub, load it in
-# headless Chromium and look for the goals in the DOM.
+# headless Chromium (web/chrome_test.mjs, over the DevTools protocol), click a subterm
+# and look for the goals and what the subterm is in the DOM.
 #   usage: web/test.sh [PORT]       (needs nix for emscripten, websocat, chromium)
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -18,11 +19,10 @@ done
 WIZ_WEB_OUT=$OUT "$ROOT/web/bridge.sh" "$PORT" "python3 $ROOT/infoview/stub_server.py --stdio" > "$OUT/bridge.log" 2>&1 &
 BRIDGE=$!
 sleep 3
-if command -v chromium >/dev/null; then CHROME=chromium; else CHROME="nix shell nixpkgs#chromium -c chromium"; fi
-$CHROME --headless --no-sandbox --disable-gpu --virtual-time-budget=8000 --run-all-compositor-stages-before-draw \
-  --dump-dom "http://127.0.0.1:$((PORT + 1))/infoview.html?port=$PORT" 2>/dev/null > "$OUT/dom.html"
+if command -v chromium >/dev/null; then CHROME=$(command -v chromium); else CHROME=$(nix shell nixpkgs#chromium -c sh -c 'command -v chromium'); fi
+node "$ROOT/web/chrome_test.mjs" "$CHROME" "http://127.0.0.1:$((PORT + 1))/infoview.html?port=$PORT" > "$OUT/chrome.txt"
 ok=1
-for want in 'id="status">connected' 'class="names">A</span>' 'data-ref="5"' '<span class="turnstile">⊢</span>'; do
-  if grep -qF "$want" "$OUT/dom.html"; then echo "ok: $want"; else echo "FAIL: missing $want"; ok=0; fi
+for want in 'status: connected' 'class="names">A</span>' 'data-ref="5"' 'tt k-const sel' 'info: <span class="kind">const</span> <code>Nat : Type</code>'; do
+  if grep -qF "$want" "$OUT/chrome.txt"; then echo "ok (chromium): $want"; else echo "FAIL (chromium): missing $want"; ok=0; fi
 done
-[ $ok = 1 ] || { sed -n '/<body>/,/<\/body>/p' "$OUT/dom.html" | head -40; exit 1; }
+[ $ok = 1 ] || { cat "$OUT/chrome.txt"; exit 1; }

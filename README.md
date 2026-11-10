@@ -2156,7 +2156,11 @@ tmux split-window -h -l 60 '.lake/build/bin/wiz-infoview /tmp/wiz.sock'
 
 The pane waits for the server, then follows the editor's cursor. Without an editor:
 `wiz-infoview --file examples/tactics.wiz --at 6:3` (`[` and `]` move the line).
-`infoview/test.sh` and `web/test.sh` run both clients against `infoview/stub_server.py`.
+`infoview/test.sh` (in the `infoview` test group) runs the terminal infoview against
+`infoview/stub_server.py` (canned goals; as text and in a pseudo-terminal) and against
+the real `wiz lsp --infoview`, with `infoview/editor_stub.py` as the editor.
+`web/test.sh` (needs nix: Emscripten, websocat, Chromium; not in CI) runs the Wasm
+module under Node, then the page in headless Chromium over the DevTools protocol.
 
 ## Stage 23: grail, a build tool
 
