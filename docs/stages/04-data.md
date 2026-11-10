@@ -428,6 +428,9 @@ compare by equivalence. What this costs, and why:
   binder is erased; `rflProof` in `Elab/Term.lean`). One expected limit: if a later
   index of the type depends on a field at a type *variable*, `rfl` is left with a stuck
   cast at that variable and fails; `refl T` still works.
+* A `cast e t` with no expected type reads its target off the type of `e`, which works
+  only while that equation is stuck. Equations between data types now compute, so write
+  `(cast e t : T)` (or use the cast where its type is expected); the error says so.
 * `μ` is now injective in its description, a large-into-small map (Hur's paradox has
   this shape). It is the same shape as the injectivity of Π that observational equality
   already has, and a description can't range over its own universe (fields are exactly in

@@ -928,6 +928,16 @@ type by a case split, `λ t. transp Unit () (λ _ _. G t) (ecase t [p₀, …]) 
 `transp` along `() = ()` is there because the binder has quantity 0 and its premises are
 checked erased (§8.1). This is an ordinary kernel-checked term; the kernel rules are not
 involved, and are deliberately not specialised to tag fields (above).
+**Casts need their target type.** `cast e t` with no expected type is elaborated by
+reading `X = Y` off the type of `e`, which works only while that equation is stuck. An
+equation between two data types now always computes (to the equation of the codes), so
+an un-ascribed cast between them is rejected ("its proof's type is an equation that has
+computed … write `(cast e t : T)`"); write the ascription, or use the cast where its type
+is expected. Before 4g this already held for two instances of one family (`μ D i = μ D i'`
+computed to `i = i'`) and for `Π`/`Σ` types; what is new is two *different* descriptions
+(`Box T2 = Box A`), whose equation used to be stuck. Nothing in `lib/`, `examples/` or
+`selfhost/` has such a cast; the Abel–Coquand test programs did, and are ascribed now.
+
 **Expected limit of `rfl`** (not observed in `lib/` or the tests). At a non-tag field the
 equation is `(0 s : S) → cast e (E s) = E (cast S S ê s)`. When `S` is a type *variable*,
 `cast S S ê s` is stuck (no regularity), so if a later index of the type depends on that

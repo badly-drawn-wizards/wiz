@@ -207,9 +207,15 @@ never be unfolded. Inline, evaluating the proof is β-reduction and `ind` on the
 which loops with regularity. -/
 def acDelta : String := "(fun (z : Top) => z T2 id2 z)"
 
-/-- `ω`'s body inline (for `A : Prop`, `a : A`): `unbox (cast … (mk δ))` -/
+/-- `ω`'s body inline (for `A : Prop`, `a : A`): `unbox (cast … (mk δ))`. The cast is
+ascribed on both sides: since 4g `Box T2 = Box A` computes (to the equation of the codes),
+so the elaborator can't read the two types off the proof's type. The target is `Box A`;
+the source must be written `Box T2`, with the *name* `T2`: the inferred type of `mk δ` is
+`Box (Top → Top)`, and the D1 regularity modes compare the two types syntactically
+(`sameVal`), so with the inferred type regularity would not fire at `A := T2` and the
+program would terminate for a reason that has nothing to do with the loop. -/
 def acOmegaBody : String :=
-  s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk {acDelta}))"
+  s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk {acDelta} : Box T2) : Box A)"
 
 /-- `Ω = δ ω`, inline -/
 def acOmega (body : String := acOmegaBody) : String :=
@@ -241,7 +247,7 @@ def abelCoquand (omega : String := "Omega") (body : String := acOmegaBody) : Str
 at `Box2` stays structural, and the program checks without regularity. -/
 def abelCoquandNested : String :=
   ((abelCoquand (body := s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (ind (fun _ _ => Box A) (fun i xs ih => xs.1.2) " ++
-      s!"(cast (apTy Prop Box2 T2 A (tautext T2 A id2 a)) (mk2 (mk {acDelta}))))")).replace
+      s!"(cast (apTy Prop Box2 T2 A (tautext T2 A id2 a)) (mk2 (mk {acDelta}) : Box2 T2) : Box2 A))")).replace
     "def omega : Top := fun A a => unbox (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk delta))\n"
     ("def Box2D (P : Prop) : Desc Unit := Desc.arg 1 ((_ : Enum [u]) × Box P) (fun _ => Desc.ret ())\n" ++
      "def Box2 (P : Prop) : Type := μ (Box2D P) ()\n" ++
@@ -4184,6 +4190,9 @@ def descEqGroup : Group where
           "def r1 : Bool = Bool := rfl\ndef r2 : Nat = Nat := rfl\n" ++
           "def r3 (A : Type) : List A = List A := rfl\ndef r4 (A : Type) : Option A = Option A := rfl\n" ++
           "def r5 : Pt = Pt := rfl\n") },
+    { name := "an un-ascribed cast between two data types asks for an ascription (the equation computed)", run := fun _ => do
+        fails (descEqTypes ++ "#check fun (A C : Type) (h : L A = L C) (l : L A) => cast h l\n") "has computed"
+        ok (descEqTypes ++ "def f (A C : Type) (h : L A = L C) (l : L A) : N := len (cast h l : L C)\n") },
     { name := "rfl still can't prove an equation between different data types", run := fun _ =>
         fails (descEqTypes ++ "def bad : L N = L B := rfl\n") "rfl" },
     { name := "different description constructors are unequal; quantities count", run := fun _ =>

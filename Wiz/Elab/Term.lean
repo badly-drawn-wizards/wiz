@@ -1928,7 +1928,10 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       let t ← check ctx (stx.getArg 2) X
       let g ← getGlobals
       return (.cast (quote g ctx.lvl X) (quote g ctx.lvl Y) e t, Y)
-    | _ => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
+    -- (4g) an equation between data types computes (to the equation of their codes), and so
+    -- do equations between `Π`s and `Σ`s: then the target can't be read off the proof's type
+    | .neutral .. | .unfold .. => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
+    | _ => throwAt ctx.info "cannot infer the type of this cast: its proof's type is an equation that has computed, so it no longer shows the target type; write `(cast e t : T)`"
   | "term.match" =>
     -- stage 13: the type is found from the alternatives (a metavariable, in `Type`)
     -- (not depending on the scrutinised variables: the motive abstracts them, which
