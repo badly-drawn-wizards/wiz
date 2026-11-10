@@ -182,6 +182,10 @@ structure Decl (R : Type) where
   /-- an implementation for the compiler, not checked by the kernel: a structurally
   recursive definition, with direct recursion instead of the recursor -/
   impl : Option (Term R) := none
+  /-- a partial definition's witness: a term of its type that the kernel checks
+  (`addPartialDecl`). The definition stays opaque (`value = none`) but is not an axiom:
+  its type is inhabited, so assuming `f : T` proves nothing that `w : T` doesn't. -/
+  witness : Option (Term R) := none
   deriving Repr, Inhabited
 
 namespace Term
@@ -242,6 +246,10 @@ don't need a case per constructor. -/
   | .ulift l A => return .ulift (← fl l) (← f 0 A)
   | .up a => return .up (← f 0 a)
   | .down t => return .down (← f 0 t)
+  -- (the arguments are children like any others: `Val.lvlBound` reads a closure's free
+  -- variables through this traversal, and missing them here made `sameVal` identify
+  -- `Nat.add x` with `Nat.add y`, which proved `False`; `wiz-notes/soundness-audit.md`, S1)
+  | .natOp op args => return .natOp op (← args.mapM (f 0))
   | t => pure t
 where
   hintM (fl : Level → m Level) (f : Nat → Term R → m (Term R)) :
@@ -293,6 +301,14 @@ def spine : Term R → Term R × List (Term R)
 /-- Instantiate universe level parameters `ps` with `us`. -/
 partial def instLevels (ps : List Name) (us : List Level) (t : Term R) : Term R :=
   Id.run <| t.mapChildrenM (fun l => pure (l.instParams ps us)) (fun _ c => pure (instLevels ps us c))
+
+/-- Does `var ix` occur free in `t`? (Trusted: `Ctx.instArg` in `Check.lean` skips
+evaluating an argument when this says the codomain doesn't mention it. It is complete
+because `mapChildrenM` visits every child of every constructor.) -/
+partial def hasVar (ix : Nat) : Term R → Bool
+  | .var i => i == ix
+  | t => (t.forChildren (m := StateM Bool) (fun _ => pure ())
+      (fun k c => modify (· || c.hasVar (ix + k))) |>.run false).2
 
 /-- All level parameter names mentioned in a term. -/
 partial def levelParamsUsed (t : Term R) : List Name :=
@@ -363,6 +379,9 @@ structure Globals (R : Type) where
   order : Array Name := #[]
   /-- `builtin key := name` registrations, such as `("nat", Nat)` and `("nat.add", Nat.add)` -/
   builtins : List (Name × Name) := []
+  /-- the registrations made outside the toolchain's library, which nothing checks: each
+  is an axiom of the declarations that depend on it (`#print axioms`) -/
+  assumed : List (Name × Name) := []
   /-- unfold every definition eagerly (no gluing), for normal forms -/
   eager : Bool := false
   /-- which casts reduce by regularity (D1: `off`, so that checking terminates) -/

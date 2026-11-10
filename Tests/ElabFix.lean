@@ -50,7 +50,7 @@ def gluedProjections : IO Unit := do
 importable: privacy is per module. -/
 def runPriv (priv input : String) : IO (Array String × Array String) := do
   let lib ← preludeLoader
-  let s := runFrontend (R := ZeroOneMany) input { loader := fun m => if m == "Priv" then some priv else lib m }
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Priv" then some priv else lib m }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   pure (errs, (s.messages.filter (·.severity != .error)).map (·.text))
 

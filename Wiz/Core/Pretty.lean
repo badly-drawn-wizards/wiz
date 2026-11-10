@@ -27,12 +27,6 @@ where
     | 0, y => y
     | n + 1, y => if names.contains y then go n (y ++ "'") else y
 
-/-- Does `var ix` occur free in `t`? -/
-partial def Term.hasVar {R : Type} (ix : Nat) : Term R → Bool
-  | .var i => i == ix
-  | t => (t.forChildren (m := StateM Bool) (fun _ => pure ())
-      (fun k c => modify (· || c.hasVar (ix + k))) |>.run false).2
-
 /-- `Prop`, `Type`, `Type 2`, `Type u`, `Sort u`, `Type (max u v)`, ... -/
 def showSort (l : Level) : String :=
   match l.toNat? with

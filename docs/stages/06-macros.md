@@ -43,6 +43,7 @@ attribute [macro term.twice] twiceMacro
   notation (written as macros).
 * `builtin key := name` registers prelude definitions with the kernel and the runtime
   (as Agda's `BUILTIN`): `nat` and its constructors and operations, and `string`.
+  Registrations in `lib/` are trusted (22f); anywhere else each is an axiom.
 * **Literals.** A numeral of the registered `Nat` is a kernel literal `natLit n`. It
   unfolds one step at a time (`0 ↦ zero`, `n+1 ↦ succ (natLit n)`, `vNatView`) when an
   eliminator, `conv`, `unify` or `vEq` looks inside it. Registered operations compute
