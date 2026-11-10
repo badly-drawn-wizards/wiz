@@ -146,7 +146,7 @@ definition by `compileReachableE`, before lowering):
 * an argument whose parameter one branch uses is computed in that branch;
 * an argument whose parameter no branch uses is not computed.
 
-A partial application (`List.foldr Bool.and`) still calls the definition.
+A partial application (`foldB Bool.and`, a fold given the function) still calls the definition.
 
 Why this is sound: the language is pure, so when an argument is evaluated cannot be
 observed, only whether the program returns. The result is the same whenever the
@@ -186,7 +186,7 @@ Allocations in the checked-heap interpreter, without and with the pass
 | `mem 3 (range 1000)`: a search in a list that exists | 1000 | 1000 (the same cells; a loop that stops at the fourth) |
 | `reach 8 100 [1]`: each level `Bool.or (mem n xs) (reach … (double xs))` | 101 | 4 |
 | `Bool.and (mem 2000 (range 1000)) (mem 5 (range 1000))` | 2000 | 1000 |
-| `orElse (.some 4) (List.length (double xs))`, 100 elements | 200 | 100 |
+| `orElse (.some 4) (List.length (range 50 xs))`, `xs` of 100 elements | 151 | 101 |
 
 Tests: group `backend` (the IR of `mem`, `allLt` and a user function; the counts
 above), groups `c` and `llvm` (a second argument that never returns; ten million steps

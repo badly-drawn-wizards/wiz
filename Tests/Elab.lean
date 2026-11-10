@@ -981,7 +981,7 @@ partial def upFrom (n i : Nat) : Bool := Bool.or (Nat.beq i n) (upFrom n (i + 1)
 def orElse (o : Option Nat) (d : Nat) : Nat := match o with
   | .some x => x
   | .none => d
-def pick (o : Option Nat) (xs : List Nat) : Nat := orElse o (List.length (double xs))
+def pick (o : Option Nat) (xs : List Nat) : Nat := orElse o (List.length (range 50 xs))
 def s1 : Bool := mem 3 (range 1000 .nil)
 def s2 : Bool := reach 8 100 (.cons 1 .nil)
 def s3 : Bool := Bool.and (mem 2000 (range 1000 .nil)) (mem 5 (range 1000 .nil))
@@ -989,14 +989,17 @@ def s4 : Nat := pick (.some 4) (range 100 .nil)
 def b2n : Bool → Nat
   | .true => 1
   | .false => 0
+def foldB (f : Bool → Bool → Bool) : List Bool → Bool
+  | .nil => .true
+  | .cons b bs => f b (foldB f bs)
 def rest : List Nat := .cons (b2n (Bool.and (mem 7 (range 5 .nil)) (loop 0))) (.cons (b2n (Bool.or (mem 3 (range 5 .nil)) (loop 0)))
   (.cons (b2n s1) (.cons (b2n s2) (.cons (b2n s3) (.cons s4 (.cons (b2n (allLt 5 (range 1000 .nil)))
-  (.cons (pick .none (range 3 .nil)) (.cons (b2n (List.foldr Bool.and .true (.cons .true (.cons .false .nil)))) .nil))))))))
+  (.cons (pick .none (range 3 .nil)) (.cons (b2n (foldB Bool.and (.cons .true (.cons .false .nil)))) .nil))))))))
 def main : List Nat := .cons (b2n (upFrom 10000000 0)) rest
 "
 
 def caseShapeRest : String :=
-  ".cons 0 (.cons 1 (.cons 1 (.cons 1 (.cons 0 (.cons 4 (.cons 0 (.cons 3 (.cons 0 .nil))))))))"
+  ".cons 0 (.cons 1 (.cons 1 (.cons 1 (.cons 0 (.cons 4 (.cons 0 (.cons 53 (.cons 0 .nil))))))))"
 
 def caseShapeExpected : String := s!".cons 1 ({caseShapeRest})"
 
@@ -1077,7 +1080,7 @@ def backendGroup : Group where
           -- the default is computed in the `none` branch only
           check ((pick.splitOn "orElse").length == 1) pick
           match pick.splitOn "case" with
-          | [before, after] => check ((before.splitOn "double").length == 1 && (after.splitOn "double").length == 2) pick
+          | [before, after] => check ((before.splitOn "range").length == 1 && (after.splitOn "range").length == 2) pick
           | _ => throw (IO.userError pick)
           -- (`#run` is the IR's interpreter: the arguments that never return are not computed)
           checkEq caseShapeRest run
@@ -1098,7 +1101,7 @@ def backendGroup : Group where
         -- the second list is not built when the first test fails
         checkEq [2000, 1000] [← allocs "s3" false, ← allocs "s3" true]
         -- the default of `orElse` is not computed for `some`
-        checkEq [200, 100] [← allocs "s4" false, ← allocs "s4" true] }
+        checkEq [151, 101] [← allocs "s4" false, ← allocs "s4" true] }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
