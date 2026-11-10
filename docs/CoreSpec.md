@@ -209,7 +209,7 @@ ULift.{u} A ≡ ULift.{w} B ⟶  (X → Y) × (Y → X)         if both are prop
 ULift A ≡ B, B another canonical former  ⟶  False      (ULift is in `canonical`: no confusion)
 cast (ULift.{u} A) (ULift.{w} B) e t
                        ⟶  up (cast A B e (down t))     if u ≡ w and u is never 0
-                       ⟶  e.1 t                        if both are propositions
+                       ⟶  stuck                        if both are propositions (the cast is a proof, §8.6)
                        ⟶  stuck                        otherwise
 ```
 
@@ -603,7 +603,7 @@ both false, by shape:
 `vCast`, `Eval.lean:610–638`. With `A`, `B` in whnf:
 
 ```
-propSort? A = propSort? B = true   ⟶  e.1 t                          (apply the equivalence)        617   [wiz]
+propSort? A = propSort? B = true   ⟶  stuck (the cast is itself a proof, §8.6)                             [std: PT23, PLT25]
 Π/Π, quantities equal              ⟶  λx. cast (B₁ x̂) (B₂ x) (e.2 x) (t x̂),  x̂ = cast A₂ A₁ e.1 x  619–624 [std: PT22]
 Π/Π or Σ/Σ, quantities not known equal ⟶  stuck
 Σ/Σ, quantities equal              ⟶  (c₁, cast (B₁ t.1) (B₂ c₁) (e.2 t.1) t.2),  c₁ = cast A₁ A₂ e.1 t.1   625–629 [std: PT22]
@@ -611,10 +611,10 @@ Sort u/Sort w, Empty_u/Empty_w     ⟶  t if u ≡ w, else stuck                
 Unit_u/Unit_w                      ⟶  tt if u ≡ w, else stuck                                        631
 Enum/Enum, same number of tags     ⟶  t                                                             632
 ULift.{u}/ULift.{u}, u never 0     ⟶  up (cast A B e (down t))                                        [Q4, §4.1]
-A inert, quote(A) = quote(B)       ⟶  t                         (regularity at inert types)   CONJECTURE (argued) [wiz, D1]
+groundEqTy A B (equal, inert, ground) ⟶  t                     (regularity at inert types)   CONJECTURE (argued) [wiz, D1, P1]
 Desc_l I / Desc_l I'               ⟶  by the description (below)                                  [wiz, D1]
 μ^s D i / μ^s D i', t = con x      ⟶  con (cast (⟦D⟧ μ^s' i) (⟦D⟧ μ^s' i') ê x)                  [std: PT22, D1]
-μ, t a numeral, i, i' syntactically equal ⟶ t                                                   [impl]
+(a numeral at its own type: the line above, since the numeral type is ground)
 ν^s D i / ν^s D i', t = cocon x    ⟶  cocon (cast (⟦D⟧ ν^s' i) (⟦D⟧ ν^s' i') ê x)                [wiz, D1]
 otherwise                          ⟶  stuck
 ```
@@ -637,6 +637,10 @@ cast (arg q S E)   ⟶  arg q S (λ s. cast (Desc I) (Desc I') e (E s))
 cast (rec q j E)   ⟶  rec q (cast I I' e j) (cast … e E)
 cast (hrec q H j E) ⟶ hrec q H (λ h. cast I I' e (j h)) (cast … e E)
 ```
+
+Until P2 (§8.6) the first line was "`e.1 t`: apply the equivalence" [wiz]. That rule
+evaluated the proof `e`. `wiz check --eager-proofs` (and `kernelLazyProofs := .false` in
+`Kernel.wiz`) restores it while the transition lasts.
 
 **No regularity** (D1, decision (a)). Until D1, the last line was "`t` if the two types
 quote equal, whatever `e` is". With an impredicative `Prop` and definitionally irrelevant
@@ -668,9 +672,9 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   Families with different parameters (`List A ≡ List B`) stay stuck: their equation would
   need equality of descriptions, which is future work.
 * **Why it blocks the D1 loop.** The rule casts *every* field, along the components of
-  `ê`. A `Prop` field is cast between propositions, which applies the equivalence (`ê`'s
-  component `.1`), a stuck proof. Abel–Coquand's box therefore yields `(… ).1 δ`, not `δ`,
-  and `Ω` has a normal form. A field at a neutral type (`cast A A e a` for a variable `A`)
+  `ê`. A `Prop` field is cast between propositions, which is a stuck proof (§8.6; before
+  P2 it applied the equivalence, `ê`'s component `.1`, also a stuck proof). Abel–Coquand's
+  box therefore yields a stuck cast of `δ`, not `δ`, and `Ω` has a normal form. A field at a neutral type (`cast A A e a` for a variable `A`)
   is stuck, as in TTobs.
 * **Regularity at inert types (CONJECTURE).** `inertTy` (`Eval.lean`; `inertTy` in
   `Kernel.wiz`) is a syntactic, conservative test: `Enum`, `Unit_l` with `l` never 0,
@@ -707,16 +711,17 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
      the μ case of `vEqType`). Those are rules of the system without regularity, so
      termination is not at risk, but "no new redex" does not prove it.
   2. Inert values do contain proofs (the index equations). Convertible proofs can *reduce*
-     differently, and the evaluator reduces proofs, so "no reduction can tell them apart"
-     is not the reason. The reason is that inert types are **rigid**: their reducibility
+     differently, and the evaluator reduced proofs when this was argued (since P2, §8.6,
+     only those bound by `let` or passed as arguments), so "no reduction can tell them
+     apart" is not the reason. The reason is that inert types are **rigid**: their reducibility
      candidate does not depend on the interpretation of `Prop` or of type variables. At
      such a type, a rule that returns its argument unchanged keeps Girard's candidates
      argument valid, provided environments must agree at inert types, and that
      restriction is not circular because inert types mention no `Prop`. Abel–Coquand's
      construction needs a non-rigid type: one whose candidate is an impredicative
      intersection (`⊤ → ⊤`), or depends on a `Prop` variable (the box).
-  3. The side condition is syntactic (`sameVal`), so algorithmic conversion is not a
-     congruence for the rule. For example, `cast (Fin (f p)) (Fin (f q)) e k` stays stuck
+  3. The side condition was syntactic (`sameVal`), so algorithmic conversion was not a
+     congruence for the rule (now fixed by ground equality, below: P1). For example, `cast (Fin (f p)) (Fin (f q)) e k` stays stuck
      for a variable `k`, although `Fin (f p) ≡ Fin (f q)` by irrelevance and the reflexive
      cast reduces to `k`. So conversion is not stable under substitution (Status.md, D1).
      That is incompleteness, not unsoundness. The fix is to decide the side condition with
@@ -749,8 +754,11 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
     are never reduced**: there is no weak-head normal form for a proof, so
     Abel–Coquand's term, which exists in CICobs, is never run. This answers open
     problem (2) of [AC20].
-  - *What this means here.* The restriction to inert types is needed in Wiz only because
-    the evaluator reduces proofs (§12; Status.md §7). The side condition they use is
+  - *What this means here.* The restriction to inert types was needed in Wiz because the
+    evaluator reduced proofs. Since P2 (§8.6) it no longer runs the proofs in `cast` and
+    `transp`, and `--regularity full` no longer makes the Lean kernel loop on
+    Abel–Coquand's program; proofs bound by `let` or passed as arguments are still
+    evaluated, so the restriction stays for now. The side condition they use is
     conversion, not syntactic equality (Status.md, D1, on the incompleteness of
     `sameVal`). Their indexed families are elaborated to parametrised ones with an
     equation in each constructor (Fordism), which is the encoding of §9.2; their
@@ -760,10 +768,33 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
     Russell's paradox by the level rule of §9.3 (`I : Sort (l+1)`).
   - *Not covered by their proofs*: descriptions as first-class codes, `μ`/`ν` over them,
     sizes, quantities, `ULift`, an equality type that computes together with Cast-Refl,
-    and any evaluator that reduces proofs.
+    and any evaluator that reduces proofs (Wiz's still does, for `let`-bound and
+    argument proofs, §8.6).
 * **Cost.** Casting a constructor of a non-inert type walks the whole value (each field
   is cast). At inert types the cast is the identity.
-* **Syntactic equality** (`sameVal`, both kernels) quotes at `max (lvlBound A)
+* **The side condition is ground equality** (P1, `groundEqTy` in both kernels;
+  `/workspace/wiz-notes/p1-stable.md`). A side condition must give the same answer for
+  convertible inputs (S1), and an answer of "fires" must survive substitution (S2).
+  Otherwise one side of a conversion reduces and the other is stuck, and a δβ-reduct of
+  a well-typed term can be rejected. Syntactic equality fails S1 (proof arguments inside
+  an index, `Fin (f p)` against `Fin (f q)`; a glued name against its unfolding).
+  `groundEqTy A B` holds for two inert types that are equal and have no free variable in
+  a relevant position:
+  * types and descriptions are compared part by part (an `arg` at a non-tag field is
+    compared under an atom, a variable bound by the comparison);
+  * values are compared by their inert type: tags, numerals and constructors; `Unit` and
+    propositions skipped; `Σ` by projections;
+  * a neutral equals only the same atom (atoms have a reserved head, so they can't
+    collide with a variable of the context).
+  At an inert type, convertible values have the same canonical skeleton and neutrals in
+  the same places, so S1 holds. A ground type has nothing to substitute, so S2 holds.
+  What is lost: regularity at inert types whose indices are open (`cast (Fin n) (Fin n) e
+  k` for variables `n`, `k` is stuck). Casts of constructors still compute structurally.
+  `--inert conv` (experimental, Lean kernel) also identifies `cast A B e t` with `t` in
+  conversion when `A` is inert and `A ≡ B` (InReg_conv, decided by `convTy`, so it is a
+  congruence). `--inert syntactic` restores the old rule for comparison.
+* **Syntactic equality** (`sameVal`, both kernels; now used only by the D1 experiment's
+  `--regularity` modes) quotes at `max (lvlBound A)
   (lvlBound B)`, a level above every variable either value mentions, so different
   variables never quote alike (before `b7e1736` it was a fixed 100000: Status.md, Q3).
 
@@ -807,6 +838,73 @@ At a type that is a proposition, any two elements are convertible (§11.2):
 There are **no inductive propositions** (`μ` always lives in `Sort (l+1)`, §9), so there
 is no large elimination out of `Prop` except through `absurd` (from `False`) and `split`
 on a Σ of propositions (whose components are propositions too: subsingleton elimination).
+
+### 8.6 Proofs are never evaluated (P2)
+
+The evaluator does not run proofs. This is the design of TTobs, CCobs and CICobs
+[PT22, PT23, PLT25]: there is no reduction relation on terms of a proposition, and
+conversion never compares two proofs. It is `Globals.lazyProofs` in the Lean kernel and
+`kernelLazyProofs` in `Kernel.wiz`, both on by default.
+
+```
+eval (cast A B e t)        e is suspended:  neutral (prf ⟨env, e⟩ : A ≡ B)
+eval (transp A a P p b e)  p and e are suspended
+cast A B e t, A and B propositions   ⟶  stuck                       (the cast is a proof)
+let q (x, y) := p as z. M; u,  p a proof   ⟶  u[p.1/x, p.2/y]        (η for Σ; Lean kernel only: Kernel.wiz has no split)
+conv at a proposition       true, before either side is unfolded
+```
+
+* **A suspended proof** is a neutral head (`Head.prf`, `hprf`) holding the term, its
+  environment and its type. Projections and applications of it grow its spine. The
+  rules of §8.4 only project the equation (`e.1`, `e.2 x`) and pass the parts on, so no
+  rule needs a proof's value.
+* **Why no rule needs it.** Every elimination of a proof yields a proof: Σ is
+  predicative, so a Σ that is a proposition has proof components; a Π into `Prop`
+  applied to anything is a proof; there are no inductive propositions; `absurd` is
+  stuck; `eq` is rejected at propositions. `split` with a relevant motive is the one
+  exception, and η for Σ covers it.
+* **Reading back.** The kernel's syntactic comparison of types (`sameVal`: behind
+  `sameFamily?`, the `--regularity` modes and `--inert syntactic`) reads every suspended
+  proof as `()`: it neither evaluates nor compares proofs (`quoteErasesProofs`;
+  `quoteM .false` in `Kernel.wiz`). Regularity at inert types, by default, does not read
+  values back at all (`groundEqTy`, §8.4), and it skips propositions.
+  Reading a value back into a term *outside* the kernel (the elaborator's `quote`,
+  messages, `#reduce`) evaluates the suspended proof, so that the term is a normal form.
+  It has to: a proof read back by substitution alone can be `(p, q).1`, and the
+  bidirectional checker cannot infer a type for that when the elaborated term is checked
+  again. So the elaborator may still run a proof. The kernel does not.
+  - *Erasure stops at `absurd`.* `absurd M p : M` for any `M`, so what is done to a
+    proof after an `absurd` need not be a proof. The erased reading keeps the
+    eliminations from the last `absurd` on, applied to `()`: two different values of a
+    data type never read back alike. A suspended proof does not reach an `absurd` from
+    a checked term (it only sits in the proof positions of `cast` and `transp`); the
+    rule is there so that this does not have to be argued (test "P2: comparing types
+    erases suspended proofs, but not what follows an absurd").
+* **Consequence: what can still loop.** The reading that evaluates proofs is outside the
+  path by which the kernel accepts a term, but it is used. An error message, `#reduce`,
+  hover information, or the elaborator reading a value back can evaluate a proof, and on
+  a proof without a normal form (Abel–Coquand's, under `--regularity full`) that does
+  not terminate. So the guarantee is about *acceptance by the kernel*, not about every
+  run of `wiz check`.
+* **P2 is reduced, not closed.** Together with the next point: the kernel no longer runs
+  the proofs in `cast` and `transp`, which is where D1's loop ran. It still runs proofs
+  in two kinds of position.
+* **What is not covered [gap].** Only the positions the syntax marks as proofs are
+  suspended. A proof bound by `let`, or passed as an ordinary argument, is still
+  evaluated strictly, because `eval` does not know the type of what it evaluates. A
+  definition is glued (§12), so a proof that is a global name is not unfolded. The gap
+  is real: with regularity switched on, the let-encoded Abel–Coquand term still makes
+  `Kernel.wiz` loop (Status.md, D1). Closing it needs the elaborator to mark such
+  positions, or an evaluator that knows types.
+* **`--regularity refl`** (a D1 experiment) is the one rule that inspects a proof (is it
+  visibly `refl`?). It forces the suspension.
+* **What the literature proves, and for what.** [PLT25] Theorem 5.6 is decidability of
+  conversion for a system whose algorithm never reduces proofs, with full regularity
+  (Cast-Refl) decided when two neutrals are compared. It is mechanised for a fragment:
+  Π, ℕ, ⊥, the impredicative `Ω`, a proof-irrelevant ∃, the observational equality and
+  `cast`, with two universe levels and no general inductive types. Wiz's descriptions,
+  `μ`/`ν`, sizes, quantities, `ULift` and its computing equality type are outside that
+  theorem (§8.4, "Related work"; `/workspace/wiz-notes/plt-vs-inert.md`).
 
 ---
 
@@ -1174,7 +1272,8 @@ observational equality (`μ^s ≡ μ^t` as types is stuck, §8.3).
 
 `eval` (`Eval.lean:128`) is call-by-value on an environment, with closures for binders.
 Lazy places: glued globals and `ind` on numerals (thunks); `coit`/`scofix` values (until
-`out`); `ecase` branches (evaluated only when the tag is known). Ill-typed situations
+`out`); `ecase` branches (evaluated only when the tag is known); and the proof positions
+of `cast` and `transp`, which are never evaluated (§8.6). Ill-typed situations
 (applying a non-function) `panic!` and are meant to be unreachable on checked terms. All
 functions are `partial` in Lean: **termination of evaluation and of type checking is not
 proved**, and the D1 experiment shows checking can loop (Status.md).
@@ -1276,7 +1375,10 @@ Each item says what the code does; the code is what the kernel checks.
 | globals | table, by name | inline `const` terms carrying value and type (trusted) |
 | **`Size ≡ Size`, `Size< s ≡ Size< t`** | **stuck** (`Eval.lean:572`) | **`False`**: `canonical` includes `vsize`/`vsizeLt` (`Kernel.wiz:552–565`) and `vEqTypeW` has no case for two sizes, so it falls through to "different formers ⇒ False" (`Kernel.wiz:961–963`). **Unsound** (Status.md, O1). |
 | regularity in conversion (`unCast`) | off by default (`Conv.lean:264`, only under `--regularity`) | no: stuck casts are compared structurally |
-| regularity in evaluation | off; at inert types only (`inertTy`) | the same (`kernelRegularity := .false`; `inertTy`) |
+| regularity in evaluation | off; at inert types only, decided by `groundEqTy` (P1) | the same (`kernelRegularity := .false`; `groundEqTy`) |
+| InReg in conversion (`--inert conv`, experimental) | `unCast` at an inert type with `convTy A B` | not implemented |
+| proofs (P2, §8.6) | never evaluated (`Globals.lazyProofs`, `--eager-proofs` for the old behaviour); `quote` forces a suspended proof unless `quoteErasesProofs` | the same (`kernelLazyProofs := .true`); `quote` forces, `quoteM .false` (in `sameVal`) erases |
+| two proof heads in `convNe` | any two of `refl`, `reflTy`, `transp`, `prf` are equal (`isProof`) | only two of the same kind (`convHead`): **stricter**, so it can reject where the Lean kernel accepts, never the reverse. Reached only under an `absurd` (elsewhere proof irrelevance answers first); pinned by the test "P2: comparing types erases suspended proofs …" |
 | convTy at Π/Σ propositions | quantities may differ | quantities must be equal (`Kernel.wiz:1598`) |
 | proof irrelevance at Π/Σ | asked at the Π/Σ | asked at the codomain/components only (`Kernel.wiz:1537–1541`); equivalent |
 | `isProp` | `typeSort? ≡ 0` | Π: codomain is a proposition; Σ: both parts (`Kernel.wiz:1328`) |

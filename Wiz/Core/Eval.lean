@@ -55,7 +55,9 @@ partial def whnf : Val R → Val R
 
 /-- **Exercise 4.4b.** First projection. -/
 partial def vFst : Val R → Val R
-  | .unfold _ _ _ v => vFst v.get  -- (given) unfold glued values
+  -- (given) a projection of a glued value stays glued, like an application (`vApp`):
+  -- `(f a).1` is computed only when needed (`f a` may be a big computation)
+  | .unfold n us sp v => .unfold n us (sp.push .fst) (Thunk.mk fun _ => vFst v.get)
   | .lazyInd l I D w P m i x sp v => .lazyInd l I D w P m i x (sp.push .fst) (Thunk.mk fun _ => vFst v.get)  -- (given)
   --<sol
   | .pair a _ => a
@@ -67,7 +69,7 @@ partial def vFst : Val R → Val R
 
 /-- **Exercise 4.4c.** Second projection. -/
 partial def vSnd : Val R → Val R
-  | .unfold _ _ _ v => vSnd v.get  -- (given)
+  | .unfold n us sp v => .unfold n us (sp.push .snd) (Thunk.mk fun _ => vSnd v.get)  -- (given)
   | .lazyInd l I D w P m i x sp v => .lazyInd l I D w P m i x (sp.push .snd) (Thunk.mk fun _ => vSnd v.get)  -- (given)
   --<sol
   | .pair _ b => b
@@ -125,14 +127,18 @@ def natNative? : Name → Array Nat → Option Nat
 `nat.zero` is the literal `0`, and an operation is a closure whose body is a
 `Term.natOp` on its arguments, so it computes natively when they are literals. -/
 def vBuiltin? (g : Globals R) (n : Name) : Option (Val R) := do
-  let k ← g.builtinKey? n
-  if !k.startsWith "nat." then none
-  else if k == "nat.zero" then some (.natLit 0)
+  -- (its `nat.` key: other registrations on `n`, such as `inline`, don't hide it)
+  let (k, _) ← g.builtins.find? fun (k, m) => m == n && k.startsWith "nat."
+  if k == "nat.zero" then some (.natLit 0)
   else if natOpArity k == 1 then some (.lam "a" (.mk [] (.natOp k #[.var 0])))
   else some (.lam "a" (.mk [] (.lam "b" (.natOp k #[.var 1, .var 0]))))
 
-/-- `absurd` is always stuck: the empty type has no constructors. -/
-def vAbsurd (m : Val R) : Val R → Val R
+/-- `absurd` is always stuck: the empty type has no constructors. (A glued value is
+unfolded first, as `Kernel.wiz` does: `absurd (lemma h)` was a panic, and the value that
+came back was `Sort 0`; `wiz-notes/soundness-audit.md`, F2.) -/
+partial def vAbsurd (m : Val R) : Val R → Val R
+  | .unfold _ _ _ v => vAbsurd m v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => vAbsurd m v.get
   | .neutral h sp => .neutral h (sp.push (.absurd m))
   | _ => panic! "vAbsurd: ill-typed"
 
@@ -197,6 +203,7 @@ partial def Head.lvlBound : Head R → Nat
   | .refl A a => Val.maxBound [A, a]
   | .reflTy X => X.lvlBound
   | .transp A a P p b e => Val.maxBound [A, a, P, p, b, e]
+  | .prf _ env t _ => Closure.lvlBound 0 (.mk env t)
 partial def Elim.spineBound (sp : Array (Elim R)) : Nat := sp.foldl (fun m e => max m e.lvlBound) 0
 partial def Elim.lvlBound : Elim R → Nat
   | .app a => a.lvlBound
@@ -225,6 +232,16 @@ partial def reflProof (e : Val R) : Bool :=
   match whnf e with
   | .neutral (.refl ..) #[] | .neutral (.reflTy _) #[] | .tt => true
   | .neutral (.transp _ _ _ p _ e) #[] => reflProof p && reflProof e
+  -- (P2) the one rule that inspects a proof: force the suspension
+  | .neutral (.prf _ _ _ v) #[] => reflProof v.get
+  | _ => false
+
+/-- (P2) Is this neutral head a proof? Suspended proofs, the proof heads, and (with
+`lazyProofs`) a stuck cast between propositions. -/
+def proofHead (h : Head R) : Bool :=
+  match h with
+  | .prf .. | .refl .. | .reflTy _ | .transp .. => true
+  | .cast A B _ _ => propSort? (whnf A) == some true && propSort? (whnf B) == some true
   | _ => false
 
 /-- (D1 experiment) May `cast A A e t` reduce to `t` under `g.regularity`? -/
@@ -299,12 +316,20 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .absurd m t => vAbsurd (eval g env m) (eval g env t)
   | .eq A a b => vEq g (eval g env A) (eval g env a) (eval g env b)
   | .eqTy A B => vEqType g (eval g env A) (eval g env B)
-  | .cast A B e t => vCast g (eval g env A) (eval g env B) (eval g env e) (eval g env t)
+  | .cast A B e t =>
+    let vA := eval g env A
+    let vB := eval g env B
+    vCast g vA vB (suspend g env e (Thunk.mk fun _ => vEqType g vA vB)) (eval g env t)
   | .refl A a => .neutral (.refl (eval g env A) (eval g env a)) #[]
   | .reflTy X => .neutral (.reflTy (eval g env X)) #[]
   | .transp A a P p b e =>
-    .neutral (.transp (eval g env A) (eval g env a) (eval g env P) (eval g env p)
-      (eval g env b) (eval g env e)) #[]
+    let vA := eval g env A
+    let va := eval g env a
+    let vP := eval g env P
+    let vb := eval g env b
+    .neutral (.transp vA va vP
+      (suspend g env p (Thunk.mk fun _ => vApp g (vApp g vP va) (.neutral (.refl vA va) #[])))
+      vb (suspend g env e (Thunk.mk fun _ => vEq g vA va vb))) #[]
   | .qty => .qty
   | .qlit r => .qlit r
   | .enum ls => .enum ls
@@ -403,6 +428,12 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .scofix l I D A f s i a => sorry
   --sol>
 
+/-- (P2) A proof position: with `g.lazyProofs`, a suspended proof of type `ty`
+(`Head.prf`), never evaluated; otherwise evaluated as usual. -/
+partial def suspend (g : Globals R) (env : Env R) (t : Term R) (ty : Thunk (Val R)) : Val R :=
+  if g.lazyProofs then .neutral (.prf ty env t (Thunk.mk fun _ => eval g env t)) #[]
+  else eval g env t
+
 /-- Evaluate a display hint's arguments. -/
 partial def evalHint (g : Globals R) (env : Env R) :
     Option (Name × List Level × List (Term R)) → Option (Name × List Level × List (Val R))
@@ -444,7 +475,10 @@ partial def vSplit (g : Globals R) (q : Val R) (s : Val R) (z : Name) (m : Closu
   --<sol
   match s with
   | .pair a b => Closure.inst2 g body a b
-  | .neutral h sp => .neutral h (sp.push (.split q z m x y body))
+  -- (P2) a proof is never evaluated to a pair: split it by η (`Σ` has η)
+  | .neutral h sp =>
+    if g.lazyProofs && proofHead h then Closure.inst2 g body (vFst s) (vSnd s)
+    else .neutral h (sp.push (.split q z m x y body))
   | _ => panic! "vSplit: ill-typed"
   --|ex
   --| sorry
@@ -854,14 +888,17 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   -- proposition is cast by the equivalence, below)
   if let (.ulift u A₁, .ulift w B₁) := (A, B) then
     if u.isNeverZero && u.equiv w then .up (vCast g A₁ B₁ e (vDown t))
-    else if propSort? A == some true && propSort? B == some true then vApp g (vFst e) t
+    else if propSort? A == some true && propSort? B == some true then
+      if g.lazyProofs then .neutral (.cast A B e t) #[] else vApp g (vFst e) t
     else .neutral (.cast A B e t) #[]
   else
   --<sol
   let v (i : Nat) : Term R := .var i
   let stuck : Val R := .neutral (.cast A B e t) #[]
   -- between propositions, `e` is an equivalence
-  if propSort? A == some true && propSort? B == some true then vApp g (vFst e) t else
+  -- (P2, `lazyProofs`) the cast is a proof itself, so nothing ever needs its value: stuck
+  if propSort? A == some true && propSort? B == some true then
+    if g.lazyProofs then stuck else vApp g (vFst e) t else
   match A, B with
   | .pi x _ q A₁ B₁ _, .pi _ _ q' A₂ B₂ _ =>
     if sameQty q q' != some true then stuck else
@@ -877,10 +914,15 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   | .sort u, .sort w | .empty u, .empty w => if u.equiv w then t else stuck
   | .unit u, .unit w => if u.equiv w then .tt else stuck
   | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
-  -- regularity (only when `g.regularity` allows it; off by default): syntactically equal
-  -- types (`sameVal`: quoted at a level above every variable in them)
+  -- regularity at inert types (InReg, P1): `A` and `B` equal by `groundEqTy`, which is
+  -- invariant under conversion and stable under substitution. (The D1 experiment's
+  -- `g.regularity` modes, off by default, still compare by `sameVal`.)
   | _, _ =>
-    if (regularityAllowed g A e || inertTy g 0 A) && sameVal g A B then t else vCastData g A B e t stuck
+    if regularityAllowed g A e && sameVal g A B then t else
+    if (match g.inertReg with
+        | .syntactic => inertTy g 0 A && sameVal g A B
+        | _ => groundEqTy g 0 A B) then t else
+    vCastData g A B e t stuck
   --|ex
   --| sorry
   --sol>
@@ -890,6 +932,8 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
 side condition of the rules below (as it was of regularity): cheap, and stable under
 substitution, since a substitution instance of equal terms is equal. -/
 partial def sameVal (g : Globals R) (a b : Val R) : Bool :=
+  -- (P2) proofs are not evaluated, and not compared: all proofs are equal
+  let g := { g with quoteErasesProofs := true }
   let l := max a.lvlBound b.lvlBound
   quote g l a == quote g l b
 
@@ -922,6 +966,109 @@ partial def inertDesc (g : Globals R) (depth : Nat) (D : Val R) : Bool :=
     | some (ls, lifted) => (List.range ls.length).all fun k =>
       inertDesc g depth (vApp g E (if lifted then .up (.tag ls k) else .tag ls k))
     | none => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (Val.var (100000 + 50 + depth)))
+  | _ => false
+
+/- ### Ground equality at inert types (P1)
+
+InReg's side condition must not flip under substitution, and must give the same answer
+for convertible inputs: otherwise `cast A B e t` fires on one side of a conversion and is
+stuck on the other (`wiz-notes/inert-regularity-probe.wiz`). Syntactic equality
+(`sameVal`) fails the second test (`Fin (f p)` and `Fin (f q)` for proofs `p q`, or a
+glued name and its unfolding). `groundEqTy` answers `true` only for two inert types that
+are equal and have **no free variable in a relevant position**:
+
+* types: `Enum`, `Unit`, `ULift`, `Σ` and `μ` by their parts (inert shapes only);
+* values at an inert type, by the type: tags, numerals and constructors by their parts;
+  `Unit` and propositions (the index equations at `ret`) are skipped, `Σ` is compared by
+  projections (η);
+* a neutral is equal only to itself, and only if it is an **atom**: a fresh constant
+  standing for a variable bound *inside* the comparison (under a `Σ` or an `arg`),
+  with projections. Every other
+  neutral (a free variable, `f p`, a stuck cast) gives `false`: the cast is stuck.
+
+Why it is stable: a value of an inert type is convertible only to values with the same
+canonical skeleton and neutrals in the same places (η at `Unit` and `Σ` and irrelevance
+are what the comparison skips). So "ground and equal" is decided the same way for
+convertible inputs, and a substitution doesn't change a ground value (atoms are never
+substituted). A `false` may become `true` after a substitution (a free variable replaced
+by a constructor): that is stuck ⟶ fires, which is allowed. -/
+
+/-- The `d`-th atom of `groundEqTy`: a neutral whose head is a reserved global name (it
+starts with a space, so it is no identifier and no declaration). Unlike a variable at a
+large level, it can't collide with a variable of the context, however deep. -/
+partial def groundAtom (d : Nat) : Val R := .neutral (.global s!" atom{d}" []) #[]
+
+/-- Two neutrals that are the same atom, with the same projections. -/
+partial def groundAtomEq : Val R → Val R → Bool
+  | .neutral (.global x _) sp, .neutral (.global y _) sp' =>
+    x.startsWith " atom" && x == y && sp.size == sp'.size &&
+      (sp.zip sp').all fun
+        | (.fst, .fst) | (.snd, .snd) | (.down, .down) => true
+        | _ => false
+  | _, _ => false
+
+/-- A size equal to another, ground: `∞`, or `↑` of ground sizes. -/
+partial def groundSizeEq (s s' : Val R) : Bool :=
+  match whnf s, whnf s' with
+  | .szInf, .szInf => true
+  | .szSuc a, .szSuc b => groundSizeEq a b
+  | a, b => groundAtomEq a b
+
+/-- Two inert types, equal and ground (see above). `d` counts binders, for fresh atoms, and
+bounds the nesting. -/
+partial def groundEqTy (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
+  d < 64 &&
+  match whnf A, whnf B with
+  | .enum ls, .enum ls' => ls.length == ls'.length
+  | .unit l, .unit l' => l.isNeverZero && l.equiv l'
+  | .ulift l A₁, .ulift l' B₁ => l.isNeverZero && l.equiv l' && groundEqTy g (d + 1) A₁ B₁
+  | .sigma _ q A₁ B₁ _, .sigma _ q' A₂ B₂ _ =>
+    sameQty q q' == some true && groundEqTy g (d + 1) A₁ A₂ &&
+      let x := groundAtom d
+      groundEqTy g (d + 1) (Closure.inst g B₁ x) (Closure.inst g B₂ x)
+  | .mu l I D i s _, .mu l' I' D' i' s' _ =>
+    l.equiv l' && groundSizeEq s s' && groundEqTy g (d + 1) I I' &&
+      groundEqDesc g (d + 1) I D D' && groundEqVal g (d + 1) I i i'
+  | _, _ => false
+
+/-- Two descriptions of inert fields (`ret`, `rec`, `arg` at an inert type), equal and
+ground. A tag field is compared branch by branch; any other field under an atom. -/
+partial def groundEqDesc (g : Globals R) (d : Nat) (I D D' : Val R) : Bool :=
+  d < 64 &&
+  match whnf D, whnf D' with
+  | .dret j, .dret j' => groundEqVal g d I j j'
+  | .drec q j E, .drec q' j' E' =>
+    sameQty q q' == some true && groundEqVal g d I j j' && groundEqDesc g d I E E'
+  | .darg q S E, .darg q' S' E' =>
+    sameQty q q' == some true && groundEqTy g (d + 1) S S' &&
+      match tagField? S with
+      | some (ls, lifted) => (List.range ls.length).all fun k =>
+        let t : Val R := if lifted then .up (.tag ls k) else .tag ls k
+        groundEqDesc g (d + 1) I (vApp g E t) (vApp g E' t)
+      | none =>
+        let x := groundAtom d
+        groundEqDesc g (d + 1) I (vApp g E x) (vApp g E' x)
+  | _, _ => false
+
+/-- Two values of an inert type `T`, equal and ground, by `T`. -/
+partial def groundEqVal (g : Globals R) (d : Nat) (T a b : Val R) : Bool :=
+  let T := whnf T
+  if propSort? T == some true then true else
+  let a := whnf a
+  let b := whnf b
+  if let (.natLit n, .natLit m) := (a, b) then n == m else
+  match T with
+  | .unit _ => true
+  | .enum _ => match a, b with
+    | .tag _ i, .tag _ j => i == j
+    | _, _ => groundAtomEq a b
+  | .sigma _ _ A₁ B₁ _ =>
+    let a₁ := vFst a
+    groundEqVal g d A₁ a₁ (vFst b) && groundEqVal g d (Closure.inst g B₁ a₁) (vSnd a) (vSnd b)
+  | .ulift _ A₁ => groundEqVal g d A₁ (vDown a) (vDown b)
+  | .mu l I D i _ _ => match vNatView g a, vNatView g b with
+    | .con x, .con y => groundEqVal g d (vInterp g l I D (muFamily l I D) i) x y
+    | a, b => groundAtomEq a b
   | _ => false
 
 /-- Two `μ` (or two `ν`) types of the same family, `μ^s_l I D i` and `μ^s_l I D i'`:
@@ -981,7 +1128,9 @@ partial def vCastData (g : Globals R) (A B e t stuck : Val R) : Val R :=
   | .mu .., .mu .. => match sameFamily? g A B with
     | some (l, I, D, s, i, i') =>
       let t := whnf t
-      if (match t with | .natLit _ => true | _ => false) && sameVal g i i' then t else
+      -- (a numeral at a ground type was handled by InReg, `groundEqTy`; the old fast path
+      -- here compared the indices by `sameVal`, which is not stable, P1)
+      if g.inertReg == .syntactic && (match t with | .natLit _ => true | _ => false) && sameVal g i i' then t else
       match vNatView g t, sizePred? s with
       | .con x, some s' =>
         let (Xi, Xi', e') := payloadEq g l I D (muFamilyAt l I D s') i i' e
@@ -1012,6 +1161,23 @@ two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   -- (given) a glued value keeps its name
   | .unfold n us sp _ => quote g l (.neutral (.global n us) sp)
+  -- (P2) a suspended proof, with the eliminations applied to it. The kernel's own
+  -- comparisons (`sameVal`) never evaluate it: every proof reads back as `()`. Readback
+  -- outside the kernel (the elaborator, messages) evaluates it, so that the term read
+  -- back is a normal form, which the kernel can check again (a substituted `(p, q).1`
+  -- has no inferable type).
+  | .neutral (.prf _ _ _ v) sp =>
+    if !g.quoteErasesProofs then quote g l (vElims g v.get sp) else
+    -- erased: `()`. Past an `absurd` the value need not be a proof (`absurd M p : M`, for
+    -- any `M`), so the eliminations from the last `absurd` on are kept, on `()`: two
+    -- different values of a data type must not read back alike. (Read back at `l + 1`
+    -- with a fresh variable for the head, then `()` for it.)
+    let isAbsurd (i : Nat) : Bool := match sp[i]? with
+      | some (.absurd _) => true
+      | _ => false
+    match (List.range sp.size).reverse.find? isAbsurd with
+    | none => .tt
+    | some k => (quote g (l + 1) (.neutral (.local l) (sp.extract k sp.size))).instantiateAt 0 .tt
   | .lazyInd lv I D v P m i x sp _ =>
     sp.foldl (fun t e => match e with
       | .app a => .app t (quote g l a)
@@ -1033,6 +1199,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .reflTy X => .reflTy (quote g l X)
       | .transp A a P p b e =>
         .transp (quote g l A) (quote g l a) (quote g l P) (quote g l p) (quote g l b) (quote g l e)
+      | .prf _ _ _ v => quote g l v.get  -- (not reached: the case above)
     sp.foldl (init := hd) fun acc e => match e with
       | .app v => .app acc (quote g l v)
       | .fst => .fst acc
@@ -1089,10 +1256,8 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   --| | v => sorry
   --sol>
 
-end
-
 /-- Apply a whole spine of eliminations to a value (used to unfold solved metas). -/
-def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
+partial def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
   sp.foldl (init := v) fun v e => match e with
     | .app a => vApp g v a
     | .fst => vFst v
@@ -1106,6 +1271,8 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .down => vDown v
     | .sfix l I D lv P f s i => vSfix g l I D lv P f s i v
     | .scase l I D lv P m s i => vScase g l I D lv P m s i v
+
+end
 
 /-- Normal form of a closed term (every definition unfolded). -/
 def nf (g : Globals R) (t : Term R) : Term R :=

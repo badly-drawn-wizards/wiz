@@ -72,7 +72,11 @@ def Candidate.best (cs : Array Candidate) : Option Candidate :=
 returns the candidate *without* committing to its state; on failure it still keeps the
 error and memo information. -/
 def tryAlternative (p : P Syntax) (prec priority index : Nat) : P (Option Candidate) :=
-  fun c s => match p c s with
+  fun c s =>
+    -- what to come back to, without the tables: keeping `s` itself while `p` runs would
+    -- share them with `p`'s state, so that every insertion in `p` copied them
+    let s₀ := { s with memo := {}, toks := {} }
+    match p c s with
     | .ok stx s' =>
       -- the candidate doesn't keep the memo (`commit` replaces it anyway): sharing it would
       -- make the next `memoStore` copy the whole table
@@ -80,8 +84,8 @@ def tryAlternative (p : P Syntax) (prec priority index : Nat) : P (Option Candid
       let toks := s'.toks
       let state := { s' with memo := {}, toks := {} }
       .ok (some { stx, stop := s'.pos, prec, priority, index, state })
-        { s with err := s'.err, memo, toks }
-    | .error s' => .ok none { s with err := s'.err, memo := s'.memo, toks := s'.toks }
+        { s₀ with err := s'.err, memo, toks }
+    | .error s' => .ok none { s₀ with err := s'.err, memo := s'.memo, toks := s'.toks }
 
 /-- Commit to a candidate's state, keeping the accumulated errors and memo. -/
 def commit (cand : Candidate) : P Unit := fun _ s =>

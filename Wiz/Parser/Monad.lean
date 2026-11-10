@@ -80,11 +80,14 @@ def failAt (pos : Nat) (expected : String) : P α := fun _ s =>
     else s.err
   .error { s with err }
 
-/-- Ordered choice with backtracking. -/
+/-- Ordered choice with backtracking. (Only the position is kept for backtracking:
+keeping `s` itself while `p` runs would share its memo table with `p`'s state, so that
+every `memoStore` in `p` copied the whole table, quadratic in the input's length.) -/
 def orElse (p q : P α) : P α := fun c s =>
+  let pos := s.pos
   match p c s with
   | .ok a s' => .ok a s'
-  | .error s' => q c { s' with pos := s.pos }
+  | .error s' => q c { s' with pos }
 
 instance : OrElse (P α) := ⟨fun p q => orElse p (q ())⟩
 
