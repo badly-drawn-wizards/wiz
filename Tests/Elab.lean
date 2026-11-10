@@ -2972,7 +2972,7 @@ def derivingGroup : Group where
           "#eval Repr.repr (Box.mk (P.mk 1 2))\n#eval BEq.beq (Box.mk 1) (Box.mk 2)\n#eval Repr.repr (Inhabited.default : P Nat)\n" ++
           "#check @instReprBoxA")
           ["\"Box.mk (P.mk 1 2)\"", ".false", "\"P.mk 0 0\"",
-           "instReprBoxA : {A : Type u} → [inst✝ : Repr A] → Repr (Box A)"] },
+           "instReprBoxA : {A : Type ?u0} → [inst✝ : Repr A] → Repr (Box A)"] },
     { name := "deriving for a type above Type: lifted fields are seen through down (F5)", run := fun _ =>
         okDeriving ("import Deriving\ninstance : Repr Type := Repr.mk (fun _ _ => \"<type>\")\n" ++
           "instance : Inhabited Type := Inhabited.mk Nat\n" ++

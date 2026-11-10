@@ -137,7 +137,7 @@ inductive Box.{u} (A : Type u) where          -- Box : Type u → Type u (inferr
   the smallest `Type l` that holds its fields: `Box.{u} (A : Type u)` is in `Type u`
   (before, it was put in `Type` and rejected).
 * **Through `ULift`.** A field smaller than its type's universe is lifted in the
-  description (CoreSpec §4.1, F5 in Status.md); the recursor a deriver eliminates
+  description (CoreSpec §4.1, F5 in [Status.md](../Status.md)); the recursor a deriver eliminates
   with hands out `down` of it, whose type is the field's own, so instance resolution
   sees `Nat`, not `ULift Nat` (tested on a type in `Type 1` with a `Nat` field and a
   proof field).
