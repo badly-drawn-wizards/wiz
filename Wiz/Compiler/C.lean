@@ -96,6 +96,7 @@ open RVal (FKind)
 def ftype : FKind → String
   | .k c => ctype c
   | .struct c _ _ => c
+  | .callback .. => "void *"
 
 /-- (9i) The C definition of a struct whose layout is declared in Wiz without a header:
 `struct t { … };` for a name `struct t`, else a `typedef`. Fields: `uint64_t` for `Nat`
