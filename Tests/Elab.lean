@@ -309,7 +309,7 @@ def ottGroup : Group where
           "#reduce N.s N.z = N.s N.z\n" ++
           "#reduce fun (n m : N) => (V N n = V N m)\n" ++
           "#reduce fun (e : V N (.s .z) = V N (.s .z)) => (cast e (V.cons N.z V.nil : V N (.s .z)) : V N (.s .z))")
-          ["fun e => .s .z", "(0 _ : True) × (0 _ : (0 _ : True) × True) × True", "fun n m => (0 e : n = m) × True",
+          ["fun e => .s .z", "True", "fun n m => (0 e : n = m) × True",
            "fun e => .cons .z .z .nil"] },
     { name := "type equality", run := fun _ =>
         ok "def t : Type = Type := refl Type" },
@@ -2299,6 +2299,17 @@ def languageGroup : Group where
   name := "language"
   exercise := "Stage 13"
   cases := [
+    { name := "castRefl: a propositional regularity axiom in the Prelude; it doesn't compute (D1)", run := fun _ =>
+        okLib ("import Prelude\ndef r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n" ++
+          "#reduce fun (A : Type) (e : A = A) (a : A) => castRefl e a")
+          ["fun A e a => castRefl A e a"] },
+    { name := "an equation between numbers has one shape, numeral or constructor", run := fun _ =>
+        okLib ("import Prelude\n#reduce ((0 : Nat) = 0)\n#reduce (Nat.zero = Nat.zero)\n#reduce ((0 : Nat) = Nat.zero)\n" ++
+          "#reduce ((2 : Nat) = Nat.succ (Nat.succ Nat.zero))\n#reduce fun (m n : Nat) => (Nat.succ m = Nat.succ n)\n" ++
+          "def t (e : (0 : Nat) = 0) : Nat.zero = Nat.zero := e\n")
+          ["True", "True", "True", "True", "fun m n => m = n"] },
+    { name := "a proof of True is not a pair", run := fun _ =>
+        failsLib "import Prelude\ndef bad (x : True) : True := x.1\n" "cannot project" },
     { name := "recursion on a later argument, with parameters before the colon", run := fun _ =>
         okLib ("import Prelude\ndef addE (w : Nat) : List Nat → List Nat\n  | .nil => .cons w .nil\n" ++
           "  | .cons x xs => .cons x (addE w xs)\ndef app2 : Nat → List Nat → List Nat → List Nat\n" ++
@@ -2960,12 +2971,10 @@ def vecGroup : Group where
           "def c3 (e : Vec Nat (Nat.succ 2) = Vec Nat 3) : (cast e u3 : Vec Nat 3) = v3 := rfl\n" ++
           "#reduce fun (e : Vec Nat (Nat.succ 2) = Vec Nat 3) => Vec.toList (cast e u3 : Vec Nat 3)")
           ["fun e => .cons 10 (.cons 20 (.cons 30 .nil))"] },
-    { name := "known failure: map_map needs regularity at a variable type (D1; wishful: cast-refl)", run := fun _ =>
-        -- `Vec.map f (cons x xs)` is `cons (cast B B _ (f x)) …` without regularity; see
-        -- drafts/vec-lib/VecProofs.wiz. Turn into an `okLibs` if `castRefl` is added.
-        failsLibs (vecPrelude ++ "def Vec.map_map {A B C : Type} (f : B → C) (g : A → B) {0 n : Nat} : (v : Vec A n) →\n" ++
-          "    Vec.map f (Vec.map g v) = Vec.map (fun a => f (g a)) v\n  | .nil => rfl\n" ++
-          "  | .cons x xs => congrArg (Vec.cons (f (g x))) (Vec.map_map f g xs)\n") "type mismatch" },
+    { name := "map_map, get_set and get_map, with the castRefl axiom (D1)", run := fun _ =>
+        okLibs (vecPrelude ++ "def mm : Vec.map Nat.succ (Vec.map Nat.succ w3) = Vec.map (fun a => Nat.succ (Nat.succ a)) w3 := Vec.map_map Nat.succ Nat.succ w3\n" ++
+          "def gs {A : Type} {0 n : Nat} (v : Vec A n) (i : Fin n) (x : A) : Vec.get (Vec.set v i x) i = x := Vec.get_set v i x\n" ++
+          "def gm {A B : Type} (f : A → B) {0 n : Nat} (v : Vec A n) (i : Fin n) : Vec.get (Vec.map f v) i = f (Vec.get v i) := Vec.get_map f v i\n") },
     { name := "compiled, through the IR and C", run := fun _ => do
         okLibs (vecPrelude ++ "#run Vec.toList (Vec.reverse v3)\n#run Vec.get (Vec.set v3 (Fin.of 3 2 rfl) 7) (Fin.of 3 2 rfl)\n" ++
           "#run Vec.toList (Vec.zipWith Nat.mul v3 w3)")

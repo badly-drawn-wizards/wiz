@@ -267,6 +267,17 @@ def Lens.pair_getPut {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Law
     Lens.GetPut (Lens.pair l m) := fun s =>
   @Optic.subst S (fun (y : S) => (m y).2 (m s).1 = s) s ((l s).2 (l s).1) (Optic.sym (hl.1 s)) (hm.1 s)
 
+-- Equality of a pair with a pair-valued variable, componentwise. The equation computes to
+-- `(e : a = p.1) × (cast B B _ b = p.2)` (the second component's type is cast along the
+-- first's equation, and `B` is a variable, so the cast is stuck): `castRefl` removes it.
+def Optic.pairEq {A B : Type} (a : A) (b : B) (p : A × B) (e₁ : a = p.1) (e₂ : b = p.2) : (a, b) = p :=
+  (e₁, Optic.trans (@castRefl B rfl b) e₂)
+def Lens.pair_putGet {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m)
+    (hi : Lens.Indep l m) : Lens.PutGet (Lens.pair l m) := fun s ab =>
+  Optic.pairEq ((l ((m ((l s).2 ab.1)).2 ab.2)).1) ((m ((m ((l s).2 ab.1)).2 ab.2)).1) ab
+    (Optic.trans (hi.2.1 ((l s).2 ab.1) ab.2) (hl.2.1 s ab.1))
+    (hm.2.1 ((l s).2 ab.1) ab.2)
+
 -- `underR` preserves the laws, case by case on the inner result. These are the lemmas
 -- for a partial lens behind a lens whose put-then-get is definitional (a field, a
 -- constructor's argument): the composite's laws are the inner lens's.

@@ -300,6 +300,9 @@ At **inert** types (first-order data: `Nat`, `Bool`, `List Nat`, … — no `Pro
 functions or type variables) regularity is kept: there a cast between equal types is the
 identity. A cast at a type variable (`cast e a` for `e : A = A`) stays stuck, as in
 TTobs: `J` computes on `refl` at data types, not at a variable family (docs/CoreSpec.md §8.4).
+What regularity said definitionally is available as a proof: the Prelude's axiom
+`castRefl : (cast e a : A) = a` (for `e : A = A`). It doesn't compute, it is consistent
+(the setoid model), and `#print axioms` shows where it is used.
 
 **Propositions inside types.** Two propositions are equal when equivalent, whatever
 their shapes: `True = (True → True)` holds. So equality of types can't compare a
@@ -1932,10 +1935,11 @@ Functions: `head`/`tail`/`last`/`init` on non-empty vectors, `get`/`set` by `Fin
 `map`, `zipWith`, `zip`, `foldl`/`foldr`, `replicate`, `ofFn`, `append`, `reverse`
 (linear, with a `cast` along `m + (k+1) = (m+k)+1`), `snoc`, `splitAt`, `shiftIn`,
 `toList`/`fromList` (`fromList l : Vec A (List.length l)`). Theorems: `length_eq`,
-`length_toList`, `toList_fromList`, and the `Nat` lemmas they need
-(`add_zero`, `add_succ`, `add_comm`), all by structural recursion. (`map_map`, `get_set`
-and `get_map` are in `drafts/vec-lib/VecProofs.wiz` since D1: without regularity they would
-need `cast B B e b = b` at a type variable, which is not provable; see docs/Status.md.)
+`length_toList`, `toList_fromList`, `map_map`, `get_set` (`get (set v i x) i = x`),
+`get_map`, and the `Nat` lemmas they need (`add_zero`, `add_succ`, `add_comm`), all by
+structural recursion. `map_map`, `get_set` and `get_map` go through equations such as
+`Vec.map_cons : map f (cons x xs) = cons (f x) (map f xs)`, which hold only up to casts at
+the element type and are proved with the Prelude's axiom `castRefl` (below).
 
 `lib/BitVec.wiz` (`import BitVec`): `BitVec n`, a `Nat` below `2^n` by construction
 (every operation reduces mod `2^n`). Wrapping `add`/`sub`/`neg`/`mul`, `udiv`/`umod`,
