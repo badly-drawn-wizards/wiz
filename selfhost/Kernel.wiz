@@ -943,24 +943,26 @@ def eqPayload (l : Nat) (I X i : Val) : Val → Val → Val → Option Val
     | .venum k => eqTags l I X i (.venum k) E (whnf (vfst x)) (whnf (vfst y)) x y
     | S' => .some (vEq (vInterp l I (.vdarg S' E) X i) x y)
   | .vdrec j E, x, y => match eqPayload l I X i (whnf E) (vsnd x) (vsnd y) with
-    | .some r => .some (pairTy (vEq (vapp X j) (vfst x) (vfst y)) r)
+    | .some r => .some (withRest (vEq (vapp X j) (vfst x) (vfst y)) (whnf E) r)
     | .none => .none
   | .vdhrec H j E, x, y => match eqPayload l I X i (whnf E) (vsnd x) (vsnd y) with
     -- h0 j1 X2
-    | .some r => .some (pairTy (vEq (.vpi .qw H (.cons j (.cons X .nil)) (.app (.var 2) (.app (.var 1) (.var 0))) .none)
-        (vfst x) (vfst y)) r)
+    | .some r => .some (withRest (vEq (.vpi .qw H (.cons j (.cons X .nil)) (.app (.var 2) (.app (.var 1) (.var 0))) .none)
+        (vfst x) (vfst y)) (whnf E) r)
     | .none => .none
   | _, _, _ => .none
--- (equal tags: `True × …`; different tags: the Σ rule, whose first component is `False`)
+-- (equal tags: the rest; different tags: the Σ rule, whose first component is `False`)
 def eqTags (l : Nat) (I X i S E : Val) : Val → Val → Val → Val → Option Val
   | .vtag k a, .vtag _ b, x, y => match Nat.beq a b with
-    | .true => match eqPayload l I X i (whnf (vapp E (.vtag k a))) (vsnd x) (vsnd y) with
-      | .some r => .some (pairTy (.vunit 0) r)
-      | .none => .none
+    | .true => eqPayload l I X i (whnf (vapp E (.vtag k a))) (vsnd x) (vsnd y)
     | .false => .some (vEq (vInterp l I (.vdarg S E) X i) x y)
   | _, _, _, _ => .none
 -- `A × B` in `Prop`
 def pairTy (A B : Val) : Val := .vsigma .qz A (.cons B .nil) (.var 1) (.some (.lnum 0))
+-- a field's equation, and the rest's unless the rest is `ret` (`withRest` in `Eval.lean`)
+def withRest (A E r : Val) : Val := match E with
+  | .vdret _ => A
+  | _ => pairTy A r
 -- `A = B` between types (`vEqType`)
 def vEqType (X Y : Val) : Val := vEqTypeP (whnf X) (whnf Y)
 -- propositions are equal when equivalent; a proposition is never a type of another sort

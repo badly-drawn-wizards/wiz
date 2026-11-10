@@ -490,35 +490,42 @@ constructor, so that `succ m = succ n` is `m = n` (and not, through the Σ rule,
 equation with a cast along the tags' equation, which without regularity would be stuck):
 
     ret j          ↦ True                       (the index proofs are irrelevant)
-    arg q (Enum) E ↦ by the tags: equal ↦ True × (the rest at `E tag`); different ↦ the
+    arg q (Enum) E ↦ by the tags: equal ↦ the rest at `E tag`; different ↦ the
                      Σ rule (a pair whose first component is False); not both tags ↦
                      none (the whole equation is stuck)
     arg q S E      ↦ `x = y` at the Σ type `⟦arg q S E⟧ X i` (the Σ rule)
-    rec q j E      ↦ (x.1 = y.1 : X j) × (the rest at E)
-    hrec q H j E   ↦ (x.1 = y.1 : (h : H) → X (j h)) × (the rest at E)
+    rec q j E      ↦ (x.1 = y.1 : X j) × (the rest at E), or just x.1 = y.1 if E is `ret`
+    hrec q H j E   ↦ (x.1 = y.1 : (h : H) → X (j h)) × (the rest at E), likewise
 
 The choice between rules depends only on `D` and on whether tags are canonical (computed or
 stuck), so it is stable under substitution. -/
 partial def vEqPayload (g : Globals R) (l : Level) (I X i D x y : Val R) : Option (Val R) :=
   let pairTy (A B : Val R) : Val R := .sigma "_" (.qlit 0) A (.mk [B] (.var 1)) (some 0)
+  -- a field's equation, and the rest's unless the rest is just `ret` (whose equation is
+  -- `True`): decided by the description, so `succ m = succ n` is `m = n` and the
+  -- nesting doesn't depend on how a number is written (`2 = 2` is `True`, and so is
+  -- `succ (succ zero) = succ (succ zero)`)
+  let withRest (A E r : Val R) : Val R := match whnf E with
+    | .dret _ => A
+    | _ => pairTy A r
   match whnf D with
   | .dret _ => some (.unit 0)
   | .darg q S E => match whnf S with
     | .enum _ => match whnf (vFst x), whnf (vFst y) with
       | .tag ls a, .tag _ b =>
-        if a == b then (pairTy (.unit 0) ·) <$> vEqPayload g l I X i (vApp g E (.tag ls a)) (vSnd x) (vSnd y)
+        if a == b then vEqPayload g l I X i (vApp g E (.tag ls a)) (vSnd x) (vSnd y)
         -- different tags: the Σ rule, whose first component is `False`
         else some (vEq g (vInterp g l I (.darg q S E) X i) x y)
       | _, _ => none
     | _ => some (vEq g (vInterp g l I (.darg q S E) X i) x y)
   | .drec _ j E => do
     let r ← vEqPayload g l I X i E (vSnd x) (vSnd y)
-    pure (pairTy (vEq g (vApp g X j) (vFst x) (vFst y)) r)
+    pure (withRest (vEq g (vApp g X j) (vFst x) (vFst y)) E r)
   | .dhrec q H j E => do
     let r ← vEqPayload g l I X i E (vSnd x) (vSnd y)
     -- h0 j1 X2
     let F : Val R := .pi "h" .default q H (.mk [j, X] (.app (.var 2) (.app (.var 1) (.var 0)))) none
-    pure (pairTy (vEq g F (vFst x) (vFst y)) r)
+    pure (withRest (vEq g F (vFst x) (vFst y)) E r)
   | _ => none
 
 /-- **Exercise 4.11b.** Equality of types:

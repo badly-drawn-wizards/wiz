@@ -1,5 +1,12 @@
 -- The Wiz prelude: `import Prelude`.
 
+-- Propositional regularity: a cast along a proof of `A = A` is the identity, up to
+-- equality. An axiom (it doesn't compute), consistent in the setoid model. Wiz has no
+-- definitional regularity (D1: with an impredicative `Prop` it makes checking loop), so
+-- a cast at a type variable stays stuck; this axiom is how proofs get rid of one
+-- (`Vec.map_cons` in lib/Vec.wiz).
+axiom castRefl.{u} {0 A : Type u} (0 e : A = A) (0 a : A) : (cast e a : A) = a
+
 inductive Bool where
   | false
   | true
