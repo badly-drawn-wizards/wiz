@@ -74,7 +74,11 @@ where
     | .pap f as => .pap f (as.map r)
     | .ap f as => .ap (r f) (as.map r)
     | .prim op as => .prim op (as.map r)
-    | e => e
+    | .reset x => .reset (r x)
+    | .reuse tok t as => .reuse (r tok) t (as.map r)
+    -- no wildcard: a new expression form must say how it renames
+    | .erased => .erased
+    | .lit n => .lit n
 
 /-- The free de Bruijn indices of a term under `depth` binders (as outer indices). -/
 partial def freeIdx (e : ETerm) (depth : Nat := 0) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=

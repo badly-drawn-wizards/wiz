@@ -9,20 +9,13 @@ import Wiz
 import Tests.Elab
 open Wiz Tests.Elab
 
-def strip (f : String) : String :=
-  "\n".intercalate ((f.splitOn "\n").filter (!·.startsWith "import"))
-
 def gen (out : String) : IO Unit := do
   IO.FS.createDirAll out
-  let src ← ["Lex", "Parse", "Kernel", "Frontend", "Backend"].mapM fun f =>
-    IO.FS.readFile s!"selfhost/{f}.wiz"
-  let t := Builtin.tables
-  let compiler := "import IO\nimport Std\n" ++ "\n".intercalate (src.map strip) ++ "\n" ++ wizTables t ++
-    s!"def tokens : List String := {wizList (t.tokens.toList.map wizLit)}\n" ++
-    "def commentLines : List String → List String\n  | .nil => .nil\n  | .cons l rest => .cons (String.append \"/* \" (String.append l \" */\")) (commentLines rest)\n" ++
-    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with\n    | .mk out gs _ _ _ => do\n      printAll (commentLines (List.reverseOf out .nil));\n      printDocs (genProgram gs)\n"
-  IO.FS.writeFile s!"{out}/compiler.wiz" compiler
-  IO.FS.writeFile s!"{out}/self.wiz" ("import Prelude\n" ++ strip compiler)
+  let src ← Selfhost.compilerFiles.mapM fun (f : String) => IO.FS.readFile f
+  -- (the driver of `Selfhost.compilerSource`: `--rc` on the command line picks reference
+  -- counting, stage 21k)
+  IO.FS.writeFile s!"{out}/compiler.wiz" (Selfhost.compilerSource src)
+  IO.FS.writeFile s!"{out}/self.wiz" (Selfhost.selfSource src)
 
 -- `lake lean` passes no arguments to the file, so the output directory comes from $OUT.
 #eval show IO Unit from do gen ((← IO.getEnv "OUT").getD ".")

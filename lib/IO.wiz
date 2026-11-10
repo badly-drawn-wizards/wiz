@@ -40,6 +40,15 @@ extern "wiz_io_println" IO.println : String → IO Unit
 extern "wiz_io_print" IO.print : String → IO Unit
 extern "wiz_io_read_file" IO.readFile : String → IO String
 
+-- The program's command-line arguments, without its name (stage 21k). (`#eval` and `#run`
+-- can't call C: run the compiled program.)
+extern "wiz_io_arg_count" IO.argCount : IO Nat
+extern "wiz_io_arg" IO.arg : Nat → IO String
+def IO.argsFrom : Nat → Nat → IO (List String)
+  | .zero, _ => IO.pure .nil
+  | .succ k, i => IO.bind (IO.arg i) (fun a => IO.bind (IO.argsFrom k (Nat.succ i)) (fun rest => IO.pure (List.cons a rest)))
+def IO.args : IO (List String) := IO.bind IO.argCount (fun n => IO.argsFrom n 0)
+
 -- Byte buffers: functional, but `push` updates in place when the buffer is unique.
 axiom Bytes : Type
 extern "wiz_bytes_empty" Bytes.empty : Bytes
