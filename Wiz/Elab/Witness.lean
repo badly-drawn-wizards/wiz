@@ -55,9 +55,24 @@ private partial def headNames (v : Val R) (acc : List Name := []) : ElabM R (Lis
   | .neutral (.global T _) _ => pure (acc ++ [T])
   | _ => pure acc
 
+/-- The constants by the head of their type's conclusion, constructors first (built once
+per search: scanning every global for every type the search looks for is slow). -/
+abbrev HeadIndex := Std.HashMap Name (Array Name)
+
+def headIndex (g : Globals R) : HeadIndex := Id.run do
+  let mut ctors : HeadIndex := {}
+  let mut others : HeadIndex := {}
+  for c in g.order do
+    let some d := g.find? c | continue
+    let some h := resultHead d.type | continue
+    if h == c then continue
+    if d.inline then ctors := ctors.insert h ((ctors.getD h #[]).push c)
+    else others := others.insert h ((others.getD h #[]).push c)
+  others.fold (fun m h cs => m.insert h ((m.getD h #[]) ++ cs)) ctors
+
 mutual
 /-- A term of type `ty` in `ctx`, found within `fuel` nested constant applications. -/
-partial def witness (ctx : LocalCtx R) (ty : VTy R) (fuel : Nat) : ElabM R (Option (Term R)) := do
+partial def witness (ix : HeadIndex) (ctx : LocalCtx R) (ty : VTy R) (fuel : Nat) : ElabM R (Option (Term R)) := do
   if fuel == 0 then return none
   let g ← getGlobals
   let names ← headNames ty
@@ -69,7 +84,7 @@ partial def witness (ctx : LocalCtx R) (ty : VTy R) (fuel : Nat) : ElabM R (Opti
         return some t
   match ty with
   | .pi x _ _ A B _ =>
-    let some b ← witness (ctx.bind x A) (Closure.inst g B (.var ctx.lvl)) fuel | return none
+    let some b ← witness ix (ctx.bind x A) (Closure.inst g B (.var ctx.lvl)) fuel | return none
     return some (.lam x b)
   | .sort l => return some (.unit l)
   | .unit _ => return some .tt
@@ -77,8 +92,8 @@ partial def witness (ctx : LocalCtx R) (ty : VTy R) (fuel : Nat) : ElabM R (Opti
   | .size => return some .szInf
   | .enum ls => return if ls.isEmpty then none else some (.tag ls 0)
   | .sigma _ _ A B _ => attempt do
-    let some a ← witness ctx A fuel | return none
-    let some b ← witness ctx (Closure.inst g B (eval g ctx.env a)) fuel | return none
+    let some a ← witness ix ctx A fuel | return none
+    let some b ← witness ix ctx (Closure.inst g B (eval g ctx.env a)) fuel | return none
     return some (.pair a b)
   | .neutral (.eq A a b) #[] => attempt do
     unify ctx.lvl a b
@@ -87,20 +102,18 @@ partial def witness (ctx : LocalCtx R) (ty : VTy R) (fuel : Nat) : ElabM R (Opti
     if names.isEmpty then return none
     -- `Inhabited.default`, when an instance resolves
     if g.contains "Inhabited.default" && (← get).classes.any (·.name == "Inhabited") then
-      if let some t ← applyConst ctx ty "Inhabited.default" fuel then return some t
+      if let some t ← applyConst ix ctx ty "Inhabited.default" fuel then return some t
     -- constants whose type ends in one of the names: constructors first
-    let cands := g.order.filter fun c => match g.find? c with
-      | some d => !names.contains c && (resultHead d.type).any names.contains
-      | none => false
-    let (ctors, others) := cands.partition fun c => (g.find? c).any (·.inline)
-    for c in ctors ++ others do
-      if let some t ← applyConst ctx ty c (fuel - 1) then return some t
+    for n in names do
+      for c in ix.getD n #[] do
+        if names.contains c then continue
+        if let some t ← applyConst ix ctx ty c (fuel - 1) then return some t
     return none
 
 /-- Apply the constant `c` to holes, unify its conclusion with `ty`, and fill the holes
 unification left open: instance arguments by instance resolution, the others by
 `witness`. -/
-partial def applyConst (ctx : LocalCtx R) (ty : VTy R) (c : Name) (fuel : Nat) :
+partial def applyConst (ix : HeadIndex) (ctx : LocalCtx R) (ty : VTy R) (c : Name) (fuel : Nat) :
     ElabM R (Option (Term R)) := attempt do
   let g ← getGlobals
   let some d := g.find? c | return none
@@ -119,7 +132,7 @@ partial def applyConst (ctx : LocalCtx R) (ty : VTy R) (c : Name) (fuel : Nat) :
   unify ctx.lvl ty cty
   for (m, dom, bi) in holes do
     if let .neutral (.mvar _) _ ← forceMeta (← evalIn ctx m) then
-      let w ← if bi == .instImplicit then synthInstance ctx dom else witness ctx dom fuel
+      let w ← if bi == .instImplicit then synthInstance ctx dom else witness ix ctx dom fuel
       let some w := w | return none
       unify ctx.lvl (← evalIn ctx m) (← evalIn ctx w)
   let r ← zonk ctx.lvl t
@@ -129,7 +142,7 @@ end
 /-- A witness for a closed type, with the universe levels the search left open set to
 `0`; `none` if the search finds nothing. -/
 def findWitness (ty : Term R) (fuel : Nat := 4) : ElabM R (Option (Term R)) := do
-  let some w ← witness {} (← evalIn {} ty) fuel | return none
+  let some w ← witness (headIndex (← getGlobals)) {} (← evalIn {} ty) fuel | return none
   modify fun s => { s with levelMetas := s.levelMetas.map fun l => l.orElse fun _ => some .zero }
   let w ← zonk 0 w
   return if w.mvars.isEmpty && !w.hasLevelMVar then some w else none

@@ -3123,14 +3123,35 @@ def sortWit (l : Lvl) : Option Tm := match l with
     | .zero => .some .ptrue
     | .succ m => .some (.unit m)
   | _ => .none
+-- the witness search's view of the globals: all of them, and by the head of their
+-- conclusion (built once per partial definition, so the search doesn't scan every
+-- global for every type it looks for)
+inductive WEnv where
+  | mk (all : Array Global) (ix : StrMap (List Nat))
+def globalHead (g : Global) : Option String := match g with
+  | .mk _ gty _ _ _ => match tmConcl gty 0 with
+    | .mk concl _ => tmHeadName concl
+-- (from the latest global down, so each list is in declaration order)
+partial def headIndex (all : Array Global) (i : Nat) (m : StrMap (List Nat)) : StrMap (List Nat) := match i with
+  | .zero => m
+  | .succ j => headIndex all j (match globalHead (Array.getD all j (.mk "?" .star .star .star .nil)) with
+    | .none => m
+    | .some h => StrMap.insert m (Str.ofString h) (.cons j (StrMap.findD m (Str.ofString h) .nil)))
+def WEnv.of (gs : Globals) : WEnv := match gs with
+  | .mk all _ _ => .mk all (headIndex all (Array.size all) StrMap.empty)
+def WEnv.global (we : WEnv) (i : Nat) : Global := match we with
+  | .mk all _ => Array.getD all i (.mk "?" .star .star .star .nil)
+def WEnv.cands (we : WEnv) (h : HeadArgs) : List Nat := match we with
+  | .mk _ ix => match h with
+    | .mk n _ => StrMap.findD ix (Str.ofString n) .nil
 mutual
-def wit (gs : Globals) (c : TCtx) (ty : Val) (fuel : Nat) : Option Tm := match fuel with
+def wit (we : WEnv) (c : TCtx) (ty : Val) (fuel : Nat) : Option Tm := match fuel with
   | .zero => .none
   | .succ f => match hypWit c ty (TCtx.types c) 0 with
     | .some t => .some t
-    | .none => witShape gs c ty (whnf ty) fuel f
-def witShape (gs : Globals) (c : TCtx) (ty w : Val) (fuel f : Nat) : Option Tm := match w with
-  | .vpi _ dom env cod _ => match wit gs (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod) fuel with
+    | .none => witShape we c ty (whnf ty) fuel f
+def witShape (we : WEnv) (c : TCtx) (ty w : Val) (fuel f : Nat) : Option Tm := match w with
+  | .vpi _ dom env cod _ => match wit we (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod) fuel with
     | .some b => .some (.lam b)
     | .none => .none
   | .vsort l => sortWit l
@@ -3139,42 +3160,46 @@ def witShape (gs : Globals) (c : TCtx) (ty w : Val) (fuel f : Nat) : Option Tm :
     | .zero => .none
     | .succ _ => .some (.tag k 0)
   | .vsize => .some .szInf
-  | .vsigma _ a env b _ => match wit gs c a fuel with
+  | .vsigma _ a env b _ => match wit we c a fuel with
     | .none => .none
-    | .some x => match wit gs c (eval (.cons (eval (TCtx.env c) x) env) b) fuel with
+    | .some x => match wit we c (eval (.cons (eval (TCtx.env c) x) env) b) fuel with
       | .none => .none
       | .some y => .some (.pair x y)
-  | _ => match gs with
-    | .mk all _ _ => byGlobals gs c ty (headsOf ty) f all 0
-def byGlobals (gs : Globals) (c : TCtx) (ty : Val) (hs : List HeadArgs) (f : Nat) (all : Array Global) (i : Nat) : Option Tm :=
-  match Nat.lt i (Array.size all) with
-  | .false => .none
-  | .true => match tryGlobal gs c ty hs f (Array.getD all i (.mk "?" .star .star .star .nil)) with
+  | _ => let hs := headsOf ty; byHeads we c ty hs f hs
+-- the globals whose conclusion has one of the type's names as its head (`WEnv.ix`)
+def byHeads (we : WEnv) (c : TCtx) (ty : Val) (hs : List HeadArgs) (f : Nat) : List HeadArgs → Option Tm
+  | .nil => .none
+  | .cons h rest => match byGlobals we c ty hs f (WEnv.cands we h) with
     | .some t => .some t
-    | .none => byGlobals gs c ty hs f all (i + 1)
-def tryGlobal (gs : Globals) (c : TCtx) (ty : Val) (hs : List HeadArgs) (f : Nat) (g : Global) : Option Tm :=
+    | .none => byHeads we c ty hs f rest
+def byGlobals (we : WEnv) (c : TCtx) (ty : Val) (hs : List HeadArgs) (f : Nat) : List Nat → Option Tm
+  | .nil => .none
+  | .cons i rest => match tryGlobal we c ty hs f (WEnv.global we i) with
+    | .some t => .some t
+    | .none => byGlobals we c ty hs f rest
+def tryGlobal (we : WEnv) (c : TCtx) (ty : Val) (hs : List HeadArgs) (f : Nat) (g : Global) : Option Tm :=
   match g with
   | .mk n gty v _ _ => match tmConcl gty 0 with
     | .mk concl k => match tmHeadName concl with
       | .none => .none
       | .some h => match headArgs h hs with
         | .none => .none
-        | .some vs => applyGlobal gs c ty f (matchArgs k (tmArgs concl .nil) vs (noneList k)) gty .nil (.const n .nil .nil v gty)
-def applyGlobal (gs : Globals) (c : TCtx) (ty : Val) (f : Nat) (asg : List (Option Val)) (gty : Tm) (env : Env) (acc : Tm) : Option Tm :=
+        | .some vs => applyGlobal we c ty f (matchArgs k (tmArgs concl .nil) vs (noneList k)) gty .nil (.const n .nil .nil v gty)
+def applyGlobal (we : WEnv) (c : TCtx) (ty : Val) (f : Nat) (asg : List (Option Val)) (gty : Tm) (env : Env) (acc : Tm) : Option Tm :=
   match wPeel gty with
   | .bind dom cod => match asg with
     | .cons a rest => match a with
-      | .some v => applyGlobal gs c ty f rest cod (.cons v env) (.app acc (quote (TCtx.lvl c) v))
-      | .none => applyFound gs c ty f rest dom cod env acc
-    | .nil => applyFound gs c ty f .nil dom cod env acc
+      | .some v => applyGlobal we c ty f rest cod (.cons v env) (.app acc (quote (TCtx.lvl c) v))
+      | .none => applyFound we c ty f rest dom cod env acc
+    | .nil => applyFound we c ty f .nil dom cod env acc
   | .done => match check (TCtx.erase c) acc ty with
     | .ok _ _ => .some acc
     | .err _ => .none
 -- an argument the conclusion doesn't fix: found by the search
-def applyFound (gs : Globals) (c : TCtx) (ty : Val) (f : Nat) (asg : List (Option Val)) (dom cod : Tm) (env : Env) (acc : Tm) : Option Tm :=
-  match wit gs c (eval env dom) f with
+def applyFound (we : WEnv) (c : TCtx) (ty : Val) (f : Nat) (asg : List (Option Val)) (dom cod : Tm) (env : Env) (acc : Tm) : Option Tm :=
+  match wit we c (eval env dom) f with
   | .none => .none
-  | .some w => applyGlobal gs c ty f asg cod (.cons (eval (TCtx.env c) w) env) (.app acc w)
+  | .some w => applyGlobal we c ty f asg cod (.cons (eval (TCtx.env c) w) env) (.app acc w)
 end
 inductive PSigR where
   | ok (f : String) (ty : Tm)
@@ -3204,7 +3229,7 @@ def unwrapDefs : List Syntax → List Syntax
   | .nil => .nil
   | .cons d rest => .cons (unwrapDef d) (unwrapDefs rest)
 -- the witness of a partial definition's type: the one written, or one found
-def findWit (gs : Globals) (f : String) (ty : Tm) : PSigR := match wit gs empty (eval .nil ty) 4 with
+def findWit (gs : Globals) (f : String) (ty : Tm) : PSigR := match wit (WEnv.of gs) empty (eval .nil ty) 4 with
   | .some w => .ok f w
   | .none => .err (String.append (String.append "partial definition " f)
       ": no witness found for its type; give one with `partial (default := w) def`")
