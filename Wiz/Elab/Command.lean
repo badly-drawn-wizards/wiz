@@ -108,9 +108,46 @@ structure CommandState (R : Type) where
   messages and the info tree) -/
   pristine : Bool := true
 
-/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`). -/
-def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) :=
-  addDecl g (d.withSorts g)
+/-- (13b) The types that are opaque in the module being elaborated: declared in another
+module with a private constructor, field or observation. Sorted, for stable messages. -/
+def foreignOpaques (g : Globals R) : List Name :=
+  (g.opaques.toList.filterMap fun (n, m) => if m == g.module then none else some n).mergeSort
+
+/-- (13b) **The privacy check.** The kernel compares types by shape, so it takes a
+look-alike for a type whose constructor is private to another module, and every
+comparison the elaborator leaves to it is answered that way (`rfl`, a term assigned by a
+tactic while it had holes, the solutions of untyped unification). So when such a type is
+visible, the declaration is checked a second time, by the same kernel checker, against
+the elaborator's view of the environment (`Globals.elabView`), where those types have no
+definition. A declaration that passes used no hidden shape. The first check, against the
+real environment, is the one soundness rests on; this one only rejects.
+
+On a failure, the types whose shape was used are those that make the check fail when
+hidden alone. `kind` chooses the kernel entry (`addDecl`, or `addPartialDecl`). -/
+def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → TCM (Globals R) := addDecl) : TCM Unit := do
+  let ops := foreignOpaques g
+  if ops.isEmpty then return
+  match kind g.elabView d with
+  | .ok _ => pure ()
+  | .error e =>
+    let hide (n : Name) : Globals R := match g.decls[n]? with
+      | some t => { g with decls := g.decls.insert n { t with value := none } }
+      | none => g
+    let used := ops.filter fun n => match kind (hide n) d with
+      | .ok _ => false
+      | .error _ => true
+    let used := if used.isEmpty then ops else used
+    let show1 (n : Name) : String := s!"{n} (module {(g.opaques[n]?).getD "?"})"
+    throw (.other (s!"{d.name} depends on the definition of {", ".intercalate (used.map show1)}, which is hidden outside " ++
+      s!"its module (it has private parts): with the definition hidden, {e}"))
+
+/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and then
+the privacy check. -/
+def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  let d := d.withSorts g
+  let g' ← addDecl g d
+  privacyCheck g d
+  pure g'
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
@@ -842,7 +879,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             report .error (d.getArg 1).info s!"partial definition {name}: no witness found for its type {ty.pretty}; give one with `partial (default := w) def {name} …` (the kernel takes {name} only if its type is inhabited)"
             return
           | .error e => report .error e.info e.msg; return
-        match addPartialDecl g (Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }) with
+        let pd := Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }
+        match (do let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
