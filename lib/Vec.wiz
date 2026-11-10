@@ -1,15 +1,11 @@
-import Prelude
+import Logic
 -- Bounded numbers and length-indexed vectors (`import Vec`). The length of a `Vec` is
 -- an erased index (quantity 0): at runtime a vector is a list, and `Vec.length` counts
 -- it (`Vec.length_eq` ties the count to the index).
 
--- Equality lemmas used below.
+-- Equality lemmas used below (`Eq.symm`, `Eq.trans` are in lib/Logic.wiz).
 def congrArg.{u, v} {A : Type u} {B : Type v} (f : A → B) {a b : A} (e : a = b) : f a = f b :=
   transp (fun b _ => f a = f b) (refl (f a)) e
-def Eq.symm {A : Type} {a b : A} (e : a = b) : b = a :=
-  transp (fun b _ => b = a) (refl a) e
-def Eq.trans {A : Type} {a b c : A} (e₁ : a = b) (e₂ : b = c) : a = c :=
-  transp (fun c _ => a = c) e₁ e₂
 
 def Nat.add_zero : (n : Nat) → n + 0 = n
   | .zero => rfl

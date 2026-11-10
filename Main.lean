@@ -15,7 +15,11 @@ options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
 (default off),
---predicative-prop
+--predicative-prop, --eager-proofs (P2: the evaluator runs proofs, as it did before; the
+default never evaluates them),
+--inert syntactic|ground|conv (P1: regularity at inert types; default ground)
+compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
+unboxed; not stable under substitution, so off by default)
 --strict-privacy (13b, an experiment; turns the cache off): check each declaration again with
   the definitions of other modules' types with private parts hidden
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
@@ -68,6 +72,29 @@ initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 the elaborator's view. Off by default. -/
 initialize strictPrivacyOpt : IO.Ref Bool ← IO.mkRef false
 
+/-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
+initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
+
+/-- (P1) `--inert MODE`: regularity at inert types. -/
+initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
+
+/-- `--unbox-structs` (22i): the last field of a structure is unboxed. Off by default: the
+representation is not stable under substitution (`unboxedSigma` in `Erase.lean`). -/
+initialize unboxOpt : IO.Ref Bool ← IO.mkRef false
+
+/-- Take `--inert MODE` out of the arguments. -/
+def takeInertOpt : List String → Except String (Option InertReg × List String)
+  | "--inert" :: m :: rest => do
+    let r ← match m with
+      | "syntactic" => pure InertReg.syntactic | "ground" => pure .ground | "conv" => pure .conv
+      | _ => throw s!"unknown inert mode {m}"
+    let (_, rest) ← takeInertOpt rest
+    return (some r, rest)
+  | a :: rest => do
+    let (r, rest) ← takeInertOpt rest
+    return (r, a :: rest)
+  | [] => return (none, [])
+
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
   let closure ← Module.loadClosure (moduleRoots tc) input
@@ -75,14 +102,19 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
   let (regularity, predicativeProp) ← kernelOpts.get
+  let lazyProofs ← lazyProofsOpt.get
+  let inertReg ← inertOpt.get
+  let unboxStructs ← unboxOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?),
-      globals := { regularity, predicativeProp, strictPrivacy := ← strictPrivacyOpt.get },
+      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && !(← strictPrivacyOpt.get) then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs &&
+      !(← strictPrivacyOpt.get)
+    then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -111,8 +143,8 @@ def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) : IO UInt32 := d
   | .error e => IO.eprintln e; pure 1
   | .ok (decls, ty) =>
     let io := Build.isIO ty
-    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls))
-      else Build.compileC tc (C.program decls io (Build.extraC s)) out
+    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls) (Build.extraC s) s.globals.unboxStructs)
+      else Build.compileC tc (C.program decls io (Build.extraC s) s.globals.unboxStructs) out
     match r with
     | .error e => IO.eprintln e; pure 1
     | .ok () => pure 0
@@ -146,6 +178,14 @@ def main (args : List String) : IO UInt32 := do
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
   if args.contains "--strict-privacy" then strictPrivacyOpt.set true
   let args := args.filter (· != "--strict-privacy")
+  if args.contains "--unbox-structs" then unboxOpt.set true
+  let args := args.filter (· != "--unbox-structs")
+  lazyProofsOpt.set (!args.contains "--eager-proofs")
+  let args := args.filter (· != "--eager-proofs")
+  let args ← match takeInertOpt args with
+    | .ok (r, a) => do if let some r := r then inertOpt.set r
+                       pure a
+    | .error e => do IO.eprintln e; return 1
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1

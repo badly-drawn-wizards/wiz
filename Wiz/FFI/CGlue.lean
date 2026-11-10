@@ -11,6 +11,13 @@ no casts, no indexing or member access, no `goto`, `asm` or `sizeof`. Strings
 (`const char *`) can only be passed around. So a glue snippet can't break the memory
 safety of the rest of the program (beyond what the C functions it calls do).
 
+(9i) Structs: a glue function may take and return C structs (`c_struct`, or a struct of
+an imported header) by value, declare struct locals (`struct timespec t;`, only of
+structs whose fields are all numbers, so an uninitialised one holds no pointers), read
+and assign their fields (`t.tv_sec`), and pass the address of a struct local or
+parameter, `&t`, but only directly as the argument of a C function that takes a
+pointer to that struct. Nothing else may take an address.
+
     stmt := type x [= expr] ; | x (= | += | -= | *= | /= | %=) expr ; | x++ ; | x-- ;
           | if (expr) stmt [else stmt] | while (expr) stmt | for (stmt expr ; step) stmt
           | { stmt* } | return expr ; | break ; | continue ; | call ;
@@ -24,6 +31,12 @@ inductive GTy where
   | int | dbl | str | void
   /-- an opaque foreign pointer: it can only be passed on -/
   | ptr
+  /-- (9i) a struct by value, by its C spelling -/
+  | struct (spelling : String)
+  /-- (9i) a pointer to a struct: `&x` of a struct variable, or a foreign pointer -/
+  | sptr (spelling : String)
+  /-- (9i) `&x` of a struct variable: only an argument for a matching `sptr` parameter -/
+  | addr (spelling : String)
   deriving BEq, Repr, Inhabited
 
 def GTy.ofC : CType → Option GTy
@@ -33,11 +46,28 @@ def GTy.ofC : CType → Option GTy
   | .void => some .void
   | .ptr t => match t with
     | .int "char" | .const (.int "char") => some .str
+    | .struct sp | .const (.struct sp) => some (.sptr sp)
     | _ => some .ptr
+  | .struct sp => some (.struct sp)
+  | .array .. => none
   | .other _ => none
 
 def GTy.show : GTy → String
   | .int => "an integer" | .dbl => "a double" | .str => "a string" | .void => "void" | .ptr => "a pointer"
+  | .struct sp => sp | .sptr sp => s!"a pointer to {sp}" | .addr sp => s!"the address of a {sp}"
+
+def GTy.isNum : GTy → Bool | .int | .dbl => true | _ => false
+
+/-- Is a value of type `a` accepted where `b` is expected? Numbers mix; a foreign pointer
+goes where a struct pointer is expected (and back); the address of a struct variable only
+where a pointer to that struct is; everything else must match. -/
+def GTy.fits (a b : GTy) : Bool :=
+  match a, b with
+  | .addr x, .sptr y => x == y
+  | .addr _, _ => false
+  | .ptr, .sptr _ | .sptr _, .ptr => true
+  | _, _ => a == b || (a.isNum && b.isNum)
+
 
 /-- Type names allowed for locals. -/
 def localTypes : List (List String × GTy) :=
@@ -51,6 +81,8 @@ structure GState where
   vars : List (String × GTy)
   funcs : List (String × List GTy × GTy)
   ret : GTy
+  /-- (9i) the structs in scope, by spelling: their fields -/
+  structs : List (String × List (String × GTy)) := []
 
 abbrev G := StateT GState (Except String)
 
@@ -60,7 +92,7 @@ def expect (t : String) : G Unit := do
   let u ← gnext
   unless u == t do throw s!"expected '{t}', found '{u}'"
 
-def forbidden : List String := ["goto", "asm", "__asm__", "sizeof", "->", "[", "&", "struct", "union", "malloc", "free"]
+def forbidden : List String := ["goto", "asm", "__asm__", "sizeof", "->", "[", "&", "union", "malloc", "free"]
 
 def isIdent (t : String) : Bool := t != "" && (t.front.isAlpha || t.front == '_')
 def isNumber (t : String) : Bool := t != "" && t.front.isDigit
@@ -97,15 +129,15 @@ partial def expr (prec : Nat := 0) : G GTy := do
       let a ← expr
       expect ":"
       let b ← expr
-      unless lhs == .int || lhs == .dbl do throw "the condition of ?: must be a number"
-      unless a == b || (a != .str && b != .str && a != .ptr && b != .ptr) do throw s!"the branches of ?: have different types"
-      lhs := if a == .str then .str else if a == .dbl || b == .dbl then .dbl else .int
+      unless lhs.isNum do throw "the condition of ?: must be a number"
+      unless a.fits b || b.fits a do throw s!"the branches of ?: have different types"
+      lhs := if !(a.isNum && b.isNum) then a else if a == .dbl || b == .dbl then .dbl else .int
       continue
     let some lvl := binops.findIdx? (·.contains t) | break
     if lvl < prec then break
     let _ ← gnext
     let rhs ← expr (lvl + 1)
-    if lhs == .str || rhs == .str || lhs == .ptr || rhs == .ptr then throw s!"'{t}' needs numbers"
+    unless lhs.isNum && rhs.isNum do throw s!"'{t}' needs numbers"
     lhs := if lvl ≤ 6 then .int else if lhs == .dbl || rhs == .dbl then .dbl else .int
   pure lhs
   --|ex
@@ -119,7 +151,7 @@ partial def unary : G GTy := do
   if t == "-" || t == "!" || t == "~" then
     let _ ← gnext
     let a ← unary
-    if a == .str then throw s!"'{t}' needs a number"
+    unless a.isNum do throw s!"'{t}' needs a number"
     return (if t == "-" then a else .int)
   primary
 
@@ -142,21 +174,52 @@ partial def primary : G GTy := do
     let _ ← gnext
     let mut args := #[]
     while (← gpeek) != ")" do
-      args := args.push (← expr)
+      -- (9i) `&x` of a struct variable, only as an argument
+      if (← gpeek) == "&" then
+        let _ ← gnext
+        let x ← gnext
+        match (← get).vars.lookup x with
+        | some (.struct sp) =>
+          if (← gpeek) != "," && (← gpeek) != ")" then throw "'&' only takes the address of a whole struct variable"
+          args := args.push (.addr sp)
+        | _ => throw "'&' is only allowed on a struct variable, as the argument of a C function"
+      else
+        args := args.push (← expr)
       if (← gpeek) == "," then let _ ← gnext
     let _ ← gnext
     unless args.size == ps.length do throw s!"{t} takes {ps.length} arguments, not {args.size}"
     for a in args, p in ps do
-      unless a == p || (a != .str && p != .str && a != .ptr && p != .ptr) do throw s!"{t}: expected {p.show}, got {a.show}"
+      unless a.fits p do throw s!"{t}: expected {p.show}, got {a.show}"
     return r
   match (← get).vars.lookup t with
   | some ty =>
+    let ty ← members ty
     let nxt ← gpeek
     if nxt == "[" || nxt == "." || nxt == "->" then throw s!"'{nxt}' (indexing or member access) is not allowed in glue code"
     pure ty
   | none => throw s!"unknown variable {t}"
 
+/-- (9i) Field accesses `.f` after a struct-valued variable. -/
+partial def members (ty : GTy) : G GTy := do
+  match ty with
+  | .struct sp =>
+    if (← gpeek) != "." then return ty
+    let _ ← gnext
+    let f ← gnext
+    let some fs := (← get).structs.lookup sp | throw s!"the fields of {sp} are not known"
+    let some fty := fs.lookup f | throw s!"{sp} has no field {f}"
+    members fty
+  | _ => pure ty
+
 end
+
+/-- Are all fields numbers (in nested structs too)? -/
+def allNumbers (structs : List (String × List (String × GTy))) : List (String × GTy) → Nat → Bool
+  | _, 0 => false
+  | fs, fuel + 1 => fs.all fun (_, t) => match t with
+    | .int | .dbl => true
+    | .struct sp => allNumbers structs ((structs.lookup sp).getD []) fuel
+    | _ => false
 
 partial def stmt : G Unit := do
   let t ← gpeek
@@ -172,7 +235,7 @@ partial def stmt : G Unit := do
   else if t == "if" || t == "while" then
     let _ ← gnext; expect "("
     let c ← expr
-    if c == .str then throw s!"the condition of {t} must be a number"
+    unless c.isNum do throw s!"the condition of {t} must be a number"
     expect ")"
     stmt
     if t == "if" && (← gpeek) == "else" then let _ ← gnext; stmt
@@ -191,14 +254,20 @@ partial def stmt : G Unit := do
     let r := (← get).ret
     if r == .void then expect ";" else
       let a ← expr
-      unless a == r || (a != .str && r != .str && a != .ptr && r != .ptr) do throw s!"return: expected {r.show}, got {a.show}"
+      unless a.fits r do throw s!"return: expected {r.show}, got {a.show}"
       expect ";"
   else if t == "break" || t == "continue" then let _ ← gnext; expect ";"
   else
     -- a declaration?
     let s ← get
     let rest := (s.toks.extract s.pos (s.pos + 3)).toList
-    match localTypes.find? fun (ws, _) => rest.take ws.length == ws with
+    -- (9i) a struct local: `struct t x` or `t_name x`
+    let structLocal : Option (List String × GTy) :=
+      match rest with
+      | "struct" :: tag :: _ => if (s.structs.lookup s!"struct {tag}").isSome then some (["struct", tag], .struct s!"struct {tag}") else none
+      | n :: x :: _ => if isIdent x && (s.structs.lookup n).isSome && (s.vars.lookup n).isNone then some ([n], .struct n) else none
+      | _ => none
+    match structLocal <|> localTypes.find? fun (ws, _) => rest.take ws.length == ws with
     | some (ws, ty) =>
       for _ in ws do let _ ← gnext
       let x ← gnext
@@ -206,31 +275,51 @@ partial def stmt : G Unit := do
       if (← gpeek) == "=" then
         let _ ← gnext
         let a ← expr
-        unless a == ty || (a != .str && ty != .str && a != .ptr && ty != .ptr) do throw s!"{x}: expected {ty.show}, got {a.show}"
+        unless a.fits ty do throw s!"{x}: expected {ty.show}, got {a.show}"
+      else if let .struct sp := ty then
+        -- an uninitialised struct may hold no pointers
+        let fs := ((← get).structs.lookup sp).getD []
+        unless allNumbers (← get).structs fs 8 do throw s!"{x}: a struct local with string or pointer fields must be initialised"
       modify fun s => { s with vars := (x, ty) :: s.vars }
       expect ";"
-    | none => simple; expect ";"
+    | none =>
+      if t == "struct" then throw s!"unknown struct {rest.getD 1 ""} (declare it with c_struct or import its header)"
+      simple; expect ";"
 where
   /-- assignment, increment, or a call -/
   simple : G Unit := do
     let x ← gpeek
-    let op := (← get).toks[(← get).pos + 1]?.getD ""
-    if ["=", "+=", "-=", "*=", "/=", "%="].contains op then
+    -- (9i) an assignment to a field: `x.f.g = e`
+    let mut path : Option GTy := none
+    if (← get).toks[(← get).pos + 1]?.getD "" == "." then
+      if let some ty@(.struct _) := (← get).vars.lookup x then
+        let _ ← gnext
+        path := some (← members ty)
+    let st ← get
+    let op := if path.isSome then st.toks[st.pos]?.getD "" else st.toks[st.pos + 1]?.getD ""
+    if path.isSome && !["=", "+=", "-=", "*=", "/=", "%="].contains op then throw s!"expected an assignment, found '{op}'"
+    if let some ty := path then
+      let _ ← gnext
+      let a ← expr
+      unless a.fits ty do throw s!"{x}: expected {ty.show}, got {a.show}"
+      if !ty.isNum && op != "=" then throw s!"'{op}' needs numbers"
+    else if ["=", "+=", "-=", "*=", "/=", "%="].contains op then
       let _ ← gnext; let _ ← gnext
       let some ty := (← get).vars.lookup x | throw s!"unknown variable {x}"
       let a ← expr
-      unless a == ty || (a != .str && ty != .str && a != .ptr && ty != .ptr) do throw s!"{x}: expected {ty.show}, got {a.show}"
-      if ty == .str && op != "=" then throw s!"'{op}' needs numbers"
+      unless a.fits ty do throw s!"{x}: expected {ty.show}, got {a.show}"
+      if !ty.isNum && op != "=" then throw s!"'{op}' needs numbers"
     else if op == "++" || op == "--" then
       let _ ← gnext; let _ ← gnext
       if (← get).vars.lookup x != some .int then throw s!"'{op}' needs an integer variable"
     else let _ ← expr
 
-/-- Check a glue body: the parameters and functions in scope, and the return type. -/
-def checkGlue (body : String) (params : List (String × GTy)) (funcs : List (String × List GTy × GTy)) (ret : GTy) :
-    Except String Unit := do
+/-- Check a glue body: the parameters and functions in scope, the return type, and (9i)
+the structs it may use. -/
+def checkGlue (body : String) (params : List (String × GTy)) (funcs : List (String × List GTy × GTy)) (ret : GTy)
+    (structs : List (String × List (String × GTy)) := []) : Except String Unit := do
   let toks := joinOps (tokenize body)
-  let ((), s) ← (do while (← gpeek) != "" do stmt : G Unit).run { toks, vars := params, funcs, ret }
+  let ((), s) ← (do while (← gpeek) != "" do stmt : G Unit).run { toks, vars := params, funcs, ret, structs }
   let _ := s
   pure ()
 

@@ -196,6 +196,9 @@ inductive Head where
   | hrefl (A a : Val)
   | hreflTy (X : Val)
   | htransp (A a P p b e : Val)
+  -- (P2) a suspended proof: the term `t` in `env`, never evaluated by the kernel; `ty`
+  -- is its type
+  | hprf (ty : Unit → Val) (env : Env) (t : Tm)
   | hconst (name : String) (params : List String) (levels : List Lvl) (value ty : Tm)
   | haxiom (name : String) (ty : Tm)
 end
@@ -205,7 +208,10 @@ inductive PayEq where
 
 def kCharsEq : List Char → List Char → Bool
   | .nil, .nil => .true
-  | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (kCharsEq as bs)
+  -- (the heads first: `Bool.and` would evaluate the rest anyway, call by value)
+  | .cons a as, .cons b bs => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => kCharsEq as bs
+    | .false => .false
   | _, _ => .false
 def kStrEq (a b : String) : Bool := match a with
   | .mk x => match b with
@@ -514,8 +520,10 @@ def tmsLen : Tms → Nat
   | .tnil => 0
   | .tcons _ rest => Nat.succ (tmsLen rest)
 
+-- (past the end: a stuck unknown. The checker rejects a variable out of scope, so
+-- nothing well typed gets here; `Sort 0` here made such a variable a term `Prop : Prop`)
 def lookup : Env → Nat → Val
-  | .nil, _ => .vsort (.lnum 0)
+  | .nil, _ => .vne (.haxiom " out of scope" .star) .snil
   | .cons v rest, i => match i with
     | .zero => v
     | .succ j => lookup rest j
@@ -757,6 +765,11 @@ def sizePred (sz : Val) : Option Val := match whnf sz with
 -- and proof irrelevance it makes checking loop (D1, Abel–Coquand). `.true` restores
 -- it, as `--regularity full` does in the Lean kernel.
 def kernelRegularity : Bool := .false
+-- (P2) proofs are never evaluated (`Globals.lazyProofs` in the Lean kernel): a proof
+-- position (`coe`'s equation, `subst`'s two proofs) is suspended (`Head.hprf`), and a cast
+-- between propositions is stuck. `.false` is the old behaviour (the evaluator runs
+-- proofs), kept for the transition.
+def kernelLazyProofs : Bool := .true
 
 -- **Exercise 14.1.** Evaluation, application and projections (`eval`, `vApp`, `vFst`,
 -- `vSnd` in `Eval.lean`).
@@ -851,6 +864,7 @@ def headBound : Head → Nat
       (Nat.max (Nat.max (lvlBound P) (lvlBound p)) (Nat.max (lvlBound b) (lvlBound e)))
   | .hconst _ _ _ _ _ => 0
   | .haxiom _ _ => 0
+  | .hprf _ env t => envBound 0 env t
 def spineBound : Spine → Nat
   | .snil => 0
   | .sapp sp a => Nat.max (spineBound sp) (lvlBound a)
@@ -905,11 +919,19 @@ def eval : Env → Tm → Val
     | v => v
   | env, .eq A a b => vEq (eval env A) (eval env a) (eval env b)
   | env, .eqTy A B => vEqType (eval env A) (eval env B)
-  | env, .coe A B e t => vCast (eval env A) (eval env B) (eval env e) (eval env t)
+  | env, .coe A B e t =>
+    let vA := eval env A;
+    let vB := eval env B;
+    vCast vA vB (suspend env e (memo (fun _ => vEqType vA vB))) (eval env t)
   | env, .eqRefl A a => .vne (.hrefl (eval env A) (eval env a)) .snil
   | env, .tyRefl X => .vne (.hreflTy (eval env X)) .snil
   | env, .subst A a P p b e =>
-    .vne (.htransp (eval env A) (eval env a) (eval env P) (eval env p) (eval env b) (eval env e)) .snil
+    let vA := eval env A;
+    let va := eval env a;
+    let vP := eval env P;
+    let vb := eval env b;
+    .vne (.htransp vA va vP (suspend env p (memo (fun _ => vapp (vapp vP va) (.vne (.hrefl vA va) .snil)))) vb
+      (suspend env e (memo (fun _ => vEq vA va vb)))) .snil
   | env, .descr l I => .vdesc l (eval env I)
   | env, .dret i => .vdret (eval env i)
   | env, .darg S D => .vdarg (eval env S) (eval env D)
@@ -946,6 +968,56 @@ def eval : Env → Tm → Val
   --|ex
   --| | _, _ => .vsort (.lnum 0)
   --sol>
+-- (P2) a proof position: suspended, never evaluated (`suspend` in `Eval.lean`)
+def suspend (env : Env) (t : Tm) (ty : Unit → Val) : Val := match kernelLazyProofs with
+  | .true => .vne (.hprf ty env t) .snil
+  | .false => eval env t
+-- (P2) the eliminations of a proof, applied to its value (for reading it back)
+def forceSp : Val → Spine → Val
+  | v, .snil => v
+  | v, .sapp sp a => vapp (forceSp v sp) a
+  | v, .sfst sp => vfst (forceSp v sp)
+  | v, .ssnd sp => vsnd (forceSp v sp)
+  | v, .sdown sp => vdown (forceSp v sp)
+  | v, .sabsurd sp m => match whnf (forceSp v sp) with
+    | .vne h sp' => .vne h (.sabsurd sp' m)
+    | w => w
+  | v, _ => v
+-- (P2) the eliminations of a proof from its last `absurd` on (`.none`: there is none).
+-- Past an `absurd` the value need not be a proof (`exfalso M p : M`, for any `M`).
+def fromAbsurd : Spine → Option Spine
+  | .snil => .none
+  | .sabsurd _ m => .some (.sabsurd .snil m)
+  | .sapp sp a => match fromAbsurd sp with
+    | .some r => .some (.sapp r a)
+    | .none => .none
+  | .sfst sp => match fromAbsurd sp with
+    | .some r => .some (.sfst r)
+    | .none => .none
+  | .ssnd sp => match fromAbsurd sp with
+    | .some r => .some (.ssnd r)
+    | .none => .none
+  | .secase sp env m bs => match fromAbsurd sp with
+    | .some r => .some (.secase r env m bs)
+    | .none => .none
+  | .sdelim sp v P a b c d => match fromAbsurd sp with
+    | .some r => .some (.sdelim r v P a b c d)
+    | .none => .none
+  | .sind sp l I D v P m i => match fromAbsurd sp with
+    | .some r => .some (.sind r l I D v P m i)
+    | .none => .none
+  | .ssfix sp l I D v P f s i => match fromAbsurd sp with
+    | .some r => .some (.ssfix r l I D v P f s i)
+    | .none => .none
+  | .sscase sp l I D v P m s i => match fromAbsurd sp with
+    | .some r => .some (.sscase r l I D v P m s i)
+    | .none => .none
+  | .sout sp => match fromAbsurd sp with
+    | .some r => .some (.sout r)
+    | .none => .none
+  | .sdown sp => match fromAbsurd sp with
+    | .some r => .some (.sdown r)
+    | .none => .none
 def vapp : Val → Val → Val
   | .vglued h sp v, a => .vglued h (.sapp sp a) (memo (fun _ => vapp (v ()) a))  -- (given) glued stays glued
   --<sol
@@ -1172,7 +1244,10 @@ def vCastP (A B e t : Val) : Val := match propSort A with
   | .some pa => match pa with
     | .true => match propSort B with
       | .some pb => match pb with
-        | .true => vapp (vfst e) t
+        -- (P2) the cast is a proof itself: nothing needs its value, so it is stuck
+        | .true => match kernelLazyProofs with
+          | .true => .vne (.hcast A B e t) .snil
+          | .false => vapp (vfst e) t
         | .false => vCastW A B e t
       | .none => vCastW A B e t
     | .false => vCastW A B e t
@@ -1198,11 +1273,13 @@ def vCastW : Val → Val → Val → Val → Val
   | .venum k, .venum k', e, t => same k k' t (.vne (.hcast (.venum k) (.venum k') e t) .snil)
   -- (Q4) through `down` (a lifted proposition is cast by the equivalence, in `vCastP`)
   | .vulift l A, .vulift l' B, e, t => same l l' (.vup (vCast A B e (vdown t))) (.vne (.hcast (.vulift l A) (.vulift l' B) e t) .snil)
-  -- regularity (off, see `kernelRegularity`): syntactically equal types
-  | A, B, e, t => match Bool.or kernelRegularity (inertTy 0 A) with
-    | .true => match sameVal A B with
-      | .true => t
-      | .false => vCastData A B e t
+  -- regularity at inert types (InReg, P1): equal ground inert types (`groundEqTy`, stable
+  -- under substitution); full regularity (off, `kernelRegularity`) by `sameVal`
+  | A, B, e, t => castReg A B e t
+def castReg (A B e t : Val) : Val := match Bool.and kernelRegularity (sameVal A B) with
+  | .true => t
+  | .false => match groundEqTy 0 A B with
+    | .true => t
     | .false => vCastData A B e t
 -- an inert type (`inertTy` in `Eval.lean`): first-order data, where a cast between equal
 -- types is the identity: `Enum`, `Unit`, `Σ`s of inert types, and `μ` types whose index
@@ -1255,7 +1332,93 @@ def inertTags (depth : Nat) (E : Val) (lifted : Bool) (k i : Nat) : Bool := matc
 -- (`lvlBound`), so that different variables never quote alike
 def sameVal (a b : Val) : Bool :=
   let l := Nat.max (lvlBound a) (lvlBound b);
-  tmEq (quote l a) (quote l b)
+  tmEq (quoteM .false l a) (quoteM .false l b)
+-- Ground equality at inert types (`groundEqTy` in `Eval.lean`, P1): two inert types that
+-- are equal and have no free variable in a relevant position. Values are compared by
+-- their type (tags, constructors; `Unit` and propositions skipped; `Σ` by projections);
+-- a neutral equals only itself, and only if it is an atom (a fresh constant for a variable
+-- bound inside the comparison, with projections). So the answer is the same for
+-- convertible inputs and doesn't flip from `true` under a substitution.
+def groundAtomSp : Spine → Spine → Bool
+  | .snil, .snil => .true
+  | .sfst a, .sfst b => groundAtomSp a b
+  | .ssnd a, .ssnd b => groundAtomSp a b
+  | .sdown a, .sdown b => groundAtomSp a b
+  | _, _ => .false
+-- the `d`-th atom: a neutral with a reserved head (an axiom whose name starts with a
+-- space, so it is no declaration), which can't collide with a variable of the context
+def groundAtom (d : Nat) : Val := .vne (.haxiom (String.append " atom" (Nat.toString d)) .star) .snil
+def isAtomName (n : String) : Bool := match n with
+  | .mk cs => match cs with
+    | .cons c _ => Nat.beq (Char.code c) 32
+    | .nil => .false
+def groundAtomEq : Val → Val → Bool
+  | .vne (.haxiom x _) sp, .vne (.haxiom y _) sp' => match isAtomName x with
+    | .true => Bool.and (kStrEq x y) (groundAtomSp sp sp')
+    | .false => .false
+  | _, _ => .false
+def groundSizeEq (s s' : Val) : Bool := groundSizeW (whnf s) (whnf s')
+def groundSizeW : Val → Val → Bool
+  | .vszInf, .vszInf => .true
+  | .vszSuc a, .vszSuc b => groundSizeEq a b
+  | a, b => groundAtomEq a b
+def groundEqTy (d : Nat) (A B : Val) : Bool := match Nat.lt d 64 with
+  | .false => .false
+  | .true => groundTyW d (whnf A) (whnf B)
+def groundTyW (d : Nat) : Val → Val → Bool
+  | .venum k, .venum k' => Nat.beq k k'
+  | .vunit l, .vunit l' => Bool.and (Nat.lt 0 l) (Nat.beq l l')
+  | .vulift l A, .vulift l' B => Bool.and (Bool.and (Nat.lt 0 l) (Nat.beq l l')) (groundEqTy (Nat.succ d) A B)
+  | .vsigma q a env b _, .vsigma q' a' env' b' _ => match Bool.and (qEq q q') (groundEqTy (Nat.succ d) a a') with
+    | .true => groundEqTy (Nat.succ d) (eval (.cons (groundAtom d) env) b) (eval (.cons (groundAtom d) env') b')
+    | .false => .false
+  | .vmu l I D i sz, .vmu l' I' D' i' sz' => match Bool.and (Nat.beq l l') (groundSizeEq sz sz') with
+    | .true => match groundEqTy (Nat.succ d) I I' with
+      | .true => match groundEqDesc (Nat.succ d) I D D' with
+        | .true => groundEqVal I i i'
+        | .false => .false
+      | .false => .false
+    | .false => .false
+  | _, _ => .false
+def groundEqDesc (d : Nat) (I D D' : Val) : Bool := match Nat.lt d 64 with
+  | .false => .false
+  | .true => groundDescW d I (whnf D) (whnf D')
+def groundDescW (d : Nat) (I : Val) : Val → Val → Bool
+  | .vdret j, .vdret j' => groundEqVal I j j'
+  | .vdrec j E, .vdrec j' E' => Bool.and (groundEqVal I j j') (groundEqDesc d I E E')
+  | .vdarg S E, .vdarg S' E' => match groundEqTy (Nat.succ d) S S' with
+    | .true => groundArg d I (whnf S) E E'
+    | .false => .false
+  | _, _ => .false
+-- the rest of an `arg`: branch by branch at a tag field, else under an atom
+def groundArg (d : Nat) (I S E E' : Val) : Bool := match S with
+  | .venum k => groundTags d I E E' .false k 0
+  | .vulift n A => match whnf A with
+    | .venum k => groundTags d I E E' .true k 0
+    | _ => groundEqDesc (Nat.succ d) I (vapp E (groundAtom d)) (vapp E' (groundAtom d))
+  | _ => groundEqDesc (Nat.succ d) I (vapp E (groundAtom d)) (vapp E' (groundAtom d))
+def groundTags (d : Nat) (I E E' : Val) (lifted : Bool) (k i : Nat) : Bool := match Nat.lt i k with
+  | .false => .true
+  | .true => match groundEqDesc (Nat.succ d) I (vapp E (upIf lifted (.vtag k i))) (vapp E' (upIf lifted (.vtag k i))) with
+    | .true => groundTags d I E E' lifted k (Nat.succ i)
+    | .false => .false
+def groundEqVal (T a b : Val) : Bool := groundValP (whnf T) (whnf a) (whnf b)
+def groundValP (T a b : Val) : Bool := match propSort T with
+  | .some p => match p with
+    | .true => .true
+    | .false => groundValW T a b
+  | .none => groundValW T a b
+def groundValW : Val → Val → Val → Bool
+  | .vunit _, _, _ => .true
+  | .venum _, .vtag _ i, .vtag _ j => Nat.beq i j
+  | .venum _, a, b => groundAtomEq a b
+  | .vsigma _ A env B _, a, b => match groundEqVal A (vfst a) (vfst b) with
+    | .true => groundEqVal (eval (.cons (vfst a) env) B) (vsnd a) (vsnd b)
+    | .false => .false
+  | .vulift _ A, a, b => groundEqVal A (vdown a) (vdown b)
+  | .vmu l I D i _, .vcon x, .vcon y => groundEqVal (vInterp l I D (muFamily l I D) i) x y
+  | .vmu _ _ _ _ _, a, b => groundAtomEq a b
+  | _, _, _ => .false
 -- (4g) sizes equal as conversion decides it (`sizeEqTrue` in `Eval.lean`, `sizeEq`
 -- below): any `↑ᵏ ∞` is `∞`, and `↑ᵏ x = ↑ᵐ y` when `k = m` and `x`, `y` are one variable
 def szIsInf (s : Val) : Bool := match whnf s with
@@ -1398,17 +1561,17 @@ def outCast (A B e t : Val) : Val := match A with
   | _ => .vne (.hcast A B e t) (.sout .snil)
 
 -- **Exercise 14.2.** Quotation (`quote` in `Eval.lean`): back to a term at depth `l`.
-def quote : Nat → Val → Tm
+def quoteM (qm : Bool) : Nat → Val → Tm
   --<sol
   | _, .vsort l => match lvlClosed l with
     | .some n => match n with
       | .zero => .prop
       | .succ m => .univ m
     | .none => .sortL l
-  | l, .vpi q a env b s => sortedTm s (piTm q (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b)))
-  | l, .vlam env b => .lam (quote (l + 1) (eval (.cons (fresh l) env) b))
-  | l, .vsigma q a env b s => sortedTm s (sigmaTm q (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b)))
-  | l, .vpair a b => .pair (quote l a) (quote l b)
+  | l, .vpi q a env b s => sortedTm s (piTm q (quoteM qm l a) (quoteM qm (l + 1) (eval (.cons (fresh l) env) b)))
+  | l, .vlam env b => .lam (quoteM qm (l + 1) (eval (.cons (fresh l) env) b))
+  | l, .vsigma q a env b s => sortedTm s (sigmaTm q (quoteM qm l a) (quoteM qm (l + 1) (eval (.cons (fresh l) env) b)))
+  | l, .vpair a b => .pair (quoteM qm l a) (quoteM qm l b)
   | _, .vunit l => match l with
     | .zero => .ptrue
     | .succ n => .unit n
@@ -1418,63 +1581,76 @@ def quote : Nat → Val → Tm
     | .succ n => .empty n
   | _, .venum k => .enum k
   | _, .vtag k i => .tag k i
-  | l, .vdesc k I => .descr k (quote l I)
-  | l, .vdret i => .dret (quote l i)
-  | l, .vdarg S E => .darg (quote l S) (quote l E)
-  | l, .vdrec j E => .drec (quote l j) (quote l E)
-  | l, .vdhrec H j E => .dhrec (quote l H) (quote l j) (quote l E)
+  | l, .vdesc k I => .descr k (quoteM qm l I)
+  | l, .vdret i => .dret (quoteM qm l i)
+  | l, .vdarg S E => .darg (quoteM qm l S) (quoteM qm l E)
+  | l, .vdrec j E => .drec (quoteM qm l j) (quoteM qm l E)
+  | l, .vdhrec H j E => .dhrec (quoteM qm l H) (quoteM qm l j) (quoteM qm l E)
   | l, .vmu k I D i sz => match sz with
-    | .vszInf => .mu k (quote l I) (quote l D) (quote l i)
-    | _ => .mus k (quote l I) (quote l D) (quote l i) (quote l sz)
+    | .vszInf => .mu k (quoteM qm l I) (quoteM qm l D) (quoteM qm l i)
+    | _ => .mus k (quoteM qm l I) (quoteM qm l D) (quoteM qm l i) (quoteM qm l sz)
   | _, .vsize => .size
   | _, .vszInf => .szInf
-  | l, .vszSuc sz => .szSuc (quote l sz)
-  | l, .vsizeLt sz => .sizeLt (quote l sz)
-  | l, .vcon x => .con (quote l x)
-  | l, .vnu k I D i sz => .nu k (quote l I) (quote l D) (quote l i) (quote l sz)
-  | l, .vcocon x => .cocon (quote l x)
+  | l, .vszSuc sz => .szSuc (quoteM qm l sz)
+  | l, .vsizeLt sz => .sizeLt (quoteM qm l sz)
+  | l, .vcon x => .con (quoteM qm l x)
+  | l, .vnu k I D i sz => .nu k (quoteM qm l I) (quoteM qm l D) (quoteM qm l i) (quoteM qm l sz)
+  | l, .vcocon x => .cocon (quoteM qm l x)
   | l, .vscofix k I D A f sz i a =>
-    .scofix k (quote l I) (quote l D) (quote l A) (quote l f) (quote l sz) (quote l i) (quote l a)
-  | l, .vcoit k I D S st i s => .coit k (quote l I) (quote l D) (quote l S) (quote l st) (quote l i) (quote l s)
-  | l, .vne h sp => quoteSpine l (quoteHead l h) sp
-  | l, .vglued h sp _ => quoteSpine l (quoteHead l h) sp
-  | l, .vulift k A => .ulift k (quote l A)
-  | l, .vup a => .up (quote l a)
+    .scofix k (quoteM qm l I) (quoteM qm l D) (quoteM qm l A) (quoteM qm l f) (quoteM qm l sz) (quoteM qm l i) (quoteM qm l a)
+  | l, .vcoit k I D S st i s => .coit k (quoteM qm l I) (quoteM qm l D) (quoteM qm l S) (quoteM qm l st) (quoteM qm l i) (quoteM qm l s)
+  -- (P2) a suspended proof, with its eliminations: evaluated (`.true`), or `()`. Erased,
+  -- the eliminations from the last `absurd` on are kept, on `()`: past an `absurd` the
+  -- value need not be a proof, and two different values must not read back alike
+  | l, .vne (.hprf _ env t) sp => match qm with
+    | .true => quoteM qm l (forceSp (eval env t) sp)
+    | .false => match fromAbsurd sp with
+      | .none => .star
+      | .some r => quoteSpine qm l .star r
+  | l, .vne h sp => quoteSpine qm l (quoteHead qm l h) sp
+  | l, .vglued h sp _ => quoteSpine qm l (quoteHead qm l h) sp
+  | l, .vulift k A => .ulift k (quoteM qm l A)
+  | l, .vup a => .up (quoteM qm l a)
   --|ex
   --| | _, _ => .univ 0
   --sol>
-def quoteSpine : Nat → Tm → Spine → Tm
+def quoteSpine (qm : Bool) : Nat → Tm → Spine → Tm
   | _, h, .snil => h
-  | l, h, .sapp sp a => .app (quoteSpine l h sp) (quote l a)
-  | l, h, .sfst sp => .fst (quoteSpine l h sp)
-  | l, h, .ssnd sp => .snd (quoteSpine l h sp)
+  | l, h, .sapp sp a => .app (quoteSpine qm l h sp) (quoteM qm l a)
+  | l, h, .sfst sp => .fst (quoteSpine qm l h sp)
+  | l, h, .ssnd sp => .snd (quoteSpine qm l h sp)
   | l, h, .secase sp env m bs =>
-    .ecase (quote (l + 1) (eval (.cons (fresh l) env) m)) (quoteSpine l h sp) (quoteBranches l env bs)
-  | l, h, .sabsurd sp m => .exfalso (quote l m) (quoteSpine l h sp)
+    .ecase (quoteM qm (l + 1) (eval (.cons (fresh l) env) m)) (quoteSpine qm l h sp) (quoteBranches qm l env bs)
+  | l, h, .sabsurd sp m => .exfalso (quoteM qm l m) (quoteSpine qm l h sp)
   | l, h, .sdelim sp v P a b c d =>
-    .delim v (quote l P) (quote l a) (quote l b) (quote l c) (quote l d) (quoteSpine l h sp)
+    .delim v (quoteM qm l P) (quoteM qm l a) (quoteM qm l b) (quoteM qm l c) (quoteM qm l d) (quoteSpine qm l h sp)
   | l, h, .sind sp k I D v P m i =>
-    .ind k (quote l I) (quote l D) v (quote l P) (quote l m) (quote l i) (quoteSpine l h sp)
+    .ind k (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l m) (quoteM qm l i) (quoteSpine qm l h sp)
   | l, h, .ssfix sp k I D v P f sz i =>
-    .sfix k (quote l I) (quote l D) v (quote l P) (quote l f) (quote l sz) (quote l i) (quoteSpine l h sp)
+    .sfix k (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l f) (quoteM qm l sz) (quoteM qm l i) (quoteSpine qm l h sp)
   | l, h, .sscase sp k I D v P m sz i =>
-    .scase k (quote l I) (quote l D) v (quote l P) (quote l m) (quote l sz) (quote l i) (quoteSpine l h sp)
-  | l, h, .sout sp => .out (quoteSpine l h sp)
-  | l, h, .sdown sp => .down (quoteSpine l h sp)
-def quoteHead : Nat → Head → Tm
+    .scase k (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l m) (quoteM qm l sz) (quoteM qm l i) (quoteSpine qm l h sp)
+  | l, h, .sout sp => .out (quoteSpine qm l h sp)
+  | l, h, .sdown sp => .down (quoteSpine qm l h sp)
+def quoteHead (qm : Bool) : Nat → Head → Tm
   | l, .hvar x => .var (l - x - 1)
-  | l, .heq A a b => .eq (quote l A) (quote l a) (quote l b)
-  | l, .heqTy A B => .eqTy (quote l A) (quote l B)
-  | l, .hcast A B e t => .coe (quote l A) (quote l B) (quote l e) (quote l t)
-  | l, .hrefl A a => .eqRefl (quote l A) (quote l a)
-  | l, .hreflTy X => .tyRefl (quote l X)
-  | l, .htransp A a P p b e => .subst (quote l A) (quote l a) (quote l P) (quote l p) (quote l b) (quote l e)
+  | l, .heq A a b => .eq (quoteM qm l A) (quoteM qm l a) (quoteM qm l b)
+  | l, .heqTy A B => .eqTy (quoteM qm l A) (quoteM qm l B)
+  | l, .hcast A B e t => .coe (quoteM qm l A) (quoteM qm l B) (quoteM qm l e) (quoteM qm l t)
+  | l, .hrefl A a => .eqRefl (quoteM qm l A) (quoteM qm l a)
+  | l, .hreflTy X => .tyRefl (quoteM qm l X)
+  | l, .htransp A a P p b e => .subst (quoteM qm l A) (quoteM qm l a) (quoteM qm l P) (quoteM qm l p) (quoteM qm l b) (quoteM qm l e)
   | _, .hconst n ps ls v ty => .const n ps ls v ty
   | _, .haxiom n ty => .axiomC n ty
-def quoteBranches : Nat → Env → Tms → Tms
+  | l, .hprf _ env t => quoteM qm l (eval env t)  -- (not reached: `quoteM`'s case)
+def quoteBranches (qm : Bool) : Nat → Env → Tms → Tms
   | _, _, .tnil => .tnil
-  | l, env, .tcons b rest => .tcons (quote l (eval env b)) (quoteBranches l env rest)
+  | l, env, .tcons b rest => .tcons (quoteM qm l (eval env b)) (quoteBranches qm l env rest)
 end
+-- **Reading back** a value: suspended proofs are evaluated, so that the term is a normal
+-- form (which `infer` can check again). The kernel's own comparison of types (`sameVal`)
+-- uses `quoteM .false`, which never evaluates a proof.
+def quote (l : Nat) (v : Val) : Tm := quoteM .true l v
 
 -- a binder's quantity, as ` :0 ` (ω is the default, ` : `)
 def showQ : Q → String
@@ -1729,6 +1905,7 @@ def headType : TCtx → Head → Val
   | _, .htransp _ _ P _ b e => vapp (vapp P b) e
   | _, .hconst _ ps ls _ ty => eval .nil (substIfAny ps ls ty)
   | _, .haxiom _ ty => eval .nil ty
+  | _, .hprf ty _ _ => ty ()
 end
 
 -- (without computing the whole sort: a Π type is a proposition when its codomain is,
@@ -2042,6 +2219,7 @@ def convHead : TCtx → Head → Head → Bool
   | _, .hrefl _ _, .hrefl _ _ => .true
   | _, .hreflTy _, .hreflTy _ => .true
   | _, .htransp _ _ _ _ _ _, .htransp _ _ _ _ _ _ => .true
+  | _, .hprf _ _ _, .hprf _ _ _ => .true
   | _, _, _ => .false
 -- the same head `x`: compare the eliminations, at their types
 def convSpine : TCtx → Head → Spine → Spine → Bool
@@ -2139,7 +2317,9 @@ partial def mustUse (a v : Val) : Bool := match whnf a with
 mutual
 def infer : TCtx → Tm → TyRes
   --<sol
-  | c, .var i => .ok (lookup (TCtx.types c) i) (uSingle (TCtx.lvl c) i)
+  | c, .var i => match Nat.lt i (TCtx.lvl c) with
+    | .true => .ok (lookup (TCtx.types c) i) (uSingle (TCtx.lvl c) i)
+    | .false => .err "internal error: a variable out of scope"
   | c, .univ n => .ok (.vsort (.lnum (n + 2))) (uZeros (TCtx.lvl c))
   | c, .prop => .ok (.vsort (.lnum 1)) (uZeros (TCtx.lvl c))
   | c, .sortL l => .ok (.vsort (.lsucc l)) (uZeros (TCtx.lvl c))

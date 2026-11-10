@@ -91,7 +91,7 @@ it is off (`wiz check --regularity full` turns it back on, for experiments). Ins
 `cast` computes on data, constructor by constructor: `cast (μ D i) (μ D' i') e (con x)`
 casts each field of `x` along the pieces of `e` (since 4g `μ D i = μ D' i'` compares the
 codes) (so a proof field is
-cast between propositions, which applies the equivalence: that is what stops the loop).
+cast between propositions, which is a stuck proof: that is what stops the loop).
 At **inert** types (first-order data: `Nat`, `Bool`, `List Nat`, … — no `Prop` fields,
 functions or type variables) regularity is kept: there a cast between equal types is the
 identity. A cast at a type variable (`cast e a` for `e : A = A`) stays stuck, as in
@@ -115,7 +115,10 @@ projection types, a structure's or an index's `Σ`, match motives) get theirs fr
 kernel's `typeSort?` in the context they live in (`Sorts` in `Elab/Basic.lean`, applied to
 every declaration before the kernel sees it). Only a `Π`/`Σ` under a `fun` whose
 variable's type isn't written down, or one that still mentions a metavariable, goes
-without. A cast between propositions applies the equivalence.
+without. A cast between propositions is itself a proof, so it stays stuck: **proofs are
+never evaluated** (the equation of a `cast` and the proofs of a `transp` are kept as
+written; `wiz check --eager-proofs` restores the older evaluator that ran them;
+docs/CoreSpec.md §8.6).
 
 Stuck equations, casts and proofs are new neutral heads (`Head.eq`, `Head.cast`,
 `Head.refl`, …). Some results of the computation rules need new binders. Values can't
@@ -425,6 +428,9 @@ compare by equivalence. What this costs, and why:
   binder is erased; `rflProof` in `Elab/Term.lean`). One expected limit: if a later
   index of the type depends on a field at a type *variable*, `rfl` is left with a stuck
   cast at that variable and fails; `refl T` still works.
+* A `cast e t` with no expected type reads its target off the type of `e`, which works
+  only while that equation is stuck. Equations between data types now compute, so write
+  `(cast e t : T)` (or use the cast where its type is expected); the error says so.
 * `μ` is now injective in its description, a large-into-small map (Hur's paradox has
   this shape). It is the same shape as the injectivity of Π that observational equality
   already has, and a description can't range over its own universe (fields are exactly in
