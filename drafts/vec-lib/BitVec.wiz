@@ -9,5 +9,4 @@ instance {n : Nat} : OfNat (BitVec n) := ⟨BitVec.ofNat n⟩        -- wishful:
 def mac {n : Nat} (a b c : BitVec n) : BitVec n := a * b + c    -- wishful: numeric-classes-bitvec
 def x : BitVec 8 := 200 + 100                                   -- wishful: numeric-classes-bitvec
 
--- Native words when the width is small (RD9/RD10).
-attribute [implemented_by wiz_u64_add_wrap] BitVec.add           -- wishful: implemented-by
+-- (Native words: done in stage 22f, `BitVec n := UIntN n`.)

@@ -1,78 +1,82 @@
 import Prelude
 import Vec
+import Word
 -- Bit vectors of width `n` (`import BitVec`): a `Nat` below `2^n`. The bound is kept by
--- construction (every operation ends in `BitVec.ofNat`, which reduces mod `2^n`), not
--- by a proof (decision HD3; a proof-carrying subtype may come later). Arithmetic wraps
--- around. Bit 0 is the least significant.
+-- construction (every operation reduces mod `2^n`), not by a proof (decision HD3; a
+-- proof-carrying subtype may come later). Arithmetic wraps around. Bit 0 is the least
+-- significant.
+--
+-- One type family (stage 22f): `BitVec n` *is* `UIntN n` (lib/Word.wiz), the
+-- machine-integer type, under the names hardware and proofs use. A bit vector and a word
+-- are interchangeable (no conversion); the kernel and proofs see the definitions below,
+-- each of which unfolds to Word's model (`BitVec.add a b` is `UIntN.ofNat n (a.toNat +
+-- b.toNat)`); compiled code gets Word's native representation (a word is its bits: no
+-- allocation below 2^63) and Word's natives, through the operation each one calls.
 --
 -- Operations that compute `2^n` take the width at runtime (`{ω n : Nat}`); the others
 -- (`toNat`, comparisons, `ofVec`) take it erased.
 
-structure BitVec (n : Nat) where
-  toNat : Nat
+def BitVec (n : Nat) : Type := UIntN n
 
-def BitVec.ofNat (n x : Nat) : BitVec n := @BitVec.mk n (Nat.mod x (Nat.pow 2 n))
+-- the bits as a number, and a number below `2^n` as bits (`mk` doesn't reduce; `ofNat` does)
+def BitVec.toNat {0 n : Nat} (a : BitVec n) : Nat := UIntN.toNat a
+def BitVec.mk {0 n : Nat} (x : Nat) : BitVec n := @UIntN.mk n x
 
-def BitVec.zero (n : Nat) : BitVec n := @BitVec.mk n 0
-def BitVec.allOnes (n : Nat) : BitVec n := @BitVec.mk n (Nat.pow 2 n - 1)
+def BitVec.ofNat (n x : Nat) : BitVec n := UIntN.ofNat n x
+
+def BitVec.zero (n : Nat) : BitVec n := UIntN.zero n
+def BitVec.allOnes (n : Nat) : BitVec n := UIntN.max n
 
 -- Arithmetic, modulo `2^n`.
-def BitVec.add {ω n : Nat} (a b : BitVec n) : BitVec n := BitVec.ofNat n (a.toNat + b.toNat)
-def BitVec.sub {ω n : Nat} (a b : BitVec n) : BitVec n :=
-  BitVec.ofNat n (a.toNat + (Nat.pow 2 n - b.toNat))
-def BitVec.neg {ω n : Nat} (a : BitVec n) : BitVec n := BitVec.ofNat n (Nat.pow 2 n - a.toNat)
-def BitVec.mul {ω n : Nat} (a b : BitVec n) : BitVec n := BitVec.ofNat n (a.toNat * b.toNat)
+def BitVec.add {ω n : Nat} (a b : BitVec n) : BitVec n := UIntN.add a b
+def BitVec.sub {ω n : Nat} (a b : BitVec n) : BitVec n := UIntN.sub a b
+def BitVec.neg {ω n : Nat} (a : BitVec n) : BitVec n := UIntN.neg a
+def BitVec.mul {ω n : Nat} (a b : BitVec n) : BitVec n := UIntN.mul a b
 -- unsigned division and remainder (`x / 0 = 0`, `x % 0 = x`)
-def BitVec.udiv {0 n : Nat} (a b : BitVec n) : BitVec n := @BitVec.mk n (Nat.div a.toNat b.toNat)
-def BitVec.umod {0 n : Nat} (a b : BitVec n) : BitVec n := @BitVec.mk n (Nat.mod a.toNat b.toNat)
+def BitVec.udiv {ω n : Nat} (a b : BitVec n) : BitVec n := UIntN.div a b
+def BitVec.umod {ω n : Nat} (a b : BitVec n) : BitVec n := UIntN.mod a b
 
 -- Bitwise operations.
-def BitVec.and {0 n : Nat} (a b : BitVec n) : BitVec n := @BitVec.mk n (Nat.land a.toNat b.toNat)
-def BitVec.or {0 n : Nat} (a b : BitVec n) : BitVec n := @BitVec.mk n (Nat.lor a.toNat b.toNat)
-def BitVec.xor {0 n : Nat} (a b : BitVec n) : BitVec n := @BitVec.mk n (Nat.xor a.toNat b.toNat)
-def BitVec.not {ω n : Nat} (a : BitVec n) : BitVec n := @BitVec.mk n (Nat.pow 2 n - 1 - a.toNat)
+def BitVec.and {0 n : Nat} (a b : BitVec n) : BitVec n := UIntN.land a b
+def BitVec.or {0 n : Nat} (a b : BitVec n) : BitVec n := UIntN.lor a b
+def BitVec.xor {0 n : Nat} (a b : BitVec n) : BitVec n := UIntN.xor a b
+def BitVec.not {ω n : Nat} (a : BitVec n) : BitVec n := UIntN.not a
 
 -- Shifts by a number of places.
-def BitVec.shl {ω n : Nat} (a : BitVec n) (k : Nat) : BitVec n := BitVec.ofNat n (Nat.shiftLeft a.toNat k)
-def BitVec.lshr {0 n : Nat} (a : BitVec n) (k : Nat) : BitVec n := @BitVec.mk n (Nat.shiftRight a.toNat k)
+def BitVec.shl {ω n : Nat} (a : BitVec n) (k : Nat) : BitVec n := UIntN.shiftLeft a k
+def BitVec.lshr {0 n : Nat} (a : BitVec n) (k : Nat) : BitVec n := UIntN.shiftRight a k
 
 -- Bits.
-def BitVec.getBit {0 n : Nat} (a : BitVec n) (i : Nat) : Bool := Nat.testBit a.toNat i
+def BitVec.getBit {0 n : Nat} (a : BitVec n) (i : Nat) : Bool := UIntN.testBit a i
 -- the most significant bit (the sign, read as two's complement); `false` at width 0
-def BitVec.msb {ω n : Nat} (a : BitVec n) : Bool := match n with
-  | .zero => .false
-  | .succ m => Nat.testBit a.toNat m
+def BitVec.msb {ω n : Nat} (a : BitVec n) : Bool := UIntN.msb a
 
+-- Signed operations read the same bits as an `IntN n` (`toIntN` is free).
 -- arithmetic shift right: shift in copies of the sign bit
-def BitVec.ashr {ω n : Nat} (a : BitVec n) (k : Nat) : BitVec n := match BitVec.msb a with
-  | .false => BitVec.lshr a k
-  | .true => BitVec.not (BitVec.lshr (BitVec.not a) k)
+def BitVec.ashr {ω n : Nat} (a : BitVec n) (k : Nat) : BitVec n :=
+  IntN.toUIntN (IntN.shiftRight (UIntN.toIntN a) k)
 
 -- Comparisons.
-def BitVec.beq {0 n : Nat} (a b : BitVec n) : Bool := Nat.beq a.toNat b.toNat
-def BitVec.ult {0 n : Nat} (a b : BitVec n) : Bool := Nat.lt a.toNat b.toNat
-def BitVec.ule {0 n : Nat} (a b : BitVec n) : Bool := Nat.le a.toNat b.toNat
--- signed (two's complement): flipping the sign bits turns signed order into unsigned
-def BitVec.slt {ω n : Nat} (a b : BitVec n) : Bool := match BitVec.msb a, BitVec.msb b with
-  | .true, .false => .true
-  | .false, .true => .false
-  | _, _ => Nat.lt a.toNat b.toNat
-def BitVec.sle {ω n : Nat} (a b : BitVec n) : Bool := Bool.not (BitVec.slt b a)
+def BitVec.beq {0 n : Nat} (a b : BitVec n) : Bool := UIntN.beq a b
+def BitVec.ult {0 n : Nat} (a b : BitVec n) : Bool := UIntN.lt a b
+def BitVec.ule {0 n : Nat} (a b : BitVec n) : Bool := UIntN.le a b
+-- signed (two's complement)
+def BitVec.slt {ω n : Nat} (a b : BitVec n) : Bool := IntN.lt (UIntN.toIntN a) (UIntN.toIntN b)
+def BitVec.sle {ω n : Nat} (a b : BitVec n) : Bool := IntN.le (UIntN.toIntN a) (UIntN.toIntN b)
 
 -- Widths.
 -- `hi` on top of `lo`
 def BitVec.concat {0 m : Nat} {ω n : Nat} (hi : BitVec m) (lo : BitVec n) : BitVec (m + n) :=
-  @BitVec.mk (m + n) (Nat.shiftLeft hi.toNat n + lo.toNat)
+  BitVec.mk (Nat.shiftLeft hi.toNat n + lo.toNat)
 -- bits `hi` down to `lo` (inclusive), as in Verilog `a[hi:lo]`
 def BitVec.extract {0 n : Nat} (hi lo : Nat) (a : BitVec n) : BitVec (hi + 1 - lo) :=
-  BitVec.ofNat (hi + 1 - lo) (Nat.shiftRight a.toNat lo)
+  UIntN.resize (hi + 1 - lo) (UIntN.shiftRight a lo)
 -- to width `m`, adding zeros at the top (or truncating)
-def BitVec.zeroExtend {0 n : Nat} (m : Nat) (a : BitVec n) : BitVec m := BitVec.ofNat m a.toNat
-def BitVec.truncate {0 n : Nat} (m : Nat) (a : BitVec n) : BitVec m := BitVec.ofNat m a.toNat
+def BitVec.zeroExtend {0 n : Nat} (m : Nat) (a : BitVec n) : BitVec m := UIntN.resize m a
+def BitVec.truncate {0 n : Nat} (m : Nat) (a : BitVec n) : BitVec m := UIntN.resize m a
 -- to width `m`, copying the sign bit into the new top bits (or truncating)
-def BitVec.signExtend {ω n : Nat} (m : Nat) (a : BitVec n) : BitVec m := match BitVec.msb a with
-  | .false => BitVec.ofNat m a.toNat
-  | .true => BitVec.ofNat m (a.toNat + (Nat.pow 2 (m + n) - Nat.pow 2 n))
+def BitVec.signExtend {ω n : Nat} (m : Nat) (a : BitVec n) : BitVec m :=
+  IntN.toUIntN (IntN.resize m (UIntN.toIntN a))
 
 -- As vectors of bits, least significant first.
 def BitVec.toVecAux : (n : Nat) → Nat → Vec Bool n
@@ -83,8 +87,14 @@ def BitVec.bitValue : Bool → Nat
   | .false => 0
   | .true => 1
 def BitVec.ofVec {0 n : Nat} (v : Vec Bool n) : BitVec n :=
-  @BitVec.mk n (Vec.foldr (fun b acc => BitVec.bitValue b + acc + acc) 0 v)
+  BitVec.mk (Vec.foldr (fun b acc => BitVec.bitValue b + acc + acc) 0 v)
 
--- Theorems.
+-- Theorems. A bit vector is a word, by definition: the operations are Word's.
+def BitVec.toUIntN {0 n : Nat} (a : BitVec n) : UIntN n := a
+def BitVec.ofUIntN {0 n : Nat} (a : UIntN n) : BitVec n := a
+def BitVec.add_eq {ω n : Nat} (a b : BitVec n) : BitVec.add a b = UIntN.add a b :=
+  refl (BitVec.add a b)
+def BitVec.toNat_eq {0 n : Nat} (a : BitVec n) : BitVec.toNat a = UIntN.toNat (BitVec.toUIntN a) :=
+  refl (BitVec.toNat a)
 def BitVec.add_comm {ω n : Nat} (a b : BitVec n) : BitVec.add a b = BitVec.add b a :=
-  congrArg (BitVec.ofNat n) (Nat.add_comm a.toNat b.toNat)
+  congrArg (UIntN.ofNat n) (Nat.add_comm a.toNat b.toNat)

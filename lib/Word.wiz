@@ -6,17 +6,18 @@ import Prelude
 -- here reduces mod `2^w`, so arithmetic wraps around). The kernel computes with these
 -- definitions (fast on numerals: `Nat.mod`, `Nat.pow`, … are native), proofs see them,
 -- and compiled code runs native implementations instead (`implemented_by`, at the end).
--- One width-indexed type serves the HDL's `Unsigned n` (any width: 1, 5, 65, …) and
--- Rust's `u32` (`U32 := UIntN 32`). Division by zero follows Lean: `a / 0 = 0` and
+-- One width-indexed type serves the HDL's bit vectors (`BitVec n := UIntN n`,
+-- lib/BitVec.wiz; any width: 1, 5, 65, …) and Rust's `u32` (`U32 := UIntN 32`). Division by zero follows Lean: `a / 0 = 0` and
 -- `a % 0 = a` (Rust panics; a Rust front end checks first).
 
--- The width is an index, not a parameter: types are structural, so a parameter that no
--- field mentions would be forgotten (`UIntN 8` and `UIntN 16` would be one type, and
--- `{w : Nat}` could not be inferred from an argument).
-inductive UIntN : Nat → Type where
-  | mk {0 w : Nat} (toNat : Nat) : UIntN w
-inductive IntN : Nat → Type where
-  | mk {0 w : Nat} (toNat : Nat) : IntN w
+-- No field mentions the width, but it is part of the type all the same (a phantom
+-- parameter, stage 22e): `UIntN 8` and `UIntN 16` are different types, and `w` is
+-- inferred from an argument. At runtime a word is `⟨0 bits⟩` in the model (or just its
+-- bits, compiled: see the end).
+inductive UIntN (w : Nat) where
+  | mk (toNat : Nat)
+inductive IntN (w : Nat) where
+  | mk (toNat : Nat)
 
 -- the bits as a number (for `IntN`, the two's-complement bits: `-1` is `2^w - 1`)
 def UIntN.toNat {w : Nat} : UIntN w → Nat
