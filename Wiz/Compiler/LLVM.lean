@@ -60,7 +60,10 @@ def expr (arities : Std.HashMap Name Nat) (env : Std.HashMap Var String) (x : St
     else do
       -- a big literal: through the runtime, from its digits
       let s := toString n
-      let g := "@" ++ ((← fresh "lit").drop 1) ++ ".str"
+      -- (named after the number: one global per literal in the module. A counter per
+      -- function gave two functions the same `@lit.1.str`, so a program with two big
+      -- literals was not a valid module: 15g)
+      let g := s!"@wiz.lit.{n}"
       emit s!"  {x} = call i64 @wiz_nat_lit(ptr {g})"
       modify fun st => { st with out := st.out.push s!";global {g} = private constant [{s.length + 1} x i8] c\"{s}\\00\"" }
   | .ctor t as =>
@@ -197,7 +200,7 @@ runs it, for `IO`). The foreign wrappers are C (`C.glue`), compiled with the run
 def program (decls : Array IR.Decl) (io : Bool := false) : String :=
   let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
   let parts := decls.map (decl arities)
-  let globals := parts.foldl (fun acc (g, _) => acc ++ g) #[]
+  let globals := (parts.foldl (fun acc (g, _) => acc ++ g) #[]).toList.eraseDups.toArray
   let fns := parts.foldl (fun acc (_, f) => acc ++ f) #[]
   let externDecls := (C.externs decls).toList.map fun key =>
     let n := RVal.nativeArity key

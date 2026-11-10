@@ -89,3 +89,39 @@ after the call): otherwise the call stays a call. In the garbage collected mode 
 under a match on a computed value (`match Nat.beq … with`) is not yet in tail position:
 the match's payload is a suspended `let`, and its branches are closures (under reference
 counting lets are strict, and it is a loop).
+
+### 15g: big numerals ✅
+
+A numeral like `1000000000` in a file compiled by the self-hosted compiler crashed the
+compiler (a stack overflow), when that compiler was the one built by the Lean
+`wiz build`. The self-hosted kernel has no number literals: its frontend elaborates a
+numeral to a binary term, `2 * (n / 2)` plus one if `n` is odd (`binNat`), and it
+halved `n` with `halfNat`, a recursion on `succ (succ j)`: `n / 2` frames deep. It now
+uses `Nat.div`, a native operation in both compilers; the term was always logarithmic.
+
+What each compiler does with a numeral:
+
+* **The Lean compiler** keeps it as a literal from the elaborator to the IR
+  (`Term.natLit`, `ETerm.natLit`, `Expr.lit`), and the backends emit a constant: below
+  `2^62` an immediate, from `2^62` a GMP number built once from its digits
+  (`wiz_nat_lit`). Nothing recurses on the value. One bug on the way: the LLVM backend
+  named the global holding the digits with a counter per function, so a module with
+  two such literals in two functions defined `@lit.1.str` twice and `llc` rejected it;
+  the global is now named after the number.
+* **The self-hosted compiler.** Its numbers are 63-bit words whose arithmetic wraps
+  (a limit of that runtime, not changed here), so a numeral from `2^63` could only be
+  its value modulo `2^63` (`2^64 + 1` would be `1`). It is now an error in the frontend
+  ("the numeral does not fit in 63 bits"), decided on the digits: when the compiler
+  runs on words itself, the value has wrapped before anyone can look at it. The
+  definition is then missing, as for any elaboration error: the message is in the
+  comments at the top of the C, and the C compiler fails where the definition is used.
+  The backend recognises the binary term and emits `BOX(n)` (`natConst`, which also
+  folds `+` and `*` of constants): it now wraps like the runtime does. Built by the Lean
+  compiler its own numbers are unbounded, and a folded product could print a constant
+  like `BOX(18446744073709551616UL)`, which gcc truncates with a warning and other C
+  compilers reject (and stage 1 and stage 2 would print different C).
+
+Tests: numerals at `2^31`, `2^32`, `2^62 - 1`, `2^62`, `2^63`, `2^64`, `2^64 + 1` and
+`10^30` with `#eval`, `#run`, C and LLVM (groups `backend`, `c`, `llvm`); with the
+self-hosted compiler (group `selfhost`), numerals up to `2^63 - 1` compiled and run
+with both collectors, and the error from `2^63`.

@@ -1330,19 +1330,49 @@ partial def numValue (s : Syntax) : Nat := match s with
     | .mk cs => digits cs 0
   | .node _ _ => numValue (kid s 0)
   | _ => 0
+-- A numeral from 2^63 is an error: the numbers of a program this compiler compiles (and
+-- of the compiler itself, once it has compiled itself) are 63-bit words, so the numeral
+-- would silently be its value modulo 2^63. Decided on the digits, not on the value, which
+-- has wrapped already when the compiler's own numbers are words (stage 15g).
+partial def numDigits (s : Syntax) : List Char := match s with
+  | .atom d => match d with
+    | .mk cs => cs
+  | .node _ _ => numDigits (kid s 0)
+  | _ => .nil
+def dropZeros : List Char → List Char
+  | .nil => .nil
+  | .cons c cs => match Nat.beq (Char.code c) 48 with
+    | .true => dropZeros cs
+    | .false => .cons c cs
+-- `xs > ys`, for digits of the same length
+def digitsGt : List Char → List Char → Bool
+  | .cons x xs, .cons y ys => match Nat.lt (Char.code y) (Char.code x) with
+    | .true => .true
+    | .false => match Nat.lt (Char.code x) (Char.code y) with
+      | .true => .false
+      | .false => digitsGt xs ys
+  | _, _ => .false
+def numTooBig (s : Syntax) : Bool :=
+  let ds := dropZeros (numDigits s);
+  let n := List.length ds;
+  match Nat.lt 19 n with
+  | .true => .true
+  | .false => match Nat.beq n 19 with
+    | .true => match "9223372036854775807" with
+      | .mk m => digitsGt ds m
+    | .false => .false
 def iterApp (f : Tm) : Nat → Tm → Tm
   | .zero, t => t
   | .succ k, t => iterApp f k (.app f t)
 -- (a big numeral is built in binary when `Nat.mul` is there: `2 * (n / 2)`, plus one if
--- `n` is odd; `succ` applied 100000 times would be a term of that depth: stage 19f)
-partial def halfNat : Nat → Nat
-  | .zero => 0
-  | .succ .zero => 0
-  | .succ (.succ j) => halfNat j + 1
+-- `n` is odd; `succ` applied 100000 times would be a term of that depth: stage 19f.
+-- The half is `Nat.div`, a native operation in both compilers: halving by recursion on
+-- `succ (succ j)` was `n / 2` frames deep, and a numeral like 1000000000 overflowed the
+-- stack of the compiler compiling it: stage 15g)
 partial def binNat (sc z mul : Tm) (n : Nat) : Tm := match Nat.lt n 16 with
   | .true => iterApp sc n z
   | .false =>
-    let h := halfNat n;
+    let h := Nat.div n 2;
     let t : Tm := .app (.app mul (iterApp sc 2 z)) (binNat sc z mul h);
     match Nat.beq (h + h) n with
     | .true => t
@@ -2052,7 +2082,9 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
   match strEq k "term.paren" with
   | .true => inferT gs es cx (kid s 1)
   | .false => match strEq k "term.num" with
-    | .true => numeral gs es cx (numValue s)
+    | .true => match numTooBig s with
+      | .true => .err "the numeral does not fit in 63 bits (numbers are 63-bit words here)"
+      | .false => numeral gs es cx (numValue s)
     | .false => match strEq k "term.str" with
     | .true => stringLit gs es cx (strValue s)
     | .false => match strEq k "term.unitVal" with
