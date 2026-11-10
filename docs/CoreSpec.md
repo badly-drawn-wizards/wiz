@@ -133,8 +133,13 @@ is the zero vector, `𝟙ₓ` is "x used once" (`Usage.single`), `U + V` is poin
 `p·U` is pointwise scaling. The rules below write `⊣ 0` for `⊣ 0ₙ`.
 
 **Erased mode** `Γ⁰` is a light version of Atkey's σ = 0 (§5.4). It is switched on for
-type positions, arguments to `0`-quantity binders, proofs and sizes, and its only effect is
-to allow projecting an erased field (rule *fst*).
+type positions, proofs and sizes, and for every position whose usage is scaled by a
+constant 0 (`Ctx.erasedAt`): an argument to a `0`-quantity binder, the value of a `let` at
+0, the first part of a pair checked at a 0 field, the scrutinee of a `split` at 0. Such a
+position is never computed (erasure replaces it by `◾`, `Erase.lean`). Its effect is on
+projections only (§7.1): in `Γ⁰` any field of any pair may be read, erased fields
+included, and a projection counts its pair's usage unscaled (which the position then
+multiplies by 0, or discards).
 
 ---
 
@@ -342,7 +347,8 @@ what the 0-fragment does anyway).
      ──────────────────────────────────────────── app     [std: Atkey18]    Check.lean:368–375
      Γ ⊢ f a ⇒ B[a/x] ⊣ U₁ + p·U₂
 
-     Γ ⊢ q qty ↦ p   Γ ⊢ T type@_   Γ ⊢ v ⇐ T ⊣ U₁   Γ, x :p T := v ⊢ b ⇐ A ⊣ (u :: U₂)   u ≤ p
+     Γ ⊢ q qty ↦ p   Γ ⊢ T type@_   Γ' ⊢ v ⇐ T ⊣ U₁   Γ, x :p T := v ⊢ b ⇐ A ⊣ (u :: U₂)   u ≤ p
+     (Γ' = Γ⁰ if p is the constant 0, else Γ)
      ──────────────────────────────────────────── let (⇐; the ⇒ form is the same)    Check.lean:263–270, 376–383
      Γ ⊢ let x :q T := v; b ⇐ A ⊣ p·U₁ + U₂
 
@@ -374,43 +380,95 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
      ──────────────────────────────────────────────────────── sigma               Check.lean:389–394
      Γ ⊢ (q x : A) × B [σ] ⇒ Sort (max i j) ⊣ 0
 
-     Γ ⊢ a ⇐ A ⊣ U₁     Γ ⊢ b ⇐ B[a/x] ⊣ U₂
-     ──────────────────────────────────────── pair  (check only)                  Check.lean:271–275
+     Γ' ⊢ a ⇐ A ⊣ U₁     Γ ⊢ b ⇐ B[a/x] ⊣ U₂     (Γ' = Γ⁰ if p is the constant 0, else Γ)
+     ──────────────────────────────────────── pair  (check only)                  Check.lean `check`
      Γ ⊢ (a, b) ⇐ (q x : A) × B ⊣ p·U₁ + U₂
 
-     Γ ⊢ t ⇒ T ⊣ U    whnf T = (q x : A) × B    (1 ≤ p  or  Γ is Γ⁰)
-     ──────────────────────────────────────── fst                                  Check.lean:395–403
-     Γ ⊢ t.1 ⇒ A ⊣ U
+     Γ ⊢ t ⇒ T ⊣ U    whnf T = (q x : A) × B    1 ≤ p    ω·U fits Γ
+     ──────────────────────────────────────── fst                                  Check.lean `infer`, `projUsage`
+     Γ ⊢ t.1 ⇒ A ⊣ ω·U
 
-     Γ ⊢ t ⇒ T ⊣ U    whnf T = (q x : A) × B
-     ──────────────────────────────────────── snd                                  Check.lean:404–408
-     Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ U
+     Γ ⊢ t ⇒ T ⊣ U    whnf T = (q x : A) × B    ω·U fits Γ
+     ──────────────────────────────────────── snd                                  Check.lean `infer`, `projUsage`
+     Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ ω·U
 
-     Γ ⊢ r qty ↦ ρ     Γ ⊢ s ⇒ T ⊣ U₁     whnf T = (q x : A) × B   (p = value of q)
+     Γ⁰ ⊢ t ⇒ T ⊣ U    whnf T = (q x : A) × B
+     ──────────────────────────────────────── fst⁰, snd⁰  (erased positions)
+     Γ⁰ ⊢ t.1 ⇒ A ⊣ U         Γ⁰ ⊢ t.2 ⇒ B[t.1/x] ⊣ U
+
+     Γ ⊢ r qty ↦ ρ     Γ' ⊢ s ⇒ T ⊣ U₁     whnf T = (q x : A) × B   (p = value of q)
+     (Γ' = Γ⁰ if ρ is the constant 0, else Γ)
      Γ, z :0 T ⊢ M type@_
      Γ, x :ρ·p A, y :ρ B ⊢ b ⇐ M[(x,y)/z] ⊣ (u_y :: u_x :: U₂)     u_y ≤ ρ    u_x ≤ ρ·p
-     ──────────────────────────────────────── split                               Check.lean:409–424
+     ──────────────────────────────────────── split                               Check.lean `infer`
      Γ ⊢ let r (x, y) := s as z. M; b ⇒ M[s/z] ⊣ ρ·U₁ + U₂
 ```
 
 * Σ with `split` is Atkey's dependent tensor ⊗ [std: Atkey18]. η for pairs holds
   (§11.2).
-* **Projections are [wiz].** Atkey's tensor has only the `let` eliminator. Wiz also allows
-  `t.1` (when the field's quantity allows one use) and `t.2` (always; since `212aebf`, if the field
-  doesn't allow zero uses, `t.2` uses `t` ω times, so only an unrestricted pair may drop
-  it). Each projection uses the whole pair, so using both on a
-  linear pair is rejected. `p.1` still silently drops the second component, which has no
-  quantity of its own. (Before `212aebf`, `p.2` on `(1 x : A) × B` discarded the linear
-  `x`.) This is consistent with an *affine* reading of `1`, not with "exactly once"
-  (the rig's stated meaning, `Rig.lean:22–24`). It cannot affect logical consistency or
-  erasure (a dropped value is never needed), but it is a gap in the linearity guarantee.
-  See Status.md, Q1.
-* `split`'s motive variable `z` has quantity 0 (`ctx.bind z []`, `Check.lean:415`).
+* **Projections are [wiz], and available only on unrestricted pairs** (R1; Status.md,
+  Q1/R1). Atkey's tensor has only the `let` eliminator. A projection keeps one component
+  and drops the other, and the second component of a Σ has no quantity of its own that
+  could say whether it may be dropped. So the rule does not look at the component types:
+  outside erased positions `t.1` and `t.2` use `t` **ω times** (`projUsage`; a rig
+  without an unrestricted quantity, `QRig.many? = none`, allows them only when `t` uses no
+  local variable).
+  * `t` may be any expression: `(act w).1` uses `w` ω times, so it is rejected when `w`
+    is linear. (Before, a projection of an expression passed the expression's usage
+    through, and the world `act` returns was dropped.)
+  * "`ω·U` fits `Γ`" is checked at the projection, to give an error that says what to
+    write (`cannot project p.1: a projection needs an unrestricted pair … take the pair
+    apart with let 1 (x, y) := p`): every variable `x :p' A` with `U(x) ≠ 0` needs
+    `ω·U(x) ≤ p'`. This is what leaving the binder of `x` would check anyway: usages only
+    grow on the way out (`+`, scaling by a non-zero quantity, the join of branches), except
+    under a scaling by a constant 0, and those positions are `Γ⁰`, where this rule does
+    not apply.
+  * A pair held at any other quantity is consumed by `split`, which binds both
+    components: `let 1 (x, y) := p; …` for a linear pair. A `split` at ω
+    (`let (x, y) := p`, the surface default) uses `p` ω times like a projection.
+  * **Quantity variables.** For `p :π A × B` with `π` a quantity variable, `p.1` is
+    rejected: `ω ≤ π` fails at `π = 1` (and at `π = 0`). `let π (x, y) := p; …` works
+    at every `π`. Only the constant ω, or an erased position, admits a projection.
+  * **Fields.** The first field's quantity `q` matters only for `fst`: an erased field
+    (`¬ 1 ≤ p`) cannot be projected at runtime. `snd` has no side condition on `q`: an
+    unrestricted pair's first field is held at `ω·p`, which may always go unused. (The
+    earlier rules, `mustUse`/`mustUseType?` for `.1` and the `0 ≤ q` test for `.2`,
+    inspected the dropped part's declared field quantities; the rule above subsumes them
+    and they are gone, together with the evaluation of the pair they needed.)
+  * **Structures** are right-nested Σ types ending in a marker tail (§R3 of the audit;
+    `structTailName`), and `s.field` is a chain of projections. So a structure held at a
+    quantity other than ω has no usable field access, and it has no destructuring form
+    either (`match` does not split a Σ linearly, and a nested `let 1 (x, y)` leaves the
+    marker tail, a linear variable of type `(0 fields✝ : …) → Unit`, with nothing to
+    consume it). The kernel's error says so. Linear data is a tuple, taken apart with
+    `let 1 (x, y) := …`. (Linear matching: wishful `linear-case`.)
+  * **η for Σ** (§11.2) is part of conversion: it compares `vFst`/`vSnd` of *values* and
+    never builds projection *terms* for the checker, so no usage is computed for an
+    η-expansion. Types are checked in `Γ⁰` and their usage is discarded, so a type may
+    mention `p.1` for a linear `p`.
+  * **The elaborator** inserts projections in four places: field access `t.f`
+    (`elabFields`), tuple patterns in `match` (two `let`s at ω of `p.1` and `p.2`),
+    structure field projections `C.x` (functions of an ω `self`), and the payloads of
+    constructors inside `ind`/`scase` methods (bound at ω). All of them are on ω
+    variables, or are rejected for a linear scrutinee exactly as before (a tuple pattern
+    used `p` twice). None of them elaborates a linear scrutinee to `split`: only
+    `let q (x, y) := s` does. `do`/`do1` binds go through `bind`/`bind1`, which are
+    library functions written with `let 1 (a, w') := x w` (`lib/IO.wiz`).
+* `split`'s motive variable `z` has quantity 0 (`ctx.bind z []`).
 * The sort annotation `σ` is not checked for `split`'s scrutinee; it is checked where the
   Σ type is formed.
+* **Positions at 0.** The `pair` rule's first part at a 0 field, `split`'s scrutinee at
+  `ρ = 0` and `let`'s value at 0 (§6) are erased positions, like `app`'s argument to a 0
+  binder. Before R1 only `app` did this; the usage was multiplied by 0 in all four, so the
+  difference is only that a projection there is `fst⁰`/`snd⁰`. Erasure agrees: each of
+  these positions compiles to `◾` and is never evaluated (`Erase.lean`: `pair`, `letE`,
+  `split`, the application spine).
 
-*Kernel.wiz* has no `split` (no `let (x, y)` in its term syntax, `Kernel.wiz:40–119`).
-Its `fst` rule is `Kernel.wiz:1791`.
+*Kernel.wiz* has no `split` (no `let (x, y)` in its term syntax). Its `fst`/`snd` rules
+are the ones above (usage scaled by ω outside erased positions; no check at the
+projection, so the error surfaces when the variable's binder is left), and its `let` and
+`pair` rules use the same erased positions (`erasedIf`). Without `split`, **a pair held at
+quantity 1 cannot be consumed inside Kernel.wiz's fragment** (§15).
 
 ### 7.2 Unit, Empty, True, False
 
@@ -1291,7 +1349,7 @@ Each item says what the code does; the code is what the kernel checks.
 |---|---|---|
 | quantities | any `QRig`, quantity variables, `Qty` | literals `0, 1, ω` only (`Q`, `Kernel.wiz:19`); no `Qty` type |
 | description fields | carry a quantity | carry none; the methods receive `tt` (`Kernel.wiz:830–845`) |
-| `split` (`let (x, y)`) | yes | **no** |
+| `split` (`let (x, y)`) | yes | **no**. Projections need an unrestricted pair in both kernels (§7.1, R1), so a pair held at quantity 1 cannot be consumed in Kernel.wiz's fragment: every term that projects one is rejected by both kernels, and terms with `split` are outside the fragment (the differential test's term type `MTm` has no `split`) |
 | numerals, `natOp` | yes | no |
 | levels of data | `Level` | closed numerals (`descr l`, `mu l`, `ulift l`) |
 | `ULift` (Q4) | `ulift`/`up`/`down`, `cast` needs a level never `0` | `ulift`/`up`/`down` at closed levels (`vulift`, `vup`, `sdown`); the same rules |

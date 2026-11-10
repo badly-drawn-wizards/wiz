@@ -332,20 +332,20 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
     | none => throw (.unboundGlobal n)
   | .app f a => match whnf (← quickType ctx f) with
     | .pi _ _ _ _ cod _ => pure (ctx.instArg cod a)
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .fst p => match whnf (← quickType ctx p) with
     | .sigma _ _ A _ _ => pure A
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .snd p => match whnf (← quickType ctx p) with
     | .sigma _ _ _ B _ => pure (Closure.inst g B (vFst (ctx.eval p)))
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .ann _ ty => pure (ctx.eval ty)
   | .down p => match whnf (← quickType ctx p) with
     | .ulift _ A => pure A
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .ecase _ m s _ => pure (Closure.inst g (.mk ctx.env m) (ctx.eval s))
   | .ind _ _ _ _ P _ i x => pure (vApp g (vApp g (ctx.eval P) (ctx.eval i)) (ctx.eval x))
-  | _ => return (← infer ctx t).1
+  | _ => return (← infer { ctx with erased := true } t).1
 
 /-- **Exercise 5.1a.** Erase `t`, checking it against `ty`.
 
@@ -466,14 +466,20 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
     | .snd p => do
       let (p', pty) ← eraseInfer ctx p
       pure (if unboxedSigma g ctx.lvl pty then .erased else .proj 1 p')
-    | .split _ s _ _ x y b => do
-      let (s', sty) ← eraseInfer ctx s
+    | .split sq s _ _ x y b => do
+      -- a split at 0 never computes its scrutinee (the kernel checks it as an erased
+      -- position): both components are `◾`
+      let zero := isZeroQ (ctx.eval sq)
+      let (s', sty) ← if zero then pure (.erased, ← quickType ctx s) else eraseInfer ctx s
       let .sigma _ q A B _ := whnf sty | throw (.other "erasure: split of a non-pair")
       let some pq := q.toPoly? | throw (.other "erasure: unknown quantity")
       -- let s := s'; let x := s.0; let y := s.1; b   (b lives under x, y: lift past s)
       let vx := Val.var ctx.lvl
       let ctx₂ := (ctx.bind x pq A).bind y [] (Closure.inst g B vx)
       let (b', _) ← eraseInfer ctx₂ b
+      if zero then
+        pure (.letE "s" .erased (.letE x .erased (.letE y .erased (b'.lift 1 2))))
+      else
       if unboxedSigma g ctx.lvl sty then
         pure (.letE "s" s' (.letE x (.var 0) (.letE y .erased (b'.lift 1 2))))
       else

@@ -59,16 +59,18 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── pair      (check only)
     Γ ⊢ (a, b) ⇐ (q x : A) × B ⊣ q·U₁ + U₂
 
-    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q  (or Γ is erased)
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q
     ──────────────────────────────── fst       (an erased field can't be projected at runtime)
-    Γ ⊢ t.1 ⇒ A ⊣ U
-    (`t.1` drops `t.2`: if `B` holds a field that must be used (`mustUse`), `t.1 ⊣ ω·U`,
-    so only an unrestricted pair may drop it)
+    Γ ⊢ t.1 ⇒ A ⊣ ω·U
 
-    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 0 q  (or Γ is erased)
-    ──────────────────────────────── snd       (`t.2` drops the first field: it must allow that)
-    Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ U
-    (otherwise `t.2 ⊣ ω·U`: only an unrestricted pair, whose field is ω·q, may drop it)
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U
+    ──────────────────────────────── snd
+    Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ ω·U
+
+    (R1: projections are available only on unrestricted pairs. A projection keeps one
+    component and drops the other, so `t` is used ω times, whatever the component types
+    and whether `t` is a variable or not (`projUsage`). In an erased position, Γ⁰, both
+    rules have no side condition and the usage is `U`: nothing is consumed there.)
 
     Γ ⊢ s ⇒ (p x : A) × B ⊣ U₁     Γ, z : (p x : A) × B ⊢ M type
     Γ, x :(q·p) A, y :q B ⊢ b ⇐ M[(x, y)/z] ⊣ (u_y :: u_x :: U₂)
@@ -141,9 +143,12 @@ local variables outside erased positions). Branches of `ecase` are alternatives,
 case uses the *join* of its branches' usages: with `{0, 1, ω}` a linear variable must be used the same way in
 every branch, and an ω variable may be used differently.
 
-`split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
-using both on a linear pair uses it twice, and `snd p` alone would drop a linear first
-field, so then it uses `p` ω times.
+`split` is how a pair held at any quantity other than ω is consumed: it accounts for
+both components. `fst p` and `snd p` each drop a component, so they use `p` ω times.
+
+A position scaled by a constant 0 (an argument to a 0 binder, the value of a `let` at 0,
+the first part of a pair at a 0 field, the scrutinee of a `split` at 0) is never
+computed: it is checked as an erased position (`Ctx.erasedAt`).
 
 `Γ ⊢ A type@i` means `A ⇒ Sort i`, with its usage **thrown away**: types live in
 the erased (0) fragment, so they may mention 0-quantity variables freely.
@@ -285,49 +290,53 @@ def methodUsage (ctx : Ctx R) (u : Usage R) : TCM (Usage R) :=
     | some (p, x) => throw (.other s!"a method may run any number of times, so it can't use {x} ({p} times): the rig has no unrestricted quantity")
     | none => pure u
 
-/-- (Q1) Must a value `v` of type `A` be used, i.e. is `A` a `Σ` with a field whose
-quantity doesn't allow zero uses (`¬ le 0 q`), here or in its second part? `t.1` discards
-`t.2`, so it may do that only when this is false (or the pair is unrestricted). The second
-part of a `Σ` has no quantity of its own: a bare `A × World` counts as droppable; a
-resource is "linear" here when it sits in a field declared linear. -/
-partial def mustUse (ctx : Ctx R) (A : Val R) (v : Val R) : Bool :=
-  match whnf A with
-  | .sigma _ q _ B _ =>
-    match q.toPoly? with
-    | some p => !QPoly.le (QPoly.const 0) p || mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v)
-    | none => true
+/-- For error messages only: is this `Σ` (a suffix of) a structure, i.e. does its chain
+of second parts end in a structure's marker tail (`structTailName`)? -/
+partial def endsInStructTail (ctx : Ctx R) (ty : Val R) (k : Nat) : Bool :=
+  match whnf ty with
+  | .sigma _ _ _ B _ => endsInStructTail ctx (Closure.inst ctx.globals B (Val.var (ctx.lvl + k))) (k + 1)
+  | .pi x _ _ _ cod _ => k > 0 && (x == structTailName ||
+      (isPhantomName x && endsInStructTail ctx (Closure.inst ctx.globals cod (Val.var (ctx.lvl + k))) (k + 1)))
   | _ => false
 
-/-- `mustUse` decided from the type alone, without evaluating the value. `mustUse` needs
-the value only to instantiate dependent second parts, and computing it runs the term in
-the evaluator at check time: `p.1` on a global builder's result (`(Circuit.netlistS c).1`
-in lib/Hdl/Core.wiz) would compute the whole netlist, deep enough to overflow the stack.
-So each field is instantiated with a placeholder instead, a fresh variable past the
-context (levels `ctx.lvl + k`, `k ≥ 1`; the caller used `ctx.lvl` for the first field).
-Evaluation commutes with substituting a variable: a canonical form reached with
-placeholders is the same with the real values. So the answer is exact, except where a
-placeholder might have mattered: a type stuck on anything but a context variable, axiom
-or metavariable (a variable applied, a builtin or observational equality stuck on its
-arguments), or a quantity that isn't a polynomial over context variables. Then the
-answer is `none`, and the caller decides with the values (`mustUse`). This needs no
-syntactic "does the codomain mention the variable" test (`Term.hasVar`), so a wrong
-answer from one can't make it drop a linear field. -/
-partial def mustUseType? (ctx : Ctx R) (A : Val R) (k : Nat) : Option Bool :=
-  match whnf A with
-  | .sigma _ q _ B _ =>
-    match q.toPoly? with
-    | some p =>
-      if p.any (fun (vs, _) => vs.any (· ≥ ctx.lvl)) then none
-      else if !QPoly.le (QPoly.const 0) p then some true
-      else mustUseType? ctx (Closure.inst ctx.globals B (Val.var (ctx.lvl + k))) (k + 1)
-    | none => none
-  -- stuck, but not on a placeholder: the same with the real values
-  | .neutral (.global ..) #[] | .neutral (.mvar _) #[] => some false
-  | .neutral (.local l) #[] => if l < ctx.lvl then some false else none
-  -- stuck on something that might be a placeholder
-  | .neutral .. => none
-  -- a canonical type other than `Σ` (whnf removed glued values)
-  | _ => some false
+/-- (R1) The usage of a projection `t.1` / `t.2`, where `t` uses `u`: **projections are
+available only on unrestricted pairs**. A projection keeps one component and drops the
+other, and the second component of a `Σ` has no quantity of its own to say whether it may
+be dropped, so the rule doesn't look at the component types at all: `t` is used ω times
+(`QRig.many?`), whether it is a variable or any other expression (`(act w).1` uses `w` ω
+times). A pair held at any other quantity is taken apart with `split`
+(`let (x, y) := p; …`), which accounts for both components. Erased positions don't come
+here: nothing is consumed there.
+
+Every variable `t` uses is checked against its declared quantity right away, so that the
+error can say what to write instead; it would otherwise surface as a plain quantity
+mismatch at the variable's binder. (Usages only grow on the way out, except where they
+are scaled by a constant 0, and those positions are checked erased: `erasedAt`.) -/
+def projUsage (ctx : Ctx R) (t : Term R) (ty : Val R) (field : String) (u : Usage R) : TCM (Usage R) :=
+  let st := ctx.showTerm t
+  let fail {α} (x : Name) (q : String) : TCM α := throw (.other <|
+    s!"cannot project {match t with | .var _ => st | _ => s!"({st})"}{field}: a projection needs an unrestricted pair (it keeps one component and drops the other), but this one uses {x}, which has quantity {q}; " ++
+    (if endsInStructTail ctx ty 0 then
+      s!"this is a field of a structure, and a structure can't be held at a quantity other than ω yet (it has no destructuring form); use a tuple `A × B` instead, taken apart with `let {q} (x, y) := …`"
+    else s!"take the pair apart with `let {q} (x, y) := {st}; …` instead"))
+  match QRig.many? (R := R) with
+  | some m =>
+    let u' := QPoly.const m • u
+    -- (a variable `t` doesn't use is not this rule's business: 0 ≤ 1 is false)
+    match ((u'.zip ctx.qtys).zip ctx.names).find? fun ((p, q), _) => !QPoly.le p (QPoly.const 0) && !QPoly.le p q with
+    | some ((_, q), x) => fail x (toString q)
+    | none => pure u'
+  | none =>
+    -- a rig without an unrestricted quantity (exact counting): only pairs that use no
+    -- local variable at all can be projected
+    match ((u.zip ctx.qtys).zip ctx.names).find? fun ((p, _), _) => !QPoly.le p (QPoly.const 0) with
+    | some ((_, q), x) => fail x (toString q)
+    | none => pure u
+
+/-- A position whose usage is scaled by `q`: when `q` is the constant 0 it is erased (the
+value is never computed), so it is checked as an erased position. -/
+def Ctx.erasedAt (ctx : Ctx R) (q : QPoly R) : Ctx R :=
+  if q.isConst? == some 0 then { ctx with erased := true } else ctx
 
 /-- (D1 experiment) Is this type a universe, or a function type ending in one? A `Π`
 into `Prop` over such a domain is impredicative. -/
@@ -358,13 +367,13 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
-    let uv ← check ctx val vty
+    let uv ← check (ctx.erasedAt q) val vty
     let ub ← check (ctx.define x q vty (ctx.eval val)) body ty
     let ub ← popUsage x q ub
     pure (q • uv + ub)
   | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
-    let ua ← check ctx a A
+    let ua ← check (ctx.erasedAt q) a A
     let ub ← check ctx b (ctx.instArg B a)
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
@@ -490,14 +499,14 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     match whnf fty with
     | .pi _ _ q dom cod _ =>
       let q ← qtyPoly ctx q
-      let ua ← check (if q.isConst? == some 0 then { ctx with erased := true } else ctx) a dom
+      let ua ← check (ctx.erasedAt q) a dom
       pure (ctx.instArg cod a, uf + q • ua)
     | _ => throw (.notAFunction (ctx.showTerm f) (ctx.showVal fty))
   | .letE x q tty val body => do
     let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
-    let uv ← check ctx val vty
+    let uv ← check (ctx.erasedAt q) val vty
     let (bty, ub) ← infer (ctx.define x q vty (ctx.eval val)) body
     let ub ← popUsage x q ub
     pure (bty, q • uv + ub)
@@ -515,39 +524,28 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .fst t => do
     let (ty, u) ← infer ctx t
     match whnf ty with
-    | .sigma x q A B _ =>
-      let q ← qtyPoly ctx q
-      unless ctx.erased || QPoly.le (QPoly.const 1) q do
-        throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
-      -- `t.1` discards the second part (Q1): if that holds a field that must be used,
-      -- only an unrestricted pair may drop it, so `t` counts as used ω times
-      -- (from the type alone when it can be decided so: `ctx.eval t` would run `t`)
+    | .sigma x q A _ _ =>
+      -- in an erased position nothing is consumed: any field of any pair may be read
       if ctx.erased then pure (A, u) else
-      let mustUse? : Bool := match mustUseType? ctx (Closure.inst ctx.globals B (Val.var ctx.lvl)) 1 with
-        | some b => b
-        | none => let v := ctx.eval t; mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v)
-      if !mustUse? then pure (A, u) else
-      match QRig.many? (R := R) with
-      | some m => pure (A, QPoly.const m • u)
-      | none => throw (.other s!"cannot discard the second part of {ctx.showTerm t}, which holds a linear field; use let (x, y) := ... instead")
+      let q ← qtyPoly ctx q
+      unless QPoly.le (QPoly.const 1) q do
+        throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
+      -- (R1) only an unrestricted pair has projections: `t` counts as used ω times
+      pure (A, ← projUsage ctx t ty ".1" u)
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .snd t => do
-    let (ty, u) ← infer ctx t
-    match whnf ty with
-    | .sigma x q _ B _ =>
-      -- `t.2` discards the first field: only allowed if the field may go unused
-      let q ← qtyPoly ctx q
+    let (pty, u) ← infer ctx t
+    match whnf pty with
+    | .sigma _ _ _ B _ =>
       let ty := Closure.inst ctx.globals B (vFst (ctx.eval t))
-      if ctx.erased || QPoly.le (QPoly.const 0) q then pure (ty, u) else
-      -- a field that must be used can be dropped only from an unrestricted pair (whose
-      -- fields are ω·q): so `t` counts as used ω times
-      match QRig.many? (R := R) with
-      | some m => pure (ty, QPoly.const m • u)
-      | none => throw (.other s!"cannot discard the field {x}, which has quantity {q}; use let (x, y) := ... instead")
-    | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
+      if ctx.erased then pure (ty, u) else
+      -- (R1) as for `t.1`. The first field's quantity doesn't matter: an unrestricted
+      -- pair's field is at ω·q, which may always go unused
+      pure (ty, ← projUsage ctx t pty ".2" u)
+    | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal pty}")
   | .split q s z m x y b => do
     let q ← checkQty ctx q
-    let (sty, us) ← infer ctx s
+    let (sty, us) ← infer (ctx.erasedAt q) s
     match whnf sty with
     | .sigma _ p A B _ =>
       let p ← qtyPoly ctx p

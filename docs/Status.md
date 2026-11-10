@@ -71,7 +71,7 @@ the results of the probes listed in the "Probes" section.
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] and [PT23] give ℕ equality rules by constructor (Eq-zero, Eq-Suc); CICobs [PLT25 §2.1, §4.1] gives inductive types *no* rule for equality of elements (it is derivable from the eliminator) and a weaker, non-injective equation between instances. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
-| QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
+| QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections only on unrestricted pairs (§7.1; Q1/R1, fixed), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
 | Quantity polymorphism (`Qty`, polynomial usages, `≤` by trying every assignment) | **conjecture** | Sound for finite rigs if each assignment is a valid instance (it checks them all). No paper. |
 | Numerals and native arithmetic | **folklore**, conditional on correct `builtin` registrations | The Prelude's registrations are trusted (reviewed, §7); any other is an axiom (F4). |
 | Glued (lazy) unfolding, `lazyInd` | **folklore** | An implementation technique; it must give the same answers as eager unfolding. Not proved. |
@@ -421,7 +421,7 @@ check `Γ⁰ ⊢ s ⇐ Size` (one line in each kernel).
 `MTm.sizeArgs` (`tt` and `Enum 2` as sizes are rejected) in the Lean verdicts and the
 differential samples.
 
-### Q1. Projections drop linear components — **fixed** (`.2`: `212aebf`; `.1`: lin-fixes; both kernels)
+### Q1 / R1. Projections drop linear components — **fixed**: projections need an unrestricted pair (lin-proj; both kernels)
 
 `p.2` on `p : (1 x : A) × B` uses `p` once and discards `x` (§7.1); `p.1` discards the
 second component. In the `{0, 1, ω}` rig, `1` is documented as "exactly once"
@@ -434,21 +434,49 @@ allow `.2` only when the first field's quantity allows zero uses (`0 ≤ q`), an
 only when the pair's second part is not linear; or reserve projections for pairs whose
 quantities admit weakening.
 
-**Fix** (`.2`): when the first field's quantity `q` doesn't allow zero uses, `p.2` counts
-`p` as used ω times (only an unrestricted pair, whose field is `ω·q`, may drop it), so
-`drop` above is rejected (both kernels; tests in "check: structural types" and the differential
-samples).
+**History.** `212aebf` made `p.2` count `p` as used ω times when the first field's
+quantity doesn't allow zero uses. lin-fixes (PR #50, `mustUse`) did the same for `p.1`
+when the second part *holds a field declared* with such a quantity, and hdl-fix (PR #58,
+`mustUseType?`) decided that from the type, because evaluating the pair overflowed the
+stack. Both rules asked the dropped part's declared quantities. The second component of a
+Σ has none, so **R1** (the soundness audit) remained: `p.1` on `(1 p : A × Tok)` dropped
+the bare `Tok`, and a projection of an *expression* was never tracked at all, so
+`(act w).1` for `act : IO A` used `w` once and dropped the world `act` returns. Not a
+duplication (no use after free), but "must be consumed" did not hold: a session endpoint
+abandoned mid-protocol, a lock guard never released, a region never closed.
 
-**Fix** (`.1`, CS11 (a)): `p.1` discards `p.2`. The second part of a Σ has no quantity of
-its own, so the rule asks whether the second part *holds a field that must be used*
-(`mustUse`: its type is a Σ with a field whose quantity doesn't allow zero uses, in its
-first field or, recursively, its second part). If so, `p.1` counts `p` as used ω times,
-like `.2` above: `def dropFst {A B : Type} (1 p : (x : A) × (1 y : B) × B) : A := p.1` is
-rejected, the same on an unrestricted `p` is accepted, and projecting a linear field out
-of the middle of a linear tuple (`p.2.1`) is rejected too (both kernels; tests in "check:
-structural types" and the differential samples). A bare second component (`A × World`)
-counts as droppable: it is linear only through the pair's own quantity, which `.1`
-cannot see. Consume a linear pair with `let 1 (x, y) := p`.
+**Fix** (rule (b) of the audit; CoreSpec §7.1): **projections are available only on
+unrestricted pairs.** Outside erased positions `t.1` and `t.2` use `t` ω times, whatever
+the component types and whether `t` is a variable or an expression. A pair held at any
+other quantity is taken apart with the split form, `let 1 (x, y) := p; …`, which accounts
+for both components. This subsumes the two earlier rules: `mustUse`, `mustUseType?` and
+the `.2` special case are removed from both kernels (and with them the last place where
+the checker evaluated a pair to decide a usage). In erased positions (types, proofs,
+arguments to 0 binders, and now also the other positions scaled by a constant 0: the
+value of a `let` at 0, the first part of a pair at a 0 field, the scrutinee of a split at
+0) projections stay free.
+
+What it costs:
+
+* `let (x, y) := p` without a quantity splits at ω; a linear pair needs `let 1 (x, y)`.
+  The error at a rejected projection says which form to write.
+* A pair at a quantity *variable* can't be projected (`ω ≤ q` fails for `q = 1`); it can
+  be split at `q`.
+* **A structure held at a quantity other than ω can't be consumed.** `s.field` is a chain
+  of projections; `match` doesn't take a structure (or a tuple) apart linearly; and a
+  nested `let 1 (x, y)` over the structure's Σ leaves its marker tail as a linear
+  variable that nothing consumes. Before the fix the only thing that worked was reading
+  exactly one field, which silently dropped the others: nothing sound is lost. Linear
+  data is a tuple for now; linear matching is wishful
+  (`/workspace/wiz-notes/wishful/linear-case.md`).
+* Kernel.wiz has no split form, so its fragment can't consume a linear pair at all
+  (CoreSpec §15); both kernels reject the same terms.
+* Nothing in `lib/`, `examples/` or `selfhost/` needed a change: `lib/IO.wiz` already
+  split the result of an action with `let 1 (a, w') := x w`.
+
+Tests: "check: structural types" (kernel rules), "language" and "ffi" (surface programs,
+the three audit probes, structures, erased positions and their erasure), and the
+differential samples.
 
 ### Q2. Methods are scaled by the rig's default, not by ω — **fixed** (`a986c02`, Lean kernel)
 
@@ -652,6 +680,7 @@ as a test yet (each should become one when its issue is fixed).
 | `builtin nat := E` (empty) + `(0 : E)` (O3) | `wiz check` crashes (stack overflow) (now an error, F4) |
 | `p.2` on a linear pair (Q1) | rejected since `212aebf` (was accepted) |
 | `p.1` on a linear pair whose second part holds a linear field (Q1) | rejected (lin-fixes; was accepted) |
+| `p.1` on `(1 p : A × Tok)`, on `(1 p : (1 a : A) × Tok)`, and `(act w).1` (R1; `soundness-probes/r1-linear-fst.wiz`) | rejected (lin-proj: projections need an unrestricted pair; were accepted) |
 | `Desc.arg 1 True …` (Q4, fixed: F5) | rejected by the elaborator (field must be in `Type ?u`) and now by both kernels (`MTm.smallField`: `D` and `getS D` rejected; the lifted `D'` accepted, `getS D'` is `ULift True : Type`) |
 
 ## How to report a soundness bug

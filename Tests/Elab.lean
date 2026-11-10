@@ -1222,6 +1222,17 @@ def ffiGroup : Group where
     { name := "... and a linear value is still used exactly once", run := fun _ =>
         ioFails ("import IO\naxiom Tok : Type\naxiom Tok.close : (1 t : Tok) → IO Unit\n" ++ "def bad (1 t : Tok) : IO Unit := do1\n  Tok.close t;\n  Tok.close t")
           "quantity 1 but used ω" },
+    { name := "an action's result is split, not projected: (x w).1 would drop the world (R1)", run := fun _ => do
+        ioFails ("import IO\ndef peek {A : Type} (1 x : IO A) (1 w : World) : A := (x w).1") "cannot project (x w).1"
+        ioFails ("import IO\ndef peek {A : Type} (1 x : IO A) (1 w : World) : A := (x w).1") "which has quantity 1; take the pair apart with `let 1 (x, y) := x w; …`"
+        ioFails ("import IO\ndef keep {A : Type} (1 x : IO A) (1 w : World) : World := (x w).2") "a projection needs an unrestricted pair"
+        ioRun ("import IO\ndef twice (1 x : IO Nat) : IO Nat := fun w => let 1 (a, w') := x w; (a + a, w')\n" ++
+          "def main : IO Unit := do\n  n ← twice (IO.pure 4);\n  IO.println (Nat.toString n)") "8\n" },
+    { name := "... and compiled code never evaluates a 0 position (a let at 0, a 0 field, a split at 0, a 0 argument)", run := fun _ =>
+        ioRun ("import IO\npartial def loop (u : Unit) : Nat × Nat := loop u\n" ++
+          "def a : Nat := let 0 x : Nat := (loop ()).1; 1\ndef b : (0 x : Nat) × Nat := ((loop ()).1, 2)\n" ++
+          "def c : Nat := let 0 (x, y) := loop (); 3\ndef d (f : (0 x : Nat) → Nat) : Nat := f (loop ()).1\n" ++
+          "def main : IO Unit := IO.println (Nat.toString (a + b.2 + c + d (fun _ => 4)))") "10\n" },
     { name := "machine integers and floats", run := fun _ =>
         ioRun ("import IO\ndef main : IO Unit := do\n" ++
           "  IO.println (Nat.toString (UInt64.toNat (UInt64.mul (UInt64.ofNat 1000000) (UInt64.ofNat 1000000))));\n" ++
@@ -1835,10 +1846,44 @@ def qtyApart : List MTm :=
    ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (F .one) (F .one)) (empty 0)),
    reflTy (F .one)]
 
+/-- (R1) Projections are available only on unrestricted pairs, and positions at 0 are
+erased positions: each term with whether the kernels accept it. -/
+def projRule : List (MTm × Bool) := [
+   -- (R1) projections need an unrestricted pair, whatever the fields' quantities:
+   -- a linear pair is rejected (the last one has a bare second component: the audit's
+   -- probe), an unrestricted one and a closed one are accepted
+   (ann (lam (snd (var 0))) (piq .one (sigmaq .one (univ 0) (univ 0)) (univ 0)), false),
+   (ann (lam (snd (var 0))) (piq .one (sigmaq .many (univ 0) (univ 0)) (univ 0)), false),
+   (ann (lam (snd (var 0))) (piq .many (sigmaq .one (univ 0) (univ 0)) (univ 0)), true),
+   (snd (ann (pair (enum 2) (enum 2)) (sigmaq .one (univ 0) (univ 0))), true),
+   (ann (lam (fst (var 0))) (piq .one (sigma (univ 0) (sigmaq .one (univ 0) (univ 0))) (univ 0)), false),
+   (ann (lam (fst (var 0))) (piq .many (sigma (univ 0) (sigmaq .one (univ 0) (univ 0))) (univ 0)), true),
+   (ann (lam (fst (var 0))) (piq .one (sigma (univ 0) (sigma (univ 0) (univ 0))) (univ 0)), false),
+   (ann (lam (fst (var 0))) (piq .one (sigmaq .one (univ 0) (univ 0)) (univ 0)), false),
+   (ann (lam (fst (snd (var 0)))) (piq .one (sigma (univ 0) (sigma (univ 0) (univ 0))) (univ 0)), false),
+   (ann (lam (fst (snd (var 0)))) (piq .many (sigma (univ 0) (sigma (univ 0) (univ 0))) (univ 0)), true),
+   -- a projection of an expression uses the expression ω times: `(f x).1` with `x` at 1
+   -- is rejected, with `x` at ω accepted
+   (ann (lam (lam (fst (app (var 1) (var 0))))) (pi (piq .one (univ 0) (sigma (univ 0) (univ 0))) (piq .one (univ 0) (univ 0))), false),
+   (ann (lam (lam (fst (app (var 1) (var 0))))) (pi (piq .one (univ 0) (sigma (univ 0) (univ 0))) (piq .many (univ 0) (univ 0))), true),
+   -- positions at 0 are erased positions, where a projection is free: the value of a
+   -- `let` at 0, the first part of a pair at a 0 field, an argument to a 0 binder
+   -- (accepted: the linear pair is then used once, by the body)
+   (ann (lam (letq .zero (univ 0) (fst (var 0)) (var 1))) (piq .one (sigma (univ 0) (univ 0)) (sigma (univ 0) (univ 0))), true),
+   (ann (lam (pair (fst (var 0)) (var 0))) (piq .one (sigma (univ 0) (univ 0)) (sigmaq .zero (univ 0) (sigma (univ 0) (univ 0)))), true),
+   (ann (lam (lam (app (app (var 1) (fst (var 0))) (var 0))))
+     (pi (piq .zero (univ 0) (piq .one (sigma (univ 0) (univ 0)) (univ 0))) (piq .one (sigma (univ 0) (univ 0)) (univ 0))), true),
+   -- an erased field can be read there (accepted), and not in a `let` at 1 or ω (rejected)
+   (ann (lam (letq .zero (univ 0) (fst (var 0)) (snd (var 1)))) (piq .many (sigmaq .zero (univ 0) (univ 0)) (univ 0)), true),
+   (ann (lam (letq .one (univ 0) (fst (var 0)) (var 0))) (piq .many (sigmaq .zero (univ 0) (univ 0)) (univ 0)), false),
+   -- what a `let` at 0 binds can't be used (rejected), nor can the linear pair go unused
+   (ann (lam (letq .zero (univ 0) (fst (var 0)) (var 0))) (piq .many (sigma (univ 0) (univ 0)) (univ 0)), false),
+   (ann (lam (letq .zero (univ 0) (fst (var 0)) (enum 2))) (piq .one (sigma (univ 0) (univ 0)) (univ 0)), false)]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -1879,14 +1924,6 @@ def samples : List MTm :=
    letq .zero (univ 0) (enum 2) (ann (lam (var 0)) (pi (var 0) (var 1))),
    fst (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
    snd (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
-   -- `p.2` drops `p.1`: not if that field is linear (Q1)
-   ann (lam (snd (var 0))) (piq .one (sigmaq .one (univ 0) (univ 0)) (univ 0)),
-   ann (lam (snd (var 0))) (piq .one (sigmaq .many (univ 0) (univ 0)) (univ 0)),
-   snd (ann (pair (enum 2) (enum 2)) (sigmaq .one (univ 0) (univ 0))),
-   -- `p.1` drops `p.2`: not if that holds a linear field (Q1)
-   ann (lam (fst (var 0))) (piq .one (sigma (univ 0) (sigmaq .one (univ 0) (univ 0))) (univ 0)),
-   ann (lam (fst (var 0))) (piq .many (sigma (univ 0) (sigmaq .one (univ 0) (univ 0))) (univ 0)),
-   ann (lam (fst (var 0))) (piq .one (sigma (univ 0) (sigma (univ 0) (univ 0))) (univ 0)),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, var 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, univ 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    -- sizes and subtyping
@@ -2529,6 +2566,11 @@ def selfHostGroup : Group where
           unless a == "EqTy(Size, Size)" && b == "EqTy(Size<(∞), Size<(∞))" do
             throw (IO.userError s!"unexpected types {a}, {b}")
         | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "projections need an unrestricted pair; positions at 0 are erased (R1; and both kernels agree on it below)", run := fun _ => do
+        for (t, ok) in MTm.projRule do
+          let v := leanVerdict t
+          unless (v != "error") == ok do
+            throw (IO.userError s!"expected {if ok then "accepted" else "rejected"}, got {v}: {MTm.pretty 0 t}") },
     { name := "the size of μ and ν is checked (and both kernels agree on it below)", run := fun _ => do
         let vs := MTm.sizeArgs.map leanVerdict
         unless vs.take 2 == ["error", "error"] && (vs.drop 2).all (· != "error") do
@@ -2611,6 +2653,9 @@ def selfHostGroup : Group where
         ioDiverges (withReg ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") }
   ]
 
+/-- (R1) A linear token, for the projection tests. -/
+def r1Header : String := "import Prelude\naxiom Tok : Type\n"
+
 def languageGroup : Group where
   name := "language"
   exercise := "Stage 13"
@@ -2630,14 +2675,61 @@ def languageGroup : Group where
           "def substω (0 P : Nat → Type) {0 a b : Nat} (0 e : a = b) (pa : P a) : P b := cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa\n" ++
           "def closeAt (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit := Tok.close (substω Tok e t)")
           "quantity 1 but used ω" },
-    -- `p.1` with a second part whose shape depends on the first: decided from the type
-    -- with a placeholder, it is stuck, so the kernel decides with the value (Q1)
-    { name := "p.1 drops p.2 only if p.2 holds no linear field, also when that depends on p.1 (Q1)", run := fun _ => do
-        okLib ("import Prelude\naxiom W : Type\ndef T (b : Bool) : Type := match b with\n  | .true => (1 w : W) × Unit\n  | .false => Unit\n" ++
-          "def h : Bool := let 1 p : (b : Bool) × T b := (Bool.false, ()); p.1\n")
-        failsLib ("import Prelude\naxiom W : Type\ndef T (b : Bool) : Type := match b with\n  | .true => (1 w : W) × Unit\n  | .false => Unit\n" ++
-          "def g (1 w : W) : Bool := let 1 p : (b : Bool) × T b := (Bool.true, (w, ())); p.1\n")
-          "quantity 1 but used ω" },
+    -- (R1) projections are available only on unrestricted pairs
+    { name := "p.1 and p.2 on a linear pair are rejected, whatever the components (R1: the audit's probes)", run := fun _ => do
+        let needs := "a projection needs an unrestricted pair"
+        failsLib (r1Header ++ "def drop1 {A : Type} (1 p : A × Tok) : A := p.1") needs
+        failsLib (r1Header ++ "def drop2 {A : Type} (1 p : (1 a : A) × Tok) : A := p.1") needs
+        failsLib (r1Header ++ "def drop3 {A : Type} (1 p : (1 t : Tok) × A) : A := p.2") needs
+        -- the error says what to write
+        failsLib (r1Header ++ "def drop1 {A : Type} (1 p : A × Tok) : A := p.1") "take the pair apart with `let 1 (x, y) := p; …`"
+        -- a `let` at 1 of a projection is no better, and a pair in the middle of a tuple neither
+        failsLib (r1Header ++ "def let1 {A : Type} (1 p : A × Tok) : A := let 1 a : A := p.1; a") needs
+        failsLib (r1Header ++ "def mid {A : Type} (1 p : A × Tok × Tok) : Tok := p.2.1") needs },
+    { name := "... a projection of an expression uses the expression ω times (R1)", run := fun _ => do
+        failsLib (r1Header ++ "def bad {A : Type} (f : (1 t : Tok) → A × Tok) (1 t : Tok) : A := (f t).1")
+          "cannot project (f t).1"
+        okLib (r1Header ++ "def fine {A : Type} (f : (1 t : Tok) → A × Tok) (t : Tok) : A := (f t).1\n" ++
+          "def split {A : Type} (f : (1 t : Tok) → A × Tok) (1 t : Tok) : (1 u : Tok) × A := let 1 (a, u) := f t; (u, a)") },
+    { name := "... a linear pair is taken apart with let 1 (x, y) := p, which accounts for both components", run := fun _ => do
+        okLib (r1Header ++ "def swap {A : Type} (1 p : A × Tok) : (1 t : Tok) × A := let 1 (a, t) := p; (t, a)\n" ++
+          "def nest {A : Type} (1 p : A × Tok × Tok) : (1 t : Tok) × (1 u : Tok) × A := let 1 (a, r) := p; let 1 (t, u) := r; (u, t, a)\n" ++
+          "def inTy (1 p : (A : Type) × A) (f : (0 A : Type) → (1 x : A) → Nat) : Nat := let 1 (A, x) := p; f A x")
+        -- the split may not drop the bare second component either
+        failsLib (r1Header ++ "def dropSplit {A : Type} (1 p : A × Tok) : A := let 1 (a, t) := p; a") "variable t declared with quantity 1 but used 0"
+        -- and without a quantity it is a split at ω
+        failsLib (r1Header ++ "def atω {A : Type} (1 p : A × Tok) : (1 t : Tok) × A := let (a, t) := p; (t, a)") "quantity 1 but used ω" },
+    { name := "... an unrestricted pair has both projections, whatever its fields' quantities", run := fun _ =>
+        okLib (r1Header ++ "def fstω {A : Type} (p : A × Tok) : A := p.1\ndef sndω {A : Type} (p : (1 a : A) × Tok) : Tok := p.2\n" ++
+          "def both {A : Type} (p : A × Tok) : Tok × A := (p.2, p.1)\ndef mid {A : Type} (p : A × (1 t : Tok) × Tok) : Tok := p.2.1") },
+    { name := "... a pair at a quantity variable can't be projected, but it can be split at that quantity", run := fun _ => do
+        failsLib (r1Header ++ "def polyq {A : Type} {q : Qty} (%q p : A × Tok) : A := p.1") "a projection needs an unrestricted pair"
+        okLib (r1Header ++ "def poly {A : Type} {q : Qty} (%q p : A × Tok) (k : (%q a : A) → (%q t : Tok) → Nat) : Nat := let %q (a, t) := p; k a t") },
+    { name := "... erased positions project freely: a 0 argument, a let at 0, a 0 field, a split at 0", run := fun _ => do
+        okLib (r1Header ++ "def erasedArg {A : Type} (0 p : A × Tok) (g : (0 a : A) → Nat) : Nat := g p.1\n" ++
+          "def peek {A : Type} (1 p : A × Tok) (g : (0 a : A) → (1 p : A × Tok) → Nat) : Nat := g p.1 p\n" ++
+          "def let0 {A : Type} (1 p : A × Tok) : A × Tok := let 0 a : A := p.1; p\n" ++
+          "def field0 {A : Type} (1 p : A × Tok) : ((0 a : A) × Unit) × (A × Tok) := ((p.1, ()), p)\n" ++
+          "def split0 {A : Type} (1 p : A × Tok) : A × Tok := let 0 (a, t) := p; p")
+        -- what is bound at 0 there can't be used at runtime, and an erased variable has no runtime projection
+        failsLib (r1Header ++ "def use0 {A : Type} (1 p : A × Tok) : A × (A × Tok) := let 0 a : A := p.1; (a, p)") "variable a declared with quantity 0"
+        failsLib (r1Header ++ "def use00 {A : Type} (1 p : A × Tok) : A × (A × Tok) := let 0 (a, t) := p; (a, p)") "variable a declared with quantity 0"
+        failsLib (r1Header ++ "def run0 {A : Type} (0 p : A × Tok) : A := p.1") "a projection needs an unrestricted pair" },
+    { name := "... a 0 position is never evaluated: #eval of a let at 0, a 0 field, a split at 0, a 0 argument", run := fun _ =>
+        okLib ("import Prelude\npartial def loop (u : Unit) : Nat × Nat := loop u\n" ++
+          "def a : Nat := let 0 x : Nat := (loop ()).1; 1\ndef b : (0 x : Nat) × Nat := ((loop ()).1, 2)\n" ++
+          "def c : Nat := let 0 (x, y) := loop (); 3\ndef d (f : (0 x : Nat) → Nat) : Nat := f (loop ()).1\n" ++
+          "#eval a\n#eval b.2\n#eval c\n#eval d (fun _ => 4)") ["1", "2", "3", "4"] },
+    { name := "... a structure can't be held at quantity 1 yet: no field access, no match, no nested split (R1)", run := fun _ => do
+        let guard := r1Header ++ "structure Guard where\n  n : Nat\n  tok : Tok\n"
+        okLib (guard ++ "def readω (g : Guard) : Nat × Tok := (g.n, g.tok)\ndef pass (1 g : Guard) : Guard := g")
+        failsLib (guard ++ "def s1 (1 g : Guard) : Nat := g.n") "a structure can't be held at a quantity other than ω yet"
+        failsLib (guard ++ "def s2 (1 g : Guard) : Tok := g.tok") "use a tuple `A × B` instead"
+        failsLib (guard ++ "def s3 (1 g : Guard) : Nat × Tok := match g with\n  | .mk n t => (n, t)") "cannot match on a value of type"
+        failsLib (guard ++ "def s4 (1 g : Guard) : (1 t : Tok) × Nat := let 1 (n, rest) := g; let 1 (t, tail) := rest; (t, n)")
+          "variable tail declared with quantity 1 but used 0"
+        -- a tuple pattern in `match` is two projections: not for a linear pair
+        failsLib (r1Header ++ "def m1 (1 p : Nat × Tok) : (1 t : Tok) × Nat := match p with\n  | (n, t) => (t, n)") "quantity 1 but used ω" },
     { name := "castRefl: a propositional regularity axiom in the Prelude; it doesn't compute (D1)", run := fun _ =>
         okLib ("import Prelude\ndef r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n" ++
           "#reduce fun (A : Type) (e : A = A) (a : A) => castRefl e a")
