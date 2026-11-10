@@ -700,7 +700,8 @@ where
     | "term.paren" => check ctx (stx.getArg 1) expected
     | "term.app" =>
       if (stx.getArg 0).isOfKind "term.explicit" || (← builtinApp? ctx stx).isSome ||
-          !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0))) then
+          !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0)) ||
+            holeAndNestedCheck (stx.getArg 1).args) then
         let (t, ty) ← infer ctx stx
         unifyAt ctx stx expected ty
         pure t
@@ -1086,21 +1087,11 @@ partial def dotComponent (stx : Syntax) : Bool :=
   (stx.isOfKind "term.tuple" && (dotComponent (stx.getArg 1) ||
     ((stx.getArg 3).args.any fun c => !(c matches .atom ..) && dotComponent c)))
 
-/-- A (parenthesised) `fun`. -/
-partial def isFun (stx : Syntax) : Bool :=
-  stx.isOfKind "term.fun" || (stx.isOfKind "term.paren" && isFun (stx.getArg 1))
-
 /-- Does elaborating this argument need its expected type to be known? -/
 partial def needsExpected (stx : Syntax) : Bool :=
   (stx.isOfKind "term.paren" && needsExpected (stx.getArg 1)) ||
   stx.isOfKind "term.dotIdent" || stx.isOfKind "term.tag" || stx.isOfKind "term.rfl" ||
   (stx.isOfKind "term.app" && (stx.getArg 0).isOfKind "term.dotIdent") ||
-  -- an application that is checked against its type itself (`Ex.intro _ 3 rfl` as an
-  -- argument): the outer application's type must be known first, or its implicit
-  -- motive meets the argument's expected type unsolved (`?P 3`). (Not for a lambda
-  -- argument: its domains come from the inner function's type.)
-  (stx.isOfKind "term.app" && !(stx.getArg 0).isOfKind "term.explicit" &&
-    (stx.getArg 1).args.any fun a => needsExpected a && !isFun a) ||
   -- a tuple with a constructor component (`.ok (.nil, st)`)
   (stx.isOfKind "term.tuple" && (dotComponent (stx.getArg 1) ||
     ((stx.getArg 3).args.any fun c => !(c matches .atom ..) && dotComponent c))) ||
@@ -1109,6 +1100,20 @@ partial def needsExpected (stx : Syntax) : Bool :=
   stx.isOfKind "term.match" || stx.isOfKind "term.by" || stx.isOfKind "term.block" ||
   -- a lambda's binder types usually come from the expected type
   stx.isOfKind "term.fun"
+
+/-- The term inside parentheses. -/
+partial def stripParens (a : Syntax) : Syntax := if a.isOfKind "term.paren" then stripParens (a.getArg 1) else a
+
+/-- Arguments `_ … (g … rfl)`: a hole to be filled from the expected type, and an
+application that is checked against its own expected type (`Ex.intro _ 3 (Ex.intro _ 3 rfl)`).
+Inferring the outer application would check the inner one against `?P 3` with the hole
+`?P` unsolved; take the outer one's type from the expected type first instead. -/
+partial def holeAndNestedCheck (args : Array Syntax) : Bool :=
+  args.any (fun a => (stripParens a).isOfKind "term.hole") &&
+  args.any fun a =>
+    let a := stripParens a
+    a.isOfKind "term.app" && !(a.getArg 0).isOfKind "term.explicit" &&
+      (a.getArg 1).args.any fun b => needsExpected b && !(stripParens b).isOfKind "term.fun"
 
 /-- An application in check mode, using the **expected type first**: every explicit
 argument gets a placeholder metavariable, the resulting type is unified with the

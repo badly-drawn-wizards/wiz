@@ -26,6 +26,25 @@ namespace Wiz
 
 variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 
+/-- (Given) `vElims`, but an elimination that doesn't fit the value (applying a number,
+projecting a function) is an elaboration error, not a panic in the evaluator. Heuristic
+solutions (the first-order approximation, which is untyped) can be ill-typed:
+`?P 3 =?= Ex ?A ?Q` guesses `?Q := 3`, and `?Q 3` comes later. -/
+def elimsChecked (m : Nat) (sol : Val R) (sp : Array (Elim R)) : ElabM R (Val R) := do
+  let g ← getGlobals
+  let mut v := sol
+  for e in sp do
+    let fits : Bool := match v, e with
+      | .neutral .., _ | .unfold .., _ | .lazyInd .., _ => true
+      | .lam .., .app _ => true
+      | .pair .., .fst | .pair .., .snd => true
+      | _, .app _ | _, .fst | _, .snd => false
+      | _, _ => true
+    unless fits do
+      throwAt {} s!"the solution found for the hole ?m{m} is ill-typed (a guess that didn't fit)"
+    v := vElims g v #[e]
+  pure v
+
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
 A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
 `sp` applied (`vElims`). Anything else is returned unchanged. -/
@@ -34,7 +53,7 @@ partial def forceMeta (v : Val R) : ElabM R (Val R) := do
   match v with
   | .neutral (.mvar m) sp =>
     match (← lookupMeta m).solution with
-    | some sol => forceMeta (vElims (← getGlobals) sol sp)
+    | some sol => forceMeta (← elimsChecked m sol sp)
     | none => pure v
   | _ => pure v
   --|ex
@@ -444,12 +463,6 @@ partial def unifyFirstOrder (l : Lvl) (m : Nat) (sp : Array (Elim R)) (v : Val R
     if (← forceMeta a) matches .neutral (.local _) #[] then k := k + 1 else break
   let j := args.size - k
   if j == 0 || j > args'.size then return false
-  -- a rigid argument on the hole's side against an unsolved hole on the other is a guess,
-  -- and an untyped one: `?P 3 =?= Ex ?A ?Q` would solve `?Q := 3` (and `?P := Ex ?A`),
-  -- ill-typed, and applying `?Q` later panics. Leave such problems to the caller.
-  let flex (v : Val R) : ElabM R Bool := return (← forceMeta v) matches .neutral (.mvar _) _
-  for a in args.extract k args.size, b in args'.extract (args'.size - j) args'.size do
-    if (← flex b) && !(← flex a) then return false
   let s ← get
   try
     for a in args.extract k args.size, b in args'.extract (args'.size - j) args'.size do
