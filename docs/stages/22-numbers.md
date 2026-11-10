@@ -170,9 +170,8 @@ typing:
 Scopes run their body at the enclosing region (regions are erased, so this is sound);
 the separation comes from parametricity alone. `drafts/rust/rejected/` has the classic
 errors, lowered, each rejected (`sh drafts/rust/check.sh`); test group `regions`.
-Not yet: the constructors of the handles are public (private-decls), so the guarantee
-holds for code that follows the lowering rules (the DSL front end), not for hand-written
-Wiz that forges a handle.
+The constructors of the handles are private to the module ([13b](13-language.md)), so the guarantee
+holds for hand-written Wiz too: a handle can't be forged.
 
 ## 22h: one bit-vector family ✅
 
