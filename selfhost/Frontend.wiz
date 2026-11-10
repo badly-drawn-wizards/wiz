@@ -1252,6 +1252,13 @@ def postponable (a : Syntax) : Bool := Bool.or (isDotStx a) (Bool.or (strEq (kin
 def isMetaApp (es : ES) (ty : Val) : Bool := match metaApp es (force es ty) with
   | .mk _ _ => .true
   | .none => .false
+-- a `fun` against a function type whose domain isn't known yet waits too: the other
+-- arguments may fix it (`zipWith3 (fun b x y => …) c t e`; elab-postpone-lambdas)
+def funDomMeta (es : ES) (a : Syntax) (ty : Val) : Bool := match strEq (kindOf (unparen a)) "term.fun" with
+  | .true => match whnf (force es ty) with
+    | .vpi _ d _ _ _ => isMetaApp es d
+    | _ => .false
+  | .false => .false
 -- `.c` (or `.c a …`) against a type `T …`: `T.c`
 -- (a type that is a definition, like `Syntax := SyntaxF .true`, is unfolded: stage 19d)
 partial def dotName (gs : Globals) (es : ES) (ty : Val) (c : String) : Option String := match force es ty with
@@ -1976,7 +1983,7 @@ def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List B
         | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected
       | _ => .err "too many implicit arguments"
     | _ => match whnf (force es fty) with
-      | .vpi _ dom env cod _ => match Bool.and (postponable a) (isMetaApp es dom) with
+      | .vpi _ dom env cod _ => match Bool.and (postponable a) (Bool.or (isMetaApp es dom) (funDomMeta es a dom)) with
         | .true => match newMeta es cx dom with
           | .mk mt es1 => appArgsT gs es1 cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
               (.cons (.mk a dom mt) post) expected
