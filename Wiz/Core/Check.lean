@@ -908,6 +908,10 @@ partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run 
             out := out.push s!"native {T} := {mkImpl}/{getImpl}"
       let (cs, lit) := ([d.type] ++ d.value.toList ++ d.witness.toList).foldl
         (fun (acc : List Name × Bool) t => (consts t acc.1, acc.2 || hasNatLit t)) ([], false)
+      -- a registered operation or constructor makes numerals without a literal in the
+      -- term (`Nat.zero` is `0`, `Nat.pow 0 0` is `1`), and numerals unfold through the
+      -- registered `nat.zero` and `nat.succ`: it depends on them like a literal does
+      let lit := lit || g.builtins.any fun (k, m) => m == c && k.startsWith "nat."
       todo := cs ++ (if lit then numeral else []) ++ todo
   return out.toList
 where

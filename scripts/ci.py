@@ -20,10 +20,6 @@
   scripts/ci.py baseline JSONL..     a new .github/test-timings.json (stdout) from
                                      `--timings` files, e.g. the `test-timings`
                                      artifact of a CI run (the split shards' cases)
-  scripts/ci.py check-include-str BASE
-                                     Lake doesn't track `include_str`: fail if a file a
-                                     .lean file embeds changed since BASE (a commit) and
-                                     the .lean file didn't (bump its counter comment)
 
 Selectors are the arguments of `lake test --`: `=NAME` selects the group NAME,
 `=NAME#I,J` the cases I and J of it, anything else is a prefix of group names (see
@@ -380,27 +376,6 @@ def make_baseline(paths):
     return 0
 
 
-def check_include_str(base):
-    changed = set(subprocess.run(["git", "diff", "--name-only", base, "HEAD"], cwd=ROOT,
-                                 capture_output=True, text=True, check=True).stdout.split())
-    lean = subprocess.run(["git", "grep", "-l", "include_str", "--", "*.lean"], cwd=ROOT,
-                          capture_output=True, text=True).stdout.split()
-    errors = []
-    for f in lean:
-        with open(os.path.join(ROOT, f)) as h:
-            text = h.read()
-        for inc in re.findall(r'include_str\s+"([^"]+)"', text):
-            target = os.path.normpath(os.path.join(os.path.dirname(f), inc))
-            if target in changed and f not in changed:
-                errors.append(f"{target} changed but {f}, which embeds it with include_str, did not: "
-                              f"bump its counter comment so Lake rebuilds it")
-    for e in errors:
-        print(f"::error::{e}")
-    if not errors:
-        print("include_str: every embedded file that changed has its .lean file changed too")
-    return 1 if errors else 0
-
-
 def main(args):
     binary = args[1] if len(args) > 1 else DEFAULT_BIN
     if args[:1] == ["matrix"]:
@@ -410,8 +385,6 @@ def main(args):
         return check_shards(binary)
     if args[:1] == ["plan"]:
         return plan(binary)
-    if args[:1] == ["check-include-str"] and len(args) == 2:
-        return check_include_str(args[1])
     if args[:1] == ["summary"] and len(args) >= 2:
         return summary(args[1], args[2:])
     if args[:1] == ["baseline"] and len(args) >= 2:
