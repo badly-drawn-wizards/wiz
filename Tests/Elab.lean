@@ -2364,6 +2364,11 @@ term accepted? `T2` is `True → True`, a proposition. -/
 def markerSamples : List (MTm × Bool) :=
   let T2 := pi ptrue ptrue
   let z : MLvl := .num 0
+  -- `refl #0 : #0 = #0` at `Enum 2`, its type, a `transp` proving `True`, and a Σ with a proof field
+  let rE := refl (enum 2) (tag 2 0)
+  let TE := eq (enum 2) (tag 2 0) (tag 2 0)
+  let tr (p e : MTm) := transp (enum 2) (tag 2 0) (lam (lam ptrue)) p (tag 2 0) e
+  let SP := sorted 1 (sigma (enum 2) ptrue)
   [ -- a λ at a proposition must be marked
     (ann (lam (var 0)) T2, false),
     (ann (prf z (lam (var 0))) T2, true),
@@ -2382,6 +2387,34 @@ def markerSamples : List (MTm × Bool) :=
     (ann (pair (tag 2 0) star) (sigma (enum 2) ptrue), true),
     -- a marker inside a marked proof is allowed
     (ann (prf z (lam (prf z (var 0)))) T2, true),
+    -- The stuck proof formers need no marker, in any position: evaluating one evaluates
+    -- its relevant parts and gives a neutral. `refl`:
+    (ann rE TE, true),
+    (letE TE rE (univ 0), true),
+    (ann (pair (tag 2 0) rE) (sigma (enum 2) TE), true),
+    (app (ann (lam (tag 2 0)) (pi TE (enum 2))) rE, true),
+    (ann (lam (exfalso (enum 2) (var 0))) (pi pfalse (enum 2)), true),
+    -- `reflTy`:
+    (ann (reflTy (enum 2)) (eqTy (enum 2) (enum 2)), true),
+    (letE (eqTy (enum 2) (enum 2)) (reflTy (enum 2)) (univ 0), true),
+    (ann (pair (tag 2 0) (reflTy (enum 2))) (sigma (enum 2) (eqTy (enum 2) (enum 2))), true),
+    -- `transp` (its motive is a family of propositions, a relevant term; its base and its
+    -- equation are never evaluated, so they may be any proof, unmarked):
+    (ann (tr star rE) ptrue, true),
+    (letE ptrue (tr star rE) (univ 0), true),
+    (ann (pair (tag 2 0) (tr star rE)) (sigma (enum 2) ptrue), true),
+    (app (ann (lam (tag 2 0)) (pi ptrue (enum 2))) (tr star rE), true),
+    (letE ptrue (tr (letE ptrue star (var 0)) (letE TE rE (var 0))) (univ 0), true),
+    -- under `absurd`: a `transp` that proves `False` from a hypothesis
+    (ann (lam (exfalso (enum 2) (transp (enum 2) (tag 2 0) (lam (lam pfalse)) (var 0) (tag 2 0) rE))) (pi pfalse (enum 2)), true),
+    -- but the relevant parts of a `refl` are checked like any term: a proof in them that is
+    -- not neutral-shaped needs its marker
+    (ann (refl SP (pair (tag 2 0) (letE ptrue star (var 0)))) (eq SP (pair (tag 2 0) star) (pair (tag 2 0) star)), false),
+    (ann (refl SP (pair (tag 2 0) (prf z (letE ptrue star (var 0))))) (eq SP (pair (tag 2 0) star) (pair (tag 2 0) star)), true),
+    -- a `refl` whose term holds a proof variable, which a marked proof is then substituted for
+    (app (ann (lam (pair (tag 2 0) (refl SP (pair (tag 2 0) (var 0)))))
+        (pi ptrue (sigma (enum 2) (eq SP (pair (tag 2 0) (var 1)) (pair (tag 2 0) (var 1))))))
+      (prf z (letE ptrue star (var 0))), true),
     -- `absurd` on a proof that is not neutral-shaped: marked
     (ann (lam (exfalso (enum 2) (letE pfalse (var 0) (var 0)))) (pi pfalse (enum 2)), false),
     (ann (lam (exfalso (enum 2) (prf z (letE pfalse (var 0) (var 0))))) (pi pfalse (enum 2)), true),
@@ -3041,7 +3074,27 @@ def selfHostGroup : Group where
         let calls := samples.map fun (t, _) => s!"(okVerdict {t.toWiz})"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ okV ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n")
-          ("\n".intercalate (samples.map fun (_, ok) => show' ok) ++ "\n") },
+          ("\n".intercalate (samples.map fun (_, ok) => show' ok) ++ "\n")
+        -- Marking on demand (`withMarksOnDemand`): a declaration the kernel finds unmarked is
+        -- marked and checked again, and what is stored (and cached) is the marked term
+        let g0 : Globals ZeroOneMany := {}
+        let T2 : Term ZeroOneMany := (MTm.pi .ptrue .ptrue).toTerm
+        let pairTy : Term ZeroOneMany := (MTm.sorted 1 (.sigma (.enum 2) (.pi .ptrue .ptrue))).toTerm
+        let d : Decl ZeroOneMany := { name := "d", type := pairTy, value := some (.pair (.tag ["a", "b"] 0) (.lam "x" (.var 0))) }
+        match addDeclSorted g0 d with
+        | .error e => throw (IO.userError s!"marking on demand failed: {e}")
+        | .ok g => match (g.find? "d").bind (·.value) with
+          | some (.pair _ (.prf ..)) => pure ()
+          | v => throw (IO.userError s!"the stored value is not the marked one: {repr v}")
+        -- a theorem is marked at once
+        match addDeclSorted g0 { name := "t", type := T2, value := some (.lam "x" (.var 0)) } with
+        | .ok g => unless ((g.find? "t").bind (·.value)) matches some (.prf ..) do throw (IO.userError "the theorem is stored unmarked")
+        | .error e => throw (IO.userError s!"{e}")
+        -- and when the marked term fails, the error is the second check's (not "unmarked proof")
+        match addDeclSorted g0 { name := "e", type := pairTy, value := some (.pair (.lam "x" (.var 0)) (.lam "x" (.var 0))) } with
+        | .ok _ => throw (IO.userError "an ill-typed declaration was accepted")
+        | .error (.unmarkedProof ..) => throw (IO.userError "the error of the first check was reported")
+        | .error _ => pure () },
     { name := "P2 (R1): a level-generic term is marked at its level, and is a suspended proof at the instance 0 (both kernels)", run := fun _ => do
         -- k.{u} (A : Sort u) (a : A) : A := (fun x => x : A → A) a
         let ty : MTm := .pi (.sortParam "u") (.pi (.var 0) (.var 1))

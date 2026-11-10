@@ -111,10 +111,36 @@ structure CommandState (R : Type) where
   messages and the info tree) -/
   pristine : Bool := true
 
+/-- Run a kernel entry on a declaration, with the proof markers the kernel requires
+(`Mark`) **when it asks for them**. The marking pass is a typed traversal of the whole
+term, about as much work as the kernel's own check, and most declarations of a program
+need no marker (their proofs, if any, are variables and `()`). So:
+
+* a declaration whose own type may be a proposition and whose body is not neutral-shaped
+  (a theorem) is marked at once: the kernel would refuse it at the first step;
+* any other declaration goes to the kernel as it is, and is marked and checked again
+  only if the kernel answers "unmarked proof".
+
+Either way the kernel has accepted exactly the term that is stored. -/
+def withMarksOnDemand (g : Globals R) (d : Decl R) (body : Decl R → Option (Term R))
+    (k : Decl R → TCM (Globals R)) : TCM (Globals R) :=
+  let theorem' : Bool := match body d with
+    | some v => !v.neutralShaped &&
+      (match ({ globals := g } : Ctx R).sortOf? (eval g [] d.type) with
+       | some s => !s.isNeverZero
+       | none => true)
+    | none => false
+  if theorem' then k (d.withMarks g) else
+  match k d with
+  | .error (.unmarkedProof t ty l) =>
+    let go := fun (_ : Unit) => k (d.withMarks g)
+    if g.traceProofSteps then dbgTrace s!"marks-on-demand {d.name}: {(t.take 80).replace "\n" " "} : {(ty.take 60).replace "\n" " "} in Sort {l}" go else go ()
+  | r => r
+
 /-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and
-the proof markers the kernel requires (`Mark`). -/
+the proof markers the kernel requires (`withMarksOnDemand`). -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) :=
-  addDecl g ((d.withSorts g).withMarks g)
+  withMarksOnDemand g (d.withSorts g) (·.value) (addDecl g)
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
@@ -859,7 +885,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             report .error (d.getArg 1).info s!"partial definition {name}: no witness found for its type {ty.pretty}; give one with `partial (default := w) def {name} …` (the kernel takes {name} only if its type is inhabited)"
             return
           | .error e => report .error e.info e.msg; return
-        match addPartialDecl g ((Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }).withMarks g) with
+        match withMarksOnDemand g (Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }) (·.witness) (addPartialDecl g) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
@@ -877,9 +903,15 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | (.ok v, hv) =>
         addInfos hv
         let v := match g.find? name with
-          | some d => Mark.check { globals := g } (Sorts.value g #[] [] v (eval g [] d.type)) (eval g [] d.type)
+          | some d => Sorts.value g #[] [] v (eval g [] d.type)
           | none => v
-        match addPartialImpl g name v with
+        -- (the proof markers, if the kernel asks for them: `withMarksOnDemand`)
+        let r := match addPartialImpl g name v with
+          | .error (.unmarkedProof ..) => match g.find? name with
+            | some d => addPartialImpl g name (Mark.check { globals := g } v (eval g [] d.type))
+            | none => addPartialImpl g name v
+          | r => r
+        match r with
         | .ok g' => g := g'
         | .error e => report .error d.info s!"kernel rejected {name}: {e}"; return
       | (.error e, hv) => addInfos hv; reportErr e; return

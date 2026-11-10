@@ -2391,6 +2391,11 @@ def neutralShaped : Tm → Bool
   | .down _ => .true
   | .ann _ _ => .true
   | .prf _ _ => .true
+  -- (the proofs that are stuck heads: evaluating one evaluates its relevant parts and
+  -- gives a neutral, with no step inside a proof)
+  | .eqRefl _ _ => .true
+  | .tyRefl _ => .true
+  | .subst _ _ _ _ _ _ => .true
   | _ => .false
 -- the requirement on `t`, found at the type `ty`: `.none`, or the error
 def requireMarker (c : TCtx) (t : Tm) (ty : Val) : Option String := match TCtx.pm c with
@@ -3271,3 +3276,27 @@ def markInferW : TCtx → Tm → MR
 end
 -- a closed term with its proof markers, at the type `ty` (a term)
 def markClosed (v ty : Tm) : Tm := markCheck empty v (eval .nil ty)
+-- Check a closed term `v` at the type `ty` (a term), **marking it only when the kernel
+-- asks**: the marking pass is about as much work as the kernel's own check, and most
+-- definitions of a program need no marker. The term goes to the kernel as it is; if the
+-- answer is "unmarked proof", it is marked and checked again. `.good v'`: the term the
+-- kernel accepted.
+inductive Checked where
+  | good (v : Tm)
+  | bad (m : String)
+def kCharsPrefix : List Char → List Char → Bool
+  | .nil, _ => .true
+  | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (kCharsPrefix as bs)
+  | _, _ => .false
+def isUnmarkedErr (m : String) : Bool := match "unmarked proof" with
+  | .mk x => match m with
+    | .mk y => kCharsPrefix x y
+def checkMarking (v ty : Tm) : Checked := match check empty v (eval .nil ty) with
+  | .ok _ _ => .good v
+  | .err m => match isUnmarkedErr m with
+    | .false => .bad m
+    | .true =>
+      let v' := markClosed v ty;
+      match check empty v' (eval .nil ty) with
+      | .ok _ _ => .good v'
+      | .err m' => .bad m'

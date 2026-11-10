@@ -169,6 +169,10 @@ inductive TypeError where
   | cannotInfer (term : String)
   | quantityMismatch (var : Name) (declared used : String)
   | duplicateDecl (name : Name)
+  /-- (P2) a term whose sort may be `0` is neither marked nor neutral-shaped. Its own
+  case, so that the elaborator can tell "this term needs its markers" from a type error
+  (`addDeclMarked`). -/
+  | unmarkedProof (term type sort : String)
   | other (msg : String)
   deriving Repr, BEq, Inhabited
 
@@ -181,6 +185,7 @@ instance : ToString TypeError where
     | .cannotInfer t => s!"cannot infer a type for {t}; add an annotation"
     | .quantityMismatch x d u => s!"variable {x} declared with quantity {d} but used {u}"
     | .duplicateDecl n => s!"duplicate declaration: {n}"
+    | .unmarkedProof t ty l => s!"unmarked proof: {t}\n  has type {ty}, in Sort {l}; the kernel does not evaluate proofs, so it must be marked (prf)"
     | .other m => m
 
 abbrev TCM := Except TypeError
@@ -349,10 +354,10 @@ suspends by itself). In relevant mode a term whose type is in a sort that may be
 * **marked**, `prf.{l} t`, with `l` the sort: the evaluator suspends it without looking at
   `t` when `l` is `0` (for a parameter: at the instances where it is `0`); or
 * **neutral-shaped**: a variable, a constant or `()`, under applications, projections,
-  `down` and type ascriptions.
+  `down` and type ascriptions; or one of the stuck proofs `refl`, `reflTy`, `transp`.
 
-Anything else there (a `fun`, a pair, a `let`, `refl`, a cast, `absurd`, a case analysis,
-…) is rejected. Then every value the evaluator builds at a proposition is a neutral,
+Anything else there (a `fun`, a pair, a `let`, a cast, `absurd`, a case analysis, …) is
+rejected. Then every value the evaluator builds at a proposition is a neutral,
 `()`, or a glued constant that unfolds to one: a variable of proposition type is only
 ever bound to the value of a term that was checked here, and applying or projecting such
 a value only grows a spine. So the kernel never performs a β, projection or ι step inside
@@ -360,9 +365,15 @@ a proof (`wiz-notes/prf-marker.md` §3). With `Globals.strictProofs`, only `prf 
 accepted. With `--eager-proofs` (no `lazyProofs`) nothing is required. -/
 
 /-- The formers that need no marker at a proposition: evaluating them at a proposition
-only looks a value up or grows a spine (their subterms are checked in turn). -/
+only looks a value up or grows a spine (their subterms are checked in turn). And the
+proofs that are stuck heads, `refl`, `reflTy` and `transp`: evaluating one evaluates its
+relevant parts (the type and the term of a `refl`; `transp`'s two proofs are suspended)
+and gives a neutral, with no step inside a proof. (Without these, nearly every
+definition that builds a value of an indexed family needed the marking pass, for the
+`refl` that proves its index equation.) -/
 def Term.neutralShaped : Term R → Bool
   | .var _ | .const .. | .tt | .app .. | .fst _ | .snd _ | .down _ | .ann .. | .prf .. => true
+  | .refl .. | .reflTy _ | .transp .. => true
   | _ => false
 
 /-- The sort of a type (`typeSort?`), read off the head for the common formers without
@@ -394,7 +405,7 @@ def Ctx.requireMarker (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM Unit := do
   if ctx.wantsMarker t then
     let l ← ctx.sortOf ty
     unless l.isNeverZero do
-      throw (.other s!"unmarked proof: {ctx.showTerm t}\n  has type {ctx.showVal ty}, in Sort {l.format}; the kernel does not evaluate proofs, so it must be marked (prf)")
+      throw (.unmarkedProof (ctx.showTerm t) (ctx.showVal ty) l.format)
 
 /-- A marker `prf.{l}` at the type `ty`: `l` must be the sort of `ty`. Returns the context
 for the marked term: proof mode when `l` is `0`; otherwise the same mode, with the marked

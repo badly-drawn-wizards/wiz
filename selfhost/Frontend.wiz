@@ -2764,10 +2764,10 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
                     match compileM gs mc ES.empty cxP (eval (TCtx.env (Cx.c cxP)) R) cols useInd .nil cls with
                     | .err m => errStep gs m
                     | .ok t _ =>
-                      let fn := markClosed (tLams n t) tyT;
-                      match check empty fn (eval .nil tyT) with
-                      | .err m => errStep gs m
-                      | .ok _ _ => .mk (String.append f (String.append " : " (show .nil 0 tyT)))
+                      -- (with its proof markers, if the kernel asks for them)
+                      match checkMarking (tLams n t) tyT with
+                      | .bad m => errStep gs m
+                      | .good fn => .mk (String.append f (String.append " : " (show .nil 0 tyT)))
                           (Globals.add gs (.mk f tyT fn (inlineTm gs fn) (paramMask (kids (kid stx 3)))))
     | _ => errStep gs "a definition needs a type"
   | _ => errStep gs "a definition needs a name"
@@ -2792,11 +2792,10 @@ def command (gs : Globals) (stx : Syntax) : Step :=
             | .some v0z => match inferUniv empty tyT with
               | .err m => errStep gs m
               | .ok _ _ =>
-                -- (P2) the proof markers the kernel requires
-                let v := markClosed v0z tyT;
-                match check empty v (eval .nil tyT) with
-                | .err m => errStep gs m
-                | .ok _ _ => .mk (String.append x (String.append " : " (show .nil 0 tyT)))
+                -- (P2) with the proof markers the kernel requires, if it asks for them
+                match checkMarking v0z tyT with
+                | .bad m => errStep gs m
+                | .good v => .mk (String.append x (String.append " : " (show .nil 0 tyT)))
                     (Globals.add gs (.mk x tyT v (inlineTm gs v) (paramMask (kids (kid stx 3)))))
       | _ => errStep gs "a definition needs a type"
     | _ => errStep gs "a definition needs a name"
