@@ -52,6 +52,56 @@ def tupleTm (as : List (Term R)) : Term R := as.foldr .pair .tt
 
 def lamsTm (xs : List Name) (b : Term R) : Term R := xs.foldr .lam b
 
+/-- `(a₁, (a₂, …, tail))`: an index or structure tuple ending in `tail` (`()`, or the
+phantom tail's `fun _ => ()`). -/
+def tupleWith (tail : Term R) (as : List (Term R)) : Term R := as.foldr .pair tail
+
+/-- **Phantom parameters.** Types are structural, so a parameter that nothing in the type
+mentions would be forgotten: `UIntN 8` and `UIntN 16` would be one type, and `w` could
+not be inferred. For each such parameter `p : P` the type's final `Unit` (of an index
+type, or of a structure's Σ) becomes `(0 phantom✝ : D) → Unit`, where
+
+* `D := p` if `p` is a type (`P` is a `Sort`), and
+* `D := (0 x : P) × (x = p)` otherwise: a type (not a proposition, which would compare by
+  equivalence and so forget `p` again) with one inhabitant, mentioning `p`.
+
+The function type has one inhabitant up to η, `fun _ => ()`, so the tail is still a
+singleton: constructors fill it in, nothing reads it, and erasure drops it (`erasable`),
+so the runtime representation doesn't change. But conversion compares `D`, so `p` now
+counts, and unification can solve it. Proof parameters (`p : P` with `P` a proposition)
+and sizes or quantities get no phantom; neither does a parameter whose `D` lives above
+the type's universe `lvl` (the tail would raise it).
+
+Given `used k` (whether the parameter `var k` of the context `Δ` is mentioned), returns
+the tail type and its value in `Δ`, and the names of the phantom parameters. -/
+def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R × Term R))
+    (used : Nat → Bool) (lvl : Level) : ElabM R (Term R × Term R × List Name) := do
+  let g ← getGlobals
+  let nΔ := Δ.size
+  let tys := ctxΔ.types.reverse.toArray
+  let mut doms : Array (Term R) := #[]
+  let mut names : List Name := []
+  for (x, _, _, A) in Δ, j in [0:nΔ] do
+    let k := nΔ - 1 - j
+    if used k then continue
+    let P := A.lift (nΔ - j)
+    let p : Term R := .var k
+    let vP ← force (← evalIn ctxΔ P)
+    let D? : Option (Term R) := match vP with
+      | .sort _ => some p
+      | .qty | .size | .sizeLt _ => none
+      | _ => if isProp g tys vP then none
+        else some (.sigma "x" (.qlit 0) P (.eq (P.lift 1) (.var 0) (p.lift 1)) none)
+    let some D := D? | continue
+    let some u := typeSort? g tys (← evalIn ctxΔ D) | continue
+    unless u.le lvl do continue
+    doms := doms.push D
+    names := names ++ [x]
+  let ty := (doms.toList.zipIdx).foldr (fun (D, i) acc => .pi phantomName .default (.qlit 0) (D.lift i) acc none)
+    (Term.unit lvl : Term R)
+  let val := doms.foldr (fun _ acc => .lam phantomName acc) (Term.tt : Term R)
+  pure (ty, val, names)
+
 /-- `T`'s arguments at a position where `T` is `var k`: the first `nΔ` must be the
 parameters themselves (`var (k + nΔ - j)` for the `j`-th); returns the rest. -/
 def paramArgs? (nΔ k : Nat) (args : List (Term R)) : Option (List (Term R)) :=
@@ -80,9 +130,11 @@ Build the description from the end:
 * Finally remove `T` itself (`strengthen? 0`). If it still occurs, it was used in a
   non-recursive position: error.
 
-The result lives in the parameter context `Δ`. -/
-def ctorDesc (nΔ : Nat) (fields : List (Name × Term R × Term R)) (target : List (Term R)) :
-    Except String (Term R) := do
+The result lives in the parameter context `Δ`. Index tuples end in `tail` (a term in
+`Δ`: `()`, or the phantom tail's value, see `phantomTail`) instead of `()`: lift it to
+the context it is used in. -/
+def ctorDesc (nΔ : Nat) (fields : List (Name × Term R × Term R)) (target : List (Term R))
+    (tail : Term R := .tt) : Except String (Term R) := do
   sorry
 
 /-- Peel a type signature `(ξ₁ : X₁) → … → Type l` into indices and `l`. -/
@@ -157,6 +209,13 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     names := names ++ [cname]
     descs := descs ++ [D]
     ctorInfo := ctorInfo ++ [(cname, fs'.toList, js)]
+  -- phantom parameters: those that neither a constructor nor an index type mentions
+  let (tailTy, tailV, _) ← phantomTail ctxΔ Δ (fun k => descs.any (·.hasVar k) || I.hasVar k) (.succ l)
+  let I : Term R := Ξ.foldr (fun (x, _, q, X) acc => .sigma x q X acc none) (tailTy.lift nΞ)
+  if !(tailV matches .tt) then
+    descs ← ctorInfo.mapM fun (cname, fs, js) => match ctorDesc nΔ (fs.map fun (x, _, q, A) => (x, q, A)) js tailV with
+      | .ok D => pure D
+      | .error e => fail cmd s!"constructor {cname}: {e}"
   -- the whole description: a tag, then the constructor's description
   let w : Term R := .qlit QuantitySyntax.explicitDefault
   let desc : Term R := .darg w (.enum names)
@@ -172,7 +231,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let Δvars := telescopeVars nΔ nΞ
   let ξvars := telescopeVars nΞ 0
   let muTm : Term R := .mu l (I.lift nΞ) ((Δvars.foldl .app (.const descName us)))
-    (tupleTm ξvars) .szInf (some (T, us, Δvars ++ ξvars))
+    (tupleWith (tailV.lift nΞ) ξvars) .szInf (some (T, us, Δvars ++ ξvars))
   let typeDecl : Decl R :=
     { name := T, levelParams := levelParams,
       type := pisTm ΔBinders sig, value := some (lamsTm (ΔNames ++ ξNames) muTm) }
@@ -189,7 +248,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
       | fail cmd s!"constructor {cname}: its indices may not mention {T}"
     let fieldVars := telescopeVars n 0
     let payload := Term.pair (.tag names tagIx)
-      (fieldVars.foldr .pair (.pair (.refl (I.lift n) (tupleTm js')) .tt))
+      (fieldVars.foldr .pair (.pair (.refl (I.lift n) (tupleWith (tailV.lift n) js')) .tt))
     let d : Decl R :=
       { name := T ++ "." ++ cname, levelParams := levelParams,
         type := pisTm implicitΔ (pisTm fsTy resTy),
@@ -229,13 +288,18 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
   let D ← match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) [] with
     | .ok D => pure D
     | .error e => throwAt cmd.info e
-  let I : Term R := .unit (.succ l)
+  -- phantom parameters (see `phantomTail`): the index type is the tail
+  let (I, tailV, _) ← phantomTail ctxΔ Δ (fun k => D.hasVar k) (.succ l)
+  let D ← if tailV matches .tt then pure D else
+    match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) [] tailV with
+    | .ok D => pure D
+    | .error e => throwAt cmd.info e
   let ΔNames := Δ.toList.map (·.1)
   let descDecl : Decl R :=
     { name := T ++ ".desc", levelParams := levelParams,
       type := pisTm Δ.toList (.desc l I), value := some (lamsTm ΔNames D) }
   let Δvars := telescopeVars nΔ 0
-  let nuTm : Term R := .nu l I (Δvars.foldl .app (.const (T ++ ".desc") us)) .tt .szInf (some (T, us, Δvars))
+  let nuTm : Term R := .nu l I (Δvars.foldl .app (.const (T ++ ".desc") us)) tailV .szInf (some (T, us, Δvars))
   let typeDecl : Decl R :=
     { name := T, levelParams := levelParams, type := pisTm Δ.toList sig, value := some (lamsTm ΔNames nuTm) }
   -- observations: T.f : {Δ} → T Δ → F, with F not depending on earlier fields
@@ -271,7 +335,8 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     let w : Term R := .qlit QuantitySyntax.explicitDefault
     let fsTy := fieldTys.zipIdx.map fun ((x, F), k) => (x, BinderInfo.default, w, F.lift k)
     let resTy := ((telescopeVars nΔ 0).foldl Term.app (Term.const T us)).lift n
-    let payload : Term R := (telescopeVars n 0).foldr .pair (.pair .tt .tt)
+    let e : Term R := if tailV matches .tt then .tt else .refl (I.lift n) tailV
+    let payload : Term R := (telescopeVars n 0).foldr .pair (.pair e .tt)
     let mk : Decl R :=
       { name := T ++ ".mk", levelParams := levelParams,
         type := pisTm implicitΔ (pisTm fsTy resTy),
@@ -318,6 +383,9 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     | .ok _ => throwAt (cmd.getArg 4).info "a structure has no indices"
     | .error e => throwAt (cmd.getArg 4).info e
   let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc none) (.unit (.succ l))
+  -- phantom parameters (see `phantomTail`): the final `Unit` becomes the phantom tail
+  let (tailTy, tailV, _) ← phantomTail ctxΔ Δ (fun k => body.hasVar k) (.succ l)
+  let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc none) (tailTy.lift fs'.size)
   let ΔNames := Δ.toList.map (·.1)
   let n := fs'.size
   let Sapp : Term R := (telescopeVars Δ.size n).foldl .app (.const S us)
@@ -327,7 +395,7 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
       value := some (lamsTm ΔNames body) }
   let mkDecl : Decl R :=
     { name := S ++ ".mk", levelParams := levelParams, type := pisTm implicitΔ (pisTm fs'.toList Sapp),
-      value := some (lamsTm ΔNames (lamsTm (fs'.toList.map (·.1)) (tupleTm (telescopeVars n 0)))), inline := true }
+      value := some (lamsTm ΔNames (lamsTm (fs'.toList.map (·.1)) (tupleWith tailV (telescopeVars n 0)))), inline := true }
   pure [sDecl, mkDecl]
 
 end Wiz.Elab
