@@ -2083,7 +2083,9 @@ def selfhostChecker : IO (Except String System.FilePath) := do
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "checker"
+  note "uses checker"
   if ← exe.pathExists then return .ok exe
+  let start ← IO.monoMsNow
   IO.FS.createDirAll dir
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
@@ -2100,7 +2102,10 @@ def selfhostChecker : IO (Except String System.FilePath) := do
     let tmp := dir / s!"checker-{← IO.monoNanosNow}"
     match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
-    | .ok () => IO.FS.rename tmp exe; return .ok exe
+    | .ok () =>
+      IO.FS.rename tmp exe
+      note s!"built checker {showMs ((← IO.monoMsNow) - start)}"
+      return .ok exe
 
 /-- The self-hosted compiler (stage 21): the frontend and `Backend.wiz`, printing the C
 program for `input.wiz` (the frontend's own output as comments). -/
@@ -2110,7 +2115,9 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "compiler"
+  note "uses compiler"
   if ← exe.pathExists then return .ok exe
+  let start ← IO.monoMsNow
   IO.FS.createDirAll dir
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
@@ -2126,7 +2133,10 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
     let tmp := dir / s!"compiler-{← IO.monoNanosNow}"
     match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
-    | .ok () => IO.FS.rename tmp exe; return .ok exe
+    | .ok () =>
+      IO.FS.rename tmp exe
+      note s!"built compiler {showMs ((← IO.monoMsNow) - start)}"
+      return .ok exe
 
 /-- A program for the self-hosted backend (recursion, lists, arrays, maps, strings, mutual
 types), printing `6765 5050 1989 2 yes, ünïcode 2 5`. -/

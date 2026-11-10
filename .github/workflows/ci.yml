@@ -95,20 +95,21 @@ jobs:
           fi
           lake build wiz grail tests
           du -sh .lake .lake/cache 2>/dev/null || true
-      - name: Every test group is in exactly one shard
+      - name: Every test case is in exactly one shard
         run: python3 scripts/ci.py check-shards
       - name: Shards
         id: shards
         run: |
+          # a shard with "split" becomes several, balanced by .github/test-timings.json
           echo "matrix=$(python3 scripts/ci.py matrix)" >> "$GITHUB_OUTPUT"
-          python3 scripts/ci.py matrix
+          python3 scripts/ci.py plan
 
   test:
     name: test (${{ matrix.shard.name }})
     needs: build
     if: needs.build.outputs.tree == 'solutions'
     runs-on: ubuntu-latest
-    timeout-minutes: 90 # the selfhost shard takes ~45 min and grows with each selfhost test
+    timeout-minutes: 90 # the selfhost group is split into parts (test-shards.json) to keep each one short
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
@@ -149,7 +150,9 @@ jobs:
           mkdir -p logs ~/.cache/wiz
           du -sh ~/.cache/wiz .grail /tmp/wiz-selfhost-* 2>/dev/null || true
           echo "lake test -- --cache ~/.cache/wiz ${sel[*]}"
-          lake test -- --cache "$HOME/.cache/wiz" "${sel[@]}" 2>&1 | tee "logs/${{ matrix.shard.name }}.log"
+          # every case's time, as JSON lines (scripts/ci.py summary and baseline read them)
+          lake test -- --cache "$HOME/.cache/wiz" --timings "logs/${{ matrix.shard.name }}.jsonl" \
+            --shard "${{ matrix.shard.name }}" "${sel[@]}" 2>&1 | tee "logs/${{ matrix.shard.name }}.log"
       - name: Save the Wiz build caches
         if: always() && steps.wiz-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -163,7 +166,8 @@ jobs:
         if: always()
         run: |
           [ -f "logs/${{ matrix.shard.name }}.log" ] || exit 0
-          python3 scripts/ci.py summary "shard ${{ matrix.shard.name }}" "logs/${{ matrix.shard.name }}.log" >> "$GITHUB_STEP_SUMMARY"
+          shopt -s nullglob
+          python3 scripts/ci.py summary "shard ${{ matrix.shard.name }}" logs/${{ matrix.shard.name }}.log logs/${{ matrix.shard.name }}.jsonl >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -224,8 +228,16 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          logs=(logs/*.log)
+          logs=(logs/*.log logs/*.jsonl)
           python3 scripts/ci.py summary "Wiz test suite (${{ needs.build.outputs.tree }} tree)" "${logs[@]}" >> "$GITHUB_STEP_SUMMARY"
+          # all shards' case times in one file, for `scripts/ci.py baseline`
+          mkdir -p timings
+          cat logs/*.jsonl > timings/timings.jsonl 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-timings
+          path: timings/timings.jsonl
+          if-no-files-found: ignore
       - name: Verdict
         shell: bash
         run: |

@@ -7,8 +7,18 @@ lake build          # the library and the `wiz` executable
 lake test           # all exercise tests; every case runs in its own process
 lake test -- conv   # only the groups whose name starts with "conv"
 lake test -- =c     # only the group named exactly "c"
-lake test -- --list # the group names
+lake test -- '=selfhost#0,3'          # only cases 0 and 3 of the group "selfhost"
+lake test -- --list                   # the group names
+lake test -- --list-cases =selfhost   # the selected cases: GROUP<tab>INDEX<tab>NAME
+lake test -- --timings t.jsonl rig    # also append each case's time to t.jsonl
 ```
+
+Every case prints its wall time (`✓ name (12.345 s)`), and every group its total.
+`--timings FILE` (with `--shard NAME` as a label) appends one line of JSON per case:
+`shard`, `group`, `index`, `case`, `seconds`, `ok`, and `notes`, which say which shared
+programs the case used and built (`Tests.note`: `uses checker`, `built checker 331.2`;
+the self-hosted checker and compiler are built by the first case that needs them and
+kept under `/tmp`).
 
 An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)`.
 
@@ -29,9 +39,20 @@ cached between runs.
 * **The solution tree** (`solutions`; recognised by its `--<sol` markers) runs the full
   suite in parallel shards, one job per entry of `.github/test-shards.json` (each entry
   is a list of `lake test` selectors). The build job checks that every group of
-  `Tests/Main.lean` is in exactly one shard (`scripts/ci.py check-shards`), so **a new
-  test group must be added to `.github/test-shards.json`**. Each shard prints a pass/fail
-  table in its job summary, and the `CI result` job sums them up for the whole suite.
+  `Tests/Main.lean` is in exactly one shard (`scripts/ci.py check-shards`, which checks
+  every case after splitting), so **a new test group must be added to
+  `.github/test-shards.json`**. Each shard's job summary has a table of every case's time
+  (three decimals), group subtotals and the shard's total; the `CI result` job sums the
+  shards up (a table of shard totals and the grand total, and the 15 slowest cases) and
+  uploads every case's time as the `test-timings` artifact.
+* **Split shards.** A shard with `"split": N` runs as N jobs `NAME-1` … `NAME-N`, each a
+  list of `=GROUP#I,J,…` selectors. `scripts/ci.py` balances the parts with the case
+  times in `.github/test-timings.json`: a part pays once for each shared program its
+  cases use (the self-hosted checker or compiler, which the part's first case that needs
+  it builds), so parts that don't need the checker don't build it. Unknown cases (new
+  ones) count as their group's median. `scripts/ci.py plan` shows the parts and their
+  estimates. To refresh the baseline from a CI run:
+  `gh run download RUN -n test-timings && scripts/ci.py baseline timings.jsonl > .github/test-timings.json`.
 * **The exercise tree** (`master`) checks that everything builds and that the test driver
   runs to its summary line; the failures are the exercises.
 * **The bootstrap fixpoint** (`scripts/fixpoint.sh`: the stage-1 C of the toolchain

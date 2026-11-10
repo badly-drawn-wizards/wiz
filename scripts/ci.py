@@ -1,27 +1,42 @@
 #!/usr/bin/env python3
 """Helpers for .github/workflows/ci.yml.
 
-  scripts/ci.py matrix               the shards of .github/test-shards.json as a JSON
+  scripts/ci.py matrix [BIN]         the shards of .github/test-shards.json as a JSON
                                      matrix (one line, for $GITHUB_OUTPUT); each shard's
-                                     selectors are joined by newlines
-  scripts/ci.py check-shards [BIN]   check that every test group (BIN --list; default
-                                     .lake/build/bin/tests) is run by exactly one shard,
-                                     and that every selector of a shard selects something
-  scripts/ci.py summary TITLE LOG..  a Markdown summary of `lake test` logs (per-group
-                                     pass/fail counts and the failing cases), for
-                                     $GITHUB_STEP_SUMMARY
+                                     selectors are joined by newlines. A shard with
+                                     "split": N becomes N shards NAME-1 … NAME-N, its
+                                     cases balanced by .github/test-timings.json (needs
+                                     the test driver BIN; default .lake/build/bin/tests)
+  scripts/ci.py check-shards [BIN]   check that every test case is run by exactly one
+                                     shard (after splitting), and that every selector
+                                     of a shard selects something
+  scripts/ci.py plan [BIN]           the split shards' parts with their estimated times
+  scripts/ci.py summary TITLE FILE.. a Markdown summary for $GITHUB_STEP_SUMMARY of
+                                     `lake test` logs (*.log: pass/fail, failing cases)
+                                     and `--timings` files (*.jsonl: a table of every
+                                     case's time with group and shard totals; with
+                                     several shards, a table of the shards and the
+                                     slowest cases)
+  scripts/ci.py baseline JSONL..     a new .github/test-timings.json (stdout) from
+                                     `--timings` files, e.g. the `test-timings`
+                                     artifact of a CI run
   scripts/ci.py check-include-str BASE
                                      Lake doesn't track `include_str`: fail if a file a
                                      .lean file embeds changed since BASE (a commit) and
                                      the .lean file didn't (bump its counter comment)
 
-Selectors are the arguments of `lake test --`: `=NAME` selects the group NAME, anything
-else is a prefix of group names (see Tests/Main.lean).
+Selectors are the arguments of `lake test --`: `=NAME` selects the group NAME,
+`=NAME#I,J` the cases I and J of it, anything else is a prefix of group names (see
+Tests/Main.lean).
 """
 import json, os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHARDS = os.path.join(ROOT, ".github", "test-shards.json")
+TIMINGS = os.path.join(ROOT, ".github", "test-timings.json")
+DEFAULT_BIN = os.path.join(ROOT, ".lake/build/bin/tests")
+NOTE_USES = "uses "
+NOTE_BUILT = "built "
 
 
 def shards():
@@ -30,48 +45,162 @@ def shards():
 
 
 def selects(group, sel):
-    return group == sel[1:] if sel.startswith("=") else group.startswith(sel)
+    return group == sel[1:].split("#")[0] if sel.startswith("=") else group.startswith(sel)
 
 
-def matrix():
-    print(json.dumps({"shard": [{"name": s["name"], "select": "\n".join(s["select"])}
-                                for s in shards()]}, ensure_ascii=False))
+def list_cases(binary, sels):
+    """The cases that the selectors pick: [(group, index, name)]."""
+    out = subprocess.run([binary, "--list-cases", *sels], capture_output=True, text=True,
+                         check=True, cwd=ROOT).stdout
+    return [(g, int(i), n) for g, i, n in (l.split("\t", 2) for l in out.split("\n") if l)]
+
+
+def baseline():
+    """.github/test-timings.json: {"cases": {group: {case: {"seconds": S, "uses": [R]}}},
+    "builds": {R: S}}; a case's seconds leave out the builds it did."""
+    try:
+        with open(TIMINGS) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"cases": {}, "builds": {}}
+
+
+def estimate(cases, base):
+    """[(group, index, name, seconds, uses)]: unknown cases get their group's median."""
+    out = []
+    for g, i, n in cases:
+        known = base["cases"].get(g, {})
+        if n in known:
+            out.append((g, i, n, known[n]["seconds"], tuple(known[n].get("uses", []))))
+        else:
+            ts = sorted(c["seconds"] for c in known.values()) or [1.0]
+            out.append((g, i, n, ts[len(ts) // 2], ()))
+    return out
+
+
+def part_cost(items, builds):
+    uses = {r for it in items for r in it[4]}
+    return sum(it[3] for it in items) + sum(builds.get(r, 0.0) for r in uses)
+
+
+def partition(items, n, builds):
+    """Split the cases into n parts with the smallest longest part (estimated), where a
+    part pays once for each shared program its cases use (the self-hosted checker or
+    compiler: the first case that needs it builds it). Greedy, longest first, then
+    single moves while they help; deterministic."""
+    parts = [[] for _ in range(n)]
+    for it in sorted(items, key=lambda it: (-(it[3] + sum(builds.get(r, 0.0) for r in it[4])), it[0], it[1])):
+        def score(k):
+            trial = [p + [it] if j == k else p for j, p in enumerate(parts)]
+            return (max(part_cost(p, builds) for p in trial),
+                    part_cost(trial[k], builds) - part_cost(parts[k], builds), k)
+        parts[min(range(n), key=score)].append(it)
+    improved = True
+    while improved:
+        improved = False
+        span = max(part_cost(p, builds) for p in parts)
+        for a in sorted(range(n), key=lambda k: -part_cost(parts[k], builds)):
+            for it in list(parts[a]):
+                for b in range(n):
+                    if b == a:
+                        continue
+                    pa = [x for x in parts[a] if x is not it]
+                    pb = parts[b] + [it]
+                    rest = [part_cost(p, builds) for j, p in enumerate(parts) if j not in (a, b)]
+                    new = max([part_cost(pa, builds), part_cost(pb, builds)] + rest)
+                    if new < span - 1e-9:
+                        parts[a], parts[b] = pa, pb
+                        improved = True
+                        break
+                if improved:
+                    break
+            if improved:
+                break
+    return [sorted(p, key=lambda it: (it[0], it[1])) for p in parts]
+
+
+def part_selectors(items):
+    """The selectors of a part: `=GROUP#I,J,…` per group, in the groups' order."""
+    groups = []
+    for g, i, *_ in items:
+        if not groups or groups[-1][0] != g:
+            groups.append((g, []))
+        groups[-1][1].append(i)
+    return [f"={g}#{','.join(map(str, ixs))}" for g, ixs in groups]
+
+
+def expanded(binary, base=None):
+    """The shards with each split shard replaced by its parts: [(name, selectors,
+    estimated seconds or None)]."""
+    out = []
+    for s in shards():
+        n = s.get("split", 1)
+        if n <= 1:
+            out.append((s["name"], s["select"], None))
+            continue
+        base = base or baseline()
+        items = estimate(list_cases(binary, s["select"]), base)
+        for k, p in enumerate(partition(items, n, base["builds"]), 1):
+            if p:
+                out.append((f"{s['name']}-{k}", part_selectors(p), part_cost(p, base["builds"])))
+    return out
+
+
+def matrix(binary):
+    print(json.dumps({"shard": [{"name": n, "select": "\n".join(sel)}
+                                for n, sel, _ in expanded(binary)]}, ensure_ascii=False))
+
+
+def plan(binary):
+    base = baseline()
+    for name, sel, est in expanded(binary, base):
+        if est is None:
+            continue
+        cases = list_cases(binary, sel)
+        uses = sorted({r for *_, u in estimate(cases, base) for r in u})
+        print(f"{name}: {len(cases)} cases, ~{est:.0f} s estimated"
+              + (f" (builds {', '.join(uses)})" if uses else ""))
+        for g, i, n in cases:
+            print(f"    {g} #{i} {n}")
+    return 0
 
 
 def check_shards(binary):
     out = subprocess.run([binary, "--list"], capture_output=True, text=True, check=True).stdout
     groups = [g for g in out.split("\n") if g]
     errors = []
-    runs = {g: [] for g in groups}
     names = set()
     for s in shards():
         if s["name"] in names:
             errors.append(f"shard name {s['name']!r} is used twice")
         names.add(s["name"])
-        picked = set()   # a group selected twice within a shard still runs once
         for sel in s["select"]:
-            hit = [g for g in groups if selects(g, sel)]
-            if not hit:
+            if not any(selects(g, sel) for g in groups):
                 errors.append(f"shard {s['name']!r}: selector {sel!r} selects no group")
-            picked.update(hit)
-        for g in picked:
-            runs[g].append(s["name"])
-    for g, by in runs.items():
-        if not by:
-            errors.append(f"group {g!r} is in no shard: add it to .github/test-shards.json")
-        elif len(by) > 1:
-            errors.append(f"group {g!r} is run by several shards: {', '.join(by)}")
+    runs = {(g, i): [] for g, i, _ in list_cases(binary, [])}
+    parts = expanded(binary)
+    for name, sel, _ in parts:
+        for g, i, _ in set(list_cases(binary, sel)):  # a case selected twice within a shard still runs once
+            runs[(g, i)].append(name)
+    for g in groups:
+        missing = [i for (h, i), by in runs.items() if h == g and not by]
+        if missing:
+            errors.append(f"group {g!r}: {'all' if len(missing) == sum(1 for h, _ in runs if h == g) else len(missing)} "
+                          f"of its cases are in no shard: add it to .github/test-shards.json")
+    for (g, i), by in runs.items():
+        if len(by) > 1:
+            errors.append(f"case {g} #{i} is run by several shards: {', '.join(by)}")
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print(f"ok: {len(groups)} groups, each in exactly one of {len(names)} shards")
+    print(f"ok: {len(groups)} groups, {len(runs)} cases, each in exactly one of {len(parts)} shards")
     return 0
 
 
 GROUP = re.compile(r"^── (.*) \((.*)\)$")
-PASS = re.compile(r"^  ✓ (.*)$")
-FAIL = re.compile(r"^  ✗ (.*)$")
-TIME = re.compile(r"^  \((.*): (\d+) s\)$")
+PASS = re.compile(r"^  ✓ (.*?)(?: \([\d.]+ s\))?$")
+FAIL = re.compile(r"^  ✗ (.*?)(?: \([\d.]+ s\))?$")
+TIME = re.compile(r"^  \((.*): ([\d.]+) s(?:;.*)?\)$")
 TOTAL = re.compile(r"^(\d+) passed, (\d+) failed$")
 
 
@@ -100,7 +229,65 @@ def parse_log(path):
     return groups, total
 
 
-def summary(title, logs):
+def read_timings(paths):
+    """The records of `--timings` files, in order."""
+    out = []
+    for p in paths:
+        with open(p, encoding="utf-8") as f:
+            out += [json.loads(l) for l in f if l.strip()]
+    return out
+
+
+def md(text):
+    return str(text).replace("|", "\\|").replace("\n", " ")
+
+
+def secs(x):
+    return f"{x:.3f}"
+
+
+def by_key(records, key):
+    """The records grouped by a field, in order of first appearance."""
+    out = {}
+    for r in records:
+        out.setdefault(r[key], []).append(r)
+    return out
+
+
+def timing_table(records):
+    """Every case with its time, a subtotal per group and the total."""
+    out = ["| group | case | | seconds |", "|---|---|:-:|---:|"]
+    for g, rs in by_key(records, "group").items():
+        for r in rs:
+            out.append(f"| {md(g)} | {md(r['case'])} | {'✓' if r['ok'] else '✗'} | {secs(r['seconds'])} |")
+        out.append(f"| **{md(g)}** | **{len(rs)} cases** | | **{secs(sum(r['seconds'] for r in rs))}** |")
+    out.append(f"| **total** | **{len(records)} cases** | | **{secs(sum(r['seconds'] for r in records))}** |")
+    return out
+
+
+def shard_table(records):
+    """A line per shard (its groups, cases and time) and the grand total."""
+    out = ["| shard | groups | cases | passed | failed | seconds |", "|---|---:|---:|---:|---:|---:|"]
+    for sh, rs in sorted(by_key(records, "shard").items(), key=lambda kv: -sum(r["seconds"] for r in kv[1])):
+        ok = sum(r["ok"] for r in rs)
+        out.append(f"| {md(sh) or '(none)'} | {len(by_key(rs, 'group'))} | {len(rs)} | {ok} | {len(rs) - ok} | "
+                   f"{secs(sum(r['seconds'] for r in rs))} |")
+    ok = sum(r["ok"] for r in records)
+    out.append(f"| **total** | **{len({(r['shard'], r['group']) for r in records})}** | **{len(records)}** | **{ok}** | "
+               f"**{len(records) - ok}** | **{secs(sum(r['seconds'] for r in records))}** |")
+    return out
+
+
+def slowest_table(records, n=15):
+    out = ["| | shard | group | case | seconds |", "|---:|---|---|---|---:|"]
+    for k, r in enumerate(sorted(records, key=lambda r: -r["seconds"])[:n], 1):
+        out.append(f"| {k} | {md(r['shard'])} | {md(r['group'])} | {md(r['case'])} | {secs(r['seconds'])} |")
+    return out
+
+
+def summary(title, files):
+    logs = [f for f in files if not f.endswith(".jsonl")]
+    records = read_timings([f for f in files if f.endswith(".jsonl")])
     groups, passed, failed, unfinished = [], 0, 0, []
     for log in logs:
         g, total = parse_log(log)
@@ -111,20 +298,52 @@ def summary(title, logs):
             passed, failed = passed + total[0], failed + total[1]
     out = [f"### {title}", ""]
     mark = "✅" if failed == 0 and not unfinished and logs else "❌"
-    out.append(f"{mark} **{passed} passed, {failed} failed**")
+    out.append(f"{mark} **{passed} passed, {failed} failed**"
+               + (f" in {secs(sum(r['seconds'] for r in records))} s of test time" if records else ""))
     if unfinished:
         out.append(f"\n**The test driver did not finish** in: {', '.join(unfinished)} (see the log).")
     if not logs:
         out.append("\nNo test logs.")
-    out += ["", "| group | passed | failed | time |", "|---|---:|---:|---:|"]
-    for name, p, f, t, _ in groups:
-        out.append(f"| {name} | {p} | {f} | {t + ' s' if t else ''} |")
     fails = [(g[0], c, d) for g in groups for c, d in g[4]]
     if fails:
-        out += ["", "<details><summary>failing cases</summary>", ""]
+        out += ["", "<details open><summary>failing cases</summary>", ""]
         out += [f"- **{g}**: {c}" + (f" — `{d}`" if d else "") for g, c, d in fails[:200]]
         out += ["", "</details>"]
+    shards = by_key(records, "shard")
+    if len(shards) > 1:
+        out += ["", "#### Shards", ""] + shard_table(records)
+        out += ["", "#### The 15 slowest cases", ""] + slowest_table(records)
+        out += ["", "<details><summary>every case</summary>", ""]
+        for sh, rs in shards.items():
+            out += ["", f"##### {md(sh)}", ""] + timing_table(rs)
+        out += ["", "</details>"]
+    elif records:
+        out += [""] + timing_table(records)
+    else:
+        out += ["", "| group | passed | failed | time |", "|---|---:|---:|---:|"]
+        for name, p, f, t, _ in groups:
+            out.append(f"| {name} | {p} | {f} | {t + ' s' if t else ''} |")
     print("\n".join(out))
+    return 0
+
+
+def make_baseline(paths):
+    """.github/test-timings.json from `--timings` records (see `baseline`); a case seen
+    more than once keeps its largest time, a build its largest."""
+    cases, builds = {}, {}
+    for r in read_timings(paths):
+        uses = sorted({n[len(NOTE_USES):] for n in r.get("notes", []) if n.startswith(NOTE_USES)})
+        built = 0.0
+        for n in r.get("notes", []):
+            if n.startswith(NOTE_BUILT):
+                res, t = n[len(NOTE_BUILT):].rsplit(" ", 1)
+                builds[res] = round(max(builds.get(res, 0.0), float(t)), 3)
+                built += float(t)
+        own = round(max(r["seconds"] - built, 0.0), 3)
+        old = cases.setdefault(r["group"], {}).get(r["case"])
+        if old is None or old["seconds"] < own:
+            cases[r["group"]][r["case"]] = {"seconds": own, **({"uses": uses} if uses else {})}
+    print(json.dumps({"builds": dict(sorted(builds.items())), "cases": cases}, indent=1, ensure_ascii=False))
     return 0
 
 
@@ -150,15 +369,20 @@ def check_include_str(base):
 
 
 def main(args):
+    binary = args[1] if len(args) > 1 else DEFAULT_BIN
     if args[:1] == ["matrix"]:
-        matrix()
+        matrix(binary)
         return 0
     if args[:1] == ["check-shards"]:
-        return check_shards(args[1] if len(args) > 1 else os.path.join(ROOT, ".lake/build/bin/tests"))
+        return check_shards(binary)
+    if args[:1] == ["plan"]:
+        return plan(binary)
     if args[:1] == ["check-include-str"] and len(args) == 2:
         return check_include_str(args[1])
     if args[:1] == ["summary"] and len(args) >= 2:
         return summary(args[1], args[2:])
+    if args[:1] == ["baseline"] and len(args) >= 2:
+        return make_baseline(args[1:])
     print(__doc__, file=sys.stderr)
     return 2
 
