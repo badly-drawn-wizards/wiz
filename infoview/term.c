@@ -3,7 +3,7 @@
    callbacks or structs, so the parts that need them live here: raw mode (termios),
    the alternate screen, the window size, SIGWINCH (through a self-pipe), poll, and
    Unix sockets. Everything else, from decoding keys to drawing, is Wiz.
-   Linked with WIZ_LDFLAGS="... infoview/term.c" (see infoview/build.sh). */
+   Linked by passing it to wiz with the linker flags (see infoview/build.sh). */
 #define _DEFAULT_SOURCE
 #include <errno.h>
 #include <fcntl.h>

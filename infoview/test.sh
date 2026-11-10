@@ -1,7 +1,9 @@
 #!/bin/sh
-# Smoke tests of the terminal infoview against infoview/stub_server.py (the socket
-# protocol of infoview-protocol.md §8, with canned goals): once with --dump (plain text),
-# once interactively in a pseudo-terminal (select a subterm, ask what it is, quit).
+# Tests of the terminal infoview: against infoview/stub_server.py (the socket protocol of
+# infoview-protocol.md §8, with canned goals) once with --dump (plain text) and once
+# interactively in a pseudo-terminal (select a subterm, ask what it is, quit); then end
+# to end, against the real `wiz lsp --infoview SOCK` with infoview/editor_stub.py as the
+# editor.
 #   usage: infoview/test.sh [BINARY]     (default: build one in a temporary directory)
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -40,3 +42,23 @@ x : A
 [const] Nat : Type
 END
 check "interactive: select the fourth subterm, Nat" "$TMP/screen.exp" "$TMP/screen.cut"
+
+cat > "$TMP/t.wiz" <<'END'
+import Prelude
+def k : (A : Type) → A → Nat → A := by
+  intro A
+  intro x
+  intro n
+  exact x
+END
+WIZ=${WIZ:-$ROOT/.lake/build/bin/wiz}
+(cd "$ROOT" && python3 "$ROOT/infoview/editor_stub.py" "$WIZ" "$TMP/lsp.sock" "$TMP/t.wiz" 3 9 -- \
+  "$BIN" "$TMP/lsp.sock" --dump --width 40) > "$TMP/e2e.txt"
+cat > "$TMP/e2e.exp" <<'END'
+Tactic state
+A : Type
+x : A
+⊢ Nat → A
+END
+head -4 "$TMP/e2e.txt" > "$TMP/e2e.cut"
+check "end to end: wiz lsp --infoview, the goals after intro x" "$TMP/e2e.exp" "$TMP/e2e.cut"

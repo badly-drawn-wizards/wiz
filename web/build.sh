@@ -10,8 +10,8 @@ OUT=$(mkdir -p "${1:-$ROOT/web/out}" && cd "${1:-$ROOT/web/out}" && pwd)
 WIZ=${WIZ:-$ROOT/.lake/build/bin/wiz}
 if command -v emcc >/dev/null; then EMCC=emcc; else EMCC="nix shell nixpkgs#emscripten -c emcc"; fi
 
-# 1. Wiz → C: `wiz build` writes OUT/web.c, then runs $WIZ_CC, here a no-op.
-(cd "$ROOT" && WIZ_CC=true "$WIZ" build web/Web.wiz -o "$OUT/web")
+# 1. Wiz → C: `wiz build` writes OUT/web.c, then runs the C compiler, here a no-op.
+(cd "$ROOT" && "$WIZ" --cc true build web/Web.wiz -o "$OUT/web")
 
 # 2. mini-gmp from GMP's source tarball, behind a <gmp.h>
 if [ ! -f "$OUT/gmp/mini-gmp.c" ]; then
