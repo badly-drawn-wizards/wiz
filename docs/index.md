@@ -28,6 +28,7 @@ topic below, so the numbers are not in order.
 * [Stage 8: the backend](stages/08-backend.md)
 * [Stage 9: the C FFI](stages/09-ffi.md)
 * [Stage 10: effects](stages/10-effects.md)
+* [Stage 25: concurrency](stages/25-concurrency.md)
 
 ### Self-hosting
 

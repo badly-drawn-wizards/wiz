@@ -31,6 +31,21 @@ def okLibBounded (mb : Nat) (input : String) (infos : List String := []) : IO Un
   let peak ← peakMB
   unless peak ≤ mb do throw (IO.userError s!"used {peak} MB (bound: {mb} MB)")
 
+/-- `p.1` and `p.2` of a glued global `p := (a, a)` stay glued: the spine records the
+projection and `p` is not unfolded (elab-bugs-from-hdl 2). -/
+def gluedProjections : IO Unit := do
+  let pairTy : Raw Unit := .sigma "x" () "A" "A"
+  let g : Globals Unit := [Raw.axiom "A" (.sort 0), Raw.axiom "a" "A",
+    Raw.defn "p" pairTy (.pair "a" "a")].foldl Globals.insert {}
+  let pv := eval g [] (.const "p" [])
+  for (which, v) in [("fst", vFst pv), ("snd", vSnd pv)] do
+    match v with
+    | .unfold "p" _ sp _ =>
+      unless sp.size == 1 do throw (IO.userError s!"{which}: spine of size {sp.size}")
+    | _ => throw (IO.userError s!"{which}: the projection unfolded p")
+    -- and it still computes
+    checkEq "a" (quote g 0 (whnf v)).pretty
+
 /-- (13b) The messages of `input`, with `lib/Prelude.wiz` and the module `Priv` (`priv`)
 importable: privacy is per module. -/
 def runPriv (priv input : String) : IO (Array String × Array String) := do
@@ -248,6 +263,22 @@ def group : Group where
         failsLib "import Prelude\nclass C (A : Type) where\n  private m : A" "can't be private" },
     { name := "`private def` right after a structure (13b)", run := fun _ =>
         okLib "import Prelude\nstructure P where\n  x : Nat\nprivate def q : P := P.mk 1\n#eval q.x" ["1"] },
+    { name := "a projection of an inline application doesn't run it (elab-bugs-from-hdl 2)", run := fun _ =>
+        -- `(mk n).b` used to evaluate `mk n` (100000 nested matches) to find the type of
+        -- `.b`: the evaluator overflowed the stack. Projections of glued values stay glued.
+        okLibBounded 2000 ("import Prelude\nstructure S where\n  a : Nat\n  b : List Nat\n" ++
+          "def step (p : Nat × List Nat) : Nat × List Nat := match p with\n  | (a, b) => (a + 1, .cons a b)\n" ++
+          "def go : Nat → Nat × List Nat\n  | .zero => (0, .nil)\n  | .succ n => step (go n)\n" ++
+          "def mk (n : Nat) : S := match go n with\n  | (a, b) => S.mk a b\n" ++
+          "def len : Nat := List.length (mk 100000).b\ndef len2 : Nat := List.length (go 100000).2\n" ++
+          "#eval List.length (mk 3).b") ["3"] },
+    { name := "projections of a glued value stay glued (elab-bugs-from-hdl 2)", run := fun _ => gluedProjections },
+    { name := "a two-row match with a catch-all covers the other constructors (elab-bugs-from-hdl 3)", run := fun _ =>
+        okLib ("import Prelude\ninductive Op where\n  | input (port : Nat)\n  | const (v : Nat)\n  | add\n  | sub\n  | slice (lo : Nat)\n" ++
+          "def Op.isAdd : Op → Bool\n  | .add => .true\n  | _ => .false\n" ++
+          "def Op.isAdd2 (o : Op) : Bool := match o with\n  | .add => .true\n  | _ => .false\n" ++
+          "def Op.lo : Op → List Nat → Nat\n  | .slice lo, _ => lo\n  | _, _ => 0\n" ++
+          "#eval Op.isAdd (Op.input 0)\n#eval Op.isAdd2 Op.add\n#eval Op.lo (Op.slice 4) List.nil") [".false", ".true", "4"] },
     -- agent/elab-whnf
     { name := "a constructor field with a lifted domain: `?k (down h)` is a pattern (gap 7)", run := fun _ =>
         okLib (protoLike ++
@@ -270,5 +301,12 @@ def group : Group where
         -- without an expected type the motives can't be inferred: an error, not a panic
         failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "ill-typed" }
   ]
+
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  group ::
+  []
 
 end Tests.ElabFix

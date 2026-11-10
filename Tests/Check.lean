@@ -232,4 +232,13 @@ def structGroup : Group where
         rejects (R := Unit) [Raw.defn "bad" (.empty 1) .tt] (fun _ => true) "an error" }
   ]
 
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  mlttGroup ::
+  qttGroup ::
+  structGroup ::
+  []
+
 end Tests.Check

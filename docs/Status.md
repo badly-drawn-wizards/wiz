@@ -65,7 +65,7 @@ the results of the probes listed in the "Probes" section.
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
 | Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs and CCobs treat propositions (rule Eq-Ω: `A ∼ B ⇒ (A → B) ∧ (B → A)`; checked in [PT22] §2.3 and [PT23] Fig. 4). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; algorithmically incomplete, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation *of proofs*. TTobs and CCobs do not have definitional regularity; they have the proof term `castrefl`, which is Wiz's `castRefl` ([PT22] §2.2, [PT23] §2.2; checked). CICobs [PLT25] has definitional regularity at **all** types (rule Cast-Refl, side condition by conversion) and proves conversion decidable for a fragment, with an algorithm that never reduces proofs. So regularity at inert types (CoreSpec §8.4) is a special case of a published rule; what is Wiz's own is the restriction, which a proof-reducing evaluator needs. See D1 and `/workspace/wiz-notes/plt-vs-inert.md`. `--regularity full` restores the old rule for experiments. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; decided by ground equality since P1, so stable under substitution, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation *of proofs*. TTobs and CCobs do not have definitional regularity; they have the proof term `castrefl`, which is Wiz's `castRefl` ([PT22] §2.2, [PT23] §2.2; checked). CICobs [PLT25] has definitional regularity at **all** types (rule Cast-Refl, side condition by conversion) and proves conversion decidable for a fragment, with an algorithm that never reduces proofs. So regularity at inert types (CoreSpec §8.4) is a special case of a published rule; what is Wiz's own is the restriction, which a proof-reducing evaluator needs. See D1 and `/workspace/wiz-notes/plt-vs-inert.md`. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] and [PT23] give ℕ equality rules by constructor (Eq-zero, Eq-Suc); CICobs [PLT25 §2.1, §4.1] gives inductive types *no* rule for equality of elements (it is derivable from the eliminator) and a weaker, non-injective equation between instances. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
@@ -166,9 +166,23 @@ the results of the probes listed in the "Probes" section.
   Registrations are checked for shape (`nat` an inductive type, each operation a
   definition `N → … → N`), numerals need `nat.zero` and `nat.succ`, and a numeral at a
   type that isn't the registered data type is an error. PR #5 (`agent/trust-gaps`).
+* **A hole in that accounting, closed** (soundness audit, T14). A second registration of
+  a key was accepted: after `import Prelude`, `builtin nat.add := K` made the Prelude's
+  `Nat.add n 1` unfold through `K` on a variable (the kernel finds the definition by key)
+  while numerals stayed native, so `boom : False` followed, and `#print axioms boom`
+  showed nothing, since `boom` never mentions `K`. Now **a key is registered once and a
+  constant has one key**: a second registration is an error at the command, and also when
+  a module elaborated on its own is replayed from the cache next to another registration.
+  `nat.zero` and `nat.succ` must be constructors of the registered type (numerals unfold
+  through them), and a constant registered under a `nat.` key depends on the numerals'
+  registrations as a literal does (`P z z` with `nat.pow := P` is the numeral `1` with no
+  literal in the term). So with the Prelude imported nothing more can be registered, and
+  without it every registration is an axiom of whatever uses its constant or a numeral.
 * **Regression tests.** Group *trust*: the probe's warnings and `#print axioms` output, a
   registration in a module from an `-I` directory, the crash and the shape errors, and the
-  Prelude's numerals still computing natively with no axioms.
+  Prelude's numerals still computing natively with no axioms; the T14 probe and second
+  registrations of `nat`, `nat.zero`, `nat.succ` (rejected, also through the cache),
+  non-constructors as `nat.zero`/`nat.succ` (rejected).
 
 ### F5. Description fields in smaller universes (Q4, decision (a)) — **fixed**
 
@@ -201,8 +215,18 @@ the results of the probes listed in the "Probes" section.
   * group *inductive*: "Q4: …" cases for a proof field, the fields of `Prod.{u,v}`, a type
     in `Type 1` with an infinitary field over `Type` and with a lifted tag, and `#ir`
     unchanged by lifting.
-* **What remains.** Derived instances (`deriving`) for universe-polymorphic types are not
-  supported (unrelated to Q4). The subject-reduction argument is on paper (CoreSpec §4.1,
+* **Deriving** (stage 7d, docs/stages/07-type-classes.md). `deriving` used to fail on a
+  type with a proof field (it showed, compared and defaulted the proof: a unification
+  error at `BEq`, no `Repr`/`Inhabited` of a proposition) and on universe-polymorphic
+  types (an `inductive Box.{u} (A : Type u)` without a signature was put in `Type`, so its
+  field was lifted to a level below its own and the kernel rejected `Box.desc`; the
+  classes and instances were in `Type` only). Now reflection marks proof fields, the
+  derivers skip them, the classes take `Type u`, instances have universe parameters, and
+  a missing signature is the smallest `Type l` that holds the fields. Derivers see a
+  lifted field through `down` (the recursor's method gets the field at its own type).
+  Tests: group *deriving*, "deriving with proof fields …", "… universe-polymorphic type
+  …", "… a type above Type: lifted fields are seen through down (F5)".
+* **What remains.** The subject-reduction argument is on paper (CoreSpec §4.1,
   §9.1), not mechanised; the OTT rules for `ULift` are the standard ones for a one-field
   former and are **conjecture** in Wiz's combination like the rest of §8.
 
@@ -378,6 +402,24 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
 
   `sameFamily?` has the same defect. The fix is to decide the side condition with
   conversion. Confirmed by a probe (the note, §10): `h p q p` is well typed, but its δβ-reduct is rejected, so subject reduction fails for the algorithmic typing.
+
+  **Fixed (P1, `agent/p1-stable`; `/workspace/wiz-notes/p1-stable.md`).**
+  * **The change.** InReg's side condition is ground equality (`groundEqTy`, both
+    kernels). It holds for two inert types that are equal and have no free variable in a
+    relevant position, so it gives the same answer for convertible types and survives
+    substitution. `sameFamily?` is replaced by desc-eq's head-directed rules (PR #40).
+    The numeral fast path is subsumed.
+  * **The probe as a regression test** (group *observational equality*, "P1: …").
+    `h`, `h2` and `h3` check, so the reduct checks iff the term does. `t1` and `t2`
+    (InReg at an open index `f p`) are rejected, consistently.
+  * **What it costs.** InReg on a variable at an inert type whose index is open
+    (`cast (Fin n) (Fin n) e k`). Casts at closed inert types still reduce, and casts of
+    constructors at open ones compute structurally. Measured: every test, library file
+    and example checks as before, and no cast in `lib/` or `examples/` is decided
+    differently from the old rule (the note, §5). The loss shows only on the probe.
+  * **Option** (a decision for the user). `--inert conv` adds InReg_conv: conversion
+    identifies the cast with its argument when the types are convertible (`convTy`). It
+    is congruent, and it accepts `t1` and `t2` too. It is Lean kernel only so far.
 * **What it costs (known failures).** Without regularity a cast at a **type variable**
   is stuck (TTobs behaviour): `cast e a = a` for `e : A = A`, "`J` computes on `refl`"
   at a variable family, and the definitional equations of functions defined by `match`
@@ -491,6 +533,15 @@ equations are not provable by computation. They are incompleteness, not unsoundn
 * **Π/Σ types whose quantities are not literals** (quantity variables that can't be
   compared): type equality is stuck.
 * **Casts at a level `u` that might be 0**, `Sort u ≡ Sort v` for different parameters.
+* **Regularity at an inert type with an open index** (P1): `cast (Fin n) (Fin n) e k` for
+  variables `n`, `k` is stuck. The rule fires only at ground types, so that its firing is
+  stable under substitution (D1). `castRefl` proves the equation propositionally;
+  `--inert conv` is an experiment that recovers it in conversion.
+* **The sort annotation decides between rules** (P1 inventory, U5). `propSort?` reads a
+  Π/Σ's optional annotation, so an unannotated type and a convertible annotated one are
+  treated differently by type equality and `cast` (stuck against computing). That is a
+  side condition which is not invariant under conversion. No bad consequence is known
+  (the stuck side proves nothing); it is listed in `/workspace/wiz-notes/p1-stable.md`.
 * **Conversion is incomplete** where proof irrelevance meets computation (e.g. a `split`
   stuck on one proof and computing on another). Incompleteness only.
 
@@ -572,6 +623,8 @@ that checks everything. Wiz's situation:
   so they can't prove anything; they are trusted to agree with the definitions, as in
   Lean, and the tests compare the two (`#eval` runs the definitions, compiled code the
   natives). They are not `builtin` commands, so the registration checks don't apply.
+  `#print axioms d` lists the ones `d` depends on, the library's too, marked `native`
+  (`native f := g`, `native T := mk/get`).
 * **Termination** of the kernel is not proved and is known to fail (D1); all evaluation
   functions are `partial` in Lean.
 * **The evaluator reduces proofs.** `eval` is strict, and `vCast` forces `e` (through

@@ -673,9 +673,17 @@ def builtinShapeError (g : Globals R) (key : Name) (d : Decl R) : Option String 
     | some N =>
       let (as, r) := doms d.type
       let arity := natOpArity key
+      -- numerals unfold through `nat.zero` and `nat.succ`: they must be `N`'s own
+      -- constructors, not definitions that only have their types
+      let rec isCtor : Term R → Bool
+        | .lam _ b => isCtor b
+        | .con _ => true
+        | _ => false
       if d.value.isNone then some "it must be a definition"
       else if as.length != arity || !as.all (isN N) then
         some s!"it must take {arity} argument{if arity == 1 then "" else "s"} of type {N}"
+      else if (key == "nat.zero" || key == "nat.succ") && !(d.inline && (d.value.map isCtor).getD false) then
+        some s!"it must be a constructor of {N}"
       else if !(key == "nat.beq" || key == "nat.blt") && !isN N r then some s!"its result must have type {N}"
       else none
 
@@ -1006,19 +1014,27 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | none => throw s!"missing field {x}"
         let head := Syntax.node cmd.info "term.ident" #[.ident cmd.info (C ++ ".mk")]
         pure (if args.isEmpty then head else .node cmd.info "term.app" #[head, .node {} "null" args.toArray])
+    -- the universe names in the binders and the type are the instance's universe
+    -- parameters (an instance has no `.{u}` of its own; derivers write `Type u`)
+    let rec levelNames (stx : Syntax) : List Name := match stx with
+      | .node _ k as =>
+        if k == "level.param" then ((stx.getArg 0).getId?).toList
+        else as.toList.flatMap levelNames
+      | _ => []
+    let levelParams := (binders.toList.flatMap levelNames ++ levelNames typeStx).eraseDups
     match valStx with
     | .error e => report .error cmd.info e
     | .ok valStx =>
       match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics)
           (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
-          (elabDeclTerms binders (some typeStx) (some valStx) cmd.info) [] with
+          (elabDeclTerms binders (some typeStx) (some valStx) cmd.info) levelParams with
       | .error e => report .error e.info e.msg
       | .ok (ty, val) =>
         let (_, concl) := peelPis ty
         match (Term.spine concl).1 with
         | .const C _ =>
           if s.classes.any (·.name == C) then
-            addDeclChecked name [] ty val
+            addDeclChecked name levelParams ty val
             modify fun s => { s with instances := s.instances.push { name, cls := C, priority } }
           else report .error cmd.info s!"{C} is not a class"
         | _ => report .error cmd.info "an instance's type must be an application of a class"
@@ -1096,6 +1112,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo",
       "nat.div", "nat.mod", "nat.pow", "nat.land", "nat.lor", "nat.xor", "nat.shiftLeft", "nat.shiftRight", "nat.log2"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
+    -- one registration per key, and one key per constant: a second `builtin nat.add := K`
+    -- would redirect how the first one's constant unfolds (the kernel finds the definition
+    -- by key), an assumption that no declaration using it would show
+    else if let some m := s.globals.builtins.lookup key then
+      report .error cmd.info s!"builtin {key} is already registered (as {m}); a builtin can be registered only once"
+    else if let some (k, _) := s.globals.builtins.find? fun (k, m) => m == n && known.contains k then
+      report .error cmd.info s!"{n} is already registered as builtin {k}"
     else match s.globals.find? n with
     | none => report .error cmd.info s!"unknown declaration {n}"
     | some d =>
@@ -1117,7 +1140,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if !s.globals.contains n then report .error (cmd.getArg 2).info s!"unknown declaration {n}"
     else match s.globals.axiomsOf n with
       | [] => report .info cmd.info s!"'{n}' does not depend on any axioms"
-      | as => report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]"
+      | as =>
+        -- (a native implementation is trusted to agree with its definition; proofs
+        -- never run it, compiled code does)
+        let note := if as.any (·.startsWith "native ") then
+          "\n(native: an implementation that compiled code runs, trusted to agree with its definition)" else ""
+        report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]{note}"
   | "command.foreignType" =>
     -- an opaque C pointer type; values are released with the finalizer
     let name := ((cmd.getArg 1).getId?).getD "_"
