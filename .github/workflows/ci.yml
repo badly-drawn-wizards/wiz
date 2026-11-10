@@ -105,7 +105,7 @@ jobs:
     needs: build
     if: needs.build.outputs.tree == 'solutions'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90 # the selfhost shard takes ~45 min and grows with each selfhost test
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build.outputs.matrix) }}

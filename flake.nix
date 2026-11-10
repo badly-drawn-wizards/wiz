@@ -16,15 +16,15 @@
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           packages = [ pkgs.elan pkgs.gmp pkgs.boehmgc pkgs.llvm pkgs.python3 pkgs.git ];
-          # `wiz` and `grail` take the toolchain as flags (stage 23a). The test driver reads
-          # these variables (Tests/Main.lean, the one place), and grail reads the
-          # uncommitted grail.local.wiz written here (when run from the repository root).
+          # `wiz` and `grail` take the toolchain as flags (stage 23a); grail and the test
+          # driver read this machine's paths from the uncommitted grail.local.wiz written
+          # here (when run from the repository root). Nothing reads the environment.
           shellHook = ''
-            export WIZ_CFLAGS="-I${pkgs.gmp.dev}/include"
-            export WIZ_LDFLAGS="-L${pkgs.gmp}/lib -Wl,-rpath,${pkgs.gmp}/lib"
-            export WIZ_LLC="${pkgs.llvm}/bin/llc"
-            export WIZ_GC_CFLAGS="-I${pkgs.boehmgc.dev}/include"
-            export WIZ_GC_LDFLAGS="-L${pkgs.boehmgc}/lib -Wl,-rpath,${pkgs.boehmgc}/lib -lgc -lpthread"
+            WIZ_CFLAGS="-I${pkgs.gmp.dev}/include"
+            WIZ_LDFLAGS="-L${pkgs.gmp}/lib -Wl,-rpath,${pkgs.gmp}/lib"
+            WIZ_LLC="${pkgs.llvm}/bin/llc"
+            WIZ_GC_CFLAGS="-I${pkgs.boehmgc.dev}/include"
+            WIZ_GC_LDFLAGS="-L${pkgs.boehmgc}/lib -Wl,-rpath,${pkgs.boehmgc}/lib -lgc -lpthread"
             if [ -f grail.wiz ]; then
               local_wiz=$(printf '%s\n' \
                 '-- This machine'"'"'s toolchain, written by the nix dev shell (flake.nix); not committed.' \
