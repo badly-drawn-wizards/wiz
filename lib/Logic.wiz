@@ -1,0 +1,123 @@
+import Prelude
+-- Propositional logic over the impredicative `Prop` (stage 24a).
+--
+-- Wiz has no inductive propositions (`μ` always lives in `Type`), so the connectives are
+-- built from what the kernel has: `True`, `False`, `absurd`, Σ and Π, and observational
+-- equality (CoreSpec §7–8).
+--
+-- * `∧` is a Σ of two propositions, so it is itself a proposition, with projections and η.
+-- * `↔` is the pair `(P → Q) × (Q → P)`. An equation of propositions computes to almost
+--   the same type (propext, CoreSpec §8.2), `(0 _ : (0 _ : P) → Q) × ((0 _ : Q) → P)`,
+--   with erased binders, so `Iff.toEq` and `Iff.ofEq` are one-liners (and no axiom).
+--   The two differ in the Σ binder's quantity: the first field of a computed equation
+--   can't be projected outside erased code, so `Iff.ofEq` gets it from `Eq.symm`.
+-- * `∨` and `∃` are Church encodings (the impredicative ones: `∀ R, (… → R) → R`). A Σ
+--   over a `Type` would land in `Type`, and there are no inductive propositions to define
+--   them with. Their eliminators only go into propositions, which is all a logic needs
+--   (and is what Lean's `Or.elim`/`Exists.elim` allow too). The eliminated proposition
+--   `R` is bound at quantity 0.
+--
+-- The names are Lean's, so that the library can switch to native inductive propositions
+-- later (plan D4) without renaming.
+
+-- ## Truth, falsity, negation
+
+def True.intro : True := ()
+def False.elim {0 P : Prop} (h : False) : P := absurd h
+def Not (P : Prop) : Prop := P → False
+def Not.elim {P : Prop} {0 R : Prop} (n : Not P) (p : P) : R := absurd (n p)
+def absurdOf {P : Prop} {0 R : Prop} (p : P) (n : Not P) : R := absurd (n p)
+
+-- ## Conjunction
+
+def And (P Q : Prop) : Prop := P × Q
+infixr:35 " ∧ " => And
+def And.intro {P Q : Prop} (p : P) (q : Q) : P ∧ Q := (p, q)
+def And.left {P Q : Prop} (h : P ∧ Q) : P := h.1
+def And.right {P Q : Prop} (h : P ∧ Q) : Q := h.2
+def And.elim {P Q : Prop} {0 R : Prop} (h : P ∧ Q) (k : P → Q → R) : R := k h.1 h.2
+def And.symm {P Q : Prop} (h : P ∧ Q) : Q ∧ P := (h.2, h.1)
+def And.imp {P Q P' Q' : Prop} (f : P → P') (g : Q → Q') (h : P ∧ Q) : P' ∧ Q' := (f h.1, g h.2)
+
+-- ## Disjunction
+
+def Or (P Q : Prop) : Prop := (0 R : Prop) → (P → R) → (Q → R) → R
+infixr:30 " ∨ " => Or
+def Or.inl {P Q : Prop} (p : P) : P ∨ Q := fun R l r => l p
+def Or.inr {P Q : Prop} (q : Q) : P ∨ Q := fun R l r => r q
+def Or.elim {P Q : Prop} {0 R : Prop} (h : P ∨ Q) (l : P → R) (r : Q → R) : R := h R l r
+def Or.symm {P Q : Prop} (h : P ∨ Q) : Q ∨ P := h (Q ∨ P) (fun p => Or.inr p) (fun q => Or.inl q)
+def Or.imp {P Q P' Q' : Prop} (f : P → P') (g : Q → Q') (h : P ∨ Q) : P' ∨ Q' :=
+  h (P' ∨ Q') (fun p => Or.inl (f p)) (fun q => Or.inr (g q))
+-- the disjunctive syllogism
+def Or.resolveLeft {P Q : Prop} (h : P ∨ Q) (n : Not P) : Q := h Q (fun p => absurd (n p)) (fun q => q)
+def Or.resolveRight {P Q : Prop} (h : P ∨ Q) (n : Not Q) : P := h P (fun p => p) (fun q => absurd (n q))
+
+-- ## Equivalence
+
+def Iff (P Q : Prop) : Prop := (P → Q) × (Q → P)
+infix:20 " ↔ " => Iff
+def Iff.intro {P Q : Prop} (f : P → Q) (g : Q → P) : P ↔ Q := (f, g)
+def Iff.mp {P Q : Prop} (h : P ↔ Q) (p : P) : Q := h.1 p
+def Iff.mpr {P Q : Prop} (h : P ↔ Q) (q : Q) : P := h.2 q
+def Iff.refl (P : Prop) : P ↔ P := (fun p => p, fun p => p)
+def Iff.symm {P Q : Prop} (h : P ↔ Q) : Q ↔ P := (h.2, h.1)
+def Iff.trans {P Q R : Prop} (h₁ : P ↔ Q) (h₂ : Q ↔ R) : P ↔ R :=
+  (fun p => h₂.1 (h₁.1 p), fun r => h₁.2 (h₂.2 r))
+
+-- ## Existential quantification
+
+def Ex {A : Type} (P : A → Prop) : Prop := (0 R : Prop) → ((a : A) → P a → R) → R
+def Ex.intro {A : Type} (0 P : A → Prop) (a : A) (p : P a) : Ex P := fun R k => k a p
+def Ex.elim {A : Type} {P : A → Prop} {0 R : Prop} (h : Ex P) (k : (a : A) → P a → R) : R := h R k
+def Ex.imp {A : Type} {P Q : A → Prop} (f : (a : A) → P a → Q a) (h : Ex P) : Ex Q :=
+  h (Ex Q) (fun a p => Ex.intro Q a (f a p))
+-- `∃` commutes with `∧` on a side that doesn't mention the witness
+def Ex.andRight {A : Type} {P : A → Prop} {Q : Prop} (h : Ex P ∧ Q) : Ex (fun a => P a ∧ Q) :=
+  h.1 (Ex (fun a => P a ∧ Q)) (fun a p => Ex.intro (fun a => P a ∧ Q) a (p, h.2))
+
+-- ## Universal quantification
+--
+-- `∀` is the Π type `(a : A) → P a`, a proposition whenever `P a` is (impredicativity).
+-- `∀` and `∃` interact as usual:
+def Ex.notForall {A : Type} {P : A → Prop} (h : Ex P) (n : (a : A) → Not (P a)) : False :=
+  h False (fun a p => n a p)
+def Forall.notEx {A : Type} {P : A → Prop} (n : Not (Ex P)) (a : A) : Not (P a) :=
+  fun p => n (Ex.intro P a p)
+
+-- ## Equality
+--
+-- `transp` is the eliminator; these are J in its usual shapes. (lib/Optic.wiz has the
+-- same lemmas under `Optic.*`.)
+def Eq.symm {A : Type} {a b : A} (e : a = b) : b = a :=
+  transp (fun b _ => b = a) (refl a) e
+def Eq.trans {A : Type} {a b c : A} (e₁ : a = b) (e₂ : b = c) : a = c :=
+  transp (fun c _ => a = c) e₁ e₂
+def Eq.congrArg {A B : Type} (0 f : A → B) {a b : A} (e : a = b) : f a = f b :=
+  transp (fun b _ => f a = f b) (refl (f a)) e
+-- transport into a family of propositions
+-- (through `congrArg`: a motive `fun b _ => P b` would use `b`, which `transp` binds at 0;
+-- an equation of propositions computes to the pair of implications, whose second field is
+-- the direction we want)
+def Eq.substProp {A : Type} (0 P : A → Prop) {a b : A} (e : a = b) (pa : P a) : P b :=
+  (@Eq.congrArg A Prop P b a (@Eq.symm A a b e)).2 pa
+-- propositional extensionality is definitional (`P = Q` computes to a pair of implications)
+def Iff.toEq {P Q : Prop} (h : P ↔ Q) : P = Q := (h.1, h.2)
+def Iff.ofEq {P Q : Prop} (e : P = Q) : P ↔ Q := ((@Eq.symm Prop P Q e).2, e.2)
+def propext {P Q : Prop} (h : P ↔ Q) : P = Q := Iff.toEq h
+-- Function extensionality is definitional: an equation of functions *is* pointwise,
+-- `(0 x : A) → f x = g x`. Its binder is erased, so a proof that uses `x` (passes it to a
+-- lemma that matches on it) can't be written against it directly; `funext` takes the
+-- unerased form and lets subtyping (quantities don't matter in a Π that is a
+-- proposition, CoreSpec §11.5) do the rest.
+def funext {A B : Type} {f g : A → B} (h : (x : A) → f x = g x) : f = g := h
+def congrFun {A B : Type} {f g : A → B} (e : f = g) (x : A) : f x = g x := e x
+
+-- ## Booleans
+
+def Bool.cases (b : Bool) : b = .true ∨ b = .false := match b with
+  | .true => Or.inl rfl
+  | .false => Or.inr rfl
+-- `.true = .false` computes to a Σ whose first component is `False`; `absurd` checks its
+-- argument erased, so it may project that (erased) field
+def Bool.trueNeFalse : Not (Bool.true = Bool.false) := fun e => absurd e.1
