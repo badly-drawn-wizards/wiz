@@ -36,10 +36,13 @@ structure Loaded where
 def mainName : Name := "main✝"
 
 def load (tc : Toolchain) (roots : List System.FilePath) (salt : UInt64) (src : String) : IO Loaded := do
-  let lib := (← Module.loadClosure roots src).fold (fun m n (_, s) => m.insert n s) ({} : Std.HashMap Name String)
+  let closure ← Module.loadClosure roots src
+  let lib := closure.fold (fun m n (_, s) => m.insert n s) ({} : Std.HashMap Name String)
   let headers ← preprocessHeaders tc (src :: lib.values)
   let loader : Name → Option String := (lib[·]?)
-  let init : CommandState ZeroOneMany := { loader, cHeaders := (headers[·]?) }
+  -- `builtin` registrations are trusted only in the toolchain's library, the first root
+  let own := Module.fromFirstRoot roots closure
+  let init : CommandState ZeroOneMany := { loader, cHeaders := (headers[·]?), trustedModule := own.contains }
   let key := Cache.moduleKey (fun n => if n == mainName then some src else loader n) (headers[·]?) salt mainName
   pure { src, init, key }
 
