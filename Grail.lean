@@ -4,3 +4,4 @@ import Grail.Build
 import Grail.Test
 import Grail.Selfhost
 import Grail.Graph
+import Grail.Deps

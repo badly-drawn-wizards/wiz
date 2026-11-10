@@ -21,16 +21,21 @@ inductive Setting where
 inductive Settings where
   | mk (pairs : List Setting)
 
+-- A package from git: its name (`.grail/packages/NAME`), URL, and revision (a tag, a
+-- branch or a commit); `grail update` pins it in `grail.lock`.
+inductive Dep where
+  | mk (name : String) (url : String) (rev : String)
+
 inductive Package where
-  | mk (name : String) (targets : List Target) (settings : Settings)
+  | mk (name : String) (targets : List Target) (settings : Settings) (deps : List Dep)
 
 def Settings.empty : Settings := .mk .nil
 def Settings.set (key value : String) : Settings → Settings
   | .mk ps => .mk (List.append ps (.cons (Setting.mk key value) .nil))
 
-def Package.new (name : String) : Package := .mk name .nil Settings.empty
+def Package.new (name : String) : Package := .mk name .nil Settings.empty .nil
 def Package.add (t : Target) : Package → Package
-  | .mk n ts s => .mk n (List.append ts (.cons t .nil)) s
+  | .mk n ts s ds => .mk n (List.append ts (.cons t .nil)) s ds
 def Package.lib (name root : String) (p : Package) : Package := Package.add (.lib name root) p
 def Package.check (name file : String) (p : Package) : Package := Package.add (.check name file) p
 def Package.exe (name file : String) (p : Package) : Package := Package.add (.exe name file) p
@@ -38,7 +43,10 @@ def Package.tests (name root : String) (p : Package) : Package := Package.add (.
 -- the self-hosted toolchain (from selfhost/): role `checker`, `compiler` or `bootstrap`
 def Package.selfhost (name role : String) (p : Package) : Package := Package.add (.selfhost name role) p
 def Package.set (key value : String) : Package → Package
-  | .mk n ts s => .mk n ts (Settings.set key value s)
+  | .mk n ts s ds => .mk n ts (Settings.set key value s) ds
+-- depend on the package at a git URL and revision
+def Package.dep (name url rev : String) : Package → Package
+  | .mk n ts s ds => .mk n ts s (List.append ds (.cons (Dep.mk name url rev) .nil))
 
 -- ## Rendering, as S-expressions
 def Grail.cat (a b : String) : String := String.append a b
@@ -71,5 +79,9 @@ def Grail.renderPairs : List Setting → List String
   | .cons (.mk k v) ps => .cons (Grail.node "set" (.cons (Grail.quote k) (.cons (Grail.quote v) .nil))) (Grail.renderPairs ps)
 def Settings.render : Settings → String
   | .mk ps => Grail.list (Grail.renderPairs ps)
+def Grail.renderDeps : List Dep → List String
+  | .nil => .nil
+  | .cons (.mk n u r) ds => .cons (Grail.node "dep" (.cons (Grail.quote n) (.cons (Grail.quote u) (.cons (Grail.quote r) .nil)))) (Grail.renderDeps ds)
 def Package.render : Package → String
-  | .mk n ts s => Grail.node "package" (.cons (Grail.quote n) (.cons (Grail.list (Grail.renderTargets ts)) (.cons (Settings.render s) .nil)))
+  | .mk n ts s ds => Grail.node "package" (.cons (Grail.quote n) (.cons (Grail.list (Grail.renderTargets ts))
+      (.cons (Settings.render s) (.cons (Grail.list (Grail.renderDeps ds)) .nil))))
