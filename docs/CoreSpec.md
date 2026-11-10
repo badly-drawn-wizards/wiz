@@ -1274,6 +1274,7 @@ Each item says what the code does; the code is what the kernel checks.
 | levels of data | `Level` | closed numerals (`descr l`, `mu l`, `ulift l`) |
 | `ULift` (Q4) | `ulift`/`up`/`down`, `cast` needs a level never `0` | `ulift`/`up`/`down` at closed levels (`vulift`, `vup`, `sdown`); the same rules |
 | globals | table, by name | inline `const` terms carrying value and type (trusted) |
+| quantities written in the surface language (`(1 x : A)`, `(0 x : A)`) | elaborated and checked | **dropped by `Frontend.wiz`** (audit 2, K10; a tracked gap): every surface binder is unrestricted, so `def twice (1 x : Nat) (f : Nat → Nat → Nat) : Nat := f x x` and `def drop (1 x : Nat) : Nat := Nat.zero` are accepted there and rejected by the Lean frontend. `Kernel.wiz` itself checks the quantities of core terms (test group `audit-kernels`) |
 | **`Size ≡ Size`, `Size< s ≡ Size< t`** | **stuck** (`Eval.lean:572`) | **`False`**: `canonical` includes `vsize`/`vsizeLt` (`Kernel.wiz:552–565`) and `vEqTypeW` has no case for two sizes, so it falls through to "different formers ⇒ False" (`Kernel.wiz:961–963`). **Unsound** (Status.md, O1). |
 | regularity in conversion (`unCast`) | off by default (`Conv.lean:264`, only under `--regularity`) | no: stuck casts are compared structurally |
 | regularity in evaluation | off; at inert types only (`inertTy`) | the same (`kernelRegularity := .false`; `inertTy`) |
