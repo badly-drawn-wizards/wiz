@@ -47,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
+      tree: solution # only the summary's title reads it (there is one tree now)
       matrix: ${{ steps.shards.outputs.matrix }}
       lake-key: ${{ steps.key.outputs.key }}
       compiler-key: ${{ steps.key.outputs.compiler }}
@@ -213,7 +214,7 @@ jobs:
         run: |
           shopt -s nullglob
           logs=(logs/*.log)
-          python3 scripts/ci.py summary "Wiz test suite" "${logs[@]}" >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/ci.py summary "Wiz test suite (${{ needs.build.outputs.tree }} tree)" "${logs[@]}" >> "$GITHUB_STEP_SUMMARY"
       - name: Verdict
         shell: bash
         run: |
