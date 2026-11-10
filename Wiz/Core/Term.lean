@@ -447,6 +447,10 @@ structure Globals (R : Type) where
   opaques : Std.HashMap Name String := {}
   /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
   module : String := ""
+  /-- the library module each declaration was made in (none for the main file's). Read by
+  erasure only (a type with a native representation is built and taken apart only in its
+  own module, `nativeHome?` in `Compiler/Erase.lean`); the kernel ignores it. -/
+  declModule : Std.HashMap Name String := {}
 
 namespace Globals
 
@@ -464,7 +468,9 @@ def builtinKey? (g : Globals R) (n : Name) : Option Name :=
 def insert (g : Globals R) (d : Decl R) : Globals R :=
   { g with
     decls := g.decls.insert d.name d
-    order := if g.decls.contains d.name then g.order else g.order.push d.name }
+    order := if g.decls.contains d.name then g.order else g.order.push d.name
+    declModule := if g.module == "" || g.decls.contains d.name then g.declModule
+      else g.declModule.insert d.name g.module }
 
 /-- (13b) The environment as the elaborator sees it in `g.module`: a structure whose
 constructor is private to another module has no definition (it doesn't unfold), so

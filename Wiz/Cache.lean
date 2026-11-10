@@ -308,7 +308,8 @@ def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
     let was := (s.globals.builtins.lookup k).getD "?"
     let text := s!"builtin {k} := {n}: {k} is already registered (as {was}); a builtin can be registered only once"
     { s with messages := s.messages.push { info := {}, severity := .error, text }, pristine := false } else
-  let globals := e.decls.foldl (·.insert ·) s.globals
+  -- (the declarations belong to the module being replayed: `Globals.declModule`)
+  let globals := e.decls.foldl (·.insert ·) { s.globals with module := s.module }
   let globals := { globals with builtins := e.builtins ++ globals.builtins,
                                 assumed := e.assumed ++ globals.assumed,
                                 privates := e.privates.foldl (fun m (n, md) => m.insert n md) globals.privates,
