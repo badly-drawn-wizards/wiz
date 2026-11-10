@@ -137,9 +137,16 @@ with instances for `Nat` that are the natively computed functions (`Add.mk Nat.a
   that unfolds to `Nat.add a b`: `2 + 3` computes natively, `rfl : 2 + 3 = 5` and
   `0 + n = n` hold by evaluation, and lemmas stated with `+` (`Nat.add_comm` in
   lib/Vec.wiz) are unchanged.
-* **Elaboration order.** The arguments of `Add.add {A} [inst] a b` go left to right, after
-  the expected type: `def f (x : U8) : U8 := 1 + x` and `x + 1` elaborate the numeral at
-  `U8`, but `1 + x` with no expected type makes the `1` a `Nat` (write `(1 : U8) + x`).
+* **Elaboration order.** An application of a class method with a numeral argument
+  (`1 + x`, `Add.add x 1`, `-3`) is elaborated expected type first (in infer mode against
+  a fresh type), and a numeral whose type is still a hole waits for the other arguments:
+  `1 + x` with `x : U8`, `0 + a` with `a : Int`, `(-3 : Int)` and `def x : U8 := 1 + 2`
+  put the numerals at the right type, with no search (a small Lean `binop%`).
+* **Nominal resolution.** Types are structural, so `UIntN w` and `IntN w` (one shape) unify,
+  and an instance for one would serve the other. Resolution compares the declared
+  inductive types behind the class arguments (aliases such as `U8` and `BitVec 8` are seen
+  through to `UIntN`) and skips an instance for a different one (`Class.lean`,
+  `nominalClash`), so `/` at `I32` is signed and at `U32` unsigned.
 * **Declared types.** A definition by equations, a copattern definition, an inductive
   type's signature and constructor types solve their instance problems before their
   types are zonked (they used to be zonked at once: `(n : Nat) → n + 0 = n` would have
@@ -149,7 +156,13 @@ with instances for `Nat` that are the natively computed functions (`Add.mk Nat.a
   trivial definitions wherever they are applied (`ETerm.trivialBody`: a variable, a
   projection, a global, `◾`, or a forwarder `f x y`) and projects a method out of an
   instance with several (`ETerm.objBody`, `projOf`): `a * b + a` at `Nat` compiles to
-  `prim nat.mul`/`prim nat.add`, as before, with no dictionary.
+  `prim nat.mul`/`prim nat.add`, as before, with no dictionary; at `U32` it is
+  `wiz_word_mul`/`wiz_word_add` (numerals `wiz_word_of_nat`), as `UIntN.add` was. Inlined
+  arguments float out of `let`s, and a partial application used once is substituted, so
+  the inlined call meets its arguments.
+* **Instances** (docs/libraries.md, "Numbers"): `Int` (lib/Int.wiz, printed `-10` through
+  `builtin int`), `UIntN w`/`IntN w` and their aliases (lib/Word.wiz), `UInt64`,
+  `Float64` (lib/IO.wiz).
 * **Errors.** `"a" + 1`: "failed to synthesize an instance of Add String"; `(1 : Bool)`:
   "failed to synthesize an instance of OfNat Bool 1"; `-1 : Nat`: "… Neg Nat".
 * **The self-hosted toolchain** has no type classes: its own prelude
