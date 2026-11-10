@@ -286,7 +286,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
       let saved ← get
       let mut l : Level := .zero
       for c in (cmd.getArg 6).args do
-        let (ctxF, fs) ← elabTelescope ctxT0 ((c.getArg 2).args.flatMap binderViews).toList
+        let (ctxF, fs) ← elabTelescope ctxT0 ((c.getArg 3).args.flatMap binderViews).toList
         let mut tys := #[]
         for (_, _, _, A) in fs, k in [0:fs.size] do tys := tys.push (← zonk (ctxT0.lvl + k) A)
         for (lA, _) in ← fieldLevels ctxF ctxT0.lvl tys.toList do
