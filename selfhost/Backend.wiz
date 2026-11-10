@@ -985,6 +985,31 @@ def caseRE (re : RE) (d : Nat) (s : ETm) : RE := match projRoot s with
       | .false => RE.withCand re (d - 1 - j)
     | .false => re
   | _ => re
+-- **Static objects**: a value of a constructor without fields is `(k, ◾)`, the same
+-- every time: the runtime keeps one for each `k < 64` (`nul(k)`, never freed), as for
+-- the Bools its natives return
+def scalarOf : ETm → Option Nat
+  | .nat n => .some n
+  | .erased => .some 0
+  | .obj k fs => match fs with
+    | .nil => .some k
+    | .cons _ _ => .none
+  | _ => .none
+def staticNul (tag : Nat) (items : ETms) : Option Nat := match tag with
+  | .zero => match items with
+    | .cons a rest => match rest with
+      | .cons b more => match more with
+        | .nil => match scalarOf a with
+          | .some k => match scalarOf b with
+            | .some z => match Bool.and (Nat.beq z 0) (Nat.lt k 64) with
+              | .true => .some k
+              | .false => .none
+            | .none => .none
+          | .none => .none
+        | .cons _ _ => .none
+      | .nil => .none
+    | .nil => .none
+  | .succ _ => .none
 -- an object: in a reuse context with no wish open, it wishes for a cell (`w`)
 def objC (w : String) (k n : Nat) (atoms : List Doc) : Doc := match strEq w "" with
   | .true => .t "mkobj(" ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat n ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})"
@@ -1059,9 +1084,12 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
           | .idle => match CG.fresh st "w" with
             | .mk w st0 => .mk w (CG.setPend st0 (.want w n))
           | .want _ _ => .mk "" st;
-      match wish with
-      | .mk w st0 => match rcEs re st0 names d live items with
-        | .mk fc atoms fl st1 => bindTo st1 fc (objC w tag n atoms) fl
+      match staticNul tag items with
+      -- (a constant `(k, ◾)`: the runtime's static object, `nul(k)`)
+      | .some kk => .mk (.t "") (.t ("nul(" +++ Nat.toString kk +++ ")")) live st
+      | .none => match wish with
+        | .mk w st0 => match rcEs re st0 names d live items with
+          | .mk fc atoms fl st1 => bindTo st1 fc (objC w tag n atoms) fl
   | .letE v b => match CG.fresh st "l" with
     | .mk x st1 => match rcE re st1 (.cons x names) (d + 1) live b with
       | .mk bc ba bl st2 => match rcE re st2 names d (lvDel d bl) v with
@@ -1319,10 +1347,18 @@ def leafEs : ETms → Bool
     | .true => leafEs rest
     | .false => .false
 end
+def isNulE : ETm → Bool
+  | .obj k fs => match staticNul k fs with
+    | .some _ => .true
+    | .none => .false
+  | _ => .false
 def consMap : StrMap ETm → List Erased → StrMap ETm
   | m, .nil => m
   | m, .cons (.mk n e) rest => match lamsOf e with
-    | .zero => consMap m rest
+    -- (a constant constructor: when it is a static object)
+    | .zero => match isNulE e with
+      | .true => consMap (StrMap.insert m (Str.ofString n) e) rest
+      | .false => consMap m rest
     | .succ _ => match leafE (underLams (lamsOf e) e) with
       | .true => consMap (StrMap.insert m (Str.ofString n) e) rest
       | .false => consMap m rest
@@ -1332,6 +1368,10 @@ def eappsL : ETm → List ETm → ETm
 def betaL : ETm → List ETm → ETm
   | f, .nil => f
   | f, .cons a rest => betaL (betaE f a) rest
+-- a global standing alone: a static object put in place
+def inlConst (t body : ETm) : ETm := match isNulE body with
+  | .true => body
+  | .false => t
 -- `h args`, `h` a global and `body` its definition if it is put in place (else `◾`)
 def inlApp (h : ETm) (args : List ETm) (body : ETm) : ETm :=
   let k := lamsOf body;
@@ -1357,6 +1397,7 @@ def inlE (m : StrMap ETm) (t : ETm) : ETm := match t with
   | .proj i x => .proj i (inlE m x)
   | .case s bs => .case (inlE m s) (inlEs m bs)
   | .prim op as => .prim op (inlEs m as)
+  | .glob g => inlConst t (StrMap.findD m (Str.ofString g) .erased)
   | _ => t
 def inlEs (m : StrMap ETm) (ts : ETms) : ETms := match ts with
   | .nil => .nil

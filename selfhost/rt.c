@@ -176,12 +176,32 @@ static V pair(V a, V b) { V fs[2] = {a, b}; return mkobj(0, 2, fs); }
 
 /* ---- data the natives build: Bool, Prod, List, Char, String ---- */
 
+#ifdef WIZ_RC
+/* Static objects: the value of a constructor without fields, `(k, ◾)`, is the same every
+   time; one per `k < 64` (Bools, `nil`, `none`, `0`'s payload…). Their count starts
+   high and they are never freed (they are not counted as allocated either). */
+typedef struct { uint32_t rc, tag, n, pad; V f[2]; } __attribute__((aligned(16))) Nul;
+#define RT_NNUL 64
+static Nul rt_nul[RT_NNUL];
+static void rt_nulInit(void) {
+  for (uint32_t k = 0; k < RT_NNUL; k++) { rt_nul[k].rc = 1u << 30; rt_nul[k].tag = 0; rt_nul[k].n = 2; rt_nul[k].f[0] = BOX(k); rt_nul[k].f[1] = BOX(0); }
+}
+INLINE V nul(uint32_t k) { rt_nul[k].rc++; return (V)&rt_nul[k]; }
+static V boolv(int b) { return nul(b ? 1 : 0); }
+#else
 static V boolv(int b) { return pair(BOX(b ? 1 : 0), BOX(0)); }
+#endif
 static V flat3(V a, V b, V t) { V fs[3] = {a, b, t}; return mkobj(0, 3, fs); }
 static V flat4(V a, V b, V c, V t) { V fs[4] = {a, b, c, t}; return mkobj(0, 4, fs); }
 /* `Prod.mk a b`: the payload `(tag 0, (a, (b, ◾)))` */
 static V prodv(V a, V b) { return flat4(BOX(0), a, b, BOX(0)); }
-static V nilv(void) { return pair(BOX(0), BOX(0)); }
+static V nilv(void) {
+#ifdef WIZ_RC
+  return nul(0);
+#else
+  return pair(BOX(0), BOX(0));
+#endif
+}
 static V consv(V h, V t) { return flat4(BOX(1), h, t, BOX(0)); }
 static V charv(uint32_t c) { return flat3(BOX(0), BOX(c), BOX(0)); }
 static V stringv(V list) { return flat3(BOX(0), list, BOX(0)); }
@@ -242,6 +262,9 @@ static V p_natSucc(V n) { return BOX(UNBOX(n) + 1); }
 /* a number's payload for a match: `(tag 0, ◾)` or `(tag 1, (n - 1, ◾))` */
 static V p_natUnpack(V n) {
   uintptr_t k = UNBOX(n);
+#ifdef WIZ_RC
+  if (k == 0) return nul(0);
+#endif
   return k == 0 ? pair(BOX(0), BOX(0)) : flat3(BOX(1), BOX(k - 1), BOX(0));
 }
 static V p_natPack(V p) {
@@ -869,6 +892,9 @@ static void rt_start(char **argv) {
     r.rlim_cur = (r.rlim_max == RLIM_INFINITY || r.rlim_max >= want) ? want : r.rlim_max;
     if (setrlimit(RLIMIT_STACK, &r) == 0) { setenv("WIZ_STACK_SET", "1", 1); execv("/proc/self/exe", argv); }
   }
+#ifdef WIZ_RC
+  rt_nulInit();
+#endif
 #ifndef WIZ_RC
   GC_INIT();
   /* collect less often: the heap of a compiler is mostly live (20% faster) */
