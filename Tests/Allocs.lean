@@ -17,16 +17,20 @@ def allocsMain (args : List String) : IO UInt32 := do
     | (e, _ :: i) => (e, i)
     | (e, []) => (e, [])
   let mut m : List (Name × String) := []
+  -- only modules from the toolchain's `lib/` (not replaced by a draft) are trusted
+  let mut own : List Name := []
   for dir in ["lib", "drafts/rust/lib"] do
     for e in ← System.FilePath.readDir dir do
       if e.path.extension == some "wiz" then
-        m := (e.path.fileStem.getD "", ← IO.FS.readFile e.path) :: m
+        let n := e.path.fileStem.getD ""
+        own := if dir == "lib" then n :: own else own.filter (· != n)
+        m := (n, ← IO.FS.readFile e.path) :: m
   let src ← IO.FS.readFile file
   let extra := "\n" ++ String.intercalate "\n" ((entries.filter (·.contains ':')).map fun e =>
     let parts := e.splitOn ":="
     s!"def {parts[0]!.trimAscii} := {parts[1]!.trimAscii}")
   let src := src ++ extra
-  let s := runFrontend (R := ZeroOneMany) src { trustedModule := (· != ""), loader := fun n => m.lookup n }
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := own.contains, loader := fun n => m.lookup n }
   for msg in s.messages do
     if msg.severity == .error then IO.eprintln (msg.render src)
   for e in entries do
