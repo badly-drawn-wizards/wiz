@@ -542,8 +542,11 @@ def mkMetaCode (g : Globals R) (builtins procMacros tactics : List (Name × Name
 
 /-- The method functions of a class `C` (from its structure declaration):
 `C.f : {Δ} → [self : C Δ] → F`, the field `f` of `self`, where earlier fields in `F`
-become projections of `self`. -/
-def classMethods (sDecl : Decl R) (levelParams : List Name) : List (Decl R) := Id.run do
+become projections of `self`. With `selfBi := .default`, the projection functions of a
+structure `S`: `S.f : {Δ} → (self : S Δ) → F` (`Signal.map BitVec.toNat s`). Erased
+fields get none. -/
+def classMethods (sDecl : Decl R) (levelParams : List Name)
+    (selfBi : BinderInfo := .instImplicit) : List (Decl R) := Id.run do
   let C := sDecl.name
   let us := levelParams.map Level.param
   let (Δ, _) := peelPis sDecl.type
@@ -567,7 +570,7 @@ def classMethods (sDecl : Decl R) (levelParams : List Name) : List (Decl R) := I
     let mut A' := A.lift 1 k
     for i in (List.range k).reverse do
       A' := A'.instantiateAt 0 (proj i (.var i))
-    let type := implicitΔ.foldr (fun (y, bi, q, B) acc => .pi y bi q B acc none) (.pi "self" .instImplicit w Capp A' none)
+    let type := implicitΔ.foldr (fun (y, bi, q, B) acc => .pi y bi q B acc none) (.pi "self" selfBi w Capp A' none)
     let value := Δ.foldr (fun (y, _, _, _) acc => .lam y acc) (.lam "self" (proj k (.var 0)))
     let d : Decl R := { name := C ++ "." ++ x, levelParams, type, value := some value }
     out := out ++ [d]
@@ -893,7 +896,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
-      match runElab (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
           (elabStructure cmd levelParams) levelParams with
       | .error e => report .error e.info e.msg
       | .ok decls =>
@@ -976,6 +979,11 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals elabCmd levelParams with
       | .error e => report .error e.info e.msg
       | .ok decls =>
+        -- a structure's projection functions `S.f` (unless the name is taken, as `S.mk`)
+        let decls := if cmd.isOfKind "command.structure" then
+            decls ++ (classMethods (decls[0]!) levelParams .default).filter fun d =>
+              !s.globals.contains d.name && !decls.any (·.name == d.name)
+          else decls
         let mut g := s.globals
         for d in decls do
           match addDeclSorted g d with
@@ -1066,7 +1074,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let body := ((cmd.getArg 6).getStr?).getD ""
     if s.globals.contains name then report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
-      let elabTy := runElab (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+      let elabTy := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
         (elabDeclTerms binders (some (cmd.getArg 4)) none cmd.info) []
       match elabTy with
       | .error e => report .error e.info e.msg
@@ -1120,7 +1128,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let name := ((cmd.getArg 3).getId?).getD "_"
     if s.globals.contains name then report .error (cmd.getArg 3).info s!"'{name}' has already been declared"
     else
-      let elabTy := runElab (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+      let elabTy := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
         (elabDeclTerms #[] (some (cmd.getArg 5)) none cmd.info) []
       match elabTy with
       | .error e => report .error e.info e.msg
