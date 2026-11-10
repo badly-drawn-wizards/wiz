@@ -2400,7 +2400,7 @@ def wordGroup : Group where
         check ((out.splitOn "wiz_word_to_bits").length > 1) s!"match doesn't read the bits natively:\n{out}" },
     { name := "a U64 result is read back from a raw box", run := fun _ =>
         cRun "import Word\ndef main : U64 := UIntN.mul (U64.ofNat 18446744073709551615) (U64.ofNat 3)"
-          ".mk .zero 18446744073709551613" }
+          ".mk 18446744073709551613" }
   ]
 
 def stdGroup : Group where
@@ -3021,7 +3021,21 @@ def vecGroup : Group where
           "#run (BitVec.add (BitVec.ofNat 65 36893488147419103231) (BitVec.ofNat 65 2)).toNat\n" ++
           "#run (BitVec.sub (BitVec.ofNat 63 0) (BitVec.ofNat 63 1)).toNat")
           ["18446744073709551613", "1", "9223372036854775807"]
-        cRunLibs "import BitVec\ndef main : Nat := (BitVec.ashr (BitVec.ofNat 64 9223372036854775808) 63).toNat" "18446744073709551615" }
+        cRunLibs "import BitVec\ndef main : Nat := (BitVec.ashr (BitVec.ofNat 64 9223372036854775808) 63).toNat" "18446744073709551615" },
+    { name := "one type family: a BitVec is a UIntN, both ways, and widths still count", run := fun _ => do
+        okLibs ("import BitVec\ndef w (x : U32) : BitVec 32 := BitVec.add x (BitVec.ofNat 32 1)\n" ++
+          "def u (x : BitVec 8) : U8 := UIntN.mul x x\n#eval (w (U32.ofNat 4294967295)).toNat\n#eval (u (BitVec.ofNat 8 20)).toNat\n" ++
+          "def t : (UIntN.add (BitVec.ofNat 8 200) (U8.ofNat 100)).toNat = 44 := rfl")
+          ["0", "144"]
+        failsLibs "import BitVec\ndef bad (x : BitVec 8) : U16 := x" "mismatch" },
+    { name := "a BitVec compiles to native words: no word object in the IR", run := fun _ => do
+        let src := "import BitVec\ndef f (a b : BitVec 64) : BitVec 64 := BitVec.add (BitVec.xor a b) (BitVec.ashr a 3)\n" ++
+          "def g (a : BitVec 64) : Bool := BitVec.slt a (BitVec.signExtend 64 (BitVec.extract 7 0 a))\n#ir f\n#ir g\n" ++
+          "#ir BitVec.add\n#ir BitVec.ashr\n#ir BitVec.slt\n#ir BitVec.extract\n#ir BitVec.signExtend\n#ir BitVec.concat"
+        let s := runFrontend (R := ZeroOneMany) src { loader := ← libLoader }
+        let out := String.intercalate "\n" (s.messages.toList.map (·.text))
+        check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
+        check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }
   ]
 
 
