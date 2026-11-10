@@ -1605,7 +1605,17 @@ WIZ_API void *wiz_sys_spawn(const char *cmd, wiz_val args, uint64_t in, uint64_t
   pid_t pid = 0;
   if (r == 0) {
     fflush(stdout); fflush(stderr);
-    r = posix_spawnp(&pid, cmd, &fa, NULL, argv, environ);
+    /* the child gets SIGPIPE back (we ignore it), and an empty signal mask */
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    sigset_t def, none;
+    sigemptyset(&def); sigaddset(&def, SIGPIPE);
+    sigemptyset(&none);
+    posix_spawnattr_setsigdefault(&at, &def);
+    posix_spawnattr_setsigmask(&at, &none);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+    r = posix_spawnp(&pid, cmd, &fa, &at, argv, environ);
+    posix_spawnattr_destroy(&at);
   }
   posix_spawn_file_actions_destroy(&fa);
   wiz_sys_free_strings(argv);
@@ -1704,6 +1714,7 @@ WIZ_API uint64_t wiz_sys_child_kill(void *p, uint64_t sig) {
 WIZ_API uint64_t wiz_sys_exec(const char *cmd, wiz_val args) {
   char **argv = wiz_sys_strings(args, cmd);
   fflush(stdout); fflush(stderr);
+  signal(SIGPIPE, SIG_DFL);
   execvp(cmd, argv);
   int e = errno;
   wiz_sys_free_strings(argv);
