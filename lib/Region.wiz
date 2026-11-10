@@ -31,13 +31,16 @@ axiom Outlives.static : (0 ρ : Region) → Outlives Region.static ρ
 -- `&'a A`: a shared borrow carries the value (shared, rc + 1; nothing mutates it while
 -- the borrow lives). Read it with `.val`.
 structure Shr (ρ : Region) (A : Type) where
+  private mk ::
   val : A
 -- `&'a mut A` as an argument (L3): the current value, handed back by the callee.
 structure Uniq (ρ : Region) (A : Type) where
+  private mk ::
   val : A
 -- `&'a mut A` returned from a lender `S` (L4): the borrowed value and the backward
 -- function that rebuilds the lender from the borrow's final value.
 structure Mut (ρ : Region) (A S : Type) where
+  private mk ::
   store : Store A S
 -- `Option (&'a mut A)` returned from a lender `S` (L12): a borrow, or the lender back.
 inductive MutOpt (ρ : Region) (A S : Type) where
@@ -46,11 +49,14 @@ inductive MutOpt (ρ : Region) (A S : Type) where
 -- the lender `S` while it is mutably borrowed at `ρ`: inside the borrow's scope the
 -- lender's name is rebound to this, and nothing accepts it
 structure Lent (ρ : Region) (S : Type) where
+  private mk ::
   lent : Unit
 
--- The constructors `Shr.mk`, `Uniq.mk`, `Mut.mk`, `MutOpt.some/none`, `Lent.mk` are
--- this library's: lowered code gets handles only from the scopes and operations below.
--- wishful: private-decls (today nothing stops lowered code from forging a handle)
+-- The constructors `Shr.mk`, `Uniq.mk`, `Mut.mk` and `Lent.mk` are private to this
+-- module (`private mk ::`, README 13b): other modules get handles only from the scopes
+-- and operations below, and see the handle types as opaque (no tuple or look-alike
+-- structure converts to one), reading them through `.val`/`.store`/`.lent`. `MutOpt`'s
+-- constructors stay public: their fields are handles already, so they forge nothing.
 
 -- ## Scopes: fresh regions
 

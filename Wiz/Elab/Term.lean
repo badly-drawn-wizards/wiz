@@ -252,6 +252,21 @@ second component's type with the first projection. Throw if the field isn't foun
 Returns the projected term and its type. -/
 partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : List Name) :
     ElabM R (Term R × VTy R) := do
+  -- (given, 13b) a structure with a constructor private to another module is opaque
+  -- here: `t.f` is its projection function `S.f t`
+  if let f :: rest := fields then
+    if let .neutral (.global S us) _ ← force ty then
+      let g ← getGlobals
+      if g.opaques.contains S then
+        let some d := g.find? (S ++ "." ++ f)
+          | throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty}"
+        if let some m := g.privateTo? (S ++ "." ++ f) then
+          throwAt ctx.info s!"'{S}.{f}' is private to module {m}" "private"
+        let fty : VTy R := eval g [] (d.type.instLevels d.levelParams us)
+        let (tm, fty) ← insertImplicits ctx (.const (S ++ "." ++ f) us) fty
+        let .pi _ _ _ dom cod _ ← force fty | throwAt ctx.info s!"{S}.{f} is not a function of {S}"
+        unifyAt ctx (.missing) dom ty
+        return ← elabFields ctx (Term.app tm t) (← instM cod (← evalIn ctx t)) rest
   sorry
 
 /-! ## Pattern matching (stage 4e)
@@ -494,6 +509,10 @@ partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R))
     let some b ← rflProof (ctx.bind x A) (← instM B (Val.var ctx.lvl)) | pure none
     pure (some (.lam x b))
   | _ => pure none
+
+/-- (13a) Does an application have a named argument `(x := e)`? -/
+def hasNamedArgs (stx : Syntax) : Bool :=
+  stx.isOfKind "term.app" && (stx.getArg 1).args.any (·.isOfKind "term.namedArg")
 
 mutual
 
@@ -912,6 +931,10 @@ expected type (failure is fine here), and only then are the arguments elaborated
 against domains that are now usually known. That is what lets `.cons .zero .nil` find
 its constructors. Each placeholder is then unified with its argument. -/
 partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
+  if hasNamedArgs stx then
+    let (t, ty) ← inferAppNamed ctx stx
+    unifyAt ctx stx expected ty
+    return t
   let (f, fty) ← infer ctx (stx.getArg 0)
   let mut f := f
   let mut fty := fty
@@ -983,7 +1006,82 @@ unify it with a fresh Π `(x : ?A) → ?B x` first. Anything else is "not a func
 
 With `@f`, each argument fills the next Π whether implicit or explicit. -/
 partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true) : ElabM R (Term R × VTy R) := do
+  -- (given, 13a) named arguments `(x := e)`
+  if hasNamedArgs stx then return ← inferAppNamed ctx stx
   sorry
+
+/-- (13a) The binder names of a Π telescope. -/
+partial def binderNames (lvl : Lvl) (ty : VTy R) : ElabM R (List Name) := do
+  match ← force ty with
+  | .pi x _ _ _ cod _ => return x :: (← binderNames (lvl + 1) (← instM cod (Val.var lvl)))
+  | _ => return []
+
+/-- (13a) An application with named arguments `f a (x := e) b`, as in Lean. Walk `f`'s
+type: a binder whose name has a named argument takes it, wherever it is (implicit,
+instance or explicit); otherwise an explicit binder takes the next positional argument,
+and an implicit or instance binder gets a metavariable or an instance problem (with
+`@f`, every binder takes the next positional argument). Once the positional arguments
+run out, the walk continues only while named arguments are left, so a named argument
+after the last positional one fills its binder, inserting implicits before it; an
+explicit binder before it, with no positional argument, is an error (Lean would
+abstract it). Trailing instance arguments are inserted as for `inferApp`. -/
+partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) := do
+  let fStx := stx.getArg 0
+  let explicitMode := fStx.isOfKind "term.explicit"
+  let args := (stx.getArg 1).args
+  let mut named : Array (Name × Syntax × Syntax) := #[]
+  let mut positional : Array Syntax := #[]
+  for a in args do
+    if a.isOfKind "term.namedArg" then
+      let x := ((a.getArg 1).getId?).getD "_"
+      if named.any (·.1 == x) then
+        throwAt (ctx.withInfo a).info s!"argument '{x}' was already given"
+      named := named.push (x, a.getArg 3, a)
+    else positional := positional.push a
+  let (f, fty) ← infer ctx fStx
+  let mut f := f
+  let mut fty := fty
+  let mut pos := 0
+  while pos < positional.size || !named.isEmpty do
+    let .pi x bi _ dom cod _ ← force fty
+      | if let some (y, _, a) := named[0]? then
+          throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})"
+        else
+          throwAt (ctx.withInfo fStx).info s!"function expected\n  {showTerm ctx f} : {← showVal ctx fty}"
+    let a ← match named.findIdx? (·.1 == x) with
+      | some i =>
+        let (_, e, _) := named[i]!
+        named := named.eraseIdx! i
+        check ctx e dom
+      | none =>
+        if bi == .default || explicitMode then
+          match positional[pos]? with
+          | some e =>
+            pos := pos + 1
+            if explicitMode && bi == .instImplicit && e.isOfKind "term.hole" then do
+              let m ← freshMeta (ctx.withInfo e) s!"instance {x}"
+              addInstProblem ctx m dom
+              pure m
+            else check ctx e dom
+          | none =>
+            let later ← binderNames ctx.lvl fty
+            let (y, _, a) := named[0]!
+            if let some (y, _, a) := named.find? (!later.contains ·.1) then
+              throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})"
+            throwAt (ctx.withInfo a).info s!"named argument '{y}' comes after the explicit parameter '{x}', which has no argument"
+        else if bi == .instImplicit then do
+          let m ← freshMeta ctx s!"instance {x}"
+          addInstProblem ctx m dom
+          pure m
+        else do
+          let m ← freshMeta ctx s!"implicit argument {x}"
+          if let .sort l ← force dom then addSortConstraint ctx m l
+          pure m
+    f := .app f a
+    fty ← instM cod (← evalIn ctx a)
+  if !explicitMode && (← trailingInst ctx.lvl fty) then
+    (f, fty) ← insertImplicits ctx f fty
+  pure (f, fty)
 
 /-- Compile clauses over the variables `vars` (levels) against `goal`. -/
 partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (MClause R))
@@ -1408,6 +1506,9 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let x := stripScope x
     match (← getGlobals).find? x with
     | some d =>
+      -- (13b) a private name of another module
+      if let some m := (← getGlobals).privateTo? x then
+        throwAt ctx.info s!"'{x}' is private to module {m}" "private"
       let us ← match explicitLevels with
         | some ls =>
           unless ls.size == d.levelParams.length do
@@ -1447,6 +1548,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     return (.sort l, .sort (.succ l))
   | "term.prop" => return (.sort .zero, .sort (.succ .zero))
   | "term.paren" => infer ctx (stx.getArg 1)
+  | "term.namedArg" => throwAt ctx.info "a named argument `(x := e)` is only allowed as an argument of an application"
   | "term.ascription" =>
     let (ty, _) ← checkType ctx (stx.getArg 3)
     let vty ← evalIn ctx ty
