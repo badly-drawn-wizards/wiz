@@ -1869,7 +1869,7 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   `I8 … I64`, with `U32.ofNat`, `I32.ofNeg`, …). Operations are named functions
   (`UIntN.add a b`, or `a.add b`) until the numeric classes (HD9) arrive.
 * **The width is a phantom parameter** (`inductive UIntN (w : Nat) where | mk (toNat :
-  Nat)`, since 22e/22f): no field mentions it, yet `UIntN 8` and `UIntN 16` are different
+  Nat)`, since 22e/22h): no field mentions it, yet `UIntN 8` and `UIntN 16` are different
   types and `w` is inferred. (Before 22e it had to be an index, `mk {0 w : Nat} …`,
   leaving an erased slot in the object.)
 * **Natives.** The kernel computes with the definitions, quickly on numerals (22a), and
@@ -1960,7 +1960,7 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
 * A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
   parameters never count. Declare a `structure` instead.
 
-### 22f: one bit-vector family ✅
+### 22h: one bit-vector family ✅
 
 `BitVec n` (`lib/BitVec.wiz`) and `UIntN n` (`lib/Word.wiz`) are one type:
 
@@ -2009,7 +2009,7 @@ Functions: `head`/`tail`/`last`/`init` on non-empty vectors, `get`/`set` by `Fin
 and `get_map` are in `drafts/vec-lib/VecProofs.wiz` since D1: without regularity they would
 need `cast B B e b = b` at a type variable, which is not provable; see docs/Status.md.)
 
-`lib/BitVec.wiz` (`import BitVec`): `BitVec n` (since 22f, `UIntN n` under another name), a `Nat` below `2^n` by construction
+`lib/BitVec.wiz` (`import BitVec`): `BitVec n` (since 22h, `UIntN n` under another name), a `Nat` below `2^n` by construction
 (every operation reduces mod `2^n`). Wrapping `add`/`sub`/`neg`/`mul`, `udiv`/`umod`,
 `and`/`or`/`xor`/`not`, `shl`/`lshr`/`ashr`, `getBit`, `msb`, `beq`/`ult`/`ule`/`slt`/`sle`,
 `concat`, `extract hi lo`, `zeroExtend`, `signExtend`, and `toVec`/`ofVec` (to and
@@ -2017,7 +2017,7 @@ from `Vec Bool n`, least significant bit first). Operations that need `2^n` take
 width at runtime (`{ω n : Nat}`). The arithmetic is the Prelude's native `Nat`
 operations (22a), so the kernel computes on literal bit vectors:
 `(BitVec.add (BitVec.ofNat 8 200) (BitVec.ofNat 8 100)).toNat = 44 := rfl`. Compiled code
-runs `lib/Word.wiz`'s native words (22f).
+runs `lib/Word.wiz`'s native words (22h).
 
 Along the way the elaborator learned to:
 * keep erased constructor fields and arguments erased when a `match` reverts them, and

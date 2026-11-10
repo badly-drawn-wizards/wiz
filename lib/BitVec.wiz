@@ -6,7 +6,7 @@ import Word
 -- proof-carrying subtype may come later). Arithmetic wraps around. Bit 0 is the least
 -- significant.
 --
--- One type family (stage 22f): `BitVec n` *is* `UIntN n` (lib/Word.wiz), the
+-- One type family (stage 22h): `BitVec n` *is* `UIntN n` (lib/Word.wiz), the
 -- machine-integer type, under the names hardware and proofs use. A bit vector and a word
 -- are interchangeable (no conversion); the kernel and proofs see the definitions below,
 -- each of which unfolds to Word's model (`BitVec.add a b` is `UIntN.ofNat n (a.toNat +
