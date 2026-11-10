@@ -1,15 +1,18 @@
 import RsCore
 -- Lowering of drafts/rust/surface/03_get_mut.wiz (rules: drafts/rust/LOWERING.md).
 -- A function returning `&'a mut` (L4): its result is a `Mut ρ A S`, a borrowed value and
--- the backward function to the lender. Its body is a place expression, so it is a place
+-- the backward function to the lender, in the lender's region `ρ` (inferred from `v`). Its body is a place expression, so it is a place
 -- function (L10): the front end also emits its lens laws and its spec.
 
 -- fn get_mut {'a} (v : &'a mut Vec U64) (i : USize) : &'a mut U64 := &mut v[i]
-def get_mut {ρ : Region} (v : Vec U64) (i : U64) : Result (Mut ρ U64 (Vec U64)) :=
-  Vec.indexMut i v
+def get_mut {ρ : Region} (v : Uniq ρ (Vec U64)) (i : U64) : Result (Mut ρ U64 (Vec U64)) :=
+  Mut.ofPLens v (Vec.indexMut i)
 
--- generated: `get_mut` is a lawful partial lens (a place function), at quantity 0
-def get_mut.lawful {ρ : Region} (i : U64) : PLens.Lawful (fun (v : Vec U64) => @get_mut ρ v i) :=
+-- generated: `get_mut` borrows through a place (L10), a lawful partial lens, at quantity 0
+def get_mut.place (i : U64) : PLens (Vec U64) U64 := Vec.indexMut i
+def get_mut.is_place {ρ : Region} (v : Uniq ρ (Vec U64)) (i : U64) :
+    get_mut v i = Mut.ofPLens v (get_mut.place i) := refl (get_mut v i)
+def get_mut.lawful (i : U64) : PLens.Lawful (get_mut.place i) :=
   Vec.indexMut_lawful i
 
 -- the spec, `ensures *result = old(v)[i] ∧ final(v) = old(v).set i final(result)`:
@@ -19,24 +22,26 @@ def List.set {A : Type} : Nat → List A → A → List A
   | _, .nil, _ => .nil
   | .zero, .cons _ xs, y => .cons y xs
   | .succ i, .cons x xs, y => .cons x (List.set i xs y)
-def get_mut.spec {ρ : Region} (v : Vec U64) (i : U64) : Prop :=
+def get_mut.spec {ρ : Region} (v : Uniq ρ (Vec U64)) (i : U64) : Prop :=
   Result.All (fun (r : Mut ρ U64 (Vec U64)) =>
-    (Vec.index v i = .ok r.1) × ((fin : U64) → (r.2 fin).items = List.set i.val v.items fin))
-    (@get_mut ρ v i)
+    (Vec.index v.val i = .ok (Mut.get r)) × ((fin : U64) → (Mut.close r fin).val.items = List.set i.val v.val.items fin))
+    (get_mut v i)
 
 -- fn bump (v : &mut Vec U64) : Unit := { *get_mut (&mut v) 1 += 10 }
-def bump {ρ : Region} (v : Vec U64) : Result (Unit × Vec U64) :=
-  match @get_mut Region.static v (U64.lit 1) with   -- the borrow `r` of v (v is frozen)
-  | .ok r =>
-    match U64.add r.1 (U64.lit 10) with             -- *r + 10 (may overflow)
-    | .ok x =>
-      let v := r.2 x;                               -- the borrow ends: put the final value
-      .ok ((), v)
-    | .err e => .err e                              -- a panic drops `r` (and its hole)
-  | .err e => .err e
+-- The call returns a borrow of `*v`, so it runs in a reborrow scope (L17): inside, `v`
+-- is a `Lent` token (v is frozen while `m` lives: using it is a type error, see
+-- drafts/rust/rejected/E0502_use_while_mut.wiz), and `m`'s last use gives the lender back.
+def bump {ρ : Region} (v : Uniq ρ (Vec U64)) : Result (Unit × Uniq ρ (Vec U64)) :=
+  Uniq.reborrow v (fun ρ' h v r =>                  -- &mut *v, at ρ' (ρ : ρ')
+    match get_mut r (U64.lit 1) with                -- the borrow `m` of *r
+    | .ok m =>
+      (match U64.add (Mut.get m) (U64.lit 10) with  -- *m + 10 (may overflow)
+      | .ok x => .ok ((), Mut.close m x)            -- the borrow ends: put the final value
+      | .err e => .err e)                           -- a panic drops `m` (and its hole)
+    | .err e => .err e)
 
 def run (xs : List Nat) : Result (List Nat) :=
-  match @bump Region.static (Vec.ofList (List.map U64.mk xs)) with
+  match Uniq.borrow Region.static (Vec.ofList (List.map U64.mk xs)) (fun ρ h v r => bump r) with
   | .ok r => .ok (List.map U64.toNat r.2.items)
   | .err e => .err e
 
@@ -69,16 +74,16 @@ def List.atL_get {A : Type} : (i : Nat) → (s : List A) →
   | .zero, .cons x xs => refl (Option.some x)
   | .succ i, .cons x xs => List.atL_get_under x (List.getOpt i xs) (List.atL i xs) (List.atL_get i xs)
 
-def get_mut.spec_under {ρ : Region} (v : Vec U64) (i : U64) : (r : Result (Store U64 (List U64))) →
-    Result.All (fun (st : Store U64 (List U64)) => List.getOpt i.val v.items = Option.some st.1) r →
-    Result.All (fun (st : Store U64 (List U64)) => (fin : U64) → st.2 fin = List.set i.val v.items fin) r →
+def get_mut.spec_under {ρ : Region} (v : Uniq ρ (Vec U64)) (i : U64) : (r : Result (Store U64 (List U64))) →
+    Result.All (fun (st : Store U64 (List U64)) => List.getOpt i.val v.val.items = Option.some st.1) r →
+    Result.All (fun (st : Store U64 (List U64)) => (fin : U64) → st.2 fin = List.set i.val v.val.items fin) r →
     Result.All (fun (r : Mut ρ U64 (Vec U64)) =>
-      (Vec.index v i = .ok r.1) × ((fin : U64) → (r.2 fin).items = List.set i.val v.items fin))
-      (Store.underR Vec.mkL r)
+      (Vec.index v.val i = .ok (Mut.get r)) × ((fin : U64) → (Mut.close r fin).val.items = List.set i.val v.val.items fin))
+      (@Mut.ofR ρ (Vec U64) U64 (Store.underR Vec.mkL r))
   | .ok st, hg, hs =>
     (@Optic.subst (Option U64) (fun (o : Option U64) => Option.okOr .outOfBounds o = Result.ok st.1)
-       (Option.some st.1) (List.getOpt i.val v.items) (Optic.sym hg) (refl (Result.ok st.1)),
+       (Option.some st.1) (List.getOpt i.val v.val.items) (Optic.sym hg) (refl (Result.ok st.1)),
      hs)
   | .err e, hg, hs => ()
-def get_mut.spec_holds {ρ : Region} (v : Vec U64) (i : U64) : get_mut.spec v i :=
-  @get_mut.spec_under ρ v i (@List.atL U64 i.val v.items) (@List.atL_get U64 i.val v.items) (@List.atL_set U64 i.val v.items)
+def get_mut.spec_holds {ρ : Region} (v : Uniq ρ (Vec U64)) (i : U64) : get_mut.spec v i :=
+  get_mut.spec_under v i (@List.atL U64 i.val v.val.items) (@List.atL_get U64 i.val v.val.items) (@List.atL_set U64 i.val v.val.items)
