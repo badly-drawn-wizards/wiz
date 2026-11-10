@@ -375,10 +375,12 @@ def piTele : Tms → Tm → Tm
 def fieldNames : List Field → List String
   | .nil => .nil
   | .cons (.mk x _) rest => .cons x (fieldNames rest)
-def ctorName (c : Syntax) : String := match kid c 1 with
+-- (13b: a constructor is "|" ["private"] ident binders [":" T]; privacy is the
+-- Lean elaborator's, the self-hosted frontend ignores it)
+def ctorName (c : Syntax) : String := match kid c 2 with
   | .ident n => n
   | _ => "_"
-def ctorFields (c : Syntax) : List Field := fieldsOf (kids (kid c 2))
+def ctorFields (c : Syntax) : List Field := fieldsOf (kids (kid c 3))
 
 -- an index (`tt` without one), scope-checked in `sc` and closed at depth `d`
 def idxTm (inline : Bool) (gs : Globals) (sc : Scope) (d : Nat) : Option Syntax → Elab
@@ -415,7 +417,7 @@ def ctorDesc (inline : Bool) (gs : Globals) (T : String) (ps : List String) (nid
 -- a constructor's index: the last argument of its result type `T ps i`
 def ctorRes (nidx : Nat) (c : Syntax) : Option Syntax := match nidx with
   | .zero => .none
-  | .succ _ => match kids (kid c 3) with
+  | .succ _ => match kids (kid c 4) with
     | .cons _ (.cons ty _) => .some (lastS (kids (kid ty 1)))
     | _ => .none
 
@@ -3100,10 +3102,11 @@ def implicitBinders : List Syntax → List Syntax
   | .nil => .nil
   | .cons b rest => .cons (mkNode "binder.implicit" (.cons (.atom "{") (.cons (kid b 1) (.cons (kid b 2)
       (.cons (kid b 3) (one (.atom "}"))))))) (implicitBinders rest)
-def fieldName (f : Syntax) : String := identOf' (kid f 1)
+-- (a field is ["private"] [quantity] ident ":" T)
+def fieldName (f : Syntax) : String := identOf' (kid f 2)
 def fieldBinders : List Syntax → List Syntax
   | .nil => .nil
-  | .cons f rest => .cons (binderStx "(" ")" (fieldName f) (kid f 3)) (fieldBinders rest)
+  | .cons f rest => .cons (binderStx "(" ")" (fieldName f) (kid f 4)) (fieldBinders rest)
 def fieldIdents : List Syntax → List Syntax
   | .nil => .nil
   | .cons f rest => .cons (identStx (fieldName f)) (fieldIdents rest)
@@ -3115,7 +3118,7 @@ def projections (T : String) (bs : List Syntax) (sTy pat : Syntax) : List Syntax
       (.cons (.atom "with") (one (mkNull (one alt))))));
     let d := mkNode "command.def" (.cons (.atom "def") (.cons (.ident (String.append (String.append T ".") (fieldName f)))
       (.cons (mkNull .nil) (.cons (mkNull (List.append (implicitBinders bs) (one (binderStx "(" ")" "s✝" sTy))))
-        (.cons (mkNull (.cons (.atom ":") (one (kid f 3)))) (.cons (.atom ":=") (one body)))))));
+        (.cons (mkNull (.cons (.atom ":") (one (kid f 4)))) (.cons (.atom ":=") (one body)))))));
     .cons d (projections T bs sTy pat rest)
 def strIdents : List String → List Syntax
   | .nil => .nil
@@ -3128,7 +3131,7 @@ def structCmd (gs : Globals) (stx : Syntax) : Step :=
   let sTy := match ps with
     | .nil => identStx T
     | .cons _ _ => mkNode "term.app" (.cons (identStx T) (one (mkNull (strIdents ps))));
-  let ctor := mkNode "inductive.ctor" (.cons (.atom "|") (.cons (.ident "mk") (.cons (mkNull (fieldBinders fs)) (one (mkNull .nil)))));
+  let ctor := mkNode "inductive.ctor" (.cons (.atom "|") (.cons (mkNull .nil) (.cons (.ident "mk") (.cons (mkNull (fieldBinders fs)) (one (mkNull .nil))))));
   let ind := mkNode "command.inductive" (.cons (.atom "inductive") (.cons (kid stx 1) (.cons (kid stx 2) (.cons (kid stx 3)
     (.cons (kid stx 4) (.cons (.atom "where") (one (mkNull (one ctor)))))))));
   let pat := mkNode "term.app" (.cons (mkNode "term.dotIdent" (.cons (.atom ".") (one (.ident "mk")))) (one (mkNull (fieldIdents fs))));

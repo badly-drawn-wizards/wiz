@@ -289,10 +289,10 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let mut ctorInfo : List (Name × List (Name × BinderInfo × Term R × Term R) × List (Term R)) := []
   let mut ctorLevels : List (List (Option Level × Option Level)) := []
   for c in ctors do
-    let cname := ((c.getArg 1).getId?).getD "_"
-    let (ctxF, fs) ← elabTelescope ctxT ((c.getArg 2).args.flatMap binderViews).toList
+    let cname := ((c.getArg 2).getId?).getD "_"
+    let (ctxF, fs) ← elabTelescope ctxT ((c.getArg 3).args.flatMap binderViews).toList
     let n := fs.size
-    let target ← match (c.getArg 3).args[1]? with
+    let target ← match (c.getArg 4).args[1]? with
       | some s => pure (← checkType ctxF s).1
       -- no result type: `T` applied to the parameters
       | none => pure ((telescopeVars nΔ (n + 1)).foldl .app (.var n))
@@ -389,8 +389,8 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     | .error e => throwAt (cmd.getArg 4).info e
   let ctxT := ctxΔ.bind T (eval (← getGlobals) [] (pisTm Δ.toList sig))
   let views : List BinderView := (cmd.getArg 6).args.toList.map fun f =>
-    { name := ((f.getArg 1).getId?).getD "_", info := f.info, bi := .default,
-      qty := (f.getArg 0).args[0]?, type := some (f.getArg 3) }
+    { name := ((f.getArg 2).getId?).getD "_", info := f.info, bi := .default,
+      qty := (f.getArg 1).args[0]?, type := some (f.getArg 4) }
   let (ctxF, fs) ← elabTelescope ctxT views
   let mut fs' := #[]
   for (x, bi, q, A) in fs, k in [0:fs.size] do
@@ -465,8 +465,8 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let us := levelParams.map Level.param
   let (ctxΔ, Δ) ← elabTelescope {} ((cmd.getArg 3).args.flatMap binderViews).toList
   let views : List BinderView := (cmd.getArg 6).args.toList.map fun f =>
-    { name := ((f.getArg 1).getId?).getD "_", info := f.info, bi := .default,
-      qty := (f.getArg 0).args[0]?, type := some (f.getArg 3) }
+    { name := ((f.getArg 2).getId?).getD "_", info := f.info, bi := .default,
+      qty := (f.getArg 1).args[0]?, type := some (f.getArg 4) }
   let (ctxF, fs) ← elabTelescope ctxΔ views
   let mut fs' := #[]
   for (x, bi, q, A) in fs, k in [0:fs.size] do

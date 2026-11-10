@@ -21,10 +21,13 @@ structure Domain where
 def System : Domain := Domain.mk "System" 10000          -- 100 MHz
 
 coinductive Signal (d : Domain) (A : Type) where
-  head : A
-  tail : Signal d A
--- `head`/`tail` are simulation-only: synthesis rejects them on a symbolic signal. The
--- static discipline (Synth.wiz) wants them private to this module.  -- wishful: private-decls
+  private head : A
+  private tail : Signal d A
+-- `head`/`tail` are simulation-only: synthesis rejects them on a symbolic signal. They
+-- are private to this module (docs/stages/13-*.md, 13b), with the coconstructor
+-- `Signal.mk`, and elsewhere `Signal` is opaque: other modules build and observe signals
+-- only through the combinators below and `sample`/`Signal.at` (and can't define one by
+-- copatterns). drafts/hdl/rejected/observe_signal.wiz.
 
 ------------------------------------------------------------------------------------
 -- Combinational lifting

@@ -209,6 +209,11 @@ def termTrailing : List TrailingParser := [
   { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "^", term maxPrec] }
 ]
 
+/-- A field of a `structure`, `class` or `coinductive` (an observation), on its own line;
+`private` (13b) makes its projection (observation) private to the module. -/
+def structureField : ParserDescr :=
+  node "structure.field" (withPosition (seqs [optional (atom "private"), optional quantity, ident, ":", term]))
+
 /-- `where`, then optionally `private mk ::` (13b: a constructor private to the module) -/
 def structureWhere : ParserDescr :=
   node "structure.where" (seqs ["where", optional (seqs [optional (atom "private"), ident, "::"])])
@@ -237,8 +242,9 @@ continue onto a line starting at the command's column.
 | `command.partial`            | "partial" command (a `def`) |
 | `command.mutual`             | "mutual" [command+] "end" (`def`s, all partial) |
 
-A constructor is `inductive.ctor`: "|" ident [binders] [":" T]. A field is
-`structure.field`: [quantity] ident ":" T, on its own line.
+A constructor is `inductive.ctor`: "|" ["private"] ident [binders] [":" T]. A field is
+`structure.field`: ["private"] [quantity] ident ":" T, on its own line (13b: `private`
+makes the constructor, or the field's projection or observation, private to the module).
 -/
 def commandLeading : List LeadingParser := [
   { kind := "command.def", prec := maxPrec,
@@ -291,16 +297,16 @@ def commandLeading : List LeadingParser := [
       many1 (cat "stx" 0), ":", ident] },
   { kind := "command.inductive", prec := maxPrec,
     p := seqs ["inductive", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
-      "where", many (node "inductive.ctor" (seqs ["|", ident, many (bracketedBinder false),
+      "where", many (node "inductive.ctor" (seqs ["|", optional (atom "private"), ident, many (bracketedBinder false),
         optional (seqs [":", term])])), derivingClause] },
   { kind := "command.structure", prec := maxPrec,
     p := seqs ["structure", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
-      structureWhere, many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term]))),
+      structureWhere, many (structureField),
       derivingClause] },
   -- stage 7: a class is a structure whose values are found by instance resolution
   { kind := "command.class", prec := maxPrec,
     p := seqs ["class", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
-      "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term])))] },
+      "where", many (structureField)] },
   { kind := "command.instance", prec := maxPrec,
     p := seqs ["instance", optional (seqs ["(", nonReserved "priority", ":=", num, ")"]),
       many (bracketedBinder false), ":", term,
@@ -308,7 +314,7 @@ def commandLeading : List LeadingParser := [
         (seqs ["where", withPosition (many1 (node "instance.field" (seqs [colGe, ident, ":=", term])))])] },
   { kind := "command.coinductive", prec := maxPrec,
     p := seqs ["coinductive", ident, univParams, many (bracketedBinder false), optional (seqs [":", term]),
-      "where", many (node "structure.field" (withPosition (seqs [optional quantity, ident, ":", term])))] }
+      "where", many (structureField)] }
 ]
 
 /-- The grammar of grammars, used by the `syntax` command.
