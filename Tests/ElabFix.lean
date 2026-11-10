@@ -153,6 +153,11 @@ def group : Group where
           "  | cons {0 n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n" ++
           "def zip {A B : Type} {n : Nat} : Vec A n → Vec B n → Vec (A × B) n\n" ++
           "  | .nil, .nil => .nil\n  | .cons a as, .cons b bs => .cons (a, b) (zip as bs)") },
+    { name := "an argument naming a tuple pattern's component, before a postponed lambda (no scope escape)", run := fun _ =>
+        okLib ("import Prelude\nstructure P where\n  a : Nat\n  b : Nat\n" ++
+          "def app {S B : Type} (s : S) (k : S → B) : B := k s\n" ++
+          "def f (p : P) : Nat := match p with\n  | (x, y, _) => app x (fun x => Nat.add x y)\n" ++
+          "#eval f (P.mk 2 3)") ["5"] },
     { name := "named arguments: explicit, implicit and instance parameters (13a)", run := fun _ =>
         okLib ("import Prelude\nclass BitPack (A : Type) where\n  width : Nat\ninstance : BitPack Bool := BitPack.mk 1\n" ++
           "def bitWidth (0 A : Type) [BitPack A] : Nat := BitPack.width (A := A)\n" ++
