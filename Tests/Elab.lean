@@ -1861,10 +1861,21 @@ def elimLevels : List MTm :=
   [ann star (eq (enum 2) (ind 0 (unit 1) (dret star) 1 (lams 2 (enum 2)) (lams 3 (tag 2 0)) star (con (pair star star))) (tag 2 0)),
    fst (out (coit 0 (unit 1) (drec star (dret star)) (lam (unit 0)) (lams 2 (pair star (pair star star))) star star))]
 
+/-- `transp` is for types in `Type u`, like `eq` and `refl` (audit-2): its motive's type
+`(0 b : A) → (0 _ : a = b) → Prop` and the type of its proof are equations at `A`, which
+the `eq` rule rejects at a proposition. Rejected: `transp` at `True` and at an equation;
+accepted: the same at `Unit` and at `Enum2`. -/
+def transpProp : List MTm :=
+  let e2 := eq (enum 2) (tag 2 0) (tag 2 0)
+  [transp ptrue star (lams 2 ptrue) star star star,
+   transp e2 star (lams 2 ptrue) star star star,
+   transp (unit 0) star (lams 2 ptrue) star star star,
+   transp (enum 2) (tag 2 0) (lams 2 ptrue) star (tag 2 0) (refl (enum 2) (tag 2 0))]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ qtyApart ++ elimLevels ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ qtyApart ++ elimLevels ++ transpProp ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -2578,6 +2589,10 @@ def selfHostGroup : Group where
           unless vs[10 + k]? != some "error" && vs[15 + k]? != some "error" do
             throw (IO.userError s!"{n} with a well-levelled index type was rejected: {vs[10 + k]?}, {vs[15 + k]?}")
         unless vs.drop 20 == ["error", "error"] do throw (IO.userError s!"unexpected verdicts {vs.drop 20}") },
+    { name := "transp is rejected at a proposition, as eq and refl are (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.transpProp.map leanVerdict
+        unless vs.take 2 == ["error", "error"] && (vs.drop 2).all (· != "error") && vs.length == 4 do
+          throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "Q4: a small description field is rejected, a lifted one works (and both kernels agree on it below)", run := fun _ => do
         let vs := MTm.smallField.map leanVerdict
         let body := (vs.drop 4).dropLast

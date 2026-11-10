@@ -477,7 +477,7 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
      ──────────────────────────────────────── cast                                  Check.lean:458–466
      Γ ⊢ cast A B e t ⇒ B ⊣ U
 
-     (all premises in Γ⁰)  Γ⁰ ⊢ A type@_   Γ⁰ ⊢ a ⇐ A   Γ⁰ ⊢ b ⇐ A
+     (all premises in Γ⁰)  Γ⁰ ⊢ A type@l   isNeverZero l   Γ⁰ ⊢ a ⇐ A   Γ⁰ ⊢ b ⇐ A
      Γ⁰ ⊢ P ⇐ (b :0 A) → (_ :0 a =_A b) → Prop
      Γ⁰ ⊢ p ⇐ P a (refl A a)    Γ⁰ ⊢ e ⇐ (a =_A b)
      ──────────────────────────────────────── transp                                Check.lean:467–484
@@ -486,6 +486,12 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
 
 * `a = b` is only formed at a type whose sort is **never** `Prop` (`isNeverZero`).
   Equality of proofs is not expressible, which is consistent with proof irrelevance.
+* `transp` has the same premise (since the F9 fix; found by the second audit). Its rule
+  builds the motive's type `(b :0 A) → (_ :0 a =_A b) → Prop` and the type `a =_A b` of `e`
+  as values, without the `eq` rule, so with only `Γ ⊢ A type@_` it was accepted at a
+  proposition (`transp True tt P p tt tt`), where those are equations the `eq` rule
+  rejects. Harmless (an equation at a proposition computes like one at `Unit`, and proofs
+  are irrelevant), but the type of a well-typed term was not a type.
 * The written type `A` of `eq` and `refl` is not tied to `a`'s type by anything other than
   `a ⇐ A`.
 * `cast` is the only operation whose *result* is relevant; `transp` (transport into a

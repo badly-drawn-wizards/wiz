@@ -295,6 +295,14 @@ the results of the probes listed in the "Probes" section.
   rules have the premise `Γ ⊢ I type@k`, `k ≡ l+1` (CoreSpec §9.3). No other rule had the
   omission: `con`, `cocon`, `out` take their type from the context, `Desc.elim` infers its
   description, `cast`/`transp`/`=` take type terms.
+* **The same kind of gap in `transp`** (second audit; fixed with it). `transp A a P p b e`
+  only required `A` to be a type, while `eq` and `refl` require a sort that is never
+  `Prop`. Its motive type and the type of `e` are equations at `A`, built as values, so
+  `transp` was accepted at a proposition, where the `eq` rule rejects those types. Harmless
+  (proofs are irrelevant), same defect. Now `isNeverZero` / `lvlNeverZero` in both kernels
+  (CoreSpec §8.1). Tests: "transp at a proposition is rejected, at a type accepted" (group
+  *check: structural types*), `MTm.transpProp` in the differential samples and its
+  Lean-verdict case in *selfhost*.
 * **Regression tests.** Group *check: structural types*: three "F3: ind, sfix, scase,
   coit, scofix …" cases (accepted at `Sort (l+1)`; rejected one level too high and one too
   low, with the error text). Group *selfhost*: "F3 (audit): the eliminators check the

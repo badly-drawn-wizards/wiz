@@ -216,6 +216,16 @@ def structGroup : Group where
   name := "check: structural types"
   exercise := "Exercise 4.7"
   cases := [
+    { name := "transp at a proposition is rejected, at a type accepted (as eq and refl)", run := fun _ => do
+        let P : Term Q := .lam "b" (.lam "e" (.unit 0))
+        let at' (A : Term Q) : Term Q := .transp A .tt P .tt .tt .tt
+        match infer (R := Q) { globals := {} } (at' (.unit 0)) with
+        | .ok _ => throw (IO.userError "transp at True was accepted")
+        | .error e => unless ((toString e).splitOn "transp is for types in Type u, not propositions").length > 1 do
+            throw (IO.userError s!"expected the transp error, got: {e}")
+        match infer (R := Q) { globals := {} } (at' (.unit 1)) with
+        | .ok _ => pure ()
+        | .error e => throw (IO.userError s!"transp at Unit was rejected: {e}") },
     { name := "F3: ind, sfix, scase, coit, scofix accept an index type in Sort (l+1)", run := fun _ => do
         elimsAccepted 0; elimsAccepted 1 },
     { name := "F3: ind, sfix, scase, coit, scofix reject an index type one level too high", run := fun _ => do

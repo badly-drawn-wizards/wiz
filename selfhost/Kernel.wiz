@@ -2301,7 +2301,7 @@ def infer : TCtx → Tm → TyRes
   | c0, .subst A a P p b e =>
     -- a proof: everything in it is erased
     let c := TCtx.erase c0;
-    match inferUniv c A with
+    match checkEqDomain c A with
     | .ok _ _ =>
       let vA := eval (TCtx.env c) A;
       match check c a vA with
@@ -2649,6 +2649,14 @@ def checkIndexLevel : TCtx → Nat → Tm → TyRes
     | .ok (.vsort lI) u => match lvlEquiv lI (.lnum (l + 1)) with
       | .true => .ok (.vsort lI) u
       | .false => .err (String.append (String.append (String.append "an index type must be in the data type's universe: Sort " (Nat.toString (l + 1))) ", not Sort ") (lvlShow lI))
+    | r => r
+-- `transp` is for types in `Type u`, as `eq` and `refl` are: the type of its motive and
+-- the type of its proof `e` are equations at `A`, which the `eq` rule rejects at a proposition
+def checkEqDomain : TCtx → Tm → TyRes
+  | c, A => match inferUniv c A with
+    | .ok (.vsort l) u => match lvlNeverZero l with
+      | .true => .ok (.vsort l) u
+      | .false => .err "transp is for types in Type u, not propositions"
     | r => r
 def inferUniv : TCtx → Tm → TyRes
   | c, t => match infer (TCtx.erase c) t with

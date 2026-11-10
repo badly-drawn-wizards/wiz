@@ -100,7 +100,7 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── cast
     Γ ⊢ cast A B e t ⇒ B ⊣ U
 
-    Γ ⊢ a, b ⇐ A    Γ ⊢ P ⇐ (b :0 A) → (_ :0 a = b) → Prop
+    Γ ⊢ A type@l (isNeverZero l)   Γ ⊢ a, b ⇐ A    Γ ⊢ P ⇐ (b :0 A) → (_ :0 a = b) → Prop
     Γ ⊢ p ⇐ P a (refl a)    Γ ⊢ e ⇐ (a = b)
     ──────────────────────────────── transp
     Γ ⊢ transp A a P p b e ⇒ P b e ⊣ 0ₙ
@@ -606,7 +606,10 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .transp A a P p b e => do
     -- a proof: everything in it is erased
     let ctx := { ctx with erased := true }
-    let _ ← checkType ctx A
+    let l ← checkType ctx A
+    -- as for `eq` and `refl`: the motive's type and the type of `e` are equations at `A`
+    unless l.isNeverZero do
+      throw (.other s!"transp is for types in Type u, not propositions: {ctx.showTerm A}")
     let vA := ctx.eval A
     let _ ← check ctx a vA
     let va := ctx.eval a
