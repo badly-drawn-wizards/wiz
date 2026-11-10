@@ -62,7 +62,7 @@ the results of the probes listed in the "Probes" section.
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
 | Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs treats `Prop` (per the review `xtt-cubical-attacks.md` A0; not re-checked in [PT22]). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; algorithmically incomplete, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; decided by ground equality since P1, so stable under substitution, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
@@ -321,6 +321,22 @@ simpler).
 
   `sameFamily?` has the same defect. The fix is to decide the side condition with
   conversion. Confirmed by a probe (the note, §10): `h p q p` is well typed, but its δβ-reduct is rejected, so subject reduction fails for the algorithmic typing.
+
+  **Fixed (P1, `agent/p1-stable`; `/workspace/wiz-notes/p1-stable.md`).**
+  * **The change.** InReg's side condition is ground equality (`groundEqTy`, both
+    kernels). It holds for two inert types that are equal and have no free variable in a
+    relevant position, so it gives the same answer for convertible types and survives
+    substitution. `sameFamily?` is replaced by desc-eq's head-directed rules (PR #40).
+    The numeral fast path is subsumed.
+  * **The probe as a regression test** (group *observational equality*, "P1: …").
+    `h`, `h2` and `h3` check, so the reduct checks iff the term does. `t1` and `t2`
+    (InReg at an open index `f p`) are rejected, consistently.
+  * **What it costs.** InReg on a variable at an inert type whose index is open
+    (`cast (Fin n) (Fin n) e k`). Casts at closed inert types still reduce, and so do
+    casts of constructors at open ones. The measurements are in the note.
+  * **Option** (a decision for the user). `--inert conv` adds InReg_conv: conversion
+    identifies the cast with its argument when the types are convertible (`convTy`). It
+    is congruent, and it accepts `t1` and `t2` too. It is Lean kernel only so far.
 * **What it costs (known failures).** Without regularity a cast at a **type variable**
   is stuck (TTobs behaviour): `cast e a = a` for `e : A = A`, "`J` computes on `refl`"
   at a variable family, and the definitional equations of functions defined by `match`

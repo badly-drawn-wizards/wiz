@@ -606,10 +606,10 @@ Sort u/Sort w, Empty_u/Empty_w     ⟶  t if u ≡ w, else stuck                
 Unit_u/Unit_w                      ⟶  tt if u ≡ w, else stuck                                        631
 Enum/Enum, same number of tags     ⟶  t                                                             632
 ULift.{u}/ULift.{u}, u never 0     ⟶  up (cast A B e (down t))                                        [Q4, §4.1]
-A inert, quote(A) = quote(B)       ⟶  t                         (regularity at inert types)   CONJECTURE (argued) [wiz, D1]
+groundEqTy A B (equal, inert, ground) ⟶  t                     (regularity at inert types)   CONJECTURE (argued) [wiz, D1, P1]
 Desc_l I / Desc_l I'               ⟶  by the description (below)                                  [wiz, D1]
 μ^s D i / μ^s D i', t = con x      ⟶  con (cast (⟦D⟧ μ^s' i) (⟦D⟧ μ^s' i') ê x)                  [std: PT22, D1]
-μ, t a numeral, i, i' syntactically equal ⟶ t                                                   [impl]
+(a numeral at its own type: the line above, since the numeral type is ground)
 ν^s D i / ν^s D i', t = cocon x    ⟶  cocon (cast (⟦D⟧ ν^s' i) (⟦D⟧ ν^s' i') ê x)                [wiz, D1]
 otherwise                          ⟶  stuck
 ```
@@ -703,8 +703,8 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
      restriction is not circular because inert types mention no `Prop`. Abel–Coquand's
      construction needs a non-rigid type: one whose candidate is an impredicative
      intersection (`⊤ → ⊤`), or depends on a `Prop` variable (the box).
-  3. The side condition is syntactic (`sameVal`), so algorithmic conversion is not a
-     congruence for the rule. For example, `cast (Fin (f p)) (Fin (f q)) e k` stays stuck
+  3. The side condition was syntactic (`sameVal`), so algorithmic conversion was not a
+     congruence for the rule (now fixed by ground equality, below: P1). For example, `cast (Fin (f p)) (Fin (f q)) e k` stays stuck
      for a variable `k`, although `Fin (f p) ≡ Fin (f q)` by irrelevance and the reflexive
      cast reduces to `k`. So conversion is not stable under substitution (Status.md, D1).
      That is incompleteness, not unsoundness. The fix is to decide the side condition with
@@ -723,7 +723,28 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   need.
 * **Cost.** Casting a constructor of a non-inert type walks the whole value (each field
   is cast). At inert types the cast is the identity.
-* **Syntactic equality** (`sameVal`, both kernels) quotes at `max (lvlBound A)
+* **The side condition is ground equality** (P1, `groundEqTy` in both kernels;
+  `/workspace/wiz-notes/p1-stable.md`). A side condition must give the same answer for
+  convertible inputs (S1), and an answer of "fires" must survive substitution (S2).
+  Otherwise one side of a conversion reduces and the other is stuck, and a δβ-reduct of
+  a well-typed term can be rejected. Syntactic equality fails S1 (proof arguments inside
+  an index, `Fin (f p)` against `Fin (f q)`; a glued name against its unfolding).
+  `groundEqTy A B` holds for two inert types that are equal and have no free variable in
+  a relevant position:
+  * types and descriptions are compared part by part (an `arg` at a non-tag field is
+    compared under an atom, a variable bound by the comparison);
+  * values are compared by their inert type: tags, numerals and constructors; `Unit` and
+    propositions skipped; `Σ` by projections;
+  * a neutral equals only the same atom.
+  At an inert type, convertible values have the same canonical skeleton and neutrals in
+  the same places, so S1 holds. A ground type has nothing to substitute, so S2 holds.
+  What is lost: regularity at inert types whose indices are open (`cast (Fin n) (Fin n) e
+  k` for variables `n`, `k` is stuck). Casts of constructors still compute structurally.
+  `--inert conv` (experimental, Lean kernel) also identifies `cast A B e t` with `t` in
+  conversion when `A` is inert and `A ≡ B` (InReg_conv, decided by `convTy`, so it is a
+  congruence). `--inert syntactic` restores the old rule for comparison.
+* **Syntactic equality** (`sameVal`, both kernels; now used only by the D1 experiment's
+  `--regularity` modes) quotes at `max (lvlBound A)
   (lvlBound B)`, a level above every variable either value mentions, so different
   variables never quote alike (before `b7e1736` it was a fixed 100000: Status.md, Q3).
 
