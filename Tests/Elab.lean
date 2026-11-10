@@ -978,20 +978,13 @@ def reuseGroup : Group where
     { name := "a structure updated through calls reuses its own cells, in place", run := fun _ => do
         let [s0, r0] ← reuseAllocs ["s0", "r0"] | throw (IO.userError "?")
         let ls ← reuseIR "record"
-        -- the parameter's cell holds the new outer pair, whose second field is the new inner pair
-        let ctorOf (l : String) : Option (String × List String) :=
-          match l.splitOn " := " with
-          | [lhs, rhs] => some ((lhs.drop 4).toString, rhs.splitOn " ")
-          | _ => none
-        let outer := ls.findSome? fun l => match ctorOf l with
-          | some (_, ["reuse", "x1000000", "in", "ctor", "0", _, b]) => some b
-          | _ => none
-        let inner := outer.bind fun b => ls.find? fun l => match ctorOf l with
-          | some (x, "reuse" :: _ :: "in" :: "ctor" :: _) => x == b
-          | _ => false
-        check inner.isSome s!"the parameter's cell is not rebuilt in place:\n{"\n".intercalate ls}"
-        -- bump2's result (an option and a pair) is the only allocation
-        checkEq (s0 + 4) r0 }
+        -- `Stats` is one pair since 22i (its last field is unboxed): the parameter's cell
+        -- holds the new one
+        check (ls.any fun l => (l.splitOn ":= reuse x1000000 in ctor 0 ").length > 1 &&
+            ((l.splitOn ":= reuse x1000000 in ctor 0 ")[1]!.splitOn " ").length == 2)
+          s!"the parameter's cell is not rebuilt in place:\n{"\n".intercalate ls}"
+        -- step's and bump2's results (an option, and an option and a pair) are the only allocations
+        checkEq (s0 + 3) r0 }
   ]
 
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
