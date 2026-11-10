@@ -1993,6 +1993,45 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
 * A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
   parameters never count. Declare a `structure` instead.
 
+### 22g: regions: borrow checking as typing ✅
+
+```
+def longest {ρa ρb : Region} (0 h : Outlives ρa ρb) (x : Shr ρa U64) (y : Shr ρb U64) : Result (Shr ρb U64) :=
+  match U64.lt x.val y.val with
+  | .true => .ok y
+  | .false => .ok (Shr.weaken h x)                       -- without `h`: type mismatch
+def bad {ρ : Region} (x : Shr ρ U64) : Result (Shr ρ U64) :=
+  Shr.borrow ρ (U64.lit 5) (fun ρy hy y => .ok y)         -- E0515: type mismatch
+```
+
+`lib/Region.wiz` (`import Region`) is the lifetime layer of the Rust DSL's lowering
+(`drafts/rust/`, RD12). A lifetime is an erased `ρ : Region`, and the borrow handles are
+declared types, so with phantom parameters (22e) the region is part of their identity
+and is inferred: `Shr ρ A` (`&'a A`), `Uniq ρ A` (`&'a mut A` passed in and handed back),
+`Mut ρ A S` (a returned `&'a mut A` with its backward function to the lender `S`),
+`MutOpt ρ A S`, and `Lent ρ S`, the lender while it is borrowed. Borrow checking is
+typing:
+
+* A borrow scope (`Shr.borrow`, `Uniq.borrow`, `Uniq.reborrow`, `Uniq.share`,
+  `Uniq.zoom`, `Region.scope`) takes a body polymorphic in a fresh region, whose result
+  type is chosen outside it (as `runST`), so no handle of the scope's region can leave
+  it: returning a borrow of a local (E0515) or keeping one past its lender's scope
+  (E0597) is a type mismatch.
+* Inside a mutable borrow, the lender's name is rebound to a `Lent` token, which nothing
+  accepts: using the lender, or borrowing it again, while the borrow lives (E0499,
+  E0502) is a type mismatch.
+* A reference flows to a place of a shorter region only through `Shr.weaken`, which
+  takes an `Outlives ρ ρ'` proof (erased). Proofs come from scopes (a scope nested in `σ`
+  hands out `Outlives σ ρ`) and from a function's `'a : 'b` bounds (erased proof
+  arguments); `Outlives` is opaque, so there is no other way to get one.
+
+Scopes run their body at the enclosing region (regions are erased, so this is sound);
+the separation comes from parametricity alone. `drafts/rust/rejected/` has the classic
+errors, lowered, each rejected (`sh drafts/rust/check.sh`); test group `regions`.
+Not yet: the constructors of the handles are public (private-decls), so the guarantee
+holds for code that follows the lowering rules (the DSL front end), not for hand-written
+Wiz that forges a handle.
+
 ### 22h: one bit-vector family ✅
 
 `BitVec n` (`lib/BitVec.wiz`) and `UIntN n` (`lib/Word.wiz`) are one type:

@@ -5,30 +5,37 @@ import RsCore
 -- can't be applied to the wrong variant.
 
 -- fn first_mut {'a} (v : &'a mut Vec U64) : Option (&'a mut U64) := v.get_mut 0
-def first_mut {ρ : Region} (v : Vec U64) : Result (MutOpt ρ U64 (Vec U64)) :=
+def first_mut {ρ : Region} (v : Uniq ρ (Vec U64)) : Result (MutOpt ρ U64 (Vec U64)) :=
   .ok (Vec.getMut (U64.lit 0) v)
 
 -- fn zero_first (v : &mut Vec U64) : Bool :=
 --   if let .some x := first_mut v then { *x := 0; true } else false
-def zero_first {ρ : Region} (v : Vec U64) : Result (Bool × Vec U64) :=
-  match @first_mut Region.static v with
-  | .ok o => (match o with
-    | .some x k =>
-      let x := U64.lit 0;                           -- *x := 0
-      let v := k x;                                 -- the borrow ends
-      .ok (Bool.true, v)
-    | .none v => .ok (Bool.false, v))                   -- no borrow: v comes straight back
-  | .err e => .err e
+-- (`first_mut` returns a borrow of `*v`: a reborrow scope, L17)
+def zero_first {ρ : Region} (v : Uniq ρ (Vec U64)) : Result (Bool × Uniq ρ (Vec U64)) :=
+  Uniq.reborrow v (fun ρ' h v r =>
+    match first_mut r with
+    | .ok o => (match o with
+      | .some x =>
+        let x := Mut.set x (U64.lit 0);             -- *x := 0
+        .ok (Bool.true, Mut.release x)              -- the borrow ends
+      | .none r => .ok (Bool.false, r))             -- no borrow: the lender straight back
+    | .err e => .err e)
 
--- (the same, through the library: `Affine.over`)
-def zero_first' {ρ : Region} (v : Vec U64) : Result (Unit × Vec U64) :=
-  match @first_mut Region.static v with
-  | .ok o => .ok ((), Affine.over (fun (_ : U64) => U64.lit 0) o)
-  | .err e => .err e
+-- (the same, through the library: `MutOpt.over`)
+def zero_first' {ρ : Region} (v : Uniq ρ (Vec U64)) : Result (Unit × Uniq ρ (Vec U64)) :=
+  Uniq.reborrow v (fun ρ' h v r =>
+    match first_mut r with
+    | .ok o => .ok ((), MutOpt.over (fun (_ : U64) => U64.lit 0) o)
+    | .err e => .err e)
 
 def show (r : Result (Bool × Vec U64)) : Result (Bool × List Nat) :=
   Result.map (fun (r : Bool × Vec U64) => (r.1, List.map U64.toNat r.2.items)) r
-#eval show (@zero_first Region.static (Vec.ofList (.cons (U64.lit 7) (.cons (U64.lit 8) .nil))))
+def run (v : Vec U64) : Result (Bool × List Nat) :=
+  show (Uniq.borrow Region.static v (fun ρ h v r => zero_first r))
+#eval run (Vec.ofList (.cons (U64.lit 7) (.cons (U64.lit 8) .nil)))
 -- .ok (.true, [0, 8])
-#eval show (@zero_first Region.static Vec.new)
+#eval run Vec.new
 -- .ok (.false, [])
+#eval Result.map (fun (r : Unit × Vec U64) => List.map U64.toNat r.2.items)
+  (Uniq.borrow Region.static (Vec.ofList (.cons (U64.lit 7) .nil)) (fun ρ h v r => zero_first' r))
+-- .ok [0]
