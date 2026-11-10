@@ -830,6 +830,239 @@ def lazyLetsEs (sl : Bool) : ETms → ETms
   | .nil => .nil
   | .cons t rest => .cons (lazyLets sl t) (lazyLetsEs sl rest)
 end
+-- (reference counting mode) the same, but a source `let` that isn't put in place is only
+-- marked, `let (lazy v); b`: whether it is strict, suspended or dropped is decided after
+-- pushing and inlining (`decideLets`), with the whole program in view
+mutual
+def markLets : ETm → ETm
+  | .letE v b =>
+    let v' := markLets v;
+    let b' := markLets b;
+    match cheapE v' with
+    | .true => substE v' 0 b'
+    | .false => .letE (.prim "lazy" (etms1 v')) b'
+  | .lam b => .lam (markLets b)
+  | .app f a => betaE (markLets f) (markLets a)
+  | .obj t fs => .obj t (markLetsEs fs)
+  | .proj i t => .proj i (markLets t)
+  | .case s bs => .case (markLets s) (markLetsEs bs)
+  | .prim op as => .prim op (markLetsEs as)
+  | t => t
+def markLetsEs : ETms → ETms
+  | .nil => .nil
+  | .cons t rest => .cons (markLets t) (markLetsEs rest)
+end
+-- a marked `let`'s value
+def lazyVal : ETm → Option ETm
+  | .prim op as => match strEq op "lazy" with
+    | .true => match as with
+      | .cons v rest => match rest with
+        | .nil => .some v
+        | .cons _ _ => .none
+      | .nil => .none
+    | .false => .none
+  | _ => .none
+-- **Demand analysis** (reference counting mode). The demand of a term on a variable is
+-- how it is used (`u`: 0 bottom, the path ends in `unreachable`; 1 strict, evaluated on
+-- every path; 2 lazy, maybe evaluated; 3 absent) and at most how many times (`n`: 0, 1,
+-- or 2 for many). Application is call by value, so what is lazy is a suspended `let`'s
+-- value and what is under a `λ`.
+inductive Dmd where
+  | mk (u n : Nat)
+def Dmd.u : Dmd → Nat
+  | .mk u _ => u
+def Dmd.n : Dmd → Nat
+  | .mk _ n => n
+def dAbs : Dmd := .mk 3 0
+def dBot : Dmd := .mk 0 0
+def nAdd (a b : Nat) : Nat := match Nat.lt 1 (a + b) with
+  | .true => 2
+  | .false => a + b
+def nMax (a b : Nat) : Nat := match Nat.lt a b with
+  | .true => b
+  | .false => a
+-- both evaluated
+def dSeq (a b : Dmd) : Dmd := .mk (match Nat.beq (Dmd.u a) 0 with
+  | .true => 0
+  | .false => match Nat.beq (Dmd.u b) 0 with
+    | .true => 0
+    | .false => match Bool.or (Nat.beq (Dmd.u a) 1) (Nat.beq (Dmd.u b) 1) with
+      | .true => 1
+      | .false => match Bool.or (Nat.beq (Dmd.u a) 2) (Nat.beq (Dmd.u b) 2) with
+        | .true => 2
+        | .false => 3) (nAdd (Dmd.n a) (Dmd.n b))
+-- one or the other (branches of a `case`)
+def dJoin (a b : Dmd) : Dmd := .mk (match Nat.beq (Dmd.u a) 0 with
+  | .true => Dmd.u b
+  | .false => match Nat.beq (Dmd.u b) 0 with
+    | .true => Dmd.u a
+    | .false => match Nat.beq (Dmd.u a) (Dmd.u b) with
+      | .true => Dmd.u a
+      | .false => 2) (nMax (Dmd.n a) (Dmd.n b))
+-- (`mode` 0: under a `λ`, maybe and any number of times; 1: maybe)
+def dWeak (mode : Nat) (a : Dmd) : Dmd := match Nat.beq (Dmd.u a) 3 with
+  | .true => dAbs
+  | .false => match Nat.beq mode 0 with
+    | .true => .mk 2 2
+    | .false => .mk 2 (Dmd.n a)
+-- the demands of a term on the variables, by level, descending; a missing variable is
+-- absent, or bottom when `bot` (every path ends in `unreachable`)
+inductive DE where
+  | mk (lv : Nat) (d : Dmd)
+inductive DEnv where
+  | mk (bot : Bool) (es : List DE)
+def DEnv.bot : DEnv → Bool
+  | .mk b _ => b
+def DEnv.es : DEnv → List DE
+  | .mk _ es => es
+def deNone : DEnv := .mk .false .nil
+def deMiss (bot : Bool) : Dmd := match bot with
+  | .true => dBot
+  | .false => dAbs
+def deLook (x : Nat) : List DE → Option Dmd
+  | .nil => .none
+  | .cons (.mk y d) rest => match Nat.beq x y with
+    | .true => .some d
+    | .false => match Nat.lt x y with
+      | .true => deLook x rest
+      | .false => .none
+def denvAt (x : Nat) (e : DEnv) : Dmd := match deLook x (DEnv.es e) with
+  | .some d => d
+  | .none => deMiss (DEnv.bot e)
+def deOp (sq : Bool) (a b : Dmd) : Dmd := match sq with
+  | .true => dSeq a b
+  | .false => dJoin a b
+-- both sides' entries combined (`sq`: both evaluated, else one or the other), a side's
+-- missing entries being `ma` and `mb`
+partial def deMerge (sq : Bool) (ma mb : Dmd) (xs ys : List DE) : List DE := match xs with
+  | .nil => match ys with
+    | .nil => .nil
+    | .cons (.mk y d) rest => .cons (.mk y (deOp sq ma d)) (deMerge sq ma mb .nil rest)
+  | .cons (.mk x dx) xr => match ys with
+    | .nil => .cons (.mk x (deOp sq dx mb)) (deMerge sq ma mb xr .nil)
+    | .cons (.mk y dy) yr => match Nat.beq x y with
+      | .true => .cons (.mk x (deOp sq dx dy)) (deMerge sq ma mb xr yr)
+      | .false => match Nat.lt y x with
+        | .true => .cons (.mk x (deOp sq dx mb)) (deMerge sq ma mb xr ys)
+        | .false => .cons (.mk y (deOp sq ma dy)) (deMerge sq ma mb xs yr)
+def denvSeq (a b : DEnv) : DEnv :=
+  .mk (Bool.or (DEnv.bot a) (DEnv.bot b)) (deMerge .true (deMiss (DEnv.bot a)) (deMiss (DEnv.bot b)) (DEnv.es a) (DEnv.es b))
+def denvJoin (a b : DEnv) : DEnv :=
+  .mk (Bool.and (DEnv.bot a) (DEnv.bot b)) (deMerge .false (deMiss (DEnv.bot a)) (deMiss (DEnv.bot b)) (DEnv.es a) (DEnv.es b))
+def deWeak (mode : Nat) : List DE → List DE
+  | .nil => .nil
+  | .cons (.mk y d) rest => .cons (.mk y (dWeak mode d)) (deWeak mode rest)
+-- the entries of the variables of levels `< d`
+def deBelow (d : Nat) : List DE → List DE
+  | .nil => .nil
+  | .cons (.mk y dy) rest => match Nat.lt y d with
+    | .true => .cons (.mk y dy) rest
+    | .false => deBelow d rest
+def denvBelow (d : Nat) (e : DEnv) : DEnv := .mk (DEnv.bot e) (deBelow d (DEnv.es e))
+-- what a `let`'s value demands, its variable demanded by `x`
+def denvScale (x : Dmd) (e : DEnv) : DEnv := match Nat.beq (Dmd.u x) 3 with
+  | .true => deNone
+  | .false => match Nat.beq (Dmd.u x) 2 with
+    | .true => .mk .false (deWeak 1 (DEnv.es e))
+    | .false => e
+-- a suspended `let`'s value (`memo (λ _. v)`)
+def memoVal : ETm → Option ETm
+  | .prim op as => match strEq op "memo" with
+    | .true => match as with
+      | .cons f rest => match rest with
+        | .nil => match f with
+          | .lam v => .some v
+          | _ => .none
+        | .cons _ _ => .none
+      | .nil => .none
+    | .false => .none
+  | _ => .none
+mutual
+-- the demands of `t`, in a scope of `d` variables
+def dmdA (d : Nat) (t : ETm) : DEnv := match t with
+  | .var i => match Nat.lt i d with
+    | .true => .mk .false (.cons (.mk (d - 1 - i) (.mk 1 1)) .nil)
+    | .false => deNone
+  | .app f a => denvSeq (dmdA d f) (dmdA d a)
+  | .letE v b =>
+    let eb := dmdA (d + 1) b;
+    let rest := denvBelow d eb;
+    match memoVal v with
+    | .some mv => denvSeq (denvScale (denvAt d eb) (denvBelow d (dmdA (d + 1) mv))) rest
+    | .none => match lazyVal v with
+      | .some lv => denvSeq (denvScale (denvAt d eb) (dmdA d lv)) rest
+      | .none => denvSeq (dmdA d v) rest
+  | .obj _ fs => dmdSeq d fs
+  | .proj _ x => dmdA d x
+  | .case s bs => denvSeq (dmdA d s) (dmdJoin d bs)
+  | .prim op as => match strEq op "unreachable" with
+    | .true => .mk .true .nil
+    | .false => dmdSeq d as
+  | .lam b => .mk .false (deWeak 0 (deBelow d (DEnv.es (dmdA (d + 1) b))))
+  | _ => deNone
+def dmdSeq (d : Nat) (ts : ETms) : DEnv := match ts with
+  | .nil => deNone
+  | .cons t rest => denvSeq (dmdA d t) (dmdSeq d rest)
+def dmdJoin (d : Nat) (ts : ETms) : DEnv := match ts with
+  | .nil => .mk .true .nil
+  | .cons t rest => denvJoin (dmdA d t) (dmdJoin d rest)
+end
+-- the demand of `t` (in a scope of `d + 1`) on the variable of level `d`
+def dmdOn (d : Nat) (t : ETm) : Dmd := denvAt d (dmdA (d + 1) t)
+-- the branch of `bs` that alone uses the variable of level `d` (by position), if one does
+partial def soleUser (d : Nat) (bs : ETms) (i : Nat) (found : Option Nat) : Option Nat := match bs with
+  | .nil => found
+  | .cons b rest => match Nat.beq (Dmd.u (dmdOn d b)) 3 with
+    | .true => soleUser d rest (i + 1) found
+    | .false => match found with
+      | .some _ => .none
+      | .none => soleUser d rest (i + 1) (.some i)
+-- `let x := memo (λ _. v); b[x ◾ / x]`
+def suspendLet (v b : ETm) : ETm :=
+  .letE (.prim "memo" (etms1 (.lam (liftE 1 0 v)))) (substE (.app (.var 0) .erased) 0 (liftE 1 1 b))
+mutual
+-- a source `let` of `v` over `b` (both decided), in a scope of `d`: strict when its
+-- variable is demanded on every path (or the path ends in `unreachable`), dropped when
+-- absent; used on some paths only, moved into the one branch of a `case` that uses it
+-- (not its scrutinee) and decided again there; else suspended
+def placeLet (d : Nat) (v b : ETm) : ETm :=
+  let dx := dmdOn d b;
+  match Nat.lt (Dmd.u dx) 2 with
+  | .true => .letE v b
+  | .false => match Nat.beq (Dmd.u dx) 3 with
+    | .true => substE .erased 0 b
+    | .false => match b with
+      | .case s bs => match Nat.beq (Dmd.u (dmdOn d s)) 3 with
+        | .true => match soleUser d bs 0 .none with
+          | .some i => .case (substE .erased 0 s) (placeIn d v i 0 bs)
+          | .none => suspendLet v b
+        | .false => suspendLet v b
+      | _ => suspendLet v b
+def placeIn (d : Nat) (v : ETm) (i j : Nat) (bs : ETms) : ETms := match bs with
+  | .nil => .nil
+  | .cons b rest => match Nat.beq i j with
+    | .true => .cons (placeLet d v b) (placeIn d v i (j + 1) rest)
+    | .false => .cons (substE .erased 0 b) (placeIn d v i (j + 1) rest)
+end
+mutual
+-- (in a scope of `d` variables)
+def decideLets (d : Nat) : ETm → ETm
+  | .letE v b =>
+    let b' := decideLets (d + 1) b;
+    match lazyVal v with
+    | .some lv => placeLet d (decideLets d lv) b'
+    | .none => .letE (decideLets d v) b'
+  | .lam b => .lam (decideLets (d + 1) b)
+  | .app f a => .app (decideLets d f) (decideLets d a)
+  | .obj t fs => .obj t (decideLetsEs d fs)
+  | .proj i t => .proj i (decideLets d t)
+  | .case s bs => .case (decideLets d s) (decideLetsEs d bs)
+  | .prim op as => .prim op (decideLetsEs d as)
+  | t => t
+def decideLetsEs (d : Nat) : ETms → ETms
+  | .nil => .nil
+  | .cons t rest => .cons (decideLets d t) (decideLetsEs d rest)
+end
 
 -- **Reference counting** (stage 22, the `rc` mode; see `rt.c`). The C is in A-normal
 -- form, statements in evaluation order (left to right), each intermediate value in a
@@ -1358,7 +1591,11 @@ partial def eraseGlobals (sl : Bool) (all : Array Global) (seen : List String) (
         | .axiomC _ _ => eraseGlobals sl all (.cons n seen) acc k
         | _ => match eraseCheck empty v (eval .nil ty) with
           | .err m => .err (n +++ ": " +++ m)
-          | .ok e => eraseGlobals sl all (.cons n seen) (.cons (.mk n (lazyLets sl e)) acc) k
+          | .ok e =>
+            let e' := match sl with
+              | .true => markLets e
+              | .false => lazyLets .false e;
+            eraseGlobals sl all (.cons n seen) (.cons (.mk n e') acc) k
 def arities : StrMap Nat → List Erased → StrMap Nat
   | ar, .nil => ar
   | ar, .cons (.mk n e) rest => arities (StrMap.insert ar (Str.ofString n) (lamsOf e)) rest
@@ -1398,6 +1635,150 @@ def genCode : CG → List Doc → List Doc → List Erased → Code
           (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ ") { top_: return ") ⧺ code ⧺ .t "; }") (.cons
             (.t ("static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); return c; }")) defs)) rest
+-- **Foreign functions** (stage 21l). An `extern` (`Foreign.fn`, from the frontend) is a
+-- C function `d_g` of the Wiz function's arity (the world last, for an `IO` result) that
+-- marshals its arguments by their kinds (as `C.glue` does for the Lean backends), calls
+-- the C function, and builds the result: `Nat`, `UInt64` and `Float64` from/to their
+-- C numbers, a `String` through a UTF-8 copy, `Bool` an `int`, `Unit` nothing, a
+-- foreign pointer wrapped in an object that runs the type's finalizer when it dies
+-- (under reference counting: its last reference; under the collector: when it is
+-- collected, or at exit). Like any function it owns its arguments; a foreign pointer is
+-- lent to C for the call and released after it. Without a header, a prototype is
+-- written from the Wiz type (except for the runtime's own `wiz_…` functions).
+def ffiArity (ps : List String) (io : Bool) : Nat := lenL ps + (match io with
+  | .true => 1
+  | .false => 0)
+def ffiArities : StrMap Nat → List Foreign → StrMap Nat
+  | ar, .nil => ar
+  | ar, .cons f rest => match f with
+    | .fn n _ _ ps _ io _ => ffiArities (StrMap.insert ar (Str.ofString n) (ffiArity ps io)) rest
+    | .ty _ _ => ffiArities ar rest
+def ffiCType (k : String) : String := match strEq k "f" with
+  | .true => "double"
+  | .false => match strEq k "s" with
+  | .true => "const char *"
+  | .false => match strEq k "b" with
+  | .true => "int"
+  | .false => match strEq k "p" with
+  | .true => "void *"
+  | .false => match strEq k "w" with
+  | .true => "V"
+  | .false => match strEq k "v" with
+  | .true => "void"
+  | .false => "uint64_t"
+-- the C parameter types of a prototype (`e` and `v` are not passed)
+def ffiProtoParams : List String → List String
+  | .nil => .nil
+  | .cons k rest => match Bool.or (strEq k "e") (strEq k "v") with
+    | .true => ffiProtoParams rest
+    | .false => .cons (ffiCType k) (ffiProtoParams rest)
+def commaSep : List String → String
+  | .nil => ""
+  | .cons x rest => match rest with
+    | .nil => x
+    | .cons _ _ => x +++ ", " +++ commaSep rest
+def ffiPrefix : List Char → List Char → Bool
+  | .nil, _ => .true
+  | .cons _ _, .nil => .false
+  | .cons a xs, .cons b ys => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => ffiPrefix xs ys
+    | .false => .false
+def strStarts (p s : String) : Bool := match p with
+  | .mk ps => match s with
+    | .mk cs => ffiPrefix ps cs
+-- the marshalling of the parameters: the statements before the call, the C arguments,
+-- and the statements after it
+inductive FfiIn where
+  | mk (pre : String) (cargs : List String) (post : String)
+partial def ffiIn (i : Nat) : List String → FfiIn
+  | .nil => .mk "" .nil ""
+  | .cons k rest => match ffiIn (i + 1) rest with
+    | .mk pre cargs post =>
+      let a := "p" +++ Nat.toString i;
+      let c := "c" +++ Nat.toString i;
+      match strEq k "e" with
+      | .true => .mk pre cargs post
+      | .false => match strEq k "v" with
+      | .true => .mk ("rt_drop(" +++ a +++ "); " +++ pre) cargs post
+      | .false => match strEq k "w" with
+      | .true => .mk pre (.cons a cargs) post
+      | .false => match strEq k "s" with
+      | .true => .mk ("char *" +++ c +++ " = rt_in_str(" +++ a +++ "); " +++ pre) (.cons c cargs) ("rt_free_cstr(" +++ c +++ "); " +++ post)
+      | .false => match strEq k "p" with
+      | .true => .mk ("void *" +++ c +++ " = rt_in_ptr(" +++ a +++ "); " +++ pre) (.cons c cargs) ("rt_drop(" +++ a +++ "); " +++ post)
+      | .false => match strEq k "b" with
+      | .true => .mk ("int " +++ c +++ " = rt_in_bool(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+      | .false => match strEq k "f" with
+      | .true => .mk ("double " +++ c +++ " = rt_in_f64(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+      | .false => match strEq k "u" with
+      | .true => .mk ("uint64_t " +++ c +++ " = rt_in_u64(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+      | .false => .mk ("uint64_t " +++ c +++ " = rt_in_nat(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+-- the result, from the call
+def ffiOut (k fin call : String) : String := match strEq k "v" with
+  | .true => call +++ "; V r = BOX(0); "
+  | .false => match strEq k "w" with
+  | .true => "V r = " +++ call +++ "; "
+  | .false => match strEq k "s" with
+  | .true => "V r = rt_out_str(" +++ call +++ "); "
+  | .false => match strEq k "p" with
+  | .true => "V r = rt_out_ptr((void *)" +++ call +++ ", " +++ (match strEq fin "" with
+    | .true => "NULL"
+    | .false => "(void (*)(void *))" +++ fin) +++ "); "
+  | .false => match strEq k "b" with
+  | .true => "V r = boolv(" +++ call +++ " != 0); "
+  | .false => match strEq k "f" with
+  | .true => "V r = rt_out_f64(" +++ call +++ "); "
+  | .false => match strEq k "u" with
+  | .true => "V r = rt_out_u64(" +++ call +++ "); "
+  | .false => "V r = rt_out_nat(" +++ call +++ "); "
+def elemS (x : String) : List String → Bool
+  | .nil => .false
+  | .cons y rest => Bool.or (strEq x y) (elemS x rest)
+-- the headers to include (each once), and the prototypes
+partial def ffiDecls (seen : List String) : List Foreign → List Doc
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .ty _ _ => ffiDecls seen rest
+    | .fn _ cname header ps r _ _ => match strEq header "" with
+      | .false => match elemS header seen with
+        | .true => ffiDecls seen rest
+        | .false => .cons (.t ("#include <" +++ header +++ ">")) (ffiDecls (.cons header seen) rest)
+      | .true => match Bool.or (strStarts "wiz_" cname) (elemS cname seen) with
+        | .true => ffiDecls seen rest
+        | .false =>
+          let pts := ffiProtoParams ps;
+          .cons (.t ("extern " +++ ffiCType r +++ " " +++ cname +++ "(" +++ (match pts with
+            | .nil => "void"
+            | .cons _ _ => commaSep pts) +++ ");")) (ffiDecls (.cons cname seen) rest)
+-- each foreign function's wrapper, `get_g` its curried closure (a constant computed
+-- once, for arity 0)
+def ffiWrappers (rc : Bool) : List Foreign → List Doc
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .ty _ _ => ffiWrappers rc rest
+    | .fn n cname _ ps r io fin =>
+      let g := mangle n;
+      let k := ffiArity ps io;
+      let keep := match rc with
+        | .true => "rt_root(&c); } inc(c); "
+        | .false => "} ";
+      match ffiIn 0 ps with
+      | .mk pre cargs post =>
+        let body := pre +++ ffiOut r fin (cname +++ "(" +++ commaSep cargs +++ ")") +++ post;
+        let ret := match io with
+          | .true => "return prodv(r, p" +++ Nat.toString (k - 1) +++ "); "
+          | .false => "return r; ";
+        match k with
+        | .zero => .cons (.t ("V get_" +++ g +++ "(void) { static V c = 0; static int i = 0; if (!i) { i = 1; c = ({ " +++ body +++ "r; }); " +++
+            keep +++ "return c; }")) (ffiWrappers rc rest)
+        | .succ _ => .cons (.t ("V d_" +++ g +++ "(" +++ paramDecls 0 k +++ ") { " +++ body +++ ret +++ "} " +++
+            "static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
+            "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); " +++ keep +++ "return c; }"))
+          (ffiWrappers rc rest)
+-- the C of a program's foreign functions (after the runtime)
+def ffiDocs (rc : Bool) (ffi : List Foreign) : List Doc :=
+  let fs := List.reverseOf ffi .nil;
+  List.append (ffiDecls .nil fs) (ffiWrappers rc fs)
 -- **Applications pushed into `case`s** (reference counting mode). A match is a method
 -- applied to the payload, and the method is chosen by a `case`: `(case s [bᵢ]) a⃗`
 -- built a closure for the chosen branch and applied it. With cheap arguments
@@ -1436,20 +1817,24 @@ end
 def pushGlobals : List Erased → List Erased
   | .nil => .nil
   | .cons (.mk n e) rest => .cons (.mk n (pushE e)) (pushGlobals rest)
+-- (the marked `let`s decided by their demands, `placeLet`)
+def decideGlobals : List Erased → List Erased
+  | .nil => .nil
+  | .cons (.mk n e) rest => .cons (.mk n (decideLets 0 e)) (decideGlobals rest)
 -- the program's C text, one `Doc` per line
 def genProgram (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ => match eraseGlobals .false all .nil .nil (Array.size all) with
+  | .mk all _ _ ffi => match eraseGlobals .false all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       -- (applications pushed into `case`s, as under reference counting: a match is then
       -- no closure, and its recursive calls are in tail position)
       let es := pushGlobals es0;
-      match genCode (.mk .nil 0 (arities StrMap.empty es) .idle) .nil .nil es with
+      match genCode (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
       | .mk protos defs st => match st with
         | .mk fns _ _ _ =>
-          .cons (.t "#include \"rt.c\"") (List.append protos
+          .cons (.t "#include \"rt.c\"") (List.append (ffiDocs .false ffi) (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs
-              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); return 0; }") .nil))))
+              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); rt_finishGC(); return 0; }") .nil)))))
 
 -- **Constructors inlined** (reference counting mode): a global whose body, under its
 -- `λ`s, only builds an object from its parameters and constants (a constructor, as
@@ -1732,20 +2117,20 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++
              "); rt_root(&c); } inc(c); return c; }")) defs)) rest
 def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ => match eraseGlobals .true all .nil .nil (Array.size all) with
+  | .mk all _ _ ffi => match eraseGlobals .true all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       let es1 := pushGlobals es0;
-      let es := inlGlobals (consMap StrMap.empty es1) es1;
+      let es := decideGlobals (inlGlobals (consMap StrMap.empty es1) es1);
       let sigs : StrMap (List Bool) := match borrow with
         | .true => sigsFix (sigsInit StrMap.empty es) 0 es
         | .false => StrMap.empty;
-      match genCodeRC sigs (.mk .nil 0 (arities StrMap.empty es) .idle) .nil .nil es with
+      match genCodeRC sigs (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
       | .mk protos defs st => match st with
         | .mk fns _ _ _ =>
-          .cons (.t "#define WIZ_RC 1") (.cons (.t "#include \"rt.c\"") (List.append protos
+          .cons (.t "#define WIZ_RC 1") (.cons (.t "#include \"rt.c\"") (List.append (ffiDocs .true ffi) (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs
-              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }") .nil)))))
+              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }") .nil))))))
 
 -- The backend a program asks for: reference counting if its first line is `-- wiz: rc`,
 -- else the garbage collector. (A command-line flag, once programs can read their
