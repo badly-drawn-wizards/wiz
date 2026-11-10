@@ -129,7 +129,7 @@ def runGlobal (tc : Toolchain) (s : CommandState R) (n : Name) (dir : System.Fil
   | .ok (decls, ty) =>
     let exe := dir / "wiz_main"
     let io := isIO ty
-    let built ← if llvm then compileLLVM tc (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls)) (linkOf s)
+    let built ← if llvm then compileLLVM tc (LLVM.program decls io) exe (extraC s ++ "\n" ++ C.glue (C.externs decls) (extraC s)) (linkOf s)
       else compileC tc (C.program decls io (extraC s)) exe (linkOf s)
     match built with
     | .error e => pure (.error e)

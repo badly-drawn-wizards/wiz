@@ -243,6 +243,7 @@ continue onto a line starting at the command's column.
 | `command.partial`            | "partial" ["(" "default" ":=" w ")"] command (a `def`) |
 | `command.mutual`             | "mutual" [command+] "end" (`def`s, all partial; or `partial (default := w) def`s) |
 | `command.printAxioms`        | "#print" "axioms" ident |
+| `command.cStruct`            | "c_struct" [str] ["(" "header" ":=" str ")"] ident "where" [fields] ["deriving" C,+] (9i) |
 
 A constructor is `inductive.ctor`: "|" ["private"] ident [binders] [":" T]. A field is
 `structure.field`: ["private"] [quantity] ident ":" T, on its own line (13b: `private`
@@ -276,9 +277,17 @@ def commandLeading : List LeadingParser := [
   { kind := "command.glue", prec := maxPrec,
     p := seqs ["glue", ident, many (bracketedBinder false), ":", term, ":=", str] },
   { kind := "command.foreignType", prec := maxPrec,
-    p := seqs ["foreign_type", ident, optional (seqs ["(", nonReserved "finalizer", ":=", str, ")"])] },
+    p := seqs ["foreign_type", ident, optional (seqs ["(", nonReserved "finalizer", ":=", str, ")"]),
+      -- 9i: the C pointer type it stands for in imported headers (`T *` for the type `T`)
+      optional (seqs ["(", nonReserved "c", ":=", str, ")"])] },
   { kind := "command.importC", prec := maxPrec,
-    p := seqs ["import_c", str, optional (seqs ["(", nonReserved "pure", ")"])] },
+    p := seqs ["import_c", str, optional (seqs ["(", nonReserved "pure", ")"]),
+      -- 9i: opt-outs of the automatic mapping of structs, pointers and buffers
+      many (node "importC.opt" (seqs ["(", orelse (seqs [nonReserved "skip", ":=", str]) (nonReserved "no_auto"), ")"]))] },
+  -- 9i: a C struct, as a Wiz structure: `c_struct ["struct t"] [(header := "h")] T where fields`
+  { kind := "command.cStruct", prec := maxPrec,
+    p := seqs ["c_struct", optional str, optional (seqs ["(", nonReserved "header", ":=", str, ")"]), ident,
+      "where", many structureField, derivingClause] },
   -- 9f: C source files and libraries linked with the program
   { kind := "command.linkC", prec := maxPrec, p := seqs ["link_c", str] },
   { kind := "command.linkLib", prec := maxPrec, p := seqs ["link_lib", str] },

@@ -15,7 +15,8 @@ options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
 (default off),
---predicative-prop,
+--predicative-prop, --eager-proofs (P2: the evaluator runs proofs, as it did before; the
+default never evaluates them),
 --inert syntactic|ground|conv (P1: regularity at inert types; default ground)
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
@@ -63,6 +64,9 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
+/-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
+initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
+
 /-- (P1) `--inert MODE`: regularity at inert types. -/
 initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
 
@@ -90,14 +94,15 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   -- (9f) the `link_c` files, each relative to its own file
   let sources ← Module.cSourceTable ((System.FilePath.mk path).parent.getD ".") input closure
   let (regularity, predicativeProp) ← kernelOpts.get
+  let lazyProofs ← lazyProofsOpt.get
   let inertReg ← inertOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
-      globals := { regularity, predicativeProp, inertReg }, trustedModule := own.contains }
+      globals := { regularity, predicativeProp, lazyProofs, inertReg }, trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && inertReg == .ground then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -126,7 +131,7 @@ def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) : IO UInt32 := d
   | .error e => IO.eprintln e; pure 1
   | .ok (decls, ty) =>
     let io := Build.isIO ty
-    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls)) (Build.linkOf s)
+    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls) (Build.extraC s)) (Build.linkOf s)
       else Build.compileC tc (C.program decls io (Build.extraC s)) out (Build.linkOf s)
     match r with
     | .error e => IO.eprintln e; pure 1
@@ -159,6 +164,8 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  lazyProofsOpt.set (!args.contains "--eager-proofs")
+  let args := args.filter (· != "--eager-proofs")
   let args ← match takeInertOpt args with
     | .ok (r, a) => do if let some r := r then inertOpt.set r
                        pure a

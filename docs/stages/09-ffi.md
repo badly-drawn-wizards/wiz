@@ -82,8 +82,8 @@ extern "fputs" (header := "stdio.h") fputs : String → FILE → IO Nat
   buffer is unique (the same idea as Perceus reuse). It has `IO.readFile` for input.
   Runtime helpers like these take Wiz values as they are (the `w` marshalling kind).
 
-The FFI is complete for now. Not done yet: callbacks (C calling Wiz closures), structs
-by value, and mapping more of a header's pointer types onto foreign types automatically.
+The FFI is complete for now. Not done yet: callbacks (C calling Wiz closures). Structs
+by value and more of a header's pointer types: 9i.
 
 ## 9e: linear sequencing ✅
 
@@ -143,3 +143,82 @@ extern "iv_term_open" Term.open : IO Nat
 
 Not done: `pkg-config` names (`link_pkg "gtk+-3.0"`) — for now, give their flags with
 `--cflags`/`--ldflags`.
+
+## 9i: C structs by value; header pointer types as foreign types ✅
+
+```
+import IO
+c_struct "div_t" (header := "stdlib.h") DivT where
+  quot : Nat
+  rem : Nat
+extern "div" (header := "stdlib.h") cdiv : Nat → Nat → DivT
+
+import_c "time.h"
+c_struct "struct timespec" (header := "time.h") Timespec where
+  tv_sec : Nat
+  tv_nsec : Nat
+glue monotonic : IO Timespec := "struct timespec t; clock_gettime(1, &t); return t;"
+
+c_struct "struct pair" Pair where     -- no header: the C definition is generated
+  a : Nat
+  b : Float64
+```
+
+* `c_struct ["ctype"] [(header := "h")] T where fields` declares a Wiz structure `T`
+  (an ordinary one: `T.mk`, `t.field`, `deriving`) that stands for the C struct `ctype`.
+  Externs and glue functions take and return it **by value**. A field is `Nat`,
+  `UInt64`, `Float64`, `String`, `Bool`, a foreign type, another `c_struct` (nested),
+  `Bytes` for a byte array `char f[N]` (copied; cut or zero-padded to `N`), or a `0`
+  field (not in C). Fields can't depend on each other.
+* **With a header**, the header's definition is the layout: fields are assigned by name,
+  the C compiler converts the numbers, and only the named fields are marshalled (a
+  `c_struct` may name a subset; the rest are zero going in and dropped coming out).
+  **Without**, the definition is generated from the fields (`uint64_t`, `double`, `int`
+  for `Bool`, `const char *`, `void *`), as `struct t { … };` for a name `struct t` or a
+  `typedef` otherwise (the default name is `wiz_s_T`), so C code (glue, linked sources)
+  can use it.
+* **Marshalling** (`C.lean`, `structHelpers`): for each struct the glue gets
+  `wiz_sin_N(&c, v)` (fill `c` from the structure, which is borrowed: it is nested pairs
+  with the last pair unboxed, 22i), `wiz_sfree_N` (free the strings that made) and
+  `wiz_sout_N(c)` (build the structure; strings are copied, a NULL one becomes `""`; a
+  pointer field coming back has no finalizer). The extern key carries the layout,
+  `<ctype|header|f=k,…>`, so the wrappers need nothing else.
+* **LLVM backend**: the foreign wrappers are C in both backends (the LLVM module calls
+  `wiz_ext_…` on `wiz_val`s), so a by-value struct is lowered by the C compiler, which
+  follows the x86-64 SysV ABI (registers or memory, by size and class). The LLVM IR never
+  sees a C struct; no ABI lowering of our own.
+* **Glue** may take and return structs, declare struct locals (`struct timespec t;`, or a
+  typedef name; one with string or pointer fields must be initialised), read and assign
+  fields (`t.tv_sec = t.tv_sec + 1;`), and take `&t` of a struct variable, but only as
+  the argument of a C function whose parameter is a pointer to that struct. The checker
+  knows the fields of `c_struct`s and of imported headers' structs.
+
+**`import_c`** now also maps (unless opted out):
+
+| C type in a prototype        | Wiz type                                          |
+|------------------------------|---------------------------------------------------|
+| `struct foo` / `foo_t` by value | a structure `C.struct_foo` / `C.foo_t`, made with `c_struct` from the header's definition (every field must map: numbers, `char *`, `char f[N]` → `Bytes`, nested structs); a struct with bit fields or anonymous members is left out |
+| `struct foo *`, `FILE *`     | a foreign type `C.struct_foo` / `C.FILE` (no finalizer) |
+| `const void *buf, size_t n`  | one `Bytes` argument (the pointer and the length come from the buffer; only when the length parameter right after is named `n`, `len`, `nbytes` or `length`, with or without `__`) |
+
+`const char *` stays `String`; other pointers (`int *`, `void *`, output buffers) are
+still skipped. The C subset parser (`FFI/CParse.lean`, `parseHeaderFull`) reads struct
+bodies, array lengths, typedef names of structs and parameter names for this.
+
+Opt-outs:
+
+* `import_c "h" (no_auto)`: only the 9b mappings (numbers, strings).
+* `import_c "h" (skip := "FILE div_t fopen")`: leave out these C types (struct spellings
+  or typedef names; functions using them are skipped) and functions.
+* `foreign_type File (finalizer := "fclose") (c := "FILE")`: a header's `FILE *` is this
+  type, with its finalizer, instead of an automatic one.
+* `c_struct "div_t" (header := "stdlib.h") DivT where …` before the import: the header's
+  `div_t` is this structure (with the fields it names).
+
+Caveats: an automatic foreign type has no finalizer, so nothing is freed for it; a C
+function may keep a pointer it was given (`&t` or a foreign pointer) beyond the call,
+which the checker can't see. Tests: the `ffi-structs` group (`div`, `ldiv`, `inet_ntoa`
+with `struct in_addr`, `clock_gettime` with `struct timespec`, a header of our own with
+nested structs, strings, byte arrays, an opaque pointer type and a buffer function, the
+opt-outs, and the glue checks).
+
