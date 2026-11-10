@@ -64,3 +64,10 @@ Sharing has two parts:
   instance is `[Hw r] → ShareLet (r a) (r b)` (through `Hw.share`), so a meta-level `let`
   of an object value names one wire: the doubling chain `let y := x + x` at depth 20
   emits 20 adders in 25 builder steps. Write `let ω x := …` to opt out.
+
+## Logic, heap predicates and Hoare triples ✅
+
+`lib/Logic.wiz` (`∧`, `∨`, `∃`, `↔`, `Not`, equality lemmas, `funext`, `propext`),
+`lib/HProp.wiz` (model heaps, `emp`, `↦`, `⋆`, `−∗`, entailment and the separation-logic
+laws) and `lib/Hoare.wiz` (`wp`, triples, the frame rule, verified swap and list reversal,
+adequacy for an interpreter). See [stage 24](stages/24-separation-logic.md).
