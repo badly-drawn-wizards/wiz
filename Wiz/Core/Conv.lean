@@ -303,13 +303,16 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
 where
   unCast (v : Val R) : Val R :=
     match v with
-    | .neutral (.cast A B e t) #[] =>
-      let ok := match g.regularity with
+    | .neutral (.cast A B e t) sp =>
+      let ok := sp.isEmpty && match g.regularity with
         | .full => true
         | .nonProp => !isProp g tys A
         | .refl => reflProof e
         | .off => false
-      if ok && convTy g tys A B then unCast t else v
+      -- (P1, `inertReg = conv`) InReg decided by conversion: at an inert `A` with `A ≡ B`,
+      -- `cast A B e t` is `t`, also under eliminations (InReg_conv)
+      let inert := g.inertReg == .conv && inertTy g 0 A
+      if (ok || inert) && convTy g tys A B then unCast (whnf (vElims g t sp)) else v
     | v => v
   --|ex
   --| sorry
