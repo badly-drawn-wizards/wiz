@@ -19,6 +19,7 @@ import Wiz.Frontend.Parse
 import Wiz.Elab.Basic
 import Wiz.Elab.Unify
 import Wiz.Elab.Zonk
+import Wiz.Elab.Info
 import Wiz.Elab.Term
 import Wiz.Elab.ProcMacro
 import Wiz.Elab.Tactic
@@ -39,5 +40,10 @@ import Wiz.Compiler.Build
 import Wiz.FFI.CParse
 import Wiz.FFI.CGlue
 import Wiz.Query
+import Wiz.Infoview
+import Wiz.Actions
 import Wiz.LSP
+import Wiz.Toolchain
+import Wiz.Module
+import Wiz.Selfhost
 import Wiz.Cache

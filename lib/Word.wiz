@@ -6,17 +6,18 @@ import Prelude
 -- here reduces mod `2^w`, so arithmetic wraps around). The kernel computes with these
 -- definitions (fast on numerals: `Nat.mod`, `Nat.pow`, … are native), proofs see them,
 -- and compiled code runs native implementations instead (`implemented_by`, at the end).
--- One width-indexed type serves the HDL's `Unsigned n` (any width: 1, 5, 65, …) and
--- Rust's `u32` (`U32 := UIntN 32`). Division by zero follows Lean: `a / 0 = 0` and
+-- One width-indexed type serves the HDL's bit vectors (`BitVec n := UIntN n`,
+-- lib/BitVec.wiz; any width: 1, 5, 65, …) and Rust's `u32` (`U32 := UIntN 32`). Division by zero follows Lean: `a / 0 = 0` and
 -- `a % 0 = a` (Rust panics; a Rust front end checks first).
 
--- The width is an index, not a parameter: types are structural, so a parameter that no
--- field mentions would be forgotten (`UIntN 8` and `UIntN 16` would be one type, and
--- `{w : Nat}` could not be inferred from an argument).
-inductive UIntN : Nat → Type where
-  | mk {0 w : Nat} (toNat : Nat) : UIntN w
-inductive IntN : Nat → Type where
-  | mk {0 w : Nat} (toNat : Nat) : IntN w
+-- No field mentions the width, but it is part of the type all the same (a phantom
+-- parameter, stage 22e): `UIntN 8` and `UIntN 16` are different types, and `w` is
+-- inferred from an argument. At runtime a word is `⟨0 bits⟩` in the model (or just its
+-- bits, compiled: see the end).
+inductive UIntN (w : Nat) where
+  | mk (toNat : Nat)
+inductive IntN (w : Nat) where
+  | mk (toNat : Nat)
 
 -- the bits as a number (for `IntN`, the two's-complement bits: `-1` is `2^w - 1`)
 def UIntN.toNat {w : Nat} : UIntN w → Nat
@@ -135,40 +136,101 @@ def I16.ofNeg (n : Nat) : I16 := IntN.ofNeg 16 n
 def I32.ofNeg (n : Nat) : I32 := IntN.ofNeg 32 n
 def I64.ofNeg (n : Nat) : I64 := IntN.ofNeg 64 n
 
--- Native implementations for compiled code (runtime/wiz.c: a uint64_t up to 64 bits,
--- GMP beyond). `#eval` and `#run` run the definitions above. Operations whose
--- definition is already one native `Nat` operation (`land`, comparisons, …) need none.
+-- Native implementations for compiled code (runtime/wiz.c). `#eval` and `#run` run the
+-- definitions above; the word group's tables check that both agree.
+--
+-- The representation (stage 22d): compiled code doesn't build the model's object
+-- `mk n`. A word *is* its bits, as the runtime keeps them: a tagged scalar below 2^63
+-- (no allocation), a raw 64-bit box below 2^64, a big number beyond (widths above 64).
+-- `ofBits` is the constructor and `toBits` its field; matching on a word reads the
+-- field with `toBits`. Every operation below works on that representation directly.
+
+-- a `Nat` passed to C as the runtime number itself (it may be big), not as a uint64_t
+def NatObj : Type := Nat
+
+extern "wiz_word_of_bits" UIntN.ofBits : {0 w : Nat} → NatObj → UIntN w
+extern "wiz_word_to_bits" UIntN.toBits : {0 w : Nat} → UIntN w → NatObj
+extern "wiz_word_of_bits" IntN.ofBits : {0 w : Nat} → NatObj → IntN w
+extern "wiz_word_to_bits" IntN.toBits : {0 w : Nat} → IntN w → NatObj
+attribute [implemented_by UIntN.ofBits UIntN.toBits] UIntN.mk
+attribute [implemented_by IntN.ofBits IntN.toBits] IntN.mk
+attribute [implemented_by UIntN.toBits] UIntN.toNat
+attribute [implemented_by IntN.toBits] IntN.toNat
+
+extern "wiz_word_of_nat" UIntN.ofNatNative : (w : Nat) → NatObj → UIntN w
 extern "wiz_word_add" UIntN.addNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
 extern "wiz_word_sub" UIntN.subNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
 extern "wiz_word_mul" UIntN.mulNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
 extern "wiz_word_udiv" UIntN.divNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
 extern "wiz_word_umod" UIntN.modNative : {ω w : Nat} → UIntN w → UIntN w → UIntN w
+extern "wiz_word_eq" UIntN.beqNative : {w : Nat} → UIntN w → UIntN w → Bool
+extern "wiz_word_ult" UIntN.ltNative : {w : Nat} → UIntN w → UIntN w → Bool
+extern "wiz_word_ule" UIntN.leNative : {w : Nat} → UIntN w → UIntN w → Bool
+extern "wiz_word_and" UIntN.landNative : {w : Nat} → UIntN w → UIntN w → UIntN w
+extern "wiz_word_or" UIntN.lorNative : {w : Nat} → UIntN w → UIntN w → UIntN w
+extern "wiz_word_xor" UIntN.xorNative : {w : Nat} → UIntN w → UIntN w → UIntN w
 extern "wiz_word_not" UIntN.notNative : {ω w : Nat} → UIntN w → UIntN w
-extern "wiz_word_shl" UIntN.shiftLeftNative : {ω w : Nat} → UIntN w → Nat → UIntN w
+extern "wiz_word_shl" UIntN.shiftLeftNative : {ω w : Nat} → UIntN w → NatObj → UIntN w
+extern "wiz_word_lshr" UIntN.shiftRightNative : {w : Nat} → UIntN w → NatObj → UIntN w
+extern "wiz_word_bit" UIntN.testBitNative : {w : Nat} → UIntN w → NatObj → Bool
+extern "wiz_word_msb" UIntN.msbNative : {ω w : Nat} → UIntN w → Bool
+extern "wiz_word_zext" UIntN.resizeNative : {w : Nat} → (ω v : Nat) → UIntN w → UIntN v
+extern "wiz_word_cast" UIntN.toIntNNative : {w : Nat} → UIntN w → IntN w
+extern "wiz_word_cast" IntN.toUIntNNative : {w : Nat} → IntN w → UIntN w
+attribute [implemented_by UIntN.ofNatNative] UIntN.ofNat
 attribute [implemented_by UIntN.addNative] UIntN.add
 attribute [implemented_by UIntN.subNative] UIntN.sub
 attribute [implemented_by UIntN.mulNative] UIntN.mul
 attribute [implemented_by UIntN.divNative] UIntN.div
 attribute [implemented_by UIntN.modNative] UIntN.mod
+attribute [implemented_by UIntN.beqNative] UIntN.beq
+attribute [implemented_by UIntN.ltNative] UIntN.lt
+attribute [implemented_by UIntN.leNative] UIntN.le
+attribute [implemented_by UIntN.landNative] UIntN.land
+attribute [implemented_by UIntN.lorNative] UIntN.lor
+attribute [implemented_by UIntN.xorNative] UIntN.xor
 attribute [implemented_by UIntN.notNative] UIntN.not
 attribute [implemented_by UIntN.shiftLeftNative] UIntN.shiftLeft
+attribute [implemented_by UIntN.shiftRightNative] UIntN.shiftRight
+attribute [implemented_by UIntN.testBitNative] UIntN.testBit
+attribute [implemented_by UIntN.msbNative] UIntN.msb
+attribute [implemented_by UIntN.resizeNative] UIntN.resize
+attribute [implemented_by UIntN.toIntNNative] UIntN.toIntN
+attribute [implemented_by IntN.toUIntNNative] IntN.toUIntN
+
+extern "wiz_word_of_nat" IntN.ofNatNative : (w : Nat) → NatObj → IntN w
+extern "wiz_word_of_neg" IntN.ofNegNative : (w : Nat) → NatObj → IntN w
 extern "wiz_word_add" IntN.addNative : {ω w : Nat} → IntN w → IntN w → IntN w
 extern "wiz_word_sub" IntN.subNative : {ω w : Nat} → IntN w → IntN w → IntN w
 extern "wiz_word_mul" IntN.mulNative : {ω w : Nat} → IntN w → IntN w → IntN w
 extern "wiz_word_sdiv" IntN.divNative : {ω w : Nat} → IntN w → IntN w → IntN w
 extern "wiz_word_srem" IntN.remNative : {ω w : Nat} → IntN w → IntN w → IntN w
+extern "wiz_word_eq" IntN.beqNative : {w : Nat} → IntN w → IntN w → Bool
+extern "wiz_word_and" IntN.landNative : {w : Nat} → IntN w → IntN w → IntN w
+extern "wiz_word_or" IntN.lorNative : {w : Nat} → IntN w → IntN w → IntN w
+extern "wiz_word_xor" IntN.xorNative : {w : Nat} → IntN w → IntN w → IntN w
 extern "wiz_word_not" IntN.notNative : {ω w : Nat} → IntN w → IntN w
-extern "wiz_word_shl" IntN.shiftLeftNative : {ω w : Nat} → IntN w → Nat → IntN w
-extern "wiz_word_ashr" IntN.shiftRightNative : {ω w : Nat} → IntN w → Nat → IntN w
+extern "wiz_word_shl" IntN.shiftLeftNative : {ω w : Nat} → IntN w → NatObj → IntN w
+extern "wiz_word_ashr" IntN.shiftRightNative : {ω w : Nat} → IntN w → NatObj → IntN w
 extern "wiz_word_slt" IntN.ltNative : {ω w : Nat} → IntN w → IntN w → Bool
 extern "wiz_word_sle" IntN.leNative : {ω w : Nat} → IntN w → IntN w → Bool
+extern "wiz_word_msb" IntN.isNegNative : {ω w : Nat} → IntN w → Bool
+extern "wiz_word_sext" IntN.resizeNative : {ω w : Nat} → (ω v : Nat) → IntN w → IntN v
+attribute [implemented_by IntN.ofNatNative] IntN.ofNat
+attribute [implemented_by IntN.ofNegNative] IntN.ofNeg
 attribute [implemented_by IntN.addNative] IntN.add
 attribute [implemented_by IntN.subNative] IntN.sub
 attribute [implemented_by IntN.mulNative] IntN.mul
 attribute [implemented_by IntN.divNative] IntN.div
 attribute [implemented_by IntN.remNative] IntN.rem
+attribute [implemented_by IntN.beqNative] IntN.beq
+attribute [implemented_by IntN.landNative] IntN.land
+attribute [implemented_by IntN.lorNative] IntN.lor
+attribute [implemented_by IntN.xorNative] IntN.xor
 attribute [implemented_by IntN.notNative] IntN.not
 attribute [implemented_by IntN.shiftLeftNative] IntN.shiftLeft
 attribute [implemented_by IntN.shiftRightNative] IntN.shiftRight
 attribute [implemented_by IntN.ltNative] IntN.lt
 attribute [implemented_by IntN.leNative] IntN.le
+attribute [implemented_by IntN.isNegNative] IntN.isNeg
+attribute [implemented_by IntN.resizeNative] IntN.resize

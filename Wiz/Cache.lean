@@ -1,4 +1,5 @@
 import Wiz.Query
+import Wiz.Module
 
 /-!
 # The shared cache
@@ -255,7 +256,7 @@ structure Effect (R : Type) where
   coinductives : List (Name × List (Name × Bool)) := []
   foreignTypes : List (Name × String) := []
   cCode : Array String := #[]
-  hovers : Array (SourceInfo × Name × String) := #[]
+  infos : Array (Info R) := #[]
   sites : Array (Name × SourceInfo × String) := #[]
 
 /-- The command kinds whose effect is just the fields of `Effect`. -/
@@ -275,7 +276,7 @@ def effectOf (s s' : CommandState R) : Effect R :=
     coinductives := s'.coinductives.drop s.coinductives.length
     foreignTypes := s'.foreignTypes.take (s'.foreignTypes.length - s.foreignTypes.length)
     cCode := s'.cCode.extract s.cCode.size s'.cCode.size
-    hovers := s'.hovers.extract s.hovers.size s'.hovers.size
+    infos := s'.infos.extract s.infos.size s'.infos.size
     sites := newNames.filterMap fun n => (s'.declSites.get? n).map fun (i, m) => (n, i, m) }
 
 /-- Replay an effect. -/
@@ -285,19 +286,75 @@ def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
   { s with globals, messages := s.messages ++ e.messages, builtins := e.builtins ++ s.builtins,
            classes := e.classes ++ s.classes, instances := s.instances ++ e.instances,
            coinductives := s.coinductives ++ e.coinductives, foreignTypes := e.foreignTypes ++ s.foreignTypes,
-           cCode := s.cCode ++ e.cCode, hovers := s.hovers ++ e.hovers,
-           declSites := e.sites.foldl (fun m (n, i, md) => m.insert n (i, md)) s.declSites }
+           cCode := s.cCode ++ e.cCode, infos := s.infos ++ e.infos,
+           declSites := e.sites.foldl (fun m (n, i, md) => m.insert n (i, md)) s.declSites,
+           pristine := false }
 
 def info (i : SourceInfo) : Sx := list [nat i.start, nat i.stop]
 def dinfo (x : Sx) : Option SourceInfo := do
   let #[a, b] ← items? x | none
   pure { start := ← (← atom? a).toNat?, stop := ← (← atom? b).toNat? }
 
+/-! ## The info tree -/
+
+def optTerm : Option (Term R) → Sx
+  | some t => list [term t]
+  | none => list []
+
+def dOptTerm (x : Sx) : Option (Option (Term R)) := do
+  match ← items? x with
+  | #[t] => some (some (← dterm t))
+  | #[] => some none
+  | _ => none
+
+def names (ns : List Name) : Sx := list (ns.map str)
+def dnames (x : Sx) : Option (List Name) := do (← items? x).toList.mapM atom?
+def bool (b : Bool) : Sx := .a (toString b)
+def dbool (x : Sx) : Option Bool := do pure ((← atom? x) == "true")
+
+def goalSx (g : GoalView R) : Sx :=
+  list [list (g.hyps.toList.map fun (n, t, v) => list [str n, term t, optTerm v]), term g.target,
+        names g.userName.toList]
+
+def dGoal (x : Sx) : Option (GoalView R) := do
+  let #[hs, t, u] ← items? x | none
+  let hyps ← (← items? hs).mapM fun h => do
+    let #[n, ty, v] ← items? h | none
+    pure (← atom? n, ← dterm ty, ← dOptTerm v)
+  pure { hyps, target := ← dterm t, userName := (← dnames u).head? }
+
+def infoSx : Info R → Sx
+  | .ident i n l ns t => node "ident" [info i, str n, bool l, names ns, term t]
+  | .term i g h => node "term" [info i, goalSx g, bool h]
+  | .tactic i b gs gs' => node "tactic" [info i, bool b, list (gs.toList.map goalSx), list (gs'.toList.map goalSx)]
+  | .matchCases i m => node "match" [info i, str m.type, names m.covered, bool m.catchAll, nat m.columns,
+      info m.firstAlt, info m.lastAlt]
+  | .decl i n ns t a at_ => node "decl" [info i, str n, names ns, term t, bool a, nat at_]
+  | .unknownIdent i n ns => node "unknown" [info i, str n, names ns]
+
+def dInfo (x : Sx) : Option (Info R) := do
+  let xs ← items? x
+  let tag ← atom? (← xs[0]?)
+  let a (k : Nat) : Option Sx := xs[k]?
+  match tag with
+  | "ident" => pure (.ident (← dinfo (← a 1)) (← atom? (← a 2)) (← dbool (← a 3)) (← dnames (← a 4)) (← dterm (← a 5)))
+  | "term" => pure (.term (← dinfo (← a 1)) (← dGoal (← a 2)) (← dbool (← a 3)))
+  | "tactic" => pure (.tactic (← dinfo (← a 1)) (← dbool (← a 2)) (← (← items? (← a 3)).mapM dGoal)
+      (← (← items? (← a 4)).mapM dGoal))
+  | "match" =>
+    let m := MatchInfo.mk (← atom? (← a 2)) (← dnames (← a 3)) (← dbool (← a 4)) (← (← atom? (← a 5)).toNat?)
+      (← dinfo (← a 6)) (← dinfo (← a 7))
+    pure (.matchCases (← dinfo (← a 1)) m)
+  | "decl" => pure (.decl (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)) (← dterm (← a 4))
+      (← dbool (← a 5)) (← (← atom? (← a 6)).toNat?))
+  | "unknown" => pure (.unknownIdent (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)))
+  | _ => none
+
 def Effect.toSx (e : Effect R) : Sx :=
   let decl (d : Decl R) : Sx := list [str d.name, list (d.levelParams.map str), term d.type,
     (match d.value with | some v => term v | none => .a "none"), .a (toString d.inline),
     (match d.impl with | some v => term v | none => .a "none")]
-  let msg (m : Msg) : Sx := list [info m.info, .a (if m.severity == .error then "error" else "info"), str m.text]
+  let msg (m : Msg) : Sx := list [info m.info, .a (if m.severity == .error then "error" else "info"), str m.text, str m.code]
   list [list (e.decls.toList.map decl), list (e.messages.toList.map msg),
     list (e.builtins.map fun (k, n) => list [str k, str n]),
     list (e.classes.map fun c => list [str c.name, list (c.outParams.map (.a ∘ toString)), list (c.fields.map str)]),
@@ -305,7 +362,7 @@ def Effect.toSx (e : Effect R) : Sx :=
     list (e.coinductives.map fun (n, obs) => list [str n, list (obs.map fun (o, b) => list [str o, .a (toString b)])]),
     list (e.foreignTypes.map fun (n, f) => list [str n, str f]),
     list (e.cCode.toList.map str),
-    list (e.hovers.toList.map fun (i, n, t) => list [info i, str n, str t]),
+    list (e.infos.toList.map infoSx),
     list (e.sites.toList.map fun (n, i, m) => list [str n, info i, str m])]
 
 def Effect.ofSx? (x : Sx) : Option (Effect R) := do
@@ -317,8 +374,9 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
            inline := (← atom? inl) == "true",
            impl := ← (match im with | .a "none" => some none | v => (dterm v).map some) }
   let msg (x : Sx) : Option Msg := do
-    let #[i, sev, t] ← items? x | none
-    pure { info := ← dinfo i, severity := if (← atom? sev) == "error" then .error else .info, text := ← atom? t }
+    let #[i, sev, t, c] ← items? x | none
+    pure { info := ← dinfo i, severity := if (← atom? sev) == "error" then .error else .info, text := ← atom? t,
+           code := ← atom? c }
   let pair (x : Sx) : Option (String × String) := do
     let #[a, b] ← items? x | none
     pure (← atom? a, ← atom? b)
@@ -340,67 +398,181 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
         pure (← atom? a, (← atom? b) == "true")))
     foreignTypes := (← (← items? fts).toList.mapM pair)
     cCode := (← (← items? cc).mapM atom?)
-    hovers := (← (← items? hs).mapM fun h => do
-      let #[i, n, t] ← items? h | none
-      pure (← dinfo i, ← atom? n, ← atom? t))
+    infos := (← (← items? hs).mapM dInfo)
     sites := (← (← items? ss).mapM fun x => do
       let #[n, i, m] ← items? x | none
       pure (← atom? n, ← dinfo i, ← atom? m)) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes. -/
-def salt : UInt64 := hash "wiz-cache-3"
+def salt : UInt64 := hash "wiz-cache-6-d1"  -- 6: D1, regularity off (after grail's 5)
 
-/-- Elaborate `input` (like `Query.elaborate`), reading and writing `dir`. Returns the
-final state and how many commands came from the disk cache. -/
-partial def elaborateCached (dir : System.FilePath) (input : String) (init : CommandState R) (key₀ : UInt64) :
-    IO (CommandState R × Nat) := do
+/-! ## Keys and atomic writes (stage 23c)
+
+A **module's key** is computed from text alone, before anything is elaborated:
+
+    key(M) = hash(salt, toolchain, text of M, the C headers M imports, key(N) for M's imports N)
+
+so editing one module invalidates it and the modules that (transitively) import it, and
+nothing else. A module is elaborated **in isolation** (from the empty state plus its own
+imports), so what it elaborates to depends only on its key; the commands of `M` chain
+from `key(M)`, and an importer's chain mixes in `key(M)` at the `import`. -/
+
+/-- Write a file atomically: to a temporary name next to it, then rename (another
+process sees the old file, or the whole new one). -/
+def writeAtomic (file : System.FilePath) (content : String) : IO Unit := do
+  let tmp := file.toString ++ s!".tmp{← IO.Process.getPID}-{← IO.monoNanosNow}"
+  IO.FS.writeFile tmp content
+  IO.FS.rename tmp file
+
+/-- The key of every module reachable from `ms` (see above). `headers` gives the
+preprocessed text of a C header. Import cycles get key 0 on the back edge (the frontend
+reports them). -/
+partial def moduleKeys (loader : Name → Option String) (headers : String → Option String) (toolchain : UInt64)
+    (ms : List Name) (memo : Std.HashMap Name UInt64 := {}) : Std.HashMap Name UInt64 :=
+  ms.foldl (fun memo m => (go [] m memo).2) memo
+where
+  go (stack : List Name) (m : Name) (memo : Std.HashMap Name UInt64) : UInt64 × Std.HashMap Name UInt64 :=
+    match memo.get? m with
+    | some k => (k, memo)
+    | none =>
+      if stack.contains m then (0, memo) else
+      match loader m with
+      | none => (0, memo)
+      | some src =>
+        let k₀ := mixHash (mixHash salt toolchain) (hash src)
+        let k₀ := (Module.headersOf src).foldl (fun k h => mixHash k (hash ((headers h).getD ""))) k₀
+        let (k, memo) := (Module.importsOf src).foldl (fun (k, memo) n =>
+          let (kn, memo) := go (m :: stack) n memo
+          (mixHash k kn, memo)) (k₀, memo)
+        (k, memo.insert m k)
+
+/-- The key of one module. -/
+def moduleKey (loader : Name → Option String) (headers : String → Option String) (toolchain : UInt64) (m : Name) : UInt64 :=
+  ((moduleKeys loader headers toolchain [m]).get? m).getD 0
+
+/-- How a file's commands are being elaborated. -/
+inductive Mode where
+  /-- the main file, or a module in isolation: misses are elaborated and written -/
+  | write
+  /-- a module replayed into an importer's state: misses are elaborated, not written
+  (their effect could depend on what the importer imported before) -/
+  | replay
+
+/-- Where command effects are kept: a directory (the shared cache), or memory (for one
+run without the cache: modules are still elaborated in isolation, so the cache on or off
+gives the same results). -/
+structure Store (R : Type) where
+  get : UInt64 → IO (Option (Effect R))
+  put : UInt64 → Effect R → IO Unit
+  /-- has module `k` been elaborated in isolation? -/
+  seen : UInt64 → IO Bool
+  markSeen : UInt64 → Name → IO Unit
+
+def Store.disk (dir : System.FilePath) : IO (Store R) := do
   IO.FS.createDirAll dir
-  let chars := input.toList.toArray
-  let mut pos := 0
-  let mut s := init
-  let mut key := mixHash salt key₀
-  let _ : Inhabited (CommandState R) := ⟨init⟩
-  let mut hits := 0
-  while skipWs chars pos < chars.size do
-    match parseCommand chars s.tables pos with
-    | .error _ =>
-      -- report the parse error (and everything after it) without the cache
-      s := runFrontend.go input chars pos s
-      break
-    | .ok (cmd, stop) =>
-      let text := String.ofList (chars.extract pos stop).toList
-      key := mixHash key (hash text)
-      if cmd.isOfKind "command.import" then
-        -- a module: elaborate it through the cache too (its keys continue this chain)
-        let m := ((cmd.getArg 1).getId?).getD "_"
-        if !s.imported.contains m then
-          match s.loader m with
-          | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}" } }
-          | some src =>
-            let (inner, h) ← elaborateCached dir src { s with imported := m :: s.imported, messages := #[], module := m } key
-            hits := hits + h
-            let errs := inner.messages.filter (·.severity == .error)
-            let msg : Msg := { info := cmd.info, severity := .error,
-                               text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
-            s := { inner with messages := if errs.isEmpty then s.messages else s.messages.push msg,
-                              module := s.module, hovers := s.hovers }
+  pure {
+    get := fun k => do
+      let file := dir / s!"{k}.wizc"
+      if ← file.pathExists then pure ((Sx.parse (← IO.FS.readFile file)).bind Effect.ofSx?) else pure none
+    put := fun k e => writeAtomic (dir / s!"{k}.wizc") e.toSx.render
+    seen := fun k => (dir / s!"{k}.wizm").pathExists
+    markSeen := fun k m => writeAtomic (dir / s!"{k}.wizm") m }
+
+def Store.memory : IO (Store R) := do
+  let effects ← IO.mkRef ({} : Std.HashMap UInt64 (Effect R))
+  let seen ← IO.mkRef ({} : Std.HashSet UInt64)
+  pure {
+    get := fun k => return (← effects.get)[k]?
+    put := fun k e => effects.modify (·.insert k e)
+    seen := fun k => return (← seen.get).contains k
+    markSeen := fun k _ => seen.modify (·.insert k) }
+
+/-- Elaborate `input` (like `Query.elaborate`), reading and writing `store`. Returns the
+final state and how many commands came from the store. `key₀` identifies what the
+file can see besides its imports (for example its C headers); `toolchain` is mixed into
+every module's key. -/
+partial def elaborateWith (store : Store R) (input : String) (init : CommandState R) (key₀ : UInt64)
+    (toolchain : UInt64 := 0) : IO (CommandState R × Nat) := do
+  let keys ← IO.mkRef ({} : Std.HashMap Name UInt64)
+  -- recording every term's expected type changes the effects: a different chain
+  let salt' := if init.termInfo then mixHash salt 1 else salt
+  go keys init [] input init (mixHash salt' (mixHash toolchain key₀)) .write
+where
+  keyOf (keys : IO.Ref (Std.HashMap Name UInt64)) (m : Name) : IO UInt64 := do
+    -- (term info changes what a module elaborates to, like the main file's chain)
+    let tc := if init.termInfo then mixHash toolchain 1 else toolchain
+    let memo := moduleKeys init.loader init.cHeaders tc [m] (← keys.get)
+    keys.set memo
+    pure ((memo.get? m).getD 0)
+  /-- Bring module `m` into `s`: elaborate it in isolation first if the cache has not
+  seen it, then replay it from the cache. -/
+  importModule (keys : IO.Ref (Std.HashMap Name UInt64)) (base : CommandState R) (stack : List Name)
+      (s : CommandState R) (m : Name) (src : String) : IO (CommandState R × Nat) := do
+    let k ← keyOf keys m
+    let fresh ← if ← store.seen k then pure none else do
+      let (_, h) ← go keys base (m :: stack) src { base with imported := [m], messages := #[], module := m } k .write
+      store.markSeen k m
+      pure (some h)
+    let (s', h) ← go keys base (m :: stack) src { s with imported := m :: s.imported, messages := #[], module := m } k .replay
+    -- after a fresh isolated run, the hits are that run's (the replay reads what it wrote)
+    pure (s', fresh.getD h)
+  go (keys : IO.Ref (Std.HashMap Name UInt64)) (base : CommandState R) (stack : List Name) (input : String)
+      (s₀ : CommandState R) (key₀ : UInt64) (mode : Mode) : IO (CommandState R × Nat) := do
+    let chars := input.toList.toArray
+    let mut pos := 0
+    let mut s := s₀
+    let mut key := key₀
+    let _ : Inhabited (CommandState R) := ⟨init⟩
+    let mut hits := 0
+    while skipWs chars pos < chars.size do
+      match parseCommand chars s.tables pos with
+      | .error _ =>
+        -- report the parse error (and everything after it) without the cache
+        s := runFrontend.go input base chars pos s
+        break
+      | .ok (cmd, stop) =>
+        let text := String.ofList (chars.extract pos stop).toList
+        key := mixHash key (hash text)
+        if cmd.isOfKind "command.import" then
+          let m := ((cmd.getArg 1).getId?).getD "_"
+          -- what the rest of the file sees depends on the module's text, through its key
+          key := mixHash key (← keyOf keys m)
+          if stack.contains m then
+            s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"import cycle through {m}" } }
+          else if !s.imported.contains m then
+            match s.loader m with
+            | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}" } }
+            | some src =>
+              let (inner, h) ← importModule keys base stack s m src
+              hits := hits + h
+              let errs := inner.messages.filter (·.severity == .error)
+              let msg : Msg := { info := cmd.info, severity := .error,
+                                 text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+              s := { inner with messages := if errs.isEmpty then s.messages else s.messages.push msg,
+                                module := s.module, infos := s.infos }
+          pos := stop
+          continue
+        let cached : Option (Effect R) ←
+          if cacheable.contains cmd.kind then store.get key else pure none
+        match cached with
+        | some e =>
+          s := e.apply s
+          hits := hits + 1
+        | none =>
+          let s' := Query.elaborate.elabOne input base chars pos stop s
+          if cacheable.contains cmd.kind && mode matches .write then
+            store.put key (effectOf s s')
+          s := s'
         pos := stop
-        continue
-      let file := dir / s!"{key}.wizc"
-      let cached : Option (Effect R) ←
-        if cacheable.contains cmd.kind && (← file.pathExists) then
-          pure ((Sx.parse (← IO.FS.readFile file)).bind Effect.ofSx?)
-        else pure none
-      match cached with
-      | some e =>
-        s := e.apply s
-        hits := hits + 1
-      | none =>
-        let s' := Query.elaborate.elabOne input chars pos stop s
-        if cacheable.contains cmd.kind then
-          IO.FS.writeFile file (effectOf s s').toSx.render
-        s := s'
-      pos := stop
-  pure (s, hits)
+    pure (s, hits)
+
+/-- `elaborateWith`, through the cache directory `dir`. -/
+def elaborateCached (dir : System.FilePath) (input : String) (init : CommandState R) (key₀ : UInt64)
+    (toolchain : UInt64 := 0) : IO (CommandState R × Nat) := do
+  elaborateWith (← Store.disk dir) input init key₀ toolchain
+
+/-- `elaborateWith`, without a cache: modules are elaborated in isolation all the same. -/
+def elaborateUncached (input : String) (init : CommandState R) (toolchain : UInt64 := 0) : IO (CommandState R) := do
+  pure (← elaborateWith (← Store.memory) input init 0 toolchain).1
 
 end Wiz.Cache

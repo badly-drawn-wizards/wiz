@@ -27,8 +27,10 @@ soundness issues are known, open and fixed.
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
 LLVM's `llc` for the C and LLVM backends, Boehm GC for the self-hosted backend, a C
-compiler, and elan, which installs the Lean in `lean-toolchain`. It sets `$WIZ_CFLAGS`,
-`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`.
+compiler, and elan, which installs the Lean in `lean-toolchain`. Entered at the
+repository root, it writes this machine's paths to the uncommitted `grail.local.wiz`,
+which grail and the test driver read (`Tests/Main.lean`; flags to `lake test -- …` win);
+`wiz` takes flags. Nothing reads environment variables.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
 `solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
@@ -249,8 +251,12 @@ These changes landed in stage 1's files. Stage 1's exercises keep their numbers,
 the new constructor cases inside them are labelled 4.3–4.8.
 
 Quantities: `(1 x : A) × B` is a pair whose first field is linear. `p.1` and `p.2`
-each use `p`, so a linear pair is consumed with `let 1 (x, y) := p; …`. An erased
-field (`(0 n : A) × B`) can't be projected at all.
+each use `p`, so a linear pair is consumed with `let 1 (x, y) := p; …`. `p.2` drops the
+first field, so if that field is linear it counts `p` as used ω times (only an
+unrestricted pair may drop a linear field); `p.1` drops the second component, which the
+projection rule doesn't track. An erased field
+(`(0 n : A) × B`) can't be projected at all. Both projections are allowed in erased
+positions (`Ctx.erased`).
 
 | #   | Where              | What                                                       |
 |-----|--------------------|------------------------------------------------------------|
@@ -271,19 +277,29 @@ of `a` and `b` (Pujet & Tabareau, *Observational Equality: Now for Good*):
 
 | at type          | `a = b` computes to                                  | consequence |
 |------------------|------------------------------------------------------|-------------|
-| `(x : A) → B`    | `(x : A) → a x = b x`                                | funext      |
+| `(x : A) → B`    | `(0 x : A) → a x = b x`                              | funext      |
 | `(x : A) × B`    | `(e : a.1 = b.1) × cast … a.2 = b.2`                  |             |
 | `Unit`, `Empty`  | `True`                                               |             |
 | `Prop`           | `(a → b) × (b → a)`                                  | propext     |
-| `Type u`         | structural equality of types; `False` for different formers | no-confusion |
+| `Type u`         | structural equality of types (propositions inside by equivalence; `μ`, `ν`, `Desc` stuck); `False` for different formers | no-confusion |
 | a type variable  | stuck                                                 |             |
 
 `cast e t : B` (for `e : A = B`, `t : A`) also computes by the two types.
 `transp P p e` transports into propositions, and together they give `J`
 (`examples/equality.wiz` derives `subst` and `sym`). Proofs are **definitionally
-irrelevant**, so conversion at a proposition always succeeds. **Regularity**,
-`cast A A e t ≡ t`, is a conversion rule (not an evaluation rule), which makes `J`
-compute on `refl`.
+irrelevant**, so conversion at a proposition always succeeds.
+
+**No regularity (D1).** Regularity, `cast A A e t ≡ t` for *any* proof `e`, would make
+`J` compute on `refl` everywhere, but together with an impredicative `Prop` and
+irrelevant proofs it makes type checking loop (Abel–Coquand; `Tests/Elab.lean` "D1"). So
+it is off (`wiz check --regularity full` turns it back on, for experiments). Instead
+`cast` computes on data, constructor by constructor: `μ D i = μ D i'` is `i = i'`, and
+`cast (μ D i) (μ D i') e (con x)` casts each field of `x` along it (so a proof field is
+cast between propositions, which applies the equivalence: that is what stops the loop).
+At **inert** types (first-order data: `Nat`, `Bool`, `List Nat`, … — no `Prop` fields,
+functions or type variables) regularity is kept: there a cast between equal types is the
+identity. A cast at a type variable (`cast e a` for `e : A = A`) stays stuck, as in
+TTobs: `J` computes on `refl` at data types, not at a variable family (docs/CoreSpec.md §8.4).
 
 **Propositions inside types.** Two propositions are equal when equivalent, whatever
 their shapes: `True = (True → True)` holds. So equality of types can't compare a
@@ -388,7 +404,9 @@ index, and `Enum`s by size. Equality at ν is stuck (a design decision).
 
 A case uses the **join** of its branches' usages (`0 ⊔ 1 = ω`), so a linear variable
 must be used identically in every branch. `ind`'s method is scaled by ω, since it runs
-once per node. Erased fields can be projected in erased positions (`Ctx.erased`).
+once per node (and so are the methods of `Desc.elim`, `sfix`, `scofix` and `coit`). ω
+is the rig's unrestricted quantity (`QRig.many?`); a rig without one, like exact
+counting (`Nat`), only lets a method use local variables in erased positions. Erased fields can be projected in erased positions (`Ctx.erased`).
 
 `examples/data.wiz` defines `Bool`, `Nat`, addition by `ind` (with a hand-written
 "convoy" to branch on the tag, which `match` will generate in stage 4e), and streams.
@@ -422,9 +440,13 @@ other occurrence is an error. A `structure` is a Σ ending in `Unit` with constr
 
 Every `inductive` also gets Lean-style eliminators `T.rec` (with induction
 hypotheses) and `T.casesOn` (`Elab/Recursor.lean`). They are built on `ind`: a
-"convoy" `ecase` on the tag, then a `cast` along the constructor's index equation.
-In evaluation, `cast A B e t` reduces to `t` whenever `A` and `B` quote to the same
-term (cheap regularity), so normal forms stay readable.
+"convoy" `ecase` on the tag, then a `cast` along the constructor's index equation
+(none for a type without indices). Indexed families also get `T.recN` and `T.casesOnN`,
+whose motive is a plain type: they need no cast, and `match` uses them when its result
+type depends on neither the indices nor the scrutinee. Without regularity (D1) the cast
+in `T.rec` computes on a constructor only through the motive's type: at an inert type
+(`Vec.length`) it vanishes, at a type variable (`Vec.map : … → Vec B n`) the fields stay
+cast (`cons (cast B B _ (f x)) …`).
 
 `.c` (with or without arguments) is a constructor of the expected type. Applications
 containing such arguments are elaborated *expected type first* (`checkApp`), so
@@ -632,7 +654,7 @@ attribute [macro term.twice] twiceMacro
 #eval twice! 21                     -- 42
 ```
 
-* `import M` loads `lib/M.wiz` (and `$WIZ_PATH`). `lib/Prelude.wiz` defines `Bool`,
+* `import M` loads `lib/M.wiz` (and the `-I DIR` roots; `import A.B` is `A/B.wiz`). `lib/Prelude.wiz` defines `Bool`,
   `Nat`, `List`, `Option`, `Char`, `String`, `Except`, `Syntax`, `MacroM`, and `do`
   notation (written as macros).
 * `builtin key := name` registers prelude definitions with the kernel and the runtime
@@ -864,8 +886,9 @@ $ wiz run fact.wiz        # def main : Nat := fact 30
 
 * `wiz build FILE -o OUT` compiles the definition `main` to C and then to an
   executable; `wiz run FILE` also runs it and reads the printed result back with
-  `main`'s type. The C compiler is `$WIZ_CC` (default `cc`), with `$WIZ_CFLAGS` and
-  `$WIZ_LDFLAGS` for GMP. The C tests skip themselves if GMP isn't found.
+  `main`'s type. The C compiler is `--cc X` (default `cc`), with `--cflags "…"` and
+  `--ldflags "…"` for GMP (stage 23a: flags, not environment variables). The C tests
+  skip themselves if GMP isn't found.
 * **Runtime** (`runtime/wiz.c`, embedded in the compiler): a value is a word; scalars
   have the low bit set; objects have a header (reference count, tag, size). Closures
   point to a boxed entry and share or move their captured arguments when applied.
@@ -905,7 +928,7 @@ zipper's insertion loop then allocates nothing per level.
 ### 8d: LLVM ✅
 
 `wiz build FILE -o OUT --llvm` and `wiz run FILE --llvm` go through textual LLVM IR
-(`Compiler/LLVM.lean`) and `llc` (`$WIZ_LLC`). The runtime is the same C file,
+(`Compiler/LLVM.lean`) and `llc` (`--llc X`). The runtime is the same C file,
 compiled separately with `-DWIZ_API=` so that its functions are exported. In SSA form,
 join point parameters live in stack slots, and a variable bound in several branches
 gets one name per branch. The LLVM tests are the C tests, through LLVM.
@@ -1763,6 +1786,43 @@ minutes. A `match` was a method applied to the payload, a closure built and call
 time; a lambda applied to arguments is now a `let`: 6 minutes. Reference counting comes
 next.
 
+### 21g: reference counting in the self-hosted backend (first stage)
+
+A second mode of `Backend.wiz` (`genProgramRC`), chosen by a first line `-- wiz: rc` in
+the program (a stand-in for a command-line flag: self-hosted programs can't read their
+arguments yet). The garbage-collected mode is unchanged, byte for byte.
+
+* **Perceus on the erased terms** (`rcE`): the C is in A-normal form, one local per
+  intermediate value, statements in evaluation order (C leaves the order of arguments
+  unspecified, and with reference counts the order of a use and an `inc` matters).
+  Liveness is one backward pass: a term is compiled knowing the variables used after it
+  (by de Bruijn level), and returns those used from its start; arguments are compiled
+  right to left. The last use of a variable moves it, earlier uses `inc` it, and a
+  variable that dies unused is `dec`ed where it dies (after its `let`, at a function's
+  start, at the start of each `case` branch that doesn't use it). A projection path from
+  a variable reads in place and `inc`s only the field; a `case` on a variable's field
+  reads the tag in place.
+* **Runtime** (`rt.c` with `WIZ_RC`): a count in every object's header; functions own
+  their arguments; function closures pass their collected arguments on (moved out when
+  unique); freeing is a worklist (a list a million long frees without recursion);
+  `memo` and the lazy hypotheses of `ind` release their suspension once forced; arrays
+  are updated in place when unique, else copied (Baker's versions would make cycles);
+  map nodes hold their keys. Constants (globals, string literals) are roots, released at
+  exit, after which the program checks that every object was freed.
+
+* **Borrowed parameters** (as in Lean): a parameter of a global function that its body
+  only reads (projections, a `case`'s tag, borrowed arguments of direct calls) is
+  borrowed, found as a greatest fixed point over all functions. A caller lends a
+  variable to it (and releases it after the call if that was its last use); the function
+  neither `inc`s it nor releases it.
+
+**Bootstrap in this mode**: stage 1 compiles the toolchain (with the `-- wiz: rc` line)
+to C, and that program (stage 2, reference counted) compiles it again to the same C,
+freeing every object by the end.
+
+Next: reuse and drop specialisation (as in stages 8c), a faster allocator, keeping tail
+calls when a borrowed argument is lent; then reference counting by default.
+
 ## Stage 22: numbers for hardware and systems code
 
 Prerequisites shared by the HDL and the Rust-style DSL (decisions RD9, RD10/HD3).
@@ -1808,9 +1868,10 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   width (1, 5, 65, …) and Rust's `u32` is `U32 := UIntN 32` (also `U8 … U64`, `USize`,
   `I8 … I64`, with `U32.ofNat`, `I32.ofNeg`, …). Operations are named functions
   (`UIntN.add a b`, or `a.add b`) until the numeric classes (HD9) arrive.
-* **The width is an index** (`mk {0 w : Nat} (toNat : Nat) : UIntN w`): types are
-  structural, and a parameter that no field mentions is forgotten, so `UIntN 8` and
-  `UIntN 16` would be one type and `w` could not be inferred.
+* **The width is a phantom parameter** (`inductive UIntN (w : Nat) where | mk (toNat :
+  Nat)`, since 22e/22h): no field mentions it, yet `UIntN 8` and `UIntN 16` are different
+  types and `w` is inferred. (Before 22e it had to be an index, `mk {0 w : Nat} …`,
+  leaving an erased slot in the object.)
 * **Natives.** The kernel computes with the definitions, quickly on numerals (22a), and
   so do `#eval`/`#run`. Compiled code calls natives (`runtime/wiz.c`, `wiz_word_*`) by
   `implemented_by`: in a `uint64_t` up to 64 bits, GMP beyond, one function per
@@ -1820,7 +1881,118 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   sides still contain an unsolved implicit width when it is computed gets stuck, so
   state facts about definitions). A word is still an
   object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
-  `implemented_by`.
+  `implemented_by` (22d).
+
+### 22d: native representations: unboxed words ✅
+
+`attribute [implemented_by mk get] T.mk` gives a type a **native representation** in
+compiled code. `T.mk` is a constructor with one runtime field (the others erased);
+`mk` has the constructor's type and `get` reads the field back. Erasure then never
+builds the model's object: a constructor becomes `mk`, and `match` (and the generic
+eliminators, which get the model's object back from `get`) reads the field with `get`.
+The kernel and every proof keep the model. As with function-level `implemented_by`,
+the natives are trusted, and the interpreters (`#eval`, `#run`) keep the model's
+objects when `mk` or `get` is foreign, so the tables below compare the two.
+
+`lib/Word.wiz` uses it for `UIntN w` and `IntN w` (and `NatObj`, a `Nat` passed to C
+as the runtime number itself, possibly big). **A word is its bits**:
+
+| bits b | representation | allocation |
+|---|---|---|
+| `b < 2^63` | a tagged scalar | none |
+| `2^63 ≤ b < 2^64` | a raw 64-bit box (`WIZ_TAG_RAW`) | one cell |
+| `b ≥ 2^64` (widths above 64) | a GMP number | as `Nat` |
+
+* **Width-independent.** The representation depends only on b, so generic code over
+  `UIntN w` (unknown `w`, any width: `BitVec n`, the HDL's `Unsigned n`) needs no width
+  to build or read a word, and each value has exactly one representation (equality is
+  a comparison of bits). `ofBits`/`toBits` convert from and to `Nat` (free below
+  `2^62`).
+* **Operations** are natives on that representation (`wiz_word_*` in `runtime/wiz.c`):
+  `ofNat`/`ofNeg`, `+ - *`, `div`/`mod`/`rem`, comparisons, `land`/`lor`/`xor`/`not`,
+  shifts and `testBit` (a shift or index of `2^64` or more counts as infinite),
+  `resize` (zero- or sign-extending), `toIntN`/`toUIntN` (free). Up to 64 bits each is
+  a few instructions on a `uint64_t`; the C backend pastes the runtime into the program,
+  so `cc -O2` inlines them.
+* **What is not unboxed.** A 64-bit value with the top bit set still takes a cell (the
+  uniform representation has 63 bits of payload). Unboxing those too needs per-variable
+  representations in the IR (raw `uint64_t` locals and parameters, boxed at polymorphic
+  boundaries, as Lean's `UInt64`): the next step, once a measurement says it pays.
+* **Self-hosted backend:** not yet (it runs the model; see the wishful note).
+
+### 22e: phantom parameters ✅
+
+```
+inductive UIntN (w : Nat) where
+  | mk (toNat : Nat)                     -- no field mentions `w`
+def f (x : UIntN 8) : UIntN 16 := x      -- type mismatch
+def width {ω w : Nat} (a : UIntN w) : Nat := w
+#eval width (UIntN.mk 3 : UIntN 8)       -- 8: `w` is inferred
+```
+
+Types are structural, so a parameter that no field mentions used to be forgotten:
+`UIntN 8` and `UIntN 16` were one type, `w` couldn't be inferred, and an HDL `Signal d A`
+didn't keep clock domains apart. Now, for each such parameter `p : P`, the elaborator
+(`phantomTail`, `Elab/Inductive.lean`) ends the type with `(0 phantom✝ : D) → Unit`
+instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
+`coinductive`, or of a structure's Σ. Here `D := p` if `p` is a type, and
+`D := (0 x : P) × (x = p)` otherwise.
+
+* `D` mentions `p` and is a type, not a proposition. Propositions compare by equivalence
+  (4c), so `p = p` would have forgotten `p` again. Conversion now compares `p`, and
+  unification solves it.
+* The tail's only inhabitant is `fun _ => ()` (up to η). So it is still a singleton:
+  constructors fill it in, patterns never see it, structure η and copattern index
+  equations hold by `refl`, and `()` fills a structure's tail in a tuple.
+* Erasure drops it (`erasable` knows the inaccessible binder name), so data, `#ir` and the
+  C/LLVM code are those of the type without the parameter. Constructors, projections,
+  `deriving` and `implemented_by` don't change. Nothing in the kernel changes either: it
+  checks the encoding like any other declaration.
+* Proof parameters get no phantom, and neither do sizes or quantities. A parameter whose
+  `D` lives in a higher universe than the type also gets none, since the tail would
+  raise the type's universe; it stays forgotten.
+* For structures, `S 8 = S 16` computes through the Σ to `(x = 8) ↔ (x = 16)` under
+  a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). Equality of two
+  `μ` types computes to the index equation only when their descriptions agree (so
+  `UIntN 8 = UIntN 8` does), and the phantom is part of the description. So for an
+  `inductive`, `UIntN 8 = UIntN 16` stays stuck: it is neither provable nor refutable,
+  and a `cast` between such types gets stuck too.
+* A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
+  parameters never count. Declare a `structure` instead.
+
+### 22h: one bit-vector family ✅
+
+`BitVec n` (`lib/BitVec.wiz`) and `UIntN n` (`lib/Word.wiz`) are one type:
+
+```
+inductive UIntN (w : Nat) where | mk (toNat : Nat)   -- lib/Word.wiz: the model + natives
+def BitVec (n : Nat) : Type := UIntN n               -- lib/BitVec.wiz: the HDL/proof names
+def BitVec.add {ω n : Nat} (a b : BitVec n) : BitVec n := UIntN.add a b
+def w (x : U32) : BitVec 32 := BitVec.add x (BitVec.ofNat 32 1)   -- no conversion
+```
+
+* **Design.** `UIntN` is the implementation: one model (a number below `2^w`), one set
+  of natives (22c-d), one runtime representation (a word is its bits). `BitVec` is a
+  view of it: a `def` alias plus the hardware vocabulary (`udiv`, `and`, `shl`, `lshr`,
+  `ashr`, `slt`, `concat`, `extract`, `zeroExtend`, `signExtend`, `toVec`/`ofVec`, …),
+  each defined as the `UIntN`/`IntN` operation it is (signed ones read the bits as
+  `IntN n`, a free cast). The alias is enough because the width counts through
+  `UIntN`'s phantom parameter (a `def` alias's own parameters never count, 22e):
+  `BitVec 8` is not `U16`. The reverse (a `BitVec` structure `implemented_by` words)
+  would need a second representation registration and conversions at every Rust/HDL
+  boundary.
+* **Proofs** see the definitions, which unfold to Word's model, so the BitVec lemmas
+  are stated as before (`BitVec.add_comm` is `congrArg (UIntN.ofNat n)
+  (Nat.add_comm …)`); `BitVec.add_eq : BitVec.add a b = UIntN.add a b` is `refl`.
+  The literal tables (group `vec`) and the 34-operation and 64-bit word tables (group
+  `word`) agree in the kernel, `#eval`, `#run`, C and LLVM.
+* **Compiled**, a bit vector is a native word: no constructor or projection in the IR
+  (group `vec`), no allocation below `2^63`. The model's object is now `⟨0 bits⟩`
+  (the width no longer takes a slot), so a word read back prints as `.mk 18446744073709551613`.
+* **For the HDL**: `Unsigned n`/`Signed n` (hdl-plan §2.2) can reuse the same
+  representation as aliases (`def Unsigned (n : Nat) := UIntN n`, `Signed n := IntN n`);
+  a `structure` wrapper would instead need its own `implemented_by mk get` to avoid a box.
+
 ## Libraries
 
 ### H0c: vectors and bit vectors ✅
@@ -1832,19 +2004,20 @@ Functions: `head`/`tail`/`last`/`init` on non-empty vectors, `get`/`set` by `Fin
 `map`, `zipWith`, `zip`, `foldl`/`foldr`, `replicate`, `ofFn`, `append`, `reverse`
 (linear, with a `cast` along `m + (k+1) = (m+k)+1`), `snoc`, `splitAt`, `shiftIn`,
 `toList`/`fromList` (`fromList l : Vec A (List.length l)`). Theorems: `length_eq`,
-`length_toList`, `toList_fromList`, `map_map`, `get_set` (`get (set v i x) i = x`),
-`get_map`, and the `Nat` lemmas they need
-(`add_zero`, `add_succ`, `add_comm`), all by structural recursion.
+`length_toList`, `toList_fromList`, and the `Nat` lemmas they need
+(`add_zero`, `add_succ`, `add_comm`), all by structural recursion. (`map_map`, `get_set`
+and `get_map` are in `drafts/vec-lib/VecProofs.wiz` since D1: without regularity they would
+need `cast B B e b = b` at a type variable, which is not provable; see docs/Status.md.)
 
-`lib/BitVec.wiz` (`import BitVec`): `BitVec n`, a `Nat` below `2^n` by construction
+`lib/BitVec.wiz` (`import BitVec`): `BitVec n` (since 22h, `UIntN n` under another name), a `Nat` below `2^n` by construction
 (every operation reduces mod `2^n`). Wrapping `add`/`sub`/`neg`/`mul`, `udiv`/`umod`,
 `and`/`or`/`xor`/`not`, `shl`/`lshr`/`ashr`, `getBit`, `msb`, `beq`/`ult`/`ule`/`slt`/`sle`,
 `concat`, `extract hi lo`, `zeroExtend`, `signExtend`, and `toVec`/`ofVec` (to and
 from `Vec Bool n`, least significant bit first). Operations that need `2^n` take the
 width at runtime (`{ω n : Nat}`). The arithmetic is the Prelude's native `Nat`
 operations (22a), so the kernel computes on literal bit vectors:
-`(BitVec.add (BitVec.ofNat 8 200) (BitVec.ofNat 8 100)).toNat = 44 := rfl`. (`lib/Word.wiz`'s
-`UIntN w` (22c) is the machine-integer counterpart, with native words in compiled code.)
+`(BitVec.add (BitVec.ofNat 8 200) (BitVec.ofNat 8 100)).toNat = 44 := rfl`. Compiled code
+runs `lib/Word.wiz`'s native words (22h).
 
 Along the way the elaborator learned to:
 * keep erased constructor fields and arguments erased when a `match` reverts them, and
@@ -1860,7 +2033,7 @@ Along the way the elaborator learned to:
 
 Not yet: facts like `Vec.get v (Fin.of 3 1 rfl) = 20 := rfl` (the `rfl` shape
 problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` in general, numerals and operators
-(`a + b`) for `BitVec` (decision HD9), and native representations (`implemented_by`).
+(`a + b`) for `BitVec` (decision HD9).
 
 ## Stage 11: tooling
 
@@ -1879,7 +2052,7 @@ problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` 
 ### 11c: a shared, content-addressed cache ✅
 
 `wiz check`/`build`/`run` keep each command's **effect** (declarations, messages,
-registrations, hovers) in the cache directory (`--cache DIR`, default `~/.cache/wiz`;
+registrations, info trees) in the cache directory (`--cache DIR`, default `~/.cache/wiz`;
 `--no-cache` turns it off), under the command's chained content hash. A shared directory is a shared cache,
 since equal keys mean equal results. Imported modules are cached command by command
 too. Commands that change the grammar or the macros rerun (they are cheap).
@@ -1887,12 +2060,58 @@ too. Commands that change the grammar or the macros rerun (they are cheap).
 literal syntax). Every example gives the same output from the cache as without it.
 
 Next: finer dependencies (re-elaborate only what an edit affects, not everything
-after it), and hovers for declarations that fail.
+after it).
 
-### 11h, 11k: the infoview, in a terminal and in a browser ✅
+### 11d: the info tree, the infoview and code actions ✅
+
+* **The info tree** (`Elab/Basic.lean`, `Elab/Info.lean`): while elaborating, the
+  elaborator records identifiers, the expected type of every checked term (and of every
+  hole), the open goals before and after each tactic, `match`es and declarations. It
+  keeps values and contexts as it goes (free) and quotes and zonks them at the end of the
+  declaration, into `Term`s, not strings. An error carries the state it was thrown in,
+  so a declaration that fails (unsolved goals, a hole) still has its tree. The tree is
+  memoised and cached with its command; hovers and go to definition read it.
+* **The infoview** (`Wiz/Infoview.lean`): `Term.prettyTagged` prints a term exactly as
+  `Term.pretty` does, as tagged text: every subterm is a tag whose ref points into the
+  document's session table (valid until the next edit). `wiz lsp` answers
+  `wiz/plainGoal`, `wiz/plainTermGoal`, `wiz/interactiveGoals`,
+  `wiz/interactiveTermGoal` and `wiz/subtermInfo` (a subterm's type, from the kernel,
+  and where a constant was declared); the protocol is in
+  `wiz-notes/infoview-protocol.md`.
+* **Code actions** (`Wiz/Actions.lean`): diagnostics carry a code and data; the server
+  offers *did you mean* (edit distance ≤ 2 over locals and globals), *add missing cases*
+  (`| .c x y => ?c` per missing constructor) and *add type ascription* to a `def` without
+  a type, with edits inline or through `codeAction/resolve`.
 
 ```
-wiz lsp --infoview /tmp/wiz.sock          # the editor's server (see infoview-protocol)
+def k : Nat → Bool → Nat := by
+  intro n         -- wiz/plainGoal here:  n : Nat ⊢ Bool → Nat
+  intro b
+  exact n
+def four : Nat := doubel 2    -- unknown identifier 'doubel'   [Did you mean 'double'?]
+```
+
+### 11l: the infoview socket ✅
+
+`wiz lsp --infoview SOCK` also listens on the Unix socket `SOCK`, for infoviews that run
+beside the editor (the terminal infoview connects there). The editor never says where
+its cursor is, so the server infers it from the editor's requests: any request with a
+position (hover, `documentHighlight`, which the server now advertises so that editors
+send it on every move, go to definition, completion, …) and code actions (at the
+range's start). When the cursor moves, and after each elaboration of its document,
+every connected infoview gets `wiz/infoview/cursor` (uri, position, session) and pulls
+with the ordinary `wiz/*` requests on the socket; sessions and refs are the editor's.
+Lean's library has no Unix sockets, so `c/sockets.c` (compiled into the executables by
+the linker, `moreLinkObjs` in the lakefile) listens, accepts, and turns a connection
+into two ordinary Lean handles. The server's state stays single-threaded: a reader
+thread per connection feeds one channel, and one loop answers in order. Protocol §8 of
+`wiz-notes/infoview-protocol.md`; tested in-process (the `lsp-server` group: the editor
+on a socket pair, an infoview on the socket).
+
+### 11m–n: the infoview, in a terminal and in a browser ✅
+
+```
+wiz lsp --infoview /tmp/wiz.sock          # the editor's server (11l)
 wiz-infoview /tmp/wiz.sock                # in a tmux split: the goals at the cursor
 wiz-infoview --file t.wiz --at 4:5        # or on its own: starts `wiz lsp` itself
 web/build.sh && web/bridge.sh             # the same infoview in a browser
@@ -1924,7 +2143,7 @@ Both clients are Wiz programs, and they share their logic:
   speaks WebSocket itself.
 
 Running it in tmux, next to an editor whose language server is `wiz lsp --infoview
-/tmp/wiz.sock` (the socket is the server's job, infoview-protocol.md §8):
+/tmp/wiz.sock` (11l):
 
 ```
 infoview/build.sh                                   # → .lake/build/bin/wiz-infoview
@@ -1934,3 +2153,115 @@ tmux split-window -h -l 60 '.lake/build/bin/wiz-infoview /tmp/wiz.sock'
 The pane waits for the server, then follows the editor's cursor. Without an editor:
 `wiz-infoview --file examples/tactics.wiz --at 6:3` (`[` and `]` move the line).
 `infoview/test.sh` and `web/test.sh` run both clients against `infoview/stub_server.py`.
+
+## Stage 23: grail, a build tool
+
+### 23b: modules by path ✅
+
+`import A.B` reads `A/B.wiz` under the first **module root** that has it; `lib/` is a
+root, so `import Prelude` is `lib/Prelude.wiz` as before. The frontend stays pure: the
+caller reads every module a file can reach up front, by scanning its import lines
+(`Wiz/Module.lean`).
+
+### 23c: a key per module, atomic writes ✅
+
+A module's key is computed from text alone, before anything is elaborated:
+
+    key(M) = hash(salt, toolchain, text of M, M's C headers, key(N) for each import N)
+
+and a module is elaborated **in isolation**, from the empty state plus its own imports,
+so what it elaborates to depends only on its key. An importer's chain of command keys
+mixes in `key(M)` at the `import`. Editing a module now invalidates it and what imports
+it, not the whole library, and a module imported by many files is cached once. A module
+that uses a name it doesn't import is an error, with the cache or without (`--no-cache`
+keeps the effects in memory for the run), and in `runFrontend`, which the tests and the
+language server use: it checks each module once in isolation (errors are reported at
+the `import`) and then elaborates it into the importer's state, unless that state is
+still the initial one and the isolated result serves as it is. So the editor rejects
+what `wiz check` rejects. Cache files are
+written to a temporary name and renamed, so concurrent runs never see half a file.
+
+### 23d: grail v0 ✅
+
+A package is a directory with a `grail.wiz`, written in Wiz against `lib/Grail.wiz`:
+
+```
+import Grail
+def package : Package := Package.new "wiz"
+  |> Package.lib "std" "lib"                    -- check every module under lib/
+  |> Package.check "app" "app.wiz"              -- check one file
+  |> Package.exe "io" "examples/io.wiz"         -- compile `main`: .grail/bin/io
+```
+
+```sh
+lake build grail
+.lake/build/bin/grail build          # every target; `grail build std` for one
+.lake/build/bin/grail targets        # list them; `grail config` prints the toolchain
+```
+
+grail evaluates `Package.render package` (an S-expression) in the interpreter and
+builds a graph of **jobs**: `check` per file, and `ir → c → obj → link` per executable.
+A job's key is computed from its inputs before it runs (a check from the file's key, an
+object from the C text and the compiler flags), its output goes to
+`.grail/build/<key>/` through a temporary directory and a rename, and a job whose
+directory exists doesn't run: **a second build runs no jobs**, an edit reruns the checks
+of the files that import what changed, and an edit that leaves the C alone stops there.
+The key also covers the grail binary itself, so a new elaborator rebuilds everything.
+
+There are no environment variables: the C compiler and its flags come from flags
+(`--cc`, `--cflags`, `--ldflags`, `--llc`, `-I DIR`, `--cache DIR`, `--no-cache`) or from
+an uncommitted `grail.local.wiz` with this machine's paths (`nix develop` writes it from
+`flake.nix`):
+
+```
+import Grail
+def settings : Settings := Settings.empty
+  |> Settings.set "cflags" "-I/nix/store/…-gmp-…-dev/include"
+  |> Settings.set "ldflags" "-L/nix/store/…-gmp-…/lib -Wl,-rpath,/nix/store/…-gmp-…/lib"
+```
+
+### 23a: the toolchain as flags ✅
+
+`wiz` reads no environment variables: the toolchain record (`Wiz/Toolchain.lean`: C
+compiler and flags, `llc`, the collector's flags, the cache, module roots) comes from
+`--cc`, `--cflags`, `--ldflags`, `--libs`, `--llc`, `--cache DIR`/`--no-cache` and
+`-I DIR` (which replaces `$WIZ_PATH`), and is passed explicitly to everything that
+compiles. Its compiler fields are its `id`, which enters grail's keys.
+
+### 23e: the self-hosted toolchain as targets ✅
+
+`Package.selfhost NAME ROLE` builds the self-hosted programs from `selfhost/*.wiz`
+(`Wiz/Selfhost.lean` generates their sources, parser tables included, for grail and the
+tests alike): `checker`, `compiler`, and `bootstrap`, the fixpoint check of
+`scripts/fixpoint.sh` as jobs (generate the source, build stage 1, `self1.c`, stage 2,
+`self2.c`, compare). `grail build bootstrap` runs it (minutes); run again, it runs
+nothing unless a source, `rt.c`, the toolchain or grail changed. `grail build` alone
+leaves it out.
+
+### 23f: a test runner ✅
+
+`Package.tests NAME DIR` makes every `.wiz` file under `DIR` a test, with its expected
+output beside it in `.expected`. The first line gives the kind: `-- test: check` (the
+default: the messages, as `wiz check` prints them) or `-- test: run` (what `main` prints,
+compiled through C). A pass is a job like any other, keyed by the file (and its
+imports), the kind, the toolchain and the expected output, so `grail test` again runs
+nothing; `grail test FILTER` runs the tests whose path contains it, and
+`grail test --update` writes the actual output. Every example is a test
+(`examples/*.expected`). The Lean tests stay in `lake test`.
+
+### 23g: parallel jobs ✅
+
+The jobs form an explicit graph (`Grail/Graph.lean`): `ir F` depends on `check F`, …,
+`link E` on `obj F`, a check on the checks of the package modules it imports, a `run` test
+on its executable, the bootstrap steps on each other. A node's key is computed when its
+dependencies are done (an object's key hashes the C its `c` node wrote); a node whose
+output exists is up to date, the rest are jobs in a ready queue. `grail build -j N`
+(default: the cores, at most 4) runs up to `N` jobs at a time, each as a separate process
+(`grail --grail-job …` with the toolchain as flags, or the C compiler) under `timeout`
+(`--timeout SECS`, default 1800; tests `--test-timeout SECS`, default 300, so a test that
+hangs fails instead of hanging the run). A failed job is reported and the jobs that depend
+on it are skipped; the others still run. Each job's output is buffered and printed in the
+graph's order, so `-j 1` and `-j 8` print the same report, and a second build still runs
+no jobs.
+
+Next: git dependencies and a lock file (23h).

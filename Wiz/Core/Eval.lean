@@ -17,9 +17,11 @@ Every eliminator has a semantic version (`vApp`, `vFst`, `vSnd`, `vSplit`,
 `vAbsurd`). Each computes when its argument is a constructor (a β-rule) and otherwise
 pushes itself onto the neutral's spine.
 
-Globals are δ-unfolded eagerly: `const n` evaluates to the value of `n`'s definition.
-Axioms (no definition) become neutrals. (Eager unfolding makes error messages huge and
-is slow; "glued evaluation" is the standard fix, see the optional exercises.)
+Globals are **glued** (stage 7a): `const n` evaluates to `Val.unfold`, which keeps the
+name and computes the unfolding only when `whnf` needs it. Definitions marked `inline`
+(constructors), or all of them when `Globals.eager` is set (as `nf` does), are
+δ-unfolded at once. Axioms (no
+definition) become neutrals.
 
 These are `partial` because the untyped evaluator need not terminate (`Ω = (λx. x x)(λx. x x)`).
 On well-typed terms they do.
@@ -95,7 +97,7 @@ def natNative? : Name → Array Nat → Option Nat
 `Term.natOp` on its arguments, so it computes natively when they are literals. -/
 def vBuiltin? (g : Globals R) (n : Name) : Option (Val R) := do
   let k ← g.builtinKey? n
-  if !k.startsWith "nat." || k == "nat.beq" || k == "nat.blt" then none
+  if !k.startsWith "nat." then none
   else if k == "nat.zero" then some (.natLit 0)
   else if natOpArity k == 1 then some (.lam "a" (.mk [] (.natOp k #[.var 0])))
   else some (.lam "a" (.mk [] (.lam "b" (.natOp k #[.var 1, .var 0]))))
@@ -122,6 +124,71 @@ def propSort? : Val R → Option Bool
   | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
   | _ => none
 
+/-! ### A level above every variable of a value
+
+Regularity (`vCast`'s last case) compares two types by quoting them. Quoting at level
+`l` turns the variable at level `x` into the index `l - x - 1`, so `l` must be above
+every variable the values mention, or two different variables could quote to the same
+index. `Val.lvlBound` computes such an `l`. A closure counts only the entries of its
+environment that its body might mention (that is all `quote` can reach). The bound may
+be too large (a `lazyInd`'s whole spine counts), never too small. -/
+
+/-- The free variables of `t` under `depth` binders, as indices into the enclosing
+environment (with repeats). -/
+partial def Term.freeVarsAt (depth : Nat) (t : Term R) : StateM (Array Nat) Unit :=
+  match t with
+  | .var i => if i ≥ depth then modify (·.push (i - depth)) else pure ()
+  | t => t.forChildren (fun _ => pure ()) (fun d c => Term.freeVarsAt (depth + d) c)
+
+mutual
+/-- `1 +` the largest level of a local variable in `v` (`0` if none). -/
+partial def Val.lvlBound : Val R → Nat
+  | .neutral h sp => max h.lvlBound (Elim.spineBound sp)
+  | .unfold _ _ sp _ => Elim.spineBound sp
+  | .lazyInd _ I D _ P m i x sp _ => max (Val.maxBound [I, D, P, m, i, x]) (Elim.spineBound sp)
+  | .pi _ _ q a b _ | .sigma _ q a b _ => max (max q.lvlBound a.lvlBound) (b.lvlBound 1)
+  | .lam _ b => b.lvlBound 1
+  | .pair a b => max a.lvlBound b.lvlBound
+  | .desc _ a | .dret a | .szSuc a | .sizeLt a | .con a | .cocon a => a.lvlBound
+  | .darg q S D => Val.maxBound [q, S, D]
+  | .drec q j D => Val.maxBound [q, j, D]
+  | .dhrec q H j D => Val.maxBound [q, H, j, D]
+  | .mu _ I D i s h | .nu _ I D i s h => max (Val.maxBound [I, D, i, s]) (Val.maxBound ((h.map (·.2.2)).getD []))
+  | .scofix _ I D A f s i a => Val.maxBound [I, D, A, f, s, i, a]
+  | .coit _ I D S st i s => Val.maxBound [I, D, S, st, i, s]
+  | .sort _ | .unit _ | .tt | .empty _ | .qty | .qlit _ | .enum _ | .tag .. | .size | .szInf
+  | .natLit _ => 0
+partial def Val.maxBound (vs : List (Val R)) : Nat := vs.foldl (fun m v => max m v.lvlBound) 0
+partial def Head.lvlBound : Head R → Nat
+  | .local x => x + 1
+  | .global .. | .mvar _ => 0
+  | .eq A a b => Val.maxBound [A, a, b]
+  | .eqTy A B => Val.maxBound [A, B]
+  | .cast A B e t => Val.maxBound [A, B, e, t]
+  | .refl A a => Val.maxBound [A, a]
+  | .reflTy X => X.lvlBound
+  | .transp A a P p b e => Val.maxBound [A, a, P, p, b, e]
+partial def Elim.spineBound (sp : Array (Elim R)) : Nat := sp.foldl (fun m e => max m e.lvlBound) 0
+partial def Elim.lvlBound : Elim R → Nat
+  | .app a => a.lvlBound
+  | .fst | .snd | .out => 0
+  | .split q _ m _ _ b => max q.lvlBound (max (m.lvlBound 1) (b.lvlBound 2))
+  | .absurd m => m.lvlBound
+  | .ecase _ m env bs => max (m.lvlBound 1) (envBound env (bs.foldl (fun acc b => ((Term.freeVarsAt 0 b).run acc).2) #[]))
+  | .delim _ P a b c h => Val.maxBound [P, a, b, c, h]
+  | .ind _ I D _ P m i => Val.maxBound [I, D, P, m, i]
+  | .sfix _ I D _ P f s i => Val.maxBound [I, D, P, f, s, i]
+  | .scase _ I D _ P m s i => Val.maxBound [I, D, P, m, s, i]
+/-- The bound of the entries of `env` at the indices `fv`. -/
+partial def envBound (env : Env R) (fv : Array Nat) : Nat :=
+  (fv.qsort (· < ·)).foldl (init := (0, none)) (fun (m, prev) i =>
+    if prev == some i then (m, prev)
+    else (max m ((env[i]?.map Val.lvlBound).getD 0), some i)) |>.1
+/-- A closure whose body is under `binders` binders. -/
+partial def Closure.lvlBound (binders : Nat) : Closure R → Nat
+  | .mk env body => envBound env ((Term.freeVarsAt binders body).run #[]).2
+end
+
 /-- (D1 experiment, `Regularity.refl`) Is this proof visibly a reflexivity: `refl`,
 `reflTy`, `()`, or a `transp` of one along one? Such proofs only prove equations whose
 sides are definitionally equal. -/
@@ -138,6 +205,15 @@ def regularityAllowed (g : Globals R) (A e : Val R) : Bool :=
   | .nonProp => propSort? A != some true
   | .refl => reflProof e
   | .off => false
+
+/-- The predecessor of a size, for `con`/`cocon`/`out`: `↑s ↦ s`, `∞ ↦ ∞`; `none`
+for a size variable, which can't be built from or observed. -/
+partial def sizePred? : Val R → Option (Val R)
+  | .unfold _ _ _ v => sizePred? v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => sizePred? v.get
+  | .szInf => some .szInf
+  | .szSuc s => some s
+  | _ => none
 
 mutual
 
@@ -421,15 +497,41 @@ partial def vNatView (g : Globals R) : Val R → Val R
 /-- A registered operation applied to all its arguments: native arithmetic on literals,
 otherwise the operation's definition. -/
 partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
-  let lits := args.filterMap fun a => match whnf a with
-    | .natLit n => some n
+  -- the arguments as numerals, stopping at the first that isn't one: forcing the rest
+  -- could run a numeral's recursion all the way down (`d * 2^64` is `d + d * (2^64 - 1)`,
+  -- whose second argument is the next step, and so on)
+  let lits : Option (Array Nat) := args.foldlM (init := #[]) fun acc a => match whnf a with
+    | .natLit n => some (acc.push n)
     | _ => none
-  let native : Option Nat := if lits.size != args.size then none else natNative? op lits
-  match native with
-  | some n => .natLit n
-  | none => match (g.builtins.lookup op).bind g.find? with
-    | some { value := some v, .. } => args.foldl (vApp g) (eval g [] v)
+  let d : Val R := match (g.builtins.lookup op).bind g.find? with
+    | some { value := some v, .. } => eval g [] v
     | _ => panic! s!"no definition for builtin {op}"
+  -- not computed natively: the definition, kept glued under its name (`Nat.pred n`, not
+  -- its unfolding; `succ` is a constructor). `a - n` with `a` stuck and `n` a numeral is
+  -- `pred` applied `n` times to `a` (`Nat.subFrom` recurses on the numeral), a stuck term
+  -- of size `n` built one step at a time (`x - 55296` ran out of memory): it stays the
+  -- stuck application instead, compared by its arguments. (Not on a metavariable: it may
+  -- still compute.)
+  let unfold : Unit → Val R := fun _ =>
+    let stuckSub : Bool := op == "nat.sub" && match args.map whnf with
+      | #[.neutral h _, .natLit (_ + 1)] => !(h matches .mvar _)
+      | _ => false
+    match g.builtins.lookup op with
+    | some n =>
+      if stuckSub then .neutral (.global n []) (args.map .app)
+      else if op == "nat.succ" then args.foldl (vApp g) d
+      else .unfold n [] (args.map .app) (Thunk.mk fun _ => args.foldl (vApp g) d)
+    | none => panic! s!"no definition for builtin {op}"
+  match lits with
+  | some ns => match natNative? op ns, op, ns with
+    | some n, _, _ => .natLit n
+    -- comparisons return a `Bool`: the definition's own result on small numerals
+    | none, "nat.beq", #[a, b] =>
+      whnf (vApp g (vApp g d (.natLit 0)) (.natLit (if a == b then 0 else 1)))
+    | none, "nat.blt", #[a, b] =>
+      whnf (vApp g (vApp g d (.natLit 0)) (.natLit (if a < b then 1 else 0)))
+    | none, _, _ => unfold ()
+  | none => unfold ()
 
 /-- **Exercise 4.19c.** Induction computes on constructors:
 
@@ -510,6 +612,14 @@ partial def vOut (g : Globals R) (x : Val R) : Val R :=
     let rec_ : Val R := .lam "i" (.mk [f, A, D, I]
       (.lam "a" (.scofix l (.var 5) (.var 4) (.var 3) (.var 2) .szInf (.var 1) (.var 0))))
     vOut g ([.szInf, rec_, i, a].foldl (vApp g) f)
+  -- a cast between two `ν` types of a family is observed through (`vCastData`)
+  | .neutral (.cast A B e t) #[] => match whnf A, sameFamily? g (whnf A) (whnf B) with
+    | .nu .., some (l, I, D, s, i, i') => match sizePred? s with
+      | some s' =>
+        let (Xi, Xi', e') := payloadEq g l I D (nuFamilyAt l I D s') i i' e
+        vCast g Xi Xi' e' (vOut g t)
+      | none => .neutral (.cast A B e t) #[.out]
+    | _, _ => .neutral (.cast A B e t) #[.out]
   | .neutral h sp => .neutral h (sp.push .out)
   | _ => panic! "vOut: ill-typed"
   --|ex
@@ -544,6 +654,8 @@ it's stuck. -/
 partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   -- numerals: decide directly, or else look one step inside (`vNatView`)
   if let (.natLit n, .natLit m) := (whnf a, whnf b) then (if n == m then .unit 0 else .empty 0) else
+  -- (stuck, it keeps its sides as written: their names, for display and for `match`)
+  let stuck : Val R := .neutral (.eq A a b) #[]
   let A := whnf A
   let a := vNatView g (whnf a)
   let b := vNatView g (whnf b)
@@ -563,20 +675,56 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   | .unit _ | .empty _ => .unit 0
   | .enum _ => match a, b with
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
-    | _, _ => .neutral (.eq A a b) #[]
+    | _, _ => stuck
   | .mu l I D i _ _ => match a, b with
-    | .con x, .con y => vEq g (vInterp g l I D (muFamily l I D) i) x y
-    | _, _ => .neutral (.eq A a b) #[]
+    | .con x, .con y => (vEqPayload g l I (muFamily l I D) i D x y).getD stuck
+    | _, _ => stuck
   | .sort l =>
     if l.equiv 0 then
       -- (a → b) × (b → a)
       vIff a b
     else if l.isNeverZero then vEqType g a b
-    else .neutral (.eq A a b) #[]
-  | _ => .neutral (.eq A a b) #[]
+    else stuck
+  | _ => stuck
   --|ex
   --| sorry
   --sol>
+
+/-- Equality of two payloads `x y : ⟦D⟧ X i`, by the description: constructor by
+constructor, so that `succ m = succ n` is `m = n` (and not, through the Σ rule, an
+equation with a cast along the tags' equation, which without regularity would be stuck):
+
+    ret j          ↦ True                       (the index proofs are irrelevant)
+    arg q (Enum) E ↦ by the tags: equal ↦ True × (the rest at `E tag`); different ↦ the
+                     Σ rule (a pair whose first component is False); not both tags ↦
+                     none (the whole equation is stuck)
+    arg q S E      ↦ `x = y` at the Σ type `⟦arg q S E⟧ X i` (the Σ rule)
+    rec q j E      ↦ (x.1 = y.1 : X j) × (the rest at E)
+    hrec q H j E   ↦ (x.1 = y.1 : (h : H) → X (j h)) × (the rest at E)
+
+The choice between rules depends only on `D` and on whether tags are canonical (computed or
+stuck), so it is stable under substitution. -/
+partial def vEqPayload (g : Globals R) (l : Level) (I X i D x y : Val R) : Option (Val R) :=
+  let pairTy (A B : Val R) : Val R := .sigma "_" (.qlit 0) A (.mk [B] (.var 1)) (some 0)
+  match whnf D with
+  | .dret _ => some (.unit 0)
+  | .darg q S E => match whnf S with
+    | .enum _ => match whnf (vFst x), whnf (vFst y) with
+      | .tag ls a, .tag _ b =>
+        if a == b then (pairTy (.unit 0) ·) <$> vEqPayload g l I X i (vApp g E (.tag ls a)) (vSnd x) (vSnd y)
+        -- different tags: the Σ rule, whose first component is `False`
+        else some (vEq g (vInterp g l I (.darg q S E) X i) x y)
+      | _, _ => none
+    | _ => some (vEq g (vInterp g l I (.darg q S E) X i) x y)
+  | .drec _ j E => do
+    let r ← vEqPayload g l I X i E (vSnd x) (vSnd y)
+    pure (pairTy (vEq g (vApp g X j) (vFst x) (vFst y)) r)
+  | .dhrec q H j E => do
+    let r ← vEqPayload g l I X i E (vSnd x) (vSnd y)
+    -- h0 j1 X2
+    let F : Val R := .pi "h" .default q H (.mk [j, X] (.app (.var 2) (.app (.var 1) (.var 0)))) none
+    pure (pairTy (vEq g F (vFst x) (vFst y)) r)
+  | _ => none
 
 /-- **Exercise 4.11b.** Equality of types:
 
@@ -620,7 +768,10 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
       (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0)))) (some 0))) (some 0)
   | .sort u, .sort w | .unit u, .unit w | .empty u, .empty w => levels u w
   | .enum ls, .enum ls' => if ls.length == ls'.length then .unit 0 else .empty 0
-  | .desc .., .desc .. | .mu .., .mu .. | .nu .., .nu .. => .neutral (.eqTy X Y) #[]
+  | .desc l I, .desc l' I' => if l.equiv l' then vEqType g I I' else .neutral (.eqTy X Y) #[]
+  | .mu .., .mu .. | .nu .., .nu .. => match sameFamily? g X Y with
+    | some (_, I, _, _, i, i') => vEq g I i i'
+    | none => .neutral (.eqTy X Y) #[]
   | _, _ => if canonical X && canonical Y then .empty 0 else .neutral (.eqTy X Y) #[]
   --|ex
   --| sorry
@@ -660,13 +811,123 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   | .sort u, .sort w | .empty u, .empty w => if u.equiv w then t else stuck
   | .unit u, .unit w => if u.equiv w then .tt else stuck
   | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
-  -- regularity, when it is cheap to see: syntactically equal types (quoted at a level
-  -- above any variable in use)
-  | _, _ => if regularityAllowed g A e && quote g 100000 A == quote g 100000 B then t else stuck
+  -- regularity (only when `g.regularity` allows it; off by default): syntactically equal
+  -- types (`sameVal`: quoted at a level above every variable in them)
+  | _, _ =>
+    if (regularityAllowed g A e || inertTy g 0 A) && sameVal g A B then t else vCastData g A B e t stuck
   --|ex
   --| sorry
   --sol>
 
+
+/-- Syntactic equality of two values, quoted at a level above any variable in use. The
+side condition of the rules below (as it was of regularity): cheap, and stable under
+substitution, since a substitution instance of equal terms is equal. -/
+partial def sameVal (g : Globals R) (a b : Val R) : Bool :=
+  let l := max a.lvlBound b.lvlBound
+  quote g l a == quote g l b
+
+/-- An **inert** type: first-order data, whose values contain no functions, no proofs
+but index equations at inert types, and no values of a neutral type: `Enum`, `Unit`,
+`Σ`s of inert types, and `μ` types whose index type and fields are inert (`rec` fields;
+`arg` fields at inert types; not `hrec`). At an inert type, a cast between equal types
+is the identity (regularity, restricted): there it never creates a redex, since an inert
+value has no λ to apply, and on a constructor it agrees with `vCastData` up to proof
+irrelevance. (The Abel–Coquand box has a `Prop` field, so it is not inert.) `depth`
+bounds the nesting of `μ`s in fields. -/
+partial def inertTy (g : Globals R) (depth : Nat) (A : Val R) : Bool :=
+  depth < 8 &&
+  match whnf A with
+  | .enum _ => true
+  | .unit l => l.isNeverZero
+  | .sigma _ _ A₁ B (some s) => s.isNeverZero && inertTy g (depth + 1) A₁ &&
+      inertTy g (depth + 1) (Closure.inst g B (Val.var (100000 + depth)))
+  | .mu _ I D _ _ _ => inertTy g (depth + 1) I && inertDesc g (depth + 1) D
+  | _ => false
+
+/-- Every field of the description is inert (`inertTy`). -/
+partial def inertDesc (g : Globals R) (depth : Nat) (D : Val R) : Bool :=
+  depth < 8 &&
+  match whnf D with
+  | .dret _ => true
+  | .drec _ _ E => inertDesc g depth E
+  | .darg _ S E => match whnf S with
+    | .enum ls => (List.range ls.length).all fun k => inertDesc g depth (vApp g E (.tag ls k))
+    | S => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (Val.var (100000 + 50 + depth)))
+  | _ => false
+
+/-- Two `μ` (or two `ν`) types of the same family, `μ^s_l I D i` and `μ^s_l I D i'`:
+the level, index type, description and size agree (`sameVal`), only the indices may
+differ. Returns `(l, I, D, s, i, i')`. -/
+partial def sameFamily? (g : Globals R) (A B : Val R) :
+    Option (Level × Val R × Val R × Val R × Val R × Val R) :=
+  match A, B with
+  | .mu l I D i s _, .mu l' I' D' i' s' _ | .nu l I D i s _, .nu l' I' D' i' s' _ =>
+    if l.equiv l' && sameVal g s s' && sameVal g I I' && sameVal g D D' then
+      some (l, I, D, s, i, i')
+    else none
+  | _, _ => none
+
+/-- The payload types of a family `X` (`muFamilyAt …`/`nuFamilyAt …`) at two indices,
+and the equation between them derived from `e : i = i'`:
+
+    transp I i (fun j _ => ⟦D⟧ X i = ⟦D⟧ X j) (reflTy (⟦D⟧ X i)) i' e
+      : ⟦D⟧ X i = ⟦D⟧ X i' -/
+partial def payloadEq (g : Globals R) (l : Level) (I D X i i' e : Val R) : Val R × Val R × Val R :=
+  let Xi := vInterp g l I D X i
+  let Xi' := vInterp g l I D X i'
+  -- under `j _`: _0 j1 Xi2 X3 D4 I5
+  let P : Val R := .lam "j" (.mk [Xi, X, D, I] (.lam "_"
+    (.eqTy (.var 2) ((Templates.interpTm l).app (.var 5) |>.app (.var 4) |>.app (.var 3) |>.app (.var 1)))))
+  (Xi, Xi', .neutral (.transp I i P (.neutral (.reflTy Xi) #[]) i' e) #[])
+
+/-- `cast` at the data types, by the value (no regularity):
+
+    cast (Desc l I) (Desc l I') e D        by `D` (`e : I = I'`):
+      ret i ↦ ret (cast I I' e i);   arg q S E ↦ arg q S (fun s => cast _ _ e (E s))
+      rec q j E ↦ rec q (cast I I' e j) (cast _ _ e E)
+      hrec q H j E ↦ hrec q H (fun h => cast I I' e (j h)) (cast _ _ e E)
+    cast (μ^s D i) (μ^s D i') e (con x)  ↦ con (cast (⟦D⟧ μ^s' i) (⟦D⟧ μ^s' i') e' x)
+    cast (ν^s D i) (ν^s D i') e (cocon x) ↦ cocon (cast (⟦D⟧ ν^s' i) (⟦D⟧ ν^s' i') e' x)
+
+where `s = ↑s'` (or `∞`), `e : i = i'` (`vEqType` at a family), and `e'` is `payloadEq`'s
+equation. The payload's cast casts every field, so a proof field becomes the
+equivalence applied to it (`vCast` between propositions), and a field at a neutral type
+stays a stuck cast. A numeral is a value of `builtin nat`, a type with an index in
+`Unit` and no proof or neutral fields: its cast is itself (what the rule computes, up
+to proof irrelevance). Otherwise stuck. -/
+partial def vCastData (g : Globals R) (A B e t stuck : Val R) : Val R :=
+  let v (i : Nat) : Term R := .var i
+  match A, B with
+  | .desc l I, .desc l' I' =>
+    if !l.equiv l' then stuck else
+    match whnf t with
+    | .dret i => .dret (vCast g I I' e i)
+    -- s0 E1 e2 I'3 I4
+    | .darg q S E => .darg q S (.lam "s" (.mk [E, e, I', I] (.cast (.desc l (v 4)) (.desc l (v 3)) (v 2) (.app (v 1) (v 0)))))
+    | .drec q j E => .drec q (vCast g I I' e j) (vCast g A B e E)
+    -- h0 j1 e2 I'3 I4
+    | .dhrec q H j E => .dhrec q H (.lam "h" (.mk [j, e, I', I] (.cast (v 4) (v 3) (v 2) (.app (v 1) (v 0)))))
+        (vCast g A B e E)
+    | _ => stuck
+  | .mu .., .mu .. => match sameFamily? g A B with
+    | some (l, I, D, s, i, i') =>
+      let t := whnf t
+      if (match t with | .natLit _ => true | _ => false) && sameVal g i i' then t else
+      match vNatView g t, sizePred? s with
+      | .con x, some s' =>
+        let (Xi, Xi', e') := payloadEq g l I D (muFamilyAt l I D s') i i' e
+        .con (vCast g Xi Xi' e' x)
+      | _, _ => stuck
+    | none => stuck
+  | .nu .., .nu .. => match sameFamily? g A B, whnf t with
+    | some (l, I, D, s, i, i'), .cocon x => match sizePred? s with
+      | some s' =>
+        let (Xi, Xi', e') := payloadEq g l I D (nuFamilyAt l I D s') i i' e
+        .cocon (vCast g Xi Xi' e' x)
+      | none => stuck
+    | _, _ => stuck
+  | _, _ => stuck
 
 /-- **Exercise 1.3.** Read a value back into syntax in a context of `l` local variables.
 To quote under a binder, instantiate the closure with `Val.var l` and quote the

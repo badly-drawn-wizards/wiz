@@ -1,0 +1,3 @@
+examples/macros.wiz:15:1: info: .succ (.succ (.succ (.succ (.succ (.succ .zero)))))
+examples/macros.wiz:22:1: info: .succ (.succ .zero)
+examples/macros.wiz:28:1: info: .succ (.succ .zero)

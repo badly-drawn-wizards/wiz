@@ -1,0 +1,4 @@
+examples/procmacro.wiz:3:1: info: .node "term.app" (.cons (.node "term.ident" (.cons (.ident "f✝") .nil)) (.cons (.node "null" (.cons (.node "term.ident" (.cons (.ident "x✝") .nil)) .nil)) .nil))
+examples/procmacro.wiz:9:1: info: 42
+examples/procmacro.wiz:11:1: info: 10
+examples/procmacro.wiz:16:8: error: kaboom

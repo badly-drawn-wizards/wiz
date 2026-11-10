@@ -1,6 +1,6 @@
 import IO
 import Infoview
--- The infoview in a browser (stage 11k): this program, compiled to C and then to
+-- The infoview in a browser (stage 11n): this program, compiled to C and then to
 -- WebAssembly (`web/build.sh`), is the page's language client. `web/infoview.js` hands
 -- it events (text from the server, edits, cursor moves, clicks) one at a time through
 -- `js_next_event`, and it answers with `js_send` (bytes to the server) and

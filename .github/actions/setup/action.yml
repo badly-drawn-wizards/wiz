@@ -22,7 +22,7 @@ runs:
         skipPush: ${{ inputs.cachix-token == '' }}
     - name: Dev shell
       shell: bash
-      run: nix develop --command bash -c 'env | grep "^WIZ_" | sort; cc --version | head -1; elan --version'
+      run: nix develop --command bash -c 'cat grail.local.wiz; cc --version | head -1; elan --version'
     - name: Cache the Lean toolchain
       uses: actions/cache@v4
       with:

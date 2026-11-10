@@ -1,12 +1,12 @@
 import IO
 import Infoview
 -- `wiz-infoview`: the infoview as a terminal program, for a tmux split next to an editor
--- (stage 11h). It speaks JSON-RPC to the language server: either on the socket of
+-- (stage 11m). It speaks JSON-RPC to the language server: either on the socket of
 -- `wiz lsp --infoview SOCK`, where the server says where the editor's cursor is
 -- (`wiz/infoview/cursor`) and the infoview asks for the goals there, or directly to a
 -- `wiz lsp` it starts itself, for a file and position given on the command line.
 -- The layout, colours, navigation and protocol are `lib/Infoview.wiz`; the terminal
--- and socket system calls are `infoview/term.c`. Running it: the README, stage 11h.
+-- and socket system calls are `infoview/term.c`. Running it: the README, stage 11m.
 
 -- ## Foreign functions (infoview/term.c)
 extern "iv_term_open" Term.open : IO Nat

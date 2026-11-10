@@ -24,7 +24,7 @@ have all their metavariables replaced before they reach the kernel.
 
 Universe levels are described in `Wiz.Core.Level`.
 
-Not in the core yet (see ROADMAP.md): μ/ν data and Σ-types (stage 4).
+Stage 4 added Σ-types, observational equality, descriptions with μ/ν data, and sizes.
 -/
 
 namespace Wiz
@@ -289,6 +289,19 @@ where
 
 end Term
 
+/-- The binder name of a **phantom** argument (`Elab/Inductive.lean`): a type whose
+parameters no field mentions ends in `(0 phantom✝ : D) → … → Unit` instead of `Unit`,
+with `D` mentioning the parameter. Such a function type has one inhabitant up to η,
+`fun _ => ()`, so it has no runtime content (`erasable`). The name is inaccessible,
+so only the elaborator writes it. -/
+def phantomName : Name := "phantom✝"
+
+/-- The value of a phantom tail type, `fun _ … _ => ()`. -/
+partial def Term.phantomTailVal? {R : Type} : Term R → Option (Term R)
+  | .pi x _ _ _ b _ => if x == phantomName then (phantomTailVal? b).map (.lam phantomName) else none
+  | .unit _ => some .tt
+  | _ => none
+
 /-- Which casts `cast A A e t` reduce to `t` (regularity), for the D1 experiment
 (`wiz-notes/d1-experiment.md`). Regularity, definitional proof irrelevance and an
 impredicative `Prop` together break normalisation (Abel–Coquand, LMCS 2020;
@@ -313,8 +326,8 @@ structure Globals (R : Type) where
   builtins : List (Name × Name) := []
   /-- unfold every definition eagerly (no gluing), for normal forms -/
   eager : Bool := false
-  /-- D1 experiment (default `full`): which casts reduce by regularity -/
-  regularity : Regularity := .full
+  /-- which casts reduce by regularity (D1: `off`, so that checking terminates) -/
+  regularity : Regularity := .off
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false

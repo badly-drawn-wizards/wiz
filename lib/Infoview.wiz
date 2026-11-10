@@ -1,5 +1,5 @@
 import Json
--- The infoview's model and its two renderers (stage 11h/11k): goals as the language
+-- The infoview's model and its two renderers (stages 11m–n): goals as the language
 -- server sends them, laid out for a terminal (SGR colours, wrapped to a width, one
 -- selected subterm in reverse video) and for a browser (HTML with `data-ref`
 -- attributes). Pure functions; the terminal program (`infoview/Tui.wiz`) and the

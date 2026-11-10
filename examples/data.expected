@@ -1,0 +1,3 @@
+examples/data.wiz:16:1: info: .false
+examples/data.wiz:24:1: info: .succ (.succ (.succ .zero))
+examples/data.wiz:33:1: info: .false

@@ -1,11 +1,20 @@
 /* The runtime of the self-hosted backend (stage 21b): what `Backend.wiz` generates
-   `#include`s this. A minimal one: memory is garbage collected (Boehm), values are
-   tagged words. A scalar (`BOX(n)`, low bit 1) is a number, a tag, or `◾`; anything
-   else points to an object: a constructor (a tag and fields; payloads are nested
-   pairs, `⟨0 a b⟩`), a closure, a string (`Str`), an array or a map. */
+   `#include`s this. A minimal one: values are tagged words. A scalar (`BOX(n)`, low bit
+   1) is a number, a tag, or `◾`; anything else points to an object: a constructor (a
+   tag and fields; payloads are nested pairs, `⟨0 a b⟩`), a closure, a string (`Str`),
+   an array or a map.
+
+   Two ways to manage memory. By default objects are collected by the Boehm garbage
+   collector. A program generated in the backend's reference counting mode (stage 22)
+   defines `WIZ_RC` first: every object then starts with a reference count, the
+   generated code `inc`s and `dec`s precisely (Perceus), every function owns its
+   arguments and returns an owned result, and the program checks at exit that every
+   object was freed. */
 
 #include <stddef.h>
+#ifndef WIZ_RC
 #include <gc.h>
+#endif
 #include <sys/resource.h>
 #include <unistd.h>
 #include <stdint.h>
@@ -22,40 +31,114 @@ typedef uintptr_t V;
 /* Flat chains of pairs: `(e₀, (e₁, … (eₘ₋₁, t)))` is one object with tag 0 and fields
    `e₀ … eₘ₋₁ t` (a pair is the case m = 1). Its tail `(eᵢ, …)` is the same pointer
    with `i` in bits 1–3 (objects are 16-byte aligned; bit 0 marks a scalar), so taking
-   the second component allocates nothing. A list cell is one object instead of three. */
+   the second component allocates nothing. A list cell is one object instead of three.
+   (Under reference counting a tail is a reference to the whole object.) */
 #define OBJ(v) ((Obj *)((v) & ~(V)0xE))
 #define OFF(v) ((unsigned)(((v) >> 1) & 7))
 
 enum { T_CLO = 0x7fff0000u, T_STR, T_ARR, T_MAP, T_HYP };
 
-typedef struct { uint32_t tag, n; V f[]; } Obj;
+/* every object starts with `RCF`: its reference count (nothing under the collector) */
+#ifdef WIZ_RC
+#define RCF uint32_t rc;
+#else
+#define RCF
+#endif
+typedef struct { RCF uint32_t tag, n; V f[]; } Obj;
 typedef V (*Fn)(V *env, V a);
-typedef struct { uint32_t tag, n; Fn fn; V env[]; } Clo;
+typedef struct { RCF uint32_t tag, n; Fn fn; V env[]; } Clo;
 
 static V unreach(void) { fprintf(stderr, "wiz: unreachable\n"); exit(3); }
 static void die(const char *m) { fprintf(stderr, "wiz: %s\n", m); exit(3); }
 
-static V mkobj(uint32_t t, uint32_t n, V *fs) {
-  Obj *o = (Obj *)GC_MALLOC(sizeof(Obj) + n * sizeof(V));
+#ifdef WIZ_RC
+/* ---- reference counting ---- */
+
+static size_t rt_live; /* objects allocated and not freed yet */
+/* Small objects come from free lists, one per size class of 16 bytes (up to 256),
+   carved from big blocks (malloc's per-object header and bookkeeping were 15% of a
+   compiler's time); bigger ones from malloc. Blocks are never given back. */
+#define RT_NCLS 16
+static void *rt_fl[RT_NCLS + 1];
+static char *rt_blk, *rt_blkEnd;
+static void *rt_alloc(size_t sz) {
+  size_t c = (sz + 15) >> 4;
+  Obj *o;
+  if (c <= RT_NCLS) {
+    o = (Obj *)rt_fl[c];
+    if (o) rt_fl[c] = *(void **)o;
+    else {
+      size_t b = c << 4;
+      if (rt_blk + b > rt_blkEnd) {
+        rt_blk = (char *)malloc(1 << 20);
+        if (!rt_blk) die("out of memory");
+        rt_blkEnd = rt_blk + (1 << 20);
+      }
+      o = (Obj *)rt_blk; rt_blk += b;
+    }
+  } else {
+    o = (Obj *)malloc(sz);
+    if (!o) die("out of memory");
+  }
+  o->rc = 1;
+  rt_live++;
+  return o;
+}
+#define MALLOC_OBJ(sz) rt_alloc(sz)
+#define MALLOC_BUF(sz) malloc(sz)
+#define FREE_BUF(b) free(b)
+static V accFn(V *env, V a);
+static void rt_free(Obj *o);
+static inline void inc(V v) { if (!ISBOX(v)) OBJ(v)->rc++; }
+static inline void dec(V v) { if (!ISBOX(v)) { Obj *o = OBJ(v); if (--o->rc == 0) rt_free(o); } }
+#else
+#define MALLOC_OBJ(sz) GC_MALLOC(sz)
+#define MALLOC_BUF(sz) GC_MALLOC_ATOMIC(sz)
+#define FREE_BUF(b) ((void)0)
+#endif
+
+/* (copies of a few words: inlined loops, not `memcpy` calls of a variable length,
+   which were half of a compiler's time) */
+#define INLINE static inline __attribute__((always_inline))
+INLINE void copyV(V *d, const V *s, uint32_t n) { for (uint32_t i = 0; i < n; i++) d[i] = s[i]; }
+INLINE V mkobj(uint32_t t, uint32_t n, V *fs) {
+  Obj *o = (Obj *)MALLOC_OBJ(sizeof(Obj) + n * sizeof(V));
   if (!o) die("out of memory");
   o->tag = t; o->n = n;
-  memcpy(o->f, fs, n * sizeof(V));
+  copyV(o->f, fs, n);
   return (V)o;
 }
-static V mkclo(Fn fn, uint32_t n, V *env) {
-  Clo *c = (Clo *)GC_MALLOC(sizeof(Clo) + n * sizeof(V));
+INLINE V mkclo(Fn fn, uint32_t n, V *env) {
+  Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + n * sizeof(V));
   if (!c) die("out of memory");
   c->tag = T_CLO; c->n = n; c->fn = fn;
-  if (n) memcpy(c->env, env, n * sizeof(V));
+  copyV(c->env, env, n);
   return (V)c;
 }
+#ifndef WIZ_RC
 static V ap(V f, V a) {
   if (ISBOX(f) || ((Clo *)f)->tag != T_CLO) die("applying a non-function");
   Clo *c = (Clo *)f;
   return c->fn(c->env, a);
 }
+#else
+/* `ap` and `apn` consume the function and the arguments. A closure made by `mkclo`
+   (the runtime's own: `memo`, the hypotheses of `ind`) lends its environment to the
+   call; a function closure (`accFn`: the generated code's and the natives') passes its
+   collected arguments on, moved out if the closure was unique, else copied. */
+static V apn(V f, uint32_t n, V *args);
+static V ap(V f, V a) {
+  if (ISBOX(f) || ((Clo *)f)->tag != T_CLO) die("applying a non-function");
+  Clo *c = (Clo *)f;
+  if (c->fn == accFn) return apn(f, 1, &a);
+  V r = c->fn(c->env, a);
+  dec(f);
+  return r;
+}
+#endif
 /* a field (of `◾`, an erased payload, `◾` again). A hypothesis of `ind` (`T_HYP`:
-   `[suspension, rest, done]`) is computed when its field is first read. */
+   `[suspension, rest, done]`) is computed when its field is first read. (Under
+   reference counting the field is borrowed: the caller `inc`s it to keep it.) */
 static V fld(V o, int i) {
   if (ISBOX(o)) return BOX(0);
   Obj *p = OBJ(o);
@@ -66,7 +149,12 @@ static V fld(V o, int i) {
     return p->f[p->n - 1];
   }
   if (p->tag == T_HYP && i == 0) {
+#ifndef WIZ_RC
     if (p->f[2] == BOX(0)) { p->f[0] = ((Clo *)p->f[0])->fn(((Clo *)p->f[0])->env, BOX(0)); p->f[2] = BOX(1); }
+#else
+    /* (a hypothesis being forced is `◾`: forcing it again fails rather than loops) */
+    if (p->f[2] == BOX(0)) { V s = p->f[0]; p->f[0] = BOX(0); p->f[0] = ap(s, BOX(0)); p->f[2] = BOX(1); }
+#endif
     return p->f[0];
   }
   return (uint32_t)i < p->n ? p->f[i] : BOX(0);
@@ -86,15 +174,19 @@ static V consv(V h, V t) { return flat4(BOX(1), h, t, BOX(0)); }
 static V charv(uint32_t c) { return flat3(BOX(0), BOX(c), BOX(0)); }
 static V stringv(V list) { return flat3(BOX(0), list, BOX(0)); }
 
-/* a Wiz string as UTF-8 (a new buffer) */
+/* a Wiz string as UTF-8 (a new buffer; the string is only read) */
 static char *cstr(V s) {
   size_t cap = 64, len = 0;
-  char *buf = (char *)GC_MALLOC_ATOMIC(cap);
+  char *buf = (char *)MALLOC_BUF(cap);
   V l = fld(fld(s, 1), 0);
   while (tagof(fld(l, 0)) == 1) {
     V rest = fld(l, 1);
     uint32_t c = (uint32_t)UNBOX(fld(fld(fld(rest, 0), 1), 0));
+#ifndef WIZ_RC
     if (len + 5 > cap) { char *nb = (char *)GC_MALLOC_ATOMIC(cap * 2); memcpy(nb, buf, len); buf = nb; cap *= 2; }
+#else
+    if (len + 5 > cap) { buf = (char *)realloc(buf, cap * 2); if (!buf) die("out of memory"); cap *= 2; }
+#endif
     if (c < 0x80) buf[len++] = (char)c;
     else if (c < 0x800) { buf[len++] = (char)(0xC0 | (c >> 6)); buf[len++] = (char)(0x80 | (c & 0x3F)); }
     else if (c < 0x10000) { buf[len++] = (char)(0xE0 | (c >> 12)); buf[len++] = (char)(0x80 | ((c >> 6) & 0x3F)); buf[len++] = (char)(0x80 | (c & 0x3F)); }
@@ -107,7 +199,7 @@ static char *cstr(V s) {
 /* UTF-8 text as a Wiz string */
 static V wstr(const char *s, size_t n) {
   /* decode to code points, then build the list from the end */
-  uint32_t *cps = (uint32_t *)GC_MALLOC_ATOMIC((n + 1) * sizeof(uint32_t));
+  uint32_t *cps = (uint32_t *)MALLOC_BUF((n + 1) * sizeof(uint32_t));
   size_t k = 0;
   for (size_t i = 0; i < n;) {
     unsigned char b = (unsigned char)s[i];
@@ -120,6 +212,7 @@ static V wstr(const char *s, size_t n) {
   }
   V l = nilv();
   while (k > 0) l = consv(charv(cps[--k]), l);
+  FREE_BUF(cps);
   return stringv(l);
 }
 
@@ -140,13 +233,18 @@ static V p_natUnpack(V n) {
   return k == 0 ? pair(BOX(0), BOX(0)) : flat3(BOX(1), BOX(k - 1), BOX(0));
 }
 static V p_natPack(V p) {
-  return tagof(fld(p, 0)) == 0 ? BOX(0) : BOX(UNBOX(fld(fld(p, 1), 0)) + 1);
+  V r = tagof(fld(p, 0)) == 0 ? BOX(0) : BOX(UNBOX(fld(fld(p, 1), 0)) + 1);
+#ifdef WIZ_RC
+  dec(p);
+#endif
+  return r;
 }
 
 /* `ind D m i x`: `m i payload hyps`, the hypotheses computed by walking the description
    (`⟨0 i⟩` ret, `⟨1 ◾ F⟩` arg, `⟨2 j E⟩` rec, `⟨3 ◾ j E⟩` hrec) along the payload */
 static V apn(V f, uint32_t n, V *args);
 static V p_ind(V nat, V D, V m, V i, V x);
+#ifndef WIZ_RC
 static V hrecFn(V *env, V h) { return p_ind(env[0], env[1], env[2], ap(env[3], h), ap(env[4], h)); }
 /* the hypothesis of a recursive field, suspended: `p_ind … j y` when first read (eager
    hypotheses made every structural function walk its whole argument) */
@@ -170,32 +268,96 @@ static V p_ind(V nat, V D, V m, V i, V x) {
   V args[3] = {i, pl, hyps(nat, D, m, D, pl)};
   return apn(m, 3, args);
 }
+#else
+/* (the closures' environments are lent: what is passed on is `inc`ed) */
+static V hrecFn(V *env, V h) {
+  inc(env[1]); inc(env[2]); inc(env[3]); inc(env[4]); inc(h);
+  V j = ap(env[3], h);
+  return p_ind(env[0], env[1], env[2], j, ap(env[4], h));
+}
+static V recFn(V *env, V u) {
+  (void)u;
+  inc(env[1]); inc(env[2]); inc(env[3]); inc(env[4]);
+  return p_ind(env[0], env[1], env[2], env[3], env[4]);
+}
+/* (`D`, `m`, and the fields `j`, `y` are borrowed; `rest` is owned) */
+static V lazyHyp(V nat, V D, V m, V j, V y, V rest) {
+  inc(D); inc(m); inc(j); inc(y);
+  V env[5] = {nat, D, m, j, y};
+  V fs[3] = {mkclo(recFn, 5, env), rest, BOX(0)};
+  return mkobj(T_HYP, 3, fs);
+}
+/* (`D`, `m`, `d`, `pl` borrowed) */
+static V hyps(V nat, V D, V m, V d, V pl) {
+  switch (tagof(d)) {
+  case 1: {
+    V F = fld(d, 1), a = fld(pl, 0);
+    inc(F); inc(a);
+    V d2 = ap(F, a);
+    V r = hyps(nat, D, m, d2, fld(pl, 1));
+    dec(d2);
+    return r;
+  }
+  case 2: return lazyHyp(nat, D, m, fld(d, 0), fld(pl, 0), hyps(nat, D, m, fld(d, 1), fld(pl, 1)));
+  case 3: { V env[5] = {nat, D, m, fld(d, 1), fld(pl, 0)};
+    inc(D); inc(m); inc(env[3]); inc(env[4]);
+    V c = mkclo(hrecFn, 5, env);
+    return pair(c, hyps(nat, D, m, fld(d, 2), fld(pl, 1))); }
+  default: return BOX(0);
+  }
+}
+static V p_ind(V nat, V D, V m, V i, V x) {
+  V pl = UNBOX(nat) ? p_natUnpack(x) : x;
+  V h = hyps(nat, D, m, D, pl);
+  dec(D);
+  V args[3] = {i, pl, h};
+  return apn(m, 3, args);
+}
+#endif
 
 /* ---- natives: curried functions of `n` arguments ---- */
 
 typedef V (*NF)(V *args);
+#ifndef WIZ_RC
 /* env: [the function, its arity, the arguments so far…] */
 static V accFn(V *env, V a) {
   uintptr_t arity = UNBOX(env[1]);
   Clo *self = (Clo *)((char *)env - offsetof(Clo, env));
   uint32_t have = self->n - 2;
   V *args = (V *)alloca((have + 1) * sizeof(V));
-  memcpy(args, env + 2, have * sizeof(V));
+  copyV(args, env + 2, have);
   args[have] = a;
   if (have + 1 == arity) return ((NF)env[0])(args);
   V *nenv = (V *)alloca((have + 3) * sizeof(V));
   nenv[0] = env[0]; nenv[1] = env[1];
-  memcpy(nenv + 2, args, (have + 1) * sizeof(V));
+  copyV(nenv + 2, args, have + 1);
   return mkclo(accFn, have + 3, nenv);
 }
+#else
+/* (only a mark: `ap` and `apn` call function closures themselves) */
+static V accFn(V *env, V a) { (void)env; (void)a; die("accFn"); return BOX(0); }
+#endif
 static V native(NF f, int arity) { V env[2] = {(V)f, BOX(arity)}; return mkclo(accFn, 2, env); }
 /* a function of `arity` arguments (captured variables first), `n` of them given */
-static V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
-  V *env = (V *)alloca((n + 2) * sizeof(V));
-  env[0] = (V)f; env[1] = BOX(arity);
-  if (n) memcpy(env + 2, args, n * sizeof(V));
-  return mkclo(accFn, n + 2, env);
+INLINE V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
+  Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + (n + 2) * sizeof(V));
+  if (!c) die("out of memory");
+  c->tag = T_CLO; c->n = n + 2; c->fn = accFn;
+  c->env[0] = (V)f; c->env[1] = BOX(arity);
+  copyV(c->env + 2, args, n);
+  return (V)c;
 }
+#ifdef WIZ_RC
+/* the collected arguments of a function closure being used up: moved out of a unique
+   closure (then freed without touching them), else copied */
+static void rt_freeShell(Obj *o);
+static void takeArgs(Clo *c, V *to) {
+  uint32_t have = c->n - 2;
+  copyV(to, c->env + 2, have);
+  if (c->rc == 1) rt_freeShell((Obj *)c);
+  else { for (uint32_t j = 0; j < have; j++) inc(to[j]); c->rc--; }
+}
+#endif
 /* `f a₁ … aₙ`: a function that wants that many (or fewer) is called once, without the
    closures of the partial applications in between */
 static V apn(V f, uint32_t n, V *args) {
@@ -206,23 +368,52 @@ static V apn(V f, uint32_t n, V *args) {
       uint32_t have = c->n - 2, ar = (uint32_t)UNBOX(c->env[1]), rem = ar - have;
       if (n - i >= rem) {
         V *full = (V *)alloca(ar * sizeof(V));
-        memcpy(full, c->env + 2, have * sizeof(V));
-        memcpy(full + have, args + i, rem * sizeof(V));
+#ifndef WIZ_RC
+        copyV(full, c->env + 2, have);
+        copyV(full + have, args + i, rem);
         f = ((NF)c->env[0])(full);
+#else
+        NF fn = (NF)c->env[0];
+        takeArgs(c, full);
+        copyV(full + have, args + i, rem);
+        f = fn(full);
+#endif
         i += rem;
       } else {
         V *nenv = (V *)alloca((have + (n - i) + 2) * sizeof(V));
-        memcpy(nenv, c->env, (have + 2) * sizeof(V));
-        memcpy(nenv + 2 + have, args + i, (n - i) * sizeof(V));
+#ifndef WIZ_RC
+        copyV(nenv, c->env, have + 2);
+#else
+        nenv[0] = c->env[0]; nenv[1] = c->env[1];
+        takeArgs(c, nenv + 2);
+#endif
+        copyV(nenv + 2 + have, args + i, n - i);
         return mkclo(accFn, have + (n - i) + 2, nenv);
       }
     } else { f = ap(f, args[i]); i++; }
   }
   return f;
 }
+#ifndef WIZ_RC
 #define NATIVE(name, arity, ...) \
   static V nf_##name(V *a) { __VA_ARGS__ } \
   V get_##name(void) { static V c = 0; if (!c) c = native(nf_##name, arity); return c; }
+#else
+/* the constants a program keeps (globals, string literals, natives' closures), released
+   at exit before the check for leaks */
+static V **rt_roots; static size_t rt_nroots, rt_caproots;
+static void rt_root(V *p) {
+  if (rt_nroots == rt_caproots) {
+    rt_caproots = rt_caproots ? 2 * rt_caproots : 256;
+    rt_roots = (V **)realloc(rt_roots, rt_caproots * sizeof(V *));
+    if (!rt_roots) die("out of memory");
+  }
+  rt_roots[rt_nroots++] = p;
+}
+#define NATIVE(name, arity, ...) \
+  static V nf_##name(V *a) { __VA_ARGS__ } \
+  V get_##name(void) { static V c = 0; if (!c) { c = native(nf_##name, arity); rt_root(&c); } inc(c); return c; }
+#endif
 
 V get_Nat_46_zero(void) { return BOX(0); }
 NATIVE(Nat_46_succ, 1, return BOX(UNBOX(a[0]) + 1);)
@@ -245,6 +436,7 @@ NATIVE(Nat_46_shiftLeft, 2, return BOX(UNBOX(a[1]) >= 64 ? 0 : UNBOX(a[0]) << UN
 NATIVE(Nat_46_shiftRight, 2, return BOX(UNBOX(a[1]) >= 64 ? 0 : UNBOX(a[0]) >> UNBOX(a[1]));)
 NATIVE(Nat_46_log2, 1, uintptr_t x = UNBOX(a[0]); return BOX(x ? 63 - __builtin_clzll((unsigned long long)x) : 0);)
 NATIVE(Nat_46_toString, 1, char b[32]; int n = snprintf(b, sizeof b, "%lu", (unsigned long)UNBOX(a[0])); return wstr(b, (size_t)n);)
+#ifndef WIZ_RC
 /* IO: `String → World → Prod Unit World` */
 NATIVE(IO_46_println, 2, puts(cstr(a[0])); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_print, 2, fputs(cstr(a[0]), stdout); return prodv(BOX(0), a[1]);)
@@ -258,7 +450,26 @@ NATIVE(IO_46_readFile, 2,
   }
   fclose(f);
   return prodv(wstr(buf, len), a[1]);)
+#else
+NATIVE(IO_46_println, 2, char *s = cstr(a[0]); dec(a[0]); puts(s); free(s); return prodv(BOX(0), a[1]);)
+NATIVE(IO_46_print, 2, char *s = cstr(a[0]); dec(a[0]); fputs(s, stdout); free(s); return prodv(BOX(0), a[1]);)
+NATIVE(IO_46_readFile, 2,
+  char *p = cstr(a[0]); dec(a[0]);
+  FILE *f = fopen(p, "rb");
+  free(p);
+  if (!f) return prodv(wstr("", 0), a[1]);
+  size_t cap = 4096, len = 0; char *buf = (char *)malloc(cap);
+  for (size_t r; (r = fread(buf + len, 1, cap - len, f)) > 0;) {
+    len += r;
+    if (len == cap) { buf = (char *)realloc(buf, cap * 2); if (!buf) die("out of memory"); cap *= 2; }
+  }
+  fclose(f);
+  V s = wstr(buf, len);
+  free(buf);
+  return prodv(s, a[1]);)
+#endif
 
+#ifndef WIZ_RC
 /* `memo f`: a suspension computed at most once (the kernel's glued values rely on it) */
 static V memoFn(V *env, V u) {
   V *cell = (V *)env[1];
@@ -268,18 +479,67 @@ static V memoFn(V *env, V u) {
 /* (the backend's suspended `let`s) */
 static V p_memo(V f) { V *cell = (V *)GC_MALLOC(sizeof(V)); cell[0] = 0; V env[2] = {f, (V)cell}; return mkclo(memoFn, 2, env); }
 NATIVE(memo, 2, V *cell = (V *)GC_MALLOC(sizeof(V)); cell[0] = 0; V env[2] = {a[1], (V)cell}; return mkclo(memoFn, 2, env);)
+#else
+/* `memo f`: env `[f, ◾]`, `[its value, 1]` once forced (the suspension, and what it
+   captured, are released then). A value never points to its own suspension (it is
+   made from what the suspension captured, all older), so there are no cycles. */
+static V memoFn(V *env, V u) {
+  if (env[1] == BOX(0)) { V f = env[0]; env[0] = BOX(0); env[0] = ap(f, u); env[1] = BOX(1); }
+  else dec(u);
+  inc(env[0]);
+  return env[0];
+}
+static V p_memo(V f) { V env[2] = {f, BOX(0)}; return mkclo(memoFn, 2, env); }
+/* the backend's suspended `let`s, one object each: env `[code, state, value,
+   captured…]`, the state `◾`, then 2 while being forced, then 1 (the captured variables
+   moved into the call, the value kept) */
+static V thunkFn(V *env, V u) {
+  if (env[1] == BOX(0)) {
+    Clo *self = (Clo *)((char *)env - offsetof(Clo, env));
+    uint32_t nc = self->n - 3;
+    V *a = (V *)alloca((nc + 1) * sizeof(V));
+    for (uint32_t i = 0; i < nc; i++) { a[i] = env[3 + i]; env[3 + i] = BOX(0); }
+    a[nc] = u;
+    env[1] = BOX(2);
+    env[2] = ((NF)env[0])(a);
+    env[1] = BOX(1);
+  } else {
+    if (env[1] == BOX(2)) die("a suspension forced while being forced");
+    dec(u);
+  }
+  inc(env[2]);
+  return env[2];
+}
+INLINE V mkthunk(NF f, uint32_t nc, V *caps) {
+  Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + (nc + 3) * sizeof(V));
+  c->tag = T_CLO; c->n = nc + 3; c->fn = thunkFn;
+  c->env[0] = (V)f; c->env[1] = BOX(0); c->env[2] = BOX(0);
+  copyV(c->env + 3, caps, nc);
+  return (V)c;
+}
+NATIVE(memo, 2, V env[2] = {a[1], BOX(0)}; return mkclo(memoFn, 2, env);)
+#endif
 
 /* `Str`: immutable text */
-typedef struct { uint32_t tag, n; char s[]; } Str;
+typedef struct { RCF uint32_t tag, n; char s[]; } Str;
 static V mkstr(const char *s) {
   size_t n = strlen(s);
+#ifndef WIZ_RC
   Str *t = (Str *)GC_MALLOC_ATOMIC(sizeof(Str) + n + 1);
+#else
+  Str *t = (Str *)rt_alloc(sizeof(Str) + n + 1);
+#endif
   t->tag = T_STR; t->n = (uint32_t)n;
   memcpy(t->s, s, n + 1);
   return (V)t;
 }
+#ifndef WIZ_RC
 NATIVE(Str_46_ofString, 1, return mkstr(cstr(a[0]));)
+#else
+NATIVE(Str_46_ofString, 1, char *s = cstr(a[0]); dec(a[0]); V r = mkstr(s); free(s); return r;)
+#endif
 
+#ifndef WIZ_RC
 /* Arrays: persistent, Baker's trick. The newest version holds the vector; an older one
    is a difference from a newer one, and is made the holder again when it is used. */
 typedef struct Arr {
@@ -346,7 +606,56 @@ NATIVE(Array_46_set, 4,
   Arr *n = arrNode(); n->kind = 0; n->data = r->data; n->len = r->len; n->cap = r->cap;
   r->kind = 1; r->idx = i; r->val = old; r->next = n;
   return (V)n;)
+#else
+/* Arrays under reference counting: updated in place when unique, else copied (as in
+   Lean). Baker's versions point from old to new, so an array stored in its own
+   successor would be a cycle; and the count already tells when an update can be in
+   place. */
+typedef struct Arr { RCF uint32_t tag, pad; size_t len, cap; V *data; } Arr;
+static Arr *arrNew(size_t cap) {
+  Arr *r = (Arr *)rt_alloc(sizeof(Arr));
+  r->tag = T_ARR; r->len = 0; r->cap = cap;
+  r->data = cap ? (V *)malloc(cap * sizeof(V)) : NULL;
+  if (cap && !r->data) die("out of memory");
+  return r;
+}
+/* an array to update: `v` itself if unique, else a copy (and `v` released) */
+static Arr *arrMut(V v, size_t extra) {
+  Arr *a = (Arr *)v;
+  if (a->rc == 1) return a;
+  Arr *r = arrNew(a->len + extra);
+  memcpy(r->data, a->data, a->len * sizeof(V));
+  r->len = a->len;
+  for (size_t i = 0; i < r->len; i++) inc(r->data[i]);
+  dec(v);
+  return r;
+}
+NATIVE(Array_46_empty, 1, return (V)arrNew(0);)
+NATIVE(Array_46_size, 2, V n = BOX(((Arr *)a[1])->len); dec(a[1]); return n;)
+NATIVE(Array_46_getD, 4,
+  Arr *r = (Arr *)a[1]; uintptr_t i = UNBOX(a[2]);
+  if (i < r->len) { V x = r->data[i]; inc(x); dec(a[1]); dec(a[3]); return x; }
+  dec(a[1]); return a[3];)
+NATIVE(Array_46_push, 3,
+  Arr *r = arrMut(a[1], 1);
+  if (r->len == r->cap) {
+    size_t cap = r->cap ? 2 * r->cap : 8;
+    r->data = (V *)realloc(r->data, cap * sizeof(V));
+    if (!r->data) die("out of memory");
+    r->cap = cap;
+  }
+  r->data[r->len++] = a[2];
+  return (V)r;)
+NATIVE(Array_46_set, 4,
+  uintptr_t i = UNBOX(a[2]);
+  if (i >= ((Arr *)a[1])->len) { dec(a[3]); return a[1]; }
+  Arr *r = arrMut(a[1], 0);
+  dec(r->data[i]);
+  r->data[i] = a[3];
+  return (V)r;)
+#endif
 
+#ifndef WIZ_RC
 /* StrMap: a persistent treap on the keys' text (priorities from a hash) */
 typedef struct Node { uint32_t tag, pri; const char *key; V val; struct Node *l, *r; } Node;
 static uint32_t hashs(const char *s) { uint32_t h = 2166136261u; for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u; return h; }
@@ -375,6 +684,108 @@ NATIVE(StrMap_46_findD, 4,
   for (Node *n = mapOf(a[1]); n;) { int c = strcmp(k, n->key); if (c == 0) return n->val; n = c < 0 ? n->l : n->r; }
   return a[3];)
 NATIVE(StrMap_46_size, 2, return BOX(count(mapOf(a[1])));)
+#else
+/* StrMap under reference counting: the same treap, path copying, a node holding its
+   key's `Str`. The nodes `ins` returns are new (unique), so rotations relink them. */
+typedef struct Node { RCF uint32_t tag, pri; V key; V val; struct Node *l, *r; } Node;
+static uint32_t hashs(const char *s) { uint32_t h = 2166136261u; for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u; return h; }
+#define KEY(n) (((Str *)(n)->key)->s)
+static Node *mk(V k, uint32_t p, V v, Node *l, Node *r) {
+  Node *n = (Node *)rt_alloc(sizeof(Node));
+  n->tag = T_MAP; n->pri = p; n->key = k; n->val = v; n->l = l; n->r = r;
+  return n;
+}
+static void incN(Node *n) { if (n) n->rc++; }
+static Node *rotR(Node *m) { Node *l = m->l; m->l = l->r; l->r = m; return l; }
+static Node *rotL(Node *m) { Node *r = m->r; m->r = r->l; r->l = m; return r; }
+/* (`n` borrowed; `k`, `v` owned) */
+static Node *ins(Node *n, V k, uint32_t p, V v) {
+  if (!n) return mk(k, p, v, NULL, NULL);
+  int c = strcmp(((Str *)k)->s, KEY(n));
+  if (c == 0) { dec(k); inc(n->key); incN(n->l); incN(n->r); return mk(n->key, n->pri, v, n->l, n->r); }
+  inc(n->key); inc(n->val);
+  if (c < 0) { incN(n->r); Node *m = mk(n->key, n->pri, n->val, ins(n->l, k, p, v), n->r); return m->l->pri > m->pri ? rotR(m) : m; }
+  incN(n->l);
+  Node *m = mk(n->key, n->pri, n->val, n->l, ins(n->r, k, p, v));
+  return m->r->pri > m->pri ? rotL(m) : m;
+}
+static size_t count(Node *n) { return n ? 1 + count(n->l) + count(n->r) : 0; }
+static Node *mapOf(V v) { return ISBOX(v) ? NULL : (Node *)v; }
+NATIVE(StrMap_46_empty, 1, return BOX(0);)
+NATIVE(StrMap_46_insert, 4,
+  Node *r = ins(mapOf(a[1]), a[2], hashs(((Str *)a[2])->s), a[3]);
+  dec(a[1]); return (V)r;)
+NATIVE(StrMap_46_findD, 4,
+  const char *k = ((Str *)a[2])->s;
+  for (Node *n = mapOf(a[1]); n;) {
+    int c = strcmp(k, KEY(n));
+    if (c == 0) { V x = n->val; inc(x); dec(a[1]); dec(a[2]); dec(a[3]); return x; }
+    n = c < 0 ? n->l : n->r;
+  }
+  dec(a[1]); dec(a[2]); return a[3];)
+NATIVE(StrMap_46_size, 2, V n = BOX(count(mapOf(a[1]))); dec(a[1]); return n;)
+#endif
+
+#ifdef WIZ_RC
+/* ---- freeing: a worklist, not recursion (a list a million long is no deeper) ---- */
+
+static Obj **rt_work; static size_t rt_nwork, rt_capwork;
+static void rt_push(Obj *o) {
+  if (rt_nwork == rt_capwork) {
+    rt_capwork = rt_capwork ? 2 * rt_capwork : 1024;
+    rt_work = (Obj **)realloc(rt_work, rt_capwork * sizeof(Obj *));
+    if (!rt_work) die("out of memory");
+  }
+  rt_work[rt_nwork++] = o;
+}
+static inline void rt_decChild(V v) {
+  if (v && !ISBOX(v)) { Obj *o = OBJ(v); if (--o->rc == 0) rt_push(o); }
+}
+/* an object's size, as allocated */
+static size_t rt_size(Obj *o) {
+  switch (o->tag) {
+  case T_CLO: return sizeof(Clo) + o->n * sizeof(V);
+  case T_STR: return sizeof(Str) + o->n + 1;
+  case T_ARR: return sizeof(Arr);
+  case T_MAP: return sizeof(Node);
+  default: return sizeof(Obj) + o->n * sizeof(V);
+  }
+}
+static void rt_freeShell(Obj *o) {
+  size_t c = (rt_size(o) + 15) >> 4;
+  if (c <= RT_NCLS) { *(void **)o = rt_fl[c]; rt_fl[c] = o; } else free(o);
+  rt_live--;
+}
+static int rt_freeing;
+static void rt_free(Obj *o) {
+  rt_push(o);
+  if (rt_freeing) return;
+  rt_freeing = 1;
+  while (rt_nwork) {
+    Obj *x = rt_work[--rt_nwork];
+    uint32_t t = x->tag;
+    if (t < T_CLO || t == T_HYP) { for (uint32_t i = 0; i < x->n; i++) rt_decChild(x->f[i]); }
+    else if (t == T_CLO) {
+      Clo *c = (Clo *)x;
+      for (uint32_t i = c->fn == accFn ? 2 : c->fn == thunkFn ? 1 : 0; i < c->n; i++) rt_decChild(c->env[i]);
+    } else if (t == T_ARR) {
+      Arr *a = (Arr *)x;
+      for (size_t i = 0; i < a->len; i++) rt_decChild(a->data[i]);
+      free(a->data);
+    } else if (t == T_MAP) {
+      Node *n = (Node *)x;
+      rt_decChild(n->key); rt_decChild(n->val); rt_decChild((V)n->l); rt_decChild((V)n->r);
+    }
+    rt_freeShell(x);
+  }
+  rt_freeing = 0;
+}
+/* at exit: release the constants; then every object must have been freed */
+static void rt_finish(void) {
+  for (size_t i = rt_nroots; i > 0; i--) dec(*rt_roots[i - 1]);
+  if (rt_live) { fflush(stdout); fprintf(stderr, "wiz: %zu objects leaked\n", rt_live); exit(4); }
+}
+#endif
 
 /* the program needs a big stack (deep recursion): raise the limit and start again (a
    thread with a big stack would do, but the collector's stopping of the world lost
@@ -386,7 +797,9 @@ static void rt_start(char **argv) {
     r.rlim_cur = (r.rlim_max == RLIM_INFINITY || r.rlim_max >= want) ? want : r.rlim_max;
     if (setrlimit(RLIMIT_STACK, &r) == 0) { setenv("WIZ_STACK_SET", "1", 1); execv("/proc/self/exe", argv); }
   }
+#ifndef WIZ_RC
   GC_INIT();
   /* collect less often: the heap of a compiler is mostly live (20% faster) */
   GC_set_free_space_divisor(1);
+#endif
 }
