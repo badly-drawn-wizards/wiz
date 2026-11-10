@@ -80,7 +80,7 @@ def Heap.symm {V : Type} {h₁ h₂ : Heap V} (e : h₁ = h₂) : h₂ = h₁ :=
 def Heap.trans {V : Type} {h₁ h₂ h₃ : Heap V} (e₁ : h₁ = h₂) (e₂ : h₂ = h₃) : h₁ = h₃ :=
   @Eq.trans (Heap V) h₁ h₂ h₃ e₁ e₂
 def Heap.subst {V : Type} (0 P : Heap V → Prop) {h₁ h₂ : Heap V} (e : h₁ = h₂) (p : P h₁) : P h₂ :=
-  @Eq.subst (Heap V) P h₁ h₂ e p
+  @Eq.substProp (Heap V) P h₁ h₂ e p
 def Heap.congrUnionL {V : Type} {h₁ h₁' : Heap V} (h₂ : Heap V) (e : h₁ = h₁') :
     Heap.union h₁ h₂ = Heap.union h₁' h₂ :=
   @Eq.congrArg (Heap V) (Heap V) (fun (x : Heap V) => Heap.union x h₂) h₁ h₁' e
@@ -131,8 +131,8 @@ def Heap.disj_eq_r {V : Type} (h₁ : Heap V) {h h' : Heap V} (e : h = h') (d : 
 -- two singletons at one location overlap
 def Heap.disj_single {V : Type} (l : Nat) (v w : V) : Not (Heap.Disj (Heap.single l v) (Heap.single l w)) :=
   fun d => Or.elim (d l)
-    (fun f => absurd (@Eq.subst (Option V) (fun (o : Option V) => Option.Free o) (Heap.single l v l) (Option.some v) (Heap.single_at l v) f).1)
-    (fun f => absurd (@Eq.subst (Option V) (fun (o : Option V) => Option.Free o) (Heap.single l w l) (Option.some w) (Heap.single_at l w) f).1)
+    (fun f => absurd (@Eq.substProp (Option V) (fun (o : Option V) => Option.Free o) (Heap.single l v l) (Option.some v) (Heap.single_at l v) f).1)
+    (fun f => absurd (@Eq.substProp (Option V) (fun (o : Option V) => Option.Free o) (Heap.single l w l) (Option.some w) (Heap.single_at l w) f).1)
 
 -- ## Heap predicates
 

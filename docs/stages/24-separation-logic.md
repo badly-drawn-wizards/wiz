@@ -92,10 +92,10 @@ cell, `fail`) is `none`. `adequacy : Bounded h n → wp c Q h → Post Q (run c 
 run doesn't fault, ends in a heap satisfying `Q`, and keeps the bound; `Triple.run` adds a
 frame. This is what makes `wp` mean something: it is not only a definition.
 
-**Examples.** `swap_spec : {p ↦ a ⋆ q ↦ b} swap p q {p ↦ b ⋆ q ↦ a}`, and in-place list
+**Examples.** `Prog.swap_spec : {p ↦ a ⋆ q ↦ b} Prog.swap p q {p ↦ b ⋆ q ↦ a}`, and in-place list
 reversal: `MList L p` (cells of two locations, value then next pointer, `0` is null),
-`revLoop.spec` (the loop invariant, by induction on the list) and
-`reverse.spec : {MList L p} reverse fuel p {r. MList (List.reverse L) r}`. Programs are
+`Prog.revLoop.spec` (the loop invariant, by induction on the list) and
+`Prog.reverse_spec : {MList L p} Prog.reverse fuel p {r. MList (List.reverse L) r}`. Programs are
 total, so the loop takes fuel; the specification asks for more fuel than cells, and since
 `wp fail = \[False]` a proved triple also proves the fuel suffices. The proofs are
 explicit rearrangements of `⋆` chains (`star.swap`, `star.assoc_l`, …); SLF's `xsimpl`

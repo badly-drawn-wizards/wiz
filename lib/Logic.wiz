@@ -99,7 +99,7 @@ def Eq.congrArg {A B : Type} (0 f : A → B) {a b : A} (e : a = b) : f a = f b :
 -- (through `congrArg`: a motive `fun b _ => P b` would use `b`, which `transp` binds at 0;
 -- an equation of propositions computes to the pair of implications, whose second field is
 -- the direction we want)
-def Eq.subst {A : Type} (0 P : A → Prop) {a b : A} (e : a = b) (pa : P a) : P b :=
+def Eq.substProp {A : Type} (0 P : A → Prop) {a b : A} (e : a = b) (pa : P a) : P b :=
   (@Eq.congrArg A Prop P b a (@Eq.symm A a b e)).2 pa
 -- propositional extensionality is definitional (`P = Q` computes to a pair of implications)
 def Iff.toEq {P Q : Prop} (h : P ↔ Q) : P = Q := (h.1, h.2)

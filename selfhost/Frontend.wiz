@@ -375,10 +375,12 @@ def piTele : Tms → Tm → Tm
 def fieldNames : List Field → List String
   | .nil => .nil
   | .cons (.mk x _) rest => .cons x (fieldNames rest)
-def ctorName (c : Syntax) : String := match kid c 1 with
+-- (13b: a constructor is "|" ["private"] ident binders [":" T]; privacy is the
+-- Lean elaborator's, the self-hosted frontend ignores it)
+def ctorName (c : Syntax) : String := match kid c 2 with
   | .ident n => n
   | _ => "_"
-def ctorFields (c : Syntax) : List Field := fieldsOf (kids (kid c 2))
+def ctorFields (c : Syntax) : List Field := fieldsOf (kids (kid c 3))
 
 -- an index (`tt` without one), scope-checked in `sc` and closed at depth `d`
 def idxTm (inline : Bool) (gs : Globals) (sc : Scope) (d : Nat) : Option Syntax → Elab
@@ -415,7 +417,7 @@ def ctorDesc (inline : Bool) (gs : Globals) (T : String) (ps : List String) (nid
 -- a constructor's index: the last argument of its result type `T ps i`
 def ctorRes (nidx : Nat) (c : Syntax) : Option Syntax := match nidx with
   | .zero => .none
-  | .succ _ => match kids (kid c 3) with
+  | .succ _ => match kids (kid c 4) with
     | .cons _ (.cons ty _) => .some (lastS (kids (kid ty 1)))
     | _ => .none
 
@@ -512,6 +514,113 @@ def sortSpine : TCtx → Tm → STm
   | c, t => sortLeaf c t
 -- a closed type with its sorts (`sortSpine`)
 def sortTy (t : Tm) : Tm := STm.tm (sortSpine empty t)
+-- **Phantom parameters** (stage 21i; `phantomTail` in `Elab/Inductive.lean`, README
+-- 22e). Types are structural, so a parameter no constructor mentions would be forgotten
+-- (`UIntN 8` and `UIntN 16` one type, `w` never inferred). For each such parameter
+-- `p : P` the index type `Unit` becomes `(0 _ : D) → … → Unit`, with `D := p` for a
+-- type and `D := (0 x : P) × (x = p)` otherwise; the indices are its one value
+-- `fun _ => tt`. Proofs and sizes get none, nor does a parameter whose `D` would raise
+-- the index type's universe. Erasure drops the tail (a function into `Unit` is a
+-- proposition here: `erasable`). An indexed family with such a parameter is rejected
+-- (the Lean frontend pairs the index with the tail; not mirrored yet).
+mutual
+-- does `t` mention the variable `i`? (exact on the forms of field types and
+-- descriptions; any other form counts as a mention)
+def occurs : Nat → Tm → Bool
+  | i, .var j => Nat.beq i j
+  | i, .pi a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .piq _ a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .sigma a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .sigmaq _ a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .lam b => occurs (i + 1) b
+  | i, .app f a => Bool.or (occurs i f) (occurs i a)
+  | i, .letE ty v b => Bool.or (occurs i ty) (Bool.or (occurs i v) (occurs (i + 1) b))
+  | i, .ann t ty => Bool.or (occurs i t) (occurs i ty)
+  | i, .sorted _ t => occurs i t
+  | i, .pair a b => Bool.or (occurs i a) (occurs i b)
+  | i, .fst t => occurs i t
+  | i, .snd t => occurs i t
+  | i, .con t => occurs i t
+  | i, .eq A a b => Bool.or (occurs i A) (Bool.or (occurs i a) (occurs i b))
+  | i, .eqRefl A a => Bool.or (occurs i A) (occurs i a)
+  | i, .descr _ I => occurs i I
+  | i, .dret x => occurs i x
+  | i, .darg S D => Bool.or (occurs i S) (occurs i D)
+  | i, .drec j D => Bool.or (occurs i j) (occurs i D)
+  | i, .dhrec H j D => Bool.or (occurs i H) (Bool.or (occurs i j) (occurs i D))
+  | i, .ecase m s bs => Bool.or (occurs (i + 1) m) (Bool.or (occurs i s) (occursTms i bs))
+  | i, .mu _ I D x => Bool.or (occurs i I) (Bool.or (occurs i D) (occurs i x))
+  | _, .const _ _ _ _ _ => .false
+  | _, .axiomC _ _ => .false
+  | _, .univ _ => .false
+  | _, .prop => .false
+  | _, .sortL _ => .false
+  | _, .unit _ => .false
+  | _, .star => .false
+  | _, .empty _ => .false
+  | _, .enum _ => .false
+  | _, .tag _ _ => .false
+  | _, _ => .true
+def occursTms : Nat → Tms → Bool
+  | _, .tnil => .false
+  | i, .tcons t rest => Bool.or (occurs i t) (occursTms i rest)
+end
+-- the context of the parameters (their types, each over the ones before)
+def paramCtx : TCtx → Tms → TCtx
+  | c, .tnil => c
+  | c, .tcons A rest => paramCtx (TCtx.bind c (eval (TCtx.env c) A)) rest
+-- the phantom domain `D` of the parameter `k` of `np` (its type `A` over the ones
+-- before), at depth `np` in the parameters' context `c`; `none` if it gets none
+def phantomDom (c : TCtx) (np k : Nat) (A : Tm) : Option Tm :=
+  let P := shiftTm (np - k) 0 A;
+  let p : Tm := .var (np - 1 - k);
+  let vP := eval (TCtx.env c) P;
+  let D : Option Tm := match whnf vP with
+    | .vsort _ => .some p
+    | .vsize => .none
+    | .vsizeLt _ => .none
+    | _ => match isProp c vP with
+      | .true => .none
+      | .false => .some (.sigmaq .qz P (.eq (shiftTm 1 0 P) (.var 0) (shiftTm 1 0 p)));
+  match D with
+  | .none => .none
+  | .some D' => match inferUniv c (.piq .qz D' (.unit 0)) with
+    | .ok ty _ => match ty with
+      | .vsort l => match lvlEquiv l (.lnum 1) with
+        | .true => .some D'
+        | .false => .none
+      | _ => .none
+    | .err _ => .none
+-- the phantom domains of the parameters from the `k`th on that `used` doesn't mention
+def phantomDoms (c : TCtx) (np : Nat) (used : Nat → Bool) : Nat → Tms → Tms
+  | _, .tnil => .tnil
+  | k, .tcons A rest =>
+    let more := phantomDoms c np used (k + 1) rest;
+    match used k with
+    | .true => more
+    | .false => match phantomDom c np k A with
+      | .some D => .tcons D more
+      | .none => more
+-- the tail `(0 _ : D₁) → … → Unit` (the `i` domains before already bound)
+def phantomTy : Nat → Tms → Tm
+  | _, .tnil => .unit 0
+  | i, .tcons D rest => .piq .qz (shiftTm i 0 D) (phantomTy (i + 1) rest)
+-- the index of a type without indices: the tail's value `fun _ … _ => tt` (`tt` for `Unit`)
+partial def phantomVal (I : Tm) : Tm := match I with
+  | .sorted _ t => phantomVal t
+  | .piq _ _ b => .lam (phantomVal b)
+  | _ => .star
+-- a constructor's description with the indices (all `tt`) replaced by the tail's value
+partial def retail (v : Tm) (D : Tm) : Tm := match D with
+  | .darg S F => match F with
+    | .lam B => .darg S (.lam (retail v B))
+    | _ => D
+  | .drec _ E => .drec v (retail v E)
+  | .dret _ => .dret v
+  | _ => D
+def retailTms (v : Tm) : Tms → Tms
+  | .tnil => .tnil
+  | .tcons D rest => .tcons (retail v D) (retailTms v rest)
 def addCtors (T : String) (ps : List String) (pts : Tms) (nidx : Nat) (I : Tm) (Tc TcI : Tm) (k : Nat) : Globals → Nat → List Syntax → Added
   | gs, _, .nil => .ok gs .nil
   | gs, i, .cons c cs =>
@@ -524,9 +633,12 @@ def addCtors (T : String) (ps : List String) (pts : Tms) (nidx : Nat) (I : Tm) (
       | .err _ => .err
       | .ok ics =>
         let ty := sortTy (piTele pts (ctorType (tApps Tc (tmsAppend (pvars np (np + n)) ics)) fs));
+        -- (without an index: `tt`, or `refl` at a phantom tail)
         let proof : Tm := match ics with
           | .tcons ic _ => .eqRefl (shiftTm n 0 I) ic
-          | .tnil => .star;
+          | .tnil => match I with
+            | .unit _ => .star
+            | _ => .eqRefl (shiftTm n 0 I) (phantomVal I);
         let v := tLams (np + n) (.con (.pair (.tag k i) (payloadP proof n (n - 1))));
         match check empty v (eval .nil ty) with
         | .err _ => .err
@@ -630,30 +742,48 @@ def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match kid stx0 1 with
         | .bad => .err "an inductive type's signature must be Type or I → Type";
       match Ir with
       | .err m => errStep gs m
-      | .ok I =>
-        let mkD := fun (ds : Tms) => (.darg (.enum k) (.lam (.ecase (.descr 0 (shiftTm 1 0 I)) (.var 0) ds)) : Tm);
+      | .ok I0 =>
         match ctorDescs .false gs T ps nidx ctors with
         | .err m => errStep gs m
-        | .ok ds => match ctorDescs .true gs T ps nidx ctors with
+        | .ok ds0 => match ctorDescs .true gs T ps nidx ctors with
           | .err m => errStep gs m
-          | .ok dsI =>
-            -- `fun ps => μ D tt`, or `fun ps i => μ D i`
-            let body := fun (D : Tm) => (match sig with
-              | .indexed _ => .lam (.mu 0 (shiftTm 1 0 I) (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0))
-              | _ => .mu 0 (.unit 0) D .star : Tm);
-            let ty := sortTy (piTele pts (match sig with
-              | .indexed _ => .pi I (.univ 0)
-              | _ => .univ 0));
-            let val := tLams np (body (mkD ds));
-            match check empty val (eval .nil ty) with
-            | .err m => errStep gs m
-            | .ok _ _ =>
-              let valI := tLams np (body (mkD dsI));
-              let gs1 := Globals.add gs (.mk T ty val valI .nil);
-              match addCtors T ps pts nidx I (.const T .nil .nil val ty) valI k gs1 0 ctors with
-              | .err => errStep gs "ill-typed constructor"
-              | .ok gs2 cs => .mk (String.append T (String.append " : " (show .nil 0 ty)))
-                  (Globals.addInd gs2 T (.mk np I (mkD ds) (mkD dsI) cs .none (.const T .nil .nil val ty)))
+          | .ok dsI0 =>
+            -- phantom parameters: those that neither a constructor nor the index type
+            -- mentions (in the descriptions, under `t✝`, the parameter `k` is `np - k`)
+            let cP := paramCtx empty pts;
+            let doms := phantomDoms cP np (fun (j : Nat) => Bool.or (occursTms (np - j) ds0) (occurs (np - 1 - j) I0)) 0 pts;
+            let I : Tm := match doms with
+              | .tnil => I0
+              | .tcons _ _ => STm.tm (sortSpine cP (phantomTy 0 doms));
+            let tl := phantomVal I;
+            let ds := match doms with
+              | .tnil => ds0
+              | .tcons _ _ => retailTms tl ds0;
+            let dsI := match doms with
+              | .tnil => dsI0
+              | .tcons _ _ => retailTms tl dsI0;
+            -- (the motive is under the tag's binder and its own)
+            let mkD := fun (ds : Tms) => (.darg (.enum k) (.lam (.ecase (.descr 0 (shiftTm 2 0 I)) (.var 0) ds)) : Tm);
+            match Bool.and (Nat.beq nidx 1) (Bool.not (Nat.beq (tmsLenF doms) 0)) with
+            | .true => errStep gs "a parameter that no constructor mentions (a phantom parameter) of an indexed family is not supported by the self-hosted frontend"
+            | .false =>
+              -- `fun ps => μ D tt`, or `fun ps i => μ D i`
+              let body := fun (D : Tm) => (match sig with
+                | .indexed _ => .lam (.mu 0 (shiftTm 1 0 I) (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0))
+                | _ => .mu 0 I D tl : Tm);
+              let ty := sortTy (piTele pts (match sig with
+                | .indexed _ => .pi I (.univ 0)
+                | _ => .univ 0));
+              let val := tLams np (body (mkD ds));
+              match check empty val (eval .nil ty) with
+              | .err m => errStep gs m
+              | .ok _ _ =>
+                let valI := tLams np (body (mkD dsI));
+                let gs1 := Globals.add gs (.mk T ty val valI .nil);
+                match addCtors T ps pts nidx I (.const T .nil .nil val ty) valI k gs1 0 ctors with
+                | .err => errStep gs "ill-typed constructor"
+                | .ok gs2 cs => .mk (String.append T (String.append " : " (show .nil 0 ty)))
+                    (Globals.addInd gs2 T (.mk np I (mkD ds) (mkD dsI) cs .none (.const T .nil .nil val ty)))
   | _ => errStep gs "an inductive type needs a name"
 
 def sndN : Nat → Tm → Tm
@@ -1765,6 +1895,39 @@ inductive BE where
   | err (msg : String)
 def noBE : BE := .ok .tnil ES.empty
 -- `fun t => ecase t [D₁, …]`, the description after its tag
+-- (stage 21j) the implicit arguments' metavariables and the result type of `f a…`
+-- with a placeholder for each explicit argument (`appExpected`)
+inductive PreR where
+  | mk (implicits : List Tm) (ty : Val) (es : ES)
+partial def preArgs (es : ES) (cx : Cx) (fty : Val) (m : List Bool) (args : List Syntax) : Option PreR :=
+  match m with
+  | .cons .true m' => match whnf (force es fty) with
+    | .vpi _ dom env cod _ => match newMeta es cx dom with
+      | .mk mt es1 => match preArgs es1 cx (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args with
+        | .some (.mk ims rty es2) => .some (.mk (.cons mt ims) rty es2)
+        | .none => .none
+    | _ => .none
+  | _ => match args with
+    | .nil => .some (.mk .nil fty es)
+    | .cons _ rest => match whnf (force es fty) with
+      | .vpi _ dom env cod _ => match newMeta es cx dom with
+        | .mk mt es1 => preArgs es1 cx (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
+      | _ => .none
+-- is the head a constructor (`T.c` of an inductive type `T`, not shadowed)?
+def ctorHead (gs : Globals) (cx : Cx) (h : Syntax) : Bool := match strEq (kindOf h) "term.ident" with
+  | .true => match Scope.lookup (Cx.sc cx) (identOf h) with
+    | .some i => match Nat.lt i (Cx.lvl cx) with
+      | .true => .false
+      | .false => match splitLast (identOf h) with
+        | .some (.mk T _) => match Globals.ind gs T with
+          | .some _ => .true
+          | .none => .false
+        | .none => .false
+    | .none => .false
+  | .false => .false
+def headImplicit : List Bool → Bool
+  | .cons b _ => b
+  | .nil => .false
 def descFn : Tm → Tm
   | .darg _ f => f
   | t => t
@@ -1898,7 +2061,7 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
     | .true => .ok (.univ (univLevel s)) (.vsort (.lnum (univLevel s + 2))) es
     | .false => match strEq k "term.app" with
       | .true => match inferHead gs es cx (kid s 0) with
-        | .ok f fty es' m => appArgsT gs es' cx f fty m (kids (kid s 1)) .nil .none
+        | .ok f fty es' m => appArgsT gs es' cx f fty m (kids (kid s 1)) .nil .none .nil
         | .err msg => .err msg
       | .false => match strEq k "term.arrow" with
         | .true => match inferType gs es cx (kid s 0) with
@@ -1963,7 +2126,7 @@ def depPis (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (aStx body : Sy
 -- argument whose type isn't known yet is postponed: a metavariable stands for it until
 -- the other arguments are done
 def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List Bool) (args : List Syntax) (post : List Post)
-    (expected : Option Val) : TE :=
+    (expected : Option Val) (pre : List Tm) : TE :=
   match args with
   | .nil => match insertImplicits gs es cx f fty m with
     | .ok f' fty' es1 =>
@@ -1979,18 +2142,42 @@ def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List B
     | e => e
   | .cons a rest => match m with
     | .cons .true m' => match whnf fty with
-      | .vpi _ dom env cod _ => match newMeta es cx dom with
-        | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected
+      | .vpi _ dom env cod _ => match pre with
+        -- (an implicit argument's metavariable made by `preArgs`, as its solution: a
+        -- solved metavariable in a later argument's type would not compute there)
+        | .cons mt0 pre' =>
+          let mt := match zonk es (Cx.lvl cx) mt0 with
+            | .some z => z
+            | .none => mt0;
+          appArgsT gs es cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected pre'
+        | .nil => match newMeta es cx dom with
+          | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected .nil
       | _ => .err "too many implicit arguments"
     | _ => match whnf (force es fty) with
       | .vpi _ dom env cod _ => match Bool.and (postponable a) (Bool.or (isMetaApp es dom) (funDomMeta es a dom)) with
         | .true => match newMeta es cx dom with
           | .mk mt es1 => appArgsT gs es1 cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
-              (.cons (.mk a dom mt) post) expected
+              (.cons (.mk a dom mt) post) expected pre
         | .false => match checkT gs es cx a dom with
-          | .ok ta _ es1 => appArgsT gs es1 cx (.app f ta) (eval (.cons (eval (TCtx.env (Cx.c cx)) ta) env) cod) (tailBools m) rest post expected
+          | .ok ta _ es1 => appArgsT gs es1 cx (.app f ta) (eval (.cons (eval (TCtx.env (Cx.c cx)) ta) env) cod) (tailBools m) rest post expected pre
           | e => e
       | ty => .err (String.append "not a function: its type is " (show .nil (Cx.lvl cx) (quote (Cx.lvl cx) ty)))
+-- (stage 21j) An application of a constructor with implicit parameters, checked
+-- against `ty`: the expected type first (`checkApp` in the Lean elaborator). `preArgs`
+-- makes the implicit arguments' metavariables and a placeholder for each explicit
+-- argument, and the result type is unified with `ty`, which solves the parameters the
+-- arguments' types mention (`Fin.mk 3 rfl : Fin 5`: `rfl` is then checked against
+-- `Nat.lt 3 5 = .true`). The placeholders are dropped: `appArgsT` checks the
+-- arguments, with the implicit metavariables made here. Without a solution, the
+-- arguments come first, as before.
+def appExpected (gs : Globals) (es : ES) (cx : Cx) (h : Syntax) (f : Tm) (fty : Val) (m : List Bool) (args : List Syntax) (ty : Val) : TE :=
+  match Bool.and (ctorHead gs cx h) (headImplicit m) with
+  | .false => appArgsT gs es cx f fty m args .nil (.some ty) .nil
+  | .true => match preArgs es cx fty m args with
+    | .some (.mk ims rty es1) => match unify es1 cx rty ty with
+      | .some es2 => appArgsT gs es2 cx f fty m args .nil (.some ty) ims
+      | .none => appArgsT gs es cx f fty m args .nil (.some ty) .nil
+    | .none => appArgsT gs es cx f fty m args .nil (.some ty) .nil
 -- the postponed arguments, each unified with its metavariable (one whose type is
 -- still unknown waits longer: `drain`)
 def resolvePosts (gs : Globals) (es : ES) (cx : Cx) : List Post → Option ES
@@ -2069,7 +2256,7 @@ def checkT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (ty : Val) : TE :=
         | .true => letT gs es cx s (.some ty)
         | .false => match (match strEq k "term.app" with
           | .true => match inferHead gs es cx (kid s 0) with
-            | .ok f fty es1 m => appArgsT gs es1 cx f fty m (kids (kid s 1)) .nil (.some ty)
+            | .ok f fty es1 m => appExpected gs es1 cx (kid s 0) f fty m (kids (kid s 1)) ty
             | .err msg => TE.err msg
           | .false => inferT gs es cx s) with
           | .ok t ty' es' => match unify es' cx ty' ty with
@@ -2211,7 +2398,8 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
             | .some f => f
             | .none => match tmsDrop np args with
               | .tcons j _ => j
-              | .tnil => (.star : Tm);
+              -- (`tt`, or a phantom tail's value)
+              | .tnil => phantomVal I;
           let nidxE := match fixed with
             | .some _ => 1
             | .none => tmsLenF (tmsDrop np args);
@@ -3100,10 +3288,11 @@ def implicitBinders : List Syntax → List Syntax
   | .nil => .nil
   | .cons b rest => .cons (mkNode "binder.implicit" (.cons (.atom "{") (.cons (kid b 1) (.cons (kid b 2)
       (.cons (kid b 3) (one (.atom "}"))))))) (implicitBinders rest)
-def fieldName (f : Syntax) : String := identOf' (kid f 1)
+-- (a field is ["private"] [quantity] ident ":" T)
+def fieldName (f : Syntax) : String := identOf' (kid f 2)
 def fieldBinders : List Syntax → List Syntax
   | .nil => .nil
-  | .cons f rest => .cons (binderStx "(" ")" (fieldName f) (kid f 3)) (fieldBinders rest)
+  | .cons f rest => .cons (binderStx "(" ")" (fieldName f) (kid f 4)) (fieldBinders rest)
 def fieldIdents : List Syntax → List Syntax
   | .nil => .nil
   | .cons f rest => .cons (identStx (fieldName f)) (fieldIdents rest)
@@ -3115,7 +3304,7 @@ def projections (T : String) (bs : List Syntax) (sTy pat : Syntax) : List Syntax
       (.cons (.atom "with") (one (mkNull (one alt))))));
     let d := mkNode "command.def" (.cons (.atom "def") (.cons (.ident (String.append (String.append T ".") (fieldName f)))
       (.cons (mkNull .nil) (.cons (mkNull (List.append (implicitBinders bs) (one (binderStx "(" ")" "s✝" sTy))))
-        (.cons (mkNull (.cons (.atom ":") (one (kid f 3)))) (.cons (.atom ":=") (one body)))))));
+        (.cons (mkNull (.cons (.atom ":") (one (kid f 4)))) (.cons (.atom ":=") (one body)))))));
     .cons d (projections T bs sTy pat rest)
 def strIdents : List String → List Syntax
   | .nil => .nil
@@ -3128,7 +3317,7 @@ def structCmd (gs : Globals) (stx : Syntax) : Step :=
   let sTy := match ps with
     | .nil => identStx T
     | .cons _ _ => mkNode "term.app" (.cons (identStx T) (one (mkNull (strIdents ps))));
-  let ctor := mkNode "inductive.ctor" (.cons (.atom "|") (.cons (.ident "mk") (.cons (mkNull (fieldBinders fs)) (one (mkNull .nil)))));
+  let ctor := mkNode "inductive.ctor" (.cons (.atom "|") (.cons (mkNull .nil) (.cons (.ident "mk") (.cons (mkNull (fieldBinders fs)) (one (mkNull .nil))))));
   let ind := mkNode "command.inductive" (.cons (.atom "inductive") (.cons (kid stx 1) (.cons (kid stx 2) (.cons (kid stx 3)
     (.cons (kid stx 4) (.cons (.atom "where") (one (mkNull (one ctor)))))))));
   let pat := mkNode "term.app" (.cons (mkNode "term.dotIdent" (.cons (.atom ".") (one (.ident "mk")))) (one (mkNull (fieldIdents fs))));
@@ -3136,7 +3325,7 @@ def structCmd (gs : Globals) (stx : Syntax) : Step :=
 
 -- The self-hosted frontend's Prelude (stage 19a), read by `import Prelude`: numbers,
 -- Booleans, lists, options, pairs, characters (by their code) and strings.
-def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.pred : Nat → Nat\n  | .zero => .zero\n  | .succ n => n\ndef Nat.sub : Nat → Nat → Nat\n  | m, .zero => m\n  | m, .succ n => Nat.pred (Nat.sub m n)\ninfixl:65 \" + \" => Nat.add\ninfixl:65 \" - \" => Nat.sub\ninfixl:70 \" * \" => Nat.mul\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Nat.lt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.lt m n\ndef Nat.le (m n : Nat) : Bool := Nat.lt m (.succ n)\ndef Nat.max (m n : Nat) : Nat := if Nat.lt m n then n else m\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef Nat.divGo : Nat → Nat → Nat → Nat\n  | .zero, _, _ => .zero\n  | .succ fuel, n, m => if Nat.lt n m then .zero else .succ (Nat.divGo fuel (Nat.sub n m) m)\ndef Nat.div (n m : Nat) : Nat := match m with\n  | .zero => .zero\n  | .succ _ => Nat.divGo n n m\ndef Nat.mod (n m : Nat) : Nat := Nat.sub n (Nat.mul m (Nat.div n m))\ninfixl:70 \" / \" => Nat.div\ndef Nat.pow : Nat → Nat → Nat\n  | _, .zero => .succ .zero\n  | b, .succ e => Nat.mul b (Nat.pow b e)\ndef Bool.xor : Bool → Bool → Bool\n  | .true, b => Bool.not b\n  | .false, b => b\ndef Nat.isOdd (n : Nat) : Bool := Nat.beq (Nat.mod n 2) 1\ndef Nat.bitwise (f : Bool → Bool → Bool) : Nat → Nat → Nat → Nat\n  | .zero, _, _ => .zero\n  | .succ fuel, a, b =>\n    let rest := Nat.mul 2 (Nat.bitwise f fuel (Nat.div a 2) (Nat.div b 2));\n    if f (Nat.isOdd a) (Nat.isOdd b) then .succ rest else rest\ndef Nat.land (a b : Nat) : Nat := Nat.bitwise Bool.and (Nat.add a b) a b\ndef Nat.lor (a b : Nat) : Nat := Nat.bitwise Bool.or (Nat.add a b) a b\ndef Nat.xor (a b : Nat) : Nat := Nat.bitwise Bool.xor (Nat.add a b) a b\ndef Nat.shiftLeft (a n : Nat) : Nat := Nat.mul a (Nat.pow 2 n)\ndef Nat.shiftRight (a n : Nat) : Nat := Nat.div a (Nat.pow 2 n)\ndef Nat.log2Go : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ fuel, n => if Nat.lt n 2 then .zero else .succ (Nat.log2Go fuel (Nat.div n 2))\ndef Nat.log2 (n : Nat) : Nat := Nat.log2Go n n\ndef Nat.testBit (n i : Nat) : Bool := Nat.isOdd (Nat.shiftRight n i)\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ninfixr:67 \" ++ \" => List.append\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\ndef memo {A : Type} (f : Unit → A) : Unit → A := f\naxiom Array : Type → Type\naxiom Array.empty {A : Type} : Array A\naxiom Array.push {A : Type} (a : Array A) (x : A) : Array A\naxiom Array.size {A : Type} (a : Array A) : Nat\naxiom Array.getD {A : Type} (a : Array A) (i : Nat) (d : A) : A\naxiom Array.set {A : Type} (a : Array A) (i : Nat) (x : A) : Array A\naxiom World : Type\ndef IO (A : Type) : Type := World → Prod A World\ndef IO.pure {A : Type} (a : A) : IO A := fun w => .mk a w\ndef IO.bind {A B : Type} (x : IO A) (f : A → IO B) : IO B := fun w =>\n  let r := x w;\n  f r.fst r.snd\naxiom IO.println : String → IO Unit\naxiom IO.print : String → IO Unit\naxiom IO.readFile : String → IO String\naxiom Nat.toString : Nat → String\naxiom Str : Type\naxiom Str.ofString : String → Str\naxiom StrMap : Type → Type\naxiom StrMap.empty {V : Type} : StrMap V\naxiom StrMap.insert {V : Type} (m : StrMap V) (k : Str) (v : V) : StrMap V\naxiom StrMap.findD {V : Type} (m : StrMap V) (k : Str) (d : V) : V\naxiom StrMap.size {V : Type} (m : StrMap V) : Nat\ninductive SyntaxF : Bool → Type where\n  | missing : SyntaxF .true\n  | atom (val : String) : SyntaxF .true\n  | ident (val : String) : SyntaxF .true\n  | node (kind : String) (args : SyntaxF .false) : SyntaxF .true\n  | nil : SyntaxF .false\n  | cons (head : SyntaxF .true) (tail : SyntaxF .false) : SyntaxF .false\ndef Syntax : Type := SyntaxF .true\ndef SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax\n  | .cons x t, n => match n with\n    | .zero => x\n    | .succ m => SyntaxF.nth t m\n  | _, _ => .missing\ndef Syntax.getArg (stx : Syntax) (i : Nat) : Syntax := match stx with\n  | .node _ args => SyntaxF.nth args i\n  | _ => .missing\n"
+def preludeText : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\ninductive Bool where\n  | false\n  | true\ninductive List (A : Type) where\n  | nil\n  | cons (head : A) (tail : List A)\ninductive Option (A : Type) where\n  | none\n  | some (val : A)\nstructure Prod (A B : Type) where\n  fst : A\n  snd : B\nstructure Char where\n  code : Nat\nstructure String where\n  data : List Char\ndef Nat.add : Nat → Nat → Nat\n  | .zero, n => n\n  | .succ m, n => .succ (Nat.add m n)\ndef Nat.mul : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ m, n => Nat.add n (Nat.mul m n)\ndef Nat.pred : Nat → Nat\n  | .zero => .zero\n  | .succ n => n\ndef Nat.sub : Nat → Nat → Nat\n  | m, .zero => m\n  | m, .succ n => Nat.pred (Nat.sub m n)\ninfixl:65 \" + \" => Nat.add\ninfixl:65 \" - \" => Nat.sub\ninfixl:70 \" * \" => Nat.mul\ndef Nat.beq : Nat → Nat → Bool\n  | .zero, .zero => .true\n  | .succ m, .succ n => Nat.beq m n\n  | _, _ => .false\ndef Nat.blt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.blt m n\ndef Nat.lt : Nat → Nat → Bool\n  | _, .zero => .false\n  | .zero, .succ _ => .true\n  | .succ m, .succ n => Nat.lt m n\ndef Nat.le (m n : Nat) : Bool := Nat.lt m (.succ n)\ndef Nat.max (m n : Nat) : Nat := if Nat.lt m n then n else m\ndef Bool.not : Bool → Bool\n  | .true => .false\n  | .false => .true\ndef Bool.and : Bool → Bool → Bool\n  | .true, b => b\n  | .false, _ => .false\ndef Bool.or : Bool → Bool → Bool\n  | .true, _ => .true\n  | .false, b => b\ndef Nat.divGo : Nat → Nat → Nat → Nat\n  | .zero, _, _ => .zero\n  | .succ fuel, n, m => if Nat.lt n m then .zero else .succ (Nat.divGo fuel (Nat.sub n m) m)\ndef Nat.div (n m : Nat) : Nat := match m with\n  | .zero => .zero\n  | .succ _ => Nat.divGo n n m\ndef Nat.mod (n m : Nat) : Nat := Nat.sub n (Nat.mul m (Nat.div n m))\ninfixl:70 \" / \" => Nat.div\ndef Nat.pow : Nat → Nat → Nat\n  | _, .zero => .succ .zero\n  | b, .succ e => Nat.mul b (Nat.pow b e)\ndef Bool.xor : Bool → Bool → Bool\n  | .true, b => Bool.not b\n  | .false, b => b\ndef Nat.isOdd (n : Nat) : Bool := Nat.beq (Nat.mod n 2) 1\ndef Nat.bitwise (f : Bool → Bool → Bool) : Nat → Nat → Nat → Nat\n  | .zero, _, _ => .zero\n  | .succ fuel, a, b =>\n    let rest := Nat.mul 2 (Nat.bitwise f fuel (Nat.div a 2) (Nat.div b 2));\n    if f (Nat.isOdd a) (Nat.isOdd b) then .succ rest else rest\ndef Nat.land (a b : Nat) : Nat := Nat.bitwise Bool.and (Nat.add a b) a b\ndef Nat.lor (a b : Nat) : Nat := Nat.bitwise Bool.or (Nat.add a b) a b\ndef Nat.xor (a b : Nat) : Nat := Nat.bitwise Bool.xor (Nat.add a b) a b\ndef Nat.shiftLeft (a n : Nat) : Nat := Nat.mul a (Nat.pow 2 n)\ndef Nat.shiftRight (a n : Nat) : Nat := Nat.div a (Nat.pow 2 n)\ndef Nat.log2Go : Nat → Nat → Nat\n  | .zero, _ => .zero\n  | .succ fuel, n => if Nat.lt n 2 then .zero else .succ (Nat.log2Go fuel (Nat.div n 2))\ndef Nat.log2 (n : Nat) : Nat := Nat.log2Go n n\ndef Nat.testBit (n i : Nat) : Bool := Nat.isOdd (Nat.shiftRight n i)\ndef List.length {A : Type} : List A → Nat\n  | .nil => .zero\n  | .cons _ t => .succ (List.length t)\ndef List.append {A : Type} : List A → List A → List A\n  | .nil, ys => ys\n  | .cons x xs, ys => .cons x (List.append xs ys)\ninfixr:67 \" ++ \" => List.append\ndef List.map {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\ndef String.append (a b : String) : String := .mk (List.append a.data b.data)\ndef String.length (s : String) : Nat := List.length s.data\ndef memo {A : Type} (f : Unit → A) : Unit → A := f\naxiom Array : Type → Type\naxiom Array.empty {A : Type} : Array A\naxiom Array.push {A : Type} (a : Array A) (x : A) : Array A\naxiom Array.size {A : Type} (a : Array A) : Nat\naxiom Array.getD {A : Type} (a : Array A) (i : Nat) (d : A) : A\naxiom Array.set {A : Type} (a : Array A) (i : Nat) (x : A) : Array A\naxiom World : Type\ndef IO (A : Type) : Type := World → Prod A World\ndef IO.pure {A : Type} (a : A) : IO A := fun w => .mk a w\ndef IO.bind {A B : Type} (x : IO A) (f : A → IO B) : IO B := fun w =>\n  let r := x w;\n  f r.fst r.snd\naxiom IO.println : String → IO Unit\naxiom IO.print : String → IO Unit\naxiom IO.readFile : String → IO String\naxiom IO.argCount : IO Nat\naxiom IO.arg : Nat → IO String\ndef IO.argsFrom : Nat → Nat → IO (List String)\n  | .zero, _ => IO.pure .nil\n  | .succ k, i => IO.bind (IO.arg i) (fun a => IO.bind (IO.argsFrom k (Nat.succ i)) (fun rest => IO.pure (List.cons a rest)))\ndef IO.args : IO (List String) := IO.bind IO.argCount (fun n => IO.argsFrom n 0)\naxiom Nat.toString : Nat → String\naxiom Str : Type\naxiom Str.ofString : String → Str\naxiom StrMap : Type → Type\naxiom StrMap.empty {V : Type} : StrMap V\naxiom StrMap.insert {V : Type} (m : StrMap V) (k : Str) (v : V) : StrMap V\naxiom StrMap.findD {V : Type} (m : StrMap V) (k : Str) (d : V) : V\naxiom StrMap.size {V : Type} (m : StrMap V) : Nat\ninductive SyntaxF : Bool → Type where\n  | missing : SyntaxF .true\n  | atom (val : String) : SyntaxF .true\n  | ident (val : String) : SyntaxF .true\n  | node (kind : String) (args : SyntaxF .false) : SyntaxF .true\n  | nil : SyntaxF .false\n  | cons (head : SyntaxF .true) (tail : SyntaxF .false) : SyntaxF .false\ndef Syntax : Type := SyntaxF .true\ndef SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax\n  | .cons x t, n => match n with\n    | .zero => x\n    | .succ m => SyntaxF.nth t m\n  | _, _ => .missing\ndef Syntax.getArg (stx : Syntax) (i : Nat) : Syntax := match stx with\n  | .node _ args => SyntaxF.nth args i\n  | _ => .missing\n"
 
 -- Infix operators (stage 19b): `infixl:p " op " => f` (also `infixr`, `infix`) adds a
 -- trailing term parser `a op b` (kind `term.infix op`) and the token `op`; each later
