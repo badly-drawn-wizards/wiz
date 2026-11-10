@@ -2431,6 +2431,21 @@ def languageGroup : Group where
   name := "language"
   exercise := "Stage 13"
   cases := [
+    { name := "linear transport: Eq.subst, Eq.substBack and Eq.cast take a linear value (L4)", run := fun _ =>
+        okLib ("import Prelude\naxiom Tok : Nat → Type\naxiom Tok.close : (1 t : Tok 0) → Unit\n" ++
+          "def closeAt (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit := Tok.close (Eq.subst Tok e t)\n" ++
+          "def closeBack (0 n : Nat) (0 e : 0 = n) (1 t : Tok n) : Unit := Tok.close (Eq.substBack Tok e t)\n" ++
+          "def closeCast (0 n : Nat) (0 e : Tok n = Tok 0) (1 t : Tok n) : Unit := Tok.close (Eq.cast e t)\n" ++
+          "def listCast (0 A B : Type) (0 e : A = B) (v : List A) : List B := Eq.subst List e v\n") },
+    { name := "... still used exactly once", run := fun _ =>
+        failsLib ("import Prelude\naxiom Tok : Nat → Type\naxiom Tok.close : (1 t : Tok 0) → Unit\n" ++
+          "def twice (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit × Unit := (Tok.close (Eq.subst Tok e t), Tok.close (Eq.subst Tok e t))")
+          "quantity 1 but used ω" },
+    { name := "... where a transport with an unrestricted argument can't carry a linear value", run := fun _ =>
+        failsLib ("import Prelude\naxiom Tok : Nat → Type\naxiom Tok.close : (1 t : Tok 0) → Unit\n" ++
+          "def substω (0 P : Nat → Type) {0 a b : Nat} (0 e : a = b) (pa : P a) : P b := cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa\n" ++
+          "def closeAt (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit := Tok.close (substω Tok e t)")
+          "quantity 1 but used ω" },
     { name := "castRefl: a propositional regularity axiom in the Prelude; it doesn't compute (D1)", run := fun _ =>
         okLib ("import Prelude\ndef r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n" ++
           "#reduce fun (A : Type) (e : A = A) (a : A) => castRefl e a")

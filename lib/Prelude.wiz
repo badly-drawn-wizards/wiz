@@ -7,6 +7,17 @@
 -- (`Vec.map_cons` in lib/Vec.wiz).
 axiom castRefl.{u} {0 A : Type u} (0 e : A = A) (0 a : A) : (cast e a : A) = a
 
+-- Transport along an equation, for linear values too (L4). The transported value is a
+-- quantity-1 parameter: a linear value (a channel endpoint, a token) can be passed,
+-- and so can an unrestricted one (an ω variable may be used once). `cast` itself passes
+-- its argument's usage through; these just state it in their types.
+def Eq.cast.{u} {A B : Type u} (0 e : A = B) (1 a : A) : B := cast e a
+def Eq.subst.{u, v} {A : Type u} (0 P : A → Type v) {0 a b : A} (0 e : a = b) (1 pa : P a) : P b :=
+  cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa
+-- ... and backwards, without `Eq.symm`
+def Eq.substBack.{u, v} {A : Type u} (0 P : A → Type v) {0 a b : A} (0 e : a = b) (1 pb : P b) : P a :=
+  cast (transp (fun b _ => P b = P a) (refl (P a)) e) pb
+
 inductive Bool where
   | false
   | true
