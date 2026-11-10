@@ -2,9 +2,13 @@
 # The bootstrap fixpoint check. Stage 1, the self-hosted compiler built by the Lean
 # `wiz build`, compiles the whole toolchain to C (self1.c); stage 2, that C compiled with
 # selfhost/rt.c and Boehm GC, compiles the toolchain again (self2.c). They must be equal.
-#   usage (from the repository root, in `nix develop`): scripts/fixpoint.sh [OUTDIR]
+#   usage (from the repository root, in `nix develop`): scripts/fixpoint.sh [--rc] [OUTDIR]
+# With --rc both stages compile with reference counting (the compiler's flag, stage 21k),
+# so stage 2 is the reference-counted compiler and must also free every object.
 # Slow: two compilations of the whole toolchain (CI runs it on a schedule).
 set -euo pipefail
+mode=()
+if [ "${1:-}" = "--rc" ]; then mode=(--rc); shift; fi
 out=${1:-.lake/fixpoint}
 mkdir -p "$out/run"
 out=$(cd "$out" && pwd)
@@ -23,7 +27,7 @@ step "stage 1: the Lean wiz build of the self-hosted compiler"
 done_
 
 step "stage 1 compiles the toolchain (self1.c)"
-(cd "$out/run" && "$out/compiler" > "$out/self1.c")
+(cd "$out/run" && "$out/compiler" "${mode[@]}" > "$out/self1.c")
 done_
 
 step "stage 2: cc self1.c with selfhost/rt.c"
@@ -32,7 +36,7 @@ cc -O1 -w -I"$PWD/selfhost" $WIZ_GC_CFLAGS "$out/self1.c" -o "$out/stage2" $WIZ_
 done_
 
 step "stage 2 compiles the toolchain (self2.c)"
-(cd "$out/run" && "$out/stage2" > "$out/self2.c")
+(cd "$out/run" && "$out/stage2" "${mode[@]}" > "$out/self2.c")
 done_
 
 if cmp -s "$out/self1.c" "$out/self2.c"; then

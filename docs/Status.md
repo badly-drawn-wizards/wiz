@@ -69,7 +69,7 @@ the results of the probes listed in the "Probes" section.
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
-| QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed for `.2`), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
+| QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
 | Quantity polymorphism (`Qty`, polynomial usages, `≤` by trying every assignment) | **conjecture** | Sound for finite rigs if each assignment is a valid instance (it checks them all). No paper. |
 | Numerals and native arithmetic | **folklore**, conditional on correct `builtin` registrations | See K2: the registrations are trusted. |
 | Glued (lazy) unfolding, `lazyInd` | **folklore** | An implementation technique; it must give the same answers as eager unfolding. Not proved. |
@@ -395,7 +395,7 @@ check `Γ⁰ ⊢ s ⇐ Size` (one line in each kernel).
 `MTm.sizeArgs` (`tt` and `Enum 2` as sizes are rejected) in the Lean verdicts and the
 differential samples.
 
-### Q1. Projections drop linear components — **fixed for `.2`** (`212aebf`, both kernels); `.1` still drops the second component
+### Q1. Projections drop linear components — **fixed** (`.2`: `212aebf`; `.1`: lin-fixes; both kernels)
 
 `p.2` on `p : (1 x : A) × B` uses `p` once and discards `x` (§7.1); `p.1` discards the
 second component. In the `{0, 1, ω}` rig, `1` is documented as "exactly once"
@@ -411,9 +411,18 @@ quantities admit weakening.
 **Fix** (`.2`): when the first field's quantity `q` doesn't allow zero uses, `p.2` counts
 `p` as used ω times (only an unrestricted pair, whose field is `ω·q`, may drop it), so
 `drop` above is rejected (both kernels; tests in "check: structural types" and the differential
-samples). `p.1` still drops the second component: the second part of a Σ has no
-quantity of its own, so the rule has nothing to check. Consume a linear pair with
-`let 1 (x, y) := p`.
+samples).
+
+**Fix** (`.1`, CS11 (a)): `p.1` discards `p.2`. The second part of a Σ has no quantity of
+its own, so the rule asks whether the second part *holds a field that must be used*
+(`mustUse`: its type is a Σ with a field whose quantity doesn't allow zero uses, in its
+first field or, recursively, its second part). If so, `p.1` counts `p` as used ω times,
+like `.2` above: `def dropFst {A B : Type} (1 p : (x : A) × (1 y : B) × B) : A := p.1` is
+rejected, the same on an unrestricted `p` is accepted, and projecting a linear field out
+of the middle of a linear tuple (`p.2.1`) is rejected too (both kernels; tests in "check:
+structural types" and the differential samples). A bare second component (`A × World`)
+counts as droppable: it is linear only through the pair's own quantity, which `.1`
+cannot see. Consume a linear pair with `let 1 (x, y) := p`.
 
 ### Q2. Methods are scaled by the rig's default, not by ω — **fixed** (`a986c02`, Lean kernel)
 
@@ -583,6 +592,7 @@ as a test yet (each should become one when its issue is fixed).
 | wrong `builtin nat.add` (O3) | accepted: `bad : False` |
 | `builtin nat := E` (empty) + `(0 : E)` (O3) | `wiz check` crashes (stack overflow) |
 | `p.2` on a linear pair (Q1) | rejected since `212aebf` (was accepted) |
+| `p.1` on a linear pair whose second part holds a linear field (Q1) | rejected (lin-fixes; was accepted) |
 | `Desc.arg 1 True …` (Q4, fixed: F5) | rejected by the elaborator (field must be in `Type ?u`) and now by both kernels (`MTm.smallField`: `D` and `getS D` rejected; the lifted `D'` accepted, `getS D'` is `ULift True : Type`) |
 
 ## How to report a soundness bug

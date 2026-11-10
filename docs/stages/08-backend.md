@@ -111,4 +111,8 @@ description).
   if `x` is unique the fields move out and only its cell is freed, otherwise the fields
   get their references and `x` is decremented. A pair returned by a call and taken
   apart costs no reference counting when it is unique.
+* **Borrowed comparisons**: the native comparisons `nat.beq` and `nat.blt` only look
+  at their arguments, so they borrow them (`Expr.primBorrows`; the runtime's
+  `wiz_nat_beq`/`wiz_nat_blt` no longer decrement): a lookup in a tree counts neither
+  the key nor the keys it compares it with.
 

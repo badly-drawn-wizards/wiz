@@ -203,8 +203,8 @@ def program (decls : Array IR.Decl) (io : Bool := false) : String :=
     let n := RVal.nativeArity key
     s!"declare i64 @{C.externWrapper key}({", ".intercalate (List.replicate n "i64")})\n"
   let io' := if io then 1 else 0
-  runtimeDecls ++ "declare i32 @wiz_run_main(ptr, i32)\n" ++ String.join externDecls ++
+  runtimeDecls ++ "declare i32 @wiz_run_main(ptr, i32)\ndeclare void @wiz_set_args(i32, ptr)\n" ++ String.join externDecls ++
     "\n".intercalate globals.toList ++ "\n" ++ "\n".intercalate fns.toList ++
-    s!"\ndefine i32 @main() \{\n  %c = call i32 @wiz_run_main(ptr {fn "wiz.entry"}, i32 {io'})\n  ret i32 %c\n}\n"
+    s!"\ndefine i32 @main(i32 %argc, ptr %argv) \{\n  call void @wiz_set_args(i32 %argc, ptr %argv)\n  %c = call i32 @wiz_run_main(ptr {fn "wiz.entry"}, i32 {io'})\n  ret i32 %c\n}\n"
 
 end Wiz.LLVM

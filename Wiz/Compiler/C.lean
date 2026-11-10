@@ -16,7 +16,7 @@ namespace Wiz.C
 open IR
 
 /-- The runtime, embedded in the compiler. (Lake does not track `include_str`: after
-editing `runtime/wiz.c`, change this file too, e.g. this counter: 28.) -/
+editing `runtime/wiz.c`, change this file too, e.g. this counter: 30.) -/
 def runtime : String := include_str "../../runtime/wiz.c"
 
 /-- A C identifier for a Wiz name: letters and digits stay, anything else is `_xx`. -/
@@ -184,11 +184,14 @@ def decl (arities : Std.HashMap Name Nat) (d : IR.Decl) : String :=
   let locals := ((bound d.body).filter (!d.params.contains ·)).toList.eraseDups.toArray
   let decls := if locals.isEmpty then "" else s!"  wiz_val {", ".intercalate (locals.toList.map var)};\n"
   let boxedArgs := ", ".intercalate ((List.range d.params.size).map (s!"a[{·}]"))
-  -- (a hoisted constant is built once, made immortal, and shared)
+  -- (a hoisted constant is built once, made immortal, and shared; threads may race to
+  -- build it: the first to publish wins, a loser's copy stays immortal and unused)
   if d.name.startsWith "wiz.const." && d.params.isEmpty then
     s!"static wiz_val {mangle d.name}_build(void) {lb}\n{decls}{body arities {} d.body}{rb}\n" ++
-    s!"{signature d} {lb} static wiz_val c = 0; if (!c) {lb} c = {mangle d.name}_build(); wiz_immortal(c); {rb} " ++
-    s!"wiz_inc(c); return c; {rb}\n" ++
+    s!"{signature d} {lb} static wiz_val c = 0; wiz_val v = __atomic_load_n(&c, __ATOMIC_ACQUIRE); " ++
+    s!"if (!v) {lb} wiz_val z = 0; v = {mangle d.name}_build(); wiz_immortal(v); " ++
+    s!"if (!__atomic_compare_exchange_n(&c, &z, v, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) v = z; {rb} " ++
+    s!"wiz_inc(v); return v; {rb}\n" ++
     s!"static wiz_val {mangle d.name}_boxed(wiz_val *a) {lb} return {mangle d.name}(); {rb}\n"
   else
   s!"{signature d} {lb}\n{decls}{body arities {} d.body}{rb}\n" ++
@@ -208,6 +211,6 @@ def program (decls : Array IR.Decl) (io : Bool := false) (extra : String := "") 
   runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ extra ++ "\n" ++ glue (externs decls) ++
     "\n/* ---- generated ---- */\n\n" ++ String.join protos ++ "\n" ++
     String.join (decls.toList.map (decl arities ·)) ++
-    s!"\nint main(void) \{ return wiz_run_main({mangle "wiz.entry"}, {finish}); }\n"
+    s!"\nint main(int argc, char **argv) \{ wiz_set_args(argc, argv); return wiz_run_main({mangle "wiz.entry"}, {finish}); }\n"
 
 end Wiz.C

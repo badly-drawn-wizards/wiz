@@ -75,11 +75,12 @@ def checkerSource (srcs : List String) : String :=
     "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  printAll (checkFile cats tokens text)\n"
 
 /-- The self-hosted compiler: reads `input.wiz` and prints C (the frontend's output as
-comments). -/
+comments). `--rc` (or `--rc-owned`, `--gc`) on its command line picks the backend's
+mode (stage 21k; `genProgramArgs`). -/
 def compilerSource (srcs : List String) : String :=
   "import IO\nimport Std\n" ++ "\n".intercalate (srcs.map strip) ++ "\n" ++ tablesSource ++
     "def commentLines : List String → List String\n  | .nil => .nil\n  | .cons l rest => .cons (String.append \"/* \" (String.append l \" */\")) (commentLines rest)\n" ++
-    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with\n    | .mk out gs _ _ _ => do\n      printAll (commentLines (List.reverseOf out .nil));\n      printDocs (genProgramFor text gs)\n"
+    "def main : IO Unit := do\n  args ← IO.args;\n  text ← IO.readFile \"input.wiz\";\n  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with\n    | .mk out gs _ _ _ => do\n      printAll (commentLines (List.reverseOf out .nil));\n      printDocs (genProgramArgs args text gs)\n"
 
 /-- The toolchain as its own input (for the bootstrap check): the compiler's source, with
 `import Prelude` (the self-hosted frontend's prelude) instead of the Lean libraries. -/
