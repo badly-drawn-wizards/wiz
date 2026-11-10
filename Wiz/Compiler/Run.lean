@@ -1,4 +1,4 @@
-import Wiz.Compiler.Erase
+import Wiz.Compiler.Inline
 
 /-!
 # Running erased programs
@@ -345,6 +345,11 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
     else readbackData ty v
   | .mu .., v => readbackData ty v
   | .sigma _ _ A B _, v =>
+    -- the last field of a structure is unboxed (22i): `v` is the field itself
+    if isStructTail g (Closure.inst g B (.var 1000000)) then
+      let a' := readback A v
+      .pair a' (readback (Closure.inst g B (eval g [] a')) .erased)
+    else
     let a' := readback A (v.field 0)
     .pair a' (readback (Closure.inst g B (eval g [] a')) (v.field 1))
   -- Q4: a lifted value is the value itself at run time
@@ -352,7 +357,8 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
   | .enum ls, .obj t _ => .tag ls t
   | .enum ls, .nat t => .tag ls t
   | .unit _, _ => .tt
-  | .pi .., _ => .const "<function>" []
+  -- a phantom tail or structure marker (22e, 22i): its one inhabitant
+  | .pi x .., _ => if isPhantomName x then .tt else .const "<function>" []
   | .nu .., _ => .const "<codata>" []
   | _, _ => .tt
 where
@@ -417,7 +423,8 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
   let mut failed : List (Name × String) := []
   let mut todo := roots.toArray
   -- definitions registered as native operations
-  let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && !key.startsWith "repr:"
+  let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && !key.startsWith "repr:" &&
+    key != inlineKey
   -- native representations (stage 22d): the interpreters keep the model's objects when
   -- the conversions are foreign functions
   let isExtern (f : Name) := builtins.any fun (k, x) => x == f && k.startsWith "extern:"
@@ -425,6 +432,12 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     { g with builtins := g.builtins.filter fun (k, _) => match ReprInfo.parse? k with
       | some (_, ri) => !isExtern ri.mkImpl && !isExtern ri.getImpl
       | none => true }
+  -- `attribute [inline]` (22i): the erased bodies of the inline definitions
+  let mut inlines : Std.HashMap Name ETerm := {}
+  for (k, f) in g.builtins do
+    if k == inlineKey then
+      if let some d := g.find? f then
+        if let .ok e := eraseDecl g d then inlines := inlines.insert f e
   while h : todo.size > 0 do
     let n := todo.back
     todo := todo.pop
@@ -448,6 +461,10 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     let e ← match eraseDecl g d with
       | .ok e => pure e
       | .error err => do failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
+    let e := if e.globals.any inlines.contains then
+      let inl := inlines
+      e.inlineSimp fun f => if f == n then none else inl.get? f
+    else e
     code := code.insert n e
     todo := e.globals todo
   pure (code, failed.reverse)

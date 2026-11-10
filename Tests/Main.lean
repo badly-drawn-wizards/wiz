@@ -6,6 +6,7 @@ import Tests.Elab
 import Tests.ElabFix
 import Tests.Grail
 import Tests.LSP
+import Tests.Allocs
 import Tests.Scaling
 
 -- Closed terms are normally evaluated at program start-up; that would execute
@@ -53,7 +54,7 @@ against them). -/
 def main (args : List String) : IO UInt32 := do
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] => true
+    | "--run" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -73,6 +74,8 @@ def main (args : List String) : IO UInt32 := do
     pure (if errs.isEmpty then 0 else 1)
   -- a job of a grail build that a test runs (`Grail/Graph.lean`)
   | ["--grail-job", job] => Grail.jobMain tc job
+  -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
+  | "--allocs" :: rest => Allocs.allocsMain rest
   | ["--list"] => do
     for g in groups do IO.println g.name
     pure 0
