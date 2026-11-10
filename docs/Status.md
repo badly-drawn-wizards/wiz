@@ -490,7 +490,7 @@ scrutinee of a split at 0 (fixed), and the kernel and erasure now share the test
 soundly before (`structure Coin where value : Nat`; `c.value` dropped only the marker
 tail); it can't now. Write such a wrapper as a definition (`def Coin : Type := Nat`) or a
 tuple. The follow-up is a destructuring `let 1 (.mk a b) := s` compiled to nested splits
-(`/workspace/wiz-notes/linear-case-design.md`).
+(`/workspace/wiz-notes/linear-case-design.md`). The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator.
 
 Tests: "check: structural types" (kernel rules), "language" and "ffi" (surface programs,
 the three audit probes, structures, erased positions and their erasure), and the

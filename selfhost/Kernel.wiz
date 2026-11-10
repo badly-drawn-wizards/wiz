@@ -2529,7 +2529,7 @@ def letIn : TCtx → Q → Tm → Tm → Tm → TyRes
       | .ok _ uv => match infer (TCtx.define c (eval (TCtx.env c) v) tyv) b with
         | .ok bty ub => match popUsage q ub with
           | .some ub' => .ok bty (uAdd (uScale q uv) ub')
-          | .none => .err "the let-bound variable is used more than its quantity allows"
+          | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
       | r => r
     | r => r
@@ -2543,7 +2543,7 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
       | .ok _ uv => match check (TCtx.define c (eval (TCtx.env c) v) tyv) b T with
         | .ok _ ub => match popUsage q ub with
           | .some ub' => .ok T (uAdd (uScale q uv) ub')
-          | .none => .err "the let-bound variable is used more than its quantity allows"
+          | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
       | r => r
     | r => r
@@ -2557,7 +2557,7 @@ def checkW : TCtx → Tm → Val → TyRes
     match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
     | .ok _ u => match popUsage q u with
       | .some u' => .ok (.vpi q dom env cod .none) u'
-      | .none => .err "the bound variable is used more than its quantity allows"
+      | .none => .err "the bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
     | r => r
   | c, .letE ty v b, T => checkLet c .qw ty v b T
   | c, .letq q ty v b, T => checkLet c q ty v b T

@@ -486,7 +486,7 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
   `def Coin : Type := Nat`), besides the unsound reads of one field among several.
   Follow-up (not in the kernel): a destructuring `let 1 (.mk a b) := s` for structures,
   compiled to nested splits, and tuple patterns in `match` compiled to `split`; both in
-  `/workspace/wiz-notes/linear-case-design.md`.
+  `/workspace/wiz-notes/linear-case-design.md`. The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator.
 
 *Kernel.wiz* has no `split` (no `let (x, y)` in its term syntax). Its `fst`/`snd` rules
 are the ones above (usage scaled by ω outside erased positions; no check at the

@@ -78,7 +78,7 @@ form is `let 1 (.mk a b) := s`, compiled to nested splits
 (`/workspace/wiz-notes/linear-case-design.md`). The eliminators follow the same rule:
 `ind`, `sfix`, `scase` (and `coit`/`scofix` for their seed) bind what they take apart at
 ω, so their scrutinee counts ω times and a value of an inductive type held at 1 can be
-passed on but not eliminated; `match` already took its scrutinee at ω.
+passed on but not eliminated; `match` already took its scrutinee at ω. The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator.
 
 | #   | Where              | What                                                       |
 |-----|--------------------|------------------------------------------------------------|
