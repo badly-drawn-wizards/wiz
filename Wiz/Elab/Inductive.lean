@@ -277,7 +277,24 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   -- signature
   let sig ← match (cmd.getArg 4).args[1]? with
     | some s => pure (← checkType ctxΔ s).1
-    | none => pure (.sort 1)
+    | none => do
+      -- no signature: the smallest `Type l` that holds every field (`Type` unless a field
+      -- is bigger, as `x : A` with `A : Type u`). The fields are elaborated once to find
+      -- their levels (with `T : Δ → Type`; a recursive field doesn't raise `l`), then
+      -- again below.
+      let ctxT0 := ctxΔ.bind T (eval (← getGlobals) [] (pisTm Δ.toList (.sort 1)))
+      let saved ← get
+      let mut l : Level := .zero
+      for c in (cmd.getArg 6).args do
+        let (ctxF, fs) ← elabTelescope ctxT0 ((c.getArg 3).args.flatMap binderViews).toList
+        let mut tys := #[]
+        for (_, _, _, A) in fs, k in [0:fs.size] do tys := tys.push (← zonk (ctxT0.lvl + k) A)
+        for (lA, _) in ← fieldLevels ctxF ctxT0.lvl tys.toList do
+          if let some k := lA then
+            -- a field in `Sort (k+1)` needs `l ≥ k`; one in `Sort u` needs `l ≥ u`
+            unless k.hasMVar do l := l.join k.predBound
+      set saved
+      pure (.sort (.succ l))
   finishInstances
   let sig ← zonk ctxΔ.lvl sig
   let (Ξ, l) ← match peelSignature sig with
@@ -490,19 +507,20 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   for (x, bi, q, A) in Δ, k in [0:Δ.size] do
     Δz := Δz.push (x, bi, ← zonk k q, ← zonk k A)
   let Δ := Δz
-  -- the universe: as given, or else big enough for every field (closed levels only)
+  -- the universe: as given, or else big enough for every field (`Type u` for a field
+  -- `x : A` with `A : Type u`)
   let sig ← match (cmd.getArg 4).args[1]? with
     | some s => pure (← checkType ctxΔ s).1
     | none =>
       let g ← getGlobals
       let tys := ctxF.types.reverse.toArray
-      let mut n := 1
+      let mut l : Level := 0
       for (_, _, _, A) in fs', k in [0:fs'.size] do
         let env := (List.range (ctxΔ.lvl + k)).reverse.map Val.var
         match typeSort? g (tys.extract 0 (ctxΔ.lvl + k)) (eval g env A) with
-        | some s => if let some m := s.toNat? then n := max n m
+        | some s => unless s.hasMVar do l := l.join s.predBound
         | none => pure ()
-      pure (.sort (Level.ofNat n))
+      pure (.sort (.succ l))
   finishInstances
   let sig ← zonk ctxΔ.lvl sig
   let l ← match peelSignature sig with
