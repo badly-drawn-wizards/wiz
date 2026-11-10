@@ -139,3 +139,43 @@ listen/accept/connect, with connections again as plain Lean handles; the server 
 (`serveWith`) handles messages from every connection in order, as before. Protocol §8.2;
 tested in-process (the `lsp-server` group: frames of each length class, the handshake's
 RFC example, foreign origins refused, an editor on a socket pair and two pages).
+
+## 11p: a Neovim plugin ✅
+
+`editors/nvim/` is **wiz.nvim**, a Lua plugin for Neovim ≥ 0.10 modelled on lean.nvim
+(installation, options, keymaps and the full abbreviation list are in its README):
+
+* **The language server.** The `wiz` filetype (`*.wiz`), a syntax file for highlighting
+  (no tree-sitter), and `wiz lsp` started with `vim.lsp.start` for each Wiz buffer, rooted
+  at the nearest `grail.wiz`, `wiz-toolchain`, `lakefile.toml` or `.git`. `lsp/wiz.lua` is the same
+  configuration for Neovim 0.11's `vim.lsp.enable 'wiz'`. The client asks for
+  `wiz/elaborated` (protocol §1), so the infoview hears about every re-elaboration.
+* **Unicode input like Lean's.** `\lam` → λ, `\r` → →, `\<` → ⟨, `\-1` → ⁻¹, … from
+  Lean's own table (vscode-lean4's `abbreviations.json`, Apache-2.0, vendored) plus Wiz's
+  additions: the nine letters Lean leaves free become Greek (`\f` φ, `\h` η, `\j` ξ, `\k`
+  κ, `\q` θ, `\s` σ, `\w` ω, `\y` υ, `\z` ζ; Lean's `\l` ←, `\r` →, `\x` × stay), and the
+  symbols the repository uses that Lean has no abbreviation for (`\++` ⧺, `\done` ✅,
+  `\cross` ✗). An abbreviation is an extmark from the leader to the cursor (so it
+  survives edits around it); it is replaced as soon as the next character could not
+  continue any abbreviation, when it is complete and nothing longer starts with it, on
+  `<Tab>`/`<CR>`, or when insert mode ends. `InsertCharPre` can't edit the buffer, so
+  the replacement is scheduled and checks that the text is still there. `:WizAbbrev`
+  looks a symbol or an abbreviation up.
+* **The infoview.** A split that follows the cursor (debounced) and shows
+  `wiz/interactiveGoals` and `wiz/interactiveTermGoal`, sent through the editor's own
+  LSP client (no socket: 11l is for infoviews outside the editor). Tagged text becomes
+  lines plus a list of tag ranges (kind, ref, nesting depth); kinds get highlight groups
+  as extmarks, the innermost tag under the infoview's cursor is highlighted, and `K`
+  asks `wiz/subtermInfo` for it (its type and, for a constant, `gd` to its
+  declaration). A stale session (`ContentModified`) refreshes the view.
+* **Nix.** `packages.<system>.wiz-nvim` (`vimUtils.buildVimPlugin`) and `nix run
+  .#nvim-wiz`: Neovim with the plugin and the packaged wiz on `PATH`. The dev shell has
+  `neovim`, for the tests.
+
+The `nvim` test group runs `editors/nvim/tests/run.sh`: headless Neovim types
+abbreviations through insert mode (and one key at a time in an embedded Neovim, so the
+scheduled replacements run between keys and the cursor must end up right), checks that
+every non-ASCII character in `lib/*.wiz` has an abbreviation, and drives the infoview
+against the real `wiz lsp` on `tests/fixture/Goals.wiz`: the goal after `intro n`, an
+argument's expected type, constants highlighted, `K` on `Bool` giving `Bool : Type`,
+the view following an edit. It is skipped without `nvim`.

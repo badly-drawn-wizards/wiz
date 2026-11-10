@@ -29,6 +29,7 @@
     "lsp",
     "macros",
     "modules",
+    "=nvim",
     "optic",
     "phantom",
     "regions",

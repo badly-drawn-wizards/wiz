@@ -102,7 +102,7 @@ def build (tc : Toolchain) (s : CommandState R) (n : Name) (out : System.FilePat
     let ex := (exports s).map (·.1)
     if lib then IO.FS.writeFile (out.withExtension "h") (C.exportHeader ex)
     let r ← if llvm then
-        compileLLVM tc (LLVM.program decls io lib) out (extraC s ++ "\n" ++ C.glue (C.externs decls) ++ "\n" ++ C.exportWrappers ex true) lib
+        compileLLVM tc (LLVM.program decls io lib) out (extraC s ++ "\n" ++ C.glue (C.externs decls) (extraC s) ++ "\n" ++ C.exportWrappers ex true) lib
       else compileC tc (C.program decls io (extraC s) ex lib) out lib
     pure (r.map fun () => ty)
 
