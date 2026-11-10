@@ -2010,7 +2010,7 @@ end
 -- method's three `λ`s: `hs` is level 2)
 def hypsOnce (body : ETm) : List Nat → Bool
   | .nil => .true
-  | .cons j rest => match Nat.lt 1 (Dmd.n (denvAt 2 (dmdA StrMap.empty 3 (hypOnly 0 j body)))) with
+  | .cons j rest => match Nat.lt 1 (Dmd.n (denvAt 2 (dmdA 3 (hypOnly 0 j body)))) with
     | .true => .false
     | .false => hypsOnce body rest
 -- the method `λ i pl hs. body` with its reads rewritten, if it may take a view
