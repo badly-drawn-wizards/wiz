@@ -90,7 +90,9 @@ tuples and look-alike types don't convert to it.
   not even on its public constructors with a catch-all: a `match` compiles to
   `T.casesOn`, whose case for `c` hands out `c`'s fields, and the case tree needs `T`'s
   description, which is what the opacity hides. So exhaustiveness never comes up
-  there; the module exports the eliminators it wants (`Tok.value`, or a fold).
+  there; the module exports the eliminators it wants (`Tok.value`, or a fold). In a
+  `mutual` block the types are one indexed family, so a private constructor makes the
+  whole family opaque.
 * `private f : A` (an observation of a `coinductive`): `T.f` is private, and so is the
   coconstructor `T.mk` (it would build a value from the private observation's value).
   Outside the module a `T` isn't observed through `f` (`s.f`, `T.f s`, `out s`) and

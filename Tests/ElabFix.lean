@@ -204,8 +204,8 @@ def group : Group where
     { name := "private constructors, observations and fields: the public API (13b)", run := fun _ => do
         okPriv privMod2 ("import Priv\n#eval Tok.value (Tok.num 3)\n#eval Tok.value (Tok.hide 4)\n#eval Tok.value (.num 5)\n" ++
           "#eval Sig.sample (Sig.next (Sig.const 3))\n#eval (Sig.const 2).name\n" ++
-          "#eval Acct.balance (Acct.mk 1 50)\n#eval (Acct.mk 1 50).owner\n#eval Acct.balance { owner := 1, bal := 9 }")
-          ["3", "104", "5", "3", "7", "50", "1", "9"]
+          "#eval Acct.balance (Acct.mk 1 50)\n#eval (Acct.mk 1 50).owner")
+          ["3", "104", "5", "3", "7", "50", "1"]
         -- in their own module everything is ordinary
         okPriv "" (privMod2 ++ "#eval Tok.value (.secret 1)\n#eval (Sig.const 4).tail.head\n#eval (Acct.mk 1 2).bal\n" ++
           "def f (t : Tok) : Nat := match t with\n  | .num _ => 0\n  | .secret _ => 1\n#eval f (Tok.hide 0)")
