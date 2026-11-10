@@ -1,4 +1,5 @@
 import Wiz.Parser.Descr
+import Wiz.Syntax.Children
 
 /-!
 # The built-in grammar
@@ -431,5 +432,37 @@ def tables : ParserTables :=
   let t := stxTrailing.foldl (·.addTrailing "stx" ·) t
   let t := macroCommands.foldl (·.addLeading "command" ·) t
   ["term", "command", "level", "tactic"].foldl addMetaParsers t
+
+/-- The number of children a descriptor adds to its node, when that is fixed. -/
+partial def arity? : ParserDescr → Option Nat
+  | .atom _ | .nonReserved _ | .ident | .num | .str | .cat .. | .many _ | .many1 _ | .optional _
+  | .sepBy .. | .sepBy1 .. | .node .. => some 1
+  | .seq ps => ps.foldl (fun acc p => do pure ((← acc) + (← arity? p))) (some 0)
+  | .orelse p q => do
+    let a ← arity? p
+    if (← arity? q) == a then some a else none
+  | .withPosition p | .withoutPosition p => arity? p
+  | .colGt | .colGe | .noWs | .checkPrec _ => some 0
+
+/-- Every `node k p` inside a descriptor. -/
+partial def nodesIn : ParserDescr → List (Name × ParserDescr)
+  | .node k p => (k, p) :: nodesIn p
+  | .seq ps => ps.toList.flatMap nodesIn
+  | .many p | .many1 p | .optional p | .sepBy p .. | .sepBy1 p .. | .withPosition p | .withoutPosition p => nodesIn p
+  | .orelse p q => nodesIn p ++ nodesIn q
+  | _ => []
+
+/-- The kinds whose `childNames` disagree with the grammar: a different number of
+children, or a rule whose number of children isn't fixed. Empty when all is well (the
+test group `parser: commands` checks that). -/
+def childNamesMismatches : List String :=
+  let rules := (termLeading ++ commandLeading).flatMap fun lp => (lp.kind, lp.p) :: nodesIn lp.p
+  rules.filterMap fun (k, p) =>
+    let names := childNames k
+    if names.isEmpty then none
+    else match arity? p with
+      | some n => if n == names.length then none else
+          some s!"{k}: the grammar produces {n} children, childNames lists {names.length}"
+      | none => some s!"{k}: the number of children is not fixed"
 
 end Wiz.Builtin

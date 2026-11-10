@@ -9,6 +9,7 @@ import Wiz.Core.Pretty
 import Wiz.Core.Check
 import Wiz.Core.Raw
 import Wiz.Syntax.Basic
+import Wiz.Syntax.Children
 import Wiz.Parser.Descr
 import Wiz.Parser.Token
 import Wiz.Parser.Monad

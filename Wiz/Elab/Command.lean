@@ -724,14 +724,14 @@ partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Exce
 
 /-- (13b) Does a `structure` command say `private mk ::` after `where`? -/
 def structurePrivateMk (cmd : Syntax) : Bool :=
-  let spec := (cmd.getArg 5).getArg 1
+  let spec := (cmd.child "where").child "ctor"
   !spec.args.isEmpty && !(spec.getArg 0).args.isEmpty
 
 /-- (13b) The fields (observations) of a `structure` or `coinductive` command marked
 `private`. -/
 def privateFields (cmd : Syntax) : List Name :=
-  (cmd.getArg 6).args.toList.filterMap fun f =>
-    if (f.getArg 0).args.isEmpty then none else (f.getArg 2).getId?
+  (cmd.child "fields").args.toList.filterMap fun f =>
+    if (f.child "private").args.isEmpty then none else (f.child "name").getId?
 
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
@@ -1043,11 +1043,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           else report .error cmd.info s!"{C} is not a class"
         | _ => report .error cmd.info "an instance's type must be an application of a class"
   | "command.inductive" | "command.structure" =>
-    let name := ((cmd.getArg 1).getId?).getD "_"
-    let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
-    let ctorSpec := ((cmd.getArg 5).getArg 1)
+    -- (children by name, `childNames`: positions shift when the grammar grows)
+    let name := ((cmd.child "name").getId?).getD "_"
+    let levelParams := ((cmd.child "univParams").getArg 1).args.toList.filterMap Syntax.getId?
+    let ctorSpec := if cmd.isOfKind "command.structure" then (cmd.child "where").child "ctor" else .missing
     if s.globals.contains name then
-      report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
+      report .error (cmd.child "name").info s!"'{name}' has already been declared"
     else if cmd.isOfKind "command.structure" && !ctorSpec.args.isEmpty &&
         (ctorSpec.getArg 1).getId? != some "mk" then
       report .error (ctorSpec.getArg 1).info s!"a structure's constructor is `mk` (only `private mk ::` can be written)"
@@ -1071,7 +1072,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
         -- the recursors need the declarations above
         if cmd.isOfKind "command.inductive" then
-          let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 2).getId?
+          let ctors := (cmd.child "ctors").args.toList.filterMap fun c => (c.child "name").getId?
           -- (indexed families also get `recN`/`casesOnN`, for motives that don't depend
           -- on the scrutinee)
           let indexed := isIndexed g name
@@ -1091,8 +1092,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           -- recursors (their cases would hand out a private constructor's fields, and
           -- they are what a `match` compiles to); elsewhere `T` is opaque
           -- (`Globals.elabView`): it isn't matched there, and nothing else converts to it
-          let privCtors := (cmd.getArg 6).args.toList.filterMap fun c =>
-            if (c.getArg 1).args.isEmpty then none else (c.getArg 2).getId?
+          let privCtors := (cmd.child "ctors").args.toList.filterMap fun c =>
+            if (c.child "private").args.isEmpty then none else (c.child "name").getId?
           unless privCtors.isEmpty do
             let names := privCtors.map (name ++ "." ++ ·) ++ recNames
             g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
@@ -1109,7 +1110,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           g := { g with privates := privFields.foldl (fun m f => m.insert (name ++ "." ++ f) s.module) g.privates,
                         opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g }
-        derivingClause (cmd.getArg 7) name
+        derivingClause (cmd.child "deriving") name
   | "command.builtin" =>
     let key := ((cmd.getArg 1).getId?).getD "_"
     let n := ((cmd.getArg 3).getId?).getD "_"

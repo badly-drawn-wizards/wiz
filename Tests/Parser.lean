@@ -182,6 +182,8 @@ def cmdGroup : Group where
     { name := "later rule overrides an equally long earlier one", run := fun _ => do
         let r ← parseFileOk "syntax (name := a) \"foo\" : term\nsyntax (name := b) \"foo\" : term\n#check foo"
         checkEq "(command.check (term.b))" r.commands[2]!.toSExpr },
+    { name := "childNames agrees with the grammar (children read by name)", run := fun _ =>
+        checkEq ([] : List String) Builtin.childNamesMismatches },
     { name := "unknown category is an error", run := fun _ => do
         let r := parseFile "syntax \"x\" : nope"
         checkEq 1 r.messages.size }
