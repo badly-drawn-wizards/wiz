@@ -402,7 +402,19 @@ def qtyGroup : Group where
     { name := "products of quantity variables", run := fun _ =>
         ok ("def twice {A B : Type} {q r : Qty} (f : (%q x : A) → B) (g : (%r y : B) → B) (%(r) a : B) : B := g a\n") },
     { name := "quantity literals as terms", run := fun _ =>
-        ok "def one : Qty := 1\ndef many : Qty := ω\ndef f {A : Type} (%one x : A) : A := x" }
+        ok "def one : Qty := 1\ndef many : Qty := ω\ndef f {A : Type} (%one x : A) : A := x" },
+    -- F6: `(%q x : A) → B = (1 x : A) → B` computed to `False` (the quantities differ as
+    -- polynomials), and `q := 1` made it provable: a closed proof of `False`
+    { name := "F6: types whose quantities differ only by a variable are not unequal (it proved False)", run := fun _ => do
+        fails ("inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def flip {q : Qty} (e : ((%q x : N) → N) = ((1 x : N) → N)) : False := e\n" ++
+          "def boom : False := flip (q := 1) rfl\n") "mismatch"
+        fails ("def bad (q : Qty) (e : ((%q x : Unit) → Unit) = ((1 x : Unit) → Unit)) : False := e\n" ++
+          "def boom : False := bad 1 (refl ((1 x : Unit) → Unit))\n") "mismatch"
+        fails "def bad (q : Qty) (e : ((%q x : Unit) × Unit) = ((1 x : Unit) × Unit)) : False := e\n" "mismatch" },
+    { name := "F6: types with two different literal quantities are unequal", run := fun _ =>
+        ok ("def apart (e : ((0 x : Unit) → Unit) = ((1 x : Unit) → Unit)) : False := e\n" ++
+          "def apart2 (e : ((ω x : Unit) × Unit) = ((1 x : Unit) × Unit)) : False := e\n") }
   ]
 
 end Tests.Elab
@@ -1650,8 +1662,18 @@ def smallField : List MTm :=
 
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
+/-- F6: two types whose binder quantities are different literals are unequal (`False`, so
+the `absurd` checks), and equal literals give the Σ rule. (`MTm` has no quantity variables,
+the case F6 was about: its Lean test is in the group *quantity polymorphism*.) -/
+def qtyApart : List MTm :=
+  let F (q : ZeroOneMany) := sorted 1 (piq q (enum 2) (enum 2))
+  [ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (F .zero) (F .one)) (empty 0)),
+   ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (sorted 1 (sigmaq .one (enum 2) (enum 2))) (sorted 1 (sigma (enum 2) (enum 2)))) (empty 0)),
+   ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (F .one) (F .one)) (empty 0)),
+   reflTy (F .one)]
+
 def samples : List MTm :=
-  propShapes ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -2281,6 +2303,10 @@ def selfHostGroup : Group where
         let vs := MTm.sizeInf.map leanVerdict
         unless vs.take 5 == List.replicate 5 "error" && (vs.drop 5).all (· != "error") do
           throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "F6: literal quantities that differ make types unequal (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.qtyApart.map leanVerdict
+        unless vs.take 2 |>.all (· != "error") do throw (IO.userError s!"unexpected verdicts {vs}")
+        unless vs[2]? == some "error" && vs[3]? != some "error" do throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "Q4: a small description field is rejected, a lifted one works (and both kernels agree on it below)", run := fun _ => do
         let vs := MTm.smallField.map leanVerdict
         let body := (vs.drop 4).dropLast
