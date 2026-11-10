@@ -14,7 +14,7 @@ open Tests
 
 def groups : List Group :=
   [Rig.group, Eval.evalGroup, Eval.convGroup, Eval.structGroup, Check.mlttGroup, Check.qttGroup, Check.structGroup,
-   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group, Elab.levelGroup, Elab.structGroup, Elab.ottGroup, Elab.qtyGroup, Elab.dataGroup, Elab.inductiveGroup, Elab.matchGroup, Elab.coinductiveGroup, Elab.sizedGroup, Elab.runGroup, Elab.macroGroup, Elab.builtinGroup, Elab.tacticGroup, Elab.classGroup, Elab.backendGroup, Elab.cGroup, Elab.llvmGroup, Elab.ffiGroup, Elab.effectsGroup, Elab.toolingGroup, Elab.stdGroup, Elab.wordGroup, Elab.selfHostGroup, Elab.languageGroup, Elab.opticGroup, Elab.derivingGroup, Elab.reuseGroup, Elab.phantomGroup, Elab.vecGroup, LSP.group, LSP.serverGroup, Grail.modulesGroup, Grail.toolchainGroup, Grail.grailGroup, Grail.testRunnerGroup, Grail.grailSelfhostGroup]
+   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group, Elab.levelGroup, Elab.structGroup, Elab.ottGroup, Elab.qtyGroup, Elab.dataGroup, Elab.inductiveGroup, Elab.matchGroup, Elab.coinductiveGroup, Elab.sizedGroup, Elab.runGroup, Elab.macroGroup, Elab.builtinGroup, Elab.tacticGroup, Elab.classGroup, Elab.backendGroup, Elab.cGroup, Elab.llvmGroup, Elab.ffiGroup, Elab.effectsGroup, Elab.toolingGroup, Elab.stdGroup, Elab.wordGroup, Elab.selfHostGroup, Elab.languageGroup, Elab.opticGroup, Elab.derivingGroup, Elab.reuseGroup, Elab.phantomGroup, Elab.vecGroup, LSP.group, LSP.serverGroup, Grail.modulesGroup, Grail.toolchainGroup, Grail.grailGroup, Grail.grailJobsGroup, Grail.testRunnerGroup, Grail.grailSelfhostGroup]
 
 /-- Whether a command-line selector picks a group: `=NAME` exactly, anything else as a
 prefix of the group's name. -/
@@ -54,6 +54,8 @@ def main (args : List String) : IO UInt32 := do
     let errs := s.messages.filter (·.severity == .error)
     for m in errs do IO.eprintln (m.render input)
     pure (if errs.isEmpty then 0 else 1)
+  -- a job of a grail build that a test runs (`Grail/Graph.lean`)
+  | ["--grail-job", job] => Grail.jobMain tc job
   | ["--list"] => do
     for g in groups do IO.println g.name
     pure 0

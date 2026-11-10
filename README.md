@@ -2111,4 +2111,19 @@ nothing; `grail test FILTER` runs the tests whose path contains it, and
 `grail test --update` writes the actual output. Every example is a test
 (`examples/*.expected`). The Lean tests stay in `lake test`.
 
-Next: parallel jobs (23g), git dependencies and a lock file (23h).
+### 23g: parallel jobs ✅
+
+The jobs form an explicit graph (`Grail/Graph.lean`): `ir F` depends on `check F`, …,
+`link E` on `obj F`, a check on the checks of the package modules it imports, a `run` test
+on its executable, the bootstrap steps on each other. A node's key is computed when its
+dependencies are done (an object's key hashes the C its `c` node wrote); a node whose
+output exists is up to date, the rest are jobs in a ready queue. `grail build -j N`
+(default: the cores, at most 4) runs up to `N` jobs at a time, each as a separate process
+(`grail --grail-job …` with the toolchain as flags, or the C compiler) under `timeout`
+(`--timeout SECS`, default 1800; tests `--test-timeout SECS`, default 300, so a test that
+hangs fails instead of hanging the run). A failed job is reported and the jobs that depend
+on it are skipped; the others still run. Each job's output is buffered and printed in the
+graph's order, so `-j 1` and `-j 8` print the same report, and a second build still runs
+no jobs.
+
+Next: git dependencies and a lock file (23h).
