@@ -1261,8 +1261,16 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- erased parameters (`{A : Type}`) are passed as ◾ and ignored; a function
         -- (9g) is passed as a callback: borrowed for the call, or, as a `Callback T`,
         -- owned by the C side
+        -- a runtime native (`wiz_…`, runtime/wiz.c) takes and returns any other Wiz value
+        -- as it is: an opaque type's (`Chan p`, `MVar A`), a closure, a Σ pair (25a)
+        let native := cname.startsWith "wiz_"
+        let ffiKind (t : Term R) : Option Char :=
+          match ffiKind t with
+          | some k => some k
+          | none => if native then some 'w' else none
         let pkind (qa : Term R × Term R) : Option String :=
           if qa.1 == .qlit 0 then some "e" else
+          if native then (ffiKind qa.2).map toString else
           match qa.2 with
           | .pi .. => (ffiCallSig qa.2).map fun c => "k" ++ c.toKey
           | A => match Term.spine A with
@@ -1275,7 +1283,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             | A => match Term.spine A with
               | (.const "Callback" _, [T]) => ((ffiCallSig T).map (·.io)).getD false
               | _ => false
-          if cbIO && !io then
+          if cbIO && !io && !native then
             report .error cmd.info "a foreign function that takes a callback in IO must be in IO itself"
           else
           let key : Name := s!"extern:{cname}:{String.join ks}:{rk}:{if io then "io" else "pure"}:{header}:{finOf res}"

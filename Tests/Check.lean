@@ -199,6 +199,20 @@ def structGroup : Group where
     { name := "an unrestricted pair may drop its linear first field (Q1)", run := fun _ =>
         accepts [Raw.defn "dropMany" (forallA (pi' "B" zero ty (arr many (.sigma "x" one "A" "B") "B")))
           (lams ["A", "B", "p"] (.snd "p"))] },
+    { name := "the first projection can't drop a linear field in the second part (Q1)", run := fun _ =>
+        rejects [Raw.defn "dropFst" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" (.sigma "y" one "B" "B")) "A")))
+          (lams ["A", "B", "p"] (.fst "p"))] isQty "a quantity error" },
+    { name := "an unrestricted pair may drop a linear field in its second part (Q1)", run := fun _ =>
+        accepts [Raw.defn "dropFstMany" (forallA (pi' "B" zero ty (arr many (.sigma "x" many "A" (.sigma "y" one "B" "B")) "A")))
+          (lams ["A", "B", "p"] (.fst "p"))] },
+    { name := "the first projection may drop a second part without linear fields", run := fun _ =>
+        accepts [Raw.defn "fstω" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" (.sigma "y" many "B" "B")) "A")))
+            (lams ["A", "B", "p"] (.fst "p")),
+          Raw.defn "fst0" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" (.sigma "y" zero "B" "B")) "A")))
+            (lams ["A", "B", "p"] (.fst "p"))] },
+    { name := "projecting a linear field out of the middle of a linear tuple is rejected (Q1)", run := fun _ =>
+        rejects [Raw.defn "mid" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" (.sigma "y" one "B" (.sigma "z" one "B" "B"))) "B")))
+          (lams ["A", "B", "p"] (.fst (.snd "p")))] isQty "a quantity error" },
     { name := "the second projection may drop an ω or erased first field", run := fun _ =>
         accepts [Raw.defn "dropω" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" "B") "B")))
             (lams ["A", "B", "p"] (.snd "p")),

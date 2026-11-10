@@ -85,6 +85,30 @@ extern "fputs" (header := "stdio.h") fputs : String → FILE → IO Nat
 The FFI is complete for now. Not done yet: structs by value, and mapping more of a
 header's pointer types onto foreign types automatically. (Callbacks: 9g.)
 
+## 9e: linear sequencing ✅
+
+```
+axiom Tok : Type
+axiom Tok.close : (1 t : Tok) → IO Unit
+def finish (1 t : Tok) : IO Nat := do1
+  IO.println "closing";
+  Tok.close t;
+  IO.pure 3
+```
+
+* `IO.bind` takes its action and its continuation **at quantity 1** (both are used
+  once), so an action that consumes a linear value can be sequenced, and the
+  continuation may capture one. Unrestricted arguments pass as before. `IO.then1 x y`
+  runs `x`, drops its result, then `y`.
+* `class Monad1 m` has `bind1 : (1 x : m A) → (1 f : A → m B) → m B`, and **`do1`** is
+  `do` notation over it (`x ← e;`, `e;`, `let x := e;`). `do` stays on `Monad.bind`,
+  whose continuation is unrestricted: the same block written with `do` is rejected
+  when a later step uses a linear variable. Bound results are unrestricted in both.
+* Transport for linear values: `Eq.cast (0 e : A = B) (1 a : A) : B`, `Eq.subst P e`
+  and `Eq.substBack P e` take the transported value at 1 (the kernel's `cast` already
+  passes its argument's usage through), e.g. `Chan (dual (dual p))` to `Chan p` given
+  a proof (Prelude; plan L4).
+
 ## 9g: callbacks and exported functions ✅
 
 ```
@@ -129,8 +153,9 @@ extern "on_tick" onTick : Callback (Nat → IO Unit) → IO Unit
   file with the runtime, and writes `OUT.h` with their prototypes and the handle
   functions; a C program links it with `-lgmp`. A program with a `main` exports its
   functions too (C code linked with it, here through `--libs`, can call them).
-  Exported functions run on the caller's thread and stack (not `main`'s big stack),
-  and, like the rest of the runtime outside 25a's shared objects, on one thread.
+  Exported functions run on the caller's thread and stack (not `main`'s big stack);
+  a handle is used from the thread that got it (only 25a's shared objects cross
+  threads), and `wiz_live_objects()` counts the calling thread's objects.
 * The keys: an export is `export:cname:kinds:result:io` in the builtins (cached with
   them); a callback parameter is `k[<params>><result>]` (`K` for `Callback`, `!` before
   a result in `IO`) in an `extern:` key (`RVal.ExternSig`). An export's code is an IR

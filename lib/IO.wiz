@@ -6,11 +6,19 @@ import Prelude
 axiom World : Type
 def IO (A : Type) : Type := (1 w : World) → A × World
 def IO.pure {A : Type} (a : A) : IO A := fun w => (a, w)
-def IO.bind {A B : Type} (x : IO A) (f : A → IO B) : IO B := fun w =>
+-- The action and the continuation are used once, so both are quantity-1 parameters
+-- (L6): the continuation may capture linear resources, and an action that consumes one
+-- may be sequenced. (Unrestricted arguments are fine too.)
+def IO.bind {A B : Type} (1 x : IO A) (1 f : A → IO B) : IO B := fun w =>
   let 1 (a, w') := x w; f a w'
+-- run `x`, drop its result, then `y`
+def IO.then1 {A B : Type} (1 x : IO A) (1 y : IO B) : IO B := fun w =>
+  let 1 (a, w') := x w; y w'
 instance : Monad IO where
   pure := IO.pure
-  bind := IO.bind
+  bind := fun x f => fun w => let 1 (a, w') := x w; f a w'
+instance : Monad1 IO where
+  bind1 := IO.bind
 
 -- Machine types: opaque to the kernel, native at runtime (through the FFI).
 axiom UInt64 : Type
