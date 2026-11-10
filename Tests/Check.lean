@@ -212,10 +212,40 @@ def elimsAccepted (l : Nat) : IO Unit :=
     | .ok _ => pure ()
     | .error e => throw (IO.userError s!"{n} at level {l} with its index type in Sort {l + 1} was rejected: {e}")
 
+/-- The hint of a `μ`/`ν` type is checked before `eval` runs it: raw core terms whose hint
+would make the evaluator panic or loop, or instantiate a constant at the wrong number of
+levels, are rejected (both formers); well-typed hints are accepted. -/
+def hintCase : IO Unit := do
+  let pi (a b : Term Q) : Term Q := .pi "x" .default (.qlit .many) a b none
+  let g ← match addDecls (R := Q) {} [{ name := "T", type := pi (.unit 1) (.sort 1), value := none },
+      { name := "P", levelParams := ["u"], type := pi (.unit 1) (.sort 1), value := none }] with
+    | .ok g => pure g
+    | .error e => throw (IO.userError s!"setup rejected: {e}")
+  let ty (former : Bool) (h : Name × List Level × List (Term Q)) : Term Q :=
+    if former then .mu 0 (.unit 1) (.dret .tt) .tt .szInf (some h) else .nu 0 (.unit 1) (.dret .tt) .tt .szInf (some h)
+  let omega : Term Q := .app (.lam "x" (.app (.var 0) (.var 0))) (.lam "x" (.app (.var 0) (.var 0)))
+  let bad : List (String × (Name × List Level × List (Term Q))) := [
+    ("an application of tt (the evaluator would panic)", ("T", [], [.app .tt .tt])),
+    ("a projection of tt, undeclared name", ("Nope", [], [.fst .tt])),
+    ("a looping term", ("T", [], [omega])),
+    ("a looping term, undeclared name", ("Nope", [], [omega])),
+    ("an argument of the wrong type", ("T", [], [.sort 0])),
+    ("too many arguments", ("T", [], [.tt, .tt])),
+    ("a constant at too few levels", ("P", [], [.tt])),
+    ("a constant at too few levels in an argument", ("Nope", [], [.const "P" []]))]
+  for former in [true, false] do
+    for (what, h) in bad do
+      if let .ok _ := infer (R := Q) { globals := g } (ty former h) then
+        throw (IO.userError s!"a hint with {what} was accepted")
+    for h in [("T", [], [.tt]), ("T", [], []), ("P", [Level.ofNat 1], [.tt]), ("Nope", [], [.unit 1, .const "T" []])] do
+      if let .error e := infer (R := Q) { globals := g } (ty former h) then
+        throw (IO.userError s!"a well-typed hint was rejected: {e}")
+
 def structGroup : Group where
   name := "check: structural types"
   exercise := "Exercise 4.7"
   cases := [
+    { name := "the hint of μ/ν is checked before it is evaluated (a panicking or a looping hint is rejected)", run := fun _ => hintCase },
     { name := "transp at a proposition is rejected, at a type accepted (as eq and refl)", run := fun _ => do
         let P : Term Q := .lam "b" (.lam "e" (.unit 0))
         let at' (A : Term Q) : Term Q := .transp A .tt P .tt .tt .tt

@@ -972,6 +972,15 @@ never type-checks them, and their Σ types carry hand-written sort annotations
 ```
 
 * `μ` is always in `Sort (l+1)`: there are no inductive propositions.
+* **The hint** [impl, Lean kernel only]. A `μ`/`ν` term carries an optional hint
+  `(T, us, args)`, its nominal form `T.{us} args`. Conversion ignores it; the elaborator
+  reads it back (a type's name, constructors and arguments), and `eval` evaluates `args`.
+  So the `mu`/`nu` rule checks it (`checkHint`): if `T` is declared, `Γ⁰ ⊢ T.{us} args ⇒ _`;
+  if not (the definition of `T` itself, whose hint lists its own parameters),
+  `Γ⁰ ⊢ a ⇒ _` for every argument. Before, the hint was not checked and a raw core term in
+  it was run by the evaluator unchecked (a `panic!`, a loop, a constant at too few
+  levels). That the hint equals the type is not checked; nothing in the kernel relies on
+  it. `Kernel.wiz` has no hints.
 * The size argument of `μ` (and `ν`) is checked erased: `Γ⁰ ⊢ s ⇐ Size` (since
   `4605514`; Status.md, K3).
 * The method's usage is scaled by ω (`QRig.many?`) because the method may run once per

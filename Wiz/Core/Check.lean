@@ -666,7 +666,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let uc ← check ctx c tc
     let uh ← check ctx h th
     pure (vApp ctx.globals vP (ctx.eval D), (← methodUsage ctx (ua + ub + uc + uh)) + uD)
-  | .mu l I D i s _ | .nu l I D i s _ => do
+  | .mu l I D i s h | .nu l I D i s h => do
+    checkHint ctx h
     let _ ← check { ctx with erased := true } s .size
     let lI ← checkType ctx I
     unless lI.equiv (.succ l) do throw (.other "an index type must be in the data type's universe")
@@ -791,6 +792,25 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   --| | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --sol>
+
+/-- The hint of a `μ`/`ν` type is its nominal form, `(T, us, args)` for `T.{us} args` (the
+elaborator reads it back to find a type's name, constructors and arguments; conversion
+ignores it). It is not otherwise constrained, but `eval` evaluates its arguments, so they
+must be well typed: an unchecked term there would be run by the evaluator (any of its
+`panic!`s, a loop, a constant at the wrong number of levels). If `T` is declared, the
+application `T.{us} args` must be well typed. If it is not (the definition of `T` itself,
+whose hint lists its own parameters), every argument must have an inferable type. That
+the hint *is* the type (`T.{us} args ≡ μ …`) is not checked: nothing in the kernel
+depends on it. -/
+partial def checkHint (ctx : Ctx R) : Option (Name × List Level × List (Term R)) → TCM Unit
+  | none => pure ()
+  | some (T, us, args) => do
+    let ctx := { ctx with erased := true }
+    if (ctx.globals.find? T).isSome then
+      let _ ← infer ctx (args.foldl .app (.const T us))
+    else
+      for a in args do
+        let _ ← infer ctx a
 
 /-- The index type of a data type at level `l` lives exactly in `Sort (l+1)`: the premise
 `Γ ⊢ I type@k`, `k ≡ l+1` of `μ`/`ν`, repeated by every eliminator that names `I` (`ind`,

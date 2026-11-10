@@ -303,6 +303,16 @@ the results of the probes listed in the "Probes" section.
   (CoreSpec §8.1). Tests: "transp at a proposition is rejected, at a type accepted" (group
   *check: structural types*), `MTm.transpProp` in the differential samples and its
   Lean-verdict case in *selfhost*.
+* **The hint of `μ`/`ν` was evaluated unchecked** (found by the kernel lint; Lean kernel
+  only, `Kernel.wiz` has no hints). The `mu`/`nu` rule ignored the hint `(T, us, args)`,
+  and `eval` evaluates its arguments, so a raw core term there was run without having
+  been checked: every evaluator `panic!` was reachable, a looping hint hung the checker,
+  and a constant could be instantiated at too few levels. The values only land in the
+  hint, which conversion ignores, so no wrong acceptance is known. Now `checkHint`:
+  `T.{us} args` must be well typed if `T` is declared, and each argument must have an
+  inferable type otherwise (CoreSpec §9.3). Test: "the hint of μ/ν is checked before it is
+  evaluated" (group *check: structural types*). The hint is not display-only: the
+  elaborator finds a type's name, constructors and arguments through it.
 * **Regression tests.** Group *check: structural types*: three "F3: ind, sfix, scase,
   coit, scofix …" cases (accepted at `Sort (l+1)`; rejected one level too high and one too
   low, with the error text). Group *selfhost*: "F3 (audit): the eliminators check the
