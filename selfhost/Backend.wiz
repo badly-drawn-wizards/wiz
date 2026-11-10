@@ -1633,6 +1633,150 @@ def genCode : CG → List Doc → List Doc → List Erased → Code
           (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ ") { top_: return ") ⧺ code ⧺ .t "; }") (.cons
             (.t ("static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); return c; }")) defs)) rest
+-- **Foreign functions** (stage 21l). An `extern` (`Foreign.fn`, from the frontend) is a
+-- C function `d_g` of the Wiz function's arity (the world last, for an `IO` result) that
+-- marshals its arguments by their kinds (as `C.glue` does for the Lean backends), calls
+-- the C function, and builds the result: `Nat`, `UInt64` and `Float64` from/to their
+-- C numbers, a `String` through a UTF-8 copy, `Bool` an `int`, `Unit` nothing, a
+-- foreign pointer wrapped in an object that runs the type's finalizer when it dies
+-- (under reference counting: its last reference; under the collector: when it is
+-- collected, or at exit). Like any function it owns its arguments; a foreign pointer is
+-- lent to C for the call and released after it. Without a header, a prototype is
+-- written from the Wiz type (except for the runtime's own `wiz_…` functions).
+def ffiArity (ps : List String) (io : Bool) : Nat := lenL ps + (match io with
+  | .true => 1
+  | .false => 0)
+def ffiArities : StrMap Nat → List Foreign → StrMap Nat
+  | ar, .nil => ar
+  | ar, .cons f rest => match f with
+    | .fn n _ _ ps _ io _ => ffiArities (StrMap.insert ar (Str.ofString n) (ffiArity ps io)) rest
+    | .ty _ _ => ffiArities ar rest
+def ffiCType (k : String) : String := match strEq k "f" with
+  | .true => "double"
+  | .false => match strEq k "s" with
+  | .true => "const char *"
+  | .false => match strEq k "b" with
+  | .true => "int"
+  | .false => match strEq k "p" with
+  | .true => "void *"
+  | .false => match strEq k "w" with
+  | .true => "V"
+  | .false => match strEq k "v" with
+  | .true => "void"
+  | .false => "uint64_t"
+-- the C parameter types of a prototype (`e` and `v` are not passed)
+def ffiProtoParams : List String → List String
+  | .nil => .nil
+  | .cons k rest => match Bool.or (strEq k "e") (strEq k "v") with
+    | .true => ffiProtoParams rest
+    | .false => .cons (ffiCType k) (ffiProtoParams rest)
+def commaSep : List String → String
+  | .nil => ""
+  | .cons x rest => match rest with
+    | .nil => x
+    | .cons _ _ => x +++ ", " +++ commaSep rest
+def ffiPrefix : List Char → List Char → Bool
+  | .nil, _ => .true
+  | .cons _ _, .nil => .false
+  | .cons a xs, .cons b ys => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => ffiPrefix xs ys
+    | .false => .false
+def strStarts (p s : String) : Bool := match p with
+  | .mk ps => match s with
+    | .mk cs => ffiPrefix ps cs
+-- the marshalling of the parameters: the statements before the call, the C arguments,
+-- and the statements after it
+inductive FfiIn where
+  | mk (pre : String) (cargs : List String) (post : String)
+partial def ffiIn (i : Nat) : List String → FfiIn
+  | .nil => .mk "" .nil ""
+  | .cons k rest => match ffiIn (i + 1) rest with
+    | .mk pre cargs post =>
+      let a := "p" +++ Nat.toString i;
+      let c := "c" +++ Nat.toString i;
+      match strEq k "e" with
+      | .true => .mk pre cargs post
+      | .false => match strEq k "v" with
+      | .true => .mk ("rt_drop(" +++ a +++ "); " +++ pre) cargs post
+      | .false => match strEq k "w" with
+      | .true => .mk pre (.cons a cargs) post
+      | .false => match strEq k "s" with
+      | .true => .mk ("char *" +++ c +++ " = rt_in_str(" +++ a +++ "); " +++ pre) (.cons c cargs) ("rt_free_cstr(" +++ c +++ "); " +++ post)
+      | .false => match strEq k "p" with
+      | .true => .mk ("void *" +++ c +++ " = rt_in_ptr(" +++ a +++ "); " +++ pre) (.cons c cargs) ("rt_drop(" +++ a +++ "); " +++ post)
+      | .false => match strEq k "b" with
+      | .true => .mk ("int " +++ c +++ " = rt_in_bool(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+      | .false => match strEq k "f" with
+      | .true => .mk ("double " +++ c +++ " = rt_in_f64(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+      | .false => match strEq k "u" with
+      | .true => .mk ("uint64_t " +++ c +++ " = rt_in_u64(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+      | .false => .mk ("uint64_t " +++ c +++ " = rt_in_nat(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+-- the result, from the call
+def ffiOut (k fin call : String) : String := match strEq k "v" with
+  | .true => call +++ "; V r = BOX(0); "
+  | .false => match strEq k "w" with
+  | .true => "V r = " +++ call +++ "; "
+  | .false => match strEq k "s" with
+  | .true => "V r = rt_out_str(" +++ call +++ "); "
+  | .false => match strEq k "p" with
+  | .true => "V r = rt_out_ptr((void *)" +++ call +++ ", " +++ (match strEq fin "" with
+    | .true => "NULL"
+    | .false => "(void (*)(void *))" +++ fin) +++ "); "
+  | .false => match strEq k "b" with
+  | .true => "V r = boolv(" +++ call +++ " != 0); "
+  | .false => match strEq k "f" with
+  | .true => "V r = rt_out_f64(" +++ call +++ "); "
+  | .false => match strEq k "u" with
+  | .true => "V r = rt_out_u64(" +++ call +++ "); "
+  | .false => "V r = rt_out_nat(" +++ call +++ "); "
+def elemS (x : String) : List String → Bool
+  | .nil => .false
+  | .cons y rest => Bool.or (strEq x y) (elemS x rest)
+-- the headers to include (each once), and the prototypes
+partial def ffiDecls (seen : List String) : List Foreign → List Doc
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .ty _ _ => ffiDecls seen rest
+    | .fn _ cname header ps r _ _ => match strEq header "" with
+      | .false => match elemS header seen with
+        | .true => ffiDecls seen rest
+        | .false => .cons (.t ("#include <" +++ header +++ ">")) (ffiDecls (.cons header seen) rest)
+      | .true => match Bool.or (strStarts "wiz_" cname) (elemS cname seen) with
+        | .true => ffiDecls seen rest
+        | .false =>
+          let pts := ffiProtoParams ps;
+          .cons (.t ("extern " +++ ffiCType r +++ " " +++ cname +++ "(" +++ (match pts with
+            | .nil => "void"
+            | .cons _ _ => commaSep pts) +++ ");")) (ffiDecls (.cons cname seen) rest)
+-- each foreign function's wrapper, `get_g` its curried closure (a constant computed
+-- once, for arity 0)
+def ffiWrappers (rc : Bool) : List Foreign → List Doc
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .ty _ _ => ffiWrappers rc rest
+    | .fn n cname _ ps r io fin =>
+      let g := mangle n;
+      let k := ffiArity ps io;
+      let keep := match rc with
+        | .true => "rt_root(&c); } inc(c); "
+        | .false => "} ";
+      match ffiIn 0 ps with
+      | .mk pre cargs post =>
+        let body := pre +++ ffiOut r fin (cname +++ "(" +++ commaSep cargs +++ ")") +++ post;
+        let ret := match io with
+          | .true => "return prodv(r, p" +++ Nat.toString (k - 1) +++ "); "
+          | .false => "return r; ";
+        match k with
+        | .zero => .cons (.t ("V get_" +++ g +++ "(void) { static V c = 0; static int i = 0; if (!i) { i = 1; c = ({ " +++ body +++ "r; }); " +++
+            keep +++ "return c; }")) (ffiWrappers rc rest)
+        | .succ _ => .cons (.t ("V d_" +++ g +++ "(" +++ paramDecls 0 k +++ ") { " +++ body +++ ret +++ "} " +++
+            "static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
+            "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); " +++ keep +++ "return c; }"))
+          (ffiWrappers rc rest)
+-- the C of a program's foreign functions (after the runtime)
+def ffiDocs (rc : Bool) (ffi : List Foreign) : List Doc :=
+  let fs := List.reverseOf ffi .nil;
+  List.append (ffiDecls .nil fs) (ffiWrappers rc fs)
 -- **Applications pushed into `case`s** (reference counting mode). A match is a method
 -- applied to the payload, and the method is chosen by a `case`: `(case s [bᵢ]) a⃗`
 -- built a closure for the chosen branch and applied it. With cheap arguments
@@ -1677,18 +1821,18 @@ def decideGlobals : List Erased → List Erased
   | .cons (.mk n e) rest => .cons (.mk n (decideLets 0 e)) (decideGlobals rest)
 -- the program's C text, one `Doc` per line
 def genProgram (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ => match eraseGlobals .false all .nil .nil (Array.size all) with
+  | .mk all _ _ ffi => match eraseGlobals .false all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       -- (applications pushed into `case`s, as under reference counting: a match is then
       -- no closure, and its recursive calls are in tail position)
       let es := pushGlobals es0;
-      match genCode (.mk .nil 0 (arities StrMap.empty es) .idle) .nil .nil es with
+      match genCode (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
       | .mk protos defs st => match st with
         | .mk fns _ _ _ =>
-          .cons (.t "#include \"rt.c\"") (List.append protos
+          .cons (.t "#include \"rt.c\"") (List.append (ffiDocs .false ffi) (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs
-              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); return 0; }") .nil))))
+              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); rt_finishGC(); return 0; }") .nil)))))
 
 -- **Constructors inlined** (reference counting mode): a global whose body, under its
 -- `λ`s, only builds an object from its parameters and constants (a constructor, as
@@ -1971,7 +2115,7 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++
              "); rt_root(&c); } inc(c); return c; }")) defs)) rest
 def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ => match eraseGlobals .true all .nil .nil (Array.size all) with
+  | .mk all _ _ ffi => match eraseGlobals .true all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       let es1 := pushGlobals es0;
@@ -1979,12 +2123,12 @@ def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
       let sigs : StrMap (List Bool) := match borrow with
         | .true => sigsFix (sigsInit StrMap.empty es) 0 es
         | .false => StrMap.empty;
-      match genCodeRC sigs (.mk .nil 0 (arities StrMap.empty es) .idle) .nil .nil es with
+      match genCodeRC sigs (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
       | .mk protos defs st => match st with
         | .mk fns _ _ _ =>
-          .cons (.t "#define WIZ_RC 1") (.cons (.t "#include \"rt.c\"") (List.append protos
+          .cons (.t "#define WIZ_RC 1") (.cons (.t "#include \"rt.c\"") (List.append (ffiDocs .true ffi) (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs
-              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }") .nil)))))
+              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }") .nil))))))
 
 -- The backend a program asks for: reference counting if its first line is `-- wiz: rc`,
 -- else the garbage collector. (A command-line flag, once programs can read their
