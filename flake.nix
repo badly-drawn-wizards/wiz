@@ -48,7 +48,7 @@
                 fileset = fs.unions [
                   ./lakefile.toml ./lake-manifest.json ./lean-toolchain
                   ./Main.lean ./Wiz.lean ./Wiz ./Grail.lean ./Grail
-                  ./runtime # embedded with include_str
+                  ./runtime # wiz.c and WizRuntime.lean, which embeds it (include_str)
                   ./c # linked into the executables (moreLinkObjs)
                 ];
               };

@@ -1,5 +1,6 @@
 import Wiz.Compiler.IR
 import Wiz.Compiler.Run
+import WizRuntime
 
 /-!
 # C code generation
@@ -8,16 +9,12 @@ Each IR function becomes a C function on `wiz_val`s, plus a *boxed* version taki
 array, which closures point to. Variables become locals, `case` a `switch` on the
 tag, join points labelled blocks entered with `goto` (their parameters are locals
 assigned before the jump), and `dup`/`drop` calls to the runtime (`runtime/wiz.c`,
-which is pasted at the top of the output).
+which is pasted at the top of the output; `Wiz.C.runtime`, in `runtime/WizRuntime.lean`).
 -/
 
 namespace Wiz.C
 
 open IR
-
-/-- The runtime, embedded in the compiler. (Lake does not track `include_str`: after
-editing `runtime/wiz.c`, change this file too, e.g. this counter: 32.) -/
-def runtime : String := include_str "../../runtime/wiz.c"
 
 /-- A C identifier for a Wiz name: letters and digits stay, anything else is `_xx`. -/
 def mangle (n : Name) : String :=

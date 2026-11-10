@@ -22,6 +22,15 @@ kept under `/tmp`).
 
 An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)`.
 
+**Embedded files.** Lake does not track files a module reads with `include_str`, so each
+embedded file gets a library of its own whose `needs` names the file as an
+`input_file` (`lakefile.toml`): Lake mixes the file's content hash into that library's
+module traces, so editing the file rebuilds the embedding module and its importers, and
+the artifact cache never serves a stale one. The only one today is the C runtime:
+`runtime/wiz.c`, embedded by `runtime/WizRuntime.lean` (library `WizRuntime`, imported by
+`Wiz/Compiler/C.lean`). A new `include_str` goes in such a library too, not in `Wiz`
+(a `needs` on `Wiz` would rebuild all of it); `scripts/test-embed.sh` checks the setup (CI runs it in the build job).
+
 ## Continuous integration
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and

@@ -299,6 +299,15 @@ where
 
 /-- Replay an effect. -/
 def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
+  -- a builtin key is registered once (`command.builtin`); a replayed registration (a
+  -- module that was elaborated on its own) must not get around that. (Other keys,
+  -- `extern:…`, `repr:…`, `inline`, are per constant.)
+  let once (k : Name) : Bool := k == "nat" || k.startsWith "nat." || k == "string" || k == "memo"
+  let clash := e.builtins.filter fun (k, n) => once k && (s.globals.builtins.lookup k).any (· != n)
+  if let (k, n) :: _ := clash then
+    let was := (s.globals.builtins.lookup k).getD "?"
+    let text := s!"builtin {k} := {n}: {k} is already registered (as {was}); a builtin can be registered only once"
+    { s with messages := s.messages.push { info := {}, severity := .error, text }, pristine := false } else
   let globals := e.decls.foldl (·.insert ·) s.globals
   let globals := { globals with builtins := e.builtins ++ globals.builtins,
                                 assumed := e.assumed ++ globals.assumed,
@@ -437,7 +446,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-13-trust"  -- 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-14-builtin-once"  -- 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 

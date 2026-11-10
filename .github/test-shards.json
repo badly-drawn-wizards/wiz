@@ -9,6 +9,7 @@
     "backend",
     "borrow",
     "=c",
+    "conc",
     "effects",
     "ffi",
     "llvm",
