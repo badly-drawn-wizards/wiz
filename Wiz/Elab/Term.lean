@@ -650,6 +650,7 @@ where
         | none => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.letPair" => elabLetPair ctx stx expected
+    | "term.letTuple" => elabLetPair ctx (letTupleToPairs stx) expected
     | "term.match" => elabMatch ctx stx expected
     | "term.by" => elabBy ctx stx expected
     | "term.num" =>
@@ -951,6 +952,24 @@ partial def inferTuple (ctx : LocalCtx R) (items : List Syntax) : ElabM R (Term 
     -- the second component's type, weakened under the Σ binder
     let bTerm := quote g (ctx.lvl + 1) bty
     return (.pair a b, ctx.sortVal g (.sigma "_" (.qlit QuantitySyntax.explicitDefault) aty (.mk ctx.env bTerm) none))
+
+/-- `let q (x₁, x₂, …, xₙ) := e; body` (n ≥ 3) as right-nested pairs:
+`let q (x₁, r₁) := e; let q (x₂, r₂) := r₁; …; let q (xₙ₋₁, xₙ) := rₙ₋₂; body`, with
+names `rᵢ` that no user name can capture. -/
+partial def letTupleToPairs (stx : Syntax) : Syntax :=
+  let i := stx.info
+  let names : List Syntax := [stx.getArg 3, stx.getArg 5] ++
+    ((stx.getArg 7).args.toList.filter (· matches .ident ..))
+  let pair (x y e body : Syntax) : Syntax :=
+    .node i "term.letPair" #[stx.getArg 0, stx.getArg 1, .atom i "(", x, .atom i ",", y, .atom i ")",
+      .atom i ":=", e, .node i Syntax.nullKind #[], body]
+  let rec go : Nat → List Syntax → Syntax → Syntax
+    | _, [x, y], e => pair x y e (stx.getArg 12)
+    | k, x :: rest, e =>
+      let r : Name := s!"tuple✝{k}"
+      pair x (.ident i r) e (go (k + 1) rest (.node i "term.ident" #[.ident i r]))
+    | _, _, e => e
+  go 0 names (stx.getArg 10)
 
 /-- `let q (x, y) := s; body`, check mode only (the motive is the expected type). -/
 partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
@@ -1917,7 +1936,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let ctx' := { ctx with bound := ctx.bound.zipIdx.map fun (b, i) => b && !hidden.contains i }
     let ty ← evalIn ctx (← freshMeta ctx' "the type of this match")
     return (← check ctx stx ty, ty)
-  | "term.letPair" | "term.absurd" | "term.rfl" =>
+  | "term.letPair" | "term.letTuple" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
   | "term.omega" => return (← elabQtyLit ctx stx "ω", .qty)
   | "term.num" =>

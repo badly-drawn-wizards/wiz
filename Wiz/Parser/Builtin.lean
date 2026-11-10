@@ -121,6 +121,7 @@ def levelTrailing : List TrailingParser := [
 | `term.proj` (trailing) | max | t "." num |
 | `term.field` (trailing) | max | t "." ident (a Σ field, or `T.f t` for a nominal `T`) |
 | `term.letPair`       | lead | "let" [quantity] "(" ident "," ident ")" ":=" term [";"] term |
+| `term.letTuple`      | lead | "let" [quantity] "(" ident "," ident "," [idents,+] ")" ":=" term [";"] term |
 | `term.absurd`        | lead | "absurd" term |
 | `term.eq` (trailing) | 50   | a "=" b |
 | `term.refl`          | lead | "refl" term |
@@ -176,6 +177,10 @@ def termLeading : List LeadingParser := [
   { kind := "term.letPair", prec := leadPrec,
     p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ")", ":=", term,
       optional ";", term] },
+  -- three or more components: right-nested pairs (`Elab.letTupleToPairs`)
+  { kind := "term.letTuple", prec := leadPrec,
+    p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ",", sepBy1 ident ",", ")",
+      ":=", term, optional ";", term] },
   { kind := "term.absurd", prec := leadPrec, p := seqs ["absurd", term maxPrec] },
   { kind := "term.refl", prec := leadPrec, p := seqs ["refl", term maxPrec] },
   { kind := "term.rfl", prec := maxPrec, p := "rfl" },

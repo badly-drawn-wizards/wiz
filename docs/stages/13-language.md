@@ -187,3 +187,19 @@ since quotations can't splice lists. `¬ P` is `Not P` (Lean's precedence: `¬ a
 for `∧`, `\/` for `∨`, `<->` for `↔`. `lib/Logic.wiz` and `lib/HProp.wiz` state their
 lemmas with them (`hexists J h` is `∃ a : A, J a h`; `star` is
 `∃ h₁ h₂ : Heap V, StarAt …`). Tests: group `language`.
+
+## 13f: `let` with tuple patterns of any length ✅
+
+```
+def f (p : Nat × Nat × Nat) : Nat := let (a, b, c) := p; a + b * c
+def lin (1 p : Nat × Tok × Tok) : Unit × Unit :=
+  let 1 (n, s, t) := p;
+  (Tok.close s, Tok.close t)
+```
+
+`let q (x₁, …, xₙ) := e; body` with three or more names (`term.letTuple`) is right-nested
+pairs, as tuple types and tuple patterns are: `let q (x₁, r₁) := e; let q (x₂, r₂) := r₁; …`,
+with intermediate names (`tuple✝k`) that no program can mention (`letTupleToPairs`,
+`Elab/Term.lean`). Each step is a `let (x, y)` split at quantity `q`, so with `let 1` every
+component of a linear tuple is bound once, which is how a tuple holding resources is taken
+apart now that linear pairs aren't projected. Tests: group `language`.
