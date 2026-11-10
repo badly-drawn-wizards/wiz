@@ -242,6 +242,10 @@ don't need a case per constructor. -/
   | .ulift l A => return .ulift (← fl l) (← f 0 A)
   | .up a => return .up (← f 0 a)
   | .down t => return .down (← f 0 t)
+  -- (the arguments are children like any others: `Val.lvlBound` reads a closure's free
+  -- variables through this traversal, and missing them here made `sameVal` identify
+  -- `Nat.add x` with `Nat.add y`, which proved `False`; `wiz-notes/soundness-audit.md`, S1)
+  | .natOp op args => return .natOp op (← args.mapM (f 0))
   | t => pure t
 where
   hintM (fl : Level → m Level) (f : Nat → Term R → m (Term R)) :
