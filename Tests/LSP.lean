@@ -238,7 +238,7 @@ def socketCase : IO Unit := do
         let ((srvIn, srvOut), (edIn, edOut)) ← Socket.pair
         let (ed, edW) := (IO.FS.Stream.ofHandle edIn, IO.FS.Stream.ofHandle edOut)
         let done ← IO.asTask (prio := .dedicated)
-          (LSP.serveInfoview (← server).libs (IO.FS.Stream.ofHandle srvIn) (IO.FS.Stream.ofHandle srvOut) sock)
+          (LSP.serveInfoview (← server).libs (IO.FS.Stream.ofHandle srvIn) (IO.FS.Stream.ofHandle srvOut) sock ["Prelude"])
         let next (h : IO.FS.Stream) : IO Lean.Json := do
           let some j ← LSP.readMessage h | throw (IO.userError "the stream ended")
           pure j
@@ -306,7 +306,7 @@ def wsCase : IO Unit := do
         let port ← IO.Promise.new
         let done ← IO.asTask (prio := .dedicated)
           (LSP.serveWith (← server).libs (some (IO.FS.Stream.ofHandle srvIn, IO.FS.Stream.ofHandle srvOut))
-            { ws := some (Socket.loopback, 0) } (fun p => port.resolve p))
+            { ws := some (Socket.loopback, 0) } (fun p => port.resolve p) ["Prelude"])
         let port := port.result!.get
         let next (h : IO.FS.Stream) : IO Lean.Json := do
           let some j ← LSP.readMessage h | throw (IO.userError "the stream ended")
