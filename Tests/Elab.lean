@@ -833,9 +833,9 @@ def backendGroup : Group where
         let texts := s.messages.toList.map (·.text)
         check (texts.any fun t => (t.splitOn "reuse").length > 1) s!"no reuse in {texts}"
         check (texts.contains ".cons 2 (.cons 3 .nil)") s!"wrong result: {texts}" },
-    { name := "unused parameters are dropped at once", run := fun _ =>
+    { name := "unused parameters are borrowed (the caller drops them)", run := fun _ =>
         okLib "import Prelude\ndef k (x y : List Nat) : List Nat := x\n#ir k"
-          ["def k x0 x1 :=\n  drop x1\n  ret x0"] }
+          ["def k x0 @&x1 :=\n  ret x0"] }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
@@ -932,7 +932,7 @@ def reuseAllocs (entries : List Name) : IO (List Nat) := do
     let r : Except String Nat := do
       let code ← (compileReachable s.globals s.builtins [n]).mapError toString
       let decls ← IR.lowerProgram code (.global n)
-      let (_, a) ← IR.runProgram (decls.map (·.optimize))
+      let (_, a) ← IR.runProgram (IR.optimizeProgram decls)
       pure a
     match r with
     | .ok a => pure a
@@ -945,8 +945,8 @@ def reuseIR (n : Name) : IO (List String) := do
       let code ← (compileReachable s.globals s.builtins [n]).mapError toString
       IR.lowerProgram code (.global n) : Except String (Array IR.Decl)) with
   | .ok decls =>
-    let d := (decls.find? (·.name == n)).get!
-    pure ((d.optimize.toString.splitOn "\n").map (·.trimAscii.toString))
+    let d := ((IR.optimizeProgram decls).find? (·.name == n)).get!
+    pure ((d.toString.splitOn "\n").map (·.trimAscii.toString))
   | .error e => throw (IO.userError e)
 
 /-- Only the parameter `x0` is reset (a `Bool` returned by `small` is never paired). -/
@@ -994,6 +994,52 @@ def reuseGroup : Group where
         checkEq (s0 + 4) r0 }
   ]
 
+/-- Programs for the borrowing tests (stage 8e): functions that only look at their
+argument, a closure over one, and a pair taken apart at once. -/
+def borrowSrc : String := "import Prelude
+def len : List Nat → Nat
+  | .nil => 0
+  | .cons _ xs => Nat.succ (len xs)
+def sumAcc : Nat → List Nat → Nat
+  | acc, .nil => acc
+  | acc, .cons x xs => sumAcc (Nat.add acc x) xs
+inductive Tree where
+  | leaf
+  | node (key : Nat) (left : Tree) (right : Tree)
+def Tree.mem (k : Nat) : Tree → Bool
+  | .leaf => .false
+  | .node key l r => match Nat.lt k key with
+    | .true => Tree.mem k l
+    | .false => match Nat.lt key k with
+      | .true => Tree.mem k r
+      | .false => .true
+def mapL (f : List Nat → Nat) : List (List Nat) → List Nat
+  | .nil => .nil
+  | .cons x xs => .cons (f x) (mapL f xs)
+def split (xs : List Nat) : List Nat × List Nat := (xs, xs)
+def both (xs : List Nat) : Nat := match split xs with
+  | (a, b) => Nat.add (len a) (len b)
+def t3 : Tree := Tree.node 2 (Tree.node 1 .leaf .leaf) (Tree.node 3 .leaf .leaf)
+"
+
+/-- The optimised IR of a function of `borrowSrc`, as lines. -/
+def borrowIR (n : Name) : IO (List String) := do
+  let s := runFrontend (R := ZeroOneMany) borrowSrc { loader := ← preludeLoader }
+  match (do
+      let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+      IR.lowerProgram code (.global n) : Except String (Array IR.Decl)) with
+  | .ok decls =>
+    let d := ((IR.optimizeProgram decls).find? (·.name == n)).get!
+    pure ((d.toString.splitOn "\n").map (·.trimAscii.toString))
+  | .error e => throw (IO.userError e)
+
+/-- Parameter `x{i}` of `n` is borrowed and never counted. -/
+def borrowedUncounted (n : Name) (i : Nat) : IO Unit := do
+  let ls ← borrowIR n
+  let hdr := ls.headD ""
+  check ((hdr.splitOn s!"@&x{i} ").length > 1 || hdr.endsWith s!"@&x{i} :=") s!"x{i} not borrowed:\n{"\n".intercalate ls}"
+  check (!ls.any fun l => l == s!"dup x{i}" || l == s!"drop x{i}") s!"x{i} counted:\n{"\n".intercalate ls}"
+
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
 the C toolchain can't find GMP: give the suite a toolchain (`Tests/Main.lean`) to run these. -/
 def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
@@ -1006,6 +1052,38 @@ def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := 
   | .error e =>
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+
+def borrowGroup : Group where
+  name := "borrow"
+  exercise := "Stage 8e"
+  cases := [
+    { name := "the length of a list borrows it", run := fun _ => borrowedUncounted "len" 0 },
+    { name := "a left fold borrows the list (and keeps its tail call)", run := fun _ => do
+        borrowedUncounted "sumAcc" 1
+        let ls ← borrowIR "sumAcc"
+        check (ls.any fun l => l.startsWith "let " && (l.splitOn ":= sumAcc").length > 1) s!"no call:\n{"\n".intercalate ls}" },
+    { name := "a lookup in a tree borrows the tree", run := fun _ => borrowedUncounted "Tree.mem" 1 },
+    { name := "borrowing functions run without leaks", run := fun _ =>
+        okLib (borrowSrc ++ "#run len (.cons 1 (.cons 2 .nil))\n#run sumAcc 0 (.cons 1 (.cons 2 .nil))\n#run Tree.mem 3 t3\n#run Tree.mem 4 t3")
+          ["2", "3", ".true", ".false"] },
+    { name := "a closure over a borrowing function goes through an owned wrapper", run := fun _ => do
+        okLib (borrowSrc ++ "#run mapL len (.cons (.cons 1 .nil) (.cons .nil .nil))") [".cons 1 (.cons 0 .nil)"]
+        let s := runFrontend (R := ZeroOneMany) (borrowSrc ++ "def lens : List Nat := mapL len (.cons .nil .nil)\n") { loader := ← preludeLoader }
+        match (do
+            let code ← (compileReachable s.globals s.builtins ["lens"]).mapError toString
+            IR.lowerProgram code (.global "lens") : Except String (Array IR.Decl)) with
+        | .ok decls =>
+          let ds := IR.optimizeProgram decls
+          check (ds.any (·.name == "len._owned")) "no wrapper"
+          check (ds.all fun d => (d.toString.splitOn "pap len ").length == 1) "len partially applied directly"
+        | .error e => throw (IO.userError e) },
+    { name := "drop specialisation: a unique pair taken apart moves its fields", run := fun _ => do
+        let ls ← borrowIR "both"
+        check (ls.any fun l => (l.splitOn "prim dropMoved").length > 1) s!"no specialised drop:\n{"\n".intercalate ls}"
+        okLib (borrowSrc ++ "#run both (.cons 1 (.cons 2 .nil))") ["4"] },
+    { name := "borrowing and drop specialisation in C", run := fun _ =>
+        cRun (borrowSrc ++ "def main : Nat := Nat.add (both (.cons 1 (.cons 2 .nil))) (len (mapL len (.cons .nil .nil)))\n") "5" }
+  ]
 
 /-- Build `main : IO _` with the C backend (and the `IO` library) and compare its output. -/
 def ioRun (src : String) (expected : String) : IO Unit := do

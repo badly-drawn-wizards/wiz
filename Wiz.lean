@@ -33,6 +33,8 @@ import Wiz.Compiler.PrimCode
 import Wiz.Compiler.Lower
 import Wiz.Compiler.RC
 import Wiz.Compiler.Reuse
+import Wiz.Compiler.DropSpec
+import Wiz.Compiler.Borrow
 import Wiz.Compiler.IRRun
 import Wiz.Compiler.C
 import Wiz.Compiler.LLVM
