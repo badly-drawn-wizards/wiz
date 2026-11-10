@@ -233,3 +233,61 @@ def w (x : U32) : BitVec 32 := BitVec.add x (BitVec.ofNat 32 1)   -- no conversi
 * **For the HDL**: `Unsigned n`/`Signed n` (hdl-plan §2.2) can reuse the same
   representation as aliases (`def Unsigned (n : Nat) := UIntN n`, `Signed n := IntN n`);
   a `structure` wrapper would instead need its own `implemented_by mk get` to avoid a box.
+  (Since 22i a one-field `structure` is unboxed anyway.)
+
+## 22i: unboxed newtypes and `attribute [inline]` ✅
+
+```
+structure Uniq (ρ : Region) (A : Type) where
+  val : A                                  -- at run time, a Uniq ρ A is its A
+attribute [inline] Uniq.borrow             -- compiled code runs the scope's body in place
+def push (xs : List Nat) := Uniq.borrow Region.static xs (fun ρ h v r => push1 r)
+#ir push                                   -- no pap, no ap, no handle allocated
+```
+
+The region discipline of 22g used to cost at run time: every handle was a cell
+(`⟨val, ◾⟩`) and every scope a closure called through `ap`. Both are gone:
+
+* **The last field of a structure is unboxed.** A structure with fields now ends in
+  its phantom tail (22e) followed by a **marker**, `(0 fields✝ : Enum [fields✝]) → Unit`,
+  instead of `Unit`: `structure W where val : A` is `(val : A) × ((0 fields✝ : Enum [fields✝]) → Unit)`.
+  Like a phantom tail it has one inhabitant (`fun _ => ()`, filled in by constructors and
+  by `()` in a tuple), so η, `refl` and structure equality are as before. Erasure
+  (`unboxedSigma`) represents a Σ whose second component ends in the marker by its first
+  component: `S.mk a` is `a`, `.1` is the identity, `.2` is `◾`, and `#eval`/`#run`/
+  `wiz run` read the value back the same way. So a one-field structure (a newtype:
+  `Shr`, `Uniq`, `Lent`, `Mut`) is its field, and an `n`-field structure is `n − 1` pairs
+  instead of `n`.
+* **Why in the type.** A representation must be a function of the type *up to
+  conversion*: a value converted (or cast) from one type to an equal one keeps its bits.
+  A raw `A × Unit` (or a name the kernel ignores) can't carry it, since a type variable
+  can stand for `Unit` and `S` converts to its Σ. The marker's domain is compared by
+  conversion and its label is inaccessible, so every type convertible to a structure has
+  it and no other type does; substitution can neither make nor remove it, so generic code
+  and code at a known type agree. Zero-field structures and index types have no marker.
+  Phantom parameters still don't change the representation (group `phantom`).
+* **`attribute [inline] f`** (`Inline.lean`) substitutes `f`'s erased body where `f` is
+  applied to all its arguments, then simplifies: a redex `(λ x. b) a` becomes a `let`,
+  and a `let` of a variable, of `◾`, or of a lambda used once (not under a lambda) is
+  substituted, so a lambda argument lands in the head of an application and is reduced.
+  `lib/Region.wiz` marks its scopes and `Uniq.set`/`Shr.weaken`. The kernel never sees
+  the attribute; inlining a recursive definition stops after a few levels.
+
+Objects allocated on `#run`'s checked heap (`tests --allocs FILE ENTRY…`, a measuring
+mode of the test driver), before → after:
+
+| program (`drafts/rust/lowered`) | before | unboxed | + inline |
+|---|---|---|---|
+| 01 `main` (swap two `U64`s) | 12 | 6 | 4 |
+| 01 `swapLists` | 11 | 7 | 5 |
+| 02 `fill 5` | 106 | 82 | 32 |
+| 02 `fill 50` | 5506 | 5302 | 302 |
+| 07 `record` | 31 | 13 | 9 |
+| 07 `record_optic` | 47 | 30 | 26 |
+
+(`fill` was quadratic: `Uniq.set` was a call, so the vector inside the handle was
+shared and `push` copied it; inlined, it is updated in place.) Not yet: case of a known
+constructor, so the `.ok (q.2, q.1)` re-wrapping around each scope is still rebuilt (in
+the same cells, by reuse); a recursive call through a scope's lambda is still not seen
+as structural (`05_bst` `insert` stays `partial`; wishful: reborrow-recursion has a
+design). The self-hosted toolchain doesn't have phantom tails at all yet.

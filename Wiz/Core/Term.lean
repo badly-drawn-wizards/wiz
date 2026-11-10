@@ -322,9 +322,26 @@ with `D` mentioning the parameter. Such a function type has one inhabitant up to
 so only the elaborator writes it. -/
 def phantomName : Name := "phantom✝"
 
+/-- The **structure marker** (stage 22i): a structure with at least one field ends in
+`(0 phantom✝ : D) → … → (0 fields✝ : Enum [fields✝]) → Unit` (its phantom tail, 22e, then
+the marker), so `structure S where val : A` is `(val : A) × ((0 fields✝ : Enum [fields✝]) → Unit)`.
+Erasure recognises the marker and unboxes the Σ whose second component it ends (the
+structure's last field): at run time that pair is just the field. The marker is in the
+*type*, not only in a name, because the representation must be a function of the type up
+to conversion: conversion ignores binder names but compares domains, and no user-written
+type has the domain `Enum [fields✝]` (the label is inaccessible), so nothing convertible
+to a structure lacks the marker, and nothing else has it. -/
+def structTailName : Name := "fields✝"
+
+/-- The marker's domain, `Enum [fields✝]`. -/
+def structTailDom {R : Type} : Term R := .enum [structTailName]
+
+/-- A binder name of a phantom tail (`phantomName` or `structTailName`). -/
+def isPhantomName (x : Name) : Bool := x == phantomName || x == structTailName
+
 /-- The value of a phantom tail type, `fun _ … _ => ()`. -/
 partial def Term.phantomTailVal? {R : Type} : Term R → Option (Term R)
-  | .pi x _ _ _ b _ => if x == phantomName then (phantomTailVal? b).map (.lam phantomName) else none
+  | .pi x _ _ _ b _ => if isPhantomName x then (phantomTailVal? b).map (.lam x) else none
   | .unit _ => some .tt
   | _ => none
 

@@ -33,8 +33,9 @@ the results of the probes listed in the "Probes" section.
   regularity is off in both kernels, `cast` computes on data constructor by constructor,
   and the program now checks. One departure from the published "off" theory remains, a
   **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below; now argued relative to the system without regularity, with one incompleteness found).
-* **Two proofs of `False` in the kernel have been found and fixed** (propositions
-  compared by shape; `∞ < ∞`), each with regression tests in both kernels. A failure of
+* **Three proofs of `False` in the kernel have been found and fixed** (propositions
+  compared by shape; `∞ < ∞`; quantities that differ only by a variable, F6), each with
+  regression tests. A failure of
   subject reduction for small description fields (Q4) is fixed too (F5, `ULift`).
 * **Three proofs of `False` were found while writing this page, and confirmed by
   running them** (see "Open issues" and "Probes"):
@@ -204,6 +205,36 @@ the results of the probes listed in the "Probes" section.
   supported (unrelated to Q4). The subject-reduction argument is on paper (CoreSpec §4.1,
   §9.1), not mechanised; the OTT rules for `ULift` are the standard ones for a one-field
   former and are **conjecture** in Wiz's combination like the rest of §8.
+
+### F6. Quantities that differ only by a variable made two types unequal — **fixed**
+
+* **The bug.** Type equality between two Π (or two Σ) types computed to `False` when the
+  binder quantities were different *as polynomials* (`sameQty q q' == some false`). A
+  quantity variable `q` and the literal `1` are different polynomials, so
+  `((%q x : N) → N) = ((1 x : N) → N)` computed to `False` for a variable `q`, and the
+  instance `q := 1` made it provable:
+
+  ```
+  def flip {q : Qty} (e : ((%q x : N) → N) = ((1 x : N) → N)) : False := e
+  def boom : False := flip (q := 1) rfl
+  ```
+
+  A closed proof of `False`, accepted by the Lean kernel. The decision "False" was not
+  stable under substitution (a rule fired that a substitution turns into a different
+  rule). It was found by the P1 inventory of syntactic side conditions
+  (`/workspace/wiz-notes/p1-stable.md`), and independently by the theory agent (the same
+  attack at `Unit`). The self-hosted kernel was not affected: its quantities are literals
+  only.
+* **The fix.** `qtyApart` (`Eval.lean`). The equation is `False` only when both
+  quantities are closed (constant polynomials) and differ (`QPoly.equiv`, so the test is
+  invariant under conversion). It is the Σ rule when they are equivalent polynomials. In
+  every other case it is stuck. Branch `agent/p1-qty`.
+* **Regression tests.**
+  * group *quantity polymorphism*: "F6: types whose quantities differ only by a variable
+    are not unequal" (the attack, the `Unit` variant and a Σ variant, all must fail) and
+    "F6: types with two different literal quantities are unequal";
+  * group *selfhost*: "F6: literal quantities that differ make types unequal" (Lean kernel
+    verdicts on `MTm.qtyApart`), and `MTm.qtyApart` is in the differential samples.
 
 ---
 

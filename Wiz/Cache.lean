@@ -20,7 +20,7 @@ The format is S-expressions; quantities are written with the rig's literal synta
 
 namespace Wiz.Cache
 
-variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
+variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R] [IsoCache R]
 
 inductive Sx where
   | a (s : String)
@@ -437,7 +437,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-10-trust"  -- 10: witnesses, assumed registrations, warnings; 9: private names (13b)
+def salt : UInt64 := hash "wiz-cache-13-trust"  -- 13: witnesses, assumed registrations, warnings; 12: (#48); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 

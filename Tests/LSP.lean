@@ -89,6 +89,41 @@ def group : Group where
   name := "lsp"
   exercise := "Stage 11 (infoview)"
   cases := [
+    { name := "modules in isolation are elaborated once per process", run := fun _ => do
+        let pre ← prelude
+        let size : IO Nat := do pure (← isoCacheZOM.get).size
+        isoCacheZOM.set {}
+        let msgs (s : St) := s.messages.toList.map (·.text)
+        let src := "import Prelude\ndef x : Nat := 1 + 1\ndef bad : Nat := true\n"
+        let s₁ := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some pre else none }
+        -- (each state is looked at before the table: that fixes the order)
+        check ((msgs s₁).length == 1) s!"{msgs s₁}"
+        let n ← size
+        check (n ≥ 1) "nothing kept"
+        -- again, from a loader that is another closure: the same, from the table
+        let s₂ := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some pre else none }
+        checkEq (msgs s₁) (msgs s₂)
+        checkEq n (← size)
+        checkEq s₁.globals.order.size s₂.globals.order.size
+        -- the loader is the file's own after a hit: a module the first loader didn't have
+        let loader (m : Name) := if m == "Prelude" then some pre else if m == "Extra" then some "import Prelude\ndef extra : Nat := 3\n" else none
+        let s₃ := runFrontend (R := ZeroOneMany) "import Prelude\nimport Extra\ndef y : Nat := extra\n" { loader, trustedModule := Tests.libModule }
+        checkEq ([] : List String) (msgs s₃)
+        -- another Prelude text, other settings: other entries
+        let s₄ := runFrontend (R := ZeroOneMany) "import Prelude\ndef y : Nat := preExtra\n"
+          { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some (pre ++ "\ndef preExtra : Nat := 0\n") else none }
+        checkEq ([] : List String) (msgs s₄)
+        let k₁ ← size
+        let s₆ := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some pre else none, termInfo := true }
+        checkEq (msgs s₁) (msgs s₆)
+        check ((← size) > k₁) "termInfo shares an entry"
+        -- a state that is not initial is not cached; an import cycle isn't either
+        isoCacheZOM.set {}
+        let s₅ := runFrontend (R := ZeroOneMany) "import A\n" { trustedModule := Tests.libModule, loader := fun m => if m == "A" then some "import B\n" else if m == "B" then some "import A\n" else none }
+        check (s₅.messages.size ≥ 1) "no cycle error"
+        let s₇ := runFrontend (R := ZeroOneMany) "import Prelude\n" { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some pre else none, pristine := false }
+        checkEq ([] : List String) (msgs s₇)
+        checkEq 0 (← size) },
     { name := "info tree: hovers are unchanged", run := fun _ => do
         let src := "import Prelude\ndef double (n : Nat) : Nat := n + n\ndef four : Nat := double 2\n"
         for ti in [false, true] do
@@ -263,6 +298,121 @@ def socketCase : IO Unit := do
         check ((← LSP.readMessage iv).isNone) "the infoview's connection is still open"
 
 
+/-- The body of the WebSocket case: an editor on stdio (a socket pair), and two
+WebSocket clients, one of which edits a document of its own. -/
+def wsCase : IO Unit := do
+        let ((srvIn, srvOut), (edIn, edOut)) ← Socket.pair
+        let (ed, edW) := (IO.FS.Stream.ofHandle edIn, IO.FS.Stream.ofHandle edOut)
+        let port ← IO.Promise.new
+        let done ← IO.asTask (prio := .dedicated)
+          (LSP.serveWith (← server).libs (some (IO.FS.Stream.ofHandle srvIn, IO.FS.Stream.ofHandle srvOut))
+            { ws := some (Socket.loopback, 0) } (fun p => port.resolve p))
+        let port := port.result!.get
+        let next (h : IO.FS.Stream) : IO Lean.Json := do
+          let some j ← LSP.readMessage h | throw (IO.userError "the stream ended")
+          pure j
+        let tcp : IO (IO.FS.Stream × IO.FS.Stream) := do
+          let (r, w) ← Socket.tcpConnect Socket.loopback port
+          pure (IO.FS.Stream.ofHandle r, IO.FS.Stream.ofHandle w)
+        let mask := some (ByteArray.mk #[0x37, 0xfa, 0x21, 0x3d])
+        let send (w : IO.FS.Stream) (j : Lean.Json) := WebSocket.sendText w j.compress mask
+        let recv (r w : IO.FS.Stream) : IO Lean.Json := do
+          let some t ← WebSocket.recvText r w (server := false) | throw (IO.userError "the WebSocket closed")
+          match Lean.Json.parse t with
+          | .ok j => pure j
+          | .error e => throw (IO.userError s!"not JSON ({e}): {t}")
+        -- a page from another site is refused; so is a plain HTTP request
+        let (r, w) ← tcp
+        match ← WebSocket.connect r w s!"127.0.0.1:{port}" (origin := some "https://example.com") with
+        | .ok () => throw (IO.userError "a foreign origin was let in")
+        | .error e => check ((e.splitOn "403").length > 1) s!"refused how: {e}"
+        let (r, w) ← tcp
+        w.putStr "GET / HTTP/1.1\r\nHost: x\r\n\r\n"; w.flush
+        check (((← r.getLine).splitOn "426").length > 1) "a plain GET was not refused"
+        -- the editor opens a document
+        let src := "import Prelude\ndef k : Nat → Bool → Nat := by\n  intro n\n  intro b\n  exact n\n"
+        LSP.writeMessage edW (req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+        let _ ← next ed
+        LSP.writeMessage edW (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])])
+        let _ ← next ed
+        -- a local page connects and is told where the cursor is
+        let (iv, ivW) ← tcp
+        match ← WebSocket.connect iv ivW s!"127.0.0.1:{port}" (origin := some s!"http://127.0.0.1:{port + 1}") with
+        | .ok () => pure ()
+        | .error e => throw (IO.userError s!"handshake: {e}")
+        let c ← recv iv ivW
+        checkEq "wiz/infoview/cursor" (LSP.getStr c ["method"])
+        -- the editor's cursor moves; the page hears of it and pulls the goals
+        let pos := posJson src (offAfter src "intro n")
+        LSP.writeMessage edW (req s!"\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"textDocument/hover\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{pos}}}")
+        let _ ← next ed
+        let c ← recv iv ivW
+        checkEq (req pos).compress (LSP.get? c ["params", "position"]).get!.compress
+        let session := LSP.getNat c ["params", "session"]
+        send ivW (req s!"\{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"wiz/interactiveGoals\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{pos}}}")
+        let r ← recv iv ivW
+        checkEq "7" (LSP.get? r ["id"]).get!.compress
+        let some (.arr #[g]) := LSP.get? r ["result", "goals"] | throw (IO.userError s!"goals: {r.compress}")
+        checkEq "Bool → Nat" (flatten (LSP.get? g ["type"]).get!)
+        checkEq session (LSP.getNat r ["result", "session"])
+        -- a ping is answered (by the client's `recv`, which skips the pong); then a request
+        -- split into two fragments, the second after a ping
+        WebSocket.writeFrame ivW WebSocket.opPing "hi".toUTF8 mask
+        let msg := (req "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"shutdown\"}").compress.toUTF8
+        let half := msg.size / 2
+        let frag (fin : Bool) (op : UInt8) (bs : ByteArray) : ByteArray :=
+          let f := WebSocket.frameBytes op bs mask
+          f.set! 0 (if fin then f.get! 0 else f.get! 0 &&& 0x7f)
+        ivW.write (frag false WebSocket.opText (msg.extract 0 half)); ivW.flush
+        WebSocket.writeFrame ivW WebSocket.opPing .empty mask
+        ivW.write (frag true 0 (msg.extract half msg.size)); ivW.flush
+        checkEq "8" (LSP.get? (← recv iv ivW) ["id"]).get!.compress
+        -- the page opens a document of its own (a long one: a 16-bit frame length) and gets
+        -- its diagnostics, and hovers in it: the cursor moves there, for every infoview
+        let mine := "import Prelude\n" ++ String.join ((List.range 40).map fun i => s!"def d{i} : Nat := {i}\n") ++ "def bad : Nat := true\n"
+        send ivW (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///w.wiz"), ("version", (1 : Nat)), ("text", mine)])])])
+        let d ← recv iv ivW
+        checkEq "textDocument/publishDiagnostics" (LSP.getStr d ["method"])
+        let some (.arr #[_]) := LSP.get? d ["params", "diagnostics"] | throw (IO.userError s!"diagnostics: {d.compress}")
+        let mpos := posJson mine (offAfter mine "def d3 : Na" (-1))
+        send ivW (req s!"\{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"textDocument/hover\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///w.wiz\"},\"position\":{mpos}}}")
+        check (has (← recv iv ivW) "Nat") "no hover"
+        let c ← recv iv ivW
+        checkEq "file:///w.wiz" (LSP.getStr c ["params", "textDocument", "uri"])
+        -- the page's `initialize` sets its own settings only: it asks for `wiz/elaborated`,
+        -- and gets it for its edits; the editor (which didn't ask) doesn't for its own
+        send ivW (req "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"experimental\":{\"wizElaborated\":true}}}}")
+        check (has (← recv iv ivW) "wizInfoview") "no capabilities"
+        send ivW (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didChange"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///w.wiz"), ("version", (2 : Nat))]),
+                                      ("contentChanges", Lean.Json.arr #[Lean.Json.mkObj [("text", mine ++ "\n")]])])])
+        checkEq "textDocument/publishDiagnostics" (LSP.getStr (← recv iv ivW) ["method"])
+        checkEq "wiz/elaborated" (LSP.getStr (← recv iv ivW) ["method"])
+        let _ ← recv iv ivW  -- (the cursor's document was elaborated again: its note)
+        LSP.writeMessage edW (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didChange"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (2 : Nat))]),
+                                      ("contentChanges", Lean.Json.arr #[Lean.Json.mkObj [("text", src ++ "\n")]])])])
+        checkEq "textDocument/publishDiagnostics" (LSP.getStr (← next ed) ["method"])
+        LSP.writeMessage edW (req "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"shutdown\"}")
+        checkEq "3" (LSP.get? (← next ed) ["id"]).get!.compress
+        -- a second page connects and hears of the cursor too
+        let (iv2, iv2W) ← tcp
+        match ← WebSocket.connect iv2 iv2W s!"localhost:{port}" with
+        | .ok () => pure ()
+        | .error e => throw (IO.userError s!"handshake: {e}")
+        checkEq "file:///w.wiz" (LSP.getStr (← recv iv2 iv2W) ["params", "textDocument", "uri"])
+        -- a page's `exit` closes its own connection; the editor's stops the server
+        send iv2W (req "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
+        check ((← WebSocket.recvText iv2 iv2W (server := false)).isNone) "still open after exit"
+        LSP.writeMessage edW (req "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
+        match ← IO.wait done with
+        | .ok () => pure ()
+        | .error e => throw e
+        check ((← WebSocket.recvText iv ivW (server := false)).isNone) "the page's connection is still open"
+        check ((← (try some <$> Socket.tcpConnect Socket.loopback port catch _ => pure none)).isNone) "still listening"
+
 def serverGroup : Group where
   name := "lsp-server"
   exercise := "Stage 11 (infoview, code actions)"
@@ -372,6 +522,32 @@ def serverGroup : Group where
         -- the process would wait for it, the case ends with an explicit exit)
         let _ ← IO.asTask (prio := .dedicated) (do IO.sleep 60000; IO.eprintln "timed out"; IO.Process.exit 3 : IO Unit)
         try socketCase; IO.Process.exit 0
+        catch e => IO.eprintln e; IO.Process.exit 1 },
+    { name := "WebSocket: handshake (RFC 6455's example), frames", run := fun _ => do
+        checkEq "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" (WebSocket.acceptKey "dGhlIHNhbXBsZSBub25jZQ==")
+        checkEq "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
+          (String.join ((WebSocket.sha1 "The quick brown fox jumps over the lazy dog".toUTF8).toList.map fun b =>
+            let h := Nat.toDigits 16 b.toNat; String.ofList (if h.length < 2 then '0' :: h else h)))
+        checkEq "Zm9vYmE=" (WebSocket.base64 "fooba".toUTF8)
+        for o in ["null", "http://localhost:8766", "http://127.0.0.1", "vscode-webview://abc"] do
+          check (WebSocket.localOrigin o) s!"{o} refused"
+        for o in ["https://example.com", "http://localhost.example.com", "http://127.0.0.1.nip.io:80"] do
+          check (!WebSocket.localOrigin o) s!"{o} let in"
+        -- frames of each length class, masked and not, read back
+        let ((r, w), (r', w')) ← Socket.pair
+        let (r, w, r', w') := (IO.FS.Stream.ofHandle r, IO.FS.Stream.ofHandle w, IO.FS.Stream.ofHandle r', IO.FS.Stream.ofHandle w')
+        for n in [0, 125, 126, 65535, 65536, 200000] do
+          let text := String.ofList (List.replicate n 'x')
+          WebSocket.sendText w text (some (ByteArray.mk #[9, 8, 7, 6]))
+          checkEq (some text) (← WebSocket.recvText r' w')
+          WebSocket.sendText w' text
+          checkEq (some text) (← WebSocket.recvText r w (server := false))
+        -- an unmasked frame from a client breaks the protocol
+        WebSocket.sendText w "x"
+        checkEq none (← WebSocket.recvText r' w') },
+    { name := "WebSocket transport (--ws): infoview requests, editing, origins", run := fun _ => do
+        let _ ← IO.asTask (prio := .dedicated) (do IO.sleep 60000; IO.eprintln "timed out"; IO.Process.exit 3 : IO Unit)
+        try wsCase; IO.Process.exit 0
         catch e => IO.eprintln e; IO.Process.exit 1 }
   ]
 

@@ -402,7 +402,19 @@ def qtyGroup : Group where
     { name := "products of quantity variables", run := fun _ =>
         ok ("def twice {A B : Type} {q r : Qty} (f : (%q x : A) → B) (g : (%r y : B) → B) (%(r) a : B) : B := g a\n") },
     { name := "quantity literals as terms", run := fun _ =>
-        ok "def one : Qty := 1\ndef many : Qty := ω\ndef f {A : Type} (%one x : A) : A := x" }
+        ok "def one : Qty := 1\ndef many : Qty := ω\ndef f {A : Type} (%one x : A) : A := x" },
+    -- F6: `(%q x : A) → B = (1 x : A) → B` computed to `False` (the quantities differ as
+    -- polynomials), and `q := 1` made it provable: a closed proof of `False`
+    { name := "F6: types whose quantities differ only by a variable are not unequal (it proved False)", run := fun _ => do
+        fails ("inductive N where\n  | z\n  | s (n : N)\n" ++
+          -- (then `def boom : False := flip (q := 1) rfl` was a closed proof of False)
+          "def flip {q : Qty} (e : ((%q x : N) → N) = ((1 x : N) → N)) : False := e\n") "mismatch"
+        -- (then `bad 1 (refl …)`)
+        fails "def bad (q : Qty) (e : ((%q x : Unit) → Unit) = ((1 x : Unit) → Unit)) : False := e\n" "mismatch"
+        fails "def bad (q : Qty) (e : ((%q x : Unit) × Unit) = ((1 x : Unit) × Unit)) : False := e\n" "mismatch" },
+    { name := "F6: types with two different literal quantities are unequal", run := fun _ =>
+        ok ("def apart (e : ((0 x : Unit) → Unit) = ((1 x : Unit) → Unit)) : False := e\n" ++
+          "def apart2 (e : ((ω x : Unit) × Unit) = ((1 x : Unit) × Unit)) : False := e\n") }
   ]
 
 end Tests.Elab
@@ -833,9 +845,9 @@ def backendGroup : Group where
         let texts := s.messages.toList.map (·.text)
         check (texts.any fun t => (t.splitOn "reuse").length > 1) s!"no reuse in {texts}"
         check (texts.contains ".cons 2 (.cons 3 .nil)") s!"wrong result: {texts}" },
-    { name := "unused parameters are dropped at once", run := fun _ =>
+    { name := "unused parameters are borrowed (the caller drops them)", run := fun _ =>
         okLib "import Prelude\ndef k (x y : List Nat) : List Nat := x\n#ir k"
-          ["def k x0 x1 :=\n  drop x1\n  ret x0"] }
+          ["def k x0 @&x1 :=\n  ret x0"] }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
@@ -932,7 +944,7 @@ def reuseAllocs (entries : List Name) : IO (List Nat) := do
     let r : Except String Nat := do
       let code ← (compileReachable s.globals s.builtins [n]).mapError toString
       let decls ← IR.lowerProgram code (.global n)
-      let (_, a) ← IR.runProgram (decls.map (·.optimize))
+      let (_, a) ← IR.runProgram (IR.optimizeProgram decls)
       pure a
     match r with
     | .ok a => pure a
@@ -945,8 +957,8 @@ def reuseIR (n : Name) : IO (List String) := do
       let code ← (compileReachable s.globals s.builtins [n]).mapError toString
       IR.lowerProgram code (.global n) : Except String (Array IR.Decl)) with
   | .ok decls =>
-    let d := (decls.find? (·.name == n)).get!
-    pure ((d.optimize.toString.splitOn "\n").map (·.trimAscii.toString))
+    let d := ((IR.optimizeProgram decls).find? (·.name == n)).get!
+    pure ((d.toString.splitOn "\n").map (·.trimAscii.toString))
   | .error e => throw (IO.userError e)
 
 /-- Only the parameter `x0` is reset (a `Bool` returned by `small` is never paired). -/
@@ -978,21 +990,61 @@ def reuseGroup : Group where
     { name := "a structure updated through calls reuses its own cells, in place", run := fun _ => do
         let [s0, r0] ← reuseAllocs ["s0", "r0"] | throw (IO.userError "?")
         let ls ← reuseIR "record"
-        -- the parameter's cell holds the new outer pair, whose second field is the new inner pair
-        let ctorOf (l : String) : Option (String × List String) :=
-          match l.splitOn " := " with
-          | [lhs, rhs] => some ((lhs.drop 4).toString, rhs.splitOn " ")
-          | _ => none
-        let outer := ls.findSome? fun l => match ctorOf l with
-          | some (_, ["reuse", "x1000000", "in", "ctor", "0", _, b]) => some b
-          | _ => none
-        let inner := outer.bind fun b => ls.find? fun l => match ctorOf l with
-          | some (x, "reuse" :: _ :: "in" :: "ctor" :: _) => x == b
-          | _ => false
-        check inner.isSome s!"the parameter's cell is not rebuilt in place:\n{"\n".intercalate ls}"
-        -- bump2's result (an option and a pair) is the only allocation
+        -- `Stats` is one pair since 22i (its last field is unboxed): the parameter's cell
+        -- holds the new one
+        check (ls.any fun l => (l.splitOn ":= reuse x1000000 in ctor 0 ").length > 1 &&
+            ((l.splitOn ":= reuse x1000000 in ctor 0 ")[1]!.splitOn " ").length == 2)
+          s!"the parameter's cell is not rebuilt in place:\n{"\n".intercalate ls}"
+        -- the two `step`s' options and bump2's result (an option and a pair) are the only
+        -- allocations: the new `Stats` takes the parameter's cell
         checkEq (s0 + 4) r0 }
   ]
+
+/-- Programs for the borrowing tests (stage 8e): functions that only look at their
+argument, a closure over one, and a pair taken apart at once. -/
+def borrowSrc : String := "import Prelude
+def len : List Nat → Nat
+  | .nil => 0
+  | .cons _ xs => Nat.succ (len xs)
+def sumAcc : Nat → List Nat → Nat
+  | acc, .nil => acc
+  | acc, .cons x xs => sumAcc (Nat.add acc x) xs
+inductive Tree where
+  | leaf
+  | node (key : Nat) (left : Tree) (right : Tree)
+def Tree.mem (k : Nat) : Tree → Bool
+  | .leaf => .false
+  | .node key l r => match Nat.lt k key with
+    | .true => Tree.mem k l
+    | .false => match Nat.lt key k with
+      | .true => Tree.mem k r
+      | .false => .true
+def mapL (f : List Nat → Nat) : List (List Nat) → List Nat
+  | .nil => .nil
+  | .cons x xs => .cons (f x) (mapL f xs)
+def split (xs : List Nat) : List Nat × List Nat := (xs, xs)
+def both (xs : List Nat) : Nat := match split xs with
+  | (a, b) => Nat.add (len a) (len b)
+def t3 : Tree := Tree.node 2 (Tree.node 1 .leaf .leaf) (Tree.node 3 .leaf .leaf)
+"
+
+/-- The optimised IR of a function of `borrowSrc`, as lines. -/
+def borrowIR (n : Name) : IO (List String) := do
+  let s := runFrontend (R := ZeroOneMany) borrowSrc { trustedModule := Tests.libModule, loader := ← preludeLoader }
+  match (do
+      let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+      IR.lowerProgram code (.global n) : Except String (Array IR.Decl)) with
+  | .ok decls =>
+    let d := ((IR.optimizeProgram decls).find? (·.name == n)).get!
+    pure ((d.toString.splitOn "\n").map (·.trimAscii.toString))
+  | .error e => throw (IO.userError e)
+
+/-- Parameter `x{i}` of `n` is borrowed and never counted. -/
+def borrowedUncounted (n : Name) (i : Nat) : IO Unit := do
+  let ls ← borrowIR n
+  let hdr := ls.headD ""
+  check ((hdr.splitOn s!"@&x{i} ").length > 1 || hdr.endsWith s!"@&x{i} :=") s!"x{i} not borrowed:\n{"\n".intercalate ls}"
+  check (!ls.any fun l => l == s!"dup x{i}" || l == s!"drop x{i}") s!"x{i} counted:\n{"\n".intercalate ls}"
 
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
 the C toolchain can't find GMP: give the suite a toolchain (`Tests/Main.lean`) to run these. -/
@@ -1006,6 +1058,38 @@ def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := 
   | .error e =>
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+
+def borrowGroup : Group where
+  name := "borrow"
+  exercise := "Stage 8e"
+  cases := [
+    { name := "the length of a list borrows it", run := fun _ => borrowedUncounted "len" 0 },
+    { name := "a left fold borrows the list (and keeps its tail call)", run := fun _ => do
+        borrowedUncounted "sumAcc" 1
+        let ls ← borrowIR "sumAcc"
+        check (ls.any fun l => l.startsWith "let " && (l.splitOn ":= sumAcc").length > 1) s!"no call:\n{"\n".intercalate ls}" },
+    { name := "a lookup in a tree borrows the tree", run := fun _ => borrowedUncounted "Tree.mem" 1 },
+    { name := "borrowing functions run without leaks", run := fun _ =>
+        okLib (borrowSrc ++ "#run len (.cons 1 (.cons 2 .nil))\n#run sumAcc 0 (.cons 1 (.cons 2 .nil))\n#run Tree.mem 3 t3\n#run Tree.mem 4 t3")
+          ["2", "3", ".true", ".false"] },
+    { name := "a closure over a borrowing function goes through an owned wrapper", run := fun _ => do
+        okLib (borrowSrc ++ "#run mapL len (.cons (.cons 1 .nil) (.cons .nil .nil))") [".cons 1 (.cons 0 .nil)"]
+        let s := runFrontend (R := ZeroOneMany) (borrowSrc ++ "def lens : List Nat := mapL len (.cons .nil .nil)\n") { trustedModule := Tests.libModule, loader := ← preludeLoader }
+        match (do
+            let code ← (compileReachable s.globals s.builtins ["lens"]).mapError toString
+            IR.lowerProgram code (.global "lens") : Except String (Array IR.Decl)) with
+        | .ok decls =>
+          let ds := IR.optimizeProgram decls
+          check (ds.any (·.name == "len._owned")) "no wrapper"
+          check (ds.all fun d => (d.toString.splitOn "pap len ").length == 1) "len partially applied directly"
+        | .error e => throw (IO.userError e) },
+    { name := "drop specialisation: a unique pair taken apart moves its fields", run := fun _ => do
+        let ls ← borrowIR "both"
+        check (ls.any fun l => (l.splitOn "prim dropMoved").length > 1) s!"no specialised drop:\n{"\n".intercalate ls}"
+        okLib (borrowSrc ++ "#run both (.cons 1 (.cons 2 .nil))") ["4"] },
+    { name := "borrowing and drop specialisation in C", run := fun _ =>
+        cRun (borrowSrc ++ "def main : Nat := Nat.add (both (.cons 1 (.cons 2 .nil))) (len (mapL len (.cons .nil .nil)))\n") "5" }
+  ]
 
 /-- Build `main : IO _` with the C backend (and the `IO` library) and compare its output. -/
 def ioRun (src : String) (expected : String) : IO Unit := do
@@ -1648,10 +1732,20 @@ def smallField : List MTm :=
    -- rejected: boxed different tags are different
    ann star (eq (L (enum 2)) (liftedTag 0) (liftedTag 1))]
 
+/-- F6: two types whose binder quantities are different literals are unequal (`False`, so
+the `absurd` checks), and equal literals give the Σ rule. (`MTm` has no quantity variables,
+the case F6 was about: its Lean test is in the group *quantity polymorphism*.) -/
+def qtyApart : List MTm :=
+  let F (q : ZeroOneMany) := sorted 1 (piq q (enum 2) (enum 2))
+  [ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (F .zero) (F .one)) (empty 0)),
+   ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (sorted 1 (sigmaq .one (enum 2) (enum 2))) (sorted 1 (sigma (enum 2) (enum 2)))) (empty 0)),
+   ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (F .one) (F .one)) (empty 0)),
+   reflTy (F .one)]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -2281,6 +2375,10 @@ def selfHostGroup : Group where
         let vs := MTm.sizeInf.map leanVerdict
         unless vs.take 5 == List.replicate 5 "error" && (vs.drop 5).all (· != "error") do
           throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "F6: literal quantities that differ make types unequal (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.qtyApart.map leanVerdict
+        unless vs.take 2 |>.all (· != "error") do throw (IO.userError s!"unexpected verdicts {vs}")
+        unless vs[2]? == some "error" && vs[3]? != some "error" do throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "Q4: a small description field is rejected, a lifted one works (and both kernels agree on it below)", run := fun _ => do
         let vs := MTm.smallField.map leanVerdict
         let body := (vs.drop 4).dropLast
@@ -3413,7 +3511,31 @@ def phantomGroup : Group where
         match (l0.zip l1).find? (fun (a, b) => a != b) with
         | some (a, b) => throw (IO.userError s!"the C differs:\n  without: {a}\n  with:    {b}")
         | none => check (l0.length == l1.length) "the C differs in length" },
-    { name := "and it runs", run := fun _ => cRun (phantomPair true) "6" }
+    { name := "and it runs", run := fun _ => cRun (phantomPair true) "6" },
+    { name := "structures: the last field is unboxed, so a one-field structure is its field (22i)", run := fun _ => do
+        let src := "import Prelude\nstructure W where\n  val : List Nat\nstructure P (w : Nat) where\n  x : Nat\n  y : List Nat\n" ++
+          "def w : W := W.mk (List.cons 1 List.nil)\ndef l : List Nat := List.cons 1 List.nil\n" ++
+          "def p : P 3 := P.mk 2 (List.cons 1 List.nil)\ndef q : Nat × List Nat × Unit := (2, List.cons 1 List.nil, ())\n" ++
+          "def unW (v : W) : List Nat := v.val\ndef swap (v : P 3) : P 3 := (v.x, v.y, ())\n" ++
+          "#eval w\n#run w\n#run p\n#eval swap p\n#run swap p\n" ++
+          "def wl : List W := List.cons w List.nil\n#run wl\n"
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← preludeLoader }
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        checkEq ["(.cons 1 .nil, ())", "(.cons 1 .nil, ())", "(2, .cons 1 .nil, ())",
+          "(2, .cons 1 .nil, ())", "(2, .cons 1 .nil, ())", ".cons (.cons 1 .nil, ()) .nil"]
+          (s.messages.toList.map (·.text))
+        let allocs (n : Name) : IO Nat := match (do
+            let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+            let decls ← IR.lowerProgram code (.global n)
+            let (_, a) ← IR.runProgram (decls.map (·.optimize))
+            pure a : Except String Nat) with
+          | .ok a => pure a
+          | .error e => throw (IO.userError e)
+        -- `W` is its list; `P` is one pair, as a raw `Nat × List Nat × Unit` is two
+        checkEq (← allocs "l") (← allocs "w")
+        checkEq ((← allocs "l") + 1) (← allocs "p")
+        checkEq ((← allocs "l") + 2) (← allocs "q") }
   ]
 
 /-! ## Regions: borrow checking as typing (lib/Region.wiz, Rust DSL RD12) -/
@@ -3423,6 +3545,32 @@ def regionsPush : String :=
 def regionsLongest : String :=
   "def longest {ρa ρb : Region} (0 h : Outlives ρa ρb) (x : Shr ρa Nat) (y : Shr ρb Nat) : Result (Shr ρb Nat) :=\n" ++
   "  match Nat.lt x.val y.val with\n  | .true => .ok y\n  | .false => .ok (Shr.weaken h x)\n"
+
+/-- The front end's state for `src`, with every library importable. -/
+def libsState (src : String) : IO (CommandState ZeroOneMany) := do
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  pure s
+
+/-- The optimised IR of the program computing `n`: `n` and the functions lifted from it. -/
+def libsIR (s : CommandState ZeroOneMany) (n : Name) : IO (List String) := do
+  match (do
+      let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+      IR.lowerProgram code (.global n) : Except String (Array IR.Decl)) with
+  | .ok decls =>
+    pure ((decls.filter (·.name.startsWith n)).toList.map (·.optimize.toString))
+  | .error e => throw (IO.userError e)
+
+/-- The objects allocated computing `n` on the checked heap (a leak is an error). -/
+def libsAllocs (s : CommandState ZeroOneMany) (n : Name) : IO Nat := do
+  match (do
+      let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+      let decls ← IR.lowerProgram code (.global n)
+      let (_, a) ← IR.runProgram (decls.map (·.optimize))
+      pure a : Except String Nat) with
+  | .ok a => pure a
+  | .error e => throw (IO.userError s!"{n}: {e}")
 
 def regionsGroup : Group where
   name := "regions"
@@ -3464,7 +3612,34 @@ def regionsGroup : Group where
         failsLibs "import Region\ndef forge {ρ : Region} : Lent ρ Nat := .mk ()" "Lent"
         failsLibs "import Region\ndef forge {ρ : Region} : Shr ρ Nat := (5, ())" "Shr"
         failsLibs ("import Region\nstructure MyShr (ρ : Region) (A : Type) where\n  val : A\n" ++
-          "def forge {ρ : Region} : Shr ρ Nat := MyShr.mk 5") "mismatch" }
+          "def forge {ρ : Region} : Shr ρ Nat := MyShr.mk 5") "mismatch" },
+    { name := "a handle is its value at run time, and a scope is its body run in place (22i)", run := fun _ => do
+        let s ← libsState ("import Region\n" ++ regionsPush ++
+          "def get {ρ : Region} (x : Shr ρ Nat) : Nat := x.val\n" ++
+          "def scoped (xs : List Nat) : Result (Unit × List Nat) := Uniq.borrow Region.static xs (fun ρ h v r => push1 r)\n" ++
+          "def direct (xs : List Nat) : Result (Unit × List Nat) := .ok ((), List.cons 1 xs)\n" ++
+          "def nested (a b : List Nat) : Result (List Nat × List Nat) :=\n" ++
+          "  match Uniq.borrow Region.static a (fun ρa ha a ra =>\n" ++
+          "    match Uniq.borrow ρa b (fun ρb hb b rb =>\n" ++
+          "      match push1 rb with\n      | .ok q => .ok (ra, q.2)\n      | .err e => .err e) with\n" ++
+          "    | .ok q => .ok (q.2, q.1)\n    | .err e => .err e) with\n" ++
+          "  | .ok p => .ok (p.2, p.1)\n  | .err e => .err e\n" ++
+          "def t1 : Result (Unit × List Nat) := scoped List.nil\n" ++
+          "def t0 : Result (Unit × List Nat) := direct List.nil\n" ++
+          "def t2 : Result (List Nat × List Nat) := nested List.nil List.nil\n#run t1\n#eval t1\n#run t2\n" ++
+          "#run Shr.borrow Region.static 4 (fun ρ h x => .ok (get x))")
+        let msgs := s.messages.toList.map (·.text)
+        checkEq [".ok ((), .cons 1 .nil)", ".ok ((), .cons 1 .nil)", ".ok (.nil, .cons 1 .nil)", ".ok 4"] msgs
+        -- `x.val` is `x`: no projection
+        let getIR ← libsIR s "get"
+        check (getIR.all fun d => (d.splitOn "proj").length == 1) s!"a projection:\n{"\n".intercalate getIR}"
+        -- no closure for the scopes' bodies, and nothing lifted
+        for n in ["scoped", "nested"] do
+          let ir ← libsIR s n
+          check (ir.length == 1 && ir.all fun d => (d.splitOn "pap").length == 1 && (d.splitOn "ap x").length == 1)
+            s!"{n}: a closure:\n{"\n".intercalate ir}"
+        -- a borrow costs no allocation: the same objects as without it
+        checkEq (← libsAllocs s "t0") (← libsAllocs s "t1") }
   ]
 
 
