@@ -403,6 +403,13 @@ def Netlist.countAux (p : Op → Bool) : List Node → Nat
   | .nil => 0
   | .cons x xs => Nat.ofBool (p x.op) + Netlist.countAux p xs
 
+def Netlist.size (n : Netlist) : Nat := List.length n.nodes
+
+def Op.isAdd : Op → Bool
+  | .add => .true
+  | .sub => .false
+  | _ => .false
+
 def Netlist.count (p : Op → Bool) (n : Netlist) : Nat :=
   Netlist.countAux p n.nodes
 
@@ -447,6 +454,8 @@ def Circuit.netlistS {ω i o : HwTy} (cse : Bool) (name : String) (c : Circuit i
     (List.cons (Port.mk "y" (HwTy.width o) r.1.2.2.2) List.nil), r.2)
 
 def Circuit.netlist {ω i o : HwTy} (name : String) (c : Circuit i o) : Netlist := (Circuit.netlistS .true name c).1
+-- without hash-consing (to measure what it saves)
+def Circuit.netlistNaive {ω i o : HwTy} (name : String) (c : Circuit i o) : Netlist := (Circuit.netlistS .false name c).1
 
 -- netlist simulation on bus encodings, one input per cycle
 def Circuit.simNet {ω i o : HwTy} (cse : Bool) (c : Circuit i o) (xs : List Nat) : List Nat :=
