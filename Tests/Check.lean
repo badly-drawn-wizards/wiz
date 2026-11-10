@@ -71,6 +71,18 @@ def mlttGroup : Group where
           (arr () (arr () "B" "C") (arr () (arr () "A" "B") (arr () "A" "C"))))))
         (lams ["A", "B", "C", "g", "f", "x"] (.app "g" (.app "f" "x")))] },
     { name := "Church numerals", run := fun _ => accepts churchDecls },
+    -- (audit 2) an index beyond the context used to panic and go on with `Sort 0`, as the
+    -- variable's type and as its value: a term `Prop : Prop`
+    { name := "a variable out of scope is rejected",
+      run := fun _ => do
+        let outOfScope : TypeError → Bool
+          | .other m => (m.splitOn "out of scope").length > 1
+          | _ => false
+        let d (ty : Term Unit) (v : Option (Term Unit)) : Decl Unit := { name := "d", type := ty, value := v }
+        let fnTy : Term Unit := Term.pi "x" .default (.qlit ()) (.sort 1) (.sort 0) none
+        rejects [d (.sort 0) (some (.var 0))] outOfScope "an out-of-scope variable"
+        rejects [d fnTy (some (.lam "x" (.var 3)))] outOfScope "an out-of-scope variable"
+        rejects [d (.var 2) none] outOfScope "an out-of-scope variable" },
     { name := "refl : 2 + 2 = 4 (needs conversion)",
       run := fun _ => accepts (churchDecls ++ leibnizDecls ++
         [Raw.defn "twoPlusTwo" (apps "Eq" [apps "add" ["two", "two"], "four"]) (.app "refl" "four")]) },
@@ -265,5 +277,14 @@ def structGroup : Group where
     { name := "() only checks against Unit", run := fun _ =>
         rejects (R := Unit) [Raw.defn "bad" (.empty 1) .tt] (fun _ => true) "an error" }
   ]
+
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  mlttGroup ::
+  qttGroup ::
+  structGroup ::
+  []
 
 end Tests.Check

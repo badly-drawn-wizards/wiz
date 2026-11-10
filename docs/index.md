@@ -28,6 +28,7 @@ topic below, so the numbers are not in order.
 * [Stage 8: the backend](stages/08-backend.md)
 * [Stage 9: the C FFI](stages/09-ffi.md)
 * [Stage 10: effects](stages/10-effects.md)
+* [Stage 25: concurrency](stages/25-concurrency.md)
 
 ### Self-hosting
 
@@ -46,6 +47,7 @@ topic below, so the numbers are not in order.
 
 * [Stage 11: tooling](stages/11-tooling.md)
 * [Stage 23: grail, a build tool](stages/23-grail.md)
+* [Stage 26: tower, a toolchain manager](stages/26-tower.md)
 
 ### Numbers and libraries
 
