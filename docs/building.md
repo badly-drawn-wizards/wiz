@@ -22,20 +22,22 @@ which grail and the test driver read (`Tests/Main.lean`; flags to `lake test -- 
 `wiz` takes flags. Nothing reads environment variables.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
-`solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
+`master`. Every job runs in that dev shell (with the Cachix cache, when
 one is configured); the elan toolchain and `.lake` (including Lake's artifact cache) are
 cached between runs.
 
-* **The solution tree** (`solutions`; recognised by its `--<sol` markers) runs the full
-  suite in parallel shards, one job per entry of `.github/test-shards.json` (each entry
+* **The test suite** runs in parallel shards, one job per entry of `.github/test-shards.json` (each entry
   is a list of `lake test` selectors). The build job checks that every group of
   `Tests/Main.lean` is in exactly one shard (`scripts/ci.py check-shards`), so **a new
   test group must be added to `.github/test-shards.json`**. Each shard prints a pass/fail
   table in its job summary, and the `CI result` job sums them up for the whole suite.
-* **The exercise tree** (`master`) checks that everything builds and that the test driver
-  runs to its summary line; the failures are the exercises.
+* **The exercise tree** (the `exercise tree` job) is generated with
+  `scripts/mkexercises.py` into a temporary directory and built (`lake build wiz grail
+  tests`), with a Lake cache of its own; it runs beside the test shards. It does not run
+  the exercise tree's tests (almost all of them fail by design). See
+  [exercises.md](exercises.md).
 * **The bootstrap fixpoint** (`scripts/fixpoint.sh`: the stage-1 C of the toolchain
-  equals its stage-2 C) runs weekly on `solutions`, or from "Run workflow" with
+  equals its stage-2 C) runs weekly on `master`, or from "Run workflow" with
   `fixpoint` ticked. It takes a long time; run it locally with `nix develop -c
   scripts/fixpoint.sh`.
 * **The Nix package** (the `nix package` job): `nix build .#wiz` builds `wiz` and
@@ -59,12 +61,12 @@ To run Wiz without a checkout or a Lean toolchain, with the binaries from Cachix
 ```
 nix run --option extra-substituters https://badlydrawnwizards.cachix.org \
   --option extra-trusted-public-keys badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI= \
-  github:badly-drawn-wizards/wiz/solutions#wiz -- check hello.wiz
+  github:badly-drawn-wizards/wiz#wiz -- check hello.wiz
 ```
 
 or `cachix use badlydrawnwizards` once and then `nix run
-github:badly-drawn-wizards/wiz/solutions#wiz -- …` (`#grail` for grail; `wiz build FILE
--o OUT` works out of the box). Name the `solutions` branch: the default branch, `master`,
-is the exercise tree, whose `wiz` is mostly stubs. The `--option`s count only for a
-trusted Nix user (or with the cache in `nix.conf`); otherwise Nix builds wiz from source,
-which takes a few minutes.
+github:badly-drawn-wizards/wiz#wiz -- …` (`#grail` for grail; `wiz build FILE -o OUT`
+works out of the box). Without a branch the flake reference means the default branch,
+`master`, whose binaries are on Cachix once its `nix package` job has run. The
+`--option`s count only for a trusted Nix user (or with the cache in `nix.conf`);
+otherwise Nix builds wiz from source, which takes a few minutes.

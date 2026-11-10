@@ -48,6 +48,8 @@ structure Server where
   docs : Std.HashMap String Doc := {}
   /-- library modules: name ↦ (path, source) -/
   libs : Std.HashMap String (String × String) := {}
+  /-- the modules from the toolchain's `lib/`, whose `builtin` registrations are trusted -/
+  trusted : List String := []
   /-- the last session number handed out (sessions are unique over the server's life) -/
   sessions : Nat := 0
   /-- the client asked for `wiz/elaborated` notifications -/
@@ -82,7 +84,9 @@ def range (text : String) (info : SourceInfo) : Json :=
 /-- Elaborate a document (incrementally) with the libraries available to `import`. -/
 def elaborate (srv : Server) (doc : Doc) : Doc :=
   let libs := srv.libs
-  let init : St := { loader := fun m => (libs.get? m).map (·.2), termInfo := true }
+  let trusted := srv.trusted
+  let init : St := { loader := fun m => (libs.get? m).map (·.2), termInfo := true,
+                     trustedModule := trusted.contains }
   let key₀ := hash (libs.toList.map (·.2.2) |>.toString)
   let (s, eng) := Query.elaborate doc.engine doc.text init key₀
   { doc with state := s, engine := eng }
@@ -93,7 +97,7 @@ def diagnostic (doc : Doc) (m : Msg) : Json :=
      ("data", Json.mkObj ((Actions.messageData doc.state m).map fun (k, vs) =>
         (k, if k == "name" then Json.str (vs.headD "") else Json.arr (vs.map Json.str).toArray)))]
   Json.mkObj ([("range", range doc.text m.info),
-               ("severity", (if m.severity == .error then 1 else 3 : Nat)),
+               ("severity", (match m.severity with | .error => 1 | .warning => 2 | .info => 3 : Nat)),
                ("source", "wiz"), ("message", m.text)] ++ code)
 
 def diagnostics (uri : String) (doc : Doc) : Json :=
@@ -449,7 +453,7 @@ per infoview) feed one channel, and this loop handles the messages in order, so 
 server's state is never shared. `ready` gets the WebSocket's port once it listens.
 Without `stdio`, the server runs until it is killed. -/
 partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Option (IO.FS.Stream × IO.FS.Stream))
-    (listen : Listen) (ready : UInt16 → IO Unit := fun _ => pure ()) : IO Unit := do
+    (listen : Listen) (ready : UInt16 → IO Unit := fun _ => pure ()) (trusted : List String := []) : IO Unit := do
   let ch ← Std.Channel.Sync.new (α := Event)
   let next ← IO.mkRef 0
   let fresh : IO Nat := next.modifyGet fun k => (k, k + 1)
@@ -534,30 +538,32 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
     | .disconnected k =>
       if let some c := conns.get? k then Socket.shutdown c.fd
       loop srv (conns.erase k)
-  let conns ← loop { libs } {}
+  let conns ← loop { libs, trusted } {}
   -- stop the other threads: the acceptors and every infoview's reader see the end
   if let (some fd, some sock) := (unixFd, listen.infoview) then Socket.close fd sock
   if let some (fd, _) := wsFd then Socket.closeFd fd
   for (_, c) in conns do Socket.shutdown c.fd
 
 /-- `serveWith` for the editor on `input`/`output` and infoviews on the Unix socket `sock`. -/
-def serveInfoview (libs : Std.HashMap String (String × String)) (input output : IO.FS.Stream) (sock : String) : IO Unit :=
-  serveWith libs (some (input, output)) { infoview := some sock }
+def serveInfoview (libs : Std.HashMap String (String × String)) (input output : IO.FS.Stream) (sock : String)
+    (trusted : List String := []) : IO Unit :=
+  serveWith libs (some (input, output)) { infoview := some sock } (trusted := trusted)
 
 /-- Serve until `exit`: on stdin/stdout (unless `stdio := false`), and on the sockets of
 `listen`. -/
-partial def serve (libs : Std.HashMap String (String × String)) (listen : Listen := {}) (stdio : Bool := true) : IO Unit := do
+partial def serve (libs : Std.HashMap String (String × String)) (listen : Listen := {}) (stdio : Bool := true)
+    (trusted : List String := []) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
   if listen.infoview.isSome || listen.ws.isSome || !stdio then
     let ready (port : UInt16) := IO.eprintln s!"wiz lsp: WebSocket on port {port}"
-    return ← serveWith libs (if stdio then some (stdin, stdout) else none) listen ready
+    return ← serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted
   let rec loop (srv : Server) : IO Unit := do
     let some msg ← readMessage stdin | return
     if getStr msg ["method"] == "exit" then return
     let (srv, out) := handle srv msg
     for j in out do writeMessage stdout j
     loop srv
-  loop { libs }
+  loop { libs, trusted }
 
 end Wiz.LSP
