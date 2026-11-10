@@ -408,13 +408,6 @@ namespace Budget
 
 instance : Nonempty Budget := ⟨⟨Classical.choice inferInstance⟩⟩
 
-@[never_extract, noinline] unsafe def newImpl (steps : Nat) : Budget :=
-  match unsafeBaseIO (IO.mkRef (steps + 1)) with
-  | r => ⟨r⟩
-
-/-- A fresh budget of `steps` steps. -/
-@[implemented_by newImpl] opaque new (steps : Nat) : Budget
-
 @[never_extract, noinline] unsafe def tickImpl (b : Budget) : Bool :=
   unsafeBaseIO do
     let n ← b.ref.get
@@ -424,12 +417,24 @@ instance : Nonempty Budget := ⟨⟨Classical.choice inferInstance⟩⟩
 /-- Take one step: `false` when the budget has run out. -/
 @[implemented_by tickImpl] opaque tick (b : Budget) : Bool
 
-@[never_extract, noinline] unsafe def leftAfterImpl {α : Type} (b : Budget) (_ : α) : Nat :=
-  unsafeBaseIO b.ref.get
+/-- (An action, so that what comes after it in `runImpl` comes after `x` is computed: the
+compiler may move a pure computation, not an action.) -/
+@[never_extract, noinline] private def computed {α : Type} (x : α) : BaseIO α := pure x
 
-/-- What is left (plus one; `0`: it ran out) once `x` has been computed. (Taking `x` makes
-the read come after the computation.) -/
-@[implemented_by leftAfterImpl] opaque leftAfter {α : Type} (b : Budget) (x : α) : Nat
+@[never_extract, noinline] unsafe def runImpl {α : Type} [Inhabited α] (steps : Nat) (f : Budget → α) : α × Nat :=
+  unsafeBaseIO do
+    let r ← IO.mkRef (steps + 1)
+    let x ← computed (f ⟨r⟩)
+    let left ← r.get
+    -- (the budget is over: a closure that outlived it, in a metavariable's solution, must
+    -- not find it exhausted later)
+    r.set (1 <<< 62)
+    pure (x, steps + 1 - left)
+
+/-- Compute `f` with a fresh budget of `steps` steps. Returns the result and the number of
+steps it took; `steps + 1` means the budget ran out. (Afterwards the budget no longer
+counts: a value made under it that is forced later computes freely.) -/
+@[implemented_by runImpl] opaque run {α : Type} [Inhabited α] (steps : Nat) (f : Budget → α) : α × Nat
 
 /-- What a proof reads back as when its budget ran out: a constant with this name. No
 declaration has it, so the kernel rejects a term that contains it, with this text. -/

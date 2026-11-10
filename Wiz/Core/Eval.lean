@@ -1252,12 +1252,11 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
           -- steps. If it runs out, the proof reads back as a constant that says so (and
           -- that the kernel rejects).
           | none =>
-            let b := Budget.new g.proofSteps
-            let g' := { g with budget := some b }
-            let tm := quote g' l (vElims g' (eval g' env t) pre)
-            let left := b.leftAfter tm
-            let tm : Term R := if left == 0 then .const (Budget.message g.proofSteps) [] else tm
-            if g.traceProofSteps then dbgTrace s!"proof-steps {g.proofSteps + 1 - left}" fun _ => tm else tm
+            let (tm, used) := Budget.run g.proofSteps fun b =>
+              let g' := { g with budget := some b }
+              quote g' l (vElims g' (eval g' env t) pre)
+            let tm : Term R := if used > g.proofSteps then .const (Budget.message g.proofSteps) [] else tm
+            if g.traceProofSteps then dbgTrace s!"proof-steps {used}" fun _ => tm else tm
         | _ => elims (hd ()) pre
       let p : Term R := match p with
         | .prf .. => p
