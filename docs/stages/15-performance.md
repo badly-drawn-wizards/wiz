@@ -125,3 +125,74 @@ Tests: numerals at `2^31`, `2^32`, `2^62 - 1`, `2^62`, `2^63`, `2^64`, `2^64 + 1
 `10^30` with `#eval`, `#run`, C and LLVM (groups `backend`, `c`, `llvm`); with the
 self-hosted compiler (group `selfhost`), numerals up to `2^63 - 1` compiled and run
 with both collectors, and the error from `2^63`.
+
+### 15h: case-shaped calls (`Bool.and` and `Bool.or` short-circuit) ✅
+
+Application is call by value in compiled code: `Bool.and a b` computed `b` before
+looking at `a`. So `p x && all p xs` (written with `Bool.and`) walked the whole list
+after the answer was known, and the recursive call was not a tail call. The kernel's
+evaluator never did that (it is lazy).
+
+A definition is **case-shaped** when its erased code is `λ x₁ … xₙ. case s [b₀, …]`
+with a scrutinee and branches built only from the parameters, constants, objects,
+projections and tags (no application, no binder; at most 16 nodes), after substituting
+the `let`s a compiled `match` makes for fields. `Bool.and`, `Bool.or`, `Bool.not`, a
+`getD` or `orElse` on `Option` are. A call with all `n` arguments is compiled as the
+`case` itself (`ETerm.caseInline` in `Wiz/Compiler/Inline.lean`, run on every reachable
+definition by `compileReachableE`, before lowering):
+
+* an argument whose parameter the scrutinee uses, or that more than one branch uses, is
+  computed first, as before;
+* an argument whose parameter one branch uses is computed in that branch;
+* an argument whose parameter no branch uses is not computed.
+
+A partial application (`List.foldr Bool.and`) still calls the definition.
+
+Why this is sound: the language is pure, so when an argument is evaluated cannot be
+observed, only whether the program returns. The result is the same whenever the
+call-by-value program returned. A program that did not return because of such an
+argument (a `partial` definition that loops, an absurd case) now returns when the
+branch taken doesn't use it, which is what the kernel's evaluator does with the same
+term. An argument of type `IO A` is a value (a function of the world): not building it
+performs nothing, and performing it was never part of evaluating the call.
+
+The passes after it see ordinary `case`s: constant folding (15c) removes the `case`
+when the test is known, the recursive call in a branch is a tail call and becomes a
+loop (15f), and borrow inference and reuse (8e, 8f) run on the result.
+
+    def mem (n : Nat) : List Nat → Bool
+      | .nil => .false
+      | .cons x xs => Bool.or (Nat.beq x n) (mem n xs)
+
+    def mem @&x0 @&x1 :=
+      join j1(x13 x14) :=
+          case x14 of
+          | 0 => let x6 := Bool.false; ret x6
+          | 1 =>
+              let x8 := proj 0 x14
+              let x9 := proj 1 x14
+              let x10 := prim nat.beq x8 x13
+              case x10 of
+              | 0 => jmp j1 x13 x9
+              | 1 => let x12 := Bool.true; ret x12
+      jmp j1 x0 x1
+
+Allocations in the checked-heap interpreter, without and with the pass
+(`compileReachable … (caseShapes := false)` turns it off; the programs are
+`caseShapeSrc` in `Tests/Elab.lean`):
+
+| program | before | after |
+|---|---|---|
+| `mem 3 (range 1000)`: a search in a list that exists | 1000 | 1000 (the same cells; a loop that stops at the fourth) |
+| `reach 8 100 [1]`: each level `Bool.or (mem n xs) (reach … (double xs))` | 101 | 4 |
+| `Bool.and (mem 2000 (range 1000)) (mem 5 (range 1000))` | 2000 | 1000 |
+| `orElse (.some 4) (List.length (double xs))`, 100 elements | 200 | 100 |
+
+Tests: group `backend` (the IR of `mem`, `allLt` and a user function; the counts
+above), groups `c` and `llvm` (a second argument that never returns; ten million steps
+of `Bool.or (Nat.beq i n) (upFrom n (i + 1))` on a 1 MB stack at `-O0`).
+
+The self-hosted backend does the same for its own input (small case-shaped functions
+inlined with lazy arguments, branch `agent/selfhost-demand-d`); `&&` and `||` as macros
+that expand to matches (`agent/prelude-batch`) need neither.
+

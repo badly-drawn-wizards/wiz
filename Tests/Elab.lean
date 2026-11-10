@@ -956,6 +956,50 @@ def main : IO Unit := printAll (.cons 1000000000 (.cons 2147483648 (.cons 429496
 def selfhostBigLitsExpected : String :=
   "1000000000\n2147483648\n4294967296\n4611686018427387904\n9223372036854775807\n0\n4294967296\n"
 
+/-- (15h) Calls of case-shaped definitions: a search that stops (`Bool.or`), a test of
+every element (`Bool.and`), a second argument that never returns, a breadth-first
+search whose next level is only built if the test fails, and a user function of that
+shape (`orElse`). -/
+def caseShapeSrc : String := "import Prelude
+def range : Nat → List Nat → List Nat
+  | .zero, acc => acc
+  | .succ n, acc => range n (.cons n acc)
+def mem (n : Nat) : List Nat → Bool
+  | .nil => .false
+  | .cons x xs => Bool.or (Nat.beq x n) (mem n xs)
+def allLt (n : Nat) : List Nat → Bool
+  | .nil => .true
+  | .cons x xs => Bool.and (Nat.lt x n) (allLt n xs)
+def double : List Nat → List Nat
+  | .nil => .nil
+  | .cons x xs => .cons (x + x) (double xs)
+def reach (n : Nat) : Nat → List Nat → Bool
+  | .zero, _ => .false
+  | .succ fuel, xs => Bool.or (mem n xs) (reach n fuel (.cons 1 (double xs)))
+partial def loop (n : Nat) : Bool := loop (n + 1)
+partial def upFrom (n i : Nat) : Bool := Bool.or (Nat.beq i n) (upFrom n (i + 1))
+def orElse (o : Option Nat) (d : Nat) : Nat := match o with
+  | .some x => x
+  | .none => d
+def pick (o : Option Nat) (xs : List Nat) : Nat := orElse o (List.length (double xs))
+def s1 : Bool := mem 3 (range 1000 .nil)
+def s2 : Bool := reach 8 100 (.cons 1 .nil)
+def s3 : Bool := Bool.and (mem 2000 (range 1000 .nil)) (mem 5 (range 1000 .nil))
+def s4 : Nat := pick (.some 4) (range 100 .nil)
+def b2n : Bool → Nat
+  | .true => 1
+  | .false => 0
+def rest : List Nat := .cons (b2n (Bool.and (mem 7 (range 5 .nil)) (loop 0))) (.cons (b2n (Bool.or (mem 3 (range 5 .nil)) (loop 0)))
+  (.cons (b2n s1) (.cons (b2n s2) (.cons (b2n s3) (.cons s4 (.cons (b2n (allLt 5 (range 1000 .nil)))
+  (.cons (pick .none (range 3 .nil)) (.cons (b2n (List.foldr Bool.and .true (.cons .true (.cons .false .nil)))) .nil))))))))
+def main : List Nat := .cons (b2n (upFrom 10000000 0)) rest
+"
+
+def caseShapeRest : String :=
+  ".cons 0 (.cons 1 (.cons 1 (.cons 1 (.cons 0 (.cons 4 (.cons 0 (.cons 3 (.cons 0 .nil))))))))"
+
+def caseShapeExpected : String := s!".cons 1 ({caseShapeRest})"
+
 def backendGroup : Group where
   name := "backend"
   exercise := "Exercise 8.1"
@@ -1019,7 +1063,42 @@ def backendGroup : Group where
           checkEq "100000" run
         | ms => throw (IO.userError s!"unexpected messages {ms}") },
     { name := "numerals at 2^31 … 2^64+1 and 10^30, interpreted and through the IR (15g)", run := fun _ =>
-        okLib (bigLitSrc ++ "#eval main\n#run main\n") [bigLitExpected, bigLitExpected] }
+        okLib (bigLitSrc ++ "#eval main\n#run main\n") [bigLitExpected, bigLitExpected] },
+    { name := "Bool.and/Bool.or calls are cases: the search is a loop that stops (15h)", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) (caseShapeSrc ++ "#ir mem\n#ir allLt\n#ir pick\n#run rest\n") { loader := ← preludeLoader }
+        let errs := (s.messages.filter (·.severity == .error)).map (·.text)
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors: {errs}")
+        match (s.messages.toList.filter (·.severity == .info)).map (·.text) with
+        | [mem, allLt, pick, run] =>
+          for ir in [mem, allLt] do
+            -- no call of `Bool.or`/`Bool.and`: a case on the test, and the recursion a jump
+            check ((ir.splitOn "Bool.or x").length == 1 && (ir.splitOn "Bool.and x").length == 1) ir
+            check ((ir.splitOn "case").length == 3 && (ir.splitOn "jmp").length == 3) ir
+          -- the default is computed in the `none` branch only
+          check ((pick.splitOn "orElse").length == 1) pick
+          match pick.splitOn "case" with
+          | [before, after] => check ((before.splitOn "double").length == 1 && (after.splitOn "double").length == 2) pick
+          | _ => throw (IO.userError pick)
+          -- (`#run` is the IR's interpreter: the arguments that never return are not computed)
+          checkEq caseShapeRest run
+        | ms => throw (IO.userError s!"unexpected messages {ms}") },
+    { name := "allocations of a short-circuiting search, before and after (15h)", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) caseShapeSrc { loader := ← preludeLoader }
+        let allocs (n : Name) (caseShapes : Bool) : IO Nat := match (do
+            let code ← (compileReachable s.globals s.builtins [n] (caseShapes := caseShapes)).mapError toString
+            let decls ← IR.lowerProgram code (.global n)
+            let (_, a) ← IR.runProgram (IR.optimizeProgram decls)
+            pure a : Except String Nat) with
+          | .ok a => pure a
+          | .error e => throw (IO.userError s!"{n}: {e}")
+        -- a search in a list that exists already: the same cells (but a loop, and it stops)
+        checkEq [1000, 1000] [← allocs "s1" false, ← allocs "s1" true]
+        -- the next level of the search is built only when the test failed
+        checkEq [101, 4] [← allocs "s2" false, ← allocs "s2" true]
+        -- the second list is not built when the first test fails
+        checkEq [2000, 1000] [← allocs "s3" false, ← allocs "s3" true]
+        -- the default of `orElse` is not computed for `some`
+        checkEq [200, 100] [← allocs "s4" false, ← allocs "s4" true] }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
@@ -3306,6 +3385,8 @@ def nativeCases (llvm : Bool) : List Case :=
         cRun (llvm := llvm) foldSrc foldExpected },
     { name := "numerals at 2^31 … 2^64+1 and 10^30 are constants (15g)", run := fun _ =>
         cRun (llvm := llvm) bigLitSrc bigLitExpected },
+    { name := "Bool.and/Bool.or don't compute an argument they don't need: one that never returns, 10M steps on a 1 MB stack at -O0 (15h)", run := fun _ =>
+        cRunSmallStack (llvm := llvm) caseShapeSrc caseShapeExpected },
     { name := "memoised suspensions (memo)", run := fun _ =>
         cRun (llvm := llvm) ("import Prelude\ndef twice (t : Unit → Nat) : Nat := t () + t ()\n" ++
           "def lazyAdd (m n : Nat) : Unit → Nat := memo (fun _ => m + n)\n" ++
