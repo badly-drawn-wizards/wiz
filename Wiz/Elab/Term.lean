@@ -1179,10 +1179,13 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   -- a lambda with unannotated binders whose domains aren't known yet waits for the other
   -- arguments, which may fix them (`zipWith3 (fun b x y => if b then x else y) c t e`)
   let mut postponed : Array (Syntax × Term R × VTy R × Bool) := #[]
+  -- (7e) the numerals of a class method's application wait too (`1 + x`); elsewhere a
+  -- numeral may be what fixes a postponed lambda's domain (`mealy (fun s i => …) 0 xs`)
+  let numPostpone ← numOperands ctx stx
   for pass in [0:2] do
     for (arg, m, dom, used) in (if pass == 0 then pending else postponed) do
       if pass == 0 && ((postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg))) ||
-          (numLike arg && (← force dom) matches .neutral (.mvar _) _)) then
+          (numPostpone && numLike arg && (← force dom) matches .neutral (.mvar _) _)) then
         postponed := postponed.push (arg, m, dom, used)
         continue
       let a ← check ctx arg dom
