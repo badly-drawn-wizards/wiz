@@ -475,7 +475,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
     | .snd p => do
       let (p', pty) ← eraseInfer ctx p
       pure (if unboxedSigma g ctx.lvl pty then .erased else .proj 1 p')
-    | .split sq s _ _ x y b => do
+    | .split sq s _ m x y b => do
       -- a split at 0 never computes its scrutinee (the kernel checks it as an erased
       -- position): both components are `◾`
       let zero := isZeroQ (ctx.eval sq)
@@ -485,7 +485,9 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       -- let s := s'; let x := s.0; let y := s.1; b   (b lives under x, y: lift past s)
       let vx := Val.var ctx.lvl
       let ctx₂ := (ctx.bind x pq A).bind y [] (Closure.inst g B vx)
-      let (b', _) ← eraseInfer ctx₂ b
+      -- the body is erased against the motive, as the kernel checks it: it may be a
+      -- pair or a λ, which have no inferred type (`let 1 (a, w') := x w; (a, w')`)
+      let b' ← eraseCheck ctx₂ b (Closure.inst g (.mk ctx.env m) (.pair vx (Val.var (ctx.lvl + 1))))
       if zero then
         pure (.letE "s" .erased (.letE x .erased (.letE y .erased (b'.lift 1 2))))
       else
