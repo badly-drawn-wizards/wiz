@@ -133,11 +133,11 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
     | none => freshMeta ctx "the type of this definition"
   -- (for the language server) the type after the binders, and where ` : T` would go
   if let some (n, ni, at_) := declName? then pushInfo (.decl ni n ctx ty typeStx.isSome at_)
-  -- the type's holes and instance problems that are already determined, solved into it
-  -- before the body is checked: an equation evaluated with a hole in it stays stuck
-  -- after the hole is solved (`w ?n = 8` against `refl 8`)
+  -- the type's instance problems that are already determined, solved before the body is
+  -- checked: an equation stuck on such a hole then computes when it meets the body's type
+  -- (`unifyAt`). (The type isn't zonked here: an equation that stays as written lets
+  -- `rfl` be `refl` of its sides.)
   while ← synthPending do pure ()
-  let ty ← zonk ctx.lvl ty
   let val ← valStx.mapM fun s => do Elab.check ctx s (← evalIn ctx ty)
   let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val := val.map fun v => tele.foldr (fun (x, _, _, _) b => Term.lam x b) v

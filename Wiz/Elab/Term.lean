@@ -187,7 +187,7 @@ def expand? (stx : Syntax) : ElabM R (Option Syntax) := do
 Unification is untyped, so it misses the η-rule for `Unit` (`P x =?= P ()` with
 `x : Unit`). When it fails, we ask the kernel's type-directed `convTy`, which treats
 unsolved metas as rigid, before giving up. -/
-def unifyAt (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : ElabM R Unit :=
+def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : ElabM R Unit :=
   fun s => match unify ctx.lvl expected inferred s with
     | .ok r => .ok r
     | .error e =>
@@ -195,6 +195,31 @@ def unifyAt (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Elab
       let show' (v : VTy R) := (quote s.globals ctx.lvl v).pretty ctx.names
       .error { info := (ctx.withInfo stx).info,
                msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})" }
+
+/-- A type evaluated while some of its holes were unsolved: an equation in it computed
+(or got stuck) on the holes, and stays so after they are solved (`w ?n = 8`). Evaluate it
+again with the solutions (`none` if it mentions no solved hole). -/
+def reevalSolved? (ctx : LocalCtx R) (v : VTy R) : ElabM R (Option (VTy R)) := do
+  let t := quote (← getGlobals) ctx.lvl (← forceMeta v)
+  let ms := t.mvars
+  if ms.isEmpty then return none
+  let mut anySolved := false
+  for m in ms do
+    if (← lookupMeta m).solution.isSome then anySolved := true
+  if !anySolved then return none
+  return some (← evalIn ctx (← zonk ctx.lvl t))
+
+/-- `unifyAt0`, and when it fails, once more with both types evaluated again with the
+holes solved since (see `reevalSolved?`). -/
+def unifyAt (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : ElabM R Unit := do
+  let s ← get
+  try unifyAt0 ctx stx expected inferred
+  catch err =>
+    set s
+    let e' ← reevalSolved? ctx expected
+    let i' ← reevalSolved? ctx inferred
+    if e'.isNone && i'.isNone then throw err
+    unifyAt0 ctx stx (e'.getD expected) (i'.getD inferred)
 
 /-- Is this a `fun` whose first binder is implicit? -/
 private def isImplicitFun (stx : Syntax) : Bool :=

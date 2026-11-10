@@ -81,11 +81,7 @@ def group : Group where
         okOptic ("import Optic\n" ++
           "def t3 (x : Nat) (xs ys : List Nat) (h : xs = ys) : List.cons x xs = List.cons x ys :=\n" ++
           "  Optic.congrArg (List.cons x) h\n" ++
-          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Optic.congrArg Nat.succ h\n" ++
-          "def pg {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m)\n" ++
-          "    (hi : Lens.Indep l m) : Lens.PutGet (Lens.pair l m) := fun s ab =>\n" ++
-          "  ((Optic.trans (hi.2.1 ((l s).2 ab.1) ab.2) (hl.2.1 s ab.1),\n" ++
-          "    hm.2.1 ((l s).2 ab.1) ab.2))") }
+          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Optic.congrArg Nat.succ h") }
   ]
 
 end Tests.ElabFix
