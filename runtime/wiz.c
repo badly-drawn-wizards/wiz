@@ -632,8 +632,9 @@ WIZ_API wiz_val wiz_out_nat(uint64_t n) {
 }
 
 /* ---- machine words (lib/Word.wiz, stages 22c-d) ----
-   `UIntN w` and `IntN w` are, in the model, `mk (toNat : Nat)`: the bits as a number
-   below 2^w (two's complement for `IntN`). Compiled code represents them natively
+   `UIntN w` and `IntN w` (and `BitVec n`, which is `UIntN n`) are, in the model,
+   `mk (toNat : Nat)` with the width a phantom parameter (stage 22e), so the model's
+   object is `⟨0 bits⟩`: the bits as a number below 2^w (two's complement for `IntN`). Compiled code represents them natively
    (`attribute [implemented_by mk get] UIntN.mk`): a value is its bits b,
      * a scalar if b < 2^63 (no allocation),
      * a raw box (WIZ_TAG_RAW) if 2^63 <= b < 2^64,
