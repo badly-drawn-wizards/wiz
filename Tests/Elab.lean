@@ -4356,30 +4356,241 @@ def phantomGroup : Group where
         | some (a, b) => throw (IO.userError s!"the C differs:\n  without: {a}\n  with:    {b}")
         | none => check (l0.length == l1.length) "the C differs in length" },
     { name := "and it runs", run := fun _ => cRun (phantomPair true) "6" },
-    { name := "structures: the last field is unboxed, so a one-field structure is its field (22i)", run := fun _ => do
+    { name := "structures: every pair is a pair; with --unbox-structs the last field is unboxed (22i)", run := fun _ => do
         let src := "import Prelude\nstructure W where\n  val : List Nat\nstructure P (w : Nat) where\n  x : Nat\n  y : List Nat\n" ++
           "def w : W := W.mk (List.cons 1 List.nil)\ndef l : List Nat := List.cons 1 List.nil\n" ++
           "def p : P 3 := P.mk 2 (List.cons 1 List.nil)\ndef q : Nat × List Nat × Unit := (2, List.cons 1 List.nil, ())\n" ++
           "def unW (v : W) : List Nat := v.val\ndef swap (v : P 3) : P 3 := (v.x, v.y, ())\n" ++
           "#eval w\n#run w\n#run p\n#eval swap p\n#run swap p\n" ++
           "def wl : List W := List.cons w List.nil\n#run wl\n"
-        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← preludeLoader }
-        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
-        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
-        checkEq ["(.cons 1 .nil, ())", "(.cons 1 .nil, ())", "(2, .cons 1 .nil, ())",
-          "(2, .cons 1 .nil, ())", "(2, .cons 1 .nil, ())", ".cons (.cons 1 .nil, ()) .nil"]
-          (s.messages.toList.map (·.text))
-        let allocs (n : Name) : IO Nat := match (do
-            let code ← (compileReachable s.globals s.builtins [n]).mapError toString
-            let decls ← IR.lowerProgram code (.global n)
-            let (_, a) ← IR.runProgram (decls.map (·.optimize))
-            pure a : Except String Nat) with
-          | .ok a => pure a
-          | .error e => throw (IO.userError e)
-        -- `W` is its list; `P` is one pair, as a raw `Nat × List Nat × Unit` is two
-        checkEq (← allocs "l") (← allocs "w")
-        checkEq ((← allocs "l") + 1) (← allocs "p")
-        checkEq ((← allocs "l") + 2) (← allocs "q") }
+        for unbox in [false, true] do
+          let s := runFrontend (R := ZeroOneMany) src
+            { trustedModule := Tests.libModule, loader := ← preludeLoader, globals := { unboxStructs := unbox } }
+          let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+          unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+          -- the values read back the same in both layouts
+          checkEq ["(.cons 1 .nil, ())", "(.cons 1 .nil, ())", "(2, .cons 1 .nil, ())",
+            "(2, .cons 1 .nil, ())", "(2, .cons 1 .nil, ())", ".cons (.cons 1 .nil, ()) .nil"]
+            (s.messages.toList.map (·.text))
+          let allocs (n : Name) : IO Nat := match (do
+              let code ← (compileReachable s.globals s.builtins [n]).mapError toString
+              let decls ← IR.lowerProgram code (.global n)
+              let (_, a) ← IR.runProgram (decls.map (·.optimize))
+              pure a : Except String Nat) with
+            | .ok a => pure a
+            | .error e => throw (IO.userError e)
+          let l ← allocs "l"
+          -- unboxed: `W` is its list, and `P` is one pair, as a raw `Nat × List Nat × Unit`
+          -- is two; else one cell per field
+          let k := if unbox then 0 else 1
+          checkEq (unbox, l + k, l + 1 + k, l + 2) (unbox, ← allocs "w", ← allocs "p", ← allocs "q") }
+  ]
+
+/-! ### Representations are a function of the type up to conversion (R3)
+
+`wiz-notes/repr-shape.md`. A value keeps its bits when it is converted to an equal type,
+or passed to generic code, so erasure may choose a representation only by what conversion
+(and substitution) can see: never by a binder name, an `Enum` label or the display name
+on a `μ`. -/
+
+/-- `#eval main`, `#run main` (the IR interpreter), and `main` compiled by the C and the
+LLVM backends all give `expected`. `unbox`: with `--unbox-structs`. -/
+def reprAll (src expected : String) (unbox : Bool := false) (libs : Bool := false) : IO Unit := do
+  let full := src ++ "\n#eval main\n#run main\n"
+  let loader ← if libs then libLoader else preludeLoader
+  let s := runFrontend (R := ZeroOneMany) full
+    { trustedModule := Tests.libModule, loader, globals := { unboxStructs := unbox } }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render full
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  checkEq [expected, expected] (s.messages.toList.map (·.text))
+  for llvm in [false, true] do
+    let dir ← IO.FS.createTempDir
+    match ← Build.runGlobal (← toolchain) s "main" dir llvm with
+    | .ok v => checkEq expected v
+    | .error e =>
+      let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
+      if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+
+/-- The audit's probe: a hand-written Σ of a structure's shape, converted both ways. -/
+def r3Marker : String := "import Prelude
+structure S where
+  val : Nat
+def toS (p : (val : Nat) × ((0 f : Enum [x]) → Unit)) : S := p
+def ofS (s : S) : (val : Nat) × ((0 f : Enum [x]) → Unit) := s
+def main : Nat := (toS (5, fun _ => ())).val + 10 * (ofS (S.mk 7)).1
+"
+
+/-- A structure's phantom tail, at a type that calls it a function, applied. -/
+def r3PhantomTail : String := "import Prelude
+structure P (n : Nat) where
+  val : Nat
+def tailOf (p : P 3) : (0 d : (0 x : Nat) × (x = 3)) → (0 f : Enum [q]) → Unit := p.2
+def useT (t : (0 d : (0 x : Nat) × (x = 3)) → (0 f : Enum [q]) → Unit) : Unit := t (3, rfl) 'q
+def keep (u : Unit) : Nat := 9
+def main : Nat := keep (useT (tailOf (P.mk 4)))
+"
+
+/-- … and applied by generic code, which knows nothing of the tail. -/
+def r3PhantomGeneric : String := "import Prelude
+structure P (n : Nat) where
+  val : Nat
+def app0 {D A : Type} (0 d : D) (f : (0 _ : D) → A) : A := f d
+def tailU (p : P 3) : (0 f : Enum [q]) → Unit := app0 (D := (0 x : Nat) × (x = 3)) (3, rfl) p.2
+def keep (u : Unit) : Nat := 9
+def main : Nat := keep (tailU (P.mk 4) 'q)
+"
+
+/-- Generic code over pairs, used at a structure: unification puts the structure's tail
+in the type variable `B`. -/
+def r3Generic : String := "import Prelude
+structure S where
+  val : Nat
+def first {A : Type} {B : Type} (p : A × B) : A := p.1
+def mk2 {A : Type} {B : Type} (a : A) (b : B) : A × B := (a, b)
+def s2 : S := mk2 7 (S.mk 1).2
+def main : Nat := first (S.mk 5) + 10 * s2.val
+"
+
+/-- A Σ whose second component is a function into `Unit` only for some first components. -/
+def r3Dependent : String := "import Prelude
+def T (b : Bool) : Type := match b with
+  | .true => (0 f : Enum [x]) → Unit
+  | .false => Nat
+def p : (b : Bool) × T b := (.true, fun _ => ())
+def q : (b : Bool) × T b := (.false, 7)
+def isT (q : (b : Bool) × T b) : Nat := match q.1 with
+  | .true => 1
+  | .false => 0
+def main : Nat := isT p + 10 * isT q
+"
+
+/-- A copy of `Nat`'s declaration is convertible to `Nat`. -/
+def r3NatCopy : String := "import Prelude
+inductive MyNat where
+  | zero
+  | succ (n : MyNat)
+def ofNat (n : Nat) : MyNat := n
+def toNat (n : MyNat) : Nat := n
+def count : MyNat → Nat
+  | .zero => 0
+  | .succ n => count n + 1
+def main : Nat := count (ofNat 3) + 10 * (toNat (.succ (.succ .zero)) + 1)
+"
+
+/-- A proof-valued function applied by code that is generic in the sort. -/
+def r3SortPoly : String := "import Prelude
+def app.{u} {A : Sort u} (f : Nat → A) : A := f 0
+def keep.{u} {A : Sort u} (f : Nat → A) : Nat := let x := app f; 4
+def main : Nat := keep (A := 0 = 0) (fun _ => rfl)
+"
+
+/-- A description built by a function that abstracts its first field's type, used at an
+`Enum`: code at the known type takes the tag from the object, the generic eliminator
+would follow the description's run-time mark, which says there is none. -/
+def r3DescMark : String := "import Prelude
+def mkD (S : Type) (F : S → Desc Unit) : Desc Unit := Desc.arg 1 S F
+def B2 : Type := μ (mkD (Enum [a, b]) (fun _ => Desc.ret ())) ()
+def tb : B2 := con ('b, (), ())
+def isB2 (x : B2) : Nat := ind (fun _ _ => Nat) (fun i xs ih => let h := ih; ecase xs.1 [0, 1]) x
+def main : Nat := isB2 tb
+"
+
+/-- A pair of proofs projected by code that is generic in the sorts of its components. -/
+def r3SortPolyPair : String := "import Prelude
+def sndP.{u, v} {A : Sort u} {B : Sort v} (p : A × B) : B := p.2
+def keep.{u, v} {A : Sort u} {B : Sort v} (p : A × B) : Nat := let x := sndP p; 4
+def main : Nat := keep (A := 0 = 0) (B := 1 = 1) (rfl, rfl)
+"
+
+/-- Structures of 1 to 3 fields, with and without a phantom parameter, each with the Σ of
+its shape written by hand: values converted back and forth, read through the structure's
+projections and through the raw ones. Returns the program and the value of `main`. -/
+def r3RoundTrips : String × Nat := Id.run do
+  let mut src := "import Prelude\ndef lsum : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + lsum xs\n"
+  let mut total := 0
+  let mut terms : List String := []
+  let mut k := 0
+  for nf in [1, 2, 3] do
+    for phantom in [false, true] do
+      k := k + 1
+      -- field `i` is a `Nat` (even `i`) or a `List Nat` (odd `i`), with the value `v i`
+      let v (i : Nat) : Nat := 3 * k + 5 * i + 1
+      let isList (i : Nat) : Bool := i % 2 == 1
+      let fty (i : Nat) : String := if isList i then "List Nat" else "Nat"
+      let lit (i : Nat) : String := if isList i then s!"(List.cons {v i} (List.cons 1 List.nil))" else s!"{v i}"
+      let rd (i : Nat) (e : String) : String := if isList i then s!"lsum ({e})" else e
+      let (ps, arg) := if phantom then (" (w : Nat)", " 3") else ("", "")
+      let tail := if phantom then "((0 d : (0 x : Nat) × (x = 3)) → (0 f : Enum [q]) → Unit)" else "((0 f : Enum [q]) → Unit)"
+      let tailV := if phantom then "(fun _ _ => ())" else "(fun _ => ())"
+      let fields := List.range nf
+      src := src ++ s!"structure S{k}{ps} where\n" ++ String.join (fields.map fun i => s!"  f{i} : {fty i}\n")
+      src := src ++ s!"def H{k} : Type := " ++ String.join (fields.map fun i => s!"(f{i} : {fty i}) × ") ++ tail ++ "\n"
+      src := src ++ s!"def to{k} (h : H{k}) : S{k}{arg} := h\ndef of{k} (s : S{k}{arg}) : H{k} := s\n"
+      -- the weighted sum of the fields, through the structure's projections and the raw ones
+      let viaS := " + ".intercalate (fields.map fun i => s!"{i + 1} * {rd i s!"s.f{i}"}")
+      let raw (i : Nat) : String := "h" ++ String.join (List.replicate i ".2") ++ ".1"
+      let viaH := " + ".intercalate (fields.map fun i => s!"{i + 1} * {rd i (raw i)}")
+      src := src ++ s!"def sumS{k} (s : S{k}{arg}) : Nat := {viaS}\ndef sumH{k} (h : H{k}) : Nat := {viaH}\n"
+      src := src ++ s!"def s{k} : S{k}{arg} := S{k}.mk {" ".intercalate (fields.map lit)}\n"
+      src := src ++ s!"def h{k} : H{k} := ({", ".intercalate (fields.map lit)}, {tailV})\n"
+      let w := fields.foldl (fun acc i => acc + (i + 1) * (v i + (if isList i then 1 else 0))) 0
+      let checks := [s!"sumS{k} (to{k} h{k})", s!"sumH{k} (of{k} s{k})", s!"sumS{k} (to{k} (of{k} (to{k} (of{k} s{k}))))",
+        s!"sumH{k} (of{k} (to{k} h{k}))", s!"sumS{k} s{k}", s!"sumH{k} h{k}"]
+      for c in checks, j in [0:checks.length] do
+        terms := terms ++ [s!"{j + 1} * {c}"]
+        total := total + (j + 1) * w
+  src := src ++ "def main : Nat := " ++ " + ".intercalate terms ++ "\n"
+  pure (src, total)
+
+def reprGroup : Group where
+  name := "repr"
+  exercise := "Representations and conversion (R3)"
+  cases := [
+    { name := "R3: a hand-written Σ of a structure's shape converts to the structure and back", run := fun _ =>
+        reprAll r3Marker "75" },
+    { name := "… and with --unbox-structs", run := fun _ => reprAll r3Marker "75" (unbox := true) },
+    { name := "R3: a phantom tail at a type that calls it a function is applied (compiled too)", run := fun _ =>
+        reprAll r3PhantomTail "9" },
+    { name := "… and applied by generic code: ◾ applied is ◾", run := fun _ => do
+        reprAll r3PhantomGeneric "9"
+        reprAll r3PhantomGeneric "9" (unbox := true) },
+    { name := "generic code over pairs, used at a structure (substitution)", run := fun _ =>
+        reprAll r3Generic "75" },
+    { name := "a Σ whose second component depends on the first is always a pair", run := fun _ => do
+        reprAll r3Dependent "1"
+        reprAll r3Dependent "1" (unbox := true) },
+    { name := "a copy of Nat's declaration is convertible to Nat, and is a number too", run := fun _ =>
+        reprAll r3NatCopy "33" },
+    { name := "a proof-valued function applied by code generic in the sort", run := fun _ =>
+        reprAll r3SortPoly "4" },
+    { name := "a pair of proofs projected by code generic in the sorts: a projection of ◾ is ◾", run := fun _ =>
+        reprAll r3SortPolyPair "4" },
+    { name := "a description whose first field has an abstract type is refused, not miscompiled", run := fun _ => do
+        failsLib (r3DescMark ++ "#eval main\n") "cannot compile a description"
+        let s := runFrontend (R := ZeroOneMany) r3DescMark { trustedModule := Tests.libModule, loader := ← preludeLoader }
+        match Build.cProgram s "main" with
+        | .ok _ => throw (IO.userError "it compiled")
+        | .error e => check ((e.splitOn "cannot compile a description").length > 1) e
+        -- a parameterised type's own fields are not first fields: `List A` compiles
+        reprAll "import Prelude\ndef len {A : Type} : List A → Nat\n  | .nil => 0\n  | .cons _ xs => len xs + 1\ndef main : Nat := len (List.cons 'a (List.cons 'b List.nil) : List (Enum [a, b]))\n" "2" },
+    { name := "two runs in one process with different options don't share a module's state", run := fun _ => do
+        let loader ← preludeLoader
+        let run (g : Globals ZeroOneMany) : Globals ZeroOneMany :=
+          (runFrontend (R := ZeroOneMany) "import Prelude\n" { trustedModule := Tests.libModule, loader, globals := g }).globals
+        check (!(run {}).unboxStructs) "the default unboxes"
+        check (run { unboxStructs := true }).unboxStructs "unboxStructs was lost"
+        check (!(run {}).unboxStructs) "unboxStructs leaked"
+        check ((run { inertReg := .syntactic }).inertReg == .syntactic) "inertReg := syntactic was lost"
+        check ((run { inertReg := .conv }).inertReg == .conv) "inertReg := conv was lost"
+        check ((run {}).inertReg == .ground) "inertReg leaked"
+        check ((run { predicativeProp := true }).predicativeProp) "predicativeProp was lost"
+        check (!(run {}).predicativeProp) "predicativeProp leaked"
+        check (!(run { lazyProofs := false }).lazyProofs) "lazyProofs := false was lost"
+        check ((run {}).lazyProofs) "lazyProofs leaked" },
+    { name := "structures and the Σ of their shape: values converted back and forth", run := fun _ => do
+        let (src, total) := r3RoundTrips
+        reprAll src (toString total)
+        reprAll src (toString total) (unbox := true) }
   ]
 
 /-- A user-declared `ShareLet` (no HDL library): the hook fires on a `let` in check mode
@@ -4427,8 +4638,9 @@ def regionsLongest : String :=
   "  match Nat.lt x.val y.val with\n  | .true => .ok y\n  | .false => .ok (Shr.weaken h x)\n"
 
 /-- The front end's state for `src`, with every library importable. -/
-def libsState (src : String) : IO (CommandState ZeroOneMany) := do
-  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+def libsState (src : String) (unbox : Bool := false) : IO (CommandState ZeroOneMany) := do
+  let s := runFrontend (R := ZeroOneMany) src
+    { trustedModule := Tests.libModule, loader := ← libLoader, globals := { unboxStructs := unbox } }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   pure s
@@ -4493,7 +4705,7 @@ def regionsGroup : Group where
         failsLibs "import Region\ndef forge {ρ : Region} : Shr ρ Nat := (5, ())" "Shr"
         failsLibs ("import Region\nstructure MyShr (ρ : Region) (A : Type) where\n  val : A\n" ++
           "def forge {ρ : Region} : Shr ρ Nat := MyShr.mk 5") "mismatch" },
-    { name := "a handle is its value at run time, and a scope is its body run in place (22i)", run := fun _ => do
+    { name := "with --unbox-structs a handle is its value at run time; a scope is its body run in place (22i)", run := fun _ => do
         let s ← libsState ("import Region\n" ++ regionsPush ++
           "def get {ρ : Region} (x : Shr ρ Nat) : Nat := x.val\n" ++
           "def scoped (xs : List Nat) : Result (Unit × List Nat) := Uniq.borrow Region.static xs (fun ρ h v r => push1 r)\n" ++
@@ -4507,7 +4719,7 @@ def regionsGroup : Group where
           "def t1 : Result (Unit × List Nat) := scoped List.nil\n" ++
           "def t0 : Result (Unit × List Nat) := direct List.nil\n" ++
           "def t2 : Result (List Nat × List Nat) := nested List.nil List.nil\n#run t1\n#eval t1\n#run t2\n" ++
-          "#run Shr.borrow Region.static 4 (fun ρ h x => .ok (get x))")
+          "#run Shr.borrow Region.static 4 (fun ρ h x => .ok (get x))") (unbox := true)
         let msgs := s.messages.toList.map (·.text)
         checkEq [".ok ((), .cons 1 .nil)", ".ok ((), .cons 1 .nil)", ".ok (.nil, .cons 1 .nil)", ".ok 4"] msgs
         -- `x.val` is `x`: no projection
@@ -4835,6 +5047,7 @@ def groups : List Group :=
   phantomGroup ::
   qtyGroup ::
   regionsGroup ::
+  reprGroup ::
   reuseGroup ::
   runGroup ::
   selfHostGroup ::
