@@ -412,6 +412,11 @@ structure Globals (R : Type) where
   regularity : Regularity := .off
   /-- (P1) regularity at inert types: `ground` (stable) by default -/
   inertReg : InertReg := .ground
+  /-- a compiler option, not read by the kernel (`--unbox-structs`, stage 22i): erasure
+  represents a Σ whose second component is a structure's tail by its first component
+  (`unboxedSigma` in `Compiler/Erase.lean`). Off by default: it is not stable under
+  substitution. -/
+  unboxStructs : Bool := false
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false

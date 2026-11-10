@@ -211,23 +211,41 @@ partial def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
   match whnf ty with
   | .sort _ | .size | .sizeLt _ | .qty => true
   | .ulift _ A => erasable ctx A
-  | .pi .. => erasedFunTy ctx.globals ty ctx.lvl || isProp ctx.globals ctx.tys ty
-  | _ => isProp ctx.globals ctx.tys ty
+  | .pi .. => erasedFunTy ctx.globals ty ctx.lvl || isPropTy ctx ty
+  | _ => isPropTy ctx ty
+where
+  /-- `isProp`, but from the sort a `Π`/`Σ` carries (checked by the kernel) when it has
+  one: `typeSort?` recomputes it from every component, which along a structure's
+  telescope of `n` fields, asked once per field, is quadratic. (The annotation is
+  optional; without it the sort is computed, and the two agree, so the answer is the
+  same on both sides of a conversion: `wiz-notes/repr-shape.md`.) -/
+  isPropTy (ctx : Ctx R) (ty : VTy R) : Bool :=
+    match whnf ty with
+    | .pi _ _ _ _ _ (some l) | .sigma _ _ _ _ (some l) => l.equiv 0
+    | _ => isProp ctx.globals ctx.tys ty
 
-/-- **Unboxed newtypes** (stage 22i). Is `ty` a Σ whose second component is an erased
-function into `Unit` (`erasedFunTy`), as the last field of a structure is (its second
-component is the structure's tail)? Then a value of it is represented by its first
-component alone: building it is the identity, `.1` is the identity, `.2` is `◾`. A
-one-field structure (`Shr ρ A`, a newtype) is then its field, and an `n`-field one is
-`n - 1` pairs instead of `n`.
+/-- **Unboxed newtypes** (stage 22i), behind `--unbox-structs` (`Globals.unboxStructs`;
+off by default). Is `ty` a Σ whose second component is an erased function into `Unit`
+(`erasedFunTy`), as the last field of a structure is (its second component is the
+structure's tail)? Then a value of it is represented by its first component alone:
+building it is the identity, `.1` is the identity, `.2` is `◾`. A one-field structure
+(`Shr ρ A`, a newtype) is then its field, and an `n`-field one is `n - 1` pairs instead
+of `n`.
 
 The decision is a function of the Σ type alone, with its second component taken at a
 **variable** (never at the pair's actual first component: building, projecting and
 reading back must agree), and by shape, so that two convertible types get one
-representation. It is not stable under substituting such a function type for a type
-variable (`wiz-notes/repr-shape.md`, the open case). -/
+representation (R3). But it is **not stable under substitution**: generic code over
+`A × B` sees a neutral `B` and keeps the pair, and `B` can be instantiated with a
+structure's tail (`first (S.mk 5)` with `first : A × B → A`), so the caller's value and
+the callee's code disagree. No test on the second component can be stable, hence the
+default: every pair is a pair (`wiz-notes/repr-shape.md`). -/
 def unboxedSigma (g : Globals R) (lvl : Nat) (ty : VTy R) : Bool :=
+  g.unboxStructs &&
   match whnf ty with
+  -- (a second component that is itself a `Σ`, the next field, is not a tail: don't
+  -- evaluate the rest of the telescope to find out)
+  | .sigma _ _ _ (.mk _ (.sigma ..)) _ => false
   | .sigma _ _ _ B _ => erasedFunTy g (Closure.inst g B (.var lvl)) (lvl + 1)
   | _ => false
 
@@ -465,7 +483,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
   | .app .., _ => match unfoldCases? g t with
     | some t' => eraseCheck ctx t' ty
     | none => return (← eraseSpine ctx t).1
-  | _, _ => return (← eraseInfer ctx t).1
+  | _, _ => return (← eraseInfer ctx t ty).1
   --|ex
   --| sorry
   --sol>
@@ -478,8 +496,13 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
 * `ecase` on a tag is `case`; `cast` is its argument; `ann` is its term;
 * the eliminators `ind`, `Desc.elim`, `out`, `coit`, `scofix` become primitives;
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
-partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
-  let ty ← quickType ctx t
+partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := none) : TCM (ETerm × VTy R) := do
+  -- (`known`: the type, when the caller has it. Otherwise `quickType`, which off the
+  -- elimination spine asks the kernel's `infer`: that checks the whole term again, once
+  -- per enclosing node, quadratic in the depth of a `match`'s tree of `split`s)
+  let ty ← match known with
+    | some ty => pure ty
+    | none => quickType ctx t
   if erasable ctx ty then return (.erased, ty)
   if let .natLit n := t then return (.natLit n, ty)
   -- (given) Q4: `down t` is `t`
@@ -490,7 +513,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
     | .var ix => pure (.var ix)
     | .const n _ => pure (.global n)
     | .app .. => match unfoldCases? g t with
-      | some t' => pure (← eraseInfer ctx t').1
+      | some t' => pure (← eraseInfer ctx t' ty).1
       | none => pure (← eraseSpine ctx t).1
     | .ann tm ty' => eraseCheck ctx tm (ctx.eval ty')
     | .letE .. => eraseCheck ctx t ty
@@ -500,14 +523,15 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
     | .snd p => do
       let (p', pty) ← eraseInfer ctx p
       pure (if unboxedSigma g ctx.lvl pty then .erased else .proj 1 p')
-    | .split _ s _ _ x y b => do
+    | .split _ s _ m x y b => do
       let (s', sty) ← eraseInfer ctx s
       let .sigma _ q A B _ := whnf sty | throw (.other "erasure: split of a non-pair")
       let some pq := q.toPoly? | throw (.other "erasure: unknown quantity")
       -- let s := s'; let x := s.0; let y := s.1; b   (b lives under x, y: lift past s)
       let vx := Val.var ctx.lvl
       let ctx₂ := (ctx.bind x pq A).bind y [] (Closure.inst g B vx)
-      let (b', _) ← eraseInfer ctx₂ b
+      -- the body's type, as the kernel checks it: the motive at the pair
+      let b' ← eraseCheck ctx₂ b (Closure.inst g (.mk ctx.env m) (.pair vx (Val.var (ctx.lvl + 1))))
       if unboxedSigma g ctx.lvl sty then
         pure (.letE "s" s' (.letE x (.var 0) (.letE y .erased (b'.lift 1 2))))
       else
