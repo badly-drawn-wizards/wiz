@@ -21,7 +21,7 @@ default never evaluates them),
 compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
 unboxed; not stable under substitution, so off by default)
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
-  --libs \"…\" (say -lm), --llc X (default llc)"
+  --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
 
 def parseCmd (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
@@ -90,11 +90,15 @@ def takeInertOpt : List String → Except String (Option InertReg × List String
   | [] => return (none, [])
 
 /-- Elaborate a file, through the toolchain's cache (if any). -/
-def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
+def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandState ZeroOneMany) := do
+  -- every module the file can reach (`import A.B` is `A/B.wiz` under a root), read up
+  -- front: the frontend is pure
   let closure ← Module.loadClosure (moduleRoots tc) input
   let lib : Std.HashMap Name String := closure.fold (fun m n (_, src) => m.insert n src) {}
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
+  -- (9f) the `link_c` files, each relative to its own file
+  let sources ← Module.cSourceTable ((System.FilePath.mk path).parent.getD ".") input closure
   let (regularity, predicativeProp) ← kernelOpts.get
   let lazyProofs ← lazyProofsOpt.get
   let inertReg ← inertOpt.get
@@ -102,7 +106,7 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?),
+    { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
       globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
@@ -117,7 +121,7 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
 
 def checkCmd (tc : Toolchain) (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
-  let s ← elaborate tc input
+  let s ← elaborate tc path input
   for m in s.messages do
     let line := s!"{path}:{m.render input}"
     if m.severity == .error then IO.eprintln line else IO.println line
@@ -125,7 +129,7 @@ def checkCmd (tc : Toolchain) (path : String) : IO UInt32 := do
 
 def elabFile (tc : Toolchain) (path : String) : IO (Option (CommandState ZeroOneMany)) := do
   let input ← IO.FS.readFile path
-  let s ← elaborate tc input
+  let s ← elaborate tc path input
   for m in s.messages do
     if m.severity == .error then IO.eprintln s!"{path}:{m.render input}"
   pure (if s.messages.any (·.severity == .error) then none else some s)
@@ -136,8 +140,8 @@ def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) : IO UInt32 := d
   | .error e => IO.eprintln e; pure 1
   | .ok (decls, ty) =>
     let io := Build.isIO ty
-    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls) (Build.extraC s) s.globals.unboxStructs)
-      else Build.compileC tc (C.program decls io (Build.extraC s) s.globals.unboxStructs) out
+    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls) (Build.extraC s) s.globals.unboxStructs) (Build.linkOf s)
+      else Build.compileC tc (C.program decls io (Build.extraC s) s.globals.unboxStructs) out (Build.linkOf s)
     match r with
     | .error e => IO.eprintln e; pure 1
     | .ok () => pure 0
