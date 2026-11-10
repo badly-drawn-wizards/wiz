@@ -250,6 +250,41 @@ def closeG (inline : Bool) (gs : Globals) : Nat → Tm → Tm
 inductive Step where
   | mk (out : String) (gs : Globals)
 
+-- Names are unique: the kernel compares two glued constants by their names
+-- (`convHead`, `tmEq`, `headSame` in Kernel.wiz), and a constant carries its value, so a
+-- second declaration of a name would be identified with the first wherever both stay
+-- folded (`def T := Nat; def a : Box T := …; def T := Empty; def c : Box T := a`).
+-- Checked in one place, for every command (`stepCommand`): none of the globals a command
+-- added may be in scope before it, or twice among them. One exception: a partial
+-- definition's signature (an axiom) is followed, once, by its body under the same name.
+def Globals.all : Globals → Array Global
+  | .mk all _ _ => all
+inductive Seen where
+  | mk (name : String) (axiomOnly : Bool)
+def isAxiomTm : Tm → Bool
+  | .axiomC _ _ => .true
+  | _ => .false
+-- `.none`: a first occurrence; else whether the name was seen as an axiom only
+def seenAs : List Seen → String → Option Bool
+  | .nil, _ => .none
+  | .cons (.mk n ax) rest, x => match strEq n x with
+    | .true => .some ax
+    | .false => seenAs rest x
+-- the first name declared twice among the globals `i, i + 1, …` (`fuel` of them)
+def dupFrom (old : Scope) (all : Array Global) : Nat → Nat → List Seen → Option String
+  | .zero, _, _ => .none
+  | .succ fuel, i, seen => match Array.getD all i (.mk "?" .star .star .star .nil) with
+    | .mk x _ v _ _ => match Scope.lookup old x with
+      | .some _ => .some x
+      | .none => match seenAs seen x with
+        | .none => dupFrom old all fuel (i + 1) (.cons (.mk x (isAxiomTm v)) seen)
+        | .some ax => match Bool.and ax (Bool.not (isAxiomTm v)) with
+          | .true => dupFrom old all fuel (i + 1) (.cons (.mk x .false) seen)
+          | .false => .some x
+def newDuplicate (gs gs' : Globals) : Option String :=
+  let n := Array.size (Globals.all gs);
+  dupFrom (Globals.scope gs) (Globals.all gs') (Array.size (Globals.all gs') - n) n .nil
+
 def errStep (gs : Globals) (m : String) : Step := .mk (String.append "error: " m) gs
 
 
@@ -3808,7 +3843,9 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
                   | .true => foreignTypeCmd gs stx
                   | .false => defStep gs stx;
       match step with
-      | .mk line gs' => .next (.some line) stop gs' cats tokens notes
+      | .mk line gs' => match newDuplicate gs gs' with
+        | .some x => .next (.some (String.append (String.append "error: '" x) "' has already been declared")) stop gs cats tokens notes
+        | .none => .next (.some line) stop gs' cats tokens notes
 def runCommands (cats : List Cat) (tokens : List String) (notes : List Note) (input : Array Nat) (pos : Nat)
     (gs : Globals) (out : List String) : Run :=
   match stepCommand cats tokens notes input pos gs with
