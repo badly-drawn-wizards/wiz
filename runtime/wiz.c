@@ -4,7 +4,11 @@
    number, a tag, or ◾) holding `v >> 1`; otherwise it points to an **object**: a
    header (reference count, tag, number of fields) and the fields. Closures and big
    numbers (GMP) are objects with reserved tags. Reference counts follow the IR's
-   `dup`/`drop` (Perceus): every function owns its arguments. */
+   `dup`/`drop` (Perceus): every function owns its arguments.
+
+   Threads (stage 25a): a count rc > 0 belongs to one thread, rc < 0 is an object shared
+   between threads (its count is -rc, changed atomically), rc == 0 is immortal. See
+   `wiz_mark_mt` for the transfer rule. */
 
 #include <alloca.h>
 #include <pthread.h>
@@ -101,7 +105,10 @@ typedef struct {
   wiz_val *vals;
 } wiz_map;
 
-static int64_t wiz_live = 0;
+/* objects allocated minus objects freed, per thread (see `wiz_live_exited`) */
+static __thread int64_t wiz_live = 0;
+/* read a count that another thread may be changing (if the object is shared) */
+#define WIZ_RC(h) __atomic_load_n(&(h)->rc, __ATOMIC_RELAXED)
 
 /* with WIZ_LEAKS set, remember every live object, to list the leaked ones at exit */
 static int wiz_leaks = -1;
@@ -113,12 +120,20 @@ static size_t wiz_track_slot(void *p) {
   while (wiz_track_tab[i] && wiz_track_tab[i] != p) i = (i + 1) & (wiz_track_cap - 1);
   return i;
 }
+static pthread_mutex_t wiz_track_mu = PTHREAD_MUTEX_INITIALIZER;
+static void wiz_track_init(void) {
+  wiz_leaks = getenv("WIZ_LEAKS") != NULL;
+  if (getenv("WIZ_WATCH")) wiz_watch = (void *)strtoull(getenv("WIZ_WATCH"), NULL, 16);
+}
+static void wiz_track_(void *p);
 static void wiz_track(void *p) {
-  if (wiz_leaks < 0) {
-    wiz_leaks = getenv("WIZ_LEAKS") != NULL;
-    if (getenv("WIZ_WATCH")) wiz_watch = (void *)strtoull(getenv("WIZ_WATCH"), NULL, 16);
-  }
+  if (wiz_leaks < 0) wiz_track_init();
   if (!wiz_leaks) return;
+  pthread_mutex_lock(&wiz_track_mu);
+  wiz_track_(p);
+  pthread_mutex_unlock(&wiz_track_mu);
+}
+static void wiz_track_(void *p) {
   if (2 * (wiz_track_n + 1) > wiz_track_cap) {
     void **old = wiz_track_tab; size_t oc = wiz_track_cap;
     wiz_track_cap = oc ? 2 * oc : 1024;
@@ -130,8 +145,14 @@ static void wiz_track(void *p) {
   wiz_track_tab[wiz_track_slot(p)] = p;
   wiz_track_n++;
 }
+static void wiz_untrack_(void *p);
 static void wiz_untrack(void *p) {
   if (wiz_leaks != 1) return;
+  pthread_mutex_lock(&wiz_track_mu);
+  wiz_untrack_(p);
+  pthread_mutex_unlock(&wiz_track_mu);
+}
+static void wiz_untrack_(void *p) {
   /* rebuild the probe chain after removing */
   size_t i = wiz_track_slot(p);
   if (wiz_track_tab[i] != p) return;
@@ -169,7 +190,12 @@ static void wiz_watch_log(const char *what, wiz_val v, void *from) {
   if ((void *)v == wiz_watch) fprintf(stderr, "  %s %p: rc %ld, from %p\n", what, (void *)v, (long)((wiz_hdr *)v)->rc, from);
 }
 WIZ_API void wiz_inc(wiz_val v) {
-  if (!WIZ_IS_SCALAR(v)) ((wiz_hdr *)v)->rc++;
+  if (!WIZ_IS_SCALAR(v)) {
+    wiz_hdr *h = (wiz_hdr *)v;
+    int64_t rc = WIZ_RC(h);
+    if (rc > 0) h->rc = rc + 1;
+    else if (rc < 0) __atomic_fetch_sub(&h->rc, 1, __ATOMIC_RELAXED);
+  }
   if (wiz_watch) wiz_watch_log("inc", v, __builtin_return_address(0));
 }
 
@@ -177,7 +203,12 @@ static void wiz_free(wiz_val v);
 
 WIZ_API void wiz_dec(wiz_val v) {
   if (wiz_watch) wiz_watch_log("dec", v, __builtin_return_address(0));
-  if (!WIZ_IS_SCALAR(v) && --((wiz_hdr *)v)->rc == 0) wiz_free(v);
+  if (WIZ_IS_SCALAR(v)) return;
+  wiz_hdr *h = (wiz_hdr *)v;
+  int64_t rc = WIZ_RC(h);
+  if (rc > 1) h->rc = rc - 1;
+  else if (rc == 1) wiz_free(v);
+  else if (rc < 0 && __atomic_add_fetch(&h->rc, 1, __ATOMIC_ACQ_REL) == 0) wiz_free(v);
 }
 
 static void wiz_free(wiz_val v) {
@@ -220,13 +251,25 @@ static void wiz_free(wiz_val v) {
 static void wiz_immortal(wiz_val v) {
   if (WIZ_IS_SCALAR(v)) return;
   wiz_hdr *h = (wiz_hdr *)v;
-  if (h->rc >= ((int64_t)1 << 40)) return;
-  h->rc = (int64_t)1 << 50;
+  if (h->rc <= 0) return; /* immortal already (or shared: not a fresh constant) */
+  h->rc = 0;
   wiz_live--;
   wiz_untrack(h);
   if (h->tag < WIZ_TAG_FIRST_SPECIAL)
     for (uint32_t i = 0; i < h->size; i++) wiz_immortal(((wiz_ctor *)v)->fields[i]);
 }
+
+static void wiz_mark_mt(wiz_val v);
+static pthread_mutex_t wiz_thunk_mu;
+static pthread_once_t wiz_thunk_once = PTHREAD_ONCE_INIT;
+static void wiz_thunk_mu_init(void) {
+  pthread_mutexattr_t a;
+  pthread_mutexattr_init(&a);
+  pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+  pthread_mutex_init(&wiz_thunk_mu, &a);
+}
+static void wiz_thunk_lock(void) { pthread_once(&wiz_thunk_once, wiz_thunk_mu_init); pthread_mutex_lock(&wiz_thunk_mu); }
+static void wiz_thunk_unlock(void) { pthread_mutex_unlock(&wiz_thunk_mu); }
 
 WIZ_API uint32_t wiz_tag(wiz_val v) {
   return WIZ_IS_SCALAR(v) ? (uint32_t)WIZ_UNBOX(v) : ((wiz_hdr *)v)->tag;
@@ -302,17 +345,16 @@ static int wiz_nat_eq(wiz_val a, wiz_val b) {
   return mpz_cmp(((wiz_big *)a)->z, ((wiz_big *)b)->z) == 0;
 }
 
-/* the prelude's `Bool`: a constructor without fields is its tag */
+/* the prelude's `Bool`: a constructor without fields is its tag. The comparisons
+   borrow their arguments (stage 8e, `primBorrows`): the caller keeps its references. */
 WIZ_API wiz_val wiz_nat_beq(wiz_val a, wiz_val b) {
   int eq = wiz_nat_eq(a, b);
-  wiz_dec(a); wiz_dec(b);
   return WIZ_BOX(eq ? 1 : 0);
 }
 WIZ_API wiz_val wiz_nat_blt(wiz_val a, wiz_val b) {
   int lt;
   if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) lt = WIZ_UNBOX(a) < WIZ_UNBOX(b);
   else { mpz_t x, y; wiz_to_mpz(x, a); wiz_to_mpz(y, b); lt = mpz_cmp(x, y) < 0; mpz_clear(x); mpz_clear(y); }
-  wiz_dec(a); wiz_dec(b);
   return WIZ_BOX(lt ? 1 : 0);
 }
 
@@ -443,19 +485,16 @@ WIZ_API wiz_val wiz_mk_obj(wiz_val t, wiz_val l) {
   return r;
 }
 
-/* ---- fields: a number looks like its unary payload (`natView`) ---- */
+/* ---- fields ---- */
 
+/* A number's constructor tag (0 for zero) is field 0 of its unary view. Its other fields
+   would be fresh objects (`natView`), but `proj` is borrowed since stage 8e: nobody would
+   own, and so free, them. The lowering takes numbers apart with `natTag`/`nat.pred`, so
+   reaching this is a compiler bug: stop instead of leaking. */
 WIZ_API wiz_val wiz_proj(wiz_val v, uint32_t i) {
   if (WIZ_IS_SCALAR(v) || wiz_is_big(v)) {
-    int zero = WIZ_IS_SCALAR(v) ? WIZ_UNBOX(v) == 0 : 0;
-    if (i == 0) return WIZ_BOX(zero ? 0 : 1);
-    wiz_val u = wiz_ctor_new(0, 2);
-    WIZ_SET(u, 0, WIZ_BOX(0)); WIZ_SET(u, 1, WIZ_BOX(0));
-    if (zero) return u;
-    wiz_inc(v);
-    wiz_val r = wiz_ctor_new(0, 2);
-    WIZ_SET(r, 0, wiz_nat_pred(v)); WIZ_SET(r, 1, u);
-    return r;
+    if (i == 0) return WIZ_BOX(WIZ_IS_SCALAR(v) && WIZ_UNBOX(v) == 0 ? 0 : 1);
+    wiz_panic("internal error: proj of a field of a number (use natTag/nat.pred)");
   }
   /* borrowed: no new reference (the IR `dup`s it if it needs one) */
   return ((wiz_ctor *)v)->fields[i];
@@ -476,12 +515,12 @@ WIZ_API wiz_val wiz_lazy_tag(wiz_val v) {
    A unique cell (rc 1) dies here, so there is nothing to keep (the plain-thunk case);
    an immortal cell (a hoisted constant) is not overwritten, or it would keep its
    observed prefix for ever.
-   Threads: like `memo`, this assumes one mutator (reference counts are not atomic).
-   With several, only a shared cell needs care: claim it by a CAS of its tag to a
-   blackhole before computing, and make other observers wait for the payload. */
+   A cell shared between threads (rc < 0) is not overwritten either (25a): its other
+   observers recompute the payload, which is the same value. (Keeping it would need a
+   CAS of the tag to a blackhole, and observers waiting for the payload.) */
 WIZ_API wiz_val wiz_lazy_set(wiz_val x, wiz_val p) {
   wiz_hdr *h = (wiz_hdr *)x;
-  if (WIZ_IS_SCALAR(x) || h->rc == 1 || h->rc >= ((int64_t)1 << 40) || (h->tag != 1000 && h->tag != 1001)) {
+  if (WIZ_IS_SCALAR(x) || WIZ_RC(h) <= 1 || (h->tag != 1000 && h->tag != 1001)) {
     wiz_dec(x);
     return p;
   }
@@ -520,13 +559,19 @@ WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
   if (!WIZ_IS_SCALAR(f) && ((wiz_hdr *)f)->tag == WIZ_TAG_THUNK) {
     /* force: the first argument is the unit */
     wiz_thunk *t = (wiz_thunk *)f;
+    /* a thunk shared between threads is forced under one (recursive) lock, and its
+       value is shared too; pure code never blocks, so the lock can't deadlock */
+    int shared = WIZ_RC(&t->h) < 0;
+    if (shared) wiz_thunk_lock();
     if (t->fn) {
       wiz_val g = t->fn;
       t->fn = 0;
       t->val = wiz_apply(g, 1, args);
+      if (shared) wiz_mark_mt(t->val);
     } else wiz_dec(args[0]);
     wiz_val r = t->val;
     wiz_inc(r);
+    if (shared) wiz_thunk_unlock();
     wiz_dec(f);
     return n > 1 ? wiz_apply(r, n - 1, args + 1) : r;
   }
@@ -539,8 +584,8 @@ WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
   wiz_boxed_fn fn = c->fn;
   uint32_t arity = c->arity;
   /* take the captured arguments: move them out of a unique closure, else share them */
-  if (c->h.rc == 1) { wiz_live--; wiz_untrack(c); free(c); }
-  else { for (uint32_t i = 0; i < m; i++) wiz_inc(all[i]); c->h.rc--; }
+  if (WIZ_RC(&c->h) == 1) { wiz_live--; wiz_untrack(c); free(c); }
+  else { for (uint32_t i = 0; i < m; i++) wiz_inc(all[i]); wiz_dec(f); }
   if (total == arity) return fn(all);
   if (total < arity) return wiz_clo_new(fn, arity, total, all);
   wiz_val r = fn(all);
@@ -554,7 +599,7 @@ WIZ_API wiz_val wiz_reset(wiz_val x) {
     wiz_hdr *h = (wiz_hdr *)x;
     /* only a constructor's cell can be reused: closures, numbers and the runtime's own
        objects (arrays, strings, maps …) own more than their fields */
-    if (h->rc == 1 && h->tag < WIZ_TAG_FIRST_SPECIAL) {
+    if (WIZ_RC(h) == 1 && h->tag < WIZ_TAG_FIRST_SPECIAL) {
       for (uint32_t i = 0; i < h->size; i++) wiz_dec(((wiz_ctor *)x)->fields[i]);
       return x;
     }
@@ -572,7 +617,7 @@ WIZ_API wiz_val wiz_drop_moved(wiz_val x, wiz_val mask) {
   uint64_t m = WIZ_UNBOX(mask);
   if (h->tag >= WIZ_TAG_FIRST_SPECIAL) { wiz_dec(x); return WIZ_BOX(0); }
   wiz_val *fs = ((wiz_ctor *)x)->fields;
-  if (h->rc == 1) {
+  if (WIZ_RC(h) == 1) {
     for (uint32_t i = 0; i < h->size; i++)
       if (i >= 62 || !((m >> i) & 1)) wiz_dec(fs[i]);
     wiz_live--;
@@ -581,7 +626,7 @@ WIZ_API wiz_val wiz_drop_moved(wiz_val x, wiz_val mask) {
   } else {
     for (uint32_t i = 0; i < h->size && i < 62; i++)
       if ((m >> i) & 1) wiz_inc(fs[i]);
-    h->rc--;
+    wiz_dec(x); /* shared, or immortal (no count), or shared between threads */
   }
   return WIZ_BOX(0);
 }
@@ -954,7 +999,7 @@ WIZ_API wiz_val wiz_bytes_empty(void) {
 }
 static wiz_val wiz_bytes_unique(wiz_val v) {
   wiz_bytes *b = (wiz_bytes *)v;
-  if (b->h.rc == 1) return v;
+  if (WIZ_RC(&b->h) == 1) return v;
   wiz_bytes *c = (wiz_bytes *)wiz_bytes_empty();
   c->len = c->cap = b->len;
   c->data = (unsigned char *)malloc(b->len ? b->len : 1);
@@ -981,7 +1026,7 @@ WIZ_API wiz_val wiz_bytes_of_string(const char *s) {
   for (const char *p = s; *p; p++) v = wiz_bytes_push(v, (unsigned char)*p);
   return v;
 }
-static char *wiz_scratch = NULL;
+static __thread char *wiz_scratch = NULL;
 WIZ_API const char *wiz_bytes_to_string(wiz_val v) {
   wiz_bytes *b = (wiz_bytes *)v;
   free(wiz_scratch);
@@ -1001,7 +1046,7 @@ WIZ_API wiz_val wiz_array_empty(void) {
 }
 static wiz_val wiz_array_unique(wiz_val v) {
   wiz_array *a = (wiz_array *)v;
-  if (a->h.rc == 1) return v;
+  if (WIZ_RC(&a->h) == 1) return v;
   wiz_array *c = (wiz_array *)wiz_array_empty();
   c->len = c->cap = a->len;
   c->data = (wiz_val *)malloc((a->len ? a->len : 1) * sizeof(wiz_val));
@@ -1108,7 +1153,7 @@ WIZ_API wiz_val wiz_map_empty(void) {
 }
 static wiz_val wiz_map_unique(wiz_val v) {
   wiz_map *m = (wiz_map *)v;
-  if (m->h.rc == 1) return v;
+  if (WIZ_RC(&m->h) == 1) return v;
   wiz_map *c = (wiz_map *)wiz_alloc(sizeof(wiz_map), WIZ_TAG_MAP, 0);
   c->count = m->count; c->cap = m->cap;
   c->keys = (wiz_val *)calloc(m->cap, sizeof(wiz_val));
@@ -1200,8 +1245,8 @@ WIZ_API double wiz_f64_sub(double a, double b) { return a - b; }
 WIZ_API double wiz_f64_mul(double a, double b) { return a * b; }
 WIZ_API double wiz_f64_div(double a, double b) { return a / b; }
 WIZ_API int wiz_f64_lt(double a, double b) { return a < b; }
-WIZ_API const char *wiz_f64_show(double a) { static char buf[64]; snprintf(buf, sizeof buf, "%.17g", a); return buf; }
-WIZ_API const char *wiz_nat_show(uint64_t a) { static char buf[32]; snprintf(buf, sizeof buf, "%llu", (unsigned long long)a); return buf; }
+WIZ_API const char *wiz_f64_show(double a) { static __thread char buf[64]; snprintf(buf, sizeof buf, "%.17g", a); return buf; }
+WIZ_API const char *wiz_nat_show(uint64_t a) { static __thread char buf[32]; snprintf(buf, sizeof buf, "%llu", (unsigned long long)a); return buf; }
 
 /* ---- output: a generic tree, read back by the compiler using the type ---- */
 
@@ -1219,12 +1264,293 @@ static void wiz_print(wiz_val v) {
 /* WIZ_SET as a function, for the LLVM backend */
 WIZ_API void wiz_set(wiz_val o, uint32_t i, wiz_val v) { WIZ_SET(o, i, v); }
 
+/* ---- threads (stage 25a): spawning, channels, MVars, locks ----
+
+   Ownership rule. An object with rc > 0 belongs to one thread: its count is changed with
+   plain arithmetic. Before a value crosses to another thread (a forked thread's closure,
+   a message, an MVar's contents) the runtime marks everything reachable from it as
+   shared (`wiz_mark_mt`: rc becomes -rc), and shared counts change atomically. rc == 0
+   is immortal (hoisted constants), never counted. So a shared object only points to
+   shared or immortal objects; in-place updates need rc == 1, which a shared object
+   never has, and a shared thunk is forced under a lock and its value marked shared. */
+
+static void wiz_mark_mt(wiz_val v) {
+  size_t cap = 64, n = 0;
+  wiz_val *st = (wiz_val *)malloc(cap * sizeof(wiz_val));
+  st[n++] = v;
+#define WIZ_PUSH(x) do { wiz_val y_ = (x); if (!WIZ_IS_SCALAR(y_) && WIZ_RC((wiz_hdr *)y_) > 0) { \
+    if (n == cap) { cap *= 2; st = (wiz_val *)realloc(st, cap * sizeof(wiz_val)); } st[n++] = y_; } } while (0)
+  while (n) {
+    wiz_val x = st[--n];
+    if (WIZ_IS_SCALAR(x)) continue;
+    wiz_hdr *h = (wiz_hdr *)x;
+    if (h->rc <= 0) continue; /* already shared, or immortal */
+    h->rc = -h->rc;
+    switch (h->tag) {
+    case WIZ_TAG_CLO: for (uint32_t i = 0; i < h->size; i++) WIZ_PUSH(((wiz_clo *)x)->args[i]); break;
+    case WIZ_TAG_THUNK: { wiz_thunk *t = (wiz_thunk *)x; WIZ_PUSH(t->fn ? t->fn : t->val); break; }
+    case WIZ_TAG_ARRAY: { wiz_array *a = (wiz_array *)x; for (size_t i = 0; i < a->len; i++) WIZ_PUSH(a->data[i]); break; }
+    case WIZ_TAG_MAP: { wiz_map *m = (wiz_map *)x;
+      for (size_t i = 0; i < m->cap; i++)
+        if (m->keys[i]) { WIZ_PUSH(m->keys[i]); WIZ_PUSH(m->vals[i]); }
+      break; }
+    case WIZ_TAG_BIG: case WIZ_TAG_RAW: case WIZ_TAG_EXT: case WIZ_TAG_BYTES: case WIZ_TAG_STR: break;
+    default: for (uint32_t i = 0; i < h->size; i++) WIZ_PUSH(((wiz_ctor *)x)->fields[i]);
+    }
+  }
+#undef WIZ_PUSH
+  free(st);
+}
+
+/* every thread but main is counted, so the program can wait for them before it checks
+   for leaks; a finished thread adds its allocation balance to wiz_live_exited */
+static pthread_mutex_t wiz_threads_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t wiz_threads_cv = PTHREAD_COND_INITIALIZER;
+static int64_t wiz_threads_running = 0;
+static int64_t wiz_live_exited = 0;
+
+typedef struct { wiz_val fn; wiz_val arg; } wiz_spawn_args;
+
+static void *wiz_thread_main(void *p) {
+  wiz_spawn_args a = *(wiz_spawn_args *)p;
+  free(p);
+  /* `fn : (1 c : Chan …) → IO Unit`: apply it to its argument and a world */
+  wiz_val args[2] = {a.arg, WIZ_BOX(0)};
+  wiz_val r = wiz_apply(a.fn, 2, args);
+  wiz_dec(r);
+  pthread_mutex_lock(&wiz_threads_mu);
+  wiz_live_exited += wiz_live;
+  wiz_threads_running--;
+  pthread_cond_broadcast(&wiz_threads_cv);
+  pthread_mutex_unlock(&wiz_threads_mu);
+  return NULL;
+}
+
+/* run `fn arg world` on a new thread; `fn` must be shared already, `arg` is moved */
+static void wiz_spawn(wiz_val fn, wiz_val arg) {
+  wiz_spawn_args *a = (wiz_spawn_args *)malloc(sizeof *a);
+  a->fn = fn; a->arg = arg;
+  const char *mb = getenv("WIZ_THREAD_STACK_MB");
+  size_t size = (size_t)(mb ? atol(mb) : 256) << 20;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, size);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  pthread_mutex_lock(&wiz_threads_mu);
+  wiz_threads_running++;
+  pthread_mutex_unlock(&wiz_threads_mu);
+  pthread_t t;
+  if (pthread_create(&t, &attr, wiz_thread_main, a) != 0) wiz_panic("can't start a thread");
+  pthread_attr_destroy(&attr);
+}
+
+static void wiz_wait_threads(void) {
+  pthread_mutex_lock(&wiz_threads_mu);
+  while (wiz_threads_running > 0) pthread_cond_wait(&wiz_threads_cv, &wiz_threads_mu);
+  pthread_mutex_unlock(&wiz_threads_mu);
+}
+
+/* a Σ pair ⟨a, b⟩ */
+static wiz_val wiz_pair(wiz_val a, wiz_val b) {
+  wiz_val p = wiz_ctor_new(0, 2);
+  WIZ_SET(p, 0, a); WIZ_SET(p, 1, b);
+  return p;
+}
+
+/* -- channels (lib/Session.wiz): two endpoints, one queue of messages towards each.
+   Sending never blocks; receiving waits for a message. Each endpoint is a foreign
+   object; the channel goes when both are closed. -- */
+
+typedef struct wiz_msg { wiz_val v; struct wiz_msg *next; } wiz_msg;
+typedef struct wiz_chan wiz_chan;
+typedef struct { wiz_chan *ch; int side; } wiz_end;
+struct wiz_chan {
+  pthread_mutex_t mu;
+  pthread_cond_t cv;
+  wiz_msg *head[2], *tail[2]; /* messages to side 0, to side 1 */
+  int ends;
+  wiz_end end[2];
+};
+
+static void wiz_chan_end_fin(void *p) {
+  wiz_end *e = (wiz_end *)p;
+  wiz_chan *ch = e->ch;
+  pthread_mutex_lock(&ch->mu);
+  int last = --ch->ends == 0;
+  pthread_mutex_unlock(&ch->mu);
+  if (!last) return;
+  for (int s = 0; s < 2; s++)
+    for (wiz_msg *m = ch->head[s]; m;) { wiz_msg *nx = m->next; wiz_dec(m->v); free(m); m = nx; }
+  pthread_mutex_destroy(&ch->mu);
+  pthread_cond_destroy(&ch->cv);
+  free(ch);
+}
+
+static wiz_chan *wiz_chan_of(wiz_val c, int *side) {
+  wiz_end *e = (wiz_end *)((wiz_ext *)c)->ptr;
+  *side = e->side;
+  return e->ch;
+}
+
+/* `Chan.forkRaw child`: a new channel; `child` runs on end 1 in a new thread, the
+   caller gets end 0 */
+WIZ_API wiz_val wiz_chan_fork(wiz_val child) {
+  wiz_chan *ch = (wiz_chan *)calloc(1, sizeof(wiz_chan));
+  pthread_mutex_init(&ch->mu, NULL);
+  pthread_cond_init(&ch->cv, NULL);
+  ch->ends = 2;
+  for (int s = 0; s < 2; s++) { ch->end[s].ch = ch; ch->end[s].side = s; }
+  wiz_val e0 = wiz_out_ptr(&ch->end[0], wiz_chan_end_fin);
+  wiz_val e1 = wiz_out_ptr(&ch->end[1], wiz_chan_end_fin);
+  wiz_mark_mt(child);
+  wiz_spawn(child, e1);
+  return e0;
+}
+
+/* `Chan.sendRaw c a`: queue `a` for the other end; the endpoint comes back */
+WIZ_API wiz_val wiz_chan_send(wiz_val c, wiz_val a) {
+  int side;
+  wiz_chan *ch = wiz_chan_of(c, &side);
+  wiz_mark_mt(a);
+  wiz_msg *m = (wiz_msg *)malloc(sizeof *m);
+  m->v = a; m->next = NULL;
+  int to = 1 - side;
+  pthread_mutex_lock(&ch->mu);
+  if (ch->tail[to]) ch->tail[to]->next = m; else ch->head[to] = m;
+  ch->tail[to] = m;
+  pthread_cond_broadcast(&ch->cv);
+  pthread_mutex_unlock(&ch->mu);
+  return c;
+}
+
+/* `Chan.recvRaw c`: wait for a message; ⟨message, endpoint⟩ */
+WIZ_API wiz_val wiz_chan_recv(wiz_val c) {
+  int side;
+  wiz_chan *ch = wiz_chan_of(c, &side);
+  pthread_mutex_lock(&ch->mu);
+  while (!ch->head[side]) pthread_cond_wait(&ch->cv, &ch->mu);
+  wiz_msg *m = ch->head[side];
+  ch->head[side] = m->next;
+  if (!m->next) ch->tail[side] = NULL;
+  pthread_mutex_unlock(&ch->mu);
+  wiz_val v = m->v;
+  free(m);
+  return wiz_pair(v, c);
+}
+
+WIZ_API void wiz_chan_close(wiz_val c) { wiz_dec(c); }
+
+/* -- MVars and locks (lib/MVar.wiz) -- */
+
+typedef struct {
+  pthread_mutex_t mu;
+  pthread_cond_t cv;
+  int full;
+  wiz_val v;
+} wiz_mvar;
+
+static void wiz_mvar_fin(void *p) {
+  wiz_mvar *m = (wiz_mvar *)p;
+  if (m->full) wiz_dec(m->v);
+  pthread_mutex_destroy(&m->mu);
+  pthread_cond_destroy(&m->cv);
+  free(m);
+}
+
+WIZ_API wiz_val wiz_mvar_new(void) {
+  wiz_mvar *m = (wiz_mvar *)calloc(1, sizeof(wiz_mvar));
+  pthread_mutex_init(&m->mu, NULL);
+  pthread_cond_init(&m->cv, NULL);
+  m->v = WIZ_BOX(0);
+  return wiz_out_ptr(m, wiz_mvar_fin);
+}
+
+static wiz_val wiz_mvar_take_(wiz_val mv, int keep) {
+  wiz_mvar *m = (wiz_mvar *)((wiz_ext *)mv)->ptr;
+  pthread_mutex_lock(&m->mu);
+  while (!m->full) pthread_cond_wait(&m->cv, &m->mu);
+  wiz_val v = m->v;
+  if (keep) wiz_inc(v);
+  else { m->full = 0; m->v = WIZ_BOX(0); pthread_cond_broadcast(&m->cv); }
+  pthread_mutex_unlock(&m->mu);
+  wiz_dec(mv);
+  return v;
+}
+
+WIZ_API void wiz_mvar_put(wiz_val mv, wiz_val a) {
+  wiz_mvar *m = (wiz_mvar *)((wiz_ext *)mv)->ptr;
+  wiz_mark_mt(a);
+  pthread_mutex_lock(&m->mu);
+  while (m->full) pthread_cond_wait(&m->cv, &m->mu);
+  m->v = a; m->full = 1;
+  pthread_cond_broadcast(&m->cv);
+  pthread_mutex_unlock(&m->mu);
+  wiz_dec(mv);
+}
+
+WIZ_API wiz_val wiz_mvar_new_full(wiz_val a) {
+  wiz_val mv = wiz_mvar_new();
+  wiz_inc(mv);
+  wiz_mvar_put(mv, a);
+  return mv;
+}
+WIZ_API wiz_val wiz_mvar_take(wiz_val mv) { return wiz_mvar_take_(mv, 0); }
+WIZ_API wiz_val wiz_mvar_read(wiz_val mv) { return wiz_mvar_take_(mv, 1); }
+/* the hole is a token with nothing in it */
+WIZ_API wiz_val wiz_mvar_take_hole(wiz_val mv) { return wiz_pair(wiz_mvar_take_(mv, 0), WIZ_BOX(0)); }
+WIZ_API void wiz_mvar_fill(wiz_val mv, wiz_val hole, wiz_val a) { wiz_dec(hole); wiz_mvar_put(mv, a); }
+
+/* a lock is a binary semaphore, so a guard may be released by another thread */
+typedef struct {
+  pthread_mutex_t mu;
+  pthread_cond_t cv;
+  int held;
+} wiz_lock;
+
+static void wiz_lock_fin(void *p) {
+  wiz_lock *l = (wiz_lock *)p;
+  pthread_mutex_destroy(&l->mu);
+  pthread_cond_destroy(&l->cv);
+  free(l);
+}
+WIZ_API wiz_val wiz_lock_new(void) {
+  wiz_lock *l = (wiz_lock *)calloc(1, sizeof(wiz_lock));
+  pthread_mutex_init(&l->mu, NULL);
+  pthread_cond_init(&l->cv, NULL);
+  return wiz_out_ptr(l, wiz_lock_fin);
+}
+WIZ_API wiz_val wiz_lock_acquire(wiz_val lv) {
+  wiz_lock *l = (wiz_lock *)((wiz_ext *)lv)->ptr;
+  pthread_mutex_lock(&l->mu);
+  while (l->held) pthread_cond_wait(&l->cv, &l->mu);
+  l->held = 1;
+  pthread_mutex_unlock(&l->mu);
+  wiz_dec(lv);
+  return WIZ_BOX(0);
+}
+WIZ_API void wiz_lock_release(wiz_val lv, wiz_val g) {
+  wiz_lock *l = (wiz_lock *)((wiz_ext *)lv)->ptr;
+  wiz_dec(g);
+  pthread_mutex_lock(&l->mu);
+  l->held = 0;
+  pthread_cond_broadcast(&l->cv);
+  pthread_mutex_unlock(&l->mu);
+  wiz_dec(lv);
+}
+
+/* the objects still alive, once every thread has finished */
+static int64_t wiz_live_total(void) {
+  wiz_wait_threads();
+  return wiz_live + wiz_live_exited;
+}
+
 /* run `main : IO A`: apply it to the world, and drop the result */
 WIZ_API int wiz_finish_io(wiz_val main) {
   wiz_val w = WIZ_BOX(0);
   wiz_val r = wiz_apply(main, 1, &w);
   wiz_dec(r);
-  if (wiz_live != 0) { fprintf(stderr, "wiz: %ld objects leaked\n", (long)wiz_live); wiz_report_leaks(); return 2; }
+  int64_t live = wiz_live_total();
+  if (live != 0) { fprintf(stderr, "wiz: %ld objects leaked\n", (long)live); wiz_report_leaks(); return 2; }
   return 0;
 }
 
@@ -1232,7 +1558,8 @@ WIZ_API int wiz_finish(wiz_val r) {
   wiz_print(r);
   putchar('\n');
   wiz_dec(r);
-  if (wiz_live != 0) { fprintf(stderr, "wiz: %ld objects leaked\n", (long)wiz_live); wiz_report_leaks(); return 2; }
+  int64_t live = wiz_live_total();
+  if (live != 0) { fprintf(stderr, "wiz: %ld objects leaked\n", (long)live); wiz_report_leaks(); return 2; }
   return 0;
 }
 
@@ -1250,6 +1577,7 @@ static void *wiz_main_thread(void *p) {
 
 WIZ_API int wiz_run_main(wiz_val (*entry)(void), int io) {
   wiz_main_args args = {entry, io, 0};
+  wiz_track_init();
   const char *mb = getenv("WIZ_STACK_MB");
   size_t size = (size_t)(mb ? atol(mb) : 1024) << 20;
   pthread_attr_t attr;
