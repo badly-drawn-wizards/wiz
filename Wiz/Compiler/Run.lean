@@ -333,20 +333,20 @@ strings of the registered `nat` and `string` types print as literals. -/
 partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy R) (v : RVal) : Term R :=
   let readback := readback g builtins
   match whnf ty, v with
-  | .mu _ _ _ _ _ (some (T, _, _)), v =>
-    if builtins.lookup "nat" == some T then
+  | .mu _ _ _ _ _ hint, v =>
+    -- (the same test as erasure's: a type shaped like `Nat` is a number, R3)
+    if isNatTy { g with builtins := builtins } ty then
       match v.toNat? with
       | some n => .const (toString n) []
       | none => readbackData ty v
-    else if builtins.lookup "string" == some T then
+    else if hint.map (·.1) == builtins.lookup "string" && hint.isSome then
       match v.toString? with
       | some s => .const s.quote []
       | none => readbackData ty v
     else readbackData ty v
-  | .mu .., v => readbackData ty v
   | .sigma _ _ A B _, v =>
     -- the last field of a structure is unboxed (22i): `v` is the field itself
-    if isStructTail g (Closure.inst g B (.var 1000000)) then
+    if unboxedSigma g 1000000 ty then
       let a' := readback A v
       .pair a' (readback (Closure.inst g B (eval g [] a')) .erased)
     else
@@ -357,8 +357,9 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
   | .enum ls, .obj t _ => .tag ls t
   | .enum ls, .nat t => .tag ls t
   | .unit _, _ => .tt
-  -- a phantom tail or structure marker (22e, 22i): its one inhabitant
-  | .pi x .., _ => if isPhantomName x then .tt else .const "<function>" []
+  -- an erased function into `Unit` (a phantom tail or structure marker, 22e, 22i): its
+  -- one inhabitant
+  | .pi .., _ => if erasedFunTy g ty 1000000 then .tt else .const "<function>" []
   | .nu .., _ => .const "<codata>" []
   | _, _ => .tt
 where
@@ -371,9 +372,7 @@ where
             if k == ri.r then .nat n else .erased)
         | v, _ => v
       let v := match v with
-        | .nat n => if builtins.lookup "nat" == (match whnf ty with
-            | .mu _ _ _ _ _ (some (T, _, _)) => some T
-            | _ => none) then RVal.natView n else unflat D v
+        | .nat n => if isNatTy { g with builtins := builtins } ty then RVal.natView n else unflat D v
         | v => unflat D v
       .con (readback g builtins (vInterp g l I D (muFamily l I D) i) v)
     | _ => .tt
@@ -460,7 +459,11 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     -- a declaration that can't be erased yet becomes a runtime error if it is reached
     let e ← match eraseDecl g d with
       | .ok e => pure e
-      | .error err => do failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
+      | .error err => do
+        -- (a refusal, not a gap: running on would give a wrong value)
+        if ((toString err).splitOn abstractFieldMsg).length > 1 then
+          throw (.other s!"cannot erase {n}: {err}")
+        failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
     let e := if e.globals.any inlines.contains then
       let inl := inlines
       e.inlineSimp fun f => if f == n then none else inl.get? f

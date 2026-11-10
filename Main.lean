@@ -17,6 +17,8 @@ experimental kernel options (D1, they turn the cache off): --regularity off|full
 (default off),
 --predicative-prop,
 --inert syntactic|ground|conv (P1: regularity at inert types; default ground)
+compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
+unboxed; not stable under substitution, so off by default)
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --llc X (default llc)"
 
@@ -66,6 +68,10 @@ initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 /-- (P1) `--inert MODE`: regularity at inert types. -/
 initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
 
+/-- `--unbox-structs` (22i): the last field of a structure is unboxed. Off by default: the
+representation is not stable under substitution (`unboxedSigma` in `Erase.lean`). -/
+initialize unboxOpt : IO.Ref Bool ← IO.mkRef false
+
 /-- Take `--inert MODE` out of the arguments. -/
 def takeInertOpt : List String → Except String (Option InertReg × List String)
   | "--inert" :: m :: rest => do
@@ -87,13 +93,14 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
   let (regularity, predicativeProp) ← kernelOpts.get
   let inertReg ← inertOpt.get
+  let unboxStructs ← unboxOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot (moduleRoots tc) closure
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, inertReg },
+    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, inertReg, unboxStructs },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && inertReg == .ground then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && inertReg == .ground && !unboxStructs then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -155,6 +162,8 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  if args.contains "--unbox-structs" then unboxOpt.set true
+  let args := args.filter (· != "--unbox-structs")
   let args ← match takeInertOpt args with
     | .ok (r, a) => do if let some r := r then inertOpt.set r
                        pure a

@@ -492,6 +492,9 @@ WIZ_API wiz_val wiz_mk_obj(wiz_val t, wiz_val l) {
    own, and so free, them. The lowering takes numbers apart with `natTag`/`nat.pred`, so
    reaching this is a compiler bug: stop instead of leaking. */
 WIZ_API wiz_val wiz_proj(wiz_val v, uint32_t i) {
+  /* a projection of `◾` is `◾`: a pair of proofs reaches code that is generic in the
+     sorts of its components as `◾` (as in the interpreters) */
+  if (v == WIZ_BOX(0)) return v;
   if (WIZ_IS_SCALAR(v) || wiz_is_big(v)) {
     if (i == 0) return WIZ_BOX(WIZ_IS_SCALAR(v) && WIZ_UNBOX(v) == 0 ? 0 : 1);
     wiz_panic("internal error: proj of a field of a number (use natTag/nat.pred)");
@@ -575,6 +578,10 @@ WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
     wiz_dec(f);
     return n > 1 ? wiz_apply(r, n - 1, args + 1) : r;
   }
+  /* `◾` applied is `◾`: a function with no runtime content (a proof, or an erased function
+     into `Unit`, `erasedFunTy` in Erase.lean) reaches generic code as `◾`, and generic
+     code applies it like any function */
+  if (f == WIZ_BOX(0)) { for (uint32_t i = 0; i < n; i++) wiz_dec(args[i]); return f; }
   if (WIZ_IS_SCALAR(f) || ((wiz_hdr *)f)->tag != WIZ_TAG_CLO) wiz_panic("applying a non-function");
   wiz_clo *c = (wiz_clo *)f;
   uint32_t m = c->h.size, total = m + n;
