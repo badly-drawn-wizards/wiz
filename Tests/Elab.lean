@@ -3913,7 +3913,11 @@ def regionsGroup : Group where
         failsLibs "import Region\ndef forge {ρ : Region} : Lent ρ Nat := .mk ()" "Lent"
         failsLibs "import Region\ndef forge {ρ : Region} : Shr ρ Nat := (5, ())" "Shr"
         failsLibs ("import Region\nstructure MyShr (ρ : Region) (A : Type) where\n  val : A\n" ++
-          "def forge {ρ : Region} : Shr ρ Nat := MyShr.mk 5") "mismatch" },
+          "def forge {ρ : Region} : Shr ρ Nat := MyShr.mk 5") "mismatch"
+        -- nor through an equation with a look-alike (the kernel compares by shape; `rfl`
+        -- compares in the elaborator's view)
+        failsLibs ("import Region\nstructure MyShr (ρ : Region) (A : Type) where\n  val : A\n" ++
+          "def forge {ρ : Region} (x : Nat) : Shr ρ Nat := cast rfl (MyShr.mk x : MyShr ρ Nat)") "not definitionally equal" },
     { name := "a handle is its value at run time, and a scope is its body run in place (22i)", run := fun _ => do
         let s ← libsState ("import Region\n" ++ regionsPush ++
           "def get {ρ : Region} (x : Shr ρ Nat) : Nat := x.val\n" ++

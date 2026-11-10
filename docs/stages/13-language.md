@@ -61,6 +61,35 @@ Like Lean's, privacy is enforced by the elaborator: the kernel checks every decl
 against the full environment, where an opaque structure is its Σ again (which is sound:
 whatever converts with the definition hidden converts with it unfolded).
 
+**The elaborator never leaves a comparison to the kernel.** The other direction is not
+sound for privacy: the kernel accepts what converts with the definition *unfolded*, so a
+check that the elaborator skips is answered by shape. `rfl` used to be such a check: at a
+stuck equation `X = Y` it produced `reflTy X` and let the kernel compare `X` with `Y`.
+For a look-alike `structure Look (A) where val : A`, `rfl : Look Nat = Pos Nat` was
+accepted, and `cast` along it made a `Pos Nat` without `Pos.mk` (against `lib/Region.wiz`,
+a `Shr ρ Nat` at any region). Now `rfl` compares the two sides itself, in its own view
+(`sameSides` in `Elab/Term.lean`: unification, then the type-directed conversion with
+the elaborator's globals), for values as well as types, and at every equation left
+inside one that has computed (`rflProof`). A false `rfl` is reported at the `rfl`
+("rfl: the two sides are not definitionally equal"), not as "kernel rejected …", and
+`first | rfl | …` in a tactic can fail. The proof that structural recursion passes to an
+induction hypothesis at a concrete index (`trivialProof`) is compared the same way.
+
+What this does and does not give. It stops the *elaborator* from producing an equation
+between a private type and a look-alike. The kernel still considers the two types
+equal, so a term that reaches the kernel without the elaborator comparing its types
+would still be accepted:
+
+| path | status |
+|---|---|
+| `rfl` at a type or value equation, also under pairs, functions and data types | closed |
+| `refl X`, `cast e x`, `transp`, a tuple or look-alike against the type, `p.1` | closed (their types are unified in the elaborator's view) |
+| `exact`, `rfl` and other tactics that elaborate syntax; macros (they produce syntax) | closed (they go through the same rules) |
+| the tactic request `assign` with a term that still has holes | **open**: its type is inferred only when it has no holes |
+| a hole solved by unification, whose solution is not type-checked by the elaborator | not audited |
+| the self-hosted frontend (`selfhost/Frontend.wiz`) | **open**: it parses `private` and ignores it |
+| inside the declaring module | by design: there the look-alike is the same type |
+
 The motivating use is `lib/Region.wiz` ([22g](22-numbers.md)): the constructors of the borrow handles
 `Shr`, `Uniq`, `Mut` and `Lent` are private, so a handle at a region comes only from a
 scope or an operation of the library, and hand-written Wiz can't forge one

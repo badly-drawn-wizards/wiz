@@ -201,6 +201,41 @@ def group : Group where
         failsPriv privMod "import Priv\ndef x : Pos Nat := (5, ())" "Pos"
         failsPriv privMod "import Priv\nstructure Fake (A : Type) where\n  val : A\ndef x : Pos Nat := Fake.mk 5" "mismatch"
         failsPriv privMod "import Priv\ndef x (p : Pos Nat) : Nat := p.1" "cannot project" },
+    { name := "rfl compares the two sides in the elaborator's view: no equation with a look-alike (13b)", run := fun _ => do
+        let look := "import Priv\nstructure Look (A : Type) where\n  val : A\n"
+        let neq := "rfl: the two sides are not definitionally equal"
+        -- the kernel compares by shape, so `reflTy Look : Look = Pos` would check there,
+        -- and `cast` along it would make a `Pos` without `Pos.mk`
+        failsPriv privMod (look ++ "def e : Look Nat = Pos Nat := rfl") neq
+        failsPriv privMod (look ++ "def e : Pos Nat = Look Nat := rfl") neq
+        failsPriv privMod (look ++ "def e (A : Type) : Look A = Pos A := rfl") neq
+        failsPriv privMod (look ++ "def forge (x : Look Nat) : Pos Nat := cast rfl x") neq
+        failsPriv privMod (look ++ "def e : Look Nat = Pos Nat := refl (Look Nat)") "mismatch"
+        -- inside an equation that computes first (a pair, a function, a parameter of a data type)
+        failsPriv privMod (look ++ "def p : Type × Nat := (Look Nat, 1)\ndef e : p = (Pos Nat, 1) := rfl") neq
+        failsPriv privMod (look ++ "def e : (fun (A : Type) => Look A) = (fun (A : Type) => Pos A) := rfl") neq
+        failsPriv privMod (look ++ "def e : List (Look Nat) = List (Pos Nat) := rfl") neq
+        -- inductive and coinductive types, a structure with a private field (4g makes
+        -- these equations compute in the kernel)
+        let fake := "import Priv\ninductive Fake where\n  | num (n : Nat)\n  | secret (n : Nat)\n"
+        failsPriv privMod2 (fake ++ "def e : Fake = Tok := rfl") neq
+        failsPriv privMod2 (fake ++ "def e : Tok = Fake := rfl") neq
+        failsPriv privMod2 ("import Priv\ncoinductive Fake (A : Type) where\n  head : A\n  tail : Fake A\n  name : Nat\n" ++
+          "def e : Fake Nat = Sig Nat := rfl") neq
+        failsPriv privMod2 "import Priv\nstructure Fake where\n  owner : Nat\n  bal : Nat\ndef e : Fake = Acct := rfl" neq
+        -- controls: a type and itself, through a definition, values; in its own module a
+        -- look-alike is still the same type
+        okPriv privMod ("import Priv\ndef a : Pos Nat = Pos Nat := rfl\ndef T : Type := Pos Nat\ndef b : T = Pos Nat := rfl\n" ++
+          "def c (p : Pos Nat) : p = p := rfl\ndef d : Nat.add 1 1 = 2 := rfl\ndef f : List Nat = List Nat := rfl\n" ++
+          "def g (A : Type) : List A = List A := rfl\ndef i : (fun (n : Nat) => Nat.add 0 n) = (fun n => n) := rfl\n" ++
+          "def l (x : Nat) : (x, 1) = (x, Nat.add 0 1) := rfl")
+        okPriv privMod2 "import Priv\ndef e : Tok = Tok := rfl\ndef j : Sig Nat = Sig Nat := rfl\ndef k : Acct = Acct := rfl"
+        okPriv "" (privMod ++ "structure Look (A : Type) where\n  val : A\ndef e : Look Nat = Pos Nat := rfl\n" ++
+          "def forge (x : Look Nat) : Pos Nat := cast e x\n#eval (forge (Look.mk 4)).val") ["4"] },
+    { name := "rfl is checked by the elaborator, not left to the kernel (wishful: elab-rfl-unchecked)", run := fun _ => do
+        failsLib "import Prelude\ndef w (r a : Nat) : r = Nat.succ a := rfl" "rfl: the two sides are not definitionally equal"
+        failsLib "import Prelude\ndef z (a : Nat) : a = a + 0 := rfl" "rfl: the two sides are not definitionally equal"
+        okLib "import Prelude\ndef k (a : Nat) : 0 + a = a := rfl\ndef m (xs : List Nat) : List.append List.nil xs = xs := rfl" },
     { name := "private constructors, observations and fields: the public API (13b)", run := fun _ => do
         okPriv privMod2 ("import Priv\n#eval Tok.value (Tok.num 3)\n#eval Tok.value (Tok.hide 4)\n#eval Tok.value (.num 5)\n" ++
           "#eval Sig.sample (Sig.next (Sig.const 3))\n#eval (Sig.const 2).name\n" ++
