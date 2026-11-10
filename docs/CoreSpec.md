@@ -1162,13 +1162,15 @@ proved**, and the D1 experiment shows checking can loop (Status.md).
 * **No recursion in the kernel:** a declaration is checked against the environment
   *without* itself, so a value cannot mention its own name.
 * **Axioms** (`value = none`) are accepted with any well-formed type, including `False`.
-* **Partial definitions** (`addPartialImpl`, `Check.lean:687`): `f` is added as an
-  **axiom**, and its recursive implementation is checked against `f`'s type but used only
-  by the compiler. The kernel never unfolds it. That the type is inhabited (so that the
-  axiom is harmless) is checked by the **elaborator** (`inhabitedTy`,
-  `Elab/Command.lean:576`), not by the kernel (Status.md, O2: this check can be fooled, and a proof of `False` was built).
-* **`builtin` registrations** (`Elab/Command.lean:937–944`) are not checked by the kernel
-  at all (§9.4; Status.md, O3).
+* **Partial definitions** (`addPartialDecl`, `addPartialImpl`): `f` is opaque, and the
+  kernel takes it only with a **witness** `w : T` of its type (`Decl.witness`), which it
+  checks (erased), so `f` proves nothing `w` doesn't. Its recursive implementation is
+  checked against `f`'s type but used only by the compiler; the kernel never unfolds it.
+  (Status.md, F3: the elaborator's old inhabitedness check could be fooled.)
+* **`builtin` registrations** are not checked against their definitions by the kernel
+  (§9.4). Those of the toolchain's `lib/` are trusted (reviewed, Status.md §7); any other
+  is an axiom, listed by `#print axioms` (Status.md, F4). The elaborator checks their
+  shapes.
 * `Decl.inline` (evaluate eagerly) and `Decl.impl` (compiler implementation) do not affect
   what the kernel accepts.
 
@@ -1273,9 +1275,9 @@ is not caught by type checking):
 
 1. **Axioms** (`axiom`, and `C.*` functions from imported C headers, `foreign` types).
    The Prelude has one, `castRefl` (§8.4a).
-2. **Partial definitions**: the kernel trusts the elaborator's inhabitedness check
-   (`inhabitedTy`).
-3. **`builtin` registrations**: numerals' type and native arithmetic.
+2. **Partial definitions**: no longer trusted: each has a witness the kernel checks.
+3. **`builtin` registrations** of the toolchain's `lib/`: numerals' type and native
+   arithmetic (any other registration is an axiom, reported by `#print axioms`).
 4. **The templates** (`Templates.lean`): never type-checked; their sort annotations are
    hand-written.
 5. **The method/motive types** the kernel builds itself (`delimMethodTys`,
