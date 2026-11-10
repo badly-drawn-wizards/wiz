@@ -1875,6 +1875,46 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   state facts about definitions). A word is still an
   object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
   `implemented_by`.
+### 22e: phantom parameters ✅
+
+```
+inductive UIntN (w : Nat) where
+  | mk (toNat : Nat)                     -- no field mentions `w`
+def f (x : UIntN 8) : UIntN 16 := x      -- type mismatch
+def width {ω w : Nat} (a : UIntN w) : Nat := w
+#eval width (UIntN.mk 3 : UIntN 8)       -- 8: `w` is inferred
+```
+
+Types are structural, so a parameter that no field mentions used to be forgotten:
+`UIntN 8` and `UIntN 16` were one type, `w` couldn't be inferred, and an HDL `Signal d A`
+didn't keep clock domains apart. Now, for each such parameter `p : P`, the elaborator
+(`phantomTail`, `Elab/Inductive.lean`) ends the type with `(0 phantom✝ : D) → Unit`
+instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
+`coinductive`, or of a structure's Σ. Here `D := p` if `p` is a type, and
+`D := (0 x : P) × (x = p)` otherwise.
+
+* `D` mentions `p` and is a type, not a proposition. Propositions compare by equivalence
+  (4c), so `p = p` would have forgotten `p` again. Conversion now compares `p`, and
+  unification solves it.
+* The tail's only inhabitant is `fun _ => ()` (up to η). So it is still a singleton:
+  constructors fill it in, patterns never see it, structure η and copattern index
+  equations hold by `refl`, and `()` fills a structure's tail in a tuple.
+* Erasure drops it (`erasable` knows the inaccessible binder name), so data, `#ir` and the
+  C/LLVM code are those of the type without the parameter. Constructors, projections,
+  `deriving` and `implemented_by` don't change. Nothing in the kernel changes either: it
+  checks the encoding like any other declaration.
+* Proof parameters get no phantom, and neither do sizes or quantities. A parameter whose
+  `D` lives in a higher universe than the type also gets none, since the tail would
+  raise the type's universe; it stays forgotten.
+* For structures, `S 8 = S 16` computes through the Σ to `(x = 8) ↔ (x = 16)` under
+  a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). Equality of two
+  `μ` types computes to the index equation only when their descriptions agree (so
+  `UIntN 8 = UIntN 8` does), and the phantom is part of the description. So for an
+  `inductive`, `UIntN 8 = UIntN 16` stays stuck: it is neither provable nor refutable,
+  and a `cast` between such types gets stuck too.
+* A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
+  parameters never count. Declare a `structure` instead.
+
 ## Libraries
 
 ### H0c: vectors and bit vectors ✅

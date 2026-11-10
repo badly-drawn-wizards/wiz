@@ -107,6 +107,20 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
   let (tele, _) := peelPis Td.type
   let Ξ := tele.drop nΔ
   let nΞ := Ξ.length
+  -- index tuples end in `()`, or in the value of a phantom tail (`phantomTail`), which is
+  -- closed: read it off `T`'s definition, `fun Δ ξ => μ … (ξ…, tail)`
+  let rec stripN : Nat → Term R → Term R
+    | 0, t => t
+    | n + 1, .lam _ b => stripN n b
+    | _, t => t
+  let rec dropPairs : Nat → Term R → Term R
+    | 0, t => t
+    | n + 1, .pair _ b => dropPairs n b
+    | _, t => t
+  let tailTm : Term R := match Td.value.map (stripN (nΔ + nΞ)) with
+    | some (.mu _ _ _ idx _ _) => dropPairs nΞ idx
+    | _ => .tt
+  let tuple (as : List (B R)) : B R := as.foldr pair (closed tailTm)
   -- `λ t. ecase …` from `T.desc`'s value: `fun Δ => Desc.arg w (Enum ls) F`
   let some descVal := descD.value | throw "description without value"
   let rec stripLams : Nat → Term R → Term R
