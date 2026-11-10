@@ -345,6 +345,11 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
     else readbackData ty v
   | .mu .., v => readbackData ty v
   | .sigma _ _ A B _, v =>
+    -- the last field of a structure is unboxed (22i): `v` is the field itself
+    if isStructTail (Closure.inst g B (.var 0)) then
+      let a' := readback A v
+      .pair a' (readback (Closure.inst g B (eval g [] a')) .erased)
+    else
     let a' := readback A (v.field 0)
     .pair a' (readback (Closure.inst g B (eval g [] a')) (v.field 1))
   | .enum ls, .obj t _ => .tag ls t

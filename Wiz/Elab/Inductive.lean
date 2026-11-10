@@ -75,7 +75,7 @@ the type's universe `lvl` (the tail would raise it).
 Given `used k` (whether the parameter `var k` of the context `Δ` is mentioned), returns
 the tail type and its value in `Δ`, and the names of the phantom parameters. -/
 def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R × Term R))
-    (used : Nat → Bool) (lvl : Level) : ElabM R (Term R × Term R × List Name) := do
+    (used : Nat → Bool) (lvl : Level) (binder : Name := phantomName) : ElabM R (Term R × Term R × List Name) := do
   let g ← getGlobals
   let nΔ := Δ.size
   let tys := ctxΔ.types.reverse.toArray
@@ -97,9 +97,9 @@ def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R �
     unless u.le lvl do continue
     doms := doms.push D
     names := names ++ [x]
-  let ty := (doms.toList.zipIdx).foldr (fun (D, i) acc => .pi phantomName .default (.qlit 0) (D.lift i) acc none)
+  let ty := (doms.toList.zipIdx).foldr (fun (D, i) acc => .pi binder .default (.qlit 0) (D.lift i) acc none)
     (Term.unit lvl : Term R)
-  let val := doms.foldr (fun _ acc => .lam phantomName acc) (Term.tt : Term R)
+  let val := doms.foldr (fun _ acc => .lam binder acc) (Term.tt : Term R)
   pure (ty, val, names)
 
 /-- `T`'s arguments at a position where `T` is `var k`: the first `nΔ` must be the
@@ -416,7 +416,9 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     | .error e => throwAt (cmd.getArg 4).info e
   let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc none) (.unit (.succ l))
   -- phantom parameters (see `phantomTail`): the final `Unit` becomes the phantom tail
+  -- (a structure with fields marks its tail, so that erasure unboxes the last field, 22i)
   let (tailTy, tailV, _) ← phantomTail ctxΔ Δ (fun k => body.hasVar k) (.succ l)
+    (if fs'.isEmpty then phantomName else structTailName)
   let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc none) (tailTy.lift fs'.size)
   let ΔNames := Δ.toList.map (·.1)
   let n := fs'.size

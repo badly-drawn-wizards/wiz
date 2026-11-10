@@ -296,9 +296,20 @@ with `D` mentioning the parameter. Such a function type has one inhabitant up to
 so only the elaborator writes it. -/
 def phantomName : Name := "phantom✝"
 
+/-- The binder name of the phantom tail of a structure **with at least one field**
+(stage 22i): `structure S (ρ : Region) where val : A` is `(val : A) × ((0 fields✝ : D) → Unit)`.
+Erasure recognises this tail, so the Σ whose second component it is (the structure's last
+field) is unboxed: at runtime it is just that field. Inductive index types and zero-field
+structures keep `phantomName`: a zero-field structure is a type that a type variable can
+stand for, and `A × B` at `B := S` must keep its pair. -/
+def structTailName : Name := "fields✝"
+
+/-- A binder name of a phantom tail (`phantomName` or `structTailName`). -/
+def isPhantomName (x : Name) : Bool := x == phantomName || x == structTailName
+
 /-- The value of a phantom tail type, `fun _ … _ => ()`. -/
 partial def Term.phantomTailVal? {R : Type} : Term R → Option (Term R)
-  | .pi x _ _ _ b _ => if x == phantomName then (phantomTailVal? b).map (.lam phantomName) else none
+  | .pi x _ _ _ b _ => if isPhantomName x then (phantomTailVal? b).map (.lam x) else none
   | .unit _ => some .tt
   | _ => none
 
