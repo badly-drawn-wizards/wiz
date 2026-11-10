@@ -25,7 +25,7 @@ these operations as pure.
 
 * **Self tail calls as loops** (stage 15f). A function `f ps` whose body calls `f`
   in tail position (`let r := f as; ret r`) becomes a join point
-  `join J(ps) := body[f as ↦ jmp J as]; jmp J ps'` (with fresh parameters `ps'`): the
+  `join J(ps') := body[ps ↦ ps', f as ↦ jmp J as]; jmp J ps` (with fresh parameters `ps'`): the
   backends emit join points as labels and jumps (C `goto`, LLVM `br`), so the
   recursion is a loop and uses constant stack, whatever the C compiler does.
 -/
@@ -182,8 +182,11 @@ def Decl.loopify (d : Decl) : Decl :=
   let J := j + 1
   match d.body.selfTail d.name d.params.size J with
   | (body, true) =>
+    -- the join point gets fresh parameters (the body renamed; join bodies are closed),
+    -- so the function keeps its own (borrow annotations, `#ir`)
     let fresh := (List.range d.params.size).toArray.map (v + 1 + ·)
-    { d with params := fresh, body := .jdecl J d.params body (.jmp J fresh) }
+    let σ := (d.params.zip fresh).foldl (fun m (a, b) => m.insert a b) (∅ : Std.TreeMap Var Var)
+    { d with body := .jdecl J fresh (Body.simp { σ } body) (.jmp J d.params) }
   | _ => d
 
 def Decl.simplify (d : Decl) : Decl :=

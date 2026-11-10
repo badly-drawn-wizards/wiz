@@ -336,11 +336,12 @@ def hoistConsts (decls : Array Decl) : Array Decl :=
     (st, ds.push { d with body := b })) ({}, #[])
   ds ++ st.decls
 
-/-- The backend's optimisations, in order: dead code, reference counting, then reuse
+/-- The backend's optimisations for one function, in order: dead code, reference counting
+(with the borrowed parameters `σ`; see `optimizeProgram` in `Borrow.lean`), then reuse
 (across `case` first, then within blocks). -/
-def Decl.optimize (d : Decl) : Decl :=
+def Decl.optimize (d : Decl) (σ : BorrowSigs := {}) : Decl :=
   let d := { d with body := (elimDead d.body).1 }
-  let d := d.insertRC
+  let d := d.insertRC σ
   { d with body := insertReuse (reuseAcross {} {} (dropScalars d.body)) }
 
 end Wiz.IR
