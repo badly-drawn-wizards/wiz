@@ -38,6 +38,7 @@
     "testrunner",
     "toolchain",
     "tooling",
+    "=tower",
     "trust",
     "vec",
     "word"
