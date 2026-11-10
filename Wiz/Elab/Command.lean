@@ -267,6 +267,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
   let (ty, _) ← Elab.checkType ctx tyStx
+  finishInstances
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let alts := (cmd.getArg 5).args
@@ -374,6 +375,7 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
   let (ty, _) ← Elab.checkType ctx tyStx
+  finishInstances
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let .nu l I D i _ (some (T, us, args)) ← force (← evalIn ctx ty)
@@ -470,6 +472,7 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
   let (ty, _) ← Elab.checkType ctx tyStx
+  finishInstances
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let .nu l I D i sz hint ← force (← evalIn ctx ty)

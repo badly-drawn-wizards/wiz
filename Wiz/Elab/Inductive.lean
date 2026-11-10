@@ -278,6 +278,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let sig ← match (cmd.getArg 4).args[1]? with
     | some s => pure (← checkType ctxΔ s).1
     | none => pure (.sort 1)
+  finishInstances
   let sig ← zonk ctxΔ.lvl sig
   let (Ξ, l) ← match peelSignature sig with
     | .ok r => pure r
@@ -301,6 +302,8 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
       | some s => pure (← checkType ctxF s).1
       -- no result type: `T` applied to the parameters
       | none => pure ((telescopeVars nΔ (n + 1)).foldl .app (.var n))
+    -- (HD9) the instance problems of the types (`Vec A (n + 1)`), solved first
+    finishInstances
     -- zonk the fields and the target in their contexts
     let mut fs' := #[]
     for (x, bi, q, A) in fs, k in [0:n] do
@@ -387,6 +390,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
   let sig ← match (cmd.getArg 4).args[1]? with
     | some s => pure (← checkType ctxΔ s).1
     | none => pure (.sort 1)
+  finishInstances
   let sig ← zonk ctxΔ.lvl sig
   let l ← match peelSignature sig with
     | .ok ([], l) => pure l
@@ -397,6 +401,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     { name := ((f.getArg 2).getId?).getD "_", info := f.info, bi := .default,
       qty := (f.getArg 1).args[0]?, type := some (f.getArg 4) }
   let (ctxF, fs) ← elabTelescope ctxT views
+  finishInstances
   let mut fs' := #[]
   for (x, bi, q, A) in fs, k in [0:fs.size] do
     let q ← zonk (ctxT.lvl + k) q
@@ -473,6 +478,7 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     { name := ((f.getArg 2).getId?).getD "_", info := f.info, bi := .default,
       qty := (f.getArg 1).args[0]?, type := some (f.getArg 4) }
   let (ctxF, fs) ← elabTelescope ctxΔ views
+  finishInstances
   let mut fs' := #[]
   for (x, bi, q, A) in fs, k in [0:fs.size] do
     let q ← zonk (ctxΔ.lvl + k) q
@@ -497,6 +503,7 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
         | some s => if let some m := s.toNat? then n := max n m
         | none => pure ()
       pure (.sort (Level.ofNat n))
+  finishInstances
   let sig ← zonk ctxΔ.lvl sig
   let l ← match peelSignature sig with
     | .ok ([], l) => pure l
