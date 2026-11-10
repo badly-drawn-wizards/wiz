@@ -649,7 +649,7 @@ where
       -- `()` also fills a structure's phantom tail (`phantomTail`)
       | e@(.pi x ..) => do
         let g ← getGlobals
-        match (if x == phantomName then (quote g ctx.lvl e).phantomTailVal? else none) with
+        match (if isPhantomName x then (quote g ctx.lvl e).phantomTailVal? else none) with
         | some t => pure t
         | none => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t

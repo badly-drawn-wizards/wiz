@@ -12,9 +12,10 @@ Values are **objects** (a tag and fields, reference counted) or **scalars**: num
 `◾`, and constructors without fields (`ctor t #[]` is the scalar `t`, so tags cost no
 allocation). Following Perceus (Reinking, Xie, de Moura & Leijen, *Perceus: Garbage
 Free Reference Counting with Reuse*, PLDI 2021), reference counts are explicit:
-`dup x` and `drop x`, inserted by `RC.lean`. Every variable is **owned**: using it
-as an argument transfers that reference. `proj` returns a new (owned) reference to the
-field.
+`dup x` and `drop x`, inserted by `RC.lean`. A variable is **owned** (using it as an
+argument transfers that reference) or **borrowed** (stage 8e: a parameter marked `@&`,
+whose reference the caller keeps, or a field of a borrowed object). `proj` reads a
+field without a new reference.
 -/
 
 namespace Wiz.IR
@@ -29,7 +30,7 @@ inductive Expr where
   | lit (n : Nat)
   /-- an object with a tag and fields; with no fields, the scalar `tag` -/
   | ctor (tag : Nat) (args : Array Var)
-  /-- field `i` of `x` (a new reference) -/
+  /-- field `i` of `x` (borrowed from `x`: no new reference) -/
   | proj (i : Nat) (x : Var)
   /-- full application of a top-level function -/
   | fap (f : Name) (args : Array Var)
@@ -62,9 +63,18 @@ structure Decl where
   name : Name
   params : Array Var
   body : Body
+  /-- which parameters are borrowed (stage 8e; empty: all owned) -/
+  borrow : Array Bool := #[]
   deriving Repr, Inhabited
 
 namespace Expr
+
+/-- Native operations that only look at their arguments (comparisons): they **borrow**
+them, like a borrowed parameter, so the caller keeps its references (a key compared
+during a lookup is neither incremented nor decremented). Every other native operation
+consumes its arguments. -/
+def primBorrows (op : Name) : Bool :=
+  op == "nat.beq" || op == "nat.blt"
 
 def args : Expr → Array Var
   | ctor _ as | fap _ as | pap _ as | prim _ as => as
@@ -123,6 +133,7 @@ partial def toString (b : Body) (ind : String := "  ") : String :=
 end Body
 
 def Decl.toString (d : Decl) : String :=
-  s!"def {d.name} {Expr.toString.vs d.params} :=\n{d.body.toString}"
+  let ps := d.params.zipIdx.toList.map fun (p, i) => if d.borrow[i]?.getD false then s!"@&x{p}" else s!"x{p}"
+  s!"def {d.name} {" ".intercalate ps} :=\n{d.body.toString}"
 
 end Wiz.IR

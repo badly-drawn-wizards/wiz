@@ -21,7 +21,7 @@ global was declared.
 
 namespace Wiz.Query
 
-variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
+variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R] [IsoCache R]
 
 structure Engine (R : Type) where
   /-- command results, by chained key -/
