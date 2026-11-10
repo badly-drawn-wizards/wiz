@@ -1,5 +1,5 @@
 import Signal
--- E3: a UART transmitter, 8N1, LSB first (HDL plan §6). `WIZ_PATH=drafts/hdl wiz check drafts/hdl/Uart.wiz`
+-- E3: a UART transmitter, 8N1, LSB first (HDL plan §6). `wiz check -I drafts/hdl drafts/hdl/Uart.wiz`
 -- `clksPerBit` is a compile-time Nat (a static parameter in the HD5 discipline): it only
 -- appears compared against the baud counter, so the netlist holds the constant.
 

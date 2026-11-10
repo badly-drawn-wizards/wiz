@@ -1,3 +1,5 @@
+import Wiz.Toolchain
+
 /-!
 # A tiny test harness
 
@@ -6,6 +8,14 @@ the named groups. Unimplemented `sorry`s fail at runtime with "executed 'sorry'"
 -/
 
 namespace Tests
+
+/-- The toolchain the suite builds with (C compiler, GMP and collector flags), set once by
+`Tests/Main.lean` and passed to everything that compiles. -/
+initialize toolchainRef : IO.Ref Wiz.Toolchain ← IO.mkRef {}
+/-- The toolchain flags, given again to each case's process. -/
+initialize flagsRef : IO.Ref (List String) ← IO.mkRef []
+
+def toolchain : IO Wiz.Toolchain := toolchainRef.get
 
 structure Case where
   name : String
@@ -41,7 +51,7 @@ def Group.run (g : Group) : IO (Nat × Nat) := do
   let mut failed := 0
   for c in g.cases, i in [0:g.cases.length] do
     let out ← IO.Process.output
-      { cmd := self.toString, args := #["--run", g.name, toString i] }
+      { cmd := self.toString, args := #["--run", g.name, toString i] ++ (← flagsRef.get).toArray }
     if out.exitCode == 0 then
       IO.println s!"  ✓ {c.name}"
       passed := passed + 1
