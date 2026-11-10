@@ -1588,13 +1588,22 @@ def uAdd : List Q → List Q → List Q
 def uScale (q : Q) : List Q → List Q
   | .nil => .nil
   | .cons a r => .cons (qmul q a) (uScale q r)
+-- (a usage list drops its trailing zeros: `uZeros` is empty, `uOne i` stops at `i`. So a
+-- list that has run out means "0 from here on": a branch that doesn't mention a variable
+-- uses it 0 times, which joins with 1 to ω)
+def uJoinZero : List Q → List Q
+  | .nil => .nil
+  | .cons a r => .cons (qjoin a .qz) (uJoinZero r)
 def uJoin : List Q → List Q → List Q
   | .cons a r, .cons b r' => .cons (qjoin a b) (uJoin r r')
-  | u, .nil => u
-  | .nil, u => u
--- leave a binder of quantity `q`: its own usage must fit
+  | u, .nil => uJoinZero u
+  | .nil, u => uJoinZero u
+-- leave a binder of quantity `q`: its own usage must fit (an empty list: used 0 times,
+-- which a binder at 1 does not allow)
 def popUsage (q : Q) : List Q → Option (List Q)
-  | .nil => .some .nil
+  | .nil => match qle .qz q with
+    | .true => .some .nil
+    | .false => .none
   | .cons used rest => match qle used q with
     | .true => .some rest
     | .false => .none
