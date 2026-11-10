@@ -1310,7 +1310,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             let key := ReprInfo.key T { mkImpl := impl, getImpl := get, tag, nfields, r, mkArity, p, getArity }
             modify fun s => { s with builtins := (key, f) :: s.builtins,
                                      globals := { s.globals with builtins := (key, f) :: s.globals.builtins } }
-      else if s.builtins.any (·.2 == f) then
+      else if s.builtins.any (fun (k, x) => x == f && k != inlineKey) then
         report .error fStx.info s!"{f} is a builtin or foreign function: it already has an implementation"
       else if f == impl then report .error (cmd.getArg 3).info s!"{f} can't be implemented by itself"
       else if df.levelParams.length != di.levelParams.length then
@@ -1325,6 +1325,21 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             s!"{impl} can't implement {f}: its type {tyI.pretty} is not {f}'s type {df.type.pretty}"
         else
           modify fun s => { s with globals := s.globals.insert { df with impl := some (.const impl us) } }
+  | "command.attrInline" =>
+    -- `attribute [inline] f` (22i): compiled code substitutes `f`'s body where `f` is
+    -- applied to all its arguments, so a lambda argument is applied directly (no
+    -- closure). Registered as the builtin key `inline`; the kernel doesn't see it.
+    let fStx := cmd.getArg 4
+    let f := (fStx.getId?).getD "_"
+    match s.globals.find? f with
+    | none => report .error fStx.info s!"unknown declaration {f}"
+    | some d =>
+      if d.value.isNone then report .error fStx.info s!"{f} has no definition to inline"
+      else if s.builtins.any (·.2 == f) then
+        report .error fStx.info s!"{f} is a builtin, foreign or inline function already"
+      else
+        modify fun s => { s with builtins := s.builtins ++ [(inlineKey, f)],
+                                 globals := { s.globals with builtins := s.globals.builtins ++ [(inlineKey, f)] } }
   | "command.attrDeriver" =>
     let C := ((cmd.getArg 3).getId?).getD "_"
     let f := ((cmd.getArg 5).getId?).getD "_"
@@ -1392,7 +1407,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let e ← (eraseTop ctx t ty).mapError toString
         let code ← (compileReachable s.globals s.builtins e.globals.toList (externImpls := false)).mapError toString
         let decls ← IR.lowerProgram code e
-        let (v, _) ← IR.runProgram (decls.map (·.optimize))
+        let (v, _) ← IR.runProgram (IR.optimizeProgram decls)
         pure (ty, v)
       match result with
       | .ok (ty, v) => report .info cmd.info (readback s.globals s.builtins ty v).pretty
@@ -1404,8 +1419,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       IR.lowerProgram code (.global n)
     match result with
     | .ok decls =>
-      let mine := decls.filter fun d => d.name == n || d.name.startsWith (n ++ ".")
-      report .info cmd.info ("\n".intercalate (mine.toList.map (·.optimize.toString)))
+      -- (not the owned wrappers for closures, stage 8e)
+      let mine := (IR.optimizeProgram decls).filter fun d =>
+        d.name == n || (d.name.startsWith (n ++ ".") && !d.name.endsWith "._owned")
+      report .info cmd.info ("\n".intercalate (mine.toList.map (·.toString)))
     | .error err => report .error cmd.info s!"#ir: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with

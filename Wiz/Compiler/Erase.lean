@@ -194,10 +194,31 @@ partial def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
   | .sort _ | .size | .sizeLt _ | .qty => true
   | .ulift _ A => erasable ctx A
   -- a phantom tail `(0 phantom✝ : D) → … → Unit` (only `fun _ => ()` inhabits it)
-  | .pi x .. => x == phantomName || isProp ctx.globals ctx.tys ty
+  | .pi x .. => isPhantomName x || isProp ctx.globals ctx.tys ty
   | _ => isProp ctx.globals ctx.tys ty
 
 private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
+
+/-- Is `ty` the tail of a structure with fields, `(0 _ : D) → … → (0 _ : Enum [fields✝]) → Unit`
+(`structTailName`, stage 22i)? -/
+partial def isStructTail (g : Globals R) (ty : VTy R) (lvl : Nat := 1000000) : Bool :=
+  match whnf ty with
+  | .pi _ _ _ dom cod _ =>
+    match whnf dom with
+    | .enum [l] => l == structTailName
+    | _ => isStructTail g (Closure.inst g cod (.var lvl)) (lvl + 1)
+  | _ => false
+
+/-- **Unboxed newtypes** (stage 22i). Is `ty` a Σ whose second component is a structure's
+tail, that is, the last field of a structure? Then a value of it is represented by its
+first component alone: building it is the identity, `.1` is the identity, `.2` is `◾`.
+A one-field structure (`Shr ρ A`, a newtype) is then its field, and an `n`-field one is
+`n - 1` pairs instead of `n`. The decision depends only on the binder name of the tail,
+which substitution can't create or remove, so generic and specialised code agree. -/
+def unboxedSigma (g : Globals R) (lvl : Nat) (ty : VTy R) : Bool :=
+  match whnf ty with
+  | .sigma _ _ _ B _ => isStructTail g (Closure.inst g B (.var lvl)) (lvl + 1)
+  | _ => false
 
 /-- A call of a generated `T.casesOn`, unfolded and beta-reduced: as a function, its
 arguments (the branches) would all be computed before the call; unfolded, they sit in
@@ -331,7 +352,8 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
 * if `ty` is `erasable`, the result is `◾`;
 * `lam` against a Π: erase the body under the binder;
 * `pair` against a Σ: an object `obj 0 #[a, b]`, with `a` erased if the Σ's quantity
-  is `0`;
+  is `0`; if the second component ends in a structure's marker (`isStructTail`, 22i),
+  just `a` (the last field of a structure is unboxed);
 * `con x` against `μ D i`: erase the payload `x` against `⟦D⟧ (μ D) i`, then make it
   flat: `flatCon` gives the tag and fields of a literal payload (`obj k fs`; for the
   `nat` type, `natLit 0` or the successor applied to the field); otherwise
@@ -360,7 +382,10 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     return .lam x b'
   | .pair a b, .sigma _ q A B _ =>
     let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a A
-    let b' ← eraseCheck ctx b (ctx.instArg B a)
+    let Bv := ctx.instArg B a
+    -- the last field of a structure: the pair is its first component (22i)
+    if isStructTail g Bv ctx.lvl then return a'
+    let b' ← eraseCheck ctx b Bv
     return .obj 0 #[a', b']
   | .con x, .mu l I D i s _ =>
     let x' ← eraseCheck ctx x (vInterp g l I D (muFamilyAt l I D ((sizePred? s).getD .szInf)) i)
@@ -414,7 +439,8 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
 /-- **Exercise 5.1b.** Erase `t`, computing its type with the kernel's `infer`.
 
 * variables, globals, applications (an argument to a `0`-quantity Π is `◾`);
-* `fst`/`snd` are `proj 0`/`proj 1`; `split` binds the projections with `let`s;
+* `fst`/`snd` are `proj 0`/`proj 1`; `split` binds the projections with `let`s; but
+  at an `unboxedSigma` (22i) `fst` is the value itself, `snd` is `◾`;
 * `ecase` on a tag is `case`; `cast` is its argument; `ann` is its term;
 * the eliminators `ind`, `Desc.elim`, `out`, `coit`, `scofix` become primitives;
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
@@ -434,8 +460,12 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       | none => pure (← eraseSpine ctx t).1
     | .ann tm ty' => eraseCheck ctx tm (ctx.eval ty')
     | .letE .. => eraseCheck ctx t ty
-    | .fst p => pure (.proj 0 (← eraseInfer ctx p).1)
-    | .snd p => pure (.proj 1 (← eraseInfer ctx p).1)
+    | .fst p => do
+      let (p', pty) ← eraseInfer ctx p
+      pure (if unboxedSigma g ctx.lvl pty then p' else .proj 0 p')
+    | .snd p => do
+      let (p', pty) ← eraseInfer ctx p
+      pure (if unboxedSigma g ctx.lvl pty then .erased else .proj 1 p')
     | .split _ s _ _ x y b => do
       let (s', sty) ← eraseInfer ctx s
       let .sigma _ q A B _ := whnf sty | throw (.other "erasure: split of a non-pair")
@@ -444,6 +474,9 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
       let vx := Val.var ctx.lvl
       let ctx₂ := (ctx.bind x pq A).bind y [] (Closure.inst g B vx)
       let (b', _) ← eraseInfer ctx₂ b
+      if unboxedSigma g ctx.lvl sty then
+        pure (.letE "s" s' (.letE x (.var 0) (.letE y .erased (b'.lift 1 2))))
+      else
       pure (.letE "s" s' (.letE x (.proj 0 (.var 0)) (.letE y (.proj 1 (.var 1)) (b'.lift 1 2))))
     | .ecase _ m s bs => do
       let (s', sty) ← eraseInfer ctx s
