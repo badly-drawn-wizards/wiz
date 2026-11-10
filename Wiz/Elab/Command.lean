@@ -873,7 +873,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
-      match runElab (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
           (elabStructure cmd levelParams) levelParams with
       | .error e => report .error e.info e.msg
       | .ok decls =>
@@ -1046,7 +1046,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let body := ((cmd.getArg 6).getStr?).getD ""
     if s.globals.contains name then report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
-      let elabTy := runElab (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+      let elabTy := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
         (elabDeclTerms binders (some (cmd.getArg 4)) none cmd.info) []
       match elabTy with
       | .error e => report .error e.info e.msg
@@ -1100,7 +1100,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let name := ((cmd.getArg 3).getId?).getD "_"
     if s.globals.contains name then report .error (cmd.getArg 3).info s!"'{name}' has already been declared"
     else
-      let elabTy := runElab (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+      let elabTy := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
         (elabDeclTerms #[] (some (cmd.getArg 5)) none cmd.info) []
       match elabTy with
       | .error e => report .error e.info e.msg
