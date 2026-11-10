@@ -571,10 +571,21 @@ def sameSides (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R U
       evalIn ctx (← zonk ctx.lvl (quote g ctx.lvl (← forceMeta v)))
     let a ← again a
     let b ← again b
-    let tys := ctx.types.reverse.toArray
+    -- the types of the variables too: a binder's type may have been a hole when it was
+    -- bound, and conversion (which infers the types of neutrals) takes holes as rigid
+    let mut tys : Array (VTy R) := #[]
+    for v in ctx.types.reverse do
+      let j := tys.size
+      let t ← zonk j (quote g j (← forceMeta v))
+      tys := tys.push (eval g (ctx.env.drop (ctx.lvl - j)) t)
+    -- what the kernel does with `refl a`: its type `a = a` against `a = b`, both
+    -- computed afresh (an equation at a Σ or Π computes by components, and then holds by
+    -- η where the sides themselves are not compared by `conv`)
     let ok ← match A? with
-      | some A => do pure (conv g tys (← again A) a b)
-      | none => pure (convTy g tys a b)
+      | some A => do
+        let A ← again A
+        pure (conv g tys A a b || convTy g tys (vEq g A a a) (vEq g A a b))
+      | none => pure (convTy g tys a b || convTy g tys (vEqType g a a) (vEqType g a b))
     unless ok do
       throwAt ctx.info s!"rfl: the two sides are not definitionally equal\n  left:  {← showVal ctx a}\n  right: {← showVal ctx b}\n  ({e.msg})"
 
