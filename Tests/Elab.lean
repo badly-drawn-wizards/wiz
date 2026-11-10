@@ -3838,15 +3838,11 @@ def phantomGroup : Group where
               pure a : Except String Nat) with
             | .ok a => pure a
             | .error e => throw (IO.userError e)
-          if unbox then
-            -- `W` is its list; `P` is one pair, as a raw `Nat × List Nat × Unit` is two
-            checkEq (← allocs "l") (← allocs "w")
-            checkEq ((← allocs "l") + 1) (← allocs "p")
-          else
-            -- one cell per field
-            checkEq ((← allocs "l") + 1) (← allocs "w")
-            checkEq ((← allocs "l") + 2) (← allocs "p")
-          checkEq ((← allocs "l") + 2) (← allocs "q") }
+          let l ← allocs "l"
+          -- unboxed: `W` is its list, and `P` is one pair, as a raw `Nat × List Nat × Unit`
+          -- is two; else one cell per field
+          let k := if unbox then 0 else 1
+          checkEq (unbox, l + k, l + 1 + k, l + 2) (unbox, ← allocs "w", ← allocs "p", ← allocs "q") }
   ]
 
 /-! ### Representations are a function of the type up to conversion (R3)
