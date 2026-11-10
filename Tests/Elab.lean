@@ -1928,10 +1928,29 @@ def elimRule : List (MTm × Bool) :=
      (ann (lam (coit 0 (unit 0) streamD (lam (enum 2)) step star (var 0))) (piq q (enum 2) streamTy), ok),
      (ann (lam (scofix 0 (unit 0) streamD (lam (unit 0)) zerosF szInf star (var 0))) (piq q (unit 0) streamTy), ok)]
 
+/-- Usage checking at the edges (kernel-lint's findings in Kernel.wiz, whose usage lists
+drop trailing zeros): a variable that is never used has usage 0, which a binder at 1 does
+not allow; and branches that disagree about a linear variable join to ω, also when one of
+them uses no variable at all. -/
+def usageRule : List (MTm × Bool) :=
+  let caseOn (q : ZeroOneMany) (bs : List MTm) :=
+    ann (lam (lam (ecase (enum 2) (var 1) bs))) (pi (enum 2) (piq q (enum 2) (enum 2)))
+  [(ann (lam star) (piq .one (unit 0) (unit 0)), false),
+   (ann (lam star) (piq .many (unit 0) (unit 0)), true),
+   (ann (lam star) (piq .zero (unit 0) (unit 0)), true),
+   (ann (lam (lam (var 1))) (pi (enum 2) (piq .one (enum 2) (enum 2))), false),
+   (letq .one (enum 2) (tag 2 0) (tag 2 1), false),
+   (letq .many (enum 2) (tag 2 0) (tag 2 1), true),
+   (caseOn .one [var 0, tag 2 0], false),
+   (caseOn .one [tag 2 0, var 0], false),
+   (caseOn .one [var 0, var 0], true),
+   (caseOn .one [tag 2 0, tag 2 1], false),
+   (caseOn .many [var 0, tag 2 0], true)]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ elimRule.map (·.1) ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ elimRule.map (·.1) ++ usageRule.map (·.1) ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -2615,7 +2634,7 @@ def selfHostGroup : Group where
             throw (IO.userError s!"unexpected types {a}, {b}")
         | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "projections need an unrestricted pair; positions at 0 are erased; eliminators use their scrutinee ω times (R1; and both kernels agree on it below)", run := fun _ => do
-        for (t, ok) in MTm.projRule ++ MTm.elimRule do
+        for (t, ok) in MTm.projRule ++ MTm.elimRule ++ MTm.usageRule do
           let v := leanVerdict t
           unless (v != "error") == ok do
             throw (IO.userError s!"expected {if ok then "accepted" else "rejected"}, got {v}: {MTm.pretty 0 t}") },
