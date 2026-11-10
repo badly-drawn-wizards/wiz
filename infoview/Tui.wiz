@@ -1,0 +1,502 @@
+import IO
+import Infoview
+-- `wiz-infoview`: the infoview as a terminal program, for a tmux split next to an editor
+-- (stage 11m). It speaks JSON-RPC to the language server: either on the socket of
+-- `wiz lsp --infoview SOCK`, where the server says where the editor's cursor is
+-- (`wiz/infoview/cursor`) and the infoview asks for the goals there, or directly to a
+-- `wiz lsp` it starts itself, for a file and position given on the command line.
+-- The layout, colours, navigation and protocol are `lib/Infoview.wiz`; the terminal
+-- and socket system calls are `infoview/term.c`. Running it: docs/stages/11-tooling.md, 11m.
+
+-- ## Foreign functions (infoview/term.c)
+extern "iv_term_open" Term.open : IO Nat
+extern "iv_term_close" Term.close : IO Unit
+extern "iv_term_cols" Term.cols : IO Nat
+extern "iv_term_rows" Term.rows : IO Nat
+extern "iv_out" Term.out : String → IO Unit
+extern "iv_read_keys" Term.readKeys : IO String
+extern "iv_connect" Sock.connect : String → IO Nat
+extern "iv_close" Sock.close : Nat → IO Unit
+extern "iv_wait" Sock.wait : Nat → Nat → IO Nat
+extern "iv_read_fd" Sock.read : Nat → IO String
+extern "iv_closed" Sock.closed : IO Nat
+extern "iv_send" Sock.send : Nat → String → IO Nat
+extern "iv_now_ms" Clock.ms : IO Nat
+extern "iv_argc" Args.count : IO Nat
+extern "iv_arg" Args.get : Nat → IO String
+extern "iv_spawn" Proc.spawn : String → IO Nat
+extern "iv_realpath" Path.real : String → IO String
+extern "iv_exit" Proc.exit : Nat → IO Unit
+
+-- ## Options
+
+structure Opts where
+  sock : String
+  file : String
+  line : Nat
+  col : Nat
+  wiz : String
+  dump : Bool
+  ansi : Bool
+  width : Nat
+
+def Opts.empty : Opts := Opts.mk "" "" 0 0 "wiz" .false .false 0
+def Str.isEmpty (s : String) : Bool := Nat.beq (List.length (String.chars s)) 0
+-- `L:C`, 1-based, as a 0-based position
+def Opts.parsePos (s : String) : Nat × Nat :=
+  let l := Json.digits (String.chars s) 0 0 .nil;
+  let c := Json.digits (Json.drop1 l.2.2.2) 0 0 .nil;
+  (l.1 - 1, c.1 - 1)
+partial def Opts.parse (o : Opts) (i n : Nat) : IO Opts := match Nat.lt i n with
+  | .false => IO.pure o
+  | .true => do
+    a ← Args.get i;
+    b ← Args.get (i + 1);
+    match String.eq a "--file" with
+    | .true => Opts.parse (Opts.mk o.sock b o.line o.col o.wiz o.dump o.ansi o.width) (i + 2) n
+    | .false => match String.eq a "--at" with
+      | .true =>
+        let p := Opts.parsePos b;
+        Opts.parse (Opts.mk o.sock o.file p.1 p.2 o.wiz o.dump o.ansi o.width) (i + 2) n
+      | .false => match String.eq a "--wiz" with
+        | .true => Opts.parse (Opts.mk o.sock o.file o.line o.col b o.dump o.ansi o.width) (i + 2) n
+        | .false => match String.eq a "--width" with
+          | .true => Opts.parse (Opts.mk o.sock o.file o.line o.col o.wiz o.dump o.ansi (Json.digits (String.chars b) 0 0 .nil).1) (i + 2) n
+          | .false => match String.eq a "--dump" with
+            | .true => Opts.parse (Opts.mk o.sock o.file o.line o.col o.wiz .true o.ansi o.width) (i + 1) n
+            | .false => match String.eq a "--ansi" with
+              | .true => Opts.parse (Opts.mk o.sock o.file o.line o.col o.wiz o.dump .true o.width) (i + 1) n
+              | .false => Opts.parse (Opts.mk a o.file o.line o.col o.wiz o.dump o.ansi o.width) (i + 1) n
+
+def usage : String := "usage: wiz-infoview SOCK                      follow `wiz lsp --infoview SOCK`
+       wiz-infoview --file F --at L:C [--wiz CMD]   start `CMD lsp` and show F at line L, column C
+options: --dump (print the view once, as text, and exit; --ansi with colours), --width N
+keys: ←/→ or Tab/S-Tab select a subterm, ↑ enclosing, ↓ first inside, Esc clear,
+      j/k PgUp/PgDn scroll, [ ] move the cursor line (with --file), r refresh, q quit"
+
+-- ## State
+
+structure St where
+  fd : Nat
+  buf : List Char
+  next : Nat
+  pending : List (Nat × Nat)
+  uri : String
+  line : Nat
+  col : Nat
+  session : Nat
+  goals : Option (List Goal)
+  term : Option Goal
+  sel : Nat
+  scroll : Nat
+  info : List String
+  status : String
+  width : Nat
+  height : Nat
+  got : Nat
+  opts : Opts
+
+def St.setConn (s : St) (fd : Nat) (buf : List Char) (next : Nat) (pending : List (Nat × Nat)) : St :=
+  St.mk fd buf next pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info s.status s.width s.height s.got s.opts
+def St.setDoc (s : St) (uri : String) (line col session : Nat) : St :=
+  St.mk s.fd s.buf s.next s.pending uri line col session s.goals s.term s.sel s.scroll s.info s.status s.width s.height s.got s.opts
+def St.setGoals (s : St) (goals : Option (List Goal)) (session : Nat) : St :=
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col session goals s.term 0 0 .nil s.status s.width s.height (s.got + 1) s.opts
+def St.setTerm (s : St) (term : Option Goal) : St :=
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals term 0 0 .nil s.status s.width s.height (s.got + 1) s.opts
+def St.setSel (s : St) (sel scroll : Nat) : St :=
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term sel scroll s.info s.status s.width s.height s.got s.opts
+def St.setInfo (s : St) (info : List String) : St :=
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll info s.status s.width s.height s.got s.opts
+def St.setStatus (s : St) (status : String) : St :=
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info status s.width s.height s.got s.opts
+def St.setSize (s : St) (w h : Nat) : St :=
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info s.status w h s.got s.opts
+
+def St.view (s : St) : View := View.ofState s.width s.goals s.term
+-- rows for the goals: all but the status bar, the rule and the info line
+def St.bodyRows (s : St) : Nat := s.height - 3
+
+-- ## Talking to the server
+
+def St.send (s : St) (method : String) (params : Json) (kind : Nat) : IO St := do
+  ok ← Sock.send s.fd (Rpc.frame (Rpc.request s.next method params));
+  IO.pure (St.setConn s s.fd s.buf (s.next + 1) (.cons (s.next, kind) s.pending))
+def St.notify (s : St) (method : String) (params : Json) : IO Unit := do
+  ok ← Sock.send s.fd (Rpc.frame (Json.render (Json.mkObj (.cons (Json.field "jsonrpc" (Json.mkStr "2.0"))
+    (.cons (Json.field "method" (Json.mkStr method)) (.cons (Json.field "params" params) .nil))))));
+  IO.pure ()
+
+-- the goals and the expected type at the cursor
+def St.refresh (s : St) : IO St := do
+  s1 ← St.send s "wiz/interactiveGoals" (Rpc.position s.uri s.line s.col) 1;
+  St.send s1 "wiz/interactiveTermGoal" (Rpc.position s.uri s.line s.col) 2
+
+-- what the selected subterm is
+def St.askInfo (s : St) : IO St := match Infoview.nthTag (View.tags (St.view s)) (s.sel - 1) with
+  | .none => IO.pure (St.setInfo s .nil)
+  | .some t => St.send s "wiz/subtermInfo" (Json.mkObj (.cons (Json.field "textDocument" (Json.mkObj (.cons (Json.field "uri" (Json.mkStr s.uri)) .nil)))
+      (.cons (Json.field "session" (Json.ofNat s.session)) (.cons (Json.field "ref" (Json.ofNat (TagInfo.ref t))) .nil)))) 3
+
+def Infoview.lookup : List (Nat × Nat) → Nat → Nat
+  | .nil, _ => 0
+  | .cons p ps, id => match Nat.beq p.1 id with
+    | .true => p.2
+    | .false => Infoview.lookup ps id
+def Infoview.remove : List (Nat × Nat) → Nat → List (Nat × Nat)
+  | .nil, _ => .nil
+  | .cons p ps, id => match Nat.beq p.1 id with
+    | .true => ps
+    | .false => .cons p (Infoview.remove ps id)
+
+-- the lines describing a `wiz/subtermInfo` result
+def Infoview.infoLines (r : Json) : List String :=
+  let name := Json.getStr r "name";
+  let what : String := match Str.isEmpty name with
+    | .true => Json.getStr r "text"
+    | .false => name;
+  let ty : String := match Json.get r "type" with
+    | .some t => match Json.isNull t with
+      | .true => what
+      | .false => String.append what (String.append " : " (TT.toString (TT.ofJson t)))
+    | .none => what;
+  let line1 := String.append "[" (String.append (Json.getStr r "kind") (String.append "] " ty));
+  match Json.get r "definition" with
+  | .some d => match Json.isNull d with
+    | .true => .cons line1 .nil
+    | .false => .cons line1 (.cons (String.append "defined at " (String.append (Json.getStr d "uri")
+        (String.append ":" (Nat.repr (Json.getNat (match Json.getPath d (.cons "range" (.cons "start" .nil)) with
+          | .some p => p
+          | .none => .null) "line" + 1))))) .nil)
+  | .none => .cons line1 .nil
+
+def St.onResponse (s : St) (j : Json) : IO St :=
+  let id := Json.getNat j "id";
+  let kind := Infoview.lookup s.pending id;
+  let s1 := St.setConn s s.fd s.buf s.next (Infoview.remove s.pending id);
+  match Json.get j "error" with
+  | .some e => match Rpc.contentModified e with
+    -- the document changed; ask again
+    | .true => St.refresh (St.setStatus s1 "document changed")
+    -- (an error for the goals or the expected type counts as nothing to show)
+    | .false =>
+      let s2 := St.setStatus s1 (Json.getStr e "message");
+      match Nat.beq kind 1 with
+      | .true => IO.pure (St.setStatus (St.setGoals s2 .none s2.session) (Json.getStr e "message"))
+      | .false => match Nat.beq kind 2 with
+        | .true => IO.pure (St.setStatus (St.setTerm s2 .none) (Json.getStr e "message"))
+        | .false => IO.pure s2
+  | .none =>
+    let r : Json := match Json.get j "result" with
+      | .some v => v
+      | .none => .null;
+    match Nat.beq kind 1 with
+    | .true => match Json.isNull r with
+      | .true => IO.pure (St.setGoals s1 .none s1.session)
+      | .false => IO.pure (St.setGoals s1 (.some (Goals.ofJson r)) (Json.getNat r "session"))
+    | .false => match Nat.beq kind 2 with
+      | .true => match Json.get r "goal" with
+        | .some g => IO.pure (St.setTerm s1 (.some (Goal.ofJson g)))
+        | .none => IO.pure (St.setTerm s1 .none)
+      | .false => match Nat.beq kind 3 with
+        | .true => IO.pure (St.setInfo s1 (Infoview.infoLines r))
+        | .false => IO.pure s1
+
+def St.onMessage (s : St) (j : Json) : IO St := match Json.get j "method" with
+  | .some (.str m) => match String.eq m "wiz/infoview/cursor" with
+    | .true =>
+      let p : Json := match Json.get j "params" with
+        | .some p => p
+        | .none => .null;
+      let pos : Json := match Json.get p "position" with
+        | .some q => q
+        | .none => .null;
+      let uri : String := match Json.getPath p (.cons "textDocument" (.cons "uri" .nil)) with
+        | .some (.str u) => u
+        | _ => s.uri;
+      St.refresh (St.setDoc s uri (Json.getNat pos "line") (Json.getNat pos "character") (Json.getNat p "session"))
+    | .false => match String.eq m "wiz/elaborated" with
+      | .true => St.refresh s
+      | .false => IO.pure s
+  | _ => match Json.get j "id" with
+    | .some _ => St.onResponse s j
+    | .none => IO.pure s
+
+-- every complete message in the buffer
+partial def St.drain (s : St) : IO St := match Rpc.unframe s.buf with
+  | .none => IO.pure s
+  | .some m =>
+    let s1 := St.setConn s s.fd m.2 s.next s.pending;
+    match Json.parse m.1 with
+    | .error e => St.drain (St.setStatus s1 e)
+    | .ok j => do
+      s2 ← St.onMessage s1 j;
+      St.drain s2
+
+-- ## Drawing
+
+def Infoview.fit (w : Nat) (s : String) : List Char := (Infoview.takeWidth w (Infoview.safe (String.chars s) .nil)).1
+def Infoview.basename : List Char → List Char → List Char
+  | .nil, acc => Json.revOnto acc .nil
+  | .cons c cs, acc => match Nat.beq (Char.code c) 47 with
+    | .true => Infoview.basename cs .nil
+    | .false => Infoview.basename cs (.cons c acc)
+def St.title (s : St) : String :=
+  let file := String.mk (Infoview.basename (String.chars s.uri) .nil);
+  String.append " wiz infoview  " (String.append file (String.append ":" (String.append (Nat.repr (s.line + 1))
+    (String.append ":" (String.append (Nat.repr (s.col + 1)) (String.append "  " s.status))))))
+def Infoview.drop {A : Type} : Nat → List A → List A
+  | .zero, xs => xs
+  | .succ n, .nil => .nil
+  | .succ n, .cons _ xs => Infoview.drop n xs
+def Infoview.moveTo (row : Nat) (tail : List Char) : List Char :=
+  .cons Infoview.esc (.cons (Json.chr 91) (Json.natChars (row + 1) (List.append (String.chars ";1H") tail)))
+def Infoview.clearEol (tail : List Char) : List Char :=
+  Infoview.sgr "" (.cons Infoview.esc (.cons (Json.chr 91) (.cons (Json.chr 75) tail)))
+-- the body rows, from `row`, `n` of them
+def Infoview.bodyRows (sel : Nat) : List (List Piece) → Nat → Nat → List Char → List Char
+  | _, _, .zero, tail => tail
+  | .nil, row, .succ m, tail => Infoview.moveTo row (Infoview.clearEol (Infoview.bodyRows sel .nil (row + 1) m tail))
+  | .cons l ls, row, .succ m, tail => Infoview.moveTo row (Infoview.ansiPieces sel l
+      (Infoview.clearEol (Infoview.bodyRows sel ls (row + 1) m tail)))
+def Infoview.repeat : Nat → Nat → List Char
+  | .zero, _ => .nil
+  | .succ m, c => .cons (Json.chr c) (Infoview.repeat m c)
+def St.frame (s : St) : String :=
+  let v := St.view s;
+  let title := Infoview.fit s.width (St.title s);
+  let pad := Infoview.spaces (s.width - Infoview.width title);
+  let infoText : String := match s.info with
+    | .cons l _ => l
+    | .nil => match Nat.beq s.sel 0 with
+      | .true => "←/→ select  ↑/↓ out/in  j/k scroll  r refresh  q quit"
+      | .false => "";
+  String.mk (Infoview.moveTo 0 (Infoview.sgr "7" (List.append title (List.append pad
+    (Infoview.clearEol (Infoview.bodyRows s.sel (Infoview.drop s.scroll (View.lines v)) 1 (St.bodyRows s)
+      (Infoview.moveTo (s.height - 2) (Infoview.sgr "2" (List.append (Infoview.repeat s.width 9472)
+        (Infoview.moveTo (s.height - 1) (Infoview.sgr "36" (List.append (Infoview.fit s.width infoText)
+          (Infoview.clearEol .nil)))))))))))))
+def St.draw (s : St) : IO Unit := Term.out (St.frame s)
+
+-- ## Keys
+
+-- after the selection moved: scroll it into view, ask what it is
+def St.select (s : St) (sel : Nat) : IO St :=
+  let v := St.view s;
+  let line := Infoview.selLine sel (View.lines v) 0;
+  let rows := Nat.max (St.bodyRows s) 1;
+  let scroll : Nat := match Nat.lt line s.scroll with
+    | .true => line
+    | .false => match Nat.le (s.scroll + rows) line with
+      | .true => line + 1 - rows
+      | .false => s.scroll;
+  St.askInfo (St.setSel s sel (match Nat.beq sel 0 with
+    | .true => s.scroll
+    | .false => scroll))
+def St.nav (s : St) (n : Nav) : IO St := St.select s (View.navigate (St.view s) s.sel n)
+def St.scrollBy (s : St) (down : Bool) (k : Nat) : St :=
+  let total := List.length (View.lines (St.view s));
+  let maxScroll := total - Nat.max (St.bodyRows s) 1;
+  St.setSel s s.sel (match down with
+    | .true => Nat.max 0 (match Nat.lt maxScroll (s.scroll + k) with
+      | .true => maxScroll
+      | .false => s.scroll + k)
+    | .false => s.scroll - k)
+-- move the cursor (direct mode)
+def St.moveLine (s : St) (down : Bool) : IO St :=
+  St.refresh (St.setDoc s s.uri (match down with
+    | .true => s.line + 1
+    | .false => s.line - 1) s.col s.session)
+
+def Infoview.nthLine : List (List Piece) → Nat → Option (List Piece)
+  | .nil, _ => .none
+  | .cons l _, .zero => .some l
+  | .cons _ ls, .succ n => Infoview.nthLine ls n
+-- `none`: quit
+def St.key (s : St) (k : Key) : IO (Option St) := match k with
+  | .right => do x ← St.nav s .next; IO.pure (.some x)
+  | .left => do x ← St.nav s .prev; IO.pure (.some x)
+  | .backtab => do x ← St.nav s .prev; IO.pure (.some x)
+  | .up => do x ← St.nav s .out; IO.pure (.some x)
+  | .down => do x ← St.nav s .into; IO.pure (.some x)
+  | .escape => do x ← St.nav s .clear; IO.pure (.some x)
+  | .pageDown => IO.pure (.some (St.scrollBy s .true (St.bodyRows s)))
+  | .pageUp => IO.pure (.some (St.scrollBy s .false (St.bodyRows s)))
+  | .home => IO.pure (.some (St.setSel s s.sel 0))
+  | .mouse b x y press => match Bool.and press (Nat.beq b 0) with
+    | .true => match Infoview.nthLine (Infoview.drop s.scroll (View.lines (St.view s))) (y - 2) with
+      | .some l => do sx ← St.select s (Infoview.tagAt l (x - 1)); IO.pure (.some sx)
+      | .none => IO.pure (.some s)
+    | .false => match Nat.beq b 64 with
+      | .true => IO.pure (.some (St.scrollBy s .false 3))
+      | .false => match Nat.beq b 65 with
+        | .true => IO.pure (.some (St.scrollBy s .true 3))
+        | .false => IO.pure (.some s)
+  | .char c => match Bool.or (Nat.beq c 113) (Nat.beq c 3) with
+    | .true => IO.pure .none
+    | .false => match Bool.or (Nat.beq c 9) (Nat.beq c 108) with
+      | .true => do x ← St.nav s .next; IO.pure (.some x)
+      | .false => match Nat.beq c 104 with
+        | .true => do x ← St.nav s .prev; IO.pure (.some x)
+        | .false => match Nat.beq c 106 with
+          | .true => IO.pure (.some (St.scrollBy s .true 1))
+          | .false => match Nat.beq c 107 with
+            | .true => IO.pure (.some (St.scrollBy s .false 1))
+            | .false => match Nat.beq c 114 with
+              | .true => do x ← St.refresh s; IO.pure (.some x)
+              | .false => match Nat.beq c 93 with
+                | .true => do x ← St.moveLine s .true; IO.pure (.some x)
+                | .false => match Nat.beq c 91 with
+                  | .true => do x ← St.moveLine s .false; IO.pure (.some x)
+                  | .false => IO.pure (.some s)
+  | _ => IO.pure (.some s)
+partial def St.keys (s : St) (ks : List Key) : IO (Option St) := match ks with
+  | .nil => IO.pure (.some s)
+  | .cons k rest => do
+    r ← St.key s k;
+    match r with
+    | .none => IO.pure .none
+    | .some s2 => St.keys s2 rest
+
+-- ## The loop
+
+def Infoview.bit (bits k : Nat) : Bool := Nat.beq (Nat.mod (Nat.div bits k) 2) 1
+def St.keysIf (bits : Nat) : IO String := match Infoview.bit bits 1 with
+  | .true => Term.readKeys
+  | .false => IO.pure ""
+
+-- Connect to the server's socket (socket mode), retrying every half second.
+partial def St.connect (s : St) : IO St := do
+  fd ← Sock.connect s.opts.sock;
+  match Nat.beq fd 0 with
+  | .false => IO.pure (St.setStatus (St.setConn s fd .nil s.next .nil) "connected")
+  | .true => do
+    bits ← Sock.wait 0 500;
+    ks ← St.keysIf bits;
+    match Json.charsEq (String.chars ks) (String.chars "q") with
+    | .true => do Proc.exit 0; IO.pure s
+    | .false => St.connect s
+
+def St.onResize (s : St) (bits : Nat) : IO St := match Infoview.bit bits 4 with
+  | .false => IO.pure s
+  | .true => do
+    w ← Term.cols;
+    h ← Term.rows;
+    IO.pure (St.setSize s w h)
+
+-- the server closed the connection: in socket mode, wait for it to come back
+def St.lost (s : St) : IO St := match Str.isEmpty s.opts.sock with
+  | .true => do Proc.exit 0; IO.pure s
+  | .false => do
+    Sock.close s.fd;
+    St.draw (St.setStatus s "disconnected; waiting for the server");
+    St.connect (St.setStatus (St.setConn s 0 .nil s.next .nil) "")
+
+def St.onSocket (s : St) (bits : Nat) : IO St := match Infoview.bit bits 2 with
+  | .false => IO.pure s
+  | .true => do
+    text ← Sock.read s.fd;
+    eof ← Sock.closed;
+    match Nat.beq eof 1 with
+    | .false => St.drain (St.setConn s s.fd (List.append s.buf (String.chars text)) s.next s.pending)
+    | .true => St.lost s
+
+def St.onKeys (s : St) (bits : Nat) : IO (Option St) := match Infoview.bit bits 1 with
+  | .false => IO.pure (.some s)
+  | .true => do
+    ks ← Term.readKeys;
+    St.keys s (Key.decode (String.chars ks))
+
+-- One round: wait for input, handle it, draw.
+partial def St.loop (s : St) : IO Unit := do
+  bits ← Sock.wait s.fd 0;
+  s1 ← St.onResize s bits;
+  s2 ← St.onSocket s1 bits;
+  r ← St.onKeys s2 bits;
+  match r with
+  | .none => Term.close
+  | .some s3 => do
+    St.draw s3;
+    St.loop s3
+
+def printLines : List String → IO Unit
+  | .nil => IO.pure ()
+  | .cons l ls => do IO.println l; printLines ls
+
+-- Non-interactive (`--dump`): read until the goals and the expected type have both
+-- come, then print the view as text.
+def St.printView (s : St) : IO Unit := match s.opts.ansi with
+  | .true => printLines (Infoview.ansiLines 0 (View.lines (St.view s)))
+  | .false => printLines (Infoview.plainLines (View.lines (St.view s)))
+def St.fail (msg : String) : IO Unit := do
+  IO.println (String.append "wiz-infoview: " msg);
+  Proc.exit 1
+def St.dumpRead (s : St) : IO (Option St) := do
+  text ← Sock.read s.fd;
+  eof ← Sock.closed;
+  match Nat.beq eof 1 with
+  | .true => IO.pure .none
+  | .false => do
+    s1 ← St.drain (St.setConn s s.fd (List.append s.buf (String.chars text)) s.next s.pending);
+    IO.pure (.some s1)
+partial def St.dumpLoop (s : St) (deadline : Nat) : IO Unit := do
+  now ← Clock.ms;
+  match Nat.lt deadline now with
+  | .true => St.fail "no answer from the server"
+  | .false => match Nat.le 2 s.got with
+    | .true => St.printView s
+    | .false => do
+      bits ← Sock.wait s.fd 200;
+      match Infoview.bit bits 2 with
+      | .false => St.dumpLoop s deadline
+      | .true => do
+        r ← St.dumpRead s;
+        match r with
+        | .none => St.fail "the server closed the connection"
+        | .some s1 => St.dumpLoop s1 deadline
+
+-- ## Starting
+
+-- Direct mode: start `wiz lsp`, open the file, ask at the position.
+def St.startLsp (s : St) : IO St := do
+  fd ← Proc.spawn (String.append s.opts.wiz " lsp");
+  path ← Path.real s.opts.file;
+  text ← IO.readFile path;
+  let uri := String.append "file://" path;
+  let s1 := St.setDoc (St.setConn s fd .nil 1 .nil) uri s.opts.line s.opts.col 0;
+  s2 ← St.send s1 "initialize" (Json.mkObj (.cons (Json.field "processId" Json.mkNull) (.cons (Json.field "capabilities"
+    (Json.mkObj (.cons (Json.field "experimental" (Json.mkObj (.cons (Json.field "wizElaborated" (Json.mkBool .true)) .nil))) .nil))) .nil))) 0;
+  St.notify s2 "initialized" (Json.mkObj .nil);
+  St.notify s2 "textDocument/didOpen" (Json.mkObj (.cons (Json.field "textDocument" (Json.mkObj (.cons (Json.field "uri" (Json.mkStr uri))
+    (.cons (Json.field "languageId" (Json.mkStr "wiz")) (.cons (Json.field "version" (Json.ofNat 1)) (.cons (Json.field "text" (Json.mkStr text)) .nil)))))) .nil));
+  St.refresh s2
+
+def St.start (s : St) : IO St := match Str.isEmpty s.opts.file with
+  | .false => St.startLsp s
+  | .true => St.connect s
+
+def main : IO Unit := do
+  n ← Args.count;
+  o ← Opts.parse Opts.empty 0 n;
+  match Bool.and (Str.isEmpty o.sock) (Str.isEmpty o.file) with
+  | .true => IO.println usage
+  | .false => do
+    let s0 := St.mk 0 .nil 1 .nil "" 0 0 0 .none .none 0 0 .nil "" (match Nat.beq o.width 0 with
+      | .true => 80
+      | .false => o.width) 24 0 o;
+    match o.dump with
+    | .true => do
+      s1 ← St.start s0;
+      now ← Clock.ms;
+      St.dumpLoop s1 (now + 30000)
+    | .false => do
+      ok ← Term.open;
+      w ← Term.cols;
+      h ← Term.rows;
+      let s1 := St.setSize s0 (match Nat.beq o.width 0 with
+        | .true => w
+        | .false => o.width) h;
+      St.draw (St.setStatus s1 "waiting for the server");
+      s2 ← St.start s1;
+      St.draw s2;
+      St.loop s2

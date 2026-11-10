@@ -353,6 +353,14 @@ structure Globals (R : Type) where
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false
+  /-- (13b) names private to a module (`private def …`, `private mk ::`), with the
+  module: the elaborator rejects them elsewhere. The kernel ignores this. -/
+  privates : Std.HashMap Name String := {}
+  /-- (13b) structures with a private constructor, with their module: elsewhere the
+  elaborator sees them as opaque (`Globals.elabView`). The kernel ignores this. -/
+  opaques : Std.HashMap Name String := {}
+  /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
+  module : String := ""
 
 namespace Globals
 
@@ -371,6 +379,24 @@ def insert (g : Globals R) (d : Decl R) : Globals R :=
   { g with
     decls := g.decls.insert d.name d
     order := if g.decls.contains d.name then g.order else g.order.push d.name }
+
+/-- (13b) The environment as the elaborator sees it in `g.module`: a structure whose
+constructor is private to another module has no definition (it doesn't unfold), so
+values of it can't be built from a tuple or a look-alike structure; its fields are read
+through its projection functions. The kernel still checks against `g` itself. -/
+def elabView (g : Globals R) : Globals R :=
+  if g.opaques.isEmpty then g else
+  g.opaques.fold (init := g) fun g' n m =>
+    if m == g.module then g' else
+    match g'.decls[n]? with
+    | some d => { g' with decls := g'.decls.insert n { d with value := none } }
+    | none => g'
+
+/-- (13b) The module `n` is private to, if that is not the one being elaborated. -/
+def privateTo? (g : Globals R) (n : Name) : Option String :=
+  match g.privates[n]? with
+  | some m => if m == g.module then none else some m
+  | none => none
 
 end Globals
 

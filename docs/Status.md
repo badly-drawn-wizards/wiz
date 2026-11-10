@@ -32,7 +32,7 @@ the results of the probes listed in the "Probes" section.
   experiment produced a closed program on which both kernels looped. Decision D1 (a):
   regularity is off in both kernels, `cast` computes on data constructor by constructor,
   and the program now checks. One departure from the published "off" theory remains, a
-  **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below).
+  **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below; now argued relative to the system without regularity, with one incompleteness found).
 * **Two proofs of `False` in the kernel have been found and fixed** (propositions
   compared by shape; `∞ < ∞`), each with regression tests in both kernels. A failure of
   subject reduction for small description fields (Q4) is fixed too (F5, `ULift`).
@@ -62,7 +62,7 @@ the results of the probes listed in the "Probes" section.
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
 | Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs treats `Prop` (per the review `xtt-cubical-attacks.md` A0; not re-checked in [PT22]). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture**; propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; algorithmically incomplete, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. Since 4g every `μ ≡ μ` computes by the codes, to `(I, D, i) = (I', D', i')` at `(J : Sort (l+1)) × Desc J × J`, and equality at `Desc` is structural (CoreSpec §8.4b); see E1. |
@@ -81,7 +81,7 @@ the results of the probes listed in the "Probes" section.
 | QTT + observational equality | **conjecture** | No published system combines them. Proofs and types are erased (usage 0), `cast` passes its argument's usage through. Erasure soundness (a 0-quantity value is never needed at run time) is what QTT should give; it is not proved for Wiz. |
 | QTT + descriptions | **conjecture** | Fields carry quantities; the payload Σ uses them; methods are scaled. No paper. |
 | QTT + sized types + coinduction | **conjecture** | Sizes are erased (always quantity 0). No paper. |
-| Observational equality + impredicative `Prop` + regularity | **resolved by D1 (a)**: regularity off; at inert types **conjecture** | D1, below. |
+| Observational equality + impredicative `Prop` + regularity | **resolved by D1 (a)**: regularity off; at inert types **conjecture** (argued, see D1) | D1, below. |
 | Observational equality + descriptions (`eq` at `μ` and at `Desc`, `cast` between `μ` types) | **conjecture** (model obligation E1) | `cast` between any two `μ` types computes on constructors along the decomposed equation (PT22/CIC-obs style, CoreSpec §8.4, §8.4b). `List A ≡ List B` computes, and gives `A ≡ B`; `UIntN 8 ≡ UIntN 16` is refutable. Makes `μ` injective in its description (Hur's shape, D4): argued in §8.4b. |
 | Observational equality + sized types | **conjecture** | Subtyping is not reflected in type equality (`μ^s ≡ μ^t` stuck). |
 | Sized types + `∞` | **fixed** (D2) for `∞ < ∞`; **conjecture** otherwise | F2 below. |
@@ -291,6 +291,37 @@ simpler).
   stays decidable. No normalisation proof covers it. A nested box (a `μ` whose field is
   the Abel–Coquand box) is not inert and checks (test "a box in a box is not inert
   either").
+
+  **Argued, relative to the system without regularity**
+  (`/workspace/wiz-notes/inert-regularity.md`, 2026-11-10; it stays a conjecture: the
+  argument has not been reviewed). That note corrects the argument above and gives a
+  sketch of three properties.
+  * **Consistency.** The rule holds in any model where `μ` is an initial algebra and
+    `Prop` is proof-irrelevant.
+  * **Normalisation of relevant terms.** The rule adds one trivial case to a
+    Pujet–Tabareau-style logical relation, provided its side condition is judgmental.
+  * **Normalisation of proofs.** Inert types are *rigid*: their reducibility candidate
+    does not depend on `Prop` or on type variables. So Girard's candidates argument
+    survives a rule that returns its argument unchanged at them, using environments that
+    agree at inert types. Abel–Coquand needs a non-rigid type. This property matters
+    because Wiz's strict evaluator reduces proofs (it forces `e` inside `cast`), and
+    Pujet–Tabareau's decidability proof for CCobs deliberately never reduces proofs.
+
+  All three assume the same property of the system without regularity, which is itself
+  unproved for Wiz. That system already has two identity casts that inspect types: at
+  `Enum` on any argument, and at `Sort`.
+
+  **Found gap (incompleteness, not unsoundness).** The side condition is syntactic
+  (`sameVal`), so algorithmic conversion is not a congruence and is not stable under
+  substitution.
+  * `cast (Fin (f p)) (Fin (f q)) e k` stays stuck for a variable `k`, although
+    `Fin (f p) ≡ Fin (f q)` by irrelevance, while the reflexive cast reduces to `k`.
+  * Two stuck casts that are convertible before a substitution stop being convertible
+    after one of them becomes syntactically reflexive.
+
+  `sameFamily?` had the same defect; 4g removed it (μ/ν rules are head-directed, E1).
+  The fix for InReg is to decide the side condition with
+  conversion. Confirmed by a probe (the note, §10): `h p q p` is well typed, but its δβ-reduct is rejected, so subject reduction fails for the algorithmic typing.
 * **What it costs (known failures).** Without regularity a cast at a **type variable**
   is stuck (TTobs behaviour): `cast e a = a` for `e : A = A`, "`J` computes on `refl`"
   at a variable family, and the definitional equations of functions defined by `match`
@@ -421,7 +452,7 @@ equations are not provable by computation. They are incompleteness, not unsoundn
   the elaborator leaves several internally built Π/Σ without one. The branch
   `agent/elab-sorts` (commit `31395a2`, not merged at `9717950`) annotates them using the
   kernel's `typeSort?`, except "a Π/Σ under a `fun` whose variable's type isn't written
-  down, or one that still mentions a metavariable" (its README 4c text).
+  down, or one that still mentions a metavariable" (its README 4c text, now in [stages/04-data.md](stages/04-data.md)).
 * **Neutral types**: `a =_X b` and `cast X Y e t` for a variable `X` are stuck.
 * **`μ ≡ μ`, `ν ≡ ν`** are stuck when the levels are not known equivalent or the sizes
   are not equal by their heads (`∞` against `↑s`, two different size variables). Since 4g
@@ -486,6 +517,14 @@ that checks everything. Wiz's situation:
   type checking (erasure, the backends).
 * **Termination** of the kernel is not proved and is known to fail (D1); all evaluation
   functions are `partial` in Lean.
+* **The evaluator reduces proofs.** `eval` is strict, and `vCast` forces `e` (through
+  `vFst`/`vSnd`, and by applying `e.1`). So the kernel terminates only if the proofs it
+  forces normalise. Pujet–Tabareau's decidability result for impredicative OTT (CCobs,
+  POPL 2023) is proved *without* normalising proofs: in their words, the Abel–Coquand
+  loop "is not a problem if we don't reduce irrelevant proofs" (Pujet, HoTTEST 2023). So
+  even a Wiz version of their theorem would not cover this kernel as written. An
+  evaluator that never forces proof positions would close that gap.
+  (`/workspace/wiz-notes/inert-regularity.md` §2.)
 
 ## 8. Testing evidence
 
