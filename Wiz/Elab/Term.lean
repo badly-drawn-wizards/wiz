@@ -578,6 +578,12 @@ where
     | "term.unitVal" =>
       match ← force expected with
       | .unit _ => pure .tt
+      -- `()` also fills a structure's phantom tail (`phantomTail`)
+      | e@(.pi x ..) => do
+        let g ← getGlobals
+        match (if x == phantomName then (quote g ctx.lvl e).phantomTailVal? else none) with
+        | some t => pure t
+        | none => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.letPair" => elabLetPair ctx stx expected
     | "term.match" => elabMatch ctx stx expected
@@ -1212,7 +1218,9 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       if G.hasVar (ctx.lvl - x - 1) then
         throwAt (cl.pats[k]!).info "this match needs index unification whose goal depends on the scrutinee; not supported yet"
       let .mu _ I _ _ _ _ := xty | unreachable!
-      let lhs : Term R := (List.range nΞ).foldr (fun k acc => .pair (.var (nΞ - k)) acc) .tt
+      -- the tuple ends like the scrutinee's index: `()`, or a phantom tail's value
+      let tail := q ((List.range nΞ).foldl (fun v _ => vSnd v) ξi)
+      let lhs : Term R := (List.range nΞ).foldr (fun k acc => .pair (.var (nΞ - k)) acc) (tail.lift (nΞ + 1))
       let eqTm : Term R := .eq ((q I).lift (nΞ + 1)) lhs ((q ξi).lift (nΞ + 1))
       let body : Term R := .pi "e" .default (.qlit 0) eqTm (G.lift (nΞ + 2)) (vG.map (.imax 0 ·))
       pure ((List.range nΞ).foldr (fun k acc => .lam s!"i{k}" acc) (.lam "x" body))

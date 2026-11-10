@@ -17,9 +17,11 @@ Every eliminator has a semantic version (`vApp`, `vFst`, `vSnd`, `vSplit`,
 `vAbsurd`). Each computes when its argument is a constructor (a β-rule) and otherwise
 pushes itself onto the neutral's spine.
 
-Globals are δ-unfolded eagerly: `const n` evaluates to the value of `n`'s definition.
-Axioms (no definition) become neutrals. (Eager unfolding makes error messages huge and
-is slow; "glued evaluation" is the standard fix, see the optional exercises.)
+Globals are **glued** (stage 7a): `const n` evaluates to `Val.unfold`, which keeps the
+name and computes the unfolding only when `whnf` needs it. Definitions marked `inline`
+(constructors), or all of them when `Globals.eager` is set (as `nf` does), are
+δ-unfolded at once. Axioms (no
+definition) become neutrals.
 
 These are `partial` because the untyped evaluator need not terminate (`Ω = (λx. x x)(λx. x x)`).
 On well-typed terms they do.
@@ -95,7 +97,7 @@ def natNative? : Name → Array Nat → Option Nat
 `Term.natOp` on its arguments, so it computes natively when they are literals. -/
 def vBuiltin? (g : Globals R) (n : Name) : Option (Val R) := do
   let k ← g.builtinKey? n
-  if !k.startsWith "nat." || k == "nat.beq" || k == "nat.blt" then none
+  if !k.startsWith "nat." then none
   else if k == "nat.zero" then some (.natLit 0)
   else if natOpArity k == 1 then some (.lam "a" (.mk [] (.natOp k #[.var 0])))
   else some (.lam "a" (.mk [] (.lam "b" (.natOp k #[.var 1, .var 0]))))
@@ -121,6 +123,71 @@ def propSort? : Val R → Option Bool
   | .sort _ | .qty | .enum _ | .desc .. | .mu .. | .nu .. | .size | .sizeLt _ => some false
   | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
   | _ => none
+
+/-! ### A level above every variable of a value
+
+Regularity (`vCast`'s last case) compares two types by quoting them. Quoting at level
+`l` turns the variable at level `x` into the index `l - x - 1`, so `l` must be above
+every variable the values mention, or two different variables could quote to the same
+index. `Val.lvlBound` computes such an `l`. A closure counts only the entries of its
+environment that its body might mention (that is all `quote` can reach). The bound may
+be too large (a `lazyInd`'s whole spine counts), never too small. -/
+
+/-- The free variables of `t` under `depth` binders, as indices into the enclosing
+environment (with repeats). -/
+partial def Term.freeVarsAt (depth : Nat) (t : Term R) : StateM (Array Nat) Unit :=
+  match t with
+  | .var i => if i ≥ depth then modify (·.push (i - depth)) else pure ()
+  | t => t.forChildren (fun _ => pure ()) (fun d c => Term.freeVarsAt (depth + d) c)
+
+mutual
+/-- `1 +` the largest level of a local variable in `v` (`0` if none). -/
+partial def Val.lvlBound : Val R → Nat
+  | .neutral h sp => max h.lvlBound (Elim.spineBound sp)
+  | .unfold _ _ sp _ => Elim.spineBound sp
+  | .lazyInd _ I D _ P m i x sp _ => max (Val.maxBound [I, D, P, m, i, x]) (Elim.spineBound sp)
+  | .pi _ _ q a b _ | .sigma _ q a b _ => max (max q.lvlBound a.lvlBound) (b.lvlBound 1)
+  | .lam _ b => b.lvlBound 1
+  | .pair a b => max a.lvlBound b.lvlBound
+  | .desc _ a | .dret a | .szSuc a | .sizeLt a | .con a | .cocon a => a.lvlBound
+  | .darg q S D => Val.maxBound [q, S, D]
+  | .drec q j D => Val.maxBound [q, j, D]
+  | .dhrec q H j D => Val.maxBound [q, H, j, D]
+  | .mu _ I D i s h | .nu _ I D i s h => max (Val.maxBound [I, D, i, s]) (Val.maxBound ((h.map (·.2.2)).getD []))
+  | .scofix _ I D A f s i a => Val.maxBound [I, D, A, f, s, i, a]
+  | .coit _ I D S st i s => Val.maxBound [I, D, S, st, i, s]
+  | .sort _ | .unit _ | .tt | .empty _ | .qty | .qlit _ | .enum _ | .tag .. | .size | .szInf
+  | .natLit _ => 0
+partial def Val.maxBound (vs : List (Val R)) : Nat := vs.foldl (fun m v => max m v.lvlBound) 0
+partial def Head.lvlBound : Head R → Nat
+  | .local x => x + 1
+  | .global .. | .mvar _ => 0
+  | .eq A a b => Val.maxBound [A, a, b]
+  | .eqTy A B => Val.maxBound [A, B]
+  | .cast A B e t => Val.maxBound [A, B, e, t]
+  | .refl A a => Val.maxBound [A, a]
+  | .reflTy X => X.lvlBound
+  | .transp A a P p b e => Val.maxBound [A, a, P, p, b, e]
+partial def Elim.spineBound (sp : Array (Elim R)) : Nat := sp.foldl (fun m e => max m e.lvlBound) 0
+partial def Elim.lvlBound : Elim R → Nat
+  | .app a => a.lvlBound
+  | .fst | .snd | .out => 0
+  | .split q _ m _ _ b => max q.lvlBound (max (m.lvlBound 1) (b.lvlBound 2))
+  | .absurd m => m.lvlBound
+  | .ecase _ m env bs => max (m.lvlBound 1) (envBound env (bs.foldl (fun acc b => ((Term.freeVarsAt 0 b).run acc).2) #[]))
+  | .delim _ P a b c h => Val.maxBound [P, a, b, c, h]
+  | .ind _ I D _ P m i => Val.maxBound [I, D, P, m, i]
+  | .sfix _ I D _ P f s i => Val.maxBound [I, D, P, f, s, i]
+  | .scase _ I D _ P m s i => Val.maxBound [I, D, P, m, s, i]
+/-- The bound of the entries of `env` at the indices `fv`. -/
+partial def envBound (env : Env R) (fv : Array Nat) : Nat :=
+  (fv.qsort (· < ·)).foldl (init := (0, none)) (fun (m, prev) i =>
+    if prev == some i then (m, prev)
+    else (max m ((env[i]?.map Val.lvlBound).getD 0), some i)) |>.1
+/-- A closure whose body is under `binders` binders. -/
+partial def Closure.lvlBound (binders : Nat) : Closure R → Nat
+  | .mk env body => envBound env ((Term.freeVarsAt binders body).run #[]).2
+end
 
 /-- (D1 experiment, `Regularity.refl`) Is this proof visibly a reflexivity: `refl`,
 `reflTy`, `()`, or a `transp` of one along one? Such proofs only prove equations whose
@@ -430,30 +497,41 @@ partial def vNatView (g : Globals R) : Val R → Val R
 /-- A registered operation applied to all its arguments: native arithmetic on literals,
 otherwise the operation's definition. -/
 partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
-  let lits := args.filterMap fun a => match whnf a with
-    | .natLit n => some n
+  -- the arguments as numerals, stopping at the first that isn't one: forcing the rest
+  -- could run a numeral's recursion all the way down (`d * 2^64` is `d + d * (2^64 - 1)`,
+  -- whose second argument is the next step, and so on)
+  let lits : Option (Array Nat) := args.foldlM (init := #[]) fun acc a => match whnf a with
+    | .natLit n => some (acc.push n)
     | _ => none
-  let native : Option Nat := if lits.size != args.size then none else natNative? op lits
-  match native with
-  | some n => .natLit n
-  | none =>
-  -- `a - n` with `a` stuck and `n` a numeral: the definition is `pred` applied `n` times
-  -- to `a` (`Nat.subFrom` recurses on the numeral), a stuck term of size `n` built one
-  -- step at a time (`x - 55296` ran out of memory). It stays the stuck application
-  -- instead, compared by its arguments. (Not on a metavariable: it may still compute.)
-  let stuckSub : Bool := op == "nat.sub" && match args.map whnf with
-    | #[.neutral h _, .natLit (_ + 1)] => !(h matches .mvar _)
-    | _ => false
-  if stuckSub then
+  let d : Val R := match (g.builtins.lookup op).bind g.find? with
+    | some { value := some v, .. } => eval g [] v
+    | _ => panic! s!"no definition for builtin {op}"
+  -- not computed natively: the definition, kept glued under its name (`Nat.pred n`, not
+  -- its unfolding; `succ` is a constructor). `a - n` with `a` stuck and `n` a numeral is
+  -- `pred` applied `n` times to `a` (`Nat.subFrom` recurses on the numeral), a stuck term
+  -- of size `n` built one step at a time (`x - 55296` ran out of memory): it stays the
+  -- stuck application instead, compared by its arguments. (Not on a metavariable: it may
+  -- still compute.)
+  let unfold : Unit → Val R := fun _ =>
+    let stuckSub : Bool := op == "nat.sub" && match args.map whnf with
+      | #[.neutral h _, .natLit (_ + 1)] => !(h matches .mvar _)
+      | _ => false
     match g.builtins.lookup op with
-    | some n => .neutral (.global n []) (args.map .app)
+    | some n =>
+      if stuckSub then .neutral (.global n []) (args.map .app)
+      else if op == "nat.succ" then args.foldl (vApp g) d
+      else .unfold n [] (args.map .app) (Thunk.mk fun _ => args.foldl (vApp g) d)
     | none => panic! s!"no definition for builtin {op}"
-  else match g.builtins.lookup op, (g.builtins.lookup op).bind g.find? with
-    -- glued: it keeps its name (`Nat.pred n`, not its unfolding); `succ` is a constructor
-    | some n, some { value := some v, .. } =>
-      if op == "nat.succ" then args.foldl (vApp g) (eval g [] v) else
-      .unfold n [] (args.map .app) (Thunk.mk fun _ => args.foldl (vApp g) (eval g [] v))
-    | _, _ => panic! s!"no definition for builtin {op}"
+  match lits with
+  | some ns => match natNative? op ns, op, ns with
+    | some n, _, _ => .natLit n
+    -- comparisons return a `Bool`: the definition's own result on small numerals
+    | none, "nat.beq", #[a, b] =>
+      whnf (vApp g (vApp g d (.natLit 0)) (.natLit (if a == b then 0 else 1)))
+    | none, "nat.blt", #[a, b] =>
+      whnf (vApp g (vApp g d (.natLit 0)) (.natLit (if a < b then 1 else 0)))
+    | none, _, _ => unfold ()
+  | none => unfold ()
 
 /-- **Exercise 4.19c.** Induction computes on constructors:
 
@@ -734,7 +812,7 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   | .unit u, .unit w => if u.equiv w then .tt else stuck
   | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
   -- regularity (only when `g.regularity` allows it; off by default): syntactically equal
-  -- types (quoted at a level above any variable in use)
+  -- types (`sameVal`: quoted at a level above every variable in them)
   | _, _ =>
     if (regularityAllowed g A e || inertTy g 0 A) && sameVal g A B then t else vCastData g A B e t stuck
   --|ex
@@ -746,7 +824,8 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
 side condition of the rules below (as it was of regularity): cheap, and stable under
 substitution, since a substitution instance of equal terms is equal. -/
 partial def sameVal (g : Globals R) (a b : Val R) : Bool :=
-  quote g 100000 a == quote g 100000 b
+  let l := max a.lvlBound b.lvlBound
+  quote g l a == quote g l b
 
 /-- An **inert** type: first-order data, whose values contain no functions, no proofs
 but index equations at inert types, and no values of a neutral type: `Enum`, `Unit`,

@@ -740,6 +740,110 @@ def kernelRegularity : Bool := .false
 
 -- **Exercise 14.1.** Evaluation, application and projections (`eval`, `vApp`, `vFst`,
 -- `vSnd` in `Eval.lean`).
+-- might `t` mention the variable `i` (at the top: index `i`)? conservative: the forms
+-- not listed might
+def usesVar : Nat → Tm → Bool
+  | i, .var j => Nat.beq i j
+  | i, .pi a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
+  | i, .piq _ a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
+  | i, .sigma a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
+  | i, .sigmaq _ a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
+  | i, .lam b => usesVar (i + 1) b
+  | i, .app f a => Bool.or (usesVar i f) (usesVar i a)
+  | i, .fst p => usesVar i p
+  | i, .snd p => usesVar i p
+  | i, .pair a b => Bool.or (usesVar i a) (usesVar i b)
+  | i, .con x => usesVar i x
+  | i, .mu _ I D x => Bool.or (usesVar i I) (Bool.or (usesVar i D) (usesVar i x))
+  | i, .eq A a b => Bool.or (usesVar i A) (Bool.or (usesVar i a) (usesVar i b))
+  | i, .const _ _ _ _ _ => .false
+  | i, .axiomC _ _ => .false
+  | i, .univ _ => .false
+  | i, .prop => .false
+  | i, .sortL _ => .false
+  | i, .unit _ => .false
+  | i, .empty _ => .false
+  | i, .ptrue => .false
+  | i, .pfalse => .false
+  | i, .star => .false
+  | i, .enum _ => .false
+  | i, .tag _ _ => .false
+  | i, .size => .false
+  | i, .szInf => .false
+  | _, _ => .true
+
+-- `1 +` the largest level of a variable in a value (`0` if none). `sameVal` (regularity,
+-- `vCastW`) quotes at this level, so that every variable gets its own index. A closure counts only
+-- the entries of its environment that its body might mention (`usesVar`).
+mutual
+def lvlBound : Val → Nat
+  | .vsort _ => 0
+  | .vpi _ a env b _ => Nat.max (lvlBound a) (envBound 1 env b)
+  | .vlam env b => envBound 1 env b
+  | .vsigma _ a env b _ => Nat.max (lvlBound a) (envBound 1 env b)
+  | .vpair a b => Nat.max (lvlBound a) (lvlBound b)
+  | .vunit _ => 0
+  | .vtt => 0
+  | .vempty _ => 0
+  | .venum _ => 0
+  | .vtag _ _ => 0
+  | .vdesc _ I => lvlBound I
+  | .vdret i => lvlBound i
+  | .vdarg S E => Nat.max (lvlBound S) (lvlBound E)
+  | .vdrec j E => Nat.max (lvlBound j) (lvlBound E)
+  | .vdhrec H j E => Nat.max (lvlBound H) (Nat.max (lvlBound j) (lvlBound E))
+  | .vmu _ I D i sz => Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound i) (lvlBound sz))
+  | .vsize => 0
+  | .vszInf => 0
+  | .vszSuc sz => lvlBound sz
+  | .vsizeLt sz => lvlBound sz
+  | .vcon x => lvlBound x
+  | .vnu _ I D i sz => Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound i) (lvlBound sz))
+  | .vcocon x => lvlBound x
+  | .vscofix _ I D A f sz i a => Nat.max (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound A) (lvlBound f)))
+      (Nat.max (Nat.max (lvlBound sz) (lvlBound i)) (lvlBound a))
+  | .vcoit _ I D S st i s => Nat.max (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound S) (lvlBound st)))
+      (Nat.max (lvlBound i) (lvlBound s))
+  | .vglued h sp _ => Nat.max (headBound h) (spineBound sp)
+  | .vne h sp => Nat.max (headBound h) (spineBound sp)
+-- the entries of `env` (the first at index `i` of `b`) that `b` might mention
+def envBound : Nat → Env → Tm → Nat
+  | _, .nil, _ => 0
+  | i, .cons v rest, b => Nat.max (match usesVar i b with
+    | .true => lvlBound v
+    | .false => 0) (envBound (i + 1) rest b)
+def branchesBound : Env → Tms → Nat
+  | _, .tnil => 0
+  | env, .tcons b rest => Nat.max (envBound 0 env b) (branchesBound env rest)
+def headBound : Head → Nat
+  | .hvar x => x + 1
+  | .heq A a b => Nat.max (lvlBound A) (Nat.max (lvlBound a) (lvlBound b))
+  | .heqTy A B => Nat.max (lvlBound A) (lvlBound B)
+  | .hcast A B e t => Nat.max (Nat.max (lvlBound A) (lvlBound B)) (Nat.max (lvlBound e) (lvlBound t))
+  | .hrefl A a => Nat.max (lvlBound A) (lvlBound a)
+  | .hreflTy X => lvlBound X
+  | .htransp A a P p b e => Nat.max (Nat.max (lvlBound A) (lvlBound a))
+      (Nat.max (Nat.max (lvlBound P) (lvlBound p)) (Nat.max (lvlBound b) (lvlBound e)))
+  | .hconst _ _ _ _ _ => 0
+  | .haxiom _ _ => 0
+def spineBound : Spine → Nat
+  | .snil => 0
+  | .sapp sp a => Nat.max (spineBound sp) (lvlBound a)
+  | .sfst sp => spineBound sp
+  | .ssnd sp => spineBound sp
+  | .secase sp env m bs => Nat.max (spineBound sp) (Nat.max (envBound 1 env m) (branchesBound env bs))
+  | .sabsurd sp m => Nat.max (spineBound sp) (lvlBound m)
+  | .sdelim sp _ P a b c d => Nat.max (spineBound sp)
+      (Nat.max (Nat.max (lvlBound P) (lvlBound a)) (Nat.max (Nat.max (lvlBound b) (lvlBound c)) (lvlBound d)))
+  | .sind sp _ I D _ P m i => Nat.max (spineBound sp)
+      (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound P) (Nat.max (lvlBound m) (lvlBound i))))
+  | .ssfix sp _ I D _ P f sz i => Nat.max (spineBound sp)
+      (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (Nat.max (lvlBound P) (lvlBound f)) (Nat.max (lvlBound sz) (lvlBound i))))
+  | .sscase sp _ I D _ P m sz i => Nat.max (spineBound sp)
+      (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (Nat.max (lvlBound P) (lvlBound m)) (Nat.max (lvlBound sz) (lvlBound i))))
+  | .sout sp => spineBound sp
+end
+
 mutual
 def eval : Env → Tm → Val
   --<sol
@@ -1081,8 +1185,11 @@ def inertTags (depth : Nat) (E : Val) (k i : Nat) : Bool := match Nat.lt i k wit
   | .true => match inertDesc depth (vapp E (.vtag k i)) with
     | .true => inertTags depth E k (Nat.succ i)
     | .false => .false
--- syntactic equality of values (quoted above any variable in use)
-def sameVal (a b : Val) : Bool := tmEq (quote 100000 a) (quote 100000 b)
+-- syntactic equality of values, quoted at a level above every variable in them
+-- (`lvlBound`), so that different variables never quote alike
+def sameVal (a b : Val) : Bool :=
+  let l := Nat.max (lvlBound a) (lvlBound b);
+  tmEq (quote l a) (quote l b)
 -- two `μ` (or two `ν`) types of one family: the level, index type, description and
 -- size agree, only the indices may differ (`sameFamily?` in `Eval.lean`)
 def sameFamily : Val → Val → Bool
@@ -1882,38 +1989,6 @@ end
 
 def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
 
--- might `t` mention the variable `i` (at the top: index `i`)? conservative: the forms
--- not listed might
-def usesVar : Nat → Tm → Bool
-  | i, .var j => Nat.beq i j
-  | i, .pi a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
-  | i, .piq _ a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
-  | i, .sigma a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
-  | i, .sigmaq _ a b => Bool.or (usesVar i a) (usesVar (i + 1) b)
-  | i, .lam b => usesVar (i + 1) b
-  | i, .app f a => Bool.or (usesVar i f) (usesVar i a)
-  | i, .fst p => usesVar i p
-  | i, .snd p => usesVar i p
-  | i, .pair a b => Bool.or (usesVar i a) (usesVar i b)
-  | i, .con x => usesVar i x
-  | i, .mu _ I D x => Bool.or (usesVar i I) (Bool.or (usesVar i D) (usesVar i x))
-  | i, .eq A a b => Bool.or (usesVar i A) (Bool.or (usesVar i a) (usesVar i b))
-  | i, .const _ _ _ _ _ => .false
-  | i, .axiomC _ _ => .false
-  | i, .univ _ => .false
-  | i, .prop => .false
-  | i, .sortL _ => .false
-  | i, .unit _ => .false
-  | i, .empty _ => .false
-  | i, .ptrue => .false
-  | i, .pfalse => .false
-  | i, .star => .false
-  | i, .enum _ => .false
-  | i, .tag _ _ => .false
-  | i, .size => .false
-  | i, .szInf => .false
-  | _, _ => .true
-
 -- **Exercise 14.3.** Bidirectional type checking with usage (`infer` and `check` in
 -- `Check.lean`): each answer comes with the usage of the variables (types and proofs
 -- count nothing); leaving a binder checks its variable's usage against its quantity.
@@ -1965,7 +2040,11 @@ def infer : TCtx → Tm → TyRes
     | r => r
   | c, .snd p => match infer c p with
     | .ok ty u => match whnf ty with
-      | .vsigma _ _ env b _ => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
+      -- `p.2` discards the first field: if it must be used, only an unrestricted pair
+      -- (whose field is ω·q) may drop it, so `p` counts as used ω times
+      | .vsigma q _ env b _ => match Bool.or (TCtx.erased c) (qle .qz q) with
+        | .true => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
+        | .false => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) (uScale .qw u)
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   | c, .unit n => .ok (.vsort (.lnum (n + 1))) (uZeros (TCtx.lvl c))
@@ -2083,7 +2162,9 @@ def infer : TCtx → Tm → TyRes
   | c, .sizeLt sz => match check (TCtx.erase c) sz .vsize with
     | .ok _ _ => .ok (.vsort (.lnum 1)) (uZeros (TCtx.lvl c))
     | r => r
-  | c, .mus l I D i _ => infer c (.mu l I D i)
+  | c, .mus l I D i sz => match check (TCtx.erase c) sz .vsize with
+    | .ok _ _ => infer c (.mu l I D i)
+    | r => r
   | c, .sfix l I D v P f sz i x => match inferUniv c I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
@@ -2132,7 +2213,9 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .nu l I D i _ => infer c (.mu l I D i)
+  | c, .nu l I D i sz => match check (TCtx.erase c) sz .vsize with
+    | .ok _ _ => infer c (.mu l I D i)
+    | r => r
   | c, .out x => match infer c x with
     | .ok ty u => match whnf ty with
       | .vnu l I D i sz => match sizePred sz with

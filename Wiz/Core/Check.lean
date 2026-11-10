@@ -63,9 +63,10 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── fst       (an erased field can't be projected at runtime)
     Γ ⊢ t.1 ⇒ A ⊣ U
 
-    Γ ⊢ t ⇒ (q x : A) × B ⊣ U
-    ──────────────────────────────── snd
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 0 q  (or Γ is erased)
+    ──────────────────────────────── snd       (`t.2` drops the first field: it must allow that)
     Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ U
+    (otherwise `t.2 ⊣ ω·U`: only an unrestricted pair, whose field is ω·q, may drop it)
 
     Γ ⊢ s ⇒ (p x : A) × B ⊣ U₁     Γ, z : (p x : A) × B ⊢ M type
     Γ, x :(q·p) A, y :q B ⊢ b ⇐ M[(x, y)/z] ⊣ (u_y :: u_x :: U₂)
@@ -75,13 +76,13 @@ Two mutually recursive judgments, each also producing a **usage vector**:
 
     Γ ⊢ Unit_l ⇒ Sort l      Γ ⊢ () ⇐ Unit_l      Γ ⊢ Empty_l ⇒ Sort l
 
-    Γ ⊢ M type     Γ ⊢ t ⇒ Empty_l ⊣ U
-    ──────────────────────────────── absurd
-    Γ ⊢ absurd M t ⇒ M ⊣ U
+    Γ ⊢ M type     Γ⁰ ⊢ t ⇒ Empty_l
+    ──────────────────────────────── absurd    (`t` is never evaluated: an erased position)
+    Γ ⊢ absurd M t ⇒ M ⊣ 0ₙ
 
 ## Observational equality (stage 4c)
 
-    Γ ⊢ A type@l   l ≠ 0 (A is not a proposition)   Γ ⊢ a, b ⇐ A
+    Γ ⊢ A type@l   l ≠ 0 at every level instance (`isNeverZero`)   Γ ⊢ a, b ⇐ A
     ──────────────────────────────── eq            (a proposition)
     Γ ⊢ a = b ⇒ Prop ⊣ 0ₙ
 
@@ -89,7 +90,9 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── eqTy
     Γ ⊢ A = B ⇒ Prop ⊣ 0ₙ
 
-    Γ ⊢ refl a ⇒ (a = a) ⊣ 0ₙ          Γ ⊢ refl X ⇒ (X = X) ⊣ 0ₙ
+    Γ ⊢ A type@l (isNeverZero l)   Γ ⊢ a ⇐ A
+    ──────────────────────────────── refl          Γ ⊢ X type ⇒ Γ ⊢ reflTy X ⇒ (X = X) ⊣ 0ₙ
+    Γ ⊢ refl A a ⇒ (a = a) ⊣ 0ₙ
 
     Γ ⊢ A, B type@l    Γ ⊢ e ⇐ (A = B)    Γ ⊢ t ⇐ A ⊣ U
     ──────────────────────────────── cast
@@ -115,15 +118,30 @@ Proofs carry no usage: they are erased, and conversion never looks at them.
     Γ ⊢ μ.{l} I D i ⇒ Type l           Γ ⊢ con x ⇐ μ D i  if  Γ ⊢ x ⇐ ⟦D⟧ (μ D) i
     Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·Uₘ + Uₓ                    (`indMotiveTy`, `indMethodTy`)
     Γ ⊢ ν.{l} I D i ⇒ Type l           Γ ⊢ out x ⇒ ⟦D⟧ (ν D) i
+    (at a size: Γ ⊢ μ^s.{l} I D i ⇒ Type l and Γ ⊢ ν^s.{l} I D i ⇒ Type l if also Γ⁰ ⊢ s ⇐ Size)
     Γ ⊢ coit S step i s ⇒ ν D i ⊣ ω·U_step + U_s
 
-A method may run once per node, so its usage is scaled by ω (the rig's default
-quantity). Branches of `ecase` are alternatives, so a case uses the *join* of its
-branches' usages: with `{0, 1, ω}` a linear variable must be used the same way in
+## Sizes (stage 4f)
+
+    Γ ⊢ Size, Size< s ⇒ Type      Γ ⊢ ∞, ↑s ⇒ Size      (s is checked erased: Γ⁰ ⊢ s ⇐ Size)
+    Γ⁰ ⊢ t ⇐ Size   t is below s (`sizeBelow`; ∞ is not below itself)  ⇒  Γ ⊢ t ⇐ Size< s ⊣ 0ₙ
+    Γ ⊢ con x ⇐ μ^s D i  if  s = ↑s' and Γ ⊢ x ⇐ ⟦D⟧ (μ^s' D) i;  cocon x ⇐ ν^s D i likewise
+    Γ ⊢ sfix P f s i x ⇒ P i x ⊣ ω·U_f + Uₓ        (`sfixFunTy`; x ⇐ μ^s D i)
+    Γ ⊢ scase P m s i x ⇒ P i x ⊣ Uₘ + Uₓ          (`scaseMethodTy`: the method runs once)
+    Γ ⊢ scofix A f s i a ⇒ ν^s D i ⊣ ω·U_f + Uₐ    (`scofixFunTy`)
+
+A `Π`/`Σ` may carry its sort; if it does, the sort must be the one the rule computes
+(`checkSortNote`).
+
+A method may run once per node, so its usage is scaled by ω (`QRig.many?`, the rig's
+unrestricted quantity; a rig without one, like exact counting, rejects methods that use
+local variables outside erased positions). Branches of `ecase` are alternatives, so a
+case uses the *join* of its branches' usages: with `{0, 1, ω}` a linear variable must be used the same way in
 every branch, and an ω variable may be used differently.
 
 `split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
-using both on a linear pair uses it twice.
+using both on a linear pair uses it twice, and `snd p` alone would drop a linear first
+field, so then it uses `p` ω times.
 
 `Γ ⊢ A type@i` means `A ⇒ Sort i`, with its usage **thrown away**: types live in
 the erased (0) fragment, so they may mention 0-quantity variables freely.
@@ -244,6 +262,18 @@ def checkSortNote (s : Option Level) (l : Level) : TCM Unit := do
   if let some s := s then
     unless s.equiv l do
       throw (.other s!"internal error: a type marked as in sort {s} is in sort {l}")
+
+/-- The usage of an eliminator's methods (`ind`, `Desc.elim`, `sfix`, `scofix`, `coit`),
+which run once per node: any number of times. Scaled by the rig's unrestricted quantity
+(`QRig.many?`, ω); a rig without one (exact counting) only lets methods use local
+variables in erased positions. -/
+def methodUsage (ctx : Ctx R) (u : Usage R) : TCM (Usage R) :=
+  match QRig.many? (R := R) with
+  | some m => pure (QPoly.const m • u)
+  | none =>
+    match (u.zip ctx.names).find? fun (p, _) => !QPoly.le p (QPoly.const 0) with
+    | some (p, x) => throw (.other s!"a method may run any number of times, so it can't use {x} ({p} times): the rig has no unrestricted quantity")
+    | none => pure u
 
 /-- (D1 experiment) Is this type a universe, or a function type ending in one? A `Π`
 into `Prop` over such a domain is impredicative. -/
@@ -416,7 +446,16 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .snd t => do
     let (ty, u) ← infer ctx t
     match whnf ty with
-    | .sigma _ _ _ B _ => pure (Closure.inst ctx.globals B (vFst (ctx.eval t)), u)
+    | .sigma x q _ B _ =>
+      -- `t.2` discards the first field: only allowed if the field may go unused
+      let q ← qtyPoly ctx q
+      let ty := Closure.inst ctx.globals B (vFst (ctx.eval t))
+      if ctx.erased || QPoly.le (QPoly.const 0) q then pure (ty, u) else
+      -- a field that must be used can be dropped only from an unrestricted pair (whose
+      -- fields are ω·q): so `t` counts as used ω times
+      match QRig.many? (R := R) with
+      | some m => pure (ty, QPoly.const m • u)
+      | none => throw (.other s!"cannot discard the field {x}, which has quantity {q}; use let (x, y) := ... instead")
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .split q s z m x y b => do
     let q ← checkQty ctx q
@@ -535,8 +574,9 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let ub ← check ctx b tb
     let uc ← check ctx c tc
     let uh ← check ctx h th
-    pure (vApp ctx.globals vP (ctx.eval D), QPoly.const w • (ua + ub + uc + uh) + uD)
-  | .mu l I D i _ _ | .nu l I D i _ _ => do
+    pure (vApp ctx.globals vP (ctx.eval D), (← methodUsage ctx (ua + ub + uc + uh)) + uD)
+  | .mu l I D i s _ | .nu l I D i s _ => do
+    let _ ← check { ctx with erased := true } s .size
     let lI ← checkType ctx I
     unless lI.equiv (.succ l) do throw (.other "an index type must be in the data type's universe")
     let vI := ctx.eval I
@@ -555,7 +595,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let vi := ctx.eval i
     let ux ← check ctx x (.mu l vI vD vi .szInf none)
-    pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), QPoly.const w • um + ux)
+    pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), (← methodUsage ctx um) + ux)
   | .out x => do
     let (ty, u) ← infer ctx x
     let .nu l I D i s _ := whnf ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
@@ -574,7 +614,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check { ctx with erased := true } s .size
     let _ ← check ctx i vI
     let ux ← check ctx x (.mu l vI vD (ctx.eval i) (ctx.eval s) none)
-    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), QPoly.const w • uf + ux)
+    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), (← methodUsage ctx uf) + ux)
   | .scofix l I D A f s i a => do
     let _ ← checkType ctx I
     let vI := ctx.eval I
@@ -587,7 +627,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check { ctx with erased := true } s .size
     let _ ← check ctx i vI
     let ua ← check ctx a (vApp ctx.globals vA (ctx.eval i))
-    pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, QPoly.const w • uf + ua)
+    pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, (← methodUsage ctx uf) + ua)
   | .scase l I D v P m s i x => do
     let _ ← checkType ctx I
     let vI := ctx.eval I
@@ -615,7 +655,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let vi := ctx.eval i
     let us ← check ctx s (vApp ctx.globals vS vi)
-    pure (.nu l vI vD vi .szInf none, QPoly.const w • ust + us)
+    pure (.nu l vI vD vi .szInf none, (← methodUsage ctx ust) + us)
   | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --|ex
   --| | .app f a => sorry
