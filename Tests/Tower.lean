@@ -206,4 +206,11 @@ def group : Group where
         check (← System.FilePath.pathExists target) "uninstall removed the store path" }
   ]
 
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  group ::
+  []
+
 end Tests.Tower
