@@ -689,13 +689,17 @@ def interpTm (l : Nat) : Tm :=
   -- D'0 D1 I2
   let P : Tm := .lam (.pi (.pi (.var 2) tyL) (.pi (.var 3) tyL));
   -- i0 X1 j2 D3 I4
-  let mret := tLams 3 (.sigmaq .qz (.eq (.var 4) (.var 2) (.var 0)) (.unit l));
+  -- (the motive puts every method's result in `Sort (l+1)`: that is each `Σ`'s sort, and
+  -- the sort of the `hrec` field's `Π`. Written, because a cast at a `Π`/`Σ` whose sort is
+  -- not known is stuck, U5b)
+  let sL : Lvl := .lnum (l + 1);
+  let mret := tLams 3 (.sorted sL (.sigmaq .qz (.eq (.var 4) (.var 2) (.var 0)) (.unit l)));
   -- i0 X1 ih2 E3 S4 q5
-  let marg := tLams 6 (.sigma (.var 4) (tApps (.var 3) (args3 (.var 0) (.var 2) (.var 1))));
+  let marg := tLams 6 (.sorted sL (.sigma (.var 4) (tApps (.var 3) (args3 (.var 0) (.var 2) (.var 1)))));
   -- i0 X1 ih2 E3 j4 q5
-  let mrec := tLams 6 (.sigma (.app (.var 1) (.var 4)) (tApps (.var 3) (args2 (.var 2) (.var 1))));
+  let mrec := tLams 6 (.sorted sL (.sigma (.app (.var 1) (.var 4)) (tApps (.var 3) (args2 (.var 2) (.var 1)))));
   -- i0 X1 ih2 E3 j4 H5 q6
-  let mhrec := tLams 7 (.sigma (.pi (.var 5) (.app (.var 2) (.app (.var 5) (.var 0)))) (tApps (.var 3) (args2 (.var 2) (.var 1))));
+  let mhrec := tLams 7 (.sorted sL (.sigma (.sorted sL (.pi (.var 5) (.app (.var 2) (.app (.var 5) (.var 0))))) (tApps (.var 3) (args2 (.var 2) (.var 1)))));
   tLams 2 (.delim (l + 2) P mret marg mrec mhrec (.var 0))
 
 -- `Sort v` and the unit type in it, as terms
@@ -1312,14 +1316,21 @@ def vCastP (A B e t : Val) : Val := match propSort A with
       | .none => vCastW A B e t
     | .false => vCastW A B e t
   | .none => vCastW A B e t
+-- (U5b) at a `Π`/`Σ` whose sort is not known, the equation `e` proves is stuck
+-- (`vEqTypeP`), so it is no pair to project: the cast is stuck exactly when the equation is
+def sortsKnown (s1 s2 : Option Lvl) : Bool := match sortProp s1 with
+  | .none => .false
+  | .some _ => match sortProp s2 with
+    | .none => .false
+    | .some _ => .true
 def vCastW : Val → Val → Val → Val → Val
-  | .vpi q1 a1 env1 b1 s1, .vpi q2 a2 env2 b2 s2, e, t => match qEq q1 q2 with
+  | .vpi q1 a1 env1 b1 s1, .vpi q2 a2 env2 b2 s2, e, t => match Bool.and (sortsKnown s1 s2) (qEq q1 q2) with
     | .false => .vne (.hcast (.vpi q1 a1 env1 b1 s1) (.vpi q2 a2 env2 b2 s2) e t) .snil
     | .true =>
       let c : Tm := .coe (.var 5) (.var 6) (.fst (.var 2)) (.var 0);
       .vlam (.cons t (.cons e (.cons (.vlam env2 b2) (.cons (.vlam env1 b1) (.cons a2 (.cons a1 .nil))))))
         (.coe (.app (.var 4) c) (.app (.var 3) (.var 0)) (.app (.snd (.var 2)) (.var 0)) (.app (.var 1) c))
-  | .vsigma q1 a1 env1 b1 s1, .vsigma q2 a2 env2 b2 s2, e, t => match qEq q1 q2 with
+  | .vsigma q1 a1 env1 b1 s1, .vsigma q2 a2 env2 b2 s2, e, t => match Bool.and (sortsKnown s1 s2) (qEq q1 q2) with
     | .false => .vne (.hcast (.vsigma q1 a1 env1 b1 s1) (.vsigma q2 a2 env2 b2 s2) e t) .snil
     | .true =>
       let t1 := vfst t;
@@ -1622,7 +1633,14 @@ def quoteM (qm : Bool) : Nat → Val → Tm
     | .true => match fromAbsurd sp with
       | .none => markTm (quoteSpine qm l (quoteHead qm l h) sp)
       | .some r => quoteSpine qm l (markTm (quoteSpine qm l (quoteHead qm l h) (toAbsurd sp))) r
-    | .false => quoteSpine qm l (quoteHead qm l h) sp
+    -- (erased, every proof head reads back as `()`, like a suspended proof: the same proof
+    -- can be a `refl` head in one value and a suspension in another, and two types that
+    -- differ only so must not compare as different)
+    | .false => match Bool.and (Bool.not qm) (Bool.and kernelLazyProofs (proofHead h)) with
+      | .true => (match fromAbsurd sp with
+        | .none => .star
+        | .some r => quoteSpine qm l .star r)
+      | .false => quoteSpine qm l (quoteHead qm l h) sp
   | l, .vglued h sp _ => quoteSpine qm l (quoteHead qm l h) sp
   | l, .vulift k A => .ulift k (quoteM qm l A)
   | l, .vup a => .up (quoteM qm l a)

@@ -923,15 +923,20 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   -- (P2, `lazyProofs`) the cast is a proof itself, so nothing ever needs its value: stuck
   if propSort? A == some true && propSort? B == some true then
     if g.lazyProofs then stuck else vApp g (vFst e) t else
+  -- (given, U5b) at a `Π`/`Σ` whose sort is not known (no annotation, or a level with
+  -- parameters), the equation `e` proves is stuck (`vEqType`), so it is no pair to project:
+  -- the cast is stuck exactly when the equation is. (Computing here gave `e.1` on a
+  -- `reflTy`, a term the kernel then rejected.)
+  let known : Bool := (propSort? A).isSome && (propSort? B).isSome
   match A, B with
   | .pi x _ q A₁ B₁ _, .pi _ _ q' A₂ B₂ _ =>
-    if sameQty q q' != some true then stuck else
+    if !known || sameQty q q' != some true then stuck else
     -- env: t, e, B₂, B₁, A₂, A₁; index 0 is the new `x`
     let c : Term R := .cast (v 5) (v 6) (.fst (v 2)) (v 0)
     .lam x (.mk [t, e, .lam x B₂, .lam x B₁, A₂, A₁]
       (.cast (.app (v 4) c) (.app (v 3) (v 0)) (.app (.snd (v 2)) (v 0)) (.app (v 1) c)))
   | .sigma _ q A₁ B₁ _, .sigma _ q' A₂ B₂ _ =>
-    if sameQty q q' != some true then stuck else
+    if !known || sameQty q q' != some true then stuck else
     let t₁ := vFst t
     let c₁ := vCast g A₁ A₂ (vFst e) t₁
     .pair c₁ (vCast g (Closure.inst g B₁ t₁) (Closure.inst g B₂ c₁) (vApp g (vSnd e) t₁) (vSnd t))
@@ -1241,10 +1246,12 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
     let post := sp.extract k sp.size
     if g.quoteErasesProofs then
       -- the kernel's own comparisons never evaluate a suspended proof, and never compare
-      -- two: it reads back as `()`
-      match h with
-      | .prf .. => elims .tt post
-      | _ => elims (hd ()) sp
+      -- two proofs: every proof reads back as `()`, a suspended one and a stuck `refl`,
+      -- `reflTy`, `transp` or cast between propositions alike. (Alike matters: the same
+      -- proof can be a `refl` head where its term was evaluated and a suspension where it
+      -- was read back marked and evaluated again, and two types that differ only so must
+      -- not compare as different: that made a cast stuck, in `lib/Vec.wiz`.)
+      elims .tt post
     else
       -- outside the kernel (the elaborator, `#reduce`): a suspended proof is evaluated, so
       -- that the term read back is a normal form, which the kernel can check again (a
