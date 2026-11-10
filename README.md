@@ -33,9 +33,10 @@ def id {0 A : Type} (1 x : A) : A := x
 
 Run Wiz without a checkout, with the binaries from the public Cachix cache:
 
+<!-- TODO: drop `/solutions` from the URL when solutions becomes the default branch (master). -->
 ```sh
 cachix use badlydrawnwizards
-nix run github:badly-drawn-wizards/wiz#wiz -- check hello.wiz   # `#grail` for grail
+nix run github:badly-drawn-wizards/wiz/solutions#wiz -- check hello.wiz   # `#grail` for grail
 ```
 
 From a checkout:
