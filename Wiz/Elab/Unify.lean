@@ -445,9 +445,11 @@ partial def unifyFirstOrder (l : Lvl) (m : Nat) (sp : Array (Elim R)) (v : Val R
 /-- Rigid heads: the same variable, the same global (levels unified), or the same
 stuck observational construct (components unified). Any two proofs are equal. -/
 partial def unifyHead (l : Lvl) (h h' : Head R) : ElabM R Unit := do
+  let lazy := (← getGlobals).lazyProofs
   let isProof : Head R → Bool
     | .refl .. | .reflTy _ | .transp .. | .prf .. => true
-    | _ => false
+    -- (P2) with `lazyProofs`, a stuck cast between propositions is a proof too
+    | h => lazy && proofHead h
   match h, h' with
   | .global n us, .global n' us' =>
     unless n == n' && us.length == us'.length do throwAt {} "rigid mismatch"

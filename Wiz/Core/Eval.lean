@@ -1056,9 +1056,14 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .transp A a P p b e =>
         .transp (quote g l A) (quote g l a) (quote g l P) (quote g l p) (quote g l b) (quote g l e)
       -- (P2) a suspended proof: substitute, don't reduce
-      | .prf _ env t _ => if g.quoteErasesProofs then .tt else t.substFree fun i => match env[i]? with
-        | some v => quote g l v
-        | none => .var (i + l)  -- (ill-scoped: not reached on well-scoped terms)
+      | .prf _ env t _ => if g.quoteErasesProofs then .tt else
+        -- each entry it mentions quoted once (not once per occurrence)
+        let fv := ((Term.freeVarsAt 0 t).run #[]).2
+        let sub : Std.HashMap Nat (Term R) := fv.foldl (init := {}) fun m i =>
+          if m.contains i then m else match env[i]? with
+            | some v => m.insert i (quote g l v)
+            | none => m
+        t.substFree fun i => (sub[i]?).getD (.var (i + l))
     sp.foldl (init := hd) fun acc e => match e with
       | .app v => .app acc (quote g l v)
       | .fst => .fst acc
