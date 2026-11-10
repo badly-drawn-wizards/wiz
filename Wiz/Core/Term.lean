@@ -298,6 +298,14 @@ def spine : Term R → Term R × List (Term R)
 partial def instLevels (ps : List Name) (us : List Level) (t : Term R) : Term R :=
   Id.run <| t.mapChildrenM (fun l => pure (l.instParams ps us)) (fun _ c => pure (instLevels ps us c))
 
+/-- Does `var ix` occur free in `t`? (Trusted: `Ctx.instArg` in `Check.lean` skips
+evaluating an argument when this says the codomain doesn't mention it. It is complete
+because `mapChildrenM` visits every child of every constructor.) -/
+partial def hasVar (ix : Nat) : Term R → Bool
+  | .var i => i == ix
+  | t => (t.forChildren (m := StateM Bool) (fun _ => pure ())
+      (fun k c => modify (· || c.hasVar (ix + k))) |>.run false).2
+
 /-- All level parameter names mentioned in a term. -/
 partial def levelParamsUsed (t : Term R) : List Name :=
   (go t |>.run []).2
