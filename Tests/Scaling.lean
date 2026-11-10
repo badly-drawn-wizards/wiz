@@ -103,7 +103,7 @@ def listSource (n : Nat) : String :=
   String.join ((List.range n).map (s!"List.cons {·} (")) ++ "List.nil" ++ String.ofList (List.replicate n ')')
 
 /-- Elaborate `src` (with the library), or fail. -/
-def elabOk (src : String) : IO (CommandState ZeroOneMany) := do
+def elabOk (src : String) (unbox : Bool := false) : IO (CommandState ZeroOneMany) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
@@ -111,7 +111,7 @@ def elabOk (src : String) : IO (CommandState ZeroOneMany) := do
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib
     else if m == "Eff" then some effLib else none
-  let st := runFrontend (R := ZeroOneMany) src { loader }
+  let st := runFrontend (R := ZeroOneMany) src { loader, globals := { unboxStructs := unbox } }
   let errs := (st.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   pure st
@@ -195,7 +195,7 @@ def group : Group where
           unless bad.isEmpty do throw (IO.userError s!"they differ on {bad}") }]
 
 
-/-! ### A probe (`tests --probe-checker`): where building the self-hosted checker spends
+/-! ### A probe (`tests --probe-checker [unbox] [rc]`): where building the self-hosted checker spends
 its time and memory, phase by phase, and whether the one-pass reference counting agrees
 with the specification on all of it. -/
 
@@ -204,7 +204,7 @@ def rss : IO String := do
   let get (k : String) : String := ((s.splitOn "\n").find? (·.startsWith k)).getD "" |>.drop k.length |>.trimAscii.toString
   pure s!"rss {get "VmRSS:"}, peak {get "VmHWM:"}"
 
-def probeChecker : IO Unit := do
+def probeChecker (opts : List String := []) : IO Unit := do
   let t0 ← IO.monoMsNow
   let say (what : String) : IO Unit := do
     IO.eprintln s!"[{((← IO.monoMsNow) - t0) / 1000} s] {what}: {← rss}"
@@ -212,7 +212,7 @@ def probeChecker : IO Unit := do
   let src ← Selfhost.checkerFiles.mapM (fun (f : String) => IO.FS.readFile f)
   let prog := Selfhost.checkerSource src
   say "start"
-  let st ← elabOk prog
+  let st ← elabOk prog (unbox := opts.contains "unbox")
   say s!"frontend ({st.globals.decls.size} globals)"
   let code ← match compileReachable st.globals st.builtins ["main"] with
     | .ok c => pure c
@@ -228,8 +228,10 @@ def probeChecker : IO Unit := do
   say s!"optimizeProgram ({opt.size} declarations)"
   let c := C.program opt true (Build.extraC st)
   say s!"C ({c.length} characters, hash {hash c})"
-  let bad ← rcMismatches st "main"
-  say s!"reference counting: one pass and specification differ on {bad.length} declarations {bad.take 10}"
+  -- (the specification is quadratic in space: about 4.7 GB here, so only on request)
+  if opts.contains "rc" then
+    let bad ← rcMismatches st "main"
+    say s!"reference counting: one pass and specification differ on {bad.length} declarations {bad.take 10}"
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
 order, so that branches adding groups rarely touch the same lines. A new group also
