@@ -223,6 +223,14 @@ def define (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) (val : Val R) : C
 
 def eval (ctx : Ctx R) (t : Term R) : Val R := Wiz.eval ctx.globals ctx.env t
 
+/-- `Closure.inst c (ctx.eval a)`, evaluating `a` only if `c`'s body mentions it.
+Evaluation is strict, and the codomain of a non-dependent Π (`List.cons : A → List A →
+List A`) doesn't need its argument: evaluating it anyway, at every application along a
+nested spine (a long list or string literal), would be quadratic in its length. -/
+def instArg (ctx : Ctx R) (c : Closure R) (a : Term R) : Val R :=
+  match c with
+  | .mk env body => Wiz.eval ctx.globals ((if body.hasVar 0 then ctx.eval a else .unit .zero) :: env) body
+
 /-- The types of the locals indexed by level, as `conv` wants them. -/
 def tys (ctx : Ctx R) : Array (VTy R) := ctx.types.reverse.toArray
 
@@ -290,6 +298,37 @@ partial def mustUse (ctx : Ctx R) (A : Val R) (v : Val R) : Bool :=
     | none => true
   | _ => false
 
+/-- `mustUse` decided from the type alone, without evaluating the value. `mustUse` needs
+the value only to instantiate dependent second parts, and computing it runs the term in
+the evaluator at check time: `p.1` on a global builder's result (`(Circuit.netlistS c).1`
+in lib/Hdl/Core.wiz) would compute the whole netlist, deep enough to overflow the stack.
+So each field is instantiated with a placeholder instead, a fresh variable past the
+context (levels `ctx.lvl + k`, `k ≥ 1`; the caller used `ctx.lvl` for the first field).
+Evaluation commutes with substituting a variable: a canonical form reached with
+placeholders is the same with the real values. So the answer is exact, except where a
+placeholder might have mattered: a type stuck on anything but a context variable, axiom
+or metavariable (a variable applied, a builtin or observational equality stuck on its
+arguments), or a quantity that isn't a polynomial over context variables. Then the
+answer is `none`, and the caller decides with the values (`mustUse`). This needs no
+syntactic "does the codomain mention the variable" test (`Term.hasVar`), so a wrong
+answer from one can't make it drop a linear field. -/
+partial def mustUseType? (ctx : Ctx R) (A : Val R) (k : Nat) : Option Bool :=
+  match whnf A with
+  | .sigma _ q _ B _ =>
+    match q.toPoly? with
+    | some p =>
+      if p.any (fun (vs, _) => vs.any (· ≥ ctx.lvl)) then none
+      else if !QPoly.le (QPoly.const 0) p then some true
+      else mustUseType? ctx (Closure.inst ctx.globals B (Val.var (ctx.lvl + k))) (k + 1)
+    | none => none
+  -- stuck, but not on a placeholder: the same with the real values
+  | .neutral (.global ..) #[] | .neutral (.mvar _) #[] => some false
+  | .neutral (.local l) #[] => if l < ctx.lvl then some false else none
+  -- stuck on something that might be a placeholder
+  | .neutral .. => none
+  -- a canonical type other than `Σ` (whnf removed glued values)
+  | _ => some false
+
 /-- (D1 experiment) Is this type a universe, or a function type ending in one? A `Π`
 into `Prop` over such a domain is impredicative. -/
 partial def largeDomain (ctx : Ctx R) (A : Val R) (l : Nat) : Bool :=
@@ -326,7 +365,7 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
     let ua ← check ctx a A
-    let ub ← check ctx b (Closure.inst ctx.globals B (ctx.eval a))
+    let ub ← check ctx b (ctx.instArg B a)
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
   | t, .sizeLt s => do
@@ -396,8 +435,15 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   match t with
   | .mvar m => throw (.other s!"the kernel does not accept metavariables (?m{m})")
-  | .natLit _ => match ctx.globals.builtins.lookup "nat" with
-    | some N => pure (ctx.eval (.const N []), Usage.zeros ctx.lvl)
+  | .natLit _ =>
+    -- a numeral means `succ (… zero)`, so it needs both constructors, as definitions
+    let defined (k : Name) := match (ctx.globals.builtins.lookup k).bind ctx.globals.find? with
+      | some { value := some _, .. } => true
+      | _ => false
+    match ctx.globals.builtins.lookup "nat" with
+    | some N =>
+      if defined "nat.zero" && defined "nat.succ" then pure (ctx.eval (.const N []), Usage.zeros ctx.lvl)
+      else throw (.other "numerals need `builtin nat.zero := …` and `builtin nat.succ := …`")
     | none => throw (.other "numerals need `builtin nat := …`")
   | .natOp .. => throw (.cannotInfer (ctx.showTerm t))
   -- (given) Q4: lifting
@@ -445,7 +491,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | .pi _ _ q dom cod _ =>
       let q ← qtyPoly ctx q
       let ua ← check (if q.isConst? == some 0 then { ctx with erased := true } else ctx) a dom
-      pure (Closure.inst ctx.globals cod (ctx.eval a), uf + q • ua)
+      pure (ctx.instArg cod a, uf + q • ua)
     | _ => throw (.notAFunction (ctx.showTerm f) (ctx.showVal fty))
   | .letE x q tty val body => do
     let q ← checkQty ctx q
@@ -475,8 +521,12 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
         throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
       -- `t.1` discards the second part (Q1): if that holds a field that must be used,
       -- only an unrestricted pair may drop it, so `t` counts as used ω times
-      let v := ctx.eval t
-      if ctx.erased || !mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v) then pure (A, u) else
+      -- (from the type alone when it can be decided so: `ctx.eval t` would run `t`)
+      if ctx.erased then pure (A, u) else
+      let mustUse? : Bool := match mustUseType? ctx (Closure.inst ctx.globals B (Val.var ctx.lvl)) 1 with
+        | some b => b
+        | none => let v := ctx.eval t; mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v)
+      if !mustUse? then pure (A, u) else
       match QRig.many? (R := R) with
       | some m => pure (A, QPoly.const m • u)
       | none => throw (.other s!"cannot discard the second part of {ctx.showTerm t}, which holds a linear field; use let (x, y) := ... instead")
@@ -766,31 +816,97 @@ partial def declTypeSpine (ctx : Ctx R) : Term R → TCM Unit
     declTypeSpine (ctx.bind x q (ctx.eval dom)) cod
   | t => do let _ ← checkType ctx t
 
-/-- Type check a declaration and add it to the global environment. -/
-def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+/-- The checks every declaration's header gets: a new name, its level parameters, and
+its type is a type. -/
+def checkHeader (g : Globals R) (d : Decl R) : TCM Unit := do
   if g.contains d.name then throw (.duplicateDecl d.name)
   unless d.levelParams.eraseDups.length == d.levelParams.length do
     throw (.other s!"duplicate universe level parameter in {d.name}")
-  let used := d.type.levelParamsUsed ++ (d.value.map Term.levelParamsUsed).getD []
+  let used := d.type.levelParamsUsed ++ (d.value.map Term.levelParamsUsed).getD [] ++
+    (d.witness.map Term.levelParamsUsed).getD []
   if let some u := used.find? (!d.levelParams.contains ·) then
     throw (.other s!"unknown universe level parameter {u} in {d.name}")
   let ctx : Ctx R := { globals := g }
   if g.predicativeProp then declTypeSpine ctx d.type
   else discard <| checkType ctx d.type
+
+/-- Type check a declaration and add it to the global environment. -/
+def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  if d.witness.isSome then throw (.other s!"{d.name}: only a partial definition has a witness")
+  checkHeader g d
+  let ctx : Ctx R := { globals := g }
   if let some v := d.value then
     -- usage is the empty vector: a closed term has no locals to misuse
     let _ ← check ctx v (ctx.eval d.type)
   pure (g.insert d)
 
-/-- A partial definition (stage 13): `f` itself is opaque to the kernel, an axiom (so
-its type must be inhabited, which the elaborator checks), and its implementation, which
-may call `f` and the other definitions of its group, is checked against the type and
-kept for the compiler. -/
+/-- A partial definition's signature (stage 13): `f : T` is opaque to the kernel, like an
+axiom, so the bodies of its group can call it. It must come with a **witness** `w : T`,
+which the kernel checks here: then `f` proves nothing `w` doesn't, whatever the bodies do.
+The witness is checked erased (quantity 0): it is only evidence that `T` is inhabited,
+never run, so it may ignore a linear argument. -/
+def addPartialDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  let some w := d.witness
+    | throw (.other s!"partial definition {d.name} needs a witness, a term of its type")
+  if d.value.isSome then throw (.other s!"partial definition {d.name} can't have a value")
+  checkHeader g d
+  let ctx : Ctx R := { globals := g, erased := true }
+  let _ ← check ctx w (ctx.eval d.type)
+  pure (g.insert d)
+
+/-- A partial definition's implementation, which may call `f` and the other definitions
+of its group: checked against the type and kept for the compiler. Only a partial
+definition (one with a checked witness) takes one. -/
 def addPartialImpl (g : Globals R) (name : Name) (impl : Term R) : TCM (Globals R) := do
   let some d := g.find? name | throw (.other s!"unknown declaration {name}")
+  unless d.witness.isSome && d.value.isNone do
+    throw (.other s!"{name} is not a partial definition")
   let ctx : Ctx R := { globals := g }
   let _ ← check ctx impl (ctx.eval d.type)
   pure (g.insert { d with impl := some impl })
+
+/-- The axioms the declaration `n` depends on, through the constants in its type, its
+value and (for a partial definition) its witness: the declarations without a value or a
+witness (`axiom`s, foreign functions), and the `builtin` registrations made outside the
+toolchain's library (`Globals.assumed`), shown as `builtin key := name`. A numeral
+depends on the declarations registered as `nat`, `nat.zero` and `nat.succ`. A partial
+definition's implementation is not looked at: it is only run, never unfolded in a proof. -/
+partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run do
+  let mut seen : Std.HashSet Name := {}
+  let mut todo := [n]
+  let mut out : Array String := #[]
+  let numeral := ["nat", "nat.zero", "nat.succ"].filterMap (List.lookup · g.builtins)
+  while true do
+    match todo with
+    | [] => break
+    | c :: rest =>
+      todo := rest
+      if seen.contains c then continue
+      seen := seen.insert c
+      let some d := g.find? c | continue
+      if d.value.isNone && d.witness.isNone then out := out.push c
+      for (k, m) in g.assumed.reverse do
+        if m == c then out := out.push s!"builtin {k} := {c}"
+      let (cs, lit) := ([d.type] ++ d.value.toList ++ d.witness.toList).foldl
+        (fun (acc : List Name × Bool) t => (consts t acc.1, acc.2 || hasNatLit t)) ([], false)
+      todo := cs ++ (if lit then numeral else []) ++ todo
+  return out.toList
+where
+  consts (t : Term R) (acc : List Name) : List Name :=
+    match t with
+    | .const c _ => c :: acc
+    | t => (go t |>.run acc).2
+  go (t : Term R) : StateM (List Name) Unit :=
+    t.forChildren (fun _ => pure ()) fun _ c => match c with
+      | .const n _ => modify (n :: ·)
+      | c => go c
+  hasNatLit (t : Term R) : Bool := match t with
+    | .natLit _ => true
+    | t => (litGo t |>.run false).2
+  litGo (t : Term R) : StateM Bool Unit :=
+    t.forChildren (fun _ => pure ()) fun _ c => match c with
+      | .natLit _ => set true
+      | c => litGo c
 
 /-- Check a list of declarations in order. -/
 def addDecls (g : Globals R) (ds : List (Decl R)) : TCM (Globals R) :=

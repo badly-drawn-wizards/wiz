@@ -146,7 +146,7 @@ RFC example, foreign origins refused, an editor on a socket pair and two pages).
 
 * **The language server.** The `wiz` filetype (`*.wiz`), a syntax file for highlighting
   (no tree-sitter), and `wiz lsp` started with `vim.lsp.start` for each Wiz buffer, rooted
-  at the nearest `grail.wiz`, `lakefile.toml` or `.git`. `lsp/wiz.lua` is the same
+  at the nearest `grail.wiz`, `wiz-toolchain`, `lakefile.toml` or `.git`. `lsp/wiz.lua` is the same
   configuration for Neovim 0.11's `vim.lsp.enable 'wiz'`. The client asks for
   `wiz/elaborated` (protocol §1), so the infoview hears about every re-elaboration.
 * **Unicode input like Lean's.** `\lam` → λ, `\r` → →, `\<` → ⟨, `\-1` → ⁻¹, … from

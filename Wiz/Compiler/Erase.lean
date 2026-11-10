@@ -331,7 +331,7 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
     | some d => pure (Wiz.eval g [] (d.type.instLevels d.levelParams us))
     | none => throw (.unboundGlobal n)
   | .app f a => match whnf (← quickType ctx f) with
-    | .pi _ _ _ _ cod _ => pure (Closure.inst g cod (ctx.eval a))
+    | .pi _ _ _ _ cod _ => pure (ctx.instArg cod a)
     | _ => return (← infer ctx t).1
   | .fst p => match whnf (← quickType ctx p) with
     | .sigma _ _ A _ _ => pure A
@@ -382,7 +382,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     return .lam x b'
   | .pair a b, .sigma _ q A B _ =>
     let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a A
-    let Bv := Closure.inst g B (ctx.eval a)
+    let Bv := ctx.instArg B a
     -- the last field of a structure: the pair is its first component (22i)
     if isStructTail g Bv ctx.lvl then return a'
     let b' ← eraseCheck ctx b Bv
@@ -563,7 +563,7 @@ partial def eraseSpine (ctx : Ctx R) (t : Term R) : TCM (ETerm × VTy R) := do
     | .pi _ _ q dom cod _ =>
       let a' ← if isZeroQ q then pure .erased else eraseCheck ctx a dom
       acc := .app acc a'
-      fty := Closure.inst ctx.globals cod (ctx.eval a)
+      fty := ctx.instArg cod a
     | _ => throw (.other "erasure: application of a non-function")
   pure (acc, fty)
 

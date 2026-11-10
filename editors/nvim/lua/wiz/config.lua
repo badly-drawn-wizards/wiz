@@ -8,7 +8,7 @@ M.defaults = {
     -- yourself (e.g. `vim.lsp.enable 'wiz'` with this plugin's lsp/wiz.lua).
     enable = true,
     cmd = { 'wiz', 'lsp' },
-    root_markers = { 'grail.wiz', 'lakefile.toml', '.git' },
+    root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil, -- function(client, bufnr)
     capabilities = nil, -- merged into the client's capabilities
   },

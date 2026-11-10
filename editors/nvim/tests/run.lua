@@ -193,7 +193,7 @@ else
       return require('wiz.lsp').client(0) ~= nil
     end, 'the wiz client')
     wait(5000, iv.is_open, 'the infoview window')
-    eq(vim.fs.root(fixture, { 'grail.wiz', 'lakefile.toml', '.git' }), require('wiz.lsp').client(0).config.root_dir, 'root dir')
+    eq(vim.fs.root(fixture, { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' }), require('wiz.lsp').client(0).config.root_dir, 'root dir')
   end)
 
   test('the tactic state after `intro n`', function()

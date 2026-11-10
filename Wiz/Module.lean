@@ -46,6 +46,14 @@ def resolve (roots : List System.FilePath) (m : Name) : IO (Option System.FilePa
     if ← p.pathExists then return some p
   pure none
 
+/-- The modules of `m` (from `loadClosure` or `loadAll`) that come from the first root,
+the toolchain's `lib/`: their `builtin` registrations are trusted (a later root can't
+replace them, since the first root that has a module wins). -/
+def fromFirstRoot (roots : List System.FilePath) (m : Std.HashMap Name (System.FilePath × String)) : List Name :=
+  match roots with
+  | [] => []
+  | lib :: _ => m.toList.filterMap fun (n, (p, _)) => if p == lib / relPath n then some n else none
+
 /-- Every module reachable from `src` by imports, with its path and text. Modules that
 can't be found are left out (the frontend reports them). -/
 partial def loadClosure (roots : List System.FilePath) (src : String) :

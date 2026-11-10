@@ -93,12 +93,39 @@ fallback). The garbage-collected mode is unchanged, byte for byte.
   variable to it (and releases it after the call if that was its last use); the function
   neither `inc`s it nor releases it.
 
+* **Reuse** (Perceus' reuse tokens, as [stage 8c](08-backend.md)): in a branch of a
+  `case` on an owned variable `x`, an object built after `x` dies takes `x`'s cell when
+  `x` was unique and of the same size class (`reset`/`reuseobj`). Compiling backwards,
+  the allocation comes first and leaves a wish for a cell; the place where `x` dies (its
+  last projection, a call it was lent to, the branch's start) grants it. Tokens stay
+  inside their branch. Constructors (globals that only build an object from their
+  parameters) are put in place where they are applied, so that the object is visible to
+  reuse; and, as in Lean's borrow inference, a parameter matched on where a branch builds
+  an object is owned (its cell may be reused).
+* **Drop specialisation**: a variable dying at its projection hands its reference to the
+  field when it is unique (`dropTake`: the other fields are released and the cell freed,
+  with no `inc`/`dec` of the field); an owned variable a `case` matches on and no branch
+  uses dies at each branch's start, where the tag is known.
+
+* **Strict `let`s**: a `let` that every path of its body evaluates (not under a `λ`)
+  is evaluated where it stands instead of suspended (a thunk gains nothing when the
+  value is needed anyway). Stage 2 on mid.wiz: 10.9% fewer allocations (thunks −30%,
+  closures −23%), and the generated C is 17% smaller.
+* **Static objects**: a constructor without fields is `(k, ◾)` every time; the runtime
+  keeps one object per `k < 64` with a count that starts high (never freed, not counted
+  as allocated), used for constant constructors in the generated code (also the
+  globals that are one, put in place) and for the Bools, `nil` and `0`'s payload the
+  natives make. Stage 2 on mid.wiz: 9.4% fewer allocations.
+* **Tail calls kept** (Lean's `preserveTailCall`): a function calling itself in tail
+  position with a borrowed parameter given something it would release after the call
+  (a variable it owns, or a temporary) makes that parameter owned, so nothing follows
+  the call (17 of 228 borrowed parameters of the toolchain).
+
 **Bootstrap in this mode**: stage 1 compiles the toolchain (with the `-- wiz: rc` line)
 to C, and that program (stage 2, reference counted) compiles it again to the same C,
 freeing every object by the end.
 
-Next: reuse and drop specialisation (as in [stage 8c](08-backend.md)), a faster allocator, keeping tail
-calls when a borrowed argument is lent; then reference counting by default.
+Next: demand analysis for `let`s; then reference counting by default.
 
 ## 21i: phantom parameters in the self-hosted frontend ✅
 

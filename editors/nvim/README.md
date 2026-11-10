@@ -4,7 +4,7 @@ Wiz in Neovim (0.10 or later; tested with 0.12):
 
 * **the language server**: the `wiz` filetype for `*.wiz`, highlighting from a syntax file
   (no tree-sitter needed), and `wiz lsp` started for every Wiz buffer. Its root is the
-  nearest directory with `grail.wiz`, `lakefile.toml` or `.git`, else the file's own
+  nearest directory with `grail.wiz`, `wiz-toolchain`, `lakefile.toml` or `.git`, else the file's own
   directory. Diagnostics, hover, go to definition, completion and code actions are the
   ones Neovim's LSP client already provides.
 * **unicode input like Lean's**: `\lam` → `λ`, `\r` → `→`, `\forall` → `∀`, …
@@ -17,17 +17,16 @@ notes are in `docs/stages/11-tooling.md` (11p).
 ## Installing
 
 `wiz` must be on `PATH` (or set `lsp.cmd`), e.g. from `nix profile install
-github:badly-drawn-wizards/wiz/solutions` or a checkout's `.lake/build/bin/wiz`.
+github:badly-drawn-wizards/wiz` or a checkout's `.lake/build/bin/wiz`.
 
 **Try it with Nix**, without touching your configuration (Neovim with only this plugin,
 and the packaged `wiz` on `PATH`):
 
 ```sh
-nix run github:badly-drawn-wizards/wiz/solutions#nvim-wiz -- examples/tactics.wiz
+nix run github:badly-drawn-wizards/wiz#nvim-wiz -- examples/tactics.wiz
 ```
 
-(Name the `solutions` branch: `master` is the exercise tree, whose `wiz` is mostly stubs.
-The Cachix cache of docs/building.md saves building wiz.)
+(The Cachix cache of docs/building.md saves building wiz.)
 
 **lazy.nvim** (the plugin is in a subdirectory of the repository):
 
@@ -77,7 +76,7 @@ require('wiz').setup {
   lsp = {
     enable = true,
     cmd = { 'wiz', 'lsp' },            -- e.g. { 'wiz', '-I', 'src', 'lsp' }
-    root_markers = { 'grail.wiz', 'lakefile.toml', '.git' },
+    root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil,                   -- function(client, bufnr)
     capabilities = nil,                -- merged into the defaults
   },

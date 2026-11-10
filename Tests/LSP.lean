@@ -14,7 +14,7 @@ def prelude : IO String := IO.FS.readFile "lib/Prelude.wiz"
 /-- Elaborate `src` (which imports the prelude) as the language server does. -/
 def elabSrc (src : String) (termInfo : Bool := true) : IO St := do
   let p ← prelude
-  let init : St := { loader := fun m => if m == "Prelude" then some p else none, termInfo }
+  let init : St := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some p else none, termInfo }
   pure (Query.elaborate {} src init).1
 
 /-- The character offset just after the `k`th occurrence of `needle` (plus `delta`). -/
@@ -38,7 +38,8 @@ def termGoalText (s : St) (off : Nat) : String :=
 def req (s : String) : Lean.Json := (Lean.Json.parse s).toOption.get!
 
 def server : IO LSP.Server := do
-  pure { libs := ({} : Std.HashMap String (String × String)).insert "Prelude" ("lib/Prelude.wiz", ← prelude) }
+  pure { libs := ({} : Std.HashMap String (String × String)).insert "Prelude" ("lib/Prelude.wiz", ← prelude),
+         trusted := ["Prelude"] }
 
 def lineCol (src : String) (off : Nat) : Nat × Nat :=
   let pre := src.toList.take off
@@ -94,33 +95,33 @@ def group : Group where
         isoCacheZOM.set {}
         let msgs (s : St) := s.messages.toList.map (·.text)
         let src := "import Prelude\ndef x : Nat := 1 + 1\ndef bad : Nat := true\n"
-        let s₁ := runFrontend (R := ZeroOneMany) src { loader := fun m => if m == "Prelude" then some pre else none }
+        let s₁ := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some pre else none }
         -- (each state is looked at before the table: that fixes the order)
         check ((msgs s₁).length == 1) s!"{msgs s₁}"
         let n ← size
         check (n ≥ 1) "nothing kept"
         -- again, from a loader that is another closure: the same, from the table
-        let s₂ := runFrontend (R := ZeroOneMany) src { loader := fun m => if m == "Prelude" then some pre else none }
+        let s₂ := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some pre else none }
         checkEq (msgs s₁) (msgs s₂)
         checkEq n (← size)
         checkEq s₁.globals.order.size s₂.globals.order.size
         -- the loader is the file's own after a hit: a module the first loader didn't have
         let loader (m : Name) := if m == "Prelude" then some pre else if m == "Extra" then some "import Prelude\ndef extra : Nat := 3\n" else none
-        let s₃ := runFrontend (R := ZeroOneMany) "import Prelude\nimport Extra\ndef y : Nat := extra\n" { loader }
+        let s₃ := runFrontend (R := ZeroOneMany) "import Prelude\nimport Extra\ndef y : Nat := extra\n" { loader, trustedModule := Tests.libModule }
         checkEq ([] : List String) (msgs s₃)
         -- another Prelude text, other settings: other entries
         let s₄ := runFrontend (R := ZeroOneMany) "import Prelude\ndef y : Nat := preExtra\n"
-          { loader := fun m => if m == "Prelude" then some (pre ++ "\ndef preExtra : Nat := 0\n") else none }
+          { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some (pre ++ "\ndef preExtra : Nat := 0\n") else none }
         checkEq ([] : List String) (msgs s₄)
         let k₁ ← size
-        let s₆ := runFrontend (R := ZeroOneMany) src { loader := fun m => if m == "Prelude" then some pre else none, termInfo := true }
+        let s₆ := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some pre else none, termInfo := true }
         checkEq (msgs s₁) (msgs s₆)
         check ((← size) > k₁) "termInfo shares an entry"
         -- a state that is not initial is not cached; an import cycle isn't either
         isoCacheZOM.set {}
-        let s₅ := runFrontend (R := ZeroOneMany) "import A\n" { loader := fun m => if m == "A" then some "import B\n" else if m == "B" then some "import A\n" else none }
+        let s₅ := runFrontend (R := ZeroOneMany) "import A\n" { trustedModule := Tests.libModule, loader := fun m => if m == "A" then some "import B\n" else if m == "B" then some "import A\n" else none }
         check (s₅.messages.size ≥ 1) "no cycle error"
-        let s₇ := runFrontend (R := ZeroOneMany) "import Prelude\n" { loader := fun m => if m == "Prelude" then some pre else none, pristine := false }
+        let s₇ := runFrontend (R := ZeroOneMany) "import Prelude\n" { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some pre else none, pristine := false }
         checkEq ([] : List String) (msgs s₇)
         checkEq 0 (← size) },
     { name := "info tree: hovers are unchanged", run := fun _ => do
@@ -176,7 +177,7 @@ def group : Group where
         check (ds.contains "h Nat false") s!"decl infos: {ds}" },
     { name := "info tree: through the shared cache", run := fun _ => do
         let p ← prelude
-        let init : St := { loader := fun m => if m == "Prelude" then some p else none, termInfo := true }
+        let init : St := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some p else none, termInfo := true }
         let src := tacticSrc ++ "def f (n : Nat) : Nat := Nat.add n _\ndef h := Nat.add 1 2\n"
         let dir ← IO.FS.createTempDir
         let (cold, _) ← Cache.elaborateCached dir src init 0
@@ -188,7 +189,7 @@ def group : Group where
           checkEq (termGoalText cold off) (termGoalText warm off) },
     { name := "tagged printing agrees with the printer", run := fun _ => do
         let p ← prelude
-        let st := runFrontend (R := ZeroOneMany) "import Prelude" { loader := fun _ => some p }
+        let st := runFrontend (R := ZeroOneMany) "import Prelude" { trustedModule := Tests.libModule, loader := fun _ => some p }
         for n in st.globals.order do
           let some d := st.globals.find? n | continue
           for t in [d.type] ++ d.value.toList do
@@ -237,7 +238,7 @@ def socketCase : IO Unit := do
         let ((srvIn, srvOut), (edIn, edOut)) ← Socket.pair
         let (ed, edW) := (IO.FS.Stream.ofHandle edIn, IO.FS.Stream.ofHandle edOut)
         let done ← IO.asTask (prio := .dedicated)
-          (LSP.serveInfoview (← server).libs (IO.FS.Stream.ofHandle srvIn) (IO.FS.Stream.ofHandle srvOut) sock)
+          (LSP.serveInfoview (← server).libs (IO.FS.Stream.ofHandle srvIn) (IO.FS.Stream.ofHandle srvOut) sock ["Prelude"])
         let next (h : IO.FS.Stream) : IO Lean.Json := do
           let some j ← LSP.readMessage h | throw (IO.userError "the stream ended")
           pure j
@@ -305,7 +306,7 @@ def wsCase : IO Unit := do
         let port ← IO.Promise.new
         let done ← IO.asTask (prio := .dedicated)
           (LSP.serveWith (← server).libs (some (IO.FS.Stream.ofHandle srvIn, IO.FS.Stream.ofHandle srvOut))
-            { ws := some (Socket.loopback, 0) } (fun p => port.resolve p))
+            { ws := some (Socket.loopback, 0) } (fun p => port.resolve p) ["Prelude"])
         let port := port.result!.get
         let next (h : IO.FS.Stream) : IO Lean.Json := do
           let some j ← LSP.readMessage h | throw (IO.userError "the stream ended")

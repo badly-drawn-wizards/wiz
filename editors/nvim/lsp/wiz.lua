@@ -5,7 +5,7 @@ local lsp = require 'wiz.lsp'
 return {
   cmd = { 'wiz', 'lsp' },
   filetypes = { 'wiz' },
-  root_markers = { 'grail.wiz', 'lakefile.toml', '.git' },
+  root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
   capabilities = lsp.capabilities(),
   handlers = lsp.handlers,
 }
