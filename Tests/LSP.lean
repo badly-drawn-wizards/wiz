@@ -38,7 +38,8 @@ def termGoalText (s : St) (off : Nat) : String :=
 def req (s : String) : Lean.Json := (Lean.Json.parse s).toOption.get!
 
 def server : IO LSP.Server := do
-  pure { libs := ({} : Std.HashMap String (String × String)).insert "Prelude" ("lib/Prelude.wiz", ← prelude) }
+  pure { libs := ({} : Std.HashMap String (String × String)).insert "Prelude" ("lib/Prelude.wiz", ← prelude),
+         trusted := ["Prelude"] }
 
 def lineCol (src : String) (off : Nat) : Nat × Nat :=
   let pre := src.toList.take off
