@@ -33,10 +33,12 @@ the results of the probes listed in the "Probes" section.
   regularity is off in both kernels, `cast` computes on data constructor by constructor,
   and the program now checks. One departure from the published "off" theory remains, a
   **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below; now argued relative to the system without regularity, with one incompleteness found).
-* **Proofs are never evaluated (P2).** Both kernels suspend the proof positions of `cast`
-  and `transp`, and a cast between propositions is stuck. That is the algorithm the
-  published decidability results are about ([PT23], [PLT25]). One gap remains: proofs
-  bound by `let` or passed as ordinary arguments are still evaluated (D1 below, §7).
+* **The kernels no longer evaluate the proofs in `cast` and `transp` (P2: reduced, not
+  closed).** Both kernels suspend those positions, and a cast between propositions is
+  stuck. That is the direction of the algorithm the published decidability results are
+  about ([PT23], [PLT25]). Two things remain: proofs bound by `let` or passed as ordinary
+  arguments are still evaluated, and the elaborator, `#reduce` and error messages still
+  evaluate a proof when they read a value back (D1 below, §7).
 * **Three proofs of `False` in the kernel have been found and fixed** (propositions
   compared by shape; `∞ < ∞`; quantities that differ only by a variable, F6), each with
   regression tests. A failure of
@@ -360,8 +362,9 @@ simpler).
 
   `sameFamily?` has the same defect. The fix is to decide the side condition with
   conversion. Confirmed by a probe (the note, §10): `h p q p` is well typed, but its δβ-reduct is rejected, so subject reduction fails for the algorithmic typing.
-* **P2: proofs are never evaluated** (CoreSpec §8.6; `Globals.lazyProofs`,
-  `kernelLazyProofs`; the user's decision, 2026-11-10).
+* **P2: the proofs in `cast` and `transp` are never evaluated. P2 is reduced, not closed**
+  (CoreSpec §8.6; `Globals.lazyProofs`, `kernelLazyProofs`; the user's decision,
+  2026-11-10).
   * Pujet–Tabareau's and Pujet–Leray–Tabareau's algorithms never reduce a proof, and
     their theorems are about those algorithms. Wiz's kernels ran proofs, so those
     theorems could not cover them even in principle.
@@ -384,8 +387,12 @@ simpler).
     regularity on: its proofs are let-bound)" shows it: that term binds its proofs with
     `let`, and with `kernelRegularity := .true` the Wiz kernel still loops on it.
     Regularity is off by default, so this is not reachable in the default configuration.
-  * The elaborator still evaluates a suspended proof when it reads a value back into a
-    term, because the kernel must be able to check that term again (CoreSpec §8.6).
+  * **What can still loop.** The elaborator evaluates a suspended proof when it reads a
+    value back into a term, because the kernel must be able to check that term again
+    (CoreSpec §8.6). So do error messages and `#reduce`. On an Abel–Coquand proof under
+    `--regularity full` any of these can fail to terminate. That reading is outside the
+    path by which the kernel accepts a term: the kernel's own comparison of types reads
+    a suspended proof as `()`.
 * **What it costs (known failures).** Without regularity a cast at a **type variable**
   is stuck (TTobs behaviour): `cast e a = a` for `e : A = A`, "`J` computes on `refl`"
   at a variable family, and the definitional equations of functions defined by `match`
@@ -554,14 +561,16 @@ that checks everything. Wiz's situation:
 * **Termination** of the kernel is not proved; all evaluation functions are `partial` in
   Lean. With non-default options it is known to fail (D1: `--regularity full
   --eager-proofs`).
-* **The evaluator does not run proofs (P2, resolved for the marked positions).** `eval`
+* **The evaluator does not run the proofs in `cast` and `transp` (P2: reduced, not
+  closed).** `eval`
   suspends the equation of a `cast` and the proofs of a `transp`, and `vCast` only
   projects them. Pujet–Tabareau's decidability result for impredicative OTT (CCobs,
   [PT23]) and Pujet–Leray–Tabareau's with regularity ([PLT25], Theorem 5.6, for Π, ℕ, ⊥,
   `Ω`, ∃) are proved for algorithms that never normalise proofs, so a Wiz version of
-  those theorems can now be about this kernel. Two things are still outside it:
-  proofs bound by `let` or passed as arguments are evaluated strictly, and Wiz's data
-  types are not in the fragment those theorems cover (D1, P2).
+  those theorems could be about this kernel once the following are dealt with:
+  proofs bound by `let` or passed as arguments are evaluated strictly; readback
+  outside the kernel (elaboration, `#reduce`, error messages) evaluates proofs; and
+  Wiz's data types are not in the fragment those theorems cover (D1, P2).
   (`/workspace/wiz-notes/p2-proofs.md`, `/workspace/wiz-notes/plt-vs-inert.md`.)
 
 ## 8. Testing evidence

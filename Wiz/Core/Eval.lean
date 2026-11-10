@@ -1051,7 +1051,17 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   -- back is a normal form, which the kernel can check again (a substituted `(p, q).1`
   -- has no inferable type).
   | .neutral (.prf _ _ _ v) sp =>
-    if g.quoteErasesProofs then .tt else quote g l (vElims g v.get sp)
+    if !g.quoteErasesProofs then quote g l (vElims g v.get sp) else
+    -- erased: `()`. Past an `absurd` the value need not be a proof (`absurd M p : M`, for
+    -- any `M`), so the eliminations from the last `absurd` on are kept, on `()`: two
+    -- different values of a data type must not read back alike. (Read back at `l + 1`
+    -- with a fresh variable for the head, then `()` for it.)
+    let isAbsurd (i : Nat) : Bool := match sp[i]? with
+      | some (.absurd _) => true
+      | _ => false
+    match (List.range sp.size).reverse.find? isAbsurd with
+    | none => .tt
+    | some k => (quote g (l + 1) (.neutral (.local l) (sp.extract k sp.size))).instantiateAt 0 .tt
   | .lazyInd lv I D v P m i x sp _ =>
     sp.foldl (fun t e => match e with
       | .app a => .app t (quote g l a)

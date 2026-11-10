@@ -806,6 +806,22 @@ conv at a proposition       true, before either side is unfolded
   It has to: a proof read back by substitution alone can be `(p, q).1`, and the
   bidirectional checker cannot infer a type for that when the elaborated term is checked
   again. So the elaborator may still run a proof. The kernel does not.
+  - *Erasure stops at `absurd`.* `absurd M p : M` for any `M`, so what is done to a
+    proof after an `absurd` need not be a proof. The erased reading keeps the
+    eliminations from the last `absurd` on, applied to `()`: two different values of a
+    data type never read back alike. A suspended proof does not reach an `absurd` from
+    a checked term (it only sits in the proof positions of `cast` and `transp`); the
+    rule is there so that this does not have to be argued (test "P2: comparing types
+    erases suspended proofs, but not what follows an absurd").
+* **Consequence: what can still loop.** The reading that evaluates proofs is outside the
+  path by which the kernel accepts a term, but it is used. An error message, `#reduce`,
+  hover information, or the elaborator reading a value back can evaluate a proof, and on
+  a proof without a normal form (Abel–Coquand's, under `--regularity full`) that does
+  not terminate. So the guarantee is about *acceptance by the kernel*, not about every
+  run of `wiz check`.
+* **P2 is reduced, not closed.** Together with the next point: the kernel no longer runs
+  the proofs in `cast` and `transp`, which is where D1's loop ran. It still runs proofs
+  in two kinds of position.
 * **What is not covered [gap].** Only the positions the syntax marks as proofs are
   suspended. A proof bound by `let`, or passed as an ordinary argument, is still
   evaluated strictly, because `eval` does not know the type of what it evaluates. A
@@ -1293,6 +1309,7 @@ Each item says what the code does; the code is what the kernel checks.
 | regularity in conversion (`unCast`) | off by default (`Conv.lean:264`, only under `--regularity`) | no: stuck casts are compared structurally |
 | regularity in evaluation | off; at inert types only (`inertTy`) | the same (`kernelRegularity := .false`; `inertTy`) |
 | proofs (P2, §8.6) | never evaluated (`Globals.lazyProofs`, `--eager-proofs` for the old behaviour); `quote` forces a suspended proof unless `quoteErasesProofs` | the same (`kernelLazyProofs := .true`); `quote` forces, `quoteM .false` (in `sameVal`) erases |
+| two proof heads in `convNe` | any two of `refl`, `reflTy`, `transp`, `prf` are equal (`isProof`) | only two of the same kind (`convHead`): **stricter**, so it can reject where the Lean kernel accepts, never the reverse. Reached only under an `absurd` (elsewhere proof irrelevance answers first); pinned by the test "P2: comparing types erases suspended proofs …" |
 | convTy at Π/Σ propositions | quantities may differ | quantities must be equal (`Kernel.wiz:1598`) |
 | proof irrelevance at Π/Σ | asked at the Π/Σ | asked at the codomain/components only (`Kernel.wiz:1537–1541`); equivalent |
 | `isProp` | `typeSort? ≡ 0` | Π: codomain is a proposition; Σ: both parts (`Kernel.wiz:1328`) |
