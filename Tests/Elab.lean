@@ -1260,6 +1260,10 @@ inductive MTm where
   | scase (l : Nat) (I D : MTm) (v : Nat) (P m s i x : MTm)
   /-- a `Π`/`Σ` with its sort (level `l`) -/
   | sorted (l : Nat) (t : MTm)
+  /-- `ULift A` in `Sort l` (Q4), its constructor and eliminator -/
+  | ulift (l : Nat) (A : MTm)
+  | up (a : MTm)
+  | down (t : MTm)
   deriving Inhabited
 
 namespace MTm
@@ -1349,6 +1353,9 @@ partial def toWiz : MTm → String
   | scofix l I D A f s i a => s!"(.scofix {l} {I.toWiz} {D.toWiz} {A.toWiz} {f.toWiz} {s.toWiz} {i.toWiz} {a.toWiz})"
   | coit l I D S st i s => s!"(.coit {l} {I.toWiz} {D.toWiz} {S.toWiz} {st.toWiz} {i.toWiz} {s.toWiz})"
   | scase l I D v P m s i x => s!"(.scase {l} {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {s.toWiz} {i.toWiz} {x.toWiz})"
+  | ulift l A => s!"(.ulift {l} {A.toWiz})"
+  | up a => s!"(.up {a.toWiz})"
+  | down t => s!"(.down {t.toWiz})"
 
 partial def toTerm : MTm → Term ZeroOneMany
   | var i => .var i
@@ -1409,6 +1416,9 @@ partial def toTerm : MTm → Term ZeroOneMany
   | scofix l I D A f s i a => .scofix (Level.ofNat l) I.toTerm D.toTerm A.toTerm f.toTerm s.toTerm i.toTerm a.toTerm
   | coit l I D S st i s => .coit (Level.ofNat l) I.toTerm D.toTerm S.toTerm st.toTerm i.toTerm s.toTerm
   | scase l I D v P m s i x => .scase (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm s.toTerm i.toTerm x.toTerm
+  | ulift l A => .ulift (Level.ofNat l) A.toTerm
+  | up a => .up a.toTerm
+  | down t => .down t.toTerm
 
 partial def ofTerm : Term ZeroOneMany → Option MTm
   | .var i => some (var i)
@@ -1466,6 +1476,9 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .con x => return con (← ofTerm x)
   | .ind l I D v P m i x => return ind (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm i) (← ofTerm x)
   | .const n us => return const n (← us.mapM Level.toNat?)
+  | .ulift l A => return ulift (← l.toNat?) (← ofTerm A)
+  | .up a => return up (← ofTerm a)
+  | .down t => return down (← ofTerm t)
   | _ => none
 
 /-- Printed like `show .nil` in `Kernel.wiz`. -/
@@ -1525,6 +1538,9 @@ partial def pretty (l : Nat) : MTm → String
   | szSuc s => s!"↑({pretty l s})"
   | sizeLt s => s!"Size<({pretty l s})"
   | mus k I D i s => s!"μ{k}({pretty l I}, {pretty l D}, {pretty l i}, {pretty l s})"
+  | ulift k A => s!"ULift{k}({pretty l A})"
+  | up a => pretty l a
+  | down t => pretty l t
 
 /-- A well-typed pair (at random levels), for the generator: `(U k, U k)`, or the
 dependent `(U k, λx. x) : (A : U (k+1)) × (A → A)`. -/
@@ -1599,14 +1615,38 @@ def sizeArgs : List MTm :=
   [mus 0 (unit 0) natD star star, streamAt (enum 2),
    natAt szInf, ann (lam (natAt (var 0))) (pi size (univ 0)), ann (lam (streamAt (szSuc (var 0)))) (pi size (univ 0))]
 
-/-- Q4 (open): a description field may live in a smaller universe than `Desc.elim`'s
-`marg` expects (`Sort (l+1)`), and universes aren't cumulative, so `Desc.elim` can
-reduce to a term of the wrong type: `getS D : Type` (accepted) reduces to `True`, while
-`True : Type` is rejected. Both kernels agree on all three. -/
+/-- Q4 (fixed): a description field must live exactly in `Sort (l+1)`, the universe
+`Desc.elim`'s `marg` takes it from. It used to be enough for it to fit (`Sort k`,
+`k ≤ l+1`), and universes aren't cumulative, so `Desc.elim` could reduce to a term of the
+wrong type: `getS D : Type` was accepted and reduced to `True`, while `True : Type` is
+rejected. Now that `D` is rejected (the first four are errors, and so is the last), and the field is lifted
+instead: `getS D' : Type` reduces to `ULift True`, which is in `Type`. The rest: the rules
+of `ULift` (a boxed proof, `down`, equality and casts, η, the level check). -/
 def smallField : List MTm :=
+  let getS (D : MTm) := delim 2 (lam (univ 0)) (lam (unit 0)) (lams 4 (var 2)) (lams 4 (unit 0)) (lams 5 (unit 0)) D
   let D := ann (darg ptrue (lam (dret star))) (desc 0 (unit 0))
-  let getS := delim 2 (lam (univ 0)) (lam (unit 0)) (lams 4 (var 2)) (lams 4 (unit 0)) (lams 5 (unit 0)) D
-  [ann getS (univ 0), ann ptrue (univ 0), ann star (eq (univ 0) getS (unit 0))]
+  let L (A : MTm) := ulift 1 A
+  let D' := ann (darg (L ptrue) (lam (dret star))) (desc 0 (unit 0))
+  let boxed := ann (up star) (L ptrue)
+  let liftedTag (i : Nat) := ann (up (tag 2 i)) (L (enum 2))
+  [-- rejected: the small field, `getS` on it, `True : Type`, and `ULift.{1} Type`
+   D, ann (getS D) (univ 0), ann ptrue (univ 0), L (univ 0),
+   -- accepted: the lifted field; `getS D'` is `ULift True` (by `reflTy`), a type
+   D', ann (getS D') (univ 0), ann (reflTy (getS D')) (eqTy (getS D') (L ptrue)),
+   ann (con (pair (up star) (pair star star))) (mu 0 (unit 0) D' star),
+   -- a boxed proof, its contents, and equality of boxed proofs (`True`)
+   boxed, down boxed, ann star (eq (L ptrue) boxed boxed),
+   ann (lam (lam star)) (pi (L ptrue) (pi (L ptrue) (eq (L ptrue) (var 1) (var 0)))),
+   -- η: a variable of type `ULift A` is `up (down x)`
+   ann (lam (refl (L (enum 2)) (var 0))) (pi (L (enum 2)) (eq (L (enum 2)) (var 0) (up (down (var 0))))),
+   ann (lam (up (var 0))) (pi (enum 2) (ulift 2 (enum 2))),
+   -- type equality: `ULift A = ULift B` is `A = B`; `ULift A = A` is `False`
+   reflTy (L ptrue), reflTy (L (enum 2)),
+   ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (L (enum 2)) (enum 2)) (empty 0)),
+   -- casts go through `down`
+   ann star (eq (L (enum 2)) (cast (L (enum 2)) (L (enum 2)) star (liftedTag 1)) (liftedTag 1)),
+   -- rejected: boxed different tags are different
+   ann star (eq (L (enum 2)) (liftedTag 0) (liftedTag 1))]
 
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
@@ -2241,6 +2281,14 @@ def selfHostGroup : Group where
         let vs := MTm.sizeInf.map leanVerdict
         unless vs.take 5 == List.replicate 5 "error" && (vs.drop 5).all (· != "error") do
           throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "Q4: a small description field is rejected, a lifted one works (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.smallField.map leanVerdict
+        let body := (vs.drop 4).dropLast
+        unless vs.take 4 == List.replicate 4 "error" && body.all (· != "error") && vs.getLast? == some "error" do
+          throw (IO.userError s!"unexpected verdicts {vs}")
+        -- `getS D'` is a type (it computes to `ULift True`), and a boxed proof unboxes to `True`
+        unless vs[5]? == some "U0" && vs[9]? == some "True" do
+          throw (IO.userError s!"unexpected types {vs}") },
     { name := "the self-hosted frontend checks itself (Lex, Parse, Kernel and Frontend.wiz)", run := fun _ => do
         let src := (← IO.FS.readFile "selfhost/Lex.wiz") ++ "\n" ++ (← IO.FS.readFile "selfhost/Parse.wiz") ++ "\n" ++
           (← IO.FS.readFile "selfhost/Kernel.wiz") ++ "\n" ++ (← IO.FS.readFile "selfhost/Frontend.wiz")
@@ -3125,6 +3173,64 @@ def renumberVars (s : String) : String := Id.run do
       out := out.push c
       i := i + 1
   return out
+
+/-- Q4: description fields live exactly in `Sort (l+1)`; the elaborator lifts smaller
+ones with `ULift`, invisibly (`Elab/Inductive.lean`, CoreSpec §4.1, §9.1). -/
+def liftPrelude : String := "import Prelude
+inductive Pos where
+  | mk (n : Nat) (h : n = n)
+def Pos.val (p : Pos) : Nat := match p with
+  | .mk n _ => n
+inductive Prod2.{u, v} (A : Type u) (B : Type v) : Type (max u v) where
+  | mk (a : A) (b : B)
+def Prod2.snd.{u, v} {A : Type u} {B : Type v} (p : Prod2 A B) : B := match p with
+  | .mk _ b => b
+inductive T3 : Type 1 where
+  | leaf
+  | node (f : Nat → T3)
+def depth : T3 → Nat
+  | .leaf => 0
+  | .node f => Nat.succ (depth (f 0))
+"
+
+def liftGroup : Group where
+  name := "lift"
+  exercise := "Q4 (lifted description fields)"
+  cases := [
+    { name := "a proof field is lifted invisibly: constructor, pattern, printing", run := fun _ =>
+        okLib (liftPrelude ++ "#eval Pos.val (Pos.mk 3 rfl)\n#check Pos.mk\n#reduce Pos.mk 3 rfl\n#reduce Pos.val (Pos.mk 3 rfl)")
+          ["3", "Pos.mk : (n : Nat) → n = n → Pos", ".mk 3 ()", "3"] },
+    { name := "the fields of Prod.{u,v} and the tag of a polymorphic type are lifted invisibly", run := fun _ =>
+        okLib (liftPrelude ++ "#check Prod2.mk\n#eval Prod2.snd (Prod2.mk 1 Bool.true)\n#reduce Prod2.mk 1 Bool.false\n" ++
+            "#check Prod2.casesOn\n#reduce Prod2.desc Nat Bool")
+          ["Prod2.mk : {A : Type ?u0} → {B : Type ?u1} → A → B → Prod2 A B", ".true", ".mk 1 .false",
+           "Prod2.casesOn : {A : Type ?u0} → {B : Type ?u1} → (0 motive : Prod2 A B → Sort ?u2) → ((a : A) → (b : B) → motive (.mk a b)) → (x : Prod2 A B) → motive x",
+           "Desc.arg ω (ULift Enum [mk]) (fun t => ecase t [Desc.arg ω (ULift Nat) (fun a => Desc.arg ω (ULift Bool) (fun b => Desc.ret ()))])"] },
+    { name := "an infinitary field over a smaller domain, in a type in Type 1 (structural recursion through it)", run := fun _ =>
+        okLib (liftPrelude ++ "#eval depth (T3.node (fun _ => T3.node (fun _ => T3.leaf)))\n" ++
+            "inductive Tr : Type 1 where\n  | leaf\n  | node (T : Type) (f : T → Tr)\n" ++
+            "def Tr.size (t : Tr) : Nat := match t with\n  | .leaf => 0\n  | .node _ _ => 1\n#eval Tr.size (Tr.node Nat (fun _ => Tr.leaf))")
+          ["2", "1"] },
+    { name := "a lifted proof field in a coinductive type", run := fun _ =>
+        okLib ("import Prelude\ncoinductive S where\n  hd : Nat\n  ok : True\n  tl : S\n" ++
+            "def zs : S\n  | .hd => 0\n  | .ok => ()\n  | .tl => zs\n#eval S.hd (S.tl zs)\n#check S.ok") ["0", "S.ok : S → True"] },
+    { name := "lifting is erased: the #ir of a lifted type is the unlifted one's", run := fun _ => do
+        let src := "import Prelude\ninductive Box.{u} (A : Type u) : Type u where\n  | box (a : A)\n" ++
+          "def unbox.{u} {A : Type u} (b : Box A) : A := match b with\n  | .box a => a\n" ++
+          "inductive Box0 (A : Type) : Type where\n  | box (a : A)\n" ++
+          "def unbox0 {A : Type} (b : Box0 A) : A := match b with\n  | .box a => a\n#ir unbox\n#ir unbox0\n" ++
+          "inductive Pos where\n  | mk (n : Nat) (h : n = n)\ninductive Pos0 where\n  | mk (n : Nat)\n" ++
+          "def Pos.val (p : Pos) : Nat := match p with\n  | .mk n _ => n\ndef Pos0.val (p : Pos0) : Nat := match p with\n  | .mk n => n\n" ++
+          "#ir Pos.val\n#ir Pos0.val\n"
+        let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
+        match s.messages.toList.map (·.text) with
+        | [a, b, c, d] =>
+          checkEq (b.replace "unbox0" "unbox") a
+          checkEq (d.replace "Pos0" "Pos") c
+        | ms => throw (IO.userError s!"unexpected messages {ms}") },
+    { name := "the surface Desc.arg takes a field only in exactly its universe", run := fun _ =>
+        failsLib "import Prelude\ndef D : Desc Unit := Desc.arg 1 True (fun _ => Desc.ret ())" "type mismatch" }
+  ]
 
 def phantomGroup : Group where
   name := "phantom"

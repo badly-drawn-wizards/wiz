@@ -81,12 +81,6 @@ and `lake test -- regions`.
    with quantity-0 binders: no annotations needed, but the scope's `B` is solved from
    the body, so errors point into it.
 
-9. **Tuple-pattern variables passed where the argument's type is a metavariable**
-   (regression on `solutions` 5d7c515, found while merging): `match p with | (x, y, _) =>
-   app x (fun x => …)` with `app {S B} (s : S) …` fails with "a variable escapes the
-   scope of the hole being solved" (inferred type `fst✝`). Explicit type arguments work
-   (`@app Nat Nat x …`). Worked around in lowered/07 (`@Uniq.borrow U64 _ ρh m …`).
-
 ## Measurements wanted (not done: no timing claims)
 
 * Allocation/reuse counts (`#run` heap or a future `--stats`) for lowered/04 (expect 0

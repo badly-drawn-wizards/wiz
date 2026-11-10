@@ -139,6 +139,9 @@ partial def term : Term R → Sx
   | .coit l I D S st i s => node "coit" [level l, term I, term D, term S, term st, term i, term s]
   | .natLit n => node "nat" [nat n]
   | .natOp op as => node "natOp" [str op, list (as.toList.map term)]
+  | .ulift l A => node "ulift" [level l, term A]
+  | .up a => node "up" [term a]
+  | .down t => node "down" [term t]
 where
   optLevel : Option Level → Sx
     | none => .a "none"
@@ -237,6 +240,9 @@ partial def dterm : Sx → Option (Term R)
     | "sfix" => return .sfix (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
     | "scase" => return .scase (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
     | "cocon" => return .cocon (← t 1)
+    | "ulift" => return .ulift (← lv 1) (← t 2)
+    | "up" => return .up (← t 1)
+    | "down" => return .down (← t 1)
     | "scofix" => return .scofix (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7) (← t 8)
     | "coit" => return .coit (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7)
     | "nat" => return .natLit (← n 1)
@@ -406,7 +412,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-6-d1"  -- 6: D1, regularity off (after grail's 5)
+def salt : UInt64 := hash "wiz-cache-8-q4-lift"  -- 8: Q4, lifted description fields (after D1's 6)
 
 /-! ## Keys and atomic writes (stage 23c)
 
