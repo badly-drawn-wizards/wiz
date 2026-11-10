@@ -235,9 +235,7 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
     | .ok r => .ok r
     | .error e =>
       if subTy s.globals ctx.types.reverse.toArray inferred expected then .ok ((), s) else
-      -- (P2) with `lazyProofs`, suspended proofs print as `()`: quoting them substitutes,
-      -- which loses sharing (`wiz-notes/p2-proofs.md` §4)
-      let show' (v : VTy R) := (quote { s.globals with quoteErasesProofs := s.globals.lazyProofs } ctx.lvl v).pretty ctx.names
+      let show' (v : VTy R) := (quote s.globals ctx.lvl v).pretty ctx.names
       .error { info := (ctx.withInfo stx).info,
                msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})" }
 
@@ -245,9 +243,7 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
 (or got stuck) on the holes, and stays so after they are solved (`w ?n = 8`). Evaluate it
 again with the solutions (`none` if it mentions no solved hole). -/
 def reevalSolved? (ctx : LocalCtx R) (v : VTy R) : ElabM R (Option (VTy R)) := do
-  -- (P2) with `lazyProofs`, suspended proofs quote as `()` (they are never looked at)
-  let g ← getGlobals
-  let t := quote { g with quoteErasesProofs := g.lazyProofs } ctx.lvl (← forceMeta v)
+  let t := quote (← getGlobals) ctx.lvl (← forceMeta v)
   let ms := t.mvars
   if ms.isEmpty then return none
   let mut anySolved := false

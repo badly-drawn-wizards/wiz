@@ -41,7 +41,7 @@ inductive Head (R : Type) where
   | refl (A a : Val R)
   | reflTy (X : Val R)
   | transp (A a P p b e : Val R)
-  /-- (P2 experiment, `Globals.lazyProofs`) a **suspended proof**: the term `t` in `env`,
+  /-- (P2, `Globals.lazyProofs`) a **suspended proof**: the term `t` in `env`,
   never evaluated by the kernel (`v` computes it, only for the proof-inspecting
   `--regularity refl`). Quoting substitutes `env` into `t` without reducing. `ty` is its
   type, for conversion (which never compares two proofs). -/

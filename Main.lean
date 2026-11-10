@@ -15,7 +15,8 @@ options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
 (default off),
---predicative-prop, --lazy-proofs (P2: never evaluate proofs; wiz-notes/p2-proofs.md)
+--predicative-prop, --eager-proofs (P2: the evaluator runs proofs, as it did before; the
+default never evaluates them)
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --llc X (default llc)"
 
@@ -62,8 +63,8 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
-/-- The P2 experiment's kernel option, `--lazy-proofs`. -/
-initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef false
+/-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
+initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
 
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
@@ -75,7 +76,7 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, lazyProofs } }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && !lazyProofs then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && lazyProofs then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -137,8 +138,8 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
-  lazyProofsOpt.set (args.contains "--lazy-proofs")
-  let args := args.filter (· != "--lazy-proofs")
+  lazyProofsOpt.set (!args.contains "--eager-proofs")
+  let args := args.filter (· != "--eager-proofs")
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1

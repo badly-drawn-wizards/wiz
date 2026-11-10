@@ -68,10 +68,10 @@ def main (args : List String) : IO UInt32 := do
   -- can time out: `Elab.checkDiverges`
   | ["--check", mode, file] => do
     let input ← IO.FS.readFile file
-    -- `MODE+lazy`: also `lazyProofs` (P2)
+    -- `MODE+eager`: without `lazyProofs` (P2: the evaluator runs proofs, as before)
     let (mode, lazyProofs) := match mode.splitOn "+" with
-      | [m, "lazy"] => (m, true)
-      | _ => (mode, false)
+      | [m, "eager"] => (m, false)
+      | _ => (mode, true)
     let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { globals := { regularity := Elab.regularityMode mode, lazyProofs } }
     let errs := s.messages.filter (·.severity == .error)
     for m in errs do IO.eprintln (m.render input)

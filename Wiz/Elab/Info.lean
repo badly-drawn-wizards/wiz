@@ -16,8 +16,6 @@ variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 /-- The goal `ctx ⊢ ty`, quoted and zonked. -/
 def goalView (ctx : LocalCtx R) (ty : VTy R) (userName : Option Name := none) : ElabM R (GoalView R) := do
   let g ← getGlobals
-  -- (P2) with `lazyProofs`, suspended proofs display as `()`
-  let g := { g with quoteErasesProofs := g.lazyProofs }
   let mut hyps : Array (Name × Term R × Option (Term R)) := #[]
   for l in [0:ctx.lvl] do
     let i := ctx.lvl - 1 - l
@@ -28,9 +26,7 @@ def goalView (ctx : LocalCtx R) (ty : VTy R) (userName : Option Name := none) : 
 
 def RawInfo.finish : RawInfo R → ElabM R (Info R)
   | .ident i n isLocal ctx ty => do
-    -- (P2) with `lazyProofs`, suspended proofs display as `()`
-    let g ← getGlobals
-    pure (.ident i n isLocal ctx.names (← zonk ctx.lvl (quote { g with quoteErasesProofs := g.lazyProofs } ctx.lvl ty)))
+    pure (.ident i n isLocal ctx.names (← zonk ctx.lvl (quote (← getGlobals) ctx.lvl ty)))
   | .term i ctx ty hole user => do pure (.term i (← goalView ctx ty user) hole)
   | .tactic i blk before after => do
     let views (gs : Array (LocalCtx R × VTy R)) := gs.mapM fun (c, t) => goalView c t

@@ -921,8 +921,8 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
 side condition of the rules below (as it was of regularity): cheap, and stable under
 substitution, since a substitution instance of equal terms is equal. -/
 partial def sameVal (g : Globals R) (a b : Val R) : Bool :=
-  -- (P2) with `lazyProofs`, modulo the suspended proofs
-  let g := if g.lazyProofs then { g with quoteErasesProofs := true } else g
+  -- (P2) proofs are not evaluated, and not compared: all proofs are equal
+  let g := { g with quoteErasesProofs := true }
   let l := max a.lvlBound b.lvlBound
   quote g l a == quote g l b
 
@@ -1045,6 +1045,13 @@ two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   -- (given) a glued value keeps its name
   | .unfold n us sp _ => quote g l (.neutral (.global n us) sp)
+  -- (P2) a suspended proof, with the eliminations applied to it. The kernel's own
+  -- comparisons (`sameVal`) never evaluate it: every proof reads back as `()`. Readback
+  -- outside the kernel (the elaborator, messages) evaluates it, so that the term read
+  -- back is a normal form, which the kernel can check again (a substituted `(p, q).1`
+  -- has no inferable type).
+  | .neutral (.prf _ _ _ v) sp =>
+    if g.quoteErasesProofs then .tt else quote g l (vElims g v.get sp)
   | .lazyInd lv I D v P m i x sp _ =>
     sp.foldl (fun t e => match e with
       | .app a => .app t (quote g l a)
@@ -1067,14 +1074,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .transp A a P p b e =>
         .transp (quote g l A) (quote g l a) (quote g l P) (quote g l p) (quote g l b) (quote g l e)
       -- (P2) a suspended proof: substitute, don't reduce
-      | .prf _ env t _ => if g.quoteErasesProofs then .tt else
-        -- each entry it mentions quoted once (not once per occurrence)
-        let fv := ((Term.freeVarsAt 0 t).run #[]).2
-        let sub : Std.HashMap Nat (Term R) := fv.foldl (init := {}) fun m i =>
-          if m.contains i then m else match env[i]? with
-            | some v => m.insert i (quote g l v)
-            | none => m
-        t.substFree fun i => (sub[i]?).getD (.var (i + l))
+      | .prf _ _ _ v => quote g l v.get  -- (not reached: the case above)
     sp.foldl (init := hd) fun acc e => match e with
       | .app v => .app acc (quote g l v)
       | .fst => .fst acc
@@ -1131,10 +1131,8 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   --| | v => sorry
   --sol>
 
-end
-
 /-- Apply a whole spine of eliminations to a value (used to unfold solved metas). -/
-def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
+partial def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
   sp.foldl (init := v) fun v e => match e with
     | .app a => vApp g v a
     | .fst => vFst v
@@ -1148,6 +1146,8 @@ def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .down => vDown v
     | .sfix l I D lv P f s i => vSfix g l I D lv P f s i v
     | .scase l I D lv P m s i => vScase g l I D lv P m s i v
+
+end
 
 /-- Normal form of a closed term (every definition unfolded). -/
 def nf (g : Globals R) (t : Term R) : Term R :=

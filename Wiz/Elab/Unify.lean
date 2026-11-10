@@ -164,14 +164,9 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .neutral (.transp A a P q b e) sp => do
     goSp (.transp (← rename m p A) (← rename m p a) (← rename m p P) (← rename m p q)
       (← rename m p b) (← rename m p e)) sp
-  -- (P2) a suspended proof: rename the entries of its environment that it mentions
-  | .neutral (.prf _ env t _) sp => do
-    let fv := ((Term.freeVarsAt 0 t).run #[]).2
-    let mut sub : Std.HashMap Nat (Term R) := {}
-    for i in fv do
-      unless sub.contains i do
-        if let some v := env[i]? then sub := sub.insert i (← rename m p v)
-    goSp (t.substFree fun i => (sub[i]?).getD (.var i)) sp
+  -- (P2) a suspended proof is evaluated for a solution (a normal form, which the kernel
+  -- can check)
+  | .neutral (.prf _ _ _ pv) sp => do rename m p (vElims (← getGlobals) pv.get sp)
   | .neutral (.mvar m') sp =>
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
     else goSp (.mvar m') sp
