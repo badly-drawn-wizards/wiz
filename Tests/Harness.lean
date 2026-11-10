@@ -17,6 +17,11 @@ initialize flagsRef : IO.Ref (List String) ← IO.mkRef []
 
 def toolchain : IO Wiz.Toolchain := toolchainRef.get
 
+/-- The tests' loaders serve the toolchain's `lib/` (and test modules standing in for
+it): their `builtin` registrations are trusted, as `wiz` trusts `lib/`. The main file
+never is. -/
+def libModule (m : String) : Bool := m != ""
+
 structure Case where
   name : String
   run  : Unit → IO Unit  -- a thunk: test bodies must not run at start-up
