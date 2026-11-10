@@ -872,7 +872,7 @@ def backendGroup : Group where
           ["def k x0 @&x1 :=\n  ret x0"] },
     { name := "constant folding and known constructors in the IR (15c)", run := fun _ => do
         let s := runFrontend (R := ZeroOneMany) (foldSrc ++ "#ir known\n#ir isTen\n#ir again\n#run main\n") { loader := ← preludeLoader }
-        match s.messages.toList.map (·.text) with
+        match (s.messages.toList.filter (·.severity == .info)).map (·.text) with
         | [known, isTen, again, run] =>
           -- a match on a constructor built in place: its field, plus one
           check ((known.splitOn "case").length == 1 && (known.splitOn ":= 6\n").length == 2) known
@@ -886,7 +886,7 @@ def backendGroup : Group where
         let src := "import Prelude\npartial def count (n acc : Nat) : Nat := match n with\n  | .zero => acc\n" ++
           "  | .succ m => count m (acc + 1)\n#ir count\n#run count 100000 0\n"
         let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
-        match s.messages.toList.map (·.text) with
+        match (s.messages.toList.filter (·.severity == .info)).map (·.text) with
         | [ir, run] =>
           check ((ir.splitOn "join").length > 1 && (ir.splitOn "jmp").length > 2) ir
           checkEq "100000" run
@@ -2507,7 +2507,12 @@ def selfHostGroup : Group where
           "  | .succ m => count m (acc + 1)\ndef main : IO Unit := IO.println (Nat.toString (count 10000000 0))\n"
         selfhostCompileRun prog "10000000\n" (opt := "-O0") (smallStack := true)
         selfhostCompileRun prog "10000000\n" (flags := #["--rc"]) (opt := "-O0") (smallStack := true)
-        selfhostCompileRun prog "10000000\n" (flags := #["--rc-owned"]) (opt := "-O0") (smallStack := true) },
+        selfhostCompileRun prog "10000000\n" (flags := #["--rc-owned"]) (opt := "-O0") (smallStack := true)
+        -- under reference counting lets are strict: a call under a match on a computed value loops too
+        let nested := "import Prelude\npartial def count (n acc : Nat) : Nat := match n with\n  | .zero => acc\n" ++
+          "  | .succ m => match Nat.beq (Nat.mod m 3) 0 with\n    | .true => count m (acc + 2)\n    | .false => count m acc\n" ++
+          "def main : IO Unit := IO.println (Nat.toString (count 10000000 0))\n"
+        selfhostCompileRun nested "6666668\n" (flags := #["--rc"]) (opt := "-O0") (smallStack := true) },
     { name := "dead lets without effects are not computed (15e)", run := fun _ =>
         selfhostCompileRun ("import Prelude\ndef f (n : Nat) : Nat :=\n  let unused := List.cons n (List.cons 2 .nil);\n" ++
           "  let alsoUnused := List.cons unused .nil;\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" (flags := #["--rc"]) },
