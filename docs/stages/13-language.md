@@ -216,3 +216,28 @@ there and can't be matched or taken apart ("its constructor is private to module
 
 Tests: `language` ("structure patterns …", "anonymous constructors …", "let with a
 structure pattern …"), `parser: terms`.
+
+## 13i: structure update `{ s with f := v }` ✅
+
+```
+def bump (s : Stats) : Stats := { s with hits := Nat.succ s.hits }
+def reset (s : Stats) : Stats := { s with hits := 0, misses := 0 }
+```
+
+`{ s with f₁ := v₁, …, fₖ := vₖ }` is `S.mk` applied to the structure's parameters
+(taken from the type of `s`) and to every field: `vᵢ` for a named field, checked against
+the field's type, and the projection of `s` for the others. `s` is any term; unless it
+is a variable it is bound once (`let s✝ := s`). The type of `s` must be a structure,
+and it is the type of the result; nothing is taken from the expected type. Unknown
+fields ("Stats has no field 'x' (its fields are hits, misses)") and repeated ones are
+errors. With dependent fields, a kept field whose type mentions an updated one must
+still fit: `{ d with n := 3 }` for `structure D where n : Nat; v : Vec Nat n` is "field
+'v' keeps its value, but its type … depends on an updated field"; update both.
+
+The projections make this an unrestricted use of `s`: a structure held at quantity 1
+can't be updated this way (take it apart with the pattern `let` of 13h, once that works
+for linear structures). Like 13h it reads the fields through `structLayout?`, and it is
+refused for a structure that is opaque in the current module.
+
+Syntax: `term.structUpdate`, `"{" term "with" (ident ":=" term),+ "}"`. No new reserved
+word (`with` already is one). Tests: `language` ("structure update …"), `parser: terms`.

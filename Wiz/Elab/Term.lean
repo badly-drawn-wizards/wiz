@@ -1133,6 +1133,72 @@ partial def elabAnon (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
       check ctx (app (.node i "term.dotIdent" #[.atom i ".", .ident i c])) expected
     | ty => throwAt ctx.info s!"an anonymous constructor ⟨…⟩ needs a structure, a pair or a data type with one constructor as its expected type, not {← showVal ctx ty}"
 
+/-- (13i) Structure update `{ s with f₁ := v₁, … }`: `S.mk` with the named fields
+replaced and the others projected from `s` (bound once, unless it is a variable). A
+kept field whose type depends on a replaced one must still have its type. The fields
+are read through `StructLayout`. -/
+partial def elabStructUpdate (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) := do
+  let g ← getGlobals
+  let sStx := stx.getArg 1
+  let (s, sty) ← infer ctx sStx
+  let some (S, us, params) := structHead? g (← forceMeta sty)
+    | throwAt (ctx.withInfo sStx).info s!"structure update needs a value of a structure type, not one of type {← showVal ctx sty}"
+  if let some m := g.privateTo? (S ++ ".mk") then
+    throwAt ctx.info s!"cannot update a value of type {S} here: its constructor is private to module {m}" "private"
+  let some L := structLayout? g S
+    | throwAt ctx.info (s!"cannot update a value of type {S}: {S} is opaque " ++
+        s!"outside module {(g.opaqueTo? S).getD "?"} (it has private constructors or fields)") "private"
+  let some mk := g.find? (S ++ ".mk") | throwAt ctx.info s!"{S}.mk is missing"
+  -- the updates, by field
+  let mut updates : List (Name × Syntax) := []
+  for u in (stx.getArg 3).args do
+    if u matches .atom .. then continue
+    let f := ((u.getArg 0).getId?).getD "_"
+    unless L.fields.contains f do
+      throwAt u.info s!"{S} has no field '{f}' (its fields are {", ".intercalate L.fields})"
+    if updates.any (·.1 == f) then throwAt u.info s!"field '{f}' is updated twice"
+    updates := updates ++ [(f, u.getArg 2)]
+  -- `s` is read once per kept field: bind it, unless it is a variable
+  let w : Term R := .qlit QuantitySyntax.explicitDefault
+  let isVar := s matches .var _
+  let sVal0 ← evalIn ctx s
+  let ctx' := if isVar then ctx else ctx.define "s✝" sty sVal0
+  let sTm : Term R := if isVar then s else .var 0
+  let sVal ← evalIn ctx' sTm
+  let mut tm : Term R := .const (S ++ ".mk") us
+  let mut fty : VTy R := eval g [] (mk.type.instLevels mk.levelParams us)
+  for p in params do
+    let .pi _ _ _ _ cod _ ← force fty | throwAt ctx.info s!"internal error: the type of {S}.mk"
+    tm := .app tm (quote g ctx'.lvl p)
+    fty ← instM cod p
+  -- the components of `s`, with their types
+  let mut compTys : Array (VTy R) := #[]
+  let mut restTy ← force sty
+  let mut restVal := sVal
+  for _ in [0:L.comps.length - 1] do
+    let .sigma _ _ A B _ := restTy | throwAt ctx.info s!"internal error: the layout of {S}"
+    compTys := compTys.push A
+    restTy ← force (← instM B (vFst restVal))
+    restVal := vSnd restVal
+  compTys := compTys.push restTy
+  for f in L.fields, i in [0:L.fields.length] do
+    let .pi _ _ _ dom cod _ ← force fty | throwAt ctx.info s!"internal error: the type of {S}.mk"
+    let a ← match updates.lookup f with
+      | some v => check ctx' v dom
+      | none =>
+        let some k := L.fieldComp? i | throwAt ctx.info s!"internal error: the layout of {S}"
+        let st ← get
+        try unifyAt ctx' stx dom compTys[k]!
+        catch _ =>
+          set st
+          throwAt ctx.info (s!"field '{f}' keeps its value, but its type {← showVal ctx' compTys[k]!} depends on an updated field: " ++
+            s!"it should now have type {← showVal ctx' dom}; update '{f}' too")
+        pure (L.compTerm k sTm)
+    tm := .app tm a
+    fty ← instM cod (← evalIn ctx' a)
+  let t := if isVar then tm else .letE "s✝" w (quote g ctx.lvl sty) s tm
+  pure (t, sty)
+
 /-- `fun` in inference mode: untyped binders get a metavariable as their type. -/
 partial def inferFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     ElabM R (Term R × VTy R) := do
@@ -2170,6 +2236,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.asPat" => throwAt ctx.info "an as-pattern `x@p` is only allowed in a pattern"
   | "term.anon" => throwAt ctx.info "cannot infer the type of an anonymous constructor ⟨…⟩; add a type ascription"
   | "term.letPat" => elabLetPat ctx stx none
+  | "term.structUpdate" => elabStructUpdate ctx stx
   | "term.omega" => return (← elabQtyLit ctx stx "ω", .qty)
   | "term.num" =>
     -- an unannotated numeral is a `builtin nat`

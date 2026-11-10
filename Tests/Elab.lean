@@ -3039,6 +3039,27 @@ def languageGroup : Group where
           "its components are names or `_`"
         failsLib ("import Prelude\ndef f (n : Nat) : Nat :=\n  let 1 ⟨a, b⟩ := n\n  a")
           "expects a structure or a tuple, got Nat" },
+    -- 13i
+    { name := "structure update: named fields replaced, the others projected", run := fun _ =>
+        okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def bump (s : Stats) : Stats := { s with hits := Nat.succ s.hits }\n" ++
+          "#eval (bump (Stats.mk 3 4)).hits\n#eval (bump (Stats.mk 3 4)).misses\n" ++
+          "def both (s : Stats) : Stats := { { s with hits := 0 } with misses := 10, hits := 1 }\n" ++
+          "#eval Nat.add (both (Stats.mk 3 4)).hits (both (Stats.mk 3 4)).misses\n" ++
+          "structure Box (A : Type) where\n  val : A\n  tag : Nat\n" ++
+          "def retag {A : Type} (b : Box A) (n : Nat) : Box A := { b with tag := n }\n#eval (retag (Box.mk Bool.true 1) 9).tag\n" ++
+          "structure D where\n  n : Nat\n  p : n = 0\n" ++
+          "def d2 (d : D) : D := { d with n := 0, p := rfl }\n#eval (d2 (D.mk 0 rfl)).n\n" ++
+          "def t (s : Stats) : (bump s).misses = s.misses := rfl")
+          ["4", "4", "11", "9", "0"] },
+    { name := "structure update: unknown and repeated fields, a non-structure, a kept dependent field", run := fun _ => do
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def f (s : Stats) : Stats := { s with hit := 1 }")
+          "Stats has no field 'hit' (its fields are hits, misses)"
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def f (s : Stats) : Stats := { s with hits := 1, hits := 2 }")
+          "field 'hits' is updated twice"
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := { n with hits := 1 }"
+          "structure update needs a value of a structure type"
+        failsLib ("import Prelude\nstructure D where\n  n : Nat\n  p : n = 0\ndef f (d : D) : D := { d with n := 3 }")
+          "field 'p' keeps its value, but its type" },
     { name := "recursion over a family at a concrete index", run := fun _ =>
         okLib ("import Prelude\ndef len : SyntaxF .false → Nat\n  | .nil => 0\n  | .cons _ xs => Nat.succ (len xs)\n" ++
           "#eval len (.cons .missing (.cons .missing .nil))") ["2"] },

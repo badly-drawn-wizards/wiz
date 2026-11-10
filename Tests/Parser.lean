@@ -117,6 +117,11 @@ def termGroup : Group where
         parses "let ⟨a, b⟩ := s; a" "(term.letPat [] (term.anon [(term.ident a) (term.ident b)]) (term.ident s) [] (term.ident a))"
         parses "let 1 (.mk a b) := s; a" "(term.letPat [(quantity 1)] (term.paren (term.app (term.dotIdent mk) [(term.ident a) (term.ident b)])) (term.ident s) [] (term.ident a))"
         fails "⟨a, b" "'⟩'" },
+    -- 13i
+    { name := "structure update { s with f := v }; {x : A} → B is still a binder", run := fun _ => do
+        parses "{ s with x := 1, y := f a }" "(term.structUpdate (term.ident s) [(structUpdate.field x (term.num 1)) (structUpdate.field y (term.app (term.ident f) [(term.ident a)]))])"
+        parses "{x : A} → x" "(term.depArrow (binder.implicit [] [x] [(term.ident A)]) (term.ident x))"
+        fails "{ s with }" "identifier" },
     { name := "comments are whitespace", run := fun _ =>
         parses "f /- a /- nested -/ -/ b -- c" "(term.app (term.ident f) [(term.ident b)])" },
     { name := "error: missing body", run := fun _ => fails "fun x =>" "term" },

@@ -140,6 +140,7 @@ def anonCtor : ParserDescr := seqs ["⟨", withoutPosition (sepBy term ","), "�
 | `term.asPat` (trailing) | max | x "@" p, without spaces: an as-pattern (13g; patterns only) |
 | `term.anon`          | max  | "⟨" [terms] "⟩": the constructor of the expected structure (13h; also a pattern) |
 | `term.letPat`        | lead | "let" [quantity] (`term.anon` / `term.paren`) ":=" term [";"] term (13h) |
+| `term.structUpdate`  | max  | "{" term "with" [`structUpdate.field`: ident ":=" term],+ "}" (13i) |
 
 The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
 `Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out`, `coit` and `cocon` have no syntax of their
@@ -196,6 +197,10 @@ def termLeading : List LeadingParser := [
     p := withPosition <| seqs ["let", optional quantity,
       orelse (node "term.anon" anonCtor) (node "term.paren" (seqs ["(", withoutPosition term, ")"])),
       ":=", term, optional ";", term] },
+  -- 13i: structure update
+  { kind := "term.structUpdate", prec := maxPrec,
+    p := seqs ["{", withoutPosition (seqs [term, "with",
+      sepBy1 (node "structUpdate.field" (seqs [ident, ":=", term])) ","]), "}"] },
   { kind := "term.szInf", prec := maxPrec, p := "∞" },
   { kind := "term.szSuc", prec := maxPrec, p := seqs ["↑", term maxPrec] },
   { kind := "term.sizeLt", prec := leadPrec, p := seqs ["Size<", term maxPrec] },
