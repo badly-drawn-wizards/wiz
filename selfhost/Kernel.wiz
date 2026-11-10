@@ -2099,7 +2099,11 @@ def headSame : Nat → Head → Head → Option Nat
   | n, .hvar x, .hvar y => match Nat.beq x y with
     | .true => .some n
     | .false => .none
-  | n, .hconst a _ _ _ _, .hconst b _ _ _ _ => match kStrEq a b with
+  -- (the same constant at the same levels: by name alone, `d.{0}` and `d.{1}` were "the
+  -- same", `convSpine`'s shortcut for a stuck `ecase` then identified two cases whose
+  -- environments differed in a level instance, and that proved `False`:
+  -- `wiz-notes/kernel-lint.md`, W1)
+  | n, .hconst a _ ls _ _, .hconst b _ ls' _ _ => match Bool.and (kStrEq a b) (lvlsEq ls ls') with
     | .true => .some n
     | .false => .none
   | n, .haxiom a _, .haxiom b _ => match kStrEq a b with
