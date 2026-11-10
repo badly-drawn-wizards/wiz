@@ -1,0 +1,8 @@
+examples/hdl.wiz:52:1: info: ((7, 7), .cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))), .cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))), .cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))))
+examples/hdl.wiz:54:1: info: ((10, 10), .cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 .nil))))), .cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 .nil))))), .cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 .nil))))))
+examples/hdl.wiz:57:1: info: ((31, 38), .cons 1 (.cons 1 (.cons 2 (.cons 1 (.cons 3 (.cons 3 .nil))))), .cons 1 (.cons 1 (.cons 2 (.cons 1 (.cons 3 (.cons 3 .nil))))), .cons 1 (.cons 1 (.cons 2 (.cons 1 (.cons 3 (.cons 3 .nil))))))
+examples/hdl.wiz:59:1: info: ((15, 17), .cons 1 (.cons 4 (.cons 9 (.cons 15 (.cons 216 (.cons 162 .nil))))), .cons 1 (.cons 4 (.cons 9 (.cons 15 (.cons 216 (.cons 162 .nil))))), .cons 1 (.cons 4 (.cons 9 (.cons 15 (.cons 216 (.cons 162 .nil))))))
+examples/hdl.wiz:63:1: info: (25, 20, 25)
+examples/hdl.wiz:66:1: info: (.cons 8 (.cons 16 (.cons 24 (.cons 32 (.cons 64 (.cons 56 .nil))))), .cons 8 (.cons 16 (.cons 24 (.cons 32 (.cons 64 (.cons 56 .nil))))))
+examples/hdl.wiz:71:1: info: (11, 2047, 2047)
+examples/hdl.wiz:76:1: info: 4
