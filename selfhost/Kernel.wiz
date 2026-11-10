@@ -1256,11 +1256,30 @@ def inertTags (depth : Nat) (E : Val) (lifted : Bool) (k i : Nat) : Bool := matc
 def sameVal (a b : Val) : Bool :=
   let l := Nat.max (lvlBound a) (lvlBound b);
   tmEq (quote l a) (quote l b)
-def spNil : Spine → Bool
-  | .snil => .true
+-- (4g) sizes equal as conversion decides it (`sizeEqTrue` in `Eval.lean`, `sizeEq`
+-- below): any `↑ᵏ ∞` is `∞`, and `↑ᵏ x = ↑ᵐ y` when `k = m` and `x`, `y` are one variable
+def szIsInf (s : Val) : Bool := match whnf s with
+  | .vszInf => .true
+  | .vszSuc t => szIsInf t
   | _ => .false
--- (4g) sizes equal as conversion decides it (`sizeEqTrue` in `Eval.lean`): `sizeEq`
-def sizeEqTrue (s s' : Val) : Bool := sizeEq (whnf s) (whnf s')
+def szVar (s : Val) : Option Nat := match whnf s with
+  | .vszSuc t => szVar t
+  | .vne h sp => match h with
+    | .hvar x => match sp with
+      | .snil => .some x
+      | _ => .none
+    | _ => .none
+  | _ => .none
+def szSucs (s : Val) : Nat := match whnf s with
+  | .vszSuc t => Nat.succ (szSucs t)
+  | _ => 0
+def sizeEqTrue (s s' : Val) : Bool := match Bool.and (szIsInf s) (szIsInf s') with
+  | .true => .true
+  | .false => match szVar s with
+    | .some x => match szVar s' with
+      | .some y => Bool.and (Nat.beq x y) (Nat.beq (szSucs s) (szSucs s'))
+      | .none => .false
+    | .none => .false
 -- (4g) equality of description codes, by the constructors (`vEqDesc` in `Eval.lean`):
 -- `ret j = ret j'` is `j = j'`; `arg S E = arg S' E'` is
 -- `(e : S = S') × ((s : S) → E s = E' (cast e s))`; `rec`, `hrec` likewise with the rests
