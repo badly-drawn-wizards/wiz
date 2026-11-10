@@ -78,6 +78,7 @@ def main (args : List String) : IO UInt32 := do
     pure (if errs.isEmpty then 0 else 1)
   -- a job of a grail build that a test runs (`Grail/Graph.lean`)
   | ["--grail-job", job] => Grail.jobMain tc job
+  | ["--probe-checker"] => do Scaling.probeChecker; pure 0
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
   | ["--list"] => do
