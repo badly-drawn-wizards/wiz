@@ -123,18 +123,29 @@ def pkgFiles : List (String × String) :=
    ("src/Demo/Three.wiz", "import Prelude\ndef three : Nat := 3\n"),
    ("app.wiz", "import Demo.Two\n#eval two + two\n")]
 
-/-- Run grail's build in-process on a package directory. -/
-def build (dir : System.FilePath) (tc : Toolchain) (only : List String := []) : IO (Grail.Stats × Bool) := do
-  let std : System.FilePath := "lib"
-  match ← Grail.readConfig tc 7 std dir with
+/-- A runner for a package directory; its jobs run as `<this test driver> --grail-job …`,
+and its report goes to `log`. -/
+def runner (dir : System.FilePath) (tc : Toolchain) (pkg : Grail.Package) (jobs : Nat := 1)
+    (log : IO.Ref String) : IO Grail.Runner := do
+  pure { ctx := { dir, std := "lib", tc, binId := 7, libRoots := Grail.libRootsOf dir pkg.targets },
+         stats := ← IO.mkRef {}, memo := ← IO.mkRef {}, jobs, self := ← IO.appPath,
+         out := fun s => log.modify (· ++ s), err := fun s => log.modify (· ++ s) }
+
+/-- Run grail's build on a package directory; also returns the report. -/
+def buildLog (dir : System.FilePath) (tc : Toolchain) (only : List String := []) (jobs : Nat := 1)
+    (timeoutMs : Option Nat := none) : IO (Grail.Stats × Bool × String) := do
+  match ← Grail.readConfig tc 7 "lib" dir with
   | .error e => throw (IO.userError e)
   | .ok (pkg, _) =>
-    let r : Grail.Runner := { ctx := { dir, std, tc, binId := 7, libRoots := Grail.libRootsOf dir pkg.targets }, stats := ← IO.mkRef {}, memo := ← IO.mkRef {},
-                              log := fun _ => pure () }
-    let mut ok := true
-    for t in pkg.targets do
-      if only.isEmpty || only.contains t.name then ok := (← r.target t) && ok
-    pure (← r.stats.get, ok)
+    let log ← IO.mkRef ""
+    let r ← runner dir tc pkg jobs log
+    let r := { r with timeoutMs := timeoutMs.getD r.timeoutMs }
+    let ok ← r.build pkg.targets (pkg.targets.filter fun t => only.isEmpty || only.contains t.name)
+    pure (← r.stats.get, ok, ← log.get)
+
+def build (dir : System.FilePath) (tc : Toolchain) (only : List String := []) (jobs : Nat := 1) : IO (Grail.Stats × Bool) := do
+  let (s, ok, _) ← buildLog dir tc only jobs
+  pure (s, ok)
 
 /-- Every `.lean` file under a directory. -/
 partial def leanFiles (dir : System.FilePath) : IO (Array System.FilePath) := do
@@ -148,8 +159,8 @@ def toolchainGroup : Group where
   name := "toolchain"
   exercise := "Stage 23a"
   cases := [
-    { name := "wiz and grail read no environment variables", run := fun _ => do
-        let files := (← leanFiles "Wiz") ++ (← leanFiles "Grail") ++ #[System.FilePath.mk "Main.lean"]
+    { name := "wiz, grail and the test driver read no environment variables", run := fun _ => do
+        let files := (← leanFiles "Wiz") ++ (← leanFiles "Grail") ++ #[System.FilePath.mk "Main.lean", "Tests/Main.lean"]
         for f in files do
           let text ← IO.FS.readFile f
           check ((text.splitOn "getEnv \"WIZ").length == 1) s!"{f} reads a WIZ_ variable" },
@@ -241,14 +252,74 @@ def grailGroup : Group where
         checkEq 2 s.upToDate }
   ]
 
+/-- A diamond: `B` and `C` import `A`, `D` imports both, and `app.wiz` imports `D`. -/
+def diamondFiles : List (String × String) :=
+  [("grail.wiz", "import Grail\ndef package : Package := Package.new \"diamond\"\n  |> Package.lib \"lib\" \"src\"\n  |> Package.check \"app\" \"app.wiz\"\n"),
+   ("src/A.wiz", "import Prelude\ndef a : Nat := 1\n"),
+   ("src/B.wiz", "import A\ndef b : Nat := a + 1\n"),
+   ("src/C.wiz", "import A\ndef c : Nat := a + 2\n"),
+   ("src/D.wiz", "import B\nimport C\ndef d : Nat := b + c\n"),
+   ("app.wiz", "import D\n#eval d\n")]
+
+/-- The names in a package's `.grail/build`, sorted. -/
+def buildDirs (dir : System.FilePath) : IO (List String) := do
+  let entries ← (dir / ".grail" / "build").readDir
+  pure (entries.map (·.fileName)).toList.mergeSort
+
+def grailJobsGroup : Group where
+  name := "grail-jobs"
+  exercise := "Stage 23g"
+  cases := [
+    { name := "a diamond builds with -j 4 as with -j 1, and again runs nothing", run := fun _ => do
+        let cache ← IO.FS.createTempDir
+        let tc : Toolchain := { cacheDir := some cache }
+        let d1 ← mkTree diamondFiles
+        let (s1, ok1, log1) ← buildLog d1 tc (jobs := 1)
+        check ok1 s!"-j 1 failed:\n{log1}"
+        let d4 ← mkTree diamondFiles
+        let (s4, ok4, log4) ← buildLog d4 tc (jobs := 4)
+        check ok4 s!"-j 4 failed:\n{log4}"
+        checkEq 5 s1.ran
+        checkEq 5 s4.ran
+        -- the same report, in the graph's order, and the same outputs
+        checkEq log1 log4
+        checkEq "[check src/A.wiz]\n[check src/B.wiz]\n[check src/C.wiz]\n[check src/D.wiz]\n[check app.wiz]\napp.wiz:2:1: info: 5\n" log4
+        checkEq (← buildDirs d1) (← buildDirs d4)
+        let (s, ok, _) ← buildLog d4 tc (jobs := 4)
+        check ok "the second build failed"
+        checkEq 0 s.ran
+        checkEq 5 s.upToDate },
+    { name := "a failed job stops what depends on it, only", run := fun _ => do
+        let dir ← mkTree (diamondFiles.map fun (p, t) => if p == "src/B.wiz" then (p, "import A\ndef b : Nat := Nat.zero Nat.zero\n") else (p, t))
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        let (s, ok, log) ← buildLog dir tc (jobs := 4)
+        check (!ok) "the build succeeded"
+        -- A and C ran; B failed; D and app were skipped
+        checkEq 2 s.ran
+        checkEq 1 s.failed
+        checkEq 2 s.skipped
+        check ((log.splitOn "✗ check src/B.wiz\n  src/B.wiz:2:").length == 2) log
+        check ((log.splitOn "- check src/D.wiz: skipped (check src/B.wiz failed)").length == 2) log
+        check ((log.splitOn "- check app.wiz: skipped (check src/B.wiz failed)").length == 2) log
+        -- nothing half-written is left
+        let tmp := dir / ".grail" / "tmp"
+        if ← tmp.pathExists then checkEq 0 (← tmp.readDir).size },
+    { name := "a job has a time limit", run := fun _ => do
+        let dir ← mkTree diamondFiles
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        let (s, ok, log) ← buildLog dir tc (jobs := 2) (timeoutMs := some 1)
+        check (!ok) "the build succeeded"
+        checkEq 0 s.ran
+        check ((log.splitOn "timed out after 0.001 s").length > 1) log }
+  ]
+
 /-- Run `grail test` in-process on a package directory. -/
 def runTests (dir : System.FilePath) (tc : Toolchain) (update : Bool := false) : IO (Array Grail.TestResult × Grail.Stats) := do
   let std : System.FilePath := "lib"
   match ← Grail.readConfig tc 7 std dir with
   | .error e => throw (IO.userError e)
   | .ok (pkg, _) =>
-    let r : Grail.Runner := { ctx := { dir, std, tc, binId := 7, libRoots := Grail.libRootsOf dir pkg.targets },
-                              stats := ← IO.mkRef {}, memo := ← IO.mkRef {}, log := fun _ => pure () }
+    let r ← runner dir tc pkg 2 (← IO.mkRef "")
     let res ← r.tests pkg.targets [] update
     pure (res, ← r.stats.get)
 
@@ -305,14 +376,12 @@ def grailSelfhostGroup : Group where
     { name := "grail builds the self-hosted checker, the same program as the tests'", run := fun _ => do
         let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
         let dir ← IO.FS.realPath "."
-        let stats ← IO.mkRef {}
-        let r : Grail.Runner := { ctx := { dir, std := "lib", tc, binId := 7 }, stats, memo := ← IO.mkRef {},
-                                  log := fun _ => pure () }
-        match ← r.selfhost "selfhost-checker" "checker" with
-        | .error e =>
-          if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"; return
-          throw (IO.userError e)
-        | .ok () => pure ()
+        let log ← IO.mkRef ""
+        let target := Grail.Target.selfhost "selfhost-checker" "checker"
+        let r ← runner dir tc { name := "wiz", targets := [target], settings := [] } 4 log
+        if !(← r.build [target] [target]) then
+          if ((← log.get).splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"; return
+          throw (IO.userError (← log.get))
         let mine := dir / ".grail" / "bin" / "selfhost-checker"
         let .ok theirs ← Tests.Elab.selfhostChecker | throw (IO.userError "the tests' checker failed")
         let work ← IO.FS.createTempDir
@@ -323,7 +392,7 @@ def grailSelfhostGroup : Group where
         check (!a.stdout.isEmpty) "no output"
         -- again: nothing runs
         let r : Grail.Runner := { r with stats := ← IO.mkRef ({} : Grail.Stats), memo := ← IO.mkRef ({} : Grail.Memo) }
-        let .ok () ← r.selfhost "selfhost-checker" "checker" | throw (IO.userError "the second build failed")
+        check (← r.build [target] [target]) "the second build failed"
         checkEq 0 (← r.stats.get).ran }
   ]
 
