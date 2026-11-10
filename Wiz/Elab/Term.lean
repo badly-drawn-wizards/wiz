@@ -1136,13 +1136,16 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   let (f, fty) ← infer ctx (stx.getArg 0)
   let mut f := f
   let mut fty := fty
-  let mut pending : Array (Syntax × Term R × VTy R) := #[]
+  let mut pending : Array (Syntax × Term R × VTy R × Bool) := #[]
   for arg in (stx.getArg 1).args do
     (f, fty) ← insertImplicits ctx f fty
     match ← force fty with
     | .pi _ _ _ dom cod _ =>
       let m ← freshPlaceholder (ctx.withInfo arg)
-      pending := pending.push (arg, m, dom)
+      -- (does the rest of the type mention the argument? If not, the placeholder occurs
+      -- only in `f`, which `respine` rebuilds: it needn't be solved)
+      let used := match cod with | .mk _ body => body.hasVar 0
+      pending := pending.push (arg, m, dom, used)
       f := .app f m
       fty ← instM cod (← evalIn ctx m)
     | _ => return ← (do let (t, ty) ← inferApp ctx stx (postpone := false); unifyAt ctx stx expected ty; pure t)
@@ -1151,14 +1154,17 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   let mut args : Array (Term R × Term R) := #[]
   -- a lambda with unannotated binders whose domains aren't known yet waits for the other
   -- arguments, which may fix them (`zipWith3 (fun b x y => if b then x else y) c t e`)
-  let mut postponed : Array (Syntax × Term R × VTy R) := #[]
+  let mut postponed : Array (Syntax × Term R × VTy R × Bool) := #[]
   for pass in [0:2] do
-    for (arg, m, dom) in (if pass == 0 then pending else postponed) do
+    for (arg, m, dom, used) in (if pass == 0 then pending else postponed) do
       if pass == 0 && postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg)) then
-        postponed := postponed.push (arg, m, dom)
+        postponed := postponed.push (arg, m, dom, used)
         continue
       let a ← check ctx arg dom
       args := args.push (m, a)
+      -- solving the placeholder evaluates the argument: along a nested spine
+      -- (`List.cons x (List.cons y …)`) that would be quadratic, and nothing needs it
+      unless used do continue
       -- solve the placeholder with `fun Γ => a` directly when we can: unification would
       -- quote `a`'s value, which can be expensive (normalising under binders)
       let unsolved ← match (Term.spine m).1 with
@@ -1243,7 +1249,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
           pure m
         else check ctx arg dom
       f := .app f a
-      fty ← instM cod (← evalIn ctx a)
+      fty ← instArgM ctx cod a
     | _ => throwAt {} "unreachable"
   -- trailing instance arguments are inserted (`bitWidth A : Nat` for
   -- `bitWidth (0 A : Type) [BitPack A] : Nat`), as are implicits before them
