@@ -62,6 +62,8 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q  (or Γ is erased)
     ──────────────────────────────── fst       (an erased field can't be projected at runtime)
     Γ ⊢ t.1 ⇒ A ⊣ U
+    (`t.1` drops `t.2`: if `B` holds a field that must be used (`mustUse`), `t.1 ⊣ ω·U`,
+    so only an unrestricted pair may drop it)
 
     Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 0 q  (or Γ is erased)
     ──────────────────────────────── snd       (`t.2` drops the first field: it must allow that)
@@ -275,6 +277,19 @@ def methodUsage (ctx : Ctx R) (u : Usage R) : TCM (Usage R) :=
     | some (p, x) => throw (.other s!"a method may run any number of times, so it can't use {x} ({p} times): the rig has no unrestricted quantity")
     | none => pure u
 
+/-- (Q1) Must a value `v` of type `A` be used, i.e. is `A` a `Σ` with a field whose
+quantity doesn't allow zero uses (`¬ le 0 q`), here or in its second part? `t.1` discards
+`t.2`, so it may do that only when this is false (or the pair is unrestricted). The second
+part of a `Σ` has no quantity of its own: a bare `A × World` counts as droppable; a
+resource is "linear" here when it sits in a field declared linear. -/
+partial def mustUse (ctx : Ctx R) (A : Val R) (v : Val R) : Bool :=
+  match whnf A with
+  | .sigma _ q _ B _ =>
+    match q.toPoly? with
+    | some p => !QPoly.le (QPoly.const 0) p || mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v)
+    | none => true
+  | _ => false
+
 /-- (D1 experiment) Is this type a universe, or a function type ending in one? A `Π`
 into `Prop` over such a domain is impredicative. -/
 partial def largeDomain (ctx : Ctx R) (A : Val R) (l : Nat) : Bool :=
@@ -461,11 +476,17 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .fst t => do
     let (ty, u) ← infer ctx t
     match whnf ty with
-    | .sigma x q A _ _ =>
+    | .sigma x q A B _ =>
       let q ← qtyPoly ctx q
       unless ctx.erased || QPoly.le (QPoly.const 1) q do
         throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
-      pure (A, u)
+      -- `t.1` discards the second part (Q1): if that holds a field that must be used,
+      -- only an unrestricted pair may drop it, so `t` counts as used ω times
+      let v := ctx.eval t
+      if ctx.erased || !mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v) then pure (A, u) else
+      match QRig.many? (R := R) with
+      | some m => pure (A, QPoly.const m • u)
+      | none => throw (.other s!"cannot discard the second part of {ctx.showTerm t}, which holds a linear field; use let (x, y) := ... instead")
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .snd t => do
     let (ty, u) ← infer ctx t
