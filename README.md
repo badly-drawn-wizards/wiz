@@ -33,10 +33,9 @@ def id {0 A : Type} (1 x : A) : A := x
 
 Run Wiz without a checkout, with the binaries from the public Cachix cache:
 
-<!-- TODO: drop `/solutions` from the URL when solutions becomes the default branch (master). -->
 ```sh
 cachix use badlydrawnwizards
-nix run github:badly-drawn-wizards/wiz/solutions#wiz -- check hello.wiz   # `#grail` for grail
+nix run github:badly-drawn-wizards/wiz#wiz -- check hello.wiz   # `#grail` for grail
 ```
 
 Or install toolchains with **tower** (like elan/rustup: `wiz` and `grail` shims on
@@ -66,6 +65,7 @@ See [docs/building.md](docs/building.md) for the details, CI and caches.
   soundness issues. Nothing about Wiz as a whole is proved yet.
 * [ROADMAP.md](ROADMAP.md): the plan and the design decisions behind it.
 
-**Exercises.** Exercises are marked blocks in the solution tree;
-`scripts/mkexercises.py` generates the exercise tree, with `sorry` stubs, from it (see
-[docs/exercises.md](docs/exercises.md)).
+**Exercises.** This repository is the solution tree; exercises are marked blocks in it.
+`scripts/mkexercises.py . ../wiz-exercises` generates the exercise tree, with `sorry`
+stubs, from a checkout (see [docs/exercises.md](docs/exercises.md)). There is no exercise
+branch any more; the old one is archived as `exercises-archive`.

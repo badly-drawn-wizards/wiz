@@ -1,7 +1,7 @@
 # Wiz documentation
 
 * [building.md](building.md)
-* [exercises.md](exercises.md)
+* [exercises.md](exercises.md): generating the exercise tree from this one
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
 * [ROADMAP.md](../ROADMAP.md)
