@@ -2054,6 +2054,21 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     unifyGoal gl (.lam x m)
     let (st, id) := addGoal st { ctx := ctx', ty := ← instM cod (Val.var lvl), tm := m }
     return ← runTac code info st (apply code (fld 2) (.nat id))
+  if tag == TacTag.introFresh then
+    let .pi bx _ _ dom cod _ ← force gl.ty | throwAt info "intro: the goal is not a function type"
+    let x := introName gl.ctx.names (← str (fld 1)) bx (isProp g gl.ctx.types.reverse.toArray dom)
+      (decodeBool (fld 2) == some true)
+    let ctx' := gl.ctx.bind x dom
+    let m ← freshMeta ctx' "goal"
+    unifyGoal gl (.lam x m)
+    let (st, id) := addGoal st { ctx := ctx', ty := ← instM cod (Val.var lvl), tm := m }
+    return ← runTac code info st (apply code (fld 3) (encodePair (encodeString x) (.nat id)))
+  if tag == TacTag.rename then
+    let i ← num (fld 1)
+    unless i < lvl do throwAt info "rename: no such hypothesis"
+    -- names are not part of terms: the same hole, in a context that differs in a name
+    let (st, id) := addGoal st { gl with ctx := { gl.ctx with names := gl.ctx.names.set i (← str (fld 2)) } }
+    return ← runTac code info st (apply code (fld 3) (.nat id))
   if tag == TacTag.exact then
     let stx ← stxOf (fld 1)
     let t ← check (gl.ctx.withInfo stx) stx gl.ty

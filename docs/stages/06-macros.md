@@ -156,3 +156,37 @@ def k : Nat → Bool → Nat := by
   traces (`withTraces`). A macro's traces come back with its result (`runMacroTac`
   returns them also when the macro fails).
 
+## 6e: names for introduced variables ✅
+
+A tactic that introduces variables must call them something. Coq's answer (generated
+`H0`, `x1` that proofs then mention) makes proofs break under unrelated edits; Lean's is
+hygiene: a name nobody chose is *inaccessible* (`n✝`), and a proof that wants to use
+it says so (`rename_i`, `intro n`). Wiz follows Lean, with predictable base names.
+
+```
+def k : (n : Nat) → (b : Bool) → Nat → Nat := by
+  intros                 -- n✝ : Nat, b✝ : Bool, x✝ : Nat
+  rename_i c, m          -- names the last inaccessible hypotheses: b✝ ↦ c, x✝ ↦ m
+  exact m
+```
+
+* **From the binder.** `TacticM.introFresh g hint : TacticM (String × Nat)` introduces
+  under `hint`, or (if `hint` is `""`) the binder's name, or `h` for a proof and `x`
+  otherwise when the binder has none. A name already in the context gets the first free
+  numeric suffix (`n`, `n1`, `n2`, …): nothing is shadowed. The request **returns the
+  name** with the new goal, so a tactic can report or reuse what it introduced.
+  `TacticM.intro g x` is unchanged (it takes the name as given, shadowing).
+* **Inaccessible.** `TacticM.introInaccessible g hint` marks the name with `✝` (`n✝`,
+  then `n✝1`, …). `✝` is not an identifier character, so the name can be read in a goal
+  but not written. `intros` introduces every binder of the goal this way (it does not
+  unfold definitions to find more; `TacticM.intros g` returns the names), and
+  `rename_i a, b` (`TacticM.rename g i x`: hypothesis `i` renamed, a new goal with the
+  same hole, since names are not part of terms) gives the most recent ones real names.
+* **Binder names survive unification.** A hole solved under a binder used to be
+  abstracted over a generated name: `?J x7 := …` became `fun x7 => …`, and a tactic
+  that introduced `J`'s variable called it `x7`. The unifier now remembers the names of
+  the binders it goes under (`ElabState.binderNames`, by level; `fun n => …` against a
+  hole, or two `Π`s) and `solve` uses them: `ap0 g0` elaborates to
+  `ap0 (fun k => List Nat) g0`, not `ap0 (fun x0 => List Nat) g0`. Names are not part of
+  conversion, so nothing else changes.
+

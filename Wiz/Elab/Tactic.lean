@@ -61,6 +61,8 @@ def getType := 22
 -- the tactic framework's requests (a block of their own in the prelude's `Tac`)
 def ppGoal := 23
 def ppExpr := 24
+def introFresh := 25
+def rename := 26
 end TacTag
 
 structure Goal (R : Type) where
@@ -163,6 +165,34 @@ partial def reify (handles : Array (Term R × Nat)) (v : RVal) (depth : Nat) : E
   --|ex
   --| sorry
   --sol>
+
+/-! ## Names for introduced variables
+
+A tactic that introduces a variable without being given a name takes the binder's
+(`intro` on `(n : Nat) → …` gives `n`). The name is then made **fresh**: either
+accessible, with the first free numeric suffix (`n`, `n1`, `n2`, …), or
+**inaccessible**, marked with `✝` (`n✝`, `n✝1`, …), which is not an identifier
+character: the user cannot refer to it by accident, and a proof cannot come to depend
+on a generated name. `rename_i` gives inaccessible names a real one. -/
+
+/-- The mark of an inaccessible name. -/
+def inaccessibleMark : String := "✝"
+
+def Name.isInaccessible (x : Name) : Bool := (x.splitOn inaccessibleMark).length > 1
+
+/-- The name for a variable introduced from a binder `binder`, given the names in scope:
+`hint` if it is not empty, else the binder's name, else `h` for a proof and `x` for
+anything else; then made fresh (see above). -/
+def introName (taken : List Name) (hint binder : Name) (isProof inaccessible : Bool) : Name :=
+  let binder := (binder.splitOn inaccessibleMark).headD ""
+  let base := if !hint.isEmpty then hint
+    else if !binder.isEmpty && binder != "_" then binder
+    else if isProof then "h" else "x"
+  let base := if inaccessible then base ++ inaccessibleMark else base
+  if !taken.contains base then base else
+  match (List.range (taken.length + 1)).find? fun i => !taken.contains s!"{base}{i + 1}" with
+  | some i => s!"{base}{i + 1}"
+  | none => base
 
 /-! ## Goals -/
 

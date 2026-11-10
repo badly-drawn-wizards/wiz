@@ -164,6 +164,10 @@ structure ElabState (R : Type) where
   termInfo : Bool := false
   /-- instance problems not solved yet: the hole, in its context, and its class type -/
   pendingInsts : Array (LocalCtx R × Term R × VTy R) := #[]
+  /-- the names of the binders unification is under, by level (innermost first): a
+  solution `?m x := t` found under a binder `n` is `fun n => t`, not `fun x7 => t`, so a
+  goal a tactic makes from it shows (and `intro` takes) the name the user wrote -/
+  binderNames : List (Lvl × Name) := []
   /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
   kernelInfer : Ctx R → Term R → Except String (VTy R) := fun _ _ => .error "no kernel here"
 

@@ -884,6 +884,30 @@ def tacticGroup : Group where
           "syntax (name := tw) \"tw!\" term : term\ndef twMacro : Macro := fun stx => do\n  u ← TacticM.trace \"expanding\";\n  MacroM.pure (Syntax.getArg stx 1)\n" ++
           "attribute [macro term.tw] twMacro\ndef z : Nat := tw! 3\n#check (by trace \"checking\"; exact 1 : Nat)")
           ["goal: n : Nat\n⊢ Nat / Nat", "expanding", "checking", "1 : Nat"] },
+    -- names (docs/stages/06-macros.md, 6e)
+    { name := "intros takes the binders' names, inaccessible; rename_i names them", run := fun _ => do
+        okLib ("import Prelude\ndef k : (n : Nat) → (b : Bool) → Nat → Nat := by\n  intros\n  trace_state\n  rename_i c, m\n  trace_state\n  exact m")
+          ["n✝ : Nat\nb✝ : Bool\nx✝ : Nat\n⊢ Nat", "n✝ : Nat\nc : Bool\nm : Nat\n⊢ Nat"]
+        okLib "import Prelude\ndef k : (n : Nat) → (n : Nat) → Nat := by\n  intros\n  trace_state\n  rename_i a\n  exact a"
+          ["n✝ : Nat\nn✝1 : Nat\n⊢ Nat"]
+        failsLib "import Prelude\ndef k : Nat → Nat := by\n  intros\n  rename_i a, b\n  exact a" "rename_i: more names than inaccessible hypotheses" },
+    { name := "an inaccessible name cannot be written", run := fun _ => do
+        let ms ← msgsLib "import Prelude\ndef bad : (n : Nat) → Nat := by\n  intros\n  exact n"
+        checkEq ["error: unknown identifier 'n'"] ms },
+    { name := "TacticM.introFresh: the binder's name, made fresh, and returned", run := fun _ =>
+        okLib ("import Prelude\nsyntax (name := in3) \"in3\" : tactic\n" ++
+          "def in3Tac : Tactic := fun _ => do\n  g ← TacticM.mainGoal;\n  p ← TacticM.introFresh g \"\";\n  q ← TacticM.introFresh p.2 \"\";\n  r ← TacticM.introFresh q.2 \"\";\n  s ← TacticM.introFresh r.2 \"n\";\n" ++
+          "  u ← TacticM.trace (String.append p.1 (String.append \" \" (String.append q.1 (String.append \" \" (String.append r.1 (String.append \" \" s.1))))));\n" ++
+          "  TacticM.replaceMainGoal (.cons s.2 .nil)\nattribute [tactic tactic.in3] in3Tac\n" ++
+          "def k : (n : Nat) → (n : Nat) → (1 = 1) → Bool → Nat := by\n  in3\n  trace_state\n  exact n1")
+          ["n n1 h n2", "n : Nat\nn1 : Nat\nh : True\nn2 : Bool\n⊢ Nat"] },
+    { name := "a hole solved under a binder keeps the binder's name (not x0)", run := fun _ =>
+        okLib ("import Prelude\ndef ap0 {B : Nat → Type} (f : (k : Nat) → B k) : B 0 := f 0\ndef g0 (n : Nat) : List Nat := .nil\n#check ap0 g0\n" ++
+          "def Ex {A : Type} (P : A → Prop) : Prop := (R : Prop) → ((a : A) → P a → R) → R\n" ++
+          "def Ex.elim {A : Type} {P : A → Prop} (R : Prop) (e : Ex P) (k : (a : A) → P a → R) : R := e R k\n" ++
+          "def t (e : Ex (fun (n : Nat) => n = 0)) : Ex (fun (m : Nat) => m = 0) := by\n  apply Ex.elim _ e\n  intros\n  trace_state\n" ++
+          "  rename_i w, h\n  exact (fun R k => k w h)")
+          ["ap0 (fun k => List Nat) g0 : List Nat", "e : Ex Nat (fun n => n = 0)\na✝ : Nat\nh✝ : a✝ = 0\n⊢ Ex Nat (fun m => m = 0)"] },
     { name := "traces reach the language server (a diagnostic) and the infoview (wiz/plainGoal)", run := fun _ => do
         let src := "import Prelude\ndef k : Nat → Nat := by\n  intro n\n  trace_state\n  exact n\n"
         let (srv, out) ← tacticLsp src

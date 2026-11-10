@@ -256,6 +256,9 @@ inductive Tac where
   -- don't change
   | ppGoal (g : Nat) (k : String → Tac)
   | ppExpr (g : Nat) (e : Expr) (k : String → Tac)
+  -- names: introduce with a fresh name (the name and the new goal); rename hypothesis `i`
+  | introFresh (g : Nat) (hint : String) (inaccessible : Bool) (k : String × Nat → Tac)
+  | rename (g : Nat) (i : Nat) (x : String) (k : Nat → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -286,6 +289,17 @@ def TacticM.evalTactic (stx : Syntax) : TacticM Unit := fun k => Tac.evalTactic 
 -- `g`'s context: for `trace` and for error messages
 def TacticM.ppGoal (g : Nat) : TacticM String := fun k => Tac.ppGoal g k
 def TacticM.ppExpr (g : Nat) (e : Expr) : TacticM String := fun k => Tac.ppExpr g e k
+-- Introduce a variable under a fresh name, and return the name with the new goal. The
+-- name is `hint`, or (if `hint` is "") the binder's, or `h` (a proof) or `x`; if it is
+-- taken it gets the first free numeric suffix (`n`, `n1`, `n2`, …).
+def TacticM.introFresh (g : Nat) (hint : String) : TacticM (String × Nat) :=
+  fun k => Tac.introFresh g hint .false k
+-- … under an inaccessible name (`n✝`): the user cannot write it, so no proof depends on
+-- it; `rename_i` (or `TacticM.rename`) names it.
+def TacticM.introInaccessible (g : Nat) (hint : String) : TacticM (String × Nat) :=
+  fun k => Tac.introFresh g hint .true k
+-- goal `g` with its hypothesis `i` (the variable `Expr.var i`) renamed: a new goal
+def TacticM.rename (g : Nat) (i : Nat) (x : String) : TacticM Nat := fun k => Tac.rename g i x k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
@@ -544,3 +558,66 @@ def Tactic.traceState : Tactic := fun _ => do
   s ← TacticM.ppGoals gs;
   TacticM.trace s
 attribute [tactic tactic.traceState] Tactic.traceState
+
+-- ## Names (stage 6e)
+--
+-- `intros` takes the binders' names, as inaccessible names (`n✝`);
+-- `rename_i a, b` names the last inaccessible hypotheses (`b` the most recent).
+-- introduce while the goal is (syntactically) a function type; the names, in order
+def TacticM.introsLoop : Nat → Nat → TacticM (List String × Nat)
+  | .zero, g => TacticM.pure (.nil, g)
+  | .succ fuel, g => do
+    ty ← TacticM.goalType g;
+    match ty with
+    | .pi _ _ _ _ _ => do
+      p ← TacticM.introInaccessible g "";
+      r ← TacticM.introsLoop fuel p.2;
+      TacticM.pure (.cons p.1 r.1, r.2)
+    | _ => TacticM.pure (.nil, g)
+def TacticM.intros (g : Nat) : TacticM (List String × Nat) := TacticM.introsLoop 4096 g
+syntax (name := intros) "intros" : tactic
+def Tactic.intros : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  r ← TacticM.intros g;
+  TacticM.replaceMainGoal (.cons r.2 .nil)
+attribute [tactic tactic.intros] Tactic.intros
+
+-- does a name carry the inaccessible mark `✝` (code point 10013)?
+def List.hasDagger : List Char → Bool
+  | .nil => .false
+  | .cons c cs => match Nat.beq (Char.code c) 10013 with
+    | .true => .true
+    | .false => List.hasDagger cs
+def String.isInaccessible : String → Bool
+  | .mk cs => List.hasDagger cs
+
+-- the indices of the inaccessible hypotheses, innermost first
+def TacticM.inaccessibleFrom : Nat → List (String × Expr) → List Nat
+  | _, .nil => .nil
+  | i, .cons h hs => match String.isInaccessible h.1 with
+    | .true => .cons i (TacticM.inaccessibleFrom (Nat.succ i) hs)
+    | .false => TacticM.inaccessibleFrom (Nat.succ i) hs
+def List.revOnto {A : Type} : List A → List A → List A
+  | .nil, acc => acc
+  | .cons x xs, acc => List.revOnto xs (.cons x acc)
+-- `names` are given innermost first, like the indices
+def TacticM.renameAll : Nat → List Nat → List String → TacticM Nat
+  | g, _, .nil => TacticM.pure g
+  | _, .nil, .cons _ _ => TacticM.fail "rename_i: more names than inaccessible hypotheses"
+  | g, .cons i ixs, .cons x xs => do
+    g' ← TacticM.rename g i x;
+    TacticM.renameAll g' ixs xs
+def Syntax.identNames {b : Bool} : SyntaxF b → List String
+  | .cons (.ident x) rest => .cons x (Syntax.identNames rest)
+  | .cons _ rest => Syntax.identNames rest
+  | _ => .nil
+def Syntax.sepIdents (stx : Syntax) : List String := match stx with
+  | .node _ xs => Syntax.identNames xs
+  | _ => .nil
+syntax (name := renameI) "rename_i" sepBy1(ident, ",") : tactic
+def Tactic.renameI : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  hyps ← TacticM.goalHyps g;
+  g' ← TacticM.renameAll g (TacticM.inaccessibleFrom 0 hyps) (List.revOnto (Syntax.sepIdents (Syntax.getArg stx 1)) .nil);
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.renameI] Tactic.renameI
