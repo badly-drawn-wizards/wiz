@@ -1,4 +1,5 @@
 import Wiz.Compiler.IR
+import Wiz.Compiler.Simp
 import Wiz.Compiler.PrimCode
 import Wiz.Compiler.Run
 
@@ -285,6 +286,7 @@ def lowerProgram (code : Code) (main : ETerm) (extra : Array (Name × ETerm) := 
     let env := params.toList.reverse.map Binding.var
     let (b, (_, _, lifted)) ← (lower env body .ret).run ctx |>.run (xs.length, 0, #[])
     out := out ++ lifted.push { name := n, params, body := b }
-  pure out
+  -- constant folding, known constructors, self tail calls as loops (`Simp.lean`)
+  pure (out.map (·.simplify))
 
 end Wiz.IR

@@ -6,7 +6,7 @@ mean what they claim. It is meant to be honest first: if something is not proved
 so. The calculus itself is specified in [CoreSpec.md](CoreSpec.md); section numbers
 written "§n" refer to it.
 
-The state described here is the `solutions` branch at commit `9717950` (2026-11-09), plus
+The state described here is `master` at commit `9717950` (2026-11-09), plus
 the results of the probes listed in the "Probes" section.
 
 ## Status values
@@ -33,23 +33,25 @@ the results of the probes listed in the "Probes" section.
   regularity is off in both kernels, `cast` computes on data constructor by constructor,
   and the program now checks. One departure from the published "off" theory remains, a
   **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below; now argued relative to the system without regularity, with one incompleteness found).
-* **Three proofs of `False` in the kernel have been found and fixed** (propositions
-  compared by shape; `∞ < ∞`; quantities that differ only by a variable, F6), each with
-  regression tests. A failure of
+* **Four proofs of `False` in the kernel have been found and fixed** (propositions
+  compared by shape; `∞ < ∞`; quantities that differ only by a variable, F6; a syntactic
+  comparison that missed a variable, F7), each with regression tests. A failure of
   subject reduction for small description fields (Q4) is fixed too (F5, `ULift`).
 * **Three proofs of `False` were found while writing this page, and confirmed by
   running them** (see "Open issues" and "Probes"):
   * **O1** (fixed in `c079d1b`): the self-hosted kernel reduced `Size ≡ Size` to
     `False`, so `reflTy Size : False` there (the Lean kernel was not affected);
-  * **O2**: a `partial def` at an empty instance of an indexed family passes the
-    elaborator's inhabitedness check, and the kernel takes it as an axiom
-    (`boom : False`, no axioms written);
-  * **O3**: a user's `builtin nat.add := K` with a definition that disagrees with native
-    addition proves `False`.
+  * **O2** (fixed, F3, PR #5): a `partial def` at an empty instance of an indexed
+    family passed the elaborator's inhabitedness check, and the kernel took it as an
+    axiom (`boom : False`, no axioms written);
+  * **O3** (fixed, F4, PR #5): a user's `builtin nat.add := K` with a definition that
+    disagrees with native addition proved `False`.
 
-  O2 and O3 are not bugs in the kernel's rules: in both, the kernel accepts a declaration
-  on trust (an axiom the elaborator vouched for; an unchecked registration). They are
-  still closed proofs of `False` in the language. Several smaller gaps are listed too.
+  O2 and O3 were not bugs in the kernel's rules: in both, the kernel accepted a
+  declaration on trust (an axiom the elaborator vouched for; an unchecked registration).
+  Now a partial definition needs a witness the kernel checks, and a registration outside
+  the toolchain's library is an axiom that `#print axioms` reports. Several smaller gaps
+  are listed too.
 
 ---
 
@@ -61,17 +63,17 @@ the results of the probes listed in the "Probes" section.
 | Universes `Sort l`, `imax`, impredicative `Prop`, non-cumulative, universe-polymorphic declarations | **published** for CIC-like systems; **folklore** for Wiz's exact algorithm | Lean 4's universe design; Wiz's level normaliser (§4) is sound by construction (it case-splits) and incomplete for `imax`, as in Lean (unverified against Lean's source). |
 | Definitional proof irrelevance for `Prop` | **published** | [PT22], [PT23] (TTobs, CCobs); Gilbert et al. POPL 2019 (unverified). Wiz has no inductive propositions, so the Lean 4 `Acc` problem does not arise. |
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
-| Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs treats `Prop` (per the review `xtt-cubical-attacks.md` A0; not re-checked in [PT22]). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
+| Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs and CCobs treat propositions (rule Eq-Ω: `A ∼ B ⇒ (A → B) ∧ (B → A)`; checked in [PT22] §2.3 and [PT23] Fig. 4). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; algorithmically incomplete, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation. TTobs/CCobs do not have definitional regularity (unverified against the papers). Regularity at inert types (CoreSpec §8.4) is Wiz's own; see D1. `--regularity full` restores the old rule for experiments. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; decided by ground equality since P1, so stable under substitution, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation *of proofs*. TTobs and CCobs do not have definitional regularity; they have the proof term `castrefl`, which is Wiz's `castRefl` ([PT22] §2.2, [PT23] §2.2; checked). CICobs [PLT25] has definitional regularity at **all** types (rule Cast-Refl, side condition by conversion) and proves conversion decidable for a fragment, with an algorithm that never reduces proofs. So regularity at inert types (CoreSpec §8.4) is a special case of a published rule; what is Wiz's own is the restriction, which a proof-reducing evaluator needs. See D1 and `/workspace/wiz-notes/plt-vs-inert.md`. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
-| Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
+| Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] and [PT23] give ℕ equality rules by constructor (Eq-zero, Eq-Suc); CICobs [PLT25 §2.1, §4.1] gives inductive types *no* rule for equality of elements (it is derivable from the eliminator) and a weaker, non-injective equation between instances. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
 | QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
 | Quantity polymorphism (`Qty`, polynomial usages, `≤` by trying every assignment) | **conjecture** | Sound for finite rigs if each assignment is a valid instance (it checks them all). No paper. |
-| Numerals and native arithmetic | **folklore**, conditional on correct `builtin` registrations | See K2: the registrations are trusted. |
+| Numerals and native arithmetic | **folklore**, conditional on correct `builtin` registrations | The Prelude's registrations are trusted (reviewed, §7); any other is an axiom (F4). |
 | Glued (lazy) unfolding, `lazyInd` | **folklore** | An implementation technique; it must give the same answers as eager unfolding. Not proved. |
 
 ## 2. Interactions
@@ -102,8 +104,8 @@ the results of the probes listed in the "Probes" section.
   adversarial review (`/workspace/wiz-notes/xtt-cubical-attacks.md`, A0).
 * **The fix.** Π and Σ carry their sort; the kernel checks it; type equality and `cast`
   treat two propositions by equivalence, and a proposition is never equal to a
-  non-proposition (§8.3, §8.4). Commit **`1b6dc00`** on `solutions` ("Fix a proof of
-  False: type equality compares propositions by equivalence"; `cfac255` on `master`).
+  non-proposition (§8.3, §8.4). Commit **`1b6dc00`** ("Fix a proof of
+  False: type equality compares propositions by equivalence"; `cfac255` in the old exercise tree, now `exercises-archive`).
 * **Regression tests.**
   * group *observational equality*: "equivalent propositions of different shapes don't
     prove False" (the attack, must fail) and "propositions in a function type's domain
@@ -123,8 +125,8 @@ the results of the probes listed in the "Probes" section.
   proof of `False` was built in Wiz (the attack review, D2, could not build one, since
   Wiz has no user-level recursion on `Size`), but the rule was the known-bad one.
 * **The fix.** `sizeBelow` (`Conv.lean:143`, `Kernel.wiz:1413`): below `∞` are only
-  `↑ᵏ x` for a variable `x : Size< u`. Commit **`fb9074d`** on `solutions` ("Decision D2:
-  ∞ is not below itself (both kernels)"; `d521cfa` on `master`).
+  `↑ᵏ x` for a variable `x : Size< u`. Commit **`fb9074d`** ("Decision D2:
+  ∞ is not below itself (both kernels)"; `d521cfa` in `exercises-archive`).
 * **Regression tests.**
   * group *sized types*: "∞ is not a size below ∞";
   * group *selfhost*: "∞ is not below itself (and both kernels agree on it below)"
@@ -133,6 +135,54 @@ the results of the probes listed in the "Probes" section.
 * **Status of sizes otherwise:** conjecture. The atlas still lists `sized-types`,
   `sized-recursion`, `sized-corecursion`, `sh-kernel-sizes` and `sh-kernel-coinduction` as
   "known-issue" for `∞ < ∞`; that is out of date.
+
+### F3. Partial definitions at an empty index gave `False` (was O2) — **fixed**
+
+* **The bug.** `partial def f : T := …` made `f : T` a kernel axiom, guarded only by
+  the elaborator's `inhabitedTy`, which looked at the type's *head*: `T.mk : T .t` made
+  `T .f` look inhabited, so `partial def bad : T .f := bad` and a `match` gave
+  `boom : False` (also `partial def bad : T .t → T .f`).
+* **The fix.** A partial definition carries a **witness** (`Decl.witness`), a term of
+  its type that the kernel checks (`addPartialDecl`, erased); `addPartialImpl` accepts only
+  such declarations, and `inhabitedTy` is gone. The elaborator finds the witness
+  (`Elab/Witness.lean`: constructors and constants unified against the goal, so indices
+  must match; `fun`, pairs, `Inhabited.default`, …) or the user writes
+  `partial (default := w) def …`. Both self-hosted mirrors do the same (`checkPartial` in
+  `Kernel.wiz`, `addPartials`/`wit` in `Frontend.wiz`). PR #5 (`agent/trust-gaps`, first
+  commit `ebb6a08`).
+* **Regression tests.** Group *trust*: the probe and its Π variant are rejected, a wrong
+  `default` is rejected, the kernel rejects missing and ill-typed witnesses, inferred and
+  written witnesses are accepted, and the self-hosted frontend rejects the probe.
+
+### F4. Unchecked `builtin` registrations gave `False` (was O3) — **fixed**
+
+* **The bug.** `builtin nat.add := K` made `K` compute natively on numerals whatever its
+  definition, so a lemma proved by unfolding `K` was refuted by native computation:
+  `bad : False`. `builtin nat := E` for an empty `E` and `(0 : E)` crashed `wiz check`
+  (a `check`/`infer` loop on numerals).
+* **The fix.** Registrations in modules of the toolchain's `lib/` are trusted (reviewed,
+  §7). Any other is recorded (`Globals.assumed`), warned about (at an `import` for a
+  module), and reported by `#print axioms d`, which lists every axiom `d` depends on.
+  Registrations are checked for shape (`nat` an inductive type, each operation a
+  definition `N → … → N`), numerals need `nat.zero` and `nat.succ`, and a numeral at a
+  type that isn't the registered data type is an error. PR #5 (`agent/trust-gaps`).
+* **A hole in that accounting, closed** (soundness audit, T14). A second registration of
+  a key was accepted: after `import Prelude`, `builtin nat.add := K` made the Prelude's
+  `Nat.add n 1` unfold through `K` on a variable (the kernel finds the definition by key)
+  while numerals stayed native, so `boom : False` followed, and `#print axioms boom`
+  showed nothing, since `boom` never mentions `K`. Now **a key is registered once and a
+  constant has one key**: a second registration is an error at the command, and also when
+  a module elaborated on its own is replayed from the cache next to another registration.
+  `nat.zero` and `nat.succ` must be constructors of the registered type (numerals unfold
+  through them), and a constant registered under a `nat.` key depends on the numerals'
+  registrations as a literal does (`P z z` with `nat.pow := P` is the numeral `1` with no
+  literal in the term). So with the Prelude imported nothing more can be registered, and
+  without it every registration is an axiom of whatever uses its constant or a numeral.
+* **Regression tests.** Group *trust*: the probe's warnings and `#print axioms` output, a
+  registration in a module from an `-I` directory, the crash and the shape errors, and the
+  Prelude's numerals still computing natively with no axioms; the T14 probe and second
+  registrations of `nat`, `nat.zero`, `nat.succ` (rejected, also through the cache),
+  non-constructors as `nat.zero`/`nat.succ` (rejected).
 
 ### F5. Description fields in smaller universes (Q4, decision (a)) — **fixed**
 
@@ -165,8 +215,18 @@ the results of the probes listed in the "Probes" section.
   * group *inductive*: "Q4: …" cases for a proof field, the fields of `Prod.{u,v}`, a type
     in `Type 1` with an infinitary field over `Type` and with a lifted tag, and `#ir`
     unchanged by lifting.
-* **What remains.** Derived instances (`deriving`) for universe-polymorphic types are not
-  supported (unrelated to Q4). The subject-reduction argument is on paper (CoreSpec §4.1,
+* **Deriving** (stage 7d, docs/stages/07-type-classes.md). `deriving` used to fail on a
+  type with a proof field (it showed, compared and defaulted the proof: a unification
+  error at `BEq`, no `Repr`/`Inhabited` of a proposition) and on universe-polymorphic
+  types (an `inductive Box.{u} (A : Type u)` without a signature was put in `Type`, so its
+  field was lifted to a level below its own and the kernel rejected `Box.desc`; the
+  classes and instances were in `Type` only). Now reflection marks proof fields, the
+  derivers skip them, the classes take `Type u`, instances have universe parameters, and
+  a missing signature is the smallest `Type l` that holds the fields. Derivers see a
+  lifted field through `down` (the recursor's method gets the field at its own type).
+  Tests: group *deriving*, "deriving with proof fields …", "… universe-polymorphic type
+  …", "… a type above Type: lifted fields are seen through down (F5)".
+* **What remains.** The subject-reduction argument is on paper (CoreSpec §4.1,
   §9.1), not mechanised; the OTT rules for `ULift` are the standard ones for a one-field
   former and are **conjecture** in Wiz's combination like the rest of §8.
 
@@ -200,6 +260,40 @@ the results of the probes listed in the "Probes" section.
   * group *selfhost*: "F6: literal quantities that differ make types unequal" (Lean kernel
     verdicts on `MTm.qtyApart`), and `MTm.qtyApart` is in the differential samples.
 
+### F7. Syntactic equality missed a variable captured by a native operation — **fixed**
+
+* **The bug.** `Term.mapChildrenM` had no case for `natOp`, so `Term.freeVarsAt` saw no
+  variable in the body of a native operation's closure, and `Val.lvlBound` of the partial
+  application `Nat.add x` was `0`. `sameVal` then quoted below `x`, where every variable
+  truncates to index `0`: `T (Nat.add x)` and `T (Nat.add y)` quoted alike, `sameFamily?`
+  took `μ D_x ()` and `μ D_y ()` for one family, and their equation computed to `() = ()`.
+  With `T (Nat.add 0)` inhabited and `T (Nat.add 1)` empty, a cast along the instance at
+  `0`, `1` was a closed proof of `False` (Prelude only, no axiom). Found by the soundness
+  audit (`/workspace/wiz-notes/soundness-audit.md`, S1; the probe is
+  `soundness-probes/s1-natop-samefamily.wiz`). The self-hosted kernel was not affected: it
+  has no native operations, and its `usesVar` is conservative.
+* **The fix.** The `natOp` case in `mapChildrenM` (`Term.lean`). The constructor list of
+  `Term` was compared with the traversal's cases: it was the only one missing.
+* **Regression tests.** Group *builtins*: "S1: a variable captured by a native operation
+  counts in syntactic equality (it proved False)" (three attacks, must fail) and "S1: the
+  same family at the same partial application is still one family".
+* **What remains.** `quote` still turns a variable at or above its level into index `0`
+  silently (truncated subtraction). An explicit failure there would have made this a crash.
+
+### F8. `absurd` on a glued value evaluated to `Sort 0` — **fixed**
+
+* **The bug.** `vAbsurd` matched only a neutral. For `absurd (lem h)` with `lem` a global
+  definition the scrutinee is a glued value, the `panic!` branch ran, and Lean's `panic!`
+  returns the default value, `Sort 0`. So `def g (h : False) : Type := absurd (lem h)`
+  evaluated to `Prop`, and `def u (h : False) : g h := True` was accepted. Reachable only
+  under an inconsistent hypothesis, so no closed proof of `False`. `Kernel.wiz` takes the
+  weak head normal form first and was not affected (audit, F2).
+* **The fix.** `vAbsurd` unfolds glued values first (`Eval.lean`).
+* **Regression test.** Group *observational equality*: "F2: absurd on a lemma's result is
+  stuck, not Prop".
+* **What remains.** Every other `panic!` in `Eval.lean` also returns `Sort 0` and lets the
+  check go on. None is known to be reachable from a well-typed term.
+
 ---
 
 ## 4. Open issues
@@ -232,66 +326,7 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
 * Reach: `Kernel.wiz` is used by the self-hosted frontend; whether the self-hosted
   frontend can produce this term from surface syntax was not checked.
 
-### O2. Partial definitions trust an elaborator check that can be fooled — **open issue (proof of `False`, confirmed)**
-
-`partial def f : T := …` adds `f : T` as a kernel **axiom** (§13). Only the elaborator's
-`inhabitedTy` (`Elab/Command.lean:576`) stands between that and `partial def bad : False
-:= bad`. It decides inhabitation by the *head* of a type: a type headed by a name `T`
-counts as inhabited if *some* constant's type ends in `T …` (`byConstant`), whatever the
-indices, and inside a Π any type headed by the same name as a domain counts as inhabited.
-So for an indexed family with an empty instance:
-
-```
-inductive B where | t | f
-inductive T : B → Type where | mk : T .t
-partial def bad : T .f := bad          -- T.mk : T .t makes "T …" look inhabited
-```
-
-`T .f` is empty, and an inhabitant of it gives `False` by `match`:
-
-```
-def boom : False := match bad with
-  | .mk => absurd ()
-#check boom                            -- boom : False   (CONFIRMED, `wiz check`)
-```
-
-The control `partial def bad2 : False := bad2` is rejected ("its type must be visibly
-inhabited"), and `def ok (x : T .f) : False := match x with | .mk => absurd ()` is
-accepted (it is correct: `T .f` is empty). So the hole is in `inhabitedTy`. The same check
-also accepts `partial def bad : T .t → T .f := bad` (the domain's head `T` is assumed
-inhabited in the codomain). Fix: make the kernel check partial definitions' types against a
-witness the elaborator supplies, or make `inhabitedTy` compare the indices (use
-`conv`), and add the file above as a negative test.
-
-### O3. `builtin` registrations are trusted — **open issue (proof of `False` from a user registration, confirmed)**
-
-`builtin nat := N` makes numerals have type `N`; `builtin nat.add := f` makes
-`f 2 3` compute natively. Nothing checks `N` or `f` (`Elab/Command.lean:937–944`;
-`vBuiltin?`, `vNatOp`, `Eval.lean:76, 386`). A wrong registration proves `False`, for
-example by registering an empty type as `nat` (numerals inhabit it) or an `add` whose
-definition disagrees with native addition (a lemma proved by unfolding the definition is
-refuted by native computation at literals). **Confirmed**:
-
-```
-inductive N where
-  | zero
-  | succ (n : N)
-def K (a b : N) : N := a
-builtin nat := N
-builtin nat.zero := N.zero
-builtin nat.succ := N.succ
-builtin nat.add := K
-def h (n : N) : K n 3 = n := refl n     -- by K's definition
-def bad : False := absurd (h 2)         -- K 2 3 computes natively to 5, so h 2 : 5 = 2 ↦ False
-#check bad                              -- bad : False
-```
-
-(`#reduce K 2 3` prints `5`.) Registering an empty type as `nat` and writing a numeral at
-it (`def E : Type := Empty; builtin nat := E; def bad : False := absurd (0 : E)`) crashed
-`wiz check` with a stack overflow instead (where, not investigated). Registrations should be treated like axioms: listed,
-restricted to the Prelude, or checked (the native operations can be checked against the
-definitions on the registration's own terms only by proof, so restricting them is
-simpler).
+### O2, O3 — **fixed** (F3, F4).
 
 ### D1. Regularity + impredicative `Prop` + irrelevant equality: type checking looped — **fixed** by decision D1 (a); regularity at inert types is a **conjecture**
 
@@ -340,7 +375,22 @@ simpler).
 
   All three assume the same property of the system without regularity, which is itself
   unproved for Wiz. That system already has two identity casts that inspect types: at
-  `Enum` on any argument, and at `Sort`.
+  `Enum` on any argument, and at `Sort` (the latter is rule Cast-Univ of [PT22], [PT23]
+  and [PLT25]).
+
+  **Related published work** (`/workspace/wiz-notes/plt-vs-inert.md`). CICobs [PLT25] has
+  regularity at every type as a *conversion* rule (Cast-Refl: `cast A B e t ≡ t` when
+  `A ≡ B`, any `e`), with an impredicative proof-irrelevant sort. Its Agda proof gives
+  normalisation of relevant terms and decidability of conversion ([PLT25] Theorem 5.6) for
+  a fragment with Π and ℕ and no general inductive types. Two points of method matter
+  here:
+  * the rule is decided by the conversion checker when it compares neutrals, with a
+    conversion test on the cast's two types, never by a syntactic test in the evaluator;
+  * proofs are never reduced, which is how Abel–Coquand's term stays harmless.
+
+  So the inert rule is not new, and no counterexample in [AC20], [PT23] or [PLT25]
+  applies to it. Their theorem does not cover Wiz: not the kernel as written (it reduces
+  proofs), and not descriptions, sizes, `ν`, quantities or `ULift`.
 
   **Found gap (incompleteness, not unsoundness).** The side condition is syntactic
   (`sameVal`), so algorithmic conversion is not a congruence and is not stable under
@@ -352,6 +402,24 @@ simpler).
 
   `sameFamily?` has the same defect. The fix is to decide the side condition with
   conversion. Confirmed by a probe (the note, §10): `h p q p` is well typed, but its δβ-reduct is rejected, so subject reduction fails for the algorithmic typing.
+
+  **Fixed (P1, `agent/p1-stable`; `/workspace/wiz-notes/p1-stable.md`).**
+  * **The change.** InReg's side condition is ground equality (`groundEqTy`, both
+    kernels). It holds for two inert types that are equal and have no free variable in a
+    relevant position, so it gives the same answer for convertible types and survives
+    substitution. `sameFamily?` is replaced by desc-eq's head-directed rules (PR #40).
+    The numeral fast path is subsumed.
+  * **The probe as a regression test** (group *observational equality*, "P1: …").
+    `h`, `h2` and `h3` check, so the reduct checks iff the term does. `t1` and `t2`
+    (InReg at an open index `f p`) are rejected, consistently.
+  * **What it costs.** InReg on a variable at an inert type whose index is open
+    (`cast (Fin n) (Fin n) e k`). Casts at closed inert types still reduce, and casts of
+    constructors at open ones compute structurally. Measured: every test, library file
+    and example checks as before, and no cast in `lib/` or `examples/` is decided
+    differently from the old rule (the note, §5). The loss shows only on the probe.
+  * **Option** (a decision for the user). `--inert conv` adds InReg_conv: conversion
+    identifies the cast with its argument when the types are convertible (`convTy`). It
+    is congruent, and it accepts `t1` and `t2` too. It is Lean kernel only so far.
 * **What it costs (known failures).** Without regularity a cast at a **type variable**
   is stuck (TTobs behaviour): `cast e a = a` for `e : A = A`, "`J` computes on `refl`"
   at a variable family, and the definitional equations of functions defined by `match`
@@ -465,6 +533,15 @@ equations are not provable by computation. They are incompleteness, not unsoundn
 * **Π/Σ types whose quantities are not literals** (quantity variables that can't be
   compared): type equality is stuck.
 * **Casts at a level `u` that might be 0**, `Sort u ≡ Sort v` for different parameters.
+* **Regularity at an inert type with an open index** (P1): `cast (Fin n) (Fin n) e k` for
+  variables `n`, `k` is stuck. The rule fires only at ground types, so that its firing is
+  stable under substitution (D1). `castRefl` proves the equation propositionally;
+  `--inert conv` is an experiment that recovers it in conversion.
+* **The sort annotation decides between rules** (P1 inventory, U5). `propSort?` reads a
+  Π/Σ's optional annotation, so an unannotated type and a convertible annotated one are
+  treated differently by type equality and `cast` (stuck against computing). That is a
+  side condition which is not invariant under conversion. No bad consequence is known
+  (the stuck side proves nothing); it is listed in `/workspace/wiz-notes/p1-stable.md`.
 * **Conversion is incomplete** where proof irrelevance meets computation (e.g. a `split`
   stuck on one proof and computing on another). Incompleteness only.
 
@@ -476,7 +553,8 @@ None of these is implemented. Their status is **design and conjecture**:
 
 * **XTT and univalent cubical type theory as tiers** (`Pre ⊇ K ⊇ Set`):
   `/workspace/wiz-notes/xtt-cubical-fragments.md`. XTT has a **canonicity** proof only
-  (Sterling, Angiuli, Gratzer, FSCD 2019 and LMCS 2022, as reported in the note); no
+  (Sterling, Angiuli, Gratzer, FSCD 2019 and *A Cubical Language for Bishop Sets*, LMCS
+  18(1), 2022; venue checked); no
   normalisation or decidability proof exists for XTT. The combined three-tier model is a
   **conjecture**.
 * **Adversarial review** of that design: `/workspace/wiz-notes/xtt-cubical-attacks.md`.
@@ -501,7 +579,10 @@ that checks everything. Wiz's situation:
 * **Size.** The Lean kernel is `Wiz/Core/{Term,Value,Level,QPoly,Usage,Eval,Conv,Check,
   Templates}.lean` plus `Wiz/Rig.lean` and `Wiz/Rig/Instances.lean`: about **3 200
   lines**, about 2 500 without blank lines and line comments. (`Pretty.lean` and
-  `Raw.lean` are not trusted.) This includes the computation rules of OTT, descriptions
+  `Raw.lean` are not trusted. `Term.hasVar`, which `Ctx.instArg` relies on, and the
+  traversal `Term.mapChildrenM`/`forChildren`, which `hasVar` and `Val.lvlBound` rely on,
+  are in `Term.lean`: `hasVar` was moved there from `Pretty.lean` when the kernel started
+  to depend on it. A constructor missing from `mapChildrenM` is a kernel bug: see F7.) This includes the computation rules of OTT, descriptions
   and sizes, so it is larger than a Lean-4-style kernel per feature.
 * **Two kernels.** `selfhost/Kernel.wiz` (about 2 200 lines) is an independent
   reimplementation in Wiz of a fragment (CoreSpec §15). It was written from the Lean
@@ -513,20 +594,49 @@ that checks everything. Wiz's situation:
   checked by both kernels, must get the same verdict (the printed type or `error`).
   It compares *verdicts*; it cannot find a bug both kernels share, and its generator does
   not reach every former (it missed O1).
-* **What the kernel does not check** (CoreSpec §16): axioms (including C imports),
-  partial definitions' inhabitedness (O2), `builtin` registrations (O3), the templates
-  and the kernel's own generated types, and everything after
-  type checking (erasure, the backends).
+* **What the kernel does not check** (CoreSpec §16): axioms (including C imports;
+  `#print axioms d` lists those `d` depends on), the `builtin` registrations of the
+  toolchain's library (below; a registration anywhere else is an axiom, reported by
+  `#print axioms`), the templates and the kernel's own generated types, and everything
+  after type checking (erasure, the backends). Partial definitions are no longer
+  trusted: each comes with a witness the kernel checks.
+* **Trusted registrations** (`lib/Prelude.wiz`, reviewed once against the native
+  operations `natNative?` in `Eval.lean`, which follow Lean's `Nat`): `nat := Nat`,
+  `nat.zero := Nat.zero`, `nat.succ := Nat.succ` (numerals); `nat.pred := Nat.pred`
+  (`0 ↦ 0`), `nat.add := Nat.add`, `nat.sub := Nat.sub` (truncated: `subFrom m n` is
+  `pred` applied `m` times), `nat.mul := Nat.mul`, `nat.div := Nat.div` (`divGo` with
+  fuel `n`, enough since `n / m ≤ n`; `n / 0 = 0`), `nat.mod := Nat.mod`
+  (`n - m * (n / m)`, so `n % 0 = n`), `nat.pow := Nat.pow`, `nat.land`, `nat.lor`,
+  `nat.xor` (`Nat.bitwise` with fuel `a + b`, at least the number of bits),
+  `nat.shiftLeft` (`a * 2^n`), `nat.shiftRight` (`a / 2^n`), `nat.log2` (`log2Go` with
+  fuel `n`; `log2 0 = 0`); `nat.beq := Nat.beq` and `nat.blt := Nat.lt` (the kernel
+  decides `a == b` or `a < b` natively, then evaluates the definition at `0` and `0` or
+  `1`, so the result is the definition's own `Bool`: correct exactly when the definition
+  is equality, resp. `<`, which `Nat.beq` and `Nat.lt` are, by their equations). The
+  kernel computes only these natively; `memo := memo` (`memo f = f` to the kernel) and
+  `string := String` affect only the runtime representation and literals.
+* **Implementations for compiled code** are outside the kernel: `attribute
+  [implemented_by g] f` (stage 22b), including the native representations it registers
+  for a type (`attribute [implemented_by mk get] T.mk`, builtin keys `repr:T:…`, used by
+  `UIntN`/`IntN` in `lib/Word.wiz`) and the word natives (`UIntN.addNative` …,
+  `runtime/wiz.c`). The kernel never sees them (`vBuiltin?` acts only on `nat.*` keys),
+  so they can't prove anything; they are trusted to agree with the definitions, as in
+  Lean, and the tests compare the two (`#eval` runs the definitions, compiled code the
+  natives). They are not `builtin` commands, so the registration checks don't apply.
+  `#print axioms d` lists the ones `d` depends on, the library's too, marked `native`
+  (`native f := g`, `native T := mk/get`).
 * **Termination** of the kernel is not proved and is known to fail (D1); all evaluation
   functions are `partial` in Lean.
 * **The evaluator reduces proofs.** `eval` is strict, and `vCast` forces `e` (through
   `vFst`/`vSnd`, and by applying `e.1`). So the kernel terminates only if the proofs it
   forces normalise. Pujet–Tabareau's decidability result for impredicative OTT (CCobs,
   POPL 2023) is proved *without* normalising proofs: in their words, the Abel–Coquand
-  loop "is not a problem if we don't reduce irrelevant proofs" (Pujet, HoTTEST 2023). So
+  loop "is not a problem if we don't reduce irrelevant proofs" (Pujet, HoTTEST 2023), and
+  "we never perform reduction in the proof-irrelevant layer" ([PT23] §6.1). The same holds
+  for CICobs [PLT25], whose decidability theorem includes regularity at all types. So
   even a Wiz version of their theorem would not cover this kernel as written. An
   evaluator that never forces proof positions would close that gap.
-  (`/workspace/wiz-notes/inert-regularity.md` §2.)
+  (`/workspace/wiz-notes/inert-regularity.md` §2, `p2-proofs.md`, `plt-vs-inert.md` §6.)
 
 ## 8. Testing evidence
 
@@ -559,11 +669,11 @@ as a test yet (each should become one when its issue is fixed).
 |---|---|
 | `reflTy Size`, `absurd Empty (reflTy Size)` in `Kernel.wiz` (O1) | accepted: `False`, `Empty0` |
 | `#reduce Size = Size` in the Lean kernel | stuck: `Size = Size` |
-| `partial def bad : T .f` + `boom : False` (O2) | accepted: `boom : False` |
+| `partial def bad : T .f` + `boom : False` (O2) | accepted: `boom : False` (now rejected: no witness, F3) |
 | `partial def bad2 : False := bad2` (control) | rejected |
-| `partial def bad : T .t → T .f` (O2) | accepted |
-| wrong `builtin nat.add` (O3) | accepted: `bad : False` |
-| `builtin nat := E` (empty) + `(0 : E)` (O3) | `wiz check` crashes (stack overflow) |
+| `partial def bad : T .t → T .f` (O2) | accepted (now rejected, F3) |
+| wrong `builtin nat.add` (O3) | accepted: `bad : False` (now an axiom: warned, listed by `#print axioms`, F4) |
+| `builtin nat := E` (empty) + `(0 : E)` (O3) | `wiz check` crashes (stack overflow) (now an error, F4) |
 | `p.2` on a linear pair (Q1) | rejected since `212aebf` (was accepted) |
 | `p.1` on a linear pair whose second part holds a linear field (Q1) | rejected (lin-fixes; was accepted) |
 | `Desc.arg 1 True …` (Q4, fixed: F5) | rejected by the elaborator (field must be in `Type ?u`) and now by both kernels (`MTm.smallField`: `D` and `getS D` rejected; the lifted `D'` accepted, `getS D'` is `ULift True : Type`) |
@@ -588,4 +698,5 @@ as a test yet (each should become one when its issue is fixed).
 ## References
 
 As in [CoreSpec.md §17](CoreSpec.md#17-references): [Atkey18], [AC20], [CDMM10], [AVW17],
-[PT22], [PT23], Agda #3026 (checked); [ML84], [AMS07], Gilbert et al. (not re-checked).
+[PT22], [PT23], [PLT25], Agda #3026 (checked); [ML84], [AMS07], Gilbert et al. (not
+re-checked).

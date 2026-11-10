@@ -43,3 +43,49 @@ the largest share left is reference counting (about 1.4 billion `inc`/`dec` for 
   times here.
 
 Next: fewer index equations for mutual families (elaboration time and code size).
+
+### 15c: known constructors and constant folding ✅
+
+`Wiz/Compiler/Simp.lean` simplifies every function of the IR right after lowering
+(before constants are hoisted and before reference counting). A native operation on
+numbers whose arguments are literals is computed at compile time, with the kernel's own
+semantics (`natNative?`: `3 - 5 = 0`, `n / 0 = 0`, `n % 0 = n`); `nat.beq`/`nat.blt` of
+literals, or of a variable with itself, are the `Bool` tags. A `case` on a variable known
+to be a constructor (built in the same function), a literal, or already tested by an
+enclosing `case` is replaced by the branch, and a projection of a known constructor is
+its field. A branch also learns from its test: in the `true` branch of
+`case (nat.beq n 10)`, `n` is `10`. What becomes unused is removed by `elimDead`, which
+now counts operations on numbers, tests and tags as pure. `#ir` shows the folded form;
+`#run`, C and LLVM agree (group `c`/`llvm`: "constant folding and known constructors").
+
+### 15d: the self-hosted C at `-O2` ✅
+
+Stage 2 of the bootstrap (`scripts/fixpoint.sh`, grail's `stage2` target) and the
+self-hosted compile-and-run tests compile the self-hosted backend's C with `-O2`
+instead of `-O1`, like `wiz build`.
+
+### 15e: dead code in the self-hosted backend ✅
+
+The reference counting mode compiles a `let`'s body first, so it knows whether the
+variable is live: a dead `let` whose value has no effects (variables, globals, numbers,
+objects and projections of such, closures, suspensions; no applications) is not
+compiled at all. Before, it was computed and released at once.
+
+### 15f: self tail calls are loops ✅
+
+A function that calls itself in tail position runs in constant stack, whatever the C
+compiler does (tested at `-O0` on a 1 MB stack, 10 million iterations). In the Lean
+compiler (`Decl.loopify`), `f ps` whose body has `let r := f as; ret r` (in a branch, a
+join point's body, …) becomes `join J(ps') := body[ps ↦ ps', f as ↦ jmp J as]; jmp J ps`; join
+points are labels and `goto`s in C and branches in LLVM, and borrow inference (8e)
+treats the join point's parameters like the function's. In the self-hosted backend (`markSelf`),
+such a call becomes `wiz.self`: the arguments are computed, the parameters reassigned
+and control goes back to the label `top_` at the function's start (in the garbage
+collected mode, out of the statement expressions; that mode now pushes applications
+into `case`s too, as reference counting did, so a match builds no closure and the calls
+in its branches are in tail position). Under reference counting a borrowed
+parameter must be passed a borrowed parameter (else the argument would be released
+after the call): otherwise the call stays a call. In the garbage collected mode a call
+under a match on a computed value (`match Nat.beq … with`) is not yet in tail position:
+the match's payload is a suspended `let`, and its branches are closures (under reference
+counting lets are strict, and it is a loop).

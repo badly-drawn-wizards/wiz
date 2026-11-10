@@ -282,10 +282,20 @@ def Decl.withSorts (g : Globals R) (d : Decl R) : Decl R :=
   let type := (Sorts.type g #[] [] d.type).1
   let ty := eval g [] type
   { d with type, value := d.value.map (Sorts.value g #[] [] · ty),
-           impl := d.impl.map (Sorts.value g #[] [] · ty) }
+           impl := d.impl.map (Sorts.value g #[] [] · ty),
+           witness := d.witness.map (Sorts.value g #[] [] · ty) }
 
 def instM (c : Closure R) (v : Val R) : ElabM R (Val R) :=
   return Closure.inst (← getGlobals) c v
+
+/-- `instM c (← evalIn ctx a)`, evaluating `a` only if `c`'s body mentions it (as the
+kernel's `Ctx.instArg`: evaluation is strict, and along a nested spine evaluating each
+argument would be quadratic). -/
+def instArgM (ctx : LocalCtx R) (c : Closure R) (a : Term R) : ElabM R (Val R) := do
+  match c with
+  | .mk env body =>
+    let v ← if body.hasVar 0 then evalIn ctx a else pure (.unit .zero)
+    return eval (← getGlobals) (v :: env) body
 
 def vAppM (f a : Val R) : ElabM R (Val R) := return vApp (← getGlobals) f a
 

@@ -1,17 +1,16 @@
 # Wiz CI. See "Continuous integration" in docs/building.md.
 #
-# The same file is on both branches (master is generated from solutions), and what runs
-# depends on the tree, not the branch name: a tree with solution markers (`--<sol`) runs
-# the full suite, split into shards (.github/test-shards.json); the exercise tree (master,
-# where the solutions are stubs and almost every test fails by design) only builds and
-# checks that the test driver runs to its summary line.
+# Runs on `master` (the integration branch, with the solutions in it) and on pull
+# requests into it: the full suite, split into shards (.github/test-shards.json). The
+# exercise tree is not a branch: the `exercises` job generates it with
+# scripts/mkexercises.py and checks that it builds.
 name: CI
 
 on:
   push:
-    branches: [solutions, master]  # agent branches are tested through their PRs
+    branches: [master]  # agent branches are tested through their PRs
   pull_request:
-    branches: [solutions, master]
+    branches: [master]
   schedule:
     - cron: "23 2 * * 1" # Mondays: the bootstrap fixpoint check
   workflow_dispatch:
@@ -21,9 +20,14 @@ on:
         type: boolean
         default: false
 
+# A newer push to a pull request supersedes its running check (saves minutes). Runs on
+# the branches themselves (push events) are never cancelled: pull requests are merged
+# on green without being up to date, so the run of each merge commit is what tells
+# which merge broke something. They get a group per commit, since a shared group with
+# cancel-in-progress off would still drop a queued run when a newer one arrives.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}
-  cancel-in-progress: true # a newer push supersedes a running check (saves minutes)
+  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   contents: read
@@ -48,31 +52,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
-      tree: ${{ steps.tree.outputs.tree }}
+      tree: solution # only the summary's title reads it (there is one tree now)
       matrix: ${{ steps.shards.outputs.matrix }}
       lake-key: ${{ steps.key.outputs.key }}
       compiler-key: ${{ steps.key.outputs.compiler }}
     steps:
       - uses: actions/checkout@v5
-      - name: Embedded files (include_str) changed with their .lean files
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          # the checkout is the PR merged into its base: compare it with the base's tip
-          git fetch --depth=1 origin "${{ github.base_ref }}"
-          python3 scripts/ci.py check-include-str FETCH_HEAD
       - uses: ./.github/actions/setup
         with:
           cachix-name: ${{ env.CACHIX_NAME }}
           # empty in pull requests from forks: Cachix is then pull-only
           cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Which tree
-        id: tree
-        shell: bash
-        run: |
-          if git grep -q -e '--<sol' -- '*.lean' '*.wiz'; then tree=solutions; else tree=exercises; fi
-          echo "tree=$tree" >> "$GITHUB_OUTPUT"
-          echo "tree: $tree"
       - name: Cache key
         id: key
         shell: bash
@@ -95,20 +85,23 @@ jobs:
           fi
           lake build wiz grail tests
           du -sh .lake .lake/cache 2>/dev/null || true
-      - name: Every test group is in exactly one shard
+      - name: Every test case is in exactly one shard
         run: python3 scripts/ci.py check-shards
       - name: Shards
         id: shards
         run: |
+          # a shard with "split" becomes several, balanced by .github/test-timings.json
           echo "matrix=$(python3 scripts/ci.py matrix)" >> "$GITHUB_OUTPUT"
-          python3 scripts/ci.py matrix
+          python3 scripts/ci.py plan
+      - name: Lake tracks the embedded runtime (runtime/wiz.c)
+        # editing wiz.c rebuilds what embeds it and nothing else (docs/building.md)
+        run: scripts/test-embed.sh
 
   test:
     name: test (${{ matrix.shard.name }})
     needs: build
-    if: needs.build.outputs.tree == 'solutions'
     runs-on: ubuntu-latest
-    timeout-minutes: 90 # the selfhost shard takes ~45 min and grows with each selfhost test
+    timeout-minutes: 90 # the selfhost group is split into parts (test-shards.json) to keep each one short
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
@@ -149,7 +142,9 @@ jobs:
           mkdir -p logs ~/.cache/wiz
           du -sh ~/.cache/wiz .grail /tmp/wiz-selfhost-* 2>/dev/null || true
           echo "lake test -- --cache ~/.cache/wiz ${sel[*]}"
-          lake test -- --cache "$HOME/.cache/wiz" "${sel[@]}" 2>&1 | tee "logs/${{ matrix.shard.name }}.log"
+          # every case's time, as JSON lines (scripts/ci.py summary and baseline read them)
+          lake test -- --cache "$HOME/.cache/wiz" --timings "logs/${{ matrix.shard.name }}.jsonl" \
+            --shard "${{ matrix.shard.name }}" "${sel[@]}" 2>&1 | tee "logs/${{ matrix.shard.name }}.log"
       - name: Save the Wiz build caches
         if: always() && steps.wiz-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -163,7 +158,8 @@ jobs:
         if: always()
         run: |
           [ -f "logs/${{ matrix.shard.name }}.log" ] || exit 0
-          python3 scripts/ci.py summary "shard ${{ matrix.shard.name }}" "logs/${{ matrix.shard.name }}.log" >> "$GITHUB_STEP_SUMMARY"
+          shopt -s nullglob
+          python3 scripts/ci.py summary "shard ${{ matrix.shard.name }}" logs/${{ matrix.shard.name }}.log logs/${{ matrix.shard.name }}.jsonl >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -195,8 +191,6 @@ jobs:
       - name: The package checks, builds and runs a program outside the checkout
         shell: bash
         run: |
-          # (the exercise tree's wiz is mostly stubs)
-          git grep -q -e '--<sol' -- '*.lean' || { echo "exercise tree: skipped"; exit 0; }
           dir=$(mktemp -d)
           cp examples/io.wiz "$dir/"
           cd "$dir"
@@ -208,7 +202,7 @@ jobs:
   # One check for branch protection, and the whole suite's summary.
   result:
     name: CI result
-    needs: [build, test, stubs, package]
+    needs: [build, test, exercises, package]
     if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -224,23 +218,29 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          logs=(logs/*.log)
+          logs=(logs/*.log logs/*.jsonl)
           python3 scripts/ci.py summary "Wiz test suite (${{ needs.build.outputs.tree }} tree)" "${logs[@]}" >> "$GITHUB_STEP_SUMMARY"
+          # all shards' case times in one file, for `scripts/ci.py baseline`
+          mkdir -p timings
+          cat logs/*.jsonl > timings/timings.jsonl 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-timings
+          path: timings/timings.jsonl
+          if-no-files-found: ignore
       - name: Verdict
         shell: bash
         run: |
-          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, stubs: ${{ needs.stubs.result }}, package: ${{ needs.package.result }}"
-          [ "${{ needs.build.result }}" = success ] || exit 1
-          [ "${{ needs.package.result }}" = success ] || exit 1
-          for r in "${{ needs.test.result }}" "${{ needs.stubs.result }}"; do
-            [ "$r" = success ] || [ "$r" = skipped ] || exit 1
+          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, exercises: ${{ needs.exercises.result }}, package: ${{ needs.package.result }}"
+          for r in "${{ needs.build.result }}" "${{ needs.test.result }}" "${{ needs.exercises.result }}" "${{ needs.package.result }}"; do
+            [ "$r" = success ] || exit 1
           done
 
-  # The exercise tree: it builds, and the stubs run (most tests fail by design).
-  stubs:
-    name: exercise stubs
-    needs: build
-    if: needs.build.outputs.tree == 'exercises'
+  # The exercise tree, generated from this one (docs/exercises.md): it must build. It runs
+  # beside the test shards, with its own Lake cache (most modules differ from this tree's).
+  exercises:
+    name: exercise tree
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -249,29 +249,24 @@ jobs:
         with:
           cachix-name: ${{ env.CACHIX_NAME }}
           cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Restore the Lake build
-        uses: actions/cache/restore@v4
+      - name: Generate the exercise tree
+        run: python3 scripts/mkexercises.py . "$RUNNER_TEMP/exercises"
+      - name: Cache its Lake build
+        uses: actions/cache@v4
         with:
-          path: .lake
-          key: ${{ needs.build.outputs.lake-key }}
-      - name: lake test (failures expected)
+          path: ${{ runner.temp }}/exercises/.lake
+          key: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}
+          restore-keys: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      - name: lake build (exercise tree)
+        env:
+          LAKE_CACHE_DIR: ${{ runner.temp }}/exercises/.lake/cache
         run: |
-          mkdir -p logs
-          status=0
-          lake test 2>&1 | tee logs/exercises.log || status=$?
-          echo "lake test exited with $status"
-          # Failing tests are the exercises; a crash or a missing summary line is not.
-          grep -Eq '^[0-9]+ passed, [0-9]+ failed$' logs/exercises.log || {
-            echo "::error::the test driver did not reach its summary line"; exit 1; }
-          [ "$status" -le 1 ] || { echo "::error::lake test exited with $status"; exit 1; }
-      - name: Summary
-        if: always()
-        run: |
-          [ -f logs/exercises.log ] || exit 0
-          python3 scripts/ci.py summary "Exercise tree (failures are the exercises)" logs/exercises.log >> "$GITHUB_STEP_SUMMARY"
+          # (the dev shell comes from this checkout's flake; the build runs in the copy)
+          cd "$RUNNER_TEMP/exercises"
+          lake build wiz grail tests
 
   # Stage-1 C of the toolchain = stage-2 C (scripts/fixpoint.sh). Scheduled runs use the
-  # default branch's workflow, so they check out solutions explicitly.
+  # default branch (master).
   fixpoint:
     name: bootstrap fixpoint
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.fixpoint)
@@ -279,8 +274,6 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'schedule' && 'solutions' || '' }}
       - uses: ./.github/actions/setup
         with:
           cachix-name: ${{ env.CACHIX_NAME }}

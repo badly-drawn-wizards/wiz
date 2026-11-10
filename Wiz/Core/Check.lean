@@ -435,8 +435,15 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
 partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   match t with
   | .mvar m => throw (.other s!"the kernel does not accept metavariables (?m{m})")
-  | .natLit _ => match ctx.globals.builtins.lookup "nat" with
-    | some N => pure (ctx.eval (.const N []), Usage.zeros ctx.lvl)
+  | .natLit _ =>
+    -- a numeral means `succ (… zero)`, so it needs both constructors, as definitions
+    let defined (k : Name) := match (ctx.globals.builtins.lookup k).bind ctx.globals.find? with
+      | some { value := some _, .. } => true
+      | _ => false
+    match ctx.globals.builtins.lookup "nat" with
+    | some N =>
+      if defined "nat.zero" && defined "nat.succ" then pure (ctx.eval (.const N []), Usage.zeros ctx.lvl)
+      else throw (.other "numerals need `builtin nat.zero := …` and `builtin nat.succ := …`")
     | none => throw (.other "numerals need `builtin nat := …`")
   | .natOp .. => throw (.cannotInfer (ctx.showTerm t))
   -- (given) Q4: lifting
@@ -809,31 +816,116 @@ partial def declTypeSpine (ctx : Ctx R) : Term R → TCM Unit
     declTypeSpine (ctx.bind x q (ctx.eval dom)) cod
   | t => do let _ ← checkType ctx t
 
-/-- Type check a declaration and add it to the global environment. -/
-def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+/-- The checks every declaration's header gets: a new name, its level parameters, and
+its type is a type. -/
+def checkHeader (g : Globals R) (d : Decl R) : TCM Unit := do
   if g.contains d.name then throw (.duplicateDecl d.name)
   unless d.levelParams.eraseDups.length == d.levelParams.length do
     throw (.other s!"duplicate universe level parameter in {d.name}")
-  let used := d.type.levelParamsUsed ++ (d.value.map Term.levelParamsUsed).getD []
+  let used := d.type.levelParamsUsed ++ (d.value.map Term.levelParamsUsed).getD [] ++
+    (d.witness.map Term.levelParamsUsed).getD []
   if let some u := used.find? (!d.levelParams.contains ·) then
     throw (.other s!"unknown universe level parameter {u} in {d.name}")
   let ctx : Ctx R := { globals := g }
   if g.predicativeProp then declTypeSpine ctx d.type
   else discard <| checkType ctx d.type
+
+/-- Type check a declaration and add it to the global environment. -/
+def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  if d.witness.isSome then throw (.other s!"{d.name}: only a partial definition has a witness")
+  checkHeader g d
+  let ctx : Ctx R := { globals := g }
   if let some v := d.value then
     -- usage is the empty vector: a closed term has no locals to misuse
     let _ ← check ctx v (ctx.eval d.type)
   pure (g.insert d)
 
-/-- A partial definition (stage 13): `f` itself is opaque to the kernel, an axiom (so
-its type must be inhabited, which the elaborator checks), and its implementation, which
-may call `f` and the other definitions of its group, is checked against the type and
-kept for the compiler. -/
+/-- A partial definition's signature (stage 13): `f : T` is opaque to the kernel, like an
+axiom, so the bodies of its group can call it. It must come with a **witness** `w : T`,
+which the kernel checks here: then `f` proves nothing `w` doesn't, whatever the bodies do.
+The witness is checked erased (quantity 0): it is only evidence that `T` is inhabited,
+never run, so it may ignore a linear argument. -/
+def addPartialDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  let some w := d.witness
+    | throw (.other s!"partial definition {d.name} needs a witness, a term of its type")
+  if d.value.isSome then throw (.other s!"partial definition {d.name} can't have a value")
+  checkHeader g d
+  let ctx : Ctx R := { globals := g, erased := true }
+  let _ ← check ctx w (ctx.eval d.type)
+  pure (g.insert d)
+
+/-- A partial definition's implementation, which may call `f` and the other definitions
+of its group: checked against the type and kept for the compiler. Only a partial
+definition (one with a checked witness) takes one. -/
 def addPartialImpl (g : Globals R) (name : Name) (impl : Term R) : TCM (Globals R) := do
   let some d := g.find? name | throw (.other s!"unknown declaration {name}")
+  unless d.witness.isSome && d.value.isNone do
+    throw (.other s!"{name} is not a partial definition")
   let ctx : Ctx R := { globals := g }
   let _ ← check ctx impl (ctx.eval d.type)
   pure (g.insert { d with impl := some impl })
+
+/-- The axioms the declaration `n` depends on, through the constants in its type, its
+value and (for a partial definition) its witness: the declarations without a value or a
+witness (`axiom`s, foreign functions), and the `builtin` registrations made outside the
+toolchain's library (`Globals.assumed`), shown as `builtin key := name`. A numeral
+depends on the declarations registered as `nat`, `nat.zero` and `nat.succ`. A partial
+definition's implementation is not looked at: it is only run, never unfolded in a proof.
+
+Also listed, marked `native`: the **native implementations** the declaration's compiled
+code runs, wherever they are registered (the library's too). `native f := g` is
+`attribute [implemented_by g] f`, and `native T := mk/get` a native representation of the
+type `T` (`attribute [implemented_by mk get] T.mk`, a `repr:` registration). The kernel
+never runs them, so they prove nothing: they are trusted to agree with the definitions. -/
+partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run do
+  let mut seen : Std.HashSet Name := {}
+  let mut todo := [n]
+  let mut out : Array String := #[]
+  let mut reprs : List Name := []
+  let numeral := ["nat", "nat.zero", "nat.succ"].filterMap (List.lookup · g.builtins)
+  while true do
+    match todo with
+    | [] => break
+    | c :: rest =>
+      todo := rest
+      if seen.contains c then continue
+      seen := seen.insert c
+      let some d := g.find? c | continue
+      if d.value.isNone && d.witness.isNone then out := out.push c
+      for (k, m) in g.assumed.reverse do
+        if m == c then out := out.push s!"builtin {k} := {c}"
+      if let some i := d.nativeImpl? then out := out.push s!"native {c} := {i}"
+      -- (a `repr:T:mk:get:…` registration is on `T`'s constructor: it concerns whatever
+      -- mentions the type or the constructor)
+      for (k, m) in g.builtins.reverse do
+        if let "repr" :: T :: mkImpl :: getImpl :: _ := k.splitOn ":" then
+          if (c == m || c == T) && !reprs.contains T then
+            reprs := T :: reprs
+            out := out.push s!"native {T} := {mkImpl}/{getImpl}"
+      let (cs, lit) := ([d.type] ++ d.value.toList ++ d.witness.toList).foldl
+        (fun (acc : List Name × Bool) t => (consts t acc.1, acc.2 || hasNatLit t)) ([], false)
+      -- a registered operation or constructor makes numerals without a literal in the
+      -- term (`Nat.zero` is `0`, `Nat.pow 0 0` is `1`), and numerals unfold through the
+      -- registered `nat.zero` and `nat.succ`: it depends on them like a literal does
+      let lit := lit || g.builtins.any fun (k, m) => m == c && k.startsWith "nat."
+      todo := cs ++ (if lit then numeral else []) ++ todo
+  return out.toList
+where
+  consts (t : Term R) (acc : List Name) : List Name :=
+    match t with
+    | .const c _ => c :: acc
+    | t => (go t |>.run acc).2
+  go (t : Term R) : StateM (List Name) Unit :=
+    t.forChildren (fun _ => pure ()) fun _ c => match c with
+      | .const n _ => modify (n :: ·)
+      | c => go c
+  hasNatLit (t : Term R) : Bool := match t with
+    | .natLit _ => true
+    | t => (litGo t |>.run false).2
+  litGo (t : Term R) : StateM Bool Unit :=
+    t.forChildren (fun _ => pure ()) fun _ c => match c with
+      | .natLit _ => set true
+      | c => litGo c
 
 /-- Check a list of declarations in order. -/
 def addDecls (g : Globals R) (ds : List (Decl R)) : TCM (Globals R) :=
