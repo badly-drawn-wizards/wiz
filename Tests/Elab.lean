@@ -2164,7 +2164,9 @@ def selfhostChecker : IO (Except String System.FilePath) := do
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "checker"
+  note "uses checker"
   if ← exe.pathExists then return .ok exe
+  let start ← IO.monoMsNow
   IO.FS.createDirAll dir
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
@@ -2181,7 +2183,10 @@ def selfhostChecker : IO (Except String System.FilePath) := do
     let tmp := dir / s!"checker-{← IO.monoNanosNow}"
     match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
-    | .ok () => IO.FS.rename tmp exe; return .ok exe
+    | .ok () =>
+      IO.FS.rename tmp exe
+      note s!"built checker {showMs ((← IO.monoMsNow) - start)}"
+      return .ok exe
 
 /-- The self-hosted compiler (stage 21): the frontend and `Backend.wiz`, printing the C
 program for `input.wiz` (the frontend's own output as comments). -/
@@ -2191,7 +2196,9 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
   let stamp := toString (← (← IO.appPath).metadata).modified.sec
   let dir : System.FilePath := s!"/tmp/wiz-selfhost-{hash (prog ++ stamp)}"
   let exe := dir / "compiler"
+  note "uses compiler"
   if ← exe.pathExists then return .ok exe
+  let start ← IO.monoMsNow
   IO.FS.createDirAll dir
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
@@ -2207,7 +2214,10 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
     let tmp := dir / s!"compiler-{← IO.monoNanosNow}"
     match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
-    | .ok () => IO.FS.rename tmp exe; return .ok exe
+    | .ok () =>
+      IO.FS.rename tmp exe
+      note s!"built compiler {showMs ((← IO.monoMsNow) - start)}"
+      return .ok exe
 
 /-- A program for the self-hosted backend (recursion, lists, arrays, maps, strings, mutual
 types), printing `6765 5050 1989 2 yes, ünïcode 2 5`. -/
@@ -4117,5 +4127,48 @@ def infoviewGroup : Group where
           if ((out.stdout ++ out.stderr).splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"
           else throw (IO.userError s!"infoview/test.sh failed:\n{out.stdout}{out.stderr}") }
   ]
+
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  backendGroup ::
+  borrowGroup ::
+  builtinGroup ::
+  cGroup ::
+  classGroup ::
+  coinductiveGroup ::
+  dataGroup ::
+  derivingGroup ::
+  effectsGroup ::
+  ffiGroup ::
+  group ::
+  hdlGroup ::
+  inductiveGroup ::
+  infoviewGroup ::
+  languageGroup ::
+  levelGroup ::
+  liftGroup ::
+  llvmGroup ::
+  macroGroup ::
+  matchGroup ::
+  opticGroup ::
+  ottGroup ::
+  phantomGroup ::
+  qtyGroup ::
+  regionsGroup ::
+  reuseGroup ::
+  runGroup ::
+  selfHostGroup ::
+  seplogicGroup ::
+  sizedGroup ::
+  stdGroup ::
+  structGroup ::
+  tacticGroup ::
+  toolingGroup ::
+  trustGroup ::
+  vecGroup ::
+  wordGroup ::
+  []
 
 end Tests.Elab
