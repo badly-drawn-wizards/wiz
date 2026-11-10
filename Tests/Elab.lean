@@ -3399,7 +3399,7 @@ def seplogicGroup : Group where
           "  Triple (P ⋆ H) c (fun a => Q a ⋆ H) := Triple.frame H t\n" ++
           "def t4 (l : Nat) : Triple (l ↦ 1) (Prog.bind (Prog.read l) (fun v => Prog.write l (Nat.succ v))) (fun _ => l ↦ 2) :=\n" ++
           "  Triple.bind (Triple.read l 1) (fun r => Triple.pure (fun e =>\n" ++
-          "    Eq.substProp (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) (Eq.symm e) (Triple.write l 2 1)))") },
+          "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
     { name := "swap and in-place list reversal are verified", run := fun _ =>
         okLibs ("import Hoare\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
           ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (star Nat (pts Nat p a) (pts Nat q b)) (Prog.swap p q) (fun x => star Nat (pts Nat p b) (pts Nat q a))",
