@@ -944,7 +944,12 @@ def cases (long : Bool) : List Case := [
   { name := "arithmetic: compiled (C) against Lean's Nat", run := fun _ => arithCompiled long false },
   { name := "arithmetic: compiled (LLVM) against Lean's Nat", run := fun _ => arithCompiled long true },
   { name := "words: the natives (C) against the definitions", run := fun _ => wordsAgree long false },
-  { name := "words: the natives (LLVM) against the definitions", run := fun _ => wordsAgree long true }] ++
+  { name := "words: the natives (LLVM) against the definitions", run := fun _ => wordsAgree long true },
+  -- R5 (open): a pinned difference. When `.mk` is sealed (or the model changed) this case flips
+  { name := "words: R5, a word built with .mk from a number that does not fit: `not` differs compiled (pinned)", run := fun _ => do
+      sameOutput "#eval (the definitions)" (printedList [300, 0, 1, 0, 150, 300, 300]) (← evaluated wordOutOfRange)
+      if let some got ← compiled wordOutOfRange false then
+        sameOutput "compiled (the natives)" (printedList [300, 211, 1, 0, 150, 300, 300]) got }] ++
   paradoxCases
 
 def group : Group where
