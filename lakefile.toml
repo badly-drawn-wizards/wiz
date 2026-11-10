@@ -1,6 +1,6 @@
 name = "wiz"
 version = "0.1.0"
-defaultTargets = ["wiz"]
+defaultTargets = ["wiz", "grail"]
 testDriver = "tests"
 # compiled modules go to the shared Lake cache (keyed by their inputs), so worktrees
 # reuse each other's builds
@@ -19,3 +19,10 @@ root = "Main"
 [[lean_exe]]
 name = "tests"
 root = "Tests.Main"
+
+[[lean_lib]]
+name = "Grail"
+
+[[lean_exe]]
+name = "grail"
+root = "Grail.Main"

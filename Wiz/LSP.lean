@@ -43,6 +43,8 @@ structure Server where
   docs : Std.HashMap String Doc := {}
   /-- library modules: name ↦ (path, source) -/
   libs : Std.HashMap String (String × String) := {}
+  /-- the modules from the toolchain's `lib/`, whose `builtin` registrations are trusted -/
+  trusted : List String := []
   /-- the last session number handed out (sessions are unique over the server's life) -/
   sessions : Nat := 0
   /-- the client asked for `wiz/elaborated` notifications -/
@@ -73,7 +75,9 @@ def range (text : String) (info : SourceInfo) : Json :=
 /-- Elaborate a document (incrementally) with the libraries available to `import`. -/
 def elaborate (srv : Server) (doc : Doc) : Doc :=
   let libs := srv.libs
-  let init : St := { loader := fun m => (libs.get? m).map (·.2), termInfo := true }
+  let trusted := srv.trusted
+  let init : St := { loader := fun m => (libs.get? m).map (·.2), termInfo := true,
+                     trustedModule := trusted.contains }
   let key₀ := hash (libs.toList.map (·.2.2) |>.toString)
   let (s, eng) := Query.elaborate doc.engine doc.text init key₀
   { doc with state := s, engine := eng }
@@ -330,7 +334,7 @@ def writeMessage (stdout : IO.FS.Stream) (j : Json) : IO Unit := do
   stdout.flush
 
 /-- Serve until `exit`. -/
-partial def serve (libs : Std.HashMap String (String × String)) : IO Unit := do
+partial def serve (libs : Std.HashMap String (String × String)) (trusted : List String := []) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
   let rec loop (srv : Server) : IO Unit := do
@@ -339,6 +343,6 @@ partial def serve (libs : Std.HashMap String (String × String)) : IO Unit := do
     let (srv, out) := handle srv msg
     for j in out do writeMessage stdout j
     loop srv
-  loop { libs }
+  loop { libs, trusted }
 
 end Wiz.LSP

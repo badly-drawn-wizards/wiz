@@ -627,7 +627,7 @@ def macroGroup : Group where
 /-- Exactly one error (with `lib/` importable), mentioning `fragment`. -/
 def failsLib (input : String) (fragment : String) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let s := runFrontend (R := ZeroOneMany) input { loader := fun m => if m == "Prelude" then some prelude else none }
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do
@@ -660,7 +660,7 @@ def preludeLoader : IO (Name → Option String) := do
 
 def okLib (input : String) (infos : List String := []) : IO Unit := do
   let loader ← preludeLoader
-  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
@@ -785,7 +785,7 @@ def backendGroup : Group where
     { name := "reuse: a dead cell is reused for a new one (Exercise 8.3)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let src := "import Prelude\ndef inc : List Nat → List Nat\n  | .nil => .nil\n  | .cons x xs => .cons (x + 1) (inc xs)\n#ir inc\n#run inc (.cons 1 (.cons 2 .nil))"
-        let s := runFrontend (R := ZeroOneMany) src { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         let texts := s.messages.toList.map (·.text)
         check (texts.any fun t => (t.splitOn "reuse").length > 1) s!"no reuse in {texts}"
         check (texts.contains ".cons 2 (.cons 3 .nil)") s!"wrong result: {texts}" },
@@ -875,7 +875,7 @@ def z20 : Tree := Tree.insert 21 (spine 1 20) Path.top
 
 def reuseState : IO (CommandState ZeroOneMany) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let s := runFrontend (R := ZeroOneMany) reuseSrc { loader := fun m => if m == "Prelude" then some prelude else none }
+  let s := runFrontend (R := ZeroOneMany) reuseSrc { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render reuseSrc
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   pure s
@@ -951,13 +951,13 @@ def reuseGroup : Group where
   ]
 
 /-- Build `main` with the C backend and compare its printed value. Skipped (passes) if
-the C toolchain can't find GMP: set `WIZ_CFLAGS`/`WIZ_LDFLAGS` to run these. -/
+the C toolchain can't find GMP: give the suite a toolchain (`Tests/Main.lean`) to run these. -/
 def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) src { loader := ← preludeLoader }
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← preludeLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal s "main" dir llvm with
+  match ← Build.runGlobal (← toolchain) s "main" dir llvm with
   | .ok v => checkEq expected v
   | .error e =>
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
@@ -972,12 +972,12 @@ def ioRun (src : String) (expected : String) : IO Unit := do
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
     else if m == "Std" then some stdLib else none
-  let headers ← Build.preprocessHeaders src
-  let s := runFrontend (R := ZeroOneMany) src { loader, cHeaders := (headers[·]?) }
+  let headers ← Build.preprocessHeaders (← toolchain) src
+  let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal s "main" dir (timeout := some 120) with
+  match ← Build.runGlobal (← toolchain) s "main" dir (timeout := some 120) with
   | .ok v => checkEq expected v
   | .error e =>
     if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
@@ -988,7 +988,7 @@ def ioFails (src : String) (fragment : String) : IO Unit := do
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib else none
-  let s := runFrontend (R := ZeroOneMany) src { loader }
+  let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
@@ -1903,7 +1903,7 @@ def selfhostChecker : IO (Except String System.FilePath) := do
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib else none
-  let s := runFrontend (R := ZeroOneMany) prog { loader }
+  let s := runFrontend (R := ZeroOneMany) prog { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render prog
   unless errs.isEmpty do return .error s!"unexpected errors:\n{"\n".intercalate errs.toList}"
   match Build.irProgram s "main" with
@@ -1911,7 +1911,7 @@ def selfhostChecker : IO (Except String System.FilePath) := do
   | .ok (decls, _) =>
     -- built under another name and renamed: tests may run at the same time
     let tmp := dir / s!"checker-{← IO.monoNanosNow}"
-    match ← Build.compileC (C.program decls true (Build.extraC s)) tmp with
+    match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
     | .ok () => IO.FS.rename tmp exe; return .ok exe
 
@@ -1936,14 +1936,14 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib else none
-  let s := runFrontend (R := ZeroOneMany) prog { loader }
+  let s := runFrontend (R := ZeroOneMany) prog { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render prog
   unless errs.isEmpty do return .error s!"unexpected errors:\n{"\n".intercalate errs.toList}"
   match Build.irProgram s "main" with
   | .error e => return .error e
   | .ok (decls, _) =>
     let tmp := dir / s!"compiler-{← IO.monoNanosNow}"
-    match ← Build.compileC (C.program decls true (Build.extraC s)) tmp with
+    match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) tmp with
     | .error e => return .error e
     | .ok () => IO.FS.rename tmp exe; return .ok exe
 
@@ -1959,11 +1959,11 @@ def selfhostProgram2 : String :=
   "import Prelude\ndef len : List Nat → Nat\n  | .nil => 0\n  | .cons _ t => len t + 1\npartial def build (n : Nat) (acc : List Nat) : List Nat := match n with\n  | 0 => acc\n  | .succ k => build k (List.cons k acc)\ndef firstOr (d : Nat) : List Nat → Nat\n  | .nil => d\n  | .cons x _ => x\ndef twice (f : Nat → Nat) (x : Nat) : Nat := f (f x)\ndef adder (n : Nat) : Nat → Nat := fun x => x + n\ndef pick (b : Bool) (x y : List Nat) : List Nat := if b then x else y\ndef ignore (x : List Nat) (y : Nat) : Nat := y\ndef main : IO Unit := do\n  let big := build 1000000 .nil;\n  IO.println (Nat.toString (len big));\n  IO.println (Nat.toString (firstOr 7 big));\n  let a := Array.push (Array.push Array.empty 1) 2;\n  let b := Array.set a 0 5;\n  IO.println (Nat.toString (Array.getD a 0 0 + Array.getD b 0 0));\n  let add3 := adder 3;\n  IO.println (Nat.toString (twice add3 1 + twice add3 2));\n  IO.println (Nat.toString (len (pick .false big (List.cons 1 .nil)) + ignore big 4));\n  let m := StrMap.insert (StrMap.insert StrMap.empty (Str.ofString \"k\") 1) (Str.ofString \"k\") 2;\n  IO.println (Nat.toString (StrMap.findD m (Str.ofString \"k\") 0 + StrMap.size m))\n"
 
 /-- Compile a program with the self-hosted compiler, then the C it prints with the
-self-hosted runtime (`selfhost/rt.c`, with the garbage collector given by
-`$WIZ_GC_CFLAGS`/`$WIZ_GC_LDFLAGS`), run it, and compare its output. -/
+self-hosted runtime (`selfhost/rt.c`, with the garbage collector given by the
+toolchain's `gcCflags`/`gcLdflags`), run it, and compare its output. -/
 def selfhostCompileRun (file expected : String) : IO Unit := do
-  let some gcc ← IO.getEnv "WIZ_GC_CFLAGS" | IO.println "    (skipped: no garbage collector, $WIZ_GC_CFLAGS)"
-  let gcl := (← IO.getEnv "WIZ_GC_LDFLAGS").getD ""
+  let tc ← toolchain
+  if tc.gcCflags.isEmpty then IO.println "    (skipped: no garbage collector, --gc-cflags)"; return
   match ← selfhostCompiler with
   | .error e =>
     if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
@@ -1974,9 +1974,8 @@ def selfhostCompileRun (file expected : String) : IO Unit := do
     unless out.exitCode == 0 do throw (IO.userError s!"the compiler failed ({out.exitCode}): {out.stderr}")
     IO.FS.writeFile (dir / "out.c") out.stdout
     let rt := (← IO.currentDir) / "selfhost"
-    let args := #["-O1", "-w", s!"-I{rt}"] ++ (gcc.splitOn " ").toArray ++ #["out.c", "-o", "prog"] ++
-      ((gcl.splitOn " ").filter (· != "")).toArray
-    let cc ← IO.Process.output { cmd := "cc", args, cwd := dir }
+    let args := #["-O1", "-w", s!"-I{rt}"] ++ tc.gcCflags.toArray ++ #["out.c", "-o", "prog"] ++ tc.gcLdflags.toArray
+    let cc ← IO.Process.output { cmd := tc.cc, args, cwd := dir }
     unless cc.exitCode == 0 do throw (IO.userError s!"cc failed: {cc.stderr.take 2000}")
     let run ← IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString], cwd := dir }
     unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
@@ -2017,7 +2016,7 @@ def ioDiverges (src : String) (secs : Nat := 5) : IO Unit := do
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
-  let s := runFrontend (R := ZeroOneMany) src { loader }
+  let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   match Build.irProgram s "main" with
@@ -2025,7 +2024,7 @@ def ioDiverges (src : String) (secs : Nat := 5) : IO Unit := do
   | .ok (decls, _) =>
     let dir ← IO.FS.createTempDir
     let exe := dir / "wiz_main"
-    match ← Build.compileC (C.program decls true (Build.extraC s)) exe with
+    match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) exe with
     | .error e =>
       if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
     | .ok () =>
@@ -2350,14 +2349,14 @@ def wordGroup : Group where
     { name := "compiled code calls the native", run := fun _ => do
         let loader ← preludeLoader
         let src := "import Word\ndef f (a b : U32) : U32 := UIntN.add a b\n#ir f"
-        let s := runFrontend (R := ZeroOneMany) src { loader }
+        let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "wiz_word_add").length > 1) s!"no native call in:\n{out}" },
     { name := "the width is part of the type, and is inferred", run := fun _ => do
         okLib "import Word\ndef w {ω n : Nat} (a : UIntN n) : Nat := n\n#check w (U8.ofNat 3)\n#eval w (U8.ofNat 3)"
           ["w 8 (U8.ofNat 3) : Nat", "8"]
         let loader ← preludeLoader
-        let s := runFrontend (R := ZeroOneMany) "import Word\ndef bad (x : U8) : U16 := x" { loader }
+        let s := runFrontend (R := ZeroOneMany) "import Word\ndef bad (x : U8) : U16 := x" { loader, trustedModule := Tests.libModule }
         check (s.messages.any (·.severity == .error)) "U8 was accepted as U16" },
     { name := "field notation through the fixed widths", run := fun _ =>
         okLib "import Word\ndef f (a b : I16) : Bool := a.lt b\n#eval f (I16.ofNeg 2) (I16.ofNat 1)" [".true"] }
@@ -2425,7 +2424,7 @@ def toolingGroup : Group where
   cases := [
     { name := "queries: an edit re-elaborates only what follows it", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         let v1 := "import Prelude\ndef a : Nat := 1\ndef b : Nat := a + 1\ndef c : Nat := b + 1\n"
         let (s1, eng) := Query.elaborate {} v1 init
         checkEq 4 eng.elaborated
@@ -2438,7 +2437,7 @@ def toolingGroup : Group where
         checkEq 5 eng.elaborated },
     { name := "queries: hover, definition, completion", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         let src := "import Prelude\ndef double (n : Nat) : Nat := n + n\ndef four : Nat := double 2\n"
         let (s, _) := Query.elaborate {} src init
         let off := (src.splitOn "double 2")[0]!.length
@@ -2451,7 +2450,7 @@ def toolingGroup : Group where
         checkEq "#[double]" (toString (Query.completionsAt s' pre pre.length)) },
     { name := "the shared cache gives the same results", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let init : CommandState ZeroOneMany := { loader := fun m => if m == "Prelude" then some prelude else none }
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         let src := "import Prelude\ninductive T where\n  | a\n  | b (t : T)\ndef size : T → Nat\n  | .a => 1\n  | .b t => size t + 1\n#eval size (.b (.b .a))\ndef bad : Nat := true\n"
         let plain := runFrontend src init
         let dir ← IO.FS.createTempDir
@@ -2465,7 +2464,7 @@ def toolingGroup : Group where
         checkEq plain.globals.order.size warm.globals.order.size },
     { name := "terms survive the cache's format", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let st := runFrontend (R := ZeroOneMany) "import Prelude" { loader := fun _ => some prelude }
+        let st := runFrontend (R := ZeroOneMany) "import Prelude" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         for n in ["List.append", "Nat.rec", "SyntaxF.casesOn", "Tac.rec", "Monad.bind"] do
           let some d := st.globals.find? n | throw (IO.userError s!"no {n}")
           let text := (Cache.term d.type).render
@@ -2537,7 +2536,7 @@ def cGroup : Group where
   exercise := "Exercise 8.2"
   cases := nativeCases false
 
-/-- The same programs, through LLVM (`$WIZ_LLC`). -/
+/-- The same programs, through LLVM (the toolchain's `llc`). -/
 def llvmGroup : Group where
   name := "llvm"
   exercise := "Stage 8d"
@@ -2595,7 +2594,7 @@ def builtinGroup : Group where
         failsLib "import Prelude\ndef g (m n : Nat) : Nat := m\nattribute [implemented_by g] Nat.add" "already has an implementation" },
     { name := "the natives agree with the definitions (n / 0 = 0)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : Nat.div 7 0 = 7 := refl 7" { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : Nat.div 7 0 = 7 := refl 7" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "kernel arithmetic on literals is native", run := fun _ =>
         okLib "import Prelude\ndef t : 100000 * 100000 = 10000000000 := refl 10000000000" },
@@ -2604,7 +2603,7 @@ def builtinGroup : Group where
           "def t : isZero 3 = Bool.false := refl Bool.false\ndef u : Nat.succ 4 = 5 := refl 5") },
     { name := "different literals are not equal", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : 2 + 2 = 5 := refl 4" { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef t : 2 + 2 = 5 := refl 4" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "non-ASCII strings are cheap", run := fun _ =>
         okLib "import Prelude\n#eval \"λ✝\"" ["\"λ✝\""] },
@@ -2623,11 +2622,11 @@ def builtinGroup : Group where
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let src := procPrelude ++ "syntax (name := boom) \"boom!\" : term\n" ++
           "def boomMacro : Macro := fun _ => MacroM.throw \"kaboom\"\nattribute [macro term.boom] boomMacro\n#eval (boom! : Nat)"
-        let s := runFrontend (R := ZeroOneMany) src { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.text == "kaboom")) s!"expected kaboom, got {s.messages.map (·.text)}" },
     { name := "only a Macro can be a macro", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\nattribute [macro term.app] Nat.add" { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\nattribute [macro term.app] Nat.add" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "infinitary inductive: recursor", run := fun _ =>
         okLib (treePrelude ++ "#check Tree.rec")
@@ -2640,7 +2639,7 @@ def builtinGroup : Group where
           "#check W.sup") ["W.sup : {A : Type} → (n : Nat) → ((i : Nat) → W A i) → W A (.succ n)"] },
     { name := "infinitary inductive: the domain may not mention the type", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\ninductive Bad where\n  | mk (k : Bad → Bad)" { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ninductive Bad where\n  | mk (k : Bad → Bad)" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" },
     { name := "a match does not shadow the user's variables", run := fun _ =>
         okLib "import Prelude\ndef e (x : Bool) (n : Nat) : Bool := match n with\n  | .zero => x\n  | .succ _ => x" },
@@ -2651,7 +2650,7 @@ def builtinGroup : Group where
         okLib "import Prelude\n#eval String.append \"ab\" \"cd\"" ["\"abcd\""] },
     { name := "a numeral is not a string", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef s : String := 3" { loader := fun _ => some prelude }
+        let s := runFrontend (R := ZeroOneMany) "import Prelude\ndef s : String := 3" { trustedModule := Tests.libModule, loader := fun _ => some prelude }
         check (s.messages.any (·.severity == .error)) "expected an error" }
   ]
 
@@ -2662,7 +2661,7 @@ def okOptic (input : String) (infos : List String := []) : IO Unit := do
   let optic ← IO.FS.readFile "lib/Optic.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "Optic" then some optic else none
-  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
@@ -2672,7 +2671,7 @@ def failsOptic (input : String) (fragment : String) : IO Unit := do
   let optic ← IO.FS.readFile "lib/Optic.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "Optic" then some optic else none
-  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do
@@ -2711,7 +2710,7 @@ def derivingRun (input : String) : IO (CommandState ZeroOneMany) := do
   let derivingLib ← IO.FS.readFile "lib/Deriving.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "Deriving" then some derivingLib else none
-  pure (runFrontend (R := ZeroOneMany) input { loader })
+  pure (runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule })
 
 def okDeriving (input : String) (infos : List String := []) : IO Unit := do
   let s ← derivingRun input
@@ -2833,7 +2832,7 @@ def derivingGroup : Group where
 /-- Messages of `input` (with `lib/` importable), without positions, errors marked. -/
 def messagesLib (input : String) : IO (List String) := do
   let loader ← preludeLoader
-  let s := runFrontend (R := ZeroOneMany) input { loader }
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   pure (s.messages.toList.map fun m => (match m.severity with
     | .error => "error: " | .warning => "warning: " | .info => "") ++ m.text)
 
@@ -2908,6 +2907,23 @@ def trustGroup : Group where
         fails "inductive E where\n  | z\nbuiltin nat := E\ndef x : E := 0\n" "numerals need"
         fails "inductive N where\n  | z\naxiom Z : N\nbuiltin nat := N\nbuiltin nat.zero := Z\n" "must be a definition"
         fails "inductive N where\n  | z\ndef f (a : N) : N := a\nbuiltin nat := N\nbuiltin nat.add := f\n" "2 arguments" },
+    { name := "O3: a registration in a module from an -I directory is an axiom", run := fun _ => do
+        let dir : System.FilePath := s!"/tmp/wiz-trust-{← IO.monoNanosNow}"
+        IO.FS.createDirAll dir
+        IO.FS.writeFile (dir / "Mine.wiz") "def Nat.k (a b : Nat) : Nat := a\nbuiltin nat.add := Nat.k\n"
+        -- a `Prelude` in the directory doesn't replace the library's
+        IO.FS.writeFile (dir / "Prelude.wiz") "builtin nat := Nat\n"
+        let src := "import Prelude\nimport Mine\ndef x : Nat := Nat.k 1 2\n#print axioms x\n"
+        let roots : List System.FilePath := ["lib", dir]
+        let cl ← Wiz.Module.loadClosure roots src
+        let own := Wiz.Module.fromFirstRoot roots cl
+        check (own.contains "Prelude" && !own.contains "Mine") s!"trusted modules: {own}"
+        let s := runFrontend (R := ZeroOneMany) src { loader := fun m => (cl.get? m).map (·.2), trustedModule := own.contains }
+        let msgs := s.messages.toList.map fun m => (m.severity == .warning, m.text)
+        IO.FS.removeDirAll dir
+        let expect := [(true, "module Mine: 2:1: warning: builtin nat.add := Nat.k is not checked: it is an axiom of every declaration that depends on Nat.k (see `#print axioms`)"),
+          (false, "'x' depends on axioms: [builtin nat.add := Nat.k]")]
+        checkEq (repr expect).pretty (repr msgs).pretty },
     { name := "Prelude registrations are trusted and compute natively", run := fun _ =>
         okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4\n#print axioms t\n#eval 3 * 7 + Nat.pow 2 10\n"
           ["'t' does not depend on any axioms", "1045"] },
@@ -2932,14 +2948,14 @@ def libLoader : IO (Name → Option String) := do
 
 /-- No errors, and these messages, with every library importable. -/
 def okLibs (input : String) (infos : List String := []) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) input { loader := ← libLoader }
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
 
 /-- Exactly one error, mentioning `fragment`, with every library importable. -/
 def failsLibs (input : String) (fragment : String) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) input { loader := ← libLoader }
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
   unless (errs[0]!.splitOn fragment).length > 1 do
@@ -2947,11 +2963,11 @@ def failsLibs (input : String) (fragment : String) : IO Unit := do
 
 /-- Build `main` with the C backend, with every library importable. -/
 def cRunLibs (src : String) (expected : String) : IO Unit := do
-  let s := runFrontend (R := ZeroOneMany) src { loader := ← libLoader }
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal s "main" dir with
+  match ← Build.runGlobal (← toolchain) s "main" dir with
   | .ok v => checkEq expected v
   | .error e =>
     if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)

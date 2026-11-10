@@ -37,15 +37,17 @@ the results of the probes listed in the "Probes" section.
   running them** (see "Open issues" and "Probes"):
   * **O1** (fixed in `c079d1b`): the self-hosted kernel reduced `Size ≡ Size` to
     `False`, so `reflTy Size : False` there (the Lean kernel was not affected);
-  * **O2**: a `partial def` at an empty instance of an indexed family passes the
-    elaborator's inhabitedness check, and the kernel takes it as an axiom
-    (`boom : False`, no axioms written);
-  * **O3**: a user's `builtin nat.add := K` with a definition that disagrees with native
-    addition proves `False`.
+  * **O2** (fixed, F3, PR #5): a `partial def` at an empty instance of an indexed
+    family passed the elaborator's inhabitedness check, and the kernel took it as an
+    axiom (`boom : False`, no axioms written);
+  * **O3** (fixed, F4, PR #5): a user's `builtin nat.add := K` with a definition that
+    disagrees with native addition proved `False`.
 
-  O2 and O3 are not bugs in the kernel's rules: in both, the kernel accepts a declaration
-  on trust (an axiom the elaborator vouched for; an unchecked registration). They are
-  still closed proofs of `False` in the language. Several smaller gaps are listed too.
+  O2 and O3 were not bugs in the kernel's rules: in both, the kernel accepted a
+  declaration on trust (an axiom the elaborator vouched for; an unchecked registration).
+  Now a partial definition needs a witness the kernel checks, and a registration outside
+  the toolchain's library is an axiom that `#print axioms` reports. Several smaller gaps
+  are listed too.
 
 ---
 
@@ -67,7 +69,7 @@ the results of the probes listed in the "Probes" section.
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
 | QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by the default quantity, projections on pairs (§7.1), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**, and one is an open issue (Q1). |
 | Quantity polymorphism (`Qty`, polynomial usages, `≤` by trying every assignment) | **conjecture** | Sound for finite rigs if each assignment is a valid instance (it checks them all). No paper. |
-| Numerals and native arithmetic | **folklore**, conditional on correct `builtin` registrations | See K2: the registrations are trusted. |
+| Numerals and native arithmetic | **folklore**, conditional on correct `builtin` registrations | The Prelude's registrations are trusted (reviewed, §7); any other is an axiom (F4). |
 | Glued (lazy) unfolding, `lazyInd` | **folklore** | An implementation technique; it must give the same answers as eager unfolding. Not proved. |
 
 ## 2. Interactions
@@ -130,6 +132,40 @@ the results of the probes listed in the "Probes" section.
   `sized-recursion`, `sized-corecursion`, `sh-kernel-sizes` and `sh-kernel-coinduction` as
   "known-issue" for `∞ < ∞`; that is out of date.
 
+### F3. Partial definitions at an empty index gave `False` (was O2) — **fixed**
+
+* **The bug.** `partial def f : T := …` made `f : T` a kernel axiom, guarded only by
+  the elaborator's `inhabitedTy`, which looked at the type's *head*: `T.mk : T .t` made
+  `T .f` look inhabited, so `partial def bad : T .f := bad` and a `match` gave
+  `boom : False` (also `partial def bad : T .t → T .f`).
+* **The fix.** A partial definition carries a **witness** (`Decl.witness`), a term of
+  its type that the kernel checks (`addPartialDecl`, erased); `addPartialImpl` accepts only
+  such declarations, and `inhabitedTy` is gone. The elaborator finds the witness
+  (`Elab/Witness.lean`: constructors and constants unified against the goal, so indices
+  must match; `fun`, pairs, `Inhabited.default`, …) or the user writes
+  `partial (default := w) def …`. Both self-hosted mirrors do the same (`checkPartial` in
+  `Kernel.wiz`, `addPartials`/`wit` in `Frontend.wiz`). PR #5 (`agent/trust-gaps`, first
+  commit `ebb6a08`).
+* **Regression tests.** Group *trust*: the probe and its Π variant are rejected, a wrong
+  `default` is rejected, the kernel rejects missing and ill-typed witnesses, inferred and
+  written witnesses are accepted, and the self-hosted frontend rejects the probe.
+
+### F4. Unchecked `builtin` registrations gave `False` (was O3) — **fixed**
+
+* **The bug.** `builtin nat.add := K` made `K` compute natively on numerals whatever its
+  definition, so a lemma proved by unfolding `K` was refuted by native computation:
+  `bad : False`. `builtin nat := E` for an empty `E` and `(0 : E)` crashed `wiz check`
+  (a `check`/`infer` loop on numerals).
+* **The fix.** Registrations in modules of the toolchain's `lib/` are trusted (reviewed,
+  §7). Any other is recorded (`Globals.assumed`), warned about (at an `import` for a
+  module), and reported by `#print axioms d`, which lists every axiom `d` depends on.
+  Registrations are checked for shape (`nat` an inductive type, each operation a
+  definition `N → … → N`), numerals need `nat.zero` and `nat.succ`, and a numeral at a
+  type that isn't the registered data type is an error. PR #5 (`agent/trust-gaps`).
+* **Regression tests.** Group *trust*: the probe's warnings and `#print axioms` output, a
+  registration in a module from an `-I` directory, the crash and the shape errors, and the
+  Prelude's numerals still computing natively with no axioms.
+
 ---
 
 ## 4. Open issues
@@ -162,66 +198,7 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
 * Reach: `Kernel.wiz` is used by the self-hosted frontend; whether the self-hosted
   frontend can produce this term from surface syntax was not checked.
 
-### O2. Partial definitions trust an elaborator check that can be fooled — **open issue (proof of `False`, confirmed)**
-
-`partial def f : T := …` adds `f : T` as a kernel **axiom** (§13). Only the elaborator's
-`inhabitedTy` (`Elab/Command.lean:576`) stands between that and `partial def bad : False
-:= bad`. It decides inhabitation by the *head* of a type: a type headed by a name `T`
-counts as inhabited if *some* constant's type ends in `T …` (`byConstant`), whatever the
-indices, and inside a Π any type headed by the same name as a domain counts as inhabited.
-So for an indexed family with an empty instance:
-
-```
-inductive B where | t | f
-inductive T : B → Type where | mk : T .t
-partial def bad : T .f := bad          -- T.mk : T .t makes "T …" look inhabited
-```
-
-`T .f` is empty, and an inhabitant of it gives `False` by `match`:
-
-```
-def boom : False := match bad with
-  | .mk => absurd ()
-#check boom                            -- boom : False   (CONFIRMED, `wiz check`)
-```
-
-The control `partial def bad2 : False := bad2` is rejected ("its type must be visibly
-inhabited"), and `def ok (x : T .f) : False := match x with | .mk => absurd ()` is
-accepted (it is correct: `T .f` is empty). So the hole is in `inhabitedTy`. The same check
-also accepts `partial def bad : T .t → T .f := bad` (the domain's head `T` is assumed
-inhabited in the codomain). Fix: make the kernel check partial definitions' types against a
-witness the elaborator supplies, or make `inhabitedTy` compare the indices (use
-`conv`), and add the file above as a negative test.
-
-### O3. `builtin` registrations are trusted — **open issue (proof of `False` from a user registration, confirmed)**
-
-`builtin nat := N` makes numerals have type `N`; `builtin nat.add := f` makes
-`f 2 3` compute natively. Nothing checks `N` or `f` (`Elab/Command.lean:937–944`;
-`vBuiltin?`, `vNatOp`, `Eval.lean:76, 386`). A wrong registration proves `False`, for
-example by registering an empty type as `nat` (numerals inhabit it) or an `add` whose
-definition disagrees with native addition (a lemma proved by unfolding the definition is
-refuted by native computation at literals). **Confirmed**:
-
-```
-inductive N where
-  | zero
-  | succ (n : N)
-def K (a b : N) : N := a
-builtin nat := N
-builtin nat.zero := N.zero
-builtin nat.succ := N.succ
-builtin nat.add := K
-def h (n : N) : K n 3 = n := refl n     -- by K's definition
-def bad : False := absurd (h 2)         -- K 2 3 computes natively to 5, so h 2 : 5 = 2 ↦ False
-#check bad                              -- bad : False
-```
-
-(`#reduce K 2 3` prints `5`.) Registering an empty type as `nat` and writing a numeral at
-it (`def E : Type := Empty; builtin nat := E; def bad : False := absurd (0 : E)`) crashed
-`wiz check` with a stack overflow instead (where, not investigated). Registrations should be treated like axioms: listed,
-restricted to the Prelude, or checked (the native operations can be checked against the
-definitions on the registration's own terms only by proof, so restricting them is
-simpler).
+### O2, O3 — **fixed** (F3, F4).
 
 ### D1. Regularity + impredicative `Prop` + irrelevant equality: type checking loops — **open issue (normalisation)**
 
@@ -413,11 +390,11 @@ as a test yet (each should become one when its issue is fixed).
 |---|---|
 | `reflTy Size`, `absurd Empty (reflTy Size)` in `Kernel.wiz` (O1) | accepted: `False`, `Empty0` |
 | `#reduce Size = Size` in the Lean kernel | stuck: `Size = Size` |
-| `partial def bad : T .f` + `boom : False` (O2) | accepted: `boom : False` |
+| `partial def bad : T .f` + `boom : False` (O2) | accepted: `boom : False` (now rejected: no witness, F3) |
 | `partial def bad2 : False := bad2` (control) | rejected |
-| `partial def bad : T .t → T .f` (O2) | accepted |
-| wrong `builtin nat.add` (O3) | accepted: `bad : False` |
-| `builtin nat := E` (empty) + `(0 : E)` (O3) | `wiz check` crashes (stack overflow) |
+| `partial def bad : T .t → T .f` (O2) | accepted (now rejected, F3) |
+| wrong `builtin nat.add` (O3) | accepted: `bad : False` (now an axiom: warned, listed by `#print axioms`, F4) |
+| `builtin nat := E` (empty) + `(0 : E)` (O3) | `wiz check` crashes (stack overflow) (now an error, F4) |
 | `p.2` on a linear pair (Q1) | accepted; dropping a linear variable directly is rejected |
 | `Desc.arg 1 True …` (Q4) | rejected by the elaborator (field must be in `Type ?u`); kernel path not probed |
 

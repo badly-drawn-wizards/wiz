@@ -96,8 +96,8 @@ structure CommandState (R : Type) where
   /-- the module being elaborated (`""` for the main file) -/
   module : String := ""
   /-- the modules whose `builtin` registrations are trusted: the toolchain's library
-  (`lib/`). The main file never is; `wiz` leaves out modules from `$WIZ_PATH`. -/
-  trustedModule : String → Bool := fun m => m != ""
+  (`lib/`). The main file never is, nor a module from a `-I` directory. -/
+  trustedModule : String → Bool := fun _ => false
   /-- macro rules, latest first -/
   macros : List (Name × Syntax × Syntax × List Name) := []
   nextScope : Nat := 1000000

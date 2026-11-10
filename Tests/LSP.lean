@@ -14,7 +14,7 @@ def prelude : IO String := IO.FS.readFile "lib/Prelude.wiz"
 /-- Elaborate `src` (which imports the prelude) as the language server does. -/
 def elabSrc (src : String) (termInfo : Bool := true) : IO St := do
   let p ← prelude
-  let init : St := { loader := fun m => if m == "Prelude" then some p else none, termInfo }
+  let init : St := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some p else none, termInfo }
   pure (Query.elaborate {} src init).1
 
 /-- The character offset just after the `k`th occurrence of `needle` (plus `delta`). -/
@@ -141,7 +141,7 @@ def group : Group where
         check (ds.contains "h Nat false") s!"decl infos: {ds}" },
     { name := "info tree: through the shared cache", run := fun _ => do
         let p ← prelude
-        let init : St := { loader := fun m => if m == "Prelude" then some p else none, termInfo := true }
+        let init : St := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some p else none, termInfo := true }
         let src := tacticSrc ++ "def f (n : Nat) : Nat := Nat.add n _\ndef h := Nat.add 1 2\n"
         let dir ← IO.FS.createTempDir
         let (cold, _) ← Cache.elaborateCached dir src init 0
@@ -153,7 +153,7 @@ def group : Group where
           checkEq (termGoalText cold off) (termGoalText warm off) },
     { name := "tagged printing agrees with the printer", run := fun _ => do
         let p ← prelude
-        let st := runFrontend (R := ZeroOneMany) "import Prelude" { loader := fun _ => some p }
+        let st := runFrontend (R := ZeroOneMany) "import Prelude" { trustedModule := Tests.libModule, loader := fun _ => some p }
         for n in st.globals.order do
           let some d := st.globals.find? n | continue
           for t in [d.type] ++ d.value.toList do
