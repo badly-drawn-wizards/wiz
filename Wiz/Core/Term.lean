@@ -246,6 +246,10 @@ don't need a case per constructor. -/
   | .ulift l A => return .ulift (← fl l) (← f 0 A)
   | .up a => return .up (← f 0 a)
   | .down t => return .down (← f 0 t)
+  -- (the arguments are children like any others: `Val.lvlBound` reads a closure's free
+  -- variables through this traversal, and missing them here made `sameVal` identify
+  -- `Nat.add x` with `Nat.add y`, which proved `False`; `wiz-notes/soundness-audit.md`, S1)
+  | .natOp op args => return .natOp op (← args.mapM (f 0))
   | t => pure t
 where
   hintM (fl : Level → m Level) (f : Nat → Term R → m (Term R)) :
@@ -297,6 +301,14 @@ def spine : Term R → Term R × List (Term R)
 /-- Instantiate universe level parameters `ps` with `us`. -/
 partial def instLevels (ps : List Name) (us : List Level) (t : Term R) : Term R :=
   Id.run <| t.mapChildrenM (fun l => pure (l.instParams ps us)) (fun _ c => pure (instLevels ps us c))
+
+/-- Does `var ix` occur free in `t`? (Trusted: `Ctx.instArg` in `Check.lean` skips
+evaluating an argument when this says the codomain doesn't mention it. It is complete
+because `mapChildrenM` visits every child of every constructor.) -/
+partial def hasVar (ix : Nat) : Term R → Bool
+  | .var i => i == ix
+  | t => (t.forChildren (m := StateM Bool) (fun _ => pure ())
+      (fun k c => modify (· || c.hasVar (ix + k))) |>.run false).2
 
 /-- All level parameter names mentioned in a term. -/
 partial def levelParamsUsed (t : Term R) : List Name :=

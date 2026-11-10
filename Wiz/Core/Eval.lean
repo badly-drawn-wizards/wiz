@@ -131,8 +131,12 @@ def vBuiltin? (g : Globals R) (n : Name) : Option (Val R) := do
   else if natOpArity k == 1 then some (.lam "a" (.mk [] (.natOp k #[.var 0])))
   else some (.lam "a" (.mk [] (.lam "b" (.natOp k #[.var 1, .var 0]))))
 
-/-- `absurd` is always stuck: the empty type has no constructors. -/
-def vAbsurd (m : Val R) : Val R → Val R
+/-- `absurd` is always stuck: the empty type has no constructors. (A glued value is
+unfolded first, as `Kernel.wiz` does: `absurd (lemma h)` was a panic, and the value that
+came back was `Sort 0`; `wiz-notes/soundness-audit.md`, F2.) -/
+partial def vAbsurd (m : Val R) : Val R → Val R
+  | .unfold _ _ _ v => vAbsurd m v.get
+  | .lazyInd _ _ _ _ _ _ _ _ _ v => vAbsurd m v.get
   | .neutral h sp => .neutral h (sp.push (.absurd m))
   | _ => panic! "vAbsurd: ill-typed"
 
