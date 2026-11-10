@@ -1,5 +1,5 @@
 import Signal
--- E2: an FIR filter over `Vec` (HDL plan §6). `WIZ_PATH=drafts/hdl wiz check drafts/hdl/Fir.wiz`
+-- E2: an FIR filter over `Vec` (HDL plan §6). `wiz check -I drafts/hdl drafts/hdl/Fir.wiz`
 -- y(t) = Σₖ cₖ · x(t − k). The number of taps is a compile-time `Nat`: the Vec recursion
 -- unrolls during synthesis, so the netlist has n multipliers and n − 1 adders.
 

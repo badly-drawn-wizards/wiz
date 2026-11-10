@@ -1,0 +1,1 @@
+examples/sized.wiz:15:1: info: .succ (.succ (.succ (.succ (.succ .zero))))

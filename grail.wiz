@@ -1,0 +1,18 @@
+import Grail
+-- The Wiz repository's build file (stage 23d): `grail build`, or `grail build std`.
+-- Machine settings (where GMP lives) go in grail.local.wiz, which isn't committed.
+-- Every example is a test (`grail test`): its messages against examples/NAME.expected.
+def package : Package := Package.new "wiz"
+  |> Package.set "libs" "-lm"
+  |> Package.lib "std" "lib"
+  |> Package.tests "examples" "examples"
+  |> Package.exe "io" "examples/io.wiz"
+  |> Package.exe "std-demo" "examples/std.wiz"
+  |> Package.exe "effects" "examples/effects.wiz"
+  |> Package.exe "foreign" "examples/foreign.wiz"
+  |> Package.exe "glue" "examples/glue.wiz"
+  |> Package.exe "import-c" "examples/import_c.wiz"
+  -- the self-hosted toolchain; `grail build bootstrap` is the fixpoint check (minutes)
+  |> Package.selfhost "selfhost-checker" "checker"
+  |> Package.selfhost "selfhost-compiler" "compiler"
+  |> Package.selfhost "bootstrap" "bootstrap"
