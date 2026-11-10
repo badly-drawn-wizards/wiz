@@ -28,7 +28,7 @@ done_
 
 step "stage 2: cc self1.c with selfhost/rt.c"
 # shellcheck disable=SC2086
-cc -O1 -w -I"$PWD/selfhost" $WIZ_GC_CFLAGS "$out/self1.c" -o "$out/stage2" $WIZ_GC_LDFLAGS
+cc -O2 -w -I"$PWD/selfhost" $WIZ_GC_CFLAGS "$out/self1.c" -o "$out/stage2" $WIZ_GC_LDFLAGS
 done_
 
 step "stage 2 compiles the toolchain (self2.c)"
