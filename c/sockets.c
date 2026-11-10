@@ -1,9 +1,10 @@
-/* Unix-domain sockets for `wiz lsp --infoview SOCK` (Wiz/Socket.lean).
+/* Sockets for `wiz lsp --infoview SOCK` (Unix-domain) and `wiz lsp --ws PORT` (TCP,
+   for WebSockets): Wiz/Socket.lean.
 
-   Lean's standard library has TCP and UDP sockets but no Unix-domain ones, so the
-   server listens, accepts and connects here, and turns each connection into two
-   ordinary Lean handles (one for reading, one for writing), which it then reads and
-   writes like stdin/stdout.
+   Lean's standard library has no Unix-domain sockets, and its TCP sockets are
+   asynchronous (libuv) rather than handles, so the server listens, accepts and connects
+   here, and turns each connection into two ordinary Lean handles (one for reading, one
+   for writing), which it then reads and writes like stdin/stdout.
 
    The linker compiles this file into each executable (`moreLinkObjs` in the lakefile),
    without Lean's include directory, so it does not include <lean/lean.h>: Lean values
@@ -11,6 +12,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -93,7 +95,59 @@ lean_object *wiz_unix_listen(lean_object *w) {
   return wiz_sock_ok_fd((uint32_t)fd, w);
 }
 
-/* Accept a connection (blocking): its descriptor (for `wiz_fd_shutdown`), read handle
+/* Listen on TCP address `addr` (IPv4, host byte order: 0x7f000001 is 127.0.0.1) and
+   `port` (0: any free port, see `wiz_tcp_port`). Returns the listening descriptor. */
+lean_object *wiz_tcp_listen(uint32_t addr, uint16_t port, lean_object *w) {
+  signal(SIGPIPE, SIG_IGN);
+  int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) return io_errno(w);
+  int one = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+  struct sockaddr_in a;
+  memset(&a, 0, sizeof a);
+  a.sin_family = AF_INET;
+  a.sin_addr.s_addr = htonl(addr);
+  a.sin_port = htons(port);
+  if (bind(fd, (struct sockaddr *)&a, sizeof a) != 0 || listen(fd, 8) != 0) {
+    int e = errno; close(fd); errno = e; return io_errno(w);
+  }
+  return wiz_sock_ok_fd((uint32_t)fd, w);
+}
+
+/* The port a TCP socket is bound to. */
+lean_object *wiz_tcp_port(uint32_t fd, lean_object *w) {
+  struct sockaddr_in a;
+  socklen_t len = sizeof a;
+  if (getsockname((int)fd, (struct sockaddr *)&a, &len) != 0) return io_errno(w);
+  return wiz_sock_ok_fd((uint32_t)ntohs(a.sin_port), w);
+}
+
+/* Connect to TCP `addr`:`port` (for tests): read handle and write handle. */
+lean_object *wiz_tcp_connect(uint32_t addr, uint16_t port, lean_object *w) {
+  signal(SIGPIPE, SIG_IGN);
+  int c = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (c < 0) return io_errno(w);
+  struct sockaddr_in a;
+  memset(&a, 0, sizeof a);
+  a.sin_family = AF_INET;
+  a.sin_addr.s_addr = htonl(addr);
+  a.sin_port = htons(port);
+  if (connect(c, (struct sockaddr *)&a, sizeof a) != 0) {
+    int e = errno; close(c); errno = e; return io_errno(w);
+  }
+  lean_object *r, *wr;
+  if (conn_handles(c, &r, &wr) != 0) return io_errno(w);
+  return wiz_sock_ok_handles(r, wr, w);
+}
+
+/* Stop listening on a TCP socket (a thread blocked in accept returns). */
+lean_object *wiz_fd_close(uint32_t fd, lean_object *w) {
+  shutdown((int)fd, SHUT_RDWR);
+  close((int)fd);
+  return wiz_sock_ok_unit(w);
+}
+
+/* Accept a connection on a listening socket, Unix or TCP (blocking): its descriptor (for `wiz_fd_shutdown`), read handle
    and write handle. */
 lean_object *wiz_unix_accept(uint32_t fd, lean_object *w) {
   int c;
