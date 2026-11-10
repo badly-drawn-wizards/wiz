@@ -69,7 +69,7 @@ the results of the probes listed in the "Probes" section.
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] treats ℕ and (unverified) general inductives differently. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
-| QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by the default quantity, projections on pairs (§7.1), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**, and one is an open issue (Q1). |
+| QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed for `.2`), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
 | Quantity polymorphism (`Qty`, polynomial usages, `≤` by trying every assignment) | **conjecture** | Sound for finite rigs if each assignment is a valid instance (it checks them all). No paper. |
 | Numerals and native arithmetic | **folklore**, conditional on correct `builtin` registrations | The Prelude's registrations are trusted (reviewed, §7); any other is an axiom (F4). |
 | Glued (lazy) unfolding, `lazyInd` | **folklore** | An implementation technique; it must give the same answers as eager unfolding. Not proved. |
@@ -244,14 +244,18 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
   motives are unaffected: recursors of non-indexed types have no cast, and indexed
   families get `T.recN`/`T.casesOnN` for motives independent of the scrutinee.
 
-### K3. The size argument of `μ`/`ν` is never type-checked — **open issue (de Bruijn criterion)**
+### K3. The size argument of `μ`/`ν` is never type-checked — **fixed** (`4605514`, both kernels)
 
 The `mu`/`nu` rule ignores the size (`Check.lean:527`; `Kernel.wiz:1918, 1967, 2020`), so
 a type `μ^s D i` with an ill-typed `s` is accepted. Sizes only matter to `sizeLe`, which
 treats an unknown base as incomparable, so no exploit is known. The kernel should still
 check `Γ⁰ ⊢ s ⇐ Size` (one line in each kernel).
 
-### Q1. Projections drop linear components — **open issue (linearity, not consistency)**
+**Fix**: both kernels now check `Γ⁰ ⊢ s ⇐ Size` in the `mu`/`nu` rule. Regression tests:
+`MTm.sizeArgs` (`tt` and `Enum 2` as sizes are rejected) in the Lean verdicts and the
+differential samples.
+
+### Q1. Projections drop linear components — **fixed for `.2`** (`212aebf`, both kernels); `.1` still drops the second component
 
 `p.2` on `p : (1 x : A) × B` uses `p` once and discards `x` (§7.1); `p.1` discards the
 second component. In the `{0, 1, ω}` rig, `1` is documented as "exactly once"
@@ -264,14 +268,28 @@ allow `.2` only when the first field's quantity allows zero uses (`0 ≤ q`), an
 only when the pair's second part is not linear; or reserve projections for pairs whose
 quantities admit weakening.
 
-### Q2. Methods are scaled by the rig's default, not by ω — **open issue (non-default rigs only)**
+**Fix** (`.2`): when the first field's quantity `q` doesn't allow zero uses, `p.2` counts
+`p` as used ω times (only an unrestricted pair, whose field is `ω·q`, may drop it), so
+`drop` above is rejected (both kernels; tests in "check: structural types" and the differential
+samples). `p.1` still drops the second component: the second part of a Σ has no
+quantity of its own, so the rule has nothing to check. Consume a linear pair with
+`let 1 (x, y) := p`.
+
+### Q2. Methods are scaled by the rig's default, not by ω — **fixed** (`a986c02`, Lean kernel)
 
 `ind`, `Desc.elim`, `sfix`, `scofix`, `coit` scale their methods' usage by
 `explicitDefault` (§9, §10). That is ω for `{0, 1, ω}`, so the `wiz` tool is fine. For the
 `Nat` rig (exact counting) it is `1`, which under-counts a method that runs once per node.
 The kernel is advertised as parametric in the rig, so this is a gap for those instances.
 
-### Q3. Regularity by quotation assumes fewer than 100 000 variables — **open issue (theoretical)**
+**Fix**: `QRig` has `many? : Option R`, the unrestricted quantity (ω for `{0, 1, ω}`,
+`()` for the trivial rig, none for `Nat`). Methods are scaled by it; in a rig without one
+a method may use local variables only in erased positions (`methodUsage`,
+`Check.lean`). The self-hosted kernel has the fixed `{0, 1, ω}` rig, whose default is ω,
+so it needed no change. Tests: "check: quantities" (a `coit` in the `Nat` rig whose step
+captures an erased variable is accepted, a linear one rejected).
+
+### Q3. Regularity by quotation assumes fewer than 100 000 variables — **fixed** (`b7e1736`, both kernels)
 
 `sameVal` compares `quote 100000 A` and `quote 100000 B` (`Eval.lean`, `Kernel.wiz`); since
 D1 it decides regularity at inert types and whether two `μ` types are of one family. With more than 100 000 variables in scope, `100000 - x - 1` truncates
@@ -279,7 +297,18 @@ to 0 for several variables, and two different types could quote equal. Unreachab
 practice; easy to fix (quote at the actual context size, which `vCast` doesn't have, or
 compare with `conv`).
 
+**Fix**: `sameVal` (both kernels) quotes at `max (lvlBound A) (lvlBound B)`, one above
+the largest variable level `quote` can reach in either value (`Val.lvlBound` in
+`Eval.lean`, `lvlBound` in `Kernel.wiz`; a closure counts only the environment entries
+its body mentions). The bound can be too large, never too small. Cost: one extra walk of
+the two values per `sameVal` (a perf measurement of the self-check is wanted).
+
 ### Q4. Description fields in smaller universes: subject reduction fails — **open issue (no exploit known)**
+
+**Decision** (owner, 2026-11-09): option **(a)**, a kernel `Lift` former, with the
+elaborator lifting small fields; the kernel then requires `k ≡ l+1` for `arg` (and `hrec`).
+Decided but **not yet implemented**. It lands after `agent/d1-off`, which touches the same
+`vEq`/`vCast` cases at `Desc`/`μ`.
 
 `arg q S D` accepts `S : Sort k` with `k ≤ l+1`, but `Desc.elim`'s `marg` expects
 `S : Sort (l+1)`, and universes are not cumulative (§9.1). So `Desc.elim` on such a
@@ -288,6 +317,63 @@ returns `True : Prop`. **Not reproduced**: the surface elaborator rejects
 `Desc.arg 1 True …` (it expects the field in `Type ?u`), so building it needs a core term;
 this finding is from reading the code only. No proof of `False` is known from it. A model with cumulativity would justify it; Wiz has none.
 Options: require `k ≡ l+1` (lift small fields), or quantify `marg` over the field's level.
+
+**Regression test**: `MTm.smallField` (`Tests/Elab.lean`, in the differential samples)
+builds `D := Desc.arg True (λ _. ret ())` as a core term and records today's behaviour:
+both kernels accept `getS D : Type`, which reduces to `True`, and reject `True : Type`.
+
+**How common.** Small fields are not rare. The elaborator emits each field at its own
+level (`Inductive.lean`, `ctorDesc`), and `k ≤ l+1` is decided symbolically. So a proof
+field in a `Type` datatype is small, and so is every field of a level-polymorphic
+structure whose level is a `max`: in `Prod.{u,v} A B : Type (max u v)` the field
+`A : Type u` is small. The usual inductive types are therefore affected at symbolic
+levels. Only the tag field (`Enum`, at `Type`) stands in the way of a surface `getS`.
+Some rule has to change for subject reduction to hold.
+
+**Options and their costs** (both kernels in every case):
+
+* **(a) Lift small fields; the kernel requires `k ≡ l+1`** (with the same rule for
+  `hrec`'s `H`). The kernel change is one line in each kernel (`Level.le` becomes
+  `Level.equiv`, at `Check.lean` `darg`/`dhrec` and the matching rows of `Kernel.wiz`).
+  The elaborator then has to wrap every small field. Without a new former, the wrapper
+  is `(q x : S) × Unit_{l+1}`. Constructors build `(x, ())` and patterns project `.1`.
+  That touches `Inductive.lean`, `Recursor.lean`, `Match.lean` (patterns and
+  copatterns), deriving, and printing. The backends either erase the extra `Unit`
+  or pay for a field. With a kernel `Lift` former (`lift`/`lower`, η both ways, erased
+  at run time) the representation stays clean. The price is a new former in `Term`,
+  `Value`, `Eval` (OTT: `Lift A = Lift B ↦ A = B`, cast through `lower`), `Conv`,
+  `Check` and `Pretty`. **Selfhost: yes.** `Frontend.wiz` builds descriptions (≈line 410)
+  and compiles matches the same way, and `Kernel.wiz` needs the one-line rule (plus the
+  former, if there is one). Because of `max` levels, most polymorphic structures get
+  wrapped fields. Size: medium to large (a few hundred lines on each side).
+* **(b) Cumulativity** (`S : Sort k` is accepted where `Sort m` is expected, `k ≤ m`):
+  this is the textbook justification. In Wiz it is a subsumption step in `check` (as
+  sizes already have), plus `≤` constraints in level unification
+  (`Elab/Unify.lean`, `Frontend.wiz`). `Prop ≤ Type` needs care with definitional proof
+  irrelevance: Coq's `SProp` is not cumulative. Whether a type is a proposition must stay
+  a property of the type itself (`propSort?` on its own annotation), not of the sort it
+  is used at. That restores subject reduction for `Desc.elim` without changing the data
+  representation. Size: large and cross-cutting (both kernels' checkers, both
+  elaborators' level solvers). It also widens what OTT's type equality has to be sound
+  for.
+* **(d) `arg` records the field's level `k` and `marg` quantifies over it** (Agda- or
+  Lean-style). This does not fit Wiz's core. Levels are prenex parameters of globals
+  (`const n us`), and no term binds a level. `marg` is one term-level method for every
+  `arg` node of a description, and different nodes have different `k`. So its type would be
+  `(k : Level) → (S : Sort k) → …`. That is a Π over levels, which lives in a sort above
+  every finite level (Agda's `Setω`). `Desc.elim`'s motive and method types, and the
+  templates built with `Desc.elim` (`Templates.lean`: `interp`, `All`, `map`), would
+  all live there. Lean avoids this because it has no generic eliminator over
+  descriptions (recursors are per inductive, so field levels are fixed). Agda's levitated
+  descriptions fix the field level and use `Lift`, which is (a). Exposing `k` statically
+  (a `Level` in the `arg` node, not a variable) does not help, since `marg` must accept
+  every node. A restricted variant has two constructors, `arg` at exactly `l+1` and
+  `parg` for `Prop` fields with its own method. It covers proof fields but not the `max`
+  case above, so it still needs (a) or (b) there.
+
+Interaction with the constructor-wise cast on `μ`/`Desc` (`agent/d1-off`): all three
+options touch `vEq`/`vCast` at `Desc`/`μ` (for (a) only with a `Lift` former), so they
+should be sequenced after that branch lands.
 
 ---
 
@@ -363,9 +449,9 @@ that checks everything. Wiz's situation:
 * **What the kernel does not check** (CoreSpec §16): axioms (including C imports;
   `#print axioms d` lists those `d` depends on), the `builtin` registrations of the
   toolchain's library (below; a registration anywhere else is an axiom, reported by
-  `#print axioms`), the templates and the kernel's own generated types, the size of
-  `μ`/`ν` (K3), and everything after type checking (erasure, the backends). Partial
-  definitions are no longer trusted: each comes with a witness the kernel checks.
+  `#print axioms`), the templates and the kernel's own generated types, and everything
+  after type checking (erasure, the backends). Partial definitions are no longer
+  trusted: each comes with a witness the kernel checks.
 * **Trusted registrations** (`lib/Prelude.wiz`, reviewed once against the native
   operations `natNative?` in `Eval.lean`, which follow Lean's `Nat`): `nat := Nat`,
   `nat.zero := Nat.zero`, `nat.succ := Nat.succ` (numerals); `nat.pred := Nat.pred`
@@ -417,8 +503,8 @@ as a test yet (each should become one when its issue is fixed).
 | `partial def bad : T .t → T .f` (O2) | accepted (now rejected, F3) |
 | wrong `builtin nat.add` (O3) | accepted: `bad : False` (now an axiom: warned, listed by `#print axioms`, F4) |
 | `builtin nat := E` (empty) + `(0 : E)` (O3) | `wiz check` crashes (stack overflow) (now an error, F4) |
-| `p.2` on a linear pair (Q1) | accepted; dropping a linear variable directly is rejected |
-| `Desc.arg 1 True …` (Q4) | rejected by the elaborator (field must be in `Type ?u`); kernel path not probed |
+| `p.2` on a linear pair (Q1) | rejected since `212aebf` (was accepted) |
+| `Desc.arg 1 True …` (Q4) | rejected by the elaborator (field must be in `Type ?u`); the kernel path is `MTm.smallField`: `getS D : Type` accepted, reduces to `True` |
 
 ## How to report a soundness bug
 

@@ -61,6 +61,12 @@ class QRig (R : Type) extends Rig R where
   (stage 4d), `used ≤ declared` for symbolic quantities is decided by trying every
   assignment, which needs this list. -/
   elements? : Option (List R) := none
+  /-- An unrestricted quantity ("many", ω), if the rig has one: a variable declared with it
+  may be used any number of times (`le 0 m`, `le 1 m`, `le (m + m) m`). An eliminator's
+  methods (`ind`, `Desc.elim`, …) run once per node, so their usage is scaled by it. A rig
+  without one (exact counting, `Nat`) can't bound that usage: there, methods may use
+  local variables only in erased positions. -/
+  many? : Option R := none
 
 /-- How quantities are written in surface syntax and printed back.
 

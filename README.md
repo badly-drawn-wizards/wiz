@@ -251,8 +251,12 @@ These changes landed in stage 1's files. Stage 1's exercises keep their numbers,
 the new constructor cases inside them are labelled 4.3–4.8.
 
 Quantities: `(1 x : A) × B` is a pair whose first field is linear. `p.1` and `p.2`
-each use `p`, so a linear pair is consumed with `let 1 (x, y) := p; …`. An erased
-field (`(0 n : A) × B`) can't be projected at all.
+each use `p`, so a linear pair is consumed with `let 1 (x, y) := p; …`. `p.2` drops the
+first field, so if that field is linear it counts `p` as used ω times (only an
+unrestricted pair may drop a linear field); `p.1` drops the second component, which the
+projection rule doesn't track. An erased field
+(`(0 n : A) × B`) can't be projected at all. Both projections are allowed in erased
+positions (`Ctx.erased`).
 
 | #   | Where              | What                                                       |
 |-----|--------------------|------------------------------------------------------------|
@@ -273,11 +277,11 @@ of `a` and `b` (Pujet & Tabareau, *Observational Equality: Now for Good*):
 
 | at type          | `a = b` computes to                                  | consequence |
 |------------------|------------------------------------------------------|-------------|
-| `(x : A) → B`    | `(x : A) → a x = b x`                                | funext      |
+| `(x : A) → B`    | `(0 x : A) → a x = b x`                              | funext      |
 | `(x : A) × B`    | `(e : a.1 = b.1) × cast … a.2 = b.2`                  |             |
 | `Unit`, `Empty`  | `True`                                               |             |
 | `Prop`           | `(a → b) × (b → a)`                                  | propext     |
-| `Type u`         | structural equality of types; `False` for different formers | no-confusion |
+| `Type u`         | structural equality of types (propositions inside by equivalence; `μ`, `ν`, `Desc` stuck); `False` for different formers | no-confusion |
 | a type variable  | stuck                                                 |             |
 
 `cast e t : B` (for `e : A = B`, `t : A`) also computes by the two types.
@@ -400,7 +404,9 @@ index, and `Enum`s by size. Equality at ν is stuck (a design decision).
 
 A case uses the **join** of its branches' usages (`0 ⊔ 1 = ω`), so a linear variable
 must be used identically in every branch. `ind`'s method is scaled by ω, since it runs
-once per node. Erased fields can be projected in erased positions (`Ctx.erased`).
+once per node (and so are the methods of `Desc.elim`, `sfix`, `scofix` and `coit`). ω
+is the rig's unrestricted quantity (`QRig.many?`); a rig without one, like exact
+counting (`Nat`), only lets a method use local variables in erased positions. Erased fields can be projected in erased positions (`Ctx.erased`).
 
 `examples/data.wiz` defines `Bool`, `Nat`, addition by `ind` (with a hand-written
 "convoy" to branch on the tag, which `match` will generate in stage 4e), and streams.
@@ -1877,6 +1883,46 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   state facts about definitions). A word is still an
   object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
   `implemented_by`.
+### 22e: phantom parameters ✅
+
+```
+inductive UIntN (w : Nat) where
+  | mk (toNat : Nat)                     -- no field mentions `w`
+def f (x : UIntN 8) : UIntN 16 := x      -- type mismatch
+def width {ω w : Nat} (a : UIntN w) : Nat := w
+#eval width (UIntN.mk 3 : UIntN 8)       -- 8: `w` is inferred
+```
+
+Types are structural, so a parameter that no field mentions used to be forgotten:
+`UIntN 8` and `UIntN 16` were one type, `w` couldn't be inferred, and an HDL `Signal d A`
+didn't keep clock domains apart. Now, for each such parameter `p : P`, the elaborator
+(`phantomTail`, `Elab/Inductive.lean`) ends the type with `(0 phantom✝ : D) → Unit`
+instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
+`coinductive`, or of a structure's Σ. Here `D := p` if `p` is a type, and
+`D := (0 x : P) × (x = p)` otherwise.
+
+* `D` mentions `p` and is a type, not a proposition. Propositions compare by equivalence
+  (4c), so `p = p` would have forgotten `p` again. Conversion now compares `p`, and
+  unification solves it.
+* The tail's only inhabitant is `fun _ => ()` (up to η). So it is still a singleton:
+  constructors fill it in, patterns never see it, structure η and copattern index
+  equations hold by `refl`, and `()` fills a structure's tail in a tuple.
+* Erasure drops it (`erasable` knows the inaccessible binder name), so data, `#ir` and the
+  C/LLVM code are those of the type without the parameter. Constructors, projections,
+  `deriving` and `implemented_by` don't change. Nothing in the kernel changes either: it
+  checks the encoding like any other declaration.
+* Proof parameters get no phantom, and neither do sizes or quantities. A parameter whose
+  `D` lives in a higher universe than the type also gets none, since the tail would
+  raise the type's universe; it stays forgotten.
+* For structures, `S 8 = S 16` computes through the Σ to `(x = 8) ↔ (x = 16)` under
+  a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). Equality of two
+  `μ` types computes to the index equation only when their descriptions agree (so
+  `UIntN 8 = UIntN 8` does), and the phantom is part of the description. So for an
+  `inductive`, `UIntN 8 = UIntN 16` stays stuck: it is neither provable nor refutable,
+  and a `cast` between such types gets stuck too.
+* A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
+  parameters never count. Declare a `structure` instead.
+
 ## Libraries
 
 ### H0c: vectors and bit vectors ✅

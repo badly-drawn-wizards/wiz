@@ -1593,10 +1593,25 @@ def sizeInf : List MTm :=
    ann (lam (lam (szSuc (var 0)))) (pi size (pi (sizeLt (var 0)) (sizeLt (szSuc (var 1))))),
    ann (lam (lam (sizeArg (sizeLt szInf) (var 0)))) (pi size (pi (sizeLt (var 0)) (unit 0)))]
 
+/-- K3: the size of `μ^s`/`ν^s` must be a size. The first two (`tt`, `Enum 2` as sizes) are
+rejected, the rest accepted. -/
+def sizeArgs : List MTm :=
+  [mus 0 (unit 0) natD star star, streamAt (enum 2),
+   natAt szInf, ann (lam (natAt (var 0))) (pi size (univ 0)), ann (lam (streamAt (szSuc (var 0)))) (pi size (univ 0))]
+
+/-- Q4 (open): a description field may live in a smaller universe than `Desc.elim`'s
+`marg` expects (`Sort (l+1)`), and universes aren't cumulative, so `Desc.elim` can
+reduce to a term of the wrong type: `getS D : Type` (accepted) reduces to `True`, while
+`True : Type` is rejected. Both kernels agree on all three. -/
+def smallField : List MTm :=
+  let D := ann (darg ptrue (lam (dret star))) (desc 0 (unit 0))
+  let getS := delim 2 (lam (univ 0)) (lam (unit 0)) (lams 4 (var 2)) (lams 4 (unit 0)) (lams 5 (unit 0)) D
+  [ann getS (univ 0), ann ptrue (univ 0), ann star (eq (univ 0) getS (unit 0))]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ sizeInf ++ sizeEq ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -1637,6 +1652,10 @@ def samples : List MTm :=
    letq .zero (univ 0) (enum 2) (ann (lam (var 0)) (pi (var 0) (var 1))),
    fst (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
    snd (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
+   -- `p.2` drops `p.1`: not if that field is linear (Q1)
+   ann (lam (snd (var 0))) (piq .one (sigmaq .one (univ 0) (univ 0)) (univ 0)),
+   ann (lam (snd (var 0))) (piq .one (sigmaq .many (univ 0) (univ 0)) (univ 0)),
+   snd (ann (pair (enum 2) (enum 2)) (sigmaq .one (univ 0) (univ 0))),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, var 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, univ 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    -- sizes and subtyping
@@ -2206,6 +2225,10 @@ def selfHostGroup : Group where
           unless a == "EqTy(Size, Size)" && b == "EqTy(Size<(∞), Size<(∞))" do
             throw (IO.userError s!"unexpected types {a}, {b}")
         | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "the size of μ and ν is checked (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.sizeArgs.map leanVerdict
+        unless vs.take 2 == ["error", "error"] && (vs.drop 2).all (· != "error") do
+          throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "∞ is not below itself (and both kernels agree on it below)", run := fun _ => do
         let vs := MTm.sizeInf.map leanVerdict
         unless vs.take 5 == List.replicate 5 "error" && (vs.drop 5).all (· != "error") do
@@ -3076,6 +3099,133 @@ def vecGroup : Group where
           "#run (BitVec.sub (BitVec.ofNat 63 0) (BitVec.ofNat 63 1)).toNat")
           ["18446744073709551613", "1", "9223372036854775807"]
         cRunLibs "import BitVec\ndef main : Nat := (BitVec.ashr (BitVec.ofNat 64 9223372036854775808) 63).toNat" "18446744073709551615" }
+  ]
+
+
+/-! ### Phantom parameters
+
+A parameter that no field mentions gets an erased phantom tail (`phantomTail`,
+`Elab/Inductive.lean`), so it counts in conversion and unification and costs nothing at
+run time. -/
+
+/-- The same program with a phantom parameter (`B`/`Q` are `Box 8`/`Pt 8`) or with a
+proof parameter instead, which gets no phantom (`Box (refl 0)`): the only difference is
+the phantom tail. -/
+def phantomPair (phantom : Bool) : String :=
+  let (ps, args) := if phantom then (" (w : Nat)", " 8") else (" (h : 0 = 0)", " (refl 0)")
+  s!"import Prelude\ninductive Box{ps} where\n  | mk (n : Nat)\nstructure Pt{ps} where\n  x : Nat\n  y : Nat\n" ++
+  s!"def B : Type := Box{args}\ndef Q : Type := Pt{args}\n" ++
+  "def get : B → Nat\n  | .mk n => n\ndef sum (p : Q) : Nat := p.x + p.y\n" ++
+  "def main : Nat := get (.mk 3) + sum (Pt.mk 1 2)\n#ir get\n#ir sum\n#ir main\n"
+
+/-- Rename the variables `x<n>` of IR or C in order of first occurrence (an erased
+argument still takes a variable number). -/
+def renumberVars (s : String) : String := Id.run do
+  let cs := s.toList.toArray
+  let mut out : String := ""
+  let mut seen : Array String := #[]
+  let mut i := 0
+  while i < cs.size do
+    let c := cs[i]!
+    let prevOk := i == 0 || !(cs[i-1]!.isAlphanum || cs[i-1]! == '_')
+    if c == 'x' && prevOk && i + 1 < cs.size && cs[i+1]!.isDigit then
+      let mut j := i + 1
+      let mut num := ""
+      while j < cs.size && cs[j]!.isDigit do
+        num := num.push cs[j]!
+        j := j + 1
+      if j < cs.size && (cs[j]!.isAlphanum || cs[j]! == '_') then
+        out := out.push c
+        i := i + 1
+      else
+        let k := match seen.findIdx? (· == num) with
+          | some k => k
+          | none => seen.size
+        if k == seen.size then seen := seen.push num
+        out := out ++ s!"x{k}"
+        i := j
+    else
+      out := out.push c
+      i := i + 1
+  return out
+
+def phantomGroup : Group where
+  name := "phantom"
+  exercise := "Phantom parameters"
+  cases := [
+    { name := "UIntN 8 and UIntN 16 are different types", run := fun _ =>
+        failsLib "import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\ndef f (x : UIntN 8) : UIntN 16 := x" "mismatch" },
+    { name := "so rfl can't prove UIntN 8 = UIntN 16", run := fun _ =>
+        failsLib "import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\ndef e : UIntN 8 = UIntN 16 := rfl" "mismatch" },
+    { name := "μ equality: UIntN 8 = UIntN 8 computes, UIntN 8 = UIntN 16 stays stuck", run := fun _ => do
+        -- equality at μ computes to the index equation only when the descriptions agree,
+        -- and a phantom parameter is part of the description, so the inequality is not
+        -- refutable for an inductive (it is for a structure, below)
+        let ty := "import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\n"
+        okLib (ty ++ "def same : UIntN 8 = UIntN 8 := fun _ => ()")
+        failsLib (ty ++ "def stuck (e : UIntN 8 = UIntN 16) : Nat := e") "inferred: UIntN 8 = UIntN 16" },
+    { name := "the width is inferred from the type", run := fun _ =>
+        okLib ("import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\nstructure S (w : Nat) where\n  x : Nat\n" ++
+          "def width {ω w : Nat} (a : UIntN w) : Nat := w\ndef swidth {ω w : Nat} (a : S w) : Nat := w\n" ++
+          "#eval width (UIntN.mk 3 : UIntN 8)\n#eval swidth (S.mk 1 : S 16)") ["8", "16"] },
+    { name := "structures: S 8 and S 16 are different types", run := fun _ =>
+        failsLib "import Prelude\nstructure S (w : Nat) where\n  x : Nat\ndef f (x : S 8) : S 16 := x" "mismatch" },
+    { name := "structures: S 8 = S 16 is refutable", run := fun _ =>
+        okLib ("import Prelude\nstructure S (w : Nat) where\n  x : Nat\n" ++
+          "def ne (e : S 8 = S 16) : Empty := absurd (((e.2 0).1.2 16).1 (refl 16))") },
+    { name := "structures: tuples end in (), and η still holds", run := fun _ =>
+        okLib ("import Prelude\nstructure P (w : Nat) where\n  x : Nat\n  y : Nat\n" ++
+          "def p : P 4 := (1, 2, ())\n#eval p.y\ndef eta {w : Nat} (q : P w) : q = P.mk q.x q.y := refl q") ["2"] },
+    { name := "type parameters: Proxy Nat and Proxy Bool are different types", run := fun _ =>
+        failsLib "import Prelude\ninductive Proxy (A : Type) where\n  | mk\ndef f (x : Proxy Nat) : Proxy Bool := x" "mismatch" },
+    { name := "coinductive: signals in different clock domains are different types", run := fun _ => do
+        let sig := "import Prelude\nstructure Domain where\n  period : Nat\ndef System : Domain := Domain.mk 10\ndef Fast : Domain := Domain.mk 1\n" ++
+          "coinductive Signal (d : Domain) (A : Type) where\n  head : A\n  tail : Signal d A\n" ++
+          "def konst {d : Domain} {A : Type} (a : A) : Signal d A\n  | .head => a\n  | .tail => konst a\n" ++
+          "def reg {d : Domain} {A : Type} (init : A) (s : Signal d A) : Signal d A\n  | .head => init\n  | .tail => s\n"
+        okLib (sig ++ "def sys : Signal System Nat := reg 1 (konst 2)\n#eval sys.tail.head") ["2"]
+        failsLib (sig ++ "def crossDomain (s : Signal System Nat) : Signal Fast Nat := s") "mismatch" },
+    { name := "indexed families: matching with index unification, and recursion", run := fun _ =>
+        okLib ("import Prelude\ninductive V (w : Nat) (A : Type) : Nat → Type where\n  | nil : V w A .zero\n" ++
+          "  | cons {0 n : Nat} (x : A) (xs : V w A n) : V w A (.succ n)\n" ++
+          "def V.len {w : Nat} {A : Type} {0 n : Nat} : V w A n → Nat\n  | .nil => 0\n  | .cons _ xs => Nat.succ (V.len xs)\n" ++
+          "def V.head {w : Nat} {A : Type} {0 n : Nat} : V w A (.succ n) → A\n  | .cons x _ => x\n" ++
+          "def v : V 7 Nat 2 := .cons 5 (.cons 6 .nil)\n#eval V.len v\n#eval V.head v\n#run V.head v") ["2", "5", "5"] },
+    { name := "sized recursion on a parameterised (and a phantom) type", run := fun _ =>
+        okLib ("import Prelude\ninductive L (A : Type) where\n  | nil\n  | cons (a : A) (t : L A)\n" ++
+          "def L.app {A : Type} {i : Size} : (L A)^i → L A → L A\n  | .nil, m => m\n  | .cons a t, m => .cons a (L.app t m)\n" ++
+          "inductive N (w : Nat) where\n  | z\n  | s (n : N w)\n" ++
+          "def N.add {i : Size} {w : Nat} : (N w)^i → N w → N w\n  | .z, m => m\n  | .s n, m => .s (N.add n m)\n" ++
+          "#eval N.add (.s .z : N 3) (.s .z)\n#eval L.app (.cons 1 .nil) (.cons 2 .nil)")
+          [".s (.s .z)", ".cons 1 (.cons 2 .nil)"] },
+    { name := "deriving still works", run := fun _ =>
+        okDeriving ("import Deriving\ninductive Tagged (w : Nat) where\n  | none\n  | some (n : Nat)\n  deriving Repr, BEq, Inhabited\n" ++
+          "#eval Repr.repr (Tagged.some 3 : Tagged 8)\n#eval BEq.beq (Tagged.some 3 : Tagged 8) (Tagged.some 3)\n" ++
+          "structure P (w : Nat) where\n  x : Nat\n  y : Nat\nderiving instance Repr, BEq for P\n#eval Repr.repr (P.mk 1 2 : P 5)")
+          ["\"Tagged.some 3\"", ".true", "\"P.mk 1 2\""] },
+    { name := "regions: Mut ρ A and Mut ρ' A are different types", run := fun _ =>
+        failsLib ("import Prelude\naxiom Region : Type\nstructure Mut (ρ : Region) (A : Type) where\n  get : A\n" ++
+          "def reborrow {ρ : Region} {A : Type} (m : Mut ρ A) : Mut ρ A := m\n" ++
+          "def bad {ρ ρ' : Region} {A : Type} (m : Mut ρ A) : Mut ρ' A := m") "mismatch" },
+    { name := "erased: the IR and the C don't change", run := fun _ => do
+        let loader ← preludeLoader
+        let run (phantom : Bool) : IO (List String × String) := do
+          let src := phantomPair phantom
+          let s := runFrontend (R := ZeroOneMany) src { loader }
+          let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+          unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+          match Build.cProgram s "main" with
+          | .ok (c, _) => pure (s.messages.toList.map (renumberVars ·.text), renumberVars c)
+          | .error e => throw (IO.userError e)
+        let (ir1, c1) ← run true
+        let (ir0, c0) ← run false
+        checkEq (repr ir0).pretty (repr ir1).pretty
+        let l0 := c0.splitOn "\n"
+        let l1 := c1.splitOn "\n"
+        match (l0.zip l1).find? (fun (a, b) => a != b) with
+        | some (a, b) => throw (IO.userError s!"the C differs:\n  without: {a}\n  with:    {b}")
+        | none => check (l0.length == l1.length) "the C differs in length" },
+    { name := "and it runs", run := fun _ => cRun (phantomPair true) "6" }
   ]
 
 end Tests.Elab
