@@ -948,11 +948,14 @@ eval (prf.{l} t)   =  eval t                      otherwise
   ```
   marked:          prf.{l} t
   neutral-shaped:  x | c | () | n a | n.1 | n.2 | down n | (n : T)      (n any term accepted here)
+  a stuck proof:   refl A a | reflTy X | transp A a P p b e
   ```
 
-  Anything else there (a `fun`, a pair, a `let`, `refl`, `transp`, a cast, `absurd`, a case
-  analysis or an induction with such a motive, `up`) is the kernel error "unmarked
-  proof". The body of a marked `fun` is exempt: `Sort (imax a l)` is `0` exactly when
+  Anything else there (a `fun`, a pair, a `let`, a cast, `absurd`, a case analysis or an
+  induction with such a motive, `up`) is the kernel error "unmarked proof". The stuck
+  proofs need no marker because `eval` makes each a stuck head: it evaluates their
+  relevant parts (`A`, `a`, `X`, `b`, and the motive `P`, which is a family of
+  propositions and so a relevant term) and suspends `transp`'s `p` and `e`. The body of a marked `fun` is exempt: `Sort (imax a l)` is `0` exactly when
   `Sort l` is, so where the body's sort is `0` the whole `fun` is suspended.
 * **The invariant.** Call a value *proof-safe* if it is a neutral, `()`, or a glued
   constant that unfolds to one. Every value the kernel's evaluator builds at a
@@ -964,9 +967,12 @@ eval (prf.{l} t)   =  eval t                      otherwise
   so is rejected. `Globals.strictProofs` (off) asks for the marker on neutral-shaped
   proofs too.
 * **Who writes the marker.** The elaborator's marking pass (`Wiz/Elab/Mark.lean`; in
-  `Kernel.wiz`, outside the kernel proper, `markCheck`/`markInfer`), a typed traversal run
-  on every declaration before the kernel. It is untrusted: a missing or wrong marker is a
-  kernel error. `quote` outside the kernel writes proofs back marked.
+  `Kernel.wiz`, outside the kernel proper, `markCheck`/`markInfer`), a typed traversal.
+  It is untrusted: a missing or wrong marker is a kernel error. It costs about as much as
+  the kernel's check, so it runs **on demand**: a declaration goes to the kernel as it
+  is, and is marked and checked again only if the kernel answers "unmarked proof" (a
+  theorem is marked at once). What is stored, and cached, is the term the kernel
+  accepted. `quote` outside the kernel writes proofs back marked.
 * **Conversion.** At a proposition, conversion answers before it looks (§8.5). A proof
   can sit inside a neutral that is compared at a relevant type only under `absurd`:
 

@@ -3091,7 +3091,7 @@ def selfHostGroup : Group where
         | .ok g => unless ((g.find? "t").bind (·.value)) matches some (.prf ..) do throw (IO.userError "the theorem is stored unmarked")
         | .error e => throw (IO.userError s!"{e}")
         -- and when the marked term fails, the error is the second check's (not "unmarked proof")
-        match addDeclSorted g0 { name := "e", type := pairTy, value := some (.pair (.lam "x" (.var 0)) (.lam "x" (.var 0))) } with
+        match addDeclSorted g0 { name := "e", type := pairTy, value := some (.pair (.tag ["a", "b"] 0) (.lam "x" (.tag ["a", "b"] 0))) } with
         | .ok _ => throw (IO.userError "an ill-typed declaration was accepted")
         | .error (.unmarkedProof ..) => throw (IO.userError "the error of the first check was reported")
         | .error _ => pure () },

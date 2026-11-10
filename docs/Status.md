@@ -445,7 +445,8 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
     former `prf.{l} t` (`l` the sort of `t`'s type), which the evaluator suspends when
     `l` is `0`. The kernel **verifies** it (the level must be the type's sort) and
     **requires** it: outside a proof, a term whose sort may be `0` must be marked or
-    neutral-shaped (a variable, a constant or `()` under applications and projections).
+    neutral-shaped (a variable, a constant or `()` under applications and projections),
+    or one of the proofs that are stuck heads (`refl`, `reflTy`, `transp`).
     So every value the evaluator builds at a proposition is a neutral, `()`, or a glued
     constant that unfolds to one, and the kernel never does a β, projection or ι step
     inside a proof. A term that would make it do so is a kernel error ("unmarked proof").
@@ -454,7 +455,8 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
   * **The marking pass is outside the kernel and may panic on ill-typed input.** It
     checks nothing and evaluates the term as it goes, so every caller must give it
     elaborated terms only (the elaborator makes the same assumption of its own terms).
-    Its callers: every declaration on its way to the kernel (`addDeclSorted`, the two
+    Its callers: a declaration the kernel has answered "unmarked proof" to, and a
+    theorem, on their way to the kernel (`withMarksOnDemand`: `addDeclSorted`, the two
     partial-definition paths), `#reduce`, and the kernel entries of `Frontend.wiz`. A
     wrong elaborator output can therefore show as a panic in the pass, which ends
     `wiz check`, where it used to be a kernel error message.
