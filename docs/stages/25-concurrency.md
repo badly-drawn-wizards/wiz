@@ -130,13 +130,16 @@ result back through an MVar). A compiled program printing it is a differential t
 natives against the pure semantics (`conc` group). A model of the whole `Chan` API (a
 deterministic scheduler) needs one-shot linear continuations (plan C5, `LEff`).
 
-**Current workarounds**, until the linearity fixes land (plan L1, L6, gap 7): `IO.bind`
-takes its continuation at ω, so a `do` block can't capture an endpoint; use
-`IO.seq1 (1 x : IO A) (1 k : A → IO B)`. Implicit continuations aren't inferred through
-a defined protocol (`Chan Q` against `Chan (.send ?A ?k)`), so give them by name:
+**Sequencing and current workarounds.** Linear steps sequence with `do1` or `IO.bind`
+(both take the action and the continuation at quantity 1, [9e](09-ffi.md)); plain `do`
+uses `Monad.bind`, whose continuation is ω, so it can't capture an endpoint. Implicit
+continuations aren't inferred through a defined protocol yet (`Chan Q` against
+`Chan (.send ?A ?k)` needs `Q` unfolded; plan gap 7), so give them by name:
 `Chan.send (k := fun _ => …) c a next`. `match` uses its branches at ω, so pass endpoints
-into a branch as arguments (`| .val x => fun c => …`) instead of capturing them. Direct
-style (`send : (1 c) → A → IO (Chan (k a))`) waits for linear Σ fields (plan L3).
+into a branch as arguments (`| .val x => fun c => …`) instead of capturing them. `Proto.dual`
+is an involution only propositionally; `Eq.cast` at quantity 1 (9e) can move an endpoint
+along a proof. Direct style (`send : (1 c) → A → IO (Chan (k a))`) waits for linear Σ
+fields (plan L3).
 
 ## 25d: MVars and locks ✅
 

@@ -1163,6 +1163,17 @@ def ffiGroup : Group where
         ioRun "import IO\ndef main : IO Unit := do\n  IO.println \"one\";\n  IO.println \"two\"" "one\ntwo\n" },
     { name := "the world is linear: it can't be duplicated", run := fun _ =>
         ioFails "import IO\ndef bad (x : IO Unit) : IO Unit := fun w =>\n  let 1 (a, w') := x w; x w" "quantity 1" },
+    { name := "linear sequencing: IO.bind, IO.then1 and do1 take an action and a continuation that use a linear value (L6)", run := fun _ => do
+        ioFails ("import IO\naxiom Tok : Type\naxiom Tok.close : (1 t : Tok) → IO Unit\n" ++
+          "def seqs (1 t : Tok) : IO Nat := do1\n  IO.println \"closing\";\n  Tok.close t;\n  IO.pure 3\n" ++
+          "def seq2 (1 t : Tok) : IO Nat := IO.then1 (Tok.close t) (IO.pure 3)\n" ++
+          "def seq3 (1 t : Tok) : IO Nat := IO.bind (IO.println \"x\") (fun _ => IO.bind (Tok.close t) (fun _ => IO.pure 3))\n" ++
+          "def bad (1 t : Tok) : IO Nat := do\n  IO.println \"closing\";\n  Tok.close t;\n  IO.pure 3")
+          "kernel rejected bad: variable t declared with quantity 1 but used ω"
+        ioRun ("import IO\ndef main : IO Unit := do1\n  IO.println \"one\";\n  n ← IO.pure 2;\n  let m := n + n;\n  IO.println (Nat.toString m)") "one\n4\n" },
+    { name := "... and a linear value is still used exactly once", run := fun _ =>
+        ioFails ("import IO\naxiom Tok : Type\naxiom Tok.close : (1 t : Tok) → IO Unit\n" ++ "def bad (1 t : Tok) : IO Unit := do1\n  Tok.close t;\n  Tok.close t")
+          "quantity 1 but used ω" },
     { name := "machine integers and floats", run := fun _ =>
         ioRun ("import IO\ndef main : IO Unit := do\n" ++
           "  IO.println (Nat.toString (UInt64.toNat (UInt64.mul (UInt64.ofNat 1000000) (UInt64.ofNat 1000000))));\n" ++
@@ -1824,6 +1835,10 @@ def samples : List MTm :=
    ann (lam (snd (var 0))) (piq .one (sigmaq .one (univ 0) (univ 0)) (univ 0)),
    ann (lam (snd (var 0))) (piq .one (sigmaq .many (univ 0) (univ 0)) (univ 0)),
    snd (ann (pair (enum 2) (enum 2)) (sigmaq .one (univ 0) (univ 0))),
+   -- `p.1` drops `p.2`: not if that holds a linear field (Q1)
+   ann (lam (fst (var 0))) (piq .one (sigma (univ 0) (sigmaq .one (univ 0) (univ 0))) (univ 0)),
+   ann (lam (fst (var 0))) (piq .many (sigma (univ 0) (sigmaq .one (univ 0) (univ 0))) (univ 0)),
+   ann (lam (fst (var 0))) (piq .one (sigma (univ 0) (sigma (univ 0) (univ 0))) (univ 0)),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, var 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, univ 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    -- sizes and subtyping
@@ -2544,6 +2559,21 @@ def languageGroup : Group where
   name := "language"
   exercise := "Stage 13"
   cases := [
+    { name := "linear transport: Eq.subst, Eq.substBack and Eq.cast take a linear value (L4)", run := fun _ =>
+        okLib ("import Prelude\naxiom Tok : Nat → Type\naxiom Tok.close : (1 t : Tok 0) → Unit\n" ++
+          "def closeAt (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit := Tok.close (Eq.subst Tok e t)\n" ++
+          "def closeBack (0 n : Nat) (0 e : 0 = n) (1 t : Tok n) : Unit := Tok.close (Eq.substBack Tok e t)\n" ++
+          "def closeCast (0 n : Nat) (0 e : Tok n = Tok 0) (1 t : Tok n) : Unit := Tok.close (Eq.cast e t)\n" ++
+          "def listCast (0 A B : Type) (0 e : A = B) (v : List A) : List B := Eq.subst List e v\n") },
+    { name := "... still used exactly once", run := fun _ =>
+        failsLib ("import Prelude\naxiom Tok : Nat → Type\naxiom Tok.close : (1 t : Tok 0) → Unit\n" ++
+          "def twice (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit × Unit := (Tok.close (Eq.subst Tok e t), Tok.close (Eq.subst Tok e t))")
+          "quantity 1 but used ω" },
+    { name := "... where a transport with an unrestricted argument can't carry a linear value", run := fun _ =>
+        failsLib ("import Prelude\naxiom Tok : Nat → Type\naxiom Tok.close : (1 t : Tok 0) → Unit\n" ++
+          "def substω (0 P : Nat → Type) {0 a b : Nat} (0 e : a = b) (pa : P a) : P b := cast (transp (fun b _ => P a = P b) (refl (P a)) e) pa\n" ++
+          "def closeAt (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit := Tok.close (substω Tok e t)")
+          "quantity 1 but used ω" },
     { name := "castRefl: a propositional regularity axiom in the Prelude; it doesn't compute (D1)", run := fun _ =>
         okLib ("import Prelude\ndef r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n" ++
           "#reduce fun (A : Type) (e : A = A) (a : A) => castRefl e a")
@@ -2707,6 +2737,14 @@ def effectsGroup : Group where
         ioRun (prog ++ "def main : IO Unit := do\n  p ← runConsole (runState (prog : Eff (Row.cons (State Nat) (Row.cons Console Row.nil)) Nat) 0);\n  report p")
           "counting\n100\n"
         ioRun (prog ++ "def main : IO Unit := do\n  p ← (prog : StateT Nat IO Nat) 0;\n  report p") "counting\n100\n" },
+    { name := "one-shot effects: a continuation may hold a linear value; Eff programs run under one-shot handlers", run := fun _ =>
+        ioRun "import Eff\nstructure Coin where\n  value : Nat\ndef Coin.spend (1 c : Coin) : Nat := c.value\ndef prog {R : Type} (1 c : Coin) : Eff1 1 (Row.cons (State Nat) Row.nil) R Coin :=\n  Eff1.bind (do1 n ← get1; put1 (n + 1)) (fun u => Eff1.pure c)\ndef spent : Nat := Coin.spend (Eff1.run1 (evalState1 (prog (Coin.mk 5)) 10))\ndef count {R : Type} : Eff1 ω (Row.cons (State Nat) (Row.cons Console Row.nil)) R Nat := do1\n  n ← get1;\n  println1 \"counting\";\n  put1 (n + 1);\n  get1\ndef old : Eff (Row.cons (State Nat) Row.nil) Nat := do\n  n ← get;\n  put (n * 2);\n  get\ndef runOld : Nat := (Eff1.run (runState1 (Eff.toEff1 old) 21)).1\ndef main : IO Unit := do1\n  p ← runConsole1 (runState1 count 10);\n  IO.println (Nat.toString p.1);\n  IO.println (Nat.toString spent);\n  IO.println (Nat.toString runOld)" "counting\n11\n5\n42\n" },
+    { name := "... which a multi-shot continuation can't", run := fun _ =>
+        ioFails "import Eff\nstructure Coin where\n  value : Nat\ndef Coin.spend (1 c : Coin) : Nat := c.value\ndef prog (1 c : Coin) : Eff (Row.cons (State Nat) Row.nil) Coin :=\n  Eff.bind (do n ← get; put (n + 1)) (fun u => Eff.pure c)" "quantity 1 but used ω" },
+    { name := "a one-shot handler resumes exactly once: not twice, not never", run := fun _ => do
+        ioFails "import Eff\ndef twice {r : Row} {R A : Type} (1 m : Eff1 ω (Row.cons Console r) (Eff1 ω r R A) A) : Eff1 ω r R A :=\n  Eff1.handle (fun a => Eff1.pure a) (fun o k => Eff1.bind (k ()) (fun x => k ())) m" "variable k declared with quantity 1 but used ω"
+        ioFails "import Eff\ndef abort {r : Row} {R A : Type} (d : A) (1 m : Eff1 ω (Row.cons (Exn String) r) (Eff1 ω r R A) A) : Eff1 ω r R A :=\n  Eff1.handle (fun a => Eff1.pure a) (fun o k => Eff1.pure d) m" "variable k declared with quantity 1 but used 0"
+        ioRun "import Eff\ndef quiet {r : Row} {R A : Type} (1 m : Eff1 ω (Row.cons Console r) (Eff1 ω r R A) A) : Eff1 ω r R A :=\n  Eff1.handle (fun a => Eff1.pure a) (fun o k => k ()) m\ndef main : IO Unit := IO.println \"ok\"" "ok\n" },
     { name := "effects that commute: the proof is checked", run := fun _ =>
         ioRun ("import Eff\ndef ReaderM (E A : Type) : Type := E → A\ninstance {E : Type} : Monad (ReaderM E) where\n" ++
           "  pure := fun a => fun _ => a\n  bind := fun x f => fun env => f (x env) env\n" ++
@@ -3160,12 +3198,16 @@ def derivingGroup : Group where
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}") }
   ]
 
-/-- Every `lib/*.wiz`, by module name. -/
+/-- Every `lib/*.wiz` and `lib/D/*.wiz` (as `D.X`), by module name. -/
 def libLoader : IO (Name → Option String) := do
   let mut m : List (Name × String) := []
   for e in ← System.FilePath.readDir "lib" do
     if e.path.extension == some "wiz" then
       m := (e.path.fileStem.getD "", ← IO.FS.readFile e.path) :: m
+    else if ← e.path.isDir then
+      for f in ← System.FilePath.readDir e.path do
+        if f.path.extension == some "wiz" then
+          m := (e.fileName ++ "." ++ f.path.fileStem.getD "", ← IO.FS.readFile f.path) :: m
   pure fun n => m.lookup n
 
 /-- No errors, and these messages, with every library importable. -/
@@ -3526,6 +3568,42 @@ def phantomGroup : Group where
         checkEq ((← allocs "l") + 2) (← allocs "q") }
   ]
 
+/-- A user-declared `ShareLet` (no HDL library): the hook fires on a `let` in check mode
+with no explicit quantity, and only when an instance exists. -/
+def shareLetHook : String := "import Prelude
+structure W where
+  n : Nat
+class ShareLet (A B : Type) where
+  share : A → (A → B) → B
+instance : ShareLet W W where
+  share := fun x f => f (W.mk (x.n + 100))
+def t1 : W := let y := W.mk 1; y
+def t2 : W := let ω y := W.mk 1; y
+def t3 : Nat := let y := 1; y
+#eval t1.n
+#eval t2.n
+#eval t3
+"
+
+def hdlGroup : Group where
+  name := "hdl"
+  exercise := "HDL stage S0 (hdl-plan H14)"
+  cases := [
+    { name := "auto-share: a let becomes ShareLet.share when an instance exists", run := fun _ =>
+        okLibs shareLetHook ["101", "1", "1"] },
+    { name := "L2 examples: hash-consed netlists are no bigger, three simulations agree; the doubling chain is linear", run := fun _ => do
+        -- r1–r4: (nodes hash-consed, nodes naive), then the value simulation and the netlist
+        -- simulations (hash-consed, naive). q1: the chain at k = 20 (nodes, adders, builder
+        -- work). q2: the chain at k = 3 simulated. q3: the chain without sharing (`let ω`) at
+        -- k = 10 (nodes, work, naive nodes). Last: (x + y) * (y + x) has one adder.
+        okLibs (← IO.FS.readFile "examples/hdl.wiz") ["((7, 7), .cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))), .cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))), .cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))))", "((10, 10), .cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 .nil))))), .cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 .nil))))), .cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 .nil))))))", "((31, 38), .cons 1 (.cons 1 (.cons 2 (.cons 1 (.cons 3 (.cons 3 .nil))))), .cons 1 (.cons 1 (.cons 2 (.cons 1 (.cons 3 (.cons 3 .nil))))), .cons 1 (.cons 1 (.cons 2 (.cons 1 (.cons 3 (.cons 3 .nil))))))", "((15, 17), .cons 1 (.cons 4 (.cons 9 (.cons 15 (.cons 216 (.cons 162 .nil))))), .cons 1 (.cons 4 (.cons 9 (.cons 15 (.cons 216 (.cons 162 .nil))))), .cons 1 (.cons 4 (.cons 9 (.cons 15 (.cons 216 (.cons 162 .nil))))))", "(25, 20, 25)", "(.cons 8 (.cons 16 (.cons 24 (.cons 32 (.cons 64 (.cons 56 .nil))))), .cons 8 (.cons 16 (.cons 24 (.cons 32 (.cons 64 (.cons 56 .nil))))))", "(11, 2047, 2047)", "4"] },
+    { name := "auto-share elaborates an object let to ShareLet.share; an erased or meta let stays a let", run := fun _ =>
+        okLibs ("import Hdl.Core\ndef f {r : HwTy → Type} [Hw r] (x : r (HwTy.bits 8)) : r (HwTy.bits 8) := let y := Hw.add x x; Hw.add y y\n" ++
+          "def g {r : HwTy → Type} [Hw r] (x : r (HwTy.bits 8)) (k : Nat) : r (HwTy.bits 8) := let j := Nat.succ k; Hw.lit 8 j\n#erase f\n#erase g")
+          ["f := (λr. (λinst✝. (λx. (((((ShareLet.share ◾) ◾) ((((instShareLetRARB ◾) #1) ⟨0 8⟩) ⟨0 8⟩)) (((((Hw.add ◾) #1) 8) #0) #0)) (λy. (((((Hw.add ◾) #2) 8) #0) #0))))))",
+           "g := (λr. (λinst✝. (λx. (λk. (let j := (Nat.succ #0); ((((Hw.lit ◾) #3) 8) #0))))))"] }
+  ]
+
 /-! ## Regions: borrow checking as typing (lib/Region.wiz, Rust DSL RD12) -/
 
 def regionsPush : String :=
@@ -3687,7 +3765,7 @@ def stage : Nat → (1 c : Chan (Proto.dual Q)) → IO Unit
 def shared : List Nat := upto 100
 def main : IO Unit := Chan.fork Q (stage 50) (fun d =>
   Chan.send (k := fun _ => .recv Nat (fun _ => .done)) d shared (fun d' => Chan.recv (k := fun _ => .done) d' (fun s d'' =>
-    Chan.close d'' (IO.seq1 (IO.println (Nat.toString s)) (fun _ => IO.println (Nat.toString (total shared)))))))
+    Chan.close d'' (IO.bind (IO.println (Nat.toString s)) (fun _ => IO.println (Nat.toString (total shared)))))))
 "
 
 /-- A cancellable protocol (decision CS13): up to `n` numbers, each one a value or a
@@ -3722,19 +3800,23 @@ import Session
 import MVar
 def worker (m : MVar Nat) (l : Lock) : Nat → IO Unit
   | .zero => IO.pure ()
-  | .succ n => IO.seq1 (MVar.modify m (fun x => x + 1)) (fun _ =>
-      IO.seq1 (Lock.with l (IO.pure ())) (fun _ => worker m l n))
+  | .succ n => IO.bind (MVar.modify m (fun x => x + 1)) (fun _ =>
+      IO.bind (Lock.with l (IO.pure ())) (fun _ => worker m l n))
 def spawnN (m : MVar Nat) (l : Lock) (done : MVar Nat) : Nat → IO Unit
   | .zero => IO.pure ()
-  | .succ k => Chan.fork Proto.done (fun c => Chan.close c (IO.seq1 (worker m l 1000) (fun _ => MVar.put done 1)))
+  | .succ k => Chan.fork Proto.done (fun c => Chan.close c (IO.bind (worker m l 1000) (fun _ => MVar.put done 1)))
       (fun c => Chan.close c (spawnN m l done k))
 def waitN (done : MVar Nat) : Nat → IO Unit
   | .zero => IO.pure ()
-  | .succ k => IO.seq1 (MVar.take done) (fun _ => waitN done k)
-def main : IO Unit :=
-  IO.seq1 (MVar.newFull 0) (fun m => IO.seq1 Lock.new (fun l => IO.seq1 (MVar.new (A := Nat)) (fun done =>
-    IO.seq1 (spawnN m l done 8) (fun _ => IO.seq1 (waitN done 8) (fun _ =>
-      IO.seq1 (MVar.take m) (fun n => IO.println (Nat.toString n)))))))
+  | .succ k => IO.bind (MVar.take done) (fun _ => waitN done k)
+def main : IO Unit := do1
+  m ← MVar.newFull 0;
+  l ← Lock.new;
+  done ← MVar.new (A := Nat);
+  spawnN m l done 8;
+  waitN done 8;
+  n ← MVar.take m;
+  IO.println (Nat.toString n)
 "
 
 /-- Two threads observe one lazy stream (shared lazy cells are not overwritten, 25a). -/
@@ -3750,10 +3832,10 @@ def natsFrom (n : Nat) : Stream Nat
 def sumN : Nat → Stream Nat → Nat
   | .zero, _ => 0
   | .succ k, s => s.head + sumN k s.tail
-def main : IO Unit := IO.seq1 (MVar.new (A := Nat)) (fun r =>
+def main : IO Unit := IO.bind (MVar.new (A := Nat)) (fun r =>
   let s := natsFrom 0;
   Chan.fork Proto.done (fun c => Chan.close c (MVar.put r (sumN 2000 s)))
-    (fun c => Chan.close c (IO.seq1 (MVar.take r) (fun a =>
+    (fun c => Chan.close c (IO.bind (MVar.take r) (fun a =>
       IO.println (Nat.toString (a + sumN 2000 s))))))
 "
 
@@ -3765,10 +3847,10 @@ def concGroup : Group where
         okLibs (concSum ++ "#eval (link sumProto (client 100) server).1") ["5050"] },
     { name := "the same protocol over a channel, server in a new thread", run := fun _ =>
         cRunLibs (concSum ++ "def main : IO Unit := Chan.fork sumProto serve (fun c =>\n" ++
-          "  IO.seq1 (runClient 1000 c) (fun s => IO.println (Nat.toString s)))") "500500\n" },
+          "  IO.bind (runClient 1000 c) (fun s => IO.println (Nat.toString s)))") "500500\n" },
     { name := "Proc.runLinked: the model is `link`, compiled code runs threads (differential)", run := fun _ => do
         okLibs (concSum ++ "#eval (link sumProto (client 300) server).1") ["45150"]
-        cRunLibs (concSum ++ "def main : IO Unit := IO.seq1 (Proc.runLinked sumProto (client 300) server)\n" ++
+        cRunLibs (concSum ++ "def main : IO Unit := IO.bind (Proc.runLinked sumProto (client 300) server)\n" ++
           "  (fun r => IO.println (Nat.toString r.1))") "45150\n" },
     { name := "a chain of 51 threads; endpoints move into children", run := fun _ =>
         cRunLibs concChain "9950\n4950\n" },
@@ -3788,7 +3870,7 @@ def concGroup : Group where
     { name := "a closure that captured an endpoint is linear itself", run := fun _ =>
         failsLibs ("import IO\nimport Session\n" ++
           "def capture (1 c : Chan Proto.done) : Unit → IO Unit := fun _ => Chan.close c (IO.pure ())\n" ++
-          "def dupf (1 c : Chan Proto.done) : IO Unit := let f := capture c; IO.seq1 (f ()) (fun _ => f ())") "quantity" },
+          "def dupf (1 c : Chan Proto.done) : IO Unit := let f := capture c; IO.bind (f ()) (fun _ => f ())") "quantity" },
     { name := "the protocol is checked: wrong message type, wrong step", run := fun _ => do
         failsLibs (concSum ++ "def bad (1 c : Chan sumProto) : IO Unit :=\n" ++
           "  Chan.send (k := fun n => sendMany ack n) c Bool.true (fun c' => Chan.close c' (IO.pure ()))") "mismatch"

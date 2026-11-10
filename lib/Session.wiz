@@ -17,6 +17,9 @@ import MVar
 --     channel is a native queue and `fork` starts a thread (runtime/wiz.c, `wiz_chan_*`, 25a);
 --     `#eval`/`#run` can't run threads, and run `Proc.runLinked`'s model (`link`) instead.
 --
+-- Sequence linear steps with `do1` or `IO.bind` (both take the action and the continuation
+-- at quantity 1, 9e); plain `do` can't capture an endpoint.
+--
 -- The API is in continuation-passing style (decision CS3): every operation takes the rest
 -- of the program as a function of the endpoint's next state, so no linear value has to sit
 -- in a data structure (Σ fields are ω, and `match` can't bind fields linearly yet).
@@ -121,11 +124,6 @@ def Chan.cancel {A : Type} {k : A → Proto} {B : Type} (1 c : Chan (Proto.sendC
     (1 next : IO B) : IO B :=
   Chan.send (k := Msg.next k) c Msg.cancel (fun c' => Chan.close c' next)
 
--- Sequencing with a linear continuation (`IO.bind` takes its continuation at ω, so a
--- `do` block can't capture an endpoint yet: plan gap L6, being fixed in lib/IO.wiz).
-def IO.seq1 {A B : Type} (1 x : IO A) (1 k : A → IO B) : IO B := fun w =>
-  let 1 (a, w') := x w; k a w'
-
 -- ## 3. Pure processes over real channels, and the model
 
 -- Run a pure process on an endpoint: the same `Proc` that `link` runs purely.
@@ -143,7 +141,7 @@ def Proc.runLinked {A B : Type} (p : Proto) (a : Proc A p) (b : Proc B (Proto.du
   IO.pure (link p a b)
 -- (the peer's result comes back through an MVar, written once and read once)
 def Proc.runLinkedThreads {A B : Type} (p : Proto) (a : Proc A p) (b : Proc B (Proto.dual p)) : IO (A × B) :=
-  IO.seq1 (MVar.new (A := B)) (fun m =>
-    Chan.fork p (fun c => IO.seq1 (Proc.run (Proto.dual p) b c) (fun y => MVar.put m y))
-      (fun c => IO.seq1 (Proc.run p a c) (fun x => IO.seq1 (MVar.take m) (fun y => IO.pure (x, y)))))
+  IO.bind (MVar.new (A := B)) (fun m =>
+    Chan.fork p (fun c => IO.bind (Proc.run (Proto.dual p) b c) (fun y => MVar.put m y))
+      (fun c => IO.bind (Proc.run p a c) (fun x => IO.bind (MVar.take m) (fun y => IO.pure (x, y)))))
 attribute [implemented_by Proc.runLinkedThreads] Proc.runLinked
