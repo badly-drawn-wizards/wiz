@@ -278,6 +278,17 @@ def shard_table(records):
     return out
 
 
+def group_table(records):
+    """A line per group of each shard, a subtotal per shard and the grand total."""
+    out = ["| shard | group | cases | seconds |", "|---|---|---:|---:|"]
+    for sh, rs in by_key(records, "shard").items():
+        for g, gs in by_key(rs, "group").items():
+            out.append(f"| {md(sh)} | {md(g)} | {len(gs)} | {secs(sum(r['seconds'] for r in gs))} |")
+        out.append(f"| **{md(sh)}** | **total** | **{len(rs)}** | **{secs(sum(r['seconds'] for r in rs))}** |")
+    out.append(f"| **all shards** | **total** | **{len(records)}** | **{secs(sum(r['seconds'] for r in records))}** |")
+    return out
+
+
 def slowest_table(records, n=15):
     out = ["| | shard | group | case | seconds |", "|---:|---|---|---|---:|"]
     for k, r in enumerate(sorted(records, key=lambda r: -r["seconds"])[:n], 1):
@@ -313,6 +324,7 @@ def summary(title, files):
     if len(shards) > 1:
         out += ["", "#### Shards", ""] + shard_table(records)
         out += ["", "#### The 15 slowest cases", ""] + slowest_table(records)
+        out += ["", "<details><summary>groups</summary>", ""] + group_table(records) + ["", "</details>"]
         out += ["", "<details><summary>every case</summary>", ""]
         for sh, rs in shards.items():
             out += ["", f"##### {md(sh)}", ""] + timing_table(rs)
