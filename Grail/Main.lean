@@ -31,22 +31,8 @@ Machine settings (where GMP lives) go in an uncommitted grail.local.wiz:
   def settings : Settings := Settings.empty |> Settings.set \"cflags\" \"-I…\""
 
 /-- What identifies this binary (so a new elaborator or backend rebuilds everything):
-its hash, remembered by size and modification time in `~/.cache/grail-binid`. -/
-def binaryId (cacheDir : Option System.FilePath) : IO UInt64 := do
-  let exe ← IO.appPath
-  let md ← exe.metadata
-  let stamp := s!"{exe} {md.byteSize} {md.modified.sec} {md.modified.nsec}"
-  let file := cacheDir.map (· / "grail-binid")
-  if let some f := file then
-    if ← f.pathExists then
-      match (← IO.FS.readFile f).splitOn "\n" with
-      | [st, k] => if st == stamp then if let some n := k.toNat? then return n.toUInt64
-      | _ => pure ()
-  let h := hash (← IO.FS.readBinFile exe)
-  if let some f := file then
-    IO.FS.createDirAll (f.parent.getD ".")
-    Cache.writeAtomic f s!"{stamp}\n{h.toNat}"
-  pure h
+`Cache.binaryId`, remembered under the cache directory. -/
+def binaryId (cacheDir : Option System.FilePath) : IO UInt64 := Cache.binaryId cacheDir
 
 structure Opts where
   dir : Option String := none

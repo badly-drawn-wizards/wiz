@@ -1,4 +1,5 @@
 import Optic
+import Region
 -- The runtime of lowered DSL code, beyond `lib/Optic.wiz` (which has `Result`, `Error`
 -- and the optics). This file CHECKS today, but it holds stand-ins for work owned by other
 -- tracks, so it lives in drafts/ until they land:
@@ -8,24 +9,10 @@ import Optic
 --     the real `takeAt`/`fillAt` move the element out of a native array in place.
 -- Use: wiz check -I drafts/rust/lib drafts/rust/lowered/NN_name.wiz
 
--- ## Regions (RD12): lifetimes are quantity-0 indices
+-- ## Regions (RD12): lib/Region.wiz
 --
--- A lifetime `'a` lowers to an erased variable `{ρ : Region}` (implicit binders are at
--- quantity 0). References mention it in their types, so `#lower` shows which borrow a
--- value came from; nothing of it reaches run time.
-axiom Region : Type
-axiom Region.static : Region
--- `'a : 'b` (`'a` outlives `'b`): checked by the front end, recorded as an erased
--- hypothesis
-axiom Outlives : Region → Region → Prop
-
--- `&'a T`: a shared borrow is the value itself (shared, rc + 1; Rust forbids mutation
--- while it lives).
-def Shr (0 ρ : Region) (A : Type) : Type := A
--- `&'a mut A` returned from a lender `S`: the borrowed value and the backward function.
-def Mut (0 ρ : Region) (A S : Type) : Type := Store A S
--- `Option<&'a mut A>` returned from a lender `S`
-def MutOpt (0 ρ : Region) (A S : Type) : Type := Affine A S
+-- `Region`, `Outlives`, the handles `Shr`/`Uniq`/`Mut`/`MutOpt`/`Lent` (structures, so the
+-- region is part of their type) and the borrow scopes live in the library.
 
 -- ## Machine integers (stand-in for RD9)
 
@@ -69,13 +56,13 @@ structure Vec (A : Type) where
   items : List A
 
 def Vec.new {A : Type} : Vec A := Vec.mk List.nil
-def Vec.len {ρ : Region} {A : Type} (v : Shr ρ (Vec A)) : U64 := U64.mk (List.length (v.items))
+def Vec.len {ρ : Region} {A : Type} (v : Shr ρ (Vec A)) : U64 := U64.mk (List.length v.val.items)
 def List.snoc {A : Type} : List A → A → List A
   | .nil, x => .cons x .nil
   | .cons y ys, x => .cons y (List.snoc ys x)
 -- `v.push(x)`: `&mut self` is handed back. (Natively: in place when unique.)
-def Vec.push {A : Type} (v : Vec A) (x : A) : Result (Unit × Vec A) :=
-  .ok ((), Vec.mk (List.snoc v.items x))
+def Vec.push {ρ : Region} {A : Type} (v : Uniq ρ (Vec A)) (x : A) : Result (Unit × Uniq ρ (Vec A)) :=
+  .ok ((), Uniq.set v (Vec.mk (List.snoc v.val.items x)))
 def List.getOpt {A : Type} : Nat → List A → Option A
   | _, .nil => .none
   | .zero, .cons x _ => .some x
@@ -101,9 +88,10 @@ def Vec.indexMut_lawful {A : Type} (i : U64) : PLens.Lawful (@Vec.indexMut A i) 
      (List.atL i.val v.items) (List.atL_pg i.val v.items),
    fun v => Store.underR_pp Vec.mkL (List.atL i.val) (Vec.indexMut i) (fun x => rfl)
      (List.atL i.val v.items) (List.atL_pp i.val v.items))
--- `v.get_mut(i)`: `Option<&mut A>`, as an affine optic
-def Vec.getMut {A : Type} (i : U64) (v : Vec A) : Affine A (Vec A) := match Vec.indexMut i v with
-  | .ok st => .some st.1 st.2
+-- `v.get_mut(i)`: `Option<&mut A>`, a borrow of the element or the vector back
+def Vec.getMut {ρ : Region} {A : Type} (i : U64) (v : Uniq ρ (Vec A)) : MutOpt ρ A (Vec A) :=
+  match Mut.ofPLens v (Vec.indexMut i) with
+  | .ok m => .some m
   | .err _ => .none v
 def List.map {A B : Type} (f : A → B) : List A → List B
   | .nil => .nil
