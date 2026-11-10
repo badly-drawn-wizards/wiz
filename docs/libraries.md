@@ -69,5 +69,7 @@ Sharing has two parts:
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃`, `↔`, `Not`, equality lemmas, `funext`, `propext`),
 `lib/HProp.wiz` (model heaps, `emp`, `↦`, `⋆`, `−∗`, entailment and the separation-logic
-laws) and `lib/Hoare.wiz` (`wp`, triples, the frame rule, verified swap and list reversal,
-adequacy for an interpreter). See [stage 24](stages/24-separation-logic.md).
+laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpreter),
+`lib/HoareTactics.wiz` (SLF-style automation: `xsimpl`, `xpull`, `xstep`, `xapp`, …) and
+`lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
+freeing a list). See [stage 24](stages/24-separation-logic.md).

@@ -1,0 +1,182 @@
+import HoareTactics
+-- Verified programs over the model heap (stages 24c–24d), proved with the `x`-tactics of
+-- lib/HoareTactics.wiz. Every specification is a `Triple`, so `adequacy` (lib/Hoare.wiz)
+-- applies to it: the program runs without a fault on any heap satisfying the
+-- precondition.
+
+-- ## Swapping two cells
+
+def Prog.swap (p q : Nat) : Prog Nat Unit :=
+  .get p (fun a => .get q (fun b => .set p b (.set q a (.ret ()))))
+
+def Prog.swap_spec (p q a b : Nat) : Triple ((p ↦ a) ⋆ (q ↦ b)) (Prog.swap p q) (fun _ => (p ↦ b) ⋆ (q ↦ a)) := by
+  xgo
+
+-- ## Mutable lists
+--
+-- A list cell at `p` is two cells: the value at `p`, the next pointer at `p + 1`; `0` is
+-- the null pointer. `MList L p`: the cells from `p` hold `L` (SLF, Repr: `MList`).
+
+def MList : List Nat → Nat → HProp Nat
+  | .nil, p => hpure (p = 0)
+  | .cons x L, p => hexists (fun (n : Nat) =>
+      hpure (Not (p = 0)) ⋆ ((p ↦ x) ⋆ ((Nat.succ p ↦ n) ⋆ MList L n)))
+
+-- `revApp L acc` is `reverse L ++ acc`
+def List.revApp {A : Type} : List A → List A → List A
+  | .nil, acc => acc
+  | .cons x xs, acc => List.revApp xs (.cons x acc)
+def List.reverse {A : Type} (l : List A) : List A := List.revApp l .nil
+
+def Nat.succ_ne_zero (n : Nat) : Not (Nat.succ n = 0) := fun e => absurd e.1
+
+-- ## In-place list reversal
+--
+-- The loop: `q` is the reversed prefix, `p` the rest; each step turns one pointer round.
+-- Programs are total, so the loop takes fuel; the specification asks for more fuel than
+-- cells, and since `wp fail = \[False]`, a proved triple also proves the fuel suffices.
+
+def Prog.revLoop : Nat → Nat → Nat → Prog Nat Nat
+  | .zero, p, q => .fail
+  | .succ f, .zero, q => .ret q
+  | .succ f, .succ p, q =>
+      .get (Nat.succ (Nat.succ p)) (fun n => .set (Nat.succ (Nat.succ p)) q (Prog.revLoop f n (Nat.succ p)))
+def Prog.reverse (fuel p : Nat) : Prog Nat Nat := Prog.revLoop fuel p 0
+
+-- the invariant: with more fuel than cells, `MList L p ⋆ MList L₂ q` becomes `MList (revApp L L₂)`
+def Prog.revLoop.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length L) f = .true → (p q : Nat) → (L₂ : List Nat) →
+    Triple (MList L p ⋆ MList L₂ q) (Prog.revLoop f p q) (fun r => MList (List.revApp L L₂) r)
+  | .nil, .zero, h, p, q, L₂ => absurd h.1
+  | .cons x L, .zero, h, p, q, L₂ => absurd h.1
+  | .nil, .succ f, h, .zero, q, L₂ => by xgo
+  | .nil, .succ f, h, .succ p, q, L₂ => by xunfold; exact absurd (Nat.succ_ne_zero p hp)
+  | .cons x L, .succ f, h, .zero, q, L₂ => by xunfold; exact absurd (hp rfl)
+  | .cons x L, .succ f, h, .succ p, q, L₂ => by
+      xstep as n, hp; xstep
+      xapp (Prog.revLoop.spec L f h n (Nat.succ p) (.cons x L₂))
+
+def Prog.reverse_spec (L : List Nat) (fuel p : Nat) (h : Nat.lt (List.length L) fuel = .true) :
+    Triple (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse L) r) := by
+  xapp (Prog.revLoop.spec L fuel h p 0 .nil)
+
+-- ## A counter: increment, calls with a frame, allocation
+
+def Prog.incr (p : Nat) : Prog Nat Unit := .get p (fun n => .set p (Nat.succ n) (.ret ()))
+
+def Prog.incr_spec (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ Nat.succ n) := by
+  xgo
+
+-- three calls; each finds its cell in the precondition and frames the other
+def Prog.incr3 (p q : Nat) : Prog Nat Unit :=
+  Prog.bind (Prog.incr p) (fun _ => Prog.bind (Prog.incr q) (fun _ => Prog.incr p))
+
+def Prog.incr3_spec (p q m n : Nat) :
+    Triple ((p ↦ m) ⋆ (q ↦ n)) (Prog.incr3 p q) (fun _ => (q ↦ Nat.succ n) ⋆ (p ↦ Nat.succ (Nat.succ m))) := by
+  xapp (Prog.incr_spec p m)
+  xapp (Prog.incr_spec q n)
+  xapp (Prog.incr_spec p (Nat.succ m))
+
+-- a fresh counter, incremented and read
+def Prog.counter : Prog Nat Nat :=
+  Prog.bind (Prog.ref 0) (fun c => Prog.bind (Prog.incr c) (fun _ => Prog.read c))
+
+def Prog.counter_spec : Triple emp Prog.counter (fun r => hexists (fun (c : Nat) => hpure (r = 1) ⋆ (c ↦ 1))) := by
+  xstep as l
+  xapp (Prog.incr_spec l 0)
+  xgo
+
+-- ## The length of a mutable list (read-only traversal)
+
+-- the length, counted onto an accumulator (as the loop counts)
+def List.lenAcc {A : Type} : List A → Nat → Nat
+  | .nil, acc => acc
+  | .cons _ xs, acc => List.lenAcc xs (Nat.succ acc)
+def List.lenAcc_succ {A : Type} : (L : List A) → (acc : Nat) → List.lenAcc L (Nat.succ acc) = Nat.succ (List.lenAcc L acc)
+  | .nil, acc => rfl
+  | .cons _ xs, acc => List.lenAcc_succ xs (Nat.succ acc)
+-- (`succ b = succ c` computes to `b = c`)
+def Nat.succ_eq_of {a b c : Nat} (e₁ : a = Nat.succ b) (e₂ : b = c) : a = Nat.succ c :=
+  @Eq.trans Nat a (Nat.succ b) (Nat.succ c) e₁ e₂
+def List.lenAcc_zero {A : Type} : (L : List A) → List.lenAcc L 0 = List.length L
+  | .nil => rfl
+  | .cons _ xs =>
+      Nat.succ_eq_of (List.lenAcc_succ xs 0) (List.lenAcc_zero xs)
+
+def Prog.lenLoop : Nat → Nat → Nat → Prog Nat Nat
+  | .zero, p, acc => .fail
+  | .succ f, .zero, acc => .ret acc
+  | .succ f, .succ p, acc => .get (Nat.succ (Nat.succ p)) (fun n => Prog.lenLoop f n (Nat.succ acc))
+def Prog.length (fuel p : Nat) : Prog Nat Nat := Prog.lenLoop fuel p 0
+
+def Prog.lenLoop.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length L) f = .true → (p acc : Nat) →
+    Triple (MList L p) (Prog.lenLoop f p acc) (fun r => hpure (r = List.lenAcc L acc) ⋆ MList L p)
+  | .nil, .zero, h, p, acc => absurd h.1
+  | .cons x L, .zero, h, p, acc => absurd h.1
+  | .nil, .succ f, h, .zero, acc => by xgo
+  | .nil, .succ f, h, .succ p, acc => by xunfold; exact absurd (Nat.succ_ne_zero p hp)
+  | .cons x L, .succ f, h, .zero, acc => by xunfold; exact absurd (hp rfl)
+  | .cons x L, .succ f, h, .succ p, acc => by
+      xstep as n, hp
+      xapp (Prog.lenLoop.spec L f h n (Nat.succ acc))
+
+def Prog.length_spec (L : List Nat) (fuel p : Nat) (h : Nat.lt (List.length L) fuel = .true) :
+    Triple (MList L p) (Prog.length fuel p) (fun r => hpure (r = List.length L) ⋆ MList L p) := by
+  xapp [r, hr] (Prog.lenLoop.spec L fuel h p 0)
+  exact Eq.trans hr (List.lenAcc_zero L)
+
+-- ## Adding one to every element in place
+
+def List.incr : List Nat → List Nat
+  | .nil => .nil
+  | .cons x xs => .cons (Nat.succ x) (List.incr xs)
+
+def Prog.incrAll : Nat → Nat → Prog Nat Unit
+  | .zero, p => .fail
+  | .succ f, .zero => .ret ()
+  | .succ f, .succ p =>
+      .get (Nat.succ p) (fun x => .set (Nat.succ p) (Nat.succ x)
+        (.get (Nat.succ (Nat.succ p)) (fun n => Prog.incrAll f n)))
+
+def Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length L) f = .true → (p : Nat) →
+    Triple (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)
+  | .nil, .zero, h, p => absurd h.1
+  | .cons x L, .zero, h, p => absurd h.1
+  | .nil, .succ f, h, .zero => by xgo
+  | .nil, .succ f, h, .succ p => by xunfold; exact absurd (Nat.succ_ne_zero p hp)
+  | .cons x L, .succ f, h, .zero => by xunfold; exact absurd (hp rfl)
+  | .cons x L, .succ f, h, .succ p => by
+      xstep as n, hp; xstep; xstep
+      xapp (Prog.incrAll.spec L f h n)
+
+-- ## Freeing a mutable list
+
+def Prog.freeAll : Nat → Nat → Prog Nat Unit
+  | .zero, p => .fail
+  | .succ f, .zero => .ret ()
+  | .succ f, .succ p =>
+      .get (Nat.succ (Nat.succ p)) (fun n => .free (Nat.succ p) (.free (Nat.succ (Nat.succ p)) (Prog.freeAll f n)))
+
+def Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length L) f = .true → (p : Nat) →
+    Triple (MList L p) (Prog.freeAll f p) (fun _ => emp)
+  | .nil, .zero, h, p => absurd h.1
+  | .cons x L, .zero, h, p => absurd h.1
+  | .nil, .succ f, h, .zero => by xgo
+  | .nil, .succ f, h, .succ p => by xunfold; exact absurd (Nat.succ_ne_zero p hp)
+  | .cons x L, .succ f, h, .zero => by xunfold; exact absurd (hp rfl)
+  | .cons x L, .succ f, h, .succ p => by
+      xstep as n, hp; xstep; xstep
+      xapp (Prog.freeAll.spec L f h n)
+
+-- ## Running programs on concrete heaps
+
+-- the heap holding `vs` from location `l` on
+def Heap.ofList {V : Type} : List V → Nat → Heap V
+  | .nil, l => Heap.empty
+  | .cons v vs, l => Heap.union (Heap.single l v) (Heap.ofList vs (Nat.succ l))
+-- the cells `l … l + k - 1`
+def Heap.toList {V : Type} (h : Heap V) : Nat → Nat → List (Option V)
+  | .zero, l => .nil
+  | .succ k, l => .cons (h l) (Heap.toList h k (Nat.succ l))
+-- run, and show the result and the first `k` cells
+def Prog.show {V A : Type} (c : Prog V A) (h : Heap V) (n k : Nat) : Option (A × List (Option V)) :=
+  Option.caseOf (Prog.run c h n) .none (fun r => .some (r.1, Heap.toList r.2.1 k 0))
