@@ -3943,6 +3943,17 @@ def keep.{u} {A : Sort u} (f : Nat → A) : Nat := let x := app f; 4
 def main : Nat := keep (A := 0 = 0) (fun _ => rfl)
 "
 
+/-- A description built by a function that abstracts its first field's type, used at an
+`Enum`: code at the known type takes the tag from the object, the generic eliminator
+would follow the description's run-time mark, which says there is none. -/
+def r3DescMark : String := "import Prelude
+def mkD (S : Type) (F : S → Desc Unit) : Desc Unit := Desc.arg 1 S F
+def B2 : Type := μ (mkD (Enum [a, b]) (fun _ => Desc.ret ())) ()
+def tb : B2 := con ('b, (), ())
+def isB2 (x : B2) : Nat := ind (fun _ _ => Nat) (fun i xs ih => let h := ih; ecase xs.1 [0, 1]) x
+def main : Nat := isB2 tb
+"
+
 /-- A pair of proofs projected by code that is generic in the sorts of its components. -/
 def r3SortPolyPair : String := "import Prelude
 def sndP.{u, v} {A : Sort u} {B : Sort v} (p : A × B) : B := p.2
@@ -4013,6 +4024,14 @@ def reprGroup : Group where
         reprAll r3SortPoly "4" },
     { name := "a pair of proofs projected by code generic in the sorts: a projection of ◾ is ◾", run := fun _ =>
         reprAll r3SortPolyPair "4" },
+    { name := "a description whose first field has an abstract type is refused, not miscompiled", run := fun _ => do
+        failsLib (r3DescMark ++ "#eval main\n") "cannot compile a description"
+        let s := runFrontend (R := ZeroOneMany) r3DescMark { trustedModule := Tests.libModule, loader := ← preludeLoader }
+        match Build.cProgram s "main" with
+        | .ok _ => throw (IO.userError "it compiled")
+        | .error e => check ((e.splitOn "cannot compile a description").length > 1) e
+        -- a parameterised type's own fields are not first fields: `List A` compiles
+        reprAll "import Prelude\ndef len {A : Type} : List A → Nat\n  | .nil => 0\n  | .cons _ xs => len xs + 1\ndef main : Nat := len (List.cons 'a (List.cons 'b List.nil) : List (Enum [a, b]))\n" "2" },
     { name := "structures and the Σ of their shape: values converted back and forth", run := fun _ => do
         let (src, total) := r3RoundTrips
         reprAll src (toString total)

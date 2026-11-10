@@ -311,6 +311,16 @@ def reprOfTy? (g : Globals R) (ty : Val R) : Option ReprInfo :=
   | .mu _ _ _ _ _ (some (T, _, _)) => reprOf? g.builtins T
   | _ => none
 
+/-- Is this field type not known yet: a neutral (a type variable, a stuck match), or a
+lift of one? Then `tagField?` could change its answer under substitution. -/
+def neutralFieldTy (S : Val R) : Bool :=
+  match whnf S with
+  | .neutral .. => true
+  | .ulift _ A => match whnf A with
+    | .neutral .. => true
+    | _ => false
+  | _ => false
+
 /-- Does a description start with a choice of tag, `Desc.arg (Enum ls) F`? Then the
 tag is the flat object's tag. -/
 def startsWithTag (D : Val R) : Bool :=
@@ -417,7 +427,7 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
   and `obj 3 #[◾, j, D]`;
 * `tt` is `◾`; `letE` keeps the binder (with `◾` for a `0` let);
 * everything else: `eraseInfer`. -/
-partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
+partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool := false) : TCM ETerm := do
   if erasable ctx ty then return .erased
   -- (given) Q4: `ULift` has no runtime content: `up a` is `a`
   if let (.up a, .ulift _ A) := (t, whnf ty) then return ← eraseCheck ctx a A
@@ -426,7 +436,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
   match t, whnf ty with
   | .lam x b, .pi _ _ q dom cod _ =>
     let some p := q.toPoly? | throw (.other "erasure: unknown quantity")
-    let b' ← eraseCheck (ctx.bind x p dom) b (Closure.inst g cod (Val.var ctx.lvl))
+    let b' ← eraseCheck (ctx.bind x p dom) b (Closure.inst g cod (Val.var ctx.lvl)) inDesc
     -- η for an infinitary field with a lifted domain (Q4): `fun h => f (up h)` (reading
     -- it) and `fun h => f (down h)` (building it) are `f` at run time
     if b matches .app _ (.up (.var 0)) || b matches .app _ (.down (.var 0)) then
@@ -463,27 +473,36 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
     eraseCheck ctx x (vInterp g l I D (nuFamilyAt l I D ((sizePred? s).getD .szInf)) i)
   | .dret i, .desc _ I => return .obj 0 #[← eraseCheck ctx i I]
   | .darg _ S D, .desc l I =>
-    let D' ← eraseCheck ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval S)
-      (.mk [I] (.desc l (.var 1))) none)
+    let vS := ctx.eval S
+    -- The mark below is this description's whole run-time knowledge of `S`, and code at
+    -- a known type decides the same thing from the type (`startsWithTag`). At the head of
+    -- a description they must agree for every instance, so `S` must be known here.
+    if !inDesc && neutralFieldTy vS then
+      throw (.other ("cannot compile a description whose first field has a type that is not known here " ++
+        s!"(`Desc.arg` at `{ctx.showTerm S}`, a type variable or a stuck term): whether its values carry a " ++
+        "constructor tag would depend on how that type is instantiated. Give the first field a known type " ++
+        "(for a choice of constructors, `Enum […]`)"))
+    let D' ← eraseCheck ctx D (.pi "s" .default (.qlit QuantitySyntax.explicitDefault) vS
+      (.mk [I] (.desc l (.var 1))) none) true
     -- a choice of tag is marked, for `pack`
-    return .obj (if (tagField? (ctx.eval S)).isSome then 4 else 1) #[.erased, D']
+    return .obj (if (tagField? vS).isSome then 4 else 1) #[.erased, D']
   | .drec _ j D, .desc l I =>
-    return .obj 2 #[← eraseCheck ctx j I, ← eraseCheck ctx D (.desc l I)]
+    return .obj 2 #[← eraseCheck ctx j I, ← eraseCheck ctx D (.desc l I) true]
   | .dhrec _ H j D, .desc l I =>
     let jTy : VTy R := .pi "h" .default (.qlit QuantitySyntax.explicitDefault) (ctx.eval H) (.mk [I] (.var 1)) none
-    return .obj 3 #[.erased, ← eraseCheck ctx j jTy, ← eraseCheck ctx D (.desc l I)]
+    return .obj 3 #[.erased, ← eraseCheck ctx j jTy, ← eraseCheck ctx D (.desc l I) true]
   | .tt, _ => return .erased
   | .letE x q ty' v b, _ =>
     let vTy := ctx.eval ty'
     let some p := (ctx.eval q).toPoly? | throw (.other "erasure: unknown quantity")
     let v' ← if p == [] then pure .erased else eraseCheck ctx v vTy
-    let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty
+    let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty inDesc
     return .letE x v' b'
   -- the type is known (and not erasable), so don't infer the whole application again
   | .app .., _ => match unfoldCases? g t with
-    | some t' => eraseCheck ctx t' ty
+    | some t' => eraseCheck ctx t' ty inDesc
     | none => return (← eraseSpine ctx t).1
-  | _, _ => return (← eraseInfer ctx t ty).1
+  | _, _ => return (← eraseInfer ctx t ty inDesc).1
   --|ex
   --| sorry
   --sol>
@@ -496,7 +515,8 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM ETerm := do
 * `ecase` on a tag is `case`; `cast` is its argument; `ann` is its term;
 * the eliminators `ind`, `Desc.elim`, `out`, `coit`, `scofix` become primitives;
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
-partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := none) : TCM (ETerm × VTy R) := do
+partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := none) (inDesc : Bool := false) :
+    TCM (ETerm × VTy R) := do
   -- (`known`: the type, when the caller has it. Otherwise `quickType`, which off the
   -- elimination spine asks the kernel's `infer`: that checks the whole term again, once
   -- per enclosing node, quadratic in the depth of a `match`'s tree of `split`s)
@@ -513,10 +533,10 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
     | .var ix => pure (.var ix)
     | .const n _ => pure (.global n)
     | .app .. => match unfoldCases? g t with
-      | some t' => pure (← eraseInfer ctx t' ty).1
+      | some t' => pure (← eraseInfer ctx t' ty inDesc).1
       | none => pure (← eraseSpine ctx t).1
-    | .ann tm ty' => eraseCheck ctx tm (ctx.eval ty')
-    | .letE .. => eraseCheck ctx t ty
+    | .ann tm ty' => eraseCheck ctx tm (ctx.eval ty') inDesc
+    | .letE .. => eraseCheck ctx t ty inDesc
     | .fst p => do
       let (p', pty) ← eraseInfer ctx p
       pure (if unboxedSigma g ctx.lvl pty then p' else .proj 0 p')
@@ -531,7 +551,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
       let vx := Val.var ctx.lvl
       let ctx₂ := (ctx.bind x pq A).bind y [] (Closure.inst g B vx)
       -- the body's type, as the kernel checks it: the motive at the pair
-      let b' ← eraseCheck ctx₂ b (Closure.inst g (.mk ctx.env m) (.pair vx (Val.var (ctx.lvl + 1))))
+      let b' ← eraseCheck ctx₂ b (Closure.inst g (.mk ctx.env m) (.pair vx (Val.var (ctx.lvl + 1)))) inDesc
       if unboxedSigma g ctx.lvl sty then
         pure (.letE "s" s' (.letE x (.var 0) (.letE y .erased (b'.lift 1 2))))
       else
@@ -540,7 +560,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
       let (s', sty) ← eraseInfer ctx s
       let .enum ls := whnf sty | throw (.other "erasure: case on a non-tag")
       let mc : Closure R := .mk ctx.env m
-      let bs' ← bs.toArray.mapIdxM fun k b => eraseCheck ctx b (Closure.inst g mc (.tag ls k))
+      let bs' ← bs.toArray.mapIdxM fun k b => eraseCheck ctx b (Closure.inst g mc (.tag ls k)) inDesc
       pure (.case s' bs')
     -- (checked against its own type: it may be a function that can't be inferred)
     | .cast A _ _ x => eraseCheck ctx x (ctx.eval A)
