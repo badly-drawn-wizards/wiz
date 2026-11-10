@@ -40,7 +40,7 @@ initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.full, false)
 /-- Elaborate a file, through the toolchain's cache (if any). -/
 def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
   let closure ← Module.loadClosure (moduleRoots tc) input
-  let lib := closure.fold (fun m n (_, src) => m.insert n src) {}
+  let lib : Std.HashMap Name String := closure.fold (fun m n (_, src) => m.insert n src) {}
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
   let (regularity, predicativeProp) ← kernelOpts.get
