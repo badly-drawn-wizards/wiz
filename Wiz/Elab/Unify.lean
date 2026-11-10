@@ -119,6 +119,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | .app a => return .app t (← rename m p a)
       | .fst => pure (.fst t)
       | .snd => pure (.snd t)
+      | .down => pure (.down t)
       | _ => pure t) t
   if let .natLit n ← force v then return .natLit n
   --<sol
@@ -143,6 +144,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | .ind l I D v P mt i =>
         return .ind l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p mt) (← rename m p i) acc
       | .out => pure (.out acc)
+      | .down => pure (.down acc)
       | .scase l I D v P mt s i =>
         return .scase l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p mt) (← rename m p s) (← rename m p i) acc
       | .sfix l I D v P f s i =>
@@ -194,6 +196,8 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .mu l I D i s h => return .mu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .nu l I D i s h => return .nu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .con x => return .con (← rename m p x)
+  | .ulift l A => return .ulift l (← rename m p A)
+  | .up a => return .up (← rename m p a)
   | .natLit n => return .natLit n
   | .unfold n us sp _ => goSp (.const n us) sp
   | .lazyInd _ _ _ _ _ _ _ _ _ v => rename m p v.get
@@ -318,6 +322,10 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .mu u I D i s _, .mu u' I' D' i' s' _ | .nu u I D i s _, .nu u' I' D' i' s' _ =>
     unifyLevel u u'; unify l I I'; unify l D D'; unify l i i'; unify l s s'
   | .con x, .con y => unify l x y
+  | .ulift u A, .ulift u' A' => unifyLevel u u'; unify l A A'
+  | .up a, .up b => unify l a b
+  | .up a, t'@(.neutral ..) => unify l a (vDown t')
+  | t'@(.neutral ..), .up a => unify l (vDown t') a
   | .coit u I D S st i s, .coit u' I' D' S' st' i' s' =>
     unifyLevel u u'
     for (a, b) in [(I, I'), (D, D'), (S, S'), (st, st'), (i, i'), (s, s')] do unify l a b
@@ -465,7 +473,7 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
     | .ind u I D v P mt i, .ind u' I' D' v' P' mt' i' =>
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (mt, mt'), (i, i')] do unify l x y
-    | .out, .out => pure ()
+    | .out, .out | .down, .down => pure ()
     | .scase u I D v P f s i, .scase u' I' D' v' P' f' s' i' =>
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (f, f'), (s, s'), (i, i')] do unify l x y

@@ -67,8 +67,8 @@ def constructors (g : Globals R) (T : Name) : List (Name × List Name) :=
     let body := d.value.map fun v => (List.range nΔ).foldl (fun t _ => match t with
       | .lam _ b => b
       | t => t) v
-    match body with
-    | some (.darg _ (.enum ls) _) => ls.map fun c =>
+    match body.bind Term.descTag? with
+    | some (ls, _, _) => ls.map fun c =>
       let fields := match g.find? (T ++ "." ++ c) with
         | some cd => (Elab.piInfos cd.type).filterMap fun (x, bi, _) =>
           if bi == .default then some (if x == "_" || x.contains '✝' then "x" else x) else none

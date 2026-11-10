@@ -140,7 +140,7 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
     let n := if s matches .szInf then n else s!"{n}^{s.prettyPrec names 1024}"
     if as.isEmpty then n else app n as
   | .mu _ _ D i s none => app (if s matches .szInf then "μ" else s!"μ^{s.prettyPrec names 1024}") [D, i]
-  | .con (.pair (.tag ls i) rest) =>
+  | .con (.pair (.tag ls i) rest) | .con (.pair (.up (.tag ls i)) rest) =>
     -- `.c f₁ … fₙ`: the payload ends with the index equation and `()`
     let fields := (tuple rest #[]).toList
     let fields := fields.take (fields.length - 2)
@@ -152,6 +152,9 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .out x => app "out" [x]
   | .coit _ _ _ S st i s => app "coit" [S, st, i, s]
   | .natLit n => toString n
+  -- Q4: the elaborator lifts small fields; `up`/`down` are invisible
+  | .ulift _ A => app "ULift" [A]
+  | .up a | .down a => a.prettyPrec names prec
   | .natOp op args => app s!"<{op}>" args.toList
   | .transp _ _ P p _ e =>
     paren (prec > 1022)

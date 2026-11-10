@@ -1128,8 +1128,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let ctors : List Name := match descD.value.map (fun v => (piInfos descD.type).foldl (fun t _ => match t with
       | .lam _ b => b
       | t => t) v) with
-    | some (.darg _ (.enum ls) _) => ls
-    | _ => []
+    | some t => (t.descTag?.map (·.1)).getD []
+    | none => []
   let nΞ := ξ.length
   -- a motive that depends on neither the indices nor the scrutinee: the non-dependent
   -- eliminator (`T.recN`), whose branches need no cast along the index equation
