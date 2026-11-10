@@ -1047,6 +1047,12 @@ def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := 
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
 
+/-- A program that projects field 1 of a number (the old unary-view fallback: since
+`proj` is borrowed, the objects it made would leak). Lowering never emits this. -/
+def projOfNumber : Array IR.Decl :=
+  #[{ name := "wiz.entry", params := #[],
+      body := .vdecl 0 (.lit 5) (.vdecl 1 (.proj 1 0) (.ret 1)) }]
+
 def borrowGroup : Group where
   name := "borrow"
   exercise := "Stage 8e"
@@ -1084,6 +1090,19 @@ def borrowGroup : Group where
         let ls ← borrowIR "both"
         check (ls.any fun l => (l.splitOn "prim dropMoved").length > 1) s!"no specialised drop:\n{"\n".intercalate ls}"
         okLib (borrowSrc ++ "#run both (.cons 1 (.cons 2 .nil))") ["4"] },
+    { name := "proj of a field of a number stops the IR interpreter and the C runtime", run := fun _ => do
+        match IR.runProgram projOfNumber with
+        | .ok _ => throw (IO.userError "the IR interpreter projected a number")
+        | .error e => check ((e.splitOn "internal error: proj 1 of the number 5").length > 1) e
+        let dir ← IO.FS.createTempDir
+        let exe := dir / "proj"
+        match ← Build.compileC (← toolchain) (C.program projOfNumber) exe with
+        | .error e =>
+          if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+        | .ok () =>
+          let out ← IO.Process.output { cmd := exe.toString }
+          checkEq 3 out.exitCode
+          check ((out.stderr.splitOn "internal error: proj").length > 1) out.stderr },
     { name := "borrowing and drop specialisation in C", run := fun _ =>
         cRun (borrowSrc ++ "def main : Nat := Nat.add (both (.cons 1 (.cons 2 .nil))) (len (mapL len (.cons .nil .nil)))\n") "5" }
   ]

@@ -442,19 +442,16 @@ WIZ_API wiz_val wiz_mk_obj(wiz_val t, wiz_val l) {
   return r;
 }
 
-/* ---- fields: a number looks like its unary payload (`natView`) ---- */
+/* ---- fields ---- */
 
+/* A number's constructor tag (0 for zero) is field 0 of its unary view. Its other fields
+   would be fresh objects (`natView`), but `proj` is borrowed since stage 8e: nobody would
+   own, and so free, them. The lowering takes numbers apart with `natTag`/`nat.pred`, so
+   reaching this is a compiler bug: stop instead of leaking. */
 WIZ_API wiz_val wiz_proj(wiz_val v, uint32_t i) {
   if (WIZ_IS_SCALAR(v) || wiz_is_big(v)) {
-    int zero = WIZ_IS_SCALAR(v) ? WIZ_UNBOX(v) == 0 : 0;
-    if (i == 0) return WIZ_BOX(zero ? 0 : 1);
-    wiz_val u = wiz_ctor_new(0, 2);
-    WIZ_SET(u, 0, WIZ_BOX(0)); WIZ_SET(u, 1, WIZ_BOX(0));
-    if (zero) return u;
-    wiz_inc(v);
-    wiz_val r = wiz_ctor_new(0, 2);
-    WIZ_SET(r, 0, wiz_nat_pred(v)); WIZ_SET(r, 1, u);
-    return r;
+    if (i == 0) return WIZ_BOX(WIZ_IS_SCALAR(v) && WIZ_UNBOX(v) == 0 ? 0 : 1);
+    wiz_panic("internal error: proj of a field of a number (use natTag/nat.pred)");
   }
   /* borrowed: no new reference (the IR `dup`s it if it needs one) */
   return ((wiz_ctor *)v)->fields[i];
