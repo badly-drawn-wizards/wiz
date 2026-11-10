@@ -27,10 +27,10 @@ soundness issues are known, open and fixed.
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
 LLVM's `llc` for the C and LLVM backends, Boehm GC for the self-hosted backend, a C
-compiler, and elan, which installs the Lean in `lean-toolchain`. It sets `$WIZ_CFLAGS`,
-`$WIZ_LDFLAGS`, `$WIZ_LLC`, `$WIZ_GC_CFLAGS` and `$WIZ_GC_LDFLAGS`, which only the test
-driver reads (`Tests/Main.lean`; flags to `lake test -- …` win); `wiz` and `grail` take
-flags.
+compiler, and elan, which installs the Lean in `lean-toolchain`. Entered at the
+repository root, it writes this machine's paths to the uncommitted `grail.local.wiz`,
+which grail and the test driver read (`Tests/Main.lean`; flags to `lake test -- …` win);
+`wiz` takes flags. Nothing reads environment variables.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
 `solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
@@ -928,7 +928,7 @@ zipper's insertion loop then allocates nothing per level.
 ### 8d: LLVM ✅
 
 `wiz build FILE -o OUT --llvm` and `wiz run FILE --llvm` go through textual LLVM IR
-(`Compiler/LLVM.lean`) and `llc` (`$WIZ_LLC`). The runtime is the same C file,
+(`Compiler/LLVM.lean`) and `llc` (`--llc X`). The runtime is the same C file,
 compiled separately with `-DWIZ_API=` so that its functions are exported. In SSA form,
 join point parameters live in stack slots, and a variable bound in several branches
 gets one name per branch. The LLVM tests are the C tests, through LLVM.

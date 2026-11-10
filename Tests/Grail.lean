@@ -159,8 +159,8 @@ def toolchainGroup : Group where
   name := "toolchain"
   exercise := "Stage 23a"
   cases := [
-    { name := "wiz and grail read no environment variables", run := fun _ => do
-        let files := (← leanFiles "Wiz") ++ (← leanFiles "Grail") ++ #[System.FilePath.mk "Main.lean"]
+    { name := "wiz, grail and the test driver read no environment variables", run := fun _ => do
+        let files := (← leanFiles "Wiz") ++ (← leanFiles "Grail") ++ #[System.FilePath.mk "Main.lean", "Tests/Main.lean"]
         for f in files do
           let text ← IO.FS.readFile f
           check ((text.splitOn "getEnv \"WIZ").length == 1) s!"{f} reads a WIZ_ variable" },

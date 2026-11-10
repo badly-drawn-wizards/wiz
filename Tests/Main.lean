@@ -21,24 +21,39 @@ prefix of the group's name. -/
 def selects (g : Group) (arg : String) : Bool :=
   if arg.startsWith "=" then "=" ++ g.name == arg else g.name.startsWith arg
 
-/-- The suite's toolchain: what the dev shell exports (`flake.nix`, `wiz-env.sh`: the one
-place the environment is read, so that `lake test` works in it), then the toolchain flags
-given to `lake test -- …`, which win. The flags are passed on to each case's process. -/
-def suiteToolchain (args : List String) : IO (Wiz.Toolchain × List String) := do
-  let ws (v : String) : IO (List String) := do pure (Wiz.Toolchain.words ((← IO.getEnv v).getD ""))
-  let fromEnv : Wiz.Toolchain := {
-    cc := (← IO.getEnv "WIZ_CC").getD "cc", llc := (← IO.getEnv "WIZ_LLC").getD "llc",
-    cflags := ← ws "WIZ_CFLAGS", ldflags := ← ws "WIZ_LDFLAGS",
-    gcCflags := ← ws "WIZ_GC_CFLAGS", gcLdflags := ← ws "WIZ_GC_LDFLAGS" }
-  let (tc, rest) := fromEnv.parseFlags args
-  pure (tc, rest)
+/-- This machine's toolchain settings, from the uncommitted `grail.local.wiz` that the nix
+dev shell writes (`flake.nix`), as grail reads them. -/
+def localToolchain : IO Wiz.Toolchain := do
+  let file : System.FilePath := "grail.local.wiz"
+  unless ← file.pathExists do
+    IO.eprintln "note: no grail.local.wiz (`nix develop` writes it): tests that compile C use `cc` without GMP's paths"
+    return {}
+  let settings ← match ← Grail.evalBuildFile {} 0 ["lib", "."] file "Settings.render settings" with
+    | .error e => throw (IO.userError e)
+    | .ok x => match Grail.decodeSettings x with
+      | .error e => throw (IO.userError s!"{file}: {e}")
+      | .ok ss => pure ss
+  settings.foldlM (init := {}) fun tc (k, v) => match tc.set k v with
+    | some tc => pure tc
+    | none => throw (IO.userError s!"{file}: unknown setting {k}")
+
+/-- The suite's toolchain: `grail.local.wiz`, then the toolchain flags given to
+`lake test -- …`, which win. The top-level run reads the file and passes the result to
+each case's process as flags (`readLocal := false` there). -/
+def suiteToolchain (args : List String) (readLocal : Bool) : IO (Wiz.Toolchain × List String) := do
+  let base ← if readLocal then localToolchain else pure {}
+  pure (base.parseFlags args)
 
 /-- `lake test` runs everything; `lake test -- conv rig` runs only groups whose name
 starts with one of the arguments, and `lake test -- =c` only the group named `c`.
 `lake test -- --list` prints the group names, one per line (CI checks its shards
 against them). -/
 def main (args : List String) : IO UInt32 := do
-  let (tc, args') ← suiteToolchain args
+  -- the processes the suite starts get the toolchain as flags
+  let child := match args with
+    | "--run" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] => true
+    | _ => false
+  let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
   flagsRef.set tc.toFlags
   match args' with
