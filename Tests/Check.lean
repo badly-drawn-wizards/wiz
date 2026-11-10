@@ -97,6 +97,27 @@ def mlttGroup : Group where
         (fun | .cannotInfer .. => true | _ => false) "cannotInfer" }
   ]
 
+/-! ## Methods in a rig without ω (Q2) -/
+
+/-- In the `Nat` rig (exact counting) there is no unrestricted quantity, so a method of
+an eliminator, which runs once per node, may not use a runtime variable. Here `coit`'s
+step uses `y`: `bad` declares `y` linear (rejected: each `out` reruns the step), `good`
+declares it erased and the step only passes it to an erased argument. -/
+def natRigCoit (q : Nat) (name : Name) : List (Decl Nat) :=
+  let pi (x : Name) (q : Nat) (a b : Term Nat) : Term Nat := .pi x .default (.qlit q) a b none
+  let U : Term Nat := .unit 1
+  let D : Term Nat := .dret .tt
+  -- a global state family: `fun _ => Unit` would drop its linear argument
+  let S : Term Nat := .const s!"{name}S" []
+  -- ⟦ret tt⟧ S i = (0 _ : tt = i) × Unit
+  let stepTy := pi "i" 1 U (pi "s" 1 (.app S (.var 0)) (pi "y" q U (.sigma "_" (.qlit 0) (.eq U .tt (.var 2)) (.unit 1) none)))
+  [{ name := s!"{name}S", type := pi "i" 1 U (.sort 1), value := none },
+   { name := s!"{name}S0", type := .app S .tt, value := none },
+   { name := s!"{name}Step", type := stepTy, value := none },
+   { name, type := pi "y" q U (.nu 0 U D .tt .szInf none),
+     value := some (.lam "y" (.coit 0 U D S
+       (.lam "i" (.lam "s" (.app (.app (.app (.const s!"{name}Step" []) (.var 1)) (.var 0)) (.var 2)))) .tt (.const s!"{name}S0" []))) }]
+
 /-! ## Quantities (`ZeroOneMany` rig) -/
 
 abbrev Q := ZeroOneMany
@@ -145,7 +166,10 @@ def qttGroup : Group where
         (lams ["A", "x", "z"] (.letE "y" one "A" "x" "z"))] isQty "a quantity error" },
     { name := "erased let feeding a type",
       run := fun _ => accepts [Raw.defn "l" (forallA (arr one "A" "A"))
-        (lams ["A", "x"] (.letE "B" zero ty "A" (.ann "x" "B")))] }
+        (lams ["A", "x"] (.letE "B" zero ty "A" (.ann "x" "B")))] },
+    { name := "Nat rig: a method may use an erased variable", run := fun _ => accepts (natRigCoit 0 "good") },
+    { name := "Nat rig: a method may not use a linear variable, it runs any number of times (Q2)", run := fun _ =>
+        rejects (natRigCoit 1 "bad") (fun | .other .. => true | _ => false) "a method usage error" }
   ]
 
 /-! ## Structural types -/
@@ -164,10 +188,22 @@ def structGroup : Group where
           (lams ["A", "B", "p"] (.split one "p" "z" (.sigma "y" one "B" "A") "x" "y" (.pair "y" "x")))] },
     { name := "linear pair projected twice is rejected", run := fun _ =>
         rejects [Raw.defn "swap" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" "B") (.sigma "y" one "B" "A"))))
-          (lams ["A", "B", "p"] (.pair (.snd "p") (.fst "p")))] isQty "a quantity error" },
+          (lams ["A", "B", "p"] (.pair (.snd "p") (.fst "p")))]
+          (fun e => isQty e || match e with | .other .. => true | _ => false) "a quantity or projection error" },
     { name := "erased field cannot be projected", run := fun _ =>
         rejects [Raw.defn "bad" (forallA (pi' "B" zero ty (arr many (.sigma "x" zero "A" "B") "A")))
           (lams ["A", "B", "p"] (.fst "p"))] (fun | .other .. => true | _ => false) "a projection error" },
+    { name := "the second projection can't drop a linear first field (Q1)", run := fun _ =>
+        rejects [Raw.defn "drop" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" "B") "B")))
+          (lams ["A", "B", "p"] (.snd "p"))] isQty "a quantity error" },
+    { name := "an unrestricted pair may drop its linear first field (Q1)", run := fun _ =>
+        accepts [Raw.defn "dropMany" (forallA (pi' "B" zero ty (arr many (.sigma "x" one "A" "B") "B")))
+          (lams ["A", "B", "p"] (.snd "p"))] },
+    { name := "the second projection may drop an ω or erased first field", run := fun _ =>
+        accepts [Raw.defn "dropω" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" "B") "B")))
+            (lams ["A", "B", "p"] (.snd "p")),
+          Raw.defn "drop0" (forallA (pi' "B" zero ty (arr one (.sigma "x" zero "A" "B") "B")))
+            (lams ["A", "B", "p"] (.snd "p"))] },
     { name := "erased field can be bound by split and ignored", run := fun _ =>
         accepts [Raw.defn "ok" (forallA (pi' "B" zero ty (arr one (.sigma "x" zero "A" "B") "B")))
           (lams ["A", "B", "p"] (.split one "p" "z" "B" "x" "y" "y"))] },
