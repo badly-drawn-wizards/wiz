@@ -3410,7 +3410,7 @@ def regionsGroup : Group where
   cases := [
     { name := "handles in different regions are different types; regions are inferred", run := fun _ => do
         okLibs ("import Region\ndef same {ρ : Region} (m : Mut ρ Nat (List Nat)) : Mut ρ Nat (List Nat) := m\n" ++
-          "def get {ρ : Region} (x : Shr ρ Nat) : Nat := x.val\n#eval get (Shr.mk 4 : Shr Region.static Nat)") ["4"]
+          "def get {ρ : Region} (x : Shr ρ Nat) : Nat := x.val\n#eval Shr.borrow Region.static 4 (fun ρ h x => .ok (get x))") [".ok 4"]
         failsLibs "import Region\ndef bad {ρ ρ' : Region} (m : Mut ρ Nat (List Nat)) : Mut ρ' Nat (List Nat) := m" "mismatch"
         failsLibs "import Region\ndef bad {ρ ρ' : Region} (x : Shr ρ Nat) : Shr ρ' Nat := x" "mismatch" },
     { name := "a mutable borrow scope hands the lender back", run := fun _ =>
@@ -3437,7 +3437,14 @@ def regionsGroup : Group where
           "  match push1 r with\n  | .ok q => .ok (List.length v, q.2)\n  | .err e => .err e)") "mismatch"
         failsLibs ("import Region\n" ++ regionsPush ++
           "def bad : Result (Unit × List Nat) := Uniq.borrow Region.static List.nil (fun ρ1 h1 v r1 =>\n" ++
-          "  match Uniq.borrow ρ1 v (fun ρ2 h2 v r2 => push1 r2) with\n  | .ok q => .ok ((), r1)\n  | .err e => .err e)") "mismatch" }
+          "  match Uniq.borrow ρ1 v (fun ρ2 h2 v r2 => push1 r2) with\n  | .ok q => .ok ((), r1)\n  | .err e => .err e)") "mismatch" },
+    { name := "handles can't be forged outside lib/Region.wiz (private constructors, 13b)", run := fun _ => do
+        failsLibs "import Region\ndef forge {ρ : Region} : Shr ρ Nat := Shr.mk 5" "'Shr.mk' is private to module Region"
+        failsLibs "import Region\ndef forge {ρ : Region} (s : List Nat) : Uniq ρ (List Nat) := Uniq.mk s" "private"
+        failsLibs "import Region\ndef forge {ρ : Region} : Lent ρ Nat := .mk ()" "Lent"
+        failsLibs "import Region\ndef forge {ρ : Region} : Shr ρ Nat := (5, ())" "Shr"
+        failsLibs ("import Region\nstructure MyShr (ρ : Region) (A : Type) where\n  val : A\n" ++
+          "def forge {ρ : Region} : Shr ρ Nat := MyShr.mk 5") "mismatch" }
   ]
 
 
