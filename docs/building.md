@@ -41,16 +41,21 @@ cached between runs.
   is a list of `lake test` selectors). The build job checks that every group of
   `Tests/Main.lean` is in exactly one shard (`scripts/ci.py check-shards`, which checks
   every case after splitting), so **a new test group must be added to
-  `.github/test-shards.json`**. Each shard's job summary has a table of every case's time
+  `.github/test-shards.json`** (one selector per line, sorted within its shard) and to
+  the `groups` list at the end of its test module (`Tests/*.lean`, one group per line,
+  sorted; `Tests/Main.lean` only concatenates the modules' lists). Both are laid out so
+  that branches adding different groups don't touch the same lines. Each shard's job summary has a table of every case's time
   (three decimals), group subtotals and the shard's total; the `CI result` job sums the
   shards up (a table of shard totals and the grand total, and the 15 slowest cases) and
   uploads every case's time as the `test-timings` artifact.
 * **Split shards.** A shard with `"split": N` runs as N jobs `NAME-1` … `NAME-N`, each a
   list of `=GROUP#I,J,…` selectors. `scripts/ci.py` balances the parts with the case
-  times in `.github/test-timings.json`: a part pays once for each shared program its
-  cases use (the self-hosted checker or compiler, which the part's first case that needs
-  it builds), so parts that don't need the checker don't build it. Unknown cases (new
-  ones) count as their group's median. `scripts/ci.py plan` shows the parts and their
+  times in `.github/test-timings.json`: the cases that use the same shared program (the
+  self-hosted checker or compiler, which the first case that needs it builds) stay in
+  one part, so each program is built once, and the other cases fill the parts up. A new
+  case counts as its group's median, with the programs most of its group uses. The
+  baseline holds only the split shards' cases, one per line.
+  `scripts/ci.py plan` shows the parts and their
   estimates. To refresh the baseline from a CI run:
   `gh run download RUN -n test-timings && scripts/ci.py baseline timings.jsonl > .github/test-timings.json`.
 * **The exercise tree** (`master`) checks that everything builds and that the test driver

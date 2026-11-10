@@ -19,7 +19,7 @@
                                      slowest cases)
   scripts/ci.py baseline JSONL..     a new .github/test-timings.json (stdout) from
                                      `--timings` files, e.g. the `test-timings`
-                                     artifact of a CI run
+                                     artifact of a CI run (the split shards' cases)
   scripts/ci.py check-include-str BASE
                                      Lake doesn't track `include_str`: fail if a file a
                                      .lean file embeds changed since BASE (a commit) and
@@ -66,15 +66,19 @@ def baseline():
 
 
 def estimate(cases, base):
-    """[(group, index, name, seconds, uses)]: unknown cases get their group's median."""
+    """[(group, index, name, seconds, uses)], from the baseline."""
     out = []
     for g, i, n in cases:
         known = base["cases"].get(g, {})
         if n in known:
             out.append((g, i, n, known[n]["seconds"], tuple(known[n].get("uses", []))))
         else:
+            # a new case: the group's median time, and the programs that most of the
+            # group's cases use (wrongly assumed, it only sits with their users)
             ts = sorted(c["seconds"] for c in known.values()) or [1.0]
-            out.append((g, i, n, ts[len(ts) // 2], ()))
+            sets = [tuple(c.get("uses", [])) for c in known.values()]
+            uses = max(sorted(set(sets)), key=sets.count) if sets else ()
+            out.append((g, i, n, ts[len(ts) // 2], uses))
     return out
 
 
@@ -84,39 +88,41 @@ def part_cost(items, builds):
 
 
 def partition(items, n, builds):
-    """Split the cases into n parts with the smallest longest part (estimated), where a
-    part pays once for each shared program its cases use (the self-hosted checker or
-    compiler: the first case that needs it builds it). Greedy, longest first, then
-    single moves while they help; deterministic."""
+    """Split the cases into n parts with the smallest longest part (estimated). The
+    cases that use the same shared programs (the self-hosted checker or compiler: the
+    first case that needs one builds it) stay together, so each program is built by one
+    part only; the other cases fill the parts up. Greedy, longest first, then single
+    moves while they help; deterministic."""
+    clusters = {}
+    for it in items:
+        clusters.setdefault(it[4], []).append(it)
+    # the units to place: a cluster per set of programs, and each remaining case
+    units = [c for uses, c in clusters.items() if uses] + [[it] for it in clusters.get((), [])]
+    units.sort(key=lambda u: (-part_cost(u, builds), u[0][0], u[0][1]))
     parts = [[] for _ in range(n)]
-    for it in sorted(items, key=lambda it: (-(it[3] + sum(builds.get(r, 0.0) for r in it[4])), it[0], it[1])):
-        def score(k):
-            trial = [p + [it] if j == k else p for j, p in enumerate(parts)]
-            return (max(part_cost(p, builds) for p in trial),
-                    part_cost(trial[k], builds) - part_cost(parts[k], builds), k)
-        parts[min(range(n), key=score)].append(it)
+    cost = lambda us: part_cost([it for u in us for it in u], builds)
+    for u in units:
+        k = min(range(n), key=lambda k: (cost(parts[k] + [u]), k))
+        parts[k].append(u)
     improved = True
     while improved:
         improved = False
-        span = max(part_cost(p, builds) for p in parts)
-        for a in sorted(range(n), key=lambda k: -part_cost(parts[k], builds)):
-            for it in list(parts[a]):
+        span = max(cost(p) for p in parts)
+        for a in sorted(range(n), key=lambda k: -cost(parts[k])):
+            for u in parts[a]:
                 for b in range(n):
                     if b == a:
                         continue
-                    pa = [x for x in parts[a] if x is not it]
-                    pb = parts[b] + [it]
-                    rest = [part_cost(p, builds) for j, p in enumerate(parts) if j not in (a, b)]
-                    new = max([part_cost(pa, builds), part_cost(pb, builds)] + rest)
-                    if new < span - 1e-9:
-                        parts[a], parts[b] = pa, pb
-                        improved = True
+                    pa = [x for x in parts[a] if x is not u]
+                    trial = [pa if j == a else p + [u] if j == b else p for j, p in enumerate(parts)]
+                    if max(cost(p) for p in trial) < span - 1e-9:
+                        parts, improved = trial, True
                         break
                 if improved:
                     break
             if improved:
                 break
-    return [sorted(p, key=lambda it: (it[0], it[1])) for p in parts]
+    return [sorted((it for u in p for it in u), key=lambda it: (it[0], it[1])) for p in parts]
 
 
 def part_selectors(items):
@@ -341,9 +347,15 @@ def summary(title, files):
 
 def make_baseline(paths):
     """.github/test-timings.json from `--timings` records (see `baseline`); a case seen
-    more than once keeps its largest time, a build its largest."""
+    more than once keeps its largest time, a build its largest. Only the shards with
+    "split" count."""
     cases, builds = {}, {}
+    split = [s["name"] for s in shards() if s.get("split", 1) > 1]
     for r in read_timings(paths):
+        # only the split shards' cases are balanced (and other shards may use the same
+        # programs with other build times)
+        if not any(r["shard"] == n or re.fullmatch(re.escape(n) + r"-\d+", r["shard"]) for n in split):
+            continue
         uses = sorted({n[len(NOTE_USES):] for n in r.get("notes", []) if n.startswith(NOTE_USES)})
         built = 0.0
         for n in r.get("notes", []):
@@ -355,7 +367,16 @@ def make_baseline(paths):
         old = cases.setdefault(r["group"], {}).get(r["case"])
         if old is None or old["seconds"] < own:
             cases[r["group"]][r["case"]] = {"seconds": own, **({"uses": uses} if uses else {})}
-    print(json.dumps({"builds": dict(sorted(builds.items())), "cases": cases}, indent=1, ensure_ascii=False))
+    # one case per line, sorted, so that the file diffs and merges well
+    dump = lambda x: json.dumps(x, ensure_ascii=False)
+    out = ['{', f' "builds": {dump(dict(sorted(builds.items())))},', ' "cases": {']
+    for k, (g, cs) in enumerate(sorted(cases.items())):
+        out.append(f'  {dump(g)}: {{')
+        lines = [f'   {dump(n)}: {dump(c)}' for n, c in sorted(cs.items())]
+        out += [l + "," for l in lines[:-1]] + lines[-1:]
+        out.append('  }' + ("," if k < len(cases) - 1 else ""))
+    out += [' }', '}']
+    print("\n".join(out))
     return 0
 
 

@@ -559,4 +559,17 @@ def grailSelfhostGroup : Group where
         checkEq 0 (← r.stats.get).ran }
   ]
 
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  grailDepsGroup ::
+  grailGroup ::
+  grailJobsGroup ::
+  grailSelfhostGroup ::
+  modulesGroup ::
+  testRunnerGroup ::
+  toolchainGroup ::
+  []
+
 end Tests.Grail

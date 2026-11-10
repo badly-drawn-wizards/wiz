@@ -15,9 +15,19 @@ set_option compiler.extract_closed false
 
 open Tests
 
+/-- Every test group: each test module lists its own (`groups` at its end), so that a
+new group touches only its module (and `.github/test-shards.json`). -/
 def groups : List Group :=
-  [Rig.group, Eval.evalGroup, Eval.convGroup, Eval.structGroup, Check.mlttGroup, Check.qttGroup, Check.structGroup,
-   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group, Elab.levelGroup, Elab.structGroup, Elab.ottGroup, Elab.qtyGroup, Elab.dataGroup, Elab.inductiveGroup, Elab.matchGroup, Elab.coinductiveGroup, Elab.sizedGroup, Elab.runGroup, Elab.macroGroup, Elab.builtinGroup, Elab.tacticGroup, Elab.classGroup, Elab.backendGroup, Elab.cGroup, Elab.llvmGroup, Elab.ffiGroup, Elab.effectsGroup, Elab.toolingGroup, Elab.stdGroup, Elab.wordGroup, Elab.selfHostGroup, Elab.languageGroup, Elab.opticGroup, Elab.derivingGroup, Elab.reuseGroup, Elab.borrowGroup, Elab.phantomGroup, Elab.liftGroup, Elab.regionsGroup, Elab.vecGroup, Elab.hdlGroup, LSP.group, LSP.serverGroup, Grail.modulesGroup, Grail.toolchainGroup, Grail.grailGroup, Grail.grailJobsGroup, Grail.grailDepsGroup, Grail.testRunnerGroup, Grail.grailSelfhostGroup, ElabFix.group, Elab.infoviewGroup, Scaling.group]
+  Check.groups ++
+  Elab.groups ++
+  ElabFix.groups ++
+  Eval.groups ++
+  Grail.groups ++
+  LSP.groups ++
+  Parser.groups ++
+  Rig.groups ++
+  Scaling.groups ++
+  []
 
 /-- Whether a command-line selector picks a group: `=NAME` exactly, anything else as a
 prefix of the group's name. `=NAME#I,J,…` picks only the cases with those indices
