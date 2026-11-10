@@ -23,14 +23,14 @@ deriving instance BitPack for TxState                      -- wishful: deriving-
 -- wishful: nat-arith-proofs — `from (unpack (pack (to a))) = a` from BitPack B's law and `law`;
 -- needs rewriting under `back`, i.e. `congr` (verification 22a).
 axiom BitPack.ofIso.law {A B : Type} [ib : BitPack B] (to : A → B) (back : B → A)
-    (law : (a : A) → back (to a) = a) (a : A) : back (BitPack.unpack (BitPack.pack (to a))) = a
+    (law : (a : A) → back (to a) = a) (a : A) : back (@BitPack.unpack B ib (@BitPack.pack B ib (to a))) = a
 
 -- (`A` explicit: inferred from `to` alone, the law is checked before `A` is known —
 --  wishful: ctor-params-from-expected-type)
 def BitPack.ofIso (0 A : Type) {B : Type} [ib : BitPack B] (to : A → B) (back : B → A)
     (0 law : (a : A) → back (to a) = a) : BitPack A :=
-  @BitPack.mk A (bitWidth B ()) (fun (a : A) => BitPack.pack (to a))
-    (fun (v : BitVec (bitWidth B ())) => back (BitPack.unpack v)) (BitPack.ofIso.law to back law)
+  @BitPack.mk A (bitWidth B ()) (fun (a : A) => @BitPack.pack B ib (to a))
+    (fun (v : BitVec (bitWidth B ())) => back (@BitPack.unpack B ib v)) (@BitPack.ofIso.law A B ib to back law)
 
 def TxPhase.toU : TxPhase → Unsigned 2
   | .idle => Unsigned.ofNat 2 0
@@ -68,7 +68,7 @@ def txStep (clksPerBit : Nat) (s : TxState) (inp : Option (BitVec 8)) : TxState 
     let phase' := if tick then (if s.bit == 7 then TxPhase.stop else TxPhase.data) else TxPhase.data
     let bit' := if tick then s.bit + 1 else s.bit
     let shift' := if tick then BitVec.lshr s.shift 1 else s.shift
-    (TxState.mk phase' bit' baud' shift', (BitVec.getBit 0 s.shift, Bool.true))
+    (TxState.mk phase' bit' baud' shift', (BitVec.getBit s.shift 0, Bool.true))
   | .stop => (TxState.mk (if tick then .idle else .stop) 0 baud' s.shift, (Bool.true, Bool.true))
 
 def txInit : TxState := TxState.mk .idle 0 0 0                            -- wishful: numeric-classes-bitvec
@@ -78,7 +78,7 @@ def uartTx {ω d : Domain} (clksPerBit : Nat) (inp : Signal d (Option (BitVec 8)
 
 -- Simulation: send 0x55 = 0b01010101 at cycle 0, two clocks per bit.
 def send55 : Signal System (Option (BitVec 8)) :=
-  Signal.backList Option.none (Vec.toList #v[Option.some (BitVec.ofNat 8 85)])
+  Signal.fromList Option.none (Vec.toList #v[Option.some (BitVec.ofNat 8 85)])
 def bitsOf (s : Signal System Bool) (n : Nat) : List Nat :=
   sample n (Signal.map (fun (b : Bool) => if b then 1 else 0) s)
 #eval bitsOf (uartTx 2 send55).1 22

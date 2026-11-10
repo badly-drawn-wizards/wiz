@@ -20,7 +20,7 @@ def fir {ω d : Domain} {A : Type} [BitPack A] [Add A] [Mul A] {ω n : Nat}
 def firM {ω d : Domain} {A : Type} [BitPack A] [Add A] [Mul A] {ω n : Nat}
     (zero : A) (cs : Vec A (.succ n)) (x : Signal d A) : Signal d A :=
   mealy (fun (st : Vec A n) (xi : A) => (Vec.shiftIn xi st, Vec.dot zero cs (Vec.cons xi st)))
-        (Vec.replicate zero n) x
+        (Vec.replicate n zero) x
 
 -- A 4-tap filter on 16-bit signed samples, as it should read:
 def fir4 {ω d : Domain} (x : Signal d (Signed 16)) : Signal d (Signed 16) :=

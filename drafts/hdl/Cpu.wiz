@@ -64,7 +64,7 @@ deriving instance BitPack for Cpu                          -- wishful: deriving-
 def Vec.index {A : Type} {0 n k : Nat} (v : Vec A n) (i : Unsigned k) (dflt : A) : A :=
   Vec.nthD v (Unsigned.toNat i) dflt
 def Vec.update {A : Type} {0 n k : Nat} (v : Vec A n) (i : Unsigned k) (x : A) : Vec A n :=
-  Vec.set v (Unsigned.toNat i) x
+  Vec.setD v (Unsigned.toNat i) x
 attribute [hdl vec.index] Vec.index                         -- wishful: hdl-commands
 attribute [hdl vec.update] Vec.update                       -- wishful: hdl-commands
 

@@ -35,6 +35,17 @@ variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 def sameQty (a b : Val R) : Option Bool := do
   return QPoly.equiv (← a.toPoly?) (← b.toPoly?)
 
+/-- Are two quantities certainly different: both literals (no variables), and different?
+`False` between two types is decided only then. Polynomials with variables that differ
+(`q` and `1`) can become equal under a substitution (`q := 1`), so the equation must stay
+stuck there: computing it to `False` proved `False` (P1, `wiz-notes/p1-stable.md`). -/
+def qtyApart (a b : Val R) : Bool :=
+  match a.toPoly?, b.toPoly? with
+  | some p, some q => match p.isConst?, q.isConst? with
+    | some _, some _ => !QPoly.equiv p q
+    | _, _ => false
+  | _, _ => false
+
 /-- Unfold glued values (`Val.unfold`) until the head is not a definition: do this before
 matching on a value's shape. -/
 partial def whnf : Val R → Val R
@@ -775,7 +786,7 @@ partial def vEqPayload (g : Globals R) (l : Level) (I X i D x y : Val R) : Optio
     Sort u = Sort v, Unit = Unit, …     ↦  True if the levels are equivalent; False if
                                            both are closed and differ; stuck otherwise
     different type formers, or
-    different quantities                ↦  False
+    different quantities (two literals) ↦  False; a quantity variable on either side ↦ stuck
     a neutral on either side            ↦  stuck: neutral (Head.eqTy X Y)
 
 Why can't `Sort u = Sort v` be `False` when `u` and `v` are different parameters?
@@ -808,12 +819,12 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
   if pX != pY then .empty 0 else
   match X, Y with
   | .pi _ _ q A B _, .pi _ _ q' A' B' _ =>
-    if sameQty q q' == some false then .empty 0 else if sameQty q q' == none then .neutral (.eqTy X Y) #[] else
+    if qtyApart q q' then .empty 0 else if sameQty q q' != some true then .neutral (.eqTy X Y) #[] else
     -- env (inside the Σ, after `e`): B', B, A', A; inside the Π add `x`
     .sigma "e" (.qlit 0) (vEqType g A' A) (.mk [.lam "x" B', .lam "x" B, A', A]
       (.pi "x" .default (.qlit 0) (v 3) (.eqTy (.app (v 3) (.cast (v 4) (v 5) (v 1) (v 0))) (.app (v 2) (v 0))) (some 0))) (some 0)
   | .sigma _ q A B _, .sigma _ q' A' B' _ =>
-    if sameQty q q' == some false then .empty 0 else if sameQty q q' == none then .neutral (.eqTy X Y) #[] else
+    if qtyApart q q' then .empty 0 else if sameQty q q' != some true then .neutral (.eqTy X Y) #[] else
     .sigma "e" (.qlit 0) (vEqType g A A') (.mk [.lam "x" B', .lam "x" B, A', A]
       (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0)))) (some 0))) (some 0)
   | .sort u, .sort w | .unit u, .unit w | .empty u, .empty w => levels u w

@@ -302,17 +302,16 @@ static int wiz_nat_eq(wiz_val a, wiz_val b) {
   return mpz_cmp(((wiz_big *)a)->z, ((wiz_big *)b)->z) == 0;
 }
 
-/* the prelude's `Bool`: a constructor without fields is its tag */
+/* the prelude's `Bool`: a constructor without fields is its tag. The comparisons
+   borrow their arguments (stage 8e, `primBorrows`): the caller keeps its references. */
 WIZ_API wiz_val wiz_nat_beq(wiz_val a, wiz_val b) {
   int eq = wiz_nat_eq(a, b);
-  wiz_dec(a); wiz_dec(b);
   return WIZ_BOX(eq ? 1 : 0);
 }
 WIZ_API wiz_val wiz_nat_blt(wiz_val a, wiz_val b) {
   int lt;
   if (WIZ_IS_SCALAR(a) && WIZ_IS_SCALAR(b)) lt = WIZ_UNBOX(a) < WIZ_UNBOX(b);
   else { mpz_t x, y; wiz_to_mpz(x, a); wiz_to_mpz(y, b); lt = mpz_cmp(x, y) < 0; mpz_clear(x); mpz_clear(y); }
-  wiz_dec(a); wiz_dec(b);
   return WIZ_BOX(lt ? 1 : 0);
 }
 
@@ -443,23 +442,19 @@ WIZ_API wiz_val wiz_mk_obj(wiz_val t, wiz_val l) {
   return r;
 }
 
-/* ---- fields: a number looks like its unary payload (`natView`) ---- */
+/* ---- fields ---- */
 
+/* A number's constructor tag (0 for zero) is field 0 of its unary view. Its other fields
+   would be fresh objects (`natView`), but `proj` is borrowed since stage 8e: nobody would
+   own, and so free, them. The lowering takes numbers apart with `natTag`/`nat.pred`, so
+   reaching this is a compiler bug: stop instead of leaking. */
 WIZ_API wiz_val wiz_proj(wiz_val v, uint32_t i) {
   if (WIZ_IS_SCALAR(v) || wiz_is_big(v)) {
-    int zero = WIZ_IS_SCALAR(v) ? WIZ_UNBOX(v) == 0 : 0;
-    if (i == 0) return WIZ_BOX(zero ? 0 : 1);
-    wiz_val u = wiz_ctor_new(0, 2);
-    WIZ_SET(u, 0, WIZ_BOX(0)); WIZ_SET(u, 1, WIZ_BOX(0));
-    if (zero) return u;
-    wiz_inc(v);
-    wiz_val r = wiz_ctor_new(0, 2);
-    WIZ_SET(r, 0, wiz_nat_pred(v)); WIZ_SET(r, 1, u);
-    return r;
+    if (i == 0) return WIZ_BOX(WIZ_IS_SCALAR(v) && WIZ_UNBOX(v) == 0 ? 0 : 1);
+    wiz_panic("internal error: proj of a field of a number (use natTag/nat.pred)");
   }
-  wiz_val f = ((wiz_ctor *)v)->fields[i];
-  wiz_inc(f);
-  return f;
+  /* borrowed: no new reference (the IR `dup`s it if it needs one) */
+  return ((wiz_ctor *)v)->fields[i];
 }
 
 /* `0` for an observed coinductive value, `1` for coit, `2` for scofix, `3` for a lazy
@@ -561,6 +556,29 @@ WIZ_API wiz_val wiz_reset(wiz_val x) {
     }
   }
   wiz_dec(x);
+  return WIZ_BOX(0);
+}
+
+/* drop specialisation (stage 8e): drop `x`, whose fields in `mask` were read and are
+   still needed. Unique: they move out (the others are dropped) and the cell is freed;
+   shared: they get a reference each and `x` is decremented. */
+WIZ_API wiz_val wiz_drop_moved(wiz_val x, wiz_val mask) {
+  if (WIZ_IS_SCALAR(x)) return WIZ_BOX(0);
+  wiz_hdr *h = (wiz_hdr *)x;
+  uint64_t m = WIZ_UNBOX(mask);
+  if (h->tag >= WIZ_TAG_FIRST_SPECIAL) { wiz_dec(x); return WIZ_BOX(0); }
+  wiz_val *fs = ((wiz_ctor *)x)->fields;
+  if (h->rc == 1) {
+    for (uint32_t i = 0; i < h->size; i++)
+      if (i >= 62 || !((m >> i) & 1)) wiz_dec(fs[i]);
+    wiz_live--;
+    wiz_untrack(h);
+    free(h);
+  } else {
+    for (uint32_t i = 0; i < h->size && i < 62; i++)
+      if ((m >> i) & 1) wiz_inc(fs[i]);
+    h->rc--;
+  }
   return WIZ_BOX(0);
 }
 
@@ -1153,6 +1171,13 @@ WIZ_API const char *wiz_io_read_file(const char *path) {
   fclose(f);
   return wiz_scratch;
 }
+
+/* the program's arguments (without its name), saved by `main` (stage 21k) */
+static int wiz_argc;
+static char **wiz_argv;
+WIZ_API void wiz_set_args(int argc, char **argv) { wiz_argc = argc; wiz_argv = argv; }
+WIZ_API uint64_t wiz_io_arg_count(void) { return wiz_argc > 1 ? (uint64_t)(wiz_argc - 1) : 0; }
+WIZ_API const char *wiz_io_arg(uint64_t i) { return i + 1 < (uint64_t)wiz_argc ? wiz_argv[i + 1] : ""; }
 
 /* functions for the library to bind */
 WIZ_API void wiz_io_println(const char *s) { puts(s); fflush(stdout); }
