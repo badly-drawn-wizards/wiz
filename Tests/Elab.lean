@@ -2231,6 +2231,49 @@ def selfhostCompileRun (file expected : String) (flags : Array String := #[]) (p
     unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
     checkEq expected run.stdout
 
+/-- (21l) A program with foreign functions gives the same output compiled by the Lean
+compiler and by the self-hosted one (with the collector unless `gc := false`, and with
+reference counting, which also checks that every object was freed). -/
+def ffiAgrees (src expected : String) (gc : Bool := true) : IO Unit := do
+  ioRun src expected
+  if gc then selfhostCompileRun src expected
+  selfhostCompileRun src expected (flags := #["--rc"])
+
+/-- (21l) Foreign functions: headers, prototypes, numbers, strings, `Bool`, `Unit`, `IO`. -/
+def ffiProgram1 : String :=
+  "import IO\nextern \"strlen\" (header := \"string.h\") strlen : String → Nat\n" ++
+  "extern \"strerror\" (header := \"string.h\") strerror : Nat → String\n" ++
+  "extern \"isdigit\" (header := \"ctype.h\") isdigit : Nat → Bool\n" ++
+  "extern \"puts\" (header := \"stdio.h\") cputs : String → IO Unit\n" ++
+  "extern \"labs\" (header := \"stdlib.h\") labs : Nat → Nat\n" ++
+  "def show (n : Nat) : IO Unit := IO.println (Nat.toString n)\n" ++
+  "def pick (b : Bool) (y n : String) : String := match b with\n  | .true => y\n  | .false => n\n" ++
+  "def main : IO Unit := do\n  show (strlen \"hello, ünïcode\");\n  IO.println (strerror 0);\n" ++
+  "  IO.println (pick (isdigit 55) \"digit\" \"not\");\n  IO.println (pick (isdigit 65) \"digit\" \"not\");\n" ++
+  "  cputs \"from C\";\n  show (labs 42);\n" ++
+  "  show (UInt64.toNat (UInt64.mul (UInt64.ofNat 1000000) (UInt64.ofNat 1000000)));\n" ++
+  "  let big := UInt64.sub (UInt64.ofNat 0) (UInt64.ofNat 1);\n" ++
+  "  IO.println (pick (UInt64.lt (UInt64.ofNat 5) big) \"wraps\" \"no\");\n" ++
+  "  IO.println (pick (UInt64.eq (UInt64.add big (UInt64.ofNat 1)) (UInt64.ofNat 0)) \"zero\" \"no\");\n" ++
+  "  IO.println (Float64.toString (Float64.div (Float64.ofNat 1) (Float64.ofNat 4)));\n" ++
+  "  IO.println (Float64.toString (Float64.sub (Float64.ofNat 1) (Float64.ofNat 3)))\n"
+
+def ffiExpected1 : String :=
+  "16\nSuccess\ndigit\nnot\nfrom C\n42\n1000000000000\nwraps\nzero\n0.25\n-2\n"
+
+/-- (21l) A foreign pointer type with a finalizer: `fclose` runs when the last reference
+to the `FILE` goes (so the file is complete when it is read back). -/
+def ffiProgramFin (flush : Bool) : String :=
+  let file := s!"/tmp/wiz_ffi_fin_{flush}.txt"
+  "import IO\nforeign_type FILE (finalizer := \"fclose\")\n" ++
+  "extern \"fopen\" (header := \"stdio.h\") fopen : String → String → IO FILE\n" ++
+  "extern \"fputs\" (header := \"stdio.h\") fputs : String → FILE → IO Nat\n" ++
+  "extern \"fflush\" (header := \"stdio.h\") fflush : FILE → IO Nat\n" ++
+  "def write (f : FILE) : Nat → IO Unit\n  | .zero => IO.pure ()\n  | .succ k => do\n    n ← fputs \"line\\n\" f;\n    write f k\n" ++
+  "def main : IO Unit := do\n  f ← fopen \"" ++ file ++ "\" \"w\";\n  write f 3;\n" ++
+  (if flush then "  n ← fflush f;\n" else "") ++
+  "  s ← IO.readFile \"" ++ file ++ "\";\n  IO.print s\n"
+
 /-- Check a file of commands with the whole self-hosted pipeline (compiled), and compare
 its output. -/
 def selfhostCheckFile (file expected : String) : IO Unit := do
@@ -2440,7 +2483,7 @@ def selfHostGroup : Group where
         selfhostCheckFile "import Prelude\n#reduce Nat.beq (2 + 3 * 2) 8\ndef pred2 : Nat → Nat\n  | n + 2 => n\n  | _ => 0\n#reduce Nat.beq (pred2 5) 3\n#reduce Nat.beq (10 - 3 - 2) 5\ninfixr:50 \" ⊕ \" => Bool.or\n#reduce .false ⊕ .false ⊕ .true\ndef len3 : Nat := List.length (List.cons 1 .nil ++ List.cons 2 (List.cons 3 .nil))\n#reduce Nat.beq len3 3\n#reduce Nat.le 3 3\n"
           "con((#1, (tt, tt)))\npred2 : (x0 : Nat) → Nat\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\nlen3 : Nat\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\n" },
     { name := "axioms, Unit, Array, IO and do, checked in Wiz", run := fun _ =>
-        selfhostCheckFile "import Prelude\naxiom Secret : Type\nextern \"wiz_peek\" peek : Secret → Nat\ndef unit : Unit := ()\ndef twice (s : String) : IO Unit := do\n  IO.println s;\n  let t := String.append s \"!\";\n  IO.println t\ndef readLen (p : String) : IO Nat := do\n  s ← IO.readFile p;\n  IO.pure (String.length s)\ndef push2 (a : Array Nat) : Array Nat := Array.push (Array.push a 1) 2\ndef size2 : Nat := Array.size (push2 Array.empty)\ndef sum3 (n : Nat) : Nat :=\n  let m := n + n;\n  m + n\n#reduce Nat.beq (sum3 2) 6\n"
+        selfhostCheckFile "import Prelude\nforeign_type Secret\nextern \"wiz_peek\" peek : Secret → Nat\ndef unit : Unit := ()\ndef twice (s : String) : IO Unit := do\n  IO.println s;\n  let t := String.append s \"!\";\n  IO.println t\ndef readLen (p : String) : IO Nat := do\n  s ← IO.readFile p;\n  IO.pure (String.length s)\ndef push2 (a : Array Nat) : Array Nat := Array.push (Array.push a 1) 2\ndef size2 : Nat := Array.size (push2 Array.empty)\ndef sum3 (n : Nat) : Nat :=\n  let m := n + n;\n  m + n\n#reduce Nat.beq (sum3 2) 6\n"
           "Secret : U0\npeek : (x0 : Secret) → Nat\nunit : Unit0\ntwice : (x0 : String) → (IO Unit0)\nreadLen : (x0 : String) → (IO Nat)\npush2 : (x0 : (Array Nat)) → (Array Nat)\nsize2 : Nat\nsum3 : (x0 : Nat) → Nat\ncon((#1, (tt, tt)))\n" },
     { name := "Syntax, StrMap and definitions as types, checked in Wiz", run := fun _ =>
         selfhostCheckFile "import Prelude\ndef leaf : Syntax := .node \"leaf\" (.cons (.atom \"x\") .nil)\ndef kindOf : Syntax → String\n  | .node k _ => k\n  | _ => \"\"\n#reduce String.length (kindOf leaf)\ndef argCount {b : Bool} : SyntaxF b → Nat\n  | .cons _ t => argCount t + 1\n  | .node _ args => argCount args\n  | _ => 0\n#reduce Nat.beq (argCount leaf) 1\ninductive Cat where\n  | mk (name : String) (n : Nat)\ndef find : List Cat → String → Option Cat\n  | .nil, _ => .none\n  | .cons (.mk m n) rest, name => match Nat.beq (String.length m) (String.length name) with\n    | .true => .some (.mk m n)\n    | .false => find rest name\ndef m : StrMap Nat := StrMap.insert StrMap.empty (Str.ofString \"k\") 1\n"
@@ -2486,6 +2529,15 @@ def selfHostGroup : Group where
           "  show (Nat.shiftLeft 3 20);\n  show (Nat.shiftRight 1000 3);\n  show (Nat.log2 1025);\n" ++
           "  IO.println (if Nat.testBit 5 2 then \"set\" else \"clear\")\n")
           "14\n2\n0\n5\n3486784401\n8\n14\n6\n3145728\n125\n10\nset\n" },
+    { name := "foreign functions: the Lean and the self-hosted compilers agree (21l)", run := fun _ =>
+        ffiAgrees ffiProgram1 ffiExpected1 },
+    { name := "foreign pointers: the finalizer runs with the last reference, in both compilers (21l)", run := fun _ =>
+        ffiAgrees (ffiProgramFin false) "line\nline\nline\n" (gc := false) },
+    { name := "foreign pointers passed around and flushed, with either collector (21l)", run := fun _ =>
+        ffiAgrees (ffiProgramFin true) "line\nline\nline\n" },
+    { name := "the self-hosted frontend: foreign types are checked (21l)", run := fun _ =>
+        selfhostCheckFile "import Prelude\nextern \"f\" f : (Nat → Nat) → Nat\nforeign_type T\nextern \"g\" g : {A : Type} → A → T → IO A\n"
+          "error: a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit or a Wiz data type (the result may be in IO)\nT : U0\ng : (x0 : U0) → (x1 : x0) → (x2 : T) → (IO x0)\n" },
     { name := "the self-hosted frontend: the Prelude's division and bits compute", run := fun _ =>
         selfhostCheckFile "import Prelude\n#reduce Nat.beq (Nat.mod 17 5) 2\n#reduce Nat.beq (Nat.xor 6 3) 5\n#reduce Nat.beq (Nat.log2 9) 3\n"
           "con((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\n" },
