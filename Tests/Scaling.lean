@@ -51,7 +51,7 @@ def wideClass (n : Nat) : String :=
 spine of `n` nested applications), checked by the kernel and then erased, within `secs`
 seconds. -/
 def longLiteral (n secs : Nat) : IO Unit := do
-  let text := String.mk ((List.range n).map fun i => Char.ofNat (97 + i % 26))
+  let text := String.ofList ((List.range n).map fun i => Char.ofNat (97 + i % 26))
   let input := s!"import Prelude\ndef s : String := \"{text}\"\n"
   let start ← IO.monoMsNow
   let loader ← Tests.Elab.preludeLoader
@@ -68,9 +68,9 @@ def longLiteral (n secs : Nat) : IO Unit := do
 
 /-- The peak resident set size of this process in MB (`VmHWM`), after resetting it
 (`clear_refs`), around `act`. -/
-def peakOf {α : Type} (act : IO α) : IO (α × Nat) := do
+def peakOf {α : Type} (act : Unit → IO α) : IO (α × Nat) := do
   try IO.FS.writeFile "/proc/self/clear_refs" "5" catch _ => pure ()
-  let a ← act
+  let a ← act ()
   pure (a, ← Tests.ElabFix.peakMB)
 
 /-- The program's IR, reference counted by both `Decl.insertRC` (one pass) and the
@@ -89,6 +89,19 @@ def rcMismatches (st : CommandState ZeroOneMany) (root : Name) : IO (List Name) 
     let σ : IR.BorrowSigs := { fns := bs.fns, jps := (bs.jps.get? d.name).getD {} }
     if (d.insertRC σ).toString == (d.insertRCSpec σ).toString then none else some d.name
 
+/-- `act` within `secs` seconds and `mb` megabytes (peak RSS, reset first). -/
+def within {α : Type} (secs mb : Nat) (act : Unit → IO α) : IO α := do
+  let start ← IO.monoMsNow
+  let (a, peak) ← peakOf act
+  let ms := (← IO.monoMsNow) - start
+  unless ms ≤ secs * 1000 && peak ≤ mb do
+    throw (IO.userError s!"took {ms} ms and {peak} MB (bounds: {secs} s, {mb} MB)")
+  pure a
+
+/-- A list of `n` numerals written out: `List.cons 0 (List.cons 1 (… List.nil))`. -/
+def listSource (n : Nat) : String :=
+  String.join ((List.range n).map (s!"List.cons {·} (")) ++ "List.nil" ++ String.ofList (List.replicate n ')')
+
 /-- Elaborate `src` (with the library), or fail. -/
 def elabOk (src : String) : IO (CommandState ZeroOneMany) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
@@ -105,7 +118,7 @@ def elabOk (src : String) : IO (CommandState ZeroOneMany) := do
 
 /-- A program with an `n`-character string literal (`s`, printed by `main`). -/
 def literalProgram (n : Nat) : String :=
-  let text := String.mk ((List.range n).map fun i => Char.ofNat (97 + i % 26))
+  let text := String.ofList ((List.range n).map fun i => Char.ofNat (97 + i % 26))
   s!"import IO\ndef s : String := \"{text}\"\ndef main : IO Unit := IO.println s\n"
 
 def group : Group where
@@ -129,13 +142,23 @@ def group : Group where
     -- 10 s and 4 GB)
     { name := "the IR of a 6000-character literal is reference counted in linear time and space", run := fun _ => do
         let st ← elabOk (literalProgram 6000)
-        let start ← IO.monoMsNow
-        let (r, mb) ← peakOf (pure (Build.irProgram st "main"))
-        let ms := (← IO.monoMsNow) - start
+        let r ← within 30 1000 fun _ => pure (Build.irProgram st "main")
         let .ok (decls, _) := r | throw (IO.userError "no IR")
-        check (decls.size > 0) "no declarations"
-        unless ms ≤ 30000 && mb ≤ 1000 do
-          throw (IO.userError s!"took {ms} ms and {mb} MB (bounds: 30 s, 1000 MB)") },
+        check (decls.size > 0) "no declarations" },
+    -- the parser kept the state from before each alternative (`orElse`, `tryAlternative`)
+    -- while the alternative ran: every memo and token-table insertion in it copied the
+    -- whole table (4000 elements: about 1.9 GB)
+    { name := "a 20000-element nested term parses in linear time and space", run := fun _ => do
+        let r ← within 30 1000 fun _ => pure (parseCategory Builtin.tables "term" (listSource 20000))
+        match r with
+        | .ok _ => pure ()
+        | .error e => throw (IO.userError e) },
+    -- checking an application solved each argument's placeholder by evaluating the
+    -- argument (and `inferApp` instantiated each codomain with it): quadratic along a
+    -- nested spine
+    { name := "a 16000-element list written out is elaborated in linear time and space", run := fun _ => do
+        let _ ← within 30 1000 fun _ => elabOk s!"import Prelude\ndef l : List Nat := {listSource 16000}\n"
+        pure () },
     { name := "one-pass reference counting agrees with the specification (insertRC)", run := fun _ => do
         let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         for p in examples ++ [literalProgram 300] do
