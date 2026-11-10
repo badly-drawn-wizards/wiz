@@ -500,6 +500,11 @@ levels (`Setω`) that Wiz's core has no place for (levels are prenex parameters 
   is `◾` in `runtime/wiz.c` and the IR interpreter): erased functions into `Unit` by
   quantities (`erasedFunTy`), `Nat` by the description's shape (`natShaped`), one function
   deciding unboxing at every site. Group `repr`.
+* **Refused instead of miscompiled:** a description whose first field has an abstract type
+  (`def mkD (S : Type) F := Desc.arg 1 S F`, later used at `S := Enum …`). Whether a
+  value's object carries the constructor tag is decided from the type at a known type and
+  from a mark in the run-time description in generic code, and the two disagreed
+  (a wrong value in `#eval`, a crash compiled). Erasure now reports an error.
 * **Open 1: Σ unboxing is not stable under substitution**, with the marker or by shape:
   generic code over `A × B` meets a structure's bare field. It is off by default
   (`--unbox-structs`, 22i); the layout needs a new structure encoding to come back.
