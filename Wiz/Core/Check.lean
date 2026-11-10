@@ -830,7 +830,24 @@ def checkHeader (g : Globals R) (d : Decl R) : TCM Unit := do
   if g.predicativeProp then declTypeSpine ctx d.type
   else discard <| checkType ctx d.type
 
-/-- Type check a declaration and add it to the global environment. -/
+/-- A definition's **implementation for the compiler** (`Decl.impl`): the term compiled
+code runs instead of the value. It may call the definition itself (a structurally
+recursive definition's equations with direct recursion), so it is checked against the
+declared type in `g`, which already has the definition. The kernel never unfolds it, so it
+proves nothing; it is checked because erasure reads it (its types, the sorts noted on its
+`Π`s and `Σ`s, its quantities) as it reads a checked term. That it computes what the
+value computes is *not* checked. -/
+def checkImpl (g : Globals R) (d : Decl R) (impl : Term R) : TCM Unit := do
+  if let some u := impl.levelParamsUsed.find? (!d.levelParams.contains ·) then
+    throw (.other s!"unknown universe level parameter {u} in the implementation of {d.name}")
+  let ctx : Ctx R := { globals := g }
+  match check ctx impl (ctx.eval d.type) with
+  | .ok _ => pure ()
+  | .error e => throw (.other s!"the implementation of {d.name} (the term compiled code runs) does not check: {e}")
+
+/-- Type check a declaration and add it to the global environment. Its implementation
+for the compiler, if it has one, is checked too (`checkImpl`): no term reaches erasure
+unchecked. -/
 def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   if d.witness.isSome then throw (.other s!"{d.name}: only a partial definition has a witness")
   checkHeader g d
@@ -838,7 +855,17 @@ def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   if let some v := d.value then
     -- usage is the empty vector: a closed term has no locals to misuse
     let _ ← check ctx v (ctx.eval d.type)
-  pure (g.insert d)
+  let g' := g.insert d
+  if let some impl := d.impl then checkImpl g' d impl
+  pure g'
+
+/-- Give the declaration `name` another implementation for the compiler
+(`attribute [implemented_by g] f` sets the constant `g`), checked like a definition's own
+(`checkImpl`): at `name`'s type. The kernel's view of `name` does not change. -/
+def setImpl (g : Globals R) (name : Name) (impl : Term R) : TCM (Globals R) := do
+  let some d := g.find? name | throw (.other s!"unknown declaration {name}")
+  checkImpl g d impl
+  pure (g.insert { d with impl := some impl })
 
 /-- A partial definition's signature (stage 13): `f : T` is opaque to the kernel, like an
 axiom, so the bodies of its group can call it. It must come with a **witness** `w : T`,

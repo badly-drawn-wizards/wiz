@@ -261,6 +261,28 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   ensureNoMVars fullTy info
   pure (fullTy, val)
 
+/-- The recursive calls of `fn` in a right-hand side, as `rewriteRecCalls` recognises them
+(an application whose head is the identifier `fn` or `@fn`), with the head given a macro
+scope (`fn✝rec`): such a name is never a local variable's, so it resolves to the global
+`fn`. The second elaboration of a recursive definition's equations (`elabDefEqns`) uses
+it: there the definition is a global, and a local variable called `fn` (a `fun` or `let`
+binder) would capture the call, which the first elaboration turned into the induction
+hypothesis without looking at what is in scope. Compiled code would then call the local
+where the checked definition recurses. -/
+partial def markRecCalls (fn : Name) (stx : Syntax) : Syntax :=
+  let marked (i : SourceInfo) : Syntax := .ident i (fn ++ "✝rec")
+  match stx with
+  | .node i k args =>
+    let args := args.map (markRecCalls fn)
+    let head? : Option Syntax := if k == "term.app" then args[0]? else none
+    match head? with
+    | some (Syntax.node hi "term.ident" #[Syntax.ident ii n]) =>
+      if n == fn then .node i k (args.set! 0 (.node hi "term.ident" #[marked ii])) else .node i k args
+    | some (Syntax.node hi "term.explicit" #[at_, Syntax.ident ii n]) =>
+      if n == fn then .node i k (args.set! 0 (.node hi "term.explicit" #[at_, marked ii])) else .node i k args
+    | _ => .node i k args
+  | s => s
+
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
 arguments of `T`; a right-hand side that calls `f` makes it structurally recursive. -/
 def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
@@ -332,6 +354,10 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
     let saved ← get
     try
       modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
+      -- the calls the first elaboration took for recursive ones, by their syntax
+      -- (`rewriteRecCalls`), are calls of the definition here too, whatever `name` is
+      -- bound to locally
+      let clauses := clauses.map fun c => { c with rhs := markRecCalls name c.rhs }
       let body' ← compileMatch ctx' (perm vars) clauses tyv none true
       solveSortConstraints
       let v' ← zonk 0 (tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body'))
@@ -787,7 +813,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       (impl : Option (Term R) := none) := do
     match addDeclSorted s.globals { name, levelParams, type := ty, value := val, impl } with
     | .ok g => modify fun s => { s with globals := g }
-    | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
+    | .error e =>
+      -- the implementation (a recursive definition's equations compiled a second time,
+      -- `elabDefEqns`) is the elaborator's own: if only it fails, the bug is ours
+      let ours := impl.isSome &&
+        (addDeclSorted s.globals { name, levelParams, type := ty, value := val }) matches .ok _
+      report .error cmd.info (s!"kernel rejected {name}: {e}" ++ (if ours then
+        "\n(the definition itself checks: this is a bug in Wiz's compilation of recursive definitions, not in your code; please report it)" else ""))
   match cmd.kind with
   | "command.private" =>
     -- (13b) every name the command declares is private to this module
@@ -1603,7 +1635,11 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           report .error (cmd.getArg 3).info
             s!"{impl} can't implement {f}: its type {tyI.pretty} is not {f}'s type {df.type.pretty}"
         else
-          modify fun s => { s with globals := s.globals.insert { df with impl := some (.const impl us) } }
+          -- (the kernel checks the constant at `f`'s type too: no implementation is
+          -- stored unchecked)
+          match setImpl s.globals f (.const impl us) with
+          | .ok g' => modify fun s => { s with globals := g' }
+          | .error e => report .error (cmd.getArg 3).info s!"kernel rejected {impl} as the implementation of {f}: {e}"
   | "command.attrInline" =>
     -- `attribute [inline] f` (22i): compiled code substitutes `f`'s body where `f` is
     -- applied to all its arguments, so a lambda argument is applied directly (no
