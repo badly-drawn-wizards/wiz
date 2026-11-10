@@ -2091,6 +2091,23 @@ def k : Nat → Bool → Nat := by
 def four : Nat := doubel 2    -- unknown identifier 'doubel'   [Did you mean 'double'?]
 ```
 
+### 11l: the infoview socket ✅
+
+`wiz lsp --infoview SOCK` also listens on the Unix socket `SOCK`, for infoviews that run
+beside the editor (the terminal infoview connects there). The editor never says where
+its cursor is, so the server infers it from the editor's requests: any request with a
+position (hover, `documentHighlight`, which the server now advertises so that editors
+send it on every move, go to definition, completion, …) and code actions (at the
+range's start). When the cursor moves, and after each elaboration of its document,
+every connected infoview gets `wiz/infoview/cursor` (uri, position, session) and pulls
+with the ordinary `wiz/*` requests on the socket; sessions and refs are the editor's.
+Lean's library has no Unix sockets, so `c/sockets.c` (compiled into the executables by
+the linker, `moreLinkObjs` in the lakefile) listens, accepts, and turns a connection
+into two ordinary Lean handles. The server's state stays single-threaded: a reader
+thread per connection feeds one channel, and one loop answers in order. Protocol §8 of
+`wiz-notes/infoview-protocol.md`; tested in-process (the `lsp-server` group: the editor
+on a socket pair, an infoview on the socket).
+
 ## Stage 23: grail, a build tool
 
 ### 23b: modules by path ✅
@@ -2111,8 +2128,11 @@ so what it elaborates to depends only on its key. An importer's chain of command
 mixes in `key(M)` at the `import`. Editing a module now invalidates it and what imports
 it, not the whole library, and a module imported by many files is cached once. A module
 that uses a name it doesn't import is an error, with the cache or without (`--no-cache`
-keeps the effects in memory for the run; `runFrontend`, which the tests and the language
-server use, still elaborates a module in its importer's state). Cache files are
+keeps the effects in memory for the run), and in `runFrontend`, which the tests and the
+language server use: it checks each module once in isolation (errors are reported at
+the `import`) and then elaborates it into the importer's state, unless that state is
+still the initial one and the isolated result serves as it is. So the editor rejects
+what `wiz check` rejects. Cache files are
 written to a temporary name and renamed, so concurrent runs never see half a file.
 
 ### 23d: grail v0 ✅
