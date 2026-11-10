@@ -1593,10 +1593,25 @@ def sizeInf : List MTm :=
    ann (lam (lam (szSuc (var 0)))) (pi size (pi (sizeLt (var 0)) (sizeLt (szSuc (var 1))))),
    ann (lam (lam (sizeArg (sizeLt szInf) (var 0)))) (pi size (pi (sizeLt (var 0)) (unit 0)))]
 
+/-- K3: the size of `μ^s`/`ν^s` must be a size. The first two (`tt`, `Enum 2` as sizes) are
+rejected, the rest accepted. -/
+def sizeArgs : List MTm :=
+  [mus 0 (unit 0) natD star star, streamAt (enum 2),
+   natAt szInf, ann (lam (natAt (var 0))) (pi size (univ 0)), ann (lam (streamAt (szSuc (var 0)))) (pi size (univ 0))]
+
+/-- Q4 (open): a description field may live in a smaller universe than `Desc.elim`'s
+`marg` expects (`Sort (l+1)`), and universes aren't cumulative, so `Desc.elim` can
+reduce to a term of the wrong type: `getS D : Type` (accepted) reduces to `True`, while
+`True : Type` is rejected. Both kernels agree on all three. -/
+def smallField : List MTm :=
+  let D := ann (darg ptrue (lam (dret star))) (desc 0 (unit 0))
+  let getS := delim 2 (lam (univ 0)) (lam (unit 0)) (lams 4 (var 2)) (lams 4 (unit 0)) (lams 5 (unit 0)) D
+  [ann getS (univ 0), ann ptrue (univ 0), ann star (eq (univ 0) getS (unit 0))]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ sizeInf ++ sizeEq ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
@@ -1637,6 +1652,10 @@ def samples : List MTm :=
    letq .zero (univ 0) (enum 2) (ann (lam (var 0)) (pi (var 0) (var 1))),
    fst (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
    snd (ann (pair (univ 0) star) (sigmaq .zero (univ 1) (unit 0))),
+   -- `p.2` drops `p.1`: not if that field is linear (Q1)
+   ann (lam (snd (var 0))) (piq .one (sigmaq .one (univ 0) (univ 0)) (univ 0)),
+   ann (lam (snd (var 0))) (piq .one (sigmaq .many (univ 0) (univ 0)) (univ 0)),
+   snd (ann (pair (enum 2) (enum 2)) (sigmaq .one (univ 0) (univ 0))),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, var 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    ann (lam (lam (ecase (univ 0) (var 1) [var 0, univ 0]))) (pi (enum 2) (piq .one (univ 0) (univ 0))),
    -- sizes and subtyping
@@ -2206,6 +2225,10 @@ def selfHostGroup : Group where
           unless a == "EqTy(Size, Size)" && b == "EqTy(Size<(∞), Size<(∞))" do
             throw (IO.userError s!"unexpected types {a}, {b}")
         | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "the size of μ and ν is checked (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.sizeArgs.map leanVerdict
+        unless vs.take 2 == ["error", "error"] && (vs.drop 2).all (· != "error") do
+          throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "∞ is not below itself (and both kernels agree on it below)", run := fun _ => do
         let vs := MTm.sizeInf.map leanVerdict
         unless vs.take 5 == List.replicate 5 "error" && (vs.drop 5).all (· != "error") do

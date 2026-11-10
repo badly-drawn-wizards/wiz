@@ -36,6 +36,7 @@ instance : QRig Unit where
   add_le_add _ _ _ _ _ _ := rfl
   mul_le_mul _ _ _ _ _ _ := rfl
   elements? := some [()]
+  many? := some ()
 
 instance : QuantitySyntax Unit where
   ofLiteral _ := some ()
@@ -111,6 +112,7 @@ instance : QRig ZeroOneMany where
   mul := mul
   le := le
   elements? := some [zero, one, many]
+  many? := some many
   add_assoc := sorry
   add_comm := sorry
   zero_add := sorry

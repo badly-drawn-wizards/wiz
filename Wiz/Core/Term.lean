@@ -24,7 +24,7 @@ have all their metavariables replaced before they reach the kernel.
 
 Universe levels are described in `Wiz.Core.Level`.
 
-Not in the core yet (see ROADMAP.md): μ/ν data and Σ-types (stage 4).
+Stage 4 added Σ-types, observational equality, descriptions with μ/ν data, and sizes.
 -/
 
 namespace Wiz
