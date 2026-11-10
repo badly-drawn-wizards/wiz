@@ -3393,6 +3393,11 @@ def descEqGroup : Group where
     { name := "a quantity variable against a literal is not unequal (stuck: substituting can make them equal)", run := fun _ =>
         ok ("#reduce fun (q : Qty) => (Desc.rec q () (Desc.ret ()) : Desc Unit) = Desc.rec 1 () (Desc.ret ())\n")
           ["fun q => Desc.rec q () (Desc.ret ()) = Desc.rec 1 () (Desc.ret ())"] },
+    -- the Desc analogue of wiz-notes/qty-false-probe.wiz (F6): if the equation computed to
+    -- `False`, `bad 1 (refl _)` would be a closed proof of `False`
+    { name := "a quantity variable against a literal does not prove False (rec and arg)", run := fun _ => do
+        fails "def bad (q : Qty) (e : (Desc.rec q () (Desc.ret ()) : Desc Unit) = Desc.rec 1 () (Desc.ret ())) : False := e\n" "type mismatch"
+        fails "def bad (q : Qty) (e : (Desc.arg q Unit (fun _ => Desc.ret ()) : Desc Unit) = Desc.arg 1 Unit (fun _ => Desc.ret ())) : False := e\n" "type mismatch" },
     { name := "lifted proof fields compare by equivalence, not by shape", run := fun _ =>
         okLib ("import Prelude\ninductive PB (P : Prop) where\n  | mk (p : P)\n" ++
           "def pbne (e : PB True = PB False) : Empty := absurd ((e.2.1.2 'mk).1.1 ())\n") },
