@@ -12,7 +12,7 @@ disagreement. What is proved about the calculus, and what is not, is in
   `Templates.lean` (the generic operations on descriptions).
 * **Mirror:** `selfhost/Kernel.wiz`, the same kernel written in Wiz. It covers a fragment
   (§15) and differs in places, listed per rule and in §15.
-* **Line numbers** refer to the `solutions` branch at commit `9717950`. They drift as the
+* **Line numbers** refer to commit `9717950` (on `master`). They drift as the
   code changes. The function names are the stable reference.
 
 Each rule is tagged:
@@ -579,7 +579,8 @@ both false, by shape:
   quantities. A variable `q` and `1` are different polynomials, but `q := 1` makes them
   equal. Deciding `False` there proved `False` (Status.md, F6).
 * The Π/Σ decomposition and "different formers ⇒ False" are TTobs's [std: PT22]. The
-  Π case puts the domain equation backwards (`A' ≡ A`), as in PT22 (unverified detail).
+  Π case puts the domain equation backwards (`A' ≡ A`), as in CCobs ([PT23] Fig. 4, rule
+  Eq-Π). TTobs has it forwards and casts along the inverse ([PT22] Fig. 4).
 * **Propositions compared by equivalence, and the sort annotation** are [wiz]. They exist
   because comparing propositions by shape proved `False` (Status.md, issue F1). A Π or Σ
   can't tell by its parts alone whether it is a proposition, so it carries its sort `σ`,
@@ -610,10 +611,10 @@ Sort u/Sort w, Empty_u/Empty_w     ⟶  t if u ≡ w, else stuck                
 Unit_u/Unit_w                      ⟶  tt if u ≡ w, else stuck                                        631
 Enum/Enum, same number of tags     ⟶  t                                                             632
 ULift.{u}/ULift.{u}, u never 0     ⟶  up (cast A B e (down t))                                        [Q4, §4.1]
-A inert, quote(A) = quote(B)       ⟶  t                         (regularity at inert types)   CONJECTURE (argued) [wiz, D1]
+groundEqTy A B (equal, inert, ground) ⟶  t                     (regularity at inert types)   CONJECTURE (argued) [wiz, D1, P1]
 Desc_l I / Desc_l I'               ⟶  by the description (below)                                  [wiz, D1]
 μ^s D i / μ^s D i', t = con x      ⟶  con (cast (⟦D⟧ μ^s' i) (⟦D⟧ μ^s' i') ê x)                  [std: PT22, D1]
-μ, t a numeral, i, i' syntactically equal ⟶ t                                                   [impl]
+(a numeral at its own type: the line above, since the numeral type is ground)
 ν^s D i / ν^s D i', t = cocon x    ⟶  cocon (cast (⟦D⟧ ν^s' i) (⟦D⟧ ν^s' i') ê x)                [wiz, D1]
 otherwise                          ⟶  stuck
 ```
@@ -649,9 +650,14 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   `λ j _. ⟦D⟧ X i ≡ ⟦D⟧ X j` at `i` is `⟦D⟧ X i ≡ ⟦D⟧ X i`, proved by `reflTy`, and at `i'`
   is the goal. `x : ⟦D⟧ X i` (rule *con*, `X` at the predecessor size), so the inner cast
   has type `⟦D⟧ X i'` and `con` of it has type `μ^s D i'`. The rule uses nothing but
-  `e`. The type equation is the code equation of PT22/CIC-obs for an inductive family
-  with the parameters fixed: `μ D i ≡ μ D i'` iff `i = i'`. It is injective in the index,
-  which holds in the setoid/inductive-recursive model where `μ D i` is a code. The
+  `e`. The type equation `μ D i ≡ μ D i'` iff `i = i'` is **stronger** than the one
+  of CICobs [PLT25 §4]: there, an equation between two instances of an inductive type
+  gives only the equations between the *types of the constructor arguments* (for a
+  forded family, `(j = i) ≡ (j = i')` at each constructor), not `i = i'`, because CIC lets
+  an inductive type live in a universe smaller than its indices, where injectivity gives
+  Russell's paradox [PLT25 §2.3]. Wiz's rule is injective in the index. That holds in a
+  setoid/inductive-recursive model where `μ D i` is a code, and it relies on the level
+  rule of §9.3: the index type is in the family's own universe (`I : Sort (l+1)`). The
   equation computes only when `I`, `D`, the level and the size agree syntactically;
   otherwise it stays stuck, and the stuck form quotes back to the equation itself. So the
   rule's *result* is stable under substitution: syntactic equality is preserved by
@@ -689,8 +695,10 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   that terminate (the inertness walk is bounded by the nesting depth 8 and by the finite
   enumerations; the payload cast follows the finite constructor value), and conversion
   is unchanged (proof irrelevance, η, structural comparison; `unCast` applies only under
-  `--regularity full|nonprop|refl`). It is a conjecture: there is no normalisation proof
-  for TTobs with this rule, though the argument above suggests it is admissible.
+  `--regularity full|nonprop|refl`). It is a conjecture for Wiz. A published system has
+  the rule at *every* type, with a proof that conversion stays decidable, but for an
+  algorithm that never reduces proofs and for a fragment without general inductive types
+  (CICobs [PLT25]; see "Related work" below).
 
   **A more careful argument** (`/workspace/wiz-notes/inert-regularity.md`) corrects the
   one above in three places:
@@ -707,8 +715,8 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
      restriction is not circular because inert types mention no `Prop`. Abel–Coquand's
      construction needs a non-rigid type: one whose candidate is an impredicative
      intersection (`⊤ → ⊤`), or depends on a `Prop` variable (the box).
-  3. The side condition is syntactic (`sameVal`), so algorithmic conversion is not a
-     congruence for the rule. For example, `cast (Fin (f p)) (Fin (f q)) e k` stays stuck
+  3. The side condition was syntactic (`sameVal`), so algorithmic conversion was not a
+     congruence for the rule (now fixed by ground equality, below: P1). For example, `cast (Fin (f p)) (Fin (f q)) e k` stays stuck
      for a variable `k`, although `Fin (f p) ≡ Fin (f q)` by irrelevance and the reflexive
      cast reduces to `k`. So conversion is not stable under substitution (Status.md, D1).
      That is incompleteness, not unsoundness. The fix is to decide the side condition with
@@ -725,9 +733,59 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   All three are **relative to the same property of the system without regularity**, which
   is itself unproved for Wiz. No counterexample was found. The note lists what one would
   need.
+* **Related work: cast on reflexivity in CICobs** (`/workspace/wiz-notes/plt-vs-inert.md`).
+  Pujet, Leray and Tabareau's CICobs [PLT25] has the conversion rule *Cast-Refl*:
+  `cast A B e t ≡ t` whenever `Γ ⊢ A ≡ B`, for any proof `e` and **any** type `A`, next to
+  an impredicative proof-irrelevant sort. So regularity at inert types, read with a
+  judgmental side condition, is a special case of a published rule, and is not new.
+  - *What they prove* (Agda): weak-head normalisation of proof-relevant terms and
+    decidability of conversion ([PLT25] Theorem 5.6), for a fragment with Π, ℕ, ⊥, the
+    impredicative sort and two universe levels. General inductive types are covered by
+    their rules and by a set model (consistency, Theorem 6.5), not by the decidability
+    proof.
+  - *How.* Cast-Refl is not a reduction rule. On a canonical argument the structural
+    rules compute. A stuck cast is removed by the conversion checker when it compares
+    two neutrals, if the cast's two types are convertible (as η is decided). And **proofs
+    are never reduced**: there is no weak-head normal form for a proof, so
+    Abel–Coquand's term, which exists in CICobs, is never run. This answers open
+    problem (2) of [AC20].
+  - *What this means here.* The restriction to inert types is needed in Wiz only because
+    the evaluator reduces proofs (§12; Status.md §7). The side condition they use is
+    conversion, not syntactic equality (Status.md, D1, on the incompleteness of
+    `sameVal`). Their indexed families are elaborated to parametrised ones with an
+    equation in each constructor (Fordism), which is the encoding of §9.2; their
+    equality of two instances of an inductive type is deliberately *not* injective in
+    parameters or indices, because CIC allows an inductive type in a universe smaller
+    than its indices. Wiz's `μ D i ≡ μ D i' ⟶ i = i'` is injective, and is kept from
+    Russell's paradox by the level rule of §9.3 (`I : Sort (l+1)`).
+  - *Not covered by their proofs*: descriptions as first-class codes, `μ`/`ν` over them,
+    sizes, quantities, `ULift`, an equality type that computes together with Cast-Refl,
+    and any evaluator that reduces proofs.
 * **Cost.** Casting a constructor of a non-inert type walks the whole value (each field
   is cast). At inert types the cast is the identity.
-* **Syntactic equality** (`sameVal`, both kernels) quotes at `max (lvlBound A)
+* **The side condition is ground equality** (P1, `groundEqTy` in both kernels;
+  `/workspace/wiz-notes/p1-stable.md`). A side condition must give the same answer for
+  convertible inputs (S1), and an answer of "fires" must survive substitution (S2).
+  Otherwise one side of a conversion reduces and the other is stuck, and a δβ-reduct of
+  a well-typed term can be rejected. Syntactic equality fails S1 (proof arguments inside
+  an index, `Fin (f p)` against `Fin (f q)`; a glued name against its unfolding).
+  `groundEqTy A B` holds for two inert types that are equal and have no free variable in
+  a relevant position:
+  * types and descriptions are compared part by part (an `arg` at a non-tag field is
+    compared under an atom, a variable bound by the comparison);
+  * values are compared by their inert type: tags, numerals and constructors; `Unit` and
+    propositions skipped; `Σ` by projections;
+  * a neutral equals only the same atom (atoms have a reserved head, so they can't
+    collide with a variable of the context).
+  At an inert type, convertible values have the same canonical skeleton and neutrals in
+  the same places, so S1 holds. A ground type has nothing to substitute, so S2 holds.
+  What is lost: regularity at inert types whose indices are open (`cast (Fin n) (Fin n) e
+  k` for variables `n`, `k` is stuck). Casts of constructors still compute structurally.
+  `--inert conv` (experimental, Lean kernel) also identifies `cast A B e t` with `t` in
+  conversion when `A` is inert and `A ≡ B` (InReg_conv, decided by `convTy`, so it is a
+  congruence). `--inert syntactic` restores the old rule for comparison.
+* **Syntactic equality** (`sameVal`, both kernels; now used only by the D1 experiment's
+  `--regularity` modes) quotes at `max (lvlBound A)
   (lvlBound B)`, a level above every variable either value mentions, so different
   variables never quote alike (before `b7e1736` it was a fixed 100000: Status.md, Q3).
 
@@ -741,7 +799,9 @@ axiom castRefl.{u} {0 A : Type u} (0 e : A = A) (0 a : A) : (cast e a : A) = a
 
 It is an **axiom**: a proof, so it is a stuck neutral and never computes (`#reduce`
 leaves `castRefl e a` alone), and `#print axioms` lists it for any declaration that uses it.
-It is the propositional form of regularity that §8.4 removed from conversion. Proofs use it to
+It is the propositional form of regularity that §8.4 removed from conversion, and it is a
+primitive of TTobs and CCobs (`castrefl`, rule Cast-Refl in Fig. 2 of [PT22] and of
+[PT23]). Proofs use it to
 get rid of a stuck cast at a type variable: `Vec.map f (cons x xs)` is
 `cons (cast B B _ (f x)) …`, and `Vec.map_cons` (`lib/Vec.wiz`) proves it equal to
 `cons (f x) (Vec.map f xs)` by one `castRefl` at `Vec B (n+1)`. The cast in its type
@@ -1162,13 +1222,15 @@ proved**, and the D1 experiment shows checking can loop (Status.md).
 * **No recursion in the kernel:** a declaration is checked against the environment
   *without* itself, so a value cannot mention its own name.
 * **Axioms** (`value = none`) are accepted with any well-formed type, including `False`.
-* **Partial definitions** (`addPartialImpl`, `Check.lean:687`): `f` is added as an
-  **axiom**, and its recursive implementation is checked against `f`'s type but used only
-  by the compiler. The kernel never unfolds it. That the type is inhabited (so that the
-  axiom is harmless) is checked by the **elaborator** (`inhabitedTy`,
-  `Elab/Command.lean:576`), not by the kernel (Status.md, O2: this check can be fooled, and a proof of `False` was built).
-* **`builtin` registrations** (`Elab/Command.lean:937–944`) are not checked by the kernel
-  at all (§9.4; Status.md, O3).
+* **Partial definitions** (`addPartialDecl`, `addPartialImpl`): `f` is opaque, and the
+  kernel takes it only with a **witness** `w : T` of its type (`Decl.witness`), which it
+  checks (erased), so `f` proves nothing `w` doesn't. Its recursive implementation is
+  checked against `f`'s type but used only by the compiler; the kernel never unfolds it.
+  (Status.md, F3: the elaborator's old inhabitedness check could be fooled.)
+* **`builtin` registrations** are not checked against their definitions by the kernel
+  (§9.4). Those of the toolchain's `lib/` are trusted (reviewed, Status.md §7); any other
+  is an axiom, listed by `#print axioms` (Status.md, F4). The elaborator checks their
+  shapes.
 * `Decl.inline` (evaluate eagerly) and `Decl.impl` (compiler implementation) do not affect
   what the kernel accepts.
 
@@ -1210,7 +1272,7 @@ Each item says what the code does; the code is what the kernel checks.
    equivalence, and `μ`/`ν`/`Desc` are stuck. (The prose below the table says the first
    part.)
 9. **Sort annotations.** Stage 4c ([stages/04-data.md](stages/04-data.md)) says a Π/Σ "carries its sort (the elaborator writes
-   it)". On `solutions` at `9717950`, several Π/Σ the elaborator builds carry none
+   it)". At `9717950`, several Π/Σ the elaborator builds carry none
    (the stage docs themselves list them only on the unmerged `agent/elab-sorts` branch, commit
    `31395a2`). After that branch merges, the remaining unannotated cases are "a Π/Σ under
    a `fun` whose variable's type isn't written down, or one that still mentions a
@@ -1236,7 +1298,8 @@ Each item says what the code does; the code is what the kernel checks.
 | globals | table, by name | inline `const` terms carrying value and type (trusted) |
 | **`Size ≡ Size`, `Size< s ≡ Size< t`** | **stuck** (`Eval.lean:572`) | **`False`**: `canonical` includes `vsize`/`vsizeLt` (`Kernel.wiz:552–565`) and `vEqTypeW` has no case for two sizes, so it falls through to "different formers ⇒ False" (`Kernel.wiz:961–963`). **Unsound** (Status.md, O1). |
 | regularity in conversion (`unCast`) | off by default (`Conv.lean:264`, only under `--regularity`) | no: stuck casts are compared structurally |
-| regularity in evaluation | off; at inert types only (`inertTy`) | the same (`kernelRegularity := .false`; `inertTy`) |
+| regularity in evaluation | off; at inert types only, decided by `groundEqTy` (P1) | the same (`kernelRegularity := .false`; `groundEqTy`) |
+| InReg in conversion (`--inert conv`, experimental) | `unCast` at an inert type with `convTy A B` | not implemented |
 | convTy at Π/Σ propositions | quantities may differ | quantities must be equal (`Kernel.wiz:1598`) |
 | proof irrelevance at Π/Σ | asked at the Π/Σ | asked at the codomain/components only (`Kernel.wiz:1537–1541`); equivalent |
 | `isProp` | `typeSort? ≡ 0` | Π: codomain is a proposition; Σ: both parts (`Kernel.wiz:1328`) |
@@ -1273,9 +1336,9 @@ is not caught by type checking):
 
 1. **Axioms** (`axiom`, and `C.*` functions from imported C headers, `foreign` types).
    The Prelude has one, `castRefl` (§8.4a).
-2. **Partial definitions**: the kernel trusts the elaborator's inhabitedness check
-   (`inhabitedTy`).
-3. **`builtin` registrations**: numerals' type and native arithmetic.
+2. **Partial definitions**: no longer trusted: each has a witness the kernel checks.
+3. **`builtin` registrations** of the toolchain's `lib/`: numerals' type and native
+   arithmetic (any other registration is an axiom, reported by `#print axioms`).
 4. **The templates** (`Templates.lean`): never type-checked; their sort annotations are
    hand-written.
 5. **The method/motive types** the kernel builds itself (`delimMethodTys`,
@@ -1302,12 +1365,20 @@ Checked for this document (title, authors, venue):
 * **[AVW17]** A. Abel, A. Vezzosi, T. Winterhalter. *Normalization by Evaluation for Sized
   Dependent Types.* PACMPL 1 (ICFP), 2017. doi:10.1145/3110277.
 * **[PT22]** L. Pujet, N. Tabareau. *Observational Equality: Now for Good.* PACMPL 6
-  (POPL), 2022. doi:10.1145/3498693. (TTobs.) The details of its rules quoted above
-  (orientation of the Π domain equation, whether it has definitional regularity) were
-  **not** re-checked against the paper.
+  (POPL), Article 32, 2022. doi:10.1145/3498693. (TTobs.) Checked against the paper: it
+  has no definitional regularity, only the proof term `castrefl` (§2.2, Fig. 2); its Π
+  domain equation is forwards (Fig. 4).
 * **[PT23]** L. Pujet, N. Tabareau. *Impredicative Observational Equality.* PACMPL 7
-  (POPL), 2023, pp. 2171–2196. (CCobs: TTobs with an impredicative universe of
-  definitionally proof-irrelevant propositions; decidability of conversion.)
+  (POPL), Article 74, 2023. doi:10.1145/3571739. (CCobs: TTobs with an impredicative
+  universe of definitionally proof-irrelevant propositions; decidability of conversion,
+  Theorem 3.2, without reducing proofs; undecidability with a proof-relevant impredicative
+  universe, Theorem 6.1.)
+* **[PLT25]** L. Pujet, Y. Leray, N. Tabareau. *Observational Equality Meets CIC.* ACM
+  TOPLAS 47(2), Article 6, 2025. doi:10.1145/3719342. (CICobs: CCobs with the conversion
+  rule Cast-Refl, `cast A B e t ≡ t` when `A ≡ B`, and Coq's inductive types by Fordism;
+  decidability of conversion for a fragment, Theorem 5.6. Read in full; the comparison
+  with Wiz is `/workspace/wiz-notes/plt-vs-inert.md`. An earlier version appeared at
+  ESOP 2024, which we did not obtain.)
 * **Agda issue #3026**, "Well-founded induction on Size is inconsistent"
   (github.com/agda/agda/issues/3026).
 

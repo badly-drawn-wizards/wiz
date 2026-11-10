@@ -7,10 +7,29 @@ lake build          # the library and the `wiz` executable
 lake test           # all exercise tests; every case runs in its own process
 lake test -- conv   # only the groups whose name starts with "conv"
 lake test -- =c     # only the group named exactly "c"
-lake test -- --list # the group names
+lake test -- '=selfhost#0,3'          # only cases 0 and 3 of the group "selfhost"
+lake test -- --list                   # the group names
+lake test -- --list-cases =selfhost   # the selected cases: GROUP<tab>INDEX<tab>NAME
+lake test -- --timings t.jsonl rig    # also append each case's time to t.jsonl
 ```
 
+Every case prints its wall time (`✓ name (12.345 s)`), and every group its total.
+`--timings FILE` (with `--shard NAME` as a label) appends one line of JSON per case:
+`shard`, `group`, `index`, `case`, `seconds`, `ok`, and `notes`, which say which shared
+programs the case used and built (`Tests.note`: `uses checker`, `built checker 331.2`;
+the self-hosted checker and compiler are built by the first case that needs them and
+kept under `/tmp`).
+
 An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)`.
+
+**Embedded files.** Lake does not track files a module reads with `include_str`, so each
+embedded file gets a library of its own whose `needs` names the file as an
+`input_file` (`lakefile.toml`): Lake mixes the file's content hash into that library's
+module traces, so editing the file rebuilds the embedding module and its importers, and
+the artifact cache never serves a stale one. The only one today is the C runtime:
+`runtime/wiz.c`, embedded by `runtime/WizRuntime.lean` (library `WizRuntime`, imported by
+`Wiz/Compiler/C.lean`). A new `include_str` goes in such a library too, not in `Wiz`
+(a `needs` on `Wiz` would rebuild all of it); `scripts/test-embed.sh` checks the setup (CI runs it in the build job).
 
 ## Continuous integration
 
@@ -22,20 +41,38 @@ which grail and the test driver read (`Tests/Main.lean`; flags to `lake test -- 
 `wiz` takes flags. Nothing reads environment variables.
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on pushes and pull requests to
-`solutions` and `master`. Every job runs in that dev shell (with the Cachix cache, when
+`master`. Every job runs in that dev shell (with the Cachix cache, when
 one is configured); the elan toolchain and `.lake` (including Lake's artifact cache) are
 cached between runs.
 
-* **The solution tree** (`solutions`; recognised by its `--<sol` markers) runs the full
-  suite in parallel shards, one job per entry of `.github/test-shards.json` (each entry
+* **The test suite** runs in parallel shards, one job per entry of `.github/test-shards.json` (each entry
   is a list of `lake test` selectors). The build job checks that every group of
-  `Tests/Main.lean` is in exactly one shard (`scripts/ci.py check-shards`), so **a new
-  test group must be added to `.github/test-shards.json`**. Each shard prints a pass/fail
-  table in its job summary, and the `CI result` job sums them up for the whole suite.
-* **The exercise tree** (`master`) checks that everything builds and that the test driver
-  runs to its summary line; the failures are the exercises.
+  `Tests/Main.lean` is in exactly one shard (`scripts/ci.py check-shards`, which checks
+  every case after splitting), so **a new test group must be added to
+  `.github/test-shards.json`** (one selector per line, sorted within its shard) and to
+  the `groups` list at the end of its test module (`Tests/*.lean`, one group per line,
+  sorted; `Tests/Main.lean` only concatenates the modules' lists). Both are laid out so
+  that branches adding different groups don't touch the same lines. Each shard's job summary has a table of every case's time
+  (three decimals), group subtotals and the shard's total; the `CI result` job sums the
+  shards up (a table of shard totals and the grand total, and the 15 slowest cases) and
+  uploads every case's time as the `test-timings` artifact.
+* **Split shards.** A shard with `"split": N` runs as N jobs `NAME-1` … `NAME-N`, each a
+  list of `=GROUP#I,J,…` selectors. `scripts/ci.py` balances the parts with the case
+  times in `.github/test-timings.json`: the cases that use the same shared program (the
+  self-hosted checker or compiler, which the first case that needs it builds) stay in
+  one part, so each program is built once, and the other cases fill the parts up. A new
+  case counts as its group's median, with the programs most of its group uses. The
+  baseline holds only the split shards' cases, one per line.
+  `scripts/ci.py plan` shows the parts and their
+  estimates. To refresh the baseline from a CI run:
+  `gh run download RUN -n test-timings && scripts/ci.py baseline timings.jsonl > .github/test-timings.json`.
+* **The exercise tree** (the `exercise tree` job) is generated with
+  `scripts/mkexercises.py` into a temporary directory and built (`lake build wiz grail
+  tests`), with a Lake cache of its own; it runs beside the test shards. It does not run
+  the exercise tree's tests (almost all of them fail by design). See
+  [exercises.md](exercises.md).
 * **The bootstrap fixpoint** (`scripts/fixpoint.sh`: the stage-1 C of the toolchain
-  equals its stage-2 C) runs weekly on `solutions`, or from "Run workflow" with
+  equals its stage-2 C) runs weekly on `master`, or from "Run workflow" with
   `fixpoint` ticked. It takes a long time; run it locally with `nix develop -c
   scripts/fixpoint.sh`.
 * **The Nix package** (the `nix package` job): `nix build .#wiz` builds `wiz` and
@@ -59,12 +96,12 @@ To run Wiz without a checkout or a Lean toolchain, with the binaries from Cachix
 ```
 nix run --option extra-substituters https://badlydrawnwizards.cachix.org \
   --option extra-trusted-public-keys badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI= \
-  github:badly-drawn-wizards/wiz/solutions#wiz -- check hello.wiz
+  github:badly-drawn-wizards/wiz#wiz -- check hello.wiz
 ```
 
 or `cachix use badlydrawnwizards` once and then `nix run
-github:badly-drawn-wizards/wiz/solutions#wiz -- …` (`#grail` for grail; `wiz build FILE
--o OUT` works out of the box). Name the `solutions` branch: the default branch, `master`,
-is the exercise tree, whose `wiz` is mostly stubs. The `--option`s count only for a
-trusted Nix user (or with the cache in `nix.conf`); otherwise Nix builds wiz from source,
-which takes a few minutes.
+github:badly-drawn-wizards/wiz#wiz -- …` (`#grail` for grail; `wiz build FILE -o OUT`
+works out of the box). Without a branch the flake reference means the default branch,
+`master`, whose binaries are on Cachix once its `nix package` job has run. The
+`--option`s count only for a trusted Nix user (or with the cache in `nix.conf`);
+otherwise Nix builds wiz from source, which takes a few minutes.

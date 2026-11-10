@@ -1,17 +1,33 @@
 # Exercises and solutions
 
 Wiz is also a course: each stage leaves parts of the implementation as exercises, and the
-test suite tells you when you've got them right. The repository keeps one tree with the
-solutions in it, and generates the exercise tree from it.
+test suite tells you when you've got them right. The repository (the `master` branch)
+holds one tree with the solutions in it; the exercise tree is generated from it on demand.
 
 ## The two trees
 
-* **The solution tree** (the `solutions` branch) is the complete implementation. Every
+* **The solution tree** (the repository, `master`) is the complete implementation. Every
   exercise is a marked block whose solution and exercise versions sit side by side.
-* **The exercise tree** (the `master` branch) is generated from it by
-  `scripts/mkexercises.py SRC_WORKTREE DST_WORKTREE`: each marked block is replaced by
-  its exercise version. Nobody edits it by hand; it is regenerated after every merge into
-  the solution tree.
+* **The exercise tree** is generated from it by `scripts/mkexercises.py SRC DST`: each
+  marked block is replaced by its exercise version. It is not committed anywhere; make
+  your own from a checkout:
+
+  ```sh
+  git clone https://github.com/badly-drawn-wizards/wiz && cd wiz
+  scripts/mkexercises.py . ../wiz-exercises   # a new or empty directory
+  cd ../wiz-exercises && git init && git add -A && git commit -qm "Exercises"
+  nix develop -c lake build                   # then work through `lake test`
+  ```
+
+  The `git init` is optional, but with it a later run (`scripts/mkexercises.py .
+  ../wiz-exercises` from an updated checkout) updates the tree in place: it refuses to
+  run on a worktree with uncommitted changes, so commit your work first, then merge the
+  new stubs with your answers using git.
+
+  Until 2026-11-10 the exercise tree was the `master` branch, regenerated after every
+  merge, and the solution tree was the `solutions` branch. That exercise branch is kept,
+  frozen, as `exercises-archive` (its last commit, `906cbb0`, matches solutions commit
+  `7dae398`); `master` is now the solution tree.
 
 In the exercise tree an unimplemented exercise shows up in `lake test` as
 `✗ ... not implemented yet (hit a sorry)`. The exercises of each stage are listed, in
@@ -36,9 +52,10 @@ top-level block (no indentation) must have an `--|ex` part, possibly empty. Nest
 blocks, stray markers and unterminated blocks are errors.
 
 Files listed in `.solutions-only` are not copied to the exercise tree, and tracked files
-of the exercise tree that no longer exist in the solution tree are deleted.
-`mkexercises.py` refuses to run on an exercise worktree with uncommitted changes.
+of the exercise tree that no longer exist in the solution tree are deleted (when it is a
+git worktree). `mkexercises.py` refuses to run on an exercise worktree with uncommitted
+changes, and on a directory that is neither empty nor a git worktree.
 
-When writing solutions, keep the exercise stubs runnable: the exercise tree must build,
-and its test driver must run to its summary line (CI checks both; see
-[building.md](building.md)).
+When writing solutions, keep the exercise stubs runnable: the exercise tree must build
+(CI's `exercise tree` job generates it and builds it; see [building.md](building.md)),
+and its test driver should run to its summary line.
