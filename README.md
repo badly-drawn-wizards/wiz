@@ -1908,8 +1908,10 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
   raise the type's universe; it stays forgotten.
 * For structures, `S 8 = S 16` computes through the Σ to `(x = 8) ↔ (x = 16)` under
   a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). Equality of two
-  `μ` or `ν` types doesn't compute, so for an `inductive` `UIntN 8 = UIntN 16` is neither
-  provable nor refutable, and a `cast` between such types gets stuck.
+  `μ` types computes to the index equation only when their descriptions agree (so
+  `UIntN 8 = UIntN 8` does), and the phantom is part of the description. So for an
+  `inductive`, `UIntN 8 = UIntN 16` stays stuck: it is neither provable nor refutable,
+  and a `cast` between such types gets stuck too.
 * A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
   parameters never count. Declare a `structure` instead.
 
