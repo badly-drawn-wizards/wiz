@@ -606,6 +606,32 @@ partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
     | none, _, _ => unfold ()
   | none => unfold ()
 
+/-- `hyps D X P f i xs` by `Templates.hypsTm`: the definition. -/
+partial def vHypsTemplate (g : Globals R) (l v : Level) (I D X P f i xs : Val R) : Val R :=
+  [I, D, X, P, f, i, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+
+/-- (given) `hyps D X P f i xs` computed directly on a canonical description, one step of
+`Templates.hypsTm`'s `Desc.elim` at a time, without evaluating the template (most of the
+cost of a data operation: `wiz-notes/kernel-eval.md`, F2):
+
+    ret j        ↦ ()
+    arg q S E    ↦ hyps (E xs.1) xs.2
+    rec q j E    ↦ (f j xs.1, hyps E xs.2)
+    hrec q H j E ↦ (fun h => f (j h) (xs.1 h), hyps E xs.2)
+
+On a description that isn't canonical (stuck), the template from there on, which is what
+the template itself reduces to after the steps already taken. -/
+partial def vHyps (g : Globals R) (l v : Level) (I D X P f i xs : Val R) : Val R :=
+  match whnf D with
+  | .dret _ => .tt
+  | .darg _ _ E => vHyps g l v I (vApp g E (vFst xs)) X P f i (vSnd xs)
+  | .drec _ j E => .pair (vApp g (vApp g f j) (vFst xs)) (vHyps g l v I E X P f i (vSnd xs))
+  | .dhrec _ _ j E =>
+    -- h0 x1 j2 f3
+    .pair (.lam "h" (.mk [vFst xs, j, f] (.app (.app (.var 3) (.app (.var 2) (.var 0))) (.app (.var 1) (.var 0)))))
+      (vHyps g l v I E X P f i (vSnd xs))
+  | _ => vHypsTemplate g l v I D X P f i xs
+
 /-- **Exercise 4.19c.** Induction computes on constructors:
 
     ind P m i (con xs) ↦ m i xs (hyps D (μ D) P (fun j y => ind P m j y) i xs)
@@ -619,7 +645,7 @@ partial def vIndStep (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m 
     -- y0 j1 m2 P3 D4 I5
     let f : Val R := .lam "j" (.mk [m, P, D, I]
       (.lam "y" (.ind l (.var 5) (.var 4) v (.var 3) (.var 2) (.var 1) (.var 0))))
-    let hyps := [I, D, muFamily l I D, P, f, i, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+    let hyps := vHyps g l v I D (muFamily l I D) P f i xs
     [i, xs, hyps].foldl (vApp g) m
   | .neutral h sp => .neutral h (sp.push (.ind l I D v P m i))
   | _ => panic! "vInd: ill-typed"

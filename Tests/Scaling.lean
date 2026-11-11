@@ -134,6 +134,73 @@ def eraseMatchMs (n : Nat) : IO Nat := do
   | .error e => throw (IO.userError (toString e))
   pure ((← IO.monoMsNow) - start)
 
+/-! ### Direct hypotheses against the template (kernel-eval-2, P2)
+
+`vHyps` computes an induction's hypotheses on a canonical description directly; its
+definition is `Templates.hypsTm` (`vHypsTemplate`). They must agree, as read back, on every
+description: every global whose type ends in `Desc I`, applied to variables, at every
+constructor (the tags enumerated, the other fields variables). -/
+
+/-- The descriptions among `g`'s globals: the level, `I` and `D`, after applying each to
+fresh variables (levels from 0). -/
+def descsOf (g : Globals ZeroOneMany) : Array (Name × Level × Val ZeroOneMany × Val ZeroOneMany × Nat) := Id.run do
+  let mut out := #[]
+  for n in g.order do
+    let some d := g.find? n | continue
+    if d.value.isNone then continue
+    let mut ty := whnf (eval g [] d.type)
+    let mut v : Val ZeroOneMany := eval g [] (.const n (d.levelParams.map Level.param))
+    let mut k := 0
+    for _ in [0:12] do
+      match ty with
+      | .pi _ _ _ _ B _ =>
+        ty := whnf (Closure.inst g B (Val.var k)); v := vApp g v (Val.var k); k := k + 1
+      | _ => break
+    if let .desc l I := ty then out := out.push (n, l, I, v, k)
+  pure out
+
+/-- Payloads for `D`: the tags enumerated (at most `budget` in all), other fields fresh
+variables from level `k`. -/
+partial def payloads (g : Globals ZeroOneMany) (D : Val ZeroOneMany) (k budget : Nat) :
+    List (Val ZeroOneMany × Nat) :=
+  if budget == 0 then [] else
+  match whnf D with
+  | .darg _ S E => match tagField? S with
+    | some (ls, lifted) =>
+      (List.range ls.length).flatMap fun t =>
+        let tg : Val ZeroOneMany := if lifted then .up (.tag ls t) else .tag ls t
+        (payloads g (vApp g E tg) k (budget / ls.length)).map fun (r, k') => (.pair tg r, k')
+    | none => (payloads g (vApp g E (Val.var k)) (k + 1) budget).map fun (r, k') => (.pair (Val.var k) r, k')
+  | .drec _ _ E | .dhrec _ _ _ E => (payloads g E (k + 1) budget).map fun (r, k') => (.pair (Val.var k) r, k')
+  | _ => [(Val.var k, k + 1)]
+
+/-- The descriptions (and payloads) on which `vHyps` and the template read back differently. -/
+def hypsMismatches (g : Globals ZeroOneMany) (extra : List (Name × Level × Val ZeroOneMany × Val ZeroOneMany × Nat) := [])
+    (direct : Globals ZeroOneMany → Level → Level → (I D X P f i xs : Val ZeroOneMany) → Val ZeroOneMany := vHyps) :
+    Nat × List String := Id.run do
+  let mut n := 0
+  let mut bad := []
+  for (name, l, I, D, k) in (descsOf g).toList ++ extra do
+    for (xs, k') in payloads g D k 64 do
+      -- X P f i: variables above everything else
+      let (X, P, f, i) := (Val.var k', Val.var (k' + 1), Val.var (k' + 2), Val.var (k' + 3))
+      let L := k' + 4
+      let a := quote g L (direct g l .zero I D X P f i xs)
+      let b := quote g L (vHypsTemplate g l .zero I D X P f i xs)
+      n := n + 1
+      unless a == b do bad := s!"{name}: {a.pretty []} vs {b.pretty []}" :: bad
+  pure (n, bad)
+
+/-- Every module of `lib/` imported at once. -/
+def allLibSource : IO String := do
+  let mut ms := #[]
+  for e in ← System.FilePath.readDir "lib" do
+    if e.path.extension == some "wiz" then ms := ms.push (e.path.fileStem.getD "")
+    else if ← e.path.isDir then
+      for f in ← System.FilePath.readDir e.path do
+        if f.path.extension == some "wiz" then ms := ms.push (e.fileName ++ "." ++ f.path.fileStem.getD "")
+  pure (String.join ((ms.qsort (· < ·)).toList.map (s!"import {·}\n")))
+
 /-- `n` matches on a `len`-element list, checked by `refl`. -/
 def listMatchProgram (len n : Nat) : String :=
   "import Prelude\n" ++
@@ -263,6 +330,35 @@ def group : Group where
         let st := runFrontend (R := ZeroOneMany) ("import Prelude\n" ++ hypUnderBinder ++
           "def t : sumF (.cons 1 (.cons 2 (.cons 3 .nil))) 0 = 7 := refl 7\n") { loader }
         check (st.messages.any (·.severity == .error)) "a wrong sum was accepted" },
+    -- (P2) the direct hypotheses are the template's, on every description of the library
+    -- and the examples, and on stuck descriptions (where the direct one falls back)
+    { name := "direct induction hypotheses agree with the template on every Desc in lib/ and examples/", run := fun _ => do
+        let loader ← Tests.Elab.libLoader
+        let lib := runFrontend (R := ZeroOneMany) (← allLibSource) { trustedModule := Tests.libModule, loader }
+        let errs := lib.messages.filter (·.severity == .error)
+        unless errs.isEmpty do throw (IO.userError s!"the library has errors: {(errs.toList.take 3).map (·.text)}")
+        -- (the comparison can fail: a variant with the pairs swapped is caught)
+        let swapped := fun g l v I D X P f i xs => match vHyps g l v I D X P f i xs with
+          | .pair a b => .pair b a
+          | h => h
+        check (!(hypsMismatches lib.globals (direct := swapped)).2.isEmpty) "a wrong variant was not caught"
+        let mut total := 0
+        -- stuck: the whole description a variable, and an `arg` whose rest is a variable
+        let w : Val ZeroOneMany := .qlit QuantitySyntax.explicitDefault
+        let stuck := [("a variable", Level.zero, (.unit 0 : Val ZeroOneMany), Val.var 0, 1),
+          ("arg then a variable", .zero, .unit 0, .darg w (.sort 0) (Val.var 0), 1),
+          ("rec then a variable", .zero, .unit 0, .drec w .tt (.darg w (.sort 0) (Val.var 0)), 1)]
+        let (n, bad) := hypsMismatches lib.globals stuck
+        unless bad.isEmpty do throw (IO.userError s!"lib: {bad.take 3}")
+        total := total + n
+        for e in ← System.FilePath.readDir "examples" do
+          unless e.path.extension == some "wiz" do continue
+          let st := runFrontend (R := ZeroOneMany) (← IO.FS.readFile e.path) { trustedModule := Tests.libModule, loader }
+          if st.messages.any (·.severity == .error) then continue  -- (an example of an error)
+          let (n, bad) := hypsMismatches st.globals
+          unless bad.isEmpty do throw (IO.userError s!"{e.path}: {bad.take 3}")
+          total := total + n
+        check (total > 1000) s!"only {total} cases" },
     -- the elaborator's sort pass (`Sorts.type`) no longer evaluates an equation to learn
     -- that it is a proposition; the kernel still checks every sort note itself
     { name := "a wrong sort note on a Π into an equation is rejected by the kernel", run := fun _ => do
