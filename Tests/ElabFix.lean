@@ -471,6 +471,12 @@ def group : Group where
         okLibs ("import Hdl.Core\nstructure CombT (i o : HwTy) where\n  run : {r : HwTy → Type} → [Hw r] → r i → r o\n" ++
           "def mapIn {ω i' i o : HwTy} (f : CombT i' i) (c : Circuit i o) : Circuit i' o :=\n" ++
           "  Circuit.mk c.st c.init (fun s x => c.step s (f.run x))\n") },
+    { name := "a variable whose type is the expected definition is not η-expanded through it (hdl-cleanup)", run := fun _ =>
+        -- `f : Comb i o` against `Comb ?i ?o` (`def Comb … := {r} → [Hw r] → …`) became
+        -- `fun {r} [_] => f`, with an instance hole made while `?r` was unsolved: "could not
+        -- infer instance" on the binary of #92. Now the two types are unified first, as Lean
+        -- does, and `f` stays `f` (the `#check`).
+        okLibs "import Logic\ninductive HwTy where\n  | bits (n : Nat)\nclass Hw (r : HwTy → Type) where\n  lit : (ω n : Nat) → Nat → r (HwTy.bits n)\ndef El : HwTy → Type\n  | .bits n => Nat\ninstance : Hw El where\n  lit := fun n k => k\ndef Comb (i o : HwTy) : Type 1 := {r : HwTy → Type} → [Hw r] → r i → r o\ndef Comb.el {i o : HwTy} (f : Comb i o) (x : El i) : El o := f x\ndef mapL {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons a as => .cons (f a) (mapL f as)\ndef consEq {A : Type} (x : A) {xs ys : List A} (e : xs = ys) : List.cons x xs = List.cons x ys :=\n  Eq.congrArg (List.cons x) e\ndef h {i o : HwTy} (f : Comb i o) : (xs : List (El i)) → mapL (Comb.el f) xs = mapL (fun (x : El i) => Comb.el f x) xs\n  | .nil => refl (@List.nil (El o))\n  | .cons x xs => consEq (Comb.el f x) (h f xs)\n\n#check fun (f : Comb (HwTy.bits 1) (HwTy.bits 2)) => Comb.el f" ["fun f => Comb.el (.bits 1) (.bits 2) f : Comb (.bits 1) (.bits 2) → El (.bits 1) → El (.bits 2)"] },
     { name := "a clause definition's type: instance holes still pending are solved before it is closed (hdl-cleanup)", run := fun _ =>
         -- `Comb.el f` checks `f : Comb i o` against `Comb ?i ?o`, which η-expands `f` to
         -- `fun {r} [_] => f ?inst` while `?r` is unsolved: `?inst` is pending, and the type

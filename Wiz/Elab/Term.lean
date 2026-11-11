@@ -770,6 +770,22 @@ partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Lev
     pure (t, u)
   | ty => throwAt (ctx.withInfo stx).info s!"type expected, got a term of type {← showVal ctx ty}"
 
+/-- `check` of a variable or an application against a glued definition `D a…` that
+unfolds to an implicit or instance Π: if the term's own type is `D b…` too, unify the
+two directly (`some` the term); otherwise `none`, and nothing happened. -/
+partial def sameDefinition? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Option (Term R)) := do
+  unless stx.isOfKind "term.ident" || stx.isOfKind "term.app" do return none
+  let .unfold n _ _ _ ← forceMeta expected | return none
+  unless (← force expected) matches .pi _ .implicit .. || (← force expected) matches .pi _ .instImplicit .. do
+    return none
+  tryCatch (do
+      let (t, ty) ← infer ctx stx
+      let .unfold n' _ _ _ ← forceMeta ty | throwAt {} "another type"
+      unless n' == n do throwAt {} "another definition"
+      unify ctx.lvl expected ty
+      pure (some t))
+    (fun _ => pure none)
+
 /-- **Exercise 3.8.** Elaborate `stx` against `expected`. Force `expected` first.
 
 1. If `expected` is an implicit Π and `stx` is not an implicit `fun`
@@ -787,6 +803,12 @@ partial def check (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R
   recordExpected ctx stx expected
   if let some stx' ← expand? stx then return ← check ctx stx' expected
   if let some t ← checkData? ctx stx expected then return t
+  -- a variable or application whose type is the expected type's own definition
+  -- (`f : Comb i o` against `Comb ?i ?o`, `def Comb … := {r} → [Hw r] → …`): unify the
+  -- two, without unfolding the definition to introduce implicit lambdas (that would make
+  -- `fun {r} [_] => f`, with an instance hole created while `?r` is unsolved). Lean
+  -- doesn't unfold a definition to find implicit binders either.
+  if let some t ← sameDefinition? ctx stx expected then return t
   -- (given, stage 7) against `[x : C A] → B`, bind the instance as a local
   if let .pi x .instImplicit _ dom cod _ ← force expected then
     return .lam x (← check (ctx.bind x dom) stx (← instM cod (Val.var ctx.lvl)))
