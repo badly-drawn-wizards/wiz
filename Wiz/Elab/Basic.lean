@@ -111,9 +111,12 @@ inductive Info (R : Type) where
   | decl (info : SourceInfo) (name : Name) (names : List Name) (type : Term R) (annotated : Bool) (insertAt : Nat)
   /-- an unknown identifier, with the locals in scope (for "did you mean") -/
   | unknownIdent (info : SourceInfo) (name : Name) (locals : List Name)
+  /-- a `trace` of a tactic or macro: the command elaborator turns it into an info
+  message (it is not kept in the tree) -/
+  | trace (info : SourceInfo) (text : String)
 
 def Info.info : Info R → SourceInfo
-  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. => i
+  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. | .trace i .. => i
 
 /-- An `Info` as recorded during elaboration, before quoting and zonking. -/
 inductive RawInfo (R : Type) where
@@ -123,6 +126,16 @@ inductive RawInfo (R : Type) where
   | decl (info : SourceInfo) (name : Name) (ctx : LocalCtx R) (type : Term R) (annotated : Bool) (insertAt : Nat)
   /-- nothing to quote -/
   | done (i : Info R)
+
+/-- Which heuristic (non-unique) solutions unification may pick outside the pattern
+fragment (the rule and its table: `Unify.lean`, "When unification approximates").
+`none`: no first-order guess (the speculative "expected type first" pass of an
+application whose result depends on arguments not elaborated yet); `default`:
+flex-rigid guesses; `last`: also flex-flex guesses (a postponed argument, once nothing
+else can make progress). -/
+inductive Approx where
+  | none | default | last
+  deriving BEq, Inhabited
 
 structure ElabState (R : Type) where
   globals : Globals R
@@ -144,8 +157,8 @@ structure ElabState (R : Type) where
   procMacros : List (Name × Name) := []
   /-- runs a procedural macro (`f`, the node, the next scope); the command elaborator
   supplies it, since it needs the compiler -/
-  runProcMacro : Name → Syntax → Nat → Except String (Syntax × Nat) :=
-    fun _ _ _ => .error "procedural macros can't run here"
+  runProcMacro : Name → Syntax → Nat → Array String × Except String (Syntax × Nat) :=
+    fun _ _ _ => (#[], .error "procedural macros can't run here")
   /-- tactics: node kind and the Wiz function that runs it, latest first -/
   tactics : List (Name × Name) := []
   /-- erase what is reachable from these globals, for the interpreter (supplied by the
@@ -159,8 +172,14 @@ structure ElabState (R : Type) where
   /-- record the expected type of every checked term, not only of holes (the language
   server asks for it; it costs a quote per term) -/
   termInfo : Bool := false
+  /-- the heuristics unification may use (`Approx`) -/
+  approx : Approx := .default
   /-- instance problems not solved yet: the hole, in its context, and its class type -/
   pendingInsts : Array (LocalCtx R × Term R × VTy R) := #[]
+  /-- the names of the binders unification is under, by level (innermost first): a
+  solution `?m x := t` found under a binder `n` is `fun n => t`, not `fun x7 => t`, so a
+  goal a tactic makes from it shows (and `intro` takes) the name the user wrote -/
+  binderNames : List (Lvl × Name) := []
   /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
   kernelInfer : Ctx R → Term R → Except String (VTy R) := fun _ _ => .error "no kernel here"
 
@@ -198,6 +217,13 @@ def throwAt (info : SourceInfo) (msg : String) (code : String := "") : ElabM R �
 
 def pushInfo (i : RawInfo R) : ElabM R Unit :=
   modify fun s => { s with infos := s.infos.push i }
+
+/-- A `trace` of a tactic or macro at `info`: an info message, in the order traced. It is
+part of the elaborator state, so a trace in a branch that fails and is caught (`try`,
+`first`) is dropped with the rest of that branch, and the traces before an uncaught
+error are still shown (the error carries the state). -/
+def pushTrace (info : SourceInfo) (text : String) : ElabM R Unit :=
+  pushInfo (.done (.trace info text))
 
 /-- Record the expected type of a term being checked (always for holes; for every term
 when `termInfo` is on). -/
@@ -341,9 +367,18 @@ def instLevel (l : Level) : ElabM R Level := do
   pure (l.instMVars fun m => ls[m]?.join)
 
 
-def showTerm (ctx : LocalCtx R) (t : Term R) : String := t.pretty ctx.names
+def showTerm (ctx : LocalCtx R) (t : Term R) : String := elideLong (t.pretty ctx.names)
 
 def showVal (ctx : LocalCtx R) (v : Val R) : ElabM R String :=
-  return (quote (← getGlobals) ctx.lvl v).pretty ctx.names
+  return elideLong ((quote (← getGlobals) ctx.lvl v).pretty ctx.names)
+
+/-- Run `x` with the unification heuristics `a` (`Approx`); the previous setting comes
+back afterwards (on failure too: `ElabM` drops a failed computation's state). -/
+def withApprox {α : Type} (a : Approx) (x : ElabM R α) : ElabM R α := do
+  let saved := (← get).approx
+  modify fun s => { s with approx := a }
+  let r ← x
+  modify fun s => { s with approx := saved }
+  pure r
 
 end Wiz

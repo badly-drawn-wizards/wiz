@@ -121,12 +121,14 @@ compiler you are working on.
 
 ## 26d: installing tower, release tarballs ✅
 
-**With Nix**: `nix profile install github:badly-drawn-wizards/wiz#tower`, then
-`tower --self ~/.nix-profile/bin/tower self install`. The shims call the profile's
-tower, which stays valid when the profile is updated. After that, `tower default
-nightly`. (`nix run …#tower -- …` works for single commands, but shims written from
-it point into a store path that nothing keeps alive.) The package (`packages.tower`,
-`apps.tower`) adds git, tar and curl to `PATH`; `nix` and `lake` are yours.
+**With Nix**: the package (`packages.tower`) contains tower and the `wiz` and `grail`
+shims, which call that same tower; installing it puts all three on `PATH`:
+`nix profile install github:badly-drawn-wizards/wiz#tower` (or `home.packages` /
+`environment.systemPackages`), then `tower default nightly`. Nix installs only tower and
+the shims: the toolchains are installed by tower into `~/.tower` (with `tower set source
+release` they come from the release tarballs and never from Nix). The package adds git,
+tar and curl to tower's `PATH`; `nix` and `lake` are yours. `tower self shims` is still
+there for shims in `~/.tower/bin` (they then call the tower given with `--self`).
 
 **With the install script** (no Nix):
 `curl -sSfL https://raw.githubusercontent.com/badly-drawn-wizards/wiz/master/scripts/tower-init.sh | sh`

@@ -82,52 +82,54 @@ structure MacroEnv where
   declType? : String → Option RVal := fun _ => none
 
 /-- Answer a macro's requests until it returns. `v` is a `Tac` value; the result is the
-syntax it returns (scoped with `scope`) and the next free scope. A macro may ask for
-fresh scopes (`fresh`), fail (`fail`), `trace` (ignored here), and read the environment
+syntax it returns (scoped with `scope`) and the next free scope, or an error; with it
+come the messages the macro `trace`d, in order (also when it fails). A macro may ask for
+fresh scopes (`fresh`), fail (`fail`), `trace`, and read the environment
 (`getInductive`, `getType`). -/
 partial def runMacroTac (code : Code) (env : MacroEnv) (what : String) (info : SourceInfo)
-    (scope : Nat) (v : RVal) (next : Nat) : Except String (Syntax × Nat) :=
+    (scope : Nat) (v : RVal) (next : Nat) (traces : Array String := #[]) :
+    Array String × Except String (Syntax × Nat) :=
   let str (r : RVal) := (r.toString?).getD ""
   match v.tag? with
   | some 1 => -- result
     match decodeSyntax info (v.conField 0) with
-    | some out => pure (scopeQuoted scope out, next)
-    | none => throw s!"{what} returned a malformed syntax tree"
-  | some 2 => throw (((v.conField 0).toString?).getD "macro failed") -- fail
-  | some 3 => runMacroTac code env what info scope (v.conField 1) next -- trace
-  | some 4 => runMacroTac code env what info scope (apply code (v.conField 0) (.nat next)) (next + 1) -- fresh
+    | some out => (traces, pure (scopeQuoted scope out, next))
+    | none => (traces, throw s!"{what} returned a malformed syntax tree")
+  | some 2 => (traces, throw (((v.conField 0).toString?).getD "macro failed")) -- fail
+  | some 3 => runMacroTac code env what info scope (v.conField 1) next (traces.push (str (v.conField 0))) -- trace
+  | some 4 => runMacroTac code env what info scope (apply code (v.conField 0) (.nat next)) (next + 1) traces -- fresh
   | some 21 => -- getInductive
     let ans := (env.inductive? (str (v.conField 0))).map (mkCon 1 [·]) |>.getD (mkCon 0 [])
-    runMacroTac code env what info scope (apply code (v.conField 1) ans) next
+    runMacroTac code env what info scope (apply code (v.conField 1) ans) next traces
   | some 22 => -- getType
     let ans := (env.declType? (str (v.conField 0))).map (mkCon 1 [·]) |>.getD (mkCon 0 [])
-    runMacroTac code env what info scope (apply code (v.conField 1) ans) next
-  | some t => throw s!"{what} made a request ({t}) that only tactics can make"
-  | none => throw s!"{what} returned a malformed result"
+    runMacroTac code env what info scope (apply code (v.conField 1) ans) next traces
+  | some t => (traces, throw s!"{what} made a request ({t}) that only tactics can make")
+  | none => (traces, throw s!"{what} returned a malformed result")
 
-/-- Run the macro `f` on `stx`: returns the expansion and the next free scope.
+/-- Run the macro `f` on `stx`: its traces, and the expansion and the next free scope.
 
 `f stx : MacroM Syntax`, and `Macro.run` turns it into a `Tac` request chain ending in
 `result stx'` (see `Elab/Tactic.lean`). -/
 def runProcMacro (code : Code) (f : Name) (stx : Syntax) (scope : Nat) (env : MacroEnv := {}) :
-    Except String (Syntax × Nat) :=
+    Array String × Except String (Syntax × Nat) :=
   let m := apply code (run code [] (.global f)) (encodeSyntax stx)
   runMacroTac code env s!"macro {f}" stx.info scope (apply code (run code [] (.global "Macro.run")) m) (scope + 1)
 
 /-- Run the command macro `f : CommandMacro` on `stx`: the commands it expands to. -/
 def runCommandMacro (code : Code) (f : Name) (stx : Syntax) (scope : Nat) (env : MacroEnv := {}) :
-    Except String (Array Syntax × Nat) := do
+    Array String × Except String (Array Syntax × Nat) :=
   let m := apply code (run code [] (.global f)) (encodeSyntax stx)
-  let (out, next) ← runMacroTac code env s!"macro {f}" stx.info scope
+  let (tr, r) := runMacroTac code env s!"macro {f}" stx.info scope
     (apply code (run code [] (.global "CommandMacro.run")) m) (scope + 1)
-  pure (out.args, next)
+  (tr, r.map fun (out, next) => (out.args, next))
 
 /-- Run the deriver `f : Deriver` for the type `T`: the commands it produces. -/
 def runDeriver (code : Code) (f : Name) (T : Name) (info : SourceInfo) (scope : Nat) (env : MacroEnv := {}) :
-    Except String (Array Syntax × Nat) := do
+    Array String × Except String (Array Syntax × Nat) :=
   let m := apply code (run code [] (.global f)) (encodeString T)
-  let (out, next) ← runMacroTac code env s!"deriver {f}" info scope
+  let (tr, r) := runMacroTac code env s!"deriver {f}" info scope
     (apply code (run code [] (.global "CommandMacro.run")) m) (scope + 1)
-  pure (out.args, next)
+  (tr, r.map fun (out, next) => (out.args, next))
 
 end Wiz.Elab

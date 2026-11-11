@@ -147,6 +147,28 @@ def listMatchProgram (len n : Nat) : String :=
 def hypUnderBinder : String :=
   "def sumF : List Nat → Nat → Nat\n  | .nil => fun k => k\n  | .cons x xs => fun k => sumF xs (Nat.add k x)\n"
 
+/-- A circuit with a chain of 1500 adders and xors, and a counter on long traces. -/
+def hdlScaleSrc : String := "import Hdl.Core
+def u8 : HwTy := HwTy.bits 8
+def chainOf {r : HwTy → Type} [Hw r] : Nat → r u8 → r u8 → r u8
+  | .zero, x, y => x
+  | .succ k, x, y => let z := Hw.xor (Hw.add x y) (Hw.lit 8 k); chainOf k z x
+def big : Circuit u8 u8 := Circuit.mk u8 (BitVec.ofNat 8 1) (fun s x => let y := chainOf 1500 s x; Hw.pair y y)
+def Rng.trace : Nat → Nat → List Nat
+  | .zero, _ => .nil
+  | .succ k, s => .cons (Nat.mod s 256) (Rng.trace k (Nat.mod (s * 1103515245 + 12345) 2147483648))
+def ok : Bool × Nat := let xs := Rng.trace 100 7; (Hdl.natsEq (Circuit.runPacked big xs) (Circuit.simNet .true big xs), Netlist.size (Circuit.netlist \"big\" big))
+#eval ok
+def ctr : Circuit u8 u8 := Circuit.mk u8 (BitVec.ofNat 8 0) (fun s x => Hw.pair (Hw.add s x) s)
+def Rep.go : Nat → List (HwTy.El u8) → List (HwTy.El u8)
+  | .zero, acc => acc
+  | .succ k, acc => Rep.go k (List.cons (BitVec.ofNat 8 3) acc)
+def n : Nat := List.length (Circuit.run ctr (Rep.go 200000 List.nil))
+#eval n
+def m : Nat := List.length (Netlist.simulate (Circuit.netlist \"c\" ctr) (Hdl.map (fun (v : HwTy.El u8) => List.cons (BitVec.toNat v) List.nil) (Rep.go 200000 List.nil)))
+#eval m
+"
+
 def group : Group where
   name := "scaling"
   exercise := "super-linear time and memory"
@@ -254,7 +276,14 @@ def group : Group where
         let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         for p in examples ++ [literalProgram 300] do
           let bad ← rcMismatches (← elabOk p) "main"
-          unless bad.isEmpty do throw (IO.userError s!"they differ on {bad}") }]
+          unless bad.isEmpty do throw (IO.userError s!"they differ on {bad}") },
+    -- the netlist interpreter appended to its list of node values and looked arguments up
+    -- by position: O(n²) per cycle (FINDINGS.md G6 of the iCEstick project: traces were
+    -- cut to 6000 cycles); now a random-access list, O(n log n). Here 3258 nodes for 100
+    -- cycles (the old interpreter: about 5·10⁸ list steps), compared with the values;
+    -- then `Circuit.run` and `Netlist.simulate` on a 200000-cycle trace.
+    { name := "the HDL's netlist simulation is O(n log n) per cycle; long traces run", run := fun _ =>
+        within 120 1500 fun _ => Tests.Elab.okLibs hdlScaleSrc ["(.true, 3258)", "200000", "200000"] }]
 
 
 /-! ### A probe (`tests --probe-checker [unbox] [rc]`): where building the self-hosted checker spends

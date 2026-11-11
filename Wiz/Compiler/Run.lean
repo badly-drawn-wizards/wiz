@@ -513,7 +513,7 @@ interpreters, which can't call C), a definition implemented by a foreign functio
 its own code: `#eval` and `#run` run the model, compiled code the native. Also returns
 the definitions that couldn't be erased, with the reasons. -/
 def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
-    (externImpls : Bool := true) : TCM (Code × List (Name × String)) := do
+    (externImpls : Bool := true) (caseShapes : Bool := true) : TCM (Code × List (Name × String)) := do
   let mut code : Code := {}
   let mut failed : List (Name × String) := []
   let mut todo := roots.toArray
@@ -535,37 +535,58 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     if k == inlineKey then
       if let some d := g.find? f then
         if let .ok e := eraseDecl g d then inlines := inlines.insert f e
+  -- `attribute [implemented_by m] n`: `n` gets `m`'s code (following chains)
+  let rec target (m : Name) : Nat → Name
+    | 0 => m
+    | fuel + 1 => match (g.find? m).bind (·.impl) with
+      | some (.const m' _) =>
+        if !externImpls && builtins.any (fun (k, x) => x == m' && k.startsWith "extern:") then m
+        else target m' fuel
+      | _ => m
+  -- the erased code of `n` before inlining (`none`: no such definition), and the reason
+  -- if it couldn't be erased
+  let eraseOne (n : Name) : Option (ETerm × Option String) :=
+    let m := target n 100
+    if let some (key, _) := natives.find? (·.2 == m) then
+      some (.prim .unreachable #[.global key], none)
+    else match g.find? m with
+      | none => none
+      | some d =>
+        -- (an `implemented_by` not followed: the definition itself)
+        let d := if d.impl matches some (.const ..) then { d with impl := none } else d
+        -- a declaration that can't be erased yet becomes a runtime error if it is reached
+        match eraseDecl g d with
+        | .ok e => some (e, none)
+        | .error err => some (.prim .unreachable #[], some (toString err))
+  -- (kept: a definition is erased once, when first called or when reached)
+  let mut raw : Std.HashMap Name (Option (ETerm × Option String)) := {}
   while h : todo.size > 0 do
     let n := todo.back
     todo := todo.pop
     if code.contains n then continue
-    -- `attribute [implemented_by m] n`: `n` gets `m`'s code (following chains)
-    let rec target (m : Name) : Nat → Name
-      | 0 => m
-      | fuel + 1 => match (g.find? m).bind (·.impl) with
-        | some (.const m' _) =>
-          if !externImpls && builtins.any (fun (k, x) => x == m' && k.startsWith "extern:") then m
-          else target m' fuel
-        | _ => m
-    let m := target n 100
-    if let some (key, _) := natives.find? (·.2 == m) then
-      code := code.insert n (.prim .unreachable #[.global key])
-      continue
-    let some d := g.find? m | continue
-    -- (an `implemented_by` not followed: the definition itself)
-    let d := if d.impl matches some (.const ..) then { d with impl := none } else d
-    -- a declaration that can't be erased yet becomes a runtime error if it is reached
-    let e ← match eraseDecl g d with
-      | .ok e => pure e
-      | .error err => do
-        -- (a refusal, not a gap: running on would give a wrong value)
-        if ((toString err).splitOn abstractFieldMsg).length > 1 then
-          throw (.other s!"cannot erase {n}: {err}")
-        failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
+    let r ← match raw.get? n with
+      | some r => pure r
+      | none => do let r := eraseOne n; raw := raw.insert n r; pure r
+    let some (e, err) := r | continue
+    if let some err := err then
+      -- (a refusal, not a gap: running on would give a wrong value)
+      if (err.splitOn abstractFieldMsg).length > 1 then
+        throw (.other s!"cannot erase {n}: {err}")
+      failed := (n, err) :: failed
     let e := if e.globals.any inlines.contains then
       let inl := inlines
       e.inlineSimp fun f => if f == n then none else inl.get? f
     else e
+    -- calls of case-shaped definitions (`Bool.and`, …) become `case`s (15h)
+    let e ← if caseShapes then do
+        for f in e.globals do
+          unless raw.contains f do raw := raw.insert f (eraseOne f)
+        let known := raw
+        pure (e.caseInline fun f => if f == n then none else
+          match known.get? f with
+          | some (some (b, _)) => b.caseShape?
+          | _ => none)
+      else pure e
     code := code.insert n e
     todo := e.globals todo
   pure (code, failed.reverse)
@@ -573,8 +594,8 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
 /-- The same, ignoring the definitions that couldn't be erased (reaching one is a
 runtime error). -/
 def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
-    (externImpls : Bool := true) : TCM Code :=
-  return (← compileReachableE g builtins roots externImpls).1
+    (externImpls : Bool := true) (caseShapes : Bool := true) : TCM Code :=
+  return (← compileReachableE g builtins roots externImpls caseShapes).1
 
 /-- Erase every global. -/
 def compileAll (g : Globals R) (builtins : List (Name × Name) := []) : TCM Code :=
