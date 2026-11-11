@@ -1,6 +1,6 @@
 # Stage 22: numbers for hardware and systems code
 
-Prerequisites shared by the HDL and the Rust-style DSL (decisions RD9, RD10/HD3).
+Prerequisites shared by the HDL and Feral (decisions RD9, RD10/HD3).
 
 ## 22a: division, powers and bits ✅
 
@@ -203,8 +203,8 @@ def bad {ρ : Region} (x : Shr ρ U64) : Result (Shr ρ U64) :=
   Shr.borrow ρ (U64.lit 5) (fun ρy hy y => .ok y)         -- E0515: type mismatch
 ```
 
-`lib/Region.wiz` (`import Region`) is the lifetime layer of the Rust DSL's lowering
-(`drafts/rust/`, RD12). A lifetime is an erased `ρ : Region`, and the borrow handles are
+`lib/Region.wiz` (`import Region`) is the lifetime layer of Feral's lowering
+(`drafts/feral/`, RD12). A lifetime is an erased `ρ : Region`, and the borrow handles are
 declared types, so with phantom parameters (22e) the region is part of their identity
 and is inferred: `Shr ρ A` (`&'a A`), `Uniq ρ A` (`&'a mut A` passed in and handed back),
 `Mut ρ A S` (a returned `&'a mut A` with its backward function to the lender `S`),
@@ -219,16 +219,45 @@ typing:
 * Inside a mutable borrow, the lender's name is rebound to a `Lent` token, which nothing
   accepts: using the lender, or borrowing it again, while the borrow lives (E0499,
   E0502) is a type mismatch.
-* A reference flows to a place of a shorter region only through `Shr.weaken`, which
-  takes an `Outlives ρ ρ'` proof (erased). Proofs come from scopes (a scope nested in `σ`
-  hands out `Outlives σ ρ`) and from a function's `'a : 'b` bounds (erased proof
-  arguments); `Outlives` is opaque, so there is no other way to get one.
+* A reference flows to a place of a shorter region only through `Shr.weaken` (shared)
+  or `Mut.weaken` (a returned `&mut`, covariant in its region), which take an
+  `Outlives ρ ρ'` proof (erased). Proofs come from scopes (a scope nested in `σ` hands
+  out `Outlives σ ρ`, so a borrow is shortened, never lengthened) and from a function's
+  `'a : 'b` bounds (erased proof arguments); `Outlives` is opaque, so there is no other
+  way to get one. A function returning one of two `&mut` arguments moves both into a
+  `Mut ρb A (Uniq ρa A × Uniq ρb A)` (`Mut.ofUniq`, `Mut.mapBack`, `Mut.finish`) and
+  needs `'a : 'b` for the first (`drafts/feral/lowered/12_pick.wiz`).
 
 Scopes run their body at the enclosing region (regions are erased, so this is sound);
-the separation comes from parametricity alone. `drafts/rust/rejected/` has the classic
-errors, lowered, each rejected (`sh drafts/rust/check.sh`); test group `regions`.
-The constructors of the handles are private to the module ([13b](13-language.md)), so the guarantee
-holds for hand-written Wiz too: a handle can't be forged.
+the separation comes from parametricity alone. `drafts/feral/rejected/` has the classic
+errors, lowered, each rejected (`sh drafts/feral/check.sh`); test group `regions`.
+The constructors of the handles are private to the module ([13b](13-language.md)), so
+hand-written Wiz can't forge a handle either.
+
+**Known gaps** (test group `regions`, the case marked KNOWN GAP, which checks that they
+are *accepted* today; wishful: linear-case). Regions are enforced by the type checker;
+*aliasing* is not. The handles are ω values, so a scope's body can use one twice
+(`swap r r`: Rust's E0499), and the `Lent` token only shadows the lender's name, so a
+body that names the token differently reads the lender while it is borrowed (E0502).
+A handle can also leave its scope packed with its region (`B := (0 r : Region) × Shr r A`
+is a closed type) and still be used. All three are rejected only because the lowering
+(`drafts/feral/LOWERING.md`, L20) always rebinds the lender's name, uses each handle
+once and never packs a region. Making the handles linear would
+reject them in the kernel, but a linear variable can't be used inside a `match`
+alternative today (`match` is built on `ind`, whose methods are scaled by ω) and
+`Result`'s payload is ω, so it needs a case whose alternatives run once (R9a, a kernel
+change). Linearity would still not be uniqueness: in-place updates stay with RC.
+
+Linearity closes the escape for `Uniq` (the body has one handle and must hand it back,
+so it can't also pack it) but not for `Shr`, which is a copy. The scope is already rank-2
+(`(0 ρ : Region) → … → Result B`, `B` bound outside); what's missing is that `B` may
+still *quantify* over regions. Two ways to forbid that: put regions in a universe a
+scope's `B : Type` can't quantify over (`Region : Type 1`; that needs phantom
+parameters to count for a parameter whose phantom would raise the universe, which they
+don't today, 22e), or give each scope an erased `[RegionFree B]` instance, derived
+structurally and with no instance for `Σ (r : Region)` or `Π (r : Region)`. Either way
+the lowering only has to state each scope's result type (it does: the variables that
+live on after the borrow), and with the second it also has to request the instance.
 
 ## 22h: one bit-vector family ✅
 
@@ -249,7 +278,7 @@ def w (x : U32) : BitVec 32 := BitVec.add x (BitVec.ofNat 32 1)   -- no conversi
   `IntN n`, a free cast). The alias is enough because the width counts through
   `UIntN`'s phantom parameter (a `def` alias's own parameters never count, 22e):
   `BitVec 8` is not `U16`. The reverse (a `BitVec` structure `implemented_by` words)
-  would need a second representation registration and conversions at every Rust/HDL
+  would need a second representation registration and conversions at every Feral/HDL
   boundary.
 * **Proofs** see the definitions, which unfold to Word's model, so the BitVec lemmas
   are stated as before (`BitVec.add_comm` is `congrArg (UIntN.ofNat n)
@@ -311,7 +340,7 @@ Objects allocated on `#run`'s checked heap (`tests --allocs FILE ENTRY…`, a me
 mode of the test driver), before → after (the "unbox" columns are with `--unbox-structs`;
 the default has 22i's inlining on the boxed layout, not measured here):
 
-| program (`drafts/rust/lowered`) | before | unboxed | + inline |
+| program (`drafts/feral/lowered`) | before | unboxed | + inline |
 |---|---|---|---|
 | 01 `main` (swap two `U64`s) | 12 | 6 | 4 |
 | 01 `swapLists` | 11 | 7 | 5 |
@@ -326,3 +355,78 @@ constructor, so the `.ok (q.2, q.1)` re-wrapping around each scope is still rebu
 the same cells, by reuse); a recursive call through a scope's lambda is still not seen
 as structural (`05_bst` `insert` stays `partial`; wishful: reborrow-recursion has a
 design). The self-hosted toolchain doesn't have phantom tails at all yet.
+
+## 22j: Feral, the surface language ✅
+
+```
+import FeralCore
+import Feral
+feral
+  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {
+    let t := *x;
+    *x := *y;
+    *y := t
+  }
+  fn main () : U64 × U64 := {
+    let mut a : U64 := 1;
+    let mut b : U64 := 2;
+    swap (&mut a) (&mut b);
+    (a, b)
+  }
+end
+#eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) main     -- .ok (2, 1)
+```
+
+**Feral** is the Rust-like language of the plan (it was "the Rust DSL"; its syntax is
+Wiz's, its semantics Rust's). Until now it was a design, with programs lowered by hand
+(22g). `lib/Feral.wiz` makes the surface real for the fragment the lowering rules cover:
+functions with lifetime parameters and `'a : 'b` bounds, `let`/`let mut`, `&`/`&mut`
+borrows and reborrows, structs and enums, `match`/`if let`, calls and library methods,
+loops, `?`, `U64`, and functions that return borrows.
+
+* **A command macro written in Wiz.** `feral … end` is ordinary `syntax` (categories
+  `feral_item`, `feral_expr`, `feral_ty`, …) with a `CommandMacro` (7c) that runs in the
+  interpreter: it checks the items and lowers each to Wiz **source text**, which is parsed
+  and elaborated like anything else. `#lower feral … end` also shows that text: the
+  function above becomes
+
+  ```
+  def swap {ρa ρb : Region} (x : (Uniq ρa U64)) (y : (Uniq ρb U64)) : Result (Unit × ((Uniq ρa U64) × (Uniq ρb U64))) :=
+    let t := x.val;
+    let x := (Uniq.set x y.val);
+    let y := (Uniq.set y t);
+    Result.ok ((), (x, y))
+  ```
+  and `main` is two nested `Uniq.borrow` scopes around the call. The rules are
+  `drafts/feral/LOWERING.md` (L1–L23), cited in the code.
+* **The checker's types carry regions.** The lowering is type-directed (`*x` is `x.val`
+  on an argument borrow and `Mut.get` on a returned one), so the front end infers types,
+  with regions as part of them, exactly as lib/Region.wiz has them: a borrow opens a
+  scope with a fresh region, the lender becomes a `Lent` token inside, and what leaves
+  the scope may not mention the region. A scope lasts from the borrow to the last
+  statement that mentions something tied to its region.
+* **Borrow errors, twice.** The front end reports E0499, E0502, E0506, E0515, E0597 and
+  "lifetime may not live long enough" at the Feral expression. They are also type errors
+  of the lowered program: `#unchecked feral … end` lowers without the front end's
+  verdict, and the kernel rejects the result. The tests run every rejected program both
+  ways, so the two can't drift apart.
+* **What Feral is and isn't.** A Feral program *is* the Wiz program `#lower` shows;
+  soundness never depends on the front end. But aliasing — one live `&mut`, no use of a
+  lender while it is lent — is enforced by the **shape** of the lowering (scopes that
+  rebind the lender's name, handles never emitted twice), not by linearity: handles are
+  ω values (22g, known gaps). One Feral program shows it: `swap (&mut a) (&mut a)` is
+  E0499 in the front end, yet its `#unchecked` lowering checks. The surface language
+  never names handles, scopes or tokens, so when handles become linear only the text
+  emitted for scopes changes.
+* **Located output for command macros.** Runtime `Syntax` has no positions. A command
+  macro now names a node of its input by **path** (child indices), and its output may
+  contain `Syntax.errorAt path msg`, `Syntax.infoAt path msg` and
+  `Syntax.sourceAt path text` (`Elab/ProcMacro.lean`, `pathInfo`): diagnostics at that
+  node, and Wiz source parsed as commands and positioned there. Generated source that
+  fails to check is reported at the node with its text.
+
+Limitations: the fragment (LOWERING.md §1a); spec clauses are not parsed; `U64` and `Vec`
+are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; keywords such as `if` and `mut`
+are reserved in a file that imports `Feral`; errors inside generated code point at the
+whole item; one borrow error per function; stricter than rustc where a `&mut` would be
+implicitly reborrowed at a shorter lifetime.

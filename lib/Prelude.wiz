@@ -893,3 +893,34 @@ def ListLit.expand : Macro := fun stx => match Syntax.getArg stx 1 with
   | _ => MacroM.pure (Syntax.mkVar "List.nil")
 attribute [macro term.listLit] ListLit.expand
 -- (end of the notation section)
+
+-- A decimal numeral as text, for macros (`Nat.toString` is an extern: it only runs compiled).
+partial def Syntax.decPowers (n p : Nat) (acc : List Nat) : List Nat := match Nat.lt n p with
+  | .true => acc
+  | .false => Syntax.decPowers n (p * 10) (.cons p acc)
+partial def Syntax.decDigit (n p d : Nat) : Nat := match Nat.lt n p with
+  | .true => d
+  | .false => Syntax.decDigit (n - p) p (d + 1)
+def Syntax.decDigits : List Nat → Nat → List Char
+  | .nil, _ => .nil
+  | .cons p ps, n => .cons (Char.mk (Syntax.decDigit n p 0 + 48)) (Syntax.decDigits ps (n - Syntax.decDigit n p 0 * p))
+def Syntax.decimal (n : Nat) : String := match Syntax.decPowers n 1 .nil with
+  | .nil => "0"
+  | .cons p ps => String.mk (Syntax.decDigits (.cons p ps) n)
+
+-- ## Located output of command macros
+-- Runtime `Syntax` has no positions. A command macro names a node of its input by its
+-- *path*: the child indices from the macro's input node down to it. Its output may
+-- contain these pseudo-commands, which the command elaborator interprets
+-- (Elab/ProcMacro.lean): an error or an info message at the node at `path`, and Wiz
+-- source text, parsed as commands and positioned at that node.
+def Syntax.pathAtoms : List Nat → SyntaxF .false
+  | .nil => .nil
+  | .cons i is => .cons (.atom (Syntax.decimal i)) (Syntax.pathAtoms is)
+def Syntax.pathNode (path : List Nat) : Syntax := .node "null" (Syntax.pathAtoms path)
+def Syntax.errorAt (path : List Nat) (msg : String) : Syntax :=
+  Syntax.mkNode "macro.error" (.cons (Syntax.pathNode path) (.cons (.atom msg) .nil))
+def Syntax.infoAt (path : List Nat) (msg : String) : Syntax :=
+  Syntax.mkNode "macro.info" (.cons (Syntax.pathNode path) (.cons (.atom msg) .nil))
+def Syntax.sourceAt (path : List Nat) (src : String) : Syntax :=
+  Syntax.mkNode "macro.source" (.cons (Syntax.pathNode path) (.cons (.atom src) .nil))

@@ -1,0 +1,43 @@
+import FeralCore
+import Feral
+-- Binary search tree insertion: recursive, and as a cursor loop (a borrow that moves
+-- down the tree). Hand-lowered: drafts/feral/lowered/05_bst.wiz (closure and zipper forms;
+-- the front end emits the closure form, L16)
+
+feral
+  enum Tree where
+    | leaf
+    | node (key : U64) (left : Box Tree) (right : Box Tree)
+
+  fn insert (t : &mut Tree) (k : U64) : Unit :=
+    match t with                                     -- matching on &mut Tree: fields bind as places (L15)
+    | .leaf => *t := .node k .leaf .leaf
+    | .node key left right =>
+      if k < *key then insert left k
+      else if *key < k then insert right k
+      else ()
+
+  fn insert_loop {'a} (t : &'a mut Tree) (k : U64) : Unit := {
+    let mut cur : &'a mut Tree := t;
+    while let .node key left right := cur do {       -- R6c: a loop that moves a mutable borrow
+      if k < *key then cur := left
+      else if *key < k then cur := right
+      else return ()
+    };
+    *cur := .node k .leaf .leaf
+  }
+end
+
+def Tree.toNats : Tree → List Nat
+  | .leaf => .nil
+  | .node k l r => List.append (Tree.toNats l) (.cons k.val (Tree.toNats r))
+def build (ins : (0 ρ : Region) → Uniq ρ Tree → U64 → Result (Unit × Uniq ρ Tree)) : List Nat → Tree → Result Tree
+  | .nil, t => .ok t
+  | .cons k ks, t => match Uniq.borrow Region.static t (fun ρ h t r => ins ρ r (U64.mk k)) with
+    | .ok r => let (u, t) := r; build ins ks t
+    | .err e => .err e
+def keys : List Nat := .cons 5 (.cons 2 (.cons 8 (.cons 2 (.cons 7 (.cons 1 .nil)))))
+
+#eval Result.map Tree.toNats (build (fun ρ => @insert ρ) keys .leaf)
+#eval Result.map Tree.toNats (build (fun ρ => @insert_loop ρ) keys .leaf)
+-- both: .ok [1, 2, 5, 7, 8]

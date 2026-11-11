@@ -1,0 +1,26 @@
+import FeralCore
+import Feral
+-- Returning a mutable borrow. Hand-lowered: drafts/feral/lowered/03_get_mut.wiz (which also
+-- has the generated lens laws and the proof of the spec below; the front end does not
+-- emit specs yet).
+
+feral
+  fn get_mut {'a} (v : &'a mut Vec U64) (i : USize) : &'a mut U64
+    -- ensures *result = old(v)[i]                      -- wishful: spec-clauses
+    -- ensures final(v) = old(v).set i final(result)    -- wishful: final-specs
+  := &mut v[i]                                       -- a place expression: a lawful partial lens
+
+  fn bump (v : &mut Vec U64) : Unit := {
+    *get_mut (&mut v) 1 += 10
+  }                                                  -- the borrow ends at the `;`: v is usable again
+end
+
+def run (xs : List Nat) : Result (List Nat) :=
+  match Uniq.borrow Region.static (Vec.ofList (List.map U64.mk xs)) (fun ρ h v r => bump r) with
+  | .ok r => .ok (List.map U64.toNat r.2.items)
+  | .err e => .err e
+
+#eval run (List.cons 1 (List.cons 2 (List.cons 3 List.nil)))
+-- .ok [1, 12, 3]
+#eval run (List.cons 1 List.nil)
+-- .err .outOfBounds

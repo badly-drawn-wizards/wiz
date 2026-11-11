@@ -2206,7 +2206,36 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let r := match metaCodeFor f with
           | .ok code => Elab.runCommandMacro code f cmd s.nextScope (macroEnv s.globals)
           | .error e => (#[], .error e)
-        elabExpansion s!"macro {f}" r cmd.info
+        for t in r.1 do report .info cmd.info t
+        match r.2 with
+        | .error e => report .error cmd.info s!"macro {f}: {e}"
+        | .ok (cmds, next) =>
+          modify fun s => { s with nextScope := next }
+          for c in cmds do
+            -- located output (Elab/ProcMacro.lean): diagnostics and generated source,
+            -- placed at a node of the macro's input
+            let info := Elab.pathInfo cmd (c.getArg 0)
+            let text := Elab.atomText (c.getArg 1)
+            match c.kind with
+            | "macro.error" => report .error info text
+            | "macro.info" => report .info info text
+            | "macro.source" =>
+              let chars := text.toList.toArray
+              let mut pos := 0
+              let errorsBefore : Nat := ((← get).messages.filter (·.severity == .error)).size
+              for _ in [0:chars.size + 1] do
+                if skipWs chars pos ≥ chars.size then break
+                match parseCommand chars (← get).tables pos with
+                | .ok (stx, stop) =>
+                  elabCommand (Elab.setInfoAll info stx)
+                  pos := stop
+                | .error e =>
+                  report .error info s!"macro {f}: the generated source does not parse: {e.render text}\n{text}"
+                  break
+              let errorsAfter : Nat := ((← get).messages.filter (·.severity == .error)).size
+              if errorsAfter > errorsBefore then
+                report .error info s!"macro {f}: the generated source was rejected (an internal error of the macro, unless reported above); it is:\n{text}"
+            | _ => elabCommand c
       | none => match s.procMacros.lookup k with
         | some f =>
           -- a `Macro` for a command kind: one command

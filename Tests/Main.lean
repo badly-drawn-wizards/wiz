@@ -10,6 +10,7 @@ import Tests.Meta
 import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
+import Tests.Feral
 import Tests.Tower
 
 -- Closed terms are normally evaluated at program start-up; that would execute
@@ -24,6 +25,7 @@ def groups : List Group :=
   Check.groups ++
   Elab.groups ++
   ElabFix.groups ++
+  Feral.groups ++
   Eval.groups ++
   Grail.groups ++
   Lint.groups ++

@@ -1,0 +1,9 @@
+import FeralCore
+import Feral
+-- REJECTED (Rust: "lifetime may not live long enough": a `&'a` returned as a `&'b`
+-- without `'a : 'b`).
+-- expect: lifetime may not live long enough at 8
+feral
+  fn longest {'a 'b} (x : &'a U64) (y : &'b U64) : &'b U64 :=
+    if *x < *y then y else x
+end
