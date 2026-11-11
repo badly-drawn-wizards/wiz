@@ -1678,7 +1678,8 @@ def zeroFieldDecls : String :=
 
 /-- Build `main : IO _` with the C backend (and the `IO` library), run it, and hand its
 output to `k`. -/
-def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[]) (llvm : Bool := false) : IO Unit := do
+def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[]) (llvm : Bool := false)
+    (cflags : List String := []) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
@@ -1692,15 +1693,17 @@ def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal (← toolchain) s "main" dir llvm (timeout := some 120) (args := args) with
+  let tc ← toolchain
+  match ← Build.runGlobal { tc with cflags := tc.cflags ++ cflags } s "main" dir llvm (timeout := some 120) (args := args) with
   | .ok v => k v
   | .error e =>
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then skip "no toolchain" else throw (IO.userError e)
 
 /-- Build `main : IO _` with the C backend (and the `IO` library) and compare its output. -/
-def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm : Bool := false) : IO Unit :=
-  ioRunWith src (checkEq expected ·) args llvm
+def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm : Bool := false)
+    (cflags : List String := []) : IO Unit :=
+  ioRunWith src (checkEq expected ·) args llvm cflags
 
 def ioFails (src : String) (fragment : String) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
@@ -1879,11 +1882,11 @@ def ffiGroup : Group where
 
 /-- A `Sys` program, on the C backend and on the LLVM backend: `body` is the lines of an
 `EIO` do block. -/
-def sysRun (body : List String) (expected : String) (defs : String := "") : IO Unit := do
+def sysRun (body : List String) (expected : String) (defs : String := "") (cflags : List String := []) : IO Unit := do
   let src := "import Sys\n" ++ defs ++ "def main : IO Unit := EIO.toIO (do\n" ++
     ";\n".intercalate (body.map ("  " ++ ·)) ++ ")"
-  ioRun src expected
-  ioRun src expected (llvm := true)
+  ioRun src expected (cflags := cflags)
+  ioRun src expected (llvm := true) (cflags := cflags)
 
 def sysShow : String :=
   "def showList : List String → String\n  | .nil => \"\"\n  | .cons x xs => String.append x (String.append \";\" (showList xs))\n" ++
@@ -1965,6 +1968,23 @@ def sysBytesCases : List Case := [
           "say (ExitStatus.toString r)"]
           "/\nz y\nunset\nONLY=1\nrunning\nsignal 15\nsignal 15\nexit code 0\n"
           sysBytesShow },
+    -- (26f) spawning in a directory without posix_spawn_file_actions_addchdir_np (glibc
+    -- < 2.29, as the release toolchain's sysroot): fork, chdir, exec; and its errors
+    { name := "spawn in a directory: posix_spawn and the fork fallback (-DWIZ_NO_SPAWN_CHDIR)", run := fun _ => do
+        let body := [r#"o ← Process.outputWith "sh" (.cons "-c" (.cons "pwd; echo $A" .nil)) "" (SpawnOptions.default |> SpawnOptions.inDir "/" |> SpawnOptions.setEnv "A" "x")"#,
+          "EIO.lift (IO.print o.stdout)",
+          r#"p ← Process.outputWith "pwd" .nil "" (SpawnOptions.default |> SpawnOptions.inDir "/tmp")"#,
+          "EIO.lift (IO.print p.stdout)",
+          r#"c ← Process.spawnWith "sh" (.cons "-c" (.cons "read x; echo got $x; pwd" .nil)) (SpawnOptions.default |> SpawnOptions.inDir "/" |> SpawnOptions.withStdio .piped .piped .inherit |> SpawnOptions.withGroup .newGroup)"#,
+          r#"Child.write c "line\n""#, "Child.closeStdin c", "out ← Child.readStdout c", "EIO.lift (IO.print out)",
+          "s ← Child.wait c", "say (ExitStatus.toString s)",
+          r#"r ← EIO.lift (Process.spawnWith "pwd" .nil (SpawnOptions.default |> SpawnOptions.inDir "/wiz-no-such-dir"))"#,
+          r#"say (match r with | .ok c => "spawned" | .error e => e)"#,
+          r#"q ← EIO.lift (Process.spawnWith "wiz-no-such-program" .nil (SpawnOptions.default |> SpawnOptions.inDir "/"))"#,
+          r#"say (match q with | .ok c => "spawned" | .error e => e)"#]
+        let want := "/\nx\n/tmp\ngot line\n/\nexit code 0\npwd: No such file or directory\nwiz-no-such-program: No such file or directory\n"
+        sysRun body want sysBytesShow
+        sysRun body want sysBytesShow (cflags := ["-DWIZ_NO_SPAWN_CHDIR"]) },
     { name := "poll, and a child's pipe as a descriptor", run := fun _ =>
         sysRun ["a ← Fd.pipe", "z ← Fd.pipe",
           "r0 ← Fd.poll (.cons (a.1, .readable) (.cons (z.1, .readable) .nil)) (Duration.millis 50)",
