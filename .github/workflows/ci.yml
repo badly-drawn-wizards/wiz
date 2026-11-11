@@ -208,6 +208,8 @@ jobs:
           name: test-log-${{ matrix.shard.name }}
           path: logs/
           if-no-files-found: ignore
+          # always uploaded (the `CI result` job sums them up), but kept briefly
+          retention-days: 3
 
   # The Nix package (flake.nix: wiz and grail, wrapped with the toolchain), pushed to
   # Cachix when the token is there (pushes, and pull requests from this repository), so
@@ -247,6 +249,9 @@ jobs:
     needs: [build, test, exercises, package]
     if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write # deleting this pull request's big cache entries (below)
     steps:
       - uses: actions/checkout@v5
         with:
@@ -272,6 +277,8 @@ jobs:
           name: test-timings
           path: timings/timings.jsonl
           if-no-files-found: ignore
+          # master's feed `scripts/ci.py baseline` (docs/building.md); others are short-lived
+          retention-days: ${{ github.event_name == 'push' && 7 || 2 }}
       # The shards stay balanced (docs/building.md, "Shard balance"): warn, never fail, when
       # the longest shard is over 1.5x the median, a split shard's cases are missing from
       # the baseline, or two parts build the same program. On master, a run whose tests all
@@ -295,6 +302,26 @@ jobs:
         with:
           name: test-timings-baseline
           path: test-timings.json
+          retention-days: 7
+      # A pull request's (or merge queue entry's) Lake build is saved only to hand it to
+      # its test shards; once they're done it's dead weight that evicts master's entries
+      # from the 10 GB Actions cache (each is ~500 MB). The next push restores master's
+      # build and catches up. The small per-shard wiz-* entries stay. Not in a cancelled
+      # run (the newer run of this ref may be using them). Fork PRs get a read-only token:
+      # the step may fail, which is fine.
+      - name: Drop this ref's Lake caches
+        if: ${{ !cancelled() && github.event_name != 'push' && github.event_name != 'workflow_dispatch' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list -R "${{ github.repository }}" --ref "${{ github.ref }}" --limit 100 --json id,key,sizeInBytes \
+            --jq '.[] | select(.key | test("^(lake|exercises|elan)-")) | "\(.id) \(.sizeInBytes) \(.key)"' |
+          while read -r id size key; do
+            echo "deleting $key ($((size / 1000000)) MB)"
+            gh cache delete -R "${{ github.repository }}" "$id" || true
+          done
       - name: Verdict
         shell: bash
         run: |
