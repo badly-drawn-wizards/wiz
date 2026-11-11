@@ -6,6 +6,9 @@ def usage : String := "usage:
   wiz parse FILE          print the syntax tree of every command
   wiz check FILE          elaborate and type check (quantities: 0, 1, ω)
   wiz build FILE -o OUT [--llvm]   compile the definition `main` to an executable (via C or LLVM)
+  wiz build FILE -o OUT --lib      … or the exported functions to an object file, with OUT.h
+  wiz build FILE -o OUT --no-main  … or the exported functions, linked without a `main`
+                                   (say, a Wasm module: --cc emcc --ldflags --no-entry)
   wiz run FILE [--llvm]            build and run `main`, printing its value
   wiz lsp                          a language server on stdin/stdout
   wiz lsp --infoview SOCK          … and for infoviews on the Unix socket SOCK
@@ -134,17 +137,11 @@ def elabFile (tc : Toolchain) (path : String) : IO (Option (CommandState ZeroOne
     if m.severity == .error then IO.eprintln s!"{path}:{m.render input}"
   pure (if s.messages.any (·.severity == .error) then none else some s)
 
-def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) : IO UInt32 := do
+def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) (lib : Bool := false) (noMain : Bool := false) : IO UInt32 := do
   let some s ← elabFile tc path | pure 1
-  match Build.irProgram s "main" with
+  match ← Build.build tc s "main" out llvm lib noMain with
   | .error e => IO.eprintln e; pure 1
-  | .ok (decls, ty) =>
-    let io := Build.isIO ty
-    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls) (Build.extraC s) s.globals.unboxStructs) (Build.linkOf s)
-      else Build.compileC tc (C.program decls io (Build.extraC s) s.globals.unboxStructs) out (Build.linkOf s)
-    match r with
-    | .error e => IO.eprintln e; pure 1
-    | .ok () => pure 0
+  | .ok _ => pure 0
 
 def runCmd (tc : Toolchain) (path : String) (llvm : Bool) : IO UInt32 := do
   let some s ← elabFile tc path | pure 1
@@ -189,6 +186,12 @@ def main (args : List String) : IO UInt32 := do
   | ["check", path] => checkCmd tc path
   | ["build", path, "-o", out] => buildCmd tc path out false
   | ["build", path, "-o", out, "--llvm"] => buildCmd tc path out true
+  | ["build", path, "-o", out, "--lib"] => buildCmd tc path out false true
+  | ["build", path, "-o", out, "--lib", "--llvm"] | ["build", path, "-o", out, "--llvm", "--lib"] =>
+    buildCmd tc path out true true
+  | ["build", path, "-o", out, "--no-main"] => buildCmd tc path out false false true
+  | ["build", path, "-o", out, "--no-main", "--llvm"] | ["build", path, "-o", out, "--llvm", "--no-main"] =>
+    buildCmd tc path out true false true
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
   | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc); pure 0

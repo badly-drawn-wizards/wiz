@@ -82,8 +82,8 @@ extern "fputs" (header := "stdio.h") fputs : String → FILE → IO Nat
   buffer is unique (the same idea as Perceus reuse). It has `IO.readFile` for input.
   Runtime helpers like these take Wiz values as they are (the `w` marshalling kind).
 
-The FFI is complete for now. Not done yet: callbacks (C calling Wiz closures). Structs
-by value and more of a header's pointer types: 9i.
+Later sections: callbacks and exported functions (C calling Wiz) are 9g; structs by
+value and more of a header's pointer types are 9i.
 
 ## 9e: linear sequencing ✅
 
@@ -143,6 +143,79 @@ extern "iv_term_open" Term.open : IO Nat
 
 Not done: `pkg-config` names (`link_pkg "gtk+-3.0"`) — for now, give their flags with
 `--cflags`/`--ldflags`.
+
+## 9g: callbacks and exported functions ✅
+
+```
+import IO
+-- C calls Wiz: a symbol for a definition
+def greet (who : String) : String := String.append "hello, " who
+export "wiz_greet" greet                  -- char *wiz_greet(const char *)
+
+-- a Wiz closure passed to C: a function pointer and a context
+extern "sort_some" sortSome : (Nat → Nat → Bool) → String
+--   const char *sort_some(int (*lt)(void *, uint64_t, uint64_t), void *ctx)
+extern "on_tick" onTick : Callback (Nat → IO Unit) → IO Unit
+--   void on_tick(void (*f)(void *, uint64_t), void *ctx)   -- keeps ctx; wiz_release(ctx)
+```
+
+* `export "c_name" f (: T)?` gives a closed definition a C symbol. The wrapper is the
+  reverse of an `extern`'s: C values come in (`Nat`/`UInt64` from `uint64_t`, `Float64`
+  from `double`, `String` from a `const char *` that Wiz copies, `Bool` from `int`, a
+  foreign pointer lent without a finalizer, a Wiz data type as a `wiz_val`), the
+  closure is applied, and the result goes out (a `String` as a `malloc`ed `char *` the
+  caller `free`s; `Unit` as `void`). A result in `IO` is run: the wrapper passes the
+  world (a scalar) and drops it after. The optional type must be the definition's.
+  Universe-polymorphic definitions and erased parameters can't be exported, nor
+  functions taking functions.
+* **Handles.** A Wiz value of a data type crosses as `wiz_val` (a word), and the C
+  side **owns** the reference it gets: passing it back to an export hands that
+  reference over (so `s = step(s, ev)` threads a state), `wiz_retain(v)` makes another
+  one first (to keep `v` across a call), and `wiz_release(v)` gives one back. The
+  runtime's `wiz_live_objects()` counts live objects, for leak checks in C tests.
+* **Callbacks.** A foreign function's parameter of function type becomes two C
+  arguments: a function pointer whose first parameter is the context, then the
+  context (`void *`, the closure). The function is a *trampoline* generated per
+  signature (`wiz_cb_nn_b` for `Nat → Nat → Bool`), which marshals like an export and
+  applies the closure. Ownership: a plain `A → B` parameter is **borrowed** for the
+  call (the wrapper drops the closure when the C function returns, so C must not keep
+  it); `Callback (A → B)` (`lib/IO.wiz`, a transparent definition) hands C a
+  reference, kept alive until C calls `wiz_release(ctx)` (a stored callback C never
+  releases shows up in the leak check at exit). A callback whose result is in `IO`
+  may run effects; the foreign function taking it must be in `IO` too, so they happen
+  during that call, in order.
+* `wiz build FILE -o OUT.o --lib [--llvm]` compiles the exports (no `main`) to an object
+  file with the runtime, and writes `OUT.h` with their prototypes and the handle
+  functions; a C program links it with `-lgmp` (and with the file's `link_c` sources
+  and `link_lib` libraries, 9f, which an object file doesn't carry).
+  `wiz build FILE -o OUT --no-main` links the exports like a program, `link_c` files
+  included, but without a `main`: what that makes is the toolchain's business (with
+  `--cc emcc --ldflags "--no-entry …"`, a Wasm module). A program with a `main` exports its
+  functions too (C code linked with it, here through `--libs`, can call them).
+  Exported functions run on the caller's thread and stack (not `main`'s big stack);
+  a handle is used from the thread that got it (only 25a's shared objects cross
+  threads), and `wiz_live_objects()` counts the calling thread's objects.
+* The keys: an export is `export:cname:kinds:result:io` in the builtins (cached with
+  them); a callback parameter is `k[<params>/<result>]` (`K` for `Callback`, `!` before
+  a result in `IO`) in an `extern:` key (`RVal.ExternSig`). An export's code is an IR
+  function `wiz.export.<cname>` giving `f`'s closure (so borrowed parameters and owned
+  wrappers stay the compiler's business), which the C wrapper applies with `wiz_apply`;
+  for LLVM it is not `internal`, and the wrappers are C compiled with the runtime.
+* **The web infoview** (`web/Web.wiz`, 11n) is now a library: it exports
+  `wiz_web_init : WSt` and `wiz_web_step : WSt → String → IO WSt` (State → Event →
+  State, the actions — messages to the server, HTML for the page — done through the
+  `js_send`/`js_set_html` imports during the step). `web/infoview.js` keeps the state
+  and calls the step on every event, so there is no Wasm main loop waiting in
+  `js_next_event` and the build (`wiz --cc emcc … build web/Web.wiz --no-main`, with
+  `web/js.c` by `link_c`) no longer needs Asyncify.
+
+Known limits: a project built by grail doesn't get its export wrappers yet (only
+`wiz build` and `wiz run` emit them); a callback's or an export's signature can't
+contain a `c_struct` (9i) or another callback; the self-hosted compiler has no `export`.
+
+Tests: `callbacks` (qsort with Wiz comparators, a closure kept by C and called later
+in `IO`, the leak when it isn't released, C calling an export from a program, a C
+program linked with a `--lib` build, both backends), `web/test.sh`.
 
 ## 9h: system interfaces: processes, environment, files ✅
 

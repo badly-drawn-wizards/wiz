@@ -3,7 +3,8 @@
 # with the reference-counting runtime and mini-gmp (GMP's portable subset) for bignums.
 #   usage: web/build.sh [OUT]       (default web/out; needs .lake/build/bin/wiz)
 # wasm64 (-sMEMORY64) keeps the runtime's 64-bit words and 62-bit small numbers as they
-# are; Asyncify lets `js_next_event` wait for the page without callbacks into Wiz.
+# are. Web.wiz is a library (stage 9g): the page calls its exports `wiz_web_init` and
+# `wiz_web_step` on every event, so nothing waits inside Wasm (no Asyncify).
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # without emcc on the PATH, run again with Emscripten from nixpkgs
@@ -21,11 +22,14 @@ fi
 
 # 2. Wiz → C → wasm, as an ES module that web/infoview.js imports: `wiz build` with emcc
 # as the C compiler, mini-gmp in place of -lgmp (--gmp), and web/js.c by Web.wiz's
-# `link_c "js.c"` (stage 9f). It writes OUT/wiz-infoview.c beside the module.
+# `link_c "js.c"` (stage 9f). `--no-main` (9g): the module is Web.wiz's exports, linked
+# without a `main` (emcc's --no-entry). It writes OUT/wiz-infoview.c beside the module.
 (cd "$ROOT" && "$WIZ" --cc emcc --cflags "-I$OUT/gmp" --gmp "$OUT/gmp/mini-gmp.c" \
-  --ldflags "-sMEMORY64=1 -sASYNCIFY -sASYNCIFY_STACK_SIZE=4194304 -sSTACK_SIZE=33554432 \
+  --ldflags "-sMEMORY64=1 -sSTACK_SIZE=33554432 --no-entry \
 -sALLOW_MEMORY_GROWTH -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web,node \
--sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=\$setValue,\$stringToNewUTF8,\$UTF8ToString" \
-  build web/Web.wiz -o "$OUT/wiz-infoview.mjs")
+-sEXPORTED_FUNCTIONS=_wiz_web_init,_wiz_web_step,_wiz_release,_free \
+-sEXPORTED_RUNTIME_METHODS=stringToNewUTF8 \
+-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=\$stringToNewUTF8,\$UTF8ToString" \
+  build web/Web.wiz -o "$OUT/wiz-infoview.mjs" --no-main)
 cp "$ROOT/web/infoview.html" "$ROOT/web/infoview.js" "$OUT/"
 echo "built $OUT/wiz-infoview.mjs"

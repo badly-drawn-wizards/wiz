@@ -1439,7 +1439,7 @@ def ffiGroup : Group where
           "def main : IO Unit := do\n  IO.println (Bytes.toString (fill 3 Bytes.empty));\n" ++
           "  IO.println (Nat.toString (Bytes.size (Bytes.ofString \"λx\")))") "ABC\n3\n" },
     { name := "foreign types are checked", run := fun _ =>
-        ioFails "import IO\nextern \"f\" f : (Nat → Nat) → Nat" "foreign function" },
+        ioFails "import IO\nextern \"f\" f : ((Nat → Nat) → Nat) → Nat" "foreign function" },
     { name := "link_c: a C file and a library linked with the program (C backend)", run := fun _ =>
         linkRun linkFiles "42\n42\n" },
     { name := "link_c: the same with the LLVM backend", run := fun _ =>
@@ -1558,6 +1558,141 @@ def sysGroup : Group where
           "o ← EIO.lift File.stdout", "File.write o \"to stdout\\n\"", "File.flush o",
           "FS.removeAll d"]
           "first,second,(unset)\n3 255\nto stdout\n" sysShow }
+  ]
+
+/-! ### Stage 9g: callbacks and exported functions -/
+
+/-- The frontend's state for a test program (with the libraries `ioRun` has). -/
+def ffiState (src : String) : IO (CommandState ZeroOneMany) := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let ioLib ← IO.FS.readFile "lib/IO.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
+  let s := runFrontend (R := ZeroOneMany) src { loader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  pure s
+
+/-- Run `main` linked with a C file `csrc`, through both backends. -/
+def ioRunC (src csrc expected : String) (fails : Option String := none) : IO Unit := do
+  let s ← ffiState src
+  for llvm in [false, true] do
+    let dir ← IO.FS.createTempDir
+    IO.FS.writeFile (dir / "helper.c") csrc
+    let tc ← toolchain
+    let tc := { tc with libs := tc.libs ++ [(dir / "helper.c").toString] }
+    match ← Build.runGlobal tc s "main" dir llvm (timeout := some 120) with
+    | .ok v => if fails.isSome then throw (IO.userError s!"expected a failure, got {v}") else checkEq expected v
+    | .error e =>
+      if ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1 then
+        IO.println "    (skipped: no toolchain)"
+      else match fails with
+        | some frag => unless (e.splitOn frag).length > 1 do throw (IO.userError s!"error does not mention '{frag}':\n{e}")
+        | none => throw (IO.userError s!"{if llvm then "(llvm) " else ""}{e}")
+
+/-- Build the exports of `src` as a library (`wiz build --lib`), link it with the C
+program `csrc` (which includes `lib.h`), run it. Both backends. -/
+def libRunC (src csrc expected : String) : IO Unit := do
+  let s ← ffiState src
+  for llvm in [false, true] do
+    let dir ← IO.FS.createTempDir
+    let tc ← toolchain
+    match ← Build.build tc s "main" (dir / "lib.o") llvm true with
+    | .error e =>
+      if ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1 then
+        IO.println "    (skipped: no toolchain)"
+      else throw (IO.userError s!"{if llvm then "(llvm) " else ""}{e}")
+    | .ok _ =>
+      IO.FS.writeFile (dir / "main.c") csrc
+      let exe := (dir / "prog").toString
+      let out ← IO.Process.output { cmd := tc.cc, args := #["-w", "-I", dir.toString, "-o", exe, (dir / "main.c").toString,
+        (dir / "lib.o").toString] ++ tc.cflags.toArray ++ tc.gmp.toArray ++ tc.ldflags.toArray ++ tc.libs.toArray }
+      unless out.exitCode == 0 do throw (IO.userError s!"cc failed: {out.stderr}")
+      let r ← IO.Process.output { cmd := exe }
+      unless r.exitCode == 0 do throw (IO.userError s!"the program failed ({r.exitCode}): {r.stderr}")
+      checkEq expected r.stdout
+
+def sortHelper : String := "#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+typedef int (*cmp_fn)(void *, uint64_t, uint64_t);
+static cmp_fn g_fn; static void *g_ctx;
+static int cmp(const void *a, const void *b) {
+  uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+  return g_fn(g_ctx, x, y) ? -1 : g_fn(g_ctx, y, x) ? 1 : 0;
+}
+/* sort some numbers with qsort and a Wiz comparator; the result as text */
+const char *sort_some(cmp_fn lt, void *ctx) {
+  static char buf[64];
+  uint64_t a[] = {5, 3, 9, 1, 7, 4};
+  g_fn = lt; g_ctx = ctx;
+  qsort(a, 6, sizeof a[0], cmp);
+  buf[0] = 0;
+  for (int i = 0; i < 6; i++) sprintf(buf + strlen(buf), i ? \" %llu\" : \"%llu\", (unsigned long long)a[i]);
+  return buf;
+}
+"
+
+def tickHelper : String := "#include <stdint.h>
+void wiz_release(void *v);
+typedef void (*tick_fn)(void *, uint64_t);
+static tick_fn s_fn; static void *s_ctx;
+/* keep a callback (and its reference) for later */
+void on_tick(tick_fn f, void *ctx) { if (s_ctx) wiz_release(s_ctx); s_fn = f; s_ctx = ctx; }
+void tick(uint64_t n) { for (uint64_t i = 0; i < n; i++) if (s_ctx) s_fn(s_ctx, i); }
+void forget(void) { if (s_ctx) wiz_release(s_ctx); s_ctx = 0; }
+"
+
+def tickSrc (release : Bool) : String :=
+  "import IO\nextern \"on_tick\" onTick : Callback (Nat → IO Unit) → IO Unit\n" ++
+  "extern \"tick\" tick : Nat → IO Unit\nextern \"forget\" forget : IO Unit\n" ++
+  "def say (p : String) (n : Nat) : IO Unit := IO.println (String.append p (Nat.toString n))\n" ++
+  "def main : IO Unit := do\n  onTick (say (String.append \"tick \" \"#\"));\n  IO.println \"registered\";\n" ++
+  "  tick 2;\n  onTick (fun n => say \"tock \" (n + 10));\n  tick 1" ++ (if release then ";\n  forget" else "")
+
+def callbacksGroup : Group where
+  name := "callbacks"
+  exercise := "Stage 9g"
+  cases := [
+    { name := "qsort with a Wiz comparator (a closure, borrowed for the call)", run := fun _ =>
+        ioRunC ("import IO\nextern \"sort_some\" sortSome : (Nat → Nat → Bool) → String\n" ++
+          "def byShift (k : Nat) (a b : Nat) : Bool := Nat.lt (Nat.mod (a + k) 10) (Nat.mod (b + k) 10)\n" ++
+          "def main : IO Unit := do\n  IO.println (sortSome (fun a b => Nat.lt a b));\n" ++
+          "  IO.println (sortSome (fun a b => Nat.lt b a));\n  IO.println (sortSome (byShift 3))")
+          sortHelper "1 3 4 5 7 9\n9 7 5 4 3 1\n7 9 1 3 4 5\n" },
+    { name := "a callback kept by C and called later, in IO, released by C", run := fun _ =>
+        ioRunC (tickSrc true) tickHelper "registered\ntick #0\ntick #1\ntock 10\n" },
+    { name := "a kept callback that C never releases is a leak", run := fun _ =>
+        ioRunC (tickSrc false) tickHelper "" (fails := some "leaked") },
+    { name := "a C function calls an exported Wiz function", run := fun _ =>
+        ioRunC ("import IO\nextern \"sum_squares\" sumSquares : Nat → Nat\n" ++
+          "def square (n : Nat) : Nat := n * n\nexport \"wiz_square\" square : Nat → Nat\n" ++
+          "def main : IO Unit := IO.println (Nat.toString (sumSquares 10))")
+          "#include <stdint.h>\nuint64_t wiz_square(uint64_t);\nuint64_t sum_squares(uint64_t n) { uint64_t s = 0; for (uint64_t i = 1; i <= n; i++) s += wiz_square(i); return s; }\n"
+          "385\n" },
+    { name := "a C program uses a Wiz library (wiz build --lib)", run := fun _ =>
+        libRunC ("import IO\ndef fact : Nat → Nat\n  | .zero => 1\n  | .succ n => (n + 1) * fact n\n" ++
+          "export \"wiz_fact\" fact\n" ++
+          "def greet (who : String) : String := String.append \"hello, \" who\nexport \"wiz_greet\" greet : String → String\n" ++
+          "def shout (s : String) : IO Unit := IO.println (String.append s \"!\")\nexport \"wiz_shout\" shout\n" ++
+          "structure Counter where\n  total : Nat\n  steps : Nat\n" ++
+          "def Counter.zero : Counter := Counter.mk 0 0\ndef Counter.add (c : Counter) (n : Nat) : Counter := Counter.mk (c.total + n) (c.steps + 1)\n" ++
+          "def Counter.get (c : Counter) : Nat := c.total * 100 + c.steps\n" ++
+          "export \"wiz_counter_new\" Counter.zero\nexport \"wiz_counter_add\" Counter.add\nexport \"wiz_counter_get\" Counter.get\n")
+          ("#include <stdio.h>\n#include <stdlib.h>\n#include \"lib.h\"\nint main(void) {\n" ++
+           "  printf(\"%llu\\n\", (unsigned long long)wiz_fact(20));\n" ++
+           "  char *s = wiz_greet(\"C\"); printf(\"%s\\n\", s); free(s);\n  wiz_shout(\"from Wiz\");\n" ++
+           "  wiz_val c = wiz_counter_new();\n  for (int i = 1; i <= 4; i++) c = wiz_counter_add(c, i);\n" ++
+           "  wiz_retain((void *)c); printf(\"%llu\\n\", (unsigned long long)wiz_counter_get(c));\n" ++
+           "  wiz_release((void *)c);\n  printf(\"live %ld\\n\", wiz_live_objects());\n  return 0;\n}\n")
+          "2432902008176640000\nhello, C\nfrom Wiz!\n1004\nlive 0\n" },
+    { name := "a callback in IO needs a foreign function in IO", run := fun _ =>
+        ioFails "import IO\nextern \"f\" f : (Nat → IO Unit) → Nat" "must be in IO" },
+    { name := "only closed, marshallable functions are exported", run := fun _ =>
+        ioFails "import IO\ndef app (f : Nat → Nat) : Nat := f 1\nexport \"wiz_app\" app" "exported function" },
+    { name := "an export's type is the definition's", run := fun _ =>
+        ioFails "import IO\ndef two : Nat := 2\nexport \"wiz_two\" two : String" "not String" }
   ]
 
 /-- (9i) A header of our own: structs by value (nested, with a string and a byte array),
@@ -2606,7 +2741,7 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
 /-- A program for the self-hosted backend (recursion, lists, arrays, maps, strings, mutual
 types), printing `6765 5050 1989 2 yes, ünïcode 2 5`. -/
 def selfhostProgram1 : String :=
-  "import Prelude\npartial def fib : Nat → Nat\n  | 0 => 0\n  | 1 => 1\n  | n + 2 => fib n + fib (n + 1)\npartial def countdown (n : Nat) (acc : List Nat) : List Nat := match n with\n  | 0 => acc\n  | .succ k => countdown k (List.cons n acc)\ndef sum : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + sum xs\ndef fill (a : Array Nat) : Nat → Array Nat\n  | 0 => a\n  | .succ k => fill (Array.push a k) k\nmutual\ninductive Tree where\n  | leaf (n : Nat)\n  | node (ts : Forest)\ninductive Forest where\n  | nil\n  | cons (t : Tree) (ts : Forest)\nend\nmutual\ndef sizeT (t : Tree) : Nat := match t with\n  | .leaf _ => 1\n  | .node ts => sizeF ts\ndef sizeF (f : Forest) : Nat := match f with\n  | .nil => 0\n  | .cons t ts => sizeT t + sizeF ts\nend\ndef main : IO Unit := do\n  IO.println (Nat.toString (fib 20));\n  IO.println (Nat.toString (sum (countdown 100 .nil)));\n  let a := fill Array.empty 1000;\n  IO.println (Nat.toString (Array.size a + Array.getD a 10 0));\n  let m := StrMap.insert (StrMap.insert StrMap.empty (Str.ofString \"a\") 1) (Str.ofString \"b\") 2;\n  IO.println (Nat.toString (StrMap.findD m (Str.ofString \"b\") 0));\n  IO.println (if Nat.blt 3 4 then String.append \"yes, \" \"ünïcode\" else \"no\");\n  IO.println (Nat.toString (sizeT (Tree.node (Forest.cons (Tree.leaf 1) (Forest.cons (Tree.leaf 2) Forest.nil)))));\n  IO.println (Nat.toString (String.length \"hello\"))\n"
+  "import Prelude\npartial def fib : Nat → Nat\n  | 0 => 0\n  | 1 => 1\n  | n + 2 => fib n + fib (n + 1)\npartial def countdown (n : Nat) (acc : List Nat) : List Nat := match n with\n  | 0 => acc\n  | .succ k => countdown k (List.cons n acc)\ndef sum : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + sum xs\ndef fill (a : Array Nat) : Nat → Array Nat\n  | 0 => a\n  | .succ k => fill (Array.push a k) k\nmutual\ninductive Tree where\n  | leaf (n : Nat)\n  | node (ts : Forest)\ninductive Forest where\n  | nil\n  | cons (t : Tree) (ts : Forest)\nend\nmutual\ndef sizeT (t : Tree) : Nat := match t with\n  | .leaf _ => 1\n  | .node ts => sizeF ts\ndef sizeF (f : Forest) : Nat := match f with\n  | .nil => 0\n  | .cons t ts => sizeT t + sizeF ts\nend\ndef main : IO Unit := do\n  IO.println (Nat.toString (fib 20));\n  IO.println (Nat.toString (sum (countdown 100 .nil)));\n  let a := fill Array.empty 1000;\n  IO.println (Nat.toString (Array.size a + Array.getD a 10 0));\n  let m := StrMap.insert (StrMap.insert StrMap.empty (Str.ofString \"a\") 1) (Str.ofString \"b\") 2;\n  IO.println (Nat.toString (StrMap.findD m (Str.ofString \"b\") 0));\n  IO.println (if Nat.lt 3 4 then String.append \"yes, \" \"ünïcode\" else \"no\");\n  IO.println (Nat.toString (sizeT (Tree.node (Forest.cons (Tree.leaf 1) (Forest.cons (Tree.leaf 2) Forest.nil)))));\n  IO.println (Nat.toString (String.length \"hello\"))\n"
 
 /-- A program for the reference counting mode: a list a million long (built, walked by
 `ind`, freed without deep recursion), a hypothesis never read, a shared array updated
@@ -2963,7 +3098,7 @@ def selfHostGroup : Group where
         selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\ndef add : Nat → Nat → Nat\n  | 0, n => n\n  | .succ m, n => .succ (add m n)\n#reduce add 2 3\ndef isSmall : Nat → Nat\n  | 0 => 1\n  | 1 => 1\n  | _ => 0\n#reduce isSmall 1\n#reduce isSmall 5\ninductive Bool where\n  | false\n  | true\ndef lt : Nat → Nat → Bool\n  | _, 0 => .false\n  | 0, .succ _ => .true\n  | .succ m, .succ n => lt m n\n#reduce lt 1 3\ndef pick (b : Bool) (x y : Nat) : Nat := add (match b with\n  | .true => x\n  | .false => y) 1\n#reduce pick .false 2 5\ndef both (a b : Bool) : Bool := match a, b with\n  | .true, .true => .true\n  | _, _ => .false\n#reduce both .true .false\n"
           "Nat : U0\nadd : (x0 : Nat) → (x1 : Nat) → Nat\ncon((#1, (con((#1, (con((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt))))\nisSmall : (x0 : Nat) → Nat\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\ncon((#0, (tt, tt)))\nBool : U0\nlt : (x0 : Nat) → (x1 : Nat) → Bool\ncon((#1, (tt, tt)))\npick : (x0 : Bool) → (x1 : Nat) → (x2 : Nat) → Nat\ncon((#1, (con((#1, (con((#1, (con((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (tt, tt))))\nboth : (x0 : Bool) → (x1 : Bool) → Bool\ncon((#0, (tt, tt)))\n" },
     { name := "the Prelude, if and strings, checked in Wiz", run := fun _ =>
-        selfhostCheckFile "import Prelude\n#check Nat.add\ndef three : Nat := Nat.add 1 2\n#reduce Nat.beq three 3\ndef min (m n : Nat) : Nat := if Nat.blt m n then m else n\n#reduce min 2 1\ndef hi : String := \"hi\"\n#reduce String.length (String.append hi \"!\")\ndef firstCode (s : String) : Nat := match s.data with\n  | .cons c _ => c.code\n  | .nil => 0\n#reduce Nat.beq (firstCode \"A\") 65\n"
+        selfhostCheckFile "import Prelude\n#check Nat.add\ndef three : Nat := Nat.add 1 2\n#reduce Nat.beq three 3\ndef min (m n : Nat) : Nat := if Nat.lt m n then m else n\n#reduce min 2 1\ndef hi : String := \"hi\"\n#reduce String.length (String.append hi \"!\")\ndef firstCode (s : String) : Nat := match s.data with\n  | .cons c _ => c.code\n  | .nil => 0\n#reduce Nat.beq (firstCode \"A\") 65\n"
           "(x0 : Nat) → (x1 : Nat) → Nat\nthree : Nat\ncon((#1, (tt, tt)))\nmin : (x0 : Nat) → (x1 : Nat) → Nat\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\nhi : String\ncon((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt))))\nfirstCode : (x0 : String) → Nat\ncon((#1, (tt, tt)))\n" },
     { name := "infix operators, checked in Wiz", run := fun _ =>
         selfhostCheckFile "import Prelude\n#reduce Nat.beq (2 + 3 * 2) 8\ndef pred2 : Nat → Nat\n  | n + 2 => n\n  | _ => 0\n#reduce Nat.beq (pred2 5) 3\n#reduce Nat.beq (10 - 3 - 2) 5\ninfixr:50 \" ⊕ \" => Bool.or\n#reduce .false ⊕ .false ⊕ .true\ndef len3 : Nat := List.length (List.cons 1 .nil ++ List.cons 2 (List.cons 3 .nil))\n#reduce Nat.beq len3 3\n#reduce Nat.le 3 3\n"
@@ -5294,6 +5429,7 @@ def groups : List Group :=
   borrowGroup ::
   builtinGroup ::
   cGroup ::
+  callbacksGroup ::
   classGroup ::
   coinductiveGroup ::
   concGroup ::

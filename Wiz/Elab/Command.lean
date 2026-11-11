@@ -758,6 +758,44 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let finOf (t : Term R) : String := match (Term.spine t).1 with
     | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
     | _ => ""
+  -- how a foreign function's parameter or result is marshalled (stage 9a, `ExternSig`)
+  let ffiKind (t : Term R) : Option Char := match t with
+    | .unit _ => some 'v'
+    -- a type variable: any Wiz value, passed as it is
+    | .var _ => some 'w'
+    | t => match (Term.spine t).1 with
+      | .const "Nat" _ => some 'n'
+      | .const "UInt64" _ => some 'u'
+      | .const "Float64" _ => some 'f'
+      | .const "String" _ => some 's'
+      | .const "Bool" _ => some 'b'
+      | .const "Bytes" _ | .const "Array" _ | .const "Str" _ | .const "StrMap" _ => some 'w'
+      | .var _ => some 'w'
+      | .const n _ =>
+        if s.foreignTypes.any (·.1 == n) then some 'p'
+        -- a Wiz data type (`UIntN w`): the value as it is, for runtime natives
+        else if (s.globals.find? n).any (·.value.isSome) then some 'w' else none
+      | _ => none
+  -- the parameters and result of a function type, and whether the result is in `IO`
+  let rec ffiParams : Term R → List (Term R × Term R) × Term R
+    | .pi _ _ q A B _ => let (ps, r) := ffiParams B; ((q, A) :: ps, r)
+    | t => ([], t)
+  let ffiIO (res : Term R) : Bool × Term R := match Term.spine res with
+    | (.const "IO" _, [A]) => (true, A)
+    | _ => (false, res)
+  -- (9g) a function that C calls: Wiz values come in (`n u f s b p w`) and go out
+  -- (`n u f s b v w`); none erased, none a callback
+  let ffiCallSig (ty : Term R) : Option RVal.CallbackSig := do
+    let (ps, res) := ffiParams ty
+    let (io, res) := ffiIO res
+    let ks ← ps.mapM fun (q, A) => if q == .qlit 0 then none else
+      match ffiKind A with
+      | some 'v' => none
+      | k => k
+    let rk ← match ffiKind res with
+      | some 'p' => none
+      | k => k
+    pure { params := ks, result := rk, io }
   -- (9i) the C struct a Wiz structure stands for (`c_struct`), as a marshalling kind
   let structKind? (n : Name) : Option RVal.FKind :=
     (s.builtins.find? fun (k, x) => x == n && k.startsWith "cstruct:").bind fun (k, _) =>
@@ -1505,17 +1543,63 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           match kind t with
           | some k => some k
           | none => if cname.startsWith "wiz_" then some (.k 'w') else none
-        let pkind (qa : Term R × Term R) : Option RVal.FKind := if qa.1 == .qlit 0 then some (.k 'e') else kind qa.2
+        -- (9g) a function is passed as a callback: borrowed for the call, or, as a
+        -- `Callback T`, owned by the C side (runtime natives take closures as they are)
+        let native := cname.startsWith "wiz_"
+        let callback? (A : Term R) : Option (Option RVal.FKind) :=
+          if native then none else
+          match A with
+          | .pi .. => some ((ffiCallSig A).map (.callback false ·))
+          | A => match Term.spine A with
+            | (.const "Callback" _, [T]) => some ((ffiCallSig T).map (.callback true ·))
+            | _ => none
+        let pkind (qa : Term R × Term R) : Option RVal.FKind :=
+          if qa.1 == .qlit 0 then some (.k 'e') else
+          match callback? qa.2 with
+          | some k => k
+          | none => kind qa.2
         match ps.mapM pkind, kind res with
         | some ks, some rk =>
+          if !io && ks.any (fun k => match k with | .callback _ c => c.io | _ => false) then
+            report .error cmd.info "a foreign function that takes a callback in IO must be in IO itself"
+          else
           let key : Name := s!"extern:{cname}:{String.join (ks.map (·.toKey))}:{rk.toKey}:{if io then "io" else "pure"}:{header}:{finOf res}"
           match addDeclSorted s.globals { name, type := ty, value := none } with
           | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
                                               globals := { g with builtins := (key, name) :: g.builtins } }
           | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
         | _, _ =>
-          let msg := "a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit, a c_struct or a Wiz data type (the result may be in IO)"
+          let msg := "a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit, a c_struct, a Wiz data type or a function of those (a callback; the result may be in IO)"
           report .error cmd.info msg
+  | "command.export" =>
+    -- (9g) a C symbol for a Wiz function: the inverse of `extern`
+    let cname := ((cmd.getArg 1).getStr?).getD "_"
+    let fStx := cmd.getArg 2
+    let f := (fStx.getId?).getD "_"
+    match s.globals.find? f with
+    | none => report .error fStx.info s!"unknown declaration {f}"
+    | some d =>
+      -- an optional type, which must be the definition's
+      let ty? : Except (ElabError R) (Term R) :=
+        if (cmd.getArg 3).isNone then pure d.type else do
+          let (ty, _) ← runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+            (elabDeclTerms #[] (some ((cmd.getArg 3).getArg 1)) none cmd.info) []
+          pure ty
+      match ty? with
+      | .error e => report .error e.info e.msg
+      | .ok ty =>
+        if !d.levelParams.isEmpty then report .error fStx.info s!"{f} has universe parameters: only closed functions can be exported"
+        else if !convTy s.globals #[] (eval s.globals [] d.type) (eval s.globals [] ty) then
+          report .error (cmd.getArg 3).info s!"{f} has type {d.type.pretty}, not {ty.pretty}"
+        else if !C.isCIdent cname then report .error (cmd.getArg 1).info s!"{cname} is not a C identifier"
+        else if s.builtins.any (fun (k, _) => (RVal.ExternSig.ofExportKey? k).any (·.cname == cname)) then
+          report .error (cmd.getArg 1).info s!"{cname} is exported already"
+        else match ffiCallSig ty with
+          | none =>
+            report .error cmd.info "an exported function's arguments must be Nat, UInt64, Float64, String, Bool, a foreign pointer or a Wiz data type, and its result one of those (not a foreign pointer) or Unit, maybe in IO"
+          | some c =>
+            let key : Name := s!"export:{cname}:{String.ofList c.params}:{c.result}:{if c.io then "io" else "pure"}"
+            modify fun s => { s with builtins := (key, f) :: s.builtins }
   | "command.attrMacro" =>
     let k := ((cmd.getArg 3).getId?).getD "_"
     let f := ((cmd.getArg 5).getId?).getD "_"
@@ -1612,7 +1696,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             let key := ReprInfo.key T { mkImpl := impl, getImpl := get, tag, nfields, r, mkArity, p, getArity }
             modify fun s => { s with builtins := (key, f) :: s.builtins,
                                      globals := { s.globals with builtins := (key, f) :: s.globals.builtins } }
-      else if s.builtins.any (fun (k, x) => x == f && k != inlineKey) then
+      else if s.builtins.any (fun (k, x) => x == f && k != inlineKey && !k.startsWith RVal.exportPrefix) then
         report .error fStx.info s!"{f} is a builtin or foreign function: it already has an implementation"
       else if f == impl then report .error (cmd.getArg 3).info s!"{f} can't be implemented by itself"
       else if df.levelParams.length != di.levelParams.length then
@@ -1637,7 +1721,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | none => report .error fStx.info s!"unknown declaration {f}"
     | some d =>
       if d.value.isNone then report .error fStx.info s!"{f} has no definition to inline"
-      else if s.builtins.any (·.2 == f) then
+      else if s.builtins.any (fun (k, x) => x == f && !k.startsWith RVal.exportPrefix) then
         report .error fStx.info s!"{f} is a builtin, foreign or inline function already"
       else
         modify fun s => { s with builtins := s.builtins ++ [(inlineKey, f)],

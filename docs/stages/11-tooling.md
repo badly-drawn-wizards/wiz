@@ -100,7 +100,8 @@ Both clients are Wiz programs, and they share their logic:
   (`wiz/subtermInfo`); a mouse click selects too.
 * `web/Web.wiz` (`web/build.sh`): the page's language client, compiled to C and then to
   WebAssembly by Emscripten (`wiz --cc emcc`, with `web/js.c` by `link_c`, 9f): wasm64 keeps the runtime's 62-bit small numbers, mini-gmp
-  stands in for GMP, and Asyncify lets `js_next_event` wait for the page. The page
+  stands in for GMP. It is a library (09-ffi.md, 9g): the page calls its exported
+  `wiz_web_step` (state, event → state) on every event, so nothing waits in Wasm. The page
   (`web/infoview.html`, `web/infoview.js`, about 100 lines of JavaScript) only moves events
   in and HTML out. It talks to `wiz lsp --ws PORT` (11o) directly; `web/bridge.sh`
   starts that server and serves the page.
