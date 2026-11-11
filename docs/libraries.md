@@ -67,9 +67,106 @@ Sharing has two parts:
   of an object value names one wire: the doubling chain `let y := x + x` at depth 20
   emits 20 adders in 25 builder steps. Write `let ω x := …` to opt out.
 
+## H14 S1: a usable HDL: names, bundles, composition, reset, emitters ✅
+
+Driven by a real design (a UART on a Lattice iCEstick, written in this library and run on
+the board; its findings G1–G10 are the requirements). Design notes:
+`/workspace/wiz-notes/hdl-usability.md`. Everything is in `lib/Hdl/Core.wiz`; examples and
+tests in `examples/hdl-compose.wiz` (group `hdl`) and in the `scaling` group.
+
+```
+structure Tx (r : HwTy → Type) where      -- a bundle: a structure of signals
+  line : r Bit
+  left : r B4
+  deriving Bundle                         -- Tx.code, Tx.pack, Tx.unpack, Tx.bundle
+def txStep {r : HwTy → Type} [Hw r] (s : Tx r) (go : r Bit) : r Tx.code :=
+  let idle := Hw.eq s.left (Hw.lit 4 0);  -- field access by name
+  Tx.pack (Tx.mk (Hw.mux go (Hw.lit 1 0) s.line) (Hw.label "left" …))
+def top : Circuit In.code Out.code := Circuit.bundled Tx.bundle In.bundle Out.bundle init (BStep.mk …)
+-- module top(input clk, input [0:0] rx, output [0:0] tx, output [4:0] leds); reg … line; reg … left;
+```
+
+* **Structured wires.** `Wire t` is a product of node ids, one per leaf of `t`: pairs and
+  projections emit nothing, `mux` at a product is one multiplexer per leaf. A code may
+  carry names, `HwTy.named s t` (ignored by `El`, `width` and the bus encoding). Ports
+  and registers are one per leaf, named by the path of `named` segments joined with `_`
+  (`HwTy.portNames`; an unnamed leaf is `x`/`y`/`r`, with `_k` where names would clash);
+  wires are named by `Hw.label "name" x`, others are `nK`. Verilog names are sanitised
+  and unique. `Hw` gained `const`, `tag`/`untag`, `label`, `resetTo`, `hold`.
+* **Bundles.** A structure parameterised by `r : HwTy → Type` with fields `r T` or nested
+  bundles; `deriving Bundle` defines its code (a product of `named` fields) and the
+  conversions. A bundle is a *value* (`S.bundle`), not an instance: structures are
+  structural types, so two structures with the same field types are one type and
+  instance resolution could not tell their bundles apart.
+* **Composition** (Lava/Clash-style arrows): `Circuit.comb`, `delay`, `seq`, `par`,
+  `loop` (feedback through a register), `named` (names the state), `mapIn`/`mapOut`,
+  `inputName`/`outputName`, and `Circuit.inst c s x` for an instance with its own state
+  inside a hand-written step. Each has its semantics as a lemma: `Circuit.runFrom_seq`,
+  `run_seq` (`run (seq a b) xs = run b (run a xs)`), `run_par`, `run_delay`,
+  `runFrom_loop`, `run_named`, `runFrom_comb`, `inst_el`, `stepEl_withReset`/`Enable`.
+  Combinational code passed to a combinator is a `Comb i o` value (a polymorphic
+  function cannot be applied under a step's own representation binder; see the
+  wishful notes on non-linear unification spines). The netlist is flat.
+* **Reset and enable**, by construction: `Circuit.withReset c` adds an input `rst` (while
+  high, the next state is `c.init`: synchronous) and `withEnable` an input `en` (while low,
+  the state holds), built from `Hw.resetTo`/`Hw.hold`, whose meaning at values is a
+  multiplexer and which the netlist turns into a reset or enable of the register they
+  feed: `always @(posedge clk) if (rst) r <= 4'd0; else if (en) r <= next;`. Where the
+  pattern does not apply (a `resetTo` not feeding a register), the node stays a
+  multiplexer with the same meaning. `initial` values are always printed.
+* **Emitters.** `Testbench.verilog n vec cycles` (a bench that replays a vector file and
+  compares every output in every cycle), `Circuit.vectors n c xs` (the vector file of a
+  value simulation), `Vcd.ofRun name c xs` (a waveform of every input, output and state
+  leaf), `Pcf.emit n clkPin pins` and `Pcf.check` (pin constraints from named ports:
+  `Pin.one "uart_tx" 8`, `Pin.bus "leds" [99, 98, …]`).
+* **Designs in a list.** `Circuit i o` quantifies over representations and lives in
+  `Type 1`; `Circuit.design name c : Design` packs a top at the first order (the step at
+  values and the netlist), so `List Design` works.
+* **Simulation scales.** `Circuit.run` is tail recursive (`Circuit.run_eq` relates it to
+  the structural `Circuit.runFrom`, the one to reason with); `Netlist.simulate` keeps node
+  values in a skew-binary random-access list: O(n log n) per cycle instead of O(n²).
+* **Names.** The generic helpers are `Hdl.map`, `Hdl.nthD`, `Hdl.rev`, `Hdl.show`, …
+  (importers keep `List.map` and the like); the netlist types are `NetOp`, `NetNode`,
+  `NetReg`, `NetPort`. (`<+>` stays.)
+
+Not done: module hierarchy in the Verilog, enumerations at `HwTy`, numerals and operators
+at `r (bits n)` (instances of the numeric classes, when they land: `Add`, `Sub`, `Mul`,
+`Neg`, `OfNat` at `r (HwTy.bits n)` through `Hw`), wire names from `let` binders (an
+elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃`, `↔`, `Not`, equality lemmas, `funext`, `propext`),
 `lib/HProp.wiz` (model heaps, `emp`, `↦`, `⋆`, `−∗`, entailment and the separation-logic
 laws) and `lib/Hoare.wiz` (`wp`, triples, the frame rule, verified swap and list reversal,
 adequacy for an interpreter). See [stage 24](stages/24-separation-logic.md).
+
+## Numbers: classes, integers, words ✅
+
+(Stage doc: docs/stages/07-type-classes.md, 7e.) The Prelude's `Add`, `Sub`, `Mul`,
+`Div`, `Mod`, `Neg` and `OfNat` give `+ - * / %`, prefix `-` and numerals at every
+numeric type:
+
+| type | where | numerals | operators |
+|------|-------|----------|-----------|
+| `Nat` | Prelude | native literals | `+ - * / %` (natural subtraction: `2 - 3 = 0`) |
+| `Int` | `lib/Int.wiz` | `5`, `-5` | `+ - * / %`, prefix `-` |
+| `UIntN w` (`U8` … `U64`, `USize`, `BitVec n`) | `lib/Word.wiz` | wrap around, with a warning: `(300 : U8) = 44` | `+ - * / %`, `-` (wrapping) |
+| `IntN w` (`I8` … `I64`) | `lib/Word.wiz` | `-7 : I32` | `+ - * -`, signed `/ %` (truncating, as Rust) |
+| `UInt64`, `Float64` | `lib/IO.wiz` | through `ofNat` | `+ - * /` (and `%` for `UInt64`) |
+
+* **`Int`** is `ofNat n | negSucc n`, as in Lean. Arithmetic is defined by cases on the
+  natively computed Nat operations, so the kernel computes on numerals
+  (`rfl : (-3 : Int) * 4 + 2 = -10`) and compiled code runs Nat's natives on the
+  magnitudes (an `Int` is a small object holding a number; no native signed numbers
+  yet). `builtin int := Int` makes `#eval`, `#run` and compiled `main` print `-10`
+  instead of `.negSucc 9` (a printing hint, not an axiom: `#print axioms` lists nothing
+  for it). Division truncates (`-7 / 2 = -3`, `-7 % 2 = -1`), like `IntN` and C. Also
+  `Int.natAbs`, `Int.toNat` (negatives to 0), `Int.lt`/`le`/`beq`, and lemmas
+  `Int.neg_neg`, `Int.add_zero`, `Int.zero_add`, `Int.natAbs_neg`, `Int.lt_irrefl`.
+* **Words.** One set of instances at `UIntN w` serves `U8 … U64` and `BitVec n` (aliases
+  are seen through). `UIntN w` and `IntN w` have the same shape (types are structural),
+  so resolution compares the declared type names of a class's arguments and skips an
+  instance for a different type: `-7 / 2 : I32` is signed division, `x / 2 : U32`
+  unsigned. Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
+  inlined away), as `UIntN.add a b` was.

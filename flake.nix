@@ -89,6 +89,8 @@
               share=$out/share/wiz
               mkdir -p $share/.lake/build/bin $out/bin
               cp -r ${fs.toSource { root = ./lib; fileset = ./lib; }} $share/lib
+              # the marker editors look for (editors/nvim: a library file is served by its toolchain's wiz)
+              echo 'A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).' > $share/TOOLCHAIN
               cp ${unwrapped}/bin/wiz ${unwrapped}/bin/grail $share/.lake/build/bin/
               # wiz's module roots: ./lib (a checkout's), then the packaged standard library
               makeWrapper $share/.lake/build/bin/wiz $out/bin/wiz \
@@ -137,9 +139,26 @@
               makeWrapper ${tower-unwrapped}/bin/tower $out/bin/tower \
                 --suffix PATH : ${lib.makeBinPath [ pkgs.coreutils pkgs.git pkgs.gnutar pkgs.gzip pkgs.curl ]} \
                 --add-flags ${addFlags [ "--self" "${placeholder "out"}/bin/tower" ]}
+              # The `wiz` and `grail` shims, so installing the package puts them on PATH. They
+              # call the `tower` on PATH (the user's), falling back to this package's own, and
+              # use tower's default home, ~/.tower, where the toolchains live.
+              for t in wiz grail; do
+                cat > $out/bin/$t <<EOF
+            #!/bin/sh
+            # tower shim: runs \`$t\` of the toolchain for this directory (\`tower show\`).
+            # It asks the \`tower\` on PATH (the user's), else this package's own.
+            tower=\$(command -v tower) || tower='$out/bin/tower'
+            case "\$1" in
+              +*) tc=\$("\$tower" resolve "\$1") || exit; shift ;;
+              *) tc=\$("\$tower" resolve) || exit ;;
+            esac
+            exec "\$tc/bin/$t" "\$@"
+            EOF
+                chmod +x $out/bin/$t
+              done
             '';
             meta = {
-              description = "tower, the Wiz toolchain manager: installs toolchains and puts wiz and grail shims on PATH";
+              description = "tower, the Wiz toolchain manager, with the wiz and grail shims: installs toolchains, and the shims run the one a project asks for";
               mainProgram = "tower";
               platforms = systems;
             };

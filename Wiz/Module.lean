@@ -73,9 +73,34 @@ def cSourceTable (dir : System.FilePath) (src : String)
 def cSourceResolver (t : Std.HashMap String String) : String → String → Option String :=
   fun m rel => t[cSourceKey m rel]?
 
+/-- The toolchain's own library: `lib/` of the checkout or installation the running
+binary belongs to (`<dir>/.lake/build/bin/wiz`: a checkout, `share/wiz` of the Nix
+package and of the release tarball, which tower installs), else `./lib`. As grail's
+`findStd`. It is the first module root, so no other root can replace its modules. -/
+def toolchainLib : IO System.FilePath := do
+  let exe ← IO.appPath
+  let guess := ((((exe.parent.bind (·.parent)).bind (·.parent)).bind (·.parent)).getD ".") / "lib"
+  if ← (guess / "Prelude.wiz").pathExists then return guess
+  pure "lib"
+
+/-- The modules of `m` from the first root that a later root also has a file for (a
+different file): that file is never read. `(module, ignored file)`. -/
+def shadowed (roots : List System.FilePath) (m : Std.HashMap Name (System.FilePath × String)) :
+    IO (List (Name × System.FilePath)) := do
+  let some lib := roots.head? | return []
+  let mut out := []
+  for (n, (p, _)) in m.toList do
+    unless p == lib / relPath n do continue
+    let real ← IO.FS.realPath p
+    for r in roots.drop 1 do
+      let q := r / relPath n
+      if ← q.pathExists then
+        if (← IO.FS.realPath q) != real then out := (n, q) :: out
+  pure out
+
 /-- The modules of `m` (from `loadClosure` or `loadAll`) that come from the first root,
-the toolchain's `lib/`: their `builtin` registrations are trusted (a later root can't
-replace them, since the first root that has a module wins). -/
+the toolchain's library (`toolchainLib`): their `builtin` registrations are trusted (a
+later root can't replace them, since the first root that has a module wins). -/
 def fromFirstRoot (roots : List System.FilePath) (m : Std.HashMap Name (System.FilePath × String)) : List Name :=
   match roots with
   | [] => []

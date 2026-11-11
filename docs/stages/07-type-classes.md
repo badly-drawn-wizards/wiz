@@ -141,3 +141,71 @@ inductive Box.{u} (A : Type u) where          -- Box : Type u → Type u (inferr
   with hands out `down` of it, whose type is the field's own, so instance resolution
   sees `Nat`, not `ULift Nat` (tested on a type in `Type 1` with a `Nat` field and a
   proof field).
+
+## 7e: numeric classes ✅
+
+```
+class Add (A : Type) where
+  add : A → A → A                      -- also Sub, Mul, Div, Mod, Neg
+class OfNat (A : Type) (n : Nat) where
+  ofNat : A
+instance {ω w : Nat} : Add (UIntN w) := Add.mk UIntN.add
+def mac {ω w : Nat} (a b c : UIntN w) : UIntN w := a * b + c
+def x : U8 := 200                      -- OfNat (UIntN 8) 200
+```
+
+Decision HD9: `+ - * / %` and prefix `-` are the methods of the Prelude's classes `Add`,
+`Sub`, `Mul`, `Div`, `Mod` and `Neg` (`infixl:65 " + " => Add.add`, `syntax:75 "-" term:75`),
+with instances for `Nat` that are the natively computed functions (`Add.mk Nat.add`).
+
+* **Numerals.** At the `builtin nat` type a numeral is still the kernel's literal. At
+  another type `T` it is `@OfNat.ofNat T n ?i`, with an instance problem `OfNat T n`: the
+  literal is an index of the class, as in Lean, so an instance can look at it (Z3 below
+  reduces it mod 3; a `Fin n` instance could check the bound). At an unsolved type the
+  numeral is a `Nat`, as before: that default is a rule of the numeral elaborator, not a
+  default instance, so ordinary arithmetic involves no search beyond `Add Nat`.
+* **Conversion.** `a + b` at `Nat` is `Add.add Nat instAddNat a b`, a glued application
+  that unfolds to `Nat.add a b`: `2 + 3` computes natively, `rfl : 2 + 3 = 5` and
+  `0 + n = n` hold by evaluation, and lemmas stated with `+` (`Nat.add_comm` in
+  lib/Vec.wiz) are unchanged.
+* **Elaboration order.** An application of a class method with a numeral argument
+  (`1 + x`, `Add.add x 1`, `-3`) is elaborated expected type first (in infer mode against
+  a fresh type), and a numeral whose type is still a hole waits for the other arguments:
+  `1 + x` with `x : U8`, `0 + a` with `a : Int`, `(-3 : Int)` and `def x : U8 := 1 + 2`
+  put the numerals at the right type, with no search (a small Lean `binop%`).
+* **Nominal resolution.** Types are structural, so `UIntN w` and `IntN w` (one shape) unify,
+  and an instance for one would serve the other. Resolution compares the declared
+  inductive types behind the class arguments (aliases such as `U8` and `BitVec 8` are seen
+  through to `UIntN`) and skips an instance for a different one (`Class.lean`,
+  `nominalClash`), so `/` at `I32` is signed and at `U32` unsigned.
+* **Declared types.** A definition by equations, a copattern definition, an inductive
+  type's signature and constructor types solve their instance problems before their
+  types are zonked (they used to be zonked at once: `(n : Nat) → n + 0 = n` would have
+  left the instance a hole).
+* **Compiled code.** A one-method class is unboxed (22i), so `Add.add` erases to
+  `λ A self. self` and `instAddNat` to `Nat.add`. The Lean compiler substitutes such
+  trivial definitions wherever they are applied (`ETerm.trivialBody`: a variable, a
+  projection, a global, `◾`, or a forwarder `f x y`) and projects a method out of an
+  instance with several (`ETerm.objBody`, `projOf`): `a * b + a` at `Nat` compiles to
+  `prim nat.mul`/`prim nat.add`, as before, with no dictionary; at `U32` it is
+  `wiz_word_mul`/`wiz_word_add` (numerals `wiz_word_of_nat`), as `UIntN.add` was. Inlined
+  arguments float out of `let`s, and a partial application used once is substituted, so
+  the inlined call meets its arguments.
+* **Instances** (docs/libraries.md, "Numbers"): `Int` (lib/Int.wiz, printed `-10` through
+  `builtin int`), `UIntN w`/`IntN w` and their aliases (lib/Word.wiz), `UInt64`,
+  `Float64` (lib/IO.wiz).
+* **Literals that don't fit.** A numeral at `UIntN w` above `2^w - 1`, or at `IntN w`
+  above `2^(w-1)` (so `-128 : I8` is fine), still wraps around (`OfNat (UIntN w) n` is
+  `UIntN.ofNat`), but with a warning: "the numeral 300 does not fit in UIntN 8 (at most
+  255): it wraps around to 44" (the elaborator knows these two families by name; an
+  `Info.warning` carries it to the command's messages).
+* **Errors.** `"a" + 1`: "failed to synthesize an instance of Add String"; `(1 : Bool)`:
+  "failed to synthesize an instance of OfNat Bool 1"; `-1 : Nat`: "… Neg Nat".
+* **The self-hosted toolchain** has no type classes: its own prelude
+  (`selfhost/Frontend.wiz`, `preludeText`) keeps `infixl " + " => Nat.add`, and its
+  sources use `+` only at `Nat`, which both frontends accept.
+
+Heterogeneous `HAdd A B C` (Lean's) is not here: it needs default instances, which the
+class mechanism lacks; see /workspace/wiz-notes/num-classes.md for the design.
+Types are structural (two declarations of the same shape are one type), so an instance
+for a look-alike type applies too; numerals and patterns: numerals are not patterns yet.

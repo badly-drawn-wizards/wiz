@@ -187,7 +187,11 @@ end ReprInfo
 
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
-private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
+/-- Is a position at quantity `q` erased? The kernel's own test (`QPoly.isErased`, used by
+`Ctx.erasedAt`): a position the kernel checked in erased mode must become `◾` here. -/
+private def isZeroQ (q : Val R) : Bool := match q.toPoly? with
+  | some p => p.isErased
+  | none => false
 
 /-- Is `ty` an **erased function into `Unit`**, `(0 x₁ : D₁) → … → (0 xₙ : Dₙ) → Unit` with
 `n ≥ 1` (`n ≥ 0` with `allowUnit`)? Such a type has one inhabitant up to η,
@@ -398,7 +402,12 @@ partial def sndType (ctx : Ctx R) (B : Closure R) (p : Term R) : VTy R :=
   | .mk env body =>
     Wiz.eval ctx.globals ((if body.hasVar 0 then vFst (ctx.eval p) else .unit .zero) :: env) body
 
-/-- The type of a term that is already known to be well typed, without checking it
+/-- (The fallback runs the kernel's `infer` in erased mode: it wants the type only, and
+this context's quantities are approximate. **Erasure is not the checker**: in erased mode
+`infer` does not notice a relevant misuse (a projection of a linear pair, a read of an
+erased field), so nothing here may be taken as a second check of the term.)
+
+The type of a term that is already known to be well typed, without checking it
 again: along an elimination spine only (heads, applications, projections, annotations,
 `ecase`, `ind`), else by the kernel's `infer`. Erasure asks for the type of every
 subterm, so a full `infer` at each would re-check each subterm once per enclosing node:
@@ -412,21 +421,21 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
     | none => throw (.unboundGlobal n)
   | .app f a => match whnf (← quickType ctx f) with
     | .pi _ _ _ _ cod _ => pure (ctx.instArg cod a)
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .fst p => match whnf (← quickType ctx p) with
     | .sigma _ _ A _ _ => pure A
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .snd p => match whnf (← quickType ctx p) with
     -- (`p` is evaluated only if the type of the second component mentions the first)
     | .sigma _ _ _ B _ => pure (sndType ctx B p)
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .ann _ ty => pure (ctx.eval ty)
   | .down p => match whnf (← quickType ctx p) with
     | .ulift _ A => pure A
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .ecase _ m s _ => pure (Closure.inst g (.mk ctx.env m) (ctx.eval s))
   | .ind _ _ _ _ P _ i x => pure (vApp g (vApp g (ctx.eval P) (ctx.eval i)) (ctx.eval x))
-  | _ => return (← infer ctx t).1
+  | _ => return (← infer { ctx with erased := true } t).1
 
 /-- **Exercise 5.1a.** Erase `t`, checking it against `ty`.
 
@@ -513,7 +522,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
   | .letE x q ty' v b, _ =>
     let vTy := ctx.eval ty'
     let some p := (ctx.eval q).toPoly? | throw (.other "erasure: unknown quantity")
-    let v' ← if p == [] then pure .erased else eraseCheck ctx v vTy
+    let v' ← if p.isErased then pure .erased else eraseCheck ctx v vTy
     let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty inDesc
     return .letE x v' b'
   -- the type is known (and not erasable), so don't infer the whole application again
@@ -576,15 +585,22 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
     | .snd p => do
       let (p', pty) ← eraseInfer ctx p
       pure (if unboxedSigma g ctx.lvl pty then .erased else .proj 1 p')
-    | .split _ s _ m x y b => do
-      let (s', sty) ← eraseInfer ctx s
+    | .split sq s _ m x y b => do
+      -- a split at 0 never computes its scrutinee (the kernel checks it as an erased
+      -- position): both components are `◾`
+      let zero := isZeroQ (ctx.eval sq)
+      let (s', sty) ← if zero then pure (.erased, ← quickType ctx s) else eraseInfer ctx s
       let .sigma _ q A B _ := whnf sty | throw (.other "erasure: split of a non-pair")
       let some pq := q.toPoly? | throw (.other "erasure: unknown quantity")
       -- let s := s'; let x := s.0; let y := s.1; b   (b lives under x, y: lift past s)
       let vx := Val.var ctx.lvl
       let ctx₂ := (ctx.bind x pq A).bind y [] (Closure.inst g B vx)
-      -- the body's type, as the kernel checks it: the motive at the pair
+      -- the body's type, as the kernel checks it: the motive at the pair (the body may
+      -- be a pair or a λ, which have no inferred type)
       let b' ← eraseCheck ctx₂ b (Closure.inst g (.mk ctx.env m) (.pair vx (Val.var (ctx.lvl + 1)))) inDesc
+      if zero then
+        pure (.letE "s" .erased (.letE x .erased (.letE y .erased (b'.lift 1 2))))
+      else
       if unboxedSigma g ctx.lvl sty then
         pure (.letE "s" s' (.letE x (.var 0) (.letE y .erased (b'.lift 1 2))))
       else

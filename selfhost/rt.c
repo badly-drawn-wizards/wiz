@@ -554,10 +554,13 @@ NATIVE(IO_46_arg, 2,
   uintptr_t i = UNBOX(a[0]);
   const char *s = i + 1 < (uintptr_t)rt_argc ? rt_argv[i + 1] : "";
   return prodv(wstr(s, strlen(s)), a[1]);)
+/* end the program with an exit code (as `Process.exit` of lib/Sys.wiz: no leak check) */
+NATIVE(Process_46_exit, 2, fflush(stdout); exit((int)UNBOX(a[0])); return a[1];)
 #ifndef WIZ_RC
 /* IO: `String → World → Prod Unit World` */
 NATIVE(IO_46_println, 2, puts(cstr(a[0])); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_print, 2, fputs(cstr(a[0]), stdout); return prodv(BOX(0), a[1]);)
+NATIVE(IO_46_ePrintln, 2, fflush(stdout); fprintf(stderr, "%s\n", cstr(a[0])); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_readFile, 2,
   FILE *f = fopen(cstr(a[0]), "rb");
   if (!f) return prodv(wstr("", 0), a[1]);
@@ -571,6 +574,7 @@ NATIVE(IO_46_readFile, 2,
 #else
 NATIVE(IO_46_println, 2, char *s = cstr(a[0]); dec(a[0]); puts(s); free(s); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_print, 2, char *s = cstr(a[0]); dec(a[0]); fputs(s, stdout); free(s); return prodv(BOX(0), a[1]);)
+NATIVE(IO_46_ePrintln, 2, char *s = cstr(a[0]); dec(a[0]); fflush(stdout); fprintf(stderr, "%s\n", s); free(s); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_readFile, 2,
   char *p = cstr(a[0]); dec(a[0]);
   FILE *f = fopen(p, "rb");

@@ -439,6 +439,12 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
       match v.toString? with
       | some s => .const s.quote []
       | none => readbackData ty v
+    -- (7e) an integer of the registered `int` type, `ofNat n` or `negSucc n`: `n`, `-(n+1)`
+    else if hint.map (·.1) == builtins.lookup "int" && hint.isSome then
+      match v.tag?, (v.field 0).toNat? with
+      | some 0, some n => .const (toString n) []
+      | some 1, some n => .const s!"-{n + 1}" []
+      | _, _ => readbackData ty v
     else readbackData ty v
   | .sigma _ _ A B _, v =>
     -- the last field of a structure is unboxed (22i): `v` is the field itself
@@ -507,18 +513,42 @@ partial def ETerm.globals (e : ETerm) (acc : Array Name := #[]) : Array Name :=
   | .case s bs => bs.foldl (fun acc b => b.globals acc) (s.globals acc)
   | _ => acc
 
+/-- (HD9) An erased body that compiled code substitutes wherever its definition is
+applied, at little cost in code size: under its lambdas, a small application (at most 16
+nodes) of variables, projections, globals, `◾` and numerals: a forwarder.
+Class methods (`Add.add` is `λ A self. self`: a one-method dictionary is the method
+itself), instances (`instAddNat` is `Nat.add`), structure projections and aliases are
+of this shape, so `a + b` at `Nat` compiles to the native addition. -/
+partial def ETerm.trivialBody : ETerm → Bool
+  | .lam _ b => b.trivialBody
+  | t => (size t).any (· ≤ 16)
+where
+  /-- the number of nodes of an application of atoms (`none` for anything else) -/
+  size : ETerm → Option Nat
+    | .var _ | .erased | .global _ | .natLit _ => some 1
+    | .proj _ t => (size t).map (· + 1)
+    | .app f a => do let m ← size f; let n ← size a; pure (m + n + 1)
+    | _ => none
+
+/-- (HD9) An erased body that builds an object (under its lambdas): an instance of a class
+with several methods. Inlined only where a field of it is projected. -/
+def ETerm.objBody : ETerm → Bool
+  | .lam _ b => b.objBody
+  | .obj .. => true
+  | _ => false
+
 /-- Erase the definitions reachable from `roots`. (Erasing everything would be wasteful:
 recursors of big types are expensive to erase and rarely run.) With `externImpls := false` (the
 interpreters, which can't call C), a definition implemented by a foreign function keeps
 its own code: `#eval` and `#run` run the model, compiled code the native. Also returns
 the definitions that couldn't be erased, with the reasons. -/
 def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
-    (externImpls : Bool := true) : TCM (Code × List (Name × String)) := do
+    (externImpls : Bool := true) (caseShapes : Bool := true) : TCM (Code × List (Name × String)) := do
   let mut code : Code := {}
   let mut failed : List (Name × String) := []
   let mut todo := roots.toArray
   -- definitions registered as native operations
-  let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && !key.startsWith "repr:" &&
+  let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && key != "int" && !key.startsWith "repr:" &&
     !key.startsWith "cstruct:" &&
     !key.startsWith RVal.exportPrefix &&
     key != inlineKey
@@ -535,37 +565,86 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     if k == inlineKey then
       if let some d := g.find? f then
         if let .ok e := eraseDecl g d then inlines := inlines.insert f e
+  -- (HD9) the definitions compiled code substitutes (`trivialBody`) and the objects it
+  -- projects from (`objBody`), by name, with each erased body
+  let mut trivial : Std.HashMap Name ETerm := {}
+  let mut objs : Std.HashMap Name ETerm := {}
+  let mut classified : Std.HashSet Name := {}
+  -- `attribute [implemented_by m] n`: `n` gets `m`'s code (following chains)
+  let rec target (m : Name) : Nat → Name
+    | 0 => m
+    | fuel + 1 => match (g.find? m).bind (·.impl) with
+      | some (.const m' _) =>
+        if !externImpls && builtins.any (fun (k, x) => x == m' && k.startsWith "extern:") then m
+        else target m' fuel
+      | _ => m
+  -- the erased code of `n` before inlining (`none`: no such definition), and the reason
+  -- if it couldn't be erased
+  let eraseOne (n : Name) : Option (ETerm × Option String) :=
+    let m := target n 100
+    if let some (key, _) := natives.find? (·.2 == m) then
+      some (.prim .unreachable #[.global key], none)
+    else match g.find? m with
+      | none => none
+      | some d =>
+        -- (an `implemented_by` not followed: the definition itself)
+        let d := if d.impl matches some (.const ..) then { d with impl := none } else d
+        -- a declaration that can't be erased yet becomes a runtime error if it is reached
+        match eraseDecl g d with
+        | .ok e => some (e, none)
+        | .error err => some (.prim .unreachable #[], some (toString err))
+  -- (kept: a definition is erased once, when first called or when reached)
+  let mut raw : Std.HashMap Name (Option (ETerm × Option String)) := {}
   while h : todo.size > 0 do
     let n := todo.back
     todo := todo.pop
     if code.contains n then continue
-    -- `attribute [implemented_by m] n`: `n` gets `m`'s code (following chains)
-    let rec target (m : Name) : Nat → Name
-      | 0 => m
-      | fuel + 1 => match (g.find? m).bind (·.impl) with
-        | some (.const m' _) =>
-          if !externImpls && builtins.any (fun (k, x) => x == m' && k.startsWith "extern:") then m
-          else target m' fuel
-        | _ => m
-    let m := target n 100
-    if let some (key, _) := natives.find? (·.2 == m) then
-      code := code.insert n (.prim .unreachable #[.global key])
-      continue
-    let some d := g.find? m | continue
-    -- (an `implemented_by` not followed: the definition itself)
-    let d := if d.impl matches some (.const ..) then { d with impl := none } else d
-    -- a declaration that can't be erased yet becomes a runtime error if it is reached
-    let e ← match eraseDecl g d with
-      | .ok e => pure e
-      | .error err => do
-        -- (a refusal, not a gap: running on would give a wrong value)
-        if ((toString err).splitOn abstractFieldMsg).length > 1 then
-          throw (.other s!"cannot erase {n}: {err}")
-        failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
-    let e := if e.globals.any inlines.contains then
+    let r ← match raw.get? n with
+      | some r => pure r
+      | none => do let r := eraseOne n; raw := raw.insert n r; pure r
+    let some (e, err) := r | continue
+    if let some err := err then
+      -- (a refusal, not a gap: running on would give a wrong value)
+      if (err.splitOn abstractFieldMsg).length > 1 then
+        throw (.other s!"cannot erase {n}: {err}")
+      failed := (n, err) :: failed
+    -- classify the globals `e` mentions (each once), and those their bodies mention
+    let mut pending := e.globals
+    let mut rounds := 0
+    while !pending.isEmpty && rounds < 3 do
+      rounds := rounds + 1
+      let mut next := #[]
+      for f in pending do
+        if classified.contains f then continue
+        classified := classified.insert f
+        -- (not a native, an `implemented_by`, a constructor with a native representation …)
+        if builtins.any (·.2 == f) || g.builtins.any (·.2 == f) then continue
+        let some df := g.find? f | continue
+        if df.value.isNone || df.impl.isSome then continue
+        if let .ok b := eraseDecl g df then
+          if b.globals.contains f then continue
+          if b.trivialBody then trivial := trivial.insert f b; next := b.globals next
+          else if b.objBody then objs := objs.insert f b; next := b.globals next
+      pending := next
+    let e := if e.globals.any (fun f => inlines.contains f || trivial.contains f || objs.contains f) then
       let inl := inlines
-      e.inlineSimp fun f => if f == n then none else inl.get? f
+      let triv := trivial
+      let os := objs
+      e.inlineSimp (fun f => if f == n then none else match inl.get? f with
+          | some b => some b
+          | none => triv.get? f) 8
+        (fun f => if f == n then none else os.get? f)
     else e
+    -- calls of case-shaped definitions (`Bool.and`, …) become `case`s (15h)
+    let e ← if caseShapes then do
+        for f in e.globals do
+          unless raw.contains f do raw := raw.insert f (eraseOne f)
+        let known := raw
+        pure (e.caseInline fun f => if f == n then none else
+          match known.get? f with
+          | some (some (b, _)) => b.caseShape?
+          | _ => none)
+      else pure e
     code := code.insert n e
     todo := e.globals todo
   pure (code, failed.reverse)
@@ -573,8 +652,8 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
 /-- The same, ignoring the definitions that couldn't be erased (reaching one is a
 runtime error). -/
 def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
-    (externImpls : Bool := true) : TCM Code :=
-  return (← compileReachableE g builtins roots externImpls).1
+    (externImpls : Bool := true) (caseShapes : Bool := true) : TCM Code :=
+  return (← compileReachableE g builtins roots externImpls caseShapes).1
 
 /-- Erase every global. -/
 def compileAll (g : Globals R) (builtins : List (Name × Name) := []) : TCM Code :=

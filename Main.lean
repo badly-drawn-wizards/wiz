@@ -23,6 +23,8 @@ default never evaluates them),
 --inert syntactic|ground|conv (P1: regularity at inert types; default ground)
 compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
 unboxed; not stable under substitution, so off by default)
+--strict-privacy (13b, an experiment; turns the cache off): check each declaration again with
+  the definitions of other modules' types with private parts hidden
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
 
@@ -35,18 +37,23 @@ def parseCmd (path : String) : IO UInt32 := do
     IO.eprintln s!"{path}:{m.render input}"
   pure (if r.messages.isEmpty then 0 else 1)
 
-/-- The module roots: `lib/` (the standard library), then the `-I` directories. -/
-def moduleRoots (tc : Toolchain) : List System.FilePath := "lib" :: tc.searchPath
+/-- The module roots: the toolchain's library (`Module.toolchainLib`, the binary's own,
+whatever the current directory), then `./lib` and the `-I` directories. Only the first
+root's modules are trusted (stage 22f), and since the first root that has a module wins,
+no other directory can stand in for one of them. -/
+def moduleRoots (tc : Toolchain) : IO (List System.FilePath) :=
+  return (← Module.toolchainLib) :: "lib" :: tc.searchPath
 
 /-- The library modules from the toolchain's own `lib/` (the first root): their
 `builtin` registrations are trusted. -/
 def libTrusted (tc : Toolchain) : IO (List String) := do
-  return Module.fromFirstRoot (moduleRoots tc) (← Module.loadAll (moduleRoots tc))
+  let roots ← moduleRoots tc
+  return Module.fromFirstRoot roots (← Module.loadAll roots)
 
 /-- Library modules with their paths (for the language server's go-to-definition). -/
 def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String)) := do
   let mut m : Std.HashMap String (String × String) := {}
-  for (n, p, src) in (← Module.loadAll (moduleRoots tc)).toList do
+  for (n, p, src) in (← Module.loadAll (← moduleRoots tc)).toList do
     m := m.insert n ((← IO.FS.realPath p).toString, src)
   pure m
 
@@ -68,6 +75,10 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
 
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
+
+/-- `--strict-privacy` (13b, an experiment): the second check of every declaration against
+the elaborator's view. Off by default. -/
+initialize strictPrivacyOpt : IO.Ref Bool ← IO.mkRef false
 
 /-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
 initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
@@ -96,7 +107,8 @@ def takeInertOpt : List String → Except String (Option InertReg × List String
 def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandState ZeroOneMany) := do
   -- every module the file can reach (`import A.B` is `A/B.wiz` under a root), read up
   -- front: the frontend is pure
-  let closure ← Module.loadClosure (moduleRoots tc) input
+  let roots ← moduleRoots tc
+  let closure ← Module.loadClosure roots input
   let lib : Std.HashMap Name String := closure.fold (fun m n (_, src) => m.insert n src) {}
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
@@ -107,13 +119,20 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let inertReg ← inertOpt.get
   let unboxStructs ← unboxOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
-  let own := Module.fromFirstRoot (moduleRoots tc) closure
+  let own := Module.fromFirstRoot roots closure
+  -- a file that would replace one of them is ignored: say so (loudly: it may be meant
+  -- to stand in for the toolchain's module, `builtin`s and all)
+  let shadow := (← Module.shadowed roots closure).map fun (n, p) =>
+    ({ info := {}, severity := .warning,
+       text := s!"{p} is ignored: module {n} is the toolchain's own ({roots.head!}), which a module root cannot replace" } : Msg)
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
-      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs },
+      messages := shadow.toArray,
+      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs &&
+      !(← strictPrivacyOpt.get)
     then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
@@ -170,6 +189,8 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  if args.contains "--strict-privacy" then strictPrivacyOpt.set true
+  let args := args.filter (· != "--strict-privacy")
   if args.contains "--unbox-structs" then unboxOpt.set true
   let args := args.filter (· != "--unbox-structs")
   lazyProofsOpt.set (!args.contains "--eager-proofs")
@@ -181,6 +202,9 @@ def main (args : List String) : IO UInt32 := do
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1
+  -- a `panic!` (a kernel-internal failure) ends a batch command with status 1 instead of
+  -- going on with a default value; the language server keeps running
+  unless args.head? == some "lsp" do exitOnPanic
   match args with
   | ["parse", path] => parseCmd path
   | ["check", path] => checkCmd tc path

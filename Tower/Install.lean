@@ -12,11 +12,14 @@ source:
 * `nix`: `nix build FLAKE/COMMIT#wiz`, the package of `flake.nix` (from the Cachix cache
   `badlydrawnwizards` when the user is trusted), linked as a GC root;
 * `release`: the tarball `RELEASES/TAG/wiz-ARCH-linux.tar.gz` that CI attaches to the
-  GitHub release of a tag (and to `nightly`); only tags and channels have one;
+  GitHub release of a tag, or for any other spec the snapshot of its commit,
+  `RELEASES/snapshot-<full sha>/…` (26g: CI publishes one for every master commit and
+  prunes old ones; `nightly` is the commit of the tag `nightly`, which CI moves only
+  once that snapshot is complete);
 * `source`: `git clone` + `lake build wiz grail` (needs elan).
 
-`auto` (the default) takes `nix` when `nix` runs, else the release when there is one, else
-the source. A toolchain is built in `toolchains/.tmp-…` and renamed into place, so a
+`auto` (the default) takes `nix` when `nix` runs, else the release (when the commit has
+one), else the source. A toolchain is built in `toolchains/.tmp-…` and renamed into place, so a
 shim never sees half of one.
 -/
 
@@ -26,8 +29,11 @@ namespace Tower
 structure Want where
   ref : String
   commit : Option String := none
-  /-- a channel's release tag (`nightly`, or the resolved `stable` tag) -/
+  /-- the release tag of a tag spec (or the resolved `stable` tag) -/
   tag : Option String := none
+  /-- the commit whose snapshot a release install takes, when it is not `commit`
+  (`nightly`: the commit of the tag `nightly`, which may be behind the branch) -/
+  snapshot : Option String := none
   deriving Repr
 
 /-- The refs of the repository: (name, commit), tags peeled. -/
@@ -75,7 +81,12 @@ def resolveSpec (s : Settings) (spec : String) : IO (Except String Want) := do
   match spec with
   | "nightly" =>
     match find s.nightlyRef with
-    | some c => pure (.ok { ref := s.nightlyRef, commit := some c, tag := some "nightly" })
+    | some c =>
+      -- the tag `nightly` (when there is one): the newest commit with a complete snapshot
+      let snap := match refs with
+        | .ok rs => (rs.find? (·.1 == "refs/tags/nightly")).map (·.2)
+        | .error _ => none
+      pure (.ok { ref := s.nightlyRef, commit := some c, snapshot := snap })
     | none => pure (.error s!"nightly: no branch {s.nightlyRef} in {s.git}{(refs.toOption.map fun _ => "").getD " (could not list it)"}")
   | "stable" =>
     match refs with
@@ -86,7 +97,9 @@ def resolveSpec (s : Settings) (spec : String) : IO (Except String Want) := do
   | ref =>
     match find ref with
     | some c =>
+      -- a tag has its own release, except the tags that name a snapshot's commit
       let isTag := match refs with | .ok rs => rs.any (·.1 == "refs/tags/" ++ ref) | .error _ => false
+      let isTag := isTag && !ref.startsWith "keep/" && !ref.startsWith "snapshot-" && ref != "nightly"
       pure (.ok { ref, commit := some c, tag := if isTag then some ref else none })
     | none =>
       if isHex ref && ref.length ≥ 7 then pure (.ok { ref, commit := some ref })
@@ -156,17 +169,21 @@ def fetch (url : String) (dst : System.FilePath) : IO (Except String Unit) := do
 
 def tarballName (a : String) : String := s!"wiz-{a}-linux.tar.gz"
 
-/-- Unpack the release tarball of `tag` into `work`; the toolchain directory in it. -/
-def releaseFetch (s : Settings) (tag : String) (work : System.FilePath) : IO (Except String System.FilePath) := do
+/-- Unpack the release tarball of `tag` into `work`; the toolchain directory in it.
+The `.sha256` next to it is checked when there is one, and must be there when `needSum`.
+`missing` is the error when the tarball itself can't be fetched. -/
+def releaseFetch (s : Settings) (tag : String) (work : System.FilePath) (needSum : Bool := false)
+    (missing : String → IO String := fun e => pure e) : IO (Except String System.FilePath) := do
   let url := s!"{s.releases}/{tag}/{tarballName (← arch)}"
   note s!"downloading {url}"
   let file := work / "wiz.tar.gz"
-  if let .error e ← fetch url file then return .error e
-  -- a checksum next to it, when there is one
-  if (← fetch (url ++ ".sha256") (work / "sum")) matches .ok _ then
+  if let .error e ← fetch url file then return .error (← missing e)
+  match ← fetch (url ++ ".sha256") (work / "sum") with
+  | .ok _ =>
     let want := ((← IO.FS.readFile (work / "sum")).splitOn " ").head!.trimAscii.toString
     let got := ((← runOrThrow "sha256sum" [file.toString]).splitOn " ").head!
     if want != got then return .error s!"{url}: sha256 {got}, expected {want}"
+  | .error e => if needSum then return .error s!"{url}.sha256: {e} (a snapshot is only installed with its checksum)"
   let x := work / "x"
   IO.FS.createDirAll x
   if let .error e ← run "tar" ["-xzf", file.toString, "-C", x.toString] then return .error e
@@ -175,6 +192,45 @@ def releaseFetch (s : Settings) (tag : String) (work : System.FilePath) : IO (Ex
   unless ← (d.path / "share/wiz/.lake/build/bin/wiz").pathExists do
     return .error s!"{url}: no share/wiz/.lake/build/bin/wiz in the tarball"
   pure (.ok d.path)
+
+/-! ## Snapshots (26g) -/
+
+def snapshotPrefix : String := "refs/tags/snapshot-"
+
+/-- The snapshots the repository lists: (full commit, tag name). -/
+def snapshots (refs : List (String × String)) : List (String × String) :=
+  refs.filterMap fun (r, _) => if r.startsWith snapshotPrefix then some ((r.drop snapshotPrefix.length).toString, (r.drop 10).toString) else none
+
+/-- The release tag of the snapshot of `commit`: a full sha names it directly (no `git
+ls-remote` needed); a shorter one is looked up among the snapshot tags. -/
+def snapshotTag (refs : Except String (List (String × String))) (commit : String) : Except String String :=
+  if commit.length == 40 then .ok s!"snapshot-{commit}" else
+  match refs with
+  | .error e => .error s!"{commit}: a short commit, and the snapshots could not be listed ({e}); use the full sha"
+  | .ok rs => match (snapshots rs).filter (·.1.startsWith commit) with
+    | [(_, t)] => .ok t
+    | [] => .error s!"{commit}: no snapshot"
+    | ms => .error s!"{commit}: ambiguous, snapshots {", ".intercalate (ms.map fun (m : String × String) => (m.1.take 12).toString)}"
+
+/-- Why there is no snapshot of `commit`, and what to do instead: what is retained (the tag
+`nightly`, and the snapshots kept by a `v*` or `keep/…` tag), and the other sources. -/
+def noSnapshot (s : Settings) (refs : Except String (List (String × String))) (commit why : String) : String :=
+  let retained := match refs with
+    | .error _ => ""
+    | .ok rs =>
+      let snaps := snapshots rs
+      let has (c : String) : Bool := snaps.any (·.1 == c)
+      let named := rs.filter fun ((r, c) : String × String) =>
+        (r == "refs/tags/nightly" || r.startsWith "refs/tags/keep/" ||
+          (r.startsWith "refs/tags/" && (versionOf (r.drop 10).toString).isSome)) && has c
+      let others := (snaps.filter fun (p : String × String) => !named.any (·.2 == p.1)).length
+      let named := named.map fun ((r, c) : String × String) => s!"{(r.drop 10).toString} (master@{c})"
+      s!"\n  retained: {if named.isEmpty then "no named snapshots" else ", ".intercalate named}" ++
+        (if others > 0 then s!", and {others} recent master commit{if others == 1 then "" else "s"} (`git ls-remote {s.git} 'refs/tags/snapshot-*'`)" else "")
+  s!"no release snapshot of commit {commit} ({why}): snapshots are published for master commits only, \
+    and kept for the newest ones and for commits a v*, keep/… or nightly tag points at{retained}\n  \
+    alternatives: `--source source` (builds it with elan), `--source nix`, a retained toolchain above, \
+    or have it published (release.yml's workflow_dispatch with commit={commit}; push a tag keep/NAME to keep it)"
 
 /-- Copy what a toolchain needs from a built checkout `src` into `tc/share/wiz`. -/
 def layoutFrom (src tc : System.FilePath) (commit : String) : IO (Except String Unit) := do
@@ -186,6 +242,8 @@ def layoutFrom (src tc : System.FilePath) (commit : String) : IO (Except String 
   if ← (src / "editors").pathExists then
     if let .error e ← run "cp" ["-R", (src / "editors").toString, share.toString] then return .error e
   IO.FS.writeFile (share / "REVISION") (commit ++ "\n")
+  -- the marker editors look for (editors/nvim: a library file is served by its toolchain's wiz)
+  IO.FS.writeFile (share / "TOOLCHAIN") "A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).\n"
   pure (.ok ())
 
 /-- Clone, check out and build with Lake. -/
@@ -219,7 +277,7 @@ def install (e : Env) (spec : String) (source : Option String := none) (force : 
   let candidates ← match src with
     | "auto" => do
       let n ← if ← have? "nix" then pure ["nix"] else pure []
-      pure (n ++ (if w.tag.isSome then ["release"] else []) ++ ["source"])
+      pure (n ++ ["release", "source"])
     | x => pure [x]
   IO.FS.createDirAll e.toolchains
   let mut errs : List String := []
@@ -236,8 +294,23 @@ def install (e : Env) (spec : String) (source : Option String := none) (force : 
           IO.FS.createDirAll tc
           pure (.ok ({ spec, source := "nix", ref := w.ref, commit }, some path))
       | "release" => do
-        let some tag := w.tag | pure (.error s!"release: {spec} is not a tag or a channel (only those have release tarballs)")
-        match ← releaseFetch s tag work with
+        -- a tag's own release, else the snapshot of the commit
+        let r : Except String (String × Bool × (String → IO String)) ← match w.tag, w.snapshot <|> w.commit with
+          | some t, _ => pure (.ok (t, false, fun e => pure e))
+          | none, none => pure (.error s!"{spec}: no commit")
+          | none, some c => do
+            -- the repository's refs, once, for a short sha and for the error
+            let refs ← if c.length == 40 then pure (Except.error "not listed") else lsRemote s.git
+            match snapshotTag refs c with
+            | .ok t => pure (.ok (t, true, fun e => do
+                let refs ← match refs with | .error _ => lsRemote s.git | ok => pure ok
+                pure (noSnapshot s refs c e)))
+            | .error e => do
+              let refs ← match refs with | .error _ => lsRemote s.git | ok => pure ok
+              pure (.error (noSnapshot s refs c e))
+        match ← (match r with
+            | .error m => pure (.error m)
+            | .ok (tag, needSum, missing) => releaseFetch s tag work needSum missing) with
         | .error m => pure (.error m)
         | .ok d =>
           IO.FS.rename d tc

@@ -8,6 +8,16 @@ M.defaults = {
     -- yourself (e.g. `vim.lsp.enable 'wiz'` with this plugin's lsp/wiz.lua).
     enable = true,
     cmd = { 'wiz', 'lsp' },
+    -- In a grail package (the root has a grail.wiz), start `grail lsp` instead: the
+    -- server then finds the package's modules (its lib targets' roots and its
+    -- dependencies') and uses its toolchain settings. `cmd` above is for other files.
+    grail = {
+      enable = true,
+      cmd = { 'grail', 'lsp' },
+    },
+    -- A file in an installed toolchain's standard library (go to definition opens them)
+    -- is served by that toolchain's own `wiz lsp`, one server per toolchain.
+    toolchains = true,
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil, -- function(client, bufnr)
     capabilities = nil, -- merged into the client's capabilities

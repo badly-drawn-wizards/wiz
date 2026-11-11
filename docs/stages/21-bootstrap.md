@@ -273,10 +273,10 @@ is accepted here (the kernel's case joins the branches' usage) and rejected ther
 branch is an ω argument of `T.casesOn`); a constructor field with a quantity is an error
 here, since `Kernel.wiz`'s descriptions have none; implicit constructor fields don't
 exist here. An unused linear variable (`def drop (1 x : Nat) : Nat := Nat.zero`) and a
-match on a linear variable are rejected once the kernel's `popUsage` and eliminator
-rules of PR #84 are in.
+match on a linear variable are rejected by both, through the kernel's `popUsage` and
+eliminator rules (PR #84).
 
-**Tests** (group `selfhost`): `selfhostAgrees` runs 21 declarations through both
+**Tests** (group `selfhost`): `selfhostAgrees` runs 23 declarations through both
 frontends (accepted and rejected alike: linear functions passed and used twice, `let 1`,
 `let 0`, implicit parameters used at runtime, a `fun`'s quantity against the expected
 one, a quantity `2`); `selfhostVerdicts` pins the three differences above; a program

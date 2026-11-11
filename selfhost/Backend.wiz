@@ -240,12 +240,15 @@ def eraseCheck (c : TCtx) (t : Tm) (ty : Val) : ER := match erasable c ty with
       | .ok b' => .ok (.letE v' b')
       | e => e
     | e => e
-  -- (`let q x := v`, stage 21m: at 0 the value is erased, else as a `let`)
+  -- a `let` at a quantity: at 0 the value is never computed (the kernel checks it as an
+  -- erased position, so it may only be valid erased). The frontend produces it for a
+  -- `let` with a written quantity (stage 21m)
   | .letq q A v b =>
     let vA := eval (TCtx.env c) A;
-    match (match q with
-      | .qz => ER.ok .erased
-      | _ => eraseCheck c v vA) with
+    let vr : ER := match q with
+      | .qz => .ok .erased
+      | _ => eraseCheck c v vA;
+    match vr with
     | .ok v' => match eraseCheck (TCtx.define c (eval (TCtx.env c) v) vA) b ty with
       | .ok b' => .ok (.letE v' b')
       | e => e
@@ -364,11 +367,11 @@ def mangle (n : String) : String := match n with
 def nativeNames : List String :=
   .cons "Nat.zero" (.cons "Nat.succ" (.cons "Nat.add" (.cons "Nat.sub" (.cons "Nat.mul" (.cons "Nat.pred"
   (.cons "Nat.beq" (.cons "Nat.blt" (.cons "Nat.lt" (.cons "Nat.le" (.cons "Nat.toString"
-  (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "IO.argCount" (.cons "IO.arg" (.cons "Str.ofString"
+  (.cons "IO.ePrintln" (.cons "Process.exit" (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "IO.argCount" (.cons "IO.arg" (.cons "Str.ofString"
   (.cons "Array.empty" (.cons "Array.push" (.cons "Array.size" (.cons "Array.getD" (.cons "Array.set"
   (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo"
   (.cons "Nat.div" (.cons "Nat.mod" (.cons "Nat.pow" (.cons "Nat.land" (.cons "Nat.lor" (.cons "Nat.xor"
-  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))))
+  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))))))
 def elemStr (x : String) : List String → Bool
   | .nil => .false
   | .cons y rest => Bool.or (strEq x y) (elemStr x rest)
@@ -522,24 +525,28 @@ def chainE : Nat → ETm → ETms
 -- are recognised: a string becomes its code points in the C code, built once (strings
 -- are immutable). Spelled out, each character was a chain of applications (800 bytes of
 -- C), and the text was built again at every evaluation.
+-- (A number of this runtime is a 63-bit word, and its arithmetic wraps. The constant is
+-- computed the same way, whatever numbers the compiler itself runs on: built by the Lean
+-- compiler its numbers are unbounded, and `BOX(18446744073709551616UL)` is not C.)
+def natWord (n : Nat) : Nat := Nat.land n 9223372036854775807
 partial def natConst (t : ETm) : Option Nat := match t with
-  | .nat n => .some n
+  | .nat n => .some (natWord n)
   | .glob g => match strEq g "Nat.zero" with
     | .true => .some 0
     | .false => .none
   | .app f a => match f with
     | .glob g => match strEq g "Nat.succ" with
       | .true => match natConst a with
-        | .some n => .some (n + 1)
+        | .some n => .some (natWord (n + 1))
         | .none => .none
       | .false => .none
     | .app h x => match h with
       | .glob g => match Bool.or (strEq g "Nat.mul") (strEq g "Nat.add") with
         | .true => match natConst x with
           | .some m => match natConst a with
-            | .some n => .some (match strEq g "Nat.mul" with
+            | .some n => .some (natWord (match strEq g "Nat.mul" with
               | .true => m * n
-              | .false => m + n)
+              | .false => m + n))
             | .none => .none
           | .none => .none
         | .false => .none
