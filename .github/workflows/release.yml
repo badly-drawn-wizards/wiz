@@ -1,0 +1,151 @@
+# Release tarballs (stages 26d, 26g): what `tower` installs with `--source release`, and
+# what you can untar by hand (scripts/release-tarball.sh describes the layout).
+#
+# * a tag vX.Y.Z: a GitHub release of that tag with wiz-x86_64-linux.tar.gz (+ .sha256);
+# * a push to master: the pre-release `snapshot-<sha>` of that commit, then old snapshots
+#   are pruned (scripts/release-snapshots.sh); the tag `nightly` moves to it only once CI
+#   has passed on that commit (nightly.yml);
+# * workflow_dispatch with `commit`: builds that (older) master commit and publishes its
+#   snapshot (to satisfy a pin whose snapshot was pruned);
+# * a pull request that touches the packaging: builds and tests the tarball, uploads nothing.
+#
+# The build is outside Nix, with elan's Lean, whose bundled clang and sysroot make the
+# binaries depend only on glibc (>= 2.27) and the C runtime libraries, as Lean's own
+# releases do: no /nix/store paths. `wiz build` and grail still need a C compiler and
+# GMP (`apt install gcc libgmp-dev`; the self-hosted toolchain needs libgc-dev too).
+name: release
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+    paths:
+      - scripts/release-tarball.sh
+      - .github/workflows/release.yml
+      - Tower/**
+      - scripts/release-snapshots.sh
+      - scripts/test-release-snapshots.sh
+      - .github/workflows/nightly.yml
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "a master commit (full sha) to build and publish as snapshot-<sha>; empty: just build"
+        required: false
+        default: ""
+
+concurrency:
+  # a newer master push cancels an older one (which then never moves nightly back);
+  # a dispatched snapshot runs alongside
+  group: release-${{ github.ref }}-${{ inputs.commit }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # creating releases and uploading assets
+
+jobs:
+  tarball:
+    name: release tarball (x86_64-linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      LAKE_CACHE_DIR: ${{ github.workspace }}/.lake/cache
+      # the commit built: the pushed one, or the dispatched `commit`
+      OLD_COMMIT: ${{ inputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      # this workflow's own scripts (a dispatched old commit may predate them)
+      - uses: actions/checkout@v5
+        with:
+          path: .release-tools
+          sparse-checkout: scripts
+      - name: The snapshot scripts work (a fake gh, nothing published)
+        run: sh .release-tools/scripts/test-release-snapshots.sh
+      - name: A dispatched commit is on master
+        if: inputs.commit != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$OLD_COMMIT" in *[!0-9a-f]*) echo "commit: not a sha"; exit 1 ;; esac
+          [ "$(git rev-parse HEAD)" = "$OLD_COMMIT" ] || { echo "commit: give the full 40-hex sha"; exit 1; }
+          st=$(gh api "repos/${{ github.repository }}/compare/$OLD_COMMIT...master" --jq .status)
+          case $st in ahead|identical) ;; *) echo "$OLD_COMMIT is not on master ($st)"; exit 1 ;; esac
+      - name: elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Cache the Lake build
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: release-lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean', 'runtime/**', 'c/**') }}
+          restore-keys: release-lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      - name: lake build wiz grail tower
+        # Lean's clang has a sysroot with libraries but no libc headers, and the link
+        # step that compiles c/sockets.c (linked into wiz and grail) doesn't pass Lean's
+        # own include/clang: give it both (it uses nothing newer than the sysroot's glibc)
+        run: |
+          export C_INCLUDE_PATH="$(lean --print-prefix)/include/clang:/usr/include/x86_64-linux-gnu:/usr/include"
+          lake build wiz grail tower
+      - name: The binaries don't depend on the build machine
+        run: |
+          for b in wiz grail tower; do
+            ldd .lake/build/bin/$b
+            if ldd .lake/build/bin/$b | grep -q /nix/store; then echo "$b links /nix/store paths"; exit 1; fi
+          done
+      - name: Tarball
+        run: |
+          mkdir -p dist
+          .release-tools/scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz
+          ls -l dist
+      - name: The tarball works on a plain Ubuntu (with gcc and GMP), and tower installs it
+        run: |
+          sudo apt-get install -y -q gcc libgmp-dev >/dev/null
+          t=$(mktemp -d)
+          tar -xzf dist/wiz-x86_64-linux.tar.gz -C "$t"
+          d=$(mktemp -d); cp examples/io.wiz "$d/"; cd "$d"
+          "$t/wiz-x86_64-linux/bin/wiz" check io.wiz
+          "$t/wiz-x86_64-linux/bin/wiz" build io.wiz -o io
+          ./io | head -3
+          # an old commit's own tower may not know snapshots; the rest was checked
+          [ -z "$OLD_COMMIT" ] || exit 0
+          # tower: install this tarball as nightly from a local release directory laid out
+          # as GitHub's (snapshot-<sha>/), nightly being HEAD of the checkout
+          sha=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
+          rel=$(mktemp -d); mkdir -p "$rel/snapshot-$sha"
+          cp "$GITHUB_WORKSPACE"/dist/* "$rel/snapshot-$sha/"
+          tower="$t/wiz-x86_64-linux/bin/tower --home $d/.tower"
+          $tower set git "$GITHUB_WORKSPACE"
+          $tower set nightly-ref HEAD
+          $tower set releases "$rel"
+          $tower set source release
+          $tower self install
+          $tower default nightly
+          echo "$d/.tower/bin" >> "$GITHUB_PATH"
+          PATH="$d/.tower/bin:$PATH" wiz check io.wiz
+          PATH="$d/.tower/bin:$PATH" tower toolchain list
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wiz-x86_64-linux
+          path: dist/
+      - name: Publish (a tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* --title "Wiz ${GITHUB_REF_NAME}" --notes "Wiz ${GITHUB_REF_NAME}: install with tower (docs/stages/26-tower.md)" ||
+            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+      # snapshot-<sha>, then pruning (26g); nightly.yml moves nightly once CI passed
+      - name: Publish (snapshot, from master)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .release-tools/scripts/release-snapshots.sh publish "$GITHUB_SHA" dist
+      - name: Publish (snapshot of a dispatched commit)
+        if: inputs.commit != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .release-tools/scripts/release-snapshots.sh publish "$OLD_COMMIT" dist

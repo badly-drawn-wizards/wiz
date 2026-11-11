@@ -6,6 +6,9 @@ def usage : String := "usage:
   wiz parse FILE          print the syntax tree of every command
   wiz check FILE          elaborate and type check (quantities: 0, 1, ω)
   wiz build FILE -o OUT [--llvm]   compile the definition `main` to an executable (via C or LLVM)
+  wiz build FILE -o OUT --lib      … or the exported functions to an object file, with OUT.h
+  wiz build FILE -o OUT --no-main  … or the exported functions, linked without a `main`
+                                   (say, a Wasm module: --cc emcc --ldflags --no-entry)
   wiz run FILE [--llvm]            build and run `main`, printing its value
   wiz lsp                          a language server on stdin/stdout
   wiz lsp --infoview SOCK          … and for infoviews on the Unix socket SOCK
@@ -15,10 +18,15 @@ options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
 (default off),
---predicative-prop,
+--predicative-prop, --eager-proofs (P2: the evaluator runs proofs, as it did before; the
+default never evaluates them),
 --inert syntactic|ground|conv (P1: regularity at inert types; default ground)
+compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
+unboxed; not stable under substitution, so off by default)
+--strict-privacy (13b, an experiment; turns the cache off): check each declaration again with
+  the definitions of other modules' types with private parts hidden
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
-  --libs \"…\" (say -lm), --llc X (default llc)"
+  --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
 
 def parseCmd (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
@@ -29,18 +37,23 @@ def parseCmd (path : String) : IO UInt32 := do
     IO.eprintln s!"{path}:{m.render input}"
   pure (if r.messages.isEmpty then 0 else 1)
 
-/-- The module roots: `lib/` (the standard library), then the `-I` directories. -/
-def moduleRoots (tc : Toolchain) : List System.FilePath := "lib" :: tc.searchPath
+/-- The module roots: the toolchain's library (`Module.toolchainLib`, the binary's own,
+whatever the current directory), then `./lib` and the `-I` directories. Only the first
+root's modules are trusted (stage 22f), and since the first root that has a module wins,
+no other directory can stand in for one of them. -/
+def moduleRoots (tc : Toolchain) : IO (List System.FilePath) :=
+  return (← Module.toolchainLib) :: "lib" :: tc.searchPath
 
 /-- The library modules from the toolchain's own `lib/` (the first root): their
 `builtin` registrations are trusted. -/
 def libTrusted (tc : Toolchain) : IO (List String) := do
-  return Module.fromFirstRoot (moduleRoots tc) (← Module.loadAll (moduleRoots tc))
+  let roots ← moduleRoots tc
+  return Module.fromFirstRoot roots (← Module.loadAll roots)
 
 /-- Library modules with their paths (for the language server's go-to-definition). -/
 def loadLibraryPaths (tc : Toolchain) : IO (Std.HashMap String (String × String)) := do
   let mut m : Std.HashMap String (String × String) := {}
-  for (n, p, src) in (← Module.loadAll (moduleRoots tc)).toList do
+  for (n, p, src) in (← Module.loadAll (← moduleRoots tc)).toList do
     m := m.insert n ((← IO.FS.realPath p).toString, src)
   pure m
 
@@ -63,8 +76,19 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 
+/-- `--strict-privacy` (13b, an experiment): the second check of every declaration against
+the elaborator's view. Off by default. -/
+initialize strictPrivacyOpt : IO.Ref Bool ← IO.mkRef false
+
+/-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
+initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
+
 /-- (P1) `--inert MODE`: regularity at inert types. -/
 initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
+
+/-- `--unbox-structs` (22i): the last field of a structure is unboxed. Off by default: the
+representation is not stable under substitution (`unboxedSigma` in `Erase.lean`). -/
+initialize unboxOpt : IO.Ref Bool ← IO.mkRef false
 
 /-- Take `--inert MODE` out of the arguments. -/
 def takeInertOpt : List String → Except String (Option InertReg × List String)
@@ -80,20 +104,36 @@ def takeInertOpt : List String → Except String (Option InertReg × List String
   | [] => return (none, [])
 
 /-- Elaborate a file, through the toolchain's cache (if any). -/
-def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) := do
-  let closure ← Module.loadClosure (moduleRoots tc) input
+def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandState ZeroOneMany) := do
+  -- every module the file can reach (`import A.B` is `A/B.wiz` under a root), read up
+  -- front: the frontend is pure
+  let roots ← moduleRoots tc
+  let closure ← Module.loadClosure roots input
   let lib : Std.HashMap Name String := closure.fold (fun m n (_, src) => m.insert n src) {}
   -- the C headers of the file and of the modules it imports
   let headers ← Build.preprocessHeaders tc (String.join (input :: lib.values))
+  -- (9f) the `link_c` files, each relative to its own file
+  let sources ← Module.cSourceTable ((System.FilePath.mk path).parent.getD ".") input closure
   let (regularity, predicativeProp) ← kernelOpts.get
+  let lazyProofs ← lazyProofsOpt.get
   let inertReg ← inertOpt.get
+  let unboxStructs ← unboxOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
-  let own := Module.fromFirstRoot (moduleRoots tc) closure
+  let own := Module.fromFirstRoot roots closure
+  -- a file that would replace one of them is ignored: say so (loudly: it may be meant
+  -- to stand in for the toolchain's module, `builtin`s and all)
+  let shadow := (← Module.shadowed roots closure).map fun (n, p) =>
+    ({ info := {}, severity := .warning,
+       text := s!"{p} is ignored: module {n} is the toolchain's own ({roots.head!}), which a module root cannot replace" } : Msg)
   let init : CommandState ZeroOneMany :=
-    { loader := (lib[·]?), cHeaders := (headers[·]?), globals := { regularity, predicativeProp, inertReg },
+    { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
+      messages := shadow.toArray,
+      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && inertReg == .ground then tc.cacheDir else none
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs &&
+      !(← strictPrivacyOpt.get)
+    then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
   | some dir =>
@@ -103,7 +143,7 @@ def elaborate (tc : Toolchain) (input : String) : IO (CommandState ZeroOneMany) 
 
 def checkCmd (tc : Toolchain) (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
-  let s ← elaborate tc input
+  let s ← elaborate tc path input
   for m in s.messages do
     let line := s!"{path}:{m.render input}"
     if m.severity == .error then IO.eprintln line else IO.println line
@@ -111,22 +151,16 @@ def checkCmd (tc : Toolchain) (path : String) : IO UInt32 := do
 
 def elabFile (tc : Toolchain) (path : String) : IO (Option (CommandState ZeroOneMany)) := do
   let input ← IO.FS.readFile path
-  let s ← elaborate tc input
+  let s ← elaborate tc path input
   for m in s.messages do
     if m.severity == .error then IO.eprintln s!"{path}:{m.render input}"
   pure (if s.messages.any (·.severity == .error) then none else some s)
 
-def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) : IO UInt32 := do
+def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) (lib : Bool := false) (noMain : Bool := false) : IO UInt32 := do
   let some s ← elabFile tc path | pure 1
-  match Build.irProgram s "main" with
+  match ← Build.build tc s "main" out llvm lib noMain with
   | .error e => IO.eprintln e; pure 1
-  | .ok (decls, ty) =>
-    let io := Build.isIO ty
-    let r ← if llvm then Build.compileLLVM tc (LLVM.program decls io) out (Build.extraC s ++ "\n" ++ C.glue (C.externs decls))
-      else Build.compileC tc (C.program decls io (Build.extraC s)) out
-    match r with
-    | .error e => IO.eprintln e; pure 1
-    | .ok () => pure 0
+  | .ok _ => pure 0
 
 def runCmd (tc : Toolchain) (path : String) (llvm : Bool) : IO UInt32 := do
   let some s ← elabFile tc path | pure 1
@@ -155,6 +189,12 @@ def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  if args.contains "--strict-privacy" then strictPrivacyOpt.set true
+  let args := args.filter (· != "--strict-privacy")
+  if args.contains "--unbox-structs" then unboxOpt.set true
+  let args := args.filter (· != "--unbox-structs")
+  lazyProofsOpt.set (!args.contains "--eager-proofs")
+  let args := args.filter (· != "--eager-proofs")
   let args ← match takeInertOpt args with
     | .ok (r, a) => do if let some r := r then inertOpt.set r
                        pure a
@@ -162,11 +202,20 @@ def main (args : List String) : IO UInt32 := do
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1
+  -- a `panic!` (a kernel-internal failure) ends a batch command with status 1 instead of
+  -- going on with a default value; the language server keeps running
+  unless args.head? == some "lsp" do exitOnPanic
   match args with
   | ["parse", path] => parseCmd path
   | ["check", path] => checkCmd tc path
   | ["build", path, "-o", out] => buildCmd tc path out false
   | ["build", path, "-o", out, "--llvm"] => buildCmd tc path out true
+  | ["build", path, "-o", out, "--lib"] => buildCmd tc path out false true
+  | ["build", path, "-o", out, "--lib", "--llvm"] | ["build", path, "-o", out, "--llvm", "--lib"] =>
+    buildCmd tc path out true true
+  | ["build", path, "-o", out, "--no-main"] => buildCmd tc path out false false true
+  | ["build", path, "-o", out, "--no-main", "--llvm"] | ["build", path, "-o", out, "--llvm", "--no-main"] =>
+    buildCmd tc path out true false true
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
   | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc); pure 0

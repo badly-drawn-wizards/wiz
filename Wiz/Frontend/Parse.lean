@@ -45,7 +45,18 @@ def recoverPos (chars : Array Char) (pos : Nat) : Nat := Id.run do
 def updateTables (tables : ParserTables) (cmd : Syntax) : Except String ParserTables :=
   match cmd.kind with
   | "command.declareSyntaxCat" => match (cmd.getArg 1).getId? with
-    | some c => pure (Builtin.addMetaParsers (tables.declareCategory c) c)
+    | some c =>
+      -- `(keywords := s)`: the category joins the keyword scope `s` (13j). The scope is set
+      -- after the antiquotation parsers are added, so that they add no keyword to it.
+      match ((cmd.getArg 2).getArg 3).getId?, tables.cats[c]? with
+      | none, some { scope := some _, .. } => pure tables
+      | none, _ => pure (Builtin.addMetaParsers (tables.declareCategory c) c)
+      | some s, none => pure ((Builtin.addMetaParsers (tables.declareCategory c) c).setScope c s)
+      | some s, some cat =>
+        if cat.scope == some s then pure tables
+        else throw s!"syntax category {c} is already declared, {match cat.scope with
+          | some s' => s!"with the keyword scope {s'}"
+          | none => "without a keyword scope"}"
     | none => throw "malformed declare_syntax_cat"
   | "command.syntax" => addSyntax tables cmd
   | _ => pure tables

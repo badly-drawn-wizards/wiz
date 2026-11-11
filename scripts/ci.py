@@ -20,10 +20,16 @@
   scripts/ci.py baseline JSONL..     a new .github/test-timings.json (stdout) from
                                      `--timings` files, e.g. the `test-timings`
                                      artifact of a CI run (the split shards' cases)
-  scripts/ci.py check-include-str BASE
-                                     Lake doesn't track `include_str`: fail if a file a
-                                     .lean file embeds changed since BASE (a commit) and
-                                     the .lean file didn't (bump its counter comment)
+  scripts/ci.py balance [--factor F] [--baseline-out FILE] [--strict] JSONL..
+                                     check a run's shard balance from its `--timings`
+                                     files: the longest shard's test time is at most F
+                                     (default 1.5) times the median shard's, every case
+                                     of a split shard is in .github/test-timings.json,
+                                     and no shared program is built by two parts of one
+                                     split shard. Prints GitHub warning annotations and
+                                     a Markdown report (stdout); on drift, writes the
+                                     regenerated baseline to FILE. Exits 0 (1 with
+                                     --strict when there is drift)
 
 Selectors are the arguments of `lake test --`: `=NAME` selects the group NAME,
 `=NAME#I,J` the cases I and J of it, anything else is a prefix of group names (see
@@ -199,6 +205,15 @@ def check_shards(binary):
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
+    # a split shard's cases without a baseline entry are balanced by guesswork; warn
+    # (a new case has no time until a CI run measured it, so this cannot be an error)
+    base = baseline()
+    for s in shards():
+        if s.get("split", 1) > 1:
+            new = [n for g, _, n in list_cases(binary, s["select"]) if n not in base["cases"].get(g, {})]
+            if new:
+                warn(f"{len(new)} cases of the split shard {s['name']!r} are unbalanced: not in "
+                     f".github/test-timings.json (estimated at their group's median)", "Shard balance")
     print(f"ok: {len(groups)} groups, {len(runs)} cases, each in exactly one of {len(parts)} shards")
     return 0
 
@@ -345,6 +360,86 @@ def summary(title, files):
     return 0
 
 
+def warn(msg, title):
+    """A warning: a GitHub annotation in Actions, a plain line on stderr otherwise."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::warning title={title}::{msg}", file=sys.stderr)
+    else:
+        print(f"warning: {msg}", file=sys.stderr)
+
+
+def split_of(shard, split):
+    """The split shard that a shard (job) name belongs to, or None."""
+    for n in split:
+        if shard == n or re.fullmatch(re.escape(n) + r"-\d+", shard):
+            return n
+    return None
+
+
+def balance(args):
+    factor, out, strict, paths = 1.5, None, False, []
+    it = iter(args)
+    for a in it:
+        if a == "--factor":
+            factor = float(next(it))
+        elif a == "--baseline-out":
+            out = next(it)
+        elif a == "--strict":
+            strict = True
+        else:
+            paths.append(a)
+    records = read_timings(paths)
+    if not records:
+        print("No case timings: the shard balance was not checked.")
+        return 0
+    totals = {sh: sum(r["seconds"] for r in rs) for sh, rs in by_key(records, "shard").items()}
+    ranked = sorted(totals.items(), key=lambda kv: -kv[1])
+    ts = sorted(totals.values())
+    median = (ts[(len(ts) - 1) // 2] + ts[len(ts) // 2]) / 2
+    longest, top = ranked[0]
+    problems = []
+    if median > 0 and top > factor * median:
+        problems.append(f"the longest shard {longest} ({top:.0f} s of tests) is {top / median:.1f}x the "
+                        f"median shard ({median:.0f} s), over the limit of {factor}x")
+    base = baseline()
+    split = [s["name"] for s in shards() if s.get("split", 1) > 1]
+    new = sorted({(r["group"], r["case"]) for r in records if split_of(r["shard"], split)
+                  and r["case"] not in base["cases"].get(r["group"], {})})
+    if new:
+        problems.append(f"{len(new)} cases unbalanced: not in .github/test-timings.json")
+    built = {}
+    for r in records:
+        if (n := split_of(r["shard"], split)):
+            for note in r.get("notes", []):
+                if note.startswith(NOTE_BUILT):
+                    built.setdefault((n, note[len(NOTE_BUILT):].rsplit(" ", 1)[0]), set()).add(r["shard"])
+    for (n, res), parts in sorted(built.items()):
+        if len(parts) > 1:
+            problems.append(f"the {res} is built by {len(parts)} parts of {n} ({', '.join(sorted(parts))}): "
+                            f"its users are split, the baseline is stale")
+    for p in problems:
+        warn(p, "Shard balance")
+    lines = ["### Shard balance", ""]
+    lines.append(("⚠️ **Out of balance**: " + "; ".join(problems) + ".") if problems else
+                 f"✅ Balanced: the longest shard ({longest}, {top:.0f} s) is {top / max(median, 1e-9):.2f}x the "
+                 f"median ({median:.0f} s); limit {factor}x.")
+    lines += ["", "| shard | seconds of tests | × median |", "|---|---:|---:|"]
+    lines += [f"| {md(sh)} | {t:.0f} | {t / max(median, 1e-9):.2f} |" for sh, t in ranked]
+    if new:
+        lines += ["", "<details><summary>cases not in the baseline</summary>", ""]
+        lines += [f"- {md(g)}: {md(c)}" for g, c in new[:200]] + ["", "</details>"]
+    if problems and out:
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            make_baseline(paths)
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(buf.getvalue())
+        lines += ["", f"A regenerated baseline from this run is in `{out}`."]
+    print("\n".join(lines))
+    return 1 if problems and strict else 0
+
+
 def make_baseline(paths):
     """.github/test-timings.json from `--timings` records (see `baseline`); a case seen
     more than once keeps its largest time, a build its largest. Only the shards with
@@ -354,7 +449,7 @@ def make_baseline(paths):
     for r in read_timings(paths):
         # only the split shards' cases are balanced (and other shards may use the same
         # programs with other build times)
-        if not any(r["shard"] == n or re.fullmatch(re.escape(n) + r"-\d+", r["shard"]) for n in split):
+        if not split_of(r["shard"], split):
             continue
         uses = sorted({n[len(NOTE_USES):] for n in r.get("notes", []) if n.startswith(NOTE_USES)})
         built = 0.0
@@ -380,27 +475,6 @@ def make_baseline(paths):
     return 0
 
 
-def check_include_str(base):
-    changed = set(subprocess.run(["git", "diff", "--name-only", base, "HEAD"], cwd=ROOT,
-                                 capture_output=True, text=True, check=True).stdout.split())
-    lean = subprocess.run(["git", "grep", "-l", "include_str", "--", "*.lean"], cwd=ROOT,
-                          capture_output=True, text=True).stdout.split()
-    errors = []
-    for f in lean:
-        with open(os.path.join(ROOT, f)) as h:
-            text = h.read()
-        for inc in re.findall(r'include_str\s+"([^"]+)"', text):
-            target = os.path.normpath(os.path.join(os.path.dirname(f), inc))
-            if target in changed and f not in changed:
-                errors.append(f"{target} changed but {f}, which embeds it with include_str, did not: "
-                              f"bump its counter comment so Lake rebuilds it")
-    for e in errors:
-        print(f"::error::{e}")
-    if not errors:
-        print("include_str: every embedded file that changed has its .lean file changed too")
-    return 1 if errors else 0
-
-
 def main(args):
     binary = args[1] if len(args) > 1 else DEFAULT_BIN
     if args[:1] == ["matrix"]:
@@ -410,10 +484,10 @@ def main(args):
         return check_shards(binary)
     if args[:1] == ["plan"]:
         return plan(binary)
-    if args[:1] == ["check-include-str"] and len(args) == 2:
-        return check_include_str(args[1])
     if args[:1] == ["summary"] and len(args) >= 2:
         return summary(args[1], args[2:])
+    if args[:1] == ["balance"]:
+        return balance(args[1:])
     if args[:1] == ["baseline"] and len(args) >= 2:
         return make_baseline(args[1:])
     print(__doc__, file=sys.stderr)

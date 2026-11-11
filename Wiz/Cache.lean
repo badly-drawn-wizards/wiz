@@ -273,7 +273,7 @@ structure Effect (R : Type) where
 def cacheable : List Name :=
   ["command.def", "command.axiom", "command.defEqns", "command.inductive", "command.structure",
    "command.class", "command.instance", "command.coinductive", "command.builtin", "command.extern",
-   "command.glue", "command.foreignType", "command.check", "command.reduce", "command.eval",
+   "command.glue", "command.foreignType", "command.cStruct", "command.export", "command.check", "command.reduce", "command.eval",
    "command.erase", "command.run", "command.ir", "command.printAxioms", "command.private"]
 
 def effectOf (s s' : CommandState R) : Effect R :=
@@ -299,6 +299,15 @@ where
 
 /-- Replay an effect. -/
 def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
+  -- a builtin key is registered once (`command.builtin`); a replayed registration (a
+  -- module that was elaborated on its own) must not get around that. (Other keys,
+  -- `extern:…`, `repr:…`, `inline`, are per constant.)
+  let once (k : Name) : Bool := k == "nat" || k.startsWith "nat." || k == "string" || k == "memo"
+  let clash := e.builtins.filter fun (k, n) => once k && (s.globals.builtins.lookup k).any (· != n)
+  if let (k, n) :: _ := clash then
+    let was := (s.globals.builtins.lookup k).getD "?"
+    let text := s!"builtin {k} := {n}: {k} is already registered (as {was}); a builtin can be registered only once"
+    { s with messages := s.messages.push { info := {}, severity := .error, text }, pristine := false } else
   let globals := e.decls.foldl (·.insert ·) s.globals
   let globals := { globals with builtins := e.builtins ++ globals.builtins,
                                 assumed := e.assumed ++ globals.assumed,
@@ -352,6 +361,7 @@ def infoSx : Info R → Sx
       info m.firstAlt, info m.lastAlt]
   | .decl i n ns t a at_ => node "decl" [info i, str n, names ns, term t, bool a, nat at_]
   | .unknownIdent i n ns => node "unknown" [info i, str n, names ns]
+  | .trace i t => node "trace" [info i, str t]
 
 def dInfo (x : Sx) : Option (Info R) := do
   let xs ← items? x
@@ -369,6 +379,7 @@ def dInfo (x : Sx) : Option (Info R) := do
   | "decl" => pure (.decl (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)) (← dterm (← a 4))
       (← dbool (← a 5)) (← (← atom? (← a 6)).toNat?))
   | "unknown" => pure (.unknownIdent (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)))
+  | "trace" => pure (.trace (← dinfo (← a 1)) (← atom? (← a 2)))
   | _ => none
 
 def Effect.toSx (e : Effect R) : Sx :=
@@ -437,7 +448,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-13-trust"  -- 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-14-builtin-once"  -- 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 
@@ -480,9 +491,13 @@ def binaryId (dir : Option System.FilePath) : IO UInt64 := do
 
 /-- The key of every module reachable from `ms` (see above). `headers` gives the
 preprocessed text of a C header. Import cycles get key 0 on the back edge (the frontend
-reports them). -/
+reports them). A module's trust (`CommandState.trustedModule`: its `builtin`
+registrations are axioms or not) is part of its key, and so of its importers' keys:
+an effect elaborated with one trust status (its messages, `#print axioms`) is never
+replayed under the other. -/
 partial def moduleKeys (loader : Name → Option String) (headers : String → Option String) (toolchain : UInt64)
-    (ms : List Name) (memo : Std.HashMap Name UInt64 := {}) : Std.HashMap Name UInt64 :=
+    (ms : List Name) (memo : Std.HashMap Name UInt64 := {}) (trusted : Name → Bool := fun _ => false) :
+    Std.HashMap Name UInt64 :=
   ms.foldl (fun memo m => (go [] m memo).2) memo
 where
   go (stack : List Name) (m : Name) (memo : Std.HashMap Name UInt64) : UInt64 × Std.HashMap Name UInt64 :=
@@ -494,6 +509,7 @@ where
       | none => (0, memo)
       | some src =>
         let k₀ := mixHash (mixHash salt toolchain) (hash src)
+        let k₀ := if trusted m then mixHash k₀ (hash "trusted") else k₀
         let k₀ := (Module.headersOf src).foldl (fun k h => mixHash k (hash ((headers h).getD ""))) k₀
         let (k, memo) := (Module.importsOf src).foldl (fun (k, memo) n =>
           let (kn, memo) := go (m :: stack) n memo
@@ -501,8 +517,9 @@ where
         (k, memo.insert m k)
 
 /-- The key of one module. -/
-def moduleKey (loader : Name → Option String) (headers : String → Option String) (toolchain : UInt64) (m : Name) : UInt64 :=
-  ((moduleKeys loader headers toolchain [m]).get? m).getD 0
+def moduleKey (loader : Name → Option String) (headers : String → Option String) (toolchain : UInt64) (m : Name)
+    (trusted : Name → Bool := fun _ => false) : UInt64 :=
+  ((moduleKeys loader headers toolchain [m] {} trusted).get? m).getD 0
 
 /-- How a file's commands are being elaborated. -/
 inductive Mode where
@@ -558,7 +575,7 @@ where
   keyOf (keys : IO.Ref (Std.HashMap Name UInt64)) (m : Name) : IO UInt64 := do
     -- (term info changes what a module elaborates to, like the main file's chain)
     let tc := if init.termInfo then mixHash toolchain 1 else toolchain
-    let memo := moduleKeys init.loader init.cHeaders tc [m] (← keys.get)
+    let memo := moduleKeys init.loader init.cHeaders tc [m] (← keys.get) init.trustedModule
     keys.set memo
     pure ((memo.get? m).getD 0)
   /-- Bring module `m` into `s`: elaborate it in isolation first if the cache has not

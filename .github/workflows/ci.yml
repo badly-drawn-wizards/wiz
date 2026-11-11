@@ -58,13 +58,6 @@ jobs:
       compiler-key: ${{ steps.key.outputs.compiler }}
     steps:
       - uses: actions/checkout@v5
-      - name: Embedded files (include_str) changed with their .lean files
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          # the checkout is the PR merged into its base: compare it with the base's tip
-          git fetch --depth=1 origin "${{ github.base_ref }}"
-          python3 scripts/ci.py check-include-str FETCH_HEAD
       - uses: ./.github/actions/setup
         with:
           cachix-name: ${{ env.CACHIX_NAME }}
@@ -100,6 +93,9 @@ jobs:
           # a shard with "split" becomes several, balanced by .github/test-timings.json
           echo "matrix=$(python3 scripts/ci.py matrix)" >> "$GITHUB_OUTPUT"
           python3 scripts/ci.py plan
+      - name: Lake tracks the embedded runtime (runtime/wiz.c)
+        # editing wiz.c rebuilds what embeds it and nothing else (docs/building.md)
+        run: scripts/test-embed.sh
 
   test:
     name: test (${{ matrix.shard.name }})
@@ -212,7 +208,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          sparse-checkout: scripts
+          sparse-checkout: |
+            scripts
+            .github
       - uses: actions/download-artifact@v5
         with:
           pattern: test-log-*
@@ -232,6 +230,29 @@ jobs:
           name: test-timings
           path: timings/timings.jsonl
           if-no-files-found: ignore
+      # The shards stay balanced (docs/building.md, "Shard balance"): warn, never fail, when
+      # the longest shard is over 1.5x the median, a split shard's cases are missing from
+      # the baseline, or two parts build the same program. On master, a run whose tests all
+      # passed and that drifted uploads the regenerated baseline (`test-timings-baseline`).
+      - name: Shard balance
+        id: balance
+        continue-on-error: true
+        shell: bash
+        run: |
+          shopt -s nullglob
+          rm -f test-timings.json
+          python3 scripts/ci.py balance --factor 1.5 --baseline-out test-timings.json logs/*.jsonl >> "$GITHUB_STEP_SUMMARY"
+          if [ -f test-timings.json ] && [ "${{ github.event_name }}" = push ] && [ "${{ needs.test.result }}" = success ]; then
+            echo "refresh=true" >> "$GITHUB_OUTPUT"
+            cmd="gh run download ${{ github.run_id }} -R ${{ github.repository }} -n test-timings-baseline -D .github"
+            echo "::warning title=Shard balance::the test-timings baseline drifted; to apply this run's: $cmd"
+            { echo; echo "To apply it (then commit .github/test-timings.json in a PR):"; echo; echo '```'; echo "$cmd"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.balance.outputs.refresh == 'true'
+        with:
+          name: test-timings-baseline
+          path: test-timings.json
       - name: Verdict
         shell: bash
         run: |
