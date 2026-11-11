@@ -191,7 +191,11 @@ def hypsMismatches (g : Globals ZeroOneMany) (extra : List (Name × Level × Val
       unless a == b do bad := s!"{name}: {a.pretty []} vs {b.pretty []}" :: bad
   pure (n, bad)
 
-/-- Every module of `lib/` imported at once. -/
+/-- Modules of `lib/` that can't be imported together with all the others (`Json`
+declares its own `Nat.repr`), checked on their own. -/
+def libApart : List String := ["Json", "Infoview"]
+
+/-- Every other module of `lib/` imported at once. -/
 def allLibSource : IO String := do
   let mut ms := #[]
   for e in ← System.FilePath.readDir "lib" do
@@ -199,7 +203,7 @@ def allLibSource : IO String := do
     else if ← e.path.isDir then
       for f in ← System.FilePath.readDir e.path do
         if f.path.extension == some "wiz" then ms := ms.push (e.fileName ++ "." ++ f.path.fileStem.getD "")
-  pure (String.join ((ms.qsort (· < ·)).toList.map (s!"import {·}\n")))
+  pure (String.join (((ms.qsort (· < ·)).toList.filter (!libApart.contains ·)).map (s!"import {·}\n")))
 
 /-- `n` matches on a `len`-element list, checked by `refl`. -/
 def listMatchProgram (len n : Nat) : String :=
@@ -351,6 +355,12 @@ def group : Group where
         let (n, bad) := hypsMismatches lib.globals stuck
         unless bad.isEmpty do throw (IO.userError s!"lib: {bad.take 3}")
         total := total + n
+        for m in libApart do
+          let st := runFrontend (R := ZeroOneMany) s!"import {m}\n" { trustedModule := Tests.libModule, loader }
+          unless st.messages.all (·.severity != .error) do throw (IO.userError s!"lib/{m} has errors")
+          let (n, bad) := hypsMismatches st.globals
+          unless bad.isEmpty do throw (IO.userError s!"{m}: {bad.take 3}")
+          total := total + n
         for e in ← System.FilePath.readDir "examples" do
           unless e.path.extension == some "wiz" do continue
           let st := runFrontend (R := ZeroOneMany) (← IO.FS.readFile e.path) { trustedModule := Tests.libModule, loader }
@@ -364,12 +374,12 @@ def group : Group where
     { name := "a polymorphic definition unfolds the same at cached and uncached levels", run := fun _ => do
         let src := "import Prelude\ndef pick.{u} (A : Type u) (a b : A) (c : Bool) : A := match c with\n  | .true => a\n  | .false => b\n" ++
           "def t0 : pick Nat 1 2 .false = 2 := refl 2\n" ++
-          "def t1 : pick Type Nat Bool .true = Nat := reflTy Nat\n" ++
-          "def t2 : pick (Type 1) Type (Type → Type) .true = Type := reflTy Type\n" ++
-          "def t5 : pick (Type 4) (Type 3) (Type 2) .false = Type 2 := reflTy (Type 2)\n"
+          "def t1 : pick Type Nat Bool .true = Nat := refl Nat\n" ++
+          "def t2 : pick (Type 1) Type (Type → Type) .true = Type := refl Type\n" ++
+          "def t5 : pick (Type 4) (Type 3) (Type 3 → Type 3) .false = (Type 3 → Type 3) := refl (Type 3 → Type 3)\n"
         let _ ← elabOk src
         let loader ← Tests.Elab.preludeLoader
-        let st := runFrontend (R := ZeroOneMany) (src ++ "def bad : pick Type Nat Bool .true = Bool := reflTy Bool\n") { loader }
+        let st := runFrontend (R := ZeroOneMany) (src ++ "def bad : pick Type Nat Bool .true = Bool := refl Bool\n") { loader }
         check (st.messages.any (·.severity == .error)) "a wrong unfolding was accepted" },
     -- the elaborator's sort pass (`Sorts.type`) no longer evaluates an equation to learn
     -- that it is a proposition; the kernel still checks every sort note itself
