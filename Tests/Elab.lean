@@ -5242,16 +5242,16 @@ def serverMany : (n : Nat) → (acc : Nat) → Proc Unit (Proto.dual (sendMany a
   | .succ n, acc => fun x => serverMany n (acc + x)
 def server : Proc Unit (Proto.dual sumProto) := fun n => serverMany n 0
 def serveMany : (n : Nat) → (acc : Nat) → (1 c : Chan (Proto.dual (sendMany ack n))) → IO Unit
-  | .zero, acc => fun c => Chan.send (k := fun _ => Proto.dual .done) c acc (fun c' => Chan.close c' (IO.pure ()))
+  | .zero, acc => fun c => Chan.send c acc (fun c' => Chan.close c' (IO.pure ()))
   | .succ n, acc => fun c =>
-      Chan.recv (k := fun _ => Proto.dual (sendMany ack n)) c (fun x c' => serveMany n (acc + x) c')
+      Chan.recv c (fun x c' => serveMany n (acc + x) c')
 def serve (1 c : Chan (Proto.dual sumProto)) : IO Unit :=
-  Chan.recv (k := fun n => Proto.dual (sendMany ack n)) c (fun n c' => serveMany n 0 c')
+  Chan.recv c (fun n c' => serveMany n 0 c')
 def sendNums : (n : Nat) → (1 c : Chan (sendMany ack n)) → IO Nat
-  | .zero => fun c => Chan.recv (k := fun _ => Proto.done) c (fun s c' => Chan.close c' (IO.pure s))
-  | .succ n => fun c => Chan.send (k := fun _ => sendMany ack n) c (n + 1) (fun c' => sendNums n c')
+  | .zero => fun c => Chan.recv c (fun s c' => Chan.close c' (IO.pure s))
+  | .succ n => fun c => Chan.send c (n + 1) (fun c' => sendNums n c')
 def runClient (m : Nat) (1 c : Chan sumProto) : IO Nat :=
-  Chan.send (k := fun n => sendMany ack n) c m (fun c' => sendNums m c')
+  Chan.send c m (fun c' => sendNums m c')
 "
 
 /-- A chain of threads: each adds one to every element of a list and passes it on; the
@@ -5269,15 +5269,15 @@ def upto : Nat → List Nat
   | .zero => .nil
   | .succ n => .cons n (upto n)
 def stage : Nat → (1 c : Chan (Proto.dual Q)) → IO Unit
-  | .zero => fun c => Chan.recv (k := fun _ => Proto.dual (.recv Nat (fun _ => .done))) c (fun xs c' =>
-      Chan.send (k := fun _ => Proto.dual .done) c' (total xs) (fun c'' => Chan.close c'' (IO.pure ())))
-  | .succ n => fun c => Chan.recv (k := fun _ => Proto.dual (.recv Nat (fun _ => .done))) c (fun xs c' =>
-      Chan.fork Q (stage n) (fun d => Chan.send (k := fun _ => .recv Nat (fun _ => .done)) d (bump xs) (fun d' =>
-        Chan.recv (k := fun _ => .done) d' (fun s d'' => Chan.close d''
-          (Chan.send (k := fun _ => Proto.dual .done) c' s (fun c'' => Chan.close c'' (IO.pure ())))))))
+  | .zero => fun c => Chan.recv c (fun xs c' =>
+      Chan.send c' (total xs) (fun c'' => Chan.close c'' (IO.pure ())))
+  | .succ n => fun c => Chan.recv c (fun xs c' =>
+      Chan.fork Q (stage n) (fun d => Chan.send d (bump xs) (fun d' =>
+        Chan.recv d' (fun s d'' => Chan.close d''
+          (Chan.send c' s (fun c'' => Chan.close c'' (IO.pure ())))))))
 def shared : List Nat := upto 100
 def main : IO Unit := Chan.fork Q (stage 50) (fun d =>
-  Chan.send (k := fun _ => .recv Nat (fun _ => .done)) d shared (fun d' => Chan.recv (k := fun _ => .done) d' (fun s d'' =>
+  Chan.send d shared (fun d' => Chan.recv d' (fun s d'' =>
     Chan.close d'' (IO.bind (IO.println (Nat.toString s)) (fun _ => IO.println (Nat.toString (total shared)))))))
 "
 
@@ -5295,14 +5295,14 @@ def onMsg (n acc : Nat) (serve : (acc : Nat) → (1 c : Chan (Proto.dual (items 
 def serveItems : (n : Nat) → (acc : Nat) → (1 c : Chan (Proto.dual (items n))) → IO Unit
   | .zero, acc => fun c => Chan.close c (IO.println (String.append \"all: \" (Nat.toString acc)))
   | .succ n, acc => fun c =>
-      Chan.recv (A := Msg Nat) (k := fun m => Proto.dual (Msg.next (fun _ => items n) m)) c (fun m c' => onMsg n acc (serveItems n) m c')
+      Chan.recv c (fun m c' => onMsg n acc (serveItems n) m c')
 def client (1 c : Chan (items 3)) : IO Unit :=
-  Chan.send (k := Msg.next (fun _ => items 2)) c (.val 10) (fun c1 =>
-    Chan.send (k := Msg.next (fun _ => items 1)) c1 (.val 20) (fun c2 =>
-      Chan.cancel (k := fun _ => items 0) c2 (IO.pure ())))
+  Chan.send c (.val 10) (fun c1 =>
+    Chan.send c1 (.val 20) (fun c2 =>
+      Chan.cancel c2 (IO.pure ())))
 def full (1 c : Chan (items 2)) : IO Unit :=
-  Chan.send (k := Msg.next (fun _ => items 1)) c (.val 1) (fun c1 =>
-    Chan.send (k := Msg.next (fun _ => items 0)) c1 (.val 2) (fun c2 => Chan.close c2 (IO.pure ())))
+  Chan.send c (.val 1) (fun c1 =>
+    Chan.send c1 (.val 2) (fun c2 => Chan.close c2 (IO.pure ())))
 def main : IO Unit := Chan.fork (items 3) (serveItems 3 0) (fun c => client c)
 "
 
@@ -5377,7 +5377,7 @@ def concGroup : Group where
         cRunLibs concStream "3998000\n" },
     { name := "an endpoint can't be used twice, dropped, or closed twice", run := fun _ => do
         failsLibs (concSum ++ "def twice (1 c : Chan sumProto) : IO Nat :=\n" ++
-          "  Chan.send (k := fun n => sendMany ack n) c 1 (fun c' => runClient 1 c)") "quantity 1"
+          "  Chan.send c 1 (fun c' => runClient 1 c)") "quantity 1"
         failsLibs "import IO\nimport Session\ndef leak (1 c : Chan Proto.done) : IO Unit := IO.pure ()" "quantity 1"
         failsLibs "import IO\nimport Session\ndef dupe (1 c : Chan Proto.done) : IO Unit := Chan.close c (Chan.close c (IO.pure ()))" "quantity 1" },
     { name := "a closure that captured an endpoint is linear itself", run := fun _ =>
@@ -5386,7 +5386,7 @@ def concGroup : Group where
           "def dupf (1 c : Chan Proto.done) : IO Unit := let f := capture c; IO.bind (f ()) (fun _ => f ())") "quantity" },
     { name := "the protocol is checked: wrong message type, wrong step", run := fun _ => do
         failsLibs (concSum ++ "def bad (1 c : Chan sumProto) : IO Unit :=\n" ++
-          "  Chan.send (k := fun n => sendMany ack n) c Bool.true (fun c' => Chan.close c' (IO.pure ()))") "mismatch"
+          "  Chan.send c Bool.true (fun c' => Chan.close c' (IO.pure ()))") "mismatch"
         failsLibs (concSum ++ "def bad (1 c : Chan sumProto) : IO Unit := Chan.close c (IO.pure ())") "mismatch" },
     { name := "endpoints can't be forged, retyped, sent, or stored", run := fun _ => do
         failsLibs "import IO\nimport Session\ndef bad (1 c : Chan Proto.done) : Chan (.send Nat (fun _ => .done)) := c" "mismatch"
@@ -5394,7 +5394,7 @@ def concGroup : Group where
           "  Chan.sendRaw c 1") "private"
         -- an endpoint is not a message (no delegation: the channel graph stays a forest)
         failsLibs ("import IO\nimport Session\ndef bad (1 c : Chan (.send (Chan Proto.done) (fun _ => .done))) (1 d : Chan Proto.done) : IO Unit :=\n" ++
-          "  Chan.send (k := fun _ => .done) c d (fun c' => Chan.close c' (IO.pure ()))") "quantity 1"
+          "  Chan.send c d (fun c' => Chan.close c' (IO.pure ()))") "quantity 1"
         failsLibs ("import IO\nimport Session\nimport MVar\ndef bad (m : MVar (Chan Proto.done)) (1 d : Chan Proto.done) : IO Unit :=\n" ++
           "  MVar.put m d") "quantity 1" },
     { name := "a lock guard and an MVar hole must be given back exactly once", run := fun _ => do
