@@ -948,6 +948,26 @@ where
           mkStringLit (((stx.getArg 0).getStr?).getD "") us
         | none => throwAt ctx.info "string literals need `builtin string := …`"
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+    -- `refl a` against an equation `a' =_A b'`: check `a` against `A` first, so that the
+    -- metavariables in `a`'s type are solved by `A`. Inferring `a`'s type alone can leave a
+    -- component's sort unknown (`fun x => x : ?m → ?m`), and then the equation computes
+    -- by another rule than the expected one (at a proposition it is `True`, nu-transp) and
+    -- the two no longer unify. (`A` is read back from the computed Σ, `eqSigmaSides?`.)
+    | "term.refl" =>
+      let A? : Option (VTy R) := match ← force expected with
+        | .neutral (.eq A _ _) #[] => some A
+        | e => (eqSigmaSides? e).map (·.1)
+      match A? with
+      | some A =>
+        let g ← getGlobals
+        match ← force A with
+        | .sort _ => let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+        | A =>
+          let a ← check ctx (stx.getArg 1) A
+          let va ← evalIn ctx a
+          unifyAt ctx stx expected (vEq g A va va)
+          pure (.refl (quote g ctx.lvl A) a)
+      | none => let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.rfl" =>
       let g ← getGlobals
       match ← force expected with
