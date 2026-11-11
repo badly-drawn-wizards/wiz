@@ -11,8 +11,10 @@ per constructor.
 A field's quantity is a term of type `Qty`. `⟦D⟧` computes when it is a literal (it
 becomes the label of the `Σ`); at a quantity that is not a literal it is stuck.
 
-Not here: `Desc.{l} I ≡ Desc.{l} I'` and casts between descriptions (PR #40's rules "by
-codes" are not on master), except the injectivity of the former.
+Not here, though master has them since PR #40 (CoreSpec §8.4b, 4g): equality *at*
+`Desc l I` (by the two heads), and casts between descriptions (constructor by
+constructor). Only the injectivity of the former is here. Not yet modelled (review,
+`wiz-notes/wiz-meta-review.md`).
 -/
 
 namespace WizMeta.Spec
