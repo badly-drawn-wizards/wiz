@@ -28,6 +28,10 @@ def rejects {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
 def isMismatch : TypeError → Bool | .typeMismatch .. => true | _ => false
 def isQty : TypeError → Bool | .quantityMismatch .. => true | _ => false
+/-- The projection rule's own error (R1). -/
+def isProj : TypeError → Bool
+  | .other m => (m.splitOn "a projection needs an unrestricted pair").length > 1
+  | _ => false
 
 /-! ## Plain dependent types (`Unit` rig) -/
 
@@ -289,30 +293,60 @@ def structGroup : Group where
     { name := "erased field cannot be projected", run := fun _ =>
         rejects [Raw.defn "bad" (forallA (pi' "B" zero ty (arr many (.sigma "x" zero "A" "B") "A")))
           (lams ["A", "B", "p"] (.fst "p"))] (fun | .other .. => true | _ => false) "a projection error" },
-    { name := "the second projection can't drop a linear first field (Q1)", run := fun _ =>
-        rejects [Raw.defn "drop" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" "B") "B")))
-          (lams ["A", "B", "p"] (.snd "p"))] isQty "a quantity error" },
-    { name := "an unrestricted pair may drop its linear first field (Q1)", run := fun _ =>
+    -- (R1) projections are available only on unrestricted pairs, whatever the components
+    { name := "p.2 on a linear pair is rejected, whatever the first field's quantity (R1)", run := fun _ => do
+        for q in [one, many, zero] do
+          rejects [Raw.defn "drop" (forallA (pi' "B" zero ty (arr one (.sigma "x" q "A" "B") "B")))
+            (lams ["A", "B", "p"] (.snd "p"))] isProj "a projection error" },
+    { name := "p.1 on a linear pair is rejected: it would drop the bare second component (R1)", run := fun _ => do
+        for q in [one, many] do
+          rejects [Raw.defn "drop" (forallA (pi' "B" zero ty (arr one (.sigma "x" q "A" "B") "A")))
+            (lams ["A", "B", "p"] (.fst "p"))] isProj "a projection error" },
+    { name := "an unrestricted pair has both projections, whatever its fields' quantities", run := fun _ =>
         accepts [Raw.defn "dropMany" (forallA (pi' "B" zero ty (arr many (.sigma "x" one "A" "B") "B")))
-          (lams ["A", "B", "p"] (.snd "p"))] },
-    { name := "the first projection can't drop a linear field in the second part (Q1)", run := fun _ =>
-        rejects [Raw.defn "dropFst" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" (.sigma "y" one "B" "B")) "A")))
-          (lams ["A", "B", "p"] (.fst "p"))] isQty "a quantity error" },
-    { name := "an unrestricted pair may drop a linear field in its second part (Q1)", run := fun _ =>
-        accepts [Raw.defn "dropFstMany" (forallA (pi' "B" zero ty (arr many (.sigma "x" many "A" (.sigma "y" one "B" "B")) "A")))
-          (lams ["A", "B", "p"] (.fst "p"))] },
-    { name := "the first projection may drop a second part without linear fields", run := fun _ =>
-        accepts [Raw.defn "fstω" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" (.sigma "y" many "B" "B")) "A")))
-            (lams ["A", "B", "p"] (.fst "p")),
-          Raw.defn "fst0" (forallA (pi' "B" zero ty (arr one (.sigma "x" one "A" (.sigma "y" zero "B" "B")) "A")))
-            (lams ["A", "B", "p"] (.fst "p"))] },
-    { name := "projecting a linear field out of the middle of a linear tuple is rejected (Q1)", run := fun _ =>
-        rejects [Raw.defn "mid" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" (.sigma "y" one "B" (.sigma "z" one "B" "B"))) "B")))
-          (lams ["A", "B", "p"] (.fst (.snd "p")))] isQty "a quantity error" },
-    { name := "the second projection may drop an ω or erased first field", run := fun _ =>
-        accepts [Raw.defn "dropω" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" "B") "B")))
             (lams ["A", "B", "p"] (.snd "p")),
-          Raw.defn "drop0" (forallA (pi' "B" zero ty (arr one (.sigma "x" zero "A" "B") "B")))
+          Raw.defn "dropFstMany" (forallA (pi' "B" zero ty (arr many (.sigma "x" many "A" (.sigma "y" one "B" "B")) "A")))
+            (lams ["A", "B", "p"] (.fst "p")),
+          Raw.defn "mid" (forallA (pi' "B" zero ty (arr many (.sigma "x" many "A" (.sigma "y" one "B" (.sigma "z" one "B" "B"))) "B")))
+            (lams ["A", "B", "p"] (.fst (.snd "p")))] },
+    { name := "projecting out of the middle of a linear tuple is rejected (R1)", run := fun _ =>
+        rejects [Raw.defn "mid" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" (.sigma "y" one "B" (.sigma "z" one "B" "B"))) "B")))
+          (lams ["A", "B", "p"] (.fst (.snd "p")))] isProj "a projection error" },
+    { name := "a projection of an expression uses the expression ω times (R1)", run := fun _ => do
+        -- `(f w).1` with `w` linear: rejected; with `w` unrestricted: accepted
+        let tyOf (q : ZeroOneMany) := forallA (pi' "B" zero ty (arr many (arr one "B" (.sigma "x" many "A" "B")) (arr q "B" "A")))
+        rejects [Raw.defn "bad" (tyOf one) (lams ["A", "B", "f", "w"] (.fst (.app "f" "w")))] isProj "a projection error"
+        accepts [Raw.defn "ok" (tyOf many) (lams ["A", "B", "f", "w"] (.fst (.app "f" "w")))] },
+    { name := "a linear pair is consumed by a split at 1, and a split at ω is not enough", run := fun _ => do
+        -- (the bare second component `y : B` is held at 1: it goes into a field at 1)
+        let tyOf := forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" "B") (.sigma "y" one "B" "A")))
+        accepts [Raw.defn "swap" tyOf
+          (lams ["A", "B", "p"] (.split one "p" "z" (.sigma "y" one "B" "A") "x" "y" (.pair "y" "x")))]
+        rejects [Raw.defn "swap" tyOf
+          (lams ["A", "B", "p"] (.split many "p" "z" (.sigma "y" one "B" "A") "x" "y" (.pair "y" "x")))] isQty "a quantity error"
+        -- and the split may not drop the bare second component either
+        rejects [Raw.defn "drop" (forallA (pi' "B" zero ty (arr one (.sigma "x" many "A" "B") "A")))
+          (lams ["A", "B", "p"] (.split one "p" "z" "A" "x" "y" "x"))] isQty "a quantity error" },
+    { name := "erased positions project freely: a 0 argument, a let at 0, a 0 field (R1)", run := fun _ => do
+        let P : Raw ZeroOneMany := .sigma "x" many "A" "B"
+        -- `g p.1 p`: the 0 argument reads the linear pair without using it
+        accepts [Raw.defn "arg" (forallA (pi' "B" zero ty (arr many (arr zero "A" (arr one P P)) (arr one P P))))
+          (lams ["A", "B", "g", "p"] (.app (.app "g" (.fst "p")) "p"))]
+        accepts [Raw.defn "let0" (forallA (pi' "B" zero ty (arr one P P)))
+          (lams ["A", "B", "p"] (.letE "a" zero "A" (.fst "p") "p"))]
+        accepts [Raw.defn "field0" (forallA (pi' "B" zero ty (arr one P (.sigma "a" zero "A" P))))
+          (lams ["A", "B", "p"] (.pair (.fst "p") "p"))]
+        -- an erased field may be read there too (as in an argument to a 0 binder)
+        accepts [Raw.defn "let0e" (forallA (pi' "B" zero ty (arr many (.sigma "x" zero "A" "B") "B")))
+          (lams ["A", "B", "p"] (.letE "a" zero "A" (.fst "p") (.snd "p")))]
+        -- but what is bound at 0 can't be used at runtime
+        rejects [Raw.defn "use0" (forallA (pi' "B" zero ty (arr one P "A")))
+          (lams ["A", "B", "p"] (.letE "a" zero "A" (.fst "p") "a"))] (fun _ => true) "an error"
+        -- and a let at 1 or ω is not an erased position
+        rejects [Raw.defn "let1" (forallA (pi' "B" zero ty (arr one P "A")))
+          (lams ["A", "B", "p"] (.letE "a" one "A" (.fst "p") "a"))] isProj "a projection error" },
+    { name := "the second projection reads past an erased first field of an unrestricted pair", run := fun _ =>
+        accepts [Raw.defn "drop0" (forallA (pi' "B" zero ty (arr many (.sigma "x" zero "A" "B") "B")))
             (lams ["A", "B", "p"] (.snd "p"))] },
     { name := "erased field can be bound by split and ignored", run := fun _ =>
         accepts [Raw.defn "ok" (forallA (pi' "B" zero ty (arr one (.sigma "x" zero "A" "B") "B")))

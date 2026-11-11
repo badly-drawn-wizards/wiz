@@ -137,16 +137,18 @@
               makeWrapper ${tower-unwrapped}/bin/tower $out/bin/tower \
                 --suffix PATH : ${lib.makeBinPath [ pkgs.coreutils pkgs.git pkgs.gnutar pkgs.gzip pkgs.curl ]} \
                 --add-flags ${addFlags [ "--self" "${placeholder "out"}/bin/tower" ]}
-              # The `wiz` and `grail` shims (as `tower self shims` writes them), calling this
-              # package's tower, so installing the package puts them on PATH. They use tower's
-              # default home, ~/.tower, where the toolchains live.
+              # The `wiz` and `grail` shims, so installing the package puts them on PATH. They
+              # call the `tower` on PATH (the user's), falling back to this package's own, and
+              # use tower's default home, ~/.tower, where the toolchains live.
               for t in wiz grail; do
                 cat > $out/bin/$t <<EOF
             #!/bin/sh
             # tower shim: runs \`$t\` of the toolchain for this directory (\`tower show\`).
+            # It asks the \`tower\` on PATH (the user's), else this package's own.
+            tower=\$(command -v tower) || tower='$out/bin/tower'
             case "\$1" in
-              +*) tc=\$('$out/bin/tower' resolve "\$1") || exit; shift ;;
-              *) tc=\$('$out/bin/tower' resolve) || exit ;;
+              +*) tc=\$("\$tower" resolve "\$1") || exit; shift ;;
+              *) tc=\$("\$tower" resolve) || exit ;;
             esac
             exec "\$tc/bin/$t" "\$@"
             EOF

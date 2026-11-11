@@ -258,6 +258,73 @@ def group : Group where
         failsPriv privMod "import Priv\ndef x : Pos Nat := (5, ())" "Pos"
         failsPriv privMod "import Priv\nstructure Fake (A : Type) where\n  val : A\ndef x : Pos Nat := Fake.mk 5" "mismatch"
         failsPriv privMod "import Priv\ndef x (p : Pos Nat) : Nat := p.1" "cannot project" },
+    { name := "rfl compares the two sides in the elaborator's view: no equation with a look-alike (13b)", run := fun _ => do
+        let look := "import Priv\nstructure Look (A : Type) where\n  val : A\n"
+        let neq := "rfl: the two sides are not definitionally equal"
+        -- the kernel compares by shape, so `reflTy Look : Look = Pos` would check there,
+        -- and `cast` along it would make a `Pos` without `Pos.mk`
+        failsPriv privMod (look ++ "def e : Look Nat = Pos Nat := rfl") neq
+        failsPriv privMod (look ++ "def e : Pos Nat = Look Nat := rfl") neq
+        failsPriv privMod (look ++ "def e (A : Type) : Look A = Pos A := rfl") neq
+        failsPriv privMod (look ++ "def forge (x : Look Nat) : Pos Nat := cast rfl x") neq
+        failsPriv privMod (look ++ "def e : Look Nat = Pos Nat := refl (Look Nat)") "mismatch"
+        -- inside an equation that computes first (a pair, a function, a parameter of a data type)
+        failsPriv privMod (look ++ "def p : Type × Nat := (Look Nat, 1)\ndef e : p = (Pos Nat, 1) := rfl") neq
+        failsPriv privMod (look ++ "def e : (fun (A : Type) => Look A) = (fun (A : Type) => Pos A) := rfl") neq
+        failsPriv privMod (look ++ "def e : List (Look Nat) = List (Pos Nat) := rfl") neq
+        -- inductive and coinductive types, a structure with a private field (4g makes
+        -- these equations compute in the kernel)
+        let fake := "import Priv\ninductive Fake where\n  | num (n : Nat)\n  | secret (n : Nat)\n"
+        failsPriv privMod2 (fake ++ "def e : Fake = Tok := rfl") neq
+        failsPriv privMod2 (fake ++ "def e : Tok = Fake := rfl") neq
+        failsPriv privMod2 ("import Priv\ncoinductive Fake (A : Type) where\n  head : A\n  tail : Fake A\n  name : Nat\n" ++
+          "def e : Fake Nat = Sig Nat := rfl") neq
+        failsPriv privMod2 "import Priv\nstructure Fake where\n  owner : Nat\n  bal : Nat\ndef e : Fake = Acct := rfl" neq
+        -- controls: a type and itself, through a definition, values; in its own module a
+        -- look-alike is still the same type
+        okPriv privMod ("import Priv\ndef a : Pos Nat = Pos Nat := rfl\ndef T : Type := Pos Nat\ndef b : T = Pos Nat := rfl\n" ++
+          "def c (p : Pos Nat) : p = p := rfl\ndef d : Nat.add 1 1 = 2 := rfl\ndef f : List Nat = List Nat := rfl\n" ++
+          "def g (A : Type) : List A = List A := rfl\ndef i : (fun (n : Nat) => Nat.add 0 n) = (fun n => n) := rfl\n" ++
+          "def l (x : Nat) : (x, 1) = (x, Nat.add 0 1) := rfl")
+        okPriv privMod2 "import Priv\ndef e : Tok = Tok := rfl\ndef j : Sig Nat = Sig Nat := rfl\ndef k : Acct = Acct := rfl"
+        okPriv "" (privMod ++ "structure Look (A : Type) where\n  val : A\ndef e : Look Nat = Pos Nat := rfl\n" ++
+          "def forge (x : Look Nat) : Pos Nat := cast e x\n#eval (forge (Look.mk 4)).val") ["4"] },
+    { name := "the tactic request assign: a term with holes is type-checked at the end of the block (13b)", run := fun _ => do
+        let tac (body : String) := "syntax (name := viaHole) \"viaHole\" : tactic\ndef Tactic.viaHole : Tactic := fun _ => do\n" ++
+          "  g ← TacticM.mainGoal;\n  ng ← TacticM.newGoal g (.const \"Nat\");\n  e ← TacticM.goalExpr ng;\n" ++
+          "  TacticM.assign g (" ++ body ++ ");\n  TacticM.replaceMainGoal (.cons ng .nil)\n" ++
+          "attribute [tactic tactic.viaHole] Tactic.viaHole\n"
+        -- `K x ?n : Look Nat` given to a goal `Pos Nat`: with the hole the type was never
+        -- inferred, and the kernel takes the look-alike for the private type
+        failsPriv privMod ("import Priv\nstructure Look (A : Type) where\n  val : A\n" ++
+          "def K (x : Look Nat) (n : Nat) : Look Nat := x\n" ++ tac "Expr.app (.app (.const \"K\") (.var 0)) e" ++
+          "def forge (x : Look Nat) : Pos Nat := by\n  viaHole\n  exact 0") "mismatch"
+        -- control: a term with a hole of the goal's type (what `apply` does)
+        okLib ("import Prelude\n" ++ tac "Expr.app (.const \"Nat.succ\") e" ++ "def three : Nat := by\n  viaHole\n  exact 2\n#eval three") ["3"]
+        okLib ("import Prelude\ndef ap : (A B : Type) → (A → B) → A → B := by\n  intro A; intro B; intro f; intro a\n  apply f\n  assumption") },
+    { name := "OPEN (13b): a first-order unification solution forges a value of a private type", run := fun _ => do
+        -- not wanted: this records that the path is open. `?F ?p =?= G x` is solved by
+        -- `?F := G`, `?p := x`; nobody type-checks the solutions, and the kernel takes
+        -- `Look Nat` for `Pos Nat` by shape. When this test fails, the path was closed:
+        -- turn it into a `failsPriv` and update docs/stages/13-language.md, 13b.
+        okPriv privMod ("import Priv\nstructure Look (A : Type) where\n  val : A\n" ++
+          "inductive G : Look Nat → Type where\n  | mk (l : Look Nat) : G l\n" ++
+          "def sel {F : Pos Nat → Type} (p : Pos Nat) (w : F p) : Pos Nat := p\n" ++
+          "def forge (x : Look Nat) : Pos Nat := sel _ (G.mk x)\n#eval (forge (Look.mk 11)).val") ["11"] },
+    { name := "rfl is checked by the elaborator, not left to the kernel (wishful: elab-rfl-unchecked)", run := fun _ => do
+        failsLib "import Prelude\ndef w (r a : Nat) : r = Nat.succ a := rfl" "rfl: the two sides are not definitionally equal"
+        failsLib "import Prelude\ndef z (a : Nat) : a = a + 0 := rfl" "rfl: the two sides are not definitionally equal"
+        okLib "import Prelude\ndef k (a : Nat) : 0 + a = a := rfl\ndef m (xs : List Nat) : List.append List.nil xs = xs := rfl"
+        -- (agent elab-whnf's case) under a constructor whose motive is a hole: the kernel
+        -- used to answer "expected False, inferred True"
+        failsLibs "import Logic\ndef t : Ex (fun (m : Nat) => 3 = m) := Ex.intro _ 4 rfl" "rfl: the two sides are not definitionally equal"
+        okLibs "import Logic\ndef t : Ex (fun (m : Nat) => 3 = m) := Ex.intro _ 3 rfl"
+        -- so a tactic can try it: `rfl` fails, and the alternative runs
+        okLib "import Prelude\ndef a (r x : Nat) (h : r = Nat.succ x) : r = Nat.succ x := by first | rfl | exact h"
+        failsLib "import Prelude\ndef c (r x : Nat) : r = Nat.succ x := by rfl" "rfl: the two sides are not definitionally equal"
+        -- η still holds by `rfl`, also at an equation formed while a type was a hole
+        okLib ("import Prelude\ndef GP {S : Type} (f : S → S) : Prop := (s : S) → f s = s\nstructure One where\n  a : Nat\n" ++
+          "def x2 : GP (fun (s : One) => One.mk s.a) := fun s => rfl\ndef x6 : GP (fun (s : Unit) => ()) := fun s => rfl") },
     { name := "private constructors, observations and fields: the public API (13b)", run := fun _ => do
         okPriv privMod2 ("import Priv\n#eval Tok.value (Tok.num 3)\n#eval Tok.value (Tok.hide 4)\n#eval Tok.value (.num 5)\n" ++
           "#eval Sig.sample (Sig.next (Sig.const 3))\n#eval (Sig.const 2).name\n" ++
@@ -278,6 +345,9 @@ def group : Group where
         -- the recursors would hand out the private constructor's fields
         failsPriv privMod2 "import Priv\ndef f := @Tok.casesOn" "'Tok.casesOn' is private to module Priv"
         failsPriv privMod2 "import Priv\ndef f := @Tok.rec" "private"
+        -- the description is private too: `μ Tok.desc ()` is the type with nothing hidden
+        failsPriv privMod2 "import Priv\ndef raw : μ Tok.desc () := con ('secret, 7, (), ())" "'Tok.desc' is private to module Priv"
+        failsPriv privMod2 "import Priv\ndef D := @Sig.desc" "'Sig.desc' is private to module Priv"
         -- a type declared private: values of it can't be matched elsewhere either
         failsPriv privMod2 "import Priv\ndef f : Nat := match fav with\n  | .red => 1\n  | .blue => 2" "private to module Priv" },
     { name := "private observations of a coinductive: no observing, no building (13b)", run := fun _ => do
@@ -364,8 +434,8 @@ def group : Group where
     { name := "approximation: a repeated variable in a hole's spine (not a pattern) falls back to first order", run := fun _ =>
         -- `?m Γ i' =?= r i'` with `i'` in `Γ`: pruning the repeated `i'` loses it, so the
         -- solution is first-order from the repeated variable on (hdl-usability)
-        okLibs ("import Hdl.Core\nstructure Comb (i o : HwTy) where\n  run : {r : HwTy → Type} → [Hw r] → r i → r o\n" ++
-          "def mapIn {ω i' i o : HwTy} (f : Comb i' i) (c : Circuit i o) : Circuit i' o :=\n" ++
+        okLibs ("import Hdl.Core\nstructure CombT (i o : HwTy) where\n  run : {r : HwTy → Type} → [Hw r] → r i → r o\n" ++
+          "def mapIn {ω i' i o : HwTy} (f : CombT i' i) (c : Circuit i o) : Circuit i' o :=\n" ++
           "  Circuit.mk c.st c.init (fun s x => c.step s (f.run x))\n") },
     { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
         -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
