@@ -216,9 +216,10 @@ def acDelta : String := "(fun (z : Top) => z T2 id2 z)"
 ascribed on both sides: since 4g `Box T2 = Box A` computes (to the equation of the codes),
 so the elaborator can't read the two types off the proof's type. The target is `Box A`;
 the source must be written `Box T2`, with the *name* `T2`: the inferred type of `mk δ` is
-`Box (Top → Top)`, and the D1 regularity modes compare the two types syntactically
-(`sameVal`), so with the inferred type regularity would not fire at `A := T2` and the
-program would terminate for a reason that has nothing to do with the loop. -/
+`Box (Top → Top)`, and the D1 regularity modes used to compare the two types
+syntactically, so with the inferred type regularity did not fire at `A := T2` and the
+program terminated for a reason that had nothing to do with the loop. (Since Part 2
+regularity is decided by conversion, and both spellings behave alike.) -/
 def acOmegaBody : String :=
   s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk {acDelta} : Box T2) : Box A)"
 
@@ -274,8 +275,6 @@ def abelCoquandLiteral : String :=
 
 /-- `--regularity` modes, as on the command line. -/
 def regularityMode : String → Regularity
-  | "nonprop" => .nonProp
-  | "refl" => .refl
   | "off" => .off
   | _ => .full
 
@@ -464,18 +463,31 @@ def ottGroup : Group where
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
         fails "def bad (A : Type) (a b : A) : a = b := rfl" "rfl: the two sides are not definitionally equal" },
-    -- D1: regularity is off by default, and the program checks; with `--regularity full`
-    -- (or `nonprop`) and an evaluator that runs proofs (`--eager-proofs`, the behaviour
-    -- before P2) checking it does not terminate
+    -- D1: regularity beyond the inert types is off by default, and the program checks. It
+    -- used to loop with `--regularity full` and an evaluator that runs proofs
+    -- (`--eager-proofs`): regularity was then a rule of evaluation, decided by comparing the
+    -- two types as written. Now regularity is decided by conversion only, so the evaluator
+    -- never fires it, and the program checks in every mode
     { name := "D1 (Abel–Coquand): the program checks (no regularity: the box's cast casts its proof field)", run := fun _ => do
         ok (abelCoquand "omega")
         ok (abelCoquand) },
-    { name := "D1 (Abel–Coquand): with regularity and eager proofs, checking the program does not terminate", run := fun _ =>
-        checkDiverges (abelCoquand) "full+eager" },
-    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks; loops with regularity and eager proofs)", run := fun _ => do
+    { name := "D1 (Abel–Coquand): with regularity and eager proofs the program checks too (regularity is a rule of conversion, not of evaluation)", run := fun _ =>
+        checkTerminates (abelCoquand) "full+eager" },
+    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks, with regularity and eager proofs too)", run := fun _ => do
         unless (abelCoquandNested.splitOn "unbox2").length > 2 do throw (IO.userError "variant not built")
         ok abelCoquandNested
-        checkDiverges abelCoquandNested "full+eager" },
+        checkTerminates abelCoquandNested "full+eager" },
+    -- (from PR #40) The cast's source type written by name, `Box T2`, or as inferred,
+    -- `Box (Top → Top)`: the syntactic rule fired for one spelling and not for the other, so
+    -- the same program looped or terminated depending on how a type was written. Decided by
+    -- conversion, the two spellings behave alike, in every mode
+    { name := "D1 (Abel–Coquand): the cast's source type by name or as inferred: the same verdict and the same termination in every mode", run := fun _ => do
+        let named := abelCoquand
+        let inferred := named.replace ": Box T2)" ": Box (Top → Top))"
+        unless named != inferred && (named.splitOn ": Box T2)").length == 2 do throw (IO.userError "variant not built")
+        for p in [named, inferred] do
+          ok p
+          for mode in ["off", "full", "full+eager", "off+eager"] do checkTerminates p mode },
     { name := "regularity at inert types: an indexed recursor computes at a data motive (Vec.length)", run := fun _ =>
         ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
           "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
@@ -485,31 +497,27 @@ def ottGroup : Group where
     { name := "no regularity at a type with a variable parameter", run := fun _ =>
         fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
           "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "rfl: the two sides are not definitionally equal" },
-    -- P1: InReg decided by ground equality is stable (h3 checks, and so does its reduct h2)
-    { name := "P1: InReg is stable under substitution (the probe's reduct checks iff the term does)", run := fun _ =>
+    -- P1: regularity at inert types is decided by conversion (InReg_conv, the default): all
+    -- eight probes check, and the control at a type variable does not
+    { name := "P1: InReg decided by conversion accepts the eight probes, open indices too (the default)", run := fun _ => do
+        checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .conv)).pretty
+        let dflt := p1Decls.filterMap fun (n, d) =>
+          if (runFrontend (R := ZeroOneMany) (p1Prelude ++ d ++ "\n")).messages.any (·.severity == .error) then none else some n
+        checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr dflt).pretty },
+    -- the evaluator's fast path alone (`--inert ground`) is stable under substitution (h3
+    -- checks, and so does its reduct h2) but gives up a neutral value at an open index
+    { name := "P1: the fast path alone (ground) is stable, and rejects t1 and t2", run := fun _ =>
         checkEq (repr ["h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .ground)).pretty },
-    { name := "P1: with InReg_conv (decided by conversion), open indices too", run := fun _ =>
-        checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .conv)).pretty },
-    -- (since I-1 the arguments of a proof are bound suspended, so in `h3`'s body the
-    -- instance of `h`'s type has `f p` with `p` a suspension, which the syntactic test's
-    -- read-back erases, against `f p` with `p` a variable in `h3`'s declared type: the same
-    -- instability, now rejecting `h3` too; P1's `ground` mode, the default, has neither)
-    { name := "P1: the old syntactic InReg rejects the reduct h2 of h3, and h3 (documents the bug)", run := fun _ =>
-        checkEq (repr ["t1", "h", "g1", "g3"]).pretty (repr (p1Accepted .syntactic)).pretty },
     { name := "D1: with eager proofs, a cast between propositions applies the equivalence, not regularity", run := fun _ => do
         let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral { globals := { lazyProofs := false } }
         checkEq (repr ["fun x => x"]).pretty (repr (s.messages.toList.map (·.text))).pretty },
-    { name := "D1 (R1): regularity only at non-propositions doesn't help with eager proofs (the box is a type)", run := fun _ =>
-        checkDiverges (abelCoquand) "nonprop+eager" },
-    { name := "D1 (R2, off): regularity only along refl, or none, checks the program", run := fun _ => do
-        okWith .refl (abelCoquand)
+    { name := "D1 (off): without regularity the program checks", run := fun _ =>
         okWith .off (abelCoquand) },
     -- P2 (the default): proofs are never evaluated, so the loop, which lives in a proof,
     -- is never run, even with full regularity
     { name := "P2: proofs are never evaluated, so Abel–Coquand checks even with full regularity (and nested)", run := fun _ => do
         checkTerminates (abelCoquand) "full"
         checkTerminates abelCoquandNested "full"
-        checkTerminates (abelCoquand) "nonprop"
         checkTerminates (abelCoquand) "off" },
     { name := "P2: a cast between propositions is stuck (a proof), not the equivalence applied", run := fun _ => do
         let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral
@@ -3523,6 +3531,43 @@ def markerSamples : List (MTm × Bool) :=
       (pi pfalse (eq (univ 0) (app (exfalso (pi (enum 2) (univ 0)) (var 0)) (tag 2 0))
         (app (exfalso (pi (enum 2) (univ 0)) (prf z (letE pfalse (var 0) (var 0)))) (tag 2 0)))), true) ]
 
+/-- (P1) Regularity at inert types, decided by conversion (InReg_conv): the probes of
+`wiz-notes/p1-stable.md` as core terms, for both kernels. `F i` is an inert family over
+`Enum 2` (one constructor, at index `#0`), so `F i` for a variable `i` has an open index.
+Each term is `fun … => refl k` at a type that states an equation; `true`: accepted. -/
+def convSamples : List (String × MTm × Bool) :=
+  let F (i : MTm) : MTm := mu 0 (enum 2) (dret (tag 2 0)) i
+  -- a type computed by induction: `T i x : U0`, stuck on `x`
+  let T (i x : MTm) : MTm := ind 0 (enum 2) (dret (tag 2 0)) 2 (lams 2 (univ 0)) (lams 3 (enum 2)) i x
+  [ -- t1: a stuck cast between the same types at an open index is its argument
+    ("t1", ann (lams 3 (refl (F (var 2)) (var 1)))
+      (pi (enum 2) (pi (F (var 0)) (pi (eqTy (F (var 1)) (F (var 1)))
+        (eq (F (var 2)) (cast (F (var 2)) (F (var 2)) (var 0) (var 1)) (var 1))))), true),
+    -- t2: the two types convertible, not syntactically equal (`F (f p)`, `F (f q)`, two proofs)
+    ("t2", ann (lams 6 (refl (F (app (var 4) (var 2))) (var 1)))
+      (pi prop (pi (pi (var 0) (enum 2)) (pi (var 1) (pi (var 2) (pi (F (app (var 2) (var 1)))
+        (pi (eqTy (F (app (var 3) (var 2))) (F (app (var 3) (var 1))))
+          (eq (F (app (var 4) (var 2))) (cast (F (app (var 4) (var 3))) (F (app (var 4) (var 2))) (var 0) (var 1)) (var 1)))))))), true),
+    -- h2: two casts of one value, at `F (f p) ≡ F (f p)` and at `F (f p) ≡ F (f q)`
+    ("h2", ann (lams 7 (refl (F (app (var 5) (var 3))) (var 2)))
+      (pi prop (pi (pi (var 0) (enum 2)) (pi (var 1) (pi (var 2) (pi (F (app (var 2) (var 1)))
+        (pi (eqTy (F (app (var 3) (var 2))) (F (app (var 3) (var 2))))
+          (pi (eqTy (F (app (var 4) (var 3))) (F (app (var 4) (var 2))))
+            (eq (F (app (var 5) (var 3)))
+              (cast (F (app (var 5) (var 4))) (F (app (var 5) (var 4))) (var 1) (var 2))
+              (cast (F (app (var 5) (var 4))) (F (app (var 5) (var 3))) (var 0) (var 2)))))))))), true),
+    -- a *type* stuck on such a cast (`convTy`): `x : T i (cast e k)` is a `T i k`
+    ("ty", ann (lams 4 (var 0))
+      (pi (enum 2) (pi (F (var 0)) (pi (eqTy (F (var 1)) (F (var 1)))
+        (pi (T (var 2) (cast (F (var 2)) (F (var 2)) (var 0) (var 1))) (T (var 3) (var 2)))))), true),
+    -- a cast between types that are not convertible stays: `F #0`, `F #1`
+    ("ne", ann (lams 2 (refl (F (tag 2 1)) (cast (F (tag 2 0)) (F (tag 2 1)) (var 0) (var 1))))
+      (pi (F (tag 2 0)) (pi (eqTy (F (tag 2 0)) (F (tag 2 1)))
+        (eq (F (tag 2 1)) (cast (F (tag 2 0)) (F (tag 2 1)) (var 0) (var 1)) (cast (F (tag 2 0)) (F (tag 2 1)) (var 0) (var 1))))), true),
+    -- t5, the control: no regularity at a type variable
+    ("t5", ann (lams 3 (refl (var 2) (var 1)))
+      (pi (univ 0) (pi (var 0) (pi (eqTy (var 1) (var 1)) (eq (var 2) (cast (var 2) (var 2) (var 0) (var 1)) (var 1))))), false) ]
+
 end MTm
 
 /-- (audit S1, audit-2 P-1) The name of a term's constructor. **No wildcard**: a new
@@ -4466,12 +4511,19 @@ def selfHostGroup : Group where
         let E : Val ZeroOneMany := .enum ls
         let pf (sp : Array (Elim ZeroOneMany)) : Val ZeroOneMany :=
           .neutral (.prf [] .tt) sp
+        -- (the kernel's read-back, as its comparisons and its messages use it)
+        let sameVal (g : Globals ZeroOneMany) (a b : Val ZeroOneMany) : Bool :=
+          quote { g with quoteErasesProofs := true } 0 a == quote { g with quoteErasesProofs := true } 0 b
         -- two proofs are equal, whatever was projected
         checkEq "true" (toString (sameVal g (pf #[.fst]) (pf #[.snd])))
         -- `absurd E p` is a value of `E`, not a proof: what is done with it is compared
         checkEq "false" (toString (sameVal g (pf #[.absurd E, .app (.tag ls 0)]) (pf #[.absurd E, .app (.tag ls 1)])))
         -- and what was done before the `absurd` is not
         checkEq "true" (toString (sameVal g (pf #[.fst, .absurd E, .app (.tag ls 0)]) (pf #[.snd, .absurd E, .app (.tag ls 0)])))
+        -- the same proof as a stuck `refl` head and as a suspension reads back alike (the
+        -- two forms of one proof must not make two types differ: `prf-marker.md` §4.3)
+        checkEq "true" (toString (sameVal g (.neutral (.refl E (.tag ls 0)) #[.fst]) (pf #[.snd])))
+        checkEq "true" (toString (sameVal g (.neutral (.refl E (.tag ls 0)) #[.absurd E]) (pf #[.fst, .absurd E])))
         -- conversion, a suspended proof against a `refl`, both under `absurd`: a proof under
         -- `absurd` is not compared, in either kernel (they differed before the marker)
         let refl : Val ZeroOneMany := .neutral (.refl E (.tag ls 0)) #[.absurd E]
@@ -4482,14 +4534,18 @@ def selfHostGroup : Group where
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let main := "def b2s : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\n" ++
           "def pf : Head := .hprf .nil .star\n" ++
+          "def rf : Head := .hrefl (.venum 2) (.vtag 2 0)\n" ++
+          "def sameVal (a b : Val) : Bool := tmEq (quoteM .false 0 a) (quoteM .false 0 b)\n" ++
           "def ab (sp : Spine) : Spine := .sabsurd sp (.venum 2)\n" ++
           "def main : IO Unit := do\n" ++
           "  IO.println (b2s (sameVal (.vne pf (.sfst .snil)) (.vne pf (.ssnd .snil))));\n" ++
           "  IO.println (b2s (sameVal (.vne pf (.sapp (ab .snil) (.vtag 2 0))) (.vne pf (.sapp (ab .snil) (.vtag 2 1)))));\n" ++
           "  IO.println (b2s (sameVal (.vne pf (.sapp (ab (.sfst .snil)) (.vtag 2 0))) (.vne pf (.sapp (ab (.ssnd .snil)) (.vtag 2 0)))));\n" ++
+          "  IO.println (b2s (sameVal (.vne rf (.sfst .snil)) (.vne pf (.ssnd .snil))));\n" ++
+          "  IO.println (b2s (sameVal (.vne rf (ab .snil)) (.vne pf (ab (.sfst .snil)))));\n" ++
           "  IO.println (b2s (conv empty (.venum 2) (.vne pf (ab .snil)) (.vne (.hrefl (.venum 2) (.vtag 2 0)) (ab .snil))));\n" ++
           "  IO.println (b2s (conv empty (.venum 2) (.vne pf (.sfst .snil)) (.vne (.hrefl (.venum 2) (.vtag 2 0)) (.sfst .snil))))\n"
-        ioRun (kernel ++ "\n" ++ main) "true\nfalse\ntrue\ntrue\ntrue\n" },
+        ioRun (kernel ++ "\n" ++ main) "true\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\n" },
     { name := "every constructor of Term is covered by the traversals (S1: a missed one proved False)", run := fun _ => do
         let samples := termSamples (.var 5) (.param "pw")
         -- a sample for every constructor
@@ -4503,10 +4559,7 @@ def selfHostGroup : Group where
             (fun _ => modify fun (a, b) => (a, b + 1)) (fun _ _ => modify fun (a, b) => (a + 1, b))).run (0, 0)
           unless (ts, ls) == (nTerms, nLevels) do
             throw (IO.userError s!"{c}: mapChildrenM visits {ts} terms and {ls} levels, expected {nTerms} and {nLevels}")
-          -- so do the traversals built on it: the free variables (`lvlBound`, `sameVal`),
-          -- shifting, substitution, and the levels
-          let fv := if c == "var" then 1 else nTerms
-          unless ((Term.freeVarsAt 0 t).run #[]).2.size == fv do throw (IO.userError s!"{c}: freeVarsAt misses a child")
+          -- so do the traversals built on it: shifting, substitution, occurrence, the levels
           if nTerms > 0 then
             unless t.lift 1 != t do throw (IO.userError s!"{c}: lift misses the children")
             unless (List.range 3).any (fun d => t.instantiateAt (5 - d) .tt != t) do throw (IO.userError s!"{c}: instantiateAt misses the children")
@@ -4519,8 +4572,6 @@ def selfHostGroup : Group where
         let g : Globals ZeroOneMany := {}
         let m : Term ZeroOneMany := (Term.prf (.param "u") .tt).instLevels ["u"] [.zero]
         unless (eval g [] m) matches .neutral (.prf ..) #[] do throw (IO.userError "prf.{u} at u := 0 is not suspended")
-        -- and a suspended proof's environment counts for `lvlBound`, as a closure's does
-        checkEq "8" (toString (Val.lvlBound (eval g [Val.var 7] (.prf .zero (.var 0)) : Val ZeroOneMany)))
         -- the Wiz kernel's traversals
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let main := "def b2s : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\n" ++
@@ -4531,9 +4582,8 @@ def selfHostGroup : Group where
           "  IO.println (b2s (tmEq (.prf z (.var 0)) (.prf z (.var 1))));\n" ++
           "  IO.println (b2s (tmEq (.prf z .star) (.prf (.lnum 1) .star)));\n" ++
           "  IO.println (b2s (tmEq (tmSubst (.cons \"u\" .nil) (.cons z .nil) (.prf (.lparam \"u\") .star)) (.prf z .star)));\n" ++
-          "  IO.println (Nat.toString (lvlBound (eval (.cons (fresh 7) .nil) (.prf z (.var 0)))));\n" ++
           "  IO.println (b2s (tmEq (quote 1 (eval (.cons (fresh 0) .nil) (.prf z (.var 0)))) (.prf z (.var 0))))\n"
-        ioRun (kernel ++ "\n" ++ main) "true\nfalse\nfalse\nfalse\ntrue\n8\ntrue\n" },
+        ioRun (kernel ++ "\n" ++ main) "true\nfalse\nfalse\nfalse\ntrue\ntrue\n" },
     { name := "P2: the proof marker is required and verified, by both kernels (terms without the marking pass)", run := fun _ => do
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let samples := MTm.markerSamples
@@ -4567,6 +4617,32 @@ def selfHostGroup : Group where
         | .ok _ => throw (IO.userError "an ill-typed declaration was accepted")
         | .error (.unmarkedProof ..) => throw (IO.userError "the error of the first check was reported")
         | .error _ => pure () },
+    { name := "P1: regularity at inert types is decided by conversion, in both kernels (the probes as core terms)", run := fun _ => do
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let samples := MTm.convSamples
+        let show' (b : Bool) : String := if b then "ok" else "error"
+        -- the Lean kernel, by default (`conv`)
+        for (n, t, ok) in samples do
+          let v := leanVerdict t
+          unless (v != "error") == ok do throw (IO.userError s!"{n}: the Lean kernel says {v}, expected {show' ok}")
+        -- with the fast path alone (`--inert ground`), the open-index probes are rejected
+        let ground (t : MTm) : Bool :=
+          let g : Globals ZeroOneMany := { leanGlobals () with inertReg := .ground }
+          (infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } t.toTerm).1).toBool
+        for (n, t, _) in samples do
+          unless ground t == (n == "ne") do throw (IO.userError s!"{n}: unexpected verdict with the fast path alone")
+        -- the Wiz kernel
+        let okV := "def okVerdict (t : Tm) : String := match infer (TCtx.inProof empty) t with\n  | .err _ => \"error\"\n  | .ok _ _ => match infer empty (MR.tm (markInfer empty t)) with\n    | .ok _ _ => \"ok\"\n    | .err _ => \"error\"\n"
+        let calls := samples.map fun (_, t, _) => s!"(okVerdict {t.toWiz})"
+        let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
+        ioRun (kernel ++ "\n" ++ wizVerdict ++ okV ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n")
+          ("\n".intercalate (samples.map fun (_, _, ok) => show' ok) ++ "\n")
+        -- and with `kernelInertConv := .false` it rejects the same ones
+        let on := "def kernelInertConv : Bool := .true"
+        unless (kernel.splitOn on).length == 2 do throw (IO.userError "kernelInertConv not found")
+        let groundK := kernel.replace on "def kernelInertConv : Bool := .false"
+        ioRun (groundK ++ "\n" ++ wizVerdict ++ okV ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n")
+          ("\n".intercalate (samples.map fun (n, _, _) => show' (n == "ne")) ++ "\n") },
     { name := "U5b: a cast at a Π/Σ whose sort is not known is stuck, as the equation it goes along is (both kernels)", run := fun _ => do
         -- (prop-harness, `wiz-notes/soundness-probes/ph-u5b-cast-at-unknown-sort.txt`) the cast
         -- used to compute, projecting a proof whose type is a stuck equation and no pair
@@ -4672,6 +4748,9 @@ def selfHostGroup : Group where
           "def t5 : P (refl (((), fun x => x) : B2)) := t3 (refl (((), fun x => x) : B2))\n" ++
           "def t4 : P (refl (((), fun x => x) : B2)) := t3 _\n"
         ok surf
+        -- the pair's type left to inference (#130: `refl` retries against the expected
+        -- equation's type), as in prf-review's probe
+        ok (surf.replace "(((), fun x => x) : B2)" "((), fun x => x)")
         -- raw: prf.{0} ((fun _ => () : a = a → True) (refl B2 a)) : True, a := ((), fun x => x)
         let B2 : MTm := .sigma (.unit 0) (.pi .ptrue .ptrue)
         let a : MTm := .ann (.pair .star (.lam (.var 0))) B2
@@ -6696,8 +6775,8 @@ def descEqGroup : Group where
     { name := "D1 (Abel–Coquand) with two different box descriptions: checks", run := fun _ => do
         unless (abelCoquandTwoBoxes.splitOn "boxEq").length > 2 do throw (IO.userError "variant not built")
         ok abelCoquandTwoBoxes },
-    -- with regularity on, the cast between the two descriptions is still structural (they
-    -- are not syntactically equal), so it applies `boxEq`'s equivalence: `id2`, no loop
+    -- with regularity on, the cast between the two descriptions is still structural (it is
+    -- on a constructor), so no loop
     { name := "D1 (Abel–Coquand) with two different box descriptions: checks with regularity too", run := fun _ =>
         okWith .full abelCoquandTwoBoxes }
   ]
@@ -7049,9 +7128,8 @@ def reprGroup : Group where
         check (!(run {}).unboxStructs) "the default unboxes"
         check (run { unboxStructs := true }).unboxStructs "unboxStructs was lost"
         check (!(run {}).unboxStructs) "unboxStructs leaked"
-        check ((run { inertReg := .syntactic }).inertReg == .syntactic) "inertReg := syntactic was lost"
-        check ((run { inertReg := .conv }).inertReg == .conv) "inertReg := conv was lost"
-        check ((run {}).inertReg == .ground) "inertReg leaked"
+        check ((run { inertReg := .ground }).inertReg == .ground) "inertReg := ground was lost"
+        check ((run {}).inertReg == .conv) "inertReg leaked"
         check ((run { predicativeProp := true }).predicativeProp) "predicativeProp was lost"
         check (!(run {}).predicativeProp) "predicativeProp leaked"
         check (!(run { lazyProofs := false }).lazyProofs) "lazyProofs := false was lost"

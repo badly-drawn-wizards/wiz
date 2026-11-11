@@ -159,92 +159,12 @@ def propSort? : Val R → Option Bool
   | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
   | _ => none
 
-/-! ### A level above every variable of a value
-
-Regularity (`vCast`'s last case) compares two types by quoting them. Quoting at level
-`l` turns the variable at level `x` into the index `l - x - 1`, so `l` must be above
-every variable the values mention, or two different variables could quote to the same
-index. `Val.lvlBound` computes such an `l`. A closure counts only the entries of its
-environment that its body might mention (that is all `quote` can reach). The bound may
-be too large (a `lazyInd`'s whole spine counts), never too small. -/
-
-/-- The free variables of `t` under `depth` binders, as indices into the enclosing
-environment (with repeats). -/
-partial def Term.freeVarsAt (depth : Nat) (t : Term R) : StateM (Array Nat) Unit :=
-  match t with
-  | .var i => if i ≥ depth then modify (·.push (i - depth)) else pure ()
-  | t => t.forChildren (fun _ => pure ()) (fun d c => Term.freeVarsAt (depth + d) c)
-
-mutual
-/-- `1 +` the largest level of a local variable in `v` (`0` if none). -/
-partial def Val.lvlBound : Val R → Nat
-  | .neutral h sp => max h.lvlBound (Elim.spineBound sp)
-  | .unfold _ _ sp _ => Elim.spineBound sp
-  | .lazyInd _ I D _ P m i x sp _ => max (Val.maxBound [I, D, P, m, i, x]) (Elim.spineBound sp)
-  | .pi _ _ q a b _ | .sigma _ q a b _ => max (max q.lvlBound a.lvlBound) (b.lvlBound 1)
-  | .lam _ b => b.lvlBound 1
-  | .pair a b => max a.lvlBound b.lvlBound
-  | .desc _ a | .dret a | .szSuc a | .sizeLt a | .con a | .cocon a | .ulift _ a | .up a => a.lvlBound
-  | .darg q S D => Val.maxBound [q, S, D]
-  | .drec q j D => Val.maxBound [q, j, D]
-  | .dhrec q H j D => Val.maxBound [q, H, j, D]
-  | .mu _ I D i s h | .nu _ I D i s h => max (Val.maxBound [I, D, i, s]) (Val.maxBound ((h.map (·.2.2)).getD []))
-  | .scofix _ I D A f s i a => Val.maxBound [I, D, A, f, s, i, a]
-  | .coit _ I D S st i s => Val.maxBound [I, D, S, st, i, s]
-  | .sort _ | .unit _ | .tt | .empty _ | .qty | .qlit _ | .enum _ | .tag .. | .size | .szInf
-  | .natLit _ => 0
-partial def Val.maxBound (vs : List (Val R)) : Nat := vs.foldl (fun m v => max m v.lvlBound) 0
-partial def Head.lvlBound : Head R → Nat
-  | .local x => x + 1
-  | .global .. | .mvar _ => 0
-  | .eq A a b => Val.maxBound [A, a, b]
-  | .eqTy A B => Val.maxBound [A, B]
-  | .cast A B e t => Val.maxBound [A, B, e, t]
-  | .refl A a => Val.maxBound [A, a]
-  | .reflTy X => X.lvlBound
-  | .transp A a P p b e => Val.maxBound [A, a, P, p, b, e]
-  | .prf env t => Closure.lvlBound 0 (.mk env t)
-partial def Elim.spineBound (sp : Array (Elim R)) : Nat := sp.foldl (fun m e => max m e.lvlBound) 0
-partial def Elim.lvlBound : Elim R → Nat
-  | .app a => a.lvlBound
-  | .fst | .snd | .out | .down => 0
-  | .split q _ m _ _ b => max q.lvlBound (max (m.lvlBound 1) (b.lvlBound 2))
-  | .absurd m => m.lvlBound
-  | .ecase _ m env bs => max (m.lvlBound 1) (envBound env (bs.foldl (fun acc b => ((Term.freeVarsAt 0 b).run acc).2) #[]))
-  | .delim _ P a b c h => Val.maxBound [P, a, b, c, h]
-  | .ind _ I D _ P m i => Val.maxBound [I, D, P, m, i]
-  | .sfix _ I D _ P f s i => Val.maxBound [I, D, P, f, s, i]
-  | .scase _ I D _ P m s i => Val.maxBound [I, D, P, m, s, i]
-/-- The bound of the entries of `env` at the indices `fv`. -/
-partial def envBound (env : Env R) (fv : Array Nat) : Nat :=
-  (fv.qsort (· < ·)).foldl (init := (0, none)) (fun (m, prev) i =>
-    if prev == some i then (m, prev)
-    else (max m ((env[i]?.map Val.lvlBound).getD 0), some i)) |>.1
-/-- A closure whose body is under `binders` binders. -/
-partial def Closure.lvlBound (binders : Nat) : Closure R → Nat
-  | .mk env body => envBound env ((Term.freeVarsAt binders body).run #[]).2
-end
-
 /-- The position of the last `absurd` in a spine. What comes before it is a term of an
 empty type; what comes after is typed by its motive. -/
 def lastAbsurd? (sp : Array (Elim R)) : Option Nat :=
   (List.range sp.size).reverse.find? fun i => match sp[i]? with
     | some (.absurd _) => true
     | _ => false
-
-/-- (D1 experiment, `Regularity.refl`) Is this proof visibly a reflexivity: `refl`,
-`reflTy`, `()`, or a `transp` of one along one? Such proofs only prove equations whose
-sides are definitionally equal. -/
-partial def reflProof (e : Val R) : Bool :=
-  match whnf e with
-  | .neutral (.refl ..) #[] | .neutral (.reflTy _) #[] | .tt => true
-  | .neutral (.transp _ _ _ p _ e) #[] => reflProof p && reflProof e
-  -- (P2) the one rule that inspects a proof, by its term: a suspended `refl`, `reflTy`
-  -- or `()` (it is not evaluated)
-  | .neutral (.prf _ t) #[] => (match t with
-    | .refl .. | .reflTy _ | .tt => true
-    | _ => false)
-  | _ => false
 
 /-- (P2) What a closure's instantiation is once a read-back's step budget has run out
 (`Budget`): stuck. -/
@@ -257,14 +177,6 @@ def proofHead (h : Head R) : Bool :=
   | .prf .. | .refl .. | .reflTy _ | .transp .. => true
   | .cast A B _ _ => propSort? (whnf A) == some true && propSort? (whnf B) == some true
   | _ => false
-
-/-- (D1 experiment) May `cast A A e t` reduce to `t` under `g.regularity`? -/
-def regularityAllowed (g : Globals R) (A e : Val R) : Bool :=
-  match g.regularity with
-  | .full => true
-  | .nonProp => propSort? A != some true
-  | .refl => reflProof e
-  | .off => false
 
 /-- The predecessor of a size, for `con`/`cocon`/`out`: `↑s ↦ s`, `∞ ↦ ∞`; `none`
 for a size variable, which can't be built from or observed. -/
@@ -959,28 +871,17 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   | .sort u, .sort w | .empty u, .empty w => if u.equiv w then t else stuck
   | .unit u, .unit w => if u.equiv w then .tt else stuck
   | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
-  -- regularity at inert types (InReg, P1): `A` and `B` equal by `groundEqTy`, which is
-  -- invariant under conversion and stable under substitution. (The D1 experiment's
-  -- `g.regularity` modes, off by default, still compare by `sameVal`.)
+  -- regularity at inert types (InReg): the evaluator's fast path. `A` and `B` equal by
+  -- `groundEqTy`, which is invariant under conversion and stable under substitution, and
+  -- needs no conversion. The rule itself (`A ≡ B` by conversion) is applied by the
+  -- conversion checker to the casts that stay stuck (`unCast` in `Conv.lean`).
   | _, _ =>
-    if regularityAllowed g A e && sameVal g A B then t else
-    if (match g.inertReg with
-        | .syntactic => inertTy g 0 A && sameVal g A B
-        | _ => groundEqTy g 0 A B) then t else
+    if groundEqTy g 0 A B then t else
     vCastData g A B e t stuck
   --|ex
   --| sorry
   --sol>
 
-
-/-- Syntactic equality of two values, quoted at a level above any variable in use. The
-side condition of the rules below (as it was of regularity): cheap, and stable under
-substitution, since a substitution instance of equal terms is equal. -/
-partial def sameVal (g : Globals R) (a b : Val R) : Bool :=
-  -- (P2) proofs are not evaluated, and not compared: all proofs are equal
-  let g := { g with quoteErasesProofs := true }
-  let l := max a.lvlBound b.lvlBound
-  quote g l a == quote g l b
 
 /-- An **inert** type: first-order data, whose values contain no functions, no proofs
 but index equations at inert types, and no values of a neutral type: `Enum`, `Unit`,
@@ -997,7 +898,7 @@ partial def inertTy (g : Globals R) (depth : Nat) (A : Val R) : Bool :=
   | .unit l => l.isNeverZero
   | .ulift l A₁ => l.isNeverZero && inertTy g (depth + 1) A₁
   | .sigma _ _ A₁ B (some s) => s.isNeverZero && inertTy g (depth + 1) A₁ &&
-      inertTy g (depth + 1) (Closure.inst g B (Val.var (100000 + depth)))
+      inertTy g (depth + 1) (Closure.inst g B (groundAtom (1000 + depth)))
   | .mu _ I D _ _ _ => inertTy g (depth + 1) I && inertDesc g (depth + 1) D
   | _ => false
 
@@ -1010,7 +911,7 @@ partial def inertDesc (g : Globals R) (depth : Nat) (D : Val R) : Bool :=
   | .darg _ S E => match tagField? S with
     | some (ls, lifted) => (List.range ls.length).all fun k =>
       inertDesc g depth (vApp g E (if lifted then .up (.tag ls k) else .tag ls k))
-    | none => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (Val.var (100000 + 50 + depth)))
+    | none => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (groundAtom (2000 + depth)))
   | _ => false
 
 /- ### Ground equality at inert types (P1)
@@ -1251,9 +1152,7 @@ partial def vCastData (g : Globals R) (A B e t stuck : Val R) : Val R :=
     | _ => stuck
   | .mu .., .mu .. =>
     let t := whnf t
-    -- (a numeral at a ground type was handled by InReg, `groundEqTy`; the old fast path
-    -- compared by `sameVal`, which is not stable, P1: kept only under `--inert-reg syntactic`)
-    if g.inertReg == .syntactic && (match t with | .natLit _ => true | _ => false) && sameVal g A B then t else
+    -- (a numeral at a ground type was handled by InReg, `groundEqTy`)
     match vNatView g t with
     | .con x => match famPayloadEq? g A B e with
       | some (Xi, Xi', e') => .con (vCast g Xi Xi' e' x)
