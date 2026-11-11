@@ -1490,7 +1490,8 @@ proved**, and the D1 experiment shows checking can loop (Status.md).
 ```
      name ∉ Σ    level parameters ν₁…νₖ distinct    every level parameter used is among them
      · ⊢ T type@_        (value v given ⇒  · ⊢ v ⇐ T)
-     ────────────────────────────────────────── addDecl                Check.lean:669–681
+     (implementation m given ⇒  · ⊢ m ⇐ T  in  Σ, c.{ν…} : T [:= v])
+     ────────────────────────────────────────── addDecl                Check.lean (`addDecl`, `checkImpl`)
      Σ ⊢ c.{ν₁…νₖ} : T [:= v]   added
 
      c.{ν…} : T ∈ Σ     |us| = k
@@ -1513,8 +1514,20 @@ proved**, and the D1 experiment shows checking can loop (Status.md).
   (§9.4). Those of the toolchain's `lib/` are trusted (reviewed, Status.md §7); any other
   is an axiom, listed by `#print axioms` (Status.md, F4). The elaborator checks their
   shapes.
-* `Decl.inline` (evaluate eagerly) and `Decl.impl` (compiler implementation) do not affect
-  what the kernel accepts.
+* **Implementations for the compiler** (`Decl.impl`): the term compiled code runs
+  instead of the value. Three things set one: a structurally recursive definition by
+  equations (the same equations with direct recursion, so that a program computes only
+  the recursive calls it makes), a partial definition (its body, above), and
+  `attribute [implemented_by g] f` (the constant `g`). The kernel never unfolds an
+  implementation, so it proves nothing, but it **checks every one against the declared
+  type**, with the definition itself already declared (a recursive one calls it):
+  `checkImpl`, from `addDecl` and `setImpl`, as `addPartialImpl` does for a partial
+  definition. So an implementation is well typed at `T`, its quantities are respected,
+  and the sorts noted on its `Π`s and `Σ`s are right (`checkSortNote`): erasure reads all
+  three. A declaration whose implementation does not check is rejected. **Not checked:**
+  that the implementation computes what the value computes (they are equal by induction,
+  not by conversion); see Status.md, T1.
+* `Decl.inline` (evaluate eagerly) does not affect what the kernel accepts.
 
 *Kernel.wiz.* There is no global table: a constant term carries its value and type
 (`Tm.const`, `Kernel.wiz:118`), and the kernel trusts that this pair was checked
@@ -1631,7 +1644,13 @@ is not caught by type checking):
    `indMethodTy`, `sfixFunTy`, … in `Conv.lean`), and the terms built inside `vEq`,
    `vEqType`, `vCast` (their binders and `some 0` annotations).
 6. **Code outside the kernel that runs on checked terms**: erasure and the backends.
-   Erasure relies on QTT: a 0-quantity value is assumed unneeded.
+   Erasure relies on QTT: a 0-quantity value is assumed unneeded. Every term erasure is
+   given has been checked by the kernel, a definition's implementation for the compiler
+   included (§13).
+6a. **That an implementation for the compiler agrees with the definition** (§13): the
+   compiled equations of a structurally recursive definition (two elaborations of the
+   same clauses; Status.md, T1), and native implementations (`implemented_by`, `repr:`),
+   which `#print axioms` lists.
 7. **The Lean compiler and runtime** (for the Lean kernel), and Wiz's own backend (for
    `Kernel.wiz`).
 
