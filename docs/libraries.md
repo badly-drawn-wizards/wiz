@@ -51,7 +51,9 @@ over hardware type codes `HwTy` (`bits n`, `prod a b`). `Hw` has the operations 
 by construction. Two instances: `HwTy.El` (values: simulation) and `Wire` (a netlist
 builder). A `Circuit i o` is a Mealy machine whose step is such code: `Circuit.run`
 simulates it on values, `Circuit.netlist` builds its netlist, `Netlist.simulate` runs the
-netlist, and `Verilog.emit` prints Verilog-2005. `examples/hdl.wiz` has a counter, a
+netlist, and `Verilog.emit` prints Verilog-2005. The module declares its registers (with sized initial
+values), then one wire per node, then the register updates, so every name is declared
+before its use (Icarus Verilog insists; the `hdl` test group runs it when it is installed). `examples/hdl.wiz` has a counter, a
 saturating counter, a popcount, a 4-tap sum and a doubling chain.
 
 Sharing has two parts:

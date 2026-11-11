@@ -71,6 +71,12 @@ def IO.argsFrom : Nat → Nat → IO (List String)
   | .succ k, i => IO.bind (IO.arg i) (fun a => IO.bind (IO.argsFrom k (Nat.succ i)) (fun rest => IO.pure (List.cons a rest)))
 def IO.args : IO (List String) := IO.bind IO.argCount (fun n => IO.argsFrom n 0)
 
+-- A Wiz function that C keeps after the call it was passed to (stage 9g). A foreign
+-- function's parameter `f : A → B` is a callback borrowed for the call; as
+-- `f : Callback (A → B)`, the C side owns a reference to it and gives it back with
+-- `wiz_release(ctx)`.
+def Callback (T : Type) : Type := T
+
 -- Byte buffers: functional, but `push` updates in place when the buffer is unique.
 axiom Bytes : Type
 extern "wiz_bytes_empty" Bytes.empty : Bytes

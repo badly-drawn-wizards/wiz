@@ -8,7 +8,8 @@ import Infoview
 -- The layout, colours, navigation and protocol are `lib/Infoview.wiz`; the terminal
 -- and socket system calls are `infoview/term.c`. Running it: docs/stages/11-tooling.md, 11m.
 
--- ## Foreign functions (infoview/term.c)
+-- ## Foreign functions (infoview/term.c, compiled and linked with the program: 9f)
+link_c "term.c"
 extern "iv_term_open" Term.open : IO Nat
 extern "iv_term_close" Term.close : IO Unit
 extern "iv_term_cols" Term.cols : IO Nat

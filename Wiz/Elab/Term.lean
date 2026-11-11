@@ -580,7 +580,8 @@ def openGoals (st : TacState R) : ElabM R (Array (LocalCtx R × VTy R)) :=
 
 /-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
 `True`s and `a = b`, an equation of functions a Π. Build the proof by the same shape
-(pairs, lambdas, `()`), with `refl` at the equations left; the kernel checks them. -/
+(pairs, lambdas, `()`, and a case split for a Π over a tag type), with `refl` at the
+equations left; the kernel checks them. -/
 partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
   let g ← getGlobals
   match ← force ty with
@@ -592,8 +593,30 @@ partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R))
     let some b ← rflProof ctx (← instM B (← evalIn ctx a)) | pure none
     pure (some (.pair a b))
   | .pi x _ _ A B _ =>
-    let some b ← rflProof (ctx.bind x A) (← instM B (Val.var ctx.lvl)) | pure none
-    pure (some (.lam x b))
+    let ctx' := ctx.bind x A
+    match tagField? A with
+    -- (4g) a Π over a tag type is proved tag by tag: an equation between two
+    -- descriptions is `(t : Enum ls) → E t = E' t`, and under the binder `E t` is a stuck
+    -- `ecase t …`, while at each tag it computes. `fun t => ecase t [p₀, …]`; a lifted tag
+    -- (`ULift (Enum ls)`) is split through `down` (the result's type is the goal by η).
+    | some (ls, lifted) =>
+      let tagV (k : Nat) : Val R := if lifted then .up (.tag ls k) else .tag ls k
+      let mut branches : List (Term R) := []
+      for k in [0:ls.length] do
+        let some p ← rflProof ctx' (← instM B (tagV k)) | return none
+        branches := branches ++ [p]
+      -- the motive, under one more binder `t : Enum ls` (in `ctx'`)
+      let t : Val R := Val.var (ctx.lvl + 1)
+      let motive := quote g (ctx.lvl + 2) (← instM B (if lifted then .up t else t))
+      let split : Term R := .ecase "t" motive (if lifted then .down (.var 0) else .var 0) branches
+      -- the binder is erased (quantity 0) and a case split uses its scrutinee, so the
+      -- split goes inside a `transp` along `() = ()`, whose premises are checked erased:
+      -- `transp Unit () (fun _ _ => goal) split () ()  :  goal`
+      let goal := quote g (ctx.lvl + 3) (← instM B (Val.var ctx.lvl))
+      pure (some (.lam x (.transp (.unit 1) .tt (.lam "_" (.lam "_" goal)) split .tt .tt)))
+    | none =>
+      let some b ← rflProof ctx' (← instM B (Val.var ctx.lvl)) | pure none
+      pure (some (.lam x b))
   | _ => pure none
 
 /-- (13a) Does an application have a named argument `(x := e)`? -/
@@ -1976,7 +1999,10 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       let t ← check ctx (stx.getArg 2) X
       let g ← getGlobals
       return (.cast (quote g ctx.lvl X) (quote g ctx.lvl Y) e t, Y)
-    | _ => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
+    -- (4g) an equation between data types computes (to the equation of their codes), and so
+    -- do equations between `Π`s and `Σ`s: then the target can't be read off the proof's type
+    | .neutral .. | .unfold .. => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
+    | _ => throwAt ctx.info "cannot infer the type of this cast: its proof's type is an equation that has computed, so it no longer shows the target type; write `(cast e t : T)`"
   | "term.match" =>
     -- stage 13: the type is found from the alternatives (a metavariable, in `Type`)
     -- (not depending on the scrutinised variables: the motive abstracts them, which

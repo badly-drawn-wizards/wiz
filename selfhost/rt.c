@@ -55,8 +55,11 @@ static void die(const char *m) { fprintf(stderr, "wiz: %s\n", m); exit(3); }
 /* (`-DWIZ_STATS`: count allocations, reused cells and the peak of live objects, printed
    at exit under reference counting) */
 #ifdef WIZ_STATS
-static size_t rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk;
+static size_t rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced, rt_nfun0;
 #define STAT(x) (x)
+static size_t hypSlot(V m);
+#define HYPT 8192
+static uintptr_t hypKey[HYPT]; static size_t hypMade[HYPT], hypForced[HYPT];
 #else
 #define STAT(x) ((void)0)
 #endif
@@ -166,7 +169,7 @@ static V fld(V o, int i) {
     if (p->f[2] == BOX(0)) { p->f[0] = ((Clo *)p->f[0])->fn(((Clo *)p->f[0])->env, BOX(0)); p->f[2] = BOX(1); }
 #else
     /* (a hypothesis being forced is `◾`: forcing it again fails rather than loops) */
-    if (p->f[2] == BOX(0)) { V s = p->f[0]; p->f[0] = BOX(0); p->f[0] = ap(s, BOX(0)); p->f[2] = BOX(1); }
+    if (p->f[2] == BOX(0)) { STAT(rt_nforced++); STAT(hypForced[hypSlot(((Clo *)p->f[0])->env[2])]++); V s = p->f[0]; p->f[0] = BOX(0); p->f[0] = ap(s, BOX(0)); p->f[2] = BOX(1); }
 #endif
     return p->f[0];
   }
@@ -305,6 +308,17 @@ static V p_ind(V nat, V D, V m, V i, V x) {
   return apn(m, 3, args);
 }
 #else
+#ifdef WIZ_STATS
+/* (per method of `ind`: hypotheses created and forced, keyed by the method's code) */
+static size_t hypSlot(V m) {
+  uintptr_t k = 0;
+  if (!ISBOX(m) && ((Clo *)m)->tag == T_CLO) { Clo *c = (Clo *)m; k = c->fn == accFn ? (uintptr_t)c->env[0] : (uintptr_t)c->fn; }
+  size_t h = (size_t)((k >> 4) * 2654435761u) % HYPT;
+  while (hypKey[h] && hypKey[h] != k) h = (h + 1) % HYPT;
+  hypKey[h] = k ? k : 1;
+  return h;
+}
+#endif
 /* (the closures' environments are lent: what is passed on is `inc`ed) */
 static V hrecFn(V *env, V h) {
   inc(env[1]); inc(env[2]); inc(env[3]); inc(env[4]); inc(h);
@@ -321,6 +335,7 @@ static V lazyHyp(V nat, V D, V m, V j, V y, V rest) {
   inc(D); inc(m); inc(j); inc(y);
   V env[5] = {nat, D, m, j, y};
   V fs[3] = {mkclo(recFn, 5, env), rest, BOX(0)};
+  STAT(rt_nhyp++); STAT(hypMade[hypSlot(m)]++);
   return mkobj(T_HYP, 3, fs);
 }
 /* (`D`, `m`, `d`, `pl` borrowed) */
@@ -349,6 +364,65 @@ static V p_ind(V nat, V D, V m, V i, V x) {
   V args[3] = {i, pl, h};
   return apn(m, 3, args);
 }
+/* Unmemoised hypotheses (`indv`, see Backend.wiz): the method gets a view
+   `[nat, D, m, payload]` instead of the chain, and reads the `j`-th hypothesis with
+   `p_hypAt`, computed there (the backend uses this only for methods that read each at
+   most once on a path, or whose result is a function) */
+static V p_indv(V nat, V D, V m, V i, V x) {
+  V pl = UNBOX(nat) ? p_natUnpack(x) : x;
+  inc(m); inc(pl);
+  V vw = mkobj(0, 4, (V[]){nat, D, m, pl});
+  V args[3] = {i, pl, vw};
+  return apn(m, 3, args);
+}
+static V hrecFnV(V *env, V h) {
+  inc(env[1]); inc(env[2]); inc(env[3]); inc(env[4]); inc(h);
+  V j = ap(env[3], h);
+  return p_indv(env[0], env[1], env[2], j, ap(env[4], h));
+}
+/* (the view is owned and released; the description is walked along the payload as
+   `hyps` does, keeping the descriptions it computes alive until the end) */
+static V p_hypAt(V vw, V jj) {
+  Obj *o = OBJ(vw);
+  V nat = o->f[0], D = o->f[1], m = o->f[2], p = o->f[3], d = D, own = BOX(0), r = BOX(0);
+  uintptr_t k = UNBOX(jj);
+  for (;;) {
+    switch (tagof(d)) {
+    case 1: {
+      V F = fld(d, 1), a = fld(p, 0);
+      inc(F); inc(a);
+      V d2 = ap(F, a);
+      dec(own); own = d2; d = d2; p = fld(p, 1);
+      continue;
+    }
+    case 2:
+      if (k == 0) {
+        V j = fld(d, 0), y = fld(p, 0);
+        inc(D); inc(m); inc(j); inc(y);
+        r = p_indv(nat, D, m, j, y);
+        goto done;
+      }
+      k--; d = fld(d, 1); p = fld(p, 1);
+      continue;
+    case 3:
+      if (k == 0) {
+        V env[5] = {nat, D, m, fld(d, 1), fld(p, 0)};
+        inc(D); inc(m); inc(env[3]); inc(env[4]);
+        r = mkclo(hrecFnV, 5, env);
+        goto done;
+      }
+      k--; d = fld(d, 2); p = fld(p, 1);
+      continue;
+    default:
+      r = unreach();
+      goto done;
+    }
+  }
+done:
+  dec(own);
+  dec(vw);
+  return r;
+}
 #endif
 
 /* ---- natives: curried functions of `n` arguments ---- */
@@ -376,7 +450,7 @@ static V accFn(V *env, V a) { (void)env; (void)a; die("accFn"); return BOX(0); }
 static V native(NF f, int arity) { V env[2] = {(V)f, BOX(arity)}; return mkclo(accFn, 2, env); }
 /* a function of `arity` arguments (captured variables first), `n` of them given */
 INLINE V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
-  STAT(rt_nfun++);
+  STAT(rt_nfun++); STAT(rt_nfun0 += n == 0);
   Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + (n + 2) * sizeof(V));
   if (!c) die("out of memory");
   c->tag = T_CLO; c->n = n + 2; c->fn = accFn;
@@ -886,8 +960,10 @@ INLINE void dropTake(V x, V r) { (void)resetTake(x, 0, r); }
 static void rt_finish(void) {
   for (size_t i = rt_nroots; i > 0; i--) dec(*rt_roots[i - 1]);
 #ifdef WIZ_STATS
-  fprintf(stderr, "wiz stats: %zu allocations, %zu reused, peak %zu live (mkobj %zu, mkclo %zu, mkfun %zu, mkthunk %zu)\n",
-          rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk);
+  fprintf(stderr, "wiz stats: %zu allocations, %zu reused, peak %zu live (mkobj %zu, mkclo %zu, mkfun %zu, mkthunk %zu; hypotheses %zu, forced %zu; capture-free mkfun %zu)\n",
+          rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced, rt_nfun0);
+  fprintf(stderr, "wiz hyp base rt_finish %p\n", (void *)rt_finish);
+  for (size_t i = 0; i < HYPT; i++) if (hypMade[i] > 1000000) fprintf(stderr, "wiz hyp %p: %zu made, %zu forced\n", (void *)hypKey[i], hypMade[i], hypForced[i]);
 #endif
   if (rt_live) { fflush(stdout); fprintf(stderr, "wiz: %zu objects leaked\n", rt_live); exit(4); }
 }

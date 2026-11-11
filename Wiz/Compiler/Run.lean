@@ -128,16 +128,40 @@ where
     | .obj 2 #[_, D'] | .obj 3 #[_, _, D'] => fields D' (x.field 1) (acc.push (x.field 0))
     | _ => acc
 
+/-- (9g) The signature of a function C calls (a callback, an exported function): the
+kinds of its parameters and result (letters), and whether the result is in `IO`. -/
+structure CallbackSig where
+  params : List Char
+  result : Char
+  io : Bool
+  deriving BEq, Inhabited, Repr
+
+/-- `[nn/b]`: the parameters, `/`, then the result, with `!` before it for a result in
+`IO`. -/
+def CallbackSig.toKey (c : CallbackSig) : String :=
+  s!"[{String.ofList c.params}/{if c.io then "!" else ""}{c.result}]"
+
+def CallbackSig.ofKey (s : List Char) : CallbackSig :=
+  let ps := s.takeWhile (· != '/')
+  let r := (s.dropWhile (· != '/')).drop 1
+  let (io, r) := match r with | '!' :: r => (true, r) | r => (false, r)
+  { params := ps, result := r.headD 'v', io }
+
 /-- How one argument or result of a foreign function is marshalled: a kind letter, or
 (9i) a C struct passed by value, `<ctype|header|f₁=k₁,…>`, whose fields are kinds
-again. A struct's `header` is empty when its definition is generated from the fields. -/
+again. A struct's `header` is empty when its definition is generated from the fields.
+(9g) A Wiz closure passed to C as a callback, a function pointer and a context
+pointer, is `k[sig]` (borrowed for the call) or `K[sig]` (`owned`: the C side has a
+reference and gives it back with `wiz_release`). -/
 inductive FKind where
   | k (c : Char)
   | struct (ctype : String) (header : String) (fields : List (String × FKind))
+  | callback (owned : Bool) (sig : CallbackSig)
   deriving BEq, Inhabited, Repr
 
 partial def FKind.toKey : FKind → String
   | .k c => c.toString
+  | .callback owned sig => (if owned then "K" else "k") ++ sig.toKey
   | .struct c h fs => "<" ++ c ++ "|" ++ h ++ "|" ++ ",".intercalate (fs.map fun (f, kd) => f ++ "=" ++ kd.toKey) ++ ">"
 
 /-- The text up to the matching `>` (after a `<`), and the rest. -/
@@ -170,6 +194,8 @@ partial def FKind.parseOne (cs : List Char) : Option (FKind × List Char) :=
         | _ => none
       some (.struct (String.ofList c) (String.ofList h) fields, rest)
     | _ => none
+  | 'k' :: '[' :: r => some (.callback false (CallbackSig.ofKey (r.takeWhile (· != ']'))), (r.dropWhile (· != ']')).drop 1)
+  | 'K' :: '[' :: r => some (.callback true (CallbackSig.ofKey (r.takeWhile (· != ']'))), (r.dropWhile (· != ']')).drop 1)
   | c :: r => some (.k c, r)
   | [] => none
 
@@ -183,6 +209,7 @@ partial def FKind.parseMany (cs : List Char) : List FKind :=
 def FKind.letter : FKind → Char
   | .k c => c
   | .struct .. => 'S'
+  | .callback owned _ => if owned then 'K' else 'k'
 
 /-- A foreign function's key: `extern:cname:kinds:result:io:header:finalizer` (see
 `extern`). Kinds: `n` Nat, `u` UInt64, `f` Float64, `s` String, `b` Bool, `v` Unit,
@@ -204,6 +231,15 @@ def ExternSig.ofKey? (key : Name) : Option ExternSig :=
     some { cname := c, params := FKind.parseMany ps.toList, result := ((FKind.parseMany r.toList).headD (.k 'v')),
            io := io == "io", header := h, fin }
   | _ => none
+
+/-- An exported function (stage 9g), `export:cname:kinds:result:io`: C calls `cname`. -/
+def ExternSig.ofExportKey? (key : Name) : Option ExternSig :=
+  match key.splitOn ":" with
+  | ["export", c, ps, r, io] =>
+    some { cname := c, params := ps.toList.map .k, result := .k (r.toList.headD 'v'), io := io == "io", header := "" }
+  | _ => none
+
+def exportPrefix : String := "export:"
 
 def nativeArity (key : Name) : Nat :=
   match ExternSig.ofKey? key with
@@ -514,6 +550,7 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
   -- definitions registered as native operations
   let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && key != "int" && !key.startsWith "repr:" &&
     !key.startsWith "cstruct:" &&
+    !key.startsWith RVal.exportPrefix &&
     key != inlineKey
   -- native representations (stage 22d): the interpreters keep the model's objects when
   -- the conversions are foreign functions
