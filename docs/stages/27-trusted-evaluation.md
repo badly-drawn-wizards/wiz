@@ -20,8 +20,12 @@ Lean's `native_decide` (`Lean.ofReduceBool`).
   parameters, whose type is an equation `a = b` between closed terms;
 * at a **first-order data** type: inductive data, enumerations, `Unit`, pairs and
   structures, numbers, words (`UIntN`, `BitVec`, through their native representation's
-  model). Functions, codata, types, fields of quantity 0 and proofs are refused (only the
-  index equations of constructors, which hold by computation, are accepted).
+  model). Functions, codata, types and erased (quantity-0) fields that are not proofs
+  are refused. An erased proof (a constructor's index equation, a word's range proof
+  `Nat.lt n (2^w) = .true`) is not at run time: the read-back builds it, from `Unit`,
+  `ULift`, equations that hold and pairs, and the kernel checks it (conversion ignores
+  proofs, so any proof is as good as the erased one). Foreign constants (`extern "f" c : Nat`)
+  have no value here and are an error.
 
 **How it is decided** (`Wiz/Compiler/Native.lean`). `a` and `b` are erased with the
 definitions they reach (as for `#eval`, with the models of foreign functions), and both
@@ -70,10 +74,13 @@ into the keys too (the command chain, every module key, grail's `check` jobs), s
 acceptance is never replayed without the flag, nor the error without it replayed with it.
 The first run with the flag elaborates the imports again.
 
-**The self-hosted toolchain** has the keyword (its parser tables are the Lean parser's)
-and reports "unsupported syntax term.nativeRefl": it has no native evaluation and no flag.
-It checks sources itself and never receives the Lean toolchain's declarations, so it
-never sees a `.native✝` axiom; if it did, it would be an ordinary axiom.
+**The self-hosted toolchain** has no native evaluation and no flag. The grammar entry
+reaches its parser only through the tables generated at build time from the Lean parser's
+(`Selfhost.wizTables`; it is not in `selfhost/Parse.wiz`), so it rejects `native_refl`
+either as "unsupported syntax term.nativeRefl" or as an unknown identifier (not run here;
+either way it fails closed). It checks sources itself and never receives the Lean
+toolchain's declarations, so it never sees a `.native✝` axiom; if it did, it would be an
+ordinary axiom.
 
 **Why the interpreter, not the C backend.** The interpreter runs in the (pure) frontend,
 needs no C compiler and no process, and keeps the IR, reference counting, the C runtime
