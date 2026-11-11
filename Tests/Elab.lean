@@ -4742,6 +4742,9 @@ def selfHostGroup : Group where
           "def t5 : P (refl (((), fun x => x) : B2)) := t3 (refl (((), fun x => x) : B2))\n" ++
           "def t4 : P (refl (((), fun x => x) : B2)) := t3 _\n"
         ok surf
+        -- the pair's type left to inference (#130: `refl` retries against the expected
+        -- equation's type), as in prf-review's probe
+        ok (surf.replace "(((), fun x => x) : B2)" "((), fun x => x)")
         -- raw: prf.{0} ((fun _ => () : a = a → True) (refl B2 a)) : True, a := ((), fun x => x)
         let B2 : MTm := .sigma (.unit 0) (.pi .ptrue .ptrue)
         let a : MTm := .ann (.pair .star (.lam (.var 0))) B2
