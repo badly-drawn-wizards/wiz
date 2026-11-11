@@ -1,4 +1,5 @@
 import Wiz.Compiler.NativeRun
+import Wiz.Elab.Mark
 
 /-!
 # `native_refl`: deciding a closed equation by running it (stage 27a)
@@ -197,6 +198,10 @@ def decideNative (g : Globals R) (builtins : List (Name × Name)) (A a b : Term 
   let (vb, sb) ← NativeRun.runWith code eb (fuel - sa)
   let ta ← (nativeReadback g builtins vA va).mapError (s!"the left-hand side's value is not first-order data: {·}")
   let tb ← (nativeReadback g builtins vA vb).mapError (s!"the right-hand side's value is not first-order data: {·}")
+  -- (P2) the proofs the read-back built (index equations, a word's range proof) get the
+  -- markers the kernel requires, as every declaration does (`Mark`, untrusted)
+  let ta := Mark.check ctx ta vA
+  let tb := Mark.check ctx tb vA
   -- (the kernel checks the values it is given: a malformed result is not a value of `A`)
   let _ ← (check ctx ta vA).mapError (s!"internal error: the left-hand side's value is ill-typed: {·}")
   let _ ← (check ctx tb vA).mapError (s!"internal error: the right-hand side's value is ill-typed: {·}")
