@@ -819,8 +819,6 @@ def k10Lean : List (String × String) :=
 def k10Wiz : String :=
   "inductive Nat where\n  | zero\n  | succ (n : Nat)\ndef drop (1 x : Nat) : Nat := Nat.zero\n" ++
   "def twice (1 x : Nat) (f : Nat → Nat → Nat) : Nat := f x x\n"
-def k10WizExpected : String :=
-  "Nat : U0\ndrop : (x0 : Nat) → Nat\ntwice : (x0 : Nat) → (x1 : (x1 : Nat) → (x2 : Nat) → Nat) → Nat\n"
 
 def kernelGroup : Group where
   name := "audit-kernels"
@@ -828,10 +826,14 @@ def kernelGroup : Group where
   cases := [
     { name := "the two kernels agree on generated typed terms, their normal forms, and the templates",
       run := fun _ => kernelsAgree 120 },
-    { name := "K10 (a tracked gap): the self-hosted frontend ignores written quantities; the Lean frontend does not",
+    -- (K10 was a gap until stage 21m: the self-hosted frontend now checks written quantities;
+    -- the selfhost group's 21m cases test it in full)
+    { name := "K10 (closed by 21m): both frontends reject a dropped and a duplicated linear variable",
       run := fun _ => do
         for (src, fragment) in k10Lean do Elab.fails src fragment
-        Elab.selfhostCheckFile k10Wiz k10WizExpected }]
+        if let some out ← Elab.selfhostOutput k10Wiz then
+          let n := (out.splitOn "does not fit its quantity").length - 1
+          unless n == 2 do throw (IO.userError s!"expected 2 quantity errors from the self-hosted checker, got {n}:\n{out}") }]
 
 /-! ## Paradoxes
 
