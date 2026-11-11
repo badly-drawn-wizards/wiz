@@ -5,3 +5,4 @@ import Grail.Test
 import Grail.Selfhost
 import Grail.Graph
 import Grail.Deps
+import Grail.Lsp

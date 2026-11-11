@@ -1,0 +1,2 @@
+import Fix.Two
+#eval two + two

@@ -470,15 +470,18 @@ def piInfos : Term R → List (Name × BinderInfo × Term R)
 /-- A proof of a proposition that holds by computation: `Unit`, pairs of such, and stuck
 equations `a = b` (which hold by `refl` when they arise from a match on a family with a
 concrete index, `SyntaxF .false`). -/
-partial def trivialProof (g : Globals R) (ty : Val R) : Option (Val R) :=
+partial def trivialProof (g : Globals R) (tys : Array (VTy R)) (ty : Val R) : Option (Val R) :=
   match whnf ty with
   | .unit _ => some .tt
   | .sigma _ _ A B _ => do
-    let a ← trivialProof g A
-    let b ← trivialProof g (Closure.inst g B a)
+    let a ← trivialProof g tys A
+    let b ← trivialProof g tys (Closure.inst g B a)
     pure (.pair a b)
-  | .neutral (.eq A a _) _ => some (.neutral (.refl A a) #[])
-  | .neutral (.eqTy X _) _ => some (.neutral (.reflTy X) #[])
+  -- (13b) `refl` only when the two sides are convertible *here* (`g` is the elaborator's
+  -- view, where a type with a private constructor of another module is opaque): the
+  -- kernel compares by shape, so the comparison can't be left to it (`sameSides`)
+  | .neutral (.eq A a b) _ => if conv g tys A a b then some (.neutral (.refl A a) #[]) else none
+  | .neutral (.eqTy X Y) _ => if convTy g tys X Y then some (.neutral (.reflTy X) #[]) else none
   | _ => none
 
 /-- `Term.abstract`, but not inside the arguments of an unsolved hole: there the
@@ -518,7 +521,7 @@ partial def elabTypeSort? (tys : Array (VTy R)) (v : VTy R) : ElabM R (Option Le
 `h a…`, and `f (k e) a…` (with `k` an infinitary field) by `h e a…`. Returns the
 rewritten syntax and the hypothesis bindings it needs. -/
 partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name × VTy R × Val R))
-    (ihType : Lvl → Option (VTy R)) (lvl : Lvl) (stx : Syntax) :
+    (ihType : Lvl → Option (VTy R)) (lvl : Lvl) (tys : Array (VTy R)) (stx : Syntax) :
     Except String (Syntax × List (Name × VTy R × Val R)) := do
   let isF (h : Syntax) := h.isOfKind "term.ident" && (h.getArg 0).getId? == some rc.fn
   let isExplicitF (h : Syntax) := h.isOfKind "term.explicit" && (h.getArg 1).getId? == some rc.fn
@@ -557,7 +560,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     -- proof that the field's index is that index
     let ihVal : Val R := .neutral (.local ihl) #[]
     let (ihVal, ty) := match whnf ty with
-      | .pi _ _ q dom cod _ => match q.toPoly?, trivialProof g dom with
+      | .pi _ _ q dom cod _ => match q.toPoly?, trivialProof g tys dom with
         | some [], some p => (vApp g ihVal p, Closure.inst g cod p)
         | _, _ =>
           -- an infinitary field: the proof comes after `h`, so the hypothesis becomes
@@ -566,7 +569,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
           match kargs.isEmpty, whnf ty with
           | false, .pi hn hbi hq H hcod _ =>
             match whnf (Closure.inst g hcod (Val.var lvl)) with
-            | .pi _ _ q' E cod2 _ => match q'.toPoly?, trivialProof g E with
+            | .pi _ _ q' E cod2 _ => match q'.toPoly?, trivialProof g (tys.push H) E with
               | some [], some p =>
                 let env : Env R := (List.range lvl).reverse.map Val.var
                 let pTm := quote g (lvl + 1) p
@@ -581,7 +584,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     let ihName := "_ih_" ++ y
     let ident : Syntax := .node a.info "term.ident" #[.ident a.info ihName]
     let others := args.extract np (np + rc.pos) ++ args.extract (np + rc.pos + 1) args.size
-    let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType lvl ·)
+    let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType lvl tys ·)
     let restStx := rest.map (·.1)
     let newBinds := [(ihName, ty, ihVal)] ++ rest.toList.flatMap (·.2)
     let stx' := if restStx.isEmpty then ident
@@ -590,7 +593,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
   if isF stx || isExplicitF stx then throw s!"{rc.fn} may only be used in structurally recursive calls"
   match stx with
   | .node i k as =>
-    let rs ← as.mapM (rewriteRecCalls g rc binds ihType lvl ·)
+    let rs ← as.mapM (rewriteRecCalls g rc binds ihType lvl tys ·)
     return (.node i k (rs.map (·.1)), rs.toList.flatMap (·.2))
   | s => return (s, [])
 
@@ -616,6 +619,54 @@ def openGoals (st : TacState R) : ElabM R (Array (LocalCtx R × VTy R)) :=
     let some gl := st.goals[i]? | pure none
     pure (if ← gl.isOpen then some (gl.ctx, gl.ty) else none)
 
+/-- (13b) The types of `ctx`'s variables, by level, evaluated again with their holes
+solved: a binder's type may have been a hole when it was bound (`e : Ex P` with `Ex`'s
+implicit `A` solved later), and conversion and the kernel's inference take the types
+as they are (a hole is rigid there). -/
+def zonkedTypes (ctx : LocalCtx R) : ElabM R (Array (VTy R)) := do
+  let g ← getGlobals
+  let mut tys : Array (VTy R) := #[]
+  for v in ctx.types.reverse do
+    let j := tys.size
+    let t ← zonk j (quote g j (← forceMeta v))
+    tys := tys.push (eval g (ctx.env.drop (ctx.lvl - j)) t)
+  pure tys
+
+/-- (13b) The two sides of an equation that `rfl` is about to prove by `refl`/`reflTy`
+must be definitionally equal **in the elaborator's view** (`Globals.elabView`: a type
+with a private constructor, field or observation of another module is opaque). The
+kernel checks `refl` too, but against the real definitions and by shape, so it accepts
+`Look = Token` for a look-alike `Look` of a private `Token`, and `cast` along that
+equation forges a `Token`. So the comparison is never left to the kernel: unify (which
+may solve holes), and when unification fails, the type-directed conversion with the
+elaborator's globals (η for `Unit`; holes are rigid). `A?` is the type of the sides, or
+`none` for two types. -/
+def sameSides (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R Unit := do
+  let s ← get
+  try unify ctx.lvl a b
+  catch e =>
+    set s
+    -- the sides were evaluated when the equation was formed, perhaps with holes that are
+    -- solved by now (`P.mk s.1 s.2 = s`: `P.mk`'s parameters): evaluate them again
+    let g ← getGlobals
+    let again (v : Val R) : ElabM R (Val R) := do
+      evalIn ctx (← zonk ctx.lvl (quote g ctx.lvl (← forceMeta v)))
+    let a ← again a
+    let b ← again b
+    -- the types of the variables too: a binder's type may have been a hole when it was
+    -- bound, and conversion (which infers the types of neutrals) takes holes as rigid
+    let tys ← zonkedTypes ctx
+    -- what the kernel does with `refl a`: its type `a = a` against `a = b`, both
+    -- computed afresh (an equation at a Σ or Π computes by components, and then holds by
+    -- η where the sides themselves are not compared by `conv`)
+    let ok ← match A? with
+      | some A => do
+        let A ← again A
+        pure (conv g tys A a b || convTy g tys (vEq g A a a) (vEq g A a b))
+      | none => pure (convTy g tys a b || convTy g tys (vEqType g a a) (vEqType g a b))
+    unless ok do
+      throwAt ctx.info s!"rfl: the two sides are not definitionally equal\n  left:  {← showVal ctx a}\n  right: {← showVal ctx b}\n  ({e.msg})"
+
 /-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
 `True`s and `a = b`, an equation of functions a Π. Build the proof by the same shape
 (pairs, lambdas, `()`, and a case split for a Π over a tag type), with `refl` at the
@@ -623,8 +674,12 @@ equations left; the kernel checks them. -/
 partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
   let g ← getGlobals
   match ← force ty with
-  | .neutral (.eq A a _) #[] => pure (some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a)))
-  | .neutral (.eqTy X _) #[] => pure (some (.reflTy (quote g ctx.lvl X)))
+  | .neutral (.eq A a b) #[] =>
+    sameSides ctx (some A) a b
+    pure (some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a)))
+  | .neutral (.eqTy X Y) #[] =>
+    sameSides ctx none X Y
+    pure (some (.reflTy (quote g ctx.lvl X)))
   | .unit _ => pure (some .tt)
   | .sigma _ _ A B _ =>
     let some a ← rflProof ctx A | pure none
@@ -781,8 +836,12 @@ where
     | "term.rfl" =>
       let g ← getGlobals
       match ← force expected with
-      | .neutral (.eq A a _) #[] => pure (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
-      | .neutral (.eqTy X _) #[] => pure (.reflTy (quote g ctx.lvl X))
+      | .neutral (.eq A a b) #[] =>
+        sameSides ctx (some A) a b
+        pure (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
+      | .neutral (.eqTy X Y) #[] =>
+        sameSides ctx none X Y
+        pure (.reflTy (quote g ctx.lvl X))
       | .unit _ => pure .tt
       | e => match ← rflProof ctx e with
         | some t => pure t
@@ -1544,7 +1603,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let mut rhs := cl.rhs
     if let some rc := rc then
       let ihType (l : Lvl) : Option (VTy R) := ctx.types[ctx.lvl - l - 1]?
-      match rewriteRecCalls g rc binds ihType ctx.lvl cl.rhs with
+      match rewriteRecCalls g rc binds ihType ctx.lvl ctx.types.reverse.toArray cl.rhs with
       | .ok (r, extra) => rhs := r; binds := binds ++ extra
       | .error e => throwAt cl.rhs.info e
     let mut ctx' := ctx
@@ -2318,10 +2377,14 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (apply code (fld 2) (encodePair r₁ r₂))
   if tag == TacTag.assign then
     let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let mut st := st
     if t.mvars.isEmpty then
       match (← get).kernelInfer (gl.kernelCtx g) t with
       | .ok ty => unifyAt gl.ctx .missing gl.ty ty
       | .error e => throwAt info s!"assign: {e}"
+    else
+      -- with holes its type can't be inferred yet: at the end of the block (`elabBy`)
+      st := { st with unchecked := st.unchecked.push (gl, t) }
     unifyGoal gl t
     return ← runTac code info st (fld 2)
   if tag == TacTag.newGoal then
@@ -2381,6 +2444,18 @@ partial def elabBy (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM 
       if ← gl.isOpen then rest := rest.push (← gl.show)
   pushInfo (.tactic stx.info true #[(ctx, expected)] (← openGoals st))
   unless rest.isEmpty do throwAt ctx.info s!"unsolved goals:\n{"\n\n".intercalate rest.toList}" "unsolved-goals"
+  -- (13b) the terms `assign` took with holes: now that the holes are solved, their types
+  -- are inferred and compared with their goals here, in the elaborator's view (where a
+  -- type with a private constructor is opaque), not left to the kernel
+  for (gl, t) in st.unchecked do
+    let t ← zonk gl.ctx.lvl t
+    unless t.mvars.isEmpty do throwAt ctx.info "assign: the assigned term still has holes at the end of the tactic block"
+    -- (the context's types with their holes solved: they may have been holes when the
+    -- goal was made, and the kernel takes a hole as rigid)
+    let kctx := { gl.kernelCtx (← getGlobals) with types := (← zonkedTypes gl.ctx).toList.reverse }
+    match (← get).kernelInfer kctx t with
+    | .ok ty => unifyAt gl.ctx stx gl.ty ty
+    | .error e => throwAt ctx.info s!"assign: {e}"
   pure m
 
 end
