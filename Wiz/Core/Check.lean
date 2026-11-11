@@ -1090,8 +1090,11 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
     throw (.other s!"the compiled equations of {d.name} do not agree with its definition: {why}")
   -- (an implementation convertible to the value agrees with it, trivially)
   if conv g #[] (eval g [] d.type) (eval g [] value) (eval g [] impl) then return
+  -- (P2: through the markers too: a level-generic value is `prf.{l} (fun …)`, with `l`
+  -- symbolic, which evaluates to its body's value)
   let rec lams : Term R → Nat
     | .lam _ b => lams b + 1
+    | .prf _ b => lams b
     | _ => 0
   let k := lams value
   let mut tys : Array (VTy R) := #[]
