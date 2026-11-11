@@ -74,6 +74,7 @@ partial def nativeReadback (g : Globals R) (builtins : List (Name × Name)) (ty 
     if isZeroQ q then
       -- (only the index equation of a constructor's payload, `⟦ret i⟧ X j = (0 _ : i = j) × Unit`:
       -- a data field of quantity 0 was refused by `unflat`)
+      unless irrelevant A 100 do throw s!"a field of quantity 0 (erased at run time) that is not a proof, of type {(quote g 0 A).pretty}"
       let p ← proof A 100
       return .pair p (← rb (Closure.inst g B (eval g [] p)) (v.field 1) fuel)
     let .obj _ fs := v | throw "a pair was expected"
@@ -98,11 +99,22 @@ partial def nativeReadback (g : Globals R) (builtins : List (Name × Name)) (ty 
   | .sort _ => throw "a type (not first-order data)"
   | t => throw s!"a value of a type that is not first-order data ({(quote g 0 t).pretty})"
 where
-  /-- The proof of an index equation that holds (closed, so it computes). -/
+  /-- Is `A` a proposition (or a lifted one)? Conversion ignores its proofs (proof
+  irrelevance, and η at `ULift` of a proposition), so building any proof of it is as good
+  as the erased one; at any other type an erased field could hold different values on the
+  two sides, and is refused. -/
+  irrelevant (A : VTy R) (fuel : Nat) : Bool :=
+    match fuel, whnf A with
+    | 0, _ => false
+    | fuel + 1, .ulift _ B => irrelevant B fuel
+    | _, t => propSort? t == some true
+  /-- A proof of a closed proposition that holds by computation (an index equation, a
+  range proof `Nat.lt n m = .true`, …), which the kernel then checks with the rest. -/
   proof (A : VTy R) (fuel : Nat) : Except String (Term R) := do
-    if fuel == 0 then throw "an index equation too deep"
+    if fuel == 0 then throw "a proof too deep"
     match whnf A with
     | .unit _ => return .tt
+    | .ulift _ B => return .up (← proof B (fuel - 1))
     | .neutral (.eq X a b) #[] =>
       if conv g #[] X a b then return .refl (quote g 0 X) (quote g 0 a)
       throw "an index equation that does not hold"
@@ -122,7 +134,12 @@ where
       | fuel + 1 =>
       match whnf d with
       | .darg q S F =>
-        if isZeroQ q then throw s!"a constructor field of quantity 0 (erased at run time), of type {(quote g 0 S).pretty}"
+        if isZeroQ q then
+          -- an erased proof field (a word's range proof): built, not read (it is `◾`)
+          unless irrelevant S 100 do
+            throw s!"a constructor field of quantity 0 (erased at run time), of type {(quote g 0 S).pretty}"
+          let p ← proof S 100
+          return .obj 0 #[.erased, ← rest (vApp g F (eval g [] p)) (n + 1) fuel]
         let f ← field n
         let s ← nativeReadback g builtins S f
         return .obj 0 #[f, ← rest (vApp g F (eval g [] s)) (n + 1) fuel]

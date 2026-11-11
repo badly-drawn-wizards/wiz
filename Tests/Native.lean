@@ -132,7 +132,38 @@ def group : Group where
           "def h (n : Nat) : Nat := Nat.add n 2\nattribute [implemented_by h] g\nattribute [implemented_by g] f\n" ++
           "def lie : f 1 = 3 := native_refl\n#print axioms lie\n")
         noErrors ms
-        expect ms "native g := h" },
+        expect ms "native g := h"
+        -- (t1-review L2) a three-link chain a1 → a2 → a3 → a4, and what the last one uses
+        let ms ← msgs (sumTo ++ "axiom k : Nat\ndef a1 (n : Nat) : Nat := n\ndef a2 (n : Nat) : Nat := n\n" ++
+          "def a3 (n : Nat) : Nat := n\ndef a4 (n : Nat) : Nat := Nat.add n k\n" ++
+          "attribute [implemented_by a4] a3\nattribute [implemented_by a3] a2\nattribute [implemented_by a2] a1\n" ++
+          "def u : Nat := a1 2\n#print axioms u\n")
+        noErrors ms
+        expect ms "native a1 := a2"
+        expect ms "native a2 := a3"
+        expect ms "native a3 := a4"
+        check (has ms ", k]" || has ms ", k," || has ms "[k,") s!"the last link's axiom k is not listed: {ms}" },
+    { name := "a foreign constant has no value here (trust-review N1)", run := fun _ => do
+        -- `getpid` is not 0: reading a foreign constant as 0 would prove `pid = 0`
+        let ms ← msgs (sumTo ++ "extern \"getpid\" pid : Nat\ndef pidIsZero : pid = 0 := native_refl\n")
+        expect ms "error: native_refl: native evaluation failed: pid is a foreign constant"
+        let ms ← msgs (sumTo ++ "extern \"wiz_flag\" flag : Bool\ndef f : flag = Bool.false := native_refl\n")
+        expect ms "is a foreign constant" },
+    { name := "a huge power is an error, not a panic (trust-review N2)", run := fun _ => do
+        let ms ← msgs (sumTo ++ "def huge : Nat.beq (Nat.pow 2 (Nat.pow 2 40)) 0 = Bool.false := native_refl\n")
+        expect ms "nat.pow: the result would have more than" },
+    { name := "an erased proof field is built and checked; an erased data field is refused (AB1)", run := fun _ => do
+        -- the shape of a word with its range proof (PR #145)
+        let small := sumTo ++ "inductive Small where\n  | mk (n : Nat) (0 h : Nat.lt n 10 = .true)\n" ++
+          "def three : Small := Small.mk 3 (refl Bool.true)\n"
+        let ms ← msgs (small ++ "def s : three = Small.mk (sumTo 2) (refl Bool.true) := native_refl\n" ++
+          "def l : List.cons three List.nil = List.cons three List.nil := native_refl\n")
+        noErrors ms
+        let ms ← msgs (small ++ "def s : three = Small.mk 4 (refl Bool.true) := native_refl\n")
+        expect ms "native evaluation refutes it"
+        -- an erased field that is data: the two sides could differ there
+        let ms ← msgs (sumTo ++ "inductive E where\n  | mk (m : Nat) (0 n : Nat)\ndef e : E.mk 1 2 = E.mk 1 3 := native_refl\n")
+        expect ms "quantity 0" },
     { name := "a partial definition's implementation is not run", run := fun _ => do
         let ms ← msgs (sumTo ++ "partial def loop (n : Nat) : Nat := loop n\ndef l : loop 0 = 0 := native_refl\n")
         expect ms "reaches the partial definition loop" },
