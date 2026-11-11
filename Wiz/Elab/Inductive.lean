@@ -77,11 +77,15 @@ the type's universe `lvl` (the tail would raise it).
 Given `used k` (whether the parameter `var k` of the context `Δ` is mentioned), returns
 the tail type and its value in `Δ`, and the names of the phantom parameters. -/
 def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R × Term R))
-    (used : Nat → Bool) (lvl : Level) (markTail : Bool := false) : ElabM R (Term R × Term R × List Name) := do
+    (used : Nat → Bool) (lvl : Level) (markTail : Bool := false) (sealAx : Option Name := none) :
+    ElabM R (Term R × Term R × List Name) := do
   let g ← getGlobals
   let nΔ := Δ.size
   let tys := ctxΔ.types.reverse.toArray
-  let mut doms : Array (Term R) := #[]
+  -- a sealed type's seal comes first (22k): a closed domain, the axiom itself
+  let mut doms : Array (Term R) := match sealAx with
+    | some k => #[.const k []]
+    | none => #[]
   let mut names : List Name := []
   for (x, _, _, A) in Δ, j in [0:nΔ] do
     let k := nΔ - 1 - j
@@ -344,7 +348,10 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     descs := descs ++ [D]
     ctorInfo := ctorInfo ++ [(cname, fs'.toList, js)]
   -- phantom parameters: those that neither a constructor nor an index type mentions
+  -- (a `sealed inductive`: the seal was declared just before, `command.sealed`)
+  let sealAx := if (← getGlobals).contains (sealName T) then some (sealName T) else none
   let (tailTy, tailV, _) ← phantomTail ctxΔ Δ (fun k => descs.any (·.hasVar k) || I.hasVar k) (.succ l)
+    (sealAx := sealAx)
   let I : Term R := Ξ.foldr (fun (x, _, q, X) acc => .sigma x q X acc .hole) (tailTy.lift nΞ)
   if !(tailV matches .tt) then
     descs ← (ctorInfo.zip ctorLevels).mapM fun ((cname, fs, js), lvs) => match ctorDesc nΔ (fs.map fun (x, _, q, A) => (x, q, A)) js tailV l lvs with

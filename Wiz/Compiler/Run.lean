@@ -469,7 +469,8 @@ where
     match whnf ty with
     | .mu l I D i _ hint =>
       -- a native value (stage 22d), printed as a number: the model's object around it
-      let v := match v, hint.bind fun (T, _, _) => reprOf? builtins T with
+      let _ := hint
+      let v := match v, reprOfTy? { g with builtins := builtins } ty with
         | .nat n, some ri => RVal.obj ri.tag ((List.range ri.nfields).toArray.map fun k =>
             if k == ri.r then .nat n else .erased)
         | v, _ => v
@@ -549,7 +550,7 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
   let mut todo := roots.toArray
   -- definitions registered as native operations
   let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && key != "int" && !key.startsWith "repr:" &&
-    !key.startsWith "cstruct:" &&
+    !key.startsWith "cstruct:" && !key.startsWith "seal:" &&
     !key.startsWith RVal.exportPrefix &&
     key != inlineKey
   -- native representations (stage 22d): the interpreters keep the model's objects when
@@ -565,6 +566,12 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     if k == inlineKey then
       if let some d := g.find? f then
         if let .ok e := eraseDecl g d then inlines := inlines.insert f e
+  -- the seals of the sealed types with a native representation (22k)
+  let nativeSeals := g.builtins.filterMap fun (key, x) =>
+    if key.startsWith "seal:" then
+      let T : Name := (key.drop 5).toString
+      if (reprOf? g.builtins T).isSome then some (x, T) else none
+    else none
   -- (HD9) the definitions compiled code substitutes (`trivialBody`) and the objects it
   -- projects from (`objBody`), by name, with each erased body
   let mut trivial : Std.HashMap Name ETerm := {}
@@ -599,13 +606,25 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     let n := todo.back
     todo := todo.pop
     if code.contains n then continue
+    -- (22k, layer 3) the seal of a type with a native representation stays in the type's
+    -- module, except inside the type itself
+    unless nativeSeals.isEmpty do
+      let m := target n 100
+      if let some d := g.find? m then
+        let here := (g.declModule[m]?).getD ""
+        for (k, T) in nativeSeals do
+          if (g.declModule[T]?).getD "" != here then
+            if let some v := d.impl <|> d.value then
+              if sealOutsideMu (· == k) v then
+                throw (.other (s!"cannot compile {n}: {T} has a native representation (it is a sealed type), so generic " ++
+                  s!"code over types or descriptions cannot be used at it: {T}'s seal is passed as an argument here"))
     let r ← match raw.get? n with
       | some r => pure r
       | none => do let r := eraseOne n; raw := raw.insert n r; pure r
     let some (e, err) := r | continue
     if let some err := err then
       -- (a refusal, not a gap: running on would give a wrong value)
-      if (err.splitOn abstractFieldMsg).length > 1 then
+      if (err.splitOn abstractFieldMsg).length > 1 || (err.splitOn nativeHomeMsg).length > 1 then
         throw (.other s!"cannot erase {n}: {err}")
       failed := (n, err) :: failed
     -- classify the globals `e` mentions (each once), and those their bodies mention
