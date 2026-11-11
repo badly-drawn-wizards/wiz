@@ -147,7 +147,7 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .coit _ _ _ S st i s => app "coit" [S, st, i, s]
   | .natLit n => toString n
   -- Q4: the elaborator lifts small fields; `up`/`down` are invisible
-  | .ulift _ A => app "ULift" [A]
+  | .ulift _ _ A => app "ULift" [A]
   | .up a | .down a => a.prettyPrec names prec
   -- (P2) the proof marker is invisible too
   | .prf _ a => a.prettyPrec names prec

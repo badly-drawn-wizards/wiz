@@ -169,7 +169,7 @@ def elab : Scope → Syntax → Elab
           | .false => match strEq (kindOf s) "term.arrow" with
             | .true => match elab names (kid s 0) with
               | .ok a => match elab (Scope.bind names "_") (kid s 2) with
-                | .ok b => .ok (.pi a b)
+                | .ok b => .ok (piH a b)
                 | e => e
               | e => e
             | .false => match strEq (kindOf s) "term.depArrow" with
@@ -315,13 +315,11 @@ def closeG (inline : Bool) (gs : Globals) : Nat → Tm → Tm
   | d, .var i => match Nat.lt i d with
     | .true => .var i
     | .false => globalTm inline gs (i - d)
-  | d, .pi a b => .pi (closeG inline gs d a) (closeG inline gs (d + 1) b)
-  | d, .piq q a b => .piq q (closeG inline gs d a) (closeG inline gs (d + 1) b)
+  | d, .pi q i j a b => .pi q i j (closeG inline gs d a) (closeG inline gs (d + 1) b)
   | d, .lam b => .lam (closeG inline gs (d + 1) b)
   | d, .app f a => .app (closeG inline gs d f) (closeG inline gs d a)
   | d, .letE ty v b => .letE (closeG inline gs d ty) (closeG inline gs d v) (closeG inline gs (d + 1) b)
   | d, .ann t ty => .ann (closeG inline gs d t) (closeG inline gs d ty)
-  | d, .sorted l t => .sorted l (closeG inline gs d t)
   | _, t => t
 
 -- the output of a command, and the globals after it
@@ -402,16 +400,13 @@ def shiftTm (k : Nat) : Nat → Tm → Tm
   | c, .var i => match Nat.lt i c with
     | .true => .var i
     | .false => .var (i + k)
-  | c, .pi a b => .pi (shiftTm k c a) (shiftTm k (c + 1) b)
+  | c, .pi q i j a b => .pi q i j (shiftTm k c a) (shiftTm k (c + 1) b)
   | c, .lam b => .lam (shiftTm k (c + 1) b)
   | c, .app f a => .app (shiftTm k c f) (shiftTm k c a)
   | c, .letE ty v b => .letE (shiftTm k c ty) (shiftTm k c v) (shiftTm k (c + 1) b)
   | c, .letq q ty v b => .letq q (shiftTm k c ty) (shiftTm k c v) (shiftTm k (c + 1) b)
   | c, .ann t ty => .ann (shiftTm k c t) (shiftTm k c ty)
-  | c, .sorted l t => .sorted l (shiftTm k c t)
-  | c, .piq q a b => .piq q (shiftTm k c a) (shiftTm k (c + 1) b)
-  | c, .sigmaq q a b => .sigmaq q (shiftTm k c a) (shiftTm k (c + 1) b)
-  | c, .sigma a b => .sigma (shiftTm k c a) (shiftTm k (c + 1) b)
+  | c, .sigma q i j a b => .sigma q i j (shiftTm k c a) (shiftTm k (c + 1) b)
   | c, .eq A a b => .eq (shiftTm k c A) (shiftTm k c a) (shiftTm k c b)
   | c, .eqRefl A a => .eqRefl (shiftTm k c A) (shiftTm k c a)
   | c, .pair a b => .pair (shiftTm k c a) (shiftTm k c b)
@@ -502,10 +497,10 @@ def piTeleQ : List Q → Tms → Tm → Tm
 -- a constructor's parameters: implicit, at 0 (as in the Lean elaborator's `implicitΔ`)
 def piTeleZ : Tms → Tm → Tm
   | .tnil, b => b
-  | .tcons a rest, b => .piq .qz a (piTeleZ rest b)
+  | .tcons a rest, b => piTm .qz a (piTeleZ rest b)
 def piTele : Tms → Tm → Tm
   | .tnil, b => b
-  | .tcons a rest, b => .pi a (piTele rest b)
+  | .tcons a rest, b => piH a (piTele rest b)
 def fieldNames : List Field → List String
   | .nil => .nil
   | .cons (.mk x _) rest => .cons x (fieldNames rest)
@@ -594,7 +589,7 @@ def ctorFieldTys (gs : Globals) (T : String) (ps : List String) (nidx : Nat) (Tc
 -- a constructor's type: `(fields) → T`
 def ctorType (Tc : Tm) : List CField → Tm
   | .nil => Tc
-  | .cons (.mk _ _ A _) rest => .pi A (ctorType Tc rest)
+  | .cons (.mk _ _ A _) rest => piH A (ctorType Tc rest)
 -- the payload `(field₁, …, (tt, tt))`, the first field being `var (n - 1)`
 def payloadTm : Nat → Nat → Tm
   | .zero, _ => .pair .star .star
@@ -635,19 +630,29 @@ def closedLvl (l : Lvl) : Lvl := match lvlClosed l with
 def binLvl (isPi : Bool) (i j : Lvl) : Lvl := match isPi with
   | .true => closedLvl (.limax i j)
   | .false => closedLvl (.lmax i j)
+-- (mandatory sorts: the components' sorts are written, a hole where one is not known; the
+-- sorts pass fills the rest, `sortsTy`)
+def binSorted (isPi : Bool) (q : Q) (i j : Lvl) (a b : Tm) : Tm := match isPi with
+  | .true => .pi q i j a b
+  | .false => .sigma q i j a b
 def sortJoin (isPi : Bool) (q : Q) (a b : STm) : STm := match a, b with
-  | .mk a' (.some i), .mk b' (.some j) => .mk (.sorted (binLvl isPi i j) (binTm isPi q a' b')) (.some (binLvl isPi i j))
+  | .mk a' (.some i), .mk b' (.some j) => .mk (binSorted isPi q (closedLvl i) (closedLvl j) a' b') (.some (binLvl isPi i j))
+  | .mk a' (.some i), .mk b' _ => .mk (binSorted isPi q (closedLvl i) .lhole a' b') .none
+  | .mk a' _, .mk b' (.some j) => .mk (binSorted isPi q .lhole (closedLvl j) a' b') .none
   | .mk a' _, .mk b' _ => .mk (binTm isPi q a' b') .none
 def sortUnder (c : TCtx) (a : STm) : TCtx := TCtx.bind c (eval (TCtx.env c) (STm.tm a))
+-- (a component sort already written is kept)
+def keepLvl (l : Lvl) (s : Option Lvl) : Option Lvl := match lvlHasHole l with
+  | .true => s
+  | .false => .some l
+def sortJoinK (isPi : Bool) (q : Q) (i j : Lvl) (a b : STm) : STm := match a, b with
+  | .mk a' si, .mk b' sj => sortJoin isPi q (.mk a' (keepLvl i si)) (.mk b' (keepLvl j sj))
 def sortSpine : TCtx → Tm → STm
-  | c, .pi a b => let sa := sortSpine c a; sortJoin .true .qw sa (sortSpine (sortUnder c sa) b)
-  | c, .piq q a b => let sa := sortSpine c a; sortJoin .true q sa (sortSpine (sortUnder c sa) b)
-  | c, .sigma a b => let sa := sortSpine c a; sortJoin .false .qw sa (sortSpine (sortUnder c sa) b)
-  | c, .sigmaq q a b => let sa := sortSpine c a; sortJoin .false q sa (sortSpine (sortUnder c sa) b)
-  | _, .sorted l t => .mk (.sorted l t) (.some l)
+  | c, .pi q i j a b => let sa := sortSpine c a; sortJoinK .true q i j sa (sortSpine (sortUnder c sa) b)
+  | c, .sigma q i j a b => let sa := sortSpine c a; sortJoinK .false q i j sa (sortSpine (sortUnder c sa) b)
   | c, t => sortLeaf c t
--- a closed type with its sorts (`sortSpine`)
-def sortTy (t : Tm) : Tm := STm.tm (sortSpine empty t)
+-- a closed type with its sorts (`sortSpine`, then the sorts pass for what it left)
+def sortTy (t : Tm) : Tm := sortsTy (STm.tm (sortSpine empty t))
 -- **Phantom parameters** (stage 21i; `phantomTail` in `Elab/Inductive.lean`, README
 -- 22e). Types are structural, so a parameter no constructor mentions would be forgotten
 -- (`UIntN 8` and `UIntN 16` one type, `w` never inferred). For each such parameter
@@ -662,16 +667,13 @@ mutual
 -- descriptions; any other form counts as a mention)
 def occurs : Nat → Tm → Bool
   | i, .var j => Nat.beq i j
-  | i, .pi a b => Bool.or (occurs i a) (occurs (i + 1) b)
-  | i, .piq _ a b => Bool.or (occurs i a) (occurs (i + 1) b)
-  | i, .sigma a b => Bool.or (occurs i a) (occurs (i + 1) b)
-  | i, .sigmaq _ a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .pi _ _ _ a b => Bool.or (occurs i a) (occurs (i + 1) b)
+  | i, .sigma _ _ _ a b => Bool.or (occurs i a) (occurs (i + 1) b)
   | i, .lam b => occurs (i + 1) b
   | i, .app f a => Bool.or (occurs i f) (occurs i a)
   | i, .letE ty v b => Bool.or (occurs i ty) (Bool.or (occurs i v) (occurs (i + 1) b))
   | i, .letq _ ty v b => Bool.or (occurs i ty) (Bool.or (occurs i v) (occurs (i + 1) b))
   | i, .ann t ty => Bool.or (occurs i t) (occurs i ty)
-  | i, .sorted _ t => occurs i t
   | i, .pair a b => Bool.or (occurs i a) (occurs i b)
   | i, .fst t => occurs i t
   | i, .snd t => occurs i t
@@ -716,10 +718,10 @@ def phantomDom (c : TCtx) (np k : Nat) (A : Tm) : Option Tm :=
     | .vsizeLt _ => .none
     | _ => match isProp c vP with
       | .true => .none
-      | .false => .some (.sigmaq .qz P (.eq (shiftTm 1 0 P) (.var 0) (shiftTm 1 0 p)));
+      | .false => .some (sigmaTm .qz P (.eq (shiftTm 1 0 P) (.var 0) (shiftTm 1 0 p)));
   match D with
   | .none => .none
-  | .some D' => match inferUniv c (.piq .qz D' (.unit 0)) with
+  | .some D' => match inferUniv c (sortsTyIn c (piTm .qz D' (.unit 0))) with
     | .ok ty _ => match ty with
       | .vsort l => match lvlEquiv l (.lnum 1) with
         | .true => .some D'
@@ -739,11 +741,11 @@ def phantomDoms (c : TCtx) (np : Nat) (used : Nat → Bool) : Nat → Tms → Tm
 -- the tail `(0 _ : D₁) → … → Unit` (the `i` domains before already bound)
 def phantomTy : Nat → Tms → Tm
   | _, .tnil => .unit 0
-  | i, .tcons D rest => .piq .qz (shiftTm i 0 D) (phantomTy (i + 1) rest)
+  | i, .tcons D rest => piTm .qz (shiftTm i 0 D) (phantomTy (i + 1) rest)
 -- the index of a type without indices: the tail's value `fun _ … _ => tt` (`tt` for `Unit`)
 partial def phantomVal (I : Tm) : Tm := match I with
-  | .sorted _ t => phantomVal t
-  | .piq _ _ b => .lam (phantomVal b)
+  | .pi .qz _ _ _ b => .lam (phantomVal b)
+  | .pi .qo _ _ _ b => .lam (phantomVal b)
   | _ => .star
 -- a constructor's description with the indices (all `tt`) replaced by the tail's value
 partial def retail (v : Tm) (D : Tm) : Tm := match D with
@@ -934,7 +936,7 @@ def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match ctorQtyErr (kids
               let ty := sortTy (piTeleQ (match binderQs (kids (kid stx 3)) with
                 | .some qs => qs
                 | .none => .nil) pts (match sig with
-                | .indexed _ => .pi I (.univ 0)
+                | .indexed _ => piH I (.univ 0)
                 | _ => .univ 0));
               let val := markClosed (tLams np (body (mkD ds))) ty;
               match check empty val (eval .nil ty) with
@@ -1073,21 +1075,13 @@ def lowerTm (k : Nat) : Nat → Tm → Option Tm
     | .false => match Nat.lt (i - c) k with
       | .true => .none
       | .false => .some (.var (i - k))
-  | c, .pi a b => match lowerTm k c a with
+  | c, .pi q i j a b => match lowerTm k c a with
     | .some a' => match lowerTm k (c + 1) b with
-      | .some b' => .some (.pi a' b')
-      | .none => .none
-    | .none => .none
-  | c, .piq q a b => match lowerTm k c a with
-    | .some a' => match lowerTm k (c + 1) b with
-      | .some b' => .some (.piq q a' b')
+      | .some b' => .some (.pi q i j a' b')
       | .none => .none
     | .none => .none
   | c, .lam b => match lowerTm k (c + 1) b with
     | .some b' => .some (.lam b')
-    | .none => .none
-  | c, .sorted l t => match lowerTm k c t with
-    | .some t' => .some (.sorted l t')
     | .none => .none
   | c, .app f a => match lowerTm k c f with
     | .some f' => match lowerTm k c a with
@@ -1124,10 +1118,8 @@ def mentions (i : Nat) : Tm → Bool
   | .axiomC n _ => match metaId n with
     | .some j => Nat.beq i j
     | .none => .false
-  | .pi a b => Bool.or (mentions i a) (mentions i b)
-  | .piq _ a b => Bool.or (mentions i a) (mentions i b)
+  | .pi _ _ _ a b => Bool.or (mentions i a) (mentions i b)
   | .lam b => mentions i b
-  | .sorted _ t => mentions i t
   | .app f a => Bool.or (mentions i f) (mentions i a)
   | .fst t => mentions i t
   | .snd t => mentions i t
@@ -1141,13 +1133,13 @@ def mentions (i : Nat) : Tm → Bool
 def piCod : Nat → Tm → Option Tm
   | .zero, t => .some t
   | .succ n, t => match t with
-    | .pi _ b => piCod n b
+    | .pi .qw _ _ _ b => piCod n b
     | _ => .none
 def piPrefix : Nat → Tm → Tm → Option Tm
   | .zero, _, B => .some B
   | .succ n, t, B => match t with
-    | .pi a b => match piPrefix n b B with
-      | .some r => .some (.pi a r)
+    | .pi .qw i j a b => match piPrefix n b B with
+      | .some r => .some (.pi .qw i j a r)
       | .none => .none
     | _ => .none
 def spineHead : Tm → Tm
@@ -1188,12 +1180,9 @@ partial def pruneTm (k d : Nat) (es : ES) (t : Tm) : Pruned := match spineHead t
     | .app f a => match pruneTm k d es f with
       | .mk es1 f' => match pruneTm k d es1 a with
         | .mk es2 a' => .mk es2 (.app f' a')
-    | .pi a b => match pruneTm k d es a with
+    | .pi q i j a b => match pruneTm k d es a with
       | .mk es1 a' => match pruneTm k (d + 1) es1 b with
-        | .mk es2 b' => .mk es2 (.pi a' b')
-    | .piq q a b => match pruneTm k d es a with
-      | .mk es1 a' => match pruneTm k (d + 1) es1 b with
-        | .mk es2 b' => .mk es2 (.piq q a' b')
+        | .mk es2 b' => .mk es2 (.pi q i j a' b')
     | .lam b => match pruneTm k (d + 1) es b with
       | .mk es1 b' => .mk es1 (.lam b')
     | t' => .mk es t'
@@ -1245,8 +1234,8 @@ def unifyW (es : ES) (cx : Cx) (a b : Val) : Option ES := match a with
     | _ => unifyS es cx (whnf a) (whnf b)
   | _ => unifyS es cx (whnf a) (whnf b)
 def unifyS (es : ES) (cx : Cx) (a b : Val) : Option ES := match a with
-  | .vpi q A e B _ => match b with
-    | .vpi q' A' e' B' _ => match qEq q q' with
+  | .vpi q _ _ A e B => match b with
+    | .vpi q' _ _ A' e' B' => match qEq q q' with
       | .true => match unify es cx A A' with
         | .some es1 =>
           let x := fresh (Cx.lvl cx);
@@ -1307,9 +1296,9 @@ def zonk (es : ES) (d : Nat) (t : Tm) : Option Tm := match metaHead t 0 with
       | .none => .none
     | _ => .none
   | .none => match t with
-    | .pi a b => match zonk es d a with
+    | .pi q i j a b => match zonk es d a with
       | .some a' => match zonk es (d + 1) b with
-        | .some b' => .some (.pi a' b')
+        | .some b' => .some (.pi q i j a' b')
         | .none => .none
       | .none => .none
     | .lam b => match zonk es (d + 1) b with
@@ -1332,13 +1321,10 @@ def zonk (es : ES) (d : Nat) (t : Tm) : Option Tm := match metaHead t 0 with
         | .some ty' => .some (.ann x' ty')
         | .none => .none
       | .none => .none
-    | .sorted l x => match zonk es d x with
-      | .some x' => .some (.sorted l x')
-      | .none => .none
     -- (the other forms a match or a postponed argument leaves: stage 20a)
-    | .sigma a b => match zonk es d a with
+    | .sigma q i j a b => match zonk es d a with
       | .some a' => match zonk es (d + 1) b with
-        | .some b' => .some (.sigma a' b')
+        | .some b' => .some (.sigma q i j a' b')
         | .none => .none
       | .none => .none
     | .letq q ty v b => match zonk es d ty with
@@ -1346,16 +1332,6 @@ def zonk (es : ES) (d : Nat) (t : Tm) : Option Tm := match metaHead t 0 with
         | .some v' => match zonk es (d + 1) b with
           | .some b' => .some (.letq q ty' v' b')
           | .none => .none
-        | .none => .none
-      | .none => .none
-    | .piq q a b => match zonk es d a with
-      | .some a' => match zonk es (d + 1) b with
-        | .some b' => .some (.piq q a' b')
-        | .none => .none
-      | .none => .none
-    | .sigmaq q a b => match zonk es d a with
-      | .some a' => match zonk es (d + 1) b with
-        | .some b' => .some (.sigmaq q a' b')
         | .none => .none
       | .none => .none
     | .ecase m sc bs => match zonk es (d + 1) m with
@@ -1587,7 +1563,7 @@ def isMetaApp (es : ES) (ty : Val) : Bool := match metaApp es (force es ty) with
 -- arguments may fix it (`zipWith3 (fun b x y => …) c t e`; elab-postpone-lambdas)
 def funDomMeta (es : ES) (a : Syntax) (ty : Val) : Bool := match strEq (kindOf (unparen a)) "term.fun" with
   | .true => match whnf (force es ty) with
-    | .vpi _ d _ _ _ => isMetaApp es d
+    | .vpi _ _ _ d _ _ => isMetaApp es d
     | _ => .false
   | .false => .false
 -- `.c` (or `.c a …`) against a type `T …`: `T.c`
@@ -1618,12 +1594,11 @@ def dotCtor (gs : Globals) (es : ES) (ty : Val) (s : Syntax) : Option Syntax :=
 def sortLvl (es : ES) (ty : Val) : Lvl := match whnf (force es ty) with
   | .vsort l => l
   | _ => .lnum 0
--- `(x : a) → b` with its sort, when both parts' sorts are known (`sorted`)
-def piSortedQ (q : Q) (es : ES) (a b : Tm) (la lb : Val) : Tm := match whnf (force es la) with
-  | .vsort l1 => match whnf (force es lb) with
-    | .vsort l2 => .sorted (.limax l1 l2) (piTm q a b)
-    | _ => piTm q a b
-  | _ => piTm q a b
+-- `(x : a) → b` with its components' sorts, where known (a hole for the others)
+def sortOrHole (es : ES) (l : Val) : Lvl := match whnf (force es l) with
+  | .vsort s => s
+  | _ => .lhole
+def piSortedQ (q : Q) (es : ES) (a b : Tm) (la lb : Val) : Tm := .pi q (sortOrHole es la) (sortOrHole es lb) a b
 def piSorted (es : ES) (a b : Tm) (la lb : Val) : Tm := piSortedQ .qw es a b la lb
 def tailBools : List Bool → List Bool
   | .nil => .nil
@@ -1961,7 +1936,7 @@ inductive Gen where
 def genBind (es : ES) : Cx → Val → List String → Gen
   | cx, ty, .nil => .mk cx ty
   | cx, ty, .cons x rest => match whnf ty with
-    | .vpi _ dom env cod _ => genBind es (Cx.bind cx x dom) (eval (.cons (fresh (Cx.lvl cx)) env) cod) rest
+    | .vpi _ _ _ dom env cod => genBind es (Cx.bind cx x dom) (eval (.cons (fresh (Cx.lvl cx)) env) cod) rest
     | t => .mk cx t
 def dropEnv : Nat → Env → Env
   | .zero, e => e
@@ -1986,7 +1961,7 @@ def isNilCl : List Clause → Bool
 -- `False` from a proof of an equation that computes to it (or to `False × …`)
 partial def toFalse (ty : Val) (t : Tm) : Option Tm := match whnf ty with
   | .vempty _ => .some t
-  | .vsigma _ A _ _ _ => toFalse A (.fst t)
+  | .vsigma _ _ _ A _ _ => toFalse A (.fst t)
   | _ => .none
 -- the field variables (from level `d0`, `F` of them) as arguments at depth `D`
 def fieldVarsAt (D d0 : Nat) : Nat → Nat → Tms
@@ -1998,7 +1973,7 @@ def fieldVarsAt (D d0 : Nat) : Nat → Nat → Tms
 def absurdBranch (cx6 : Cx) (np L d d0 F : Nat) (args : Tms) (I idx res : Tm) (MBv : Val) : Option Tm :=
   let D1 := Cx.lvl cx6;
   match whnf MBv with
-  | .vpi _ eTy envE codE _ =>
+  | .vpi _ _ _ eTy envE codE =>
     let cxE := Cx.bind cx6 "e✝" eTy;
     let D := D1 + 1;
     let expected' := eval (.cons (fresh D1) envE) codE;
@@ -2025,10 +2000,10 @@ def ihLetsB (gs : Globals) (MB0 MB : Tm) (md d0 F np L : Nat) (args : Tms) (I id
       | .some fty => fty
       | .none => .star;
     let hr : Option Tm := match fty0 with
-      | .pi H _ => .some (shiftTm (D - l) 0 H)
+      | .pi .qw _ _ H _ => .some (shiftTm (D - l) 0 H)
       | _ => .none;
     let fty : Tm := match fty0 with
-      | .pi _ B => B
+      | .pi .qw _ _ _ B => B
       | t => t;
     -- the field's index, at depth `D` (a function field's under its binder `h`, a member's
     -- tag)
@@ -2052,8 +2027,8 @@ def ihLetsB (gs : Globals) (MB0 MB : Tm) (md d0 F np L : Nat) (args : Tms) (I id
         | .true => shiftTm (D - md) 0 MB0
         | .false => nfAt D (.app (.app (.lam (.lam (shiftTm (D - (md - 2)) 2 MB))) jD) (.var (D - 1 - l)))
       | .some H => match same with
-        | .true => .pi H (shiftTm (D + 1 - md) 0 MB0)
-        | .false => .pi H (nfAt (D + 1) (.app (.app (.lam (.lam (shiftTm (D + 1 - (md - 2)) 2 MB))) jD) (.app (.var (D - l)) (.var 0))));
+        | .true => piH H (shiftTm (D + 1 - md) 0 MB0)
+        | .false => piH H (nfAt (D + 1) (.app (.app (.lam (.lam (shiftTm (D + 1 - (md - 2)) 2 MB))) jD) (.app (.var (D - l)) (.var 0))));
     match ihLetsB gs MB0 MB md d0 F np L args I idx modeB fcols (Cx.define cx (String.append "ih✝" (Nat.toString l)) (eval env val) (eval env ty)) (r + 1) rest with
     | .mk w cx' => .mk (fun b => .letE ty val (w b)) cx'
 -- the result of compiling a match: the term and the metavariables
@@ -2104,7 +2079,7 @@ inductive PreR where
 partial def preArgs (es : ES) (cx : Cx) (fty : Val) (m : List Bool) (args : List Syntax) : Option PreR :=
   match m with
   | .cons .true m' => match whnf (force es fty) with
-    | .vpi _ dom env cod _ => match newMeta es cx dom with
+    | .vpi _ _ _ dom env cod => match newMeta es cx dom with
       | .mk mt es1 => match preArgs es1 cx (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args with
         | .some (.mk ims rty es2) => .some (.mk (.cons mt ims) rty es2)
         | .none => .none
@@ -2112,7 +2087,7 @@ partial def preArgs (es : ES) (cx : Cx) (fty : Val) (m : List Bool) (args : List
   | _ => match args with
     | .nil => .some (.mk .nil fty es)
     | .cons _ rest => match whnf (force es fty) with
-      | .vpi _ dom env cod _ => match newMeta es cx dom with
+      | .vpi _ _ _ dom env cod => match newMeta es cx dom with
         | .mk mt es1 => preArgs es1 cx (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
       | _ => .none
 -- is the head a constructor (`T.c` of an inductive type `T`, not shadowed)?
@@ -2193,7 +2168,7 @@ def projT (gs : Globals) (es : ES) (cx : Cx) (bt : Tm) (bty : Val) (f : String) 
   | .vglued (.hconst T _ _ _ _) _ _ => match identHead gs es cx (String.append (String.append T ".") f) with
     | .ok pt pty es3 pm => match insertImplicits gs es3 cx pt pty pm with
       | .ok pt' pty' es4 => match whnf (force es4 pty') with
-        | .vpi _ dom env cod _ => match unify es4 cx bty dom with
+        | .vpi _ _ _ dom env cod => match unify es4 cx bty dom with
           | .some es5 => .ok (.app pt' bt) (eval (.cons (eval (TCtx.env (Cx.c cx)) bt) env) cod) es5 .nil
           | .none => .err (String.append "cannot apply the projection " f)
         | _ => .err (String.append "not a projection: " f)
@@ -2244,7 +2219,7 @@ def stringLit (gs : Globals) (es : ES) (cx : Cx) (v : String) : TE :=
 def insertImplicits (gs : Globals) (es : ES) (cx : Cx) (t : Tm) (ty : Val) (m : List Bool) : TE :=
   match m with
   | .cons .true rest => match whnf ty with
-    | .vpi _ dom env cod _ => match newMeta es cx dom with
+    | .vpi _ _ _ dom env cod => match newMeta es cx dom with
       | .mk mt es' => insertImplicits gs es' cx (.app t mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) rest
     | _ => .ok t ty es
   | _ => .ok t ty es
@@ -2350,7 +2325,7 @@ def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List B
     | e => e
   | .cons a rest => match m with
     | .cons .true m' => match whnf fty with
-      | .vpi _ dom env cod _ => match pre with
+      | .vpi _ _ _ dom env cod => match pre with
         -- (an implicit argument's metavariable made by `preArgs`, as its solution: a
         -- solved metavariable in a later argument's type would not compute there)
         | .cons mt0 pre' =>
@@ -2362,7 +2337,7 @@ def appArgsT (gs : Globals) (es : ES) (cx : Cx) (f : Tm) (fty : Val) (m : List B
           | .mk mt es' => appArgsT gs es' cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) m' args post expected .nil
       | _ => .err "too many implicit arguments"
     | _ => match whnf (force es fty) with
-      | .vpi _ dom env cod _ => match Bool.and (postponable a) (Bool.or (isMetaApp es dom) (funDomMeta es a dom)) with
+      | .vpi _ _ _ dom env cod => match Bool.and (postponable a) (Bool.or (isMetaApp es dom) (funDomMeta es a dom)) with
         | .true => match newMeta es cx dom with
           | .mk mt es1 => appArgsT gs es1 cx (.app f mt) (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
               (.cons (.mk a dom mt) post) expected pre
@@ -2515,7 +2490,7 @@ def scrutLets (gs : Globals) (es : ES) (cx : Cx) : List Syntax → SL
 def checkLams (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (ws : List QW) (body : Syntax) (ty : Val) : TE := match xs with
   | .nil => checkT gs es cx body ty
   | .cons x rest => match whnf (force es ty) with
-    | .vpi q dom env cod _ =>
+    | .vpi q _ _ dom env cod =>
       let cx' := Cx.bind cx x dom;
       let go := fun (u : Unit) => (match checkLams gs es cx' rest (match ws with
           | .nil => .nil
@@ -2653,7 +2628,7 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
             | .none => .false);
           let MB0 := MB;
           let MB : Tm := match modeB with
-            | .true => .piq .qz (.eq (IAt (d + 2)) (.var 1) (shiftTm (d + 2 - L) 0 idx)) (shiftTm 1 0 MB0)
+            | .true => piTm .qz (.eq (IAt (d + 2)) (.var 1) (shiftTm (d + 2 - L) 0 idx)) (shiftTm 1 0 MB0)
             | .false => MB0;
           -- (the motive's own binders `i`, `y` stay: only the context moves)
           let PAt := fun (dd : Nat) => (.lam (.lam (shiftTm (dd - d) 2 MB)) : Tm);
@@ -2669,11 +2644,11 @@ def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val)
           -- (in case analysis the payload is at `μ^j`, and the motive is applied to
           -- `y := con (tag, rest) : μ^{↑j} D i`, below `μ D i`)
           let MT : Tm := match top with
-            | .true => .pi (nfAt (d + 4) (interpApp 0 (IAt (d + 4)) (DtAt (d + 4) 0) (XAt (d + 4)) (.var 3)))
-                (.pi (nfAt (d + 5) (tApps (allTm 0 v) (args6 (IAt (d + 5)) (DtAt (d + 5) 1) (XAt (d + 5)) (PAt (d + 5)) (.var 4) (.var 0))))
+            | .true => piH (nfAt (d + 4) (interpApp 0 (IAt (d + 4)) (DtAt (d + 4) 0) (XAt (d + 4)) (.var 3)))
+                (piH (nfAt (d + 5) (tApps (allTm 0 v) (args6 (IAt (d + 5)) (DtAt (d + 5) 1) (XAt (d + 5)) (PAt (d + 5)) (.var 4) (.var 0))))
                   (shiftTm 4 0 MB))
-            | .false => .pi (nfAt (e + 4) (interpApp 0 (IAt (e + 4)) (DtAt (e + 4) 0) (XsAt (e + 4) (.var 4)) (.var 3)))
-                (.pi (.unit 0) (.letE (.mus 0 (IAt (e + 6)) (DAt (e + 6)) (.var 5) (.szSuc (.var 6))) (.con (.pair (.var 2) (.var 1)))
+            | .false => piH (nfAt (e + 4) (interpApp 0 (IAt (e + 4)) (DtAt (e + 4) 0) (XsAt (e + 4) (.var 4)) (.var 3)))
+                (piH (.unit 0) (.letE (.mus 0 (IAt (e + 6)) (DAt (e + 6)) (.var 5) (.szSuc (.var 6))) (.con (.pair (.var 2) (.var 1)))
                   (nfAt (e + 7) (.app (.app (PAt (e + 7)) (.var 6)) (.var 0)))));
           -- the method's binders (`j`), `i`, `xs`, `ih`, in the context
           let env := TCtx.env (Cx.c cx);
@@ -2716,10 +2691,10 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
     -- `rest` and `ih`: the convoy's motive at this constructor's tag
     let bt := whnf (eval (.cons (.vtag nc i) (TCtx.env (Cx.c cx3))) MT);
     let cx5 := match bt with
-      | .vpi _ restTy e1 c1 _ =>
+      | .vpi _ _ _ restTy e1 c1 =>
         let cx4 := Cx.bind cx3 "rest✝" restTy;
         match whnf (eval (.cons (fresh (d + 3)) e1) c1) with
-        | .vpi _ ihTy _ _ _ => Cx.bind cx4 "ihs✝" ihTy
+        | .vpi _ _ _ ihTy _ _ => Cx.bind cx4 "ihs✝" ihTy
         | _ => Cx.bind cx4 "ihs✝" .vtt
       | _ => Cx.bind (Cx.bind cx3 "rest✝" .vtt) "ihs✝" .vtt;
     let next := fun (es1 : ES) => branches gs mc es1 cx3 expected cols top ihLvls cls k col T np args nidx I idx fam modeB MB0 MB MBv MT G b nc (i + 1) rest;
@@ -2782,7 +2757,7 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
               let curValB : Tm := .coe FiE curTyB tyEq (.var (De - 1 - base));
               let afterE := match modeB with
                 | .true => match whnf MBi with
-                  | .vpi _ eTy envE codE _ =>
+                  | .vpi _ _ _ eTy envE codE =>
                     let cxe := Cx.bind cx8 "e✝" eTy;
                     let rem := eval (.cons (fresh (Cx.lvl cx8)) envE) codE;
                     match top with
@@ -2859,14 +2834,12 @@ def inlineTm (gs : Globals) : Tm → Tm
   | .const n _ _ _ _ => match Scope.lookup (Globals.scope gs) n with
     | .some i => globalTm .true gs i
     | .none => .var 0
-  | .pi a b => .pi (inlineTm gs a) (inlineTm gs b)
+  | .pi q i j a b => .pi q i j (inlineTm gs a) (inlineTm gs b)
   | .lam b => .lam (inlineTm gs b)
   | .app f a => .app (inlineTm gs f) (inlineTm gs a)
   | .letE ty v b => .letE (inlineTm gs ty) (inlineTm gs v) (inlineTm gs b)
-  | .piq q a b => .piq q (inlineTm gs a) (inlineTm gs b)
   | .letq q ty v b => .letq q (inlineTm gs ty) (inlineTm gs v) (inlineTm gs b)
   | .ann t ty => .ann (inlineTm gs t) (inlineTm gs ty)
-  | .sorted l t => .sorted l (inlineTm gs t)
   | .pair a b => .pair (inlineTm gs a) (inlineTm gs b)
   | .fst t => .fst (inlineTm gs t)
   | .snd t => .snd (inlineTm gs t)
@@ -2887,7 +2860,7 @@ inductive Peeled where
 def peelCtx : Nat → TCtx → Val → Peeled
   | .zero, c, v => .mk c v
   | .succ k, c, v => match whnf v with
-    | .vpi _ dom env cod _ => peelCtx k (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod)
+    | .vpi _ _ _ dom env cod => peelCtx k (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod)
     | v' => .mk c v'
 def indexIn : List String → String → Nat → Option Nat
   | .nil, _, _ => .none
@@ -3209,7 +3182,7 @@ def mutualInductiveCmd (gs : Globals) (defs : List Syntax) : Step := match mutua
       | .ok dsI =>
         -- `fun ps i => μ D i` (the description moved under `i`)
         let body := fun (D : Tm) => tLams np (.lam (.mu 0 I (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0)));
-        let fty := sortTy (piTele pts (.pi I (.univ 0)));
+        let fty := sortTy (piTele pts (piH I (.univ 0)));
         let fval := markClosed (body (mkD ds)) fty;
         match check empty fval (eval .nil fty) with
         | .err e => errStep gs e
@@ -3503,18 +3476,14 @@ inductive WPeel where
   | bind (dom cod : Tm)
   | done
 partial def wPeel : Tm → WPeel
-  | .pi a b => .bind a b
-  | .piq _ a b => .bind a b
-  | .sorted _ t => wPeel t
+  | .pi _ _ _ a b => .bind a b
   | _ => .done
 -- a global type's conclusion and its number of binders
 inductive Concl where
   | mk (t : Tm) (k : Nat)
 partial def tmConcl (t : Tm) (k : Nat) : Concl := match wPeel t with
   | .bind _ b => tmConcl b (k + 1)
-  | .done => match t with
-    | .sorted _ u => .mk u k
-    | _ => .mk t k
+  | .done => .mk t k
 partial def tmHeadName : Tm → Option String
   | .app f _ => tmHeadName f
   | .const n _ _ _ _ => .some n
@@ -3602,7 +3571,7 @@ def wit (we : WEnv) (c : TCtx) (ty : Val) (fuel : Nat) : Option Tm := match fuel
     | .some t => .some t
     | .none => witShape we c ty (whnf ty) fuel f
 def witShape (we : WEnv) (c : TCtx) (ty w : Val) (fuel f : Nat) : Option Tm := match w with
-  | .vpi _ dom env cod _ => match wit we (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod) fuel with
+  | .vpi _ _ _ dom env cod => match wit we (TCtx.bind c dom) (eval (.cons (fresh (TCtx.lvl c)) env) cod) fuel with
     | .some b => .some (.lam b)
     | .none => .none
   | .vsort l => sortWit l
@@ -3611,10 +3580,10 @@ def witShape (we : WEnv) (c : TCtx) (ty w : Val) (fuel f : Nat) : Option Tm := m
     | .zero => .none
     | .succ _ => .some (.tag k 0)
   | .vsize => .some .szInf
-  | .vulift _ A => match wit we c A fuel with
+  | .vulift _ _ A => match wit we c A fuel with
     | .some x => .some (.up x)
     | .none => .none
-  | .vsigma _ a env b _ => match wit we c a fuel with
+  | .vsigma _ _ _ a env b => match wit we c a fuel with
     | .none => .none
     | .some x => match wit we c (eval (.cons (eval (TCtx.env c) x) env) b) fuel with
       | .none => .none
@@ -3725,7 +3694,6 @@ def axiomCmd (gs : Globals) (stx : Syntax) : Step := match addAxioms gs (one stx
 -- quantity 0) is not passed. A result in `IO` takes and gives back the world.
 def tmHead : Tm → Tm
   | .app f _ => tmHead f
-  | .sorted _ t => tmHead t
   | .ann t _ => tmHead t
   | t => t
 def foreignFin : List Foreign → String → Option String
@@ -3804,9 +3772,7 @@ def ffiSigRes (ffi : List Foreign) (t : Tm) : FfiSig :=
     | .none => .false) (finOfHead ffi (tmHead res))
 mutual
 def ffiSig (ffi : List Foreign) (t : Tm) : FfiSig := match t with
-  | .sorted _ u => ffiSig ffi u
-  | .pi a b => ffiSigPi ffi .qw a b
-  | .piq q a b => ffiSigPi ffi q a b
+  | .pi q _ _ a b => ffiSigPi ffi q a b
   | _ => ffiSigRes ffi t
 def ffiSigPi (ffi : List Foreign) (q : Q) (a b : Tm) : FfiSig := match ffiParamKind ffi q a with
   | .none => .bad

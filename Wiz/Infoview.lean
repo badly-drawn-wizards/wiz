@@ -197,7 +197,7 @@ where
     | .out x => app (txt "out") [x]
     | .coit _ _ _ S st i s => app (txt "coit") [S, st, i, s]
     | .natLit n => pure (txt (toString n))
-    | .ulift _ A => app (txt "ULift") [A]
+    | .ulift _ _ A => app (txt "ULift") [A]
     | .up a | .down a | .prf _ a => sub prec a
     | .natOp op args => app (txt s!"<{op}>") args.toList
     | .transp _ _ P p _ e =>

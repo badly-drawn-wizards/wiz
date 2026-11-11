@@ -640,7 +640,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
                 let env : Env R := (List.range lvl).reverse.map Val.var
                 let pTm := quote g (lvl + 1) p
                 let tyTm : Term R := .pi hn hbi (quote g lvl hq) (quote g lvl H)
-                  (quote g (lvl + 1) (Closure.inst g cod2 p)) none
+                  (quote g (lvl + 1) (Closure.inst g cod2 p)) .hole
                 let valTm : Term R := .lam hn (.app (.app (.var (lvl - ihl)) (.var 0)) pTm)
                 (eval g env valTm, eval g env tyTm)
               | _, _ => (ihVal, ty)
@@ -1113,14 +1113,14 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     let qt ← check ctx qs .qty
     let S' ← check ctx S (.sort (.succ l))
     let vS ← evalIn ctx S'
-    let D' ← check ctx D (ctx.sortVal g (.pi "s" .default (.qlit w) vS (.mk [I] (.desc l (.var 1))) none))
+    let D' ← check ctx D (ctx.sortVal g (.pi "s" .default (.qlit w) vS (.mk [I] (.desc l (.var 1))) ⟨.succ l, .succ (.succ l)⟩))
     return some (.darg qt S' D')
   | "Desc.rec", #[qs, j, D], .desc l I =>
     return some (.drec (← check ctx qs .qty) (← check ctx j I) (← check ctx D (.desc l I)))
   | "Desc.hrec", #[qs, H, j, D], .desc l I =>
     let (H', lH) ← checkType ctx H
     unifyLevel lH (.succ l)
-    let jTy : VTy R := ctx.sortVal g (.pi "h" .default (.qlit w) (← evalIn ctx H') (.mk ctx.env (quote g (ctx.lvl + 1) I)) none)
+    let jTy : VTy R := ctx.sortVal g (.pi "h" .default (.qlit w) (← evalIn ctx H') (.mk ctx.env (quote g (ctx.lvl + 1) I)) ⟨.succ l, .succ l⟩)
     return some (.dhrec (← check ctx qs .qty) H' (← check ctx j jTy) (← check ctx D (.desc l I)))
   | "con", #[x], .mu l I D i _ _ => return some (.con (← check ctx x (vInterp g l I D (muFamily l I D) i)))
   | "coit", #[S, st, s], .nu l I D i _ _ =>
@@ -1166,7 +1166,7 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
     let v ← freshLevelMeta
     let P' ← check ctx P (delimMotiveTy l v I w)
     let vP ← evalIn ctx P'
-    let (ta, tb, tc, th) := delimMethodTys g l I vP w
+    let (ta, tb, tc, th) := delimMethodTys g l v I vP w
     return some (.delim v P' (← check ctx a ta) (← check ctx b tb) (← check ctx c tc) (← check ctx h th) D',
                  vApp g vP (← evalIn ctx D'))
   | "Desc.interp", #[D, X, i] =>
@@ -1183,7 +1183,7 @@ partial def inferData? (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Option (Term
     let v ← freshLevelMeta
     -- (i : I) → X i → Sort v
     let Pty : VTy R := ctx.sortVal g <| eval g [vX, I] (.pi "i" .default (.qlit w) (.var 1)
-      (.pi "_" .default (.qlit w) (.app (.var 1) (.var 0)) (.sort v) none) none)
+      (.pi "_" .default (.qlit w) (.app (.var 1) (.var 0)) (.sort v) .hole) .hole)
     let P' ← check ctx P Pty
     let i' ← check ctx i I
     let xs' ← check ctx xs (vInterp g l I (← evalIn ctx D') vX (← evalIn ctx i'))
@@ -1231,7 +1231,7 @@ partial def inferTuple (ctx : LocalCtx R) (items : List Syntax) : ElabM R (Term 
     let g ← getGlobals
     -- the second component's type, weakened under the Σ binder
     let bTerm := quote g (ctx.lvl + 1) bty
-    return (.pair a b, ctx.sortVal g (.sigma "_" (.qlit QuantitySyntax.explicitDefault) aty (.mk ctx.env bTerm) none))
+    return (.pair a b, ctx.sortVal g (.sigma "_" (.qlit QuantitySyntax.explicitDefault) aty (.mk ctx.env bTerm) .hole))
 
 /-- `let q (x₁, x₂, …, xₙ) := e; body` (n ≥ 3) as right-nested pairs:
 `let q (x₁, r₁) := e; let q (x₂, r₂) := r₁; …; let q (xₙ₋₁, xₙ) := rₙ₋₂; body`, with
@@ -1468,7 +1468,7 @@ partial def inferFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     let ctx' := ctx.bind b.name vty
     let (t, bty) ← inferFun ctx' rest body
     let g ← getGlobals
-    return (.lam b.name t, ctx.sortVal g (.pi b.name b.bi (← evalIn ctx q) vty (.mk ctx.env (quote g ctx'.lvl bty)) none))
+    return (.lam b.name t, ctx.sortVal g (.pi b.name b.bi (← evalIn ctx q) vty (.mk ctx.env (quote g ctx'.lvl bty)) .hole))
 
 /-- `ShareLet.share A B inst` if the class `ShareLet` is declared, `A` and `B` have no
 holes, and an instance `ShareLet A B` is found (auto-share for `let`, HDL stage S0). -/
@@ -1531,7 +1531,7 @@ partial def elabPis (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     let vty ← evalIn ctx ty
     recordBinder ctx b.info b.name vty
     let (cod, l₂) ← elabPis (ctx.bind b.name vty) rest body
-    return (.pi b.name b.bi q ty cod (some (.imax l₁ l₂)), .imax l₁ l₂)
+    return (.pi b.name b.bi q ty cod ⟨l₁, l₂⟩, .imax l₁ l₂)
 
 /-- `(x : A) × (y : B) × C`, like `elabPis`. -/
 partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
@@ -1551,7 +1551,7 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
     let l₂ ← match ← force s with
       | .sort l => pure l
       | _ => freshLevelMeta
-    return (.sigma b.name q ty cod (some (.max l₁ l₂)), .sort (.max l₁ l₂))
+    return (.sigma b.name q ty cod ⟨l₁, l₂⟩, .sort (.max l₁ l₂))
 
 /-- (7e) After an application: its instance problems whose types its arguments have just
 fixed (`Add ?A` in `a + 5`, now `Add Nat`) are solved now, not at the next instance
@@ -1764,7 +1764,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
         let a ← freshMeta ctx "a function domain"
         let va ← evalIn ctx a
         let b ← freshMeta (ctx.bind "x" va) "a function codomain"
-        let pi : Val R := .pi "x" .default (.qlit QuantitySyntax.explicitDefault) va (.mk ctx.env b) none
+        let pi : Val R := .pi "x" .default (.qlit QuantitySyntax.explicitDefault) va (.mk ctx.env b) .hole
         unifyAt ctx fStx ty pi
         pure pi
       | ty => do
@@ -1985,7 +1985,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
         let mut fnTy := q goal
         for x in vars.reverse do
           fn := .lam (nameOf x) (fn.abstract (varTm x))
-          fnTy := .pi (nameOf x) .default w (q (typeOf x)) (fnTy.abstract (varTm x)) none
+          fnTy := .pi (nameOf x) .default w (q (typeOf x)) (fnTy.abstract (varTm x)) .hole
         fnTy := ctx.sortType g fnTy
         let fnTyV ← evalIn ctx fnTy
         let ctx' := ctx.define "dflt✝" fnTyV (← evalIn ctx fn)
@@ -2092,7 +2092,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let mut G := q goal
   for r in rs.reverse do
     let wr : Term R := if ctx.erasedLvls.contains r then .qlit 0 else w
-    G := .pi (nameOf r) .default wr (q (typeOf r)) (G.abstract (varTm r)) none
+    G := .pi (nameOf r) .default wr (q (typeOf r)) (G.abstract (varTm r)) .hole
   G := ctx.sortType g G
   -- the motive's universe
   let tys := ctx.types.reverse.toArray
@@ -2123,7 +2123,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       let tail := q ((List.range nΞ).foldl (fun v _ => vSnd v) ξi)
       let lhs : Term R := (List.range nΞ).foldr (fun k acc => .pair (.var (nΞ - k)) acc) (tail.lift (nΞ + 1))
       let eqTm : Term R := .eq ((q I).lift (nΞ + 1)) lhs ((q ξi).lift (nΞ + 1))
-      let body : Term R := .pi "e" .default (.qlit 0) eqTm (G.lift (nΞ + 2)) (vG.map (.imax 0 ·))
+      let body : Term R := .pi "e" .default (.qlit 0) eqTm (G.lift (nΞ + 2)) ⟨0, vG.getD .hole⟩
       pure ((List.range nΞ).foldr (fun k acc => .lam s!"i{k}" acc) (.lam "x" body))
   -- a type still to be found (an inferred `match`) is taken to be in `Type`
   let unknown := match whnf Gv with
@@ -2289,7 +2289,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           for d in deps.reverse do
             Gd := .pi ctxBefore.names[L - d - 1]! .default
               (if ctxBefore.erasedLvls.contains d then .qlit 0 else .qlit QuantitySyntax.explicitDefault)
-              (quote g L ctxBefore.types[L - d - 1]!) (Gd.abstract (vt d)) none
+              (quote g L ctxBefore.types[L - d - 1]!) (Gd.abstract (vt d)) .hole
           Gd := ctxBefore.sortType g Gd
           let Gdz := Gd.abstract (vt y)              -- under a binder for `y`
           let tTm := quote g L tv
@@ -2363,7 +2363,7 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   let body ← compileMatch ctx' lvls clauses goal none true
   let lam := (binders.toList.map (·.1)).foldr .lam body
   -- (the `i`-th scrutinee's type is under the `i` binders before it)
-  let piTy := binders.toList.foldr (fun (n, A) acc => Term.pi n .default (.qlit QuantitySyntax.explicitDefault) A acc none) goalTm
+  let piTy := binders.toList.foldr (fun (n, A) acc => Term.pi n .default (.qlit QuantitySyntax.explicitDefault) A acc .hole) goalTm
   let piTy := ctx.sortType g piTy
   pure (ts.foldl .app (.ann lam piTy))
 
@@ -2508,7 +2508,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.arrow" =>
     let (a, l₁) ← checkType ctx (stx.getArg 0)
     let (b, l₂) ← checkType (ctx.bind "_" (← evalIn ctx a)) (stx.getArg 2)
-    return (.pi "_" .default (defaultQty .default) a b (some (.imax l₁ l₂)), .sort (.imax l₁ l₂))
+    return (.pi "_" .default (defaultQty .default) a b ⟨l₁, l₂⟩, .sort (.imax l₁ l₂))
   | "term.depArrow" =>
     let (t, l) ← elabPis ctx (binderViews (stx.getArg 0)).toList (stx.getArg 2)
     return (t, .sort l)
@@ -2521,7 +2521,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.prod" =>
     let (a, l₁) ← checkType ctx (stx.getArg 0)
     let (b, l₂) ← checkType (ctx.bind "_" (← evalIn ctx a)) (stx.getArg 2)
-    return (.sigma "_" (defaultQty .default) a b (some (.max l₁ l₂)), .sort (.max l₁ l₂))
+    return (.sigma "_" (defaultQty .default) a b ⟨l₁, l₂⟩, .sort (.max l₁ l₂))
   | "term.tuple" =>
     inferTuple ctx (#[stx.getArg 1] ++ ((stx.getArg 3).args.filter (!· matches .atom ..))).toList
   | "term.unitVal" => return (.tt, .unit 1)
@@ -2566,7 +2566,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     match ← force ety with
     | .neutral (.eq A a b) #[] =>
       let motiveTy : Val R := ctx.sortVal g (.pi "b" .default (.qlit 0) A
-        (.mk [a, A] (.pi "_" .default (.qlit 0) (.eq (.var 2) (.var 1) (.var 0)) (.sort 0) (some 1))) none)
+        (.mk [a, A] (.pi "_" .default (.qlit 0) (.eq (.var 2) (.var 1) (.var 0)) (.sort 0) ⟨0, 1⟩)) .hole)
       let P ← check ctx (stx.getArg 1) motiveTy
       let vP ← evalIn ctx P
       let p ← check ctx (stx.getArg 2) (vApp g (vApp g vP a) (.neutral (.refl A a) #[]))

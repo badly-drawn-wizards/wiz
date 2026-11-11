@@ -9,9 +9,17 @@ open Wiz Raw ZeroOneMany
 
 namespace Tests.Check
 
+/-- `addDecl` after the elaborator's sorts pass (mandatory sorts): `Raw` terms are built
+with holes for the `Π`/`Σ` sorts, which the pass fills (`Decl.withSorts`). -/
+def addDeclS {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R] (g : Globals R) (d : Decl R) : TCM (Globals R) :=
+  addDecl g (Decl.withSorts g d)
+
+def addDeclsS {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R] (g : Globals R) (ds : List (Decl R)) : TCM (Globals R) :=
+  ds.foldlM addDeclS g
+
 /-- Expect a list of declarations to check. -/
 def accepts {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R] (ds : List (Decl R)) : IO Unit :=
-  match addDecls {} ds with
+  match addDeclsS {} ds with
   | .ok _ => pure ()
   | .error e => throw (IO.userError s!"rejected: {e}")
 
@@ -19,10 +27,10 @@ def accepts {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R] 
 All earlier declarations must check. -/
 def rejects {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
     (ds : List (Decl R)) (p : TypeError → Bool) (what : String) : IO Unit := do
-  let g ← match addDecls {} ds.dropLast with
+  let g ← match addDeclsS {} ds.dropLast with
     | .ok g => pure g
     | .error e => throw (IO.userError s!"setup declaration rejected: {e}")
-  match addDecl g ds.getLast! with
+  match addDeclS g ds.getLast! with
   | .ok _ => throw (IO.userError s!"accepted, but expected {what}")
   | .error e => unless p e do throw (IO.userError s!"expected {what}, got: {e}")
 
@@ -79,7 +87,7 @@ def mlttGroup : Group where
           | .other m => (m.splitOn "out of scope").length > 1
           | _ => false
         let d (ty : Term Unit) (v : Option (Term Unit)) : Decl Unit := { name := "d", type := ty, value := v }
-        let fnTy : Term Unit := Term.pi "x" .default (.qlit ()) (.sort 1) (.sort 0) none
+        let fnTy : Term Unit := Term.pi "x" .default (.qlit ()) (.sort 1) (.sort 0) ⟨2, 1⟩
         rejects [d (.sort 0) (some (.var 0))] outOfScope "an out-of-scope variable"
         rejects [d fnTy (some (.lam "x" (.var 3)))] outOfScope "an out-of-scope variable"
         rejects [d (.var 2) none] outOfScope "an out-of-scope variable" },
@@ -120,13 +128,13 @@ an eliminator, which runs once per node, may not use a runtime variable. Here `c
 step uses `y`: `bad` declares `y` linear (rejected: each `out` reruns the step), `good`
 declares it erased and the step only passes it to an erased argument. -/
 def natRigCoit (q : Nat) (name : Name) : List (Decl Nat) :=
-  let pi (x : Name) (q : Nat) (a b : Term Nat) : Term Nat := .pi x .default (.qlit q) a b none
+  let pi (x : Name) (q : Nat) (a b : Term Nat) : Term Nat := .pi x .default (.qlit q) a b .hole
   let U : Term Nat := .unit 1
   let D : Term Nat := .dret .tt
   -- a global state family: `fun _ => Unit` would drop its linear argument
   let S : Term Nat := .const s!"{name}S" []
   -- ⟦ret tt⟧ S i = (0 _ : tt = i) × Unit
-  let stepTy := pi "i" 1 U (pi "s" 1 (.app S (.var 0)) (pi "y" q U (.sigma "_" (.qlit 0) (.eq U .tt (.var 2)) (.unit 1) none)))
+  let stepTy := pi "i" 1 U (pi "s" 1 (.app S (.var 0)) (pi "y" q U (.sigma "_" (.qlit 0) (.eq U .tt (.var 2)) (.unit 1) .hole)))
   [{ name := s!"{name}S", type := pi "i" 1 U (.sort 1), value := none },
    { name := s!"{name}S0", type := .app S .tt, value := none },
    { name := s!"{name}Step", type := stepTy, value := none },
@@ -232,7 +240,7 @@ def elimsAccepted (l : Nat) : IO Unit :=
 would make the evaluator panic or loop, or instantiate a constant at the wrong number of
 levels, are rejected (both formers); well-typed hints are accepted. -/
 def hintCase : IO Unit := do
-  let pi (a b : Term Q) : Term Q := .pi "x" .default (.qlit .many) a b none
+  let pi (a b : Term Q) : Term Q := .pi "x" .default (.qlit .many) a b ⟨1, 2⟩  -- (`Unit → Type`)
   let g ← match addDecls (R := Q) {} [{ name := "T", type := pi (.unit 1) (.sort 1), value := none },
       { name := "P", levelParams := ["u"], type := pi (.unit 1) (.sort 1), value := none }] with
     | .ok g => pure g
