@@ -258,7 +258,7 @@ inductive Step where
 -- added may be in scope before it, or twice among them. One exception: a partial
 -- definition's signature (an axiom) is followed, once, by its body under the same name.
 def Globals.all : Globals → Array Global
-  | .mk all _ _ => all
+  | .mk all _ _ _ => all
 inductive Seen where
   | mk (name : String) (axiomOnly : Bool)
 def isAxiomTm : Tm → Bool
@@ -3548,9 +3548,6 @@ def namedKind (ffi : List Foreign) (n : String) (isAxiom : Bool) : Option String
     | .false => .some "w"
 -- (the catch-all rows below are calls: `Tm` has many constructors, and a catch-all's
 -- right-hand side is compiled once for each)
-def isAxiomTm (v : Tm) : Bool := match v with
-  | .axiomC _ _ => .true
-  | _ => .false
 def ffiKindHead (ffi : List Foreign) (h : Tm) : Option String := match h with
   | .var _ => .some "w"
   | .const n _ _ v _ => namedKind ffi n (isAxiomTm v)

@@ -179,8 +179,12 @@ structure Decl (R : Type) where
   /-- unfold eagerly instead of gluing (constructors, so values look like constructor
   applications) -/
   inline : Bool := false
-  /-- an implementation for the compiler, not checked by the kernel: a structurally
-  recursive definition, with direct recursion instead of the recursor -/
+  /-- an implementation for the compiler: the term compiled code runs instead of `value`
+  (a structurally recursive definition's equations, with direct recursion instead of the
+  recursor; a partial definition's body; a native implementation's constant). The kernel
+  never unfolds it, but checks it against `type` (`checkImpl` in `addDecl`/`setImpl`,
+  `addPartialImpl`), so erasure only sees checked terms. That it computes what `value`
+  computes is not checked. -/
   impl : Option (Term R) := none
   /-- a partial definition's witness: a term of its type that the kernel checks
   (`addPartialDecl`). The definition stays opaque (`value = none`) but is not an axiom:

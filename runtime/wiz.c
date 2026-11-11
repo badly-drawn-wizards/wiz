@@ -993,6 +993,22 @@ WIZ_API wiz_val wiz_io_result(wiz_val v, wiz_val world) {
   return p;
 }
 
+/* ---- callbacks and exported functions (stage 9g) ----
+   These three are part of the C interface whatever WIZ_API is. C code that holds a
+   Wiz value (the context of a callback it keeps, a handle an exported function
+   returned) owns one reference and gives it back with `wiz_release`; `wiz_retain`
+   takes one more. `wiz_live_objects` counts the objects alive, for leak tests. */
+void wiz_release(void *v) { wiz_dec((wiz_val)v); }
+void wiz_retain(void *v) { wiz_inc((wiz_val)v); }
+long wiz_live_objects(void) { return (long)wiz_live; }
+/* the value of an `IO` result (value, world), which is consumed */
+static wiz_val wiz_io_value(wiz_val r) {
+  wiz_val v = ((wiz_ctor *)r)->fields[0];
+  wiz_inc(v);
+  wiz_dec(r);
+  return v;
+}
+
 /* foreign pointers: borrowed for a call (the wrapper drops the reference after it) */
 WIZ_API void *wiz_in_ptr(wiz_val v) { return ((wiz_ext *)v)->ptr; }
 WIZ_API wiz_val wiz_out_ptr(void *p, void (*fin)(void *)) {

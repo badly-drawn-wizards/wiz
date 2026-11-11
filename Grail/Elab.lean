@@ -29,21 +29,30 @@ def preprocessHeaders (tc : Toolchain) (srcs : List String) : IO (Std.HashMap St
 structure Loaded where
   src : String
   init : CommandState ZeroOneMany
-  /-- the file's key: as for a module (`Cache.moduleKey`), its text, headers and imports -/
+  /-- the file's key: as for a module (`Cache.moduleKey`), its text, headers and imports,
+  and (9f) which of its `link_c` files exist, where -/
   key : UInt64
 
 /-- The name a file that isn't itself imported goes by in the key computation. -/
 def mainName : Name := "main✝"
 
-def load (tc : Toolchain) (roots : List System.FilePath) (salt : UInt64) (src : String) : IO Loaded := do
+def load (tc : Toolchain) (roots : List System.FilePath) (salt : UInt64) (src : String)
+    (dir : System.FilePath := ".") : IO Loaded := do
   let closure ← Module.loadClosure roots src
   let lib := closure.fold (fun m n (_, s) => m.insert n s) ({} : Std.HashMap Name String)
   let headers ← preprocessHeaders tc (src :: lib.values)
+  -- (9f) the `link_c` files, relative to their files (`dir` is the main file's)
+  let sources ← Module.cSourceTable dir src closure
   let loader : Name → Option String := (lib[·]?)
   -- `builtin` registrations are trusted only in the toolchain's library, the first root
   let own := Module.fromFirstRoot roots closure
-  let init : CommandState ZeroOneMany := { loader, cHeaders := (headers[·]?), trustedModule := own.contains }
+  let init : CommandState ZeroOneMany :=
+    { loader, cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
+      trustedModule := own.contains }
   let key := Cache.moduleKey (fun n => if n == mainName then some src else loader n) (headers[·]?) salt mainName
+  -- a `link_c` file that appears or disappears changes the check (its contents enter
+  -- only the link's key)
+  let key := mixHash key (hash (toString ((sources.toList.map fun (k, v) => k ++ "=" ++ v).toArray.qsort (· < ·))))
   pure { src, init, key }
 
 /-- Elaborate a loaded file (through the cache when there is one). -/
