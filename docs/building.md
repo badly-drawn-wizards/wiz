@@ -158,6 +158,18 @@ cached between runs.
   same compiler (the elaboration cache's own keys include the wiz binary's hash, but the
   test driver's grail runs use a fixed binary id and the `/tmp` programs a timestamp).
 
+* **Path filters.** On a pull request the `changes` job (`scripts/ci.py changes`) reads
+  the files the PR changes and decides what runs: nothing but `changes` and `CI result`
+  for a docs-only PR (`docs/`, `*.md`, LICENSE); every shard when a Lean file, the build,
+  the runtime, `scripts/` or `.github/` changed; otherwise each shard with `"inputs"` in
+  `.github/test-shards.json` only when one of its inputs changed (a `lib/X.wiz` input
+  brings the lib files it imports), and the shards without `"inputs"` (backends,
+  library) for any non-docs change. So a PR touching only, say, `lib/Json.wiz` skips
+  `core` and the selfhost shards. `CI result` counts a job the filter skipped as fine
+  and a job it wanted only if it succeeded. Pushes to `master`, the merge queue and
+  manual runs always run everything, so a missing input shows up there at the latest.
+  A test that starts reading a new file belongs in a shard without `"inputs"`, or add
+  the file to its shard's `"inputs"`.
 * **A self-hosted runner** for the heavy shards (`"heavy": true` in
   `.github/test-shards.json`): set the repository variable `WIZ_RUNNER_HEAVY` to its
   label; unset, everything runs on `ubuntu-latest`. Pull requests from forks never run
