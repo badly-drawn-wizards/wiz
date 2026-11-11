@@ -3592,7 +3592,7 @@ def convSamples : List (String × MTm × Bool) :=
 whether conversion accepts it, the third whether the fast path alone (`groundEqTy`) does. -/
 def c1Samples : List (String × MTm × Bool × Bool) :=
   let G (I j : MTm) : MTm := mu 0 I (dret j) j
-  let tl (X : MTm) : MTm := piq .zero X (unit 1)
+  let tl (X : MTm) : MTm := piq .zero X (unit 0)
   let reg (T : MTm) : MTm := ann (lams 2 (refl T (var 1)))
     (pi T (pi (eqTy T T) (eq T (cast T T (var 0) (var 1)) (var 1))))
   [ -- an axiom as the tail's domain (the shape of a seal): compared by name
@@ -3607,7 +3607,7 @@ def c1Samples : List (String × MTm × Bool × Bool) :=
         (eq (G (tl (var 2)) (lam star)) (cast (G (tl (var 2)) (lam star)) (G (tl (var 2)) (lam star)) (var 0) (var 1)) (var 1))))), true, false),
     -- controls: a Π into `Enum 2` is not a tail, nor is a Π at quantity ω
     ("enum", reg (G (piq .zero (const "A") (enum 2)) (lam (tag 2 0))), false, false),
-    ("omega", reg (G (pi (const "A") (unit 1)) (lam star)), false, false) ]
+    ("omega", reg (G (pi (const "A") (unit 0)) (lam star)), false, false) ]
 
 end MTm
 
