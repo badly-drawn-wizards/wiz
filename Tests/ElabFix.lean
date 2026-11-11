@@ -485,6 +485,14 @@ def group : Group where
           "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
           "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
           "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
+    { name := "pruning: a `let` of an inferred `match` (icestick-cpu C6)", run := fun _ =>
+        -- the match's type `?T n` meets `List (?A n x✝)` from a branch, where `x✝` (the
+        -- scrutinee) is in scope: `?A` can't depend on `x✝`, so it is pruned to `?A' n`
+        okLib ("import Prelude\ndef size (n : Nat) : List String :=\n  let ω s := match Nat.lt 256 n with\n" ++
+          "    | .true => List.cons \"big\" List.nil\n    | .false => List.nil;\n  List.append s s\n" ++
+          "def size2 (n : Nat) : List String :=\n  let s := match Nat.lt 256 n with\n" ++
+          "    | .true => List.nil\n    | .false => List.cons \"small\" List.nil;\n  List.append s s\n" ++
+          "#eval size 300\n#eval size2 3") [".cons \"big\" (.cons \"big\" .nil)", ".cons \"small\" (.cons \"small\" .nil)"] },
     { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
         -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
         -- the scrutinee isn't abstracted inside `?A b` (that would leave the pattern fragment)
