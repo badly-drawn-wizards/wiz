@@ -69,3 +69,18 @@ See [docs/building.md](docs/building.md) for the details, CI and caches.
 `scripts/mkexercises.py . ../wiz-exercises` generates the exercise tree, with `sorry`
 stubs, from a checkout (see [docs/exercises.md](docs/exercises.md)). There is no exercise
 branch any more; the old one is archived as `exercises-archive`.
+
+## Licence
+
+Wiz is free software: you can redistribute it and/or modify it under the terms of the GNU
+General Public License as published by the Free Software Foundation, either version 3 of
+the License, or (at your option) any later version (SPDX: `GPL-3.0-or-later`). It is
+distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; see
+[LICENSE](LICENSE) for the full text.
+
+This covers everything in the repository, including the runtime (`runtime/`, `selfhost/rt.c`)
+and the libraries (`lib/`) that are compiled into programs built with Wiz. One file comes
+from elsewhere under its own, compatible licence: `editors/nvim/data/lean-abbreviations.json`
+(Apache-2.0, see `editors/nvim/data/LICENSE.lean-abbreviations`). Programs built with Wiz link
+against GMP (LGPL-3.0-or-later / GPL-2.0-or-later) and, for the self-hosted runtime, the Boehm
+collector (MIT-style); the toolchain itself is built with Lean 4 (Apache-2.0).
