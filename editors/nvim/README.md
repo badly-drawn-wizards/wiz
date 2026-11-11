@@ -7,12 +7,17 @@ Wiz in Neovim (0.10 or later; tested with 0.12):
   nearest directory with `grail.wiz`, `wiz-toolchain`, `lakefile.toml` or `.git`, else the file's own
   directory. In a grail package (the root has a `grail.wiz`) the plugin starts `grail lsp`
   instead, so that the server finds the package's modules (`import Icestick.Gates` from
-  `src/` of a `Package.lib "lib" "src"`) and uses its toolchain settings. Diagnostics,
+  `src/` of a `Package.lib "lib" "src"`) and uses its toolchain settings. A file of an
+  installed toolchain's standard library (where go to definition takes you) is served by
+  that toolchain's own `wiz lsp`, rooted at its `lib/`: one server per toolchain, the
+  same version as the files. Diagnostics,
   hover, go to definition, completion and code actions are the ones Neovim's LSP client
   already provides.
 * **unicode input like Lean's**: `\lam` → `λ`, `\r` → `→`, `\forall` → `∀`, …
 * **an infoview**: a split that follows the cursor and shows the tactic state and the
-  expected type there, with subterms you can inspect.
+  expected type there, with subterms you can inspect, and what else is there: a use of
+  syntax and what it expands to, an import, the instances found, the command's
+  declarations, `#check`/`#eval` output.
 
 The protocol behind the infoview is in `wiz-notes/infoview-protocol.md`; the stage
 notes are in `docs/stages/11-tooling.md` (11p).
@@ -85,6 +90,7 @@ require('wiz').setup {
       enable = true,                   --   start `grail lsp -C ROOT` instead of `cmd`
       cmd = { 'grail', 'lsp' },
     },
+    toolchains = true,                 -- a toolchain's lib/ file: that toolchain's wiz lsp
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil,                   -- function(client, bufnr)
     capabilities = nil,                -- merged into the defaults
@@ -120,8 +126,9 @@ refreshes it, `<LocalLeader>\` is `:WizAbbrev`. The usual LSP keymaps (`K` hover
 
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
 type, kind and, for a constant, where it is declared: `wiz/subtermInfo`); moving the
-cursor highlights that subterm; `gd` jumps to the constant's declaration; `r`
-refreshes; `q` closes.
+cursor highlights that subterm; `gd` jumps to the constant's declaration (or, on a
+syntax, expansion or import line, to the `syntax` command, the macro rule or the
+module); `r` refreshes; `q` closes.
 
 ## The infoview
 
@@ -137,8 +144,10 @@ Expected type
 ```
 
 It shows the state at the cursor of the last Wiz window you were in: the goals inside a
-`by` block (`wiz/interactiveGoals`) and the expected type of the term at the cursor
-(`wiz/interactiveTermGoal`), after a short debounce, and again after each edit (on the
+`by` block (`wiz/interactiveGoals`), the expected type of the term at the cursor
+(`wiz/interactiveTermGoal`; on a binder or pattern variable, its type in its context),
+and the rest (`wiz/interactiveInfo`: sections Syntax, Import, Instances, Declarations,
+Messages), after a short debounce, and again after each edit (on the
 server's `wiz/elaborated`). The terms are tagged text, coloured by kind:
 `WizInfoviewConst`, `WizInfoviewVar`, `WizInfoviewSort`, `WizInfoviewLit`, with
 `WizInfoviewTitle`, `WizInfoviewHypName`, `WizInfoviewTurnstile`, `WizInfoviewCase`,
@@ -206,3 +215,14 @@ has one).
 The design follows [lean.nvim](https://github.com/Julian/lean.nvim) (MIT) and Lean's
 VS Code extension; the code is this plugin's own. The abbreviation table is
 vscode-lean4's (Apache-2.0).
+
+## Toolchain files
+
+An installed toolchain (tower's `~/.tower/toolchains/NAME`, the Nix package, a release
+tarball) is recognised by its layout: `share/wiz/TOOLCHAIN` (a marker every installation
+writes; older ones have `share/wiz/REVISION`), `share/wiz/lib/Prelude.wiz` and
+`share/wiz/.lake/build/bin/wiz`. A file under its `share/wiz/lib/` gets a client rooted at
+that directory whose command is the toolchain's `bin/wiz lsp` (else the binary itself),
+whatever `lsp.cmd` says: a `wiz` on `PATH` may be a tower shim that picks a toolchain by
+the server's directory, which for a library file is not the project's. Set
+`lsp.toolchains = false` to treat such files like any other.

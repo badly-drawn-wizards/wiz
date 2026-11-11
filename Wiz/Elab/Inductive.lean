@@ -44,7 +44,9 @@ def elabTelescope (ctx : LocalCtx R) (bs : List BinderView) :
       | none => freshMeta ctx s!"the type of {b.name}"
     let q ← elabQuantity ctx b.bi b.qty
     tele := tele.push (b.name, b.bi, q, ty)
-    ctx := ctx.bind b.name (← evalIn ctx ty)
+    let vty ← evalIn ctx ty
+    recordBinder ctx b.info b.name vty
+    ctx := ctx.bind b.name vty
   pure (ctx, tele)
 
 /-- `(a₁, (a₂, …, ()))` -/
@@ -268,14 +270,14 @@ private def telescopeVars (n extra : Nat) : List (Term R) :=
 
 /-- Elaborate an `inductive` command to its declarations. -/
 def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl R)) := do
-  let T := ((cmd.getArg 1).getId?).getD "_"
+  let T := ((cmd.child "name").getId?).getD "_"
   let us := levelParams.map Level.param
   let fail {α} (stx : Syntax) (msg : String) : ElabM R α := throwAt stx.info msg
   -- parameters
-  let (ctxΔ, Δ) ← elabTelescope {} ((cmd.getArg 3).args.flatMap binderViews).toList
+  let (ctxΔ, Δ) ← elabTelescope {} ((cmd.child "binders").args.flatMap binderViews).toList
   let nΔ := Δ.size
   -- signature
-  let sig ← match (cmd.getArg 4).args[1]? with
+  let sig ← match (cmd.child "sig").args[1]? with
     | some s => pure (← checkType ctxΔ s).1
     | none => do
       -- no signature: the smallest `Type l` that holds every field (`Type` unless a field
@@ -285,8 +287,8 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
       let ctxT0 := ctxΔ.bind T (eval (← getGlobals) [] (pisTm Δ.toList (.sort 1)))
       let saved ← get
       let mut l : Level := .zero
-      for c in (cmd.getArg 6).args do
-        let (ctxF, fs) ← elabTelescope ctxT0 ((c.getArg 3).args.flatMap binderViews).toList
+      for c in (cmd.child "ctors").args do
+        let (ctxF, fs) ← elabTelescope ctxT0 ((c.child "binders").args.flatMap binderViews).toList
         let mut tys := #[]
         for (_, _, _, A) in fs, k in [0:fs.size] do tys := tys.push (← zonk (ctxT0.lvl + k) A)
         for (lA, _) in ← fieldLevels ctxF ctxT0.lvl tys.toList do
@@ -295,29 +297,32 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
             unless k.hasMVar do l := l.join k.predBound
       set saved
       pure (.sort (.succ l))
+  finishInstances
   let sig ← zonk ctxΔ.lvl sig
   let (Ξ, l) ← match peelSignature sig with
     | .ok r => pure r
-    | .error e => fail (cmd.getArg 4) e
+    | .error e => fail (cmd.child "sig") e
   let nΞ := Ξ.length
   -- the index type: (ξ₁ : X₁) × … × Unit
   let I : Term R := Ξ.foldr (fun (x, _, q, X) acc => .sigma x q X acc none) (.unit (.succ l))
   -- constructors, elaborated with `T` bound locally
   -- inside the declaration `T` takes the parameters too: `T : Δ → Ξ → Type l`
   let ctxT := ctxΔ.bind T (eval (← getGlobals) [] (pisTm Δ.toList sig))
-  let ctors := (cmd.getArg 6).args
+  let ctors := (cmd.child "ctors").args
   let mut names : List Name := []
   let mut descs : List (Term R) := []
   let mut ctorInfo : List (Name × List (Name × BinderInfo × Term R × Term R) × List (Term R)) := []
   let mut ctorLevels : List (List (Option Level × Option Level)) := []
   for c in ctors do
-    let cname := ((c.getArg 2).getId?).getD "_"
-    let (ctxF, fs) ← elabTelescope ctxT ((c.getArg 3).args.flatMap binderViews).toList
+    let cname := ((c.child "name").getId?).getD "_"
+    let (ctxF, fs) ← elabTelescope ctxT ((c.child "binders").args.flatMap binderViews).toList
     let n := fs.size
-    let target ← match (c.getArg 4).args[1]? with
+    let target ← match (c.child "sig").args[1]? with
       | some s => pure (← checkType ctxF s).1
       -- no result type: `T` applied to the parameters
       | none => pure ((telescopeVars nΔ (n + 1)).foldl .app (.var n))
+    -- (HD9) the instance problems of the types (`Vec A (n + 1)`), solved first
+    finishInstances
     -- zonk the fields and the target in their contexts
     let mut fs' := #[]
     for (x, bi, q, A) in fs, k in [0:n] do
@@ -397,23 +402,25 @@ observations. `T.desc`, `T := ν (T.desc Δ) ()`, and an observation function pe
 whether each is recursive. Fields may depend on the parameters only. -/
 def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     ElabM R (List (Decl R) × List (Name × Bool)) := do
-  let T := ((cmd.getArg 1).getId?).getD "_"
+  let T := ((cmd.child "name").getId?).getD "_"
   let us := levelParams.map Level.param
-  let (ctxΔ, Δ) ← elabTelescope {} ((cmd.getArg 3).args.flatMap binderViews).toList
+  let (ctxΔ, Δ) ← elabTelescope {} ((cmd.child "binders").args.flatMap binderViews).toList
   let nΔ := Δ.size
-  let sig ← match (cmd.getArg 4).args[1]? with
+  let sig ← match (cmd.child "sig").args[1]? with
     | some s => pure (← checkType ctxΔ s).1
     | none => pure (.sort 1)
+  finishInstances
   let sig ← zonk ctxΔ.lvl sig
   let l ← match peelSignature sig with
     | .ok ([], l) => pure l
-    | .ok _ => throwAt (cmd.getArg 4).info "a coinductive type has no indices (yet)"
-    | .error e => throwAt (cmd.getArg 4).info e
+    | .ok _ => throwAt (cmd.child "sig").info "a coinductive type has no indices (yet)"
+    | .error e => throwAt (cmd.child "sig").info e
   let ctxT := ctxΔ.bind T (eval (← getGlobals) [] (pisTm Δ.toList sig))
-  let views : List BinderView := (cmd.getArg 6).args.toList.map fun f =>
-    { name := ((f.getArg 2).getId?).getD "_", info := f.info, bi := .default,
-      qty := (f.getArg 1).args[0]?, type := some (f.getArg 4) }
+  let views : List BinderView := (cmd.child "fields").args.toList.map fun f =>
+    { name := ((f.child "name").getId?).getD "_", info := f.info, bi := .default,
+      qty := (f.child "quantity").args[0]?, type := some (f.child "type") }
   let (ctxF, fs) ← elabTelescope ctxT views
+  finishInstances
   let mut fs' := #[]
   for (x, bi, q, A) in fs, k in [0:fs.size] do
     let q ← zonk (ctxT.lvl + k) q
@@ -483,13 +490,14 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
 
 /-- Elaborate a `structure` command to the Σ type and its constructor `S.mk`. -/
 def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl R)) := do
-  let S := ((cmd.getArg 1).getId?).getD "_"
+  let S := ((cmd.child "name").getId?).getD "_"
   let us := levelParams.map Level.param
-  let (ctxΔ, Δ) ← elabTelescope {} ((cmd.getArg 3).args.flatMap binderViews).toList
-  let views : List BinderView := (cmd.getArg 6).args.toList.map fun f =>
-    { name := ((f.getArg 2).getId?).getD "_", info := f.info, bi := .default,
-      qty := (f.getArg 1).args[0]?, type := some (f.getArg 4) }
+  let (ctxΔ, Δ) ← elabTelescope {} ((cmd.child "binders").args.flatMap binderViews).toList
+  let views : List BinderView := (cmd.child "fields").args.toList.map fun f =>
+    { name := ((f.child "name").getId?).getD "_", info := f.info, bi := .default,
+      qty := (f.child "quantity").args[0]?, type := some (f.child "type") }
   let (ctxF, fs) ← elabTelescope ctxΔ views
+  finishInstances
   let mut fs' := #[]
   for (x, bi, q, A) in fs, k in [0:fs.size] do
     let q ← zonk (ctxΔ.lvl + k) q
@@ -503,7 +511,7 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let Δ := Δz
   -- the universe: as given, or else big enough for every field (`Type u` for a field
   -- `x : A` with `A : Type u`)
-  let sig ← match (cmd.getArg 4).args[1]? with
+  let sig ← match (cmd.child "sig").args[1]? with
     | some s => pure (← checkType ctxΔ s).1
     | none =>
       let g ← getGlobals
@@ -515,11 +523,12 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
         | some s => unless s.hasMVar do l := l.join s.predBound
         | none => pure ()
       pure (.sort (.succ l))
+  finishInstances
   let sig ← zonk ctxΔ.lvl sig
   let l ← match peelSignature sig with
     | .ok ([], l) => pure l
-    | .ok _ => throwAt (cmd.getArg 4).info "a structure has no indices"
-    | .error e => throwAt (cmd.getArg 4).info e
+    | .ok _ => throwAt (cmd.child "sig").info "a structure has no indices"
+    | .error e => throwAt (cmd.child "sig").info e
   let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc none) (.unit (.succ l))
   -- phantom parameters (see `phantomTail`): the final `Unit` becomes the phantom tail
   -- (a structure with fields marks its tail, so that erasure unboxes the last field, 22i)

@@ -1,0 +1,49 @@
+import FeralCore
+-- Lowering of drafts/feral/surface/04_reverse.wiz (rules: drafts/feral/LOWERING.md).
+-- `Box T` is `T` (L13); a `while` loop is a `partial def` over its live variables (L8).
+-- At run time every `cons` cell matched in the loop has rc 1 and is reused for the
+-- `cons` built in the same iteration (Perceus reuse): no allocation.
+
+-- enum List where | nil | cons (head : U64) (tail : Box List)
+inductive LList where
+  | nil
+  | cons (head : U64) (tail : LList)
+
+-- the loop `while let .cons x tail := l do { acc := .cons x acc; l := tail }`
+-- (live variables in and out: l, acc; RD8: partial now, `decreases` later)
+partial def reverse.loop0 (l : LList) (acc : LList) : Result (LList × LList) :=
+  match l with
+  | .cons x tail =>
+    let acc := LList.cons x acc;
+    let l := tail;
+    reverse.loop0 l acc
+  | .nil => .ok (l, acc)
+
+-- fn reverse (l : List) : List
+def reverse (l : LList) : Result LList :=
+  let acc := LList.nil;
+  match reverse.loop0 l acc with
+  | .ok r =>
+    let (l, acc) := r;       -- (l is dead: dropped)
+    .ok acc
+  | .err e => .err e
+
+-- fn reverse_in_place {'a} (l : &'a mut List) : Unit := { let old := mem.take l; *l := reverse old }
+def reverse_in_place {ρ : Region} (l : Uniq ρ LList) : Result (Unit × Uniq ρ LList) :=
+  let old := l.val;          -- mem.take l: move the value out ...
+  let l := Uniq.set l LList.nil;   -- ... leaving the default behind
+  match reverse old with
+  | .ok r =>
+    let l := Uniq.set l r;   -- *l := reverse old
+    .ok ((), l)
+  | .err e => .err e
+
+def LList.toNats : LList → List Nat
+  | .nil => .nil
+  | .cons x xs => .cons x.val (LList.toNats xs)
+def l123 : LList := .cons (U64.lit 1) (.cons (U64.lit 2) (.cons (U64.lit 3) .nil))
+
+#eval Result.map LList.toNats (reverse l123)
+-- .ok [3, 2, 1]
+#eval Result.map (fun (r : Unit × LList) => LList.toNats r.2)
+  (Uniq.borrow Region.static l123 (fun ρ h l r => reverse_in_place r))

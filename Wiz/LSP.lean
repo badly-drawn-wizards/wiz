@@ -109,11 +109,13 @@ def diagnostics (uri : String) (doc : Doc) : Json :=
               ("params", Json.mkObj [("uri", uri), ("diagnostics", Json.arr ds.toArray)])]
 
 def infoviewMethods : List String :=
-  ["wiz/plainGoal", "wiz/plainTermGoal", "wiz/interactiveGoals", "wiz/interactiveTermGoal", "wiz/subtermInfo"]
+  ["wiz/plainGoal", "wiz/plainTermGoal", "wiz/interactiveGoals", "wiz/interactiveTermGoal", "wiz/subtermInfo",
+   "wiz/interactiveInfo"]
 
 def capabilities : Json :=
   Json.mkObj [("capabilities", Json.mkObj [
     ("textDocumentSync", (1 : Nat)), ("hoverProvider", true), ("definitionProvider", true),
+    ("declarationProvider", true),
     -- (answered with null; asked for so that editors report cursor moves, for `--infoview`)
     ("documentHighlightProvider", true),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
@@ -168,6 +170,154 @@ def location (srv : Server) (uri : String) (doc : Doc) (n : Name) : Json :=
     | some (path, src) => Json.mkObj [("uri", "file://" ++ path), ("range", range src info)]
     | none => Json.null
   | none => Json.null
+
+/-! ## Syntax, imports and instances (11q) -/
+
+/-- The source of a module (`""`: the document) and its URI. -/
+def moduleSource (srv : Server) (uri : String) (doc : Doc) (m : String) : Option (String × String) :=
+  if m.isEmpty then some (uri, doc.text) else (srv.libs.get? m).map fun (path, src) => ("file://" ++ path, src)
+
+/-- A target (`Query.Target`) as an LSP `Location`. -/
+def targetJson (srv : Server) (uri : String) (doc : Doc) : Query.Target → Json
+  | .site info m => match moduleSource srv uri doc m with
+    | some (u, src) => Json.mkObj [("uri", u), ("range", range src info)]
+    | none => Json.null
+  | .module m => match srv.libs.get? m with
+    | some (path, _) => Json.mkObj [("uri", "file://" ++ path), ("range", range "" {})]
+    | none => Json.null
+
+/-- Where a target is, for people: `this file, line 3` or `Prelude, line 212`. -/
+def targetText (srv : Server) (uri : String) (doc : Doc) : Query.Target → String
+  | .site info m => match moduleSource srv uri doc m with
+    | some (_, src) => s!"{if m.isEmpty then "this file" else m}, line {(lineCol src info.start).1 + 1}"
+    | none => if m.isEmpty then "this file" else m
+  | .module m => match srv.libs.get? m with
+    | some (path, _) => path
+    | none => m
+
+/-- The first line of the command at a target (`syntax:75 (name := neg) "-" term:75 : term`). -/
+def targetLine (srv : Server) (uri : String) (doc : Doc) : Query.Target → Option String
+  | .site info m => do
+    let (_, src) ← moduleSource srv uri doc m
+    let text := String.ofList ((src.toList.drop info.start).take (info.stop - info.start))
+    let line := (text.splitOn "\n").headD ""
+    pure (if line.length > 120 then (line.take 117).toString ++ "…" else line)
+  | .module _ => none
+
+/-- What a handler is, in words. -/
+def handlerText : SyntaxHandler → String
+  | .rule .. => "macro rule"
+  | .fn what f => s!"{what} {f}"
+
+/-- The text of a range of the document, on one line (cut at 80 characters). -/
+def rangeText (doc : Doc) (info : SourceInfo) : String :=
+  let t := String.ofList ((doc.text.toList.drop info.start).take (info.stop - info.start))
+  let t := " ".intercalate ((t.splitOn "\n").map (·.trimAscii.toString))
+  if t.length > 80 then (t.take 77).toString ++ "…" else t
+
+/-- The expansion a hover shows (cut at 600 characters). -/
+def expansionText (e : Syntax) : String :=
+  let t := e.reprint
+  if t.length > 600 then (t.take 597).toString ++ "…" else t
+
+/-- The hover of a use of syntax or an `import` (`Query.syntaxAt`), as Markdown. -/
+def syntaxHover (srv : Server) (uri : String) (doc : Doc) (es : Array (Info ZeroOneMany)) : Option String := do
+  let e ← es[0]?
+  let st := doc.state
+  let mut parts : Array String := #[]
+  -- the syntax and its type (the expected type where it was checked), as Lean shows it
+  let ty := st.infos.findSome? fun
+    | .term r g _ => if r.start == e.info.start && r.stop == e.info.stop then some (g.target.pretty g.names) else none
+    | _ => none
+  for x in es do
+    match x with
+    | .importMod _ m =>
+      parts := parts.push s!"```wiz\nimport {m}\n```\nmodule `{m}`: {targetText srv uri doc (.module m)}"
+    | .syntaxRef _ r =>
+      let (what, name) := match r with
+        | .kind k => ("syntax", k)
+        | .cat c => ("syntax category", c)
+      let head := match r, ty with
+        | .kind _, some t => s!"```wiz\n{rangeText doc e.info} : {t}\n```\n"
+        | _, _ => ""
+      let site := Query.refSite st r
+      let decl := match site.bind (targetLine srv uri doc) with
+        | some l => s!"\n```wiz\n{l}\n```"
+        | none => ""
+      let at_ := match site with
+        | some t => s!" ({targetText srv uri doc t})"
+        | none => ""
+      parts := parts.push s!"{head}{what} `{name}`{at_}{decl}"
+    | .expansion _ _ h out =>
+      let at_ := match Query.handlerSite st h with
+        | some t => s!" ({targetText srv uri doc t})"
+        | none => ""
+      let body := match out with
+        | some o => s!", expands to\n```wiz\n{expansionText o}\n```"
+        | none => ""
+      parts := parts.push s!"by {handlerText h}{at_}{body}"
+    | _ => pure ()
+  -- the instances found there (`a + b`: `Add Nat`)
+  for i in st.infos do
+    if let .inst r ns cls t := i then
+      if r.start == e.info.start && r.stop == e.info.stop then
+        parts := parts.push s!"instance `{t.pretty ns} : {cls.pretty ns}`"
+  if parts.isEmpty then none else some ("\n\n".intercalate parts.toList)
+
+/-- Names a command declares that the infoview doesn't list: what the elaborator makes
+for its own use. -/
+def auxiliaryDecl (n : Name) : Bool :=
+  (n.splitOn "✝").length > 1 ||
+  [".desc", ".casesOn", ".rec", ".ind", ".below", ".brecOn", ".noConfusion", ".sizeOf", ".elim", ".Tag"].any (n.endsWith ·)
+
+/-- `wiz/interactiveInfo`: what the infoview shows at the cursor besides the goals and the
+expected type. -/
+def infoItems (srv : Server) (uri : String) (doc : Doc) (off : Nat) :
+    StateM (Array (Subterm ZeroOneMany)) (Array (String × SourceInfo × String × Option String × Option TT × Json)) := do
+  let st := doc.state
+  let mut items := #[]
+  -- the use of syntax (or the import) at the cursor
+  for e in Query.syntaxAt st off do
+    match e with
+    | .importMod r m =>
+      items := items.push ("import", r, s!"import {m}", some (targetText srv uri doc (.module m)), none,
+        targetJson srv uri doc (.module m))
+    | .syntaxRef r ref =>
+      let (title, site) := match ref with
+        | .kind k => (s!"syntax {k}", Query.refSite st ref)
+        | .cat c => (s!"syntax category {c}", Query.refSite st ref)
+      let at_ := match site with
+        | some t => s!" ({targetText srv uri doc t})"
+        | none => ""
+      items := items.push ("syntax", r, title ++ at_, site.bind (targetLine srv uri doc), none,
+        (site.map (targetJson srv uri doc)).getD Json.null)
+    | .expansion r _ h out =>
+      let site := Query.handlerSite st h
+      let at_ := match site with
+        | some t => s!" ({targetText srv uri doc t})"
+        | none => ""
+      items := items.push ("expansion", r, s!"{if out.isSome then "expanded" else "elaborated"} by {handlerText h}{at_}",
+        out.map expansionText, none, (site.map (targetJson srv uri doc)).getD Json.null)
+    | _ => pure ()
+  -- the instances found at the innermost application
+  for i in Query.instancesAt st off do
+    if let .inst r ns cls t := i then
+      let (nsr, tys) := (ns, ns.map fun _ => (none : Option (Term ZeroOneMany)))
+      items := items.push ("instance", r, s!"instance {t.pretty ns}", some (t.pretty ns),
+        some (← cls.prettyTagged nsr tys), Json.null)
+  -- the declarations of the command at the cursor
+  for n in Query.declsAt st off do
+    if auxiliaryDecl n then continue
+    let some d := st.globals.find? n | continue
+    let some (r, _) := st.declSites.get? n | continue
+    items := items.push ("declaration", r, n, none, some (← d.type.prettyTagged [] []),
+      targetJson srv uri doc (.site r ""))
+  -- the messages at the cursor (`#check`, `#eval`, traces, errors)
+  for m in st.messages do
+    if m.info.start ≤ off && (off < m.info.stop || off == m.info.start) then
+      let sev := match m.severity with | .error => "error" | .warning => "warning" | .info => "info"
+      items := items.push ("message", m.info, sev, some m.text, none, Json.null)
+  pure items
 
 /-- The type of a subterm, from the kernel, if every variable in scope has a known type. -/
 def subtermType (g : Globals ZeroOneMany) (sub : Subterm ZeroOneMany) : Option (Term ZeroOneMany) := do
@@ -225,6 +375,16 @@ def infoview (srv : Server) (uri : String) (doc : Doc) (method : String) (msg : 
       let k (tg : TaggedGoal) (tj : TT → Json) : Json :=
         Json.mkObj [("goal", goalJson tg tj), ("range", range doc.text info), ("session", doc.session)]
       pure (memo s!"term {info.start} {info.stop}" (withTable doc g.tagged k))
+  | "wiz/interactiveInfo" =>
+    let k (items : Array (String × SourceInfo × String × Option String × Option TT × Json)) (tj : TT → Json) : Json :=
+      if items.isEmpty then Json.null else
+      Json.mkObj [("items", Json.arr (items.map fun (kind, r, title, text, ty, loc) => Json.mkObj [
+          ("kind", kind), ("range", range doc.text r), ("title", title),
+          ("text", match text with | some t => Json.str t | none => Json.null),
+          ("type", match ty with | some t => tj t | none => Json.null),
+          ("location", loc)])),
+        ("session", doc.session)]
+    pure (memo s!"info {off}" (withTable doc (infoItems srv uri doc off) k))
   | _ => -- wiz/subtermInfo
     let some session := (get? msg ["params", "session"]).bind (·.getNat?.toOption) | throw (-32602, "missing session")
     let some r := (get? msg ["params", "ref"]).bind (·.getNat?.toOption) | throw (-32602, "missing ref")
@@ -304,30 +464,30 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     if session != doc.session then return (srv, #[replyError (-32801) "the document changed"])
     let some a := doc.actions[k]? | return (srv, #[replyError (-32801) "unknown action"])
     (srv, #[reply (codeAction auri doc a none)])
-  | "wiz/plainGoal" | "wiz/plainTermGoal" | "wiz/interactiveGoals" | "wiz/interactiveTermGoal" | "wiz/subtermInfo" =>
+  | "wiz/plainGoal" | "wiz/plainTermGoal" | "wiz/interactiveGoals" | "wiz/interactiveTermGoal" | "wiz/subtermInfo"
+  | "wiz/interactiveInfo" =>
     let some doc := srv.docs.get? uri | return (srv, #[replyError (-32602) s!"unknown document {uri}"])
     match infoview srv uri doc method msg with
     | .ok (doc, j) => ({ srv with docs := srv.docs.insert uri doc }, #[reply j])
     | .error (c, m) => (srv, #[replyError c m])
-  | "textDocument/hover" | "textDocument/definition" | "textDocument/completion" =>
+  | "textDocument/hover" | "textDocument/definition" | "textDocument/declaration" | "textDocument/completion" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
     let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])
     match method with
     | "textDocument/hover" =>
-      match Query.hoverAt doc.state off with
-      | some (n, ty) =>
-        let md := s!"```wiz\n{n} : {ty}\n```"
-        (srv, #[reply (Json.mkObj [("contents", Json.mkObj [("kind", "markdown"), ("value", md)])])])
+      let md? := match syntaxHover srv uri doc (Query.syntaxAt doc.state off) with
+        | some md => some md
+        | none => (Query.hoverAt doc.state off).map fun (n, ty) => s!"```wiz\n{n} : {ty}\n```"
+      match md? with
+      | some md => (srv, #[reply (Json.mkObj [("contents", Json.mkObj [("kind", "markdown"), ("value", md)])])])
       | none => (srv, #[reply Json.null])
-    | "textDocument/definition" =>
-      match Query.definitionAt doc.state off with
-      | some (_, info, "") => (srv, #[reply (Json.mkObj [("uri", uri), ("range", range doc.text info)])])
-      | some (_, info, m) =>
-        match srv.libs.get? m with
-        | some (path, src) =>
-          (srv, #[reply (Json.mkObj [("uri", "file://" ++ path), ("range", range src info)])])
-        | none => (srv, #[reply Json.null])
-      | none => (srv, #[reply Json.null])
+    | "textDocument/definition" | "textDocument/declaration" =>
+      -- one location, or (several macro rules, say) a list
+      let ts := (Query.targetsAt doc.state off (decl := method == "textDocument/declaration")).filterMap fun t =>
+        match targetJson srv uri doc t with
+        | .null => none
+        | j => some j
+      (srv, #[reply (if ts.size == 1 then ts[0]! else if ts.isEmpty then Json.null else Json.arr ts)])
     | _ =>
       let names : Array Name := Query.completionsAt doc.state doc.text off
       let items : Array Json := names.map fun (n : Name) => Json.mkObj [("label", Json.str n), ("kind", (3 : Nat))]

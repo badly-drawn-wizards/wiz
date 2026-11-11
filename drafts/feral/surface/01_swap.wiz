@@ -1,0 +1,25 @@
+import FeralCore
+import Feral
+-- Swap through two mutable borrows. Hand-lowered: drafts/feral/lowered/01_swap.wiz
+
+feral
+  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {
+    let t := *x;                                     -- U64 is Copy: a copy, not a move
+    *x := *y;
+    *y := t
+  }
+
+  -- moving out of a borrow needs mem.swap / mem.replace / mem.take
+  fn mem_swap {'a 'b} {T : Type} (x : &'a mut T) (y : &'b mut T) : Unit :=
+    mem.swap x y
+
+  fn main () : U64 × U64 := {
+    let mut a : U64 := 1;
+    let mut b : U64 := 2;
+    swap (&mut a) (&mut b);                          -- two disjoint borrows, then a and b are usable again
+    (a, b)
+  }
+end
+
+#eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) main
+-- (2, 1)

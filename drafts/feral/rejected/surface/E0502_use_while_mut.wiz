@@ -1,0 +1,16 @@
+import FeralCore
+import Feral
+-- REJECTED (Rust E0502: the lender read while a mutable borrow of it lives).
+-- expect: E0502 at 12
+-- `get_mut` returns a borrow of `*v`, so the call is in a reborrow scope (L17) where `v`
+-- is a `Lent` token until `m`'s last use: `v.len` gets a `Lent ρ' (Vec U64)`.
+feral
+  fn get_mut {'a} (v : &'a mut Vec U64) (i : USize) : &'a mut U64 := &mut v[i]
+
+  fn bad (v : &mut Vec U64) : U64 := {
+    let m := get_mut v 0;
+    let n := v.len;
+    *m += 1;
+    n
+  }
+end

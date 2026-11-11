@@ -26,7 +26,7 @@ def clampC : Circuit none0 u8 :=
 
 -- popcount by meta recursion over the bit index
 def bitAt {r : HwTy → Type} [Hw r] (x : r u8) (i : Nat) : r u8 :=
-  Hw.cat (Hw.lit 7 0 : r (HwTy.bits 7)) (Hw.slice i 1 x : r (HwTy.bits 1))
+  Hw.cat (Hw.lit 7 0) (Hw.slice i 1 x)
 def popCount {r : HwTy → Type} [Hw r] (x : r u8) : Nat → r u8
   | .zero => Hw.lit 8 0
   | .succ i => Hw.add (bitAt x i) (popCount x i)

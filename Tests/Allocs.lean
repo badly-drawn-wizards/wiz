@@ -7,7 +7,7 @@ open Wiz
 namespace Tests.Allocs
 
 /-- `tests --allocs FILE ENTRY… [--ir NAME…]`: a measuring tool, not a test. Loads FILE
-(imports from `lib/` and `drafts/rust/lib/`) and prints, for each ENTRY, the number of
+(imports from `lib/` and `drafts/feral/lib/`) and prints, for each ENTRY, the number of
 objects the optimised IR allocates computing it on the checked heap (`#run`'s
 interpreter). An ENTRY `name : T := e` is appended to the file as a definition first.
 With `--ir`, prints the optimised IR of each NAME and of the functions lifted from it. -/
@@ -19,7 +19,7 @@ def allocsMain (args : List String) : IO UInt32 := do
   let mut m : List (Name × String) := []
   -- only modules from the toolchain's `lib/` (not replaced by a draft) are trusted
   let mut own : List Name := []
-  for dir in ["lib", "drafts/rust/lib"] do
+  for dir in ["lib", "drafts/feral/lib"] do
     for e in ← System.FilePath.readDir dir do
       if e.path.extension == some "wiz" then
         let n := e.path.fileStem.getD ""

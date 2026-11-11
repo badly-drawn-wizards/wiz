@@ -70,6 +70,7 @@ def whnf := 28
 def unfold := 29
 def rewrite := 30
 def ctorInfo := 31
+def isDefinition := 32
 end TacTag
 
 structure Goal (R : Type) where

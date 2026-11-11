@@ -242,6 +242,8 @@ def layoutFrom (src tc : System.FilePath) (commit : String) : IO (Except String 
   if ← (src / "editors").pathExists then
     if let .error e ← run "cp" ["-R", (src / "editors").toString, share.toString] then return .error e
   IO.FS.writeFile (share / "REVISION") (commit ++ "\n")
+  -- the marker editors look for (editors/nvim: a library file is served by its toolchain's wiz)
+  IO.FS.writeFile (share / "TOOLCHAIN") "A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).\n"
   pure (.ok ())
 
 /-- Clone, check out and build with Lake. -/

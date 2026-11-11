@@ -1,8 +1,8 @@
 import Prelude
--- Optics for borrows (RD11): the target library of the Rust-style DSL's lowering of
+-- Optics for borrows (RD11): the target library of Feral's lowering of
 -- mutable borrows. See /workspace/wiz-notes/borrows-as-optics.md.
 --
--- A Rust function that returns `&mut A` borrowed from a lender `S` lowers (Aeneas
+-- A Feral function that returns `&mut A` borrowed from a lender `S` lowers (Aeneas
 -- style) to a forward value and a backward closure: `S → Result (A × (A → S))`. That
 -- is a (partial) costate coalgebra `S → Result (Store A S)`, and when its body is a
 -- place expression (fields, indices, variant payloads) it is a lawful partial lens.
@@ -209,11 +209,11 @@ def Pair2.fstL {A B : Type} : Lens (Pair2 A B) A := fun s =>
 def Pair2.sndL {A B : Type} : Lens (Pair2 A B) B := fun s =>
   (s.snd, fun b => Pair2.mk s.fst b)
 
-def Pair2.fstL_lawful {A B : Type} : Lens.Lawful (@Pair2.fstL A B) :=
+def Pair2.fstL_lawful {A B : Type} : @Lens.Lawful (Pair2 A B) A (@Pair2.fstL A B) :=
   (fun s => rfl, fun s a => rfl, fun s a b => rfl)
-def Pair2.sndL_lawful {A B : Type} : Lens.Lawful (@Pair2.sndL A B) :=
+def Pair2.sndL_lawful {A B : Type} : @Lens.Lawful (Pair2 A B) B (@Pair2.sndL A B) :=
   (fun s => rfl, fun s a => rfl, fun s a b => rfl)
-def Pair2.indep {A B : Type} : Lens.Indep (@Pair2.fstL A B) (@Pair2.sndL A B) :=
+def Pair2.indep {A B : Type} : @Lens.Indep (Pair2 A B) A B (@Pair2.fstL A B) (@Pair2.sndL A B) :=
   (fun s a => rfl, fun s b => rfl, fun s a b => rfl)
 
 -- `&mut v[0]` on a list: panics on the empty list.
@@ -261,7 +261,7 @@ def Lens.comp_lawful {S A B : Type} (l : Lens S A) (m : Lens A B)
        (hl.2.2 s ((m (l s).1).2 b) ((m (l s).1).2 c))))
 
 -- GetPut for two independent places borrowed at once. (PutGet and PutPut hold too, by
--- `Indep`; their proofs are in drafts/rust/Optic.wiz until the elaborator compares an
+-- `Indep`; their proofs are in drafts/feral/Optic.wiz until the elaborator compares an
 -- equation of pairs with its computed form.)
 def Lens.pair_getPut {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m) :
     Lens.GetPut (Lens.pair l m) := fun s =>
