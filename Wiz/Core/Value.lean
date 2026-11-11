@@ -110,7 +110,7 @@ inductive Elim (R : Type) where
   | delim (v : Level) (P mret marg mrec mhrec : Val R)
   | ind (l : Level) (I D : Val R) (v : Level) (P m i : Val R)
   | sfix (l : Level) (I D : Val R) (v : Level) (P f s i : Val R)
-  | scase (l : Level) (I D : Val R) (v : Level) (P m s i : Val R)
+  | scase (l : Level) (q : Val R) (I D : Val R) (v : Level) (P m s i : Val R)
   | out
   /-- `down` (Q4) -/
   | down

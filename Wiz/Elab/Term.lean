@@ -1391,15 +1391,9 @@ partial def elabLetPat (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy
       let n := L.fields.length
       unless ps.length == n do
         throwAt pat.info s!"{S}.mk expects {n} argument{if n == 1 then "" else "s"} (the fields {", ".intercalate L.fields}), got {ps.length}"
-      -- a component that is not a field, bound at `q` and never used
-      let leftoverOk := match q with
-        | .qlit r => QRig.le (0 : R) r
-        | _ => false
-      if L.comps.any (· == .marker false) && !leftoverOk then
-        throwAt pat.info (s!"cannot take a value of the structure {S} apart at quantity {q.pretty ctx.names}: " ++
-          s!"the Σ type of a structure ends in a component that is not a field (its marker tail), and this " ++
-          s!"`let` would bind it at quantity {q.pretty ctx.names} and never use it. This is a limitation of " ++
-          "how structures are encoded today; take the structure at quantity ω, or use a tuple type for linear data")
+      -- a component that is not a field (the marker tail, `(0 fields✝ : …) → Unit`) is
+      -- bound at `q` and never used: the kernel allows that for a unit-shaped type at any
+      -- quantity (K2a, `popBinder`), so a linear structure can be taken apart
       L.comps.mapM fun c => match c with
         | .field i => nameOf ps[i]!
         | .marker _ => pure "_"
@@ -2153,7 +2147,11 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- (21v) with a variable bound at quantity 1 in scope: the additive case `T.casesOnA`,
   -- whose branches are alternatives, so that each may use the variable once (with
   -- `casesOn` the methods are separate ω arguments, and the uses add up)
-  let additive := !sized && !useRec && !ctx.linearLvls.isEmpty && (g.find? (T ++ ".casesOnA")).isSome
+  -- (linear-case stage 2) a scrutinee held at 1 (`linearLvls`): `T.casesOn1`, the
+  -- additive case at quantity 1, whose branches receive the fields at their declared
+  -- quantities (the kernel's `scase` at 1, K1)
+  let linear := !sized && !useRec && ctx.linearLvls.contains x && (g.find? (T ++ ".casesOn1")).isSome
+  let additive := linear || (!sized && !useRec && !ctx.linearLvls.isEmpty && (g.find? (T ++ ".casesOnA")).isSome)
   let nondep := !additive && modeA && !sized && nΞ > 0 && !((ξLvls ++ [x]).any fun l => G.hasVar (ctx.lvl - l - 1))
   let motive : Term R ←
     if nondep then pure G
@@ -2179,7 +2177,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     | _ => false
   let some v := vG.orElse fun _ => if unknown then some (.succ .zero) else none
     | throwAt ctx.info "could not determine the universe of the match's type"
-  let elimName := T ++ (if additive then ".casesOnA" else if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn") ++
+  let elimName := T ++ (if linear then ".casesOn1" else if additive then ".casesOnA" else if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn") ++
     (if nondep then "N" else "")
   let some ed := g.find? elimName | throwAt ctx.info s!"{elimName} is missing"
   let elimHead : Term R := .const elimName (us ++ [v])
@@ -2234,8 +2232,9 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
         ctx' := { ctx' with erasedLvls := ctx'.lvl :: ctx'.erasedLvls }
       mt ← instM B (Val.var ctx'.lvl)
       -- hidden: the patterns name the fields (`.ok items s1`), and a field's own name
-      -- (`s`) must not shadow a variable of the same name in the right-hand side
-      ctx' := ctx'.bind (n ++ "✝") A
+      -- (`s`) must not shadow a variable of the same name in the right-hand side.
+      -- A field the method takes at 1 is linear: a match on it is `casesOn1` again
+      ctx' := ctx'.bindQ (n ++ "✝") A ((Val.toPoly? fq).bind (·.isConst?))
     let mut ihLvls : Array Lvl := #[]
     for _ in [0:nRec] do
       let .pi _ _ _ A B _ ← force mt | throwAt ctx.info "internal error: hypothesis type"
@@ -2407,9 +2406,18 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   -- zonk: solved metas in the expected type would otherwise hide its universe
   let mut goalTm ← zonk ctx.lvl (quote g ctx.lvl expected)
   let mut binders : Array (Name × Term R) := #[]
+  -- (linear-case stage 2) a scrutinee that uses a linear local is bound at 1 and taken
+  -- apart by `T.casesOn1`
+  let mut linearScruts : Array Bool := #[]
   for s in scruts do
     let (t, ty) ← infer ctx s
     ts := ts.push t
+    -- (only a data type with `T.casesOn1`, at size ∞: anything else would bind the
+    -- scrutinee at 1 and then take it apart at ω)
+    let hasCases1 := match ← force ty with
+      | .mu _ _ _ _ .szInf (some (T, _, _)) => (g.find? (T ++ ".casesOn1")).isSome
+      | _ => false
+    linearScruts := linearScruts.push (hasCases1 && ctx.linearLvls.any fun l => t.hasVar (ctx.lvl - l - 1))
     -- an inaccessible name, so the user's own `x` isn't shadowed
     binders := binders.push ("x✝", quote g ctx.lvl ty)
   -- abstract the scrutinees, last first
@@ -2427,7 +2435,7 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
     let vTy ← evalIn ctx' A
     absBinders := absBinders.push (n, A)
     lvls := lvls ++ [ctx'.lvl]
-    ctx' := ctx'.bind n vTy
+    ctx' := ctx'.bindQ n vTy (if linearScruts[i]! then some 1 else none)
   binders := absBinders
   goalTm := absGoal
   let goal ← evalIn ctx' goalTm
@@ -2435,7 +2443,8 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   let body ← compileMatch ctx' lvls clauses goal none true
   let lam := (binders.toList.map (·.1)).foldr .lam body
   -- (the `i`-th scrutinee's type is under the `i` binders before it)
-  let piTy := binders.toList.foldr (fun (n, A) acc => Term.pi n .default (.qlit QuantitySyntax.explicitDefault) A acc none) goalTm
+  let piTy := (binders.toList.zip linearScruts.toList).foldr (fun ((n, A), lin) acc =>
+    Term.pi n .default (.qlit (if lin then 1 else QuantitySyntax.explicitDefault)) A acc none) goalTm
   let piTy := ctx.sortType g piTy
   pure (ts.foldl .app (.ann lam piTy))
 

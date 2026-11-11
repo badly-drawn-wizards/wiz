@@ -204,8 +204,8 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
         return .ind l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p mt) (← rename m p i) acc
       | .out => pure (.out acc)
       | .down => pure (.down acc)
-      | .scase l I D v P mt s i =>
-        return .scase l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p mt) (← rename m p s) (← rename m p i) acc
+      | .scase l q I D v P mt s i =>
+        return .scase l (← rename m p q) (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p mt) (← rename m p s) (← rename m p i) acc
       | .sfix l I D v P f s i =>
         return .sfix l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p f) (← rename m p s) (← rename m p i) acc
   match ← force v with
@@ -741,9 +741,9 @@ partial def unifySpine (l : Lvl) (sp sp' : Array (Elim R)) : ElabM R Unit := do
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (mt, mt'), (i, i')] do unify l x y
     | .out, .out | .down, .down => pure ()
-    | .scase u I D v P f s i, .scase u' I' D' v' P' f' s' i' =>
+    | .scase u q I D v P f s i, .scase u' q' I' D' v' P' f' s' i' =>
       unifyLevel u u'; unifyLevel v v'
-      for (x, y) in [(I, I'), (D, D'), (P, P'), (f, f'), (s, s'), (i, i')] do unify l x y
+      for (x, y) in [(q, q'), (I, I'), (D, D'), (P, P'), (f, f'), (s, s'), (i, i')] do unify l x y
     | .sfix u I D v P f s i, .sfix u' I' D' v' P' f' s' i' =>
       unifyLevel u u'; unifyLevel v v'
       for (x, y) in [(I, I'), (D, D'), (P, P'), (f, f'), (s, s'), (i, i')] do unify l x y

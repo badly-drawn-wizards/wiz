@@ -131,7 +131,8 @@ Proofs carry no usage: they are erased, and conversion never looks at them.
     Γ⁰ ⊢ t ⇐ Size   t is below s (`sizeBelow`; ∞ is not below itself)  ⇒  Γ ⊢ t ⇐ Size< s ⊣ 0ₙ
     Γ ⊢ con x ⇐ μ^s D i  if  s = ↑s' and Γ ⊢ x ⇐ ⟦D⟧ (μ^s' D) i;  cocon x ⇐ ν^s D i likewise
     Γ ⊢ sfix P f s i x ⇒ P i x ⊣ ω·(U_f + Uₓ)      (`sfixFunTy`; x ⇐ μ^s D i)
-    Γ ⊢ scase P m s i x ⇒ P i x ⊣ Uₘ + ω·Uₓ        (`scaseMethodTy`: the method runs once)
+    Γ ⊢ scase_q P m s i x ⇒ P i x ⊣ Uₘ + q·Uₓ      (`scaseMethodTy`: the method runs once and
+                                                    binds the payload at q; K1)
     Γ ⊢ scofix A f s i a ⇒ ν^s D i ⊣ ω·(U_f + Uₐ)  (`scofixFunTy`)
 
 A `Π`/`Σ` may carry its sort; if it does, the sort must be the one the rule computes
@@ -276,6 +277,43 @@ def popUsage (x : Name) (q : QPoly R) : Usage R → TCM (Usage R)
   --| | u => sorry
   --sol>
 
+/-- (K2a) Does a value of this type have no content: is it `Unit`, or a function with
+erased arguments into such, `(0 x₁ : D₁) → … → (0 xₙ : Dₙ) → Unit` (a phantom tail, a
+structure's marker tail)? Each has one value up to η (`()`, `fun _ … _ => ()`), the shape
+erasure already compiles to nothing (`erasedFunTy`, by the quantities and the final
+`Unit`, never by a name). `lvl` is a level above every variable of the type.
+
+**A named type is never unit-shaped**: the test does not unfold a global definition
+(`Val.unfold`), so a type that only *unfolds* to `Unit` (`def Tok : Type := Unit`, a
+structure without fields, a brand) is not exempt, and a linear token of such a type
+still must be used. The marker tail of a structure qualifies because it is a literal Π
+in the structure's definition, reached by unfolding the *structure* type at the `split`,
+not a name of its own. (This makes the rule depend on how the type is written, which
+only ever rejects more: `(1 x : Tok)` must be used where `(1 x : Unit)` need not.) -/
+partial def unitShaped (g : Globals R) (ty : VTy R) (lvl : Nat) : Bool :=
+  match ty with
+  | .unfold .. => false
+  | _ =>
+  match whnf ty with
+  | .unit _ => true
+  | .pi _ _ q _ cod _ =>
+    (match q.toPoly? with | some p => p.isErased | none => false) &&
+      unitShaped g (Closure.inst g cod (.var lvl)) (lvl + 1)
+  | _ => false
+
+/-- Leave the scope of a binder `x :q ty` (`lam`, `let`, `split`): `popUsage`, and the
+rule K2a of the linear-case design: **a variable whose type is unit-shaped
+(`unitShaped`) may go unused at any quantity**. By η, `b` is convertible to
+`let () := x; b`, which would use `x` once; a unit value holds no resource. (Only *unused*:
+a unit-shaped variable used twice at quantity 1 is still a mismatch.) `ctx` is the
+context the binder is in scope in. -/
+def popBinder (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) (u : Usage R) : TCM (Usage R) :=
+  match u with
+  | used :: rest =>
+    if QPoly.le used (QPoly.const 0) && unitShaped ctx.globals ty ctx.lvl then pure rest
+    else popUsage x q u
+  | [] => popUsage x q u
+
 /-- A `Π`/`Σ`'s sort, when it gives one, must be its sort: type equality trusts it to
 tell propositions from other types. -/
 def checkSortNote (s : Option Level) (l : Level) : TCM Unit := do
@@ -326,7 +364,7 @@ def projUsage (ctx : Ctx R) (t : Term R) (ty : Val R) (field : String) (u : Usag
   let fail {α} (x : Name) (q : String) : TCM α := throw (.other <|
     s!"cannot project {match t with | .var _ => st | _ => s!"({st})"}{field}: a projection needs an unrestricted pair (it keeps one component and drops the other), but this one uses {x}, which has quantity {q}; " ++
     (if endsInStructTail ctx ty 0 then
-      s!"this is a field of a structure, and a structure can't be held at a quantity other than ω yet (it has no destructuring form); use a tuple `A × B` instead, taken apart with `let {q} (x, y) := …`"
+      s!"this is a field of a structure: take the structure apart with `let {q} ⟨x, y, …⟩ := {st}; …` instead"
     else s!"take the pair apart with `let {q} (x, y) := {st}; …` instead"))
   match QRig.many? (R := R) with
   | some m =>
@@ -371,15 +409,17 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   --<sol
   | .lam x body, .pi _ _ q dom cod _ => do
     let q ← qtyPoly ctx q
-    let u ← check (ctx.bind x q dom) body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
-    popUsage x q u
+    let ctx' := ctx.bind x q dom
+    let u ← check ctx' body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
+    popBinder ctx' x q dom u
   | .letE x q tty val body, _ => do
     let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
     let uv ← check (ctx.erasedAt q) val vty
-    let ub ← check (ctx.define x q vty (ctx.eval val)) body ty
-    let ub ← popUsage x q ub
+    let ctx' := ctx.define x q vty (ctx.eval val)
+    let ub ← check ctx' body ty
+    let ub ← popBinder ctx' x q vty ub
     pure (q • uv + ub)
   | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
@@ -521,8 +561,9 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
     let uv ← check (ctx.erasedAt q) val vty
-    let (bty, ub) ← infer (ctx.define x q vty (ctx.eval val)) body
-    let ub ← popUsage x q ub
+    let ctx' := ctx.define x q vty (ctx.eval val)
+    let (bty, ub) ← infer ctx' body
+    let ub ← popBinder ctx' x q vty ub
     pure (bty, q • uv + ub)
   | .ann tm tty => do
     let _ ← checkType ctx tty
@@ -567,10 +608,12 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       let mc : Closure R := .mk ctx.env m
       let vx : Val R := Val.var ctx.lvl
       let vy : Val R := Val.var (ctx.lvl + 1)
-      let ctx₂ := (ctx.bind x (q * p) A).bind y q (Closure.inst ctx.globals B vx)
+      let ctx₁ := ctx.bind x (q * p) A
+      let By := Closure.inst ctx.globals B vx
+      let ctx₂ := ctx₁.bind y q By
       let ub ← check ctx₂ b (Closure.inst ctx.globals mc (.pair vx vy))
-      let ub ← popUsage y q ub
-      let ub ← popUsage x (q * p) ub
+      let ub ← popBinder ctx₂ y q By ub
+      let ub ← popBinder ctx₁ x (q * p) A ub
       pure (Closure.inst ctx.globals mc (ctx.eval s), q • us + ub)
     | _ => throw (.other s!"not a pair: {ctx.showTerm s}\n  has type: {ctx.showVal sty}")
   | .unit l => pure (.sort l, Usage.zeros ctx.lvl)
@@ -732,7 +775,10 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let ua ← check ctx a (vApp ctx.globals vA (ctx.eval i))
     pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, ← methodUsage ctx (uf + ua))
-  | .scase l I D v P m s i x => do
+  | .scase l q I D v P m s i x => do
+    -- (K1) the case at quantity `q`: the method runs once (unscaled) and receives the
+    -- payload at `q`, so the scrutinee is used `q` times
+    let qp ← checkQty ctx q
     checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
@@ -742,10 +788,10 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let vP := ctx.eval P
     let _ ← check { ctx with erased := true } s .size
     let vs := ctx.eval s
-    let um ← check ctx m (scaseMethodTy ctx.globals l vI vD vP vs w)
+    let um ← check ctx m (scaseMethodTy ctx.globals l vI vD vP vs (ctx.eval q))
     let _ ← check ctx i vI
-    let ux ← check ctx x (.mu l vI vD (ctx.eval i) vs none)
-    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + (← methodUsage ctx ux))
+    let ux ← check (ctx.erasedAt qp) x (.mu l vI vD (ctx.eval i) vs none)
+    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + qp • ux)
   | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   | .coit l I D S st i s => do
     checkIndexLevel ctx l I
@@ -800,7 +846,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| -- Exercise 4.23: the sized rules
   --| | .sfix l I D v P f s i x => sorry
   --| | .scofix l I D A f s i a => sorry
-  --| | .scase l I D v P m s i x => sorry
+  --| | .scase l q I D v P m s i x => sorry
   --| | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   --| | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --sol>

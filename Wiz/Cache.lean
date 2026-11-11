@@ -133,7 +133,7 @@ partial def term : Term R → Sx
   | .szSuc s => node "szSuc" [term s]
   | .sizeLt s => node "sizeLt" [term s]
   | .sfix l I D v P f s i x => node "sfix" [level l, term I, term D, level v, term P, term f, term s, term i, term x]
-  | .scase l I D v P m s i x => node "scase" [level l, term I, term D, level v, term P, term m, term s, term i, term x]
+  | .scase l q I D v P m s i x => node "scase" [level l, term q, term I, term D, level v, term P, term m, term s, term i, term x]
   | .cocon x => node "cocon" [term x]
   | .scofix l I D A f s i a => node "scofix" [level l, term I, term D, term A, term f, term s, term i, term a]
   | .coit l I D S st i s => node "coit" [level l, term I, term D, term S, term st, term i, term s]
@@ -238,7 +238,7 @@ partial def dterm : Sx → Option (Term R)
     | "szSuc" => return .szSuc (← t 1)
     | "sizeLt" => return .sizeLt (← t 1)
     | "sfix" => return .sfix (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
-    | "scase" => return .scase (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
+    | "scase" => return .scase (← lv 1) (← t 2) (← t 3) (← t 4) (← lv 5) (← t 6) (← t 7) (← t 8) (← t 9) (← t 10)
     | "cocon" => return .cocon (← t 1)
     | "ulift" => return .ulift (← lv 1) (← t 2)
     | "up" => return .up (← t 1)
@@ -494,7 +494,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-14-builtin-once"  -- 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-15-scase-qty"  -- 15: `scase` carries a quantity (K1); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 

@@ -463,3 +463,37 @@ compare by equivalence. What this costs, and why:
   already has, and a description can't range over its own universe (fields are exactly in
   `Sort (l+1)`), so the model of codes covers it. That is an argument, not a proof:
   docs/CoreSpec.md §8.4b, docs/Status.md E1.
+
+## 4h: linear case analysis
+
+A value of an inductive type held at quantity 1 can be taken apart (linear-case stage 2;
+design in `wiz-notes/linear-case-design.md`, K1 and K2a; rules and soundness argument in
+`docs/CoreSpec.md` §10.2 and §10.2a).
+
+* **K1, `scase` at a quantity.** `Term.scase` carries a quantity `q`. The method runs once
+  and receives the payload at `q`; the scrutinee is used `q` times (`U_m + q·U_x`). At ω
+  this is the old case; at 1 a linear value is taken apart; at 0 the scrutinee is erased
+  and the method can't branch on it. Both kernels (`Check.lean`, `Kernel.wiz`).
+* **K2a, unit-shaped binders.** A variable whose type is `Unit`, or `(0 x : D) → … →
+  Unit` written as such (not a global that unfolds to one), may go unused at any
+  quantity. A constructor payload's final `Unit` and a structure's marker tail are of
+  this shape, so `let 1 ⟨a, b⟩ := s` on a structure now checks. A token type (an
+  axiom, a definition of `Unit`, a field-less structure) is never exempt.
+* **`T.casesOn1`**, generated for every inductive next to `T.casesOnA`: the additive case
+  with the scrutinee at 1, built on `scase` at 1 and `split`s at 1 (fields come out at
+  their declared quantities). `match` uses it when the scrutinee mentions a variable
+  bound at 1 (the scrutinee is then bound at 1 too), and a field bound at 1 is linear
+  again for a nested match.
+
+```
+inductive Res1 (A : Type) where
+  | ok (1 a : A)
+  | err (e : Nat) (1 back : A)
+def rebuild (1 r : Res1 Tok) : Res1 Tok := match r with
+  | .ok t => .ok t
+  | .err e t => .err e t          -- dropping `t`, or using it twice: a quantity error
+```
+
+A field that holds a resource must be declared at 1 (`1 val : S`): an ω field puts its
+value in an ω position. Tests: the group `linear-case`, and `linearCaseRule` (both
+kernels) in the self-hosted group.

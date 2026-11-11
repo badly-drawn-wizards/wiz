@@ -1635,16 +1635,18 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           -- (21v) the additive case `T.casesOnA`, for a `match` whose branches share a
           -- linear variable (none for a type without constructors: its bundle would be
           -- a linear argument nothing uses)
+          -- (linear-case stage 2) and `T.casesOn1`, the case on a scrutinee held at 1
           unless ctors.isEmpty do
-            match mkRecursor g name ctors false (additive := true) with
-            | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
-            | .ok d =>
-              recNames := recNames ++ [d.name]
-              match addDeclSorted g d with
-              | .ok g' => g := g'
-              | .error e =>
-                report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
-                return
+            for linear in [false, true] do
+              match mkRecursor g name ctors false (additive := true) (linear := linear) with
+              | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
+              | .ok d =>
+                recNames := recNames ++ [d.name]
+                match addDeclSorted g d with
+                | .ok g' => g := g'
+                | .error e =>
+                  report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
+                  return
           -- (13b) `| private c`: the constructor is private to this module, and so are the
           -- recursors (their cases would hand out a private constructor's fields, and
           -- they are what a `match` compiles to); elsewhere `T` is opaque

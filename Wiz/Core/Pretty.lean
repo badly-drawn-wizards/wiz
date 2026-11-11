@@ -385,7 +385,9 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
   | .szSuc s => pure (cat [txt "↑", ← sub 1024 s])
   | .sfix _ _ _ _ P f s i x => app (txt "sfix") [P, f, s, i, x]
   | .cocon x => app (txt "cocon") [x]
-  | .scase _ _ _ _ P m s i x => app (txt "scase") [P, m, s, i, x]
+  | .scase _ q _ _ _ P m s i x =>
+    -- (K1) the quantity, unless it is the ordinary ω case
+    app (txt "scase") ((if isDefaultQ .default q then [] else [q]) ++ [P, m, s, i, x])
   | .scofix _ _ _ A f s i a => app (txt "scofix") [A, f, s, i, a]
   | .qlit r => pure (txt (QuantitySyntax.display r))
   | .sort l => pure (paren (prec > 1022 && !atomicSort l) (txt (showSort l)))

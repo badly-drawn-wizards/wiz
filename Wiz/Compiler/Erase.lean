@@ -781,15 +781,22 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
       let recE : ETerm := .lam "j" (.lam "i" (.lam "y" (.apps (.var 5) [.var 1, .var 0])))
       let body : ETerm := .lam "i" (.lam "x" (.apps (f'.lift 3) [.erased, recE, .var 1, .var 0]))
       pure (.apps (.fix "self" body) [← eraseCheck ctx i vI, ← eraseE ctx x])
-    | .scase l I D v P m s i x => do
-      -- m ◾ i payload   (a value of μ is its payload)
+    | .scase l q I D v P m s i x => do
+      -- m ◾ i payload   (a value of μ is its payload; K1: the quantity plays no part,
+      -- except that a case at 0 has an erased scrutinee, whose payload is ◾)
       let (vI, vD, vP) := (ctx.eval I, ctx.eval D, ctx.eval P)
-      let mTy := scaseMethodTy g l vI vD vP (ctx.eval s) QuantitySyntax.explicitDefault
+      let vq := ctx.eval q
+      let mTy := scaseMethodTy g l vI vD vP (ctx.eval s) vq
       let _ := v
+      let m' ← eraseCheck ctx m mTy
+      let i' ← eraseCheck ctx i vI
+      if (vq.toPoly?.map (·.isErased)) == some true then
+        pure (.apps m' [.erased, i', .erased])
+      else
       let xty ← quickType ctx x
       if let some (T, home) := nativeHome? g xty then throw (nativeHomeError T home)
       let D' ← eraseCheck ctx D (.desc l vI)
-      pure (.apps (← eraseCheck ctx m mTy) [.erased, ← eraseCheck ctx i vI, viewOf g vD xty D' (← eraseE ctx x)])
+      pure (.apps m' [.erased, i', viewOf g vD xty D' (← eraseE ctx x)])
     | .tag _ i => pure (.obj i #[])
     | _ => throw (.other s!"erasure: unexpected term {ctx.showTerm t}")
   return (e, ty)

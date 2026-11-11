@@ -229,7 +229,7 @@ def termTable : List TermRow := [
   ⟨"szSuc", [0], 0, fun c _ => .szSuc (c 0)⟩,
   ⟨"sizeLt", [0], 0, fun c _ => .sizeLt (c 0)⟩,
   ⟨"sfix", [0, 0, 0, 0, 0, 0, 0], 2, fun c l => .sfix (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) (c 6)⟩,
-  ⟨"scase", [0, 0, 0, 0, 0, 0, 0], 2, fun c l => .scase (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) (c 6)⟩,
+  ⟨"scase", [0, 0, 0, 0, 0, 0, 0, 0], 2, fun c l => .scase (l 0) (c 0) (c 1) (c 2) (l 1) (c 3) (c 4) (c 5) (c 6) (c 7)⟩,
   ⟨"cocon", [0], 0, fun c _ => .cocon (c 0)⟩,
   ⟨"scofix", [0, 0, 0, 0, 0, 0, 0], 1, fun c l => .scofix (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5) (c 6)⟩,
   ⟨"coit", [0, 0, 0, 0, 0, 0], 1, fun c l => .coit (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5)⟩,
@@ -480,7 +480,7 @@ def elimTable : List ElimRow := [
   ⟨"delim", 5, [], 1, fun c _ l => .delim (l 0) (c 0) (c 1) (c 2) (c 3) (c 4)⟩,
   ⟨"ind", 5, [], 2, fun c _ l => .ind (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4)⟩,
   ⟨"sfix", 6, [], 2, fun c _ l => .sfix (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5)⟩,
-  ⟨"scase", 6, [], 2, fun c _ l => .scase (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5)⟩,
+  ⟨"scase", 7, [], 2, fun c _ l => .scase (l 0) (c 0) (c 1) (c 2) (l 1) (c 3) (c 4) (c 5) (c 6)⟩,
   ⟨"out", 0, [], 0, fun _ _ _ => .out⟩,
   ⟨"down", 0, [], 0, fun _ _ _ => .down⟩
 ]
@@ -898,7 +898,7 @@ def panicSites : List (String × Term R) := [
   ("vDelim", .delim .zero .tt .tt .tt .tt .tt .tt),
   ("vInd", .ind .zero .tt .tt .zero .tt .tt .tt .tt),
   ("vSfix", .sfix .zero .tt .tt .zero .tt .tt .tt .tt .tt),
-  ("vScase", .scase .zero .tt .tt .zero .tt .tt .tt .tt .tt),
+  ("vScase", .scase .zero .tt .tt .tt .zero .tt .tt .tt .tt .tt),
   ("vOut", .out .tt),
   ("vNatOp", .natOp "nat.add" #[.tt, .tt])
 ]

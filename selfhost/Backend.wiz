@@ -124,7 +124,7 @@ partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
   | .ind _ _ _ _ P _ i x => .some (vapp (vapp (eval (TCtx.env c) P) (eval (TCtx.env c) i)) (eval (TCtx.env c) x))
   -- (the forms a match leaves: without these, erasing a match inferred the whole match
   -- again at every nested split)
-  | .scase _ _ _ _ P _ _ i x => .some (vapp (vapp (eval (TCtx.env c) P) (eval (TCtx.env c) i)) (eval (TCtx.env c) x))
+  | .scase _ _ _ _ _ P _ _ i x => .some (vapp (vapp (eval (TCtx.env c) P) (eval (TCtx.env c) i)) (eval (TCtx.env c) x))
   | .exfalso m _ => .some (eval (TCtx.env c) m)
   | .coe _ B _ _ => .some (eval (TCtx.env c) B)
   | .tag k _ => .some (.venum k)
@@ -301,15 +301,17 @@ def eraseInfer (c : TCtx) (t : Tm) : ER := match quickType c t with
             | e => e
           | e => e
         | e => e
-      | .scase l I D v P m sz i x =>
-        -- `m ◾ i payload`
+      | .scase l q I D v P m sz i x =>
+        -- `m ◾ i payload` (K1: a case at 0 has an erased scrutinee, whose payload is ◾)
         let vI := eval (TCtx.env c) I;
         let vD := eval (TCtx.env c) D;
-        match eraseCheck c m (scaseMethodTy l vI vD (eval (TCtx.env c) P) (eval (TCtx.env c) sz)) with
+        match eraseCheck c m (scaseMethodTy l q vI vD (eval (TCtx.env c) P) (eval (TCtx.env c) sz)) with
         | .ok m' => match eraseCheck c i vI with
-          | .ok i' => match eraseInfer c x with
-            | .ok x' => .ok (eapps m' (.cons .erased (etms2 i' (payloadOf (.vmu l vI vD (eval (TCtx.env c) i) .vszInf) x'))))
-            | e => e
+          | .ok i' => match q with
+            | .qz => .ok (eapps m' (.cons .erased (etms2 i' .erased)))
+            | _ => match eraseInfer c x with
+              | .ok x' => .ok (eapps m' (.cons .erased (etms2 i' (payloadOf (.vmu l vI vD (eval (TCtx.env c) i) .vszInf) x'))))
+              | e => e
           | e => e
         | e => e
       | _ => .err "erasure: unsupported term"
