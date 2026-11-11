@@ -13,7 +13,9 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: cachix/install-nix-action@v31
+    # a self-hosted runner brings its own Nix (docs/ci-runner.md)
+    - if: runner.environment == 'github-hosted'
+      uses: cachix/install-nix-action@v31
     - if: inputs.cachix-name != ''
       uses: cachix/cachix-action@v16
       with:
@@ -27,7 +29,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.elan
-        key: elan-${{ runner.os }}-${{ hashFiles('lean-toolchain') }}
+        key: elan-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain') }}
     - name: Lean toolchain
       shell: bash
       run: nix develop --command bash -c 'lake --version'

@@ -18,6 +18,11 @@
 #   share/wiz/editors/       the editor plugins, when the checkout has them
 #   share/wiz/cc/            the C compiler, glibc 2.27 sysroot, static GMP and GC (CCDIR)
 #   share/wiz/REVISION       the commit
+#   share/wiz/LICENSE, COPYING.RUNTIME, NOTICE   Wiz's licence, the runtime exception,
+#                            and what third-party code is in the toolchain
+#                            (scripts/release-licenses/NOTICE, beside this script)
+#   share/wiz/LICENSES/      third-party licence texts: Lean's (lean --print-prefix, when
+#                            there is a lean) and scripts/release-licenses/*-LICENSE
 #   share/wiz/TOOLCHAIN      a marker: editors find the toolchain a library file belongs to
 #
 # OUT.tar.gz.sha256 is written next to it.
@@ -39,6 +44,19 @@ done
 cp -R lib "$top/share/wiz/lib"
 [ -d editors ] && cp -R editors "$top/share/wiz/editors"
 echo "$rev" > "$top/share/wiz/REVISION"
+# (the licence files come from this script's directory: the release job runs the
+# current scripts on an older commit too)
+lic=$(cd "$(dirname "$0")" && pwd)/release-licenses
+for f in LICENSE COPYING.RUNTIME; do [ -f "$f" ] && cp "$f" "$top/share/wiz/"; done
+cp "$lic/NOTICE" "$top/share/wiz/NOTICE"
+mkdir -p "$top/share/wiz/LICENSES"
+cp "$lic/"*-LICENSE "$top/share/wiz/LICENSES/"
+if lean=$(lean --print-prefix 2>/dev/null) && [ -f "$lean/LICENSE" ]; then
+  cp "$lean/LICENSE" "$top/share/wiz/LICENSES/lean4-LICENSE"
+  [ -f "$lean/LICENSES" ] && cp "$lean/LICENSES" "$top/share/wiz/LICENSES/lean4-third-party"
+else
+  echo "release-tarball: no lean on PATH: Lean's licence texts are not in the tarball" >&2
+fi
 [ -n "$ccdir" ] && cp -R "$ccdir" "$top/share/wiz/cc"
 echo 'A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).' > "$top/share/wiz/TOOLCHAIN"
 cat > "$top/bin/wiz" <<'EOF'
