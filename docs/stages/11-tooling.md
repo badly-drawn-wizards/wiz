@@ -297,3 +297,13 @@ constructor values, not applications, so lists print as before there; `do` notat
 to tactics as text and `trace_state` print without notation. The self-hosted toolchain
 has its own printer (selfhost/Frontend.wiz) and prints no notation. Design notes:
 `wiz-notes/pp-unexpand.md`. Tested in the `language` group.
+
+## 11z: semantic tokens for the file's own keywords
+
+`textDocument/semanticTokens/full` (`Wiz/Semantic.lean`, one token type `keyword`)
+marks what a fixed syntax file can't know: the words of declared syntax (`syntax`,
+`notation`, the Prelude's tactics, a keyword-scoped DSL's `when … yes … no`) inside the
+nodes of that kind the info tree saw (`syntaxRef`), and the words that declared `term`
+and `command` rules reserve everywhere (`run_calc`, `done`). A DSL keyword used as a name
+outside the DSL (`def no (yes : Nat)`) stays a name. Comments and strings are skipped.
+Neovim shows them as `@lsp.type.keyword` (linked to `@keyword`) without configuration.

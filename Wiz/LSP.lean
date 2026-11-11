@@ -3,6 +3,7 @@ import Wiz.Query
 import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Semantic
 import Wiz.Socket
 import Wiz.WebSocket
 import Std.Sync.Channel
@@ -119,6 +120,8 @@ def capabilities : Json :=
     -- (answered with null; asked for so that editors report cursor moves, for `--infoview`)
     ("documentHighlightProvider", true),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
+    ("semanticTokensProvider", Json.mkObj [("legend", Json.mkObj [("tokenTypes", Json.arr #["keyword"]), ("tokenModifiers", Json.arr #[])]),
+                                           ("full", true)]),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
     ("experimental", Json.mkObj [("wizInfoview", Json.mkObj [("version", (1 : Nat)),
@@ -449,6 +452,10 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     ({ srv with docs := srv.docs.insert uri doc, sessions := session },
      #[diagnostics uri doc] ++ (if srv.elaboratedNotes then #[note] else #[]))
   | "textDocument/didClose" => ({ srv with docs := srv.docs.erase uri }, #[])
+  | "textDocument/semanticTokens/full" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
+    let data := Semantic.encode doc.text (Semantic.keywords doc.state doc.text)
+    (srv, #[reply (Json.mkObj [("data", Json.arr (data.map fun (n : Nat) => (n : Json)))])])
   | "textDocument/codeAction" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
     let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])
