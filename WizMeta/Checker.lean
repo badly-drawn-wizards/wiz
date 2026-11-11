@@ -73,6 +73,14 @@ structure Opts where
   payload : PayloadRule := .stuck
   /-- regularity at inert types as a conversion rule (T1). Off: T0. -/
   inertReg : Bool := true
+  /-- a presupposition check, for tests: every type the checker builds from a template
+  (`transp`'s motive type, the motive and method types of `Desc.elim` and `ind`, `familyTy`,
+  …) is itself inferred to be a type before a term is checked against it (at variables for
+  the motive and family it is built from, since a λ there makes β-redexes, which `infer`
+  does not type). `check` does not
+  look at the sort annotation of the `Π` it checks a `λ` against, so a template with a wrong
+  annotation is invisible without this. -/
+  checkTemplates : Bool := false
   deriving Repr, Inhabited
 
 structure Env where
@@ -160,21 +168,41 @@ def whnf (E : Env) : Nat → Ctx → Tm → M Tm
       | .drec q j D₁ => whnf E n Γ (delimRec v P mret marg mrec mhrec q j D₁)
       | .dhrec q H j D₁ => whnf E n Γ (delimHrec v P mret marg mrec mhrec q H j D₁)
       | _ => pure (.delim v P mret marg mrec mhrec D')
+    -- `All` and `hyps` compute at a field only when its quantity is a literal, as `⟦D⟧` does:
+    -- otherwise the payload `xs` is not a pair and the reduct's projections are ill typed
     | .dall l v I D X P i xs => do
       let D' ← whnf E n Γ D
       match D' with
       | .dret _ => pure (.unit (allSort l v))
-      | .darg _ _ D₁ => whnf E n Γ (allArg l v I D₁ X P i xs)
-      | .drec _ j D₁ => pure (allRec l v I j D₁ X P i xs)
-      | .dhrec _ H j D₁ => pure (allHrec l v I H j D₁ X P i xs)
+      | .darg q S D₁ =>
+        match ← whnf E n Γ q with
+        | .qlit _ => whnf E n Γ (allArg l v I D₁ X P i xs)
+        | q' => pure (.dall l v I (.darg q' S D₁) X P i xs)
+      | .drec q j D₁ =>
+        match ← whnf E n Γ q with
+        | .qlit _ => pure (allRec l v I j D₁ X P i xs)
+        | q' => pure (.dall l v I (.drec q' j D₁) X P i xs)
+      | .dhrec q H j D₁ =>
+        match ← whnf E n Γ q with
+        | .qlit _ => pure (allHrec l v I H j D₁ X P i xs)
+        | q' => pure (.dall l v I (.dhrec q' H j D₁) X P i xs)
       | _ => pure (.dall l v I D' X P i xs)
     | .dhyps l v I D X P f i xs => do
       let D' ← whnf E n Γ D
       match D' with
       | .dret _ => pure .tt
-      | .darg _ _ D₁ => whnf E n Γ (hypsArg l v I D₁ X P f i xs)
-      | .drec _ j D₁ => pure (hypsRec l v I j D₁ X P f i xs)
-      | .dhrec _ _ j D₁ => pure (hypsHrec l v I j D₁ X P f i xs)
+      | .darg q S D₁ =>
+        match ← whnf E n Γ q with
+        | .qlit _ => whnf E n Γ (hypsArg l v I D₁ X P f i xs)
+        | q' => pure (.dhyps l v I (.darg q' S D₁) X P f i xs)
+      | .drec q j D₁ =>
+        match ← whnf E n Γ q with
+        | .qlit _ => pure (hypsRec l v I j D₁ X P f i xs)
+        | q' => pure (.dhyps l v I (.drec q' j D₁) X P f i xs)
+      | .dhrec q H j D₁ =>
+        match ← whnf E n Γ q with
+        | .qlit _ => pure (hypsHrec l v I j D₁ X P f i xs)
+        | q' => pure (.dhyps l v I (.dhrec q' H j D₁) X P f i xs)
       | _ => pure (.dhyps l v I D' X P f i xs)
     | .ind l I D v P m i x => do
       let x' ← whnf E n Γ x
@@ -322,12 +350,19 @@ def whnfEqTy (E : Env) : Nat → Ctx → Tm → Tm → M Tm
         pure (if A'.former?.isSome && B'.former?.isSome && A'.former? != B'.former? then False' else stuck)
 
 /-- The level premise of the variant `EqTyLevelled`: the two domains in one sort, the two
-codomains in one sort. Always true in the variant `EqTyCross`. -/
+codomains in one sort. Always true in the variant `EqTyCross` (for the type equation; the
+structural cast asks for it in both variants, `componentSorts`). -/
 def sameSorts (E : Env) : Nat → Ctx → Tm → Tm → Tm → Tm → M Bool
   | 0, _, _, _, _, _ => throw .fuel
   | n + 1, Γ, A₁, B₁, A₂, B₂ => do
     if !E.opts.eqTyLevelled then pure true
-    else if !(← sortOfTy E n Γ A₁).equiv (← sortOfTy E n Γ A₂) then pure false
+    else componentSorts E n Γ A₁ B₁ A₂ B₂
+
+/-- The two domains are in one sort, and the two codomains are. -/
+def componentSorts (E : Env) : Nat → Ctx → Tm → Tm → Tm → Tm → M Bool
+  | 0, _, _, _, _, _ => throw .fuel
+  | n + 1, Γ, A₁, B₁, A₂, B₂ => do
+    if !(← sortOfTy E n Γ A₁).equiv (← sortOfTy E n Γ A₂) then pure false
     else pure ((← sortOfTy E n (A₁ :: Γ) B₁).equiv (← sortOfTy E n (A₂ :: Γ) B₂))
 
 /-- `cast A B e t`, by the weak-head normal forms of `A` and `B`. The proof `e` is only
@@ -343,17 +378,23 @@ def whnfCast (E : Env) : Nat → Ctx → Tm → Tm → Tm → Tm → M Tm
     -- a cast between propositions is a proof; and the structural rules use the parts of
     -- `e`, which exist when `A ≡ B` computes by formers: both not propositions
     if !(pa == some false && pb == some false) then pure stuck else
+    -- the structural rules cast between the components, so these must be in one sort
+    -- (a cast is formed only at one sort); otherwise the reduct is ill typed
     match A', B' with
     | .pi q _ A₁ B₁, .pi q' _ A₂ B₂ =>
-      pure (if q != q' then stuck else castPi A₁ B₁ A₂ B₂ e t)
+      if q != q' then pure stuck
+      else if ← componentSorts E n Γ A₁ B₁ A₂ B₂ then pure (castPi A₁ B₁ A₂ B₂ e t) else pure stuck
     | .sigma q _ A₁ B₁, .sigma q' _ A₂ B₂ =>
-      pure (if q != q' then stuck else castSigma A₁ B₁ A₂ B₂ e t)
+      if q != q' then pure stuck
+      else if ← componentSorts E n Γ A₁ B₁ A₂ B₂ then pure (castSigma A₁ B₁ A₂ B₂ e t) else pure stuck
     | .sort u, .sort w => if u.equiv w then whnf E n Γ t else pure stuck
     | .empty u, .empty w => if u.equiv w then whnf E n Γ t else pure stuck
     | .unit u, .unit w => if u.equiv w then pure .tt else pure stuck
     | .enum k, .enum k' => if k == k' then whnf E n Γ t else pure stuck
     | .ulift u A₀, .ulift w B₀ =>
-      if u.equiv w then pure (.up (.cast A₀ B₀ e (.down t))) else pure stuck
+      if u.equiv w && (← sortOfTy E n Γ A₀).equiv (← sortOfTy E n Γ B₀) then
+        pure (.up (.cast A₀ B₀ e (.down t)))
+      else pure stuck
     | _, _ => pure stuck
 
 /-- Is this type (in weak-head normal form) a proposition? `none` only when its sort
@@ -477,7 +518,7 @@ def strip (E : Env) : Nat → Ctx → Tm → M (Option Tm)
     | _ => pure none
 
 /-- An inert type: first-order data. `Enum`, `Unit` above `Prop`, lifts and `Σ`s of inert
-types that are not propositions. (With `μ`: data whose fields are inert; not implemented.) -/
+types that are not propositions, and `μ` types with an inert index type and inert fields. -/
 def inert (E : Env) : Nat → Ctx → Tm → M Bool
   | 0, _, _ => throw .fuel
   | n + 1, Γ, A => do
@@ -708,11 +749,12 @@ def inferSort (E : Env) : Nat → Ctx → Tm → M Lvl
 
 /-- The domain of an equation: a type, at a sort that is never `Prop` if the kernels' rule
 is asked for. -/
-def inferEqDomain (E : Env) : Nat → Ctx → Tm → M Unit
+def inferEqDomain (E : Env) : Nat → Ctx → Tm → M Lvl
   | 0, _, _ => throw .fuel
   | n + 1, Γ, A => do
     let l ← inferSort E n Γ A
     if E.opts.kernelEqFormation && !l.neverZero then fail "an equation at a type that may be a proposition"
+    pure l
 
 /-- `Γ ⊢ t ⇒ T`. -/
 def infer (E : Env) : Nat → Ctx → Tm → M Tm
@@ -783,17 +825,18 @@ def infer (E : Env) : Nat → Ctx → Tm → M Tm
         pure (mot.inst s)
       | _ => fail "case on a non-enumeration"
     | .eq A a b => do
-      inferEqDomain E n Γ A
+      let _ ← inferEqDomain E n Γ A
       check E n Γ a A
       check E n Γ b A
       pure (.sort 0)
     | .eqTy A B => do
       let l ← inferSort E n Γ A
       let l' ← inferSort E n Γ B
-      if E.opts.kernelEqFormation && !l.equiv l' then fail "type equation between different universes"
+      if (E.opts.kernelEqFormation || E.opts.eqTyLevelled) && !l.equiv l' then
+        fail "type equation between different universes"
       else pure (.sort 0)
     | .refl A a => do
-      inferEqDomain E n Γ A
+      let _ ← inferEqDomain E n Γ A
       check E n Γ a A
       pure (.eq A a a)
     | .reflTy A => do
@@ -807,10 +850,11 @@ def infer (E : Env) : Nat → Ctx → Tm → M Tm
       check E n Γ a A
       pure B
     | .transp A a P p b e => do
-      inferEqDomain E n Γ A
+      let l ← inferEqDomain E n Γ A
       check E n Γ a A
       check E n Γ b A
-      check E n Γ P (transpMotiveTy A a)
+      validateTy E n Γ (transpMotiveTy l A a)
+      check E n Γ P (transpMotiveTy l A a)
       check E n Γ p (.app (.app P a) (.refl A a))
       check E n Γ e (.eq A a b)
       pure (.app (.app P b) e)
@@ -834,26 +878,34 @@ def infer (E : Env) : Nat → Ctx → Tm → M Tm
     | .interp l I D X i => do
       checkIndexLevel E n Γ l I
       check E n Γ D (.desc l I)
+      validateTy E n Γ (familyTy l I)
       check E n Γ X (familyTy l I)
       check E n Γ i I
       pure (.sort l.succ)
     | .dall l v I D X P i xs => do
       checkIndexLevel E n Γ l I
       check E n Γ D (.desc l I)
+      validateTy E n Γ (familyTy l I)
       check E n Γ X (familyTy l I)
+      validateTy E n (familyTy l I :: Γ) (predTy l v I.shift (.var 0))
       check E n Γ P (predTy l v I X)
       check E n Γ i I
       check E n Γ xs (.interp l I D X i)
       pure (.sort (allSort l v))
     | .dhyps l v I D X P f i xs => do
       let _ ← infer E n Γ (.dall l v I D X P i xs)
+      validateTy E n (predTy l v I.shift (.var 0) :: familyTy l I :: Γ) (sectionTy l v (I.shiftN 2) (.var 1) (.var 0))
       check E n Γ f (sectionTy l v I X P)
       pure (.dall l v I D X P i xs)
     | .delim v P mret marg mrec mhrec D => do
       match ← whnfS E n Γ (← infer E n Γ D) with
       | .desc l I => do
+        validateTy E n Γ (delimMotiveTy l v I)
         check E n Γ P (delimMotiveTy l v I)
         let (ta, tb, tc, th) := delimMethodTys l v I P
+        -- at a variable motive: a λ motive makes β-redexes, which `infer` does not type
+        let (ga, gb, gc, gh) := delimMethodTys l v I.shift (.var 0)
+        for T in [ga, gb, gc, gh] do validateTy E n (delimMotiveTy l v I :: Γ) T
         check E n Γ mret ta
         check E n Γ marg tb
         check E n Γ mrec tc
@@ -864,12 +916,24 @@ def infer (E : Env) : Nat → Ctx → Tm → M Tm
       -- the index type is in the family's own universe (audit F3)
       checkIndexLevel E n Γ l I
       check E n Γ D (.desc l I)
+      validateTy E n Γ (indMotiveTy l v I D)
       check E n Γ P (indMotiveTy l v I D)
+      validateTy E n (indMotiveTy l v I D :: Γ) (indMethodTy l v I.shift D.shift (.var 0))
       check E n Γ m (indMethodTy l v I D P)
       check E n Γ i I
       check E n Γ x (.mu l I D i)
       pure (apps P [i, x])
     | _ => fail "cannot infer a type for this term"
+
+/-- With `checkTemplates`: the built type `T` is a type. -/
+def validateTy (E : Env) : Nat → Ctx → Tm → M Unit
+  | 0, _, _ => throw .fuel
+  | n + 1, Γ, T => do
+    if E.opts.checkTemplates then
+      match inferSort E n Γ T with
+      | .ok _ => pure ()
+      | .error .fuel => throw .fuel
+      | .error (.fail m) => fail s!"a template is not a type ({m})"
 
 /-- `Γ ⊢ I : Sort (l+1)`, exactly: the index type of `Desc.{l}`, `μ.{l}` and their
 eliminators. -/
@@ -900,6 +964,7 @@ def check (E : Env) : Nat → Ctx → Tm → Tm → M Unit
       check E n Γ q .qty
       -- a field is in exactly Sort (l+1)
       checkIndexLevel E n Γ l S
+      validateTy E n Γ (argContTy l I S)
       check E n Γ D (argContTy l I S)
     | .drec q j D, .desc l I => do
       check E n Γ q .qty
@@ -908,9 +973,12 @@ def check (E : Env) : Nat → Ctx → Tm → Tm → M Unit
     | .dhrec q H j D, .desc l I => do
       check E n Γ q .qty
       checkIndexLevel E n Γ l H
+      validateTy E n Γ (hrecIndexTy l I H)
       check E n Γ j (hrecIndexTy l I H)
       check E n Γ D (.desc l I)
-    | .con x, .mu l I D i => check E n Γ x (.interp l I D (muFamily l I D) i)
+    | .con x, .mu l I D i => do
+      validateTy E n Γ (.interp l I D (muFamily l I D) i)
+      check E n Γ x (.interp l I D (muFamily l I D) i)
     | _, _ => do
       let T₁ ← infer E n Γ t
       if ← convTy E n Γ T₁ T' then pure () else fail "type mismatch"
