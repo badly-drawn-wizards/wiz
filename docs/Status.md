@@ -6,8 +6,10 @@ mean what they claim. It is meant to be honest first: if something is not proved
 so. The calculus itself is specified in [CoreSpec.md](CoreSpec.md); section numbers
 written "§n" refer to it.
 
-The state described here is `master` at commit `f6fd4a3` (2026-11-11, after PR #142),
-plus the results of the probes listed in the "Probes" section. The page was first
+The state described here is the **v0.1.0 release candidate**: `master` at `a916e13`
+(2026-11-11, after PR #159) with PRs #190, #195, #128, #138, #129 and #145 merged
+(branch `agent/release-v0.1`), plus the results of the probes listed in the "Probes"
+section. The tagging commit replaces this sentence with the tag's commit. The page was first
 written at `9717950` (2026-11-09); the [ledger](#0-ledger) lists every item with its
 status and PR, and section 9 lists what open PRs will change here when they merge.
 
@@ -83,8 +85,12 @@ status and PR, and section 9 lists what open PRs will change here when they merg
   terms only), and **IS** (#104: two imported modules declaring one name, the second
   replaced the first while proofs about it stayed). Also fixed: **R5** (#119: an
   out-of-range machine word, so definitions and compiled code disagreed; a proof of
-  `False` only once `native_refl` exists). One hole of R5's kind is **open on master**: `UIntN.ofBitsTrusted` builds an out-of-range word from
-  any module (O4; PR #145 closes it).
+  `False` only once `native_refl` exists) and **O4** (#145: `UIntN.ofBitsTrusted` built
+  out-of-range words from any module; the range is now a field the kernel checks).
+* **One trust extension, off by default:** `native_refl` with `--trust-native` (#129,
+  stage 27a) decides a closed equation by running both sides. Each use is an axiom that
+  `#print axioms` lists, with the implementations the run reached (§7.0). Nothing on
+  this page is claimed for programs that use it beyond what that list says.
 * **Compiled code of recursive definitions is now checked** (T1, #82 and #126): the
   kernel checks that the compiled equations compute what the definition computes, as
   **partial correctness** (if compiled code terminates, its result is the value's;
@@ -112,18 +118,19 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
 | F10 / W1 | `Kernel.wiz` `headSame` ignored levels: `False` | **fixed** | #76 (and #78) | §3 |
 | F11 / Y4, K6 | name declared twice (selfhost); variable out of scope `Prop : Prop` | **fixed** | #72 | §3 |
 | F12 / IS | two imported modules declaring one name: `Empty` | **fixed** | #104; private names per module #109, #132 | §3 |
-| F13 / NU-TRANSP | ill-typed equations at a Σ with a visible proof component | **fixed** (visible); neutral case **open issue** (pinned) | #123; regression fix *#130* | §3, §4 |
+| F13 / NU-TRANSP | ill-typed equations at a Σ with a visible proof component | **fixed** (visible); neutral case **open issue** (pinned) | #123; regression fix #130 | §3, §4 |
 | F14 / R5, R3 open 2 | native representation by display name; out-of-range `.mk` word | **fixed** | #119 (seal) | §3, §4 R3 |
 | T1 | compiled equations of recursive definitions | **fixed**, partial correctness (M1 open, low); L1 doc fixed here | #82, #98, #126 | §3 |
-| T1-L2 | `#print axioms` names only the first link of an `implemented_by` chain | **open issue** (low) | fix in *#129* | §4 |
+| T1-L2 | `#print axioms` names only the first link of an `implemented_by` chain | **fixed** | #129 | §4 |
 | O1 | `Kernel.wiz` `Size ≡ Size` was `False` | **fixed** | (`c079d1b`) | §4 |
-| O4 | `UIntN.ofBitsTrusted`: out-of-range words from any module (probe `a3-word-ofbitstrusted`) | **open issue** (wrong compiled values; `False` with `native_refl`) | fix in *#145* | §4 |
-| D1 | regularity + impredicative `Prop` looped; inert regularity | **fixed** (off); inert rule **conjecture** | (`agent/d1-off`), P1 #46 | §4 |
+| O4 | `UIntN.ofBitsTrusted`: out-of-range words from any module (probe `a3-word-ofbitstrusted`) | **fixed** (words carry `toNat < 2^w`; `ofBitsTrusted` removed) | #145 | §4 |
+| D1 | regularity + impredicative `Prop` looped; inert regularity | **fixed** (off); inert rule **conjecture**, decided by conversion (InReg_conv, the default) | (`agent/d1-off`), P1 #46, #138 | §4 |
 | P1 | inert regularity stable under substitution (`groundEqTy`) | **fixed** | #46 | §4 D1 |
-| P2 | the kernel never evaluates proofs | step 1 **fixed** (`cast`/`transp` proofs) #61; let-bound and argument proofs still evaluated: **open issue** | marker *#128* (Part 1), *#138* (Part 2, InReg by conversion) | §4 D1, §9 |
-| D2 (meta-review) | Π/Σ/`ULift` casts compute without checking component sorts: subject reduction fails | **open issue** (no verdict change known) | pinned in *#128*; fix = mandatory sorts | §4, §9 |
+| P2 | the kernel never evaluates proofs | **fixed** up to two gaps: step 1 (`cast`/`transp` proofs) #61, step 2 (the proof marker `prf.{l} t`, required by the kernel) #128; open: U5, and the elaborator's own evaluation (bounded by `--proof-steps` on read-back) | #61, #128, #138 | §4 D1 |
+| PRF-F7 | `Kernel.wiz`'s force-mode read-back has no step budget: the self-hosted elaborator can hang in messages | **open issue** (low; not the kernel's verdict) | prf-review | §4 |
+| D2 (meta-review) | Π/Σ/`ULift` casts compute without checking component sorts: subject reduction fails | **open issue** (no verdict change known) | pinned in #128 ("D2 (known gap, pinned)"); fix = mandatory sorts | §4, §9 |
 | U5 | an unannotated Π/Σ makes type equality stuck; `propSort?` reads the optional annotation | **open issue** (incompleteness) | mandatory sorts (in progress, `agent/msorts`) | §5, §9 |
-| U5b | `cast` at a Π/Σ of unknown sort computed (ill-typed result) | **open issue** on master | fixed in *#128* | §9 |
+| U5b | `cast` at a Π/Σ of unknown sort computed (ill-typed result) | **fixed** | #128 | §4 |
 | E1 | `μ` injective in its description (4g) | **conjecture** (model obligation) | #40 | §4 |
 | R1 / Q1 | projections dropped linear components; eliminators | **fixed** | #84 | §4 |
 | K3 | μ/ν size argument unchecked | **fixed** | (`4605514`) | §4 |
@@ -136,8 +143,8 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
 | lint | traversals handle every constructor; panics are not values | **fixed** (tested) | #78 | §8 |
 | audit 2 tests | groups `audit`, `audit-kernels` | evidence | *#120* | §8 |
 | property harness | substitution laws on generated terms | evidence | *#121*; W1 generator *#136* | §8 |
-| `native_refl` | trusted evaluation, `--trust-native` | not on master | *#129* | §7.0, §9 |
-| `smt` | trusted SMT, `--trust-smt`; certified `sat_decide` | not on master | *#144* (draft) | §7.0, §9 |
+| `native_refl` | trusted evaluation, `--trust-native` | trust extension, off by default; each use an axiom | #129 | §7.0, §7.1 |
+| `smt` | trusted SMT, `--trust-smt`; certified `sat_decide` | not in 0.1 | *#144* (draft) | §7.0, §9 |
 | linear handles | duplicating a `&mut`; one local borrowed twice (feral) | **open issue** (pinned "KNOWN GAP" tests; wishful `linear-case`) | — | §4 |
 
 ## 1. Ingredients
@@ -541,8 +548,8 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
   compiled one alike); partial definitions and `mutual` blocks (a witness and a body:
   unrelated by design, the body is opaque to the kernel and resolves names by scope);
   instance bodies and generated declarations (one term each); `implemented_by` (the
-  user's second term: trusted, listed by `#print axioms`; on master only the first link
-  of a chain is listed, L2 in §4).
+  user's second term: trusted, listed by `#print axioms`, the whole chain since #129;
+  L2 in §4).
 * **Everything else that is compiled** was checked already: partial definitions' bodies
   (`addPartialImpl`), the terms of `#eval`/`#run` (inferred by the kernel first),
   generated declarations (instances, `deriving`, macros: they are commands, and go
@@ -634,7 +641,7 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
 * **The fix** (CoreSpec §8.2, both kernels). `a =_A b ↦ True` when `A` is a proposition;
   the Σ rule along a proof first component uses `reflTy (B a.1)`.
 * **Regression.** The elaborator's `refl a` inferred its equation from `a`'s own type, so
-  a program that checked before #123 fails (prf-conv-2's `t5`); PR #130 (open) checks
+  a program that checked before #123 fails (prf-conv-2's `t5`); **fixed** by PR #130, which checks
   `refl a` against the expected equation. WizMeta follows #123 in PR #135 (open).
 * **Open: NU-TRANSP-NEUTRAL.** `propSort?` can't see a neutral proposition (`P q.1` for a
   variable `P`), so a generic subtype is still rejected. Pinned: "known gap: an equation
@@ -660,8 +667,8 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
   `lib/Word.wiz` builds words. Three layers keep a look-alike out: opacity (13b), the
   unwritable seal name, and erasure refusing a native value built outside its module.
   num-classes' nominal instance resolution is removed (the kernel tells the types apart).
-* **What remains.** `UIntN.ofBitsTrusted`, a public unchecked builder kept for
-  `BitVec.mk`, reopens R5 from any module: O4 in §4 (PR #145).
+* **What remained.** `UIntN.ofBitsTrusted`, a public unchecked builder kept for
+  `BitVec.mk`, reopened R5 from any module: O4 in §4, fixed by PR #145.
 * **Tests.** Group *repr*: the "22k: …" cases (look-alikes, a native sealed type in its
   own module, layer 1 and layer 3 refusals, the registration's errors, sealed words);
   group *selfhost*: "the self-hosted frontend: a sealed type has no look-alikes, as in
@@ -1108,28 +1115,38 @@ with two different but equal descriptions checks; the Hur-style encoding over `T
   compares (F14). `/workspace/wiz-notes/repr-shape.md`, §4. Kernel brands
   (`structural-vs-nominal.md` §6b) would later replace the seal's axiom.
 
-### O4. `UIntN.ofBitsTrusted` builds out-of-range words from any module — **open issue** (fix: PR #145)
+### O4. `UIntN.ofBitsTrusted` built out-of-range words from any module — **fixed** (PR #145, stage 22l)
 
 `UIntN.ofBitsTrusted {0 w} (n : Nat) : UIntN w := .mk n` (`lib/Word.wiz`) is public and
 unchecked; #119 kept it for `BitVec.mk`, whose callers have the width erased. With `bad :=
 UIntN.ofBitsTrusted 5 : UIntN 1`, `#reduce` and `wiz run` disagree on `sub bad bad`,
 `IntN.resize 8`, `IntN.div`, and on `not`/`div` of an out-of-range `UIntN 64` (probe
 `soundness-probes/a3-word-ofbitstrusted.wiz`, master `6ec079f`; found by hdl-temporal).
-Not a proof of `False` on master: the kernel never runs the natives. **It becomes one with
-`native_refl`** (#129) if that merges first, so #145 should land before or with #129.
+It was not a proof of `False` before #129, since the kernel never runs the natives. **It
+would have become one with `native_refl`** (#129), which is why #145 lands with #129.
 PR #145 (stage 22l) adds an erased field `toNat < 2^w` to both word types, removes
 `ofBitsTrusted`, and makes `BitVec.mk`/`ofVec`/`concat` and `HwTy.El.cat` take the width
 at run time. trust-review: the hole is closed (8 900 expressions, `#eval` against C, 0
-differences); its finding B0 (the pushed head did not check `lib/Word.wiz`) must be
-resolved on the PR before merging.
+differences). Its finding B0 (the pushed head did not check `lib/Word.wiz`) is resolved:
+the fix (`5c218b1`) is on the PR.
 
-### L2. `#print axioms` names only the first link of an `implemented_by` chain — **open issue** (low; fix in PR #129)
+* **Fixed by #145.** `UIntN w` and `IntN w` carry an erased field `toNat < 2^w`, so a
+  word out of range can't be built without a proof of the range; `ofBitsTrusted` is
+  gone (`git grep ofBitsTrusted lib` is empty). With `native_refl` (#129) in the same
+  release, trust-review's AB1 applies: `native_refl` reads a word back with its erased
+  proof field built and checked (group *native*, "an erased proof field is built and
+  checked; an erased data field is refused (AB1)"). Regression tests: groups *word*
+  (the probe is rejected, `UIntN.mk`/`IntN.mk` stay private) and *vec*.
+
+### L2. `#print axioms` named only the first link of an `implemented_by` chain — **fixed** (PR #129)
 
 With `a1 → a2 → a3`, `#eval useA 0` runs `a3` (prints 2, the kernel says 0) but `#print
 axioms` lists only `native a1 := a2`: `axiomsOf` does not walk a native's own
 dependencies, so neither `a2 := a3` nor an `extern` used by the native is listed
 (`soundness-probes/t1-native2.wiz`; t1-review L2). The trusted-base claim "`#print axioms`
-lists the natives `d` depends on" holds only for direct natives until the fix lands.
+lists the natives `d` depends on" held only for direct natives. #129's review fixes make
+`axiomsOf` walk a native's own dependencies (test "(t1-review L2) a three-link chain a1 →
+a2 → a3 → a4, and what the last one uses", group *native*).
 
 ### D2 (meta-review). Π/Σ/`ULift` casts compute without checking that the components are in one sort — **open issue** (subject reduction; no verdict change known)
 
@@ -1142,7 +1159,7 @@ substitution). The fix needs both component sorts in the term: mandatory sorts (
 Pinned by "D2 (known gap, pinned)" in PR #128. Probe
 `soundness-probes/mr-cast-component-sorts.lean`.
 
-### U5, U5b. Sorts that are not written — **open issue** (U5: incompleteness; U5b: fixed in PR #128)
+### U5, U5b. Sorts that are not written — **open issue** (U5: incompleteness; U5b: **fixed**, PR #128)
 
 * **U5.** A Π/Σ without a sort annotation makes type equality and `cast` stuck where an
   annotated, convertible type computes, and `propSort?` reads the optional annotation, so
@@ -1154,6 +1171,14 @@ Pinned by "D2 (known gap, pinned)" in PR #128. Probe
   evaluation does not commute with instantiation. Fixed on PR #128 (the cast is stuck
   exactly when the equation is). Probes `ph-u5-smallest.txt`,
   `ph-u5b-cast-at-unknown-sort.txt`.
+
+### PRF-F7. `Kernel.wiz`'s force-mode read-back has no step budget — **open issue** (low)
+
+Found by prf-review on #128. The Lean elaborator bounds its read-back of a proof by
+`--proof-steps`; `Kernel.wiz`'s read-back in force mode (for messages) has no budget, so
+the self-hosted elaborator can hang while printing a message about a term whose proofs
+loop. The kernel's verdict is not affected: its own comparison of types reads a
+suspended proof as `()`. Fix: the same budget in `Kernel.wiz` (PR #162, draft).
 
 ### Linear handles in the region and feral libraries — **open issue** (pinned; wishful `linear-case`)
 
@@ -1231,7 +1256,7 @@ None of these is implemented. Their status is **design and conjecture**:
 ### 7.0 Trusted components, in one list
 
 Everything a wrong answer from which is not caught by the kernel's type checking, at the
-default options (`f6fd4a3`). "Listed" means `#print axioms d` names it when `d` depends
+default options (the v0.1.0 candidate, see the first paragraph). "Listed" means `#print axioms d` names it when `d` depends
 on it. Details in §7.1 and CoreSpec §16.
 
 | component | what is trusted | listed? | notes |
@@ -1242,14 +1267,15 @@ on it. Details in §7.1 and CoreSpec §16.
 | templates and kernel-built types | `Templates.lean`, method/motive types, the terms built in `vEq`/`vEqType`/`vCast` | — | type-checked by audit-2's tests (#120, open), not by the kernel |
 | axioms | `axiom`, `extern`/`C.*` functions, `foreign` types; the Prelude's `castRefl`; each sealed type's `T.seal✝ : Type` (#119) | yes | a seal is an inhabitant of `Type`, harmless |
 | `builtin` registrations | `nat.*` of the toolchain's `lib/Prelude.wiz` (reviewed, §7.1), `memo`, `string` | library: no; elsewhere: yes (an axiom) | one registration per key (T14) |
-| native implementations | `implemented_by` functions, native representations (`repr:`, sealed types only since #119), the word natives in `runtime/wiz.c` | yes, as `native f := g`; **first link of a chain only** (L2, §4) | the kernel never runs them; `UIntN.ofBitsTrusted` (O4) is an unchecked builder until #145 |
+| native implementations | `implemented_by` functions, native representations (`repr:`, sealed types only since #119), the word natives in `runtime/wiz.c` | yes, as `native f := g`, the whole chain (L2 fixed, #129) | the kernel never runs them (except through `native_refl`, below) |
 | compiled equations (`Decl.impl`) | **not** trusted for their value since #126; trusted to **terminate** (M1, §3 T1) | no | |
 | erasure and the backends | `Compiler/Erase.lean`, `Compiler/Push.lean` (rewrites 1, 2 re-checked for typing only; `inlineCalls` not checked), the IR, RC, the C and LLVM backends, `runtime/wiz.c`, the C compiler, the eliminators' code (`PrimCode.lean`, the runtime's `ind`) | — | erasure relies on QTT (a 0-quantity value is never needed): not proved |
 | partial definitions | the body (opaque to the kernel; a witness of the type is checked) | no | compiled code runs the body; it may loop |
 | the elaboration cache | replayed declarations are not checked again; an entry is keyed by the binary, the source text and (since #104) the module name; a replay refuses a name already declared (F12) | — | `~/.cache/wiz` |
-| library invariants behind private constructors | `lib/Word.wiz` keeps `toNat < 2^w` (until #145 makes it a field), `lib/Region.wiz` handles (linear handles, §4) | — | privacy is the elaborator's (13b) plus erasure's layer 3 (#119); the kernel does not see it |
-| non-default kernel flags | `--regularity full`, `--eager-proofs`, `--inert`, `--predicative-prop`, `--unbox-structs`, `--strict-privacy` | — | experiments: nothing on this page is claimed for them |
-| trust extensions (not on master) | `--trust-native` / `native_refl` (#129), `--trust-smt` (#144) | yes (each use an axiom) | §9 |
+| library invariants behind private constructors | `lib/Region.wiz` handles (linear handles, §4); words no longer (their range is a kernel-checked field since #145) | — | privacy is the elaborator's (13b) plus erasure's layer 3 (#119); the kernel does not see it |
+| non-default kernel flags | `--regularity full`, `--eager-proofs`, `--inert ground`, `--predicative-prop`, `--unbox-structs`, `--strict-privacy` | — | experiments: nothing on this page is claimed for them |
+| trust extension `--trust-native` | `native_refl` (#129, 27a): erasure and its rewrites, the interpreter `Compiler/NativeRun.lean`, Lean's `Nat`, and every `implemented_by`, non-library `builtin` and native representation the run reaches | yes: each use is an axiom `X.native✝`, listed with the implementations the run reached | off by default; §7.1 |
+| trust extension `--trust-smt` (not in 0.1) | `smt` (#144, draft): the SMT solver | yes (each use an axiom) | §9 |
 
 ### 7.1 The kernel and the de Bruijn criterion
 
@@ -1381,54 +1407,16 @@ that checks everything. Wiz's situation:
 
 ## 9. Queued: what open PRs change on this page
 
-Prepared at `f6fd4a3`. When one of these merges, fold its paragraph into the sections
+Prepared at `f6fd4a3`, updated for the v0.1.0 candidate (#128, #138, #145, #129 and
+#130 are folded in above). When one of these merges, fold its paragraph into the sections
 named and delete it here. Order matters where noted.
 
-* **#128, the proof marker (P2 Part 1).** A term former `prf.{l} t` that the evaluator
-  suspends at `l = 0`, which the kernel verifies and **requires** wherever a proof would
-  otherwise be evaluated; the elaborator's marking pass (`Wiz/Elab/Mark.lean`,
-  `markCheck` in `Kernel.wiz`) writes the markers and is untrusted. The PR carries its own
-  edits of this page (the summary's P2 bullet, D1's P2 item, §7.1's P2 bullet), which do
-  not overlap this refresh's. After it merges: ledger rows P2 (step 2 **fixed**; open:
-  U5 and the elaborator's own evaluation, bounded by `--proof-steps` on read-back), U5b
-  (**fixed**), D2 (meta-review, pinned "D2 (known gap, pinned)"). prf-review: sound;
-  follow-up F7 (Kernel.wiz's force-mode read-back has no step budget, so the self-hosted
-  elaborator can hang in messages) goes to §4. Cost measured +6.6% on checking
-  `selfhost/Kernel.wiz`.
-* **#138, inert regularity by conversion (P2 Part 2; stacked on #128).** Deletes every
-  syntactic regularity decision (`sameVal`, `Val.lvlBound`, `reflProof`,
-  `InertReg.syntactic`, the numeral shortcut; CLI `--regularity nonprop|refl`, `--inert
-  syntactic`) and adds InReg_conv, a rule of conversion (`cast A B e t · sp ≡ t · sp` when
-  one endpoint is inert and `A ≡ B`), with `--inert conv` the **default**; `groundEqTy`
-  stays as the evaluator's fast path. After it merges: D1's "Found gap" and P1 items
-  become history (the eight P1 probes check under the default); Q3 and F7's "What
-  remains" refer to deleted code; §5's "regularity at an inert type with an open index"
-  bullet goes; CoreSpec §15's rows "InReg in conversion" and "regularity in conversion"
-  change. New known limit (completeness, not soundness): conversion with the rule is not
-  transitive at unannotated Σ types (`inertTy` reads the optional annotation), closed by
-  mandatory sorts. prf-review-p2: sound, terminates, kernels agree, nothing lost. Its
-  status stays **conjecture** (an instance of [PLT25]'s Cast-Refl restricted to inert
-  types; [PLT25]'s theorem does not cover Wiz's data types).
-* **#145, words carry their range (22l).** Closes O4: ledger row O4 **fixed**; §7.0's
-  native-implementations and library-invariants rows lose `ofBitsTrusted` and the
-  module invariant (the range is a kernel-checked field). **Merge before #129**, or with
-  it: with `native_refl`, O4 is a proof of `False`. trust-review's AB1 (with both merged,
-  `native_refl` must read back a word's erased proof field) is addressed in #129's
-  review fixes; re-check when the second of the two lands.
-* **#129, `native_refl` behind `--trust-native` (27a).** A trust extension: each use is
-  an axiom `X.native✝`, listed with the implementations the run reached. It trusts
-  erasure and its rewrites, the interpreter `Compiler/NativeRun.lean`, Lean's `Nat`, and
-  every `implemented_by`, non-library `builtin` and native representation the run
-  reaches (a wrong one proves a false equation; group *native* has that adversary); not
-  the IR, C backend, runtime or C compiler. The PR adds its own paragraph to §7.1; add a
-  row to §7.0 ("trust extensions") and fix L2 there (the PR's review fixes include
-  t1-review L2 and trust-review N1, nullary externs read as `0`).
 * **#144, solvers (28; draft).** `smt`: an axiom `X.smt✝N⟨solver⟩` per use, only with
   `--trust-smt` (z3 trusted). `sat_decide`: certified, no new trust (CaDiCaL's LRAT proof
-  is checked by the kernel through `lib/Sat.wiz`, proved sound). Adds a §7.0 row for
-  `--trust-smt`. Depends on #129.
-* **#130** (the `refl a` regression from #123) and **#135** (WizMeta follows #123): F13's
-  "Regression" item and §7.1's WizMeta bullet.
+  is checked by the kernel through `lib/Sat.wiz`, proved sound). Fills in §7.0's row for
+  `--trust-smt`. (CaDiCaL itself is already in the 0.1 bundle, unused there.)
+* **#135** (WizMeta follows #123): §7.1's WizMeta bullet.
+* **#162** (a step budget for `Kernel.wiz`'s read-back): PRF-F7 **fixed**.
 * **#120** (audit 2 tests) and **#121** (property harness), **#136** (W1 generator):
   §8; the ledger rows become "tested". #121's NU-TRANSP-NEUTRAL pin fails once mandatory
   sorts lands and must then be removed.

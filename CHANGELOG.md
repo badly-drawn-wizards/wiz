@@ -10,7 +10,7 @@ Section numbers (`4c`, `22e`, …) refer to the stage docs: section `NNx` is in
 
 ## [Unreleased]
 
-## [0.1.0] - unreleased (draft)
+## [0.1.0] - YYYY-MM-DD
 
 The first tagged release. Everything below is new in it; it collects stages 1–26 and the
 pull requests merged up to the tag. The repository is https://github.com/wiz-pl/wiz
@@ -43,13 +43,25 @@ pull requests merged up to the tag. The repository is https://github.com/wiz-pl/
   copatterns.
 * Regularity off by default (decision D1 (a), #4, #15); regularity at inert types
   decided by ground equality (#46); `castRefl` as a propositional axiom (#23).
-* Proofs are never evaluated by the kernels (P2, #61); `Size`/`Qty` handling, `ULift`
-  for small description fields (Q4, #26).
+* The kernels never evaluate a proof (P2): the proofs of `cast` and `transp` are
+  suspended (#61), and every other proof in an evaluated position carries a proof
+  marker `prf.{l} t` that the kernel verifies and requires; the elaborator writes the
+  markers (#128). `--proof-steps N` bounds the elaborator's read-back of a proof.
+* Regularity at inert types is decided by conversion (InReg_conv, the Cast-Refl rule of
+  Pujet, Leray and Tabareau's CICobs restricted to inert types), in both kernels and by default; the syntactic decisions are
+  gone, and with them `--regularity nonprop|refl` and `--inert syntactic`
+  (`--inert ground` keeps only the evaluator's fast path) (#138).
+* `Size`/`Qty` handling, `ULift` for small description fields (Q4, #26).
 * The trusted base made explicit (22f): partial definitions need a witness the kernel
   checks (#5), `builtin` registrations outside the toolchain's library are axioms (#5),
   a builtin key is registered once (#67), compiled equations are derived from the
   checked value and their agreement is checked by the kernel (T1, #82, #126),
-  `#print axioms` lists native implementations (#66).
+  `#print axioms` lists native implementations (#66), the whole `implemented_by` chain
+  (L2, #129).
+* A trust extension, off by default: `native_refl` under `--trust-native` (stage 27a,
+  #129) decides a closed equation by running both sides; each use is an axiom that
+  `#print axioms` lists with the implementations the run reached. `--native-fuel N`
+  limits the run.
 * Soundness fixes, each with regression tests (docs/Status.md §3–4): propositions
   compared by shape (F1), `∞ < ∞` (F2), partial definitions at an empty index (F3, #5),
   unchecked registrations (F4, #5), quantity variables in type equality (F6, #43), a
@@ -100,7 +112,9 @@ pull requests merged up to the tag. The repository is https://github.com/wiz-pl/
   unboxed structure fields and `attribute [inline]` (22i, #37).
 * Numbers for hardware and systems code (stage 22): division, powers and bits,
   `implemented_by`, machine integers, unboxed words (#11), one bit-vector family (#24),
-  big numerals (#80).
+  big numerals (#80). Words carry their range: `UIntN w`/`IntN w` have an erased field
+  `toNat < 2^w`, `UIntN.ofBitsTrusted` is removed, and `BitVec.mk`/`ofVec`/`concat`
+  and `HwTy.El.cat` take the width at run time (22l, #145).
 * The C FFI (stage 9): foreign functions and header import, checked glue, foreign
   pointers and finalizers, `link_c`/`link_lib` (9f, #57), callbacks and exported
   functions (9g, #56), processes, environment and files in `lib/Sys.wiz` (9h, #64), C
@@ -175,19 +189,36 @@ pull requests merged up to the tag. The repository is https://github.com/wiz-pl/
 
 ### Known limitations
 
-From [docs/Status.md](docs/Status.md) (its ledger, §0, has the details and the tests
-that pin each one):
+From [docs/Status.md](docs/Status.md) for this release (its ledger, §0, has the details
+and the tests that pin each one). None is a known proof of `False` with default flags.
 
-* Conjectures, not proved: regularity at inert types (D1; `--inert conv` is
-  experimental), `μ` injective in its description (E1), and the rest of the core
-  theory's combination (Status §1–2).
-* Open issues: the neutral case of NU-TRANSP; Π/Σ/`ULift` casts compute without
-  checking their components' sorts (D2, until mandatory sorts); an unannotated Π/Σ
-  makes type equality stuck (U5); Σ unboxing is not stable under substitution, so
-  `--unbox-structs` stays off (R3 open 1); duplicating a `&mut` and borrowing one
-  local twice in Feral are not rejected (pinned "KNOWN GAP" tests).
-* "Stuck but sound" cases (Status §5) are incompleteness: some true equations don't
-  compute.
-* No mechanised model, and no systematic search for proofs of `False` yet.
-* Not yet in Wiz: string patterns, `deriving` in the self-hosted frontend, termination
-  by measure, machine-integer and vector literals.
+* **Conjectures, not proved:** regularity at inert types (D1: InReg_conv is an instance
+  of a published rule, but the theorem behind it does not cover Wiz's data types), `μ`
+  injective in its description (E1), WizMeta's specification, and Wiz's combination of
+  QTT, observational equality, descriptions and sized types as a whole (Status §1–2).
+  There is no mechanised model.
+* **Open issues:**
+  * an equation at a Σ with a *neutral* proof component is rejected (NU-TRANSP-NEUTRAL;
+    incompleteness, pinned);
+  * Π/Σ/`ULift` casts compute without checking that their components are in one sort, so
+    subject reduction fails there (D2 of the meta-review; no verdict change known;
+    pinned "D2 (known gap, pinned)");
+  * a Π/Σ without a sort annotation makes type equality stuck, and conversion with
+    InReg_conv is not transitive at Σ types that differ only in that annotation (U5;
+    incompleteness). Mandatory sorts, planned for 0.2, close these three;
+  * the elaborator still evaluates proofs it reads back (bounded by `--proof-steps`),
+    and the self-hosted elaborator's read-back has no such bound, so it can hang while
+    printing a message (PRF-F7, #162);
+  * compiled equations of recursive definitions are checked for partial correctness
+    only: they are trusted to terminate (T1, M1);
+  * Σ unboxing is not stable under substitution, so `--unbox-structs` stays off (R3);
+  * duplicating a `&mut`, or borrowing one local twice, in Feral and `lib/Region.wiz`
+    is not rejected (pinned "KNOWN GAP" tests).
+* **Trust:** with `--trust-native`, every `native_refl` trusts erasure, the
+  interpreter and the implementations it reaches (Status §7.0). Off by default.
+* **Incompleteness:** the "stuck but sound" cases of Status §5: some true equations
+  don't compute.
+* **Not yet in Wiz:** string patterns, `deriving` in the self-hosted frontend,
+  termination by measure, machine-integer and vector literals, `sat_decide`/`smt`
+  (stage 28, after 0.1).
+* **Platforms:** x86_64 Linux only.

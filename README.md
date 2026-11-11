@@ -31,20 +31,28 @@ def id {0 A : Type} (1 x : A) : A := x
 
 ## Quick start
 
-Run Wiz without a checkout, with the binaries from the public Cachix cache:
+Install the latest release, v0.1.0, with **tower** (like elan/rustup: `wiz` and `grail`
+shims on `PATH`, a `wiz-toolchain` file per project). This needs only curl and tar on
+x86_64 Linux; the toolchain brings its own C compiler. See [docs/install.md](docs/install.md)
+for more:
+
+```sh
+curl -sSfL https://raw.githubusercontent.com/wiz-pl/wiz/v0.1.0/scripts/tower-init.sh | sh -s -- v0.1.0
+export PATH="$HOME/.tower/bin:$PATH"
+wiz --version                    # wiz 0.1.0 (<commit>)
+```
+
+`tower default stable` follows the newest release, and `tower default nightly` follows
+master. What a release promises is in [docs/stability.md](docs/stability.md).
+
+With Nix, using the binaries from the public Cachix cache:
 
 ```sh
 cachix use badlydrawnwizards
-nix run github:wiz-pl/wiz#wiz -- check hello.wiz   # `#grail` for grail
-```
-
-Or install toolchains with **tower** (like elan/rustup: `wiz` and `grail` shims on
-`PATH`, a `wiz-toolchain` file per project; [docs/stages/26-tower.md](docs/stages/26-tower.md)):
-
-```sh
-nix profile install github:wiz-pl/wiz#tower
+nix run github:wiz-pl/wiz/v0.1.0#wiz -- check hello.wiz   # `#grail` for grail
+nix profile install github:wiz-pl/wiz/v0.1.0#tower
 tower --self ~/.nix-profile/bin/tower self install   # shims in ~/.tower/bin: put it on PATH
-tower default nightly
+tower default v0.1.0
 ```
 
 From a checkout:
