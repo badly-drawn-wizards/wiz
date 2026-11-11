@@ -297,7 +297,7 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
     | .ok r => .ok r
     | .error e =>
       if subTy s.globals ctx.types.reverse.toArray inferred expected then .ok ((), s) else
-      let show' (v : VTy R) := elideLong ((quote s.globals ctx.lvl v).pretty ctx.names)
+      let show' (v : VTy R) := elideLong ((quote s.globals ctx.lvl v).pretty ctx.names (some s.globals))
       .error { info := (ctx.withInfo stx).info,
                msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})",
                code := e.code,
