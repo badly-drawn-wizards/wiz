@@ -297,3 +297,19 @@ constructor values, not applications, so lists print as before there; `do` notat
 to tactics as text and `trace_state` print without notation. The self-hosted toolchain
 has its own printer (selfhost/Frontend.wiz) and prints no notation. Design notes:
 `wiz-notes/pp-unexpand.md`. Tested in the `language` group.
+
+## 11u: signature help
+
+`textDocument/signatureHelp` (`Wiz/Signature.lean`; triggered by a space or `(`) shows
+the binders of the function being applied, `List.length {A : Type} (_ : List A) : Nat`,
+with the explicit argument being typed highlighted. The application is found in the
+text, since the document rarely elaborates mid-application: back from the cursor to the
+nearest unclosed bracket, or `:=`, `=>`, `,`, `|`, `;` at bracket depth 0, or the
+start of the command. Its first word is the function, and the complete arguments after
+it (named arguments `(x := e)` aside) say which explicit binder comes next. A global's
+binders come from its declaration; a local function's type from the info tree of the
+text cut after it, with its open brackets closed. In Neovim 0.11, `<C-s>` in insert mode.
+
+```
+def b (xs : List Nat) : Nat := List.length ‸    -- List.length {A : Type} [(_ : List A)] : Nat
+```
