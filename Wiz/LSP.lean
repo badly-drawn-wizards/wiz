@@ -81,6 +81,9 @@ def ofPos (text : String) (line col : Nat) : Nat := Id.run do
 def range (text : String) (info : SourceInfo) : Json :=
   Json.mkObj [("start", toPos text info.start), ("end", toPos text (max info.stop (info.start + 1)))]
 
+-- (the whole elaborator is specialised to `ZeroOneMany` here; the default limit of
+-- 200000 heartbeats no longer covers compiling that)
+set_option maxHeartbeats 800000 in
 /-- Elaborate a document (incrementally) with the libraries available to `import`. -/
 def elaborate (srv : Server) (doc : Doc) : Doc :=
   let libs := srv.libs
@@ -146,10 +149,16 @@ def goalJson (g : TaggedGoal) (tj : TT → Json) : Json :=
     ("type", tj g.target), ("goalPrefix", "⊢ "),
     ("userName", match g.userName with | some n => Json.str n | none => Json.null)]
 
-def plainGoals (gs : Array (GoalView ZeroOneMany)) : Json :=
+def plainGoals (gs : Array (GoalView ZeroOneMany)) (traces : Array String := #[]) : Json :=
   let shown := gs.map (·.show)
   let rendered := if shown.isEmpty then "no goals" else s!"```wiz\n{"\n\n".intercalate shown.toList}\n```"
-  Json.mkObj [("rendered", rendered), ("goals", Json.arr (shown.map Json.str))]
+  let rendered := if traces.isEmpty then rendered else s!"{rendered}\n\n{"\n\n".intercalate traces.toList}"
+  Json.mkObj [("rendered", rendered), ("goals", Json.arr (shown.map Json.str)), ("messages", Json.arr (traces.map Json.str))]
+
+/-- The info messages (`trace`, `trace_state`) of the tactic at `info`, in order: the
+infoview shows them under its goals. -/
+def tracesAt (st : St) (info : SourceInfo) : Array String :=
+  (st.messages.filter fun m => m.severity == .info && info.start ≤ m.info.start && m.info.start < info.stop).map (·.text)
 
 /-- Where a library module's source is, as a URI. -/
 def location (srv : Server) (uri : String) (doc : Doc) (n : Name) : Json :=
@@ -195,7 +204,7 @@ def infoview (srv : Server) (uri : String) (doc : Doc) (method : String) (msg : 
   match method with
   | "wiz/plainGoal" =>
     pure (doc, match Query.goalsAt st off with
-      | some (_, _, gs) => plainGoals gs
+      | some (_, info, gs) => plainGoals gs (tracesAt st info)
       | none => Json.null)
   | "wiz/plainTermGoal" =>
     pure (doc, match Query.termGoalAt st off with
@@ -207,7 +216,7 @@ def infoview (srv : Server) (uri : String) (doc : Doc) (method : String) (msg : 
     | some (key, info, gs) =>
       let k (tgs : Array TaggedGoal) (tj : TT → Json) : Json :=
         Json.mkObj [("goals", Json.arr (tgs.map (goalJson · tj))), ("range", range doc.text info),
-                    ("session", doc.session)]
+                    ("session", doc.session), ("messages", Json.arr ((tracesAt st info).map Json.str))]
       pure (memo s!"goals {key}" (withTable doc (gs.mapM (·.tagged)) k))
   | "wiz/interactiveTermGoal" =>
     match Query.termGoalAt st off with

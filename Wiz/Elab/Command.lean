@@ -118,9 +118,54 @@ structure CommandState (R : Type) where
   messages and the info tree) -/
   pristine : Bool := true
 
-/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`). -/
-def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) :=
-  addDecl g (d.withSorts g)
+/-- (13b) The types that are opaque in the module being elaborated: declared in another
+module with a private constructor, field or observation. Sorted, for stable messages. -/
+def foreignOpaques (g : Globals R) : List Name :=
+  (g.opaques.toList.filterMap fun (n, m) => if m == g.module then none else some n).mergeSort
+
+/-- (13b) **The strict privacy check** (`wiz --strict-privacy`; off by default, an
+experiment). The kernel compares types by shape, so it takes a
+look-alike for a type whose constructor is private to another module, and every
+comparison the elaborator leaves to it is answered that way (`rfl`, a term assigned by a
+tactic while it had holes, the solutions of untyped unification). So when such a type is
+visible, the declaration is checked a second time, by the same kernel checker, against
+the elaborator's view of the environment (`Globals.elabView`), where those types have no
+definition. A declaration that passes used no hidden shape. The first check, against the
+real environment, is the one soundness rests on; this one only rejects.
+
+It is off by default because it also rejects legitimate declarations: the elaborator
+quotes evaluated values into terms, so a proof that computes through a library operation
+on such a type contains a raw pair or projection at it, which has no type with the
+definition hidden (`drafts/rust/lowered/03_get_mut.wiz`: `get_mut.is_place`,
+`get_mut.spec_under`). With it on, a type with private parts is abstract for proofs too.
+
+On a failure, the types whose shape was used are those that make the check fail when
+hidden alone. `kind` chooses the kernel entry (`addDecl`, or `addPartialDecl`). -/
+def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → TCM (Globals R) := addDecl) : TCM Unit := do
+  unless g.strictPrivacy do return
+  let ops := foreignOpaques g
+  if ops.isEmpty then return
+  match kind g.elabView d with
+  | .ok _ => pure ()
+  | .error e =>
+    let hide (n : Name) : Globals R := match g.decls[n]? with
+      | some t => { g with decls := g.decls.insert n { t with value := none } }
+      | none => g
+    let used := ops.filter fun n => match kind (hide n) d with
+      | .ok _ => false
+      | .error _ => true
+    let used := if used.isEmpty then ops else used
+    let show1 (n : Name) : String := s!"{n} (module {(g.opaques[n]?).getD "?"})"
+    throw (.other (s!"{d.name} depends on the definition of {", ".intercalate (used.map show1)}, which is hidden outside " ++
+      s!"its module (it has private parts): with the definition hidden, {e}"))
+
+/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and then
+the privacy check. -/
+def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  let d := d.withSorts g
+  let g' ← addDecl g d
+  privacyCheck g d
+  pure g'
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
@@ -578,7 +623,9 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     | .ok c => if roots.all c.contains then .ok c
       else (compileReachable g builtins roots (externImpls := false)).mapError (s!"cannot compile the environment: {·}")
     | .error e => .error e
-  let runProcMacro f stx scope := do Elab.runProcMacro (← compileCode [f, "Macro.run"]) f stx scope (macroEnv g)
+  let runProcMacro f stx scope := match compileCode [f, "Macro.run"] with
+    | .ok code => Elab.runProcMacro code f stx scope (macroEnv g)
+    | .error e => (#[], .error e)
   let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
   -- (13b) structures with a constructor private to another module don't unfold here
   match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
@@ -769,6 +816,14 @@ def privateFields (cmd : Syntax) : List Name :=
   (cmd.getArg 6).args.toList.filterMap fun f =>
     if (f.getArg 0).args.isEmpty then none else (f.getArg 2).getId?
 
+/-- The result of `runElabH`, for a command that keeps no info tree (`#check`, `#eval`,
+`instance`, …): the `trace`s of its tactics and macros still become info messages. -/
+def withTraces (r : Except (ElabError R) α × Array (Info R)) : StateM (CommandState R) (Except (ElabError R) α) := do
+  for i in r.2 do
+    if let .trace info text := i then
+      modify fun s => { s with messages := s.messages.push { info, severity := .info, text } }
+  pure r.1
+
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   -- (13b) privacy is per module: the globals know which one is being elaborated
@@ -778,8 +833,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     modify fun s => { s with messages := s.messages.push { info, severity := sev, text } }
   let reportErr (e : ElabError R) : StateM (CommandState R) Unit :=
     modify fun s => { s with messages := s.messages.push { info := e.info, severity := .error, text := e.msg, code := e.code } }
+  -- the info tree of a declaration; its `trace`s become info messages
   let addInfos (is : Array (Info R)) : StateM (CommandState R) Unit :=
-    unless is.isEmpty do modify fun s => { s with infos := s.infos ++ is }
+    unless is.isEmpty do modify fun s =>
+      let traces := is.filterMap fun
+        | .trace info text => some { info, severity := .info, text }
+        | _ => none
+      if traces.isEmpty then { s with infos := s.infos ++ is }
+      else { s with infos := s.infos ++ is.filter (!· matches .trace ..), messages := s.messages ++ traces }
   -- the finalizer of a foreign pointer type (for a foreign function's result)
   let finOf (t : Term R) : String := match (Term.spine t).1 with
     | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
@@ -836,9 +897,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       else (compileReachable s.globals s.builtins [f, runner] (externImpls := false)).mapError (s!"cannot compile {f}: {·}")
     | .error e => .error e
   -- elaborate the commands a command macro or deriver produced
-  let elabExpansion (what : String) (r : Except String (Array Syntax × Nat)) (info : SourceInfo) :
+  let elabExpansion (what : String) (r : Array String × Except String (Array Syntax × Nat)) (info : SourceInfo) :
       StateM (CommandState R) Unit := do
-    match r with
+    for t in r.1 do report .info info t
+    match r.2 with
     | .error e => report .error info s!"{what}: {e}"
     | .ok (cmds, next) =>
       modify fun s => { s with nextScope := next }
@@ -849,7 +911,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match s.derivers.lookup C with
     | none => report .error info s!"no deriver for {C} (register one with `attribute [deriver {C}] f`)"
     | some f =>
-      let r := do Elab.runDeriver (← metaCodeFor f) f T info s.nextScope (macroEnv s.globals)
+      let r := match metaCodeFor f with
+        | .ok code => Elab.runDeriver code f T info s.nextScope (macroEnv s.globals)
+        | .error e => (#[], .error e)
       elabExpansion s!"deriving {C} for {T}" r info
   let derivingClause (stx : Syntax) (T : Name) : StateM (CommandState R) Unit := do
     unless stx.isNone do
@@ -934,7 +998,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             report .error (d.getArg 1).info s!"partial definition {name}: no witness found for its type {ty.pretty}; give one with `partial (default := w) def {name} …` (the kernel takes {name} only if its type is inhabited)"
             return
           | .error e => report .error e.info e.msg; return
-        match addPartialDecl g (Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }) with
+        let pd := Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }
+        match (do let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
@@ -960,7 +1025,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | (.error e, hv) => addInfos hv; reportErr e; return
     modify fun s => { s with globals := g }
   | "command.check" =>
-    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
       let (t, ty) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -974,7 +1039,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
   | "command.reduce" =>
-    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -1015,7 +1080,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if s.globals.contains name then
       report .error (cmd.getArg 1).info s!"'{name}' has already been declared"
     else
-      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabCoinductive cmd levelParams) levelParams with
+      match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabCoinductive cmd levelParams) levelParams) with
       | .error e => report .error e.info e.msg
       | .ok (decls, obs) =>
         let mut g := s.globals
@@ -1030,7 +1095,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- neither observed nor built except through the module's own definitions
         let privObs := privateFields cmd
         unless privObs.isEmpty do
-          let names := privObs.map (name ++ "." ++ ·) ++ [name ++ ".mk"]
+          -- (and the description: `ν T.desc i` written out is the type with nothing hidden)
+          let names := privObs.map (name ++ "." ++ ·) ++ [name ++ ".mk", name ++ ".desc"]
           g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
                         opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g, coinductives := s.coinductives ++ [(name, obs)] }
@@ -1109,9 +1175,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match valStx with
     | .error e => report .error cmd.info e
     | .ok valStx =>
-      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics)
+      match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics)
           (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
-          (elabDeclTerms binders (some typeStx) (some valStx) cmd.info) levelParams with
+          (elabDeclTerms binders (some typeStx) (some valStx) cmd.info) levelParams) with
       | .error e => report .error e.info e.msg
       | .ok (ty, val) =>
         let (_, concl) := peelPis ty
@@ -1134,7 +1200,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else
       let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
         else elabStructure cmd levelParams
-      match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals elabCmd levelParams with
+      match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals elabCmd levelParams) with
       | .error e => report .error e.info e.msg
       | .ok decls =>
         -- a structure's projection functions `S.f` (unless the name is taken, as `S.mk`)
@@ -1174,7 +1240,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           let privCtors := (cmd.getArg 6).args.toList.filterMap fun c =>
             if (c.getArg 1).args.isEmpty then none else (c.getArg 2).getId?
           unless privCtors.isEmpty do
-            let names := privCtors.map (name ++ "." ++ ·) ++ recNames
+            -- (and the description: `μ T.desc i` written out is the type with nothing
+            -- hidden; a raw `con` builds a value of it, and it lists the private fields)
+            let names := privCtors.map (name ++ "." ++ ·) ++ recNames ++ [name ++ ".desc"]
             g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
                           opaques := g.opaques.insert name s.module }
         -- (13b) `private mk ::`: the constructor is private to this module, and elsewhere
@@ -1789,7 +1857,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error err => report .error cmd.info s!"cannot erase {n}: {err}"
   | "command.eval" =>
     -- elaborate, erase, run, and read the result back using its type
-    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -1814,7 +1882,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error err => report .error cmd.info s!"cannot run this: {err}"
   | "command.run" =>
     -- like `#eval`, but through the IR, with reference counting, on a checked heap
-    let r := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -1874,14 +1942,18 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       -- (HD8) a command macro, written in Wiz
       match s.cmdMacros.lookup k with
       | some f =>
-        let r := do Elab.runCommandMacro (← metaCodeFor f) f cmd s.nextScope (macroEnv s.globals)
+        let r := match metaCodeFor f with
+          | .ok code => Elab.runCommandMacro code f cmd s.nextScope (macroEnv s.globals)
+          | .error e => (#[], .error e)
         elabExpansion s!"macro {f}" r cmd.info
       | none => match s.procMacros.lookup k with
         | some f =>
           -- a `Macro` for a command kind: one command
-          let r := do
-            let (out, next) ← Elab.runProcMacro (← metaCodeFor f "Macro.run") f cmd s.nextScope (macroEnv s.globals)
-            pure (#[out], next)
+          let r := match metaCodeFor f "Macro.run" with
+            | .ok code =>
+              let (tr, r) := Elab.runProcMacro code f cmd s.nextScope (macroEnv s.globals)
+              (tr, r.map fun (out, next) => (#[out], next))
+            | .error e => (#[], .error e)
           elabExpansion s!"macro {f}" r cmd.info
         | none => report .error cmd.info s!"no elaborator for command kind {k}"
 

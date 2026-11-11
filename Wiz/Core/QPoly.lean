@@ -61,6 +61,14 @@ def vars (p : QPoly R) : List Nat := (p.flatMap (·.1)).eraseDups
 def isConst? (p : QPoly R) : Option R :=
   if p.all (·.1.isEmpty) then some (p.foldl (fun acc m => acc + m.2) 0) else none
 
+/-- **The** test for "a position at this quantity is erased": the constant 0 (not a
+quantity variable, which may be 0 for some instances only). The kernel checks such a
+position in erased mode (`Ctx.erasedAt` in `Check.lean`), where a term may be valid only
+because it is never computed, and erasure replaces exactly these positions by `◾`
+(`Erase.lean`). Both must ask this one predicate: if erasure kept a position the kernel
+checked erased, compiled code would run a term that was never checked for running. -/
+def isErased (p : QPoly R) : Bool := p.isConst? == some 0
+
 def eval (assign : Nat → R) (p : QPoly R) : R :=
   p.foldl (fun acc (xs, c) => acc + xs.foldl (fun m x => m * assign x) c) 0
 

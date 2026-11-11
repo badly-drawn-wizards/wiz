@@ -1,20 +1,84 @@
 import BitVec
--- The L2 backbone of the HDL (`import Hdl.Core`): combinational logic as tagless-final
--- code, polymorphic in its representation `r : HwTy → Type`, with two instances: values
--- (`HwTy.El`, simulation) and wires (`Wire`, netlist construction). A sequential circuit
--- is a `Circuit`, a Mealy machine whose step is such code. See drafts/hdl/Synth.wiz for
--- the design notes (HD5 L1–L3) and wiz-notes/hdl-staging-research.md for the plan.
+import Logic
+import Deriving
+-- The HDL library (`import Hdl.Core`). Combinational logic is tagless-final code,
+-- polymorphic in its representation `r : HwTy → Type`, with two instances: values
+-- (`HwTy.El`, simulation and proofs) and wires (`Wire`, netlist construction). A
+-- sequential circuit is a `Circuit i o`, a Mealy machine whose step is such code.
+-- docs/libraries.md ("H14 S0", "H14 S1") describes it; design notes in drafts/hdl/Synth.wiz
+-- and /workspace/wiz-notes/hdl-usability.md.
 --
--- Sharing (stage S0). `Wire t` is a netlist-building computation, so a wire used twice
--- would be built twice. Two things keep that in check:
--- * the builder hash-conses: emitting a node whose operation, width and arguments are
---   already in the netlist returns the existing node, so identical subterms reached by
---   different paths are one node, whatever the source looks like;
--- * a meta-level `let` of an object value whose body is an object value is
---   elaborated as `ShareLet.share v (fun x => body)` (auto-share), which at `Wire` runs
---   `v` once and names its node, so generation time is linear too. At `HwTy.El`,
---   `share` is application.
--- `Hw.share` is still there for explicit use (a lambda's argument used twice, say).
+-- * Types are codes (`HwTy`): bit vectors, products, and `named s t`, a type with a name
+--   (`El`, `width` and the bus encoding ignore the name; the netlist uses it for ports,
+--   registers and wires).
+-- * Wires are structured: a value of a product type is a product of node ids, so pairs
+--   and projections cost nothing, and ports and registers are one per leaf, named by
+--   the path of `named` segments (`tx_cnt`).
+-- * Structures of signals (`structure Tx (r : HwTy → Type) where line : r Bit …`) are
+--   `Bundle`s: `deriving Bundle` gives their code and the conversions, and field access
+--   is the ordinary `s.line`.
+--
+-- Sharing. `Wire t` is a netlist-building computation, so a wire used twice would be built
+-- twice. The builder hash-conses (identical nodes are one node), and a meta-level `let`
+-- of an object value whose body is an object value is elaborated as `ShareLet.share v
+-- (fun x => body)` (auto-share), which at `Wire` runs `v` once. Write `let ω x := …` to
+-- opt out, `Hw.share` for explicit sharing and `Hw.label "name" x` to name a wire.
+
+------------------------------------------------------------------------------------
+-- Small helpers (prefixed `Hdl.`, so that importers keep the general names)
+
+def Hdl.rev {A : Type} : List A → List A → List A
+  | .nil, acc => acc
+  | .cons x xs, acc => Hdl.rev xs (List.cons x acc)
+def Hdl.reverse {A : Type} (xs : List A) : List A := Hdl.rev xs List.nil
+
+def Hdl.map {A B : Type} (f : A → B) : List A → List B
+  | .nil => .nil
+  | .cons x xs => .cons (f x) (Hdl.map f xs)
+
+def Hdl.nthD {A : Type} (d : A) : List A → Nat → A
+  | .nil, _ => d
+  | .cons x _, .zero => x
+  | .cons _ xs, .succ k => Hdl.nthD d xs k
+
+def Hdl.natsEq : List Nat → List Nat → Bool
+  | .nil, .nil => .true
+  | .cons a as, .cons b bs => Bool.and (Nat.beq a b) (Hdl.natsEq as bs)
+  | _, _ => .false
+
+def Hdl.sum : List Nat → Nat
+  | .nil => 0
+  | .cons x xs => x + Hdl.sum xs
+
+-- the elements with their indices, from `k`
+def Hdl.indexed {A : Type} : Nat → List A → List (Nat × A)
+  | _, .nil => .nil
+  | k, .cons x xs => .cons (k, x) (Hdl.indexed (Nat.succ k) xs)
+
+infixr:67 " <+> " => String.append
+def Hdl.digitsAux : Nat → Nat → List Char → List Char
+  | .zero, _, acc => acc
+  | .succ f, n, acc => match Nat.lt n 10 with
+    | .true => List.cons (Char.mk (48 + n)) acc
+    | .false => Hdl.digitsAux f (Nat.div n 10) (List.cons (Char.mk (48 + Nat.mod n 10)) acc)
+-- decimal
+def Hdl.show (n : Nat) : String := String.mk (Hdl.digitsAux (Nat.succ n) n List.nil)
+def Hdl.hexDigit (n : Nat) : Char := match Nat.lt n 10 with
+  | .true => Char.mk (48 + n)
+  | .false => Char.mk (87 + n)
+-- `d` hexadecimal digits of `v`, pushed onto `acc` (most significant first)
+def Hdl.hexAux : Nat → Nat → List Char → List Char
+  | .zero, _, acc => acc
+  | .succ d, v, acc => Hdl.hexAux d (Nat.div v 16) (List.cons (Hdl.hexDigit (Nat.mod v 16)) acc)
+-- `w` binary digits of `v`
+def Hdl.binAux : Nat → Nat → List Char → List Char
+  | .zero, _, acc => acc
+  | .succ d, v, acc => Hdl.binAux d (Nat.div v 2) (List.cons (Char.mk (48 + Nat.mod v 2)) acc)
+def Hdl.bin (w v : Nat) : String := String.mk (Hdl.binAux w v List.nil)
+def Hdl.strEq (a b : String) : Bool := String.beq a b
+def Hdl.concat : List String → String
+  | .nil => ""
+  | .cons s ss => s <+> Hdl.concat ss
 
 ------------------------------------------------------------------------------------
 -- Hardware types (codes) and their values
@@ -22,30 +86,87 @@ import BitVec
 inductive HwTy where
   | bits (n : Nat)
   | prod (a b : HwTy)
+  | named (s : String) (t : HwTy)
 
 def HwTy.El : HwTy → Type
   | .bits n => BitVec n
   | .prod a b => HwTy.El a × HwTy.El b
+  | .named _ t => HwTy.El t
 
 def HwTy.width : HwTy → Nat
   | .bits n => n
   | .prod a b => HwTy.width a + HwTy.width b
+  | .named _ t => HwTy.width t
 
 -- The bus encoding (first component in the high bits).
 def HwTy.pack : (ω t : HwTy) → HwTy.El t → Nat
   | .bits n, v => v.toNat
   | .prod a b, v => Nat.shiftLeft (HwTy.pack a v.1) (HwTy.width b) + HwTy.pack b v.2
+  | .named _ t, v => HwTy.pack t v
 
 def HwTy.unpack : (ω t : HwTy) → Nat → HwTy.El t
   | .bits n, k => BitVec.ofNat n k
   | .prod a b, k => (HwTy.unpack a (Nat.shiftRight k (HwTy.width b)), HwTy.unpack b k)
+  | .named _ t, k => HwTy.unpack t k
 
--- (`HwTy.bit` rather than `HwTy.bits 1`, and `Nat.add m n` rather than `m + n`: class
---  field types are elaborated without numerals or macros; wishful: numerals-in-class-decls)
+-- (`HwTy.bit` rather than `HwTy.bits 1`: class field types are elaborated without
+--  numerals or macros; wishful: numerals-in-class-decls)
 def HwTy.bit : HwTy := HwTy.bits 1
 
+-- The leaves of a code: bit vectors, in order (first component first).
+def HwTy.leafWidths : HwTy → List Nat
+  | .bits n => .cons n .nil
+  | .prod a b => List.append (HwTy.leafWidths a) (HwTy.leafWidths b)
+  | .named _ t => HwTy.leafWidths t
+
+-- a value's leaves as numbers, and back
+def HwTy.leaves : (ω t : HwTy) → HwTy.El t → List Nat
+  | .bits n, v => .cons v.toNat .nil
+  | .prod a b, v => List.append (HwTy.leaves a v.1) (HwTy.leaves b v.2)
+  | .named _ t, v => HwTy.leaves t v
+def HwTy.ofLeavesAux : (ω t : HwTy) → List Nat → HwTy.El t × List Nat
+  | .bits n, .nil => (BitVec.ofNat n 0, .nil)
+  | .bits n, .cons k ks => (BitVec.ofNat n k, ks)
+  | .prod a b, ks =>
+    let ω p := HwTy.ofLeavesAux a ks;
+    let ω q := HwTy.ofLeavesAux b p.2;
+    ((p.1, q.1), q.2)
+  | .named _ t, ks => HwTy.ofLeavesAux t ks
+def HwTy.ofLeaves (ω t : HwTy) (ks : List Nat) : HwTy.El t := (HwTy.ofLeavesAux t ks).1
+
+-- Leaf names: the `named` segments on the path to the leaf, joined with `_`.
+def Hdl.joinName (pre s : String) : String := match pre with
+  | .mk .nil => s
+  | _ => pre <+> "_" <+> s
+def HwTy.pathsAux : String → HwTy → List String
+  | pre, .bits _ => .cons pre .nil
+  | pre, .prod a b => List.append (HwTy.pathsAux pre a) (HwTy.pathsAux pre b)
+  | pre, .named s t => HwTy.pathsAux (Hdl.joinName pre s) t
+def Hdl.countName (s : String) : List String → Nat
+  | .nil => 0
+  | .cons x xs => match Hdl.strEq s x with
+    | .true => Nat.succ (Hdl.countName s xs)
+    | .false => Hdl.countName s xs
+def Hdl.dedup (all : List String) : List (Nat × String) → List String
+  | .nil => .nil
+  | .cons p ps => .cons (match Nat.lt 1 (Hdl.countName p.2 all) with
+      | .true => p.2 <+> "_" <+> Hdl.show p.1
+      | .false => p.2) (Hdl.dedup all ps)
+-- One name per leaf: its path under `base` (`base` alone for an unnamed leaf), with
+-- `_k` (the leaf's index) where several leaves would get the same name.
+def HwTy.leafNames (base : String) (t : HwTy) : List String :=
+  let ω ps := HwTy.pathsAux base t;
+  Hdl.dedup ps (Hdl.indexed 0 ps)
+-- the same, with unnamed leaves named `base` and named ones by their path alone
+def Hdl.orBase (base p : String) : String := match p with
+  | .mk .nil => base
+  | _ => p
+def HwTy.portNames (base : String) (t : HwTy) : List String :=
+  let ω ps := Hdl.map (Hdl.orBase base) (HwTy.pathsAux "" t);
+  Hdl.dedup ps (Hdl.indexed 0 ps)
+
 ------------------------------------------------------------------------------------
--- L2: the combinational operations, tagless final
+-- The combinational operations, tagless final
 
 class Hw (r : HwTy → Type) where
   lit : (ω n : Nat) → Nat → r (HwTy.bits n)
@@ -65,11 +186,22 @@ class Hw (r : HwTy → Type) where
   fst : {ω a b : HwTy} → r (HwTy.prod a b) → r a
   snd : {ω a b : HwTy} → r (HwTy.prod a b) → r b
   share : {ω a b : HwTy} → r a → (r a → r b) → r b
+  -- a constant of any type
+  const : (ω t : HwTy) → HwTy.El t → r t
+  -- naming: into and out of `named s t` (no hardware), and a name for a wire
+  tag : (ω s : String) → {ω t : HwTy} → r t → r (HwTy.named s t)
+  untag : {ω s : String} → {ω t : HwTy} → r (HwTy.named s t) → r t
+  label : (ω s : String) → {ω t : HwTy} → r t → r t
+  -- register controls, by construction: `resetTo rst v x` is `mux rst (const v) x` and
+  -- `hold en x cur` is `mux en x cur`; when a register's next value is built with them
+  -- (`Circuit.withReset`, `Circuit.withEnable`), the netlist records a synchronous reset
+  -- or a clock enable on the register instead of a multiplexer
+  resetTo : {ω t : HwTy} → r HwTy.bit → HwTy.El t → r t → r t
+  hold : {ω t : HwTy} → r HwTy.bit → r t → r t → r t
 
 -- Auto-share: the elaborator turns `let x := v; body` into `ShareLet.share v (fun x =>
 -- body)` when an instance `ShareLet A B` exists for the value's type `A` and the
--- body's type `B` (README, stage H0d). The one instance: object values in object
--- answers, through `Hw.share`.
+-- body's type `B` (docs/libraries.md, H14 S0).
 class ShareLet (A B : Type) where
   share : A → (A → B) → B
 
@@ -91,6 +223,11 @@ def HwTy.El.cat {0 m : Nat} {ω n : Nat} (a : HwTy.El (HwTy.bits m)) (b : HwTy.E
     HwTy.El (HwTy.bits (Nat.add m n)) := BitVec.concat a b
 def HwTy.El.slice (ω lo w : Nat) {ω n : Nat} (a : HwTy.El (HwTy.bits n)) : HwTy.El (HwTy.bits w) :=
   BitVec.ofNat w (Nat.shiftRight (a : BitVec n).toNat lo)
+def HwTy.El.tag (ω s : String) {ω t : HwTy} (x : HwTy.El t) : HwTy.El (HwTy.named s t) := x
+def HwTy.El.untag {ω s : String} {ω t : HwTy} (x : HwTy.El (HwTy.named s t)) : HwTy.El t := x
+def HwTy.El.label (ω s : String) {ω t : HwTy} (x : HwTy.El t) : HwTy.El t := x
+def HwTy.El.resetTo {ω t : HwTy} (c : HwTy.El HwTy.bit) (v : HwTy.El t) (x : HwTy.El t) : HwTy.El t :=
+  HwTy.El.mux c v x
 
 instance : Hw HwTy.El where
   lit := fun n k => BitVec.ofNat n k
@@ -110,11 +247,17 @@ instance : Hw HwTy.El where
   fst := fun p => p.1
   snd := fun p => p.2
   share := fun a f => f a
+  const := fun t v => v
+  tag := HwTy.El.tag
+  untag := HwTy.El.untag
+  label := HwTy.El.label
+  resetTo := HwTy.El.resetTo
+  hold := HwTy.El.mux
 
 ------------------------------------------------------------------------------------
--- The netlist IR (hdl-plan §3.3): flat, widths concrete
+-- The netlist IR: flat, widths concrete, one node per bit-vector operation
 
-inductive Op where
+inductive NetOp where
   | input (port : Nat)
   | const (v : Nat)
   | reg (r : Nat)
@@ -130,36 +273,41 @@ inductive Op where
   | mux
   | concat
   | slice (lo : Nat)
+  | resetTo (v : Nat)
+  | hold
 
-structure Node where
-  op : Op
+structure NetNode where
+  op : NetOp
   width : Nat
   args : List Nat
 
-structure Reg where
+-- A register: its name, width and initial value; `next` is the node it loads; with
+-- `rst`, a one-bit node that makes it load `init` instead (synchronous reset, before the
+-- enable); with `en`, a one-bit node without which it keeps its value.
+structure NetReg where
+  name : String
   width : Nat
   init : Nat
   next : Nat
+  rst : Option Nat
+  en : Option Nat
 
-structure Port where
+structure NetPort where
   name : String
   width : Nat
   node : Nat
 
 structure Netlist where
   name : String
-  nodes : List Node        -- node k is the k-th; arguments refer to earlier nodes
-  regs : List Reg
-  inputs : List Port
-  outputs : List Port
-
-def List.reverseAux {A : Type} : List A → List A → List A
-  | .nil, acc => acc
-  | .cons x xs, acc => List.reverseAux xs (List.cons x acc)
+  nodes : List NetNode       -- node k is the k-th; arguments refer to earlier nodes
+  regs : List NetReg
+  inputs : List NetPort
+  outputs : List NetPort
+  hints : List (Nat × String) -- wire names (`Hw.label`)
 
 -- Hash-consing keys: the operation (a code and its payload), the width, the arguments.
 -- Commutative operations sort their two arguments, so `a + b` and `b + a` are one node.
-def Op.code : Op → List Nat
+def NetOp.code : NetOp → List Nat
   | .input p => List.cons 0 (List.cons p List.nil)
   | .const v => List.cons 1 (List.cons v List.nil)
   | .reg r => List.cons 2 (List.cons r List.nil)
@@ -175,8 +323,10 @@ def Op.code : Op → List Nat
   | .mux => List.cons 12 List.nil
   | .concat => List.cons 13 List.nil
   | .slice lo => List.cons 14 (List.cons lo List.nil)
+  | .resetTo v => List.cons 15 (List.cons v List.nil)
+  | .hold => List.cons 16 List.nil
 
-def Op.commutative : Op → Bool
+def NetOp.commutative : NetOp → Bool
   | .add => .true
   | .mul => .true
   | .and => .true
@@ -185,19 +335,14 @@ def Op.commutative : Op → Bool
   | .eq => .true
   | _ => .false
 
-def Node.canonArgs (op : Op) (args : List Nat) : List Nat := match Op.commutative op, args with
+def NetNode.canonArgs (op : NetOp) (args : List Nat) : List Nat := match NetOp.commutative op, args with
   | .true, .cons a (.cons b .nil) => match Nat.lt b a with
     | .true => List.cons b (List.cons a List.nil)
     | .false => args
   | _, _ => args
 
-def Node.key (op : Op) (w : Nat) (args : List Nat) : List Nat :=
-  Op.code op ++ List.cons w args
-
-def NatList.beq : List Nat → List Nat → Bool
-  | .nil, .nil => .true
-  | .cons a as, .cons b bs => Bool.and (Nat.beq a b) (NatList.beq as bs)
-  | _, _ => .false
+def NetNode.key (op : NetOp) (w : Nat) (args : List Nat) : List Nat :=
+  NetOp.code op ++ List.cons w args
 
 def NatList.hash : List Nat → Nat → Nat
   | .nil, h => h
@@ -215,7 +360,7 @@ def HTrie.depth : Nat := 20
 
 def HTrie.assoc {V : Type} (key : List Nat) : List (List Nat × V) → Option V
   | .nil => .none
-  | .cons kv kvs => match NatList.beq key kv.1 with
+  | .cons kv kvs => match Hdl.natsEq key kv.1 with
     | .true => .some kv.2
     | .false => HTrie.assoc key kvs
 
@@ -239,18 +384,27 @@ def HTrie.insert {V : Type} (key : List Nat) (v : V) (h : Nat) : Nat → HTrie V
     | .true => .node l (HTrie.insert key v h d r)
     | .false => .node (HTrie.insert key v h d l) r
 
+def HTrie.get {V : Type} (key : List Nat) (t : HTrie V) : Option V :=
+  HTrie.find key (NatList.hash key 7) HTrie.depth t
+def HTrie.put {V : Type} (key : List Nat) (v : V) (t : HTrie V) : HTrie V :=
+  HTrie.insert key v (NatList.hash key 7) HTrie.depth t
+-- maps keyed by a number
+def HTrie.getN {V : Type} (k : Nat) (t : HTrie V) : Option V := HTrie.get (List.cons k List.nil) t
+def HTrie.putN {V : Type} (k : Nat) (v : V) (t : HTrie V) : HTrie V := HTrie.put (List.cons k List.nil) v t
+
 -- Building netlists: a state monad. The state: the next node id, the nodes in reverse,
 -- the hash-consing table, whether to hash-cons at all (off only to measure what it
--- saves), and a work counter (every emit, hit or miss: generation time, measured
--- deterministically).
+-- saves), a work counter (every emit, hit or miss: generation time, measured
+-- deterministically), and the wire names.
 structure NetS where
   next : Nat
-  nodes : List Node
+  nodes : List NetNode
   table : HTrie Nat
   cse : Bool
   work : Nat
+  hints : List (Nat × String)
 
-def NetS.init (cse : Bool) : NetS := NetS.mk 0 List.nil HTrie.tip cse 0
+def NetS.init (cse : Bool) : NetS := NetS.mk 0 List.nil HTrie.tip cse 0 List.nil
 
 def NetM (A : Type) : Type := NetS → A × NetS
 def NetM.pure {A : Type} (a : A) : NetM A := fun s => (a, s)
@@ -261,59 +415,136 @@ instance : Monad NetM where
   pure := NetM.pure
   bind := NetM.bind
 
-def NetS.push (s : NetS) (op : Op) (w : Nat) (args : List Nat) (table : HTrie Nat) : Nat × NetS :=
-  (s.next, NetS.mk (Nat.succ s.next) (List.cons (Node.mk op w args) s.nodes) table s.cse (Nat.succ s.work))
+def NetS.push (s : NetS) (op : NetOp) (w : Nat) (args : List Nat) (table : HTrie Nat) : Nat × NetS :=
+  (s.next, NetS.mk (Nat.succ s.next) (List.cons (NetNode.mk op w args) s.nodes) table s.cse (Nat.succ s.work) s.hints)
 
-def NetM.emitKeyed (op : Op) (w : Nat) (args : List Nat) (s : NetS) : Nat × NetS :=
-  let key := Node.key op w args
+def NetM.emitKeyed (op : NetOp) (w : Nat) (args : List Nat) (s : NetS) : Nat × NetS :=
+  let key := NetNode.key op w args
   let h := NatList.hash key 7
   match HTrie.find key h HTrie.depth s.table with
-  | .some k => (k, NetS.mk s.next s.nodes s.table s.cse (Nat.succ s.work))
+  | .some k => (k, NetS.mk s.next s.nodes s.table s.cse (Nat.succ s.work) s.hints)
   | .none => NetS.push s op w args (HTrie.insert key s.next h HTrie.depth s.table)
 
-def NetM.emit (op : Op) (w : Nat) (args : List Nat) : NetM Nat := fun s => match s.cse with
-  | .true => NetM.emitKeyed op w (Node.canonArgs op args) s
+def NetM.emit (op : NetOp) (w : Nat) (args : List Nat) : NetM Nat := fun s => match s.cse with
+  | .true => NetM.emitKeyed op w (NetNode.canonArgs op args) s
   | .false => NetS.push s op w args s.table
 
--- Synthesis: a wire is a computation that emits nodes and returns the id of its output.
--- Products are flattened into one bus (first component in the high bits, as `pack`).
-def Wire (t : HwTy) : Type := NetM Nat
-def Wire.op2 (op : Op) (w : Nat) (a b : NetM Nat) : NetM Nat := do
+def NetM.hint (k : Nat) (name : String) : NetM Unit := fun s =>
+  ((), NetS.mk s.next s.nodes s.table s.cse s.work (List.cons (k, name) s.hints))
+
+-- Synthesis: a wire is a computation that emits nodes and returns the ids of its
+-- output, one per leaf of its type.
+def HwTy.Ids : HwTy → Type
+  | .bits _ => Nat
+  | .prod a b => HwTy.Ids a × HwTy.Ids b
+  | .named _ t => HwTy.Ids t
+
+def HwTy.idsLeaves : (ω t : HwTy) → HwTy.Ids t → List Nat
+  | .bits _, k => .cons k .nil
+  | .prod a b, p => List.append (HwTy.idsLeaves a p.1) (HwTy.idsLeaves b p.2)
+  | .named _ t, p => HwTy.idsLeaves t p
+def HwTy.idsTake : (ω t : HwTy) → List Nat → HwTy.Ids t × List Nat
+  | .bits _, .nil => (0, .nil)
+  | .bits _, .cons k ks => (k, ks)
+  | .prod a b, ks =>
+    let ω p := HwTy.idsTake a ks;
+    let ω q := HwTy.idsTake b p.2;
+    ((p.1, q.1), q.2)
+  | .named _ t, ks => HwTy.idsTake t ks
+
+def Wire (t : HwTy) : Type := NetM (HwTy.Ids t)
+
+def Wire.op2 (op : NetOp) (w : Nat) (a b : NetM Nat) : NetM Nat := do
   x ← a;
   y ← b;
   NetM.emit op w (List.cons x (List.cons y List.nil))
-def Wire.op1 (op : Op) (w : Nat) (a : NetM Nat) : NetM Nat := do
+def Wire.op1 (op : NetOp) (w : Nat) (a : NetM Nat) : NetM Nat := do
   x ← a;
   NetM.emit op w (List.cons x List.nil)
-def NetM.op3 (op : Op) (w : Nat) (a b c : NetM Nat) : NetM Nat := do
-  x ← a;
-  y ← b;
-  z ← c;
-  NetM.emit op w (List.cons x (List.cons y (List.cons z List.nil)))
--- `share` runs the wire's computation once and hands on its id.
-def NetM.share (x : NetM Nat) (f : NetM Nat → NetM Nat) : NetM Nat := do
-  id ← x;
-  f (NetM.pure id)
 
-def Wire.lit (ω n : Nat) (k : Nat) : Wire (HwTy.bits n) := NetM.emit (Op.const (Nat.mod k (Nat.pow 2 n))) n List.nil
-def Wire.add {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 Op.add n a b
-def Wire.sub {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 Op.sub n a b
-def Wire.mul {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 Op.mul n a b
-def Wire.and {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 Op.and n a b
-def Wire.or {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 Op.or n a b
-def Wire.xor {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 Op.xor n a b
-def Wire.not {ω n : Nat} (a : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op1 Op.not n a
-def Wire.eq {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := Wire.op2 Op.eq 1 a b
-def Wire.ult {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := Wire.op2 Op.ult 1 a b
-def Wire.mux {ω t : HwTy} (c : Wire HwTy.bit) (x y : Wire t) : Wire t := NetM.op3 Op.mux (HwTy.width t) c x y
+-- per-leaf multiplexers, constants, resets, holds, names
+def Wire.muxIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM (HwTy.Ids t)
+  | .bits n, c, a, b => NetM.emit NetOp.mux n (List.cons c (List.cons a (List.cons b List.nil)))
+  | .prod x y, c, a, b => do
+    p ← Wire.muxIds x c a.1 b.1;
+    q ← Wire.muxIds y c a.2 b.2;
+    NetM.pure (p, q)
+  | .named _ x, c, a, b => Wire.muxIds x c a b
+def Wire.holdIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM (HwTy.Ids t)
+  | .bits n, c, a, b => NetM.emit NetOp.hold n (List.cons c (List.cons a (List.cons b List.nil)))
+  | .prod x y, c, a, b => do
+    p ← Wire.holdIds x c a.1 b.1;
+    q ← Wire.holdIds y c a.2 b.2;
+    NetM.pure (p, q)
+  | .named _ x, c, a, b => Wire.holdIds x c a b
+def Wire.constIds : (ω t : HwTy) → HwTy.El t → NetM (HwTy.Ids t)
+  | .bits n, v => NetM.emit (NetOp.const (v : BitVec n).toNat) n List.nil
+  | .prod x y, v => do
+    p ← Wire.constIds x v.1;
+    q ← Wire.constIds y v.2;
+    NetM.pure (p, q)
+  | .named _ x, v => Wire.constIds x v
+def Wire.resetIds : (ω t : HwTy) → Nat → HwTy.El t → HwTy.Ids t → NetM (HwTy.Ids t)
+  | .bits n, c, v, a => NetM.emit (NetOp.resetTo (v : BitVec n).toNat) n (List.cons c (List.cons a List.nil))
+  | .prod x y, c, v, a => do
+    p ← Wire.resetIds x c v.1 a.1;
+    q ← Wire.resetIds y c v.2 a.2;
+    NetM.pure (p, q)
+  | .named _ x, c, v, a => Wire.resetIds x c v a
+def NetM.hints : List Nat → List String → NetM Unit
+  | .cons k ks, .cons n ns => do
+    NetM.hint k n;
+    NetM.hints ks ns
+  | _, _ => NetM.pure ()
+
+def Wire.lit (ω n : Nat) (k : Nat) : Wire (HwTy.bits n) := NetM.emit (NetOp.const (Nat.mod k (Nat.pow 2 n))) n List.nil
+def Wire.add {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 NetOp.add n a b
+def Wire.sub {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 NetOp.sub n a b
+def Wire.mul {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 NetOp.mul n a b
+def Wire.and {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 NetOp.and n a b
+def Wire.or {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 NetOp.or n a b
+def Wire.xor {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op2 NetOp.xor n a b
+def Wire.not {ω n : Nat} (a : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op1 NetOp.not n a
+def Wire.eq {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := Wire.op2 NetOp.eq 1 a b
+def Wire.ult {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := Wire.op2 NetOp.ult 1 a b
+def Wire.mux {ω t : HwTy} (c : Wire HwTy.bit) (x y : Wire t) : NetM (HwTy.Ids t) := do
+  k ← c;
+  a ← x;
+  b ← y;
+  Wire.muxIds t k a b
 def Wire.cat {ω m n : Nat} (a : Wire (HwTy.bits m)) (b : Wire (HwTy.bits n)) : Wire (HwTy.bits (Nat.add m n)) :=
-  Wire.op2 Op.concat (m + n) a b
-def Wire.slice (ω lo w : Nat) {ω n : Nat} (a : Wire (HwTy.bits n)) : Wire (HwTy.bits w) := Wire.op1 (Op.slice lo) w a
-def Wire.pair {ω a b : HwTy} (x : Wire a) (y : Wire b) : Wire (HwTy.prod a b) :=
-  Wire.op2 Op.concat (HwTy.width a + HwTy.width b) x y
-def Wire.fst {ω a b : HwTy} (p : Wire (HwTy.prod a b)) : Wire a := Wire.op1 (Op.slice (HwTy.width b)) (HwTy.width a) p
-def Wire.snd {ω a b : HwTy} (p : Wire (HwTy.prod a b)) : Wire b := Wire.op1 (Op.slice 0) (HwTy.width b) p
-def Wire.share {0 a b : HwTy} (x : Wire a) (f : Wire a → Wire b) : Wire b := NetM.share x f
+  Wire.op2 NetOp.concat (m + n) a b
+def Wire.slice (ω lo w : Nat) {ω n : Nat} (a : Wire (HwTy.bits n)) : Wire (HwTy.bits w) := Wire.op1 (NetOp.slice lo) w a
+def Wire.pair {ω a b : HwTy} (x : Wire a) (y : Wire b) : NetM (HwTy.Ids a × HwTy.Ids b) := do
+  p ← x;
+  q ← y;
+  NetM.pure (p, q)
+def Wire.fst {ω a b : HwTy} (p : Wire (HwTy.prod a b)) : NetM (HwTy.Ids a) := do
+  q ← p;
+  NetM.pure q.1
+def Wire.snd {ω a b : HwTy} (p : Wire (HwTy.prod a b)) : NetM (HwTy.Ids b) := do
+  q ← p;
+  NetM.pure q.2
+-- `share` runs the wire's computation once and hands on its ids.
+def Wire.share {ω a b : HwTy} (x : Wire a) (f : Wire a → Wire b) : NetM (HwTy.Ids b) := do
+  ids ← x;
+  f (NetM.pure ids)
+def Wire.const (ω t : HwTy) (v : HwTy.El t) : Wire t := Wire.constIds t v
+def Wire.tag (ω s : String) {ω t : HwTy} (x : Wire t) : Wire (HwTy.named s t) := x
+def Wire.untag {ω s : String} {ω t : HwTy} (x : Wire (HwTy.named s t)) : Wire t := x
+def Wire.label (ω s : String) {ω t : HwTy} (x : Wire t) : NetM (HwTy.Ids t) := do
+  ids ← x;
+  NetM.hints (HwTy.idsLeaves t ids) (HwTy.leafNames s t);
+  NetM.pure ids
+def Wire.resetTo {ω t : HwTy} (c : Wire HwTy.bit) (v : HwTy.El t) (x : Wire t) : NetM (HwTy.Ids t) := do
+  k ← c;
+  a ← x;
+  Wire.resetIds t k v a
+def Wire.hold {ω t : HwTy} (c : Wire HwTy.bit) (x y : Wire t) : NetM (HwTy.Ids t) := do
+  k ← c;
+  a ← x;
+  b ← y;
+  Wire.holdIds t k a b
 
 instance : Hw Wire where
   lit := Wire.lit
@@ -333,32 +564,100 @@ instance : Hw Wire where
   fst := Wire.fst
   snd := Wire.snd
   share := Wire.share
+  const := Wire.const
+  tag := Wire.tag
+  untag := Wire.untag
+  label := Wire.label
+  resetTo := Wire.resetTo
+  hold := Wire.hold
 
--- Running a wire computation from scratch (for combinational tests): the node list.
-def Wire.build {0 t : HwTy} (cse : Bool) (x : Wire t) : Nat × NetS := (x : NetM Nat) (NetS.init cse)
+-- Running a wire computation from scratch (for combinational tests): its ids and the
+-- builder's state.
+def Wire.build {ω t : HwTy} (cse : Bool) (x : Wire t) : HwTy.Ids t × NetS := (x : NetM (HwTy.Ids t)) (NetS.init cse)
+def NetS.nodeCount (s : NetS) : Nat := s.next
 
 ------------------------------------------------------------------------------------
--- Netlist semantics: evaluate the nodes in order (hdl-plan §5.1's netlist interpreter).
+-- A random-access list (Okasaki's skew binary lists): `cons` in O(1), `get` in O(log n).
+-- Index 0 is the most recent element. The netlist simulator keeps node values in one.
 
-def List.nthD {A : Type} (d : A) : List A → Nat → A
-  | .nil, _ => d
-  | .cons x _, .zero => x
-  | .cons _ xs, .succ k => List.nthD d xs k
+inductive Hdl.RTree (A : Type) where
+  | leaf (x : A)
+  | node (x : A) (l r : Hdl.RTree A)
+
+def Hdl.RList (A : Type) : Type := List (Nat × Hdl.RTree A)
+
+def Hdl.RList.nil {A : Type} : Hdl.RList A := List.nil
+def Hdl.RList.cons {A : Type} (x : A) (ts : Hdl.RList A) : Hdl.RList A := match (ts : List (Nat × Hdl.RTree A)) with
+  | .cons p (.cons q rest) => (match Nat.beq p.1 q.1 with
+    | .true => List.cons (Nat.succ (p.1 + q.1), Hdl.RTree.node x p.2 q.2) rest
+    | .false => List.cons (1, Hdl.RTree.leaf x) (List.cons p (List.cons q rest)))
+  | other => List.cons (1, Hdl.RTree.leaf x) other
+
+def Hdl.RTree.get {A : Type} (d : A) : Nat → Nat → Hdl.RTree A → A
+  | _, _, .leaf x => x
+  | w, i, .node x l r => match i with
+    | .zero => x
+    | .succ j => (match Nat.lt j (Nat.div w 2) with
+      | .true => Hdl.RTree.get d (Nat.div w 2) j l
+      | .false => Hdl.RTree.get d (Nat.div w 2) (j - Nat.div w 2) r)
+
+def Hdl.RList.getAux {A : Type} (d : A) : Nat → List (Nat × Hdl.RTree A) → A
+  | _, .nil => d
+  | i, .cons p ps => match Nat.lt i p.1 with
+    | .true => Hdl.RTree.get d p.1 i p.2
+    | .false => Hdl.RList.getAux d (i - p.1) ps
+def Hdl.RList.get {A : Type} (d : A) (i : Nat) (ts : Hdl.RList A) : A := Hdl.RList.getAux d i ts
+
+-- a list as a random-access list indexed like the list (element k at index k)
+def Hdl.RList.ofListAux {A : Type} : List A → Hdl.RList A → Hdl.RList A
+  | .nil, acc => acc
+  | .cons x xs, acc => Hdl.RList.ofListAux xs (Hdl.RList.cons x acc)
+def Hdl.RList.ofList {A : Type} (xs : List A) : Hdl.RList A := Hdl.RList.ofListAux (Hdl.reverse xs) Hdl.RList.nil
+
+-- A growing vector: element k is the k-th pushed (`count` elements).
+structure Hdl.Vec (A : Type) where
+  count : Nat
+  items : Hdl.RList A
+def Hdl.Vec.empty {A : Type} : Hdl.Vec A := Hdl.Vec.mk 0 Hdl.RList.nil
+def Hdl.Vec.push {A : Type} (v : Hdl.Vec A) (x : A) : Hdl.Vec A := Hdl.Vec.mk (Nat.succ v.count) (Hdl.RList.cons x v.items)
+def Hdl.Vec.get {A : Type} (d : A) (v : Hdl.Vec A) (k : Nat) : A := Hdl.RList.get d (v.count - 1 - k) v.items
+def Hdl.Vec.ofListAux {A : Type} : List A → Hdl.Vec A → Hdl.Vec A
+  | .nil, v => v
+  | .cons x xs, v => Hdl.Vec.ofListAux xs (Hdl.Vec.push v x)
+def Hdl.Vec.ofList {A : Type} (xs : List A) : Hdl.Vec A := Hdl.Vec.ofListAux xs Hdl.Vec.empty
+
+------------------------------------------------------------------------------------
+-- Netlist semantics: evaluate the nodes in order, once per clock cycle.
 
 def Nat.wrap (w v : Nat) : Nat := Nat.mod v (Nat.pow 2 w)
 def Nat.ofBool (b : Bool) : Nat := match b with
   | .true => 1
   | .false => 0
+def Hdl.isZero (v : Nat) : Bool := Nat.beq v 0
 
--- One node's value, given the values (and widths) of the nodes before it, the input
--- port values and the register values.
-def Node.eval (n : Node) (vals widths ins regs : List Nat) : Nat :=
-  let arg := fun (i : Nat) => List.nthD 0 vals (List.nthD 0 n.args i)
-  let w := n.width
+-- A node prepared for simulation: `aux` is the width of the second argument of a
+-- `concat` (its shift).
+structure SimNode where
+  op : NetOp
+  width : Nat
+  args : List Nat
+  aux : Nat
+
+def SimNode.ofNodes : List NetNode → Hdl.Vec Nat → List SimNode
+  | .nil, _ => .nil
+  | .cons n ns, ws =>
+    .cons (SimNode.mk n.op n.width n.args (Hdl.Vec.get 0 ws (Hdl.nthD 0 n.args 1)))
+      (SimNode.ofNodes ns (Hdl.Vec.push ws n.width))
+
+-- One node's value, given the values of the nodes before it, the input port values
+-- and the register values.
+def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl.Vec Nat) : Nat :=
+  let ω arg := fun (i : Nat) => Hdl.Vec.get 0 vals (Hdl.nthD 0 n.args i);
+  let ω w := n.width;
   match n.op with
-  | .input p => List.nthD 0 ins p
+  | .input p => Hdl.nthD 0 ins p
   | .const v => v
-  | .reg r => List.nthD 0 regs r
+  | .reg r => Hdl.Vec.get 0 regs r
   | .add => Nat.wrap w (arg 0 + arg 1)
   | .sub => Nat.wrap w (arg 0 + Nat.pow 2 w - arg 1)
   | .mul => Nat.wrap w (arg 0 * arg 1)
@@ -368,53 +667,171 @@ def Node.eval (n : Node) (vals widths ins regs : List Nat) : Nat :=
   | .not => Nat.pow 2 w - 1 - arg 0
   | .eq => Nat.ofBool (Nat.beq (arg 0) (arg 1))
   | .ult => Nat.ofBool (Nat.lt (arg 0) (arg 1))
-  | .mux => match Nat.beq (arg 0) 0 with
+  | .mux => (match Hdl.isZero (arg 0) with
+    | .true => arg 2
+    | .false => arg 1)
+  | .concat => Nat.shiftLeft (arg 0) n.aux + arg 1
+  | .slice lo => Nat.wrap w (Nat.shiftRight (arg 0) lo)
+  | .resetTo v => (match Hdl.isZero (arg 0) with
+    | .true => arg 1
+    | .false => v)
+  | .hold => match Hdl.isZero (arg 0) with
     | .true => arg 2
     | .false => arg 1
-  | .concat => Nat.shiftLeft (arg 0) (List.nthD 0 widths (List.nthD 0 n.args 1)) + arg 1
-  | .slice lo => Nat.wrap w (Nat.shiftRight (arg 0) lo)
 
--- All node values (in order), accumulating the values in an appended list.
-def Netlist.evalNodes (ins regs : List Nat) : List Node → List Nat → List Nat → List Nat
-  | .nil, vals, _ => vals
-  | .cons n ns, vals, widths =>
-    Netlist.evalNodes ins regs ns (vals ++ List.cons (Node.eval n vals widths ins regs) List.nil)
-      (widths ++ List.cons n.width List.nil)
+def SimNode.evalAll (ins : List Nat) (regs : Hdl.Vec Nat) : List SimNode → Hdl.Vec Nat → Hdl.Vec Nat
+  | .nil, vals => vals
+  | .cons n ns, vals => SimNode.evalAll ins regs ns (Hdl.Vec.push vals (SimNode.eval n vals ins regs))
 
-def Port.read (vals : List Nat) (p : Port) : Nat := List.nthD 0 vals p.node
-def Reg.read (vals : List Nat) (r : Reg) : Nat := List.nthD 0 vals r.next
+-- the value a register loads: `init` under reset, its own value without enable
+def NetReg.load (vals : Hdl.Vec Nat) (r : NetReg) (cur : Nat) : Nat :=
+  let ω loaded := match r.en with
+    | .none => Hdl.Vec.get 0 vals r.next
+    | .some e => (match Hdl.isZero (Hdl.Vec.get 0 vals e) with
+      | .true => cur
+      | .false => Hdl.Vec.get 0 vals r.next);
+  match r.rst with
+  | .none => loaded
+  | .some k => match Hdl.isZero (Hdl.Vec.get 0 vals k) with
+    | .true => loaded
+    | .false => r.init
 
-def List.map {A B : Type} (f : A → B) : List A → List B
-  | .nil => .nil
-  | .cons x xs => .cons (f x) (List.map f xs)
+def NetReg.loadAll (vals : Hdl.Vec Nat) : List NetReg → List Nat → List Nat
+  | .cons r rs, .cons c cs => .cons (NetReg.load vals r c) (NetReg.loadAll vals rs cs)
+  | _, _ => .nil
+
+def NetPort.read (vals : Hdl.Vec Nat) (p : NetPort) : Nat := Hdl.Vec.get 0 vals p.node
+
+def Netlist.simulateGo (n : Netlist) (prog : List SimNode) : List Nat → List (List Nat) → List (List Nat) → List (List Nat)
+  | _, .nil, acc => Hdl.reverse acc
+  | regs, .cons ins rest, acc =>
+    let ω vals := SimNode.evalAll ins (Hdl.Vec.ofList regs) prog Hdl.Vec.empty;
+    Netlist.simulateGo n prog (NetReg.loadAll vals n.regs regs) rest
+      (List.cons (Hdl.map (NetPort.read vals) n.outputs) acc)
 
 -- A clocked simulation: one input vector per cycle (one value per input port), the
--- output vectors (one value per output port).
-def Netlist.simulateFrom (n : Netlist) : List Nat → List (List Nat) → List (List Nat)
-  | _, .nil => .nil
-  | regs, .cons ins rest =>
-    let vals := Netlist.evalNodes ins regs n.nodes List.nil List.nil
-    List.cons (List.map (Port.read vals) n.outputs) (Netlist.simulateFrom n (List.map (Reg.read vals) n.regs) rest)
-
+-- output vectors (one value per output port). O(nodes · log nodes) per cycle.
 def Netlist.simulate (n : Netlist) (inputs : List (List Nat)) : List (List Nat) :=
-  Netlist.simulateFrom n (List.map (fun (r : Reg) => r.init) n.regs) inputs
+  Netlist.simulateGo n (SimNode.ofNodes n.nodes Hdl.Vec.empty) (Hdl.map (fun (r : NetReg) => r.init) n.regs) inputs List.nil
 
-def Netlist.countAux (p : Op → Bool) : List Node → Nat
+def Netlist.countAux (p : NetOp → Bool) : List NetNode → Nat
   | .nil => 0
   | .cons x xs => Nat.ofBool (p x.op) + Netlist.countAux p xs
 
 def Netlist.size (n : Netlist) : Nat := List.length n.nodes
 
-def Op.isAdd : Op → Bool
+def NetOp.isAdd : NetOp → Bool
   | .add => .true
-  | .sub => .false
+  | _ => .false
+def NetOp.isMux : NetOp → Bool
+  | .mux => .true
+  | .resetTo _ => .true
+  | .hold => .true
   | _ => .false
 
-def Netlist.count (p : Op → Bool) (n : Netlist) : Nat :=
+def Netlist.count (p : NetOp → Bool) (n : Netlist) : Nat :=
   Netlist.countAux p n.nodes
 
 ------------------------------------------------------------------------------------
--- Circuits: Mealy machines whose step is L2 code. The only way to make feedback.
+-- From the builder's nodes to a netlist: registers take their reset and enable from
+-- `resetTo`/`hold` nodes that feed them, and nodes nothing reads are dropped.
+
+def NetNode.none : NetNode := NetNode.mk (NetOp.const 0) 0 List.nil
+
+-- `hold en x cur` in front of the register reading `cur`: an enable
+def Net.peelEn (nodes : Hdl.Vec NetNode) (cur x : Nat) : Option Nat × Nat :=
+  let ω n := Hdl.Vec.get NetNode.none nodes x;
+  match n.op, n.args with
+  | .hold, .cons e (.cons a (.cons b .nil)) => (match Nat.beq b cur with
+    | .true => (Option.some e, a)
+    | .false => (Option.none, x))
+  | _, _ => (Option.none, x)
+-- `resetTo rst init x`, with the register's initial value: a reset
+def Net.peel (nodes : Hdl.Vec NetNode) (cur init next : Nat) : Option Nat × (Option Nat × Nat) :=
+  let ω n := Hdl.Vec.get NetNode.none nodes next;
+  match n.op, n.args with
+  | .resetTo v, .cons c (.cons x .nil) => (match Nat.beq v init with
+    | .true => (Option.some c, Net.peelEn nodes cur x)
+    | .false => (Option.none, Net.peelEn nodes cur next))
+  | _, _ => (Option.none, Net.peelEn nodes cur next)
+
+-- registers: names, widths, initial values, the nodes that read them, their next values
+def Net.regs (nodes : Hdl.Vec NetNode) : List String → List Nat → List Nat → List Nat → List Nat → List NetReg
+  | .cons nm nms, .cons w ws, .cons v vs, .cons c cs, .cons x xs =>
+    let ω p := Net.peel nodes c v x;
+    .cons (NetReg.mk nm w v p.2.2 p.1 p.2.1) (Net.regs nodes nms ws vs cs xs)
+  | _, _, _, _, _ => .nil
+
+def Net.ports : List String → List Nat → List Nat → List NetPort
+  | .cons nm nms, .cons w ws, .cons k ks => .cons (NetPort.mk nm w k) (Net.ports nms ws ks)
+  | _, _, _ => .nil
+
+def Hdl.Set : Type := HTrie Unit
+def Hdl.Set.addAll : List Nat → Hdl.Set → Hdl.Set
+  | .nil, s => s
+  | .cons k ks, s => Hdl.Set.addAll ks (HTrie.putN k () s)
+def Hdl.Set.has (k : Nat) (s : Hdl.Set) : Bool := match HTrie.getN k s with
+  | .some _ => .true
+  | .none => .false
+def Hdl.optList : Option Nat → List Nat
+  | .none => .nil
+  | .some k => .cons k .nil
+def NetReg.reads (r : NetReg) : List Nat := .cons r.next (List.append (Hdl.optList r.rst) (Hdl.optList r.en))
+def NetReg.readsAll : List NetReg → List Nat
+  | .nil => .nil
+  | .cons r rs => List.append (NetReg.reads r) (NetReg.readsAll rs)
+
+-- which nodes are live, in order, from the nodes newest first (`k` the newest's id)
+def Net.liveAux : List NetNode → Nat → Hdl.Set → List Bool → List Bool
+  | .nil, _, _, acc => acc
+  | .cons n ns, k, need, acc => match Hdl.Set.has k need with
+    | .true => Net.liveAux ns (k - 1) (Hdl.Set.addAll n.args need) (List.cons .true acc)
+    | .false => Net.liveAux ns (k - 1) need (List.cons .false acc)
+
+def Net.mapId (m : HTrie Nat) (k : Nat) : Nat := match HTrie.getN k m with
+  | .some j => j
+  | .none => 0
+
+-- renumber the live nodes (in order)
+def Net.renumber : List NetNode → List Bool → Nat → Nat → HTrie Nat → List NetNode → List NetNode × HTrie Nat
+  | .cons n ns, .cons l ls, k, j, m, acc => (match l with
+    | .true => Net.renumber ns ls (Nat.succ k) (Nat.succ j) (HTrie.putN k j m)
+        (List.cons (NetNode.mk n.op n.width (Hdl.map (Net.mapId m) n.args)) acc)
+    | .false => Net.renumber ns ls (Nat.succ k) j m acc)
+  | _, _, _, _, m, acc => (Hdl.reverse acc, m)
+
+def Net.mapOpt (m : HTrie Nat) : Option Nat → Option Nat
+  | .none => .none
+  | .some k => .some (Net.mapId m k)
+def NetReg.remap (m : HTrie Nat) (r : NetReg) : NetReg :=
+  NetReg.mk r.name r.width r.init (Net.mapId m r.next) (Net.mapOpt m r.rst) (Net.mapOpt m r.en)
+def NetPort.remap (m : HTrie Nat) (p : NetPort) : NetPort := NetPort.mk p.name p.width (Net.mapId m p.node)
+def Net.remapHints (live : Hdl.Set) (m : HTrie Nat) : List (Nat × String) → List (Nat × String)
+  | .nil => .nil
+  | .cons h hs => match Hdl.Set.has h.1 live with
+    | .true => .cons (Net.mapId m h.1, h.2) (Net.remapHints live m hs)
+    | .false => Net.remapHints live m hs
+def Net.liveSet : List Bool → Nat → Hdl.Set → Hdl.Set
+  | .nil, _, s => s
+  | .cons b bs, k, s => match b with
+    | .true => Net.liveSet bs (Nat.succ k) (HTrie.putN k () s)
+    | .false => Net.liveSet bs (Nat.succ k) s
+
+-- The netlist of a builder's state, with registers and ports. Roots: the ports, the
+-- nodes that read the registers and what the registers load.
+def Net.finish (name : String) (s : NetS) (regs : List NetReg) (regReads : List Nat)
+    (ins outs : List NetPort) : Netlist :=
+  let ω roots := List.append (Hdl.map (fun (p : NetPort) => p.node) ins)
+    (List.append regReads (List.append (Hdl.map (fun (p : NetPort) => p.node) outs)
+      (NetReg.readsAll regs)));
+  let ω live := Net.liveAux s.nodes (s.next - 1) (Hdl.Set.addAll roots HTrie.tip) List.nil;
+  let ω r := Net.renumber (Hdl.reverse s.nodes) live 0 0 HTrie.tip List.nil;
+  Netlist.mk name r.1 (Hdl.map (NetReg.remap r.2) regs) (Hdl.map (NetPort.remap r.2) ins)
+    (Hdl.map (NetPort.remap r.2) outs) (Net.remapHints (Net.liveSet live 0 HTrie.tip) r.2 (Hdl.reverse s.hints))
+
+------------------------------------------------------------------------------------
+-- Circuits: Mealy machines whose step is tagless-final code. The only way to make
+-- feedback: the state is a register.
 
 structure Circuit (i o : HwTy) where
   st : HwTy
@@ -425,112 +842,895 @@ structure Circuit (i o : HwTy) where
 def Circuit.stepEl {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (x : HwTy.El i) : HwTy.El (HwTy.prod c.st o) := c.step s x
 def Circuit.stepWire {i o : HwTy} (c : Circuit i o) (s : Wire c.st) (x : Wire i) : Wire (HwTy.prod c.st o) := c.step s x
 
--- simulation by values, over a finite input trace
+-- The semantics: simulation by values over a finite input trace. `runFrom` is the
+-- specification (structural, for proofs); `run` is the same with an accumulator (for
+-- long traces), and `Circuit.run_eq` says they agree.
 def Circuit.runFrom {ω i o : HwTy} (c : Circuit i o) : HwTy.El c.st → List (HwTy.El i) → List (HwTy.El o)
   | _, .nil => .nil
-  | s, .cons x xs =>
-    let r : HwTy.El c.st × HwTy.El o := Circuit.stepEl c s x
-    List.cons r.2 (Circuit.runFrom c r.1 xs)
+  | s, .cons x xs => List.cons (Circuit.stepEl c s x).2 (Circuit.runFrom c (Circuit.stepEl c s x).1 xs)
+
+def Circuit.runAcc {ω i o : HwTy} (c : Circuit i o) : HwTy.El c.st → List (HwTy.El i) → List (HwTy.El o) → List (HwTy.El o)
+  | _, .nil, acc => Hdl.rev acc List.nil
+  | s, .cons x xs, acc =>
+    let ω r : HwTy.El c.st × HwTy.El o := Circuit.stepEl c s x;
+    Circuit.runAcc c r.1 xs (List.cons r.2 acc)
+
 def Circuit.run {ω i o : HwTy} (c : Circuit i o) (xs : List (HwTy.El i)) : List (HwTy.El o) :=
-  Circuit.runFrom c c.init xs
+  Circuit.runAcc c c.init xs List.nil
 
--- the same, on bus encodings (for comparison with the netlist)
-def Circuit.runPacked {ω i o : HwTy} (c : Circuit i o) (xs : List Nat) : List Nat :=
-  List.map (HwTy.pack o) (Circuit.run c (List.map (HwTy.unpack i) xs))
+def Circuit.runAcc_eq {i o : HwTy} (c : Circuit i o) : (s : HwTy.El c.st) → (xs : List (HwTy.El i)) → (acc : List (HwTy.El o)) →
+    Circuit.runAcc c s xs acc = Hdl.rev acc (Circuit.runFrom c s xs)
+  | s, .nil, acc => refl (Hdl.rev acc (@List.nil (HwTy.El o)))
+  | s, .cons x xs, acc => Circuit.runAcc_eq c (Circuit.stepEl c s x).1 xs (List.cons (Circuit.stepEl c s x).2 acc)
 
--- synthesis: the same step at the wire instance. Also returns the builder's final state.
+def Circuit.run_eq {i o : HwTy} (c : Circuit i o) (xs : List (HwTy.El i)) : Circuit.run c xs = Circuit.runFrom c c.init xs :=
+  Circuit.runAcc_eq c c.init xs List.nil
+
+------------------------------------------------------------------------------------
+-- Composition. Each combinator's state is made of its parts' states; the lemmas after
+-- each say what it does to `runFrom` (and so, by `Circuit.run_eq`, to `run`).
+
+-- Combinational code as a value (a structure: a polymorphic function can't be passed
+-- as an argument and applied under a step's own representation binder)
+structure Comb (i o : HwTy) where
+  run : {r : HwTy → Type} → [Hw r] → r i → r o
+
+-- stateless: combinational code
+def Circuit.combStep {ω i o : HwTy} (f : Comb i o) {r : HwTy → Type} [Hw r] (s : r (HwTy.bits 0)) (x : r i) :
+    r (HwTy.prod (HwTy.bits 0) o) := Hw.pair s (@Comb.run i o f r _ x)
+def Circuit.comb {ω i o : HwTy} (f : Comb i o) : Circuit i o :=
+  Circuit.mk (HwTy.bits 0) (BitVec.ofNat 0 0) (fun s x => Circuit.combStep f s x)
+
+-- one register: the output is the input of the cycle before (`init` first)
+def Circuit.delay (ω t : HwTy) (init : HwTy.El t) : Circuit t t :=
+  Circuit.mk t init (fun s x => Hw.pair x s)
+
+-- `a`, then `b` on its outputs
+def Circuit.seq {ω i m o : HwTy} (a : Circuit i m) (b : Circuit m o) : Circuit i o :=
+  Circuit.mk (HwTy.prod a.st b.st) (a.init, b.init) (fun s x =>
+    let ra := a.step (Hw.fst s) x;
+    let rb := b.step (Hw.snd s) (Hw.snd ra);
+    Hw.pair (Hw.pair (Hw.fst ra) (Hw.fst rb)) (Hw.snd rb))
+
+-- `a` and `b` side by side
+def Circuit.par {ω i1 o1 i2 o2 : HwTy} (a : Circuit i1 o1) (b : Circuit i2 o2) : Circuit (HwTy.prod i1 i2) (HwTy.prod o1 o2) :=
+  Circuit.mk (HwTy.prod a.st b.st) (a.init, b.init) (fun s x =>
+    let ra := a.step (Hw.fst s) (Hw.fst x);
+    let rb := b.step (Hw.snd s) (Hw.snd x);
+    Hw.pair (Hw.pair (Hw.fst ra) (Hw.fst rb)) (Hw.pair (Hw.snd ra) (Hw.snd rb)))
+
+-- feedback through a register: `c`'s second output comes back as its second input in
+-- the next cycle (`init` first)
+def Circuit.loop {ω i o f : HwTy} (c : Circuit (HwTy.prod i f) (HwTy.prod o f)) (init : HwTy.El f) : Circuit i o :=
+  Circuit.mk (HwTy.prod c.st f) (c.init, init) (fun s x =>
+    let rc := c.step (Hw.fst s) (Hw.pair x (Hw.snd s));
+    Hw.pair (Hw.pair (Hw.fst rc) (Hw.snd (Hw.snd rc))) (Hw.fst (Hw.snd rc)))
+
+-- a name for the state: its registers are `name_…`
+def Circuit.named {ω i o : HwTy} (name : String) (c : Circuit i o) : Circuit i o :=
+  Circuit.mk (HwTy.named name c.st) c.init (fun s x =>
+    let rc := c.step (Hw.untag s) x;
+    Hw.pair (Hw.tag name (Hw.fst rc)) (Hw.snd rc))
+
+-- combinational code before and after
+def Circuit.mapInStep {ω i' i o : HwTy} (f : Comb i' i) (c : Circuit i o) {r : HwTy → Type} [Hw r]
+    (s : r c.st) (x : r i') : r (HwTy.prod c.st o) := c.step s (@Comb.run i' i f r _ x)
+def Circuit.mapIn {ω i' i o : HwTy} (f : Comb i' i) (c : Circuit i o) : Circuit i' o :=
+  Circuit.mk c.st c.init (fun s x => Circuit.mapInStep f c s x)
+def Circuit.mapOutStep {ω i o o' : HwTy} (f : Comb o o') (c : Circuit i o) {r : HwTy → Type} [Hw r]
+    (s : r c.st) (x : r i) : r (HwTy.prod c.st o') :=
+  let rc := c.step s x;
+  Hw.pair (Hw.fst rc) (@Comb.run o o' f r _ (Hw.snd rc))
+def Circuit.mapOut {ω i o o' : HwTy} (f : Comb o o') (c : Circuit i o) : Circuit i o' :=
+  Circuit.mk c.st c.init (fun s x => Circuit.mapOutStep f c s x)
+
+-- names for the input and the output (the ports `name`, or `name_…` for a product)
+def Circuit.inputName {ω i o : HwTy} (name : String) (c : Circuit i o) : Circuit (HwTy.named name i) o :=
+  Circuit.mk c.st c.init (fun s x => c.step s (Hw.untag x))
+def Circuit.outputName {ω i o : HwTy} (name : String) (c : Circuit i o) : Circuit i (HwTy.named name o) :=
+  Circuit.mk c.st c.init (fun s x =>
+    let rc := c.step s x;
+    Hw.pair (Hw.fst rc) (Hw.tag name (Hw.snd rc)))
+
+-- an instance of `c` inside another step: `s` is its state (a part of the caller's
+-- state, starting at `c.init`), the result its next state and its output
+def Circuit.inst {r : HwTy → Type} [Hw r] {i o : HwTy} (c : Circuit i o) (s : r c.st) (x : r i) : r (HwTy.prod c.st o) :=
+  c.step s x
+
+-- A synchronous reset: while `rst` is high the next state is `c.init` (the outputs in
+-- that cycle are `c`'s, from the current state). In the netlist, every register gets
+-- `rst` as its reset (`if (rst) r <= init;` in Verilog).
+def Circuit.withReset {ω i o : HwTy} (c : Circuit i o) : Circuit (HwTy.prod (HwTy.named "rst" HwTy.bit) i) o :=
+  Circuit.mk c.st c.init (fun s x =>
+    let rc := c.step s (Hw.snd x);
+    Hw.pair (Hw.resetTo (Hw.untag (Hw.fst x)) c.init (Hw.fst rc)) (Hw.snd rc))
+
+-- A clock enable: while `en` is low the state holds (the outputs are still `c`'s, from
+-- the current state and input).
+def Circuit.withEnable {ω i o : HwTy} (c : Circuit i o) : Circuit (HwTy.prod (HwTy.named "en" HwTy.bit) i) o :=
+  Circuit.mk c.st c.init (fun s x =>
+    let rc := c.step s (Hw.snd x);
+    Hw.pair (Hw.hold (Hw.untag (Hw.fst x)) (Hw.fst rc) s) (Hw.snd rc))
+
+------------------------------------------------------------------------------------
+-- What the combinators do to the semantics.
+
+def Hdl.zip {A B : Type} : List A → List B → List (A × B)
+  | .cons a as, .cons b bs => .cons (a, b) (Hdl.zip as bs)
+  | _, _ => .nil
+-- `v`, then the list without its last element
+def Hdl.shift {A : Type} : A → List A → List A
+  | _, .nil => .nil
+  | v, .cons x xs => .cons v (Hdl.shift x xs)
+def Hdl.fsts {A B : Type} : List (A × B) → List A
+  | .nil => .nil
+  | .cons p ps => .cons p.1 (Hdl.fsts ps)
+def Hdl.snds {A B : Type} : List (A × B) → List B
+  | .nil => .nil
+  | .cons p ps => .cons p.2 (Hdl.snds ps)
+
+def Hdl.consEq {A : Type} (x : A) {xs ys : List A} (e : xs = ys) : List.cons x xs = List.cons x ys :=
+  Eq.congrArg (List.cons x) e
+
+def Comb.el {i o : HwTy} (f : Comb i o) (x : HwTy.El i) : HwTy.El o := @Comb.run i o f HwTy.El _ x
+def Circuit.runFrom_comb {i o : HwTy} (f : Comb i o) :
+    (s : HwTy.El (HwTy.bits 0)) → (xs : List (HwTy.El i)) →
+    Circuit.runFrom (Circuit.comb f) s xs = Hdl.map (Comb.el f) xs
+  | s, .nil => refl (@List.nil (HwTy.El o))
+  | s, .cons x xs => Hdl.consEq (Comb.el f x) (Circuit.runFrom_comb f s xs)
+
+def Circuit.runFrom_delay {t : HwTy} (v : HwTy.El t) : (s : HwTy.El t) → (xs : List (HwTy.El t)) →
+    Circuit.runFrom (Circuit.delay t v) s xs = Hdl.shift s xs
+  | s, .nil => refl (@List.nil (HwTy.El t))
+  | s, .cons x xs => Hdl.consEq s (Circuit.runFrom_delay v x xs)
+
+def Circuit.runFrom_seq {i m o : HwTy} (a : Circuit i m) (b : Circuit m o) :
+    (sa : HwTy.El a.st) → (sb : HwTy.El b.st) → (xs : List (HwTy.El i)) →
+    Circuit.runFrom (Circuit.seq a b) (sa, sb) xs = Circuit.runFrom b sb (Circuit.runFrom a sa xs)
+  | sa, sb, .nil => refl (@List.nil (HwTy.El o))
+  | sa, sb, .cons x xs =>
+    Hdl.consEq (Circuit.stepEl b sb (Circuit.stepEl a sa x).2).2
+      (Circuit.runFrom_seq a b (Circuit.stepEl a sa x).1 (Circuit.stepEl b sb (Circuit.stepEl a sa x).2).1 xs)
+
+def Circuit.runFrom_par {i1 o1 i2 o2 : HwTy} (a : Circuit i1 o1) (b : Circuit i2 o2) :
+    (sa : HwTy.El a.st) → (sb : HwTy.El b.st) → (xs : List (HwTy.El i1 × HwTy.El i2)) →
+    Circuit.runFrom (Circuit.par a b) (sa, sb) xs =
+      Hdl.zip (Circuit.runFrom a sa (Hdl.fsts xs)) (Circuit.runFrom b sb (Hdl.snds xs))
+  | sa, sb, .nil => refl (@List.nil (HwTy.El o1 × HwTy.El o2))
+  | sa, sb, .cons x xs =>
+    Hdl.consEq ((Circuit.stepEl a sa x.1).2, (Circuit.stepEl b sb x.2).2)
+      (Circuit.runFrom_par a b (Circuit.stepEl a sa x.1).1 (Circuit.stepEl b sb x.2).1 xs)
+
+-- feedback: one cycle (the definition, as an equation to rewrite with)
+def Circuit.runFrom_loop {i o f : HwTy} (v : HwTy.El f) (c : Circuit (HwTy.prod i f) (HwTy.prod o f))
+    (s : HwTy.El c.st) (fb : HwTy.El f) (x : HwTy.El i) (xs : List (HwTy.El i)) :
+    Circuit.runFrom (Circuit.loop c v) (s, fb) (List.cons x xs) =
+      List.cons (Circuit.stepEl c s (x, fb)).2.1
+        (Circuit.runFrom (Circuit.loop c v) ((Circuit.stepEl c s (x, fb)).1, (Circuit.stepEl c s (x, fb)).2.2) xs) :=
+  refl (Circuit.runFrom (Circuit.loop c v) (s, fb) (List.cons x xs))
+
+def Circuit.runFrom_named {i o : HwTy} (name : String) (c : Circuit i o) : (s : HwTy.El c.st) → (xs : List (HwTy.El i)) →
+    Circuit.runFrom (Circuit.named name c) s xs = Circuit.runFrom c s xs
+  | s, .nil => refl (@List.nil (HwTy.El o))
+  | s, .cons x xs => Hdl.consEq (Circuit.stepEl c s x).2 (Circuit.runFrom_named name c (Circuit.stepEl c s x).1 xs)
+
+-- an instance is the sub-circuit's step
+def Circuit.inst_el {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (x : HwTy.El i) :
+    @Circuit.inst HwTy.El _ i o c s x = Circuit.stepEl c s x := refl (Circuit.stepEl c s x)
+
+-- reset and enable, one cycle
+def Circuit.stepEl_withReset {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (rst : HwTy.El HwTy.bit) (x : HwTy.El i) :
+    Circuit.stepEl (Circuit.withReset c) s (rst, x) =
+      (@HwTy.El.mux c.st rst c.init (Circuit.stepEl c s x).1, (Circuit.stepEl c s x).2) :=
+  refl (Circuit.stepEl (Circuit.withReset c) s (rst, x))
+def Circuit.stepEl_withEnable {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (en : HwTy.El HwTy.bit) (x : HwTy.El i) :
+    Circuit.stepEl (Circuit.withEnable c) s (en, x) =
+      (@HwTy.El.mux c.st en (Circuit.stepEl c s x).1 s, (Circuit.stepEl c s x).2) :=
+  refl (Circuit.stepEl (Circuit.withEnable c) s (en, x))
+
+-- the same for `run`
+def Circuit.run_seq {ω i m o : HwTy} (a : Circuit i m) (b : Circuit m o) (xs : List (HwTy.El i)) :
+    Circuit.run (Circuit.seq a b) xs = Circuit.run b (Circuit.run a xs) :=
+  Eq.trans (Eq.trans (Circuit.run_eq (Circuit.seq a b) xs) (Circuit.runFrom_seq a b a.init b.init xs))
+    (Eq.symm (Eq.trans (Circuit.run_eq b (Circuit.run a xs)) (Eq.congrArg (Circuit.runFrom b b.init) (Circuit.run_eq a xs))))
+def Circuit.run_delay {ω t : HwTy} (v : HwTy.El t) (xs : List (HwTy.El t)) :
+    Circuit.run (Circuit.delay t v) xs = Hdl.shift v xs :=
+  Eq.trans (Circuit.run_eq (Circuit.delay t v) xs) (Circuit.runFrom_delay v v xs)
+def Circuit.run_par {ω i1 o1 i2 o2 : HwTy} (a : Circuit i1 o1) (b : Circuit i2 o2) (xs : List (HwTy.El i1 × HwTy.El i2)) :
+    Circuit.run (Circuit.par a b) xs = Hdl.zip (Circuit.run a (Hdl.fsts xs)) (Circuit.run b (Hdl.snds xs)) :=
+  Eq.trans (Eq.trans (Circuit.run_eq (Circuit.par a b) xs) (Circuit.runFrom_par a b a.init b.init xs))
+    (Eq.symm (Eq.trans (Eq.congrArg (fun (l : List (HwTy.El o1)) => Hdl.zip l (Circuit.run b (Hdl.snds xs))) (Circuit.run_eq a (Hdl.fsts xs)))
+      (Eq.congrArg (Hdl.zip (Circuit.runFrom a a.init (Hdl.fsts xs))) (Circuit.run_eq b (Hdl.snds xs)))))
+def Circuit.run_named {ω i o : HwTy} (name : String) (c : Circuit i o) (xs : List (HwTy.El i)) :
+    Circuit.run (Circuit.named name c) xs = Circuit.run c xs :=
+  Eq.trans (Eq.trans (Circuit.run_eq (Circuit.named name c) xs) (Circuit.runFrom_named name c c.init xs))
+    (Eq.symm (Circuit.run_eq c xs))
+
+------------------------------------------------------------------------------------
+-- Synthesis: the step at the wire instance. Ports: one per leaf of the input and the
+-- output (`HwTy.portNames "x"`, `"y"`); registers: one per leaf of the state
+-- (`HwTy.portNames "r"`).
+
+def NetM.emitLeaves (mk : Nat → NetOp) : Nat → List Nat → NetM (List Nat)
+  | _, .nil => NetM.pure List.nil
+  | k, .cons w ws => do
+    x ← NetM.emit (mk k) w List.nil;
+    rest ← NetM.emitLeaves mk (Nat.succ k) ws;
+    NetM.pure (List.cons x rest)
+
+def Circuit.build {ω i o : HwTy} (c : Circuit i o) : NetM (List Nat × (List Nat × (List Nat × List Nat))) := do
+  ins ← NetM.emitLeaves NetOp.input 0 (HwTy.leafWidths i);
+  cur ← NetM.emitLeaves NetOp.reg 0 (HwTy.leafWidths c.st);
+  res ← (Circuit.stepWire c (NetM.pure (HwTy.idsTake c.st cur).1) (NetM.pure (HwTy.idsTake i ins).1) :
+    NetM (HwTy.Ids c.st × HwTy.Ids o));
+  NetM.pure (ins, (cur, (HwTy.idsLeaves c.st res.1, HwTy.idsLeaves o res.2)))
+
+-- the netlist, and the builder's final state
 def Circuit.netlistS {ω i o : HwTy} (cse : Bool) (name : String) (c : Circuit i o) : Netlist × NetS :=
-  let build : NetM (Nat × Nat × Nat × Nat) := do
-    inp ← NetM.emit (Op.input 0) (HwTy.width i) List.nil;
-    cur ← NetM.emit (Op.reg 0) (HwTy.width c.st) List.nil;
-    res ← (Circuit.stepWire c (NetM.pure cur) (NetM.pure inp) : NetM Nat);
-    nxt ← NetM.emit (Op.slice (HwTy.width o)) (HwTy.width c.st) (List.cons res List.nil);
-    out ← NetM.emit (Op.slice 0) (HwTy.width o) (List.cons res List.nil);
-    NetM.pure (inp, cur, nxt, out)
-  let r := build (NetS.init cse)
-  (Netlist.mk name (List.reverseAux r.2.nodes List.nil)
-    (List.cons (Reg.mk (HwTy.width c.st) (HwTy.pack c.st c.init) r.1.2.2.1) List.nil)
-    (List.cons (Port.mk "x" (HwTy.width i) r.1.1) List.nil)
-    (List.cons (Port.mk "y" (HwTy.width o) r.1.2.2.2) List.nil), r.2)
+  let ω r := Circuit.build c (NetS.init cse);
+  let ω ids := r.1;
+  let ω s := r.2;
+  let ω nodes := Hdl.Vec.ofList (Hdl.reverse s.nodes);
+  let ω regs := Net.regs nodes (HwTy.portNames "r" c.st) (HwTy.leafWidths c.st) (HwTy.leaves c.st c.init) ids.2.1 ids.2.2.1;
+  (Net.finish name s regs ids.2.1
+    (Net.ports (HwTy.portNames "x" i) (HwTy.leafWidths i) ids.1)
+    (Net.ports (HwTy.portNames "y" o) (HwTy.leafWidths o) ids.2.2.2), s)
 
 def Circuit.netlist {ω i o : HwTy} (name : String) (c : Circuit i o) : Netlist := (Circuit.netlistS .true name c).1
 -- without hash-consing (to measure what it saves)
 def Circuit.netlistNaive {ω i o : HwTy} (name : String) (c : Circuit i o) : Netlist := (Circuit.netlistS .false name c).1
 
--- netlist simulation on bus encodings, one input per cycle
+-- Simulations to compare: values (`run`) and the netlist, on leaves (one number per
+-- port per cycle) and on bus encodings (one number per cycle).
+def Circuit.runLeaves {ω i o : HwTy} (c : Circuit i o) (xs : List (HwTy.El i)) : List (List Nat) :=
+  Hdl.map (HwTy.leaves o) (Circuit.run c xs)
+def Circuit.simLeaves {ω i o : HwTy} (cse : Bool) (c : Circuit i o) (xs : List (HwTy.El i)) : List (List Nat) :=
+  Netlist.simulate (Circuit.netlistS cse "c" c).1 (Hdl.map (HwTy.leaves i) xs)
+def Circuit.runPacked {ω i o : HwTy} (c : Circuit i o) (xs : List Nat) : List Nat :=
+  Hdl.map (HwTy.pack o) (Circuit.run c (Hdl.map (HwTy.unpack i) xs))
 def Circuit.simNet {ω i o : HwTy} (cse : Bool) (c : Circuit i o) (xs : List Nat) : List Nat :=
-  List.map (fun (v : List Nat) => List.nthD 0 v 0)
-    (Netlist.simulate (Circuit.netlistS cse "c" c).1 (List.map (fun (x : Nat) => List.cons x List.nil) xs))
+  Hdl.map (fun (ls : List Nat) => HwTy.pack o (HwTy.ofLeaves o ls)) (Circuit.simLeaves cse c (Hdl.map (HwTy.unpack i) xs))
 
 ------------------------------------------------------------------------------------
--- Verilog-2005 (hdl-plan §3.4): one wire per node, one register per Reg.
+-- Verilog-2005: one port per leaf, one `reg` per register (with its reset and enable),
+-- one `wire` per node that is neither a port, a register nor a constant. Names come
+-- from the netlist (ports, registers, `Hw.label`), made into unique identifiers.
 
-infixr:67 " <+> " => String.append
-def Nat.digitsAux : Nat → Nat → List Char → List Char
-  | .zero, _, acc => acc
-  | .succ f, n, acc => match Nat.lt n 10 with
-    | .true => List.cons (Char.mk (48 + n)) acc
-    | .false => Nat.digitsAux f (Nat.div n 10) (List.cons (Char.mk (48 + Nat.mod n 10)) acc)
-def Nat.show (n : Nat) : String := String.mk (Nat.digitsAux (Nat.succ n) n List.nil)
+def Verilog.keywords : List String :=
+  .cons "module" (.cons "endmodule" (.cons "input" (.cons "output" (.cons "inout" (.cons "wire" (.cons "reg"
+  (.cons "assign" (.cons "always" (.cons "initial" (.cons "begin" (.cons "end" (.cons "if" (.cons "else"
+  (.cons "posedge" (.cons "negedge" (.cons "integer" (.cons "parameter" (.cons "localparam" (.cons "case"
+  (.cons "endcase" (.cons "default" (.cons "for" (.cons "while" (.cons "function" (.cons "endfunction"
+  (.cons "task" (.cons "endtask" (.cons "generate" (.cons "endgenerate" (.cons "genvar" (.cons "signed"
+  (.cons "unsigned" (.cons "and" (.cons "or" (.cons "not" (.cons "xor" (.cons "nand" (.cons "nor" (.cons "buf"
+  (.cons "supply0" (.cons "supply1" (.cons "tri" (.cons "time" (.cons "real" (.cons "event" (.cons "clk"
+  .nil))))))))))))))))))))))))))))))))))))))))))))))
 
-def Verilog.node (k : Nat) : String := "n" <+> Nat.show k
+def Verilog.identChar (c : Char) : Char :=
+  let ω k := Char.code c;
+  match Bool.or (Bool.or (Bool.and (Nat.le 48 k) (Nat.le k 57)) (Bool.and (Nat.le 65 k) (Nat.le k 90)))
+      (Bool.or (Bool.and (Nat.le 97 k) (Nat.le k 122)) (Nat.beq k 95)) with
+  | .true => c
+  | .false => Char.mk 95
+def Verilog.identChars : List Char → List Char
+  | .nil => .nil
+  | .cons c cs => .cons (Verilog.identChar c) (Verilog.identChars cs)
+def Hdl.member (s : String) : List String → Bool
+  | .nil => .false
+  | .cons x xs => Bool.or (Hdl.strEq s x) (Hdl.member s xs)
+-- a legal identifier: other characters become `_`, a leading digit or an empty name gets
+-- a `_` in front, a keyword one behind
+-- SystemVerilog keywords too (yosys, Verilator and simulators in SV mode read the output)
+def Verilog.svKeywords : List String :=
+  .cons "bit" (.cons "byte" (.cons "logic" (.cons "int" (.cons "shortint" (.cons "longint" (.cons "string"
+  (.cons "struct" (.cons "union" (.cons "enum" (.cons "typedef" (.cons "packed" (.cons "interface" (.cons "class"
+  (.cons "program" (.cons "package" (.cons "import" (.cons "export" (.cons "final" (.cons "assert" (.cons "property"
+  (.cons "sequence" (.cons "cover" (.cons "void" (.cons "return" (.cons "break" (.cons "continue" (.cons "do"
+  (.cons "foreach" (.cons "automatic" (.cons "static" (.cons "const" (.cons "ref" (.cons "new" (.cons "null"
+  (.cons "this" (.cons "super" (.cons "local" (.cons "virtual" (.cons "type" (.cons "priority" (.cons "unique"
+  (.cons "wait" (.cons "fork" (.cons "join" (.cons "forever" (.cons "repeat" (.cons "always_ff" (.cons "always_comb"
+  (.cons "always_latch" (.cons "assign" .nil))))))))))))))))))))))))))))))))))))))))))))))))))
+
+def Verilog.ident (s : String) : String :=
+  let ω cs := Verilog.identChars (match s with
+    | .mk l => l);
+  let ω body := match cs with
+    | .nil => String.mk (.cons (Char.mk 95) .nil)
+    | .cons c _ => (match Bool.and (Nat.le 48 (Char.code c)) (Nat.le (Char.code c) 57) with
+      | .true => String.mk (.cons (Char.mk 95) cs)
+      | .false => String.mk cs);
+  match Bool.or (Hdl.member body Verilog.keywords) (Hdl.member body Verilog.svKeywords) with
+  | .true => body <+> "_"
+  | .false => body
+
+def Hdl.strKey (s : String) : List Nat := match s with
+  | .mk cs => Hdl.map Char.code cs
+-- `s`, or `s_2`, `s_3` … if taken; and the names taken after
+def Verilog.freshFrom (used : Hdl.Set) (s : String) : Nat → Nat → String × Hdl.Set
+  | .zero, k => (s <+> "_" <+> Hdl.show k, used)
+  | .succ f, k => match HTrie.get (Hdl.strKey (s <+> "_" <+> Hdl.show k)) used with
+    | .some _ => Verilog.freshFrom used s f (Nat.succ k)
+    | .none => (s <+> "_" <+> Hdl.show k, HTrie.put (Hdl.strKey (s <+> "_" <+> Hdl.show k)) () used)
+def Verilog.fresh (used : Hdl.Set) (raw : String) : String × Hdl.Set :=
+  let ω s := Verilog.ident raw;
+  match HTrie.get (Hdl.strKey s) used with
+  | .some _ => Verilog.freshFrom used s 100000 2
+  | .none => (s, HTrie.put (Hdl.strKey s) () used)
+def Verilog.freshAll : Hdl.Set → List String → List String × Hdl.Set
+  | used, .nil => (.nil, used)
+  | used, .cons s ss =>
+    let ω a := Verilog.fresh used s;
+    let ω b := Verilog.freshAll a.2 ss;
+    (.cons a.1 b.1, b.2)
+def Verilog.reserved : Hdl.Set := HTrie.put (Hdl.strKey "clk") () HTrie.tip
+
+def Hdl.names {A : Type} (f : A → String) (xs : List A) : List String := Hdl.map f xs
+
+-- The identifiers of the inputs, outputs and registers, in that order.
+structure VNames where
+  ins : List String
+  outs : List String
+  regs : List String
+  used : Hdl.Set
+
+def Verilog.portIdents (n : Netlist) : VNames :=
+  let ω a := Verilog.freshAll Verilog.reserved (Hdl.names (fun (p : NetPort) => p.name) n.inputs);
+  let ω b := Verilog.freshAll a.2 (Hdl.names (fun (p : NetPort) => p.name) n.outputs);
+  let ω c := Verilog.freshAll b.2 (Hdl.names (fun (r : NetReg) => r.name) n.regs);
+  VNames.mk a.1 b.1 c.1 c.2
+
+def Verilog.lit (w v : Nat) : String := match w with
+  | .zero => "1'd0"
+  | .succ _ => Hdl.show w <+> "'d" <+> Hdl.show v
 -- a zero-width bus has no Verilog range; it is declared one bit wide and never read
 def Verilog.range (w : Nat) : String := match w with
   | .zero => "[0:0] "
-  | .succ v => "[" <+> Nat.show v <+> ":0] "
-def Verilog.bin (o : String) : List Nat → String
-  | .cons a (.cons b _) => Verilog.node a <+> " " <+> o <+> " " <+> Verilog.node b
+  | .succ v => "[" <+> Hdl.show v <+> ":0] "
+
+-- how each node is referred to: a port or register by its name, a constant by its
+-- value, anything of width 0 as `1'd0`, a labelled node by its label, others `nK`
+def Verilog.refOf (vn : VNames) (hints : HTrie String) (used : Hdl.Set) (k : Nat) (n : NetNode) : String × Hdl.Set :=
+  match n.width with
+  | .zero => ("1'd0", used)
+  | .succ _ => match n.op with
+    | .input p => (Hdl.nthD "?" vn.ins p, used)
+    | .reg r => (Hdl.nthD "?" vn.regs r, used)
+    | .const v => (Verilog.lit n.width v, used)
+    | _ => match HTrie.getN k hints with
+      | .some h => Verilog.fresh used h
+      | .none => Verilog.fresh used ("n" <+> Hdl.show k)
+def Verilog.refs (vn : VNames) (hints : HTrie String) : Nat → List NetNode → Hdl.Set → Hdl.Vec String → Hdl.Vec String
+  | _, .nil, _, acc => acc
+  | k, .cons n ns, used, acc =>
+    let ω r := Verilog.refOf vn hints used k n;
+    Verilog.refs vn hints (Nat.succ k) ns r.2 (Hdl.Vec.push acc r.1)
+-- the first label of each node wins
+def Verilog.hintMap : List (Nat × String) → HTrie String → HTrie String
+  | .nil, m => m
+  | .cons h hs, m => match HTrie.getN h.1 m with
+    | .some _ => Verilog.hintMap hs m
+    | .none => Verilog.hintMap hs (HTrie.putN h.1 h.2 m)
+
+structure VCtx where
+  names : Hdl.Vec String
+  nodes : Hdl.Vec NetNode
+
+def VCtx.ref (cx : VCtx) (k : Nat) : String := Hdl.Vec.get "?" cx.names k
+def VCtx.node (cx : VCtx) (k : Nat) : NetNode := Hdl.Vec.get NetNode.none cx.nodes k
+def Verilog.bin (cx : VCtx) (o : String) : List Nat → String
+  | .cons a (.cons b _) => VCtx.ref cx a <+> " " <+> o <+> " " <+> VCtx.ref cx b
   | _ => "?"
-def Verilog.expr (n : Node) : String := match n.op with
-  | .input p => "x"
-  | .const v => (match n.width with
-    | .zero => "1'd0"
-    | .succ _ => Nat.show n.width <+> "'d" <+> Nat.show v)
-  | .reg r => "r" <+> Nat.show r
-  | .add => Verilog.bin "+" n.args
-  | .sub => Verilog.bin "-" n.args
-  | .mul => Verilog.bin "*" n.args
-  | .and => Verilog.bin "&" n.args
-  | .or => Verilog.bin "|" n.args
-  | .xor => Verilog.bin "^" n.args
+def Verilog.mux3 (cx : VCtx) : List Nat → String
+  | .cons c (.cons a (.cons b _)) => VCtx.ref cx c <+> " ? " <+> VCtx.ref cx a <+> " : " <+> VCtx.ref cx b
+  | _ => "?"
+-- a part select (only of a name: a constant is cut at once)
+def Verilog.slice (cx : VCtx) (lo w a : Nat) : String :=
+  let ω an := VCtx.node cx a;
+  match an.op with
+  | .const v => Verilog.lit w (Nat.wrap w (Nat.shiftRight v lo))
+  | _ => VCtx.ref cx a <+> "[" <+> Hdl.show (lo + w - 1) <+> ":" <+> Hdl.show lo <+> "]"
+def Verilog.concat (cx : VCtx) (a b : Nat) : String :=
+  match (VCtx.node cx a).width, (VCtx.node cx b).width with
+  | .zero, _ => VCtx.ref cx b
+  | _, .zero => VCtx.ref cx a
+  | _, _ => "{" <+> VCtx.ref cx a <+> ", " <+> VCtx.ref cx b <+> "}"
+def Verilog.expr (cx : VCtx) (n : NetNode) : String := match n.op with
+  | .input p => "?"
+  | .const v => Verilog.lit n.width v
+  | .reg r => "?"
+  | .add => Verilog.bin cx "+" n.args
+  | .sub => Verilog.bin cx "-" n.args
+  | .mul => Verilog.bin cx "*" n.args
+  | .and => Verilog.bin cx "&" n.args
+  | .or => Verilog.bin cx "|" n.args
+  | .xor => Verilog.bin cx "^" n.args
   | .not => (match n.args with
-    | .cons a _ => "~" <+> Verilog.node a
+    | .cons a _ => "~" <+> VCtx.ref cx a
     | _ => "?")
-  | .eq => Verilog.bin "==" n.args
-  | .ult => Verilog.bin "<" n.args
-  | .concat => "{" <+> Verilog.bin "," n.args <+> "}"
+  | .eq => Verilog.bin cx "==" n.args
+  | .ult => Verilog.bin cx "<" n.args
+  | .concat => (match n.args with
+    | .cons a (.cons b _) => Verilog.concat cx a b
+    | _ => "?")
   | .slice lo => (match n.args with
-    | .cons a _ => Verilog.node a <+> "[" <+> Nat.show (lo + n.width - 1) <+> ":" <+> Nat.show lo <+> "]"
+    | .cons a _ => Verilog.slice cx lo n.width a
     | _ => "?")
-  | .mux => match n.args with
-    | .cons c (.cons a (.cons b _)) => Verilog.node c <+> " ? " <+> Verilog.node a <+> " : " <+> Verilog.node b
-    | _ => "?"
-def Verilog.nodes : Nat → List Node → String
+  | .mux => Verilog.mux3 cx n.args
+  | .resetTo v => (match n.args with
+    | .cons c (.cons a _) => VCtx.ref cx c <+> " ? " <+> Verilog.lit n.width v <+> " : " <+> VCtx.ref cx a
+    | _ => "?")
+  | .hold => Verilog.mux3 cx n.args
+
+def Verilog.declared (n : NetNode) : Bool := match n.width with
+  | .zero => .false
+  | .succ _ => match n.op with
+    | .input _ => .false
+    | .reg _ => .false
+    | .const _ => .false
+    | _ => .true
+def Verilog.wires (cx : VCtx) : Nat → List NetNode → String
   | _, .nil => ""
-  | k, .cons n ns => "  wire " <+> Verilog.range n.width <+> Verilog.node k <+> " = " <+> Verilog.expr n <+> ";\n"
-                     <+> Verilog.nodes (Nat.succ k) ns
--- A register's declaration with its initial value (sized: an unsized literal is only
--- guaranteed 32 bits), and, after the wires (Verilog wants a name declared before its
--- use, and Icarus Verilog insists), its update.
-def Verilog.size (w : Nat) : String := match w with
-  | .zero => "1"
-  | .succ _ => Nat.show w
-def Verilog.regs : Nat → List Reg → String
-  | _, .nil => ""
-  | k, .cons r rs => "  reg " <+> Verilog.range r.width <+> "r" <+> Nat.show k <+> "; initial r" <+> Nat.show k
-      <+> " = " <+> Verilog.size r.width <+> "'d" <+> Nat.show r.init <+> ";\n" <+> Verilog.regs (Nat.succ k) rs
-def Verilog.updates : Nat → List Reg → String
-  | _, .nil => ""
-  | k, .cons r rs => "  always @(posedge clk) r" <+> Nat.show k <+> " <= " <+> Verilog.node r.next <+> ";\n"
-      <+> Verilog.updates (Nat.succ k) rs
-def Verilog.port (dir : String) (p : Port) : String := ", " <+> dir <+> " " <+> Verilog.range p.width <+> p.name
-def Verilog.ports (dir : String) : List Port → String
-  | .nil => ""
-  | .cons p ps => Verilog.port dir p <+> Verilog.ports dir ps
-def Verilog.assigns : List Port → String
-  | .nil => ""
-  | .cons p ps => "  assign " <+> p.name <+> " = " <+> Verilog.node p.node <+> ";\n" <+> Verilog.assigns ps
+  | k, .cons n ns => (match Verilog.declared n with
+    | .true => "  wire " <+> Verilog.range n.width <+> VCtx.ref cx k <+> " = " <+> Verilog.expr cx n <+> ";\n"
+    | .false => "") <+> Verilog.wires cx (Nat.succ k) ns
+-- A register's declaration with its initial value (sized), and, after the wires
+-- (Verilog wants a name declared before its use), its update.
+def Verilog.regDecls : List String → List NetReg → String
+  | .cons nm nms, .cons r rs => (match r.width with
+    | .zero => ""
+    | .succ _ => "  reg " <+> Verilog.range r.width <+> nm <+> "; initial " <+> nm <+> " = " <+> Verilog.lit r.width r.init <+> ";\n")
+    <+> Verilog.regDecls nms rs
+  | _, _ => ""
+def Verilog.load (cx : VCtx) (nm : String) (r : NetReg) : String :=
+  let ω plain := nm <+> " <= " <+> VCtx.ref cx r.next <+> ";";
+  let ω enabled := match r.en with
+    | .none => plain
+    | .some e => "if (" <+> VCtx.ref cx e <+> ") " <+> plain;
+  match r.rst with
+  | .none => enabled
+  | .some k => "if (" <+> VCtx.ref cx k <+> ") " <+> nm <+> " <= " <+> Verilog.lit r.width r.init <+> "; else " <+> enabled
+def Verilog.updates (cx : VCtx) : List String → List NetReg → String
+  | .cons nm nms, .cons r rs => (match r.width with
+    | .zero => ""
+    | .succ _ => "  always @(posedge clk) " <+> Verilog.load cx nm r <+> "\n") <+> Verilog.updates cx nms rs
+  | _, _ => ""
+def Verilog.portDecls (dir : String) : List String → List NetPort → String
+  | .cons nm nms, .cons p ps => (match p.width with
+    | .zero => ""
+    | .succ _ => ", " <+> dir <+> " " <+> Verilog.range p.width <+> nm) <+> Verilog.portDecls dir nms ps
+  | _, _ => ""
+def Verilog.assigns (cx : VCtx) : List String → List NetPort → String
+  | .cons nm nms, .cons p ps => (match p.width with
+    | .zero => ""
+    | .succ _ => "  assign " <+> nm <+> " = " <+> VCtx.ref cx p.node <+> ";\n") <+> Verilog.assigns cx nms ps
+  | _, _ => ""
+
+def Verilog.ctx (n : Netlist) (vn : VNames) : VCtx :=
+  VCtx.mk (Verilog.refs vn (Verilog.hintMap n.hints HTrie.tip) 0 n.nodes vn.used Hdl.Vec.empty) (Hdl.Vec.ofList n.nodes)
+
 def Verilog.emit (n : Netlist) : String :=
-  "module " <+> n.name <+> "(input clk" <+> Verilog.ports "input" n.inputs <+> Verilog.ports "output" n.outputs
-  <+> ");\n" <+> Verilog.regs 0 n.regs <+> Verilog.nodes 0 n.nodes <+> Verilog.updates 0 n.regs
-  <+> Verilog.assigns n.outputs <+> "endmodule\n"
+  let ω vn := Verilog.portIdents n;
+  let ω cx := Verilog.ctx n vn;
+  "module " <+> Verilog.ident n.name <+> "(input clk" <+> Verilog.portDecls "input" vn.ins n.inputs
+  <+> Verilog.portDecls "output" vn.outs n.outputs <+> ");\n" <+> Verilog.regDecls vn.regs n.regs
+  <+> Verilog.wires cx 0 n.nodes <+> Verilog.updates cx vn.regs n.regs
+  <+> Verilog.assigns cx vn.outs n.outputs <+> "endmodule\n"
+
+------------------------------------------------------------------------------------
+-- Bundles: structures of signals. A bundle is a structure parameterised by the
+-- representation, `structure Tx (r : HwTy → Type) where line : r Bit; …`, so that
+-- `s.line` is field access; `Bundle F` gives its code (a product of `named` fields) and
+-- the conversions. `deriving Bundle` writes the instance. Values: `Tx HwTy.El`.
+
+structure Bundle (F : (HwTy → Type) → Type) where
+  code : HwTy
+  pack : {r : HwTy → Type} → [Hw r] → F r → r code
+  unpack : {r : HwTy → Type} → [Hw r] → r code → F r
+
+-- (A bundle is a plain value, not an instance: structures are structural types, so two
+-- structures with the same field types are one type, and instance resolution could not
+-- tell their bundles apart. `deriving Bundle` names it `S.bundle`.)
+
+def Bundle.toEl {F : (HwTy → Type) → Type} (b : Bundle F) (v : F HwTy.El) : HwTy.El b.code :=
+  @Bundle.pack F b HwTy.El _ v
+def Bundle.ofEl {F : (HwTy → Type) → Type} (b : Bundle F) (v : HwTy.El b.code) : F HwTy.El :=
+  @Bundle.unpack F b HwTy.El _ v
+
+-- A step on bundles, as a value (see `Comb`).
+structure BStep (S I : (HwTy → Type) → Type) (st o : HwTy) where
+  run : {r : HwTy → Type} → [Hw r] → S r → I r → r (HwTy.prod st o)
+
+def Circuit.bundledStep {S I O : (HwTy → Type) → Type} (bs : Bundle S) (bi : Bundle I) (bo : Bundle O)
+    (f : BStep S I bs.code bo.code) {r : HwTy → Type} [Hw r] (s : r bs.code) (x : r bi.code) : r (HwTy.prod bs.code bo.code) :=
+  @BStep.run S I bs.code bo.code f r _ (@Bundle.unpack S bs r _ s) (@Bundle.unpack I bi r _ x)
+
+-- A circuit whose state, input and output are bundles: the step takes the state and the
+-- input as structures and returns the packed next state and output
+-- (`Hw.pair (S.pack s') (O.pack o)`).
+def Circuit.bundled {S I O : (HwTy → Type) → Type} (bs : Bundle S) (bi : Bundle I) (bo : Bundle O)
+    (init : S HwTy.El) (f : BStep S I bs.code bo.code) : Circuit bi.code bo.code :=
+  Circuit.mk bs.code (Bundle.toEl bs init) (fun s x => Circuit.bundledStep bs bi bo f s x)
+
+------------------------------------------------------------------------------------
+-- `deriving Bundle` for a structure `S Δ (r : HwTy → Type)` (the representation is the
+-- last parameter) whose fields are leaves `r T` or nested bundles `G … r` (which must
+-- have been derived too: their code is `G.code …`). It defines
+--   `S.code Δ : HwTy`                     the product of `named "field" T`
+--   `S.pack Δ : S Δ r → r (S.code Δ)`     and `S.unpack Δ`
+--   `S.bundle Δ : Bundle (S Δ)`
+-- (the parameters Δ explicit).
+
+def HdlDerive.list : SyntaxF .false → List Syntax
+  | .nil => .nil
+  | .cons x xs => .cons x (HdlDerive.list xs)
+def HdlDerive.init {A : Type} : List A → List A
+  | .nil => .nil
+  | .cons _ .nil => .nil
+  | .cons x xs => .cons x (HdlDerive.init xs)
+def HdlDerive.last : List Syntax → Syntax
+  | .nil => .missing
+  | .cons x .nil => x
+  | .cons _ xs => HdlDerive.last xs
+def HdlDerive.lastName : List ParamView → String
+  | .nil => "r"
+  | .cons p .nil => ParamView.name p
+  | .cons _ ps => HdlDerive.lastName ps
+def HdlDerive.unparen (t : Syntax) : Syntax := match t with
+  | .node k args => (match String.beq k "term.paren" with
+    | .true => SyntaxF.nth args 1
+    | .false => t)
+  | _ => t
+-- a field type `h a₁ … aₖ`: (`h a₁ … aₖ₋₁`, `aₖ`)
+def HdlDerive.split (t : Syntax) : Syntax × Syntax := match HdlDerive.unparen t with
+  | .node k args => (match String.beq k "term.app" with
+    | .true =>
+      let ω xs := HdlDerive.list (match Syntax.getArg (.node k args) 1 with
+        | .node _ l => l
+        | _ => SyntaxF.nil);
+      (Syntax.mkApp (SyntaxF.nth args 0) (HdlDerive.init xs), HdlDerive.last xs)
+    | .false => (.missing, .missing))
+  | _ => (.missing, .missing)
+def HdlDerive.isVar (r : String) (t : Syntax) : Bool := match HdlDerive.unparen t with
+  | .node k args => Bool.and (String.beq k "term.ident") (match SyntaxF.nth args 0 with
+    | .ident x => String.beq x r
+    | _ => .false)
+  | _ => .false
+
+-- `G a₁ … aₖ` ↦ `G.suffix a₁ … aₖ`
+def HdlDerive.identSuffixed (suffix : String) (t : Syntax) : Syntax := match HdlDerive.unparen t with
+  | .node k args => (match String.beq k "term.ident" with
+    | .true => (match SyntaxF.nth args 0 with
+      | .ident x => Syntax.mkVar (String.append x suffix)
+      | _ => t)
+    | .false => t)
+  | _ => t
+def HdlDerive.suffixed (suffix : String) (t : Syntax) : Syntax := match HdlDerive.unparen t with
+  | .node k args => (match String.beq k "term.app" with
+    | .true => Syntax.mkApp (HdlDerive.identSuffixed suffix (SyntaxF.nth args 0))
+        (HdlDerive.list (match Syntax.getArg (.node k args) 1 with
+          | .node _ l => l
+          | _ => SyntaxF.nil))
+    | .false => HdlDerive.identSuffixed suffix t)
+  | _ => t
+
+-- One field: its code, how it is packed (from `s.f`) and unpacked (from `x`).
+def HdlDerive.fieldCode (r : String) (f : FieldView) : Syntax :=
+  let ω sp := HdlDerive.split (FieldView.type f);
+  let ω nm := Syntax.mkStr (FieldView.name f);
+  match HdlDerive.isVar r sp.1 with
+  | .true => let t := sp.2; `(term| HwTy.named $nm $t)
+  | .false => let g := HdlDerive.suffixed ".code" sp.1; `(term| HwTy.named $nm $g)
+def HdlDerive.fieldPack (r : String) (s : Syntax) (f : FieldView) : Syntax :=
+  let ω sp := HdlDerive.split (FieldView.type f);
+  let ω nm := Syntax.mkStr (FieldView.name f);
+  let ω x := Derive.proj s (FieldView.name f);
+  match HdlDerive.isVar r sp.1 with
+  | .true => `(term| Hw.tag $nm $x)
+  | .false => let g := HdlDerive.suffixed ".pack" sp.1; `(term| Hw.tag $nm ($g $x))
+def HdlDerive.fieldUnpack (r : String) (x : Syntax) (f : FieldView) : Syntax :=
+  let ω sp := HdlDerive.split (FieldView.type f);
+  match HdlDerive.isVar r sp.1 with
+  | .true => `(term| Hw.untag $x)
+  | .false => let g := HdlDerive.suffixed ".unpack" sp.1; `(term| $g (Hw.untag $x))
+
+def HdlDerive.code (r : String) : List FieldView → Syntax
+  | .nil => `(term| HwTy.bits 0)
+  | .cons f .nil => HdlDerive.fieldCode r f
+  | .cons f fs => let a := HdlDerive.fieldCode r f; let b := HdlDerive.code r fs; `(term| HwTy.prod $a $b)
+def HdlDerive.pack (r : String) (s : Syntax) : List FieldView → Syntax
+  | .nil => `(term| Hw.lit 0 0)
+  | .cons f .nil => HdlDerive.fieldPack r s f
+  | .cons f fs => let a := HdlDerive.fieldPack r s f; let b := HdlDerive.pack r s fs; `(term| Hw.pair $a $b)
+-- the fields of `x`, as arguments of the constructor
+def HdlDerive.unpackArgs (r : String) : Syntax → List FieldView → List Syntax
+  | x, .nil => .nil
+  | x, .cons f .nil => .cons (HdlDerive.fieldUnpack r x f) .nil
+  | x, .cons f fs => .cons (HdlDerive.fieldUnpack r `(term| Hw.fst $x) f) (HdlDerive.unpackArgs r `(term| Hw.snd $x) fs)
+
+def HdlDerive.explicitPis : List ParamView → Syntax → Syntax
+  | .nil, rest => rest
+  | .cons p ps', rest =>
+    let x := Syntax.mkIdent (ParamView.name p);
+    let t := ParamView.type p;
+    let b := HdlDerive.explicitPis ps' rest;
+    `(term| ($x : $t) → $b)
+def HdlDerive.lams : List ParamView → Syntax → Syntax
+  | .nil, rest => rest
+  | .cons p ps', rest =>
+    let x := Syntax.mkIdent (ParamView.name p);
+    let b := HdlDerive.lams ps' rest;
+    `(term| fun $x => $b)
+def HdlDerive.implicitPis : List ParamView → Syntax → Syntax
+  | .nil, rest => rest
+  | .cons p ps', rest =>
+    let x := Syntax.mkIdent (ParamView.name p);
+    let t := ParamView.type p;
+    let b := HdlDerive.implicitPis ps' rest;
+    `(term| {ω $x : $t} → $b)
+
+def deriveBundle : Deriver := fun n => do
+  v ← Derive.lookup "Bundle" n;
+  Derive.noIndices "Bundle" v;
+  match IndView.ctors v with
+  | .cons c .nil => do
+    let ps := HdlDerive.init (IndView.params v);
+    let delta := Derive.paramVars ps;
+    let r := HdlDerive.lastName (IndView.params v);
+    let rid := Syntax.mkIdent r;
+    let rv := Syntax.mkVar r;
+    let fs := CtorView.fields c;
+    let tyF := Syntax.mkApp (Syntax.mkVar n) delta;
+    let tyS := Syntax.mkApp tyF (.cons rv .nil);
+    let codeN := Syntax.mkIdent (String.append n ".code");
+    let packN := Syntax.mkIdent (String.append n ".pack");
+    let unpackN := Syntax.mkIdent (String.append n ".unpack");
+    let codeApp := Syntax.mkApp (Syntax.mkVar (String.append n ".code")) delta;
+    let packApp := Syntax.mkApp (Syntax.mkVar (String.append n ".pack")) delta;
+    let unpackApp := Syntax.mkApp (Syntax.mkVar (String.append n ".unpack")) delta;
+    let codeTy := HdlDerive.explicitPis ps `(term| HwTy);
+    let codeVal := HdlDerive.lams ps (HdlDerive.code r fs);
+    let s := Syntax.mkIdent "s✝";
+    let sv := Syntax.mkVar "s✝";
+    let x := Syntax.mkIdent "x✝";
+    let xv := Syntax.mkVar "x✝";
+    let packTy := HdlDerive.explicitPis ps `(term| {$rid : HwTy → Type} → [Hw $rv] → $tyS → $rv $codeApp);
+    let packBody := HdlDerive.pack r sv fs;
+    let packVal := HdlDerive.lams ps `(term| fun $s => $packBody);
+    let unpackTy := HdlDerive.explicitPis ps `(term| {$rid : HwTy → Type} → [Hw $rv] → $rv $codeApp → $tyS);
+    let mk := Syntax.mkApp (Syntax.mkVar (Derive.ctorName v c)) (HdlDerive.unpackArgs r xv fs);
+    let unpackVal := HdlDerive.lams ps `(term| fun $x => $mk);
+    let bundleN := Syntax.mkIdent (String.append n ".bundle");
+    let bundleTy := HdlDerive.explicitPis ps `(term| Bundle $tyF);
+    let bundleVal := HdlDerive.lams ps `(term| Bundle.mk $codeApp (fun $s => $packApp $sv) (fun $x => $unpackApp $xv));
+    MacroM.pure (.cons `(command| def $codeN : $codeTy := $codeVal)
+      (.cons `(command| def $packN : $packTy := $packVal)
+      (.cons `(command| def $unpackN : $unpackTy := $unpackVal)
+      (.cons `(command| def $bundleN : $bundleTy := $bundleVal) .nil))))
+  | _ => MacroM.throw (String.append "Bundle: not a structure: " n)
+attribute [deriver Bundle] deriveBundle
+
+------------------------------------------------------------------------------------
+-- Test benches. `Testbench.verilog n vec cycles` replays a vector file on the module
+-- `Verilog.emit n` makes: each line of `vec` is one cycle, in hexadecimal, the input
+-- ports then the expected output ports (in port order, the first in the high bits;
+-- ports of width 0 left out). In each cycle the bench sets the inputs, waits for them to
+-- settle, compares every output and clocks. It prints `PASS name: N cycles` or
+-- `FAIL name: K mismatches` (and the first ten mismatches).
+
+def Hdl.nonZero (p : NetPort) : Bool := Bool.not (Nat.beq p.width 0)
+def Hdl.filterPorts : List String → List NetPort → List (String × NetPort)
+  | .cons nm nms, .cons p ps => (match Hdl.nonZero p with
+    | .true => .cons (nm, p) (Hdl.filterPorts nms ps)
+    | .false => Hdl.filterPorts nms ps)
+  | _, _ => .nil
+def Hdl.portWidths : List (String × NetPort) → Nat
+  | .nil => 0
+  | .cons p ps => p.2.width + Hdl.portWidths ps
+
+def Testbench.regs : List (String × NetPort) → String
+  | .nil => ""
+  | .cons p ps => "  reg " <+> Verilog.range p.2.width <+> p.1 <+> " = 0;\n" <+> Testbench.regs ps
+def Testbench.wires : List (String × NetPort) → String
+  | .nil => ""
+  | .cons p ps => "  wire " <+> Verilog.range p.2.width <+> p.1 <+> ";\n" <+> Testbench.wires ps
+def Testbench.conns : List (String × NetPort) → String
+  | .nil => ""
+  | .cons p ps => ", ." <+> p.1 <+> "(" <+> p.1 <+> ")" <+> Testbench.conns ps
+-- the bits of a port in the vector: [hi:lo], `top` the bit above it
+def Testbench.field (top w : Nat) : String :=
+  "tb_vec[tb_i][" <+> Hdl.show (top - 1) <+> ":" <+> Hdl.show (top - w) <+> "]"
+def Testbench.drive : Nat → List (String × NetPort) → String
+  | _, .nil => ""
+  | top, .cons p ps => "      " <+> p.1 <+> " = " <+> Testbench.field top p.2.width <+> ";\n"
+      <+> Testbench.drive (top - p.2.width) ps
+def Testbench.compare : Nat → List (String × NetPort) → String
+  | _, .nil => ""
+  | top, .cons p ps =>
+    "      if (" <+> p.1 <+> " !== " <+> Testbench.field top p.2.width <+> ") begin\n"
+    <+> "        tb_errors = tb_errors + 1;\n"
+    <+> "        if (tb_errors < 10) $display(\"mismatch at cycle %0d: " <+> p.1 <+> " = %b, expected %b\", tb_i, "
+    <+> p.1 <+> ", " <+> Testbench.field top p.2.width <+> ");\n      end\n"
+    <+> Testbench.compare (top - p.2.width) ps
+
+def Testbench.verilog (n : Netlist) (vec : String) (cycles : Nat) : String :=
+  let ω vn := Verilog.portIdents n;
+  let ω ins := Hdl.filterPorts vn.ins n.inputs;
+  let ω outs := Hdl.filterPorts vn.outs n.outputs;
+  let ω wi := Hdl.portWidths ins;
+  let ω w := wi + Hdl.portWidths outs;
+  let ω name := Verilog.ident n.name;
+  "`timescale 1ns/1ps\n"
+  <+> "module tb;\n"
+  <+> "  reg clk = 0;\n"
+  <+> Testbench.regs ins <+> Testbench.wires outs
+  <+> "  " <+> name <+> " dut(.clk(clk)" <+> Testbench.conns ins <+> Testbench.conns outs <+> ");\n"
+  <+> "  reg " <+> Verilog.range w <+> "tb_vec [0:" <+> Hdl.show (cycles - 1) <+> "];\n"
+  <+> "  integer tb_i, tb_errors;\n"
+  <+> "  initial begin\n"
+  <+> "    $readmemh(\"" <+> vec <+> "\", tb_vec);\n"
+  <+> "    tb_errors = 0;\n"
+  <+> "    for (tb_i = 0; tb_i < " <+> Hdl.show cycles <+> "; tb_i = tb_i + 1) begin\n"
+  <+> Testbench.drive w ins
+  <+> "      #1;\n"
+  <+> Testbench.compare (w - wi) outs
+  <+> "      clk = 1; #1; clk = 0; #1;\n"
+  <+> "    end\n"
+  <+> "    if (tb_errors == 0) $display(\"PASS " <+> name <+> ": %0d cycles\", tb_i);\n"
+  <+> "    else $display(\"FAIL " <+> name <+> ": %0d mismatches\", tb_errors);\n"
+  <+> "    $finish;\n"
+  <+> "  end\n"
+  <+> "endmodule\n"
+
+-- One vector line: the leaves of the inputs and the expected outputs (one number per
+-- port, ports of width 0 included, as `Netlist.simulate` takes and gives them).
+def Testbench.packPorts : List NetPort → List Nat → Nat → Nat
+  | .cons p ps, .cons v vs, acc => Testbench.packPorts ps vs (Nat.shiftLeft acc p.width + Nat.wrap p.width v)
+  | _, _, acc => acc
+def Testbench.line (n : Netlist) (ins outs : List Nat) : String :=
+  let ω w := Hdl.sum (Hdl.map (fun (p : NetPort) => p.width) n.inputs) + Hdl.sum (Hdl.map (fun (p : NetPort) => p.width) n.outputs);
+  let ω v := Testbench.packPorts n.outputs outs (Testbench.packPorts n.inputs ins 0);
+  String.mk (Hdl.hexAux (Nat.max 1 (Nat.div (w + 3) 4)) v (List.cons (Char.mk 10) List.nil))
+def Testbench.lines (n : Netlist) : List (List Nat) → List (List Nat) → List String
+  | .cons i is, .cons o os => .cons (Testbench.line n i o) (Testbench.lines n is os)
+  | _, _ => .nil
+-- the vector file of a value simulation of `c` (the netlist `n` must be `c`'s)
+def Circuit.vectors {ω i o : HwTy} (n : Netlist) (c : Circuit i o) (xs : List (HwTy.El i)) : List String :=
+  Testbench.lines n (Hdl.map (HwTy.leaves i) xs) (Circuit.runLeaves c xs)
+
+------------------------------------------------------------------------------------
+-- A VCD waveform of a value simulation: the clock, every input and output leaf (by
+-- port name) and every state leaf (by register name); a cycle is 2 time units.
+
+def Vcd.idAux : Nat → Nat → List Char → List Char
+  | .zero, _, acc => acc
+  | .succ f, k, acc => match Nat.lt k 94 with
+    | .true => List.cons (Char.mk (33 + k)) acc
+    | .false => Vcd.idAux f (Nat.div k 94 - 1) (List.cons (Char.mk (33 + Nat.mod k 94)) acc)
+def Vcd.id (k : Nat) : String := String.mk (Vcd.idAux 8 k List.nil)
+def Vcd.value (w v : Nat) (id : String) : String := match w with
+  | .succ .zero => Hdl.show v <+> id <+> "\n"
+  | _ => "b" <+> Hdl.bin (Nat.max w 1) v <+> " " <+> id <+> "\n"
+def Vcd.vars : Nat → List String → List Nat → String
+  | k, .cons nm nms, .cons w ws =>
+    "$var wire " <+> Hdl.show (Nat.max w 1) <+> " " <+> Vcd.id k <+> " " <+> nm <+> " $end\n" <+> Vcd.vars (Nat.succ k) nms ws
+  | _, _, _ => ""
+-- the values that changed (all of them in the first cycle)
+def Vcd.changes : Bool → Nat → List Nat → List Nat → List Nat → String
+  | first, k, .cons w ws, .cons v vs, prev =>
+    let ω rest := Vcd.changes first (Nat.succ k) ws vs (match prev with
+      | .cons _ ps => ps
+      | .nil => .nil);
+    (match Bool.or first (Bool.not (Nat.beq v (Hdl.nthD 0 prev 0))) with
+    | .true => Vcd.value w v (Vcd.id k)
+    | .false => "") <+> rest
+  | _, _, _, _, _ => ""
+def Vcd.cycles {ω i o : HwTy} (c : Circuit i o) (ws : List Nat) :
+    Nat → HwTy.El c.st → List (HwTy.El i) → List Nat → List String → List String
+  | t, _, .nil, _, acc => Hdl.reverse (List.cons ("#" <+> Hdl.show (2 * t) <+> "\n") acc)
+  | t, s, .cons x xs, prev, acc =>
+    let ω r : HwTy.El c.st × HwTy.El o := Circuit.stepEl c s x;
+    let ω vals := List.cons 0 (List.append (HwTy.leaves i x) (List.append (HwTy.leaves o r.2) (HwTy.leaves c.st s)));
+    let ω now := "#" <+> Hdl.show (2 * t) <+> "\n" <+> Vcd.changes (Nat.beq t 0) 0 ws vals prev
+      <+> "#" <+> Hdl.show (2 * t + 1) <+> "\n1!\n";
+    Vcd.cycles c ws (Nat.succ t) r.1 xs (List.cons 1 (Hdl.map (fun (v : Nat) => v) (match vals with
+      | .cons _ vs => vs
+      | .nil => .nil))) (List.cons now acc)
+
+def Vcd.ofRun {ω i o : HwTy} (name : String) (c : Circuit i o) (xs : List (HwTy.El i)) : String :=
+  let ω names := List.cons "clk" (List.append (HwTy.portNames "x" i) (List.append (HwTy.portNames "y" o) (HwTy.portNames "r" c.st)));
+  let ω ws := List.cons 1 (List.append (HwTy.leafWidths i) (List.append (HwTy.leafWidths o) (HwTy.leafWidths c.st)));
+  "$timescale 1ns $end\n$scope module " <+> Verilog.ident name <+> " $end\n" <+> Vcd.vars 0 names ws
+  <+> "$upscope $end\n$enddefinitions $end\n" <+> Hdl.concat (Vcd.cycles c ws 0 c.init xs List.nil List.nil)
+
+------------------------------------------------------------------------------------
+-- Pin constraints (the PCF of nextpnr-ice40 and arachne): a pin for every port, by the
+-- port's name in the netlist. `Pin.bus` lists the pins of a wider port, bit 0 first.
+
+inductive Pin where
+  | one (port : String) (pin : Nat)
+  | bus (port : String) (pins : List Nat)
+
+def Pin.port : Pin → String
+  | .one p _ => p
+  | .bus p _ => p
+def Pin.find (name : String) : List Pin → Option Pin
+  | .nil => .none
+  | .cons p ps => match Hdl.strEq (Pin.port p) name with
+    | .true => .some p
+    | .false => Pin.find name ps
+
+def Pcf.busLines (id : String) : Nat → List Nat → String
+  | _, .nil => ""
+  | k, .cons pin pins => "set_io " <+> id <+> "[" <+> Hdl.show k <+> "] " <+> Hdl.show pin <+> "\n" <+> Pcf.busLines id (Nat.succ k) pins
+def Pcf.port (pins : List Pin) (id : String) (p : NetPort) : String := match Pin.find p.name pins with
+  | .none => ""
+  | .some (.one _ pin) => "set_io " <+> id <+> " " <+> Hdl.show pin <+> "\n"
+  | .some (.bus _ ps) => Pcf.busLines id 0 ps
+def Pcf.ports (pins : List Pin) : List String → List NetPort → String
+  | .cons id ids, .cons p ps => (match Hdl.nonZero p with
+    | .true => Pcf.port pins id p
+    | .false => "") <+> Pcf.ports pins ids ps
+  | _, _ => ""
+
+-- `set_io` lines for the clock and the ports (with the identifiers `Verilog.emit` uses)
+def Pcf.emit (n : Netlist) (clk : Nat) (pins : List Pin) : String :=
+  let ω vn := Verilog.portIdents n;
+  "set_io clk " <+> Hdl.show clk <+> "\n" <+> Pcf.ports pins vn.ins n.inputs <+> Pcf.ports pins vn.outs n.outputs
+
+-- What is wrong with a pin list: ports without a pin, pins for no port, wrong widths.
+def Pcf.portProblem (pins : List Pin) (p : NetPort) : List String := match Hdl.nonZero p with
+  | .false => .nil
+  | .true => match Pin.find p.name pins with
+    | .none => .cons ("no pin for port " <+> p.name) .nil
+    | .some (.one _ _) => (match Nat.beq p.width 1 with
+      | .true => .nil
+      | .false => .cons ("port " <+> p.name <+> " has " <+> Hdl.show p.width <+> " bits, one pin given") .nil)
+    | .some (.bus _ ps) => match Nat.beq p.width (List.length ps) with
+      | .true => .nil
+      | .false => .cons ("port " <+> p.name <+> " has " <+> Hdl.show p.width <+> " bits, "
+          <+> Hdl.show (List.length ps) <+> " pins given") .nil
+def Pcf.portProblems (pins : List Pin) : List NetPort → List String
+  | .nil => .nil
+  | .cons p ps => List.append (Pcf.portProblem pins p) (Pcf.portProblems pins ps)
+def Pcf.hasPort (name : String) : List NetPort → Bool
+  | .nil => .false
+  | .cons p ps => Bool.or (Hdl.strEq p.name name) (Pcf.hasPort name ps)
+def Pcf.strayPins (ports : List NetPort) : List Pin → List String
+  | .nil => .nil
+  | .cons p ps => match Pcf.hasPort (Pin.port p) ports with
+    | .true => Pcf.strayPins ports ps
+    | .false => .cons ("pin for no port: " <+> Pin.port p) (Pcf.strayPins ports ps)
+def Pcf.check (n : Netlist) (pins : List Pin) : List String :=
+  List.append (Pcf.portProblems pins (List.append n.inputs n.outputs)) (Pcf.strayPins (List.append n.inputs n.outputs) pins)
+
+------------------------------------------------------------------------------------
+-- A design: a top-level circuit with a name, packed at the first order, so that it is a
+-- `Type` (a `Circuit` quantifies over representations and lives in `Type 1`) and
+-- designs fit in a `List`. It keeps the step at values and the netlist.
+
+structure Design where
+  name : String
+  i : HwTy
+  o : HwTy
+  st : HwTy
+  init : HwTy.El st
+  step : HwTy.El st → HwTy.El i → HwTy.El (HwTy.prod st o)
+  net : Unit → Netlist
+
+def Circuit.design {ω i o : HwTy} (name : String) (c : Circuit i o) : Design :=
+  Design.mk name i o c.st c.init (Circuit.stepEl c) (fun u => Circuit.netlist name c)
+
+def Design.netlist (d : Design) : Netlist := d.net ()
+def Design.verilog (d : Design) : String := Verilog.emit (Design.netlist d)
+
+def Design.runGo (d : Design) : HwTy.El d.st → List (HwTy.El d.i) → List (HwTy.El d.o) → List (HwTy.El d.o)
+  | _, .nil, acc => Hdl.reverse acc
+  | s, .cons x xs, acc =>
+    let ω r : HwTy.El d.st × HwTy.El d.o := d.step s x;
+    Design.runGo d r.1 xs (List.cons r.2 acc)
+def Design.run (d : Design) (xs : List (HwTy.El d.i)) : List (HwTy.El d.o) := Design.runGo d d.init xs List.nil
+-- on bus encodings, and on leaves (one number per port)
+def Design.runPacked (d : Design) (xs : List Nat) : List Nat :=
+  Hdl.map (HwTy.pack d.o) (Design.run d (Hdl.map (HwTy.unpack d.i) xs))
+def Design.runLeaves (d : Design) (xs : List (List Nat)) : List (List Nat) :=
+  Hdl.map (HwTy.leaves d.o) (Design.run d (Hdl.map (HwTy.ofLeaves d.i) xs))

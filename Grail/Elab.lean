@@ -50,6 +50,7 @@ def load (tc : Toolchain) (roots : List System.FilePath) (salt : UInt64) (src : 
     { loader, cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
       trustedModule := own.contains }
   let key := Cache.moduleKey (fun n => if n == mainName then some src else loader n) (headers[·]?) salt mainName
+    own.contains
   -- a `link_c` file that appears or disappears changes the check (its contents enter
   -- only the link's key)
   let key := mixHash key (hash (toString ((sources.toList.map fun (k, v) => k ++ "=" ++ v).toArray.qsort (· < ·))))
