@@ -1639,17 +1639,23 @@ proved**, and the D1 experiment shows checking can loop (Status.md).
   shapes.
 * **Implementations for the compiler** (`Decl.impl`): the term compiled code runs
   instead of the value. Three things set one: a structurally recursive definition by
-  equations (the same equations with direct recursion, so that a program computes only
-  the recursive calls it makes), a partial definition (its body, above), and
+  equations (its value with the recursor's hypotheses replaced by direct calls, so that a
+  program computes only the recursive calls it makes), a partial definition (its body,
+  above), and
   `attribute [implemented_by g] f` (the constant `g`). The kernel never unfolds an
   implementation, so it proves nothing, but it **checks every one against the declared
   type**, with the definition itself already declared (a recursive one calls it):
   `checkImpl`, from `addDecl` and `setImpl`, as `addPartialImpl` does for a partial
   definition. So an implementation is well typed at `T`, its quantities are respected,
   and the sorts noted on its `Π`s and `Σ`s are right (`checkSortNote`): erasure reads all
-  three. A declaration whose implementation does not check is rejected. **Not checked:**
-  that the implementation computes what the value computes (they are equal by induction,
-  not by conversion); see Status.md, T1.
+  three. A declaration whose implementation does not check is rejected. For a
+  structurally recursive definition the kernel also checks that the implementation
+  **computes what the value computes** (`checkImplAgrees`): both are stuck on the same
+  argument as `ind P M i x` and `ind P M' i x` (through `T.rec` and `T.casesOn`), convertible
+  with `M'` replaced by `M`, and for each constructor tag `t` and a fresh payload
+  `xs = (t, rest)`, `M j xs H ≡ M' j xs H` with `H` the hypotheses `ind` computes; by
+  induction on the scrutinee they agree on every closed argument (Status.md, T1). An
+  `implemented_by` constant is not checked this way (trusted, listed by `#print axioms`).
 * `Decl.inline` (evaluate eagerly) does not affect what the kernel accepts.
 
 *Kernel.wiz.* There is no global table: a constant term carries its value and type

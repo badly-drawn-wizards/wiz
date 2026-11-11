@@ -253,15 +253,23 @@ def adjacentFields? (stx : Syntax) : Option Syntax := do
 def expand? (stx : Syntax) : ElabM R (Option Syntax) := do
   if let some stx' := adjacentFields? stx then return some stx'
   let s ← get
-  let rules := s.macros.map fun (kind, pattern, template, vars) => ({ kind, pattern, template, vars } : MacroRule)
-  match expandMacro? rules stx s.nextScope with
-  | some stx' => modify (fun s => { s with nextScope := s.nextScope + 1 }); pure (some stx')
+  -- (11q) what expanded the syntax the user wrote, for hovers and go to definition
+  let recordExp (h : SyntaxHandler) (stx' : Syntax) : ElabM R Unit :=
+    if stx.info.stop > 0 then pushInfo (.done (.expansion stx.info stx.kind h (some stx'))) else pure ()
+  match expandMacroRule? s.macros stx s.nextScope with
+  | some (stx', r) =>
+    modify (fun s => { s with nextScope := s.nextScope + 1 })
+    recordExp (.rule r.site r.module) stx'
+    pure (some stx')
   | none =>
     let some f := s.procMacros.lookup stx.kind | pure none
     let (traces, r) := s.runProcMacro f stx s.nextScope
     for t in traces do pushTrace stx.info t
     match r with
-    | .ok (stx', next) => modify (fun s => { s with nextScope := next }); pure (some stx')
+    | .ok (stx', next) =>
+      modify (fun s => { s with nextScope := next })
+      recordExp (.fn "macro" f) stx'
+      pure (some stx')
     | .error e => throwAt stx.info e
 
 /-- Expand the macros in a pattern (a list literal `[x, y]`, a user notation), outside
@@ -645,7 +653,10 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
           | _, _ => (ihVal, ty)
       | _ => (ihVal, ty)
     let ihName := "_ih_" ++ y
-    let ident : Syntax := .node a.info "term.ident" #[.ident a.info ihName]
+    -- (`term.recCall`: the hypothesis, after checking that no local variable named like
+    -- the definition is in scope, see `infer`)
+    let ident : Syntax := .node a.info "term.recCall"
+      #[.ident (stx.getArg 0).info rc.fn, .node a.info "term.ident" #[.ident a.info ihName]]
     let others := args.extract np (np + rc.pos) ++ args.extract (np + rc.pos + 1) args.size
     let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType lvl tys ·)
     let restStx := rest.map (·.1)
@@ -653,7 +664,8 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     let stx' := if restStx.isEmpty then ident
       else .node stx.info "term.app" #[ident, .node {} "null" restStx]
     return (stx', newBinds)
-  if isF stx || isExplicitF stx then throw s!"{rc.fn} may only be used in structurally recursive calls"
+  if isF stx || isExplicitF stx then
+    throw s!"{rc.fn} may only be used in structurally recursive calls (inside its equations, {rc.fn} is the definition: rename a local variable called {rc.fn})"
   match stx with
   | .node i k as =>
     let rs ← as.mapM (rewriteRecCalls g rc binds ihType lvl tys ·)
@@ -904,6 +916,7 @@ where
         | none => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.letPair" => elabLetPair ctx stx expected
+    | "term.letTuple" => elabLetPair ctx (letTupleToPairs stx) expected
     | "term.match" => elabMatch ctx stx expected
     | "term.by" => elabBy ctx stx expected
     | "term.num" =>
@@ -1009,6 +1022,7 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
           let ok ← tryCatch (do unify ctx.lvl q vq'; pure true) (fun _ => pure false)
           unless ok do
             throwAt b.info s!"binder quantity {showTerm ctx q'} does not match the expected {← showVal ctx q}"
+        recordBinder ctx b.info b.name dom
         let t ← checkFun (ctx.bind b.name dom) rest body (← instM cod (Val.var ctx.lvl))
         return .lam b.name t
       else if bi == .implicit || bi == .instImplicit then
@@ -1224,6 +1238,24 @@ partial def inferTuple (ctx : LocalCtx R) (items : List Syntax) : ElabM R (Term 
     let bTerm := quote g (ctx.lvl + 1) bty
     return (.pair a b, ctx.sortVal g (.sigma "_" (.qlit QuantitySyntax.explicitDefault) aty (.mk ctx.env bTerm) none))
 
+/-- `let q (x₁, x₂, …, xₙ) := e; body` (n ≥ 3) as right-nested pairs:
+`let q (x₁, r₁) := e; let q (x₂, r₂) := r₁; …; let q (xₙ₋₁, xₙ) := rₙ₋₂; body`, with
+names `rᵢ` that no user name can capture. -/
+partial def letTupleToPairs (stx : Syntax) : Syntax :=
+  let i := stx.info
+  let names : List Syntax := [stx.getArg 3, stx.getArg 5] ++
+    ((stx.getArg 7).args.toList.filter (· matches .ident ..))
+  let pair (x y e body : Syntax) : Syntax :=
+    .node i "term.letPair" #[stx.getArg 0, stx.getArg 1, .atom i "(", x, .atom i ",", y, .atom i ")",
+      .atom i ":=", e, .node i Syntax.nullKind #[], body]
+  let rec go : Nat → List Syntax → Syntax → Syntax
+    | _, [x, y], e => pair x y e (stx.getArg 12)
+    | k, x :: rest, e =>
+      let r : Name := s!"tuple✝{k}"
+      pair x (.ident i r) e (go (k + 1) rest (.node i "term.ident" #[.ident i r]))
+    | _, _, e => e
+  go 0 names (stx.getArg 10)
+
 /-- `let q (x, y) := s; body`, check mode only (the motive is the expected type). -/
 partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
   let q ← elabQuantity ctx .default (stx.getArg 1).args[0]?
@@ -1437,6 +1469,7 @@ partial def inferFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
       | none => freshMeta ctx s!"the type of {b.name}"
     let q ← elabQuantity ctx b.bi b.qty
     let vty ← evalIn ctx ty
+    recordBinder ctx b.info b.name vty
     let ctx' := ctx.bind b.name vty
     let (t, bty) ← inferFun ctx' rest body
     let g ← getGlobals
@@ -1466,6 +1499,7 @@ partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)
     | none =>
       let (val, vty) ← infer ctx (stx.getArg 5)
       pure (quote (← getGlobals) ctx.lvl vty, val)
+  recordBinder ctx (stx.getArg 2).info x (← evalIn ctx ty)
   let ctx' := ctx.define x (← evalIn ctx ty) (← evalIn ctx val)
   let body := stx.getArg 7
   match expected with
@@ -1492,7 +1526,9 @@ partial def elabPis (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
       | some s => checkType ctx s
       | none => pure (← freshMeta ctx s!"the type of {b.name}", ← freshLevelMeta)
     let q ← elabQuantity ctx b.bi b.qty
-    let (cod, l₂) ← elabPis (ctx.bind b.name (← evalIn ctx ty)) rest body
+    let vty ← evalIn ctx ty
+    recordBinder ctx b.info b.name vty
+    let (cod, l₂) ← elabPis (ctx.bind b.name vty) rest body
     return (.pi b.name b.bi q ty cod (some (.imax l₁ l₂)), .imax l₁ l₂)
 
 /-- `(x : A) × (y : B) × C`, like `elabPis`. -/
@@ -1507,7 +1543,9 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
       | some s => checkType ctx s
       | none => pure (← freshMeta ctx s!"the type of {b.name}", ← freshLevelMeta)
     let q ← elabQuantity ctx b.bi b.qty
-    let (cod, s) ← elabSigmas (ctx.bind b.name (← evalIn ctx ty)) rest body
+    let vty ← evalIn ctx ty
+    recordBinder ctx b.info b.name vty
+    let (cod, s) ← elabSigmas (ctx.bind b.name vty) rest body
     let l₂ ← match ← force s with
       | .sort l => pure l
       | _ => freshLevelMeta
@@ -1977,6 +2015,9 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       | .error e => throwAt cl.rhs.info e
     let mut ctx' := ctx
     for (n, ty, val) in binds do ctx' := ctx'.define n ty val
+    -- (11q) the pattern variables, in the arm's context
+    for v in views, x in vars, p in cl.pats do
+      if let .var n := v then recordBinder ctx' p.info n (typeOf x)
     let body ← check ctx' rhs goal
     -- wrap the lets, innermost last. A pattern variable that names a variable (a field)
     -- is substituted instead: a `let` at ω would use an erased field at ω.
@@ -2412,6 +2453,16 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       | _ =>
         pushInfo (.done (.unknownIdent ctx.info x ctx.names))
         throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
+  | "term.recCall" =>
+    -- a recursive call `f y …` of the definition whose equations these are, already the
+    -- induction hypothesis (`rewriteRecCalls`). A local variable named `f` would make the
+    -- call ambiguous (the second elaboration once called the local, T1): an error.
+    let fn := ((stx.getArg 0).getId?).getD "_"
+    if (lookupLocal ctx fn).isSome then
+      throwAt ((ctx.withInfo (stx.getArg 0)).info)
+        (s!"a local variable named {fn} shadows the recursive definition {fn}: inside the equations of {fn}, " ++
+          s!"`{fn} …` is the recursive call; rename the local variable") "shadowed-recursive"
+    infer ctx (stx.getArg 1)
   | "term.type" | "term.sort" =>
     let l ← match (stx.getArg 1).args[0]? with
       | some ls => elabLevel ls
@@ -2542,7 +2593,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let ctx' := { ctx with bound := ctx.bound.zipIdx.map fun (b, i) => b && !hidden.contains i }
     let ty ← evalIn ctx (← freshMeta ctx' "the type of this match")
     return (← check ctx stx ty, ty)
-  | "term.letPair" | "term.absurd" | "term.rfl" =>
+  | "term.letPair" | "term.letTuple" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
   -- (13g–i) as-patterns, anonymous constructors, pattern `let`, structure update
   | "term.asPat" => throwAt ctx.info "an as-pattern `x@p` is only allowed in a pattern"
@@ -2590,6 +2641,7 @@ partial def evalTacticStx (code : Code) (st : TacState R) (stx : Syntax) (record
     return st'
   if let some stx' ← expand? stx then return ← evalTacticStx code st stx'
   let some f := (← get).tactics.lookup stx.kind | throwAt stx.info s!"no tactic for syntax kind {stx.kind}"
+  if stx.info.stop > 0 then pushInfo (.done (.expansion stx.info stx.kind (.fn "tactic" f) none))
   let t := apply code (run code [] (.global "TacticM.run")) (apply code (run code [] (.global f)) (encodeSyntax stx))
   runTac code stx.info st t
 
@@ -2664,6 +2716,12 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
       | some (T, nParams, nFields) => mkCon 1 [encodePair (encodeString T) (encodePair (.nat nParams) (.nat nFields))]
       | none => mkCon 0 []
     return ← runTac code info st (apply code (fld 1) ans)
+  if tag == TacTag.isDefinition then
+    let ans := match g.find? (← str (fld 0)) with
+      | some { value := some _, inline := false, .. } => mkCon 1 [encodeBool true]
+      | some _ => mkCon 1 [encodeBool false]
+      | none => mkCon 0 []
+    return ← runTac code info st (apply code (fld 1) ans)
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
@@ -2723,12 +2781,14 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (apply code (fld 2) r)
   if tag == TacTag.unfold then
     let n ← str (fld 1)
-    match g.find? n with
-    | some { value := some _, inline := false, .. } => pure ()
-    | some _ => throwAt info s!"unfold: {n} is not a definition"
-    | none => throwAt info s!"unfold: unknown constant {n}"
     let t ← zonk lvl (← reify st.handles (fld 2) lvl)
-    let (r, st) ← refl st gl (← unfoldIn gl.ctx n t) (← typeOf? gl t)
+    -- not a definition (a constructor, an axiom, an unknown name): nothing to unfold, the
+    -- term comes back unchanged, so a library can try it without catching; the `unfold`
+    -- tactic reports the reason (`TacticM.isDefinition`)
+    let t' ← match g.find? n with
+      | some { value := some _, inline := false, .. } => unfoldIn gl.ctx n t
+      | _ => pure t
+    let (r, st) ← refl st gl t' (← typeOf? gl t)
     return ← runTac code info st (apply code (fld 3) r)
   if tag == TacTag.rewrite then
     let h ← zonk lvl (← reify st.handles (fld 1) lvl)

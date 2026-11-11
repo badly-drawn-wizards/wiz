@@ -1,0 +1,35 @@
+import FeralCore
+import Feral
+-- Binary search through a shared borrow. Hand-lowered: drafts/feral/lowered/09_bsearch.wiz
+
+feral
+  fn bsearch {'a} (v : &'a Vec U64) (x : U64) : Option USize
+    -- requires sorted v                                -- wishful: spec-clauses
+    -- ensures match result with                        -- wishful: spec-clauses
+    --   | .some i => v[i] = x
+    --   | .none => ¬ (x ∈ v)                           -- wishful: prop-connectives
+  := {
+    let mut lo : USize := 0;
+    let mut hi := v.len;
+    while lo < hi
+      -- invariant lo ≤ hi ∧ hi ≤ v.len                 -- wishful: prop-connectives
+      -- decreases hi - lo                              -- wishful: decreases-loops
+    do {
+      let mid := lo + (hi - lo) / 2;
+      if v[mid] < x then lo := mid + 1
+      else if x < v[mid] then hi := mid
+      else return .some mid
+    };
+    .none
+  }
+end
+
+def sorted : Vec U64 := Vec.ofList (List.map U64.mk (.cons 1 (.cons 3 (.cons 5 (.cons 7 (.cons 9 .nil))))))
+def find (x : Nat) : Result (Option Nat) := match Shr.borrow Region.static sorted (fun ρ h v => bsearch v (U64.mk x)) with
+  | .ok (.some i) => .ok (.some i.val)
+  | .ok .none => .ok .none
+  | .err e => .err e
+#eval find 7
+-- .ok (.some 3)
+#eval find 4
+-- .ok .none

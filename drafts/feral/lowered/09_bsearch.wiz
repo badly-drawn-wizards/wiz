@@ -1,0 +1,45 @@
+import FeralCore
+-- Lowering of drafts/feral/surface/09_bsearch.wiz (rules: drafts/feral/LOWERING.md).
+-- A shared borrow `&'a Vec U64` is `Shr ρ (Vec U64)`: the vector itself (read with
+-- `.val`), not handed back (L3). The loop has a `decreases hi - lo` clause; until well-founded recursion lands it
+-- is still a `partial def` (RD8), and the clause becomes a comment.
+
+-- the loop `while lo < hi invariant … decreases hi - lo do { … }`
+-- live variables in and out: lo, hi; `return` inside: Flow.ret
+partial def bsearch.loop0 {ρ : Region} (v : Shr ρ (Vec U64)) (x : U64) (lo : U64) (hi : U64) :
+    Result (Flow (U64 × U64) (Option U64)) :=
+  match U64.lt lo hi with
+  | .true =>
+    let mid := U64.midpoint lo hi;                  -- lo + (hi - lo) / 2: no overflow
+    (match Vec.index v.val mid with                     -- v[mid] (a bounds check: lo ≤ mid < hi ≤ len)
+    | .ok y => (match U64.lt y x with
+      | .true => (match U64.add mid (U64.lit 1) with  -- lo := mid + 1
+        | .ok lo => bsearch.loop0 v x lo hi
+        | .err e => .err e)
+      | .false => match U64.lt x y with
+        | .true => bsearch.loop0 v x lo mid      -- hi := mid
+        | .false => .ok (.ret (Option.some mid)))   -- return .some mid
+    | .err e => .err e)
+  | .false => .ok (.brk (lo, hi))
+
+-- fn bsearch {'a} (v : &'a Vec U64) (x : U64) : Option USize
+--   requires sorted v
+--   ensures match result with | .some i => v[i] = x | .none => ¬ x ∈ v
+def bsearch {ρ : Region} (v : Shr ρ (Vec U64)) (x : U64) : Result (Option U64) :=
+  let lo := U64.lit 0;
+  let hi := Vec.len v;
+  match bsearch.loop0 v x lo hi with
+  | .ok fl => (match fl with
+    | .brk lh => .ok Option.none
+    | .ret r => .ok r)
+  | .err e => .err e
+
+def sorted : Vec U64 := Vec.ofList (List.map U64.mk (.cons 1 (.cons 3 (.cons 5 (.cons 7 (.cons 9 .nil))))))
+def find (x : Nat) : Result (Option Nat) := match Shr.borrow Region.static sorted (fun ρ h v => bsearch v (U64.mk x)) with
+  | .ok (.some i) => .ok (.some i.val)
+  | .ok .none => .ok .none
+  | .err e => .err e
+#eval find 7
+-- .ok (.some 3)
+#eval find 4
+-- .ok .none

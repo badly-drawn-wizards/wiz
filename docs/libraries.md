@@ -138,12 +138,21 @@ elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
 
 ## Logic, heap predicates and Hoare triples ✅
 
-`lib/Logic.wiz` (`∧`, `∨`, `∃`, `↔`, `Not`, equality lemmas, `funext`, `propext`),
+`lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
+`/\`, `\/`, `exists`, `<->`, equality lemmas, `funext`, `propext`; [13e](stages/13-language.md)),
 `lib/HProp.wiz` (model heaps, `emp`, `↦`, `⋆`, `−∗`, entailment and the separation-logic
 laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpreter),
 `lib/HoareTactics.wiz` (SLF-style automation: `xsimpl`, `xpull`, `xstep`, `xapp`, …) and
 `lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
 freeing a list). See [stage 24](stages/24-separation-logic.md).
+
+## Functors and Booleans
+
+`lib/Functor.wiz` (`import Functor`): `Functor`, `Applicative`, `<$>`, `<*>`; every `Monad`
+is an `Applicative` and every `Applicative` a `Functor`; `Monad`/`Functor` instances for
+`Option`, `Except E` and `List`, and `Option.map`/`bind`, `Except.map`/`bind`,
+`List.flatMap` (`List.map` is `lib/Text.wiz`'s, which Functor imports). See [13d](stages/13-language.md). The Prelude itself has `if … then …
+else`, short-circuiting `&&` and `||`, and `!` ([13c](stages/13-language.md)).
 
 ## 9j: text and lists (`lib/Text.wiz`) ✅
 

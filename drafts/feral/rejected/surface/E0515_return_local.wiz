@@ -1,0 +1,12 @@
+import FeralCore
+import Feral
+-- REJECTED (Rust E0515: returning a reference to a local).
+-- expect: E0515 at 10
+-- `&y` is a scope at a fresh region; the function must return a `Shr ρa U64`, and the
+-- scope's result type is chosen where the fresh region doesn't exist (L20, L21).
+feral
+  fn bad {'a} (x : &'a U64) : &'a U64 := {
+    let y := 5;
+    &y
+  }
+end

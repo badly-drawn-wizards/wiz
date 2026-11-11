@@ -246,6 +246,8 @@ def synthPending (force : Bool := false) : ElabM R Bool := do
     match ← synthInstance ctx ty with
     | some t =>
       unify ctx.lvl (← evalIn ctx m) (← evalIn ctx t)
+      -- (11q) which instance, for the infoview (at the application that needed it)
+      if ctx.info.stop > 0 then pushInfo (.inst ctx.info ctx ty t)
       progress := true
     | none =>
       if ← instReady ctx ty then
