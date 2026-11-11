@@ -136,6 +136,24 @@ at `r (bits n)` (instances of the numeric classes, when they land: `Add`, `Sub`,
 `Neg`, `OfNat` at `r (HwTy.bits n)` through `Hw`), wire names from `let` binders (an
 elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
 
+## H14 C4: bit-level reasoning (`lib/Hdl/Bits.wiz`) ✅
+
+The toy CPU's finding C2: `rfl` reduces a multiplexer on a known select but not a gate on
+a symbolic bit (`Hw.and 0 x`), so a circuit had to be written with multiplexers for its
+proof to go through. `Bit.ind P h0 h1 x` (from the words' range, 22l: a one-bit word is 0
+or 1) splits a property of a bit into its two closed cases, `Bit.ind2`/`ind3` two or
+three bits; each case is then evaluation. Closed equations of bits are best closed with
+`Bit.eqv _ _ rfl` (by their numbers), since two equal words may carry different range
+proofs. The library proves the laws once: constants (`Bit.and_zero`, `or_one`, …),
+`not_not`, idempotence, complements, commutativity, associativity, De Morgan,
+distributivity; the multiplexer normal form (`Bit.and_mux`: `a & b = a ? b : 0`,
+`or_mux`, `not_mux`, `xor_mux`; `HwTy.El.mux_same`, `mux_not` at any type); and the
+Boolean bridge `Bit.toBool` (a homomorphism: `toBool_and/or/xor/not/mux`;
+`Bit.eq_of_toBool`), which turns an equation of bits into a Boolean goal for
+`sat_decide` (28b). Example: `examples/hdl-bits.wiz` (the CPU's stall signal written
+with gates, proved equal to its multiplexer form and, once the opcode is known, to
+`!txReady`, for every value of the status bits).
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
