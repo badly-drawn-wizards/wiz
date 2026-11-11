@@ -1174,6 +1174,29 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let added := s.globals.order.extract before s.globals.order.size
       { s with globals := { s.globals with
           privates := added.foldl (fun m n => m.insert n s.module) s.globals.privates } }
+  | "command.sealed" =>
+    -- (22k) `sealed inductive T …`: declare the seal, an axiom `T.seal✝ : Type` private to
+    -- this module; `elabInductive` then puts it in `T`'s index tail. Only this
+    -- declaration can write the name, and a constant is compared by name, so no other
+    -- declaration is convertible to `T`.
+    let inner := cmd.getArg 1
+    if !inner.isOfKind "command.inductive" then
+      report .error cmd.info "`sealed` applies to an `inductive` declaration"
+    else
+      let T := ((inner.getArg 1).getId?).getD "_"
+      if s.globals.contains T then
+        report .error (inner.getArg 1).info s!"'{T}' has already been declared"
+      else
+        match addDeclSorted s.globals { name := sealName T, levelParams := [], type := .sort 1, value := none } with
+        | .error e => report .error cmd.info s!"kernel rejected {sealName T}: {e}"
+        | .ok g =>
+          let g := { g with privates := g.privates.insert (sealName T) s.module,
+                            builtins := (sealKey T, sealName T) :: g.builtins }
+          modify fun s => { s with globals := g, builtins := (sealKey T, sealName T) :: s.builtins }
+          -- (`T.desc` is private when a constructor is, 13b: a native type's always is, so
+          -- `μ (T.desc …) i` written out elsewhere can't hand the seal to unification; a
+          -- sealed type with public constructors unfolds anyway)
+          elabCommand inner
   | "command.local" =>
     -- (13m) grammar that stays in this module: remember what the command adds
     let inner := cmd.getArg 1
@@ -2044,6 +2067,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             report .error getStx.info s!"{get} must take a value of {T} as its last argument"
           else if (reprOf? s.builtins T).isSome then
             report .error fStx.info s!"{T} already has a native representation"
+          -- (22k) found by the seal, so `T` has no look-alikes; and built only in its
+          -- module (R5: the module keeps the invariant the natives rely on)
+          else if !s.builtins.any (·.1 == sealKey T) then
+            report .error fStx.info s!"a native representation needs `sealed inductive {T}`: a look-alike of an unsealed type is the same type"
+          else if (s.globals.privates.get? f) != some s.module then
+            report .error fStx.info s!"a native representation needs a private constructor (`| private {(f.splitOn ".").getLast!} …`): {T}'s module keeps the invariant its natives rely on"
           else
             let (_, getArity) := target g 0 (eval g [] dg.type) 1000
             let key := ReprInfo.key T { mkImpl := impl, getImpl := get, tag, nfields, r, mkArity, p, getArity }
