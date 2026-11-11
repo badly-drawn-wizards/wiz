@@ -1,4 +1,5 @@
-import Prelude
+import Result
+import Logic
 -- Optics for borrows (RD11): the target library of Feral's lowering of
 -- mutable borrows. See /workspace/wiz-notes/borrows-as-optics.md.
 --
@@ -9,39 +10,7 @@ import Prelude
 -- This file names the pieces and states the laws. The representation stays the
 -- closure form, which is what reference counting with reuse wants.
 
--- The result monad of lowered code (RD7): every panic (`panic!`, `unwrap` on `none`,
--- overflow, an index out of bounds, division by zero) is an `err`.
-inductive Error where
-  | panic (msg : String)
-  | overflow
-  | outOfBounds
-  | unwrapNone
-  | divZero
-
-inductive Result (A : Type) where
-  | ok (a : A)
-  | err (e : Error)
-
--- Lowered code matches on results directly (no closures around owners); `bind` and the
--- monad instance are for hand-written specs and Wiz code calling lowered code (RD16).
-def Result.bind {A B : Type} (x : Result A) (f : A → Result B) : Result B := match x with
-  | .ok a => f a
-  | .err e => .err e
-def Result.map {A B : Type} (f : A → B) (x : Result A) : Result B := match x with
-  | .ok a => .ok (f a)
-  | .err e => .err e
-instance : Monad Result where
-  pure := fun a => Result.ok a
-  bind := Result.bind
-
--- `P` holds of the value, if there is one (a failure satisfies everything).
-def Result.All {A : Type} (P : A → Prop) : Result A → Prop
-  | .ok a => P a
-  | .err _ => True
--- there is a value, and `P` holds of it (an `∃` without `∃`)
-def Result.Holds {A : Type} (P : A → Prop) : Result A → Prop
-  | .ok a => P a
-  | .err _ => False
+-- `Result`, `Error` and their specification predicates are in lib/Result.wiz.
 
 -- ## Store: a value and a way to put it back
 --
@@ -235,29 +204,19 @@ def List.headL_lawful {A : Type} : PLens.Lawful (@List.headL A) :=
 -- ## Composition preserves lawfulness
 --
 -- A reborrow chain `&mut (*r).f.g` is a composite of field lenses, so its laws follow
--- from theirs. (Equational reasoning by transport; `congrArg` and `Eq.trans` are J.)
-
-def Optic.congrArg {A B : Type} (f : A → B) {a b : A} (e : a = b) : f a = f b :=
-  transp (fun b _ => f a = f b) (refl (f a)) e
-def Optic.sym {A : Type} {a b : A} (e : a = b) : b = a :=
-  transp (fun b _ => b = a) (refl a) e
--- transport into a proposition: an equation of propositions computes to `(0 _ : P → Q)
--- × (Q → P)`, so the usable direction is the second field of `P b = P a`
-def Optic.subst {A : Type} (P : A → Prop) {a b : A} (e : a = b) (pa : P a) : P b :=
-  (@Optic.congrArg A Prop P b a (Optic.sym e)).2 pa
-def Optic.trans {A : Type} {a b c : A} (e₁ : a = b) (e₂ : b = c) : a = c :=
-  transp (fun c _ => a = c) e₁ e₂
+-- from theirs. (Equational reasoning with lib/Logic.wiz's `Eq.congrArg`, `Eq.trans`, `Eq.symm` and
+-- `Eq.substProp`.)
 
 def Lens.comp_lawful {S A B : Type} (l : Lens S A) (m : Lens A B)
     (hl : Lens.Lawful l) (hm : Lens.Lawful m) : Lens.Lawful (Lens.comp l m) :=
-  (fun s => Optic.trans (Optic.congrArg (l s).2 (hm.1 (l s).1)) (hl.1 s),
-   fun s b => Optic.trans
-     (Optic.congrArg (fun x => (m x).1) (hl.2.1 s ((m (l s).1).2 b)))
+  (fun s => Eq.trans (Eq.congrArg (l s).2 (hm.1 (l s).1)) (hl.1 s),
+   fun s b => Eq.trans
+     (Eq.congrArg (fun x => (m x).1) (hl.2.1 s ((m (l s).1).2 b)))
      (hm.2.1 (l s).1 b),
-   fun s b c => Optic.trans
-     (Optic.congrArg (fun x => (l ((l s).2 ((m (l s).1).2 b))).2 ((m x).2 c)) (hl.2.1 s ((m (l s).1).2 b)))
-     (Optic.trans
-       (Optic.congrArg (l ((l s).2 ((m (l s).1).2 b))).2 (hm.2.2 (l s).1 b c))
+   fun s b c => Eq.trans
+     (Eq.congrArg (fun x => (l ((l s).2 ((m (l s).1).2 b))).2 ((m x).2 c)) (hl.2.1 s ((m (l s).1).2 b)))
+     (Eq.trans
+       (Eq.congrArg (l ((l s).2 ((m (l s).1).2 b))).2 (hm.2.2 (l s).1 b c))
        (hl.2.2 s ((m (l s).1).2 b) ((m (l s).1).2 c))))
 
 -- GetPut for two independent places borrowed at once. (PutGet and PutPut hold too, by
@@ -265,17 +224,17 @@ def Lens.comp_lawful {S A B : Type} (l : Lens S A) (m : Lens A B)
 -- equation of pairs with its computed form.)
 def Lens.pair_getPut {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m) :
     Lens.GetPut (Lens.pair l m) := fun s =>
-  @Optic.subst S (fun (y : S) => (m y).2 (m s).1 = s) s ((l s).2 (l s).1) (Optic.sym (hl.1 s)) (hm.1 s)
+  @Eq.substProp S (fun (y : S) => (m y).2 (m s).1 = s) s ((l s).2 (l s).1) (Eq.symm (hl.1 s)) (hm.1 s)
 
 -- Equality of a pair with a pair-valued variable, componentwise. The equation computes to
 -- `(e : a = p.1) × (cast B B _ b = p.2)` (the second component's type is cast along the
 -- first's equation, and `B` is a variable, so the cast is stuck): `castRefl` removes it.
 def Optic.pairEq {A B : Type} (a : A) (b : B) (p : A × B) (e₁ : a = p.1) (e₂ : b = p.2) : (a, b) = p :=
-  (e₁, Optic.trans (@castRefl B rfl b) e₂)
+  (e₁, Eq.trans (@castRefl B rfl b) e₂)
 def Lens.pair_putGet {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m)
     (hi : Lens.Indep l m) : Lens.PutGet (Lens.pair l m) := fun s ab =>
   Optic.pairEq ((l ((m ((l s).2 ab.1)).2 ab.2)).1) ((m ((m ((l s).2 ab.1)).2 ab.2)).1) ab
-    (Optic.trans (hi.2.1 ((l s).2 ab.1) ab.2) (hl.2.1 s ab.1))
+    (Eq.trans (hi.2.1 ((l s).2 ab.1) ab.2) (hl.2.1 s ab.1))
     (hm.2.1 ((l s).2 ab.1) ab.2)
 
 -- `underR` preserves the laws, case by case on the inner result. These are the lemmas
@@ -284,7 +243,7 @@ def Lens.pair_putGet {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Law
 def Store.underR_gp {A B S : Type} (k : A → S) (a : A) (s : S) (hk : k a = s) : (r : Result (Store B A)) →
     Result.All (fun (st : Store B A) => st.2 st.1 = a) r →
     Result.All (fun (st : Store B S) => st.2 st.1 = s) (Store.underR k r)
-  | .ok st, h => Optic.trans (Optic.congrArg k h) hk
+  | .ok st, h => Eq.trans (Eq.congrArg k h) hk
   | .err e, h => ()
 def Store.underR_get {A B S : Type} (k : A → S) (b : B) : (r : Result (Store B A)) →
     Result.Holds (fun (st : Store B A) => st.1 = b) r →
@@ -295,7 +254,7 @@ def Store.underR_pg1 {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B
     (hC : (x : A) → @Store.underR A B S k (m x) = C (k x)) (st : Store B A) (b : B)
     (h : Result.Holds (fun (st' : Store B A) => st'.1 = b) (m (st.2 b))) :
     Result.Holds (fun (st' : Store B S) => st'.1 = b) (C (k (st.2 b))) :=
-  @Optic.subst (Result (Store B S)) (Result.Holds (fun (st' : Store B S) => st'.1 = b))
+  @Eq.substProp (Result (Store B S)) (Result.Holds (fun (st' : Store B S) => st'.1 = b))
     (Store.underR k (m (st.2 b))) (C (k (st.2 b))) (hC (st.2 b))
     (Store.underR_get k b (m (st.2 b)) h)
 def Store.underR_pg {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B)
@@ -309,13 +268,13 @@ def Store.underR_pg {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B)
 def Store.underR_put {A B S : Type} (k : A → S) (b : B) (t : A) : (r : Result (Store B A)) →
     Result.Holds (fun (st : Store B A) => st.2 b = t) r →
     Result.Holds (fun (st : Store B S) => st.2 b = k t) (Store.underR k r)
-  | .ok st, h => Optic.congrArg k h
+  | .ok st, h => Eq.congrArg k h
   | .err e, h => h
 def Store.underR_pp1 {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B)
     (hC : (x : A) → @Store.underR A B S k (m x) = C (k x)) (st : Store B A) (a b : B)
     (h : Result.Holds (fun (st' : Store B A) => st'.2 b = st.2 b) (m (st.2 a))) :
     Result.Holds (fun (st' : Store B S) => st'.2 b = k (st.2 b)) (C (k (st.2 a))) :=
-  @Optic.subst (Result (Store B S)) (Result.Holds (fun (st' : Store B S) => st'.2 b = k (st.2 b)))
+  @Eq.substProp (Result (Store B S)) (Result.Holds (fun (st' : Store B S) => st'.2 b = k (st.2 b)))
     (Store.underR k (m (st.2 a))) (C (k (st.2 a))) (hC (st.2 a))
     (Store.underR_put k b (st.2 b) (m (st.2 a)) h)
 def Store.underR_pp {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B)

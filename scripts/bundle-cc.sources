@@ -1,0 +1,10 @@
+# The external inputs of scripts/bundle-cc.sh (stage 26f): FILE SHA256 URL… (tried in
+# order; each download is checked against SHA256). The release job caches the
+# downloads keyed by this file's hash, and on master copies them to the release
+# `bundle-inputs` of this repository, which is the last mirror tried.
+# A $U in a URL is an Ubuntu pool (pool/main/...), $R the bundle-inputs release.
+libc6_2.27-3ubuntu1.6_amd64.deb 5b813d4512491cd8fb30b2eb9192349ee75ffe3c9f21ae136cc7b2429f70c3b2 $U/g/glibc/libc6_2.27-3ubuntu1.6_amd64.deb
+libc6-dev_2.27-3ubuntu1.6_amd64.deb 96ae7d2cf38f0547ca3cccb3344c8802fdf5bcd71c4b6d9aed09558ac8cc87db $U/g/glibc/libc6-dev_2.27-3ubuntu1.6_amd64.deb
+linux-libc-dev_4.15.0-213.224_amd64.deb 06d9f16644d3a1b2ab7dd01730e833d516b6f575d975855f496eea6463fef2f6 $U/l/linux/linux-libc-dev_4.15.0-213.224_amd64.deb
+gmp-6.3.0.tar.xz a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898 https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz https://ftpmirror.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+gc-8.2.8.tar.gz 7649020621cb26325e1fb5c8742590d92fb48ce5c259b502faf7d9fb5dabb160 https://github.com/ivmai/bdwgc/releases/download/v8.2.8/gc-8.2.8.tar.gz https://www.hboehm.info/gc/gc_source/gc-8.2.8.tar.gz
