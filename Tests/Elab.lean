@@ -5099,6 +5099,24 @@ def hdlGroup : Group where
     { name := "Verilog: declarations before use (regs, wires, then the updates), sized initial values", run := fun _ =>
         okLibs (hdlVerilogSrc ++ "#eval v1\n")
           ["\"module counter(input clk, input [0:0] x, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd250;\\n  wire [7:0] n3 = r + 8'd1;\\n  always @(posedge clk) r <= n3;\\n  assign y = r;\\nendmodule\\n\""] },
+    { name := "S1: bundles, composition, reset and enable at random cycles; netlist simulation = values; names, test bench, PCF, VCD", run := fun _ => do
+        -- t1–t6: (agreement of the netlist simulations with `Circuit.run`, the netlist size
+        -- and the outputs) for the bundled counter, a delay chain, `par`, a feedback loop,
+        -- two instances, and reset and enable driven at random cycles; then the counter's
+        -- Verilog (named ports and registers, `if (rst) … else if (en)`), pin constraints,
+        -- the problems of a bad pin list, a waveform, and the sizes of a list of designs
+        okLibs (← IO.FS.readFile "examples/hdl-compose.wiz")
+          ["(.true, .cons 17 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 2 (.cons 4 (.cons 6 (.cons 8 (.cons 8 (.cons 10 (.cons 10 (.cons 10 (.cons 12 (.cons 14 (.cons 14 (.cons 14 (.cons 16 (.cons 19 (.cons 16 (.cons 14 (.cons 12 (.cons 12 (.cons 12 (.cons 12 (.cons 10 (.cons 8 (.cons 6 (.cons 6 (.cons 4 (.cons 2 .nil)))))))))))))))))))))))))))))))",
+           "(.true, .cons 5 (.cons 9 (.cons 7 (.cons 0 (.cons 0 (.cons 140 (.cons 173 (.cons 172 (.cons 30 (.cons 11 (.cons 226 (.cons 250 (.cons 211 .nil)))))))))))))",
+           "(.true, .cons 9 (.cons 2389 (.cons 1798 (.cons 150 (.cons 40 (.cons 17709 (.cons 24795 (.cons 35041 (.cons 43032 .nil)))))))))",
+           "(.true, .cons 4 (.cons 1 (.cons 1 (.cons 26 (.cons 128 (.cons 123 (.cons 250 (.cons 41 (.cons 185 .nil)))))))))",
+           "(.true, .cons 29 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 .nil)))))))))))))))))))))))))))))))))))))))))",
+           "(.true, .cons 19 (.cons 0 (.cons 0 (.cons 0 (.cons 2 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 2 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 2 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 2 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 2 (.cons 2 (.cons 0 (.cons 0 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 2 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 .nil)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
+           "\"module counter(input clk, input [0:0] rst, input [0:0] en, input [0:0] go, output [3:0] leds, output [0:0] top);\\n  reg [3:0] count; initial count = 4'd0;\\n  reg [0:0] up; initial up = 1'd1;\\n  wire [3:0] n6 = count + 4'd1;\\n  wire [3:0] n7 = count - 4'd1;\\n  wire [3:0] n8 = up ? n6 : n7;\\n  wire [3:0] next = go ? n8 : count;\\n  wire [0:0] n11 = next == 4'd9;\\n  wire [0:0] n13 = next == 4'd0;\\n  wire [0:0] n16 = n13 ? 1'd1 : up;\\n  wire [0:0] n17 = n11 ? 1'd0 : n16;\\n  wire [0:0] n18 = count == 4'd9;\\n  always @(posedge clk) if (rst) count <= 4'd0; else if (en) count <= next;\\n  always @(posedge clk) if (rst) up <= 1'd1; else if (en) up <= n17;\\n  assign leds = count;\\n  assign top = n18;\\nendmodule\\n\"",
+           "\"set_io clk 21\\nset_io rst 1\\nset_io en 2\\nset_io go 3\\nset_io leds[0] 99\\nset_io leds[1] 98\\nset_io leds[2] 97\\nset_io leds[3] 96\\nset_io top 95\\n\"",
+           ".cons \"no pin for port rst\" (.cons \"no pin for port en\" (.cons \"port leds has 4 bits, one pin given\" (.cons \"no pin for port top\" (.cons \"pin for no port: led\" .nil))))",
+           "\"$timescale 1ns $end\\n$scope module counter $end\\n$var wire 1 ! clk $end\\n$var wire 1 \\\" go $end\\n$var wire 4 # leds $end\\n$var wire 1 $ top $end\\n$var wire 4 % count $end\\n$var wire 1 & up $end\\n$upscope $end\\n$enddefinitions $end\\n#0\\n0!\\n0\\\"\\nb0000 #\\n0$\\nb0000 %\\n1&\\n#1\\n1!\\n#2\\n0!\\n#3\\n1!\\n#4\\n0!\\n#5\\n1!\\n#6\\n0!\\n1\\\"\\n#7\\n1!\\n#8\\n\"",
+           ".cons 17 (.cons 5 (.cons 4 .nil))"] },
     { name := "Verilog: Icarus Verilog accepts the emitted modules (skipped without iverilog on PATH)", run := fun _ => do
         let found ← (do let o ← IO.Process.output { cmd := "iverilog", args := #["-V"] }; pure (o.exitCode == 0)) <|> pure false
         unless found do IO.println "    (no iverilog: skipped)"; return
@@ -5113,7 +5131,27 @@ def hdlGroup : Group where
             let file := dir / s!"m{i}.v"
             IO.FS.writeFile file text
             let o ← IO.Process.output { cmd := "iverilog", args := #["-g2005", "-o", (dir / "out.vvp").toString, file.toString] }
-            unless o.exitCode == 0 do throw (IO.userError s!"iverilog rejects module {i}:\n{o.stderr}\n{text}") }
+            unless o.exitCode == 0 do throw (IO.userError s!"iverilog rejects module {i}:\n{o.stderr}\n{text}")
+        -- the composed circuits, and the generated test bench replaying the counter with
+        -- reset and enable at random cycles against its value simulation
+        let src ← IO.FS.readFile "examples/hdl-compose.wiz"
+        let s := runFrontend (R := ZeroOneMany) (src ++ "\n#eval vCounter\n#eval vTwo\n#eval vPipe\n#eval tbCounter\n#eval vecCounter\n")
+          { trustedModule := Tests.libModule, loader := ← libLoader }
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render ""
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors: {errs}")
+        let texts := (s.messages.toList.map (·.text)).drop 11
+        let unq (t : String) : String := ((t.drop 1).dropRight 1).replace "\\n" "\n" |>.replace "\\\"" "\""
+        IO.FS.withTempDir fun dir => do
+          let names := ["counter.v", "two.v", "pipe.v", "tb.v", "counter.vec"]
+          for t in texts, nm in names do IO.FS.writeFile (dir / nm) (unq t)
+          for nm in ["two.v", "pipe.v"] do
+            let o ← IO.Process.output { cmd := "iverilog", args := #["-g2005", "-o", (dir / "x.vvp").toString, (dir / nm).toString] }
+            unless o.exitCode == 0 do throw (IO.userError s!"iverilog rejects {nm}:\n{o.stderr}")
+          let o ← IO.Process.output { cmd := "iverilog", args := #["-g2005", "-o", (dir / "tb.vvp").toString, (dir / "tb.v").toString, (dir / "counter.v").toString], cwd := dir }
+          unless o.exitCode == 0 do throw (IO.userError s!"iverilog rejects the test bench:\n{o.stderr}")
+          let r ← IO.Process.output { cmd := "vvp", args := #["-n", (dir / "tb.vvp").toString], cwd := dir }
+          unless (r.stdout.splitOn "PASS counter: 60 cycles").length > 1 do
+            throw (IO.userError s!"test bench: {r.stdout}{r.stderr}") }
   ]
 
 /-! ## Regions: borrow checking as typing (lib/Region.wiz, Rust DSL RD12) -/

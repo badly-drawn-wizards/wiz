@@ -882,7 +882,7 @@ def Circuit.comb {ω i o : HwTy} (f : Comb i o) : Circuit i o :=
   Circuit.mk (HwTy.bits 0) (BitVec.ofNat 0 0) (fun s x => Circuit.combStep f s x)
 
 -- one register: the output is the input of the cycle before (`init` first)
-def Circuit.delay {ω t : HwTy} (init : HwTy.El t) : Circuit t t :=
+def Circuit.delay (ω t : HwTy) (init : HwTy.El t) : Circuit t t :=
   Circuit.mk t init (fun s x => Hw.pair x s)
 
 -- `a`, then `b` on its outputs
@@ -901,7 +901,7 @@ def Circuit.par {ω i1 o1 i2 o2 : HwTy} (a : Circuit i1 o1) (b : Circuit i2 o2) 
 
 -- feedback through a register: `c`'s second output comes back as its second input in
 -- the next cycle (`init` first)
-def Circuit.loop {ω i o f : HwTy} (init : HwTy.El f) (c : Circuit (HwTy.prod i f) (HwTy.prod o f)) : Circuit i o :=
+def Circuit.loop {ω i o f : HwTy} (c : Circuit (HwTy.prod i f) (HwTy.prod o f)) (init : HwTy.El f) : Circuit i o :=
   Circuit.mk (HwTy.prod c.st f) (c.init, init) (fun s x =>
     let rc := c.step (Hw.fst s) (Hw.pair x (Hw.snd s));
     Hw.pair (Hw.pair (Hw.fst rc) (Hw.snd (Hw.snd rc))) (Hw.fst (Hw.snd rc)))
@@ -980,7 +980,7 @@ def Circuit.runFrom_comb {i o : HwTy} (f : Comb i o) :
   | s, .cons x xs => Hdl.consEq (Comb.el f x) (Circuit.runFrom_comb f s xs)
 
 def Circuit.runFrom_delay {t : HwTy} (v : HwTy.El t) : (s : HwTy.El t) → (xs : List (HwTy.El t)) →
-    Circuit.runFrom (Circuit.delay v) s xs = Hdl.shift s xs
+    Circuit.runFrom (Circuit.delay t v) s xs = Hdl.shift s xs
   | s, .nil => refl (@List.nil (HwTy.El t))
   | s, .cons x xs => Hdl.consEq s (Circuit.runFrom_delay v x xs)
 
@@ -1004,10 +1004,10 @@ def Circuit.runFrom_par {i1 o1 i2 o2 : HwTy} (a : Circuit i1 o1) (b : Circuit i2
 -- feedback: one cycle (the definition, as an equation to rewrite with)
 def Circuit.runFrom_loop {i o f : HwTy} (v : HwTy.El f) (c : Circuit (HwTy.prod i f) (HwTy.prod o f))
     (s : HwTy.El c.st) (fb : HwTy.El f) (x : HwTy.El i) (xs : List (HwTy.El i)) :
-    Circuit.runFrom (Circuit.loop v c) (s, fb) (List.cons x xs) =
+    Circuit.runFrom (Circuit.loop c v) (s, fb) (List.cons x xs) =
       List.cons (Circuit.stepEl c s (x, fb)).2.1
-        (Circuit.runFrom (Circuit.loop v c) ((Circuit.stepEl c s (x, fb)).1, (Circuit.stepEl c s (x, fb)).2.2) xs) :=
-  refl (Circuit.runFrom (Circuit.loop v c) (s, fb) (List.cons x xs))
+        (Circuit.runFrom (Circuit.loop c v) ((Circuit.stepEl c s (x, fb)).1, (Circuit.stepEl c s (x, fb)).2.2) xs) :=
+  refl (Circuit.runFrom (Circuit.loop c v) (s, fb) (List.cons x xs))
 
 def Circuit.runFrom_named {i o : HwTy} (name : String) (c : Circuit i o) : (s : HwTy.El c.st) → (xs : List (HwTy.El i)) →
     Circuit.runFrom (Circuit.named name c) s xs = Circuit.runFrom c s xs
@@ -1034,8 +1034,8 @@ def Circuit.run_seq {ω i m o : HwTy} (a : Circuit i m) (b : Circuit m o) (xs : 
   Eq.trans (Eq.trans (Circuit.run_eq (Circuit.seq a b) xs) (Circuit.runFrom_seq a b a.init b.init xs))
     (Eq.symm (Eq.trans (Circuit.run_eq b (Circuit.run a xs)) (Eq.congrArg (Circuit.runFrom b b.init) (Circuit.run_eq a xs))))
 def Circuit.run_delay {ω t : HwTy} (v : HwTy.El t) (xs : List (HwTy.El t)) :
-    Circuit.run (Circuit.delay v) xs = Hdl.shift v xs :=
-  Eq.trans (Circuit.run_eq (Circuit.delay v) xs) (Circuit.runFrom_delay v v xs)
+    Circuit.run (Circuit.delay t v) xs = Hdl.shift v xs :=
+  Eq.trans (Circuit.run_eq (Circuit.delay t v) xs) (Circuit.runFrom_delay v v xs)
 def Circuit.run_par {ω i1 o1 i2 o2 : HwTy} (a : Circuit i1 o1) (b : Circuit i2 o2) (xs : List (HwTy.El i1 × HwTy.El i2)) :
     Circuit.run (Circuit.par a b) xs = Hdl.zip (Circuit.run a (Hdl.fsts xs)) (Circuit.run b (Hdl.snds xs)) :=
   Eq.trans (Eq.trans (Circuit.run_eq (Circuit.par a b) xs) (Circuit.runFrom_par a b a.init b.init xs))
@@ -1311,48 +1311,43 @@ def Verilog.emit (n : Netlist) : String :=
 -- `s.line` is field access; `Bundle F` gives its code (a product of `named` fields) and
 -- the conversions. `deriving Bundle` writes the instance. Values: `Tx HwTy.El`.
 
-class Bundle (F : (HwTy → Type) → Type) where
+structure Bundle (F : (HwTy → Type) → Type) where
   code : HwTy
   pack : {r : HwTy → Type} → [Hw r] → F r → r code
   unpack : {r : HwTy → Type} → [Hw r] → r code → F r
 
--- the code of a bundle
-def HwTy.of (0 F : (HwTy → Type) → Type) [i : Bundle F] : HwTy := @Bundle.code F i
+-- (A bundle is a plain value, not an instance: structures are structural types, so two
+-- structures with the same field types are one type, and instance resolution could not
+-- tell their bundles apart. `deriving Bundle` names it `S.bundle`.)
 
-def Bundle.toEl {F : (HwTy → Type) → Type} [i : Bundle F] (v : F HwTy.El) : HwTy.El (HwTy.of F) :=
-  @Bundle.pack F i HwTy.El _ v
-def Bundle.ofEl {F : (HwTy → Type) → Type} [i : Bundle F] (v : HwTy.El (HwTy.of F)) : F HwTy.El :=
-  @Bundle.unpack F i HwTy.El _ v
-
--- A `let` of a bundle in code that returns an object value is shared (packed once).
-instance {F : (HwTy → Type) → Type} [iF : Bundle F] {r : HwTy → Type} [ir : Hw r] {ω b : HwTy} : ShareLet (F r) (r b) where
-  share := fun v f => @Hw.share r ir (HwTy.of F) b (@Bundle.pack F iF r ir v) (fun p => f (@Bundle.unpack F iF r ir p))
-
--- the result of a bundled step: the next state and the outputs
-def Hw.next {r : HwTy → Type} [ir : Hw r] {S O : (HwTy → Type) → Type} [is : Bundle S] [io : Bundle O] (s : S r) (o : O r) :
-    r (HwTy.prod (HwTy.of S) (HwTy.of O)) :=
-  @Hw.pair r ir (HwTy.of S) (HwTy.of O) (@Bundle.pack S is r ir s) (@Bundle.pack O io r ir o)
+def Bundle.toEl {F : (HwTy → Type) → Type} (b : Bundle F) (v : F HwTy.El) : HwTy.El b.code :=
+  @Bundle.pack F b HwTy.El _ v
+def Bundle.ofEl {F : (HwTy → Type) → Type} (b : Bundle F) (v : HwTy.El b.code) : F HwTy.El :=
+  @Bundle.unpack F b HwTy.El _ v
 
 -- A step on bundles, as a value (see `Comb`).
-structure BStep (S I O : (HwTy → Type) → Type) [Bundle S] [Bundle O] where
-  run : {r : HwTy → Type} → [Hw r] → S r → I r → r (HwTy.prod (HwTy.of S) (HwTy.of O))
+structure BStep (S I : (HwTy → Type) → Type) (st o : HwTy) where
+  run : {r : HwTy → Type} → [Hw r] → S r → I r → r (HwTy.prod st o)
 
-def Circuit.bundledStep {S I O : (HwTy → Type) → Type} [is : Bundle S] [ii : Bundle I] [io : Bundle O] (f : BStep S I O)
-    {r : HwTy → Type} [Hw r] (s : r (HwTy.of S)) (x : r (HwTy.of I)) : r (HwTy.prod (HwTy.of S) (HwTy.of O)) :=
-  @BStep.run S I O is io f r _ (@Bundle.unpack S is r _ s) (@Bundle.unpack I ii r _ x)
+def Circuit.bundledStep {S I O : (HwTy → Type) → Type} (bs : Bundle S) (bi : Bundle I) (bo : Bundle O)
+    (f : BStep S I bs.code bo.code) {r : HwTy → Type} [Hw r] (s : r bs.code) (x : r bi.code) : r (HwTy.prod bs.code bo.code) :=
+  @BStep.run S I bs.code bo.code f r _ (@Bundle.unpack S bs r _ s) (@Bundle.unpack I bi r _ x)
 
--- A circuit whose state, input and output are bundles.
-def Circuit.bundled {S I O : (HwTy → Type) → Type} [is : Bundle S] [ii : Bundle I] [io : Bundle O]
-    (init : S HwTy.El) (f : BStep S I O) : Circuit (HwTy.of I) (HwTy.of O) :=
-  Circuit.mk (HwTy.of S) (Bundle.toEl init) (fun s x => Circuit.bundledStep f s x)
+-- A circuit whose state, input and output are bundles: the step takes the state and the
+-- input as structures and returns the packed next state and output
+-- (`Hw.pair (S.pack s') (O.pack o)`).
+def Circuit.bundled {S I O : (HwTy → Type) → Type} (bs : Bundle S) (bi : Bundle I) (bo : Bundle O)
+    (init : S HwTy.El) (f : BStep S I bs.code bo.code) : Circuit bi.code bo.code :=
+  Circuit.mk bs.code (Bundle.toEl bs init) (fun s x => Circuit.bundledStep bs bi bo f s x)
 
 ------------------------------------------------------------------------------------
 -- `deriving Bundle` for a structure `S Δ (r : HwTy → Type)` (the representation is the
--- last parameter) whose fields are leaves `r T` or nested bundles `G … r`. It defines
---   `S.code Δ : HwTy`                     the product of `named "field" T` (`HwTy.of`)
---   `S.pack Δ : S Δ r → r (S.code Δ)`     and `S.unpack Δ` (the parameters Δ explicit)
--- and `instance {Δ} : Bundle (S Δ)`. (`S.pack`/`S.unpack` name the bundle, so they need
--- no inference of `S` from `S r`.)
+-- last parameter) whose fields are leaves `r T` or nested bundles `G … r` (which must
+-- have been derived too: their code is `G.code …`). It defines
+--   `S.code Δ : HwTy`                     the product of `named "field" T`
+--   `S.pack Δ : S Δ r → r (S.code Δ)`     and `S.unpack Δ`
+--   `S.bundle Δ : Bundle (S Δ)`
+-- (the parameters Δ explicit).
 
 def HdlDerive.list : SyntaxF .false → List Syntax
   | .nil => .nil
@@ -1390,25 +1385,42 @@ def HdlDerive.isVar (r : String) (t : Syntax) : Bool := match HdlDerive.unparen 
     | _ => .false)
   | _ => .false
 
+-- `G a₁ … aₖ` ↦ `G.suffix a₁ … aₖ`
+def HdlDerive.identSuffixed (suffix : String) (t : Syntax) : Syntax := match HdlDerive.unparen t with
+  | .node k args => (match String.beq k "term.ident" with
+    | .true => (match SyntaxF.nth args 0 with
+      | .ident x => Syntax.mkVar (String.append x suffix)
+      | _ => t)
+    | .false => t)
+  | _ => t
+def HdlDerive.suffixed (suffix : String) (t : Syntax) : Syntax := match HdlDerive.unparen t with
+  | .node k args => (match String.beq k "term.app" with
+    | .true => Syntax.mkApp (HdlDerive.identSuffixed suffix (SyntaxF.nth args 0))
+        (HdlDerive.list (match Syntax.getArg (.node k args) 1 with
+          | .node _ l => l
+          | _ => SyntaxF.nil))
+    | .false => HdlDerive.identSuffixed suffix t)
+  | _ => t
+
 -- One field: its code, how it is packed (from `s.f`) and unpacked (from `x`).
 def HdlDerive.fieldCode (r : String) (f : FieldView) : Syntax :=
   let ω sp := HdlDerive.split (FieldView.type f);
   let ω nm := Syntax.mkStr (FieldView.name f);
   match HdlDerive.isVar r sp.1 with
   | .true => let t := sp.2; `(term| HwTy.named $nm $t)
-  | .false => let g := sp.1; `(term| HwTy.named $nm (HwTy.of $g))
+  | .false => let g := HdlDerive.suffixed ".code" sp.1; `(term| HwTy.named $nm $g)
 def HdlDerive.fieldPack (r : String) (s : Syntax) (f : FieldView) : Syntax :=
   let ω sp := HdlDerive.split (FieldView.type f);
   let ω nm := Syntax.mkStr (FieldView.name f);
   let ω x := Derive.proj s (FieldView.name f);
   match HdlDerive.isVar r sp.1 with
   | .true => `(term| Hw.tag $nm $x)
-  | .false => let g := sp.1; `(term| Hw.tag $nm (@Bundle.pack $g _ _ _ $x))
+  | .false => let g := HdlDerive.suffixed ".pack" sp.1; `(term| Hw.tag $nm ($g $x))
 def HdlDerive.fieldUnpack (r : String) (x : Syntax) (f : FieldView) : Syntax :=
   let ω sp := HdlDerive.split (FieldView.type f);
   match HdlDerive.isVar r sp.1 with
   | .true => `(term| Hw.untag $x)
-  | .false => let g := sp.1; `(term| @Bundle.unpack $g _ _ _ (Hw.untag $x))
+  | .false => let g := HdlDerive.suffixed ".unpack" sp.1; `(term| $g (Hw.untag $x))
 
 def HdlDerive.code (r : String) : List FieldView → Syntax
   | .nil => `(term| HwTy.bits 0)
@@ -1476,11 +1488,238 @@ def deriveBundle : Deriver := fun n => do
     let unpackTy := HdlDerive.explicitPis ps `(term| {$rid : HwTy → Type} → [Hw $rv] → $rv $codeApp → $tyS);
     let mk := Syntax.mkApp (Syntax.mkVar (Derive.ctorName v c)) (HdlDerive.unpackArgs r xv fs);
     let unpackVal := HdlDerive.lams ps `(term| fun $x => $mk);
-    let instTy := HdlDerive.implicitPis ps `(term| Bundle $tyF);
-    let instVal := `(term| Bundle.mk $codeApp (fun $s => $packApp $sv) (fun $x => $unpackApp $xv));
+    let bundleN := Syntax.mkIdent (String.append n ".bundle");
+    let bundleTy := HdlDerive.explicitPis ps `(term| Bundle $tyF);
+    let bundleVal := HdlDerive.lams ps `(term| Bundle.mk $codeApp (fun $s => $packApp $sv) (fun $x => $unpackApp $xv));
     MacroM.pure (.cons `(command| def $codeN : $codeTy := $codeVal)
       (.cons `(command| def $packN : $packTy := $packVal)
       (.cons `(command| def $unpackN : $unpackTy := $unpackVal)
-      (.cons (Derive.instance instTy instVal) .nil))))
+      (.cons `(command| def $bundleN : $bundleTy := $bundleVal) .nil))))
   | _ => MacroM.throw (String.append "Bundle: not a structure: " n)
 attribute [deriver Bundle] deriveBundle
+
+------------------------------------------------------------------------------------
+-- Test benches. `Testbench.verilog n vec cycles` replays a vector file on the module
+-- `Verilog.emit n` makes: each line of `vec` is one cycle, in hexadecimal, the input
+-- ports then the expected output ports (in port order, the first in the high bits;
+-- ports of width 0 left out). In each cycle the bench sets the inputs, waits for them to
+-- settle, compares every output and clocks. It prints `PASS name: N cycles` or
+-- `FAIL name: K mismatches` (and the first ten mismatches).
+
+def Hdl.nonZero (p : NetPort) : Bool := Bool.not (Nat.beq p.width 0)
+def Hdl.filterPorts : List String → List NetPort → List (String × NetPort)
+  | .cons nm nms, .cons p ps => (match Hdl.nonZero p with
+    | .true => .cons (nm, p) (Hdl.filterPorts nms ps)
+    | .false => Hdl.filterPorts nms ps)
+  | _, _ => .nil
+def Hdl.portWidths : List (String × NetPort) → Nat
+  | .nil => 0
+  | .cons p ps => p.2.width + Hdl.portWidths ps
+
+def Testbench.regs : List (String × NetPort) → String
+  | .nil => ""
+  | .cons p ps => "  reg " <+> Verilog.range p.2.width <+> p.1 <+> " = 0;\n" <+> Testbench.regs ps
+def Testbench.wires : List (String × NetPort) → String
+  | .nil => ""
+  | .cons p ps => "  wire " <+> Verilog.range p.2.width <+> p.1 <+> ";\n" <+> Testbench.wires ps
+def Testbench.conns : List (String × NetPort) → String
+  | .nil => ""
+  | .cons p ps => ", ." <+> p.1 <+> "(" <+> p.1 <+> ")" <+> Testbench.conns ps
+-- the bits of a port in the vector: [hi:lo], `top` the bit above it
+def Testbench.field (top w : Nat) : String :=
+  "tb_vec[tb_i][" <+> Hdl.show (top - 1) <+> ":" <+> Hdl.show (top - w) <+> "]"
+def Testbench.drive : Nat → List (String × NetPort) → String
+  | _, .nil => ""
+  | top, .cons p ps => "      " <+> p.1 <+> " = " <+> Testbench.field top p.2.width <+> ";\n"
+      <+> Testbench.drive (top - p.2.width) ps
+def Testbench.compare : Nat → List (String × NetPort) → String
+  | _, .nil => ""
+  | top, .cons p ps =>
+    "      if (" <+> p.1 <+> " !== " <+> Testbench.field top p.2.width <+> ") begin\n"
+    <+> "        tb_errors = tb_errors + 1;\n"
+    <+> "        if (tb_errors < 10) $display(\"mismatch at cycle %0d: " <+> p.1 <+> " = %b, expected %b\", tb_i, "
+    <+> p.1 <+> ", " <+> Testbench.field top p.2.width <+> ");\n      end\n"
+    <+> Testbench.compare (top - p.2.width) ps
+
+def Testbench.verilog (n : Netlist) (vec : String) (cycles : Nat) : String :=
+  let ω vn := Verilog.portIdents n;
+  let ω ins := Hdl.filterPorts vn.ins n.inputs;
+  let ω outs := Hdl.filterPorts vn.outs n.outputs;
+  let ω wi := Hdl.portWidths ins;
+  let ω w := wi + Hdl.portWidths outs;
+  let ω name := Verilog.ident n.name;
+  "`timescale 1ns/1ps\n"
+  <+> "module tb;\n"
+  <+> "  reg clk = 0;\n"
+  <+> Testbench.regs ins <+> Testbench.wires outs
+  <+> "  " <+> name <+> " dut(.clk(clk)" <+> Testbench.conns ins <+> Testbench.conns outs <+> ");\n"
+  <+> "  reg " <+> Verilog.range w <+> "tb_vec [0:" <+> Hdl.show (cycles - 1) <+> "];\n"
+  <+> "  integer tb_i, tb_errors;\n"
+  <+> "  initial begin\n"
+  <+> "    $readmemh(\"" <+> vec <+> "\", tb_vec);\n"
+  <+> "    tb_errors = 0;\n"
+  <+> "    for (tb_i = 0; tb_i < " <+> Hdl.show cycles <+> "; tb_i = tb_i + 1) begin\n"
+  <+> Testbench.drive w ins
+  <+> "      #1;\n"
+  <+> Testbench.compare (w - wi) outs
+  <+> "      clk = 1; #1; clk = 0; #1;\n"
+  <+> "    end\n"
+  <+> "    if (tb_errors == 0) $display(\"PASS " <+> name <+> ": %0d cycles\", tb_i);\n"
+  <+> "    else $display(\"FAIL " <+> name <+> ": %0d mismatches\", tb_errors);\n"
+  <+> "    $finish;\n"
+  <+> "  end\n"
+  <+> "endmodule\n"
+
+-- One vector line: the leaves of the inputs and the expected outputs (one number per
+-- port, ports of width 0 included, as `Netlist.simulate` takes and gives them).
+def Testbench.packPorts : List NetPort → List Nat → Nat → Nat
+  | .cons p ps, .cons v vs, acc => Testbench.packPorts ps vs (Nat.shiftLeft acc p.width + Nat.wrap p.width v)
+  | _, _, acc => acc
+def Testbench.line (n : Netlist) (ins outs : List Nat) : String :=
+  let ω w := Hdl.sum (Hdl.map (fun (p : NetPort) => p.width) n.inputs) + Hdl.sum (Hdl.map (fun (p : NetPort) => p.width) n.outputs);
+  let ω v := Testbench.packPorts n.outputs outs (Testbench.packPorts n.inputs ins 0);
+  String.mk (Hdl.hexAux (Nat.max 1 (Nat.div (w + 3) 4)) v (List.cons (Char.mk 10) List.nil))
+def Testbench.lines (n : Netlist) : List (List Nat) → List (List Nat) → List String
+  | .cons i is, .cons o os => .cons (Testbench.line n i o) (Testbench.lines n is os)
+  | _, _ => .nil
+-- the vector file of a value simulation of `c` (the netlist `n` must be `c`'s)
+def Circuit.vectors {ω i o : HwTy} (n : Netlist) (c : Circuit i o) (xs : List (HwTy.El i)) : List String :=
+  Testbench.lines n (Hdl.map (HwTy.leaves i) xs) (Circuit.runLeaves c xs)
+
+------------------------------------------------------------------------------------
+-- A VCD waveform of a value simulation: the clock, every input and output leaf (by
+-- port name) and every state leaf (by register name); a cycle is 2 time units.
+
+def Vcd.idAux : Nat → Nat → List Char → List Char
+  | .zero, _, acc => acc
+  | .succ f, k, acc => match Nat.lt k 94 with
+    | .true => List.cons (Char.mk (33 + k)) acc
+    | .false => Vcd.idAux f (Nat.div k 94 - 1) (List.cons (Char.mk (33 + Nat.mod k 94)) acc)
+def Vcd.id (k : Nat) : String := String.mk (Vcd.idAux 8 k List.nil)
+def Vcd.value (w v : Nat) (id : String) : String := match w with
+  | .succ .zero => Hdl.show v <+> id <+> "\n"
+  | _ => "b" <+> Hdl.bin (Nat.max w 1) v <+> " " <+> id <+> "\n"
+def Vcd.vars : Nat → List String → List Nat → String
+  | k, .cons nm nms, .cons w ws =>
+    "$var wire " <+> Hdl.show (Nat.max w 1) <+> " " <+> Vcd.id k <+> " " <+> nm <+> " $end\n" <+> Vcd.vars (Nat.succ k) nms ws
+  | _, _, _ => ""
+-- the values that changed (all of them in the first cycle)
+def Vcd.changes : Bool → Nat → List Nat → List Nat → List Nat → String
+  | first, k, .cons w ws, .cons v vs, prev =>
+    let ω rest := Vcd.changes first (Nat.succ k) ws vs (match prev with
+      | .cons _ ps => ps
+      | .nil => .nil);
+    (match Bool.or first (Bool.not (Nat.beq v (Hdl.nthD 0 prev 0))) with
+    | .true => Vcd.value w v (Vcd.id k)
+    | .false => "") <+> rest
+  | _, _, _, _, _ => ""
+def Vcd.cycles {ω i o : HwTy} (c : Circuit i o) (ws : List Nat) :
+    Nat → HwTy.El c.st → List (HwTy.El i) → List Nat → List String → List String
+  | t, _, .nil, _, acc => Hdl.reverse (List.cons ("#" <+> Hdl.show (2 * t) <+> "\n") acc)
+  | t, s, .cons x xs, prev, acc =>
+    let ω r : HwTy.El c.st × HwTy.El o := Circuit.stepEl c s x;
+    let ω vals := List.cons 0 (List.append (HwTy.leaves i x) (List.append (HwTy.leaves o r.2) (HwTy.leaves c.st s)));
+    let ω now := "#" <+> Hdl.show (2 * t) <+> "\n" <+> Vcd.changes (Nat.beq t 0) 0 ws vals prev
+      <+> "#" <+> Hdl.show (2 * t + 1) <+> "\n1!\n";
+    Vcd.cycles c ws (Nat.succ t) r.1 xs (List.cons 1 (Hdl.map (fun (v : Nat) => v) (match vals with
+      | .cons _ vs => vs
+      | .nil => .nil))) (List.cons now acc)
+
+def Vcd.ofRun {ω i o : HwTy} (name : String) (c : Circuit i o) (xs : List (HwTy.El i)) : String :=
+  let ω names := List.cons "clk" (List.append (HwTy.portNames "x" i) (List.append (HwTy.portNames "y" o) (HwTy.portNames "r" c.st)));
+  let ω ws := List.cons 1 (List.append (HwTy.leafWidths i) (List.append (HwTy.leafWidths o) (HwTy.leafWidths c.st)));
+  "$timescale 1ns $end\n$scope module " <+> Verilog.ident name <+> " $end\n" <+> Vcd.vars 0 names ws
+  <+> "$upscope $end\n$enddefinitions $end\n" <+> Hdl.concat (Vcd.cycles c ws 0 c.init xs List.nil List.nil)
+
+------------------------------------------------------------------------------------
+-- Pin constraints (the PCF of nextpnr-ice40 and arachne): a pin for every port, by the
+-- port's name in the netlist. `Pin.bus` lists the pins of a wider port, bit 0 first.
+
+inductive Pin where
+  | one (port : String) (pin : Nat)
+  | bus (port : String) (pins : List Nat)
+
+def Pin.port : Pin → String
+  | .one p _ => p
+  | .bus p _ => p
+def Pin.find (name : String) : List Pin → Option Pin
+  | .nil => .none
+  | .cons p ps => match Hdl.strEq (Pin.port p) name with
+    | .true => .some p
+    | .false => Pin.find name ps
+
+def Pcf.busLines (id : String) : Nat → List Nat → String
+  | _, .nil => ""
+  | k, .cons pin pins => "set_io " <+> id <+> "[" <+> Hdl.show k <+> "] " <+> Hdl.show pin <+> "\n" <+> Pcf.busLines id (Nat.succ k) pins
+def Pcf.port (pins : List Pin) (id : String) (p : NetPort) : String := match Pin.find p.name pins with
+  | .none => ""
+  | .some (.one _ pin) => "set_io " <+> id <+> " " <+> Hdl.show pin <+> "\n"
+  | .some (.bus _ ps) => Pcf.busLines id 0 ps
+def Pcf.ports (pins : List Pin) : List String → List NetPort → String
+  | .cons id ids, .cons p ps => (match Hdl.nonZero p with
+    | .true => Pcf.port pins id p
+    | .false => "") <+> Pcf.ports pins ids ps
+  | _, _ => ""
+
+-- `set_io` lines for the clock and the ports (with the identifiers `Verilog.emit` uses)
+def Pcf.emit (n : Netlist) (clk : Nat) (pins : List Pin) : String :=
+  let ω vn := Verilog.portIdents n;
+  "set_io clk " <+> Hdl.show clk <+> "\n" <+> Pcf.ports pins vn.ins n.inputs <+> Pcf.ports pins vn.outs n.outputs
+
+-- What is wrong with a pin list: ports without a pin, pins for no port, wrong widths.
+def Pcf.portProblem (pins : List Pin) (p : NetPort) : List String := match Hdl.nonZero p with
+  | .false => .nil
+  | .true => match Pin.find p.name pins with
+    | .none => .cons ("no pin for port " <+> p.name) .nil
+    | .some (.one _ _) => (match Nat.beq p.width 1 with
+      | .true => .nil
+      | .false => .cons ("port " <+> p.name <+> " has " <+> Hdl.show p.width <+> " bits, one pin given") .nil)
+    | .some (.bus _ ps) => match Nat.beq p.width (List.length ps) with
+      | .true => .nil
+      | .false => .cons ("port " <+> p.name <+> " has " <+> Hdl.show p.width <+> " bits, "
+          <+> Hdl.show (List.length ps) <+> " pins given") .nil
+def Pcf.portProblems (pins : List Pin) : List NetPort → List String
+  | .nil => .nil
+  | .cons p ps => List.append (Pcf.portProblem pins p) (Pcf.portProblems pins ps)
+def Pcf.hasPort (name : String) : List NetPort → Bool
+  | .nil => .false
+  | .cons p ps => Bool.or (Hdl.strEq p.name name) (Pcf.hasPort name ps)
+def Pcf.strayPins (ports : List NetPort) : List Pin → List String
+  | .nil => .nil
+  | .cons p ps => match Pcf.hasPort (Pin.port p) ports with
+    | .true => Pcf.strayPins ports ps
+    | .false => .cons ("pin for no port: " <+> Pin.port p) (Pcf.strayPins ports ps)
+def Pcf.check (n : Netlist) (pins : List Pin) : List String :=
+  List.append (Pcf.portProblems pins (List.append n.inputs n.outputs)) (Pcf.strayPins (List.append n.inputs n.outputs) pins)
+
+------------------------------------------------------------------------------------
+-- A design: a top-level circuit with a name, packed at the first order, so that it is a
+-- `Type` (a `Circuit` quantifies over representations and lives in `Type 1`) and
+-- designs fit in a `List`. It keeps the step at values and the netlist.
+
+structure Design where
+  name : String
+  i : HwTy
+  o : HwTy
+  st : HwTy
+  init : HwTy.El st
+  step : HwTy.El st → HwTy.El i → HwTy.El (HwTy.prod st o)
+  net : Unit → Netlist
+
+def Circuit.design {ω i o : HwTy} (name : String) (c : Circuit i o) : Design :=
+  Design.mk name i o c.st c.init (Circuit.stepEl c) (fun u => Circuit.netlist name c)
+
+def Design.netlist (d : Design) : Netlist := d.net ()
+def Design.verilog (d : Design) : String := Verilog.emit (Design.netlist d)
+
+def Design.runGo (d : Design) : HwTy.El d.st → List (HwTy.El d.i) → List (HwTy.El d.o) → List (HwTy.El d.o)
+  | _, .nil, acc => Hdl.reverse acc
+  | s, .cons x xs, acc =>
+    let ω r : HwTy.El d.st × HwTy.El d.o := d.step s x;
+    Design.runGo d r.1 xs (List.cons r.2 acc)
+def Design.run (d : Design) (xs : List (HwTy.El d.i)) : List (HwTy.El d.o) := Design.runGo d d.init xs List.nil
+-- on bus encodings, and on leaves (one number per port)
+def Design.runPacked (d : Design) (xs : List Nat) : List Nat :=
+  Hdl.map (HwTy.pack d.o) (Design.run d (Hdl.map (HwTy.unpack d.i) xs))
+def Design.runLeaves (d : Design) (xs : List (List Nat)) : List (List Nat) :=
+  Hdl.map (HwTy.leaves d.o) (Design.run d (Hdl.map (HwTy.ofLeaves d.i) xs))
