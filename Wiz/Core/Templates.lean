@@ -74,7 +74,10 @@ def allTm (l v' : Level) : Term R :=
   -- xs0 i1 P2 X3 ih4 E5 j6 H7 q8
   let mhrec := lams ["q", "H", "j", "E", "ih", "X", "P", "i", "xs"]
     (.sigma "_" (.qlit QuantitySyntax.explicitDefault)
-      (pi "h" (v 7) (apps (v 3) [.app (v 7) (v 0), .app (.fst (v 1)) (v 0)]))
+      -- (with its sort, `H` being in `Sort (l+1)` and `P …` in `Sort v'`: a cast at a `Π`
+      -- without one is stuck, U5b)
+      (.pi "h" .default (.qlit QuantitySyntax.explicitDefault) (v 7)
+        (apps (v 3) [.app (v 7) (v 0), .app (.fst (v 1)) (v 0)]) (some (.imax (.succ l) v')))
       (apps (v 5) [v 4, v 3, v 2, .snd (v 1)]) (some (.max (.succ l) v')))
   lams ["I", "D"] (.delim (.max (.succ (.succ l)) (.succ v')) P mret marg mrec mhrec (v 0))
   --|ex

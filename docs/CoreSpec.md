@@ -1165,6 +1165,24 @@ eval (prf.{l} t)   =  eval t                      otherwise
   relevant parts (`A`, `a`, `X`, `b`, and the motive `P`, which is a family of
   propositions and so a relevant term) and suspends `transp`'s `p` and `e`. The body of a marked `fun` is exempt: `Sort (imax a l)` is `0` exactly when
   `Sort l` is, so where the body's sort is `0` the whole `fun` is suspended.
+* **Inside a proof** (audit-2's I-1). Two rules make proof mode keep the same promise:
+  - *the mode of a subterm is decided by its type*: a subterm of a proof whose type is not
+    a proposition (the argument of a type, an index) is a relevant term again, since the
+    checker may evaluate it, so the proofs in it must be marked. For a term whose type is
+    only known afterwards: the argument of an application is checked in relevant mode
+    when the function's type is not a proposition; the value of a `let`-bound proof after
+    the body, in relevant mode when the body's type is not a proposition; `absurd`'s
+    argument by the motive's sort; `split`'s scrutinee likewise. A type is always
+    checked in relevant mode;
+  - *bind by type*: where the checker needs a term's value to bind a variable or to
+    instantiate a type (`let`, a dependent argument, a pair's first part, `split`'s
+    scrutinee, `.2`, `transp`'s endpoints), inside a proof a proof is suspended, not
+    evaluated.
+
+  So the checker never evaluates a term that was checked in proof mode. (Before this, a
+  `let` inside a marked proof evaluated its value to bind it: a Church tower of twos in
+  `Prop`, 2^65536 steps at height 4, hung the checker. It now checks at once, with no
+  step budget involved: the kernel has none.)
 * **The invariant.** Call a value *proof-safe* if it is a neutral, `()`, or a glued
   constant that unfolds to one. Every value the kernel's evaluator builds at a
   proposition is proof-safe: a variable of proposition type is only ever bound (by a

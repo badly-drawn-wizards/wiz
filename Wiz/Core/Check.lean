@@ -395,6 +395,33 @@ def Ctx.sortOf (ctx : Ctx R) (ty : VTy R) : TCM Level :=
   | some l => pure l
   | none => throw (.other s!"internal error: cannot compute the sort of {ctx.showVal ty}")
 
+/-- Is this type a proposition (its sort is computed, and is `0`)? -/
+def Ctx.isProofTy (ctx : Ctx R) (ty : VTy R) : Bool :=
+  ctx.globals.lazyProofs && (ctx.sortOf? ty).any (·.isZero)
+
+/-- **The mode of a subterm is decided by its type** (I-1). Inside a proof, a subterm whose
+type is not a proposition is a relevant term again: it can be evaluated (as the index of
+a type the checker computes), so the proofs in it must be marked, as anywhere else. Only
+a subterm that is itself a proof stays in proof mode. (A type whose sort cannot be
+computed, U5, is left in the mode it is in.) -/
+def Ctx.modeAt (ctx : Ctx R) (ty : VTy R) : Ctx R :=
+  if !ctx.proof then ctx else
+  match ctx.sortOf? ty with
+  | some s => if s.isZero then ctx else { ctx with proof := false }
+  | none => ctx
+
+/-- **Bind by type** (I-1): the value of `t : ty`, for the checker to bind a variable to
+or to instantiate a type with. Inside a proof, a proof is not evaluated: it is suspended.
+(Outside, a proof was checked in relevant mode, so evaluating it computes nothing.) So
+the checker never evaluates a term that was checked in proof mode. -/
+def Ctx.evalAt (ctx : Ctx R) (t : Term R) (ty : VTy R) : Val R :=
+  if ctx.proof && ctx.isProofTy ty then suspend ctx.globals ctx.env t else ctx.eval t
+
+/-- `Ctx.instArg` for an argument of type `dom`, bound by type (`evalAt`). -/
+def Ctx.instArgAt (ctx : Ctx R) (dom : VTy R) (c : Closure R) (a : Term R) : Val R :=
+  match c with
+  | .mk env body => Wiz.eval ctx.globals ((if body.hasVar 0 then ctx.evalAt a dom else .unit .zero) :: env) body
+
 /-- Is `t` a term that needs a marker in this mode, if its sort may be `0`? -/
 def Ctx.wantsMarker (ctx : Ctx R) (t : Term R) : Bool :=
   !ctx.proof && !ctx.marked && ctx.globals.lazyProofs &&
@@ -433,6 +460,8 @@ of the expected one.)
 
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) := do
+  -- (given) P2: inside a proof, a term that is not a proof is a relevant term again
+  let ctx := ctx.modeAt ty
   -- (given) P2: outside a proof, a proof is marked or neutral-shaped
   ctx.requireMarker t ty
   -- (the exemption of a marked term goes on to the body of a marked `fun`: `Sort (imax a l)`
@@ -458,13 +487,13 @@ partial def checkCore (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
     let uv ← check ctx val vty
-    let ub ← check (ctx.define x q vty (ctx.eval val)) body ty
+    let ub ← check (ctx.define x q vty (ctx.evalAt val vty)) body ty
     let ub ← popUsage x q ub
     pure (q • uv + ub)
   | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
     let ua ← check ctx a A
-    let ub ← check ctx b (ctx.instArg B a)
+    let ub ← check ctx b (ctx.instArgAt A B a)
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
   | t, .sizeLt s => do
@@ -607,13 +636,26 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     match whnf fty with
     | .pi _ _ q dom cod _ =>
       let q ← qtyPoly ctx q
-      let ua ← check (if q.isConst? == some 0 then { ctx with erased := true } else ctx) a dom
-      pure (ctx.instArg cod a, uf + q • ua)
+      -- (inside a proof: the application is a proof exactly when its function is, `Sort
+      -- (imax a b)` being `0` when `Sort b` is. If it is not, it can be evaluated, and its
+      -- argument with it: the argument is checked as in relevant mode)
+      let actx := if ctx.proof && !ctx.isProofTy fty then { ctx with proof := false } else ctx
+      let ua ← check (if q.isConst? == some 0 then { actx with erased := true } else actx) a dom
+      pure (ctx.instArgAt dom cod a, uf + q • ua)
     | _ => throw (.notAFunction (ctx.showTerm f) (ctx.showVal fty))
   | .letE x q tty val body => do
     let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
+    if ctx.proof && ctx.isProofTy vty then
+      -- inside a proof, a `let`-bound proof: bound suspended, so the body's type is known
+      -- before the value is checked. If the `let` is not itself a proof it can be
+      -- evaluated, and its value with it: the value is then checked as in relevant mode
+      let (bty, ub) ← infer (ctx.define x q vty (suspend ctx.globals ctx.env val)) body
+      let uv ← check (if ctx.isProofTy bty then ctx else { ctx with proof := false }) val vty
+      let ub ← popUsage x q ub
+      pure (bty, q • uv + ub)
+    else
     let uv ← check ctx val vty
     let (bty, ub) ← infer (ctx.define x q vty (ctx.eval val)) body
     let ub ← popUsage x q ub
@@ -642,7 +684,9 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       if ctx.erased then pure (A, u) else
       let mustUse? : Bool := match mustUseType? ctx (Closure.inst ctx.globals B (Val.var ctx.lvl)) 1 with
         | some b => b
-        | none => let v := ctx.eval t; mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v)
+        -- (a proof is never evaluated, and its parts are proofs: nothing to use)
+        | none => if ctx.isProofTy ty then false else
+          let v := ctx.eval t; mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v)
       if !mustUse? then pure (A, u) else
       match QRig.many? (R := R) with
       | some m => pure (A, QPoly.const m • u)
@@ -654,7 +698,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     | .sigma x q _ B _ =>
       -- `t.2` discards the first field: only allowed if the field may go unused
       let q ← qtyPoly ctx q
-      let ty := Closure.inst ctx.globals B (vFst (ctx.eval t))
+      let ty := Closure.inst ctx.globals B (vFst (ctx.evalAt t ty))
       if ctx.erased || QPoly.le (QPoly.const 0) q then pure (ty, u) else
       -- a field that must be used can be dropped only from an unrestricted pair (whose
       -- fields are ω·q): so `t` counts as used ω times
@@ -668,7 +712,10 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     match whnf sty with
     | .sigma _ p A B _ =>
       let p ← qtyPoly ctx p
-      let _ ← checkType (ctx.bind z [] sty) m
+      let j ← checkType (ctx.bind z [] sty) m
+      -- (inside a proof, a `split` that is not a proof can be evaluated, and its scrutinee
+      -- with it: a scrutinee that is a proof must then be marked or neutral-shaped)
+      if ctx.proof && !j.isZero then ({ ctx with proof := false }).requireMarker s sty
       let mc : Closure R := .mk ctx.env m
       let vx : Val R := Val.var ctx.lvl
       let vy : Val R := Val.var (ctx.lvl + 1)
@@ -676,14 +723,16 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       let ub ← check ctx₂ b (Closure.inst ctx.globals mc (.pair vx vy))
       let ub ← popUsage y q ub
       let ub ← popUsage x (q * p) ub
-      pure (Closure.inst ctx.globals mc (ctx.eval s), q • us + ub)
+      pure (Closure.inst ctx.globals mc (ctx.evalAt s sty), q • us + ub)
     | _ => throw (.other s!"not a pair: {ctx.showTerm s}\n  has type: {ctx.showVal sty}")
   | .unit l => pure (.sort l, Usage.zeros ctx.lvl)
   | .empty l => pure (.sort l, Usage.zeros ctx.lvl)
   | .absurd m t => do
-    let _ ← checkType ctx m
+    let j ← checkType ctx m
     -- `t` can never be evaluated (nothing inhabits the empty type): an erased position
-    let (ty, _) ← infer { ctx with erased := true } t
+    -- (inside a proof: if the motive is not a proposition the `absurd` is a relevant term,
+    -- which evaluates its argument: the argument is inferred as in relevant mode)
+    let (ty, _) ← infer { ctx with erased := true, proof := ctx.proof && j.isZero } t
     match whnf ty with
     | .empty _ => pure (ctx.eval m, Usage.zeros ctx.lvl)
     | _ => throw (.typeMismatch "an empty type" (ctx.showVal ty))
@@ -727,7 +776,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← checkType ctx A
     let vA := ctx.eval A
     let _ ← check ctx a vA
-    let va := ctx.eval a
+    let va := ctx.evalAt a vA
     -- (b :0 A) → (_ :0 a = b) → Prop, with env [a, A]
     let motiveTy : Val R := .pi "b" .default (.qlit 0) vA
       (.mk [va, vA] (.pi "_" .default (.qlit 0) (.eq (.var 2) (.var 1) (.var 0)) (.sort 0) none)) none
@@ -737,7 +786,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     -- (`p` and `e` are never evaluated: checked as proofs)
     let _ ← check { ctx with proof := true } p (vApp g (vApp g vP va) (.neutral (.refl vA va) #[]))
     let _ ← check ctx b vA
-    let vb := ctx.eval b
+    let vb := ctx.evalAt b vA
     let _ ← check { ctx with proof := true } e (vEq g vA va vb)
     pure (vApp g (vApp g vP vb) (suspend g ctx.env e), Usage.zeros ctx.lvl)
   | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
@@ -917,7 +966,8 @@ partial def checkQty (ctx : Ctx R) (q : Term R) : TCM (QPoly R) := do
 /-- `Γ ⊢ A type@i`: infer `A`, require it to be a `sort`, return the level.
 The usage is discarded: type positions are erased. -/
 partial def checkType (ctx : Ctx R) (a : Term R) : TCM Level := do
-  let (ty, _) ← infer { ctx with erased := true } a
+  -- (a type is a relevant term, also inside a proof: it is evaluated)
+  let (ty, _) ← infer { ctx with erased := true, proof := false } a
   match whnf ty with
   | .sort l => pure l
   | _ => throw (.notAType (ctx.showTerm a) (ctx.showVal ty))
@@ -938,6 +988,10 @@ partial def declTypeSpine (ctx : Ctx R) : Term R → TCM Unit
 /-- The checks every declaration's header gets: a new name, its level parameters, and
 its type is a type. -/
 def checkHeader (g : Globals R) (d : Decl R) : TCM Unit := do
+  -- (P2) the kernel evaluates no proof, so it has no step budget, and must not be given
+  -- one: a budget that ran out inside a conversion would make two different closures the
+  -- same stuck constant
+  if g.budget.isSome then throw (.other "internal error: the kernel was called inside a proof's read-back (a step budget is set)")
   if g.contains d.name then throw (.duplicateDecl d.name)
   unless d.levelParams.eraseDups.length == d.levelParams.length do
     throw (.other s!"duplicate universe level parameter in {d.name}")

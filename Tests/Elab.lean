@@ -2465,6 +2465,17 @@ def abelCoquand (selfApp : Bool) : MTm :=
   ann (refl (enum 2) (tag 2 0))
     (eq (enum 2) (fst (cast p2 p2 (app (app (var 0) (eqTy p2 p2)) (reflTy p2)) (pair (tag 2 0) (tag 2 1)))) (tag 2 0))
 
+/-- (I-1, audit-2's probe) A proof that takes a tower of exponentials of β-steps to
+normalise, inside a marked proof: `let two : (A : Prop) → (A → A) → A → A := fun A f x =>
+f (f x); let h : True := two A_k (two A_{k-1}) … (two True) (fun x => x) (); ()`, all in
+`Prop`. The checker must not run it: inside a proof it binds a proof suspended. -/
+def proofTower (k : Nat) : MTm :=
+  let A : Nat → MTm := fun n => (List.range n).foldl (fun a _ => sorted 0 (pi a a)) ptrue
+  let twoTy := sorted 0 (pi prop (sorted 0 (pi (sorted 0 (pi (var 0) (var 1))) (sorted 0 (pi (var 1) (var 2))))))
+  let twoVal := lams 3 (app (var 1) (app (var 1) (var 0)))
+  let head := (List.range k).foldl (fun acc i => app acc (app (var 0) (A (k - 1 - i)))) (app (var 0) (A k))
+  ann (prf (.num 0) (letE twoTy twoVal (letE ptrue (app (app head (lam (var 0))) star) star))) ptrue
+
 /-- (P2) The proof marker, on terms that are *not* run through the marking pass: is the
 term accepted? `T2` is `True → True`, a proposition. -/
 def markerSamples : List (MTm × Bool) :=
@@ -2517,6 +2528,12 @@ def markerSamples : List (MTm × Bool) :=
     -- not neutral-shaped needs its marker
     (ann (refl SP (pair (tag 2 0) (letE ptrue star (var 0)))) (eq SP (pair (tag 2 0) star) (pair (tag 2 0) star)), false),
     (ann (refl SP (pair (tag 2 0) (prf z (letE ptrue star (var 0))))) (eq SP (pair (tag 2 0) star) (pair (tag 2 0) star)), true),
+    -- (I-1) inside a proof, a subterm that is not a proof is a relevant term again (it can be
+    -- evaluated, as the argument of a type), so a proof in it needs its marker
+    (ann (prf z (app (ann (lam star) (pi (enum 2) ptrue)) (app (ann (lam (tag 2 0)) (pi T2 (enum 2))) (lam (var 0))))) ptrue, false),
+    (ann (prf z (app (ann (lam star) (pi (enum 2) ptrue)) (app (ann (lam (tag 2 0)) (pi T2 (enum 2))) (prf z (lam (var 0)))))) ptrue, true),
+    -- while a proof directly inside a proof needs none
+    (ann (prf z (app (ann (lam star) (pi T2 ptrue)) (lam (var 0)))) ptrue, true),
     -- a `refl` whose term holds a proof variable, which a marked proof is then substituted for
     (app (ann (lam (pair (tag 2 0) (refl SP (pair (tag 2 0) (var 0)))))
         (pi ptrue (sigma (enum 2) (eq SP (pair (tag 2 0) (var 1)) (pair (tag 2 0) (var 1))))))
@@ -3202,6 +3219,9 @@ def selfHostGroup : Group where
         -- `absurd` is not compared, in either kernel (they differed before the marker)
         let refl : Val ZeroOneMany := .neutral (.refl E (.tag ls 0)) #[.absurd E]
         checkEq "true" (toString (conv g #[] E (pf #[.absurd E]) refl))
+        -- (I-2) and with no `absurd`, where the type was not seen to be a proposition: a
+        -- suspended proof and a `refl` head are two proofs, equal in both kernels
+        checkEq "true" (toString (conv g #[] E (pf #[.fst]) (.neutral (.refl E (.tag ls 0)) #[.fst])))
         let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
         let main := "def b2s : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\n" ++
           "def pf : Head := .hprf .nil .star\n" ++
@@ -3210,8 +3230,9 @@ def selfHostGroup : Group where
           "  IO.println (b2s (sameVal (.vne pf (.sfst .snil)) (.vne pf (.ssnd .snil))));\n" ++
           "  IO.println (b2s (sameVal (.vne pf (.sapp (ab .snil) (.vtag 2 0))) (.vne pf (.sapp (ab .snil) (.vtag 2 1)))));\n" ++
           "  IO.println (b2s (sameVal (.vne pf (.sapp (ab (.sfst .snil)) (.vtag 2 0))) (.vne pf (.sapp (ab (.ssnd .snil)) (.vtag 2 0)))));\n" ++
-          "  IO.println (b2s (conv empty (.venum 2) (.vne pf (ab .snil)) (.vne (.hrefl (.venum 2) (.vtag 2 0)) (ab .snil))))\n"
-        ioRun (kernel ++ "\n" ++ main) "true\nfalse\ntrue\ntrue\n" },
+          "  IO.println (b2s (conv empty (.venum 2) (.vne pf (ab .snil)) (.vne (.hrefl (.venum 2) (.vtag 2 0)) (ab .snil))));\n" ++
+          "  IO.println (b2s (conv empty (.venum 2) (.vne pf (.sfst .snil)) (.vne (.hrefl (.venum 2) (.vtag 2 0)) (.sfst .snil))))\n"
+        ioRun (kernel ++ "\n" ++ main) "true\nfalse\ntrue\ntrue\ntrue\n" },
     { name := "every constructor of Term is covered by the traversals (S1: a missed one proved False)", run := fun _ => do
         let samples := termSamples (.var 5) (.param "pw")
         -- a sample for every constructor
@@ -3324,6 +3345,20 @@ def selfHostGroup : Group where
           "  IO.println (shape (vCast S S (fresh 0) (.vpair .vtt .vtt)));\n" ++
           "  IO.println (shape (vCast G G (fresh 0) (fresh 1)))\n"
         ioRun (kernel ++ "\n" ++ main) "stuck\nstuck\nstuck\nstuck\nlam\n" },
+    { name := "P2 (I-1): a proof inside a marked proof is not evaluated: a tower of exponentials in Prop checks at once (both kernels)", run := fun _ => do
+        -- k = 3 is 65 536 β-steps and k = 4 is 2^65536 if the checker runs the proof (it
+        -- did: a `let` evaluated its value to bind it). The kernel has no step budget, so
+        -- nothing but not evaluating can make these answer.
+        for k in [3, 4, 6] do
+          let t0 ← IO.monoMsNow
+          checkEq "True" (leanVerdict (MTm.proofTower k) (mark := false))
+          let ms := (← IO.monoMsNow) - t0
+          unless ms < 5000 do throw (IO.userError s!"k = {k}: the Lean kernel took {ms} ms")
+        -- the same term as a relevant `let` is rejected unmarked, as before
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let calls := [3, 4, 6].map fun k => s!"(rawVerdict {(MTm.proofTower k).toWiz})"
+        let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
+        ioRun (kernel ++ "\n" ++ wizVerdict ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n") "True\nTrue\nTrue\n" },
     { name := "P2 (R1): a level-generic term is marked at its level, and is a suspended proof at the instance 0 (both kernels)", run := fun _ => do
         -- k.{u} (A : Sort u) (a : A) : A := (fun x => x : A → A) a
         let ty : MTm := .pi (.sortParam "u") (.pi (.var 0) (.var 1))

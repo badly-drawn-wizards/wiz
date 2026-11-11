@@ -462,6 +462,12 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
     partial-definition paths), `#reduce`, and the kernel entries of `Frontend.wiz`. A
     wrong elaborator output can therefore show as a panic in the pass, which ends
     `wiz check`, where it used to be a kernel error message.
+  * **Inside a marked proof too** (found by audit-2 on the first version: a `let` inside a
+    proof evaluated its value to bind it, and a tower of exponentials in `Prop` hung the
+    checker). The mode of a subterm is decided by its type (a relevant subterm of a proof
+    is checked in relevant mode again), and inside a proof the checker binds a proof
+    suspended (test "P2 (I-1): …", heights 3, 4 and 6 on both kernels). The elaborator's
+    `let` does the same.
   * **Level-generic terms.** `(a : A)` with `A : Sort u` is a proof at the instance
     `u := 0`. The marker carries the level, so such a term is marked once, at `u`, and is
     suspended exactly at the instances where it is a proof (tests "P2 (R1): …").

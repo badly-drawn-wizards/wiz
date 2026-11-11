@@ -17,9 +17,12 @@ checks: it only needs the type of each subterm, to see its sort.
   term alone, and the kernel reports the real error.
 * It is **untrusted**: a missing marker is the kernel's error "unmarked proof", and a
   wrong one is rejected by the kernel's rule for `prf`.
-* It does not go inside a proof (a term it marks at level `0`): proofs are the bulk of a
-  library, and nothing in them needs a marker.
-* It evaluates the terms it has already marked, so it never runs a proof either.
+* Inside a proof (a term it marks at level `0`) nothing needs a marker but the proofs in
+  a *relevant* subterm (an index, a type), which the kernel may evaluate: the pass goes
+  through the proof to find those. A cheaper first attempt marks only the declaration's
+  body (`Decl.withTopMarks`); the kernel says whether that was enough.
+* It evaluates the terms it has already marked, and binds a proof inside a proof
+  suspended, as the kernel does (`Ctx.evalAt`): so it never runs a proof either.
 * With `Globals.fillSorts` (off) it also writes the sort of every `Π`/`Σ` it passes through
   and can compute the sort of (`Sorts` in `Basic.lean` stops at a `fun`, whose variable
   has no type written down; this pass knows it). Off, because writing some sorts and not
@@ -48,15 +51,21 @@ private def sortLevel? (ty : Option (VTy R)) : Option Level :=
 mutual
 
 /-- Mark `t`, which is checked against `ty`. (`ctx.marked`: `t` is the body of a marked
-`fun`, which needs no marker of its own; `Check.lean`.) -/
+`fun`, which needs no marker of its own; `ctx.proof`: `t` is inside a proof, where a proof
+needs no marker but a relevant subterm is marked as anywhere else; `Check.lean`.) -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : Term R :=
   match t with
   | .prf .. => t
   | _ =>
-    let (w, inside) := if ctx.marked then (none, true) else decide ctx t ty
-    -- below a marker, and below the `fun`s it wraps, the bodies are exempt
-    let ctx' := { ctx with marked := (ctx.marked || w.isSome) && (t matches .lam ..) }
-    let t := if inside then checkCore ctx' t ty else t
+    -- the mode of a subterm is decided by its type
+    let ctx := ctx.modeAt ty
+    if ctx.proof then checkCore ctx t ty else
+    let (w, _) := if ctx.marked then (none, true) else decide ctx t ty
+    -- below a marker, and below the `fun`s it wraps, the bodies are exempt; below a marker
+    -- at level `0` the term is a proof
+    let ctx' := { ctx with marked := (ctx.marked || w.isSome) && (t matches .lam ..),
+                           proof := w.any (·.isZero) }
+    let t := checkCore ctx' t ty
     match w with
     | some l => .prf l t
     | none => t
@@ -77,10 +86,10 @@ partial def checkRest (ctx : Ctx R) (t : Term R) (ty : VTy R) : Term R :=
     let (T, _) := type ctx T
     let vT := ctx.eval T
     let v := check ctx v vT
-    .letE x q T v (check (ctx.define x [] vT (ctx.eval v)) b ty)
+    .letE x q T v (check (ctx.define x [] vT (ctx.evalAt v vT)) b ty)
   | .pair a b, .sigma _ _ A B _ =>
     let a := check ctx a A
-    .pair a (check ctx b (ctx.instArg B a))
+    .pair a (check ctx b (ctx.instArgAt A B a))
   | .tt, _ => t
   | _, .sizeLt _ => t
   | .dret i, .desc _ I => .dret (check ctx i I)
@@ -106,6 +115,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
   | .prf _ t' => (t, (infer ctx t').2)
   | _ =>
     let (t', ty?) := inferCore ctx t
+    -- (inside a proof nothing is wrapped; the relevant subterms were marked on the way)
+    if ctx.proof then (t', ty?) else
     match ty? with
     | some ty => match (decide ctx t ty).1 with
       | some l => (.prf l t', ty?)
@@ -114,7 +125,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
 
 /-- Mark a type, and compute its level. -/
 partial def type (ctx : Ctx R) (t : Term R) : Term R × Option Level :=
-  let (t, ty) := infer ctx t
+  -- (a type is a relevant term, also inside a proof)
+  let (t, ty) := infer { ctx with proof := false } t
   (t, sortLevel? ty)
 
 partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
@@ -140,12 +152,21 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
     let (f, fty) := infer ctx f
     match fty.map whnf with
     | some (.pi _ _ _ dom cod _) =>
-      let a := check ctx a dom
-      (.app f a, some (ctx.instArg cod a))
+      -- (inside a proof, the argument of an application that is not a proof is marked as
+      -- in relevant mode: `Check.lean`)
+      let actx := if ctx.proof && !(fty.any ctx.isProofTy) then { ctx with proof := false } else ctx
+      let a := check actx a dom
+      (.app f a, some (ctx.instArgAt dom cod a))
     | _ => (.app f a, none)
   | .letE x q T v b =>
     let (T, _) := type ctx T
     let vT := ctx.eval T
+    if ctx.proof && ctx.isProofTy vT then
+      -- (inside a proof, a `let`-bound proof: the body first, as in `Check.lean`)
+      let (b, bty) := infer (ctx.define x [] vT (suspend g ctx.env v)) b
+      let v := check (if bty.any ctx.isProofTy then ctx else { ctx with proof := false }) v vT
+      (.letE x q T v b, bty)
+    else
     let v := check ctx v vT
     let (b, bty) := infer (ctx.define x [] vT (ctx.eval v)) b
     (.letE x q T v b, bty)
@@ -161,24 +182,30 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
   | .snd p =>
     let (p, ty) := infer ctx p
     match ty.map whnf with
-    | some (.sigma _ _ _ B _) => (.snd p, some (Closure.inst g B (vFst (ctx.eval p))))
+    | some (.sigma _ _ _ B _) => (.snd p, some (Closure.inst g B (vFst (ctx.evalAt p (ty.getD (.unit 1))))))
     | _ => (.snd p, none)
   | .split q s z m x y b =>
     let (s, sty?) := infer ctx s
     match sty?, sty?.map whnf with
     | some sty, some (.sigma _ _ A B _) =>
-      let (m, _) := type (ctx.bind z [] sty) m
+      let (m, j) := type (ctx.bind z [] sty) m
+      -- (inside a proof, the scrutinee of a `split` that is not a proof needs its marker)
+      let s := if ctx.proof && !(j.any (·.isZero)) then
+          match (decide { ctx with proof := false } s sty).1 with
+          | some l => .prf l s
+          | none => s
+        else s
       let mc : Closure R := .mk ctx.env m
       let vx : Val R := Val.var ctx.lvl
       let vy : Val R := Val.var (ctx.lvl + 1)
       let ctx₂ := (ctx.bind x [] A).bind y [] (Closure.inst g B vx)
       let b := check ctx₂ b (Closure.inst g mc (.pair vx vy))
-      (.split q s z m x y b, some (Closure.inst g mc (ctx.eval s)))
+      (.split q s z m x y b, some (Closure.inst g mc (ctx.evalAt s sty)))
     | _, _ => (.split q s z m x y b, none)
   | .unit l | .empty l => (t, some (.sort l))
   | .absurd m e =>
-    let (m, _) := type ctx m
-    let (e, _) := infer ctx e
+    let (m, j) := type ctx m
+    let (e, _) := infer { ctx with proof := ctx.proof && j.any (·.isZero) } e
     (.absurd m e, some (ctx.eval m))
   | .eq A a b =>
     let (A, _) := type ctx A
@@ -205,12 +232,12 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
     let (A, _) := type ctx A
     let vA := ctx.eval A
     let a := check ctx a vA
-    let va := ctx.eval a
+    let va := ctx.evalAt a vA
     let motiveTy : Val R := .pi "b" .default (.qlit 0) vA
       (.mk [va, vA] (.pi "_" .default (.qlit 0) (.eq (.var 2) (.var 1) (.var 0)) (.sort 0) none)) none
     let P := check ctx P motiveTy
     let b := check ctx b vA
-    (.transp A a P p b e, some (vApp g (vApp g (ctx.eval P) (ctx.eval b)) (suspend g ctx.env e)))
+    (.transp A a P p b e, some (vApp g (vApp g (ctx.eval P) (ctx.evalAt b vA)) (suspend g ctx.env e)))
   | .qty | .size | .enum _ => (t, some (.sort 1))
   | .sizeLt _ => (t, some (.sort 1))
   | .qlit _ => (t, some .qty)
@@ -334,5 +361,19 @@ def Decl.withMarks (g : Globals R) (d : Decl R) : Decl R :=
   { d with type, value := d.value.map (Mark.check ctx · ty),
            impl := d.impl.map (Mark.check ctx · ty),
            witness := d.witness.map (Mark.check ctx · ty) }
+
+/-- A declaration with a marker on its body only, when the body is a proof (its type's
+sort may be `0`) and not neutral-shaped: enough for most theorems, whose proofs hold no
+relevant subterm with a proof of its own in it. The kernel answers "unmarked proof" when
+it is not enough (`withMarksOnDemand`). -/
+def Decl.withTopMarks (g : Globals R) (d : Decl R) : Decl R :=
+  let ctx : Ctx R := { globals := g }
+  let ty := ctx.eval d.type
+  let top (v : Term R) : Term R := match v with
+    | .prf .. => v
+    | _ => match (Mark.decide ctx v ty).1 with
+      | some l => .prf l v
+      | none => v
+  { d with value := d.value.map top, witness := d.witness.map top }
 
 end Wiz
