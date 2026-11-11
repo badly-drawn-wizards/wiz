@@ -335,13 +335,13 @@ inductive Tac where
   -- is `n` a definition (something `unfold` can unfold: not a constructor, an axiom, …)?
   -- `none` if there is no constant `n`
   | isDefinition (n : String) (k : Option Bool → Tac)
-  -- solvers (stage 28): close goal `g` on an SMT solver's word (trusted: --trust-smt;
-  -- it fails with a counterexample otherwise); ask the SAT solver about a CNF over
-  -- variables `0 … nvars-1` (untrusted); look inside an equation (an opaque handle
-  -- `a = b` at `A`: `(A, a, b)`)
-  | smt (g : Nat) (next : Tac)
+  -- solvers (stage 28b): ask the SAT solver about a CNF over variables `0 … nvars-1`
+  -- (untrusted: `sat_decide` checks the proof); look inside an equation (an opaque handle
+  -- `a = b` at `A`: `(A, a, b)`); (28a) close goal `g` on an SMT solver's word (trusted:
+  -- --trust-smt; it fails with a counterexample otherwise)
   | satSolve (nvars : Nat) (clauses : List (List Nat)) (k : SatAnswer → Tac)
   | eqView (g : Nat) (e : Expr) (k : Option (Expr × Expr × Expr) → Tac)
+  | smt (g : Nat) (next : Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
