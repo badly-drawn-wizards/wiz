@@ -364,9 +364,8 @@ def Tower.sourceBuild (s : Settings) (w : Want) (work tc : String) : EIO String 
     | .true => EIO.pure ()
     | .false => EIO.fail "building from source needs `lake` (install elan: https://github.com/leanprover/elan)" : EIO Unit);
   Tower.note ("lake build wiz grail (at " & String.take 12 commit & "; this takes a while the first time)");
-  -- (no environment for a child: remove the variables from ours)
-  Tower.unsetAll Tower.leanVars;
-  c ← Tower.runIn src "lake" ("build" :> "wiz" :> "grail" :> .nil);
+  -- (without the Lean variables of the environment tower runs in)
+  c ← Tower.runWith (Tower.unsetAll Tower.leanVars (SpawnOptions.inDir src SpawnOptions.default)) "lake" ("build" :> "wiz" :> "grail" :> .nil);
   Tower.layoutFrom src tc commit;
   Tower.removeAll src;
   EIO.pure commit

@@ -13,9 +13,6 @@ import Text
 --     share/wiz/TOOLCHAIN      a marker: editors find the toolchain a library file belongs to
 --     tower.info               where it came from (spec, source, ref, commit, flags)
 
-link_c "native.c"
-extern "tower_realpath" Tower.realPathRaw : String → IO String
-
 infixr:67 " & " => String.append
 infixr:66 " :> " => List.cons
 
@@ -62,12 +59,9 @@ def Tower.parent (p : String) : Option String :=
         | .true => .none
         | .false => .some "/"
       | d => .some d
-def Tower.realPath (p : String) : EIO String := EIO.bind (EIO.lift (Tower.realPathRaw p)) (fun r =>
-  match String.isEmpty r with
-  | .true => EIO.fail (p & ": No such file or directory")
-  | .false => EIO.pure r)
--- this program (Linux)
-def Tower.appPath : EIO String := FS.readLink "/proc/self/exe"
+def Tower.realPath (p : String) : EIO String := FS.realPath p
+-- this program
+def Tower.appPath : EIO String := IO.appPath
 -- `mkdir -p`
 partial def Tower.createDirAll (p : String) : EIO Unit := do
   e ← EIO.lift (FS.isDir p);
@@ -254,34 +248,28 @@ def Tower.leanVars : List String :=
   "LEAN_SYSROOT" :> "LEAN_AR" :> "LEAN_CC" :> "ELAN_TOOLCHAIN" :> "LD_LIBRARY_PATH" :> .nil
 
 -- Run a command, capturing its output (trimmed); an error with its output when it fails.
-def Tower.run (cmd : String) (args : List String) : EIO String := do
-  r ← EIO.lift (Process.output cmd args "");
+def Tower.runWith (o : SpawnOptions) (cmd : String) (args : List String) : EIO String := do
+  r ← EIO.lift (Process.outputWith cmd args "" o);
   match r with
   | .error e => EIO.fail e
   | .ok o => match ExitStatus.success o.status with
     | .true => EIO.pure (String.trim o.stdout)
     | .false => EIO.fail (cmd & " " & String.intercalate " " args & ": " & ExitStatus.toString o.status & "\n" &
         String.trim (o.stderr & o.stdout))
--- ... in a directory (there is no `cwd` for a child: change ours and back)
-def Tower.runIn (dir cmd : String) (args : List String) : EIO String := do
-  here ← FS.currentDir;
-  FS.setCurrentDir dir;
-  r ← EIO.lift (Tower.run cmd args);
-  FS.setCurrentDir here;
-  match r with
-  | .ok o => EIO.pure o
-  | .error e => EIO.fail e
+def Tower.run (cmd : String) (args : List String) : EIO String := Tower.runWith SpawnOptions.default cmd args
+-- ... in a directory
+def Tower.runIn (dir cmd : String) (args : List String) : EIO String :=
+  Tower.runWith (SpawnOptions.inDir dir SpawnOptions.default) cmd args
 -- is `cmd` a program we can run?
 def Tower.have (cmd : String) : EIO Bool := do
   r ← EIO.lift (Tower.run cmd ("--version" :> .nil));
   match r with
   | .ok o => EIO.pure .true
   | .error e => EIO.pure .false
-def Tower.unsetAll : List String → EIO Unit
-  | .nil => EIO.pure ()
-  | .cons v rest => do
-    Env.unset v;
-    Tower.unsetAll rest
+-- options that remove the variables from a child's environment
+def Tower.unsetAll : List String → SpawnOptions → SpawnOptions
+  | .nil, o => o
+  | .cons v rest, o => Tower.unsetAll rest (SpawnOptions.unsetEnv v o)
 
 -- ## Toolchain names and info
 

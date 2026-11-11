@@ -192,12 +192,10 @@ The shims in the tests call the test driver (`tests --tower …`), which runs to
 `tower/` is tower again, in Wiz: a grail package (`tower/grail.wiz`) whose executable
 `tower` (`cd tower && grail build`: `.grail/bin/tower`) has the same commands, messages,
 settings file, `tower.info` and layout as the Lean one, module for module
-(`Tower/Basic.wiz`, `Install.wiz`, `Cli.wiz`). It uses `lib/Sys.wiz` (9h) for processes,
-the environment and files, `lib/Text.wiz` (9j) for text, and a small C file of its own
-(`Tower/native.c`, `link_c`) for `realpath`. Its own executable comes from
-`/proc/self/exe`; a child's working directory is set by changing tower's around the
-spawn, and the Lean variables are unset in tower itself before `lake build` (Sys has no
-`cwd` or environment for a child yet). `grail test` in `tower/` checks the pure
+(`Tower/Basic.wiz`, `Install.wiz`, `Cli.wiz`). It uses `lib/Sys.wiz` (9h, 9k) for processes,
+the environment and files (`FS.realPath`, `IO.appPath`, and `SpawnOptions` for a child's
+working directory and for `lake build` without the Lean variables), and `lib/Text.wiz`
+(9j) for text; no C of its own. `grail test` in `tower/` checks the pure
 functions (`tests/pure.wiz` against `tests/pure.expected`).
 
 **Tests.** The cases of `Tests/Tower.lean` run tower as a process, through its command

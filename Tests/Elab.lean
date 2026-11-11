@@ -1892,6 +1892,183 @@ def sysShow : String :=
   "def yesNo : Bool → String\n  | .true => \"yes\"\n  | .false => \"no\"\n" ++
   "def orUnset : Option String → String\n  | .some s => s\n  | .none => \"(unset)\"\n"
 
+/-! Byte I/O, descriptors with time limits, spawn options (sys-bytes; docs/stages/09-ffi.md, 9k). -/
+
+def sysBytesShow : String := sysShow ++ r#"def showR : List Readiness → String
+  | .nil => ""
+  | .cons r rs => String.append (Nat.toString r.index) (String.append (yesNo r.readable) (String.append (yesNo r.hangup) (String.append ";" (showR rs))))
+def utf8 (b : Bytes) : String := match Bytes.toUtf8 b with
+  | .ok s => s
+  | .error e => e
+def gotShow {t : Bool} (all : Bytes) (g : Got t) : String := match g with
+  | .all b => String.append "all " (yesNo (Bytes.eq b all))
+  | .eof b => String.append "eof after " (Nat.toString (Bytes.size b))
+  | .timeout b => String.append "timeout after " (Nat.toString (Bytes.size b))
+"#
+
+def sysBytesCases : List Case := [
+    { name := "bytes: slices, lists and explicit encodings", run := fun _ =>
+        sysRun ["let all := Bytes.range 256", "say (Nat.toString (Bytes.size all))",
+          "say (Bytes.show (Bytes.slice all 250 10))",
+          "say (Bytes.show (Bytes.append (Bytes.take all 3) (Bytes.drop all 254)))",
+          "say (yesNo (Bytes.eq (Bytes.ofList (Bytes.toList all)) all))",
+          r#"let u := Bytes.ofUtf8 (String.append "aλ✓" (String.append (String.mk (.cons (Char.mk 0) .nil)) "𝄞"))"#,
+          "say (Bytes.show u)", "say (Nat.toString (Bytes.size (Bytes.ofUtf8 (utf8 u))))",
+          "say (utf8 all)", "say (utf8 (Bytes.ofList (.cons 237 (.cons 160 (.cons 128 .nil)))))",
+          "say (utf8 (Bytes.ofList (.cons 192 (.cons 128 .nil))))",
+          r#"say (match Bytes.ofLatin1 (Bytes.toLatin1 all) with | .ok b => yesNo (Bytes.eq b all) | .error e => e)"#,
+          r#"say (match Bytes.ofLatin1 "aλ" with | .ok b => "?" | .error e => e)"#,
+          r#"say (match Bytes.at all 300 with | .some x => "?" | .none => "none")"#]
+          ("256\n[250, 251, 252, 253, 254, 255]\n[0, 1, 2, 254, 255]\nyes\n[97, 206, 187, 226, 156, 147, 0, 240, 157, 132, 158]\n11\n" ++
+           "invalid UTF-8 at byte 128\ninvalid UTF-8 at byte 0\ninvalid UTF-8 at byte 0\nyes\nnot Latin-1: character 1 is U+955\nnone\n")
+          sysBytesShow },
+    { name := "descriptors: every byte value through a pipe, end of file, a time limit", run := fun _ =>
+        sysRun ["p ← Fd.pipe", "let all := Bytes.range 256", "Fd.write p.2 all", "Fd.write p.2 all",
+          "g ← Fd.readExactly p.1 256", "say (gotShow all g)",
+          "h ← Fd.readExactlyWithin p.1 256 (Duration.seconds 5)", "say (gotShow all h)",
+          "t0 ← EIO.lift Clock.monotonic", "r ← Fd.readWithin p.1 10 (Duration.millis 200)",
+          "t1 ← EIO.lift Clock.monotonic",
+          r#"say (match r with | .timedOut => "timed out" | .ready _ => "data?")"#,
+          "say (yesNo (Duration.lt (Duration.millis 150) (Duration.sub t1 t0)))",
+          "ok ← Fd.readableWithin p.1 (Duration.millis 10)", "say (yesNo ok)",
+          "Fd.write p.2 (Bytes.take all 5)",
+          "k ← Fd.readExactlyWithin p.1 10 (Duration.millis 100)", "say (gotShow all k)",
+          "Fd.write p.2 (Bytes.take all 3)", "Fd.close p.2",
+          "e ← Fd.readExactly p.1 10", "say (gotShow all e)",
+          r#"z ← Fd.read p.1 10"#, r#"say (match z with | .none => "end" | .some _ => "data?")"#,
+          "Fd.close p.1", "c ← EIO.lift (Fd.close p.1)",
+          r#"say (match c with | .ok _ => "closed twice?" | .error m => m)"#,
+          "q ← EIO.lift (Fd.read p.1 1)", r#"say (match q with | .ok _ => "read?" | .error m => m)"#]
+          ("all yes\nall yes\ntimed out\nyes\nno\ntimeout after 5\neof after 3\nend\nclose: Bad file descriptor\nread: Bad file descriptor\n")
+          sysBytesShow },
+    { name := "files: bytes, seek, the end", run := fun _ =>
+        sysRun ["d ← FS.createTempDir", "f ← File.open (Path.join d \"bin\") \"w+\"",
+          "File.writeBytes f (Bytes.range 256)", "n ← File.seek f (.start 250)", "say (Nat.toString n)",
+          r#"b ← File.readBytes f 100"#, r#"say (match b with | .some x => Bytes.show x | .none => "end")"#,
+          r#"b2 ← File.readBytes f 100"#, r#"say (match b2 with | .some x => Bytes.show x | .none => "end")"#,
+          "m ← File.seek f (.fromEnd 3)", "say (Nat.toString m)", "n2 ← File.seek f (.back 1)",
+          r#"b3 ← File.readBytes f 2"#, r#"say (match b3 with | .some x => Bytes.show x | .none => "end")"#,
+          "File.close f", "x ← FS.readBytes (Path.join d \"bin\")", "say (yesNo (Bytes.eq x (Bytes.range 256)))",
+          "g ← Fd.open (Path.join d \"bin\") .read OpenFlags.none", "n3 ← Fd.seek g (.start 254)",
+          "y ← Fd.readExactly g 4", "say (gotShow x y)", "FS.removeAll d"]
+          "250\n[250, 251, 252, 253, 254, 255]\nend\n253\n[252, 253]\nyes\neof after 2\n"
+          sysBytesShow },
+    { name := "spawn options: directory, environment, process groups, try-wait", run := fun _ =>
+        sysRun [r#"Env.set "WIZ_T_HOME" "set""#, r#"o ← Process.outputWith "sh" (.cons "-c" (.cons "pwd; echo $A $B; echo ${WIZ_T_HOME:-unset}" .nil)) "" (SpawnOptions.default |> SpawnOptions.inDir "/" |> SpawnOptions.setEnv "A" "x" |> SpawnOptions.setEnv "B" "y" |> SpawnOptions.setEnv "A" "z" |> SpawnOptions.unsetEnv "WIZ_T_HOME")"#,
+          "EIO.lift (IO.print o.stdout)",
+          r#"e ← Process.outputWith "/usr/bin/env" .nil "" (SpawnOptions.default |> SpawnOptions.emptyEnv |> SpawnOptions.setEnv "ONLY" "1")"#,
+          "EIO.lift (IO.print e.stdout)",
+          r#"c ← Process.spawnWith "sh" (.cons "-c" (.cons "sleep 30 & sleep 30; true" .nil)) (SpawnOptions.default |> SpawnOptions.withGroup .newGroup)"#,
+          r#"w ← Child.tryWait c"#, r#"say (match w with | .none => "running" | .some s => ExitStatus.toString s)"#,
+          "Child.killGroup c 15", "s ← Child.wait c", "say (ExitStatus.toString s)",
+          r#"w2 ← Child.tryWait c"#, r#"say (match w2 with | .none => "running" | .some s => ExitStatus.toString s)"#,
+          r#"r ← Process.runWith "true" .nil (SpawnOptions.default |> SpawnOptions.withGroup .newSession)"#,
+          "say (ExitStatus.toString r)"]
+          "/\nz y\nunset\nONLY=1\nrunning\nsignal 15\nsignal 15\nexit code 0\n"
+          sysBytesShow },
+    { name := "poll, and a child's pipe as a descriptor", run := fun _ =>
+        sysRun ["a ← Fd.pipe", "z ← Fd.pipe",
+          "r0 ← Fd.poll (.cons (a.1, .readable) (.cons (z.1, .readable) .nil)) (Duration.millis 50)",
+          r#"say (String.append "poll: " (showR r0))"#, r#"Fd.writeUtf8 z.2 "hi""#, "Fd.close a.2",
+          "r1 ← Fd.poll (.cons (a.1, .readable) (.cons (z.1, .readable) .nil)) (Duration.millis 50)",
+          r#"say (String.append "poll: " (showR r1))"#,
+          r#"ch ← Process.spawn "echo" (.cons "piped" .nil) .null .piped .null"#,
+          "out ← Child.takePipe ch 1", "rr ← Fd.readWithin out 100 (Duration.seconds 5)",
+          r#"say (match rr with | .ready (.some x) => utf8 x | _ => "?")"#,
+          "st ← Child.wait ch", "say (ExitStatus.toString st)",
+          r#"again ← EIO.lift (Child.readStdout ch)"#, r#"say (match again with | .ok _ => "?" | .error m => m)"#,
+          "Fd.close z.1", "Fd.close a.1", "Fd.close z.2"]
+          "poll: \npoll: 0noyes;1yesno;\npiped\n\nexit code 0\nread child stdout: Bad file descriptor\n"
+          sysBytesShow },
+    { name := "paths and clocks", run := fun _ =>
+        sysRun ["d ← FS.createTempDir", "FS.writeFile (Path.join d \"f\") \"x\"",
+          r#"FS.symlink "f" (Path.join d "l")"#,
+          r#"a ← FS.realPath (Path.join d "l")"#,
+          r#"b ← FS.realPath (Path.join (Path.join d ".") "f")"#, "say (yesNo (strEq a b))",
+          r#"m ← EIO.lift (FS.realPath "/nonexistent/x")"#, r#"say (match m with | .ok _ => "?" | .error e => e)"#,
+          "p ← IO.appPath", "s ← FS.stat p", "say (match s.kind with | .file => \"file\" | _ => \"?\")",
+          "w ← EIO.lift Clock.wall", "say (yesNo (Nat.lt 1700000000 (Nat.div w.ns 1000000000)))",
+          "t0 ← EIO.lift Clock.monotonic", "EIO.lift (Clock.sleep (Duration.millis 20))", "t1 ← EIO.lift Clock.monotonic",
+          "say (yesNo (Duration.lt (Duration.millis 19) (Duration.sub t1 t0)))", "FS.removeAll d"]
+          "yes\n/nonexistent/x: No such file or directory\nfile\nyes\nyes\n"
+          (sysBytesShow ++ "def chEq : List Char → List Char → Bool\n  | .nil, .nil => .true\n  | .cons a xs, .cons b ys => Bool.and (Nat.beq (Char.code a) (Char.code b)) (chEq xs ys)\n  | _, _ => .false\n" ++
+            "def strEq : String → String → Bool\n  | .mk a, .mk b => chEq a b\n") }
+  ]
+
+/-- A `Serial` program (lib/Serial.wiz links lib/serial.c), on both backends. -/
+def serialRun (body : List String) (expected : String) (defs : String := "") : IO Unit := do
+  let src := "import Serial\n" ++ sysBytesShow ++ defs ++ "def main : IO Unit := EIO.toIO (do\n" ++
+    ";\n".intercalate (body.map ("  " ++ ·)) ++ ")\n"
+  linkRun [("main.wiz", src)] expected
+  linkRun [("main.wiz", src)] expected (llvm := true)
+
+def serialTryAll : String := r#"def tryAll (t : Fd) : List SerialConfig → EIO String
+  | .nil => EIO.pure ""
+  | .cons c cs => do
+    Serial.configure t c;
+    s ← Serial.settings t;
+    rest ← tryAll t cs;
+    EIO.pure (String.append (yesNo (SerialSettings.matches s c)) rest)
+def bauds : List Baud → List SerialConfig
+  | .nil => .nil
+  | .cons b bs => .cons (SerialConfig.raw8N1 b) (bauds bs)
+"#
+
+def serialGroup : Group where
+  name := "serial"
+  exercise := "Stage 9k"
+  cases := [
+    { name := "a pseudo-terminal: every byte value both ways, raw settings read back", run := fun _ =>
+        serialRun ["pty ← Pty.open", "let all := Bytes.range 256",
+          "t ← Serial.open pty.path (SerialConfig.raw8N1 .b115200)",
+          "s ← Serial.settings t", "say (yesNo (SerialSettings.matches s (SerialConfig.raw8N1 .b115200)))",
+          "say (yesNo s.raw)", "say (Nat.toString s.minBytes)",
+          "Fd.write t all", "Fd.write t all",
+          "h ← Fd.readExactlyWithin pty.controller 512 (Duration.seconds 5)",
+          "say (gotShow (Bytes.append all all) h)",
+          "Fd.write pty.controller all", "Serial.drain pty.controller",
+          "k ← Fd.readExactlyWithin t 256 (Duration.seconds 5)", "say (gotShow all k)",
+          "Fd.close t", "e ← Fd.readWithin pty.controller 10 (Duration.seconds 5)",
+          r#"say (match e with | .ready .none => "end" | .ready (.some _) => "data?" | .timedOut => "timed out")"#,
+          "Fd.close pty.controller"]
+          "yes\nyes\n1\nall yes\nall yes\nend\n" },
+    { name := "a terminal that does not answer in time", run := fun _ =>
+        serialRun ["pty ← Pty.open",
+          "t ← Serial.open pty.path (SerialConfig.raw8N1 .b9600)",
+          "t0 ← EIO.lift Clock.monotonic",
+          "q ← Fd.readExactlyWithin t 3 (Duration.millis 300)", "t1 ← EIO.lift Clock.monotonic",
+          "say (gotShow Bytes.empty q)", "say (yesNo (Duration.lt (Duration.millis 250) (Duration.sub t1 t0)))",
+          "Fd.write pty.controller (Bytes.ofUtf8 \"ab\")",
+          "r ← Fd.readExactlyWithin t 3 (Duration.millis 300)", "say (gotShow Bytes.empty r)",
+          "Fd.write pty.controller (Bytes.ofUtf8 \"stale\")", "Serial.discard t .input",
+          "w ← Fd.readWithin t 10 (Duration.millis 100)",
+          r#"say (match w with | .timedOut => "nothing left" | .ready _ => "data?")"#,
+          "Fd.close t", "Fd.close pty.controller"]
+          "timeout after 0\nyes\ntimeout after 2\nnothing left\n" },
+    { name := "settings: every rate, stop bits and flow control read back; errors", run := fun _ =>
+        serialRun ["pty ← Pty.open", "t ← Fd.open pty.path .readWrite OpenFlags.device",
+          "s0 ← Serial.settings t", "say (yesNo s0.raw)",
+          "r ← tryAll t (List.append (bauds Baud.all) (.cons (SerialConfig.mk .b9600 .eight .none .two .none) (.cons (SerialConfig.mk .b57600 .eight .none .one .rtsCts) (.cons (SerialConfig.mk .b19200 .eight .none .two .xonXoff) .nil))))",
+          "say r", "s ← Serial.settings t",
+          r#"say (match s.baud with | .some b => Nat.toString (Baud.bitsPerSecond b) | .none => "?")"#,
+          "say (Nat.toString s.stopBits)", "say (yesNo s.xonXoff)",
+          r#"say (match Baud.ofBitsPerSecond 115200 with | .some b => Nat.toString (Baud.toIndex b) | .none => "?")"#,
+          r#"say (match Baud.ofBitsPerSecond 115201 with | .some b => "?" | .none => "not standard")"#,
+          "q ← EIO.lift (Serial.configure t (SerialConfig.mk .b9600 .seven .even .one .none))",
+          r#"say (match q with | .ok _ => "7E1 kept?" | .error m => m)"#,
+          "p ← Fd.pipe", "e ← EIO.lift (Serial.configure p.1 (SerialConfig.raw8N1 .b9600))",
+          r#"say (match e with | .ok _ => "?" | .error m => m)"#,
+          "a ← EIO.lift (Serial.isTty t)", "b ← EIO.lift (Serial.isTty p.2)",
+          "say (String.append (yesNo a) (yesNo b))",
+          r#"n ← EIO.lift (Serial.open "/nonexistent/tty" (SerialConfig.raw8N1 .b9600))"#,
+          r#"say (match n with | .ok _ => "?" | .error m => m)"#,
+          "Fd.close t", "Fd.close pty.controller"]
+          ("no\nyesyesyesyesyesyesyesyesyesyesyesyesyesyesyesyesyes\n19200\n2\nyes\n7\nnot standard\n" ++
+           "configure terminal: the device did not keep these settings (a pseudo-terminal is always 8 data bits without parity)\n" ++
+           "configure terminal: Inappropriate ioctl for device\nyesno\n/nonexistent/tty: No such file or directory\n")
+          serialTryAll }
+  ]
+
 def sysGroup : Group where
   name := "sys"
   exercise := "Stage 9h"
@@ -1975,7 +2152,7 @@ def sysGroup : Group where
           "o ← EIO.lift File.stdout", "File.write o \"to stdout\\n\"", "File.flush o",
           "FS.removeAll d"]
           "first,second,(unset)\n3 255\nto stdout\n" sysShow }
-  ]
+  ] ++ sysBytesCases
 
 /-! ### Stage 9g: callbacks and exported functions -/
 
@@ -6367,6 +6544,7 @@ def groups : List Group :=
   runGroup ::
   selfHostGroup ::
   seplogicGroup ::
+  serialGroup ::
   sizedGroup ::
   stdGroup ::
   structGroup ::
