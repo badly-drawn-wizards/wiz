@@ -880,9 +880,11 @@ def brokenOps : TermOps := { kernelOps with children := brokenChildren, freeVars
 /-! ## Panics
 
 Each ill-typed term below makes one eliminator of the evaluator panic. The checker never
-evaluates a term it has not checked, with one exception found by this audit: the display
-hint of a `mu`/`nu` (`wiz-notes/kernel-lint.md`, H). `hintCarrier X` is a well-typed
-declaration whose type carries the raw term `X` in a hint, so `addDecl` evaluates `X`. -/
+evaluates a term it has not checked. The one exception this audit found, the display hint
+of a `mu`/`nu` (`wiz-notes/kernel-lint.md`, H), is closed by `checkHint` (PR #83):
+`hintCarrier X` carries the raw term `X` in a hint, and `addDecl` now rejects it with an
+ordinary error before evaluating it. The panics themselves are reached by evaluating each
+term directly (`--panic-probe MODE eval:SITE`). -/
 
 def panicSites : List (String × Term R) := [
   ("vFst", .fst .tt),
@@ -907,12 +909,20 @@ def hintCarrier (X : Term R) : Decl R :=
       (.mu 0 (.unit 1) (.dret .tt) .tt .szInf (some ("hint", [], [X]))) (.unit 1) none }
 
 /-- `tests --panic-probe MODE SITE`: check `hintCarrier` of the site's term (`eval`: just
-evaluate `fst ()` and print the constructor of the value), after `exitOnPanic` when MODE
-is `exit`. Prints the verdict. -/
+evaluate `fst ()` and print the constructor of the value; `eval:SITE`: evaluate the site's
+term directly, force it and read it back), after `exitOnPanic` when MODE is `exit`. Prints
+the verdict. -/
 def panicProbe (mode site : String) : IO UInt32 := do
   Wiz.exitOnPanic (mode == "exit")
   if site == "eval" then
     IO.println (valCtorName (Wiz.eval (R := R) {} [] (.fst .tt)))
+    return 0
+  if site.startsWith "eval:" then
+    let name := site.drop 5
+    let some (_, X) := panicSites.find? (·.1 == name) | do IO.eprintln s!"no such site: {name}"; return 2
+    let v := Wiz.whnf (Wiz.eval (R := R) {} [] X)
+    let t := quote {} 0 v
+    IO.println s!"{valCtorName v} {(reprStr t).length}"
     return 0
   let some (_, X) := panicSites.find? (·.1 == site) | do IO.eprintln s!"no such site: {site}"; return 2
   match addDecl {} (hintCarrier X) with
@@ -1035,18 +1045,26 @@ def lintGroup : Group where
         match addDecl {} { name := "x", type := .sort 0, value := some t } with
         | .ok _ => throw (IO.userError "the checker accepts a panic's value as a proposition")
         | .error _ => pure () },
-    { name := "every panic of the evaluator, reached from a raw core term (in a mu's hint), ends a checking process", run := fun _ => do
+    { name := "a raw core term in a mu's hint is rejected by the checker before it is evaluated (finding H, checkHint)", run := fun _ => do
         let self ← IO.appPath
-        -- the carrier itself is well typed
-        match addDecl {} (hintCarrier .tt) with
+        -- the carrier itself is well typed (with a hint argument whose type can be inferred)
+        match addDecl {} (hintCarrier (.ann .tt (.unit 0))) with
         | .ok _ => pure ()
         | .error e => throw (IO.userError s!"the carrier is rejected: {e}")
         let mut bad : List String := []
         for (site, _) in panicSites do
           let out ← IO.Process.output { cmd := self.toString, args := #["--panic-probe", "exit", site] }
+          unless out.exitCode == 0 && (trim out.stdout).startsWith "rejected:" && !hasSub out.stderr "PANIC" do
+            bad := bad ++ [s!"{site}: exit code {out.exitCode}, output `{trim out.stdout}`, stderr `{(out.stderr.take 200).toString}`"]
+        check bad.isEmpty s!"a raw term in a hint was not rejected with an ordinary error: {bad}" },
+    { name := "every panic of the evaluator, reached from a raw core term, ends the process", run := fun _ => do
+        let self ← IO.appPath
+        let mut bad : List String := []
+        for (site, _) in panicSites do
+          let out ← IO.Process.output { cmd := self.toString, args := #["--panic-probe", "exit", s!"eval:{site}"] }
           unless out.exitCode == 1 && hasSub out.stderr "PANIC" && trim out.stdout == "" do
             bad := bad ++ [s!"{site}: exit code {out.exitCode}, output `{trim out.stdout}`, stderr `{(out.stderr.take 200).toString}`"]
-        check bad.isEmpty s!"a raw ill-typed term was not rejected by a panic: {bad}" },
+        check bad.isEmpty s!"an evaluator panic did not end the process: {bad}" },
     { name := "the static lint fails on a default arm and on an ignored child", run := fun _ => do
         let src := "inductive T where\n  | leaf\n  | node (a b : T)\n  | wrap (t : T)\n" ++
           "def f : T → T\n  | .node a _ => .wrap a\n  | t => t\n" ++
