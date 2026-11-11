@@ -186,9 +186,6 @@ The remaining gaps:
   and is rejected by the kernel. A tactic that tries `rfl` (`try rfl`, `first | rfl | …`)
   therefore "closes" any equation; side conditions are tried with `exact XT.refl _`, which
   unifies.
-* `TacticM.unfold` fails on a constant that is not a definition (a constructor, an
-  axiom), so the tactics ask `TacticM.ctorInfo` first; an atom headed by an axiom stops
-  `xsimpl` with an error instead of being left alone.
 * A term assigned with `TacticM.assign` is type-inferred at the end of the block (13b), so
   it must not contain a β-redex with a λ at its head (a reflected λ has no domain):
   `Q a` is reduced (`TacticM.instantiate`) before it is used.

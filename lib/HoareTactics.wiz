@@ -382,18 +382,14 @@ def XT.restate (g : Nat) (V L R : Expr) : TacticM Nat := TacticM.change g (XT.en
 def XT.beta (g : Nat) (f a : Expr) : TacticM Expr := match f with
   | .lam _ b => TacticM.instantiate g b a
   | _ => TacticM.pure (.app f a)
--- `e` with the definition at its head unfolded once, if that changes it (`TacticM.unfold`
--- refuses constructors)
+-- `e` with the definition at its head unfolded once, if that changes it (a constructor or
+-- an axiom at the head changes nothing)
 def XT.unfoldHead (g : Nat) (e : Expr) : TacticM (Option Expr) := match Expr.headName e with
   | .some n => do
-    ci ← TacticM.ctorInfo n;
-    match ci with
-    | .some _ => TacticM.pure .none
-    | .none => do
-      e' ← TacticM.unfold g n e;
-      match Expr.beq e e' with
-      | .true => TacticM.pure .none
-      | .false => TacticM.pure (.some e')
+    e' ← TacticM.unfold g n e;
+    match Expr.beq e e' with
+    | .true => TacticM.pure .none
+    | .false => TacticM.pure (.some e')
   | .none => TacticM.pure .none
 
 -- Introducing variables: under the next name given (`as x, y`), else under the binder's
