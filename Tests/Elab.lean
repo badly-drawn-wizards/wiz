@@ -5538,16 +5538,80 @@ def trustGroup : Group where
           check ((addDecl g0 d) matches .ok _) s!"{n} is rejected when added again"
           check ((addDecl g0 { d with impl := some .tt }) matches .error _)
             s!"{n} was accepted with an implementation of another type" },
+    { name := "recursive definitions: a local variable named like the definition is an error", run := fun _ => do
+        -- `f n` inside `f`'s equations is the recursive call; with a local `f` in scope that
+        -- was ambiguous (the compiled equations once called the local: `f 2 = 0` was proved
+        -- and `#eval f 2` printed `3`), so it is rejected with a hint to rename
+        let n := "inductive N where\n  | z\n  | s (n : N)\n"
+        let msg := "a local variable named f shadows the recursive definition f"
+        fails (n ++ "def f : N → N\n  | .z => .z\n  | .s n => (fun (f : N → N) => f n) (fun x => .s (.s x))\n") msg
+        fails (n ++ "def f : N → N\n  | .z => .z\n  | .s n => let f : N → N := fun x => .s (.s x); f n\n") msg
+        -- a pattern variable, a parameter
+        fails (n ++ "def f : N → (N → N) → N\n  | .z, _ => .z\n  | .s n, f => f n (fun x => .s x)\n") msg
+        fails (n ++ "def f (f : N) : N → N\n  | .z => f\n  | .s n => f n\n") "rename a local variable called f"
+        -- renamed, it is the recursive call
+        ok (n ++ "def f : N → N\n  | .z => .z\n  | .s n => (fun (g : N → N) => f n) (fun x => .s (.s x))\n" ++
+            "def fThm : f (.s (.s .z)) = .z := refl N.z\n#eval f (.s (.s .z))\n#run f (.s (.s .z))\n")
+          [".z", ".z"] },
+    { name := "recursive definitions: compiled equations derived from the value agree with it, with and without moving calls out of nested splits", run := fun _ => do
+        -- nested patterns revert the hypotheses into an inner split (`last`, `leftmost`), a
+        -- structural argument after another (`findT`), a mutual family's mode-B match
+        -- (`Nat.lt` in the Prelude), an infinitary field (`wd`), an indexed family (`vsum`)
+        let src := "import Prelude\nimport Vec\ninductive Tr where\n  | tip\n  | node (l : Tr) (x : Nat) (r : Tr)\n" ++
+          "def build : Nat → Tr\n  | .zero => .tip\n  | .succ n => .node (build n) n (build n)\n" ++
+          "def leftmost : Tr → Nat\n  | .tip => 0\n  | .node .tip x _ => x\n  | .node l _ _ => leftmost l\n" ++
+          "def last : List Nat → Nat\n  | .nil => 0\n  | .cons a .nil => a\n  | .cons _ t => last t\n" ++
+          "def findT (h : Nat) : Nat → Tr → Nat\n  | _, .tip => 0\n  | .zero, .node _ x _ => x\n" ++
+          "  | .succ d, .node l _ r => match Nat.beq h d with\n    | .true => findT h d r\n    | .false => findT h d l\n" ++
+          "inductive W where\n  | sup (f : Nat → W) (n : Nat)\n  | z\n" ++
+          "def wd : W → Nat → Nat\n  | .z, _ => 0\n  | .sup f n, k => wd (f k) k + n\n" ++
+          "def vsum {0 n : Nat} : Vec Nat n → Nat\n  | .nil => 0\n  | .cons x xs => x + vsum xs\n" ++
+          "def l5 : List Nat := .cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 .nil))))\n" ++
+          "#run leftmost (build 4)\n#run last l5\n#run findT 1 3 (build 3)\n" ++
+          "#run wd (.sup (fun i => .sup (fun _ => .z) i) 10) 5\n#run vsum (.cons 1 (.cons 2 .nil))\n#run Nat.lt 3 5\n" ++
+          "def t1 : leftmost (build 4) = 0 := refl 0\ndef t2 : last l5 = 5 := refl 5\n" ++
+          "def t4 : findT 1 3 (build 3) = 0 := refl 0\ndef t5 : wd (.sup (fun i => .sup (fun _ => .z) i) 10) 5 = 15 := refl 15\n"
+        let ms ← Module.loadAll ["lib"]
+        let loader := fun m => (ms[m]?).map (·.2)
+        let run (push : Bool) : IO (List String) := do
+          let s := runFrontend (R := ZeroOneMany) src
+            { loader, trustedModule := Tests.libModule, globals := { pushCalls := push } }
+          let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+          unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+          -- every derived implementation passes the kernel's agreement check
+          for (n, d) in s.globals.decls.toList do
+            if d.derivedEquations then
+              unless (checkImplAgrees s.globals d d.value.get! d.impl.get!) matches .ok _ do
+                throw (IO.userError s!"{n}: the compiled equations do not agree")
+          pure (s.messages.toList.map (·.text))
+        let expect := ["0", "5", "0", "15", "3", ".true"]
+        checkEq (repr expect).pretty (repr (← run true)).pretty
+        checkEq (repr expect).pretty (repr (← run false)).pretty },
+    { name := "recursive definitions: the kernel rejects compiled equations that compute something else", run := fun _ => do
+        -- `g`'s compiled equations, well typed at `f`'s type, given to `f`: `f 0 = 0` but
+        -- `g 0 = 1`, so the agreement check (one conversion per constructor) fails
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def f : N → N\n  | .z => .z\n  | .s n => f n\n" ++
+          "def g : N → N\n  | .z => .s .z\n  | .s n => g n\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let (some f, some g) := (s.globals.find? "f", s.globals.find? "g")
+          | throw (IO.userError "f or g is missing")
+        let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase "f" }
+        check ((addDecl g0 f) matches .ok _) "f is rejected when added again"
+        match addDecl g0 { f with impl := g.impl } with
+        | .ok _ => throw (IO.userError "f was accepted with g's compiled equations")
+        | .error e => check (((toString e).splitOn "do not agree").length > 1) s!"unexpected error: {e}" },
     { name := "recursive definitions: a local variable named like the definition doesn't capture its calls in compiled code", run := fun _ =>
-        -- `f n` is a recursive call (the kernel's definition recurses, so `f 2 = 0`); the
-        -- compiled equations called the local `f`, and `#eval f 2` was `3`
+        -- (#82's regression test.) `f n` is a recursive call (the kernel's definition
+        -- recurses, so `f 2 = 0`); the compiled equations called the local `f`, and `#eval f 2`
+        -- was `3`. Such a local is an error now (the previous case), so the same programs
+        -- with the locals renamed: compiled code still computes what `refl` proves
         ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
-            "def f : N → N\n  | .z => .z\n  | .s n => (fun (f : N → N) => f n) (fun x => .s (.s x))\n" ++
+            "def f : N → N\n  | .z => .z\n  | .s n => (fun (f2 : N → N) => f n) (fun x => .s (.s x))\n" ++
             "def fThm : f (.s (.s .z)) = .z := refl N.z\n#eval f (.s (.s .z))\n#run f (.s (.s .z))\n" ++
-            "def g : N → N\n  | .z => .z\n  | .s n => let g : N → N := fun x => .s (.s x); g n\n" ++
+            "def g : N → N\n  | .z => .z\n  | .s n => let g2 : N → N := fun x => .s (.s x); g n\n" ++
             "def gThm : g (.s (.s .z)) = .z := refl N.z\n#eval g (.s (.s .z))\n" ++
-            -- a pattern variable too
-            "def h : N → (N → N) → N\n  | .z, _ => .z\n  | .s n, h => h n (fun x => .s x)\n" ++
+            "def h : N → (N → N) → N\n  | .z, _ => .z\n  | .s n, h2 => h n (fun x => .s x)\n" ++
             "def hThm : h (.s (.s .z)) (fun x => .s x) = .z := refl N.z\n#eval h (.s (.s .z)) (fun x => .s x)\n")
           [".z", ".z", ".z", ".z"] },
     { name := "recursive definitions: compiled code keeps an outer index that a method mentions", run := fun _ =>
@@ -5647,7 +5711,8 @@ def trustGroup : Group where
         okLib ("import Prelude\ndef slow (n : Nat) : Nat := n + 0\ndef fast (n : Nat) : Nat := n\n" ++
             "attribute [implemented_by fast] slow\ndef use (n : Nat) : Nat := slow n\n" ++
             "#print axioms use\n#print axioms fast\n" ++
-            -- a recursive definition's own compiled equations and a partial one's body are not natives
+            -- a recursive definition's compiled equations (checked to agree with its value, T1)
+            -- and a partial one's body (checked) are not listed
             "def len : List Nat → Nat\n  | .nil => 0\n  | .cons _ t => len t + 1\n#print axioms len\n" ++
             "partial def spin (n : Nat) : Nat := fast n\n#print axioms spin\n")
           ["'use' depends on axioms: [native slow := fast]" ++ note, "'fast' does not depend on any axioms",
