@@ -259,10 +259,6 @@ def terms : List (String × MTm × Bool) := [
   ("… and is not False",
     ann (lam (lam (snd (var 0)))) (pi (pi (unit 0) ptrue) (pi pfEq pfalse)), false)
 ]
-/-- The reference checker's own type of `h.2` in `f1`/`f2` (in the context `pres, p, q, h`),
-in weak-head normal form, is well formed under the kernels' formation rules (`kernelOpts`):
-what the elaborator path above needs of the third voter. Before #123 the checker's `Σ` rule
-built `transp` along `True` here. -/
 /-- A context of the reference checker from types written outermost first. -/
 def ctxOf (tys : List MTm) : Except String WizMeta.Ctx :=
   tys.foldlM (init := []) fun Γ A => do
@@ -287,6 +283,7 @@ def sndTyWellFormed (sg : Sig) (pres : List MTm) (S : Nat → MTm) : Except Stri
     let T ← WizMeta.infer E F Γ (.snd (.var 0))
     let T' ← WizMeta.whnf E F Γ T
     let _ ← WizMeta.inferSort E F Γ T'
+    pure ()
 end NuTransp
 
 /-! ## The second reading (meta-review): defects found, and presupposition properties
