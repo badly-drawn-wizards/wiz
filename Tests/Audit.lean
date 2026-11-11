@@ -487,13 +487,6 @@ def wordsAgree (long llvm : Bool) : IO Unit := do
 
 /-- A word built with `.mk` from a number that does not fit its width: the definitions
 compute with the number as it is. -/
-def wordOutOfRange : String :=
-  "import Word\ndef b2n : Bool → Nat\n  | .true => 1\n  | .false => 0\n" ++
-  "def big (n : Nat) : UIntN 8 := .mk (n + 300)\n" ++
-  "def main : List Nat := .cons (big 0).toNat (.cons (UIntN.not (big 0)).toNat (.cons (UIntN.div (big 0) (big 0)).toNat\n" ++
-  "  (.cons (b2n (UIntN.lt (big 0) (UIntN.ofNat 8 45))) (.cons (UIntN.shiftRight (big 0) 1).toNat\n" ++
-  "  (.cons (UIntN.resize 16 (big 0)).toNat (.cons (UIntN.land (big 0) (big 0)).toNat .nil))))))\n"
-
 /-! ## The two kernels against each other
 
 A type-directed generator: closed types (so no index needs shifting) and terms of a given
@@ -947,11 +940,11 @@ def cases (long : Bool) : List Case := [
   { name := "arithmetic: compiled (LLVM) against Lean's Nat", run := fun _ => arithCompiled long true },
   { name := "words: the natives (C) against the definitions", run := fun _ => wordsAgree long false },
   { name := "words: the natives (LLVM) against the definitions", run := fun _ => wordsAgree long true },
-  -- R5 (open): a pinned difference. When `.mk` is sealed (or the model changed) this case flips
-  { name := "words: R5, a word built with .mk from a number that does not fit: `not` differs compiled (pinned)", run := fun _ => do
-      sameOutput "#eval (the definitions)" (printedList [300, 0, 1, 0, 150, 300, 300]) (← evaluated wordOutOfRange)
-      if let some got ← compiled wordOutOfRange false then
-        sameOutput "compiled (the natives)" (printedList [300, 211, 1, 0, 150, 300, 300]) got }] ++
+  -- R5 (closed by the seal, #119): a word's constructor is private to lib/Word.wiz, so an
+  -- out-of-range word can't be built with `.mk` outside it (before, the definitions and the
+  -- compiled natives disagreed on such a word: `not` gave 0 and 211)
+  { name := "words: R5, a word can't be built with .mk outside lib/Word.wiz (the seal)", run := fun _ =>
+      Elab.failsLibs "import Word\ndef big (n : Nat) : UIntN 8 := .mk (n + 300)\n" "is private to module Word" }] ++
   paradoxCases
 
 def group : Group where
