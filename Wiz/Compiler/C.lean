@@ -391,20 +391,20 @@ def signature (d : IR.Decl) : String :=
   let ps := if d.params.isEmpty then "void" else ", ".intercalate (d.params.toList.map (s!"wiz_val {var ·}"))
   s!"static wiz_val {mangle d.name}({ps})"
 
-def decl (arities : Std.HashMap Name Nat) (d : IR.Decl) : String :=
+def decl (arities : Std.HashMap Name Nat) (cafs : Std.HashSet Name) (d : IR.Decl) : String :=
   -- (a reuse token may be bound in several branches: declare it once)
   let locals := ((bound d.body).filter (!d.params.contains ·)).toList.eraseDups.toArray
   let decls := if locals.isEmpty then "" else s!"  wiz_val {", ".intercalate (locals.toList.map var)};\n"
   let boxedArgs := ", ".intercalate ((List.range d.params.size).map (s!"a[{·}]"))
-  -- (a hoisted constant is built once, made immortal, and shared; threads may race to
-  -- build it: the first to publish wins, a loser's copy stays immortal and unused)
-  if d.name.startsWith "wiz.const." && d.params.isEmpty then
-    s!"static wiz_val {mangle d.name}_build(void) {lb}\n{decls}{body arities {} d.body}{rb}\n" ++
-    s!"{signature d} {lb} static wiz_val c = 0; wiz_val v = __atomic_load_n(&c, __ATOMIC_ACQUIRE); " ++
-    s!"if (!v) {lb} wiz_val z = 0; v = {mangle d.name}_build(); wiz_immortal(v); " ++
-    s!"if (!__atomic_compare_exchange_n(&c, &z, v, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) v = z; {rb} " ++
-    s!"wiz_inc(v); return v; {rb}\n" ++
-    s!"static wiz_val {mangle d.name}_boxed(wiz_val *a) {lb} return {mangle d.name}(); {rb}\n"
+  -- (a closed definition, `IR.cafs`: built on its first use, made immortal, and shared;
+  -- the fast path is one load, `wiz_caf_init` builds it)
+  if cafs.contains d.name then
+    let m := mangle d.name
+    s!"static wiz_val {m}_build(void) {lb}\n{decls}{body arities {} d.body}{rb}\n" ++
+    s!"static wiz_val {m}_slot = 0;\n" ++
+    s!"{signature d} {lb} wiz_val v = __atomic_load_n(&{m}_slot, __ATOMIC_ACQUIRE); " ++
+    s!"if (__builtin_expect(v != 0, 1)) {lb} wiz_inc(v); return v; {rb} return wiz_caf_init(&{m}_slot, {m}_build); {rb}\n" ++
+    s!"static wiz_val {m}_boxed(wiz_val *a) {lb} return {m}(); {rb}\n"
   else
   s!"{signature d} {lb}\n{decls}{body arities {} d.body}{rb}\n" ++
   s!"static wiz_val {mangle d.name}_boxed(wiz_val *a) {lb} return {mangle d.name}({boxedArgs}); {rb}\n"
@@ -418,12 +418,13 @@ leaks. -/
 def program (decls : Array IR.Decl) (io : Bool := false) (extra : String := "") (unbox : Bool := false)
     (exports : List RVal.ExternSig := []) (lib : Bool := false) : String :=
   let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
+  let cafs := IR.cafs decls
   let protos := decls.toList.map fun d =>
     s!"{signature d};\nstatic wiz_val {mangle d.name}_boxed(wiz_val *a);\n"
   let finish := if io then "1" else "0"
   runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ extra ++ "\n" ++ glue (externs decls) extra unbox ++
     "\n/* ---- generated ---- */\n\n" ++ String.join protos ++ "\n" ++
-    String.join (decls.toList.map (decl arities ·)) ++
+    String.join (decls.toList.map (decl arities cafs ·)) ++
     (if exports.isEmpty then "" else "\n/* ---- exported functions ---- */\n\n" ++ exportWrappers exports) ++
     -- (a library has no `main`: C calls its exports)
     if lib then "" else
