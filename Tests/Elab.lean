@@ -808,8 +808,10 @@ def preludeLoader : IO (Name → Option String) := do
   let word ← IO.FS.readFile "lib/Word.wiz"
   let functor ← IO.FS.readFile "lib/Functor.wiz"
   let logic ← IO.FS.readFile "lib/Logic.wiz"
+  let text ← IO.FS.readFile "lib/Text.wiz"
   pure fun m => if m == "Prelude" then some prelude else if m == "Word" then some word
-    else if m == "Functor" then some functor else if m == "Logic" then some logic else none
+    else if m == "Functor" then some functor else if m == "Logic" then some logic
+    else if m == "Text" then some text else none
 
 /-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
 
