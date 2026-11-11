@@ -805,7 +805,8 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   is stuck, as in TTobs.
 * **Regularity at inert types (CONJECTURE).** `inertTy` (`Eval.lean`; `inertTy` in
   `Kernel.wiz`) is a syntactic, conservative test: `Enum`, `Unit_l` with `l` never 0,
-  `Σ` with a never-zero sort annotation of inert types, and `μ` types whose index type
+  `Σ` with a never-zero sort annotation of inert types, singleton tails (C1, below),
+  and `μ` types whose index type
   is inert and whose description, walked with its tags (and with a fresh variable for a
   non-enum field), has only `ret`, `rec` and `arg` at inert types (no `hrec`, no `Prop`
   field, no function, no neutral type, so no variable parameter: `List A` is not inert,
@@ -953,6 +954,64 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   fragment of the rule without conversion. What it alone leaves stuck (a neutral value
   at an inert type with an open index: `cast (Fin n) (Fin n) e k` for variables `n`,
   `k`) the conversion checker removes.
+* **Singleton tails are inert (C1).** A *singleton tail* is `Unit_l` with `l` never 0,
+  or `(0 x : A) → T` with `T` a singleton tail under the binder (the quantity the literal
+  `0`). It is the shape of a phantom tail (22e), of a structure's marker (22i) and of a
+  seal (22k), and of the brands of `wiz-notes/brands-design.md`: a type's index tail, or
+  the last component of a structure's Σ. Without C1 a seal costs regularity, since the
+  index type of a sealed `Col` is `(0 _ : Col.seal✝) → Unit`, a Π, and no Π was inert:
+  `cast e c ≡ c` held for an unsealed `Col` and failed for a sealed one.
+
+  ```
+  inertTy    ((0 x : A) → T)                   iff  T is a singleton tail        (A is not inspected)
+  groundEqTy ((0 x : A) → T) ((0 x : A') → T')  iff  groundDom A A'  and  T, T' ground-equal singleton tails
+  groundDom  A A'                               iff  groundEqTy A A'
+                                                     or A, A' are the same atom
+                                                     or A, A' are the same constant c.{us} ā without a value
+                                                        (same name, levels equivalent, arguments by groundDom)
+  groundEqVal at a singleton tail               =    true
+  ```
+
+  `inertTy`, `groundEqTy`/`groundEqTail`/`groundDom` and `groundEqVal` in `Eval.lean`;
+  `inertW`/`tailW`, `groundTyW`/`groundTailW`/`groundDom` and `groundValW` in
+  `Kernel.wiz` (an axiom there, `haxiom`, whose name does not start with a space, so
+  never an atom or a sentinel); `InReg.tailUnit`/`tailPi` and `inert` in WizMeta. So a
+  sealed type, a structure with inert fields, and a type with a phantom parameter
+  instantiated by a closed inert type or an axiom are inert, and get ground regularity
+  (`cast e c ⟶ c` in the evaluator at closed types, InReg_conv in conversion at the
+  others). Why it is sound (argued, not proved, like the rest of this section):
+  * *The model.* Cast-Refl holds in the model at **every** type, "for trivial reasons"
+    (`wiz-notes/model-memo.md` C16); the restriction to inert types is algorithmic
+    (C17). C1 widens the side condition only, so it adds no equation the model rejects.
+  * *No new redex.* Inertness is there so that dropping a cast never creates or hides a
+    redex, nor changes what a later reduction sees. At a singleton tail every value is
+    convertible to `fun _ … _ => ()` by Π-η and Unit-η, so `cast A B e t` and `t` are
+    already convertible to each other by η, before any regularity; conversion cannot
+    observe the difference, and the only eliminations of a tail (applications) end in
+    `Unit`, which has no eliminator. At a `μ` type or a structure whose index or marker is
+    a tail, the tail's values occur only in the index (inside types and the index
+    equations, which are proofs and never reduced, §8.6) and in the marker (erased,
+    never read): the relevant content is the first-order data that inertness was
+    defined for. The type's reducibility candidate does not depend on the
+    interpretation of the tail's domains (they only ever reach `Unit`), so the
+    "rigid" argument above still applies; this is why the domains need not be inert.
+    In the evaluator a cast *at* a tail never reaches the fast path: the Π rule of
+    `vCast` computes first (to `fun x => cast Unit Unit _ (t (cast x)) ⟶ fun x => ()`).
+  * *Stability.* The fast path's side condition must give the same answer for
+    convertible inputs (S1) and survive substitution once `true` (S2, `p1-stable.md`).
+    `singletonTail` reads only the quantities and the final `Unit`, which conversion
+    compares. `groundDom` compares a constant without a value by name: such a constant
+    converts only to itself (with convertible arguments, compared again by `groundDom`),
+    so S1 holds, and it is closed, so S2 holds. A type variable as a domain is not
+    ground (`false`), and becomes `true` only after a substitution makes it ground
+    (stuck ⟶ fires, allowed). Sentinel heads (`outOfSteps`, out-of-scope) are excluded.
+  * *Termination.* The walks are bounded by the same depths (8 for `inertTy`, 64 for
+    ground equality) and instantiate binders with atoms.
+  * *Not covered.* A phantom of a value, `(0 x : Nat) × (x = p)` (the tail of `UIntN w`),
+    contains an equation type, which `groundEqTy` does not handle: such a domain is not
+    ground, so `cast` at a closed word is the identity only through InReg_conv (the
+    tail is inert; `groundDom` is only the fast path). Extending `groundEqTy` to
+    equations at inert types with ground sides would be separate.
 * **`--regularity full`** (an experiment; `kernelRegularity := .true`) is the same rule
   at *every* type, [PLT25]'s Cast-Refl, also in conversion only. The modes `nonprop`
   and `refl`, which fired in the evaluator by syntactic equality (and, for `refl`, by

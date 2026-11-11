@@ -336,6 +336,36 @@ def p1Accepted (m : InertReg) : List String :=
     let s := runFrontend (R := ZeroOneMany) (p1Prelude ++ d ++ "\n") { globals := { inertReg := m } }
     if s.messages.any (·.severity == .error) then none else some n
 
+/-- (C1, brands-design §2.3, probe b5) Singleton tails are inert. A phantom type
+parameter instantiated by an axiom gives the index tail `(0 phantom✝ : KCol) → Unit`,
+the shape of a seal (22k): before C1 no Π was inert, and `cast e c ≡ c` failed there. -/
+def c1Prelude : String :=
+  "axiom KCol : Type\n" ++
+  "inductive N where\n  | z\n  | s (n : N)\n" ++
+  "inductive ColP (A : Type) where\n  | red\n  | green\n" ++
+  "def Col := ColP KCol\n" ++
+  "structure P3 where\n  a : N\n  b : Col\n" ++
+  "inductive LP (A : Type) (B : Type) where\n  | nil\n  | cons (a : A) (t : LP A B)\n"
+
+def c1Decls : List (String × String) := [
+  -- an axiom in the tail
+  ("col", "def col (c : Col) (e : Col = Col) : (cast e c : Col) = c := rfl"),
+  -- a closed inert type in the tail
+  ("colN", "def colN (c : ColP N) (e : ColP N = ColP N) : (cast e c : ColP N) = c := rfl"),
+  -- a structure whose marker is a tail, with a field at a tailed type
+  ("str", "def str (s : P3) (e : P3 = P3) : (cast e s : P3) = s := rfl"),
+  -- a recursive type with a used and a phantom parameter
+  ("list", "def list (x : LP N KCol) (e : LP N KCol = LP N KCol) : (cast e x : LP N KCol) = x := rfl"),
+  -- a type variable in the tail: inert, not ground (conversion only)
+  ("var", "def var (A : Type) (c : ColP A) (e : ColP A = ColP A) : (cast e c : ColP A) = c := rfl"),
+  -- control: a used type variable is not inert
+  ("used", "def used (A : Type) (x : LP A KCol) (e : LP A KCol = LP A KCol) : (cast e x : LP A KCol) = x := rfl")]
+
+def c1Accepted (m : InertReg) : List String :=
+  c1Decls.filterMap fun (n, d) =>
+    let s := runFrontend (R := ZeroOneMany) (c1Prelude ++ d ++ "\n") { globals := { inertReg := m } }
+    if s.messages.any (·.severity == .error) then none else some n
+
 /-- `TyOf a` is `a`'s type (as the elaborator built it) -/
 def tyOfDef : String := "def TyOf {ω A : Type} (a : A) : Type := A\n"
 
@@ -493,6 +523,10 @@ def ottGroup : Group where
     -- checks, and so does its reduct h2) but gives up a neutral value at an open index
     { name := "P1: the fast path alone (ground) is stable, and rejects t1 and t2", run := fun _ =>
         checkEq (repr ["h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .ground)).pretty },
+    { name := "C1: a singleton tail is inert: casts at tailed types (seal-shaped, structures) are their argument", run := fun _ => do
+        checkEq (repr ["col", "colN", "str", "list", "var"]).pretty (repr (c1Accepted .conv)).pretty },
+    { name := "C1: the fast path alone (ground) compares tail constants by name, and rejects a variable domain", run := fun _ =>
+        checkEq (repr ["col", "colN", "str", "list"]).pretty (repr (c1Accepted .ground)).pretty },
     { name := "D1: with eager proofs, a cast between propositions applies the equivalence, not regularity", run := fun _ => do
         let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral { globals := { lazyProofs := false } }
         checkEq (repr ["fun x => x"]).pretty (repr (s.messages.toList.map (·.text))).pretty },
@@ -3552,6 +3586,29 @@ def convSamples : List (String × MTm × Bool) :=
     ("t5", ann (lams 3 (refl (var 2) (var 1)))
       (pi (univ 0) (pi (var 0) (pi (eqTy (var 1) (var 1)) (eq (var 2) (cast (var 2) (var 2) (var 0) (var 1)) (var 1))))), false) ]
 
+/-- (C1) Singleton tails are inert, in both kernels: `G I` is a family over the index type
+`I` with one constructor at the index `fun _ => ()`. Each term is
+`fun x e => refl x : (x : G) → (e : G = G) → cast G G e x = x`; the second component says
+whether conversion accepts it, the third whether the fast path alone (`groundEqTy`) does. -/
+def c1Samples : List (String × MTm × Bool × Bool) :=
+  let G (I j : MTm) : MTm := mu 0 I (dret j) j
+  let tl (X : MTm) : MTm := piq .zero X (unit 1)
+  let reg (T : MTm) : MTm := ann (lams 2 (refl T (var 1)))
+    (pi T (pi (eqTy T T) (eq T (cast T T (var 0) (var 1)) (var 1))))
+  [ -- an axiom as the tail's domain (the shape of a seal): compared by name
+    ("axiom", reg (G (tl (const "A")) (lam star)), true, true),
+    -- a closed inert type as the domain, behind a definition
+    ("nat", reg (G (tl (const "Nat")) (lam star)), true, true),
+    -- two binders
+    ("two", reg (G (piq .zero (const "A") (tl (const "Nat"))) (lam (lam star))), true, true),
+    -- a type variable as the domain: inert, but not ground
+    ("var", ann (lams 3 (refl (G (tl (var 2)) (lam star)) (var 1)))
+      (pi (univ 0) (pi (G (tl (var 0)) (lam star)) (pi (eqTy (G (tl (var 1)) (lam star)) (G (tl (var 1)) (lam star)))
+        (eq (G (tl (var 2)) (lam star)) (cast (G (tl (var 2)) (lam star)) (G (tl (var 2)) (lam star)) (var 0) (var 1)) (var 1))))), true, false),
+    -- controls: a Π into `Enum 2` is not a tail, nor is a Π at quantity ω
+    ("enum", reg (G (piq .zero (const "A") (enum 2)) (lam (tag 2 0))), false, false),
+    ("omega", reg (G (pi (const "A") (unit 1)) (lam star)), false, false) ]
+
 end MTm
 
 /-- (audit S1, audit-2 P-1) The name of a term's constructor. **No wildcard**: a new
@@ -4627,6 +4684,27 @@ def selfHostGroup : Group where
         let groundK := kernel.replace on "def kernelInertConv : Bool := .false"
         ioRun (groundK ++ "\n" ++ wizVerdict ++ okV ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n")
           ("\n".intercalate (samples.map fun (n, _, _) => show' (n == "ne")) ++ "\n") },
+    { name := "C1: a singleton tail is inert, in both kernels (core terms)", run := fun _ => do
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let samples := MTm.c1Samples
+        let show' (b : Bool) : String := if b then "ok" else "error"
+        for (n, t, ok, _) in samples do
+          let v := leanVerdict t
+          unless (v != "error") == ok do throw (IO.userError s!"{n}: the Lean kernel says {v}, expected {show' ok}")
+        let ground (t : MTm) : Bool :=
+          let g : Globals ZeroOneMany := { leanGlobals () with inertReg := .ground }
+          (infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } t.toTerm).1).toBool
+        for (n, t, _, okG) in samples do
+          unless ground t == okG do throw (IO.userError s!"{n}: the Lean kernel's fast path says {ground t}, expected {okG}")
+        let okV := "def okVerdict (t : Tm) : String := match infer (TCtx.inProof empty) t with\n  | .err _ => \"error\"\n  | .ok _ _ => match infer empty (MR.tm (markInfer empty t)) with\n    | .ok _ _ => \"ok\"\n    | .err _ => \"error\"\n"
+        let calls := samples.map fun (_, t, _, _) => s!"(okVerdict {t.toWiz})"
+        let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
+        ioRun (kernel ++ "\n" ++ wizVerdict ++ okV ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n")
+          ("\n".intercalate (samples.map fun (_, _, ok, _) => show' ok) ++ "\n")
+        let on := "def kernelInertConv : Bool := .true"
+        let groundK := kernel.replace on "def kernelInertConv : Bool := .false"
+        ioRun (groundK ++ "\n" ++ wizVerdict ++ okV ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n")
+          ("\n".intercalate (samples.map fun (_, _, _, okG) => show' okG) ++ "\n") },
     { name := "U5b: a cast at a Π/Σ whose sort is not known is stuck, as the equation it goes along is (both kernels)", run := fun _ => do
         -- (prop-harness, `wiz-notes/soundness-probes/ph-u5b-cast-at-unknown-sort.txt`) the cast
         -- used to compute, projecting a proof whose type is a stuck equation and no pair
@@ -5270,6 +5348,12 @@ def wordGroup : Group where
         let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "wiz_word_add").length > 1) s!"no native call in:\n{out}" },
+    -- (C1) a sealed word's index tail is a singleton tail, so in Word's own module (where
+    -- the type is transparent) a cast at a word type is its argument
+    { name := "C1: in its module, a sealed word gets regularity (cast e x ≡ x)", run := fun _ => do
+        let word ← IO.FS.readFile "lib/Word.wiz"
+        okLib (word ++ "\ndef wIn1 (x : UIntN 8) (e : UIntN 8 = UIntN 8) : (cast e x : UIntN 8) = x := rfl\n" ++
+          "def wIn2 (w : Nat) (x : IntN w) (e : IntN w = IntN w) : (cast e x : IntN w) = x := rfl\n") },
     { name := "the width is part of the type, and is inferred", run := fun _ => do
         okLib "import Word\ndef w {ω n : Nat} (a : UIntN n) : Nat := n\n#check w (U8.ofNat 3)\n#eval w (U8.ofNat 3)"
           ["w 8 (U8.ofNat 3) : Nat", "8"]

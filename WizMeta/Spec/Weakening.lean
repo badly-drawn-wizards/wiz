@@ -590,6 +590,11 @@ theorem inReg_renClosed {R : Rules} (hc : ∀ r, Core r → R r) (hi : ∀ r, In
     exact ofRule (hi _ (.sigma h)) (by
       fromIH ih ρ Δ hρ hΔ
       exact Renames.under hc ih.2.2.2 rfl ih.2.1 hρ hΔ)
+  | tailUnit h => exact ofRule (hi _ (.tailUnit h)) (by fromIH ih ρ Δ hρ hΔ)
+  | tailPi =>
+    exact ofRule (hi _ .tailPi) (by
+      fromIH ih ρ Δ hρ hΔ
+      exact Renames.under hc ih.2.2 rfl ih.2.1 hρ hΔ)
   | mu => exact ofRule (hi _ .mu) (by fromIH ih ρ Δ hρ hΔ)
   | descConv => exact ofRule (hi _ .descConv) (by fromIH ih ρ Δ hρ hΔ)
   | ret => exact ofRule (hi _ .ret) (by fromIH ih ρ Δ hρ hΔ)

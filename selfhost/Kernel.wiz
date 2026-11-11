@@ -1341,6 +1341,21 @@ def inertW (depth : Nat) : Val → Bool
   | .vmu _ I D _ _ => match inertTy (Nat.succ depth) I with
     | .true => inertDesc (Nat.succ depth) D
     | .false => .false
+  | .vpi q a env b s => tailW depth (.vpi q a env b s)
+  | _ => .false
+-- (C1) a singleton tail (`singletonTail` in `Eval.lean`): `Unit_l` with `l` never zero, or
+-- `(0 x : A) → T` with `T` a singleton tail; the domains are not inspected. Every value is
+-- `fun _ … _ => ()` up to η: the shape of a phantom tail, a structure's marker, a seal
+def singletonTail (depth : Nat) (A : Val) : Bool := match Nat.lt depth 64 with
+  | .false => .false
+  | .true => tailW depth (whnf A)
+def tailW (depth : Nat) : Val → Bool
+  | .vunit l => match Nat.beq l 0 with
+    | .true => .false
+    | .false => .true
+  | .vpi q _ env b _ => match q with
+    | .qz => singletonTail (Nat.succ depth) (eval (.cons (groundAtom (Nat.add 3000 depth)) env) b)
+    | _ => .false
   | _ => .false
 def inertDesc (depth : Nat) (D : Val) : Bool := match Nat.lt depth 8 with
   | .false => .false
@@ -1410,6 +1425,46 @@ def groundTyW (d : Nat) : Val → Val → Bool
         | .false => .false
       | .false => .false
     | .false => .false
+  | .vpi q a env b s, .vpi q' a' env' b' s' => groundTailW d (.vpi q a env b s) (.vpi q' a' env' b' s')
+  | _, _ => .false
+-- (C1) two singleton tails, equal and ground (`groundEqTail` in `Eval.lean`): quantities
+-- `0`, domains by `groundDom`, codomains under an atom, the final `Unit`s
+def groundEqTail (d : Nat) (A B : Val) : Bool := match Nat.lt d 64 with
+  | .false => .false
+  | .true => groundTailW d (whnf A) (whnf B)
+def groundTailW (d : Nat) : Val → Val → Bool
+  | .vunit l, .vunit l' => Bool.and (Nat.lt 0 l) (Nat.beq l l')
+  | .vpi q a env b _, .vpi q' a' env' b' _ => match q with
+    | .qz => match Bool.and (qEq q q') (groundDom (Nat.succ d) a a') with
+      | .true => groundEqTail (Nat.succ d) (eval (.cons (groundAtom d) env) b) (eval (.cons (groundAtom d) env') b')
+      | .false => .false
+    | _ => .false
+  | _, _ => .false
+-- (C1) two domains of a singleton tail, equal and ground (`groundDom` in `Eval.lean`):
+-- ground-equal inert types, the same atom, or the same axiom (a seal or brand constant;
+-- not a sentinel, whose name starts with a space) applied to ground-equal domains. An
+-- axiom converts only to itself, and is closed: invariant under conversion, stable
+-- under substitution
+def groundDom (d : Nat) (A B : Val) : Bool := match Nat.lt d 64 with
+  | .false => .false
+  | .true => match groundEqTy d A B with
+    | .true => .true
+    | .false => groundDomW d (whnf A) (whnf B)
+def groundDomW (d : Nat) (A B : Val) : Bool := match groundAtomEq A B with
+  | .true => .true
+  | .false => groundConstW d A B
+def groundConstW (d : Nat) : Val → Val → Bool
+  | .vne (.haxiom x _) sp, .vne (.haxiom y _) sp' => match isAtomName x with
+    | .true => .false
+    | .false => match kStrEq x y with
+      | .true => groundDomSp d sp sp'
+      | .false => .false
+  | _, _ => .false
+def groundDomSp (d : Nat) : Spine → Spine → Bool
+  | .snil, .snil => .true
+  | .sapp sp a, .sapp sp' b => match groundDom (Nat.succ d) a b with
+    | .true => groundDomSp d sp sp'
+    | .false => .false
   | _, _ => .false
 def groundEqDesc (d : Nat) (I D D' : Val) : Bool := match Nat.lt d 64 with
   | .false => .false
@@ -1449,6 +1504,8 @@ def groundValW : Val → Val → Val → Bool
   | .vulift _ A, a, b => groundEqVal A (vdown a) (vdown b)
   | .vmu l I D i _, .vcon x, .vcon y => groundEqVal (vInterp l I D (muFamily l I D) i) x y
   | .vmu _ _ _ _ _, a, b => groundAtomEq a b
+  -- (C1) a singleton tail: one value up to η
+  | .vpi q a env b s, _, _ => singletonTail 0 (.vpi q a env b s)
   | _, _, _ => .false
 -- (4g) sizes equal as conversion decides it (`sizeEqTrue` in `Eval.lean`, `sizeEq`
 -- below): any `↑ᵏ ∞` is `∞`, and `↑ᵏ x = ↑ᵐ y` when `k = m` and `x`, `y` are one variable

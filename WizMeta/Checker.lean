@@ -553,7 +553,8 @@ def strip (E : Env) : Nat → Ctx → Tm → M (Option Tm)
     | _ => pure none
 
 /-- An inert type: first-order data. `Enum`, `Unit` above `Prop`, lifts and `Σ`s of inert
-types that are not propositions, and `μ` types with an inert index type and inert fields. -/
+types that are not propositions, singleton tails `(0 x : A) → … → Unit` (C1), and `μ`
+types with an inert index type and inert fields. -/
 def inert (E : Env) : Nat → Ctx → Tm → M Bool
   | 0, _, _ => throw .fuel
   | n + 1, Γ, A => do
@@ -568,6 +569,12 @@ def inert (E : Env) : Nat → Ctx → Tm → M Bool
       else inert E n (A₁ :: Γ) B
     | .mu l I D _ => do
       if ← inert E n Γ I then inertDesc E n Γ l I D else pure false
+    -- (C1) a singleton tail: `(0 x : A) → T`, `T` a singleton tail (`InReg.tailUnit`, `tailPi`)
+    | .pi .zero _ A₁ B => do
+      match ← whnf E n (A₁ :: Γ) B with
+      | .unit l => pure l.neverZero
+      | B'@(.pi .zero _ _ _) => inert E n (A₁ :: Γ) B'
+      | _ => pure false
     | _ => pure false
 
 /-- Every field of the description is inert: `ret`, `rec`, and `arg` at inert types (a

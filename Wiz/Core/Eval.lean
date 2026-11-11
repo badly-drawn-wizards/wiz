@@ -35,6 +35,11 @@ variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 def sameQty (a b : Val R) : Option Bool := do
   return QPoly.equiv (← a.toPoly?) (← b.toPoly?)
 
+/-- A quantity that is the literal `0` (a polynomial with no variable). -/
+def isZeroQty (q : Val R) : Bool := match q.toPoly? with
+  | some p => p.isErased
+  | none => false
+
 /-- Are two quantities certainly different: both literals (no variables), and different?
 `False` between two types is decided only then. Polynomials with variables that differ
 (`q` and `1`) can become equal under a substitution (`q := 1`), so the equation must stay
@@ -900,6 +905,19 @@ partial def inertTy (g : Globals R) (depth : Nat) (A : Val R) : Bool :=
   | .sigma _ _ A₁ B (some s) => s.isNeverZero && inertTy g (depth + 1) A₁ &&
       inertTy g (depth + 1) (Closure.inst g B (groundAtom (1000 + depth)))
   | .mu _ I D _ _ _ => inertTy g (depth + 1) I && inertDesc g (depth + 1) D
+  | A@(.pi ..) => singletonTail g depth A
+  | _ => false
+
+/-- A **singleton tail** (C1, `docs/CoreSpec.md` §8.4): `Unit_l` with `l` never zero, or
+`(0 x : A) → T` with `T` a singleton tail under the binder. The domains are not inspected.
+This is the shape of a phantom tail (22e), of a structure's marker (22i) and of a seal or
+brand (22k): every value is `fun _ … _ => ()` up to Π-η and Unit-η, so a singleton tail is
+inert (C1), and `groundEqVal` at it is `true`. -/
+partial def singletonTail (g : Globals R) (depth : Nat) (A : Val R) : Bool :=
+  depth < 64 &&
+  match whnf A with
+  | .unit l => l.isNeverZero
+  | .pi _ _ q _ B _ => isZeroQty q && singletonTail g (depth + 1) (Closure.inst g B (groundAtom (3000 + depth)))
   | _ => false
 
 /-- Every field of the description is inert (`inertTy`). -/
@@ -975,7 +993,41 @@ partial def groundEqTy (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
   | .mu l I D i s _, .mu l' I' D' i' s' _ =>
     l.equiv l' && groundSizeEq s s' && groundEqTy g (d + 1) I I' &&
       groundEqDesc g (d + 1) I D D' && groundEqVal g (d + 1) I i i'
+  | A@(.pi ..), B@(.pi ..) => groundEqTail g d A B
   | _, _ => false
+
+/-- Two singleton tails (`singletonTail`), equal and ground: the quantities `0`, the
+domains by `groundDom`, the codomains under an atom, and the final `Unit`s. -/
+partial def groundEqTail (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
+  d < 64 &&
+  match whnf A, whnf B with
+  | .unit l, .unit l' => l.isNeverZero && l.equiv l'
+  | .pi _ _ q A₁ B₁ _, .pi _ _ q' A₂ B₂ _ =>
+    isZeroQty q && sameQty q q' == some true && groundDom g (d + 1) A₁ A₂ &&
+      let x := groundAtom d
+      groundEqTail g (d + 1) (Closure.inst g B₁ x) (Closure.inst g B₂ x)
+  | _, _ => false
+
+/-- Two domains of a singleton tail, equal and ground: two ground-equal inert types
+(`groundEqTy`), or the same **closed constant** `c.{us} a₁ … aₙ`: a neutral global (an
+axiom, or a seal or brand constant; a definition would have been unfolded by `whnf`)
+with the same name, equivalent levels, and arguments that are ground-equal domains in
+turn; or the same atom. The constant must be declared without a value (never a
+sentinel such as `outOfSteps`). A valueless constant converts only to itself, with convertible arguments, so this
+is invariant under conversion; it mentions no variable, so it is stable under
+substitution. A free variable (a type parameter) is not ground: `false`. -/
+partial def groundDom (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
+  d < 64 && (groundEqTy g d A B ||
+  let A := whnf A
+  let B := whnf B
+  groundAtomEq A B ||
+  match A, B with
+  | .neutral (.global x us) sp, .neutral (.global y us') sp' =>
+    x == y && (g.find? x).any (·.value.isNone) && us.length == us'.length && (us.zip us').all (fun (u, u') => u.equiv u') &&
+      sp.size == sp'.size && (sp.zip sp').all fun
+        | (.app a, .app b) => groundDom g (d + 1) a b
+        | _ => false
+  | _, _ => false)
 
 /-- Two descriptions of inert fields (`ret`, `rec`, `arg` at an inert type), equal and
 ground. A tag field is compared branch by branch; any other field under an atom. -/
@@ -1015,6 +1067,8 @@ partial def groundEqVal (g : Globals R) (d : Nat) (T a b : Val R) : Bool :=
   | .mu l I D i _ _ => match vNatView g a, vNatView g b with
     | .con x, .con y => groundEqVal g d (vInterp g l I D (muFamily l I D) i) x y
     | a, b => groundAtomEq a b
+  -- a singleton tail (C1): one value up to η
+  | .pi .. => singletonTail g 0 T
   | _ => false
 
 /-- A size as conversion sees it (`sizeView` in `Conv.lean`): `∞` (any `↑ᵏ ∞`, `none`), or a

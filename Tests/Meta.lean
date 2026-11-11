@@ -364,6 +364,13 @@ def group : Group where
         let v := ann (lam (lam (lam (refl (var 2) (var 0))))) (pi (univ 0) (pi (eqTy (var 0) (var 0)) (pi (var 1) (eq (var 2) (cast (var 2) (var 2) (var 1) (var 0)) (var 0)))))
         rejects v
         check (!kernelAccepts v) "the kernel has regularity at a type variable" },
+    { name := "C1: a singleton tail is inert (InReg.tailUnit, tailPi), as in the Lean kernel", run := fun _ => do
+        for (n, t, ok, _) in c1Samples do
+          if ok then accepts t else rejects t
+          check (kernelAccepts t == ok) s!"{n}: the Lean kernel's verdict differs"
+        -- without InReg (T0) none of them is accepted
+        for (_, t, _, _) in c1Samples do
+          rejects t { kernelOpts with inertReg := false } },
     { name := "the level premise of ind (audit F3): the index type is in Sort (l+1)", run := fun _ => do
         -- `ind.{1}` at an index type in `Sort 1`; `D` and the scrutinee are checked against values
         -- the rule builds, so no former sees the level (the Lean kernel at a143052 accepts this)
