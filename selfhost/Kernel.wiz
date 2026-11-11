@@ -615,7 +615,9 @@ def tmEq : Tm → Tm → Bool
   | .pfalse, .pfalse => .true
   | .exfalso a b, .exfalso c d => Bool.and (tmEq a c) (tmEq b d)
   | .enum k, .enum k' => Nat.beq k k'
-  | .tag _ i, .tag _ j => Nat.beq i j
+  -- (the enumeration's size too: `valSame` compares it, and "the same term" must not
+  -- depend on both sides having one type)
+  | .tag k i, .tag k' j => Bool.and (Nat.beq k k') (Nat.beq i j)
   | .ecase a b bs, .ecase c d bs' => Bool.and (tmEq a c) (Bool.and (tmEq b d) (tmsEq bs bs'))
   | .eq a b c, .eq d e f => Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f))
   | .eqTy a b, .eqTy c d => Bool.and (tmEq a c) (tmEq b d)
@@ -2108,7 +2110,11 @@ def headSame : Nat → Head → Head → Option Nat
   | n, .hvar x, .hvar y => match Nat.beq x y with
     | .true => .some n
     | .false => .none
-  | n, .hconst a _ _ _ _, .hconst b _ _ _ _ => match kStrEq a b with
+  -- (the same constant at the same levels: by name alone, `d.{0}` and `d.{1}` were "the
+  -- same", `convSpine`'s shortcut for a stuck `ecase` then identified two cases whose
+  -- environments differed in a level instance, and that proved `False`:
+  -- `wiz-notes/kernel-lint.md`, W1)
+  | n, .hconst a _ ls _ _, .hconst b _ ls' _ _ => match Bool.and (kStrEq a b) (lvlsEq ls ls') with
     | .true => .some n
     | .false => .none
   | n, .haxiom a _, .haxiom b _ => match kStrEq a b with
@@ -2448,7 +2454,7 @@ def infer : TCtx → Tm → TyRes
   | c0, .subst A a P p b e =>
     -- a proof: everything in it is erased
     let c := TCtx.erase c0;
-    match inferUniv c A with
+    match checkEqDomain c A with
     | .ok _ _ =>
       let vA := eval (TCtx.env c) A;
       match check c a vA with
@@ -2492,7 +2498,7 @@ def infer : TCtx → Tm → TyRes
   | c, .mus l I D i sz => match check (TCtx.erase c) sz .vsize with
     | .ok _ _ => infer c (.mu l I D i)
     | r => r
-  | c, .sfix l I D v P f sz i x => match inferUniv c I with
+  | c, .sfix l I D v P f sz i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2515,7 +2521,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .scase l I D v P m sz i x => match inferUniv c I with
+  | c, .scase l I D v P m sz i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2551,7 +2557,7 @@ def infer : TCtx → Tm → TyRes
       | ty' => .err (String.append "not a coinductive type: " (showVal c ty'))
     | r => r
   | _, .cocon _ => .err "cannot infer the type of a constructor; add a type ascription"
-  | c, .scofix l I D A f sz i a => match inferUniv c I with
+  | c, .scofix l I D A f sz i a => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2574,7 +2580,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .coit l I D S st i x => match inferUniv c I with
+  | c, .coit l I D S st i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2624,7 +2630,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | ty => .err (String.append "not a description: " (showVal c ty))
     | r => r
-  | c, .ind l I D v P m i x => match inferUniv c I with
+  | c, .ind l I D v P m i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2790,6 +2796,23 @@ def checkBranches : TCtx → Nat → Tm → Tms → Nat → Option (List Q) → 
       | .none => .some u)
     | r => r
 -- a type: its universe (types are erased: their usage counts for nothing)
+-- the index type of a data type at level `l` is exactly in `Sort (l+1)`: the premise of
+-- `μ`/`ν`, and of every eliminator that names `I` (`checkIndexLevel` in `Check.lean`;
+-- the eliminators check their scrutinee against `μ.{l} I D i` without the type former)
+def checkIndexLevel : TCtx → Nat → Tm → TyRes
+  | c, l, I => match inferUniv c I with
+    | .ok (.vsort lI) u => match lvlEquiv lI (.lnum (l + 1)) with
+      | .true => .ok (.vsort lI) u
+      | .false => .err (String.append (String.append (String.append "an index type must be in the data type's universe: Sort " (Nat.toString (l + 1))) ", not Sort ") (lvlShow lI))
+    | r => r
+-- `transp` is for types in `Type u`, as `eq` and `refl` are: the type of its motive and
+-- the type of its proof `e` are equations at `A`, which the `eq` rule rejects at a proposition
+def checkEqDomain : TCtx → Tm → TyRes
+  | c, A => match inferUniv c A with
+    | .ok (.vsort l) u => match lvlNeverZero l with
+      | .true => .ok (.vsort l) u
+      | .false => .err "transp is for types in Type u, not propositions"
+    | r => r
 def inferUniv : TCtx → Tm → TyRes
   | c, t => match infer (TCtx.erase c) t with
     | .ok ty _ => match whnf ty with

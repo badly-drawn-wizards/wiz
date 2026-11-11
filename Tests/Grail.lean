@@ -127,6 +127,33 @@ def modulesGroup : Group where
         -- a module that imports what it uses is fine, and its declarations are seen
         let s := runFrontend (R := ZeroOneMany) "import Prelude\nimport Fine\n#eval three\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         checkEq "[3:1: info: 3]" (toString (s.messages.toList.map (·.render "import Prelude\nimport Fine\n#eval three\n"))) },
+    { name := "trust is part of a module's cache key (22f)", run := fun _ => do
+        -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
+        -- warnings and `#print axioms` of the one run are never replayed in the other
+        let cache ← IO.FS.createTempDir
+        let ms ← Module.loadAll ["lib"]
+        let src := "import Prelude\ndef y : Nat := 2 + 2\n#print axioms y\n"
+        let run (trusted : Name → Bool) : IO (CommandState ZeroOneMany) := do
+          pure (← Cache.elaborateCached cache src ({ trustedModule := trusted, loader := loaderOf ms } : CommandState ZeroOneMany) 0).1
+        let unchecked (s : CommandState ZeroOneMany) : Nat :=
+          (s.messages.filter fun m => (m.text.splitOn "is not checked").length > 1).size
+        let axiomsOf (s : CommandState ZeroOneMany) : String :=
+          ((s.messages.find? fun m => (m.text.splitOn "'y'").length > 1).map (·.text)).getD "?"
+        for _ in [0:2] do
+          let s ← run (fun _ => false)
+          check (unchecked s > 10) s!"untrusted: {unchecked s} unchecked builtins reported"
+          check (((axiomsOf s).splitOn "depends on axioms").length > 1) s!"untrusted: {axiomsOf s}"
+          let s ← run Tests.libModule
+          checkEq 0 (unchecked s)
+          checkEq "'y' does not depend on any axioms" (axiomsOf s) },
+    { name := "the toolchain's library is the first root, and nothing replaces its modules (22f)", run := fun _ => do
+        let dir ← mkTree [("Prelude.wiz", "builtin nat.add := Nat.mul\n"), ("Fake.wiz", "import Prelude\ndef f : Nat := 1\n")]
+        let roots : List System.FilePath := [← Module.toolchainLib, dir]
+        checkEq (← IO.FS.realPath "lib") (← IO.FS.realPath roots.head!)
+        let ms ← Module.loadClosure roots "import Fake\n"
+        checkEq (some (roots.head! / "Prelude.wiz")) (ms["Prelude"]?.map (·.1))
+        checkEq ["Prelude"] ((Module.fromFirstRoot roots ms).toArray.qsort (· < ·)).toList
+        checkEq [("Prelude", dir / "Prelude.wiz")] (← Module.shadowed roots ms) },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
         let ms ← Module.loadAll [dir]
@@ -216,6 +243,33 @@ def toolchainGroup : Group where
         checkEq "[2:1: info: 3]" (toString (s.messages.toList.map (·.render src))) }
   ]
 
+/-- (9f) An executable with a `link_c` file: editing the C file relinks it (only). -/
+def linkCCase : Case :=
+    { name := "an executable with link_c: a C edit reruns the link only", run := fun _ => do
+        let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"p\" |> Package.exe \"hi\" \"app/hi.wiz\"\n"),
+                          ("app/hi.wiz", "import IO\nlink_c \"hi.c\"\nextern \"hi_num\" hiNum : IO Nat\n" ++
+                             "def main : IO Unit := do\n  n ← hiNum;\n  IO.println (Nat.toString n)\n"),
+                          ("app/hi.c", "#include <stdint.h>\nuint64_t hi_num(void) { return 1; }\n")]
+        let (s, ok) ← build dir tc
+        if !ok then
+          IO.println "    (skipped: no toolchain)"
+          return
+        checkEq 5 s.ran
+        let exe := (dir / ".grail" / "bin" / "hi").toString
+        checkEq "1\n" (← IO.Process.output { cmd := exe }).stdout
+        let (s, _) ← build dir tc
+        checkEq 0 s.ran
+        IO.FS.writeFile (dir / "app" / "hi.c") "#include <stdint.h>\nuint64_t hi_num(void) { return 2; }\n"
+        let (s, _) ← build dir tc
+        checkEq 1 s.ran
+        checkEq "2\n" (← IO.Process.output { cmd := exe }).stdout
+        -- a deleted file: the check reruns and says so
+        IO.FS.removeFile (dir / "app" / "hi.c")
+        let (_, ok, log) ← buildLog dir tc
+        check (!ok) "built without its C file"
+        check ((log.splitOn "link_c: no file hi.c").length > 1) s!"no error for the missing file:\n{log}" }
+
 def grailGroup : Group where
   name := "grail"
   exercise := "Stage 23d"
@@ -277,7 +331,8 @@ def grailGroup : Group where
         IO.FS.writeFile (dir / "hello.wiz") "import IO\n-- a comment\ndef main : IO Unit := IO.println \"hello from grail\"\n"
         let (s, _) ← build dir tc
         checkEq 3 s.ran
-        checkEq 2 s.upToDate }
+        checkEq 2 s.upToDate },
+    linkCCase
   ]
 
 /-- A diamond: `B` and `C` import `A`, `D` imports both, and `app.wiz` imports `D`. -/

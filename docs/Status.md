@@ -184,6 +184,14 @@ the results of the probes listed in the "Probes" section.
   registrations as a literal does (`P z z` with `nat.pow := P` is the numeral `1` with no
   literal in the term). So with the Prelude imported nothing more can be registered, and
   without it every registration is an axiom of whatever uses its constant or a numeral.
+* **A second hole, closed** (icestick-uart P3). "The toolchain's `lib/`" was `lib/`
+  relative to the current directory, so an installed toolchain (its library comes as
+  `-I share/wiz/lib`) trusted nothing (every registration of the Prelude was reported
+  as an axiom), while a `lib/Prelude.wiz` in the current directory replaced the real one
+  and was trusted; and the cache key ignored trust, so the two verdicts leaked between
+  runs. Now the trusted library is the one next to the binary, searched first, a file
+  that would shadow one of its modules is ignored with a warning, and trust is part of
+  every module's cache key (stage 22f).
 * **Regression tests.** Group *trust*: the probe's warnings and `#print axioms` output, a
   registration in a module from an `-I` directory, the crash and the shape errors, and the
   Prelude's numerals still computing natively with no axioms; the T14 probe and second
@@ -299,6 +307,147 @@ the results of the probes listed in the "Probes" section.
   stuck, not Prop".
 * **What remains.** Every other `panic!` in `Eval.lean` also returns `Sort 0` and lets the
   check go on. None is known to be reachable from a well-typed term.
+
+### F9. The eliminators did not check the index type's level (audit F3) — **fixed**
+
+* **The gap.** `μ.{l} I D i`, `ν.{l} I D i` and `Desc.{l} I` require `I` in exactly
+  `Sort (l+1)`. The five eliminators that take `I` as an argument (`ind`, `sfix`, `scase`,
+  `coit`, `scofix`) only required `I` to be a type, in both kernels, and they build the
+  types `μ.{l} I D i`, `ν.{l} I D i`, `Desc.{l} I` as values, without the type former's
+  rule. So `coit.{0} (Unit.{2}) …` was accepted with the type `ν.{0} (Unit.{2}) D i`,
+  which is not a type, and the method of an ill-levelled `ind` bound variables at such a
+  type. The surface language can't write this (the elaborator builds every eliminator from
+  a type it has checked); a core term can.
+* **Not a proof of `False`**, as far as two attempts could tell (the soundness audit's, and
+  a second one with the unchecked positions listed,
+  `/workspace/wiz-notes/elim-levels.md`). The ill-levelled type exists only as a value:
+  every position that takes a type *term* checks it with the type former, a description
+  checked against `Desc.{l} I` at such an `I` can't branch (the motive of a `case` would
+  have to name `Desc.{l} I`), and its fields are still small. Semantically such a type is
+  a small family with a large index, harmless as long as nothing can state its
+  injectivity. But "index level ≤ family level" is the side condition for injective type
+  formers ([PLT25 §2.3]: without it, Russell's paradox by Hur's argument), and Wiz's `μ`
+  equation is injective in the index (in `(I, D, i)` with PR #40), so the kernel should
+  not depend on "nobody can write that type down".
+* **The fix.** `checkIndexLevel` in both kernels (`Check.lean`, `Kernel.wiz`): the five
+  rules have the premise `Γ ⊢ I type@k`, `k ≡ l+1` (CoreSpec §9.3). No other rule had the
+  omission: `con`, `cocon`, `out` take their type from the context, `Desc.elim` infers its
+  description, `cast`/`transp`/`=` take type terms.
+* **The same kind of gap in `transp`** (second audit; fixed with it). `transp A a P p b e`
+  only required `A` to be a type, while `eq` and `refl` require a sort that is never
+  `Prop`. Its motive type and the type of `e` are equations at `A`, built as values, so
+  `transp` was accepted at a proposition, where the `eq` rule rejects those types. Harmless
+  (proofs are irrelevant), same defect. Now `isNeverZero` / `lvlNeverZero` in both kernels
+  (CoreSpec §8.1). Tests: "transp at a proposition is rejected, at a type accepted" (group
+  *check: structural types*), `MTm.transpProp` in the differential samples and its
+  Lean-verdict case in *selfhost*.
+* **The hint of `μ`/`ν` was evaluated unchecked** (found by the kernel lint; Lean kernel
+  only, `Kernel.wiz` has no hints). The `mu`/`nu` rule ignored the hint `(T, us, args)`,
+  and `eval` evaluates its arguments, so a raw core term there was run without having
+  been checked: every evaluator `panic!` was reachable, a looping hint hung the checker,
+  and a constant could be instantiated at too few levels. The values only land in the
+  hint, which conversion ignores, so no wrong acceptance is known. Now `checkHint`:
+  `T.{us} args` must be well typed if `T` is declared, and each argument must have an
+  inferable type otherwise (CoreSpec §9.3). Test: "the hint of μ/ν is checked before it is
+  evaluated" (group *check: structural types*). The hint is not display-only: the
+  elaborator finds a type's name, constructors and arguments through it.
+* **Regression tests.** Group *check: structural types*: three "F3: ind, sfix, scase,
+  coit, scofix …" cases (accepted at `Sort (l+1)`; rejected one level too high and one too
+  low, with the error text). Group *selfhost*: "F3 (audit): the eliminators check the
+  index type's level", and `MTm.elimLevels` (22 terms) is in the differential samples, so
+  `Kernel.wiz` must give the same verdicts.
+
+### T1. A recursive definition's compiled code was not checked by the kernel — **fixed** (typing; one disagreement); agreement with the definition is **trusted**
+
+* **The gap.** A declaration has a `value`, which the kernel checks and unfolds, and may
+  have an `impl`, the term that is *compiled* instead (`Decl.impl`; `eraseDecl` takes it
+  first). For a structurally recursive definition by equations the elaborator builds
+  `impl` by elaborating the clauses a second time, with direct recursion instead of the
+  recursor. `addDecl` checked `value` only: nothing type-checked `impl` or compared the
+  two, and everything that compiles ran it (`wiz build`/`run` on both backends,
+  `#eval`/`#run`, macros, tactics, derivers, and the self-hosted tools as programs).
+  Erasure also read the sorts noted on the `Π`s and `Σ`s inside it, which had never
+  passed the kernel's `checkSortNote`. Logical soundness was not at risk: the kernel never
+  unfolds `impl`. Found by reading the code (agent mem-hunt).
+* **A wrong result.** The two elaborations did disagree. The first recognises a
+  recursive call `f y` by its syntax and replaces it by the induction hypothesis; the
+  second resolved `f` by scope, so a local variable called `f` captured the call:
+
+      def f : Nat → Nat
+        | .zero => 0
+        | .succ n => (fun (f : Nat → Nat) => f n) (fun x => x + 100)
+      def thm : f 3 = 0 := refl 0      -- accepted: the definition recurses
+      #eval f 3                         -- printed 102: compiled code called the local
+
+  (the same with `let f := …`). Both terms have the declared type, so no type check
+  finds this.
+* **The fix.**
+  1. *Kernel.* `addDecl` checks `impl` against the declared type, with the definition
+     already declared (`checkImpl`, as `addPartialImpl` does for partial definitions):
+     typing, quantities, level parameters and sort notes. `attribute [implemented_by g] f`
+     stores its constant through the kernel too (`setImpl`). So every term erasure sees
+     has been checked, and erasure reads the sort a `Π`/`Σ` carries everywhere (the
+     exception it made for these implementations, `sortNotesChecked`, is removed). **A declaration whose implementation fails is rejected**, not
+     compiled from its value with a warning: the implementation is the elaborator's own
+     output, so a failure is a bug in Wiz, and falling back would hide it behind a
+     program that is correct but computes every recursive call through the recursor (a
+     change of cost that nobody asked for and no test would notice). The error says that
+     the definition itself checks and that the bug is not the user's.
+  2. *Elaborator.* In the second elaboration the calls the first one rewrote are marked
+     with a macro scope (`markRecCalls`), so they refer to the definition whatever is in
+     scope. `f 3` above now runs to `0`.
+* **What remains (trusted): that `impl` computes what `value` computes.** Nothing checks
+  it: no conversion test, no proof obligation. The kernel's check is of the *type* only,
+  and the example above is well typed, so the kernel change alone would not have caught
+  it; the elaborator change did. The agreement now rests on the two elaborations reading
+  the clauses alike (same syntax, the recursive calls resolved alike, the same local
+  context except for the induction hypotheses, which tactics don't see). `#print axioms`
+  does not list these implementations (it lists the native ones, trusted by design).
+  * *Why not `impl ≡ value`.* They are equal by induction, not by conversion: applied to
+    variables, `value` is stuck on the recursor and `impl` on a case split.
+  * *What could be checked.* (a) Per case: on a constructor both sides compute, and a
+    direct call `f y` unfolds to the recursor on `y`, which is what the induction
+    hypothesis is; so the kernel can split the arguments along `impl`'s case tree
+    (refining a variable each time `impl` is stuck on one) and ask for conversion at
+    each leaf. This is sound and needs nothing from the elaborator, but it is new kernel
+    code (it builds constructor forms from descriptions, and an indexed family's
+    constructors only fit some indices). (b) Derive, don't elaborate: build `impl` from
+    the checked `value` by a fixed translation (each use of an induction hypothesis
+    becomes the call it stands for, the recursor's method becomes a case split), or have
+    the compiler run the recursor itself with hypotheses computed on demand. Then there
+    is no second reading of the source to trust, only the translation, which belongs to
+    the compiler like the rest of erasure. (b) is the cheapest sound option and the
+    self-hosted frontend already works that way (below); it costs the compiled code's
+    current shape (direct, unboxed calls), which has to be measured.
+  * Neither is implemented.
+* **The other places with a second term or a recognition by syntax** (each probed with
+  the shadowing example; the kernel's value and the compiled result agree in all):
+  sized definitions (one term, `sfix`; the definition's name is an ordinary local);
+  copatterns (one term, `coit`; a corecursive call is recognised by syntax, so a
+  parameter named like the definition is taken for the call, in the checked term and the
+  compiled one alike); partial definitions and `mutual` blocks (a witness and a body:
+  unrelated by design, the body is opaque to the kernel and resolves names by scope);
+  instance bodies and generated declarations (one term each); `implemented_by` (the
+  user's second term: trusted, listed by `#print axioms`).
+* **Everything else that is compiled** was checked already: partial definitions' bodies
+  (`addPartialImpl`), the terms of `#eval`/`#run` (inferred by the kernel first),
+  generated declarations (instances, `deriving`, macros: they are commands, and go
+  through `addDecl`), `attribute [inline]` (erases the checked declaration). Declarations
+  replayed from the cache are not checked again, by design: an entry is keyed by the
+  binary that wrote it, and holds what its kernel accepted, `impl` included. The
+  self-hosted frontend elaborates a recursive definition once (recursive calls become
+  the hypotheses of `ind`) and its backend compiles that checked value: it has no `impl`.
+  The eliminators' own compiled code (`PrimCode.lean`, the runtime's `ind`) is
+  hand-written and belongs to the trusted backends (§7).
+* **Cost.** One more check per structurally recursive definition. Rough timings of
+  `wiz check --no-cache` (best of three, a shared machine): the Prelude 0.27 → 0.31 s,
+  `lib/Hoare.wiz` 3.3 → 3.7 s, `lib/Hdl/Core.wiz` 2.0 → 2.3 s, `selfhost/Kernel.wiz`
+  5.0 → 5.1 s, all five self-hosted sources together within noise.
+* **Regression tests.** Group *trust*: "the kernel checks a definition's implementation
+  for the compiler (Decl.impl)" (ill-typed, another type, a wrong sort note, a linear
+  variable used twice, an undeclared level parameter, `setImpl`), "recursive definitions:
+  the compiled equations are kernel-checked terms", and "… a local variable named like
+  the definition doesn't capture its calls in compiled code".
 
 ---
 
@@ -770,6 +919,8 @@ that checks everything. Wiz's situation:
   is equality, resp. `<`, which `Nat.beq` and `Nat.lt` are, by their equations). The
   kernel computes only these natively; `memo := memo` (`memo f = f` to the kernel) and
   `string := String` affect only the runtime representation and literals.
+* **Compiled equations of recursive definitions** (`Decl.impl`, T1): checked by the
+  kernel for typing since T1, trusted to compute what the definition computes.
 * **Implementations for compiled code** are outside the kernel: `attribute
   [implemented_by g] f` (stage 22b), including the native representations it registers
   for a type (`attribute [implemented_by mk get] T.mk`, builtin keys `repr:T:…`, used by

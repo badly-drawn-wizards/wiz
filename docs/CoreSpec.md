@@ -565,7 +565,7 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
      ──────────────────────────────────────── cast                                  Check.lean:458–466
      Γ ⊢ cast A B e t ⇒ B ⊣ U
 
-     (all premises in Γ⁰)  Γ⁰ ⊢ A type@_   Γ⁰ ⊢ a ⇐ A   Γ⁰ ⊢ b ⇐ A
+     (all premises in Γ⁰)  Γ⁰ ⊢ A type@l   isNeverZero l   Γ⁰ ⊢ a ⇐ A   Γ⁰ ⊢ b ⇐ A
      Γ⁰ ⊢ P ⇐ (b :0 A) → (_ :0 a =_A b) → Prop
      Γ⁰ ⊢ p ⇐ P a (refl A a)    Γ⁰ ⊢ e ⇐ (a =_A b)
      ──────────────────────────────────────── transp                                Check.lean:467–484
@@ -574,6 +574,12 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
 
 * `a = b` is only formed at a type whose sort is **never** `Prop` (`isNeverZero`).
   Equality of proofs is not expressible, which is consistent with proof irrelevance.
+* `transp` has the same premise (since the F9 fix; found by the second audit). Its rule
+  builds the motive's type `(b :0 A) → (_ :0 a =_A b) → Prop` and the type `a =_A b` of `e`
+  as values, without the `eq` rule, so with only `Γ ⊢ A type@_` it was accepted at a
+  proposition (`transp True tt P p tt tt`), where those are equations the `eq` rule
+  rejects. Harmless (an equation at a proposition computes like one at `Unit`, and proofs
+  are irrelevant), but the type of a well-typed term was not a type.
 * The written type `A` of `eq` and `refl` is not tied to `a`'s type by anything other than
   `a ⇐ A`.
 * `cast` is the only operation whose *result* is relevant; `transp` (transport into a
@@ -1324,7 +1330,7 @@ never type-checks them, and their Σ types carry hand-written sort annotations
      ───────────────────────────────────── con   (check only)                              Check.lean:303–306
      Γ ⊢ con x ⇐ μ.{l} I D i ^s ⊣ U
 
-     Γ ⊢ I type@_   Γ ⊢ D ⇐ Desc.{l} I
+     Γ ⊢ I type@k   ⊢ k ≡ l+1   Γ ⊢ D ⇐ Desc.{l} I
      Γ ⊢ P ⇐ (ω i : I) → (ω _ : μ D i ^∞) → Sort v
      Γ ⊢ m ⇐ (0 i : I) → (ω xs : ⟦D⟧ (μ D) i) → (ω ih : All D (μ D) P i xs) → P i (con xs)   ⊣ U_m
      Γ ⊢ i ⇐ I    Γ ⊢ x ⇐ μ D i ^∞ ⊣ U_x
@@ -1335,11 +1341,39 @@ never type-checks them, and their Σ types carry hand-written sort annotations
 ```
 
 * `μ` is always in `Sort (l+1)`: there are no inductive propositions.
+* **The hint** [impl, Lean kernel only]. A `μ`/`ν` term carries an optional hint
+  `(T, us, args)`, its nominal form `T.{us} args`. Conversion ignores it; the elaborator
+  reads it back (a type's name, constructors and arguments), and `eval` evaluates `args`.
+  So the `mu`/`nu` rule checks it (`checkHint`): if `T` is declared, `Γ⁰ ⊢ T.{us} args ⇒ _`;
+  if not (the definition of `T` itself, whose hint lists its own parameters),
+  `Γ⁰ ⊢ a ⇒ _` for every argument. Before, the hint was not checked and a raw core term in
+  it was run by the evaluator unchecked (a `panic!`, a loop, a constant at too few
+  levels). That the hint equals the type is not checked; nothing in the kernel relies on
+  it. `Kernel.wiz` has no hints.
 * The size argument of `μ` (and `ν`) is checked erased: `Γ⁰ ⊢ s ⇐ Size` (since
   `4605514`; Status.md, K3).
 * The method's usage is scaled by ω (`QRig.many?`) because the method may run once per
   node (§5.3; Status.md, Q2).
 * `x` is checked against `μ^∞`; a value of a smaller size is accepted by subtyping.
+* **The index type's level in the eliminators (audit F3, fixed).** `ind`, and likewise
+  `sfix`, `scase` (§10.2), `coit` and `scofix` (§10.3), take `I` and `D` as arguments and
+  repeat the premise of the type former: `I` is in **exactly** `Sort (l+1)`
+  (`checkIndexLevel`, in both kernels). Exactly, not `≤`, for the same reason as for fields
+  (§9.1): universes are not cumulative, `Desc.{l} I` and `Desc.elim`'s method types take
+  `I : Sort (l+1)`, and a smaller index type is lifted with `ULift` (§4.1). The premise is
+  not redundant. These rules check the scrutinee against the *value* `μ.{l} I D i`, check
+  `D` against the value `Desc.{l} I`, and (`coit`, `scofix`) return the value `ν.{l} I D i`,
+  none of which goes through the `mu`/`nu`/`desc` rules. Until the fix they only required
+  `Γ ⊢ I type@_`, so a core term could have a type `ν.{0} (Unit.{2}) D i` that the type
+  former rejects, and the method of an `ind` could bind variables at such a type: the
+  judgment did not have the property "the type of a well-typed term is a type". No proof of
+  `False` came out of it (the ill-levelled type could not be written as a term, so no
+  equation, cast, annotation or binder could mention it; see
+  `/workspace/wiz-notes/elim-levels.md`), but "index level ≤ family level" is the side
+  condition under which the type formers may be injective [PLT25 §2.3] (§8.3), so every
+  rule that produces a `μ`/`ν` type enforces it. `con`, `cocon` and `out` need no premise:
+  they take the type from the context (checked against it, or inferred), and `Desc.elim`
+  infers its description, whose type then went through the `desc` rule.
 
 ### 9.4 Numerals [impl]
 
@@ -1397,7 +1431,7 @@ a < ∞                       ⇔ a = ↑ᵏ x for a variable x : Size< u       
 ### 10.2 Sized μ: sfix, scase
 
 ```
-     (I, D, P as for ind)
+     (I, D, P as for ind, including  Γ ⊢ I type@k,  ⊢ k ≡ l+1)
      Γ ⊢ f ⇐ (0 s : Size) → (ω rec : (0 j : Size< s) → (ω i : I) → (ω y : μ^j D i) → P i y)
                          → (ω i : I) → (ω x : μ^s D i) → P i x                        ⊣ U_f
      Γ⁰ ⊢ s ⇐ Size    Γ ⊢ i ⇐ I    Γ ⊢ x ⇐ μ^s D i ⊣ U_x
@@ -1437,6 +1471,7 @@ a < ∞                       ⇔ a = ↑ᵏ x for a variable x : Size< u       
      ───────────────────────────────────── cocon (check only)                                Check.lean:307–310
      Γ ⊢ cocon x ⇐ ν D i ^s ⊣ U
 
+     (I, D as for ind:  Γ ⊢ I type@k   ⊢ k ≡ l+1   Γ ⊢ D ⇐ Desc.{l} I;  the same for scofix)
      Γ ⊢ S ⇐ (ω i : I) → Sort (l+1)
      Γ ⊢ step ⇐ (ω i : I) → (ω s : S i) → ⟦D⟧ S i ⊣ U_st     Γ ⊢ i ⇐ I    Γ ⊢ t ⇐ S i ⊣ U_t
      ───────────────────────────────────── coit                                              Check.lean:594–606
@@ -1578,7 +1613,8 @@ proved**, and the D1 experiment shows checking can loop (Status.md).
 ```
      name ∉ Σ    level parameters ν₁…νₖ distinct    every level parameter used is among them
      · ⊢ T type@_        (value v given ⇒  · ⊢ v ⇐ T)
-     ────────────────────────────────────────── addDecl                Check.lean:669–681
+     (implementation m given ⇒  · ⊢ m ⇐ T  in  Σ, c.{ν…} : T [:= v])
+     ────────────────────────────────────────── addDecl                Check.lean (`addDecl`, `checkImpl`)
      Σ ⊢ c.{ν₁…νₖ} : T [:= v]   added
 
      c.{ν…} : T ∈ Σ     |us| = k
@@ -1601,8 +1637,20 @@ proved**, and the D1 experiment shows checking can loop (Status.md).
   (§9.4). Those of the toolchain's `lib/` are trusted (reviewed, Status.md §7); any other
   is an axiom, listed by `#print axioms` (Status.md, F4). The elaborator checks their
   shapes.
-* `Decl.inline` (evaluate eagerly) and `Decl.impl` (compiler implementation) do not affect
-  what the kernel accepts.
+* **Implementations for the compiler** (`Decl.impl`): the term compiled code runs
+  instead of the value. Three things set one: a structurally recursive definition by
+  equations (the same equations with direct recursion, so that a program computes only
+  the recursive calls it makes), a partial definition (its body, above), and
+  `attribute [implemented_by g] f` (the constant `g`). The kernel never unfolds an
+  implementation, so it proves nothing, but it **checks every one against the declared
+  type**, with the definition itself already declared (a recursive one calls it):
+  `checkImpl`, from `addDecl` and `setImpl`, as `addPartialImpl` does for a partial
+  definition. So an implementation is well typed at `T`, its quantities are respected,
+  and the sorts noted on its `Π`s and `Σ`s are right (`checkSortNote`): erasure reads all
+  three. A declaration whose implementation does not check is rejected. **Not checked:**
+  that the implementation computes what the value computes (they are equal by induction,
+  not by conversion); see Status.md, T1.
+* `Decl.inline` (evaluate eagerly) does not affect what the kernel accepts.
 
 *Kernel.wiz.* There is no global table: a constant term carries its value and type
 (`Tm.const`, `Kernel.wiz:118`), and the kernel trusts that this pair was checked
@@ -1719,7 +1767,13 @@ is not caught by type checking):
    `indMethodTy`, `sfixFunTy`, … in `Conv.lean`), and the terms built inside `vEq`,
    `vEqType`, `vCast` (their binders and `some 0` annotations).
 6. **Code outside the kernel that runs on checked terms**: erasure and the backends.
-   Erasure relies on QTT: a 0-quantity value is assumed unneeded.
+   Erasure relies on QTT: a 0-quantity value is assumed unneeded. Every term erasure is
+   given has been checked by the kernel, a definition's implementation for the compiler
+   included (§13).
+6a. **That an implementation for the compiler agrees with the definition** (§13): the
+   compiled equations of a structurally recursive definition (two elaborations of the
+   same clauses; Status.md, T1), and native implementations (`implemented_by`, `repr:`),
+   which `#print axioms` lists.
 7. **The Lean compiler and runtime** (for the Lean kernel), and Wiz's own backend (for
    `Kernel.wiz`).
 

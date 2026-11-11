@@ -174,6 +174,23 @@ Two ways to prove `False` without writing `axiom` are closed.
   constant has one key (`nat.zero` and `nat.succ` must be constructors): a second
   `builtin nat.add := K` changed how the Prelude's `Nat.add` unfolds without any user of
   it showing the assumption, and proved `False` with no axioms listed.
+* **"The library" is the toolchain's own, wherever `wiz` runs.** The trusted modules
+  were those of the first module root, `lib/` relative to the current directory. Run
+  anywhere else (an installed toolchain, which passes its library as `-I share/wiz/lib`),
+  the Prelude was untrusted: nineteen "builtin … is not checked" warnings on every
+  `wiz check`, and every numeral listed by `#print axioms`; and a `lib/Prelude.wiz` in
+  the current directory replaced the toolchain's and was trusted, registrations and
+  all. Now the first root is the library next to the binary (`Module.toolchainLib`:
+  `<dir>/lib` for `<dir>/.lake/build/bin/wiz`, which is a checkout, the Nix package's
+  and the release tarball's `share/wiz`, as grail's `findStd`), then `./lib`, then the
+  `-I` directories. Its modules are trusted, and since the first root that has a module
+  wins, no other directory can stand in for one: a file that would (`Prelude.wiz` in an
+  `-I` directory) is ignored with a warning. The language server uses the same roots.
+  The elaboration cache keeps a module's trust in its key (`Cache.moduleKeys`), and so
+  in its importers': before, a module elaborated untrusted and replayed in a trusted
+  run (or the other way round) brought its warnings and its `#print axioms` with it.
+  Tests: group *modules*, "trust is part of a module's cache key", "the toolchain's
+  library is the first root …".
 
 ## 22g: regions: borrow checking as typing ✅
 
