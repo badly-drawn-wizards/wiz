@@ -359,6 +359,18 @@ def group : Group where
           unless bad.isEmpty do throw (IO.userError s!"{e.path}: {bad.take 3}")
           total := total + n
         check (total > 1000) s!"only {total} cases" },
+    -- (P3) a universe-polymorphic definition unfolds at the cached levels (0, 1, 2) and at
+    -- others alike, and a wrong statement at a cached level is still rejected
+    { name := "a polymorphic definition unfolds the same at cached and uncached levels", run := fun _ => do
+        let src := "import Prelude\ndef pick.{u} (A : Type u) (a b : A) (c : Bool) : A := match c with\n  | .true => a\n  | .false => b\n" ++
+          "def t0 : pick Nat 1 2 .false = 2 := refl 2\n" ++
+          "def t1 : pick Type Nat Bool .true = Nat := reflTy Nat\n" ++
+          "def t2 : pick (Type 1) Type (Type → Type) .true = Type := reflTy Type\n" ++
+          "def t5 : pick (Type 4) (Type 3) (Type 2) .false = Type 2 := reflTy (Type 2)\n"
+        let _ ← elabOk src
+        let loader ← Tests.Elab.preludeLoader
+        let st := runFrontend (R := ZeroOneMany) (src ++ "def bad : pick Type Nat Bool .true = Bool := reflTy Bool\n") { loader }
+        check (st.messages.any (·.severity == .error)) "a wrong unfolding was accepted" },
     -- the elaborator's sort pass (`Sorts.type`) no longer evaluates an equation to learn
     -- that it is a proposition; the kernel still checks every sort note itself
     { name := "a wrong sort note on a Π into an equation is rejected by the kernel", run := fun _ => do

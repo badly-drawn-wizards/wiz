@@ -295,8 +295,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .var ix => env[ix]?.getD (.neutral (.global "out of scope✝" []) #[])
   | .const n us => if let some v := vBuiltin? g n then v else match g.find? n with
     | some { value := some v, levelParams, inline, .. } =>
-      if inline || g.eager then eval g [] (v.instLevels levelParams us)
-      else .unfold n us #[] (Thunk.mk fun _ => eval g [] (v.instLevels levelParams us))
+      if inline || g.eager then eval g [] (g.instValue n v levelParams us)
+      else .unfold n us #[] (Thunk.mk fun _ => eval g [] (g.instValue n v levelParams us))
     | _ => .neutral (.global n us) #[]
   | .natLit n => .natLit n
   | .natOp op args => vNatOp g op (args.map (eval g env))

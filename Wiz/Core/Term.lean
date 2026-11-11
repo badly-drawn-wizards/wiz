@@ -449,6 +449,12 @@ structure Globals (R : Type) where
   opaques : Std.HashMap Name String := {}
   /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
   module : String := ""
+  /-- (kernel-eval, P3) a universe-polymorphic definition's value instantiated at the
+  levels most uses take (every parameter `0`, `1` or `2`: a `casesOn`'s motive in `Prop`,
+  `Type`, `Type 1`), computed once (a `Thunk`) instead of copied at every unfolding
+  (`Term.instLevels`). Built by `insert` from the value inserted with it; a pure function
+  of that value, so it can't change what unfolding gives (`instValue`). -/
+  instCache : Std.HashMap Name (List (List Level × Thunk (Term R))) := {}
 
 namespace Globals
 
@@ -464,9 +470,26 @@ def builtinKey? (g : Globals R) (n : Name) : Option Name :=
 
 /-- Unchecked insertion. Use `Wiz.addDecl` to type check first. -/
 def insert (g : Globals R) (d : Decl R) : Globals R :=
+  let ofNat (k : Nat) : Level := (List.range k).foldl (fun l _ => .succ l) .zero
+  let inst : List (List Level × Thunk (Term R)) := match d.value with
+    | some v => if d.levelParams.isEmpty then [] else [0, 1, 2].map fun k =>
+        let us := d.levelParams.map fun _ => ofNat k
+        (us, Thunk.mk fun _ => v.instLevels d.levelParams us)
+    | none => []
   { g with
     decls := g.decls.insert d.name d
-    order := if g.decls.contains d.name then g.order else g.order.push d.name }
+    order := if g.decls.contains d.name then g.order else g.order.push d.name
+    instCache := if inst.isEmpty then g.instCache.erase d.name else g.instCache.insert d.name inst }
+
+/-- The value `v` of the global `n` (its parameters `ps`) at the levels `us`:
+`v.instLevels ps us`, from `instCache` when `insert` computed it. (The cache is keyed by
+the name and built from the value `insert` stored; `decls` changes only through `insert`
+or by removing a value, so an entry belongs to the value found under its name.) -/
+def instValue (g : Globals R) (n : Name) (v : Term R) (ps : List Name) (us : List Level) : Term R :=
+  if ps.isEmpty then v else
+  match (g.instCache[n]?).bind fun es => es.find? (·.1 == us) with
+  | some (_, t) => t.get
+  | none => v.instLevels ps us
 
 /-- (13b) The environment as the elaborator sees it in `g.module`: a structure whose
 constructor is private to another module has no definition (it doesn't unfold), so
