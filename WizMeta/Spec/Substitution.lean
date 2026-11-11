@@ -545,6 +545,11 @@ theorem inReg_subClosed {R : Rules} (hren : ∀ j, Derivable R j → Renames R j
     exact ofRule (hi _ (.sigma h)) (by
       fromIH ih σ Δ hσ hΔ
       exact Substs.under hren hc ih.2.2.2 rfl ih.2.1 hσ hΔ)
+  | tailUnit h => exact ofRule (hi _ (.tailUnit h)) (by fromIH ih σ Δ hσ hΔ)
+  | tailPi =>
+    exact ofRule (hi _ .tailPi) (by
+      fromIH ih σ Δ hσ hΔ
+      exact Substs.under hren hc ih.2.2 rfl ih.2.1 hσ hΔ)
   | mu => exact ofRule (hi _ .mu) (by fromIH ih σ Δ hσ hΔ)
   | descConv => exact ofRule (hi _ .descConv) (by fromIH ih σ Δ hσ hΔ)
   | ret => exact ofRule (hi _ .ret) (by fromIH ih σ Δ hσ hΔ)

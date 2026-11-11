@@ -48,12 +48,22 @@ inductive Outcome where
   | disagree (what : String)
   deriving Repr, BEq
 
+/-- The Lean kernel on a raw term, with the proof markers it requires (P2) from the
+marking pass, as the elaborator gives them and as the differential tests do (`leanVerdict`):
+the term is marked only if it is well typed without the requirement (the pass checks
+nothing), else the kernel's answer is that check's. The reference checker needs no
+markers: it does not evaluate terms through the kernel's evaluator. -/
+def kernelInfer (g : Globals ZeroOneMany) (t : Term ZeroOneMany) : TCM (VTy ZeroOneMany × Usage ZeroOneMany) :=
+  match infer (R := ZeroOneMany) { globals := { g with lazyProofs := false } } t with
+  | .error e => .error e
+  | .ok _ => infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } t).1
+
 /-- One term: the Lean kernel's verdict against the reference checker's. -/
 def vote (g : Globals ZeroOneMany) (sg : Sig) (t : MTm) (opts : Opts := kernelOpts) : Outcome :=
   match WizMeta.ofTerm [] t.toTerm with
   | none => .outside
   | some tm =>
-    let k := infer (R := ZeroOneMany) { globals := g } t.toTerm
+    let k := kernelInfer g t.toTerm
     let r := WizMeta.inferClosed sg tm opts
     match k, r with
     | _, .error .fuel => .fuel
@@ -120,7 +130,7 @@ def tally (terms : Array MTm) (opts : Opts := kernelOpts) : Except String Tally 
 open Tests.Elab.MTm
 
 def kernelAccepts (t : MTm) (g : Globals ZeroOneMany := leanGlobals ()) : Bool :=
-  (infer (R := ZeroOneMany) { globals := g } t.toTerm).isOk
+  (kernelInfer g t.toTerm).isOk
 
 /-- The reference checker's verdict on a term: `ok`, `fuel`, `outside`, or the rejection. -/
 def refVerdict (t : MTm) (opts : Opts := kernelOpts) (sg : Option Sig := none) : String :=
@@ -354,6 +364,13 @@ def group : Group where
         let v := ann (lam (lam (lam (refl (var 2) (var 0))))) (pi (univ 0) (pi (eqTy (var 0) (var 0)) (pi (var 1) (eq (var 2) (cast (var 2) (var 2) (var 1) (var 0)) (var 0)))))
         rejects v
         check (!kernelAccepts v) "the kernel has regularity at a type variable" },
+    { name := "C1: a singleton tail is inert (InReg.tailUnit, tailPi), as in the Lean kernel", run := fun _ => do
+        for (n, t, ok, _) in c1Samples do
+          if ok then accepts t else rejects t
+          check (kernelAccepts t == ok) s!"{n}: the Lean kernel's verdict differs"
+        -- without InReg (T0) none of them is accepted
+        for (_, t, _, _) in c1Samples do
+          rejects t { kernelOpts with inertReg := false } },
     { name := "the level premise of ind (audit F3): the index type is in Sort (l+1)", run := fun _ => do
         -- `ind.{1}` at an index type in `Sort 1`; `D` and the scrutinee are checked against values
         -- the rule builds, so no former sees the level (the Lean kernel at a143052 accepts this)
@@ -376,7 +393,7 @@ def group : Group where
         -- W1: `d.{0}` and `d.{1}` under a stuck case are different
         rejects (w1 0 1) kernelOpts (some sg1)
         accepts (w1 1 1) kernelOpts (some sg1)
-        let g1 ← match addDecl (leanGlobals ()) w1Decl with | .ok g => pure g | .error e => throw (IO.userError s!"{e}")
+        let g1 ← match addDecl (leanGlobals ()) (Decl.withMarks (leanGlobals ()) w1Decl) with | .ok g => pure g | .error e => throw (IO.userError s!"{e}")
         check (!kernelAccepts (w1 0 1) g1 && kernelAccepts (w1 1 1) g1) "the Lean kernel's verdicts on W1 changed" },
     { name := "E5b: a payload equation at a neutral field type, in the three variants (the kernels' rule is not stable under substitution)", run := fun _ => do
         let stuck := { kernelOpts with payload := .stuck }

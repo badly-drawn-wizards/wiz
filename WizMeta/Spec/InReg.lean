@@ -11,7 +11,9 @@ import WizMeta.Spec.Rule
 and its side condition is conversion (no syntactic comparison, no "ground" test).
 
 Inert types are first-order data: `Enum`, `Unit` above `Prop`, lifts and `Σ`s of inert
-types that are not propositions, and `μ` types whose index type and fields are inert
+types that are not propositions, **singleton tails** `(0 x₁ : A₁) → … → Unit_l` (C1: the
+shape of a phantom tail, a structure's marker and a seal; every value is `fun _ … _ => ()`
+up to η, whatever the domains), and `μ` types whose index type and fields are inert
 (`rec` fields; `arg` at inert types; no `hrec`). Inertness is a judgment, closed under
 conversion; with mandatory sorts it reads no annotation that conversion ignores.
 
@@ -36,6 +38,15 @@ inductive InReg : Rules
   | sigma {Γ : Ctx} {A B : Tm} {s i : Lvl} {q : Q} : s.NeverZero →
       InReg ⟨[Γ ⊢ .sigma q (some s) A B ∶ .sort s, Γ ⊢ A ∶ .sort i, .inert Γ A, .inert (A :: Γ) B],
         .inert Γ (.sigma q (some s) A B)⟩
+  -- (C1) a singleton tail `(0 x : A) → … → Unit_l` is inert: every value is `fun _ … _ => ()`
+  -- up to η. The domains are not inspected (only typed: the binder's type is a premise)
+  | tailUnit {Γ : Ctx} {A : Tm} {s i l : Lvl} : l.NeverZero →
+      InReg ⟨[Γ ⊢ .pi .zero (some s) A (.unit l) ∶ .sort s, Γ ⊢ A ∶ .sort i],
+        .inert Γ (.pi .zero (some s) A (.unit l))⟩
+  | tailPi {Γ : Ctx} {A A' B : Tm} {s i : Lvl} {s' : Option Lvl} :
+      InReg ⟨[Γ ⊢ .pi .zero (some s) A (.pi .zero s' A' B) ∶ .sort s, Γ ⊢ A ∶ .sort i,
+          .inert (A :: Γ) (.pi .zero s' A' B)],
+        .inert Γ (.pi .zero (some s) A (.pi .zero s' A' B))⟩
   | mu {Γ : Ctx} {I D i : Tm} {l : Lvl} : InReg ⟨[Γ ⊢ .mu l I D i ∶ .sort l.succ, .inert Γ I, .inertD Γ l I D], .inert Γ (.mu l I D i)⟩
   | descConv {Γ : Ctx} {I D D' : Tm} {l : Lvl} : InReg ⟨[.inertD Γ l I D, Γ ⊢ D ≡ D' ∶ .desc l I], .inertD Γ l I D'⟩
   | ret {Γ : Ctx} {j I : Tm} {l : Lvl} : InReg ⟨[Γ ⊢ .dret j ∶ .desc l I], .inertD Γ l I (.dret j)⟩

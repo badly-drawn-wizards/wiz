@@ -35,6 +35,11 @@ variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 def sameQty (a b : Val R) : Option Bool := do
   return QPoly.equiv (← a.toPoly?) (← b.toPoly?)
 
+/-- A quantity that is the literal `0` (a polynomial with no variable). -/
+def isZeroQty (q : Val R) : Bool := match q.toPoly? with
+  | some p => p.isErased
+  | none => false
+
 /-- Are two quantities certainly different: both literals (no variables), and different?
 `False` between two types is decided only then. Polynomials with variables that differ
 (`q` and `1`) can become equal under a substitution (`q := 1`), so the equation must stay
@@ -159,82 +164,16 @@ def propSort? : Val R → Option Bool
   | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
   | _ => none
 
-/-! ### A level above every variable of a value
+/-- The position of the last `absurd` in a spine. What comes before it is a term of an
+empty type; what comes after is typed by its motive. -/
+def lastAbsurd? (sp : Array (Elim R)) : Option Nat :=
+  (List.range sp.size).reverse.find? fun i => match sp[i]? with
+    | some (.absurd _) => true
+    | _ => false
 
-Regularity (`vCast`'s last case) compares two types by quoting them. Quoting at level
-`l` turns the variable at level `x` into the index `l - x - 1`, so `l` must be above
-every variable the values mention, or two different variables could quote to the same
-index. `Val.lvlBound` computes such an `l`. A closure counts only the entries of its
-environment that its body might mention (that is all `quote` can reach). The bound may
-be too large (a `lazyInd`'s whole spine counts), never too small. -/
-
-/-- The free variables of `t` under `depth` binders, as indices into the enclosing
-environment (with repeats). -/
-partial def Term.freeVarsAt (depth : Nat) (t : Term R) : StateM (Array Nat) Unit :=
-  match t with
-  | .var i => if i ≥ depth then modify (·.push (i - depth)) else pure ()
-  | t => t.forChildren (fun _ => pure ()) (fun d c => Term.freeVarsAt (depth + d) c)
-
-mutual
-/-- `1 +` the largest level of a local variable in `v` (`0` if none). -/
-partial def Val.lvlBound : Val R → Nat
-  | .neutral h sp => max h.lvlBound (Elim.spineBound sp)
-  | .unfold _ _ sp _ => Elim.spineBound sp
-  | .lazyInd _ I D _ P m i x sp _ => max (Val.maxBound [I, D, P, m, i, x]) (Elim.spineBound sp)
-  | .pi _ _ q a b _ | .sigma _ q a b _ => max (max q.lvlBound a.lvlBound) (b.lvlBound 1)
-  | .lam _ b => b.lvlBound 1
-  | .pair a b => max a.lvlBound b.lvlBound
-  | .desc _ a | .dret a | .szSuc a | .sizeLt a | .con a | .cocon a | .ulift _ a | .up a => a.lvlBound
-  | .darg q S D => Val.maxBound [q, S, D]
-  | .drec q j D => Val.maxBound [q, j, D]
-  | .dhrec q H j D => Val.maxBound [q, H, j, D]
-  | .mu _ I D i s h | .nu _ I D i s h => max (Val.maxBound [I, D, i, s]) (Val.maxBound ((h.map (·.2.2)).getD []))
-  | .scofix _ I D A f s i a => Val.maxBound [I, D, A, f, s, i, a]
-  | .coit _ I D S st i s => Val.maxBound [I, D, S, st, i, s]
-  | .sort _ | .unit _ | .tt | .empty _ | .qty | .qlit _ | .enum _ | .tag .. | .size | .szInf
-  | .natLit _ => 0
-partial def Val.maxBound (vs : List (Val R)) : Nat := vs.foldl (fun m v => max m v.lvlBound) 0
-partial def Head.lvlBound : Head R → Nat
-  | .local x => x + 1
-  | .global .. | .mvar _ => 0
-  | .eq A a b => Val.maxBound [A, a, b]
-  | .eqTy A B => Val.maxBound [A, B]
-  | .cast A B e t => Val.maxBound [A, B, e, t]
-  | .refl A a => Val.maxBound [A, a]
-  | .reflTy X => X.lvlBound
-  | .transp A a P p b e => Val.maxBound [A, a, P, p, b, e]
-  | .prf _ env t _ => Closure.lvlBound 0 (.mk env t)
-partial def Elim.spineBound (sp : Array (Elim R)) : Nat := sp.foldl (fun m e => max m e.lvlBound) 0
-partial def Elim.lvlBound : Elim R → Nat
-  | .app a => a.lvlBound
-  | .fst | .snd | .out | .down => 0
-  | .split q _ m _ _ b => max q.lvlBound (max (m.lvlBound 1) (b.lvlBound 2))
-  | .absurd m => m.lvlBound
-  | .ecase _ m env bs => max (m.lvlBound 1) (envBound env (bs.foldl (fun acc b => ((Term.freeVarsAt 0 b).run acc).2) #[]))
-  | .delim _ P a b c h => Val.maxBound [P, a, b, c, h]
-  | .ind _ I D _ P m i => Val.maxBound [I, D, P, m, i]
-  | .sfix _ I D _ P f s i => Val.maxBound [I, D, P, f, s, i]
-  | .scase _ I D _ P m s i => Val.maxBound [I, D, P, m, s, i]
-/-- The bound of the entries of `env` at the indices `fv`. -/
-partial def envBound (env : Env R) (fv : Array Nat) : Nat :=
-  (fv.qsort (· < ·)).foldl (init := (0, none)) (fun (m, prev) i =>
-    if prev == some i then (m, prev)
-    else (max m ((env[i]?.map Val.lvlBound).getD 0), some i)) |>.1
-/-- A closure whose body is under `binders` binders. -/
-partial def Closure.lvlBound (binders : Nat) : Closure R → Nat
-  | .mk env body => envBound env ((Term.freeVarsAt binders body).run #[]).2
-end
-
-/-- (D1 experiment, `Regularity.refl`) Is this proof visibly a reflexivity: `refl`,
-`reflTy`, `()`, or a `transp` of one along one? Such proofs only prove equations whose
-sides are definitionally equal. -/
-partial def reflProof (e : Val R) : Bool :=
-  match whnf e with
-  | .neutral (.refl ..) #[] | .neutral (.reflTy _) #[] | .tt => true
-  | .neutral (.transp _ _ _ p _ e) #[] => reflProof p && reflProof e
-  -- (P2) the one rule that inspects a proof: force the suspension
-  | .neutral (.prf _ _ _ v) #[] => reflProof v.get
-  | _ => false
+/-- (P2) What a closure's instantiation is once a read-back's step budget has run out
+(`Budget`): stuck. -/
+def outOfSteps : Val R := .neutral (.global " out of steps" []) #[]
 
 /-- (P2) Is this neutral head a proof? Suspended proofs, the proof heads, and (with
 `lazyProofs`) a stuck cast between propositions. -/
@@ -243,14 +182,6 @@ def proofHead (h : Head R) : Bool :=
   | .prf .. | .refl .. | .reflTy _ | .transp .. => true
   | .cast A B _ _ => propSort? (whnf A) == some true && propSort? (whnf B) == some true
   | _ => false
-
-/-- (D1 experiment) May `cast A A e t` reduce to `t` under `g.regularity`? -/
-def regularityAllowed (g : Globals R) (A e : Val R) : Bool :=
-  match g.regularity with
-  | .full => true
-  | .nonProp => propSort? A != some true
-  | .refl => reflProof e
-  | .off => false
 
 /-- The predecessor of a size, for `con`/`cocon`/`out`: `↑s ↦ s`, `∞ ↦ ∞`; `none`
 for a size variable, which can't be built from or observed. -/
@@ -289,6 +220,9 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .ulift l A => .ulift l (eval g env A)
   | .up a => .up (eval g env a)
   | .down t => vDown (eval g env t)
+  -- (given) P2: a marked term whose sort is `0` is a proof: suspended, never looked into.
+  -- (At another level, or one that is still a parameter, it is an ordinary term.)
+  | .prf l t => if l.isZero then suspend g env t else eval g env t
   --<sol
   -- (the checker rejects a variable out of scope before anything evaluates it; if one
   -- gets here it is a stuck unknown, not a panic's default value, `Sort 0`)
@@ -321,7 +255,7 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .cast A B e t =>
     let vA := eval g env A
     let vB := eval g env B
-    vCast g vA vB (suspend g env e (Thunk.mk fun _ => vEqType g vA vB)) (eval g env t)
+    vCast g vA vB (suspend g env e) (eval g env t)
   | .refl A a => .neutral (.refl (eval g env A) (eval g env a)) #[]
   | .reflTy X => .neutral (.reflTy (eval g env X)) #[]
   | .transp A a P p b e =>
@@ -329,9 +263,7 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
     let va := eval g env a
     let vP := eval g env P
     let vb := eval g env b
-    .neutral (.transp vA va vP
-      (suspend g env p (Thunk.mk fun _ => vApp g (vApp g vP va) (.neutral (.refl vA va) #[])))
-      vb (suspend g env e (Thunk.mk fun _ => vEq g vA va vb))) #[]
+    .neutral (.transp vA va vP (suspend g env p) vb (suspend g env e)) #[]
   | .qty => .qty
   | .qlit r => .qlit r
   | .enum ls => .enum ls
@@ -430,11 +362,15 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| | .scofix l I D A f s i a => sorry
   --sol>
 
-/-- (P2) A proof position: with `g.lazyProofs`, a suspended proof of type `ty`
-(`Head.prf`), never evaluated; otherwise evaluated as usual. -/
-partial def suspend (g : Globals R) (env : Env R) (t : Term R) (ty : Thunk (Val R)) : Val R :=
-  if g.lazyProofs then .neutral (.prf ty env t (Thunk.mk fun _ => eval g env t)) #[]
-  else eval g env t
+/-- (P2) A proof: a marked one (`Term.prf`), or a position the syntax marks (`cast`'s
+equation, `transp`'s proofs). With `g.lazyProofs`, a suspended proof (`Head.prf`), never
+evaluated; otherwise evaluated as usual. (A marker on a marker is one suspension.) -/
+partial def suspend (g : Globals R) (env : Env R) (t : Term R) : Val R :=
+  match t with
+  | .prf _ t => suspend g env t
+  | t =>
+    if g.lazyProofs then .neutral (.prf env t) #[]
+    else eval g env t
 
 /-- Evaluate a display hint's arguments. -/
 partial def evalHint (g : Globals R) (env : Env R) :
@@ -460,14 +396,19 @@ partial def vApp (g : Globals R) : Val R → Val R → Val R
 /-- **Exercise 1.2b.** Instantiate a closure with a value for its bound variable. -/
 partial def Closure.inst (g : Globals R) : Closure R → Val R → Val R
   --<sol
-  | .mk env body, a => eval g (a :: env) body
+  | .mk env body, a => match g.budget with
+    | none => eval g (a :: env) body
+    -- (P2, outside the kernel) reading a proof back, within its step budget
+    | some b => if b.tick then eval g (a :: env) body else outOfSteps
   --|ex
   --| | .mk env body, a => sorry
   --sol>
 
 /-- Instantiate a closure over two binders (`a` first, then `b`). -/
 partial def Closure.inst2 (g : Globals R) : Closure R → Val R → Val R → Val R
-  | .mk env body, a, b => eval g (b :: a :: env) body
+  | .mk env body, a, b => match g.budget with
+    | none => eval g (b :: a :: env) body
+    | some bud => if bud.tick then eval g (b :: a :: env) body else outOfSteps
 
 /-- **Exercise 4.4a.** `let (x, y) := s; body`: β-reduces on a `pair`, gets stuck on a
 neutral. -/
@@ -915,43 +856,37 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   -- (P2, `lazyProofs`) the cast is a proof itself, so nothing ever needs its value: stuck
   if propSort? A == some true && propSort? B == some true then
     if g.lazyProofs then stuck else vApp g (vFst e) t else
+  -- (given, U5b) at a `Π`/`Σ` whose sort is not known (no annotation, or a level with
+  -- parameters), the equation `e` proves is stuck (`vEqType`), so it is no pair to project:
+  -- the cast is stuck exactly when the equation is. (Computing here gave `e.1` on a
+  -- `reflTy`, a term the kernel then rejected.)
+  let known : Bool := (propSort? A).isSome && (propSort? B).isSome
   match A, B with
   | .pi x _ q A₁ B₁ _, .pi _ _ q' A₂ B₂ _ =>
-    if sameQty q q' != some true then stuck else
+    if !known || sameQty q q' != some true then stuck else
     -- env: t, e, B₂, B₁, A₂, A₁; index 0 is the new `x`
     let c : Term R := .cast (v 5) (v 6) (.fst (v 2)) (v 0)
     .lam x (.mk [t, e, .lam x B₂, .lam x B₁, A₂, A₁]
       (.cast (.app (v 4) c) (.app (v 3) (v 0)) (.app (.snd (v 2)) (v 0)) (.app (v 1) c)))
   | .sigma _ q A₁ B₁ _, .sigma _ q' A₂ B₂ _ =>
-    if sameQty q q' != some true then stuck else
+    if !known || sameQty q q' != some true then stuck else
     let t₁ := vFst t
     let c₁ := vCast g A₁ A₂ (vFst e) t₁
     .pair c₁ (vCast g (Closure.inst g B₁ t₁) (Closure.inst g B₂ c₁) (vApp g (vSnd e) t₁) (vSnd t))
   | .sort u, .sort w | .empty u, .empty w => if u.equiv w then t else stuck
   | .unit u, .unit w => if u.equiv w then .tt else stuck
   | .enum ls, .enum ls' => if ls.length == ls'.length then t else stuck
-  -- regularity at inert types (InReg, P1): `A` and `B` equal by `groundEqTy`, which is
-  -- invariant under conversion and stable under substitution. (The D1 experiment's
-  -- `g.regularity` modes, off by default, still compare by `sameVal`.)
+  -- regularity at inert types (InReg): the evaluator's fast path. `A` and `B` equal by
+  -- `groundEqTy`, which is invariant under conversion and stable under substitution, and
+  -- needs no conversion. The rule itself (`A ≡ B` by conversion) is applied by the
+  -- conversion checker to the casts that stay stuck (`unCast` in `Conv.lean`).
   | _, _ =>
-    if regularityAllowed g A e && sameVal g A B then t else
-    if (match g.inertReg with
-        | .syntactic => inertTy g 0 A && sameVal g A B
-        | _ => groundEqTy g 0 A B) then t else
+    if groundEqTy g 0 A B then t else
     vCastData g A B e t stuck
   --|ex
   --| sorry
   --sol>
 
-
-/-- Syntactic equality of two values, quoted at a level above any variable in use. The
-side condition of the rules below (as it was of regularity): cheap, and stable under
-substitution, since a substitution instance of equal terms is equal. -/
-partial def sameVal (g : Globals R) (a b : Val R) : Bool :=
-  -- (P2) proofs are not evaluated, and not compared: all proofs are equal
-  let g := { g with quoteErasesProofs := true }
-  let l := max a.lvlBound b.lvlBound
-  quote g l a == quote g l b
 
 /-- An **inert** type: first-order data, whose values contain no functions, no proofs
 but index equations at inert types, and no values of a neutral type: `Enum`, `Unit`,
@@ -968,8 +903,21 @@ partial def inertTy (g : Globals R) (depth : Nat) (A : Val R) : Bool :=
   | .unit l => l.isNeverZero
   | .ulift l A₁ => l.isNeverZero && inertTy g (depth + 1) A₁
   | .sigma _ _ A₁ B (some s) => s.isNeverZero && inertTy g (depth + 1) A₁ &&
-      inertTy g (depth + 1) (Closure.inst g B (Val.var (100000 + depth)))
+      inertTy g (depth + 1) (Closure.inst g B (groundAtom (1000 + depth)))
   | .mu _ I D _ _ _ => inertTy g (depth + 1) I && inertDesc g (depth + 1) D
+  | A@(.pi ..) => singletonTail g depth A
+  | _ => false
+
+/-- A **singleton tail** (C1, `docs/CoreSpec.md` §8.4): `Unit_l` with `l` never zero, or
+`(0 x : A) → T` with `T` a singleton tail under the binder. The domains are not inspected.
+This is the shape of a phantom tail (22e), of a structure's marker (22i) and of a seal or
+brand (22k): every value is `fun _ … _ => ()` up to Π-η and Unit-η, so a singleton tail is
+inert (C1), and `groundEqVal` at it is `true`. -/
+partial def singletonTail (g : Globals R) (depth : Nat) (A : Val R) : Bool :=
+  depth < 64 &&
+  match whnf A with
+  | .unit l => l.isNeverZero
+  | .pi _ _ q _ B _ => isZeroQty q && singletonTail g (depth + 1) (Closure.inst g B (groundAtom (3000 + depth)))
   | _ => false
 
 /-- Every field of the description is inert (`inertTy`). -/
@@ -981,7 +929,7 @@ partial def inertDesc (g : Globals R) (depth : Nat) (D : Val R) : Bool :=
   | .darg _ S E => match tagField? S with
     | some (ls, lifted) => (List.range ls.length).all fun k =>
       inertDesc g depth (vApp g E (if lifted then .up (.tag ls k) else .tag ls k))
-    | none => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (Val.var (100000 + 50 + depth)))
+    | none => inertTy g (depth + 1) S && inertDesc g depth (vApp g E (groundAtom (2000 + depth)))
   | _ => false
 
 /- ### Ground equality at inert types (P1)
@@ -1045,7 +993,41 @@ partial def groundEqTy (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
   | .mu l I D i s _, .mu l' I' D' i' s' _ =>
     l.equiv l' && groundSizeEq s s' && groundEqTy g (d + 1) I I' &&
       groundEqDesc g (d + 1) I D D' && groundEqVal g (d + 1) I i i'
+  | A@(.pi ..), B@(.pi ..) => groundEqTail g d A B
   | _, _ => false
+
+/-- Two singleton tails (`singletonTail`), equal and ground: the quantities `0`, the
+domains by `groundDom`, the codomains under an atom, and the final `Unit`s. -/
+partial def groundEqTail (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
+  d < 64 &&
+  match whnf A, whnf B with
+  | .unit l, .unit l' => l.isNeverZero && l.equiv l'
+  | .pi _ _ q A₁ B₁ _, .pi _ _ q' A₂ B₂ _ =>
+    isZeroQty q && sameQty q q' == some true && groundDom g (d + 1) A₁ A₂ &&
+      let x := groundAtom d
+      groundEqTail g (d + 1) (Closure.inst g B₁ x) (Closure.inst g B₂ x)
+  | _, _ => false
+
+/-- Two domains of a singleton tail, equal and ground: two ground-equal inert types
+(`groundEqTy`), or the same **closed constant** `c.{us} a₁ … aₙ`: a neutral global (an
+axiom, or a seal or brand constant; a definition would have been unfolded by `whnf`)
+with the same name, equivalent levels, and arguments that are ground-equal domains in
+turn; or the same atom. The constant must be declared without a value (never a
+sentinel such as `outOfSteps`). A valueless constant converts only to itself, with convertible arguments, so this
+is invariant under conversion; it mentions no variable, so it is stable under
+substitution. A free variable (a type parameter) is not ground: `false`. -/
+partial def groundDom (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
+  d < 64 && (groundEqTy g d A B ||
+  let A := whnf A
+  let B := whnf B
+  groundAtomEq A B ||
+  match A, B with
+  | .neutral (.global x us) sp, .neutral (.global y us') sp' =>
+    x == y && (g.find? x).any (·.value.isNone) && us.length == us'.length && (us.zip us').all (fun (u, u') => u.equiv u') &&
+      sp.size == sp'.size && (sp.zip sp').all fun
+        | (.app a, .app b) => groundDom g (d + 1) a b
+        | _ => false
+  | _, _ => false)
 
 /-- Two descriptions of inert fields (`ret`, `rec`, `arg` at an inert type), equal and
 ground. A tag field is compared branch by branch; any other field under an atom. -/
@@ -1085,6 +1067,8 @@ partial def groundEqVal (g : Globals R) (d : Nat) (T a b : Val R) : Bool :=
   | .mu l I D i _ _ => match vNatView g a, vNatView g b with
     | .con x, .con y => groundEqVal g d (vInterp g l I D (muFamily l I D) i) x y
     | a, b => groundAtomEq a b
+  -- a singleton tail (C1): one value up to η
+  | .pi .. => singletonTail g 0 T
   | _ => false
 
 /-- A size as conversion sees it (`sizeView` in `Conv.lean`): `∞` (any `↑ᵏ ∞`, `none`), or a
@@ -1222,9 +1206,7 @@ partial def vCastData (g : Globals R) (A B e t stuck : Val R) : Val R :=
     | _ => stuck
   | .mu .., .mu .. =>
     let t := whnf t
-    -- (a numeral at a ground type was handled by InReg, `groundEqTy`; the old fast path
-    -- compared by `sameVal`, which is not stable, P1: kept only under `--inert-reg syntactic`)
-    if g.inertReg == .syntactic && (match t with | .natLit _ => true | _ => false) && sameVal g A B then t else
+    -- (a numeral at a ground type was handled by InReg, `groundEqTy`)
     match vNatView g t with
     | .con x => match famPayloadEq? g A B e with
       | some (Xi, Xi', e') => .con (vCast g Xi Xi' e' x)
@@ -1252,35 +1234,24 @@ two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   -- (given) a glued value keeps its name
   | .unfold n us sp _ => quote g l (.neutral (.global n us) sp)
-  -- (P2) a suspended proof, with the eliminations applied to it. The kernel's own
-  -- comparisons (`sameVal`) never evaluate it: every proof reads back as `()`. Readback
-  -- outside the kernel (the elaborator, messages) evaluates it, so that the term read
-  -- back is a normal form, which the kernel can check again (a substituted `(p, q).1`
-  -- has no inferable type).
-  | .neutral (.prf _ _ _ v) sp =>
-    if !g.quoteErasesProofs then quote g l (vElims g v.get sp) else
-    -- erased: `()`. Past an `absurd` the value need not be a proof (`absurd M p : M`, for
-    -- any `M`), so the eliminations from the last `absurd` on are kept, on `()`: two
-    -- different values of a data type must not read back alike. (Read back at `l + 1`
-    -- with a fresh variable for the head, then `()` for it.)
-    let isAbsurd (i : Nat) : Bool := match sp[i]? with
-      | some (.absurd _) => true
-      | _ => false
-    match (List.range sp.size).reverse.find? isAbsurd with
-    | none => .tt
-    | some k => (quote g (l + 1) (.neutral (.local l) (sp.extract k sp.size))).instantiateAt 0 .tt
   | .lazyInd lv I D v P m i x sp _ =>
     sp.foldl (fun t e => match e with
       | .app a => .app t (quote g l a)
       | .fst => .fst t
       | .snd => .snd t
       | .down => .down t
-      | _ => t)
+      -- (the spine of a glued induction only ever takes applications and projections:
+      -- `vApp`, `vFst`, `vSnd`, `vDown`. Anything else here is a bug, not something to drop.)
+      | .split .. | .absurd _ | .ecase .. | .delim .. | .ind .. | .sfix .. | .scase .. | .out =>
+        panic! "quote: an elimination that a glued induction cannot carry")
       (.ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) (quote g l x))
   --<sol
   | .neutral h sp =>
-    let hd : Term R := match h with
-      | .local x => .var (l - x - 1)
+    let hd : Unit → Term R := fun _ => match h with
+      -- (a variable at or above the level read back at has no index: truncated
+      -- subtraction would name another variable, which once proved `False` (S1). It reads
+      -- back as a stuck unknown, which no term is equal to and the kernel rejects.)
+      | .local x => if x < l then .var (l - x - 1) else .const "kernel panic✝" []
       | .global n us => .const n us
       | .mvar m => .mvar m
       | .eq A a b => .eq (quote g l A) (quote g l a) (quote g l b)
@@ -1290,8 +1261,8 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .reflTy X => .reflTy (quote g l X)
       | .transp A a P p b e =>
         .transp (quote g l A) (quote g l a) (quote g l P) (quote g l p) (quote g l b) (quote g l e)
-      | .prf _ _ _ v => quote g l v.get  -- (not reached: the case above)
-    sp.foldl (init := hd) fun acc e => match e with
+      | .prf env t => quote g l (eval g env t)
+    let elims (acc : Term R) (sp : Array (Elim R)) : Term R := sp.foldl (init := acc) fun acc e => match e with
       | .app v => .app acc (quote g l v)
       | .fst => .fst acc
       | .snd => .snd acc
@@ -1310,6 +1281,44 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
         .scase lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l s) (quote g l i) acc
       | .sfix lv I D v P f s i =>
         .sfix lv (quote g l I) (quote g l D) v (quote g l P) (quote g l f) (quote g l s) (quote g l i) acc
+    -- (P2) a proof head (a suspended proof, `refl`, `transp`, a stuck cast between
+    -- propositions) is a proof up to its last `absurd`: past it the value need not be one
+    -- (`absurd M p : M`, for any `M`), so those eliminations are always read back.
+    if !(g.lazyProofs && proofHead h) then elims (hd ()) sp else
+    let k := (lastAbsurd? sp).getD sp.size
+    let pre := sp.extract 0 k
+    let post := sp.extract k sp.size
+    if g.quoteErasesProofs then
+      -- the kernel's own comparisons never evaluate a suspended proof, and never compare
+      -- two proofs: every proof reads back as `()`, a suspended one and a stuck `refl`,
+      -- `reflTy`, `transp` or cast between propositions alike. (Alike matters: the same
+      -- proof can be a `refl` head where its term was evaluated and a suspension where it
+      -- was read back marked and evaluated again, and two types that differ only so must
+      -- not compare as different: that made a cast stuck, in `lib/Vec.wiz`.)
+      elims .tt post
+    else
+      -- outside the kernel (the elaborator, `#reduce`): a suspended proof is evaluated, so
+      -- that the term read back is a normal form, which the kernel can check again (a
+      -- substituted `(p, q).1` has no inferable type). The proof is read back *marked*:
+      -- in a relevant position the kernel requires the marker.
+      let p : Term R := match h with
+        | .prf env t => match g.budget with
+          -- (inside a read-back: on its budget)
+          | some _ => quote g l (vElims g (eval g env t) pre)
+          -- a read-back starts: the proof is evaluated and read back within a budget of
+          -- steps. If it runs out, the proof reads back as a constant that says so (and
+          -- that the kernel rejects).
+          | none =>
+            let (tm, used) := Budget.run g.proofSteps fun b =>
+              let g' := { g with budget := some b }
+              quote g' l (vElims g' (eval g' env t) pre)
+            let tm : Term R := if used > g.proofSteps then .const (Budget.message g.proofSteps) [] else tm
+            if g.traceProofSteps then dbgTrace s!"proof-steps {used}" fun _ => tm else tm
+        | _ => elims (hd ()) pre
+      let p : Term R := match p with
+        | .prf .. => p
+        | p => .prf .zero p
+      elims p post
   | .sort k => .sort k
   | .pi x bi q a b s => .pi x bi (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l))) s
   | .lam x b => .lam x (quote g (l + 1) (Closure.inst g b (Val.var l)))
