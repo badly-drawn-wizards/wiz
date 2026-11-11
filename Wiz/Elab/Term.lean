@@ -210,7 +210,12 @@ def ofNatLit? (ctx : LocalCtx R) (n : Nat) (A : VTy R) : ElabM R (Option (Term R
   let m ← freshMeta ctx s!"instance {x}"
   addInstProblem ctx m dom
   -- a numeral that doesn't fit a fixed-width word of lib/Word.wiz wraps around: say so
-  if let .mu _ _ _ _ _ (some (T, _, w :: _)) ← force A then
+  -- (outside lib/Word.wiz the word types are opaque, 13b/22k: a constant applied to `w`)
+  let word? : Option (Name × Val R) := match ← force A with
+    | .mu _ _ _ _ _ (some (T, _, w :: _)) => some (T, w)
+    | .neutral (.global T _) #[.app w] => some (T, w)
+    | _ => none
+  if let some (T, w) := word? then
     if T == "UIntN" || T == "IntN" then
       if let .natLit w := whnf w then
         if w ≤ 4096 then
