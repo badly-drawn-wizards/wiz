@@ -127,6 +127,33 @@ def modulesGroup : Group where
         -- a module that imports what it uses is fine, and its declarations are seen
         let s := runFrontend (R := ZeroOneMany) "import Prelude\nimport Fine\n#eval three\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         checkEq "[3:1: info: 3]" (toString (s.messages.toList.map (·.render "import Prelude\nimport Fine\n#eval three\n"))) },
+    { name := "trust is part of a module's cache key (22f)", run := fun _ => do
+        -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
+        -- warnings and `#print axioms` of the one run are never replayed in the other
+        let cache ← IO.FS.createTempDir
+        let ms ← Module.loadAll ["lib"]
+        let src := "import Prelude\ndef y : Nat := 2 + 2\n#print axioms y\n"
+        let run (trusted : Name → Bool) : IO (CommandState ZeroOneMany) := do
+          pure (← Cache.elaborateCached cache src ({ trustedModule := trusted, loader := loaderOf ms } : CommandState ZeroOneMany) 0).1
+        let unchecked (s : CommandState ZeroOneMany) : Nat :=
+          (s.messages.filter fun m => (m.text.splitOn "is not checked").length > 1).size
+        let axiomsOf (s : CommandState ZeroOneMany) : String :=
+          ((s.messages.find? fun m => (m.text.splitOn "'y'").length > 1).map (·.text)).getD "?"
+        for _ in [0:2] do
+          let s ← run (fun _ => false)
+          check (unchecked s > 10) s!"untrusted: {unchecked s} unchecked builtins reported"
+          check (((axiomsOf s).splitOn "depends on axioms").length > 1) s!"untrusted: {axiomsOf s}"
+          let s ← run Tests.libModule
+          checkEq 0 (unchecked s)
+          checkEq "'y' does not depend on any axioms" (axiomsOf s) },
+    { name := "the toolchain's library is the first root, and nothing replaces its modules (22f)", run := fun _ => do
+        let dir ← mkTree [("Prelude.wiz", "builtin nat.add := Nat.mul\n"), ("Fake.wiz", "import Prelude\ndef f : Nat := 1\n")]
+        let roots : List System.FilePath := [← Module.toolchainLib, dir]
+        checkEq (← IO.FS.realPath "lib") (← IO.FS.realPath roots.head!)
+        let ms ← Module.loadClosure roots "import Fake\n"
+        checkEq (some (roots.head! / "Prelude.wiz")) (ms["Prelude"]?.map (·.1))
+        checkEq ["Prelude"] ((Module.fromFirstRoot roots ms).toArray.qsort (· < ·)).toList
+        checkEq [("Prelude", dir / "Prelude.wiz")] (← Module.shadowed roots ms) },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
         let ms ← Module.loadAll [dir]
@@ -243,6 +270,63 @@ def linkCCase : Case :=
         check (!ok) "built without its C file"
         check ((log.splitOn "link_c: no file hi.c").length > 1) s!"no error for the missing file:\n{log}" }
 
+/-- `grail lsp` (this test driver's sibling `grail`) in `dir`: the diagnostics of `file`
+after an initialize and a didOpen; `none` if there is no grail binary. -/
+def grailLspDiagnostics (dir : System.FilePath) (file : String) : IO (Option (List String)) := do
+  let grail := ((← IO.appPath).parent.getD ".") / "grail"
+  unless ← grail.pathExists do return none
+  let cache ← IO.FS.createTempDir
+  let args := #["-C", dir.toString, "--cache", cache.toString, "lsp"]
+  let child ← IO.Process.spawn { cmd := grail.toString, args, stdin := .piped, stdout := .piped, stderr := .piped }
+  let (stdin, child) ← child.takeStdin
+  let input := IO.FS.Stream.ofHandle stdin
+  let output := IO.FS.Stream.ofHandle child.stdout
+  -- a time limit that doesn't keep the test's process alive once the test is done
+  let done ← IO.mkRef false
+  let _ ← IO.asTask (prio := .dedicated) do
+    for _ in [0:1200] do
+      if ← done.get then return
+      IO.sleep 100
+    child.kill
+  let path ← IO.FS.realPath (dir / file)
+  let uri := s!"file://{path}"
+  LSP.writeMessage input (Lean.Json.mkObj [("jsonrpc", "2.0"), ("id", (1 : Nat)), ("method", "initialize"),
+    ("params", Lean.Json.mkObj [("capabilities", Lean.Json.mkObj [])])])
+  LSP.writeMessage input (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+    ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", uri), ("languageId", "wiz"),
+      ("version", (1 : Nat)), ("text", ← IO.FS.readFile path)])])])
+  let mut diags := none
+  repeat
+    let some m ← LSP.readMessage output | break
+    if LSP.getStr m ["method"] == "textDocument/publishDiagnostics" then
+      let ds := match LSP.get? m ["params", "diagnostics"] with
+        | some (.arr ds) => ds.toList.map (LSP.getStr · ["message"])
+        | _ => []
+      diags := some ds
+      break
+  done.set true
+  child.kill
+  let _ ← child.wait
+  match diags with
+  | some ds => pure (some ds)
+  | none => throw (IO.userError s!"grail lsp ended without diagnostics: {← child.stderr.readToEnd}")
+
+def grailLspCase : Case :=
+    { name := "grail lsp: the server knows the package's modules", run := fun _ => do
+        let dir ← mkTree (pkgFiles ++ [("main.wiz", "import Demo.Two
+#eval two
+")])
+        let some ds ← grailLspDiagnostics dir "main.wiz"
+          | IO.println "    (skipped: no grail beside the test driver; lake build grail)"
+        check (ds.any (· == "2")) s!"diagnostics: {ds}"
+        check (!ds.any fun d => (d.splitOn "unknown module").length > 1) s!"diagnostics: {ds}"
+        -- a broken grail.wiz: the server still starts, with the package directory as a root
+        IO.FS.writeFile (dir / "grail.wiz") "import Grail\ndef package : Package := 3\n"
+        IO.FS.writeFile (dir / "Root.wiz") "import Prelude\ndef r : Nat := 5\n"
+        IO.FS.writeFile (dir / "main.wiz") "import Root\n#eval r\n"
+        let some ds ← grailLspDiagnostics dir "main.wiz" | return
+        check (ds.any (· == "5")) s!"diagnostics with a broken grail.wiz: {ds}" }
+
 def grailGroup : Group where
   name := "grail"
   exercise := "Stage 23d"
@@ -305,7 +389,8 @@ def grailGroup : Group where
         let (s, _) ← build dir tc
         checkEq 3 s.ran
         checkEq 2 s.upToDate },
-    linkCCase
+    linkCCase,
+    grailLspCase
   ]
 
 /-- A diamond: `B` and `C` import `A`, `D` imports both, and `app.wiz` imports `D`. -/

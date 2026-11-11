@@ -18,7 +18,7 @@
     "serial",
     "sys"
   ]},
-  {"name": "library", "select": [
+  {"name": "library", "split": 3, "select": [
     "builtins",
     "classes",
     "deriving",
@@ -58,6 +58,7 @@
     "inductive",
     "lexer",
     "lift",
+    "=lint",
     "match",
     "observational",
     "parser",

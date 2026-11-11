@@ -43,6 +43,9 @@ structure PCtx where
   savedPos? : Option Nat := none
   /-- the precedence the innermost category is being parsed at -/
   prec : Nat := 0
+  /-- the words that are not identifiers in the innermost category: the keywords of its
+  scope (13j). A function of the category, so the memo key need not mention it. -/
+  reserved : Array String := #[]
 
 structure PState where
   pos : Nat := 0

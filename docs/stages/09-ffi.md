@@ -13,7 +13,8 @@ def main : IO Unit := do
 * `lib/IO.wiz`: `IO A := (1 w : World) → A × World`. The world is a **linear token**:
   QTT's usage checking makes sure every action takes it and gives it back exactly
   once, so effects are ordered and nothing else is impure. (`let 1 (a, w') := …`
-  splits linearly; `match` can't, because `ind` uses its methods ω times.) `Monad IO`
+  splits linearly; `match` can't, because `ind` uses its methods ω times, and the
+  projections `.1`/`.2` can't either: they need an unrestricted pair, see 9e.) `Monad IO`
   makes `do` work.
 * `extern "cname" (header := "h.h")? name : T` declares an axiom implemented by a C
   function. Marshalling follows `T`: `Nat` and `UInt64` ↔ `uint64_t`, `Float64` ↔
@@ -104,6 +105,19 @@ def finish (1 t : Tok) : IO Nat := do1
   `do` notation over it (`x ← e;`, `e;`, `let x := e;`). `do` stays on `Monad.bind`,
   whose continuation is unrestricted: the same block written with `do` is rejected
   when a later step uses a linear variable. Bound results are unrestricted in both.
+* **An action's result is split, never projected.** `x w : A × World` holds the next
+  world as its second component, so it is taken apart with `let 1 (a, w') := x w; …`
+  (as `IO.bind` and `IO.then1` do). `(x w).1` would run the action and drop the world
+  it returns; the kernel rejects it, because a projection uses its pair, here the
+  expression `x w` and so `w`, ω times (stage 4b; CoreSpec §7.1, R1). The same goes for
+  every function that hands a resource back in a pair (`B × Uniq ρ S` in
+  `lib/Region.wiz`): a caller holding the pair linearly must split it.
+  ```
+  def peek {A : Type} (1 x : IO A) (1 w : World) : A := (x w).1
+  -- error: cannot project (x w).1: a projection needs an unrestricted pair …,
+  -- but this one uses w, which has quantity 1; take the pair apart with
+  -- `let 1 (x, y) := x w; …` instead
+  ```
 * Transport for linear values: `Eq.cast (0 e : A = B) (1 a : A) : B`, `Eq.subst P e`
   and `Eq.substBack P e` take the transported value at 1 (the kernel's `cast` already
   passes its argument's usage through), e.g. `Chan (dual (dual p))` to `Chan p` given
