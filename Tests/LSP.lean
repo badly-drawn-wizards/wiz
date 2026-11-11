@@ -566,6 +566,18 @@ def serverGroup : Group where
         check ((LSP.getStr r ["uri"]).endsWith "lib/Prelude.wiz") s!"import: {r.compress}"
         let (_, r) := ask srv "textDocument/hover" src (offAfter src "import Pre" (-1))
         check (has r "module `Prelude`") s!"import hover: {r.compress}" },
+    { name := "11r: hovers, expected types and definitions inside tactic arguments and list literals", run := fun _ => do
+        let src := "import Prelude\ndef f (n : Nat) : Nat := by\n  exact Nat.add n 1\ndef xs (k : Nat) : List Nat := [k, 2]\n"
+        let (srv, _) ← openDoc src
+        let (srv, r) := ask srv "textDocument/hover" src (offAfter src "add n" (-1))
+        check (has r "n : Nat") s!"hover in exact: {r.compress}"
+        let (srv, r) := ask srv "textDocument/definition" src (offAfter src "Nat.add n" (-4))
+        check ((LSP.getStr r ["uri"]).endsWith "lib/Prelude.wiz") s!"definition in exact: {r.compress}"
+        let (srv, r) := ask srv "wiz/plainTermGoal" src (offAfter src "add n" (-1))
+        checkEq "n : Nat\n⊢ Nat" (LSP.getStr r ["goal"])
+        -- a list literal (a procedural macro): its elements are the user's
+        let (_, r) := ask srv "textDocument/hover" src (offAfter src "[k" (-1))
+        check (has r "k : Nat") s!"hover in a list literal: {r.compress}" },
     { name := "11q: binders, pattern variables, declarations, messages and instances in the infoview", run := fun _ => do
         let src := "import Prelude\ndef pred (n : Nat) : Nat := match n with\n  | .zero => 0\n  | .succ m => m\nstructure P where\n  x : Nat\n  y : Bool\n#check pred 3\ndef six : Nat := 2 * 3\n"
         let (srv, _) ← openDoc src

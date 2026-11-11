@@ -372,7 +372,7 @@ def Infoview.itemLines (width : Nat) (i : InfoItem) (st : Flat) : List (List Pie
         | .false => Infoview.wrapLines width (Infoview.indented (Infoview.textLines (String.chars text) .nil));
       (List.append (Infoview.wrapLines width (.cons (String.chars title) .nil)) body, st)
 -- the items, a header (after a blank line) where the section changes
-def Infoview.itemsLines (width : Nat) (sec : String) : List InfoItem → Flat → List (List Piece) × Flat
+partial def Infoview.itemsLines (width : Nat) (sec : String) : List InfoItem → Flat → List (List Piece) × Flat
   | .nil, st => (List.nil, st)
   | .cons i is, st =>
     let s := InfoItem.section i;
@@ -808,7 +808,7 @@ def Infoview.htmlItem (sel : Nat) (i : InfoItem) (h : Html) : Html := match i wi
       match Infoview.isEmptyStr text with
       | .true => h1
       | .false => Html.lit "</pre>" (Html.add (Infoview.htmlText text .nil) (Html.lit "<pre class=\"item-text\">" h1))
-def Infoview.htmlItems (sel : Nat) (sec : String) : List InfoItem → Html → Html
+partial def Infoview.htmlItems (sel : Nat) (sec : String) : List InfoItem → Html → Html
   | .nil, h => h
   | .cons i is, h =>
     let s := InfoItem.section i;
