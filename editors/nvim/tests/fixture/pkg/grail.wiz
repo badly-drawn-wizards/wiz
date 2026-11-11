@@ -1,0 +1,4 @@
+import Grail
+-- a grail package for the wiz.nvim tests: Main.wiz imports Fix.Two from src/
+def package : Package := Package.new "fixture"
+  |> Package.lib "fix" "src"

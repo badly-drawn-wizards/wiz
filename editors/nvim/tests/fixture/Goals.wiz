@@ -1,0 +1,8 @@
+import Prelude
+
+def k : Nat → Bool → Nat := by
+  intro n
+  intro b
+  exact n
+
+def two : Nat := Nat.add 1 1
