@@ -1210,13 +1210,27 @@ def nuFamily (l : Nat) (I D : Val) : Val :=
 def nuFamilyAt (l : Nat) (I D sz : Val) : Val :=
   .vlam (.cons sz (.cons D (.cons I .nil))) (.nu l (.var 3) (.var 2) (.var 0) (.var 1))
 -- `a = b` at `A`, by `A` (`vEq` in `Eval.lean`; the closures are the same templates)
-def vEq (A a b : Val) : Val := vEqW (whnf A) (whnf a) (whnf b)
+-- at a proposition, `True` (proof irrelevance: the equation would be ill typed, and two
+-- proofs are always convertible); otherwise by `A`
+def vEq (A a b : Val) : Val :=
+  let A' := whnf A;
+  match propSort A' with
+  | .some p => match p with
+    | .true => .vunit 0
+    | .false => vEqW A' (whnf a) (whnf b)
+  | .none => vEqW A' (whnf a) (whnf b)
 def vEqW : Val → Val → Val → Val
   | .vpi _ a1 env b1 _, a, b => .vpi .qz a1 (.cons b (.cons a (.cons (.vlam env b1) .nil)))
       (.eq (.app (.var 3) (.var 0)) (.app (.var 2) (.var 0)) (.app (.var 1) (.var 0))) (.some (.lnum 0))
   | .vsigma _ a1 env b1 _, a, b =>
     let P : Tm := .lam (.lam (.eqTy (.app (.var 5) (.fst (.var 4))) (.app (.var 5) (.var 1))));
-    let apB : Tm := .subst (.var 4) (.fst (.var 2)) P (.tyRefl (.app (.var 3) (.fst (.var 2)))) (.fst (.var 1)) (.var 0);
+    -- (a proof first component: `B p.1 ≡ B q.1` by irrelevance, so `tyRefl`; `transp`
+    -- along a proposition would be ill typed)
+    let apB : Tm := match propSort (whnf a1) with
+      | .some p => match p with
+        | .true => .tyRefl (.app (.var 3) (.fst (.var 2)))
+        | .false => .subst (.var 4) (.fst (.var 2)) P (.tyRefl (.app (.var 3) (.fst (.var 2)))) (.fst (.var 1)) (.var 0)
+      | .none => .subst (.var 4) (.fst (.var 2)) P (.tyRefl (.app (.var 3) (.fst (.var 2)))) (.fst (.var 1)) (.var 0);
     .vsigma .qz (vEq a1 (vfst a) (vfst b)) (.cons b (.cons a (.cons (.vlam env b1) (.cons a1 .nil))))
       (.eq (.app (.var 3) (.fst (.var 1)))
         (.coe (.app (.var 3) (.fst (.var 2))) (.app (.var 3) (.fst (.var 1))) apB (.snd (.var 2))) (.snd (.var 1))) (.some (.lnum 0))

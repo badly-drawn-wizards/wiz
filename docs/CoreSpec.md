@@ -596,7 +596,8 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
 | `A` | `a =_A b` reduces to | tag | line |
 |---|---|---|---|
 | `(q x : A₁) → B` | `(0 x : A₁) → a x =_{B x} b x` (funext) | [std: PT22] | 523–525 |
-| `(q x : A₁) × B` | `(0 e : a.1 =_{A₁} b.1) × (cast (B a.1) (B b.1) ê a.2 =_{B b.1} b.2)`, where `ê = transp A₁ a.1 (λy _. B a.1 ≡ B y) (reflTy (B a.1)) b.1 e` | [std: PT22] | 526–532 |
+| a proposition (`propSort? A = true`) | `True` (**proof irrelevance**) | [wiz: Prop components] | `vEq` |
+| `(q x : A₁) × B` | `(0 e : a.1 =_{A₁} b.1) × (cast (B a.1) (B b.1) ê a.2 =_{B b.1} b.2)`, where `ê = transp A₁ a.1 (λy _. B a.1 ≡ B y) (reflTy (B a.1)) b.1 e`; if `A₁` is a proposition, `ê = reflTy (B a.1)` | [std: PT22; wiz] | 526–532 |
 | `Unit_l`, `Empty_l` | `True` | [std] | 533 |
 | `Enum ls`, with `a = tag i`, `b = tag j` | `True` if `i = j`, else `False` | [wiz: finite types] | 534–536 |
 | `μ D i`, with `a = con x`, `b = con y` | `x =_{⟦D⟧ (μ D) i} y`, **by the description** (`vEqPayload`, below) | [wiz: OTT for descriptions] | `vEqPayload` |
@@ -606,6 +607,25 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
 | `Desc_l I` | **by the constructors** (`vEqDesc`, §8.4b): `ret j = ret j' ⟶ j =_I j'`, `arg`/`rec`/`hrec` componentwise, different constructors `False` | [wiz: 4g] | `vEqDesc` |
 | anything else (a neutral type, `ν`, `Sort u` with `u` possibly 0, a non-constructor element of `μ`/`Enum`) | stuck: the neutral `a =_A b` | | 545–546 |
 | numerals `n`, `m` (any `A`) | `True` if `n = m`, else `False` | [impl] | 516 |
+
+The first row and the Σ rule's proof case are Wiz's [nu-transp]: in PT22 the components of
+a Σ are types, but a Wiz Σ may have a proof component (`(x : A) × P x`, `(0 h : P) × B`), and
+the equation of its components must not be formed at a proposition (the `eq` rule rejects
+it, as `transp` along a proposition, §8.1). Both are justified by conv-irr (§8.5):
+
+* at a proposition `A`, `a ≡ b` already holds, so `a =_A b` is `True`: it is never `False`
+  (two proofs, however written, are equal), so the rule gives no new inhabitant of `Empty`;
+* if `A₁` is a proposition, `a.1 ≡ b.1`, so `B a.1 ≡ B b.1` and `reflTy (B a.1) : B a.1 ≡ B b.1`
+  is well typed; `transp` along `A₁` would not be.
+
+Without them the computed equation was ill typed (a normal form the kernel rejects), and the
+kernel rejected well-typed programs that let-bound `h.2` for `h : p = q` at a subtype. The
+test `propSort? A = true` is stable under substitution (a proposition stays one); a `none`
+(an unknown sort) is handled as before (U5/U5b). **Known gap**: `propSort?` sees only
+propositions whose head shows it (`True`, an equation, a Π/Σ annotated `0`), not a neutral one
+(`P q.1` for a variable `P : A → Prop`): there the equation is still formed at the proposition,
+and the kernel rejects it (pinned in the 'observational equality' group). Mandatory sorts
+(every Π/Σ carries its components' sorts) closes it.
 
 Equality of payloads by the description (`vEqPayload`), so that `succ m = succ n` is
 `m = n` and not, through the Σ rule, an equation with a cast along the tags'
