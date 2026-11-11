@@ -448,8 +448,12 @@ def ottGroup : Group where
         checkEq (repr ["h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .ground)).pretty },
     { name := "P1: with InReg_conv (decided by conversion), open indices too", run := fun _ =>
         checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .conv)).pretty },
-    { name := "P1: the old syntactic InReg rejects the reduct h2 of h3 (documents the bug)", run := fun _ =>
-        checkEq (repr ["t1", "h", "h3", "g1", "g3"]).pretty (repr (p1Accepted .syntactic)).pretty },
+    -- (since I-1 the arguments of a proof are bound suspended, so in `h3`'s body the
+    -- instance of `h`'s type has `f p` with `p` a suspension, which the syntactic test's
+    -- read-back erases, against `f p` with `p` a variable in `h3`'s declared type: the same
+    -- instability, now rejecting `h3` too; P1's `ground` mode, the default, has neither)
+    { name := "P1: the old syntactic InReg rejects the reduct h2 of h3, and h3 (documents the bug)", run := fun _ =>
+        checkEq (repr ["t1", "h", "g1", "g3"]).pretty (repr (p1Accepted .syntactic)).pretty },
     { name := "D1: with eager proofs, a cast between propositions applies the equivalence, not regularity", run := fun _ => do
         let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral { globals := { lazyProofs := false } }
         checkEq (repr ["fun x => x"]).pretty (repr (s.messages.toList.map (·.text))).pretty },
@@ -3881,7 +3885,10 @@ def selfHostGroup : Group where
           "def verdict (r : TyRes) : String := match r with\n" ++
           "  | .ok _ _ => \"ok\"\n" ++
           "  | .err _ => \"error\"\n" ++
-          "def typeOk (t : Tm) : String := verdict (infer empty t)\n" ++
+          -- (P2) the probes are proofs (their types are propositions): checked inside a proof,
+          -- where they need no marker
+          "def typeOk (t : Tm) : String := verdict (infer (TCtx.inProof empty) t)\n" ++
+          "def typeOfP (t : Tm) : String := match infer (TCtx.inProof empty) t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err m => String.append \"error: \" m\n" ++
           "def main : IO Unit := do\n" ++
           "  IO.println (String.append \"d's declaration, at every level: \" (verdict (checkDecl .prop (.some dVal))));\n" ++
           "  IO.println (String.append \"F's declaration: \" (verdict (checkDecl fTy (.some fVal))));\n" ++
@@ -3889,7 +3896,7 @@ def selfHostGroup : Group where
           "  IO.println (String.append \"control, d.{0} used as d.{1} directly (want error): \" (typeOk (.ann d0Proof d1)));\n" ++
           "  IO.println (String.append \"control, F d.{0} x → F d.{0} x (want ok): \" (typeOk (h d0 d0)));\n" ++
           "  IO.println (String.append \"F d.{0} x → F d.{1} x (want error): \" (typeOk (h d0 d1)));\n" ++
-          "  IO.println (String.append \"a closed term of type False (want error): \" (typeOf (bad d0 d1)))\n"
+          "  IO.println (String.append \"a closed term of type False (want error): \" (typeOfP (bad d0 d1)))\n"
         ioRun (kernel ++ "\n" ++ probe) ("d's declaration, at every level: ok\nF's declaration: ok\nthe proof of d.{0}: ok\n" ++
           "control, d.{0} used as d.{1} directly (want error): error\ncontrol, F d.{0} x → F d.{0} x (want ok): ok\n" ++
           "F d.{0} x → F d.{1} x (want error): error\n" ++

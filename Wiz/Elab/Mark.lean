@@ -223,12 +223,17 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
     let vX := ctx.eval X
     (.reflTy X, some (vEqType g vX vX))
   | .cast A B e x =>
-    -- (the equation is never evaluated: nothing to mark in it)
+    -- (the equation is never evaluated, but it is a proof, which may hold relevant
+    -- subterms the kernel evaluates (`Check.lean`, I-1): marked in proof mode, as checked)
     let (A, _) := type ctx A
     let (B, _) := type ctx B
-    (.cast A B e (check ctx x (ctx.eval A)), some (ctx.eval B))
+    let vA := ctx.eval A
+    let vB := ctx.eval B
+    let e := check { ctx with proof := true } e (vEqType g vA vB)
+    (.cast A B e (check ctx x vA), some vB)
   | .transp A a P p b e =>
-    -- (`p` and `e` are never evaluated)
+    -- (`p` and `e` are never evaluated, but they are proofs, which may hold relevant
+    -- subterms: marked in proof mode, as the kernel checks them)
     let (A, _) := type ctx A
     let vA := ctx.eval A
     let a := check ctx a vA
@@ -236,8 +241,12 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
     let motiveTy : Val R := .pi "b" .default (.qlit 0) vA
       (.mk [va, vA] (.pi "_" .default (.qlit 0) (.eq (.var 2) (.var 1) (.var 0)) (.sort 0) none)) none
     let P := check ctx P motiveTy
+    let vP := ctx.eval P
+    let p := check { ctx with proof := true } p (vApp g (vApp g vP va) (.neutral (.refl vA va) #[]))
     let b := check ctx b vA
-    (.transp A a P p b e, some (vApp g (vApp g (ctx.eval P) (ctx.evalAt b vA)) (suspend g ctx.env e)))
+    let vb := ctx.evalAt b vA
+    let e := check { ctx with proof := true } e (vEq g vA va vb)
+    (.transp A a P p b e, some (vApp g (vApp g vP vb) (suspend g ctx.env e)))
   | .qty | .size | .enum _ => (t, some (.sort 1))
   | .sizeLt _ => (t, some (.sort 1))
   | .qlit _ => (t, some .qty)

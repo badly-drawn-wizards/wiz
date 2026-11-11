@@ -2401,6 +2401,12 @@ def convHead : TCtx → Head → Head → Bool
   | c, .heq A a b, .heq A' a' b' => Bool.and (convTy c A A') (Bool.and (conv c A a a') (conv c A b b'))
   | c, .heqTy A B, .heqTy A' B' => Bool.and (convTy c A A') (convTy c B B')
   | c, .hcast A B _ t, .hcast A' B' _ t' => Bool.and (convTy c A A') (Bool.and (convTy c B B') (conv c A t t'))
+  -- two proofs of one kind (the default arm below answers for any two: this lists them for
+  -- the lint, which wants every head compared with itself; their children are proofs)
+  | _, .hrefl _ _, .hrefl _ _ => .true
+  | _, .hreflTy _, .hreflTy _ => .true
+  | _, .htransp _ _ _ _ _ _, .htransp _ _ _ _ _ _ => .true
+  | _, .hprf _ _, .hprf _ _ => .true
   -- any two proofs (a suspension, `refl`, `reflTy`, `transp`), whatever their kinds: the
   -- same proof can be a `refl` head where its term was evaluated and a suspension where
   -- it was read back and evaluated again. (`convSpine` then lets only applications,
@@ -3364,12 +3370,15 @@ def markInferW : TCtx → Tm → MR
     let X' := markTy c X;
     let vX := eval (TCtx.env c) X';
     .mk (.tyRefl X') (.some (vEqType vX vX))
-  -- (the equation is never evaluated: nothing to mark in it)
+  -- (the equation is never evaluated, but it is a proof, which may hold relevant subterms
+  -- the kernel evaluates (I-1): marked in proof mode, as `check` checks it)
   | c, .coe A B e t =>
     let A' := markTy c A;
     let B' := markTy c B;
-    .mk (.coe A' B' e (markCheck c t (eval (TCtx.env c) A'))) (.some (eval (TCtx.env c) B'))
-  -- (`p` and `e` are never evaluated)
+    let vA := eval (TCtx.env c) A';
+    let vB := eval (TCtx.env c) B';
+    .mk (.coe A' B' (markCheck (TCtx.inProof c) e (vEqType vA vB)) (markCheck c t vA)) (.some vB)
+  -- (`p` and `e` are never evaluated, but they are proofs: marked in proof mode)
   | c, .subst A a P p b e =>
     let A' := markTy c A;
     let vA := eval (TCtx.env c) A';
@@ -3377,9 +3386,13 @@ def markInferW : TCtx → Tm → MR
     let va := evalAt c a' vA;
     let motiveTy : Val := .vpi .qz vA (.cons va (.cons vA .nil)) (.piq .qz (.eq (.var 2) (.var 1) (.var 0)) .prop) .none;
     let P' := markCheck c P motiveTy;
+    let vP := eval (TCtx.env c) P';
+    let p' := markCheck (TCtx.inProof c) p (vapp (vapp vP va) (.vne (.hrefl vA va) .snil));
     let b' := markCheck c b vA;
-    .mk (.subst A' a' P' p b' e)
-      (.some (vapp (vapp (eval (TCtx.env c) P') (evalAt c b' vA)) (suspend (TCtx.env c) e)))
+    let vb := evalAt c b' vA;
+    let e' := markCheck (TCtx.inProof c) e (vEq vA va vb);
+    .mk (.subst A' a' P' p' b' e')
+      (.some (vapp (vapp vP vb) (suspend (TCtx.env c) e')))
   | c, .descr l I => .mk (.descr l (markTy c I)) (.some (.vsort (.lnum (l + 2))))
   | c, .delim v P a b d e D => match markInfer c D with
     | .mk D' tD => match knownW tD with
