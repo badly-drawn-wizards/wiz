@@ -2308,25 +2308,11 @@ def Fe.ctorsOf (p : List Nat) : List (Nat × Syntax) → Fe.M (List (String × L
 def Fe.fieldLines : List (String × Fe.Ty) → String
   | .nil => ""
   | .cons f fs => "\n  " +++ f.1 +++ " : " +++ Fe.tyStr f.2 +++ Fe.fieldLines fs
-def Fe.mkArgs (target : String) : List (String × Fe.Ty) → String
-  | .nil => ""
-  | .cons f fs => (match Fe.seq f.1 target with
-    | .true => " x"
-    | .false => " s." +++ f.1) +++ Fe.mkArgs target fs
-def Fe.indepDefs (sn f : String) : List (String × Fe.Ty) → String
-  | .nil => ""
-  | .cons g gs => "\ndef " +++ sn +++ "." +++ f +++ "_" +++ g.1 +++ "_indep : Lens.Indep " +++ sn +++ "." +++ f +++ "L " +++ sn +++ "." +++ g.1
-    +++ "L := (fun s a => rfl, fun s b => rfl, fun s a b => rfl)" +++ Fe.indepDefs sn f gs
-def Fe.indepAll (sn : String) : List (String × Fe.Ty) → String
-  | .nil => ""
-  | .cons f fs => Fe.indepDefs sn f.1 fs +++ Fe.indepAll sn fs
-def Fe.lensDefs (sn : String) (all : List (String × Fe.Ty)) : List (String × Fe.Ty) → String
-  | .nil => Fe.indepAll sn all
-  | .cons f fs =>
-    "\ndef " +++ sn +++ "." +++ f.1 +++ "L : Lens " +++ sn +++ " " +++ Fe.tyStr f.2 +++ " := fun s => (s." +++ f.1
-      +++ ", fun x => " +++ sn +++ ".mk" +++ Fe.mkArgs f.1 all +++ ")"
-    +++ "\ndef " +++ sn +++ "." +++ f.1 +++ "L_lawful : Lens.Lawful " +++ sn +++ "." +++ f.1 +++ "L := (fun s => rfl, fun s a => rfl, fun s a b => rfl)"
-    +++ Fe.lensDefs sn all fs
+-- field lenses, their laws and independence: `deriving Lens` (lib/OpticDerive.wiz), the
+-- same names and statements (`S.fL`, `S.fL_lawful`, `S.f_g_indep`). The file using Feral
+-- must import OpticDerive (drafts/feral/lib/FeralCore.wiz does). Feral itself doesn't:
+-- with `import OpticDerive` here, running this macro panics in the interpreter
+-- (`Wiz.runPrim … impossible case`; wishful/feral-import-deriving.md).
 def Fe.ctorLines : List (String × List (String × Fe.Ty)) → String
   | .nil => ""
   | .cons c cs => "\n  | " +++ c.1 +++ Fe.unwords (Fe.map (fun (f : String × Fe.Ty) => "(" +++ f.1 +++ " : " +++ Fe.tyStr f.2 +++ ")") c.2) +++ Fe.ctorLines cs
@@ -2348,7 +2334,7 @@ def Fe.pass1 (bp : List Nat) : List (Nat × Syntax) → Fe.Glob → Fe.Glob × L
       ("feral_item.structI", fun _ => (match Fe.run (Fe.fieldsOf (Fe.sub p 3) (Fe.kids (Fe.arg it 3))) with
         | .ok fs _ =>
           let r := Fe.pass1 bp xs (Fe.Glob.mk g.sigs g.enums (.cons (Fe.Struct.mk name fs) g.structs));
-          (r.1, .cons (Fe.Item.data p ("structure " +++ name +++ " where" +++ Fe.fieldLines fs +++ Fe.lensDefs name fs fs)) r.2)
+          (r.1, .cons (Fe.Item.data p ("structure " +++ name +++ " where" +++ Fe.fieldLines fs +++ "\n  deriving Lens")) r.2)
         | .err q m => let r := Fe.pass1 bp xs g; (r.1, .cons (Fe.Item.bad q m) r.2))) ▸
       ("feral_item.enumI", fun _ => (match Fe.run (Fe.ctorsOf (Fe.sub p 3) (Fe.kids (Fe.arg it 3))) with
         | .ok cs _ =>

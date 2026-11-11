@@ -1,5 +1,7 @@
 import Optic
 import Region
+import Text
+import OpticDerive
 -- The runtime of lowered DSL code, beyond `lib/Optic.wiz` (which has `Result`, `Error`
 -- and the optics). This file CHECKS today, but it holds stand-ins for work owned by other
 -- tracks, so it lives in drafts/ until they land:
@@ -93,9 +95,7 @@ def Vec.getMut {ρ : Region} {A : Type} (i : U64) (v : Uniq ρ (Vec A)) : MutOpt
   match Mut.ofPLens v (Vec.indexMut i) with
   | .ok m => .some m
   | .err _ => .none v
-def List.map {A B : Type} (f : A → B) : List A → List B
-  | .nil => .nil
-  | .cons x xs => .cons (f x) (List.map f xs)
+-- (`List.map` is lib/Text.wiz's, so that Feral code can import the sep-logic libraries)
 def Vec.ofList {A : Type} (xs : List A) : Vec A := Vec.mk xs
 
 -- ## Control flow
