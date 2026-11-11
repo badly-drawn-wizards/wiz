@@ -7,11 +7,26 @@ root, so `import Prelude` is `lib/Prelude.wiz` as before. The frontend stays pur
 caller reads every module a file can reach up front, by scanning its import lines
 (`Wiz/Module.lean`).
 
+**One name, one declaration.** Two different declarations of one name can't both be
+visible in a file: importing a module that declares a name the file already has (from
+another module, or declared in the file itself) is an error at that `import`,
+`'b' is declared by both module M.A and module M.B`, whichever order the imports come
+in, and the module is not brought in. Wiz has no namespaces (`Nat.repr` is one global
+name), and the kernel identifies constants by name, so letting the later declaration win
+would keep everything checked against the earlier one: a theorem about M.A's `b` would
+then be about M.B's (it proved `Empty`, `wiz-notes/soundness-probes/is-import-shadowing`).
+One module reached by several paths (a diamond) is the same declaration and fine: a
+module is imported once per file. Two modules with identical declarations still clash,
+as in Lean; put the definition in one module that the others import. `private` names are
+global names too, so they clash as well (a module-qualified private name is a
+follow-up). The kernel's `addDecl` refuses a name that is already declared, behind all
+of this.
+
 ## 23c: a key per module, atomic writes ✅
 
 A module's key is computed from text alone, before anything is elaborated:
 
-    key(M) = hash(salt, toolchain, text of M, M's C headers, key(N) for each import N)
+    key(M) = hash(salt, toolchain, name and text of M, M's C headers, key(N) for each import N)
 
 and a module is elaborated **in isolation**, from the empty state plus its own imports,
 so what it elaborates to depends only on its key. An importer's chain of command keys

@@ -127,6 +127,65 @@ def modulesGroup : Group where
         -- a module that imports what it uses is fine, and its declarations are seen
         let s := runFrontend (R := ZeroOneMany) "import Prelude\nimport Fine\n#eval three\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         checkEq "[3:1: info: 3]" (toString (s.messages.toList.map (·.render "import Prelude\nimport Fine\n#eval three\n"))) },
+    { name := "two modules declaring one name: an error at the import, whatever the path or order", run := fun _ => do
+        -- wiz-notes/soundness-probes/is-import-shadowing: M.A's `pa : b = true` was checked
+        -- against its own `b`; with M.B's `b := false` replacing it, `pa` proved `false = true`
+        let dir ← mkTree [
+          ("M/Base.wiz", "inductive Bool where\n  | true\n  | false\ninductive Empty where\n"),
+          ("M/A.wiz", "import M.Base\ndef b : Bool := Bool.true\ndef pa : b = Bool.true := refl Bool.true\n"),
+          ("M/B.wiz", "import M.Base\ndef b : Bool := Bool.false\ndef pb : b = Bool.false := refl Bool.false\n"),
+          ("M/C.wiz", "import M.A\ndef c : Bool := b\n"),
+          ("M/D.wiz", "import M.B\ndef d : Bool := b\n"),
+          ("M/E.wiz", "import M.Base\ndef e0 : Bool := Bool.false\n")]
+        let ms ← Module.loadAll [dir]
+        let init : CommandState ZeroOneMany := { loader := loaderOf ms }
+        let cache ← IO.FS.createTempDir
+        let boomA := "def e : Bool.false = Bool.true := pa\ndef boom : Empty := absurd e.1\n"
+        let boomB := "def e : Bool.true = Bool.false := pb\ndef boom : Empty := absurd e.1\n"
+        -- every way a file is elaborated: wiz check (cold and warm cache, no cache), the
+        -- frontend, the language server's engine
+        let paths (src : String) : IO (List (String × CommandState ZeroOneMany)) := do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          pure [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                ("runFrontend", runFrontend src init), ("Query", (Query.elaborate {} src { init with termInfo := true }).1)]
+        let clash (s : CommandState ZeroOneMany) : Bool := s.messages.any fun m =>
+          m.severity == .error && ((m.text.splitOn "'b' is declared by both").length > 1 ||
+                                   (m.text.splitOn "'b' has already been declared").length > 1)
+        for src in ["import M.A\nimport M.B\n" ++ boomA, "import M.B\nimport M.A\n" ++ boomB,
+                    "import M.A\nimport M.D\n" ++ boomA, "import M.A\nimport M.D\n" ++ boomB,
+                    "import M.C\nimport M.B\n" ++ boomA, "import M.Base\ndef b : Bool := Bool.false\nimport M.A\n" ++ boomA,
+                    "import M.A\ndef b : Bool := Bool.false\n" ++ boomA] do
+          for (how, s) in ← paths src do
+            check (clash s) s!"{how}: no clash reported for\n{src}\n{s.messages.toList.map (·.text)}"
+            check (!s.globals.contains "boom") s!"{how}: boom : Empty was accepted for\n{src}"
+        -- the message names both modules
+        let (s, _) ← Cache.elaborateCached cache "import M.A\nimport M.B\n" init 0
+        check (s.messages.any fun m => (m.text.splitOn "'b' is declared by both module M.A and module M.B").length > 1)
+          s!"{s.messages.toList.map (·.text)}"
+        -- one module reached by two paths (a diamond) is fine
+        for src in ["import M.A\nimport M.C\nimport M.Base\n#eval c\n", "import M.A\nimport M.E\n#eval e0\n",
+                    "import M.E\nimport M.C\n#eval c\n"] do
+          for (how, s) in ← paths src do
+            check (!s.messages.any (·.severity == .error)) s!"{how}: diamond {src}: {s.messages.toList.map (·.text)}"
+            check (s.globals.contains "pa" && s.globals.contains "Bool.true") s!"{how}: diamond lost declarations"
+        -- the language server re-elaborating a file after an edit (the engine reused)
+        let src := "import M.A\nimport M.E\ndef x : Bool := b\n"
+        let (s₁, eng) := Query.elaborate (R := ZeroOneMany) {} src { init with termInfo := true }
+        let (s₂, eng) := Query.elaborate eng src { init with termInfo := true }
+        let (s₃, _) := Query.elaborate eng (src ++ "def y : Bool := x\n") { init with termInfo := true }
+        for s in [s₁, s₂, s₃] do
+          check (!s.messages.any (·.severity == .error)) s!"re-elaboration: {s.messages.toList.map (·.text)}"
+        -- a module whose dependency changed is elaborated again, not replayed from the
+        -- cache: M.A's `pa` no longer holds once its `b` is `false`
+        let src := "import M.A\n" ++ boomA
+        let (s, _) ← Cache.elaborateCached cache src init 0
+        check (s.messages.any (·.severity == .error)) "pa : false = true with b = true"
+        let ms' := ms.insert "M.A" (dir / "M/A.wiz", "import M.Base\ndef b : Bool := Bool.false\ndef pa : b = Bool.true := refl Bool.true\n")
+        let (s, _) ← Cache.elaborateCached cache src { init with loader := loaderOf ms' } 0
+        check (s.messages.any fun m => (m.text.splitOn "module M.A has errors").length > 1)
+          s!"the changed M.A was replayed: {s.messages.toList.map (·.text)}"
+        check (!s.globals.contains "boom") "boom accepted after M.A changed" },
     { name := "trust is part of a module's cache key (22f)", run := fun _ => do
         -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
         -- warnings and `#print axioms` of the one run are never replayed in the other
