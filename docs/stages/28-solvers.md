@@ -64,3 +64,28 @@ each. A stuck `a && b` is a `match`, not `Bool.and`, so it is an atom (write `Bo
 **Not yet**: bit vectors. Bit-blasting `UIntN w` operations into circuits is easy; the
 correctness proof needs lemmas such as `testBit (land a b) i = testBit a i && testBit b i`
 and the range invariant of `UIntN` (agent/seal-range), which the library does not have yet.
+
+## 28c: sharing ✅
+
+    def maj (a b c : Bool) : Bool := Bool.or (Bool.or (Bool.and a b) (Bool.and a c)) (Bool.and b c)
+    def eq4 … : Bool.xor (Bool.xor a3 b3) (carry a2 b2 (carry a1 b1 …)) = Bool.xor … (maj b2 a2 (maj …)) := by sat_decide
+
+28b's formulas are trees: `maj` uses its last argument twice, so a carry chain unfolded is
+exponential (a 16-bit one went over 2 GB). Now the goal becomes a **circuit of nodes**
+(`Sat.GNode`: a node number and a gate over other nodes), one per distinct subterm, and
+**a node's value is the goal's own subterm**: `σ v` is that subterm, so no formula is
+ever rebuilt. What the circuit claims is checked by the kernel, node by node:
+`Sat.allHold σ nodes` is the conjunction of `σ v = op (σ a) (σ b)`, each proved by `refl`
+at the subterm (`Sat.eqRefl`), which the kernel compares with its operands *folded* (both
+sides are the same subterms). Then `Sat.dag_sound`: an LRAT refutation of the gates'
+clauses and `¬ σ out` gives `σ out = .true`, with no Tseitin bookkeeping at all (the
+clauses hold under `σ` itself). No axioms.
+
+* **Head-only unfolding.** An application of a definition (`maj x y z`) is unfolded at
+  its head only: the definition applied to variables is unfolded (`TacticM.unfold` under
+  `fun`s) and the arguments put back (`TacticM.instantiate`), so they stay folded, and are
+  nodes already. A definition that does not unfold to a connective is an input.
+* **`TacticM.define`** (a new request): a definition in the goal's context, added before
+  the definition being elaborated and checked by the kernel like any other (it is not an
+  axiom: `#print axioms` does not list it). The proof uses two, `σ` and the node list,
+  instead of repeating them in every node's proof.

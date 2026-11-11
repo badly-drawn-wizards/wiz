@@ -340,6 +340,10 @@ inductive Tac where
   -- `a = b` at `A`: `(A, a, b)`)
   | satSolve (nvars : Nat) (clauses : List (List Nat)) (k : SatAnswer → Tac)
   | eqView (g : Nat) (e : Expr) (k : Option (Expr × Expr × Expr) → Tac)
+  -- (28c) a definition `val : ty` in goal `g`'s context, added before the definition being
+  -- elaborated (checked by the kernel; not an axiom), and the term that uses it: a big
+  -- value a proof mentions many times is then one constant
+  | define (g : Nat) (ty : Expr) (val : Expr) (k : Expr → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -403,6 +407,7 @@ def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := f
 def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.isDefinition n k
 def TacticM.satSolve (nvars : Nat) (clauses : List (List Nat)) : TacticM SatAnswer := fun k => Tac.satSolve nvars clauses k
 def TacticM.eqView (g : Nat) (e : Expr) : TacticM (Option (Expr × Expr × Expr)) := fun k => Tac.eqView g e k
+def TacticM.define (g : Nat) (ty val : Expr) : TacticM Expr := fun k => Tac.define g ty val k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 

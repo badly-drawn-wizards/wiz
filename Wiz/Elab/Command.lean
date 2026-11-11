@@ -1409,20 +1409,27 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         addInfos hv
         if sides.isEmpty then addDeclChecked name levelParams ty val
         else
-          -- (28) axioms a tactic added, checked by the kernel as types (an axiom's
-          -- statement is what was trusted), then the definition, which applies them
+          -- (28) declarations a tactic added: definitions (28c, `TacticM.define`), checked
+          -- by the kernel like any other, and axioms, checked as types (an axiom's
+          -- statement is what was trusted); then the definition, which uses them
           let mut g := s.globals
           let mut ok := true
           for d in sides do
-            let d := { d with type := Sorts.term g #[] [] d.type }
-            match (do let g' ← addDecl g d; privacyCheck g d; pure g' : TCM (Globals R)) with
+            let r : Except String (Globals R) := if d.value.isSome then
+                (addDeclSorted g d).mapError toString
+              else
+                let d := { d with type := Sorts.term g #[] [] d.type }
+                (do let g' ← addDecl g d; privacyCheck g d; pure g' : TCM (Globals R)).mapError toString
+            match r with
             | .ok g' => g := g'
             | .error e => report .error cmd.info s!"kernel rejected {d.name}: {e}"; ok := false; break
           if ok then
             match addDeclSorted g { name, levelParams, type := ty, value := val } with
             | .ok g' =>
               modify fun s => { s with globals := g' }
-              report .warning cmd.info s!"{name} is accepted on the strength of the axiom{if sides.size == 1 then "" else "s"} {", ".intercalate (sides.toList.map (·.name))} that its tactics added, not checked by the kernel; `#print axioms` lists {if sides.size == 1 then "it" else "them"} for everything that uses {name}"
+              let axs := sides.filter (·.value.isNone)
+              unless axs.isEmpty do
+                report .warning cmd.info s!"{name} is accepted on the strength of the axiom{if axs.size == 1 then "" else "s"} {", ".intercalate (axs.toList.map (·.name))} that its tactics added, not checked by the kernel; `#print axioms` lists {if axs.size == 1 then "it" else "them"} for everything that uses {name}"
             | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
       | (.error e, hv) => addInfos hv; reportErr e
   | "command.partial" | "command.mutual" =>

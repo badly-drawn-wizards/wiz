@@ -345,12 +345,15 @@ def SatT.gnodesE : List Sat.GNode → Expr
 def SatT.gateProofE : Sat.Gate → Expr → Expr
   | .inp, _ => .const "True.intro"
   | _, e => .app (.const "Sat.eqRefl") e
--- the proof that every gate holds under `σ` (each by `refl` at the node's own subterm)
-def SatT.holdsE (σ : Expr) : List Sat.GNode → List Expr → Expr
-  | .nil, _ => .app (.const "Sat.holdsNil") σ
-  | .cons (.mk v gt) ns, .cons e es => Expr.mkApp (.const "Sat.holdsCons") (.cons σ (.cons (.lit v) (.cons (SatT.gateE gt)
-      (.cons (SatT.gnodesE ns) (.cons (SatT.gateProofE gt e) (.cons (SatT.holdsE σ ns es) .nil))))))
-  | .cons _ _, .nil => .const "Sat.holdsNil"
+-- the proof that every gate holds under `σ` (each by `refl` at the node's own subterm);
+-- `nodesC` is the node list (a constant), and the tail after node `i` is `List.dropN i nodesC`
+def SatT.holdsE (σ nodesC : Expr) : Nat → List Sat.GNode → List Expr → Expr
+  | _, .nil, _ => .app (.const "Sat.holdsNil") σ
+  | i, .cons (.mk v gt) ns, .cons e es =>
+    let tl := Expr.mkApp (.const "List.dropN") (.cons (.const "Sat.GNode") (.cons (.lit (Nat.succ i)) (.cons nodesC .nil)));
+    Expr.mkApp (.const "Sat.holdsCons") (.cons σ (.cons (.lit v) (.cons (SatT.gateE gt)
+      (.cons tl (.cons (SatT.gateProofE gt e) (.cons (SatT.holdsE σ nodesC (Nat.succ i) ns es) .nil))))))
+  | _, .cons _ _, .nil => .const "Sat.holdsNil"
 
 -- the nodes, newest first, with their values in the same order
 def SatT.St.nodes : SatT.St → List Sat.GNode
@@ -384,11 +387,10 @@ def SatT.solveDag (g : Nat) (out : Nat) (st : SatT.St) (close : Expr → Expr �
     m ← SatT.showInputs g model nodes (SatT.St.vals st);
     TacticM.fail (String.append "sat_decide: the goal is false; a counterexample:" m)
   | .unsat proof => do
-    -- σ, once: a hole of type `Sat.Env` solved with the values (so the proof term refers to it)
-    sg ← TacticM.newGoal g (.const "Sat.Env");
-    σ ← TacticM.goalExpr sg;
-    TacticM.assign sg (.app (.const "Sat.envOf") (SatT.exprsE (.const "Bool") (SatT.revE (SatT.St.vals st) .nil)));
-    TacticM.assign g (close (SatT.gnodesE nodes) (SatT.stepsE proof) σ (SatT.holdsE σ nodes (SatT.St.vals st)))
+    -- σ and the node list, once each: definitions the proof mentions by name
+    σ ← TacticM.define g (.const "Sat.Env") (.app (.const "Sat.envOf") (SatT.exprsE (.const "Bool") (SatT.revE (SatT.St.vals st) .nil)));
+    nodesC ← TacticM.define g (.app (.const "List") (.const "Sat.GNode")) (SatT.gnodesE nodes);
+    TacticM.assign g (close nodesC (SatT.stepsE proof) σ (SatT.holdsE σ nodesC 0 nodes (SatT.St.vals st)))
 
 def SatT.decideDag (g : Nat) (lhs rhs : Expr) : TacticM Unit := match SatT.isConst "Bool.true" rhs with
   | .true => do
