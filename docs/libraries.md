@@ -155,6 +155,30 @@ per cycle, what temporal formulas are about), and `Circuit.run_take`:
 simulation prints is what a theorem about the trace says. The temporal logic (H14 T)
 builds on these.
 
+## H14 C3: memories (`HwTy.mem`) ✅
+
+The toy CPU's finding C1 (no memories: a ROM as a chain of multiplexers, RAM as
+flip-flops). A memory is a code, `HwTy.mem aw dw` (2^aw words of dw bits), and at values
+a function `BitVec aw → BitVec dw`, so reasoning about it is pointwise. `Hw.memRead m a`
+reads a word (combinationally); `Hw.memWrite m we a d` is the memory with word `a`
+replaced by `d` when `we` is high. A memory that is part of a circuit's state takes the
+writes of its next value at the clock edge; a read of the written value in the same
+cycle sees the write (the netlist adds the bypass). `Hw.const (HwTy.mem aw dw) f` is a
+ROM. Lemmas: `HwTy.El.memRead_write_miss` (another address: the old word),
+`memRead_write_hit`, `memRead_write_off`. A reset leaves the contents alone
+(`HwTy.El.resetToAt`, as block RAM does; `Circuit.stepEl_withReset` states it), a clock
+enable gates the writes.
+
+In the netlist a memory is a `NetMem` (name, widths, initial contents, its writes in
+order) read by `memRead k` nodes; the simulator keeps its contents in a trie. Verilog: an
+array with an `initial` block, reads `m[addr]`, the writes in one `always` block (a later
+write wins). yosys maps a memory whose read data (or address) goes through a register to
+iCE40 block RAM (`SB_RAM40_4K`): `examples/hdl-mem.wiz` (a 16×8 RAM with a registered read,
+a ROM; checked by Icarus and yosys in group `hdl` when they are on PATH). Small ROMs
+become LUTs, a 256-word one block RAM. What the netlist cannot express is listed in
+`Netlist.errors` and printed as `// error:` lines: a choice between two different
+memories, a memory in a port, a state memory replaced instead of written.
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII

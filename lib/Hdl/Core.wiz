@@ -15,6 +15,9 @@ import Deriving
 -- * Wires are structured: a value of a product type is a product of node ids, so pairs
 --   and projections cost nothing, and ports and registers are one per leaf, named by
 --   the path of `named` segments (`tx_cnt`).
+-- * Memories: `HwTy.mem aw dw`, `2^aw` words of `dw` bits, a function at values; read
+--   with `Hw.memRead` (combinational), written with `Hw.memWrite` (at the clock edge, when
+--   it is the state's next value). In Verilog an array, which yosys maps to block RAM.
 -- * Structures of signals (`structure Tx (r : HwTy → Type) where line : r Bit …`) are
 --   `Bundle`s: `deriving Bundle` gives their code and the conversions, and field access
 --   is the ordinary `s.line`.
@@ -88,43 +91,51 @@ inductive HwTy where
   | bits (n : Nat)
   | prod (a b : HwTy)
   | named (s : String) (t : HwTy)
+  | mem (aw dw : Nat)
 
 def HwTy.El : HwTy → Type
   | .bits n => BitVec n
   | .prod a b => HwTy.El a × HwTy.El b
   | .named _ t => HwTy.El t
+  | .mem aw dw => BitVec aw → BitVec dw
 
 def HwTy.width : HwTy → Nat
   | .bits n => n
   | .prod a b => HwTy.width a + HwTy.width b
   | .named _ t => HwTy.width t
+  | .mem _ _ => 0
 
 -- The bus encoding (first component in the high bits).
 def HwTy.pack : (ω t : HwTy) → HwTy.El t → Nat
   | .bits n, v => v.toNat
   | .prod a b, v => Nat.shiftLeft (HwTy.pack a v.1) (HwTy.width b) + HwTy.pack b v.2
   | .named _ t, v => HwTy.pack t v
+  | .mem _ _, v => 0
 
 def HwTy.unpack : (ω t : HwTy) → Nat → HwTy.El t
   | .bits n, k => BitVec.ofNat n k
   | .prod a b, k => (HwTy.unpack a (Nat.shiftRight k (HwTy.width b)), HwTy.unpack b k)
   | .named _ t, k => HwTy.unpack t k
+  | .mem aw dw, k => fun (a : BitVec aw) => BitVec.ofNat dw 0
 
 -- (`HwTy.bit` rather than `HwTy.bits 1`: class field types are elaborated without
 --  numerals or macros; wishful: numerals-in-class-decls)
 def HwTy.bit : HwTy := HwTy.bits 1
 
--- The leaves of a code: bit vectors, in order (first component first).
+-- The leaves of a code: bit vectors, in order (first component first). Memories are not
+-- leaves (no port or register carries one); `HwTy.memShapes` lists them.
 def HwTy.leafWidths : HwTy → List Nat
   | .bits n => .cons n .nil
   | .prod a b => List.append (HwTy.leafWidths a) (HwTy.leafWidths b)
   | .named _ t => HwTy.leafWidths t
+  | .mem _ _ => .nil
 
 -- a value's leaves as numbers, and back
 def HwTy.leaves : (ω t : HwTy) → HwTy.El t → List Nat
   | .bits n, v => .cons v.toNat .nil
   | .prod a b, v => List.append (HwTy.leaves a v.1) (HwTy.leaves b v.2)
   | .named _ t, v => HwTy.leaves t v
+  | .mem _ _, v => .nil
 def HwTy.ofLeavesAux : (ω t : HwTy) → List Nat → HwTy.El t × List Nat
   | .bits n, .nil => (BitVec.ofNat n 0, .nil)
   | .bits n, .cons k ks => (BitVec.ofNat n k, ks)
@@ -133,6 +144,7 @@ def HwTy.ofLeavesAux : (ω t : HwTy) → List Nat → HwTy.El t × List Nat
     let ω q := HwTy.ofLeavesAux b p.2;
     ((p.1, q.1), q.2)
   | .named _ t, ks => HwTy.ofLeavesAux t ks
+  | .mem aw dw, ks => (fun (a : BitVec aw) => BitVec.ofNat dw 0, ks)
 def HwTy.ofLeaves (ω t : HwTy) (ks : List Nat) : HwTy.El t := (HwTy.ofLeavesAux t ks).1
 
 -- Leaf names: the `named` segments on the path to the leaf, joined with `_`.
@@ -143,6 +155,7 @@ def HwTy.pathsAux : String → HwTy → List String
   | pre, .bits _ => .cons pre .nil
   | pre, .prod a b => List.append (HwTy.pathsAux pre a) (HwTy.pathsAux pre b)
   | pre, .named s t => HwTy.pathsAux (Hdl.joinName pre s) t
+  | pre, .mem _ _ => .nil
 def Hdl.countName (s : String) : List String → Nat
   | .nil => 0
   | .cons x xs => match Hdl.strEq s x with
@@ -165,6 +178,32 @@ def Hdl.orBase (base p : String) : String := match p with
 def HwTy.portNames (base : String) (t : HwTy) : List String :=
   let ω ps := Hdl.map (Hdl.orBase base) (HwTy.pathsAux "" t);
   Hdl.dedup ps (Hdl.indexed 0 ps)
+
+-- The memories of a code, in order: their shapes (address and data widths), names
+-- (as `portNames`) and contents (word `a` at index `a`).
+def HwTy.memShapes : HwTy → List (Nat × Nat)
+  | .bits _ => .nil
+  | .prod a b => List.append (HwTy.memShapes a) (HwTy.memShapes b)
+  | .named _ t => HwTy.memShapes t
+  | .mem aw dw => .cons (aw, dw) .nil
+def HwTy.memPathsAux : String → HwTy → List String
+  | pre, .bits _ => .nil
+  | pre, .prod a b => List.append (HwTy.memPathsAux pre a) (HwTy.memPathsAux pre b)
+  | pre, .named s t => HwTy.memPathsAux (Hdl.joinName pre s) t
+  | pre, .mem _ _ => .cons pre .nil
+def HwTy.memNames (base : String) (t : HwTy) : List String :=
+  let ω ps := Hdl.map (Hdl.orBase base) (HwTy.memPathsAux "" t);
+  Hdl.dedup ps (Hdl.indexed 0 ps)
+def Hdl.upto : Nat → Nat → List Nat
+  | .zero, k => .nil
+  | .succ n, k => .cons k (Hdl.upto n (Nat.succ k))
+def Hdl.memWords {ω aw dw : Nat} (m : BitVec aw → BitVec dw) : List Nat :=
+  Hdl.map (fun (a : Nat) => (m (BitVec.ofNat aw a)).toNat) (Hdl.upto (Nat.pow 2 aw) 0)
+def HwTy.memContents : (ω t : HwTy) → HwTy.El t → List (List Nat)
+  | .bits _, v => .nil
+  | .prod a b, v => List.append (HwTy.memContents a v.1) (HwTy.memContents b v.2)
+  | .named _ t, v => HwTy.memContents t v
+  | .mem aw dw, v => .cons (Hdl.memWords v) .nil
 
 ------------------------------------------------------------------------------------
 -- The combinational operations, tagless final
@@ -199,6 +238,11 @@ class Hw (r : HwTy → Type) where
   -- or a clock enable on the register instead of a multiplexer
   resetTo : {ω t : HwTy} → r HwTy.bit → HwTy.El t → r t → r t
   hold : {ω t : HwTy} → r HwTy.bit → r t → r t → r t
+  -- memories: the word at an address, and the memory with one word written when the
+  -- enable is high (reads of the result see the write; a memory that is a circuit's state
+  -- takes its writes at the clock edge). A reset leaves a memory's contents alone.
+  memRead : {ω aw dw : Nat} → r (HwTy.mem aw dw) → r (HwTy.bits aw) → r (HwTy.bits dw)
+  memWrite : {ω aw dw : Nat} → r (HwTy.mem aw dw) → r HwTy.bit → r (HwTy.bits aw) → r (HwTy.bits dw) → r (HwTy.mem aw dw)
 
 -- Auto-share: the elaborator turns `let x := v; body` into `ShareLet.share v (fun x =>
 -- body)` when an instance `ShareLet A B` exists for the value's type `A` and the
@@ -227,8 +271,25 @@ def HwTy.El.slice (ω lo w : Nat) {ω n : Nat} (a : HwTy.El (HwTy.bits n)) : HwT
 def HwTy.El.tag (ω s : String) {ω t : HwTy} (x : HwTy.El t) : HwTy.El (HwTy.named s t) := x
 def HwTy.El.untag {ω s : String} {ω t : HwTy} (x : HwTy.El (HwTy.named s t)) : HwTy.El t := x
 def HwTy.El.label (ω s : String) {ω t : HwTy} (x : HwTy.El t) : HwTy.El t := x
+-- a reset: `v` where `c` is high, leaf by leaf; memories keep their contents (as block
+-- RAM does: its contents are set only when the device is configured)
+def HwTy.El.resetToAt : (ω t : HwTy) → HwTy.El HwTy.bit → HwTy.El t → HwTy.El t → HwTy.El t
+  | .bits n, c, v, x => @HwTy.El.mux (HwTy.bits n) c v x
+  | .prod a b, c, v, x => (HwTy.El.resetToAt a c v.1 x.1, HwTy.El.resetToAt b c v.2 x.2)
+  | .named _ t, c, v, x => HwTy.El.resetToAt t c v x
+  | .mem _ _, c, v, x => x
 def HwTy.El.resetTo {ω t : HwTy} (c : HwTy.El HwTy.bit) (v : HwTy.El t) (x : HwTy.El t) : HwTy.El t :=
-  HwTy.El.mux c v x
+  HwTy.El.resetToAt t c v x
+-- one word of a memory, if written: `d` where the write is enabled and hits, else `old`
+def Hdl.memUpd {A : Type} : Bool → Bool → A → A → A
+  | .true, .true, d, old => d
+  | .true, .false, d, old => old
+  | .false, hit, d, old => old
+def HwTy.El.memRead {0 aw : Nat} {ω dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (a : HwTy.El (HwTy.bits aw)) : HwTy.El (HwTy.bits dw) :=
+  (m : BitVec aw → BitVec dw) a
+def HwTy.El.memWrite {0 aw : Nat} {ω dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (we : HwTy.El HwTy.bit) (a : HwTy.El (HwTy.bits aw))
+    (d : HwTy.El (HwTy.bits dw)) : HwTy.El (HwTy.mem aw dw) :=
+  fun (b : BitVec aw) => Hdl.memUpd (BitVec.isTrue (we : BitVec 1)) (BitVec.beq (a : BitVec aw) b) (d : BitVec dw) ((m : BitVec aw → BitVec dw) b)
 
 instance : Hw HwTy.El where
   lit := fun n k => BitVec.ofNat n k
@@ -254,6 +315,8 @@ instance : Hw HwTy.El where
   label := HwTy.El.label
   resetTo := HwTy.El.resetTo
   hold := HwTy.El.mux
+  memRead := HwTy.El.memRead
+  memWrite := HwTy.El.memWrite
 
 ------------------------------------------------------------------------------------
 -- The netlist IR: flat, widths concrete, one node per bit-vector operation
@@ -276,6 +339,7 @@ inductive NetOp where
   | slice (lo : Nat)
   | resetTo (v : Nat)
   | hold
+  | memRead (m : Nat)
 
 structure NetNode where
   op : NetOp
@@ -293,6 +357,15 @@ structure NetReg where
   rst : Option Nat
   en : Option Nat
 
+-- A memory: its name, address and data widths, initial contents (word `a` at index `a`)
+-- and its writes, in order (a later one wins): (enable, address, data) nodes.
+structure NetMem where
+  name : String
+  aw : Nat
+  dw : Nat
+  init : List Nat
+  writes : List (Nat × (Nat × Nat))
+
 structure NetPort where
   name : String
   width : Nat
@@ -305,6 +378,8 @@ structure Netlist where
   inputs : List NetPort
   outputs : List NetPort
   hints : List (Nat × String) -- wire names (`Hw.label`)
+  mems : List NetMem         -- memory k is the k-th; read by `memRead k` nodes
+  errors : List String       -- what the netlist cannot express (a memory used wrongly)
 
 -- Hash-consing keys: the operation (a code and its payload), the width, the arguments.
 -- Commutative operations sort their two arguments, so `a + b` and `b + a` are one node.
@@ -326,6 +401,7 @@ def NetOp.code : NetOp → List Nat
   | .slice lo => List.cons 14 (List.cons lo List.nil)
   | .resetTo v => List.cons 15 (List.cons v List.nil)
   | .hold => List.cons 16 List.nil
+  | .memRead m => List.cons 17 (List.cons m List.nil)
 
 def NetOp.commutative : NetOp → Bool
   | .add => .true
@@ -404,8 +480,10 @@ structure NetS where
   cse : Bool
   work : Nat
   hints : List (Nat × String)
+  mems : List NetMem         -- newest first
+  errs : List String
 
-def NetS.init (cse : Bool) : NetS := NetS.mk 0 List.nil HTrie.tip cse 0 List.nil
+def NetS.init (cse : Bool) : NetS := NetS.mk 0 List.nil HTrie.tip cse 0 List.nil List.nil List.nil
 
 def NetM (A : Type) : Type := NetS → A × NetS
 def NetM.pure {A : Type} (a : A) : NetM A := fun s => (a, s)
@@ -417,13 +495,13 @@ instance : Monad NetM where
   bind := NetM.bind
 
 def NetS.push (s : NetS) (op : NetOp) (w : Nat) (args : List Nat) (table : HTrie Nat) : Nat × NetS :=
-  (s.next, NetS.mk (Nat.succ s.next) (List.cons (NetNode.mk op w args) s.nodes) table s.cse (Nat.succ s.work) s.hints)
+  (s.next, NetS.mk (Nat.succ s.next) (List.cons (NetNode.mk op w args) s.nodes) table s.cse (Nat.succ s.work) s.hints s.mems s.errs)
 
 def NetM.emitKeyed (op : NetOp) (w : Nat) (args : List Nat) (s : NetS) : Nat × NetS :=
   let key := NetNode.key op w args
   let h := NatList.hash key 7
   match HTrie.find key h HTrie.depth s.table with
-  | .some k => (k, NetS.mk s.next s.nodes s.table s.cse (Nat.succ s.work) s.hints)
+  | .some k => (k, NetS.mk s.next s.nodes s.table s.cse (Nat.succ s.work) s.hints s.mems s.errs)
   | .none => NetS.push s op w args (HTrie.insert key s.next h HTrie.depth s.table)
 
 def NetM.emit (op : NetOp) (w : Nat) (args : List Nat) : NetM Nat := fun s => match s.cse with
@@ -431,7 +509,20 @@ def NetM.emit (op : NetOp) (w : Nat) (args : List Nat) : NetM Nat := fun s => ma
   | .false => NetS.push s op w args s.table
 
 def NetM.hint (k : Nat) (name : String) : NetM Unit := fun s =>
-  ((), NetS.mk s.next s.nodes s.table s.cse s.work (List.cons (k, name) s.hints))
+  ((), NetS.mk s.next s.nodes s.table s.cse s.work (List.cons (k, name) s.hints) s.mems s.errs)
+
+-- a new memory (its index), a problem, and a memory's writes
+def NetM.newMem (m : NetMem) : NetM Nat := fun s =>
+  (List.length s.mems, NetS.mk s.next s.nodes s.table s.cse s.work s.hints (List.cons m s.mems) s.errs)
+def NetM.error (e : String) : NetM Unit := fun s =>
+  ((), NetS.mk s.next s.nodes s.table s.cse s.work s.hints s.mems (List.cons e s.errs))
+-- (memories are kept newest first: memory k is at position `count - 1 - k`)
+def Hdl.setWritesAux (ws : List (Nat × (Nat × Nat))) : Nat → List NetMem → List NetMem
+  | _, .nil => .nil
+  | .zero, .cons m ms => .cons (NetMem.mk m.name m.aw m.dw m.init ws) ms
+  | .succ j, .cons m ms => .cons m (Hdl.setWritesAux ws j ms)
+def NetM.setWrites (k : Nat) (ws : List (Nat × (Nat × Nat))) : NetM Unit := fun s =>
+  ((), NetS.mk s.next s.nodes s.table s.cse s.work s.hints (Hdl.setWritesAux ws (List.length s.mems - 1 - k) s.mems) s.errs)
 
 -- Synthesis: a wire is a computation that emits nodes and returns the ids of its
 -- output, one per leaf of its type.
@@ -439,11 +530,14 @@ def HwTy.Ids : HwTy → Type
   | .bits _ => Nat
   | .prod a b => HwTy.Ids a × HwTy.Ids b
   | .named _ t => HwTy.Ids t
+  -- a memory, and the writes made to it so far (enable, address, data)
+  | .mem _ _ => Nat × List (Nat × (Nat × Nat))
 
 def HwTy.idsLeaves : (ω t : HwTy) → HwTy.Ids t → List Nat
   | .bits _, k => .cons k .nil
   | .prod a b, p => List.append (HwTy.idsLeaves a p.1) (HwTy.idsLeaves b p.2)
   | .named _ t, p => HwTy.idsLeaves t p
+  | .mem _ _, p => .nil
 def HwTy.idsTake : (ω t : HwTy) → List Nat → HwTy.Ids t × List Nat
   | .bits _, .nil => (0, .nil)
   | .bits _, .cons k ks => (k, ks)
@@ -452,6 +546,23 @@ def HwTy.idsTake : (ω t : HwTy) → List Nat → HwTy.Ids t × List Nat
     let ω q := HwTy.idsTake b p.2;
     ((p.1, q.1), q.2)
   | .named _ t, ks => HwTy.idsTake t ks
+  | .mem _ _, ks => ((0, .nil), ks)
+-- the ids of a state: leaves from the list, memories numbered from `k`
+def HwTy.idsState : (ω t : HwTy) → List Nat → Nat → HwTy.Ids t × (List Nat × Nat)
+  | .bits _, .nil, k => (0, (.nil, k))
+  | .bits _, .cons x xs, k => (x, (xs, k))
+  | .prod a b, ks, k =>
+    let ω p := HwTy.idsState a ks k;
+    let ω q := HwTy.idsState b p.2.1 p.2.2;
+    ((p.1, q.1), q.2)
+  | .named _ t, ks, k => HwTy.idsState t ks k
+  | .mem _ _, ks, k => ((k, .nil), (ks, Nat.succ k))
+-- the memories of a value's ids
+def HwTy.idsMems : (ω t : HwTy) → HwTy.Ids t → List (Nat × List (Nat × (Nat × Nat)))
+  | .bits _, p => .nil
+  | .prod a b, p => List.append (HwTy.idsMems a p.1) (HwTy.idsMems b p.2)
+  | .named _ t, p => HwTy.idsMems t p
+  | .mem _ _, p => .cons p .nil
 
 def Wire (t : HwTy) : Type := NetM (HwTy.Ids t)
 
@@ -463,6 +574,33 @@ def Wire.op1 (op : NetOp) (w : Nat) (a : NetM Nat) : NetM Nat := do
   x ← a;
   NetM.emit op w (List.cons x List.nil)
 
+-- A choice between two memories: the writes both have made, then the other writes of
+-- each, enabled only on its side (the sides exclude each other, so their order does not
+-- matter). Two different memories cannot be chosen between.
+def Hdl.wEq (a b : Nat × (Nat × Nat)) : Bool := Bool.and (Nat.beq a.1 b.1) (Bool.and (Nat.beq a.2.1 b.2.1) (Nat.beq a.2.2 b.2.2))
+def Hdl.commonW : List (Nat × (Nat × Nat)) → List (Nat × (Nat × Nat)) → List (Nat × (Nat × Nat)) × (List (Nat × (Nat × Nat)) × List (Nat × (Nat × Nat)))
+  | .cons x xs, .cons y ys => (match Hdl.wEq x y with
+    | .true => let ω r := Hdl.commonW xs ys; (.cons x r.1, r.2)
+    | .false => (.nil, (.cons x xs, .cons y ys)))
+  | xs, ys => (.nil, (xs, ys))
+def Wire.guardW (g : Nat) : List (Nat × (Nat × Nat)) → NetM (List (Nat × (Nat × Nat)))
+  | .nil => NetM.pure .nil
+  | .cons w ws => do
+    e ← NetM.emit NetOp.and 1 (.cons g (.cons w.1 .nil));
+    rest ← Wire.guardW g ws;
+    NetM.pure (.cons (e, w.2) rest)
+def Wire.memChoice (c : Nat) (a b : Nat × List (Nat × (Nat × Nat))) : NetM (Nat × List (Nat × (Nat × Nat))) :=
+  match Nat.beq a.1 b.1 with
+  | .false => do
+    NetM.error "a choice between two different memories (a memory can only be written, not chosen)";
+    NetM.pure a
+  | .true => do
+    let ω r := Hdl.commonW a.2 b.2;
+    nc ← NetM.emit NetOp.not 1 (.cons c .nil);
+    xs ← Wire.guardW c r.2.1;
+    ys ← Wire.guardW nc r.2.2;
+    NetM.pure (a.1, List.append r.1 (List.append xs ys))
+
 -- per-leaf multiplexers, constants, resets, holds, names
 def Wire.muxIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM (HwTy.Ids t)
   | .bits n, c, a, b => NetM.emit NetOp.mux n (List.cons c (List.cons a (List.cons b List.nil)))
@@ -471,6 +609,7 @@ def Wire.muxIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM (
     q ← Wire.muxIds y c a.2 b.2;
     NetM.pure (p, q)
   | .named _ x, c, a, b => Wire.muxIds x c a b
+  | .mem _ _, c, a, b => Wire.memChoice c a b
 def Wire.holdIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM (HwTy.Ids t)
   | .bits n, c, a, b => NetM.emit NetOp.hold n (List.cons c (List.cons a (List.cons b List.nil)))
   | .prod x y, c, a, b => do
@@ -478,6 +617,7 @@ def Wire.holdIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM 
     q ← Wire.holdIds y c a.2 b.2;
     NetM.pure (p, q)
   | .named _ x, c, a, b => Wire.holdIds x c a b
+  | .mem _ _, c, a, b => Wire.memChoice c a b
 def Wire.constIds : (ω t : HwTy) → HwTy.El t → NetM (HwTy.Ids t)
   | .bits n, v => NetM.emit (NetOp.const (v : BitVec n).toNat) n List.nil
   | .prod x y, v => do
@@ -485,6 +625,10 @@ def Wire.constIds : (ω t : HwTy) → HwTy.El t → NetM (HwTy.Ids t)
     q ← Wire.constIds y v.2;
     NetM.pure (p, q)
   | .named _ x, v => Wire.constIds x v
+  -- a constant memory: a ROM
+  | .mem aw dw, v => do
+    k ← NetM.newMem (NetMem.mk "rom" aw dw (Hdl.memWords v) .nil);
+    NetM.pure (k, .nil)
 def Wire.resetIds : (ω t : HwTy) → Nat → HwTy.El t → HwTy.Ids t → NetM (HwTy.Ids t)
   | .bits n, c, v, a => NetM.emit (NetOp.resetTo (v : BitVec n).toNat) n (List.cons c (List.cons a List.nil))
   | .prod x y, c, v, a => do
@@ -492,6 +636,7 @@ def Wire.resetIds : (ω t : HwTy) → Nat → HwTy.El t → HwTy.Ids t → NetM 
     q ← Wire.resetIds y c v.2 a.2;
     NetM.pure (p, q)
   | .named _ x, c, v, a => Wire.resetIds x c v a
+  | .mem _ _, c, v, a => NetM.pure a
 def NetM.hints : List Nat → List String → NetM Unit
   | .cons k ks, .cons n ns => do
     NetM.hint k n;
@@ -547,6 +692,28 @@ def Wire.hold {ω t : HwTy} (c : Wire HwTy.bit) (x y : Wire t) : NetM (HwTy.Ids 
   b ← y;
   Wire.holdIds t k a b
 
+-- A read: the word in the memory, then each write made to it in this cycle, in order,
+-- where it is enabled and hits the address.
+def Wire.bypass (dw x : Nat) : Nat → List (Nat × (Nat × Nat)) → NetM Nat
+  | acc, .nil => NetM.pure acc
+  | acc, .cons w ws => do
+    hit ← NetM.emit NetOp.eq 1 (.cons w.2.1 (.cons x .nil));
+    g ← NetM.emit NetOp.and 1 (.cons w.1 (.cons hit .nil));
+    v ← NetM.emit NetOp.mux dw (.cons g (.cons w.2.2 (.cons acc .nil)));
+    Wire.bypass dw x v ws
+def Wire.memRead {ω aw dw : Nat} (m : Wire (HwTy.mem aw dw)) (a : Wire (HwTy.bits aw)) : NetM Nat := do
+  mm ← m;
+  x ← a;
+  base ← NetM.emit (NetOp.memRead mm.1) dw (.cons x .nil);
+  Wire.bypass dw x base mm.2
+def Wire.memWrite {ω aw dw : Nat} (m : Wire (HwTy.mem aw dw)) (we : Wire HwTy.bit) (a : Wire (HwTy.bits aw)) (d : Wire (HwTy.bits dw)) :
+    NetM (Nat × List (Nat × (Nat × Nat))) := do
+  mm ← m;
+  e ← we;
+  x ← a;
+  y ← d;
+  NetM.pure (mm.1, List.append mm.2 (.cons (e, (x, y)) .nil))
+
 instance : Hw Wire where
   lit := Wire.lit
   add := Wire.add
@@ -571,6 +738,8 @@ instance : Hw Wire where
   label := Wire.label
   resetTo := Wire.resetTo
   hold := Wire.hold
+  memRead := Wire.memRead
+  memWrite := Wire.memWrite
 
 -- Running a wire computation from scratch (for combinational tests): its ids and the
 -- builder's state.
@@ -652,7 +821,15 @@ def SimNode.ofNodes : List NetNode → Hdl.Vec Nat → List SimNode
 
 -- One node's value, given the values of the nodes before it, the input port values
 -- and the register values.
-def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl.Vec Nat) : Nat :=
+-- A memory's contents in simulation: address ↦ word (absent: 0).
+def Hdl.memOfAux : Nat → List Nat → HTrie Nat → HTrie Nat
+  | _, .nil, t => t
+  | k, .cons w ws, t => Hdl.memOfAux (Nat.succ k) ws (HTrie.putN k w t)
+def Hdl.memOf (ws : List Nat) : HTrie Nat := Hdl.memOfAux 0 ws HTrie.tip
+def Hdl.memGet (t : HTrie Nat) (a : Nat) : Nat := match HTrie.getN a t with
+  | .some v => v
+  | .none => 0
+def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl.Vec Nat) (mems : Hdl.Vec (HTrie Nat)) : Nat :=
   let ω arg := fun (i : Nat) => Hdl.Vec.get 0 vals (Hdl.nthD 0 n.args i);
   let ω w := n.width;
   match n.op with
@@ -676,13 +853,24 @@ def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl
   | .resetTo v => (match Hdl.isZero (arg 0) with
     | .true => arg 1
     | .false => v)
-  | .hold => match Hdl.isZero (arg 0) with
+  | .hold => (match Hdl.isZero (arg 0) with
     | .true => arg 2
-    | .false => arg 1
+    | .false => arg 1)
+  | .memRead m => Hdl.memGet (Hdl.Vec.get HTrie.tip mems m) (arg 0)
 
-def SimNode.evalAll (ins : List Nat) (regs : Hdl.Vec Nat) : List SimNode → Hdl.Vec Nat → Hdl.Vec Nat
+def SimNode.evalAll (ins : List Nat) (regs : Hdl.Vec Nat) (mems : Hdl.Vec (HTrie Nat)) : List SimNode → Hdl.Vec Nat → Hdl.Vec Nat
   | .nil, vals => vals
-  | .cons n ns, vals => SimNode.evalAll ins regs ns (Hdl.Vec.push vals (SimNode.eval n vals ins regs))
+  | .cons n ns, vals => SimNode.evalAll ins regs mems ns (Hdl.Vec.push vals (SimNode.eval n vals ins regs mems))
+
+-- a memory at the clock edge: its enabled writes, in order
+def NetMem.storeAux (vals : Hdl.Vec Nat) : List (Nat × (Nat × Nat)) → HTrie Nat → HTrie Nat
+  | .nil, t => t
+  | .cons w ws, t => NetMem.storeAux vals ws (match Hdl.isZero (Hdl.Vec.get 0 vals w.1) with
+    | .true => t
+    | .false => HTrie.putN (Hdl.Vec.get 0 vals w.2.1) (Hdl.Vec.get 0 vals w.2.2) t)
+def NetMem.storeAll (vals : Hdl.Vec Nat) : List NetMem → List (HTrie Nat) → List (HTrie Nat)
+  | .cons m ms, .cons t ts => .cons (NetMem.storeAux vals m.writes t) (NetMem.storeAll vals ms ts)
+  | _, _ => .nil
 
 -- the value a register loads: `init` under reset, its own value without enable
 def NetReg.load (vals : Hdl.Vec Nat) (r : NetReg) (cur : Nat) : Nat :=
@@ -703,17 +891,18 @@ def NetReg.loadAll (vals : Hdl.Vec Nat) : List NetReg → List Nat → List Nat
 
 def NetPort.read (vals : Hdl.Vec Nat) (p : NetPort) : Nat := Hdl.Vec.get 0 vals p.node
 
-def Netlist.simulateGo (n : Netlist) (prog : List SimNode) : List Nat → List (List Nat) → List (List Nat) → List (List Nat)
-  | _, .nil, acc => Hdl.reverse acc
-  | regs, .cons ins rest, acc =>
-    let ω vals := SimNode.evalAll ins (Hdl.Vec.ofList regs) prog Hdl.Vec.empty;
-    Netlist.simulateGo n prog (NetReg.loadAll vals n.regs regs) rest
+def Netlist.simulateGo (n : Netlist) (prog : List SimNode) : List Nat → List (HTrie Nat) → List (List Nat) → List (List Nat) → List (List Nat)
+  | _, _, .nil, acc => Hdl.reverse acc
+  | regs, mems, .cons ins rest, acc =>
+    let ω vals := SimNode.evalAll ins (Hdl.Vec.ofList regs) (Hdl.Vec.ofList mems) prog Hdl.Vec.empty;
+    Netlist.simulateGo n prog (NetReg.loadAll vals n.regs regs) (NetMem.storeAll vals n.mems mems) rest
       (List.cons (Hdl.map (NetPort.read vals) n.outputs) acc)
 
 -- A clocked simulation: one input vector per cycle (one value per input port), the
 -- output vectors (one value per output port). O(nodes · log nodes) per cycle.
 def Netlist.simulate (n : Netlist) (inputs : List (List Nat)) : List (List Nat) :=
-  Netlist.simulateGo n (SimNode.ofNodes n.nodes Hdl.Vec.empty) (Hdl.map (fun (r : NetReg) => r.init) n.regs) inputs List.nil
+  Netlist.simulateGo n (SimNode.ofNodes n.nodes Hdl.Vec.empty) (Hdl.map (fun (r : NetReg) => r.init) n.regs)
+    (Hdl.map (fun (m : NetMem) => Hdl.memOf m.init) n.mems) inputs List.nil
 
 def Netlist.countAux (p : NetOp → Bool) : List NetNode → Nat
   | .nil => 0
@@ -820,15 +1009,28 @@ def Net.liveSet : List Bool → Nat → Hdl.Set → Hdl.Set
 
 -- The netlist of a builder's state, with registers and ports. Roots: the ports, the
 -- nodes that read the registers and what the registers load.
+def NetMem.reads : List (Nat × (Nat × Nat)) → List Nat
+  | .nil => .nil
+  | .cons w ws => .cons w.1 (.cons w.2.1 (.cons w.2.2 (NetMem.reads ws)))
+def NetMem.readsAll : List NetMem → List Nat
+  | .nil => .nil
+  | .cons m ms => List.append (NetMem.reads m.writes) (NetMem.readsAll ms)
+def NetMem.remapW (m : HTrie Nat) : List (Nat × (Nat × Nat)) → List (Nat × (Nat × Nat))
+  | .nil => .nil
+  | .cons w ws => .cons (Net.mapId m w.1, (Net.mapId m w.2.1, Net.mapId m w.2.2)) (NetMem.remapW m ws)
+def NetMem.remap (m : HTrie Nat) (x : NetMem) : NetMem := NetMem.mk x.name x.aw x.dw x.init (NetMem.remapW m x.writes)
+
 def Net.finish (name : String) (s : NetS) (regs : List NetReg) (regReads : List Nat)
     (ins outs : List NetPort) : Netlist :=
+  let ω mems := Hdl.reverse s.mems;
   let ω roots := List.append (Hdl.map (fun (p : NetPort) => p.node) ins)
     (List.append regReads (List.append (Hdl.map (fun (p : NetPort) => p.node) outs)
-      (NetReg.readsAll regs)));
+      (List.append (NetReg.readsAll regs) (NetMem.readsAll mems))));
   let ω live := Net.liveAux s.nodes (s.next - 1) (Hdl.Set.addAll roots HTrie.tip) List.nil;
   let ω r := Net.renumber (Hdl.reverse s.nodes) live 0 0 HTrie.tip List.nil;
   Netlist.mk name r.1 (Hdl.map (NetReg.remap r.2) regs) (Hdl.map (NetPort.remap r.2) ins)
     (Hdl.map (NetPort.remap r.2) outs) (Net.remapHints (Net.liveSet live 0 HTrie.tip) r.2 (Hdl.reverse s.hints))
+    (Hdl.map (NetMem.remap r.2) mems) (Hdl.reverse s.errs)
 
 ------------------------------------------------------------------------------------
 -- Circuits: Mealy machines whose step is tagless-final code. The only way to make
@@ -1042,12 +1244,29 @@ def Circuit.inst_el {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (x : HwTy.
 -- reset and enable, one cycle
 def Circuit.stepEl_withReset {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (rst : HwTy.El HwTy.bit) (x : HwTy.El i) :
     Circuit.stepEl (Circuit.withReset c) s (rst, x) =
-      (@HwTy.El.mux c.st rst c.init (Circuit.stepEl c s x).1, (Circuit.stepEl c s x).2) :=
+      (HwTy.El.resetToAt c.st rst c.init (Circuit.stepEl c s x).1, (Circuit.stepEl c s x).2) :=
   refl (Circuit.stepEl (Circuit.withReset c) s (rst, x))
 def Circuit.stepEl_withEnable {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (en : HwTy.El HwTy.bit) (x : HwTy.El i) :
     Circuit.stepEl (Circuit.withEnable c) s (en, x) =
       (@HwTy.El.mux c.st en (Circuit.stepEl c s x).1 s, (Circuit.stepEl c s x).2) :=
   refl (Circuit.stepEl (Circuit.withEnable c) s (en, x))
+
+-- memories at values: a read sees an enabled write to its address, and nothing else
+def Hdl.memUpd_miss {A : Type} : (we : Bool) → (d old : A) → Hdl.memUpd we .false d old = old
+  | .true, d, old => rfl
+  | .false, d, old => rfl
+def HwTy.El.memRead_write_miss {aw dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (we : HwTy.El HwTy.bit) (a : HwTy.El (HwTy.bits aw))
+    (d : HwTy.El (HwTy.bits dw)) (b : HwTy.El (HwTy.bits aw)) (h : BitVec.beq (a : BitVec aw) b = .false) :
+    HwTy.El.memRead (HwTy.El.memWrite m we a d) b = HwTy.El.memRead m b :=
+  Eq.substProp (fun (hit : Bool) => Hdl.memUpd (BitVec.isTrue (we : BitVec 1)) hit (d : BitVec dw) ((m : BitVec aw → BitVec dw) b) = (m : BitVec aw → BitVec dw) b)
+    (Eq.symm h) (Hdl.memUpd_miss (BitVec.isTrue (we : BitVec 1)) (d : BitVec dw) ((m : BitVec aw → BitVec dw) b))
+def HwTy.El.memRead_write_hit {aw dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (a : HwTy.El (HwTy.bits aw))
+    (d : HwTy.El (HwTy.bits dw)) (b : HwTy.El (HwTy.bits aw)) (h : BitVec.beq (a : BitVec aw) b = .true) :
+    HwTy.El.memRead (HwTy.El.memWrite m (BitVec.ofNat 1 1) a d) b = d :=
+  Eq.substProp (fun (hit : Bool) => Hdl.memUpd .true hit (d : BitVec dw) ((m : BitVec aw → BitVec dw) b) = d) (Eq.symm h) rfl
+def HwTy.El.memRead_write_off {aw dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (a : HwTy.El (HwTy.bits aw))
+    (d : HwTy.El (HwTy.bits dw)) (b : HwTy.El (HwTy.bits aw)) :
+    HwTy.El.memRead (HwTy.El.memWrite m (BitVec.ofNat 1 0) a d) b = HwTy.El.memRead m b := rfl
 
 -- the same for `run`
 def Circuit.run_seq {ω i m o : HwTy} (a : Circuit i m) (b : Circuit m o) (xs : List (HwTy.El i)) :
@@ -1079,11 +1298,34 @@ def NetM.emitLeaves (mk : Nat → NetOp) : Nat → List Nat → NetM (List Nat)
     rest ← NetM.emitLeaves mk (Nat.succ k) ws;
     NetM.pure (List.cons x rest)
 
+-- the state's memories, numbered from 0 (they are made first)
+def NetM.stateMems : List String → List (Nat × Nat) → List (List Nat) → NetM Unit
+  | .cons nm nms, .cons sh shs, .cons ws wss => do
+    k ← NetM.newMem (NetMem.mk nm sh.1 sh.2 ws .nil);
+    NetM.stateMems nms shs wss
+  | _, _, _ => NetM.pure ()
+-- the next value of state memory `k` must be memory `k` with writes
+def NetM.memNexts : Nat → List (Nat × List (Nat × (Nat × Nat))) → NetM Unit
+  | _, .nil => NetM.pure ()
+  | k, .cons m ms => do
+    (match Nat.beq m.1 k with
+     | .true => NetM.setWrites k m.2
+     | .false => NetM.error "a memory in the state must be written, not replaced by another memory");
+    NetM.memNexts (Nat.succ k) ms
+-- inputs and outputs carry no memories
+def NetM.noMems (what : String) (t : HwTy) : NetM Unit := match HwTy.memShapes t with
+  | .nil => NetM.pure ()
+  | .cons _ _ => NetM.error (String.append "a memory in the " what)
+
 def Circuit.build {ω i o : HwTy} (c : Circuit i o) : NetM (List Nat × (List Nat × (List Nat × List Nat))) := do
+  NetM.noMems "input" i;
+  NetM.noMems "output" o;
+  NetM.stateMems (HwTy.memNames "m" c.st) (HwTy.memShapes c.st) (HwTy.memContents c.st c.init);
   ins ← NetM.emitLeaves NetOp.input 0 (HwTy.leafWidths i);
   cur ← NetM.emitLeaves NetOp.reg 0 (HwTy.leafWidths c.st);
-  res ← (Circuit.stepWire c (NetM.pure (HwTy.idsTake c.st cur).1) (NetM.pure (HwTy.idsTake i ins).1) :
+  res ← (Circuit.stepWire c (NetM.pure (HwTy.idsState c.st cur 0).1) (NetM.pure (HwTy.idsTake i ins).1) :
     NetM (HwTy.Ids c.st × HwTy.Ids o));
+  NetM.memNexts 0 (HwTy.idsMems c.st res.1);
   NetM.pure (ins, (cur, (HwTy.idsLeaves c.st res.1, HwTy.idsLeaves o res.2)))
 
 -- the netlist, and the builder's final state
@@ -1192,13 +1434,15 @@ structure VNames where
   ins : List String
   outs : List String
   regs : List String
+  mems : List String
   used : Hdl.Set
 
 def Verilog.portIdents (n : Netlist) : VNames :=
   let ω a := Verilog.freshAll Verilog.reserved (Hdl.names (fun (p : NetPort) => p.name) n.inputs);
   let ω b := Verilog.freshAll a.2 (Hdl.names (fun (p : NetPort) => p.name) n.outputs);
   let ω c := Verilog.freshAll b.2 (Hdl.names (fun (r : NetReg) => r.name) n.regs);
-  VNames.mk a.1 b.1 c.1 c.2
+  let ω d := Verilog.freshAll c.2 (Hdl.names (fun (m : NetMem) => m.name) n.mems);
+  VNames.mk a.1 b.1 c.1 d.1 d.2
 
 def Verilog.lit (w v : Nat) : String := match w with
   | .zero => "1'd0"
@@ -1233,6 +1477,7 @@ def Verilog.hintMap : List (Nat × String) → HTrie String → HTrie String
     | .none => Verilog.hintMap hs (HTrie.putN h.1 h.2 m)
 
 structure VCtx where
+  mems : List String
   names : Hdl.Vec String
   nodes : Hdl.Vec NetNode
 
@@ -1281,6 +1526,9 @@ def Verilog.expr (cx : VCtx) (n : NetNode) : String := match n.op with
     | .cons c (.cons a _) => VCtx.ref cx c <+> " ? " <+> Verilog.lit n.width v <+> " : " <+> VCtx.ref cx a
     | _ => "?")
   | .hold => Verilog.mux3 cx n.args
+  | .memRead m => (match n.args with
+    | .cons a _ => Hdl.nthD "?" cx.mems m <+> "[" <+> VCtx.ref cx a <+> "]"
+    | _ => "?")
 
 def Verilog.declared (n : NetNode) : Bool := match n.width with
   | .zero => .false
@@ -1315,6 +1563,34 @@ def Verilog.updates (cx : VCtx) : List String → List NetReg → String
     | .zero => ""
     | .succ _ => "  always @(posedge clk) " <+> Verilog.load cx nm r <+> "\n") <+> Verilog.updates cx nms rs
   | _, _ => ""
+-- A memory: an array with its contents, then (after the wires) its writes in one block,
+-- in order, so that a later write wins. yosys infers block RAM (iCE40: SB_RAM40_4K) when a
+-- read's address or data goes through a register.
+def Verilog.memInit (nm : String) (dw : Nat) : Nat → List Nat → String
+  | _, .nil => ""
+  | k, .cons w ws => "    " <+> nm <+> "[" <+> Hdl.show k <+> "] = " <+> Verilog.lit dw w <+> ";\n" <+> Verilog.memInit nm dw (Nat.succ k) ws
+def Verilog.memDecls : List String → List NetMem → String
+  | .cons nm nms, .cons m ms => (match m.dw with
+    | .zero => ""
+    | .succ _ => "  reg " <+> Verilog.range m.dw <+> nm <+> " [0:" <+> Hdl.show (Nat.pow 2 m.aw - 1) <+> "];\n"
+      <+> "  initial begin\n" <+> Verilog.memInit nm m.dw 0 m.init <+> "  end\n")
+    <+> Verilog.memDecls nms ms
+  | _, _ => ""
+def Verilog.memWrites (cx : VCtx) (nm : String) : List (Nat × (Nat × Nat)) → String
+  | .nil => ""
+  | .cons w ws => "    if (" <+> VCtx.ref cx w.1 <+> ") " <+> nm <+> "[" <+> VCtx.ref cx w.2.1 <+> "] <= " <+> VCtx.ref cx w.2.2 <+> ";\n"
+    <+> Verilog.memWrites cx nm ws
+def Verilog.memUpdates (cx : VCtx) : List String → List NetMem → String
+  | .cons nm nms, .cons m ms => (match m.writes, m.dw with
+    | .nil, _ => ""
+    | _, .zero => ""
+    | _, .succ _ => "  always @(posedge clk) begin\n" <+> Verilog.memWrites cx nm m.writes <+> "  end\n")
+    <+> Verilog.memUpdates cx nms ms
+  | _, _ => ""
+def Verilog.errors : List String → String
+  | .nil => ""
+  | .cons e es => "  // error: " <+> e <+> "\n" <+> Verilog.errors es
+
 def Verilog.portDecls (dir : String) : List String → List NetPort → String
   | .cons nm nms, .cons p ps => (match p.width with
     | .zero => ""
@@ -1327,14 +1603,15 @@ def Verilog.assigns (cx : VCtx) : List String → List NetPort → String
   | _, _ => ""
 
 def Verilog.ctx (n : Netlist) (vn : VNames) : VCtx :=
-  VCtx.mk (Verilog.refs vn (Verilog.hintMap n.hints HTrie.tip) 0 n.nodes vn.used Hdl.Vec.empty) (Hdl.Vec.ofList n.nodes)
+  VCtx.mk vn.mems (Verilog.refs vn (Verilog.hintMap n.hints HTrie.tip) 0 n.nodes vn.used Hdl.Vec.empty) (Hdl.Vec.ofList n.nodes)
 
 def Verilog.emit (n : Netlist) : String :=
   let ω vn := Verilog.portIdents n;
   let ω cx := Verilog.ctx n vn;
   "module " <+> Verilog.ident n.name <+> "(input clk" <+> Verilog.portDecls "input" vn.ins n.inputs
-  <+> Verilog.portDecls "output" vn.outs n.outputs <+> ");\n" <+> Verilog.regDecls vn.regs n.regs
-  <+> Verilog.wires cx 0 n.nodes <+> Verilog.updates cx vn.regs n.regs
+  <+> Verilog.portDecls "output" vn.outs n.outputs <+> ");\n" <+> Verilog.errors n.errors <+> Verilog.regDecls vn.regs n.regs
+  <+> Verilog.memDecls vn.mems n.mems
+  <+> Verilog.wires cx 0 n.nodes <+> Verilog.updates cx vn.regs n.regs <+> Verilog.memUpdates cx vn.mems n.mems
   <+> Verilog.assigns cx vn.outs n.outputs <+> "endmodule\n"
 
 ------------------------------------------------------------------------------------
