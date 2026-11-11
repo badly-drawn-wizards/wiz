@@ -23,6 +23,8 @@ default never evaluates them),
 --inert syntactic|ground|conv (P1: regularity at inert types; default ground)
 compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
 unboxed; not stable under substitution, so off by default)
+--impl=elab|derive (turns the cache off with elab): a recursive definition's compiled equations
+  are its clauses elaborated a second time (elab) or derived from its value (derive, the default)
 --strict-privacy (13b, an experiment; turns the cache off): check each declaration again with
   the definitions of other modules' types with private parts hidden
 toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
@@ -90,6 +92,11 @@ initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
 representation is not stable under substitution (`unboxedSigma` in `Erase.lean`). -/
 initialize unboxOpt : IO.Ref Bool ← IO.mkRef false
 
+/-- `--impl=elab` (while derivation is new; `--impl=derive` is the default): a recursive
+definition's compiled equations are its clauses elaborated a second time, not derived from
+its value (`deriveImpl`). For comparing compiled code. -/
+initialize implElabOpt : IO.Ref Bool ← IO.mkRef false
+
 /-- Take `--inert MODE` out of the arguments. -/
 def takeInertOpt : List String → Except String (Option InertReg × List String)
   | "--inert" :: m :: rest => do
@@ -128,11 +135,11 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
       messages := shadow.toArray,
-      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get },
+      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get, implByElab := ← implElabOpt.get },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
   let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs &&
-      !(← strictPrivacyOpt.get)
+      !(← strictPrivacyOpt.get) && !(← implElabOpt.get)
     then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
@@ -192,6 +199,8 @@ def main (args : List String) : IO UInt32 := do
   if args.contains "--strict-privacy" then strictPrivacyOpt.set true
   let args := args.filter (· != "--strict-privacy")
   if args.contains "--unbox-structs" then unboxOpt.set true
+  if args.contains "--impl=elab" then implElabOpt.set true
+  let args := args.filter (fun a => a != "--impl=elab" && a != "--impl=derive")
   let args := args.filter (· != "--unbox-structs")
   lazyProofsOpt.set (!args.contains "--eager-proofs")
   let args := args.filter (· != "--eager-proofs")

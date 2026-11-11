@@ -314,6 +314,124 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   ensureNoMVars fullTy info
   pure (fullTy, val)
 
+/-- Derivation gives up (`fn` and the reason are for debugging). -/
+def deriveBail {α : Type} (_fn _why : String) : Option α := none
+
+/-- **The compiled equations of a structurally recursive definition, derived from its
+checked value** (docs/Status.md T1; wiz-notes/impl-unchecked.md, "Design"). `val` is
+`λ tele cols. [let …] T.rec Δ motive m₁ … mₙ ξ x rs` (`compileMatch` with a recursion
+context; `nT` telescope variables, `n` columns, the structural one at `pos`). The result
+is the same term with `T.casesOn` for `T.rec` and each method
+`m_c = λ fields ihs. body` replaced by `λ fields. body[ih := C]`, where `C` is the direct
+call the hypothesis stands for:
+
+* a field `y : T Δ js`: `λ rs. @f tele[ξ := js] (y at pos, rs elsewhere)`;
+* an infinitary field `k : (h : H) → T Δ (js h)`: `λ h rs. @f tele[ξ := js h] (k h …)`.
+
+Nothing is elaborated again, so the source can't be read differently. `none` (compiled
+code then runs the value) for an index-unification match (mode B: the hypothesis wants the
+index equation) and when an index variable occurs in `Δ`, the motive or a method (the
+recursor keeps the outer index in every step, a direct call would pass the field's). -/
+partial def deriveImpl (g : Globals R) (fn : Name) (us : List Level) (nT n pos : Nat) (val : Term R) :
+    Option (Term R) := do
+  let (xs, body) ← peel (nT + n) val
+  let body' ← go (nT + n) body
+  let body' := Push.betaCalls fn body'
+  pure (xs.foldr .lam body')
+where
+  peel : Nat → Term R → Option (List Name × Term R)
+    | 0, t => some ([], t)
+    | k + 1, .lam x b => do let (xs, r) ← peel k b; pure (x :: xs, r)
+    | _, _ => none
+  go (L : Nat) : Term R → Option (Term R)
+    | .letE x q ty v b => do pure (.letE x q ty v (← go (L + 1) b))
+    | t => split L t
+  recView (T : Name) (nΔ : Nat) (A : Term R) : Option (Option (Name × Term R) × List (Term R)) :=
+    match Term.spine A with
+    | (.const m _, args) => if m == T then some (none, args.drop nΔ) else none
+    | (.pi h _ _ H Bd _, []) => match Term.spine Bd with
+      | (.const m _, args) => if m == T then some (some (h, H), args.drop nΔ) else none
+      | _ => none
+    | _ => none
+  lamN (x : Name) : Nat → (Array (B R) → B R) → B R
+    | 0, k => k #[]
+    | m + 1, k => B.lam x fun v => lamN x m fun vs => k (#[v] ++ vs)
+  split (L : Nat) (t : Term R) : Option (Term R) := do
+    let (.const r rus, args) := t.spine | deriveBail fn "not a spine"
+    let base (k : Nat) : Name := String.ofList (r.toList.take (r.length - k))
+    let (T, cases) ← if r.endsWith ".recN" then some (base 5, base 5 ++ ".casesOnN")
+      else if r.endsWith ".rec" then some (base 4, base 4 ++ ".casesOn") else deriveBail fn s!"head {r}"
+    let Td ← g.find? T
+    let descD ← g.find? (T ++ ".desc")
+    let rd ← g.find? r
+    let nΔ := (piInfos descD.type).length
+    let nΞ := (piInfos Td.type).length - nΔ
+    let recBs := piInfos rd.type
+    let nc := recBs.length - nΔ - nΞ - 2
+    -- mode A: Δ, motive, methods, ξ, x, then the other columns (mode B has the index
+    -- equation's proof after `x`)
+    let modeB := args.length == recBs.length + n
+    unless args.length == recBs.length + (n - 1) || modeB do
+      deriveBail fn s!"arity {args.length} {recBs.length} {n}"
+    let Δargs := args.take nΔ
+    let motive := args[nΔ]!
+    let methods := (args.drop (nΔ + 1)).take nc
+    let ξ := (args.drop (nΔ + 1 + nc)).take nΞ
+    let rest := args.drop (nΔ + 1 + nc + nΞ)
+    -- the index variables: telescope variables, by level
+    let idxLvls ← if modeB then pure [] else ξ.mapM fun a => match a with
+      | .var i => if L - 1 - i < nT then some (L - 1 - i) else deriveBail fn "idx not tele"
+      | _ => deriveBail fn "idx not var"
+    if idxLvls.any (fun l => (Δargs ++ [motive] ++ methods).any (·.hasVar (L - 1 - l))) then deriveBail fn "idx escapes"
+    let ctors := ((recBs.drop (nΔ + 1)).take nc).map fun (m, _, _) => String.ofList (m.toList.drop 2)
+    let Δb : List (B R) := Δargs.map fun a => fun d => a.lift (d - L)
+    let mut methods' : List (Term R) := []
+    for c in ctors, m in methods do
+      let cd ← g.find? (T ++ "." ++ c)
+      let fields := (peelPis cd.type).1.drop nΔ
+      let F := fields.length
+      let recs := fields.zipIdx.filterMap fun ((_, _, _, A), fi) => (recView T nΔ A).map (·, fi)
+      let k := recs.length
+      let (fieldNames, m1) ← peel F m
+      let (_, mbody) ← peel k m1
+      let fieldB (fi : Nat) : B R := B.bvar (L + fi)
+      let call (js : List (B R)) (y : B R) : B R :=
+        lamN "r" (n - 1) fun rsB =>
+          let teleArgs := (List.range nT).map fun tv => match idxLvls.idxOf? tv with
+            | some q => js[q]!
+            | none => B.bvar tv
+          let colArgs := (List.range n).map fun cI =>
+            if cI == pos then y else rsB[if cI < pos then cI else cI - 1]!
+          B.app (B.closed (.const fn us)) (teleArgs ++ colArgs)
+      -- mode B: the hypothesis takes the index equation first. Where the field's index is
+      -- the scrutinee's (`js ≡ ξ`), the direct call fits; otherwise the hypothesis can
+      -- only be used with an equation between different indices (a field of another
+      -- sort of a mutual family, typically unused): it stays the recursor itself, which
+      -- is what the value computes there
+      let liftB (t : Term R) : B R := fun d => t.lift (d - L)
+      let sameIdx (js : List (B R)) (d : Nat) : Bool :=
+        js.length == ξ.length && (js.zip ξ).all fun (j, x) => B.norm g j d == B.norm g (liftB x) d
+      let viaRec (js : List (B R)) (y : B R) : B R :=
+        B.app (B.closed (.const r rus)) (Δb ++ [liftB motive] ++ methods.map liftB ++ js ++ [y])
+      let hyp (js : List (B R)) (y : B R) (d : Nat) : B R :=
+        if !modeB then call js y
+        else if sameIdx js d then B.lam "e" fun _ => call js y
+        -- (under its equation, so that compiled code builds a closure, never runs it:
+        -- such a hypothesis is only ever applied to a proof that two different indices
+        -- are equal)
+        else B.lam "e" fun ev => B.app (viaRec js y) [ev]
+      let Cs : List (B R) := recs.map fun ((v, js), fi) =>
+        let σ : Array (B R) := (Δb ++ (List.range fi).map fieldB).toArray
+        match v with
+        | none => hyp (js.map (B.ofTele · σ)) (fieldB fi) (L + F)
+        | some (h, _) => B.lam h fun hv => hyp (js.map (B.ofTele · (σ.push hv))) (B.app (fieldB fi) [hv]) (L + F + 1)
+      let mut b := mbody
+      for j in [0:k] do
+        let i := k - 1 - j
+        b := b.instantiateAt 0 ((Cs[i]! (L + F)).lift i)
+      methods' := methods' ++ [fieldNames.foldr .lam b]
+    pure ((Δargs ++ [motive] ++ methods' ++ ξ ++ rest).foldl .app (.const cases rus))
+
 /-- The recursive calls of `fn` in a right-hand side, as `rewriteRecCalls` recognises them
 (an application whose head is the identifier `fn` or `@fn`), with the head given a macro
 scope (`fn✝rec`): such a name is never a local variable's, so it resolves to the global
@@ -403,7 +521,12 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   -- for the compiler: the same equations with direct recursion (the definition, as an
   -- axiom for the moment, is called like any function) and case analysis, so that only
   -- the recursive calls the program makes are computed
-  let impl ← if rc.isNone then pure none else do
+  let impl ← if rc.isNone then pure none
+    else if !(← getGlobals).implByElab then
+      pure (deriveImpl (← getGlobals) name ((← get).levelParams.map Level.param) tele.size names.length pos val)
+    else do
+    -- (`--impl=elab`, for comparison while derivation is new) the same equations
+    -- elaborated a second time
     let saved ← get
     try
       modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }

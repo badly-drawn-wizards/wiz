@@ -439,6 +439,14 @@ structure Globals (R : Type) where
   (`unboxedSigma` in `Compiler/Erase.lean`). Off by default: it is not stable under
   substitution. -/
   unboxStructs : Bool := false
+  /-- an elaborator option, not read by the kernel (`--impl=elab`, while the derivation is
+  new): a structurally recursive definition's compiled equations come from elaborating its
+  clauses a second time instead of from its value (`deriveImpl`, `Elab/Command.lean`) -/
+  implByElab : Bool := false
+  /-- a compiler option, not read by the kernel (on by default; off only to compare
+  compiled code in the tests): compiled equations get the direct calls a nested split
+  reverted moved into its branches before erasure (`Push.pushCalls`) -/
+  pushCalls : Bool := true
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false

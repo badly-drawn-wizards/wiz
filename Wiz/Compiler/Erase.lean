@@ -1,4 +1,5 @@
 import Wiz.Core.Check
+import Wiz.Compiler.Push
 
 /-!
 # Erasure
@@ -838,6 +839,17 @@ def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   let some v := d.impl <|> d.value | return .prim .unreachable #[]
   -- (the kernel has checked it, like the value: `checkImpl`, `addPartialImpl`)
   let ctx : Ctx R := { globals := g }
+  -- compiled equations (derived from the value, `deriveImpl`): the calls a nested split
+  -- reverted go into its branches, and a constructor rebuilt from a branch's fields is the
+  -- scrutinee (`Push`), if the result checks (else the step before, else the impl as is)
+  let v := if g.pushCalls && d.impl.isSome && d.value.isSome && Push.mentions d.name v then
+      let ok (t : Term R) : Bool := (check ctx t (ctx.eval d.type)) matches .ok _
+      let pushed := Push.betaCalls d.name ((Push.pushCalls g d.name v).getD v)
+      let reused := Push.reuseScrutinee g 0 pushed
+      if reused != v && ok reused then reused
+      else if pushed != v && ok pushed then pushed
+      else v
+    else v
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
   let us := d.levelParams.map fun _ => Level.succ .zero
