@@ -426,7 +426,41 @@ partial def unifyLevel (a b : Level) : ElabM R Unit := do
   --sol>
 
 
+/-- η for a projected hole: `?m x… .1` (or `.2`) means `?m x…` is a pair, so it is one:
+solve `?m := fun x… => (?a x…, ?b x…)` with two new holes (exact, not a guess; Agda
+η-expands holes of record type the same way). Then `?m x… .1` is `?a x…`, a pattern
+again: `?q.1 =?= y` (from an equation at a product type computed to its components)
+solves `?a := y`. `false` if the spine isn't applications followed by a projection. -/
+def etaProjected (m : Nat) (sp : Array (Elim R)) : ElabM R Bool := do
+  let k := (sp.toList.takeWhile (· matches .app _)).length
+  let isProj : Bool := match sp[k]? with
+    | some .fst | some .snd => true
+    | _ => false
+  unless isProj do return false
+  unless (← lookupMeta m).solution.isNone do return false
+  let info := (← lookupMeta m).info
+  let fresh (desc : String) : ElabM R Nat := do
+    let id := (← get).metas.size
+    modify fun s => { s with metas := s.metas.push { info, desc, arity := k } }
+    pure id
+  let a ← fresh "a component of a pair"
+  let b ← fresh "a component of a pair"
+  let args (h : Nat) : Term R := (List.range k).foldl (fun t i => .app t (.var (k - i - 1))) (.mvar h)
+  let sol := (List.range k).foldl (fun t i => Term.lam s!"x{k - i - 1}" t) (Term.pair (args a) (args b))
+  solveMeta m (eval (← getGlobals) [] sol)
+  pure true
+
 mutual
+
+/-- Do `A` and `B` unify without solving any hole? (Nothing is kept either way.) -/
+partial def sameNow (l : Lvl) (A B : Val R) : ElabM R Bool := do
+  let s ← get
+  let solved (st : ElabState R) : Nat :=
+    (st.metas.filter (·.solution.isSome)).size + (st.levelMetas.filter (·.isSome)).size
+  let ok ← tryCatch (do unify l A B; pure (solved (← get) == solved s)) (fun _ => pure false)
+  set s
+  pure ok
+
 
 /-- **Exercise 3.5.** Unify two values in a context of `l` variables, throwing on
 failure. Force both sides first, then:
@@ -460,6 +494,15 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   if isEq t != isEq u then
     if let some t' ← recomputeEq? t then return ← unify l t' u
     if let some u' ← recomputeEq? u then return ← unify l t u'
+  -- a stuck `cast A B e x` (computed while a hole in `A` or `B` was unsolved) against
+  -- something else: if `A` and `B` are now the same (equal without solving anything),
+  -- it is `x` (regularity; evaluated again, it would compute to `x`)
+  let isCast (v : Val R) : Bool := v matches .neutral (.cast ..) #[]
+  if isCast (← force t) != isCast (← force u) then
+    if let .neutral (.cast A B _ x) #[] ← force t then
+      if ← sameNow l A B then return ← unify l x u
+    if let .neutral (.cast A B _ x) #[] ← force u then
+      if ← sameNow l A B then return ← unify l t x
   -- a failure that met a metavariable may not be final (see `unifyGlued`)
   if (← force t) matches .neutral (.mvar _) _ || (← force u) matches .neutral (.mvar _) _ then noteMeta
   --<sol
@@ -507,12 +550,16 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | t', .lam x b => withBinderName l x do unify (l + 1) (← vAppM t' (Val.var l)) (← instM b (Val.var l))
   | .neutral (.mvar m) sp, .neutral (.mvar m') sp' =>
     if m == m' then unifySpine l sp sp' else
+    if ← etaProjected m sp then return ← unify l t u
+    if ← etaProjected m' sp' then return ← unify l t u
     -- (if the left spine isn't a pattern, the right one may be)
     tryCatch (solve l m sp (.neutral (.mvar m') sp')) fun e => do
       if e.code != "non-pattern" then throw e
       solve l m' sp' (.neutral (.mvar m) sp)
-  | .neutral (.mvar m) sp, t' => solve l m sp t'
-  | t', .neutral (.mvar m) sp => solve l m sp t'
+  | .neutral (.mvar m) sp, t' =>
+    if ← etaProjected m sp then unify l t u else solve l m sp t'
+  | t', .neutral (.mvar m) sp =>
+    if ← etaProjected m sp then unify l t u else solve l m sp t'
   | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'
   | _, _ => throwAt {} "rigid mismatch"
   --|ex
