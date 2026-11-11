@@ -1167,7 +1167,7 @@ def classGroup : Group where
           [".b", ".a", ".c", ".a"] },
     { name := "an instance can look at the numeral", run := fun _ =>
         okLib (numClassSrc ++ "#check (7 : Z3)\ndef seven : (7 : Z3) = Z3.b := rfl")
-          ["OfNat.ofNat Z3 7 (instOfNatZ3N 7) : Z3"] },
+          ["7 : Z3"] },
     { name := "a numeral at a type without OfNat is an error", run := fun _ =>
         failsLib "import Prelude\ninductive Z3 where\n  | a\n  | b\n  | c\n#eval (1 : Z3)" "failed to synthesize an instance of OfNat Z3 1" },
     { name := "an operator without an instance is an error", run := fun _ =>
@@ -4927,7 +4927,7 @@ def stdGroup : Group where
     { name := "integers: lemmas, and printing needs no axiom", run := fun _ =>
         okLibs ("import Int\n#check Int.neg_neg\n#check Int.add_zero\n#print axioms Int.add_zero")
           ["Int.neg_neg : (a : Int) → - -a = a",
-           "Int.add_zero : (a : Int) → a + OfNat.ofNat Int 0 (instOfNatIntN 0) = a",
+           "Int.add_zero : (a : Int) → a + 0 = a",
            "'Int.add_zero' does not depend on any axioms"] },
     { name := "integers: compiled (C)", run := fun _ =>
         cRunLibs "import Int\ndef main : Int := (-3 : Int) * 4 + 2" "-10" },
@@ -6724,6 +6724,24 @@ def hdlGroup : Group where
   name := "hdl"
   exercise := "HDL stage S0 (hdl-plan H14)"
   cases := [
+    { name := "S2: operators on signals: same Verilog as the Hw operations, numerals at the width, if as a mux, printed back", run := fun _ => do
+        -- the three designs agree with their Hw-operation twins (Verilog text); the counter
+        -- wraps at 10; shifts by 3, 0, 8 places; the counter's Verilog; three terms printed
+        -- in notation; `if` on a Bool, a dependent `if b then rfl else rfl`, Nat bitwise
+        okLibs (← IO.FS.readFile "examples/hdl-operators.wiz")
+          ["(.true, .true, .true)",
+           ".cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 (.cons 6 (.cons 7 (.cons 8 (.cons 9 (.cons 0 (.cons 1 .nil)))))))))))",
+           "((72, 25), (201, 201), 0, 0)",
+           "\"module count(input clk, input [0:0] x, output [3:0] y);\\n  reg [3:0] r; initial r = 4'd0;\\n  wire [0:0] n3 = r == 4'd9;\\n  wire [3:0] n6 = r + 4'd1;\\n  wire [3:0] n7 = n3 ? 4'd0 : n6;\\n  always @(posedge clk) r <= n7;\\n  assign y = r;\\nendmodule\\n\"",
+           "fun c x y => if c then x + 1 &&& ~~~y else x <<< 2 ||| y >>> 3 : Wire Bit → Wire B8 → Wire B8 → Wire B8",
+           "fun x y => x === y ||| x <ᵤ 3 : Wire B8 → Wire B8 → Wire HwTy.bit",
+           "fun c x => if c then x else 0 : Wire Bit → Wire B8 → Wire B8",
+           "(1, 24, 14)"] },
+    { name := "S2: if on a condition that is no signal takes the ordinary path (its messages)", run := fun _ => do
+        failsLibs "import Hdl.Core\ndef f (n : Nat) : Nat := if n then 1 else 2" "constructor"
+        failsLibs "import Hdl.Core\ndef f (A : Type) (a : A) : Nat := if a then 1 else 2" "cannot match on a value of type A"
+        okLibs "import Hdl.Core\ndef f (b : Bool) : (if b then 1 else 1) = 1 := if b then rfl else rfl\n#check fun (b : Bool) (x : Nat) => if b then x + 1 else 0"
+          ["fun b x => if b then x + 1 else 0 : Bool → Nat → Nat"] },
     { name := "auto-share: a let becomes ShareLet.share when an instance exists", run := fun _ =>
         okLibs shareLetHook ["101", "1", "1"] },
     { name := "L2 examples: hash-consed netlists are no bigger, three simulations agree; the doubling chain is linear", run := fun _ => do
