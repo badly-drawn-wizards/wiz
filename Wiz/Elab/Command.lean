@@ -793,7 +793,6 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
     isRec && ((copatternAlt? alts o).map fun a => isCorecCall name (a.getArg 3)).getD false
   if corecursive then elabCopatternsCoit name cmd obs else elabCopatternsCocon name cmd obs
 
-/-- Run the elaborator; also returns the info tree it recorded (even after an error). -/
 /-- `runElabH`, with (28a) the solver settings and the definition's name, and the axioms
 that tactics added (`smt`) on success. -/
 def runElabS (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
@@ -817,6 +816,7 @@ def runElabS (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   | .ok (a, st) => (.ok (a, st.sideDecls), finishInfos st)
   | .error e => (.error e, (e.state?.map finishInfos).getD #[])
 
+/-- Run the elaborator; also returns the info tree it recorded (even after an error). -/
 def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     (macros : List MacroRule := []) (builtins : List (Name × Name) := [])
     (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])

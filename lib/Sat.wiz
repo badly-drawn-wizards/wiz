@@ -38,10 +38,13 @@ def Sat.or_left : (a b : Bool) → a = .true → Bool.or a b = .true
 def Sat.or_right : (a b : Bool) → b = .true → Bool.or a b = .true
   | .true, _, _ => rfl
   | .false, _, h => h
-def Sat.or_false : (a b : Bool) → Bool.or a b = .false → Bool.and (Bool.not a) (Bool.not (Bool.not b)) = .true
+def Sat.or_false : (a b : Bool) → Bool.or a b = .false → Bool.and (Bool.not a) (Bool.not b) = .true
   | .true, _, h => absurd h.1
   | .false, .false, _ => rfl
   | .false, .true, h => absurd h.1
+def Sat.or_false_right : (a : Bool) → Bool.or a .false = .true → a = .true
+  | .true, _ => rfl
+  | .false, h => absurd h.1
 def Sat.not_false : (a : Bool) → Bool.not a = .true → a = .false
   | .true, h => absurd h.1
   | .false, _ => rfl
@@ -93,10 +96,10 @@ def Sat.polar_neg : (b p : Bool) → Sat.polar b (Bool.not p) = .true → Sat.po
   | .false, .true, _ => rfl
   | .false, .false, h => absurd h.1
 def Sat.polar_neg' : (b p : Bool) → Sat.polar b p = .false → Sat.polar b (Bool.not p) = .true
-  | .true, .true, _ => rfl
-  | .true, .false, h => absurd h.1
-  | .false, .true, h => absurd h.1
-  | .false, .false, _ => rfl
+  | .true, .true, h => absurd h.1
+  | .true, .false, _ => rfl
+  | .false, .true, _ => rfl
+  | .false, .false, h => absurd h.1
 def Sat.Lit.eval_neg (τ : Nat → Bool) : (l : Sat.Lit) → Sat.Lit.eval τ (Sat.Lit.neg l) = .true → Sat.Lit.eval τ l = .false
   | .mk v p, h => Sat.polar_neg (τ v) p h
 def Sat.Lit.eval_neg' (τ : Nat → Bool) : (l : Sat.Lit) → Sat.Lit.eval τ l = .false → Sat.Lit.eval τ (Sat.Lit.neg l) = .true
@@ -208,15 +211,18 @@ def Sat.rupGo (db : List Sat.Entry) : List Nat → List Sat.Lit → Bool
   | .cons h hs, α =>
     Sat.withClause (fun c => Sat.rupNext (fun β => Sat.rupGo db hs β) α (Sat.classify (Sat.unfalsified α c))) (Sat.lookup h db)
 
+def Sat.rupTail_ok (τ : Nat → Bool) (k : List Sat.Lit → Bool) (α : List Sat.Lit) (hα : Sat.holds τ α = .true)
+    (hk : (β : List Sat.Lit) → Sat.holds τ β = .true → k β = .true → False) (l : Sat.Lit) : (rest : List Sat.Lit) →
+    Sat.Clause.eval τ (.cons l rest) = .true → Sat.rupNext k α (Sat.classifyTail l rest) = .true → False
+  | .nil, hr, h =>
+    let hl : Sat.Lit.eval τ l = .true := Sat.or_false_right (Sat.Lit.eval τ l) hr;
+    hk (.cons l α) (Sat.and_intro (Sat.Lit.eval τ l) (Sat.holds τ α) hl hα) h
+  | .cons _ _, _, h => absurd h.1
 def Sat.rupNext_ok (τ : Nat → Bool) (k : List Sat.Lit → Bool) (α : List Sat.Lit) (hα : Sat.holds τ α = .true)
     (hk : (β : List Sat.Lit) → Sat.holds τ β = .true → k β = .true → False) : (r : List Sat.Lit) →
     Sat.Clause.eval τ r = .true → Sat.rupNext k α (Sat.classify r) = .true → False
   | .nil, hr, _ => absurd hr.1
-  | .cons l .nil, hr, h =>
-    let hl : Sat.Lit.eval τ l = .true :=
-      Or.elim (Sat.or_cases (Sat.Lit.eval τ l) .false hr) (fun e => e) (fun e => absurd e.1);
-    hk (.cons l α) (Sat.and_intro (Sat.Lit.eval τ l) (Sat.holds τ α) hl hα) h
-  | .cons _ (.cons _ _), _, h => absurd h.1
+  | .cons l rest, hr, h => Sat.rupTail_ok τ k α hα hk l rest hr h
 
 def Sat.rupGo_ok (τ : Nat → Bool) (db : List Sat.Entry) (hdb : Sat.Db.eval τ db = .true) : (hs : List Nat) → (α : List Sat.Lit) →
     Sat.holds τ α = .true → Sat.rupGo db hs α = .true → False
@@ -239,8 +245,8 @@ def Sat.negAll_ok (τ : Nat → Bool) : (c : List Sat.Lit) → Sat.Clause.eval �
   | .nil, _ => rfl
   | .cons l ls, h =>
     let both := Sat.or_false (Sat.Lit.eval τ l) (Sat.Clause.eval τ ls) h;
-    let hl : Sat.Lit.eval τ l = .false := Sat.not_false (Sat.Lit.eval τ l) (Sat.and_left (Bool.not (Sat.Lit.eval τ l)) (Bool.not (Bool.not (Sat.Clause.eval τ ls))) both);
-    let hls : Sat.Clause.eval τ ls = .false := Sat.not_false (Sat.Clause.eval τ ls) (Sat.and_right (Bool.not (Sat.Lit.eval τ l)) (Bool.not (Bool.not (Sat.Clause.eval τ ls))) both);
+    let hl : Sat.Lit.eval τ l = .false := Sat.not_false (Sat.Lit.eval τ l) (Sat.and_left (Bool.not (Sat.Lit.eval τ l)) (Bool.not (Sat.Clause.eval τ ls)) both);
+    let hls : Sat.Clause.eval τ ls = .false := Sat.not_false (Sat.Clause.eval τ ls) (Sat.and_right (Bool.not (Sat.Lit.eval τ l)) (Bool.not (Sat.Clause.eval τ ls)) both);
     Sat.and_intro (Sat.Lit.eval τ (Sat.Lit.neg l)) (Sat.holds τ (Sat.negAll ls)) (Sat.Lit.eval_neg' τ l hl) (Sat.negAll_ok τ ls hls)
 
 -- a clause that passes the RUP check holds wherever the database does
@@ -286,9 +292,9 @@ def Sat.check_ok (τ : Nat → Bool) : (ps : List Sat.Step) → (db : List Sat.E
 
 -- the input clauses, numbered from `i` (DIMACS numbers them from 1, newest last; the
 -- database keeps the newest first, so the list is reversed)
-def Sat.initDb (i : Nat) : List (List Sat.Lit) → List Sat.Entry → List Sat.Entry
-  | .nil, acc => acc
-  | .cons c cs, acc => Sat.initDb (Nat.succ i) cs (.cons (.mk i c) acc)
+def Sat.initDb : Nat → List (List Sat.Lit) → List Sat.Entry → List Sat.Entry
+  | _, .nil, acc => acc
+  | i, .cons c cs, acc => Sat.initDb (Nat.succ i) cs (.cons (.mk i c) acc)
 def Sat.initDb_ok (τ : Nat → Bool) : (i : Nat) → (cs : List (List Sat.Lit)) → (acc : List Sat.Entry) →
     Sat.Cnf.eval τ cs = .true → Sat.Db.eval τ acc = .true → Sat.Db.eval τ (Sat.initDb i cs acc) = .true
   | _, .nil, _, _, ha => ha

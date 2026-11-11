@@ -2744,9 +2744,9 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   if tag == TacTag.eqView then
     -- (28b) inside an equation: `a = b` at `A`
     let t ← zonk lvl (← reify st.handles (fld 1) lvl)
-    let t := match t with
-      | .eq .. => t
-      | _ => quote g lvl (whnf (← evalIn gl.ctx t))
+    let t ← match t with
+      | .eq .. => pure t
+      | _ => do pure (quote g lvl (whnf (← evalIn gl.ctx t)))
     match t with
     | .eq A a b =>
       let (rA, st) ← refl st gl A
@@ -2764,7 +2764,12 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let tyT ← zonk lvl (quote g lvl gl.ty)
     if !(Term.mvars tyT).isEmpty then throwAt info "smt: the goal has holes"
     let names := gl.ctx.names.reverse
-    let types := gl.ctx.types.reverse
+    -- (the context's types with their solved holes filled: a hypothesis
+    -- `Nat.lt (UIntN.toNat x) 256 = .true` has the width as a solved hole)
+    let env := gl.ctx.env.reverse.toArray
+    let types ← (List.range lvl).zip gl.ctx.types.reverse |>.mapM fun (j, A) => do
+      let t ← zonk j (quote g j A)
+      pure (eval g (env.extract 0 j).toList.reverse t)
     let q ← match Smt.translate g names types (gl.ctx.bound.reverse) (← evalIn gl.ctx tyT) with
       | .ok q => pure q
       | .error e => throwAt info e

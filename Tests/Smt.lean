@@ -34,14 +34,14 @@ def noErrors (ms : List String) : IO Unit := do
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs}")
 
 /-- Is `cmd` on PATH? -/
-def have (cmd : String) : IO Bool := do
+def onPath (cmd : String) : IO Bool := do
   try
     let out ← IO.Process.output { cmd, args := #["--version"] }
     pure (out.exitCode == 0)
   catch _ => pure false
 
 def needs (cmd : String) (k : IO Unit) : IO Unit := do
-  if ← have cmd then k else skip s!"no {cmd} on PATH (nix develop has it)"
+  if ← onPath cmd then k else skip s!"no {cmd} on PATH (nix develop has it)"
 
 def trusted : Smt.Config := { trust := true }
 
@@ -81,6 +81,15 @@ def group : Group where
         noErrors ms
         expect ms "info: 'demorgan' does not depend on any axioms"
         expect ms "info: 'atoms' does not depend on any axioms" },
+    { name := "sat_decide: circuit equivalence (a 2-bit adder: ripple carry against the majority form)", run := fun _ => needs "cadical" do
+        let ms ← msgs ("import SatTactic\n" ++
+          "def maj (a b c : Bool) : Bool := Bool.or (Bool.or (Bool.and a b) (Bool.and a c)) (Bool.and b c)\n" ++
+          "def carry (a b c : Bool) : Bool := Bool.or (Bool.and a b) (Bool.and c (Bool.xor a b))\n" ++
+          "def carry_maj (a b c : Bool) : carry a b c = maj a b c := by\n  unfold carry, maj\n  sat_decide\n" ++
+          "def add2 (a0 a1 b0 b1 c : Bool) : Bool.xor (Bool.xor a1 b1) (carry a0 b0 c) = Bool.xor (Bool.xor b1 a1) (maj b0 a0 c) := by\n  unfold carry, maj\n  sat_decide\n" ++
+          "#print axioms add2\n")
+        noErrors ms
+        expect ms "info: 'add2' does not depend on any axioms" },
     { name := "sat_decide: a false goal fails with a counterexample", run := fun _ => needs "cadical" do
         let ms ← msgs ("import SatTactic\ndef wrong (a b : Bool) : Bool.and a b = Bool.or a b := by sat_decide\n")
         expect ms "sat_decide: the goal is false; a counterexample:" },
@@ -122,6 +131,12 @@ def group : Group where
           "    UIntN.add x y = UIntN.add y x := by smt\n" ++
           "def xs (x : UIntN 32) (h : Nat.lt (UIntN.toNat x) 4294967296 = .true) : UIntN.xor x x = UIntN.zero 32 := by smt\n") trusted
         noErrors ms },
+    { name := "smt: only the library's definitions are read as SMT operations", run := fun _ => needs "z3" do
+        -- a file of its own `UIntN` (no `import Word`): not bit vectors
+        let ms ← msgs ("import Prelude\ninductive UIntN (w : Nat) where\n  | mk (n : Nat)\n" ++
+          "def UIntN.toNat {w : Nat} : UIntN w → Nat\n  | .mk n => n\ndef UIntN.not {w : Nat} : UIntN w → UIntN w\n  | .mk n => .mk 0\n" ++
+          "def fake (x : UIntN 8) (h : Nat.lt (UIntN.toNat x) 256 = .true) : UIntN.not (UIntN.not x) = x := by smt\n") trusted
+        expect ms "smt: the goal is not in the fragment" },
     { name := "smt: a false goal fails with a counterexample in the user's names", run := fun _ => needs "z3" do
         let ms ← msgs ("import Prelude\ndef wrong (apples pears : Nat) (h : Nat.lt apples pears = .true) : Nat.lt pears apples = .true := by smt\n") trusted
         expect ms "smt: the solver found a counterexample"
@@ -136,7 +151,7 @@ def group : Group where
         let (t', _) := ({} : Toolchain).parseFlags t.toFlags
         check (t'.trustSmt && t'.smt == t.smt) "toFlags does not round-trip"
         let (u, _) := ({} : Toolchain).parseFlags ["check", "f.wiz"]
-        check (!u.trustSmt && Cache.smtKey u.smt == none) "--trust-smt is on by default, or the default settings change cache keys"
+        check (!u.trustSmt && Cache.smtKey u.smt == none) "--trust-smt must be off by default, and the default settings must not change cache keys"
         check (Cache.smtKey t.smt != none) "the solver settings are not in the cache keys" },
     { name := "lib/ never uses smt", run := fun _ => do
         for e in ← System.FilePath.readDir "lib" do

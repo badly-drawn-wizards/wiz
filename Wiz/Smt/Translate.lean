@@ -105,19 +105,38 @@ private def ctor? (v : Val R) : Option (Name × List (Val R)) :=
   | .con (.pair t rest) => (tagOf t).map fun c => (c, (parts 8 rest).map fun | .up x => x | x => x)
   | t => (tagOf t).map fun c => (c, [])
 
+/-- Is `n` the library's? The translation
+recognises definitions by name (lib/Prelude.wiz, lib/Word.wiz, lib/Logic.wiz), so a user's own `UIntN.not` (in a file that does not
+import Word) must not be read as `bvnot`. A module root can't replace the toolchain's
+`Prelude` or `Word` (Module.shadowed). -/
+def fromLib (g : Globals R) (n : Name) : Bool :=
+  match g.declModule.get? n with
+  | some m => m == "Prelude" || m == "Word" || m == "Logic"
+  | none => false
+
 /-- The sort of a type, if it is one of the fragment's. -/
 partial def sortOf (g : Globals R) (A : Val R) : Option SSort :=
   match A with
+  | .neutral (.global "UIntN" _) sp =>
+    -- (outside lib/Word.wiz a sealed type with private constructors is opaque)
+    if !fromLib g "UIntN" then none else
+    match spineArgs sp with
+    | some [w] => match wh w with
+      | .natLit (n + 1) => some (.bv (n + 1))
+      | _ => none
+    | _ => none
   | .unfold n _ sp v => match n, spineArgs sp with
     | "Int", some [] => some .int
     | _, _ => sortOf g v.get
   | .lazyInd .. => sortOf g (wh A)
-  | .mu _ _ _ _ _ (some (T, _, args)) => match T, args with
+  | .mu _ _ _ _ _ (some (T, _, args)) => if !fromLib g T then none else match T, args with
     | "Nat", [] => some .nat
     | "Bool", [] => some .bool
     | "Int", [] => some .int
-    | "UIntN", [w] => match wh w with
-      | .natLit (n + 1) => some (.bv (n + 1))
+    | "UIntN", args =>
+      -- (the width is the type's one parameter; a sealed type's hint may carry more)
+      match args.filterMap (fun a => match wh a with | .natLit n => some n | _ => none) with
+      | [n + 1] => some (.bv (n + 1))
       | _ => none
     | _, _ => none
   | _ => none
@@ -166,6 +185,7 @@ partial def atom (g : Globals R) (lvl : Nat) (v : Val R) (s : SSort) : TM R Stri
 partial def known (g : Globals R) (lvl : Nat) (n : Name) (args? : Option (List (Val R))) (s : SSort) :
     TM R (Option String) := do
   let some args := args? | return none
+  unless fromLib g n do return none
   let t (v : Val R) (s' : SSort) := term g lvl v s'
   let lit? (v : Val R) : Option Nat := match wh v with | .natLit k => some k | _ => none
   -- a word operation's width must be this sort's
@@ -244,7 +264,7 @@ partial def prop (g : Globals R) (lvl : Nat) (P : Val R) : TM R (Option String) 
     return some (bin op a b)
   match P with
   | .unfold n _ sp val =>
-    match n, spineArgs sp with
+    match (if fromLib g n then n else ""), spineArgs sp with
     | "Not", some [a] => return (← sub a).map fun a => s!"(not {a})"
     | "And", some [a, b] => two "and" a b
     | "Or", some [a, b] => two "or" a b
