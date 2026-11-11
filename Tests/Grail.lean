@@ -742,6 +742,17 @@ def testRunnerGroup : Group where
         check ((bad.splitOn "tests/sub/bad.wiz:2:").length > 1 && (bad.splitOn "error").length > 1) s!"bad.expected: {bad}"
         let (res, _) ← runTests dir tc
         check (res.all (·.ok)) "the tests failed after --update"
+        -- `--update` with nothing to update records its passes too (docs-tour: "0 recorded
+        -- passes" on the run after it)
+        let cache2 ← IO.FS.createTempDir
+        let dir2 ← mkTree testPkg
+        let tc2 : Toolchain := { cacheDir := some cache2 }
+        let _ ← runTests dir2 tc2 (update := true)
+        let (res, _) ← runTests dir2 tc2 (update := true)
+        check (res.all (·.ok)) "the second --update failed"
+        let (res, st) ← runTests dir2 tc2
+        check (res.all (·.cached)) "an unchanged --update pass was not recorded"
+        checkEq 0 st.ran
         -- passes are recorded: nothing runs again
         let (res, st) ← runTests dir tc
         check (res.all (·.cached)) "a pass was not recorded"
