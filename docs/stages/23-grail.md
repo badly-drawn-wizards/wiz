@@ -101,8 +101,8 @@ on its executable, the bootstrap steps on each other. A node's key is computed w
 dependencies are done (an object's key hashes the C its `c` node wrote); a node whose
 output exists is up to date, the rest are jobs in a ready queue. `grail build -j N`
 (default: the cores, at most 4) runs up to `N` jobs at a time, each as a separate process
-(`grail --grail-job …` with the toolchain as flags, or the C compiler) under `timeout`
-(`--timeout SECS`, default 1800; tests `--test-timeout SECS`, default 300, so a test that
+(`grail --grail-job …` with the toolchain as flags, or the C compiler) with a time limit
+(23k; `--timeout SECS`, default 1800; tests `--test-timeout SECS`, default 300, so a test that
 hangs fails instead of hanging the run). A failed job is reported and the jobs that depend
 on it are skipped; the others still run. Each job's output is buffered and printed in the
 graph's order, so `-j 1` and `-j 8` print the same report, and a second build still runs
@@ -127,3 +127,122 @@ locked commit, with a note, until `grail update`. The roots of a dependency's `l
 targets become module roots, so `import Greet.Hello` finds
 `.grail/packages/greet/src/Greet/Hello.wiz`; module keys already hash module texts.
 Two different commits of one dependency name are refused (no version resolution yet).
+
+## 23i: command targets ✅
+
+A **command** runs a program with declared inputs and outputs, as a job of the build
+graph like any other: it waits for what makes its inputs, runs under `-j N` and the time
+limit, and is up to date when its key's directory exists.
+
+```
+import Grail
+def package : Package := Package.new "uart"
+  |> Package.exe "icestick" "app/icestick.wiz"
+  -- a program of the package as the tool; its output is a directory
+  |> Package.command (Command.new "gen" (Tool.exe "icestick") |> Command.arg "gen" |> Command.outDir "build/gen")
+  -- a program from PATH; `build/gen/proto.v` is gen's output, so this waits for gen
+  |> Package.command (Command.new "synth" (Tool.path "yosys")
+       |> Command.arg "-q" |> Command.arg "-p" |> Command.arg "synth_ice40 -top proto"
+       |> Command.arg "-o" |> Command.output "build/proto.json" |> Command.input "build/gen/proto.v")
+  -- always runs when named; never by a bare `grail build`
+  |> Package.phony (Command.new "flash" (Tool.path "iceprog") |> Command.input "build/proto.bin")
+```
+
+* **The tool**: `Tool.path NAME` is looked up on `PATH` (a name with a `/` is a path in
+  the package) and run by that path; `Tool.exe NAME` is an `exe` target of the package,
+  built first and run from the store.
+* **Arguments** are data, never a shell command line: `Command.arg "text"`,
+  `Command.input PATH` and `Command.output PATH` (an argument that is a declared input or
+  output), `Command.argIn "--json=" PATH` / `Command.argOut` (a prefix and a path, one
+  argument), `Command.parts [Part.text …, Part.output …]` for anything else. Use
+  `Tool.path "sh"` when you want a shell.
+* **Declared without being an argument**: `Command.needs PATH` (input),
+  `Command.makes PATH` (output file), `Command.makesDir PATH` (output directory),
+  `Command.outDir PATH` (an output directory that is also an argument),
+  `Command.stdout PATH` (the command's stdout is this output file).
+* **Edges** come from paths: an input that another command declares as an output (or
+  that lies under its output directory) depends on that command. Any other input is a
+  source file or directory and must exist ("the input X does not exist, and no target
+  makes it"). Two commands declaring one output, or outputs inside one another, are
+  refused before anything runs.
+* **Outputs** are written into the job's own directory: an output argument renders as
+  `.grail/tmp/<job>/out/<path>` (absolute; parents are made, an output directory is made
+  empty). When the command succeeds, every declared output must exist and nothing else
+  may have been made there (both are errors, naming the files); the directory is renamed
+  into the store, `.grail/build/<key>/`, and the outputs are **installed** at their paths
+  in the package (copied when different, mode 644; an output directory is replaced as a
+  whole). So a failed or killed command leaves `build/` as it was, going back to an
+  earlier input reinstalls the earlier outputs without running anything, and a deleted
+  or hand-edited output is put back by the next build (it is grail's).
+* **Installed files** are listed in `.grail/installed` with the hash grail wrote. A build
+  removes those that no command declares any more ("removed build/old.bin (installed by
+  an earlier build; …)") unless they were changed since ("kept …: changed since grail
+  installed it"); `grail clean` does the same for all of them, and removes `.grail/build`
+  (the store), `bin`, `tmp` and `log`.
+* **Working directory**: the package directory, inputs as written; `Command.inOutDir`
+  runs it in its output directory instead (inputs then render as absolute paths).
+* **Environment**: grail's own, plus `Command.env K V` (set, and in the key).
+* **Log**: stdout and stderr are kept in the store (`log.txt`). Success prints
+  `[command NAME]` (a phony command also prints its output); failure prints how it ended
+  (`exit code 3`, `killed by signal 9 (SIGKILL: …)`, `timed out after …`), the last 20
+  lines of its output, and keeps the whole log in `.grail/log/NAME.txt`.
+* **Phony**: `Package.phony` commands have no outputs, are never recorded, always run
+  when named, and are not built by `grail build` alone; `Command.manual` keeps an ordinary
+  command out of a bare `grail build` too.
+* One name per target: two targets with the same name are refused (before, `grail build
+  NAME` built both).
+
+**The key** is the command's description (tool reference, argument parts with their
+paths as written, inputs, outputs, environment, working directory), the **identity** of
+each tool, and for each input the key of the command that made it or the hash of its
+contents (a directory: every file under it, by path and contents). A tool's identity:
+for `Tool.path`, its real path (symlinks followed) and the hash of that file; for
+`Tool.exe`, its link's key (its C, the compiler and flags, its `link_c` files: a change
+that leaves the C alone reruns nothing). `Command.uses (Tool.path "abc")` adds the
+identity of a program the command runs by itself. Since the identity is part of the key, a
+tool must be found even when nothing needs to run ("yosys: not found on PATH" fails the
+command and what depends on it, not the rest of the build).
+
+**What grail cannot see.** Nothing is sandboxed and declared inputs cannot be checked
+for completeness: a command that reads a file it didn't declare (a header beside an
+input, a configuration file in `$HOME`, a data file of the tool) is not rerun when that
+file changes, and one that writes outside its output directory does so unseen. A tool's
+identity is one file: under Nix that file's real path is a store path, which names the
+tool's whole closure, but elsewhere an upgrade of the tool's shared libraries or data
+files (yosys's `share/`) or of programs it finds on `PATH` changes nothing (declare them
+with `Command.needs` or `Command.uses`). Environment variables other than those set with
+`Command.env` are inherited and not in the key. This is make's and ninja's contract, not
+Nix's; what grail adds is that what *is* declared is handled exactly.
+
+## 23j: `grail run` ✅
+
+`grail run TARGET [-- ARGS…]` builds what TARGET needs and runs it with ARGS appended,
+in the package directory, with grail's own stdin, stdout and stderr, and exits with its
+exit code (128+N if it died of signal N). For an `exe`, that is the program; for a
+command, its tool, inputs and the commands that make them. A command run this way is not
+recorded: its outputs are written at their paths in the package directly, and its
+stdout is not redirected. The build's report goes to stderr. The program stays in
+grail's process group, so Ctrl-C reaches it.
+
+```sh
+grail run icestick -- test /dev/ttyUSB1 3000
+```
+
+## 23k: job processes don't outlive grail ✅
+
+Each job's process (a `--grail-job`, the C compiler, a command) runs under a
+**supervisor**, `grail --grail-exec MS [--cwd DIR] [--env K=V]… -- CMD ARGS…`
+(`Grail/Exec.lean`; the test driver answers `--grail-exec` too). grail starts it in a new
+session, with a pipe as its stdin that it never writes; the supervisor starts the job in
+a process group of its own and waits for it. When the time limit passes it kills the
+group (`timed out after N s`); when its stdin ends, grail has died, by whatever signal,
+`SIGKILL` included, and it kills the group and exits. Before, jobs ran under `timeout`,
+which puts the job in a process group of its own, so killing grail (`timeout 60 grail
+build`, or `SIGKILL`) left them running. (The supervisor ends with `_exit`, from
+`c/proc.c`: Lean's own exit waits for the thread blocked on stdin.)
+
+A failed job now always says how it ended. A job that was killed (here: a check job over
+its memory cap) used to be reported with an empty message; now it is `killed by signal 9
+(SIGKILL: out of memory, or killed by hand?), and printed nothing`, or the end of what it
+printed. Tests: groups `grail-commands` and `grail-hygiene` (grail itself, as
+`tests --grail …`, killed with `SIGKILL` and `SIGTERM` while a job's grandchild sleeps).
