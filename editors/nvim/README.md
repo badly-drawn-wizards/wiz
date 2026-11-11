@@ -15,7 +15,9 @@ Wiz in Neovim (0.10 or later; tested with 0.12):
   already provides.
 * **unicode input like Lean's**: `\lam` → `λ`, `\r` → `→`, `\forall` → `∀`, …
 * **an infoview**: a split that follows the cursor and shows the tactic state and the
-  expected type there, with subterms you can inspect.
+  expected type there, with subterms you can inspect, and what else is there: a use of
+  syntax and what it expands to, an import, the instances found, the command's
+  declarations, `#check`/`#eval` output.
 
 The protocol behind the infoview is in `wiz-notes/infoview-protocol.md`; the stage
 notes are in `docs/stages/11-tooling.md` (11p).
@@ -124,8 +126,9 @@ refreshes it, `<LocalLeader>\` is `:WizAbbrev`. The usual LSP keymaps (`K` hover
 
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
 type, kind and, for a constant, where it is declared: `wiz/subtermInfo`); moving the
-cursor highlights that subterm; `gd` jumps to the constant's declaration; `r`
-refreshes; `q` closes.
+cursor highlights that subterm; `gd` jumps to the constant's declaration (or, on a
+syntax, expansion or import line, to the `syntax` command, the macro rule or the
+module); `r` refreshes; `q` closes.
 
 ## The infoview
 
@@ -141,8 +144,10 @@ Expected type
 ```
 
 It shows the state at the cursor of the last Wiz window you were in: the goals inside a
-`by` block (`wiz/interactiveGoals`) and the expected type of the term at the cursor
-(`wiz/interactiveTermGoal`), after a short debounce, and again after each edit (on the
+`by` block (`wiz/interactiveGoals`), the expected type of the term at the cursor
+(`wiz/interactiveTermGoal`; on a binder or pattern variable, its type in its context),
+and the rest (`wiz/interactiveInfo`: sections Syntax, Import, Instances, Declarations,
+Messages), after a short debounce, and again after each edit (on the
 server's `wiz/elaborated`). The terms are tagged text, coloured by kind:
 `WizInfoviewConst`, `WizInfoviewVar`, `WizInfoviewSort`, `WizInfoviewLit`, with
 `WizInfoviewTitle`, `WizInfoviewHypName`, `WizInfoviewTurnstile`, `WizInfoviewCase`,

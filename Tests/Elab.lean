@@ -5858,7 +5858,10 @@ def seplogicGroup : Group where
           "def e8 (p : Nat) (a : HProp Nat) : hexists (fun (n : Nat) => hpure (n = p) ⋆ a) ⊢ a := by\n  xpull as n, h\n  xsimpl") },
     { name := "xsimpl leaves what it cannot prove", run := fun _ => do
         failsLibs "import HoareTactics\ndef bad (a b c : HProp Nat) : a ⋆ b ⊢ c ⋆ a := by xsimpl" "⊢ Entails Nat b c"
-        failsLibs "import HoareTactics\ndef bad (p : Nat) : (p ↦ 1) ⊢ (p ↦ 2) := by xsimpl" "unsolved goals" },
+        failsLibs "import HoareTactics\ndef bad (p : Nat) : (p ↦ 1) ⊢ (p ↦ 2) := by xsimpl" "unsolved goals"
+        -- a tactic that fails says why, with the goal
+        failsLibs "import HoareExamples\ndef bad (p q n : Nat) : Triple (p ↦ n) (Prog.incr q) (fun _ => p ↦ n) := by xstep" "xstep: the precondition has no cell at q"
+        failsLibs "import HoareExamples\ndef bad (p q n : Nat) : Triple (p ↦ n) (Prog.incr3 p q) (fun _ => p ↦ n) := by xapp (Prog.incr_spec q n)" "xapp: the specification is about Prog.incr q, but the program is" },
     { name := "the x-tactics verify a counter, list length, map and free on mutable lists", run := fun _ =>
         okLibs ("import HoareExamples\n#check @Prog.incr3_spec\n#check @Prog.counter_spec\n#check @Prog.length_spec\n" ++
           "#check @Prog.incrAll.spec\n#check @Prog.freeAll.spec\n" ++

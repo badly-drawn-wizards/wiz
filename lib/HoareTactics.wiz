@@ -132,18 +132,17 @@ def xs.wand_l {V : Type} (H₁ : HProp V) (0 H₂ : HProp V) (Ls : List (HProp V
     (Entails.trans (starL.cons H₂ Ls).2 k))))
 -- a wand on the right: move its premise to the left
 def xs.wand_r {V : Type} {0 L H₁ H₂ : HProp V} (k : L ⋆ H₁ ⊢ H₂) : L ⊢ H₁ −∗ H₂ := wand.intro k
--- The steps with a premise under a binder take the rest of the left side as one heap
--- predicate `F` (a chain, not a list): the tactics read such premises back after
--- introducing the binder, and a reflected list is opaque to them.
-def xc.pure_l {V : Type} (0 P : Prop) (0 F R : HProp V) (k : P → (F ⊢ R)) : hpure P ⋆ F ⊢ R := hpure.elim_l k
-def xc.pure_l1 {V : Type} (0 P : Prop) (0 R : HProp V) (k : P → (emp ⊢ R)) : hpure P ⊢ R := fun h p => k p.1 h p.2
-def xc.exists_l {V A : Type} (0 J : A → HProp V) (0 F R : HProp V) (k : (x : A) → (J x ⋆ F ⊢ R)) : hexists J ⋆ F ⊢ R :=
-  Entails.trans (star.exists_l_entails J F) (hexists.elim k)
-def xc.exists_l1 {V A : Type} (0 J : A → HProp V) (0 R : HProp V) (k : (x : A) → (J x ⊢ R)) : hexists J ⊢ R := hexists.elim k
-def xc.forall_r {V A : Type} (0 J : A → HProp V) (0 F : HProp V) (k : (x : A) → (F ⊢ J x)) : F ⊢ hforall J := hforall.intro k
--- restate a goal: `L ⊢ R` from `L' ⊢ R'` where the two are convertible (the tactics use
--- this to put goals in the form they read; it is the identity)
-def xs.conv {V : Type} (0 L R : HProp V) (k : L ⊢ R) : L ⊢ R := k
+-- the left side's front atom is a pure fact, or an existential: a hypothesis, a variable
+-- (the tactics read the premise back after introducing it: star lists are reflected as
+-- lists, stage 6g)
+def xs.pure_l {V : Type} (0 P : Prop) (Ls : List (HProp V)) {0 R : HProp V} (k : P → (starL Ls ⊢ R)) :
+    starL (.cons (hpure P) Ls) ⊢ R :=
+  Entails.trans (starL.cons (hpure P) Ls).1 (hpure.elim_l k)
+def xs.exists_l {V A : Type} (0 J : A → HProp V) (Ls : List (HProp V)) {0 R : HProp V}
+    (k : (x : A) → (starL (.cons (J x) Ls) ⊢ R)) : starL (.cons (hexists J) Ls) ⊢ R :=
+  Entails.trans (starL.cons (hexists J) Ls).1 (Entails.trans (star.exists_l_entails J (starL Ls))
+    (hexists.elim (fun x => Entails.trans (starL.cons (J x) Ls).2 (k x))))
+def xs.forall_r {V A : Type} (0 J : A → HProp V) (0 F : HProp V) (k : (x : A) → (F ⊢ J x)) : F ⊢ hforall J := hforall.intro k
 -- replace an atom on the left by one it entails
 def xs.change_l {V : Type} (0 H₁ H₂ : HProp V) (e : H₁ ⊢ H₂) (Ls : List (HProp V)) {0 R : HProp V}
     (k : starL (.cons H₂ Ls) ⊢ R) : starL (.cons H₁ Ls) ⊢ R :=
@@ -185,52 +184,30 @@ def xw.app {V A : Type} (c : Prog V A) (0 P : HProp V) (0 Q' : A → HProp V) (t
 -- ## Tactics: reading goals
 --
 -- The tactics read a goal as an `Expr` (lib/Prelude.wiz), take it apart by the names of
--- the heap-predicate constants, and build proof terms from the lemmas above with every
--- argument explicit (`XT.apply`). After each step they read the new goal again, so
--- solved metavariables and β-redexes are taken care of by the elaborator.
+-- the heap-predicate constants (`Expr.view`; star lists and programs are constructor
+-- applications, reflected by name, stage 6g), and build proof terms from the lemmas
+-- above with every argument explicit (`XT.apply`). After each step they read the new
+-- goal again, so solved metavariables and β-redexes are taken care of by the elaborator.
+-- A tactic that fails says why and shows the goal it was looking at (`XT.failAt`).
 
 infixr:67 " ∷ " => List.cons
 
-def XT.chEq : List Char → List Char → Bool
-  | .nil, .nil => .true
-  | .cons a xs, .cons b ys => match Nat.beq (Char.code a) (Char.code b) with
-    | .true => XT.chEq xs ys
-    | .false => .false
-  | _, _ => .false
-def XT.strEq : String → String → Bool
-  | .mk a, .mk b => XT.chEq a b
--- syntactic equality (binder names don't matter; opaque handles only equal themselves)
-def XT.eq : Expr → Expr → Bool
-  | .var i, .var j => Nat.beq i j
-  | .const a, .const b => XT.strEq a b
-  | .sort u, .sort v => Nat.beq u v
-  | .pi _ b₁ q₁ d₁ c₁, .pi _ b₂ q₂ d₂ c₂ => Bool.and (XT.eq q₁ q₂) (Bool.and (XT.eq d₁ d₂) (XT.eq c₁ c₂))
-  | .lam _ b₁, .lam _ b₂ => XT.eq b₁ b₂
-  | .app f a, .app g b => Bool.and (XT.eq f g) (XT.eq a b)
-  | .lit n, .lit m => Nat.beq n m
-  | .opaque i, .opaque j => Nat.beq i j
-  | _, _ => .false
-
 def XT.c (n : String) : Expr := .const n
-def XT.apps : Expr → List Expr → Expr
-  | f, .nil => f
-  | f, .cons a rest => XT.apps (.app f a) rest
-def XT.spine : Expr → List Expr → Expr × List Expr
-  | .app f a, acc => XT.spine f (.cons a acc)
-  | e, acc => (e, acc)
-def XT.headName (e : Expr) : String := match (XT.spine e .nil).1 with
-  | .const n => n
-  | _ => ""
-def XT.args (e : Expr) : List Expr := (XT.spine e .nil).2
--- `e` is the constant `n` applied to exactly `k` arguments
-def XT.is (n : String) (k : Nat) (e : Expr) : Bool :=
-  Bool.and (XT.strEq (XT.headName e) n) (Nat.beq (List.length (XT.args e)) k)
+def XT.mk (n : String) (args : List Expr) : Expr := Expr.mkApp (.const n) args
+-- `e` is the constant `n` applied to exactly `k` arguments: the arguments
+def XT.appN (n : String) (k : Nat) (e : Expr) : Option (List Expr) := match Expr.appOf n e with
+  | .some xs => (match Nat.beq (List.length xs) k with
+    | .true => .some xs
+    | .false => .none)
+  | .none => .none
 
 -- list helpers
 def XT.nth {A : Type} (d : A) : Nat → List A → A
   | _, .nil => d
   | .zero, .cons x _ => x
   | .succ n, .cons _ xs => XT.nth d n xs
+def XT.nthE (i : Nat) (es : List Expr) : Expr := XT.nth (Expr.lit 0) i es
+-- the list without its `n`th element
 def XT.drop {A : Type} : Nat → List A → List A
   | _, .nil => .nil
   | .zero, .cons _ xs => xs
@@ -241,34 +218,40 @@ def XT.findIx {A : Type} (p : A → Bool) : Nat → List A → Option Nat
   | i, .cons x xs => match p x with
     | .true => .some i
     | .false => XT.findIx p (Nat.succ i) xs
-def XT.arg (i : Nat) (e : Expr) : Expr := XT.nth (Expr.lit 0) i (XT.args e)
+def XT.sel {A : Type} (b : Bool) (x y : A) : A := match b with
+  | .true => x
+  | .false => y
 
--- `List.cons`/`List.nil` literals
+-- `List.cons`/`List.nil` literals, and reading them back
 def XT.lst (T : Expr) : List Expr → Expr
-  | .nil => .app (XT.c "List.nil") T
-  | .cons e es => XT.apps (XT.c "List.cons") (.cons T (.cons e (.cons (XT.lst T es) .nil)))
+  | .nil => XT.mk "List.nil" (T ∷ .nil)
+  | .cons e es => XT.mk "List.cons" (T ∷ e ∷ XT.lst T es ∷ .nil)
 def XT.unlstF : Nat → Expr → Option (List Expr)
   | .zero, _ => .none
-  | .succ f, e => match XT.is "List.nil" 1 e with
-    | .true => .some .nil
-    | .false => match XT.is "List.cons" 3 e with
-      | .true => match XT.unlstF f (XT.arg 2 e) with
-        | .some rest => .some (.cons (XT.arg 1 e) rest)
-        | .none => .none
-      | .false => .none
+  | .succ f, e => match XT.appN "List.cons" 3 e with
+    | .some (.cons _ (.cons x (.cons rest .nil))) => (match XT.unlstF f rest with
+      | .some l => .some (x ∷ l)
+      | .none => .none)
+    | _ => (match XT.appN "List.nil" 1 e with
+      | .some _ => .some .nil
+      | .none => .none)
 def XT.unlst (e : Expr) : Option (List Expr) := XT.unlstF 10000 e
 
 -- building heap predicates
 def XT.hpropT (V : Expr) : Expr := .app (XT.c "HProp") V
-def XT.ent (V L R : Expr) : Expr := XT.apps (XT.c "Entails") (.cons V (.cons L (.cons R .nil)))
-def XT.star (V a b : Expr) : Expr := XT.apps (XT.c "star") (.cons V (.cons a (.cons b .nil)))
+def XT.ent (V L R : Expr) : Expr := XT.mk "Entails" (V ∷ L ∷ R ∷ .nil)
+def XT.star (V a b : Expr) : Expr := XT.mk "star" (V ∷ a ∷ b ∷ .nil)
 def XT.emp (V : Expr) : Expr := .app (XT.c "emp") V
+def XT.pts (V l v : Expr) : Expr := XT.mk "pts" (V ∷ l ∷ v ∷ .nil)
+-- `Triple P c Q` is `P ⊢ wp c Q`
+def XT.wpOf (V A c Q : Expr) : Expr := XT.mk "wp" (V ∷ A ∷ c ∷ Q ∷ .nil)
 -- `H₁ ⋆ (… ⋆ Hₙ)`, as a person would write it: convertible to `starL [H₁, …, Hₙ]`
-def XT.chain (V : Expr) : List Expr → Expr
+def XT.sl (V : Expr) : List Expr → Expr
   | .nil => XT.emp V
   | .cons e .nil => e
-  | .cons e es => XT.star V e (XT.chain V es)
-def XT.sl (V : Expr) (l : List Expr) : Expr := XT.chain V l
+  | .cons e es => XT.star V e (XT.sl V es)
+def XT.lstV (V : Expr) (l : List Expr) : Expr := XT.lst (XT.hpropT V) l
+
 -- the shapes of heap predicates
 inductive XT.HV where
   | star (a b : Expr)
@@ -282,27 +265,26 @@ inductive XT.HV where
   | pts (l v : Expr)
   | wp (A c Q : Expr)
   | other
-def XT.sel {A : Type} (b : Bool) (x y : A) : A := match b with
-  | .true => x
-  | .false => y
 def XT.listOr (o : Option (List Expr)) (pre : List Expr) : XT.HV := match o with
   | .some l => .list (List.append pre l)
   | .none => .other
-def XT.view (e : Expr) : XT.HV :=
-  let n := XT.headName e;
-  let k := List.length (XT.args e);
-  let is := fun (m : String) (j : Nat) => Bool.and (XT.strEq n m) (Nat.beq k j);
-  XT.sel (is "star" 3) (.star (XT.arg 1 e) (XT.arg 2 e)) (
-  XT.sel (is "emp" 1) .emp (
-  XT.sel (is "starL" 2) (XT.listOr (XT.unlst (XT.arg 1 e)) .nil) (
-  XT.sel (is "starC" 3) (XT.listOr (XT.unlst (XT.arg 2 e)) (.cons (XT.arg 1 e) .nil)) (
-  XT.sel (is "hpure" 2) (.pure (XT.arg 1 e)) (
-  XT.sel (is "hexists" 3) (.ex (XT.arg 1 e) (XT.arg 2 e)) (
-  XT.sel (is "hforall" 3) (.all (XT.arg 1 e) (XT.arg 2 e)) (
-  XT.sel (is "wand" 3) (.wand (XT.arg 1 e) (XT.arg 2 e)) (
-  XT.sel (is "htop" 1) .top (
-  XT.sel (is "pts" 3) (.pts (XT.arg 1 e) (XT.arg 2 e)) (
-  XT.sel (is "wp" 4) (.wp (XT.arg 1 e) (XT.arg 2 e) (XT.arg 3 e)) .other))))))))))
+-- by the head constant and its arguments (the first is always `V`)
+def XT.viewC (n : String) : List Expr → XT.HV
+  | .cons _ .nil => XT.sel (Expr.nameEq n "emp") .emp (XT.sel (Expr.nameEq n "htop") .top .other)
+  | .cons _ (.cons x .nil) =>
+    XT.sel (Expr.nameEq n "hpure") (.pure x) (XT.sel (Expr.nameEq n "starL") (XT.listOr (XT.unlst x) .nil) .other)
+  | .cons _ (.cons a (.cons b .nil)) =>
+    XT.sel (Expr.nameEq n "star") (.star a b) (
+    XT.sel (Expr.nameEq n "hexists") (.ex a b) (
+    XT.sel (Expr.nameEq n "hforall") (.all a b) (
+    XT.sel (Expr.nameEq n "wand") (.wand a b) (
+    XT.sel (Expr.nameEq n "pts") (.pts a b) (
+    XT.sel (Expr.nameEq n "starC") (XT.listOr (XT.unlst b) (a ∷ .nil)) .other)))))
+  | .cons _ (.cons A (.cons c (.cons Q .nil))) => XT.sel (Expr.nameEq n "wp") (.wp A c Q) .other
+  | _ => .other
+def XT.view (e : Expr) : XT.HV := match Expr.view e with
+  | .const n args => XT.viewC n args
+  | _ => .other
 def XT.isStructural (e : Expr) : Bool := match XT.view e with
   | .star _ _ => .true
   | .emp => .true
@@ -321,13 +303,13 @@ def XT.atomsW : Nat → List Expr → List Expr
 def XT.atoms (e : Expr) : List Expr := XT.atomsW 100000 (.cons e .nil)
 -- the side as a reflected tree (`HTree.den` of it is convertible to `e`)
 def XT.tree (V : Expr) : Nat → Expr → Expr
-  | .zero, e => XT.apps (XT.c "HTree.atom") (.cons V (.cons e .nil))
+  | .zero, e => XT.mk "HTree.atom" (V ∷ e ∷ .nil)
   | .succ f, e => match XT.view e with
-    | .star a b => XT.apps (XT.c "HTree.star") (.cons V (.cons (XT.tree V f a) (.cons (XT.tree V f b) .nil)))
+    | .star a b => XT.mk "HTree.star" (V ∷ XT.tree V f a ∷ XT.tree V f b ∷ .nil)
     | .emp => .app (XT.c "HTree.emp") V
-    | .list l => XT.tree V f (XT.chain V l)
-    | _ => XT.apps (XT.c "HTree.atom") (.cons V (.cons e .nil))
--- a side already in the form `H₁ ⋆ (… ⋆ Hₙ)` with every `Hᵢ` an atom (or `emp`): its atoms
+    | .list l => XT.tree V f (XT.sl V l)
+    | _ => XT.mk "HTree.atom" (V ∷ e ∷ .nil)
+-- a side already flat: `H₁ ⋆ (… ⋆ Hₙ)` or `starL [H₁, …, Hₙ]` with every `Hᵢ` an atom
 def XT.chainF : Nat → Expr → Option (List Expr)
   | .zero, _ => .none
   | .succ f, e => match XT.view e with
@@ -339,11 +321,24 @@ def XT.chainF : Nat → Expr → Option (List Expr)
     | .emp => .none
     | .list _ => .none
     | _ => .some (e ∷ .nil)
+def XT.allAtoms : List Expr → Bool
+  | .nil => .true
+  | .cons e es => Bool.and (Bool.not (XT.isStructural e)) (XT.allAtoms es)
 def XT.flatOf (e : Expr) : Option (List Expr) := match XT.view e with
   | .emp => .some .nil
+  | .list l => XT.sel (XT.allAtoms l) (.some l) .none
   | _ => XT.chainF 100000 e
 
 -- ## Tactics: building proofs
+
+-- fail, saying why and showing the goal
+def XT.failAt {A : Type} (g : Nat) (msg : String) : TacticM A := do
+  s ← TacticM.ppGoal g;
+  TacticM.fail (String.append msg (String.append "\n" s))
+-- … and a term
+def XT.failWith {A : Type} (g : Nat) (msg : String) (e : Expr) : TacticM A := do
+  s ← TacticM.ppExpr g e;
+  XT.failAt g (String.append msg (String.append " " s))
 
 -- an argument of a lemma: a term, a new goal of the binder's type, or a new goal of a
 -- given (convertible) type
@@ -381,65 +376,60 @@ def XT.apply1 (g : Nat) (n : String) (args : List XT.Arg) : TacticM Nat := do
   match gs with
   | .cons ng _ => TacticM.pure ng
   | .nil => TacticM.fail "x-tactics: expected a goal"
--- `c` applied to `args` and then fresh metavariables for the rest of its binders (as many
--- as `n`): the term and the metavariables' goals
-def XT.metaC : Nat → Nat → Expr → Expr → TacticM (Expr × List Nat)
-  | .zero, _, f, _ => TacticM.pure (f, .nil)
-  | .succ n, g, f, ty => match ty with
-    | .pi _ _ _ dom body => do
-      ng ← TacticM.newGoal g dom;
-      e ← TacticM.goalExpr ng;
-      b ← TacticM.instantiate g body e;
-      r ← XT.metaC n g (.app f e) b;
-      TacticM.pure (r.1, .cons ng r.2)
-    | _ => TacticM.pure (f, .nil)
--- the given arguments first
-def XT.metaA (k : Nat) (g : Nat) : Expr → Expr → List Expr → TacticM (Expr × List Nat)
-  | f, ty, .nil => XT.metaC k g f ty
-  | f, ty, .cons a rest => match ty with
-    | .pi _ _ _ _ body => do
-      b ← TacticM.instantiate g body a;
-      XT.metaA k g (.app f a) b rest
-    | _ => TacticM.pure (f, .nil)
-def XT.metaApp (g : Nat) (n : String) (args : List Expr) (k : Nat) : TacticM (Expr × List Nat) := do
-  ty ← TacticM.inferType g (XT.c n);
-  XT.metaA k g (XT.c n) ty args
-def XT.goalExprs : List Nat → TacticM (List Expr)
-  | .nil => TacticM.pure .nil
-  | .cons g gs => do e ← TacticM.goalExpr g; es ← XT.goalExprs gs; TacticM.pure (.cons e es)
--- does `e` unify with `n args ?…` (k metavariables)? then the solutions
-def XT.matchShape (g : Nat) (n : String) (args : List Expr) (k : Nat) (e : Expr) : TacticM (Option (List Expr)) := do
-  r ← XT.metaApp g n args k;
-  ok ← TacticM.isDefEq g e r.1;
-  match ok with
-  | .true => do es ← XT.goalExprs r.2; TacticM.pure (.some es)
-  | .false => TacticM.pure .none
-
--- the binder name of a λ (for introduced variables)
-def XT.binder (d : String) : Expr → String
-  | .lam x _ => x
-  | _ => d
-def XT.intro (g : Nat) (x : String) : TacticM Nat := TacticM.intro g x
--- `f a`, β-reduced when `f` is a λ (a redex in an assigned term can't have its type
--- inferred: the λ has no domain)
+-- restate goal `g` as the convertible `L ⊢ R`
+def XT.restate (g : Nat) (V L R : Expr) : TacticM Nat := TacticM.change g (XT.ent V L R)
+-- `f a`, β-reduced when `f` is a λ
 def XT.beta (g : Nat) (f a : Expr) : TacticM Expr := match f with
   | .lam _ b => TacticM.instantiate g b a
   | _ => TacticM.pure (.app f a)
--- restate goal `g` with a convertible type
-def XT.restate (g : Nat) (V L R : Expr) : TacticM Nat :=
-  XT.apply1 g "xs.conv" (.cons (.val V) (.cons (.val L) (.cons (.val R) (.cons (.goalAt (XT.ent V L R)) .nil))))
+-- `e` with the definition at its head unfolded once, if that changes it (a constructor or
+-- an axiom at the head changes nothing)
+def XT.unfoldHead (g : Nat) (e : Expr) : TacticM (Option Expr) := match Expr.headName e with
+  | .some n => do
+    e' ← TacticM.unfold g n e;
+    match Expr.beq e e' with
+    | .true => TacticM.pure .none
+    | .false => TacticM.pure (.some e')
+  | .none => TacticM.pure .none
+
+-- Introducing variables: under the next name given (`as x, y`), else under the binder's
+-- name (`n` for the `∃ n` of `MList`), with a numeric suffix if it is taken. The name
+-- introduced, the new goal and the names left.
+def XT.binder (d : String) : Expr → String
+  | .lam x _ => x
+  | _ => d
+def XT.introAs (g : Nat) (hint : String) : List String → TacticM (String × (Nat × List String))
+  | .cons x xs => do
+    g' ← TacticM.intro g x;
+    TacticM.pure (x, (g', xs))
+  | .nil => do
+    r ← TacticM.introFresh g hint;
+    TacticM.pure (r.1, (r.2, .nil))
 
 -- reflexivity, through unification (the term `rfl` is not checked against its expected
 -- equation by the elaborator, only by the kernel: wishful elab-rfl-unchecked)
 def XT.refl {A : Type} (a : A) : a = a := refl a
+-- run a tactic on goal `g` alone, catching its failure; did it close the goal?
+def XT.tryOn (g : Nat) (t : Syntax) : TacticM Bool := do
+  gs ← TacticM.getGoals;
+  TacticM.setGoals (.cons g .nil);
+  TacticM.tryCatch (TacticM.evalTactic t) (fun _ => TacticM.pure ());
+  left ← TacticM.getGoals;
+  TacticM.setGoals gs;
+  match left with
+  | .nil => TacticM.pure .true
+  | _ => TacticM.pure .false
 -- try to close a side condition: reflexivity, an assumption, or a disequation of
 -- constructors (`Not (succ n = 0)` is `succ n = 0 → False`, and `succ n = 0` computes to
 -- `False`)
 def XT.trySide (g : Nat) : TacticM Unit := do
-  gs ← TacticM.getGoals;
-  TacticM.setGoals (.cons g .nil);
-  TacticM.tryCatch (TacticM.evalTactic `(tactic| first | exact XT.refl _ | (first | assumption | (first | exact (fun e => e) | exact ())))) (fun _ => TacticM.pure ());
-  TacticM.setGoals gs
+  ok ← XT.tryOn g `(tactic| first | exact XT.refl _ | (first | assumption | (first | exact (fun e => e) | exact ())));
+  TacticM.pure ()
+-- a contradictory hypothesis `h` closes the goal: an equation of different constructors
+-- (`succ n = 0` computes to `False`), or `Not (a = a)` (`0 = 0` computes to `True`)
+def XT.tryAbsurd (g : Nat) (h : String) : TacticM Bool :=
+  let x := Syntax.mkVar h;
+  XT.tryOn g `(tactic| first | exact absurd ($x).1 | (first | exact absurd ($x ()) | exact absurd ($x (XT.refl _))))
 
 -- ## `xpull` and `xsimpl`
 --
@@ -448,8 +438,9 @@ def XT.trySide (g : Nat) : TacticM Unit := do
 -- existentials, pure side conditions) or stops. In order:
 --
 -- 1. flatten both sides into star lists (`xs.flat`);
--- 2. on the left, a pure fact becomes a hypothesis (`hp`), an existential a variable
---    (names can be given: `xpull as n, h`); `xpull` stops here;
+-- 2. on the left, a pure fact becomes a hypothesis (`hp`; if it is contradictory, it
+--    closes the goal), an existential a variable (named after its binder; names can be
+--    given: `xpull as n, h`); `xpull` stops here;
 -- 3. a goal `… ⊢ wp c Q` is left for the program tactics;
 -- 4. an existential on the right gets a metavariable as its witness;
 -- 5. a right atom equal (argument by argument, up to conversion, solving
@@ -458,38 +449,23 @@ def XT.trySide (g : Nat) : TacticM Unit := do
 --    `fun e => e` proves it);
 -- 7. `emp ⊢ emp` and `… ⊢ htop` are closed; `… ⊢ ∀x. J x` and `… ⊢ H₁ −∗ H₂` are
 --    introduced;
--- 8. an atom that computes to `∃`, `⋆`, `\[P]` or `emp` (a representation predicate
---    applied to a constructor, `MList (x :: L) p`) is unfolded, right atoms first.
---
--- Unfolding by computation leaves the recursive occurrences of the predicate as raw
--- eliminator applications (`MList L n` comes back as `ind … L n`); the loop remembers
--- the names it unfolded and folds such atoms back by unification (step 1½).
+-- 8. an atom whose head is a definition that computes (a representation predicate
+--    applied to a constructor, `MList (x :: L) p`) is unfolded once (`TacticM.unfold`,
+--    which folds the recursive occurrences back), right atoms first.
 
--- the names to give introduced variables, and the predicates unfolded so far
-inductive XT.St where
-  | mk (names : List String) (heads : List String)
-def XT.St.take (d : String) : XT.St → String × XT.St
-  | .mk (.cons n ns) hs => (n, .mk ns hs)
-  | .mk .nil hs => (d, .mk .nil hs)
-def XT.St.addHead (h : String) : XT.St → XT.St
-  | .mk ns hs => .mk ns (h ∷ hs)
-def XT.St.heads : XT.St → List String
-  | .mk _ hs => hs
-def XT.St.ofNames (ns : List String) : XT.St := .mk ns .nil
-
+-- a step: the next goal (with side goals) and the names left, or the goals to stop with
 inductive XT.Res where
-  | next (g : Nat) (side : List Nat) (st : XT.St)
-  | stop (gs : List Nat) (st : XT.St)
+  | next (g : Nat) (side : List Nat) (ns : List String)
+  | stop (gs : List Nat) (ns : List String)
 
-def XT.lstV (V : Expr) (l : List Expr) : Expr := XT.lst (XT.hpropT V) l
 def XT.frontL (g : Nat) (V : Expr) (Ls : List Expr) (R : Expr) : Nat → TacticM Nat
   | .zero => TacticM.pure g
   | .succ j => XT.apply1 g "xs.pickL" (.val V ∷ .val (.lit (.succ j)) ∷ .val (XT.lstV V Ls) ∷ .val R ∷
-      .goalAt (XT.ent V (XT.sl V (XT.nth (Expr.lit 0) (.succ j) Ls ∷ XT.drop (.succ j) Ls)) R) ∷ .nil)
+      .goalAt (XT.ent V (XT.sl V (XT.nthE (.succ j) Ls ∷ XT.drop (.succ j) Ls)) R) ∷ .nil)
 def XT.frontR (g : Nat) (V : Expr) (Rs : List Expr) (L : Expr) : Nat → TacticM Nat
   | .zero => TacticM.pure g
   | .succ j => XT.apply1 g "xs.pickR" (.val V ∷ .val (.lit (.succ j)) ∷ .val (XT.lstV V Rs) ∷ .val L ∷
-      .goalAt (XT.ent V L (XT.sl V (XT.nth (Expr.lit 0) (.succ j) Rs ∷ XT.drop (.succ j) Rs))) ∷ .nil)
+      .goalAt (XT.ent V L (XT.sl V (XT.nthE (.succ j) Rs ∷ XT.drop (.succ j) Rs))) ∷ .nil)
 
 def XT.isPull (e : Expr) : Bool := match XT.view e with
   | .pure _ => .true
@@ -504,12 +480,8 @@ def XT.isPure (e : Expr) : Bool := match XT.view e with
 def XT.isWp (e : Expr) : Bool := match XT.view e with
   | .wp _ _ _ => .true
   | _ => .false
--- a raw term (no constant at its head): what unfolding leaves
-def XT.isRaw (e : Expr) : Bool := match XT.view e with
-  | .other => XT.strEq (XT.headName e) ""
-  | _ => .false
 
-def XT.eqOrConv (g : Nat) (a b : Expr) : TacticM Bool := match XT.eq a b with
+def XT.eqOrConv (g : Nat) (a b : Expr) : TacticM Bool := match Expr.beq a b with
   | .true => TacticM.pure .true
   | .false => TacticM.isDefEq g a b
 -- pairwise conversion of argument lists (stopping at the first difference, so a
@@ -522,16 +494,15 @@ def XT.argsEq (g : Nat) : List Expr → List Expr → TacticM Bool
     | .true => XT.argsEq g rs bs
     | .false => TacticM.pure .false
   | _, _ => TacticM.pure .false
--- two atoms are the same: syntactically, or with the same head constant and
--- convertible arguments (or, for raw terms, convertible)
-def XT.atomEq (g : Nat) (a b : Expr) : TacticM Bool := match XT.eq a b with
+-- two atoms are the same: syntactically, or with the same head (a constant or a
+-- variable) and convertible arguments
+def XT.atomEq (g : Nat) (a b : Expr) : TacticM Bool := match Expr.beq a b with
   | .true => TacticM.pure .true
-  | .false => match Bool.or (XT.isRaw a) (XT.isRaw b) with
-    | .true => TacticM.isDefEq g a b
-    | .false => match XT.strEq (XT.headName a) (XT.headName b) with
-      | .true => XT.argsEq g (XT.args a) (XT.args b)
-      | .false => TacticM.pure .false
-def XT.findSyn (b : Expr) (Ls : List Expr) : Option Nat := XT.findIx (fun a => XT.eq a b) 0 Ls
+  | .false => match Expr.view a, Expr.view b with
+    | .const m xs, .const n ys => XT.sel (Expr.nameEq m n) (XT.argsEq g xs ys) (TacticM.pure .false)
+    | .var i xs, .var j ys => XT.sel (Nat.beq i j) (XT.argsEq g xs ys) (TacticM.pure .false)
+    | _, _ => TacticM.pure .false
+def XT.findSyn (b : Expr) (Ls : List Expr) : Option Nat := XT.findIx (fun a => Expr.beq a b) 0 Ls
 def XT.findConv (g : Nat) (b : Expr) : Nat → List Expr → TacticM (Option Nat)
   | _, .nil => TacticM.pure .none
   | i, .cons a rs => do
@@ -567,182 +538,127 @@ def XT.findCancel (g : Nat) (Ls Rs : List Expr) : TacticM (Option (Nat × Nat)) 
   | .some p => TacticM.pure (.some p)
   | .none => XT.findCancelConv g Ls 0 Rs
 
--- unfolding: does `e` compute to `∃`, `⋆`, `\[P]` or `emp`? (by unification with the
--- shape; only for atoms headed by a constant that is not one of the logic's own)
-def XT.unfoldable (e : Expr) : Bool := match XT.view e with
-  | .other => Bool.not (XT.strEq (XT.headName e) "")
-  | _ => .false
-def XT.unfoldAs (g : Nat) (V e : Expr) (n : String) (k : Nat) : TacticM (Option Expr) := do
-  r ← XT.matchShape g n (V ∷ .nil) k e;
-  match r with
-  | .some es => TacticM.pure (.some (XT.apps (XT.c n) (V ∷ es)))
-  | .none => TacticM.pure .none
-def XT.unfold1 (g : Nat) (V e : Expr) : TacticM (Option Expr) := match XT.unfoldable e with
-  | .false => TacticM.pure .none
-  | .true => do
-    r₁ ← XT.unfoldAs g V e "hexists" 2;
-    match r₁ with
-    | .some x => TacticM.pure (.some x)
-    | .none => do
-      r₂ ← XT.unfoldAs g V e "star" 2;
-      match r₂ with
-      | .some x => TacticM.pure (.some x)
-      | .none => do
-        r₃ ← XT.unfoldAs g V e "hpure" 1;
-        match r₃ with
-        | .some x => TacticM.pure (.some x)
-        | .none => XT.unfoldAs g V e "emp" 0
--- the first atom of a list that unfolds: the list with it unfolded, and its head
-def XT.unfoldList (g : Nat) (V : Expr) : List Expr → TacticM (Option (List Expr × String))
+-- unfolding: an atom that is not one of the logic's own, whose head is a definition that
+-- computes
+def XT.unfold1 (g : Nat) (e : Expr) : TacticM (Option Expr) := match XT.view e with
+  | .other => XT.unfoldHead g e
+  | _ => TacticM.pure .none
+-- the first atom of a list that unfolds: the list with it unfolded
+def XT.unfoldList (g : Nat) : List Expr → TacticM (Option (List Expr))
   | .nil => TacticM.pure .none
   | .cons e es => do
-    r ← XT.unfold1 g V e;
+    r ← XT.unfold1 g e;
     match r with
-    | .some e' => TacticM.pure (.some (e' ∷ es, XT.headName e))
+    | .some e' => TacticM.pure (.some (e' ∷ es))
     | .none => do
-      r' ← XT.unfoldList g V es;
+      r' ← XT.unfoldList g es;
       match r' with
-      | .some p => TacticM.pure (.some (e ∷ p.1, p.2))
+      | .some l => TacticM.pure (.some (e ∷ l))
       | .none => TacticM.pure .none
-
--- folding a raw atom back into `F ?args`, for `F` among the unfolded predicates
-def XT.arity : Nat → Expr → Nat
-  | .zero, _ => 0
-  | .succ f, .pi _ _ _ _ b => Nat.succ (XT.arity f b)
-  | .succ f, _ => 0
-def XT.foldAs (g : Nat) (e : Expr) : List String → TacticM (Option Expr)
-  | .nil => TacticM.pure .none
-  | .cons F Fs => do
-    ty ← TacticM.inferType g (XT.c F);
-    r ← XT.matchShape g F .nil (XT.arity 64 ty) e;
-    match r with
-    | .some es => TacticM.pure (.some (XT.apps (XT.c F) es))
-    | .none => XT.foldAs g e Fs
-def XT.foldList (g : Nat) (Fs : List String) : List Expr → TacticM (Option (List Expr))
-  | .nil => TacticM.pure .none
-  | .cons e es => match XT.isRaw e with
-    | .false => do
-      r' ← XT.foldList g Fs es;
-      match r' with
-      | .some es' => TacticM.pure (.some (e ∷ es'))
-      | .none => TacticM.pure .none
-    | .true => do
-      r ← XT.foldAs g e Fs;
-      match r with
-      | .some e' => TacticM.pure (.some (e' ∷ es))
-      | .none => do
-        r' ← XT.foldList g Fs es;
-        match r' with
-        | .some es' => TacticM.pure (.some (e ∷ es'))
-        | .none => TacticM.pure .none
-
-def XT.headGoal : List Nat → TacticM Nat
-  | .cons g _ => TacticM.pure g
-  | .nil => TacticM.fail "x-tactics: no goal"
 
 -- the steps
--- the pull lemmas: with the rest of the left side `F`, or without (`rest = []`)
-def XT.pullPure (g : Nat) (V P R : Expr) : List Expr → TacticM Nat
-  | .nil => XT.apply1 g "xc.pure_l1" (.val V ∷ .val P ∷ .val R ∷ .goal ∷ .nil)
-  | rest => XT.apply1 g "xc.pure_l" (.val V ∷ .val P ∷ .val (XT.sl V rest) ∷ .val R ∷ .goal ∷ .nil)
-def XT.pullEx (g : Nat) (V A J R : Expr) : List Expr → TacticM Nat
-  | .nil => XT.apply1 g "xc.exists_l1" (.val V ∷ .val A ∷ .val J ∷ .val R ∷ .goal ∷ .nil)
-  | rest => XT.apply1 g "xc.exists_l" (.val V ∷ .val A ∷ .val J ∷ .val (XT.sl V rest) ∷ .val R ∷ .goal ∷ .nil)
-def XT.pull (g : Nat) (V : Expr) (Ls : List Expr) (R : Expr) (i : Nat) (st : XT.St) : TacticM XT.Res := do
+def XT.pull (g : Nat) (V : Expr) (Ls : List Expr) (R : Expr) (i : Nat) (ns : List String) : TacticM XT.Res := do
   g₁ ← XT.frontL g V Ls R i;
-  let rest := XT.drop i Ls;
-  match XT.view (XT.nth (Expr.lit 0) i Ls) with
+  let rest := XT.lstV V (XT.drop i Ls);
+  match XT.view (XT.nthE i Ls) with
   | .pure P => do
-    g₂ ← XT.pullPure g₁ V P R rest;
-    let t := XT.St.take "hp" st;
-    g₃ ← XT.intro g₂ t.1;
-    TacticM.pure (.next g₃ .nil t.2)
+    g₂ ← XT.apply1 g₁ "xs.pure_l" (.val V ∷ .val P ∷ .val rest ∷ .val R ∷ .goal ∷ .nil);
+    r ← XT.introAs g₂ "hp" ns;
+    closed ← XT.tryAbsurd r.2.1 r.1;
+    TacticM.pure (XT.sel closed (XT.Res.stop .nil r.2.2) (.next r.2.1 .nil r.2.2))
   | .ex A J => do
-    g₂ ← XT.pullEx g₁ V A J R rest;
-    let t := XT.St.take (XT.binder "x" J) st;
-    g₃ ← XT.intro g₂ t.1;
-    TacticM.pure (.next g₃ .nil t.2)
-  | _ => TacticM.fail "xpull: nothing to pull"
+    g₂ ← XT.apply1 g₁ "xs.exists_l" (.val V ∷ .val A ∷ .val J ∷ .val rest ∷ .val R ∷ .goal ∷ .nil);
+    r ← XT.introAs g₂ (XT.binder "x" J) ns;
+    TacticM.pure (.next r.2.1 .nil r.2.2)
+  | _ => XT.failAt g "xpull: nothing to pull"
 
-def XT.exR (g : Nat) (V : Expr) (L : Expr) (Rs : List Expr) (j : Nat) (st : XT.St) : TacticM XT.Res := do
+def XT.exR (g : Nat) (V : Expr) (L : Expr) (Rs : List Expr) (j : Nat) (ns : List String) : TacticM XT.Res := do
   g₁ ← XT.frontR g V Rs L j;
   let rest := XT.drop j Rs;
-  match XT.view (XT.nth (Expr.lit 0) j Rs) with
+  match XT.view (XT.nthE j Rs) with
   | .ex A J => do
     wg ← TacticM.newGoal g₁ A;
     w ← TacticM.goalExpr wg;
+    Jw ← XT.beta g₁ J w;
     g₂ ← XT.apply1 g₁ "xs.exists_r" (.val V ∷ .val A ∷ .val J ∷ .val w ∷ .val (XT.lstV V rest) ∷ .val L ∷
-      .goalAt (XT.ent V L (XT.sl V (.app J w ∷ rest))) ∷ .nil);
-    TacticM.pure (.next g₂ (wg ∷ .nil) st)
-  | _ => TacticM.fail "xsimpl: no existential"
+      .goalAt (XT.ent V L (XT.sl V (Jw ∷ rest))) ∷ .nil);
+    TacticM.pure (.next g₂ (wg ∷ .nil) ns)
+  | _ => XT.failAt g "xsimpl: no existential"
 
-def XT.cancel (g : Nat) (V : Expr) (Ls Rs : List Expr) (R : Expr) (i j : Nat) (st : XT.St) : TacticM XT.Res := do
+def XT.cancel (g : Nat) (V : Expr) (Ls Rs : List Expr) (R : Expr) (i j : Nat) (ns : List String) : TacticM XT.Res := do
   g₁ ← XT.frontL g V Ls R i;
-  let a := XT.nth (Expr.lit 0) i Ls;
+  let a := XT.nthE i Ls;
   let restL := XT.drop i Ls;
   g₂ ← XT.frontR g₁ V Rs (XT.sl V (a ∷ restL)) j;
   let restR := XT.drop j Rs;
   g₃ ← XT.apply1 g₂ "xs.cancel" (.val V ∷ .val a ∷ .val (XT.lstV V restL) ∷ .val (XT.lstV V restR) ∷
     .goalAt (XT.ent V (XT.sl V restL) (XT.sl V restR)) ∷ .nil);
-  TacticM.pure (.next g₃ .nil st)
+  TacticM.pure (.next g₃ .nil ns)
 
-def XT.pureR (g : Nat) (V : Expr) (L : Expr) (Rs : List Expr) (j : Nat) (st : XT.St) : TacticM XT.Res := do
+def XT.pureR (g : Nat) (V : Expr) (L : Expr) (Rs : List Expr) (j : Nat) (ns : List String) : TacticM XT.Res := do
   g₁ ← XT.frontR g V Rs L j;
   let rest := XT.drop j Rs;
-  match XT.view (XT.nth (Expr.lit 0) j Rs) with
+  match XT.view (XT.nthE j Rs) with
   | .pure P => do
     pg ← TacticM.newGoal g₁ P;
     p ← TacticM.goalExpr pg;
     g₂ ← XT.apply1 g₁ "xs.pure_r" (.val V ∷ .val P ∷ .val p ∷ .val (XT.lstV V rest) ∷ .val L ∷
       .goalAt (XT.ent V L (XT.sl V rest)) ∷ .nil);
     XT.trySide pg;
-    TacticM.pure (.next g₂ (pg ∷ .nil) st)
-  | _ => TacticM.fail "xsimpl: no pure fact"
+    TacticM.pure (.next g₂ (pg ∷ .nil) ns)
+  | _ => XT.failAt g "xsimpl: no pure fact"
 
--- unfold an atom that computes (right atoms first), or stop, showing the goal as a chain
-def XT.unfoldStep (g : Nat) (V : Expr) (Ls Rs : List Expr) (st : XT.St) : TacticM XT.Res := do
-  r ← XT.unfoldList g V Rs;
+-- why `xsimpl` stops (a trace at the tactic, before the goal it leaves)
+def XT.stuck (g : Nat) (Rs : List Expr) : TacticM Unit := match XT.findIx XT.cancellable 0 Rs with
+  | .some j => do
+    s ← TacticM.ppExpr g (XT.nthE j Rs);
+    TacticM.trace (String.append "xsimpl: stuck: no atom on the left matches " s)
+  | .none => (match Rs with
+    | .nil => TacticM.trace "xsimpl: stuck: atoms are left on the left, and nothing on the right (`htop` would take them)"
+    | _ => TacticM.trace "xsimpl: stuck")
+-- unfold an atom that computes (right atoms first), or stop
+def XT.unfoldStep (g : Nat) (V : Expr) (Ls Rs : List Expr) (ns : List String) : TacticM XT.Res := do
+  r ← XT.unfoldList g Rs;
   match r with
-  | .some p => do
-    g' ← XT.restate g V (XT.sl V Ls) (XT.sl V p.1);
-    TacticM.pure (.next g' .nil (XT.St.addHead p.2 st))
+  | .some Rs' => do
+    g' ← XT.restate g V (XT.sl V Ls) (XT.sl V Rs');
+    TacticM.pure (.next g' .nil ns)
   | .none => do
-    r' ← XT.unfoldList g V Ls;
+    r' ← XT.unfoldList g Ls;
     match r' with
-    | .some p => do
-      g' ← XT.restate g V (XT.sl V p.1) (XT.sl V Rs);
-      TacticM.pure (.next g' .nil (XT.St.addHead p.2 st))
+    | .some Ls' => do
+      g' ← XT.restate g V (XT.sl V Ls') (XT.sl V Rs);
+      TacticM.pure (.next g' .nil ns)
     | .none => do
-      g' ← XT.restate g V (XT.chain V Ls) (XT.chain V Rs);
-      TacticM.pure (.stop (g' ∷ .nil) st)
+      XT.stuck g Rs;
+      TacticM.pure (.stop (g ∷ .nil) ns)
 
 -- the end: close, introduce, unfold, or stop
-def XT.finish (g : Nat) (V : Expr) (L R : Expr) (Ls Rs : List Expr) (st : XT.St) : TacticM XT.Res := match Ls, Rs with
+def XT.finish (g : Nat) (V : Expr) (L R : Expr) (Ls Rs : List Expr) (ns : List String) : TacticM XT.Res := match Ls, Rs with
   | .nil, .nil => do
-    closed ← XT.apply g "Entails.refl" (.val V ∷ .val (XT.sl V .nil) ∷ .nil);
-    TacticM.pure (.stop .nil st)
+    closed ← XT.apply g "Entails.refl" (.val V ∷ .val (XT.emp V) ∷ .nil);
+    TacticM.pure (.stop .nil ns)
   | _, .cons r .nil => (match XT.view r with
     | .top => do
       closed ← XT.apply g "xs.top_r" (.val V ∷ .val (XT.lstV V Ls) ∷ .nil);
-      TacticM.pure (.stop .nil st)
+      TacticM.pure (.stop .nil ns)
     | .all A J => do
-      g₁ ← XT.apply1 g "xc.forall_r" (.val V ∷ .val A ∷ .val J ∷ .val L ∷ .goal ∷ .nil);
-      let t := XT.St.take (XT.binder "r" J) st;
-      g₂ ← XT.intro g₁ t.1;
-      TacticM.pure (.next g₂ .nil t.2)
+      g₁ ← XT.apply1 g "xs.forall_r" (.val V ∷ .val A ∷ .val J ∷ .val L ∷ .goal ∷ .nil);
+      r ← XT.introAs g₁ (XT.binder "r" J) ns;
+      TacticM.pure (.next r.2.1 .nil r.2.2)
     | .wand a b => do
       g₁ ← XT.apply1 g "xs.wand_r" (.val V ∷ .val L ∷ .val a ∷ .val b ∷ .goalAt (XT.ent V (XT.star V L a) b) ∷ .nil);
-      TacticM.pure (.next g₁ .nil st)
-    | _ => XT.unfoldStep g V Ls Rs st)
-  | _, _ => XT.unfoldStep g V Ls Rs st
+      TacticM.pure (.next g₁ .nil ns)
+    | _ => XT.unfoldStep g V Ls Rs ns)
+  | _, _ => XT.unfoldStep g V Ls Rs ns
 
-def XT.stepC (g : Nat) (V L R : Expr) (Ls Rs : List Expr) (st : XT.St) : TacticM XT.Res := do
+def XT.stepC (g : Nat) (V L R : Expr) (Ls Rs : List Expr) (ns : List String) : TacticM XT.Res := do
     c ← XT.findCancel g Ls Rs;
     match c with
-    | .some p => XT.cancel g V Ls Rs R p.1 p.2 st
+    | .some p => XT.cancel g V Ls Rs R p.1 p.2 ns
     | .none => (match XT.findIx XT.isPure 0 Rs with
-      | .some j => XT.pureR g V L Rs j st
-      | .none => XT.finish g V L R Ls Rs st)
+      | .some j => XT.pureR g V L Rs j ns
+      | .none => XT.finish g V L R Ls Rs ns)
 -- a wand on the left and, elsewhere on the left, its premise: (wand, premise)
 def XT.findWandIn (g : Nat) (Ls : List Expr) : Nat → List Expr → TacticM (Option (Nat × Nat))
   | _, .nil => TacticM.pure .none
@@ -755,105 +671,92 @@ def XT.findWandIn (g : Nat) (Ls : List Expr) : Nat → List Expr → TacticM (Op
         | .false => TacticM.pure (.some (i, j')))
       | .none => XT.findWandIn g Ls (Nat.succ i) ws
     | _ => XT.findWandIn g Ls (Nat.succ i) ws
-def XT.wandL (g : Nat) (V : Expr) (Ls : List Expr) (R : Expr) (i j : Nat) (st : XT.St) : TacticM XT.Res := do
+def XT.wandL (g : Nat) (V : Expr) (Ls : List Expr) (R : Expr) (i j : Nat) (ns : List String) : TacticM XT.Res := do
   g₁ ← XT.frontL g V Ls R j;
-  let p := XT.nth (Expr.lit 0) j Ls;
+  let p := XT.nthE j Ls;
   let Ls₁ := p ∷ XT.drop j Ls;
   let i' := XT.sel (Nat.lt i j) (Nat.succ i) i;
   g₂ ← XT.frontL g₁ V Ls₁ R i';
-  let others := XT.drop i' Ls₁;
-  let others' := XT.drop 0 others;
-  match XT.view (XT.nth (Expr.lit 0) i Ls) with
+  let others := XT.drop 0 (XT.drop i' Ls₁);
+  match XT.view (XT.nthE i Ls) with
   | .wand _ b => do
-    g₃ ← XT.apply1 g₂ "xs.wand_l" (.val V ∷ .val p ∷ .val b ∷ .val (XT.lstV V others') ∷ .val R ∷
-      .goalAt (XT.ent V (XT.sl V (b ∷ others')) R) ∷ .nil);
-    TacticM.pure (.next g₃ .nil st)
-  | _ => TacticM.fail "xsimpl: no wand"
-def XT.stepS (g : Nat) (V L R : Expr) (Ls Rs : List Expr) (st : XT.St) : TacticM XT.Res :=
+    g₃ ← XT.apply1 g₂ "xs.wand_l" (.val V ∷ .val p ∷ .val b ∷ .val (XT.lstV V others) ∷ .val R ∷
+      .goalAt (XT.ent V (XT.sl V (b ∷ others)) R) ∷ .nil);
+    TacticM.pure (.next g₃ .nil ns)
+  | _ => XT.failAt g "xsimpl: no wand"
+def XT.stepS (g : Nat) (V L R : Expr) (Ls Rs : List Expr) (ns : List String) : TacticM XT.Res :=
   match XT.findIx XT.isEx 0 Rs with
-  | .some j => XT.exR g V L Rs j st
+  | .some j => XT.exR g V L Rs j ns
   | .none => do
     wd ← XT.findWandIn g Ls 0 Ls;
     match wd with
-    | .some ij => XT.wandL g V Ls R ij.1 ij.2 st
-    | .none => XT.stepC g V L R Ls Rs st
--- fold raw atoms back (left, then right), then the rest
-def XT.stepFold (full : Bool) (g : Nat) (V L R : Expr) (Ls Rs : List Expr) (st : XT.St) : TacticM XT.Res := do
-  fl ← XT.foldList g (XT.St.heads st) Ls;
-  match fl with
-  | .some Ls' => do
-    g' ← XT.restate g V (XT.sl V Ls') R;
-    TacticM.pure (.next g' .nil st)
-  | .none => (match full with
-    | .false => TacticM.pure (.stop (g ∷ .nil) st)
-    | .true => do
-      fr ← XT.foldList g (XT.St.heads st) Rs;
-      match fr with
-      | .some Rs' => do
-        g' ← XT.restate g V L (XT.sl V Rs');
-        TacticM.pure (.next g' .nil st)
-      | .none => (match Rs with
-        | .cons r .nil => (match XT.isWp r with
-          | .true => TacticM.pure (.stop (g ∷ .nil) st)
-          | .false => XT.stepS g V L R Ls Rs st)
-        | _ => XT.stepS g V L R Ls Rs st))
-def XT.stepF (full : Bool) (g : Nat) (V L R : Expr) (Ls Rs : List Expr) (st : XT.St) : TacticM XT.Res :=
+    | .some ij => XT.wandL g V Ls R ij.1 ij.2 ns
+    | .none => XT.stepC g V L R Ls Rs ns
+-- pull (left), then stop (`xpull`, or a `wp` goal) or the rest
+def XT.stepF (full : Bool) (g : Nat) (V L R : Expr) (Ls Rs : List Expr) (ns : List String) : TacticM XT.Res :=
   match XT.findIx XT.isPull 0 Ls with
-  | .some i => XT.pull g V Ls R i st
-  | .none => XT.stepFold full g V L R Ls Rs st
-def XT.stepE (full : Bool) (g : Nat) (V L R : Expr) (st : XT.St) : TacticM XT.Res := match XT.flatOf L, XT.flatOf R with
-  | .some Ls, .some Rs => XT.stepF full g V L R Ls Rs st
+  | .some i => XT.pull g V Ls R i ns
+  | .none => (match full, Rs with
+    | .false, _ => TacticM.pure (.stop (g ∷ .nil) ns)
+    | .true, .cons r .nil => XT.sel (XT.isWp r) (TacticM.pure (XT.Res.stop (g ∷ .nil) ns)) (XT.stepS g V L R Ls Rs ns)
+    | .true, _ => XT.stepS g V L R Ls Rs ns)
+def XT.stepE (full : Bool) (g : Nat) (V L R : Expr) (ns : List String) : TacticM XT.Res := match XT.flatOf L, XT.flatOf R with
+  | .some Ls, .some Rs => XT.stepF full g V L R Ls Rs ns
   | _, _ => do
     g' ← XT.apply1 g "xs.flat" (.val V ∷ .val (XT.tree V 100000 L) ∷ .val (XT.tree V 100000 R) ∷
       .goalAt (XT.ent V (XT.sl V (XT.atoms L)) (XT.sl V (XT.atoms R))) ∷ .nil);
-    TacticM.pure (.next g' .nil st)
--- `Triple P c Q` is `P ⊢ wp c Q`
-def XT.wpOf (V A c Q : Expr) : Expr := XT.apps (XT.c "wp") (V ∷ A ∷ c ∷ Q ∷ .nil)
-def XT.step (full : Bool) (g : Nat) (st : XT.St) : TacticM XT.Res := do
+    TacticM.pure (.next g' .nil ns)
+def XT.step (full : Bool) (g : Nat) (ns : List String) : TacticM XT.Res := do
   ty ← TacticM.goalType g;
-  match XT.is "Entails" 3 ty with
-  | .true => XT.stepE full g (XT.arg 0 ty) (XT.arg 1 ty) (XT.arg 2 ty) st
-  | .false => (match XT.is "Triple" 5 ty with
-    | .true => do
-      g' ← XT.restate g (XT.arg 0 ty) (XT.arg 2 ty) (XT.wpOf (XT.arg 0 ty) (XT.arg 1 ty) (XT.arg 3 ty) (XT.arg 4 ty));
-      TacticM.pure (.next g' .nil st)
-    | .false => TacticM.pure (.stop (g ∷ .nil) st))
--- the loop: the goals left (the main one first) and the state
-def XT.simp : Nat → Bool → Nat → List Nat → XT.St → TacticM (List Nat × XT.St)
-  | .zero, _, g, side, st => TacticM.pure (g ∷ side, st)
-  | .succ f, full, g, side, st => do
-    r ← XT.step full g st;
+  match XT.appN "Entails" 3 ty, XT.appN "Triple" 5 ty with
+  | .some (.cons V (.cons L (.cons R .nil))), _ => XT.stepE full g V L R ns
+  | _, .some (.cons V (.cons A (.cons P (.cons c (.cons Q .nil))))) => do
+    g' ← XT.restate g V P (XT.wpOf V A c Q);
+    TacticM.pure (.next g' .nil ns)
+  | _, _ => TacticM.pure (.stop (g ∷ .nil) ns)
+-- the loop: the goals left (the main one first) and the names left
+def XT.simp : Nat → Bool → Nat → List Nat → List String → TacticM (List Nat × List String)
+  | .zero, _, g, side, ns => TacticM.pure (g ∷ side, ns)
+  | .succ f, full, g, side, ns => do
+    r ← XT.step full g ns;
     match r with
-    | .next g' s st' => XT.simp f full g' (List.append s side) st'
-    | .stop gs st' => TacticM.pure (List.append gs side, st')
+    | .next g' s ns' => XT.simp f full g' (List.append s side) ns'
+    | .stop gs ns' => TacticM.pure (List.append gs side, ns')
 
--- the names after `as` (`xpull as n, h`)
-def XT.namesF {b : Bool} : SyntaxF b → List String
-  | .cons (.ident x) rest => x ∷ XT.namesF rest
-  | .cons _ rest => XT.namesF rest
-  | _ => .nil
-def XT.names (stx : Syntax) : List String := match stx with
-  | .node _ args => XT.namesF args
-  | _ => .nil
+-- the goals a tactic leaves, with star lists shown as `⋆` chains
+def XT.tidy (g : Nat) : TacticM Nat := do
+  ty ← TacticM.goalType g;
+  match XT.appN "Entails" 3 ty with
+  | .some (.cons V (.cons L (.cons R .nil))) => (match XT.view L, XT.view R with
+    | .list l, .list r => XT.restate g V (XT.sl V l) (XT.sl V r)
+    | .list l, _ => XT.restate g V (XT.sl V l) R
+    | _, .list r => XT.restate g V L (XT.sl V r)
+    | _, _ => TacticM.pure g)
+  | _ => TacticM.pure g
+def XT.leave (gs : List Nat) : TacticM Unit := match gs with
+  | .cons g rest => do
+    g' ← XT.tidy g;
+    TacticM.replaceMainGoal (g' ∷ rest)
+  | .nil => TacticM.replaceMainGoal .nil
 
 def XT.runSimp (full : Bool) (ns : List String) : TacticM Unit := do
   g ← TacticM.mainGoal;
-  r ← XT.simp 1000 full g .nil (XT.St.ofNames ns);
-  TacticM.replaceMainGoal r.1
+  r ← XT.simp 1000 full g .nil ns;
+  XT.leave r.1
 
 -- `xsimpl`: simplify an entailment, cancelling what matches; what is left is a goal
 syntax (name := xsimpl) "xsimpl" : tactic
 def Tactic.xsimpl : Tactic := fun _ => XT.runSimp .true .nil
 attribute [tactic tactic.xsimpl] Tactic.xsimpl
 syntax (name := xsimplAs) "xsimpl" "as" sepBy(ident, ",") : tactic
-def Tactic.xsimplAs : Tactic := fun stx => XT.runSimp .true (XT.names (Syntax.getArg stx 2))
+def Tactic.xsimplAs : Tactic := fun stx => XT.runSimp .true (Syntax.sepIdents (Syntax.getArg stx 2))
 attribute [tactic tactic.xsimplAs] Tactic.xsimplAs
 -- `xpull`: only flatten the left and introduce its pure facts and existentials
 syntax (name := xpull) "xpull" : tactic
 def Tactic.xpull : Tactic := fun _ => XT.runSimp .false .nil
 attribute [tactic tactic.xpull] Tactic.xpull
 syntax (name := xpullAs) "xpull" "as" sepBy(ident, ",") : tactic
-def Tactic.xpullAs : Tactic := fun stx => XT.runSimp .false (XT.names (Syntax.getArg stx 2))
+def Tactic.xpullAs : Tactic := fun stx => XT.runSimp .false (Syntax.sepIdents (Syntax.getArg stx 2))
 attribute [tactic tactic.xpullAs] Tactic.xpullAs
 -- `xwp`: a triple as `P ⊢ wp c Q`, with `P` pulled
 syntax (name := xwp) "xwp" : tactic
@@ -863,23 +766,27 @@ attribute [tactic tactic.xwp] Tactic.xwp
 -- ## Program steps: `xstep`, `xapp`, `xseq`, `xval`, `xchange`, `xunfold`
 --
 -- They work on a goal `H ⊢ wp c Q` (or `Triple H c Q`), after pulling `H`. The program
--- `c` is taken apart by its head constant, or else by unification with each
--- constructor of `Prog` (which unfolds definitions such as `Prog.swap p q`). Each takes
--- `as x, y, …`: names for the variables and hypotheses it introduces, in order.
+-- `c` is taken apart as a constructor application after computing its head
+-- (`TacticM.whnfCtorApp`: `Prog.swap p q` is read as the `Prog.get p …` it computes
+-- to), or as a bind. Each takes `as x, y, …`: names for the variables and hypotheses it
+-- introduces, in order (by default they are named after their binders).
 
 inductive XT.WpGoal where
   | mk (g : Nat) (V L : Expr) (Ls : List Expr) (A c Q : Expr)
-def XT.wpGoal (g : Nat) (st : XT.St) : TacticM (XT.WpGoal × XT.St) := do
-  r ← XT.simp 1000 .false g .nil st;
-  g' ← XT.headGoal r.1;
-  ty ← TacticM.goalType g';
-  match XT.is "Entails" 3 ty with
-  | .true => (match XT.view (XT.arg 2 ty) with
-    | .wp A c Q => (match XT.flatOf (XT.arg 1 ty) with
-      | .some Ls => TacticM.pure (.mk g' (XT.arg 0 ty) (XT.arg 1 ty) Ls A c Q, r.2)
-      | .none => TacticM.fail "x-tactics: the precondition is not flat")
-    | _ => TacticM.fail "x-tactics: the goal is not `H ⊢ wp c Q` (or a triple)")
-  | .false => TacticM.fail "x-tactics: the goal is not `H ⊢ wp c Q` (or a triple)"
+  -- pulling the precondition found a contradiction: no goal left
+  | closed
+def XT.wpGoal (g : Nat) (ns : List String) : TacticM (XT.WpGoal × List String) := do
+  r ← XT.simp 1000 .false g .nil ns;
+  match r.1 with
+  | .nil => TacticM.pure (.closed, r.2)
+  | .cons g' _ => do
+    ty ← TacticM.goalType g';
+    match XT.appN "Entails" 3 ty with
+    | .some (.cons V (.cons L (.cons R .nil))) => (match XT.view R, XT.flatOf L with
+      | .wp A c Q, .some Ls => TacticM.pure (.mk g' V L Ls A c Q, r.2)
+      | .wp _ _ _, .none => XT.failAt g' "x-tactics: the precondition is not flat"
+      | _, _ => XT.failAt g' "x-tactics: the goal is not `H ⊢ wp c Q` (or a triple)")
+    | _ => XT.failAt g' "x-tactics: the goal is not `H ⊢ wp c Q` (or a triple)"
 
 inductive XT.Shape where
   | ret (a : Expr)
@@ -890,44 +797,27 @@ inductive XT.Shape where
   | fail
   | bind (A c f : Expr)
   | other
-def XT.shapeByName (c : Expr) : XT.Shape :=
-  let is := fun (m : String) (j : Nat) => XT.is m j c;
-  let a := fun (i : Nat) => XT.arg i c;
-  XT.sel (is "Prog.bind" 5) (.bind (a 1) (a 3) (a 4)) (
-  XT.sel (is "Monad.bind" 6) (.bind (a 2) (a 4) (a 5)) .other)
-def XT.nthE (i : Nat) (es : List Expr) : Expr := XT.nth (Expr.lit 0) i es
--- by unification, constructor by constructor (constructor applications are opaque to
--- tactics, wishful tactic-reflect-constructors)
-def XT.shapeProbe (g : Nat) (V A c : Expr) : TacticM XT.Shape := do
-  r₁ ← XT.matchShape g "Prog.ret" (V ∷ A ∷ .nil) 1 c;
-  match r₁ with
-  | .some es => TacticM.pure (.ret (XT.nthE 0 es))
+-- `Prog.bind c f` (or `c >>= f`): the type of `c`'s result, `c` and `f`
+def XT.bindOf (c : Expr) : Option (Expr × (Expr × Expr)) := match XT.appN "Prog.bind" 5 c, XT.appN "Monad.bind" 6 c with
+  | .some xs, _ => .some (XT.nthE 1 xs, (XT.nthE 3 xs, XT.nthE 4 xs))
+  | _, .some xs => .some (XT.nthE 2 xs, (XT.nthE 4 xs, XT.nthE 5 xs))
+  | _, _ => .none
+def XT.shapeCtor (n : String) (fs : List Expr) : XT.Shape :=
+  let f := fun (i : Nat) => XT.nthE i fs;
+  XT.sel (Expr.nameEq n "Prog.ret") (.ret (f 0)) (
+  XT.sel (Expr.nameEq n "Prog.get") (.get (f 0) (f 1)) (
+  XT.sel (Expr.nameEq n "Prog.set") (.set (f 0) (f 1) (f 2)) (
+  XT.sel (Expr.nameEq n "Prog.alloc") (.alloc (f 0) (f 1)) (
+  XT.sel (Expr.nameEq n "Prog.free") (.free (f 0) (f 1)) (
+  XT.sel (Expr.nameEq n "Prog.fail") .fail .other)))))
+def XT.shape (g : Nat) (c : Expr) : TacticM XT.Shape := match XT.bindOf c with
+  | .some b => TacticM.pure (.bind b.1 b.2.1 b.2.2)
   | .none => do
-    r₂ ← XT.matchShape g "Prog.get" (V ∷ A ∷ .nil) 2 c;
-    match r₂ with
-    | .some es => TacticM.pure (.get (XT.nthE 0 es) (XT.nthE 1 es))
-    | .none => do
-      r₃ ← XT.matchShape g "Prog.set" (V ∷ A ∷ .nil) 3 c;
-      match r₃ with
-      | .some es => TacticM.pure (.set (XT.nthE 0 es) (XT.nthE 1 es) (XT.nthE 2 es))
-      | .none => do
-        r₄ ← XT.matchShape g "Prog.alloc" (V ∷ A ∷ .nil) 2 c;
-        match r₄ with
-        | .some es => TacticM.pure (.alloc (XT.nthE 0 es) (XT.nthE 1 es))
-        | .none => do
-          r₅ ← XT.matchShape g "Prog.free" (V ∷ A ∷ .nil) 2 c;
-          match r₅ with
-          | .some es => TacticM.pure (.free (XT.nthE 0 es) (XT.nthE 1 es))
-          | .none => do
-            r₆ ← XT.matchShape g "Prog.fail" (V ∷ A ∷ .nil) 0 c;
-            match r₆ with
-            | .some _ => TacticM.pure .fail
-            | .none => TacticM.pure .other
-def XT.shape (g : Nat) (V A c : Expr) : TacticM XT.Shape := match XT.shapeByName c with
-  | .other => XT.shapeProbe g V A c
-  | s => TacticM.pure s
+    r ← TacticM.whnfCtorApp g c;
+    match r with
+    | .some p => TacticM.pure (XT.shapeCtor p.1 p.2)
+    | .none => TacticM.pure .other
 
-def XT.pts (V l v : Expr) : Expr := XT.apps (XT.c "pts") (V ∷ l ∷ v ∷ .nil)
 -- the cell `l ↦ v` among the atoms: its position and `v`
 def XT.findPts (g : Nat) (l : Expr) : Nat → List Expr → TacticM (Option (Nat × Expr))
   | _, .nil => TacticM.pure .none
@@ -939,18 +829,20 @@ def XT.findPts (g : Nat) (l : Expr) : Nat → List Expr → TacticM (Option (Nat
       | .false => XT.findPts g l (Nat.succ i) rs
     | _ => XT.findPts g l (Nat.succ i) rs
 
-def XT.split (w : XT.WpGoal) (A₀ c₀ f₀ : Expr) (st : XT.St) : TacticM (XT.WpGoal × XT.St) := match w with
+def XT.split (w : XT.WpGoal) (A₀ c₀ f₀ : Expr) (ns : List String) : TacticM (XT.WpGoal × List String) := match w with
   | .mk g V L Ls A c Q => do
     g₁ ← XT.apply1 g "xw.bind" (.val V ∷ .val A₀ ∷ .val A ∷ .val c₀ ∷ .val f₀ ∷ .val Q ∷ .val L ∷ .goal ∷ .nil);
-    XT.wpGoal g₁ st
+    XT.wpGoal g₁ ns
+  | .closed => TacticM.pure (.closed, ns)
 
 -- a command that needs the cell `l`: bring it to the front and apply `k g v rest`, or
 -- unfold the precondition (and the caller starts again)
 inductive XT.CellRes where
   | done (gs : List Nat)
-  | again (w : XT.WpGoal) (st : XT.St)
-def XT.withCell (w : XT.WpGoal) (l : Expr) (k : Nat → Expr → List Expr → TacticM (List Nat)) (st : XT.St) :
+  | again (w : XT.WpGoal) (ns : List String)
+def XT.withCell (w : XT.WpGoal) (l : Expr) (k : Nat → Expr → List Expr → TacticM (List Nat)) (ns : List String) :
     TacticM XT.CellRes := match w with
+  | .closed => TacticM.pure (.done .nil)
   | .mk g V L Ls A c Q => do
     r ← XT.findPts g l 0 Ls;
     match r with
@@ -959,210 +851,215 @@ def XT.withCell (w : XT.WpGoal) (l : Expr) (k : Nat → Expr → List Expr → T
       gs ← k g₁ p.2 (XT.drop p.1 Ls);
       TacticM.pure (.done gs)
     | .none => do
-      u ← XT.unfoldList g V Ls;
+      u ← XT.unfoldList g Ls;
       match u with
-      | .some q => do
-        g' ← XT.restate g V (XT.sl V q.1) (XT.wpOf V A c Q);
-        w' ← XT.wpGoal g' (XT.St.addHead q.2 st);
+      | .some Ls' => do
+        g' ← XT.restate g V (XT.sl V Ls') (XT.wpOf V A c Q);
+        w' ← XT.wpGoal g' ns;
         TacticM.pure (.again w'.1 w'.2)
-      | .none => TacticM.fail "xstep: the cell the command uses is not in the precondition"
+      | .none => XT.failWith g "xstep: the precondition has no cell at" l
 
 -- one command; the new goals
-def XT.step1 : Nat → XT.WpGoal → XT.St → TacticM (List Nat × XT.St)
+def XT.step1 : Nat → XT.WpGoal → List String → TacticM (List Nat × List String)
   | .zero, _, _ => TacticM.fail "xstep: too many nested binds or unfoldings"
-  | .succ f, w, st => match w with
-    | .mk g V L Ls A c Q => do
-      s ← XT.shape g V A c;
+  | .succ f, .closed, ns => TacticM.pure (.nil, ns)
+  | .succ f, .mk g V L Ls A c Q, ns => do
+      let w := XT.WpGoal.mk g V L Ls A c Q;
+      let again := fun (cr : XT.CellRes) => match cr with
+        | .done gs => TacticM.pure (gs, ns)
+        | .again w' ns' => XT.step1 f w' ns';
+      s ← XT.shape g c;
       match s with
       | .ret a => do
         Qa ← XT.beta g Q a;
         g' ← XT.restate g V L Qa;
-        TacticM.pure (g' ∷ .nil, st)
+        TacticM.pure (g' ∷ .nil, ns)
       | .get l k => do
-        cr ← XT.withCell w l (fun g₁ v rest =>
+        cr ← XT.withCell w l (fun g₁ v rest => do
+          kv ← XT.beta g₁ k v;
           XT.apply g₁ "xw.get" (.val V ∷ .val A ∷ .val l ∷ .val v ∷ .val (XT.lstV V rest) ∷ .val k ∷ .val Q ∷
-            .goalAt (XT.ent V (XT.sl V (XT.pts V l v ∷ rest)) (XT.wpOf V A (.app k v) Q)) ∷ .nil)) st;
-        match cr with
-        | .done gs => TacticM.pure (gs, st)
-        | .again w' st' => XT.step1 f w' st'
+            .goalAt (XT.ent V (XT.sl V (XT.pts V l v ∷ rest)) (XT.wpOf V A kv Q)) ∷ .nil)) ns;
+        again cr
       | .set l v k => do
         cr ← XT.withCell w l (fun g₁ u rest =>
           XT.apply g₁ "xw.set" (.val V ∷ .val A ∷ .val l ∷ .val u ∷ .val v ∷ .val (XT.lstV V rest) ∷ .val k ∷ .val Q ∷
-            .goalAt (XT.ent V (XT.sl V (XT.pts V l v ∷ rest)) (XT.wpOf V A k Q)) ∷ .nil)) st;
-        match cr with
-        | .done gs => TacticM.pure (gs, st)
-        | .again w' st' => XT.step1 f w' st'
+            .goalAt (XT.ent V (XT.sl V (XT.pts V l v ∷ rest)) (XT.wpOf V A k Q)) ∷ .nil)) ns;
+        again cr
       | .alloc v k => do
         g₁ ← XT.apply1 g "xw.alloc" (.val V ∷ .val A ∷ .val v ∷ .val L ∷ .val k ∷ .val Q ∷ .goal ∷ .nil);
-        let t := XT.St.take (XT.binder "l" k) st;
-        g₂ ← XT.intro g₁ t.1;
-        TacticM.pure (g₂ ∷ .nil, t.2)
+        r ← XT.introAs g₁ (XT.binder "l" k) ns;
+        TacticM.pure (r.2.1 ∷ .nil, r.2.2)
       | .free l k => do
         cr ← XT.withCell w l (fun g₁ u rest =>
           XT.apply g₁ "xw.free" (.val V ∷ .val A ∷ .val l ∷ .val u ∷ .val (XT.lstV V rest) ∷ .val k ∷ .val Q ∷
-            .goalAt (XT.ent V (XT.sl V rest) (XT.wpOf V A k Q)) ∷ .nil)) st;
-        match cr with
-        | .done gs => TacticM.pure (gs, st)
-        | .again w' st' => XT.step1 f w' st'
+            .goalAt (XT.ent V (XT.sl V rest) (XT.wpOf V A k Q)) ∷ .nil)) ns;
+        again cr
       | .bind A₀ c₀ f₀ => do
-        w₁ ← XT.split w A₀ c₀ f₀ st;
+        w₁ ← XT.split w A₀ c₀ f₀ ns;
         XT.step1 f w₁.1 w₁.2
-      | .fail => TacticM.fail "xstep: the program fails here (`Prog.fail`: out of fuel?)"
-      | .other => TacticM.fail "xstep: not a primitive command (for a call, use `xapp spec`)"
+      | .fail => XT.failAt g "xstep: the program fails here (`Prog.fail`: out of fuel?)"
+      | .other => XT.failWith g "xstep: not a primitive command (for a call, use `xapp spec`):" c
 
 def XT.runStep (ns : List String) : TacticM Unit := do
   g ← TacticM.mainGoal;
-  w ← XT.wpGoal g (XT.St.ofNames ns);
+  w ← XT.wpGoal g ns;
   r ← XT.step1 16 w.1 w.2;
-  TacticM.replaceMainGoal r.1
+  XT.leave r.1
 -- `xstep`: one command (read, write, allocate, free, return), through binds
 syntax (name := xstep) "xstep" : tactic
 def Tactic.xstep : Tactic := fun _ => XT.runStep .nil
 attribute [tactic tactic.xstep] Tactic.xstep
 syntax (name := xstepAs) "xstep" "as" sepBy(ident, ",") : tactic
-def Tactic.xstepAs : Tactic := fun stx => XT.runStep (XT.names (Syntax.getArg stx 2))
+def Tactic.xstepAs : Tactic := fun stx => XT.runStep (Syntax.sepIdents (Syntax.getArg stx 2))
 attribute [tactic tactic.xstepAs] Tactic.xstepAs
 
 -- `xval`: the program returns; the rest is `xsimpl`'s
 syntax (name := xval) "xval" : tactic
 def Tactic.xval : Tactic := fun _ => do
   g ← TacticM.mainGoal;
-  w ← XT.wpGoal g (XT.St.ofNames .nil);
+  w ← XT.wpGoal g .nil;
   match w.1 with
+  | .closed => TacticM.replaceMainGoal .nil
   | .mk g₁ V L Ls A c Q => do
-    s ← XT.shape g₁ V A c;
+    s ← XT.shape g₁ c;
     match s with
     | .ret a => do
       Qa ← XT.beta g₁ Q a;
       g₂ ← XT.restate g₁ V L Qa;
       r ← XT.simp 1000 .true g₂ .nil w.2;
-      TacticM.replaceMainGoal r.1
-    | _ => TacticM.fail "xval: the program does not return here"
+      XT.leave r.1
+    | _ => XT.failWith g₁ "xval: the program does not return here:" c
 attribute [tactic tactic.xval] Tactic.xval
 
 -- `xseq`: split `c >>= f` into `c` with the postcondition `fun a => wp (f a) Q`
 syntax (name := xseq) "xseq" : tactic
 def Tactic.xseq : Tactic := fun _ => do
   g ← TacticM.mainGoal;
-  w ← XT.wpGoal g (XT.St.ofNames .nil);
+  w ← XT.wpGoal g .nil;
   match w.1 with
-  | .mk g₁ V L Ls A c Q => (match XT.shapeByName c with
-    | .bind A₀ c₀ f₀ => do
-      w₁ ← XT.split w.1 A₀ c₀ f₀ w.2;
+  | .closed => TacticM.replaceMainGoal .nil
+  | .mk g₁ V L Ls A c Q => (match XT.bindOf c with
+    | .some b => do
+      w₁ ← XT.split w.1 b.1 b.2.1 b.2.2 w.2;
       match w₁.1 with
-      | .mk g₂ _ _ _ _ _ _ => TacticM.replaceMainGoal (g₂ ∷ .nil)
-    | _ => TacticM.fail "xseq: the program is not a bind")
+      | .mk g₂ _ _ _ _ _ _ => XT.leave (g₂ ∷ .nil)
+      | .closed => TacticM.replaceMainGoal .nil
+    | .none => XT.failWith g₁ "xseq: the program is not a bind:" c)
 attribute [tactic tactic.xseq] Tactic.xseq
 
 -- `xapp t` with `t : Triple P c' Q'` (or `P ⊢ wp c' Q'`): binds are split off the front
--- of the program until it is `c'`; `xsimpl` finds `P` in the precondition, and what is
--- left is the frame; the goal goes on after the call, with `Q' r` in the precondition
-def XT.specParts (ety : Expr) : Option (Expr × (Expr × Expr)) := match XT.is "Triple" 5 ety with
-  | .true => .some (XT.arg 2 ety, (XT.arg 3 ety, XT.arg 4 ety))
-  | .false => (match XT.is "Entails" 3 ety with
-    | .true => (match XT.view (XT.arg 2 ety) with
-      | .wp _ c Q => .some (XT.arg 1 ety, (c, Q))
-      | _ => .none)
-    | .false => .none)
-def XT.callGoal : Nat → XT.WpGoal → XT.St → Expr → TacticM (XT.WpGoal × XT.St)
-  | .zero, w, st, _ => TacticM.pure (w, st)
-  | .succ f, w, st, c' => match w with
-    | .mk g V L Ls A c Q => (match XT.shapeByName c with
-      | .bind A₀ c₀ f₀ => do
-        w₁ ← XT.split w A₀ c₀ f₀ st;
+-- of the program (unfolding its head where needed) until it is `c'`; `xsimpl` finds `P`
+-- in the precondition, and what is left is the frame; the goal goes on after the call,
+-- with `Q' r` in the precondition
+def XT.specParts (ety : Expr) : Option (Expr × (Expr × Expr)) := match XT.appN "Triple" 5 ety, XT.appN "Entails" 3 ety with
+  | .some xs, _ => .some (XT.nthE 2 xs, (XT.nthE 3 xs, XT.nthE 4 xs))
+  | _, .some xs => (match XT.view (XT.nthE 2 xs) with
+    | .wp _ c Q => .some (XT.nthE 1 xs, (c, Q))
+    | _ => .none)
+  | _, _ => .none
+def XT.callGoal : Nat → XT.WpGoal → List String → Expr → TacticM (XT.WpGoal × List String)
+  | .zero, w, ns, _ => TacticM.pure (w, ns)
+  | .succ f, .closed, ns, _ => TacticM.pure (.closed, ns)
+  | .succ f, .mk g V L Ls A c Q, ns, c' => (match XT.bindOf c with
+      | .some b => do
+        w₁ ← XT.split (.mk g V L Ls A c Q) b.1 b.2.1 b.2.2 ns;
         XT.callGoal f w₁.1 w₁.2 c'
-      | _ => do
-        ok ← TacticM.isDefEq g c c';
+      | .none => do
+        ok ← XT.eqOrConv g c c';
         match ok with
-        | .true => TacticM.pure (w, st)
+        | .true => TacticM.pure (.mk g V L Ls A c Q, ns)
         | .false => do
-          r ← XT.matchShape g "Prog.bind" (V ∷ .nil) 4 c;
-          match r with
-          | .some es => do
-            w₁ ← XT.split w (XT.nthE 0 es) (XT.nthE 2 es) (XT.nthE 3 es) st;
+          u ← XT.unfoldHead g c;
+          match u with
+          | .some c₁ => do
+            g₁ ← XT.restate g V L (XT.wpOf V A c₁ Q);
+            w₁ ← XT.wpGoal g₁ ns;
             XT.callGoal f w₁.1 w₁.2 c'
-          | .none => TacticM.fail "xapp: the program does not start with the specified one")
+          | .none => do
+            s ← TacticM.ppExpr g c';
+            XT.failWith g (String.append "xapp: the specification is about " (String.append s ", but the program is")) c)
 def XT.runApp (spec : Syntax) (ns : List String) : TacticM Unit := do
   g ← TacticM.mainGoal;
-  w₀ ← XT.wpGoal g (XT.St.ofNames ns);
+  w₀ ← XT.wpGoal g ns;
   match w₀.1 with
+  | .closed => TacticM.replaceMainGoal .nil
   | .mk g₀ _ _ _ _ _ _ => do
     p ← TacticM.elabInfer g₀ spec;
     match XT.specParts p.2 with
-    | .none => TacticM.fail "xapp: expected a triple `Triple P c Q` or `P ⊢ wp c Q`"
+    | .none => XT.failWith g₀ "xapp: expected a triple `Triple P c Q` or `P ⊢ wp c Q`, got" p.2
     | .some s => do
       w ← XT.callGoal 16 w₀.1 w₀.2 s.2.1;
       match w.1 with
+      | .closed => TacticM.replaceMainGoal .nil
       | .mk g₁ V L Ls A c Q => do
         g₂ ← XT.apply1 g₁ "xw.app" (.val V ∷ .val A ∷ .val s.2.1 ∷ .val s.1 ∷ .val s.2.2 ∷ .val p.1 ∷ .val L ∷ .val Q ∷
           .goal ∷ .nil);
         r ← XT.simp 1000 .true g₂ .nil w.2;
-        TacticM.replaceMainGoal r.1
+        XT.leave r.1
 syntax (name := xapp) "xapp" term : tactic
 def Tactic.xapp : Tactic := fun stx => XT.runApp (Syntax.getArg stx 1) .nil
 attribute [tactic tactic.xapp] Tactic.xapp
 syntax (name := xappAs) "xapp" "[" sepBy(ident, ",") "]" term : tactic
-def Tactic.xappAs : Tactic := fun stx => XT.runApp (Syntax.getArg stx 4) (XT.names (Syntax.getArg stx 2))
+def Tactic.xappAs : Tactic := fun stx => XT.runApp (Syntax.getArg stx 4) (Syntax.sepIdents (Syntax.getArg stx 2))
 attribute [tactic tactic.xappAs] Tactic.xappAs
 
 -- `xchange e` with `e : H₁ ⊢ H₂`: replace the atom `H₁` of the precondition by `H₂`
 syntax (name := xchange) "xchange" term : tactic
 def Tactic.xchange : Tactic := fun stx => do
   g₀ ← TacticM.mainGoal;
-  r₀ ← XT.simp 1000 .false g₀ .nil (XT.St.ofNames .nil);
-  g ← XT.headGoal r₀.1;
-  ty ← TacticM.goalType g;
-  p ← TacticM.elabInfer g (Syntax.getArg stx 1);
-  match Bool.and (XT.is "Entails" 3 ty) (XT.is "Entails" 3 p.2) with
-  | .false => TacticM.fail "xchange: expected an entailment goal and `e : H₁ ⊢ H₂`"
-  | .true => do
-    let V := XT.arg 0 ty;
-    let R := XT.arg 2 ty;
-    let H₁ := XT.arg 1 p.2;
-    let H₂ := XT.arg 2 p.2;
-    match XT.flatOf (XT.arg 1 ty) with
-    | .none => TacticM.fail "xchange: the precondition is not flat"
-    | .some Ls => do
-      ix ← XT.findConv g H₁ 0 Ls;
-      match ix with
-      | .none => TacticM.fail "xchange: the precondition has no such atom"
-      | .some i => do
-        g₁ ← XT.frontL g V Ls R i;
-        let rest := XT.drop i Ls;
-        g₂ ← XT.apply1 g₁ "xs.change_l" (.val V ∷ .val H₁ ∷ .val H₂ ∷ .val p.1 ∷ .val (XT.lstV V rest) ∷ .val R ∷
-          .goalAt (XT.ent V (XT.sl V (H₂ ∷ rest)) R) ∷ .nil);
-        r ← XT.simp 1000 .false g₂ .nil (XT.St.ofNames .nil);
-        TacticM.replaceMainGoal r.1
+  r₀ ← XT.simp 1000 .false g₀ .nil .nil;
+  match r₀.1 with
+  | .nil => TacticM.replaceMainGoal .nil
+  | .cons g _ => do
+    ty ← TacticM.goalType g;
+    p ← TacticM.elabInfer g (Syntax.getArg stx 1);
+    match XT.appN "Entails" 3 ty, XT.appN "Entails" 3 p.2 with
+    | .some (.cons V (.cons L (.cons R .nil))), .some (.cons _ (.cons H₁ (.cons H₂ .nil))) => (match XT.flatOf L with
+      | .none => XT.failAt g "xchange: the precondition is not flat"
+      | .some Ls => do
+        ix ← XT.findConv g H₁ 0 Ls;
+        match ix with
+        | .none => XT.failWith g "xchange: the precondition has no atom" H₁
+        | .some i => do
+          g₁ ← XT.frontL g V Ls R i;
+          let rest := XT.drop i Ls;
+          g₂ ← XT.apply1 g₁ "xs.change_l" (.val V ∷ .val H₁ ∷ .val H₂ ∷ .val p.1 ∷ .val (XT.lstV V rest) ∷ .val R ∷
+            .goalAt (XT.ent V (XT.sl V (H₂ ∷ rest)) R) ∷ .nil);
+          r ← XT.simp 1000 .false g₂ .nil .nil;
+          XT.leave r.1)
+    | _, _ => XT.failAt g "xchange: expected an entailment goal and `e : H₁ ⊢ H₂`"
 attribute [tactic tactic.xchange] Tactic.xchange
 
 -- `xunfold`: unfold every atom of the precondition that computes (one level), and pull
-def XT.unfoldEach (g : Nat) (V : Expr) : List Expr → TacticM (List Expr × List String)
-  | .nil => TacticM.pure (.nil, .nil)
+def XT.unfoldEach (g : Nat) : List Expr → TacticM (List Expr)
+  | .nil => TacticM.pure .nil
   | .cons e es => do
-    r ← XT.unfold1 g V e;
-    rest ← XT.unfoldEach g V es;
+    r ← XT.unfold1 g e;
+    rest ← XT.unfoldEach g es;
     match r with
-    | .some e' => TacticM.pure (e' ∷ rest.1, XT.headName e ∷ rest.2)
-    | .none => TacticM.pure (e ∷ rest.1, rest.2)
+    | .some e' => TacticM.pure (e' ∷ rest)
+    | .none => TacticM.pure (e ∷ rest)
 def XT.runUnfold (ns : List String) : TacticM Unit := do
   g₀ ← TacticM.mainGoal;
-  r₀ ← XT.simp 1000 .false g₀ .nil (XT.St.ofNames .nil);
-  g ← XT.headGoal r₀.1;
-  ty ← TacticM.goalType g;
-  match XT.is "Entails" 3 ty with
-  | .false => TacticM.fail "xunfold: expected an entailment"
-  | .true => (match XT.flatOf (XT.arg 1 ty) with
-    | .none => TacticM.fail "xunfold: the precondition is not flat"
-    | .some Ls => do
-      u ← XT.unfoldEach g (XT.arg 0 ty) Ls;
-      g₁ ← XT.restate g (XT.arg 0 ty) (XT.sl (XT.arg 0 ty) u.1) (XT.arg 2 ty);
-      r ← XT.simp 1000 .false g₁ .nil (.mk ns u.2);
-      TacticM.replaceMainGoal r.1)
+  r₀ ← XT.simp 1000 .false g₀ .nil .nil;
+  match r₀.1 with
+  | .nil => TacticM.replaceMainGoal .nil
+  | .cons g _ => do
+    ty ← TacticM.goalType g;
+    match XT.appN "Entails" 3 ty with
+    | .some (.cons V (.cons L (.cons R .nil))) => (match XT.flatOf L with
+      | .none => XT.failAt g "xunfold: the precondition is not flat"
+      | .some Ls => do
+        Ls' ← XT.unfoldEach g Ls;
+        g₁ ← XT.restate g V (XT.sl V Ls') R;
+        r ← XT.simp 1000 .false g₁ .nil ns;
+        XT.leave r.1)
+    | _ => XT.failAt g "xunfold: expected an entailment"
 syntax (name := xunfold) "xunfold" : tactic
 def Tactic.xunfold : Tactic := fun _ => XT.runUnfold .nil
 attribute [tactic tactic.xunfold] Tactic.xunfold
 syntax (name := xunfoldAs) "xunfold" "as" sepBy(ident, ",") : tactic
-def Tactic.xunfoldAs : Tactic := fun stx => XT.runUnfold (XT.names (Syntax.getArg stx 2))
+def Tactic.xunfoldAs : Tactic := fun stx => XT.runUnfold (Syntax.sepIdents (Syntax.getArg stx 2))
 attribute [tactic tactic.xunfoldAs] Tactic.xunfoldAs
 
 -- `xgo`: commands until a call (or the end), then `xsimpl`

@@ -44,7 +44,9 @@ def elabTelescope (ctx : LocalCtx R) (bs : List BinderView) :
       | none => freshMeta ctx s!"the type of {b.name}"
     let q ← elabQuantity ctx b.bi b.qty
     tele := tele.push (b.name, b.bi, q, ty)
-    ctx := ctx.bind b.name (← evalIn ctx ty)
+    let vty ← evalIn ctx ty
+    recordBinder ctx b.info b.name vty
+    ctx := ctx.bind b.name vty
   pure (ctx, tele)
 
 /-- `(a₁, (a₂, …, ()))` -/

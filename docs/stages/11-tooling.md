@@ -179,3 +179,59 @@ every non-ASCII character in `lib/*.wiz` has an abbreviation, and drives the inf
 against the real `wiz lsp` on `tests/fixture/Goals.wiz`: the goal after `intro n`, an
 argument's expected type, constants highlighted, `K` on `Bool` giving `Bool : Type`,
 the view following an edit. It is skipped without `nvim`.
+
+## 11q: go to definition and the infoview for syntax, binders, imports and instances ✅
+
+Hovers, go to definition and the infoview used to know only about terms. Now (as in
+Lean) they also know about syntax:
+
+```
+syntax (name := twice) "twice" term:max : term       -- declaration of `twice`
+macro_rules
+  | `(term| twice $x) => `(term| Nat.add $x $x)      -- definition of `twice`
+def four : Nat := twice two
+--                ^ hover: twice two : Nat
+--                         syntax `term.twice` (this file, line 1)
+--                         by macro rule (this file, line 3), expands to  Nat.add two two
+```
+
+* **Uses of syntax.** Each command the user wrote is walked once for nodes of declared
+  kinds (`syntax`, `notation`, `infix…`; also in the patterns of `macro_rules`) and for
+  the names of declared categories (`syntax … : c`, `c:prec`, `` `(c| …) ``); the
+  elaborator records what expanded each node it met (the macro rule, a procedural macro
+  `attribute [macro k] f`, a command macro, or the tactic function `attribute [tactic k]
+  f`) and what it expanded to. **Go to definition** goes to what expanded it, **go to
+  declaration** (`textDocument/declaration`, now advertised) to the `syntax` command;
+  for `notation` and `infix…` both are the same command. Prelude notation (`+`, `do`,
+  …) jumps into the toolchain's `lib/Prelude.wiz`. The hover shows the source with its
+  type, the syntax and where it was declared, the rule and the expansion (one step), and
+  the instance the notation needed (`Add Nat`). The declaring commands' ranges are kept
+  by kind and category (`CommandState.kindSites`, `catSites`) and in each `MacroRule`.
+* **Macro output is synthetic.** A template's ranges are those of the file that
+  declared the rule, so before this an expansion of a Prelude macro recorded hovers and
+  expected types at Prelude offsets in the user's file. `SourceInfo.synthetic` now marks
+  a template's nodes (and a procedural macro's output, which has the call's range):
+  nothing is recorded at them, and the local context keeps the nearest range the user
+  wrote, so errors inside an expansion point at the macro call or at the argument the
+  user wrote. What antiquotations bind keeps its ranges, so `twice two` still has a
+  hover on `two`.
+* **Binders and pattern variables** (of `def`, `fun`, `∀`/`→`, `×`, `let`, inductive
+  and structure parameters and fields, and `match` arms) are recorded like identifiers
+  (hover: `n : Nat`) and with their context, so the expected type request
+  (`wiz/plainTermGoal`, the infoview's "Expected type") shows a pattern variable in the
+  context of its arm.
+* **`import M`**: hover shows the module's file, go to definition opens it.
+* **Commands, instances and messages: `wiz/interactiveInfo`**, a new infoview request
+  (protocol in `wiz-notes/infoview-protocol.md`, §4), lists what else is at the cursor:
+  the syntax and expansion, the import, the instances found at the innermost
+  application (`instance … : Mul Nat`, at `2 * 3`), the declarations of the command
+  (a `structure`: its type, constructor and fields, with their types; an `inductive`:
+  its constructors), and the messages there (`#check`, `#eval`). wiz.nvim shows them as
+  sections under the goals, and `gd` on an item jumps to it. `#check`, `#eval`,
+  `#reduce`, `#run`, `inductive` and `structure` now keep their info trees, so hovers
+  work inside them too.
+
+Not covered: hovers inside tactic arguments (a tactic gets its syntax without ranges),
+a procedural macro's output (it has no ranges of the user's), the arguments of
+`attribute`, and docstrings (Wiz has none). Design notes: `wiz-notes/info-syntax.md`.
+Tested in the `lsp-server` group and by wiz.nvim's tests (`nvim`).
