@@ -235,9 +235,10 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
     | .ok r => .ok r
     | .error e =>
       if subTy s.globals ctx.types.reverse.toArray inferred expected then .ok ((), s) else
-      let show' (v : VTy R) := (quote s.globals ctx.lvl v).pretty ctx.names
+      let show' (v : VTy R) := elideLong ((quote s.globals ctx.lvl v).pretty ctx.names)
       .error { info := (ctx.withInfo stx).info,
-               msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})" }
+               msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})",
+               code := e.code }
 
 /-- A type evaluated while some of its holes were unsolved: an equation in it computed
 (or got stuck) on the holes, and stays so after they are solved (`w ?n = 8`). Evaluate it
@@ -444,6 +445,39 @@ partial def trivialProof (g : Globals R) (ty : Val R) : Option (Val R) :=
   | .neutral (.eq A a _) _ => some (.neutral (.refl A a) #[])
   | .neutral (.eqTy X _) _ => some (.neutral (.reflTy X) #[])
   | _ => none
+
+/-- `Term.abstract`, but not inside the arguments of an unsolved hole: there the
+scrutinee stays as it is (still in scope in every branch). Abstracted, `?A b` would be
+`?A .false` in the branch for `.false`, outside the pattern fragment, and could not be
+solved (`x ← match b with …` in a `do` block, where `?A` is the match's type). -/
+partial def abstractOutsideHoles (t target : Term R) (depth : Nat := 0) : Term R :=
+  if t == target.lift depth then .var depth else
+  match t, (Term.spine t).1 with
+  | .app .., .mvar _ => t.lift 1 depth
+  | .var i, _ => if i ≥ depth then .var (i + 1) else .var i
+  | t, _ => Id.run <| t.mapChildrenM pure (fun d c => pure (abstractOutsideHoles c target (depth + d)))
+
+/-- `typeSort?`, but a hole's universe is the one recorded for it (`addSortConstraint`,
+as for an implicit argument `{A : Type}`): the type of a `match` that is still `M ?A`
+(`x ← match …` in a `do` block) has a universe. `tys`: the context's types, by level. -/
+partial def elabTypeSort? (tys : Array (VTy R)) (v : VTy R) : ElabM R (Option Level) := do
+  let g ← getGlobals
+  if let some l := typeSort? g tys v then return some l
+  match ← force v with
+  | .neutral (.mvar m) _ =>
+    for (_, t, l) in (← get).sortConstraints do
+      if let .mvar m' := (Term.spine t).1 then
+        if m' == m then return some (← instLevel l)
+    return none
+  | .pi _ _ _ A B _ =>
+    let some a ← elabTypeSort? tys A | return none
+    let some b ← elabTypeSort? (tys.push A) (← instM B (Val.var tys.size)) | return none
+    return some (.imax a b)
+  | .sigma _ _ A B _ =>
+    let some a ← elabTypeSort? tys A | return none
+    let some b ← elabTypeSort? (tys.push A) (← instM B (Val.var tys.size)) | return none
+    return some (.max a b)
+  | _ => return none
 
 /-- Replace recursive calls `f y a…` (with `y` a field that has a hypothesis `h`) by
 `h a…`, and `f (k e) a…` (with `k` an infinitary field) by `h e a…`. Returns the
@@ -1150,7 +1184,16 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
       fty ← instM cod (← evalIn ctx m)
     | _ => return ← (do let (t, ty) ← inferApp ctx stx (postpone := false); unifyAt ctx stx expected ty; pure t)
   (f, fty) ← insertImplicits ctx f fty
-  let _ ← tryCatch (unify ctx.lvl expected fty) (fun _ => pure ())
+  -- (speculative, so no guesses when the result type depends on the arguments: their
+  -- placeholders are determined by the arguments, not by a first-order guess; see "When
+  -- unification approximates" in `Unify.lean`)
+  let holes := pending.filterMap fun (_, m, _, _) => match (Term.spine m).1 with
+    | .mvar id => some id
+    | _ => none
+  let dependent := (quote (← getGlobals) ctx.lvl fty).mvars.any holes.contains
+  let cur := (← get).approx
+  let approx := if dependent then Approx.none else cur
+  let _ ← tryCatch (withApprox approx (unify ctx.lvl expected fty)) (fun _ => pure ())
   let mut args : Array (Term R × Term R) := #[]
   -- a lambda with unannotated binders whose domains aren't known yet waits for the other
   -- arguments, which may fix them (`zipWith3 (fun b x y => if b then x else y) c t e`)
@@ -1225,6 +1268,9 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   let (f, fty) ← infer ctx fStx
   let mut f := f
   let mut fty := fty
+  -- arguments whose type couldn't be unified yet (outside the pattern fragment): they
+  -- wait, behind a placeholder, for the later arguments (which may solve the holes)
+  let mut waiting : Array (Syntax × Term R × VTy R) := #[]
   for arg in (stx.getArg 1).args do
     if !explicitMode then
       (f, fty) ← insertImplicits ctx f fty
@@ -1247,10 +1293,30 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
           let m ← freshMeta (ctx.withInfo arg) s!"instance {x}"
           addInstProblem ctx m dom
           pure m
-        else check ctx arg dom
+        else match ← tryCatch (Except.ok <$> check ctx arg dom) (fun e => pure (.error e)) with
+          | .ok a => pure a
+          | .error e =>
+            if e.code != "non-pattern" then throw e
+            let m ← freshPlaceholder (ctx.withInfo arg)
+            waiting := waiting.push (arg, m, dom)
+            pure m
       f := .app f a
       fty ← instArgM ctx cod a
     | _ => throwAt {} "unreachable"
+  -- the waiting arguments, now; still outside the pattern fragment, with the flex-flex
+  -- guess as the last resort (see "When unification approximates" in `Unify.lean`)
+  let mut done : Array (Term R × Term R) := #[]
+  for (arg, m, dom) in waiting do
+    let a ← tryCatch (check ctx arg dom) fun e => do
+      if e.code != "non-pattern" then throw e
+      withApprox .last (check ctx arg dom)
+    unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
+    done := done.push (m, a)
+  if !done.isEmpty then
+    let rec respine (t : Term R) : Term R := match t with
+      | .app g x => .app (respine g) (((done.find? (·.1 == x)).map (·.2)).getD x)
+      | t => t
+    f := respine f
   -- trailing instance arguments are inserted (`bitWidth A : Nat` for
   -- `bitWidth (0 A : Type) [BitPack A] : Nat`), as are implicits before them
   if !explicitMode && (← trailingInst ctx.lvl fty) then
@@ -1464,7 +1530,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- the motive's universe
   let tys := ctx.types.reverse.toArray
   let Gv ← evalIn ctx G
-  let vG := typeSort? g tys Gv
+  let vG ← elabTypeSort? tys Gv
   let ctors : List Name := match descD.value.map (fun v => (piInfos descD.type).foldl (fun t _ => match t with
       | .lam _ b => b
       | t => t) v) with
@@ -1708,7 +1774,7 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   -- abstract the scrutinees, last first
   -- (each abstraction adds a binder: the later scrutinee terms are lifted over it)
   let mut absGoal := goalTm
-  for t in ts, k in [0:ts.size] do absGoal := absGoal.abstract (t.lift k)
+  for t in ts, k in [0:ts.size] do absGoal := abstractOutsideHoles absGoal (t.lift k)
   let _ := goalTm
   let mut lvls : List Lvl := []
   -- a scrutinee's type mentions the earlier scrutinees (`match e, h with` for

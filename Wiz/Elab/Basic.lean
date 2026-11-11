@@ -124,6 +124,16 @@ inductive RawInfo (R : Type) where
   /-- nothing to quote -/
   | done (i : Info R)
 
+/-- Which heuristic (non-unique) solutions unification may pick outside the pattern
+fragment (the rule and its table: `Unify.lean`, "When unification approximates").
+`none`: no first-order guess (the speculative "expected type first" pass of an
+application whose result depends on arguments not elaborated yet); `default`:
+flex-rigid guesses; `last`: also flex-flex guesses (a postponed argument, once nothing
+else can make progress). -/
+inductive Approx where
+  | none | default | last
+  deriving BEq, Inhabited
+
 structure ElabState (R : Type) where
   globals : Globals R
   metas : Array (MetaEntry R) := #[]
@@ -159,6 +169,8 @@ structure ElabState (R : Type) where
   /-- record the expected type of every checked term, not only of holes (the language
   server asks for it; it costs a quote per term) -/
   termInfo : Bool := false
+  /-- the heuristics unification may use (`Approx`) -/
+  approx : Approx := .default
   /-- instance problems not solved yet: the hole, in its context, and its class type -/
   pendingInsts : Array (LocalCtx R × Term R × VTy R) := #[]
   /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
@@ -334,9 +346,18 @@ def instLevel (l : Level) : ElabM R Level := do
   pure (l.instMVars fun m => ls[m]?.join)
 
 
-def showTerm (ctx : LocalCtx R) (t : Term R) : String := t.pretty ctx.names
+def showTerm (ctx : LocalCtx R) (t : Term R) : String := elideLong (t.pretty ctx.names)
 
 def showVal (ctx : LocalCtx R) (v : Val R) : ElabM R String :=
-  return (quote (← getGlobals) ctx.lvl v).pretty ctx.names
+  return elideLong ((quote (← getGlobals) ctx.lvl v).pretty ctx.names)
+
+/-- Run `x` with the unification heuristics `a` (`Approx`); the previous setting comes
+back afterwards (on failure too: `ElabM` drops a failed computation's state). -/
+def withApprox {α : Type} (a : Approx) (x : ElabM R α) : ElabM R α := do
+  let saved := (← get).approx
+  modify fun s => { s with approx := a }
+  let r ← x
+  modify fun s => { s with approx := saved }
+  pure r
 
 end Wiz

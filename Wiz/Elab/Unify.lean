@@ -85,14 +85,14 @@ def invert (gamma : Lvl) (sp : Array (Elim R)) : ElabM R PRen := do
   let mut repeated : Array Lvl := #[]
   let mut dom := 0
   for e in sp do
-    let .app v := e | throwAt {} "unification problem is outside the pattern fragment"
+    let .app v := e | throwAt {} "unification problem is outside the pattern fragment" "non-pattern"
     match ← force v with
     | .neutral (.local x) #[] =>
       -- a repeated variable can't be used by the solution (which occurrence?)
       if ren.contains x then repeated := repeated.push x
       ren := ren.insert x dom
       dom := dom + 1
-    | _ => throwAt {} "unification problem is outside the pattern fragment"
+    | _ => throwAt {} "unification problem is outside the pattern fragment" "non-pattern"
   pure { dom, cod := gamma, ren := repeated.foldl (·.erase ·) ren }
   --|ex
   --| sorry
@@ -336,7 +336,11 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .lam _ b, t' => unify (l + 1) (← instM b (Val.var l)) (← vAppM t' (Val.var l))
   | t', .lam _ b => unify (l + 1) (← vAppM t' (Val.var l)) (← instM b (Val.var l))
   | .neutral (.mvar m) sp, .neutral (.mvar m') sp' =>
-    if m == m' then unifySpine l sp sp' else solve l m sp (.neutral (.mvar m') sp')
+    if m == m' then unifySpine l sp sp' else
+    -- (if the left spine isn't a pattern, the right one may be)
+    tryCatch (solve l m sp (.neutral (.mvar m') sp')) fun e => do
+      if e.code != "non-pattern" then throw e
+      solve l m' sp' (.neutral (.mvar m) sp)
   | .neutral (.mvar m) sp, t' => solve l m sp t'
   | t', .neutral (.mvar m) sp => solve l m sp t'
   | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'
@@ -380,13 +384,17 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
       attempt (unify l v.get u)
   | .neutral (.mvar m) sp, v@(.unfold ..) | v@(.unfold ..), .neutral (.mvar m) sp =>
     if ← attempt (solve l m sp v) then return true
+    if (← get).approx == .none then return false
     unifyFirstOrder l m sp v
   -- a hole against a rigid neutral, outside the pattern fragment:
   -- * the same projection on both sides (`?e.op =?= e.op`): unify what is projected;
   -- * applications (`?M ?A =?= m A`): the first-order approximation.
   -- (Heuristics like Lean's, tried only when pattern unification fails.)
   | .neutral (.mvar m) sp, v@(.neutral h' sp') | v@(.neutral h' sp'), .neutral (.mvar m) sp =>
-    if h' matches .mvar _ then return false
+    -- (flex-flex: only as the last resort, see "When unification approximates")
+    if let .mvar m' := h' then
+      if m' == m || (← get).approx != .last then return false
+    if (← get).approx == .none then return false
     if ← isPattern sp then return false
     match sp.back?, sp'.back? with
     | some .fst, some .fst | some .snd, some .snd =>

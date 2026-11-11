@@ -31,6 +31,39 @@ def okLibBounded (mb : Nat) (input : String) (infos : List String := []) : IO Un
   let peak ← peakMB
   unless peak ≤ mb do throw (IO.userError s!"used {peak} MB (bound: {mb} MB)")
 
+/-- A state monad over `Nat`, for `do` blocks without `Sys`. -/
+def stateM : String := "import Prelude
+def M (A : Type) : Type := Nat → (_ : A) × Nat
+instance : Monad M where
+  pure := fun a s => (a, s)
+  bind := fun x f s => f (x s).1 (x s).2
+def get : M Nat := fun s => (s, s)
+def put (n : Nat) : M Unit := fun _ => ((), n)
+"
+
+/-- `allBelow` and the two halves of a conjunction (the icestick-uart proofs). -/
+def allBelowSrc : String := "import Prelude
+def allBelow : Nat → (Nat → Bool) → Bool
+  | .zero, p => .true
+  | .succ n, p => Bool.and (p 0) (allBelow n (fun (k : Nat) => p (Nat.succ k)))
+def and_left : (a b : Bool) → Bool.and a b = .true → a = .true
+  | .true, b, h => refl Bool.true
+  | .false, b, h => absurd h.1
+def and_right : (a b : Bool) → Bool.and a b = .true → b = .true
+  | .true, b, h => h
+  | .false, b, h => absurd h.1
+"
+
+/-- The shape of `Hw` (lib/Hdl/Core.wiz) that `Hw.cat (Hw.lit 1 1) d` needs. -/
+def hwSrc : String := "import Prelude
+inductive HwTy where
+  | bits (n : Nat)
+def HwTy.bit : HwTy := HwTy.bits 1
+class Hw (r : HwTy → Type) where
+  lit : (ω n : Nat) → Nat → r (HwTy.bits n)
+  cat : {ω m n : Nat} → r (HwTy.bits m) → r (HwTy.bits n) → r (HwTy.bits (Nat.add m n))
+"
+
 /-- `p.1` and `p.2` of a glued global `p := (a, a)` stay glued: the spine records the
 projection and `p` is not unfolded (elab-bugs-from-hdl 2). -/
 def gluedProjections : IO Unit := do
@@ -269,7 +302,76 @@ def group : Group where
           "def Op.isAdd : Op → Bool\n  | .add => .true\n  | _ => .false\n" ++
           "def Op.isAdd2 (o : Op) : Bool := match o with\n  | .add => .true\n  | _ => .false\n" ++
           "def Op.lo : Op → List Nat → Nat\n  | .slice lo, _ => lo\n  | _, _ => 0\n" ++
-          "#eval Op.isAdd (Op.input 0)\n#eval Op.isAdd2 Op.add\n#eval Op.lo (Op.slice 4) List.nil") [".false", ".true", "4"] }
+          "#eval Op.isAdd (Op.input 0)\n#eval Op.isAdd2 Op.add\n#eval Op.lo (Op.slice 4) List.nil") [".false", ".true", "4"] },
+    { name := "every form of `let` in a `do` block scopes over the rest of the block (do-let-omega-scope)", run := fun _ =>
+        -- `let ω x := e; s₁; s₂`, `let x : T := e; …` and `let (a, b) := e; …` used to
+        -- parse as a term-level `let` whose body was `s₁` alone: `x` was unknown in `s₂`
+        okLib (stateM ++ "def a (d : Nat) : M Nat := do\n  let ω n := Nat.add d 1;\n  put n;\n  Monad.pure n\n" ++
+          "def b (d : Nat) : M Nat := do\n  let n : Nat := Nat.add d 2;\n  put n;\n  Monad.pure n\n" ++
+          "def c (p : (_ : Nat) × Nat) : M Nat := do\n  let (x, y) := p;\n  put x;\n  Monad.pure y\n" ++
+          "#eval (a 1 0).1\n#eval (b 1 0).1\n#eval (c (3, 4) 0).2") ["2", "3", "3"] },
+    { name := "structural recursion doesn't depend on the order of the matched arguments (B4)", run := fun _ =>
+        -- the recursive call's result type `?p ?k = .true` met the expected `p (succ k) =
+        -- .true` before the arguments were elaborated, and the first-order guess
+        -- `?k := succ k` was kept (see "When unification approximates", Unify.lean)
+        okLib (allBelowSrc ++
+          "def spec1 : (n k : Nat) → (p : Nat → Bool) → allBelow n p = .true → Nat.lt k n = .true → p k = .true\n" ++
+          "  | .zero, .zero, p, h, hk => absurd hk.1\n  | .zero, .succ k, p, h, hk => absurd hk.1\n" ++
+          "  | .succ n, .zero, p, h, hk => and_left (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h\n" ++
+          "  | .succ n, .succ k, p, h, hk =>\n    spec1 n k (fun (j : Nat) => p (Nat.succ j))\n" ++
+          "      (and_right (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h) hk\n" ++
+          "def spec2 : (k n : Nat) → (p : Nat → Bool) → allBelow n p = .true → Nat.lt k n = .true → p k = .true\n" ++
+          "  | .zero, .zero, p, h, hk => absurd hk.1\n  | .succ k, .zero, p, h, hk => absurd hk.1\n" ++
+          "  | .zero, .succ n, p, h, hk => and_left (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h\n" ++
+          "  | .succ k, .succ n, p, h, hk =>\n    spec2 k n (fun (j : Nat) => p (Nat.succ j))\n" ++
+          "      (and_right (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h) hk\n") },
+    { name := "approximation: no guess for a hole an unelaborated explicit argument determines", run := fun _ =>
+        -- `?p ?k =?= ok (base + k)`: `?p`, `?k` stand for the explicit arguments
+        -- `(fun j => ok (base + j))` and `k`; guessing `?k := base + k` was wrong
+        okLib (allBelowSrc ++
+          "def spec : (k n : Nat) → (p : Nat → Bool) → allBelow n p = .true → Nat.lt k n = .true → p k = .true\n" ++
+          "  | .zero, .zero, p, h, hk => absurd hk.1\n  | .succ k, .zero, p, h, hk => absurd hk.1\n" ++
+          "  | .zero, .succ n, p, h, hk => and_left (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h\n" ++
+          "  | .succ k, .succ n, p, h, hk =>\n    spec k n (fun (j : Nat) => p (Nat.succ j))\n" ++
+          "      (and_right (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h) hk\n" ++
+          "def ok (b : Nat) : Bool := Nat.beq b 3\n" ++
+          "def t (base : Nat) (h : allBelow 16 (fun (j : Nat) => ok (base + j)) = .true) (k : Nat)\n" ++
+          "    (hk : Nat.lt k 16 = .true) : ok (base + k) = .true :=\n  spec k 16 (fun (j : Nat) => ok (base + j)) h hk\n" ++
+          -- (a rigid result is still propagated: `Fin`-like indices come from the expected type)
+          "def t2 (p : Nat → Bool) (h : allBelow 16 p = .true) (k : Nat) (hk : Nat.lt k 16 = .true) : p k = .true :=\n" ++
+          "  spec k 16 p h hk\n") },
+    { name := "approximation: flex-rigid outside the pattern fragment still guesses (`?m ?A =?= M Nat`)", run := fun _ =>
+        okLib (stateM ++ "def g : M Nat := Monad.bind get (fun x => Monad.pure (Nat.add x 1))\n#eval (g 4).1") ["5"] },
+    { name := "approximation: flex-flex waits for the other arguments (Hw.cat (Hw.lit 1 1) d)", run := fun _ =>
+        -- `?r (.bits ?m) =?= ?r' (.bits 1)`: neither side is a pattern; the argument waits
+        -- until `d` fixes `?r`, then it is flex-rigid
+        okLib (hwSrc ++ "def frame9 {r : HwTy → Type} [Hw r] (d : r (HwTy.bits 8)) : r (HwTy.bits 9) :=\n" ++
+          "  Hw.cat (Hw.lit 1 1) d\n" ++
+          "def hiFirst {r : HwTy → Type} [Hw r] (hi : r HwTy.bit) (d : r (HwTy.bits 8)) : r (HwTy.bits 9) :=\n" ++
+          "  Hw.cat hi d\n") },
+    { name := "approximation: flex-flex guesses only as the last resort", run := fun _ =>
+        -- both arguments are flex-flex against the result: nothing else can make progress
+        okLib (hwSrc ++ "def two {r : HwTy → Type} [Hw r] : r (HwTy.bits 2) :=\n  Hw.cat (Hw.lit 1 1) (Hw.lit 1 0)\n") },
+    { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
+        -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
+        -- the scrutinee isn't abstracted inside `?A b` (that would leave the pattern fragment)
+        okLib (stateM ++ "def a1 (b : Bool) : M Nat := do\n  t ← get;\n  x ← (match b with | .true => get | .false => Monad.pure 1);\n  Monad.pure (Nat.add x t)\n" ++
+          "def a2 (o : Option Nat) : M Nat := do\n  t ← get;\n  let r := (match o with | .some w => w | .none => t);\n  Monad.pure r\n" ++
+          "def a3 (b : Bool) : M Nat := do\n  t ← get;\n  match t, b with\n  | .zero, .true => Monad.pure 1\n  | _, _ => Monad.pure 2\n" ++
+          "#eval (a1 .true 3).1\n#eval (a1 .false 3).1\n#eval (a2 .none 7).1") ["6", "4", "7"] },
+    { name := "a type in a message is bounded (P1)", run := fun _ => do
+        -- an equation between two long lists computes to a Σ of `True`s; printed in full,
+        -- with primes for each shadowed binder, it was tens of kilobytes
+        let n := 120
+        let lst := (List.range n).foldr (fun i acc => s!"(List.cons {i} {acc})") "List.nil"
+        let src := s!"import Prelude\ndef L : List Nat := {lst}\ndef bad (h : L = L) : Nat := h\n"
+        let loader ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
+        let errs := s.messages.filter (·.severity == .error)
+        unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}")
+        let t := errs[0]!.text
+        check (t.length < 4000) s!"the message has {t.length} characters"
+        check ((t.splitOn "characters left out").length > 1) s!"nothing was left out: {t.take 300}" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
