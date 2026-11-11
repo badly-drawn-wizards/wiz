@@ -136,6 +136,53 @@ at `r (bits n)` (instances of the numeric classes, when they land: `Add`, `Sub`,
 `Neg`, `OfNat` at `r (HwTy.bits n)` through `Hw`), wire names from `let` binders (an
 elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
 
+## H14 T: temporal properties of circuits (prototype)
+
+Stating and proving properties of circuits over unbounded time, after TLA+, LTL and
+SVA. `lib/Hdl/Temporal.wiz`; examples and tests in `examples/hdl-temporal.wiz` (group
+`hdl`). Survey and design: `/workspace/wiz-notes/hdl-temporal.md`.
+
+```
+def Uart.onlyThat (b : Nat) (early : Mealy.checkFrom … F loopback.init (sendOnce b) = .true)
+    (settled : Mealy.stateAt … F = loopIdle b) :
+    TL.always (TL.nowB (fun o => onlyByte b o.1 o.2)) (Mealy.obs (Circuit.stepEl loopback) loopback.init (sendOnce b)) 0
+def Uart.onlyThat_a5 := Uart.onlyThat 165 rfl rfl     -- for ever, from 48 cycles of evaluation
+```
+
+* **Traces are functions** `Trace A := Nat → A`, not ν-streams: equality at ν is stuck,
+  equality of functions is pointwise. A formula `TL A := Trace A → Nat → Prop` holds of a
+  trace at a cycle. `TL.always φ σ t := ∀ k, φ σ (k + t)`, `TL.eventually` its `∃`.
+* **Operators**: `now`/`nowB` (atoms), `and`/`or`/`imp`/`not`, `next` (○), `nexts n`
+  (`##n`), `within n` and `during n` (bounded ◇ and □), `delayRange m n` (`##[m:n]`),
+  `until`, `implies`/`impliesNext` (`|->`/`|=>` for a Boolean antecedent), `past n`
+  (`$past`), and TLA's `leadsTo`, `infOften`, `WF`, `SF`, `act` and `stut` (`[R]_v`).
+* **Laws**: `always_now`, `always_next`, `always_cons`, `always_ind` (induction on time),
+  `always_mono`, `always_and`, `always_during`, `eventually_now`, `eventually_next`,
+  `eventually_mono`, `within_eventually`, `splitAt` (a transient phase, then the rest).
+* **Mealy machines** (`Circuit.stepEl c` is one): `Mealy.stateAt`, `outAt`, `obs` (the
+  trace of states and inputs). `Mealy.runFrom_take`: `Circuit.runFrom` on the first `n`
+  inputs is the first `n` outputs, so finite simulations are prefixes of the traces.
+* **Proof rules**: `Mealy.invariant` (an inductive invariant under an environment
+  assumption), `Mealy.simulates`/`simulatesOut` (refinement by a representation map from
+  a specification: one step, by cases, gives every cycle), `Mealy.refinesStut` (TLA
+  refinement up to stuttering), `TL.fairStep` (liveness from a fair Boolean event: WF1),
+  `TL.rank` (liveness with a bound from a ranking function), `Mealy.settles` and
+  `always_settled` (the run reaches a state that is fixed under the remaining inputs).
+* **Bounded checks by evaluation**: `Mealy.checkFrom`/`findFrom` (one pass over a run)
+  with `_spec`, `checkFrom_during`, `findFrom_within`: a `.true` by `rfl` becomes a
+  temporal statement. For long checks, `native_refl` (stage 27a) is the intended backend.
+
+The examples: the UART transmitter's line is high whenever it is idle, at every cycle;
+the loopback delivers the byte sent within 45 cycles and reports no other, for ever (per
+byte, from 48 evaluated cycles plus a fixed point); a valid/ready buffer refines a
+Bool-level specification for every input trace, keeps an offered item stable (AXI), and
+hands on every accepted item if the consumer is ready infinitely often.
+
+Not done: sequences with repetition (SEREs; planned as monitor circuits), stuttering
+invariance as a theorem, a deep embedding printable as SVA, case splits on neutral bits
+(they need the range of `UIntN` in the sealed type; wishful `uintn-range-proof`), a tactic
+for the Bool case splits of refinement steps.
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
