@@ -431,8 +431,12 @@ field's quantity as the Lean kernel's do (`Desc.arg q S D`, CoreSpec §9.1):
   field quantity is a variable) a neutral, `Spine.ssigq`, which quotes back to `sigmaQ`,
   is a type in `U l` (`typeOfNe`, `propSort`) and is compared part by part (`convSpine`).
   The Lean kernel builds a Σ at a polynomial quantity there; this kernel has no
-  quantity variables on binders, so such a Σ stays stuck (and `infer` rejects a written
-  `sigmaQ` at a variable). No frontend produces one.
+  quantity variables on binders, so such a Σ stays stuck, with the rules of a Σ at an
+  unknown quantity: its projections in erased positions (`fst` at run time is rejected,
+  as `1 ≤ q` fails at `q = 0`), `snd` at ω, η in conversion, and a pair's first part
+  counted ω times. This is not hypothetical: the frontend's `match` hands the kernel
+  normal forms of `All`/`⟦D⟧` at a description stuck on a tag, whose `Desc.elim` methods
+  project such a Σ (in a type).
 * `vEqDesc` (equal quantities ↦ on, two different literals ↦ `False`, else stuck:
   `qtySame`, as `sameQty`/`qtyApart`), conversion (`conv` at `Qty`, and the quantities of
   two descriptions), `castDesc`, `groundEqDesc`, `eqPayload`, `quote` and `show`

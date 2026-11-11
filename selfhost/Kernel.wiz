@@ -1950,9 +1950,11 @@ def typeOfNe : TCtx → Head → Spine → Val
     | ty => ty
   | c, x, .sfst sp => match whnf (typeOfNe c x sp) with
     | .vsigma _ a _ _ _ => a
+    | .vne _ (.ssigq _ _ a _ _) => a
     | ty => ty
   | c, x, .ssnd sp => match whnf (typeOfNe c x sp) with
     | .vsigma _ _ env b _ => eval (.cons (vfst (.vne x sp)) env) b
+    | .vne _ (.ssigq _ _ _ env b) => eval (.cons (vfst (.vne x sp)) env) b
     | ty => ty
   | _, x, .secase sp env m _ => eval (.cons (.vne x sp) env) m
   | _, _, .sabsurd _ m => m
@@ -2236,6 +2238,9 @@ def conv : TCtx → Val → Val → Val → Bool
         conv (TCtx.bind c dom) (eval (.cons x env) cod) (vapp a x) (vapp b x)
       | .vsigma _ ta env tb _ =>
         Bool.and (conv c ta (vfst a) (vfst b)) (conv c (eval (.cons (vfst a) env) tb) (vsnd a) (vsnd b))
+      -- (21w) a `Σ` at a stuck quantity: η as for any `Σ`
+      | .vne _ (.ssigq _ _ ta env tb) =>
+        Bool.and (conv c ta (vfst a) (vfst b)) (conv c (eval (.cons (vfst a) env) tb) (vsnd a) (vsnd b))
       | .vunit _ => .true
       -- (Q4) η: compare the contents
       | .vulift _ A => conv c A (vdown a) (vdown b)
@@ -2481,11 +2486,19 @@ def infer : TCtx → Tm → TyRes
         | .false => match qle .qo q with
           | .true => .ok a (uScale .qw u)
           | .false => .err "cannot project an erased field"
+      -- (21w) at a stuck quantity (a template's `Σ` under `Desc.elim`): erased positions
+      -- only (`1 ≤ q` fails at `q = 0`, as for the Lean kernel's polynomials)
+      | .vne _ (.ssigq _ _ a _ _) => match TCtx.erased c with
+        | .true => .ok a u
+        | .false => .err "cannot project a field whose quantity is a variable"
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   | c, .snd p => match infer c p with
     | .ok ty u => match whnf ty with
       | .vsigma _ _ env b _ => match TCtx.erased c with
+        | .true => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
+        | .false => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) (uScale .qw u)
+      | .vne _ (.ssigq _ _ _ env b) => match TCtx.erased c with
         | .true => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
         | .false => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) (uScale .qw u)
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
@@ -2835,6 +2848,13 @@ def checkW : TCtx → Tm → Val → TyRes
   | c, .pair a b, .vsigma q ta env tb _ => match check (erasedIf q c) a ta with
     | .ok _ ua => match check c b (eval (.cons (eval (TCtx.env c) a) env) tb) with
       | .ok _ ub => .ok (.vsigma q ta env tb .none) (uAdd (uScale q ua) ub)
+      | r => r
+    | r => r
+  -- (21w) at a stuck quantity: the first part's usage counts ω times (at least as much as
+  -- at any value of the quantity)
+  | c, .pair a b, .vne h (.ssigq sp l ta env tb) => match check c a ta with
+    | .ok _ ua => match check c b (eval (.cons (eval (TCtx.env c) a) env) tb) with
+      | .ok _ ub => .ok (.vne h (.ssigq sp l ta env tb)) (uAdd (uScale .qw ua) ub)
       | r => r
     | r => r
   | c, .dret i, .vdesc l I => match check c i I with

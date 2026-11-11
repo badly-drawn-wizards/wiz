@@ -418,6 +418,7 @@ def shiftTm (k : Nat) : Nat → Tm → Tm
   | c, .piq q a b => .piq q (shiftTm k c a) (shiftTm k (c + 1) b)
   | c, .sigmaq q a b => .sigmaq q (shiftTm k c a) (shiftTm k (c + 1) b)
   | c, .sigma a b => .sigma (shiftTm k c a) (shiftTm k (c + 1) b)
+  | c, .sigmaQ l q a b => .sigmaQ l (shiftTm k c q) (shiftTm k c a) (shiftTm k (c + 1) b)
   | c, .eq A a b => .eq (shiftTm k c A) (shiftTm k c a) (shiftTm k c b)
   | c, .eqRefl A a => .eqRefl (shiftTm k c A) (shiftTm k c a)
   | c, .pair a b => .pair (shiftTm k c a) (shiftTm k c b)
