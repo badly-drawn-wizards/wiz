@@ -443,6 +443,14 @@ def group : Group where
         -- infer instance" on the binary of #92. Now the two types are unified first, as Lean
         -- does, and `f` stays `f` (the `#check`).
         okLibs "import Logic\ninductive HwTy where\n  | bits (n : Nat)\nclass Hw (r : HwTy → Type) where\n  lit : (ω n : Nat) → Nat → r (HwTy.bits n)\ndef El : HwTy → Type\n  | .bits n => Nat\ninstance : Hw El where\n  lit := fun n k => k\ndef Comb (i o : HwTy) : Type 1 := {r : HwTy → Type} → [Hw r] → r i → r o\ndef Comb.el {i o : HwTy} (f : Comb i o) (x : El i) : El o := f x\ndef mapL {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons a as => .cons (f a) (mapL f as)\ndef consEq {A : Type} (x : A) {xs ys : List A} (e : xs = ys) : List.cons x xs = List.cons x ys :=\n  Eq.congrArg (List.cons x) e\ndef h {i o : HwTy} (f : Comb i o) : (xs : List (El i)) → mapL (Comb.el f) xs = mapL (fun (x : El i) => Comb.el f x) xs\n  | .nil => refl (@List.nil (El o))\n  | .cons x xs => consEq (Comb.el f x) (h f xs)\n\n#check fun (f : Comb (HwTy.bits 1) (HwTy.bits 2)) => Comb.el f" ["fun f => Comb.el (.bits 1) (.bits 2) f : Comb (.bits 1) (.bits 2) → El (.bits 1) → El (.bits 2)"] },
+    { name := "a clause definition's type: instance holes still pending are solved before it is closed (hdl-cleanup)", run := fun _ =>
+        -- `Comb.el f` checks `f : Comb i o` against `Comb ?i ?o`, which η-expands `f` to
+        -- `fun {r} [_] => f ?inst` while `?r` is unsolved: `?inst` is pending, and the type
+        -- of a definition by equations was closed before it was retried
+        okLibs ("import Hdl.Core\n" ++
+          "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
+          "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
+          "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
     { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
         -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
         -- the scrutinee isn't abstracted inside `?A b` (that would leave the pattern fragment)

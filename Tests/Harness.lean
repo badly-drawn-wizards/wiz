@@ -58,24 +58,44 @@ def note (line : String) : IO Unit := do
   IO.println (noteMarker ++ line)
   (← IO.getStdout).flush
 
+/-- Mark the running case as skipped (it could not run here, e.g. without a C toolchain),
+with the reason; the case then returns normally. The driver shows it as skipped, not
+passed (`Group.run`), and records the note `skipped REASON` (`--timings`). A skipped case
+is not evidence that the case passes. -/
+def skip (reason : String) : IO Unit := note s!"skipped {reason}"
+
+/-- The reason a passing case's process gave for skipping: its `skipped` note, or a line
+in the old style (`(skipped: REASON)`, `(no X: skipped)`) that a case printed itself. -/
+def skipReason (notes : List String) (stdout : String) : Option String :=
+  match notes.find? (·.startsWith "skipped ") with
+  | some n => some (n.drop "skipped ".length).toString
+  | none => (stdout.splitOn "\n").findSome? fun l =>
+    let l := l.trimAscii.toString
+    if l.startsWith "(skipped: " && l.endsWith ")" then some ((l.drop "(skipped: ".length).dropEnd 1).toString
+    else if l.startsWith "(" && l.endsWith ": skipped)" then some ((l.drop 1).dropEnd ": skipped)".length).toString
+    else none
+
 /-- Milliseconds as seconds with three decimals, e.g. `12.345`. -/
 def showMs (ms : Nat) : String :=
   let frac := toString (ms % 1000)
   s!"{ms / 1000}.{"".pushn '0' (3 - frac.length)}{frac}"
 
-/-- One case's result: its index in the group, its name, whether it passed, its wall
-time in milliseconds and the notes it printed (`note`). -/
+/-- One case's result: its index in the group, its name, whether it passed (a skipped
+case did not fail: `ok`, with the reason in `skipped`), its wall time in milliseconds and
+the notes it printed (`note`). -/
 structure CaseResult where
   index : Nat
   name : String
   ok : Bool
   ms : Nat
   notes : List String
+  skipped : Option String := none
 
-/-- Run each case in a child process (`<self> --run <group> <index>`), because an
+/-- Run each case in a child process (`<self> --run-case <group> <index>`), because an
 executed `sorry` aborts the whole process; `only` restricts the run to the cases with
-these indices. Prints each case with its wall time and gives its result to `onResult`
-as soon as it finishes. -/
+these indices. Prints each case with its wall time (`✓` passed, `✗` failed, with its
+output, `⊘` skipped, with the reason) and gives its result to `onResult` as soon as it
+finishes. -/
 def Group.run (g : Group) (only : Option (List Nat) := none)
     (onResult : CaseResult → IO Unit := fun _ => pure ()) : IO (List CaseResult) := do
   IO.println s!"── {g.name} ({g.exercise})"
@@ -88,12 +108,15 @@ def Group.run (g : Group) (only : Option (List Nat) := none)
       unless ixs.contains i do continue
     let start ← IO.monoMsNow
     let out ← IO.Process.output
-      { cmd := self.toString, args := #["--run", g.name, toString i] ++ (← flagsRef.get).toArray }
+      { cmd := self.toString, args := #["--run-case", g.name, toString i] ++ (← flagsRef.get).toArray }
     let ms := (← IO.monoMsNow) - start
     let lines := out.stdout.splitOn "\n"
     let notes := lines.filterMap fun l => if l.startsWith noteMarker then some (l.drop noteMarker.length).toString else none
     let stdoutText := "\n".intercalate (lines.filter (!·.startsWith noteMarker))
-    if out.exitCode == 0 then
+    let skipped := if out.exitCode == 0 then skipReason notes stdoutText else none
+    if let some why := skipped then
+      IO.println s!"  ⊘ {c.name} ({showMs ms} s)\n      skipped ({why})"
+    else if out.exitCode == 0 then
       IO.println s!"  ✓ {c.name} ({showMs ms} s)"
     else
       let msg := if (out.stderr ++ stdoutText).contains "executed 'sorry'" then
@@ -101,9 +124,24 @@ def Group.run (g : Group) (only : Option (List Nat) := none)
         else (out.stderr ++ stdoutText).trimAscii.toString.replace "\n" "\n      "
       IO.println s!"  ✗ {c.name} ({showMs ms} s)\n      {msg}"
     stdout.flush
-    let r : CaseResult := { index := i, name := c.name, ok := out.exitCode == 0, ms, notes }
+    let r : CaseResult := { index := i, name := c.name, ok := out.exitCode == 0, ms, notes, skipped }
     onResult r
     results := results.push r
   pure results.toList
+
+/-- Cases with known outcomes for the test driver's own tests (`Tests/Grail.lean`,
+`testrunner`): `--run` finds this group, but no selector picks it, so it is never part
+of a suite run. -/
+def driverFixtures : Group where
+  name := "driver-fixtures"
+  exercise := "the test driver"
+  cases := [
+    { name := "fixture: passes", run := fun _ => pure () },
+    { name := "fixture: fails", run := fun _ => do
+        IO.println "fixture output before the failure"
+        throw (IO.userError "fixture failure") },
+    { name := "fixture: skips", run := fun _ => skip "fixture reason" },
+    { name := "fixture: skips (old style)", run := fun _ => IO.println "    (skipped: old fixture reason)" }
+  ]
 
 end Tests
