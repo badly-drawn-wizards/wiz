@@ -1,4 +1,5 @@
 import Hdl.Core
+import Trace
 -- Temporal logic for circuits (`import Hdl.Temporal`): properties over unbounded time, in
 -- the style of LTL, SVA and TLA+, with the proof rules to establish them. Design notes:
 -- docs/libraries.md ("H14 T") and /workspace/wiz-notes/hdl-temporal.md.
@@ -21,20 +22,8 @@ import Hdl.Core
 -- liveness from fairness (`TL.fairStep`) and from a ranking function (`TL.rank`).
 
 ------------------------------------------------------------------------------------
--- Traces
-
-def Trace (A : Type) : Type := Nat → A
-
-def Trace.tail {A : Type} (σ : Trace A) : Trace A := fun (t : Nat) => σ (Nat.succ t)
-def Trace.map {A B : Type} (f : A → B) (σ : Trace A) : Trace B := fun (t : Nat) => f (σ t)
--- the first `n` elements (what a simulation of `n` cycles sees)
-def Trace.take {A : Type} : Nat → Trace A → List A
-  | .zero, σ => .nil
-  | .succ n, σ => .cons (σ 0) (Trace.take n (Trace.tail σ))
--- `x` at time 0, `y` ever after (a single event)
-def Trace.once {A : Type} (x y : A) : Trace A := fun (t : Nat) => match t with
-  | .zero => x
-  | .succ _ => y
+-- Traces, Mealy machines, `stateAt`/`outAt`, `obs`, `invariant`, `simulates` and
+-- `Mealy.runFrom_take` come from lib/Trace.wiz and lib/Hdl/Core.wiz (H14 C1).
 
 ------------------------------------------------------------------------------------
 -- Formulas
@@ -205,66 +194,7 @@ def TL.rank {A : Type} (p q : TL A) (rk : Nat → Nat) (σ : Trace A)
               (And.intro w.1 (Eq.substProp (q σ) (Nat.add_succ k v) w.2))))
 
 ------------------------------------------------------------------------------------
--- Mealy machines along traces
-
-def Mealy (S I O : Type) : Type := S → I → S × O
-
-def Mealy.stateAt {S I O : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I) : Nat → S
-  | .zero => s0
-  | .succ t => (m (Mealy.stateAt m s0 xs t) (xs t)).1
-def Mealy.outAt {S I O : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I) (t : Nat) : O :=
-  (m (Mealy.stateAt m s0 xs t) (xs t)).2
-
--- one step, then the rest: the run from `s0` at `t + 1` is the run from the next state
--- on the rest of the inputs at `t`
-def Mealy.stateAt_succ {S I O : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I) :
-    (t : Nat) → Mealy.stateAt m s0 xs (Nat.succ t) = Mealy.stateAt m (m s0 (xs 0)).1 (Trace.tail xs) t
-  | .zero => rfl
-  | .succ t => Eq.congrArg (fun (s : S) => (m s (xs (Nat.succ t))).1) (Mealy.stateAt_succ m s0 xs t)
-def Mealy.outAt_succ {S I O : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I) (t : Nat) :
-    Mealy.outAt m s0 xs (Nat.succ t) = Mealy.outAt m (m s0 (xs 0)).1 (Trace.tail xs) t :=
-  Eq.congrArg (fun (s : S) => (m s (xs (Nat.succ t))).2) (Mealy.stateAt_succ m s0 xs t)
-
--- The finite semantics is a prefix of this one: simulating `n` cycles of a circuit
--- (`Circuit.runFrom`, which the existing proofs evaluate) gives the first `n` outputs.
-def Mealy.runFrom_take {i o : HwTy} (c : Circuit i o) :
-    (n : Nat) → (s : HwTy.El c.st) → (xs : Trace (HwTy.El i)) →
-    Circuit.runFrom c s (Trace.take n xs) = Trace.take n (Mealy.outAt (Circuit.stepEl c) s xs)
-  | .zero, s, xs => rfl
-  | .succ n, s, xs =>
-    Hdl.consEq (Circuit.stepEl c s (xs 0)).2
-      (Eq.trans (Mealy.runFrom_take c n (Circuit.stepEl c s (xs 0)).1 (Trace.tail xs))
-        (Eq.congrArg (Trace.take n) (funext (fun (t : Nat) =>
-          Eq.symm (Mealy.outAt_succ (Circuit.stepEl c) s xs t)))))
-
--- Invariance (assume-guarantee): an inductive invariant `inv` of the step, for inputs
--- that satisfy the environment assumption `env`, holds of every state of the run.
-def Mealy.invariant {S I O : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I) (env : I → Prop) (inv : S → Prop)
-    (h0 : inv s0) (hs : (s : S) → (x : I) → env x → inv s → inv (m s x).1) (henv : (t : Nat) → env (xs t)) :
-    (t : Nat) → inv (Mealy.stateAt m s0 xs t)
-  | .zero => h0
-  | .succ t => hs (Mealy.stateAt m s0 xs t) (xs t) (henv t) (Mealy.invariant m s0 xs env inv h0 hs henv t)
-
--- Refinement by a representation map: the implementation, started in the image of the
--- specification's state and driven by the image of its inputs, stays in the image of
--- its states and outputs the image of its outputs, for ever. The premise is one step.
-def Mealy.simulates {S T I J O P : Type} (impl : Mealy S I O) (spec : Mealy T J P)
-    (embS : T → S) (embI : J → I) (embO : P → O)
-    (h : (s : T) → (x : J) → impl (embS s) (embI x) = (embS (spec s x).1, embO (spec s x).2))
-    (s0 : T) (xs : Trace J) :
-    (t : Nat) → Mealy.stateAt impl (embS s0) (Trace.map embI xs) t = embS (Mealy.stateAt spec s0 xs t)
-  | .zero => rfl
-  | .succ t => Eq.trans
-      (Eq.congrArg (fun (s : S) => (impl s (embI (xs t))).1) (Mealy.simulates impl spec embS embI embO h s0 xs t))
-      (Eq.congrArg (fun (r : S × O) => r.1) (h (Mealy.stateAt spec s0 xs t) (xs t)))
-def Mealy.simulatesOut {S T I J O P : Type} (impl : Mealy S I O) (spec : Mealy T J P)
-    (embS : T → S) (embI : J → I) (embO : P → O)
-    (h : (s : T) → (x : J) → impl (embS s) (embI x) = (embS (spec s x).1, embO (spec s x).2))
-    (s0 : T) (xs : Trace J) (t : Nat) :
-    Mealy.outAt impl (embS s0) (Trace.map embI xs) t = embO (Mealy.outAt spec s0 xs t) :=
-  Eq.trans
-    (Eq.congrArg (fun (s : S) => (impl s (embI (xs t))).2) (Mealy.simulates impl spec embS embI embO h s0 xs t))
-    (Eq.congrArg (fun (r : S × O) => r.2) (h (Mealy.stateAt spec s0 xs t) (xs t)))
+-- Refinement up to stuttering
 
 -- Refinement with stuttering (TLA): if, on the states the run can reach (`inv`), every
 -- step is a step of the abstract relation `next` or leaves the abstraction `f`
@@ -321,9 +251,6 @@ def Mealy.findFrom_spec {S I O : Type} (m : Mealy S I O) (p : S → I → Bool) 
             Ex.intro (fun (j : Nat) => Nat.lt j (Nat.succ n) = .true ∧ p (Mealy.stateAt m s xs j) (xs j) = .true) (Nat.succ k)
               (And.intro w.1 (Eq.substProp (fun (u : S) => p u (xs (Nat.succ k)) = .true) (Eq.symm (Mealy.stateAt_succ m s xs k)) w.2))))
 
--- the same as temporal formulas on the trace of (state, input) pairs
-def Mealy.obs {S I O : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I) : Trace (S × I) :=
-  fun (t : Nat) => (Mealy.stateAt m s0 xs t, xs t)
 def Mealy.checkFrom_during {S I O : Type} (m : Mealy S I O) (p : S × I → Bool) (n : Nat) (s : S) (xs : Trace I)
     (h : Mealy.checkFrom m (fun (a : S) (x : I) => p (a, x)) n s xs = .true) :
     (k : Nat) → Nat.lt k n = .true → TL.nowB p (Mealy.obs m s xs) k :=
@@ -357,3 +284,22 @@ def Mealy.always_settled {S I O : Type} (m : Mealy S I O) (p : S → I → Bool)
 -- inputs after a single event
 def Trace.once_late {A : Type} (x y : A) (j F : Nat) : Trace.once x y (Nat.add j (Nat.succ F)) = y :=
   Eq.congrArg (Trace.once x y) (Nat.add_succ j F)
+-- The same when the inputs from cycle `F` on are all `y` (e.g. after a single event,
+-- `Trace.once_from`): the settled state is fixed under `y`, and `p` holds there with `y`.
+-- The facts are wrapped in definitions (`Mealy.Reaches`, `Mealy.Fixed`, `Trace.From`) so
+-- that a caller's concrete instances are matched by name: an equation between states is a
+-- product equation, and the elaborator would otherwise compute it (slowly) to compare.
+def Mealy.Reaches {S I O : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I) (F : Nat) (c : S) : Prop :=
+  Mealy.stateAt m s0 xs F = c
+def Mealy.Fixed {S I O : Type} (m : Mealy S I O) (c : S) (y : I) : Prop := (m c y).1 = c
+def Trace.From {A : Type} (xs : Trace A) (F : Nat) (y : A) : Prop := (j : Nat) → xs (Nat.add j F) = y
+def Trace.once_from {A : Type} (x y : A) (F : Nat) : Trace.From (Trace.once x y) (Nat.succ F) y :=
+  fun (j : Nat) => Trace.once_late x y j F
+
+def Mealy.always_settled_const {S I O : Type} (m : Mealy S I O) (p : S → I → Bool) (s0 : S) (xs : Trace I) (y : I) (F : Nat) (c : S)
+    (rest : Trace.From xs F y) (early : Mealy.checkFrom m p F s0 xs = .true)
+    (hF : Mealy.Reaches m s0 xs F c) (fixed : Mealy.Fixed m c y) (late : p c y = .true) :
+    TL.always (TL.nowB (fun (o : S × I) => p o.1 o.2)) (Mealy.obs m s0 xs) 0 :=
+  Mealy.always_settled m p s0 xs F c early hF
+    (fun (j : Nat) => Eq.substProp (fun (z : I) => (m c z).1 = c) (Eq.symm (rest j)) fixed)
+    (fun (j : Nat) => Eq.substProp (fun (z : I) => p c z = .true) (Eq.symm (rest j)) late)
