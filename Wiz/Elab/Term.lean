@@ -918,6 +918,24 @@ where
         | some t => pure t
         | none => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+    -- `refl x` against an equation at a Σ that has already computed (`vEq`, read back by
+    -- `eqSigmaSides?`): `x` is checked at the equation's type, and its sides are unified
+    -- with `x`. (Mandatory sorts: inferring `refl x` first computes `x = x` at `x`'s
+    -- inferred type, whose sorts may not be known yet (a `fun` whose domain is a hole),
+    -- and then the equation's shape can differ from the expected one: review F1)
+    | "term.refl" =>
+      match eqSigmaSides? (← force expected) with
+      | some (T, a, b) =>
+        let x ← check ctx (stx.getArg 1) T
+        let vx ← evalIn ctx x
+        sameSides ctx (some T) vx a
+        sameSides ctx (some T) vx b
+        return .refl (quote (← getGlobals) ctx.lvl T) x
+      | none => do
+        let (t, ty) ← infer ctx stx
+        let (t, ty) ← insertImplicits ctx t ty
+        unifyAt ctx stx expected ty
+        pure t
     | "term.letPair" => elabLetPair ctx stx expected
     | "term.letTuple" => elabLetPair ctx (letTupleToPairs stx) expected
     | "term.match" => elabMatch ctx stx expected

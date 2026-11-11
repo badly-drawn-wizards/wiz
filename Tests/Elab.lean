@@ -377,6 +377,17 @@ def ottGroup : Group where
           "#reduce fun (P : Prop) (B : Type) (p q : (0 k : P) × B) => p = q\n" ++
           "#reduce fun (A : Type) (P : A → Prop) (p q : (x : A) × P x) => p = q")
           ["fun P B p q => (0 e : True) × cast (refl B) p.2 = q.2", "fun A P p q => (0 e : p.1 = q.1) × True"] },
+    -- (msorts review F1) `refl` at a Σ whose second component is a proposition, the pair's
+    -- type inferred (`fun x => x` with its domain a hole): checked against the computed
+    -- equation, by its sides (`eqSigmaSides?`), not by inferring `x = x` first
+    { name := "refl at a Σ with a proof component, the pair's type inferred (msorts review F1)", run := fun _ =>
+        ok ("def B2 : Type := (x : Unit) × (True → True)\n" ++
+          "def P (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : Prop := True\n" ++
+          "def t3 (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : P h := ()\n" ++
+          "def t5 : P (refl ((), fun x => x)) := t3 (refl ((), fun x => x))\n" ++
+          "def t4 : P (refl ((), fun x => x)) := t3 _\n" ++
+          "def t8 : (((), fun (x : True) => x) : B2) = ((), fun x => x) := refl _\n" ++
+          "def t9 : (((), fun (x : True) => x) : B2) = ((), fun x => x) := rfl") },
     { name := "equality at Unit is True", run := fun _ =>
         ok "def uu (u v : Unit) : u = v := rfl" },
     { name := "η for pairs, via refl", run := fun _ =>

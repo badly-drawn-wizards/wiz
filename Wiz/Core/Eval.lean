@@ -1351,6 +1351,8 @@ whoever uses it must check that `vEq A a b` is the type it has (the elaborator's
 compares the two sides, and the kernel checks the `refl` it builds). -/
 def eqSigmaSides? : Val R → Option (Val R × Val R × Val R)
   | .sigma "e" _ _ (.mk [b, a, _, _, A@(.sigma ..)] (.eq _ (.cast ..) (.snd (.var 1)))) _ => some (A, a, b)
+  -- (mandatory sorts: a second component that is a proof, whose equation is `True`)
+  | .sigma "e" _ _ (.mk [b, a, _, _, A@(.sigma ..)] (.unit _)) _ => some (A, a, b)
   | _ => none
 
 /-- Normal form of a closed term (every definition unfolded). -/
