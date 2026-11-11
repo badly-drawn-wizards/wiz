@@ -69,7 +69,8 @@ def vote (g : Globals ZeroOneMany) (sg : Sig) (t : MTm) (opts : Opts := kernelOp
     | .ok _, .error (.fail m) => .disagree s!"the kernel accepts, the reference checker rejects: {m}"
     | .error e, .ok _ =>
       let m := toString e
-      if has m "declared with quantity" || has m "cannot project the field" || has m "cannot discard" then .usage
+      if has m "declared with quantity" || has m "cannot project the field" || has m "cannot discard" ||
+          has m "a projection needs an unrestricted pair" then .usage
       else .disagree s!"the reference checker accepts, the kernel rejects: {m}"
     | .error _, .error (.fail _) => .reject
 
@@ -168,6 +169,50 @@ def crossLevel : MTm :=
   erased (pair (pair (pair no no) no) (lam star)) (eqTy (sorted 2 (pi A1 (univ 0))) (sorted 2 (pi A2 (univ 0))))
 
 
+-- PR #40 (CoreSpec §8.4b): equality at `Desc`, `μ ≡ μ` by codes, casts at `Desc` and `μ`
+namespace DescEq
+def U : MTm := unit 0
+def DU : MTm := desc 0 U
+def dRet : MTm := dret star
+def dArg1 : MTm := darg (enum 1) (lam (dret star))
+def dRec : MTm := drec star (dret star)
+def M1 : MTm := mu 0 U dRet star
+def M2 : MTm := mu 0 U dArg1 star
+def Bool' : MTm := mu 0 U (darg (enum 2) (lam (dret star))) star
+def tagged (B : MTm) (k : Nat) : MTm := ann (con (pair (tag 2 k) (pair star star))) B
+/-- two constructors with a field at a type variable `A` (at index `k`): not inert -/
+def W (k : Nat) : MTm := mu 0 U (darg (enum 2) (lam (darg (var (k + 1)) (lam (dret star))))) star
+def wcon (k t : Nat) (x : MTm) : MTm := ann (con (pair (tag 2 t) (pair x (pair star star)))) (W k)
+/-- `(name, term, the kernel and the reference checker both accept)` -/
+def terms : List (String × MTm × Bool) := [
+  ("μ ≡ μ by codes: different descriptions give False (eqTyMu, Σ rule, cast at Desc, eqCtors)",
+    erased (lam (exfalso pfalse (fst (snd (var 0))))) (pi (eqTy M1 M2) pfalse), true),
+  ("equality at Desc: different constructors are False",
+    erased (lam (exfalso pfalse (var 0))) (pi (eq DU dRet dArg1) pfalse), true),
+  ("equality at Desc: arg = arg gives the field types' equation first",
+    erased (lam (fst (var 0))) (pi (eq DU dArg1 dArg1) (eqTy (enum 1) (enum 1))), true),
+  ("equality at Desc: ret = ret is the index equation (True), not False",
+    erased (lam (exfalso pfalse (var 0))) (pi (eq DU dRet dRet) pfalse), false),
+  ("a cast at Desc computes on arg",
+    erased (lam (lam (exfalso pfalse (var 0)))) (pi (eqTy DU DU) (pi (eq DU (cast DU DU (var 0) dArg1) dRet) pfalse)), true),
+  ("a cast at Desc computes on rec",
+    erased (lam (lam (exfalso pfalse (var 0)))) (pi (eqTy DU DU) (pi (eq DU (cast DU DU (var 0) dRec) dRet) pfalse)), true),
+  ("a cast at an inert μ on a constructor, then the tags differ",
+    erased (lam (lam (exfalso pfalse (fst (var 0)))))
+      (pi (eqTy Bool' Bool') (pi (eq Bool' (cast Bool' Bool' (var 0) (tagged Bool' 0)) (tagged Bool' 1)) pfalse)), true),
+  ("a cast at a non-inert μ (a field at a type variable) on a constructor, then the tags differ",
+    erased (lam (lam (lam (lam (exfalso pfalse (fst (var 0)))))))
+      (pi (univ 0) (pi (var 0) (pi (eqTy (W 1) (W 1))
+        (pi (eq (W 2) (cast (W 2) (W 2) (var 0) (wcon 2 0 (var 1))) (wcon 2 1 (var 1))) pfalse)))), true),
+  ("a cast at a non-inert μ, same tags: no False",
+    erased (lam (lam (lam (lam (exfalso pfalse (fst (var 0)))))))
+      (pi (univ 0) (pi (var 0) (pi (eqTy (W 1) (W 1))
+        (pi (eq (W 2) (cast (W 2) (W 2) (var 0) (wcon 2 0 (var 1))) (wcon 2 0 (var 1))) pfalse)))), false),
+  ("μ ≡ μ by codes, the same family: the index types' equation first",
+    erased (lam (fst (var 0))) (pi (eqTy M1 M1) (eqTy U U)), true)
+]
+end DescEq
+
 /-! ## The second reading (meta-review): defects found, and presupposition properties
 
 Terms here are written in the spec's own syntax (`WizMeta.Tm`), most of them in a context. -/
@@ -235,6 +280,19 @@ def group : Group where
         | .ok t =>
           unless t.disagree.isEmpty do
             throw (IO.userError ("\n".intercalate (t.disagree.map fun (i, w, tm) => s!"#{i}: {w}\n    {tm}"))) },
+    { name := "PR #40 (CoreSpec 8.4b): equality at Desc, μ ≡ μ by codes, casts at Desc and μ: the reference checker agrees with the Lean kernel", run := fun _ => do
+        let sg ← match refSig with | .ok sg => pure sg | .error e => throw (IO.userError e)
+        let g := leanGlobals ()
+        for (what, t, ok) in DescEq.terms do
+          check (kernelAccepts t g == ok) s!"{what}: the kernel {if ok then "rejects" else "accepts"} {t.pretty 0}"
+          match vote g sg t with
+          | .accept | .acceptUncompared => check ok s!"{what}: both accept"
+          | .reject => check (!ok) s!"{what}: both reject"
+          | o => throw (IO.userError s!"{what}: {repr o}\n    {t.pretty 0}")
+          -- the spec's own options, in each payload variant
+          for p in [WizMeta.PayloadRule.kernel, .stuck, .uniform] do
+            let r := refVerdict t { kernelOpts with payload := p }
+            check ((r == "ok") == ok) s!"{what}, payload {repr p}: {r}" },
     { name := "declarations at symbolic levels: the reference checker agrees with the Lean kernel (216)", run := fun _ => do
         let sg ← match refSig with | .ok sg => pure sg | .error e => throw (IO.userError e)
         let decls := MTm.declSamples ++ MTm.levelPuzzles 200

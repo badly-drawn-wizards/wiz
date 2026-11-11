@@ -25,8 +25,8 @@ obviously right, not fast:
 Nothing is proved about it yet (metatheory-plan M2 is soundness against the spec).
 
 Not implemented (the term is rejected, or the redex stays stuck): usage checking (quantities
-are labels), sizes, `ν`, `split`, numerals, and the rules of PR #40 (type equations
-between `μ` types and casts at `μ`/`Desc` by codes: both stay stuck here).
+are labels), sizes, `ν`, `split`, numerals. The rules of PR #40 (equality at `Desc`, `μ ≡ μ`
+by codes, casts at `Desc`/`μ`) are `Spec/DescEq.lean`.
 -/
 
 namespace WizMeta
@@ -255,6 +255,26 @@ def whnfEq (E : Env) : Nat → Ctx → Tm → Tm → Tm → M Tm
           | some r => whnf E n Γ r
           | none => pure (.eq A' a' b')
         | _, _ => pure (.eq A' a' b')
+      | .desc l I => do
+        -- by the two heads (PR #40, `Spec/DescEq.lean`)
+        let a' ← whnf E n Γ a
+        let b' ← whnf E n Γ b
+        let stuckD : Tm := .eq A' a' b'
+        -- the fields' quantities: equal (by conversion) ↦ go on; two different literals ↦
+        -- `False`; otherwise stuck (a variable can become either)
+        let qty (q q' : Tm) (r : Tm) : M Tm := do
+          match ← whnf E n Γ q, ← whnf E n Γ q' with
+          | .qlit x, .qlit y => pure (if x == y then r else False')
+          | q₁, q₂ => if ← conv E n Γ .qty q₁ q₂ then pure r else pure stuckD
+        match a', b' with
+        | .dret j, .dret j' => whnfEq E n Γ I j j'
+        | .darg q S D₁, .darg q' S' D₁' => qty q q' (eqDescArg l I S S' D₁ D₁')
+        | .drec q j D₁, .drec q' j' D₁' => qty q q' (eqDescRec l I j j' D₁ D₁')
+        | .dhrec q H j D₁, .dhrec q' H' j' D₁' => qty q q' (eqDescHrec l I H H' j j' D₁ D₁')
+        | _, _ =>
+          match a'.dctor?, b'.dctor? with
+          | some c, some c' => pure (if c != c' then False' else stuckD)
+          | _, _ => pure stuckD
       | _ => pure stuck
 
 /-- `x = y` for two payloads at `⟦D⟧ X i`, by the description; `none` when a tag is not
@@ -343,8 +363,9 @@ def whnfEqTy (E : Env) : Nat → Ctx → Tm → Tm → M Tm
         else pure stuck
       | .desc l I, .desc l' I' =>
         if l.equiv l' then whnfEqTy E n Γ I I' else pure stuck
-      -- (by codes, as in PR #40: not implemented)
-      | .mu .., .mu .. => pure stuck
+      -- by codes (PR #40): the equation of `(I, D, i)` and `(I', D', i')`
+      | .mu l I D i, .mu l' I' D' i' =>
+        if l.equiv l' then whnfEq E n Γ (famCodeTy l) (code I D i) (code I' D' i') else pure stuck
       | _, _ =>
         -- two different canonical formers are never equal
         pure (if A'.former?.isSome && B'.former?.isSome && A'.former? != B'.former? then False' else stuck)
@@ -395,6 +416,20 @@ def whnfCast (E : Env) : Nat → Ctx → Tm → Tm → Tm → Tm → M Tm
       if u.equiv w && (← sortOfTy E n Γ A₀).equiv (← sortOfTy E n Γ B₀) then
         pure (.up (.cast A₀ B₀ e (.down t)))
       else pure stuck
+    -- PR #40: constructor by constructor (`Spec/DescEq.lean`)
+    | .desc l I, .desc l' I' =>
+      if !l.equiv l' then pure stuck else
+      match ← whnf E n Γ t with
+      | .dret i => pure (.dret (.cast I I' e i))
+      | .darg q S D₁ => pure (castDescArg l I I' e q S D₁)
+      | .drec q j D₁ => pure (.drec q (.cast I I' e j) (.cast A' B' e D₁))
+      | .dhrec q H j D₁ => pure (castDescHrec l l' I I' e q H j D₁)
+      | t' => pure (.cast A' B' e t')
+    | .mu l I D i, .mu l' I' D' i' =>
+      if !l.equiv l' then pure stuck else
+      match ← whnf E n Γ t with
+      | .con x => pure (castMuCon l l' I D i I' D' i' e x)
+      | t' => pure (.cast A' B' e t')
     | _, _ => pure stuck
 
 /-- Is this type (in weak-head normal form) a proposition? `none` only when its sort

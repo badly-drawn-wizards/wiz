@@ -10,10 +10,8 @@ import WizMeta.Spec.Rule
 * **Equations between constructors** are in three variant files, `PayloadKernel.lean`,
   `PayloadStuck.lean`, `PayloadUniform.lean`: an open design question.
 
-Not here, though master has them since PR #40 (CoreSpec §8.4b): `μ I D i ≡ μ I' D' i'` by
-codes (an equation at `(J : Sort (l+1)) × Desc J × J`) and the cast of a constructor at
-`μ`. Not yet modelled: both are stuck in the spec, and T1 identifies a cast between
-convertible inert `μ` types with its argument.
+`μ I D i ≡ μ I' D' i'` by codes (an equation at `(J : Sort (l+1)) × Desc J × J`) and the
+cast of a constructor at `μ`, PR #40 (CoreSpec §8.4b), are in `DescEq.lean`.
 -/
 
 namespace WizMeta.Spec

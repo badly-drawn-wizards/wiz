@@ -156,6 +156,69 @@ The inner `Π` is in `Sort (imax 0 1) = Sort 1`, the outer one in `Sort (imax l 
 def transpMotiveTy (l : Lvl) (A a : Tm) : Tm :=
   .pi .zero (some (.imax l 1)) A (.pi .zero (some 1) (.eq A.shift a.shift (.var 0)) (.sort 0))
 
+/-! ## Equality and casts by codes (PR #40, CoreSpec §8.4b) -/
+
+/-- The type of a family's code, `(J : Sort (l+1)) × (D : Desc_l J) × J`, in `Sort (l+2)`. -/
+def famCodeTy (l : Lvl) : Tm :=
+  .sigma .many (some l.succ.succ) (.sort l.succ) (.sigma .many (some l.succ.succ) (.desc l (.var 0)) (.var 1))
+
+/-- The code `(I, D, i)` of `μ_l I D i`. -/
+def code (I D i : Tm) : Tm := .pair I (.pair D i)
+
+/-- `(0 e : S ≡ S') × ((0 x : S) → F x =_T F' (cast S S' e x))`, for `F F' : (x : S) → T` with `T`
+not depending on `x`: an `arg` continuation or an `hrec` index function, compared along an
+equation of their domains. -/
+def eqAlong (S S' F F' T : Tm) : Tm :=
+  .sigma .zero (some 0) (.eqTy S S')
+    (.pi .zero (some 0) S.shift
+      (.eq (T.shiftN 2) (.app (F.shiftN 2) (.var 0)) (.app (F'.shiftN 2) (.cast (S.shiftN 2) (S'.shiftN 2) (.var 1) (.var 0)))))
+
+/-- `arg q S E = arg q S' E'  ⟶  (0 e : S ≡ S') × ((0 s : S) → E s =_{Desc I} E' (cast S S' e s))` -/
+def eqDescArg (l : Lvl) (I S S' E E' : Tm) : Tm := eqAlong S S' E E' (.desc l I)
+/-- `rec q j E = rec q j' E'  ⟶  (0 _ : j =_I j') × (E =_{Desc I} E')` -/
+def eqDescRec (l : Lvl) (I j j' E E' : Tm) : Tm :=
+  .sigma .zero (some 0) (.eq I j j') (.eq (.desc l I.shift) E.shift E'.shift)
+/-- `hrec q H j E = hrec q H' j' E'  ⟶  (0 _ : (0 e : H ≡ H') × ((0 h : H) → j h =_I j' (cast H H' e h))) × (E = E')` -/
+def eqDescHrec (l : Lvl) (I H H' j j' E E' : Tm) : Tm :=
+  .sigma .zero (some 0) (eqAlong H H' j j' I) (.eq (.desc l I.shift) E.shift E'.shift)
+
+/-- The constructor of a description (`ret`, `arg`, `rec`, `hrec`), if it is one. -/
+def dctor? : Tm → Option Nat
+  | .dret _ => some 0
+  | .darg .. => some 1
+  | .drec .. => some 2
+  | .dhrec .. => some 3
+  | _ => none
+
+/-- The quantity of a description's field. -/
+def dqty? : Tm → Option Tm
+  | .darg q .. | .drec q .. | .dhrec q .. => some q
+  | _ => none
+
+/-- `cast (Desc l I) (Desc l' I') e (arg q S E)  ⟶  arg q S (λs. cast (Desc l I) (Desc l I') e (E s))`
+(`e : I ≡ I'`, which is what `Desc l I ≡ Desc l' I'` computes to). -/
+def castDescArg (l : Lvl) (I I' e q S E : Tm) : Tm :=
+  .darg q S (.lam (.cast (.desc l I.shift) (.desc l I'.shift) e.shift (.app E.shift (.var 0))))
+/-- `cast (Desc l I) (Desc l' I') e (hrec q H j E)  ⟶  hrec q H (λh. cast I I' e (j h)) (cast _ _ e E)` -/
+def castDescHrec (l l' : Lvl) (I I' e q H j E : Tm) : Tm :=
+  .dhrec q H (.lam (.cast I.shift I'.shift e.shift (.app j.shift (.var 0)))) (.cast (.desc l I) (.desc l' I') e E)
+
+/-- The payload equation of a cast between `μ_l I D i` and `μ_l' I' D' i'`, from
+`e : μ … ≡ μ …` (that is, by `eqTyMu`, a proof of `(I, D, i) = (I', D', i')`):
+`transp T (I, D, i) (λt _. ⟦D⟧ (μ I D) i ≡ ⟦t.2.1⟧ (μ t.1 t.2.1) t.2.2) (reflTy (⟦D⟧ (μ I D) i)) (I', D', i') e`. -/
+def muPayloadEq (l : Lvl) (I D i I' D' i' e : Tm) : Tm :=
+  let Xi : Tm := .interp l I D (.muFamily l I D) i
+  let t : Tm := .var 1
+  let tI : Tm := .fst t
+  let tD : Tm := .fst (.snd t)
+  let P : Tm := .lam (.lam (.eqTy (Xi.shiftN 2) (.interp l tI tD (.muFamily l tI tD) (.snd (.snd t)))))
+  .transp (famCodeTy l) (code I D i) P (.reflTy Xi) (code I' D' i') e
+
+/-- `cast (μ_l I D i) (μ_l' I' D' i') e (con x)  ⟶  con (cast (⟦D⟧ (μ I D) i) (⟦D'⟧ (μ I' D') i') ê x)` -/
+def castMuCon (l l' : Lvl) (I D i I' D' i' e x : Tm) : Tm :=
+  .con (.cast (.interp l I D (.muFamily l I D) i) (.interp l' I' D' (.muFamily l' I' D') i')
+    (muPayloadEq l I D i I' D' i' e) x)
+
 end Tm
 
 /-- `Sort u ≡ Sort w` and the like: `True` for equal levels, `False` for two different
