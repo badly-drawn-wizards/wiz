@@ -111,32 +111,6 @@ def candidates (ctx : LocalCtx R) (cls : Name) : ElabM R (Array (Term R × VTy R
       out := out.push (.const inst.name us, eval s.globals [] (d.type.instLevels d.levelParams us))
   pure out
 
-/-- (7e) The data type a type is, by name: the declared inductive type behind its glued
-names (`BitVec 8` and `U8` are `UIntN`), or `none` for anything else (a variable, a
-function type, a hole). -/
-def dataHead? (v : VTy R) : ElabM R (Option Name) := do
-  match ← force v with
-  | .mu _ _ _ _ _ (some (T, _, _)) | .nu _ _ _ _ _ (some (T, _, _)) => pure (some T)
-  | _ => pure none
-
-/-- (7e) The arguments of the class application an instance concludes with (its binders
-opened as fresh variables). -/
-partial def instConclusionArgs (lvl : Lvl) (ty : VTy R) : ElabM R (Option (Array (Val R))) := do
-  match ← forceMeta ty with
-  | .pi _ _ _ _ cod _ => instConclusionArgs (lvl + 1) (← instM cod (Val.var lvl))
-  | _ => return (← classOf? ty).map (·.2.2)
-
-/-- (7e) Types are structural, so `UIntN w` and `IntN w` (one shape) unify, and an
-instance for one would serve the other. Resolution is nominal on data types instead: an
-instance whose class argument is a different declared type than the goal's is skipped. -/
-def nominalClash (ctx : LocalCtx R) (goalArgs : Array (Val R)) (ety : VTy R) : ElabM R Bool := do
-  let some instArgs ← instConclusionArgs ctx.lvl ety | return false
-  for a in goalArgs, b in instArgs do
-    if let some T ← dataHead? a then
-      if let some U ← dataHead? b then
-        if T != U then return true
-  return false
-
 def mkGenerator (ctx : LocalCtx R) (key : String) (goal : Term R) (goalTy : VTy R) : ElabM R (Generator R) := do
   let cands ← match ← classOf? goalTy with
     | some (info, _, _) => candidates ctx info.name
@@ -206,11 +180,7 @@ partial def synthInstance (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Ter
         let (e, ety) := gen.candidates[gen.next]
         ss := { ss with gens := ss.gens.set! (ss.gens.size - 1) { gen with next := gen.next + 1 } }
         set gen.state
-        let clash ← match ← classOf? gen.goalTy with
-          | some (_, _, goalArgs) => nominalClash ctx goalArgs ety
-          | none => pure false
-        let applied ← if clash then pure none else
-          try some <$> applyInstance ctx gen.goal gen.goalTy e ety catch _ => pure none
+        let applied ← try some <$> applyInstance ctx gen.goal gen.goalTy e ety catch _ => pure none
         if let some subgoals := applied then
           ss ← consume ctx ss { key := gen.key, goal := gen.goal, goalTy := gen.goalTy, subgoals, state := ← get }
       else

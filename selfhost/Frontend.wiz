@@ -872,7 +872,8 @@ def fixDotsArgs (T I : String) : SyntaxF .false → SyntaxF .false
   | .nil => .nil
   | .cons s rest => .cons (fixDots T I s) (fixDotsArgs T I rest)
 end
-def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match ctorQtyErr (kids (kid stx0 3)) (kids (kid stx0 6)) with
+-- (`seal`: the seal axiom of a `sealed inductive`, 22k, the first domain of the index tail)
+def inductiveCmdS (gs : Globals) (stx0 : Syntax) (seal : Option Tm) : Step := match ctorQtyErr (kids (kid stx0 3)) (kids (kid stx0 6)) with
   | .some m => errStep gs m
   | .none => match kid stx0 1 with
   | .ident T =>
@@ -911,7 +912,10 @@ def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match ctorQtyErr (kids
             -- phantom parameters: those that neither a constructor nor the index type
             -- mentions (in the descriptions, under `t✝`, the parameter `k` is `np - k`)
             let cP := paramCtx empty pts;
-            let doms := phantomDoms cP np (fun (j : Nat) => Bool.or (occursTms (np - j) ds0) (occurs (np - 1 - j) I0)) 0 pts;
+            let doms0 := phantomDoms cP np (fun (j : Nat) => Bool.or (occursTms (np - j) ds0) (occurs (np - 1 - j) I0)) 0 pts;
+            let doms : Tms := match seal with
+              | .some K => .tcons K doms0
+              | .none => doms0;
             let I : Tm := match doms with
               | .tnil => I0
               | .tcons _ _ => STm.tm (sortSpine cP (phantomTy 0 doms));
@@ -3450,6 +3454,20 @@ def withDefault (gs : Globals) (stx : Syntax) : Step := match reorderStructural 
       | .true => .mk line gs
       | .false => command gs1 main
   | .no => withDefault' gs stx
+def inductiveCmd (gs : Globals) (stx : Syntax) : Step := inductiveCmdS gs stx .none
+-- **`sealed inductive T …`** (22k; `command.sealed` in `Elab/Command.lean`): the axiom
+-- `T.seal✝ : Type`, then `T` with the seal as the first domain of its index tail (a
+-- constant is compared by name, so no declaration that can't write the name is `T`)
+def sealedCmd (gs : Globals) (stx : Syntax) : Step :=
+  let inner := kid stx 1;
+  match strEq (kindOf inner) "command.inductive" with
+  | .false => errStep gs "`sealed` applies to an `inductive` declaration"
+  | .true => match kid inner 1 with
+    | .ident T =>
+      let K := String.append T ".seal✝";
+      let ax : Tm := .axiomC K (.univ 0);
+      inductiveCmdS (Globals.add gs (.mk K (.univ 0) ax ax .nil)) inner (.some ax)
+    | _ => errStep gs "an inductive type needs a name"
 -- one definition (or inductive type), by its form
 def defStep (gs : Globals) (stx : Syntax) : Step := match strEq (kindOf stx) "command.inductive" with
   | .true => inductiveCmd gs stx
@@ -4155,11 +4173,13 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
                 | .true => externCmd gs stx
                 | .false => match strEq (kindOf stx) "command.foreignType" with
                   | .true => foreignTypeCmd gs stx
-                  | .false => match knownCommand (kindOf stx) with
-                    | .true => defStep gs stx
-                    -- (an unknown command, or a modifier this frontend doesn't know, is
-                    -- an error naming it, never ignored)
-                    | .false => errStep gs (String.append "unsupported command " (kindOf stx));
+                  | .false => match strEq (kindOf stx) "command.sealed" with
+                    | .true => sealedCmd gs stx
+                    | .false => match knownCommand (kindOf stx) with
+                      | .true => defStep gs stx
+                      -- (an unknown command, or a modifier this frontend doesn't know, is
+                      -- an error naming it, never ignored)
+                      | .false => errStep gs (String.append "unsupported command " (kindOf stx));
       match step with
       | .mk line gs' => match newDuplicate gs gs' with
         | .some x => .next (.some (String.append (String.append "error: '" x) "' has already been declared")) stop gs cats tokens notes
