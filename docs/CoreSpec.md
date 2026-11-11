@@ -611,6 +611,11 @@ propSort? A = propSort? B = true   ⟶  stuck (the cast is itself a proof, §8.6
 Π/Π or Σ/Σ, a sort not known (U5b)  ⟶  stuck: `propSort?` of either side is unknown (no annotation, or a
                                        level with parameters), so the equation `e` proves is stuck (§8.3)
                                        and is no pair to project
+Π/Π, Σ/Σ (and ULift/ULift): KNOWN GAP (D2) ⟶ the rules compute without checking that the two domains
+                                       (contents) are in one sort and the two codomains are, so a
+                                       reduct can cast across sorts, which `cast` does not form: the
+                                       normal form of an accepted term can be rejected. Needs the
+                                       component sorts in the term (mandatory sorts; test "D2 …")
 Σ/Σ, quantities equal              ⟶  (c₁, cast (B₁ t.1) (B₂ c₁) (e.2 t.1) t.2),  c₁ = cast A₁ A₂ e.1 t.1   625–629 [std: PT22]
 Sort u/Sort w, Empty_u/Empty_w     ⟶  t if u ≡ w, else stuck                                         630
 Unit_u/Unit_w                      ⟶  tt if u ≡ w, else stuck                                        631

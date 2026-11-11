@@ -498,6 +498,18 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
     exactly when the equation is, in both kernels (test "U5b: …"); `Kernel.wiz`'s payload
     types and the `hrec` field's `Π` carry their sorts so that casts on data compute as
     before. No verdict in `lib/`, `examples/` or `selfhost/` changes.
+  * **D2 (found by the meta-review): open, needs mandatory sorts.** The `Π`, `Σ` and
+    `ULift` casts compute with no check on their components' sorts. So the kernel accepts
+    `λ e t. cast (Unit₁ → Type) (Unit₂ → Type) e t` and rejects its normal form ("cast
+    between different universes"): subject reduction fails. No verdict change is known.
+    Two gates were tried and failed:
+    * Gating on the sorts read off the heads is too weak. A type variable's sort is not
+      known there, and `lib/Vec`'s payload casts got stuck.
+    * Computing unless the sorts are known and different is unstable under substitution
+      (computes ⟶ stuck).
+
+    The fix needs the component sorts in the term (`wiz-notes/prf-marker.md` §8.1, item 6).
+    The pinned test "D2 (known gap, pinned): …" flips when it lands.
   * **Open gap 2: the elaborator.** It evaluates terms it has not marked yet, and it
     evaluates a suspended proof when it reads a value back into a term (the kernel must
     be able to check that term again). The read-back runs within a **step budget**

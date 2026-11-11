@@ -3359,6 +3359,50 @@ def selfHostGroup : Group where
         let calls := [3, 4, 6].map fun k => s!"(rawVerdict {(MTm.proofTower k).toWiz})"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ wizVerdict ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n") "True\nTrue\nTrue\n" },
+    { name := "D2 (known gap, pinned): a Π/Σ/ULift cast across components of different sorts is accepted and its normal form rejected (both kernels; flips with mandatory component sorts)", run := fun _ => do
+        -- (meta-review D2, `wiz-notes/soundness-probes/mr-cast-component-sorts.lean`) the casts
+        -- compute with no check on the components' sorts, and the kernel rejects the normal
+        -- form of a term it has accepted ("cast between different universes"): subject
+        -- reduction fails; no verdict change is known. A gate on the sorts read off the heads
+        -- is too weak (a type variable's sort is unknown: lib/Vec's payload casts got stuck),
+        -- and computing unless they are known and different is unstable under substitution
+        -- (computes ⟶ stuck). The fix needs the component sorts in the term (mandatory sorts,
+        -- `wiz-notes/prf-marker.md` §8.1, item 6). PINNED: when it lands, the four probes'
+        -- normal forms must be accepted (expect `ok` for them below and here).
+        let castCase (X Y : MTm) : MTm × MTm := (.pi (.eqTy X Y) (.pi X Y), .lam (.lam (.cast X Y (.var 1) (.var 0))))
+        let fn (l : Nat) (a b : MTm) : MTm := .sorted l (.pi a b)
+        -- `X : Sort 1`, `Y : Sort 2`, `e : (X → Type) ≡ (Y → Type)`
+        let nTy : MTm := .pi (.univ 0) (.pi (.univ 1) (.pi (.eqTy (fn 2 (.var 1) (.univ 0)) (fn 2 (.var 0) (.univ 0)))
+          (.pi (fn 2 (.var 2) (.univ 0)) (fn 2 (.var 2) (.univ 0)))))
+        let nV : MTm := .lam (.lam (.lam (.lam (.cast (fn 2 (.var 3) (.univ 0)) (fn 2 (.var 2) (.univ 0)) (.var 1) (.var 0)))))
+        -- (name, term, type, is its normal form accepted today?)
+        let cases : List (String × (MTm × MTm) × Bool) :=
+          [("Π, domains Unit₁ / Unit₂", castCase (fn 2 (.unit 0) (.univ 0)) (fn 2 (.unit 1) (.univ 0)), false),
+           ("Σ, first components Unit₁ / Unit₂", castCase (.sorted 2 (.sigma (.unit 0) (.unit 1))) (.sorted 2 (.sigma (.unit 1) (.unit 1))), false),
+           ("ULift.{1}, contents True / Unit₁", castCase (.ulift 1 .ptrue) (.ulift 1 (.unit 0)), false),
+           ("Π, domains X : Sort 1 / Y : Sort 2", (nTy, nV), false),
+           ("control: Π, domains and codomains pairwise in one sort", castCase (fn 2 (.unit 1) (.unit 0)) (fn 2 (.unit 1) (.enum 2)), true)]
+        for (name, (ty, v), nfOk) in cases do
+          let g ← match addDecl (R := ZeroOneMany) {} { name := "d", levelParams := [], type := ty.toTerm, value := some v.toTerm } with
+            | .ok g => pure g
+            | .error e => throw (IO.userError s!"{name}: the term is rejected: {e}")
+          let nf := quote g 0 (eval g [] v.toTerm)
+          match addDecl (R := ZeroOneMany) {} { name := "d", levelParams := [], type := ty.toTerm, value := some nf }, nfOk with
+          | .error e, true => throw (IO.userError s!"{name}: its normal form is rejected: {e}")
+          | .ok _, false => throw (IO.userError s!"{name}: its normal form is accepted now (the D2 gap closed?): update this pinned test")
+          | _, _ => pure ()
+        -- the control still computes: under `e` and `t` a λ, not a stuck cast
+        let (cTy, cV) := castCase (fn 2 (.unit 1) (.unit 0)) (fn 2 (.unit 1) (.enum 2))
+        let _ := cTy
+        unless (quote {} 0 (eval {} [] cV.toTerm)) matches .lam _ (.lam _ (.lam ..)) do throw (IO.userError "the control cast is stuck")
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let calls := cases.map fun (_, (ty, v), _) => s!"  both {v.toWiz} {ty.toWiz};\n"
+        let main := "def okT (t : Tm) : String := match infer empty t with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n" ++
+          "def both (v ty : Tm) : IO Unit := do\n  IO.println (okT (.ann v ty));\n  IO.println (okT (.ann (quote 0 (eval .nil v)) ty))\n" ++
+          "def lamShape : Tm → String\n  | .lam (.lam (.lam _)) => \"lam\"\n  | _ => \"other\"\n" ++
+          "def main : IO Unit := do\n" ++ String.join calls ++
+          s!"  IO.println (lamShape (quote 0 (eval .nil {cV.toWiz})))\n"
+        ioRun (kernel ++ "\n" ++ main) (String.join (cases.map fun (_, _, nfOk) => if nfOk then "ok\nok\n" else "ok\nerror\n") ++ "lam\n") },
     { name := "P2 (R1): a level-generic term is marked at its level, and is a suspended proof at the instance 0 (both kernels)", run := fun _ => do
         -- k.{u} (A : Sort u) (a : A) : A := (fun x => x : A → A) a
         let ty : MTm := .pi (.sortParam "u") (.pi (.var 0) (.var 1))
