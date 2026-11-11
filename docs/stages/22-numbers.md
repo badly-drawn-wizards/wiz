@@ -119,7 +119,12 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
 * The tail's only inhabitant is `fun _ => ()` (up to η). So it is still a singleton:
   constructors fill it in, patterns never see it, structure η and copattern index
   equations hold by `refl`, and `()` fills a structure's tail in a tuple.
-* Erasure drops it (`erasable` knows the inaccessible binder name), so data, `#ir` and the
+* Erasure drops it, **by shape**: a function type all of whose binders have quantity `0`
+  and that ends in `Unit` (`erasedFunTy`, `Compiler/Erase.lean`) has no runtime content.
+  Not by the binder's name: conversion ignores names, so a user's `(0 d : D) → Unit` is the
+  same type and must get the same representation (R3 of the soundness audit; group
+  `repr`). Generic code may still apply such a function at a type `(0 _ : D) → A`: in the
+  interpreters and in the runtime, `◾` applied is `◾`. So data, `#ir` and the
   C/LLVM code are those of the type without the parameter. Constructors, projections,
   `deriving` and `implemented_by` don't change. Nothing in the kernel changes either: it
   checks the encoding like any other declaration.
@@ -127,11 +132,11 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
   `D` lives in a higher universe than the type also gets none, since the tail would
   raise the type's universe; it stays forgotten.
 * For structures, `S 8 = S 16` computes through the Σ to `(x = 8) ↔ (x = 16)` under
-  a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). Equality of two
-  `μ` types computes to the index equation only when their descriptions agree (so
-  `UIntN 8 = UIntN 8` does), and the phantom is part of the description. So for an
-  `inductive`, `UIntN 8 = UIntN 16` stays stuck: it is neither provable nor refutable,
-  and a `cast` between such types gets stuck too.
+  a binder `x`, so it is refutable (`Tests/Elab.lean`, group `phantom`). For an
+  `inductive` the phantom is in the index type, and since 4g equality of two `μ` types
+  compares their codes, index types first: `UIntN 8 = UIntN 16` is refutable too
+  (`e.1` is the index types' equation, which at the phantom is `(x = 16) ↔ (x = 8)`), and
+  a `cast` between them computes.
 * A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
   parameters never count. Declare a `structure` instead.
 
@@ -158,10 +163,34 @@ Two ways to prove `False` without writing `axiom` are closed.
   a registration is an axiom: recorded (`Globals.assumed`), warned about, and listed by
   `#print axioms d`, which shows every axiom `d` depends on through its type, value and
   witness (`axiom`s, foreign functions, `builtin key := name`; a numeral depends on the
-  `nat` registrations). Registrations are also checked for shape (`nat.add : N → N → N`,
-  each operation a definition), and numerals need `nat.zero` and `nat.succ`: `builtin
+  `nat` registrations). It also lists, marked `native`, the implementations compiled code
+  runs instead of the definitions: `native f := g` for `attribute [implemented_by g] f`
+  and `native T := mk/get` for a native representation (22d), the library's included
+  (`UIntN.add`, `UIntN`). The kernel never runs them, so they prove nothing; they are
+  trusted to agree with the definitions. Registrations are also checked for shape
+  (`nat.add : N → N → N`, each operation a definition), and numerals need `nat.zero` and `nat.succ`: `builtin
   nat := E` for an empty `E` and then `(0 : E)` used to overflow the stack (the kernel
-  unfolded a numeral without a registered `nat.zero`).
+  unfolded a numeral without a registered `nat.zero`). A key is registered once and a
+  constant has one key (`nat.zero` and `nat.succ` must be constructors): a second
+  `builtin nat.add := K` changed how the Prelude's `Nat.add` unfolds without any user of
+  it showing the assumption, and proved `False` with no axioms listed.
+* **"The library" is the toolchain's own, wherever `wiz` runs.** The trusted modules
+  were those of the first module root, `lib/` relative to the current directory. Run
+  anywhere else (an installed toolchain, which passes its library as `-I share/wiz/lib`),
+  the Prelude was untrusted: nineteen "builtin … is not checked" warnings on every
+  `wiz check`, and every numeral listed by `#print axioms`; and a `lib/Prelude.wiz` in
+  the current directory replaced the toolchain's and was trusted, registrations and
+  all. Now the first root is the library next to the binary (`Module.toolchainLib`:
+  `<dir>/lib` for `<dir>/.lake/build/bin/wiz`, which is a checkout, the Nix package's
+  and the release tarball's `share/wiz`, as grail's `findStd`), then `./lib`, then the
+  `-I` directories. Its modules are trusted, and since the first root that has a module
+  wins, no other directory can stand in for one: a file that would (`Prelude.wiz` in an
+  `-I` directory) is ignored with a warning. The language server uses the same roots.
+  The elaboration cache keeps a module's trust in its key (`Cache.moduleKeys`), and so
+  in its importers': before, a module elaborated untrusted and replayed in a trusted
+  run (or the other way round) brought its warnings and its `#print axioms` with it.
+  Tests: group *modules*, "trust is part of a module's cache key", "the toolchain's
+  library is the first root …".
 
 ## 22g: regions: borrow checking as typing ✅
 
@@ -248,24 +277,29 @@ def push (xs : List Nat) := Uniq.borrow Region.static xs (fun ρ h v r => push1 
 The region discipline of 22g used to cost at run time: every handle was a cell
 (`⟨val, ◾⟩`) and every scope a closure called through `ap`. Both are gone:
 
-* **The last field of a structure is unboxed.** A structure with fields now ends in
-  its phantom tail (22e) followed by a **marker**, `(0 fields✝ : Enum [fields✝]) → Unit`,
-  instead of `Unit`: `structure W where val : A` is `(val : A) × ((0 fields✝ : Enum [fields✝]) → Unit)`.
-  Like a phantom tail it has one inhabitant (`fun _ => ()`, filled in by constructors and
-  by `()` in a tuple), so η, `refl` and structure equality are as before. Erasure
-  (`unboxedSigma`) represents a Σ whose second component ends in the marker by its first
-  component: `S.mk a` is `a`, `.1` is the identity, `.2` is `◾`, and `#eval`/`#run`/
-  `wiz run` read the value back the same way. So a one-field structure (a newtype:
-  `Shr`, `Uniq`, `Lent`, `Mut`) is its field, and an `n`-field structure is `n − 1` pairs
-  instead of `n`.
-* **Why in the type.** A representation must be a function of the type *up to
-  conversion*: a value converted (or cast) from one type to an equal one keeps its bits.
-  A raw `A × Unit` (or a name the kernel ignores) can't carry it, since a type variable
-  can stand for `Unit` and `S` converts to its Σ. The marker's domain is compared by
-  conversion and its label is inaccessible, so every type convertible to a structure has
-  it and no other type does; substitution can neither make nor remove it, so generic code
-  and code at a known type agree. Zero-field structures and index types have no marker.
-  Phantom parameters still don't change the representation (group `phantom`).
+* **The last field of a structure can be unboxed: `--unbox-structs`, off by default.** A
+  structure with fields ends in its phantom tail (22e) followed by a marker,
+  `(0 fields✝ : Enum [fields✝]) → Unit`: `structure W where val : A` is
+  `(val : A) × ((0 fields✝ : Enum [fields✝]) → Unit)`. Like a phantom tail it has one
+  inhabitant (`fun _ => ()`, filled in by constructors and by `()` in a tuple), so η,
+  `refl` and structure equality are as before, and it is erased (22e). With the option,
+  erasure (`unboxedSigma`) represents a Σ whose second component is such an erased
+  function into `Unit` by its first component: `S.mk a` is `a`, `.1` is the identity, `.2`
+  is `◾`, and `#eval`/`#run`/`wiz run` read the value back the same way. So a one-field
+  structure (a newtype: `Shr`, `Uniq`, `Lent`, `Mut`) is its field, and an `n`-field
+  structure is `n − 1` pairs instead of `n`. Without it, every pair is a pair
+  (`⟨a ◾⟩`).
+* **Why it is off.** A representation must be a function of the type *up to conversion*,
+  and the same for generic code and its callers (*stable under substitution*). The test
+  is by shape (quantities and the final `Unit`, which conversion compares), not by the
+  marker's label or a binder name, which it ignores: a hand-written Σ of the same shape
+  converts to the structure and now has the same representation (R3 of the soundness
+  audit). But no test on the second component is stable under substitution: generic code
+  over `A × B` sees a variable `B` and keeps the pair, and `B` can be the structure's
+  tail. `def first {A B : Type} (p : A × B) : A := p.1`, then `first (S.mk 5)`, reads
+  field 0 of a number. So the default keeps pairs, and the unboxed layout is waiting for
+  an encoding that carries it in something generic code also sees (a quantity:
+  `/workspace/wiz-notes/repr-shape.md`, option B). Group `repr`.
 * **`attribute [inline] f`** (`Inline.lean`) substitutes `f`'s erased body where `f` is
   applied to all its arguments, then simplifies: a redex `(λ x. b) a` becomes a `let`,
   and a `let` of a variable, of `◾`, or of a lambda used once (not under a lambda) is
@@ -274,7 +308,8 @@ The region discipline of 22g used to cost at run time: every handle was a cell
   the attribute; inlining a recursive definition stops after a few levels.
 
 Objects allocated on `#run`'s checked heap (`tests --allocs FILE ENTRY…`, a measuring
-mode of the test driver), before → after:
+mode of the test driver), before → after (the "unbox" columns are with `--unbox-structs`;
+the default has 22i's inlining on the boxed layout, not measured here):
 
 | program (`drafts/rust/lowered`) | before | unboxed | + inline |
 |---|---|---|---|

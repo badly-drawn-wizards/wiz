@@ -36,7 +36,8 @@ typedef uintptr_t V;
 #define OBJ(v) ((Obj *)((v) & ~(V)0xE))
 #define OFF(v) ((unsigned)(((v) >> 1) & 7))
 
-enum { T_CLO = 0x7fff0000u, T_STR, T_ARR, T_MAP, T_HYP };
+/* (T_EXT: a foreign pointer `[ptr, finalizer]`; T_RAW: a machine word `[bits]`, stage 21l) */
+enum { T_CLO = 0x7fff0000u, T_STR, T_ARR, T_MAP, T_HYP, T_EXT, T_RAW };
 
 /* every object starts with `RCF`: its reference count (nothing under the collector) */
 #ifdef WIZ_RC
@@ -54,8 +55,11 @@ static void die(const char *m) { fprintf(stderr, "wiz: %s\n", m); exit(3); }
 /* (`-DWIZ_STATS`: count allocations, reused cells and the peak of live objects, printed
    at exit under reference counting) */
 #ifdef WIZ_STATS
-static size_t rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk;
+static size_t rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced, rt_nfun0;
 #define STAT(x) (x)
+static size_t hypSlot(V m);
+#define HYPT 8192
+static uintptr_t hypKey[HYPT]; static size_t hypMade[HYPT], hypForced[HYPT];
 #else
 #define STAT(x) ((void)0)
 #endif
@@ -165,7 +169,7 @@ static V fld(V o, int i) {
     if (p->f[2] == BOX(0)) { p->f[0] = ((Clo *)p->f[0])->fn(((Clo *)p->f[0])->env, BOX(0)); p->f[2] = BOX(1); }
 #else
     /* (a hypothesis being forced is `◾`: forcing it again fails rather than loops) */
-    if (p->f[2] == BOX(0)) { V s = p->f[0]; p->f[0] = BOX(0); p->f[0] = ap(s, BOX(0)); p->f[2] = BOX(1); }
+    if (p->f[2] == BOX(0)) { STAT(rt_nforced++); STAT(hypForced[hypSlot(((Clo *)p->f[0])->env[2])]++); V s = p->f[0]; p->f[0] = BOX(0); p->f[0] = ap(s, BOX(0)); p->f[2] = BOX(1); }
 #endif
     return p->f[0];
   }
@@ -304,6 +308,17 @@ static V p_ind(V nat, V D, V m, V i, V x) {
   return apn(m, 3, args);
 }
 #else
+#ifdef WIZ_STATS
+/* (per method of `ind`: hypotheses created and forced, keyed by the method's code) */
+static size_t hypSlot(V m) {
+  uintptr_t k = 0;
+  if (!ISBOX(m) && ((Clo *)m)->tag == T_CLO) { Clo *c = (Clo *)m; k = c->fn == accFn ? (uintptr_t)c->env[0] : (uintptr_t)c->fn; }
+  size_t h = (size_t)((k >> 4) * 2654435761u) % HYPT;
+  while (hypKey[h] && hypKey[h] != k) h = (h + 1) % HYPT;
+  hypKey[h] = k ? k : 1;
+  return h;
+}
+#endif
 /* (the closures' environments are lent: what is passed on is `inc`ed) */
 static V hrecFn(V *env, V h) {
   inc(env[1]); inc(env[2]); inc(env[3]); inc(env[4]); inc(h);
@@ -320,6 +335,7 @@ static V lazyHyp(V nat, V D, V m, V j, V y, V rest) {
   inc(D); inc(m); inc(j); inc(y);
   V env[5] = {nat, D, m, j, y};
   V fs[3] = {mkclo(recFn, 5, env), rest, BOX(0)};
+  STAT(rt_nhyp++); STAT(hypMade[hypSlot(m)]++);
   return mkobj(T_HYP, 3, fs);
 }
 /* (`D`, `m`, `d`, `pl` borrowed) */
@@ -348,6 +364,65 @@ static V p_ind(V nat, V D, V m, V i, V x) {
   V args[3] = {i, pl, h};
   return apn(m, 3, args);
 }
+/* Unmemoised hypotheses (`indv`, see Backend.wiz): the method gets a view
+   `[nat, D, m, payload]` instead of the chain, and reads the `j`-th hypothesis with
+   `p_hypAt`, computed there (the backend uses this only for methods that read each at
+   most once on a path, or whose result is a function) */
+static V p_indv(V nat, V D, V m, V i, V x) {
+  V pl = UNBOX(nat) ? p_natUnpack(x) : x;
+  inc(m); inc(pl);
+  V vw = mkobj(0, 4, (V[]){nat, D, m, pl});
+  V args[3] = {i, pl, vw};
+  return apn(m, 3, args);
+}
+static V hrecFnV(V *env, V h) {
+  inc(env[1]); inc(env[2]); inc(env[3]); inc(env[4]); inc(h);
+  V j = ap(env[3], h);
+  return p_indv(env[0], env[1], env[2], j, ap(env[4], h));
+}
+/* (the view is owned and released; the description is walked along the payload as
+   `hyps` does, keeping the descriptions it computes alive until the end) */
+static V p_hypAt(V vw, V jj) {
+  Obj *o = OBJ(vw);
+  V nat = o->f[0], D = o->f[1], m = o->f[2], p = o->f[3], d = D, own = BOX(0), r = BOX(0);
+  uintptr_t k = UNBOX(jj);
+  for (;;) {
+    switch (tagof(d)) {
+    case 1: {
+      V F = fld(d, 1), a = fld(p, 0);
+      inc(F); inc(a);
+      V d2 = ap(F, a);
+      dec(own); own = d2; d = d2; p = fld(p, 1);
+      continue;
+    }
+    case 2:
+      if (k == 0) {
+        V j = fld(d, 0), y = fld(p, 0);
+        inc(D); inc(m); inc(j); inc(y);
+        r = p_indv(nat, D, m, j, y);
+        goto done;
+      }
+      k--; d = fld(d, 1); p = fld(p, 1);
+      continue;
+    case 3:
+      if (k == 0) {
+        V env[5] = {nat, D, m, fld(d, 1), fld(p, 0)};
+        inc(D); inc(m); inc(env[3]); inc(env[4]);
+        r = mkclo(hrecFnV, 5, env);
+        goto done;
+      }
+      k--; d = fld(d, 2); p = fld(p, 1);
+      continue;
+    default:
+      r = unreach();
+      goto done;
+    }
+  }
+done:
+  dec(own);
+  dec(vw);
+  return r;
+}
 #endif
 
 /* ---- natives: curried functions of `n` arguments ---- */
@@ -375,7 +450,7 @@ static V accFn(V *env, V a) { (void)env; (void)a; die("accFn"); return BOX(0); }
 static V native(NF f, int arity) { V env[2] = {(V)f, BOX(arity)}; return mkclo(accFn, 2, env); }
 /* a function of `arity` arguments (captured variables first), `n` of them given */
 INLINE V mkfun(NF f, uint32_t arity, uint32_t n, V *args) {
-  STAT(rt_nfun++);
+  STAT(rt_nfun++); STAT(rt_nfun0 += n == 0);
   Clo *c = (Clo *)MALLOC_OBJ(sizeof(Clo) + (n + 2) * sizeof(V));
   if (!c) die("out of memory");
   c->tag = T_CLO; c->n = n + 2; c->fn = accFn;
@@ -479,10 +554,13 @@ NATIVE(IO_46_arg, 2,
   uintptr_t i = UNBOX(a[0]);
   const char *s = i + 1 < (uintptr_t)rt_argc ? rt_argv[i + 1] : "";
   return prodv(wstr(s, strlen(s)), a[1]);)
+/* end the program with an exit code (as `Process.exit` of lib/Sys.wiz: no leak check) */
+NATIVE(Process_46_exit, 2, fflush(stdout); exit((int)UNBOX(a[0])); return a[1];)
 #ifndef WIZ_RC
 /* IO: `String → World → Prod Unit World` */
 NATIVE(IO_46_println, 2, puts(cstr(a[0])); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_print, 2, fputs(cstr(a[0]), stdout); return prodv(BOX(0), a[1]);)
+NATIVE(IO_46_ePrintln, 2, fflush(stdout); fprintf(stderr, "%s\n", cstr(a[0])); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_readFile, 2,
   FILE *f = fopen(cstr(a[0]), "rb");
   if (!f) return prodv(wstr("", 0), a[1]);
@@ -496,6 +574,7 @@ NATIVE(IO_46_readFile, 2,
 #else
 NATIVE(IO_46_println, 2, char *s = cstr(a[0]); dec(a[0]); puts(s); free(s); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_print, 2, char *s = cstr(a[0]); dec(a[0]); fputs(s, stdout); free(s); return prodv(BOX(0), a[1]);)
+NATIVE(IO_46_ePrintln, 2, char *s = cstr(a[0]); dec(a[0]); fflush(stdout); fprintf(stderr, "%s\n", s); free(s); return prodv(BOX(0), a[1]);)
 NATIVE(IO_46_readFile, 2,
   char *p = cstr(a[0]); dec(a[0]);
   FILE *f = fopen(p, "rb");
@@ -823,6 +902,9 @@ static void rt_drain(void) {
     } else if (t == T_MAP) {
       Node *n = (Node *)x;
       rt_decChild(n->key); rt_decChild(n->val); rt_decChild((V)n->l); rt_decChild((V)n->r);
+    } else if (t == T_EXT) {
+      /* a foreign pointer: its finalizer runs with the last reference */
+      if (x->f[0] && x->f[1]) ((void (*)(void *))x->f[1])((void *)x->f[0]);
     }
     rt_freeShell(x);
   }
@@ -882,12 +964,101 @@ INLINE void dropTake(V x, V r) { (void)resetTake(x, 0, r); }
 static void rt_finish(void) {
   for (size_t i = rt_nroots; i > 0; i--) dec(*rt_roots[i - 1]);
 #ifdef WIZ_STATS
-  fprintf(stderr, "wiz stats: %zu allocations, %zu reused, peak %zu live (mkobj %zu, mkclo %zu, mkfun %zu, mkthunk %zu)\n",
-          rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk);
+  fprintf(stderr, "wiz stats: %zu allocations, %zu reused, peak %zu live (mkobj %zu, mkclo %zu, mkfun %zu, mkthunk %zu; hypotheses %zu, forced %zu; capture-free mkfun %zu)\n",
+          rt_nalloc, rt_nreuse, rt_peak, rt_nobj, rt_nclo, rt_nfun, rt_nthunk, rt_nhyp, rt_nforced, rt_nfun0);
+  fprintf(stderr, "wiz hyp base rt_finish %p\n", (void *)rt_finish);
+  for (size_t i = 0; i < HYPT; i++) if (hypMade[i] > 1000000) fprintf(stderr, "wiz hyp %p: %zu made, %zu forced\n", (void *)hypKey[i], hypMade[i], hypForced[i]);
 #endif
   if (rt_live) { fflush(stdout); fprintf(stderr, "wiz: %zu objects leaked\n", rt_live); exit(4); }
 }
 #endif
+
+/* ---- the C FFI (stage 21l): what the wrappers of `extern` functions call ----
+   The wrappers own their arguments (`rt_drop` releases one under reference counting).
+   `Nat` is a scalar of 63 bits (a bigger C result is cut to them); `UInt64` and
+   `Float64` (its bits) are scalars when the top bit is clear, else a `T_RAW` object; a
+   foreign pointer is a `T_EXT` object whose finalizer runs when it is freed (under the
+   collector: when it is collected; `rt_finishGC` collects once more at exit). */
+INLINE void rt_drop(V v) {
+#ifdef WIZ_RC
+  dec(v);
+#else
+  (void)v;
+#endif
+}
+static uint64_t rt_in_nat(V v) { return ISBOX(v) ? (uint64_t)UNBOX(v) : 0; }
+static V rt_out_nat(uint64_t n) { return BOX(n); }
+static uint64_t rt_in_u64(V v) {
+  if (ISBOX(v)) return (uint64_t)UNBOX(v);
+  uint64_t b = (uint64_t)OBJ(v)->f[0];
+  rt_drop(v);
+  return b;
+}
+static V rt_out_u64(uint64_t b) {
+  if (!(b >> 63)) return BOX(b);
+  V fs[1] = {(V)b};
+  return mkobj(T_RAW, 1, fs);
+}
+static double rt_in_f64(V v) { uint64_t b = rt_in_u64(v); double d; memcpy(&d, &b, 8); return d; }
+static V rt_out_f64(double d) { uint64_t b; memcpy(&b, &d, 8); return rt_out_u64(b); }
+static int rt_in_bool(V v) {
+  int b = ISBOX(v) ? UNBOX(v) != 0 : tagof(fld(v, 0)) != 0;
+  rt_drop(v);
+  return b;
+}
+static char *rt_in_str(V v) {
+  char *s = cstr(v);
+  rt_drop(v);
+  return s;
+}
+static void rt_free_cstr(char *s) {
+#ifdef WIZ_RC
+  free(s);
+#else
+  (void)s;
+#endif
+}
+static V rt_out_str(const char *s) { return s ? wstr(s, strlen(s)) : wstr("", 0); }
+static void *rt_in_ptr(V v) { return ISBOX(v) ? NULL : (void *)OBJ(v)->f[0]; }
+#ifndef WIZ_RC
+static size_t rt_nfin;
+static void rt_extFin(void *o, void *cd) {
+  (void)cd;
+  Obj *x = (Obj *)o;
+  if (x->f[0] && x->f[1]) ((void (*)(void *))x->f[1])((void *)x->f[0]);
+}
+#endif
+static V rt_out_ptr(void *p, void (*fin)(void *)) {
+  V fs[2] = {(V)p, (V)fin};
+  V o = mkobj(T_EXT, 2, fs);
+#ifndef WIZ_RC
+  if (fin) { GC_register_finalizer((void *)o, rt_extFin, NULL, NULL, NULL); rt_nfin++; }
+#endif
+  return o;
+}
+#ifndef WIZ_RC
+/* at exit (the collector): finalize the foreign pointers nothing reaches any more */
+static void rt_finishGC(void) {
+  if (rt_nfin) { GC_gcollect(); GC_invoke_finalizers(); }
+  fflush(stdout);
+}
+#endif
+/* the runtime functions `lib/IO.wiz` binds (as in `runtime/wiz.c`) */
+static uint64_t wiz_u64_id(uint64_t a) { return a; }
+static uint64_t wiz_u64_add(uint64_t a, uint64_t b) { return a + b; }
+static uint64_t wiz_u64_sub(uint64_t a, uint64_t b) { return a - b; }
+static uint64_t wiz_u64_mul(uint64_t a, uint64_t b) { return a * b; }
+static uint64_t wiz_u64_div(uint64_t a, uint64_t b) { return b ? a / b : 0; }
+static uint64_t wiz_u64_mod(uint64_t a, uint64_t b) { return b ? a % b : a; }
+static int wiz_u64_lt(uint64_t a, uint64_t b) { return a < b; }
+static int wiz_u64_eq(uint64_t a, uint64_t b) { return a == b; }
+static double wiz_f64_of_nat(uint64_t a) { return (double)a; }
+static double wiz_f64_add(double a, double b) { return a + b; }
+static double wiz_f64_sub(double a, double b) { return a - b; }
+static double wiz_f64_mul(double a, double b) { return a * b; }
+static double wiz_f64_div(double a, double b) { return a / b; }
+static int wiz_f64_lt(double a, double b) { return a < b; }
+static const char *wiz_f64_show(double a) { static char buf[64]; snprintf(buf, sizeof buf, "%.17g", a); return buf; }
 
 /* the program needs a big stack (deep recursion): raise the limit and start again (a
    thread with a big stack would do, but the collector's stopping of the world lost

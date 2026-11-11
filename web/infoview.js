@@ -1,8 +1,8 @@
 // The browser half of the web infoview: a WebSocket to the language server
 // (`wiz lsp --ws PORT`, which web/bridge.sh starts), the Wiz program compiled to WebAssembly (web/Web.wiz), and the page.
 // Everything the infoview decides is in Wiz; this file only moves events in and HTML
-// out. The Wiz side calls js_next_event (async: Asyncify suspends it), js_send and
-// js_set_html (web/js.c).
+// out. Every event is a step of the Wiz program (its export `wiz_web_step`, stage 9g),
+// which calls back js_send and js_set_html (web/js.c).
 "use strict";
 
 const params = new URLSearchParams(location.search);
@@ -10,15 +10,22 @@ const port = params.get("port") || "8765";
 // (one server serves every page, and documents are shared: a URI of our own)
 const uri = params.get("uri") || `file:///scratch-${Math.random().toString(36).slice(2, 10)}.wiz`;
 
-// Events for Wiz, and the one waiting `js_next_event`, if any.
-const events = [];
-let waiting = null;
+// Events for Wiz: each is a step `state = wiz_web_step(state, event)`. The state is a
+// Wiz value (a reference the page owns, passed back in); the event's text is copied by
+// Wiz. Events before the module is loaded wait in `early`.
+let wasm = null;
+let state = null;
+const early = [];
+const big = (x) => (typeof x === "bigint" ? x : BigInt(x));   // wasm64: pointers are i64
+function step(ev) {
+  const p = wasm.stringToNewUTF8(ev);
+  state = wasm._wiz_web_step(state, big(p));
+  wasm._free(p);
+}
 function post(kind, payload) {
   const ev = kind + "\n" + payload;
-  if (waiting) { const w = waiting; waiting = null; w(ev); } else events.push(ev);
+  if (wasm) step(ev); else early.push(ev);
 }
-globalThis.wizNextEvent = () =>
-  events.length ? Promise.resolve(events.shift()) : new Promise((r) => { waiting = r; });
 
 // Messages to and from the server. Wiz frames its stream with Content-Length, as on
 // stdio; the WebSocket carries one JSON-RPC message per text frame (protocol §8.2), so
@@ -119,7 +126,9 @@ goals.addEventListener("keydown", (e) => {
 async function start() {
   setStatus("loading");
   const createModule = (await import("./wiz-infoview.mjs")).default;
-  createModule({ print: (s) => console.log(s), printErr: (s) => console.warn(s) });
+  wasm = await createModule({ print: (s) => console.log(s), printErr: (s) => console.warn(s) });
+  state = wasm._wiz_web_init();
+  for (const ev of early.splice(0)) step(ev);
   connect();
   post("open", uri + "\n" + editor.value);
   opened = true;

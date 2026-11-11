@@ -196,13 +196,22 @@ inductive Head where
   | hrefl (A a : Val)
   | hreflTy (X : Val)
   | htransp (A a P p b e : Val)
+  -- (P2) a suspended proof: the term `t` in `env`, never evaluated by the kernel; `ty`
+  -- is its type
+  | hprf (ty : Unit → Val) (env : Env) (t : Tm)
   | hconst (name : String) (params : List String) (levels : List Lvl) (value ty : Tm)
   | haxiom (name : String) (ty : Tm)
 end
+-- the payload types of a cast between two data types and their equation (4g)
+inductive PayEq where
+  | mk (Xi Xi' e : Val)
 
 def kCharsEq : List Char → List Char → Bool
   | .nil, .nil => .true
-  | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (kCharsEq as bs)
+  -- (the heads first: `Bool.and` would evaluate the rest anyway, call by value)
+  | .cons a as, .cons b bs => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => kCharsEq as bs
+    | .false => .false
   | _, _ => .false
 def kStrEq (a b : String) : Bool := match a with
   | .mk x => match b with
@@ -511,8 +520,10 @@ def tmsLen : Tms → Nat
   | .tnil => 0
   | .tcons _ rest => Nat.succ (tmsLen rest)
 
+-- (past the end: a stuck unknown. The checker rejects a variable out of scope, so
+-- nothing well typed gets here; `Sort 0` here made such a variable a term `Prop : Prop`)
 def lookup : Env → Nat → Val
-  | .nil, _ => .vsort (.lnum 0)
+  | .nil, _ => .vne (.haxiom " out of scope" .star) .snil
   | .cons v rest, i => match i with
     | .zero => v
     | .succ j => lookup rest j
@@ -604,7 +615,9 @@ def tmEq : Tm → Tm → Bool
   | .pfalse, .pfalse => .true
   | .exfalso a b, .exfalso c d => Bool.and (tmEq a c) (tmEq b d)
   | .enum k, .enum k' => Nat.beq k k'
-  | .tag _ i, .tag _ j => Nat.beq i j
+  -- (the enumeration's size too: `valSame` compares it, and "the same term" must not
+  -- depend on both sides having one type)
+  | .tag k i, .tag k' j => Bool.and (Nat.beq k k') (Nat.beq i j)
   | .ecase a b bs, .ecase c d bs' => Bool.and (tmEq a c) (Bool.and (tmEq b d) (tmsEq bs bs'))
   | .eq a b c, .eq d e f => Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f))
   | .eqTy a b, .eqTy c d => Bool.and (tmEq a c) (tmEq b d)
@@ -754,6 +767,11 @@ def sizePred (sz : Val) : Option Val := match whnf sz with
 -- and proof irrelevance it makes checking loop (D1, Abel–Coquand). `.true` restores
 -- it, as `--regularity full` does in the Lean kernel.
 def kernelRegularity : Bool := .false
+-- (P2) proofs are never evaluated (`Globals.lazyProofs` in the Lean kernel): a proof
+-- position (`coe`'s equation, `subst`'s two proofs) is suspended (`Head.hprf`), and a cast
+-- between propositions is stuck. `.false` is the old behaviour (the evaluator runs
+-- proofs), kept for the transition.
+def kernelLazyProofs : Bool := .true
 
 -- **Exercise 14.1.** Evaluation, application and projections (`eval`, `vApp`, `vFst`,
 -- `vSnd` in `Eval.lean`).
@@ -848,6 +866,7 @@ def headBound : Head → Nat
       (Nat.max (Nat.max (lvlBound P) (lvlBound p)) (Nat.max (lvlBound b) (lvlBound e)))
   | .hconst _ _ _ _ _ => 0
   | .haxiom _ _ => 0
+  | .hprf _ env t => envBound 0 env t
 def spineBound : Spine → Nat
   | .snil => 0
   | .sapp sp a => Nat.max (spineBound sp) (lvlBound a)
@@ -902,11 +921,19 @@ def eval : Env → Tm → Val
     | v => v
   | env, .eq A a b => vEq (eval env A) (eval env a) (eval env b)
   | env, .eqTy A B => vEqType (eval env A) (eval env B)
-  | env, .coe A B e t => vCast (eval env A) (eval env B) (eval env e) (eval env t)
+  | env, .coe A B e t =>
+    let vA := eval env A;
+    let vB := eval env B;
+    vCast vA vB (suspend env e (memo (fun _ => vEqType vA vB))) (eval env t)
   | env, .eqRefl A a => .vne (.hrefl (eval env A) (eval env a)) .snil
   | env, .tyRefl X => .vne (.hreflTy (eval env X)) .snil
   | env, .subst A a P p b e =>
-    .vne (.htransp (eval env A) (eval env a) (eval env P) (eval env p) (eval env b) (eval env e)) .snil
+    let vA := eval env A;
+    let va := eval env a;
+    let vP := eval env P;
+    let vb := eval env b;
+    .vne (.htransp vA va vP (suspend env p (memo (fun _ => vapp (vapp vP va) (.vne (.hrefl vA va) .snil)))) vb
+      (suspend env e (memo (fun _ => vEq vA va vb)))) .snil
   | env, .descr l I => .vdesc l (eval env I)
   | env, .dret i => .vdret (eval env i)
   | env, .darg S D => .vdarg (eval env S) (eval env D)
@@ -943,6 +970,56 @@ def eval : Env → Tm → Val
   --|ex
   --| | _, _ => .vsort (.lnum 0)
   --sol>
+-- (P2) a proof position: suspended, never evaluated (`suspend` in `Eval.lean`)
+def suspend (env : Env) (t : Tm) (ty : Unit → Val) : Val := match kernelLazyProofs with
+  | .true => .vne (.hprf ty env t) .snil
+  | .false => eval env t
+-- (P2) the eliminations of a proof, applied to its value (for reading it back)
+def forceSp : Val → Spine → Val
+  | v, .snil => v
+  | v, .sapp sp a => vapp (forceSp v sp) a
+  | v, .sfst sp => vfst (forceSp v sp)
+  | v, .ssnd sp => vsnd (forceSp v sp)
+  | v, .sdown sp => vdown (forceSp v sp)
+  | v, .sabsurd sp m => match whnf (forceSp v sp) with
+    | .vne h sp' => .vne h (.sabsurd sp' m)
+    | w => w
+  | v, _ => v
+-- (P2) the eliminations of a proof from its last `absurd` on (`.none`: there is none).
+-- Past an `absurd` the value need not be a proof (`exfalso M p : M`, for any `M`).
+def fromAbsurd : Spine → Option Spine
+  | .snil => .none
+  | .sabsurd _ m => .some (.sabsurd .snil m)
+  | .sapp sp a => match fromAbsurd sp with
+    | .some r => .some (.sapp r a)
+    | .none => .none
+  | .sfst sp => match fromAbsurd sp with
+    | .some r => .some (.sfst r)
+    | .none => .none
+  | .ssnd sp => match fromAbsurd sp with
+    | .some r => .some (.ssnd r)
+    | .none => .none
+  | .secase sp env m bs => match fromAbsurd sp with
+    | .some r => .some (.secase r env m bs)
+    | .none => .none
+  | .sdelim sp v P a b c d => match fromAbsurd sp with
+    | .some r => .some (.sdelim r v P a b c d)
+    | .none => .none
+  | .sind sp l I D v P m i => match fromAbsurd sp with
+    | .some r => .some (.sind r l I D v P m i)
+    | .none => .none
+  | .ssfix sp l I D v P f s i => match fromAbsurd sp with
+    | .some r => .some (.ssfix r l I D v P f s i)
+    | .none => .none
+  | .sscase sp l I D v P m s i => match fromAbsurd sp with
+    | .some r => .some (.sscase r l I D v P m s i)
+    | .none => .none
+  | .sout sp => match fromAbsurd sp with
+    | .some r => .some (.sout r)
+    | .none => .none
+  | .sdown sp => match fromAbsurd sp with
+    | .some r => .some (.sdown r)
+    | .none => .none
 def vapp : Val → Val → Val
   | .vglued h sp v, a => .vglued h (.sapp sp a) (memo (fun _ => vapp (v ()) a))  -- (given) glued stays glued
   --<sol
@@ -1081,6 +1158,8 @@ def vEqW : Val → Val → Val → Val
     | .false => match lvlNeverZero l with
       | .true => vEqType a b
       | .false => .vne (.heq (.vsort l) a b) .snil
+  -- (4g) equality of description codes, structurally
+  | .vdesc l I, a, b => vEqDesc l I a b
   | A, a, b => .vne (.heq A a b) .snil
 -- equality of two payloads, constructor by constructor (`vEqPayload` in `Eval.lean`):
 -- `.none` when a tag is not known (the equation is stuck)
@@ -1153,10 +1232,10 @@ def vEqTypeW : Val → Val → Val
   | .vdesc l I, .vdesc l' I' => match Nat.beq l l' with
     | .true => vEqType I I'
     | .false => .vne (.heqTy (.vdesc l I) (.vdesc l' I')) .snil
-  | .vmu l I D i s, .vmu l' I' D' i' s' => famEqTy (.vmu l I D i s) (.vmu l' I' D' i' s') I i i'
+  | .vmu l I D i s, .vmu l' I' D' i' s' => famEqTy (.vmu l I D i s) (.vmu l' I' D' i' s')
   -- (Q4) `ULift A = ULift B ↦ A = B`
   | .vulift l A, .vulift l' B => same l l' (vEqType A B) (.vempty 0)
-  | .vnu l I D i s, .vnu l' I' D' i' s' => famEqTy (.vnu l I D i s) (.vnu l' I' D' i' s') I i i'
+  | .vnu l I D i s, .vnu l' I' D' i' s' => famEqTy (.vnu l I D i s) (.vnu l' I' D' i' s')
   | X, Y => match Bool.and (canonical X) (canonical Y) with
     | .true => .vempty 0
     | .false => .vne (.heqTy X Y) .snil
@@ -1167,7 +1246,10 @@ def vCastP (A B e t : Val) : Val := match propSort A with
   | .some pa => match pa with
     | .true => match propSort B with
       | .some pb => match pb with
-        | .true => vapp (vfst e) t
+        -- (P2) the cast is a proof itself: nothing needs its value, so it is stuck
+        | .true => match kernelLazyProofs with
+          | .true => .vne (.hcast A B e t) .snil
+          | .false => vapp (vfst e) t
         | .false => vCastW A B e t
       | .none => vCastW A B e t
     | .false => vCastW A B e t
@@ -1193,11 +1275,13 @@ def vCastW : Val → Val → Val → Val → Val
   | .venum k, .venum k', e, t => same k k' t (.vne (.hcast (.venum k) (.venum k') e t) .snil)
   -- (Q4) through `down` (a lifted proposition is cast by the equivalence, in `vCastP`)
   | .vulift l A, .vulift l' B, e, t => same l l' (.vup (vCast A B e (vdown t))) (.vne (.hcast (.vulift l A) (.vulift l' B) e t) .snil)
-  -- regularity (off, see `kernelRegularity`): syntactically equal types
-  | A, B, e, t => match Bool.or kernelRegularity (inertTy 0 A) with
-    | .true => match sameVal A B with
-      | .true => t
-      | .false => vCastData A B e t
+  -- regularity at inert types (InReg, P1): equal ground inert types (`groundEqTy`, stable
+  -- under substitution); full regularity (off, `kernelRegularity`) by `sameVal`
+  | A, B, e, t => castReg A B e t
+def castReg (A B e t : Val) : Val := match Bool.and kernelRegularity (sameVal A B) with
+  | .true => t
+  | .false => match groundEqTy 0 A B with
+    | .true => t
     | .false => vCastData A B e t
 -- an inert type (`inertTy` in `Eval.lean`): first-order data, where a cast between equal
 -- types is the identity: `Enum`, `Unit`, `Σ`s of inert types, and `μ` types whose index
@@ -1250,30 +1334,162 @@ def inertTags (depth : Nat) (E : Val) (lifted : Bool) (k i : Nat) : Bool := matc
 -- (`lvlBound`), so that different variables never quote alike
 def sameVal (a b : Val) : Bool :=
   let l := Nat.max (lvlBound a) (lvlBound b);
-  tmEq (quote l a) (quote l b)
--- two `μ` (or two `ν`) types of one family: the level, index type, description and
--- size agree, only the indices may differ (`sameFamily?` in `Eval.lean`)
-def sameFamily : Val → Val → Bool
-  | .vmu l I D _ sz, .vmu l' I' D' _ sz' => famEq l I D sz l' I' D' sz'
-  | .vnu l I D _ sz, .vnu l' I' D' _ sz' => famEq l I D sz l' I' D' sz'
+  tmEq (quoteM .false l a) (quoteM .false l b)
+-- Ground equality at inert types (`groundEqTy` in `Eval.lean`, P1): two inert types that
+-- are equal and have no free variable in a relevant position. Values are compared by
+-- their type (tags, constructors; `Unit` and propositions skipped; `Σ` by projections);
+-- a neutral equals only itself, and only if it is an atom (a fresh constant for a variable
+-- bound inside the comparison, with projections). So the answer is the same for
+-- convertible inputs and doesn't flip from `true` under a substitution.
+def groundAtomSp : Spine → Spine → Bool
+  | .snil, .snil => .true
+  | .sfst a, .sfst b => groundAtomSp a b
+  | .ssnd a, .ssnd b => groundAtomSp a b
+  | .sdown a, .sdown b => groundAtomSp a b
   | _, _ => .false
-def famEq (l : Nat) (I D sz : Val) (l' : Nat) (I' D' sz' : Val) : Bool := match Nat.beq l l' with
-  | .false => .false
-  | .true => match sameVal sz sz' with
+-- the `d`-th atom: a neutral with a reserved head (an axiom whose name starts with a
+-- space, so it is no declaration), which can't collide with a variable of the context
+def groundAtom (d : Nat) : Val := .vne (.haxiom (String.append " atom" (Nat.toString d)) .star) .snil
+def isAtomName (n : String) : Bool := match n with
+  | .mk cs => match cs with
+    | .cons c _ => Nat.beq (Char.code c) 32
+    | .nil => .false
+def groundAtomEq : Val → Val → Bool
+  | .vne (.haxiom x _) sp, .vne (.haxiom y _) sp' => match isAtomName x with
+    | .true => Bool.and (kStrEq x y) (groundAtomSp sp sp')
     | .false => .false
-    | .true => match sameVal I I' with
+  | _, _ => .false
+def groundSizeEq (s s' : Val) : Bool := groundSizeW (whnf s) (whnf s')
+def groundSizeW : Val → Val → Bool
+  | .vszInf, .vszInf => .true
+  | .vszSuc a, .vszSuc b => groundSizeEq a b
+  | a, b => groundAtomEq a b
+def groundEqTy (d : Nat) (A B : Val) : Bool := match Nat.lt d 64 with
+  | .false => .false
+  | .true => groundTyW d (whnf A) (whnf B)
+def groundTyW (d : Nat) : Val → Val → Bool
+  | .venum k, .venum k' => Nat.beq k k'
+  | .vunit l, .vunit l' => Bool.and (Nat.lt 0 l) (Nat.beq l l')
+  | .vulift l A, .vulift l' B => Bool.and (Bool.and (Nat.lt 0 l) (Nat.beq l l')) (groundEqTy (Nat.succ d) A B)
+  | .vsigma q a env b _, .vsigma q' a' env' b' _ => match Bool.and (qEq q q') (groundEqTy (Nat.succ d) a a') with
+    | .true => groundEqTy (Nat.succ d) (eval (.cons (groundAtom d) env) b) (eval (.cons (groundAtom d) env') b')
+    | .false => .false
+  | .vmu l I D i sz, .vmu l' I' D' i' sz' => match Bool.and (Nat.beq l l') (groundSizeEq sz sz') with
+    | .true => match groundEqTy (Nat.succ d) I I' with
+      | .true => match groundEqDesc (Nat.succ d) I D D' with
+        | .true => groundEqVal I i i'
+        | .false => .false
       | .false => .false
-      | .true => sameVal D D'
--- `μ D i = μ D i'` is `i = i'`; other equations between data types are stuck
-def famEqTy (X Y I i i' : Val) : Val := match sameFamily X Y with
-  | .true => vEq I i i'
+    | .false => .false
+  | _, _ => .false
+def groundEqDesc (d : Nat) (I D D' : Val) : Bool := match Nat.lt d 64 with
+  | .false => .false
+  | .true => groundDescW d I (whnf D) (whnf D')
+def groundDescW (d : Nat) (I : Val) : Val → Val → Bool
+  | .vdret j, .vdret j' => groundEqVal I j j'
+  | .vdrec j E, .vdrec j' E' => Bool.and (groundEqVal I j j') (groundEqDesc d I E E')
+  | .vdarg S E, .vdarg S' E' => match groundEqTy (Nat.succ d) S S' with
+    | .true => groundArg d I (whnf S) E E'
+    | .false => .false
+  | _, _ => .false
+-- the rest of an `arg`: branch by branch at a tag field, else under an atom
+def groundArg (d : Nat) (I S E E' : Val) : Bool := match S with
+  | .venum k => groundTags d I E E' .false k 0
+  | .vulift n A => match whnf A with
+    | .venum k => groundTags d I E E' .true k 0
+    | _ => groundEqDesc (Nat.succ d) I (vapp E (groundAtom d)) (vapp E' (groundAtom d))
+  | _ => groundEqDesc (Nat.succ d) I (vapp E (groundAtom d)) (vapp E' (groundAtom d))
+def groundTags (d : Nat) (I E E' : Val) (lifted : Bool) (k i : Nat) : Bool := match Nat.lt i k with
+  | .false => .true
+  | .true => match groundEqDesc (Nat.succ d) I (vapp E (upIf lifted (.vtag k i))) (vapp E' (upIf lifted (.vtag k i))) with
+    | .true => groundTags d I E E' lifted k (Nat.succ i)
+    | .false => .false
+def groundEqVal (T a b : Val) : Bool := groundValP (whnf T) (whnf a) (whnf b)
+def groundValP (T a b : Val) : Bool := match propSort T with
+  | .some p => match p with
+    | .true => .true
+    | .false => groundValW T a b
+  | .none => groundValW T a b
+def groundValW : Val → Val → Val → Bool
+  | .vunit _, _, _ => .true
+  | .venum _, .vtag _ i, .vtag _ j => Nat.beq i j
+  | .venum _, a, b => groundAtomEq a b
+  | .vsigma _ A env B _, a, b => match groundEqVal A (vfst a) (vfst b) with
+    | .true => groundEqVal (eval (.cons (vfst a) env) B) (vsnd a) (vsnd b)
+    | .false => .false
+  | .vulift _ A, a, b => groundEqVal A (vdown a) (vdown b)
+  | .vmu l I D i _, .vcon x, .vcon y => groundEqVal (vInterp l I D (muFamily l I D) i) x y
+  | .vmu _ _ _ _ _, a, b => groundAtomEq a b
+  | _, _, _ => .false
+-- (4g) sizes equal as conversion decides it (`sizeEqTrue` in `Eval.lean`, `sizeEq`
+-- below): any `↑ᵏ ∞` is `∞`, and `↑ᵏ x = ↑ᵐ y` when `k = m` and `x`, `y` are one variable
+def szIsInf (s : Val) : Bool := match whnf s with
+  | .vszInf => .true
+  | .vszSuc t => szIsInf t
+  | _ => .false
+def szVar (s : Val) : Option Nat := match whnf s with
+  | .vszSuc t => szVar t
+  | .vne h sp => match h with
+    | .hvar x => match sp with
+      | .snil => .some x
+      | _ => .none
+    | _ => .none
+  | _ => .none
+def szSucs (s : Val) : Nat := match whnf s with
+  | .vszSuc t => Nat.succ (szSucs t)
+  | _ => 0
+def sizeEqTrue (s s' : Val) : Bool := match Bool.and (szIsInf s) (szIsInf s') with
+  | .true => .true
+  | .false => match szVar s with
+    | .some x => match szVar s' with
+      | .some y => Bool.and (Nat.beq x y) (Nat.beq (szSucs s) (szSucs s'))
+      | .none => .false
+    | .none => .false
+-- (4g) equality of description codes, by the constructors (`vEqDesc` in `Eval.lean`):
+-- `ret j = ret j'` is `j = j'`; `arg S E = arg S' E'` is
+-- `(e : S = S') × ((s : S) → E s = E' (cast e s))`; `rec`, `hrec` likewise with the rests
+-- `E = E'`; different constructors `False`; a neutral stuck
+def vEqDesc (l : Nat) (I D D' : Val) : Val := vEqDescW l I (whnf D) (whnf D')
+def isDescCon : Val → Bool
+  | .vdret _ => .true
+  | .vdarg _ _ => .true
+  | .vdrec _ _ => .true
+  | .vdhrec _ _ _ => .true
+  | _ => .false
+-- `(e :0 S = S') × ((x :0 S) → F x = F' (cast S S' e x))` at type `T`
+-- (inside `e`: e0 S1 S'2 F3 F'4 T5; inside `x`: one more)
+def eqAlong (S S' F F' T : Val) : Val :=
+  .vsigma .qz (vEqType S S') (.cons S (.cons S' (.cons F (.cons F' (.cons T .nil)))))
+    (.sorted (.lnum 0) (.piq .qz (.var 1) (.eq (.var 6) (.app (.var 4) (.var 0)) (.app (.var 5) (.coe (.var 2) (.var 3) (.var 1) (.var 0)))))) (.some (.lnum 0))
+-- `A × (E = E')` (inside `_`: _0 E1 E'2 I3)
+def andRest (l : Nat) (I A E E' : Val) : Val :=
+  .vsigma .qz A (.cons E (.cons E' (.cons I .nil))) (.eq (.descr l (.var 3)) (.var 1) (.var 2)) (.some (.lnum 0))
+def vEqDescW (l : Nat) (I : Val) : Val → Val → Val
+  | .vdret j, .vdret j' => vEq I j j'
+  | .vdarg S E, .vdarg S' E' => eqAlong S S' E E' (.vdesc l I)
+  | .vdrec j E, .vdrec j' E' => andRest l I (vEq I j j') E E'
+  | .vdhrec H j E, .vdhrec H' j' E' => andRest l I (eqAlong H H' j j' I) E E'
+  | D, D' => match Bool.and (isDescCon D) (isDescCon D') with
+    | .true => .vempty 0
+    | .false => .vne (.heq (.vdesc l I) D D') .snil
+-- `(J : Sort (l+1)) × (D : Desc_l J) × J`, the type of a family's code (`famCodeTy`)
+def famCodeTy (l : Nat) : Val :=
+  .vsigma .qw (.vsort (.lnum (Nat.succ l))) .nil
+    (.sorted (.lnum (Nat.succ (Nat.succ l))) (.sigmaq .qw (.descr l (.var 0)) (.var 1))) (.some (.lnum (Nat.succ (Nat.succ l))))
+-- `μ I D i = μ I' D' i'` is `(I, D, i) = (I', D', i')` at `famCodeTy l` when the levels
+-- agree and the sizes are equal by their heads; else stuck (`vEqType` in `Eval.lean`)
+def famEqTy (X Y : Val) : Val := match X with
+  | .vmu l I D i s => match Y with
+    | .vmu l' I' D' i' s' => famEqW X Y l I D i s l' I' D' i' s'
+    | _ => .vne (.heqTy X Y) .snil
+  | .vnu l I D i s => match Y with
+    | .vnu l' I' D' i' s' => famEqW X Y l I D i s l' I' D' i' s'
+    | _ => .vne (.heqTy X Y) .snil
+  | _ => .vne (.heqTy X Y) .snil
+def famEqW (X Y : Val) (l : Nat) (I D i s : Val) (l' : Nat) (I' D' i' s' : Val) : Val :=
+  match Bool.and (Nat.beq l l') (sizeEqTrue s s') with
   | .false => .vne (.heqTy X Y) .snil
--- `transp I i (fun j _ => ⟦D⟧ X i = ⟦D⟧ X j) (reflTy _) i' e : ⟦D⟧ X i = ⟦D⟧ X i'`
-def payloadPrf (l : Nat) (I D X i i' e : Val) : Val :=
-  let Xi := vInterp l I D X i;
-  -- under `j _`: _0 j1 Xi2 X3 D4 I5
-  .vne (.htransp I i (.vlam (.cons Xi (.cons X (.cons D (.cons I .nil))))
-    (.lam (.eqTy (.var 2) (interpApp l (.var 5) (.var 4) (.var 3) (.var 1))))) (.vne (.hreflTy Xi) .snil) i' e) .snil
+  | .true => vEq (famCodeTy l) (.vpair I (.vpair D i)) (.vpair I' (.vpair D' i'))
 -- `cast` at the data types, by the value (`vCastData` in `Eval.lean`)
 def vCastData : Val → Val → Val → Val → Val
   | .vdesc l I, .vdesc l' I', e, t => match Nat.beq l l' with
@@ -1292,64 +1508,72 @@ def castDesc (l : Nat) (I I' e : Val) : Val → Val
   | .vdhrec H j E => .vdhrec H (.vlam (.cons j (.cons e (.cons I' (.cons I .nil))))
       (.coe (.var 4) (.var 3) (.var 2) (.app (.var 1) (.var 0)))) (castDesc l I I' e (whnf E))
   | d => .vne (.hcast (.vdesc l I) (.vdesc l I') e d) .snil
-def castMu (A B e t : Val) : Val := match sameFamily A B with
-  | .false => .vne (.hcast A B e t) .snil
-  | .true => match A with
-    | .vmu l I D i sz => match B with
-      | .vmu _ _ _ i' _ => castCon l I D i i' sz A B e t
-      | _ => .vne (.hcast A B e t) .snil
-    | _ => .vne (.hcast A B e t) .snil
-def castCon (l : Nat) (I D i i' sz A B e t : Val) : Val := match whnf t with
-  | .vcon x => match sizePred sz with
-    | .some s' =>
-      let X := muFamilyAt l I D s';
-      .vcon (vCast (vInterp l I D X i) (vInterp l I D X i') (payloadPrf l I D X i i' e) x)
+-- the payload types of a cast between two `μ` (or `ν`) types and their equation
+-- (`famPayloadEq?` in `Eval.lean`)
+def famAt (nu : Bool) (l : Nat) (I D sz : Val) : Val := match nu with
+  | .true => nuFamilyAt l I D sz
+  | .false => muFamilyAt l I D sz
+def famTm (nu : Bool) (l : Nat) (I D i sz : Tm) : Tm := match nu with
+  | .true => .nu l I D i sz
+  | .false => .mus l I D i sz
+def famPayload (A B e : Val) : Option PayEq := match A with
+  | .vmu l I D i s => match B with
+    | .vmu l' I' D' i' s' => famPayloadW .false l I D i s l' I' D' i' s' e
+    | _ => .none
+  | .vnu l I D i s => match B with
+    | .vnu l' I' D' i' s' => famPayloadW .true l I D i s l' I' D' i' s' e
+    | _ => .none
+  | _ => .none
+def famPayloadW (nu : Bool) (l : Nat) (I D i s : Val) (l' : Nat) (I' D' i' s' e : Val) : Option PayEq :=
+  match Bool.and (Nat.beq l l') (sizeEqTrue s s') with
+  | .false => .none
+  | .true => match sizePred s with
+    | .none => .none
+    | .some sp =>
+      let Xi := vInterp l I D (famAt nu l I D sp) i;
+      let Xi' := vInterp l I' D' (famAt nu l I' D' sp) i';
+      -- under `t _`: _0 t1 Xi2 sp3; under `k`: k0 _1 t2 Xi3 sp4
+      let P : Val := .vlam (.cons Xi (.cons sp .nil))
+        (.lam (.eqTy (.var 2) (interpApp l (.fst (.var 1)) (.fst (.snd (.var 1)))
+          (.lam (famTm nu l (.fst (.var 2)) (.fst (.snd (.var 2))) (.var 0) (.var 4))) (.snd (.snd (.var 1))))));
+      .some (.mk Xi Xi' (.vne (.htransp (famCodeTy l) (.vpair I (.vpair D i)) P (.vne (.hreflTy Xi) .snil) (.vpair I' (.vpair D' i')) e) .snil))
+def castMu (A B e t : Val) : Val := match whnf t with
+  | .vcon x => match famPayload A B e with
+    | .some p => match p with
+      | .mk Xi Xi' e' => .vcon (vCast Xi Xi' e' x)
     | .none => .vne (.hcast A B e t) .snil
   | _ => .vne (.hcast A B e t) .snil
-def castNu (A B e t : Val) : Val := match sameFamily A B with
-  | .false => .vne (.hcast A B e t) .snil
-  | .true => match A with
-    | .vnu l I D i sz => match B with
-      | .vnu _ _ _ i' _ => castCocon l I D i i' sz A B e t
-      | _ => .vne (.hcast A B e t) .snil
-    | _ => .vne (.hcast A B e t) .snil
-def castCocon (l : Nat) (I D i i' sz A B e t : Val) : Val := match whnf t with
-  | .vcocon x => match sizePred sz with
-    | .some s' =>
-      let X := nuFamilyAt l I D s';
-      .vcocon (vCast (vInterp l I D X i) (vInterp l I D X i') (payloadPrf l I D X i i' e) x)
+def castNu (A B e t : Val) : Val := match whnf t with
+  | .vcocon x => match famPayload A B e with
+    | .some p => match p with
+      | .mk Xi Xi' e' => .vcocon (vCast Xi Xi' e' x)
     | .none => .vne (.hcast A B e t) .snil
   | _ => .vne (.hcast A B e t) .snil
--- observing a cast between two `ν` types of a family observes its argument
+-- observing a cast between two `ν` types observes its argument
 def outNe (h : Head) (sp : Spine) : Val := match sp with
   | .snil => match h with
     | .hcast A B e t => outCast A B e t
     | _ => .vne h (.sout sp)
   | _ => .vne h (.sout sp)
 def outCast (A B e t : Val) : Val := match A with
-  | .vnu l I D i sz => match B with
-    | .vnu _ _ _ i' _ => match sameFamily A B with
-      | .true => match sizePred sz with
-        | .some s' =>
-          let X := nuFamilyAt l I D s';
-          vCast (vInterp l I D X i) (vInterp l I D X i') (payloadPrf l I D X i i' e) (vOut t)
-        | .none => .vne (.hcast A B e t) (.sout .snil)
-      | .false => .vne (.hcast A B e t) (.sout .snil)
-    | _ => .vne (.hcast A B e t) (.sout .snil)
+  | .vnu _ _ _ _ _ => match famPayload A B e with
+    | .some p => match p with
+      | .mk Xi Xi' e' => vCast Xi Xi' e' (vOut t)
+    | .none => .vne (.hcast A B e t) (.sout .snil)
   | _ => .vne (.hcast A B e t) (.sout .snil)
 
 -- **Exercise 14.2.** Quotation (`quote` in `Eval.lean`): back to a term at depth `l`.
-def quote : Nat → Val → Tm
+def quoteM (qm : Bool) : Nat → Val → Tm
   --<sol
   | _, .vsort l => match lvlClosed l with
     | .some n => match n with
       | .zero => .prop
       | .succ m => .univ m
     | .none => .sortL l
-  | l, .vpi q a env b s => sortedTm s (piTm q (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b)))
-  | l, .vlam env b => .lam (quote (l + 1) (eval (.cons (fresh l) env) b))
-  | l, .vsigma q a env b s => sortedTm s (sigmaTm q (quote l a) (quote (l + 1) (eval (.cons (fresh l) env) b)))
-  | l, .vpair a b => .pair (quote l a) (quote l b)
+  | l, .vpi q a env b s => sortedTm s (piTm q (quoteM qm l a) (quoteM qm (l + 1) (eval (.cons (fresh l) env) b)))
+  | l, .vlam env b => .lam (quoteM qm (l + 1) (eval (.cons (fresh l) env) b))
+  | l, .vsigma q a env b s => sortedTm s (sigmaTm q (quoteM qm l a) (quoteM qm (l + 1) (eval (.cons (fresh l) env) b)))
+  | l, .vpair a b => .pair (quoteM qm l a) (quoteM qm l b)
   | _, .vunit l => match l with
     | .zero => .ptrue
     | .succ n => .unit n
@@ -1359,63 +1583,76 @@ def quote : Nat → Val → Tm
     | .succ n => .empty n
   | _, .venum k => .enum k
   | _, .vtag k i => .tag k i
-  | l, .vdesc k I => .descr k (quote l I)
-  | l, .vdret i => .dret (quote l i)
-  | l, .vdarg S E => .darg (quote l S) (quote l E)
-  | l, .vdrec j E => .drec (quote l j) (quote l E)
-  | l, .vdhrec H j E => .dhrec (quote l H) (quote l j) (quote l E)
+  | l, .vdesc k I => .descr k (quoteM qm l I)
+  | l, .vdret i => .dret (quoteM qm l i)
+  | l, .vdarg S E => .darg (quoteM qm l S) (quoteM qm l E)
+  | l, .vdrec j E => .drec (quoteM qm l j) (quoteM qm l E)
+  | l, .vdhrec H j E => .dhrec (quoteM qm l H) (quoteM qm l j) (quoteM qm l E)
   | l, .vmu k I D i sz => match sz with
-    | .vszInf => .mu k (quote l I) (quote l D) (quote l i)
-    | _ => .mus k (quote l I) (quote l D) (quote l i) (quote l sz)
+    | .vszInf => .mu k (quoteM qm l I) (quoteM qm l D) (quoteM qm l i)
+    | _ => .mus k (quoteM qm l I) (quoteM qm l D) (quoteM qm l i) (quoteM qm l sz)
   | _, .vsize => .size
   | _, .vszInf => .szInf
-  | l, .vszSuc sz => .szSuc (quote l sz)
-  | l, .vsizeLt sz => .sizeLt (quote l sz)
-  | l, .vcon x => .con (quote l x)
-  | l, .vnu k I D i sz => .nu k (quote l I) (quote l D) (quote l i) (quote l sz)
-  | l, .vcocon x => .cocon (quote l x)
+  | l, .vszSuc sz => .szSuc (quoteM qm l sz)
+  | l, .vsizeLt sz => .sizeLt (quoteM qm l sz)
+  | l, .vcon x => .con (quoteM qm l x)
+  | l, .vnu k I D i sz => .nu k (quoteM qm l I) (quoteM qm l D) (quoteM qm l i) (quoteM qm l sz)
+  | l, .vcocon x => .cocon (quoteM qm l x)
   | l, .vscofix k I D A f sz i a =>
-    .scofix k (quote l I) (quote l D) (quote l A) (quote l f) (quote l sz) (quote l i) (quote l a)
-  | l, .vcoit k I D S st i s => .coit k (quote l I) (quote l D) (quote l S) (quote l st) (quote l i) (quote l s)
-  | l, .vne h sp => quoteSpine l (quoteHead l h) sp
-  | l, .vglued h sp _ => quoteSpine l (quoteHead l h) sp
-  | l, .vulift k A => .ulift k (quote l A)
-  | l, .vup a => .up (quote l a)
+    .scofix k (quoteM qm l I) (quoteM qm l D) (quoteM qm l A) (quoteM qm l f) (quoteM qm l sz) (quoteM qm l i) (quoteM qm l a)
+  | l, .vcoit k I D S st i s => .coit k (quoteM qm l I) (quoteM qm l D) (quoteM qm l S) (quoteM qm l st) (quoteM qm l i) (quoteM qm l s)
+  -- (P2) a suspended proof, with its eliminations: evaluated (`.true`), or `()`. Erased,
+  -- the eliminations from the last `absurd` on are kept, on `()`: past an `absurd` the
+  -- value need not be a proof, and two different values must not read back alike
+  | l, .vne (.hprf _ env t) sp => match qm with
+    | .true => quoteM qm l (forceSp (eval env t) sp)
+    | .false => match fromAbsurd sp with
+      | .none => .star
+      | .some r => quoteSpine qm l .star r
+  | l, .vne h sp => quoteSpine qm l (quoteHead qm l h) sp
+  | l, .vglued h sp _ => quoteSpine qm l (quoteHead qm l h) sp
+  | l, .vulift k A => .ulift k (quoteM qm l A)
+  | l, .vup a => .up (quoteM qm l a)
   --|ex
   --| | _, _ => .univ 0
   --sol>
-def quoteSpine : Nat → Tm → Spine → Tm
+def quoteSpine (qm : Bool) : Nat → Tm → Spine → Tm
   | _, h, .snil => h
-  | l, h, .sapp sp a => .app (quoteSpine l h sp) (quote l a)
-  | l, h, .sfst sp => .fst (quoteSpine l h sp)
-  | l, h, .ssnd sp => .snd (quoteSpine l h sp)
+  | l, h, .sapp sp a => .app (quoteSpine qm l h sp) (quoteM qm l a)
+  | l, h, .sfst sp => .fst (quoteSpine qm l h sp)
+  | l, h, .ssnd sp => .snd (quoteSpine qm l h sp)
   | l, h, .secase sp env m bs =>
-    .ecase (quote (l + 1) (eval (.cons (fresh l) env) m)) (quoteSpine l h sp) (quoteBranches l env bs)
-  | l, h, .sabsurd sp m => .exfalso (quote l m) (quoteSpine l h sp)
+    .ecase (quoteM qm (l + 1) (eval (.cons (fresh l) env) m)) (quoteSpine qm l h sp) (quoteBranches qm l env bs)
+  | l, h, .sabsurd sp m => .exfalso (quoteM qm l m) (quoteSpine qm l h sp)
   | l, h, .sdelim sp v P a b c d =>
-    .delim v (quote l P) (quote l a) (quote l b) (quote l c) (quote l d) (quoteSpine l h sp)
+    .delim v (quoteM qm l P) (quoteM qm l a) (quoteM qm l b) (quoteM qm l c) (quoteM qm l d) (quoteSpine qm l h sp)
   | l, h, .sind sp k I D v P m i =>
-    .ind k (quote l I) (quote l D) v (quote l P) (quote l m) (quote l i) (quoteSpine l h sp)
+    .ind k (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l m) (quoteM qm l i) (quoteSpine qm l h sp)
   | l, h, .ssfix sp k I D v P f sz i =>
-    .sfix k (quote l I) (quote l D) v (quote l P) (quote l f) (quote l sz) (quote l i) (quoteSpine l h sp)
+    .sfix k (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l f) (quoteM qm l sz) (quoteM qm l i) (quoteSpine qm l h sp)
   | l, h, .sscase sp k I D v P m sz i =>
-    .scase k (quote l I) (quote l D) v (quote l P) (quote l m) (quote l sz) (quote l i) (quoteSpine l h sp)
-  | l, h, .sout sp => .out (quoteSpine l h sp)
-  | l, h, .sdown sp => .down (quoteSpine l h sp)
-def quoteHead : Nat → Head → Tm
+    .scase k (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l m) (quoteM qm l sz) (quoteM qm l i) (quoteSpine qm l h sp)
+  | l, h, .sout sp => .out (quoteSpine qm l h sp)
+  | l, h, .sdown sp => .down (quoteSpine qm l h sp)
+def quoteHead (qm : Bool) : Nat → Head → Tm
   | l, .hvar x => .var (l - x - 1)
-  | l, .heq A a b => .eq (quote l A) (quote l a) (quote l b)
-  | l, .heqTy A B => .eqTy (quote l A) (quote l B)
-  | l, .hcast A B e t => .coe (quote l A) (quote l B) (quote l e) (quote l t)
-  | l, .hrefl A a => .eqRefl (quote l A) (quote l a)
-  | l, .hreflTy X => .tyRefl (quote l X)
-  | l, .htransp A a P p b e => .subst (quote l A) (quote l a) (quote l P) (quote l p) (quote l b) (quote l e)
+  | l, .heq A a b => .eq (quoteM qm l A) (quoteM qm l a) (quoteM qm l b)
+  | l, .heqTy A B => .eqTy (quoteM qm l A) (quoteM qm l B)
+  | l, .hcast A B e t => .coe (quoteM qm l A) (quoteM qm l B) (quoteM qm l e) (quoteM qm l t)
+  | l, .hrefl A a => .eqRefl (quoteM qm l A) (quoteM qm l a)
+  | l, .hreflTy X => .tyRefl (quoteM qm l X)
+  | l, .htransp A a P p b e => .subst (quoteM qm l A) (quoteM qm l a) (quoteM qm l P) (quoteM qm l p) (quoteM qm l b) (quoteM qm l e)
   | _, .hconst n ps ls v ty => .const n ps ls v ty
   | _, .haxiom n ty => .axiomC n ty
-def quoteBranches : Nat → Env → Tms → Tms
+  | l, .hprf _ env t => quoteM qm l (eval env t)  -- (not reached: `quoteM`'s case)
+def quoteBranches (qm : Bool) : Nat → Env → Tms → Tms
   | _, _, .tnil => .tnil
-  | l, env, .tcons b rest => .tcons (quote l (eval env b)) (quoteBranches l env rest)
+  | l, env, .tcons b rest => .tcons (quoteM qm l (eval env b)) (quoteBranches qm l env rest)
 end
+-- **Reading back** a value: suspended proofs are evaluated, so that the term is a normal
+-- form (which `infer` can check again). The kernel's own comparison of types (`sameVal`)
+-- uses `quoteM .false`, which never evaluates a proof.
+def quote (l : Nat) (v : Val) : Tm := quoteM .true l v
 
 -- a binder's quantity, as ` :0 ` (ω is the default, ` : `)
 def showQ : Q → String
@@ -1586,13 +1823,22 @@ def uAdd : List Q → List Q → List Q
 def uScale (q : Q) : List Q → List Q
   | .nil => .nil
   | .cons a r => .cons (qmul q a) (uScale q r)
+-- (a usage list drops its trailing zeros: `uZeros` is empty, `uOne i` stops at `i`. So a
+-- list that has run out means "0 from here on": a branch that doesn't mention a variable
+-- uses it 0 times, which joins with 1 to ω)
+def uJoinZero : List Q → List Q
+  | .nil => .nil
+  | .cons a r => .cons (qjoin a .qz) (uJoinZero r)
 def uJoin : List Q → List Q → List Q
   | .cons a r, .cons b r' => .cons (qjoin a b) (uJoin r r')
-  | u, .nil => u
-  | .nil, u => u
--- leave a binder of quantity `q`: its own usage must fit
+  | u, .nil => uJoinZero u
+  | .nil, u => uJoinZero u
+-- leave a binder of quantity `q`: its own usage must fit (an empty list: used 0 times,
+-- which a binder at 1 does not allow)
 def popUsage (q : Q) : List Q → Option (List Q)
-  | .nil => .some .nil
+  | .nil => match qle .qz q with
+    | .true => .some .nil
+    | .false => .none
   | .cons used rest => match qle used q with
     | .true => .some rest
     | .false => .none
@@ -1670,6 +1916,7 @@ def headType : TCtx → Head → Val
   | _, .htransp _ _ P _ b e => vapp (vapp P b) e
   | _, .hconst _ ps ls _ ty => eval .nil (substIfAny ps ls ty)
   | _, .haxiom _ ty => eval .nil ty
+  | _, .hprf ty _ _ => ty ()
 end
 
 -- (without computing the whole sort: a Π type is a proposition when its codomain is,
@@ -1863,7 +2110,11 @@ def headSame : Nat → Head → Head → Option Nat
   | n, .hvar x, .hvar y => match Nat.beq x y with
     | .true => .some n
     | .false => .none
-  | n, .hconst a _ _ _ _, .hconst b _ _ _ _ => match kStrEq a b with
+  -- (the same constant at the same levels: by name alone, `d.{0}` and `d.{1}` were "the
+  -- same", `convSpine`'s shortcut for a stuck `ecase` then identified two cases whose
+  -- environments differed in a level instance, and that proved `False`:
+  -- `wiz-notes/kernel-lint.md`, W1)
+  | n, .hconst a _ ls _ _, .hconst b _ ls' _ _ => match Bool.and (kStrEq a b) (lvlsEq ls ls') with
     | .true => .some n
     | .false => .none
   | n, .haxiom a _, .haxiom b _ => match kStrEq a b with
@@ -1983,6 +2234,7 @@ def convHead : TCtx → Head → Head → Bool
   | _, .hrefl _ _, .hrefl _ _ => .true
   | _, .hreflTy _, .hreflTy _ => .true
   | _, .htransp _ _ _ _ _ _, .htransp _ _ _ _ _ _ => .true
+  | _, .hprf _ _ _, .hprf _ _ _ => .true
   | _, _, _ => .false
 -- the same head `x`: compare the eliminations, at their types
 def convSpine : TCtx → Head → Spine → Spine → Bool
@@ -2065,14 +2317,6 @@ end
 
 def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
 
--- (Q1) must a value `v` of type `a` be used: is `a` a Σ with a field whose quantity
--- doesn't allow zero uses, here or in its second part? (`p.1` drops `p.2`)
-partial def mustUse (a v : Val) : Bool := match whnf a with
-  | .vsigma q _ env b _ => match qle .qz q with
-    | .true => mustUse (eval (.cons (vfst v) env) b) (vsnd v)
-    | .false => .true
-  | _ => .false
-
 -- **Exercise 14.3.** Bidirectional type checking with usage (`infer` and `check` in
 -- `Check.lean`): each answer comes with the usage of the variables (types and proofs
 -- count nothing); leaving a binder checks its variable's usage against its quantity.
@@ -2080,7 +2324,9 @@ partial def mustUse (a v : Val) : Bool := match whnf a with
 mutual
 def infer : TCtx → Tm → TyRes
   --<sol
-  | c, .var i => .ok (lookup (TCtx.types c) i) (uSingle (TCtx.lvl c) i)
+  | c, .var i => match Nat.lt i (TCtx.lvl c) with
+    | .true => .ok (lookup (TCtx.types c) i) (uSingle (TCtx.lvl c) i)
+    | .false => .err "internal error: a variable out of scope"
   | c, .univ n => .ok (.vsort (.lnum (n + 2))) (uZeros (TCtx.lvl c))
   | c, .prop => .ok (.vsort (.lnum 1)) (uZeros (TCtx.lvl c))
   | c, .sortL l => .ok (.vsort (.lsucc l)) (uZeros (TCtx.lvl c))
@@ -2115,26 +2361,21 @@ def infer : TCtx → Tm → TyRes
       | r => r
     | r => r
   | _, .pair _ _ => .err "cannot infer the type of a pair; add a type ascription"
+  -- (R1) projections are available only on unrestricted pairs: outside erased positions
+  -- `p.1` and `p.2` count `p` as used ω times, whatever the component types (a pair held
+  -- at 1 can't be projected: this kernel has no `split`, so it can't be taken apart here)
   | c, .fst p => match infer c p with
     | .ok ty u => match whnf ty with
-      | .vsigma q a env b _ => match Bool.or (TCtx.erased c) (qle .qo q) with
-        -- `p.1` drops `p.2` (Q1): if that holds a field that must be used, only an
-        -- unrestricted pair may drop it, so `p` counts as used ω times
-        | .true => match TCtx.erased c with
-          | .true => .ok a u
-          | .false =>
-            let pv := eval (TCtx.env c) p;
-            match mustUse (eval (.cons (vfst pv) env) b) (vsnd pv) with
-            | .true => .ok a (uScale .qw u)
-            | .false => .ok a u
-        | .false => .err "cannot project an erased field"
+      | .vsigma q a _ _ _ => match TCtx.erased c with
+        | .true => .ok a u
+        | .false => match qle .qo q with
+          | .true => .ok a (uScale .qw u)
+          | .false => .err "cannot project an erased field"
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   | c, .snd p => match infer c p with
     | .ok ty u => match whnf ty with
-      -- `p.2` discards the first field: if it must be used, only an unrestricted pair
-      -- (whose field is ω·q) may drop it, so `p` counts as used ω times
-      | .vsigma q _ env b _ => match Bool.or (TCtx.erased c) (qle .qz q) with
+      | .vsigma _ _ env b _ => match TCtx.erased c with
         | .true => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
         | .false => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) (uScale .qw u)
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
@@ -2213,7 +2454,7 @@ def infer : TCtx → Tm → TyRes
   | c0, .subst A a P p b e =>
     -- a proof: everything in it is erased
     let c := TCtx.erase c0;
-    match inferUniv c A with
+    match checkEqDomain c A with
     | .ok _ _ =>
       let vA := eval (TCtx.env c) A;
       match check c a vA with
@@ -2257,7 +2498,7 @@ def infer : TCtx → Tm → TyRes
   | c, .mus l I D i sz => match check (TCtx.erase c) sz .vsize with
     | .ok _ _ => infer c (.mu l I D i)
     | r => r
-  | c, .sfix l I D v P f sz i x => match inferUniv c I with
+  | c, .sfix l I D v P f sz i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2272,7 +2513,7 @@ def infer : TCtx → Tm → TyRes
               | .ok _ _ =>
                 let vi := eval (TCtx.env c) i;
                 match check c x (.vmu l vI vD vi (eval (TCtx.env c) sz)) with
-                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd (uScale .qw uf) ux)
+                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uScale .qw (uAdd uf ux))
                 | r => r
               | r => r
             | r => r
@@ -2280,7 +2521,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .scase l I D v P m sz i x => match inferUniv c I with
+  | c, .scase l I D v P m sz i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2297,7 +2538,7 @@ def infer : TCtx → Tm → TyRes
               | .ok _ _ =>
                 let vi := eval (TCtx.env c) i;
                 match check c x (.vmu l vI vD vi vs) with
-                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd um ux)
+                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd um (uScale .qw ux))
                 | r => r
               | r => r
             | r => r
@@ -2316,7 +2557,7 @@ def infer : TCtx → Tm → TyRes
       | ty' => .err (String.append "not a coinductive type: " (showVal c ty'))
     | r => r
   | _, .cocon _ => .err "cannot infer the type of a constructor; add a type ascription"
-  | c, .scofix l I D A f sz i a => match inferUniv c I with
+  | c, .scofix l I D A f sz i a => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2331,7 +2572,7 @@ def infer : TCtx → Tm → TyRes
               | .ok _ _ =>
                 let vi := eval (TCtx.env c) i;
                 match check c a (vapp vA vi) with
-                | .ok _ ua => .ok (.vnu l vI vD vi (eval (TCtx.env c) sz)) (uAdd (uScale .qw uf) ua)
+                | .ok _ ua => .ok (.vnu l vI vD vi (eval (TCtx.env c) sz)) (uScale .qw (uAdd uf ua))
                 | r => r
               | r => r
             | r => r
@@ -2339,7 +2580,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .coit l I D S st i x => match inferUniv c I with
+  | c, .coit l I D S st i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2353,7 +2594,7 @@ def infer : TCtx → Tm → TyRes
             | .ok _ _ =>
               let vi := eval (TCtx.env c) i;
               match check c x (vapp vS vi) with
-              | .ok _ ux => .ok (.vnu l vI vD vi .vszInf) (uAdd (uScale .qw ust) ux)
+              | .ok _ ux => .ok (.vnu l vI vD vi .vszInf) (uScale .qw (uAdd ust ux))
               | r => r
             | r => r
           | r => r
@@ -2381,7 +2622,7 @@ def infer : TCtx → Tm → TyRes
             | .ok _ ub => match check c d (delimMrec l I vP) with
               | .ok _ ud => match check c e (delimMhrec l I vP) with
                 | .ok _ ue => .ok (vapp vP (eval (TCtx.env c) D))
-                    (uAdd (uScale .qw (uAdd ua (uAdd ub (uAdd ud ue)))) uD)
+                    (uScale .qw (uAdd (uAdd ua (uAdd ub (uAdd ud ue))) uD))
                 | r => r
               | r => r
             | r => r
@@ -2389,7 +2630,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | ty => .err (String.append "not a description: " (showVal c ty))
     | r => r
-  | c, .ind l I D v P m i x => match inferUniv c I with
+  | c, .ind l I D v P m i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2403,7 +2644,7 @@ def infer : TCtx → Tm → TyRes
             | .ok _ _ =>
               let vi := eval (TCtx.env c) i;
               match check c x (.vmu l vI vD vi .vszInf) with
-              | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd (uScale .qw um) ux)
+              | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uScale .qw (uAdd um ux))
               | r => r
             | r => r
           | r => r
@@ -2440,11 +2681,12 @@ def letIn : TCtx → Q → Tm → Tm → Tm → TyRes
   | c, q, ty, v, b => match inferUniv c ty with
     | .ok _ _ =>
       let tyv := eval (TCtx.env c) ty;
-      match check c v tyv with
+      -- (a `let` at 0 never computes its value: an erased position)
+      match check (erasedIf q c) v tyv with
       | .ok _ uv => match infer (TCtx.define c (eval (TCtx.env c) v) tyv) b with
         | .ok bty ub => match popUsage q ub with
           | .some ub' => .ok bty (uAdd (uScale q uv) ub')
-          | .none => .err "the let-bound variable is used more than its quantity allows"
+          | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
       | r => r
     | r => r
@@ -2453,11 +2695,12 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
   | c, q, ty, v, b, T => match inferUniv c ty with
     | .ok _ _ =>
       let tyv := eval (TCtx.env c) ty;
-      match check c v tyv with
+      -- (a `let` at 0 never computes its value: an erased position)
+      match check (erasedIf q c) v tyv with
       | .ok _ uv => match check (TCtx.define c (eval (TCtx.env c) v) tyv) b T with
         | .ok _ ub => match popUsage q ub with
           | .some ub' => .ok T (uAdd (uScale q uv) ub')
-          | .none => .err "the let-bound variable is used more than its quantity allows"
+          | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
       | r => r
     | r => r
@@ -2471,7 +2714,7 @@ def checkW : TCtx → Tm → Val → TyRes
     match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
     | .ok _ u => match popUsage q u with
       | .some u' => .ok (.vpi q dom env cod .none) u'
-      | .none => .err "the bound variable is used more than its quantity allows"
+      | .none => .err "the bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
     | r => r
   | c, .letE ty v b, T => checkLet c .qw ty v b T
   | c, .letq q ty v b, T => checkLet c q ty v b T
@@ -2479,7 +2722,7 @@ def checkW : TCtx → Tm → Val → TyRes
   | c, .up a, .vulift n A => match check c a A with
     | .ok _ u => .ok (.vulift n A) u
     | r => r
-  | c, .pair a b, .vsigma q ta env tb _ => match check c a ta with
+  | c, .pair a b, .vsigma q ta env tb _ => match check (erasedIf q c) a ta with
     | .ok _ ua => match check c b (eval (.cons (eval (TCtx.env c) a) env) tb) with
       | .ok _ ub => .ok (.vsigma q ta env tb .none) (uAdd (uScale q ua) ub)
       | r => r
@@ -2553,6 +2796,23 @@ def checkBranches : TCtx → Nat → Tm → Tms → Nat → Option (List Q) → 
       | .none => .some u)
     | r => r
 -- a type: its universe (types are erased: their usage counts for nothing)
+-- the index type of a data type at level `l` is exactly in `Sort (l+1)`: the premise of
+-- `μ`/`ν`, and of every eliminator that names `I` (`checkIndexLevel` in `Check.lean`;
+-- the eliminators check their scrutinee against `μ.{l} I D i` without the type former)
+def checkIndexLevel : TCtx → Nat → Tm → TyRes
+  | c, l, I => match inferUniv c I with
+    | .ok (.vsort lI) u => match lvlEquiv lI (.lnum (l + 1)) with
+      | .true => .ok (.vsort lI) u
+      | .false => .err (String.append (String.append (String.append "an index type must be in the data type's universe: Sort " (Nat.toString (l + 1))) ", not Sort ") (lvlShow lI))
+    | r => r
+-- `transp` is for types in `Type u`, as `eq` and `refl` are: the type of its motive and
+-- the type of its proof `e` are equations at `A`, which the `eq` rule rejects at a proposition
+def checkEqDomain : TCtx → Tm → TyRes
+  | c, A => match inferUniv c A with
+    | .ok (.vsort l) u => match lvlNeverZero l with
+      | .true => .ok (.vsort l) u
+      | .false => .err "transp is for types in Type u, not propositions"
+    | r => r
 def inferUniv : TCtx → Tm → TyRes
   | c, t => match infer (TCtx.erase c) t with
     | .ok ty _ => match whnf ty with

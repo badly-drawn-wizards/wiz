@@ -128,22 +128,118 @@ where
     | .obj 2 #[_, D'] | .obj 3 #[_, _, D'] => fields D' (x.field 1) (acc.push (x.field 0))
     | _ => acc
 
-/-- A foreign function's key: `extern:cname:kinds:result:io:header:finalizer` (see
-`extern`). Kinds: `n` Nat, `u` UInt64, `f` Float64, `s` String, `b` Bool, `v` Unit,
-`p` a foreign pointer (the finalizer is for a pointer result), `w` a Wiz value passed as is. -/
-structure ExternSig where
-  cname : String
+/-- (9g) The signature of a function C calls (a callback, an exported function): the
+kinds of its parameters and result (letters), and whether the result is in `IO`. -/
+structure CallbackSig where
   params : List Char
   result : Char
+  io : Bool
+  deriving BEq, Inhabited, Repr
+
+/-- `[nn/b]`: the parameters, `/`, then the result, with `!` before it for a result in
+`IO`. -/
+def CallbackSig.toKey (c : CallbackSig) : String :=
+  s!"[{String.ofList c.params}/{if c.io then "!" else ""}{c.result}]"
+
+def CallbackSig.ofKey (s : List Char) : CallbackSig :=
+  let ps := s.takeWhile (· != '/')
+  let r := (s.dropWhile (· != '/')).drop 1
+  let (io, r) := match r with | '!' :: r => (true, r) | r => (false, r)
+  { params := ps, result := r.headD 'v', io }
+
+/-- How one argument or result of a foreign function is marshalled: a kind letter, or
+(9i) a C struct passed by value, `<ctype|header|f₁=k₁,…>`, whose fields are kinds
+again. A struct's `header` is empty when its definition is generated from the fields.
+(9g) A Wiz closure passed to C as a callback, a function pointer and a context
+pointer, is `k[sig]` (borrowed for the call) or `K[sig]` (`owned`: the C side has a
+reference and gives it back with `wiz_release`). -/
+inductive FKind where
+  | k (c : Char)
+  | struct (ctype : String) (header : String) (fields : List (String × FKind))
+  | callback (owned : Bool) (sig : CallbackSig)
+  deriving BEq, Inhabited, Repr
+
+partial def FKind.toKey : FKind → String
+  | .k c => c.toString
+  | .callback owned sig => (if owned then "K" else "k") ++ sig.toKey
+  | .struct c h fs => "<" ++ c ++ "|" ++ h ++ "|" ++ ",".intercalate (fs.map fun (f, kd) => f ++ "=" ++ kd.toKey) ++ ">"
+
+/-- The text up to the matching `>` (after a `<`), and the rest. -/
+def FKind.group (cs : List Char) (depth : Nat) (acc : List Char) : List Char × List Char :=
+  match cs with
+  | [] => (acc.reverse, [])
+  | '<' :: r => FKind.group r (depth + 1) ('<' :: acc)
+  | '>' :: r => if depth == 0 then (acc.reverse, r) else FKind.group r (depth - 1) ('>' :: acc)
+  | c :: r => FKind.group r depth (c :: acc)
+
+/-- Split at a separator, outside brackets. -/
+def FKind.splitTop (cs : List Char) (sep : Char) (depth : Nat := 0) (cur : List Char := []) (acc : List (List Char) := []) :
+    List (List Char) :=
+  match cs with
+  | [] => (cur.reverse :: acc).reverse
+  | c :: r =>
+    if c == sep && depth == 0 then FKind.splitTop r sep depth [] (cur.reverse :: acc)
+    else FKind.splitTop r sep (if c == '<' then depth + 1 else if c == '>' then depth - 1 else depth) (c :: cur) acc
+
+/-- One kind, and the rest of the text. -/
+partial def FKind.parseOne (cs : List Char) : Option (FKind × List Char) :=
+  match cs with
+  | '<' :: r =>
+    let (inner, rest) := FKind.group r 0 []
+    match FKind.splitTop inner '|' with
+    | [c, h, fs] =>
+      let fields := if fs.isEmpty then [] else (FKind.splitTop fs ',').filterMap fun f =>
+        match FKind.splitTop f '=' with
+        | n :: rest => (FKind.parseOne (String.intercalate "=" (rest.map String.ofList)).toList).map fun (kd, _) => (String.ofList n, kd)
+        | _ => none
+      some (.struct (String.ofList c) (String.ofList h) fields, rest)
+    | _ => none
+  | 'k' :: '[' :: r => some (.callback false (CallbackSig.ofKey (r.takeWhile (· != ']'))), (r.dropWhile (· != ']')).drop 1)
+  | 'K' :: '[' :: r => some (.callback true (CallbackSig.ofKey (r.takeWhile (· != ']'))), (r.dropWhile (· != ']')).drop 1)
+  | c :: r => some (.k c, r)
+  | [] => none
+
+/-- The kinds of a key's parameter field: letters and bracketed structs. -/
+partial def FKind.parseMany (cs : List Char) : List FKind :=
+  match FKind.parseOne cs with
+  | some (kd, rest) => kd :: FKind.parseMany rest
+  | none => []
+
+/-- The letter of a kind (`S` for a struct). -/
+def FKind.letter : FKind → Char
+  | .k c => c
+  | .struct .. => 'S'
+  | .callback owned _ => if owned then 'K' else 'k'
+
+/-- A foreign function's key: `extern:cname:kinds:result:io:header:finalizer` (see
+`extern`). Kinds: `n` Nat, `u` UInt64, `f` Float64, `s` String, `b` Bool, `v` Unit,
+`p` a foreign pointer (the finalizer is for a pointer result), `w` a Wiz value passed as is,
+`y` (9i) a byte buffer (`Bytes`) passed as a pointer and a length (two C arguments),
+`<…>` a C struct by value (`FKind`). -/
+structure ExternSig where
+  cname : String
+  params : List FKind
+  result : FKind
   io : Bool
   header : String
   fin : String := ""
 
 def ExternSig.ofKey? (key : Name) : Option ExternSig :=
+  -- a struct's C type may not contain `:`, so splitting is safe
   match key.splitOn ":" with
   | ["extern", c, ps, r, io, h, fin] =>
-    some { cname := c, params := ps.toList, result := (r.toList.headD 'v'), io := io == "io", header := h, fin }
+    some { cname := c, params := FKind.parseMany ps.toList, result := ((FKind.parseMany r.toList).headD (.k 'v')),
+           io := io == "io", header := h, fin }
   | _ => none
+
+/-- An exported function (stage 9g), `export:cname:kinds:result:io`: C calls `cname`. -/
+def ExternSig.ofExportKey? (key : Name) : Option ExternSig :=
+  match key.splitOn ":" with
+  | ["export", c, ps, r, io] =>
+    some { cname := c, params := ps.toList.map .k, result := .k (r.toList.headD 'v'), io := io == "io", header := "" }
+  | _ => none
+
+def exportPrefix : String := "export:"
 
 def nativeArity (key : Name) : Nat :=
   match ExternSig.ofKey? key with
@@ -333,20 +429,20 @@ strings of the registered `nat` and `string` types print as literals. -/
 partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy R) (v : RVal) : Term R :=
   let readback := readback g builtins
   match whnf ty, v with
-  | .mu _ _ _ _ _ (some (T, _, _)), v =>
-    if builtins.lookup "nat" == some T then
+  | .mu _ _ _ _ _ hint, v =>
+    -- (the same test as erasure's: a type shaped like `Nat` is a number, R3)
+    if isNatTy { g with builtins := builtins } ty then
       match v.toNat? with
       | some n => .const (toString n) []
       | none => readbackData ty v
-    else if builtins.lookup "string" == some T then
+    else if hint.map (·.1) == builtins.lookup "string" && hint.isSome then
       match v.toString? with
       | some s => .const s.quote []
       | none => readbackData ty v
     else readbackData ty v
-  | .mu .., v => readbackData ty v
   | .sigma _ _ A B _, v =>
     -- the last field of a structure is unboxed (22i): `v` is the field itself
-    if isStructTail g (Closure.inst g B (.var 1000000)) then
+    if unboxedSigma g 1000000 ty then
       let a' := readback A v
       .pair a' (readback (Closure.inst g B (eval g [] a')) .erased)
     else
@@ -357,8 +453,9 @@ partial def readback (g : Globals R) (builtins : List (Name × Name)) (ty : VTy 
   | .enum ls, .obj t _ => .tag ls t
   | .enum ls, .nat t => .tag ls t
   | .unit _, _ => .tt
-  -- a phantom tail or structure marker (22e, 22i): its one inhabitant
-  | .pi x .., _ => if isPhantomName x then .tt else .const "<function>" []
+  -- an erased function into `Unit` (a phantom tail or structure marker, 22e, 22i): its
+  -- one inhabitant
+  | .pi .., _ => if erasedFunTy g ty 1000000 then .tt else .const "<function>" []
   | .nu .., _ => .const "<codata>" []
   | _, _ => .tt
 where
@@ -371,9 +468,7 @@ where
             if k == ri.r then .nat n else .erased)
         | v, _ => v
       let v := match v with
-        | .nat n => if builtins.lookup "nat" == (match whnf ty with
-            | .mu _ _ _ _ _ (some (T, _, _)) => some T
-            | _ => none) then RVal.natView n else unflat D v
+        | .nat n => if isNatTy { g with builtins := builtins } ty then RVal.natView n else unflat D v
         | v => unflat D v
       .con (readback g builtins (vInterp g l I D (muFamily l I D) i) v)
     | _ => .tt
@@ -418,12 +513,14 @@ interpreters, which can't call C), a definition implemented by a foreign functio
 its own code: `#eval` and `#run` run the model, compiled code the native. Also returns
 the definitions that couldn't be erased, with the reasons. -/
 def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
-    (externImpls : Bool := true) : TCM (Code × List (Name × String)) := do
+    (externImpls : Bool := true) (caseShapes : Bool := true) : TCM (Code × List (Name × String)) := do
   let mut code : Code := {}
   let mut failed : List (Name × String) := []
   let mut todo := roots.toArray
   -- definitions registered as native operations
   let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && !key.startsWith "repr:" &&
+    !key.startsWith "cstruct:" &&
+    !key.startsWith RVal.exportPrefix &&
     key != inlineKey
   -- native representations (stage 22d): the interpreters keep the model's objects when
   -- the conversions are foreign functions
@@ -438,33 +535,58 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     if k == inlineKey then
       if let some d := g.find? f then
         if let .ok e := eraseDecl g d then inlines := inlines.insert f e
+  -- `attribute [implemented_by m] n`: `n` gets `m`'s code (following chains)
+  let rec target (m : Name) : Nat → Name
+    | 0 => m
+    | fuel + 1 => match (g.find? m).bind (·.impl) with
+      | some (.const m' _) =>
+        if !externImpls && builtins.any (fun (k, x) => x == m' && k.startsWith "extern:") then m
+        else target m' fuel
+      | _ => m
+  -- the erased code of `n` before inlining (`none`: no such definition), and the reason
+  -- if it couldn't be erased
+  let eraseOne (n : Name) : Option (ETerm × Option String) :=
+    let m := target n 100
+    if let some (key, _) := natives.find? (·.2 == m) then
+      some (.prim .unreachable #[.global key], none)
+    else match g.find? m with
+      | none => none
+      | some d =>
+        -- (an `implemented_by` not followed: the definition itself)
+        let d := if d.impl matches some (.const ..) then { d with impl := none } else d
+        -- a declaration that can't be erased yet becomes a runtime error if it is reached
+        match eraseDecl g d with
+        | .ok e => some (e, none)
+        | .error err => some (.prim .unreachable #[], some (toString err))
+  -- (kept: a definition is erased once, when first called or when reached)
+  let mut raw : Std.HashMap Name (Option (ETerm × Option String)) := {}
   while h : todo.size > 0 do
     let n := todo.back
     todo := todo.pop
     if code.contains n then continue
-    -- `attribute [implemented_by m] n`: `n` gets `m`'s code (following chains)
-    let rec target (m : Name) : Nat → Name
-      | 0 => m
-      | fuel + 1 => match (g.find? m).bind (·.impl) with
-        | some (.const m' _) =>
-          if !externImpls && builtins.any (fun (k, x) => x == m' && k.startsWith "extern:") then m
-          else target m' fuel
-        | _ => m
-    let m := target n 100
-    if let some (key, _) := natives.find? (·.2 == m) then
-      code := code.insert n (.prim .unreachable #[.global key])
-      continue
-    let some d := g.find? m | continue
-    -- (an `implemented_by` not followed: the definition itself)
-    let d := if d.impl matches some (.const ..) then { d with impl := none } else d
-    -- a declaration that can't be erased yet becomes a runtime error if it is reached
-    let e ← match eraseDecl g d with
-      | .ok e => pure e
-      | .error err => do failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
+    let r ← match raw.get? n with
+      | some r => pure r
+      | none => do let r := eraseOne n; raw := raw.insert n r; pure r
+    let some (e, err) := r | continue
+    if let some err := err then
+      -- (a refusal, not a gap: running on would give a wrong value)
+      if (err.splitOn abstractFieldMsg).length > 1 then
+        throw (.other s!"cannot erase {n}: {err}")
+      failed := (n, err) :: failed
     let e := if e.globals.any inlines.contains then
       let inl := inlines
       e.inlineSimp fun f => if f == n then none else inl.get? f
     else e
+    -- calls of case-shaped definitions (`Bool.and`, …) become `case`s (15h)
+    let e ← if caseShapes then do
+        for f in e.globals do
+          unless raw.contains f do raw := raw.insert f (eraseOne f)
+        let known := raw
+        pure (e.caseInline fun f => if f == n then none else
+          match known.get? f with
+          | some (some (b, _)) => b.caseShape?
+          | _ => none)
+      else pure e
     code := code.insert n e
     todo := e.globals todo
   pure (code, failed.reverse)
@@ -472,8 +594,8 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
 /-- The same, ignoring the definitions that couldn't be erased (reaching one is a
 runtime error). -/
 def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
-    (externImpls : Bool := true) : TCM Code :=
-  return (← compileReachableE g builtins roots externImpls).1
+    (externImpls : Bool := true) (caseShapes : Bool := true) : TCM Code :=
+  return (← compileReachableE g builtins roots externImpls caseShapes).1
 
 /-- Erase every global. -/
 def compileAll (g : Globals R) (builtins : List (Name × Name) := []) : TCM Code :=
