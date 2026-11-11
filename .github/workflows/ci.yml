@@ -24,16 +24,16 @@ on:
         type: boolean
         default: false
 
-# A newer push to a pull request supersedes its running check (saves minutes). Runs on
-# the branches themselves (push events) are never cancelled: pull requests are merged
-# on green without being up to date, so the run of each merge commit is what tells
-# which merge broke something. They get a group per commit, since a shared group with
-# cancel-in-progress off would still drop a queued run when a newer one arrives. A merge
-# queue entry has a ref of its own (gh-readonly-queue/master/pr-N-SHA) and is never
-# cancelled by this rule (the queue cancels it when the entry leaves the queue).
+# A newer push supersedes an older run of the same ref (saves runners): on a pull
+# request, and on master too, where merges come in quick succession and every run
+# tests everything merged so far (the newest run covers the older commits' changes;
+# nightly.yml then moves to the newest green commit; release.yml has its own rule). A
+# merge queue entry has a ref of its own (gh-readonly-queue/master/pr-N-SHA) and is
+# never cancelled by this rule (the queue cancels it when the entry leaves the queue);
+# a manual run has a group of its own.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: ${{ github.event_name != 'push' && github.event_name != 'merge_group' }}
+  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}${{ github.event_name == 'workflow_dispatch' && format('-dispatch-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
