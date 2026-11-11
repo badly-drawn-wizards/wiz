@@ -249,7 +249,9 @@ def solveSortConstraints : ElabM R Unit := do
     for (ctx, t, l) in (← get).sortConstraints do
       let t ← zonk ctx.lvl t
       if !t.mvars.isEmpty then continue
-      let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
+      -- (a holed sort is no error here: the term is not checked for acceptance, and the
+      -- sorts pass runs later, `Decl.withSorts`)
+      let kctx : Ctx R := { globals := { (← getGlobals) with sortHolesOk := true }, env := ctx.env, names := ctx.names,
                             qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
                             types := ctx.types, lvl := ctx.lvl, proof := true }
       if let .ok (ty, _) := Wiz.infer kctx t then
@@ -823,7 +825,8 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     | .ok code => Elab.runProcMacro code f stx scope (macroEnv g)
     | .error e => (#[], .error e)
   -- (the elaborator's terms carry no proof markers yet: `proof`)
-  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer { ctx with proof := true } t).map (·.1) |>.mapError toString
+  -- (mandatory sorts: an elaboration-time type, where a sort may still be a hole)
+  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer { ctx with proof := true, globals := { ctx.globals with sortHolesOk := true } } t).map (·.1) |>.mapError toString
   -- (13b) structures with a constructor private to another module don't unfold here
   match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
                 kernelInfer, classes, instances, termInfo } with
@@ -2208,6 +2211,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
+      -- (the sorts pass first: the kernel checks the term erasure is given)
+      let t := if t.hasHole then (Mark.infer { globals := s.globals, sortsOnly := true } t).1 else t
       let ctx : Ctx R := { globals := s.globals, proof := true }
       let result := do
         let (ty, _) ← Wiz.infer ctx t
@@ -2233,6 +2238,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
+      let t := if t.hasHole then (Mark.infer { globals := s.globals, sortsOnly := true } t).1 else t
       let ctx : Ctx R := { globals := s.globals, proof := true }
       let result : Except String (VTy R × RVal) := do
         let (ty, _) ← (Wiz.infer ctx t).mapError toString

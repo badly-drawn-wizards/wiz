@@ -265,14 +265,14 @@ def hintCase : IO Unit := do
       if let .error e := infer (R := Q) { globals := g } (ty former h) then
         throw (IO.userError s!"a well-typed hint was rejected: {e}")
 
-/-- (Mandatory sorts; review F3) The description templates (`Templates.lean`) carry
-hand-written component sorts, which the kernel trusts when it evaluates them: kernel-check
-each template term against its type, at closed levels and at level parameters, so that a
-wrong leaf is caught mechanically (the kernel checks every written sort of a term). -/
 /-- `t` with every occurrence of the closed subterm `target` replaced by `c`. -/
 partial def replaceClosed (target c : Term Q) (t : Term Q) : Term Q :=
   if t == target then c else Id.run (t.mapChildrenM pure fun _ x => pure (replaceClosed target c x))
 
+/-- (Mandatory sorts; review F3) The description templates (`Templates.lean`) carry
+hand-written component sorts, which the kernel trusts when it evaluates them: kernel-check
+each template term against its type, at closed levels and at level parameters, so that a
+wrong leaf is caught mechanically (the kernel checks every written sort of a term). -/
 def templatesCheck : IO Unit := do
   let ω : Term Q := .qlit .many
   let v (i : Nat) : Term Q := .var i
@@ -306,9 +306,17 @@ def templatesCheck : IO Unit := do
     let allBody := replaceClosed (Templates.interpTm l) (.const "interpTm" us) (Templates.allTm l w)
     for (n, ty, t) in [("interpTm", interpTy, Templates.interpTm l), ("allTm", allTy, allBody),
                        ("hypsTm", hypsTy, byName (Templates.hypsTm l w)), ("mapTm", mapTy, byName (Templates.mapTm l))] do
-      match addDeclS (R := Q) g { name := n, levelParams := ps, type := ty, value := some t } with
+      -- (checked in an erased position: a template's quantities are variables, `q`, so its
+      -- projections are of pairs at quantity `q`; then declared, as an axiom, for the next)
+      let d := Decl.withSorts g { name := n, levelParams := ps, type := ty, value := some t }
+      let ctx : Ctx Q := { globals := g, erased := true }
+      let r : TCM Unit := do
+        let _ ← Wiz.checkType ctx d.type
+        let _ ← Wiz.check ctx (d.value.getD .tt) (ctx.eval d.type)
+      if let .error e := r then throw (IO.userError s!"{n} at l = {l}, v = {w}: {e}")
+      match addDecl (R := Q) g { d with value := none } with
       | .ok g' => g := g'
-      | .error e => throw (IO.userError s!"{n} at l = {l}, v = {w}: {e}")
+      | .error e => throw (IO.userError s!"{n} at l = {l}, v = {w}, its type: {e}")
 
 def structGroup : Group where
   name := "check: structural types"
