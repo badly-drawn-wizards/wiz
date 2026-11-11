@@ -1073,6 +1073,19 @@ static double wiz_f64_div(double a, double b) { return a / b; }
 static int wiz_f64_lt(double a, double b) { return a < b; }
 static const char *wiz_f64_show(double a) { static char buf[64]; snprintf(buf, sizeof buf, "%.17g", a); return buf; }
 
+/* (P2) The step budget of a proof's read-back in the self-hosted toolchain (selfhost/Kernel.wiz,
+   `forceProof`; `Budget` in Wiz/Core/Term.lean is the Lean frontend's; as in runtime/wiz.c): a counter behind a
+   pure interface, as in Lean. `start` begins a budget of `steps` closure instantiations
+   (1: it did; 0: one is already running, the caller counts on it), `tick` takes one step
+   (1, or 0 once it ran out; always 1 when no budget runs), `end` stops it (1: it did not
+   run out). Only the read-back of a suspended proof starts one, so the kernel's own
+   evaluation never finds one running. */
+static int wiz_proof_on = 0;
+static uint64_t wiz_proof_left = 0;
+static int wiz_proof_start(uint64_t steps) { if (wiz_proof_on) return 0; wiz_proof_on = 1; wiz_proof_left = steps + 1; return 1; }
+static int wiz_proof_tick(uint64_t x) { (void)x; if (!wiz_proof_on) return 1; if (wiz_proof_left <= 1) { wiz_proof_left = 0; return 0; } wiz_proof_left--; return 1; }
+static int wiz_proof_end(uint64_t x) { (void)x; wiz_proof_on = 0; return wiz_proof_left > 0; }
+
 /* the program needs a big stack (deep recursion): raise the limit and start again (a
    thread with a big stack would do, but the collector's stopping of the world lost
    its signals) */
