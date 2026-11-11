@@ -1007,6 +1007,15 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
     (stuck ⟶ fires, allowed). Sentinel heads (`outOfSteps`, out-of-scope) are excluded.
   * *Termination.* The walks are bounded by the same depths (8 for `inertTy`, 64 for
     ground equality) and instantiate binders with atoms.
+  * *Two deliberate restrictions.* Only the literal quantity `0` makes a tail:
+    `(x : A) → Unit` at `ω` is a singleton by η too, but no declaration produces it, so
+    it stays non-inert (conservative). And the kernels differ in which constants
+    `groundDom` compares by name: the Lean kernel takes any global without a value, with
+    its levels compared; `Kernel.wiz` takes only an axiom (`haxiom`), which carries no
+    levels. Where they differ (a universe-polymorphic constant without a value as a tail
+    domain) `Kernel.wiz` misses only the fast path, and InReg_conv in conversion still
+    decides, so the verdicts agree. Seals and brands are monomorphic (`T.seal✝ : Type`),
+    so this does not arise today.
   * *Not covered.* A phantom of a value, `(0 x : Nat) × (x = p)` (the tail of `UIntN w`),
     contains an equation type, which `groundEqTy` does not handle: such a domain is not
     ground, so `cast` at a closed word is the identity only through InReg_conv (the
