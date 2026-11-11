@@ -155,6 +155,21 @@ per cycle, what temporal formulas are about), and `Circuit.run_take`:
 simulation prints is what a theorem about the trace says. The temporal logic (H14 T)
 builds on these.
 
+## H14 C2: lenses for structures and bundles (`lib/OpticDerive.wiz`, `lib/Hdl/Optic.wiz`) ✅
+
+`deriving Lens` gives every field of a structure a lens (lib/Optic.wiz's `Lens S A`), its
+laws and the independence of every two distinct fields, all by `rfl`:
+`S.fL : Lens (S Δ) T`, `S.fL_lawful : Lens.Lawful S.fL`, `S.f_g_indep : Lens.Indep S.fL
+S.gL` (f declared before g; `Hdl.indep_symm` turns it round). The names and statements
+are the ones Feral's lowering of `struct` writes, so lowered code can switch to the
+deriver. On an HDL bundle (`deriving Bundle, Lens`) a lens is polymorphic in the
+representation, `Tx.leftL : Lens (Tx r) (r B4)`: the same lens updates values in a proof
+and wires in synthesis. `Hdl.zoom l g` runs a sub-step `g` on the place `l` of a state
+(`Hdl.zoom_get`), and `Hdl.zoom_frame` is the frame rule: a place independent of `l` is
+unchanged, for every state (no evaluation needed). `Bundle.lens b` (with
+`Bundle.Lawful b`, `rfl` for derived bundles) and `HwTy.fstL`/`sndL` are the packed
+views at values. Example: `examples/hdl-optic.wiz` (group `hdl`).
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
