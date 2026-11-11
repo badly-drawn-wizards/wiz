@@ -407,7 +407,9 @@ def group : Group where
           "def t : Ex (fun (n : Nat) => Ex (fun (m : Nat) => n = m)) := Ex.intro _ 3 (Ex.intro _ 3 rfl)\n" ++
           "def t' : Ex (fun (n : Nat) => Ex (fun (m : Nat) => n = m)) := Ex.intro _ 3 (Ex.intro (fun (m : Nat) => 3 = m) 3 rfl)")
         -- without an expected type the motives can't be inferred: an error, not a panic
-        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "ill-typed" }
+        -- (since agent/elab-bugs the inner `Ex.intro` waits for nothing better and no
+        -- ill-typed guess is made: `rfl` meets the unsolved motive `?P ?w`)
+        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
