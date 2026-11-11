@@ -34,7 +34,7 @@ def pis : List (Q × Lvl × Tm) → Lvl × Tm → Lvl × Tm
   | [], r => r
   | (q, i, A) :: bs, r =>
     let (j, B) := pis bs r
-    (.imax i j, .pi q (some (.imax i j)) A B)
+    (.imax i j, .pi q (some ⟨i, j⟩) A B)
 
 private def v (i : Nat) : Tm := .var i
 private def ω : Q := .many
@@ -70,7 +70,7 @@ def delimMethodTys (l v' : Lvl) (I P : Tm) : Tm × Tm × Tm × Tm :=
 in. Annotated, so that the reducts that apply it (`X j` in a payload equation) are
 inferable; the annotation is `familyTy` (written out: it is defined after this). -/
 def muFamily (l : Lvl) (I D : Tm) : Tm :=
-  .ann (.lam (.mu l I.shift D.shift (v 0))) (.pi .many (some l.succ.succ) I (.sort l.succ))
+  .ann (.lam (.mu l I.shift D.shift (v 0))) (.pi .many (some ⟨l.succ, l.succ.succ⟩) I (.sort l.succ))
 
 /-- `(i : I) → (_ : μ D i) → Sort v`, the type of `ind`'s motive. -/
 def indMotiveTy (l v' : Lvl) (I D : Tm) : Tm :=

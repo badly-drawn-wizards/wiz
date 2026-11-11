@@ -18,11 +18,13 @@ namespace WizMeta.Spec
 
 inductive EqTyLevelled : Rules
   | form {Γ : Ctx} {A B : Tm} {l : Lvl} : EqTyLevelled ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ B ∶ .sort l], Γ ⊢ .eqTy A B ∶ .sort 0⟩
-  | pi {Γ : Ctx} {A₁ A₂ B₁ B₂ : Tm} {i j s₁ s₂ : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero → s₁.Equiv (.imax i j) → s₂.Equiv (.imax i j) →
-      EqTyLevelled ⟨[Γ ⊢ A₁ ∶ .sort i, Γ ⊢ A₂ ∶ .sort i, (A₁ :: Γ) ⊢ B₁ ∶ .sort j, (A₂ :: Γ) ⊢ B₂ ∶ .sort j],
-        Γ ⊢ .eqTy (.pi q (some s₁) A₁ B₁) (.pi q (some s₂) A₂ B₂) ⟶ .eqTyPi A₁ B₁ A₂ B₂ ∶ .sort 0⟩
-  | sigma {Γ : Ctx} {A₁ A₂ B₁ B₂ : Tm} {i j s₁ s₂ : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero → s₁.Equiv (.max i j) → s₂.Equiv (.max i j) →
-      EqTyLevelled ⟨[Γ ⊢ A₁ ∶ .sort i, Γ ⊢ A₂ ∶ .sort i, (A₁ :: Γ) ⊢ B₁ ∶ .sort j, (A₂ :: Γ) ⊢ B₂ ∶ .sort j],
-        Γ ⊢ .eqTy (.sigma q (some s₁) A₁ B₁) (.sigma q (some s₂) A₂ B₂) ⟶ .eqTySigma A₁ B₁ A₂ B₂ ∶ .sort 0⟩
+  | pi {Γ : Ctx} {A₁ A₂ B₁ B₂ : Tm} {σ₁ σ₂ : Sorts} {q : Q} : σ₁.pi.NeverZero → σ₂.pi.NeverZero →
+      σ₁.dom.Equiv σ₂.dom → σ₁.cod.Equiv σ₂.cod →
+      EqTyLevelled ⟨[Γ ⊢ A₁ ∶ .sort σ₁.dom, Γ ⊢ A₂ ∶ .sort σ₁.dom, (A₁ :: Γ) ⊢ B₁ ∶ .sort σ₁.cod, (A₂ :: Γ) ⊢ B₂ ∶ .sort σ₁.cod],
+        Γ ⊢ .eqTy (.pi q (some σ₁) A₁ B₁) (.pi q (some σ₂) A₂ B₂) ⟶ .eqTyPi σ₂.dom A₁ B₁ A₂ B₂ ∶ .sort 0⟩
+  | sigma {Γ : Ctx} {A₁ A₂ B₁ B₂ : Tm} {σ₁ σ₂ : Sorts} {q : Q} : σ₁.sigma.NeverZero → σ₂.sigma.NeverZero →
+      σ₁.dom.Equiv σ₂.dom → σ₁.cod.Equiv σ₂.cod →
+      EqTyLevelled ⟨[Γ ⊢ A₁ ∶ .sort σ₁.dom, Γ ⊢ A₂ ∶ .sort σ₁.dom, (A₁ :: Γ) ⊢ B₁ ∶ .sort σ₁.cod, (A₂ :: Γ) ⊢ B₂ ∶ .sort σ₁.cod],
+        Γ ⊢ .eqTy (.sigma q (some σ₁) A₁ B₁) (.sigma q (some σ₂) A₂ B₂) ⟶ .eqTySigma σ₁.dom A₁ B₁ A₂ B₂ ∶ .sort 0⟩
 
 end WizMeta.Spec

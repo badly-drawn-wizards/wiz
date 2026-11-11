@@ -74,11 +74,11 @@ inductive PayloadKernel (whnfTy : Ctx → Tm → Prop) : Rules
   | peqRecLast {Γ : Ctx} {D q j j' I X i x y : Tm} {l : Lvl} : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .drec q j (.dret j') ∶ .desc l I], .peq Γ l I X i D x y (.eq (.app X j) (.fst x) (.fst y))⟩
   | peqRec {Γ : Ctx} {E D q j I X i x y r : Tm} {l : Lvl} : NonRet' E →
       PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .drec q j E ∶ .desc l I, .peq Γ l I X i E (.snd x) (.snd y) r],
-        .peq Γ l I X i D x y (.sigma .zero (some 0) (.eq (.app X j) (.fst x) (.fst y)) r.shift)⟩
+        .peq Γ l I X i D x y (.sigma .zero Tm.props (.eq (.app X j) (.fst x) (.fst y)) r.shift)⟩
   | peqHrecLast {Γ : Ctx} {D q H j j' I X i x y : Tm} {l : Lvl} : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .dhrec q H j (.dret j') ∶ .desc l I],
       .peq Γ l I X i D x y (.eq (.hrecFieldTy l H j X) (.fst x) (.fst y))⟩
   | peqHrec {Γ : Ctx} {E D q H j I X i x y r : Tm} {l : Lvl} : NonRet' E →
       PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .dhrec q H j E ∶ .desc l I, .peq Γ l I X i E (.snd x) (.snd y) r],
-        .peq Γ l I X i D x y (.sigma .zero (some 0) (.eq (.hrecFieldTy l H j X) (.fst x) (.fst y)) r.shift)⟩
+        .peq Γ l I X i D x y (.sigma .zero Tm.props (.eq (.hrecFieldTy l H j X) (.fst x) (.fst y)) r.shift)⟩
 
 end WizMeta.Spec

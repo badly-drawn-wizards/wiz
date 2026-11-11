@@ -17,16 +17,19 @@ namespace Tm
 def True' : Tm := .unit 0
 def False' : Tm := .empty 0
 
+/-- The component sorts of a `Π`/`Σ` of two propositions. -/
+def props : Option Sorts := some ⟨0, 0⟩
+
 /-- `(0 _ : a → b) × (b → a)`: what an equation between two propositions means. -/
 def iff (a b : Tm) : Tm :=
-  .sigma .zero (some 0) (.pi .zero (some 0) a b.shift) (.pi .zero (some 0) b.shift (a.shiftN 2))
+  .sigma .zero props (.pi .zero props a b.shift) (.pi .zero props b.shift (a.shiftN 2))
 
 /-- `B` moved under `n` more variables below its own (its variable stays `var 0`). -/
 def under (n : Nat) (B : Tm) : Tm := B.ren (upRen (· + n))
 
-/-- funext: `f =_{(x : A) → B} g  ⟶  (0 x : A) → f x =_{B} g x`. -/
-def eqPi (A B f g : Tm) : Tm :=
-  .pi .zero (some 0) A (.eq B (.app f.shift (.var 0)) (.app g.shift (.var 0)))
+/-- funext: `f =_{(x : A) → B} g  ⟶  (0 x : A) → f x =_{B} g x`, for `A : Sort i`. -/
+def eqPi (i : Lvl) (A B f g : Tm) : Tm :=
+  .pi .zero (some ⟨i, 0⟩) A (.eq B (.app f.shift (.var 0)) (.app g.shift (.var 0)))
 
 /-- The proof that `B a.1 ≡ B b.1`, from `e : a.1 = b.1` (`e` is `var 0`; the result is over
 `Γ, e`): `transp A a.1 (λy _. B a.1 ≡ B y) (reflTy (B a.1)) b.1 e`. -/
@@ -37,25 +40,43 @@ def eqSigmaTransport (A B a b : Tm) : Tm :=
   let P : Tm := .lam (.lam (.eqTy (Ba.shiftN 2) ((B.under 2).inst (.var 1))))
   .transp A.shift a1.shift P.shift (.reflTy Ba.shift) b1.shift (.var 0)
 
-/-- `a =_{(x : A) × B} b  ⟶  (0 e : a.1 =_A b.1) × (cast (B a.1) (B b.1) ê a.2 =_{B b.1} b.2)`. -/
-def eqSigma (A B a b : Tm) : Tm :=
-  let Ba := B.inst (.fst a)
-  let Bb := B.inst (.fst b)
-  .sigma .zero (some 0) (.eq A (.fst a) (.fst b))
-    (.eq Bb.shift (.cast Ba.shift Bb.shift (eqSigmaTransport A B a b) (Tm.snd a).shift) (Tm.snd b).shift)
+/-- `ê`, the proof that `B a.1 ≡ B b.1` in `eqSigma` (over `Γ, e`): by `transp`, or
+`reflTy (B a.1)` when the first components are proofs (`dom` is `0`): then `a.1 ≡ b.1` by
+irrelevance, and a `transp` along a proposition would be ill formed. -/
+def eqSigmaProof (σ : Sorts) (A B a b : Tm) : Tm :=
+  if σ.dom.isZero then .reflTy (B.inst (.fst a)).shift else eqSigmaTransport A B a b
+
+/-- The equation of the first components: `True` when they are proofs. -/
+def eqSigmaFst (σ : Sorts) (A a b : Tm) : Tm :=
+  if σ.dom.isZero then True' else .eq A (.fst a) (.fst b)
+
+/-- The equation of the second components (over `Γ, e`): `True` when they are proofs (`cod`
+is `0`). -/
+def eqSigmaSnd (σ : Sorts) (A B a b : Tm) : Tm :=
+  if σ.cod.isZero then True'
+  else .eq (B.inst (.fst b)).shift
+    (.cast (B.inst (.fst a)).shift (B.inst (.fst b)).shift (eqSigmaProof σ A B a b) (Tm.snd a).shift)
+    (Tm.snd b).shift
+
+/-- `a =_{(x : A) ×^σ B} b  ⟶  (0 e : a.1 =_A b.1) × (cast (B a.1) (B b.1) ê a.2 =_{B b.1} b.2)`,
+with the proof components' equations `True` (CoreSpec §8.2, the kernels' `vEq`): which
+component is a proposition is read off `σ`, so a neutral proposition counts too. -/
+def eqSigma (σ : Sorts) (A B a b : Tm) : Tm :=
+  .sigma .zero props (eqSigmaFst σ A a b) (eqSigmaSnd σ A B a b)
 
 /-- `((x : A₁) → B₁) ≡ ((x : A₂) → B₂)  ⟶  (0 e : A₂ ≡ A₁) × ((0 x : A₂) → B₁ (cast A₂ A₁ e x) ≡ B₂ x)`:
-the domain equation is backwards, as in CCobs. -/
-def eqTyPi (A₁ B₁ A₂ B₂ : Tm) : Tm :=
+the domain equation is backwards, as in CCobs. `i₂` is the sort of `A₂`. -/
+def eqTyPi (i₂ : Lvl) (A₁ B₁ A₂ B₂ : Tm) : Tm :=
   let c : Tm := .cast (A₂.shiftN 2) (A₁.shiftN 2) (.var 1) (.var 0)
-  .sigma .zero (some 0) (.eqTy A₂ A₁)
-    (.pi .zero (some 0) A₂.shift (.eqTy ((B₁.under 2).inst c) (B₂.under 1)))
+  .sigma .zero props (.eqTy A₂ A₁)
+    (.pi .zero (some ⟨i₂, 0⟩) A₂.shift (.eqTy ((B₁.under 2).inst c) (B₂.under 1)))
 
-/-- `((x : A₁) × B₁) ≡ ((x : A₂) × B₂)  ⟶  (0 e : A₁ ≡ A₂) × ((0 x : A₁) → B₁ x ≡ B₂ (cast A₁ A₂ e x))`. -/
-def eqTySigma (A₁ B₁ A₂ B₂ : Tm) : Tm :=
+/-- `((x : A₁) × B₁) ≡ ((x : A₂) × B₂)  ⟶  (0 e : A₁ ≡ A₂) × ((0 x : A₁) → B₁ x ≡ B₂ (cast A₁ A₂ e x))`.
+`i₁` is the sort of `A₁`. -/
+def eqTySigma (i₁ : Lvl) (A₁ B₁ A₂ B₂ : Tm) : Tm :=
   let c : Tm := .cast (A₁.shiftN 2) (A₂.shiftN 2) (.var 1) (.var 0)
-  .sigma .zero (some 0) (.eqTy A₁ A₂)
-    (.pi .zero (some 0) A₁.shift (.eqTy (B₁.under 1) ((B₂.under 2).inst c)))
+  .sigma .zero props (.eqTy A₁ A₂)
+    (.pi .zero (some ⟨i₁, 0⟩) A₁.shift (.eqTy (B₁.under 1) ((B₂.under 2).inst c)))
 
 /-- `cast ((x : A₁) → B₁) ((x : A₂) → B₂) e t  ⟶  λx. cast (B₁ x̂) (B₂ x) (e.2 x) (t x̂)`,
 `x̂ = cast A₂ A₁ e.1 x`. -/
@@ -90,16 +111,16 @@ def former? : Tm → Option Former
 /-! ## Descriptions -/
 
 /-- `⟦ret j⟧ X i = (0 _ : j =_I i) × Unit` -/
-def interpRet (l : Lvl) (I j i : Tm) : Tm := .sigma .zero (some l.succ) (.eq I j i) (.unit l.succ)
+def interpRet (l : Lvl) (I j i : Tm) : Tm := .sigma .zero (some ⟨0, l.succ⟩) (.eq I j i) (.unit l.succ)
 /-- `⟦arg q S D⟧ X i = (q s : S) × ⟦D s⟧ X i` -/
 def interpArg (l : Lvl) (q : Q) (I S D X i : Tm) : Tm :=
-  .sigma q (some l.succ) S (.interp l I.shift (.app D.shift (.var 0)) X.shift i.shift)
+  .sigma q (some ⟨l.succ, l.succ⟩) S (.interp l I.shift (.app D.shift (.var 0)) X.shift i.shift)
 /-- `⟦rec q j D⟧ X i = (q _ : X j) × ⟦D⟧ X i` -/
 def interpRec (l : Lvl) (q : Q) (I j D X i : Tm) : Tm :=
-  .sigma q (some l.succ) (.app X j) (.interp l I.shift D.shift X.shift i.shift)
+  .sigma q (some ⟨l.succ, l.succ⟩) (.app X j) (.interp l I.shift D.shift X.shift i.shift)
 /-- `⟦hrec q H j D⟧ X i = (q _ : (h : H) → X (j h)) × ⟦D⟧ X i` -/
 def interpHrec (l : Lvl) (q : Q) (I H j D X i : Tm) : Tm :=
-  .sigma q (some l.succ) (.pi .many (some l.succ) H (.app X.shift (.app j.shift (.var 0))))
+  .sigma q (some ⟨l.succ, l.succ⟩) (.pi .many (some ⟨l.succ, l.succ⟩) H (.app X.shift (.app j.shift (.var 0))))
     (.interp l I.shift D.shift X.shift i.shift)
 
 /-- The sort of `All D X P i xs`. -/
@@ -109,12 +130,12 @@ def allSort (l v : Lvl) : Lvl := .max l.succ v
 def allArg (l v : Lvl) (I D X P i xs : Tm) : Tm := .dall l v I (.app D (.fst xs)) X P i (.snd xs)
 /-- `All (rec q j D) X P i xs = P j xs.1 × All D X P i xs.2` -/
 def allRec (l v : Lvl) (I j D X P i xs : Tm) : Tm :=
-  .sigma .many (some (allSort l v)) (apps P [j, .fst xs])
+  .sigma .many (some ⟨v, allSort l v⟩) (apps P [j, .fst xs])
     (.dall l v I.shift D.shift X.shift P.shift i.shift (Tm.snd xs).shift)
 /-- `All (hrec q H j D) X P i xs = ((h : H) → P (j h) (xs.1 h)) × All D X P i xs.2` -/
 def allHrec (l v : Lvl) (I H j D X P i xs : Tm) : Tm :=
-  .sigma .many (some (allSort l v))
-    (.pi .many (some (.imax l.succ v)) H (apps P.shift [.app j.shift (.var 0), .app (Tm.fst xs).shift (.var 0)]))
+  .sigma .many (some ⟨.imax l.succ v, allSort l v⟩)
+    (.pi .many (some ⟨l.succ, v⟩) H (apps P.shift [.app j.shift (.var 0), .app (Tm.fst xs).shift (.var 0)]))
     (.dall l v I.shift D.shift X.shift P.shift i.shift (Tm.snd xs).shift)
 
 /-- `hyps (arg q S D) … xs = hyps (D xs.1) … xs.2` -/
@@ -143,44 +164,45 @@ def indCon (l v : Lvl) (I D P m i xs : Tm) : Tm := apps m [i, xs, indHyps l v I 
 
 /-- The type of the function field of `hrec`: `(h : H) → X (j h)`. -/
 def hrecFieldTy (l : Lvl) (H j X : Tm) : Tm :=
-  .pi .many (some l.succ) H (.app X.shift (.app j.shift (.var 0)))
+  .pi .many (some ⟨l.succ, l.succ⟩) H (.app X.shift (.app j.shift (.var 0)))
 
 /-- The type of the continuation of `arg`: `(s : S) → Desc I`. -/
-def argContTy (l : Lvl) (I S : Tm) : Tm := .pi .many (some l.succ.succ) S (.desc l I.shift)
+def argContTy (l : Lvl) (I S : Tm) : Tm := .pi .many (some ⟨l.succ, l.succ.succ⟩) S (.desc l I.shift)
 /-- The type of the index function of `hrec`: `(h : H) → I`. -/
-def hrecIndexTy (l : Lvl) (I H : Tm) : Tm := .pi .many (some l.succ) H I.shift
+def hrecIndexTy (l : Lvl) (I H : Tm) : Tm := .pi .many (some ⟨l.succ, l.succ⟩) H I.shift
 /-- The type of a family over the index type: `(i : I) → Sort (l+1)`. -/
-def familyTy (l : Lvl) (I : Tm) : Tm := .pi .many (some l.succ.succ) I (.sort l.succ)
+def familyTy (l : Lvl) (I : Tm) : Tm := .pi .many (some ⟨l.succ, l.succ.succ⟩) I (.sort l.succ)
 /-- The type of `transp`'s motive for `A : Sort l`: `(0 b : A) → (0 _ : a =_A b) → Prop`.
 The inner `Π` is in `Sort (imax 0 1) = Sort 1`, the outer one in `Sort (imax l 1)`. -/
 def transpMotiveTy (l : Lvl) (A a : Tm) : Tm :=
-  .pi .zero (some (.imax l 1)) A (.pi .zero (some 1) (.eq A.shift a.shift (.var 0)) (.sort 0))
+  .pi .zero (some ⟨l, 1⟩) A (.pi .zero (some ⟨0, 1⟩) (.eq A.shift a.shift (.var 0)) (.sort 0))
 
 /-! ## Equality and casts by codes (PR #40, CoreSpec §8.4b) -/
 
 /-- The type of a family's code, `(J : Sort (l+1)) × (D : Desc_l J) × J`, in `Sort (l+2)`. -/
 def famCodeTy (l : Lvl) : Tm :=
-  .sigma .many (some l.succ.succ) (.sort l.succ) (.sigma .many (some l.succ.succ) (.desc l (.var 0)) (.var 1))
+  .sigma .many (some ⟨l.succ.succ, l.succ.succ⟩) (.sort l.succ)
+    (.sigma .many (some ⟨l.succ.succ, l.succ⟩) (.desc l (.var 0)) (.var 1))
 
 /-- The code `(I, D, i)` of `μ_l I D i`. -/
 def code (I D i : Tm) : Tm := .pair I (.pair D i)
 
 /-- `(0 e : S ≡ S') × ((0 x : S) → F x =_T F' (cast S S' e x))`, for `F F' : (x : S) → T` with `T`
 not depending on `x`: an `arg` continuation or an `hrec` index function, compared along an
-equation of their domains. -/
-def eqAlong (S S' F F' T : Tm) : Tm :=
-  .sigma .zero (some 0) (.eqTy S S')
-    (.pi .zero (some 0) S.shift
+equation of their domains. `S : Sort k`. -/
+def eqAlong (k : Lvl) (S S' F F' T : Tm) : Tm :=
+  .sigma .zero props (.eqTy S S')
+    (.pi .zero (some ⟨k, 0⟩) S.shift
       (.eq (T.shiftN 2) (.app (F.shiftN 2) (.var 0)) (.app (F'.shiftN 2) (.cast (S.shiftN 2) (S'.shiftN 2) (.var 1) (.var 0)))))
 
 /-- `arg q S E = arg q S' E'  ⟶  (0 e : S ≡ S') × ((0 s : S) → E s =_{Desc I} E' (cast S S' e s))` -/
-def eqDescArg (l : Lvl) (I S S' E E' : Tm) : Tm := eqAlong S S' E E' (.desc l I)
+def eqDescArg (l : Lvl) (I S S' E E' : Tm) : Tm := eqAlong l.succ S S' E E' (.desc l I)
 /-- `rec q j E = rec q j' E'  ⟶  (0 _ : j =_I j') × (E =_{Desc I} E')` -/
 def eqDescRec (l : Lvl) (I j j' E E' : Tm) : Tm :=
-  .sigma .zero (some 0) (.eq I j j') (.eq (.desc l I.shift) E.shift E'.shift)
+  .sigma .zero props (.eq I j j') (.eq (.desc l I.shift) E.shift E'.shift)
 /-- `hrec q H j E = hrec q H' j' E'  ⟶  (0 _ : (0 e : H ≡ H') × ((0 h : H) → j h =_I j' (cast H H' e h))) × (E = E')` -/
 def eqDescHrec (l : Lvl) (I H H' j j' E E' : Tm) : Tm :=
-  .sigma .zero (some 0) (eqAlong H H' j j' I) (.eq (.desc l I.shift) E.shift E'.shift)
+  .sigma .zero props (eqAlong l.succ H H' j j' I) (.eq (.desc l I.shift) E.shift E'.shift)
 
 /-- The constructor of a description (`ret`, `arg`, `rec`, `hrec`), if it is one. -/
 def dctor? : Tm → Option Nat

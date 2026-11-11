@@ -25,11 +25,11 @@ inductive EqTyCross : Rules
       EqTyCross ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ B ∶ .sort l'], Γ ⊢ .eqTy A B ⟶ .False' ∶ .sort 0⟩
   | typeProp {Γ : Ctx} {A B : Tm} {l l' : Lvl} : l.NeverZero → l'.IsZero →
       EqTyCross ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ B ∶ .sort l'], Γ ⊢ .eqTy A B ⟶ .False' ∶ .sort 0⟩
-  | pi {Γ : Ctx} {A₁ B₁ A₂ B₂ : Tm} {s₁ s₂ : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero →
-      EqTyCross ⟨[Γ ⊢ .pi q (some s₁) A₁ B₁ ∶ .sort s₁, Γ ⊢ .pi q (some s₂) A₂ B₂ ∶ .sort s₂],
-        Γ ⊢ .eqTy (.pi q (some s₁) A₁ B₁) (.pi q (some s₂) A₂ B₂) ⟶ .eqTyPi A₁ B₁ A₂ B₂ ∶ .sort 0⟩
-  | sigma {Γ : Ctx} {A₁ B₁ A₂ B₂ : Tm} {s₁ s₂ : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero →
-      EqTyCross ⟨[Γ ⊢ .sigma q (some s₁) A₁ B₁ ∶ .sort s₁, Γ ⊢ .sigma q (some s₂) A₂ B₂ ∶ .sort s₂],
-        Γ ⊢ .eqTy (.sigma q (some s₁) A₁ B₁) (.sigma q (some s₂) A₂ B₂) ⟶ .eqTySigma A₁ B₁ A₂ B₂ ∶ .sort 0⟩
+  | pi {Γ : Ctx} {A₁ B₁ A₂ B₂ : Tm} {σ₁ σ₂ : Sorts} {q : Q} : σ₁.pi.NeverZero → σ₂.pi.NeverZero →
+      EqTyCross ⟨[Γ ⊢ .pi q (some σ₁) A₁ B₁ ∶ .sort σ₁.pi, Γ ⊢ .pi q (some σ₂) A₂ B₂ ∶ .sort σ₂.pi],
+        Γ ⊢ .eqTy (.pi q (some σ₁) A₁ B₁) (.pi q (some σ₂) A₂ B₂) ⟶ .eqTyPi σ₂.dom A₁ B₁ A₂ B₂ ∶ .sort 0⟩
+  | sigma {Γ : Ctx} {A₁ B₁ A₂ B₂ : Tm} {σ₁ σ₂ : Sorts} {q : Q} : σ₁.sigma.NeverZero → σ₂.sigma.NeverZero →
+      EqTyCross ⟨[Γ ⊢ .sigma q (some σ₁) A₁ B₁ ∶ .sort σ₁.sigma, Γ ⊢ .sigma q (some σ₂) A₂ B₂ ∶ .sort σ₂.sigma],
+        Γ ⊢ .eqTy (.sigma q (some σ₁) A₁ B₁) (.sigma q (some σ₂) A₂ B₂) ⟶ .eqTySigma σ₁.dom A₁ B₁ A₂ B₂ ∶ .sort 0⟩
 
 end WizMeta.Spec

@@ -33,9 +33,9 @@ inductive InReg : Rules
   | ulift {Γ : Ctx} {A : Tm} {l : Lvl} : l.NeverZero → InReg ⟨[Γ ⊢ .ulift l A ∶ .sort l, .inert Γ A], .inert Γ (.ulift l A)⟩
   -- the binder's type is a premise of `sigma` and `arg`: the renaming and substitution
   -- lemmas extend the target context by it
-  | sigma {Γ : Ctx} {A B : Tm} {s i : Lvl} {q : Q} : s.NeverZero →
-      InReg ⟨[Γ ⊢ .sigma q (some s) A B ∶ .sort s, Γ ⊢ A ∶ .sort i, .inert Γ A, .inert (A :: Γ) B],
-        .inert Γ (.sigma q (some s) A B)⟩
+  | sigma {Γ : Ctx} {A B : Tm} {σ : Sorts} {q : Q} : σ.sigma.NeverZero →
+      InReg ⟨[Γ ⊢ .sigma q (some σ) A B ∶ .sort σ.sigma, Γ ⊢ A ∶ .sort σ.dom, .inert Γ A, .inert (A :: Γ) B],
+        .inert Γ (.sigma q (some σ) A B)⟩
   | mu {Γ : Ctx} {I D i : Tm} {l : Lvl} : InReg ⟨[Γ ⊢ .mu l I D i ∶ .sort l.succ, .inert Γ I, .inertD Γ l I D], .inert Γ (.mu l I D i)⟩
   | descConv {Γ : Ctx} {I D D' : Tm} {l : Lvl} : InReg ⟨[.inertD Γ l I D, Γ ⊢ D ≡ D' ∶ .desc l I], .inertD Γ l I D'⟩
   | ret {Γ : Ctx} {j I : Tm} {l : Lvl} : InReg ⟨[Γ ⊢ .dret j ∶ .desc l I], .inertD Γ l I (.dret j)⟩

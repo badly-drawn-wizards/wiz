@@ -10,9 +10,11 @@ kernel does, and the rules (and later the proofs) should not move with it.
 * de Bruijn indices; a binder's body lives under one more variable;
 * quantities are **labels** `0, 1, ω` on binders and description fields: part of a type's
   identity, never computed with (no usage checking, no quantity variables);
-* a `Π`/`Σ` carries its sort. The spec's rules type only `some s` (mandatory sorts,
-  metatheory-plan N2); `none` exists so that today's kernel terms can be read, and the
-  checker accepts it only when asked to (`Opts.sortsOptional`);
+* a `Π`/`Σ` carries the sorts of its two components, `⟨i, j⟩` (`Sorts`; mandatory sorts,
+  as in both kernels: `Wiz.BinderSorts`, `Kernel.wiz`'s `pi q i j`). The type's own sort is
+  `imax i j` (resp. `max i j`). The spec's rules type only `some ⟨i, j⟩`; `none` stands for
+  the kernel's holes (`Level.hole`, elaborator only), and the checker accepts it only when
+  asked to (`Opts.sortsOptional`);
 * the branches of `ecase` are a list built from `bnil`/`bcons` inside `Tm` (as in
   `Kernel.wiz`), so that `Tm` is a plain inductive type;
 * no sizes: `μ` is `μ^∞`.
@@ -25,20 +27,39 @@ inductive Q where
   | zero | one | many
   deriving Repr, Inhabited, BEq, DecidableEq
 
+/-- The sorts of a `Π`'s or `Σ`'s two components: the domain is in `Sort dom`, the codomain
+(under the binder) in `Sort cod`. Structural, not a combination: the cast rules read the
+domain's sort (D2), and the `Σ` equation reads which component is a proposition. -/
+structure Sorts where
+  dom : Lvl
+  cod : Lvl
+  deriving Repr, Inhabited, BEq
+
+namespace Sorts
+/-- The sort of the `Π`: `imax i j`. -/
+def pi (σ : Sorts) : Lvl := .imax σ.dom σ.cod
+/-- The sort of the `Σ`: `max i j`. -/
+def sigma (σ : Sorts) : Lvl := .max σ.dom σ.cod
+def inst (us : List Lvl) (σ : Sorts) : Sorts := ⟨σ.dom.inst us, σ.cod.inst us⟩
+def bound (σ : Sorts) : Nat := Nat.max σ.dom.bound σ.cod.bound
+/-- Both components' sorts equivalent (the D2 gate of the structural casts). -/
+def equiv (σ σ' : Sorts) : Bool := σ.dom.equiv σ'.dom && σ.cod.equiv σ'.cod
+end Sorts
+
 inductive Tm where
   | var (i : Nat)
   /-- a global constant at universe levels `us` -/
   | const (c : String) (us : List Lvl)
   | sort (l : Lvl)
-  /-- `(q x : A) → B` in `Sort s` -/
-  | pi (q : Q) (s : Option Lvl) (A B : Tm)
+  /-- `(q x : A) →^⟨i,j⟩ B` in `Sort (imax i j)` -/
+  | pi (q : Q) (s : Option Sorts) (A B : Tm)
   | lam (b : Tm)
   | app (f a : Tm)
   /-- `let x :q A := v; b` -/
   | letE (q : Q) (A v b : Tm)
   | ann (t A : Tm)
-  /-- `(q x : A) × B` in `Sort s` -/
-  | sigma (q : Q) (s : Option Lvl) (A B : Tm)
+  /-- `(q x : A) ×^⟨i,j⟩ B` in `Sort (max i j)` -/
+  | sigma (q : Q) (s : Option Sorts) (A B : Tm)
   | pair (a b : Tm)
   | fst (p : Tm)
   | snd (p : Tm)
@@ -229,12 +250,12 @@ def instL (us : List Lvl) : Tm → Tm
   | var i => var i
   | const c vs => const c (vs.map (Lvl.inst us))
   | sort l => sort (l.inst us)
-  | pi q s A B => pi q (s.map (Lvl.inst us)) (instL us A) (instL us B)
+  | pi q s A B => pi q (s.map (Sorts.inst us)) (instL us A) (instL us B)
   | lam b => lam (instL us b)
   | app f a => app (instL us f) (instL us a)
   | letE q A v b => letE q (instL us A) (instL us v) (instL us b)
   | ann t A => ann (instL us t) (instL us A)
-  | sigma q s A B => sigma q (s.map (Lvl.inst us)) (instL us A) (instL us B)
+  | sigma q s A B => sigma q (s.map (Sorts.inst us)) (instL us A) (instL us B)
   | pair a b => pair (instL us a) (instL us b)
   | fst p => fst (instL us p)
   | snd p => snd (instL us p)
@@ -282,7 +303,7 @@ def lvlBound : Tm → Nat
   | var _ | tt | enum _ | tag _ _ | bnil | qty | qlit _ => 0
   | const _ us => us.foldl (fun m u => Nat.max m u.bound) 0
   | sort l | unit l | empty l => l.bound
-  | pi _ s A B | sigma _ s A B => Nat.max ((s.map Lvl.bound).getD 0) (Nat.max (lvlBound A) (lvlBound B))
+  | pi _ s A B | sigma _ s A B => Nat.max ((s.map Sorts.bound).getD 0) (Nat.max (lvlBound A) (lvlBound B))
   | lam b | fst b | snd b | reflTy b | up b | down b | dret b | con b => lvlBound b
   | app a b | ann a b | pair a b | absurd a b | bcons a b | eqTy a b | refl a b =>
     Nat.max (lvlBound a) (lvlBound b)

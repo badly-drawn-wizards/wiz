@@ -91,6 +91,12 @@ abbrev M := Except Err
 
 def fail {α : Type} (msg : String) : M α := throw (.fail msg)
 
+/-- Two written component sorts are equivalent; a missing one (`Opts.sortsOptional`)
+compares with anything. -/
+def sameWritten : Option Sorts → Option Sorts → Bool
+  | some σ, some σ' => σ.equiv σ'
+  | _, _ => true
+
 open Tm in
 mutual
 
@@ -222,8 +228,8 @@ def whnfEq (E : Env) : Nat → Ctx → Tm → Tm → Tm → M Tm
     | none => pure stuck
     | some false =>
       match A' with
-      | .pi _ _ A₁ B => pure (eqPi A₁ B a b)
-      | .sigma _ _ A₁ B => pure (eqSigma A₁ B a b)
+      | .pi _ s A₁ B => pure (eqPi (← sortsOf E n Γ s A₁ B).dom A₁ B a b)
+      | .sigma _ s A₁ B => pure (eqSigma (← sortsOf E n Γ s A₁ B) A₁ B a b)
       | .unit _ => pure True'
       | .empty _ => pure True'
       | .enum _ => do
@@ -287,7 +293,7 @@ def eqPayload (E : Env) : Nat → Ctx → Lvl → Tm → Tm → Tm → Tm → Tm
     let withRest (A D₁ r : Tm) : M Tm := do
       match ← whnf E n Γ D₁ with
       | .dret _ => pure A
-      | _ => pure (.sigma .zero (some 0) A r.shift)
+      | _ => pure (.sigma .zero props A r.shift)
     match D' with
     | .dret _ => pure (some True')
     | .darg _ S D₁ =>
@@ -345,12 +351,16 @@ def whnfEqTy (E : Env) : Nat → Ctx → Tm → Tm → M Tm
     | some false, some true => pure False'
     | some false, some false =>
       match A', B' with
-      | .pi q _ A₁ B₁, .pi q' _ A₂ B₂ =>
+      | .pi q s₁ A₁ B₁, .pi q' s₂ A₂ B₂ =>
         if q != q' then pure False'
-        else if ← sameSorts E n Γ A₁ B₁ A₂ B₂ then pure (eqTyPi A₁ B₁ A₂ B₂) else pure stuck
-      | .sigma q _ A₁ B₁, .sigma q' _ A₂ B₂ =>
+        else if ← sameSorts E n Γ s₁ A₁ B₁ s₂ A₂ B₂ then
+          pure (eqTyPi (← sortsOf E n Γ s₂ A₂ B₂).dom A₁ B₁ A₂ B₂)
+        else pure stuck
+      | .sigma q s₁ A₁ B₁, .sigma q' s₂ A₂ B₂ =>
         if q != q' then pure False'
-        else if ← sameSorts E n Γ A₁ B₁ A₂ B₂ then pure (eqTySigma A₁ B₁ A₂ B₂) else pure stuck
+        else if ← sameSorts E n Γ s₁ A₁ B₁ s₂ A₂ B₂ then
+          pure (eqTySigma (← sortsOf E n Γ s₁ A₁ B₁).dom A₁ B₁ A₂ B₂)
+        else pure stuck
       | .sort u, .sort w => pure ((eqLevels? u w).getD stuck)
       | .unit u, .unit w => pure ((eqLevels? u w).getD stuck)
       | .empty u, .empty w => pure ((eqLevels? u w).getD stuck)
@@ -373,18 +383,25 @@ def whnfEqTy (E : Env) : Nat → Ctx → Tm → Tm → M Tm
 /-- The level premise of the variant `EqTyLevelled`: the two domains in one sort, the two
 codomains in one sort. Always true in the variant `EqTyCross` (for the type equation; the
 structural cast asks for it in both variants, `componentSorts`). -/
-def sameSorts (E : Env) : Nat → Ctx → Tm → Tm → Tm → Tm → M Bool
-  | 0, _, _, _, _, _ => throw .fuel
-  | n + 1, Γ, A₁, B₁, A₂, B₂ => do
+def sameSorts (E : Env) : Nat → Ctx → Option Sorts → Tm → Tm → Option Sorts → Tm → Tm → M Bool
+  | 0, _, _, _, _, _, _, _ => throw .fuel
+  | n + 1, Γ, s₁, A₁, B₁, s₂, A₂, B₂ => do
     if !E.opts.eqTyLevelled then pure true
-    else componentSorts E n Γ A₁ B₁ A₂ B₂
+    else componentSorts E n Γ s₁ A₁ B₁ s₂ A₂ B₂
 
-/-- The two domains are in one sort, and the two codomains are. -/
-def componentSorts (E : Env) : Nat → Ctx → Tm → Tm → Tm → Tm → M Bool
-  | 0, _, _, _, _, _ => throw .fuel
-  | n + 1, Γ, A₁, B₁, A₂, B₂ => do
-    if !(← sortOfTy E n Γ A₁).equiv (← sortOfTy E n Γ A₂) then pure false
-    else pure ((← sortOfTy E n (A₁ :: Γ) B₁).equiv (← sortOfTy E n (A₂ :: Γ) B₂))
+/-- The two domains are in one sort, and the two codomains are: `σ₁ ≡ σ₂`, read off the
+two types (D2, as in both kernels). -/
+def componentSorts (E : Env) : Nat → Ctx → Option Sorts → Tm → Tm → Option Sorts → Tm → Tm → M Bool
+  | 0, _, _, _, _, _, _, _ => throw .fuel
+  | n + 1, Γ, s₁, A₁, B₁, s₂, A₂, B₂ => do
+    pure ((← sortsOf E n Γ s₁ A₁ B₁).equiv (← sortsOf E n Γ s₂ A₂ B₂))
+
+/-- The component sorts of a `Π`/`Σ`: as written; computed only for a term without them
+(`Opts.sortsOptional`). -/
+def sortsOf (E : Env) : Nat → Ctx → Option Sorts → Tm → Tm → M Sorts
+  | 0, _, _, _, _ => throw .fuel
+  | _ + 1, _, some σ, _, _ => pure σ
+  | n + 1, Γ, none, A, B => do pure ⟨← sortOfTy E n Γ A, ← sortOfTy E n (A :: Γ) B⟩
 
 /-- `cast A B e t`, by the weak-head normal forms of `A` and `B`. The proof `e` is only
 ever projected, never looked at. -/
@@ -400,14 +417,15 @@ def whnfCast (E : Env) : Nat → Ctx → Tm → Tm → Tm → Tm → M Tm
     -- `e`, which exist when `A ≡ B` computes by formers: both not propositions
     if !(pa == some false && pb == some false) then pure stuck else
     -- the structural rules cast between the components, so these must be in one sort
-    -- (a cast is formed only at one sort); otherwise the reduct is ill typed
+    -- (a cast is formed only at one sort); otherwise the reduct is ill typed. The D2 gate:
+    -- the two types' component sorts, as written, are equivalent (`σ₁ ≡ σ₂`)
     match A', B' with
-    | .pi q _ A₁ B₁, .pi q' _ A₂ B₂ =>
+    | .pi q s₁ A₁ B₁, .pi q' s₂ A₂ B₂ =>
       if q != q' then pure stuck
-      else if ← componentSorts E n Γ A₁ B₁ A₂ B₂ then pure (castPi A₁ B₁ A₂ B₂ e t) else pure stuck
-    | .sigma q _ A₁ B₁, .sigma q' _ A₂ B₂ =>
+      else if ← componentSorts E n Γ s₁ A₁ B₁ s₂ A₂ B₂ then pure (castPi A₁ B₁ A₂ B₂ e t) else pure stuck
+    | .sigma q s₁ A₁ B₁, .sigma q' s₂ A₂ B₂ =>
       if q != q' then pure stuck
-      else if ← componentSorts E n Γ A₁ B₁ A₂ B₂ then pure (castSigma A₁ B₁ A₂ B₂ e t) else pure stuck
+      else if ← componentSorts E n Γ s₁ A₁ B₁ s₂ A₂ B₂ then pure (castSigma A₁ B₁ A₂ B₂ e t) else pure stuck
     | .sort u, .sort w => if u.equiv w then whnf E n Γ t else pure stuck
     | .empty u, .empty w => if u.equiv w then whnf E n Γ t else pure stuck
     | .unit u, .unit w => if u.equiv w then pure .tt else pure stuck
@@ -446,8 +464,8 @@ def sortOf (E : Env) : Nat → Ctx → Tm → M Lvl
   | n + 1, Γ, A =>
     match A with
     | .sort l => pure l.succ
-    | .pi _ (some s) _ _ => pure s
-    | .sigma _ (some s) _ _ => pure s
+    | .pi _ (some σ) _ _ => pure σ.pi
+    | .sigma _ (some σ) _ _ => pure σ.sigma
     | .pi _ none A₁ B => do
       let i ← sortOfTy E n Γ A₁
       let j ← sortOfTy E n (A₁ :: Γ) B
@@ -640,12 +658,14 @@ def convTy (E : Env) : Nat → Ctx → Tm → Tm → M Bool
     let B' ← whnfS E n Γ B
     match A', B' with
     | .sort u, .sort w => pure (u.equiv w)
-    | .pi q _ A₁ B₁, .pi q' _ A₂ B₂ =>
-      if q != q' then pure false
+    -- (the component sorts are compared too, as in both kernels; redundant on well-typed
+    -- input, where convertible components have equivalent sorts)
+    | .pi q s₁ A₁ B₁, .pi q' s₂ A₂ B₂ =>
+      if q != q' || !sameWritten s₁ s₂ then pure false
       else if !(← convTy E n Γ A₁ A₂) then pure false
       else convTy E n (A₁ :: Γ) B₁ B₂
-    | .sigma q _ A₁ B₁, .sigma q' _ A₂ B₂ =>
-      if q != q' then pure false
+    | .sigma q s₁ A₁ B₁, .sigma q' s₂ A₂ B₂ =>
+      if q != q' || !sameWritten s₁ s₂ then pure false
       else if !(← convTy E n Γ A₁ A₂) then pure false
       else convTy E n (A₁ :: Γ) B₁ B₂
     | .unit u, .unit w => pure (u.equiv w)
@@ -807,20 +827,26 @@ def infer (E : Env) : Nat → Ctx → Tm → M Tm
         else pure (d.type.instL us)
       | none => fail s!"unknown constant {c}"
     | .sort l => pure (.sort l.succ)
+    -- each component's sort is checked against its own written sort (structural: a
+    -- combination such as `imax i j` would let `imax 2 2` pass for `X → Type`, `X : Sort 1`)
     | .pi _ s A B => do
       let i ← inferSort E n Γ A
       let j ← inferSort E n (A :: Γ) B
-      let r := Lvl.imax i j
       match s with
-      | some s => if s.equiv r then pure (.sort r) else fail "Π: wrong sort annotation"
-      | none => if E.opts.sortsOptional then pure (.sort r) else fail "Π without its sort"
+      | some σ =>
+        if !σ.dom.equiv i then fail "Π: wrong sort of the domain"
+        else if !σ.cod.equiv j then fail "Π: wrong sort of the codomain"
+        else pure (.sort σ.pi)
+      | none => if E.opts.sortsOptional then pure (.sort (.imax i j)) else fail "Π without its sorts"
     | .sigma _ s A B => do
       let i ← inferSort E n Γ A
       let j ← inferSort E n (A :: Γ) B
-      let r := Lvl.max i j
       match s with
-      | some s => if s.equiv r then pure (.sort r) else fail "Σ: wrong sort annotation"
-      | none => if E.opts.sortsOptional then pure (.sort r) else fail "Σ without its sort"
+      | some σ =>
+        if !σ.dom.equiv i then fail "Σ: wrong sort of the first component"
+        else if !σ.cod.equiv j then fail "Σ: wrong sort of the second component"
+        else pure (.sort σ.sigma)
+      | none => if E.opts.sortsOptional then pure (.sort (.max i j)) else fail "Σ without its sorts"
     | .app f a => do
       match ← whnfS E n Γ (← infer E n Γ f) with
       | .pi _ _ A B => do

@@ -62,9 +62,18 @@ def kernelInfer (g : Globals ZeroOneMany) (t0 : Term ZeroOneMany) : TCM (VTy Zer
     let t := (Mark.infer (R := ZeroOneMany) { globals := g, sortsOnly := true } t0).1
     infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } t).1
 
+/-- The term with the component sorts the kernel checks: filled by the elaborator's sorts
+pass when the term is well typed with holes, else as written (holes, which the reference
+checker reads as "no sorts", `Opts.sortsOptional`). So the reference checker reads the
+sorts the kernel reads (the D2 gate, the Σ proof-component rule) instead of computing them. -/
+def withSorts (g : Globals ZeroOneMany) (t0 : Term ZeroOneMany) : Term ZeroOneMany :=
+  match infer (R := ZeroOneMany) { globals := { g with lazyProofs := false, sortHolesOk := true } } t0 with
+  | .error _ => t0
+  | .ok _ => (Mark.infer (R := ZeroOneMany) { globals := g, sortsOnly := true } t0).1
+
 /-- One term: the Lean kernel's verdict against the reference checker's. -/
 def vote (g : Globals ZeroOneMany) (sg : Sig) (t : MTm) (opts : Opts := kernelOpts) : Outcome :=
-  match WizMeta.ofTerm [] t.toTerm with
+  match WizMeta.ofTerm [] (withSorts g t.toTerm) with
   | none => .outside
   | some tm =>
     let k := kernelInfer g t.toTerm
@@ -235,8 +244,9 @@ namespace Review
 
 def F : Nat := WizMeta.defaultFuel
 def env (o : Opts := {}) (sg : Sig := []) : WizMeta.Env := { sig := sg, opts := o }
-def piT (s : WizMeta.Lvl) (A B : Tm) : Tm := .pi .many (some s) A B
-def sgT (s : WizMeta.Lvl) (A B : Tm) : Tm := .sigma .many (some s) A B
+/-- `(x : A) →^⟨i,j⟩ B` and `(x : A) ×^⟨i,j⟩ B`: the components' sorts, written (mandatory sorts). -/
+def piT (i j : WizMeta.Lvl) (A B : Tm) : Tm := .pi .many (some ⟨i, j⟩) A B
+def sgT (i j : WizMeta.Lvl) (A B : Tm) : Tm := .sigma .many (some ⟨i, j⟩) A B
 
 def okOr {α : Type} (what : String) : WizMeta.M α → IO α
   | .ok a => pure a
@@ -258,7 +268,7 @@ def castIn (X Y : Tm) : WizMeta.Ctx × Tm := ([X, .eqTy X Y], .cast X Y (.var 1)
 /-- Closed types with their sorts, for the template properties. -/
 def typePool : List (Tm × WizMeta.Lvl) :=
   [(Tm.True', 0), (.unit 1, 1), (.enum 2, 1), (.sort 0, 1), (.unit 2, 2), (.sort 1, 2),
-   (piT 1 (.enum 2) (.unit 1), 1), (sgT 2 (.sort 1) (.unit 1), 2), (.ulift 3 (.enum 2), 3)]
+   (piT 1 1 (.enum 2) (.unit 1), 1), (sgT 2 1 (.sort 1) (.unit 1), 2), (.ulift 3 (.enum 2), 3)]
 
 /-- Index types `I : Sort (l+1)` with an element, and fields of that level. -/
 def indexPool : List (WizMeta.Lvl × Tm × Tm) :=
@@ -423,8 +433,8 @@ def group : Group where
     { name := "review: a structural cast whose components are in different sorts is stuck (its reduct would cast across universes)", run := fun _ => do
         -- (Unit₁ → Unit₂) and (Unit₂ → Unit₂) are both in Sort 2; so are the Σs and the lifts
         let pairs : List (String × Tm × Tm) :=
-          [("Π", piT 2 (.unit 1) (.unit 2), piT 2 (.unit 2) (.unit 2)),
-           ("Σ", sgT 2 (.unit 1) (.unit 2), sgT 2 (.unit 2) (.unit 2)),
+          [("Π", piT 1 2 (.unit 1) (.unit 2), piT 2 2 (.unit 2) (.unit 2)),
+           ("Σ", sgT 1 2 (.unit 1) (.unit 2), sgT 2 2 (.unit 2) (.unit 2)),
            ("ULift", .ulift 1 Tm.True', .ulift 1 (.unit 1))]
         for o in [({} : Opts), { eqTyLevelled := true }] do
           for (what, X, Y) in pairs do
@@ -433,12 +443,58 @@ def group : Group where
             let t' ← okOr what (WizMeta.whnf (env o) F Γ t)
             check (match t' with | .cast .. => true | _ => false) s!"{what}: the cast computed: {repr t'}"
         -- control: components in one sort, the cast computes and its reduct has the type
-        for (what, X, Y) in [("Π", piT 2 (.unit 2) (.unit 1), piT 2 (.unit 2) (.enum 2)),
-                             ("Σ", sgT 2 (.unit 2) (.unit 1), sgT 2 (.unit 2) (.enum 2))] do
+        for (what, X, Y) in [("Π", piT 2 1 (.unit 2) (.unit 1), piT 2 1 (.unit 2) (.enum 2)),
+                             ("Σ", sgT 2 1 (.unit 2) (.unit 1), sgT 2 1 (.unit 2) (.enum 2))] do
           let (Γ, t) := castIn X Y
           let _ ← okOr s!"{what} control" (subjRed {} [] Γ t)
           let t' ← okOr what (WizMeta.whnf (env) F Γ t)
           check (match t' with | .cast .. => false | _ => true) s!"{what}: the control cast is stuck" },
+    { name := "mandatory sorts (msorts-review F2): a Π/Σ's component sorts are checked one by one, not as their combination", run := fun _ => do
+        -- `Unit₁ → Type`: the domain is in Sort 1, the codomain in Sort 2. `⟨2, 2⟩` gives the same
+        -- `imax 2 2 = 2`, which a single sort could not tell from `⟨1, 2⟩`
+        for (what, mk) in [("Π", piT), ("Σ", sgT)] do
+          let k ← okOr s!"{what} ⟨1, 2⟩" (WizMeta.inferSort (env) F [] (mk 1 2 (.unit 1) (.sort 1)))
+          check (k.equiv 2) s!"{what}: sort {k.pretty}"
+          for (i, j) in [((2 : WizMeta.Lvl), (2 : WizMeta.Lvl)), (1, 1), (0, 2)] do
+            check (match WizMeta.inferSort (env) F [] (mk i j (.unit 1) (.sort 1)) with | .error (.fail _) => true | _ => false)
+              s!"{what} ⟨{i.pretty}, {j.pretty}⟩ accepted"
+        -- the D2 gate reads the written sorts: two Π types in one sort `imax i j`, components in
+        -- different sorts, so the cast is stuck; components in one sort, it computes
+        let X := piT 1 2 (.unit 1) (.sort 1)
+        let Y := piT 2 2 (.unit 2) (.sort 1)
+        let (Γ, t) := castIn X Y
+        let _ ← okOr "D2 cast" (WizMeta.infer (env) F Γ t)
+        check (match ← okOr "D2 whnf" (WizMeta.whnf (env) F Γ t) with | .cast .. => true | _ => false) "D2: the cast computed"
+        -- the differential corpus' terms are read with the sorts the kernel's sorts pass wrote
+        let g := leanGlobals ()
+        let t0 := (sorted 1 2 (pi (unit 0) (univ 0))).toTerm
+        check (match WizMeta.ofTerm [] (withSorts g (pi (unit 0) (univ 0)).toTerm), WizMeta.ofTerm [] t0 with
+          | some a, some b => a == b | _, _ => false) "the sorts pass's sorts are not the written ones" },
+    { name := "the Σ proof-component rule (CoreSpec 8.2): read off the written sorts, so a neutral proposition counts", run := fun _ => do
+        let E := env { checkTemplates := true }
+        -- P : Enum 2 → Prop ⊢ (x, p) = (x, q) at (x : Enum 2) × P x  ⟶  (x = x) × True
+        let Pty : Tm := piT 1 1 (.enum 2) (.sort 0)
+        -- q : P x, p : P x, x : Enum 2, P
+        let Γ : WizMeta.Ctx := [.app (.var 2) (.var 1), .app (.var 1) (.var 0), .enum 2, Pty]
+        let S : Tm := .sigma .many (some ⟨1, 0⟩) (.enum 2) (.app (.var 4) (.var 0))
+        let e : Tm := .eq S (.pair (.var 2) (.var 1)) (.pair (.var 2) (.var 0))
+        match ← okOr "neutral codomain" (WizMeta.whnf E F Γ e) with
+        | .sigma .zero (some σ) _ B => check (B == Tm.True' && σ.equiv ⟨0, 0⟩) s!"second component: {repr B}"
+        | r => throw (IO.userError s!"not a Σ: {repr r}")
+        let _ ← okOr "(refl x, ()) proves it" (WizMeta.check E F Γ (.pair (.refl (.enum 2) (.var 2)) .tt) e)
+        -- P : Prop ⊢ a = b at (0 k : P) × Enum 2  ⟶  True × (cast … (reflTy (Enum 2)) a.2 = b.2)
+        let Γ2 : WizMeta.Ctx := [.sigma .zero (some ⟨0, 1⟩) (.var 1) (.enum 2), .sigma .zero (some ⟨0, 1⟩) (.var 0) (.enum 2), .sort 0]
+        let S2 : Tm := .sigma .zero (some ⟨0, 1⟩) (.var 2) (.enum 2)
+        let e2 : Tm := .eq S2 (.var 1) (.var 0)
+        let _ ← okOr "proof-domain equation" (WizMeta.inferSort E F Γ2 e2)
+        match ← okOr "neutral domain" (WizMeta.whnf E F Γ2 e2) with
+        | .sigma .zero _ A (.eq _ (.cast _ _ p _) _) =>
+          check (A == Tm.True') s!"first component: {repr A}"
+          check (match p with | .reflTy _ => true | _ => false) s!"ê is not reflTy: {repr p}"
+        | r => throw (IO.userError s!"unexpected reduct: {repr r}")
+        -- and the reduct is a type (presupposition)
+        let r ← okOr "whnf" (WizMeta.whnf E F Γ2 e2)
+        let _ ← okOr "the reduct is a type" (WizMeta.inferSort E F Γ2 r) },
     { name := "review: transp's motive type is a type at every level (it was annotated Sort 1)", run := fun _ => do
         for (A, l) in typePool ++ [(.sort (.param 0), (WizMeta.Lvl.param 0).succ)] do
           let Γ : WizMeta.Ctx := [A]

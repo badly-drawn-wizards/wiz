@@ -28,13 +28,11 @@ def ofLevel (ps : List String) : Level → Option Lvl
   | .param n => (ps.idxOf? n).map .param
   | .mvar _ | .hole => none
 
-/-- (mandatory sorts) A kernel `Π`/`Σ`'s component sorts as the spec's one sort: `imax`
-(resp. `max`) of the two, as the spec's rules relate them (`s ≡ imax i j`). A hole (only
-before the elaborator's sorts pass) is no sort. -/
-def ofSorts (ps : List String) (σ : Wiz.BinderSorts) (pi : Bool) : Option (Option Lvl) :=
+/-- (mandatory sorts) A kernel `Π`/`Σ`'s component sorts, one to one. A hole (only before
+the elaborator's sorts pass) is no sorts. -/
+def ofSorts (ps : List String) (σ : Wiz.BinderSorts) : Option (Option Sorts) :=
   if σ.hasHole then some none else do
-    let s := if pi then σ.piSort else σ.sigmaSort
-    pure (some (← ofLevel ps s))
+    pure (some ⟨← ofLevel ps σ.dom, ← ofLevel ps σ.cod⟩)
 
 def ofQty : Term ZeroOneMany → Option Q
   | .qlit .zero => some .zero
@@ -48,14 +46,14 @@ def ofTerm (ps : List String) : Term ZeroOneMany → Option Tm
   | .const c us => do pure (.const c (← us.mapM (ofLevel ps)))
   | .sort l => do pure (.sort (← ofLevel ps l))
   | .pi _ _ q A B σ => do
-    let s ← ofSorts ps σ true
+    let s ← ofSorts ps σ
     pure (.pi (← ofQty q) s (← ofTerm ps A) (← ofTerm ps B))
   | .lam _ b => do pure (.lam (← ofTerm ps b))
   | .app f a => do pure (.app (← ofTerm ps f) (← ofTerm ps a))
   | .letE _ q A v b => do pure (.letE (← ofQty q) (← ofTerm ps A) (← ofTerm ps v) (← ofTerm ps b))
   | .ann t A => do pure (.ann (← ofTerm ps t) (← ofTerm ps A))
   | .sigma _ q A B σ => do
-    let s ← ofSorts ps σ false
+    let s ← ofSorts ps σ
     pure (.sigma (← ofQty q) s (← ofTerm ps A) (← ofTerm ps B))
   | .pair a b => do pure (.pair (← ofTerm ps a) (← ofTerm ps b))
   | .fst p => do pure (.fst (← ofTerm ps p))

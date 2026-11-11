@@ -45,8 +45,8 @@ theorem sub_under2 (B : Tm) (σ : Nat → Tm) :
 theorem sub_iff (a b : Tm) (σ : Nat → Tm) : (iff a b).sub σ = iff (a.sub σ) (b.sub σ) := by
   simp only [iff, sub, sub_shift, sub_shift2]
 
-theorem sub_eqPi (A B f g : Tm) (σ : Nat → Tm) :
-    (eqPi A B f g).sub σ = eqPi (A.sub σ) (B.sub (upSub σ)) (f.sub σ) (g.sub σ) := by
+theorem sub_eqPi (i : Lvl) (A B f g : Tm) (σ : Nat → Tm) :
+    (eqPi i A B f g).sub σ = eqPi i (A.sub σ) (B.sub (upSub σ)) (f.sub σ) (g.sub σ) := by
   simp only [eqPi, sub, sub_shift]; rfl
 
 theorem sub_castPi (A₁ B₁ A₂ B₂ e t : Tm) (σ : Nat → Tm) :
@@ -59,16 +59,29 @@ theorem sub_eqSigmaTransport (A B a b : Tm) (σ : Nat → Tm) :
       eqSigmaTransport (A.sub σ) (B.sub (upSub σ)) (a.sub σ) (b.sub σ) := by
   simp only [eqSigmaTransport, sub, sub_shift, sub_shift2, sub_inst, sub_under2]; rfl
 
-theorem sub_eqSigma (A B a b : Tm) (σ : Nat → Tm) :
-    (eqSigma A B a b).sub σ = eqSigma (A.sub σ) (B.sub (upSub σ)) (a.sub σ) (b.sub σ) := by
-  simp only [eqSigma, sub, sub_shift, sub_inst, sub_eqSigmaTransport]
+theorem sub_eqSigmaProof (s : Sorts) (A B a b : Tm) (σ : Nat → Tm) :
+    (eqSigmaProof s A B a b).sub (upSub σ) =
+      eqSigmaProof s (A.sub σ) (B.sub (upSub σ)) (a.sub σ) (b.sub σ) := by
+  unfold eqSigmaProof
+  split
+  · simp only [sub, sub_shift, sub_inst]
+  · exact sub_eqSigmaTransport A B a b σ
 
-theorem sub_eqTyPi (A₁ B₁ A₂ B₂ : Tm) (σ : Nat → Tm) :
-    (eqTyPi A₁ B₁ A₂ B₂).sub σ = eqTyPi (A₁.sub σ) (B₁.sub (upSub σ)) (A₂.sub σ) (B₂.sub (upSub σ)) := by
+theorem sub_eqSigma (s : Sorts) (A B a b : Tm) (σ : Nat → Tm) :
+    (eqSigma s A B a b).sub σ = eqSigma s (A.sub σ) (B.sub (upSub σ)) (a.sub σ) (b.sub σ) := by
+  simp only [eqSigma, eqSigmaFst, eqSigmaSnd, sub]
+  congr 1
+  · split <;> rfl
+  · split
+    · rfl
+    · simp only [sub, sub_shift, sub_inst, sub_eqSigmaProof]
+
+theorem sub_eqTyPi (i : Lvl) (A₁ B₁ A₂ B₂ : Tm) (σ : Nat → Tm) :
+    (eqTyPi i A₁ B₁ A₂ B₂).sub σ = eqTyPi i (A₁.sub σ) (B₁.sub (upSub σ)) (A₂.sub σ) (B₂.sub (upSub σ)) := by
   simp only [eqTyPi, sub, sub_shift, sub_shift2, sub_inst, sub_under1, sub_under2]; rfl
 
-theorem sub_eqTySigma (A₁ B₁ A₂ B₂ : Tm) (σ : Nat → Tm) :
-    (eqTySigma A₁ B₁ A₂ B₂).sub σ = eqTySigma (A₁.sub σ) (B₁.sub (upSub σ)) (A₂.sub σ) (B₂.sub (upSub σ)) := by
+theorem sub_eqTySigma (i : Lvl) (A₁ B₁ A₂ B₂ : Tm) (σ : Nat → Tm) :
+    (eqTySigma i A₁ B₁ A₂ B₂).sub σ = eqTySigma i (A₁.sub σ) (B₁.sub (upSub σ)) (A₂.sub σ) (B₂.sub (upSub σ)) := by
   simp only [eqTySigma, sub, sub_shift, sub_shift2, sub_inst, sub_under1, sub_under2]; rfl
 
 theorem sub_castSigma (A₁ B₁ A₂ B₂ e t : Tm) (σ : Nat → Tm) :
@@ -189,8 +202,8 @@ theorem core_subClosed {R : Rules} (hc : ∀ r, Core r → R r) : SubClosed Core
 theorem pi_subClosed {R : Rules} (hren : ∀ j, Derivable R j → Renames R j) (hc : ∀ r, Core r → R r) (hp : ∀ r, Pi r → R r) : SubClosed Pi R := by
   intro r hr ih σ Δ hσ hΔ
   cases hr with
-  | form h =>
-    exact ofRule (hp _ (.form h)) (by
+  | form =>
+    exact ofRule (hp _ .form) (by
       fromIH ih σ Δ hσ hΔ
       exact Substs.under hren hc ih.2 rfl ih.1 hσ hΔ)
   | lam =>
@@ -225,9 +238,9 @@ theorem pi_subClosed {R : Rules} (hren : ∀ j, Derivable R j → Renames R j) (
     simp only [Jdg.sub, Tm.sub, Tm.sub_eqPi]
     exact ofRule (hp _ (.eq h)) (by fromIH ih σ Δ hσ hΔ)
   | eqTyApart h1 h2 h3 => exact ofRule (hp _ (.eqTyApart h1 h2 h3)) (by fromIH ih σ Δ hσ hΔ)
-  | cast h1 h2 =>
+  | cast h1 h2 h3 h4 =>
     simp only [Jdg.sub, Tm.sub, Tm.sub_castPi]
-    exact ofRule (hp _ (.cast h1 h2)) (by
+    exact ofRule (hp _ (.cast h1 h2 h3 h4)) (by
       fromIH ih σ Δ hσ hΔ
       · exact Substs.under hren hc ih.2.2.2.2.1 rfl ih.2.2.1 hσ hΔ
       · exact Substs.under hren hc ih.2.2.2.2.2.1 rfl ih.2.2.2.1 hσ hΔ)
@@ -236,8 +249,8 @@ theorem pi_subClosed {R : Rules} (hren : ∀ j, Derivable R j → Renames R j) (
 theorem sigma_subClosed {R : Rules} (hren : ∀ j, Derivable R j → Renames R j) (hc : ∀ r, Core r → R r) (hs : ∀ r, Sigma r → R r) : SubClosed Sigma R := by
   intro r hr ih σ Δ hσ hΔ
   cases hr with
-  | form h =>
-    exact ofRule (hs _ (.form h)) (by
+  | form =>
+    exact ofRule (hs _ .form) (by
       fromIH ih σ Δ hσ hΔ
       exact Substs.under hren hc ih.2 rfl ih.1 hσ hΔ)
   | pair =>
@@ -285,9 +298,9 @@ theorem sigma_subClosed {R : Rules} (hren : ∀ j, Derivable R j → Renames R j
     simp only [Jdg.sub, Tm.sub, Tm.sub_eqSigma]
     exact ofRule (hs _ (.eq h)) (by fromIH ih σ Δ hσ hΔ)
   | eqTyApart h1 h2 h3 => exact ofRule (hs _ (.eqTyApart h1 h2 h3)) (by fromIH ih σ Δ hσ hΔ)
-  | cast h1 h2 =>
+  | cast h1 h2 h3 h4 =>
     simp only [Jdg.sub, Tm.sub, Tm.sub_castSigma]
-    exact ofRule (hs _ (.cast h1 h2)) (by
+    exact ofRule (hs _ (.cast h1 h2 h3 h4)) (by
       fromIH ih σ Δ hσ hΔ
       · exact Substs.under hren hc ih.2.2.2.2.1 rfl ih.2.2.1 hσ hΔ
       · exact Substs.under hren hc ih.2.2.2.2.2.1 rfl ih.2.2.2.1 hσ hΔ)
