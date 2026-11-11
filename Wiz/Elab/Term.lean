@@ -3,6 +3,8 @@ import Wiz.Elab.Macro
 import Wiz.Elab.Tactic
 import Wiz.Elab.Class
 import Wiz.Elab.Struct
+import Wiz.Smt.Translate
+import Wiz.Smt.Sat
 
 /-!
 # Elaborating terms
@@ -2724,9 +2726,70 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
       | some _ => mkCon 1 [encodeBool false]
       | none => mkCon 0 []
     return ← runTac code info st (apply code (fld 1) ans)
+  if tag == TacTag.satSolve then
+    -- (28b) untrusted: the proof is checked by the kernel
+    let some cs := decodeList (fld 1) | throwAt info "tactic: malformed clauses"
+    let clauses ← cs.mapM fun c => do
+      let some ls := decodeList c | throwAt info "tactic: malformed clause"
+      ls.mapM num
+    let ans := match Smt.satSolve (← get).smt (← num (fld 0)) clauses with
+      | .unsat p => mkCon 0 [encodeList (p.map fun (id, ls, hs) =>
+          encodePair (.nat id) (encodePair (encodeList (ls.map .nat)) (encodeList (hs.map .nat))))]
+      | .sat m => mkCon 1 [encodeList (m.map .nat)]
+      | .error e => mkCon 2 [encodeString e]
+    return ← runTac code info st (apply code (fld 2) ans)
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
+  if tag == TacTag.eqView then
+    -- (28b) inside an equation: `a = b` at `A`
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let t := match t with
+      | .eq .. => t
+      | _ => quote g lvl (whnf (← evalIn gl.ctx t))
+    match t with
+    | .eq A a b =>
+      let (rA, st) ← refl st gl A
+      let (ra, st) ← refl st gl a (some (← evalIn gl.ctx A))
+      let (rb, st) ← refl st gl b (some (← evalIn gl.ctx A))
+      return ← runTac code info st (apply code (fld 2) (mkCon 1 [encodePair rA (encodePair ra rb)]))
+    | _ => return ← runTac code info st (apply code (fld 2) (mkCon 0 []))
+  if tag == TacTag.smt then
+    -- (28a) trusted: the goal becomes an axiom, on the solver's word
+    let s ← get
+    unless s.smt.trust do
+      throwAt info "SMT solving is not enabled: `smt` closes a goal on an SMT solver's word, which the kernel does not check; run with --trust-smt to allow it"
+    if s.smtDecl.isEmpty then throwAt info "smt: only in the body of a definition (`def X : P := by smt`)"
+    unless gl.ctx.bound.all id do throwAt info "smt: the goal's context has a `let`; not supported yet"
+    let tyT ← zonk lvl (quote g lvl gl.ty)
+    if !(Term.mvars tyT).isEmpty then throwAt info "smt: the goal has holes"
+    let names := gl.ctx.names.reverse
+    let types := gl.ctx.types.reverse
+    let q ← match Smt.translate g names types (gl.ctx.bound.reverse) (← evalIn gl.ctx tyT) with
+      | .ok q => pure q
+      | .error e => throwAt info e
+    let secs := max 1 (s.smt.timeoutMs / 1000)
+    let (sid, ans) ← match Smt.runSolver s.smt s.smt.solver ["-smt2", s!"-T:{secs}", "{in}"] q.script "smt2" false with
+      | .ok r => pure r
+      | .error e => throwAt info s!"smt: {e}"
+    let out := ans.stdout.trim
+    let first := ((out.splitOn "\n").headD "").trim
+    if first == "sat" then
+      let model := ((out.splitOn "\n").drop 1) |> "\n".intercalate
+      let model := q.shown.foldl (fun m (x, u) => m.replace x u) model
+      throwAt info s!"smt: the solver found a counterexample:\n{model}"
+    unless first == "unsat" do
+      throwAt info s!"smt: the solver gave no proof ({sid}): {if first.isEmpty then "no answer" else out}"
+    -- `X.smt✝k⟨z3 4.13.0⟩ : Π ctx, goal`, erased binders
+    let short := Smt.shortId sid
+    let ax := s!"{s.smtDecl}.smt✝{s.sideDecls.size + 1}⟨{short}⟩"
+    let axTy := (List.range lvl).reverse.foldl (fun body j =>
+      .pi (names[j]!) .default (.qlit 0) (quote g j types[j]!) body none) tyT
+    let d : Decl R := { name := ax, type := axTy, value := none }
+    modify fun s => { s with globals := s.globals.insert d, sideDecls := s.sideDecls.push d, unifyFails := {} }
+    let use := (List.range lvl).foldl (fun f j => Term.app f (.var (lvl - 1 - j))) (Term.const ax [])
+    unifyGoal gl use
+    return ← runTac code info st (fld 1)
   if tag == TacTag.ppGoal then
     return ← runTac code info st (apply code (fld 1) (encodeString (← gl.show)))
   if tag == TacTag.ppExpr then

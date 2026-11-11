@@ -53,6 +53,8 @@ structure Server where
   /-- (27a) `--trust-native` and `--native-fuel` -/
   trustNative : Bool := false
   nativeFuel : Nat := NativeRun.defaultFuel
+  /-- (28) solvers: `--trust-smt`, `--smt-solver`, `--sat-solver` -/
+  smt : Smt.Config := {}
   /-- the last session number handed out (sessions are unique over the server's life) -/
   sessions : Nat := 0
   /-- the client asked for `wiz/elaborated` notifications -/
@@ -92,7 +94,7 @@ def elaborate (srv : Server) (doc : Doc) : Doc :=
   let libs := srv.libs
   let trusted := srv.trusted
   let init : St := { loader := fun m => (libs.get? m).map (·.2), termInfo := true,
-                     trustedModule := trusted.contains, trustNative := srv.trustNative, nativeFuel := srv.nativeFuel }
+                     trustedModule := trusted.contains, trustNative := srv.trustNative, nativeFuel := srv.nativeFuel, smt := srv.smt }
   let key₀ := hash (libs.toList.map (·.2.2) |>.toString)
   let (s, eng) := Query.elaborate doc.engine doc.text init key₀
   { doc with state := s, engine := eng }
@@ -626,7 +628,7 @@ server's state is never shared. `ready` gets the WebSocket's port once it listen
 Without `stdio`, the server runs until it is killed. -/
 partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Option (IO.FS.Stream × IO.FS.Stream))
     (listen : Listen) (ready : UInt16 → IO Unit := fun _ => pure ()) (trusted : List String := [])
-    (native : Bool × Nat := (false, NativeRun.defaultFuel)) : IO Unit := do
+    (native : Bool × Nat := (false, NativeRun.defaultFuel)) (smt : Smt.Config := {}) : IO Unit := do
   let ch ← Std.Channel.Sync.new (α := Event)
   let next ← IO.mkRef 0
   let fresh : IO Nat := next.modifyGet fun k => (k, k + 1)
@@ -711,7 +713,7 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
     | .disconnected k =>
       if let some c := conns.get? k then Socket.shutdown c.fd
       loop srv (conns.erase k)
-  let conns ← loop { libs, trusted, trustNative := native.1, nativeFuel := native.2 } {}
+  let conns ← loop { libs, trusted, trustNative := native.1, nativeFuel := native.2, smt } {}
   -- stop the other threads: the acceptors and every infoview's reader see the end
   if let (some fd, some sock) := (unixFd, listen.infoview) then Socket.close fd sock
   if let some (fd, _) := wsFd then Socket.closeFd fd
@@ -725,18 +727,18 @@ def serveInfoview (libs : Std.HashMap String (String × String)) (input output :
 /-- Serve until `exit`: on stdin/stdout (unless `stdio := false`), and on the sockets of
 `listen`. -/
 partial def serve (libs : Std.HashMap String (String × String)) (listen : Listen := {}) (stdio : Bool := true)
-    (trusted : List String := []) (native : Bool × Nat := (false, NativeRun.defaultFuel)) : IO Unit := do
+    (trusted : List String := []) (native : Bool × Nat := (false, NativeRun.defaultFuel)) (smt : Smt.Config := {}) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
   if listen.infoview.isSome || listen.ws.isSome || !stdio then
     let ready (port : UInt16) := IO.eprintln s!"wiz lsp: WebSocket on port {port}"
-    return ← serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted native
+    return ← serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted native smt
   let rec loop (srv : Server) : IO Unit := do
     let some msg ← readMessage stdin | return
     if getStr msg ["method"] == "exit" then return
     let (srv, out) := handle srv msg
     for j in out do writeMessage stdout j
     loop srv
-  loop { libs, trusted, trustNative := native.1, nativeFuel := native.2 }
+  loop { libs, trusted, trustNative := native.1, nativeFuel := native.2, smt }
 
 end Wiz.LSP

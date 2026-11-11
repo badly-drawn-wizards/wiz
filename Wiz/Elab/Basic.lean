@@ -2,6 +2,7 @@ import Wiz.Core.Check
 import Wiz.Syntax.Basic
 import Wiz.Syntax.Children
 import Wiz.Compiler.Run
+import Wiz.Smt.Process
 
 /-!
 # The elaborator monad
@@ -242,6 +243,14 @@ structure ElabState (R : Type) where
   while the globals stay as they are (the elaborator clears it when it changes them). -/
   unifyFails : Std.HashMap UInt64 (List (Term R × Term R × String)) := {}
   unifyFailCount : Nat := 0
+  /-- (28) how tactics reach solvers (`--trust-smt`, …) -/
+  smt : Smt.Config := {}
+  /-- (28a) the definition being elaborated, which names the axioms `smt` adds (`""`:
+  not in a definition, where `smt` can't add one) -/
+  smtDecl : Name := ""
+  /-- (28a) axioms a tactic added (`X.smt✝N`): already in `globals`, and added to the
+  command's globals before the definition that uses them -/
+  sideDecls : Array (Decl R) := #[]
 
 structure ElabError (R : Type) where
   info : SourceInfo

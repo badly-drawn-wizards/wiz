@@ -134,7 +134,7 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
       messages := shadow.toArray,
       globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get },
       trustedModule := own.contains, trustNative := tc.trustNative,
-      nativeFuel := tc.nativeFuel.getD NativeRun.defaultFuel }
+      nativeFuel := tc.nativeFuel.getD NativeRun.defaultFuel, smt := tc.smt }
   -- the cache doesn't know the experimental options
   let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs &&
       !(← strictPrivacyOpt.get)
@@ -228,12 +228,12 @@ def main (args : List String) : IO UInt32 := do
     buildCmd tc path out true false true
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
-  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc) (native := nativeOpts tc); pure 0
+  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc) (native := nativeOpts tc) (smt := tc.smt); pure 0
   | "lsp" :: opts => do
     match lspOptions opts with
     | none => IO.println usage; pure 2
     | some (listen, stdio) =>
-      LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc) (nativeOpts tc)
+      LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc) (nativeOpts tc) tc.smt
       -- (an infoview's reader thread may still be blocked: don't wait for it)
       IO.Process.exit 0
   | _ => do IO.println usage; pure 0

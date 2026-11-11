@@ -1,0 +1,151 @@
+import Wiz
+import Tests.Harness
+import Tests.Elab
+
+/-!
+# Solvers: `smt` behind `--trust-smt`, and `sat_decide` with checked LRAT proofs (stage 28)
+
+The group `smt`. Cases that need a solver skip (with the reason) when it is not on PATH;
+CI's Nix shell has both (flake.nix: z3, cadical).
+-/
+
+open Wiz
+
+set_option compiler.extract_closed false
+
+namespace Tests.Smt
+
+def render (s : CommandState ZeroOneMany) : List String :=
+  s.messages.toList.map fun m =>
+    s!"{match m.severity with | .error => "error" | .warning => "warning" | .info => "info"}: {m.text}"
+
+/-- Every message of `input`, with all of `lib/` importable. -/
+def msgs (input : String) (cfg : Smt.Config := {}) : IO (List String) := do
+  let loader ← Elab.libLoader
+  pure (render (runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule, smt := cfg }))
+
+def has (ms : List String) (fragment : String) : Bool := ms.any fun m => (m.splitOn fragment).length > 1
+
+def expect (ms : List String) (fragment : String) : IO Unit :=
+  unless has ms fragment do throw (IO.userError s!"no message mentions '{fragment}':\n{"\n".intercalate ms}")
+
+def noErrors (ms : List String) : IO Unit := do
+  let errs := ms.filter (·.startsWith "error")
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs}")
+
+/-- Is `cmd` on PATH? -/
+def have (cmd : String) : IO Bool := do
+  try
+    let out ← IO.Process.output { cmd, args := #["--version"] }
+    pure (out.exitCode == 0)
+  catch _ => pure false
+
+def needs (cmd : String) (k : IO Unit) : IO Unit := do
+  if ← have cmd then k else skip s!"no {cmd} on PATH (nix develop has it)"
+
+def trusted : Smt.Config := { trust := true }
+
+/-- The four clauses over two variables, refuted by CaDiCaL (its LRAT, by hand). -/
+def tinyCnf : String :=
+  "import Sat\n" ++
+  "def P (v : Nat) : Sat.Lit := Sat.Lit.mk v .true\ndef N (v : Nat) : Sat.Lit := Sat.Lit.mk v .false\n" ++
+  "def cnf : List (List Sat.Lit) := [[P 1, P 2], [N 1, P 2], [P 1, N 2], [N 1, N 2]]\n" ++
+  "def proof : List Sat.Step := [Sat.Step.add 5 [P 1] [1, 3], Sat.Step.add 6 [P 2] [5, 2], Sat.Step.add 7 [] [5, 6, 4]]\n"
+
+def group : Group where
+  name := "smt"
+  exercise := "—"
+  cases := [
+    { name := "lib/Sat.wiz: the checker and its soundness proof check, with no axioms", run := fun _ => do
+        let ms ← msgs ("import Sat\n#print axioms Sat.lratCheck_sound\n#print axioms Sat.decide_sound\n")
+        noErrors ms
+        expect ms "info: 'Sat.lratCheck_sound' does not depend on any axioms"
+        expect ms "info: 'Sat.decide_sound' does not depend on any axioms" },
+    { name := "an LRAT proof is checked by the kernel; a wrong one is not accepted", run := fun _ => do
+        let ms ← msgs (tinyCnf ++ "def ok : Sat.lratCheck cnf proof = .true := rfl\n" ++
+          "def unsat (τ : Nat → Bool) (h : Sat.Cnf.eval τ cnf = .true) : False := Sat.lratCheck_sound cnf proof ok τ h\n")
+        noErrors ms
+        -- a hint that does not propagate (clause 2 is not unit under ¬1)
+        let ms ← msgs (tinyCnf ++ "def bad : Sat.lratCheck cnf [Sat.Step.add 5 [P 1] [2, 3], Sat.Step.add 7 [] [5, 4]] = .true := rfl\n")
+        check (has ms "error") s!"a wrong proof was accepted: {ms}"
+        -- a proof that never derives the empty clause
+        let ms ← msgs (tinyCnf ++ "def bad : Sat.lratCheck cnf [Sat.Step.add 5 [P 1] [1, 3]] = .true := rfl\n")
+        check (has ms "error") s!"an unfinished proof was accepted: {ms}" },
+    { name := "sat_decide: Bool identities, checked by the kernel, no axioms", run := fun _ => needs "cadical" do
+        let ms ← msgs ("import SatTactic\n" ++
+          "def demorgan (a b : Bool) : Bool.not (Bool.and a b) = Bool.or (Bool.not a) (Bool.not b) := by sat_decide\n" ++
+          "def xorAssoc (a b c : Bool) : Bool.xor a (Bool.xor b c) = Bool.xor (Bool.xor a b) c := by sat_decide\n" ++
+          "def excluded : (a : Bool) → Bool.or a (Bool.not a) = .true := by sat_decide\n" ++
+          "def atoms (m n : Nat) : Bool.or (Nat.lt m n) (Bool.not (Nat.lt m n)) = .true := by sat_decide\n" ++
+          "#print axioms demorgan\n#print axioms atoms\n")
+        noErrors ms
+        expect ms "info: 'demorgan' does not depend on any axioms"
+        expect ms "info: 'atoms' does not depend on any axioms" },
+    { name := "sat_decide: a false goal fails with a counterexample", run := fun _ => needs "cadical" do
+        let ms ← msgs ("import SatTactic\ndef wrong (a b : Bool) : Bool.and a b = Bool.or a b := by sat_decide\n")
+        expect ms "sat_decide: the goal is false; a counterexample:" },
+    { name := "smt: refused without --trust-smt", run := fun _ => do
+        let ms ← msgs ("import Prelude\ndef t (a b : Nat) : Nat.add a b = Nat.add b a := by smt\n")
+        expect ms "error: SMT solving is not enabled"
+        expect ms "--trust-smt" },
+    { name := "smt: linear Nat arithmetic, Bool, hypotheses; an axiom per use with the solver's name", run := fun _ => needs "z3" do
+        let ms ← msgs ("import Prelude\n" ++
+          "def comm (a b : Nat) : Nat.add a b = Nat.add b a := by smt\n" ++
+          "def trans (a b c : Nat) (h₁ : Nat.lt a b = .true) (h₂ : Nat.lt b c = .true) : Nat.lt a c = .true := by smt\n" ++
+          "def sub0 (a : Nat) : Nat.sub a (Nat.add a 1) = 0 := by smt\n" ++
+          "def div0 (a : Nat) : Nat.div a 0 = 0 := by smt\n" ++
+          "def mod0 (a : Nat) : Nat.mod a 0 = a := by smt\n" ++
+          "def b (x y : Bool) : Bool.and x y = Bool.and y x := by smt\n" ++
+          "def use (a b : Nat) : Nat.add a b = Nat.add b a := comm a b\n" ++
+          "#print axioms comm\n#print axioms use\n") trusted
+        noErrors ms
+        expect ms "comm is accepted on the word of an SMT solver (--trust-smt)"
+        expect ms "info: 'comm' depends on axioms: [comm.smt✝1⟨z3"
+        expect ms "info: 'use' depends on axioms: [comm.smt✝1⟨z3"
+        expect ms "trusted are the solver named in the axiom" },
+    { name := "smt: Nat's truncated subtraction and division by zero are Wiz's, not SMT-LIB's", run := fun _ => needs "z3" do
+        -- over the integers `a - b + b = a`; in Wiz `0 - 1 + 1 = 1`
+        let ms ← msgs ("import Prelude\ndef wrong (a b : Nat) : Nat.add (Nat.sub a b) b = a := by smt\n") trusted
+        expect ms "smt: the solver found a counterexample"
+        -- SMT-LIB's `bvudiv x 0` is all ones; Wiz's `x / 0` is 0
+        let ms ← msgs ("import Word\ndef d (x : UIntN 8) (h : Nat.lt (UIntN.toNat x) 256 = .true) : UIntN.div x (UIntN.zero 8) = UIntN.zero 8 := by smt\n") trusted
+        noErrors ms },
+    { name := "smt: words need a range hypothesis (out-of-range words are values of UIntN)", run := fun _ => needs "z3" do
+        let ms ← msgs ("import Word\ndef nn (x : UIntN 8) : UIntN.not (UIntN.not x) = x := by smt\n") trusted
+        expect ms "smt: the word `x` needs a range hypothesis"
+        -- and the statement is false without it: the kernel refutes an instance
+        let ms ← msgs ("import Word\ndef f : UIntN.not (UIntN.not (UIntN.ofBitsTrusted 300 : UIntN 8)) = (UIntN.ofBitsTrusted 300 : UIntN 8) := rfl\n")
+        check (has ms "error") s!"the kernel accepted not (not 300) = 300 at width 8: {ms}"
+        let ms ← msgs ("import Word\n" ++
+          "def nn (x : UIntN 8) (h : Nat.lt (UIntN.toNat x) 256 = .true) : UIntN.not (UIntN.not x) = x := by smt\n" ++
+          "def ac (x y : UIntN 16) (hx : Nat.lt (UIntN.toNat x) 65536 = .true) (hy : Nat.lt (UIntN.toNat y) 65536 = .true) :\n" ++
+          "    UIntN.add x y = UIntN.add y x := by smt\n" ++
+          "def xs (x : UIntN 32) (h : Nat.lt (UIntN.toNat x) 4294967296 = .true) : UIntN.xor x x = UIntN.zero 32 := by smt\n") trusted
+        noErrors ms },
+    { name := "smt: a false goal fails with a counterexample in the user's names", run := fun _ => needs "z3" do
+        let ms ← msgs ("import Prelude\ndef wrong (apples pears : Nat) (h : Nat.lt apples pears = .true) : Nat.lt pears apples = .true := by smt\n") trusted
+        expect ms "smt: the solver found a counterexample"
+        expect ms "apples" },
+    { name := "the flags: --trust-smt and the solvers are taken and passed on", run := fun _ => do
+        let (t, rest) := ({} : Toolchain).parseFlags ["--trust-smt", "--smt-solver", "cvc5", "--sat-solver", "kissat", "--smt-timeout", "500", "check", "f.wiz"]
+        check t.trustSmt "--trust-smt not taken"
+        checkEq ["check", "f.wiz"] rest
+        checkEq "cvc5" t.smt.solver
+        checkEq "kissat" t.smt.satSolver
+        checkEq 500 t.smt.timeoutMs
+        let (t', _) := ({} : Toolchain).parseFlags t.toFlags
+        check (t'.trustSmt && t'.smt == t.smt) "toFlags does not round-trip"
+        let (u, _) := ({} : Toolchain).parseFlags ["check", "f.wiz"]
+        check (!u.trustSmt && Cache.smtKey u.smt == none) "--trust-smt is on by default, or the default settings change cache keys"
+        check (Cache.smtKey t.smt != none) "the solver settings are not in the cache keys" },
+    { name := "lib/ never uses smt", run := fun _ => do
+        for e in ← System.FilePath.readDir "lib" do
+          if e.path.extension == some "wiz" && e.path.fileName != some "Prelude.wiz" then
+            let src ← IO.FS.readFile e.path
+            let ws := ((src.replace "\n" " ").replace ";" " ").splitOn " "
+            check (!ws.contains "smt") s!"{e.path} uses the smt tactic" }
+  ]
+
+def groups : List Group := [group]
+
+end Tests.Smt
