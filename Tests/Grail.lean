@@ -270,6 +270,56 @@ def linkCCase : Case :=
         check (!ok) "built without its C file"
         check ((log.splitOn "link_c: no file hi.c").length > 1) s!"no error for the missing file:\n{log}" }
 
+/-- `grail lsp` (this test driver's sibling `grail`) in `dir`: the diagnostics of `file`
+after an initialize and a didOpen; `none` if there is no grail binary. -/
+def grailLspDiagnostics (dir : System.FilePath) (file : String) : IO (Option (List String)) := do
+  let grail := ((← IO.appPath).parent.getD ".") / "grail"
+  unless ← grail.pathExists do return none
+  let cache ← IO.FS.createTempDir
+  let args := #["-C", dir.toString, "--cache", cache.toString, "lsp"]
+  let child ← IO.Process.spawn { cmd := grail.toString, args, stdin := .piped, stdout := .piped, stderr := .piped }
+  let (stdin, child) ← child.takeStdin
+  let input := IO.FS.Stream.ofHandle stdin
+  let output := IO.FS.Stream.ofHandle child.stdout
+  let _ ← IO.asTask (prio := .dedicated) (do IO.sleep 120000; child.kill : IO Unit)
+  let path ← IO.FS.realPath (dir / file)
+  let uri := s!"file://{path}"
+  LSP.writeMessage input (Lean.Json.mkObj [("jsonrpc", "2.0"), ("id", (1 : Nat)), ("method", "initialize"),
+    ("params", Lean.Json.mkObj [("capabilities", Lean.Json.mkObj [])])])
+  LSP.writeMessage input (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+    ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", uri), ("languageId", "wiz"),
+      ("version", (1 : Nat)), ("text", ← IO.FS.readFile path)])])])
+  let mut diags := none
+  repeat
+    let some m ← LSP.readMessage output | break
+    if LSP.getStr m ["method"] == "textDocument/publishDiagnostics" then
+      let ds := match LSP.get? m ["params", "diagnostics"] with
+        | some (.arr ds) => ds.toList.map (LSP.getStr · ["message"])
+        | _ => []
+      diags := some ds
+      break
+  child.kill
+  let _ ← child.wait
+  match diags with
+  | some ds => pure (some ds)
+  | none => throw (IO.userError s!"grail lsp ended without diagnostics: {← child.stderr.readToEnd}")
+
+def grailLspCase : Case :=
+    { name := "grail lsp: the server knows the package's modules", run := fun _ => do
+        let dir ← mkTree (pkgFiles ++ [("main.wiz", "import Demo.Two
+#eval two
+")])
+        let some ds ← grailLspDiagnostics dir "main.wiz"
+          | IO.println "    (skipped: no grail beside the test driver; lake build grail)"
+        check (ds.any (· == "2")) s!"diagnostics: {ds}"
+        check (!ds.any fun d => (d.splitOn "unknown module").length > 1) s!"diagnostics: {ds}"
+        -- a broken grail.wiz: the server still starts, with the package directory as a root
+        IO.FS.writeFile (dir / "grail.wiz") "import Grail\ndef package : Package := 3\n"
+        IO.FS.writeFile (dir / "Root.wiz") "import Prelude\ndef r : Nat := 5\n"
+        IO.FS.writeFile (dir / "main.wiz") "import Root\n#eval r\n"
+        let some ds ← grailLspDiagnostics dir "main.wiz" | return
+        check (ds.any (· == "5")) s!"diagnostics with a broken grail.wiz: {ds}" }
+
 def grailGroup : Group where
   name := "grail"
   exercise := "Stage 23d"
@@ -332,7 +382,8 @@ def grailGroup : Group where
         let (s, _) ← build dir tc
         checkEq 3 s.ran
         checkEq 2 s.upToDate },
-    linkCCase
+    linkCCase,
+    grailLspCase
   ]
 
 /-- A diamond: `B` and `C` import `A`, `D` imports both, and `app.wiz` imports `D`. -/

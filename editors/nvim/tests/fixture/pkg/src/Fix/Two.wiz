@@ -1,0 +1,2 @@
+import Prelude
+def two : Nat := 2
