@@ -146,6 +146,15 @@ laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpret
 `lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
 freeing a list). See [stage 24](stages/24-separation-logic.md).
 
+`lib/EffHeap.wiz` connects the effects library ([stage 10](stages/10-effects.md)) to
+these heap programs. `Cell V l` is a state effect on the cell at location `l`, and
+`Eff.toProg` interprets a program over cells as a `Prog V` (with `interpret` and a
+`Handler` into `Prog`). Its specification is then `Triple P (Eff.toProg c) Q`, proved
+with the `x`-tactics. Separate cells commute without a `Commute` instance:
+`Commute (Cell V p) (Cell V q) (Prog V)` is false, because the two orders are different
+trees. `Cell.commute` proves instead that both orders meet the same specification from
+`(p ↦ x) ⋆ (q ↦ y)`, so a proof of whatever follows serves either order.
+
 ## Functors and Booleans
 
 `lib/Functor.wiz` (`import Functor`): `Functor`, `Applicative`, `<$>`, `<*>`; every `Monad`

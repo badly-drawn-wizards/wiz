@@ -6059,7 +6059,37 @@ def seplogicGroup : Group where
            "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
     { name := "a wrong specification is not proved by the x-tactics", run := fun _ =>
-        failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" }
+        failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" },
+    { name := "EffHeap: Eff programs over cells are heap programs; separate cells commute without Commute", run := fun _ => do
+        okLibs ("import EffHeap\n" ++
+          "def incrBoth (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit := do\n" ++
+          "  a ← Cell.get p;\n" ++
+          "  Cell.put p (Nat.succ a);\n" ++
+          "  b ← Cell.get q;\n" ++
+          "  Cell.put q (Nat.succ b)\n" ++
+          "def incrBoth_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (incrBoth p q)) (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ Nat.succ b)) := by\n" ++
+          "  xgo\n" ++
+          "-- the same program, run as a heap program\n" ++
+          "def cells (o : Option (Unit × Heap Nat × Nat)) : Option (Option Nat × Option Nat) := match o with\n" ++
+          "  | .some r => .some (r.2.1 1, r.2.1 2)\n" ++
+          "  | .none => .none\n" ++
+          "#eval cells (Prog.run (Eff.toProg (incrBoth 1 2)) (Heap.union (Heap.single 1 10) (Heap.single 2 20)) 3)\n" ++
+          "-- reordering two cell operations, as a triple: a proof for one order serves the other\n" ++
+          "def swapOrder (p q x y : Nat) (H : HProp Nat) (Q : Nat × Unit → HProp Nat)\n" ++
+          "    (k : (ab : Nat × Unit) → Triple ((Cell.post p x (@CellOp.get Nat p) ab.1 ⋆ Cell.post q y (@CellOp.put Nat q 7) ab.2) ⋆ H) (Prog.ret ab) Q) :\n" ++
+          "    Triple (((p ↦ x) ⋆ (q ↦ y)) ⋆ H) (Prog.bind (Cell.both21 (@CellOp.get Nat p) (@CellOp.put Nat q 7)) (fun ab => Prog.ret ab)) Q :=\n" ++
+          "  (Cell.commute p q x y CellOp.get (CellOp.put 7) H (fun ab => Prog.ret ab) Q k).2\n")
+          [".some (.some 11, .some 21)"]
+        failsLibs ("import EffHeap\n" ++
+          "def incrBoth (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit := do\n" ++
+          "  a ← Cell.get p;\n" ++
+          "  Cell.put p (Nat.succ a);\n" ++
+          "  b ← Cell.get q;\n" ++
+          "  Cell.put q (Nat.succ b)\n" ++
+          "def bad (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (incrBoth p q)) (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ b)) := by\n" ++
+          "  xgo\n") "unsolved goals" }
   ]
 
 
