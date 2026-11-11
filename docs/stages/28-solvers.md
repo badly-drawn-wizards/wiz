@@ -89,6 +89,11 @@ jobs), so an acceptance is never replayed without the flag. `lib/` never uses `s
   and `BForm.eval σ f = .true` against the goal by conversion. A model is shown as a
   counterexample.
 
+**The solver.** Release tarballs ship CaDiCaL in `share/wiz/cc/bin/cadical` (the Lean
+toolchain's copy, which Lean ships for `bv_decide`; scripts/bundle-cc.sh), and a bundled
+toolchain uses it by default. A checkout finds `cadical` on PATH (the Nix dev shell has
+it). Z3 is not shipped (tens of MB, and `smt` is opt-in): `--smt-solver` finds it.
+
 **Trusted**: nothing new. The solver, the tactic, the DIMACS/LRAT plumbing can only make
 `sat_decide` fail. The kernel runs the checker, which is slow for big proofs (kernel
 evaluation); `native_refl` could run the same check compiled (bv_decide's trust), not

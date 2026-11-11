@@ -111,13 +111,16 @@ clang with a glibc 2.27 sysroot holding static GMP and the Boehm GC, and an `llc
 runs that clang on IR. Found beside the running binary (`<dir>/.lake/build/bin/wiz` with
 `<dir>/cc/bin/cc`, as `toolchainLib` finds `<dir>/lib`). When it is there it gives the
 defaults of `cc`, `llc` and `gc-ldflags`; flags, `grail.local.wiz` and tower's settings
-still replace any field. A checkout and the Nix package have no bundle: `t` unchanged. -/
+still replace any field. (28b) A bundled `cc/bin/cadical` is the default SAT solver.
+A checkout and the Nix package have no bundle: `t` unchanged. -/
 def withBundled (t : Toolchain) : IO Toolchain := do
   let exe ← IO.appPath
   let root := (((exe.parent.bind (·.parent)).bind (·.parent)).bind (·.parent)).getD "."
   let bin := root / "cc" / "bin"
   unless ← (bin / "cc").pathExists do return t
-  pure { t with cc := (bin / "cc").toString, llc := (bin / "llc").toString, gcLdflags := ["-lgc", "-lpthread"] }
+  -- (28b) and the SAT solver, when the bundle has it (a `--sat-solver` still wins)
+  let sat ← if t.satSolver.isNone && (← (bin / "cadical").pathExists) then pure (some (bin / "cadical").toString) else pure t.satSolver
+  pure { t with cc := (bin / "cc").toString, llc := (bin / "llc").toString, gcLdflags := ["-lgc", "-lpthread"], satSolver := sat }
 
 /-- `grail config`: one `key value` line per field. -/
 def render (t : Toolchain) : String :=
