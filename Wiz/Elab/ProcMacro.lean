@@ -92,7 +92,8 @@ partial def runMacroTac (code : Code) (env : MacroEnv) (what : String) (info : S
   let str (r : RVal) := (r.toString?).getD ""
   match v.tag? with
   | some 1 => -- result
-    match decodeSyntax info (v.conField 0) with
+    -- (11q) the output is the macro's, not the user's: synthetic, at the call's range
+    match decodeSyntax { info with synthetic := true } (v.conField 0) with
     | some out => (traces, pure (scopeQuoted scope out, next))
     | none => (traces, throw s!"{what} returned a malformed syntax tree")
   | some 2 => (traces, throw (((v.conField 0).toString?).getD "macro failed")) -- fail

@@ -109,7 +109,11 @@ structure CommandState (R : Type) where
   (`lib/`). The main file never is, nor a module from a `-I` directory. -/
   trustedModule : String → Bool := fun _ => false
   /-- macro rules, latest first -/
-  macros : List (Name × Syntax × Syntax × List Name) := []
+  macros : List MacroRule := []
+  /-- (11q) where each syntax kind and syntax category was declared (the command's range,
+  and module), for go to definition on syntax -/
+  kindSites : Std.HashMap Name (SourceInfo × String) := {}
+  catSites : Std.HashMap Name (SourceInfo × String) := {}
   nextScope : Nat := 1000000
   /-- (`runFrontend`) the modules already checked in isolation, with their errors
   (`none` while one is being checked: an import cycle) -/
@@ -700,7 +704,7 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
 
 /-- Run the elaborator; also returns the info tree it recorded (even after an error). -/
 def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
-    (macros : List (Name × Syntax × Syntax × List Name) := []) (builtins : List (Name × Name) := [])
+    (macros : List MacroRule := []) (builtins : List (Name × Name) := [])
     (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
     (metaCode : Thunk (Except String Code) := Thunk.pure (.ok {}))
     (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) (termInfo : Bool := false) :
@@ -721,7 +725,7 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   | .error e => (.error e, (e.state?.map finishInfos).getD #[])
 
 def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
-    (macros : List (Name × Syntax × Syntax × List Name) := []) (builtins : List (Name × Name) := [])
+    (macros : List MacroRule := []) (builtins : List (Name × Name) := [])
     (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
     (metaCode : Thunk (Except String Code) := Thunk.pure (.ok {}))
     (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) : Except (ElabError R) α :=
@@ -771,9 +775,9 @@ def classMethods (sDecl : Decl R) (levelParams : List Name)
   pure out
 
 /-- `notation` and `infixl`/`infixr`/`infix`: register a syntax rule and a macro rule.
-Returns the new tables and the rule `(kind, pattern, template, vars)`. -/
+Returns the new tables and the macro rule. -/
 def notationRule (tables : ParserTables) (cmd : Syntax) :
-    Except String (ParserTables × (Name × Syntax × Syntax × List Name)) := do
+    Except String (ParserTables × MacroRule) := do
   let antiquot (v : Name) : Syntax := .node {} "antiquot" #[.atom {} "$", .ident {} v]
   -- items: `.inl op` for an atom, `.inr (name, prec?)` for an argument
   let (prec, items, rhs) ← if cmd.isOfKind "command.infix" then do
@@ -813,13 +817,13 @@ def notationRule (tables : ParserTables) (cmd : Syntax) :
     let p := if h : ps.length = 1 then ps[0] else .seq ps.toArray
     let kind := mkKindName tables "term" p
     let tables := tables.addTrailing "term" { kind, prec, lhsPrec := lp?.getD prec, p }
-    pure (tables, (kind, .node {} kind (items.map pat).toArray, rhs, vars))
+    pure (tables, { kind, pattern := .node {} kind (items.map pat).toArray, template := rhs, vars, site := cmd.info })
   | _ =>
     let ps := items.map descr
     let p := if h : ps.length = 1 then ps[0] else .seq ps.toArray
     let kind := mkKindName tables "term" p
     let tables := tables.addLeading "term" { kind, prec, p }
-    pure (tables, (kind, .node {} kind (items.map pat).toArray, rhs, vars))
+    pure (tables, { kind, pattern := .node {} kind (items.map pat).toArray, template := rhs, vars, site := cmd.info })
 
 /-- Is a `builtin key := d` registration well formed? Numerals and the native operations
 need the shapes they assume: `nat` a type, `nat.zero : N`, `nat.succ : N → N`, the
@@ -907,8 +911,11 @@ def privateFields (cmd : Syntax) : List Name :=
 `instance`, …): the `trace`s of its tactics and macros still become info messages. -/
 def withTraces (r : Except (ElabError R) α × Array (Info R)) : StateM (CommandState R) (Except (ElabError R) α) := do
   for i in r.2 do
-    if let .trace info text := i then
-      modify fun s => { s with messages := s.messages.push { info, severity := .info, text } }
+    match i with
+    | .trace info text => modify fun s => { s with messages := s.messages.push { info, severity := .info, text } }
+    -- (11q) the rest of the tree too (hovers in `#check`, an inductive type's binders)
+    | .warning .. => pure ()
+    | i => modify fun s => { s with infos := s.infos.push i }
   pure r.1
 
 /-- (13m) The end of an imported module: `inner` is the state after it, `outer` the
@@ -933,13 +940,13 @@ def CommandState.endModule (inner outer : CommandState R) : CommandState R :=
     let acc := cat.leading.foldl (fun acc lp => lp.p.tokens.foldl (·.insert ·) acc) acc
     cat.trailing.foldl (fun acc tp => tp.p.tokens.foldl (·.insert ·) acc) acc
   -- (entries numbered from the oldest, as `local` recorded them)
-  let keep {α : Type} (xs : List (Name × α)) (dropped : List Nat) : List (Name × α) :=
+  let keep {α : Type} (key : α → Name) (xs : List α) (dropped : List Nat) : List α :=
     let n := xs.length
-    (xs.zipIdx.filter fun ((k, _), i) => !kinds.contains k && !dropped.contains (n - 1 - i)).map (·.1)
+    (xs.zipIdx.filter fun (x, i) => !kinds.contains (key x) && !dropped.contains (n - 1 - i)).map (·.1)
   { reset with
     tables := { t with cats := cats', tokens := t.tokens.filter used.contains }
-    macros := keep inner.macros rules
-    procMacros := keep inner.procMacros procs
+    macros := keep (·.kind) inner.macros rules
+    procMacros := keep (·.1) inner.procMacros procs
     tactics := inner.tactics.filter (!kinds.contains ·.1)
     cmdMacros := inner.cmdMacros.filter (!kinds.contains ·.1) }
 
@@ -1178,7 +1185,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | (.error e, hv) => addInfos hv; reportErr e; return
     modify fun s => { s with globals := g }
   | "command.check" =>
-    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals do
       let (t, ty) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -1192,7 +1199,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
   | "command.reduce" =>
-    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -1354,7 +1361,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else
       let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
         else elabStructure cmd levelParams
-      match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals elabCmd levelParams) with
+      match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals elabCmd levelParams) with
       | .error e => report .error e.info e.msg
       | .ok decls =>
         -- a structure's projection functions `S.f` (unless the name is taken, as `S.mk`)
@@ -2012,7 +2019,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error err => report .error cmd.info s!"cannot erase {n}: {err}"
   | "command.eval" =>
     -- elaborate, erase, run, and read the result back using its type
-    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -2037,7 +2044,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error err => report .error cmd.info s!"cannot run this: {err}"
   | "command.run" =>
     -- like `#eval`, but through the IR, with reference counting, on a checked heap
-    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -2071,7 +2078,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .error err => report .error cmd.info s!"#ir: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with
-    | .ok tables => modify fun s => { s with tables }
+    | .ok tables =>
+      -- (11q) where the new kinds and categories were declared
+      let site := (cmd.info, s.module)
+      let kindSites := tables.kinds.fold (init := s.kindSites) fun m k _ =>
+        if s.tables.kinds.contains k then m else m.insert k site
+      let catSites := tables.cats.fold (init := s.catSites) fun m c _ =>
+        if s.tables.cats.contains c then m else m.insert c site
+      modify fun s => { s with tables, kindSites, catSites }
     | .error msg => report .error cmd.info msg
   | "command.macroRules" =>
     for alt in (cmd.getArg 1).args do
@@ -2081,22 +2095,31 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         report .error alt.info "a macro rule is `| `(cat| pattern) => `(cat| template)`"
         return
       let pattern := lhs.getArg 3
-      modify fun s => { s with macros := (pattern.kind, pattern, rhs.getArg 3, []) :: s.macros }
+      let rule : MacroRule := { kind := pattern.kind, pattern, template := rhs.getArg 3, site := alt.info, module := s.module }
+      modify fun s => { s with macros := rule :: s.macros }
   | "command.notation" | "command.infix" =>
     match notationRule s.tables cmd with
-    | .ok (tables, rule) => modify fun s => { s with tables, macros := rule :: s.macros }
+    | .ok (tables, rule) =>
+      modify fun s => { s with tables, macros := { rule with module := s.module } :: s.macros,
+                               kindSites := s.kindSites.insert rule.kind (cmd.info, s.module) }
     | .error e => report .error cmd.info e
   | k =>
     -- user-defined command syntax: expand a macro, if one applies
-    let rules := s.macros.map fun (kind, pattern, template, vars) => ({ kind, pattern, template, vars } : Elab.MacroRule)
-    match Elab.expandMacro? rules cmd s.nextScope with
-    | some cmd' =>
+    -- (11q) what expanded a command the user wrote
+    let recordExp (h : SyntaxHandler) (out : Option Syntax) : StateM (CommandState R) Unit :=
+      if cmd.info.stop > 0 && !cmd.info.synthetic then
+        modify fun s => { s with infos := s.infos.push (.expansion cmd.info k h out) }
+      else pure ()
+    match Elab.expandMacroRule? s.macros cmd s.nextScope with
+    | some (cmd', r) =>
       modify fun s => { s with nextScope := s.nextScope + 1 }
+      recordExp (.rule r.site r.module) (some cmd')
       elabCommand cmd'
     | none =>
       -- (HD8) a command macro, written in Wiz
       match s.cmdMacros.lookup k with
       | some f =>
+        recordExp (.fn "command macro" f) none
         let r := match metaCodeFor f with
           | .ok code => Elab.runCommandMacro code f cmd s.nextScope (macroEnv s.globals)
           | .error e => (#[], .error e)
@@ -2133,6 +2156,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | none => match s.procMacros.lookup k with
         | some f =>
           -- a `Macro` for a command kind: one command
+          recordExp (.fn "macro" f) none
           let r := match metaCodeFor f "Macro.run" with
             | .ok code =>
               let (tr, r) := Elab.runProcMacro code f cmd s.nextScope (macroEnv s.globals)

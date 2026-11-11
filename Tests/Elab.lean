@@ -802,11 +802,16 @@ def twiceMacro : Macro := fun stx => do
 attribute [macro term.twice] twiceMacro
 "
 
-/-- `import Prelude` and `import Word`. -/
+/-- `import Prelude`, `import Word`, `import Functor` and `import Logic`. -/
 def preludeLoader : IO (Name → Option String) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let word ← IO.FS.readFile "lib/Word.wiz"
-  pure fun m => if m == "Prelude" then some prelude else if m == "Word" then some word else none
+  let functor ← IO.FS.readFile "lib/Functor.wiz"
+  let logic ← IO.FS.readFile "lib/Logic.wiz"
+  let text ← IO.FS.readFile "lib/Text.wiz"
+  pure fun m => if m == "Prelude" then some prelude else if m == "Word" then some word
+    else if m == "Functor" then some functor else if m == "Logic" then some logic
+    else if m == "Text" then some text else none
 
 /-- `ok`, with `lib/` available to `import` (the tests run from the package root). -/
 
@@ -1684,11 +1689,13 @@ def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
+  let functorLib ← IO.FS.readFile "lib/Functor.wiz"
   let sysLib ← IO.FS.readFile "lib/Sys.wiz"
   let textLib ← IO.FS.readFile "lib/Text.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
-    else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else if m == "Text" then some textLib else none
+    else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else if m == "Functor" then some functorLib
+    else if m == "Text" then some textLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -4349,16 +4356,16 @@ def calcDsl (decl : String) : String := "import Prelude\ndeclare_syntax_cat calc
 syntax (name := var) ident : calc_e
 syntax (name := host) \"[\" term \"]\" : calc_e
 syntax:lead (name := app) calc_e:max calc_e:max : calc_e
-syntax:20 (name := ifE) \"if\" calc_e \"then\" calc_e:20 \"else\" calc_e:20 : calc_e
+syntax:20 (name := ifE) \"when\" calc_e \"yes\" calc_e:20 \"no\" calc_e:20 : calc_e
 syntax (name := calc) \"run_calc\" calc_e \"done\" : term
 macro_rules
   | `(term| run_calc [ $t ] done) => `(term| $t)
 macro_rules
   | `(term| run_calc $f $a done) => `(term| (run_calc $f done) (run_calc $a done))
 macro_rules
-  | `(term| run_calc if $c then $a else $b done) => `(term| match run_calc $c done with | .true => run_calc $a done | .false => run_calc $b done)
-def then : Nat := 1
-def else (if : Nat) : Nat := Nat.succ if
+  | `(term| run_calc when $c yes $a no $b done) => `(term| match run_calc $c done with | .true => run_calc $a done | .false => run_calc $b done)
+def yes : Nat := 1
+def no (when : Nat) : Nat := Nat.succ when
 def isZero : Nat → Bool
   | .zero => .true
   | .succ _ => .false
@@ -4592,6 +4599,49 @@ def languageGroup : Group where
           "inductive B where\n  | b0\n  | b1 (x : A)\nend\n" ++
           "def depthA : A → Nat\n  | .a1 f => Nat.succ (depthA (f ()))\n  | .a0 => 0\n" ++
           "#eval depthA (.a1 (fun _ => .a1 (fun _ => .a0)))") ["2"] },
+    { name := "13c: if, &&, || and ! in the Prelude", run := fun _ =>
+        okLib ("import Prelude\ndef f (b : Bool) (n : Nat) : Nat := if b then n + 1 else 0\n#eval f .true 3\n" ++
+          "#eval if Nat.beq 1 1 && !(Nat.beq 2 3) then \"yes\" else \"no\"\n" ++
+          "#eval Nat.beq 1 1 && !(Nat.beq 2 3) || Bool.false\n#eval (Bool.false || Bool.true) && Bool.false\n" ++
+          "def nested (n : Nat) : Nat := match n with\n  | .zero => if Nat.beq n 0 then 1 else 2\n  | .succ m => m\n#eval nested 0\n" ++
+          "def t1 (b : Bool) : (Bool.true && b) = b := rfl\ndef t2 (b : Bool) : (Bool.false || b) = b := rfl\n")
+          ["4", "\"yes\"", ".true", ".false", "1"] },
+    { name := "13c: && and || short-circuit in compiled code", run := fun _ =>
+        ioRun ("import IO\npartial def spin (n : Nat) : Bool := spin n\n" ++
+          "def main : IO Unit := IO.println (if Bool.false && spin 0 then \"bad\" else if Bool.true || spin 1 then \"lazy ok\" else \"bad\")")
+          "lazy ok\n" },
+    { name := "13d: Functor and Applicative (import Functor)", run := fun _ =>
+        okLib ("import Functor\n#eval Nat.add <$> Option.some 1 <*> Option.some 2\n" ++
+          "#eval (fun (a b : Nat) => (a, b)) <$> List.cons 1 (List.cons 2 .nil) <*> List.cons 3 .nil\n" ++
+          "#eval Nat.succ <$> List.cons 1 (List.cons 2 .nil)\n#eval Nat.succ <$> (Except.error \"e\" : Except String Nat)\n" ++
+          "def addOpt (x y : Option Nat) : Option Nat := do\n  a ← x;\n  b ← y;\n  Monad.pure (a + b)\n#eval addOpt (.some 1) (.some 2)\n" ++
+          "def pairT : TacticM (Nat × Nat) := (fun (a b : Nat) => (a, b)) <$> TacticM.pure 1 <*> TacticM.pure 2\n")
+          [".some 3", ".cons (1, 3) (.cons (2, 3) .nil)", ".cons 2 (.cons 3 .nil)", ".error \"e\"", ".some 3"] },
+    { name := "13d: <$> and <*> for IO, from its Monad instance", run := fun _ =>
+        ioRun ("import IO\nimport Functor\ndef main : IO Unit := do\n  n ← Nat.add <$> IO.pure 40 <*> IO.pure 2;\n" ++
+          "  IO.println (Nat.toString n)") "42\n" },
+    { name := "13e: ∃ binders, ¬, and ASCII spellings (import Logic)", run := fun _ =>
+        okLib ("import Logic\ndef t1 : ∃ n, n = 3 := Ex.intro (fun n => n = 3) 3 rfl\n" ++
+          "def t2 : ∃ n : Nat, n + n = 4 := Ex.intro _ 2 rfl\ndef t3 : ∃ (n : Nat), n = 3 := Ex.intro _ 3 rfl\n" ++
+          "def t5 : ∃ (n : Nat) m, n = m ∧ m = n := Ex.intro (fun n => ∃ m, n = m ∧ m = n) 3 (Ex.intro (fun m => 3 = m ∧ m = 3) 3 (rfl, rfl))\n" ++
+          "def same {A : Type} (P : A → A → Prop) : (∃ x y : A, P x y) → @Ex A (fun x => @Ex A (fun y => P x y)) := fun h => h\n" ++
+          "def swap {A : Type} {P : A → A → Prop} (h : ∃ x y, P x y) : ∃ y x, P x y :=\n" ++
+          "  Ex.elim h (fun x h' => Ex.elim h' (fun y p => Ex.intro (fun y => ∃ x, P x y) y (Ex.intro (fun x => P x y) x p)))\n" ++
+          "def nope : ¬ (exists (b : Bool), b = .true ∧ b = .false) :=\n  fun h => Ex.elim h (fun b p => Bool.trueNeFalse (Eq.trans (Eq.symm p.1) p.2))\n" ++
+          "def t7 : forall (n : Nat), n = n := fun n => rfl\n" ++
+          "def t8 {P Q : Prop} (h : P <-> Q) (p : P) : (Q /\\ P) \\/ False := Or.inl (h.1 p, p)\n#check t5")
+          ["t5 : Ex Nat (fun n => Ex Nat (fun m => And (n = m) (m = n)))"] },
+    { name := "13f: let with a tuple pattern of three or more names", run := fun _ =>
+        okLib ("import Prelude\ndef f (p : Nat × Nat × Nat) : Nat := let (a, b, c) := p; a + b * c\n#eval f (1, 2, 3)\n" ++
+          "def g (p : Nat × Bool × Nat × Nat) : Nat := let (a, b, c, d) := p; match b with\n  | .true => a + c + d\n  | .false => 0\n" ++
+          "#eval g (1, .true, 3, 4)\ndef tuple : Nat := 7\ndef noCapture (p : Nat × Nat × Nat) : Nat := let (a, b, c) := p; tuple\n" ++
+          "#eval noCapture (1, 2, 3)\naxiom Tok : Type\naxiom Tok.close : (1 t : Tok) → Unit\n" ++
+          "def lin (1 p : Nat × Tok × Tok) : Unit × Unit :=\n  let 1 (n, s, t) := p;\n  (Tok.close s, Tok.close t)\n")
+          ["7", "8", "7"] },
+    { name := "... and a linear one still binds each component once", run := fun _ =>
+        failsLib ("import Prelude\naxiom Tok : Type\naxiom Tok.close : (1 t : Tok) → Unit\n" ++
+          "def lin (1 p : Nat × Tok × Tok) : Unit × Unit :=\n  let 1 (n, s, t) := p;\n  (Tok.close s, Tok.close s)\n")
+          "quantity 1 but used" },
     -- (13k) list literals: a Prelude macro
     { name := "list literals: [a, b, c], [], nested, multi-line, with ++", run := fun _ =>
         okLib ("import Prelude\ndef xs : List Nat := [1, 2, 3]\ndef ys : List String := []\n" ++
@@ -4642,17 +4692,18 @@ def languageGroup : Group where
     { name := "... in the main file it is ordinary notation; only grammar commands can be local", run := fun _ => do
         okLib "import Prelude\nlocal infixl:65 \" +! \" => Nat.add\n#eval 1 +! 2" ["3"]
         failsLib "import Prelude\nlocal def x : Nat := 1" "can be `local`" },
-    -- keyword scopes (13j): `if`/`then`/`else` are keywords inside `run_calc … done` only
+    -- keyword scopes (13j): `when`/`yes`/`no` are keywords inside `run_calc … done` only
+    -- (not `if`/`then`/`else`: the Prelude's `if` (13c) reserves those in every file)
     { name := "keyword scope: a DSL's keywords are identifiers outside it (13j)", run := fun _ =>
         okLib (calcDsl " (keywords := calc_kw)" ++
-          "#eval run_calc if [isZero] [0] then [else] [then] else [else (else then)] done\n" ++
-          "#eval run_calc if [isZero] [then] then [5] else [else 7] done") ["2", "8"] },
+          "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done\n" ++
+          "#eval run_calc when [isZero] [yes] yes [5] no [no 7] done") ["2", "8"] },
     { name := "... and not its own identifiers", run := fun _ =>
-        failsLib (calcDsl " (keywords := calc_kw)" ++ "#eval run_calc [else] then done")
-          "identifier ('then' is a keyword here)" },
-    { name := "... without the scope the DSL's `if` is an application", run := fun _ => do
+        failsLib (calcDsl " (keywords := calc_kw)" ++ "#eval run_calc [no] yes done")
+          "identifier ('yes' is a keyword here)" },
+    { name := "... without the scope the DSL's `when` is an application", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let input := calcDsl "" ++ "#eval run_calc if [isZero] [0] then [else] [then] else [else (else then)] done"
+        let input := calcDsl "" ++ "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done"
         let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         check ((s.messages.filter (·.severity == .error)).size > 0) "expected errors" }
   ]
@@ -5845,7 +5896,10 @@ def seplogicGroup : Group where
           "def e8 (p : Nat) (a : HProp Nat) : hexists (fun (n : Nat) => hpure (n = p) ⋆ a) ⊢ a := by\n  xpull as n, h\n  xsimpl") },
     { name := "xsimpl leaves what it cannot prove", run := fun _ => do
         failsLibs "import HoareTactics\ndef bad (a b c : HProp Nat) : a ⋆ b ⊢ c ⋆ a := by xsimpl" "⊢ Entails Nat b c"
-        failsLibs "import HoareTactics\ndef bad (p : Nat) : (p ↦ 1) ⊢ (p ↦ 2) := by xsimpl" "unsolved goals" },
+        failsLibs "import HoareTactics\ndef bad (p : Nat) : (p ↦ 1) ⊢ (p ↦ 2) := by xsimpl" "unsolved goals"
+        -- a tactic that fails says why, with the goal
+        failsLibs "import HoareExamples\ndef bad (p q n : Nat) : Triple (p ↦ n) (Prog.incr q) (fun _ => p ↦ n) := by xstep" "xstep: the precondition has no cell at q"
+        failsLibs "import HoareExamples\ndef bad (p q n : Nat) : Triple (p ↦ n) (Prog.incr3 p q) (fun _ => p ↦ n) := by xapp (Prog.incr_spec q n)" "xapp: the specification is about Prog.incr q, but the program is" },
     { name := "the x-tactics verify a counter, list length, map and free on mutable lists", run := fun _ =>
         okLibs ("import HoareExamples\n#check @Prog.incr3_spec\n#check @Prog.counter_spec\n#check @Prog.length_spec\n" ++
           "#check @Prog.incrAll.spec\n#check @Prog.freeAll.spec\n" ++
@@ -6996,11 +7050,11 @@ def textGroup : Group where
   cases := [
     -- two modules that declare one name are an error at import: the libraries that had
     -- copies of Text's functions use Text's
-    { name := "Text imports together with Json, Deriving, Hoare and Hdl.Core", run := fun _ => do
-        for m in ["Json", "Deriving", "Hoare", "Hdl.Core"] do
+    { name := "Text imports together with Json, Deriving, Hoare, Hdl.Core and Functor", run := fun _ => do
+        for m in ["Json", "Deriving", "Hoare", "Hdl.Core", "Functor"] do
           okLibs s!"import Text\nimport {m}\n#eval Nat.repr 120" ["\"120\""]
           okLibs s!"import {m}\nimport Text\n#eval String.eq \"ab\" \"ab\"" [".true"]
-        okLibs ("import Json\nimport Deriving\nimport Hoare\nimport Hdl.Core\nimport Text\n" ++
+        okLibs ("import Json\nimport Deriving\nimport Hoare\nimport Hdl.Core\nimport Functor\nimport Text\n" ++
           "#eval List.reverse (.cons 1 (.cons 2 .nil))\n#eval String.beq \"a\" \"b\"")
           [".cons 2 (.cons 1 .nil)", ".false"] },
     { name := "split, join, trim, replace, prefixes, numbers (#eval)", run := fun _ =>

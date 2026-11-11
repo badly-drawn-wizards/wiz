@@ -517,6 +517,86 @@ def serverGroup : Group where
         let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\",\"version\":2},\"contentChanges\":[{\"text\":\"import Prelude\\n\"}]}}")
         let (_, r) := resolve srv
         check (has r "-32801") s!"stale resolve: {r.compress}" },
+    { name := "11q: go to definition and declaration of syntax, a macro use's hover", run := fun _ => do
+        let src := "import Prelude\nsyntax (name := twice) \"twice\" term:max : term\nmacro_rules\n  | `(term| twice $x) => `(term| Nat.add $x $x)\ndef two : Nat := 2\ndef four : Nat := twice two\n"
+        let (srv, _) ← openDoc src
+        let line (r : Lean.Json) : Nat := LSP.getNat r ["range", "start", "line"]
+        let use := offAfter src "twice two" (-7)
+        -- definition: the macro rule that expanded it; declaration: the `syntax`
+        let (srv, r) := ask srv "textDocument/definition" src use
+        checkEq "file:///t.wiz" (LSP.getStr r ["uri"])
+        checkEq 3 (line r)
+        let (srv, r) := ask srv "textDocument/declaration" src use
+        checkEq 1 (line r)
+        -- the argument is still an identifier of its own
+        let (srv, r) := ask srv "textDocument/definition" src (offAfter src "twice two" (-1))
+        checkEq 4 (line r)
+        -- the hover: the syntax, its type, where it is declared and what it expands to
+        let (srv, r) := ask srv "textDocument/hover" src use
+        let md := LSP.getStr r ["contents", "value"]
+        for part in ["twice two : Nat", "syntax `term.twice` (this file, line 2)", "by macro rule (this file, line 4)",
+                     "expands to\n```wiz\nNat.add two two\n```"] do
+          check ((md.splitOn part).length > 1) s!"no {part} in the hover:\n{md}"
+        -- the pattern of the rule refers to the syntax too; the template records nothing
+        -- (its ranges are the rule's, not the use's)
+        let (srv, r) := ask srv "textDocument/declaration" src (offAfter src "term| twice" (-2))
+        checkEq 1 (line r)
+        let (_, r) := ask srv "textDocument/hover" src (offAfter src "Nat.add $x" (-5))
+        checkEq Lean.Json.null r },
+    { name := "11q: Prelude notation, syntax categories and imports", run := fun _ => do
+        let src := "import Prelude\ndeclare_syntax_cat greeting\nsyntax \"hi\" : greeting\nsyntax \"greet\" greeting : term\ndef three : Nat := 1 + 2\n"
+        let (srv, _) ← openDoc src
+        let pre ← prelude
+        let preLine (needle : String) : Nat := ((pre.splitOn needle).headD "").toList.count '\n'
+        -- `+`: the `infixl` in the Prelude (the rule and the syntax are one command)
+        for m in ["textDocument/definition", "textDocument/declaration"] do
+          let (_, r) := ask srv m src (offAfter src "1 +" (-1))
+          check ((LSP.getStr r ["uri"]).endsWith "lib/Prelude.wiz") s!"{m}: {r.compress}"
+          checkEq (preLine "infixl:65 \" + \"") (LSP.getNat r ["range", "start", "line"])
+        let (srv, r) := ask srv "textDocument/hover" src (offAfter src "1 +" (-1))
+        let md := LSP.getStr r ["contents", "value"]
+        check ((md.splitOn "Add Nat").length > 1) s!"no instance in the hover:\n{md}"
+        check ((md.splitOn "expands to\n```wiz\nAdd.add 1 2").length > 1) s!"no expansion in the hover:\n{md}"
+        -- a category's name, where a rule uses it and in the rule's target
+        for needle in ["\"greet\" greeting", ": greeting"] do
+          let (_, r) := ask srv "textDocument/definition" src (offAfter src needle (-2))
+          checkEq 1 (LSP.getNat r ["range", "start", "line"])
+        -- the module of an import
+        let (srv, r) := ask srv "textDocument/definition" src (offAfter src "import Pre" (-1))
+        check ((LSP.getStr r ["uri"]).endsWith "lib/Prelude.wiz") s!"import: {r.compress}"
+        let (_, r) := ask srv "textDocument/hover" src (offAfter src "import Pre" (-1))
+        check (has r "module `Prelude`") s!"import hover: {r.compress}" },
+    { name := "11q: binders, pattern variables, declarations, messages and instances in the infoview", run := fun _ => do
+        let src := "import Prelude\ndef pred (n : Nat) : Nat := match n with\n  | .zero => 0\n  | .succ m => m\nstructure P where\n  x : Nat\n  y : Bool\n#check pred 3\ndef six : Nat := 2 * 3\n"
+        let (srv, _) ← openDoc src
+        -- a binder: its type (hover), its context (the expected type request)
+        let (srv, r) := ask srv "textDocument/hover" src (offAfter src "(n" (-1))
+        check (has r "n : Nat") s!"binder hover: {r.compress}"
+        let (srv, r) := ask srv "wiz/plainTermGoal" src (offAfter src "(n" (-1))
+        checkEq "⊢ Nat" (LSP.getStr r ["goal"])
+        -- a pattern variable: the arm's context
+        let (srv, r) := ask srv "wiz/plainTermGoal" src (offAfter src ".succ m" (-1))
+        -- (`m` is the constructor's field, as a definition: `m : Nat := n✝`)
+        let g := LSP.getStr r ["goal"]
+        check ((g.splitOn "\nm : Nat").length > 1 && g.endsWith "⊢ Nat") s!"pattern variable: {r.compress}"
+        let item (r : Lean.Json) (kind : String) : List Lean.Json := match LSP.get? r ["items"] with
+          | some (.arr is) => is.toList.filter (LSP.getStr · ["kind"] == kind)
+          | _ => []
+        -- a command: what it declares (a structure: its constructor and fields)
+        let (srv, r) := ask srv "wiz/interactiveInfo" src (offAfter src "structure P" (-1))
+        let ds := (item r "declaration").map fun d => s!"{LSP.getStr d ["title"]} : {flatten (LSP.get? d ["type"]).get!}"
+        for d in ["P : Type", "P.x : P → Nat", "P.y : P → Bool"] do
+          check (ds.contains d) s!"no {d} in {ds}"
+        check (ds.any (·.startsWith "P.mk : ")) s!"no constructor in {ds}"
+        let (srv, r) := ask srv "wiz/interactiveInfo" src (offAfter src "def pred" (-1))
+        checkEq ["pred : Nat → Nat"] ((item r "declaration").map fun d => s!"{LSP.getStr d ["title"]} : {flatten (LSP.get? d ["type"]).get!}")
+        -- `#check`: its message
+        let (srv, r) := ask srv "wiz/interactiveInfo" src (offAfter src "#check" (-2))
+        checkEq ["pred 3 : Nat"] ((item r "message").map (LSP.getStr · ["text"]))
+        -- an instance argument, at the notation that needed it; and the syntax
+        let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
+        checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
+        check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
     { name := "infoview socket: cursor notifications, requests answered on the socket", run := fun _ => do
         -- a watchdog: a broken server must fail the case, not hang the suite (and since
         -- the process would wait for it, the case ends with an explicit exit)

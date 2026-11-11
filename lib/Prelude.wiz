@@ -223,6 +223,25 @@ inductive Except (E A : Type) where
   | error (e : E)
   | ok (a : A)
 
+-- ## Booleans: `if`, `&&`, `||`, `!` (stage 13c)
+--
+-- `if c then a else b` is `match c with | .true => a | .false => b`, so only the branch
+-- taken is evaluated (compiled code too). `a && b` and `a || b` are `if`s as well, so they
+-- short-circuit: `b` is not evaluated when `a` decides. They compute like `Bool.and a b`
+-- and `Bool.or a b` once `a` is a constructor (but a stuck `a && b` is a `match`, not a
+-- `Bool.and`). `!b` is `Bool.not b`. Precedences as in Lean: `||` 30, `&&` 35, `!` max.
+syntax:lead (name := ite) "if" term "then" term "else" term : term
+macro_rules
+  | `(term| if $c then $t else $e) => `(term| match $c with | .true => $t | .false => $e)
+syntax:35 (name := boolAnd) term:36 " && " term:35 : term
+macro_rules
+  | `(term| $a && $b) => `(term| match $a with | .true => $b | .false => Bool.false)
+syntax:30 (name := boolOr) term:31 " || " term:30 : term
+macro_rules
+  | `(term| $a || $b) => `(term| match $a with | .true => Bool.true | .false => $b)
+notation:max "!" b:max => Bool.not b
+-- (end of the Boolean section)
+
 -- Reflected terms, for tactics. Variables are de Bruijn indices, relative to the goal's
 -- context. Kernel forms with no constructor here (μ, descriptions, equality, sizes, …)
 -- are `opaque` handles, held by the elaborator.
@@ -299,6 +318,9 @@ inductive Tac where
   | rewrite (g : Nat) (h : Expr) (rtl : Bool) (k : Nat → Tac)
   -- reflection: is `n` a constructor? its type, number of parameters, number of fields
   | ctorInfo (n : String) (k : Option (String × Nat × Nat) → Tac)
+  -- is `n` a definition (something `unfold` can unfold: not a constructor, an axiom, …)?
+  -- `none` if there is no constant `n`
+  | isDefinition (n : String) (k : Option Bool → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -356,6 +378,10 @@ def TacticM.rewrite (g : Nat) (h : Expr) (rtl : Bool) : TacticM Nat := fun k => 
 -- number of parameters and the constructor's number of fields: `List.cons` is
 -- `("List", 1, 2)`, and `List.cons A x L` has the fields `x` and `L` after one parameter.
 def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := fun k => Tac.ctorInfo n k
+-- Is the constant `n` a definition, which `TacticM.unfold` can unfold (not a constructor
+-- or an axiom: for those `unfold` returns the term unchanged)? `none` if there is no
+-- constant `n`.
+def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.isDefinition n k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
@@ -789,15 +815,21 @@ def TacticM.whnfCtorApp (g : Nat) (e : Expr) : TacticM (Option (String × List E
 -- if one of them changes nothing);
 -- `whnf` computes the goal's head; `change t` restates the goal as the convertible
 -- `t`; `rw h` and `rw ← h` rewrite it with the equation `h`.
--- (the `unfold` tactic fails, as Lean's does, when a name changes nothing; the request
--- `TacticM.unfold` just returns the term unchanged, for tactics that try)
+-- (the `unfold` tactic fails, as Lean's does, when a name is not a definition or changes
+-- nothing; the request `TacticM.unfold` just returns the term unchanged in both cases, for
+-- tactics that try)
 def TacticM.unfoldAll (g : Nat) : List String → Expr → TacticM Expr
   | .nil, e => TacticM.pure e
   | .cons n ns, e => do
-    e' ← TacticM.unfold g n e;
-    match Expr.beq e e' with
-    | .true => TacticM.fail (String.append "unfold: nothing to unfold: the goal has no application of " (String.append n " that computes"))
-    | .false => TacticM.unfoldAll g ns e'
+    d ← TacticM.isDefinition n;
+    match d with
+    | .none => TacticM.fail (String.append "unfold: unknown constant " n)
+    | .some .false => TacticM.fail (String.append "unfold: " (String.append n " is not a definition"))
+    | .some .true => do
+      e' ← TacticM.unfold g n e;
+      match Expr.beq e e' with
+      | .true => TacticM.fail (String.append "unfold: nothing to unfold: the goal has no application of " (String.append n " that computes"))
+      | .false => TacticM.unfoldAll g ns e'
 syntax (name := unfold) "unfold" sepBy1(ident, ",") : tactic
 def Tactic.unfold : Tactic := fun stx => do
   g ← TacticM.mainGoal;

@@ -114,7 +114,7 @@ def anonCtor : ParserDescr := seqs ["⟨", withoutPosition (sepBy term ","), "�
 | `term.explicit`      | max  | "@" ident |
 | `term.fun`           | max  | "fun" [binder+] "=>" term |
 | `term.let`           | lead | "let" [quantity] ident [":" T] ":=" term [";"] term |
-| `term.forall`        | lead | "∀" [binder+] "," term |
+| `term.forall`        | lead | ("∀" / "forall") [binder+] "," term |
 | `term.depArrow`      | 25   | binder "→" term |
 | `term.app` (trailing)| lead | f [args+] |
 | `term.arrow` (trailing)| 25 | A "→" B |
@@ -125,6 +125,7 @@ def anonCtor : ParserDescr := seqs ["⟨", withoutPosition (sepBy term ","), "�
 | `term.proj` (trailing) | max | t "." num |
 | `term.field` (trailing) | max | t "." ident (a Σ field, or `T.f t` for a nominal `T`) |
 | `term.letPair`       | lead | "let" [quantity] "(" ident "," ident ")" ":=" term [";"] term |
+| `term.letTuple`      | lead | "let" [quantity] "(" ident "," ident "," [idents,+] ")" ":=" term [";"] term |
 | `term.absurd`        | lead | "absurd" term |
 | `term.eq` (trailing) | 50   | a "=" b |
 | `term.refl`          | lead | "refl" term |
@@ -175,7 +176,7 @@ def termLeading : List LeadingParser := [
     p := withPosition <| seqs ["let", optional quantity, ident, typeSpec false, ":=", term,
       optional ";", term] },
   { kind := "term.forall", prec := leadPrec,
-    p := seqs ["∀", many1 simpleBinder, ",", term] },
+    p := seqs [orelse "∀" "forall", many1 simpleBinder, ",", term] },
   { kind := "term.depArrow", prec := 25, p := seqs [bracketedBinder true, arrow, term 25] },
   { kind := "term.depSigma", prec := 35, p := seqs [explicitBinder true, "×", term 35] },
   { kind := "term.tuple", prec := maxPrec,
@@ -184,6 +185,10 @@ def termLeading : List LeadingParser := [
   { kind := "term.letPair", prec := leadPrec,
     p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ")", ":=", term,
       optional ";", term] },
+  -- three or more components: right-nested pairs (`Elab.letTupleToPairs`)
+  { kind := "term.letTuple", prec := leadPrec,
+    p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ",", sepBy1 ident ",", ")",
+      ":=", term, optional ";", term] },
   { kind := "term.absurd", prec := leadPrec, p := seqs ["absurd", term maxPrec] },
   { kind := "term.refl", prec := leadPrec, p := seqs ["refl", term maxPrec] },
   { kind := "term.rfl", prec := maxPrec, p := "rfl" },
