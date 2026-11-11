@@ -2381,7 +2381,7 @@ def inferTuple (gs : Globals) (es : ES) (cx : Cx) (items : List Syntax) : TE := 
       | .ok tb B es2 =>
         -- (annotated: the kernel can't infer the type of a pair)
         let d := Cx.lvl cx;
-        let S := Tm.sigma (quote d (force es2 A)) (shiftTm 1 0 (quote d (force es2 B)));
+        let S : Tm := .sigma (quote d (force es2 A)) (shiftTm 1 0 (quote d (force es2 B)));
         .ok (.ann (.pair ta tb) S) (eval (TCtx.env (Cx.c cx)) S) es2
       | e => e
     | e => e
@@ -4208,7 +4208,9 @@ def attrStep (gs : Globals) (stx : Syntax) : Option LinkR := match strEq (kindOf
     | .ident f => match Scope.lookup (Globals.scope gs) f with
       | .none => LinkR.mk (.some (String.append "error: unknown declaration " f)) gs
       | .some i => match globalTm .false gs i with
-        | .const _ _ _ _ _ => LinkR.mk .none gs
+        | .const _ _ _ v _ => match isAxiomTm v with
+          | .false => LinkR.mk .none gs
+          | .true => LinkR.mk (.some (String.append "error: " (String.append f " has no definition to inline"))) gs
         | _ => LinkR.mk (.some (String.append "error: " (String.append f " has no definition to inline"))) gs
     | _ => LinkR.mk (.some "error: attribute [inline] needs a name") gs)
   | .false => .none

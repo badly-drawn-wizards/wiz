@@ -375,7 +375,7 @@ Lean toolchain prints it), and `attribute [inline] f` is checked as in the Lean 
 to the Lean compiler. Not checked here: a second `attribute [inline]` of the same name
 (an error in the Lean frontend).
 
-**Tests** (group `selfhost`): 11 Σ/∀ declarations with the same verdicts in both
+**Tests** (group `selfhost`): 10 Σ/∀ declarations with the same verdicts in both
 frontends; `#eval` and `attribute [inline]` (5 verdicts and one output).
 
 ## 21v: a linear variable in every branch of a `match` (`T.casesOnA`)

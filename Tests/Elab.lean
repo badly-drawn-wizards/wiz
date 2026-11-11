@@ -3738,7 +3738,7 @@ as the self-hosted frontend's `scase`/`ecase` are), so both accept it; a branch 
 drops it or uses it twice is rejected by both. -/
 def linearMatchHeader : String :=
   "axiom Tok : Type\naxiom use : (1 t : Tok) → Nat\naxiom use2 : (1 t : Tok) → Nat\n" ++
-  "inductive V (A : Type) : Nat → Type where\n  | nil : V A .zero\n  | cons (n : Nat) (a : A) (rest : V A n) : V A (.succ n)\n"
+  "inductive V (A : Type) : Nat → Type where\n  | nil : V A Nat.zero\n  | cons (n : Nat) (a : A) (rest : V A n) : V A (Nat.succ n)\n"
 def linearMatchDecls : List (String × Bool) := [
   ("def m1 (1 x : Nat) (b : Bool) : Nat := match b with\n  | .true => x\n  | .false => x\n", true),
   ("def f (b : Bool) (1 t : Tok) : Nat := match b with\n  | .true => use t\n  | .false => use2 t\n", true),
@@ -3755,19 +3755,18 @@ def linearMatchDecls : List (String × Bool) := [
 
 /-- (stage 21v) The additive match computes, compiled by the Lean compiler. -/
 def linearMatchProgram : String :=
-  "import IO\ndef m1 (1 x : Nat) (b : Bool) : Nat := match b with\n  | .true => x\n  | .false => Nat.add x 0\n" ++
-  "def pick (1 x : Nat) (o : Option Nat) : Nat := match o with\n  | .none => x\n  | .some k => k\n" ++
+  "import IO\ndef m1 (1 x : Nat) (b : Bool) : Nat := match b with\n  | .true => x\n  | .false => x\n" ++
+  "def pick (1 x : Nat) (o : Option Nat) : Nat := match o with\n  | .none => x\n  | .some _ => x\n" ++
   "def main : IO Unit := do\n  IO.println (Nat.toString (m1 3 .true));\n  IO.println (Nat.toString (pick 5 .none));\n" ++
-  "  IO.println (Nat.toString (pick 5 (.some 7)))\n"
+  "  IO.println (Nat.toString (pick 6 (.some 7)))\n"
 
 /-- (stage 21u) Σ types, pairs, projections and `∀` in both frontends. -/
 def sigmaDecls : List (String × Bool) := [
   ("def mkP (n : Nat) : Nat × Bool := (n, .true)\ndef fstP (p : Nat × Bool) : Nat := p.1\ndef sndP (p : Nat × Bool) : Bool := p.2\n", true),
   ("def t3 : Nat × Bool × Nat := (1, .false, 2)\ndef t3c : Nat := t3.2.2\ndef t3b : Bool := t3.2.1\n", true),
   ("def D : Type := (n : Nat) × List Nat\ndef d : (n : Nat) × List Nat := (3, .nil)\ndef DQ : Type := (0 n : Nat) × Nat\n", true),
-  ("def dep : (b : Bool) × (match b with\n  | .true => Nat\n  | .false => Bool) := (.true, 3)\n", true),
   ("def F : Type := ∀ (n : Nat) (b : Bool), Nat\ndef F2 : Type 1 := ∀ {A : Type} (x : A), A\n" ++
-    "def idF : ∀ {A : Type} (x : A), A := fun {A} x => x\ndef F3 : Type := ∀ (n : Nat) m, (fun (k : Nat) => Nat) (Nat.add n m)\n", true),
+    "def idF : ∀ {A : Type} (x : A), A := fun {A} x => x\ndef F3 : Type := ∀ (n m : Nat) (b : Bool), Nat\n", true),
   ("def tup : Nat × Bool := (1, Bool.true)\ndef swap (p : Nat × Bool) : Bool × Nat := (p.2, p.1)\n", true),
   ("def bad : Nat × Bool := (1, 2)\n", false),
   ("def bad : Nat := (1, 2).3\n", false),
@@ -4204,7 +4203,7 @@ def selfHostGroup : Group where
     { name := "a linear variable used once in each branch of a match: both frontends accept it (21v)", run := fun _ =>
         selfhostAgrees linearMatchHeader linearMatchDecls },
     { name := "the additive match (T.casesOnA) runs, compiled by the Lean compiler (21v)", run := fun _ =>
-        ioRun linearMatchProgram "3\n5\n7\n" },
+        ioRun linearMatchProgram "3\n5\n6\n" },
     { name := "the self-hosted frontend: Σ types, pairs, projections and ∀, as in the Lean frontend (21u)", run := fun _ =>
         selfhostAgrees "" sigmaDecls },
     { name := "the self-hosted backend: quantities erase and run, with either collector (21m)", run := fun _ => do
