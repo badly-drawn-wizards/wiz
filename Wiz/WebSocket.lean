@@ -118,6 +118,8 @@ def localOrigin (origin : String) : Bool :=
 output), with their media types: only these, by exact name, so no other file is reachable. -/
 def webAssets : List (String × String) :=
   [("infoview.html", "text/html; charset=utf-8"), ("infoview.js", "text/javascript; charset=utf-8"),
+   -- (11s) the part infoview.js shares with the documentation's pages
+   ("tagged.js", "text/javascript; charset=utf-8"),
    ("wiz-infoview.mjs", "text/javascript; charset=utf-8"), ("wiz-infoview.wasm", "application/wasm")]
 
 /-- The server's half of the handshake on a new connection: `true` if it is a WebSocket

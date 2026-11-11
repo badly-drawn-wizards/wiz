@@ -140,7 +140,7 @@ def St.refresh (s : St) : IO St := do
   St.send s2 "wiz/interactiveInfo" (Rpc.position s.uri s.line s.col) 4
 
 -- what the selected subterm is
-def St.askInfo (s : St) : IO St := match Infoview.nthTag (View.tags (St.view s)) (s.sel - 1) with
+def St.askInfo (s : St) : IO St := match Tagged.nthTag (View.tags (St.view s)) (s.sel - 1) with
   | .none => IO.pure (St.setInfo s .nil)
   | .some t => St.send s "wiz/subtermInfo" (Json.mkObj (.cons (Json.field "textDocument" (Json.mkObj (.cons (Json.field "uri" (Json.mkStr s.uri)) .nil)))
       (.cons (Json.field "session" (Json.ofNat s.session)) (.cons (Json.field "ref" (Json.ofNat (TagInfo.ref t))) .nil)))) 3

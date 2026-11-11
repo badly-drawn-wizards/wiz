@@ -7,11 +7,15 @@ import Infoview
 -- answers with `js_send` (bytes to the server) and `js_set_html` (a part of the page)
 -- and returns the next state (a Wiz value the page holds). The protocol and the HTML
 -- are `lib/Infoview.wiz`, shared with the terminal infoview.
+-- (11s) The same module runs the documentation's pages (`wiz doc`): `wiz_doc_init` and
+-- `wiz_doc_step` (web/scroll.js), whose model is `DocPage` in `lib/Tagged.wiz`, the
+-- tagged text both kinds of page share.
 
 -- (9f) the JavaScript side, as Emscripten C (EM_JS)
 link_c "js.c"
 extern "js_send" Js.send : String → IO Unit
 extern "js_set_html" Js.setHtml : String → String → IO Unit
+extern "js_go" Js.go : String → IO Unit
 
 structure WSt where
   buf : List Char
@@ -68,27 +72,6 @@ def Web.remove : List (Nat × Nat) → Nat → List (Nat × Nat)
     | .true => ps
     | .false => .cons p (Web.remove ps id)
 
--- what a subterm is, as HTML
-def Web.infoHtml (r : Json) : String :=
-  let name := Json.getStr r "name";
-  let what : String := match Nat.beq (List.length (String.chars name)) 0 with
-    | .true => Json.getStr r "text"
-    | .false => name;
-  let ty : String := match Json.get r "type" with
-    | .some t => match Json.isNull t with
-      | .true => ""
-      | .false => String.append " : " (String.mk (Infoview.htmlText (TT.toString (TT.ofJson t)) .nil))
-    | .none => "";
-  let defn : String := match Json.get r "definition" with
-    | .some d => match Json.getPath d (.cons "range" (.cons "start" (.cons "line" .nil))) with
-      | .some (.int .false l) => String.append "<div class=\"def\">defined at " (String.append
-          (String.mk (Infoview.htmlText (Json.getStr d "uri") .nil)) (String.append ":" (String.append (Nat.repr (l + 1)) "</div>")))
-      | _ => ""
-    | .none => "";
-  String.append "<span class=\"kind\">" (String.append (String.mk (Infoview.htmlText (Json.getStr r "kind") .nil))
-    (String.append "</span> <code>" (String.append (String.mk (Infoview.htmlText what .nil))
-      (String.append ty (String.append "</code>" defn)))))
-
 def WSt.onResponse (s : WSt) (j : Json) : IO WSt :=
   let id := Json.getNat j "id";
   let kind := Web.lookup s.pending id;
@@ -97,7 +80,7 @@ def WSt.onResponse (s : WSt) (j : Json) : IO WSt :=
   | .some e => match Rpc.contentModified e with
     | .true => WSt.refresh s1
     | .false => do
-      Js.setHtml "status" (String.mk (Infoview.htmlText (Json.getStr e "message") .nil));
+      Js.setHtml "status" (String.mk (Tagged.htmlText (Json.getStr e "message") .nil));
       IO.pure s1
   | .none =>
     let r : Json := match Json.get j "result" with
@@ -113,7 +96,7 @@ def WSt.onResponse (s : WSt) (j : Json) : IO WSt :=
         | .none => IO.pure (WSt.setTerm s1 .none)
       | .false => match Nat.beq kind 3 with
         | .true => do
-          Js.setHtml "info" (Web.infoHtml r);
+          Js.setHtml "info" (Tagged.infoHtml r);
           IO.pure s1
         | .false => match Nat.beq kind 4 with
           | .true => IO.pure (WSt.setItems s1 (Items.ofJson r))
@@ -140,7 +123,7 @@ partial def WSt.drain (s : WSt) : IO WSt := match Rpc.unframe s.buf with
 -- select a tag (index + 1) and ask what it is
 def WSt.select (s : WSt) (sel : Nat) : IO WSt :=
   let s1 := WSt.setSel s sel;
-  match Infoview.nthTag (View.tags (WSt.view s)) (sel - 1) with
+  match Tagged.nthTag (View.tags (WSt.view s)) (sel - 1) with
   | .none => do Js.setHtml "info" ""; IO.pure s1
   | .some t => WSt.send s1 "wiz/subtermInfo" (Json.mkObj (.cons (Json.field "textDocument" (Json.mkObj (.cons (Json.field "uri" (Json.mkStr s.uri)) .nil)))
       (.cons (Json.field "session" (Json.ofNat s.session)) (.cons (Json.field "ref" (Json.ofNat (TagInfo.ref t))) .nil)))) 3
@@ -215,3 +198,21 @@ def Web.step (s : WSt) (ev : String) : IO WSt := do
 
 export "wiz_web_init" WSt.empty
 export "wiz_web_step" Web.step
+
+-- (11s) A documentation page: its events (`DocPage.step`), the page's actions done here.
+def Doc.act : List DocAct → IO Unit
+  | .nil => IO.pure ()
+  | .cons a rest => do
+    (match a with
+      | .html id h => Js.setHtml id h
+      | .info h => Js.setHtml "info" h
+      | .go u => Js.go u);
+    Doc.act rest
+def Doc.step (s : DocSt) (ev : String) : IO DocSt :=
+  let r := DocPage.step s ev;
+  do
+    Doc.act r.2;
+    IO.pure r.1
+
+export "wiz_doc_init" DocSt.empty
+export "wiz_doc_step" Doc.step

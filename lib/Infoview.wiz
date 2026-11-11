@@ -1,24 +1,11 @@
 import Json
+import Tagged
 -- The infoview's model and its two renderers (stages 11m–n): goals as the language
 -- server sends them, laid out for a terminal (SGR colours, wrapped to a width, one
 -- selected subterm in reverse video) and for a browser (HTML with `data-ref`
 -- attributes). Pure functions; the terminal program (`infoview/Tui.wiz`) and the
--- browser (`web/`) do the input and output.
-
--- ## Tagged text
-
--- A pretty-printed term in which subterms are tagged (`infoview-protocol.md` §2) with a
--- reference into the server's per-session table (`wiz/subtermInfo` takes it), a kind
--- (`var`, `const`, `sort`, `app`, …) and, for variables and constants, a name.
-mutual
-inductive TT where
-  | text (s : String)
-  | tag (ref : Nat) (kind : String) (name : String) (body : TT)
-  | append (xs : TTs)
-inductive TTs where
-  | nil
-  | cons (head : TT) (tail : TTs)
-end
+-- browser (`web/`) do the input and output. Tagged text itself (its JSON, flattening,
+-- navigation, HTML) is `lib/Tagged.wiz`, shared with the documentation's pages (11s).
 
 -- A hypothesis (`x y : A`, or `x : A := v`), and a goal.
 inductive Hyp where
@@ -27,23 +14,6 @@ inductive Goal where
   | mk (name : String) (hyps : List Hyp) (type : TT)
 
 -- ## From JSON (the protocol's `wiz/interactiveGoals` result)
-
--- `{"text": s}`, `{"append": [tt…]}`, `{"tag": [{"ref": n, "kind": k, "name"?: x}, tt]}`
-mutual
-def TT.ofJson (j : Json) : TT := match Json.get j "text" with
-  | .some (.str s) => .text s
-  | _ => match Json.get j "append" with
-    | .some (.arr xs) => .append (TT.ofJsons xs)
-    | _ => match Json.get j "tag" with
-      | .some (.arr (.cons info (.cons body .nil))) =>
-        .tag (Json.getNat info "ref") (Json.getStr info "kind") (Json.getStr info "name") (TT.ofJson body)
-      | _ => match j with
-        | .str s => .text s
-        | _ => .text ""
-def TT.ofJsons (xs : Jsons) : TTs := match xs with
-  | .nil => .nil
-  | .cons x rest => .cons (TT.ofJson x) (TT.ofJsons rest)
-end
 
 def Infoview.strings : List Json → List String
   | .nil => .nil
@@ -79,46 +49,6 @@ def Goals.ofJson (j : Json) : List Goal := Infoview.goals (Json.getList j "goals
 inductive TacView where
   | mk (goals : List Goal) (messages : List String)
 def TacView.ofJson (j : Json) : TacView := .mk (Goals.ofJson j) (Infoview.strings (Json.getList j "messages"))
-
--- ## Pieces: text with a style, and the tags around it
-
--- `tags`: the indices of the enclosing tags, innermost first. Tags are numbered in
--- the order they open, across the whole view, from 0.
-inductive Piece where
-  | mk (chars : List Char) (kind : String) (tags : List Nat)
-
--- A tag of the view: its reference, kind, name and parent (`parent + 1`, or 0 at top
--- level).
-inductive TagInfo where
-  | mk (ref : Nat) (kind : String) (name : String) (parent : Nat)
-
--- Flattening: the pieces, reversed, in front of `acc`; tags are numbered from `next`,
--- and their infos pushed onto `infos` (reversed).
-inductive Flat where
-  | mk (pieces : List Piece) (next : Nat) (infos : List TagInfo)
-
-def Infoview.parentOf : List Nat → Nat
-  | .nil => 0
-  | .cons t _ => t + 1
-mutual
-def TT.flatten (t : TT) (kind : String) (tags : List Nat) (st : Flat) : Flat := match t with
-  | .text s => match st with
-    | .mk ps n is => .mk (.cons (.mk (String.chars s) kind tags) ps) n is
-  | .tag ref k x body => match st with
-    | .mk ps n is => TT.flatten body k (.cons n tags)
-        (.mk ps (n + 1) (.cons (.mk ref k x (Infoview.parentOf tags)) is))
-  | .append xs => TT.flattenAll xs kind tags st
-def TT.flattenAll (xs : TTs) (kind : String) (tags : List Nat) (st : Flat) : Flat := match xs with
-  | .nil => st
-  | .cons x rest => TT.flattenAll rest kind tags (TT.flatten x kind tags st)
-end
-
--- the plain text of tagged text
-def Infoview.piecesText : List Piece → List Char → List Char
-  | .nil, acc => acc
-  | .cons (.mk cs _ _) ps, acc => Infoview.piecesText ps (List.append cs acc)
-def TT.toString (t : TT) : String := match TT.flatten t "" .nil (.mk .nil 0 .nil) with
-  | .mk ps _ _ => .mk (Infoview.piecesText ps .nil)
 
 -- ## Width
 
@@ -442,54 +372,7 @@ def View.tags : View → List TagInfo
   | .mk _ ts => ts
 
 -- ## Selection and navigation
-
--- The selection is a tag index plus one (0: nothing selected).
-def Infoview.nthTag : List TagInfo → Nat → Option TagInfo
-  | .nil, _ => .none
-  | .cons t _, .zero => .some t
-  | .cons _ ts, .succ n => Infoview.nthTag ts n
-def TagInfo.parent : TagInfo → Nat
-  | .mk _ _ _ p => p
-def TagInfo.ref : TagInfo → Nat
-  | .mk r _ _ _ => r
-def TagInfo.kind : TagInfo → String
-  | .mk _ k _ _ => k
-def TagInfo.name : TagInfo → String
-  | .mk _ _ x _ => x
-
--- Navigation keys: next/previous tag (in reading order), out to the enclosing tag, in
--- to the first tag inside. All wrap or stay put at the ends.
-inductive Nav where
-  | next
-  | prev
-  | out
-  | into
-  | clear
-
-def View.navigate (v : View) (sel : Nat) (nav : Nav) : Nat :=
-  let n := List.length (View.tags v);
-  match Nat.beq n 0 with
-  | .true => 0
-  | .false => match nav with
-    | .clear => 0
-    | .next => match Nat.lt sel n with
-      | .true => sel + 1
-      | .false => 1
-    | .prev => match Nat.le sel 1 with
-      | .true => n
-      | .false => sel - 1
-    | .out => match Infoview.nthTag (View.tags v) (sel - 1) with
-      | .some t => match Nat.beq (TagInfo.parent t) 0 with
-        | .true => sel
-        | .false => TagInfo.parent t
-      | .none => sel
-    | .into => match Nat.beq sel 0 with
-      | .true => 1
-      | .false => match Infoview.nthTag (View.tags v) sel with
-        | .some t => match Nat.beq (TagInfo.parent t) sel with
-          | .true => sel + 1
-          | .false => sel
-        | .none => sel
+def View.navigate (v : View) (sel : Nat) (nav : Nav) : Nat := Tagged.navigate (View.tags v) sel nav
 
 def Infoview.memNat : Nat → List Nat → Bool
   | _, .nil => .false
@@ -561,67 +444,15 @@ def Infoview.ansiLines (sel : Nat) : List (List Piece) → List String
   | .nil => .nil
   | .cons l ls => .cons (Infoview.ansiLine sel l) (Infoview.ansiLines sel ls)
 -- plain text of a line (for tests and dumb terminals)
-def Infoview.plainLine (l : List Piece) : String := .mk (Infoview.safe (Infoview.piecesText (Infoview.revPieces l .nil) .nil) .nil)
+def Infoview.plainLine (l : List Piece) : String := .mk (Infoview.safe (Tagged.piecesText (Infoview.revPieces l .nil) .nil) .nil)
 def Infoview.plainLines : List (List Piece) → List String
   | .nil => .nil
   | .cons l ls => .cons (Infoview.plainLine l) (Infoview.plainLines ls)
 
--- ## HTML
-
--- text with `& < > " '` escaped, in front of `tail`
-def Infoview.htmlEsc : List Char → List Char → List Char
-  | .nil, tail => tail
-  | .cons c cs, tail =>
-    let rest := Infoview.htmlEsc cs tail;
-    let n := Char.code c;
-    match Nat.beq n 38 with
-    | .true => Json.lit "&amp;" rest
-    | .false => match Nat.beq n 60 with
-      | .true => Json.lit "&lt;" rest
-      | .false => match Nat.beq n 62 with
-        | .true => Json.lit "&gt;" rest
-        | .false => match Nat.beq n 34 with
-          | .true => Json.lit "&quot;" rest
-          | .false => match Nat.beq n 39 with
-            | .true => Json.lit "&#39;" rest
-            | .false => .cons c rest
-def Infoview.htmlText (s : String) (tail : List Char) : List Char := Infoview.htmlEsc (String.chars s) tail
-
--- Tagged text as nested spans: `<span class="tt k-KIND" data-ref="R" data-idx="I"
--- title="NAME">…</span>`; `idx` numbers the tags in order like the terminal view,
--- `sel` (index + 1) marks one with the class `sel`. The output is built reversed, in
--- `acc`, since the numbering goes left to right.
-inductive Html where
-  | mk (acc : List Char) (next : Nat)
-def Html.add (s : List Char) : Html → Html
-  | .mk acc n => .mk (Json.revOnto s acc) n
-def Html.lit (s : String) (h : Html) : Html := Html.add (String.chars s) h
-mutual
-def TT.html (sel : Nat) (t : TT) (h : Html) : Html := match t with
-  | .text s => Html.add (Infoview.htmlText s .nil) h
-  | .append xs => TT.htmlAll sel xs h
-  | .tag ref k x body => match h with
-    | .mk acc n =>
-      let selCls : String := match Nat.beq sel (n + 1) with
-        | .true => " sel"
-        | .false => "";
-      let title : List Char := match Nat.beq (List.length (String.chars x)) 0 with
-        | .true => .nil
-        | .false => List.append (String.chars " title=\"") (Infoview.htmlText x (String.chars "\""));
-      let opener := List.append (String.chars "<span class=\"tt k-") (Infoview.htmlText k
-        (List.append (String.chars selCls) (List.append (String.chars "\" data-ref=\"")
-          (Json.natChars ref (List.append (String.chars "\" data-idx=\"") (Json.natChars n
-            (.cons (Json.chr 34) (List.append title (String.chars ">")))))))));
-      Html.lit "</span>" (TT.html sel body (.mk (Json.revOnto opener acc) (n + 1)))
-def TT.htmlAll (sel : Nat) (xs : TTs) (h : Html) : Html := match xs with
-  | .nil => h
-  | .cons x rest => TT.htmlAll sel rest (TT.html sel x h)
-end
-
 def Infoview.htmlNames : List String → Html → Html
   | .nil, h => h
-  | .cons n .nil, h => Html.add (Infoview.htmlText n .nil) h
-  | .cons n ns, h => Infoview.htmlNames ns (Html.lit " " (Html.add (Infoview.htmlText n .nil) h))
+  | .cons n .nil, h => Html.add (Tagged.htmlText n .nil) h
+  | .cons n ns, h => Infoview.htmlNames ns (Html.lit " " (Html.add (Tagged.htmlText n .nil) h))
 def Infoview.htmlHyp (sel : Nat) (hy : Hyp) (h : Html) : Html := match hy with
   | .mk names ty val =>
     let h1 := TT.html sel ty (Html.lit "</span> : " (Infoview.htmlNames names (Html.lit "<div class=\"hyp\"><span class=\"names\">" h)));
@@ -637,7 +468,7 @@ def Infoview.htmlGoal (sel : Nat) (g : Goal) (h : Html) : Html := match g with
     let h0 := Html.lit "<div class=\"goal\">" h;
     let h1 : Html := match Nat.beq (List.length (String.chars name)) 0 with
       | .true => h0
-      | .false => Html.lit "</div>" (Html.add (Infoview.htmlText name .nil) (Html.lit "<div class=\"case\">case " h0));
+      | .false => Html.lit "</div>" (Html.add (Tagged.htmlText name .nil) (Html.lit "<div class=\"case\">case " h0));
     let h2 := Infoview.htmlHyps sel hyps h1;
     Html.lit "</div></div>" (TT.html sel ty (Html.lit "<div class=\"target\"><span class=\"turnstile\">⊢</span> " h2))
 def Infoview.htmlGoals (sel : Nat) : List Goal → Html → Html
@@ -797,24 +628,24 @@ partial def Key.decode (s : List Char) : List Key := match s with
 -- The whole infoview as HTML, numbered like `View.ofState` (so selections agree).
 def Infoview.htmlMsgs : List String → Html → Html
   | .nil, h => h
-  | .cons m ms, h => Infoview.htmlMsgs ms (Html.lit "</pre>" (Html.add (Infoview.htmlText m .nil) (Html.lit "<pre class=\"message\">" h)))
+  | .cons m ms, h => Infoview.htmlMsgs ms (Html.lit "</pre>" (Html.add (Tagged.htmlText m .nil) (Html.lit "<pre class=\"message\">" h)))
 -- one item, and the items with a heading where the section changes
 def Infoview.htmlItem (sel : Nat) (i : InfoItem) (h : Html) : Html := match i with
   | .mk _ title text ty => match ty with
     | .some t => Html.lit "</div>" (TT.html sel t (Html.lit "</span> : "
-        (Html.add (Infoview.htmlText (InfoItem.head i) .nil) (Html.lit "<div class=\"item\"><span class=\"names\">" h))))
+        (Html.add (Tagged.htmlText (InfoItem.head i) .nil) (Html.lit "<div class=\"item\"><span class=\"names\">" h))))
     | .none =>
-      let h1 := Html.lit "</div>" (Html.add (Infoview.htmlText title .nil) (Html.lit "<div class=\"item-title\">" h));
+      let h1 := Html.lit "</div>" (Html.add (Tagged.htmlText title .nil) (Html.lit "<div class=\"item-title\">" h));
       match Infoview.isEmptyStr text with
       | .true => h1
-      | .false => Html.lit "</pre>" (Html.add (Infoview.htmlText text .nil) (Html.lit "<pre class=\"item-text\">" h1))
+      | .false => Html.lit "</pre>" (Html.add (Tagged.htmlText text .nil) (Html.lit "<pre class=\"item-text\">" h1))
 partial def Infoview.htmlItems (sel : Nat) (sec : String) : List InfoItem → Html → Html
   | .nil, h => h
   | .cons i is, h =>
     let s := InfoItem.section i;
     let h1 : Html := match String.eq s sec with
       | .true => h
-      | .false => Html.lit "</h3>" (Html.add (Infoview.htmlText s .nil) (Html.lit "<h3>" h));
+      | .false => Html.lit "</h3>" (Html.add (Tagged.htmlText s .nil) (Html.lit "<h3>" h));
     Infoview.htmlItems sel s is (Infoview.htmlItem sel i h1)
 def Infoview.htmlInfo (sel : Nat) (st : Option TacView) (term : Option Goal) (items : List InfoItem) : String :=
   let h0 : Html := .mk .nil 0;

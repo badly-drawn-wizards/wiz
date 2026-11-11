@@ -53,6 +53,20 @@ def Msg.render (input : String) (m : Msg) : String :=
   let sev := match m.severity with | .error => "error" | .warning => "warning" | .info => "info"
   s!"{l + 1}:{c + 1}: {sev}: {m.text}"
 
+/-- (11s) A declaration, for documentation: what made it (`def`, `inductive`,
+`structure`, `class`, `instance`, `axiom`, `coinductive`, `extern`, …, or `constructor`
+and `field` for those of a type, `auxiliary` for what the elaborator adds for its own
+use), its doc comment (`/-- … -/`, Markdown, delimiters and indentation removed), and,
+for a constructor or field, its type. -/
+structure DeclDoc where
+  kind : String
+  doc : Option String := none
+  parent : Option Name := none
+  /-- where it is declared (its command, constructor or field; an offset in its module):
+  a `mutual` block's definitions each have their own -/
+  start : Nat := 0
+  deriving Inhabited, Repr, BEq
+
 structure CommandState (R : Type) where
   globals : Globals R := {}
   tables : ParserTables := Builtin.tables
@@ -103,6 +117,9 @@ structure CommandState (R : Type) where
   /-- record the expected type of every checked term (the language server turns it on) -/
   termInfo : Bool := false
   declSites : Std.HashMap Name (SourceInfo × String) := {}
+  /-- (11s) what each declaration is and its doc comment (`/-- … -/`), for `wiz doc` and
+  hovers: filled by the frontend (`runFrontend.step`), replayed by the cache -/
+  declDocs : Std.HashMap Name DeclDoc := {}
   /-- the module being elaborated (`""` for the main file) -/
   module : String := ""
   /-- the modules whose `builtin` registrations are trusted: the toolchain's library
@@ -131,6 +148,10 @@ structure CommandState (R : Type) where
   localProcs : List Nat := []
   /-- (11r) `local instance`s: their positions in `instances` (numbered from the oldest) -/
   localInsts : List Nat := []
+
+/-- (11s) The doc comment of a declaration, if it has one. -/
+def CommandState.docOf? (s : CommandState R) (n : Name) : Option String :=
+  (s.declDocs.get? n).bind (·.doc)
 
 /-- "'n' has already been declared", naming the module that declared it if that is not
 the one being elaborated (two modules, or a module and the file importing it). -/

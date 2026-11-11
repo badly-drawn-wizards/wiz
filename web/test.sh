@@ -17,6 +17,15 @@ node "$ROOT/web/node_test.mjs" "$OUT" python3 "$ROOT/infoview/stub_server.py" --
 for want in 'class="names">A</span>' 'data-ref="5"' 'info: <span class="kind">const</span> <code>Nat : Type</code>'; do
   if grep -qF "$want" "$OUT/node.txt"; then echo "ok (node): $want"; else echo "FAIL (node): missing $want"; cat "$OUT/node.txt"; exit 1; fi
 done
+# (11s) the documentation pages' half of the module, on a page `wiz doc` made
+mkdir -p "$OUT/doc/src"
+printf 'import Prelude\n/-- A colour. -/\ninductive C where\n  | red\n/-- The colour. -/\ndef pick (n : Nat) : C := C.red\n' > "$OUT/doc/src/Col.wiz"
+"$WIZ" doc "$OUT/doc/src" -o "$OUT/doc/site" --web "$OUT" >/dev/null
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["decls"]=[x for x in d["decls"] if x["name"]=="pick"]; json.dump(d,open(sys.argv[1],"w"))' "$OUT/doc/site/Col.json"
+node "$ROOT/web/doc_node_test.mjs" "$OUT" "$OUT/doc/site/Col.json" > "$OUT/doc.txt"
+for want in 'class="tt k-const" data-ref=' 'info: <span class="kind">const</span> <code>Nat : Type</code>' 'tt k-pi sel'; do
+  if grep -qF "$want" "$OUT/doc.txt"; then echo "ok (doc, node): $want"; else echo "FAIL (doc, node): missing $want"; cat "$OUT/doc.txt"; exit 1; fi
+done
 [ -n "$WIZ_WEB_NO_BROWSER" ] && exit 0
 WIZ_WEB_OUT=$OUT "$ROOT/web/bridge.sh" "$PORT" "$WIZ" > "$OUT/bridge.log" 2>&1 &
 BRIDGE=$!

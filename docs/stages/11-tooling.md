@@ -263,3 +263,70 @@ Tested in the `lsp-server` group and by wiz.nvim's tests (`nvim`).
   `wiz lsp --web DIR`. With `?follow=1` the page has no editor of its own: it follows
   the editor's cursor (`wiz/infoview/cursor`, §8.2). `wiz lsp` now always runs the
   multi-connection loop (`serveWith`), so this works without `--ws`.
+
+## 11s: scroll, the documentation generator (`wiz doc`) ✅
+
+Like Lean's doc-gen4: a static site from a set of modules. Design notes:
+`wiz-notes/scroll.md`.
+
+    wiz doc [MODULE|FILE|DIR …] -o OUT [--lib] [--source-url URL] [--title T] [--web DIR]
+    grail doc [TARGET…] [-o OUT] [--source-url URL] [--title T]
+
+`--lib` documents the toolchain's library; a directory, every module under it (it is a
+module root too); a file or module name, that module. `grail doc` runs `wiz doc` on the
+package's `lib` targets with its module roots (dependencies included), into
+`.grail/doc`. Source links are `URL` + the file's path in its root + `#L<line>`
+(without `--source-url`, the path as text). Flags only, no environment variables.
+
+* **Doc comments.** `/-- … -/` right before a command (only whitespace between)
+  documents the declarations it makes, as in Lean; before a constructor (`/-- … -/ | c`
+  or `| /-- … -/ c`) or a `structure`/`class` field, that one. `/-! … -/` documents the
+  module (without one, scroll takes the module's leading `--` comment block). To the
+  lexer a doc comment is still a block comment: the grammar is unchanged, and the
+  self-hosted frontend (selfhost/Lex.wiz) deliberately ignores doc comments (they are
+  for tools; nothing it checks depends on them). The Lean frontend finds a command's doc
+  comment from where the command starts (`docCommentBefore`,
+  `Wiz/Parser/DocComment.lean`) and stores it with what the declaration is:
+  `CommandState.declDocs : Name → DeclDoc` (`kind`: `def`, `partial def`, `inductive`,
+  `structure`, `class`, `instance`, `constructor`, `field`, `auxiliary`, …; `doc`;
+  `parent`), `CommandState.docOf?`. The cache replays them (`Effect.docs`; salt 15).
+  Doc comments are Markdown (`Wiz/Doc/Markdown.lean`: paragraphs, headings, fences,
+  lists, quotes, `code`, emphasis, links; HTML is escaped), and a name in backticks links
+  to its declaration.
+* **The site** (`Wiz/Doc/Site.lean`): `index.html` (the modules and their summaries),
+  one page per module (`A.B.html`): every public declaration (private and auxiliary ones
+  are left out) with its kind, its signature (the infoview's tagged printer,
+  `Term.prettyTagged`, so notation-aware printing applies when it does), its doc, a
+  source link, its constructors or fields, and the instances of a class or for a type;
+  every constant in a signature links to where it is documented (the definition sites
+  the language server's go to definition uses, `declSites`). `search.js` is the
+  client-side index of every declaration (name, module, kind, summary), searched by
+  `scroll-search.js` (`/` focuses the box). The pages are complete HTML: they read
+  without JS, and the search works from `file://`.
+* **Interactive signatures, with the infoview's Wasm.** Each page carries its data as
+  JSON (`<script id="wiz-doc-data">`, and `A.B.json`): per declaration the signature in
+  the infoview protocol's tagged-text format and the table of its subterms, each a
+  `wiz/subtermInfo` answer (`kind`, `name`, `text`, `type`, `definition` as a link),
+  precomputed since there is no server. With the Wasm module (served over HTTP), the
+  web infoview's module (`web/Web.wiz`, now also exporting `wiz_doc_init` and
+  `wiz_doc_step`) renders each signature as it comes into view: hover a subterm for its
+  type and where it is defined, click a constant to go to its definition, click anything
+  else to select it (the arrows move the selection, as in the infoview). The tagged text
+  both share is a library of its own, `lib/Tagged.wiz` (the JSON, flattening, numbering
+  and navigating tags, the HTML, the subterm box `Tagged.infoHtml`, and the page's
+  model `DocPage.step`), which `lib/Infoview.wiz` imports; the browser half they share is
+  `web/tagged.js` (loading and stepping the module, the mouse and keys on `.tt`), used by
+  `web/infoview.js` and `web/scroll.js`. `web/build.sh` builds the module as before and
+  copies the site's scripts and `scroll.css`; `wiz doc` takes them from `share/wiz/web`
+  of a release, `web/out` of a checkout, or `--web DIR`. Without them the pages are
+  plain HTML (and `wiz doc` says so).
+* **CI** builds the library's documentation with the Wasm module (the `docs` job:
+  `wiz doc --lib` with source links to the commit) and uploads it as the artifact
+  `wiz-docs`. Proposed, not configured: publish it from `master` to GitHub Pages
+  (`actions/upload-pages-artifact` + `actions/deploy-pages` in that job, Pages set to
+  "GitHub Actions").
+* **Tests**: the group `doc` (`Tests/Doc.lean`): doc comments stored and replayed by the
+  cache; Markdown; `wiz doc` on a small package with doc comments (kinds, docs, source
+  links, instances, the index); every cross-link resolves; every declaration is in the
+  search index; the pages without JS; `grail doc`; and the page model of the Wasm module
+  run natively on a page's JSON (hover, click, keys).
