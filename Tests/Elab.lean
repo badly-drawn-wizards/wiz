@@ -4637,8 +4637,11 @@ def selfHostGroup : Group where
         let surf := "def B2 : Type := (x : Unit) × (True → True)\n" ++
           "def P (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : Prop := True\n" ++
           "def t3 (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : P h := ()\n" ++
-          "def t5 : P (refl ((), fun x => x)) := t3 (refl ((), fun x => x))\n" ++
-          "def t4 : P (refl ((), fun x => x)) := t3 _\n"
+          -- (the pair ascribed: since #123 an equation at a type whose second part is a
+          -- proposition computes to `True` only once that is known, and the elaborator
+          -- does not solve the pair's type through it; the same on master without P2)
+          "def t5 : P (refl (((), fun x => x) : B2)) := t3 (refl (((), fun x => x) : B2))\n" ++
+          "def t4 : P (refl (((), fun x => x) : B2)) := t3 _\n"
         ok surf
         -- raw: prf.{0} ((fun _ => () : a = a → True) (refl B2 a)) : True, a := ((), fun x => x)
         let B2 : MTm := .sigma (.unit 0) (.pi .ptrue .ptrue)
