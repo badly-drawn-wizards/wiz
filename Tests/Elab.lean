@@ -1685,9 +1685,10 @@ def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
   let sysLib ← IO.FS.readFile "lib/Sys.wiz"
+  let textLib ← IO.FS.readFile "lib/Text.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
-    else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else none
+    else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else if m == "Text" then some textLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -5122,8 +5123,10 @@ def opticGroup : Group where
 def derivingRun (input : String) : IO (CommandState ZeroOneMany) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let derivingLib ← IO.FS.readFile "lib/Deriving.wiz"
+  let textLib ← IO.FS.readFile "lib/Text.wiz"
   let loader : Name → Option String := fun m =>
-    if m == "Prelude" then some prelude else if m == "Deriving" then some derivingLib else none
+    if m == "Prelude" then some prelude else if m == "Deriving" then some derivingLib
+    else if m == "Text" then some textLib else none
   pure (runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule })
 
 def okDeriving (input : String) (infos : List String := []) : IO Unit := do
@@ -6688,9 +6691,10 @@ def okInfoview (input : String) (infos : List String := []) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let json ← IO.FS.readFile "lib/Json.wiz"
   let iv ← IO.FS.readFile "lib/Infoview.wiz"
+  let textLib ← IO.FS.readFile "lib/Text.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "Json" then some json
-    else if m == "Infoview" then some iv else none
+    else if m == "Infoview" then some iv else if m == "Text" then some textLib else none
   let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
@@ -6786,6 +6790,43 @@ def infoviewGroup : Group where
           else throw (IO.userError s!"infoview/test.sh failed:\n{out.stdout}{out.stderr}") }
   ]
 
+/-- `lib/Text.wiz` (stage 9j): pure, so `#eval` runs it; and the same compiled. -/
+def textGroup : Group where
+  name := "text"
+  exercise := "Stage 9j"
+  cases := [
+    -- two modules that declare one name are an error at import: the libraries that had
+    -- copies of Text's functions use Text's
+    { name := "Text imports together with Json, Deriving, Hoare and Hdl.Core", run := fun _ => do
+        for m in ["Json", "Deriving", "Hoare", "Hdl.Core"] do
+          okLibs s!"import Text\nimport {m}\n#eval Nat.repr 120" ["\"120\""]
+          okLibs s!"import {m}\nimport Text\n#eval String.eq \"ab\" \"ab\"" [".true"]
+        okLibs ("import Json\nimport Deriving\nimport Hoare\nimport Hdl.Core\nimport Text\n" ++
+          "#eval List.reverse (.cons 1 (.cons 2 .nil))\n#eval String.beq \"a\" \"b\"")
+          [".cons 2 (.cons 1 .nil)", ".false"] },
+    { name := "split, join, trim, replace, prefixes, numbers (#eval)", run := fun _ =>
+        okLibs ("import Text\n#eval String.splitOn \"a,b,,c\" \",\"\n#eval String.splitOn \"a::b::\" \"::\"\n" ++
+          "#eval String.splitOn \"abc\" \"\"\n#eval String.intercalate \", \" (.cons \"a\" (.cons \"b\" .nil))\n" ++
+          "#eval String.trim \"  hi there \\n\"\n#eval String.replace \"it's\" \"'\" \"'\\\\''\"\n" ++
+          "#eval String.stripPrefix \"refs/tags/v1\" \"refs/tags/\"\n#eval String.stripSuffix \"v1^{}\" \"^{}\"\n" ++
+          "#eval String.endsWith \"abc\" \"bc\"\n#eval String.contains \"hello world\" \"o w\"\n" ++
+          "#eval String.parseNat \"1203\"\n#eval String.parseNat \"12a\"\n#eval Nat.repr 1234567890123\n" ++
+          "#eval String.lt \"abc\" \"abd\"\n#eval String.dropEnd 3 \"abcdef\"\n" ++
+          "#eval String.lookup \"b\" (.cons (\"a\", 1) (.cons (\"b\", 2) .nil))\n")
+          [".cons \"a\" (.cons \"b\" (.cons \"\" (.cons \"c\" .nil)))", ".cons \"a\" (.cons \"b\" (.cons \"\" .nil))",
+           ".cons \"abc\" .nil", "\"a, b\"", "\"hi there\"", "\"it'\\\\''s\"", ".some \"v1\"", ".some \"v1\"",
+           ".true", ".true", ".some 1203", ".none", "\"1234567890123\"", ".true", "\"abc\"", ".some 2"] },
+    { name := "compiled: long strings stay linear", run := fun _ =>
+        -- 200000 characters split, joined and trimmed: quadratic code would not finish
+        ioRun ("import IO\nimport Text\ndef build : Nat → List Char → List Char\n  | .zero, acc => acc\n" ++
+          "  | .succ n, acc => build n (.cons (Char.mk 97) (.cons (Char.mk 44) acc))\n" ++
+          "def main : IO Unit := do\n  let s := String.ofChars (build 100000 .nil);\n" ++
+          "  let parts := String.splitOn s \",\";\n  IO.println (Nat.toString (List.length parts));\n" ++
+          "  IO.println (Nat.toString (String.length (String.intercalate \";\" parts)));\n" ++
+          "  IO.println (Nat.toString (String.length (String.trim (String.replace s \",\" \"  \"))))")
+          "100001\n200000\n299998\n" }
+  ]
+
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
 order, so that branches adding groups rarely touch the same lines. A new group also
 needs a shard in `.github/test-shards.json` (CI checks). -/
@@ -6830,6 +6871,7 @@ def groups : List Group :=
   structGroup ::
   sysGroup ::
   tacticGroup ::
+  textGroup ::
   toolingGroup ::
   trustGroup ::
   vecGroup ::
