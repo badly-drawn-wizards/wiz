@@ -122,14 +122,14 @@ def Chan.close {B : Type} (1 c : Chan Proto.done) (1 next : IO B) : IO B := fun 
 -- Cancel at a send point of a cancellable protocol: tell the peer, and close.
 def Chan.cancel {A : Type} {k : A → Proto} {B : Type} (1 c : Chan (Proto.sendC A k))
     (1 next : IO B) : IO B :=
-  Chan.send (k := Msg.next k) c Msg.cancel (fun c' => Chan.close c' next)
+  Chan.send c Msg.cancel (fun c' => Chan.close c' next)
 
 -- ## 3. Pure processes over real channels, and the model
 
 -- Run a pure process on an endpoint: the same `Proc` that `link` runs purely.
 def Proc.run {R : Type} : (p : Proto) → Proc R p → (1 c : Chan p) → IO R
-  | .send A k => fun x c => Chan.send (k := k) c x.1 (fun c' => Proc.run (k x.1) x.2 c')
-  | .recv A k => fun f c => Chan.recv (k := k) c (fun a c' => Proc.run (k a) (f a) c')
+  | .send A k => fun x c => Chan.send c x.1 (fun c' => Proc.run (k x.1) x.2 c')
+  | .recv A k => fun f c => Chan.recv c (fun a c' => Proc.run (k a) (f a) c')
   | .done => fun r c => Chan.close c (IO.pure r)
 
 -- Run a process and a peer following the dual, and return both results. The model (what

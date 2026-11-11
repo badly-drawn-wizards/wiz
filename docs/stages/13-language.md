@@ -61,6 +61,52 @@ Like Lean's, privacy is enforced by the elaborator: the kernel checks every decl
 against the full environment, where an opaque structure is its Σ again (which is sound:
 whatever converts with the definition hidden converts with it unfolded).
 
+**The elaborator never leaves a comparison to the kernel.** The other direction is not
+sound for privacy: the kernel accepts what converts with the definition *unfolded*, so a
+check that the elaborator skips is answered by shape. `rfl` used to be such a check: at a
+stuck equation `X = Y` it produced `reflTy X` and let the kernel compare `X` with `Y`.
+For a look-alike `structure Look (A) where val : A`, `rfl : Look Nat = Pos Nat` was
+accepted, and `cast` along it made a `Pos Nat` without `Pos.mk` (against `lib/Region.wiz`,
+a `Shr ρ Nat` at any region). Now `rfl` compares the two sides itself, in its own view
+(`sameSides` in `Elab/Term.lean`: unification, then the type-directed conversion with
+the elaborator's globals), for values as well as types, and at every equation left
+inside one that has computed (`rflProof`). A false `rfl` is reported at the `rfl`
+("rfl: the two sides are not definitionally equal"), not as "kernel rejected …", and
+`first | rfl | …` in a tactic can fail. The proof that structural recursion passes to an
+induction hypothesis at a concrete index (`trivialProof`) is compared the same way.
+
+What this does and does not give. It stops the *elaborator* from producing an equation
+between a private type and a look-alike. The kernel still considers the two types
+equal, so a term that reaches the kernel without the elaborator comparing its types
+would still be accepted:
+
+| path | status |
+|---|---|
+| `rfl` at a type or value equation, also under pairs, functions and data types | closed |
+| `refl X`, `cast e x`, `transp`, a tuple or look-alike against the type, `p.1` | closed (their types are unified in the elaborator's view) |
+| `exact`, `rfl` and other tactics that elaborate syntax; macros (they produce syntax) | closed (they go through the same rules) |
+| the tactic request `assign` with a term that still has holes | closed: such a term is kept in the tactic state and its type is inferred and compared with its goal at the end of the `by` block (it was a real bypass: `K x ?n : Look Nat` for a goal `Pos Nat`) |
+| a hole solved by unification: the solution is never type-checked by the elaborator | **OPEN, with a forgery**: `def sel {F : Pos Nat → Type} (p : Pos Nat) (w : F p) : Pos Nat := p` and `sel _ (G.mk x)` for `G : Look Nat → Type` solve `?F := G`, `?p := x`, and the kernel accepts `x : Look Nat` as a `Pos Nat` (test `elabfix`, "OPEN"; `/workspace/wiz-notes/structural-probes/priv/forge-unify-first-order.wiz`) |
+| the self-hosted frontend (`selfhost/Frontend.wiz`) | open, tracked as a parity item: it parses `private` and ignores it |
+| `T.desc` of an inductive or coinductive type with private parts: `μ T.desc i` written out is the type with nothing hidden, and a raw `con` builds a value of it | closed: `T.desc` is private with the constructors and recursors (a structure has no description). Generic code over `Desc` in another module can't be pointed at such a type; it could not be applied to its values before either, since the type is opaque there. `deriving` reads the kernel's declarations, not the name, and is unaffected (a derived instance that matches on the type is refused as before) |
+| inside the declaring module | by design: there the look-alike is the same type |
+
+So privacy is **not sealed**: it holds against the rules listed as closed, not against
+every term the elaborator can produce. Closing it for good needs the kernel to tell a
+type from its look-alike (`/workspace/wiz-notes/structural-vs-nominal.md`, §6a).
+
+**`wiz --strict-privacy`** (off by default; an experiment to measure). Every declaration
+of a module that sees a type opaque to it is checked a second time, by the kernel's
+checker, against the elaborator's view (`privacyCheck`, `Elab/Command.lean`). A
+declaration that passes used no hidden shape, so this closes the open path too: the
+forgery above is rejected with "forge depends on the definition of Pos (module Priv),
+which is hidden outside its module". It is not the default because it also rejects
+legitimate proofs that compute through a library operation on such a type: the
+elaborator quotes evaluated values into terms, and a raw pair or projection at a type
+without a definition does not type-check (`drafts/rust/lowered/03_get_mut.wiz`,
+`get_mut.is_place` and `get_mut.spec_under`). With the flag a type with private parts is
+abstract for proofs as well.
+
 The motivating use is `lib/Region.wiz` ([22g](22-numbers.md)): the constructors of the borrow handles
 `Shr`, `Uniq`, `Mut` and `Lent` are private, so a handle at a region comes only from a
 scope or an operation of the library, and hand-written Wiz can't forge one
@@ -241,3 +287,42 @@ refused for a structure that is opaque in the current module.
 
 Syntax: `term.structUpdate`, `"{" term "with" (ident ":=" term),+ "}"`. No new reserved
 word (`with` already is one). Tests: `language` ("structure update …"), `parser: terms`.
+
+## 13j: keyword scopes ✅
+
+A keyword of a `term` or `command` rule is reserved in the whole file; a keyword of any
+other category is reserved nowhere (`"if"` there matches an identifier spelled `if`).
+That is right for tactics, whose names stay usable as variables, and wrong for an
+embedded language with identifiers and application by juxtaposition: its `ident` rule
+accepts `then` too, so `if c then a else b` is the application of `if` to five arguments.
+Reserving the words globally (by listing them in a `command` rule) takes `if`, `in`,
+`mut`, `fn` … away from every file that imports the language.
+
+```
+declare_syntax_cat feral_expr (keywords := feral)
+declare_syntax_cat feral_stmt (keywords := feral)
+```
+
+puts the categories in the **keyword scope** `feral`. The identifier-like atoms of their
+rules are the scope's keywords, and an `ident` item inside a category of the scope does
+not match them:
+
+* inside the language, `if c then a else b` is the `if` rule, and `let if := 1` is
+  `expected identifier ('if' is a keyword here)`;
+* outside it (in `term`, in `command`, in another language, and in a `term` nested
+  inside the language) the words are ordinary identifiers;
+* categories share a scope by naming it, because a keyword of statements (`return`) must
+  not be an identifier of expressions (or `f x` and a `return y` on the next line are
+  one application).
+
+The scope's name is an identifier, so it can't be a word that is reserved at that point
+(declare the categories before the `syntax "feral" … : command` rule, or pick another
+name). A category keeps the scope it was first declared with. Symbol atoms (`+=`, `..`)
+are still tokens everywhere: they never take an identifier away.
+
+The parser stays scannerless with one token table (`Wiz/Parser/Token.lean`): the scope is
+a property of the category being parsed (`ParserTables.reservedIn`, read by the `ident`
+case of `runDescr`), so the memo key, which already names the category, is unchanged.
+The design options are in the notes (`scoped-keywords.md`). The self-hosted parser
+interprets the built-in tables, which use no scope, and has no `syntax` command yet.
+Tests: `parser: commands and syntax`, `language`.

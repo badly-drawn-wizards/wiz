@@ -2,6 +2,7 @@
 # The wiz.nvim tests (the `nvim` test group runs this from the repository root):
 # headless Neovim, with the plugin from this checkout and the real `wiz lsp`.
 #   WIZ  the wiz executable (default: this checkout's .lake/build/bin/wiz, else `wiz`)
+#   GRAIL the grail executable (default: this checkout's .lake/build/bin/grail, else `grail`)
 #   NVIM the nvim executable (default: `nvim`)
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
@@ -14,7 +15,10 @@ fi
 if [ -z "${WIZ:-}" ]; then
   if [ -x "$repo/.lake/build/bin/wiz" ]; then WIZ=$repo/.lake/build/bin/wiz; else WIZ=wiz; fi
 fi
-export WIZ WIZ_LIB="${WIZ_LIB:-$repo/lib}"
+if [ -z "${GRAIL:-}" ]; then
+  if [ -x "$repo/.lake/build/bin/grail" ]; then GRAIL=$repo/.lake/build/bin/grail; else GRAIL=grail; fi
+fi
+export WIZ GRAIL WIZ_LIB="${WIZ_LIB:-$repo/lib}"
 cd "$here/.."
 # `-l` runs the script; it ends with cquit (status 1) when a test fails. Progress lines
 # end in \r: keep only the results.
