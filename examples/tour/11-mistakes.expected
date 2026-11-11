@@ -1,0 +1,10 @@
+examples/tour/11-mistakes.wiz:6:32: error: missing case for constructor false
+examples/tour/11-mistakes.wiz:15:27: error: type mismatch
+  expected: Vec ?m0 (.succ ?m1)
+  inferred: Vec Nat 0
+  (tag mismatch)
+examples/tour/11-mistakes.wiz:18:1: error: kernel rejected dup: variable x declared with quantity 1 but used ω
+examples/tour/11-mistakes.wiz:21:1: error: kernel rejected twice: variable t declared with quantity 1 but used ω
+examples/tour/11-mistakes.wiz:24:1: error: kernel rejected lose: variable t declared with quantity 1 but used 0
+examples/tour/11-mistakes.wiz:25:1: error: kernel rejected plain: variable t declared with quantity 1 but used ω
+examples/tour/11-mistakes.wiz:35:14: error: the observation .tail must be a corecursive call of stuck (guardedness)

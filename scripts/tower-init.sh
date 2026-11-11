@@ -5,7 +5,8 @@
 #
 # CHANNEL is nightly (the default) or a release tag. tower goes to ~/.tower/bin with the
 # shims; add that directory to PATH. Needs curl and tar (and git for nightly, as tower
-# does); `wiz build` needs cc and GMP.
+# does). The tarball brings its own C compiler and GMP (26f): `wiz build` needs nothing
+# else. docs/install.md has the details.
 set -eu
 channel=${1:-nightly}
 arch=$(uname -m)
