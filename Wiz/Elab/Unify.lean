@@ -20,6 +20,30 @@ variables) into the context of the solution (`dom`, `n` variables) with a *parti
 renaming* that maps each `xᵢ` to its new position.
 
 Reference: elaboration-zoo `03-holes`, which this follows closely.
+
+## When unification approximates
+
+Outside the pattern fragment a problem has no most general solution, and any answer
+is a guess: the **first-order approximation** `?m a₁ … aₖ =?= f b₁ … bₙ` ↦
+`?m := f b₁ … bₙ₋ₖ`, `aᵢ =?= bₙ₋ₖ₊ᵢ` (`unifyFirstOrder`), and `?e.op =?= e.op` ↦
+`?e =?= e`. A guess is right when nothing else will determine the hole, and wrong when
+something still to be elaborated would: the rule is to guess only when no more
+information is coming. `ElabState.approx` (`Approx`) says which guesses are allowed.
+
+| problem | example | Wiz | Lean 4 |
+|---|---|---|---|
+| pattern (distinct variables) | `?m x =?= x + 1` | solve exactly (`solve`) | the same (`processAssignment`) |
+| variables, one repeated | `?m Γ i' =?= r i'` (`i'` in `Γ`) | solve without the repeated variable if the right side doesn't use it (pruning); else the first-order guess from the repeated variable on (`.default`) | not a pattern (`isDefEqPattern` wants distinct variables): first-order approximation, else postponed |
+| flex-rigid, not a pattern | `?m ?A =?= M Nat` (`do`) | first-order guess (`.default`) | `isDefEq` with `foApprox` (the elaborator's configuration): the same guess |
+| the same, in the "expected type first" pass of an application whose result type mentions placeholders of its explicit arguments | `?p ?k =?= ok (base + k)`, `?p`, `?k` the arguments `p`, `k` | no guess (`.none`): the speculative pass fails and is undone, the arguments decide, the result type is unified after them | the expected type is not propagated when the result type depends on explicit arguments (`propagateExpectedType`) |
+| flex-flex, both not patterns, different holes | `?r (.bits ?m) =?= ?r' (.bits 1)` (`Hw.cat (Hw.lit 1 1) d`) | postponed: the argument waits behind a placeholder for the other arguments (`inferApp`); still stuck after them, the first-order guess `?r := ?r'` as the last resort (`.last`) | postponed; postponed problems are retried at the end, with approximations |
+| flex-flex, one side a pattern | `?a (f y) =?= ?b x` | solve the pattern side (either orientation) | the same |
+| the same hole on both sides | `?m a =?= ?m b` | unify the arguments (a guess too: `?m` may ignore them) | first-order (`isDefEqApp`), else postponed |
+
+Wiz has no global queue of postponed problems: postponement is per application (an
+argument whose check fails outside the pattern fragment, error code `non-pattern`, is
+checked again after the others). Regression tests: group *elabfix*, "approximation: …"
+and B4.
 -/
 
 namespace Wiz
@@ -452,8 +476,12 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     -- (flex-flex: only as the last resort, see "When unification approximates")
     if let .mvar m' := h' then
       if m' == m || (← get).approx != .last then return false
-    if (← get).approx == .none then return false
     if ← isPattern sp then return false
+    -- a non-linear spine of variables (`?m Γ x` with `x` in `Γ`): solve it pruning the
+    -- repeated variable if the right-hand side doesn't need it; else it is a guess
+    if ← isVarSpine sp then
+      if ← attempt (solve l m sp v) then return true
+    if (← get).approx == .none then return false
     match sp.back?, sp'.back? with
     | some .fst, some .fst | some .snd, some .snd =>
       attempt (unify l (.neutral (.mvar m) sp.pop) (.neutral h' sp'.pop))
@@ -463,7 +491,20 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
       else pure false
   | _, _ => pure false
 where
+  -- distinct variables (Miller's patterns)
   isPattern (sp : Array (Elim R)) : ElabM R Bool := do
+    let mut seen : Std.HashSet Lvl := {}
+    for e in sp do
+      match e with
+      | .app a => match ← forceMeta a with
+        | .neutral (.local x) #[] | .neutral (.local x) #[.down] =>
+          if seen.contains x then return false
+          seen := seen.insert x
+        | _ => return false
+      | _ => return false
+    pure true
+  -- variables, possibly repeated
+  isVarSpine (sp : Array (Elim R)) : ElabM R Bool := do
     for e in sp do
       match e with
       | .app a => match ← forceMeta a with
@@ -488,10 +529,17 @@ partial def unifyFirstOrder (l : Lvl) (m : Nat) (sp : Array (Elim R)) (v : Val R
     | _ => none
   let some args := sp.mapM appArg | pure false
   let some args' := sp'.mapM appArg | pure false
-  -- the arguments after the longest prefix of bound variables
+  -- the arguments after the longest prefix of distinct bound variables (a repeated
+  -- variable starts the arguments to match: `?m Γ x =?= r x` with `x` in `Γ`)
   let mut k := 0
+  let mut seen : Std.HashSet Lvl := {}
   for a in args do
-    if (← forceMeta a) matches .neutral (.local _) #[] then k := k + 1 else break
+    match ← forceMeta a with
+    | .neutral (.local x) #[] =>
+      if seen.contains x then break
+      seen := seen.insert x
+      k := k + 1
+    | _ => break
   let j := args.size - k
   if j == 0 || j > args'.size then return false
   let s ← get
