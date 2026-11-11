@@ -94,6 +94,12 @@ def termGroup : Group where
     { name := "∀", run := fun _ =>
         parses "∀ (A : Type) x, A"
           "(term.forall [(binder.explicit [] [A] [(term.type [])]) x] (term.ident A))" },
+    { name := "forall (13e)", run := fun _ =>
+        parses "forall (A : Type) x, A"
+          "(term.forall [(binder.explicit [] [A] [(term.type [])]) x] (term.ident A))" },
+    { name := "let with a tuple of three or more names (13f)", run := fun _ =>
+        parses "let 1 (a, b, c, d) := p; a"
+          "(term.letTuple [(quantity 1)] a b [c d] (term.ident p) [] (term.ident a))" },
     { name := "let with semicolon", run := fun _ =>
         parses "let 1 x : A := f a; x"
           "(term.let [(quantity 1)] x [(term.ident A)] (term.app (term.ident f) [(term.ident a)]) [] (term.ident x))" },
@@ -105,6 +111,23 @@ def termGroup : Group where
           "(term.let [] x [] (term.app (term.ident f) [(term.ident a)]) [] (term.ident x))" },
     { name := "holes and explicit", run := fun _ =>
         parses "@f _ ?m" "(term.app (term.explicit f) [(term.hole) (term.syntheticHole m)])" },
+    -- 13g
+    { name := "as-pattern x@p: no space around @; f @g is still an explicit argument", run := fun _ => do
+        parses "f xs@(.cons _ _)" "(term.app (term.ident f) [(term.asPat (term.ident xs) (term.paren (term.app (term.dotIdent cons) [(term.hole) (term.hole)])))])"
+        parses "f @g x" "(term.app (term.ident f) [(term.explicit g) (term.ident x)])"
+        parses "f@g x" "(term.app (term.ident f) [(term.explicit g) (term.ident x)])" },
+    -- 13h
+    { name := "anonymous constructor ⟨…⟩ and let with a pattern", run := fun _ => do
+        parses "⟨a, b⟩" "(term.anon [(term.ident a) (term.ident b)])"
+        parses "⟨⟩" "(term.anon [])"
+        parses "let ⟨a, b⟩ := s; a" "(term.letPat [] (term.anon [(term.ident a) (term.ident b)]) (term.ident s) [] (term.ident a))"
+        parses "let 1 (.mk a b) := s; a" "(term.letPat [(quantity 1)] (term.paren (term.app (term.dotIdent mk) [(term.ident a) (term.ident b)])) (term.ident s) [] (term.ident a))"
+        fails "⟨a, b" "'⟩'" },
+    -- 13i
+    { name := "structure update { s with f := v }; {x : A} → B is still a binder", run := fun _ => do
+        parses "{ s with x := 1, y := f a }" "(term.structUpdate (term.ident s) [(structUpdate.field x (term.num 1)) (structUpdate.field y (term.app (term.ident f) [(term.ident a)]))])"
+        parses "{x : A} → x" "(term.depArrow (binder.implicit [] [x] [(term.ident A)]) (term.ident x))"
+        fails "{ s with }" "identifier" },
     { name := "comments are whitespace", run := fun _ =>
         parses "f /- a /- nested -/ -/ b -- c" "(term.app (term.ident f) [(term.ident b)])" },
     { name := "error: missing body", run := fun _ => fails "fun x =>" "term" },
@@ -155,6 +178,10 @@ def cmdGroup : Group where
         let r ← parseFileOk "syntax \"if\" term \"then\" term \"else\" term : term\n#check if a then b else c"
         checkEq "(command.check (term.if_then_else (term.ident a) (term.ident b) (term.ident c)))"
           r.commands[1]!.toSExpr },
+    { name := "local syntax (13m): the rule applies in the file; local stays an identifier", run := fun _ => do
+        let r ← parseFileOk "local syntax \"[\" sepBy(term, \",\") \"]\" : term\n#check [a, local]\n#check [x : C] → x"
+        checkEq "(command.check (term.[_,_] [(term.ident a) (term.ident local)]))" r.commands[1]!.toSExpr
+        checkEq "(command.check (term.depArrow (binder.inst [x] (term.ident C)) (term.ident x)))" r.commands[2]!.toSExpr },
     { name := "trailing syntax with precedence: + and *", run := fun _ => do
         let r ← parseFileOk ("syntax:65 term:65 \" + \" term:66 : term\n" ++
           "syntax:70 term:70 \" * \" term:71 : term\n#check a + b * c + d")
@@ -223,6 +250,8 @@ def cmdGroup : Group where
     { name := "later rule overrides an equally long earlier one", run := fun _ => do
         let r ← parseFileOk "syntax (name := a) \"foo\" : term\nsyntax (name := b) \"foo\" : term\n#check foo"
         checkEq "(command.check (term.b))" r.commands[2]!.toSExpr },
+    { name := "childNames agrees with the grammar (children read by name)", run := fun _ =>
+        checkEq ([] : List String) Builtin.childNamesMismatches },
     { name := "unknown category is an error", run := fun _ => do
         let r := parseFile "syntax \"x\" : nope"
         checkEq 1 r.messages.size }

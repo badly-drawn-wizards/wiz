@@ -180,11 +180,11 @@ structure Decl (R : Type) where
   applications) -/
   inline : Bool := false
   /-- an implementation for the compiler: the term compiled code runs instead of `value`
-  (a structurally recursive definition's equations, with direct recursion instead of the
-  recursor; a partial definition's body; a native implementation's constant). The kernel
-  never unfolds it, but checks it against `type` (`checkImpl` in `addDecl`/`setImpl`,
-  `addPartialImpl`), so erasure only sees checked terms. That it computes what `value`
-  computes is not checked. -/
+  (a structurally recursive definition's value with direct recursion instead of the
+  recursor, `deriveImpl`; a partial definition's body; a native implementation's
+  constant). The kernel never unfolds it, but checks it against `type` (`checkImpl` in
+  `addDecl`/`setImpl`, `addPartialImpl`), so erasure only sees checked terms, and checks
+  that a derived one computes what `value` computes (`checkImplAgrees`). -/
   impl : Option (Term R) := none
   /-- a partial definition's witness: a term of its type that the kernel checks
   (`addPartialDecl`). The definition stays opaque (`value = none`) but is not an axiom:
@@ -201,6 +201,14 @@ def Decl.nativeImpl? {R : Type} (d : Decl R) : Option Name :=
   match d.impl with
   | some (.const g _) => if g == d.name then none else some g
   | _ => none
+
+/-- Does compiled code run equations of this definition derived from its value? A
+structurally recursive definition's `impl` (its value with direct recursion,
+`deriveImpl`): the kernel checks its type and that it agrees with the value
+(`checkImplAgrees`). Not a native implementation (`nativeImpl?`, trusted and listed by
+`#print axioms`) nor a partial definition's body (it has no value to agree with). -/
+def Decl.derivedEquations {R : Type} (d : Decl R) : Bool :=
+  d.impl.isSome && d.value.isSome && d.witness.isNone && d.nativeImpl?.isNone
 
 namespace Term
 
@@ -431,6 +439,10 @@ structure Globals (R : Type) where
   (`unboxedSigma` in `Compiler/Erase.lean`). Off by default: it is not stable under
   substitution. -/
   unboxStructs : Bool := false
+  /-- a compiler option, not read by the kernel (on by default; off only to compare
+  compiled code in the tests): compiled equations get the direct calls a nested split
+  reverted moved into its branches before erasure (`Push.pushCalls`) -/
+  pushCalls : Bool := true
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false

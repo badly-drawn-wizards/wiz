@@ -92,7 +92,8 @@ partial def runMacroTac (code : Code) (env : MacroEnv) (what : String) (info : S
   let str (r : RVal) := (r.toString?).getD ""
   match v.tag? with
   | some 1 => -- result
-    match decodeSyntax info (v.conField 0) with
+    -- (11q) the output is the macro's, not the user's: synthetic, at the call's range
+    match decodeSyntax { info with synthetic := true } (v.conField 0) with
     | some out => (traces, pure (scopeQuoted scope out, next))
     | none => (traces, throw s!"{what} returned a malformed syntax tree")
   | some 2 => (traces, throw (((v.conField 0).toString?).getD "macro failed")) -- fail
@@ -131,5 +132,42 @@ def runDeriver (code : Code) (f : Name) (T : Name) (info : SourceInfo) (scope : 
   let (tr, r) := runMacroTac code env s!"deriver {f}" info scope
     (apply code (run code [] (.global "CommandMacro.run")) m) (scope + 1)
   (tr, r.map fun (out, next) => (out.args, next))
+
+/-! ## Located output of command macros
+
+Runtime `Syntax` has no positions, so a command macro names a node of its input by its
+**path**: the child indices from the macro's input node down to it. Its output may
+contain three pseudo-commands that the command elaborator interprets (prelude:
+`Syntax.errorAt`, `Syntax.infoAt`, `Syntax.sourceAt`):
+
+    macro.error  [path, msg]    an error at the input node at `path`
+    macro.info   [path, msg]    an info message there
+    macro.source [path, text]   Wiz source: parsed as commands, positioned at that node
+
+A path is a `null` node of atoms, each a decimal child index. -/
+
+/-- The position of the node of `stx` at `path`: the deepest node on the way that has a
+position (optional and empty nodes have none). -/
+def pathInfo (stx : Syntax) (path : Syntax) : SourceInfo := Id.run do
+  let mut cur := stx
+  let mut info := stx.info
+  for a in path.args do
+    let i := match a with
+      | .atom _ v => v.toNat?.getD 0
+      | _ => 0
+    cur := cur.getArg i
+    if cur.info.stop > cur.info.start then info := cur.info
+  info
+
+/-- Give every node of `stx` the position `info`. -/
+partial def setInfoAll (info : SourceInfo) : Syntax → Syntax
+  | .missing => .missing
+  | .atom _ v => .atom info v
+  | .ident _ n => .ident info n
+  | .node _ k as => .node info k (as.map (setInfoAll info))
+
+def atomText : Syntax → String
+  | .atom _ v => v
+  | _ => ""
 
 end Wiz.Elab

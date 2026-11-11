@@ -1,0 +1,16 @@
+import FeralCore
+import Feral
+-- REJECTED (Rust E0597: `b` does not live long enough).
+-- expect: E0597 at 13
+-- The result of `longest` is a `&'b U64` of b's borrow; it can't leave the scope of
+-- that borrow, whose result type is chosen outside it (L20, L21).
+feral
+  fn longest {'a 'b} {'a : 'b} (x : &'a U64) (y : &'b U64) : &'b U64 :=
+    if *x < *y then y else x
+
+  fn bad () : U64 := {
+    let a := 3;
+    let r := { let b := 5; longest (&a) (&b) };
+    *r
+  }
+end

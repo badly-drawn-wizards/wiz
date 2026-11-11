@@ -138,10 +138,49 @@ elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
 
 ## Logic, heap predicates and Hoare triples ✅
 
-`lib/Logic.wiz` (`∧`, `∨`, `∃`, `↔`, `Not`, equality lemmas, `funext`, `propext`),
+`lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
+`/\`, `\/`, `exists`, `<->`, equality lemmas, `funext`, `propext`; [13e](stages/13-language.md)),
 `lib/HProp.wiz` (model heaps, `emp`, `↦`, `⋆`, `−∗`, entailment and the separation-logic
-laws) and `lib/Hoare.wiz` (`wp`, triples, the frame rule, verified swap and list reversal,
-adequacy for an interpreter). See [stage 24](stages/24-separation-logic.md).
+laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpreter),
+`lib/HoareTactics.wiz` (SLF-style automation: `xsimpl`, `xpull`, `xstep`, `xapp`, …) and
+`lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
+freeing a list). See [stage 24](stages/24-separation-logic.md).
+
+## Functors and Booleans
+
+`lib/Functor.wiz` (`import Functor`): `Functor`, `Applicative`, `<$>`, `<*>`; every `Monad`
+is an `Applicative` and every `Applicative` a `Functor`; `Monad`/`Functor` instances for
+`Option`, `Except E` and `List`, and `Option.map`/`bind`, `Except.map`/`bind`,
+`List.flatMap` (`List.map` is `lib/Text.wiz`'s, which Functor imports). See [13d](stages/13-language.md). The Prelude itself has `if … then …
+else`, short-circuiting `&&` and `||`, and `!` ([13c](stages/13-language.md)).
+
+## 9j: text and lists (`lib/Text.wiz`) ✅
+
+`import Text` (only `Prelude` underneath): the string and list functions a program needs,
+pure (so `#eval` runs them) and linear in their input.
+
+* **Lists**: `List.reverse`, `revApp`, `map`, `filter`, `foldl`, `foldr`, `any`, `all`,
+  `find`, `isEmpty`, `head`, `take`, `drop`, `concat`.
+* **Characters**: `Char.eq`, `isSpace` (ASCII), `isDigit`.
+* **Strings**: `chars`, `ofChars`, `singleton`, `length`, `isEmpty`, `eq` (also `beq`),
+  `lt` (by code point), `startsWith`, `endsWith`, `stripPrefix`, `stripSuffix`
+  (`Option`), `contains`, `containsChar`, `take`, `drop`, `dropEnd`, `splitOn`, `join`,
+  `intercalate`, `trim`, `trimLeft`, `trimRight`, `replace`, `parseNat` (`Option Nat`),
+  `lookup` (in a list of pairs keyed by strings), `elem`; `Nat.repr` (decimal, pure).
+  The same functions on `List Char` are `Chars.*`.
+
+**Cost model.** A `String` is `String.mk` around a `List Char` in the kernel *and* at
+runtime (`builtin string` only changes how values print). Walking a string from the
+front, prefix tests, `take`/`drop` are proportional to what they walk; `String.append a b`
+copies `a`, so appending in a loop from the left is quadratic (`join` and `intercalate`
+build from the right); the end of a string is far (`endsWith`, `dropEnd`, `trimRight`
+reverse once); and each call into C converts the list to a C string and back. Splitting
+200000 characters, joining and trimming them takes 0.1 s compiled (the `text` tests).
+`Std.Str` is the native alternative for indexing.
+
+`lib/Json.wiz`, `lib/Deriving.wiz` and `lib/Hoare.wiz` import `Text` and use its
+`String.eq`, `String.chars`, `String.beq`, `Nat.repr`, `List.revApp` and `List.reverse`
+instead of copies of their own (two modules declaring one name are an error at import).
 
 ## Numbers: classes, integers, words ✅
 

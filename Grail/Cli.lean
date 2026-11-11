@@ -81,7 +81,8 @@ def cliMain (args : List String) : IO UInt32 := do
   -- a `panic!` (a kernel-internal failure) ends the build, as it ends `wiz check`
   Wiz.exitOnPanic
   let home := (← IO.getEnv "HOME").getD "."
-  let defaults : Toolchain := { cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") }
+  -- (26f) a release toolchain's own C compiler, GMP and GC are the defaults
+  let defaults ← ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).withBundled
   -- a job of a build, in its own process (`Grail/Graph.lean`)
   if let "--grail-job" :: job :: flags := args then
     return ← jobMain (defaults.parseFlags flags).1 job

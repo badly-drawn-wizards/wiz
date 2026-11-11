@@ -9,6 +9,7 @@ import Wiz.Core.Pretty
 import Wiz.Core.Check
 import Wiz.Core.Raw
 import Wiz.Syntax.Basic
+import Wiz.Syntax.Children
 import Wiz.Parser.Descr
 import Wiz.Parser.Token
 import Wiz.Parser.Monad
@@ -20,6 +21,7 @@ import Wiz.Elab.Basic
 import Wiz.Elab.Unify
 import Wiz.Elab.Zonk
 import Wiz.Elab.Info
+import Wiz.Elab.Struct
 import Wiz.Elab.Term
 import Wiz.Elab.ProcMacro
 import Wiz.Elab.Tactic

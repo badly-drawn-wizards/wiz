@@ -1,0 +1,10 @@
+import FeralCore
+import Feral
+-- REJECTED (Rust E0515: returning a mutable borrow of a local).
+-- expect: E0515 at 8
+feral
+  fn bad {'a} (v : &'a mut U64) : &'a mut U64 := {
+    let mut l := 5;
+    &mut l
+  }
+end

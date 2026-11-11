@@ -150,8 +150,8 @@ def modulesGroup : Group where
           pure [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
                 ("runFrontend", runFrontend src init), ("Query", (Query.elaborate {} src { init with termInfo := true }).1)]
         let clash (s : CommandState ZeroOneMany) : Bool := s.messages.any fun m =>
-          m.severity == .error && ((m.text.splitOn "'b' is declared by both").length > 1 ||
-                                   (m.text.splitOn "'b' has already been declared").length > 1)
+          -- (one message, at the import, on every path: not inside "module … has errors")
+          m.severity == .error && m.text.startsWith "'b' is declared by both"
         for src in ["import M.A\nimport M.B\n" ++ boomA, "import M.B\nimport M.A\n" ++ boomB,
                     "import M.A\nimport M.D\n" ++ boomA, "import M.A\nimport M.D\n" ++ boomB,
                     "import M.C\nimport M.B\n" ++ boomA, "import M.Base\ndef b : Bool := Bool.false\nimport M.A\n" ++ boomA,
@@ -161,8 +161,14 @@ def modulesGroup : Group where
             check (!s.globals.contains "boom") s!"{how}: boom : Empty was accepted for\n{src}"
         -- the message names both modules
         let (s, _) ← Cache.elaborateCached cache "import M.A\nimport M.B\n" init 0
-        check (s.messages.any fun m => (m.text.splitOn "'b' is declared by both module M.A and module M.B").length > 1)
+        check (s.messages.any fun m => m.text == "'b' is declared by both module M.A and module M.B")
           s!"{s.messages.toList.map (·.text)}"
+        for (how, s) in ← paths "import M.A\ndef b : Bool := Bool.false\n" do
+          check (s.messages.any fun m => m.text == "'b' is declared by both module M.A and this file")
+            s!"{how}: {s.messages.toList.map (·.text)}"
+        for (how, s) in ← paths "import M.B\nimport M.C\n" do
+          check (s.messages.any fun m => m.text == "'b' is declared by both module M.B and module M.A")
+            s!"{how}: {s.messages.toList.map (·.text)}"
         -- one module reached by two paths (a diamond) is fine
         for src in ["import M.A\nimport M.C\nimport M.Base\n#eval c\n", "import M.A\nimport M.E\n#eval e0\n",
                     "import M.E\nimport M.C\n#eval c\n"] do
@@ -236,6 +242,14 @@ def modulesGroup : Group where
         checkEq (some (roots.head! / "Prelude.wiz")) (ms["Prelude"]?.map (·.1))
         checkEq ["Prelude"] ((Module.fromFirstRoot roots ms).toArray.qsort (· < ·)).toList
         checkEq [("Prelude", dir / "Prelude.wiz")] (← Module.shadowed roots ms) },
+    { name := "another checkout's lib/ in the current directory is not a root (22f)", run := fun _ => do
+        -- run inside another checkout, every module of its `lib/` was reported as shadowed
+        let dir ← mkTree [("lib/Prelude.wiz", "builtin nat.add := Nat.mul\n"), ("Extra/Mod.wiz", "import Prelude\ndef m : Nat := 1\n")]
+        let roots ← Module.roots [dir / "Extra"]
+        checkEq [← IO.FS.realPath "lib", dir / "Extra"] [← IO.FS.realPath roots.head!, roots[1]!]
+        checkEq 2 roots.length
+        let ms ← Module.loadClosure roots "import Mod\n"
+        checkEq ([] : List (Name × System.FilePath)) (← Module.shadowed roots ms) },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
         let ms ← Module.loadAll [dir]

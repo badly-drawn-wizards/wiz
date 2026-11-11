@@ -755,7 +755,10 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
       else .transp (v 4) (.fst (v 2)) P (.reflTy (.app (v 3) (.fst (v 2)))) (.fst (v 1)) (v 0)
     let body : Term R := .eq (.app (v 3) (.fst (v 1)))
       (.cast (.app (v 3) (.fst (v 2))) (.app (v 3) (.fst (v 1))) apB (.snd (v 2))) (.snd (v 1))
-    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁] body) (some 0)
+    -- the equation's own type `A` rides along at the end of the environment, unused by
+    -- the body: `eqSigmaSides?` reads `A`, `a`, `b` back, so that the elaborator's `rfl`
+    -- can prove the whole equation by one `refl` instead of field by field
+    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁, A] body) (some 0)
   | .unit _ | .empty _ => .unit 0
   | .enum _ => match a, b with
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
@@ -1361,6 +1364,14 @@ partial def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .scase l I D lv P m s i => vScase g l I D lv P m s i v
 
 end
+
+/-- The equation `a =_A b` that computed (by `vEq`, at a Σ type `A`) to this Σ, read back
+from its closure: `(A, a, b)`. A guess by shape (a user's Σ can have such a closure too), so
+whoever uses it must check that `vEq A a b` is the type it has (the elaborator's `rfl`
+compares the two sides, and the kernel checks the `refl` it builds). -/
+def eqSigmaSides? : Val R → Option (Val R × Val R × Val R)
+  | .sigma "e" _ _ (.mk [b, a, _, _, A@(.sigma ..)] (.eq _ (.cast ..) (.snd (.var 1)))) (some _) => some (A, a, b)
+  | _ => none
 
 /-- Normal form of a closed term (every definition unfolded). -/
 def nf (g : Globals R) (t : Term R) : Term R :=

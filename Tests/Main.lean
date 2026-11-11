@@ -6,9 +6,11 @@ import Tests.Elab
 import Tests.ElabFix
 import Tests.Grail
 import Tests.LSP
+import Tests.Meta
 import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
+import Tests.Feral
 import Tests.Tower
 
 -- Closed terms are normally evaluated at program start-up; that would execute
@@ -23,10 +25,12 @@ def groups : List Group :=
   Check.groups ++
   Elab.groups ++
   ElabFix.groups ++
+  Feral.groups ++
   Eval.groups ++
   Grail.groups ++
   Lint.groups ++
   LSP.groups ++
+  Meta.groups ++
   Parser.groups ++
   Rig.groups ++
   Scaling.groups ++
@@ -177,7 +181,7 @@ def main (args : List String) : IO UInt32 := do
   if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run-case" :: _ | "--check" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run-case" :: _ | "--check" :: _ | "--check-libs" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -198,6 +202,14 @@ def main (args : List String) : IO UInt32 := do
       | [m, "eager"] => (m, false)
       | _ => (mode, true)
     let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { globals := { regularity := Elab.regularityMode mode, lazyProofs } }
+    let errs := s.messages.filter (·.severity == .error)
+    for m in errs do IO.eprintln (m.render input)
+    pure (if errs.isEmpty then 0 else 1)
+  -- check a file with every library importable, in a child process that the test can
+  -- time out: `Elab.failsLibsWithin`
+  | ["--check-libs", file] => do
+    let input ← IO.FS.readFile file
+    let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { trustedModule := libModule, loader := ← Elab.libLoader }
     let errs := s.messages.filter (·.severity == .error)
     for m in errs do IO.eprintln (m.render input)
     pure (if errs.isEmpty then 0 else 1)
