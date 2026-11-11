@@ -7,11 +7,15 @@ import Infoview
 -- answers with `js_send` (bytes to the server) and `js_set_html` (a part of the page)
 -- and returns the next state (a Wiz value the page holds). The protocol and the HTML
 -- are `lib/Infoview.wiz`, shared with the terminal infoview.
+-- (11s) The same module runs the documentation's pages (`wiz doc`): `wiz_doc_init` and
+-- `wiz_doc_step` (web/scroll.js), whose model is `DocPage` in `lib/Tagged.wiz`, the
+-- tagged text both kinds of page share.
 
 -- (9f) the JavaScript side, as Emscripten C (EM_JS)
 link_c "js.c"
 extern "js_send" Js.send : String → IO Unit
 extern "js_set_html" Js.setHtml : String → String → IO Unit
+extern "js_go" Js.go : String → IO Unit
 
 structure WSt where
   buf : List Char
@@ -25,20 +29,26 @@ structure WSt where
   goals : Option TacView
   term : Option Goal
   sel : Nat
+  -- (11r) what else is at the cursor (`wiz/interactiveInfo`)
+  items : List InfoItem
 
-def WSt.empty : WSt := WSt.mk .nil 1 .nil "" 0 0 0 0 .none .none 0
+def WSt.empty : WSt := WSt.mk .nil 1 .nil "" 0 0 0 0 .none .none 0 .nil
 def WSt.setConn (s : WSt) (buf : List Char) (next : Nat) (pending : List (Nat × Nat)) : WSt :=
-  WSt.mk buf next pending s.uri s.line s.col s.session s.version s.goals s.term s.sel
+  WSt.mk buf next pending s.uri s.line s.col s.session s.version s.goals s.term s.sel s.items
 def WSt.setDoc (s : WSt) (uri : String) (line col version : Nat) : WSt :=
-  WSt.mk s.buf s.next s.pending uri line col s.session version s.goals s.term s.sel
+  WSt.mk s.buf s.next s.pending uri line col s.session version s.goals s.term s.sel s.items
 def WSt.setGoals (s : WSt) (goals : Option TacView) (session : Nat) : WSt :=
-  WSt.mk s.buf s.next s.pending s.uri s.line s.col session s.version goals s.term 0
+  WSt.mk s.buf s.next s.pending s.uri s.line s.col session s.version goals s.term 0 s.items
 def WSt.setTerm (s : WSt) (term : Option Goal) : WSt :=
-  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals term 0
+  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals term 0 s.items
 def WSt.setSel (s : WSt) (sel : Nat) : WSt :=
-  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals s.term sel
+  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals s.term sel s.items
 
-def WSt.render (s : WSt) : IO Unit := Js.setHtml "goals" (Infoview.htmlTacState s.sel s.goals s.term)
+def WSt.setItems (s : WSt) (items : List InfoItem) : WSt :=
+  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals s.term 0 items
+def WSt.view (s : WSt) : View := View.ofInfo 80 s.goals s.term s.items
+
+def WSt.render (s : WSt) : IO Unit := Js.setHtml "goals" (Infoview.htmlInfo s.sel s.goals s.term s.items)
 
 def WSt.send (s : WSt) (method : String) (params : Json) (kind : Nat) : IO WSt := do
   Js.send (Rpc.frame (Rpc.request s.next method params));
@@ -48,7 +58,8 @@ def WSt.notify (method : String) (params : Json) : IO Unit :=
     (.cons (Json.field "method" (Json.mkStr method)) (.cons (Json.field "params" params) .nil))))))
 def WSt.refresh (s : WSt) : IO WSt := do
   s1 ← WSt.send s "wiz/interactiveGoals" (Rpc.position s.uri s.line s.col) 1;
-  WSt.send s1 "wiz/interactiveTermGoal" (Rpc.position s.uri s.line s.col) 2
+  s2 ← WSt.send s1 "wiz/interactiveTermGoal" (Rpc.position s.uri s.line s.col) 2;
+  WSt.send s2 "wiz/interactiveInfo" (Rpc.position s.uri s.line s.col) 4
 
 def Web.lookup : List (Nat × Nat) → Nat → Nat
   | .nil, _ => 0
@@ -61,27 +72,6 @@ def Web.remove : List (Nat × Nat) → Nat → List (Nat × Nat)
     | .true => ps
     | .false => .cons p (Web.remove ps id)
 
--- what a subterm is, as HTML
-def Web.infoHtml (r : Json) : String :=
-  let name := Json.getStr r "name";
-  let what : String := match Nat.beq (List.length (String.chars name)) 0 with
-    | .true => Json.getStr r "text"
-    | .false => name;
-  let ty : String := match Json.get r "type" with
-    | .some t => match Json.isNull t with
-      | .true => ""
-      | .false => String.append " : " (String.mk (Infoview.htmlText (TT.toString (TT.ofJson t)) .nil))
-    | .none => "";
-  let defn : String := match Json.get r "definition" with
-    | .some d => match Json.getPath d (.cons "range" (.cons "start" (.cons "line" .nil))) with
-      | .some (.int .false l) => String.append "<div class=\"def\">defined at " (String.append
-          (String.mk (Infoview.htmlText (Json.getStr d "uri") .nil)) (String.append ":" (String.append (Nat.repr (l + 1)) "</div>")))
-      | _ => ""
-    | .none => "";
-  String.append "<span class=\"kind\">" (String.append (String.mk (Infoview.htmlText (Json.getStr r "kind") .nil))
-    (String.append "</span> <code>" (String.append (String.mk (Infoview.htmlText what .nil))
-      (String.append ty (String.append "</code>" defn)))))
-
 def WSt.onResponse (s : WSt) (j : Json) : IO WSt :=
   let id := Json.getNat j "id";
   let kind := Web.lookup s.pending id;
@@ -90,7 +80,7 @@ def WSt.onResponse (s : WSt) (j : Json) : IO WSt :=
   | .some e => match Rpc.contentModified e with
     | .true => WSt.refresh s1
     | .false => do
-      Js.setHtml "status" (String.mk (Infoview.htmlText (Json.getStr e "message") .nil));
+      Js.setHtml "status" (String.mk (Tagged.htmlText (Json.getStr e "message") .nil));
       IO.pure s1
   | .none =>
     let r : Json := match Json.get j "result" with
@@ -106,9 +96,11 @@ def WSt.onResponse (s : WSt) (j : Json) : IO WSt :=
         | .none => IO.pure (WSt.setTerm s1 .none)
       | .false => match Nat.beq kind 3 with
         | .true => do
-          Js.setHtml "info" (Web.infoHtml r);
+          Js.setHtml "info" (Tagged.infoHtml r);
           IO.pure s1
-        | .false => IO.pure s1
+        | .false => match Nat.beq kind 4 with
+          | .true => IO.pure (WSt.setItems s1 (Items.ofJson r))
+          | .false => IO.pure s1
 
 def WSt.onMessage (s : WSt) (j : Json) : IO WSt := match Json.get j "method" with
   | .some (.str m) => match String.eq m "wiz/elaborated" with
@@ -131,7 +123,7 @@ partial def WSt.drain (s : WSt) : IO WSt := match Rpc.unframe s.buf with
 -- select a tag (index + 1) and ask what it is
 def WSt.select (s : WSt) (sel : Nat) : IO WSt :=
   let s1 := WSt.setSel s sel;
-  match Infoview.nthTag (View.tags (View.ofTacState 80 s.goals s.term)) (sel - 1) with
+  match Tagged.nthTag (View.tags (WSt.view s)) (sel - 1) with
   | .none => do Js.setHtml "info" ""; IO.pure s1
   | .some t => WSt.send s1 "wiz/subtermInfo" (Json.mkObj (.cons (Json.field "textDocument" (Json.mkObj (.cons (Json.field "uri" (Json.mkStr s.uri)) .nil)))
       (.cons (Json.field "session" (Json.ofNat s.session)) (.cons (Json.field "ref" (Json.ofNat (TagInfo.ref t))) .nil)))) 3
@@ -163,6 +155,10 @@ def WSt.onEvent (s : WSt) (ev : String) : IO WSt :=
       WSt.notify "initialized" (Json.mkObj .nil);
       WSt.notify "textDocument/didOpen" (Json.mkObj (.cons (Json.field "textDocument" (Web.textDoc s1 q.2)) .nil));
       WSt.refresh s2
+    | .false => match String.eq kind "follow" with
+    -- (11r) `follow\nURI`: show another editor's document (the page follows its cursor,
+    -- `wiz/infoview/cursor`, which the page turns into `follow` and `cursor`)
+    | .true => IO.pure (WSt.setDoc s (String.mk rest) s.line s.col s.version)
     | .false => match String.eq kind "change" with
       | .true => do
         let s1 := WSt.setDoc s s.uri s.line s.col (s.version + 1);
@@ -180,7 +176,7 @@ def WSt.onEvent (s : WSt) (ev : String) : IO WSt :=
           | .true => WSt.select s (Web.nat rest + 1)
           | .false => match String.eq kind "key" with
             | .true =>
-              let v := View.ofTacState 80 s.goals s.term;
+              let v := WSt.view s;
               let key := String.mk rest;
               let nav : Nav := match String.eq key "ArrowRight" with
                 | .true => Nav.next
@@ -202,3 +198,21 @@ def Web.step (s : WSt) (ev : String) : IO WSt := do
 
 export "wiz_web_init" WSt.empty
 export "wiz_web_step" Web.step
+
+-- (11s) A documentation page: its events (`DocPage.step`), the page's actions done here.
+def Doc.act : List DocAct → IO Unit
+  | .nil => IO.pure ()
+  | .cons a rest => do
+    (match a with
+      | .html id h => Js.setHtml id h
+      | .info h => Js.setHtml "info" h
+      | .go u => Js.go u);
+    Doc.act rest
+def Doc.step (s : DocSt) (ev : String) : IO DocSt :=
+  let r := DocPage.step s ev;
+  do
+    Doc.act r.2;
+    IO.pure r.1
+
+export "wiz_doc_init" DocSt.empty
+export "wiz_doc_step" Doc.step

@@ -26,6 +26,7 @@ on:
     paths:
       - scripts/release-tarball.sh
       - scripts/bundle-cc.sh
+      - web/**
       - scripts/bundle-cc.sources
       - scripts/release-licenses/**
       - .github/workflows/release.yml
@@ -132,11 +133,34 @@ jobs:
           for f in cc-bundle/bin/clang cc-bundle/bin/ld.lld cc-bundle/lib/*.so*; do
             [ -L "$f" ] || echo "$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1) $f"
           done
+      # 11r: the web infoview (Web.wiz → C → Wasm with Emscripten), which `wiz lsp` serves
+      # for wiz.nvim's :WizInfoviewBrowser. (A dispatched old commit may not have it.)
+      - name: Build the web infoview?
+        id: web
+        run: |
+          if grep -q -- --gmp-src web/build.sh 2>/dev/null; then echo "web=yes" >> "$GITHUB_OUTPUT"; else echo "web=no" >> "$GITHUB_OUTPUT"; fi
+      - name: Emscripten
+        if: steps.web.outputs.web == 'yes'
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.9
+          actions-cache-folder: emsdk-cache
+      - name: The web infoview (Wasm)
+        if: steps.web.outputs.web == 'yes'
+        run: |
+          start=$(date +%s)
+          curl -sSfL -o gmp-6.3.0.tar.xz https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+          echo "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898  gmp-6.3.0.tar.xz" | sha256sum -c
+          sh web/build.sh web-out --gmp-src gmp-6.3.0.tar.xz
+          ls -l web-out
+          echo "web infoview built in $(( $(date +%s) - start )) s"
       - name: Tarball
         run: |
           mkdir -p dist
           cc=; [ "${{ steps.bundle.outputs.cc }}" = yes ] && cc=cc-bundle
-          .release-tools/scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz .lake/build/bin "$(git rev-parse HEAD)" $cc
+          web=; [ "${{ steps.web.outputs.web }}" = yes ] && web=web-out
+          [ -z "$cc" ] && [ -n "$web" ] && { echo "a web dir needs the cc argument before it"; exit 1; }
+          .release-tools/scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz .lake/build/bin "$(git rev-parse HEAD)" $cc $web
           ls -l dist
       - name: The tarball builds programs with no C compiler or GMP installed (plain Ubuntu containers)
         # the acceptance test of 26f: the images have no gcc, cc, clang, libgmp or libc

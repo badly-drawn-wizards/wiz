@@ -96,25 +96,30 @@ structure St where
   height : Nat
   got : Nat
   opts : Opts
+  -- (11r) what else is at the cursor (`wiz/interactiveInfo`)
+  items : List InfoItem
 
 def St.setConn (s : St) (fd : Nat) (buf : List Char) (next : Nat) (pending : List (Nat × Nat)) : St :=
-  St.mk fd buf next pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info s.status s.width s.height s.got s.opts
+  St.mk fd buf next pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info s.status s.width s.height s.got s.opts s.items
 def St.setDoc (s : St) (uri : String) (line col session : Nat) : St :=
-  St.mk s.fd s.buf s.next s.pending uri line col session s.goals s.term s.sel s.scroll s.info s.status s.width s.height s.got s.opts
+  St.mk s.fd s.buf s.next s.pending uri line col session s.goals s.term s.sel s.scroll s.info s.status s.width s.height s.got s.opts s.items
 def St.setGoals (s : St) (goals : Option TacView) (session : Nat) : St :=
-  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col session goals s.term 0 0 .nil s.status s.width s.height (s.got + 1) s.opts
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col session goals s.term 0 0 .nil s.status s.width s.height (s.got + 1) s.opts s.items
 def St.setTerm (s : St) (term : Option Goal) : St :=
-  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals term 0 0 .nil s.status s.width s.height (s.got + 1) s.opts
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals term 0 0 .nil s.status s.width s.height (s.got + 1) s.opts s.items
 def St.setSel (s : St) (sel scroll : Nat) : St :=
-  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term sel scroll s.info s.status s.width s.height s.got s.opts
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term sel scroll s.info s.status s.width s.height s.got s.opts s.items
 def St.setInfo (s : St) (info : List String) : St :=
-  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll info s.status s.width s.height s.got s.opts
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll info s.status s.width s.height s.got s.opts s.items
 def St.setStatus (s : St) (status : String) : St :=
-  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info status s.width s.height s.got s.opts
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info status s.width s.height s.got s.opts s.items
 def St.setSize (s : St) (w h : Nat) : St :=
-  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info s.status w h s.got s.opts
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info s.status w h s.got s.opts s.items
 
-def St.view (s : St) : View := View.ofTacState s.width s.goals s.term
+def St.setItems (s : St) (items : List InfoItem) : St :=
+  St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term 0 0 .nil s.status s.width s.height (s.got + 1) s.opts items
+
+def St.view (s : St) : View := View.ofInfo s.width s.goals s.term s.items
 -- rows for the goals: all but the status bar, the rule and the info line
 def St.bodyRows (s : St) : Nat := s.height - 3
 
@@ -131,10 +136,11 @@ def St.notify (s : St) (method : String) (params : Json) : IO Unit := do
 -- the goals and the expected type at the cursor
 def St.refresh (s : St) : IO St := do
   s1 ← St.send s "wiz/interactiveGoals" (Rpc.position s.uri s.line s.col) 1;
-  St.send s1 "wiz/interactiveTermGoal" (Rpc.position s.uri s.line s.col) 2
+  s2 ← St.send s1 "wiz/interactiveTermGoal" (Rpc.position s.uri s.line s.col) 2;
+  St.send s2 "wiz/interactiveInfo" (Rpc.position s.uri s.line s.col) 4
 
 -- what the selected subterm is
-def St.askInfo (s : St) : IO St := match Infoview.nthTag (View.tags (St.view s)) (s.sel - 1) with
+def St.askInfo (s : St) : IO St := match Tagged.nthTag (View.tags (St.view s)) (s.sel - 1) with
   | .none => IO.pure (St.setInfo s .nil)
   | .some t => St.send s "wiz/subtermInfo" (Json.mkObj (.cons (Json.field "textDocument" (Json.mkObj (.cons (Json.field "uri" (Json.mkStr s.uri)) .nil)))
       (.cons (Json.field "session" (Json.ofNat s.session)) (.cons (Json.field "ref" (Json.ofNat (TagInfo.ref t))) .nil)))) 3
@@ -186,7 +192,10 @@ def St.onResponse (s : St) (j : Json) : IO St :=
       | .true => IO.pure (St.setStatus (St.setGoals s2 .none s2.session) (Json.getStr e "message"))
       | .false => match Nat.beq kind 2 with
         | .true => IO.pure (St.setStatus (St.setTerm s2 .none) (Json.getStr e "message"))
-        | .false => IO.pure s2
+        | .false => match Nat.beq kind 4 with
+          -- (a server without `wiz/interactiveInfo`: nothing more to show)
+          | .true => IO.pure (St.setItems s1 .nil)
+          | .false => IO.pure s2
   | .none =>
     let r : Json := match Json.get j "result" with
       | .some v => v
@@ -201,7 +210,9 @@ def St.onResponse (s : St) (j : Json) : IO St :=
         | .none => IO.pure (St.setTerm s1 .none)
       | .false => match Nat.beq kind 3 with
         | .true => IO.pure (St.setInfo s1 (Infoview.infoLines r))
-        | .false => IO.pure s1
+        | .false => match Nat.beq kind 4 with
+          | .true => IO.pure (St.setItems s1 (Items.ofJson r))
+          | .false => IO.pure s1
 
 def St.onMessage (s : St) (j : Json) : IO St := match Json.get j "method" with
   | .some (.str m) => match String.eq m "wiz/infoview/cursor" with
@@ -444,7 +455,7 @@ partial def St.dumpLoop (s : St) (deadline : Nat) : IO Unit := do
   now ← Clock.ms;
   match Nat.lt deadline now with
   | .true => St.fail "no answer from the server"
-  | .false => match Nat.le 2 s.got with
+  | .false => match Nat.le 3 s.got with
     | .true => St.printView s
     | .false => do
       bits ← Sock.wait s.fd 200;
@@ -484,7 +495,7 @@ def main : IO Unit := do
   | .false => do
     let s0 := St.mk 0 .nil 1 .nil "" 0 0 0 .none .none 0 0 .nil "" (match Nat.beq o.width 0 with
       | .true => 80
-      | .false => o.width) 24 0 o;
+      | .false => o.width) 24 0 o .nil;
     match o.dump with
     | .true => do
       s1 ← St.start s0;
