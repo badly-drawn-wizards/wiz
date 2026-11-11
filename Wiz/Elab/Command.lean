@@ -478,7 +478,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let impl ← if rc.isNone || esc then pure none else do
     let saved ← get
     try
-      modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
+      modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none },
+                                unifyFails := {}, unifyFailCount := 0 }
       -- the calls the first elaboration took for recursive ones, by their syntax
       -- (`rewriteRecCalls`), are calls of the definition here too, whatever `name` is
       -- bound to locally
@@ -486,7 +487,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
       let body' ← compileMatch ctx' (perm vars) clauses tyv none true
       solveSortConstraints
       let v' ← zonk 0 (tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body'))
-      modify fun s => { s with globals := saved.globals }
+      modify fun s => { s with globals := saved.globals, unifyFails := {}, unifyFailCount := 0 }
       pure (if v'.mvars.isEmpty then some v' else none)
     catch _ =>
       set saved

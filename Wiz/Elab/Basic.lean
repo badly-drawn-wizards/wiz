@@ -187,6 +187,15 @@ structure ElabState (R : Type) where
   binderNames : List (Lvl × Name) := []
   /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
   kernelInfer : Ctx R → Term R → Except String (VTy R) := fun _ _ => .error "no kernel here"
+  /-- set when unification meets an unsolved (term or level) metavariable. A failure that
+  never met one is final: no other order of unfolding can succeed (see `unifyGlued`).
+  Unification's own backtracking keeps it (`keepLearnt`). -/
+  unifySawMeta : Bool := false
+  /-- comparisons of two glued values without metavariables that failed, with the failure's
+  message: the two sides quoted (with levels for free variables), bucketed by their head. Valid
+  while the globals stay as they are (the elaborator clears it when it changes them). -/
+  unifyFails : Std.HashMap UInt64 (List (Term R × Term R × String)) := {}
+  unifyFailCount : Nat := 0
 
 structure ElabError (R : Type) where
   info : SourceInfo
