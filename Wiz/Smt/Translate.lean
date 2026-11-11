@@ -19,12 +19,10 @@ The fragment (wiz-notes/smt.md §3.2):
   truncated `-`, `/` and `%` with Wiz's `x / 0 = 0`, `x % 0 = x`, `Nat.max`.
 * `UIntN w` (`w` a numeral ≥ 1) as `(_ BitVec w)`: `add sub mul neg div mod land lor xor
   not`, shifts and `testBit` by numerals, `beq lt le`, `ofNat`, `toNat`, `zero`, `max`.
-  **Range hypotheses**: the kernel's `UIntN w` has values out of range
-  (`UIntN.ofBitsTrusted 300 : UIntN 8`), on which the definitions are not bit-vector
-  operations (`not (not x) = x` fails there). So every word variable or atom must have a
-  hypothesis `Nat.lt (UIntN.toNat x) 2^w = .true` (as a hypothesis of the context or a
-  premise of the goal); a word built by the operations above from in-range words is in
-  range. Without it the translation refuses.
+  **Ranges**: every `UIntN w` value is below `2^w` (its constructor carries the proof,
+  stage 22l), and on such values the definitions are the bit-vector operations. (Before
+  22l the kernel's `UIntN 8` had values like `ofBitsTrusted 300`, where `not (not x) = x`
+  fails, and the translation required a range hypothesis for every word.)
 * Anything else: a premise or hypothesis outside the fragment is dropped (sound: the
   problem only gets harder); a goal outside it is an error.
 -/
@@ -56,9 +54,8 @@ structure TState (R : Type) where
   atoms : Array (Nat × Term R × String × SSort) := #[]
   /-- what to show in a counterexample: SMT name, the user's name -/
   shown : Array (String × String) := #[]
-  /-- word constants and their widths, and those with a range hypothesis -/
+  /-- word constants and their widths -/
   words : Array (String × Nat × String) := #[]
-  ranged : Array String := #[]
   next : Nat := 0
 
 abbrev TM (R : Type) := StateT (TState R) (Except String)
@@ -299,16 +296,13 @@ partial def prop (g : Globals R) (lvl : Nat) (P : Val R) : TM R (Option String) 
   | _ => return none
 
 /-- Assert a hypothesis (a premise or a context entry): dropped if it is outside the
-fragment. A range hypothesis `Nat.lt (UIntN.toNat x) 2^w = .true` marks `x`. -/
+fragment. -/
 def hyp (g : Globals R) (lvl : Nat) (P : Val R) : TM R Unit := do
   let saved ← get
   match (prop g lvl P).run saved with
   | .ok (some h, s) =>
     set s
     modify fun s => { s with asserts := s.asserts.push h }
-    for (x, w, _) in s.words do
-      if h == s!"(= (< (bv2nat {x}) {2 ^ w}) true)" then
-        modify fun s => { s with ranged := s.ranged.push x }
   | _ => set saved
 
 /-- The query for goal `ty` in context (`names`, `types`, `bound`, outermost first). -/
@@ -347,11 +341,6 @@ partial def translate (g : Globals R) (names : List Name) (types : List (Val R))
         | some p => modify fun s => { s with asserts := s.asserts.push s!"(not {p})" }
         | none => throw "smt: the goal is not in the fragment (propositions built from →, ¬, ∧, ∨, ↔ and equations at Bool, Nat and UIntN with a numeral width)"
     peel names.length ty 1000
-    -- every word needs its range
-    let s ← get
-    for (x, w, u) in s.words do
-      unless s.ranged.contains x do
-        throw s!"smt: the word `{u}` needs a range hypothesis `Nat.lt (UIntN.toNat {u}) {2 ^ w} = .true` (a `UIntN {w}` may be out of range, where its operations are not bit-vector operations; wiz-notes/smt.md §3.2)"
   match go.run {} with
   | .error e => .error e
   | .ok ((), s) =>
