@@ -258,6 +258,29 @@ def group : Group where
         failsPriv privMod "import Priv\ndef x : Pos Nat := (5, ())" "Pos"
         failsPriv privMod "import Priv\nstructure Fake (A : Type) where\n  val : A\ndef x : Pos Nat := Fake.mk 5" "mismatch"
         failsPriv privMod "import Priv\ndef x (p : Pos Nat) : Nat := p.1" "cannot project" },
+    { name := "two values of another module's opaque type: compared at its definition, proofs irrelevant (13b)", run := fun _ => do
+        -- wiz-notes/soundness-probes/opaque-proof-irrelevance: `P.mk 4 (lt_s 4)` and
+        -- `P.mk 4 rfl` are equal in PM, and the kernel (which sees `P`) agrees; outside PM
+        -- `P` is opaque, and its values used to be compared field by field, proofs included
+        let pm := "import Prelude\ndef lt_s : (n : Nat) → Nat.lt n (Nat.succ n) = .true\n  | .zero => rfl\n  | .succ n => lt_s n\ninductive P where\n  | private mk (x : Nat) (0 h : Nat.lt x 5 = .true)\ndef P.a : P := .mk 4 (lt_s 4)\ndef P.b : P := .mk 4 rfl\ndef P.c (n : Nat) (h : Nat.lt n 5 = .true) : P := .mk n h\ndef P.d (n : Nat) (h : Nat.lt n 5 = .true) : P := .mk n (transp (fun t _ => Nat.lt n 5 = t) (refl (Nat.lt n 5)) h)\ndef inside : P.a = P.b := rfl\ndef insideSym (n : Nat) (h : Nat.lt n 5 = .true) : P.c n h = P.d n h := rfl\n"
+        okPriv "" pm
+        let sig := "(n : Nat) (h : Nat.lt n 5 = .true)"
+        okPriv pm "import Priv\ndef outside : P.a = P.b := rfl\n"
+        okPriv pm s!"import Priv\ndef outsideSym {sig} : P.c n h = P.d n h := rfl\n"
+        okPriv pm "import Priv\ndef o3 : P.a = P.b := refl P.a\n"
+        okPriv pm s!"import Priv\ndef o4 {sig} : P.c n h = P.d n h := refl (P.c n h)\n"
+        -- the other fields still count
+        let neq := "rfl: the two sides are not definitionally equal"
+        failsPriv pm "import Priv\ndef no : P.a = P.c 3 rfl := rfl\n" neq
+        failsPriv pm s!"import Priv\ndef no {sig} (m : Nat) (k : Nat.lt m 5 = .true) : P.c n h = P.c m k := rfl\n" neq
+        -- the kernel's environment never has the hidden definitions (only the elaborator's
+        -- view does): the kernel decides as before, and the elaborator now agrees with it
+        let lib ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) "import Priv\ndef outside : P.a = P.b := rfl\n"
+          { trustedModule := Tests.libModule, loader := fun m => if m == "Priv" then some pm else lib m }
+        check s.globals.hidden.isEmpty "the command state's globals have hidden definitions"
+        check (s.globals.elabView.hidden.contains "P") "the elaborator's view hides P"
+        check (s.globals.find? "outside" |>.isSome) "outside was not added" },
     { name := "rfl compares the two sides in the elaborator's view: no equation with a look-alike (13b)", run := fun _ => do
         let look := "import Priv\nstructure Look (A : Type) where\n  val : A\n"
         let neq := "rfl: the two sides are not definitionally equal"
