@@ -1631,9 +1631,10 @@ def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[
   let effLib ← IO.FS.readFile "lib/Eff.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
   let sysLib ← IO.FS.readFile "lib/Sys.wiz"
+  let textLib ← IO.FS.readFile "lib/Text.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
-    else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else none
+    else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else if m == "Text" then some textLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
