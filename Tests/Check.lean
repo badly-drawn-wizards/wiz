@@ -323,6 +323,19 @@ def structGroup : Group where
   exercise := "Exercise 4.7"
   cases := [
     { name := "mandatory sorts: every description template is a well-typed term of its type, its written sorts included", run := fun _ => templatesCheck },
+    -- (`Globals.sortHolesOk` is for elaboration-time checks only: the declaration check
+    -- rejects a hole whatever the flag says, `checkHeader`)
+    { name := "mandatory sorts: a declaration with a sort hole is rejected, even with sortHolesOk set", run := fun _ => do
+        let holed : Term Q := .pi "x" .default (.qlit .many) (.unit 1) (.unit 1) .hole
+        for flag in [false, true] do
+          let g : Globals Q := { sortHolesOk := flag }
+          for d in [({ name := "a", type := holed, value := none } : Decl Q),
+                    { name := "b", type := .sort 1, value := some holed },
+                    { name := "c", type := .unit 1, value := some .tt, impl := some (.letE "T" (.qlit .zero) (.sort 1) holed .tt) }] do
+            match addDecl g d with
+            | .ok _ => throw (IO.userError s!"{d.name} (sortHolesOk := {flag}): accepted with a hole")
+            | .error e => unless ((toString e).splitOn "without its sort").length > 1 do
+                throw (IO.userError s!"{d.name}: {e}") },
     { name := "the hint of μ/ν is checked before it is evaluated (a panicking or a looping hint is rejected)", run := fun _ => hintCase },
     { name := "transp at a proposition is rejected, at a type accepted (as eq and refl)", run := fun _ => do
         let P : Term Q := .lam "b" (.lam "e" (.unit 0))
