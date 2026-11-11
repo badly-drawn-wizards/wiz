@@ -1,0 +1,38 @@
+# The tag `nightly` (stage 26g): what `tower default nightly` installs. It moves to a master
+# commit only when the CI workflow succeeded on it (master can break with only green PRs:
+# two PRs green alone, in semantic conflict), and only once release.yml has published that
+# commit's snapshot-<sha> (it waits for it; release.yml runs alongside CI). A snapshot of a
+# red commit may exist: pins name it explicitly, nightly never points at it.
+name: nightly
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+
+concurrency:
+  # one at a time, in order; the forward-only check makes a late older run harmless
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: write # moving the tag, replacing the nightly release's assets
+  actions: read # whether release.yml still runs on the commit
+
+jobs:
+  nightly:
+    name: move nightly to a commit whose CI passed
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts
+      - name: nightly -> the snapshot of ${{ github.event.workflow_run.head_sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          NIGHTLY_WAIT: "3600"
+        run: scripts/release-snapshots.sh nightly "$SHA"

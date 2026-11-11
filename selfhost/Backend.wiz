@@ -131,6 +131,7 @@ partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
   | .tag k _ => .some (.venum k)
   | .star => .some (.vunit 1)
   | .letE A v b => quickType (TCtx.define c (eval (TCtx.env c) v) (eval (TCtx.env c) A)) b
+  | .letq _ A v b => quickType (TCtx.define c (eval (TCtx.env c) v) (eval (TCtx.env c) A)) b
   | .down x => match quickType c x with
     | .some xty => match whnf xty with
       | .vulift _ A => .some A
@@ -244,6 +245,19 @@ def eraseCheck (c : TCtx) (t : Tm) (ty : Val) : ER := match erasable c ty with
       | .ok b' => .ok (.letE v' b')
       | e => e
     | e => e
+  -- a `let` at a quantity: at 0 the value is never computed (the kernel checks it as an
+  -- erased position, so it may only be valid erased). The frontend doesn't produce
+  -- `letq` today; without this case it was "unsupported term"
+  | .letq q A v b =>
+    let vA := eval (TCtx.env c) A;
+    let vr : ER := match q with
+      | .qz => .ok .erased
+      | _ => eraseCheck c v vA;
+    match vr with
+    | .ok v' => match eraseCheck (TCtx.define c (eval (TCtx.env c) v) vA) b ty with
+      | .ok b' => .ok (.letE v' b')
+      | e => e
+    | e => e
   | _ => eraseInfer c t
   --|ex
   --| .err "not implemented"
@@ -259,6 +273,7 @@ def eraseInfer (c : TCtx) (t : Tm) : ER := match quickType c t with
       | .app _ _ => eraseApp c t
       | .ann x A => eraseCheck c x (eval (TCtx.env c) A)
       | .letE _ _ _ => eraseCheck c t ty
+      | .letq _ _ _ _ => eraseCheck c t ty
       | .fst p => match eraseInfer c p with
         | .ok p' => .ok (.proj 0 p')
         | e => e
@@ -358,11 +373,11 @@ def mangle (n : String) : String := match n with
 def nativeNames : List String :=
   .cons "Nat.zero" (.cons "Nat.succ" (.cons "Nat.add" (.cons "Nat.sub" (.cons "Nat.mul" (.cons "Nat.pred"
   (.cons "Nat.beq" (.cons "Nat.blt" (.cons "Nat.lt" (.cons "Nat.le" (.cons "Nat.toString"
-  (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "IO.argCount" (.cons "IO.arg" (.cons "Str.ofString"
+  (.cons "IO.ePrintln" (.cons "Process.exit" (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "IO.argCount" (.cons "IO.arg" (.cons "Str.ofString"
   (.cons "Array.empty" (.cons "Array.push" (.cons "Array.size" (.cons "Array.getD" (.cons "Array.set"
   (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo"
   (.cons "Nat.div" (.cons "Nat.mod" (.cons "Nat.pow" (.cons "Nat.land" (.cons "Nat.lor" (.cons "Nat.xor"
-  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))))
+  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))))))
 def elemStr (x : String) : List String → Bool
   | .nil => .false
   | .cons y rest => Bool.or (strEq x y) (elemStr x rest)
@@ -516,24 +531,28 @@ def chainE : Nat → ETm → ETms
 -- are recognised: a string becomes its code points in the C code, built once (strings
 -- are immutable). Spelled out, each character was a chain of applications (800 bytes of
 -- C), and the text was built again at every evaluation.
+-- (A number of this runtime is a 63-bit word, and its arithmetic wraps. The constant is
+-- computed the same way, whatever numbers the compiler itself runs on: built by the Lean
+-- compiler its numbers are unbounded, and `BOX(18446744073709551616UL)` is not C.)
+def natWord (n : Nat) : Nat := Nat.land n 9223372036854775807
 partial def natConst (t : ETm) : Option Nat := match t with
-  | .nat n => .some n
+  | .nat n => .some (natWord n)
   | .glob g => match strEq g "Nat.zero" with
     | .true => .some 0
     | .false => .none
   | .app f a => match f with
     | .glob g => match strEq g "Nat.succ" with
       | .true => match natConst a with
-        | .some n => .some (n + 1)
+        | .some n => .some (natWord (n + 1))
         | .none => .none
       | .false => .none
     | .app h x => match h with
       | .glob g => match Bool.or (strEq g "Nat.mul") (strEq g "Nat.add") with
         | .true => match natConst x with
           | .some m => match natConst a with
-            | .some n => .some (match strEq g "Nat.mul" with
+            | .some n => .some (natWord (match strEq g "Nat.mul" with
               | .true => m * n
-              | .false => m + n)
+              | .false => m + n))
             | .none => .none
           | .none => .none
         | .false => .none
@@ -1293,6 +1312,22 @@ def staticNul (tag : Nat) (items : ETms) : Option Nat := match tag with
     | .nil => .none
   | .succ _ => .none
 -- an object: in a reuse context with no wish open, it wishes for a cell (`w`)
+-- a term built only from constants (numbers, `◾`, closed `λ`s, such objects)
+mutual
+def closedConstE (t : ETm) : Bool := match t with
+  | .nat _ => .true
+  | .erased => .true
+  | .lam _ => match freeE t .nil with
+    | .nil => .true
+    | .cons _ _ => .false
+  | .obj _ fs => closedConstEs fs
+  | _ => .false
+def closedConstEs (ts : ETms) : Bool := match ts with
+  | .nil => .true
+  | .cons t rest => match closedConstE t with
+    | .true => closedConstEs rest
+    | .false => .false
+end
 def objC (w : String) (k n : Nat) (atoms : List Doc) : Doc := match strEq w "" with
   | .true => .t "mkobj(" ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat n ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})"
   | .false => .t ("reuseobj(" +++ w +++ ", ") ⧺ Doc.nat k ⧺ .t ", " ⧺ Doc.nat n ⧺ .t ", (V[]){" ⧺ joinDocs atoms ⧺ .t "})"
@@ -1395,9 +1430,15 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
       match staticNul tag items with
       -- (a constant `(k, ◾)`: the runtime's static object, `nul(k)`)
       | .some kk => .mk (.t "") (.t ("nul(" +++ Nat.toString kk +++ ")")) live st
-      | .none => match wish with
-        | .mk w st0 => match rcEs re st0 names d live items with
-          | .mk fc atoms fl st1 => bindTo st1 fc (objC w tag n atoms) fl
+      | .none => match closedConstEs items with
+        -- (built only from constants: built once, a constant)
+        | .true => match CG.fresh st "cst" with
+          | .mk x st0 => match rcEs (RE.inner re) st0 .nil 0 .nil items with
+            | .mk fc atoms _ st1 => .mk (.t ("static V " +++ x +++ " = 0; if (!" +++ x +++ ") { ") ⧺ fc ⧺ .t (x +++ " = ") ⧺ objC "" tag n atoms ⧺
+                .t ("; rt_root(&" +++ x +++ "); } inc(" +++ x +++ "); ")) (.t x) live st1
+        | .false => match wish with
+          | .mk w st0 => match rcEs re st0 names d live items with
+            | .mk fc atoms fl st1 => bindTo st1 fc (objC w tag n atoms) fl
   | .letE v b => match CG.fresh st "l" with
     | .mk x st1 => match rcE re st1 (.cons x names) (d + 1) live b with
       | .mk bc ba bl st2 => match lvMem d bl with
@@ -1493,7 +1534,10 @@ def rcLam (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) 
             | .cons _ _ => bindTo st3 cc (.t ("mkthunk(" +++ fname +++ ", " +++ Nat.toString nc +++
                 ", (V[]){" +++ joinC (capsCode names caps) +++ "})")) cl
           | .false => match caps with
-            | .nil => bindTo st3 cc (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString k +++ ", 0, NULL)")) cl
+            -- (capturing nothing: one closure, built once, a constant)
+            | .nil => match CG.fresh st3 "clo" with
+              | .mk x st4 => .mk (cc ⧺ .t ("static V " +++ x +++ " = 0; if (!" +++ x +++ ") { " +++ x +++ " = mkfun(" +++ fname +++ ", " +++
+                  Nat.toString k +++ ", 0, NULL); rt_root(&" +++ x +++ "); } inc(" +++ x +++ "); ")) (.t x) cl st4
             | .cons _ _ => bindTo st3 cc (.t ("mkfun(" +++ fname +++ ", " +++ Nat.toString (nc + k) +++ ", " +++ Nat.toString nc +++
                 ", (V[]){" +++ joinC (capsCode names caps) +++ "})")) cl
 -- a saturated call of `d_g`, then the rest applied: a variable in a borrowed position
@@ -1869,6 +1913,52 @@ def consMap : StrMap ETm → List Erased → StrMap ETm
     | .succ _ => match leafE (underLams (lamsOf e) e) with
       | .true => consMap (StrMap.insert m (Str.ofString n) e) rest
       | .false => consMap m rest
+-- **Small branching functions inlined, their arguments suspended** (reference counting
+-- mode): a global whose body, under its `λ`s, is a `case` on (a field of) a parameter
+-- with cheap branches (`Bool.and`, `Bool.or`, `pick b x y`) is put in place where it is
+-- applied to all its arguments, each bound by a marked `let` (`lazy`), so the demand
+-- analysis evaluates an argument only in the branches that use it: `Bool.and a b` no
+-- longer evaluates `b` when `a` is false (call by value did; `b` is pure, so this only
+-- changes the cost). Marked in the constructor map as `lazyInl body`.
+def smallBranchE : ETm → Bool
+  | .glob _ => .true
+  | t => leafE t
+def smallBranches : ETms → Bool
+  | .nil => .true
+  | .cons t rest => match smallBranchE t with
+    | .true => smallBranches rest
+    | .false => .false
+def lazyInlOf : ETm → Option ETm
+  | .prim op as => match strEq op "lazyInl" with
+    | .true => match as with
+      | .cons b rest => match rest with
+        | .nil => .some b
+        | .cons _ _ => .none
+      | .nil => .none
+    | .false => .none
+  | _ => .none
+def caseShaped (k : Nat) (b : ETm) : Bool := match b with
+  | .case s bs => match projRoot s with
+    | .var i => Bool.and (Nat.lt i k) (smallBranches bs)
+    | _ => .false
+  | _ => .false
+def caseMap : StrMap ETm → List Erased → StrMap ETm
+  | m, .nil => m
+  | m, .cons (.mk n e) rest => match lamsOf e with
+    | .zero => caseMap m rest
+    | .succ _ => match caseShaped (lamsOf e) (underLams (lamsOf e) e) with
+      | .true => caseMap (StrMap.insert m (Str.ofString n) (.prim "lazyInl" (etms1 e))) rest
+      | .false => caseMap m rest
+-- `f a` with `f` a lambda: `a` put in place when cheap, else bound by a marked `let`
+def betaLz : ETm → ETm → ETm
+  | .lam b, a => match cheapE a with
+    | .true => substE a 0 b
+    | .false => .letE (.prim "lazy" (etms1 a)) b
+  | .letE v b, a => .letE v (betaLz b (liftE 1 0 a))
+  | f, a => .app f a
+def betaLzL : ETm → List ETm → ETm
+  | f, .nil => f
+  | f, .cons a rest => betaLzL (betaLz f a) rest
 def eappsL : ETm → List ETm → ETm
   | f, .nil => f
   | f, .cons a rest => eappsL (.app f a) rest
@@ -1880,11 +1970,17 @@ def inlConst (t body : ETm) : ETm := match isNulE body with
   | .true => body
   | .false => t
 -- `h args`, `h` a global and `body` its definition if it is put in place (else `◾`)
-def inlApp (h : ETm) (args : List ETm) (body : ETm) : ETm :=
+def inlApp (h : ETm) (args : List ETm) (body0 : ETm) : ETm :=
+  let lz := lazyInlOf body0;
+  let body := match lz with
+    | .some b => b
+    | .none => body0;
   let k := lamsOf body;
   match Nat.lt 0 k with
   | .true => match Nat.le k (lenL args) with
-    | .true => eappsL (betaL body (takeL k args)) (dropL k args)
+    | .true => eappsL (match lz with
+      | .some _ => betaLzL body (takeL k args)
+      | .none => betaL body (takeL k args)) (dropL k args)
     | .false => eappsL h args
   | .false => eappsL h args
 mutual
@@ -2088,6 +2184,178 @@ def wrapDecs : Nat → List Bool → String
     | .true => "dec(a[" +++ Nat.toString i +++ "]); " +++ wrapDecs (i + 1) rest
     | .false => wrapDecs (i + 1) rest
 
+-- **Unmemoised hypotheses** (reference counting mode). The method of an `ind` receives
+-- its hypotheses as a chain of suspensions (`T_HYP`: a cell and a closure per recursive
+-- field, each computed once when first read). When the method reads them only as
+-- hypotheses (paths `hs.1ʲ.0`, never `hs` or a tail passed on) and either reads each at
+-- most once on every path, not under a `λ`, or is itself a `λ` (a function-valued
+-- motive: a read then only rebuilds a closure), memoising buys nothing: `indv` passes
+-- a view of the payload instead (one object per call) and a read `hypAt hs j` computes
+-- the `j`-th hypothesis where it stands (rt.c `p_hypAt`).
+-- `proj 1ʲ (var c)`: `j`
+def hypTail (c : Nat) : ETm → Option Nat
+  | .var i => match Nat.beq i c with
+    | .true => .some 0
+    | .false => .none
+  | .proj k t => match Nat.beq k 1 with
+    | .true => match hypTail c t with
+      | .some j => .some (j + 1)
+      | .none => .none
+    | .false => .none
+  | _ => .none
+def hypRead (c j : Nat) : ETm := .prim "hypAt" (etms2 (.var c) (.nat j))
+-- a read `hypAt (var c) j`: `j`
+def hypReadOf (c : Nat) (t : ETm) : Option Nat := match t with
+  | .prim op as => match strEq op "hypAt" with
+    | .true => match as with
+      | .cons v rest => match v with
+        | .var i => match Nat.beq i c with
+          | .true => match rest with
+            | .cons n _ => match n with
+              | .nat j => .some j
+              | _ => .none
+            | .nil => .none
+          | .false => .none
+        | _ => .none
+      | .nil => .none
+    | .false => .none
+  | _ => .none
+mutual
+-- the reads of the hypotheses `hs` (the variable `c`) rewritten, if `hs` is used only so
+def hypRw (c : Nat) (t : ETm) : Option ETm := match t with
+  | .var i => match Nat.beq i c with
+    | .true => .none
+    | .false => .some t
+  | .proj k x => match Nat.beq k 0 with
+    | .true => match hypTail c x with
+      | .some j => .some (hypRead c j)
+      | .none => match hypRw c x with
+        | .some x' => .some (.proj k x')
+        | .none => .none
+    | .false => match hypRw c x with
+      | .some x' => .some (.proj k x')
+      | .none => .none
+  | .lam b => match hypRw (c + 1) b with
+    | .some b' => .some (.lam b')
+    | .none => .none
+  | .app f a => match hypRw c f with
+    | .some f' => match hypRw c a with
+      | .some a' => .some (.app f' a')
+      | .none => .none
+    | .none => .none
+  | .letE v b => match hypRw c v with
+    | .some v' => match hypRw (c + 1) b with
+      | .some b' => .some (.letE v' b')
+      | .none => .none
+    | .none => .none
+  | .obj k fs => match hypRwEs c fs with
+    | .some fs' => .some (.obj k fs')
+    | .none => .none
+  | .case s bs => match hypRw c s with
+    | .some s' => match hypRwEs c bs with
+      | .some bs' => .some (.case s' bs')
+      | .none => .none
+    | .none => .none
+  | .prim op as => match hypRwEs c as with
+    | .some as' => .some (.prim op as')
+    | .none => .none
+  | _ => .some t
+def hypRwEs (c : Nat) (ts : ETms) : Option ETms := match ts with
+  | .nil => .some .nil
+  | .cons t rest => match hypRw c t with
+    | .some t' => match hypRwEs c rest with
+      | .some r' => .some (.cons t' r')
+      | .none => .none
+    | .none => .none
+end
+mutual
+-- the hypotheses read (`j`s, with repeats)
+def hypJs (c : Nat) (t : ETm) (acc : List Nat) : List Nat := match hypReadOf c t with
+  | .some j => .cons j acc
+  | .none => match t with
+    | .lam b => hypJs (c + 1) b acc
+    | .app f a => hypJs c f (hypJs c a acc)
+    | .letE v b => hypJs c v (hypJs (c + 1) b acc)
+    | .obj _ fs => hypJsEs c fs acc
+    | .proj _ x => hypJs c x acc
+    | .case s bs => hypJs c s (hypJsEs c bs acc)
+    | .prim _ as => hypJsEs c as acc
+    | _ => acc
+def hypJsEs (c : Nat) (ts : ETms) (acc : List Nat) : List Nat := match ts with
+  | .nil => acc
+  | .cons t rest => hypJs c t (hypJsEs c rest acc)
+end
+mutual
+-- the reads of hypothesis `j` as the variable `c` itself, the other reads `◾` (to count
+-- them with `dmdA`)
+def hypOnly (c j : Nat) (t : ETm) : ETm := match hypReadOf c t with
+  | .some j' => match Nat.beq j j' with
+    | .true => .var c
+    | .false => .erased
+  | .none => match t with
+    | .lam b => .lam (hypOnly (c + 1) j b)
+    | .app f a => .app (hypOnly c j f) (hypOnly c j a)
+    | .letE v b => .letE (hypOnly c j v) (hypOnly (c + 1) j b)
+    | .obj k fs => .obj k (hypOnlyEs c j fs)
+    | .proj k x => .proj k (hypOnly c j x)
+    | .case s bs => .case (hypOnly c j s) (hypOnlyEs c j bs)
+    | .prim op as => .prim op (hypOnlyEs c j as)
+    | _ => t
+def hypOnlyEs (c j : Nat) (ts : ETms) : ETms := match ts with
+  | .nil => .nil
+  | .cons t rest => .cons (hypOnly c j t) (hypOnlyEs c j rest)
+end
+-- each hypothesis read at most once on every path, not under a `λ` (`body` under the
+-- method's three `λ`s: `hs` is level 2)
+def hypsOnce (body : ETm) : List Nat → Bool
+  | .nil => .true
+  | .cons j rest => match Nat.lt 1 (Dmd.n (denvAt 2 (dmdA 3 (hypOnly 0 j body)))) with
+    | .true => .false
+    | .false => hypsOnce body rest
+-- the method `λ i pl hs. body` with its reads rewritten, if it may take a view
+def viewMethod (m : ETm) : Option ETm := match m with
+  | .lam m1 => match m1 with
+    | .lam m2 => match m2 with
+      | .lam body => match hypRw 0 body with
+        | .some body' =>
+          let ok := match body with
+            | .lam _ => .true
+            | _ => hypsOnce body' (hypJs 0 body' .nil);
+          match ok with
+          | .true => .some (.lam (.lam (.lam body')))
+          | .false => .none
+        | .none => .none
+      | _ => .none
+    | _ => .none
+  | _ => .none
+mutual
+def indvE (t : ETm) : ETm := match t with
+  | .prim op as => match strEq op "ind" with
+    | .true => match indvEs as with
+      | .cons nat r1 => match r1 with
+        | .cons D r2 => match r2 with
+          | .cons m r3 => match viewMethod m with
+            | .some m' => .prim "indv" (.cons nat (.cons D (.cons m' r3)))
+            | .none => .prim op (.cons nat r1)
+          | .nil => .prim op (.cons nat r1)
+        | .nil => .prim op (.cons nat r1)
+      | .nil => .prim op .nil
+    | .false => .prim op (indvEs as)
+  | .lam b => .lam (indvE b)
+  | .app f a => .app (indvE f) (indvE a)
+  | .letE v b => .letE (indvE v) (indvE b)
+  | .obj k fs => .obj k (indvEs fs)
+  | .proj i x => .proj i (indvE x)
+  | .case s bs => .case (indvE s) (indvEs bs)
+  | _ => t
+def indvEs (ts : ETms) : ETms := match ts with
+  | .nil => .nil
+  | .cons t rest => .cons (indvE t) (indvEs rest)
+end
+def indvGlobals : List Erased → List Erased
+  | .nil => .nil
+  | .cons (.mk n e) rest => .cons (.mk n (indvE e)) (indvGlobals rest)
+
 -- the same under reference counting: a constant global is built by `init_g` and kept
 -- (a root, released at exit); `get_g()` returns a new reference
 def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → List Erased → Code
@@ -2121,7 +2389,7 @@ def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       let es1 := pushGlobals es0;
-      let es := decideGlobals (inlGlobals (consMap StrMap.empty es1) es1);
+      let es := indvGlobals (decideGlobals (inlGlobals (caseMap (consMap StrMap.empty es1) es1) es1));
       let sigs : StrMap (List Bool) := match borrow with
         | .true => sigsFix (sigsInit StrMap.empty es) 0 es
         | .false => StrMap.empty;

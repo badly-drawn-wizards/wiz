@@ -543,7 +543,11 @@ partial def vEcase (g : Globals R) (z : Name) (m : Closure R) (s : Val R) (env :
   let s := whnf s
   --<sol
   match s with
-  | .tag _ i => eval g env (bs[i]?.getD (.var 0))
+  -- (a tag beyond the branches is ill-typed, like any other scrutinee that is not a tag:
+  -- it was `var 0`, the innermost variable of `env`, silently)
+  | .tag _ i => match bs[i]? with
+    | some b => eval g env b
+    | none => panic! "vEcase: tag out of range"
   | .neutral h sp => .neutral h (sp.push (.ecase z m env bs))
   | _ => panic! "vEcase: ill-typed"
   --|ex

@@ -8,7 +8,8 @@ import Infoview
 -- The layout, colours, navigation and protocol are `lib/Infoview.wiz`; the terminal
 -- and socket system calls are `infoview/term.c`. Running it: docs/stages/11-tooling.md, 11m.
 
--- ## Foreign functions (infoview/term.c)
+-- ## Foreign functions (infoview/term.c, compiled and linked with the program: 9f)
+link_c "term.c"
 extern "iv_term_open" Term.open : IO Nat
 extern "iv_term_close" Term.close : IO Unit
 extern "iv_term_cols" Term.cols : IO Nat
@@ -85,7 +86,7 @@ structure St where
   line : Nat
   col : Nat
   session : Nat
-  goals : Option (List Goal)
+  goals : Option TacView
   term : Option Goal
   sel : Nat
   scroll : Nat
@@ -100,7 +101,7 @@ def St.setConn (s : St) (fd : Nat) (buf : List Char) (next : Nat) (pending : Lis
   St.mk fd buf next pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info s.status s.width s.height s.got s.opts
 def St.setDoc (s : St) (uri : String) (line col session : Nat) : St :=
   St.mk s.fd s.buf s.next s.pending uri line col session s.goals s.term s.sel s.scroll s.info s.status s.width s.height s.got s.opts
-def St.setGoals (s : St) (goals : Option (List Goal)) (session : Nat) : St :=
+def St.setGoals (s : St) (goals : Option TacView) (session : Nat) : St :=
   St.mk s.fd s.buf s.next s.pending s.uri s.line s.col session goals s.term 0 0 .nil s.status s.width s.height (s.got + 1) s.opts
 def St.setTerm (s : St) (term : Option Goal) : St :=
   St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals term 0 0 .nil s.status s.width s.height (s.got + 1) s.opts
@@ -113,7 +114,7 @@ def St.setStatus (s : St) (status : String) : St :=
 def St.setSize (s : St) (w h : Nat) : St :=
   St.mk s.fd s.buf s.next s.pending s.uri s.line s.col s.session s.goals s.term s.sel s.scroll s.info s.status w h s.got s.opts
 
-def St.view (s : St) : View := View.ofState s.width s.goals s.term
+def St.view (s : St) : View := View.ofTacState s.width s.goals s.term
 -- rows for the goals: all but the status bar, the rule and the info line
 def St.bodyRows (s : St) : Nat := s.height - 3
 
@@ -193,7 +194,7 @@ def St.onResponse (s : St) (j : Json) : IO St :=
     match Nat.beq kind 1 with
     | .true => match Json.isNull r with
       | .true => IO.pure (St.setGoals s1 .none s1.session)
-      | .false => IO.pure (St.setGoals s1 (.some (Goals.ofJson r)) (Json.getNat r "session"))
+      | .false => IO.pure (St.setGoals s1 (.some (TacView.ofJson r)) (Json.getNat r "session"))
     | .false => match Nat.beq kind 2 with
       | .true => match Json.get r "goal" with
         | .some g => IO.pure (St.setTerm s1 (.some (Goal.ofJson g)))

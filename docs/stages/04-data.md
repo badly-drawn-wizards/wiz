@@ -45,13 +45,40 @@ general eliminations (`Elim`: application, `.1`, `.2`, `let (x, y) := …`, `abs
 These changes landed in stage 1's files. Stage 1's exercises keep their numbers, and
 the new constructor cases inside them are labelled 4.3–4.8.
 
-Quantities: `(1 x : A) × B` is a pair whose first field is linear. `p.1` and `p.2`
-each use `p`, so a linear pair is consumed with `let 1 (x, y) := p; …`. `p.2` drops the
-first field, so if that field is linear it counts `p` as used ω times (only an
-unrestricted pair may drop a linear field); `p.1` drops the second component, which the
-projection rule doesn't track. An erased field
-(`(0 n : A) × B`) can't be projected at all. Both projections are allowed in erased
-positions (`Ctx.erased`).
+Quantities: `(1 x : A) × B` is a pair whose first field is linear. **Projections are
+available only on unrestricted pairs**: `p.1` keeps one component and drops the other, so
+`p.1` and `p.2` use `p` ω times, whatever the component types, and so does a projection
+of an expression (`(act w).1` uses `w` ω times). A pair held at quantity 1 (or at a
+quantity variable) is taken apart with the split form, which binds both components:
+
+```
+axiom Tok : Type
+def swap {A : Type} (1 p : A × Tok) : (1 t : Tok) × A := let 1 (a, t) := p; (t, a)
+def bad  {A : Type} (1 p : A × Tok) : A := p.1
+-- error: cannot project p.1: a projection needs an unrestricted pair (it keeps one
+-- component and drops the other), but this one uses p, which has quantity 1; take the
+-- pair apart with `let 1 (x, y) := p; …` instead
+```
+
+Write the quantity: `let (x, y) := p` splits at ω and uses `p` ω times too. An erased
+field (`(0 n : A) × B`) can't be projected at runtime at all. In erased positions (types,
+proofs, arguments to `0` binders, the value of a `let 0`, a `0` field of a pair being
+built) every projection is allowed and uses nothing: `g p.1 p` is fine for
+`g : (0 a : A) → (1 p : A × Tok) → …`. (CoreSpec §7.1; Status.md, Q1/R1.)
+
+A **structure** is such a Σ, and `s.field` is a projection: so a structure can only be
+held unrestricted for now. `(1 g : Guard)` can be passed along, but no field of it can
+be read, `match` doesn't take it apart, and a nested `let 1 (x, y)` leaves the
+structure's marker tail unconsumed. Use a tuple for linear data, e.g. `Nat × Tok`
+instead of `structure Guard where n : Nat; tok : Tok`. (Linear matching is not there
+yet: `/workspace/wiz-notes/wishful/linear-case.md`.)
+This includes a one-field wrapper (`structure Coin where value : Nat`, read with
+`c.value` at 1), which worked before: write it as `def Coin : Type := Nat`. The planned
+form is `let 1 (.mk a b) := s`, compiled to nested splits
+(`/workspace/wiz-notes/linear-case-design.md`). The eliminators follow the same rule:
+`ind`, `sfix`, `scase` (and `coit`/`scofix` for their seed) bind what they take apart at
+ω, so their scrutinee counts ω times and a value of an inductive type held at 1 can be
+passed on but not eliminated; `match` already took its scrutinee at ω. The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator.
 
 | #   | Where              | What                                                       |
 |-----|--------------------|------------------------------------------------------------|

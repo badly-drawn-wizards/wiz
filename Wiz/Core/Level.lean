@@ -51,7 +51,9 @@ def instParams (ps : List String) (us : List Level) : Level → Level
   | succ l => succ (instParams ps us l)
   | max a b => max (instParams ps us a) (instParams ps us b)
   | imax a b => imax (instParams ps us a) (instParams ps us b)
-  | l => l
+  -- (the leaves by name, here and below: a new constructor must get its own case)
+  | zero => zero
+  | mvar m => mvar m
 
 /-- Replace level metavariables using `f`. -/
 partial def instMVars (f : Nat → Option Level) : Level → Level
@@ -61,19 +63,20 @@ partial def instMVars (f : Nat → Option Level) : Level → Level
   | succ l => succ (instMVars f l)
   | max a b => max (instMVars f a) (instMVars f b)
   | imax a b => imax (instMVars f a) (instMVars f b)
-  | l => l
+  | zero => zero
+  | param n => param n
 
 def params : Level → List String
   | param n => [n]
   | succ l => params l
   | max a b | imax a b => params a ++ params b
-  | _ => []
+  | zero | mvar _ => []
 
 def hasMVar : Level → Bool
   | mvar _ => true
   | succ l => hasMVar l
   | max a b | imax a b => hasMVar a || hasMVar b
-  | _ => false
+  | zero | param _ => false
 
 /-! ## Normal forms
 

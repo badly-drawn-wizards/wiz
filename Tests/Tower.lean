@@ -169,9 +169,9 @@ def group : Group where
         match ← Tower.install e "v1" (some "release") (force := true) with
         | .error m => checkHas m "sha256"
         | .ok _ => throw (IO.userError "installed a tarball with the wrong checksum")
-        -- a branch has no release
+        -- a branch's commit has no snapshot here
         match ← Tower.install e "main" (some "release") with
-        | .error m => checkHas m "not a tag"
+        | .error m => checkHas m "no release snapshot"; checkHas m "--source source"
         | .ok _ => throw (IO.userError "installed a release of a branch")
         -- link the unpacked tarball (a toolchain layout) and use it by name
         tower e ["toolchain", "link", "mine", (x / s!"wiz-{a}-linux").toString]
@@ -179,6 +179,66 @@ def group : Group where
         checkHas (← runOut (e.binDir / "wiz").toString ["+mine", "x"]) "release wiz -I"
         tower e ["default", "mine"]
         checkHas (← runOut (e.binDir / "grail").toString ["y"] (← IO.FS.createTempDir)) "release grail y" },
+    { name := "release snapshots: per-commit tarballs, nightly by its tag, pruned commits", run := fun _ => do
+        let (bare, work) ← upstream
+        let a ← Tower.arch
+        let fake ← mkTree [("wiz", "#!/bin/sh\necho snapshot wiz \"$@\"\n"), ("grail", "#!/bin/sh\necho snapshot grail\n")]
+        for b in ["wiz", "grail"] do Tower.makeExecutable (fake / b)
+        let rel ← IO.FS.createTempDir
+        let c1 ← gitIn work ["rev-parse", "v1^{commit}"]
+        let c2 ← gitIn work ["rev-parse", "HEAD"]
+        -- what release.yml publishes for a master commit: snapshot-SHA, its tag, and nightly
+        let snapshot (c : String) : IO Unit := do
+          IO.FS.createDirAll (rel / s!"snapshot-{c}")
+          let _ ← runOut "sh" ["scripts/release-tarball.sh", (rel / s!"snapshot-{c}" / Tower.tarballName a).toString, fake.toString, c]
+          let _ ← gitIn work ["push", "--quiet", bare.toString, s!"{c}:refs/tags/snapshot-{c}"]
+        snapshot c1; snapshot c2
+        let _ ← gitIn work ["push", "--quiet", bare.toString, s!"{c2}:refs/tags/nightly", s!"{c1}:refs/tags/keep/demo"]
+        let e ← mkEnv
+        tower e ["set", "git", bare.toString]
+        tower e ["set", "releases", rel.toString]
+        tower e ["set", "nightly-ref", "main"]
+        tower e ["set", "source", "release"]
+        -- a pinned commit (full sha: no ls-remote needed) and a short one (found by its tag)
+        tower e ["toolchain", "install", s!"main@{c2}"]
+        checkHas (← readFile? (e.tcDir s!"main@{c2}" / "tower.info")) s!"commit {c2}"
+        checkHas (← runOut (e.tcDir s!"main@{c2}" / "bin/wiz").toString ["x"]) "snapshot wiz"
+        tower e ["toolchain", "install", s!"main@{c1.take 9}"]
+        checkHas (← readFile? (e.tcDir s!"main@{c1.take 9}" / "tower.info")) s!"commit {c1}"
+        -- a bare commit, with auto: no nix here means the release comes first
+        tower e ["toolchain", "install", c1, "--source", "auto"]
+        checkHas (← readFile? (e.tcDir c1 / "tower.info")) "source release"
+        -- a keep/ tag is a spec for its commit's snapshot, not a release of its own
+        tower e ["toolchain", "install", "keep/demo"]
+        checkHas (← readFile? (e.tcDir "keep/demo" / "tower.info")) s!"commit {c1}"
+        -- a snapshot is only installed with its checksum
+        IO.FS.removeFile (rel / s!"snapshot-{c1}" / (Tower.tarballName a ++ ".sha256"))
+        match ← Tower.install e s!"main@{c1}" (force := true) with
+        | .error m => checkHas m "sha256"
+        | .ok _ => throw (IO.userError "installed a snapshot without its checksum")
+        -- nightly: the commit of the tag nightly, which may be behind the branch
+        IO.FS.writeFile (work / "FakeWiz.lean") (fakeMain "wiz" "3")
+        let _ ← gitIn work ["commit", "--quiet", "-am", "v3"]
+        let c3 ← gitIn work ["rev-parse", "HEAD"]
+        let _ ← gitIn work ["push", "--quiet", bare.toString, "HEAD:refs/heads/main"]
+        tower e ["toolchain", "install", "nightly"]
+        checkHas (← readFile? (e.tcDir "nightly" / "tower.info")) s!"commit {c2}"
+        -- ... so update leaves it alone until the tag moves (it would fail: no snapshot of c3)
+        tower e ["update", "nightly"]
+        checkHas (← readFile? (e.tcDir "nightly" / "tower.info")) s!"commit {c2}"
+        -- a commit with no snapshot (unpublished, pruned or off master): what is retained, and the alternatives
+        match ← Tower.install e s!"main@{c3}" with
+        | .error m =>
+          checkHas m s!"no release snapshot of commit {c3}"
+          checkHas m s!"nightly (master@{c2})"
+          checkHas m s!"keep/demo (master@{c1})"
+          checkHas m "--source source"
+          checkHas m "--source nix"
+          checkHas m s!"workflow_dispatch with commit={c3}"
+        | .ok _ => throw (IO.userError "installed a commit without a snapshot")
+        match ← Tower.install e s!"main@{(c3.take 8)}" with
+        | .error m => checkHas m "no snapshot"; checkHas m "keep/demo"
+        | .ok _ => throw (IO.userError "installed a short commit without a snapshot") },
     { name := "from Nix: a flake's package, linked as a GC root", run := fun _ => do
         unless ← Tower.have? "nix" do IO.println "    (no nix: skipped)"; return
         let (bare, _) ← upstream

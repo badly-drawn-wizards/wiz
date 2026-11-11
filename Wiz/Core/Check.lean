@@ -59,16 +59,18 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── pair      (check only)
     Γ ⊢ (a, b) ⇐ (q x : A) × B ⊣ q·U₁ + U₂
 
-    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q  (or Γ is erased)
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 1 q
     ──────────────────────────────── fst       (an erased field can't be projected at runtime)
-    Γ ⊢ t.1 ⇒ A ⊣ U
-    (`t.1` drops `t.2`: if `B` holds a field that must be used (`mustUse`), `t.1 ⊣ ω·U`,
-    so only an unrestricted pair may drop it)
+    Γ ⊢ t.1 ⇒ A ⊣ ω·U
 
-    Γ ⊢ t ⇒ (q x : A) × B ⊣ U     le 0 q  (or Γ is erased)
-    ──────────────────────────────── snd       (`t.2` drops the first field: it must allow that)
-    Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ U
-    (otherwise `t.2 ⊣ ω·U`: only an unrestricted pair, whose field is ω·q, may drop it)
+    Γ ⊢ t ⇒ (q x : A) × B ⊣ U
+    ──────────────────────────────── snd
+    Γ ⊢ t.2 ⇒ B[t.1/x] ⊣ ω·U
+
+    (R1: projections are available only on unrestricted pairs. A projection keeps one
+    component and drops the other, so `t` is used ω times, whatever the component types
+    and whether `t` is a variable or not (`projUsage`). In an erased position, Γ⁰, both
+    rules have no side condition and the usage is `U`: nothing is consumed there.)
 
     Γ ⊢ s ⇒ (p x : A) × B ⊣ U₁     Γ, z : (p x : A) × B ⊢ M type
     Γ, x :(q·p) A, y :q B ⊢ b ⇐ M[(x, y)/z] ⊣ (u_y :: u_x :: U₂)
@@ -100,7 +102,7 @@ Two mutually recursive judgments, each also producing a **usage vector**:
     ──────────────────────────────── cast
     Γ ⊢ cast A B e t ⇒ B ⊣ U
 
-    Γ ⊢ a, b ⇐ A    Γ ⊢ P ⇐ (b :0 A) → (_ :0 a = b) → Prop
+    Γ ⊢ A type@l (isNeverZero l)   Γ ⊢ a, b ⇐ A    Γ ⊢ P ⇐ (b :0 A) → (_ :0 a = b) → Prop
     Γ ⊢ p ⇐ P a (refl a)    Γ ⊢ e ⇐ (a = b)
     ──────────────────────────────── transp
     Γ ⊢ transp A a P p b e ⇒ P b e ⊣ 0ₙ
@@ -116,24 +118,27 @@ Proofs carry no usage: they are erased, and conversion never looks at them.
     Γ ⊢ ecase t [b…] ⇒ M[t] ⊣ U + (V₀ ⊔ … ⊔ Vₙ)
 
     Γ ⊢ I type@(l+1) ⇒ Γ ⊢ Desc.{l} I ⇒ Type (l+1); ret/arg/rec/hrec check against it
-    Γ ⊢ Desc.elim P mret marg mrec mhrec D ⇒ P D                 (method types: `delimMethodTys`)
+    Γ ⊢ Desc.elim P mret marg mrec mhrec D ⇒ P D ⊣ ω·(Uₘ + U_D)   (method types: `delimMethodTys`)
     Γ ⊢ μ.{l} I D i ⇒ Type l           Γ ⊢ con x ⇐ μ D i  if  Γ ⊢ x ⇐ ⟦D⟧ (μ D) i
-    Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·Uₘ + Uₓ                    (`indMotiveTy`, `indMethodTy`)
+    Γ ⊢ ind P m i x ⇒ P i x ⊣ ω·(Uₘ + Uₓ)                  (`indMotiveTy`, `indMethodTy`)
     Γ ⊢ ν.{l} I D i ⇒ Type l           Γ ⊢ out x ⇒ ⟦D⟧ (ν D) i
     (at a size: Γ ⊢ μ^s.{l} I D i ⇒ Type l and Γ ⊢ ν^s.{l} I D i ⇒ Type l if also Γ⁰ ⊢ s ⇐ Size)
-    Γ ⊢ coit S step i s ⇒ ν D i ⊣ ω·U_step + U_s
+    Γ ⊢ coit S step i s ⇒ ν D i ⊣ ω·(U_step + U_s)
 
 ## Sizes (stage 4f)
 
     Γ ⊢ Size, Size< s ⇒ Type      Γ ⊢ ∞, ↑s ⇒ Size      (s is checked erased: Γ⁰ ⊢ s ⇐ Size)
     Γ⁰ ⊢ t ⇐ Size   t is below s (`sizeBelow`; ∞ is not below itself)  ⇒  Γ ⊢ t ⇐ Size< s ⊣ 0ₙ
     Γ ⊢ con x ⇐ μ^s D i  if  s = ↑s' and Γ ⊢ x ⇐ ⟦D⟧ (μ^s' D) i;  cocon x ⇐ ν^s D i likewise
-    Γ ⊢ sfix P f s i x ⇒ P i x ⊣ ω·U_f + Uₓ        (`sfixFunTy`; x ⇐ μ^s D i)
-    Γ ⊢ scase P m s i x ⇒ P i x ⊣ Uₘ + Uₓ          (`scaseMethodTy`: the method runs once)
-    Γ ⊢ scofix A f s i a ⇒ ν^s D i ⊣ ω·U_f + Uₐ    (`scofixFunTy`)
+    Γ ⊢ sfix P f s i x ⇒ P i x ⊣ ω·(U_f + Uₓ)      (`sfixFunTy`; x ⇐ μ^s D i)
+    Γ ⊢ scase P m s i x ⇒ P i x ⊣ Uₘ + ω·Uₓ        (`scaseMethodTy`: the method runs once)
+    Γ ⊢ scofix A f s i a ⇒ ν^s D i ⊣ ω·(U_f + Uₐ)  (`scofixFunTy`)
 
 A `Π`/`Σ` may carry its sort; if it does, the sort must be the one the rule computes
 (`checkSortNote`).
+
+The scrutinee `x` (the seed `s`, `a`) of these eliminators is scaled by ω as well: the
+methods bind its payload at ω, so they may copy or ignore it.
 
 A method may run once per node, so its usage is scaled by ω (`QRig.many?`, the rig's
 unrestricted quantity; a rig without one, like exact counting, rejects methods that use
@@ -141,9 +146,12 @@ local variables outside erased positions). Branches of `ecase` are alternatives,
 case uses the *join* of its branches' usages: with `{0, 1, ω}` a linear variable must be used the same way in
 every branch, and an ω variable may be used differently.
 
-`split` is how linear pairs are consumed: `fst p` and `snd p` each use `p`, so
-using both on a linear pair uses it twice, and `snd p` alone would drop a linear first
-field, so then it uses `p` ω times.
+`split` is how a pair held at any quantity other than ω is consumed: it accounts for
+both components. `fst p` and `snd p` each drop a component, so they use `p` ω times.
+
+A position scaled by a constant 0 (an argument to a 0 binder, the value of a `let` at 0,
+the first part of a pair at a 0 field, the scrutinee of a `split` at 0) is never
+computed: it is checked as an erased position (`Ctx.erasedAt`).
 
 `Γ ⊢ A type@i` means `A ⇒ Sort i`, with its usage **thrown away**: types live in
 the erased (0) fragment, so they may mention 0-quantity variables freely.
@@ -242,7 +250,9 @@ List A`) doesn't need its argument: evaluating it anyway, at every application a
 nested spine (a long list or string literal), would be quadratic in its length. -/
 def instArg (ctx : Ctx R) (c : Closure R) (a : Term R) : Val R :=
   match c with
-  | .mk env body => Wiz.eval ctx.globals ((if body.hasVar 0 then ctx.eval a else .unit .zero) :: env) body
+  -- (the placeholder is the stuck unknown, not a well-formed value: if `hasVar` ever
+  -- missed an occurrence, the codomain would be stuck on it, not a type that checks)
+  | .mk env body => Wiz.eval ctx.globals ((if body.hasVar 0 then ctx.eval a else default) :: env) body
 
 /-- The types of the locals indexed by level, as `conv` wants them. -/
 def tys (ctx : Ctx R) : Array (VTy R) := ctx.types.reverse.toArray
@@ -252,9 +262,9 @@ variable [QuantitySyntax R] [DecidableEq R]
 /-- Render a value for error messages. (P2: without evaluating a suspended proof, which
 reads back as `()`; so no path of the kernel, accepting or rejecting, runs a proof.) -/
 def showVal (ctx : Ctx R) (v : Val R) : String :=
-  (quote { ctx.globals with quoteErasesProofs := true } ctx.lvl v).pretty ctx.names
+  elideLong ((quote { ctx.globals with quoteErasesProofs := true } ctx.lvl v).pretty ctx.names)
 
-def showTerm (ctx : Ctx R) (t : Term R) : String := t.pretty ctx.names
+def showTerm (ctx : Ctx R) (t : Term R) : String := elideLong (t.pretty ctx.names)
 
 end Ctx
 
@@ -288,7 +298,11 @@ def checkSortNote (s : Option Level) (l : Level) : TCM Unit := do
       throw (.other s!"internal error: a type marked as in sort {s} is in sort {l}")
 
 /-- The usage of an eliminator's methods (`ind`, `Desc.elim`, `sfix`, `scofix`, `coit`),
-which run once per node: any number of times. Scaled by the rig's unrestricted quantity
+which run once per node: any number of times. Also the usage of what these eliminators
+(and `scase`) take apart or unfold, the scrutinee or the seed: its payload reaches the
+method as an ω variable, so it counts ω times too (charging it once let a method
+duplicate or drop the content of a linear scrutinee; a value held at 1 can't be
+eliminated by them until there is a case at a quantity). Scaled by the rig's unrestricted quantity
 (`QRig.many?`, ω); a rig without one (exact counting) only lets methods use local
 variables in erased positions. -/
 def methodUsage (ctx : Ctx R) (u : Usage R) : TCM (Usage R) :=
@@ -299,49 +313,54 @@ def methodUsage (ctx : Ctx R) (u : Usage R) : TCM (Usage R) :=
     | some (p, x) => throw (.other s!"a method may run any number of times, so it can't use {x} ({p} times): the rig has no unrestricted quantity")
     | none => pure u
 
-/-- (Q1) Must a value `v` of type `A` be used, i.e. is `A` a `Σ` with a field whose
-quantity doesn't allow zero uses (`¬ le 0 q`), here or in its second part? `t.1` discards
-`t.2`, so it may do that only when this is false (or the pair is unrestricted). The second
-part of a `Σ` has no quantity of its own: a bare `A × World` counts as droppable; a
-resource is "linear" here when it sits in a field declared linear. -/
-partial def mustUse (ctx : Ctx R) (A : Val R) (v : Val R) : Bool :=
-  match whnf A with
-  | .sigma _ q _ B _ =>
-    match q.toPoly? with
-    | some p => !QPoly.le (QPoly.const 0) p || mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v)
-    | none => true
+/-- For error messages only: is this `Σ` (a suffix of) a structure, i.e. does its chain
+of second parts end in a structure's marker tail (`structTailName`)? -/
+partial def endsInStructTail (ctx : Ctx R) (ty : Val R) (k : Nat) : Bool :=
+  match whnf ty with
+  | .sigma _ _ _ B _ => endsInStructTail ctx (Closure.inst ctx.globals B (Val.var (ctx.lvl + k))) (k + 1)
+  | .pi x _ _ _ cod _ => k > 0 && (x == structTailName ||
+      (isPhantomName x && endsInStructTail ctx (Closure.inst ctx.globals cod (Val.var (ctx.lvl + k))) (k + 1)))
   | _ => false
 
-/-- `mustUse` decided from the type alone, without evaluating the value. `mustUse` needs
-the value only to instantiate dependent second parts, and computing it runs the term in
-the evaluator at check time: `p.1` on a global builder's result (`(Circuit.netlistS c).1`
-in lib/Hdl/Core.wiz) would compute the whole netlist, deep enough to overflow the stack.
-So each field is instantiated with a placeholder instead, a fresh variable past the
-context (levels `ctx.lvl + k`, `k ≥ 1`; the caller used `ctx.lvl` for the first field).
-Evaluation commutes with substituting a variable: a canonical form reached with
-placeholders is the same with the real values. So the answer is exact, except where a
-placeholder might have mattered: a type stuck on anything but a context variable, axiom
-or metavariable (a variable applied, a builtin or observational equality stuck on its
-arguments), or a quantity that isn't a polynomial over context variables. Then the
-answer is `none`, and the caller decides with the values (`mustUse`). This needs no
-syntactic "does the codomain mention the variable" test (`Term.hasVar`), so a wrong
-answer from one can't make it drop a linear field. -/
-partial def mustUseType? (ctx : Ctx R) (A : Val R) (k : Nat) : Option Bool :=
-  match whnf A with
-  | .sigma _ q _ B _ =>
-    match q.toPoly? with
-    | some p =>
-      if p.any (fun (vs, _) => vs.any (· ≥ ctx.lvl)) then none
-      else if !QPoly.le (QPoly.const 0) p then some true
-      else mustUseType? ctx (Closure.inst ctx.globals B (Val.var (ctx.lvl + k))) (k + 1)
-    | none => none
-  -- stuck, but not on a placeholder: the same with the real values
-  | .neutral (.global ..) #[] | .neutral (.mvar _) #[] => some false
-  | .neutral (.local l) #[] => if l < ctx.lvl then some false else none
-  -- stuck on something that might be a placeholder
-  | .neutral .. => none
-  -- a canonical type other than `Σ` (whnf removed glued values)
-  | _ => some false
+/-- (R1) The usage of a projection `t.1` / `t.2`, where `t` uses `u`: **projections are
+available only on unrestricted pairs**. A projection keeps one component and drops the
+other, and the second component of a `Σ` has no quantity of its own to say whether it may
+be dropped, so the rule doesn't look at the component types at all: `t` is used ω times
+(`QRig.many?`), whether it is a variable or any other expression (`(act w).1` uses `w` ω
+times). A pair held at any other quantity is taken apart with `split`
+(`let (x, y) := p; …`), which accounts for both components. Erased positions don't come
+here: nothing is consumed there.
+
+Every variable `t` uses is checked against its declared quantity right away, so that the
+error can say what to write instead; it would otherwise surface as a plain quantity
+mismatch at the variable's binder. (Usages only grow on the way out, except where they
+are scaled by a constant 0, and those positions are checked erased: `erasedAt`.) -/
+def projUsage (ctx : Ctx R) (t : Term R) (ty : Val R) (field : String) (u : Usage R) : TCM (Usage R) :=
+  let st := ctx.showTerm t
+  let fail {α} (x : Name) (q : String) : TCM α := throw (.other <|
+    s!"cannot project {match t with | .var _ => st | _ => s!"({st})"}{field}: a projection needs an unrestricted pair (it keeps one component and drops the other), but this one uses {x}, which has quantity {q}; " ++
+    (if endsInStructTail ctx ty 0 then
+      s!"this is a field of a structure, and a structure can't be held at a quantity other than ω yet (it has no destructuring form); use a tuple `A × B` instead, taken apart with `let {q} (x, y) := …`"
+    else s!"take the pair apart with `let {q} (x, y) := {st}; …` instead"))
+  match QRig.many? (R := R) with
+  | some m =>
+    let u' := QPoly.const m • u
+    -- (a variable `t` doesn't use is not this rule's business: 0 ≤ 1 is false)
+    match ((u'.zip ctx.qtys).zip ctx.names).find? fun ((p, q), _) => !QPoly.le p (QPoly.const 0) && !QPoly.le p q with
+    | some ((_, q), x) => fail x (toString q)
+    | none => pure u'
+  | none =>
+    -- a rig without an unrestricted quantity (exact counting): only pairs that use no
+    -- local variable at all can be projected
+    match ((u.zip ctx.qtys).zip ctx.names).find? fun ((p, _), _) => !QPoly.le p (QPoly.const 0) with
+    | some ((_, q), x) => fail x (toString q)
+    | none => pure u
+
+/-- A position whose usage is scaled by `q`: when `q` is the constant 0 it is erased (the
+value is never computed), so it is checked as an erased position. The test is
+`QPoly.isErased`, the same one erasure uses to drop the position. -/
+def Ctx.erasedAt (ctx : Ctx R) (q : QPoly R) : Ctx R :=
+  if q.isErased then { ctx with erased := true } else ctx
 
 /-! ### The proof marker (P2)
 
@@ -486,13 +505,13 @@ partial def checkCore (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
-    let uv ← check ctx val vty
+    let uv ← check (ctx.erasedAt q) val vty
     let ub ← check (ctx.define x q vty (ctx.evalAt val vty)) body ty
     let ub ← popUsage x q ub
     pure (q • uv + ub)
   | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
-    let ua ← check ctx a A
+    let ua ← check (ctx.erasedAt q) a A
     let ub ← check ctx b (ctx.instArgAt A B a)
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
@@ -640,7 +659,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       -- (imax a b)` being `0` when `Sort b` is. If it is not, it can be evaluated, and its
       -- argument with it: the argument is checked as in relevant mode)
       let actx := if ctx.proof && !ctx.isProofTy fty then { ctx with proof := false } else ctx
-      let ua ← check (if q.isConst? == some 0 then { actx with erased := true } else actx) a dom
+      let ua ← check (actx.erasedAt q) a dom
       pure (ctx.instArgAt dom cod a, uf + q • ua)
     | _ => throw (.notAFunction (ctx.showTerm f) (ctx.showVal fty))
   | .letE x q tty val body => do
@@ -652,11 +671,11 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       -- before the value is checked. If the `let` is not itself a proof it can be
       -- evaluated, and its value with it: the value is then checked as in relevant mode
       let (bty, ub) ← infer (ctx.define x q vty (suspend ctx.globals ctx.env val)) body
-      let uv ← check (if ctx.isProofTy bty then ctx else { ctx with proof := false }) val vty
+      let uv ← check ((if ctx.isProofTy bty then ctx else { ctx with proof := false }).erasedAt q) val vty
       let ub ← popUsage x q ub
       pure (bty, q • uv + ub)
     else
-    let uv ← check ctx val vty
+    let uv ← check (ctx.erasedAt q) val vty
     let (bty, ub) ← infer (ctx.define x q vty (ctx.eval val)) body
     let ub ← popUsage x q ub
     pure (bty, q • uv + ub)
@@ -674,41 +693,28 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .fst t => do
     let (ty, u) ← infer ctx t
     match whnf ty with
-    | .sigma x q A B _ =>
-      let q ← qtyPoly ctx q
-      unless ctx.erased || QPoly.le (QPoly.const 1) q do
-        throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
-      -- `t.1` discards the second part (Q1): if that holds a field that must be used,
-      -- only an unrestricted pair may drop it, so `t` counts as used ω times
-      -- (from the type alone when it can be decided so: `ctx.eval t` would run `t`)
+    | .sigma x q A _ _ =>
+      -- in an erased position nothing is consumed: any field of any pair may be read
       if ctx.erased then pure (A, u) else
-      let mustUse? : Bool := match mustUseType? ctx (Closure.inst ctx.globals B (Val.var ctx.lvl)) 1 with
-        | some b => b
-        -- (a proof is never evaluated, and its parts are proofs: nothing to use)
-        | none => if ctx.isProofTy ty then false else
-          let v := ctx.eval t; mustUse ctx (Closure.inst ctx.globals B (vFst v)) (vSnd v)
-      if !mustUse? then pure (A, u) else
-      match QRig.many? (R := R) with
-      | some m => pure (A, QPoly.const m • u)
-      | none => throw (.other s!"cannot discard the second part of {ctx.showTerm t}, which holds a linear field; use let (x, y) := ... instead")
+      let q ← qtyPoly ctx q
+      unless QPoly.le (QPoly.const 1) q do
+        throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
+      -- (R1) only an unrestricted pair has projections: `t` counts as used ω times
+      pure (A, ← projUsage ctx t ty ".1" u)
     | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
   | .snd t => do
-    let (ty, u) ← infer ctx t
-    match whnf ty with
-    | .sigma x q _ B _ =>
-      -- `t.2` discards the first field: only allowed if the field may go unused
-      let q ← qtyPoly ctx q
-      let ty := Closure.inst ctx.globals B (vFst (ctx.evalAt t ty))
-      if ctx.erased || QPoly.le (QPoly.const 0) q then pure (ty, u) else
-      -- a field that must be used can be dropped only from an unrestricted pair (whose
-      -- fields are ω·q): so `t` counts as used ω times
-      match QRig.many? (R := R) with
-      | some m => pure (ty, QPoly.const m • u)
-      | none => throw (.other s!"cannot discard the field {x}, which has quantity {q}; use let (x, y) := ... instead")
-    | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal ty}")
+    let (pty, u) ← infer ctx t
+    match whnf pty with
+    | .sigma _ _ _ B _ =>
+      let ty := Closure.inst ctx.globals B (vFst (ctx.evalAt t pty))
+      if ctx.erased then pure (ty, u) else
+      -- (R1) as for `t.1`. The first field's quantity doesn't matter: an unrestricted
+      -- pair's field is at ω·q, which may always go unused
+      pure (ty, ← projUsage ctx t pty ".2" u)
+    | _ => throw (.other s!"not a pair: {ctx.showTerm t}\n  has type: {ctx.showVal pty}")
   | .split q s z m x y b => do
     let q ← checkQty ctx q
-    let (sty, us) ← infer ctx s
+    let (sty, us) ← infer (ctx.erasedAt q) s
     match whnf sty with
     | .sigma _ p A B _ =>
       let p ← qtyPoly ctx p
@@ -773,7 +779,10 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .transp A a P p b e => do
     -- a proof: everything in it is erased
     let ctx := { ctx with erased := true }
-    let _ ← checkType ctx A
+    let l ← checkType ctx A
+    -- as for `eq` and `refl`: the motive's type and the type of `e` are equations at `A`
+    unless l.isNeverZero do
+      throw (.other s!"transp is for types in Type u, not propositions: {ctx.showTerm A}")
     let vA := ctx.eval A
     let _ ← check ctx a vA
     let va := ctx.evalAt a vA
@@ -830,8 +839,9 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let ub ← check ctx b tb
     let uc ← check ctx c tc
     let uh ← check ctx h th
-    pure (vApp ctx.globals vP (ctx.eval D), (← methodUsage ctx (ua + ub + uc + uh)) + uD)
-  | .mu l I D i s _ | .nu l I D i s _ => do
+    pure (vApp ctx.globals vP (ctx.eval D), ← methodUsage ctx (ua + ub + uc + uh + uD))
+  | .mu l I D i s h | .nu l I D i s h => do
+    checkHint ctx h
     let _ ← check { ctx with erased := true } s .size
     let lI ← checkType ctx I
     unless lI.equiv (.succ l) do throw (.other "an index type must be in the data type's universe")
@@ -840,7 +850,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     pure (.sort (.succ l), Usage.zeros ctx.lvl)
   | .ind l I D v P m i x => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -851,7 +861,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let vi := ctx.eval i
     let ux ← check ctx x (.mu l vI vD vi .szInf none)
-    pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), (← methodUsage ctx um) + ux)
+    pure (vApp ctx.globals (vApp ctx.globals vP vi) (ctx.eval x), ← methodUsage ctx (um + ux))
   | .out x => do
     let (ty, u) ← infer ctx x
     let .nu l I D i s _ := whnf ty | throw (.typeMismatch "a coinductive type" (ctx.showVal ty))
@@ -859,7 +869,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       | throw (.other s!"only a value of size ↑s or ∞ can be observed, not {ctx.showVal s}")
     pure (vInterp ctx.globals l I D (nuFamilyAt l I D s') i, u)
   | .sfix l I D v P f s i x => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -870,9 +880,9 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check { ctx with erased := true } s .size
     let _ ← check ctx i vI
     let ux ← check ctx x (.mu l vI vD (ctx.eval i) (ctx.eval s) none)
-    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), (← methodUsage ctx uf) + ux)
+    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), ← methodUsage ctx (uf + ux))
   | .scofix l I D A f s i a => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -883,9 +893,9 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check { ctx with erased := true } s .size
     let _ ← check ctx i vI
     let ua ← check ctx a (vApp ctx.globals vA (ctx.eval i))
-    pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, (← methodUsage ctx uf) + ua)
+    pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, ← methodUsage ctx (uf + ua))
   | .scase l I D v P m s i x => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -897,10 +907,10 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let um ← check ctx m (scaseMethodTy ctx.globals l vI vD vP vs w)
     let _ ← check ctx i vI
     let ux ← check ctx x (.mu l vI vD (ctx.eval i) vs none)
-    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + ux)
+    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + (← methodUsage ctx ux))
   | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   | .coit l I D S st i s => do
-    let _ ← checkType ctx I
+    checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
     let vD := ctx.eval D
@@ -911,7 +921,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let vi := ctx.eval i
     let us ← check ctx s (vApp ctx.globals vS vi)
-    pure (.nu l vI vD vi .szInf none, (← methodUsage ctx ust) + us)
+    pure (.nu l vI vD vi .szInf none, ← methodUsage ctx (ust + us))
   | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --|ex
   --| | .app f a => sorry
@@ -956,6 +966,37 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   --| | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --sol>
+
+/-- The hint of a `μ`/`ν` type is its nominal form, `(T, us, args)` for `T.{us} args` (the
+elaborator reads it back to find a type's name, constructors and arguments; conversion
+ignores it). It is not otherwise constrained, but `eval` evaluates its arguments, so they
+must be well typed: an unchecked term there would be run by the evaluator (any of its
+`panic!`s, a loop, a constant at the wrong number of levels). If `T` is declared, the
+application `T.{us} args` must be well typed. If it is not (the definition of `T` itself,
+whose hint lists its own parameters), every argument must have an inferable type. That
+the hint *is* the type (`T.{us} args ≡ μ …`) is not checked: nothing in the kernel
+depends on it. -/
+partial def checkHint (ctx : Ctx R) : Option (Name × List Level × List (Term R)) → TCM Unit
+  | none => pure ()
+  | some (T, us, args) => do
+    let ctx := { ctx with erased := true }
+    if (ctx.globals.find? T).isSome then
+      let _ ← infer ctx (args.foldl .app (.const T us))
+    else
+      for a in args do
+        let _ ← infer ctx a
+
+/-- The index type of a data type at level `l` lives exactly in `Sort (l+1)`: the premise
+`Γ ⊢ I type@k`, `k ≡ l+1` of `μ`/`ν`, repeated by every eliminator that names `I` (`ind`,
+`sfix`, `scase`, `coit`, `scofix`). The eliminators need it as much as the type formers:
+they check their scrutinee against `μ.{l} I D i` (or return `ν.{l} I D i`) without going
+through the type former, so without this premise a term could have a type that is not a
+type (soundness audit F3; it is the "index level ≤ family level" condition that injective
+type formers need). -/
+partial def checkIndexLevel (ctx : Ctx R) (l : Level) (I : Term R) : TCM Unit := do
+  let lI ← checkType ctx I
+  unless lI.equiv (.succ l) do
+    throw (.other s!"an index type must be in the data type's universe: Sort {(Level.succ l).format}, not Sort {lI.format} (lift it with ULift)")
 
 /-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as
 for types), returned as a polynomial. -/
@@ -1003,7 +1044,24 @@ def checkHeader (g : Globals R) (d : Decl R) : TCM Unit := do
   if g.predicativeProp then declTypeSpine ctx d.type
   else discard <| checkType ctx d.type
 
-/-- Type check a declaration and add it to the global environment. -/
+/-- A definition's **implementation for the compiler** (`Decl.impl`): the term compiled
+code runs instead of the value. It may call the definition itself (a structurally
+recursive definition's equations with direct recursion), so it is checked against the
+declared type in `g`, which already has the definition. The kernel never unfolds it, so it
+proves nothing; it is checked because erasure reads it (its types, the sorts noted on its
+`Π`s and `Σ`s, its quantities) as it reads a checked term. That it computes what the
+value computes is *not* checked. -/
+def checkImpl (g : Globals R) (d : Decl R) (impl : Term R) : TCM Unit := do
+  if let some u := impl.levelParamsUsed.find? (!d.levelParams.contains ·) then
+    throw (.other s!"unknown universe level parameter {u} in the implementation of {d.name}")
+  let ctx : Ctx R := { globals := g }
+  match check ctx impl (ctx.eval d.type) with
+  | .ok _ => pure ()
+  | .error e => throw (.other s!"the implementation of {d.name} (the term compiled code runs) does not check: {e}")
+
+/-- Type check a declaration and add it to the global environment. Its implementation
+for the compiler, if it has one, is checked too (`checkImpl`): no term reaches erasure
+unchecked. -/
 def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   if d.witness.isSome then throw (.other s!"{d.name}: only a partial definition has a witness")
   checkHeader g d
@@ -1011,7 +1069,17 @@ def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   if let some v := d.value then
     -- usage is the empty vector: a closed term has no locals to misuse
     let _ ← check ctx v (ctx.eval d.type)
-  pure (g.insert d)
+  let g' := g.insert d
+  if let some impl := d.impl then checkImpl g' d impl
+  pure g'
+
+/-- Give the declaration `name` another implementation for the compiler
+(`attribute [implemented_by g] f` sets the constant `g`), checked like a definition's own
+(`checkImpl`): at `name`'s type. The kernel's view of `name` does not change. -/
+def setImpl (g : Globals R) (name : Name) (impl : Term R) : TCM (Globals R) := do
+  let some d := g.find? name | throw (.other s!"unknown declaration {name}")
+  checkImpl g d impl
+  pure (g.insert { d with impl := some impl })
 
 /-- A partial definition's signature (stage 13): `f : T` is opaque to the kernel, like an
 axiom, so the bodies of its group can call it. It must come with a **witness** `w : T`,

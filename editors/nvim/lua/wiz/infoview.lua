@@ -173,6 +173,22 @@ function M.layout(src, goals, term, err)
       end
     end
   end
+  -- the info messages (`trace`, `trace_state`) of the tactic the state belongs to
+  local msgs = goals and goals.messages or {}
+  if type(msgs) == 'table' and #msgs > 0 then
+    b:newline()
+    b:text('Messages', 'WizInfoviewTitle')
+    b:newline()
+    for i, m in ipairs(msgs) do
+      if i > 1 then
+        b:newline()
+      end
+      for _, line in ipairs(vim.split(m, '\n', { plain = true })) do
+        b:text(line)
+        b:newline()
+      end
+    end
+  end
   if term and term.goal then
     if goals then
       b:newline()

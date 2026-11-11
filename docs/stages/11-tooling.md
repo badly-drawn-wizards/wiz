@@ -94,13 +94,14 @@ Both clients are Wiz programs, and they share their logic:
   (counting UTF-8 bytes); and the decoding of terminal keys and SGR mouse reports.
 * `infoview/Tui.wiz` (`infoview/build.sh`): the terminal program. The alternate screen,
   raw mode, `poll` over the keyboard, the socket and a `SIGWINCH` self-pipe, and Unix
-  sockets are `infoview/term.c`, bound with `extern` (Wiz has no callbacks or
+  sockets are `infoview/term.c` (linked by `link_c`, 9f), bound with `extern` (Wiz has no callbacks or
   structs in its FFI, so the event loop is Wiz around a blocking `iv_wait`). ←/→ select
   a subterm, ↑/↓ go out of and into it, and the bottom line says what it is
   (`wiz/subtermInfo`); a mouse click selects too.
 * `web/Web.wiz` (`web/build.sh`): the page's language client, compiled to C and then to
-  WebAssembly by Emscripten: wasm64 keeps the runtime's 62-bit small numbers, mini-gmp
-  stands in for GMP, and Asyncify lets `js_next_event` wait for the page. The page
+  WebAssembly by Emscripten (`wiz --cc emcc`, with `web/js.c` by `link_c`, 9f): wasm64 keeps the runtime's 62-bit small numbers, mini-gmp
+  stands in for GMP. It is a library (09-ffi.md, 9g): the page calls its exported
+  `wiz_web_step` (state, event → state) on every event, so nothing waits in Wasm. The page
   (`web/infoview.html`, `web/infoview.js`, about 100 lines of JavaScript) only moves events
   in and HTML out. It talks to `wiz lsp --ws PORT` (11o) directly; `web/bridge.sh`
   starts that server and serves the page.

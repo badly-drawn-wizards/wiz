@@ -3,7 +3,11 @@
 -- the plugin doesn't start a second server.
 local lsp = require 'wiz.lsp'
 return {
-  cmd = { 'wiz', 'lsp' },
+  -- `grail lsp -C ROOT` in a grail package, else `wiz lsp` (wiz.nvim's `lsp.cmd` and
+  -- `lsp.grail` settings)
+  cmd = function(dispatchers, config)
+    return vim.lsp.rpc.start(lsp.cmd(config.root_dir), dispatchers, { cwd = config.root_dir })
+  end,
   filetypes = { 'wiz' },
   root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
   capabilities = lsp.capabilities(),

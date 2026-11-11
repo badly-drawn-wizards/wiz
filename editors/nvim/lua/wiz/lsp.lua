@@ -29,13 +29,33 @@ function M.root(buf)
   return name ~= '' and vim.fs.dirname(name) or vim.uv.cwd()
 end
 
+--- The server command for a project root: `grail lsp -C ROOT` when the root is a grail
+--- package (has a grail.wiz) and `lsp.grail.enable` is on, else `lsp.cmd`. If grail is
+--- not executable, warns once and falls back to `lsp.cmd`.
+function M.cmd(root)
+  local cfg = config.get().lsp
+  local g = cfg.grail or {}
+  if g.enable ~= false and root and vim.uv.fs_stat(root .. '/grail.wiz') then
+    local cmd = vim.deepcopy(g.cmd or { 'grail', 'lsp' })
+    if vim.fn.executable(cmd[1]) == 1 then
+      table.insert(cmd, '-C')
+      table.insert(cmd, root)
+      return cmd
+    end
+    vim.notify_once(('wiz.nvim: %s has a grail.wiz but %s is not on PATH; starting %s without the package\'s modules')
+      :format(root, cmd[1], cfg.cmd[1]), vim.log.levels.WARN)
+  end
+  return cfg.cmd
+end
+
 --- A `vim.lsp.start` config for `buf`.
 function M.client_config(buf)
   local cfg = config.get().lsp
+  local root = M.root(buf)
   return {
     name = 'wiz',
-    cmd = cfg.cmd,
-    root_dir = M.root(buf),
+    cmd = M.cmd(root),
+    root_dir = root,
     capabilities = M.capabilities(cfg.capabilities),
     handlers = M.handlers,
     on_attach = cfg.on_attach,
@@ -46,12 +66,12 @@ function M.start(buf)
   if not config.get().lsp.enable then
     return
   end
-  local cmd = config.get().lsp.cmd
-  if vim.fn.executable(cmd[1]) ~= 1 then
-    vim.notify_once(('wiz.nvim: %s is not on PATH; no language server'):format(cmd[1]), vim.log.levels.WARN)
+  local cc = M.client_config(buf)
+  if vim.fn.executable(cc.cmd[1]) ~= 1 then
+    vim.notify_once(('wiz.nvim: %s is not on PATH; no language server'):format(cc.cmd[1]), vim.log.levels.WARN)
     return
   end
-  return vim.lsp.start(M.client_config(buf), { bufnr = buf })
+  return vim.lsp.start(cc, { bufnr = buf })
 end
 
 --- The wiz client attached to `buf`, if any.

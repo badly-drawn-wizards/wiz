@@ -178,7 +178,9 @@ def update (e : Env) (names : List String) : IO UInt32 := do
     match ← resolveSpec s i.spec with
     | .error m => status := 1; IO.eprintln s!"tower: {n}: {m}"
     | .ok w =>
-      if w.commit == some i.commit then IO.println s!"{i.spec}: up to date"; continue
+      -- a release install of nightly follows the tag nightly (its snapshot), not the branch
+      let want := if i.source == "release" then w.snapshot <|> w.commit else w.commit
+      if want == some i.commit then IO.println s!"{i.spec}: up to date"; continue
       match ← install e i.spec (some i.source) true i.flags with
       | .ok _ => pure ()
       | .error m => status := 1; IO.eprintln s!"tower: {n}: {m}"
