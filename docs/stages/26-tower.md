@@ -12,7 +12,7 @@ A **spec** names a toolchain:
 
 | spec | means |
 |---|---|
-| `nightly` | the tip of the branch `nightly-ref` (default `master`) |
+| `nightly` | the commit of the tag `nightly` (the newest commit of `nightly-ref`, default `master`, whose CI passed, 26g); without that tag, the tip of `nightly-ref` |
 | `stable` | the highest `vX.Y.Z` tag |
 | `v0.2.0`, `my-branch`, a commit | that tag, branch or commit |
 | `REF@COMMIT` | that commit (`master@6f29a0a…`); the ref is a label |
@@ -300,9 +300,16 @@ or was cancelled by a newer push). Then it moves the tag, and only forwards: a c
 that is not ahead of the tag (an older run) leaves it. A ref update is atomic, so tower, which resolves `nightly` through
 `git ls-remote` to the tag's commit and downloads that snapshot, can't hit a missing
 file. Before, the assets were replaced in place, and downloads returned 404 while they
-uploaded. The tag lags the branch by at least one CI run. A release install of
-`nightly` records the tag's commit, and `tower update` compares against the tag, not
-against the branch. The release `nightly` (`releases/download/nightly/…`, for people and
+uploaded. The tag lags the branch by at least one CI run. **A channel is the same
+commit whatever the source**: `nightly` resolves to the tag's commit for a Nix, release
+or source install alike, and `stable` to its `vX.Y.Z` tag's commit. Before, only
+release installs followed the tag, so with `nix` on `PATH` (`--source auto` tries Nix
+first) `tower default nightly` built the tip of master, which Cachix may not have yet,
+and fell back to a local build of wiz. CI has built the Nix package of the commit behind the
+tag (`nix build .#wiz`, pushed to Cachix when the secret is set), so it is usually a
+download. Only when there is no tag `nightly` (a fork, a fresh repository) does
+`nightly` fall back to the tip of the branch `nightly-ref`. Every install records the
+tag's commit, and `tower update` compares against the tag, not against the branch. The release `nightly` (`releases/download/nightly/…`, for people and
 older towers) then gets the snapshot's files: each file is uploaded under a temporary name,
 the old one is deleted and the new one renamed, so it is missing for one API call
 instead of for a whole upload. `scripts/tower-init.sh` uses the snapshot of the tag
