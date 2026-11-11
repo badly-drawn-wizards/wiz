@@ -6,9 +6,11 @@ import Tests.Elab
 import Tests.ElabFix
 import Tests.Grail
 import Tests.LSP
+import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
 import Tests.Prop
+import Tests.Tower
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -24,11 +26,13 @@ def groups : List Group :=
   ElabFix.groups ++
   Eval.groups ++
   Grail.groups ++
+  Lint.groups ++
   LSP.groups ++
   Parser.groups ++
   Prop.groups ++
   Rig.groups ++
   Scaling.groups ++
+  Tower.groups ++
   []
 
 /-- Whether a command-line selector picks a group: `=NAME` exactly, anything else as a
@@ -106,9 +110,14 @@ against them), and `lake test -- --list-cases SELECTOR…` the selected cases, a
 FILE (its group, index, name, wall time in seconds, whether it passed, and its notes:
 `Tests.note`), labelled with `--shard NAME`. -/
 def main (args : List String) : IO UInt32 := do
+  -- a `panic!` fails the case that hits it (each case runs in its own process), as it
+  -- fails `wiz check`; `--panic-probe continue` turns it off again
+  Wiz.exitOnPanic
+  -- tower, as the shims of the tower tests call it (`Tests/Tower.lean`)
+  if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | ["--prop-no-sizes"] | ["--prop-trace"] | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | ["--prop-no-sizes"] | ["--prop-trace"] | "--check" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -132,7 +141,10 @@ def main (args : List String) : IO UInt32 := do
     pure (if errs.isEmpty then 0 else 1)
   -- a job of a grail build that a test runs (`Grail/Graph.lean`)
   | ["--grail-job", job] => Grail.jobMain tc job
-  | ["--probe-checker"] => do Scaling.probeChecker; pure 0
+  -- (kernel hygiene, `Tests/Lint.lean`) hit a `panic!` of the evaluator, with or without
+  -- `exitOnPanic`
+  | ["--panic-probe", mode, site] => Lint.panicProbe mode site
+  | "--probe-checker" :: opts => do Scaling.probeChecker opts; pure 0
   -- the property harness's long run (`Tests/Prop.lean`)
   | "--prop-long" :: rest => Prop.longMain rest
   | "--prop-replay" :: rest => Prop.replayMain rest

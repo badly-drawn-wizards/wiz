@@ -230,7 +230,7 @@ continue onto a line starting at the command's column.
 | `command.axiom`              | "axiom" ident [".{" [us] "}"] [binders] ":" T |
 | `command.check`              | "#check" term |
 | `command.reduce`             | "#reduce" term |
-| `command.declareSyntaxCat`   | "declare_syntax_cat" ident |
+| `command.declareSyntaxCat`   | "declare_syntax_cat" ident ["(" "keywords" ":=" ident ")"] |
 | `command.syntax`             | "syntax" [":" prec] [name] [priority] [stx+] ":" ident |
 | `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] ["deriving" C,+] |
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] where [fields] ["deriving" C,+] (where: `structure.where`, "where" [["private"] ident "::"]) |
@@ -288,8 +288,14 @@ def commandLeading : List LeadingParser := [
   { kind := "command.cStruct", prec := maxPrec,
     p := seqs ["c_struct", optional str, optional (seqs ["(", nonReserved "header", ":=", str, ")"]), ident,
       "where", many structureField, derivingClause] },
+  -- 9f: C source files and libraries linked with the program
+  { kind := "command.linkC", prec := maxPrec, p := seqs ["link_c", str] },
+  { kind := "command.linkLib", prec := maxPrec, p := seqs ["link_lib", str] },
   { kind := "command.extern", prec := maxPrec,
     p := seqs ["extern", str, optional (seqs ["(", nonReserved "header", ":=", str, ")"]), ident, ":", term] },
+  -- stage 9g: a C symbol for a Wiz function
+  { kind := "command.export", prec := maxPrec,
+    p := seqs ["export", str, ident, optional (seqs [":", term])] },
   { kind := "command.attrMacro", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "macro", ident, "]", ident] },
   { kind := "command.attrTactic", prec := maxPrec,
@@ -306,7 +312,7 @@ def commandLeading : List LeadingParser := [
     p := seqs ["attribute", "[", nonReserved "deriver", ident, "]", ident] },
   { kind := "command.deriving", prec := maxPrec,
     p := seqs ["deriving", "instance", sepBy1 ident ",", nonReserved "for", sepBy1 ident ","] },
-  { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
+  { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident, optional (seqs ["(", nonReserved "keywords", ":=", ident, ")"])] },
   { kind := "command.syntax", prec := maxPrec,
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
       optional (seqs ["(", nonReserved "name", ":=", ident, ")"]),

@@ -20,11 +20,56 @@ variables) into the context of the solution (`dom`, `n` variables) with a *parti
 renaming* that maps each `xᵢ` to its new position.
 
 Reference: elaboration-zoo `03-holes`, which this follows closely.
+
+## When unification approximates
+
+Outside the pattern fragment a problem has no most general solution, and any answer
+is a guess: the **first-order approximation** `?m a₁ … aₖ =?= f b₁ … bₙ` ↦
+`?m := f b₁ … bₙ₋ₖ`, `aᵢ =?= bₙ₋ₖ₊ᵢ` (`unifyFirstOrder`), and `?e.op =?= e.op` ↦
+`?e =?= e`. A guess is right when nothing else will determine the hole, and wrong when
+something still to be elaborated would: the rule is to guess only when no more
+information is coming. `ElabState.approx` (`Approx`) says which guesses are allowed.
+
+| problem | example | Wiz | Lean 4 |
+|---|---|---|---|
+| pattern (distinct variables) | `?m x =?= x + 1` | solve exactly (`solve`) | the same (`processAssignment`) |
+| variables, one repeated | `?m Γ i' =?= r i'` (`i'` in `Γ`) | solve without the repeated variable if the right side doesn't use it (pruning); else the first-order guess from the repeated variable on (`.default`) | not a pattern (`isDefEqPattern` wants distinct variables): first-order approximation, else postponed |
+| flex-rigid, not a pattern | `?m ?A =?= M Nat` (`do`) | first-order guess (`.default`) | `isDefEq` with `foApprox` (the elaborator's configuration): the same guess |
+| the same, in the "expected type first" pass of an application whose result type mentions placeholders of its explicit arguments | `?p ?k =?= ok (base + k)`, `?p`, `?k` the arguments `p`, `k` | no guess (`.none`): the speculative pass fails and is undone, the arguments decide, the result type is unified after them | the expected type is not propagated when the result type depends on explicit arguments (`propagateExpectedType`) |
+| flex-flex, both not patterns, different holes | `?r (.bits ?m) =?= ?r' (.bits 1)` (`Hw.cat (Hw.lit 1 1) d`) | postponed: the argument waits behind a placeholder for the other arguments (`inferApp`); still stuck after them, the first-order guess `?r := ?r'` as the last resort (`.last`) | postponed; postponed problems are retried at the end, with approximations |
+| flex-flex, one side a pattern | `?a (f y) =?= ?b x` | solve the pattern side (either orientation) | the same |
+| the same hole on both sides | `?m a =?= ?m b` | unify the arguments (a guess too: `?m` may ignore them) | first-order (`isDefEqApp`), else postponed |
+
+Wiz has no global queue of postponed problems: postponement is per application (an
+argument whose check fails outside the pattern fragment, error code `non-pattern`, is
+checked again after the others). Regression tests: group *elabfix*, "approximation: …"
+and B4.
 -/
 
 namespace Wiz
 
 variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
+
+/-- (Given) `vElims`, but an elimination that doesn't fit the value (applying a number,
+projecting a function) is an elaboration error, not a panic in the evaluator. Heuristic
+solutions (the first-order approximation, which is untyped) can be ill-typed:
+`?P 3 =?= Ex ?A ?Q` guesses `?Q := 3`, and `?Q 3` comes later. -/
+def elimsChecked (m : Nat) (sol : Val R) (sp : Array (Elim R)) : ElabM R (Val R) := do
+  let g ← getGlobals
+  let mut v := sol
+  for e in sp do
+    let fits : Bool := match v, e with
+      | .neutral .., _ | .unfold .., _ | .lazyInd .., _ => true
+      | .lam .., .app _ => true
+      | .pair .., .fst | .pair .., .snd => true
+      | _, .app _ | _, .fst | _, .snd => false
+      | _, _ => true
+    -- (merge note: with agent/slow-unify's fast failure, set `unifySawMeta := true` here
+    -- before throwing, so this failure is never taken as final)
+    unless fits do
+      throwAt {} s!"the solution found for the hole ?m{m} is ill-typed (a guess that didn't fit)"
+    v := vElims g v #[e]
+  pure v
 
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
 A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
@@ -34,7 +79,7 @@ partial def forceMeta (v : Val R) : ElabM R (Val R) := do
   match v with
   | .neutral (.mvar m) sp =>
     match (← lookupMeta m).solution with
-    | some sol => forceMeta (vElims (← getGlobals) sol sp)
+    | some sol => forceMeta (← elimsChecked m sol sp)
     | none => pure v
   | _ => pure v
   --|ex
@@ -63,37 +108,51 @@ def recomputeEq? (v : Val R) : ElabM R (Option (Val R)) := do
   else return none
 
 /-- A partial renaming from context `cod` (size `cod`) to context `dom` (size `dom`):
-`ren` maps the levels of variables in the spine to their new levels. -/
+`ren` maps the levels of variables in the spine to their new levels; `downs` maps the
+variables that occur in the spine lowered, as `down x` (see `invert`). -/
 structure PRen where
   dom : Lvl
   cod : Lvl
   ren : Std.HashMap Lvl Lvl
+  downs : Std.HashMap Lvl Lvl := {}
 
 /-- Go under a binder on both sides. -/
 def PRen.lift (p : PRen) : PRen :=
-  { dom := p.dom + 1, cod := p.cod + 1, ren := p.ren.insert p.cod p.dom }
+  { p with dom := p.dom + 1, cod := p.cod + 1, ren := p.ren.insert p.cod p.dom }
 
 /-- **Exercise 3.2.** Invert a spine into a partial renaming. `gamma` is the size of the
 current context. Every spine entry must be an application (`Elim.app v`) whose
 argument forces to a bound variable with an empty spine (`.neutral (.local x) #[]`),
 and a variable that occurs twice is left out of the renaming (the solution may not use
 it). Otherwise throw (at `{}`), saying the problem is outside the pattern fragment.
-The i-th spine variable maps to level i. -/
+The i-th spine variable maps to level i.
+
+(Given) A lowered variable `down x` (`x : ULift A`) counts as a variable too: the
+solution's i-th parameter `y` stands for `down x`, and `x` itself for `up y` (η for
+`ULift`). Constructor fields with a lifted domain (`k : A → Proto` with `A : Type` in a
+`Type 1` inductive) are stored as `fun h => k (down h)`, so unifying two such fields
+meets `?k … (down h)`. -/
 def invert (gamma : Lvl) (sp : Array (Elim R)) : ElabM R PRen := do
   --<sol
   let mut ren : Std.HashMap Lvl Lvl := {}
+  let mut downs : Std.HashMap Lvl Lvl := {}
   let mut repeated : Array Lvl := #[]
   let mut dom := 0
   for e in sp do
-    let .app v := e | throwAt {} "unification problem is outside the pattern fragment"
+    let .app v := e | throwAt {} "unification problem is outside the pattern fragment" "non-pattern"
     match ← force v with
     | .neutral (.local x) #[] =>
       -- a repeated variable can't be used by the solution (which occurrence?)
-      if ren.contains x then repeated := repeated.push x
+      if ren.contains x || downs.contains x then repeated := repeated.push x
       ren := ren.insert x dom
       dom := dom + 1
-    | _ => throwAt {} "unification problem is outside the pattern fragment"
-  pure { dom, cod := gamma, ren := repeated.foldl (·.erase ·) ren }
+    | .neutral (.local x) #[.down] =>
+      if ren.contains x || downs.contains x then repeated := repeated.push x
+      downs := downs.insert x dom
+      dom := dom + 1
+    | _ => throwAt {} "unification problem is outside the pattern fragment" "non-pattern"
+  pure { dom, cod := gamma, ren := repeated.foldl (·.erase ·) ren,
+         downs := repeated.foldl (·.erase ·) downs }
   --|ex
   --| sorry
   --sol>
@@ -153,7 +212,12 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .neutral (.local x) sp =>
     match p.ren[x]? with
     | some x' => goSp (.var (p.dom - x' - 1)) sp
-    | none => throwAt {} "a variable escapes the scope of the hole being solved"
+    | none => match p.downs[x]? with
+      -- (given) `down x` is the parameter `y`; a bare `x` is `up y`
+      | some x' =>
+        let y : Term R := .var (p.dom - x' - 1)
+        if sp[0]? matches some Elim.down then goSp y (sp.extract 1 sp.size) else goSp (.up y) sp
+      | none => throwAt {} "a variable escapes the scope of the hole being solved"
   | .neutral (.global n us) sp => goSp (.const n us) sp
   | .neutral (.eq A a b) sp => do goSp (.eq (← rename m p A) (← rename m p a) (← rename m p b)) sp
   | .neutral (.eqTy A B) sp => do goSp (.eqTy (← rename m p A) (← rename m p B)) sp
@@ -221,11 +285,27 @@ def solve (gamma : Lvl) (m : Nat) (sp : Array (Elim R)) (rhs : Val R) : ElabM R 
   --<sol
   let p ← invert gamma sp
   let body ← rename m p rhs
-  let sol := (List.range sp.size).foldl (fun t i => Term.lam s!"x{sp.size - i - 1}" t) body
+  -- a spine variable that is a binder unification went under keeps that binder's name
+  let hints := (← get).binderNames
+  let nameOf (j : Nat) : Name := match sp[j]? with
+    | some (.app (.neutral (.local lv) #[])) => match hints.find? (·.1 == lv) with
+      | some (_, x) => x
+      | none => s!"x{j}"
+    | _ => s!"x{j}"
+  let sol := (List.range sp.size).foldl (fun t i => Term.lam (nameOf (sp.size - i - 1)) t) body
   solveMeta m (eval (← getGlobals) [] sol)
   --|ex
   --| sorry
   --sol>
+
+/-- Run `k` under a binder named `x` at level `l` (see `ElabState.binderNames`). -/
+def withBinderName (l : Lvl) (x : Name) (k : ElabM R α) : ElabM R α := do
+  if x == "_" || x.isEmpty then return ← k
+  let saved := (← get).binderNames
+  modify fun s => { s with binderNames := (l, x) :: saved }
+  let a ← k
+  modify fun s => { s with binderNames := saved }
+  pure a
 
 /-- Does level metavariable `m` occur in `l`? -/
 def Level.occurs (m : Nat) : Level → Bool
@@ -297,11 +377,12 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   --<sol
   match ← force t, ← force u with
   | .sort a, .sort b => unifyLevel a b
-  | .pi _ bi q a b _, .pi _ bi' q' a' b' _ =>
+  | .pi x bi q a b _, .pi x' bi' q' a' b' _ =>
     unless bi == bi' do throwAt {} "implicit vs explicit binder mismatch"
     unify l q q'
     unify l a a'
-    unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
+    withBinderName l (if x == "_" then x' else x) do
+      unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
   | .sigma _ q a b _, .sigma _ q' a' b' _ =>
     unify l q q'
     unify l a a'
@@ -332,11 +413,16 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .coit u I D S st i s, .coit u' I' D' S' st' i' s' =>
     unifyLevel u u'
     for (a, b) in [(I, I'), (D, D'), (S, S'), (st, st'), (i, i'), (s, s')] do unify l a b
-  | .lam _ b, .lam _ b' => unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
-  | .lam _ b, t' => unify (l + 1) (← instM b (Val.var l)) (← vAppM t' (Val.var l))
-  | t', .lam _ b => unify (l + 1) (← vAppM t' (Val.var l)) (← instM b (Val.var l))
+  | .lam x b, .lam x' b' =>
+    withBinderName l (if x == "_" then x' else x) do unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
+  | .lam x b, t' => withBinderName l x do unify (l + 1) (← instM b (Val.var l)) (← vAppM t' (Val.var l))
+  | t', .lam x b => withBinderName l x do unify (l + 1) (← vAppM t' (Val.var l)) (← instM b (Val.var l))
   | .neutral (.mvar m) sp, .neutral (.mvar m') sp' =>
-    if m == m' then unifySpine l sp sp' else solve l m sp (.neutral (.mvar m') sp')
+    if m == m' then unifySpine l sp sp' else
+    -- (if the left spine isn't a pattern, the right one may be)
+    tryCatch (solve l m sp (.neutral (.mvar m') sp')) fun e => do
+      if e.code != "non-pattern" then throw e
+      solve l m' sp' (.neutral (.mvar m) sp)
   | .neutral (.mvar m) sp, t' => solve l m sp t'
   | t', .neutral (.mvar m) sp => solve l m sp t'
   | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'
@@ -380,14 +466,22 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
       attempt (unify l v.get u)
   | .neutral (.mvar m) sp, v@(.unfold ..) | v@(.unfold ..), .neutral (.mvar m) sp =>
     if ← attempt (solve l m sp v) then return true
+    if (← get).approx == .none then return false
     unifyFirstOrder l m sp v
   -- a hole against a rigid neutral, outside the pattern fragment:
   -- * the same projection on both sides (`?e.op =?= e.op`): unify what is projected;
   -- * applications (`?M ?A =?= m A`): the first-order approximation.
   -- (Heuristics like Lean's, tried only when pattern unification fails.)
   | .neutral (.mvar m) sp, v@(.neutral h' sp') | v@(.neutral h' sp'), .neutral (.mvar m) sp =>
-    if h' matches .mvar _ then return false
+    -- (flex-flex: only as the last resort, see "When unification approximates")
+    if let .mvar m' := h' then
+      if m' == m || (← get).approx != .last then return false
     if ← isPattern sp then return false
+    -- a non-linear spine of variables (`?m Γ x` with `x` in `Γ`): solve it pruning the
+    -- repeated variable if the right-hand side doesn't need it; else it is a guess
+    if ← isVarSpine sp then
+      if ← attempt (solve l m sp v) then return true
+    if (← get).approx == .none then return false
     match sp.back?, sp'.back? with
     | some .fst, some .fst | some .snd, some .snd =>
       attempt (unify l (.neutral (.mvar m) sp.pop) (.neutral h' sp'.pop))
@@ -397,10 +491,25 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
       else pure false
   | _, _ => pure false
 where
+  -- distinct variables (Miller's patterns)
   isPattern (sp : Array (Elim R)) : ElabM R Bool := do
+    let mut seen : Std.HashSet Lvl := {}
     for e in sp do
       match e with
-      | .app a => unless (← forceMeta a) matches .neutral (.local _) #[] do return false
+      | .app a => match ← forceMeta a with
+        | .neutral (.local x) #[] | .neutral (.local x) #[.down] =>
+          if seen.contains x then return false
+          seen := seen.insert x
+        | _ => return false
+      | _ => return false
+    pure true
+  -- variables, possibly repeated
+  isVarSpine (sp : Array (Elim R)) : ElabM R Bool := do
+    for e in sp do
+      match e with
+      | .app a => match ← forceMeta a with
+        | .neutral (.local _) #[] | .neutral (.local _) #[.down] => pure ()
+        | _ => return false
       | _ => return false
     pure true
 
@@ -420,10 +529,17 @@ partial def unifyFirstOrder (l : Lvl) (m : Nat) (sp : Array (Elim R)) (v : Val R
     | _ => none
   let some args := sp.mapM appArg | pure false
   let some args' := sp'.mapM appArg | pure false
-  -- the arguments after the longest prefix of bound variables
+  -- the arguments after the longest prefix of distinct bound variables (a repeated
+  -- variable starts the arguments to match: `?m Γ x =?= r x` with `x` in `Γ`)
   let mut k := 0
+  let mut seen : Std.HashSet Lvl := {}
   for a in args do
-    if (← forceMeta a) matches .neutral (.local _) #[] then k := k + 1 else break
+    match ← forceMeta a with
+    | .neutral (.local x) #[] =>
+      if seen.contains x then break
+      seen := seen.insert x
+      k := k + 1
+    | _ => break
   let j := args.size - k
   if j == 0 || j > args'.size then return false
   let s ← get

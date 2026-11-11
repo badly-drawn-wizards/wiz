@@ -353,6 +353,8 @@ def sharedWorld (_ : Unit) : World :=
   let w : World :=
     { name := "shared", g, nat, idP := true, wiz := true
       heads := [.const "idU" [], .const "twice" [], .const "constP" [1, 1],
+        -- (W1) a case on its argument, glued: its spine holds a constant at its level
+        .const "caseF" [],
         -- families over sizes
         m (.ann (.lam (MTm.natAt (.var 0))) (.pi .size (.univ 0))),
         m (.ann (.lam (MTm.streamAt (.szSuc (.var 0)))) (.pi .size (.univ 0)))]
@@ -360,7 +362,7 @@ def sharedWorld (_ : Unit) : World :=
       fixed := [#[], #[.qty, .qty], #[nat, nat], #[.sort 1, .sort 0, .var 1, .var 1],
         #[E2, piS E2 (.sort 1) 2], #[.sort 1, .sort 1, .eqTy (.var 1) (.var 0), .var 2],
         #[.size, .sizeLt (.var 0)], #[.empty 0, .sort 1]] }
-  withGadgets w [.const "zero" [], .const "one" [], .const "a" [], .const "A" [], .const "polyK" [0],
+  withGadgets w [.const "zero" [], .const "one" [], .const "a" [], .const "A" [], .const "polyK" [0], .const "dLv" [0],
     m MTm.alt, m MTm.zeros, m (MTm.shead MTm.alt), m (MTm.stail MTm.alt), m MTm.natZero,
     m (MTm.natSucc MTm.natZero), .ann (m MTm.natD) (.desc 0 (.unit 1))]
 
