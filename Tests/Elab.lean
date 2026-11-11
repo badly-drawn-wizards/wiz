@@ -3966,7 +3966,9 @@ def effectsGroup : Group where
           "  pure := fun a => fun s => (a, s)\n  bind := fun x f => fun s => let (a, s') := x s; f a s'\n" ++
           "instance {S : Type} : Handler (State S) (StateM S) where\n  handle := fun o => match o with\n" ++
           "    | .get => fun s => (s, s)\n    | .put s' => fun _ => ((), s')\n" ++
-          "instance {S : Type} : Commute (State S) (State S) (StateM S) where\n  comm := fun o₁ o₂ B f => rfl") "kernel rejected" }
+          "instance {S : Type} : Commute (State S) (State S) (StateM S) where\n  comm := fun o₁ o₂ B f => rfl")
+          -- (13b) the elaborator compares the two sides of `rfl` itself, before the kernel
+          "rfl: the two sides are not definitionally equal" }
   ]
 
 def toolingGroup : Group where
@@ -4787,7 +4789,8 @@ def vecGroup : Group where
           "#eval Vec.head v3\n#eval Vec.toList (Vec.tail v3)\n#eval Vec.last v3\n#eval Vec.toList (Vec.init v3)")
           ["30", ".cons 10 (.cons 99 (.cons 30 .nil))", "10", ".cons 20 (.cons 30 .nil)", "30", ".cons 10 (.cons 20 .nil)"] },
     { name := "an index out of range is rejected", run := fun _ =>
-        failsLibs (vecPrelude ++ "def bad : Nat := Vec.get v3 (Fin.of 3 3 rfl)") "kernel rejected bad" },
+        -- (13b) the elaborator compares the two sides of `rfl` itself (`3 < 3` is `.false`)
+        failsLibs (vecPrelude ++ "def bad : Nat := Vec.get v3 (Fin.of 3 3 rfl)") "rfl: the two sides are not definitionally equal" },
     { name := "maps, zips and folds", run := fun _ =>
         okLibs (vecPrelude ++ "#eval Vec.toList (Vec.map Nat.succ v3)\n#eval Vec.toList (Vec.zipWith Nat.add v3 w3)\n" ++
           "#eval Vec.foldr Nat.add 0 v3\n#eval Vec.foldl (fun acc x => acc * 10 + x) 0 w3\n#eval Vec.toList (Vec.zip v3 w3)")
