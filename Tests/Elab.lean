@@ -2591,9 +2591,10 @@ inductive MTm where
   | transp (A a P p b e : MTm)
   | desc (l : Nat) (I : MTm)
   | dret (i : MTm)
-  | darg (S E : MTm)
-  | drec (j E : MTm)
-  | dhrec (H j E : MTm)
+  /-- (21w) a field's quantity, last (ω by default) -/
+  | darg (S E : MTm) (q : ZeroOneMany := .many)
+  | drec (j E : MTm) (q : ZeroOneMany := .many)
+  | dhrec (H j E : MTm) (q : ZeroOneMany := .many)
   | delim (v : Nat) (P a b c h D : MTm)
   | mu (l : Nat) (I D i : MTm)
   | con (x : MTm)
@@ -2696,9 +2697,9 @@ partial def toWiz : MTm → String
   | transp A a P p b e => s!"(.subst {A.toWiz} {a.toWiz} {P.toWiz} {p.toWiz} {b.toWiz} {e.toWiz})"
   | desc l I => s!"(.descr {l} {I.toWiz})"
   | dret i => s!"(.dret {i.toWiz})"
-  | darg S E => s!"(.darg {S.toWiz} {E.toWiz})"
-  | drec j E => s!"(.drec {j.toWiz} {E.toWiz})"
-  | dhrec H j E => s!"(.dhrec {H.toWiz} {j.toWiz} {E.toWiz})"
+  | darg S E q => s!"(.darg (.qlit {qWiz q}) {S.toWiz} {E.toWiz})"
+  | drec j E q => s!"(.drec (.qlit {qWiz q}) {j.toWiz} {E.toWiz})"
+  | dhrec H j E q => s!"(.dhrec (.qlit {qWiz q}) {H.toWiz} {j.toWiz} {E.toWiz})"
   | delim v P a b c h D => s!"(.delim {v} {P.toWiz} {a.toWiz} {b.toWiz} {c.toWiz} {h.toWiz} {D.toWiz})"
   | mu l I D i => s!"(.mu {l} {I.toWiz} {D.toWiz} {i.toWiz})"
   | con x => s!"(.con {x.toWiz})"
@@ -2765,9 +2766,9 @@ partial def toTerm : MTm → Term ZeroOneMany
   | transp A a P p b e => .transp A.toTerm a.toTerm P.toTerm p.toTerm b.toTerm e.toTerm
   | desc l I => .desc (Level.ofNat l) I.toTerm
   | dret i => .dret i.toTerm
-  | darg S E => .darg (.qlit .many) S.toTerm E.toTerm
-  | drec j E => .drec (.qlit .many) j.toTerm E.toTerm
-  | dhrec H j E => .dhrec (.qlit .many) H.toTerm j.toTerm E.toTerm
+  | darg S E q => .darg (.qlit q) S.toTerm E.toTerm
+  | drec j E q => .drec (.qlit q) j.toTerm E.toTerm
+  | dhrec H j E q => .dhrec (.qlit q) H.toTerm j.toTerm E.toTerm
   | delim v P a b c h D => .delim (Level.ofNat v) P.toTerm a.toTerm b.toTerm c.toTerm h.toTerm D.toTerm
   | mu l I D i => .mu (Level.ofNat l) I.toTerm D.toTerm i.toTerm .szInf none
   | con x => .con x.toTerm
@@ -2830,9 +2831,9 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .transp A a P p b e => return transp (← ofTerm A) (← ofTerm a) (← ofTerm P) (← ofTerm p) (← ofTerm b) (← ofTerm e)
   | .desc l I => return desc (← l.toNat?) (← ofTerm I)
   | .dret i => return dret (← ofTerm i)
-  | .darg _ S E => return darg (← ofTerm S) (← ofTerm E)
-  | .drec _ j E => return drec (← ofTerm j) (← ofTerm E)
-  | .dhrec _ H j E => return dhrec (← ofTerm H) (← ofTerm j) (← ofTerm E)
+  | .darg (.qlit q) S E => return darg (← ofTerm S) (← ofTerm E) q
+  | .drec (.qlit q) j E => return drec (← ofTerm j) (← ofTerm E) q
+  | .dhrec (.qlit q) H j E => return dhrec (← ofTerm H) (← ofTerm j) (← ofTerm E) q
   | .delim v P a b c h D => return delim (← v.toNat?) (← ofTerm P) (← ofTerm a) (← ofTerm b) (← ofTerm c) (← ofTerm h) (← ofTerm D)
   | .mu l I D i .szInf _ => return mu (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i)
   | .mu l I D i s _ => return mus (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm i) (← ofTerm s)
@@ -2854,6 +2855,12 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .up a => return up (← ofTerm a)
   | .down t => return down (← ofTerm t)
   | _ => none
+
+/-- (21w) a description field's quantity, as `Kernel.wiz`'s `show` prints it: nothing at ω -/
+def fieldQPre : ZeroOneMany → String
+  | .zero => "0 "
+  | .one => "1 "
+  | .many => ""
 
 /-- Printed like `show .nil` in `Kernel.wiz`. -/
 partial def pretty (l : Nat) : MTm → String
@@ -2887,9 +2894,9 @@ partial def pretty (l : Nat) : MTm → String
   | transp A a P p b e => s!"transp({pretty l A}, {pretty l a}, {pretty l P}, {pretty l p}, {pretty l b}, {pretty l e})"
   | desc k I => s!"Desc{k}({pretty l I})"
   | dret i => s!"ret({pretty l i})"
-  | darg S E => s!"arg({pretty l S}, {pretty l E})"
-  | drec j E => s!"rec({pretty l j}, {pretty l E})"
-  | dhrec H j E => s!"hrec({pretty l H}, {pretty l j}, {pretty l E})"
+  | darg S E q => s!"arg({fieldQPre q}{pretty l S}, {pretty l E})"
+  | drec j E q => s!"rec({fieldQPre q}{pretty l j}, {pretty l E})"
+  | dhrec H j E q => s!"hrec({fieldQPre q}{pretty l H}, {pretty l j}, {pretty l E})"
   | delim _ P a b c h D => s!"elim({pretty l P}, {pretty l a}, {pretty l b}, {pretty l c}, {pretty l h}, {pretty l D})"
   | mu k I D i => s!"μ{k}({pretty l I}, {pretty l D}, {pretty l i})"
   | con x => s!"con({pretty l x})"
@@ -3729,8 +3736,63 @@ def quantityDecls : List (String × Bool) := [
 constructor field written with one is an error there. (A linear variable used once in
 each branch of a `match` was one until 21v: `linearMatchDecls`.) -/
 def quantityDiffs : List (String × Bool × Bool) := [
-  ("structure P1 where\n  1 a : Nat\n", true, false),
-  ("inductive V0 where\n  | mk (0 n : Nat)\n", true, false)]
+  -- (21w) a match on a structure with a field at 0: the Lean elaborator projects every
+  -- field at ω (`structPattern?`), and the projection of the erased one is rejected; here a
+  -- structure is a data type, and the field is bound at 0 like any constructor's
+  ("structure S0 where\n  0 n : Nat\n  m : Nat\ndef s0mt (s : S0) : Nat := match s with\n  | .mk n m => m\n", false, true)]
+
+/-- (stage 21w) Constructor fields with quantities (`Desc.arg q S D`) and implicit
+constructor fields (at 0, filled in at the call, not named by patterns): the same
+verdicts in both frontends. -/
+def fieldQtyHeader : String :=
+  "axiom Tok : Type\naxiom use : (1 t : Tok) → Nat\n" ++
+  "inductive E0 where\n  | mk (0 n : Nat) (m : Nat)\n" ++
+  "inductive L1 where\n  | mk (1 t : Tok)\n" ++
+  "inductive W where\n  | mk (ω n : Nat)\n" ++
+  "inductive V (A : Type) : Nat → Type where\n  | nil : V A Nat.zero\n" ++
+  "  | cons {n : Nat} (a : A) (rest : V A n) : V A (Nat.succ n)\n" ++
+  "structure S0 where\n  0 n : Nat\n  m : Nat\n" ++
+  "structure P1 where\n  1 a : Tok\n  b : Nat\n"
+def fieldQtyDecls : List (String × Bool) := [
+  -- 0: built with any argument, never read at run time
+  ("def e0 : E0 := E0.mk 3 4\ndef getM : E0 → Nat\n  | .mk _ m => m\ndef getM2 : E0 → Nat\n  | .mk n m => m\n", true),
+  ("def getN : E0 → Nat\n  | .mk n _ => n\n", false),
+  ("def e0d (x : E0) : Nat := match x with\n  | .mk n m => Nat.add m m\n", true),
+  -- 1: a linear field is used exactly once by a match
+  ("def l1 (1 t : Tok) : L1 := L1.mk t\ndef useL : L1 → Nat\n  | .mk t => use t\n", true),
+  ("def dropL : L1 → Nat\n  | .mk _ => 0\n", false),
+  ("def twiceL : L1 → Nat\n  | .mk t => Nat.add (use t) (use t)\n", false),
+  -- (a match uses its scrutinee ω times: the linear `t` inside it too)
+  ("def wrapTwice (1 t : Tok) : Nat := match L1.mk t with\n  | .mk u => use u\n", false),
+  -- ω, written
+  ("def w2 : W → Nat\n  | .mk n => Nat.add n n\n", true),
+  -- an implicit field: at 0, inserted at the call, not named by a pattern
+  ("def v1 : V Nat (Nat.succ Nat.zero) := V.cons 5 V.nil\n" ++
+    "def vsum {n : Nat} : V Nat n → Nat\n  | .nil => 0\n  | .cons a r => Nat.add a (vsum r)\n", true),
+  ("def vbad : V Nat (Nat.succ Nat.zero) := V.cons 0 5 V.nil\n", false),
+  -- structures: a 0 field has no projection; a linear field is read by its projection
+  ("def s0 : S0 := S0.mk 1 2\ndef s0m (s : S0) : Nat := s.m\n", true),
+  ("def s0n (s : S0) : Nat := s.n\n", false),
+  ("def p1 (1 x : Tok) : P1 := P1.mk x 3\ndef p1b (p : P1) : Nat := p.b\n", true),
+  -- (the Lean elaborator takes a structure apart by projections at ω)
+  ("def p1m (p : P1) : Nat := match p with\n  | .mk a b => b\n", true),
+  -- recursive fields carry quantities too; a bad quantity is an error
+  ("inductive R1 where\n  | z\n  | s (1 r : R1)\n", true),
+  ("inductive Q2 where\n  | mk (2 n : Nat)\n", false)]
+
+/-- (stage 21w) Field quantities and implicit fields, compiled and run. -/
+def fieldQtyProgram : String :=
+  "import Prelude\n" ++
+  "inductive E0 where\n  | mk (0 n : Nat) (m : Nat)\n" ++
+  "inductive V (A : Type) : Nat → Type where\n  | nil : V A Nat.zero\n" ++
+  "  | cons {n : Nat} (a : A) (rest : V A n) : V A (Nat.succ n)\n" ++
+  "inductive L1 where\n  | mk (1 n : Nat)\n" ++
+  "def getM : E0 → Nat\n  | .mk _ m => m\n" ++
+  "def vsum {n : Nat} : V Nat n → Nat\n  | .nil => 0\n  | .cons a r => Nat.add a (vsum r)\n" ++
+  "def unL : L1 → Nat\n  | .mk n => n\n" ++
+  "def main : IO Unit := do\n  IO.println (Nat.toString (getM (E0.mk 3 4)));\n" ++
+  "  IO.println (Nat.toString (vsum (V.cons 1 (V.cons 2 V.nil))));\n" ++
+  "  IO.println (Nat.toString (unL (L1.mk 9)))\n"
 
 /-- (stage 21v) A variable at quantity 1 used once in each branch of a `match`: the Lean
 frontend compiles the match to the additive `T.casesOnA` (its branches are alternatives,
@@ -4204,6 +4266,12 @@ def selfHostGroup : Group where
         selfhostAgrees linearMatchHeader linearMatchDecls },
     { name := "the additive match (T.casesOnA) runs, compiled by the Lean compiler (21v)", run := fun _ =>
         ioRun linearMatchProgram "3\n5\n6\n" },
+    { name := "the self-hosted frontend: constructor field quantities (0, 1, ω) and implicit fields, as in the Lean frontend (21w)", run := fun _ =>
+        selfhostAgrees fieldQtyHeader fieldQtyDecls },
+    { name := "constructor field quantities and implicit fields: the Lean and the self-hosted compilers agree (21w)", run := fun _ => do
+        ioRun (fieldQtyProgram.replace "import Prelude" "import IO") "4\n3\n9\n"
+        selfhostCompileRun fieldQtyProgram "4\n3\n9\n"
+        selfhostCompileRun fieldQtyProgram "4\n3\n9\n" (flags := #["--rc"]) },
     { name := "the self-hosted frontend: Σ types, pairs, projections and ∀, as in the Lean frontend (21u)", run := fun _ =>
         selfhostAgrees "" sigmaDecls },
     { name := "the self-hosted backend: quantities erase and run, with either collector (21m)", run := fun _ => do
