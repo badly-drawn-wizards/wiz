@@ -134,6 +134,23 @@ jobs:
         with:
           path: .lake
           key: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ needs.build.outputs.lake-hash }}
+          # the exact entry can be gone already: the build job saved it minutes ago, but
+          # the repository's 10 GB cache evicts the least recently used entries, and
+          # with many PRs a 740 MB Lake cache lasts only minutes (#103, #134: the late
+          # shards of a run found nothing and ran without wiz and grail). Then the
+          # newest older build of the same toolchain, and the next step catches up.
+          restore-keys: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      # `lake test` builds only the test driver: build the executables the tests run too
+      # (a no-op after an exact hit), and stop if they're missing rather than run without
+      - name: lake build (unless restored)
+        run: |
+          if [ "${{ steps.lake-cache.outputs.cache-hit }}" != true ]; then
+            echo "::warning title=Lake cache::no exact Lake build for this commit (evicted?): building wiz, grail and tests here"
+          fi
+          lake build wiz grail tests
+          for b in wiz grail tests; do
+            [ -x ".lake/build/bin/$b" ] || { echo "::error::.lake/build/bin/$b is missing after lake build"; exit 1; }
+          done
       # What the suite builds from Wiz programs, kept between runs: the elaboration cache
       # (`--cache`, which the grail-selfhost test uses), grail's `.grail` (the test's
       # build of the self-hosted checker) and the self-hosted checker and compiler that
