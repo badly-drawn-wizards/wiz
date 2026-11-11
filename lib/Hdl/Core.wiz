@@ -1120,6 +1120,17 @@ def Hdl.member (s : String) : List String → Bool
   | .cons x xs => Bool.or (Hdl.strEq s x) (Hdl.member s xs)
 -- a legal identifier: other characters become `_`, a leading digit or an empty name gets
 -- a `_` in front, a keyword one behind
+-- SystemVerilog keywords too (yosys, Verilator and simulators in SV mode read the output)
+def Verilog.svKeywords : List String :=
+  .cons "bit" (.cons "byte" (.cons "logic" (.cons "int" (.cons "shortint" (.cons "longint" (.cons "string"
+  (.cons "struct" (.cons "union" (.cons "enum" (.cons "typedef" (.cons "packed" (.cons "interface" (.cons "class"
+  (.cons "program" (.cons "package" (.cons "import" (.cons "export" (.cons "final" (.cons "assert" (.cons "property"
+  (.cons "sequence" (.cons "cover" (.cons "void" (.cons "return" (.cons "break" (.cons "continue" (.cons "do"
+  (.cons "foreach" (.cons "automatic" (.cons "static" (.cons "const" (.cons "ref" (.cons "new" (.cons "null"
+  (.cons "this" (.cons "super" (.cons "local" (.cons "virtual" (.cons "type" (.cons "priority" (.cons "unique"
+  (.cons "wait" (.cons "fork" (.cons "join" (.cons "forever" (.cons "repeat" (.cons "always_ff" (.cons "always_comb"
+  (.cons "always_latch" (.cons "assign" .nil))))))))))))))))))))))))))))))))))))))))))))))))))
+
 def Verilog.ident (s : String) : String :=
   let ω cs := Verilog.identChars (match s with
     | .mk l => l);
@@ -1128,7 +1139,7 @@ def Verilog.ident (s : String) : String :=
     | .cons c _ => (match Bool.and (Nat.le 48 (Char.code c)) (Nat.le (Char.code c) 57) with
       | .true => String.mk (.cons (Char.mk 95) cs)
       | .false => String.mk cs);
-  match Hdl.member body Verilog.keywords with
+  match Bool.or (Hdl.member body Verilog.keywords) (Hdl.member body Verilog.svKeywords) with
   | .true => body <+> "_"
   | .false => body
 
