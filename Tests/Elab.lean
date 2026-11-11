@@ -349,6 +349,33 @@ def ottGroup : Group where
         ok "def propext (P Q : Prop) (pq : P → Q) (qp : Q → P) : P = Q := (pq, qp)" },
     { name := "proof irrelevance", run := fun _ =>
         ok "def irr (P : Prop) (p q : P) (C : P → Type) (c : C p) : C q := c" },
+    -- nu-transp (P6): at a Σ with a proof component, the equation of the components was
+    -- formed at a proposition (`eq`, or `transp` along the first component), which the
+    -- kernel rejects: `let h2 := h.2` for `h : p = q` made the declaration fail
+    { name := "an equation at a Σ with a proof component is well typed (nu-transp)", run := fun _ =>
+        ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def f1 (p q : (x : N) × x = x) (h : p = q) : True :=\n  let h2 := h.2\n  ()\n" ++
+          "def f2 (B : Type) (p q : (0 k : True) × B) (h : p = q) : True :=\n  let h2 := h.2\n  ()\n" ++
+          "#reduce fun (p q : (x : N) × x = x) => p = q\n" ++
+          "#reduce fun (B : Type) (p q : (0 k : True) × B) => p = q")
+          ["fun p q => (0 e : p.1 = q.1) × True", "fun B p q => (0 e : True) × cast (refl B) p.2 = q.2"] },
+    -- the rule `a =_P b ↦ True` at a proposition `P` never gives `False`: two different
+    -- proofs are equal, and the equation proves nothing
+    { name := "an equation at a proposition is True, not False (nu-transp)", run := fun _ => do
+        let p := "def pf (f : Unit → True) : Unit × True := ((), f ())\n"
+        ok (p ++ "#reduce fun (f : Unit → True) => pf f = ((), ())\n" ++
+          "def e (f : Unit → True) : pf f = ((), ()) := ((), ())")
+          ["fun f => (0 e : True) × True"]
+        fails (p ++ "def bad (f : Unit → True) (h : pf f = ((), ())) : False := h.2") "mismatch" },
+    -- KNOWN GAP (pinned): a *neutral* proposition (`P q.1` for a variable `P : A → Prop`,
+    -- or `P : Prop`) is not seen by `propSort?`, so the two rules don't fire and the
+    -- kernel still rejects these. Mandatory sorts (`wiz-notes/mandatory-sorts.md`: every
+    -- Π/Σ carries its components' sorts) closes it; then this case flips: make it `ok`.
+    { name := "known gap: an equation at a Σ with a neutral proof component (nu-transp)", run := fun _ => do
+        fails "def g1 (A : Type) (P : A → Prop) (p q : (x : A) × P x) (h : p = q) : True :=\n  let h2 := h.2\n  ()"
+          "equality is for types in Type u, not propositions"
+        fails "def g2 (P : Prop) (B : Type) (p q : (0 k : P) × B) (h : p = q) : True :=\n  let h2 := h.2\n  ()"
+          "transp is for types in Type u, not propositions" },
     { name := "equality at Unit is True", run := fun _ =>
         ok "def uu (u v : Unit) : u = v := rfl" },
     { name := "η for pairs, via refl", run := fun _ =>
@@ -4686,8 +4713,11 @@ def selfHostGroup : Group where
         let surf := "def B2 : Type := (x : Unit) × (True → True)\n" ++
           "def P (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : Prop := True\n" ++
           "def t3 (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : P h := ()\n" ++
-          "def t5 : P (refl ((), fun x => x)) := t3 (refl ((), fun x => x))\n" ++
-          "def t4 : P (refl ((), fun x => x)) := t3 _\n"
+          -- (the pair ascribed: since #123 an equation at a type whose second part is a
+          -- proposition computes to `True` only once that is known, and the elaborator
+          -- does not solve the pair's type through it; the same on master without P2)
+          "def t5 : P (refl (((), fun x => x) : B2)) := t3 (refl (((), fun x => x) : B2))\n" ++
+          "def t4 : P (refl (((), fun x => x) : B2)) := t3 _\n"
         ok surf
         -- raw: prf.{0} ((fun _ => () : a = a → True) (refl B2 a)) : True, a := ((), fun x => x)
         let B2 : MTm := .sigma (.unit 0) (.pi .ptrue .ptrue)
