@@ -3,6 +3,7 @@ import Tests.Eval
 import Tests.Check
 import Tests.Parser
 import Tests.Elab
+import Tests.Groups
 import Tests.ElabFix
 import Tests.Grail
 import Tests.LSP
@@ -19,11 +20,10 @@ set_option compiler.extract_closed false
 
 open Tests
 
-/-- Every test group: each test module lists its own (`groups` at its end), so that a
-new group touches only its module (and `.github/test-shards.json`). -/
-def groups : List Group :=
+/-- The groups of the older modules that list their own (`groups` at their end). New
+groups are modules of their own under `Tests/Groups/` (`registerGroup`). -/
+def moduleGroups : List Group :=
   Check.groups ++
-  Elab.groups ++
   ElabFix.groups ++
   Feral.groups ++
   Eval.groups ++
@@ -36,6 +36,10 @@ def groups : List Group :=
   Scaling.groups ++
   Tower.groups ++
   []
+
+/-- Every test group: the modules' and the registered ones (`Tests/Groups/`). -/
+def allGroups : IO (List Group) := do
+  return moduleGroups ++ (← groupRegistry.get).toList
 
 /-- Whether a command-line selector picks a group: `=NAME` exactly, anything else as a
 prefix of the group's name. `=NAME#I,J,…` picks only the cases with those indices
@@ -56,14 +60,15 @@ def selectedCases (g : Group) (args : List String) : Option (List Nat) := Id.run
 
 /-- The group named `name`, among the suite's and the driver's fixtures (`--run` finds
 these; no selector picks them). -/
-def findGroup (name : String) : Option Group :=
-  (groups ++ [driverFixtures]).find? (·.name == name)
+def findGroup (name : String) : IO (Option Group) := do
+  return ((← allGroups) ++ [driverFixtures]).find? (·.name == name)
 
 /-- The arguments of a suite run, checked: an argument that is neither a toolchain flag
 nor `--timings`/`--shard` (an unknown or misspelt flag), a selector that picks no group
 and a case index that the group does not have are errors (exit code 2), not an empty run
 that passes. -/
 def checkSelectors (args : List String) : IO (Option UInt32) := do
+  let groups ← allGroups
   for arg in args do
     if arg.startsWith "--" then
       IO.eprintln s!"unknown flag (or a flag without its value): {arg}"
@@ -94,7 +99,7 @@ def runOne (args : List String) : IO UInt32 := do
   let [group, ix] := args
     | IO.eprintln s!"unexpected arguments: {" ".intercalate args}\n{usage}"; return 2
   let group := if group.startsWith "=" then (group.drop 1).toString else group
-  let some g := findGroup group
+  let some g ← findGroup group
     | IO.eprintln s!"no test group named {group} (`tests --list`)\n{usage}"; return 2
   let some i := ix.toNat?
     | IO.eprintln s!"not a case index: {ix}\n{usage}"; return 2
@@ -181,7 +186,7 @@ def main (args : List String) : IO UInt32 := do
   if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run-case" :: _ | "--check" :: _ | "--check-libs" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run-case" :: _ | "--check" :: _ | "--check-libs" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | ["--list-shards"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -189,7 +194,7 @@ def main (args : List String) : IO UInt32 := do
   match args' with
   -- one case in this process: what `Group.run` starts for each case
   | ["--run-case", group, ix] =>
-    match findGroup group >>= fun g => ix.toNat? >>= (g.cases[·]?) with
+    match (← findGroup group) >>= fun g => ix.toNat? >>= (g.cases[·]?) with
     | some c => c.runHere
     | none => do IO.eprintln s!"no such case: {group} #{ix}"; pure 2
   | "--run" :: rest => runOne rest
@@ -222,10 +227,14 @@ def main (args : List String) : IO UInt32 := do
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
   | ["--list"] => do
-    for g in groups do IO.println g.name
+    for g in ← allGroups do IO.println g.name
+    pure 0
+  -- each group's shard hint (`Group.shard`; empty for the default), for `scripts/ci.py`
+  | ["--list-shards"] => do
+    for g in ← allGroups do IO.println s!"{g.name}\t{g.shard}"
     pure 0
   | "--list-cases" :: sels => do
-    for g in groups do
+    for g in ← allGroups do
       let only := selectedCases g sels
       if sels.isEmpty || sels.any (selects g) then
         for c in g.cases, i in [0:g.cases.length] do
@@ -236,6 +245,7 @@ def main (args : List String) : IO UInt32 := do
     let (shard, args) := takeFlag "--shard" args
     let shard := shard.getD ""
     if let some code ← checkSelectors args then return code
+    let groups ← allGroups
     let selected := if args.isEmpty then groups
       else groups.filter fun g => args.any (selects g)
     let mut passed := 0

@@ -18,3 +18,4 @@ web/out/
 .grail/
 grail.local.wiz
 __pycache__/
+/Tests/Groups.lean

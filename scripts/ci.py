@@ -9,7 +9,10 @@
                                      the test driver BIN; default .lake/build/bin/tests)
   scripts/ci.py check-shards [BIN]   check that every test case is run by exactly one
                                      shard (after splitting), and that every selector
-                                     of a shard selects something
+                                     of a shard selects something. A group that no
+                                     selector picks goes to the shard it names
+                                     (`Group.shard`) or to the shard with
+                                     "default": true (`resolved`)
   scripts/ci.py plan [BIN]           the split shards' parts with their estimated times
   scripts/ci.py summary TITLE FILE.. a Markdown summary for $GITHUB_STEP_SUMMARY of
                                      `lake test` logs (*.log: pass/fail, failing cases)
@@ -48,6 +51,32 @@ NOTE_BUILT = "built "
 def shards():
     with open(SHARDS) as f:
         return json.load(f)
+
+
+def resolved(binary):
+    """The shards of .github/test-shards.json, with each group that no shard's selectors
+    pick added (as `=NAME`) to the shard that the group names (`Group.shard`, `tests
+    --list-shards`), else to the shard marked `"default": true`. So a new group needs no
+    edit here; selectors still win over a group's own choice."""
+    ss = shards()
+    names = {s["name"]: s for s in ss}
+    defaults = [s for s in ss if s.get("default")]
+    if len(defaults) != 1:
+        sys.exit(f"{SHARDS}: exactly one shard must have \"default\": true (found {len(defaults)})")
+    out = subprocess.run([binary, "--list-shards"], capture_output=True, text=True, check=True,
+                         cwd=ROOT).stdout
+    for line in out.split("\n"):
+        if not line:
+            continue
+        g, _, hint = line.partition("\t")
+        if any(selects(g, sel) for s in ss for sel in s["select"]):
+            continue
+        if hint and hint not in names:
+            sys.exit(f"group {g!r} asks for the shard {hint!r}, which .github/test-shards.json lacks")
+        (names[hint] if hint else defaults[0]).setdefault("added", []).append(f"={g}")
+    for s in ss:
+        s["select"] = s["select"] + s.pop("added", [])
+    return ss
 
 
 def selects(group, sel):
@@ -145,7 +174,7 @@ def expanded(binary, base=None):
     """The shards with each split shard replaced by its parts: [(name, selectors,
     estimated seconds or None)]."""
     out = []
-    for s in shards():
+    for s in resolved(binary):
         n = s.get("split", 1)
         if n <= 1:
             out.append((s["name"], s["select"], None))
@@ -198,7 +227,7 @@ def check_shards(binary):
         missing = [i for (h, i), by in runs.items() if h == g and not by]
         if missing:
             errors.append(f"group {g!r}: {'all' if len(missing) == sum(1 for h, _ in runs if h == g) else len(missing)} "
-                          f"of its cases are in no shard: add it to .github/test-shards.json")
+                          f"of its cases are in no shard")
     for (g, i), by in runs.items():
         if len(by) > 1:
             errors.append(f"case {g} #{i} is run by several shards: {', '.join(by)}")
@@ -208,7 +237,7 @@ def check_shards(binary):
     # a split shard's cases without a baseline entry are balanced by guesswork; warn
     # (a new case has no time until a CI run measured it, so this cannot be an error)
     base = baseline()
-    for s in shards():
+    for s in resolved(binary):
         if s.get("split", 1) > 1:
             new = [n for g, _, n in list_cases(binary, s["select"]) if n not in base["cases"].get(g, {})]
             if new:

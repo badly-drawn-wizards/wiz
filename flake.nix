@@ -47,7 +47,7 @@
               src = fs.toSource {
                 root = ./.;
                 fileset = fs.unions [
-                  ./lakefile.toml ./lake-manifest.json ./lean-toolchain
+                  ./lakefile.lean ./lake-manifest.json ./lean-toolchain
                   ./Main.lean ./Wiz.lean ./Wiz ./Grail.lean ./Grail
                   ./runtime # wiz.c and WizRuntime.lean, which embeds it (include_str)
                   ./c # linked into the executables (moreLinkObjs)
@@ -115,7 +115,7 @@
             inherit (unwrapped) version;
             src = fs.toSource {
               root = ./.;
-              fileset = fs.unions [ ./lakefile.toml ./lake-manifest.json ./lean-toolchain ./Tower.lean ./Tower ];
+              fileset = fs.unions [ ./lakefile.lean ./lake-manifest.json ./lean-toolchain ./Tower.lean ./Tower ];
             };
             nativeBuildInputs = [ lean ];
             buildPhase = ''
