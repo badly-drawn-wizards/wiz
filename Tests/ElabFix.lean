@@ -485,6 +485,13 @@ def group : Group where
           "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
           "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
           "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
+    { name := "dotted names: the longest prefix that names something, then fields by the type's name (cohesion-hardware)", run := fun _ =>
+        -- `Q.origin.x` was the fields `origin.x` of `Q`; and `p.sum` for a structure `P`
+        -- found no field `sum` (generalised field notation only knew inductive types)
+        okLib ("import Prelude\nstructure P where\n  x : Nat\n  y : Nat\n" ++
+          "def P.sum (p : P) : Nat := Nat.add p.x p.y\ndef Q.origin : P := P.mk 1 2\n" ++
+          "def a : Nat := Q.origin.x\ndef b : Nat := Q.origin.sum\ndef c (p : P) : Nat := p.sum\n" ++
+          "#eval a\n#eval b\n#eval c (P.mk 3 4)") ["1", "3", "7"] },
     { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
         -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
         -- the scrutinee isn't abstracted inside `?A b` (that would leave the pattern fragment)
