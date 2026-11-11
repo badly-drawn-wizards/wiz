@@ -616,6 +616,35 @@ def serverGroup : Group where
         let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
         checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
         check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
+    { name := "document symbols, workspace symbols and folding ranges (11v)", run := fun _ => do
+        let src := "import Prelude\n/- a block\n   comment -/\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
+          "def Point.norm (p : Point) : Nat := p.px\ndef k : Nat → Nat := by\n  intro n\n  exact n\n"
+        let (srv, _) ← openDoc src
+        let (srv, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\"}}}")
+        let some (.arr syms) := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        checkEq ["Point", "Point.norm", "k"] (syms.toList.map (LSP.getStr · ["name"]))
+        checkEq (23 : Nat) (LSP.getNat syms[0]! ["kind"])
+        let kids := match LSP.get? syms[0]! ["children"] with
+          | some (.arr ks) => ks.toList.map (LSP.getStr · ["name"])
+          | _ => []
+        for f in ["Point.px", "Point.py"] do check (kids.contains f) s!"children: {kids}"
+        checkEq "Point → Nat" (LSP.getStr syms[1]! ["detail"])
+        checkEq (7 : Nat) (LSP.getNat syms[2]! ["range", "start", "line"])
+        -- workspace symbols: by a part of the name, ignoring case
+        let (srv, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"NORM\"}}")
+        let some (.arr ws) := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        -- (the open documents' own declarations first, then the libraries')
+        checkEq "Point.norm" (LSP.getStr ws[0]! ["name"])
+        checkEq "file:///t.wiz" (LSP.getStr ws[0]! ["location", "uri"])
+        check (ws.toList.any (LSP.getStr · ["name"] == "TacticM.normalize")) s!"{ws.map (·.compress)}"
+        let (_, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Nat.add\"}}")
+        check (has out[0]! "lib/Prelude.wiz") s!"Nat.add in the Prelude: {out[0]!.compress}"
+        -- folding: the comment, the structure, the `by` block's definition
+        let (_, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\"}}}")
+        let some (.arr fs) := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        let rs := fs.toList.map fun f => (LSP.getNat f ["startLine"], LSP.getNat f ["endLine"], LSP.getStr f ["kind"])
+        for r in [(1, 2, "comment"), (3, 5, ""), (7, 9, "")] do
+          check (rs.contains r) s!"folding {r}: {rs}" },
     { name := "infoview socket: cursor notifications, requests answered on the socket", run := fun _ => do
         -- a watchdog: a broken server must fail the case, not hang the suite (and since
         -- the process would wait for it, the case ends with an explicit exit)
