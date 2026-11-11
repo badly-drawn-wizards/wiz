@@ -447,7 +447,7 @@ def ottGroup : Group where
     { name := "equality of proofs is rejected", run := fun _ =>
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
-        fails "def bad (A : Type) (a b : A) : a = b := rfl" "type mismatch" },
+        fails "def bad (A : Type) (a b : A) : a = b := rfl" "rfl: the two sides are not definitionally equal" },
     -- D1: regularity beyond the inert types is off by default, and the program checks. It
     -- used to loop with `--regularity full` and an evaluator that runs proofs
     -- (`--eager-proofs`): regularity was then a rule of evaluation, decided by comparing the
@@ -481,7 +481,7 @@ def ottGroup : Group where
           "def castN (e : N = N) (n : N) : (cast e n : N) = n := rfl\n") },
     { name := "no regularity at a type with a variable parameter", run := fun _ =>
         fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
-          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "type mismatch" },
+          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "rfl: the two sides are not definitionally equal" },
     -- P1: regularity at inert types is decided by conversion (InReg_conv, the default): all
     -- eight probes check, and the control at a type variable does not
     { name := "P1: InReg decided by conversion accepts the eight probes, open indices too (the default)", run := fun _ => do
