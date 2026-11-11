@@ -15,6 +15,9 @@ M.defaults = {
       enable = true,
       cmd = { 'grail', 'lsp' },
     },
+    -- A file in an installed toolchain's standard library (go to definition opens them)
+    -- is served by that toolchain's own `wiz lsp`, one server per toolchain.
+    toolchains = true,
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil, -- function(client, bufnr)
     capabilities = nil, -- merged into the client's capabilities

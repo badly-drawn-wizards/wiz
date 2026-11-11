@@ -1310,6 +1310,7 @@ static uint64_t wiz_sys_status(int r) { return r < 0 ? (uint64_t)errno : 0; }
 WIZ_API uint64_t wiz_sys_errno(void) { return (uint64_t)wiz_sys_err; }
 WIZ_API const char *wiz_sys_strerror(uint64_t e) {
   if (e == WIZ_SYS_EOF) return "end of file";
+  if (e == 100001) return "timed out"; /* WIZ_SYS_TIMEOUT */
   return strerror((int)e);
 }
 
@@ -1610,7 +1611,45 @@ static void wiz_sys_close_fd(int *fd) { if (*fd >= 0) { close(*fd); *fd = -1; } 
 
 /* spawn `cmd` (searched in PATH) with arguments; each stream is 0 inherited,
    1 a pipe, 2 /dev/null. NULL with the error. */
+/* the environment for a child: this program's with `changes` applied ("+K=V" sets K,
+   "-K" removes it), or only the "+" entries if `clear` (consumes the list) */
+static char **wiz_sys_child_env(wiz_val changes, int clear) {
+  char **ch = wiz_sys_strings(changes, NULL);
+  size_t n = 0, m = 0;
+  if (!clear) for (char **e = environ; *e; e++) n++;
+  for (char **c = ch; *c; c++) m++;
+  char **env = (char **)malloc((n + m + 1) * sizeof(char *));
+  size_t k = 0;
+  if (!clear) for (char **e = environ; *e; e++) env[k++] = strdup(*e);
+  for (char **c = ch; *c; c++) {
+    const char *kv = *c + 1;
+    size_t klen = strcspn(kv, "=");
+    /* drop an earlier binding of the same name */
+    for (size_t i = 0; i < k; i++)
+      if (strncmp(env[i], kv, klen) == 0 && env[i][klen] == '=') { free(env[i]); env[i] = env[--k]; break; }
+    if (**c == '+') env[k++] = strdup(kv);
+  }
+  env[k] = NULL;
+  wiz_sys_free_strings(ch);
+  return env;
+}
+static void *wiz_sys_spawn_in(const char *cmd, wiz_val args, uint64_t in, uint64_t out, uint64_t err,
+                              const char *cwd, char **envp, uint64_t group);
 WIZ_API void *wiz_sys_spawn(const char *cmd, wiz_val args, uint64_t in, uint64_t out, uint64_t err) {
+  return wiz_sys_spawn_in(cmd, args, in, out, err, "", NULL, 0);
+}
+/* (sys-bytes) the same in directory `cwd` (unless ""), with the environment changed
+   (`wiz_sys_child_env`), and `group` 0 this program's process group, 1 a new process
+   group (the child leads it), 2 a new session (setsid) */
+WIZ_API void *wiz_sys_spawn_with(const char *cmd, wiz_val args, uint64_t in, uint64_t out, uint64_t err,
+                                 const char *cwd, wiz_val env, int clear, uint64_t group) {
+  char **envp = wiz_sys_child_env(env, clear);
+  void *c = wiz_sys_spawn_in(cmd, args, in, out, err, cwd, envp, group);
+  wiz_sys_free_strings(envp);
+  return c;
+}
+static void *wiz_sys_spawn_in(const char *cmd, wiz_val args, uint64_t in, uint64_t out, uint64_t err,
+                              const char *cwd, char **envp, uint64_t group) {
   static int sigpipe_ignored = 0;
   if (!sigpipe_ignored) { signal(SIGPIPE, SIG_IGN); sigpipe_ignored = 1; }
   char **argv = wiz_sys_strings(args, cmd);
@@ -1629,6 +1668,7 @@ WIZ_API void *wiz_sys_spawn(const char *cmd, wiz_val args, uint64_t in, uint64_t
       posix_spawn_file_actions_addopen(&fa, i, "/dev/null", i == 0 ? O_RDONLY : O_WRONLY, 0);
     }
   }
+  if (r == 0 && cwd[0]) r = posix_spawn_file_actions_addchdir_np(&fa, cwd);
   pid_t pid = 0;
   if (r == 0) {
     fflush(stdout); fflush(stderr);
@@ -1640,8 +1680,16 @@ WIZ_API void *wiz_sys_spawn(const char *cmd, wiz_val args, uint64_t in, uint64_t
     sigemptyset(&none);
     posix_spawnattr_setsigdefault(&at, &def);
     posix_spawnattr_setsigmask(&at, &none);
-    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
-    r = posix_spawnp(&pid, cmd, &fa, &at, argv, environ);
+    short fl = POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK;
+    if (group == 1) { fl |= POSIX_SPAWN_SETPGROUP; posix_spawnattr_setpgroup(&at, 0); }
+#ifdef POSIX_SPAWN_SETSID
+    if (group == 2) fl |= POSIX_SPAWN_SETSID;
+#else
+    if (group == 2) r = ENOSYS;
+#endif
+    posix_spawnattr_setflags(&at, fl);
+    /* with a new environment, PATH is still this program's (posix_spawnp looks in ours) */
+    if (r == 0) r = posix_spawnp(&pid, cmd, &fa, &at, argv, envp ? envp : environ);
     posix_spawnattr_destroy(&at);
   }
   posix_spawn_file_actions_destroy(&fa);
@@ -1745,6 +1793,37 @@ WIZ_API uint64_t wiz_sys_child_kill(void *p, uint64_t sig) {
   if (c->waited) return ESRCH;
   return wiz_sys_status(kill(c->pid, (int)sig));
 }
+/* (sys-bytes) without blocking: as `wiz_sys_child_wait`, or 2^32 while it runs */
+WIZ_API uint64_t wiz_sys_child_try_wait(void *p) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  if (!c->waited) {
+    int st;
+    pid_t r;
+    while ((r = waitpid(c->pid, &st, WNOHANG)) < 0 && errno == EINTR) {}
+    if (r < 0) { wiz_sys_err = errno; return 0; }
+    wiz_sys_err = 0;
+    if (r == 0) return (uint64_t)1 << 32;
+    c->waited = 1;
+    c->status = WIFEXITED(st) ? WEXITSTATUS(st) : WIFSIGNALED(st) ? 256 + WTERMSIG(st) : 512;
+  }
+  wiz_sys_err = 0;
+  return (uint64_t)c->status;
+}
+/* a signal to the process group the child leads (spawned with a new group or session) */
+WIZ_API uint64_t wiz_sys_child_kill_group(void *p, uint64_t sig) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  return wiz_sys_status(kill(-c->pid, (int)sig));
+}
+/* take our end of pipe i (0 stdin, 1 stdout, 2 stderr) out of the child, as a
+   descriptor number for `wiz_sys_fd_adopt` (the child no longer closes it) */
+WIZ_API uint64_t wiz_sys_child_take(void *p, uint64_t i) {
+  wiz_sys_child *c = (wiz_sys_child *)p;
+  if (i > 2 || c->fd[i] < 0 || (i > 0 && c->buf[i - 1])) { wiz_sys_err = EBADF; return 0; }
+  int fd = c->fd[i];
+  c->fd[i] = -1;
+  wiz_sys_err = 0;
+  return (uint64_t)fd;
+}
 /* replace this program (returns only with an error) */
 WIZ_API uint64_t wiz_sys_exec(const char *cmd, wiz_val args) {
   char **argv = wiz_sys_strings(args, cmd);
@@ -1757,6 +1836,345 @@ WIZ_API uint64_t wiz_sys_exec(const char *cmd, wiz_val args) {
 }
 WIZ_API void wiz_sys_exit(uint64_t code) { exit((int)code); }
 WIZ_API uint64_t wiz_sys_getpid(void) { return (uint64_t)getpid(); }
+
+/* ---- (sys-bytes) paths, the program's own path, clocks ---- */
+
+#include <limits.h>
+#include <time.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
+WIZ_API const char *wiz_sys_realpath(const char *p) {
+  char *r = realpath(p, NULL);
+  wiz_sys_err = r ? 0 : errno;
+  return wiz_sys_keep(r);
+}
+/* the running executable: /proc/self/exe on Linux, _NSGetExecutablePath on macOS
+   (other systems: ENOSYS) */
+WIZ_API const char *wiz_sys_app_path(void) {
+#if defined(__linux__)
+  return wiz_sys_readlink("/proc/self/exe");
+#elif defined(__APPLE__)
+  uint32_t n = 0;
+  _NSGetExecutablePath(NULL, &n);
+  char *b = (char *)malloc(n + 1);
+  if (_NSGetExecutablePath(b, &n) != 0) { free(b); wiz_sys_err = ENAMETOOLONG; return wiz_sys_keep(NULL); }
+  char *r = realpath(b, NULL);
+  free(b);
+  wiz_sys_err = r ? 0 : errno;
+  return wiz_sys_keep(r);
+#else
+  wiz_sys_err = ENOSYS;
+  return wiz_sys_keep(NULL);
+#endif
+}
+/* nanoseconds: 0 the monotonic clock (since an unspecified point, never goes back),
+   1 the wall clock (since the epoch) */
+WIZ_API uint64_t wiz_sys_clock_ns(uint64_t which) {
+  struct timespec t;
+  clock_gettime(which == 0 ? CLOCK_MONOTONIC : CLOCK_REALTIME, &t);
+  return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
+}
+WIZ_API void wiz_sys_sleep_ns(uint64_t ns) {
+  struct timespec t = {(time_t)(ns / 1000000000u), (long)(ns % 1000000000u)};
+  while (nanosleep(&t, &t) < 0 && errno == EINTR) {}
+}
+
+/* ---- (sys-bytes) byte buffers: slices, joins, comparison ---- */
+
+/* a buffer that owns `data` (malloc'd, `cap` bytes, `len` used) */
+static wiz_val wiz_bytes_adopt(unsigned char *data, size_t len, size_t cap) {
+  wiz_bytes *b = (wiz_bytes *)wiz_bytes_empty();
+  if (data && len == 0) { free(data); data = NULL; cap = 0; }
+  b->data = data; b->len = len; b->cap = cap;
+  return (wiz_val)b;
+}
+/* bytes [start, start + len), cut at the end */
+WIZ_API wiz_val wiz_bytes_slice(wiz_val v, uint64_t start, uint64_t len) {
+  wiz_bytes *b = (wiz_bytes *)v;
+  size_t s = start < b->len ? start : b->len;
+  size_t n = len < b->len - s ? len : b->len - s;
+  unsigned char *d = n ? (unsigned char *)malloc(n) : NULL;
+  if (n) memcpy(d, b->data + s, n);
+  wiz_dec(v);
+  return wiz_bytes_adopt(d, n, n);
+}
+/* `a` then `b`: in place when `a` is unique */
+WIZ_API wiz_val wiz_bytes_append(wiz_val a, wiz_val b) {
+  wiz_bytes *y = (wiz_bytes *)b;
+  if (y->len == 0) { wiz_dec(b); return a; }
+  a = wiz_bytes_unique(a);
+  wiz_bytes *x = (wiz_bytes *)a;
+  if (x->len + y->len > x->cap) {
+    size_t cap = x->cap ? x->cap : 8;
+    while (cap < x->len + y->len) cap *= 2;
+    x->data = (unsigned char *)realloc(x->data, cap); x->cap = cap;
+  }
+  memcpy(x->data + x->len, y->data, y->len);
+  x->len += y->len;
+  wiz_dec(b);
+  return a;
+}
+WIZ_API int wiz_bytes_eq(wiz_val a, wiz_val b) {
+  wiz_bytes *x = (wiz_bytes *)a, *y = (wiz_bytes *)b;
+  int r = x->len == y->len && (x->len == 0 || memcmp(x->data, y->data, x->len) == 0);
+  wiz_dec(a); wiz_dec(b);
+  return r;
+}
+
+/* ---- (sys-bytes) byte I/O on `File` (stdio: buffered, shares the buffer with
+   readLine/write) ---- */
+
+#define WIZ_SYS_TIMEOUT 100001 /* not an errno: the time ran out (a timed read) */
+
+/* up to n bytes; fewer only at the end of the file (error WIZ_SYS_EOF with nothing) */
+WIZ_API wiz_val wiz_sys_file_read_bytes(void *p, uint64_t n) {
+  wiz_sys_file *h = (wiz_sys_file *)p;
+  if (!h->f) { wiz_sys_err = EBADF; return wiz_bytes_empty(); }
+  if (n == 0) { wiz_sys_err = 0; return wiz_bytes_empty(); }
+  unsigned char *d = (unsigned char *)malloc(n);
+  if (!d) { wiz_sys_err = ENOMEM; return wiz_bytes_empty(); }
+  size_t k = fread(d, 1, n, h->f);
+  if (k == 0) {
+    free(d);
+    wiz_sys_err = ferror(h->f) ? (errno ? errno : EIO) : WIZ_SYS_EOF;
+    clearerr(h->f);
+    return wiz_bytes_empty();
+  }
+  wiz_sys_err = 0;
+  return wiz_bytes_adopt(d, k, n);
+}
+WIZ_API uint64_t wiz_sys_file_write_bytes(void *p, wiz_val v) {
+  wiz_sys_file *h = (wiz_sys_file *)p;
+  wiz_bytes *b = (wiz_bytes *)v;
+  uint64_t r = !h->f ? EBADF : (b->len == 0 || fwrite(b->data, 1, b->len, h->f) == b->len) ? 0 : (errno ? (uint64_t)errno : EIO);
+  wiz_dec(v);
+  return r;
+}
+/* whence 0 from the start, 1 from here, 2 from the end; `back`: the offset is negative.
+   The new offset from the start. */
+static int wiz_sys_whence(uint64_t w) { return w == 0 ? SEEK_SET : w == 1 ? SEEK_CUR : SEEK_END; }
+WIZ_API uint64_t wiz_sys_file_seek(void *p, uint64_t whence, uint64_t off, int back) {
+  wiz_sys_file *h = (wiz_sys_file *)p;
+  if (!h->f) { wiz_sys_err = EBADF; return 0; }
+  off_t o = back ? -(off_t)off : (off_t)off;
+  if (fseeko(h->f, o, wiz_sys_whence(whence)) < 0) { wiz_sys_err = errno; return 0; }
+  off_t at = ftello(h->f);
+  wiz_sys_err = at < 0 ? errno : 0;
+  return at < 0 ? 0 : (uint64_t)at;
+}
+
+/* ---- (sys-bytes) descriptors: `foreign_type Fd (finalizer := "wiz_sys_fd_free")` ----
+
+   Unbuffered: each read is one read(2) (or a loop of them), so poll(2) sees what is
+   really waiting. For terminals, pipes and devices; for regular files `File` is
+   faster. Closing twice is an error (EBADF), never a second close(2) of a number
+   that may have been reused. */
+
+typedef struct { int fd; int owned; int eio_eof; } wiz_sys_fdh;
+WIZ_API void wiz_sys_fd_free(void *p) {
+  wiz_sys_fdh *h = (wiz_sys_fdh *)p;
+  if (h->fd >= 0 && h->owned) close(h->fd);
+  free(h);
+}
+static void *wiz_sys_fd_wrap(int fd, int owned) {
+  wiz_sys_fdh *h = (wiz_sys_fdh *)malloc(sizeof *h);
+  h->fd = fd; h->owned = owned; h->eio_eof = 0;
+  return h;
+}
+/* access 0 read, 1 write, 2 both; flags: 1 create, 2 truncate, 4 append, 8 exclusive,
+   16 no controlling terminal, 32 non-blocking open (cleared afterwards). Close-on-exec. */
+WIZ_API void *wiz_sys_fd_open(const char *path, uint64_t access, uint64_t flags, uint64_t mode) {
+  int f = (access == 0 ? O_RDONLY : access == 1 ? O_WRONLY : O_RDWR) | O_CLOEXEC;
+  if (flags & 1) f |= O_CREAT;
+  if (flags & 2) f |= O_TRUNC;
+  if (flags & 4) f |= O_APPEND;
+  if (flags & 8) f |= O_EXCL;
+  if (flags & 16) f |= O_NOCTTY;
+  if (flags & 32) f |= O_NONBLOCK;
+  int fd = open(path, f, (mode_t)mode);
+  if (fd < 0) { wiz_sys_err = errno; return NULL; }
+  if (flags & 32) fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
+  wiz_sys_err = 0;
+  return wiz_sys_fd_wrap(fd, 1);
+}
+/* 0 stdin, 1 stdout, 2 stderr (never closed) */
+WIZ_API void *wiz_sys_fd_std(uint64_t i) { return wiz_sys_fd_wrap((int)(i < 3 ? i : 2), 0); }
+/* take over a descriptor number made elsewhere (a C shim, `pipe`): closed with it */
+WIZ_API void *wiz_sys_fd_adopt(uint64_t fd) { return wiz_sys_fd_wrap((int)fd, 1); }
+/* the descriptor number, for C shims (-1 once closed: a huge Nat) */
+WIZ_API uint64_t wiz_sys_fd_raw(void *p) { return (uint64_t)(int64_t)((wiz_sys_fdh *)p)->fd; }
+/* a pseudo-terminal's controller: EIO from a read is the end of the file (Linux says
+   EIO once no one has the terminal side open) */
+WIZ_API void wiz_sys_fd_set_pty(void *p) { ((wiz_sys_fdh *)p)->eio_eof = 1; }
+/* nothing: a use of the handle, so it stays open until here (`Fd.withRaw`) */
+WIZ_API void wiz_sys_fd_keep(void *p) { (void)p; }
+WIZ_API uint64_t wiz_sys_fd_close(void *p) {
+  wiz_sys_fdh *h = (wiz_sys_fdh *)p;
+  if (h->fd < 0) return EBADF;
+  int r = h->owned ? close(h->fd) : 0;
+  h->fd = -1;
+  return wiz_sys_status(r);
+}
+/* a pipe: (read end) + 2^32 * (write end), both close-on-exec */
+WIZ_API uint64_t wiz_sys_pipe(void) {
+  int p[2];
+  if (pipe2(p, O_CLOEXEC) < 0) { wiz_sys_err = errno; return 0; }
+  wiz_sys_err = 0;
+  return (uint64_t)(unsigned)p[0] | ((uint64_t)(unsigned)p[1] << 32);
+}
+
+/* wait until fd is ready for `events` or the deadline (monotonic ns; 0: none) passes:
+   1 ready, 0 timed out, -1 error (errno) */
+static int wiz_sys_wait_fd(int fd, short events, uint64_t deadline) {
+  for (;;) {
+    int ms = -1;
+    if (deadline) {
+      uint64_t now = wiz_sys_clock_ns(0);
+      if (now >= deadline) ms = 0;
+      else { uint64_t d = (deadline - now + 999999u) / 1000000u; ms = d > INT_MAX ? INT_MAX : (int)d; }
+    }
+    struct pollfd pf = {fd, events, 0};
+    int r = poll(&pf, 1, ms);
+    if (r < 0) { if (errno == EINTR) continue; return -1; }
+    if (r > 0) {
+      if (pf.revents & POLLNVAL) { errno = EBADF; return -1; }
+      return 1; /* POLLHUP/POLLERR: the read or write that follows reports it */
+    }
+    if (ms == 0) return 0;
+    if (deadline && wiz_sys_clock_ns(0) >= deadline) return 0;
+  }
+}
+static uint64_t wiz_sys_deadline(int timed, uint64_t ns) {
+  if (!timed) return 0;
+  uint64_t d = wiz_sys_clock_ns(0) + ns;
+  return d ? d : 1;
+}
+/* one read: up to n bytes (at least one), or error WIZ_SYS_EOF (nothing: the end) or
+   WIZ_SYS_TIMEOUT (nothing came within `ns`, if `timed`) */
+WIZ_API wiz_val wiz_sys_fd_read(void *p, uint64_t n, int timed, uint64_t ns) {
+  wiz_sys_fdh *h = (wiz_sys_fdh *)p;
+  if (h->fd < 0) { wiz_sys_err = EBADF; return wiz_bytes_empty(); }
+  if (n == 0) { wiz_sys_err = 0; return wiz_bytes_empty(); }
+  uint64_t deadline = wiz_sys_deadline(timed, ns);
+  unsigned char *d = (unsigned char *)malloc(n);
+  if (!d) { wiz_sys_err = ENOMEM; return wiz_bytes_empty(); }
+  for (;;) {
+    if (timed) {
+      int w = wiz_sys_wait_fd(h->fd, POLLIN, deadline);
+      if (w <= 0) { wiz_sys_err = w == 0 ? WIZ_SYS_TIMEOUT : errno; free(d); return wiz_bytes_empty(); }
+    }
+    ssize_t k = read(h->fd, d, n);
+    if (k > 0) { wiz_sys_err = 0; return wiz_bytes_adopt(d, (size_t)k, n); }
+    if (k == 0) { wiz_sys_err = WIZ_SYS_EOF; free(d); return wiz_bytes_empty(); }
+    if (errno == EINTR) continue;
+    if (errno == EAGAIN && timed) continue; /* spurious readiness on a non-blocking fd */
+    wiz_sys_err = errno == EIO && h->eio_eof ? WIZ_SYS_EOF : errno; free(d); return wiz_bytes_empty();
+  }
+}
+/* exactly n bytes, unless the end (WIZ_SYS_EOF) or the deadline (WIZ_SYS_TIMEOUT)
+   comes first: then what came before it */
+WIZ_API wiz_val wiz_sys_fd_read_exact(void *p, uint64_t n, int timed, uint64_t ns) {
+  wiz_sys_fdh *h = (wiz_sys_fdh *)p;
+  if (h->fd < 0) { wiz_sys_err = EBADF; return wiz_bytes_empty(); }
+  uint64_t deadline = wiz_sys_deadline(timed, ns);
+  unsigned char *d = n ? (unsigned char *)malloc(n) : NULL;
+  if (n && !d) { wiz_sys_err = ENOMEM; return wiz_bytes_empty(); }
+  size_t got = 0;
+  int e = 0;
+  while (got < n) {
+    if (timed) {
+      int w = wiz_sys_wait_fd(h->fd, POLLIN, deadline);
+      if (w <= 0) { e = w == 0 ? WIZ_SYS_TIMEOUT : errno; break; }
+    }
+    ssize_t k = read(h->fd, d + got, n - got);
+    if (k > 0) { got += (size_t)k; continue; }
+    if (k == 0) { e = WIZ_SYS_EOF; break; }
+    if (errno == EINTR || (errno == EAGAIN && timed)) continue;
+    e = errno == EIO && h->eio_eof ? WIZ_SYS_EOF : errno; break;
+  }
+  wiz_sys_err = e;
+  return wiz_bytes_adopt(d, got, n);
+}
+/* all of the buffer (waiting while a non-blocking descriptor is full) */
+WIZ_API uint64_t wiz_sys_fd_write(void *p, wiz_val v) {
+  wiz_sys_fdh *h = (wiz_sys_fdh *)p;
+  wiz_bytes *b = (wiz_bytes *)v;
+  uint64_t r = 0;
+  if (h->fd < 0) r = EBADF;
+  else {
+    size_t off = 0;
+    while (off < b->len) {
+      ssize_t k = write(h->fd, b->data + off, b->len - off);
+      if (k > 0) { off += (size_t)k; continue; }
+      if (k < 0 && errno == EINTR) continue;
+      if (k < 0 && errno == EAGAIN) { if (wiz_sys_wait_fd(h->fd, POLLOUT, 0) < 0) { r = errno; break; } continue; }
+      r = k < 0 ? (uint64_t)errno : EIO; break;
+    }
+  }
+  wiz_dec(v);
+  return r;
+}
+/* readable (events 1) or writable (2) within `ns` (if timed; forever otherwise):
+   1 ready, 0 not */
+WIZ_API uint64_t wiz_sys_fd_wait(void *p, uint64_t events, int timed, uint64_t ns) {
+  wiz_sys_fdh *h = (wiz_sys_fdh *)p;
+  if (h->fd < 0) { wiz_sys_err = EBADF; return 0; }
+  int w = wiz_sys_wait_fd(h->fd, events == 2 ? POLLOUT : POLLIN, wiz_sys_deadline(timed, ns));
+  wiz_sys_err = w < 0 ? errno : 0;
+  return w > 0;
+}
+WIZ_API uint64_t wiz_sys_fd_seek(void *p, uint64_t whence, uint64_t off, int back) {
+  wiz_sys_fdh *h = (wiz_sys_fdh *)p;
+  if (h->fd < 0) { wiz_sys_err = EBADF; return 0; }
+  off_t at = lseek(h->fd, back ? -(off_t)off : (off_t)off, wiz_sys_whence(whence));
+  wiz_sys_err = at < 0 ? errno : 0;
+  return at < 0 ? 0 : (uint64_t)at;
+}
+/* poll several: `fds` a `List Fd`, `events` a `List Nat` (1 read, 2 write, 3 both) of
+   the same length; within `ns` if timed. The list of ready positions (each with what
+   it is ready for: 8 * position + (1 readable | 2 writable | 4 hung up or error)),
+   empty when the time ran out. Both lists are consumed. */
+WIZ_API wiz_val wiz_sys_fd_poll(wiz_val fds, wiz_val events, int timed, uint64_t ns) {
+  size_t n = 0;
+  for (wiz_val c = fds; wiz_tag(c) == 1; c = wiz_field_ref(c, 1)) n++;
+  struct pollfd *pf = (struct pollfd *)calloc(n ? n : 1, sizeof *pf);
+  size_t i = 0;
+  wiz_val e = events;
+  for (wiz_val c = fds; wiz_tag(c) == 1; c = wiz_field_ref(c, 1), i++) {
+    wiz_sys_fdh *h = (wiz_sys_fdh *)wiz_in_ptr(wiz_field_ref(c, 0));
+    uint64_t ev = 1;
+    if (wiz_tag(e) == 1) { wiz_val x = wiz_field_ref(e, 0); ev = WIZ_IS_SCALAR(x) ? WIZ_UNBOX(x) : 1; e = wiz_field_ref(e, 1); }
+    pf[i].fd = h->fd; /* a closed one (-1) is ignored by poll */
+    pf[i].events = (short)(((ev & 1) ? POLLIN : 0) | ((ev & 2) ? POLLOUT : 0));
+  }
+  uint64_t deadline = wiz_sys_deadline(timed, ns);
+  int r;
+  for (;;) {
+    int ms = -1;
+    if (deadline) {
+      uint64_t now = wiz_sys_clock_ns(0);
+      if (now >= deadline) ms = 0;
+      else { uint64_t d = (deadline - now + 999999u) / 1000000u; ms = d > INT_MAX ? INT_MAX : (int)d; }
+    }
+    r = poll(pf, (nfds_t)n, ms);
+    if (r < 0 && errno == EINTR) continue;
+    if (r == 0 && ms != 0 && deadline && wiz_sys_clock_ns(0) < deadline) continue;
+    break;
+  }
+  wiz_sys_err = r < 0 ? errno : 0;
+  wiz_val out = wiz_con(0, 0, NULL);
+  for (size_t k = n; r > 0 && k > 0; k--) {
+    short re = pf[k - 1].revents;
+    if (!re) continue;
+    uint64_t what = ((re & POLLIN) ? 1 : 0) | ((re & POLLOUT) ? 2 : 0) | ((re & (POLLHUP | POLLERR | POLLNVAL)) ? 4 : 0);
+    out = wiz_sys_cons(wiz_out_nat(8 * (uint64_t)(k - 1) + what), out);
+  }
+  free(pf);
+  wiz_dec(fds); wiz_dec(events);
+  return out;
+}
 
 /* ---- output: a generic tree, read back by the compiler using the type ---- */
 

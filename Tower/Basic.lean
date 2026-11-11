@@ -9,6 +9,7 @@
     bin/wiz, bin/grail       run these (the toolchain's flags are in them)
     share/wiz/lib/           the standard library
     share/wiz/.lake/build/bin/{wiz,grail}   the binaries (grail finds lib/ from there)
+    share/wiz/TOOLCHAIN      a marker: editors find the toolchain a library file belongs to
     tower.info               where it came from (spec, source, ref, commit, flags)
 ```
 

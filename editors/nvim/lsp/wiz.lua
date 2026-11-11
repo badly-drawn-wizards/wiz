@@ -8,6 +8,10 @@ return {
   cmd = function(dispatchers, config)
     return vim.lsp.rpc.start(lsp.cmd(config.root_dir), dispatchers, { cwd = config.root_dir })
   end,
+  -- a toolchain's library file: the toolchain's lib/ (served by its own wiz)
+  root_dir = function(bufnr, on_dir)
+    on_dir(lsp.root(bufnr))
+  end,
   filetypes = { 'wiz' },
   root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
   capabilities = lsp.capabilities(),
