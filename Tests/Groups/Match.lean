@@ -44,6 +44,6 @@ def matchGroup : Group where
         fails (matchPrelude ++ "def bad : Nat → Nat\n  | .zero => .zero\n  | .succ m => bad (.succ m)") "recursive call" }
   ]
 
-initialize registerGroup matchGroup
+builtin_initialize registerGroup matchGroup
 
 end Tests.Elab

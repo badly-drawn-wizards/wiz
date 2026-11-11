@@ -903,6 +903,6 @@ def selfHostGroup : Group where
         ioDiverges (withReg ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") }
   ]
 
-initialize registerGroup selfHostGroup
+builtin_initialize registerGroup selfHostGroup
 
 end Tests.Elab

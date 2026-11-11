@@ -162,6 +162,6 @@ def phantomGroup : Group where
           checkEq (unbox, l + k, l + 1 + k, l + 2) (unbox, ← allocs "w", ← allocs "p", ← allocs "q") }
   ]
 
-initialize registerGroup phantomGroup
+builtin_initialize registerGroup phantomGroup
 
 end Tests.Elab

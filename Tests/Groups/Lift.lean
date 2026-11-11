@@ -66,6 +66,6 @@ def liftGroup : Group where
         failsLib "import Prelude\ndef D : Desc Unit := Desc.arg 1 True (fun _ => Desc.ret ())" "type mismatch" }
   ]
 
-initialize registerGroup liftGroup
+builtin_initialize registerGroup liftGroup
 
 end Tests.Elab

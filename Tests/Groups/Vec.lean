@@ -132,6 +132,6 @@ def vecGroup : Group where
         check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }
   ]
 
-initialize registerGroup vecGroup
+builtin_initialize registerGroup vecGroup
 
 end Tests.Elab

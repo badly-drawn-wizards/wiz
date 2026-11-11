@@ -35,12 +35,15 @@ structure Group where
   shard    : String := ""
 
 /-- The groups of the modules under `Tests/Groups/`, in their import order: each module
-registers its own (`initialize registerGroup myGroup`), and `Tests/Groups.lean`, which
+registers its own (`builtin_initialize registerGroup myGroup`), and `Tests/Groups.lean`, which
 Lake generates from the directory's files (`lakefile.lean`), imports them all. So a new
 group is a new file and touches no shared one. -/
 initialize groupRegistry : IO.Ref (Array Group) ← IO.mkRef #[]
 
-/-- Add a group to the suite: `initialize registerGroup myGroup` in its module. -/
+/-- Add a group to the suite: `builtin_initialize registerGroup myGroup` in its module.
+`builtin_`: it runs when the test driver starts, never while Lean elaborates a module
+that imports the group (a plain `initialize` would, and in the exercise tree, where the
+code under test has `sorry`s, that is an error). -/
 def registerGroup (g : Group) : IO Unit := groupRegistry.modify (·.push g)
 
 def check (cond : Bool) (msg : String) : IO Unit :=

@@ -134,6 +134,6 @@ def ffiStructGroup : Group where
         checkEq "true" (toString ((sts[0]!.fields.getD []).map (·.2) == [.int "int", .array (.float "double") (some 3), .array (.int "char") (some 8)])) }
   ]
 
-initialize registerGroup ffiStructGroup
+builtin_initialize registerGroup ffiStructGroup
 
 end Tests.Elab

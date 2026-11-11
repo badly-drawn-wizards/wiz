@@ -46,6 +46,6 @@ def qtyGroup : Group where
           "def apart2 (e : ((ω x : Unit) × Unit) = ((1 x : Unit) × Unit)) : False := e\n") }
   ]
 
-initialize registerGroup qtyGroup
+builtin_initialize registerGroup qtyGroup
 
 end Tests.Elab

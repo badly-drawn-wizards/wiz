@@ -135,6 +135,6 @@ def ffiGroup : Group where
         checkEq #["m"] s.linkLibs }
   ]
 
-initialize registerGroup ffiGroup
+builtin_initialize registerGroup ffiGroup
 
 end Tests.Elab

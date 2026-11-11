@@ -114,6 +114,6 @@ def infoviewGroup : Group where
           else throw (IO.userError s!"infoview/test.sh failed:\n{out.stdout}{out.stderr}") }
   ]
 
-initialize registerGroup infoviewGroup
+builtin_initialize registerGroup infoviewGroup
 
 end Tests.Elab

@@ -29,6 +29,6 @@ def runGroup : Group where
           ["Vec.cons := (λA. (λn. (λx. (λxs. ⟨1 ◾ #1 #0⟩))))"] }
   ]
 
-initialize registerGroup runGroup
+builtin_initialize registerGroup runGroup
 
 end Tests.Elab

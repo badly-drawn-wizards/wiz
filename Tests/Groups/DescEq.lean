@@ -121,6 +121,6 @@ def descEqGroup : Group where
         okWith .full abelCoquandTwoBoxes }
   ]
 
-initialize registerGroup descEqGroup
+builtin_initialize registerGroup descEqGroup
 
 end Tests.Elab

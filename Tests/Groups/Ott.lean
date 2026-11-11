@@ -244,6 +244,6 @@ def ottGroup : Group where
         unless out.any (·.contains "cast") do throw (IO.userError s!"expected a stuck cast, got {out}") }
   ]
 
-initialize registerGroup ottGroup
+builtin_initialize registerGroup ottGroup
 
 end Tests.Elab

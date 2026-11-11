@@ -33,6 +33,6 @@ def sizedGroup : Group where
         fails (sizedPrelude ++ "def bad : Size< ∞ := ∞") "mismatch" }
   ]
 
-initialize registerGroup sizedGroup
+builtin_initialize registerGroup sizedGroup
 
 end Tests.Elab

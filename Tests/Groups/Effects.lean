@@ -61,6 +61,6 @@ def effectsGroup : Group where
           "rfl: the two sides are not definitionally equal" }
   ]
 
-initialize registerGroup effectsGroup
+builtin_initialize registerGroup effectsGroup
 
 end Tests.Elab

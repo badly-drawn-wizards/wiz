@@ -14,6 +14,6 @@ def llvmGroup : Group where
   exercise := "Stage 8d"
   cases := nativeCases true
 
-initialize registerGroup llvmGroup
+builtin_initialize registerGroup llvmGroup
 
 end Tests.Elab

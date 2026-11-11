@@ -56,6 +56,6 @@ def coinductiveGroup : Group where
             "def tl {A : Type} {n : Nat} (v : Vec A (.succ (.succ n))) : Vec A n := v.tail.tail") }
   ]
 
-initialize registerGroup coinductiveGroup
+builtin_initialize registerGroup coinductiveGroup
 
 end Tests.Elab

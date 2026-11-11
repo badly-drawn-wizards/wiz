@@ -36,6 +36,6 @@ def structGroup : Group where
         ok "#check True\n#check Unit" ["True : Prop", "Unit : Type"] }
   ]
 
-initialize registerGroup structGroup
+builtin_initialize registerGroup structGroup
 
 end Tests.Elab

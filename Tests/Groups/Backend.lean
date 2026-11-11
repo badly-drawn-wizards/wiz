@@ -111,6 +111,6 @@ def backendGroup : Group where
         checkEq [151, 100] [← allocs "s4" false, ← allocs "s4" true] }
   ]
 
-initialize registerGroup backendGroup
+builtin_initialize registerGroup backendGroup
 
 end Tests.Elab

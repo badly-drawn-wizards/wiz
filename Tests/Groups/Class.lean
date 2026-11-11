@@ -95,6 +95,6 @@ def classGroup : Group where
           ["def f x0 :=\n  let x1 := 0\n  let x2 := prim nat.add x0 x1\n  ret x2", "4"] }
   ]
 
-initialize registerGroup classGroup
+builtin_initialize registerGroup classGroup
 
 end Tests.Elab

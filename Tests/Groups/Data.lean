@@ -42,6 +42,6 @@ def dataGroup : Group where
         ok "def f (u : Unit) (t : Enum [a, b]) : Unit := ecase t [u, ()]" }
   ]
 
-initialize registerGroup dataGroup
+builtin_initialize registerGroup dataGroup
 
 end Tests.Elab

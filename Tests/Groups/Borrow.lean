@@ -116,6 +116,6 @@ def borrowGroup : Group where
         cRun (borrowSrc ++ "def main : Nat := Nat.add (both (.cons 1 (.cons 2 .nil))) (len (mapL len (.cons .nil .nil)))\n") "5" }
   ]
 
-initialize registerGroup borrowGroup
+builtin_initialize registerGroup borrowGroup
 
 end Tests.Elab

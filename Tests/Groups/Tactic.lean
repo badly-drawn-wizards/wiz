@@ -235,6 +235,6 @@ def tacticGroup : Group where
         checkEq "[\"n : Nat\\n⊢ Nat\"]" (((LSP.get? r[0]! ["result", "messages"]).map (·.compress)).getD "") }
   ]
 
-initialize registerGroup tacticGroup
+builtin_initialize registerGroup tacticGroup
 
 end Tests.Elab

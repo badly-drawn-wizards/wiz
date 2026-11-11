@@ -340,6 +340,6 @@ def trustGroup : Group where
            "ok1 : (T B.t)\nok2 : (x0 : Nat) → Nat\nok3 : (T B.t)\nerror: type mismatch: expected (T B.f), got (T B.t)\n") }
   ]
 
-initialize registerGroup trustGroup
+builtin_initialize registerGroup trustGroup
 
 end Tests.Elab

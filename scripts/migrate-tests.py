@@ -8,7 +8,7 @@ in the one file, listed in its `def groups`) and writes
 
   Tests/Elab.lean            the helpers that several groups (or other modules) use
   Tests/Groups/<Name>.lean   one per group: the group, the helpers only it uses, and
-                             `initialize registerGroup <group>` (Tests/Harness.lean)
+                             `builtin_initialize registerGroup <group>` (Tests/Harness.lean)
 
 The split is deterministic: it is how PR "conflict-free test registration" made the new
 layout, so a branch that still edits the old file gets the same layout by running it on
@@ -282,7 +282,7 @@ def split(path):
         written.append(fn)
         with open(os.path.join(GROUPS, fn), "w") as f:
             f.write(HEADER_GROUP + "\nnamespace Tests.Elab\n\n" + emit(cs) +
-                    f"\ninitialize registerGroup {g}\n\nend Tests.Elab\n")
+                    f"\nbuiltin_initialize registerGroup {g}\n\nend Tests.Elab\n")
     print(f"Tests/Elab.lean: {len(shared)} shared chunks; {len(written)} group modules in Tests/Groups/")
     return 0
 

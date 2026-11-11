@@ -163,6 +163,6 @@ def reuseGroup : Group where
         checkEq ["let x5 := reset x10", "let x6 := reuse x5 in ctor 0 x20 x30", "ret x6"] ls }
   ]
 
-initialize registerGroup reuseGroup
+builtin_initialize registerGroup reuseGroup
 
 end Tests.Elab

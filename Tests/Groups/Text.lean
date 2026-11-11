@@ -45,6 +45,6 @@ def textGroup : Group where
           "100001\n200000\n299998\n" }
   ]
 
-initialize registerGroup textGroup
+builtin_initialize registerGroup textGroup
 
 end Tests.Elab

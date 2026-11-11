@@ -304,6 +304,6 @@ def reprGroup : Group where
         sealLayer3 { name := "fine", type := .const "Nat" [], value := some (.app (.const "W.get" []) (.app (.const "W.of" []) (.const "ok" []))) } none }
   ]
 
-initialize registerGroup reprGroup
+builtin_initialize registerGroup reprGroup
 
 end Tests.Elab

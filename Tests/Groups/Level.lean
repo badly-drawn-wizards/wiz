@@ -45,6 +45,6 @@ def levelGroup : Group where
         fails "def id.{u} {A : Sort u} (x : A) : A := x\ndef t := @id" "universe level" }
   ]
 
-initialize registerGroup levelGroup
+builtin_initialize registerGroup levelGroup
 
 end Tests.Elab

@@ -153,6 +153,6 @@ def builtinGroup : Group where
           "def e (x : Nat) : Box (Nat.add x) = Box (Nat.add x) := rfl\n") }
   ]
 
-initialize registerGroup builtinGroup
+builtin_initialize registerGroup builtinGroup
 
 end Tests.Elab

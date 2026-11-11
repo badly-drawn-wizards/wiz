@@ -13,6 +13,6 @@ def cGroup : Group where
   exercise := "Exercise 8.2"
   cases := nativeCases false
 
-initialize registerGroup cGroup
+builtin_initialize registerGroup cGroup
 
 end Tests.Elab

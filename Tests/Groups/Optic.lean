@@ -44,6 +44,6 @@ def opticGroup : Group where
           "def badGP : Lens.GetPut bad := fun s => refl s") "type mismatch" }
   ]
 
-initialize registerGroup opticGroup
+builtin_initialize registerGroup opticGroup
 
 end Tests.Elab

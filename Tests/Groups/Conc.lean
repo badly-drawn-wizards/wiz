@@ -191,6 +191,6 @@ def concGroup : Group where
         failsLibs "import IO\nimport MVar\ndef forge (l : Lock) : IO (Lock.Guard l) := Lock.acquireRaw l" "private" }
   ]
 
-initialize registerGroup concGroup
+builtin_initialize registerGroup concGroup
 
 end Tests.Elab

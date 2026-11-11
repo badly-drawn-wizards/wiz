@@ -30,6 +30,6 @@ def macroGroup : Group where
             "macro_rules\n  | `(term| digits) => `(term| Nat.zero)\n#eval (digits : Nat)") [".zero"] }
   ]
 
-initialize registerGroup macroGroup
+builtin_initialize registerGroup macroGroup
 
 end Tests.Elab

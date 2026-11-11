@@ -70,6 +70,6 @@ def group : Group where
         fails "def a : Type 1 := Type\ndef a : Type 1 := Type" "already been declared" }
   ]
 
-initialize registerGroup group
+builtin_initialize registerGroup group
 
 end Tests.Elab

@@ -45,6 +45,6 @@ def inductiveGroup : Group where
         fails (indPrelude ++ "def bad : Nat := .three") "no constructor three" }
   ]
 
-initialize registerGroup inductiveGroup
+builtin_initialize registerGroup inductiveGroup
 
 end Tests.Elab

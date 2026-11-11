@@ -91,6 +91,6 @@ def wordGroup : Group where
         cRun "import Word\ndef main : Nat := ((250 : U8) + 10 * 2).toNat + (-1 / 2 : I8).toNat" "14" }
   ]
 
-initialize registerGroup wordGroup
+builtin_initialize registerGroup wordGroup
 
 end Tests.Elab

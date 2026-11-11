@@ -82,6 +82,6 @@ def serialGroup : Group where
           serialTryAll }
   ]
 
-initialize registerGroup serialGroup
+builtin_initialize registerGroup serialGroup
 
 end Tests.Elab

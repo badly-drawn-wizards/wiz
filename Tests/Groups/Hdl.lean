@@ -114,6 +114,6 @@ def hdlGroup : Group where
             throw (IO.userError s!"test bench: {r.stdout}{r.stderr}") }
   ]
 
-initialize registerGroup hdlGroup
+builtin_initialize registerGroup hdlGroup
 
 end Tests.Elab

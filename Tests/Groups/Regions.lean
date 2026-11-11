@@ -207,6 +207,6 @@ def regionsGroup : Group where
         checkEq (← libsAllocs s "t0") (← libsAllocs s "t1") }
   ]
 
-initialize registerGroup regionsGroup
+builtin_initialize registerGroup regionsGroup
 
 end Tests.Elab

@@ -401,6 +401,6 @@ def languageGroup : Group where
         check ((s.messages.filter (·.severity == .error)).size > 0) "expected errors" }
   ]
 
-initialize registerGroup languageGroup
+builtin_initialize registerGroup languageGroup
 
 end Tests.Elab

@@ -42,6 +42,6 @@ def stdGroup : Group where
           "  IO.println (Nat.toString (StrMap.findD m (Str.ofString \"a\") 0));\n  IO.println (Nat.toString (StrMap.size m))") "2\n2\n" }
   ]
 
-initialize registerGroup stdGroup
+builtin_initialize registerGroup stdGroup
 
 end Tests.Elab

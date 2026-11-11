@@ -94,6 +94,6 @@ def toolingGroup : Group where
         check ((out[0]!.compress.splitOn "Nat : Type").length > 1) s!"no hover: {out[0]!.compress}" }
   ]
 
-initialize registerGroup toolingGroup
+builtin_initialize registerGroup toolingGroup
 
 end Tests.Elab

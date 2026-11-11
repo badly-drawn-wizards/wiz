@@ -143,6 +143,6 @@ def callbacksGroup : Group where
         ioFails "import IO\ndef two : Nat := 2\nexport \"wiz_two\" two : String" "not String" }
   ]
 
-initialize registerGroup callbacksGroup
+builtin_initialize registerGroup callbacksGroup
 
 end Tests.Elab

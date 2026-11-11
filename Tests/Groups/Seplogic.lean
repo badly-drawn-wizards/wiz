@@ -113,6 +113,6 @@ def seplogicGroup : Group where
         failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" }
   ]
 
-initialize registerGroup seplogicGroup
+builtin_initialize registerGroup seplogicGroup
 
 end Tests.Elab

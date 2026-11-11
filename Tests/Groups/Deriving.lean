@@ -140,6 +140,6 @@ def derivingGroup : Group where
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}") }
   ]
 
-initialize registerGroup derivingGroup
+builtin_initialize registerGroup derivingGroup
 
 end Tests.Elab

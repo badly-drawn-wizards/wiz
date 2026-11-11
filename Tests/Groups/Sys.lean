@@ -207,6 +207,6 @@ def sysGroup : Group where
           "first,second,(unset)\n3 255\nto stdout\n" sysShow }
   ] ++ sysBytesCases
 
-initialize registerGroup sysGroup
+builtin_initialize registerGroup sysGroup
 
 end Tests.Elab

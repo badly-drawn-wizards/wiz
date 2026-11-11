@@ -47,7 +47,7 @@ the artifact cache never serves a stale one. The only one today is the C runtime
 Adding a test group touches no shared file:
 
 * **A new group is a new module** `Tests/Groups/<Name>.lean` that ends with
-  `initialize registerGroup myGroup` (`Tests/Harness.lean`). Lake generates
+  `builtin_initialize registerGroup myGroup` (`Tests/Harness.lean`). Lake generates
   `Tests/Groups.lean` (an import of every file in `Tests/Groups/`; not committed, see the
   `testGroups` target in `lakefile.lean`) and `Tests/Main.lean` imports it, so the group
   is in the suite as soon as its file exists. Copy a small one (e.g.
