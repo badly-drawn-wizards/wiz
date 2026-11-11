@@ -314,6 +314,9 @@ def spine : Term R → Term R × List (Term R)
 
 /-- Instantiate universe level parameters `ps` with `us`. -/
 partial def instLevels (ps : List Name) (us : List Level) (t : Term R) : Term R :=
+  -- (no parameters: nothing to replace; the copy cost a traversal of the body at every
+  -- unfolding of a global, `wiz-notes/kernel-eval.md`)
+  if ps.isEmpty then t else
   Id.run <| t.mapChildrenM (fun l => pure (l.instParams ps us)) (fun _ c => pure (instLevels ps us c))
 
 /-- Does `var ix` occur free in `t`? (Trusted: `Ctx.instArg` in `Check.lean` skips

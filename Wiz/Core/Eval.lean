@@ -623,11 +623,19 @@ partial def vIndStep (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m 
   --| sorry
   --sol>
 
-/-- `ind` on a numeral `n + 1` is computed only when needed (`Val.lazyInd`): its
-hypothesis is `ind` on `n`, so computing eagerly would go all the way down to `0`. -/
+/-- `ind` on a numeral `n + 1`, or on a constructor, is computed only when needed
+(`Val.lazyInd`): the hypotheses of `con xs` are `ind` on its recursive fields, so
+computing them eagerly would go all the way down (to `0`, or to the end of a list) even
+for a method that ignores them (a `match`: `T.casesOn`), which made a `match` on a list
+cost its length (`wiz-notes/kernel-eval.md`). Not for a normal form (`g.eager`, `nf`):
+`ind` on a constructor is a redex, which a normal form must not contain; and not with
+`--eager-proofs` (`!g.lazyProofs`), where the evaluator runs everything as it did before
+(the D1 experiments' loops are loops of that evaluator). -/
 partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
   match whnf x with
   | .natLit (_ + 1) => .lazyInd l I D v P m i x #[] (Thunk.mk fun _ => vIndStep g l I D v P m i x)
+  | .con _ => if g.eager || !g.lazyProofs then vIndStep g l I D v P m i x
+    else .lazyInd l I D v P m i x #[] (Thunk.mk fun _ => vIndStep g l I D v P m i x)
   | _ => vIndStep g l I D v P m i x
 
 /-- **Exercise 4.22a.** Sized recursion unfolds on a constructor, with the recursive

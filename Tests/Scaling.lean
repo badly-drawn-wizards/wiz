@@ -134,6 +134,19 @@ def eraseMatchMs (n : Nat) : IO Nat := do
   | .error e => throw (IO.userError (toString e))
   pure ((← IO.monoMsNow) - start)
 
+/-- `n` matches on a `len`-element list, checked by `refl`. -/
+def listMatchProgram (len n : Nat) : String :=
+  "import Prelude\n" ++
+  "def rep : Nat → List Nat\n  | .zero => .nil\n  | .succ k => .cons 1 (rep k)\n" ++
+  s!"def l : List Nat := rep {len}\n" ++
+  "def isNil : List Nat → Bool\n  | .nil => .true\n  | .cons _ _ => .false\n" ++
+  "def count : Nat → Nat\n  | .zero => 0\n  | .succ k => match isNil l with\n    | .true => count k\n    | .false => Nat.add 1 (count k)\n" ++
+  s!"def t : count {n} = {n} := refl {n}\n"
+
+/-- A structurally recursive function whose recursive call is under a `fun`. -/
+def hypUnderBinder : String :=
+  "def sumF : List Nat → Nat → Nat\n  | .nil => fun k => k\n  | .cons x xs => fun k => sumF xs (Nat.add k x)\n"
+
 def group : Group where
   name := "scaling"
   exercise := "super-linear time and memory"
@@ -212,6 +225,31 @@ def group : Group where
           "the identity on Type → Type was rejected"
         check ((addDecl {} { name := "i", type := idT bad, value := some (.lam "f" (.var 0)) }) matches .error _)
           "a wrong sort was accepted in a declaration's type" },
+    -- (kernel-eval) `ind` computed the hypotheses of a constructor by value, and the
+    -- hypothesis of a recursive field is `ind` on it: a `match` (`T.casesOn`, which ignores
+    -- them) on a list ran through the whole tail. 1000 matches on a 2000-element list:
+    -- 2 million `ind` steps per evaluation of the statement (the elaborator's and the
+    -- kernel's); now a hypothesis is computed when used (`Val.lazyInd`)
+    { name := "a match on a list does not run through its tail (1000 matches on 2000 elements)", run := fun _ => do
+        let _ ← within 30 1000 fun _ => elabOk (listMatchProgram 2000 1000)
+        pure () },
+    -- the same laziness must not lose a hypothesis that is used, here under a binder
+    { name := "a recursive call used under a `fun` is still computed (lazy hypotheses)", run := fun _ => do
+        let _ ← elabOk ("import Prelude\n" ++ hypUnderBinder ++ "def t : sumF (.cons 1 (.cons 2 (.cons 3 .nil))) 0 = 6 := refl 6\n")
+        let loader ← Tests.Elab.preludeLoader
+        let st := runFrontend (R := ZeroOneMany) ("import Prelude\n" ++ hypUnderBinder ++
+          "def t : sumF (.cons 1 (.cons 2 (.cons 3 .nil))) 0 = 7 := refl 7\n") { loader }
+        check (st.messages.any (·.severity == .error)) "a wrong sum was accepted" },
+    -- the elaborator's sort pass (`Sorts.type`) no longer evaluates an equation to learn
+    -- that it is a proposition; the kernel still checks every sort note itself
+    { name := "a wrong sort note on a Π into an equation is rejected by the kernel", run := fun _ => do
+        let w : Term ZeroOneMany := .qlit QuantitySyntax.explicitDefault
+        let ty (s : Option Level) : Term ZeroOneMany := .pi "X" .default w (.sort 1) (.eqTy (.var 0) (.var 0)) s
+        let d (s : Option Level) : Decl ZeroOneMany :=
+          { name := "r", type := ty s, value := some (.lam "X" (.reflTy (.var 0))) }
+        check ((addDecl {} (d none)) matches .ok _) "the unmarked declaration was rejected"
+        check ((addDecl {} (d (some 0))) matches .ok _) "the right sort note was rejected"
+        check ((addDecl {} (d (some 1))) matches .error _) "a wrong sort note (Type for a proposition) was accepted" },
     { name := "one-pass reference counting agrees with the specification (insertRC)", run := fun _ => do
         let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         for p in examples ++ [literalProgram 300] do
