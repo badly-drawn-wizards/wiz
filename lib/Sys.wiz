@@ -279,3 +279,319 @@ def Process.run (cmd : String) (args : List String) : EIO ExitStatus := do
   Child.wait c
 -- Replace this program by `cmd` (returns only if that fails).
 def Process.exec (cmd : String) (args : List String) : EIO Unit := Sys.lift cmd (Process.execRaw cmd args)
+
+------------------------------------------------------------------------------------
+-- Additions (sys-bytes): paths, time, spawn options, process groups, bytes on handles,
+-- descriptors with time limits. Nothing above changed.
+
+-- an absolute path without `.`, `..` or links (`realpath`; the file must exist)
+extern "wiz_sys_realpath" FS.realPathRaw : String → IO String
+def FS.realPath (p : String) : EIO String := Sys.check p (FS.realPathRaw p)
+-- the running program's file (Linux: `/proc/self/exe`; macOS: `_NSGetExecutablePath`;
+-- elsewhere an error)
+extern "wiz_sys_app_path" IO.appPathRaw : IO String
+def IO.appPath : EIO String := Sys.check "the program's path" IO.appPathRaw
+
+-- Time. A `Duration` is a number of nanoseconds; the clocks give one since their start.
+structure Duration where
+  ns : Nat
+def Duration.nanos (n : Nat) : Duration := Duration.mk n
+def Duration.micros (n : Nat) : Duration := Duration.mk (n * 1000)
+def Duration.millis (n : Nat) : Duration := Duration.mk (n * 1000000)
+def Duration.seconds (n : Nat) : Duration := Duration.mk (n * 1000000000)
+def Duration.toMillis (d : Duration) : Nat := Nat.div d.ns 1000000
+def Duration.add (a b : Duration) : Duration := Duration.mk (a.ns + b.ns)
+-- `a - b`, or zero
+def Duration.sub (a b : Duration) : Duration := Duration.mk (Nat.sub a.ns b.ns)
+def Duration.lt (a b : Duration) : Bool := Nat.lt a.ns b.ns
+extern "wiz_sys_clock_ns" Clock.nsRaw : Nat → IO Nat
+extern "wiz_sys_sleep_ns" Clock.sleepRaw : Nat → IO Unit
+-- the monotonic clock: since an unspecified start, never set back (for time limits)
+def Clock.monotonic : IO Duration := IO.bind (Clock.nsRaw 0) (fun n => IO.pure (Duration.mk n))
+-- the wall clock: since 1970-01-01 00:00 UTC (can jump when the system clock is set)
+def Clock.wall : IO Duration := IO.bind (Clock.nsRaw 1) (fun n => IO.pure (Duration.mk n))
+def Clock.sleep (d : Duration) : IO Unit := Clock.sleepRaw d.ns
+
+-- Spawn options. `Process.spawn` and friends are `spawnWith SpawnOptions.default`.
+inductive EnvChange where
+  | set (name value : String)
+  | unset (name : String)
+inductive ProcessGroup where
+  -- this program's (the default)
+  | inherit
+  -- a new process group, led by the child (`Child.killGroup` reaches its descendants)
+  | newGroup
+  -- a new session (`setsid`): no controlling terminal, and a new group
+  | newSession
+def ProcessGroup.toNat : ProcessGroup → Nat
+  | .inherit => 0
+  | .newGroup => 1
+  | .newSession => 2
+structure SpawnOptions where
+  stdin : Stdio
+  stdout : Stdio
+  stderr : Stdio
+  -- the working directory (`none`: this program's)
+  cwd : Option String
+  -- start from an empty environment instead of this program's
+  clearEnv : Bool
+  -- then these changes, in order
+  env : List EnvChange
+  group : ProcessGroup
+def SpawnOptions.default : SpawnOptions := SpawnOptions.mk .inherit .inherit .inherit .none .false .nil .inherit
+def SpawnOptions.piped : SpawnOptions := SpawnOptions.mk .piped .piped .piped .none .false .nil .inherit
+-- (pipeline-style: `SpawnOptions.default |> SpawnOptions.inDir d |> SpawnOptions.setEnv k v`)
+def SpawnOptions.inDir (d : String) (o : SpawnOptions) : SpawnOptions :=
+  SpawnOptions.mk o.stdin o.stdout o.stderr (.some d) o.clearEnv o.env o.group
+def SpawnOptions.change (c : EnvChange) (o : SpawnOptions) : SpawnOptions :=
+  SpawnOptions.mk o.stdin o.stdout o.stderr o.cwd o.clearEnv (List.append o.env (.cons c .nil)) o.group
+def SpawnOptions.setEnv (k v : String) (o : SpawnOptions) : SpawnOptions := SpawnOptions.change (.set k v) o
+def SpawnOptions.unsetEnv (k : String) (o : SpawnOptions) : SpawnOptions := SpawnOptions.change (.unset k) o
+def SpawnOptions.emptyEnv (o : SpawnOptions) : SpawnOptions :=
+  SpawnOptions.mk o.stdin o.stdout o.stderr o.cwd .true o.env o.group
+def SpawnOptions.withGroup (g : ProcessGroup) (o : SpawnOptions) : SpawnOptions :=
+  SpawnOptions.mk o.stdin o.stdout o.stderr o.cwd o.clearEnv o.env g
+def SpawnOptions.withStdio (i out err : Stdio) (o : SpawnOptions) : SpawnOptions :=
+  SpawnOptions.mk i out err o.cwd o.clearEnv o.env o.group
+def EnvChange.encode : List EnvChange → List String
+  | .nil => .nil
+  | .cons (.set k v) rest => .cons (String.append "+" (String.append k (String.append "=" v))) (EnvChange.encode rest)
+  | .cons (.unset k) rest => .cons (String.append "-" k) (EnvChange.encode rest)
+extern "wiz_sys_spawn_with" Process.spawnWithRaw : String → List String → Nat → Nat → Nat → String → List String → Bool → Nat → IO Child
+-- Start `cmd` (looked up in this program's `PATH`) with these options.
+def Process.spawnWith (cmd : String) (args : List String) (o : SpawnOptions) : EIO Child :=
+  Sys.check cmd (Process.spawnWithRaw cmd args (Stdio.toNat o.stdin) (Stdio.toNat o.stdout) (Stdio.toNat o.stderr)
+    (match o.cwd with | .some d => d | .none => "") (EnvChange.encode o.env) o.clearEnv (ProcessGroup.toNat o.group))
+-- `Process.output` and `Process.run` with options (`output` pipes all three streams)
+def Process.outputWith (cmd : String) (args : List String) (input : String) (o : SpawnOptions) : EIO Output := do
+  c ← Process.spawnWith cmd args (SpawnOptions.withStdio .piped .piped .piped o);
+  Child.communicate c input;
+  out ← Child.readStdout c;
+  err ← Child.readStderr c;
+  st ← Child.wait c;
+  EIO.pure (Output.mk st out err)
+def Process.runWith (cmd : String) (args : List String) (o : SpawnOptions) : EIO ExitStatus := do
+  c ← Process.spawnWith cmd args o;
+  Child.wait c
+
+extern "wiz_sys_child_try_wait" Child.tryWaitRaw : Child → IO Nat
+extern "wiz_sys_child_kill_group" Child.killGroupRaw : Child → Nat → IO Nat
+-- how it ended, or `none` while it runs (does not block)
+def Child.tryWait (c : Child) : EIO (Option ExitStatus) :=
+  EIO.bind (Sys.check "wait" (Child.tryWaitRaw c)) (fun n => EIO.pure (match Nat.beq n 4294967296 with
+    | .true => .none
+    | .false => .some (ExitStatus.ofNat n)))
+-- a signal to the whole process group it leads (spawned with `.newGroup`/`.newSession`)
+def Child.killGroup (c : Child) (signal : Nat) : EIO Unit := Sys.lift "kill group" (Child.killGroupRaw c signal)
+
+-- Bytes on a `File` (stdio, buffered: mixes with `readLine` and `write`).
+--
+-- The text operations' encoding: `File.write`, `Child.write` and the other `String`
+-- arguments are written as UTF-8 and end at the first NUL (code point 0); `readLine`,
+-- `readAll` and the other `String` results decode UTF-8 without checking (bytes that
+-- are not UTF-8 come out as wrong characters, not as an error) and end at a NUL byte.
+-- For binary data, or to check the encoding, read `Bytes` and use `Bytes.toUtf8`.
+extern "wiz_sys_file_read_bytes" File.readBytesRaw : File → Nat → IO Bytes
+extern "wiz_sys_file_write_bytes" File.writeBytesRaw : File → Bytes → IO Nat
+extern "wiz_sys_file_seek" File.seekRaw : File → Nat → Nat → Bool → IO Nat
+-- `Sys.check`, with the end of the file as `none`
+def Sys.checkEof {A : Type} (what : String) (x : IO A) : EIO (Option A) :=
+  IO.bind x (fun a => IO.bind Sys.errno (fun e => IO.pure (match Nat.beq e 0 with
+    | .true => .ok (.some a)
+    | .false => match Nat.beq e 100000 with
+      | .true => .ok .none
+      | .false => .error (Sys.message what e))))
+-- up to `n` bytes (fewer only at the end of the file); `none` at the end
+def File.readBytes (f : File) (n : Nat) : EIO (Option Bytes) := Sys.checkEof "read" (File.readBytesRaw f n)
+def File.writeBytes (f : File) (b : Bytes) : EIO Unit := Sys.lift "write" (File.writeBytesRaw f b)
+
+-- Where `seek` goes: an offset from the start, forwards or back from here, or back
+-- from the end.
+inductive SeekFrom where
+  | start (offset : Nat)
+  | forward (offset : Nat)
+  | back (offset : Nat)
+  | fromEnd (back : Nat)
+def SeekFrom.whence : SeekFrom → Nat
+  | .start _ => 0
+  | .forward _ => 1
+  | .back _ => 1
+  | .fromEnd _ => 2
+def SeekFrom.offset : SeekFrom → Nat
+  | .start n => n
+  | .forward n => n
+  | .back n => n
+  | .fromEnd n => n
+def SeekFrom.negative : SeekFrom → Bool
+  | .back _ => .true
+  | .fromEnd n => .true
+  | _ => .false
+-- move, and say where that is (from the start); `seek f (.forward 0)` is the position
+def File.seek (f : File) (to : SeekFrom) : EIO Nat :=
+  Sys.check "seek" (File.seekRaw f (SeekFrom.whence to) (SeekFrom.offset to) (SeekFrom.negative to))
+
+-- Descriptors: unbuffered POSIX file descriptors, for terminals, pipes and devices,
+-- with time limits. Like `File` and `Child` it is a reference-counted handle (not
+-- linear): it is closed when the last reference goes, or by `Fd.close`; after that
+-- (and on a second `close`) every operation is an error "Bad file descriptor", never
+-- an operation on a number that has since been reused.
+foreign_type Fd (finalizer := "wiz_sys_fd_free")
+extern "wiz_sys_fd_open" Fd.openRaw : String → Nat → Nat → Nat → IO Fd
+extern "wiz_sys_fd_std" Fd.std : Nat → IO Fd
+extern "wiz_sys_fd_adopt" Fd.adopt : Nat → IO Fd
+extern "wiz_sys_fd_raw" Fd.raw : Fd → IO Nat
+extern "wiz_sys_fd_close" Fd.closeRaw : Fd → IO Nat
+extern "wiz_sys_fd_keep" Fd.keep : Fd → IO Unit
+extern "wiz_sys_pipe" Fd.pipeRaw : IO Nat
+extern "wiz_sys_fd_read" Fd.readRaw : Fd → Nat → Bool → Nat → IO Bytes
+extern "wiz_sys_fd_read_exact" Fd.readExactRaw : Fd → Nat → Bool → Nat → IO Bytes
+extern "wiz_sys_fd_write" Fd.writeRaw : Fd → Bytes → IO Nat
+extern "wiz_sys_fd_wait" Fd.waitRaw : Fd → Nat → Bool → Nat → IO Nat
+extern "wiz_sys_fd_seek" Fd.seekRaw : Fd → Nat → Nat → Bool → IO Nat
+extern "wiz_sys_fd_poll" Fd.pollRaw : List Fd → List Nat → Bool → Nat → IO (List Nat)
+extern "wiz_sys_child_take" Child.takeRaw : Child → Nat → IO Nat
+
+inductive Access where
+  | read
+  | write
+  | readWrite
+def Access.toNat : Access → Nat
+  | .read => 0
+  | .write => 1
+  | .readWrite => 2
+structure OpenFlags where
+  create : Bool
+  truncate : Bool
+  append : Bool
+  -- with `create`: fail if it exists
+  exclusive : Bool
+  -- a terminal does not become this program's controlling terminal
+  noControllingTty : Bool
+  -- don't wait in `open` (a serial port waiting for carrier); reads and writes block
+  -- as usual afterwards
+  nonBlockingOpen : Bool
+def OpenFlags.none : OpenFlags := OpenFlags.mk .false .false .false .false .false .false
+def OpenFlags.createNew : OpenFlags := OpenFlags.mk .true .true .false .false .false .false
+-- for terminals and devices: no controlling terminal, don't wait for a carrier
+def OpenFlags.device : OpenFlags := OpenFlags.mk .false .false .false .false .true .true
+def Bool.bit (b : Bool) (k : Nat) : Nat := match b with
+  | .true => k
+  | .false => 0
+def OpenFlags.toNat (f : OpenFlags) : Nat :=
+  Bool.bit f.create 1 + Bool.bit f.truncate 2 + Bool.bit f.append 4 + Bool.bit f.exclusive 8 +
+  Bool.bit f.noControllingTty 16 + Bool.bit f.nonBlockingOpen 32
+
+-- open a path (new files get mode `0o666` less the umask); close-on-exec
+def Fd.open (p : String) (a : Access) (f : OpenFlags) : EIO Fd := Sys.check p (Fd.openRaw p (Access.toNat a) (OpenFlags.toNat f) 438)
+def Fd.stdin : IO Fd := Fd.std 0
+def Fd.stdout : IO Fd := Fd.std 1
+def Fd.stderr : IO Fd := Fd.std 2
+def Fd.close (f : Fd) : EIO Unit := Sys.lift "close" (Fd.closeRaw f)
+-- Run `k` on the descriptor's number (for C code: `link_c` shims), keeping the handle
+-- open until `k` is done. (A handle is closed after its last use; a bare `Fd.raw`
+-- number outlives that.)
+def Fd.withRaw {A : Type} (f : Fd) (k : Nat → IO A) : IO A :=
+  IO.bind (Fd.raw f) (fun n => IO.bind (k n) (fun a => IO.bind (Fd.keep f) (fun u => IO.pure a)))
+-- a pipe: the end to read from, the end to write to
+def Fd.pipe : EIO (Fd × Fd) := do
+  n ← Sys.check "pipe" Fd.pipeRaw;
+  r ← EIO.lift (Fd.adopt (Nat.mod n 4294967296));
+  w ← EIO.lift (Fd.adopt (Nat.div n 4294967296));
+  EIO.pure (r, w)
+-- the child's end of its stdin (0), stdout (1) or stderr (2) pipe, to read or write
+-- with time limits and `Fd.poll`; the `Child` no longer reads or closes it
+def Child.takePipe (c : Child) (i : Nat) : EIO Fd := do
+  n ← Sys.check "take pipe" (Child.takeRaw c i);
+  EIO.lift (Fd.adopt n)
+
+-- A result that may come too late.
+inductive Timed (A : Type) where
+  | ready (a : A)
+  | timedOut
+-- What a read of an exact number of bytes got: all of them, or what came before the end
+-- of the file or (only when `timed`) before the time ran out.
+inductive Got : Bool → Type where
+  | all {timed : Bool} (b : Bytes) : Got timed
+  | eof {timed : Bool} (b : Bytes) : Got timed
+  | timeout (b : Bytes) : Got .true
+-- the bytes, however the read ended
+def Got.bytes {timed : Bool} (g : Got timed) : Bytes := match g with
+  | .all b => b
+  | .eof b => b
+  | .timeout b => b
+
+-- errno-or-sentinel results: 100000 the end of the file, 100001 the time ran out
+def Sys.readResult (what : String) (e : Nat) (b : Bytes) : Except String (Timed (Option Bytes)) :=
+  match Nat.beq e 0, Nat.beq e 100000, Nat.beq e 100001 with
+  | .true, _, _ => .ok (.ready (.some b))
+  | _, .true, _ => .ok (.ready .none)
+  | _, _, .true => .ok .timedOut
+  | _, _, _ => .error (Sys.message what e)
+
+-- One read: up to `n` bytes, as many as are there (at least one, waiting for it);
+-- `none` at the end of the file.
+def Fd.read (f : Fd) (n : Nat) : EIO (Option Bytes) := Sys.checkEof "read" (Fd.readRaw f n .false 0)
+-- the same, giving up when nothing has come within `d`
+def Fd.readWithin (f : Fd) (n : Nat) (d : Duration) : EIO (Timed (Option Bytes)) :=
+  IO.bind (Fd.readRaw f n .true d.ns) (fun b => IO.bind Sys.errno (fun e => IO.pure (Sys.readResult "read" e b)))
+-- exactly `n` bytes, unless the end of the file comes first
+def Fd.readExactly (f : Fd) (n : Nat) : EIO (Got .false) :=
+  IO.bind (Fd.readExactRaw f n .false 0) (fun b => IO.bind Sys.errno (fun e => IO.pure (match Nat.beq e 0, Nat.beq e 100000 with
+    | .true, _ => .ok (.all b)
+    | _, .true => .ok (.eof b)
+    | _, _ => .error (Sys.message "read" e))))
+-- exactly `n` bytes within `d` in all
+def Fd.readExactlyWithin (f : Fd) (n : Nat) (d : Duration) : EIO (Got .true) :=
+  IO.bind (Fd.readExactRaw f n .true d.ns) (fun b => IO.bind Sys.errno (fun e => IO.pure (match Nat.beq e 0, Nat.beq e 100000, Nat.beq e 100001 with
+    | .true, _, _ => .ok (.all b)
+    | _, .true, _ => .ok (.eof b)
+    | _, _, .true => .ok (.timeout b)
+    | _, _, _ => .error (Sys.message "read" e))))
+-- all of it
+def Fd.write (f : Fd) (b : Bytes) : EIO Unit := Sys.lift "write" (Fd.writeRaw f b)
+-- text, as UTF-8
+def Fd.writeUtf8 (f : Fd) (s : String) : EIO Unit := Fd.write f (Bytes.ofUtf8 s)
+-- whether there is something to read (or the end of the file) within `d`
+def Fd.readableWithin (f : Fd) (d : Duration) : EIO Bool :=
+  EIO.bind (Sys.check "poll" (Fd.waitRaw f 1 .true d.ns)) (fun n => EIO.pure (Nat.beq n 1))
+def Fd.writableWithin (f : Fd) (d : Duration) : EIO Bool :=
+  EIO.bind (Sys.check "poll" (Fd.waitRaw f 2 .true d.ns)) (fun n => EIO.pure (Nat.beq n 1))
+def Fd.seek (f : Fd) (to : SeekFrom) : EIO Nat :=
+  Sys.check "seek" (Fd.seekRaw f (SeekFrom.whence to) (SeekFrom.offset to) (SeekFrom.negative to))
+
+-- Waiting on several descriptors.
+inductive Interest where
+  | readable
+  | writable
+  | both
+def Interest.toNat : Interest → Nat
+  | .readable => 1
+  | .writable => 2
+  | .both => 3
+structure Readiness where
+  -- the position in the list given to `Fd.poll`
+  index : Nat
+  readable : Bool
+  writable : Bool
+  -- the other end hung up, or an error is waiting (the next read or write says which)
+  hangup : Bool
+def Readiness.ofNat (n : Nat) : Readiness :=
+  let w := Nat.mod n 8;
+  Readiness.mk (Nat.div n 8) (Nat.isOdd w) (Nat.isOdd (Nat.div w 2)) (Nat.isOdd (Nat.div w 4))
+def Readiness.decode : List Nat → List Readiness
+  | .nil => .nil
+  | .cons n rest => .cons (Readiness.ofNat n) (Readiness.decode rest)
+def Fd.pollFds : List (Fd × Interest) → List Fd
+  | .nil => .nil
+  | .cons (f, i) rest => .cons f (Fd.pollFds rest)
+def Fd.pollEvents : List (Fd × Interest) → List Nat
+  | .nil => .nil
+  | .cons (f, i) rest => .cons (Interest.toNat i) (Fd.pollEvents rest)
+-- the ones that are ready, in order, waiting at most `d`: empty when the time ran out
+def Fd.poll (fs : List (Fd × Interest)) (d : Duration) : EIO (List Readiness) :=
+  EIO.bind (Sys.check "poll" (Fd.pollRaw (Fd.pollFds fs) (Fd.pollEvents fs) .true d.ns))
+    (fun l => EIO.pure (Readiness.decode l))
+-- the same, with no time limit
+def Fd.pollForever (fs : List (Fd × Interest)) : EIO (List Readiness) :=
+  EIO.bind (Sys.check "poll" (Fd.pollRaw (Fd.pollFds fs) (Fd.pollEvents fs) .false 0))
+    (fun l => EIO.pure (Readiness.decode l))

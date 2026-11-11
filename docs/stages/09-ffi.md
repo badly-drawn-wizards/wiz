@@ -280,6 +280,9 @@ Tests: the `sys` group (spawning `echo`, a pipe through `cat`, exit codes and sp
 errors, the environment, a temporary directory's life: files, links, stat, listing,
 removal, handles), on both backends.
 
+Binary data on handles, descriptors with time limits, spawn options and serial ports
+came later: 9k.
+
 ## 9i: C structs by value; header pointer types as foreign types ✅
 
 ```
@@ -358,3 +361,123 @@ with `struct in_addr`, `clock_gettime` with `struct timespec`, a header of our o
 nested structs, strings, byte arrays, an opaque pointer type and a buffer function, the
 opt-outs, and the glue checks).
 
+## 9k: bytes on handles, time limits, spawn options, serial ports ✅
+
+```
+import Serial
+def main : IO Unit := EIO.toIO (do
+  port ← Serial.open "/dev/ttyUSB1" (SerialConfig.raw8N1 .b115200);
+  Fd.write port (Bytes.range 256);                      -- every byte value, NUL included
+  r ← Fd.readExactlyWithin port 2 (Duration.seconds 2);
+  match r with
+  | .all b => EIO.lift (IO.println (Bytes.show b))
+  | .eof b => EIO.fail "the port went away"
+  | .timeout b => EIO.fail "no answer in time")
+```
+
+Additions to `lib/IO.wiz` (`Bytes`) and `lib/Sys.wiz` (one block at the end; nothing
+before it changed), and a new module `lib/Serial.wiz` with its C shim `lib/serial.c`
+(`link_c`). Written for a host test of an FPGA board over a UART
+(wiz-icestick-uart's FINDINGS.md, G13), which had to run `stty` and send only bytes
+1 … 127.
+
+* **Text and bytes.** A `String` crossing the FFI is UTF-8 and ends at the first NUL:
+  `File.write`, `Child.write` and every other `String` argument write the characters'
+  UTF-8 and stop at code point 0; `readLine`, `readAll` and other `String` results
+  decode UTF-8 without checking (bytes that aren't UTF-8 become wrong characters, not
+  an error) and stop at a NUL byte. So binary data goes as `Bytes`, and text and bytes
+  meet only through a named encoding: `Bytes.ofUtf8 : String → Bytes` (every string,
+  NUL included; a code point that isn't a scalar value becomes U+FFFD),
+  `Bytes.toUtf8 : Bytes → Except String String` (checked: overlong forms, surrogates,
+  truncated sequences are `"invalid UTF-8 at byte k"`), `Bytes.ofLatin1 : String →
+  Except String Bytes` (fails on a character above 255) and `Bytes.toLatin1` (total).
+  `Bytes.ofString`/`toString` (9d) still go through a C string.
+* **Bytes** also got `slice b start len`, `take`, `drop`, `append` (in place when the
+  first is unique), `eq`, `isEmpty`, `at : Bytes → Nat → Option Nat` (`get` past the end
+  is 0), `ofList`/`toList` (`List Nat`, each mod 256), `singleton`, `range n` (0 … n-1)
+  and `show` (`[1, 2, 255]`). A byte is a `Nat`; `import WordBytes` adds
+  `Bytes.ofU8s`/`toU8s` (`List U8`, lib/Word.wiz), kept out of IO and Sys because
+  `Hdl.Core` users define their own `U8`.
+* **Bytes on a `File`** (stdio, buffered, so they mix with `readLine`):
+  `File.readBytes f n : EIO (Option Bytes)` (up to `n`, fewer only at the end; `none`
+  at the end), `File.writeBytes`, `File.seek f to : EIO Nat` with
+  `SeekFrom = start n | forward n | back n | fromEnd n` (the result is the new offset;
+  `.forward 0` asks where it is). `File.flush` was there already.
+* **Descriptors.** `foreign_type Fd`: an unbuffered POSIX descriptor, for terminals,
+  pipes and devices, where a buffer would hide from `poll` what is waiting.
+  `Fd.open path access flags` (`Access = read | write | readWrite`; `OpenFlags` with
+  `create`, `truncate`, `append`, `exclusive`, `noControllingTty`, `nonBlockingOpen`;
+  `OpenFlags.none`, `.createNew`, `.device`), `Fd.stdin`/`stdout`/`stderr`, `Fd.pipe :
+  EIO (Fd × Fd)`, `Child.takePipe c i` (a child's pipe as an `Fd`), `Fd.close`,
+  `Fd.seek`, and:
+
+  | read | result |
+  |---|---|
+  | `Fd.read f n` | `Option Bytes`: one `read(2)`, 1 … n bytes, `none` at the end |
+  | `Fd.readWithin f n d` | `Timed (Option Bytes)`: the same, or `.timedOut` when nothing came within `d` |
+  | `Fd.readExactly f n` | `Got .false`: `.all b`, or `.eof b` with what came before the end |
+  | `Fd.readExactlyWithin f n d` | `Got .true`: also `.timeout b`, with what came in time (`d` is for the whole read) |
+
+  `Got : Bool → Type` is indexed by whether the read had a time limit, and `.timeout`
+  only exists at `Got .true`, so a match on what `readExactly` returned needs no
+  timeout case (the coverage check knows). `Fd.write f b` writes all of `b` (waiting
+  while a non-blocking descriptor is full), `Fd.writeUtf8`; `Fd.readableWithin f d`,
+  `Fd.writableWithin`; `Fd.poll (fds : List (Fd × Interest)) d : EIO (List Readiness)`
+  (each ready one's position, `readable`, `writable`, `hangup`; empty when the time ran
+  out) and `Fd.pollForever`. Time limits are measured on the monotonic clock and
+  survive `EINTR`.
+* **Handles are not linear.** `Fd`, like `File` and `Child`, is a reference-counted
+  foreign pointer: closed by its finalizer when the last reference goes, or by `close`.
+  Linear handles would need every `do` block that uses one to be a `do1` block threading
+  it, and `EIO`'s `bind` takes its continuation at ω, so a linear handle could not cross
+  a `←` in an ordinary `EIO` block (stage 9e). What keeps it sound instead: a closed
+  handle's number is forgotten, so a second `close` or a read after `close` is the error
+  "Bad file descriptor", never an operation on a number another open has since reused.
+  Two things follow from closing at the last use. A handle whose last use comes early
+  is closed early: a pseudo-terminal's controller that the program stops using is
+  closed, and the terminal side then reads the end of the file, so keep using it (or
+  `Fd.close` it at the end). And a bare number from `Fd.raw` outlives its handle: C
+  shims get it through `Fd.withRaw f (fun n => …)`, which keeps `f` open until the
+  shim returns.
+* **Spawn options**, next to `Process.spawn` (whose signature is unchanged; it is
+  `spawnWith` with `SpawnOptions.default`): `SpawnOptions` (the three `Stdio`s, `cwd :
+  Option String`, `clearEnv`, `env : List EnvChange` with `set k v | unset k` applied
+  in order, `group : ProcessGroup = inherit | newGroup | newSession`), built as
+  `SpawnOptions.default |> SpawnOptions.inDir d |> SpawnOptions.setEnv k v`;
+  `Process.spawnWith`, `outputWith`, `runWith`. `PATH` lookup uses this program's
+  `PATH`. `Child.tryWait : Child → EIO (Option ExitStatus)` doesn't block;
+  `Child.killGroup c sig` signals the group a `.newGroup`/`.newSession` child leads.
+* **Paths, clocks.** `FS.realPath`, `IO.appPath` (the running program: `/proc/self/exe`
+  on Linux, `_NSGetExecutablePath` on macOS, an error elsewhere). `Duration` (a number
+  of nanoseconds: `Duration.millis 200`, `seconds`, …, `add`, `sub`, `lt`),
+  `Clock.monotonic`, `Clock.wall` (since the epoch), `Clock.sleep`.
+* **Serial ports** (`import Serial`). Typed configuration: `Baud` is an enumeration of
+  the standard rates (`.b9600` … `.b3000000`; `Baud.ofBitsPerSecond 115200` finds one),
+  `SerialConfig` has `DataBits`, `Parity`, `StopBits`, `FlowControl` (`none | rtsCts |
+  xonXoff`), and `SerialConfig.raw8N1 b` is the usual one. `Serial.open path cfg`
+  opens for reading and writing (no controlling terminal, without waiting for a
+  carrier), configures and discards what was queued; `Serial.withPort` closes again.
+  `Serial.configure` always sets raw mode (no echo, line editing, CR/LF translation or
+  signals; a read waits for one byte, time limits are `Fd`'s) and reads the settings
+  back: a device that didn't keep them is an error. `Serial.settings` reads them as a
+  `SerialSettings` (also VMIN/VTIME and whether the terminal is raw),
+  `SerialSettings.matches`, `Serial.discard f (input | output | both)` (`tcflush`),
+  `Serial.drain` (`tcdrain`), `Serial.isTty`.
+* **Pseudo-terminals.** `Pty.open : EIO Pty` (`posix_openpt`): `controller : Fd` is
+  the device's side, `path` the terminal side another program opens like a serial port.
+  A Linux pseudo-terminal always has 8 data bits and no parity (configuring 7E1 on one
+  is the error above); rates, stop bits and flow control are kept, though nothing is
+  slowed down.
+* `lib/serial.c` is compiled with every program that imports `Serial` (9f); `Sys` itself
+  needs nothing new outside the runtime. The self-hosted toolchain's runtime
+  (`selfhost/rt.c`) has its own FFI and none of `lib/Sys`: parity would need the
+  `wiz_bytes_*` and `wiz_sys_*` functions there (or the runtime's system section shared
+  with it) and `link_c` in the self-hosted frontend.
+
+Tests: six more cases in the `sys` group (bytes and encodings; all 256 byte values
+through a pipe, the end of a file, a time limit that fires, double close; file bytes and
+seek; spawn options, process groups, try-wait; poll and a child's pipe; paths and
+clocks) and the new `serial` group (a pseudo-terminal: all 256 values both ways and
+the raw settings read back; a terminal that doesn't answer in time and a discarded
+input queue; every rate, stop bits and flow control read back, and the errors), on both
+backends, no hardware needed.
