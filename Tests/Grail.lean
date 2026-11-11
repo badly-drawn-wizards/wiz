@@ -753,6 +753,23 @@ def testRunnerGroup : Group where
         let some two := res.find? (·.file == "tests/two.wiz") | throw (IO.userError "no test two")
         check (!two.ok) "a wrong output passed"
         check ((two.message.splitOn "info: 3").length > 1 && (two.message.splitOn "info: 2").length > 1) two.message },
+    { name := "a failing test without a `-- test:` line says it was a check (icestick-cpu C8)", run := fun _ => do
+        -- the program's expected output, but no `-- test: run`: it was compared with the
+        -- (empty) messages of checking the file, and nothing said why
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/hello.wiz", "import IO\ndef main : IO Unit := IO.println \"hi\"\n"),
+          ("tests/hello.expected", "hi\n"),
+          ("tests/two.wiz", "-- test: check\nimport Prelude\n#eval 1 + 1\n"),
+          ("tests/two.expected", "tests/two.wiz:3:1: info: 3\n")]
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        let (res, _) ← runTests dir tc
+        let some hello := res.find? (·.file == "tests/hello.wiz") | throw (IO.userError "no test hello")
+        check (!hello.ok) "it passed"
+        check ((hello.message.splitOn "-- test: run").length > 1) hello.message
+        -- with the line, a failure is only the difference
+        let some two := res.find? (·.file == "tests/two.wiz") | throw (IO.userError "no test two")
+        check (!two.ok) "two passed"
+        check ((two.message.splitOn "-- test:").length == 1) two.message },
     { name := "-- test: run compiles and runs main", run := fun _ => do
         let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
           ("tests/hello.wiz", "-- test: run\nimport IO\ndef main : IO Unit := IO.println \"hi\"\n"),

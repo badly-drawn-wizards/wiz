@@ -259,7 +259,9 @@ def Runner.judgeTest (r : Runner) (file : String) (update : Bool) (results : Tes
   match expected with
   | none => report { file, ok := false, message := s!"no {expFile} (grail test --update writes it)" }
   | some e =>
-    if e != actual then report { file, ok := false, message := firstDifference e actual }
+    if e != actual then
+      let note := TestKind.defaultNote (← IO.FS.readFile (r.ctx.dir / file))
+      report { file, ok := false, message := firstDifference e actual ++ note }
     else report { file, ok := true }
 
 /-- (23i) A command whose dependencies are done: its key, and the job that runs it. -/
