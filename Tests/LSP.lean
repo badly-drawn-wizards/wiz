@@ -709,6 +709,23 @@ def serverGroup : Group where
         let some (.arr ds) := LSP.get? out[0]! ["params", "diagnostics"] | throw (IO.userError "no diagnostics")
         for d in ds do
           check ((LSP.getStr d ["message"]).startsWith "could not infer") s!"diagnostic: {d.compress}" },
+    { name := "signature help: the binders of the function being applied (11u)", run := fun _ => do
+        let src := "import Prelude\ndef a : Nat := Nat.add 1 \ndef b (xs : List Nat) : Nat := List.length \n" ++
+          "def c (f : Nat → Bool → Nat) : Nat := Nat.succ (f 2 \n"
+        let (srv, _) ← openDoc src
+        let (srv, r) := ask srv "textDocument/signatureHelp" src (offAfter src "Nat.add 1 ")
+        checkEq "Nat.add (_ : Nat) (_ : Nat) : Nat" (LSP.getStr ((LSP.get? r ["signatures"]).get!.getArrVal? 0 |>.toOption.get!) ["label"])
+        checkEq (1 : Nat) (LSP.getNat r ["activeParameter"])
+        let (srv, r) := ask srv "textDocument/signatureHelp" src (offAfter src "List.length ")
+        let sig := (LSP.get? r ["signatures"]).get!.getArrVal? 0 |>.toOption.get!
+        checkEq "List.length {A : Type} (_ : List A) : Nat" (LSP.getStr sig ["label"])
+        let some (.arr ps) := LSP.get? sig ["parameters"] | throw (IO.userError s!"{sig.compress}")
+        checkEq 1 ps.size
+        checkEq (0 : Nat) (LSP.getNat r ["activeParameter"])
+        -- inside parentheses, a local function
+        let (_, r) := ask srv "textDocument/signatureHelp" src (offAfter src "(f 2 ")
+        check (has r "Bool") s!"f: {r.compress}"
+        checkEq (1 : Nat) (LSP.getNat r ["activeParameter"]) },
     { name := "infoview socket: cursor notifications, requests answered on the socket", run := fun _ => do
         -- a watchdog: a broken server must fail the case, not hang the suite (and since
         -- the process would wait for it, the case ends with an explicit exit)

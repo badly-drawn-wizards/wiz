@@ -4,6 +4,7 @@ import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
 import Wiz.Completion
+import Wiz.Signature
 import Wiz.Socket
 import Wiz.WebSocket
 import Std.Sync.Channel
@@ -140,6 +141,7 @@ def capabilities : Json :=
     -- (answered with null; asked for so that editors report cursor moves, for `--infoview`)
     ("documentHighlightProvider", true),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
+    ("signatureHelpProvider", Json.mkObj [("triggerCharacters", Json.arr #[" ", "("]), ("retriggerCharacters", Json.arr #[" "])]),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
     ("experimental", Json.mkObj [("wizInfoview", Json.mkObj [("version", (1 : Nat)),
@@ -491,6 +493,15 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     match infoview srv uri doc method msg with
     | .ok (doc, j) => ({ srv with docs := srv.docs.insert uri doc }, #[reply j])
     | .error (c, m) => (srv, #[replyError c m])
+  | "textDocument/signatureHelp" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
+    let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])
+    match Signature.helpAt doc.state doc.text off (fun t => (elabText srv doc.engine t).1) with
+    | some h =>
+      let ps := h.params.map fun (a, b) => Json.mkObj [("label", Json.arr #[(a : Nat), (b : Nat)])]
+      (srv, #[reply (Json.mkObj [("signatures", Json.arr #[Json.mkObj [("label", Json.str h.label), ("parameters", Json.arr ps)]]),
+                                 ("activeSignature", (0 : Nat)), ("activeParameter", h.active)])])
+    | none => (srv, #[reply Json.null])
   | "textDocument/hover" | "textDocument/definition" | "textDocument/declaration" | "textDocument/completion" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
     let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])
