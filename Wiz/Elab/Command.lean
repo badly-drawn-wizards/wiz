@@ -336,6 +336,39 @@ partial def markRecCalls (fn : Name) (stx : Syntax) : Syntax :=
     | _ => .node i k args
   | s => s
 
+/-- Does the checked value of a structurally recursive definition use an index variable
+of its scrutinee's type anywhere but as the recursor's index argument (in the parameters,
+the motive or a method: a right-hand side mentions the outer index)? `val` is
+`λ tele cols. [let …] T.rec Δ motive m… ξ x …`. Then direct recursion is not what the
+recursor computes: the recursor's hypothesis keeps the outer index in every step, while a
+direct call `f xs` passes the field's index (it is an implicit argument, inferred from
+`xs`). `def g {n} : V n → Nat | .cons _ xs => n + g xs` computes `3 + 3 + 3` by its value
+and `3 + 2 + 1` by such an implementation. The definition then gets no implementation
+(compiled code runs the value). -/
+def indexEscapes (g : Globals R) (val : Term R) : Bool :=
+  let rec body : Term R → Term R
+    | .lam _ b => body b
+    | .letE _ _ _ _ b => body b
+    | t => t
+  match (body val).spine with
+  | (.const r _, args) =>
+    let base (k : Nat) : Name := String.ofList (r.toList.take (r.length - k))
+    let T := if r.endsWith ".recN" then some (base 5) else if r.endsWith ".rec" then some (base 4) else none
+    match T.bind fun T => (g.find? T).bind fun Td => (g.find? (T ++ ".desc")).bind fun descD =>
+        (g.find? r).map fun rd => (Td, descD, rd) with
+    | some (Td, descD, rd) =>
+      let nΔ := (piInfos descD.type).length
+      let nΞ := (piInfos Td.type).length - nΔ
+      -- Δ, the motive and the methods come before the indices
+      let nBefore := (piInfos rd.type).length - nΞ - 1
+      let before := args.take nBefore
+      let idxVars := (args.drop nBefore).take nΞ |>.filterMap fun a => match a with
+        | .var i => some i
+        | _ => none
+      idxVars.any fun i => before.any (·.hasVar i)
+    | none => false
+  | _ => false
+
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
 arguments of `T`; a right-hand side that calls `f` makes it structurally recursive. -/
 def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
@@ -403,7 +436,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   -- for the compiler: the same equations with direct recursion (the definition, as an
   -- axiom for the moment, is called like any function) and case analysis, so that only
   -- the recursive calls the program makes are computed
-  let impl ← if rc.isNone then pure none else do
+  let esc := rc.isSome && indexEscapes (← getGlobals) val
+  let impl ← if rc.isNone || esc then pure none else do
     let saved ← get
     try
       modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
