@@ -21,6 +21,8 @@ M.defaults = {
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil, -- function(client, bufnr)
     capabilities = nil, -- merged into the client's capabilities
+    -- Show the types of binders written without one (`fun x => …`) inline (0.10+).
+    inlay_hints = false,
   },
   abbreviations = {
     enable = true,

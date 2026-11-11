@@ -616,6 +616,15 @@ def serverGroup : Group where
         let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
         checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
         check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
+    { name := "inlay hints: the types of fun and let binders written without one", run := fun _ => do
+        let src := "import Prelude\ndef f : Nat → Nat := fun x => Nat.succ x\ndef g : Nat := let n := 2\n  Nat.add n n\n" ++
+          "def h : Nat → Bool → Nat := fun a b => a\ndef k : Nat → Nat := fun (y : Nat) => y\n"
+        let (srv, _) ← openDoc src
+        let (_, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/inlayHint\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"range\":\{\"start\":{posJson src 0},\"end\":{posJson src src.length}}}}")
+        let some (.arr hs) := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        let got := hs.toList.map fun h => (LSP.ofPos src (LSP.getNat h ["position", "line"]) (LSP.getNat h ["position", "character"]), LSP.getStr h ["label"])
+        checkEq [(offAfter src "fun x", " : Nat"), (offAfter src "let n", " : Nat"), (offAfter src "fun a", " : Nat"),
+                 (offAfter src "fun a b", " : Bool")] got },
     { name := "infoview socket: cursor notifications, requests answered on the socket", run := fun _ => do
         -- a watchdog: a broken server must fail the case, not hang the suite (and since
         -- the process would wait for it, the case ends with an explicit exit)

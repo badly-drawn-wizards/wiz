@@ -94,6 +94,7 @@ require('wiz').setup {
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil,                   -- function(client, bufnr)
     capabilities = nil,                -- merged into the defaults
+    inlay_hints = false,               -- show binder types inline (0.10+)
   },
   abbreviations = {
     enable = true,
@@ -123,6 +124,12 @@ require('wiz').setup {
 In Wiz buffers (normal mode): `<LocalLeader>i` toggles the infoview, `<LocalLeader>r`
 refreshes it, `<LocalLeader>\` is `:WizAbbrev`. The usual LSP keymaps (`K` hover,
 `gd`, `grn`, `gra`, `]d`, …) are Neovim's own.
+
+What the server offers, and Neovim's keys for it:
+
+| | |
+|---|---|
+| inlay hints (`lsp.inlay_hints`, or `:lua vim.lsp.inlay_hint.enable()`) | `: T` after a `fun`/`let` binder written without a type |
 
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
 type, kind and, for a constant, where it is declared: `wiz/subtermInfo`); moving the

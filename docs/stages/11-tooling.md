@@ -297,3 +297,11 @@ constructor values, not applications, so lists print as before there; `do` notat
 to tactics as text and `trace_state` print without notation. The self-hosted toolchain
 has its own printer (selfhost/Frontend.wiz) and prints no notation. Design notes:
 `wiz-notes/pp-unexpand.md`. Tested in the `language` group.
+
+## 11w: inlay hints
+
+`textDocument/inlayHint` (`Wiz/Inlay.lean`) shows the type the elaborator gave a `fun`
+or `let` binder written without one, `fun x : Nat => …`, from the info tree's binders
+(`recordBinder`): a local identifier whose text is the binder's own name, with `fun`/`λ`
+(past the other binders of its group) or `let` before it and `=>`/`↦`/`:=` or another
+binder after it, not `:`. wiz.nvim: `lsp.inlay_hints = true` turns them on.

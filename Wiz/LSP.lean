@@ -3,6 +3,7 @@ import Wiz.Query
 import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Inlay
 import Wiz.Socket
 import Wiz.WebSocket
 import Std.Sync.Channel
@@ -119,6 +120,7 @@ def capabilities : Json :=
     -- (answered with null; asked for so that editors report cursor moves, for `--infoview`)
     ("documentHighlightProvider", true),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
+    ("inlayHintProvider", true),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
     ("experimental", Json.mkObj [("wizInfoview", Json.mkObj [("version", (1 : Nat)),
@@ -449,6 +451,12 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     ({ srv with docs := srv.docs.insert uri doc, sessions := session },
      #[diagnostics uri doc] ++ (if srv.elaboratedNotes then #[note] else #[]))
   | "textDocument/didClose" => ({ srv with docs := srv.docs.erase uri }, #[])
+  | "textDocument/inlayHint" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
+    let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])
+    let hs := (Inlay.hintsIn doc.state doc.text (pos "start") (pos "end")).map fun h =>
+      Json.mkObj [("position", toPos doc.text h.at_), ("label", Json.str h.label), ("kind", (1 : Nat))]
+    (srv, #[reply (Json.arr hs)])
   | "textDocument/codeAction" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
     let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])

@@ -85,6 +85,17 @@ function M.cmd(root)
   return cfg.cmd
 end
 
+--- `lsp.inlay_hints`: show the server's inlay hints in the buffer.
+function M.on_attach(client, buf)
+  local cfg = config.get().lsp
+  if cfg.inlay_hints and vim.lsp.inlay_hint then
+    vim.lsp.inlay_hint.enable(true, { bufnr = buf })
+  end
+  if cfg.on_attach then
+    cfg.on_attach(client, buf)
+  end
+end
+
 --- A `vim.lsp.start` config for `buf`.
 function M.client_config(buf)
   local cfg = config.get().lsp
@@ -96,7 +107,7 @@ function M.client_config(buf)
     root_dir = root,
     capabilities = M.capabilities(cfg.capabilities),
     handlers = M.handlers,
-    on_attach = cfg.on_attach,
+    on_attach = M.on_attach,
   }
 end
 
