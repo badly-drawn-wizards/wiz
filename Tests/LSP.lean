@@ -644,6 +644,45 @@ def serverGroup : Group where
         -- an unmasked frame from a client breaks the protocol
         WebSocket.sendText w "x"
         checkEq none (← WebSocket.recvText r' w') },
+    { name := "inside a feral block: hovers, go to definition and errors at the Feral source", run := fun _ => do
+        -- the server's library: Prelude, Feral and the runtime of lowered code
+        let mut libs := (← server).libs
+        for (m, p) in [("Optic", "lib/Optic.wiz"), ("Region", "lib/Region.wiz"), ("Text", "lib/Text.wiz"),
+                       ("Feral", "lib/Feral.wiz"), ("FeralCore", "drafts/feral/lib/FeralCore.wiz")] do
+          libs := libs.insert m (p, ← IO.FS.readFile p)
+        let srv : LSP.Server := { (← server) with libs, trusted := ["Prelude", "Optic", "Region", "Text", "Feral"] }
+        let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+        let src := "import FeralCore\nimport Feral\nferal\n  fn double (n : U64) : U64 := n + n\n" ++
+          "  fn f (x : U64) : U64 := {\n    let mut v := Vec.new;\n    v.push x;\n    double (v.len)\n  }\nend\n"
+        let msg := Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])]
+        let (srv, out) := LSP.handle srv msg
+        check (!has (Lean.Json.arr out) "\"severity\":1") s!"errors: {(Lean.Json.arr out).compress}"
+        -- the type first; then (for a node of Feral's grammar) its `syntax`
+        let hover (srv : LSP.Server) (off : Nat) (want : String) : IO Unit := do
+          let md := LSP.getStr (ask srv "textDocument/hover" src off).2 ["contents", "value"]
+          check (md.startsWith s!"```wiz\n{want}\n```") s!"expected {want}, got\n{md}"
+        hover srv (offAfter src "push x" (-1)) "x : U64"
+        hover srv (offAfter src "double (v" (-4)) "double : U64 → Result U64"
+        -- a call's value is named by the call (not by the lowering's local `v_…`)
+        hover srv (offAfter src "double (v" (-3)) "double (v.len) : U64"
+        -- go to definition: `fn double`, line 4
+        let (srv, r) := ask srv "textDocument/definition" src (offAfter src "double (v" (-4))
+        checkEq "file:///t.wiz" (LSP.getStr r ["uri"])
+        checkEq 3 (LSP.getNat r ["range", "start", "line"])
+        checkEq 2 (LSP.getNat r ["range", "start", "character"])
+        -- a type error of the lowering (unchecked) is at the expression, line 13 (not the item, line 8)
+        let bad ← IO.FS.readFile "drafts/feral/rejected/surface/E0499_two_mut.wiz"
+        let bad := bad.replace "\nferal\n" "\n#unchecked feral\n"
+        let msg := Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didChange"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (2 : Nat))]),
+            ("contentChanges", Lean.Json.arr #[Lean.Json.mkObj [("text", bad)]])])]
+        let (_, out) := LSP.handle srv msg
+        let diags := out.toList.flatMap fun j => match (j.getObjVal? "params" >>= (·.getObjVal? "diagnostics")).toOption with
+          | some (.arr ds) => ds.toList
+          | _ => []
+        check (diags.any fun d => LSP.getNat d ["range", "start", "line"] == 12 && has d "type mismatch")
+          s!"no type mismatch on line 13: {(Lean.Json.arr diags.toArray).compress}" },
     { name := "WebSocket transport (--ws): infoview requests, editing, origins", run := fun _ => do
         let _ ← IO.asTask (prio := .dedicated) (do IO.sleep 60000; IO.eprintln "timed out"; IO.Process.exit 3 : IO Unit)
         try wsCase; IO.Process.exit 0

@@ -176,10 +176,15 @@ declaration; for its declaration, the other way round. A module name in an `impo
 the module. -/
 def targetsAt (s : CommandState R) (off : Nat) (decl : Bool := false) : Array Target := Id.run do
   let es := syntaxAt s off
-  if es.isEmpty then
-    return match definitionAt s off with
-      | some (_, info, m) => #[.site info m]
-      | none => #[]
+  -- a global named by syntax that is just the identifier (a DSL's `ident : cat` node, as
+  -- Feral's variables and calls): its definition is the global's
+  let sameRange := !decl && match es[0]?, identAt s off with
+    | some e, some i => i.info.start == e.info.start && i.info.stop == e.info.stop
+    | _, _ => false
+  if es.isEmpty || sameRange then
+    match definitionAt s off with
+    | some (_, info, m) => return #[.site info m]
+    | none => if es.isEmpty then return #[]
   let refs := es.filterMap fun | .syntaxRef _ r => refSite s r | _ => none
   let handlers := es.filterMap fun | .expansion _ _ h _ => handlerSite s h | _ => none
   let mods := es.filterMap fun | .importMod _ m => some (Target.module m) | _ => none
