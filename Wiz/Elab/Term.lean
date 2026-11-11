@@ -445,8 +445,11 @@ structure RecCtx where
 
 partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
   let ctorOf (n : Name) : Option (Name × Name) :=
-    match n.splitOn "." with
-    | [T, c] =>
+    -- (13b) this module's private type's constructor, under its kernel name
+    let n := g.resolve n
+    match (n.splitOn ".").reverse with
+    | c :: T@(_ :: _) =>
+      let T := ".".intercalate T.reverse
       if g.contains (T ++ ".desc") && g.contains n then some (T, c)
       -- (13h) a structure's constructor
       else if c == "mk" && g.contains n && g.contains T then some (T, c) else none
