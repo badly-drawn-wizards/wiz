@@ -171,6 +171,9 @@ def main (args : List String) : IO UInt32 := do
   -- fails `wiz check`; `--panic-probe continue` turns it off again
   Wiz.exitOnPanic
   -- tower, as the shims of the tower tests call it (`Tests/Tower.lean`)
+  -- (23k) a grail job's supervisor, and grail itself (the job-hygiene tests run it)
+  if let "--grail-exec" :: rest := args then return ← Grail.execMain rest
+  if let "--grail" :: rest := args then return ← Grail.cliMain rest
   if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
