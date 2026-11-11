@@ -268,7 +268,8 @@ inductive Tac where
   -- reflection: is `n` a constructor? its type, number of parameters, number of fields
   | ctorInfo (n : String) (k : Option (String × Nat × Nat) → Tac)
   -- is `n` a definition (something `unfold` can unfold: not a constructor, an axiom, …)?
-  | isDefinition (n : String) (k : Bool → Tac)
+  -- `none` if there is no constant `n`
+  | isDefinition (n : String) (k : Option Bool → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -326,9 +327,10 @@ def TacticM.rewrite (g : Nat) (h : Expr) (rtl : Bool) : TacticM Nat := fun k => 
 -- number of parameters and the constructor's number of fields: `List.cons` is
 -- `("List", 1, 2)`, and `List.cons A x L` has the fields `x` and `L` after one parameter.
 def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := fun k => Tac.ctorInfo n k
--- Is the constant `n` a definition, which `TacticM.unfold` can unfold? (Not a constructor,
--- an axiom or an unknown name: for those `unfold` returns the term unchanged.)
-def TacticM.isDefinition (n : String) : TacticM Bool := fun k => Tac.isDefinition n k
+-- Is the constant `n` a definition, which `TacticM.unfold` can unfold (not a constructor
+-- or an axiom: for those `unfold` returns the term unchanged)? `none` if there is no
+-- constant `n`.
+def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.isDefinition n k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
@@ -770,8 +772,9 @@ def TacticM.unfoldAll (g : Nat) : List String → Expr → TacticM Expr
   | .cons n ns, e => do
     d ← TacticM.isDefinition n;
     match d with
-    | .false => TacticM.fail (String.append "unfold: " (String.append n " is not a definition"))
-    | .true => do
+    | .none => TacticM.fail (String.append "unfold: unknown constant " n)
+    | .some .false => TacticM.fail (String.append "unfold: " (String.append n " is not a definition"))
+    | .some .true => do
       e' ← TacticM.unfold g n e;
       match Expr.beq e e' with
       | .true => TacticM.fail (String.append "unfold: nothing to unfold: the goal has no application of " (String.append n " that computes"))

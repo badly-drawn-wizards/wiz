@@ -2206,9 +2206,10 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (apply code (fld 1) ans)
   if tag == TacTag.isDefinition then
     let ans := match g.find? (← str (fld 0)) with
-      | some { value := some _, inline := false, .. } => true
-      | _ => false
-    return ← runTac code info st (apply code (fld 1) (encodeBool ans))
+      | some { value := some _, inline := false, .. } => mkCon 1 [encodeBool true]
+      | some _ => mkCon 1 [encodeBool false]
+      | none => mkCon 0 []
+    return ← runTac code info st (apply code (fld 1) ans)
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
