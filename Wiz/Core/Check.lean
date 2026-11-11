@@ -1057,6 +1057,9 @@ def checkImpl (g : Globals R) (d : Decl R) (impl : Term R) : TCM Unit := do
   let ctx : Ctx R := { globals := g }
   match check ctx impl (ctx.eval d.type) with
   | .ok _ => pure ()
+  -- (P2) kept as it is, so that the elaborator's marking on demand (`withMarksOnDemand`)
+  -- sees that the implementation asks for markers, as a value does
+  | .error e@(.unmarkedProof ..) => throw e
   | .error e => throw (.other s!"the implementation of {d.name} (the term compiled code runs) does not check: {e}")
 
 /-- Type check a declaration and add it to the global environment. Its implementation

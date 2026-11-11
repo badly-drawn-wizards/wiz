@@ -374,6 +374,6 @@ def Decl.withTopMarks (g : Globals R) (d : Decl R) : Decl R :=
     | _ => match (Mark.decide ctx v ty).1 with
       | some l => .prf l v
       | none => v
-  { d with value := d.value.map top, witness := d.witness.map top }
+  { d with value := d.value.map top, impl := d.impl.map top, witness := d.witness.map top }
 
 end Wiz
