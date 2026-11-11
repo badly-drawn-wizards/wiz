@@ -68,35 +68,102 @@ private def toLets : ETerm → List ETerm → Nat → ETerm
   | lam x b, a :: as, k => letE x (a.lift k) (toLets b as (k + 1))
   | b, as, k => apps b (as.map (·.lift k))
 
-/-- Inline the definitions `body?` knows (their erased code, closed), and simplify. -/
-partial def inlineSimp (body? : Name → Option ETerm) (fuel : Nat := 8) : ETerm → ETerm
+/-- An application of variables, globals and `◾` (no work but the call itself). -/
+private def atomApp : ETerm → Bool
+  | app f a => atomApp f && (a matches var _ | global _ | erased | natLit _)
+  | global _ | var _ => true
+  | _ => false
+
+/-- `t a…` with the arguments moved under the `let`s of `t`. -/
+private def pushArgs : ETerm → List ETerm → ETerm
+  | letE x v b, as => letE x v (pushArgs b (as.map (·.lift 1)))
+  | t, as => apps t as
+
+/-- Field `i` of an object built by `t` (through `let`s), if `t` builds one. -/
+private def projObj? (i : Nat) : ETerm → Option ETerm
+  | obj _ fs => fs[i]?
+  | letE x v b => (projObj? i b).map (letE x v)
+  | _ => none
+
+mutual
+/-- Inline the definitions `body?` knows (their erased code, closed), and simplify.
+(HD9) `dict?` knows the instances of type classes: an instance is inlined only where a
+field of it is projected (`Add.add instAddNat a b` is `Nat.add a b`), so a dictionary
+passed on is still one shared object. -/
+partial def inlineSimp (body? : Name → Option ETerm) (fuel : Nat := 8)
+    (dict? : Name → Option ETerm := fun _ => none) : ETerm → ETerm
   | t@(app ..) =>
     let (h, args) := spine t []
-    let args := args.map (inlineSimp body? fuel)
+    let args := args.map (inlineSimp body? fuel dict?)
     match h with
     | global n =>
       match body? n, fuel with
       | some b, fuel' + 1 =>
-        if args.length ≥ lamArity b then inlineSimp body? fuel' (toLets b args 0)
+        if args.length ≥ lamArity b then inlineSimp body? fuel' dict? (toLets b args 0)
         else apps h args
       | _, _ => apps h args
-    | lam .. => inlineSimp body? fuel (toLets h args 0)
-    | h => apps (inlineSimp body? fuel h) args
+    | lam .. => inlineSimp body? fuel dict? (toLets h args 0)
+    | h =>
+      match inlineSimp body? fuel dict? h with
+      -- (a projection of a dictionary may have become a function)
+      | h'@(lam ..) => inlineSimp body? fuel dict? (toLets h' args 0)
+      | h'@(global n) => if (body? n).isSome then inlineSimp body? fuel dict? (apps h' args) else apps h' args
+      -- (`(let x := v; f) a` is `let x := v; f a`)
+      | h'@(letE ..) => inlineSimp body? fuel dict? (pushArgs h' args)
+      | h' => apps h' args
   | letE x v b =>
-    let v := inlineSimp body? fuel v
+    match inlineSimp body? fuel dict? v with
+    -- (`let x := (let y := u; v); b` is `let y := u; let x := v; b`: an inlined
+    -- definition's arguments float out, so its result can meet its use)
+    | letE y u v' => inlineSimp body? fuel dict? (letE y u (letE x v' (b.lift 1 1)))
+    | v =>
     let substitutable := match v with
-      | var _ | erased => true
+      | var _ | erased | natLit _ => true
+      -- (a dictionary or an inline function: a name, free to copy)
+      | global n => (dict? n).isSome || (body? n).isSome || uses 0 b == (1, false)
       | lam .. => uses 0 b == (1, false)
+      -- (a partial application of atoms used once: it meets its arguments there)
+      | app .. => atomApp v && uses 0 b == (1, false)
       | _ => false
-    if substitutable then inlineSimp body? fuel (subst 0 v b)
-    else letE x v (inlineSimp body? fuel b)
-  | lam x b => lam x (inlineSimp body? fuel b)
-  | fix x b => fix x (inlineSimp body? fuel b)
-  | obj t fs => obj t (fs.map (inlineSimp body? fuel))
-  | proj i t => proj i (inlineSimp body? fuel t)
-  | case s bs => case (inlineSimp body? fuel s) (bs.map (inlineSimp body? fuel))
-  | prim op as => prim op (as.map (inlineSimp body? fuel))
+    if substitutable then inlineSimp body? fuel dict? (subst 0 v b)
+    else letE x v (inlineSimp body? fuel dict? b)
+  | lam x b => lam x (inlineSimp body? fuel dict? b)
+  | fix x b => fix x (inlineSimp body? fuel dict? b)
+  | obj t fs => obj t (fs.map (inlineSimp body? fuel dict?))
+  | proj i t =>
+    let t := inlineSimp body? fuel dict? t
+    match projOf body? fuel dict? i t with
+    | some f => inlineSimp body? fuel dict? f
+    | none => proj i t
+  | case s bs => case (inlineSimp body? fuel dict? s) (bs.map (inlineSimp body? fuel dict?))
+  | prim op as => prim op (as.map (inlineSimp body? fuel dict?))
   | t => t
+
+/-- Field `i` of the (simplified) term `t`, if it builds an object: directly, or by a
+known definition (a constructor function, an instance) applied to all its arguments.
+Fields other than the projected one are dropped only when they are values, so no work is
+lost; the fields of an instance are always kept as they are (an instance is pure). -/
+partial def projOf (body? : Name → Option ETerm) (fuel : Nat) (dict? : Name → Option ETerm)
+    (i : Nat) (t : ETerm) : Option ETerm :=
+  match t with
+  | obj _ fs =>
+    if fs.all (fun f => f matches var _ | global _ | lam .. | erased | natLit _) then fs[i]? else none
+  | letE x v b => (projOf body? fuel dict? i b).map (letE x v)
+  | _ =>
+    let (h, args) := spine t []
+    match h, fuel with
+    | global n, fuel' + 1 =>
+      match dict? n <|> body? n with
+      | some b =>
+        if args.length ≥ lamArity b then
+          let r := inlineSimp body? fuel' dict? (toLets b args 0)
+          match projObj? i r with
+          | some f => some f
+          | none => projOf body? fuel' dict? i r
+        else none
+      | none => none
+    | _, _ => none
+end
 
 /-!
 ## Case-shaped functions (stage 15h)

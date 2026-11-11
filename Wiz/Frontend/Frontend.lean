@@ -155,8 +155,11 @@ where
                 go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
             | none => go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
           let errs := if isoErrs.isEmpty then inner.messages.filter (·.severity == .error) else isoErrs
-          let msg : Msg := { info := cmd.info, severity := .error,
-                             text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+          -- (a declaration this file already has is reported as it is, at the import)
+          let msg : Msg := match errs.find? (·.code == "duplicate-declaration") with
+            | some d => { info := cmd.info, severity := .error, text := d.text, code := d.code }
+            | none => { info := cmd.info, severity := .error,
+                        text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
           -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
           let msgs := msgs ++ (inner.messages.filter (·.severity == .warning)).map fun w =>

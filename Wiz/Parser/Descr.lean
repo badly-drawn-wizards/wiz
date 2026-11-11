@@ -102,6 +102,8 @@ structure TrailingParser where
 structure Category where
   leading : Array LeadingParser := #[]
   trailing : Array TrailingParser := #[]
+  /-- the keyword scope the category belongs to (13j): `declare_syntax_cat c (keywords := s)` -/
+  scope : Option Name := none
   deriving Inhabited
 
 /-- All grammar state. Lives in the environment once stage 3 introduces one. -/
@@ -111,6 +113,9 @@ structure ParserTables where
   tokens : Array String := #[]
   /-- every node kind in use, so generated kind names stay unique -/
   kinds : Std.HashMap Name Unit := {}
+  /-- keyword scopes (13j): the words that are not identifiers inside the categories of a
+  scope. They are the identifier-like atoms of those categories' rules. -/
+  scopes : Std.HashMap Name (Array String) := {}
   deriving Inhabited
 
 namespace ParserTables
@@ -140,17 +145,54 @@ partial def _root_.Wiz.ParserDescr.unreserve : ParserDescr → ParserDescr
 
 def reservesKeywords (c : Name) : Bool := c == "term" || c == "command"
 
+/-- The identifier-like atoms of a rule outside `term` and `command`. -/
+partial def _root_.Wiz.ParserDescr.keywords : ParserDescr → List String
+  | .nonReserved t => [t]
+  | .seq ps => ps.toList.flatMap keywords
+  | .many p | .many1 p | .optional p | .node _ p | .withPosition p | .withoutPosition p => keywords p
+  | .sepBy p _ _ | .sepBy1 p _ _ => keywords p
+  | .orelse p q => keywords p ++ keywords q
+  | _ => []
+
+/-- **Keyword scopes (13j).** Keywords of `term` and `command` rules are reserved
+everywhere, and those of other categories nowhere: there `"if"` matches an identifier
+spelled `if`, and so does an `ident` item, so in a category with identifiers and
+juxtaposition `if c then a else b` is also an application of `if`. A category declared
+with `(keywords := s)` belongs to the *keyword scope* `s`: the identifier-like atoms of
+its rules are the scope's keywords, and an `ident` item inside a category of the scope
+does not match them. Outside those categories (in a `term` nested in one, too) the words
+are ordinary identifiers. Several categories share a scope by naming it, since a keyword
+of one (`return`, of statements) must not be an identifier of another (expressions). -/
+def setScope (t : ParserTables) (c : Name) (scope : Name) : ParserTables :=
+  { t with
+    cats := t.cats.insert c { t.cats.getD c {} with scope := some scope }
+    scopes := if t.scopes.contains scope then t.scopes else t.scopes.insert scope #[] }
+
+/-- Add a rule's keywords to the scope of its category, if it has one. -/
+def addKeywords (t : ParserTables) (c : Name) (p : ParserDescr) : ParserTables :=
+  match (t.cats.getD c {}).scope with
+  | none => t
+  | some s =>
+    let kws := p.keywords.foldl (fun acc k => if acc.contains k then acc else acc.push k) (t.scopes.getD s #[])
+    { t with scopes := t.scopes.insert s kws }
+
+/-- The words an `ident` item refuses inside category `c`. -/
+def reservedIn (t : ParserTables) (c : Name) : Array String :=
+  match t.cats[c]? with
+  | some { scope := some s, .. } => t.scopes.getD s #[]
+  | _ => #[]
+
 def addLeading (t : ParserTables) (c : Name) (lp : LeadingParser) : ParserTables :=
   let lp := if reservesKeywords c then lp else { lp with p := lp.p.unreserve }
   let cat := t.cats.getD c {}
-  { t.addTokens lp.p.tokens with
+  { (t.addTokens lp.p.tokens).addKeywords c lp.p with
     cats := t.cats.insert c { cat with leading := cat.leading.push lp }
     kinds := t.kinds.insert lp.kind () }
 
 def addTrailing (t : ParserTables) (c : Name) (tp : TrailingParser) : ParserTables :=
   let tp := if reservesKeywords c then tp else { tp with p := tp.p.unreserve }
   let cat := t.cats.getD c {}
-  { t.addTokens tp.p.tokens with
+  { (t.addTokens tp.p.tokens).addKeywords c tp.p with
     cats := t.cats.insert c { cat with trailing := cat.trailing.push tp }
     kinds := t.kinds.insert tp.kind () }
 
