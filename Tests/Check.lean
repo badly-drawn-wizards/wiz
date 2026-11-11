@@ -277,7 +277,10 @@ def templatesCheck : IO Unit := do
   for (l, w, ps) in [(Level.ofNat 0, Level.ofNat 0, []), (Level.ofNat 0, Level.ofNat 1, []), (Level.ofNat 1, Level.ofNat 2, []),
                      (Level.ofNat 2, Level.ofNat 0, []), (Level.param "u", Level.param "v", ["u", "v"])] do
     let l1 : Level := .succ l
-    let interp (I D X i : Term Q) : Term Q := apps (Templates.interpTm l) [I, D, X, i]
+    -- (the templates applied inside the types are constants declared first: the sorts pass
+    -- types the `Π`s it fills, and a bare template is an unannotated `λ`)
+    let us : List Level := ps.map .param
+    let interp (I D X i : Term Q) : Term Q := apps (.const "interpTm" us) [I, D, X, i]
     -- I : Sort (l+1), D : Desc I, X : I → Sort (l+1)
     let pre (rest : Term Q) : Term Q := pi (.sort l1) (pi (.desc l (v 0)) (pi (pi (v 1) (.sort l1)) rest))
     let interpTy := pre (pi (v 2) (.sort l1))
@@ -287,14 +290,15 @@ def templatesCheck : IO Unit := do
     -- f : (i : I) → (x : X i) → P i x (ctx P0 X1 D2 I3)
     let fTy : Term Q := pi (v 3) (pi (.app (v 2) (v 0)) (apps (v 2) [v 1, v 0]))
     let hypsTy := pre (pi Pty (pi fTy (pi (v 4) (pi (interp (v 5) (v 4) (v 3) (v 0))
-      (apps (Templates.allTm l w) [v 6, v 5, v 4, v 3, v 1, v 0])))))
+      (apps (.const "allTm" us) [v 6, v 5, v 4, v 3, v 1, v 0])))))
     -- Y : I → Sort (l+1) (ctx X0 D1 I2); f : (i : I) → X i → Y i (ctx Y0 X1 D2 I3)
     let mapTy := pre (pi (pi (v 2) (.sort l1)) (pi (pi (v 3) (pi (.app (v 2) (v 0)) (.app (v 2) (v 1))))
       (pi (v 4) (pi (interp (v 5) (v 4) (v 3) (v 0)) (interp (v 6) (v 5) (v 3) (v 1))))))
+    let mut g : Globals Q := {}
     for (n, ty, t) in [("interpTm", interpTy, Templates.interpTm l), ("allTm", allTy, Templates.allTm l w),
                        ("hypsTm", hypsTy, Templates.hypsTm l w), ("mapTm", mapTy, Templates.mapTm l)] do
-      match addDeclS (R := Q) {} { name := n, levelParams := ps, type := ty, value := some t } with
-      | .ok _ => pure ()
+      match addDeclS (R := Q) g { name := n, levelParams := ps, type := ty, value := some t } with
+      | .ok g' => g := g'
       | .error e => throw (IO.userError s!"{n} at l = {l}, v = {w}: {e}")
 
 def structGroup : Group where
