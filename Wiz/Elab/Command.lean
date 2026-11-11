@@ -209,7 +209,11 @@ def renamePrivate (s : CommandState R) (added : Array Name) : CommandState R :=
     | none => m) g.decls
   let order := g.order.map f
   let rb (bs : List (Name × Name)) := bs.map fun (k, n) => (k, f n)
-  { s with globals := { g with decls, order, builtins := rb g.builtins, assumed := rb g.assumed },
+  -- (the instantiation cache follows the renamed values: `Globals.instValue`)
+  let instCache := added.foldl (fun c n => match decls[f n]? with
+    | some d => { g with instCache := c.erase n }.cacheInst d
+    | none => c.erase n) g.instCache
+  { s with globals := { g with decls, order, instCache, builtins := rb g.builtins, assumed := rb g.assumed },
            builtins := rb s.builtins }
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each

@@ -480,23 +480,30 @@ def contains (g : Globals R) (n : Name) : Bool := g.decls.contains n
 def builtinKey? (g : Globals R) (n : Name) : Option Name :=
   (g.builtins.find? (·.2 == n)).map (·.1)
 
-/-- Unchecked insertion. Use `Wiz.addDecl` to type check first. -/
-def insert (g : Globals R) (d : Decl R) : Globals R :=
+/-- `instCache` with the entry of `d` (its value's instantiations, made when needed), or
+without one (no value, or no level parameters). -/
+def cacheInst (g : Globals R) (d : Decl R) : Std.HashMap Name (List (List Level × Thunk (Term R))) :=
   let ofNat (k : Nat) : Level := (List.range k).foldl (fun l _ => .succ l) .zero
   let inst : List (List Level × Thunk (Term R)) := match d.value with
     | some v => if d.levelParams.isEmpty then [] else [0, 1, 2].map fun k =>
         let us := d.levelParams.map fun _ => ofNat k
         (us, Thunk.mk fun _ => v.instLevels d.levelParams us)
     | none => []
+  if inst.isEmpty then g.instCache.erase d.name else g.instCache.insert d.name inst
+
+/-- Unchecked insertion. Use `Wiz.addDecl` to type check first. -/
+def insert (g : Globals R) (d : Decl R) : Globals R :=
   { g with
     decls := g.decls.insert d.name d
     order := if g.decls.contains d.name then g.order else g.order.push d.name
-    instCache := if inst.isEmpty then g.instCache.erase d.name else g.instCache.insert d.name inst }
+    instCache := g.cacheInst d }
 
 /-- The value `v` of the global `n` (its parameters `ps`) at the levels `us`:
 `v.instLevels ps us`, from `instCache` when `insert` computed it. (The cache is keyed by
-the name and built from the value `insert` stored; `decls` changes only through `insert`
-or by removing a value, so an entry belongs to the value found under its name.) -/
+the name and built from the value `insert` stored; `decls` changes only through `insert`,
+by removing a value or a declaration, or by `renamePrivate`, which moves the entries along
+with the renamed declarations (`cacheInst`), so an entry belongs to the value found under its
+name.) -/
 def instValue (g : Globals R) (n : Name) (v : Term R) (ps : List Name) (us : List Level) : Term R :=
   if ps.isEmpty then v else
   match (g.instCache[n]?).bind fun es => es.find? (·.1 == us) with
