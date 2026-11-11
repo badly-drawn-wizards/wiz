@@ -1204,7 +1204,9 @@ Also listed, marked `native`: the **native implementations** the declaration's c
 code runs, wherever they are registered (the library's too). `native f := g` is
 `attribute [implemented_by g] f`, and `native T := mk/get` a native representation of the
 type `T` (`attribute [implemented_by mk get] T.mk`, a `repr:` registration). The kernel
-never runs them, so they prove nothing: they are trusted to agree with the definitions. A structurally recursive definition's compiled equations are not listed: the kernel
+never runs them, so they prove nothing: they are trusted to agree with the definitions.
+An implementation that is a Wiz definition is walked like a dependency (compiled code runs
+it): a chain `f → g → h` lists `native f := g` and `native g := h`, and `h`'s own axioms. A structurally recursive definition's compiled equations are not listed: the kernel
 checks that they agree with its value (`checkImplAgrees`). -/
 partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run do
   let mut seen : Std.HashSet Name := {}
@@ -1237,7 +1239,13 @@ partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run 
       -- term (`Nat.zero` is `0`, `Nat.pow 0 0` is `1`), and numerals unfold through the
       -- registered `nat.zero` and `nat.succ`: it depends on them like a literal does
       let lit := lit || g.builtins.any fun (k, m) => m == c && k.startsWith "nat."
-      todo := cs ++ (if lit then numeral else []) ++ todo
+      -- (an implementation is walked too: compiled code runs it, so the rest of an
+      -- `implemented_by` chain and what it depends on are listed; a foreign function, which
+      -- has no value, is already named by `native f := g`)
+      let impls := match d.nativeImpl? with
+        | some i => if (g.find? i).any (·.value.isSome) then [i] else []
+        | none => []
+      todo := cs ++ (if lit then numeral else []) ++ impls ++ todo
   return out.toList
 where
   consts (t : Term R) (acc : List Name) : List Name :=

@@ -1,6 +1,7 @@
 import Wiz.Elab.Recursor
 import Wiz.Elab.Mark
 import Wiz.Compiler.Run
+import Wiz.Compiler.Native
 import Wiz.Compiler.IRRun
 import Wiz.Compiler.Lower
 import Wiz.FFI.CParse
@@ -109,6 +110,11 @@ structure CommandState (R : Type) where
   /-- the modules whose `builtin` registrations are trusted: the toolchain's library
   (`lib/`). The main file never is, nor a module from a `-I` directory. -/
   trustedModule : String → Bool := fun _ => false
+  /-- (27a) `--trust-native`: `native_refl` may decide a closed equation by running it
+  (off by default: it trusts the compiler, see `Native.lean`) -/
+  trustNative : Bool := false
+  /-- (27a) `--native-fuel N`: the interpreter steps `native_refl` may take -/
+  nativeFuel : Nat := NativeRun.defaultFuel
   /-- macro rules, latest first -/
   macros : List MacroRule := []
   /-- (11q) where each syntax kind and syntax category was declared (the command's range,
@@ -1348,6 +1354,54 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
     if s.globals.contains name then
       reportDup (cmd.getArg 1).info name
+    else if let some nr := valStx.filter (·.isOfKind "term.nativeRefl") then
+      -- (27a) `def X : a = b := native_refl`: decided by running `a` and `b`
+      if !s.trustNative then
+        report .error nr.info "native evaluation is not enabled: `native_refl` decides an equation by running compiled code, which the kernel does not check; run with --trust-native to allow it"
+      else if !binders.isEmpty || !levelParams.isEmpty || typeStx.isNone then
+        report .error nr.info "native_refl proves a closed equation: `def X : a = b := native_refl`, with a type and without parameters or universe parameters"
+      else match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDeclTerms binders typeStx none cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) [] with
+      | (.error e, hv) => addInfos hv; reportErr e
+      | (.ok (ty, _), hv) =>
+        addInfos hv
+        let g := s.globals
+        -- (as written: the kernel's equality computes, observationally, at data types)
+        match ty with
+        | .eq A a b =>
+          match Native.decideNative g s.builtins A a b s.nativeFuel with
+          | .error e => report .error nr.info s!"native_refl: {e}"
+          | .ok v =>
+            let ax := name ++ ".native✝"
+            -- (`addDeclSorted` without `withSorts`' evaluation of the type, which is for
+            -- checking a value against it: evaluating an equation computes both sides, F5)
+            -- (nor `Sorts.type`'s: an equation's sort is `Prop`; its sides get their sorts)
+            let axD : Decl R := { name := ax, type := Sorts.term g #[] [] ty, value := none }
+            match (do let g' ← addDecl g axD; privacyCheck g axD; pure g' : TCM (Globals R)) with
+            | .error e => report .error cmd.info s!"kernel rejected {ax}: {e}"
+            | .ok g' =>
+              -- the value mentions the native implementations the run can reach (erased
+              -- `let`s), so that `#print axioms` walks what they reach too
+              let one := Level.succ .zero
+              let val := v.natives.foldr (fun m body => match g'.find? m with
+                | some d => .letE "_" (.qlit 0) (d.type.instLevels d.levelParams (d.levelParams.map fun _ => one))
+                    (.const m (d.levelParams.map fun _ => one)) body
+                | none => body) (Term.const ax [])
+              -- Added without the kernel's check: checking `val` against the type evaluates
+              -- the equation, and the kernel's `vEq` computes both sides (F5 of
+              -- wiz-notes/kernel-eval.md), which is what native evaluation is for. The
+              -- check is the constant rule: `X.native✝` was declared (just above, by the
+              -- kernel) at this very type, and each `let` binds a constant at its own
+              -- declared type, erased, which the body does not mention.
+              -- (The header is the kernel's: the type is checked to be a well-formed type,
+              -- `a b : T`, which does not evaluate the equation.)
+              let axTy := ((g'.find? ax).map (·.type)).getD ty
+              let d : Decl R := { name, type := axTy, value := some val }
+              match checkHeader g' d with
+              | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
+              | .ok () =>
+                modify fun s => { s with globals := g'.insert d }
+                report .warning nr.info s!"{name} is accepted on the strength of native evaluation (--trust-native, {v.steps} steps), not checked by the kernel: its proof is the axiom {ax}, which `#print axioms` lists for everything that uses {name}"
+        | _ => report .error nr.info "native_refl proves an equation `a = b`; this type is not one"
     else match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDeclTerms binders typeStx valStx cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) levelParams with
       | (.ok (ty, val), hv) =>
         addInfos hv
@@ -1729,6 +1783,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- never run it, compiled code does)
         let note := if as.any (·.startsWith "native ") then
           "\n(native: an implementation that compiled code runs, trusted to agree with its definition)" else ""
+        -- (27a) a `native_refl` axiom
+        let note := note ++ if as.any (·.endsWith ".native✝") then
+          "\n(.native✝: an equation decided by running it (native_refl, --trust-native): trusted are erasure, the interpreter and the native implementations listed)" else ""
         report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]{note}"
   | "command.foreignType" =>
     -- an opaque C pointer type; values are released with the finalizer
