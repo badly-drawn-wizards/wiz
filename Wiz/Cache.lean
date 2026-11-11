@@ -628,8 +628,7 @@ partial def elaborateWith (store : Store R) (input : String) (init : CommandStat
   -- never replayed without it, nor the error without it replayed with it. (What it ran is
   -- already in the key: the binary, and the text of the file and of everything imported.)
   let salt' := if init.trustNative then mixHash salt' (nativeKey init) else salt'
-  -- (28) and the solver settings (`--trust-smt`, the solvers): a goal closed by `smt` is
-  -- never replayed without the flag
+  -- (28) and the solver settings (`--sat-solver`, `--solver-timeout`)
   let salt' := match smtKey init.smt with | some k => mixHash salt' k | none => salt'
   go keys init [] input init (mixHash salt' (mixHash toolchain key₀)) .write
 where

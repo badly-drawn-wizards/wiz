@@ -33,13 +33,10 @@ structure Toolchain where
   /-- (27a) `--native-fuel N`: the interpreter steps one `native_refl` may take (none: the
   default, `NativeRun.defaultFuel`) -/
   nativeFuel : Option Nat := none
-  /-- (28a) `--trust-smt`: the `smt` tactic may close goals on an SMT solver's word -/
-  trustSmt : Bool := false
-  /-- (28) `--smt-solver CMD` (default `z3`), `--sat-solver CMD` (default `cadical`),
-  `--smt-timeout MS` (default 10000) -/
-  smtSolver : Option String := none
+  /-- (28b) `--sat-solver CMD` (default `cadical`, or the bundle's), `--solver-timeout MS`
+  (default 10000). Flags only: a grail file can't name a program for wiz to run. -/
   satSolver : Option String := none
-  smtTimeout : Option Nat := none
+  solverTimeout : Option Nat := none
   deriving Repr, Inhabited
 
 namespace Toolchain
@@ -66,19 +63,19 @@ def set (t : Toolchain) (key value : String) : Option Toolchain :=
   | "cache" => some { t with cacheDir := some (System.FilePath.mk value) }
   | "root" => some { t with searchPath := t.searchPath ++ [System.FilePath.mk value] }
   | "native-fuel" => value.toNat?.map fun n => { t with nativeFuel := some n }
-  | "smt-solver" => some { t with smtSolver := some value }
-  | "sat-solver" => some { t with satSolver := some value }
-  | "smt-timeout" => value.toNat?.map fun n => { t with smtTimeout := some n }
   | _ => none
 
 /-- Take the toolchain flags out of the arguments: `--cc X`, `--cflags "…"`,
 `--ldflags "…"`, `--libs "…"`, `--gmp "…"`, `--llc X`, `--gc-cflags "…"`, `--gc-ldflags "…"`, `--cache DIR`,
-`--no-cache`, `-I DIR`, (27a) `--trust-native`, `--native-fuel N`, (28) `--trust-smt`,
-`--smt-solver CMD`, `--sat-solver CMD`, `--smt-timeout MS`. -/
+`--no-cache`, `-I DIR`, (27a) `--trust-native`, `--native-fuel N`, (28b) `--sat-solver CMD`,
+`--solver-timeout MS` (flags only, not settings of a grail file). -/
 partial def parseFlags (t : Toolchain) : List String → Toolchain × List String
   | "--no-cache" :: rest => parseFlags { t with cacheDir := none } rest
   | "--trust-native" :: rest => parseFlags { t with trustNative := true } rest
-  | "--trust-smt" :: rest => parseFlags { t with trustSmt := true } rest
+  | "--sat-solver" :: cmd :: rest => parseFlags { t with satSolver := some cmd } rest
+  | "--solver-timeout" :: ms :: rest => match ms.toNat? with
+    | some n => parseFlags { t with solverTimeout := some n } rest
+    | none => let (t, r) := parseFlags t rest; (t, "--solver-timeout" :: ms :: r)
   | "-I" :: dir :: rest => parseFlags { t with searchPath := t.searchPath ++ [System.FilePath.mk dir] } rest
   | flag :: v :: rest =>
     match (if flag.startsWith "--" then t.set (flag.drop 2).toString v else none) with
@@ -96,15 +93,13 @@ def toFlags (t : Toolchain) : List String :=
   t.searchPath.flatMap (fun d => ["-I", d.toString]) ++
   (if t.trustNative then ["--trust-native"] else []) ++
   (match t.nativeFuel with | some n => ["--native-fuel", toString n] | none => []) ++
-  (if t.trustSmt then ["--trust-smt"] else []) ++
-  (match t.smtSolver with | some c => ["--smt-solver", c] | none => []) ++
   (match t.satSolver with | some c => ["--sat-solver", c] | none => []) ++
-  (match t.smtTimeout with | some n => ["--smt-timeout", toString n] | none => [])
+  (match t.solverTimeout with | some n => ["--solver-timeout", toString n] | none => [])
 
 /-- (28) What the elaborator needs to reach solvers. -/
 def smt (t : Toolchain) : Smt.Config :=
-  { trust := t.trustSmt, solver := t.smtSolver.getD "z3", satSolver := t.satSolver.getD "cadical",
-    timeoutMs := t.smtTimeout.getD 10000, cacheDir := t.cacheDir.map toString }
+  { satSolver := t.satSolver.getD "cadical", timeoutMs := t.solverTimeout.getD 10000,
+    cacheDir := t.cacheDir.map toString }
 
 /-- (26f) The C toolchain a release tarball ships, `share/wiz/cc` (scripts/bundle-cc.sh):
 clang with a glibc 2.27 sysroot holding static GMP and the Boehm GC, and an `llc` that

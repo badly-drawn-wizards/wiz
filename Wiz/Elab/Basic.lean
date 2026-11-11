@@ -243,12 +243,12 @@ structure ElabState (R : Type) where
   while the globals stay as they are (the elaborator clears it when it changes them). -/
   unifyFails : Std.HashMap UInt64 (List (Term R × Term R × String)) := {}
   unifyFailCount : Nat := 0
-  /-- (28) how tactics reach solvers (`--trust-smt`, …) -/
+  /-- (28) how tactics reach solvers (`--sat-solver`, …) -/
   smt : Smt.Config := {}
-  /-- (28a) the definition being elaborated, which names the axioms `smt` adds (`""`:
-  not in a definition, where `smt` can't add one) -/
+  /-- (28) the definition being elaborated, which names the axioms a tactic adds (`""`:
+  not in a definition, where a tactic can't add one) -/
   smtDecl : Name := ""
-  /-- (28a) axioms a tactic added (`X.smt✝N`): already in `globals`, and added to the
+  /-- (28) axioms a tactic added: already in `globals`, and added to the
   command's globals before the definition that uses them -/
   sideDecls : Array (Decl R) := #[]
 

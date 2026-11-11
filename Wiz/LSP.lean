@@ -53,7 +53,7 @@ structure Server where
   /-- (27a) `--trust-native` and `--native-fuel` -/
   trustNative : Bool := false
   nativeFuel : Nat := NativeRun.defaultFuel
-  /-- (28) solvers: `--trust-smt`, `--smt-solver`, `--sat-solver` -/
+  /-- (28) solvers: `--sat-solver`, `--solver-timeout` -/
   smt : Smt.Config := {}
   /-- the last session number handed out (sessions are unique over the server's life) -/
   sessions : Nat := 0

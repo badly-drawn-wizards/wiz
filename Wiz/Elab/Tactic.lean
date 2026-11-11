@@ -72,9 +72,8 @@ def rewrite := 30
 def ctorInfo := 31
 def isDefinition := 32
 -- (stage 28) solvers
-def smt := 33
-def satSolve := 34
-def eqView := 35
+def satSolve := 33
+def eqView := 34
 end TacTag
 
 structure Goal (R : Type) where

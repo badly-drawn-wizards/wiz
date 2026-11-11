@@ -41,7 +41,7 @@
     "regions",
     "repr",
     "seplogic",
-    "=smt",
+    "=sat",
     "std",
     "tactics",
     "testrunner",

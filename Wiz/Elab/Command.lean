@@ -114,7 +114,7 @@ structure CommandState (R : Type) where
   trustNative : Bool := false
   /-- (27a) `--native-fuel N`: the interpreter steps `native_refl` may take -/
   nativeFuel : Nat := NativeRun.defaultFuel
-  /-- (28) solvers: `--trust-smt`, `--smt-solver`, `--sat-solver`, the answer cache -/
+  /-- (28) solvers: `--sat-solver`, `--solver-timeout`, the answer cache -/
   smt : Smt.Config := {}
   /-- macro rules, latest first -/
   macros : List MacroRule := []
@@ -800,8 +800,8 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
     isRec && ((copatternAlt? alts o).map fun a => isCorecCall name (a.getArg 3)).getD false
   if corecursive then elabCopatternsCoit name cmd obs else elabCopatternsCocon name cmd obs
 
-/-- `runElabH`, with (28a) the solver settings and the definition's name, and the axioms
-that tactics added (`smt`) on success. -/
+/-- `runElabH`, with (28) the solver settings and the definition's name, and the axioms
+that tactics added on success (`ElabState.sideDecls`; the trusted `smt` of 28a will). -/
 def runElabS (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     (macros : List MacroRule := []) (builtins : List (Name × Name) := [])
     (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
@@ -1409,9 +1409,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         addInfos hv
         if sides.isEmpty then addDeclChecked name levelParams ty val
         else
-          -- (28a) the axioms `smt` added (`X.smt✝N : Π ctx, goal`), checked by the kernel as
-          -- types (an axiom's statement is what the solver was trusted for), then the
-          -- definition, which applies them
+          -- (28) axioms a tactic added, checked by the kernel as types (an axiom's
+          -- statement is what was trusted), then the definition, which applies them
           let mut g := s.globals
           let mut ok := true
           for d in sides do
@@ -1423,7 +1422,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             match addDeclSorted g { name, levelParams, type := ty, value := val } with
             | .ok g' =>
               modify fun s => { s with globals := g' }
-              report .warning cmd.info s!"{name} is accepted on the word of an SMT solver (--trust-smt), not checked by the kernel: its proof uses the axiom{if sides.size == 1 then "" else "s"} {", ".intercalate (sides.toList.map (·.name))}, which `#print axioms` lists for everything that uses {name}"
+              report .warning cmd.info s!"{name} is accepted on the strength of the axiom{if sides.size == 1 then "" else "s"} {", ".intercalate (sides.toList.map (·.name))} that its tactics added, not checked by the kernel; `#print axioms` lists {if sides.size == 1 then "it" else "them"} for everything that uses {name}"
             | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
       | (.error e, hv) => addInfos hv; reportErr e
   | "command.partial" | "command.mutual" =>
@@ -1796,8 +1795,6 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- (27a) a `native_refl` axiom
         let note := note ++ if as.any (·.endsWith ".native✝") then
           "\n(.native✝: an equation decided by running it (native_refl, --trust-native): trusted are erasure, the interpreter and the native implementations listed)" else ""
-        let note := note ++ if as.any (fun a => (a.splitOn ".smt✝").length > 1) then
-          "\n(.smt✝N⟨solver⟩: a goal closed by an SMT solver (the smt tactic, --trust-smt): trusted are the solver named in the axiom and Wiz's translation to SMT-LIB, Wiz/Smt/Translate.lean)" else ""
         report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]{note}"
   | "command.foreignType" =>
     -- an opaque C pointer type; values are released with the finalizer

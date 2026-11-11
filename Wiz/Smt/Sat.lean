@@ -55,7 +55,7 @@ inductive SatResult where
 def satSolve (cfg : Config) (nvars : Nat) (clauses : List (List Nat)) : SatResult :=
   let secs := max 1 (cfg.timeoutMs / 1000)
   match runSolver cfg cfg.satSolver ["-q", "-t", toString secs, "--lrat", "--no-binary", "{in}", "{out}"]
-      (dimacs nvars clauses) "cnf" true with
+      (dimacs nvars clauses) "cnf" true (fun a => a.exitCode == 10 || a.exitCode == 20) with
   | .error e => .error e
   | .ok (_, a) =>
     if a.exitCode == 20 then
