@@ -255,6 +255,7 @@ continue onto a line starting at the command's column.
 | `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] ["deriving" C,+] |
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] where [fields] ["deriving" C,+] (where: `structure.where`, "where" [["private"] ident "::"]) |
 | `command.private`            | "private" command (every name it declares is private to the module) |
+| `command.local`              | "local" command (13m: a `syntax`, `notation`, `infix…`, `macro_rules` or `attribute [macro …]` whose syntax stays in the module) |
 | `command.deriving`           | "deriving" "instance" C,+ "for" T,+ |
 | `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
 | `command.attrInline`         | "attribute" "[" "inline" "]" ident |
@@ -276,6 +277,8 @@ def commandLeading : List LeadingParser := [
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec true, many1 matchAlt] },
   -- 13b: every name the command declares is visible only in this module
   { kind := "command.private", prec := maxPrec, p := seqs ["private", cat "command" 0] },
+  -- 13m: notation that importers don't see (`local` is not reserved)
+  { kind := "command.local", prec := maxPrec, p := seqs [nonReserved "local", cat "command" 0] },
   -- stage 13: general recursion; a `mutual` block's definitions are partial too
   -- (a partial definition's type needs a witness: found, or given with `(default := w)`)
   { kind := "command.partial", prec := maxPrec,

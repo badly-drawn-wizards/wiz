@@ -4308,6 +4308,40 @@ def selfHostGroup : Group where
         ioDiverges (withReg ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") }
   ]
 
+/-- (13m) The messages of `input` with the module `Loc` (`loc`) importable besides the
+library, through the frontend (`runFrontend`) and through the command cache
+(`Cache.elaborateUncached`, what `wiz check` runs): errors (rendered) and the rest. -/
+def runLoc (loc input : String) : IO (List (Array String × Array String)) := do
+  let lib ← preludeLoader
+  let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Loc" then some loc else lib m }
+  let split (s : CommandState ZeroOneMany) :=
+    ((s.messages.filter (·.severity == .error)).map (·.render input), (s.messages.filter (·.severity != .error)).map (·.text))
+  pure [split (runFrontend input init), split (← Cache.elaborateUncached input init)]
+
+def okLoc (loc input : String) (infos : List String := []) : IO Unit := do
+  for (errs, msgs) in ← runLoc loc input do
+    unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+    checkEq (repr infos).pretty (repr msgs.toList).pretty
+
+def failsLoc (loc input fragment : String) : IO Unit := do
+  for (errs, _) in ← runLoc loc input do
+    unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+    unless (errs[0]!.splitOn fragment).length > 1 do
+      throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+/-- A module with `local` notation (an operator, a keyword with its macro rule) and an
+exported operator that is defined with them. -/
+def locMod : String := "import Prelude
+local infixr:67 \" & \" => String.append
+local infixr:67 \" :> \" => List.cons
+local syntax (name := shout) \"shout\" term : term
+local macro_rules
+  | `(term| shout $x) => `(term| $x & \"!\")
+infixr:67 \" &&& \" => String.append
+def greet (s : String) : String := shout (\"hi \" & s)
+def three : List Nat := 1 :> 2 :> 3 :> .nil
+"
+
 /-- A term language with identifiers, juxtaposition and `if … then … else`, run by macros
 (13j); `decl` follows `declare_syntax_cat` (a keyword scope, or nothing). The file also
 defines `then` and `else` as Wiz names. -/
@@ -4558,6 +4592,56 @@ def languageGroup : Group where
           "inductive B where\n  | b0\n  | b1 (x : A)\nend\n" ++
           "def depthA : A → Nat\n  | .a1 f => Nat.succ (depthA (f ()))\n  | .a0 => 0\n" ++
           "#eval depthA (.a1 (fun _ => .a1 (fun _ => .a0)))") ["2"] },
+    -- (13k) list literals: a Prelude macro
+    { name := "list literals: [a, b, c], [], nested, multi-line, with ++", run := fun _ =>
+        okLib ("import Prelude\ndef xs : List Nat := [1, 2, 3]\ndef ys : List String := []\n" ++
+          "def zs : List (List Nat) := [[], [1], [Nat.add 1 1, 3]]\ndef ws : List Nat := [\n  4,\n  5\n]\n" ++
+          "def t : List.length [1, 2, 3] = 3 := rfl\n" ++
+          "#eval xs\n#eval ys\n#eval zs\n#eval ws ++ [6]\n#eval List.length ([] : List Nat)")
+          [".cons 1 (.cons 2 (.cons 3 .nil))", ".nil", ".cons .nil (.cons (.cons 1 .nil) (.cons (.cons 2 (.cons 3 .nil)) .nil))",
+           ".cons 4 (.cons 5 (.cons 6 .nil))", "0"] },
+    { name := "... in patterns: [], [x], [x, y], inside tuples, constructors, ⟨…⟩ and x@p", run := fun _ =>
+        okLib ("import Prelude\ndef len : List Nat → Nat\n  | [] => 0\n  | [_] => 1\n  | [_, _] => 2\n  | _ => 9\n" ++
+          "def f (p : List Nat × List Nat) : Nat := match p with\n  | ([x], [y, z]) => Nat.add x (Nat.add y z)\n" ++
+          "  | ([], _) => 0\n  | (.cons x _, _) => x\n" ++
+          "def g : List (List Nat) → Nat\n  | .cons [x] _ => x\n  | _ => 0\n" ++
+          "structure P where\n  a : List Nat\n  b : Nat\ndef h : P → Nat\n  | ⟨[x], _⟩ => x\n  | _ => 0\n" ++
+          "def k : List Nat → List Nat\n  | xs@[_] => xs ++ xs\n  | xs => xs\n" ++
+          "#eval len []\n#eval len [5]\n#eval len [5, 6]\n#eval len [5, 6, 7]\n#eval f ([1], [2, 3])\n#eval g [[7]]\n" ++
+          "#eval h ⟨[8], 0⟩\n#eval k [9]")
+          ["0", "1", "2", "9", "6", "7", "8", ".cons 9 (.cons 9 .nil)"] },
+    { name := "... numerals in a list literal are elaborated at the element type (7e)", run := fun _ => do
+        let lib ← preludeLoader
+        let int ← IO.FS.readFile "lib/Int.wiz"
+        let input := "import Word\nimport Int\n#eval ([1, 2] : List U8)\n#eval ([1, 2] : List Int)\n" ++
+          "def w : List U8 := [255, 1 + 2]\n#eval w"
+        let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Int" then some int else lib m }
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        checkEq (repr [".cons (.mk 1) (.cons (.mk 2) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255) (.cons (.mk 3) .nil)"]).pretty
+          (repr (s.messages.toList.map (·.text))).pretty },
+    { name := "... instance binders and Enum [..] still parse", run := fun _ =>
+        okLib ("import Prelude\ndef f {m : Type → Type} [Monad m] : m Nat := Monad.pure 1\n" ++
+          "def g : (m : Type → Type) → [Monad m] → m Nat := fun m => Monad.pure 2\n" ++
+          "def h : [inst : Monad TacticM] → Nat := 3\ndef E : Type := Enum [a, b]") },
+    -- (13l) `++` is a class method
+    { name := "++ appends lists and strings (class Append)", run := fun _ =>
+        okLib ("import Prelude\ndef a (ys : List Nat) : List Nat := .cons 1 .nil ++ ys ++ .nil\n" ++
+          "def b {A : Type} (xs : List A) : List A := xs ++ xs\ndef c (s : String) : String := \"<\" ++ s ++ \">\"\n" ++
+          "#eval a [2]\n#eval b [1]\n#eval c \"x\"")
+          [".cons 1 (.cons 2 .nil)", ".cons 1 (.cons 1 .nil)", "\"<x>\""] },
+    -- (13m) `local` notation
+    { name := "local notation is used in its module and not seen by importers", run := fun _ => do
+        okLoc locMod "import Loc\n#eval greet \"a\" &&& \"b\"\n#eval three" ["\"hi a!b\"", ".cons 1 (.cons 2 (.cons 3 .nil))"]
+        failsLoc locMod "import Loc\ndef x : String := \"a\" & \"b\"" "unexpected character '&'"
+        -- the local keyword is an identifier again
+        okLoc locMod "import Loc\ndef shout : Nat := 4\n#eval shout" ["4"] },
+    { name := "... an importer may define the same notation at another meaning", run := fun _ =>
+        okLoc locMod "import Loc\ninfixr:67 \" & \" => List.append\n#eval [1] & [2]\nsyntax (name := shout) \"shout\" term : term\nmacro_rules\n  | `(term| shout $x) => `(term| [$x])\n#eval shout 1"
+          [".cons 1 (.cons 2 .nil)", ".cons 1 .nil"] },
+    { name := "... in the main file it is ordinary notation; only grammar commands can be local", run := fun _ => do
+        okLib "import Prelude\nlocal infixl:65 \" +! \" => Nat.add\n#eval 1 +! 2" ["3"]
+        failsLib "import Prelude\nlocal def x : Nat := 1" "can be `local`" },
     -- keyword scopes (13j): `if`/`then`/`else` are keywords inside `run_calc … done` only
     { name := "keyword scope: a DSL's keywords are identifiers outside it (13j)", run := fun _ =>
         okLib (calcDsl " (keywords := calc_kw)" ++
