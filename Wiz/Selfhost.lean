@@ -76,11 +76,18 @@ def checkerSource (srcs : List String) : String :=
 
 /-- The self-hosted compiler: reads `input.wiz` and prints C (the frontend's output as
 comments). `--rc` (or `--rc-owned`, `--gc`) on its command line picks the backend's
-mode (stage 21k; `genProgramArgs`). -/
+mode (stage 21k; `genProgramArgs`). If the frontend reports an error (a line starting
+with `error`), the errors go to standard error, no C is printed and the exit code is 1
+(15g: before, the definition was just missing from the C, with the message in a comment). -/
 def compilerSource (srcs : List String) : String :=
-  "import IO\nimport Std\n" ++ "\n".intercalate (srcs.map strip) ++ "\n" ++ tablesSource ++
+  "import IO\nimport Std\nimport Sys\n" ++ "\n".intercalate (srcs.map strip) ++ "\n" ++ tablesSource ++
     "def commentLines : List String → List String\n  | .nil => .nil\n  | .cons l rest => .cons (String.append \"/* \" (String.append l \" */\")) (commentLines rest)\n" ++
-    "def main : IO Unit := do\n  args ← IO.args;\n  text ← IO.readFile \"input.wiz\";\n  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with\n    | .mk out gs _ _ _ => do\n      printAll (commentLines (List.reverseOf out .nil));\n      printDocs (genProgramArgs args text gs)\n"
+    "def errLine (l : String) : Bool := match l with\n  | .mk cs => match cs with\n" ++
+    "    | .cons a (.cons b (.cons c (.cons d (.cons e _)))) => Bool.and (Nat.beq (Char.code a) 101) (Bool.and (Nat.beq (Char.code b) 114)\n" ++
+    "        (Bool.and (Nat.beq (Char.code c) 114) (Bool.and (Nat.beq (Char.code d) 111) (Nat.beq (Char.code e) 114))))\n    | _ => .false\n" ++
+    "def errLines : List String → List String\n  | .nil => .nil\n  | .cons l rest => match errLine l with\n    | .true => .cons l (errLines rest)\n    | .false => errLines rest\n" ++
+    "def ePrintAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.ePrintln s;\n    ePrintAll ss\n" ++
+    "def main : IO Unit := do\n  args ← IO.args;\n  text ← IO.readFile \"input.wiz\";\n  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with\n    | .mk out gs _ _ _ => match errLines (List.reverseOf out .nil) with\n      | .nil => do\n        printAll (commentLines (List.reverseOf out .nil));\n        printDocs (genProgramArgs args text gs)\n      | .cons e es => do\n        ePrintAll (.cons e es);\n        Process.exit 1\n"
 
 /-- The toolchain as its own input (for the bootstrap check): the compiler's source, with
 `import Prelude` (the self-hosted frontend's prelude) instead of the Lean libraries. -/

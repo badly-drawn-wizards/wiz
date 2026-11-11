@@ -615,7 +615,9 @@ def tmEq : Tm → Tm → Bool
   | .pfalse, .pfalse => .true
   | .exfalso a b, .exfalso c d => Bool.and (tmEq a c) (tmEq b d)
   | .enum k, .enum k' => Nat.beq k k'
-  | .tag _ i, .tag _ j => Nat.beq i j
+  -- (the enumeration's size too: `valSame` compares it, and "the same term" must not
+  -- depend on both sides having one type)
+  | .tag k i, .tag k' j => Bool.and (Nat.beq k k') (Nat.beq i j)
   | .ecase a b bs, .ecase c d bs' => Bool.and (tmEq a c) (Bool.and (tmEq b d) (tmsEq bs bs'))
   | .eq a b c, .eq d e f => Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f))
   | .eqTy a b, .eqTy c d => Bool.and (tmEq a c) (tmEq b d)

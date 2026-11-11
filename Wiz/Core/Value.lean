@@ -124,7 +124,16 @@ end
 abbrev Env (R : Type) := List (Val R)
 abbrev VTy (R : Type) := Val R
 
-instance {R : Type} : Inhabited (Val R) := ⟨.sort 0⟩
+/-- The head of the value that a kernel-internal failure leaves behind. Lean's `panic!`
+(an eliminator applied to a value of the wrong shape, `xs[i]!` out of range) prints a
+message and goes on with the type's default value. That default was `Sort 0`, a
+well-formed type and proposition, which the checker then accepted (audit F2, K6). It is
+now a **stuck unknown**: a constant that no declaration has, so nothing computes on it,
+and a term read back from it is rejected (`unknown constant`). The batch commands do
+not go on at all (`Wiz.exitOnPanic`). See `wiz-notes/kernel-lint.md`. -/
+def kernelPanicName : Name := "kernel panic✝"
+
+instance {R : Type} : Inhabited (Val R) := ⟨.neutral (.global kernelPanicName []) #[]⟩
 
 /-- A quantity value as a polynomial: a literal, or a quantity variable. `none` for
 anything else (a stuck computation, or an elaborator metavariable). -/
