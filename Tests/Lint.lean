@@ -258,8 +258,8 @@ def TermRow.withLevel (row : TermRow) (j : Nat) (mark : Level) : Term R :=
   row.build (fun _ => plainT) (fun i => if i == j then mark else .zero)
 
 /-- The free variables of `t` under `depth` binders, as indices into the enclosing
-environment (with repeats). (`Val.lvlBound` and the kernel's copy of this went with
-`sameVal`, conv-regularity §5.) -/
+environment (with repeats). (The kernel's copy of this went with its syntactic
+regularity, conv-regularity §5; the lint keeps its own.) -/
 partial def freeVarsAt (depth : Nat) (t : Term R) : StateM (Array Nat) Unit :=
   match t with
   | .var i => if i ≥ depth then modify (·.push (i - depth)) else pure ()
@@ -337,7 +337,7 @@ def checkTermOps (ops : TermOps) (rows : List TermRow) : Failures Unit := do
 /-! ### Evaluation and read-back keep every child
 
 The witness is evaluated in an environment of `L` variables and read back. The marked
-child is the variable with the highest level, so `Val.lvlBound` must be `L`, and the term
+child is the variable with the highest level, and the term
 read back must mention the variable (index 0). The other children are a lower variable:
 every eliminator is stuck on it. -/
 
@@ -535,7 +535,7 @@ def plainK : Closure R := .mk [] (.var 0)
 /-- A closure under `b` binders whose body is the entry of its environment. -/
 def markK (b : Nat) (v : Val R) : Closure R := .mk [v] (.var b)
 
-/-- Every child of every value constructor counts for `lvlBound`, and is read back by
+/-- Every child of every value constructor is read back by
 `quote` in both modes; `eraseExempt` names the rows whose children are erased proofs. -/
 def checkValRows (what : String) (rows : List ValRow) (eraseExempt : List String := []) :
     Failures Unit := do
@@ -946,7 +946,7 @@ def lintGroup : Group where
             expect (termCtorName w == r.name) s!"Term.{r.name}: the row builds a `{termCtorName w}`" },
     { name := "Term: mapChildrenM, forChildren, freeVarsAt, hasVar, lift, instantiateAt, strengthen?, abstract, instLevels, levelParamsUsed reach every child", run := fun _ =>
         report "Term traversals" (checkTermOps kernelOps termTable) },
-    { name := "Term: eval, Val.lvlBound and quote (both modes) keep every child and level", run := fun _ =>
+    { name := "Term: eval and quote (both modes) keep every child and level", run := fun _ =>
         report "Term evaluation" (checkTermEval termTable) },
     { name := "the lint fails on the S1 bug (a traversal without a case for natOp)", run := fun _ => do
         let ((), fs) ← (checkTermOps brokenOps termTable).run #[]
@@ -972,7 +972,7 @@ def lintGroup : Group where
           for r in elimTable do
             let e := r.build (fun _ => plainV) (fun _ => plainK) (fun _ => .zero)
             expect (elimCtorName e == r.name) s!"Elim.{r.name}: the row builds a `{elimCtorName e}`" },
-    { name := "Val, Head, Elim: lvlBound counts and quote (both modes) reads back every child and level", run := fun _ =>
+    { name := "Val, Head, Elim: quote (both modes) reads back every child and level", run := fun _ =>
         report "value traversals" do
           checkValRows "Val" valTable
           -- (a suspended proof is erased by `quoteErasesProofs`; its bound still counts)

@@ -211,9 +211,10 @@ def acDelta : String := "(fun (z : Top) => z T2 id2 z)"
 ascribed on both sides: since 4g `Box T2 = Box A` computes (to the equation of the codes),
 so the elaborator can't read the two types off the proof's type. The target is `Box A`;
 the source must be written `Box T2`, with the *name* `T2`: the inferred type of `mk δ` is
-`Box (Top → Top)`, and the D1 regularity modes compare the two types syntactically
-(`sameVal`), so with the inferred type regularity would not fire at `A := T2` and the
-program would terminate for a reason that has nothing to do with the loop. -/
+`Box (Top → Top)`, and the D1 regularity modes used to compare the two types
+syntactically, so with the inferred type regularity did not fire at `A := T2` and the
+program terminated for a reason that had nothing to do with the loop. (Since Part 2
+regularity is decided by conversion, and both spellings behave alike.) -/
 def acOmegaBody : String :=
   s!"ind (fun _ _ => A) (fun i xs ih => xs.1.2) (cast (apTy Prop Box T2 A (tautext T2 A id2 a)) (mk {acDelta} : Box T2) : Box A)"
 
