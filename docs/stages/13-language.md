@@ -200,3 +200,30 @@ case of `runDescr`), so the memo key, which already names the category, is uncha
 The design options are in the notes (`scoped-keywords.md`). The self-hosted parser
 interprets the built-in tables, which use no scope, and has no `syntax` command yet.
 Tests: `parser: commands and syntax`, `language`.
+
+## 13n: `rfl` at an equation that has computed ✅
+
+An equation at a Σ type computes as soon as it is formed: `a = b` becomes
+`(0 e : a.1 = b.1) × (cast (B a.1) (B b.1) ê a.2 = b.2)`. The elaborator's `rfl` used to
+prove that Σ field by field. Every field after the first then needed the cast to
+disappear, and at a type variable (`B`, `List A`, a function type) it does not: regularity
+holds only at inert types (P1). So `s = s` at `A × B`, `(p.1, p.2) = p`,
+`Pair2.mk s.fst s.snd = s` (structure η, which conversion already has), and the field
+lenses' laws all failed with "the two sides are not definitionally equal".
+
+Now `vEq` keeps the equation's type at the end of the Σ's closure (the body doesn't use
+it), and `eqSigmaSides?` reads `A`, `a`, `b` back. When `a ≡ b`, `rfl` is a single
+`refl A a`, whose type computes to the same Σ, with the same cast on both sides. This is
+the optional exercise 4.16, done by recording the equation in its computed form. No axiom
+is used: `#print axioms` lists none for these proofs. An equation at a constructor
+(`List.cons x xs = List.cons x xs`) works the same way, through its payload's Σ.
+
+Nothing else changed. A Σ of field equations written by hand, with a cast at a type
+variable in it, is still not `rfl`. `rfl` never adds an axiom; whoever needs that
+equation writes `castRefl` themselves.
+
+`lib/Optic.wiz` now states the `Pair2` lens laws with their implicit arguments
+(`@Lens.Lawful (Pair2 A B) A …`), so that the equation has computed when `rfl` sees it.
+Before, they checked only because unsolved holes kept the equation from computing.
+Research note: `wiz-notes/structure-eta.md`. Tests: group `elabfix`, "rfl at an equation
+that has computed"; group `optic`.
