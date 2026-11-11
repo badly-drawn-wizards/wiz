@@ -735,7 +735,8 @@ Sort u/Sort w, Empty_u/Empty_w     ⟶  t if u ≡ w, else stuck                
 Unit_u/Unit_w                      ⟶  tt if u ≡ w, else stuck                                        631
 Enum/Enum, same number of tags     ⟶  t                                                             632
 ULift.{u}/ULift.{u}, u never 0     ⟶  up (cast A B e (down t))                                        [Q4, §4.1]
-groundEqTy A B (equal, inert, ground) ⟶  t                     (regularity at inert types)   CONJECTURE (argued) [wiz, D1, P1]
+groundEqTy A B (equal, inert, ground) ⟶  t        (regularity at inert types: the evaluator's fast path
+                                                    for InReg_conv, below)        CONJECTURE (argued) [wiz, D1, P1]
 Desc_l I / Desc_l I'               ⟶  by the description (below)                                  [wiz, D1]
 μ^s I D i / μ^s I' D' i', t = con x ⟶ con (cast (⟦D⟧ μ^s' i) (⟦D'⟧ μ^s' i') ê x)               [std: PT22, D1, 4g]
 (a numeral at its own type: the inert-regularity line above, since the numeral type is ground)
@@ -824,8 +825,8 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   hold neither. Conversion stays decidable as before: the new rules are evaluation rules
   that terminate (the inertness walk is bounded by the nesting depth 8 and by the finite
   enumerations; the payload cast follows the finite constructor value), and conversion
-  is unchanged (proof irrelevance, η, structural comparison; `unCast` applies only under
-  `--regularity full|nonprop|refl`). It is a conjecture for Wiz. A published system has
+  only removes a stuck cast whose two types it finds convertible (`unCast`, InReg_conv
+  below). It is a conjecture for Wiz. A published system has
   the rule at *every* type, with a proof that conversion stays decidable, but for an
   algorithm that never reduces proofs and for a fragment without general inductive types
   (CICobs [PLT25]; see "Related work" below).
@@ -899,12 +900,45 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
     argument proofs, §8.6).
 * **Cost.** Casting a constructor of a non-inert type walks the whole value (each field
   is cast). At inert types the cast is the identity.
-* **The side condition is ground equality** (P1, `groundEqTy` in both kernels;
-  `/workspace/wiz-notes/p1-stable.md`). A side condition must give the same answer for
-  convertible inputs (S1), and an answer of "fires" must survive substitution (S2).
-  Otherwise one side of a conversion reduces and the other is stuck, and a δβ-reduct of
-  a well-typed term can be rejected. Syntactic equality fails S1 (proof arguments inside
-  an index, `Fin (f p)` against `Fin (f q)`; a glued name against its unfolding).
+* **The rule is InReg_conv** (decision P1; `/workspace/wiz-notes/conv-regularity.md`,
+  `p1-stable.md`, `plt-vs-inert.md`):
+
+  ```
+  A inert     Γ ⊢ A ≡ B     Γ ⊢ e : A ≡ B     Γ ⊢ t : A
+  ───────────────────────────────────────────────────────  InReg_conv
+  Γ ⊢ cast A B e t ≡ t : B
+  ```
+
+  It is [PLT25]'s Cast-Refl restricted to inert `A`, and like theirs it is a rule of
+  **conversion**, not a reduction: the evaluator never calls conversion.
+  * *In the conversion checker* (`unCast` in `Conv.lean`, applied in `conv` and in
+    `convTy`; `stripCast` in `Kernel.wiz`, applied where neutrals are compared, with a
+    typed re-entry). A neutral `cast A B e t · sp` (any eliminations `sp`) with `A` or
+    `B` inert and `A ≡ B` by `convTy` is replaced by `t · sp`, on either side, before
+    the comparison goes on. A cast on a canonical value takes a structural rule of
+    `vCast` instead; where that rule is stuck (a size variable) the cast is removed here
+    like any other.
+  * *"`A` or `B` inert"*: `inertTy` reads a `Σ`'s sort annotation, which is optional, so
+    of two convertible types one can be inert and the other not. While sorts are
+    optional, conversion is therefore not transitive at such types: `cast A A' e t ≡ t`
+    can fail for two unannotated types where both hold through an annotated third. Not
+    unsound; the fix is mandatory sorts.
+  * *Termination.* The side condition compares two components of the neutral, as the
+    congruence rule for two casts already does; each step removes one cast; and
+    `inertTy` is a bounded walk that instantiates binders with reserved atoms (never
+    with variables a context could give a type to). The evaluation of `t · sp` for a
+    canonical `t` is the evaluation of a term that is well typed by the rule itself.
+  * *Strategy.* Strip whenever the rule applies, else congruence; no backtracking
+    ([PLT25] backtracks between congruence and the two refl rules). Argued complete
+    relative to a transitive `convTy`, not proved.
+  * `--inert ground` (`kernelInertConv := .false`) turns the conversion rule off and
+    leaves the fast path alone.
+* **The evaluator's fast path is ground equality** (`groundEqTy` in both kernels). A
+  rule of evaluation with a side condition must give the same answer for convertible
+  inputs (S1), and an answer of "fires" must survive substitution (S2). Otherwise one
+  side of a conversion reduces and the other is stuck. Syntactic equality fails S1
+  (proof arguments inside an index, `Fin (f p)` against `Fin (f q)`; a glued name
+  against its unfolding), and it is gone from both kernels.
   `groundEqTy A B` holds for two inert types that are equal and have no free variable in
   a relevant position:
   * types and descriptions are compared part by part (an `arg` at a non-tag field is
@@ -915,15 +949,17 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
     collide with a variable of the context).
   At an inert type, convertible values have the same canonical skeleton and neutrals in
   the same places, so S1 holds. A ground type has nothing to substitute, so S2 holds.
-  What is lost: regularity at inert types whose indices are open (`cast (Fin n) (Fin n) e
-  k` for variables `n`, `k` is stuck). Casts of constructors still compute structurally.
-  `--inert conv` (experimental, Lean kernel) also identifies `cast A B e t` with `t` in
-  conversion when `A` is inert and `A ≡ B` (InReg_conv, decided by `convTy`, so it is a
-  congruence). `--inert syntactic` restores the old rule for comparison.
-* **Syntactic equality** (`sameVal`, both kernels; now used only by the D1 experiment's
-  `--regularity` modes) quotes at `max (lvlBound A)
-  (lvlBound B)`, a level above every variable either value mentions, so different
-  variables never quote alike (before `b7e1736` it was a fixed 100000: Status.md, Q3).
+  Whenever it fires, `A ≡ B`, so InReg_conv gives the same equation: it decides a
+  fragment of the rule without conversion. What it alone leaves stuck (a neutral value
+  at an inert type with an open index: `cast (Fin n) (Fin n) e k` for variables `n`,
+  `k`) the conversion checker removes.
+* **`--regularity full`** (an experiment; `kernelRegularity := .true`) is the same rule
+  at *every* type, [PLT25]'s Cast-Refl, also in conversion only. The modes `nonprop`
+  and `refl`, which fired in the evaluator by syntactic equality (and, for `refl`, by
+  inspecting a proof), are gone.
+* **Not widened.** [PLT25]'s decidability proof covers Π, ℕ, ⊥, the impredicative `Prop`
+  and ∃. What regularity at `Desc l I`, or at all types, would need is in
+  `conv-regularity.md` §8.
 
 ### 8.4a Propositional regularity: the `castRefl` axiom
 
@@ -1019,10 +1055,8 @@ what a component computes to. In particular:
   `Enum` is the identity. Applying the Π to a tag computes that constructor's equation.
   (Expanding the Π into a product over the tags would depend on the field type being a
   literal `Enum`, which a substitution can create.)
-* What stays syntactic is unchanged and outside these rules: regularity at inert types
-  (`inertTy A && sameVal A B`, §8.4, a conjecture; the theory notes analyse it), and the
-  numeral shortcut (`cast` of a literal between syntactically equal types is the literal,
-  which the structural rule computes too, up to the index proofs).
+* Nothing in these rules, or in regularity at inert types (§8.4: ground equality in the
+  evaluator, conversion in the checker), is decided by syntactic equality any more.
 
 **What it gives.** For `inductive L (A : Type) | nil | cons (x : A) (xs : L A)`
 (`I = Unit`, `D = arg ω (Enum [nil, cons]) E`), `e : L A ≡ L B` has
@@ -1192,11 +1226,11 @@ conv at a proposition       true, before either side is unfolded
   applied to anything is a proof; there are no inductive propositions; `absurd` is
   stuck; `eq` is rejected at propositions. `split` with a relevant motive is the one
   exception, and η for Σ covers it.
-* **Reading back.** The kernel's syntactic comparison of types (`sameVal`: behind
-  `sameFamily?`, the `--regularity` modes and `--inert syntactic`) reads every suspended
-  proof as `()`: it neither evaluates nor compares proofs (`quoteErasesProofs`;
-  `quoteM .false` in `Kernel.wiz`). Regularity at inert types, by default, does not read
-  values back at all (`groundEqTy`, §8.4), and it skips propositions.
+* **Reading back.** The kernel's own read-back (`quoteErasesProofs`; `quoteM .false` in
+  `Kernel.wiz`) reads every proof head as `()`: it neither evaluates nor compares proofs.
+  It is used by the kernel's messages and, in the Lean kernel, by the shortcut that
+  compares two folded inductions on numerals (which falls back to conversion). Regularity
+  does not read values back at all (`groundEqTy` and `convTy`, §8.4).
   Reading a value back into a term *outside* the kernel (the elaborator's `quote`,
   `#reduce`, hover, the elaborator's messages) evaluates the suspended proof, so that the
   term is a normal form, and writes it back marked. It has to evaluate: a proof read back
@@ -1231,8 +1265,6 @@ conv at a proposition       true, before either side is unfolded
   equation and `transp`'s proofs are marked by the syntax. A proof bound by `let`, passed
   as an argument, or stored in a pair or a constructor would be evaluated, because `eval`
   has no types. The marker closes that, and the kernel checks it: see §8.6a.
-* **`--regularity refl`** (a D1 experiment) is the one rule that inspects a proof (is it
-  visibly `refl`?). It looks at a suspended proof's term, without evaluating it.
 * **What the literature proves, and for what.** [PLT25] Theorem 5.6 is decidability of
   conversion for a system whose algorithm never reduces proofs, with full regularity
   (Cast-Refl) decided when two neutrals are compared. It is mechanised for a fragment:
@@ -1656,9 +1688,9 @@ directly:
 
 ```
 1. proof irrelevance    if typeSort?(A) ≡ 0:   a ≡ b                                   263   [std: PT22]
-2. regularity           (only under --regularity full|nonprop|refl; off by default)       264–265, 307–310  [wiz]
-                        replace a stuck cast A' B' e t (empty spine) with A' ≡ B' by t,
-                        on both sides, before comparing
+2. regularity           InReg_conv (§8.4): replace a stuck cast A' B' e t · sp with A' ≡ B' and
+                        A' or B' inert (any types under --regularity full) by t · sp, on
+                        both sides, before comparing; also in convTy            [std: PLT25, restricted]
 3. by the type:
    Π   η:  a x ≡ b x  at B x, for a fresh x : A                                         267–269  [std]
    Σ   η:  a.1 ≡ b.1 : A  and  a.2 ≡ b.2 : B a.1                                        270–272  [std]
@@ -1856,9 +1888,8 @@ Each item says what the code does; the code is what the kernel checks.
 | globals | table, by name; `addDecl` rejects a second declaration of a name | inline `const` terms carrying value and type (trusted). **`convHead`, `tmEq` and `headSame` compare two constants by name alone**, so the kernel *relies* on every name having one value, and it has no table to check that with. The frontend checks it, in one place: `stepCommand` refuses a command that adds a name already in scope, or twice (`newDuplicate`, `Frontend.wiz`; a partial definition's signature followed by its body is the one exception). Before that check (audit 2, Y4), `def T := Nat; def a : Box T := …; def T := Empty; def c : Box T := a` was accepted, a closed term of an empty type: the two `T`s are both still folded under `Box`. Anything else that builds `const` terms for `Kernel.wiz` (the differential test) must keep names unique too |
 | a variable out of scope (raw core terms) | a checking error (`infer`, `.var`); `eval` gives a stuck unknown | the same (`infer`; `lookup` past the end). Before audit 2 both went on with `Sort 0` as the variable's type *and* value (a panic's default value in Lean, `lookup`'s default in Wiz): a term `Prop : Prop`, with which Hurkens' paradox checks. No frontend produces such a term |
 | **`Size ≡ Size`, `Size< s ≡ Size< t`** | **stuck** (`Eval.lean:572`) | **`False`**: `canonical` includes `vsize`/`vsizeLt` (`Kernel.wiz:552–565`) and `vEqTypeW` has no case for two sizes, so it falls through to "different formers ⇒ False" (`Kernel.wiz:961–963`). **Unsound** (Status.md, O1). |
-| regularity in conversion (`unCast`) | off by default (`Conv.lean:264`, only under `--regularity`) | no: stuck casts are compared structurally |
-| regularity in evaluation | off; at inert types only, decided by `groundEqTy` (P1) | the same (`kernelRegularity := .false`; `groundEqTy`) |
-| InReg in conversion (`--inert conv`, experimental) | `unCast` at an inert type with `convTy A B` | not implemented |
+| regularity in conversion (InReg_conv, §8.4) | `unCast` in `conv` and `convTy`: a stuck cast at an inert type with `convTy A B`; `--inert ground` turns it off, `--regularity full` widens it to every type | `stripCast` in `convNeW`, with a typed re-entry at the neutral's type; `kernelInertConv`, `kernelRegularity` |
+| regularity in evaluation | only the fast path `groundEqTy` | the same |
 | proofs (P2, §8.6) | never evaluated (`Globals.lazyProofs`, `--eager-proofs` for the old behaviour); `quote` outside the kernel evaluates a suspended proof within a step budget, the kernel's (`quoteErasesProofs`) never | the same (`kernelLazyProofs := .true`); `quote` evaluates (no budget: it is the frontend's), `quoteM .false` (in `sameVal`, `showVal`) erases |
 | the proof marker (§8.6a) | `Term.prf`, required and verified; `Globals.strictProofs` for the strict form | `Tm.prf`, the same rules; no strict form |
 | a proof under `absurd` in conversion | not compared (§8.6a) | the same. (Before the marker: any two proof heads in the Lean kernel, only two of the same kind in `Kernel.wiz`.) |
