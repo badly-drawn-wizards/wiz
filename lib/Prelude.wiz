@@ -50,9 +50,6 @@ def Nat.beq : Nat → Nat → Bool
   | .succ m, .succ n => Nat.beq m n
   | _, _ => .false
 
-infixl:65 " + " => Nat.add
-infixl:65 " - " => Nat.sub
-infixl:70 " * " => Nat.mul
 
 inductive List (A : Type) where
   | nil
@@ -184,7 +181,43 @@ builtin nat.shiftRight := Nat.shiftRight
 builtin nat.log2 := Nat.log2
 -- bit `i` of `n`
 def Nat.testBit (n i : Nat) : Bool := Nat.isOdd (Nat.shiftRight n i)
-infixl:70 " / " => Nat.div
+
+-- Numeric classes (HD9). `+ - * / %` and prefix `-` are the methods of these classes,
+-- found by instance resolution; a numeral `n` at a type other than `Nat` is
+-- `OfNat.ofNat n` at it (the literal is an index of the class, as in Lean, so an
+-- instance can look at it: a range check, say). At `Nat` a numeral stays a native
+-- literal and the instances are the natively computed functions above: `a + b` is
+-- `Add.add a b`, which unfolds to `Nat.add a b`, so `2 + 3` computes and `rfl : 2 + 3 =
+-- 5` holds by evaluation; compiled code inlines the dictionary away.
+class Add (A : Type) where
+  add : A → A → A
+class Sub (A : Type) where
+  sub : A → A → A
+class Mul (A : Type) where
+  mul : A → A → A
+class Div (A : Type) where
+  div : A → A → A
+class Mod (A : Type) where
+  mod : A → A → A
+class Neg (A : Type) where
+  neg : A → A
+class OfNat (A : Type) (n : Nat) where
+  ofNat : A
+instance : Add Nat := Add.mk Nat.add
+instance : Sub Nat := Sub.mk Nat.sub
+instance : Mul Nat := Mul.mk Nat.mul
+instance : Div Nat := Div.mk Nat.div
+instance : Mod Nat := Mod.mk Nat.mod
+instance {ω n : Nat} : OfNat Nat n := OfNat.mk n
+infixl:65 " + " => Add.add
+infixl:65 " - " => Sub.sub
+infixl:70 " * " => Mul.mul
+infixl:70 " / " => Div.div
+infixl:70 " % " => Mod.mod
+syntax:75 (name := neg) "-" term:75 : term
+macro_rules
+  | `(term| - $x) => `(term| Neg.neg $x)
+-- (end of the numeric classes)
 
 -- Errors.
 inductive Except (E A : Type) where

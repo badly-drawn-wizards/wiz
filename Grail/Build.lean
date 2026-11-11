@@ -56,6 +56,8 @@ def hex (k : UInt64) : String :=
 structure Memo where
   loaded : Std.HashMap String Loaded := {}
   states : Std.HashMap String (CommandState ZeroOneMany) := {}
+  /-- (23i) a command's program by name: the path it runs by, and its identity -/
+  tools : Std.HashMap String (Except String (String × String)) := {}
 
 structure Runner where
   ctx : Ctx

@@ -240,7 +240,7 @@ def group : Group where
         | .error m => checkHas m "no snapshot"; checkHas m "keep/demo"
         | .ok _ => throw (IO.userError "installed a short commit without a snapshot") },
     { name := "from Nix: a flake's package, linked as a GC root", run := fun _ => do
-        unless ← Tower.have? "nix" do IO.println "    (no nix: skipped)"; return
+        unless ← Tower.have? "nix" do skip "no nix"; return
         let (bare, _) ← upstream
         let flake ← mkTree [
           ("flake.nix", "{ outputs = { self }: let p = builtins.path { path = ./tc; name = \"fake-wiz\"; }; in\n" ++
