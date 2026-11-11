@@ -909,10 +909,13 @@ method ignores the hypotheses and calls the definition directly):
 
 By induction on the scrutinee this gives `value ≡ impl` on every closed argument, with
 the implementation's own recursive calls standing for the value (the induction
-hypothesis): what compiled code computes is what the kernel computes. -/
+hypothesis): what compiled code computes is what the kernel computes. An implementation
+convertible to the value passes at once. -/
 partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) : TCM Unit := do
   let fail {α : Type} (why : String) : TCM α :=
     throw (.other s!"the compiled equations of {d.name} do not agree with its definition: {why}")
+  -- (an implementation convertible to the value agrees with it, trivially)
+  if conv g #[] (eval g [] d.type) (eval g [] value) (eval g [] impl) then return
   let rec lams : Term R → Nat
     | .lam _ b => lams b + 1
     | _ => 0

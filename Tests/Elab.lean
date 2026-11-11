@@ -5379,6 +5379,19 @@ def trustGroup : Group where
         match addDecl g0 { f with impl := g.impl } with
         | .ok _ => throw (IO.userError "f was accepted with g's compiled equations")
         | .error e => check (((toString e).splitOn "do not agree").length > 1) s!"unexpected error: {e}" },
+    { name := "recursive definitions: a local variable named like the definition doesn't capture its calls in compiled code", run := fun _ =>
+        -- (#82's regression test.) `f n` is a recursive call (the kernel's definition
+        -- recurses, so `f 2 = 0`); the compiled equations called the local `f`, and `#eval f 2`
+        -- was `3`. Such a local is an error now (the previous case), so the same programs
+        -- with the locals renamed: compiled code still computes what `refl` proves
+        ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
+            "def f : N → N\n  | .z => .z\n  | .s n => (fun (f2 : N → N) => f n) (fun x => .s (.s x))\n" ++
+            "def fThm : f (.s (.s .z)) = .z := refl N.z\n#eval f (.s (.s .z))\n#run f (.s (.s .z))\n" ++
+            "def g : N → N\n  | .z => .z\n  | .s n => let g2 : N → N := fun x => .s (.s x); g n\n" ++
+            "def gThm : g (.s (.s .z)) = .z := refl N.z\n#eval g (.s (.s .z))\n" ++
+            "def h : N → (N → N) → N\n  | .z, _ => .z\n  | .s n, h2 => h n (fun x => .s x)\n" ++
+            "def hThm : h (.s (.s .z)) (fun x => .s x) = .z := refl N.z\n#eval h (.s (.s .z)) (fun x => .s x)\n")
+          [".z", ".z", ".z", ".z"] },
     { name := "recursive definitions: compiled code keeps an outer index that a method mentions", run := fun _ =>
         -- the value's hypothesis keeps the outer `n` (3 + 3 + 3); the compiled equations
         -- passed the field's index (3 + 2 + 1, `#eval` printed 6). With an erased index in the
