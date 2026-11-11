@@ -1769,6 +1769,13 @@ by the test "the self-hosted frontend: quantities, the pinned differences (21m)"
 | an implicit constructor field (`\| cons {n : Nat} …`) | a field at 0, filled in at the call | an explicit field at ω (the frontend has no implicit constructor fields; a call that leaves it out is rejected) |
 | `%t` quantity terms, quantity variables | yes | an error |
 
+**The self-hosted FFI** (stages 21l, 21o–21t) takes the Lean frontend's `extern`,
+`foreign_type`, `export`, callbacks, `c_struct`, `link_c`/`link_lib` and `implemented_by`
+with the same checks. It differs in: no `import_c` or `glue` (an error, "unsupported
+command"); no `Bytes`, so no buffer arguments or byte-array struct fields; a `Nat` is 63
+bits at the boundary (21p); `implemented_by mk get` (22d) is an error; under the collector
+`wiz_live_objects()` is 0 and `wiz_retain`/`wiz_release` do nothing.
+
 ---
 
 ## 16. What is not in the core, and who checks what
