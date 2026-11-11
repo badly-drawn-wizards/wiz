@@ -2702,10 +2702,47 @@ def qtyApart : List MTm :=
    ann (lam (exfalso (empty 0) (var 0))) (pi (eqTy (F .one) (F .one)) (empty 0)),
    reflTy (F .one)]
 
+/-- The five eliminators that name the index type `I`, at level `l`, on the smallest
+descriptions (`ret i`, and `rec i (ret i)` for `ν`), in this order: `ind`, `sfix`,
+`scase`, `coit`, `scofix`. All five are well typed when `I` is in `Sort (l+1)`. -/
+def elimsAt (l : Nat) (I i : MTm) : List MTm :=
+  let uD := dret i
+  let sD := drec i (dret i)
+  let x := con (pair star star)
+  let P := lams 2 (enum 2)
+  [ind l I uD 1 P (lams 3 (tag 2 0)) i x,
+   sfix l I uD 1 P (lams 4 (tag 2 0)) szInf i x,
+   scase l I uD 1 P (lams 3 (tag 2 0)) szInf i x,
+   coit l I sD (lam (unit l)) (lams 2 (pair star (pair star star))) i star,
+   scofix l I sD (lam (unit l)) (lams 4 (cocon (pair (app (app (var 2) (var 1)) (var 0)) (pair star star)))) szInf i star]
+
+/-- Audit F3 (fixed): an eliminator checks that its index type is in `Sort (l+1)`, as the
+type formers `μ`/`ν` do. The eliminators check the scrutinee against `μ.{l} I D i` (or
+return `ν.{l} I D i`) without the type former, so they used to accept an index type at
+any level: a term could have a type that is not a type. In order: the five eliminators
+with the index type one level too high (rejected), one level too low (rejected), then at
+level 0 and at level 1 (accepted); last, the result of an ill-levelled `ind` used in an
+equation, and the type of an ill-levelled `coit` observed (both rejected). -/
+def elimLevels : List MTm :=
+  elimsAt 0 (unit 1) star ++ elimsAt 1 (unit 0) star ++ elimsAt 0 (unit 0) star ++ elimsAt 1 (unit 1) star ++
+  [ann star (eq (enum 2) (ind 0 (unit 1) (dret star) 1 (lams 2 (enum 2)) (lams 3 (tag 2 0)) star (con (pair star star))) (tag 2 0)),
+   fst (out (coit 0 (unit 1) (drec star (dret star)) (lam (unit 0)) (lams 2 (pair star (pair star star))) star star))]
+
+/-- `transp` is for types in `Type u`, like `eq` and `refl` (audit-2): its motive's type
+`(0 b : A) → (0 _ : a = b) → Prop` and the type of its proof are equations at `A`, which
+the `eq` rule rejects at a proposition. Rejected: `transp` at `True` and at an equation;
+accepted: the same at `Unit` and at `Enum2`. -/
+def transpProp : List MTm :=
+  let e2 := eq (enum 2) (tag 2 0) (tag 2 0)
+  [transp ptrue star (lams 2 ptrue) star star star,
+   transp e2 star (lams 2 ptrue) star star star,
+   transp (unit 0) star (lams 2 ptrue) star star star,
+   transp (enum 2) (tag 2 0) (lams 2 ptrue) star (tag 2 0) (refl (enum 2) (tag 2 0))]
+
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [levelInEnv 0 0, levelInEnv 1 1, levelInEnv 0 1, levelInEnv 1 0,
+  propShapes ++ qtyApart ++ elimLevels ++ transpProp ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [levelInEnv 0 0, levelInEnv 1 1, levelInEnv 0 1, levelInEnv 1 0,
    natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
@@ -3603,6 +3640,21 @@ def selfHostGroup : Group where
         let vs := MTm.qtyApart.map leanVerdict
         unless vs.take 2 |>.all (· != "error") do throw (IO.userError s!"unexpected verdicts {vs}")
         unless vs[2]? == some "error" && vs[3]? != some "error" do throw (IO.userError s!"unexpected verdicts {vs}") },
+    { name := "F3 (audit): the eliminators check the index type's level (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.elimLevels.map leanVerdict
+        let names := ["ind", "sfix", "scase", "coit", "scofix"]
+        for n in names, k in [0:5] do
+          unless vs[k]? == some "error" do
+            throw (IO.userError s!"{n} with an index type one level too high was accepted: {vs[k]?}")
+          unless vs[5 + k]? == some "error" do
+            throw (IO.userError s!"{n} with an index type one level too low was accepted: {vs[5 + k]?}")
+          unless vs[10 + k]? != some "error" && vs[15 + k]? != some "error" do
+            throw (IO.userError s!"{n} with a well-levelled index type was rejected: {vs[10 + k]?}, {vs[15 + k]?}")
+        unless vs.drop 20 == ["error", "error"] do throw (IO.userError s!"unexpected verdicts {vs.drop 20}") },
+    { name := "transp is rejected at a proposition, as eq and refl are (and both kernels agree on it below)", run := fun _ => do
+        let vs := MTm.transpProp.map leanVerdict
+        unless vs.take 2 == ["error", "error"] && (vs.drop 2).all (· != "error") && vs.length == 4 do
+          throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "Q4: a small description field is rejected, a lifted one works (and both kernels agree on it below)", run := fun _ => do
         let vs := MTm.smallField.map leanVerdict
         let body := (vs.drop 4).dropLast

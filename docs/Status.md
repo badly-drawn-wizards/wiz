@@ -308,6 +308,55 @@ the results of the probes listed in the "Probes" section.
 * **What remains.** Every other `panic!` in `Eval.lean` also returns `Sort 0` and lets the
   check go on. None is known to be reachable from a well-typed term.
 
+### F9. The eliminators did not check the index type's level (audit F3) — **fixed**
+
+* **The gap.** `μ.{l} I D i`, `ν.{l} I D i` and `Desc.{l} I` require `I` in exactly
+  `Sort (l+1)`. The five eliminators that take `I` as an argument (`ind`, `sfix`, `scase`,
+  `coit`, `scofix`) only required `I` to be a type, in both kernels, and they build the
+  types `μ.{l} I D i`, `ν.{l} I D i`, `Desc.{l} I` as values, without the type former's
+  rule. So `coit.{0} (Unit.{2}) …` was accepted with the type `ν.{0} (Unit.{2}) D i`,
+  which is not a type, and the method of an ill-levelled `ind` bound variables at such a
+  type. The surface language can't write this (the elaborator builds every eliminator from
+  a type it has checked); a core term can.
+* **Not a proof of `False`**, as far as two attempts could tell (the soundness audit's, and
+  a second one with the unchecked positions listed,
+  `/workspace/wiz-notes/elim-levels.md`). The ill-levelled type exists only as a value:
+  every position that takes a type *term* checks it with the type former, a description
+  checked against `Desc.{l} I` at such an `I` can't branch (the motive of a `case` would
+  have to name `Desc.{l} I`), and its fields are still small. Semantically such a type is
+  a small family with a large index, harmless as long as nothing can state its
+  injectivity. But "index level ≤ family level" is the side condition for injective type
+  formers ([PLT25 §2.3]: without it, Russell's paradox by Hur's argument), and Wiz's `μ`
+  equation is injective in the index (in `(I, D, i)` with PR #40), so the kernel should
+  not depend on "nobody can write that type down".
+* **The fix.** `checkIndexLevel` in both kernels (`Check.lean`, `Kernel.wiz`): the five
+  rules have the premise `Γ ⊢ I type@k`, `k ≡ l+1` (CoreSpec §9.3). No other rule had the
+  omission: `con`, `cocon`, `out` take their type from the context, `Desc.elim` infers its
+  description, `cast`/`transp`/`=` take type terms.
+* **The same kind of gap in `transp`** (second audit; fixed with it). `transp A a P p b e`
+  only required `A` to be a type, while `eq` and `refl` require a sort that is never
+  `Prop`. Its motive type and the type of `e` are equations at `A`, built as values, so
+  `transp` was accepted at a proposition, where the `eq` rule rejects those types. Harmless
+  (proofs are irrelevant), same defect. Now `isNeverZero` / `lvlNeverZero` in both kernels
+  (CoreSpec §8.1). Tests: "transp at a proposition is rejected, at a type accepted" (group
+  *check: structural types*), `MTm.transpProp` in the differential samples and its
+  Lean-verdict case in *selfhost*.
+* **The hint of `μ`/`ν` was evaluated unchecked** (found by the kernel lint; Lean kernel
+  only, `Kernel.wiz` has no hints). The `mu`/`nu` rule ignored the hint `(T, us, args)`,
+  and `eval` evaluates its arguments, so a raw core term there was run without having
+  been checked: every evaluator `panic!` was reachable, a looping hint hung the checker,
+  and a constant could be instantiated at too few levels. The values only land in the
+  hint, which conversion ignores, so no wrong acceptance is known. Now `checkHint`:
+  `T.{us} args` must be well typed if `T` is declared, and each argument must have an
+  inferable type otherwise (CoreSpec §9.3). Test: "the hint of μ/ν is checked before it is
+  evaluated" (group *check: structural types*). The hint is not display-only: the
+  elaborator finds a type's name, constructors and arguments through it.
+* **Regression tests.** Group *check: structural types*: three "F3: ind, sfix, scase,
+  coit, scofix …" cases (accepted at `Sort (l+1)`; rejected one level too high and one too
+  low, with the error text). Group *selfhost*: "F3 (audit): the eliminators check the
+  index type's level", and `MTm.elimLevels` (22 terms) is in the differential samples, so
+  `Kernel.wiz` must give the same verdicts.
+
 ### T1. A recursive definition's compiled code was not checked by the kernel — **fixed** (typing; one disagreement); agreement with the definition is **trusted**
 
 * **The gap.** A declaration has a `value`, which the kernel checks and unfolds, and may
