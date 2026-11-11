@@ -90,49 +90,264 @@ def ctype : Char → String
   | 'w' => "wiz_val"
   | _ => "void"
 
+open RVal (FKind)
+
+/-- The C type of a kind (a struct's own type name). -/
+def ftype : FKind → String
+  | .k c => ctype c
+  | .struct c _ _ => c
+  | .callback .. => "void *"
+
+/-- (9i) The C definition of a struct whose layout is declared in Wiz without a header:
+`struct t { … };` for a name `struct t`, else a `typedef`. Fields: `uint64_t` for `Nat`
+and `UInt64`, `double`, `int` for `Bool`, `const char *`, `void *` for foreign pointers,
+and the C types of nested structs. -/
+def structDefinition (ctype : String) (fields : List (String × FKind)) : String :=
+  let fs := fields.filter (fun (_, k) => k != .k 'e') |>.map fun (f, k) => s!"  {ftype k} {f};\n"
+  if ctype.startsWith "struct " then s!"{ctype} \{\n{String.join fs}};\n"
+  else s!"typedef struct \{\n{String.join fs}} {ctype};\n"
+
+/-- The Wiz value of a structure's field `i` of `n`, borrowed from `v`. A structure is
+nested pairs ending in `◾` (its tail): field `i` is the first component after `i`
+seconds. With `unbox` (`--unbox-structs`, 22i) the last pair is unboxed, so the last
+field is the value left after `n - 1` seconds, and a one-field structure is its field. -/
+def fieldPath (v : String) (i n : Nat) (unbox : Bool := false) : String :=
+  let rec seconds : Nat → String → String
+    | 0, e => e
+    | k + 1, e => seconds k s!"wiz_field_ref({e}, 1)"
+  if unbox && i + 1 == n then seconds i v else s!"wiz_field_ref({seconds i v}, 0)"
+
+/-- (9i) Marshalling helpers for the structs a program passes by value: `wiz_sin_N(&c, v)`
+fills `c` from the (borrowed) Wiz value `v`, `wiz_sfree_N(&c)` frees what that allocated
+(strings), `wiz_sout_N(c)` makes a Wiz value. Nested structs get their own helpers,
+defined first. Returns the helpers and the number of each struct (by its key). -/
+partial def structHelpers (ks : List FKind) (unbox : Bool := false) : String × List (String × Nat) := Id.run do
+  let mut out := ""
+  let mut seen : List (String × Nat) := []
+  let rec collect : FKind → List FKind
+    | .struct c h fs => fs.flatMap (collect ·.2) ++ [.struct c h fs]
+    | _ => []
+  for k in ks.flatMap collect do
+    let .struct c _ fs := k | continue
+    if seen.any (·.1 == k.toKey) then continue
+    let id := seen.length
+    let num (k : FKind) : Nat := ((seen.find? (·.1 == k.toKey)).map (·.2)).getD 0
+    let n := fs.length
+    let mut sin := ""
+    let mut sfree := ""
+    let mut sout := ""
+    for (f, fk) in fs, i in [0:n] do
+      let path := fieldPath "v" i n unbox
+      let lhs := s!"c->{f}"
+      match fk with
+      | .k 'n' => sin := sin ++ s!"  {lb} wiz_val t = {path}; wiz_inc(t); {lhs} = wiz_in_nat(t); {rb}\n"
+                  sout := sout ++ s!"  fs[{i}] = wiz_out_nat((uint64_t)c.{f});\n"
+      | .k 'u' => sin := sin ++ s!"  {lb} wiz_val t = {path}; wiz_inc(t); {lhs} = wiz_in_u64(t); {rb}\n"
+                  sout := sout ++ s!"  fs[{i}] = wiz_out_u64((uint64_t)c.{f});\n"
+      | .k 'f' => sin := sin ++ s!"  {lb} wiz_val t = {path}; wiz_inc(t); {lhs} = wiz_in_f64(t); {rb}\n"
+                  sout := sout ++ s!"  fs[{i}] = wiz_out_f64((double)c.{f});\n"
+      | .k 'b' => sin := sin ++ s!"  {lb} wiz_val t = {path}; wiz_inc(t); {lhs} = wiz_in_bool(t); {rb}\n"
+                  sout := sout ++ s!"  fs[{i}] = wiz_out_bool(c.{f} != 0);\n"
+      | .k 's' => sin := sin ++ s!"  {lb} wiz_val t = {path}; wiz_inc(t); {lhs} = wiz_in_string(t); {rb}\n"
+                  sfree := sfree ++ s!"  free((void *){lhs});\n"
+                  sout := sout ++ s!"  fs[{i}] = wiz_out_string(c.{f} ? c.{f} : \"\");\n"
+      -- a foreign pointer in a struct: borrowed while the call runs; one that comes back
+      -- is not owned (no finalizer)
+      | .k 'p' => sin := sin ++ s!"  {lhs} = wiz_in_ptr({path});\n"
+                  sout := sout ++ s!"  fs[{i}] = wiz_out_ptr((void *)c.{f}, NULL);\n"
+      -- a byte array of fixed size (`char f[N]`): copied, zero-padded or cut to size
+      | .k 'y' => sin := sin ++ s!"  {lb} wiz_bytes *b = (wiz_bytes *){path}; size_t m = b->len < sizeof {lhs} ? b->len : sizeof {lhs};\n" ++
+                    s!"    memset({lhs}, 0, sizeof {lhs}); if (m) memcpy({lhs}, b->data, m); {rb}\n"
+                  sout := sout ++ s!"  {lb} wiz_bytes *b = (wiz_bytes *)wiz_bytes_empty(); b->len = b->cap = sizeof c.{f};\n" ++
+                    s!"    b->data = (unsigned char *)malloc(b->len); memcpy(b->data, c.{f}, b->len); fs[{i}] = (wiz_val)b; {rb}\n"
+      | .struct .. =>
+        sin := sin ++ s!"  wiz_sin_{num fk}(&{lhs}, {path});\n"
+        sfree := sfree ++ s!"  wiz_sfree_{num fk}(&{lhs});\n"
+        sout := sout ++ s!"  fs[{i}] = wiz_sout_{num fk}(c.{f});\n"
+      | _ => sout := sout ++ s!"  fs[{i}] = WIZ_BOX(0);\n"
+    -- (boxed: every field in a pair, the innermost second component the erased tail)
+    let build := if !unbox then
+      s!"  wiz_val r = WIZ_BOX(0);\n  for (int i = {n - 1}; i >= 0; i--) {lb} wiz_val p = wiz_ctor_new(0, 2); WIZ_SET(p, 0, fs[i]); WIZ_SET(p, 1, r); r = p; {rb}\n  return r;\n"
+      else if n ≤ 1 then "  return fs[0];\n" else
+      s!"  wiz_val r = fs[{n - 1}];\n  for (int i = {n - 2}; i >= 0; i--) {lb} wiz_val p = wiz_ctor_new(0, 2); WIZ_SET(p, 0, fs[i]); WIZ_SET(p, 1, r); r = p; {rb}\n  return r;\n"
+    out := out ++
+      s!"static void wiz_sin_{id}({c} *c, wiz_val v) {lb}\n  memset(c, 0, sizeof *c);\n{sin}{rb}\n" ++
+      s!"static void wiz_sfree_{id}({c} *c) {lb}\n  (void)c;\n{sfree}{rb}\n" ++
+      s!"static wiz_val wiz_sout_{id}({c} c) {lb}\n  wiz_val fs[{max n 1}];\n{sout}{build}{rb}\n"
+    seen := seen ++ [(k.toKey, id)]
+  pure (out, seen)
+where
+  lb := "{"
+  rb := "}"
+
+/-- Is this a C identifier? (an exported function's name) -/
+def isCIdent (s : String) : Bool :=
+  match s.toList with
+  | c :: cs => (c.isAlpha || c == '_') && cs.all (fun c => c.isAlphanum || c == '_')
+  | [] => false
+
+/-! ### Calls from C into Wiz (stage 9g)
+
+An exported function and a callback both turn C values into Wiz values (`wiz_out_*`),
+apply a Wiz closure, and turn the result back (`wiz_in_*`): the reverse of a foreign
+function's wrapper. A result in `IO` gets the world (a scalar) and drops it after. -/
+
+/-- The C type of a value C passes to Wiz (`const char *` is borrowed: Wiz copies it). -/
+def ctypeIn : Char → String
+  | 's' => "const char *"
+  | k => ctype k
+
+/-- The C type of a value Wiz gives C: a string is `malloc`ed, the caller frees it. -/
+def ctypeOut : Char → String
+  | 's' => "char *"
+  | k => ctype k
+
+/-- A C value of kind `k` as a Wiz value (C → Wiz). A pointer is lent: no finalizer. -/
+def wizOfC (k : Char) (x : String) : String := match k with
+  | 'n' => s!"wiz_out_nat({x})" | 'u' => s!"wiz_out_u64({x})" | 'f' => s!"wiz_out_f64({x})"
+  | 's' => s!"wiz_out_string({x})" | 'b' => s!"wiz_out_bool({x})"
+  | 'p' => s!"wiz_out_ptr((void *)({x}), NULL)"
+  | _ => x
+
+/-- A Wiz value (owned) as a C value of kind `k` (Wiz → C). -/
+def cOfWiz (k : Char) (x : String) : String := match k with
+  | 'n' => s!"wiz_in_nat({x})" | 'u' => s!"wiz_in_u64({x})" | 'f' => s!"wiz_in_f64({x})"
+  | 's' => s!"wiz_in_string({x})" | 'b' => s!"wiz_in_bool({x})"
+  | _ => x
+
+/-- The body of a C function that applies the closure `f` (an owned `wiz_val`
+expression) to its parameters `a0 …` of the signature `c`. -/
+def callIntoWiz (c : RVal.CallbackSig) (f : String) : String :=
+  let n := c.params.length + (if c.io then 1 else 0)
+  let args := (c.params.zipIdx.map fun (k, i) => wizOfC k s!"a{i}") ++ (if c.io then ["WIZ_BOX(0)"] else [])
+  let call := if n == 0 then s!"  wiz_val r = {f};\n"
+    else s!"  wiz_val f = {f};\n  wiz_val args[{n}] = {lb}{", ".intercalate args}{rb};\n  wiz_val r = wiz_apply(f, {n}, args);\n"
+  let io := if c.io then "  r = wiz_io_value(r);\n" else ""
+  let ret := if c.result == 'v' then "  wiz_dec(r);\n" else s!"  return {cOfWiz c.result "r"};\n"
+  call ++ io ++ ret
+where
+  lb := "{"
+  rb := "}"
+
+def cParams (c : RVal.CallbackSig) : List String :=
+  c.params.zipIdx.map fun (k, i) => s!"{ctypeIn k} a{i}"
+
+/-- The trampoline of a callback signature: C calls it with the context first. -/
+def trampoline (c : RVal.CallbackSig) : String :=
+  "wiz_cb_" ++ String.ofList c.params ++ "_" ++ (if c.io then "io_" else "") ++ c.result.toString
+
+def trampolineDef (c : RVal.CallbackSig) : String :=
+  let ps := ", ".intercalate ("void *ctx" :: cParams c)
+  s!"static {ctypeOut c.result} {trampoline c}({ps}) {lb}\n  wiz_inc((wiz_val)ctx);\n{callIntoWiz c "(wiz_val)ctx"}{rb}\n"
+where
+  lb := "{"
+  rb := "}"
+
+/-- The C type of a callback's function pointer. -/
+def callbackType (c : RVal.CallbackSig) : String :=
+  s!"{ctypeOut c.result} (*)({", ".intercalate ("void *" :: c.params.map ctypeIn)})"
+
+/-- An exported function's C prototype. -/
+def exportProto (sig : RVal.ExternSig) : String :=
+  let ps := (sig.params.zipIdx.map fun (k, i) => s!"{ctypeIn k.letter} a{i}")
+  s!"{ctypeOut sig.result.letter} {sig.cname}({if ps.isEmpty then "void" else ", ".intercalate ps})"
+
+/-- The IR function that gives an exported function's closure. -/
+def exportEntry (cname : String) : Name := "wiz.export." ++ cname
+
+/-- The C functions of the exports (after the generated code; with `llvm`, the closures
+come from the LLVM module). -/
+def exportWrappers (exports : List RVal.ExternSig) (llvm : Bool := false) : String :=
+  String.join (exports.map fun sig =>
+    let entry := mangle (exportEntry sig.cname)
+    let decl := if llvm then s!"extern wiz_val {entry}(void);\n" else ""
+    let c : RVal.CallbackSig := { params := sig.params.map (·.letter), result := sig.result.letter, io := sig.io }
+    decl ++ s!"{exportProto sig} {lb}\n{callIntoWiz c s!"{entry}()"}{rb}\n")
+where
+  lb := "{"
+  rb := "}"
+
+/-- A header for a library's exports (`wiz build --lib`). -/
+def exportHeader (exports : List RVal.ExternSig) : String :=
+  "/* generated by wiz build --lib: the functions the Wiz program exports (stage 9g) */\n" ++
+  "#include <stdint.h>\n#ifndef WIZ_VAL_DEFINED\n#define WIZ_VAL_DEFINED\ntypedef uintptr_t wiz_val;\n#endif\n" ++
+  "void wiz_release(void *v);\nvoid wiz_retain(void *v);\nlong wiz_live_objects(void);\n" ++
+  String.join (exports.map (exportProto · ++ ";\n"))
+
+/-- The headers of a struct kind (and of its nested structs). -/
+partial def structHeaders : FKind → List String
+  | .struct _ h fs => (if h == "" then [] else [h]) ++ fs.flatMap (structHeaders ·.2)
+  | _ => []
+
 /-- C glue for the foreign functions: their headers (or prototypes), and a marshalling
-wrapper for each (`WIZ_API`, so the LLVM backend can call them). -/
-def glue (keys : Array Name) : String := Id.run do
+wrapper for each (`WIZ_API`, so the LLVM backend can call them). Headers already
+included by `before` (the program's own C code) aren't included again. -/
+def glue (keys : Array Name) (before : String := "") (unbox : Bool := false) : String := Id.run do
   let mut includes : Array String := #[]
   let mut out := ""
-  for key in keys do
-    let some sig := RVal.ExternSig.ofKey? key | continue
-    if sig.header != "" then
-      unless includes.contains sig.header do includes := includes.push sig.header
-    else if !sig.cname.startsWith "wiz_" then
-      let ps := sig.params.filter (fun k => k != 'v' && k != 'e') |>.map ctype
-      out := out ++ s!"extern {ctype sig.result} {sig.cname}({if ps.isEmpty then "void" else ", ".intercalate ps});\n"
+  let sigs := keys.toList.filterMap fun key => (RVal.ExternSig.ofKey? key).map (key, ·)
+  for (_, sig) in sigs do
+    for h in (if sig.header == "" then [] else [sig.header]) ++ (sig.result :: sig.params).flatMap structHeaders do
+      unless includes.contains h || (before.splitOn s!"#include <{h}>").length > 1 do includes := includes.push h
+  let (helpers, nums) := structHelpers (sigs.flatMap fun (_, sig) => sig.result :: sig.params) unbox
+  let num (k : FKind) : Nat := ((nums.find? (·.1 == k.toKey)).map (·.2)).getD 0
+  out := out ++ helpers
+  -- (9g) the trampolines of the callbacks
+  let mut cbs : Array String := #[]
+  for (_, sig) in sigs do
+    for k in sig.params do
+      if let .callback _ c := k then
+        let t := trampolineDef c
+        unless cbs.contains t do cbs := cbs.push t
+  out := out ++ String.join cbs.toList
+  for (key, sig) in sigs do
+    if sig.header == "" && !sig.cname.startsWith "wiz_" then
+      let ps := sig.params.filter (fun k => k != .k 'v' && k != .k 'e') |>.flatMap fun k =>
+        if k == .k 'y' then ["const void *", "size_t"]
+        else if let .callback _ c := k then [callbackType c, "void *"] else [ftype k]
+      out := out ++ s!"extern {ftype sig.result} {sig.cname}({if ps.isEmpty then "void" else ", ".intercalate ps});\n"
     let n := sig.params.length
     let params := (List.range n).map (s!"wiz_val a{·}") ++ (if sig.io then ["wiz_val w"] else [])
     let mut body := ""
     let mut cargs : Array String := #[]
+    let mut cb := 0
     for k in sig.params, i in [0:n] do
       match k with
-      | 'n' => body := body ++ s!"  uint64_t c{i} = wiz_in_nat(a{i});\n"; cargs := cargs.push s!"c{i}"
-      | 'u' => body := body ++ s!"  uint64_t c{i} = wiz_in_u64(a{i});\n"; cargs := cargs.push s!"c{i}"
-      | 'f' => body := body ++ s!"  double c{i} = wiz_in_f64(a{i});\n"; cargs := cargs.push s!"c{i}"
-      | 's' => body := body ++ s!"  char *c{i} = wiz_in_string(a{i});\n"; cargs := cargs.push s!"c{i}"
-      | 'b' => body := body ++ s!"  int c{i} = wiz_in_bool(a{i});\n"; cargs := cargs.push s!"c{i}"
-      | 'p' => body := body ++ s!"  void *c{i} = wiz_in_ptr(a{i});\n"; cargs := cargs.push s!"c{i}"
-      | 'w' => cargs := cargs.push s!"a{i}"
-      | 'e' => pure ()
+      -- (9g) a callback: the trampoline and the closure
+      | .callback _ c => cargs := cargs ++ #[trampoline c, s!"(void *)a{i}"]
+      | .k 'n' => body := body ++ s!"  uint64_t c{i} = wiz_in_nat(a{i});\n"; cargs := cargs.push s!"c{i}"
+      | .k 'u' => body := body ++ s!"  uint64_t c{i} = wiz_in_u64(a{i});\n"; cargs := cargs.push s!"c{i}"
+      | .k 'f' => body := body ++ s!"  double c{i} = wiz_in_f64(a{i});\n"; cargs := cargs.push s!"c{i}"
+      | .k 's' => body := body ++ s!"  char *c{i} = wiz_in_string(a{i});\n"; cargs := cargs.push s!"c{i}"
+      | .k 'b' => body := body ++ s!"  int c{i} = wiz_in_bool(a{i});\n"; cargs := cargs.push s!"c{i}"
+      | .k 'p' => body := body ++ s!"  void *c{i} = wiz_in_ptr(a{i});\n"; cargs := cargs.push s!"c{i}"
+      -- (9i) a byte buffer: its data and length, borrowed for the call
+      | .k 'y' => cargs := cargs.push s!"(const void *)((wiz_bytes *)a{i})->data" |>.push s!"(size_t)((wiz_bytes *)a{i})->len"
+      | .k 'w' => cargs := cargs.push s!"a{i}"
+      | .k 'e' => pure ()
+      -- (9i) a struct by value: filled from the Wiz structure, which is released after the call
+      | .struct c .. => body := body ++ s!"  {c} c{i}; wiz_sin_{num k}(&c{i}, a{i});\n"; cargs := cargs.push s!"c{i}"
       | _ => body := body ++ s!"  wiz_dec(a{i});\n"
     let call := s!"{sig.cname}({", ".intercalate cargs.toList})"
     body := body ++ match sig.result with
-      | 'n' => s!"  wiz_val r = wiz_out_nat({call});\n"
-      | 'u' => s!"  wiz_val r = wiz_out_u64({call});\n"
-      | 'f' => s!"  wiz_val r = wiz_out_f64({call});\n"
-      | 's' => s!"  wiz_val r = wiz_out_string({call});\n"
-      | 'b' => s!"  wiz_val r = wiz_out_bool({call});\n"
-      | 'p' =>
+      | .k 'n' => s!"  wiz_val r = wiz_out_nat({call});\n"
+      | .k 'u' => s!"  wiz_val r = wiz_out_u64({call});\n"
+      | .k 'f' => s!"  wiz_val r = wiz_out_f64({call});\n"
+      | .k 's' => s!"  wiz_val r = wiz_out_string({call});\n"
+      | .k 'b' => s!"  wiz_val r = wiz_out_bool({call});\n"
+      | .k 'p' =>
         let fin := if sig.fin == "" then "NULL" else s!"(void (*)(void *)){sig.fin}"
         s!"  wiz_val r = wiz_out_ptr((void *){call}, {fin});\n"
-      | 'w' => s!"  wiz_val r = {call};\n"
+      | .k 'w' => s!"  wiz_val r = {call};\n"
+      | .struct .. => s!"  wiz_val r = wiz_sout_{num sig.result}({call});\n"
       | _ => s!"  {call};\n  wiz_val r = WIZ_BOX(0);\n"
     for k in sig.params, i in [0:n] do
-      if k == 's' then body := body ++ s!"  free(c{i});\n"
-      -- a foreign pointer is borrowed for the call: release it after
-      if k == 'p' then body := body ++ s!"  wiz_dec(a{i});\n"
+      if k == .k 's' then body := body ++ s!"  free(c{i});\n"
+      -- a foreign pointer or a buffer is borrowed for the call: release it after
+      if k == .k 'p' || k == .k 'y' then body := body ++ s!"  wiz_dec(a{i});\n"
+      if let .struct .. := k then body := body ++ s!"  wiz_sfree_{num k}(&c{i});\n  wiz_dec(a{i});\n"
+      -- (9g) a borrowed callback is released after the call; an owned one is C's now
+      if let .callback false _ := k then body := body ++ s!"  wiz_dec(a{i});\n"
     body := body ++ (if sig.io then "  return wiz_io_result(r, w);\n" else "  return r;\n")
     out := out ++ s!"WIZ_API wiz_val {externWrapper key}({", ".intercalate params}) {lb}\n{body}{rb}\n"
   pure (String.join (includes.toList.map (s!"#include <{·}>\n")) ++ out)
@@ -200,14 +415,18 @@ where
 /-- A whole C program: the runtime, the foreign glue, the functions, and a `main` that
 prints the result of the Wiz `main` (or, for `main : IO A`, runs it) and checks for
 leaks. -/
-def program (decls : Array IR.Decl) (io : Bool := false) (extra : String := "") : String :=
+def program (decls : Array IR.Decl) (io : Bool := false) (extra : String := "") (unbox : Bool := false)
+    (exports : List RVal.ExternSig := []) (lib : Bool := false) : String :=
   let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
   let protos := decls.toList.map fun d =>
     s!"{signature d};\nstatic wiz_val {mangle d.name}_boxed(wiz_val *a);\n"
   let finish := if io then "1" else "0"
-  runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ extra ++ "\n" ++ glue (externs decls) ++
+  runtime ++ "\n/* ---- foreign functions ---- */\n\n" ++ extra ++ "\n" ++ glue (externs decls) extra unbox ++
     "\n/* ---- generated ---- */\n\n" ++ String.join protos ++ "\n" ++
     String.join (decls.toList.map (decl arities ·)) ++
+    (if exports.isEmpty then "" else "\n/* ---- exported functions ---- */\n\n" ++ exportWrappers exports) ++
+    -- (a library has no `main`: C calls its exports)
+    if lib then "" else
     s!"\nint main(int argc, char **argv) \{ wiz_set_args(argc, argv); return wiz_run_main({mangle "wiz.entry"}, {finish}); }\n"
 
 end Wiz.C

@@ -46,6 +46,33 @@ def resolve (roots : List System.FilePath) (m : Name) : IO (Option System.FilePa
     if ← p.pathExists then return some p
   pure none
 
+/-- The `link_c "f.c"` files of a source text (9f), as written. -/
+def cSourcesOf (src : String) : List String :=
+  ((src.splitOn "link_c \"").drop 1).filterMap fun part =>
+    let f := (part.splitOn "\"").headD ""
+    if f.isEmpty then none else some f
+
+/-- The key of a `link_c` path in `cSourceTable`: the module (`""`: the main file) and the
+path as written. -/
+def cSourceKey (m : Name) (rel : String) : String := m ++ "\x00" ++ rel
+
+/-- Resolve the `link_c` files of the main file (in `dir`) and of the modules it reaches
+(with their paths): each relative to its own file. Files that don't exist are left out
+(the elaborator reports them). -/
+def cSourceTable (dir : System.FilePath) (src : String)
+    (mods : Std.HashMap Name (System.FilePath × String)) : IO (Std.HashMap String String) := do
+  let mut t : Std.HashMap String String := {}
+  for (m, base, text) in ("", dir, src) :: mods.toList.map (fun (n, p, txt) => (n, p.parent.getD ".", txt)) do
+    for rel in cSourcesOf text do
+      let f := if System.FilePath.isAbsolute rel then System.FilePath.mk rel else base / rel
+      if ← f.pathExists then
+        if !(← f.isDir) then t := t.insert (cSourceKey m rel) (← IO.FS.realPath f).toString
+  pure t
+
+/-- `cSourceTable` as the elaborator's resolver (`CommandState.cSources`). -/
+def cSourceResolver (t : Std.HashMap String String) : String → String → Option String :=
+  fun m rel => t[cSourceKey m rel]?
+
 /-- The modules of `m` (from `loadClosure` or `loadAll`) that come from the first root,
 the toolchain's `lib/`: their `builtin` registrations are trusted (a later root can't
 replace them, since the first root that has a module wins). -/

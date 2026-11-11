@@ -7,7 +7,8 @@
   #
   # The packages: `wiz` (the default; it has `grail` too), built with Lake and the Lean
   # of nixpkgs (which must be the version in `lean-toolchain`), and wrapped with this
-  # toolchain as flags. CI pushes them to the Cachix cache `badlydrawnwizards`; see
+  # toolchain as flags; `wiz-nvim`, the Neovim plugin, and `nvim-wiz`, Neovim with it
+  # and wiz (`nix run .#nvim-wiz`). CI pushes them to the Cachix cache `badlydrawnwizards`; see
   # docs/building.md for `nix run`.
   description = "Wiz: a didactic dependently typed language";
 
@@ -104,7 +105,82 @@
               platforms = systems;
             };
           };
-        in { inherit wiz unwrapped; default = wiz; };
+          # tower, the toolchain manager (stage 26): its own small build (it doesn't
+          # import Wiz), wrapped with the programs it runs (git, tar, curl; `nix` and
+          # `lake` are the user's), and told its own path for the shims it writes.
+          tower-unwrapped = pkgs.stdenv.mkDerivation {
+            pname = "tower-unwrapped";
+            inherit (unwrapped) version;
+            src = fs.toSource {
+              root = ./.;
+              fileset = fs.unions [ ./lakefile.toml ./lake-manifest.json ./lean-toolchain ./Tower.lean ./Tower ];
+            };
+            nativeBuildInputs = [ lean ];
+            buildPhase = ''
+              runHook preBuild
+              export HOME=$TMPDIR LAKE_CACHE_DIR=$TMPDIR/lake-cache
+              lake build tower
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 .lake/build/bin/tower $out/bin/tower
+              runHook postInstall
+            '';
+          };
+          tower = pkgs.stdenv.mkDerivation {
+            pname = "tower";
+            inherit (unwrapped) version;
+            dontUnpack = true;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            installPhase = ''
+              makeWrapper ${tower-unwrapped}/bin/tower $out/bin/tower \
+                --suffix PATH : ${lib.makeBinPath [ pkgs.coreutils pkgs.git pkgs.gnutar pkgs.gzip pkgs.curl ]} \
+                --add-flags ${addFlags [ "--self" "${placeholder "out"}/bin/tower" ]}
+            '';
+            meta = {
+              description = "tower, the Wiz toolchain manager: installs toolchains and puts wiz and grail shims on PATH";
+              mainProgram = "tower";
+              platforms = systems;
+            };
+          };
+
+          # The Neovim plugin (editors/nvim, docs/stages/11-tooling.md 11p), without its tests.
+          wiz-nvim = pkgs.vimUtils.buildVimPlugin {
+            pname = "wiz-nvim";
+            inherit (unwrapped) version;
+            src = fs.toSource {
+              root = ./editors/nvim;
+              fileset = fs.difference ./editors/nvim ./editors/nvim/tests;
+            };
+            meta = {
+              description = "Wiz in Neovim: wiz lsp, Lean-style unicode input, and an infoview";
+              platforms = lib.platforms.all;
+            };
+          };
+
+          # Neovim with wiz.nvim and this wiz on PATH (`nix run .#nvim-wiz -- file.wiz`).
+          # Its own configuration: your init.lua is not read.
+          nvim-wiz =
+            let
+              nvim = pkgs.neovim.override {
+                configure = {
+                  packages.wiz.start = [ wiz-nvim ];
+                  customRC = "";
+                };
+              };
+            in
+            pkgs.writeShellApplication {
+              name = "nvim-wiz";
+              runtimeInputs = [ wiz ];
+              text = ''exec ${nvim}/bin/nvim "$@"'';
+              meta = {
+                description = "Neovim with wiz.nvim and wiz";
+                mainProgram = "nvim-wiz";
+                platforms = systems;
+              };
+            };
+        in { inherit wiz unwrapped tower wiz-nvim nvim-wiz; default = wiz; };
     in {
       packages = forAll packagesFor;
 
@@ -112,11 +188,18 @@
         let
           pkg = self.packages.${pkgs.stdenv.hostPlatform.system}.wiz;
           app = name: { type = "app"; program = "${pkg}/bin/${name}"; meta = pkg.meta; };
-        in { wiz = app "wiz"; grail = app "grail"; default = app "wiz"; });
+          towerPkg = self.packages.${pkgs.stdenv.hostPlatform.system}.tower;
+          nvim = self.packages.${pkgs.stdenv.hostPlatform.system}.nvim-wiz;
+        in {
+          wiz = app "wiz"; grail = app "grail"; default = app "wiz";
+          tower = { type = "app"; program = "${towerPkg}/bin/tower"; meta = towerPkg.meta; };
+          nvim-wiz = { type = "app"; program = "${nvim}/bin/nvim-wiz"; meta = nvim.meta; };
+        });
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          packages = [ pkgs.elan pkgs.gmp pkgs.boehmgc pkgs.llvm pkgs.python3 pkgs.git ];
+          # neovim: the `nvim` test group (editors/nvim)
+          packages = [ pkgs.elan pkgs.gmp pkgs.boehmgc pkgs.llvm pkgs.python3 pkgs.git pkgs.neovim ];
           # `wiz` and `grail` take the toolchain as flags (stage 23a); grail and the test
           # driver read this machine's paths from the uncommitted grail.local.wiz written
           # here (when run from the repository root). Nothing reads the environment.

@@ -1,6 +1,6 @@
 name = "wiz"
 version = "0.1.0"
-defaultTargets = ["wiz", "grail"]
+defaultTargets = ["wiz", "grail", "tower"]
 testDriver = "tests"
 # compiled modules go to the shared Lake cache (keyed by their inputs), so worktrees
 # reuse each other's builds
@@ -29,6 +29,14 @@ name = "Grail"
 name = "grail"
 moreLinkObjs = ["sockets"]
 root = "Grail.Main"
+
+# the toolchain manager (stage 26): it doesn't import Wiz
+[[lean_lib]]
+name = "Tower"
+
+[[lean_exe]]
+name = "tower"
+root = "Tower.Main"
 
 # Unix-domain sockets for `wiz lsp --infoview` (Lean's library has none): a C file
 # that the linker compiles into each executable
