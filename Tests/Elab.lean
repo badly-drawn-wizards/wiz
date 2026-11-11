@@ -4732,7 +4732,38 @@ def languageGroup : Group where
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let input := calcDsl "" ++ "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done"
         let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
-        check ((s.messages.filter (·.severity == .error)).size > 0) "expected errors" }
+        check ((s.messages.filter (·.severity == .error)).size > 0) "expected errors" },
+    { name := "notation prints as notation: arithmetic, lists, Booleans, logic (11r)", run := fun _ =>
+        okLib ("import Prelude\nimport Logic\n#check fun (n : Nat) => n + 1\n#check fun (a b : Nat) => a * (b + 1) - a\n" ++
+          "#check fun (xs ys : List Nat) => xs ++ ys\n#check [1, 2, 3]\n#check ([] : List Nat)\n" ++
+          "#check fun (x : Nat) (xs : List Nat) => List.cons x xs\n" ++
+          "#check fun (b c : Bool) => if b then c else !c\n#check fun (b c : Bool) => b && c || !b\n" ++
+          "#check fun (P Q : Prop) => P ∧ Q → Q ∨ ¬ P\n#check ∃ (n : Nat), n = n\n#check fun (f : Nat → Nat) => (fun x => x) (f 1) + 2")
+          ["fun n => n + 1 : Nat → Nat", "fun a b => a * (b + 1) - a : Nat → Nat → Nat",
+           "fun xs ys => xs ++ ys : List Nat → List Nat → List Nat", "[1, 2, 3] : List Nat", "[] : List Nat",
+           "fun x xs => List.cons Nat x xs : Nat → List Nat → List Nat",
+           "fun b c => if b then c else !c : Bool → Bool → Bool", "fun b c => b && c || !b : Bool → Bool → Bool",
+           "fun P Q => P ∧ Q → Q ∨ ¬P : Prop → Prop → Prop", "∃ n, n = n : Prop",
+           "fun f => (fun x => x) (f 1) + 2 : (Nat → Nat) → Nat"] },
+    { name := "... not with set_option pp.notation false (or pp.all)", run := fun _ =>
+        okLib ("import Prelude\nset_option pp.notation false\n#check fun (n : Nat) => n + 1\n#check [1]\n" ++
+          "set_option pp.notation true\n#check [1]\nset_option pp.all true\n#check [1]")
+          ["fun n => Add.add Nat instAddNat n 1 : Nat → Nat", "List.cons Nat 1 (List.nil Nat) : List Nat",
+           "[1] : List Nat", "List.cons Nat 1 (List.nil Nat) : List Nat"] },
+    { name := "... in messages: a type mismatch", run := fun _ =>
+        failsLib "import Prelude\ndef f (xs : List Nat) : Nat := xs ++ [1]" "inferred: List Nat" },
+    { name := "... user notation, declared unexpanders and parenthesisation", run := fun _ =>
+        okLib ("import Prelude\ninfixr:67 \" :> \" => List.cons\ndef twice (n : Nat) : Nat := n + n\n" ++
+          "syntax:lead (name := dbl) \"dbl \" term:max : term\napp_unexpander twice\n  | `(term| $f $x) => `(term| dbl $x)\n" ++
+          "#check fun (x : Nat) (xs : List Nat) => List.cons x (List.cons x xs)\n#check fun (n : Nat) => twice (n + 1) * 2\n" ++
+          "#check fun (n : Nat) => twice (twice n)")
+          ["fun x xs => x :> x :> xs : Nat → List Nat → List Nat", "fun n => dbl (n + 1) * 2 : Nat → Nat",
+           "fun n => dbl (dbl n) : Nat → Nat"] },
+    { name := "... local notation's unexpanders end with the module", run := fun _ =>
+        okLoc locMod "import Loc\n#check fun (x : Nat) (xs : List Nat) => List.cons x xs\n#check fun (a b : String) => a &&& b"
+          ["fun x xs => List.cons Nat x xs : Nat → List Nat → List Nat", "fun a b => a &&& b : String → String → String"] },
+    { name := "... an unexpander that is not an Unexpander is rejected", run := fun _ =>
+        failsLib "import Prelude\ndef notOne : Nat := 1\nattribute [app_unexpander List.nil] notOne" "is not an unexpander" }
   ]
 
 /-- Machine words (`lib/Word.wiz`): one table of operations at widths 8–100, signed and
