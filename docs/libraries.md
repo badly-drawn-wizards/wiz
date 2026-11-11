@@ -154,6 +154,10 @@ with the `x`-tactics. Separate cells commute without a `Commute` instance:
 `Commute (Cell V p) (Cell V q) (Prog V)` is false, because the two orders are different
 trees. `Cell.commute` proves instead that both orders meet the same specification from
 `(p ↦ x) ⋆ (q ↦ y)`, so a proof of whatever follows serves either order.
+The interpretation is a monad morphism: `Eff.toProg_bind` (running `c >>= f` is running
+`c`, then `f` of its answer; `Prog.bind_assoc` on the way), and `Triple.effBind` states
+it for specifications, so a verified `Eff` program is called with `xapp` by its
+specification instead of being stepped through again.
 
 ## Functors and Booleans
 

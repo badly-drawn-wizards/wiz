@@ -45,6 +45,41 @@ instance {V : Type} {ω l : Nat} : Handler (Cell V l) (Prog V) where
 def Eff.toProg {V : Type} {r : Row} [hs : Handlers r (Prog V)] {A : Type} (c : Eff r A) : Prog V A :=
   @interpret r (Prog V) _ hs A c
 
+-- ## The interpretation is a monad morphism
+
+-- `Prog.bind` is associative (by induction: each node's continuation, pointwise)
+def Prog.bind_assoc {V A B C : Type} : (c : Prog V A) → (f : A → Prog V B) → (g : B → Prog V C) →
+    Prog.bind (Prog.bind c f) g = Prog.bind c (fun a => Prog.bind (f a) g)
+  | .ret a, f, g => refl (Prog.bind (f a) g)
+  | .get l k, f, g => Eq.congrArg (Prog.get l) (funext (fun v => Prog.bind_assoc (k v) f g))
+  | .set l v k, f, g => Eq.congrArg (Prog.set l v) (Prog.bind_assoc k f g)
+  | .alloc v k, f, g => Eq.congrArg (Prog.alloc v) (funext (fun l => Prog.bind_assoc (k l) f g))
+  | .free l k, f, g => Eq.congrArg (Prog.free l) (Prog.bind_assoc k f g)
+  | .fail, f, g => refl (@Prog.fail V C)
+
+-- running `c >>= f` on the heap is running `c`, then `f` of its answer (DM4All's
+-- morphism law for the effect observation, on the computational side)
+def Eff.toProg_bind {V : Type} {r : Row} [hs : Handlers r (Prog V)] {A B : Type} :
+    (c : Eff r A) → (f : A → Eff r B) →
+    @Eff.toProg V r hs B (Eff.bind c f) = Prog.bind (@Eff.toProg V r hs A c) (fun a => @Eff.toProg V r hs B (f a))
+  | .pure a, f => refl (@Eff.toProg V r hs B (f a))
+  | .op o k, f => Eq.trans
+      (Eq.congrArg (Prog.bind (@Handlers.handleU r (Prog V) hs o))
+        (funext (fun x => @Eff.toProg_bind V r hs A B (k x) f)))
+      (Eq.symm (Prog.bind_assoc (@Handlers.handleU r (Prog V) hs o)
+        (fun x => @Eff.toProg V r hs A (k x)) (fun a => @Eff.toProg V r hs B (f a))))
+def Eff.toProg_pure {V : Type} {r : Row} [hs : Handlers r (Prog V)] {A : Type} (a : A) :
+    @Eff.toProg V r hs A (Eff.pure a) = Prog.ret a := refl (@Prog.ret V A a)
+
+-- the same law for specifications: a triple for `c >>= f` from triples of `c` and the
+-- rest (with the `x`-tactics: `Triple.effBind (by xapp …)`, so that a verified `Eff`
+-- program can be called as `xapp t` instead of being stepped through again)
+def Triple.effBind {V : Type} {r : Row} [hs : Handlers r (Prog V)] {A B : Type} {P : HProp V}
+    {ω c : Eff r A} {ω f : A → Eff r B} {Q : B → HProp V}
+    (t : Triple P (Prog.bind (@Eff.toProg V r hs A c) (fun a => @Eff.toProg V r hs B (f a))) Q) :
+    Triple P (@Eff.toProg V r hs B (Eff.bind c f)) Q :=
+  Eq.substProp (fun (x : Prog V B) => Triple P x Q) (Eq.symm (@Eff.toProg_bind V r hs A B c f)) t
+
 -- A triple for an `Eff` program is the triple of the heap program it is:
 -- `Triple P (Eff.toProg c) Q`, proved with the `x`-tactics like any other (they see
 -- through `interpret`).

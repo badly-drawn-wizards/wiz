@@ -201,8 +201,7 @@ wrong specification left unproved).
 function, SLF chapter WPgen) once tactics can read constructors; an `xif`/`xcase` with
 case analysis inside a tactic (needs a `cases` request or motives built from the goal);
 a second effect observation from `Eff` (lib/Eff.wiz) state operations into `W` (done
-for state on cells: lib/EffHeap.wiz, `Eff.toProg`; the morphism lemma for `Eff.bind` is
-still to do); linear points-to tokens at
+for state on cells: lib/EffHeap.wiz, `Eff.toProg`, a monad morphism by `Eff.toProg_bind`); linear points-to tokens at
 quantity 1 over a native heap, with this model as the `implemented_by` reference (CS7b);
 then a scheduler semantics, CSL with resource invariants and PCM ghost state (CS10a).
 SteelCore's action trees with `Par` nodes are the model for where concurrency goes.

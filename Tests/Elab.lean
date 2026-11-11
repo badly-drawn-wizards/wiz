@@ -6060,6 +6060,43 @@ def seplogicGroup : Group where
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
     { name := "a wrong specification is not proved by the x-tactics", run := fun _ =>
         failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" },
+    { name := "EffHeap: the interpretation respects bind; a verified Eff program is called by its specification", run := fun _ => do
+        okLibs ("import EffHeap\n" ++
+          "def incrBoth (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit := do\n" ++
+          "  a ← Cell.get p;\n" ++
+          "  Cell.put p (Nat.succ a);\n" ++
+          "  b ← Cell.get q;\n" ++
+          "  Cell.put q (Nat.succ b)\n" ++
+          "def incrBoth_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (incrBoth p q)) (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ Nat.succ b)) := by\n" ++
+          "  xgo\n" ++
+          "-- a verified Eff program called twice, by its specification (not stepped through again)\n" ++
+          "def twice (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit :=\n" ++
+          "  Eff.bind (incrBoth p q) (fun _ => incrBoth p q)\n" ++
+          "def twice_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (twice p q))\n" ++
+          "      (fun _ => (p ↦ Nat.succ (Nat.succ a)) ⋆ (q ↦ Nat.succ (Nat.succ b))) :=\n" ++
+          "  Triple.effBind (by\n" ++
+          "    xapp (incrBoth_spec p q a b)\n" ++
+          "    xapp (incrBoth_spec p q (Nat.succ a) (Nat.succ b)))\n")
+        failsLibs ("import EffHeap\n" ++
+          "def incrBoth (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit := do\n" ++
+          "  a ← Cell.get p;\n" ++
+          "  Cell.put p (Nat.succ a);\n" ++
+          "  b ← Cell.get q;\n" ++
+          "  Cell.put q (Nat.succ b)\n" ++
+          "def incrBoth_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (incrBoth p q)) (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ Nat.succ b)) := by\n" ++
+          "  xgo\n" ++
+          "-- a verified Eff program called twice, by its specification (not stepped through again)\n" ++
+          "def twice (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit :=\n" ++
+          "  Eff.bind (incrBoth p q) (fun _ => incrBoth p q)\n" ++
+          "def twice_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (twice p q))\n" ++
+          "      (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ Nat.succ (Nat.succ b))) :=\n" ++
+          "  Triple.effBind (by\n" ++
+          "    xapp (incrBoth_spec p q a b)\n" ++
+          "    xapp (incrBoth_spec p q (Nat.succ a) (Nat.succ b)))\n") "unsolved goals" },
     { name := "EffHeap: Eff programs over cells are heap programs; separate cells commute without Commute", run := fun _ => do
         okLibs ("import EffHeap\n" ++
           "def incrBoth (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit := do\n" ++
