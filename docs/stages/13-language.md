@@ -158,3 +158,32 @@ checks with it unfolded. The self-hosted frontend parses the `private` markers a
 ignores them. The motivating use is the HDL's signals (`drafts/hdl/Signal.wiz`): user
 code builds and observes them only through the library's combinators and `sample`
 (`drafts/hdl/rejected/observe_signal.wiz`). Tests: group `elabfix`.
+
+## 13n: `rfl` at an equation that has computed ✅
+
+An equation at a Σ type computes as soon as it is formed: `a = b` becomes
+`(0 e : a.1 = b.1) × (cast (B a.1) (B b.1) ê a.2 = b.2)`. The elaborator's `rfl` used to
+prove that Σ field by field. Every field after the first then needed the cast to
+disappear, and at a type variable (`B`, `List A`, a function type) it does not: regularity
+holds only at inert types (P1). So `s = s` at `A × B`, `(p.1, p.2) = p`,
+`Pair2.mk s.fst s.snd = s` (structure η, which conversion already has), and the field
+lenses' laws all failed with "the two sides are not definitionally equal".
+
+Now `vEq` keeps the equation's type at the end of the Σ's closure (the body doesn't use
+it), and `eqSigmaSides?` reads `A`, `a`, `b` back. When `a ≡ b`, `rfl` is a single
+`refl A a`, whose type computes to the same Σ, with the same cast on both sides. This is
+the optional exercise 4.16, done by recording the equation in its computed form. No axiom
+is used: `#print axioms` lists none for these proofs. An equation at a constructor
+(`List.cons x xs = List.cons x xs`) works the same way, through its payload's Σ.
+
+**The fallback uses an axiom.** If a field equation `cast X Y e u = v` is reached anyway
+(a Σ of equations written by hand), and `X ≡ Y` and `u ≡ v`, the field is proved by
+`castRefl (refl X) u`. `castRefl` is the Prelude's axiom, so `#print axioms` then lists
+it. `rfl` on such an equation alone, `cast e b = b`, is still an error. In both cases
+`rfl` proves only equations whose sides are convertible.
+
+`lib/Optic.wiz` now states the `Pair2` lens laws with their implicit arguments
+(`@Lens.Lawful (Pair2 A B) A …`), so that the equation has computed when `rfl` sees it.
+Before, they checked only because unsolved holes kept the equation from computing.
+Research note: `wiz-notes/structure-eta.md`. Tests: group `elabfix`, "rfl at an equation
+that has computed"; group `optic`.

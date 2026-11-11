@@ -636,21 +636,75 @@ def sameSides (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R U
     unless ok do
       throwAt ctx.info s!"rfl: the two sides are not definitionally equal\n  left:  {← showVal ctx a}\n  right: {← showVal ctx b}\n  ({e.msg})"
 
+/-- A value evaluated again after its solved holes are filled in (an equation is computed
+when it is formed, perhaps while the implicit arguments of its sides are still holes:
+`Pair2.mk s.1 s.2 = s`). -/
+def refreshVal (ctx : LocalCtx R) (v : Val R) : ElabM R (Val R) := do
+  evalIn ctx (← zonk ctx.lvl (quote (← getGlobals) ctx.lvl (← forceMeta v)))
+
+/-- `sameSides` as a test: no error, and the state (solved holes) restored on failure. -/
+def sidesOk (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R Bool := do
+  let s ← get
+  try sameSides ctx A? a b; pure true
+  catch _ => set s; pure false
+
+/-- The level `u` with `Sort l ≡ Sort (u+1)`, read off a sort `l` that is a successor. -/
+partial def levelPred? : Level → Option Level
+  | .succ l => some l
+  | .max a b => do return .max (← levelPred? a) (← levelPred? b)
+  | _ => none
+
+/-- `castRefl.{u} X (reflTy X) u : cast X X _ u = u` for the equation `cast X Y e u =_A b`,
+when `X ≡ Y` and `u ≡ b` (`rflProof`, at a field equation that computed with a cast).
+`none` if the left side is not such a cast, `castRefl` (lib/Prelude.wiz) is not declared,
+or `X`'s universe is not known. `#print axioms` then lists `castRefl`. -/
+def castReflProof (ctx : LocalCtx R) (A a b : Val R) : ElabM R (Option (Term R)) := do
+  let g ← getGlobals
+  unless g.contains "castRefl" do return none
+  let .neutral (.cast X Y _ u) #[] := whnf (← force (← refreshVal ctx a)) | return none
+  let A ← refreshVal ctx A
+  let b ← refreshVal ctx b
+  let tys ← zonkedTypes ctx
+  unless convTy g tys X Y && convTy g tys X A do return none
+  let some l := typeSort? g tys X | return none
+  let some lu := levelPred? l | return none
+  unless ← sidesOk ctx (some X) u b do return none
+  let Xt := quote g ctx.lvl X
+  return some (.app (.app (.app (.const "castRefl" [lu]) Xt) (.reflTy Xt)) (quote g ctx.lvl u))
+
 /-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
-`True`s and `a = b`, an equation of functions a Π. Build the proof by the same shape
+`True`s and `a = b`, an equation of functions a Π. (13n) At a Σ that `vEq` computed from
+`a = b` with `a ≡ b`, the proof is one `refl a` (`eqSigmaSides?`). Otherwise build it by the same shape
 (pairs, lambdas, `()`, and a case split for a Π over a tag type), with `refl` at the
 equations left; the kernel checks them. -/
 partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
   let g ← getGlobals
   match ← force ty with
   | .neutral (.eq A a b) #[] =>
-    sameSides ctx (some A) a b
-    pure (some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a)))
+    -- a field's equation after the first carries a cast along the earlier fields'
+    -- equations, `cast X Y e u = v`, which without regularity at `X` (P1: only inert
+    -- types) is not `u = v` definitionally; the axiom `castRefl` proves it. Only when the
+    -- whole equation could not be proved by one `refl` (below) and only if `X ≡ Y` and
+    -- `u ≡ v`, so `rfl` still proves only equations whose sides are convertible
+    if ← sidesOk ctx (some A) a b then
+      return some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
+    if let some p ← castReflProof ctx A a b then return some p
+    sameSides ctx (some A) a b   -- the error
+    pure none
   | .neutral (.eqTy X Y) #[] =>
     sameSides ctx none X Y
     pure (some (.reflTy (quote g ctx.lvl X)))
   | .unit _ => pure (some .tt)
-  | .sigma _ _ A B _ =>
+  | ty'@(.sigma _ _ A B _) =>
+    -- an equation `a = b` at a Σ type has computed to this Σ (`vEq`): if `a ≡ b`, one
+    -- `refl` proves it, with no cast to see through (`s = s`, `P.mk s.1 s.2 = s`)
+    if let some (T, a, b) := eqSigmaSides? ty' then
+      let T ← refreshVal ctx T
+      let a ← refreshVal ctx a
+      let b ← refreshVal ctx b
+      if convTy g (← zonkedTypes ctx) (vEq g T a b) (← refreshVal ctx ty') then
+        if ← sidesOk ctx (some T) a b then
+          return some (.refl (quote g ctx.lvl T) (quote g ctx.lvl a))
     let some a ← rflProof ctx A | pure none
     let some b ← rflProof ctx (← instM B (← evalIn ctx a)) | pure none
     pure (some (.pair a b))
