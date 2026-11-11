@@ -86,10 +86,6 @@ def Mealy.invariant {S I O : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I) (en
   | .zero => h0
   | .succ t => hs (Mealy.stateAt m s0 xs t) (xs t) (henv t) (Mealy.invariant m s0 xs env inv h0 hs henv t)
 
--- the components of an equation between pairs
-def Mealy.fstEq {A B : Type} {p q : A × B} (e : p = q) : p.1 = q.1 := Eq.congrArg (fun (r : A × B) => r.1) e
-def Mealy.sndEq {A B : Type} {p q : A × B} (e : p = q) : p.2 = q.2 := Eq.congrArg (fun (r : A × B) => r.2) e
-
 -- Refinement by a representation map: the implementation, started in the image of the
 -- specification's state and driven by the image of its inputs, stays in the image of
 -- its states and outputs the image of its outputs, for ever. The premise is one step.
@@ -101,7 +97,7 @@ def Mealy.simulates {S T I J O P : Type} (impl : Mealy S I O) (spec : Mealy T J 
   | .zero => rfl
   | .succ t => Eq.trans
       (Eq.congrArg (fun (s : S) => (impl s (embI (xs t))).1) (Mealy.simulates impl spec embS embI embO h s0 xs t))
-      (@Mealy.fstEq S O (impl (embS (Mealy.stateAt spec s0 xs t)) (embI (xs t))) (embS (spec (Mealy.stateAt spec s0 xs t) (xs t)).1, embO (spec (Mealy.stateAt spec s0 xs t) (xs t)).2) (h (Mealy.stateAt spec s0 xs t) (xs t)))
+      (Eq.congrArg (fun (r : S × O) => r.1) (h (Mealy.stateAt spec s0 xs t) (xs t)))
 def Mealy.simulatesOut {S T I J O P : Type} (impl : Mealy S I O) (spec : Mealy T J P)
     (embS : T → S) (embI : J → I) (embO : P → O)
     (h : (s : T) → (x : J) → impl (embS s) (embI x) = (embS (spec s x).1, embO (spec s x).2))
@@ -109,4 +105,4 @@ def Mealy.simulatesOut {S T I J O P : Type} (impl : Mealy S I O) (spec : Mealy T
     Mealy.outAt impl (embS s0) (Trace.map embI xs) t = embO (Mealy.outAt spec s0 xs t) :=
   Eq.trans
     (Eq.congrArg (fun (s : S) => (impl s (embI (xs t))).2) (Mealy.simulates impl spec embS embI embO h s0 xs t))
-    (@Mealy.sndEq S O (impl (embS (Mealy.stateAt spec s0 xs t)) (embI (xs t))) (embS (spec (Mealy.stateAt spec s0 xs t) (xs t)).1, embO (spec (Mealy.stateAt spec s0 xs t) (xs t)).2) (h (Mealy.stateAt spec s0 xs t) (xs t)))
+    (Eq.congrArg (fun (r : S × O) => r.2) (h (Mealy.stateAt spec s0 xs t) (xs t)))
