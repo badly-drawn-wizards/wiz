@@ -636,7 +636,7 @@ function M.goto_definition()
 end
 
 ------------------------------------------------------------------------------
--- The infoview in a browser (11r): the buffer's own server listens on a WebSocket and
+-- The infoview in a browser (11w): the buffer's own server listens on a WebSocket and
 -- serves the web infoview's page on the same port (`wiz/browserInfoview`); the page
 -- follows this editor's cursor.
 

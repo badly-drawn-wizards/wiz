@@ -96,7 +96,7 @@ structure St where
   height : Nat
   got : Nat
   opts : Opts
-  -- (11r) what else is at the cursor (`wiz/interactiveInfo`)
+  -- (11w) what else is at the cursor (`wiz/interactiveInfo`)
   items : List InfoItem
 
 def St.setConn (s : St) (fd : Nat) (buf : List Char) (next : Nat) (pending : List (Nat × Nat)) : St :=

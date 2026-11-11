@@ -196,7 +196,26 @@ def group : Group where
             let (tt, subs) := (t.prettyTagged [] []).run #[]
             unless tt.flatten == t.pretty do
               throw (IO.userError s!"{n}: {tt.flatten} ≠ {t.pretty}")
-            check (subs.size > 0) s!"{n}: no tags" }
+            check (subs.size > 0) s!"{n}: no tags" },
+    { name := "tagged printing with notation agrees with the printer, and tags the parts (11r)", run := fun _ => do
+        let p ← prelude
+        let st := runFrontend (R := ZeroOneMany) "import Prelude\ndef t (n : Nat) : List Nat := [n + 2, 3]"
+          { trustedModule := Tests.libModule, loader := fun _ => some p }
+        let g := st.globals
+        for n in g.order do
+          let some d := g.find? n | continue
+          for t in [d.type] ++ d.value.toList do
+            let (tt, _) := (t.prettyTagged [] [] (some g)).run #[]
+            unless tt.flatten == t.pretty [] (some g) do
+              throw (IO.userError s!"{n}: {tt.flatten} ≠ {t.pretty [] (some g)}")
+        let some d := g.find? "t" | throw (IO.userError "no t")
+        let some v := d.value | throw (IO.userError "no value")
+        let (tt, subs) := (v.prettyTagged [] [] (some g)).run #[]
+        checkEq "fun n => [n + 2, 3]" tt.flatten
+        -- the variable, the numerals, the sum and the list are subterms of their own
+        let shown := subs.toList.map fun sub => sub.term.pretty sub.names (some g)
+        for x in ["n", "2", "3", "n + 2", "[n + 2, 3]"] do
+          check (shown.contains x) s!"no tag for {x}: {shown}" }
   ]
 
 /-- Apply a `WorkspaceEdit` (for `file:///t.wiz`) to `src`. -/
@@ -566,7 +585,7 @@ def serverGroup : Group where
         check ((LSP.getStr r ["uri"]).endsWith "lib/Prelude.wiz") s!"import: {r.compress}"
         let (_, r) := ask srv "textDocument/hover" src (offAfter src "import Pre" (-1))
         check (has r "module `Prelude`") s!"import hover: {r.compress}" },
-    { name := "11r: at the start of a tactic, the goals before it (inside it, after)", run := fun _ => do
+    { name := "11w: at the start of a tactic, the goals before it (inside it, after)", run := fun _ => do
         let src := "import Prelude\ndef k : (A : Type) → A → Nat → A := by\n  intro A\n  intro x\n  intro n\n  exact x\n"
         let (srv, _) ← openDoc src
         let at_ := offAfter src "  exact" (-5)
@@ -579,7 +598,7 @@ def serverGroup : Group where
         -- the first tactic: before it, the block's goal
         let (_, r) := ask srv "wiz/plainGoal" src (offAfter src "  intro A" (-7))
         checkEq "[\"⊢ (A : Type) → A → Nat → A\"]" (LSP.get? r ["goals"] |>.get!).compress },
-    { name := "11r: hovers, expected types and definitions inside tactic arguments and list literals", run := fun _ => do
+    { name := "11w: hovers, expected types and definitions inside tactic arguments and list literals", run := fun _ => do
         let src := "import Prelude\ndef f (n : Nat) : Nat := by\n  exact Nat.add n 1\ndef xs (k : Nat) : List Nat := [k, 2]\n"
         let (srv, _) ← openDoc src
         let (srv, r) := ask srv "textDocument/hover" src (offAfter src "add n" (-1))
@@ -650,7 +669,7 @@ def serverGroup : Group where
         -- an unmasked frame from a client breaks the protocol
         WebSocket.sendText w "x"
         checkEq none (← WebSocket.recvText r' w') },
-    { name := "11r: the web infoview's files over HTTP on the WebSocket's port (fixed list, local origins)", run := fun _ => do
+    { name := "11w: the web infoview's files over HTTP on the WebSocket's port (fixed list, local origins)", run := fun _ => do
         let dir ← IO.FS.createTempDir
         IO.FS.writeFile (dir / "infoview.html") "<p>page</p>"
         IO.FS.writeFile (dir / "secret.txt") "no"

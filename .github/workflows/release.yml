@@ -102,7 +102,7 @@ jobs:
             ldd .lake/build/bin/$b
             if ldd .lake/build/bin/$b | grep -q /nix/store; then echo "$b links /nix/store paths"; exit 1; fi
           done
-      # 11r: the web infoview (Web.wiz → C → Wasm with Emscripten), which `wiz lsp` serves
+      # 11w: the web infoview (Web.wiz → C → Wasm with Emscripten), which `wiz lsp` serves
       # for wiz.nvim's :WizInfoviewBrowser. (A dispatched old commit may not have it.)
       - name: Build the web infoview?
         id: web

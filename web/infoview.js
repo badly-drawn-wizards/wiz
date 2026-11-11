@@ -56,7 +56,7 @@ globalThis.wizSend = (text) => {
   }
   pending = buf.slice(at);
 };
-// (11r) `?follow=1`: no editor of our own; show the editor's cursor (wiz.nvim's
+// (11w) `?follow=1`: no editor of our own; show the editor's cursor (wiz.nvim's
 // :WizInfoviewBrowser opens the page so), as the server announces it
 const follow = params.get("follow") === "1";
 function received(text) {

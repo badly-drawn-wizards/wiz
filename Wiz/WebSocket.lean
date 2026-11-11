@@ -114,7 +114,7 @@ def localOrigin (origin : String) : Bool :=
       ["localhost", "127.0.0.1", "[::1]"].any fun h =>
         host == h || host.startsWith (h ++ ":")
 
-/-- (11r) The files of the web infoview a server may hand out over HTTP (`web/build.sh`'s
+/-- (11w) The files of the web infoview a server may hand out over HTTP (`web/build.sh`'s
 output), with their media types: only these, by exact name, so no other file is reachable. -/
 def webAssets : List (String × String) :=
   [("infoview.html", "text/html; charset=utf-8"), ("infoview.js", "text/javascript; charset=utf-8"),
@@ -122,7 +122,7 @@ def webAssets : List (String × String) :=
 
 /-- The server's half of the handshake on a new connection: `true` if it is a WebSocket
 now. A request that is not a WebSocket upgrade, or comes from another origin
-(`localOrigin`), gets an HTTP error and `false`. (11r) With `web` (the directory of the
+(`localOrigin`), gets an HTTP error and `false`. (11w) With `web` (the directory of the
 web infoview), a plain `GET` of one of `webAssets` (`/infoview.html?…`) gets that file
 and `false`; any other path gets `404`. -/
 def accept (r w : IO.FS.Stream) (web : Option String := none) : IO Bool := do
