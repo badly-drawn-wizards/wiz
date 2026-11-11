@@ -1304,3 +1304,183 @@ def Verilog.emit (n : Netlist) : String :=
   <+> Verilog.portDecls "output" vn.outs n.outputs <+> ");\n" <+> Verilog.regDecls vn.regs n.regs
   <+> Verilog.wires cx 0 n.nodes <+> Verilog.updates cx vn.regs n.regs
   <+> Verilog.assigns cx vn.outs n.outputs <+> "endmodule\n"
+
+------------------------------------------------------------------------------------
+-- Bundles: structures of signals. A bundle is a structure parameterised by the
+-- representation, `structure Tx (r : HwTy → Type) where line : r Bit; …`, so that
+-- `s.line` is field access; `Bundle F` gives its code (a product of `named` fields) and
+-- the conversions. `deriving Bundle` writes the instance. Values: `Tx HwTy.El`.
+
+class Bundle (F : (HwTy → Type) → Type) where
+  code : HwTy
+  pack : {r : HwTy → Type} → [Hw r] → F r → r code
+  unpack : {r : HwTy → Type} → [Hw r] → r code → F r
+
+-- the code of a bundle
+def HwTy.of (0 F : (HwTy → Type) → Type) [i : Bundle F] : HwTy := @Bundle.code F i
+
+def Bundle.toEl {F : (HwTy → Type) → Type} [i : Bundle F] (v : F HwTy.El) : HwTy.El (HwTy.of F) :=
+  @Bundle.pack F i HwTy.El _ v
+def Bundle.ofEl {F : (HwTy → Type) → Type} [i : Bundle F] (v : HwTy.El (HwTy.of F)) : F HwTy.El :=
+  @Bundle.unpack F i HwTy.El _ v
+
+-- A `let` of a bundle in code that returns an object value is shared (packed once).
+instance {F : (HwTy → Type) → Type} [iF : Bundle F] {r : HwTy → Type} [ir : Hw r] {ω b : HwTy} : ShareLet (F r) (r b) where
+  share := fun v f => @Hw.share r ir (HwTy.of F) b (@Bundle.pack F iF r ir v) (fun p => f (@Bundle.unpack F iF r ir p))
+
+-- the result of a bundled step: the next state and the outputs
+def Hw.next {r : HwTy → Type} [ir : Hw r] {S O : (HwTy → Type) → Type} [is : Bundle S] [io : Bundle O] (s : S r) (o : O r) :
+    r (HwTy.prod (HwTy.of S) (HwTy.of O)) :=
+  @Hw.pair r ir (HwTy.of S) (HwTy.of O) (@Bundle.pack S is r ir s) (@Bundle.pack O io r ir o)
+
+-- A step on bundles, as a value (see `Comb`).
+structure BStep (S I O : (HwTy → Type) → Type) [Bundle S] [Bundle O] where
+  run : {r : HwTy → Type} → [Hw r] → S r → I r → r (HwTy.prod (HwTy.of S) (HwTy.of O))
+
+def Circuit.bundledStep {S I O : (HwTy → Type) → Type} [is : Bundle S] [ii : Bundle I] [io : Bundle O] (f : BStep S I O)
+    {r : HwTy → Type} [Hw r] (s : r (HwTy.of S)) (x : r (HwTy.of I)) : r (HwTy.prod (HwTy.of S) (HwTy.of O)) :=
+  @BStep.run S I O is io f r _ (@Bundle.unpack S is r _ s) (@Bundle.unpack I ii r _ x)
+
+-- A circuit whose state, input and output are bundles.
+def Circuit.bundled {S I O : (HwTy → Type) → Type} [is : Bundle S] [ii : Bundle I] [io : Bundle O]
+    (init : S HwTy.El) (f : BStep S I O) : Circuit (HwTy.of I) (HwTy.of O) :=
+  Circuit.mk (HwTy.of S) (Bundle.toEl init) (fun s x => Circuit.bundledStep f s x)
+
+------------------------------------------------------------------------------------
+-- `deriving Bundle` for a structure `S Δ (r : HwTy → Type)` (the representation is the
+-- last parameter) whose fields are leaves `r T` or nested bundles `G … r`. It defines
+--   `S.code Δ : HwTy`                     the product of `named "field" T` (`HwTy.of`)
+--   `S.pack Δ : S Δ r → r (S.code Δ)`     and `S.unpack Δ` (the parameters Δ explicit)
+-- and `instance {Δ} : Bundle (S Δ)`. (`S.pack`/`S.unpack` name the bundle, so they need
+-- no inference of `S` from `S r`.)
+
+def HdlDerive.list : SyntaxF .false → List Syntax
+  | .nil => .nil
+  | .cons x xs => .cons x (HdlDerive.list xs)
+def HdlDerive.init {A : Type} : List A → List A
+  | .nil => .nil
+  | .cons _ .nil => .nil
+  | .cons x xs => .cons x (HdlDerive.init xs)
+def HdlDerive.last : List Syntax → Syntax
+  | .nil => .missing
+  | .cons x .nil => x
+  | .cons _ xs => HdlDerive.last xs
+def HdlDerive.lastName : List ParamView → String
+  | .nil => "r"
+  | .cons p .nil => ParamView.name p
+  | .cons _ ps => HdlDerive.lastName ps
+def HdlDerive.unparen (t : Syntax) : Syntax := match t with
+  | .node k args => (match String.beq k "term.paren" with
+    | .true => SyntaxF.nth args 1
+    | .false => t)
+  | _ => t
+-- a field type `h a₁ … aₖ`: (`h a₁ … aₖ₋₁`, `aₖ`)
+def HdlDerive.split (t : Syntax) : Syntax × Syntax := match HdlDerive.unparen t with
+  | .node k args => (match String.beq k "term.app" with
+    | .true =>
+      let ω xs := HdlDerive.list (match Syntax.getArg (.node k args) 1 with
+        | .node _ l => l
+        | _ => SyntaxF.nil);
+      (Syntax.mkApp (SyntaxF.nth args 0) (HdlDerive.init xs), HdlDerive.last xs)
+    | .false => (.missing, .missing))
+  | _ => (.missing, .missing)
+def HdlDerive.isVar (r : String) (t : Syntax) : Bool := match HdlDerive.unparen t with
+  | .node k args => Bool.and (String.beq k "term.ident") (match SyntaxF.nth args 0 with
+    | .ident x => String.beq x r
+    | _ => .false)
+  | _ => .false
+
+-- One field: its code, how it is packed (from `s.f`) and unpacked (from `x`).
+def HdlDerive.fieldCode (r : String) (f : FieldView) : Syntax :=
+  let ω sp := HdlDerive.split (FieldView.type f);
+  let ω nm := Syntax.mkStr (FieldView.name f);
+  match HdlDerive.isVar r sp.1 with
+  | .true => let t := sp.2; `(term| HwTy.named $nm $t)
+  | .false => let g := sp.1; `(term| HwTy.named $nm (HwTy.of $g))
+def HdlDerive.fieldPack (r : String) (s : Syntax) (f : FieldView) : Syntax :=
+  let ω sp := HdlDerive.split (FieldView.type f);
+  let ω nm := Syntax.mkStr (FieldView.name f);
+  let ω x := Derive.proj s (FieldView.name f);
+  match HdlDerive.isVar r sp.1 with
+  | .true => `(term| Hw.tag $nm $x)
+  | .false => let g := sp.1; `(term| Hw.tag $nm (@Bundle.pack $g _ _ _ $x))
+def HdlDerive.fieldUnpack (r : String) (x : Syntax) (f : FieldView) : Syntax :=
+  let ω sp := HdlDerive.split (FieldView.type f);
+  match HdlDerive.isVar r sp.1 with
+  | .true => `(term| Hw.untag $x)
+  | .false => let g := sp.1; `(term| @Bundle.unpack $g _ _ _ (Hw.untag $x))
+
+def HdlDerive.code (r : String) : List FieldView → Syntax
+  | .nil => `(term| HwTy.bits 0)
+  | .cons f .nil => HdlDerive.fieldCode r f
+  | .cons f fs => let a := HdlDerive.fieldCode r f; let b := HdlDerive.code r fs; `(term| HwTy.prod $a $b)
+def HdlDerive.pack (r : String) (s : Syntax) : List FieldView → Syntax
+  | .nil => `(term| Hw.lit 0 0)
+  | .cons f .nil => HdlDerive.fieldPack r s f
+  | .cons f fs => let a := HdlDerive.fieldPack r s f; let b := HdlDerive.pack r s fs; `(term| Hw.pair $a $b)
+-- the fields of `x`, as arguments of the constructor
+def HdlDerive.unpackArgs (r : String) : Syntax → List FieldView → List Syntax
+  | x, .nil => .nil
+  | x, .cons f .nil => .cons (HdlDerive.fieldUnpack r x f) .nil
+  | x, .cons f fs => .cons (HdlDerive.fieldUnpack r `(term| Hw.fst $x) f) (HdlDerive.unpackArgs r `(term| Hw.snd $x) fs)
+
+def HdlDerive.explicitPis : List ParamView → Syntax → Syntax
+  | .nil, rest => rest
+  | .cons p ps', rest =>
+    let x := Syntax.mkIdent (ParamView.name p);
+    let t := ParamView.type p;
+    let b := HdlDerive.explicitPis ps' rest;
+    `(term| ($x : $t) → $b)
+def HdlDerive.lams : List ParamView → Syntax → Syntax
+  | .nil, rest => rest
+  | .cons p ps', rest =>
+    let x := Syntax.mkIdent (ParamView.name p);
+    let b := HdlDerive.lams ps' rest;
+    `(term| fun $x => $b)
+def HdlDerive.implicitPis : List ParamView → Syntax → Syntax
+  | .nil, rest => rest
+  | .cons p ps', rest =>
+    let x := Syntax.mkIdent (ParamView.name p);
+    let t := ParamView.type p;
+    let b := HdlDerive.implicitPis ps' rest;
+    `(term| {ω $x : $t} → $b)
+
+def deriveBundle : Deriver := fun n => do
+  v ← Derive.lookup "Bundle" n;
+  Derive.noIndices "Bundle" v;
+  match IndView.ctors v with
+  | .cons c .nil => do
+    let ps := HdlDerive.init (IndView.params v);
+    let delta := Derive.paramVars ps;
+    let r := HdlDerive.lastName (IndView.params v);
+    let rid := Syntax.mkIdent r;
+    let rv := Syntax.mkVar r;
+    let fs := CtorView.fields c;
+    let tyF := Syntax.mkApp (Syntax.mkVar n) delta;
+    let tyS := Syntax.mkApp tyF (.cons rv .nil);
+    let codeN := Syntax.mkIdent (String.append n ".code");
+    let packN := Syntax.mkIdent (String.append n ".pack");
+    let unpackN := Syntax.mkIdent (String.append n ".unpack");
+    let codeApp := Syntax.mkApp (Syntax.mkVar (String.append n ".code")) delta;
+    let packApp := Syntax.mkApp (Syntax.mkVar (String.append n ".pack")) delta;
+    let unpackApp := Syntax.mkApp (Syntax.mkVar (String.append n ".unpack")) delta;
+    let codeTy := HdlDerive.explicitPis ps `(term| HwTy);
+    let codeVal := HdlDerive.lams ps (HdlDerive.code r fs);
+    let s := Syntax.mkIdent "s✝";
+    let sv := Syntax.mkVar "s✝";
+    let x := Syntax.mkIdent "x✝";
+    let xv := Syntax.mkVar "x✝";
+    let packTy := HdlDerive.explicitPis ps `(term| {$rid : HwTy → Type} → [Hw $rv] → $tyS → $rv $codeApp);
+    let packBody := HdlDerive.pack r sv fs;
+    let packVal := HdlDerive.lams ps `(term| fun $s => $packBody);
+    let unpackTy := HdlDerive.explicitPis ps `(term| {$rid : HwTy → Type} → [Hw $rv] → $rv $codeApp → $tyS);
+    let mk := Syntax.mkApp (Syntax.mkVar (Derive.ctorName v c)) (HdlDerive.unpackArgs r xv fs);
+    let unpackVal := HdlDerive.lams ps `(term| fun $x => $mk);
+    let instTy := HdlDerive.implicitPis ps `(term| Bundle $tyF);
+    let instVal := `(term| Bundle.mk $codeApp (fun $s => $packApp $sv) (fun $x => $unpackApp $xv));
+    MacroM.pure (.cons `(command| def $codeN : $codeTy := $codeVal)
+      (.cons `(command| def $packN : $packTy := $packVal)
+      (.cons `(command| def $unpackN : $unpackTy := $unpackVal)
+      (.cons (Derive.instance instTy instVal) .nil))))
+  | _ => MacroM.throw (String.append "Bundle: not a structure: " n)
+attribute [deriver Bundle] deriveBundle
