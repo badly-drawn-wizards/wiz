@@ -74,9 +74,11 @@ it is not to be kept: `base` is not an initial state, or `m`'s imports run in a 
 partial def isoKey (base : CommandState R) (m : Name) : Option UInt64 := do
   unless base.pristine && base.globals.order.isEmpty && base.imported.isEmpty && base.infos.isEmpty do none
   let g := base.globals
-  -- (every option of `Globals` that a module's state depends on or carries)
+  -- (every option of `Globals` that a module's state depends on or carries: lint's
+  -- "isoKey: every setting of Globals is in the key" checks that none is left out)
   let settings := hash (base.termInfo, base.nextScope, g.eager, g.predicativeProp, toString (repr g.regularity),
-    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs, g.lazyEqs)
+    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs, g.lazyEqs, g.strictPrivacy,
+    g.pushCalls)
   let (k, _) ← go [] m {}
   pure (mixHash settings k)
 where
