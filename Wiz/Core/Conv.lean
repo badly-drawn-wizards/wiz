@@ -370,7 +370,9 @@ partial def convGlued (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Opti
       some (convNe g tys (.neutral (.global n us) sp) (.neutral (.global n' us') sp')).isSome
     else none
   -- the same induction on a numeral: compare the folded forms
-  | a@(.lazyInd ..), b@(.lazyInd ..) =>
+  | a@(.lazyInd _ _ _ _ _ _ _ x _ _), b@(.lazyInd _ _ _ _ _ _ _ y _ _) =>
+    -- (on a constructor, `ind` is lazy for speed alone: compared by what it computes)
+    if !(whnf x matches .natLit _) || !(whnf y matches .natLit _) then none else
     -- (P2: the kernel's comparisons don't evaluate proofs)
     let g := { g with quoteErasesProofs := true }
     some (quote g tys.size a == quote g tys.size b)

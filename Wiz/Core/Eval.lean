@@ -53,6 +53,14 @@ partial def whnf : Val R → Val R
   | .lazyInd _ _ _ _ _ _ _ _ _ v => whnf v.get
   | v => v
 
+/-- A value with its suspended inductions on constructors computed (`vInd`): they are
+lazy for speed alone, so wherever a value's shape or read-back is looked at without `whnf`
+(`quote`, the elaborator's unifier) they count as what they compute, as before they were
+lazy. Inductions on numerals stay folded (`Val.lazyInd` since stage 7). -/
+partial def unlazyCon : Val R → Val R
+  | v@(.lazyInd _ _ _ _ _ _ _ x _ val) => if whnf x matches .natLit _ then v else unlazyCon val.get
+  | v => v
+
 /-- **Exercise 4.4b.** First projection. -/
 partial def vFst : Val R → Val R
   -- (given) a projection of a glued value stays glued, like an application (`vApp`):
@@ -1303,7 +1311,10 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
     match (List.range sp.size).reverse.find? isAbsurd with
     | none => .tt
     | some k => (quote g (l + 1) (.neutral (.local l) (sp.extract k sp.size))).instantiateAt 0 .tt
-  | .lazyInd lv I D v P m i x sp _ =>
+  -- (folded only on a numeral, as before kernel-eval: `ind` on a constructor is lazy for
+  -- speed alone and reads back as what it computes, so read-back is unchanged)
+  | .lazyInd lv I D v P m i x sp val =>
+    if !(whnf x matches .natLit _) then quote g l (unlazyCon val.get) else
     sp.foldl (fun t e => match e with
       | .app a => .app t (quote g l a)
       | .fst => .fst t
