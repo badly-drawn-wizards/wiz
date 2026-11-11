@@ -83,6 +83,10 @@ structure TacState (R : Type) where
   «open» : List Nat := []
   /-- opaque terms, with the number of variables in scope where they were reflected -/
   handles : Array (Term R × Nat) := #[]
+  /-- (13b) terms given to `assign` while they still had holes, with their goals: their
+  types are checked against the goals at the end of the block (`elabBy`), in the
+  elaborator's view. The kernel would check them too, but by shape. -/
+  unchecked : Array (Goal R × Term R) := #[]
 
 /-! ## Encoding answers -/
 

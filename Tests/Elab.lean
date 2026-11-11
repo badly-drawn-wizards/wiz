@@ -365,13 +365,13 @@ def ottGroup : Group where
     -- D1: no regularity by default: a cast at a variable type stays a cast
     { name := "cast along a variable `A = A` is not the identity (no regularity; it is with --regularity full)", run := fun _ => do
         let reg := "def reg (A : Type) (e : A = A) (a : A) : cast e a = a := rfl"
-        fails reg "type mismatch"
+        fails reg "rfl: the two sides are not definitionally equal"
         okWith .full reg },
     { name := "J from transp and cast", run := fun _ =>
         ok substDef },
     { name := "J computes on refl at a data type, not at a variable family (no regularity)", run := fun _ => do
         let substRefl := substDef ++ "def substRefl {A : Type} (P : A → Type) (a : A) (pa : P a) : subst P (refl a) pa = pa := rfl"
-        fails substRefl "type mismatch"
+        fails substRefl "rfl: the two sides are not definitionally equal"
         okWith .full substRefl
         ok (substDef ++ "inductive N where\n  | z\n  | s (n : N)\n" ++
           "def substN {A : Type} (a : A) : subst (fun _ => N) (refl a) (N.s N.z) = N.s N.z := rfl") },
@@ -421,7 +421,7 @@ def ottGroup : Group where
     { name := "equality of proofs is rejected", run := fun _ =>
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
-        fails "def bad (A : Type) (a b : A) : a = b := rfl" "type mismatch" },
+        fails "def bad (A : Type) (a b : A) : a = b := rfl" "rfl: the two sides are not definitionally equal" },
     -- D1: regularity is off by default, and the program checks; with `--regularity full`
     -- (or `nonprop`) and an evaluator that runs proofs (`--eager-proofs`, the behaviour
     -- before P2) checking it does not terminate
@@ -442,7 +442,7 @@ def ottGroup : Group where
           "def castN (e : N = N) (n : N) : (cast e n : N) = n := rfl\n") },
     { name := "no regularity at a type with a variable parameter", run := fun _ =>
         fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
-          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "type mismatch" },
+          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "rfl: the two sides are not definitionally equal" },
     -- P1: InReg decided by ground equality is stable (h3 checks, and so does its reduct h2)
     { name := "P1: InReg is stable under substitution (the probe's reduct checks iff the term does)", run := fun _ =>
         checkEq (repr ["h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .ground)).pretty },
@@ -4151,7 +4151,9 @@ def effectsGroup : Group where
           "  pure := fun a => fun s => (a, s)\n  bind := fun x f => fun s => let (a, s') := x s; f a s'\n" ++
           "instance {S : Type} : Handler (State S) (StateM S) where\n  handle := fun o => match o with\n" ++
           "    | .get => fun s => (s, s)\n    | .put s' => fun _ => ((), s')\n" ++
-          "instance {S : Type} : Commute (State S) (State S) (StateM S) where\n  comm := fun o₁ o₂ B f => rfl") "kernel rejected" }
+          "instance {S : Type} : Commute (State S) (State S) (StateM S) where\n  comm := fun o₁ o₂ B f => rfl")
+          -- (13b) the elaborator compares the two sides of `rfl` itself, before the kernel
+          "rfl: the two sides are not definitionally equal" }
   ]
 
 def toolingGroup : Group where
@@ -4972,7 +4974,8 @@ def vecGroup : Group where
           "#eval Vec.head v3\n#eval Vec.toList (Vec.tail v3)\n#eval Vec.last v3\n#eval Vec.toList (Vec.init v3)")
           ["30", ".cons 10 (.cons 99 (.cons 30 .nil))", "10", ".cons 20 (.cons 30 .nil)", "30", ".cons 10 (.cons 20 .nil)"] },
     { name := "an index out of range is rejected", run := fun _ =>
-        failsLibs (vecPrelude ++ "def bad : Nat := Vec.get v3 (Fin.of 3 3 rfl)") "kernel rejected bad" },
+        -- (13b) the elaborator compares the two sides of `rfl` itself (`3 < 3` is `.false`)
+        failsLibs (vecPrelude ++ "def bad : Nat := Vec.get v3 (Fin.of 3 3 rfl)") "rfl: the two sides are not definitionally equal" },
     { name := "maps, zips and folds", run := fun _ =>
         okLibs (vecPrelude ++ "#eval Vec.toList (Vec.map Nat.succ v3)\n#eval Vec.toList (Vec.zipWith Nat.add v3 w3)\n" ++
           "#eval Vec.foldr Nat.add 0 v3\n#eval Vec.foldl (fun acc x => acc * 10 + x) 0 w3\n#eval Vec.toList (Vec.zip v3 w3)")
@@ -5266,7 +5269,7 @@ def descEqGroup : Group where
           "def numCast (h : L N = L N) : (cast h (L.cons N.z L.nil) : L N) = L.cons N.z L.nil := rfl\n") },
     { name := "a cast at a variable element type stays a cast (no regularity)", run := fun _ =>
         fails (descEqTypes ++
-          "def reg (A C : Type) (h : L A = L C) (x : A) (y : C) : (cast h (L.cons x L.nil) : L C) = L.cons y L.nil := rfl\n") "type mismatch" },
+          "def reg (A C : Type) (h : L A = L C) (x : A) (y : C) : (cast h (L.cons x L.nil) : L C) = L.cons y L.nil := rfl\n") "rfl: the two sides are not definitionally equal" },
     { name := "reflexivity: refl T proves T = T for a data type; i = i' alone does not", run := fun _ => do
         ok (descEqTypes ++ "def r (A : Type) : L A = L A := refl (L A)\n")
         fails (descEqTypes ++
@@ -5831,7 +5834,11 @@ def regionsGroup : Group where
         failsLibs "import Region\ndef forge {ρ : Region} : Lent ρ Nat := .mk ()" "Lent"
         failsLibs "import Region\ndef forge {ρ : Region} : Shr ρ Nat := (5, ())" "Shr"
         failsLibs ("import Region\nstructure MyShr (ρ : Region) (A : Type) where\n  val : A\n" ++
-          "def forge {ρ : Region} : Shr ρ Nat := MyShr.mk 5") "mismatch" },
+          "def forge {ρ : Region} : Shr ρ Nat := MyShr.mk 5") "mismatch"
+        -- nor through an equation with a look-alike (the kernel compares by shape; `rfl`
+        -- compares in the elaborator's view)
+        failsLibs ("import Region\nstructure MyShr (ρ : Region) (A : Type) where\n  val : A\n" ++
+          "def forge {ρ : Region} (x : Nat) : Shr ρ Nat := cast rfl (MyShr.mk x : MyShr ρ Nat)") "not definitionally equal" },
     { name := "with --unbox-structs a handle is its value at run time; a scope is its body run in place (22i)", run := fun _ => do
         let s ← libsState ("import Region\n" ++ regionsPush ++
           "def get {ρ : Region} (x : Shr ρ Nat) : Nat := x.val\n" ++
