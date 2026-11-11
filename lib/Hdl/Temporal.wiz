@@ -354,3 +354,12 @@ def Mealy.always_settled {S I O : Type} (m : Mealy S I O) (p : S → I → Bool)
 -- inputs after a single event
 def Trace.once_late {A : Type} (x y : A) (j F : Nat) : Trace.once x y (Nat.add j (Nat.succ F)) = y :=
   Eq.congrArg (Trace.once x y) (Nat.add_succ j F)
+-- The same for a single event at cycle 0 (`Trace.once x y`): the settled state is
+-- fixed under `y`, and `p` holds there with `y`.
+def Mealy.always_settled_once {S I O : Type} (m : Mealy S I O) (p : S → I → Bool) (s0 : S) (x y : I) (F : Nat) (c : S)
+    (early : Mealy.checkFrom m p (Nat.succ F) s0 (Trace.once x y) = .true)
+    (hF : Mealy.stateAt m s0 (Trace.once x y) (Nat.succ F) = c) (fixed : (m c y).1 = c) (late : p c y = .true) :
+    TL.always (TL.nowB (fun (o : S × I) => p o.1 o.2)) (Mealy.obs m s0 (Trace.once x y)) 0 :=
+  Mealy.always_settled m p s0 (Trace.once x y) (Nat.succ F) c early hF
+    (fun (j : Nat) => Eq.substProp (fun (z : I) => (m c z).1 = c) (Eq.symm (Trace.once_late x y j F)) fixed)
+    (fun (j : Nat) => Eq.substProp (fun (z : I) => p c z = .true) (Eq.symm (Trace.once_late x y j F)) late)

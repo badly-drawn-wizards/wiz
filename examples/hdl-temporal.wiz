@@ -90,8 +90,9 @@ def loopback : Circuit Send.code Byte.code := Circuit.seq txC rxC
 
 -- The environment: send `b` in cycle 0, nothing after.
 def quiet : HwTy.El Send.code := Bundle.toEl Send.bundle (Send.mk (BitVec.ofNat 1 0) (BitVec.ofNat 8 0))
+def sendByte (b : Nat) : HwTy.El Send.code := Bundle.toEl Send.bundle (Send.mk (BitVec.ofNat 1 1) (BitVec.ofNat 8 b))
 def sendOnce (b : Nat) : Trace (HwTy.El Send.code) :=
-  Trace.once (Bundle.toEl Send.bundle (Send.mk (BitVec.ofNat 1 1) (BitVec.ofNat 8 b))) quiet
+  Trace.once (sendByte b) quiet
 
 -- Observations (Bool atoms)
 def txIdleLineHigh (s : HwTy.El txC.st) (x : HwTy.El Send.code) : Bool :=
@@ -117,18 +118,15 @@ def loopIdle_ok (b : Nat) : onlyByte b (loopIdle b) quiet = .true := rfl
 -- The frame takes 1 + 10·4 cycles; after 48 cycles both parts are idle.
 def F : Nat := Nat.succ 47
 
--- "The line is idle-high outside frames", at every cycle, when byte `b` is sent: from the
--- three facts about the first F cycles of `b`'s run (each `refl` for a given byte).
+-- "The line is idle-high outside frames", at every cycle, when byte `b` is sent: from
+-- two facts about the first F cycles of `b`'s run (each `refl` for a given byte).
 def Uart.idleHigh (b : Nat)
     (early : Mealy.checkFrom (Circuit.stepEl txC) txIdleLineHigh F txC.init (sendOnce b) = .true)
     (settled : Mealy.stateAt (Circuit.stepEl txC) txC.init (sendOnce b) F = txIdle) :
     TL.always (TL.nowB (fun (o : HwTy.El txC.st × HwTy.El Send.code) => txIdleLineHigh o.1 o.2))
       (Mealy.obs (Circuit.stepEl txC) txC.init (sendOnce b)) 0 :=
-  Mealy.always_settled (Circuit.stepEl txC) txIdleLineHigh txC.init (sendOnce b) F txIdle early settled
-    (fun (j : Nat) => Eq.substProp (fun (x : HwTy.El Send.code) => (Circuit.stepEl txC txIdle x).1 = txIdle)
-      (Eq.symm (Trace.once_late (Bundle.toEl Send.bundle (Send.mk (BitVec.ofNat 1 1) (BitVec.ofNat 8 b))) quiet j 47)) txIdle_fixed)
-    (fun (j : Nat) => Eq.substProp (fun (x : HwTy.El Send.code) => txIdleLineHigh txIdle x = .true)
-      (Eq.symm (Trace.once_late (Bundle.toEl Send.bundle (Send.mk (BitVec.ofNat 1 1) (BitVec.ofNat 8 b))) quiet j 47)) txIdle_ok)
+  Mealy.always_settled_once (Circuit.stepEl txC) txIdleLineHigh txC.init (sendByte b) quiet 47 txIdle
+    early settled txIdle_fixed txIdle_ok
 
 -- "Every byte sent is received within 45 cycles", and "every byte reported is that byte",
 -- for ever.
@@ -142,11 +140,8 @@ def Uart.onlyThat (b : Nat)
     (settled : Mealy.stateAt (Circuit.stepEl loopback) loopback.init (sendOnce b) F = loopIdle b) :
     TL.always (TL.nowB (fun (o : HwTy.El loopback.st × HwTy.El Send.code) => onlyByte b o.1 o.2))
       (Mealy.obs (Circuit.stepEl loopback) loopback.init (sendOnce b)) 0 :=
-  Mealy.always_settled (Circuit.stepEl loopback) (onlyByte b) loopback.init (sendOnce b) F (loopIdle b) early settled
-    (fun (j : Nat) => Eq.substProp (fun (x : HwTy.El Send.code) => (Circuit.stepEl loopback (loopIdle b) x).1 = loopIdle b)
-      (Eq.symm (Trace.once_late (Bundle.toEl Send.bundle (Send.mk (BitVec.ofNat 1 1) (BitVec.ofNat 8 b))) quiet j 47)) (loopIdle_fixed b))
-    (fun (j : Nat) => Eq.substProp (fun (x : HwTy.El Send.code) => onlyByte b (loopIdle b) x = .true)
-      (Eq.symm (Trace.once_late (Bundle.toEl Send.bundle (Send.mk (BitVec.ofNat 1 1) (BitVec.ofNat 8 b))) quiet j 47)) (loopIdle_ok b))
+  Mealy.always_settled_once (Circuit.stepEl loopback) (onlyByte b) loopback.init (sendByte b) quiet 47 (loopIdle b)
+    early settled (loopIdle_fixed b) (loopIdle_ok b)
 
 -- Two bytes, by evaluation of their first 48 cycles (`refl` with the value: the
 -- kernel evaluates; a bare `rfl` would have the elaborator unfold the run).
