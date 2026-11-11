@@ -14,10 +14,16 @@ import Prelude
 -- parameter, stage 22e): `UIntN 8` and `UIntN 16` are different types, and `w` is
 -- inferred from an argument. At runtime a word is `⟨0 bits⟩` in the model (or just its
 -- bits, compiled: see the end).
-inductive UIntN (w : Nat) where
-  | mk (toNat : Nat)
-inductive IntN (w : Nat) where
-  | mk (toNat : Nat)
+--
+-- Both are sealed (22k): `UIntN w` and `IntN w` have the same shape but are different
+-- types (`toIntN`/`toUIntN` convert, for free), and no look-alike is either. The
+-- constructors are private: this module keeps the invariant `toNat < 2^w`, which the
+-- natives rely on (every function here returns an in-range word if its arguments are),
+-- so outside it a word is built with `ofNat` (or `ofBitsTrusted`) and read with `toNat`.
+sealed inductive UIntN (w : Nat) where
+  | private mk (toNat : Nat)
+sealed inductive IntN (w : Nat) where
+  | private mk (toNat : Nat)
 
 -- the bits as a number (for `IntN`, the two's-complement bits: `-1` is `2^w - 1`)
 def UIntN.toNat {w : Nat} : UIntN w → Nat
@@ -26,6 +32,10 @@ def IntN.toNat {w : Nat} : IntN w → Nat
   | .mk n => n
 
 def UIntN.ofNat (w n : Nat) : UIntN w := .mk (Nat.mod n (Nat.pow 2 w))
+-- `n` as a word without reducing it, for callers that know `n < 2^w` but not `w` at
+-- runtime (`BitVec.concat`, `BitVec.ofVec`). Unchecked: the caller keeps the invariant
+-- (an out-of-range word makes the kernel's definitions and compiled code disagree).
+def UIntN.ofBitsTrusted {0 w : Nat} (n : Nat) : UIntN w := .mk n
 def UIntN.zero (w : Nat) : UIntN w := .mk 0
 def UIntN.max (w : Nat) : UIntN w := .mk (Nat.pow 2 w - 1)
 

@@ -1814,6 +1814,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             report .error getStx.info s!"{get} must take a value of {T} as its last argument"
           else if (reprOf? s.builtins T).isSome then
             report .error fStx.info s!"{T} already has a native representation"
+          -- (22k) found by the seal, so `T` has no look-alikes; and built only in its
+          -- module (R5: the module keeps the invariant the natives rely on)
+          else if !s.builtins.any (·.1 == sealKey T) then
+            report .error fStx.info s!"a native representation needs `sealed inductive {T}`: a look-alike of an unsealed type is the same type"
+          else if (s.globals.privates.get? f) != some s.module then
+            report .error fStx.info s!"a native representation needs a private constructor (`| private {f.toString.splitOn "." |>.getLast!} …`): {T}'s module keeps the invariant its natives rely on"
           else
             let (_, getArity) := target g 0 (eval g [] dg.type) 1000
             let key := ReprInfo.key T { mkImpl := impl, getImpl := get, tag, nfields, r, mkArity, p, getArity }

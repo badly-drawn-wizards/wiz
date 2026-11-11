@@ -330,18 +330,14 @@ partial def sealedIx? (g : Globals R) (I : Val R) (lvl : Nat := 2000000) : Optio
   | _ => none
 
 /-- The type with a native representation that `ty` is, with the representation: found
-by the seal of a sealed type; for a type that is not sealed (to go: a native
-representation will need `sealed`), by the display name. -/
+by the seal of a sealed type (a native representation needs `sealed`), never by the
+display name. -/
 def nativeTy? (g : Globals R) (ty : Val R) : Option (Name × ReprInfo) :=
   match whnf ty with
-  | .mu _ I _ _ _ hint =>
+  | .mu _ I _ _ _ _ =>
     match sealedIx? g I with
     | some T => (reprOf? g.builtins T).map (T, ·)
-    | none => match hint with
-      | some (T, _, _) =>
-        -- (a sealed type's representation is never found by the name alone)
-        if g.builtins.any (·.1 == sealKey T) then none else (reprOf? g.builtins T).map (T, ·)
-      | none => none
+    | none => none
   | _ => none
 
 /-- The native representation of a `μ` type, if it has one. -/
