@@ -16,6 +16,7 @@
     "ffi",
     "llvm",
     "reuse",
+    "serial",
     "sys"
   ]},
   {"name": "library", "split": 3, "select": [
@@ -23,7 +24,9 @@
     "classes",
     "deriving",
     "=grail",
+    "=grail-commands",
     "=grail-deps",
+    "=grail-hygiene",
     "=grail-jobs",
     "hdl",
     "infoview",
@@ -40,9 +43,11 @@
     "std",
     "tactics",
     "testrunner",
+    "=text",
     "toolchain",
     "tooling",
     "=tower",
+    "=tower-wiz",
     "trust",
     "vec",
     "word"
@@ -60,6 +65,7 @@
     "lift",
     "=lint",
     "match",
+    "=meta",
     "observational",
     "parser",
     "=prop",

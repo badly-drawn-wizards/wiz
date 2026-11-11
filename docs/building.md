@@ -11,6 +11,7 @@ lake test -- '=selfhost#0,3'          # only cases 0 and 3 of the group "selfhos
 lake test -- --list                   # the group names
 lake test -- --list-cases =selfhost   # the selected cases: GROUP<tab>INDEX<tab>NAME
 lake test -- --timings t.jsonl rig    # also append each case's time to t.jsonl
+.lake/build/bin/tests --run selfhost 3  # one case (also selfhost#3): exit 0 passed, 1 failed, 3 skipped
 ```
 
 Every case prints its wall time (`✓ name (12.345 s)`), and every group its total.
@@ -20,7 +21,17 @@ programs the case used and built (`Tests.note`: `uses checker`, `built checker 3
 the self-hosted checker and compiler are built by the first case that needs them and
 kept under `/tmp`).
 
-An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)`.
+An unimplemented exercise shows up as `✗ ... not implemented yet (hit a sorry)`. A case
+that cannot run here (no C toolchain, no `nix`, …) calls `Tests.skip REASON` and shows up
+as `⊘ name` with `skipped (REASON)`; the total counts it apart (`…, 2 skipped`), and it is
+not a pass. A selector that picks no group, a case index the group lacks, and an unknown
+flag are errors (exit code 2), not an empty run.
+
+`tests --run GROUP INDEX` runs one case as `lake test -- '=GROUP#INDEX'` does: in a child
+process, with the toolchain of `grail.local.wiz` (toolchain flags after it override it),
+printing the case's name and result, a failure's output, and a last line
+`GROUP #INDEX: passed|FAILED|SKIPPED`. Build the driver first (`lake build wiz tests`):
+plain `lake build` does not, and a stale driver runs whichever case had that index.
 
 **Embedded files.** Lake does not track files a module reads with `include_str`, so each
 embedded file gets a library of its own whose `needs` names the file as an
@@ -30,6 +41,37 @@ the artifact cache never serves a stale one. The only one today is the C runtime
 `runtime/wiz.c`, embedded by `runtime/WizRuntime.lean` (library `WizRuntime`, imported by
 `Wiz/Compiler/C.lean`). A new `include_str` goes in such a library too, not in `Wiz`
 (a `needs` on `Wiz` would rebuild all of it); `scripts/test-embed.sh` checks the setup (CI runs it in the build job).
+
+## What `wiz build` links
+
+`wiz build` turns a program into C (or LLVM IR) and hands it to a C compiler with the
+runtime (`runtime/wiz.c`), which needs GMP; programs from the self-hosted compiler also
+need the Boehm GC. The release toolchains (what tower installs) bring all of that in
+`share/wiz/cc` (docs/stages/26-tower.md, 26f): clang, a glibc 2.27 sysroot, and GMP and the
+GC as static libraries (the bundled clang needs glibc 2.30 or later; programs it builds
+need glibc 2.27 or later and nothing else). A checkout uses `cc` and the system's GMP unless you pass
+`--cc`/`--cflags`/`--ldflags` (the Nix dev shell writes them to `grail.local.wiz`).
+
+**Licences of what is linked into your programs.** The Wiz Runtime Library Exception
+(COPYING.RUNTIME) lets you distribute programs compiled by Wiz under any terms, but it
+covers only Wiz's own runtime. Other libraries keep their licences:
+
+* **GMP** is under the LGPL-3.0-or-later (or GPL-2.0-or-later). The release toolchain
+  links it **statically**, as Lean does for Lean programs. If you give someone a binary
+  built that way under terms that are not the (L)GPL, the LGPL asks you to: say that the
+  program uses GMP and include the GNU LGPL and GPL texts (they are in
+  `share/wiz/cc/LICENSES/`); offer GMP's source (or say where to get it); and let the
+  recipient relink your program with a modified GMP, which for a static binary means also
+  providing your program's object files (or its source). If your program's source is
+  public anyway, you have done the last part already. Using programs yourself, or in a
+  company without giving them to others, creates no obligations.
+* With **dynamic** GMP only the notice and the source offer remain, because the user can
+  replace `libgmp.so`. To build that way, use the system's compiler and GMP:
+  `--cc gcc` (with `libgmp-dev` installed; tower: `tower set cc gcc`).
+* The **Boehm GC** (self-hosted runtime) has an MIT-style licence: keep its notice
+  (`share/wiz/cc/LICENSES/bdwgc-README.QUICK`).
+* glibc is linked dynamically, as with any C program. The compiler-rt builtins clang
+  links in (Apache-2.0 with LLVM exception) need no notice.
 
 ## Continuous integration
 

@@ -1,0 +1,500 @@
+import Tower.Install
+-- tower's commands (stage 26c; the Lean original is Tower/Cli.lean).
+--
+-- Which toolchain runs in a directory (`tower show`): a `+SPEC` first argument of a shim,
+-- else, walking up from the directory, an override set for it or a `wiz-toolchain` file
+-- in it, else the default. The shims are shell scripts that ask `tower resolve` for the
+-- toolchain's directory and `exec` its `bin/TOOL`.
+
+def Tower.usage : String := "tower: Wiz toolchains (stage 26)
+
+usage: tower [--home DIR] COMMAND
+
+  toolchain install SPEC… [--source auto|nix|release|source] [--force] [--cflags …]
+  toolchain uninstall NAME…
+  toolchain list
+  toolchain link NAME DIR [--cflags …]   a checkout (.lake/build/bin) or a toolchain dir
+  default [SPEC]                 show or set the default toolchain (installs it)
+  override set SPEC [DIR]        DIR (default: here) uses SPEC
+  override unset [DIR]
+  override list
+  show                           the toolchain here, and why
+  which TOOL                     the path of TOOL (wiz, grail) in the toolchain here
+  run SPEC [--] CMD ARGS…        run CMD with SPEC's bin/ first on PATH
+  update [NAME…]                 reinstall channel and branch toolchains that moved
+  set KEY VALUE / settings       settings (source, flake, git, releases, nightly-ref,
+                                 auto-install, cc, cflags, ldflags, libs, llc,
+                                 gc-cflags, gc-ldflags)
+  self shims                     write the shims in ~/.tower/bin
+  self install                   copy tower to ~/.tower/bin and write the shims
+
+SPEC: nightly, stable, a tag, a branch, a commit, REF@COMMIT, or a linked name.
+A project names its toolchain in a file `wiz-toolchain` (one line: a SPEC).
+"
+
+-- the tools that get a shim
+def Tower.tools : List String := "wiz" :> "grail" :> .nil
+
+def Tower.isComment (l : String) : Bool :=
+  Bool.or (String.isEmpty l) (Bool.or (String.startsWith l "#") (String.startsWith l "--"))
+-- the spec in a `wiz-toolchain` file: its first line that isn't blank or a comment
+def Tower.readToolchainFile (f : String) : EIO (Option String) := do
+  t ← FS.readFile f;
+  EIO.pure (List.find (fun (l : String) => Bool.not (Tower.isComment l)) (List.map String.trim (String.splitOn t "\n")))
+
+-- the toolchain for `d` and its parents, and why
+partial def Tower.activeGo (s : Settings) (d : String) : EIO (Option (String × String)) :=
+  match String.lookup d s.overrides with
+  | .some spec => EIO.pure (.some (spec, "override for " & d))
+  | .none => do
+    let f := Path.join d "wiz-toolchain";
+    ex ← EIO.lift (FS.isFile f);
+    found ← (match ex with
+      | .true => Tower.readToolchainFile f
+      | .false => EIO.pure .none : EIO (Option String));
+    match found with
+    | .some spec => EIO.pure (.some (spec, f))
+    | .none => match Tower.parent d with
+      | .some p => match String.eq p d with
+        | .true => EIO.pure .none
+        | .false => Tower.activeGo s p
+      | .none => EIO.pure .none
+-- (`Path.join "/" "x"` is `//x`: the root's children are joined by hand)
+def Tower.active (e : TEnv) (dir : String) : EIO (Option (String × String)) := do
+  s ← TEnv.settings e;
+  d ← Tower.realPath dir;
+  r ← Tower.activeGo s d;
+  match r with
+  | .some x => EIO.pure (.some x)
+  | .none => match s.default with
+    | .some d => EIO.pure (.some (d, "the default toolchain"))
+    | .none => EIO.pure .none
+
+-- the toolchain directory for a spec, installing it if allowed
+def Tower.ensure (e : TEnv) (spec : String) (allowInstall : Bool) : EIO String := do
+  let d := TEnv.tcDir e spec;
+  ex ← EIO.lift (FS.exists (Path.join d "tower.info"));
+  match ex with
+  | .true => EIO.pure d
+  | .false => match allowInstall with
+    | .false => EIO.fail ("toolchain " & spec & " is not installed (tower toolchain install " & spec & ")")
+    | .true => do
+      Tower.note ("toolchain " & spec & " is not installed; installing it");
+      Tower.install e spec .none .false .nil
+
+-- Exit codes: commands return one.
+def Tower.fail (m : String) : EIO Nat := do
+  Tower.note m;
+  EIO.pure 1
+def Tower.usageFail : EIO Nat := do
+  EIO.lift (IO.bind File.stderr (fun f => IO.bind (File.write f Tower.usage) (fun r => IO.pure ())));
+  EIO.pure 2
+
+-- `--flag VALUE` toolchain flags, `--source X`, `--force`, and the rest
+structure Opts where
+  flags : List (String × String)
+  source : Option String
+  force : Bool
+  rest : List String
+
+partial def Tower.installOpts : List String → Opts
+  | .nil => Opts.mk .nil .none .false .nil
+  | .cons a .nil => Opts.mk .nil .none .false (a :> .nil)
+  | .cons a (.cons v more) => match String.eq a "--source" with
+    | .true => let o := Tower.installOpts more; Opts.mk o.flags (.some v) o.force o.rest
+    | .false => match String.eq a "--force" with
+      | .true => let o := Tower.installOpts (v :> more); Opts.mk o.flags o.source .true o.rest
+      | .false => match Bool.and (String.startsWith a "--") (String.elem (String.drop 2 a) Tower.flagKeys) with
+        | .true => let o := Tower.installOpts more; Opts.mk ((String.drop 2 a, v) :> o.flags) o.source o.force o.rest
+        | .false => let o := Tower.installOpts (v :> more); Opts.mk o.flags o.source o.force (a :> o.rest)
+-- (a lone `--force` at the end)
+def Tower.opts (args : List String) : Opts := match List.reverse args with
+  | .cons last init => match String.eq last "--force" with
+    | .true => let o := Tower.installOpts (List.reverse init); Opts.mk o.flags o.source .true o.rest
+    | .false => Tower.installOpts args
+  | .nil => Tower.installOpts args
+
+def Tower.shimText (e : TEnv) (tool : String) : String :=
+  let self := String.intercalate " " (List.map Tower.shQuote e.self) & " --home " & Tower.shQuote e.home;
+  "#!/bin/sh
+# tower shim: runs `" & tool & "` of the toolchain for this directory (`tower show`).
+# Written by `tower self shims`; it is overwritten.
+case \"$1\" in
+  +*) tc=$(" & self & " resolve \"$1\") || exit; shift ;;
+  *) tc=$(" & self & " resolve) || exit ;;
+esac
+exec \"$tc/bin/" & tool & "\" \"$@\"
+"
+
+def Tower.writeShimsGo (e : TEnv) : List String → EIO Unit
+  | .nil => EIO.pure ()
+  | .cons t rest => do
+    Tower.writeScript (Path.join (TEnv.binDir e) t) (Tower.shimText e t);
+    Tower.writeShimsGo e rest
+def Tower.writeShims (e : TEnv) : EIO Unit := Tower.writeShimsGo e Tower.tools
+
+def Tower.describe (e : TEnv) (name : String) (s : Settings) (here : Option String) : EIO String := do
+  i ← Tower.readInfo (Path.join (TEnv.toolchains e) name);
+  let what := (match i with
+    | .some i => match String.eq i.source "link" with
+      | .true => "link " & i.path
+      | .false => i.source & ", " & i.ref & Tower.short i
+    | .none => "?" : String);
+  let spec := (match i with
+    | .some i => i.spec
+    | .none => name : String);
+  let mark1 := (match Tower.optEq s.default (.some spec) with
+    | .true => " (default)"
+    | .false => "" : String);
+  let mark2 := (match Tower.optEq here (.some spec) with
+    | .true => " (here)"
+    | .false => "" : String);
+  EIO.pure (spec & "  [" & what & "]" & mark1 & mark2)
+
+def Tower.installEach (e : TEnv) (o : Opts) : List String → Nat → EIO Nat
+  | .nil, status => EIO.pure status
+  | .cons spec rest, status => do
+    r ← EIO.lift (Tower.install e spec o.source o.force o.flags);
+    match r with
+    | .ok d => do
+      Tower.say d;
+      Tower.installEach e o rest status
+    | .error m => do
+      Tower.note (spec & ": " & m);
+      Tower.installEach e o rest 1
+def Tower.uninstallEach (e : TEnv) : List String → Nat → EIO Nat
+  | .nil, status => EIO.pure status
+  | .cons n rest, status => do
+    let d := TEnv.tcDir e n;
+    ex ← EIO.lift (Tower.present d);
+    match ex with
+    | .true => do
+      Tower.removeAll d;
+      Tower.note ("removed " & n);
+      Tower.uninstallEach e rest status
+    | .false => do
+      Tower.note (n & " is not installed");
+      Tower.uninstallEach e rest 1
+def Tower.listEach (e : TEnv) (s : Settings) (here : Option String) : List String → EIO Unit
+  | .nil => EIO.pure ()
+  | .cons n rest => do
+    l ← Tower.describe e n s here;
+    Tower.say l;
+    Tower.listEach e s here rest
+
+def Tower.hereSpec (e : TEnv) : EIO (Option String) := do
+  cwd ← FS.currentDir;
+  a ← Tower.active e cwd;
+  match a with
+  | .some p => EIO.pure (.some p.1)
+  | .none => EIO.pure .none
+
+def Tower.toolchainCmd (e : TEnv) (args : List String) : EIO Nat := match args with
+  | .nil => Tower.usageFail
+  | .cons cmd rest => match String.eq cmd "install" with
+    | .true =>
+      let o := Tower.opts rest;
+      match o.rest with
+      | .nil => Tower.fail "toolchain install: which toolchain?"
+      | .cons _ _ => Tower.installEach e o o.rest 0
+    | .false => match String.eq cmd "uninstall" with
+    | .true => Tower.uninstallEach e rest 0
+    | .false => match Bool.and (String.eq cmd "list") (List.isEmpty rest) with
+    | .true => do
+      s ← TEnv.settings e;
+      here ← Tower.hereSpec e;
+      names ← TEnv.installed e;
+      Tower.listEach e s here names;
+      EIO.pure 0
+    | .false => match String.eq cmd "link" with
+    | .true =>
+      let o := Tower.opts rest;
+      match o.rest with
+      | .cons name (.cons dir .nil) => do
+        r ← EIO.lift (Tower.link e name dir o.flags);
+        match r with
+        | .ok d => do
+          Tower.say d;
+          EIO.pure 0
+        | .error m => Tower.fail m
+      | _ => Tower.fail "toolchain link NAME DIR"
+    | .false => Tower.usageFail
+
+-- a directory argument, or here
+def Tower.dirArg (rest : List String) : EIO String := match rest with
+  | .cons d _ => Tower.realPath d
+  | .nil => do
+    c ← FS.currentDir;
+    Tower.realPath c
+
+def Tower.overrideCmd (e : TEnv) (args : List String) : EIO Nat := match args with
+  | .cons cmd rest => match Bool.and (String.eq cmd "set") (Bool.not (List.isEmpty rest)) with
+    | .true => match rest with
+      | .cons spec more => do
+        dir ← Tower.dirArg more;
+        s ← TEnv.settings e;
+        TEnv.saveSettings e (Settings.setOverrides s (Tower.snoc (Tower.without dir s.overrides) (dir, spec)));
+        Tower.note (dir & " uses " & spec);
+        EIO.pure 0
+      | .nil => Tower.usageFail
+    | .false => match String.eq cmd "unset" with
+    | .true => do
+      dir ← Tower.dirArg rest;
+      s ← TEnv.settings e;
+      match String.lookup dir s.overrides with
+      | .none => Tower.fail ("no override for " & dir)
+      | .some x => do
+        TEnv.saveSettings e (Settings.setOverrides s (Tower.without dir s.overrides));
+        EIO.pure 0
+    | .false => match Bool.and (String.eq cmd "list") (List.isEmpty rest) with
+    | .true => do
+      s ← TEnv.settings e;
+      Tower.sayAll (List.map (fun (p : String × String) => p.1 & "  " & p.2) s.overrides);
+      EIO.pure 0
+    | .false => Tower.usageFail
+  | .nil => Tower.usageFail
+
+-- the spec for the shims: `+SPEC`, or the one for the current directory
+def Tower.specHere (e : TEnv) (plus : Option String) : EIO String := match plus with
+  | .some p => EIO.pure (String.drop 1 p)
+  | .none => do
+    h ← Tower.hereSpec e;
+    match h with
+    | .some s => EIO.pure s
+    | .none => EIO.fail "no toolchain here: no wiz-toolchain file, override or default (tower default nightly)"
+
+def Tower.isPinned (spec : String) : Bool := Nat.beq (List.length (String.splitOn spec "@")) 2
+
+def Tower.updateEach (e : TEnv) (s : Settings) : List String → Nat → EIO Nat
+  | .nil, status => EIO.pure status
+  | .cons n rest, status => do
+    mi ← Tower.readInfo (Path.join (TEnv.toolchains e) n);
+    match mi with
+    | .none => do
+      Tower.note (n & " is not installed");
+      Tower.updateEach e s rest 1
+    | .some i => match Bool.or (String.eq i.source "link") (Tower.isPinned i.spec) with
+      | .true => Tower.updateEach e s rest status
+      | .false => do
+        w ← EIO.lift (Tower.resolveSpec s i.spec);
+        match w with
+        | .error m => do
+          Tower.note (n & ": " & m);
+          Tower.updateEach e s rest 1
+        -- a release install of nightly follows the tag nightly (its snapshot), not the branch
+        | .ok w => match Tower.optEq (match String.eq i.source "release" with
+            | .true => (match w.snapshot with
+              | .some c => .some c
+              | .none => w.commit)
+            | .false => w.commit : Option String) (.some i.commit) with
+          | .true => do
+            Tower.say (i.spec & ": up to date");
+            Tower.updateEach e s rest status
+          | .false => do
+            r ← EIO.lift (Tower.install e i.spec (.some i.source) .true i.flags);
+            match r with
+            | .ok d => Tower.updateEach e s rest status
+            | .error m => do
+              Tower.note (n & ": " & m);
+              Tower.updateEach e s rest 1
+
+def Tower.update (e : TEnv) (names : List String) : EIO Nat := do
+  s ← TEnv.settings e;
+  all ← TEnv.installed e;
+  Tower.updateEach e s (match names with
+    | .nil => all
+    | .cons _ _ => names) 0
+
+partial def Tower.globalOpts (e : TEnv) : List String → TEnv × List String
+  | .cons a (.cons v rest) => match String.eq a "--home" with
+    | .true => Tower.globalOpts (TEnv.mk v e.self) rest
+    | .false => match String.eq a "--self" with
+      | .true => Tower.globalOpts (TEnv.mk e.home (v :> .nil)) rest
+      | .false => match String.eq a "--self-arg" with
+        | .true => Tower.globalOpts (TEnv.mk e.home (Tower.snoc e.self v)) rest
+        | .false => (e, a :> v :> rest)
+  | rest => (e, rest)
+
+def Tower.exitCode : ExitStatus → Nat
+  | .exited c => c
+  | .signaled n => 128 + n
+
+-- run `cmd` with the toolchain's `bin/` first on `PATH`
+def Tower.runWith (dir cmd : String) (args : List String) : EIO Nat := do
+  path ← EIO.lift (Env.get "PATH");
+  Env.set "PATH" (Path.join dir "bin" & ":" & Tower.getD path "");
+  st ← Process.run cmd args;
+  EIO.pure (Tower.exitCode st)
+
+def Tower.selfCmd (e : TEnv) (args : List String) : EIO Nat := match args with
+  | .cons cmd .nil => match String.eq cmd "shims" with
+    | .true => do
+      Tower.writeShims e;
+      Tower.note ("shims for " & String.intercalate ", " Tower.tools & " in " & TEnv.binDir e & "; put it first on PATH");
+      EIO.pure 0
+    | .false => match String.eq cmd "install" with
+      | .true => do
+        exe ← Tower.appPath;
+        e2 ← (match String.startsWith exe "/nix/store/" with
+          | .true => EIO.pure e
+          | .false => do
+            let dst := Path.join (TEnv.binDir e) "tower";
+            Tower.createDirAll (TEnv.binDir e);
+            (match String.eq exe dst with
+              | .true => EIO.pure ()
+              | .false => do
+                suffix ← EIO.lift Tower.tmpSuffix;
+                let tmp := Path.join (TEnv.binDir e) (".tower.tmp" & suffix);
+                b ← FS.readBytes exe;
+                FS.writeBytes tmp b;
+                Tower.makeExecutable tmp;
+                FS.rename tmp dst : EIO Unit);
+            EIO.pure (TEnv.mk e.home (dst :> .nil)) : EIO TEnv);
+        Tower.writeShims e2;
+        Tower.note ("tower and shims in " & TEnv.binDir e2 & ": add it to PATH, e.g. export PATH=\"" & TEnv.binDir e2 & ":$PATH\"");
+        EIO.pure 0
+      | .false => Tower.usageFail
+  | _ => Tower.usageFail
+
+def Tower.showCmd (e : TEnv) : EIO Nat := do
+  cwd ← FS.currentDir;
+  a ← Tower.active e cwd;
+  match a with
+  | .none => Tower.fail "no toolchain here (no wiz-toolchain file, override or default)"
+  | .some p => do
+    let d := TEnv.tcDir e p.1;
+    ex ← EIO.lift (FS.exists (Path.join d "tower.info"));
+    Tower.say (p.1 & "\n  from " & p.2 & "\n  " & (match ex with
+      | .true => d
+      | .false => "not installed"));
+    EIO.pure 0
+
+def Tower.setCmd (e : TEnv) (k v : String) : EIO Nat := do
+  s ← TEnv.settings e;
+  match Settings.set s k v with
+  | .ok s2 => do
+    TEnv.saveSettings e s2;
+    EIO.pure 0
+  | .error m => Tower.fail m
+
+def Tower.is (a : String) (args : List String) (n : Nat) : Bool := match args with
+  | .cons x rest => Bool.and (String.eq x a) (Nat.beq (List.length rest) n)
+  | .nil => .false
+
+def Tower.dispatch (e : TEnv) (args : List String) : EIO Nat := match args with
+  | .nil => do
+    EIO.lift (IO.print Tower.usage);
+    EIO.pure 0
+  | .cons cmd rest =>
+  match String.eq cmd "toolchain" with
+  | .true => Tower.toolchainCmd e rest
+  | .false => match String.elem cmd ("install" :> "uninstall" :> "link" :> .nil) with
+  | .true => Tower.toolchainCmd e args
+  | .false => match Tower.is "list" args 0 with
+  | .true => Tower.toolchainCmd e args
+  | .false => match Tower.is "default" args 0 with
+  | .true => do
+    s ← TEnv.settings e;
+    match s.default with
+    | .some d => do
+      Tower.say d;
+      EIO.pure 0
+    | .none => Tower.fail "no default toolchain (tower default nightly)"
+  | .false => match Tower.is "default" args 1 with
+  | .true => do
+    let spec := Tower.getD (List.head rest) "";
+    r ← EIO.lift (Tower.ensure e spec .true);
+    match r with
+    | .error m => Tower.fail m
+    | .ok d => do
+      s ← TEnv.settings e;
+      TEnv.saveSettings e (Settings.setDefault s (.some spec));
+      Tower.note ("default toolchain: " & spec);
+      EIO.pure 0
+  | .false => match String.eq cmd "override" with
+  | .true => Tower.overrideCmd e rest
+  | .false => match Tower.is "show" args 0 with
+  | .true => Tower.showCmd e
+  | .false => match String.eq cmd "resolve" with
+  | .true => do
+    sp ← EIO.lift (Tower.specHere e (List.head rest));
+    match sp with
+    | .error m => Tower.fail m
+    | .ok spec => do
+      s ← TEnv.settings e;
+      r ← EIO.lift (Tower.ensure e spec s.autoInstall);
+      match r with
+      | .ok d => do
+        Tower.say d;
+        EIO.pure 0
+      | .error m => Tower.fail m
+  | .false => match Tower.is "which" args 1 with
+  | .true => do
+    sp ← EIO.lift (Tower.specHere e .none);
+    match sp with
+    | .error m => Tower.fail m
+    | .ok spec => do
+      s ← TEnv.settings e;
+      r ← EIO.lift (Tower.ensure e spec s.autoInstall);
+      match r with
+      | .error m => Tower.fail m
+      | .ok d => do
+        let tool := Tower.getD (List.head rest) "";
+        let p := Path.join (Path.join d "bin") tool;
+        ex ← EIO.lift (FS.exists p);
+        match ex with
+        | .true => do
+          Tower.say p;
+          EIO.pure 0
+        | .false => Tower.fail (spec & " has no " & tool)
+  | .false => match Bool.and (String.eq cmd "run") (Bool.not (List.isEmpty rest)) with
+  | .true => match rest with
+    | .cons spec more =>
+      let c := (match more with
+        | .cons dd tail => match String.eq dd "--" with
+          | .true => tail
+          | .false => more
+        | .nil => .nil : List String);
+      match c with
+      | .nil => Tower.fail "run SPEC -- CMD ARGS…"
+      | .cons prog pargs => do
+        s ← TEnv.settings e;
+        r ← EIO.lift (Tower.ensure e spec s.autoInstall);
+        match r with
+        | .ok d => Tower.runWith d prog pargs
+        | .error m => Tower.fail m
+    | .nil => Tower.usageFail
+  | .false => match String.eq cmd "update" with
+  | .true => Tower.update e rest
+  | .false => match Tower.is "set" args 1 with
+  | .true => Tower.setCmd e (Tower.getD (List.head rest) "") ""
+  | .false => match Bool.and (String.eq cmd "set") (Nat.lt 1 (List.length rest)) with
+  | .true => match rest with
+    | .cons k v => Tower.setCmd e k (String.intercalate " " v)
+    | .nil => Tower.usageFail
+  | .false => match Tower.is "settings" args 0 with
+  | .true => do
+    s ← TEnv.settings e;
+    EIO.lift (IO.print (Settings.render s));
+    EIO.pure 0
+  | .false => match String.eq cmd "self" with
+  | .true => Tower.selfCmd e rest
+  | .false => match Bool.and (Bool.or (String.eq cmd "--help") (String.eq cmd "help")) (List.isEmpty rest) with
+  | .true => do
+    EIO.lift (IO.print Tower.usage);
+    EIO.pure 0
+  | .false => Tower.usageFail
+
+-- run tower with these arguments, and exit with its status
+def Tower.main (e0 : TEnv) (args0 : List String) : IO Unit :=
+  let p := Tower.globalOpts e0 args0;
+  IO.bind (Tower.dispatch p.1 p.2) (fun r => match r with
+    | .ok n => Process.exit n
+    | .error m => IO.bind (IO.ePrintln ("tower: " & m)) (fun u => Process.exit 1))
+
+-- The environment of a `tower` process: `~/.tower`, and this binary for the shims.
+def Tower.defaultEnv : IO TEnv :=
+  IO.bind (Env.get "HOME") (fun home => IO.bind Tower.appPath (fun exe =>
+    IO.pure (TEnv.mk (Path.join (Tower.getD home ".") ".tower") (match exe with
+      | .ok p => p :> .nil
+      | .error m => "tower" :> .nil))))

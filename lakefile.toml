@@ -12,6 +12,14 @@ name = "Wiz"
 [[lean_lib]]
 name = "Tests"
 
+# The spec of the core theory and its reference checker (see
+# WizMeta.lean). Not a default target: only the test driver imports it, so `lake build`
+# and `wiz` don't build it.
+[[lean_lib]]
+name = "WizMeta"
+# a misspelt name in a rule must be an error, not a fresh variable
+leanOptions = { autoImplicit = false, relaxedAutoImplicit = false }
+
 [[lean_exe]]
 name = "wiz"
 moreLinkObjs = ["sockets"]
@@ -19,7 +27,7 @@ root = "Main"
 
 [[lean_exe]]
 name = "tests"
-moreLinkObjs = ["sockets"]
+moreLinkObjs = ["sockets", "proc"]
 root = "Tests.Main"
 
 [[lean_lib]]
@@ -27,7 +35,7 @@ name = "Grail"
 
 [[lean_exe]]
 name = "grail"
-moreLinkObjs = ["sockets"]
+moreLinkObjs = ["sockets", "proc"]
 root = "Grail.Main"
 
 # the toolchain manager (stage 26): it doesn't import Wiz
@@ -43,6 +51,11 @@ root = "Tower.Main"
 [[input_file]]
 name = "sockets"
 path = "c/sockets.c"
+
+# `_exit` for grail's job supervisor (Grail/Exec.lean), linked into grail and the tests
+[[input_file]]
+name = "proc"
+path = "c/proc.c"
 
 # The C runtime as text (`include_str`, runtime/WizRuntime.lean), a library of its own so
 # that only it depends on runtime/wiz.c: `needs` mixes the file's hash into its modules'

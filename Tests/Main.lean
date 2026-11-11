@@ -6,6 +6,7 @@ import Tests.Elab
 import Tests.ElabFix
 import Tests.Grail
 import Tests.LSP
+import Tests.Meta
 import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
@@ -28,6 +29,7 @@ def groups : List Group :=
   Grail.groups ++
   Lint.groups ++
   LSP.groups ++
+  Meta.groups ++
   Parser.groups ++
   Prop.groups ++
   Rig.groups ++
@@ -51,6 +53,62 @@ def selectedCases (g : Group) (args : List String) : Option (List Nat) := Id.run
     | [_, list] => ixs := ixs ++ (list.splitOn ",").filterMap String.toNat?
     | _ => return none
   return some ixs
+
+/-- The group named `name`, among the suite's and the driver's fixtures (`--run` finds
+these; no selector picks them). -/
+def findGroup (name : String) : Option Group :=
+  (groups ++ [driverFixtures]).find? (·.name == name)
+
+/-- The arguments of a suite run, checked: an argument that is neither a toolchain flag
+nor `--timings`/`--shard` (an unknown or misspelt flag), a selector that picks no group
+and a case index that the group does not have are errors (exit code 2), not an empty run
+that passes. -/
+def checkSelectors (args : List String) : IO (Option UInt32) := do
+  for arg in args do
+    if arg.startsWith "--" then
+      IO.eprintln s!"unknown flag (or a flag without its value): {arg}"
+      return some 2
+    let picked := groups.filter (selects · arg)
+    if picked.isEmpty then
+      IO.eprintln s!"no test group matches {arg} (`tests --list` lists them; `=NAME` is exact, anything else a prefix)"
+      return some 2
+    if let [_, list] := arg.splitOn "#" then
+      for g in picked do
+        for ix in list.splitOn "," do
+          unless ix.toNat?.any (· < g.cases.length) do
+            IO.eprintln s!"no case {ix} in {g.name}: it has {g.cases.length} (0 to {g.cases.length - 1}; `tests --list-cases '={g.name}'`)"
+            return some 2
+  return none
+
+/-- `tests --run GROUP INDEX` (also `GROUP#INDEX`, and `=GROUP`): the case with that
+index (from 0) of the group named `GROUP`, run as `lake test -- '=GROUP#INDEX'` runs it,
+in a child process with the suite's toolchain (`grail.local.wiz`, then any toolchain
+flags). Prints the case's name and result (and a failure's output) and exits 0 if it
+passed, 1 if it failed, 2 on a usage error and 3 if it was skipped: a skipped case is not
+a pass. -/
+def runOne (args : List String) : IO UInt32 := do
+  let usage := "usage: tests --run GROUP INDEX [toolchain flags] (INDEX from 0: `tests --list-cases '=GROUP'`)"
+  let args := match args with
+    | [one] => one.splitOn "#"
+    | args => args
+  let [group, ix] := args
+    | IO.eprintln s!"unexpected arguments: {" ".intercalate args}\n{usage}"; return 2
+  let group := if group.startsWith "=" then (group.drop 1).toString else group
+  let some g := findGroup group
+    | IO.eprintln s!"no test group named {group} (`tests --list`)\n{usage}"; return 2
+  let some i := ix.toNat?
+    | IO.eprintln s!"not a case index: {ix}\n{usage}"; return 2
+  unless i < g.cases.length do
+    IO.eprintln s!"no case {i} in {group}: it has {g.cases.length} (0 to {g.cases.length - 1}; `tests --list-cases '={group}'`)"
+    return 2
+  let [r] ← g.run (some [i])
+    | IO.eprintln s!"{group} #{i} did not run"; return 1
+  if !r.ok then
+    IO.println s!"\n{group} #{i}: FAILED"; return 1
+  if let some why := r.skipped then
+    IO.println s!"\n{group} #{i}: SKIPPED ({why}); a skipped case is not a pass"; return 3
+  IO.println s!"\n{group} #{i}: passed"
+  return 0
 
 /-- A JSON string literal. -/
 def jsonStr (s : String) : String := Id.run do
@@ -106,7 +164,10 @@ starts with one of the arguments, `lake test -- =c` only the group named `c`, an
 `lake test -- =selfhost#0,3` only cases 0 and 3 of the group `selfhost`.
 `lake test -- --list` prints the group names, one per line (CI checks its shards
 against them), and `lake test -- --list-cases SELECTOR…` the selected cases, as
-`GROUP<tab>INDEX<tab>NAME` lines. `--timings FILE` appends one line of JSON per case to
+`GROUP<tab>INDEX<tab>NAME` lines; `lake test -- --run GROUP INDEX` runs one case and
+exits with its result (`runOne`). A selector that picks nothing, a case index the group
+lacks and an unknown flag are errors. A skipped case (`Tests.skip`) shows as `⊘` and is
+counted apart. `--timings FILE` appends one line of JSON per case to
 FILE (its group, index, name, wall time in seconds, whether it passed, and its notes:
 `Tests.note`), labelled with `--shard NAME`. -/
 def main (args : List String) : IO UInt32 := do
@@ -114,19 +175,24 @@ def main (args : List String) : IO UInt32 := do
   -- fails `wiz check`; `--panic-probe continue` turns it off again
   Wiz.exitOnPanic
   -- tower, as the shims of the tower tests call it (`Tests/Tower.lean`)
+  -- (23k) a grail job's supervisor, and grail itself (the job-hygiene tests run it)
+  if let "--grail-exec" :: rest := args then return ← Grail.execMain rest
+  if let "--grail" :: rest := args then return ← Grail.cliMain rest
   if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | ["--prop-no-sizes"] | ["--prop-trace"] | "--check" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run-case" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | ["--prop-no-sizes"] | ["--prop-trace"] | "--check" :: _ | "--check-libs" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
   flagsRef.set tc.toFlags
   match args' with
-  | ["--run", group, ix] =>
-    match groups.find? (·.name == group) >>= (·.cases[ix.toNat!]?) with
+  -- one case in this process: what `Group.run` starts for each case
+  | ["--run-case", group, ix] =>
+    match findGroup group >>= fun g => ix.toNat? >>= (g.cases[·]?) with
     | some c => c.runHere
     | none => do IO.eprintln s!"no such case: {group} #{ix}"; pure 2
+  | "--run" :: rest => runOne rest
   -- (D1) check a file with the given regularity mode, in a child process that the test
   -- can time out: `Elab.checkDiverges`
   | ["--check", mode, file] => do
@@ -136,6 +202,14 @@ def main (args : List String) : IO UInt32 := do
       | [m, "eager"] => (m, false)
       | _ => (mode, true)
     let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { globals := { regularity := Elab.regularityMode mode, lazyProofs } }
+    let errs := s.messages.filter (·.severity == .error)
+    for m in errs do IO.eprintln (m.render input)
+    pure (if errs.isEmpty then 0 else 1)
+  -- check a file with every library importable, in a child process that the test can
+  -- time out: `Elab.failsLibsWithin`
+  | ["--check-libs", file] => do
+    let input ← IO.FS.readFile file
+    let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { trustedModule := libModule, loader := ← Elab.libLoader }
     let errs := s.messages.filter (·.severity == .error)
     for m in errs do IO.eprintln (m.render input)
     pure (if errs.isEmpty then 0 else 1)
@@ -166,10 +240,12 @@ def main (args : List String) : IO UInt32 := do
     let (timings, args) := takeFlag "--timings" args
     let (shard, args) := takeFlag "--shard" args
     let shard := shard.getD ""
+    if let some code ← checkSelectors args then return code
     let selected := if args.isEmpty then groups
       else groups.filter fun g => args.any (selects g)
     let mut passed := 0
     let mut failed := 0
+    let mut skipped := 0
     for g in selected do
       let start ← IO.monoMsNow
       let results ← g.run (selectedCases g args) fun r => do
@@ -179,7 +255,9 @@ def main (args : List String) : IO UInt32 := do
       let cases := results.foldl (· + ·.ms) 0
       IO.println s!"  ({g.name}: {showMs ((← IO.monoMsNow) - start)} s; cases {showMs cases} s)"
       let p := (results.filter (·.ok)).length
-      passed := passed + p
+      let k := (results.filter (·.skipped.isSome)).length
+      passed := passed + (p - k)
+      skipped := skipped + k
       failed := failed + (results.length - p)
-    IO.println s!"\n{passed} passed, {failed} failed"
+    IO.println s!"\n{passed} passed, {failed} failed{if skipped == 0 then "" else s!", {skipped} skipped"}"
     pure (if failed == 0 then 0 else 1)

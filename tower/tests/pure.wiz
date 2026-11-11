@@ -1,0 +1,18 @@
+import Tower.Cli
+-- the pure parts of tower (stage 26e), as the Lean tests check them (Tests/Tower.lean)
+#eval Tower.latestTag (("refs/tags/v1.9.2", "") :> ("refs/tags/v1.10.0", "") :> ("refs/tags/x", "") :> ("refs/heads/v9", "") :> .nil)
+#eval Tower.flakeRef "github:o/r" "abc"
+#eval Tower.flakeRef "git+file:///r" "abc"
+#eval Tower.flakeRef "git+file:///r?dir=x" "abc"
+#eval Tower.peel (Tower.lsRows (String.splitOn "c1\trefs/heads/main\nc2\trefs/tags/v1\nc3\trefs/tags/v1^{}\n" "\n"))
+#eval Tower.tcName "agent/x y"
+#eval Tower.shQuote "it's"
+#eval Tower.flagWords (("cflags", "-I/opt/gmp/include") :> ("cc", "gcc") :> .nil)
+#eval match Settings.parse "default v1\ncflags -I/x y\noverride v1 /a b\n# comment\n" with
+  | .ok s => Settings.render s
+  | .error e => e
+#eval match Settings.parse "colour blue\n" with
+  | .ok s => "parsed"
+  | .error e => e
+#eval Info.render (Info.parse (Info.render (Info.mk "v1" "source" "v1" "abc" "" (("cc", "gcc") :> .nil))))
+#eval Tower.opts ("v1" :> "--source" :> "release" :> "--cc" :> "gcc" :> "--force" :> .nil)
