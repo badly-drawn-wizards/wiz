@@ -426,6 +426,32 @@ partial def unifyLevel (a b : Level) : ElabM R Unit := do
   --sol>
 
 
+/-- `v` evaluated again with the holes solved since (as `zonk` does, then `eval`): a
+cast computed while a hole in its types was unsolved is stuck, and may compute now, as
+the kernel will compute it. `none` if nothing changed. -/
+partial def reevalStale? (l : Lvl) (v : Val R) : ElabM R (Option (Val R)) := do
+  let g ← getGlobals
+  let env : Env R := ((List.range l).map fun i => Val.var i).reverse
+  let rec inst (k : Lvl) (t : Term R) : ElabM R (Term R) := do
+    let rec spine : Term R → Array (Term R) → Term R × Array (Term R)
+      | .app f a, acc => spine f (#[a] ++ acc)
+      | t, acc => (t, acc)
+    let (h, args) := spine t #[]
+    match h with
+    | .mvar m =>
+      match (← lookupMeta m).solution with
+      | some sol =>
+        let envk : Env R := ((List.range k).map fun i => Val.var i).reverse
+        inst k (quote g k (args.foldl (fun f a => vApp g f (eval g envk a)) sol))
+      | none => return (← args.mapM (inst k)).foldl .app (.mvar m)
+    | _ =>
+      let h' ← h.mapChildrenM instLevel (fun d c => inst (k + d) c)
+      return (← args.mapM (inst k)).foldl .app h'
+  let q := quote g l v
+  let v' := eval g env (← inst l q)
+  if quote g l v' == q then return none
+  return some v'
+
 /-- η for a projected hole: `?m x… .1` (or `.2`) means `?m x…` is a pair, so it is one:
 solve `?m := fun x… => (?a x…, ?b x…)` with two new holes (exact, not a guess; Agda
 η-expands holes of record type the same way). Then `?m x… .1` is `?a x…`, a pattern
@@ -451,16 +477,6 @@ def etaProjected (m : Nat) (sp : Array (Elim R)) : ElabM R Bool := do
   pure true
 
 mutual
-
-/-- Do `A` and `B` unify without solving any hole? (Nothing is kept either way.) -/
-partial def sameNow (l : Lvl) (A B : Val R) : ElabM R Bool := do
-  let s ← get
-  let solved (st : ElabState R) : Nat :=
-    (st.metas.filter (·.solution.isSome)).size + (st.levelMetas.filter (·.isSome)).size
-  let ok ← tryCatch (do unify l A B; pure (solved (← get) == solved s)) (fun _ => pure false)
-  set s
-  pure ok
-
 
 /-- **Exercise 3.5.** Unify two values in a context of `l` variables, throwing on
 failure. Force both sides first, then:
@@ -499,10 +515,10 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   -- it is `x` (regularity; evaluated again, it would compute to `x`)
   let isCast (v : Val R) : Bool := v matches .neutral (.cast ..) #[]
   if isCast (← force t) != isCast (← force u) then
-    if let .neutral (.cast A B _ x) #[] ← force t then
-      if ← sameNow l A B then return ← unify l x u
-    if let .neutral (.cast A B _ x) #[] ← force u then
-      if ← sameNow l A B then return ← unify l t x
+    if isCast (← force t) then
+      if let some t' ← reevalStale? l (← force t) then return ← unify l t' u
+    else
+      if let some u' ← reevalStale? l (← force u) then return ← unify l t u'
   -- a failure that met a metavariable may not be final (see `unifyGlued`)
   if (← force t) matches .neutral (.mvar _) _ || (← force u) matches .neutral (.mvar _) _ then noteMeta
   --<sol
