@@ -56,7 +56,7 @@ private def solverId (cmd : String) : IO String := do
   if let some v := (← solverIds.get).get? cmd then return v
   let v ← try
       let out ← IO.Process.output { cmd, args := #["--version"] }
-      pure s!"{cmd} {out.stdout.trim}"
+      pure s!"{cmd} {out.stdout.trimAscii.toString}"
     catch _ => pure s!"{cmd} (not found)"
   solverIds.modify (·.insert cmd v)
   pure v
@@ -85,8 +85,8 @@ private def runIO (cfg : Config) (cmd : String) (args : List String) (input : St
   let r ← try
       let out ← IO.Process.output { cmd, args := args.toArray }
       let file ← if wantOut && (← outPath.pathExists) then IO.FS.readFile outPath else pure ""
-      pure (.ok { exitCode := out.exitCode, stdout := out.stdout, outFile := file : Answer })
-    catch e => pure (.error s!"running `{cmd}` failed: {e}")
+      pure (Except.ok { exitCode := out.exitCode, stdout := out.stdout, outFile := file : Answer } : Except String Answer)
+    catch e => pure (Except.error s!"running `{cmd}` failed: {e}")
   try IO.FS.removeFile inFile catch _ => pure ()
   try IO.FS.removeFile outPath catch _ => pure ()
   match r with

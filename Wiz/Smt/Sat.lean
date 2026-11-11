@@ -66,6 +66,6 @@ def satSolve (cfg : Config) (nvars : Nat) (clauses : List (List Nat)) : SatResul
       let lits := (a.stdout.splitOn "\n").filter (·.startsWith "v ") |>.flatMap fun l =>
         ((l.drop 2).toString.splitOn " ").filterMap String.toInt?
       .sat (lits.filter (· > 0) |>.map litOfInt)
-    else .error s!"the SAT solver gave no answer (exit code {a.exitCode}): {a.stdout.trim}"
+    else .error s!"the SAT solver gave no answer (exit code {a.exitCode}): {a.stdout.trimAscii.toString}"
 
 end Wiz.Smt

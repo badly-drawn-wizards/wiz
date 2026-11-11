@@ -2772,8 +2772,8 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let (sid, ans) ← match Smt.runSolver s.smt s.smt.solver ["-smt2", s!"-T:{secs}", "{in}"] q.script "smt2" false with
       | .ok r => pure r
       | .error e => throwAt info s!"smt: {e}"
-    let out := ans.stdout.trim
-    let first := ((out.splitOn "\n").headD "").trim
+    let out := ans.stdout.trimAscii.toString
+    let first := ((out.splitOn "\n").headD "").trimAscii.toString
     if first == "sat" then
       let model := ((out.splitOn "\n").drop 1) |> "\n".intercalate
       let model := q.shown.foldl (fun m (x, u) => m.replace x u) model
