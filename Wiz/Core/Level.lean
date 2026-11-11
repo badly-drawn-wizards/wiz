@@ -21,6 +21,8 @@ approximation, the same trade-off Lean makes.
 
 namespace Wiz
 
+abbrev Name := String
+
 inductive Level where
   | zero
   | succ (l : Level)

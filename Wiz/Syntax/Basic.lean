@@ -1,4 +1,4 @@
-import Wiz.Core.Term
+import Wiz.Core.Level
 
 /-!
 # Syntax trees

@@ -1,5 +1,6 @@
 import Std.Data.HashMap
 import Wiz.Core.Level
+import Wiz.Syntax.PPTable
 
 /-!
 # Core terms
@@ -28,8 +29,6 @@ Stage 4 added Σ-types, observational equality, descriptions with μ/ν data, an
 -/
 
 namespace Wiz
-
-abbrev Name := String
 
 inductive BinderInfo where
   | default
@@ -458,6 +457,9 @@ structure Globals (R : Type) where
   opaques : Std.HashMap Name String := {}
   /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
   module : String := ""
+  /-- (11r) how terms print as notation: unexpanders and the grammar (`Syntax/PPTable.lean`).
+  The kernel ignores this. -/
+  pp : PPTable := {}
 
 namespace Globals
 
