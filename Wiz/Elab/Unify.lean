@@ -175,7 +175,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   -- (given) and glued induction on a numeral keeps its folded form
   if let .lazyInd lv I D w P mt i x sp val ← forceMeta v then
     -- (on a constructor, `ind` is lazy for speed alone: renamed as what it computes)
-    if !(whnf x matches .natLit _) then return ← rename m p val.get
+    if (whnf x matches .con _) then return ← rename m p val.get
     let t := Term.ind lv (← rename m p I) (← rename m p D) w (← rename m p P) (← rename m p mt) (← rename m p i) (← rename m p x)
     return ← sp.foldlM (fun t e => match e with
       | .app a => return .app t (← rename m p a)
@@ -538,7 +538,7 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
   match t, u with
   | .lazyInd _ _ _ _ _ _ _ x _ _, .lazyInd _ _ _ _ _ _ _ y _ _ =>
     -- (on a constructor, `ind` is lazy for speed alone: compared by what it computes)
-    if !(whnf x matches .natLit _) || !(whnf y matches .natLit _) then return false
+    if (whnf x matches .con _) || (whnf y matches .con _) then return false
     let g ← getGlobals
     pure (quote g l t == quote g l u)
   | .unfold n us sp v, .unfold n' us' sp' v' =>

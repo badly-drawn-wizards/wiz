@@ -58,7 +58,7 @@ lazy for speed alone, so wherever a value's shape or read-back is looked at with
 (`quote`, the elaborator's unifier) they count as what they compute, as before they were
 lazy. Inductions on numerals stay folded (`Val.lazyInd` since stage 7). -/
 partial def unlazyCon : Val R → Val R
-  | v@(.lazyInd _ _ _ _ _ _ _ x _ val) => if whnf x matches .natLit _ then v else unlazyCon val.get
+  | v@(.lazyInd _ _ _ _ _ _ _ x _ val) => if whnf x matches .con _ then unlazyCon val.get else v
   | v => v
 
 /-- **Exercise 4.4b.** First projection. -/
@@ -1314,7 +1314,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   -- (folded only on a numeral, as before kernel-eval: `ind` on a constructor is lazy for
   -- speed alone and reads back as what it computes, so read-back is unchanged)
   | .lazyInd lv I D v P m i x sp val =>
-    if !(whnf x matches .natLit _) then quote g l (unlazyCon val.get) else
+    if (whnf x matches .con _) then quote g l (unlazyCon val.get) else
     sp.foldl (fun t e => match e with
       | .app a => .app t (quote g l a)
       | .fst => .fst t
