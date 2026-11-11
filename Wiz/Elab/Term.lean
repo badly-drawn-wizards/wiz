@@ -926,7 +926,9 @@ where
     | "term.refl" =>
       match eqSigmaSides? (← force expected) with
       | some (T, a, b) =>
-        let x ← check ctx (stx.getArg 1) T
+        -- (`refl _`: the left side itself)
+        let x ← if (stx.getArg 1).isOfKind "term.hole" then pure (quote (← getGlobals) ctx.lvl a)
+          else check ctx (stx.getArg 1) T
         let vx ← evalIn ctx x
         sameSides ctx (some T) vx a
         sameSides ctx (some T) vx b
