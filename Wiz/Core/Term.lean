@@ -514,17 +514,17 @@ def opaqueTo? (g : Globals R) (T : Name) : Option String :=
   | none => none
 
 /-- (13b) The kernel name of a private declaration `n` of module `m` (not the main file):
-`_private.m.0.n`, as Lean does, so that two modules' private `helper`s are different
+`_private.m._0.n`, as Lean does (`_0`, not `0`, so that it parses as an identifier: `mutual` and some derivers print and parse names), so that two modules' private `helper`s are different
 constants and never clash (`docs/stages/23-grail.md`, 23b). In `m`, `helper` resolves to
 it (`resolve`); messages show `helper` (`privateBase`). -/
-def privateName (m n : Name) : Name := "_private." ++ m ++ ".0." ++ n
+def privateName (m n : Name) : Name := "_private." ++ m ++ "._0." ++ n
 
 /-- The source name of a private declaration's kernel name (`privateName`); other names
 as they are. -/
 def privateBase (n : Name) : Name :=
   if n.startsWith "_private." then
-    match n.splitOn ".0." with
-    | _ :: rest@(_ :: _) => ".0.".intercalate rest
+    match n.splitOn "._0." with
+    | _ :: rest@(_ :: _) => "._0.".intercalate rest
     | _ => n
   else n
 

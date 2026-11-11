@@ -1244,14 +1244,31 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.private" =>
     -- (13b) every name the command declares is private to this module
     let before := s.globals.order.size
-    elabCommand (cmd.getArg 1)
+    -- In a module, a private type (`inductive`, `structure`, `class`, `coinductive`, or a
+    -- `mutual` block of inductives) is declared under its private kernel name
+    -- (`Globals.privateName`) from the start, so that its constructors, fields,
+    -- recursors and the side tables about them are all under that name: the command is
+    -- elaborated with the type's name rewritten, wherever it occurs in it (`T`, `T.f`)
+    let typeKinds := ["command.inductive", "command.structure", "command.class", "command.coinductive"]
+    let inner := cmd.getArg 1
+    let typeNames : Array Name :=
+      if s.module.isEmpty then #[] else
+      if typeKinds.contains inner.kind then ((inner.getArg 1).getId?).toArray
+      else if inner.isOfKind "command.mutual" && (inner.getArg 1).args.all (·.isOfKind "command.inductive") then
+        (inner.getArg 1).args.filterMap (·.getArg 1 |>.getId?)
+      else #[]
+    let inner := if typeNames.isEmpty then inner else
+      inner.renameIdents fun n => typeNames.findSome? fun T =>
+        if n == T then some (Globals.privateName s.module T)
+        else if n.startsWith (T ++ ".") then some (Globals.privateName s.module T ++ (n.drop T.length).toString)
+        else none
+    elabCommand inner
     modify fun s =>
       let added := s.globals.order.extract before s.globals.order.size
       -- In a module, a private function, axiom or foreign function gets a kernel name of
       -- its own (`Globals.privateName`), so that another module's private declaration of
       -- the same name is a different constant (no clash at the import); in the module,
-      -- the source name resolves to it (`Globals.resolve`). Types keep their names (their
-      -- constructors, fields and recursors are in side tables by name).
+      -- the source name resolves to it (`Globals.resolve`). (Types: above.)
       let inner := cmd.getArg 1
       let inner := if inner.isOfKind "command.partial" then inner.getArg 2 else inner
       let renamed := !s.module.isEmpty &&
@@ -1418,14 +1435,29 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       reportDup (cmd.getArg 1).info name
     else
       let pats := (cmd.getArg 5).args.toList.filterMap fun a => (a.getArg 1).args[0]?
+      -- the coinductive type named by the result type, if it is one (two types may have
+      -- the same observations: another module's private one, say); else the first whose
+      -- observations the copatterns are
+      let rec resultHead (stx : Syntax) : Option Name :=
+        match stx.kind with
+        | "term.ident" => (stx.getArg 0).getId?
+        | "term.app" => resultHead (stx.getArg 0)
+        | "term.paren" => resultHead (stx.getArg 1)
+        | "term.arrow" | "term.depArrow" => resultHead (stx.getArg 2)
+        | _ => none
+      let declared := (resultHead ((cmd.getArg 4).getArg 1)).map s.globals.resolve
       let coinductiveOf? : Option (Name × List (Name × Bool)) :=
         if pats.all (·.isOfKind "term.dotIdent") then
-          s.coinductives.findSome? fun (T, obs) =>
+          let fits := fun (T, obs) =>
             if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some (T, obs) else none
+          match s.coinductives.find? (some ·.1 == declared) with
+          | some c => fits c
+          | none => s.coinductives.findSome? fits
         else none
       -- (13b) copatterns define every observation: not outside the module of a private one
       if let some (T, obs) := coinductiveOf? then
         if let some (o, m) := obs.findSome? fun (o, _) => (s.globals.privateTo? (T ++ "." ++ o)).map (o, ·) then
+          let T := Globals.privateBase T
           report .error cmd.info (s!"'{T}.{o}' is private to module {m}: a {T} can't be defined by " ++
             "copatterns outside it")
           return
@@ -1505,7 +1537,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     -- (HD8) named after the conclusion of a Π-type (as derivers write them), without macro scopes
     let rec concl (stx : Syntax) : Syntax :=
       if stx.isOfKind "term.depArrow" then concl (stx.getArg 2) else stx
-    let base := "inst" ++ String.join ((idents (concl typeStx)).map fun n => ((stripScope n).replace "." "").capitalize)
+    -- ((13b) this module's private types and classes by their kernel names, so that two
+    -- modules' instances for their private `Color`s have different names)
+    let base := "inst" ++ String.join ((idents (concl typeStx)).map fun n => ((s.globals.resolve (stripScope n)).replace "." "").capitalize)
     let name := if !s.globals.contains base then base else
       ((List.range 1000).map (s!"{base}_{·}")).find? (!s.globals.contains ·) |>.getD base
     -- `where f := v …` builds the class's constructor applied to the fields, in order
@@ -1518,6 +1552,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let valStx : Except String Syntax :=
       if !isWhere then pure body else do
         let some C := headIdent typeStx | throw "an instance's type must be an application of a class"
+        let C := s.globals.resolve C
         let some info := s.classes.find? (·.name == C) | throw s!"{C} is not a class"
         let given := body.args.toList.map fun f => (((f.getArg 0).getId?).getD "_", f.getArg 2)
         for (x, _) in given do
@@ -2272,7 +2307,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let ids (stx : Syntax) := stx.args.toList.filter (·.getId?.isSome)
     for T in ids (cmd.getArg 4) do
       for C in ids (cmd.getArg 2) do
-        derive (C.getId?.getD "_") (T.getId?.getD "_") C.info
+        derive (C.getId?.getD "_") (s.globals.resolve (T.getId?.getD "_")) C.info
   | "command.erase" =>
     let n := ((cmd.getArg 1).getId?).getD "_"
     match s.globals.find? n with
