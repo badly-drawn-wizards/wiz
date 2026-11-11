@@ -298,7 +298,7 @@ to tactics as text and `trace_state` print without notation. The self-hosted too
 has its own printer (selfhost/Frontend.wiz) and prints no notation. Design notes:
 `wiz-notes/pp-unexpand.md`. Tested in the `language` group.
 
-## 11w: inlay hints
+## 11x: inlay hints
 
 `textDocument/inlayHint` (`Wiz/Inlay.lean`) shows the type the elaborator gave a `fun`
 or `let` binder written without one, `fun x : Nat => …`, from the info tree's binders
