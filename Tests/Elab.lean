@@ -3975,7 +3975,9 @@ def languageGroup : Group where
         okLib (guard ++ "def readω (g : Guard) : Nat × Tok := (g.n, g.tok)\ndef pass (1 g : Guard) : Guard := g")
         failsLib (guard ++ "def s1 (1 g : Guard) : Nat := g.n") "a structure can't be held at a quantity other than ω yet"
         failsLib (guard ++ "def s2 (1 g : Guard) : Tok := g.tok") "use a tuple `A × B` instead"
-        failsLib (guard ++ "def s3 (1 g : Guard) : Nat × Tok := match g with\n  | .mk n t => (n, t)") "cannot match on a value of type"
+        -- (13h) `.mk n t` on a structure is the tuple pattern over its Σ: two projections,
+        -- rejected at quantity 1 like a tuple pattern on a linear pair (`m1` below)
+        failsLib (guard ++ "def s3 (1 g : Guard) : Nat × Tok := match g with\n  | .mk n t => (n, t)") "quantity 1 but used ω"
         failsLib (guard ++ "def s4 (1 g : Guard) : (1 t : Tok) × Nat := let 1 (n, rest) := g; let 1 (t, tail) := rest; (t, n)")
           "variable tail declared with quantity 1 but used 0"
         -- a tuple pattern in `match` is two projections: not for a linear pair
