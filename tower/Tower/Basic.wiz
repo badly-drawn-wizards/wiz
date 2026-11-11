@@ -1,0 +1,339 @@
+import Sys
+import Text
+-- tower: the home directory, settings, and processes (stage 26; the Lean original is
+-- Tower/Basic.lean, and this follows it definition by definition).
+--
+-- ~/.tower/
+--   settings                 key value lines (`tower settings`)
+--   bin/wiz, bin/grail       shims (`tower self shims`); bin/tower (`tower self install`)
+--   toolchains/NAME/         one toolchain:
+--     bin/wiz, bin/grail       run these (the toolchain's flags are in them)
+--     share/wiz/lib/           the standard library
+--     share/wiz/.lake/build/bin/{wiz,grail}   the binaries
+--     share/wiz/TOOLCHAIN      a marker: editors find the toolchain a library file belongs to
+--     tower.info               where it came from (spec, source, ref, commit, flags)
+
+infixr:67 " & " => String.append
+infixr:66 " :> " => List.cons
+
+-- ## Small things
+
+def Tower.say (s : String) : EIO Unit := EIO.lift (IO.println s)
+def Tower.sayAll : List String → EIO Unit
+  | .nil => EIO.pure ()
+  | .cons s rest => EIO.bind (Tower.say s) (fun u => Tower.sayAll rest)
+def Tower.note (s : String) : EIO Unit := EIO.lift (IO.ePrintln ("tower: " & s))
+def Tower.optEq : Option String → Option String → Bool
+  | .some a, .some b => String.eq a b
+  | .none, .none => .true
+  | _, _ => .false
+def Tower.getD : Option String → String → String
+  | .some a, _ => a
+  | .none, d => d
+def Tower.boolStr : Bool → String
+  | .true => "true"
+  | .false => "false"
+-- the value after the first space of a line
+def Tower.splitKey (l : String) : String × String := match String.splitOn l " " with
+  | .nil => ("", "")
+  | .cons k rest => (k, String.intercalate " " rest)
+-- a shell word: single-quoted
+def Tower.shQuote (s : String) : String := "'" & String.replace s "'" "'\\''" & "'"
+def Tower.isHex (s : String) : Bool := Bool.and (Bool.not (String.isEmpty s))
+  (List.all (fun (c : Char) => Bool.or (Char.isDigit c) (Bool.and (Nat.le 97 (Char.code c)) (Nat.le (Char.code c) 102))) (String.chars s))
+-- pairs without the key `k`
+def Tower.without {A : Type} (k : String) (l : List (String × A)) : List (String × A) :=
+  List.filter (fun (p : String × A) => Bool.not (String.eq p.1 k)) l
+def Tower.snoc {A : Type} (l : List A) (x : A) : List A := List.append l (x :> .nil)
+
+-- ## Paths
+
+-- the directory a path is in (`none` for `/` and for a bare name)
+def Tower.parent (p : String) : Option String :=
+  match List.reverse (String.splitOn p "/") with
+  | .nil => .none
+  | .cons last rest => match rest with
+    | .nil => .none
+    | .cons _ _ => match String.intercalate "/" (List.reverse rest) with
+      | .mk .nil => match String.isEmpty last with
+        | .true => .none
+        | .false => .some "/"
+      | d => .some d
+def Tower.realPath (p : String) : EIO String := FS.realPath p
+-- this program
+def Tower.appPath : EIO String := IO.appPath
+-- `mkdir -p`
+partial def Tower.createDirAll (p : String) : EIO Unit := do
+  e ← EIO.lift (FS.isDir p);
+  match e with
+  | .true => EIO.pure ()
+  | .false => do
+    match Tower.parent p with
+    | .some d => Tower.createDirAll d
+    | .none => EIO.pure ();
+    r ← EIO.lift (FS.createDir p);
+    match r with
+    | .ok u => EIO.pure ()
+    | .error m => do
+      d ← EIO.lift (FS.isDir p);
+      match d with
+      | .true => EIO.pure ()
+      | .false => EIO.fail m
+-- does anything (a file, a directory, a link, even a dangling one) have this name?
+def Tower.present (p : String) : IO Bool := IO.bind (FS.linkStat p) (fun r => IO.pure (match r with
+  | .ok s => .true
+  | .error e => .false))
+-- remove a file, a link or a tree, if there is one (links are not followed)
+def Tower.removeAll (p : String) : EIO Unit := do
+  e ← EIO.lift (Tower.present p);
+  match e with
+  | .true => FS.removeAll p
+  | .false => EIO.pure ()
+
+-- a name no other process uses at the same time
+def Tower.tmpSuffix : IO String := IO.bind Process.id (fun n => IO.pure (Nat.repr n))
+-- write a file through a temporary name and a rename (shims read it concurrently)
+def Tower.writeAtomic (f text : String) : EIO Unit := do
+  match Tower.parent f with
+  | .some d => Tower.createDirAll d
+  | .none => EIO.pure ();
+  suffix ← EIO.lift Tower.tmpSuffix;
+  let tmp := f & ".tmp" & suffix;
+  FS.writeFile tmp text;
+  FS.rename tmp f
+-- rwxr-xr-x
+def Tower.makeExecutable (f : String) : EIO Unit := FS.setMode f 493
+def Tower.writeScript (f text : String) : EIO Unit := do
+  Tower.writeAtomic f text;
+  Tower.makeExecutable f
+-- the text of a file, or "" when there is none
+def Tower.readFileD (f : String) : EIO String := do
+  r ← EIO.lift (FS.readFile f);
+  match r with
+  | .ok t => EIO.pure t
+  | .error e => EIO.pure ""
+
+-- ## Settings
+
+-- The toolchain flags a wrapper passes, in this order (the names of `wiz`'s flags).
+def Tower.flagKeys : List String :=
+  "cc" :> "cflags" :> "ldflags" :> "libs" :> "llc" :> "gc-cflags" :> "gc-ldflags" :> .nil
+
+structure Settings where
+  -- the default toolchain (a spec)
+  default : Option String
+  -- where installs come from: `auto`, `nix`, `release` or `source`
+  source : String
+  -- the flake (`nix` installs)
+  flake : String
+  -- the git repository (`source` installs, and resolving refs to commits)
+  git : String
+  -- release tarballs: `BASE/TAG/wiz-ARCH-linux.tar.gz` (a URL or a directory)
+  releases : String
+  -- the branch `nightly` follows
+  nightlyRef : String
+  -- shims install a missing toolchain on first use
+  autoInstall : Bool
+  -- toolchain flags for the wrappers of non-Nix toolchains
+  flags : List (String × String)
+  -- directory overrides: (directory, spec)
+  overrides : List (String × String)
+
+def Settings.empty : Settings := Settings.mk .none "auto" "github:badly-drawn-wizards/wiz"
+  "https://github.com/badly-drawn-wizards/wiz"
+  "https://github.com/badly-drawn-wizards/wiz/releases/download" "master" .true .nil .nil
+
+-- (no `{ s with … }` on master: one setter per field)
+def Settings.setDefault (s : Settings) (v : Option String) : Settings :=
+  Settings.mk v s.source s.flake s.git s.releases s.nightlyRef s.autoInstall s.flags s.overrides
+def Settings.setSource (s : Settings) (v : String) : Settings :=
+  Settings.mk s.default v s.flake s.git s.releases s.nightlyRef s.autoInstall s.flags s.overrides
+def Settings.setFlake (s : Settings) (v : String) : Settings :=
+  Settings.mk s.default s.source v s.git s.releases s.nightlyRef s.autoInstall s.flags s.overrides
+def Settings.setGit (s : Settings) (v : String) : Settings :=
+  Settings.mk s.default s.source s.flake v s.releases s.nightlyRef s.autoInstall s.flags s.overrides
+def Settings.setReleases (s : Settings) (v : String) : Settings :=
+  Settings.mk s.default s.source s.flake s.git v s.nightlyRef s.autoInstall s.flags s.overrides
+def Settings.setNightlyRef (s : Settings) (v : String) : Settings :=
+  Settings.mk s.default s.source s.flake s.git s.releases v s.autoInstall s.flags s.overrides
+def Settings.setAutoInstall (s : Settings) (v : Bool) : Settings :=
+  Settings.mk s.default s.source s.flake s.git s.releases s.nightlyRef v s.flags s.overrides
+def Settings.setFlags (s : Settings) (v : List (String × String)) : Settings :=
+  Settings.mk s.default s.source s.flake s.git s.releases s.nightlyRef s.autoInstall v s.overrides
+def Settings.setOverrides (s : Settings) (v : List (String × String)) : Settings :=
+  Settings.mk s.default s.source s.flake s.git s.releases s.nightlyRef s.autoInstall s.flags v
+
+def Settings.set (s : Settings) (k v : String) : Except String Settings :=
+  match String.eq k "default" with
+  | .true => .ok (Settings.setDefault s (match String.isEmpty v with
+    | .true => .none
+    | .false => .some v))
+  | .false => match String.eq k "source" with
+  | .true => match String.elem v ("auto" :> "nix" :> "release" :> "source" :> .nil) with
+    | .true => .ok (Settings.setSource s v)
+    | .false => .error ("source: expected auto, nix, release or source, got " & v)
+  | .false => match String.eq k "flake" with
+  | .true => .ok (Settings.setFlake s v)
+  | .false => match String.eq k "git" with
+  | .true => .ok (Settings.setGit s v)
+  | .false => match String.eq k "releases" with
+  | .true => .ok (Settings.setReleases s v)
+  | .false => match String.eq k "nightly-ref" with
+  | .true => .ok (Settings.setNightlyRef s v)
+  | .false => match String.eq k "auto-install" with
+  | .true => .ok (Settings.setAutoInstall s (String.eq v "true"))
+  | .false => match String.eq k "override" with
+  | .true =>
+    let p := Tower.splitKey v;
+    .ok (Settings.setOverrides s (Tower.snoc (Tower.without p.2 s.overrides) (p.2, p.1)))
+  | .false => match String.elem k Tower.flagKeys with
+  | .true => .ok (Settings.setFlags s (List.append (Tower.without k s.flags) (match String.isEmpty v with
+    | .true => .nil
+    | .false => (k, v) :> .nil)))
+  | .false => .error ("unknown setting " & k & " (default, source, flake, git, releases, nightly-ref, auto-install, "
+      & String.intercalate ", " Tower.flagKeys & ")")
+
+def Settings.parseLines : Settings → List String → Except String Settings
+  | s, .nil => .ok s
+  | s, .cons l rest =>
+    let t := String.trim l;
+    match Bool.or (String.isEmpty t) (String.startsWith t "#") with
+    | .true => Settings.parseLines s rest
+    | .false =>
+      let kv := Tower.splitKey t;
+      match Settings.set s kv.1 (String.trim kv.2) with
+      | .ok s' => Settings.parseLines s' rest
+      | .error e => .error e
+def Settings.parse (text : String) : Except String Settings :=
+  Settings.parseLines Settings.empty (String.splitOn text "\n")
+
+def Settings.render (s : Settings) : String := String.join (
+  "# tower settings (`tower set KEY VALUE`)\n" :>
+  (match s.default with
+    | .some d => "default " & d & "\n"
+    | .none => "") :>
+  "source " & s.source & "\nflake " & s.flake & "\ngit " & s.git & "\nreleases " & s.releases &
+    "\nnightly-ref " & s.nightlyRef & "\n" :>
+  "auto-install " & Tower.boolStr s.autoInstall & "\n" :>
+  String.join (List.map (fun (p : String × String) => p.1 & " " & p.2 & "\n") s.flags) :>
+  String.join (List.map (fun (p : String × String) => "override " & p.2 & " " & p.1 & "\n") s.overrides) :> .nil)
+
+-- Everything a command needs: the home directory and how shims call tower.
+structure TEnv where
+  home : String
+  -- the command a shim runs to reach tower (a path, then arguments)
+  self : List String
+
+def TEnv.settingsFile (e : TEnv) : String := Path.join e.home "settings"
+def TEnv.toolchains (e : TEnv) : String := Path.join e.home "toolchains"
+def TEnv.binDir (e : TEnv) : String := Path.join e.home "bin"
+
+def TEnv.settings (e : TEnv) : EIO Settings := do
+  ex ← EIO.lift (FS.exists (TEnv.settingsFile e));
+  match ex with
+  | .false => EIO.pure Settings.empty
+  | .true => do
+    text ← FS.readFile (TEnv.settingsFile e);
+    match Settings.parse text with
+    | .ok s => EIO.pure s
+    | .error m => EIO.fail (TEnv.settingsFile e & ": " & m)
+def TEnv.saveSettings (e : TEnv) (s : Settings) : EIO Unit := Tower.writeAtomic (TEnv.settingsFile e) (Settings.render s)
+
+-- ## Processes
+
+-- Lake and Lean variables of the process that runs us: a build in another checkout
+-- must not see them.
+def Tower.leanVars : List String :=
+  "LAKE" :> "LAKE_HOME" :> "LAKE_PKG_URL_MAP" :> "LEAN" :> "LEAN_PATH" :> "LEAN_SRC_PATH" :>
+  "LEAN_SYSROOT" :> "LEAN_AR" :> "LEAN_CC" :> "ELAN_TOOLCHAIN" :> "LD_LIBRARY_PATH" :> .nil
+
+-- Run a command, capturing its output (trimmed); an error with its output when it fails.
+def Tower.runOpts (o : SpawnOptions) (cmd : String) (args : List String) : EIO String := do
+  r ← EIO.lift (Process.outputWith cmd args "" o);
+  match r with
+  | .error e => EIO.fail e
+  | .ok o => match ExitStatus.success o.status with
+    | .true => EIO.pure (String.trim o.stdout)
+    | .false => EIO.fail (cmd & " " & String.intercalate " " args & ": " & ExitStatus.toString o.status & "\n" &
+        String.trim (o.stderr & o.stdout))
+def Tower.run (cmd : String) (args : List String) : EIO String := Tower.runOpts SpawnOptions.default cmd args
+-- ... in a directory
+def Tower.runIn (dir cmd : String) (args : List String) : EIO String :=
+  Tower.runOpts (SpawnOptions.inDir dir SpawnOptions.default) cmd args
+-- is `cmd` a program we can run?
+def Tower.have (cmd : String) : EIO Bool := do
+  r ← EIO.lift (Tower.run cmd ("--version" :> .nil));
+  match r with
+  | .ok o => EIO.pure .true
+  | .error e => EIO.pure .false
+-- options that remove the variables from a child's environment
+def Tower.unsetAll : List String → SpawnOptions → SpawnOptions
+  | .nil, o => o
+  | .cons v rest, o => Tower.unsetAll rest (SpawnOptions.unsetEnv v o)
+
+-- ## Toolchain names and info
+
+-- A toolchain's directory name: its spec, with `/` (a branch like `agent/x`) as `--`.
+def Tower.tcName (spec : String) : String := String.replace (String.replace spec "/" "--") " " "-"
+def TEnv.tcDir (e : TEnv) (spec : String) : String := Path.join (TEnv.toolchains e) (Tower.tcName spec)
+
+-- What `tower.info` records about an installed toolchain.
+structure Info where
+  spec : String
+  source : String
+  ref : String
+  commit : String
+  -- a linked toolchain's directory
+  path : String
+  flags : List (String × String)
+
+def Info.render (i : Info) : String :=
+  "spec " & i.spec & "\nsource " & i.source & "\nref " & i.ref & "\ncommit " & i.commit & "\npath " & i.path & "\n" &
+  String.join (List.map (fun (p : String × String) => "flag " & p.1 & " " & p.2 & "\n") i.flags)
+
+def Info.parseLines : Info → List String → Info
+  | i, .nil => i
+  | i, .cons l rest =>
+    let kv := Tower.splitKey (String.trim l);
+    let k := kv.1;
+    let v := kv.2;
+    Info.parseLines (match String.eq k "spec" with
+      | .true => Info.mk v i.source i.ref i.commit i.path i.flags
+      | .false => match String.eq k "source" with
+      | .true => Info.mk i.spec v i.ref i.commit i.path i.flags
+      | .false => match String.eq k "ref" with
+      | .true => Info.mk i.spec i.source v i.commit i.path i.flags
+      | .false => match String.eq k "commit" with
+      | .true => Info.mk i.spec i.source i.ref v i.path i.flags
+      | .false => match String.eq k "path" with
+      | .true => Info.mk i.spec i.source i.ref i.commit v i.flags
+      | .false => match String.eq k "flag" with
+      | .true => Info.mk i.spec i.source i.ref i.commit i.path (Tower.snoc i.flags (Tower.splitKey v))
+      | .false => i) rest
+def Info.parse (text : String) : Info := Info.parseLines (Info.mk "" "" "" "" "" .nil) (String.splitOn text "\n")
+
+def Tower.readInfo (dir : String) : EIO (Option Info) := do
+  let f := Path.join dir "tower.info";
+  ex ← EIO.lift (FS.exists f);
+  match ex with
+  | .false => EIO.pure .none
+  | .true => do
+    t ← FS.readFile f;
+    EIO.pure (.some (Info.parse t))
+
+def Tower.installedGo (root : String) : List String → EIO (List String)
+  | .nil => EIO.pure .nil
+  | .cons n rest => do
+    more ← Tower.installedGo root rest;
+    ex ← EIO.lift (FS.exists (Path.join (Path.join root n) "tower.info"));
+    match Bool.and ex (Bool.not (String.startsWith n ".")) with
+    | .true => EIO.pure (n :> more)
+    | .false => EIO.pure more
+-- the installed toolchains (directory names, sorted)
+def TEnv.installed (e : TEnv) : EIO (List String) := do
+  ex ← EIO.lift (FS.isDir (TEnv.toolchains e));
+  match ex with
+  | .false => EIO.pure .nil
+  | .true => do
+    names ← FS.listDir (TEnv.toolchains e);
+    Tower.installedGo (TEnv.toolchains e) names

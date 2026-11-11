@@ -1,4 +1,5 @@
 import Prelude
+import Text
 -- Deriving (HD8). `inductive T … deriving C` and `deriving instance C for T` run C's
 -- *deriver*: a Wiz function `Deriver := String → MacroM (List Syntax)`, registered with
 -- `attribute [deriver C] f`. It looks the type up (`MacroM.getInductive`) and returns
@@ -19,26 +20,13 @@ def Repr.addAppParen (s : String) (p : Nat) : String := match Nat.lt p 1024 with
   | .true => s
   | .false => String.append "(" (String.append s ")")
 
--- Decimal numerals (for `Repr Nat`; `Nat.toString` is an extern, so it only runs compiled).
-partial def Nat.powersFrom (n p : Nat) (acc : List Nat) : List Nat := match Nat.lt n p with
-  | .true => acc
-  | .false => Nat.powersFrom n (p * 10) (.cons p acc)
-partial def Nat.digitAt (n p d : Nat) : Nat := match Nat.lt n p with
-  | .true => d
-  | .false => Nat.digitAt (n - p) p (d + 1)
-def Nat.digitsFrom : List Nat → Nat → List Char
-  | .nil, _ => .nil
-  | .cons p ps, n => .cons (Char.mk (Nat.digitAt n p 0 + 48)) (Nat.digitsFrom ps (n - Nat.digitAt n p 0 * p))
-def Nat.repr (n : Nat) : String := match Nat.powersFrom n 1 .nil with
-  | .nil => "0"
-  | .cons p ps => String.mk (Nat.digitsFrom (.cons p ps) n)
+-- Decimal numerals (for `Repr Nat`): `Nat.repr`, lib/Text.wiz's (pure, so `#eval` runs it).
 
 def List.beqBy {A : Type} (eq : A → A → Bool) : List A → List A → Bool
   | .nil, .nil => .true
   | .cons a xs, .cons b ys => Bool.and (eq a b) (List.beqBy eq xs ys)
   | _, _ => .false
-def String.beq : String → String → Bool
-  | .mk xs, .mk ys => List.beqBy (fun c d => Nat.beq (Char.code c) (Char.code d)) xs ys
+-- (`String.beq` is lib/Text.wiz's)
 
 instance : Inhabited Nat := Inhabited.mk 0
 instance : BEq Nat := BEq.mk Nat.beq

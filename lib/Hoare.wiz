@@ -1,4 +1,5 @@
 import HProp
+import Text
 -- Hoare triples over a model heap, with the frame rule (stage 24c).
 --
 -- The presentation is SLF's (Software Foundations vol. 6, chapters WPsem and WPgen): a

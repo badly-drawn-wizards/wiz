@@ -48,7 +48,10 @@ structure with its constructor and projections, an inductive type with its
 constructors and recursors) private to its **module**: other modules get "'x' is
 private to module M"; the module itself, including its later declarations, uses the
 names as usual. Privacy is per module ([23c](23-grail.md): each module is elaborated in isolation and
-under its own name), and the main file is a module of its own.
+under its own name), and the main file is a module of its own. In a module, a private
+function, axiom or foreign function gets a kernel name of its own (`_private.M.0.secret`,
+as in Lean), so two modules' private `secret`s don't clash; see
+[23b](23-grail.md).
 
 `private mk ::` right after a structure's `where` keeps the type and its projections
 public but makes the constructor private. Types are structural, so a private name
@@ -159,6 +162,135 @@ ignores them. The motivating use is the HDL's signals (`drafts/hdl/Signal.wiz`):
 code builds and observes them only through the library's combinators and `sample`
 (`drafts/hdl/rejected/observe_signal.wiz`). Tests: group `elabfix`.
 
+## 13g: as-patterns `x@p` ✅
+
+```
+def last (A : Type) (d : A) : List A → A
+  | .nil => d
+  | .cons x .nil => x
+  | .cons _ xs@(.cons _ _) => last A d xs     -- `xs` is the tail that was matched
+def dup : List Nat → List Nat
+  | .nil => .nil
+  | l@(.cons x _) => .cons x l
+```
+
+`x@p` (no space around the `@`; `p` an atomic pattern, so a constructor with arguments
+goes in parentheses) matches `p` and binds `x` to the value that was matched. It may be
+nested anywhere a pattern may, on any kind of pattern (`q@(a, b)`, `n@m@(.succ _)`).
+
+`x` is bound exactly as a variable pattern in that position would be (`compileMatch`,
+`Elab/Term.lean`): to the scrutinised variable itself, so no constructor is rebuilt,
+unless the goal depends on that variable; then it is the constructor applied to the
+fields, which is what has the refined type. Because `x` *is* the matched variable, an
+as-pattern on a recursive field is structurally smaller: `last A d xs` above is the
+induction hypothesis of the tail. (Without the as-pattern one had to write a helper
+that takes the head and the tail separately: "recursive call must be on a variable".)
+
+Limits: when the goal depends on the matched variable, `x` is the rebuilt constructor,
+and a recursive call on it is not recognised ("not a recursive field"). In a term,
+`x@p` is an error ("only allowed in a pattern").
+
+Not solved by as-patterns: recursion over a family at an index that is not a variable.
+`Vec.last : Vec A (Nat.succ n) → A` with `| .cons _ xs@(.cons _ _) => Vec.last xs` now
+gets as far as the kernel, which rejects it ("expected: n = .succ (.succ n)"): the
+induction hypothesis of a definition matched at the index `succ n` is for that same `n`
+(the parameters before the colon are fixed), and the tail is a `Vec A n`. `lib/Vec.wiz`
+keeps its helper `Vec.lastFrom`, whose index is a variable that the motive generalises.
+
+Syntax: `term.asPat`, a trailing parser at the highest precedence, `x "@" p` with no
+whitespace on either side of the `@`. Explicit application is unchanged, `f @g` and
+also `f@g`: where both readings are as long, the application wins, so an as-pattern
+whose pattern is a bare name (`x@y`, a second name for the same value) is not available;
+`x@_` and `x@(y)` are. Tests: `language` ("as-patterns …"),
+`parser: terms`.
+
+## 13h: patterns on structures, `⟨…⟩` ✅
+
+```
+structure Stats where
+  hits : Nat
+  misses : Nat
+def total (s : Stats) : Nat := match s with
+  | .mk h m => Nat.add h m                 -- also `Stats.mk h m` and `⟨h, m⟩`
+def total' (s : Stats) : Nat :=
+  let ⟨h, m⟩ := s                           -- or `let (.mk h m) := s`
+  Nat.add h m
+def stats : Stats := ⟨3, 4⟩                 -- `Stats.mk 3 4`, from the expected type
+```
+
+A structure is a Σ type, not a data type, so there is no eliminator to split it with
+("cannot match on a value of type Nat × Nat × …" before). A constructor pattern on a
+scrutinee whose type is a structure `S` (`.mk p…`, `S.mk p…` or `⟨p…⟩`) is now
+rewritten to the **tuple pattern** over the components of `S`'s Σ, which binds every
+field as a projection of the scrutinee (`let h := s.1; let m := s.2.1; …`); the
+sub-patterns are ordinary patterns, so structure patterns nest in constructor and tuple
+patterns and the other way round, and mix with as-patterns.
+
+**One place knows the encoding.** How the Σ of a structure is laid out (which
+component is which field, and which are not fields at all: today the tail
+`(0 fields✝ : …) → Unit` after the last field, 22i) is read from the declaration by
+`structLayout?` (`Elab/Struct.lean`), as a list of components, each a field or a marker;
+structure patterns, the pattern `let` and structure update (13i) go through it and
+nothing else there looks at the Σ. It classifies the components by what the
+declaration says (a Σ binder with a phantom name is a marker, the final component is a
+field exactly if `S.mk` has a field left for it), so moving the marker to a 0-quantity
+component before the last field needs no change here; any other re-encoding is a change
+to that one function.
+
+The anonymous constructor `⟨e₁, …, eₙ⟩` is new syntax (`term.anon`), as a term and as a
+pattern. Against a structure it is `S.mk e₁ … eₙ`; against a pair, the tuple
+`(e₁, …, eₙ)`; against a data type with exactly one constructor, that constructor. It
+needs an expected type ("cannot infer the type of an anonymous constructor").
+
+`let pat := e; body` with `pat` an anonymous constructor or any pattern in parentheses
+(`term.letPat`) is `match e with | pat => body`, so it also works without an expected
+type.
+
+**Linear structures.** A `match` is a case at ω and projections need an unrestricted
+pair, so neither takes apart a structure held at quantity 1. With a quantity,
+`let 1 ⟨a, b⟩ := s; body` (or `let 1 (.mk a b) := s`) therefore elaborates to nested
+splits at that quantity, one per component of the layout, as `let 1 (a, b, c) := t`
+does for a tuple (and `let 1 ⟨a, b, c⟩ := t` is accepted on a tuple too); the components
+are then names or `_`, and the form is check-mode only. **Today this is rejected for
+every structure**: the Σ ends in the marker tail, which is not a field, and the last
+split would bind it at quantity 1 and never use it. The elaborator reports that itself
+("cannot take a value of the structure Stats apart at quantity 1: the Σ type of a
+structure ends in a component that is not a field …") instead of leaving it to the
+kernel's usage count. The check is on the layout (a marker that the Σ does not bind at
+quantity 0), so once the marker is an erased component the same `let` goes through with
+no change here. At quantity ω (`let ω ⟨a, b⟩ := s`) the splits are accepted today.
+
+A structure whose constructor or fields are private to another module (13b) is opaque
+there and can't be matched or taken apart ("its constructor is private to module M").
+
+Tests: `language` ("structure patterns …", "anonymous constructors …", "let with a
+structure pattern …"), `parser: terms`.
+
+## 13i: structure update `{ s with f := v }` ✅
+
+```
+def bump (s : Stats) : Stats := { s with hits := Nat.succ s.hits }
+def reset (s : Stats) : Stats := { s with hits := 0, misses := 0 }
+```
+
+`{ s with f₁ := v₁, …, fₖ := vₖ }` is `S.mk` applied to the structure's parameters
+(taken from the type of `s`) and to every field: `vᵢ` for a named field, checked against
+the field's type, and the projection of `s` for the others. `s` is any term; unless it
+is a variable it is bound once (`let s✝ := s`). The type of `s` must be a structure,
+and it is the type of the result; nothing is taken from the expected type. Unknown
+fields ("Stats has no field 'x' (its fields are hits, misses)") and repeated ones are
+errors. With dependent fields, a kept field whose type mentions an updated one must
+still fit: `{ d with n := 3 }` for `structure D where n : Nat; v : Vec Nat n` is "field
+'v' keeps its value, but its type … depends on an updated field"; update both.
+
+The projections make this an unrestricted use of `s`: a structure held at quantity 1
+can't be updated this way (take it apart with the pattern `let` of 13h, once that works
+for linear structures). Like 13h it reads the fields through `structLayout?`, and it is
+refused for a structure that is opaque in the current module.
+
+Syntax: `term.structUpdate`, `"{" term "with" (ident ":=" term),+ "}"`. No new reserved
+word (`with` already is one). Tests: `language` ("structure update …"), `parser: terms`.
+
 ## 13j: keyword scopes ✅
 
 A keyword of a `term` or `command` rule is reserved in the whole file; a keyword of any
@@ -197,3 +329,30 @@ case of `runDescr`), so the memo key, which already names the category, is uncha
 The design options are in the notes (`scoped-keywords.md`). The self-hosted parser
 interprets the built-in tables, which use no scope, and has no `syntax` command yet.
 Tests: `parser: commands and syntax`, `language`.
+
+## 13n: `rfl` at an equation that has computed ✅
+
+An equation at a Σ type computes as soon as it is formed: `a = b` becomes
+`(0 e : a.1 = b.1) × (cast (B a.1) (B b.1) ê a.2 = b.2)`. The elaborator's `rfl` used to
+prove that Σ field by field. Every field after the first then needed the cast to
+disappear, and at a type variable (`B`, `List A`, a function type) it does not: regularity
+holds only at inert types (P1). So `s = s` at `A × B`, `(p.1, p.2) = p`,
+`Pair2.mk s.fst s.snd = s` (structure η, which conversion already has), and the field
+lenses' laws all failed with "the two sides are not definitionally equal".
+
+Now `vEq` keeps the equation's type at the end of the Σ's closure (the body doesn't use
+it), and `eqSigmaSides?` reads `A`, `a`, `b` back. When `a ≡ b`, `rfl` is a single
+`refl A a`, whose type computes to the same Σ, with the same cast on both sides. This is
+the optional exercise 4.16, done by recording the equation in its computed form. No axiom
+is used: `#print axioms` lists none for these proofs. An equation at a constructor
+(`List.cons x xs = List.cons x xs`) works the same way, through its payload's Σ.
+
+Nothing else changed. A Σ of field equations written by hand, with a cast at a type
+variable in it, is still not `rfl`. `rfl` never adds an axiom; whoever needs that
+equation writes `castRefl` themselves.
+
+`lib/Optic.wiz` now states the `Pair2` lens laws with their implicit arguments
+(`@Lens.Lawful (Pair2 A B) A …`), so that the equation has computed when `rfl` sees it.
+Before, they checked only because unsolved holes kept the equation from computing.
+Research note: `wiz-notes/structure-eta.md`. Tests: group `elabfix`, "rfl at an equation
+that has computed"; group `optic`.

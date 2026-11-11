@@ -1,5 +1,6 @@
 import Wiz.Core.Check
 import Wiz.Syntax.Basic
+import Wiz.Syntax.Children
 import Wiz.Compiler.Run
 
 /-!
@@ -35,6 +36,8 @@ structure MetaEntry (R : Type) where
   desc : String := "_"
   /-- how many bound variables it is applied to -/
   arity : Nat := 0
+  /-- (7e) the hole of an instance problem (`addInstProblem`) -/
+  isInst : Bool := false
 
 /-- A type class: its parameters' output flags (`outParam`) and its fields, in order. -/
 structure ClassInfo where
@@ -111,12 +114,14 @@ inductive Info (R : Type) where
   | decl (info : SourceInfo) (name : Name) (names : List Name) (type : Term R) (annotated : Bool) (insertAt : Nat)
   /-- an unknown identifier, with the locals in scope (for "did you mean") -/
   | unknownIdent (info : SourceInfo) (name : Name) (locals : List Name)
+  /-- (7e) a warning for the command's messages (a numeral that doesn't fit its type) -/
+  | warning (info : SourceInfo) (msg : String)
   /-- a `trace` of a tactic or macro: the command elaborator turns it into an info
   message (it is not kept in the tree) -/
   | trace (info : SourceInfo) (text : String)
 
 def Info.info : Info R → SourceInfo
-  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. | .trace i .. => i
+  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. | .warning i .. | .trace i .. => i
 
 /-- An `Info` as recorded during elaboration, before quoting and zonking. -/
 inductive RawInfo (R : Type) where
@@ -182,6 +187,15 @@ structure ElabState (R : Type) where
   binderNames : List (Lvl × Name) := []
   /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
   kernelInfer : Ctx R → Term R → Except String (VTy R) := fun _ _ => .error "no kernel here"
+  /-- set when unification meets an unsolved (term or level) metavariable. A failure that
+  never met one is final: no other order of unfolding can succeed (see `unifyGlued`).
+  Unification's own backtracking keeps it (`keepLearnt`). -/
+  unifySawMeta : Bool := false
+  /-- comparisons of two glued values without metavariables that failed, with the failure's
+  message: the two sides quoted (with levels for free variables), bucketed by their head. Valid
+  while the globals stay as they are (the elaborator clears it when it changes them). -/
+  unifyFails : Std.HashMap UInt64 (List (Term R × Term R × String)) := {}
+  unifyFailCount : Nat := 0
 
 structure ElabError (R : Type) where
   info : SourceInfo

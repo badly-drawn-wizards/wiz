@@ -2,6 +2,7 @@ import Wiz.Elab.Zonk
 import Wiz.Elab.Macro
 import Wiz.Elab.Tactic
 import Wiz.Elab.Class
+import Wiz.Elab.Struct
 
 /-!
 # Elaborating terms
@@ -191,6 +192,37 @@ def mkStringLit (str : String) (us : List Level := []) : ElabM R (Term R) := do
     (.app (.const "List.nil" []) charTy)
   pure (.app (.const (S ++ ".mk") us) list)
 
+/-- (HD9) A numeral `n` at a type `A` other than the `builtin nat` type:
+`@OfNat.ofNat A n ?inst`, with an instance problem `OfNat A n` (the literal is an
+index of the class, as in Lean, so an instance may inspect it). `none` if the Prelude
+has no `OfNat` class. -/
+def ofNatLit? (ctx : LocalCtx R) (n : Nat) (A : VTy R) : ElabM R (Option (Term R)) := do
+  let s ← get
+  unless s.classes.any (·.name == "OfNat") do return none
+  let some d := s.globals.find? "OfNat.ofNat" | return none
+  let us ← d.levelParams.mapM fun _ => freshLevelMeta
+  let g ← getGlobals
+  let fty := eval g [] (d.type.instLevels d.levelParams us)
+  let .pi _ _ _ domA codA _ ← force fty | return none
+  let qA := quote g ctx.lvl A
+  if let .sort l ← force domA then addSortConstraint ctx qA l
+  let .pi _ _ _ _ codN _ ← force (← instM codA A) | return none
+  let .pi x .instImplicit _ dom _ _ ← force (← instM codN (.natLit n)) | return none
+  let m ← freshMeta ctx s!"instance {x}"
+  addInstProblem ctx m dom
+  -- a numeral that doesn't fit a fixed-width word of lib/Word.wiz wraps around: say so
+  if let .mu _ _ _ _ _ (some (T, _, w :: _)) ← force A then
+    if T == "UIntN" || T == "IntN" then
+      if let .natLit w := whnf w then
+        if w ≤ 4096 then
+          let limit := if T == "UIntN" then 2 ^ w - 1 else 2 ^ (w - 1)
+          if n > limit then
+            let bits := n % 2 ^ w
+            let wrapped := if T == "IntN" && bits ≥ 2 ^ (w - 1) then s!"-{2 ^ w - bits}" else toString bits
+            pushInfo (.done (.warning ctx.info
+              s!"the numeral {n} does not fit in {T} {w} (at most {limit}): it wraps around to {wrapped}"))
+  pure (some (.app (.app (.app (.const "OfNat.ofNat" us) qA) (.natLit n)) m))
+
 /-- `(x).f y` parses as `(x)` applied to `.f` and `y` (an argument `.f` is a constructor
 of the expected type): an argument `.f` right after the previous one, without a space,
 is a field of it instead (`term.field`), as in `x.f y`. -/
@@ -307,12 +339,13 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
       | .mu _ _ _ _ _ h | .nu _ _ _ _ _ h => h
       | _ => none
     if let some (T, us, args) := hint? then
-      if let some d := (← getGlobals).find? (T ++ "." ++ f) then
-        if let some m := (← getGlobals).privateTo? (T ++ "." ++ f) then
+      let Tf := (← getGlobals).resolve (T ++ "." ++ f)
+      if let some d := (← getGlobals).find? Tf then
+        if let some m := (← getGlobals).privateTo? Tf then
           throwAt ctx.info s!"'{T}.{f}' is private to module {m}" "private"
         -- `T.f : {…} → T … → F`: insert the implicits as metavariables, then unify
         let fty : VTy R := eval (← getGlobals) [] (d.type.instLevels d.levelParams us)
-        let (tm, fty) ← insertImplicits ctx (.const (T ++ "." ++ f) us) fty
+        let (tm, fty) ← insertImplicits ctx (.const Tf us) fty
         let .pi _ _ _ dom cod _ ← force fty | throwAt ctx.info s!"{T}.{f} is not a function of {T}"
         unifyAt ctx (.missing) dom ty
         let tm' := Term.app tm t
@@ -363,6 +396,11 @@ inductive PatView where
   | ctor (T : Option Name) (c : Name) (args : List Syntax)
   /-- a pair pattern `(a, b)` (`(a, b, c)` is `(a, (b, c))`) -/
   | tuple (a b : Syntax)
+  /-- (13g) an as-pattern `x@p`: `p`, with `x` bound to the matched value -/
+  | as (n : Name) (p : Syntax)
+  /-- (13h) an anonymous constructor pattern `⟨p₁, …, pₙ⟩`: the constructor of the
+  scrutinee's structure (or one-constructor data type), or a tuple -/
+  | anon (args : List Syntax)
   deriving Inhabited
 
 def holeStx : Syntax := .node {} "term.hole" #[.atom {} "_"]
@@ -385,7 +423,10 @@ structure RecCtx where
 partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
   let ctorOf (n : Name) : Option (Name × Name) :=
     match n.splitOn "." with
-    | [T, c] => if g.contains (T ++ ".desc") && g.contains n then some (T, c) else none
+    | [T, c] =>
+      if g.contains (T ++ ".desc") && g.contains n then some (T, c)
+      -- (13h) a structure's constructor
+      else if c == "mk" && g.contains n && g.contains T then some (T, c) else none
     | _ => none
   match stx.kind with
   | "term.paren" => patView g (stx.getArg 1)
@@ -398,6 +439,11 @@ partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
         .node stx.info "term.tuple" #[.atom {} "(", b, .atom {} ",", .node {} "null" (rest.extract 1 rest.size), .atom {} ")"]
       pure (.tuple (stx.getArg 1) b)
   | "term.hole" => pure .wild
+  | "term.asPat" =>
+    let x := stx.getArg 0
+    if x.isOfKind "term.ident" then pure (.as ((x.getArg 0).getId?.getD "_") (stx.getArg 2))
+    else .error "an as-pattern is `x@p` with a variable `x`"
+  | "term.anon" => pure (.anon ((stx.getArg 1).args.filter (!· matches .atom ..)).toList)
   | "term.dotIdent" => pure (.ctor none ((stx.getArg 1).getId?.getD "_") [])
   | "term.ident" =>
     let n := (stx.getArg 0).getId?.getD "_"
@@ -414,6 +460,34 @@ partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
       | none => .error "only constructors may be applied in patterns"
     | _ => .error "invalid pattern"
   | k => .error s!"invalid pattern ({k})"
+
+/-- (13g) A pattern without its as-names: `x@y@p` is `([x, y], p)`. -/
+partial def patViewAs (g : Globals R) (stx : Syntax) : Except String (List Name × PatView) := do
+  match ← patView g stx with
+  | .as n p => let (ns, v) ← patViewAs g p; pure (n :: ns, v)
+  | v => pure ([], v)
+
+/-- Is the pattern a constructor pattern (under as-names)? -/
+def patIsCtor (g : Globals R) (stx : Syntax) : Bool :=
+  match patViewAs g stx with
+  | .ok (_, .ctor ..) => true
+  | _ => false
+
+/-- The pattern `x₁@…@xₙ@p`. -/
+def asPatStx (ns : List Name) (p : Syntax) : Syntax :=
+  ns.foldr (fun n acc => .node p.info "term.asPat" #[.node {} "term.ident" #[.ident {} n], .atom {} "@", acc]) p
+
+/-- The constructors of the data type `T`. -/
+def ctorNames (g : Globals R) (T : Name) : List Name :=
+  match g.find? (T ++ ".desc") with
+  | none => []
+  | some descD =>
+    let rec strip : Term R → Term R → Term R
+      | .pi _ _ _ _ b _, .lam _ v => strip b v
+      | _, v => v
+    match descD.value with
+    | some v => ((strip descD.type v).descTag?.map (·.1)).getD []
+    | none => []
 
 /-- Find a component of type `False`/`Empty` inside a (Σ-nested) proof `e : ty`. -/
 partial def findAbsurd (g : Globals R) (ty e : Val R) : Option (Val R) :=
@@ -574,7 +648,7 @@ def recordMatch (info : SourceInfo) (alts : Array Syntax) (clauses : List (MClau
   let (some first, some last) := (alts[0]?, alts.back?) | return
   let g ← getGlobals
   let firsts := clauses.filterMap (·.pats.head?)
-  let views := firsts.map (patView g)
+  let views : List (Except String PatView) := firsts.map fun p => (patViewAs g p).map (·.2)
   let covered := views.filterMap fun v => match v with
     | .ok (.ctor _ c _) => some c
     | _ => none
@@ -636,8 +710,21 @@ def sameSides (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R U
     unless ok do
       throwAt ctx.info s!"rfl: the two sides are not definitionally equal\n  left:  {← showVal ctx a}\n  right: {← showVal ctx b}\n  ({e.msg})"
 
+/-- A value evaluated again after its solved holes are filled in (an equation is computed
+when it is formed, perhaps while the implicit arguments of its sides are still holes:
+`Pair2.mk s.1 s.2 = s`). -/
+def refreshVal (ctx : LocalCtx R) (v : Val R) : ElabM R (Val R) := do
+  evalIn ctx (← zonk ctx.lvl (quote (← getGlobals) ctx.lvl (← forceMeta v)))
+
+/-- `sameSides` as a test: no error, and the state (solved holes) restored on failure. -/
+def sidesOk (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R Bool := do
+  let s ← get
+  try sameSides ctx A? a b; pure true
+  catch _ => set s; pure false
+
 /-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
-`True`s and `a = b`, an equation of functions a Π. Build the proof by the same shape
+`True`s and `a = b`, an equation of functions a Π. (13n) At a Σ that `vEq` computed from
+`a = b` with `a ≡ b`, the proof is one `refl a` (`eqSigmaSides?`). Otherwise build it by the same shape
 (pairs, lambdas, `()`, and a case split for a Π over a tag type), with `refl` at the
 equations left; the kernel checks them. -/
 partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
@@ -650,7 +737,16 @@ partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R))
     sameSides ctx none X Y
     pure (some (.reflTy (quote g ctx.lvl X)))
   | .unit _ => pure (some .tt)
-  | .sigma _ _ A B _ =>
+  | ty'@(.sigma _ _ A B _) =>
+    -- an equation `a = b` at a Σ type has computed to this Σ (`vEq`): if `a ≡ b`, one
+    -- `refl` proves it, with no cast to see through (`s = s`, `P.mk s.1 s.2 = s`)
+    if let some (T, a, b) := eqSigmaSides? ty' then
+      let T ← refreshVal ctx T
+      let a ← refreshVal ctx a
+      let b ← refreshVal ctx b
+      if convTy g (← zonkedTypes ctx) (vEq g T a b) (← refreshVal ctx ty') then
+        if ← sidesOk ctx (some T) a b then
+          return some (.refl (quote g ctx.lvl T) (quote g ctx.lvl a))
     let some a ← rflProof ctx A | pure none
     let some b ← rflProof ctx (← instM B (← evalIn ctx a)) | pure none
     pure (some (.pair a b))
@@ -716,6 +812,22 @@ partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Lev
     pure (t, u)
   | ty => throwAt (ctx.withInfo stx).info s!"type expected, got a term of type {← showVal ctx ty}"
 
+/-- `check` of a variable or an application against a glued definition `D a…` that
+unfolds to an implicit or instance Π: if the term's own type is `D b…` too, unify the
+two directly (`some` the term); otherwise `none`, and nothing happened. -/
+partial def sameDefinition? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Option (Term R)) := do
+  unless stx.isOfKind "term.ident" || stx.isOfKind "term.app" do return none
+  let .unfold n _ _ _ ← forceMeta expected | return none
+  unless (← force expected) matches .pi _ .implicit .. || (← force expected) matches .pi _ .instImplicit .. do
+    return none
+  tryCatch (do
+      let (t, ty) ← infer ctx stx
+      let .unfold n' _ _ _ ← forceMeta ty | throwAt {} "another type"
+      unless n' == n do throwAt {} "another definition"
+      unify ctx.lvl expected ty
+      pure (some t))
+    (fun _ => pure none)
+
 /-- **Exercise 3.8.** Elaborate `stx` against `expected`. Force `expected` first.
 
 1. If `expected` is an implicit Π and `stx` is not an implicit `fun`
@@ -733,6 +845,12 @@ partial def check (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R
   recordExpected ctx stx expected
   if let some stx' ← expand? stx then return ← check ctx stx' expected
   if let some t ← checkData? ctx stx expected then return t
+  -- a variable or application whose type is the expected type's own definition
+  -- (`f : Comb i o` against `Comb ?i ?o`, `def Comb … := {r} → [Hw r] → …`): unify the
+  -- two, without unfolding the definition to introduce implicit lambdas (that would make
+  -- `fun {r} [_] => f`, with an instance hole created while `?r` is unsolved). Lean
+  -- doesn't unfold a definition to find implicit binders either.
+  if let some t ← sameDefinition? ctx stx expected then return t
   -- (given, stage 7) against `[x : C A] → B`, bind the instance as a local
   if let .pi x .instImplicit _ dom cod _ ← force expected then
     return .lam x (← check (ctx.bind x dom) stx (← instM cod (Val.var ctx.lvl)))
@@ -769,18 +887,28 @@ where
     | "term.match" => elabMatch ctx stx expected
     | "term.by" => elabBy ctx stx expected
     | "term.num" =>
+      let n := (stx.getArg 0).getNat?.getD 0
       match ← force expected with
       | .qty => elabQtyLit ctx stx (((stx.getArg 0).getNat?.map toString).getD "?")
-      | .mu _ _ _ _ _ (some (T, us, _)) =>
+      | .mu _ _ _ _ _ (some (T, _, _)) =>
         -- a numeral of the `builtin nat` type: `succ (… (succ zero))` (the kernel's Nat
         -- is unary; the runtime uses native numbers)
         let s ← get
         match s.builtins.lookup "nat" with
         | some N =>
-          if N != T then throwAt ctx.info s!"numerals are for {N}, not {T}" else
-          pure (.natLit ((stx.getArg 0).getNat?.getD 0))
+          if N == T then pure (.natLit n) else
+          -- (HD9) at another data type, through its `OfNat` instance
+          match ← ofNatLit? ctx n expected with
+          | some t => pure t
+          | none => throwAt ctx.info s!"numerals are for {N}, not {T}"
         | none => throwAt ctx.info "numerals need `builtin nat := …`"
-      | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+      -- an unsolved type: the numeral is a `Nat` (its default type)
+      | .neutral (.mvar _) _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+      -- (HD9) any other type (an axiom, a type variable with an instance): `OfNat`
+      | _ => do
+        match ← ofNatLit? ctx n expected with
+        | some t => pure t
+        | none => let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.str" =>
       match ← force expected with
       | .mu _ _ _ _ _ (some (T, us, _)) =>
@@ -817,11 +945,14 @@ where
       | ety => throwAt (ctx.withInfo (stx.getArg 1)).info s!"absurd expects a proof of False or Empty, got {← showVal ctx ety}"
     | "term.hole" => freshMeta ctx
     | "term.syntheticHole" => freshMeta ctx s!"?{((stx.getArg 1).getId?).getD "_"}"
+    -- (13h) `⟨a, b⟩` and `let ⟨a, b⟩ := s; body`
+    | "term.anon" => elabAnon ctx stx expected
+    | "term.letPat" => return (← elabLetPat ctx stx (some expected)).1
     | "term.paren" => check ctx (stx.getArg 1) expected
     | "term.app" =>
       if (stx.getArg 0).isOfKind "term.explicit" || (← builtinApp? ctx stx).isSome ||
           !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0)) ||
-            holeAndNestedCheck (stx.getArg 1).args) then
+            holeAndNestedCheck (stx.getArg 1).args || (← numOperands ctx stx)) then
         let (t, ty) ← infer ctx stx
         unifyAt ctx stx expected ty
         pure t
@@ -1088,6 +1219,193 @@ partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : E
     pure (.split q s "z" motive x y body)
   | sty => throwAt (ctx.withInfo (stx.getArg 8)).info s!"let (x, y) := ... expects a pair, got {← showVal ctx sty}"
 
+/-- `let q (x₁, (x₂, … xₙ)) := s; body` as nested splits at quantity `q`:
+`split q s (x₁, r). split q r (x₂, r'). …`, with names `r` that no user name captures.
+(One name: a `let`.) -/
+partial def splitChain (ctx : LocalCtx R) (q : Term R) (s : Term R) (sty : VTy R) (names : List Name)
+    (body : Syntax) (expected : VTy R) : ElabM R (Term R) := do
+  let g ← getGlobals
+  match names with
+  | [] => throwAt ctx.info "internal error: nothing to bind"
+  | [x] =>
+    let sv ← evalIn ctx s
+    let t ← check (ctx.define x sty sv) body expected
+    pure (.letE x q (quote g ctx.lvl sty) s t)
+  | x :: rest =>
+    let .sigma _ _ A B _ ← force sty
+      | throwAt ctx.info s!"internal error: expected a pair, got {← showVal ctx sty}"
+    let motive := quote g (ctx.lvl + 1) expected
+    let Bty ← instM B (Val.var ctx.lvl)
+    match rest with
+    | [y] =>
+      let t ← check ((ctx.bind x A).bind y Bty) body expected
+      pure (.split q s "z" motive x y t)
+    | _ =>
+      let r : Name := "rest✝"
+      let t ← splitChain ((ctx.bind x A).bind r Bty) (q.lift 2) (.var 0) Bty rest body expected
+      pure (.split q s "z" motive x r t)
+
+/-- (13h) `let q pat := e; body` for a pattern `⟨p₁, …, pₙ⟩` or `(.mk p₁ … pₙ)` (any
+pattern in parentheses).
+
+* Without a quantity it is `match e with | pat => body`: on a structure, the fields are
+  bound by projections of `e`.
+* With a quantity `q` it takes one structure (or tuple) apart with nested splits at
+  `q`, one per component of the structure's Σ (`StructLayout`), so that a structure held
+  at quantity 1 can be consumed; the patterns `pᵢ` are then names or `_`. Check mode
+  only, like `let q (x, y) := e`. A component that is not a field and that the split
+  would leave unused at `q` (today: the tail of every structure's Σ) is reported here,
+  before the kernel counts the uses. -/
+partial def elabLetPat (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)) :
+    ElabM R (Term R × VTy R) := do
+  let pat := stx.getArg 2
+  let body := stx.getArg 6
+  let some qStx := (stx.getArg 1).args[0]? | do
+    let i := stx.info
+    let alt : Syntax := .node i "match.alt" #[.atom i "|", .node i "null" #[pat], .atom i "=>", body]
+    let m : Syntax := .node i "term.match" #[.atom i "match", .node i "null" #[stx.getArg 4], .atom i "with",
+      .node i "null" #[alt]]
+    match expected with
+    | some e => return (← check ctx m e, e)
+    | none => return ← infer ctx m
+  let some expected := expected
+    | throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
+  let q ← elabQuantity ctx .default (some qStx)
+  let g ← getGlobals
+  let v ← match patView g pat with
+    | .ok v => pure v
+    | .error e => throwAt pat.info e
+  let (s, sty) ← infer ctx (stx.getArg 4)
+  let sty ← forceMeta sty
+  let nameOf (p : Syntax) : ElabM R Name := match patView g p with
+    | .ok (.var n) => pure n
+    | .ok .wild => pure "_"
+    | _ => throwAt p.info "a `let` with a quantity takes one structure apart: its components are names or `_` (nest another `let` for a component)"
+  let names ← match structHead? g sty with
+    | some (S, _, _) =>
+      if let some m := g.privateTo? (S ++ ".mk") then
+        throwAt pat.info s!"cannot take a value of type {S} apart here: its constructor is private to module {m}" "private"
+      let some L := structLayout? g S
+        | throwAt pat.info (s!"cannot take a value of type {S} apart: {S} is opaque " ++
+            s!"outside module {(g.opaqueTo? S).getD "?"} (it has private constructors or fields)") "private"
+      let ps ← match v with
+        | .ctor T c ps =>
+          unless c == "mk" && (T.isNone || T == some S) do
+            throwAt pat.info s!"{S} is a structure: its constructor is {S}.mk, not {(T.map (· ++ ".")).getD "."}{c}"
+          pure ps
+        | .anon ps => pure ps
+        | _ => throwAt pat.info s!"`let` with a quantity expects a pattern ⟨…⟩ or (.mk …) for the structure {S}"
+      let n := L.fields.length
+      unless ps.length == n do
+        throwAt pat.info s!"{S}.mk expects {n} argument{if n == 1 then "" else "s"} (the fields {", ".intercalate L.fields}), got {ps.length}"
+      -- a component that is not a field, bound at `q` and never used
+      let leftoverOk := match q with
+        | .qlit r => QRig.le (0 : R) r
+        | _ => false
+      if L.comps.any (· == .marker false) && !leftoverOk then
+        throwAt pat.info (s!"cannot take a value of the structure {S} apart at quantity {q.pretty ctx.names}: " ++
+          s!"the Σ type of a structure ends in a component that is not a field (its marker tail), and this " ++
+          s!"`let` would bind it at quantity {q.pretty ctx.names} and never use it. This is a limitation of " ++
+          "how structures are encoded today; take the structure at quantity ω, or use a tuple type for linear data")
+      L.comps.mapM fun c => match c with
+        | .field i => nameOf ps[i]!
+        | .marker _ => pure "_"
+    | none =>
+      match v, ← force sty with
+      | .anon ps, .sigma .. =>
+        unless ps.length ≥ 2 do
+          throwAt pat.info "an anonymous constructor pattern on a pair has at least two components"
+        ps.mapM nameOf
+      | _, sty => throwAt (ctx.withInfo (stx.getArg 4)).info s!"`let` with a quantity and a pattern expects a structure or a tuple, got {← showVal ctx sty}"
+  pure (← splitChain ctx q s sty names body expected, expected)
+
+/-- (13h) The anonymous constructor `⟨e₁, …, eₙ⟩`, checked against a structure `S`
+(`S.mk e₁ … eₙ`), a pair (the tuple) or a data type with one constructor `c`
+(`.c e₁ … eₙ`). -/
+partial def elabAnon (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
+  let g ← getGlobals
+  let args := (stx.getArg 1).args.filter (!· matches .atom ..)
+  let i := stx.info
+  let app (h : Syntax) : Syntax := if args.isEmpty then h else .node i "term.app" #[h, .node {} "null" args]
+  match structHead? g (← forceMeta expected) with
+  | some (S, _, _) => check ctx (app (.node i "term.ident" #[.ident i (S ++ ".mk")])) expected
+  | none =>
+    match ← force expected with
+    | .sigma .. =>
+      unless args.size ≥ 2 do throwAt ctx.info "an anonymous constructor of a pair has at least two components"
+      checkTuple ctx args.toList expected
+    | .mu _ _ _ _ _ (some (T, _, _)) =>
+      let [c] := ctorNames g T
+        | throwAt ctx.info s!"an anonymous constructor ⟨…⟩ needs a type with one constructor, and {T} has {(ctorNames g T).length}"
+      check ctx (app (.node i "term.dotIdent" #[.atom i ".", .ident i c])) expected
+    | ty => throwAt ctx.info s!"an anonymous constructor ⟨…⟩ needs a structure, a pair or a data type with one constructor as its expected type, not {← showVal ctx ty}"
+
+/-- (13i) Structure update `{ s with f₁ := v₁, … }`: `S.mk` with the named fields
+replaced and the others projected from `s` (bound once, unless it is a variable). A
+kept field whose type depends on a replaced one must still have its type. The fields
+are read through `StructLayout`. -/
+partial def elabStructUpdate (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) := do
+  let g ← getGlobals
+  let sStx := stx.getArg 1
+  let (s, sty) ← infer ctx sStx
+  let some (S, us, params) := structHead? g (← forceMeta sty)
+    | throwAt (ctx.withInfo sStx).info s!"structure update needs a value of a structure type, not one of type {← showVal ctx sty}"
+  if let some m := g.privateTo? (S ++ ".mk") then
+    throwAt ctx.info s!"cannot update a value of type {S} here: its constructor is private to module {m}" "private"
+  let some L := structLayout? g S
+    | throwAt ctx.info (s!"cannot update a value of type {S}: {S} is opaque " ++
+        s!"outside module {(g.opaqueTo? S).getD "?"} (it has private constructors or fields)") "private"
+  let some mk := g.find? (S ++ ".mk") | throwAt ctx.info s!"{S}.mk is missing"
+  -- the updates, by field
+  let mut updates : List (Name × Syntax) := []
+  for u in (stx.getArg 3).args do
+    if u matches .atom .. then continue
+    let f := ((u.getArg 0).getId?).getD "_"
+    unless L.fields.contains f do
+      throwAt u.info s!"{S} has no field '{f}' (its fields are {", ".intercalate L.fields})"
+    if updates.any (·.1 == f) then throwAt u.info s!"field '{f}' is updated twice"
+    updates := updates ++ [(f, u.getArg 2)]
+  -- `s` is read once per kept field: bind it, unless it is a variable
+  let w : Term R := .qlit QuantitySyntax.explicitDefault
+  let isVar := s matches .var _
+  let sVal0 ← evalIn ctx s
+  let ctx' := if isVar then ctx else ctx.define "s✝" sty sVal0
+  let sTm : Term R := if isVar then s else .var 0
+  let sVal ← evalIn ctx' sTm
+  let mut tm : Term R := .const (S ++ ".mk") us
+  let mut fty : VTy R := eval g [] (mk.type.instLevels mk.levelParams us)
+  for p in params do
+    let .pi _ _ _ _ cod _ ← force fty | throwAt ctx.info s!"internal error: the type of {S}.mk"
+    tm := .app tm (quote g ctx'.lvl p)
+    fty ← instM cod p
+  -- the components of `s`, with their types
+  let mut compTys : Array (VTy R) := #[]
+  let mut restTy ← force sty
+  let mut restVal := sVal
+  for _ in [0:L.comps.length - 1] do
+    let .sigma _ _ A B _ := restTy | throwAt ctx.info s!"internal error: the layout of {S}"
+    compTys := compTys.push A
+    restTy ← force (← instM B (vFst restVal))
+    restVal := vSnd restVal
+  compTys := compTys.push restTy
+  for f in L.fields, i in [0:L.fields.length] do
+    let .pi _ _ _ dom cod _ ← force fty | throwAt ctx.info s!"internal error: the type of {S}.mk"
+    let a ← match updates.lookup f with
+      | some v => check ctx' v dom
+      | none =>
+        let some k := L.fieldComp? i | throwAt ctx.info s!"internal error: the layout of {S}"
+        let st ← get
+        try unifyAt ctx' stx dom compTys[k]!
+        catch _ =>
+          set st
+          throwAt ctx.info (s!"field '{f}' keeps its value, but its type {← showVal ctx' compTys[k]!} depends on an updated field: " ++
+            s!"it should now have type {← showVal ctx' dom}; update '{f}' too")
+        pure (L.compTerm k sTm)
+    tm := .app tm a
+    fty ← instM cod (← evalIn ctx' a)
+  let t := if isVar then tm else .letE "s✝" w (quote g ctx.lvl sty) s tm
+  pure (t, sty)
+
 /-- `fun` in inference mode: untyped binders get a metavariable as their type. -/
 partial def inferFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) :
     ElabM R (Term R × VTy R) := do
@@ -1174,6 +1492,29 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
       | .sort l => pure l
       | _ => freshLevelMeta
     return (.sigma b.name q ty cod (some (.max l₁ l₂)), .sort (.max l₁ l₂))
+
+/-- (7e) After an application: its instance problems whose types its arguments have just
+fixed (`Add ?A` in `a + 5`, now `Add Nat`) are solved now, not at the next instance
+problem or the end of the command, so that the value computes when it meets a type
+(`refl (a + 5) : Nat.lor a 5 = a + 5`: native arithmetic can't see an unsolved hole). -/
+partial def solveReady : ElabM R Unit := do
+  unless (← get).pendingInsts.isEmpty do discard synthPending
+
+/-- (7e) A numeral, possibly negated or in parentheses (`3`, `-3`, `(3)`). -/
+partial def numLike (stx : Syntax) : Bool :=
+  stx.isOfKind "term.num" ||
+  ((stx.isOfKind "term.paren" || stx.isOfKind "term.neg") && numLike (stx.getArg 1))
+
+/-- (7e) An application of a class method to a numeral (`Add.add x 1`, `1 + x`, `-3`):
+its numerals are elaborated after its other arguments and the expected type, which may
+fix their type (`0 + a` with `a : Int`, `(-3 : Int)`), as Lean's `binop%` does. -/
+partial def numOperands (ctx : LocalCtx R) (stx : Syntax) : ElabM R Bool := do
+  unless stx.isOfKind "term.app" && (stx.getArg 1).args.any numLike do return false
+  let h := stx.getArg 0
+  unless h.isOfKind "term.ident" do return false
+  let x := stripScope (((h.getArg 0).getId?).getD "_")
+  if (lookupLocal ctx x).isSome then return false
+  return (← get).classes.any fun c => c.fields.any fun f => c.name ++ "." ++ f == x
 
 /-- A `fun` with a binder whose type isn't given: as an argument, it is elaborated after
 the others (`checkApp`). -/
@@ -1276,9 +1617,13 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   -- a lambda with unannotated binders whose domains aren't known yet waits for the other
   -- arguments, which may fix them (`zipWith3 (fun b x y => if b then x else y) c t e`)
   let mut postponed : Array (Syntax × Term R × VTy R × Bool) := #[]
+  -- (7e) the numerals of a class method's application wait too (`1 + x`); elsewhere a
+  -- numeral may be what fixes a postponed lambda's domain (`mealy (fun s i => …) 0 xs`)
+  let numPostpone ← numOperands ctx stx
   for pass in [0:2] do
     for (arg, m, dom, used) in (if pass == 0 then pending else postponed) do
-      if pass == 0 && postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg)) then
+      if pass == 0 && ((postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg))) ||
+          (numPostpone && numLike arg && (← force dom) matches .neutral (.mvar _) _)) then
         postponed := postponed.push (arg, m, dom, used)
         continue
       let a ← check ctx arg dom
@@ -1319,6 +1664,7 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   let rec respine (t : Term R) : Term R := match t with
     | .app g x => .app (respine g) (((args.find? (·.1 == x)).map (·.2)).getD x)
     | t => t
+  solveReady
   pure (respine f)
 
 /-- **Exercise 3.9.** Infer the type of an application `f a₁ … aₙ` (`term.app`, with
@@ -1338,7 +1684,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   let explicitMode := fStx.isOfKind "term.explicit"
   -- (a lambda argument with unannotated binders is postponed: `checkApp` against an
   -- unknown type does that)
-  if postpone && !explicitMode && (stx.getArg 1).args.any postponable then
+  if postpone && !explicitMode && ((stx.getArg 1).args.any postponable || (← numOperands ctx stx)) then
     let T ← freshMeta ctx "the type of an application"
     let vT ← evalIn ctx T
     let t ← checkApp ctx stx vT
@@ -1399,6 +1745,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   -- `bitWidth (0 A : Type) [BitPack A] : Nat`), as are implicits before them
   if !explicitMode && (← trailingInst ctx.lvl fty) then
     (f, fty) ← insertImplicits ctx f fty
+  solveReady
   pure (f, fty)
   --|ex
   --| sorry
@@ -1477,6 +1824,74 @@ partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R ×
     (f, fty) ← insertImplicits ctx f fty
   pure (f, fty)
 
+/-- (13h) Column `k` of the first clause is a constructor pattern or `⟨…⟩`. If the
+column's variable is a structure, rewrite the column's `.mk p…`/`S.mk p…`/`⟨p…⟩`
+patterns to tuple patterns over the components of the structure's Σ (`StructLayout`:
+the one place that knows the encoding) and compile that; the tuple patterns then bind
+the fields by projections. An `⟨…⟩` on another type becomes a tuple pattern (a pair) or
+the pattern of the type's only constructor. `none`: an ordinary constructor pattern. -/
+partial def structPattern? (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (MClause R))
+    (goal : VTy R) (rc : Option RecCtx) (top : Bool) (k : Nat) : ElabM R (Option (Term R)) := do
+  let g ← getGlobals
+  let x := vars[k]!
+  let xty ← forceMeta (ctx.types[ctx.lvl - x - 1]!)
+  let p0 : Syntax := ((clauses.head?.bind (·.pats[k]?)).getD .missing)
+  let rewrite (f : Syntax → PatView → ElabM R (Option Syntax)) : ElabM R (Term R) := do
+    let clauses' ← clauses.mapM fun c => do
+      let p := c.pats[k]!
+      let (ns, v) ← match patViewAs g p with
+        | .ok v => pure v
+        | .error e => throwAt p.info e
+      match ← f p v with
+      | some p' => pure { c with pats := c.pats.take k ++ [asPatStx ns p'] ++ c.pats.drop (k + 1) }
+      | none => pure c
+    compileMatch ctx vars clauses' goal rc top
+  match structHead? g xty with
+  | some (S, _, _) =>
+    if let some m := g.privateTo? (S ++ ".mk") then
+      throwAt p0.info s!"cannot match on a value of type {S} here: its constructor is private to module {m}" "private"
+    let some L := structLayout? g S
+      | throwAt p0.info (s!"cannot match on a value of type {S}: {S} is opaque " ++
+          s!"outside module {(g.opaqueTo? S).getD "?"} (it has private constructors or fields)") "private"
+    let n := L.fields.length
+    some <$> rewrite fun p v => do
+      let ps? ← match v with
+        | .ctor T c ps =>
+          unless c == "mk" && (T.isNone || T == some S) do
+            throwAt p.info s!"{S} is a structure: its constructor is {S}.mk, not {(T.map (· ++ ".")).getD "."}{c}"
+          pure (some ps)
+        | .anon ps => pure (some ps)
+        | _ => pure none
+      match ps? with
+      | none => pure none
+      | some ps =>
+        unless ps.length == n do
+          throwAt p.info s!"{S}.mk expects {n} argument{if n == 1 then "" else "s"} (the fields {", ".intercalate L.fields}), got {ps.length}"
+        pure (some (L.tuplePattern p.info ps))
+  | none =>
+    let first ← match patViewAs g p0 with
+      | .ok v => pure v.2
+      | .error e => throwAt p0.info e
+    unless first matches .anon .. do return none
+    match ← force xty with
+    | .sigma .. =>
+      some <$> rewrite fun p v => do
+        let .anon ps := v | pure none
+        match ps with
+        | a :: b :: rest =>
+          let sep := (rest.flatMap fun q => [Syntax.atom {} ",", q])
+          pure (some (.node p.info "term.tuple" #[.atom {} "(", a, .atom {} ",",
+            .node {} "null" (#[b] ++ sep.toArray), .atom {} ")"]))
+        | _ => throwAt p.info "an anonymous constructor pattern on a pair has at least two components"
+    | .mu _ _ _ _ _ (some (T, _, _)) =>
+      let [c] := ctorNames g T
+        | throwAt p0.info s!"an anonymous constructor pattern ⟨…⟩ needs a type with one constructor, and {T} has {(ctorNames g T).length}"
+      some <$> rewrite fun p v => do
+        let .anon ps := v | pure none
+        let h : Syntax := .node p.info "term.dotIdent" #[.atom {} ".", .ident p.info c]
+        pure (some (if ps.isEmpty then h else .node p.info "term.app" #[h, .node {} "null" ps.toArray]))
+    | ty => throwAt p0.info s!"an anonymous constructor pattern ⟨…⟩ needs a structure, a pair or a data type with one constructor, not {← showVal ctx ty}"
+
 /-- Compile clauses over the variables `vars` (levels) against `goal`. -/
 partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (MClause R))
     (goal : VTy R) (rc : Option RecCtx) (top : Bool) : ElabM R (Term R) := do
@@ -1491,8 +1906,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- of the scrutinees, and make the row call it. If it doesn't check generically (its
   -- right-hand side relies on what the other rows learnt), copy it as before.
   let isCatchAll (c : MClause R) : Bool := c.binds.isEmpty && c.pats.all fun p =>
-    match patView g p with
-    | .ok (.var _) | .ok .wild => true
+    match patViewAs g p with
+    | .ok (_, .var _) | .ok (_, .wild) => true
     | _ => false
   if let some last := clauses.getLast? then
     let n := vars.length
@@ -1522,13 +1937,17 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
         pure (Term.letE "dflt✝" w fnTy fn rest)) (fun _ => pure none)
       if let some t := shared? then return t
   -- find the first constructor pattern of the first clause
-  let views ← cl.pats.mapM fun p => match patView g p with
+  -- (13g) a pattern is its as-names and the pattern under them
+  let pview (p : Syntax) : ElabM R (List Name × PatView) := match patViewAs g p with
     | .ok v => pure v
     | .error e => throwAt p.info e
-  let some k := views.findIdx? (fun v => v matches .ctor .. || v matches .tuple ..) | do
+  let asViews ← cl.pats.mapM pview
+  let views := asViews.map (·.2)
+  let some k := views.findIdx? (fun v => v matches .ctor .. || v matches .tuple .. || v matches .anon ..) | do
     -- all variables: bind them and elaborate the right-hand side
     let mut binds := cl.binds
-    for v in views, x in vars do
+    for (ns, v) in asViews, x in vars do
+      for n in ns do binds := binds ++ [(n, typeOf x, Val.var x)]
       if let .var n := v then binds := binds ++ [(n, typeOf x, Val.var x)]
     let mut rhs := cl.rhs
     if let some rc := rc then
@@ -1549,6 +1968,11 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       | v@(.var _) => t := t.instantiateAt 0 v
       | v => t := .letE n (.qlit QuantitySyntax.explicitDefault) (quote g lvl ty) v t
     return t
+  -- (13h) a constructor pattern on a structure, `.mk p…` or `⟨p…⟩`: the tuple pattern
+  -- over the components of its Σ (`StructLayout`); `⟨p…⟩` is also a tuple pattern on a
+  -- pair, and the constructor's pattern on a data type with one constructor
+  if views[k]! matches .ctor .. || views[k]! matches .anon .. then
+    if let some t ← structPattern? ctx vars clauses goal rc top k then return t
   -- a pair pattern: match the components, as two new (defined) variables
   if views[k]! matches .tuple .. then
     let x := vars[k]!
@@ -1562,12 +1986,14 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let vars' := vars.take k ++ [ctx.lvl, ctx.lvl + 1] ++ vars.drop (k + 1)
     let clauses' ← clauses.mapM fun c => do
       let p := c.pats[k]!
-      let (ps, binds) ← match patView g p with
-        | .ok (.tuple a b) => pure ([a, b], c.binds)
-        | .ok (.var n) => pure ([holeStx, holeStx], c.binds ++ [(n, typeOf x, xv)])
-        | .ok .wild => pure ([holeStx, holeStx], c.binds)
+      let (ns, pv) ← pview p
+      let asBinds := ns.map fun n => (n, typeOf x, xv)
+      let (ps, binds) ← match pv with
+        | .tuple a b => pure ([a, b], c.binds)
+        | .var n => pure ([holeStx, holeStx], c.binds ++ [(n, typeOf x, xv)])
+        | .wild => pure ([holeStx, holeStx], c.binds)
         | _ => throwAt p.info "expected a tuple pattern"
-      pure { c with pats := c.pats.take k ++ ps ++ c.pats.drop (k + 1), binds }
+      pure { c with pats := c.pats.take k ++ ps ++ c.pats.drop (k + 1), binds := binds ++ asBinds }
     let body ← compileMatch ctx2 vars' clauses' goal rc top
     let w : Term R := .qlit QuantitySyntax.explicitDefault
     return .letE "fst✝" w (q A) (q v1) (.letE "snd✝" w (quote g (ctx.lvl + 1) ty2) (quote g (ctx.lvl + 1) v2) body)
@@ -1746,10 +2172,15 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           (fun l => (.var (ctx'.lvl - l - 1) : Term R))).foldl .app (.const (T ++ "." ++ c) us))
         let explicitIdx := fieldInfos.zipIdx.filter (fun ((_, bi, _), _) => bi == .default) |>.map (·.2)
         let mut cls : List (MClause R) := []
+        -- a variable pattern is `x` itself (no object is rebuilt from its fields), unless
+        -- the goal depends on `x` (then only the constructor has the refined type) or
+        -- this is the recursor's split: its method also runs for the hypotheses,
+        -- where the value at hand is the constructor, not `x`
+        let xVal := if useRec || G.hasVar (ctx.lvl - x - 1) then ctorVal else Val.var x
         for cl' in clauses do
-          let pv ← match patView g (cl'.pats[k]!) with
-            | .ok v => pure v
-            | .error e => throwAt (cl'.pats[k]!).info e
+          let (asNames, pv) ← pview (cl'.pats[k]!)
+          -- (13g) the names of an as-pattern are bound like a variable pattern
+          let cl' := { cl' with binds := cl'.binds ++ asNames.map fun n => (n, xty, xVal) }
           let before := cl'.pats.take k
           let after := cl'.pats.drop (k + 1)
           match pv with
@@ -1764,15 +2195,12 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
               cls := cls ++ [{ cl' with pats := before ++ sub ++ after }]
           | .var n =>
             let sub := fieldInfos.map fun _ => holeStx
-            -- the variable is `x` itself (no object is rebuilt from its fields), unless
-            -- the goal depends on `x` (then only the constructor has the refined type) or
-            -- this is the recursor's split: its method also runs for the hypotheses,
-            -- where the value at hand is the constructor, not `x`
-            let xVal := if useRec || G.hasVar (ctx.lvl - x - 1) then ctorVal else Val.var x
             let binds := cl'.binds ++ [(n, xty, xVal)]
             cls := cls ++ [{ cl' with pats := before ++ sub ++ after, binds := binds }]
           | .wild =>
             cls := cls ++ [{ cl' with pats := before ++ (fieldInfos.map fun _ => holeStx) ++ after }]
+          | .anon .. => throwAt (cl'.pats[k]!).info s!"an anonymous constructor pattern ⟨…⟩ needs a type with one constructor, and {T} has {ctors.length}"
+          | .as .. => throwAt (cl'.pats[k]!).info "internal error: as-pattern"
           | .tuple .. => throwAt (cl'.pats[k]!).info "a tuple pattern needs a pair"
         if cls.isEmpty then throwAt ctx.info s!"missing case for constructor {c}" "missing-case"
         -- reverted variables are re-introduced at new levels: their hypotheses follow them
@@ -1921,6 +2349,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
         return (.var ix, ty)
     -- a macro-scoped name that isn't a local refers to the global of its base name
     let x := stripScope x
+    -- (13b) this module's private declaration of that name, if any
+    let x := (← getGlobals).resolve x
     match (← getGlobals).find? x with
     | some d =>
       -- (13b) a private name of another module
@@ -1936,6 +2366,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       record x {} ty
       return (.const x us, ty)
     | none =>
+      -- (13b) another module's private declaration of that name (under its own kernel
+      -- name, `Globals.privateName`)
+      let g ← getGlobals
+      if let some (_, m) := g.privates.toList.find? fun (n, m) => m != g.module && n == Globals.privateName m x then
+        throwAt ctx.info s!"'{x}' is private to module {m}" "private"
       -- built-in types
       let builtinLevel : Option Level := match explicitLevels with
         | some _ => none
@@ -2089,6 +2524,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     return (← check ctx stx ty, ty)
   | "term.letPair" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
+  -- (13g–i) as-patterns, anonymous constructors, pattern `let`, structure update
+  | "term.asPat" => throwAt ctx.info "an as-pattern `x@p` is only allowed in a pattern"
+  | "term.anon" => throwAt ctx.info "cannot infer the type of an anonymous constructor ⟨…⟩; add a type ascription"
+  | "term.letPat" => elabLetPat ctx stx none
+  | "term.structUpdate" => elabStructUpdate ctx stx
   | "term.omega" => return (← elabQtyLit ctx stx "ω", .qty)
   | "term.num" =>
     -- an unannotated numeral is a `builtin nat`

@@ -33,7 +33,7 @@ def cntStep {r : HwTy → Type} [Hw r] (s : Cnt r) (x : CntIn r) : r (HwTy.prod 
   Hw.pair (Cnt.pack (Cnt.mk next up)) (CntOut.pack (CntOut.mk s.count (Hw.eq s.count (Hw.lit 4 9))))
 
 def counter : Circuit CntIn.code CntOut.code :=
-  Circuit.bundled Cnt.bundle CntIn.bundle CntOut.bundle (Cnt.mk (BitVec.ofNat 4 0) (BitVec.ofNat 1 1)) (BStep.mk (fun s x => cntStep s x))
+  Circuit.bundled Cnt.bundle CntIn.bundle CntOut.bundle (Cnt.mk (BitVec.ofNat 4 0) (BitVec.ofNat 1 1)) cntStep
 
 ------------------------------------------------------------------------------------
 -- Composition: a delay line and an accumulator, in sequence and side by side, a
@@ -42,7 +42,7 @@ def counter : Circuit CntIn.code CntOut.code :=
 def delay2 : Circuit B8 B8 := Circuit.seq (Circuit.named "d1" (Circuit.delay B8 (BitVec.ofNat 8 7))) (Circuit.named "d2" (Circuit.delay B8 (BitVec.ofNat 8 9)))
 def acc : Circuit B8 B8 := Circuit.mk B8 (BitVec.ofNat 8 0) (fun s x => Hw.pair (Hw.add s x) s)
 def chain : Circuit B8 B8 := Circuit.seq (Circuit.named "acc" acc) delay2
-def sideBy : Circuit (HwTy.prod B8 B8) (HwTy.prod B8 B8) := Circuit.par chain (Circuit.comb (Comb.mk (fun x => Hw.xor x (Hw.lit 8 85)) : Comb B8 B8))
+def sideBy : Circuit (HwTy.prod B8 B8) (HwTy.prod B8 B8) := Circuit.par chain (Circuit.comb (fun x => Hw.xor x (Hw.lit 8 85)))
 -- feedback: the output plus the input, fed back (a running sum through the loop register)
 def fbBody : Circuit (HwTy.prod B8 B8) (HwTy.prod B8 B8) :=
   Circuit.mk (HwTy.bits 0) (BitVec.ofNat 0 0) (fun s p => Hw.pair s (Hw.pair (Hw.snd p) (Hw.add (Hw.fst p) (Hw.snd p))))
@@ -61,7 +61,7 @@ def twoStep {r : HwTy → Type} [Hw r] (s : Two r) (x : CntIn r) : r (HwTy.prod 
   Hw.pair (Two.pack (Two.mk (Cnt.unpack (Hw.fst a)) (Cnt.unpack (Hw.fst b)))) (Hw.snd b)
 def cnt0 : Cnt HwTy.El := Cnt.mk (BitVec.ofNat 4 0) (BitVec.ofNat 1 1)
 def two : Circuit CntIn.code CntOut.code :=
-  Circuit.bundled Two.bundle CntIn.bundle CntOut.bundle (Two.mk cnt0 cnt0) (BStep.mk (fun s x => twoStep s x))
+  Circuit.bundled Two.bundle CntIn.bundle CntOut.bundle (Two.mk cnt0 cnt0) twoStep
 
 -- reset and enable around the counter
 def counterRE : Circuit (HwTy.prod (HwTy.named "rst" HwTy.bit) (HwTy.prod (HwTy.named "en" HwTy.bit) CntIn.code)) CntOut.code :=
@@ -102,7 +102,7 @@ def t6 : Bool × List Nat := agree counterRE reTrace
 def chain_run (xs : List (HwTy.El B8)) : Circuit.run chain xs = Circuit.run delay2 (Circuit.run (Circuit.named "acc" acc) xs) :=
   Circuit.run_seq (Circuit.named "acc" acc) delay2 xs
 def delay_run (xs : List (HwTy.El B8)) : Circuit.run (Circuit.delay B8 (BitVec.ofNat 8 7)) xs = Hdl.shift (BitVec.ofNat 8 7 : HwTy.El B8) xs :=
-  Circuit.run_delay (t := B8) (BitVec.ofNat 8 7) xs
+  Circuit.run_delay (BitVec.ofNat 8 7) xs
 
 ------------------------------------------------------------------------------------
 -- Names in the Verilog, a test bench, pin constraints, a waveform; designs in a list.
