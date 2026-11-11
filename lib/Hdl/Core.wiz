@@ -870,16 +870,13 @@ def Circuit.run_eq {i o : HwTy} (c : Circuit i o) (xs : List (HwTy.El i)) : Circ
 -- Composition. Each combinator's state is made of its parts' states; the lemmas after
 -- each say what it does to `runFrom` (and so, by `Circuit.run_eq`, to `run`).
 
--- Combinational code as a value (a structure: a polymorphic function can't be passed
--- as an argument and applied under a step's own representation binder)
-structure Comb (i o : HwTy) where
-  run : {r : HwTy → Type} → [Hw r] → r i → r o
+-- Combinational code: a function at every representation (`fun x => Hw.xor x k`, or a
+-- definition `{r : HwTy → Type} → [Hw r] → r i → r o` by name)
+def Comb (i o : HwTy) : Type 1 := {r : HwTy → Type} → [Hw r] → r i → r o
 
 -- stateless: combinational code
-def Circuit.combStep {ω i o : HwTy} (f : Comb i o) {r : HwTy → Type} [Hw r] (s : r (HwTy.bits 0)) (x : r i) :
-    r (HwTy.prod (HwTy.bits 0) o) := Hw.pair s (@Comb.run i o f r _ x)
 def Circuit.comb {ω i o : HwTy} (f : Comb i o) : Circuit i o :=
-  Circuit.mk (HwTy.bits 0) (BitVec.ofNat 0 0) (fun s x => Circuit.combStep f s x)
+  Circuit.mk (HwTy.bits 0) (BitVec.ofNat 0 0) (fun s x => Hw.pair s (f x))
 
 -- one register: the output is the input of the cycle before (`init` first)
 def Circuit.delay (ω t : HwTy) (init : HwTy.El t) : Circuit t t :=
@@ -913,16 +910,12 @@ def Circuit.named {ω i o : HwTy} (name : String) (c : Circuit i o) : Circuit i 
     Hw.pair (Hw.tag name (Hw.fst rc)) (Hw.snd rc))
 
 -- combinational code before and after
-def Circuit.mapInStep {ω i' i o : HwTy} (f : Comb i' i) (c : Circuit i o) {r : HwTy → Type} [Hw r]
-    (s : r c.st) (x : r i') : r (HwTy.prod c.st o) := c.step s (@Comb.run i' i f r _ x)
 def Circuit.mapIn {ω i' i o : HwTy} (f : Comb i' i) (c : Circuit i o) : Circuit i' o :=
-  Circuit.mk c.st c.init (fun s x => Circuit.mapInStep f c s x)
-def Circuit.mapOutStep {ω i o o' : HwTy} (f : Comb o o') (c : Circuit i o) {r : HwTy → Type} [Hw r]
-    (s : r c.st) (x : r i) : r (HwTy.prod c.st o') :=
-  let rc := c.step s x;
-  Hw.pair (Hw.fst rc) (@Comb.run o o' f r _ (Hw.snd rc))
+  Circuit.mk c.st c.init (fun s x => c.step s (f x))
 def Circuit.mapOut {ω i o o' : HwTy} (f : Comb o o') (c : Circuit i o) : Circuit i o' :=
-  Circuit.mk c.st c.init (fun s x => Circuit.mapOutStep f c s x)
+  Circuit.mk c.st c.init (fun s x =>
+    let rc := c.step s x;
+    Hw.pair (Hw.fst rc) (f (Hw.snd rc)))
 
 -- names for the input and the output (the ports `name`, or `name_…` for a product)
 def Circuit.inputName {ω i o : HwTy} (name : String) (c : Circuit i o) : Circuit (HwTy.named name i) o :=
@@ -972,12 +965,15 @@ def Hdl.snds {A B : Type} : List (A × B) → List B
 def Hdl.consEq {A : Type} (x : A) {xs ys : List A} (e : xs = ys) : List.cons x xs = List.cons x ys :=
   Eq.congrArg (List.cons x) e
 
-def Comb.el {i o : HwTy} (f : Comb i o) (x : HwTy.El i) : HwTy.El o := @Comb.run i o f HwTy.El _ x
+def Comb.el {i o : HwTy} (f : Comb i o) (x : HwTy.El i) : HwTy.El o := f x
 def Circuit.runFrom_comb {i o : HwTy} (f : Comb i o) :
     (s : HwTy.El (HwTy.bits 0)) → (xs : List (HwTy.El i)) →
     Circuit.runFrom (Circuit.comb f) s xs = Hdl.map (Comb.el f) xs
   | s, .nil => refl (@List.nil (HwTy.El o))
-  | s, .cons x xs => Hdl.consEq (Comb.el f x) (Circuit.runFrom_comb f s xs)
+  -- (`f x`, not `Comb.el f x`: checked against `Comb i o`, a variable `f` is η-expanded,
+  -- `fun {r} [_] => f ?inst`, and that instance is still pending when this equation
+  -- needs it)
+  | s, .cons x xs => Hdl.consEq (f x) (Circuit.runFrom_comb f s xs)
 
 def Circuit.runFrom_delay {t : HwTy} (v : HwTy.El t) : (s : HwTy.El t) → (xs : List (HwTy.El t)) →
     Circuit.runFrom (Circuit.delay t v) s xs = Hdl.shift s xs
@@ -1329,27 +1325,20 @@ structure Bundle (F : (HwTy → Type) → Type) where
 
 -- (A bundle is a plain value, not an instance: structures are structural types, so two
 -- structures with the same field types are one type, and instance resolution could not
--- tell their bundles apart. `deriving Bundle` names it `S.bundle`.)
+-- tell their bundles apart. `deriving Bundle` names it `S.bundle`. It can become an
+-- instance once declared types get kernel-level brands.)
 
 def Bundle.toEl {F : (HwTy → Type) → Type} (b : Bundle F) (v : F HwTy.El) : HwTy.El b.code :=
-  @Bundle.pack F b HwTy.El _ v
+  b.pack v
 def Bundle.ofEl {F : (HwTy → Type) → Type} (b : Bundle F) (v : HwTy.El b.code) : F HwTy.El :=
-  @Bundle.unpack F b HwTy.El _ v
-
--- A step on bundles, as a value (see `Comb`).
-structure BStep (S I : (HwTy → Type) → Type) (st o : HwTy) where
-  run : {r : HwTy → Type} → [Hw r] → S r → I r → r (HwTy.prod st o)
-
-def Circuit.bundledStep {S I O : (HwTy → Type) → Type} (bs : Bundle S) (bi : Bundle I) (bo : Bundle O)
-    (f : BStep S I bs.code bo.code) {r : HwTy → Type} [Hw r] (s : r bs.code) (x : r bi.code) : r (HwTy.prod bs.code bo.code) :=
-  @BStep.run S I bs.code bo.code f r _ (@Bundle.unpack S bs r _ s) (@Bundle.unpack I bi r _ x)
+  b.unpack v
 
 -- A circuit whose state, input and output are bundles: the step takes the state and the
 -- input as structures and returns the packed next state and output
 -- (`Hw.pair (S.pack s') (O.pack o)`).
 def Circuit.bundled {S I O : (HwTy → Type) → Type} (bs : Bundle S) (bi : Bundle I) (bo : Bundle O)
-    (init : S HwTy.El) (f : BStep S I bs.code bo.code) : Circuit bi.code bo.code :=
-  Circuit.mk bs.code (Bundle.toEl bs init) (fun s x => Circuit.bundledStep bs bi bo f s x)
+    (init : S HwTy.El) (f : {r : HwTy → Type} → [Hw r] → S r → I r → r (HwTy.prod bs.code bo.code)) : Circuit bi.code bo.code :=
+  Circuit.mk bs.code (bs.pack init) (fun s x => f (bs.unpack s) (bi.unpack x))
 
 ------------------------------------------------------------------------------------
 -- `deriving Bundle` for a structure `S Δ (r : HwTy → Type)` (the representation is the
