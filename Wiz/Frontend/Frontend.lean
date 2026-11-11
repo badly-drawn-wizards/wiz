@@ -188,8 +188,9 @@ where
           let msgs := msgs ++ (inner.messages.filter (·.severity == .warning)).map fun w =>
             { info := cmd.info, severity := .warning, text := s!"module {m}: {w.render src}" }
           -- the info tree is positions in this file: keep only ours (and (11q) the import)
+          -- (13m) the module's `local` notation stays in it
           let infos := if s.termInfo then s.infos.push (.importMod (cmd.getArg 1).info m) else s.infos
-          go' input base chars stop { inner with messages := msgs, module := s.module, infos } memo
+          go' input base chars stop { (inner.endModule s) with messages := msgs, module := s.module, infos } memo
       else go' input base chars stop (step cmd s) memo
     | .error e =>
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate

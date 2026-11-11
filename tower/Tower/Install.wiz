@@ -1,0 +1,496 @@
+import Tower.Basic
+-- Installing toolchains (stage 26b; the Lean original is Tower/Install.lean).
+--
+-- A spec resolves to a commit with `git ls-remote` on the `git` setting, then one source
+-- realises it: `nix` (`nix build FLAKE/COMMIT#wiz`, linked as a GC root), `release` (the
+-- tarball `RELEASES/TAG/wiz-ARCH-linux.tar.gz`; tags and channels only) or `source`
+-- (`git clone` + `lake build wiz grail`). `auto` tries them in that order. A toolchain
+-- is built in `toolchains/.tmp-…` and renamed into place.
+-- A spec that is not a tag (or `stable`) takes the release snapshot of its commit,
+-- `RELEASES/snapshot-<full sha>/…` (26g): `nightly` is the commit of the tag `nightly`.
+
+-- What a spec asks for: the ref to resolve, a pinned commit, the release tag of a tag
+-- spec, and the commit whose snapshot a release install takes when it is not `commit`
+-- (`nightly`: the commit of the tag `nightly`, which may be behind the branch).
+structure Want where
+  ref : String
+  commit : Option String
+  tag : Option String
+  snapshot : Option String
+
+-- ## Refs
+
+def Tower.lsRows : List String → List (String × String)
+  | .nil => .nil
+  | .cons l rest => match String.splitOn l "\t" with
+    | .cons c (.cons r .nil) => (r, c) :> Tower.lsRows rest
+    | _ => Tower.lsRows rest
+-- a peeled tag (`refs/tags/v1^{}`) is the commit of an annotated tag
+def Tower.peel (rows : List (String × String)) : List (String × String) :=
+  let peeled := List.foldr (fun (p : String × String) (acc : List (String × String)) =>
+    match String.stripSuffix p.1 "^{}" with
+    | .some r => (r, p.2) :> acc
+    | .none => acc) (.nil : List (String × String)) rows;
+  List.foldr (fun (p : String × String) (acc : List (String × String)) =>
+    match String.endsWith p.1 "^{}" with
+    | .true => acc
+    | .false => (p.1, Tower.getD (String.lookup p.1 peeled) p.2) :> acc) (.nil : List (String × String)) rows
+-- the refs of the repository: (name, commit), tags peeled
+def Tower.lsRemote (git : String) : EIO (List (String × String)) := do
+  out ← Tower.run "git" ("ls-remote" :> git :> .nil);
+  EIO.pure (Tower.peel (Tower.lsRows (String.splitOn out "\n")))
+
+-- a version tag `vX.Y.Z` as numbers
+def Tower.allNats : List String → Option (List Nat)
+  | .nil => .some .nil
+  | .cons s rest => match String.parseNat s with
+    | .none => .none
+    | .some n => match Tower.allNats rest with
+      | .none => .none
+      | .some ns => .some (n :> ns)
+def Tower.versionOf (tag : String) : Option (List Nat) := match String.stripPrefix tag "v" with
+  | .some t => Tower.allNats (String.splitOn t ".")
+  | .none => .none
+def Tower.versionLt : List Nat → List Nat → Bool
+  | .nil, .cons _ _ => .true
+  | .cons a as, .cons b bs => Bool.or (Nat.lt a b) (Bool.and (Nat.beq a b) (Tower.versionLt as bs))
+  | _, _ => .false
+def Tower.latestGo : Option (String × List Nat) → List (String × String) → Option String
+  | best, .nil => match best with
+    | .some b => .some b.1
+    | .none => .none
+  | best, .cons r rest => match String.stripPrefix r.1 "refs/tags/" with
+    | .none => Tower.latestGo best rest
+    | .some t => match Tower.versionOf t with
+      | .none => Tower.latestGo best rest
+      | .some v => match best with
+        | .none => Tower.latestGo (.some (t, v)) rest
+        | .some b => match Tower.versionLt b.2 v with
+          | .true => Tower.latestGo (.some (t, v)) rest
+          | .false => Tower.latestGo best rest
+-- the highest `vX.Y.Z` tag
+def Tower.latestTag (refs : List (String × String)) : Option String := Tower.latestGo .none refs
+
+-- the commit of a tag, a branch or a full ref name
+def Tower.findRef (rs : List (String × String)) (ref : String) : Option String :=
+  match String.lookup ("refs/tags/" & ref) rs with
+  | .some c => .some c
+  | .none => match String.lookup ("refs/heads/" & ref) rs with
+    | .some c => .some c
+    | .none => String.lookup ref rs
+
+-- tags that name a snapshot's commit rather than a release of their own
+def Tower.snapshotNamer (ref : String) : Bool :=
+  Bool.or (String.startsWith ref "keep/") (Bool.or (String.startsWith ref "snapshot-") (String.eq ref "nightly"))
+
+-- What a spec asks for, resolved against the repository's refs.
+def Tower.resolveSpec (s : Settings) (spec : String) : EIO Want :=
+  match String.splitOn spec "@" with
+  | .cons r (.cons c .nil) => EIO.pure (Want.mk r (.some c) .none .none)
+  | _ => do
+    refs ← EIO.lift (Tower.lsRemote s.git);
+    let rs := (match refs with
+      | .ok rs => rs
+      | .error e => .nil : List (String × String));
+    let listed := (match refs with
+      | .ok rs => ""
+      | .error e => " (could not list it)" : String);
+    match String.eq spec "nightly" with
+    | .true => match Tower.findRef rs s.nightlyRef with
+      -- the tag `nightly` (when there is one): the newest commit with a complete snapshot
+      | .some c => EIO.pure (Want.mk s.nightlyRef (.some c) .none (String.lookup "refs/tags/nightly" rs))
+      | .none => EIO.fail ("nightly: no branch " & s.nightlyRef & " in " & s.git & listed)
+    | .false => match String.eq spec "stable" with
+    | .true => match refs with
+      | .error e => EIO.fail ("stable: " & e)
+      | .ok rs => match Tower.latestTag rs with
+        | .some t => EIO.pure (Want.mk t (Tower.findRef rs t) (.some t) .none)
+        | .none => EIO.fail ("stable: no release tags (vX.Y.Z) in " & s.git & " yet; use nightly")
+    | .false => match Tower.findRef rs spec with
+      -- a tag has its own release, except the tags that name a snapshot's commit
+      | .some c => EIO.pure (Want.mk spec (.some c) (match String.lookup ("refs/tags/" & spec) rs with
+        | .some x => match Tower.snapshotNamer spec with
+          | .true => .none
+          | .false => .some spec
+        | .none => .none) .none)
+      | .none => match Bool.and (Tower.isHex spec) (Nat.le 7 (String.length spec)) with
+        | .true => EIO.pure (Want.mk spec (.some spec) .none .none)
+        | .false => EIO.fail (spec & ": no such tag or branch in " & s.git)
+
+-- ## Wrappers
+
+-- the flag words a wrapper passes (` --cflags '…'`)
+def Tower.flagWords (flags : List (String × String)) : String :=
+  String.join (List.map (fun (k : String) => match String.lookup k flags with
+    | .some v => " --" & k & " " & Tower.shQuote v
+    | .none => "") Tower.flagKeys)
+
+-- `bin/wiz` and `bin/grail` of a toolchain whose binaries are in `binDir` and whose
+-- standard library is `lib`: they run the binary with the toolchain's flags.
+def Tower.writeWrappers (tc binDir lib name : String) (flags : List (String × String)) : EIO Unit := do
+  let head := "#!/bin/sh\n# toolchain " & name & ", written by tower: the binary with this toolchain's flags\n";
+  Tower.writeScript (Path.join tc "bin/wiz")
+    (head & "exec " & Tower.shQuote (Path.join binDir "wiz") & Tower.flagWords flags & " -I " & Tower.shQuote lib & " \"$@\"\n");
+  Tower.writeScript (Path.join tc "bin/grail")
+    (head & "exec " & Tower.shQuote (Path.join binDir "grail") & Tower.flagWords flags & " \"$@\"\n")
+
+-- ## Sources
+
+def Tower.arch : EIO String := do
+  r ← EIO.lift (Tower.run "uname" ("-m" :> .nil));
+  match r with
+  | .ok a => EIO.pure a
+  | .error e => EIO.pure "x86_64"
+
+-- the flake reference of a commit
+def Tower.flakeRef (flake commit : String) : String :=
+  match Bool.or (String.startsWith flake "github:") (String.startsWith flake "gitlab:") with
+  | .true => flake & "/" & commit
+  | .false => match String.containsChar flake (Char.mk 63) with
+    | .true => flake & "&rev=" & commit
+    | .false => flake & "?rev=" & commit
+
+def Tower.cachixOptions (s : Settings) : List String :=
+  match String.eq s.flake "github:badly-drawn-wizards/wiz" with
+  | .true => "--option" :> "extra-substituters" :> "https://badlydrawnwizards.cachix.org" :>
+    "--option" :> "extra-trusted-public-keys" :>
+    "badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI=" :> .nil
+  | .false => .nil
+
+def Tower.nixArgs : List String := "--extra-experimental-features" :> "nix-command flakes" :> .nil
+
+-- `nix build` the package; the store path
+def Tower.nixRealise (s : Settings) (commit : String) : EIO String := do
+  let ref := Tower.flakeRef s.flake commit & "#wiz";
+  Tower.note ("nix build " & ref);
+  Tower.run "nix" (List.concat (Tower.nixArgs :> ("build" :> "--no-link" :> "--print-out-paths" :> .nil) :>
+    Tower.cachixOptions s :> (ref :> .nil) :> .nil))
+
+-- make `tc` a Nix toolchain on `storePath`: `nix` is a GC root, `bin` and `share` point into it
+def Tower.nixLink (tc storePath : String) : EIO Unit := do
+  o ← Tower.run "nix" (List.append Tower.nixArgs ("build" :> "--out-link" :> Path.join tc "nix" :> storePath :> .nil));
+  Tower.removeAll (Path.join tc "bin");
+  FS.symlink "nix/bin" (Path.join tc "bin");
+  Tower.removeAll (Path.join tc "share");
+  FS.symlink "nix/share" (Path.join tc "share")
+
+-- fetch a URL or a local file (`file://`, a path) to `dst`
+def Tower.fetch (url dst : String) : EIO Unit :=
+  let loc := (match String.stripPrefix url "file://" with
+    | .some p => .some p
+    | .none => match Bool.or (String.startsWith url "/") (String.startsWith url ".") with
+      | .true => .some url
+      | .false => .none : Option String);
+  match loc with
+  | .some p => do
+    ex ← EIO.lift (FS.exists p);
+    match ex with
+    | .true => do
+      b ← FS.readBytes p;
+      FS.writeBytes dst b
+    | .false => EIO.fail ("no " & p)
+  | .none => do
+    o ← Tower.run "curl" ("-fsSL" :> "-o" :> dst :> url :> .nil);
+    EIO.pure ()
+
+def Tower.tarballName (a : String) : String := "wiz-" & a & "-linux.tar.gz"
+
+def Tower.firstWord (s : String) : String := match String.splitOn (String.trim s) " " with
+  | .cons w _ => String.trim w
+  | .nil => ""
+
+def Tower.firstDir (x : String) : List String → EIO (Option String)
+  | .nil => EIO.pure .none
+  | .cons n rest => do
+    d ← EIO.lift (FS.isDir (Path.join x n));
+    match d with
+    | .true => EIO.pure (.some (Path.join x n))
+    | .false => Tower.firstDir x rest
+
+-- unpack the release tarball of `tag` into `work`; the toolchain directory in it. The
+-- `.sha256` next to it is checked when there is one, and must be there when `needSum`;
+-- `missing` makes the error when the tarball itself can't be fetched.
+def Tower.releaseFetch (s : Settings) (tag work : String) (needSum : Bool) (missing : String → EIO String) : EIO String := do
+  a ← Tower.arch;
+  let url := s.releases & "/" & tag & "/" & Tower.tarballName a;
+  Tower.note ("downloading " & url);
+  let file := Path.join work "wiz.tar.gz";
+  got ← EIO.lift (Tower.fetch url file);
+  (match got with
+    | .ok u => EIO.pure ()
+    | .error e => do
+      m ← missing e;
+      EIO.fail m : EIO Unit);
+  sum ← EIO.lift (Tower.fetch (url & ".sha256") (Path.join work "sum"));
+  (match sum with
+    | .error e => match needSum with
+      | .true => EIO.fail (url & ".sha256: " & e & " (a snapshot is only installed with its checksum)")
+      | .false => EIO.pure ()
+    | .ok u => do
+      wantText ← FS.readFile (Path.join work "sum");
+      gotText ← Tower.run "sha256sum" (file :> .nil);
+      let want := Tower.firstWord wantText;
+      let got := Tower.firstWord gotText;
+      match String.eq want got with
+      | .true => EIO.pure ()
+      | .false => EIO.fail (url & ": sha256 " & got & ", expected " & want) : EIO Unit);
+  let x := Path.join work "x";
+  Tower.createDirAll x;
+  o ← Tower.run "tar" ("-xzf" :> file :> "-C" :> x :> .nil);
+  names ← FS.listDir x;
+  d ← Tower.firstDir x names;
+  match d with
+  | .none => EIO.fail (url & ": an empty tarball")
+  | .some d => do
+    ok ← EIO.lift (FS.exists (Path.join d "share/wiz/.lake/build/bin/wiz"));
+    match ok with
+    | .true => EIO.pure d
+    | .false => EIO.fail (url & ": no share/wiz/.lake/build/bin/wiz in the tarball")
+
+-- ## Snapshots (26g)
+
+-- the snapshots the repository lists: (full commit, tag name)
+def Tower.snapshots : List (String × String) → List (String × String)
+  | .nil => .nil
+  | .cons r rest => match String.stripPrefix r.1 "refs/tags/snapshot-" with
+    | .some c => (c, "snapshot-" & c) :> Tower.snapshots rest
+    | .none => Tower.snapshots rest
+
+def Tower.shortList : List (String × String) → List String
+  | .nil => .nil
+  | .cons m rest => String.take 12 m.1 :> Tower.shortList rest
+
+-- The release tag of the snapshot of `commit`: a full sha names it directly (no `git
+-- ls-remote` needed); a shorter one is looked up among the snapshot tags.
+def Tower.snapshotTag (refs : Except String (List (String × String))) (commit : String) : Except String String :=
+  match Nat.beq (String.length commit) 40 with
+  | .true => .ok ("snapshot-" & commit)
+  | .false => match refs with
+    | .error e => .error (commit & ": a short commit, and the snapshots could not be listed (" & e & "); use the full sha")
+    | .ok rs => match List.filter (fun (m : String × String) => String.startsWith m.1 commit) (Tower.snapshots rs) with
+      | .nil => .error (commit & ": no snapshot")
+      | .cons m .nil => .ok m.2
+      | ms => .error (commit & ": ambiguous, snapshots " & String.intercalate ", " (Tower.shortList ms))
+
+-- a ref that keeps its commit's snapshot: the tag nightly, keep/… and v* tags
+def Tower.keeps (r : String) : Bool := match String.stripPrefix r "refs/tags/" with
+  | .none => .false
+  | .some t => Bool.or (String.eq t "nightly") (Bool.or (String.startsWith t "keep/") (match Tower.versionOf t with
+    | .some v => .true
+    | .none => .false))
+
+def Tower.namedList : List (String × String) → List String
+  | .nil => .nil
+  | .cons p rest => (String.drop 10 p.1 & " (master@" & p.2 & ")") :> Tower.namedList rest
+
+-- what is retained: the tag `nightly`, the snapshots kept by a `v*` or `keep/…` tag, and
+-- how many others
+def Tower.retained (s : Settings) (refs : Except String (List (String × String))) : String := match refs with
+  | .error e => ""
+  | .ok rs =>
+    let snaps := Tower.snapshots rs;
+    let has := (fun (c : String) => List.any (fun (p : String × String) => String.eq p.1 c) snaps);
+    let named := List.filter (fun (p : String × String) => Bool.and (Tower.keeps p.1) (has p.2)) rs;
+    let others := List.length (List.filter (fun (p : String × String) =>
+      Bool.not (List.any (fun (q : String × String) => String.eq q.2 p.1) named)) snaps);
+    "\n  retained: " & (match List.isEmpty named with
+      | .true => "no named snapshots"
+      | .false => String.intercalate ", " (Tower.namedList named)) &
+      (match Nat.beq others 0 with
+        | .true => ""
+        | .false => ", and " & Nat.repr others & " recent master commit" & (match Nat.beq others 1 with
+          | .true => ""
+          | .false => "s") & " (`git ls-remote " & s.git & " 'refs/tags/snapshot-*'`)")
+
+-- Why there is no snapshot of `commit`, and what to do instead.
+def Tower.noSnapshot (s : Settings) (refs : Except String (List (String × String))) (commit why : String) : String :=
+  "no release snapshot of commit " & commit & " (" & why & "): snapshots are published for master commits only, " &
+    "and kept for the newest ones and for commits a v*, keep/… or nightly tag points at" & Tower.retained s refs &
+    "\n  alternatives: `--source source` (builds it with elan), `--source nix`, a retained toolchain above, " &
+    "or have it published (release.yml's workflow_dispatch with commit=" & commit & "; push a tag keep/NAME to keep it)"
+
+-- the refs, listed now unless they already were
+def Tower.refsAgain (s : Settings) (refs : Except String (List (String × String))) : EIO (Except String (List (String × String))) :=
+  match refs with
+  | .ok rs => EIO.pure (.ok rs)
+  | .error e => EIO.lift (Tower.lsRemote s.git)
+
+-- the release tarball for `w`: a tag's own release, else the snapshot of its commit
+def Tower.releaseOf (s : Settings) (spec work : String) (w : Want) : EIO String := match w.tag with
+  | .some t => Tower.releaseFetch s t work .false (fun (e : String) => EIO.pure e)
+  | .none => match (match w.snapshot with
+      | .some c => .some c
+      | .none => w.commit : Option String) with
+    | .none => EIO.fail (spec & ": no commit")
+    | .some c => do
+      -- the repository's refs, once, for a short sha and for the error
+      refs ← (match Nat.beq (String.length c) 40 with
+        | .true => EIO.pure (.error "not listed")
+        | .false => EIO.lift (Tower.lsRemote s.git) : EIO (Except String (List (String × String))));
+      match Tower.snapshotTag refs c with
+      | .ok t => Tower.releaseFetch s t work .true (fun (e : String) => do
+          refs' ← Tower.refsAgain s refs;
+          EIO.pure (Tower.noSnapshot s refs' c e))
+      | .error e => do
+        refs' ← Tower.refsAgain s refs;
+        EIO.fail (Tower.noSnapshot s refs' c e)
+
+-- copy what a toolchain needs from a built checkout `src` into `tc/share/wiz`
+def Tower.layoutFrom (src tc commit : String) : EIO Unit := do
+  let share := Path.join tc "share/wiz";
+  Tower.createDirAll (Path.join share ".lake/build/bin");
+  a ← Tower.run "cp" (Path.join src ".lake/build/bin/wiz" :> Path.join share ".lake/build/bin" :> .nil);
+  b ← Tower.run "cp" (Path.join src ".lake/build/bin/grail" :> Path.join share ".lake/build/bin" :> .nil);
+  c ← Tower.run "cp" ("-R" :> Path.join src "lib" :> share :> .nil);
+  ed ← EIO.lift (FS.exists (Path.join src "editors"));
+  (match ed with
+    | .true => do
+      d ← Tower.run "cp" ("-R" :> Path.join src "editors" :> share :> .nil);
+      EIO.pure ()
+    | .false => EIO.pure () : EIO Unit);
+  FS.writeFile (Path.join share "REVISION") (commit & "\n");
+  -- the marker editors look for (editors/nvim: a library file is served by its toolchain's wiz)
+  FS.writeFile (Path.join share "TOOLCHAIN") "A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).\n"
+
+-- clone, check out and build with Lake; the commit
+def Tower.sourceBuild (s : Settings) (w : Want) (work tc : String) : EIO String := do
+  let src := Path.join work "src";
+  Tower.note ("cloning " & s.git);
+  a ← Tower.run "git" ("clone" :> "--quiet" :> s.git :> src :> .nil);
+  b ← Tower.runIn src "git" ("-c" :> "advice.detachedHead=false" :> "checkout" :> "--quiet" :> Tower.getD w.commit w.ref :> .nil);
+  commit ← Tower.runIn src "git" ("rev-parse" :> "HEAD" :> .nil);
+  lake ← Tower.have "lake";
+  (match lake with
+    | .true => EIO.pure ()
+    | .false => EIO.fail "building from source needs `lake` (install elan: https://github.com/leanprover/elan)" : EIO Unit);
+  Tower.note ("lake build wiz grail (at " & String.take 12 commit & "; this takes a while the first time)");
+  -- (without the Lean variables of the environment tower runs in)
+  c ← Tower.runOpts (Tower.unsetAll Tower.leanVars (SpawnOptions.inDir src SpawnOptions.default)) "lake" ("build" :> "wiz" :> "grail" :> .nil);
+  Tower.layoutFrom src tc commit;
+  Tower.removeAll src;
+  EIO.pure commit
+
+-- the sources to try, in order
+def Tower.candidates (src : String) (w : Want) : EIO (List String) := match String.eq src "auto" with
+  | .false => EIO.pure (src :> .nil)
+  | .true => do
+    n ← Tower.have "nix";
+    let rel := ("release" :> "source" :> .nil : List String);
+    match n with
+    | .true => EIO.pure ("nix" :> rel)
+    | .false => EIO.pure rel
+
+-- one source: the info to record, and a store path for a Nix toolchain
+def Tower.realise (s : Settings) (spec how : String) (w : Want) (flags : List (String × String)) (work tc : String) : EIO (Info × Option String) :=
+  match String.eq how "nix" with
+  | .true => match w.commit with
+    | .none => EIO.fail "nix: no commit"
+    | .some commit => do
+      path ← Tower.nixRealise s commit;
+      Tower.createDirAll tc;
+      EIO.pure (Info.mk spec "nix" w.ref commit "" .nil, .some path)
+  | .false => match String.eq how "release" with
+  | .true => do
+      d ← Tower.releaseOf s spec work w;
+      FS.rename d tc;
+      rev ← Tower.readFileD (Path.join tc "share/wiz/REVISION");
+      let commit := (match String.isEmpty (String.trim rev) with
+        | .true => Tower.getD w.commit ""
+        | .false => String.trim rev);
+      EIO.pure (Info.mk spec "release" w.ref commit "" flags, .none)
+  | .false => match String.eq how "source" with
+  | .true => do
+    Tower.createDirAll tc;
+    commit ← Tower.sourceBuild s w work tc;
+    EIO.pure (Info.mk spec "source" w.ref commit "" flags, .none)
+  | .false => EIO.fail ("unknown source " & how)
+
+def Tower.short (i : Info) : String := match String.isEmpty i.commit with
+  | .true => ""
+  | .false => "@" & String.take 12 i.commit
+
+-- put a realised toolchain in place
+def Tower.finish (e : TEnv) (spec final work tc : String) (r : Info × Option String) : EIO String := do
+  let info := r.1;
+  FS.writeFile (Path.join tc "tower.info") (Info.render info);
+  (match r.2 with
+    | .none => Tower.writeWrappers tc (Path.join final "share/wiz/.lake/build/bin") (Path.join final "share/wiz/lib") spec info.flags
+    | .some p => EIO.pure () : EIO Unit);
+  Tower.removeAll final;
+  FS.rename tc final;
+  Tower.removeAll work;
+  (match r.2 with
+    | .some p => do
+      l ← EIO.lift (Tower.nixLink final p);
+      match l with
+      | .ok u => EIO.pure ()
+      | .error m => do
+        Tower.removeAll final;
+        EIO.fail m
+    | .none => EIO.pure () : EIO Unit);
+  Tower.note ("installed " & spec & " (" & info.source & ", " & info.ref & Tower.short info & ")");
+  EIO.pure final
+
+-- try each source in turn; `errs` are the failures so far
+def Tower.tryAll (e : TEnv) (s : Settings) (spec final : String) (w : Want) (flags : List (String × String))
+    (many : Bool) : List String → List String → EIO String
+  | .nil, errs => EIO.fail (String.intercalate "\n" errs)
+  | .cons how rest, errs => do
+    work ← Sys.check (TEnv.toolchains e) (FS.mkdtempRaw (Path.join (TEnv.toolchains e) (".tmp-" & Tower.tcName spec & "-")));
+    let tc := Path.join work "tc";
+    r ← EIO.lift (Tower.realise s spec how w flags work tc);
+    match r with
+    | .ok res => Tower.finish e spec final work tc res
+    | .error m => do
+      Tower.removeAll work;
+      (match many with
+        | .true => Tower.note (how & " failed; trying the next source")
+        | .false => EIO.pure () : EIO Unit);
+      Tower.tryAll e s spec final w flags many rest (Tower.snoc errs (how & ": " & m))
+
+-- Install `spec` (as its name). `source` overrides the setting. The toolchain directory.
+def Tower.install (e : TEnv) (spec : String) (source : Option String) (force : Bool)
+    (extraFlags : List (String × String)) : EIO String := do
+  s ← TEnv.settings e;
+  let final := TEnv.tcDir e spec;
+  there ← EIO.lift (FS.exists (Path.join final "tower.info"));
+  match Bool.and there (Bool.not force) with
+  | .true => EIO.pure final
+  | .false => do
+    w ← Tower.resolveSpec s spec;
+    let flags := List.append (List.filter (fun (p : String × String) =>
+      Bool.not (List.any (fun (q : String × String) => String.eq q.1 p.1) extraFlags)) s.flags) extraFlags;
+    cands ← Tower.candidates (Tower.getD source s.source) w;
+    Tower.createDirAll (TEnv.toolchains e);
+    Tower.tryAll e s spec final w flags (Nat.lt 1 (List.length cands)) cands .nil
+
+def Tower.linkBins (work dir : String) : List String → EIO Unit
+  | .nil => EIO.pure ()
+  | .cons d rest => do
+    ex ← EIO.lift (FS.exists (Path.join dir d));
+    (match ex with
+      | .true => FS.symlink (Path.join dir d) (Path.join work d)
+      | .false => EIO.pure () : EIO Unit);
+    Tower.linkBins work dir rest
+
+-- `tower toolchain link NAME DIR`: a checkout (its `.lake/build/bin`) or an installed
+-- toolchain layout (`bin/wiz`, e.g. a Nix `result`)
+def Tower.link (e : TEnv) (name dir0 : String) (flags : List (String × String)) : EIO String := do
+  dir ← Tower.realPath dir0;
+  let final := TEnv.tcDir e name;
+  Tower.createDirAll (TEnv.toolchains e);
+  work ← Sys.check (TEnv.toolchains e) (FS.mkdtempRaw (Path.join (TEnv.toolchains e) (".tmp-" & Tower.tcName name & "-")));
+  FS.setMode work 493;
+  checkout ← EIO.lift (FS.exists (Path.join dir ".lake/build/bin/wiz"));
+  layout ← EIO.lift (FS.exists (Path.join dir "bin/wiz"));
+  (match checkout with
+    | .true => Tower.writeWrappers work (Path.join dir ".lake/build/bin") (Path.join dir "lib") name flags
+    | .false => match layout with
+      | .true => Tower.linkBins work dir ("bin" :> "share" :> .nil)
+      | .false => do
+        Tower.removeAll work;
+        EIO.fail (dir & ": neither a built checkout (.lake/build/bin/wiz) nor a toolchain (bin/wiz)") : EIO Unit);
+  FS.writeFile (Path.join work "tower.info") (Info.render (Info.mk name "link" "" "" dir flags));
+  Tower.removeAll final;
+  FS.rename work final;
+  EIO.pure final

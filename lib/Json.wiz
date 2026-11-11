@@ -1,4 +1,5 @@
 import Prelude
+import Text
 -- JSON (RFC 8259) in Wiz: values, a parser and a printer. The infoview clients use it
 -- to speak the language server's protocol. Strings are code points throughout:
 -- `\uXXXX` escapes (with surrogate pairs) are decoded on input, and the printer
@@ -40,10 +41,7 @@ def Json.charsEq : List Char → List Char → Bool
   | .nil, .nil => .true
   | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (Json.charsEq as bs)
   | _, _ => .false
-def String.eq : String → String → Bool
-  | .mk a, .mk b => Json.charsEq a b
-def String.chars : String → List Char
-  | .mk cs => cs
+-- (`String.eq`, `String.chars` and `Nat.repr` are lib/Text.wiz's)
 def Json.revOnto : List Char → List Char → List Char
   | .nil, acc => acc
   | .cons c cs, acc => Json.revOnto cs (.cons c acc)
@@ -54,7 +52,6 @@ partial def Json.natChars (n : Nat) (tail : List Char) : List Char := match Nat.
   | .false =>
     let p := Json.divMod n 10;
     Json.natChars p.1 (.cons (Json.chr (48 + p.2)) tail)
-def Nat.repr (n : Nat) : String := .mk (Json.natChars n .nil)
 
 -- ## Printing
 
