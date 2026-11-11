@@ -42,6 +42,7 @@
     "repr",
     "seplogic",
     "=sat",
+    "=smt",
     "std",
     "tactics",
     "testrunner",

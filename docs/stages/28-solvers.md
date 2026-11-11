@@ -4,17 +4,75 @@ Automated solvers decide goals that are tedious to prove by hand: linear arithme
 conditions, Boolean identities, bit-vector facts. Wiz uses them in two ways, which differ
 in what is trusted (design and survey: `wiz-notes/smt.md`):
 
-* **`smt`** (28a, a separate PR) asks an SMT solver (Z3) and believes it: an axiom per
+* **`smt`** (28a) asks an SMT solver (Z3) and believes it: an axiom per
   use, behind a flag, as `native_refl` (stage 27) does for compiled evaluation;
 * **`sat_decide`** (28b) asks a SAT solver (CaDiCaL) for a *proof*, an LRAT certificate,
   which a checker written in Wiz and proved sound checks in the kernel: nothing new is
   trusted, as with Lean's `bv_decide` (which runs its checker compiled, trusting the
   compiler) or Coq's SMTCoq.
 
-## 28a: `smt` and `--trust-smt` (a separate PR)
+## 28a: `smt` and `--trust-smt` ✅
 
-The trusted mode (an SMT solver's `unsat` as an axiom per use, behind a flag) is designed
-in `wiz-notes/smt.md` §3 and comes in its own PR, after review (`wiz-notes/smt-review.md`).
+    def trans (a b c : Nat) (h₁ : Nat.lt a b = .true) (h₂ : Nat.lt b c = .true) :
+        Nat.lt a c = .true := by smt
+    def nn (x : UIntN 8) (h : Nat.lt (UIntN.toNat x) 256 = .true) :
+        UIntN.not (UIntN.not x) = x := by smt
+
+`smt` is a tactic (lib/Prelude.wiz, over the request `Tac.smt`). It is accepted only
+
+* with **`--trust-smt`** (`wiz check/build/run/lsp`, grail), off by default, a flag
+  only (not a setting): "SMT solving is not enabled …" otherwise. `--smt-solver CMD`
+  (default `z3`) and `--solver-timeout MS` (default 10 000) choose the solver; all flags only, never settings
+  of a grail file;
+* in the body of a `def` (the axiom is named after it, and takes its universe
+  parameters).
+
+**How.** The host translates the goal and its context to SMT-LIB 2 (`Wiz/Smt/Translate.lean`),
+asserts the hypotheses and the negated goal, and runs the solver
+(`Wiz/Smt/Process.lean`: a process call behind an `opaque`, as the module cache does;
+answers are kept in `<cache>/smt` in a file named by the SHA-256 of the solver's identity
+and the query, which the entry stores and every read compares; only a definite `sat` or
+`unsat` is kept, never a timeout or a crash). `unsat`: the goal is closed by a new axiom
+**`X.smt✝N⟨z3 5.1.0⟩ : Π ctx, goal`** (the goal over its context, with erased binders,
+named after the definition, the use and the solver), applied to the context. `sat`: the
+tactic fails with the solver's model, in the user's names. The definition gets a warning;
+`#print axioms` lists the axiom, with a note, for it and everything that uses it.
+
+**Constructors by position.** A constant of a fragment's sort is read by its tag's
+*position* in the library type (`Bool` is `false | true`, `Nat` is `zero | succ`), never
+by its label: types are structural, so `inductive Flip | true | false` is convertible
+with `Bool` and `Flip.true` *is* `Bool.false`. Reading the label made `smt` prove
+`b = (Flip.true : Bool) → b = .true`, and from it `Empty` (smt-review B1; group *smt*
+keeps the case). Only names declared in lib/ (Prelude, Word, Logic, Int) are read as
+SMT operations or sorts.
+
+**The fragment.** Propositions (`→`, `¬`, `∧`, `∨`, `↔`, `True`, `False`, equations),
+`Bool` (`Bool.and/or/not/xor`, comparisons), `Nat` as integers `≥ 0` (`+ *`, `succ`,
+`pred`, `max`, truncated `-`, and `/`, `%` with Wiz's `x / 0 = 0`, `x % 0 = x`), and words
+`UIntN w` with a numeral width as `(_ BitVec w)` (arithmetic, bitwise operations, shifts and
+`testBit` by numerals, comparisons, `ofNat`, `toNat`). A subterm outside it becomes an
+*atom* (a fresh constant; equal terms are the same constant): sound, since a formula valid
+for an arbitrary value is valid for this one. Hypotheses outside it are dropped.
+
+**Words need a range hypothesis.** `UIntN w` is a `Nat` whose bound is kept by
+construction, not by a proof, so the kernel's `UIntN 8` has values like
+`UIntN.ofBitsTrusted 300`, on which the definitions are not bit-vector operations:
+`UIntN.not (UIntN.not x) = x` is valid for bit vectors and *false* in Wiz (the kernel
+refutes it at 300). A naive translation would make Wiz inconsistent. So `smt` requires
+`Nat.lt (UIntN.toNat x) 2^w = .true` for every word variable or atom, and refuses
+otherwise. (agent/seal-range makes the bound a proof field of `UIntN`; then the hypothesis
+goes.)
+
+**What is trusted**: the solver (named in the axiom), the translation (one Lean file,
+reviewed), the process plumbing (only the exact answer `unsat` closes a goal) and the
+answer cache (named by a SHA-256 digest, each entry checked against the query it stores;
+the command and module cache keys include the solver's version). Not trusted: whatever
+built the goal (the axiom's statement is the goal itself, checked by the kernel as a
+type). The flag and the solver settings are in the cache keys (commands, modules, grail's
+jobs), so an acceptance is never replayed without the flag. `lib/` never uses `smt`
+(group *smt* greps it).
+
+**The self-hosted toolchain** has no `smt`: the request is the Lean host's.
 
 ## 28b: `sat_decide`: certified, with LRAT ✅
 
@@ -48,7 +106,7 @@ in `wiz-notes/smt.md` §3 and comes in its own PR, after review (`wiz-notes/smt-
 **The solver.** Release tarballs ship CaDiCaL in `share/wiz/cc/bin/cadical` (the Lean
 toolchain's copy, which Lean ships for `bv_decide`; scripts/bundle-cc.sh), and a bundled
 toolchain uses it by default. A checkout finds `cadical` on PATH (the Nix dev shell has
-it). Z3 is not shipped (tens of MB, and `smt` is opt-in): the trusted mode's flag will find it.
+it). Z3 is not shipped (tens of MB, and `smt` is opt-in): `--smt-solver` finds it.
 
 **Trusted**: nothing new. The solver, the tactic, the DIMACS/LRAT plumbing can only make
 `sat_decide` fail. The kernel runs the checker, which is slow for big proofs (kernel
