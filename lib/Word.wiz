@@ -122,6 +122,25 @@ def IntN.resize {ω w : Nat} (ω v : Nat) (a : IntN w) : IntN v := match IntN.is
   | .true => IntN.ofNeg v (IntN.natAbs a)
   | .false => IntN.ofNat v a.toNat
 
+-- Numeric classes (7e): `a + b`, `a * b`, `-a`, `a / b`, `a % b` and numerals at every
+-- width. A numeral wraps around (`(300 : U8) = 44`), as `UIntN.ofNat` does. `IntN`'s
+-- `/` and `%` are signed (truncating, as Rust's), `UIntN`'s unsigned. (`UIntN w` and
+-- `IntN w` are different types, 22k: each has its own instances.)
+instance {ω w n : Nat} : OfNat (UIntN w) n := OfNat.mk (UIntN.ofNat w n)
+instance {ω w : Nat} : Add (UIntN w) := Add.mk UIntN.add
+instance {ω w : Nat} : Sub (UIntN w) := Sub.mk UIntN.sub
+instance {ω w : Nat} : Mul (UIntN w) := Mul.mk UIntN.mul
+instance {ω w : Nat} : Neg (UIntN w) := Neg.mk UIntN.neg
+instance {ω w : Nat} : Div (UIntN w) := Div.mk UIntN.div
+instance {ω w : Nat} : Mod (UIntN w) := Mod.mk UIntN.mod
+instance {ω w n : Nat} : OfNat (IntN w) n := OfNat.mk (IntN.ofNat w n)
+instance {ω w : Nat} : Add (IntN w) := Add.mk IntN.add
+instance {ω w : Nat} : Sub (IntN w) := Sub.mk IntN.sub
+instance {ω w : Nat} : Mul (IntN w) := Mul.mk IntN.mul
+instance {ω w : Nat} : Neg (IntN w) := Neg.mk IntN.neg
+instance {ω w : Nat} : Div (IntN w) := Div.mk IntN.div
+instance {ω w : Nat} : Mod (IntN w) := Mod.mk IntN.rem
+
 -- Rust's fixed widths. Operations come from the width-indexed types (`x.add y`).
 def U8 : Type := UIntN 8
 def U16 : Type := UIntN 16

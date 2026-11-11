@@ -204,6 +204,12 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
   -- (`unifyAt`). (The type isn't zonked here: an equation that stays as written lets
   -- `rfl` be `refl` of its sides.)
   while ← synthPending do pure ()
+  -- (7e) with the instances solved, the type's instance holes are replaced by their
+  -- solutions: the kernel's native arithmetic (`vNatOp`) can't see a solved hole, so
+  -- `Nat.land a (b + 5)` with `+`'s instance a hole would unfold `Nat.land`'s unary
+  -- definition instead. (Only the instance holes, `zonkInsts`: the other holes stay, so
+  -- the equation stays as written, as above.)
+  let ty ← if (← get).pendingInsts.isEmpty then zonkInsts ctx.lvl ty else pure ty
   let val ← valStx.mapM fun s => do Elab.check ctx s (← evalIn ctx ty)
   let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val := val.map fun v => tele.foldr (fun (x, _, _, _) b => Term.lam x b) v
@@ -336,6 +342,39 @@ partial def markRecCalls (fn : Name) (stx : Syntax) : Syntax :=
     | _ => .node i k args
   | s => s
 
+/-- Does the checked value of a structurally recursive definition use an index variable
+of its scrutinee's type anywhere but as the recursor's index argument (in the parameters,
+the motive or a method: a right-hand side mentions the outer index)? `val` is
+`λ tele cols. [let …] T.rec Δ motive m… ξ x …`. Then direct recursion is not what the
+recursor computes: the recursor's hypothesis keeps the outer index in every step, while a
+direct call `f xs` passes the field's index (it is an implicit argument, inferred from
+`xs`). `def g {n} : V n → Nat | .cons _ xs => n + g xs` computes `3 + 3 + 3` by its value
+and `3 + 2 + 1` by such an implementation. The definition then gets no implementation
+(compiled code runs the value). -/
+def indexEscapes (g : Globals R) (val : Term R) : Bool :=
+  let rec body : Term R → Term R
+    | .lam _ b => body b
+    | .letE _ _ _ _ b => body b
+    | t => t
+  match (body val).spine with
+  | (.const r _, args) =>
+    let base (k : Nat) : Name := String.ofList (r.toList.take (r.length - k))
+    let T := if r.endsWith ".recN" then some (base 5) else if r.endsWith ".rec" then some (base 4) else none
+    match T.bind fun T => (g.find? T).bind fun Td => (g.find? (T ++ ".desc")).bind fun descD =>
+        (g.find? r).map fun rd => (Td, descD, rd) with
+    | some (Td, descD, rd) =>
+      let nΔ := (piInfos descD.type).length
+      let nΞ := (piInfos Td.type).length - nΔ
+      -- Δ, the motive and the methods come before the indices
+      let nBefore := (piInfos rd.type).length - nΞ - 1
+      let before := args.take nBefore
+      let idxVars := (args.drop nBefore).take nΞ |>.filterMap fun a => match a with
+        | .var i => some i
+        | _ => none
+      idxVars.any fun i => before.any (·.hasVar i)
+    | none => false
+  | _ => false
+
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
 arguments of `T`; a right-hand side that calls `f` makes it structurally recursive. -/
 def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
@@ -344,6 +383,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
   let (ty, _) ← Elab.checkType ctx tyStx
+  finishInstances
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let alts := (cmd.getArg 5).args
@@ -403,7 +443,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   -- for the compiler: the same equations with direct recursion (the definition, as an
   -- axiom for the moment, is called like any function) and case analysis, so that only
   -- the recursive calls the program makes are computed
-  let impl ← if rc.isNone then pure none else do
+  let esc := rc.isSome && indexEscapes (← getGlobals) val
+  let impl ← if rc.isNone || esc then pure none else do
     let saved ← get
     try
       modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
@@ -455,6 +496,7 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
   let (ty, _) ← Elab.checkType ctx tyStx
+  finishInstances
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let .nu l I D i _ (some (T, us, args)) ← force (← evalIn ctx ty)
@@ -531,6 +573,8 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let coit : Term R := .coit l (q ctx.lvl I) (q ctx.lvl D) Sfun step (q ctx.lvl i) init
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) coit
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
+  -- (7e) the right-hand sides' instance problems (`nats (n + 1)`)
+  finishInstances
   let val ← zonk 0 val
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
@@ -551,6 +595,7 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
   let (ty, _) ← Elab.checkType ctx tyStx
+  finishInstances
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let .nu l I D i sz hint ← force (← evalIn ctx ty)
@@ -586,6 +631,8 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
   let payload : Term R := comps.foldr .pair (.pair e .tt)
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (Term.cocon payload)
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
+  -- (7e) the right-hand sides' instance problems (`nats (n + 1)`)
+  finishInstances
   let val ← zonk 0 val
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
@@ -746,7 +793,7 @@ def builtinShapeError (g : Globals R) (key : Name) (d : Decl R) : Option String 
   let isN (N : Name) : Term R → Bool
     | .const c [] => c == N
     | _ => false
-  if key == "nat" || key == "string" then
+  if key == "nat" || key == "string" || key == "int" then
     match d.type, d.value.map (eval g []) with
     | .sort _, some (.mu _ _ _ _ _ (some (T, _, _))) => if T == d.name then none else some "it must be an inductive type"
     | _, _ => some "it must be an inductive type"
@@ -836,11 +883,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   -- the info tree of a declaration; its `trace`s become info messages
   let addInfos (is : Array (Info R)) : StateM (CommandState R) Unit :=
     unless is.isEmpty do modify fun s =>
-      let traces := is.filterMap fun
+      -- (`trace`s become info messages, and (7e) `warning`s warnings; the warnings stay in
+      -- the tree too)
+      let msgs := is.filterMap fun
         | .trace info text => some { info, severity := .info, text }
+        | .warning info text => some { info, severity := .warning, text }
         | _ => none
-      if traces.isEmpty then { s with infos := s.infos ++ is }
-      else { s with infos := s.infos ++ is.filter (!· matches .trace ..), messages := s.messages ++ traces }
+      if msgs.isEmpty then { s with infos := s.infos ++ is }
+      else { s with infos := s.infos ++ is.filter (!· matches .trace ..), messages := s.messages ++ msgs }
   -- the finalizer of a foreign pointer type (for a foreign function's result)
   let finOf (t : Term R) : String := match (Term.spine t).1 with
     | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
@@ -1284,7 +1334,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.builtin" =>
     let key := ((cmd.getArg 1).getId?).getD "_"
     let n := ((cmd.getArg 3).getId?).getD "_"
-    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo",
+    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo", "int",
       "nat.div", "nat.mod", "nat.pow", "nat.land", "nat.lor", "nat.xor", "nat.shiftLeft", "nat.shiftRight", "nat.log2"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
     -- one registration per key, and one key per constant: a second `builtin nat.add := K`
@@ -1303,7 +1353,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- the toolchain's library is trusted (its registrations are reviewed: README,
         -- "Trusted base"); anywhere else, nothing checks that `n` computes like the native
         -- operation, so the registration is an axiom of whatever depends on `n`
-        let trusted := s.trustedModule s.module
+        -- (`builtin int` only says how values print: nothing to trust)
+        let trusted := s.trustedModule s.module || key == "int"
         modify fun s => { s with builtins := (key, n) :: s.builtins,
                                  globals := { s.globals with builtins := (key, n) :: s.globals.builtins,
                                                              assumed := if trusted then s.globals.assumed
@@ -1819,7 +1870,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           else if !s.builtins.any (·.1 == sealKey T) then
             report .error fStx.info s!"a native representation needs `sealed inductive {T}`: a look-alike of an unsealed type is the same type"
           else if (s.globals.privates.get? f) != some s.module then
-            report .error fStx.info s!"a native representation needs a private constructor (`| private {f.toString.splitOn "." |>.getLast!} …`): {T}'s module keeps the invariant its natives rely on"
+            report .error fStx.info s!"a native representation needs a private constructor (`| private {(f.splitOn ".").getLast!} …`): {T}'s module keeps the invariant its natives rely on"
           else
             let (_, getArity) := target g 0 (eval g [] dg.type) 1000
             let key := ReprInfo.key T { mkImpl := impl, getImpl := get, tag, nfields, r, mkArity, p, getArity }

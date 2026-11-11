@@ -362,6 +362,7 @@ def infoSx : Info R → Sx
       info m.firstAlt, info m.lastAlt]
   | .decl i n ns t a at_ => node "decl" [info i, str n, names ns, term t, bool a, nat at_]
   | .unknownIdent i n ns => node "unknown" [info i, str n, names ns]
+  | .warning i m => node "warning" [info i, str m]
   | .trace i t => node "trace" [info i, str t]
 
 def dInfo (x : Sx) : Option (Info R) := do
@@ -380,6 +381,7 @@ def dInfo (x : Sx) : Option (Info R) := do
   | "decl" => pure (.decl (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)) (← dterm (← a 4))
       (← dbool (← a 5)) (← (← atom? (← a 6)).toNat?))
   | "unknown" => pure (.unknownIdent (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)))
+  | "warning" => pure (.warning (← dinfo (← a 1)) (← atom? (← a 2)))
   | "trace" => pure (.trace (← dinfo (← a 1)) (← atom? (← a 2)))
   | _ => none
 
