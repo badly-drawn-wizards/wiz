@@ -2118,6 +2118,192 @@ partial def preArgs (es : ES) (cx : Cx) (fty : Val) (m : List Bool) (args : List
       | .vpi _ dom env cod _ => match newMeta es cx dom with
         | .mk mt es1 => preArgs es1 cx (eval (.cons (eval (TCtx.env (Cx.c cx)) mt) env) cod) (tailBools m) rest
       | _ => .none
+-- Literal patterns (13q; `compileLitTest` in the Lean elaborator). At `Nat` a numeral
+-- pattern is its constructors (`patOf`), up to 256; at another type `T` with a `T.beq`
+-- (the first in the chain of definitions the column's type unfolds through) a column
+-- whose first row has a literal `l` is tested with `T.beq x l`, a new `Bool` column in
+-- front of it: rows with `l` want `.true` there (and `_` in the column), rows with
+-- another literal `.false` (keeping theirs), and catch-all rows `_`. Literals don't
+-- cover a type, so the column needs a catch-all row.
+def isLitPat (p : Syntax) : Bool := Bool.or (is (unparen p) "term.num") (is (unparen p) "term.str")
+def isPlusPat (p : Syntax) : Bool := Bool.and (is (unparen p) "term.app") (strEq (identOf (kid (unparen p) 0)) "Nat.add")
+-- `p + k` without a numeral `k`
+def plusBad (p : Syntax) : Bool := match isPlusPat p with
+  | .true => match kids (kid (unparen p) 1) with
+    | .cons _ (.cons b .nil) => Bool.not (is b "term.num")
+    | _ => .true
+  | .false => .false
+def patAt (k : Nat) : List Clause → Syntax
+  | .nil => .missing
+  | .cons (.mk pats _ _) _ => unparen (nthSyntax pats k)
+def anyVarAt (k : Nat) : List Clause → Bool
+  | .nil => .false
+  | .cons (.mk pats _ _) rest => Bool.or (isVarPat (unparen (nthSyntax pats k))) (anyVarAt k rest)
+def litMsg (T : String) : String := String.append "a literal pattern needs Nat, or a type T with literals and an equality test T.beq; "
+  (String.append T " is a data type: match on its constructors")
+-- the literal patterns of a column split by constructors (of the inductive type `T`)
+def litSplitErr (T : String) (k : Nat) : List Clause → Option String
+  | .nil => .none
+  | .cons (.mk pats _ _) rest =>
+    let p := unparen (nthSyntax pats k);
+    match strEq T "Nat" with
+    | .true => match is p "term.str" with
+      | .true => .some "a string pattern needs a String, not Nat"
+      | .false => match Bool.and (is p "term.num") (Nat.lt 256 (numValue p)) with
+        | .true => .some (String.append (String.append (String.append "the numeral pattern " (Nat.toString (numValue p)))
+            " is too large: at Nat a numeral is matched by its constructors (`succ` applied ")
+            (String.append (Nat.toString (numValue p)) " times), up to 256; test with `Nat.beq` instead"))
+        | .false => match plusBad p with
+          | .true => .some "a pattern `p + k` needs a numeral `k` (as in `n + 2`)"
+          | .false => litSplitErr T k rest
+    | .false => match Bool.or (isLitPat p) (isPlusPat p) with
+      | .true => match plusBad p with
+        | .true => .some "a pattern `p + k` needs a numeral `k` (as in `n + 2`)"
+        | .false => .some (litMsg T)
+      | .false => litSplitErr T k rest
+-- the patterns of a column tested by literals: literals, `_` and variables only
+def litColErr (tyStr : String) (k : Nat) : List Clause → Option String
+  | .nil => .none
+  | .cons (.mk pats _ _) rest =>
+    let p := unparen (nthSyntax pats k);
+    match Bool.or (isLitPat p) (isVarPat p) with
+    | .true => litColErr tyStr k rest
+    | .false => match plusBad p with
+      | .true => .some "a pattern `p + k` needs a numeral `k` (as in `n + 2`)"
+      | .false => match isPlusPat p with
+        | .true => .some (String.append "a pattern `n + k` needs a Nat, not " tyStr)
+        | .false => .some (String.append (String.append "literal patterns on " tyStr)
+            " can't be mixed with other patterns in one column (only literals, `_` and variables)")
+def sameLit (a b : Syntax) : Bool := match Bool.and (is a "term.num") (is b "term.num") with
+  | .true => Nat.beq (numValue a) (numValue b)
+  | .false => match Bool.and (is a "term.str") (is b "term.str") with
+    | .true => strEq (strValue a) (strValue b)
+    | .false => .false
+def boolPat (b : String) : Syntax := mkNode "term.dotIdent" (.cons (.atom ".") (one (.ident b)))
+-- the clauses with the test's column in front of column `k`, for the literal `l`
+def litClauses (l : Syntax) (k : Nat) : List Clause → List Clause
+  | .nil => .nil
+  | .cons (.mk pats binds rhs) rest =>
+    let p := unparen (nthSyntax pats k);
+    let two : List Syntax := match isLitPat p with
+      | .true => match sameLit p l with
+        | .true => List.cons (boolPat "true") (one holeStx)
+        | .false => List.cons (boolPat "false") (one p)
+      | .false => List.cons holeStx (one p);
+    .cons (.mk (List.append (takeL k pats) (List.append two (dropL (k + 1) pats))) binds rhs) (litClauses l k rest)
+def colsInsert (k : Nat) (c : Col) (cols : List Col) : List Col := List.append (takeL k cols) (.cons c (dropL k cols))
+-- the type `T` of `T.beq` for a column's type (at depth `d`)
+partial def beqHead (gs : Globals) (d : Nat) (ty : Tm) : Option String := match headOf ty .tnil with
+  | .mk T args => match Scope.lookup (Globals.scope gs) (String.append T ".beq") with
+    | .some _ => .some T
+    | .none => match Globals.ind gs T with
+      | .some _ => .none
+      | .none => match headTm ty with
+        | .const _ _ _ v _ => beqHead gs d (nfAt d (tApps v args))
+        | _ => .none
+  | .none => .none
+-- Structure update (13i, 13p; `elabStructUpdate` in the Lean elaborator):
+-- `{ s with f := v, a.b := w }` is `let upd✝ := s; S.mk …` with field `f` the value
+-- `v`, a field `a` with paths `a.b := w, …` the update `{ upd✝.a with b := w, … }`
+-- (whose path so far rides along as a sixth argument of the node, for messages), and
+-- every other field `upd✝.g`. A structure is marked when it is declared
+-- (`Globals.markStruct`); its fields are its constructor's.
+inductive Upd where
+  | mk (field : String) (path : Option String) (val : Syntax)
+-- `a.b.c` as `a` and `b.c`
+def firstDotGo : List Char → List Char → Split
+  | .nil, acc => .mk (.mk (List.reverseOf acc .nil)) ""
+  | .cons c cs, acc => match Nat.beq (Char.code c) 46 with
+    | .true => .mk (.mk (List.reverseOf acc .nil)) (.mk cs)
+    | .false => firstDotGo cs (.cons c acc)
+def updOf (u : Syntax) : Upd := match kid u 0 with
+  | .ident n => match n with
+    | .mk cs => match firstDotGo cs .nil with
+      | .mk f rest => match strEq rest "" with
+        | .true => .mk f .none (kid u 2)
+        | .false => .mk f (.some rest) (kid u 2)
+  | _ => .mk "_" .none (kid u 2)
+def updsOf : List Syntax → List Upd
+  | .nil => .nil
+  | .cons u rest => match u with
+    | .atom _ => updsOf rest
+    | _ => .cons (updOf u) (updsOf rest)
+def Globals.markStruct (gs : Globals) (T : String) : Globals := match Globals.ind gs T with
+  | .some info => Globals.addInd gs (String.append "structure " T) info
+  | .none => gs
+-- a structure's fields (`none` if `T` isn't a structure)
+def cfieldNames : List CField → List String
+  | .nil => .nil
+  | .cons (.mk x _ _ _) rest => .cons x (cfieldNames rest)
+def Globals.structFields (gs : Globals) (T : String) : Option (List String) :=
+  match Globals.ind gs (String.append "structure " T) with
+  | .some (.mk _ _ _ _ ctors _ _) => match ctors with
+    | .cons (.mk _ fs _) _ => .some (cfieldNames fs)
+    | .nil => .some .nil
+  | .none => .none
+-- the structure a type is (a definition is unfolded, as `structHead?` does)
+partial def structOf (gs : Globals) (es : ES) (ty : Val) : Option String := match force es ty with
+  | .vglued (.hconst T _ _ _ _) _ v => match Globals.structFields gs T with
+    | .some _ => .some T
+    | .none => match Globals.ind gs T with
+      | .some _ => .none
+      | .none => structOf gs es (v ())
+  | _ => .none
+def commaJoin : List String → String
+  | .nil => ""
+  | .cons x rest => match rest with
+    | .nil => x
+    | .cons _ _ => String.append (String.append x ", ") (commaJoin rest)
+def memberS (x : String) : List String → Bool
+  | .nil => .false
+  | .cons y ys => Bool.or (strEq x y) (memberS x ys)
+def pathStr (outer f : String) : String := match strEq outer "" with
+  | .true => f
+  | .false => String.append (String.append outer ".") f
+-- the first error among the updates, in order: an unknown field, a field updated twice
+-- (`direct`: the fields given a value so far, `nested`: those updated inside)
+def updErr (S : String) (fields : List String) (outer : String) : List Upd → List String → List String → Option String
+  | .nil, _, _ => .none
+  | .cons (.mk f p _) rest, direct, nested => match memberS f fields with
+    | .false => .some (String.append (String.append (String.append S " has no field '") f)
+        (String.append "' (its fields are " (String.append (commaJoin fields) ")")))
+    | .true =>
+      let twice := String.append (String.append "field '" (pathStr outer f)) "' is updated twice";
+      match p with
+      | .none => match Bool.or (memberS f direct) (memberS f nested) with
+        | .true => .some twice
+        | .false => updErr S fields outer rest (.cons f direct) nested
+      | .some _ => match memberS f direct with
+        | .true => .some twice
+        | .false => updErr S fields outer rest direct (.cons f nested)
+def directVal (f : String) : List Upd → Option Syntax
+  | .nil => .none
+  | .cons (.mk g p v) rest => match strEq f g with
+    | .true => match p with
+      | .none => .some v
+      | .some _ => directVal f rest
+    | .false => directVal f rest
+def nestedUpds (f : String) : List Upd → List Syntax
+  | .nil => .nil
+  | .cons (.mk g p v) rest => match strEq f g with
+    | .true => match p with
+      | .some q => .cons (mkNode "structUpdate.field" (.cons (.ident q) (.cons (.atom ":=") (one v)))) (nestedUpds f rest)
+      | .none => nestedUpds f rest
+    | .false => nestedUpds f rest
+-- the constructor's arguments
+def updArgs (S outer : String) (ups : List Upd) : List String → List Syntax
+  | .nil => .nil
+  | .cons f rest =>
+    -- (`S.f upd✝`, not `upd✝.f`: the type of `s` may be a definition of `S …`)
+    let kept := mkNode "term.app" (.cons (mkNode "term.ident" (one (.ident (String.append (String.append S ".") f))))
+      (one (mkNull (one (mkNode "term.ident" (one (.ident "upd✝")))))));
+    let arg := match directVal f ups with
+      | .some v => v
+      | .none => match nestedUpds f ups with
+        | .nil => kept
+        | .cons u us => mkNode "term.structUpdate" (.cons (.atom "{") (.cons kept (.cons (.atom "with")
+            (.cons (mkNull (.cons u us)) (.cons (.atom "}") (one (.atom (pathStr outer f))))))));
+    .cons arg (updArgs S outer ups rest)
 -- is the head a constructor (`T.c` of an inductive type `T`, not shadowed)?
 def ctorHead (gs : Globals) (cx : Cx) (h : Syntax) : Bool := match strEq (kindOf h) "term.ident" with
   | .true => match Scope.lookup (Cx.sc cx) (identOf h) with
@@ -2306,7 +2492,41 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
                     | .some qs => inferLams gs es cx qs (fieldsOf (kids (kid s 1))) (kid s 3)
                     | .none => .err qtyErr
                   | .false => .err "cannot infer the type of a λ; add a type ascription"
-                | .false => .err (String.append "unsupported syntax " k)
+                | .false => match strEq k "term.structUpdate" with
+                  | .true => structUpdT gs es cx s
+                  | .false => .err (String.append "unsupported syntax " k)
+-- `{ s with … }` (13i, 13p): `let upd✝ := s; S.mk …` (`updArgs`), checked against the
+-- type of `s`
+def structUpdT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
+  let outer := match kid s 5 with
+    | .atom o => o
+    | _ => "";
+  match inferT gs es cx (kid s 1) with
+  | .err m => .err m
+  | .ok t sty es1 =>
+    let d := Cx.lvl cx;
+    let A := quote d (force es1 sty);
+    let tyStr := show (scopeNames (Cx.sc cx)) d A;
+    match structOf gs es1 sty with
+    | .none => .err (match strEq outer "" with
+      | .true => String.append "structure update needs a value of a structure type, not one of type " tyStr
+      | .false => String.append (String.append (String.append "field '" outer) "' is not a structure (its type is ")
+          (String.append tyStr "), so its fields can't be updated"))
+    | .some S => match Globals.structFields gs S with
+      | .none => .err "internal error: a structure without fields"
+      | .some fields =>
+        let ups := updsOf (kids (kid s 3));
+        match updErr S fields outer ups .nil .nil with
+        | .some m => .err m
+        | .none =>
+          let cx' := Cx.define cx "upd✝" (eval (TCtx.env (Cx.c cx)) t) sty;
+          let mk := mkNode "term.ident" (one (.ident (String.append S ".mk")));
+          let app := match updArgs S outer ups fields with
+            | .nil => mk
+            | .cons a as => mkNode "term.app" (.cons mk (one (mkNull (.cons a as))));
+          match checkT gs es1 cx' app sty with
+          | .ok b _ es2 => .ok (.letE A t b) sty es2
+          | e => e
 -- `fun (x : A) … => b` with every binder typed: `(x : A) → B` (stage 20a)
 def inferLams (gs : Globals) (es : ES) (cx : Cx) (qs : List Q) : List Field → Syntax → TE
   | .nil, body => inferT gs es cx body
@@ -2611,7 +2831,67 @@ def varBinds : List Syntax → List Col → List Bind
     | .true => varBinds ps cs
     | .false => .cons (.mk (identOf p) c) (varBinds ps cs)
   | _, _ => .nil
+-- (13q) split column `k`: by a literal test (`litTest`), or by constructors
 def splitCol (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val) (cols : List Col)
+    (top : Bool) (ihLvls : List Nat) (cls : List Clause) (k : Nat) : CE :=
+  let p0 := patAt k cls;
+  let lit := Bool.or (isLitPat p0) (isPlusPat p0);
+  match nthCol cols k with
+  | .mk L ty0 _ => match headOf (unfoldTy gs L ty0) .tnil with
+    | .mk T _ => match Bool.and lit (Bool.not (strEq T "Nat")) with
+      | .true => litTest gs mc es cx expected cols top ihLvls cls k
+      | .false => match Globals.ind gs T with
+        | .some _ => match litSplitErr T k cls with
+          | .some m => .err m
+          | .none => splitCtors gs mc es cx expected cols top ihLvls cls k
+        | .none => splitCtors gs mc es cx expected cols top ihLvls cls k
+    | .none => match lit with
+      | .true => litTest gs mc es cx expected cols top ihLvls cls k
+      | .false => splitCtors gs mc es cx expected cols top ihLvls cls k
+-- (13q) the test `T.beq x l` for the literal `l` in the first row of column `k`, `let`
+-- bound (`lit✝` for `x`, `test✝`), and the clauses with the test's column (`litClauses`)
+def litTest (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val) (cols : List Col)
+    (top : Bool) (ihLvls : List Nat) (cls : List Clause) (k : Nat) : CE :=
+  match nthCol cols k with
+  | .mk L ty0 _ =>
+    let d := Cx.lvl cx;
+    let env := TCtx.env (Cx.c cx);
+    let xA := shiftTm (d - L) 0 ty0;
+    let xty := eval env xA;
+    let tyStr := show (scopeNames (Cx.sc cx)) d xA;
+    let p0 := patAt k cls;
+    match Bool.and (Bool.not (isLitPat p0)) (plusBad p0) with
+    | .true => .err "a pattern `p + k` needs a numeral `k` (as in `n + 2`)"
+    | .false => match Bool.not (isLitPat p0) with
+    | .true => .err (String.append "a pattern `n + k` needs a Nat, not " tyStr)
+    | .false => match top with
+      | .true => .err (String.append (String.append "structural recursion: the first argument must be matched by its constructors, and a literal pattern on " tyStr)
+          " is an equality test")
+      | .false => match beqHead gs d xA with
+        | .none => .err (String.append (String.append "a literal pattern needs Nat, or a type T with literals and an equality test T.beq : T → T → Bool; " tyStr) " has none")
+        | .some T => match anyVarAt k cls with
+          | .false => .err (String.append (String.append "a match on literals of type " tyStr)
+              " needs a catch-all case (`_` or a variable) after them: literals don't cover the type")
+          | .true => match litColErr tyStr k cls with
+            | .some m => .err m
+            | .none =>
+              let x : Tm := .var (d - 1 - L);
+              let cx1 := Cx.define cx "lit✝" (eval env x) xty;
+              let ident := fun (n : String) => mkNode "term.ident" (one (.ident n));
+              let testS := mkNode "term.app" (.cons (ident (String.append T ".beq")) (one (mkNull (.cons (ident "lit✝") (one p0)))));
+              match inferT gs es cx1 testS with
+              | .err m => .err m
+              | .ok tt bty es1 => match drain gs es1 with
+                | .none => .err "could not elaborate a constructor argument"
+                | .some es2 => match zonk es2 (d + 1) tt with
+                  | .none => .err "could not infer an implicit argument"
+                  | .some tt' =>
+                    let B := quote (d + 1) (force es2 bty);
+                    let cx2 := Cx.define cx1 "test✝" (eval (TCtx.env (Cx.c cx1)) tt') bty;
+                    match compileM gs mc es2 cx2 expected (colsInsert k (.mk (d + 1) B B) cols) top ihLvls (litClauses p0 k cls) with
+                    | .ok body es3 => .ok (.letE xA x (.letE B tt' body)) es3
+                    | e => e
+def splitCtors (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Val) (cols : List Col)
     (top : Bool) (ihLvls : List Nat) (cls : List Clause) (k : Nat) : CE :=
   let d := Cx.lvl cx;
   match nthCol cols k with
@@ -4004,7 +4284,8 @@ def structCmd (gs : Globals) (stx : Syntax) : Step :=
   let ind := mkNode "command.inductive" (.cons (.atom "inductive") (.cons (kid stx 1) (.cons (kid stx 2) (.cons (kid stx 3)
     (.cons (kid stx 4) (.cons (.atom "where") (one (mkNull (one ctor)))))))));
   let pat := mkNode "term.app" (.cons (mkNode "term.dotIdent" (.cons (.atom ".") (one (.ident "mk")))) (one (mkNull (fieldIdents fs))));
-  defsSteps gs (.cons ind (projections T bs sTy pat fs))
+  match defsSteps gs (.cons ind (projections T bs sTy pat fs)) with
+  | .mk out gs' => .mk out (Globals.markStruct gs' T)
 
 -- The self-hosted frontend's Prelude (stage 19a), read by `import Prelude`: numbers,
 -- Booleans, lists, options, pairs, characters (by their code) and strings.
