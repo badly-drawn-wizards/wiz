@@ -420,6 +420,11 @@ def XT.binder (d : String) : Expr → String
   | .lam x _ => x
   | _ => d
 def XT.intro (g : Nat) (x : String) : TacticM Nat := TacticM.intro g x
+-- `f a`, β-reduced when `f` is a λ (a redex in an assigned term can't have its type
+-- inferred: the λ has no domain)
+def XT.beta (g : Nat) (f a : Expr) : TacticM Expr := match f with
+  | .lam _ b => TacticM.instantiate g b a
+  | _ => TacticM.pure (.app f a)
 -- restate goal `g` with a convertible type
 def XT.restate (g : Nat) (V L R : Expr) : TacticM Nat :=
   XT.apply1 g "xs.conv" (.cons (.val V) (.cons (.val L) (.cons (.val R) (.cons (.goalAt (XT.ent V L R)) .nil))))
@@ -970,7 +975,8 @@ def XT.step1 : Nat → XT.WpGoal → XT.St → TacticM (List Nat × XT.St)
       s ← XT.shape g V A c;
       match s with
       | .ret a => do
-        g' ← XT.restate g V L (.app Q a);
+        Qa ← XT.beta g Q a;
+        g' ← XT.restate g V L Qa;
         TacticM.pure (g' ∷ .nil, st)
       | .get l k => do
         cr ← XT.withCell w l (fun g₁ v rest =>
@@ -1027,7 +1033,8 @@ def Tactic.xval : Tactic := fun _ => do
     s ← XT.shape g₁ V A c;
     match s with
     | .ret a => do
-      g₂ ← XT.restate g₁ V L (.app Q a);
+      Qa ← XT.beta g₁ Q a;
+      g₂ ← XT.restate g₁ V L Qa;
       r ← XT.simp 1000 .true g₂ .nil w.2;
       TacticM.replaceMainGoal r.1
     | _ => TacticM.fail "xval: the program does not return here"
