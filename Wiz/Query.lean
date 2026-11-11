@@ -74,7 +74,7 @@ def identAt (s : CommandState R) (off : Nat) : Option (Info R) :=
 
 def hoverAt (s : CommandState R) (off : Nat) : Option (Name × String) := do
   let .ident _ n _ names ty ← identAt s off | none
-  pure (n, ty.pretty names)
+  pure (n, ty.pretty names (some s.globals))
 
 /-- The tactic state at a character offset: inside a `by` block, the goals after the
 innermost tactic containing `off` (its end included); between tactics, after the last one
