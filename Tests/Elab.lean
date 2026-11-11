@@ -3400,6 +3400,11 @@ def phantomHeader : String :=
   "structure S (w : Nat) where\n  x : Nat\ninductive N (w : Nat) where\n  | z\n  | s (n : N w)\n" ++
   "def width (w : Nat) (a : UIntN w) : Nat := w\ndef u8 : UIntN 8 := .mk 3\n"
 
+/-- (22k) A sealed type, a look-alike, and another sealed type of the same shape. -/
+def sealHeader : String :=
+  "sealed inductive W (w : Nat) where\n  | mk (toNat : Nat)\ninductive L (w : Nat) where\n  | mk (toNat : Nat)\n" ++
+  "sealed inductive V (w : Nat) where\n  | mk (toNat : Nat)\n"
+
 /-- Finding Y4 (audit 2): the probe (`def T` twice, with `Box T` in between), and the
 other ways a command could declare a name again. -/
 def dupNames : String :=
@@ -3715,6 +3720,14 @@ def selfHostGroup : Group where
           "def get {w : Nat} : Box w → Nat\n  | .mk n => n\ndef sum {w : Nat} (p : Pt w) : Nat := p.x + p.y\n" ++
           "def b : Box 8 := .mk 3\ndef p : Pt 8 := .mk 1 2\n" ++
           "def main : IO Unit := IO.println (Nat.toString (get b + sum p))\n") "6\n" },
+    { name := "the self-hosted frontend: a sealed type has no look-alikes, as in the Lean frontend (22k)", run := fun _ =>
+        selfhostAgrees sealHeader [
+          ("def same (x : W 8) : W 8 := x\ndef get {w : Nat} : W w → Nat\n  | .mk n => n\ndef five : Nat := get (W.mk 5 : W 8)\n", true),
+          ("def bad (x : L 8) : W 8 := x\n", false),
+          ("def bad (x : W 8) : L 8 := x\n", false),
+          ("def bad (x : V 8) : W 8 := x\n", false),
+          ("def bad (x : W 8) : W 16 := x\n", false),
+          ("sealed structure P where\n  x : Nat\n", false)] },
     { name := "the self-hosted frontend: constructor parameters from the expected type (21j)", run := fun _ =>
         selfhostAgrees ("def Code : Bool → Type\n  | .true => Nat\n  | .false => Bool\n" ++
           "structure Tagged (b : Bool) where\n  val : Code b\n")
@@ -5490,9 +5503,11 @@ on a `μ`. -/
 
 /-- `#eval main`, `#run main` (the IR interpreter), and `main` compiled by the C and the
 LLVM backends all give `expected`. `unbox`: with `--unbox-structs`. -/
-def reprAll (src expected : String) (unbox : Bool := false) (libs : Bool := false) : IO Unit := do
+def reprAll (src expected : String) (unbox : Bool := false) (libs : Bool := false)
+    (extra : Name → Option String := fun _ => none) : IO Unit := do
   let full := src ++ "\n#eval main\n#run main\n"
   let loader ← if libs then libLoader else preludeLoader
+  let loader := fun m => extra m <|> loader m
   let s := runFrontend (R := ZeroOneMany) full
     { trustedModule := Tests.libModule, loader, globals := { unboxStructs := unbox } }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render full
@@ -5637,6 +5652,50 @@ def r3RoundTrips : String × Nat := Id.run do
   src := src ++ "def main : Nat := " ++ " + ".intercalate terms ++ "\n"
   pure (src, total)
 
+/-- (22k) A type with a native representation, sealed, with a private constructor, in a
+module of its own: `W` is a byte, compiled as its bits. -/
+def sealNat8 : String := "import Word
+sealed inductive W where
+  | private mk (toNat : Nat)
+extern \"wiz_word_of_bits\" W.ofBits : NatObj → W
+extern \"wiz_word_to_bits\" W.toBits : W → NatObj
+attribute [implemented_by W.ofBits W.toBits] W.mk
+def W.of (n : Nat) : W := .mk (Nat.mod n 256)
+def W.get : W → Nat
+  | .mk n => n
+def W.succ (a : W) : W := W.of (a.get + 1)
+"
+
+def sealLoader (m : Name) : Option String := if m == "Nat8" then some sealNat8 else none
+
+/-- `input` with `Nat8` importable: its error messages. -/
+def sealErrors (input : String) : IO (Array String) := do
+  let loader ← preludeLoader
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => sealLoader m <|> loader m }
+  pure ((s.messages.filter (·.severity == .error)).map fun m => m.render input)
+
+def sealFails (input fragment : String) : IO Unit := do
+  let errs ← sealErrors input
+  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+  unless (errs[0]!.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+/-- (22k, layer 3) What erasure refuses, on kernel terms no surface program produces: the
+elaborated program `import Nat8` plus a hand-made declaration `bad` (outside `W`'s module).
+`fragment`: the refusal expected (`none`: it compiles). -/
+def sealLayer3 (bad : Decl ZeroOneMany) (fragment : Option String) : IO Unit := do
+  let loader ← preludeLoader
+  let src := "import Nat8\ndef ok : Nat := W.get (W.succ (W.of 7))\n"
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun m => sealLoader m <|> loader m }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let s := { s with globals := s.globals.insert bad }
+  match Build.irProgram s bad.name, fragment with
+  | .ok _, none => pure ()
+  | .ok _, some f => throw (IO.userError s!"{bad.name} compiled; expected a refusal mentioning '{f}'")
+  | .error e, some f => check ((e.splitOn f).length > 1) e
+  | .error e, none => throw (IO.userError s!"{bad.name} was refused: {e}")
+
 def reprGroup : Group where
   name := "repr"
   exercise := "Representations and conversion (R3)"
@@ -5685,7 +5744,34 @@ def reprGroup : Group where
     { name := "structures and the Σ of their shape: values converted back and forth", run := fun _ => do
         let (src, total) := r3RoundTrips
         reprAll src (toString total)
-        reprAll src (toString total) (unbox := true) }
+        reprAll src (toString total) (unbox := true) },
+    { name := "22k: a sealed type: a look-alike, another sealed type, another width are other types", run := fun _ => do
+        let hdr := "import Prelude\n" ++ sealHeader
+        okLib (hdr ++ "def same (x : W 8) : W 8 := x\ndef get {w : Nat} : W w → Nat\n  | .mk n => n\n#eval get (W.mk 5 : W 8)\n#print axioms same\n")
+          ["5", "'same' depends on axioms: [W.seal✝]"]
+        for d in ["def bad (x : L 8) : W 8 := x", "def bad (x : W 8) : L 8 := x", "def bad (x : V 8) : W 8 := x",
+            "def bad (x : W 8) : W 16 := x"] do
+          failsLib (hdr ++ d ++ "\n") "type mismatch"
+        failsLib (hdr ++ "def bad : W 8 = L 8 := rfl\n") "not definitionally equal"
+        failsLib (hdr ++ "def bad : W 8 = V 8 := rfl\n") "not definitionally equal"
+        failsLib "import Prelude\nsealed structure P where\n  x : Nat\n" "`sealed` applies to an `inductive` declaration"
+        -- the seal can't be named
+        check (!(← sealErrors "import Nat8\ndef s : Type := W.seal✝\n").isEmpty) "W.seal✝ was named" },
+    { name := "22k: a native sealed type in its own module: its functions, generic code and lists of it, interpreted and compiled", run := fun _ =>
+        reprAll ("import Nat8\ndef keep {A : Type} (x : A) : A := x\ndef sum : List W → Nat\n  | .nil => 0\n  | .cons x xs => x.get + sum xs\n" ++
+          "def main : Nat := W.get (keep (W.succ (W.of 299))) + sum (.cons (W.of 1) (.cons (W.of 256) .nil))\n") "45" (extra := sealLoader) },
+    { name := "22k: outside its module a native type is not built, taken apart or matched by a look-alike (R5, layer 1)", run := fun _ => do
+        sealFails "import Nat8\ndef big (n : Nat) : W := .mk (n + 300)\n" "private to module Nat8"
+        sealFails "import Nat8\ndef get (x : W) : Nat := match x with\n  | .mk n => n\n" "Nat8"
+        sealFails "import Nat8\ninductive Box (A : Type) where\n  | mk (n : Nat)\ndef toBox (x : W) : Box _ := x\n" "type mismatch"
+        sealFails "import Nat8\ndef d := W.desc\n" "private" },
+    { name := "22k: erasure refuses a native value built outside its module, and the seal outside its type (layer 3)", run := fun _ => do
+        -- a `W` built by `con` (the elaborator refuses `W.mk`; a kernel term need not)
+        sealLayer3 { name := "forged", type := .const "W" [], value := some (.con .tt) } (some nativeHomeMsg)
+        -- the seal as a term outside a `μ`
+        sealLayer3 { name := "leak", type := .sort (.succ .zero), value := some (.const (sealName "W") []) } (some "has a native representation (it is a sealed type)")
+        -- and the module's own functions are fine
+        sealLayer3 { name := "fine", type := .const "Nat" [], value := some (.app (.const "W.get" []) (.app (.const "W.of" []) (.const "ok" []))) } none }
   ]
 
 /-- A user-declared `ShareLet` (no HDL library): the hook fires on a `let` in check mode

@@ -536,7 +536,7 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     if k == inlineKey then
       if let some d := g.find? f then
         if let .ok e := eraseDecl g d then inlines := inlines.insert f e
-  -- the seals of the sealed types with a native representation (22j)
+  -- the seals of the sealed types with a native representation (22k)
   let nativeSeals := g.builtins.filterMap fun (key, x) =>
     if key.startsWith "seal:" then
       let T : Name := (key.drop 5).toString
@@ -571,7 +571,7 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     let n := todo.back
     todo := todo.pop
     if code.contains n then continue
-    -- (22j, layer 3) the seal of a type with a native representation stays in the type's
+    -- (22k, layer 3) the seal of a type with a native representation stays in the type's
     -- module, except inside the type itself
     unless nativeSeals.isEmpty do
       let m := target n 100

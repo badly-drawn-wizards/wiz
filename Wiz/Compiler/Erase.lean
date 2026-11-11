@@ -312,7 +312,7 @@ def isNatTy (g : Globals R) (ty : Val R) : Bool :=
     (match hint with | some (T, _, _) => T == N | none => false) || natShaped g I D
   | _, _ => false
 
-/-- The sealed type a `μ`'s index type names (22j): `sealed inductive T` puts its seal, the
+/-- The sealed type a `μ`'s index type names (22k): `sealed inductive T` puts its seal, the
 axiom `T.seal✝`, among the erased domains of the index tail (after the indices of an
 indexed family). A constant without a value is compared by name, so this is a function
 of the type up to conversion, unlike the display name on the `μ`. -/

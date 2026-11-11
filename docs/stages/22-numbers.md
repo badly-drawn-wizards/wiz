@@ -326,3 +326,56 @@ constructor, so the `.ok (q.2, q.1)` re-wrapping around each scope is still rebu
 the same cells, by reuse); a recursive call through a scope's lambda is still not seen
 as structural (`05_bst` `insert` stays `partial`; wishful: reborrow-recursion has a
 design). The self-hosted toolchain doesn't have phantom tails at all yet.
+
+## 22k: sealed types ✅
+
+Types are structural (stage 4): two `inductive` declarations of the same shape are one
+type. For a type with a native representation (22d) that is wrong twice over: a
+look-alike of `UIntN 8` would be a `UIntN 8` built as the model's object, and `IntN w`
+and `UIntN w` would be one type with two meanings. **`sealed inductive T …`** makes `T`
+a type of its own:
+
+* the command declares an axiom `T.seal✝ : Type` (a name no source file can write) and
+  puts it first in `T`'s index tail, like a phantom type parameter (22e):
+  `(0 _ : T.seal✝) → (the phantom domains) → Unit`. A constant without a value is
+  compared by name, so nothing that does not mention `T.seal✝` is convertible to `T`,
+  and `T args = L args` for a look-alike `L` is stuck (not provable by `rfl`, not
+  refutable). Constructors, patterns, recursors, `deriving` and the printer are
+  unchanged: the seal is not a field.
+* `#print axioms` lists the seal of every sealed type a definition depends on
+  (`'f' depends on axioms: [W.seal✝]`): what it asserts is that `T` is only `T`.
+* `sealed` applies to `inductive` only (not `structure`, `coinductive` or a `mutual`
+  block). A sealed type without a native representation is still useful: it has no
+  look-alikes (a brand).
+
+**Native representations are found by the seal.** Erasure and readback look for a
+registered seal among the index type's domains (through an indexed family's Σ), not at
+the `μ`'s display name, so the representation is a function of the type up to
+conversion (`repr-shape.md` (I1)).
+
+**Who keeps a look-alike out** (three layers, `wiz-notes/repr-shape.md` §4C.6):
+
+1. *Opacity (13b).* A native type's constructor is private (R5 below), so outside its
+   module the type does not unfold for the elaborator, and its description `T.desc` and
+   recursors are private: `Box _` against `T` is a rigid mismatch, and unification never
+   sees the seal to write it on the user's behalf. (With a public constructor it can:
+   `Box T.seal✝` is then `T`, which only matters for a type with no native
+   representation.)
+2. *Privacy of the name:* `T.seal✝` can't be written in source.
+3. *Erasure, on kernel terms, whatever the elaborator did* (fatal errors): outside `T`'s
+   module, no `con` is built at, and no `ind`/`scase` eliminates, a type with a native
+   representation and a private constructor; and its seal may occur only inside a
+   complete `μ` type (generic code over descriptions or types instantiated with the seal
+   would treat a native value as the model's object). Erasure needs to know each
+   declaration's module: `Globals.declModule`.
+
+**R5 (out-of-range words).** `.mk (n + 300) : UIntN 8` built a word whose model is not
+below `2^8`, on which the kernel and compiled code disagree. A native type's constructor
+is private, so only its module builds values, and the module keeps the invariant the
+natives rely on (for words, `n < 2^w`); this joins the natives' claim in the trusted base
+(22f) as a module invariant.
+
+Both frontends elaborate `sealed inductive` (the self-hosted one with the same axiom and
+tail). Tests: groups `repr` (look-alikes, a native byte type in its own module
+interpreted and compiled, R5 and layer 1, the layer-3 refusals on hand-made kernel
+terms) and `selfhost` (the two frontends agree). Kernel rules: none, in either kernel.

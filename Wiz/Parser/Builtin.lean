@@ -257,7 +257,7 @@ def commandLeading : List LeadingParser := [
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec true, many1 matchAlt] },
   -- 13b: every name the command declares is visible only in this module
   { kind := "command.private", prec := maxPrec, p := seqs ["private", cat "command" 0] },
-  -- 22j: `sealed inductive T …`: only this declaration is the type `T` (a look-alike is
+  -- 22k: `sealed inductive T …`: only this declaration is the type `T` (a look-alike is
   -- another type); needed for a native representation
   { kind := "command.sealed", prec := maxPrec, p := seqs ["sealed", cat "command" 0] },
   -- stage 13: general recursion; a `mutual` block's definitions are partial too

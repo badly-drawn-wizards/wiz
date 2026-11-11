@@ -940,7 +940,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       { s with globals := { s.globals with
           privates := added.foldl (fun m n => m.insert n s.module) s.globals.privates } }
   | "command.sealed" =>
-    -- (22j) `sealed inductive T …`: declare the seal, an axiom `T.seal✝ : Type` private to
+    -- (22k) `sealed inductive T …`: declare the seal, an axiom `T.seal✝ : Type` private to
     -- this module; `elabInductive` then puts it in `T`'s index tail. Only this
     -- declaration can write the name, and a constant is compared by name, so no other
     -- declaration is convertible to `T`.

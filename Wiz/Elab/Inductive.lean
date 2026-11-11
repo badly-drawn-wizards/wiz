@@ -80,7 +80,7 @@ def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R �
   let g ← getGlobals
   let nΔ := Δ.size
   let tys := ctxΔ.types.reverse.toArray
-  -- a sealed type's seal comes first (22j): a closed domain, the axiom itself
+  -- a sealed type's seal comes first (22k): a closed domain, the axiom itself
   let mut doms : Array (Term R) := match sealAx with
     | some k => #[.const k []]
     | none => #[]
