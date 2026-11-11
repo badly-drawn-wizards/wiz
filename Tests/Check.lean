@@ -269,6 +269,10 @@ def hintCase : IO Unit := do
 hand-written component sorts, which the kernel trusts when it evaluates them: kernel-check
 each template term against its type, at closed levels and at level parameters, so that a
 wrong leaf is caught mechanically (the kernel checks every written sort of a term). -/
+/-- `t` with every occurrence of the closed subterm `target` replaced by `c`. -/
+partial def replaceClosed (target c : Term Q) (t : Term Q) : Term Q :=
+  if t == target then c else Id.run (t.mapChildrenM pure fun _ x => pure (replaceClosed target c x))
+
 def templatesCheck : IO Unit := do
   let ω : Term Q := .qlit .many
   let v (i : Nat) : Term Q := .var i
@@ -295,8 +299,13 @@ def templatesCheck : IO Unit := do
     let mapTy := pre (pi (pi (v 2) (.sort l1)) (pi (pi (v 3) (pi (.app (v 2) (v 0)) (.app (v 2) (v 1))))
       (pi (v 4) (pi (interp (v 5) (v 4) (v 3) (v 0)) (interp (v 6) (v 5) (v 3) (v 1))))))
     let mut g : Globals Q := {}
-    for (n, ty, t) in [("interpTm", interpTy, Templates.interpTm l), ("allTm", allTy, Templates.allTm l w),
-                       ("hypsTm", hypsTy, Templates.hypsTm l w), ("mapTm", mapTy, Templates.mapTm l)] do
+    -- (a template applies the ones before it as closed `λ`s, which the kernel can't infer
+    -- a type for: they are replaced by the constants just checked)
+    let byName (t : Term Q) : Term Q :=
+      replaceClosed (Templates.interpTm l) (.const "interpTm" us) (replaceClosed (Templates.allTm l w) (.const "allTm" us) t)
+    let allBody := replaceClosed (Templates.interpTm l) (.const "interpTm" us) (Templates.allTm l w)
+    for (n, ty, t) in [("interpTm", interpTy, Templates.interpTm l), ("allTm", allTy, allBody),
+                       ("hypsTm", hypsTy, byName (Templates.hypsTm l w)), ("mapTm", mapTy, byName (Templates.mapTm l))] do
       match addDeclS (R := Q) g { name := n, levelParams := ps, type := ty, value := some t } with
       | .ok g' => g := g'
       | .error e => throw (IO.userError s!"{n} at l = {l}, v = {w}: {e}")

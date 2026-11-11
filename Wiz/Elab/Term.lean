@@ -924,20 +924,25 @@ where
     -- inferred type, whose sorts may not be known yet (a `fun` whose domain is a hole),
     -- and then the equation's shape can differ from the expected one: review F1)
     | "term.refl" =>
-      match eqSigmaSides? (← force expected) with
-      | some (T, a, b) =>
-        -- (`refl _`: the left side itself)
-        let x ← if (stx.getArg 1).isOfKind "term.hole" then pure (quote (← getGlobals) ctx.lvl a)
-          else check ctx (stx.getArg 1) T
-        let vx ← evalIn ctx x
-        sameSides ctx (some T) vx a
-        sameSides ctx (some T) vx b
-        return .refl (quote (← getGlobals) ctx.lvl T) x
-      | none => do
-        let (t, ty) ← infer ctx stx
-        let (t, ty) ← insertImplicits ctx t ty
-        unifyAt ctx stx expected ty
-        pure t
+      let viaSides? : ElabM R (Option (Term R)) := do
+        let some (T, a, b) := eqSigmaSides? (← force expected) | return none
+        let s ← get
+        try
+          -- (`refl _`: the left side itself)
+          let x ← if (stx.getArg 1).isOfKind "term.hole" then pure (quote (← getGlobals) ctx.lvl a)
+            else check ctx (stx.getArg 1) T
+          let vx ← evalIn ctx x
+          sameSides ctx (some T) vx a
+          sameSides ctx (some T) vx b
+          return some (.refl (quote (← getGlobals) ctx.lvl T) x)
+        -- (not a `refl` of an element at that Σ, e.g. `refl X` of a type whose equation
+        -- computed through `famCodeTy`: as before)
+        catch _ => set s; return none
+      if let some t ← viaSides? then return t
+      let (t, ty) ← infer ctx stx
+      let (t, ty) ← insertImplicits ctx t ty
+      unifyAt ctx stx expected ty
+      pure t
     | "term.letPair" => elabLetPair ctx stx expected
     | "term.letTuple" => elabLetPair ctx (letTupleToPairs stx) expected
     | "term.match" => elabMatch ctx stx expected
