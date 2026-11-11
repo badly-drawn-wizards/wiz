@@ -211,7 +211,7 @@ jobs:
 
   # The Nix package (flake.nix: wiz and grail, wrapped with the toolchain), pushed to
   # Cachix when the token is there (pushes, and pull requests from this repository), so
-  # that `nix run github:badly-drawn-wizards/wiz` downloads it. It is a pure Nix build
+  # that `nix run github:wiz-pl/wiz` downloads it. It is a pure Nix build
   # without Lake's artifact cache, so it rebuilds every module when a .lean file changes;
   # the tests keep using Lake (incremental) and don't wait for it.
   package:
