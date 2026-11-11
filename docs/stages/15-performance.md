@@ -89,3 +89,117 @@ after the call): otherwise the call stays a call. In the garbage collected mode 
 under a match on a computed value (`match Nat.beq … with`) is not yet in tail position:
 the match's payload is a suspended `let`, and its branches are closures (under reference
 counting lets are strict, and it is a loop).
+
+### 15g: big numerals ✅
+
+A numeral like `1000000000` in a file compiled by the self-hosted compiler crashed the
+compiler (a stack overflow), when that compiler was the one built by the Lean
+`wiz build`. The self-hosted kernel has no number literals: its frontend elaborates a
+numeral to a binary term, `2 * (n / 2)` plus one if `n` is odd (`binNat`), and it
+halved `n` with `halfNat`, a recursion on `succ (succ j)`: `n / 2` frames deep. It now
+uses `Nat.div`, a native operation in both compilers; the term was always logarithmic.
+
+What each compiler does with a numeral:
+
+* **The Lean compiler** keeps it as a literal from the elaborator to the IR
+  (`Term.natLit`, `ETerm.natLit`, `Expr.lit`), and the backends emit a constant: below
+  `2^62` an immediate, from `2^62` a GMP number built once from its digits
+  (`wiz_nat_lit`). Nothing recurses on the value. One bug on the way: the LLVM backend
+  named the global holding the digits with a counter per function, so a module with
+  two such literals in two functions defined `@lit.1.str` twice and `llc` rejected it;
+  the global is now named after the number.
+* **The self-hosted compiler.** Its numbers are 63-bit words whose arithmetic wraps
+  (a limit of that runtime, not changed here), so a numeral from `2^63` could only be
+  its value modulo `2^63` (`2^64 + 1` would be `1`). It is now an error in the frontend
+  ("the numeral does not fit in 63 bits"), decided on the digits: when the compiler
+  runs on words itself, the value has wrapped before anyone can look at it.
+* **The self-hosted compiler stops at a frontend error.** Its driver
+  (`Selfhost.compilerSource`) printed the frontend's messages as comments at the top
+  of the C and went on: a definition with an error was just missing, and the program
+  compiled anyway if nothing used it. Now, if any line of the frontend's output starts
+  with `error`, the errors go to standard error, no C is printed, and the exit code is
+  1. For this the self-hosted prelude and `selfhost/rt.c` have two more natives, with
+  the names and types of `lib/Sys.wiz`: `IO.ePrintln : String → IO Unit` and
+  `Process.exit : Nat → IO Unit`.
+* **Folded constants.** The backend recognises the binary term and emits `BOX(n)` (`natConst`, which also
+  folds `+` and `*` of constants): it now wraps like the runtime does. Built by the Lean
+  compiler its own numbers are unbounded, and a folded product could print a constant
+  like `BOX(18446744073709551616UL)`, which gcc truncates with a warning and other C
+  compilers reject (and stage 1 and stage 2 would print different C).
+
+Tests: numerals at `2^31`, `2^32`, `2^62 - 1`, `2^62`, `2^63`, `2^64`, `2^64 + 1` and
+`10^30` with `#eval`, `#run`, C and LLVM (groups `backend`, `c`, `llvm`); with the
+self-hosted compiler (group `selfhost`), numerals up to `2^63 - 1` compiled and run
+with both collectors, the error from `2^63`, and the compiler's exit code and
+standard error for a program with errors.
+
+### 15h: case-shaped calls (`Bool.and` and `Bool.or` short-circuit) ✅
+
+Application is call by value in compiled code: `Bool.and a b` computed `b` before
+looking at `a`. So `p x && all p xs` (written with `Bool.and`) walked the whole list
+after the answer was known, and the recursive call was not a tail call. The kernel's
+evaluator never did that (it is lazy).
+
+A definition is **case-shaped** when its erased code is `λ x₁ … xₙ. case s [b₀, …]`
+with a scrutinee and branches built only from the parameters, constants, objects,
+projections and tags (no application, no binder; at most 16 nodes), after substituting
+the `let`s a compiled `match` makes for fields. `Bool.and`, `Bool.or`, `Bool.not`, a
+`getD` or `orElse` on `Option` are. A call with all `n` arguments is compiled as the
+`case` itself (`ETerm.caseInline` in `Wiz/Compiler/Inline.lean`, run on every reachable
+definition by `compileReachableE`, before lowering):
+
+* an argument whose parameter the scrutinee uses, or that more than one branch uses, is
+  computed first, as before;
+* an argument whose parameter one branch uses is computed in that branch;
+* an argument whose parameter no branch uses is not computed.
+
+A partial application (`foldB Bool.and`, a fold given the function) still calls the definition.
+
+Why this is sound: the language is pure, so when an argument is evaluated cannot be
+observed, only whether the program returns. The result is the same whenever the
+call-by-value program returned. A program that did not return because of such an
+argument (a `partial` definition that loops, an absurd case) now returns when the
+branch taken doesn't use it, which is what the kernel's evaluator does with the same
+term. An argument of type `IO A` is a value (a function of the world): not building it
+performs nothing, and performing it was never part of evaluating the call.
+
+The passes after it see ordinary `case`s: constant folding (15c) removes the `case`
+when the test is known, the recursive call in a branch is a tail call and becomes a
+loop (15f), and borrow inference and reuse (8e, 8f) run on the result.
+
+    def mem (n : Nat) : List Nat → Bool
+      | .nil => .false
+      | .cons x xs => Bool.or (Nat.beq x n) (mem n xs)
+
+    def mem @&x0 @&x1 :=
+      join j1(x13 x14) :=
+          case x14 of
+          | 0 => let x6 := Bool.false; ret x6
+          | 1 =>
+              let x8 := proj 0 x14
+              let x9 := proj 1 x14
+              let x10 := prim nat.beq x8 x13
+              case x10 of
+              | 0 => jmp j1 x13 x9
+              | 1 => let x12 := Bool.true; ret x12
+      jmp j1 x0 x1
+
+Allocations in the checked-heap interpreter, without and with the pass
+(`compileReachable … (caseShapes := false)` turns it off; the programs are
+`caseShapeSrc` in `Tests/Elab.lean`):
+
+| program | before | after |
+|---|---|---|
+| `mem 3 (range 1000)`: a search in a list that exists | 1000 | 1000 (the same cells; a loop that stops at the fourth) |
+| `reach 8 100 [1]`: each level `Bool.or (mem n xs) (reach … (double xs))` | 101 | 4 |
+| `Bool.and (mem 2000 (range 1000)) (mem 5 (range 1000))` | 2000 | 1000 |
+| `orElse (.some 4) (List.length (range 50 xs))`, `xs` of 100 elements | 151 | 101 |
+
+Tests: group `backend` (the IR of `mem`, `allLt` and a user function; the counts
+above), groups `c` and `llvm` (a second argument that never returns; ten million steps
+of `Bool.or (Nat.beq i n) (upFrom n (i + 1))` on a 1 MB stack at `-O0`).
+
+The self-hosted backend does the same for its own input (small case-shaped functions
+inlined with lazy arguments, branch `agent/selfhost-demand-d`); `&&` and `||` as macros
+that expand to matches (`agent/prelude-batch`) need neither.
+
