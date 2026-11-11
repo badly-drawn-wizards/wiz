@@ -281,7 +281,13 @@ def grailLspDiagnostics (dir : System.FilePath) (file : String) : IO (Option (Li
   let (stdin, child) ← child.takeStdin
   let input := IO.FS.Stream.ofHandle stdin
   let output := IO.FS.Stream.ofHandle child.stdout
-  let _ ← IO.asTask (prio := .dedicated) (do IO.sleep 120000; child.kill : IO Unit)
+  -- a time limit that doesn't keep the test's process alive once the test is done
+  let done ← IO.mkRef false
+  let _ ← IO.asTask (prio := .dedicated) do
+    for _ in [0:1200] do
+      if ← done.get then return
+      IO.sleep 100
+    child.kill
   let path ← IO.FS.realPath (dir / file)
   let uri := s!"file://{path}"
   LSP.writeMessage input (Lean.Json.mkObj [("jsonrpc", "2.0"), ("id", (1 : Nat)), ("method", "initialize"),
@@ -298,6 +304,7 @@ def grailLspDiagnostics (dir : System.FilePath) (file : String) : IO (Option (Li
         | _ => []
       diags := some ds
       break
+  done.set true
   child.kill
   let _ ← child.wait
   match diags with
