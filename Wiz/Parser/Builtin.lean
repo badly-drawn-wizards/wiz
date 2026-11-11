@@ -230,7 +230,7 @@ continue onto a line starting at the command's column.
 | `command.axiom`              | "axiom" ident [".{" [us] "}"] [binders] ":" T |
 | `command.check`              | "#check" term |
 | `command.reduce`             | "#reduce" term |
-| `command.declareSyntaxCat`   | "declare_syntax_cat" ident |
+| `command.declareSyntaxCat`   | "declare_syntax_cat" ident ["(" "keywords" ":=" ident ")"] |
 | `command.syntax`             | "syntax" [":" prec] [name] [priority] [stx+] ":" ident |
 | `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] ["deriving" C,+] |
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] where [fields] ["deriving" C,+] (where: `structure.where`, "where" [["private"] ident "::"]) |
@@ -312,7 +312,7 @@ def commandLeading : List LeadingParser := [
     p := seqs ["attribute", "[", nonReserved "deriver", ident, "]", ident] },
   { kind := "command.deriving", prec := maxPrec,
     p := seqs ["deriving", "instance", sepBy1 ident ",", nonReserved "for", sepBy1 ident ","] },
-  { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
+  { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident, optional (seqs ["(", nonReserved "keywords", ":=", ident, ")"])] },
   { kind := "command.syntax", prec := maxPrec,
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
       optional (seqs ["(", nonReserved "name", ":=", ident, ")"]),

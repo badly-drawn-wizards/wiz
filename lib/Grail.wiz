@@ -7,12 +7,39 @@ import Prelude
 -- file to check, an executable (a file's `main`, compiled through C), or tests (every
 -- `.wiz` file under a directory, with its expected output in `.expected` beside it;
 -- `grail test`).
+-- (23i) Commands: an external program, or an `exe` target of this package, run with
+-- declared inputs and outputs (paths relative to the package). An input that another
+-- command outputs is an edge of the build graph. See docs/stages/23-grail.md, 23i.
+inductive Tool where
+  | path (name : String)
+  | exe (target : String)
+-- a piece of an argument: text, an input path, an output path
+inductive Part where
+  | text (s : String)
+  | input (path : String)
+  | output (path : String)
+-- one step of a command's description, in order
+inductive Step where
+  | arg (parts : List Part)
+  | input (path : String)
+  | output (path : String)
+  | dir (path : String)
+  | stdout (path : String)
+  | env (key : String) (value : String)
+  | inOutDir
+  | uses (tool : Tool)
+  | phony
+  | manual
+inductive Command where
+  | mk (name : String) (tool : Tool) (steps : List Step)
+
 inductive Target where
   | lib (name : String) (root : String)
   | check (name : String) (file : String)
   | exe (name : String) (file : String)
   | tests (name : String) (root : String)
   | selfhost (name : String) (role : String)
+  | command (c : Command)
 
 -- Settings: `key value` pairs, later ones win. Keys: `cc`, `cflags`, `ldflags`, `llc`,
 -- `gc-cflags`, `gc-ldflags` (the toolchain), `root` (another module root).
@@ -42,6 +69,47 @@ def Package.exe (name file : String) (p : Package) : Package := Package.add (.ex
 def Package.tests (name root : String) (p : Package) : Package := Package.add (.tests name root) p
 -- the self-hosted toolchain (from selfhost/): role `checker`, `compiler` or `bootstrap`
 def Package.selfhost (name role : String) (p : Package) : Package := Package.add (.selfhost name role) p
+
+-- ## Commands (23i)
+-- `Command.new "bit-proto" (Tool.path "icepack") |> Command.input "build/proto.asc"
+--    |> Command.output "build/proto.bin"`, then `Package.command`.
+def Command.new (name : String) (tool : Tool) : Command := .mk name tool .nil
+def Command.add (s : Step) : Command → Command
+  | .mk n t ss => .mk n t (List.append ss (.cons s .nil))
+def Grail.one (p : Part) : List Part := .cons p .nil
+-- an argument: text
+def Command.arg (s : String) (c : Command) : Command := Command.add (.arg (Grail.one (.text s))) c
+-- an argument that is an input path / an output path (declared as such)
+def Command.input (path : String) (c : Command) : Command := Command.add (.arg (Grail.one (.input path))) c
+def Command.output (path : String) (c : Command) : Command := Command.add (.arg (Grail.one (.output path))) c
+-- `--flag=PATH` as one argument
+def Command.argIn (pre path : String) (c : Command) : Command :=
+  Command.add (.arg (.cons (.text pre) (Grail.one (.input path)))) c
+def Command.argOut (pre path : String) (c : Command) : Command :=
+  Command.add (.arg (.cons (.text pre) (Grail.one (.output path)))) c
+-- an argument made of several parts
+def Command.parts (ps : List Part) (c : Command) : Command := Command.add (.arg ps) c
+-- declared without being an argument: an input, an output file, an output directory
+def Command.needs (path : String) (c : Command) : Command := Command.add (.input path) c
+def Command.makes (path : String) (c : Command) : Command := Command.add (.output path) c
+def Command.makesDir (path : String) (c : Command) : Command := Command.add (.dir path) c
+-- an output directory that is also an argument
+def Command.outDir (path : String) (c : Command) : Command :=
+  Command.add (.arg (Grail.one (.output path))) (Command.add (.dir path) c)
+-- the command's stdout is this output file
+def Command.stdout (path : String) (c : Command) : Command := Command.add (.stdout path) c
+-- an environment variable (part of the key)
+def Command.env (key value : String) (c : Command) : Command := Command.add (.env key value) c
+-- run in the job's output directory instead of the package directory
+def Command.inOutDir (c : Command) : Command := Command.add .inOutDir c
+-- another program the command runs by itself: its identity enters the key
+def Command.uses (t : Tool) (c : Command) : Command := Command.add (.uses t) c
+-- built only when named (`grail build NAME`), not by `grail build`
+def Command.manual (c : Command) : Command := Command.add .manual c
+def Package.command (c : Command) (p : Package) : Package := Package.add (.command c) p
+-- a command that always runs when named and is never recorded (flash, test on hardware)
+def Package.phony (c : Command) (p : Package) : Package := Package.add (.command (Command.add .phony c)) p
+
 def Package.set (key value : String) : Package → Package
   | .mk n ts s ds => .mk n ts (Settings.set key value s) ds
 -- depend on the package at a git URL and revision
@@ -65,12 +133,40 @@ def Grail.node (tag : String) (args : List String) : String :=
 def Grail.list : List String → String
   | xs => Grail.node "list" xs
 
+def Tool.render : Tool → String
+  | .path n => Grail.node "path" (.cons (Grail.quote n) .nil)
+  | .exe n => Grail.node "exe" (.cons (Grail.quote n) .nil)
+def Part.render : Part → String
+  | .text s => Grail.node "text" (.cons (Grail.quote s) .nil)
+  | .input p => Grail.node "in" (.cons (Grail.quote p) .nil)
+  | .output p => Grail.node "out" (.cons (Grail.quote p) .nil)
+def Grail.renderParts : List Part → List String
+  | .nil => .nil
+  | .cons p ps => .cons (Part.render p) (Grail.renderParts ps)
+def Step.render : Step → String
+  | .arg ps => Grail.node "arg" (.cons (Grail.list (Grail.renderParts ps)) .nil)
+  | .input p => Grail.node "input" (.cons (Grail.quote p) .nil)
+  | .output p => Grail.node "output" (.cons (Grail.quote p) .nil)
+  | .dir p => Grail.node "dir" (.cons (Grail.quote p) .nil)
+  | .stdout p => Grail.node "stdout" (.cons (Grail.quote p) .nil)
+  | .env k v => Grail.node "env" (.cons (Grail.quote k) (.cons (Grail.quote v) .nil))
+  | .inOutDir => Grail.node "in-out-dir" .nil
+  | .uses t => Grail.node "uses" (.cons (Tool.render t) .nil)
+  | .phony => Grail.node "phony" .nil
+  | .manual => Grail.node "manual" .nil
+def Grail.renderSteps : List Step → List String
+  | .nil => .nil
+  | .cons s ss => .cons (Step.render s) (Grail.renderSteps ss)
+def Command.render : Command → String
+  | .mk n t ss => Grail.node "command" (.cons (Grail.quote n) (.cons (Tool.render t) (.cons (Grail.list (Grail.renderSteps ss)) .nil)))
+
 def Target.render : Target → String
   | .lib n r => Grail.node "lib" (.cons (Grail.quote n) (.cons (Grail.quote r) .nil))
   | .check n f => Grail.node "check" (.cons (Grail.quote n) (.cons (Grail.quote f) .nil))
   | .exe n f => Grail.node "exe" (.cons (Grail.quote n) (.cons (Grail.quote f) .nil))
   | .tests n r => Grail.node "tests" (.cons (Grail.quote n) (.cons (Grail.quote r) .nil))
   | .selfhost n r => Grail.node "selfhost" (.cons (Grail.quote n) (.cons (Grail.quote r) .nil))
+  | .command c => Command.render c
 def Grail.renderTargets : List Target → List String
   | .nil => .nil
   | .cons t ts => .cons (Target.render t) (Grail.renderTargets ts)
