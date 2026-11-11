@@ -38,11 +38,13 @@ def parseCmd (path : String) : IO UInt32 := do
   pure (if r.messages.isEmpty then 0 else 1)
 
 /-- The module roots: the toolchain's library (`Module.toolchainLib`, the binary's own,
-whatever the current directory), then `./lib` and the `-I` directories. Only the first
-root's modules are trusted (stage 22f), and since the first root that has a module wins,
-no other directory can stand in for one of them. -/
+whatever the current directory; `./lib` only when there is none), then the `-I`
+directories. Only the first root's modules are trusted (stage 22f), and since the first
+root that has a module wins, no other directory can stand in for one of them. (`./lib`
+is not searched besides: run in another checkout, every module of its `lib/` would be
+reported as shadowed.) -/
 def moduleRoots (tc : Toolchain) : IO (List System.FilePath) :=
-  return (← Module.toolchainLib) :: "lib" :: tc.searchPath
+  Module.roots tc.searchPath
 
 /-- The library modules from the toolchain's own `lib/` (the first root): their
 `builtin` registrations are trusted. -/
