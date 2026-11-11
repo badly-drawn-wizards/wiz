@@ -111,6 +111,23 @@ def termGroup : Group where
           "(term.let [] x [] (term.app (term.ident f) [(term.ident a)]) [] (term.ident x))" },
     { name := "holes and explicit", run := fun _ =>
         parses "@f _ ?m" "(term.app (term.explicit f) [(term.hole) (term.syntheticHole m)])" },
+    -- 13g
+    { name := "as-pattern x@p: no space around @; f @g is still an explicit argument", run := fun _ => do
+        parses "f xs@(.cons _ _)" "(term.app (term.ident f) [(term.asPat (term.ident xs) (term.paren (term.app (term.dotIdent cons) [(term.hole) (term.hole)])))])"
+        parses "f @g x" "(term.app (term.ident f) [(term.explicit g) (term.ident x)])"
+        parses "f@g x" "(term.app (term.ident f) [(term.explicit g) (term.ident x)])" },
+    -- 13h
+    { name := "anonymous constructor ⟨…⟩ and let with a pattern", run := fun _ => do
+        parses "⟨a, b⟩" "(term.anon [(term.ident a) (term.ident b)])"
+        parses "⟨⟩" "(term.anon [])"
+        parses "let ⟨a, b⟩ := s; a" "(term.letPat [] (term.anon [(term.ident a) (term.ident b)]) (term.ident s) [] (term.ident a))"
+        parses "let 1 (.mk a b) := s; a" "(term.letPat [(quantity 1)] (term.paren (term.app (term.dotIdent mk) [(term.ident a) (term.ident b)])) (term.ident s) [] (term.ident a))"
+        fails "⟨a, b" "'⟩'" },
+    -- 13i
+    { name := "structure update { s with f := v }; {x : A} → B is still a binder", run := fun _ => do
+        parses "{ s with x := 1, y := f a }" "(term.structUpdate (term.ident s) [(structUpdate.field x (term.num 1)) (structUpdate.field y (term.app (term.ident f) [(term.ident a)]))])"
+        parses "{x : A} → x" "(term.depArrow (binder.implicit [] [x] [(term.ident A)]) (term.ident x))"
+        fails "{ s with }" "identifier" },
     { name := "comments are whitespace", run := fun _ =>
         parses "f /- a /- nested -/ -/ b -- c" "(term.app (term.ident f) [(term.ident b)])" },
     { name := "error: missing body", run := fun _ => fails "fun x =>" "term" },
@@ -229,6 +246,8 @@ def cmdGroup : Group where
     { name := "later rule overrides an equally long earlier one", run := fun _ => do
         let r ← parseFileOk "syntax (name := a) \"foo\" : term\nsyntax (name := b) \"foo\" : term\n#check foo"
         checkEq "(command.check (term.b))" r.commands[2]!.toSExpr },
+    { name := "childNames agrees with the grammar (children read by name)", run := fun _ =>
+        checkEq ([] : List String) Builtin.childNamesMismatches },
     { name := "unknown category is an error", run := fun _ => do
         let r := parseFile "syntax \"x\" : nope"
         checkEq 1 r.messages.size }

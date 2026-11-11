@@ -325,6 +325,40 @@ def group : Group where
         -- η still holds by `rfl`, also at an equation formed while a type was a hole
         okLib ("import Prelude\ndef GP {S : Type} (f : S → S) : Prop := (s : S) → f s = s\nstructure One where\n  a : Nat\n" ++
           "def x2 : GP (fun (s : One) => One.mk s.a) := fun s => rfl\ndef x6 : GP (fun (s : Unit) => ()) := fun s => rfl") },
+    { name := "rfl at an equation that has computed: one refl when the sides are convertible, no axiom (structure eta)", run := fun _ => do
+        let pair2 := "import Prelude\nstructure Pair2 (A B : Type) where\n  fst : A\n  snd : B\n"
+        let lens := "def Store (A S : Type) : Type := A × (A → S)\ndef Lens (S A : Type) : Type := S → Store A S\n" ++
+          "def Lens.GetPut {S A : Type} (l : Lens S A) : Prop := (s : S) → (l s).2 (l s).1 = s\n" ++
+          "def Pair2.fstL {A B : Type} : Lens (Pair2 A B) A := fun s => (s.fst, fun a => Pair2.mk a s.snd)\n" ++
+          "def Pair2.sndL {A B : Type} : Lens (Pair2 A B) B := fun s => (s.snd, fun b => Pair2.mk s.fst b)\n"
+        -- an equation at a Σ computes to field equations with a cast on every field after the
+        -- first; at a type variable that cast does not reduce (P1), so field by field these
+        -- failed. Now: one `refl` for the whole equation, and no axiom
+        okLib (pair2 ++ lens ++
+          "def g3 {A B : Type} (s : Pair2 A B) : Pair2.mk s.fst s.snd = s := rfl\n" ++
+          "def g5 {A B : Type} (s : Pair2 A B) : s = s := rfl\n" ++
+          "def g6 {A B : Type} (s : A × B) : (s.1, s.2) = s := rfl\n" ++
+          "def g7 {A B : Type} (s : A × B) : s = s := rfl\n" ++
+          "def l1 {A : Type} (x : A) (xs : List A) : List.cons x xs = List.cons x xs := rfl\n" ++
+          "def l4 {A : Type} (p : A × (A → A)) : p = p := rfl\n" ++
+          -- the lens laws with their implicit arguments given, so that the equation is computed
+          -- when `rfl` sees it (lib/Optic.wiz's spelling leaves it uncomputed)
+          "def gp1 {A B : Type} : @Lens.GetPut (Pair2 A B) A (@Pair2.fstL A B) := fun s => rfl\n" ++
+          "def gp2 {A B : Type} : @Lens.GetPut (Pair2 A B) B (@Pair2.sndL A B) := fun s => rfl\n" ++
+          "def gp3 {A B : Type} (s : Pair2 A B) : (Pair2.fstL s).2 (Pair2.fstL s).1 = s := rfl\n" ++
+          "#print axioms g3\n#print axioms l1\n#print axioms gp1\n")
+          ["'g3' does not depend on any axioms", "'l1' does not depend on any axioms", "'gp1' does not depend on any axioms"]
+        -- still only convertible sides
+        failsLib (pair2 ++ "def bad {A B : Type} (s t : Pair2 A B) : Pair2.mk s.fst t.snd = s := rfl")
+          "rfl: the two sides are not definitionally equal"
+        failsLib "import Prelude\ndef bad {A B : Type} (p q : A × B) : (p.1, q.2) = p := rfl"
+          "rfl: the two sides are not definitionally equal"
+        -- a field equation written by hand with a cast at a type variable is not proved by
+        -- `rfl` (no axiom is added silently: write `castRefl`)
+        failsLib "import Prelude\ndef h {A B : Type} (s : A × B) : (0 e : s.1 = s.1) × ((cast (refl B) s.2 : B) = s.2) := rfl"
+          "rfl: the two sides are not definitionally equal"
+        failsLib "import Prelude\ndef h2 {B : Type} (b : B) : (cast (refl B) b : B) = b := rfl"
+          "rfl: the two sides are not definitionally equal" },
     { name := "private constructors, observations and fields: the public API (13b)", run := fun _ => do
         okPriv privMod2 ("import Priv\n#eval Tok.value (Tok.num 3)\n#eval Tok.value (Tok.hide 4)\n#eval Tok.value (.num 5)\n" ++
           "#eval Sig.sample (Sig.next (Sig.const 3))\n#eval (Sig.const 2).name\n" ++
@@ -437,6 +471,12 @@ def group : Group where
         okLibs ("import Hdl.Core\nstructure CombT (i o : HwTy) where\n  run : {r : HwTy → Type} → [Hw r] → r i → r o\n" ++
           "def mapIn {ω i' i o : HwTy} (f : CombT i' i) (c : Circuit i o) : Circuit i' o :=\n" ++
           "  Circuit.mk c.st c.init (fun s x => c.step s (f.run x))\n") },
+    { name := "a variable whose type is the expected definition is not η-expanded through it (hdl-cleanup)", run := fun _ =>
+        -- `f : Comb i o` against `Comb ?i ?o` (`def Comb … := {r} → [Hw r] → …`) became
+        -- `fun {r} [_] => f`, with an instance hole made while `?r` was unsolved: "could not
+        -- infer instance" on the binary of #92. Now the two types are unified first, as Lean
+        -- does, and `f` stays `f` (the `#check`).
+        okLibs "import Logic\ninductive HwTy where\n  | bits (n : Nat)\nclass Hw (r : HwTy → Type) where\n  lit : (ω n : Nat) → Nat → r (HwTy.bits n)\ndef El : HwTy → Type\n  | .bits n => Nat\ninstance : Hw El where\n  lit := fun n k => k\ndef Comb (i o : HwTy) : Type 1 := {r : HwTy → Type} → [Hw r] → r i → r o\ndef Comb.el {i o : HwTy} (f : Comb i o) (x : El i) : El o := f x\ndef mapL {A B : Type} (f : A → B) : List A → List B\n  | .nil => .nil\n  | .cons a as => .cons (f a) (mapL f as)\ndef consEq {A : Type} (x : A) {xs ys : List A} (e : xs = ys) : List.cons x xs = List.cons x ys :=\n  Eq.congrArg (List.cons x) e\ndef h {i o : HwTy} (f : Comb i o) : (xs : List (El i)) → mapL (Comb.el f) xs = mapL (fun (x : El i) => Comb.el f x) xs\n  | .nil => refl (@List.nil (El o))\n  | .cons x xs => consEq (Comb.el f x) (h f xs)\n\n#check fun (f : Comb (HwTy.bits 1) (HwTy.bits 2)) => Comb.el f" ["fun f => Comb.el (.bits 1) (.bits 2) f : Comb (.bits 1) (.bits 2) → El (.bits 1) → El (.bits 2)"] },
     { name := "a clause definition's type: instance holes still pending are solved before it is closed (hdl-cleanup)", run := fun _ =>
         -- `Comb.el f` checks `f : Comb i o` against `Comb ?i ?o`, which η-expands `f` to
         -- `fun {r} [_] => f ?inst` while `?r` is unsolved: `?inst` is pending, and the type

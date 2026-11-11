@@ -209,11 +209,11 @@ def Pair2.fstL {A B : Type} : Lens (Pair2 A B) A := fun s =>
 def Pair2.sndL {A B : Type} : Lens (Pair2 A B) B := fun s =>
   (s.snd, fun b => Pair2.mk s.fst b)
 
-def Pair2.fstL_lawful {A B : Type} : Lens.Lawful (@Pair2.fstL A B) :=
+def Pair2.fstL_lawful {A B : Type} : @Lens.Lawful (Pair2 A B) A (@Pair2.fstL A B) :=
   (fun s => rfl, fun s a => rfl, fun s a b => rfl)
-def Pair2.sndL_lawful {A B : Type} : Lens.Lawful (@Pair2.sndL A B) :=
+def Pair2.sndL_lawful {A B : Type} : @Lens.Lawful (Pair2 A B) B (@Pair2.sndL A B) :=
   (fun s => rfl, fun s a => rfl, fun s a b => rfl)
-def Pair2.indep {A B : Type} : Lens.Indep (@Pair2.fstL A B) (@Pair2.sndL A B) :=
+def Pair2.indep {A B : Type} : @Lens.Indep (Pair2 A B) A B (@Pair2.fstL A B) (@Pair2.sndL A B) :=
   (fun s a => rfl, fun s b => rfl, fun s a b => rfl)
 
 -- `&mut v[0]` on a list: panics on the empty list.
