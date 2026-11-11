@@ -42,12 +42,13 @@ def recoverPos (chars : Array Char) (pos : Nat) : Nat := Id.run do
   chars.size
 
 /-- Grammar-changing commands. Everything else leaves the tables alone. -/
-def updateTables (tables : ParserTables) (cmd : Syntax) : Except String ParserTables :=
+partial def updateTables (tables : ParserTables) (cmd : Syntax) : Except String ParserTables :=
   match cmd.kind with
   | "command.declareSyntaxCat" => match (cmd.getArg 1).getId? with
     | some c => pure (Builtin.addMetaParsers (tables.declareCategory c) c)
     | none => throw "malformed declare_syntax_cat"
   | "command.syntax" => addSyntax tables cmd
+  | "command.local" => updateTables tables (cmd.getArg 1)
   | _ => pure tables
 
 structure ParsedFile where

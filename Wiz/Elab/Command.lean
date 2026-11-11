@@ -117,6 +117,14 @@ structure CommandState (R : Type) where
   /-- no command has been elaborated into this state yet (it is the initial state, up to
   messages and the info tree) -/
   pristine : Bool := true
+  /-- (13m) what `local` commands of the module being elaborated added, latest first: node
+  kinds and syntax categories, and macro rules and `attribute [macro]` registrations
+  (numbered from the oldest). They are dropped when the module's import ends
+  (`CommandState.endModule`). -/
+  localKinds : List Name := []
+  localCats : List Name := []
+  localRules : List Nat := []
+  localProcs : List Nat := []
 
 /-- (13b) The types that are opaque in the module being elaborated: declared in another
 module with a private constructor, field or observation. Sorted, for stable messages. -/
@@ -347,8 +355,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let alts := (cmd.getArg 5).args
-  let clauses : List (MClause R) := alts.toList.map fun a =>
-    { pats := ((a.getArg 1).args.filter (!· matches .atom ..)).toList, rhs := a.getArg 3 }
+  let clauses : List (MClause R) ← alts.toList.mapM fun a => do
+    pure { pats := ← ((a.getArg 1).args.filter (!· matches .atom ..)).toList.mapM expandPattern, rhs := a.getArg 3 }
   let n := (clauses.head?.map (·.pats.length)).getD 0
   -- introduce `n` arguments of the type
   let mut ctx' := ctx
@@ -824,6 +832,38 @@ def withTraces (r : Except (ElabError R) α × Array (Info R)) : StateM (Command
       modify fun s => { s with messages := s.messages.push { info, severity := .info, text } }
   pure r.1
 
+/-- (13m) The end of an imported module: `inner` is the state after it, `outer` the
+importer's before the `import`. The module's `local` notation is dropped: its parsers
+(and categories), the macro rules and macros of its kinds, and its `local` macro rules
+and registrations; tokens no remaining parser mentions are no longer reserved. Kind
+names stay taken, so a later notation gets a new kind and none of the dropped rules. -/
+def CommandState.endModule (inner outer : CommandState R) : CommandState R :=
+  let kinds := inner.localKinds.take (inner.localKinds.length - outer.localKinds.length)
+  let cats := inner.localCats.take (inner.localCats.length - outer.localCats.length)
+  let rules := inner.localRules.take (inner.localRules.length - outer.localRules.length)
+  let procs := inner.localProcs.take (inner.localProcs.length - outer.localProcs.length)
+  let reset := { inner with localKinds := outer.localKinds, localCats := outer.localCats,
+                            localRules := outer.localRules, localProcs := outer.localProcs }
+  if kinds.isEmpty && cats.isEmpty && rules.isEmpty && procs.isEmpty then reset else
+  let t := inner.tables
+  let cats' := t.cats.fold (init := ({} : Std.HashMap Name Category)) fun acc c cat =>
+    if cats.contains c then acc else
+    acc.insert c { leading := cat.leading.filter (!kinds.contains ·.kind),
+                   trailing := cat.trailing.filter (!kinds.contains ·.kind) }
+  let used : Std.HashSet String := cats'.fold (init := {}) fun acc _ cat =>
+    let acc := cat.leading.foldl (fun acc lp => lp.p.tokens.foldl (·.insert ·) acc) acc
+    cat.trailing.foldl (fun acc tp => tp.p.tokens.foldl (·.insert ·) acc) acc
+  -- (entries numbered from the oldest, as `local` recorded them)
+  let keep {α : Type} (xs : List (Name × α)) (dropped : List Nat) : List (Name × α) :=
+    let n := xs.length
+    (xs.zipIdx.filter fun ((k, _), i) => !kinds.contains k && !dropped.contains (n - 1 - i)).map (·.1)
+  { reset with
+    tables := { t with cats := cats', tokens := t.tokens.filter used.contains }
+    macros := keep inner.macros rules
+    procMacros := keep inner.procMacros procs
+    tactics := inner.tactics.filter (!kinds.contains ·.1)
+    cmdMacros := inner.cmdMacros.filter (!kinds.contains ·.1) }
+
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   -- (13b) privacy is per module: the globals know which one is being elaborated
@@ -939,6 +979,21 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let added := s.globals.order.extract before s.globals.order.size
       { s with globals := { s.globals with
           privates := added.foldl (fun m n => m.insert n s.module) s.globals.privates } }
+  | "command.local" =>
+    -- (13m) grammar that stays in this module: remember what the command adds
+    let inner := cmd.getArg 1
+    unless ["command.syntax", "command.declareSyntaxCat", "command.notation", "command.infix",
+            "command.macroRules", "command.attrMacro"].contains inner.kind do
+      report .error cmd.info "only `syntax`, `declare_syntax_cat`, `notation`, `infixl`/`infixr`/`infix`, `macro_rules` and `attribute [macro …]` can be `local`"
+      return
+    let before ← get
+    elabCommand inner
+    modify fun s =>
+      let kinds := s.tables.kinds.toList.filterMap fun (k, _) => if before.tables.kinds.contains k then none else some k
+      let cats := s.tables.cats.toList.filterMap fun (c, _) => if before.tables.cats.contains c then none else some c
+      { s with localKinds := kinds ++ s.localKinds, localCats := cats ++ s.localCats
+               localRules := (List.range' before.macros.length (s.macros.length - before.macros.length)).reverse ++ s.localRules
+               localProcs := (List.range' before.procMacros.length (s.procMacros.length - before.procMacros.length)).reverse ++ s.localProcs }
   | "command.def" | "command.axiom" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?

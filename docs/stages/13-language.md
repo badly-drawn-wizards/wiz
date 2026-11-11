@@ -158,3 +158,78 @@ checks with it unfolded. The self-hosted frontend parses the `private` markers a
 ignores them. The motivating use is the HDL's signals (`drafts/hdl/Signal.wiz`): user
 code builds and observes them only through the library's combinators and `sample`
 (`drafts/hdl/rejected/observe_signal.wiz`). Tests: group `elabfix`.
+
+## 13k: list literals ✅
+
+`[a, b, c]` is `List.cons a (List.cons b (List.cons c List.nil))` and `[]` is `List.nil`,
+in terms and in patterns:
+
+```
+def xs : List Nat := [1, 2, 3]
+def len : List Nat → Nat
+  | [] => 0
+  | [_] => 1
+  | _ => 2
+```
+
+It is a Prelude `syntax` with a procedural macro (`ListLit.expand`), not built-in
+grammar, so the self-hosted toolchain's generated parser tables are unchanged (its own
+prelude, `preludeText` in `selfhost/Frontend.wiz`, has no list literals, and its sources
+don't use them). `[` already starts an instance binder in a dependent arrow
+(`[Monad m] → m A`, `[inst : C A] → B`): that is one leading parser that also consumes
+the arrow, so it is longer than a list literal and wins (longest match, `Wiz/Parser/Interp.lean`);
+`Enum [a, b]`, `ecase t [..]` and `attribute [..]` are leading parsers that consume their
+brackets in the same way. The elements are checked at the element type of the expected
+`List A` (`List.cons a …` is an ordinary application), so numerals at a non-`Nat` element
+type go through `OfNat` like any argument (7e).
+
+**Patterns.** The match compiler (`patView`) reads constructors, applications, tuples and
+parentheses. Patterns are now macro-expanded first (`expandPattern`, `Wiz/Elab/Term.lean`;
+in `match` and in definitions by equations): every syntax kind other than those forms is
+expanded if a macro applies, so `[x, y]` becomes `List.cons x (List.cons y List.nil)`,
+and a user notation whose expansion is a constructor application works in patterns too.
+Tests: group `language`.
+
+## 13l: `++` for lists and strings ✅
+
+`a ++ b` is `Append.append a b`, a method of the homogeneous class
+`class Append (A : Type) where append : A → A → A`, with instances for `List A`
+(`List.append`) and `String` (`String.append`): the same design as the numeric classes
+(7e, HD9 stage 1). A heterogeneous `HAppend A B C` would need default instances, which
+the numeric classes also left for later. Other types get `++` by an instance.
+(`lib/Hdl/Core.wiz`'s `<+>` and `selfhost/Parse.wiz`'s `+++` are older local spellings
+of `String.append`; the self-hosted prelude keeps `infixr " ++ " => List.append`.)
+Tests: group `language`.
+
+## 13m: local notation ✅
+
+A grammar command marked `local` stays in its module: modules that import it don't see
+the syntax.
+
+```
+local infixr:67 " & " => String.append
+local syntax (name := shout) "shout" term : term
+local macro_rules
+  | `(term| shout $x) => `(term| $x & "!")
+```
+
+`local` applies to `syntax`, `declare_syntax_cat`, `notation`, `infixl`/`infixr`/`infix`,
+`macro_rules` and `attribute [macro …]`; anything else is an error. In the main file it
+changes nothing. `local` is not a reserved word.
+
+An `import` elaborates the module's text into the importer's state, so its
+syntax lands in the importer's parser tables. The state records what each `local`
+command added (new node kinds and categories, and which macro rules and macro
+registrations, by position), and when the import ends (`CommandState.endModule`, called
+by `runFrontend` and by the command cache's import walker) those are removed: the
+parsers of the kinds (and the categories), every macro rule, macro and tactic of those
+kinds, and the local rules; a token that no remaining parser mentions is no longer
+reserved (so a local keyword `shout` is an identifier again in the importer). Kind
+names stay taken, so an importer that declares the same notation gets a new kind and
+none of the dropped rules. Definitions written with the notation are unaffected (they
+are terms by then). Lean also has `scoped` notation, active where a namespace is open;
+Wiz has no `open`, so the module is the only scope. The design notes are in the notes
+(`notation.md`). `command.local` is built-in grammar (`Wiz/Parser/Builtin.lean`), so the
+self-hosted parser's generated tables have it too; the self-hosted frontend has no
+`syntax` command yet and doesn't elaborate it. Tests: groups `language`,
+`parser: commands and syntax`.

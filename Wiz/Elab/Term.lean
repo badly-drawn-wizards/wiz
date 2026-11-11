@@ -227,6 +227,21 @@ def expand? (stx : Syntax) : ElabM R (Option Syntax) := do
     | .ok (stx', next) => modify (fun s => { s with nextScope := next }); pure (some stx')
     | .error e => throwAt stx.info e
 
+/-- Expand the macros in a pattern (a list literal `[x, y]`, a user notation), outside
+in: the pattern forms `patView` reads (constructors, applications, tuples, parentheses)
+are left as they are and their parts expanded. A pattern that is no macro stays as it
+is, for `patView` to accept or reject. -/
+partial def expandPattern (stx : Syntax) : ElabM R Syntax := do
+  match stx with
+  | .node info k args =>
+    if k == "null" || k == "term.paren" || k == "term.tuple" || k == "term.app" then
+      return .node info k (← args.mapM expandPattern)
+    if k == "term.ident" || k == "term.hole" || k == "term.dotIdent" then return stx
+    match ← expand? stx with
+    | some stx' => expandPattern stx'
+    | none => pure stx
+  | _ => pure stx
+
 /-- Unify, turning a failure into a readable type mismatch at `stx`.
 
 Unification is untyped, so it misses the η-rule for `Unit` (`P x =?= P ()` with
@@ -1836,8 +1851,8 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   let g ← getGlobals
   let scruts := (stx.getArg 1).args.filter (!· matches .atom ..)
   let alts := (stx.getArg 3).args
-  let clauses : List (MClause R) := alts.toList.map fun a =>
-    { pats := ((a.getArg 1).args.filter (!· matches .atom ..)).toList, rhs := a.getArg 3 }
+  let clauses : List (MClause R) ← alts.toList.mapM fun a => do
+    pure { pats := ← ((a.getArg 1).args.filter (!· matches .atom ..)).toList.mapM expandPattern, rhs := a.getArg 3 }
   -- bind every scrutinee to a fresh variable, generalising it in the goal
   let mut ctx' := ctx
   let mut ts : Array (Term R) := #[]
