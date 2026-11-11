@@ -213,6 +213,14 @@ def modulesGroup : Group where
         checkEq (some (roots.head! / "Prelude.wiz")) (ms["Prelude"]?.map (·.1))
         checkEq ["Prelude"] ((Module.fromFirstRoot roots ms).toArray.qsort (· < ·)).toList
         checkEq [("Prelude", dir / "Prelude.wiz")] (← Module.shadowed roots ms) },
+    { name := "another checkout's lib/ in the current directory is not a root (22f)", run := fun _ => do
+        -- run inside another checkout, every module of its `lib/` was reported as shadowed
+        let dir ← mkTree [("lib/Prelude.wiz", "builtin nat.add := Nat.mul\n"), ("Extra/Mod.wiz", "import Prelude\ndef m : Nat := 1\n")]
+        let roots ← Module.roots [dir / "Extra"]
+        checkEq [← IO.FS.realPath "lib", dir / "Extra"] [← IO.FS.realPath roots.head!, roots[1]!]
+        checkEq 2 roots.length
+        let ms ← Module.loadClosure roots "import Mod\n"
+        checkEq ([] : List (Name × System.FilePath)) (← Module.shadowed roots ms) },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
         let ms ← Module.loadAll [dir]
