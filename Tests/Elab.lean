@@ -5733,8 +5733,8 @@ def trustGroup : Group where
         -- the library's are listed too: words run natively, in a native representation
         okLib ("import Prelude\nimport Word\ndef idW (x : UIntN 8) : UIntN 8 := x\n#print axioms idW\n" ++
             "def w : UIntN 8 := UIntN.add (UIntN.ofNat 8 3) (UIntN.ofNat 8 4)\n#print axioms w\n")
-          ["'idW' depends on axioms: [native UIntN := UIntN.ofBits/UIntN.toBits]" ++ note,
-           "'w' depends on axioms: [native UIntN.ofNat := UIntN.ofNatNative, native UIntN := UIntN.ofBits/UIntN.toBits, " ++
+          ["'idW' depends on axioms: [native UIntN := UIntN.ofBits/UIntN.toBits, UIntN.seal✝]" ++ note,
+           "'w' depends on axioms: [native UIntN.ofNat := UIntN.ofNatNative, native UIntN := UIntN.ofBits/UIntN.toBits, UIntN.seal✝, " ++
              "native UIntN.add := UIntN.addNative, native UIntN.toNat := UIntN.toBits]" ++ note] },
     { name := "O2 in the self-hosted frontend", run := fun _ =>
         selfhostCheckFile (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
