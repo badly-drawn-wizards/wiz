@@ -241,6 +241,43 @@ else
     vim.api.nvim_set_current_win(src_win)
   end)
 
+  test('a use of syntax: its declaration and expansion in the infoview, gd to the macro rule', function()
+    local src_win = vim.api.nvim_get_current_win()
+    local lines = at(13, 19) -- `twice` in `def four : Nat := twice two`
+    has(lines, 'Syntax')
+    has(lines, 'syntax term.twice (this file, line 10)')
+    has(lines, 'expanded by macro rule (this file, line 12)')
+    has(lines, '  Nat.add two two')
+    has(lines, 'Declarations')
+    has(lines, 'four : Nat')
+    -- go to definition (the rule) and declaration (the syntax) in the source
+    local c = require('wiz.lsp').client(0)
+    local params = vim.lsp.util.make_position_params(0, c.offset_encoding)
+    local function line_of(method)
+      local res = vim.lsp.buf_request_sync(0, method, params, 20000) or {}
+      for _, r in pairs(res) do
+        local loc = r.result and (r.result.uri and r.result or r.result[1])
+        if loc then
+          return loc.range.start.line
+        end
+      end
+    end
+    eq(11, line_of 'textDocument/definition', 'definition')
+    eq(9, line_of 'textDocument/declaration', 'declaration')
+    -- gd on the expansion's line in the infoview
+    local row
+    for i, l in ipairs(lines) do
+      if l:find('^expanded by') then
+        row = i
+      end
+    end
+    vim.api.nvim_set_current_win(iv.win())
+    vim.api.nvim_win_set_cursor(0, { row, 0 })
+    iv.goto_definition()
+    eq(src_win, vim.api.nvim_get_current_win(), 'back in the source window')
+    eq(12, vim.api.nvim_win_get_cursor(0)[1], 'at the macro rule')
+  end)
+
   test('the infoview follows edits', function()
     vim.api.nvim_buf_set_lines(0, 2, 3, false, { 'def k : Nat → Nat → Nat := by' })
     vim.api.nvim_win_set_cursor(0, { 4, 8 })

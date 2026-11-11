@@ -21,10 +21,18 @@ the atom holds the *decoded* string.
 
 namespace Wiz
 
-/-- A half-open range `[start, stop)` of character offsets in the input. -/
+/-- A half-open range `[start, stop)` of character offsets in the input.
+
+`synthetic` marks syntax a macro made rather than the user wrote (11q): the nodes of a
+macro rule's template (whose range is in the file that declared the rule, not the one
+being elaborated) and the output of a procedural macro (whose range is the call's).
+Errors still point at it, but the info tree records nothing at it (hovers and goals
+would land in the wrong place), and the local context keeps the nearest range the user
+wrote (`LocalCtx.withInfo`). -/
 structure SourceInfo where
   start : Nat := 0
   stop  : Nat := 0
+  synthetic : Bool := false
   deriving Repr, BEq, Inhabited
 
 inductive Syntax where
@@ -78,6 +86,37 @@ def getStr? : Syntax → Option String
   | _ => none
 
 def mkNull (args : Array Syntax) (info : SourceInfo := {}) : Syntax := node info nullKind args
+
+/-- (11q) Mark every range in `s` synthetic (a macro rule's template, before it is
+instantiated: what the antiquotations bind keeps its own ranges). -/
+partial def markSynthetic : Syntax → Syntax
+  | missing => missing
+  | atom i v => atom { i with synthetic := true } v
+  | ident i n => ident { i with synthetic := true } n
+  | node i k as => node { i with synthetic := true } k (as.map markSynthetic)
+
+/-- The source text of syntax, roughly: its tokens separated by spaces, with
+parentheses around arguments that need them (for "expands to" in hovers). Macro scopes
+print as `x✝`, as Lean shows inaccessible names. -/
+partial def reprint (s : Syntax) : String := go s
+where
+  name (n : Name) : String := match n.splitOn "✝" with
+    | [n] => n
+    | n :: _ => n ++ "✝"
+    | [] => n
+  -- an argument without parentheses: one token, or something in brackets of its own
+  atomic (s : Syntax) : Bool :=
+    ["term.paren", "num", "str", "term.ident", "term.tuple", "term.anon"].contains s.kind || (go s).all (· != ' ')
+  arg (s : Syntax) : String := if atomic s then go s else s!"({go s})"
+  go (s : Syntax) : String := match s with
+    | missing => ""
+    | atom _ v => v
+    | ident _ n => name n
+    | node _ "num" #[atom _ v] => v
+    | node _ "str" #[atom _ v] => (repr v).pretty
+    | node _ "term.app" as =>
+      " ".intercalate (arg (as.getD 0 missing) :: ((as.getD 1 missing).args.toList.map arg))
+    | node _ _ as => " ".intercalate ((as.toList.map go).filter (!·.isEmpty))
 
 /-- Compact s-expression rendering, used in tests and `wiz parse`.
 Atoms are omitted unless `atoms := true`, `null` nodes print as `[...]`, and literals

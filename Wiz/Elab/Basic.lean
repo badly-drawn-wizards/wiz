@@ -102,6 +102,32 @@ structure MatchInfo where
   lastAlt : SourceInfo
   deriving Inhabited, Repr
 
+/-- (11q) What a syntax node refers to: the declaration of its kind, or a syntax category. -/
+inductive SyntaxRef where
+  | kind (k : Name)
+  | cat (c : Name)
+  deriving Inhabited, Repr, BEq
+
+/-- (11q) What handled a piece of syntax: a macro rule (`macro_rules`, `notation`,
+`infix…`: the command that declared it and its module, `""` for this file), or a Wiz
+function (`what` is `macro`, `command macro` or `tactic`). -/
+inductive SyntaxHandler where
+  | rule (site : SourceInfo) (module : String)
+  | fn (what : String) (f : Name)
+  deriving Inhabited, Repr, BEq
+
+/-- A macro rule: the node kind it applies to, the pattern, the template, the names that
+`notation` arguments use in the template (`[]` for `macro_rules`, which uses `$x`), and
+(11q) the command that declared it, for go to definition. -/
+structure MacroRule where
+  kind : Name
+  pattern : Syntax
+  template : Syntax
+  vars : List Name := []
+  site : SourceInfo := {}
+  module : String := ""
+  deriving Inhabited
+
 inductive Info (R : Type) where
   /-- an identifier: its name, whether it is a local, and its type (in `names`) -/
   | ident (info : SourceInfo) (name : Name) (isLocal : Bool) (names : List Name) (type : Term R)
@@ -119,9 +145,21 @@ inductive Info (R : Type) where
   /-- a `trace` of a tactic or macro: the command elaborator turns it into an info
   message (it is not kept in the tree) -/
   | trace (info : SourceInfo) (text : String)
+  /-- (11q) a node of a declared syntax kind, or the name of a declared category, as the
+  user wrote it (go to definition: the `syntax`/`notation`/`declare_syntax_cat`) -/
+  | syntaxRef (info : SourceInfo) (ref : SyntaxRef)
+  /-- (11q) syntax of kind `kind` handled by `handler`; `expanded` is what a macro made of
+  it (one step; printed only when asked, `Syntax.reprint`) -/
+  | expansion (info : SourceInfo) (kind : Name) (handler : SyntaxHandler) (expanded : Option Syntax)
+  /-- (11q) the module name of an `import` -/
+  | importMod (info : SourceInfo) (module : Name)
+  /-- (11q) an instance argument found by instance search: the instance term and the class
+  type it solves (in `names`) -/
+  | inst (info : SourceInfo) (names : List Name) (type : Term R) (inst : Term R)
 
 def Info.info : Info R → SourceInfo
-  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. | .warning i .. | .trace i .. => i
+  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. | .warning i .. | .trace i ..
+  | .syntaxRef i .. | .expansion i .. | .importMod i .. | .inst i .. => i
 
 /-- An `Info` as recorded during elaboration, before quoting and zonking. -/
 inductive RawInfo (R : Type) where
@@ -129,8 +167,16 @@ inductive RawInfo (R : Type) where
   | term (info : SourceInfo) (ctx : LocalCtx R) (expected : VTy R) (isHole : Bool) (userName : Option Name)
   | tactic (info : SourceInfo) (block : Bool) (before after : Array (LocalCtx R × VTy R))
   | decl (info : SourceInfo) (name : Name) (ctx : LocalCtx R) (type : Term R) (annotated : Bool) (insertAt : Nat)
+  /-- (11q) an instance problem solved by `inst` (the hole, in `ctx`, of class type `ty`) -/
+  | inst (info : SourceInfo) (ctx : LocalCtx R) (ty : VTy R) (inst : Term R)
   /-- nothing to quote -/
   | done (i : Info R)
+
+/-- (11q) Is this recorded at a macro's output? (Messages never are: they must be shown.) -/
+def RawInfo.isSynthetic : RawInfo R → Bool
+  | .ident i .. | .term i .. | .tactic i .. | .decl i .. | .inst i .. => i.synthetic
+  | .done (.trace ..) | .done (.warning ..) => false
+  | .done i => i.info.synthetic
 
 /-- Which heuristic (non-unique) solutions unification may pick outside the pattern
 fragment (the rule and its table: `Unify.lean`, "When unification approximates").
@@ -152,8 +198,8 @@ structure ElabState (R : Type) where
   /-- "the solution of this hole has type `Sort l`". Metas are untyped, so these are
   checked after elaboration to solve level metavariables (see `solveSortConstraints`). -/
   sortConstraints : Array (LocalCtx R × Term R × Level) := #[]
-  /-- macro rules in scope, latest first: (kind, pattern, template, notation vars) -/
-  macros : List (Name × Syntax × Syntax × List Name) := []
+  /-- macro rules in scope, latest first -/
+  macros : List MacroRule := []
   /-- the next fresh macro scope -/
   nextScope : Nat := 1
   /-- `builtin key := name` registrations (numerals need the `nat` type) -/
@@ -222,7 +268,8 @@ def define (ctx : LocalCtx R) (x : Name) (ty : VTy R) (val : Val R) : LocalCtx R
     bound := false :: ctx.bound, lvl := ctx.lvl + 1 }
 
 def withInfo (ctx : LocalCtx R) (stx : Syntax) : LocalCtx R :=
-  if stx.info.stop == 0 then ctx else { ctx with info := stx.info }
+  -- (11q) a macro's output keeps the range of the nearest syntax the user wrote
+  if stx.info.stop == 0 || stx.info.synthetic then ctx else { ctx with info := stx.info }
 
 end LocalCtx
 
@@ -230,6 +277,9 @@ def throwAt (info : SourceInfo) (msg : String) (code : String := "") : ElabM R �
   throw { info, msg, code, state? := some (← get) }
 
 def pushInfo (i : RawInfo R) : ElabM R Unit :=
+  -- (11q) nothing is recorded at a macro's output (its ranges are the template's, in
+  -- another file, or the whole call's), except messages
+  if i.isSynthetic then pure () else
   modify fun s => { s with infos := s.infos.push i }
 
 /-- A `trace` of a tactic or macro at `info`: an info message, in the order traced. It is
@@ -238,6 +288,14 @@ part of the elaborator state, so a trace in a branch that fails and is caught (`
 error are still shown (the error carries the state). -/
 def pushTrace (info : SourceInfo) (text : String) : ElabM R Unit :=
   pushInfo (.done (.trace info text))
+
+/-- (11q) A binder or pattern variable `x : ty` the user wrote at `info`, bound in `ctx`
+(for a pattern variable, the context of its arm): its type for hovers, and (with
+`termInfo`) the context for the infoview, as a goal `ctx ⊢ ty`. -/
+def recordBinder (ctx : LocalCtx R) (info : SourceInfo) (x : Name) (ty : VTy R) : ElabM R Unit := do
+  if info.stop == 0 || info.synthetic || x == "_" then return
+  pushInfo (.ident info x true ctx ty)
+  if (← get).termInfo then pushInfo (.term info ctx ty false none)
 
 /-- Record the expected type of a term being checked (always for holes; for every term
 when `termInfo` is on). -/
