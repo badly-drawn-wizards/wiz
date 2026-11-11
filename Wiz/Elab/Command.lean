@@ -1,4 +1,5 @@
 import Wiz.Elab.Recursor
+import Wiz.Elab.Mark
 import Wiz.Compiler.Run
 import Wiz.Compiler.Native
 import Wiz.Compiler.IRRun
@@ -143,6 +144,25 @@ structure CommandState (R : Type) where
   node kind: they decide the spacing of printed notation -/
   rawAtoms : Std.HashMap Name (Array String) := {}
 
+/-- Run a kernel entry on a declaration, with the proof markers the kernel requires
+(`Mark`) **when it asks for them**. The marking pass is a typed traversal of the whole
+term, about as much work as the kernel's own check, and most declarations need at most a
+marker on their body. So the kernel is tried on, in turn:
+
+1. the declaration with a marker on its body, if the body is a proof that is not
+   neutral-shaped (`Decl.withTopMarks`: a theorem; any other declaration is left as it is);
+2. the declaration marked by the pass (`Decl.withMarks`), only if the kernel answered
+   "unmarked proof" to the first.
+
+The error reported is the last attempt's, and the kernel has accepted exactly the term
+that is stored. -/
+def withMarksOnDemand (g : Globals R) (d : Decl R) (k : Decl R → TCM (Globals R)) : TCM (Globals R) :=
+  match k (d.withTopMarks g) with
+  | .error (.unmarkedProof t ty l) =>
+    let go := fun (_ : Unit) => k (d.withMarks g)
+    if g.traceProofSteps then dbgTrace s!"marks-on-demand {d.name}: {(t.take 80).replace "\n" " "} : {(ty.take 60).replace "\n" " "} in Sort {l}" go else go ()
+  | r => r
+
 /-- "'n' has already been declared", naming the module that declared it if that is not
 the one being elaborated (two modules, or a module and the file importing it). -/
 def CommandState.alreadyDeclared (s : CommandState R) (n : Name) : String :=
@@ -194,12 +214,14 @@ def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → T
     throw (.other (s!"{d.name} depends on the definition of {", ".intercalate (used.map show1)}, which is hidden outside " ++
       s!"its module (it has private parts): with the definition hidden, {e}"))
 
-/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and then
-the privacy check. -/
+/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), the
+proof markers the kernel requires (`withMarksOnDemand`), and then the privacy check (with
+the markers too: an unmarked proof is not a privacy failure). -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   let d := d.withSorts g
-  let g' ← addDecl g d
-  privacyCheck g d
+  let kind := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addDecl g')
+  let g' ← kind g d
+  privacyCheck g d kind
   pure g'
 
 /-- Replace each const `n` by `f n`. -/
@@ -242,7 +264,7 @@ def solveSortConstraints : ElabM R Unit := do
       if !t.mvars.isEmpty then continue
       let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
                             qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
-                            types := ctx.types, lvl := ctx.lvl }
+                            types := ctx.types, lvl := ctx.lvl, proof := true }
       if let .ok (ty, _) := Wiz.infer kctx t then
         if let .sort l' ← force ty then
           try unifyLevel l l' catch e => throwAt ctx.info e.msg
@@ -813,7 +835,8 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   let runProcMacro f stx scope := match compileCode [f, "Macro.run"] with
     | .ok code => Elab.runProcMacro code f stx scope (macroEnv g)
     | .error e => (#[], .error e)
-  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
+  -- (the elaborator's terms carry no proof markers yet: `proof`)
+  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer { ctx with proof := true } t).map (·.1) |>.mapError toString
   -- (13b) structures with a constructor private to another module don't unfold here
   match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
                 kernelInfer, classes, instances, termInfo } with
@@ -1431,7 +1454,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
           | .error e => report .error e.info e.msg; return
         let pd := Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }
-        match (do let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
+        let addP := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addPartialDecl g')
+        match (do let g' ← addP g pd; privacyCheck g pd addP; pure g' : TCM (Globals R)) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
@@ -1451,7 +1475,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let v := match g.find? name with
           | some d => Sorts.value g #[] [] v (eval g [] d.type)
           | none => v
-        match addPartialImpl g name v with
+        -- (the proof markers, if the kernel asks for them: `withMarksOnDemand`)
+        let r := match addPartialImpl g name v with
+          | .error (.unmarkedProof ..) => match g.find? name with
+            | some d => addPartialImpl g name (Mark.check { globals := g } v (eval g [] d.type))
+            | none => addPartialImpl g name v
+          | r => r
+        match r with
         | .ok g' => g := g'
         | .error e => report .error d.info s!"kernel rejected {name}: {e}"; return
       | (.error e, hv) => addInfos hv; reportErr e; return
@@ -1477,8 +1507,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       solveSortConstraints
       let t ← zonk 0 t
       ensureNoMVars t
+      -- (P2) with its proofs marked: `nf` suspends them, and reads each back within the
+      -- step budget (a proof need not have a normal form)
       let g ← getGlobals
-      pure ((nf g t).pretty [] (some g))
+      pure ((nf g (Mark.infer { globals := g } t).1).pretty [] (some g))
     match r with
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
@@ -2383,7 +2415,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result := do
         let (ty, _) ← Wiz.infer ctx t
         let e ← eraseTop ctx t ty
@@ -2408,7 +2440,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result : Except String (VTy R × RVal) := do
         let (ty, _) ← (Wiz.infer ctx t).mapError toString
         let e ← (eraseTop ctx t ty).mapError toString
