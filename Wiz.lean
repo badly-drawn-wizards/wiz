@@ -1,3 +1,4 @@
+import Wiz.Version
 import Wiz.Rig
 import Wiz.Rig.Instances
 import Wiz.Core.Term
