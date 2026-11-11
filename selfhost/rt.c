@@ -983,7 +983,11 @@ INLINE void rt_drop(V v) {
 #endif
 }
 static uint64_t rt_in_nat(V v) { return ISBOX(v) ? (uint64_t)UNBOX(v) : 0; }
-static V rt_out_nat(uint64_t n) { return BOX(n); }
+/* (21p) a `Nat` here is 63 bits: a C number that doesn't fit is an error, not cut */
+static V rt_out_nat(uint64_t n) {
+  if (n >> 63) die("a foreign function's Nat does not fit in 63 bits (the self-hosted runtime's Nat)");
+  return BOX(n);
+}
 static uint64_t rt_in_u64(V v) {
   if (ISBOX(v)) return (uint64_t)UNBOX(v);
   uint64_t b = (uint64_t)OBJ(v)->f[0];

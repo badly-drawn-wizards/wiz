@@ -343,3 +343,18 @@ here; under reference counting C owns the reference it gets, as in 9g, but can't
 drop one). An exported function is called while the Wiz program runs (from C code it
 called), as in the test; the runtime isn't set up for a C `main` of its own.
 
+## 21p: a C `Nat` that doesn't fit is an error
+
+A `Nat` in the self-hosted runtime is a 63-bit scalar (PR #80 makes a numeral from 2^63 on
+an error). A foreign function's `Nat` result, or a `Nat` argument C passes to an export,
+from 2^63 on used to be cut silently; `rt_out_nat` now stops the program with "a
+foreign function's Nat does not fit in 63 bits" (exit code 3). The Lean toolchain's
+`Nat`s are unbounded, so there the same program prints the number: a known difference.
+UInt64 is unaffected (its large values are objects).
+
+**Tests** (group `selfhost`): `private` in every position both frontends take it, and
+`private` inside `mutual` rejected by both; unknown commands named in the error; the
+`export`/`link_lib` checks (9 declarations, same verdicts); one program with exports
+(numbers, strings both ways, `Bool`, `IO`) called from a `link_c` file and `link_lib
+"m"`, run by the Lean compiler and by the self-hosted one in both modes, same output;
+the 63-bit error in both modes against the Lean toolchain's answer.
