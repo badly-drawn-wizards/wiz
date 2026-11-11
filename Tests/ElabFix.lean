@@ -364,8 +364,8 @@ def group : Group where
     { name := "approximation: a repeated variable in a hole's spine (not a pattern) falls back to first order", run := fun _ =>
         -- `?m Γ i' =?= r i'` with `i'` in `Γ`: pruning the repeated `i'` loses it, so the
         -- solution is first-order from the repeated variable on (hdl-usability)
-        okLibs ("import Hdl.Core\nstructure Comb (i o : HwTy) where\n  run : {r : HwTy → Type} → [Hw r] → r i → r o\n" ++
-          "def mapIn {ω i' i o : HwTy} (f : Comb i' i) (c : Circuit i o) : Circuit i' o :=\n" ++
+        okLibs ("import Hdl.Core\nstructure CombT (i o : HwTy) where\n  run : {r : HwTy → Type} → [Hw r] → r i → r o\n" ++
+          "def mapIn {ω i' i o : HwTy} (f : CombT i' i) (c : Circuit i o) : Circuit i' o :=\n" ++
           "  Circuit.mk c.st c.init (fun s x => c.step s (f.run x))\n") },
     { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
         -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
