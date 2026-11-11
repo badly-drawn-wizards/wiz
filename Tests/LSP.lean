@@ -130,6 +130,18 @@ def group : Group where
           let s ← elabSrc src ti
           checkEq "(some (double, Nat → Nat))" (toString (Query.hoverAt s (offAfter src "double 2" (-3))))
           checkEq "(some (n, Nat))" (toString (Query.hoverAt s (offAfter src ":= n" (-1)))) },
+    { name := "13p–q: an updated field's hover and definition; a numeral pattern's variable", run := fun _ => do
+        let src := "import Prelude\nstructure In where\n  x : Nat\n  y : Nat\nstructure Out where\n  i : In\n  n : Nat\n" ++
+          "def f (o : Out) : Out := { o with n := 0, i.y := 1 }\ndef g : Nat → Nat\n  | 0 => 0\n  | k + 1 => k\n"
+        let s ← elabSrc src
+        checkEq "(some (Out.n, Nat))" (toString (Query.hoverAt s (offAfter src "with n" (-1))))
+        checkEq "(some (In.y, Nat))" (toString (Query.hoverAt s (offAfter src "i.y" (-1))))
+        let line (n : Name) : Option Nat := (Query.definitionAt s (offAfter src (if n == "n" then "with n" else "i.y") (-1))).map
+          fun (_, i, _) => ((src.toList.take i.start).count '\n')
+        -- (a projection is declared by its structure)
+        checkEq (some 4) (line "n")
+        checkEq (some 1) (line "y")
+        checkEq "(some (k, Nat))" (toString (Query.hoverAt s (offAfter src "| k" (-1)))) },
     { name := "info tree: tactic states before, between and after tactics", run := fun _ => do
         let s ← elabSrc tacticSrc
         -- on `by`: the goal the block started with
