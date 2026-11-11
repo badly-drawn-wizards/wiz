@@ -1015,6 +1015,15 @@ static void rt_free_cstr(char *s) {
 #endif
 }
 static V rt_out_str(const char *s) { return s ? wstr(s, strlen(s)) : wstr("", 0); }
+/* (21o) an exported function's `String` result: a `malloc`ed copy the caller frees */
+static char *rt_export_str(V v) {
+  char *s = rt_in_str(v);
+#ifdef WIZ_RC
+  return s;
+#else
+  return strdup(s);
+#endif
+}
 static void *rt_in_ptr(V v) { return ISBOX(v) ? NULL : (void *)OBJ(v)->f[0]; }
 #ifndef WIZ_RC
 static size_t rt_nfin;

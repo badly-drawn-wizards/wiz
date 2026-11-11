@@ -313,3 +313,33 @@ An unknown command, or a modifier the frontend doesn't know (`sealed`, `noncompu
 when the grammar gets them), is an error naming it ("unsupported command
 command.sealed"), never ignored.
 
+## 21o: `link_c`, `link_lib` and `export`, self-hosted
+
+Parity with [9f](09-ffi.md) and the first half of 9g.
+
+* **`link_c "f.c"`, `link_lib "m"`** (`linkCmd` in `Frontend.wiz`): recorded once each in
+  `Globals`' foreign declarations (a new constructor `Foreign.link`), with the Lean
+  frontend's check of a library name. The self-hosted compiler prints one C file with the
+  runtime included, so it can't link anything itself: it names the files and libraries
+  in the first lines of its output, `// wiz-link-c: f.c` and `// wiz-link-lib: m`, and
+  whoever compiles that C adds them (`cc out.c f.c -lm`; the tests do). A path is the one
+  written, relative to the input file's directory; the frontend is pure, so a missing
+  file is reported by the C compiler rather than at the `link_c`.
+* **`export "c_name" f (: T)?`** (`exportCmd`; `Foreign.exported`): the same checks and
+  messages as `command.export` (the declaration exists, the optional type converts with
+  its type, a C identifier, not exported twice, arguments `Nat`, `UInt64`, `Float64`,
+  `String`, `Bool`, a foreign pointer or a Wiz value, a result among those but not a
+  foreign pointer, or `Unit`, maybe in `IO`). The backend (`exportDocs`) writes a C
+  function `c_name` after the program's definitions, in both modes: C values become Wiz
+  values (a `String` copied, a foreign pointer lent without a finalizer, a `Bool` from
+  `int`), the definition's closure is applied (`get_f`, with the world for `IO`, whose
+  result is the pair's first field), and the result is converted back (a `String` as a
+  `malloc`ed `char *` the caller frees, `rt_export_str`; `Unit` as `void`).
+
+Not mirrored: callbacks (a parameter of function type, `Callback`), `c_struct` (9i),
+`--lib`/`--no-main` builds and the `.h` file of the exports, and the handle functions
+`wiz_retain`/`wiz_release`/`wiz_live_objects` (a Wiz value given to C is a plain word
+here; under reference counting C owns the reference it gets, as in 9g, but can't make or
+drop one). An exported function is called while the Wiz program runs (from C code it
+called), as in the test; the runtime isn't set up for a C `main` of its own.
+

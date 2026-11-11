@@ -1683,7 +1683,7 @@ def ffiArities : StrMap Nat → List Foreign → StrMap Nat
   | ar, .nil => ar
   | ar, .cons f rest => match f with
     | .fn n _ _ ps _ io _ => ffiArities (StrMap.insert ar (Str.ofString n) (ffiArity ps io)) rest
-    | .ty _ _ => ffiArities ar rest
+    | _ => ffiArities ar rest
 def ffiCType (k : String) : String := match strEq k "f" with
   | .true => "double"
   | .false => match strEq k "s" with
@@ -1770,6 +1770,8 @@ partial def ffiDecls (seen : List String) : List Foreign → List Doc
   | .nil => .nil
   | .cons f rest => match f with
     | .ty _ _ => ffiDecls seen rest
+    | .link _ _ => ffiDecls seen rest
+    | .exported _ _ _ _ _ => ffiDecls seen rest
     | .fn _ cname header ps r _ _ => match strEq header "" with
       | .false => match elemS header seen with
         | .true => ffiDecls seen rest
@@ -1787,6 +1789,8 @@ def ffiWrappers (rc : Bool) : List Foreign → List Doc
   | .nil => .nil
   | .cons f rest => match f with
     | .ty _ _ => ffiWrappers rc rest
+    | .link _ _ => ffiWrappers rc rest
+    | .exported _ _ _ _ _ => ffiWrappers rc rest
     | .fn n cname _ ps r io fin =>
       let g := mangle n;
       let k := ffiArity ps io;
@@ -1806,6 +1810,79 @@ def ffiWrappers (rc : Bool) : List Foreign → List Doc
             "static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
             "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); " +++ keep +++ "return c; }"))
           (ffiWrappers rc rest)
+-- (stage 21o) The C files and libraries of `link_c`/`link_lib`, as lines at the top of the
+-- C the compiler prints: the C file is one translation unit with the runtime, so the
+-- files are compiled and linked by whoever compiles it (`cc out.c f.c -lm`; the tests
+-- read these lines).
+def linkDocs : List Foreign → List Doc
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .link p lib => .cons (.t ((match lib with
+        | .true => "// wiz-link-lib: "
+        | .false => "// wiz-link-c: ") +++ p)) (linkDocs rest)
+    | _ => linkDocs rest
+-- (stage 21o) An `export`: a C function `cname` that converts its C arguments to Wiz
+-- values (the reverse of an `extern`'s: `Nat`/`UInt64` from `uint64_t`, `Float64` from
+-- `double`, `String` copied from a `const char *`, `Bool` from `int`, a foreign pointer
+-- lent without a finalizer, a Wiz value as it is), applies the definition's closure (the
+-- world last for an `IO` result, whose value is then the pair's first field: the payload
+-- `(tag, (a, (w, ◾)))`), and converts
+-- the result: a `String` is a `malloc`ed copy the caller frees, `Unit` is `void`.
+def exportArgs : Nat → List String → List String
+  | _, .nil => .nil
+  | i, .cons k rest =>
+    let c := "c" +++ Nat.toString i;
+    .cons (match strEq k "s" with
+      | .true => "rt_out_str(" +++ c +++ ")"
+      | .false => match strEq k "p" with
+      | .true => "rt_out_ptr(" +++ c +++ ", NULL)"
+      | .false => match strEq k "b" with
+      | .true => "boolv(" +++ c +++ " != 0)"
+      | .false => match strEq k "f" with
+      | .true => "rt_out_f64(" +++ c +++ ")"
+      | .false => match strEq k "u" with
+      | .true => "rt_out_u64(" +++ c +++ ")"
+      | .false => match strEq k "w" with
+      | .true => c
+      | .false => "rt_out_nat(" +++ c +++ ")") (exportArgs (i + 1) rest)
+def exportParams : Nat → List String → List String
+  | _, .nil => .nil
+  | i, .cons k rest => .cons (ffiCType k +++ " c" +++ Nat.toString i) (exportParams (i + 1) rest)
+def exportResult (k : String) : String := match strEq k "v" with
+  | .true => "rt_drop(r); "
+  | .false => match strEq k "s" with
+  | .true => "return rt_export_str(r); "
+  | .false => match strEq k "b" with
+  | .true => "return rt_in_bool(r); "
+  | .false => match strEq k "f" with
+  | .true => "return rt_in_f64(r); "
+  | .false => match strEq k "u" with
+  | .true => "return rt_in_u64(r); "
+  | .false => match strEq k "w" with
+  | .true => "return r; "
+  | .false => "return rt_in_nat(r); "
+def exportDocs (rc : Bool) : List Foreign → List Doc
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .exported n cname ps r io =>
+      let args := List.append (exportArgs 0 ps) (match io with
+        | .true => .cons "BOX(0)" .nil
+        | .false => .nil);
+      let call := match args with
+        | .nil => "get_" +++ mangle n +++ "()"
+        | .cons _ _ => "apn(get_" +++ mangle n +++ "(), " +++ Nat.toString (lenL args) +++ ", (V[]){" +++ commaSep args +++ "})";
+      let res := match io with
+        | .true => "V pr = " +++ call +++ "; V r = fld(fld(pr, 1), 0); " +++ (match rc with
+          | .true => "inc(r); dec(pr); "
+          | .false => "")
+        | .false => "V r = " +++ call +++ "; ";
+      let ps' := exportParams 0 ps;
+      .cons (.t ((match strEq r "s" with
+        | .true => "char *"
+        | .false => ffiCType r) +++ " " +++ cname +++ "(" +++ (match ps' with
+        | .nil => "void"
+        | .cons _ _ => commaSep ps') +++ ") { " +++ res +++ exportResult r +++ "}")) (exportDocs rc rest)
+    | _ => exportDocs rc rest
 -- the C of a program's foreign functions (after the runtime)
 def ffiDocs (rc : Bool) (ffi : List Foreign) : List Doc :=
   let fs := List.reverseOf ffi .nil;
@@ -1863,9 +1940,9 @@ def genProgram (gs : Globals) : List Doc := match gs with
       match genCode (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
       | .mk protos defs st => match st with
         | .mk fns _ _ _ =>
-          .cons (.t "#include \"rt.c\"") (List.append (ffiDocs .false ffi) (List.append protos
-            (List.append (List.reverseOf fns .nil) (List.append defs
-              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); rt_finishGC(); return 0; }") .nil)))))
+          List.append (linkDocs (List.reverseOf ffi .nil)) (.cons (.t "#include \"rt.c\"") (List.append (ffiDocs .false ffi) (List.append protos
+            (List.append (List.reverseOf fns .nil) (List.append defs (List.append (exportDocs .false (List.reverseOf ffi .nil))
+              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); rt_finishGC(); return 0; }") .nil)))))))
 
 -- **Constructors inlined** (reference counting mode): a global whose body, under its
 -- `λ`s, only builds an object from its parameters and constants (a constructor, as
@@ -2383,9 +2460,9 @@ def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
       match genCodeRC sigs (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
       | .mk protos defs st => match st with
         | .mk fns _ _ _ =>
-          .cons (.t "#define WIZ_RC 1") (.cons (.t "#include \"rt.c\"") (List.append (ffiDocs .true ffi) (List.append protos
-            (List.append (List.reverseOf fns .nil) (List.append defs
-              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }") .nil))))))
+          List.append (linkDocs (List.reverseOf ffi .nil)) (.cons (.t "#define WIZ_RC 1") (.cons (.t "#include \"rt.c\"") (List.append (ffiDocs .true ffi) (List.append protos
+            (List.append (List.reverseOf fns .nil) (List.append defs (List.append (exportDocs .true (List.reverseOf ffi .nil))
+              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }") .nil))))))))
 
 -- The backend a program asks for: reference counting if its first line is `-- wiz: rc`,
 -- else the garbage collector. (A command-line flag, once programs can read their

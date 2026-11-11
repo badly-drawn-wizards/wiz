@@ -280,6 +280,10 @@ inductive IndInfo where
 inductive Foreign where
   | fn (name cname header : String) (params : List String) (res : String) (io : Bool) (fin : String)
   | ty (name fin : String)
+  -- (stage 21o) `link_c "f.c"` (`lib := false`) and `link_lib "m"`, and `export "c" f`:
+  -- the Wiz name, the C name, the kinds of the parameters and of the result, `IO`
+  | link (path : String) (lib : Bool)
+  | exported (name cname : String) (params : List String) (res : String) (io : Bool)
 -- the globals so far: by position (the first is `0`), their names in scope, the
 -- inductive types by name, and the foreign declarations
 inductive Globals where
@@ -3799,6 +3803,92 @@ def foreignTypeCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
       let gs' := Globals.add gs (.mk T (.univ 0) (.axiomC T (.univ 0)) (.axiomC T (.univ 0)) .nil);
       .mk (String.append T " : U0") (Globals.addFFI gs' (.ty T (strValue (kid (kid stx 2) 3))))
   | _ => errStep gs "a foreign type needs a name"
+-- (stage 21o) `link_c` and `link_lib`, as `command.linkC`/`linkLib` in the Lean
+-- frontend: recorded once each, for the backend, which names them in the C it prints
+-- (`// wiz-link-c: f.c`, `// wiz-link-lib: m`); the path is the one written, relative to
+-- the input file's directory. (The frontend is pure: whether the file exists is up to
+-- the C compiler.)
+inductive LinkR where
+  | mk (line : Option String) (gs : Globals)
+def linkKnown (path : String) (lib : Bool) : List Foreign → Bool
+  | .nil => .false
+  | .cons f rest => match f with
+    | .link p l => match Bool.and (strEq p path) (match l with
+        | .true => lib
+        | .false => Bool.not lib) with
+      | .true => .true
+      | .false => linkKnown path lib rest
+    | _ => linkKnown path lib rest
+def hasDashOrSpace : List Char → Bool
+  | .nil => .false
+  | .cons c cs => Bool.or (Nat.beq (Char.code c) 32) (hasDashOrSpace cs)
+def badLib (lib : String) : Bool := match lib with
+  | .mk cs => match cs with
+    | .nil => .true
+    | .cons c _ => Bool.or (Nat.beq (Char.code c) 45) (hasDashOrSpace cs)
+def linkCmd (gs : Globals) (stx : Syntax) (lib : Bool) : LinkR :=
+  let path := strValue (kid stx 1);
+  match Bool.and lib (badLib path) with
+  | .true => LinkR.mk (.some "error: link_lib: give the library's name, as in link_lib \"m\" for -lm") gs
+  | .false => match linkKnown path lib (Globals.ffi gs) with
+    | .true => LinkR.mk .none gs
+    | .false => LinkR.mk .none (Globals.addFFI gs (.link path lib))
+-- a C identifier: letters, digits and `_`, not starting with a digit
+def isDigitC (c : Nat) : Bool := Bool.and (Nat.lt 47 c) (Nat.lt c 58)
+def isIdentC (c : Nat) : Bool := Bool.or (Bool.or (isDigitC c) (Nat.beq c 95))
+  (Bool.or (Bool.and (Nat.lt 64 c) (Nat.lt c 91)) (Bool.and (Nat.lt 96 c) (Nat.lt c 123)))
+def allIdentC : List Char → Bool
+  | .nil => .true
+  | .cons c cs => Bool.and (isIdentC (Char.code c)) (allIdentC cs)
+def isCIdent (n : String) : Bool := match n with
+  | .mk cs => match cs with
+    | .nil => .false
+    | .cons c _ => Bool.and (Bool.not (isDigitC (Char.code c))) (allIdentC cs)
+def exportedAs (cname : String) : List Foreign → Bool
+  | .nil => .false
+  | .cons f rest => match f with
+    | .exported _ c _ _ _ => Bool.or (strEq c cname) (exportedAs cname rest)
+    | _ => exportedAs cname rest
+-- an exported function's kinds: parameters passed (not erased, not a `Unit`) and a
+-- result that isn't a foreign pointer
+def exportParamOk (k : String) : Bool := Bool.not (Bool.or (strEq k "e") (strEq k "v"))
+def exportParamsOk : List String → Bool
+  | .nil => .true
+  | .cons k ks => Bool.and (exportParamOk k) (exportParamsOk ks)
+def globalTyOf (gs : Globals) (f : String) : Option Tm := match Scope.lookup (Globals.scope gs) f with
+  | .none => .none
+  | .some i => match gs with
+    | .mk all _ _ _ => match Array.getD all (Array.size all - 1 - i) (.mk "?" .star .star .star .nil) with
+      | .mk _ ty _ _ _ => .some ty
+-- `export "c_name" f (: T)?` (stage 21o, as `command.export` in the Lean frontend)
+def exportCmd (gs : Globals) (stx : Syntax) : LinkR :=
+  let cname := strValue (kid stx 1);
+  let f := identOf' (kid stx 2);
+  let err := fun (m : String) => (LinkR.mk (Option.some (String.append "error: " m)) gs : LinkR);
+  match globalTyOf gs f with
+  | .none => err (String.append "unknown declaration " f)
+  | .some ty =>
+    let tyOk : Option String := match kids (kid stx 3) with
+      | .cons _ (.cons tS _) => match inferType gs ES.empty (Cx.mk empty (Globals.scope gs) .nil) tS with
+        | .err m => .some m
+        | .ok T0 _ es => match zonk es 0 T0 with
+          | .none => .some "could not infer an implicit argument"
+          | .some T => match convTy empty (eval .nil ty) (eval .nil T) with
+            | .true => .none
+            | .false => .some (String.append (String.append (String.append f " has type ") (show .nil 0 ty))
+                (String.append ", not " (show .nil 0 T)))
+      | _ => .none;
+    match tyOk with
+    | .some m => err m
+    | .none => match isCIdent cname with
+      | .false => err (String.append cname " is not a C identifier")
+      | .true => match exportedAs cname (Globals.ffi gs) with
+        | .true => err (String.append cname " is exported already")
+        | .false => match ffiSig (Globals.ffi gs) ty with
+          | .mk ks r io _ => match Bool.and (exportParamsOk ks) (Bool.not (strEq r "p")) with
+            | .true => LinkR.mk .none (Globals.addFFI gs (.exported f cname ks r io))
+            | .false => err "an exported function's arguments must be Nat, UInt64, Float64, String, Bool, a foreign pointer or a Wiz data type, and its result one of those (not a foreign pointer) or Unit, maybe in IO"
+          | .bad => err "an exported function's arguments must be Nat, UInt64, Float64, String, Bool, a foreign pointer or a Wiz data type, and its result one of those (not a foreign pointer) or Unit, maybe in IO"
 def joinLines : List String → String
   | .nil => ""
   | .cons l rest => match rest with
@@ -3969,6 +4059,14 @@ def doCats (cats : List Cat) : List Cat :=
 def unwrapPrivate (s : Syntax) : Syntax := match strEq (kindOf s) "command.private" with
   | .true => kid s 1
   | .false => s
+-- `link_c`, `link_lib`, `export` (stage 21o): no output line unless an error
+def linkStep (gs : Globals) (stx : Syntax) : Option LinkR := match strEq (kindOf stx) "command.linkC" with
+  | .true => .some (linkCmd gs stx .false)
+  | .false => match strEq (kindOf stx) "command.linkLib" with
+    | .true => .some (linkCmd gs stx .true)
+    | .false => match strEq (kindOf stx) "command.export" with
+      | .true => .some (exportCmd gs stx)
+      | .false => .none
 -- the commands `defStep` elaborates
 def knownCommand (k : String) : Bool := Bool.or (Bool.or (strEq k "command.def") (strEq k "command.defEqns"))
   (Bool.or (strEq k "command.inductive") (Bool.or (strEq k "command.check") (strEq k "command.reduce")))
@@ -4002,6 +4100,10 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
       -- (stage 21n) `private` declares the same names: privacy is per module, and the
       -- self-hosted toolchain has one module (docs/stages/21-bootstrap.md, 21n)
       let stx := unwrapPrivate stx1;
+      match linkStep gs stx with
+      | .some r => (match r with
+        | LinkR.mk line gs' => StepR.next line stop gs' cats tokens notes)
+      | .none =>
       let step := match strEq (kindOf stx) "command.partial" with
         | .true => partialCmd gs (one stx)
         | .false => match strEq (kindOf stx) "command.mutual" with

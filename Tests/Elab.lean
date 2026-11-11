@@ -2971,6 +2971,76 @@ def quantityProgram : String :=
   "  IO.println (Nat.toString (get b + sum p));\n  IO.println (Nat.toString (Nat.add 1 (lin 4 (fun y => y))));\n" ++
   "  IO.println (Nat.toString (Nat.add (id1 7) (len (List.cons 1 (List.cons 2 .nil)))))\n"
 
+/-- (stage 21o) The files of `linkFiles`-style programs compiled by the self-hosted
+compiler: `main.wiz` is its input, the `// wiz-link-c:`/`// wiz-link-lib:` lines of the C
+it prints name the C files (relative to the input's directory) and libraries that `cc`
+compiles and links with it. Compares the output, or (`fails`) the exit code 3 of a
+runtime error and a fragment of its message. -/
+def selfhostLinkRun (files : List (String × String)) (expected : String) (flags : Array String := #[])
+    (fails : Option String := none) : IO Unit := do
+  let tc ← toolchain
+  if tc.gcCflags.isEmpty then IO.println "    (skipped: no garbage collector, --gc-cflags)"; return
+  match ← selfhostCompiler with
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+  | .ok exe =>
+    let dir ← IO.FS.createTempDir
+    for (p, text) in files do
+      let f := dir / p
+      if let some d := f.parent then IO.FS.createDirAll d
+      IO.FS.writeFile f text
+    IO.FS.writeFile (dir / "input.wiz") (← IO.FS.readFile (dir / "main.wiz"))
+    let out ← IO.Process.output { cmd := "timeout", args := #["300", exe.toString] ++ flags, cwd := dir }
+    unless out.exitCode == 0 do throw (IO.userError s!"the compiler failed ({out.exitCode}): {out.stderr}")
+    IO.FS.writeFile (dir / "out.c") out.stdout
+    let lines := out.stdout.splitOn "\n"
+    let cs := lines.filterMap fun l => (l.dropPrefix? "// wiz-link-c: ").map (·.toString)
+    let libs := lines.filterMap fun l => (l.dropPrefix? "// wiz-link-lib: ").map (s!"-l{·}")
+    let rt := (← IO.currentDir) / "selfhost"
+    let args := #["-O2", "-w", s!"-I{rt}"] ++ tc.gcCflags.toArray ++ #["out.c"] ++ cs.toArray ++ #["-o", "prog"] ++
+      tc.gcLdflags.toArray ++ libs.toArray
+    let cc ← IO.Process.output { cmd := tc.cc, args, cwd := dir }
+    unless cc.exitCode == 0 do throw (IO.userError s!"cc failed: {cc.stderr.take 2000}")
+    let run ← IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString], cwd := dir }
+    match fails with
+    | none =>
+      unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
+      checkEq expected run.stdout
+    | some frag =>
+      unless run.exitCode == 3 && (run.stderr.splitOn frag).length > 1 do
+        throw (IO.userError s!"expected the runtime error '{frag}', got exit {run.exitCode}: {run.stderr}")
+      checkEq expected run.stdout
+
+/-- (stage 21o) C calls Wiz: exports (numbers, strings both ways, `Bool`, `IO`) called from a
+`link_c` file, which the program calls through externs, and a `link_lib` library. -/
+def exportFiles : List (String × String) :=
+  [("main.wiz", "import IO\nlink_c \"c/cb.c\"\nlink_lib \"m\"\n" ++
+      "def double (n : Nat) : Nat := n + n\ndef greet (who : String) : String := String.append \"hello, \" who\n" ++
+      "def isBig (n : Nat) : Bool := Nat.lt 10 n\ndef tick (n : Nat) : IO Nat := do\n  IO.println \"tick\";\n  IO.pure (n + 1)\n" ++
+      "export \"ex_double\" double\nexport \"ex_greet\" greet : String → String\nexport \"ex_is_big\" isBig\nexport \"ex_tick\" tick\n" ++
+      "extern \"call_double\" callDouble : Nat → Nat\nextern \"greet_len\" greetLen : String → Nat\n" ++
+      "extern \"count_big\" countBig : Nat → Nat\nextern \"run_tick\" runTick : Nat → IO Nat\nextern \"root_of\" rootOf : Nat → Nat\n" ++
+      "def show (n : Nat) : IO Unit := IO.println (Nat.toString n)\n" ++
+      "def main : IO Unit := do\n  show (callDouble 20);\n  show (greetLen \"you\");\n  show (countBig 20);\n" ++
+      "  r ← runTick 41;\n  show r;\n  show (rootOf 1764)\n"),
+   ("c/cb.c", "#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n#include <math.h>\n" ++
+      "uint64_t ex_double(uint64_t);\nchar *ex_greet(const char *);\nint ex_is_big(uint64_t);\nuint64_t ex_tick(uint64_t);\n" ++
+      "uint64_t call_double(uint64_t n) { return ex_double(n) + 1; }\n" ++
+      "uint64_t greet_len(const char *s) { char *g = ex_greet(s); uint64_t n = strlen(g); free(g); return n; }\n" ++
+      "uint64_t count_big(uint64_t n) { uint64_t k = 0; for (uint64_t i = 0; i < n; i++) k += ex_is_big(i) != 0; return k; }\n" ++
+      "uint64_t run_tick(uint64_t n) { return ex_tick(ex_tick(n)); }\n" ++
+      "uint64_t root_of(uint64_t n) { volatile double d = (double)n; return (uint64_t)sqrt(d); }\n")]
+def exportExpected : String := "41\n10\n9\ntick\ntick\n43\n42\n"
+
+/-- (stage 21o) The declarations both frontends reject alike (`export`, `link_lib`). -/
+def exportHeader : String :=
+  "def f (n : Nat) : Nat := n\ndef g {A : Type} (a : A) : A := a\ndef h (f : Nat → Nat) : Nat := f 1\ndef k (u : Unit) : Nat := 1\n"
+def exportDecls : List (String × Bool) := [
+  ("export \"ok_f\" f\nexport \"ok_f2\" f : Nat → Nat\n", true),
+  ("export \"1x\" f\n", false), ("export \"ok_f\" nope\n", false), ("export \"ok_f\" f : Nat → Bool\n", false),
+  ("export \"ok_g\" g\n", false), ("export \"ok_h\" h\n", false), ("export \"ok_k\" k\n", false),
+  ("export \"ok_f\" f\nexport \"ok_f\" f\n", false), ("link_lib \"-lm\"\n", false)]
+
 /-- (stage 21n) `private` everywhere the Lean frontend takes it: with one module, the
 names are used as usual (privacy is per module). -/
 def privateDecls : List (String × Bool) := [
@@ -3305,6 +3375,12 @@ def selfHostGroup : Group where
     { name := "the self-hosted frontend: an unknown command is an error naming it (21n)", run := fun _ =>
         selfhostCheckFile "import Prelude\ndef f : Nat := 1\n#eval f\nattribute [inline] f\ndef g : Nat := f\n"
           "f : Nat\nerror: unsupported command command.eval\nerror: unsupported command command.attrInline\ng : Nat\n" },
+    { name := "the self-hosted frontend: export and link_lib are checked as in the Lean frontend (21o)", run := fun _ =>
+        selfhostAgrees exportHeader exportDecls },
+    { name := "export, link_c and link_lib: the Lean and the self-hosted compilers agree (21o)", run := fun _ => do
+        linkRun exportFiles exportExpected
+        selfhostLinkRun exportFiles exportExpected
+        selfhostLinkRun exportFiles exportExpected (flags := #["--rc"]) },
     { name := "the self-hosted frontend: constructor parameters from the expected type (21j)", run := fun _ =>
         selfhostAgrees ("def Code : Bool → Type\n  | .true => Nat\n  | .false => Bool\n" ++
           "structure Tagged (b : Bool) where\n  val : Code b\n")
