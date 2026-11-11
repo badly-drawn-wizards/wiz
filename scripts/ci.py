@@ -3,7 +3,8 @@
 
   scripts/ci.py matrix [BIN]         the shards of .github/test-shards.json as a JSON
                                      matrix (one line, for $GITHUB_OUTPUT); each shard's
-                                     selectors are joined by newlines. A shard with
+                                     selectors are joined by newlines, and "heavy"
+                                     says whether it may use the self-hosted runner. A shard with
                                      "split": N becomes N shards NAME-1 … NAME-N, its
                                      cases balanced by .github/test-timings.json (needs
                                      the test driver BIN; default .lake/build/bin/tests)
@@ -159,7 +160,14 @@ def expanded(binary, base=None):
 
 
 def matrix(binary):
-    print(json.dumps({"shard": [{"name": n, "select": "\n".join(sel)}
+    # "heavy": true shards (and the parts of a split one) may run on the self-hosted
+    # runner (vars.WIZ_RUNNER_HEAVY, docs/ci-runner.md)
+    heavy = {s["name"] for s in shards() if s.get("heavy")}
+    split = {s["name"] for s in shards() if s.get("split", 1) > 1}
+    def is_heavy(n):
+        base = n.rsplit("-", 1)[0]
+        return n in heavy or (base in split and base in heavy)
+    print(json.dumps({"shard": [{"name": n, "select": "\n".join(sel), "heavy": is_heavy(n)}
                                 for n, sel, _ in expanded(binary)]}, ensure_ascii=False))
 
 

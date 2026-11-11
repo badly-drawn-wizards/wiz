@@ -27,6 +27,7 @@ usage: tower [--home DIR] COMMAND
                                  gc-cflags, gc-ldflags)
   self shims                     write the shims in ~/.tower/bin
   self install                   copy tower to ~/.tower/bin and write the shims
+  --version                      print tower's version
 
 SPEC: nightly, stable, a tag, a branch, a commit, REF@COMMIT, or a linked name.
 A project names its toolchain in a file `wiz-toolchain` (one line: a SPEC).
@@ -482,6 +483,10 @@ def Tower.dispatch (e : TEnv) (args : List String) : EIO Nat := match args with
   | .false => match Bool.and (Bool.or (String.eq cmd "--help") (String.eq cmd "help")) (List.isEmpty rest) with
   | .true => do
     EIO.lift (IO.print Tower.usage);
+    EIO.pure 0
+  | .false => match Bool.and (String.eq cmd "--version") (List.isEmpty rest) with
+  | .true => do
+    Tower.say "tower 0.1.0-dev";
     EIO.pure 0
   | .false => Tower.usageFail
 

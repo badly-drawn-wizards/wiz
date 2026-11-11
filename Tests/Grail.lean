@@ -215,6 +215,33 @@ def modulesGroup : Group where
         for (how, s) in ← paths src do
           check (s.messages.any fun m => (m.text.splitOn "'helper' is private to module P.A").length > 1)
             s!"{how}: {s.messages.toList.map (·.text)}" },
+    { name := "private types are per module too: two modules' private Color, Pt, Sz, Sig coexist (13b)", run := fun _ => do
+        let dir ← mkTree [("Q/A.wiz", "import Prelude\nimport Deriving\nprivate inductive Color where\n  | red\n  | blue\n  deriving Repr, BEq\nprivate structure Pt where\n  x : Nat\n  y : Nat\nprivate class Sz (A : Type) where\n  size : A → Nat\ninstance : Sz Color := Sz.mk (fun c => match c with\n  | .red => 1\n  | Color.blue => 2)\nprivate def Color.code (c : Color) : Nat := Sz.size c\nprivate def Pt.sum (p : Pt) : Nat := Nat.add p.x p.y\nprivate coinductive Sig where\n  head : Nat\n  tail : Sig\nprivate def Sig.const (n : Nat) : Sig\n  | .head => n\n  | .tail => Sig.const n\nprivate def pick : Color → Pt\n  | .red => Pt.mk 1 2\n  | Color.blue => Pt.mk 3 4\nprivate def useDot (c : Color) (p : Pt) (s : Sig) : Nat := Nat.add c.code (Nat.add (Pt.sum p) s.tail.head)\ndef fa : Nat := useDot Color.blue (pick Color.blue) (Sig.const 100)\ndef ra : String := Repr.repr Color.red\ndef qa : Bool := BEq.beq Color.red Color.blue\ndef favA : Color := Color.red\n"), ("Q/B.wiz", "import Prelude\nimport Deriving\nprivate inductive Color where\n  | red\n  | blue\n  deriving Repr, BEq\nprivate structure Pt where\n  x : Nat\n  y : Nat\nprivate class Sz (A : Type) where\n  size : A → Nat\ninstance : Sz Color := Sz.mk (fun c => match c with\n  | .red => 10\n  | Color.blue => 20)\nprivate def Color.code (c : Color) : Nat := Sz.size c\nprivate def Pt.sum (p : Pt) : Nat := Nat.add p.x p.y\nprivate coinductive Sig where\n  head : Nat\n  tail : Sig\nprivate def Sig.const (n : Nat) : Sig\n  | .head => n\n  | .tail => Sig.const n\nprivate def pick : Color → Pt\n  | .red => Pt.mk 1 2\n  | Color.blue => Pt.mk 30 40\nprivate def useDot (c : Color) (p : Pt) (s : Sig) : Nat := Nat.add c.code (Nat.add (Pt.sum p) s.tail.head)\ndef fb : Nat := useDot Color.blue (pick Color.blue) (Sig.const 1000)\ndef rb : String := Repr.repr Color.blue\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+        let cache ← IO.FS.createTempDir
+        let paths (src : String) : IO (List (String × CommandState ZeroOneMany)) := do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          pure [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                ("runFrontend", runFrontend src init), ("Query", (Query.elaborate {} src { init with termInfo := true }).1)]
+        -- (the importer may have a `Color` of its own)
+        let src := "import Q.A\nimport Q.B\n#eval fa\n#eval fb\n#eval ra\n#eval rb\n#eval qa\ninductive Color where\n  | green\n#check Color.green\n"
+        for (how, s) in ← paths src do
+          checkEq (how, "[3:1: info: 109, 4:1: info: 1090, 5:1: info: \"Color.red\", 6:1: info: \"Color.blue\", 7:1: info: .false, 10:1: info: Color.green : Color]")
+            (how, toString (s.messages.toList.map (·.render src)))
+        -- still private: elsewhere the names are unknown, with the module named
+        for (bad, what) in [("def x := Color.red", "'Color.red'"), ("def x (p : Pt) : Nat := 0", "'Pt'"),
+                            ("def x := @Sig.const", "'Sig.const'")] do
+          let src := "import Q.A\n" ++ bad ++ "\n"
+          for (how, s) in ← paths src do
+            check (s.messages.any fun m => (m.text.splitOn s!"{what} is private to module Q.A").length > 1)
+              s!"{how}: {bad}: {s.messages.toList.map (·.text)}"
+        -- hovers and messages show the source name
+        let src := "import Q.A\ndef h := favA\ndef n : Nat := favA\n"
+        let (s, _) := Query.elaborate (R := ZeroOneMany) {} src { init with termInfo := true }
+        checkEq (some ("favA", "Color")) (Query.hoverAt s 21)
+        check (s.messages.any fun m => (m.text.splitOn "inferred: Color").length > 1) s!"{s.messages.toList.map (·.text)}" },
     { name := "trust is part of a module's cache key (22f)", run := fun _ => do
         -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
         -- warnings and `#print axioms` of the one run are never replayed in the other

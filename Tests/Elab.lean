@@ -6690,6 +6690,14 @@ def hdlGroup : Group where
           "def g {r : HwTy → Type} [Hw r] (x : r (HwTy.bits 8)) (k : Nat) : r (HwTy.bits 8) := let j := Nat.succ k; Hw.lit 8 j\n#erase f\n#erase g")
           ["f := (λr. (λinst✝. (λx. (((((ShareLet.share ◾) ◾) ((((instShareLetRARB ◾) #1) ⟨0 8⟩) ⟨0 8⟩)) (((((Hw.add ◾) #1) 8) #0) #0)) (λy. (((((Hw.add ◾) #2) 8) #0) #0))))))",
            "g := (λr. (λinst✝. (λx. (λk. (let j := (Nat.succ #0); ((((Hw.lit ◾) #3) 8) #0))))))"] },
+    { name := "traces: a circuit's run along a trace (lib/Trace.wiz); the finite simulation is its prefix", run := fun _ =>
+        okLibs ("import Hdl.Core\ndef u8 : HwTy := HwTy.bits 8\n" ++
+          "def ctr : Circuit (HwTy.bits 1) u8 := Circuit.mk u8 (BitVec.ofNat 8 250) (fun s u => Hw.pair (Hw.add s (Hw.lit 8 1)) s)\n" ++
+          "def xs : Trace (BitVec 1) := Trace.const (BitVec.ofNat 1 0)\n" ++
+          "def t3 : Circuit.trace ctr xs 3 = BitVec.ofNat 8 253 := rfl\n" ++
+          "def pre (n : Nat) (ys : Trace (BitVec 1)) : Circuit.run ctr (Trace.take n ys) = Trace.take n (Circuit.trace ctr ys) := Circuit.run_take ctr n ys\n" ++
+          "#eval Hdl.map BitVec.toNat (Trace.take 8 (Circuit.trace ctr xs))\n")
+          [".cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 (.cons 0 (.cons 1 .nil)))))))"] },
     { name := "Verilog: declarations before use (regs, wires, then the updates), sized initial values", run := fun _ =>
         okLibs (hdlVerilogSrc ++ "#eval v1\n")
           ["\"module counter(input clk, input [0:0] x, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd250;\\n  wire [7:0] n3 = r + 8'd1;\\n  always @(posedge clk) r <= n3;\\n  assign y = r;\\nendmodule\\n\""] },

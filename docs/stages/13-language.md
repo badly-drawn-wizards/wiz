@@ -49,8 +49,9 @@ constructors and recursors) private to its **module**: other modules get "'x' is
 private to module M"; the module itself, including its later declarations, uses the
 names as usual. Privacy is per module ([23c](23-grail.md): each module is elaborated in isolation and
 under its own name), and the main file is a module of its own. In a module, a private
-function, axiom or foreign function gets a kernel name of its own (`_private.M.0.secret`,
-as in Lean), so two modules' private `secret`s don't clash; see
+declaration (a function, axiom, foreign function or type, with a type's constructors,
+fields and recursors) gets a kernel name of its own (`_private.M._0.secret`, as in Lean),
+so two modules' private `secret`s don't clash; see
 [23b](23-grail.md).
 
 `private mk ::` right after a structure's `where` keeps the type and its projections
