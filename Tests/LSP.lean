@@ -738,6 +738,29 @@ def serverGroup : Group where
         let (_, r) := ask srv "textDocument/signatureHelp" src (offAfter src "(f 2 ")
         check (has r "Bool") s!"f: {r.compress}"
         checkEq (1 : Nat) (LSP.getNat r ["activeParameter"]) },
+    { name := "doc comments in hovers, completion items and signature help (11s)", run := fun _ => do
+        let src := "import Prelude\n/-- Twice `n`: `double 2 = 4`. -/\ndef double (n : Nat) : Nat := Nat.add n n\n" ++
+          "def four : Nat := double 2\ndef five : Nat := Nat.add 4 \ndef six : Nat := doub\n"
+        let (srv, _) ← openDoc src
+        -- hover: the type, then the doc as Markdown
+        let (srv, r) := ask srv "textDocument/hover" src (offAfter src ":= doub" (-1))
+        let md := LSP.getStr r ["contents", "value"]
+        checkEq "```wiz\ndouble : Nat → Nat\n```\n\n---\n\nTwice `n`: `double 2 = 4`." md
+        -- a local has none
+        let (srv, r) := ask srv "textDocument/hover" src (offAfter src "Nat.add n" (-1))
+        check (!(has r "---")) s!"local: {r.compress}"
+        -- the Prelude's (lib/ is documented)
+        let (srv, r) := ask srv "textDocument/hover" src (offAfter src "five : Nat := Nat.ad")
+        check (has r "Addition") s!"Nat.add: {r.compress}"
+        -- completion items
+        let (srv, r) := ask srv "textDocument/completion" src (offAfter src "six : Nat := doub")
+        let some (.arr is) := LSP.get? r ["items"] | throw (IO.userError s!"{r.compress}")
+        let some i := is.find? (LSP.getStr · ["label"] == "double") | throw (IO.userError s!"{r.compress}")
+        checkEq "Twice `n`: `double 2 = 4`." (LSP.getStr i ["documentation", "value"])
+        checkEq "markdown" (LSP.getStr i ["documentation", "kind"])
+        -- signature help
+        let (_, r) := ask srv "textDocument/signatureHelp" src (offAfter src "Nat.add 4 ")
+        check (has r "Addition") s!"signature: {r.compress}" },
     { name := "infoview socket: cursor notifications, requests answered on the socket", run := fun _ => do
         -- a watchdog: a broken server must fail the case, not hang the suite (and since
         -- the process would wait for it, the case ends with an explicit exit)
