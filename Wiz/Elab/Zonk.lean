@@ -96,7 +96,15 @@ where
 def ensureNoMVars (t : Term R) (info : SourceInfo := {}) : ElabM R Unit := do
   if let some m := t.mvars[0]? then
     let e ← lookupMeta m
-    throwAt e.info s!"could not infer {e.desc}"
+    let hint :=
+      if e.desc == "_" then ": nothing determines this hole; write the term, or give more type information"
+      else if e.desc.startsWith "the type of " && !e.desc.startsWith "the type of this" &&
+          !e.desc.startsWith "the type of a" then
+        s!"; annotate it, as in ({e.desc.drop 12} : T)"
+      else if e.desc.startsWith "implicit argument " then
+        s!"; give it by name, as in f ({e.desc.drop 18} := …), or add a type ascription"
+      else ""
+    throwAt e.info s!"could not infer {e.desc}{hint}"
   if t.hasLevelMVar then
     throwAt info "could not infer a universe level; add a universe parameter or annotation"
 

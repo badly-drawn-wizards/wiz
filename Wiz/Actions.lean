@@ -35,19 +35,6 @@ structure Action where
   edits : Array Edit
   deriving Repr
 
-/-- Levenshtein distance. -/
-def editDistance (a b : String) : Nat := Id.run do
-  let a := a.toList.toArray
-  let b := b.toList.toArray
-  let mut prev : Array Nat := Array.range (b.size + 1)
-  for i in [0:a.size] do
-    let mut cur : Array Nat := #[i + 1]
-    for j in [0:b.size] do
-      let sub := prev[j]! + (if a[i]! == b[j]! then 0 else 1)
-      cur := cur.push (min sub (min (prev[j + 1]! + 1) (cur[j]! + 1)))
-    prev := cur
-  prev[b.size]!
-
 /-- Names within distance 2 of `x` (closest first, at most 5): locals, then globals. -/
 def suggestions (s : CommandState R) (x : Name) (locals : List Name) : Array Name :=
   let cands := (locals.filter (!·.contains '✝')).toArray ++ s.globals.order

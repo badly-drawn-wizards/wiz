@@ -273,6 +273,77 @@ def withInfo (ctx : LocalCtx R) (stx : Syntax) : LocalCtx R :=
 
 end LocalCtx
 
+/-- Why unification failed, as a line under a type mismatch between the types printed as
+`expected` and `inferred`; `""` when it would only repeat what they show ("rigid
+mismatch": the two heads differ). -/
+def mismatchReason (expected inferred : String) (why : String) : String :=
+  let quiet := ["rigid mismatch", "spine mismatch", "spine length mismatch", "tag mismatch",
+    "enumeration size mismatch", "unreachable"]
+  if why.isEmpty || quiet.contains why then "" else
+  -- the levels of two universes the types already show
+  if why.startsWith "universe level mismatch" && expected != inferred &&
+      !(expected.contains '?' || inferred.contains '?') then "" else
+  let why := match why with
+    | "implicit vs explicit binder mismatch" => "one function type takes its argument implicitly, the other explicitly"
+    | "quantity mismatch" => "the binders' quantities differ"
+    | "unification problem is outside the pattern fragment" =>
+      "the holes in it can't be solved from this alone (outside the pattern fragment); a type ascription may help"
+    | w => w
+  s!"\n  ({why})"
+
+/-- `1 argument`, `2 arguments`. -/
+def plural (n : Nat) (what : String) : String :=
+  s!"{n} {what}{if n == 1 then "" else "s"}"
+
+/-- Levenshtein distance. -/
+def editDistance (a b : String) : Nat := Id.run do
+  let a := a.toList.toArray
+  let b := b.toList.toArray
+  let mut prev : Array Nat := Array.range (b.size + 1)
+  for i in [0:a.size] do
+    let mut cur : Array Nat := #[i + 1]
+    for j in [0:b.size] do
+      let sub := prev[j]! + (if a[i]! == b[j]! then 0 else 1)
+      cur := cur.push (min sub (min (prev[j + 1]! + 1) (cur[j]! + 1)))
+    prev := cur
+  prev[b.size]!
+
+/-- Names within edit distance 2 of `x` (closest first, at most `limit`): the locals, then
+the globals `g` (in the user's spelling: this module's private names without their
+prefix; other modules' private names and names the elaborator made up are left out). -/
+def closeNames (g : Globals R) (x : Name) (locals : List Name) (limit : Nat := 5) : Array Name :=
+  let globals := g.order.filterMap fun n =>
+    if n.startsWith "_private." then
+      if n.startsWith (Globals.privateName g.module "") then some (Globals.privateBase n) else none
+    else some n
+  -- (not the declarations a data type comes with that nobody writes by hand)
+  let internal := [".desc", ".rec", ".recN", ".casesOn", ".casesOnN", ".scasesOn", ".scasesOnN"]
+  let cands := (locals.filter (!·.contains '✝')).toArray ++
+    globals.filter fun n => !n.contains '✝' && !internal.any (fun s => n.endsWith s)
+  -- a short name is "close" to too many others: none for one or two letters, one edit
+  -- up to four
+  if x.length ≤ 2 then #[] else
+  let maxD := if x.length ≤ 4 then 1 else 2
+  let scored := cands.filterMap fun n =>
+    if n == x || (n.length + maxD < x.length) || (x.length + maxD < n.length) then none else
+    let d := editDistance x n
+    if d ≤ maxD then some (d, n) else none
+  -- only the closest ones
+  let best := scored.foldl (fun m (d, _) => min m d) maxD
+  let sorted := (scored.filter (·.1 == best)).qsort fun (_, n) (_, n') => n < n'
+  (sorted.map (·.2)).toList.eraseDups.toArray.extract 0 limit
+
+/-- The hint for an unknown identifier `x`: `did you mean 'y'?`, or `""`. -/
+def didYouMean (g : Globals R) (x : Name) (locals : List Name) : String :=
+  -- a hypothesis of that name that `intros` (or a macro) made inaccessible
+  if let some n := locals.find? (fun n => n.startsWith (x ++ "✝")) then
+    s!"; the hypothesis {n} is inaccessible: name it with `intro {x}` or `rename_i {x}`"
+  else
+  match (closeNames g x locals 3).toList with
+  | [] => ""
+  | [n] => s!"; did you mean '{n}'?"
+  | ns => s!"; did you mean one of {", ".intercalate (ns.map (s!"'{·}'"))}?"
+
 def throwAt (info : SourceInfo) (msg : String) (code : String := "") : ElabM R α := do
   throw { info, msg, code, state? := some (← get) }
 

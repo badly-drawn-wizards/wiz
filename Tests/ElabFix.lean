@@ -198,7 +198,7 @@ def group : Group where
           [".cons 2 .nil", ".cons 3 .nil"] },
     { name := "erased fields get no projection function", run := fun _ =>
         failsLib ("import Prelude\nstructure BV (n : Nat) where\n  toNat : Nat\n  0 ok : Nat.lt toNat 100 = .true\n" ++
-          "def g := BV.ok") "no field" },
+          "def g := BV.ok") "the field ok of BV has no projection function" },
     { name := "trailing instance arguments are inserted (trailing-instance-args)", run := fun _ =>
         okLib ("import Prelude\nclass BitPack (A : Type) where\n  width : Nat\ninstance : BitPack Bool := BitPack.mk 1\n" ++
           "def bitWidth (0 A : Type) [BitPack A] : Nat := @BitPack.width A _\n" ++
@@ -517,7 +517,7 @@ def group : Group where
           "def t3 : (n : Nat) → Ch (many n) → Nat\n  | .zero, c => 0\n  | .succ n, c => t3 n (Ch.next c 5)\n" ++
           "def t4 (c : Ch Q) := Ch.next c 1") },
     { name := "... and still fails at once on different constructors or a wrong message", run := fun _ => do
-        failsLib (protoLike ++ "def bad (c : Ch P.stop) : Ch P.stop := Ch.next c 3") "tag mismatch"
+        failsLib (protoLike ++ "def bad (c : Ch P.stop) : Ch P.stop := Ch.next c 3") "type mismatch"
         failsLib (protoLike ++ "def Q : P := .step Nat (fun _ => .stop)\n" ++
           "def bad (c : Ch Q) : Ch P.stop := Ch.next c Bool.true") "mismatch" },
     { name := "nested Ex.intro with motive holes: no ill-typed first-order solution (vApp panic)", run := fun _ => do
@@ -527,7 +527,26 @@ def group : Group where
         -- without an expected type the motives can't be inferred: an error, not a panic
         -- (since agent/elab-bugs the inner `Ex.intro` waits for nothing better and no
         -- ill-typed guess is made: `rfl` meets the unsolved motive `?P ?w`)
-        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" }
+        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" },
+    -- error messages (wiz-notes/error-audit.md)
+    { name := "messages: unknown names get a suggestion, `T.f` with T a type is a name", run := fun _ => do
+        failsLib "import Prelude\ndef f (count : Nat) : Nat := cuont" "unknown identifier 'cuont'; did you mean 'count'?"
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := Nat.ad n 1" "unknown identifier 'Nat.ad'; did you mean 'Nat.add'?"
+        failsLib "import Prelude\ndef f (xs : List Nat) : Nat := List.lenght xs" "unknown identifier 'List.lenght'; did you mean 'List.length'?"
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := f n" "a definition can't use itself in its body"
+        failsLib "def f : Nat := 1" "Nat is defined in the Prelude: add `import Prelude`" },
+    { name := "messages: fields, patterns, constructors", run := fun _ => do
+        failsLib "import Prelude\nstructure P where\n  x : Nat\n  y : Nat\ndef f (p : P) : Nat := p.z" "P has no field 'z' (its fields are x, y)"
+        failsLib "import Prelude\ndef f : Nat → Nat\n  | .zero => 0\n  | .succx n => n" "4:5: error: Nat has no constructor succx (its constructors are zero, succ)"
+        failsLib "import Prelude\ndef f : Nat → Nat\n  | .zero => 0" "missing case for constructor succ: add an alternative for .succ n"
+        failsLib "import Prelude\ninductive T where\n  | a\n  | a" "4:5: error: the constructor a is declared twice in T"
+        failsLib "import Prelude\ninstance : Frob Nat where\n  x := 1" "unknown class 'Frob'" },
+    { name := "messages: quantities are the user's errors, explained", run := fun _ => do
+        failsLib "import Prelude\ndef f (0 n : Nat) : Nat := n" "variable n declared with quantity 0 but used 1\n  (n is erased"
+        failsLib "import Prelude\ndef f (1 n : Nat) : Nat × Nat := (n, n)" "and n is used more than once" },
+    { name := "messages: parse errors name the category and what was found", run := fun _ => do
+        failsLib "import Prelude\ndef p : Nat := by frobnicate" "unexpected 'frobnicate'; expected tactic"
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := (n" "unexpected end of input; expected" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted

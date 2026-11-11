@@ -299,7 +299,8 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
       if subTy s.globals ctx.types.reverse.toArray inferred expected then .ok ((), s) else
       let show' (v : VTy R) := elideLong ((quote s.globals ctx.lvl v).pretty ctx.names)
       .error { info := (ctx.withInfo stx).info,
-               msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})",
+               msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}" ++
+                 mismatchReason (show' expected) (show' inferred) e.msg,
                code := e.code,
                -- what was recorded up to here (the info tree, `trace`s)
                state? := some s }
@@ -328,6 +329,25 @@ def unifyAt (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Elab
     let i' ← reevalSolved? ctx inferred
     if e'.isNone && i'.isNone then throw err
     unifyAt0 ctx stx (e'.getD expected) (i'.getD inferred)
+
+/-- Is this the type of a type (`… → Type u`)? -/
+def endsInSort : Term R → Bool
+  | .pi _ _ _ _ b _ => endsInSort b
+  | .sort _ => true
+  | _ => false
+
+/-- The hint under "function expected" for `f : ty` given one more argument: `f` already
+applied to arguments has too many; implicit arguments shown as holes can be given with
+`@`. -/
+def tooManyArgsHint (f : Term R) : String :=
+  match Term.spine f with
+  | (_, []) => ""
+  | (h, _) =>
+    let at_ := match h with
+      | .const n _ => s!"; its implicit arguments (the ?m here) are filled in automatically: to give them, write @{Globals.privateBase n} …"
+      | _ => ""
+    if f.mvars.isEmpty then "\n  (it is given more arguments than its type takes)"
+    else s!"\n  (it is given more arguments than its type takes{at_})"
 
 /-- Is this a `fun` whose first binder is implicit? -/
 private def isImplicitFun (stx : Syntax) : Bool :=
@@ -378,12 +398,21 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
         unifyAt ctx (.missing) dom ty
         let tm' := Term.app tm t
         return ← elabFields ctx tm' (← instM cod (← evalIn ctx t)) rest
+    -- the type the field was looked up in, for the error (not what is left of its Σs)
+    let ty0 := ty
+    let noField : ElabM R (Term R × VTy R) := do
+      let g ← getGlobals
+      match structHead? g (← forceMeta ty0) with
+      | some (S, _, _) =>
+        let fields := ((structLayout? g S).map (·.fields)).getD []
+        throwAt ctx.info s!"{Globals.privateBase S} has no field '{f}' (its fields are {", ".intercalate fields})"
+      | none => throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty0}"
     let rec walk (t : Term R) (ty : VTy R) : ElabM R (Term R × VTy R) := do
       match ← force ty with
       | .sigma x _ A B _ =>
         if x == f then pure (.fst t, A)
         else walk (.snd t) (← instM B (vFst (← evalIn ctx t)))
-      | ty => throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty}"
+      | _ => noField
     let (t, ty) ← walk t ty
     elabFields ctx t ty rest
   --|ex
@@ -624,11 +653,11 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     let (yStx, kargs) :=
       if a.isOfKind "term.app" then (a.getArg 0, (a.getArg 1).args) else (a, #[])
     let some y := (if yStx.isOfKind "term.ident" then (yStx.getArg 0).getId? else none)
-      | throw s!"recursive call of {rc.fn} must be on a variable"
+      | throw (s!"recursive call of {rc.fn} must be on a variable, not {a.reprint}" ++ "\n  (structural recursion: a recursive call must be on a field of the matched constructor, like n in `| .succ n => … f n …`; for any other recursion, use `partial def`)")
     let some (_, _, .neutral (.local fl) #[]) := binds.find? (·.1 == y)
-      | throw s!"recursive call of {rc.fn} on {y}, which is not a recursive field"
+      | throw (s!"recursive call of {rc.fn} on {a.reprint}, which is not a recursive field" ++ "\n  (structural recursion: a recursive call must be on a field of the matched constructor, like n in `| .succ n => … f n …`; for any other recursion, use `partial def`)")
     let some (_, ihl) := rc.ihs.find? (·.1 == fl)
-      | throw s!"recursive call of {rc.fn} on {y}, which is not structurally smaller"
+      | throw (s!"recursive call of {rc.fn} on {a.reprint}, which is not structurally smaller" ++ "\n  (structural recursion: a recursive call must be on a field of the matched constructor, like n in `| .succ n => … f n …`; for any other recursion, use `partial def`)")
     let some ty := ihType ihl | throw "internal error: hypothesis without a type"
     -- a family matched at a concrete index: the hypothesis first wants the (trivial)
     -- proof that the field's index is that index
@@ -743,7 +772,8 @@ def sameSides (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R U
         pure (conv g tys A a b || convTy g tys (vEq g A a a) (vEq g A a b))
       | none => pure (convTy g tys a b || convTy g tys (vEqType g a a) (vEqType g a b))
     unless ok do
-      throwAt ctx.info s!"rfl: the two sides are not definitionally equal\n  left:  {← showVal ctx a}\n  right: {← showVal ctx b}\n  ({e.msg})"
+      let (l, r) := (← showVal ctx a, ← showVal ctx b)
+      throwAt ctx.info (s!"rfl: the two sides are not definitionally equal\n  left:  {l}\n  right: {r}" ++ mismatchReason l r e.msg)
 
 /-- A value evaluated again after its solved holes are filled in (an equation is computed
 when it is formed, perhaps while the implicit arguments of its sides are still holes:
@@ -1095,6 +1125,9 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
       let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
       let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
       return some (← check ctx stx' expected)
+    | .neutral (.mvar _) _ =>
+      -- nothing says which type `.c` belongs to (yet)
+      throwAt ctx.info s!".{c} needs an expected type that is an inductive type, and nothing here says which type it is; write T.{c}, or give the type, as in (.{c} : T)"
     | _ => return ← shapeError s!".{c} needs an expected inductive type"
   match stx.kind with
   | "term.tag" =>
@@ -1769,7 +1802,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
         unifyAt ctx fStx ty pi
         pure pi
       | ty => do
-        let msg := s!"function expected\n  {showTerm ctx f} : {← showVal ctx ty}"
+        let msg := s!"function expected\n  {showTerm ctx f} : {← showVal ctx ty}" ++ tooManyArgsHint f
         throwAt (ctx.withInfo fStx).info msg
     match fty' with
     | .pi x bi _ dom cod _ =>
@@ -1849,7 +1882,7 @@ partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R ×
       | if let some (y, _, a) := named[0]? then
           throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})"
         else
-          throwAt (ctx.withInfo fStx).info s!"function expected\n  {showTerm ctx f} : {← showVal ctx fty}"
+          throwAt (ctx.withInfo fStx).info (s!"function expected\n  {showTerm ctx f} : {← showVal ctx fty}" ++ tooManyArgsHint f)
     let a ← match named.findIdx? (·.1 == x) with
       | some i =>
         let (_, e, _) := named[i]!
@@ -2104,6 +2137,16 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       | t => t) v) with
     | some t => (t.descTag?.map (·.1)).getD []
     | none => []
+  -- a constructor pattern of another type would match nothing (and the cases it was meant
+  -- for would be reported missing): say so where it is
+  unless ctors.isEmpty do
+    for cl in clauses do
+      if let (_, .ctor _ c' _) ← pview (cl.pats[k]!) then
+        unless ctors.contains c' do
+          -- (a pattern a macro wrote, such as `if`'s `.true`, has no place of its own)
+          let pi := (cl.pats[k]!).info
+          let at_ := if pi.stop == 0 || pi.synthetic then ctx.info else pi
+          throwAt at_ s!"{T} has no constructor {c'} (its constructors are {", ".intercalate ctors})"
   let nΞ := ξ.length
   -- a motive that depends on neither the indices nor the scrutinee: the non-dependent
   -- eliminator (`T.recN`), whose branches need no cast along the index equation
@@ -2251,7 +2294,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           | .ctor _ c' ps =>
             if c' == c then
               unless ps.length == explicitIdx.length do
-                throwAt (cl'.pats[k]!).info s!"{c} expects {explicitIdx.length} explicit arguments"
+                throwAt (cl'.pats[k]!).info (s!"the constructor {c} has {plural explicitIdx.length "explicit field"}, " ++
+                  s!"but the pattern gives it {plural ps.length "argument"}")
               let sub := (List.range fieldInfos.length).map fun i =>
                 match explicitIdx.idxOf? i with
                 | some j => ps[j]!
@@ -2266,7 +2310,11 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           | .anon .. => throwAt (cl'.pats[k]!).info s!"an anonymous constructor pattern ⟨…⟩ needs a type with one constructor, and {T} has {ctors.length}"
           | .as .. => throwAt (cl'.pats[k]!).info "internal error: as-pattern"
           | .tuple .. => throwAt (cl'.pats[k]!).info "a tuple pattern needs a pair"
-        if cls.isEmpty then throwAt ctx.info s!"missing case for constructor {c}" "missing-case"
+        if cls.isEmpty then
+          let fields := fieldInfos.filterMap fun (n, bi, _) =>
+            if bi == .default then some (if n == "_" || n.contains '✝' then "x" else n) else none
+          let pat := String.join ((s!".{c}" :: fields).intersperse " ")
+          throwAt ctx.info s!"missing case for constructor {c}: add an alternative for {pat}" "missing-case"
         -- reverted variables are re-introduced at new levels: their hypotheses follow them
         let moved := rs.zip rsLvls.toList
         let rc := rc.map fun r => { r with ihs := r.ihs.map fun (a, b) => ((moved.lookup a).getD a, (moved.lookup b).getD b) }
@@ -2451,6 +2499,20 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       -- field access: `p.x.y`
       match x.splitOn "." with
       | base :: f :: fs =>
+        -- `T.f` with `T` a type (or nothing at all) is a name, not a field access: say
+        -- that the name is unknown (`Nat.ad`), not that types have no field `ad`
+        let g ← getGlobals
+        let isName := (lookupLocal ctx base).isNone &&
+          match g.find? (g.resolve base) with
+          | some d => endsInSort d.type
+          | none => !["Unit", "True", "Empty", "False", "Qty", "Size"].contains base &&
+                    !(g.privates.toList.any fun (n, m) => m != g.module && n == Globals.privateName m base)
+        if isName then
+          -- a field of a structure that has no projection function (an erased one)
+          if fs.isEmpty && (((structLayout? g (g.resolve base)).map (·.fields)).getD []).contains f then
+            throwAt ctx.info s!"unknown identifier '{x}': the field {f} of {base} has no projection function (an erased field has none; take the structure apart with `match` or `let ⟨…⟩`)"
+          pushInfo (.done (.unknownIdent ctx.info x ctx.names))
+          throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
         let (t, ty) ← infer ctx (.node stx.info "term.ident" #[.ident stx.info base])
         elabFields ctx t ty (f :: fs)
       | _ =>
@@ -2624,7 +2686,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     if k.startsWith "quote." then
       let syntaxTy ← evalIn {} (.const "Syntax" [])
       return (← elabQuote ctx syntaxTy "" (stx.getArg 3), syntaxTy)
-    throwAt ctx.info s!"no elaborator for syntax kind {k}"
+    throwAt ctx.info s!"the syntax {k} has no meaning: no `macro_rules` (or `attribute [macro {k}] f`) for it is in scope (if one is defined above, it was rejected: see its error)"
 
 
 -- Tactics (see `Elab/Tactic.lean`)
@@ -2643,7 +2705,7 @@ partial def evalTacticStx (code : Code) (st : TacState R) (stx : Syntax) (record
     pushInfo (.tactic stx.info false before (← openGoals st'))
     return st'
   if let some stx' ← expand? stx then return ← evalTacticStx code st stx'
-  let some f := (← get).tactics.lookup stx.kind | throwAt stx.info s!"no tactic for syntax kind {stx.kind}"
+  let some f := (← get).tactics.lookup stx.kind | throwAt stx.info s!"the tactic syntax {stx.kind} has no meaning: no `attribute [tactic {stx.kind}] f` (or macro) for it is in scope (if one is defined above, it was rejected: see its error)"
   if stx.info.stop > 0 then pushInfo (.done (.expansion stx.info stx.kind (.fn "tactic" f) none))
   let t := apply code (run code [] (.global "TacticM.run")) (apply code (run code [] (.global f)) (encodeSyntax stx))
   runTac code stx.info st t

@@ -217,7 +217,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | some x' =>
         let y : Term R := .var (p.dom - x' - 1)
         if sp[0]? matches some Elim.down then goSp y (sp.extract 1 sp.size) else goSp (.up y) sp
-      | none => throwAt {} "a variable escapes the scope of the hole being solved"
+      | none => throwAt {} "a variable escapes the scope of the hole being solved (the hole was made outside a binder that its solution would mention; a type annotation on that binder may help)"
   | .neutral (.global n us) sp => goSp (.const n us) sp
   | .neutral (.eq A a b) sp => do goSp (.eq (← rename m p A) (← rename m p a) (← rename m p b)) sp
   | .neutral (.eqTy A B) sp => do goSp (.eqTy (← rename m p A) (← rename m p B)) sp
@@ -232,7 +232,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   -- can check)
   | .neutral (.prf _ _ _ pv) sp => do rename m p (vElims (← getGlobals) pv.get sp)
   | .neutral (.mvar m') sp =>
-    if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
+    if m == m' then throwAt {} s!"occurs check: the hole ?m{m} would have to contain itself (the type would be infinite, as when a function is applied to itself)"
     else goSp (.mvar m') sp
   | .sort l => pure (.sort l)
   | .pi x bi q a b s =>

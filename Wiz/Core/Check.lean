@@ -187,9 +187,24 @@ instance : ToString TypeError where
     | .notAFunction t ty => s!"not a function: {t}\n  has type: {ty}"
     | .notAType t ty => s!"not a type: {t}\n  has type: {ty}"
     | .cannotInfer t => s!"cannot infer a type for {t}; add an annotation"
-    | .quantityMismatch x d u => s!"variable {x} declared with quantity {d} but used {u}"
-    | .duplicateDecl n => s!"duplicate declaration: {n}"
+    | .quantityMismatch x d u => s!"variable {x} declared with quantity {d} but used {u}" ++
+        match d, u with
+        | "0", _ => s!"\n  ({x} is erased: only types, proofs and other erased arguments may use it, not the computation)"
+        | "1", "ω" => s!"\n  (a linear variable, of quantity 1, must be used exactly once, and {x} is used more than once)"
+        | "1", "0" => s!"\n  (a linear variable, of quantity 1, must be used exactly once, and {x} is not used)"
+        | _, _ => ""
+    | .duplicateDecl n => s!"'{n}' has already been declared"
     | .other m => m
+
+/-- The message for a declaration `name` the kernel rejected with `e`. The elaborator
+leaves quantities (usage) to the kernel, so a quantity error is the user's, reported as
+it is, like a clash of names; anything else says that the kernel rejected it. -/
+def kernelRejected (name : Name) (e : TypeError) : String :=
+  match e with
+  | .quantityMismatch .. => toString e
+  | .duplicateDecl n => s!"'{n}' has already been declared"
+  | .other m => if (m.splitOn "quantity").length > 1 then m else s!"kernel rejected {name}: {m}"
+  | e => s!"kernel rejected {name}: {e}"
 
 abbrev TCM := Except TypeError
 
@@ -965,7 +980,7 @@ unchecked. -/
 def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   -- constants are identified by name: a second declaration of one would change what
   -- everything checked against the first means
-  if g.contains d.name then throw (.other s!"{d.name} is already declared")
+  if g.contains d.name then throw (.duplicateDecl d.name)
   if d.witness.isSome then throw (.other s!"{d.name}: only a partial definition has a witness")
   checkHeader g d
   let ctx : Ctx R := { globals := g }
@@ -984,7 +999,7 @@ def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
 (`attribute [implemented_by g] f` sets the constant `g`), checked like a definition's own
 (`checkImpl`): at `name`'s type. The kernel's view of `name` does not change. -/
 def setImpl (g : Globals R) (name : Name) (impl : Term R) : TCM (Globals R) := do
-  let some d := g.find? name | throw (.other s!"unknown declaration {name}")
+  let some d := g.find? name | throw (.other s!"unknown declaration '{name}'")
   checkImpl g d impl
   pure (g.insert { d with impl := some impl })
 
@@ -996,7 +1011,7 @@ never run, so it may ignore a linear argument. -/
 def addPartialDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   -- constants are identified by name: a second declaration of one would change what
   -- everything checked against the first means
-  if g.contains d.name then throw (.other s!"{d.name} is already declared")
+  if g.contains d.name then throw (.duplicateDecl d.name)
   let some w := d.witness
     | throw (.other s!"partial definition {d.name} needs a witness, a term of its type")
   if d.value.isSome then throw (.other s!"partial definition {d.name} can't have a value")
@@ -1009,7 +1024,7 @@ def addPartialDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
 of its group: checked against the type and kept for the compiler. Only a partial
 definition (one with a checked witness) takes one. -/
 def addPartialImpl (g : Globals R) (name : Name) (impl : Term R) : TCM (Globals R) := do
-  let some d := g.find? name | throw (.other s!"unknown declaration {name}")
+  let some d := g.find? name | throw (.other s!"unknown declaration '{name}'")
   unless d.witness.isSome && d.value.isNone do
     throw (.other s!"{name} is not a partial definition")
   let ctx : Ctx R := { globals := g }
