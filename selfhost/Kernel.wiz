@@ -3319,12 +3319,12 @@ def tmHasHole : Tm → Bool
   | .ulift _ _ A => tmHasHole A
   | .up a => tmHasHole a
   | .down x => tmHasHole x
-  | .prf _ x => tmHasHole x
+  | .prf l x => Bool.or (lvlHasHole l) (tmHasHole x)
   -- (the leaves, by name)
   | .var _ => .false
   | .univ _ => .false
   | .prop => .false
-  | .sortL _ => .false
+  | .sortL l => lvlHasHole l
   | .unit _ => .false
   | .star => .false
   | .empty _ => .false

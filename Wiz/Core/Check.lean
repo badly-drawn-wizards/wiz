@@ -298,8 +298,9 @@ must be the sort the component is in: `inferred` is what `checkType` found for i
 equality and `cast` trust it to tell propositions from other types, and the cast rules
 compare it (D2). Structural: each component on its own, never a combination. A hole (a
 sort the elaborator's sorts pass did not fill) is rejected. -/
-def checkComponentSort (what : String) (written inferred : Level) : TCM Unit := do
+def checkComponentSort (what : String) (written inferred : Level) (holesOk : Bool := false) : TCM Unit := do
   if written.hasHole then
+    if holesOk then return
     throw (.other s!"internal error: a {what} without its sort (the sorts pass did not fill it)")
   unless written == inferred || written.equiv inferred do
     throw (.other s!"internal error: a {what} marked as in Sort {written} is in Sort {inferred}")
@@ -622,7 +623,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   -- (given) Q4: lifting
   | .ulift k' l A => do
     let k ← checkType ctx A
-    checkComponentSort "lifted type (ULift)" k' k
+    checkComponentSort "lifted type (ULift)" k' k ctx.globals.sortHolesOk
     unless Level.le k l do
       throw (.other s!"ULift.{l.format} can't lift {ctx.showTerm A}, which is in Sort {k.format}")
     pure (.sort l, Usage.zeros ctx.lvl)
@@ -648,14 +649,14 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .pi x _ q dom cod σ => do
     let q ← checkQty ctx q
     let i ← checkType ctx dom
-    checkComponentSort "Π's domain" σ.dom i
+    checkComponentSort "Π's domain" σ.dom i ctx.globals.sortHolesOk
     let j ← checkType (ctx.bind x q (ctx.eval dom)) cod
-    checkComponentSort "Π's codomain" σ.cod j
+    checkComponentSort "Π's codomain" σ.cod j ctx.globals.sortHolesOk
     -- (D1 experiment, off by default) predicative `Prop`: no quantifying over a universe
     -- into `Prop`
     if ctx.globals.predicativeProp && j.equiv 0 && largeDomain ctx (ctx.eval dom) ctx.lvl then
       throw (.other s!"impredicative Π (into Prop over {ctx.showTerm dom}) under predicative Prop")
-    pure (.sort σ.piSort, Usage.zeros ctx.lvl)
+    pure (.sort (if σ.hasHole then .imax i j else σ.piSort), Usage.zeros ctx.lvl)
   --|ex
   --| | .var ix => sorry
   --| | .const n us => sorry
@@ -701,10 +702,10 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   | .sigma x q a b σ => do
     let q ← checkQty ctx q
     let i ← checkType ctx a
-    checkComponentSort "Σ's first component" σ.dom i
+    checkComponentSort "Σ's first component" σ.dom i ctx.globals.sortHolesOk
     let j ← checkType (ctx.bind x q (ctx.eval a)) b
-    checkComponentSort "Σ's second component" σ.cod j
-    pure (.sort σ.sigmaSort, Usage.zeros ctx.lvl)
+    checkComponentSort "Σ's second component" σ.cod j ctx.globals.sortHolesOk
+    pure (.sort (if σ.hasHole then .max i j else σ.sigmaSort), Usage.zeros ctx.lvl)
   | .fst t => do
     let (ty, u) ← infer ctx t
     match whnf ty with
@@ -1038,10 +1039,10 @@ partial def declTypeSpine (ctx : Ctx R) : Term R → TCM Level
   | .pi x _ q dom cod σ => do
     let q ← checkQty ctx q
     let i ← checkType ctx dom
-    checkComponentSort "Π's domain" σ.dom i
+    checkComponentSort "Π's domain" σ.dom i ctx.globals.sortHolesOk
     let j ← declTypeSpine (ctx.bind x q (ctx.eval dom)) cod
-    checkComponentSort "Π's codomain" σ.cod j
-    pure σ.piSort
+    checkComponentSort "Π's codomain" σ.cod j ctx.globals.sortHolesOk
+    pure (if σ.hasHole then .imax i j else σ.piSort)
   | t => checkType ctx t
 
 /-- The checks every declaration's header gets: a new name, its level parameters, and

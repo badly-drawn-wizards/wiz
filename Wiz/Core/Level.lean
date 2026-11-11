@@ -59,7 +59,7 @@ def instParams (ps : List String) (us : List Level) : Level → Level
   -- (the leaves by name, here and below: a new constructor must get its own case)
   | zero => zero
   | mvar m => mvar m
-  | hole => hole
+  | .hole => .hole
 
 /-- Replace level metavariables using `f`. -/
 partial def instMVars (f : Nat → Option Level) : Level → Level
@@ -71,7 +71,7 @@ partial def instMVars (f : Nat → Option Level) : Level → Level
   | imax a b => imax (instMVars f a) (instMVars f b)
   | zero => zero
   | param n => param n
-  | hole => hole
+  | .hole => .hole
 
 def params : Level → List String
   | param n => [n]
@@ -158,7 +158,7 @@ partial def normalize : Level → NF
     else [(.imax (normalize a) nb, 0)]
   | param n => [(.param n, 0)]
   | mvar m => [(.mvar m, 0)]
-  | hole => [(.hole, 0)]
+  | .hole => [(.hole, 0)]
 
 /-- Is the level nonzero under every instantiation of its parameters? -/
 def isNeverZero (l : Level) : Bool := (normalize l).any fun (_, k) => k > 0

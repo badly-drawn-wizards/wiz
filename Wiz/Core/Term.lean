@@ -581,6 +581,10 @@ structure Globals (R : Type) where
   budget : Option Budget := none
   /-- (P2, `--trace-proof-steps`) print the steps each read-back of a proof took (stderr) -/
   traceProofSteps : Bool := false
+  /-- (tests only; off) the checker skips a hole in a `Π`/`Σ`/`ULift` sort instead of
+  rejecting it: for the differential tests' pre-check of a raw random term, which must be
+  known to be well typed before the sorts pass (which evaluates it) may run on it -/
+  sortHolesOk : Bool := false
   /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
   it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
   quoteErasesProofs : Bool := false

@@ -448,7 +448,7 @@ def ottGroup : Group where
     { name := "equality of proofs is rejected", run := fun _ =>
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
-        fails "def bad (A : Type) (a b : A) : a = b := rfl" "type mismatch" },
+        fails "def bad (A : Type) (a b : A) : a = b := rfl" "rfl: the two sides are not definitionally equal" },
     -- D1: regularity beyond the inert types is off by default, and the program checks. It
     -- used to loop with `--regularity full` and an evaluator that runs proofs
     -- (`--eager-proofs`): regularity was then a rule of evaluation, decided by comparing the
@@ -482,7 +482,7 @@ def ottGroup : Group where
           "def castN (e : N = N) (n : N) : (cast e n : N) = n := rfl\n") },
     { name := "no regularity at a type with a variable parameter", run := fun _ =>
         fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
-          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "type mismatch" },
+          "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "rfl: the two sides are not definitionally equal" },
     -- P1: regularity at inert types is decided by conversion (InReg_conv, the default): all
     -- eight probes check, and the control at a type variable does not
     { name := "P1: InReg decided by conversion accepts the eight probes, open indices too (the default)", run := fun _ => do
@@ -3628,8 +3628,10 @@ def leanVerdict (t : MTm) (mark : Bool := true) : String :=
   -- proofs hold relevant subterms reaches the pass: review F2)
   -- (mandatory sorts: the holes `MTm` writes for the `Π`/`Σ` sorts are filled first, by the
   -- sorts pass, in every case)
+  -- (the pre-check, holes allowed, comes first: the sorts pass evaluates the term)
+  -- (`mark := false`: hand-written terms, given to the pass as they are)
+  if mark && !(infer (R := ZeroOneMany) { globals := { g with lazyProofs := false, sortHolesOk := true } } t.toTerm).toBool then "error" else
   let t0 := (Mark.infer (R := ZeroOneMany) { globals := g, sortsOnly := true } t.toTerm).1
-  if mark && !(infer (R := ZeroOneMany) { globals := { g with lazyProofs := false } } t0).toBool then "error" else
   let tm := if mark then (Mark.infer (R := ZeroOneMany) { globals := g } t0).1 else t0
   match infer (R := ZeroOneMany) { globals := g } tm with
   | .ok (ty, _) => match MTm.ofTerm (quote g 0 ty) with
@@ -3650,15 +3652,15 @@ def wizVerdict : String :=
 def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
   let (ps, v, ty) := d
   let g := leanGlobals ()
-  -- (the sorts first, as in `leanVerdict`)
-  let d0 := Decl.withSorts g { name := "test", levelParams := ps, type := ty.toTerm, value := v.map MTm.toTerm }
-  -- (marked only if well typed, as in `leanVerdict`)
+  -- (marked only if well typed, as in `leanVerdict`; holes allowed in the pre-check, the
+  -- sorts pass after it)
   let pre : TCM Unit := do
-    let ctx : Ctx ZeroOneMany := { globals := { g with lazyProofs := false } }
-    let _ ← Wiz.checkType ctx d0.type
-    if let some v := d0.value then
-      let _ ← Wiz.check ctx v (ctx.eval d0.type)
+    let ctx : Ctx ZeroOneMany := { globals := { g with lazyProofs := false, sortHolesOk := true } }
+    let _ ← Wiz.checkType ctx ty.toTerm
+    if let some v := v then
+      let _ ← Wiz.check ctx v.toTerm (ctx.eval ty.toTerm)
   if !pre.toBool then "error" else
+  let d0 := Decl.withSorts g { name := "test", levelParams := ps, type := ty.toTerm, value := v.map MTm.toTerm }
   match addDecl (R := ZeroOneMany) g (Decl.withMarks g d0) with
   | .ok _ => "ok"
   | .error _ => "error"
