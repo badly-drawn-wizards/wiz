@@ -155,14 +155,18 @@ where
                 go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
             | none => go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
           let errs := if isoErrs.isEmpty then inner.messages.filter (·.severity == .error) else isoErrs
-          let msg : Msg := { info := cmd.info, severity := .error,
-                             text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+          -- (a declaration this file already has is reported as it is, at the import)
+          let msg : Msg := match errs.find? (·.code == "duplicate-declaration") with
+            | some d => { info := cmd.info, severity := .error, text := d.text, code := d.code }
+            | none => { info := cmd.info, severity := .error,
+                        text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
           -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
           let msgs := msgs ++ (inner.messages.filter (·.severity == .warning)).map fun w =>
             { info := cmd.info, severity := .warning, text := s!"module {m}: {w.render src}" }
           -- the info tree is positions in this file: keep only ours
-          go' input base chars stop { inner with messages := msgs, module := s.module, infos := s.infos } memo
+          -- (13m) the module's `local` notation stays in it
+          go' input base chars stop { (inner.endModule s) with messages := msgs, module := s.module, infos := s.infos } memo
       else go' input base chars stop (step cmd s) memo
     | .error e =>
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate

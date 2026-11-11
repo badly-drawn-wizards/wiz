@@ -1,0 +1,6 @@
+import Grail
+-- tower in Wiz (stage 26e): `grail build` makes .grail/bin/tower; `grail test` checks
+-- the pure parts (tests/*.wiz against their .expected).
+def package : Package := Package.new "tower"
+  |> Package.exe "tower" "Main.wiz"
+  |> Package.tests "tests" "tests"

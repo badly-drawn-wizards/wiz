@@ -22,11 +22,7 @@ def MList : List Nat → Nat → HProp Nat
   | .cons x L, p => hexists (fun (n : Nat) =>
       hpure (Not (p = 0)) ⋆ ((p ↦ x) ⋆ ((Nat.succ p ↦ n) ⋆ MList L n)))
 
--- `revApp L acc` is `reverse L ++ acc`
-def List.revApp {A : Type} : List A → List A → List A
-  | .nil, acc => acc
-  | .cons x xs, acc => List.revApp xs (.cons x acc)
-def List.reverse {A : Type} (l : List A) : List A := List.revApp l .nil
+-- `List.revApp L acc` (lib/Text.wiz, through Hoare) is `reverse L ++ acc`
 
 -- ## In-place list reversal
 --
