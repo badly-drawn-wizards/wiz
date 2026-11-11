@@ -2,10 +2,11 @@
 # what you can untar by hand (scripts/release-tarball.sh describes the layout).
 #
 # * a tag vX.Y.Z: a GitHub release of that tag with wiz-x86_64-linux.tar.gz (+ .sha256);
-# * a push to master: the pre-release `snapshot-<sha>` of that commit, then the tag
-#   `nightly` moves to it, then old snapshots are pruned (scripts/release-snapshots.sh);
+# * a push to master: the pre-release `snapshot-<sha>` of that commit, then old snapshots
+#   are pruned (scripts/release-snapshots.sh); the tag `nightly` moves to it only once CI
+#   has passed on that commit (nightly.yml);
 # * workflow_dispatch with `commit`: builds that (older) master commit and publishes its
-#   snapshot, leaving nightly alone (to satisfy a pin whose snapshot was pruned);
+#   snapshot (to satisfy a pin whose snapshot was pruned);
 # * a pull request that touches the packaging: builds and tests the tarball, uploads nothing.
 #
 # The build is outside Nix, with elan's Lean, whose bundled clang and sysroot make the
@@ -26,6 +27,7 @@ on:
       - Tower/**
       - scripts/release-snapshots.sh
       - scripts/test-release-snapshots.sh
+      - .github/workflows/nightly.yml
   workflow_dispatch:
     inputs:
       commit:
@@ -136,8 +138,8 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" dist/* --title "Wiz ${GITHUB_REF_NAME}" --notes "Wiz ${GITHUB_REF_NAME}: install with tower (docs/stages/26-tower.md)" ||
             gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
-      # snapshot-<sha>, then nightly moves to it (forwards only), then pruning (26g)
-      - name: Publish (snapshot and nightly, from master)
+      # snapshot-<sha>, then pruning (26g); nightly.yml moves nightly once CI passed
+      - name: Publish (snapshot, from master)
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -146,4 +148,4 @@ jobs:
         if: inputs.commit != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: .release-tools/scripts/release-snapshots.sh snapshot "$OLD_COMMIT" dist
+        run: .release-tools/scripts/release-snapshots.sh publish "$OLD_COMMIT" dist

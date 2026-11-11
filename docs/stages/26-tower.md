@@ -148,8 +148,8 @@ runtime, as Lean's own releases do, and the job checks that no `/nix/store` path
 linked in. It runs on:
 
 * tags `vX.Y.Z`: a GitHub release with the tarball and its `.sha256`;
-* pushes to `master`: the snapshot of the commit, and the tag `nightly` moves to it
-  (26g);
+* pushes to `master`: the snapshot of the commit; the tag `nightly` moves to it once
+  CI has passed on it (26g);
 * pull requests that touch the packaging: the tarball is built and tested, but nothing
   is uploaded.
 
@@ -206,15 +206,21 @@ one release, 1000), so pruning (below) keeps the size in check. Pull requests th
 the packaging still build and test the tarball, and they also run
 `scripts/test-release-snapshots.sh`, but they publish nothing.
 
-**nightly is a tag.** After the snapshot exists, the tag `nightly` moves to its commit,
-and only forwards: a commit that is not ahead of the tag (an older run, a dispatched old
-commit) leaves it. A ref update is atomic, so tower, which resolves `nightly` through
+**nightly is a tag.** It moves only to a commit whose CI passed: master can break even
+though every merged PR was green (two PRs green alone, in semantic conflict). A snapshot
+of a red commit may exist, since pins name commits explicitly, but `nightly` (what
+users get by default) never points at one. `.github/workflows/nightly.yml` runs when
+the CI workflow completes successfully on a master push (`workflow_run`). It waits up to
+an hour for that commit's `snapshot-<sha>` tag, because release.yml runs alongside CI,
+and stops at once if no release.yml run of the commit is still going (one that failed,
+or was cancelled by a newer push). Then it moves the tag, and only forwards: a commit
+that is not ahead of the tag (an older run) leaves it. A ref update is atomic, so tower, which resolves `nightly` through
 `git ls-remote` to the tag's commit and downloads that snapshot, can't hit a missing
 file. Before, the assets were replaced in place, and downloads returned 404 while they
-uploaded. The tag lags the branch for as long as a build takes. A release install of
+uploaded. The tag lags the branch by at least one CI run. A release install of
 `nightly` records the tag's commit, and `tower update` compares against the tag, not
 against the branch. The release `nightly` (`releases/download/nightly/…`, for people and
-older towers) still gets the same files: each file is uploaded under a temporary name,
+older towers) then gets the snapshot's files: each file is uploaded under a temporary name,
 the old one is deleted and the new one renamed, so it is missing for one API call
 instead of for a whole upload. `scripts/tower-init.sh` uses the snapshot of the tag
 when `git` is there, and checks the `.sha256`.
@@ -228,8 +234,8 @@ outlives the window, and `tower toolchain install keep/icestick` works too, beca
 `keep/` tag is a spec for its commit's snapshot.
 
 **Older commits.** Running the workflow by hand (`workflow_dispatch`) with the input
-`commit` set to a full master sha builds that commit and publishes its snapshot, and
-leaves `nightly` alone: `gh workflow run release.yml -R badly-drawn-wizards/wiz -f
+`commit` set to a full master sha builds that commit and publishes its snapshot (nightly
+does not move): `gh workflow run release.yml -R badly-drawn-wizards/wiz -f
 commit=<sha>`, or "Run workflow" on the Actions page. The commit's tarball is laid out
 by the workflow's current `scripts/release-tarball.sh`, not by the commit's own copy. A
 dispatched snapshot is new, so it survives the next 20 pushes; push a `keep/` tag to

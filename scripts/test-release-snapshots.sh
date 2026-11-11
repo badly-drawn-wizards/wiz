@@ -56,6 +56,9 @@ case "$1 ${2:-}" in
     for f in "$@"; do case $f in --*) ;; *) cp "$f" "$S/rel/$tag/" ;; esac; done ;;
   "release list")
     for r in "$S/rel"/snapshot-*; do [ -d "$r" ] && printf '%s\t%s\n' "$(cat "$r/.created")" "$(basename "$r")"; done; true ;;
+  "release download")
+    tag=$3; shift 3; [ "$1" = --dir ] && mkdir -p "$2" && cp "$S/rel/$tag"/* "$2/" ;;
+  "run list") cat "$S/running" 2>/dev/null || echo 1 ;;
   "release delete") rm -rf "$S/rel/$3"; git -C "$repo" update-ref -d "refs/tags/$3" ;;
   "release edit") ;;
   api*)
@@ -101,6 +104,8 @@ i=1
 while [ $i -le 25 ]; do
   eval "c=\$c$i"
   run publish "$c" "$(dist "$c")"
+  [ "$(tagAt nightly)" = "$c" ] && [ $i -gt 1 ] && fail "publish moved nightly"
+  run nightly "$c"
   [ "$(tagAt nightly)" = "$c" ] || fail "nightly is not at c$i after publishing it"
   [ "$(cat "$S/rel/nightly/wiz-x86_64-linux.tar.gz")" = "tarball $c" ] || fail "nightly assets are not c$i's"
   i=$((i + 1))
@@ -119,19 +124,40 @@ run publish "$c25" "$(dist "$c25")"
 grep -q "exists" "$t/out" || fail "rerun: $(cat "$t/out")"
 
 # workflow_dispatch of an old commit: snapshot c1, nightly stays at c25, the oldest (c6) goes
-run snapshot "$c1" "$(dist "$c1")"
+run publish "$c1" "$(dist "$c1")"
 have "$c1" || fail "dispatched snapshot c1 missing"
 have "$c6" && fail "c6 should have been pruned"
 [ "$(tagAt nightly)" = "$c25" ] || fail "snapshot moved nightly"
 
-# publish of a commit nightly is not behind: diverged d gets a snapshot, nightly stays
+# a diverged commit gets a snapshot, but nightly does not move to it
 run publish "$d" "$(dist "$d")"
 have "$d" || fail "snapshot d missing"
+run nightly "$d"
 [ "$(tagAt nightly)" = "$c25" ] || fail "nightly moved to a diverged commit"
 grep -q "not moving" "$t/out" || fail "diverged: $(cat "$t/out")"
 # ... and an older master commit does not move it back
-run publish "$c24" "$(dist "$c24")"
+run nightly "$c24"
 [ "$(tagAt nightly)" = "$c25" ] || fail "nightly moved backwards"
+
+# CI passed on a commit whose snapshot never appears (release.yml failed): nightly stays
+g checkout -q master 2>/dev/null || g checkout -q -B master "$c25"
+g commit -q --allow-empty -m c26; c26=$(g rev-parse HEAD); g push -q "$repo" HEAD:refs/heads/master
+NIGHTLY_WAIT=2 NIGHTLY_POLL=1 sh "$here/release-snapshots.sh" nightly "$c26" > "$t/out" 2>&1 && fail "nightly without a snapshot"
+grep -q "no snapshot-$c26 after" "$t/out" || fail "no snapshot: $(cat "$t/out")"
+echo 0 > "$S/running" # release.yml failed or was cancelled: stop at once
+NIGHTLY_WAIT=600 NIGHTLY_POLL=1 sh "$here/release-snapshots.sh" nightly "$c26" > "$t/out" 2>&1 && fail "nightly without a release run"
+grep -q "not running" "$t/out" || fail "release not running: $(cat "$t/out")"
+rm "$S/running"
+[ "$(tagAt nightly)" = "$c25" ] || fail "nightly moved without a snapshot"
+# ... and one still uploading: nightly waits for it
+NIGHTLY_WAIT=30 NIGHTLY_POLL=1 sh "$here/release-snapshots.sh" nightly "$c26" > "$t/out-wait" 2>&1 &
+waiter=$!
+sleep 2
+run publish "$c26" "$(dist "$c26")"
+wait $waiter || { cat "$t/out-wait"; fail "nightly did not wait for the snapshot"; }
+grep -q "waiting for snapshot-$c26" "$t/out-wait" || fail "did not wait: $(cat "$t/out-wait")"
+[ "$(tagAt nightly)" = "$c26" ] || fail "nightly is not at c26"
+[ "$(cat "$S/rel/nightly/wiz-x86_64-linux.tar.gz")" = "tarball $c26" ] || fail "nightly assets are not c26's"
 
 # bad arguments
 sh "$here/release-snapshots.sh" publish abc "$t" >/dev/null 2>&1 && fail "accepted a short sha"

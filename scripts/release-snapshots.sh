@@ -1,21 +1,26 @@
 #!/bin/sh
 # Per-commit release tarballs (stage 26g): what release.yml does with a green master push.
 #
-#   scripts/release-snapshots.sh publish SHA DIST    snapshot-SHA, move nightly, prune
-#   scripts/release-snapshots.sh snapshot SHA DIST   snapshot-SHA and prune (an older commit,
-#                                                    from workflow_dispatch: nightly stays)
-#   scripts/release-snapshots.sh prune               only the pruning
+#   scripts/release-snapshots.sh publish SHA DIST   snapshot-SHA, then prune (release.yml,
+#                                                   a master push or a dispatched commit)
+#   scripts/release-snapshots.sh nightly SHA        move nightly to SHA once snapshot-SHA is
+#                                                   there (nightly.yml, after CI passed on SHA)
+#   scripts/release-snapshots.sh prune              only the pruning
 #
 # * every master commit gets a pre-release `snapshot-<full sha>` (its tag at that commit)
 #   holding DIST/* (wiz-ARCH-linux.tar.gz and its .sha256). `gh release create` makes a
 #   draft, uploads, then publishes, so the tag (and the release) appear only once the
 #   assets are complete: whoever sees the tag (`git ls-remote`) can download them.
-# * then the tag `nightly` moves to SHA, only forwards (an older run never moves it back).
-#   A ref update is atomic: tower reads `refs/tags/nightly` and downloads
-#   snapshot-<that commit>, which exists by then, so there is no window with a 404.
+#   A snapshot of a commit whose CI fails may exist (a pin names it explicitly).
+# * `nightly` runs when the CI workflow succeeded on SHA: it waits (NIGHTLY_WAIT seconds,
+#   default 3600) for the tag snapshot-SHA, then moves the tag `nightly` to SHA, only
+#   forwards (an older commit never moves it back). A ref update is atomic: tower reads
+#   `refs/tags/nightly` and downloads snapshot-<that commit>, which exists by then, so
+#   there is no window with a 404.
 # * the release `nightly` (releases/download/nightly/…, for people and old towers) gets
-#   the same files: each is uploaded under a temporary name, then the old asset is deleted
-#   and the new one renamed, so a download misses it for one API call, not an upload.
+#   the snapshot's files: each is uploaded under a temporary name, then the old asset is
+#   deleted and the new one renamed, so a download misses it for one API call, not an
+#   upload.
 # * pruning keeps the newest $SNAPSHOT_KEEP snapshots (default 20) and every snapshot of a
 #   commit that a `v*` tag, a `keep/…` tag or `nightly` points at; the rest are deleted
 #   with their tags. To keep a pinnable toolchain, push a tag `keep/NAME` at its commit.
@@ -71,10 +76,14 @@ swap_assets() {
   done
 }
 
+fullsha() {
+  case $1 in *[!0-9a-f]*|'') echo "$1 is not a commit sha" >&2; exit 2 ;; esac
+  [ ${#1} -eq 40 ] || { echo "$1 is not a full (40 hex) sha" >&2; exit 2; }
+}
+
 snapshot() {
   sha=$1 dist=$2
-  case $sha in *[!0-9a-f]*|'') echo "publish: $sha is not a commit sha" >&2; exit 2 ;; esac
-  [ ${#sha} -eq 40 ] || { echo "publish: $sha is not a full (40 hex) sha" >&2; exit 2; }
+  fullsha "$sha"
   tag=snapshot-$sha
   if gh release view "$tag" >/dev/null 2>&1; then
     echo "$tag exists (a rerun); leaving it as it is"
@@ -85,9 +94,26 @@ snapshot() {
   fi
 }
 
-publish() {
-  sha=$1 dist=$2
-  snapshot "$sha" "$dist"
+nightly() {
+  sha=$1
+  fullsha "$sha"
+  tag=snapshot-$sha
+  # the release job may still be building or uploading: its tag appears once it is complete
+  waited=0
+  until [ -n "$(git ls-remote --tags "$remote" "refs/tags/$tag")" ]; do
+    if [ "$waited" -ge "${NIGHTLY_WAIT:-3600}" ]; then
+      echo "no $tag after ${waited}s; nightly stays" >&2; exit 1
+    fi
+    # no release.yml run of SHA is still going (it failed, or a newer push cancelled it):
+    # don't hold the queue of later nightly runs
+    running=$(gh run list --workflow release.yml --commit "$sha" --json status \
+      --jq 'map(select(.status != "completed")) | length')
+    if [ "$running" = 0 ]; then
+      echo "no $tag, and release.yml is not running on $sha (failed or cancelled); nightly stays" >&2; exit 1
+    fi
+    echo "waiting for $tag"
+    sleep "${NIGHTLY_POLL:-60}"; waited=$((waited + ${NIGHTLY_POLL:-60}))
+  done
   # nightly moves forwards only: SHA must be ahead of (or at) where it is
   cur=$(git ls-remote --tags "$remote" refs/tags/nightly | awk '{ print $1 }')
   if [ -z "$cur" ]; then
@@ -97,7 +123,7 @@ publish() {
     case $st in
       ahead) gh api -X PATCH "repos/{owner}/{repo}/git/refs/tags/nightly" -f sha="$sha" -F force=true >/dev/null ;;
       identical) ;;
-      *) echo "nightly is at $cur, which $sha is not ahead of ($st); not moving it"; prune; return ;;
+      *) echo "nightly is at $cur, which $sha is not ahead of ($st); not moving it"; return ;;
     esac
   fi
   echo "nightly -> $sha"
@@ -105,14 +131,16 @@ publish() {
     gh release create nightly --prerelease --latest=false --target "$sha" --title "Wiz nightly" \
       --notes "Wiz built from master; moves with it. tower installs the snapshot the tag nightly points at."
   fi
-  swap_assets nightly "$dist"/*
-  gh release edit nightly --notes "Wiz built from master at $sha (snapshot-$sha); moves with it. tower installs the snapshot the tag nightly points at."
-  prune
+  files=$(mktemp -d)
+  gh release download "$tag" --dir "$files"
+  swap_assets nightly "$files"/*
+  rm -rf "$files"
+  gh release edit nightly --notes "Wiz built from master at $sha (snapshot-$sha), the newest commit whose CI passed. tower installs the snapshot the tag nightly points at."
 }
 
 case ${1:-} in
-  publish) [ $# -eq 3 ] || { echo "usage: $0 publish SHA DIST" >&2; exit 2; }; publish "$2" "$3" ;;
-  snapshot) [ $# -eq 3 ] || { echo "usage: $0 snapshot SHA DIST" >&2; exit 2; }; snapshot "$2" "$3"; prune ;;
+  publish) [ $# -eq 3 ] || { echo "usage: $0 publish SHA DIST" >&2; exit 2; }; snapshot "$2" "$3"; prune ;;
+  nightly) [ $# -eq 2 ] || { echo "usage: $0 nightly SHA" >&2; exit 2; }; nightly "$2" ;;
   prune) prune ;;
-  *) echo "usage: $0 publish SHA DIST | snapshot SHA DIST | prune" >&2; exit 2 ;;
+  *) echo "usage: $0 publish SHA DIST | nightly SHA | prune" >&2; exit 2 ;;
 esac
