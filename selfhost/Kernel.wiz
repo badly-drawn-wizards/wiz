@@ -788,10 +788,16 @@ def sizePred (sz : Val) : Option Val := match whnf sz with
   | .vszInf => .some .vszInf
   | .vszSuc s => .some s
   | _ => .none
--- Regularity (`cast A A e t ↦ t` for any proof `e`) is off: with an impredicative `Prop`
--- and proof irrelevance it makes checking loop (D1, Abel–Coquand). `.true` restores
--- it, as `--regularity full` does in the Lean kernel.
+-- Regularity beyond the inert types (the D1 experiment): Cast-Refl at **every** type,
+-- [PLT25]'s rule, decided in the conversion checker only (`strippable`); the evaluator
+-- never fires it. Off: the published decidability proof covers Π, ℕ, ⊥, the impredicative
+-- `Prop` and ∃, not these data types. `.true` is `--regularity full` in the Lean kernel.
 def kernelRegularity : Bool := .false
+-- Regularity at inert types, the rule InReg_conv: `cast A B e t ≡ t` when `A` is inert and
+-- `A ≡ B`, decided by the conversion checker on the casts that stay stuck (`unCast` in
+-- `Conv.lean`; `--inert conv`, the default). `.false` leaves only the evaluator's fast
+-- path, `groundEqTy` (`--inert ground`).
+def kernelInertConv : Bool := .true
 -- (P2) proofs are never evaluated (`Globals.lazyProofs` in the Lean kernel): a proof
 -- position (`coe`'s equation, `subst`'s two proofs) is suspended (`Head.hprf`), and a cast
 -- between propositions is stuck. `.false` is the old behaviour (the evaluator runs
@@ -873,81 +879,6 @@ def usesVar : Nat → Tm → Bool
   | i, .prf _ t => usesVar i t
   | _, _ => .true
 
--- `1 +` the largest level of a variable in a value (`0` if none). `sameVal` (regularity,
--- `vCastW`) quotes at this level, so that every variable gets its own index. A closure counts only
--- the entries of its environment that its body might mention (`usesVar`).
-mutual
-def lvlBound : Val → Nat
-  | .vsort _ => 0
-  | .vpi _ a env b _ => Nat.max (lvlBound a) (envBound 1 env b)
-  | .vlam env b => envBound 1 env b
-  | .vsigma _ a env b _ => Nat.max (lvlBound a) (envBound 1 env b)
-  | .vpair a b => Nat.max (lvlBound a) (lvlBound b)
-  | .vunit _ => 0
-  | .vtt => 0
-  | .vempty _ => 0
-  | .venum _ => 0
-  | .vtag _ _ => 0
-  | .vdesc _ I => lvlBound I
-  | .vdret i => lvlBound i
-  | .vdarg S E => Nat.max (lvlBound S) (lvlBound E)
-  | .vdrec j E => Nat.max (lvlBound j) (lvlBound E)
-  | .vdhrec H j E => Nat.max (lvlBound H) (Nat.max (lvlBound j) (lvlBound E))
-  | .vmu _ I D i sz => Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound i) (lvlBound sz))
-  | .vsize => 0
-  | .vszInf => 0
-  | .vszSuc sz => lvlBound sz
-  | .vsizeLt sz => lvlBound sz
-  | .vcon x => lvlBound x
-  | .vnu _ I D i sz => Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound i) (lvlBound sz))
-  | .vcocon x => lvlBound x
-  | .vscofix _ I D A f sz i a => Nat.max (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound A) (lvlBound f)))
-      (Nat.max (Nat.max (lvlBound sz) (lvlBound i)) (lvlBound a))
-  | .vcoit _ I D S st i s => Nat.max (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound S) (lvlBound st)))
-      (Nat.max (lvlBound i) (lvlBound s))
-  | .vglued h sp _ => Nat.max (headBound h) (spineBound sp)
-  | .vne h sp => Nat.max (headBound h) (spineBound sp)
-  | .vulift _ A => lvlBound A
-  | .vup a => lvlBound a
--- the entries of `env` (the first at index `i` of `b`) that `b` might mention
-def envBound : Nat → Env → Tm → Nat
-  | _, .nil, _ => 0
-  | i, .cons v rest, b => Nat.max (match usesVar i b with
-    | .true => lvlBound v
-    | .false => 0) (envBound (i + 1) rest b)
-def branchesBound : Env → Tms → Nat
-  | _, .tnil => 0
-  | env, .tcons b rest => Nat.max (envBound 0 env b) (branchesBound env rest)
-def headBound : Head → Nat
-  | .hvar x => x + 1
-  | .heq A a b => Nat.max (lvlBound A) (Nat.max (lvlBound a) (lvlBound b))
-  | .heqTy A B => Nat.max (lvlBound A) (lvlBound B)
-  | .hcast A B e t => Nat.max (Nat.max (lvlBound A) (lvlBound B)) (Nat.max (lvlBound e) (lvlBound t))
-  | .hrefl A a => Nat.max (lvlBound A) (lvlBound a)
-  | .hreflTy X => lvlBound X
-  | .htransp A a P p b e => Nat.max (Nat.max (lvlBound A) (lvlBound a))
-      (Nat.max (Nat.max (lvlBound P) (lvlBound p)) (Nat.max (lvlBound b) (lvlBound e)))
-  | .hconst _ _ _ _ _ => 0
-  | .haxiom _ _ => 0
-  | .hprf env t => envBound 0 env t
-def spineBound : Spine → Nat
-  | .snil => 0
-  | .sapp sp a => Nat.max (spineBound sp) (lvlBound a)
-  | .sfst sp => spineBound sp
-  | .ssnd sp => spineBound sp
-  | .secase sp env m bs => Nat.max (spineBound sp) (Nat.max (envBound 1 env m) (branchesBound env bs))
-  | .sabsurd sp m => Nat.max (spineBound sp) (lvlBound m)
-  | .sdelim sp _ P a b c d => Nat.max (spineBound sp)
-      (Nat.max (Nat.max (lvlBound P) (lvlBound a)) (Nat.max (Nat.max (lvlBound b) (lvlBound c)) (lvlBound d)))
-  | .sind sp _ I D _ P m i => Nat.max (spineBound sp)
-      (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound P) (Nat.max (lvlBound m) (lvlBound i))))
-  | .ssfix sp _ I D _ P f sz i => Nat.max (spineBound sp)
-      (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (Nat.max (lvlBound P) (lvlBound f)) (Nat.max (lvlBound sz) (lvlBound i))))
-  | .sscase sp _ I D _ P m sz i => Nat.max (spineBound sp)
-      (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (Nat.max (lvlBound P) (lvlBound m)) (Nat.max (lvlBound sz) (lvlBound i))))
-  | .sout sp => spineBound sp
-  | .sdown sp => spineBound sp
-end
 
 mutual
 def eval : Env → Tm → Val
@@ -1044,7 +975,8 @@ def suspend (env : Env) (t : Tm) : Val := match kernelLazyProofs with
     | .prf _ t' => suspend env t'
     | _ => .vne (.hprf env t) .snil
   | .false => eval env t
--- (P2) the eliminations of a proof, applied to its value (for reading it back)
+-- the eliminations of a spine, applied to a value (for reading a proof back, and for
+-- the argument of a cast that regularity removes: `stripCast`)
 def forceSp : Val → Spine → Val
   | v, .snil => v
   | v, .sapp sp a => vapp (forceSp v sp) a
@@ -1364,14 +1296,13 @@ def vCastW : Val → Val → Val → Val → Val
   | .venum k, .venum k', e, t => same k k' t (.vne (.hcast (.venum k) (.venum k') e t) .snil)
   -- (Q4) through `down` (a lifted proposition is cast by the equivalence, in `vCastP`)
   | .vulift l A, .vulift l' B, e, t => same l l' (.vup (vCast A B e (vdown t))) (.vne (.hcast (.vulift l A) (.vulift l' B) e t) .snil)
-  -- regularity at inert types (InReg, P1): equal ground inert types (`groundEqTy`, stable
-  -- under substitution); full regularity (off, `kernelRegularity`) by `sameVal`
+  -- regularity at inert types (InReg): the evaluator's fast path, equal ground inert types
+  -- (`groundEqTy`: invariant under conversion, stable under substitution, no conversion
+  -- needed). The rule itself is applied by conversion to the casts that stay stuck
   | A, B, e, t => castReg A B e t
-def castReg (A B e t : Val) : Val := match Bool.and kernelRegularity (sameVal A B) with
+def castReg (A B e t : Val) : Val := match groundEqTy 0 A B with
   | .true => t
-  | .false => match groundEqTy 0 A B with
-    | .true => t
-    | .false => vCastData A B e t
+  | .false => vCastData A B e t
 -- an inert type (`inertTy` in `Eval.lean`): first-order data, where a cast between equal
 -- types is the identity: `Enum`, `Unit`, `Σ`s of inert types, and `μ` types whose index
 -- type and fields are inert (no `Prop` fields, functions or neutral types)
@@ -1389,7 +1320,7 @@ def inertW (depth : Nat) : Val → Bool
   | .vsigma _ a env b s => match s with
     | .some l => match lvlNeverZero l with
       | .true => match inertTy (Nat.succ depth) a with
-        | .true => inertTy (Nat.succ depth) (eval (.cons (fresh (Nat.add 100000 depth)) env) b)
+        | .true => inertTy (Nat.succ depth) (eval (.cons (groundAtom (Nat.add 1000 depth)) env) b)
         | .false => .false
       | .false => .false
     | .none => .false
@@ -1419,11 +1350,6 @@ def inertTags (depth : Nat) (E : Val) (lifted : Bool) (k i : Nat) : Bool := matc
   | .true => match inertDesc depth (vapp E (upIf lifted (.vtag k i))) with
     | .true => inertTags depth E lifted k (Nat.succ i)
     | .false => .false
--- syntactic equality of values, quoted at a level above every variable in them
--- (`lvlBound`), so that different variables never quote alike
-def sameVal (a b : Val) : Bool :=
-  let l := Nat.max (lvlBound a) (lvlBound b);
-  tmEq (quoteM .false l a) (quoteM .false l b)
 -- Ground equality at inert types (`groundEqTy` in `Eval.lean`, P1): two inert types that
 -- are equal and have no free variable in a relevant position. Values are compared by
 -- their type (tags, constructors; `Unit` and propositions skipped; `Σ` by projections);
@@ -2326,38 +2252,40 @@ def conv : TCtx → Val → Val → Val → Bool
       -- (Q4) η: compare the contents
       | .vulift _ A => conv c A (vdown a) (vdown b)
       | .vsort _ => convTy c a b
+      -- (a canonical value against anything else goes to `convNe` too: the other side may
+      -- be a stuck cast that regularity removes)
       | .vdesc l I => match whnf a with
         | .vdret i => match whnf b with
           | .vdret j => conv c I i j
-          | _ => .false
+          | _ => convNe c a b
         | .vdarg S E => match whnf b with
           | .vdarg S' E' => Bool.and (convTy c S S') (conv c (.vpi .qw S (.cons I .nil) (.descr l (.var 1)) .none) E E')
-          | _ => .false
+          | _ => convNe c a b
         | .vdrec j E => match whnf b with
           | .vdrec j' E' => Bool.and (conv c I j j') (conv c (.vdesc l I) E E')
-          | _ => .false
+          | _ => convNe c a b
         | .vdhrec H j E => match whnf b with
           | .vdhrec H' j' E' => Bool.and (convTy c H H')
               (Bool.and (conv c (.vpi .qw H (.cons I .nil) (.var 1) .none) j j') (conv c (.vdesc l I) E E'))
-          | _ => .false
+          | _ => convNe c a b
         | _ => convNe c a b
       | .vmu l I D i _ => match whnf a with
         | .vcon x => match whnf b with
           | .vcon y => conv c (vInterp l I D (muFamily l I D) i) x y
-          | _ => .false
+          | _ => convNe c a b
         | _ => convNe c a b
       | .vnu l I D i _ => match whnf a with
         | .vcocon x => match whnf b with
           | .vcocon y => conv c (vInterp l I D (nuFamily l I D) i) x y
-          | _ => .false
+          | _ => convNe c a b
         | .vscofix _ _ _ A f _ j x => match whnf b with
           | .vscofix _ _ _ A' f' _ j' x' => Bool.and (conv c (coitStateTy l I) A A')
               (Bool.and (conv c (scofixFunTy l I D A) f f') (Bool.and (conv c I j j') (conv c (vapp A j) x x')))
-          | _ => .false
+          | _ => convNe c a b
         | .vcoit _ _ _ S st j x => match whnf b with
           | .vcoit _ _ _ S' st' j' x' => Bool.and (conv c (coitStateTy l I) S S')
               (Bool.and (conv c (coitStepTy l I D S) st st') (Bool.and (conv c I j j') (conv c (vapp S j) x x')))
-          | _ => .false
+          | _ => convNe c a b
         | _ => convNe c a b
       | _ => convNe c a b
   --|ex
@@ -2398,8 +2326,44 @@ def convNe (c : TCtx) (a b : Val) : Bool := match lazyDelta c a b with
 def convNeW : TCtx → Val → Val → Bool
   | _, .vtag _ i, .vtag _ j => Nat.beq i j
   | _, .vtt, .vtt => .true
-  | c, .vne x sp, .vne y sp' => convSpine c x y sp sp'
+  -- **Regularity, decided by conversion** (InReg_conv; `unCast` in `Conv.lean`): a stuck
+  -- cast between convertible types (inert ones) is its argument, on either side, with the
+  -- eliminations of the neutral applied to it. The comparison goes on at the neutral's
+  -- type (`conv`: the argument may be canonical, or the type may have η).
+  | c, .vne x sp, .vne y sp' => match stripCast c x sp with
+    | .some a => conv c (typeOfNe c x sp) a (.vne y sp')
+    | .none => match stripCast c y sp' with
+      | .some b => conv c (typeOfNe c y sp') (.vne x sp) b
+      | .none => convSpine c x y sp sp'
+  | c, .vne x sp, b => match stripCast c x sp with
+    | .some a => conv c (typeOfNe c x sp) a b
+    | .none => .false
+  | c, a, .vne y sp' => match stripCast c y sp' with
+    | .some b => conv c (typeOfNe c y sp') a b
+    | .none => .false
   | _, _, _ => .false
+-- the argument of a stuck cast with the neutral's eliminations applied, when the rule
+-- applies: the two types are convertible, and one of them is inert (`inertTy` reads a
+-- `Σ`'s sort annotation, which is optional, so of two convertible types one can be inert
+-- and the other not) or regularity is on at every type (`kernelRegularity`). `convTy A B`
+-- compares two components of the neutral, as the congruence rule for two casts does, and
+-- each step removes one cast: it terminates. Every head is listed.
+def stripCast : TCtx → Head → Spine → Option Val
+  | c, .hcast A B _ t, sp => match Bool.or kernelRegularity
+      (Bool.and kernelInertConv (Bool.or (inertTy 0 A) (inertTy 0 B))) with
+    | .false => .none
+    | .true => match convTy c A B with
+      | .true => .some (forceSp t sp)
+      | .false => .none
+  | _, .hvar _, _ => .none
+  | _, .heq _ _ _, _ => .none
+  | _, .heqTy _ _, _ => .none
+  | _, .hrefl _ _, _ => .none
+  | _, .hreflTy _, _ => .none
+  | _, .htransp _ _ _ _ _ _, _ => .none
+  | _, .hprf _ _, _ => .none
+  | _, .hconst _ _ _ _ _, _ => .none
+  | _, .haxiom _ _, _ => .none
 -- the same head: the same variable, or equal components (proofs are all equal)
 def convHead : TCtx → Head → Head → Bool
   | _, .hvar x, .hvar y => Nat.beq x y

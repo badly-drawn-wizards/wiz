@@ -466,32 +466,28 @@ def defaultSteps : Nat := 1000000
 
 end Budget
 
-/-- Which casts `cast A A e t` reduce to `t` (regularity), for the D1 experiment
-(`wiz-notes/d1-experiment.md`). Regularity, definitional proof irrelevance and an
-impredicative `Prop` together break normalisation (Abel–Coquand, LMCS 2020;
-`Tests/Elab.lean` "D1"). The default is `full`; the others are prototypes. -/
+/-- Regularity beyond the inert types, for the D1 experiment (`wiz-notes/d1-experiment.md`,
+`conv-regularity.md`). `full` is Cast-Refl at **every** type, [PLT25]'s rule: conversion
+identifies `cast A B e t` with `t` when `A ≡ B`. It is decided in the conversion checker
+only; the evaluator never fires it. Off by default: the published decidability proof
+covers Π, ℕ, ⊥, the impredicative `Prop` and ∃, not Wiz's data types. -/
 inductive Regularity where
-  /-- whenever the two types are equal (today's rule) -/
+  /-- Cast-Refl at every type, in conversion -/
   | full
-  /-- (R1) only at types that are not propositions -/
-  | nonProp
-  /-- (R2) only along `refl`, `reflTy`, `()` or a `transp` of such proofs along such proofs -/
-  | refl
-  /-- never: a cast computes only by the shapes of its types -/
+  /-- only at inert types (`InertReg`) -/
   | off
   deriving BEq, Repr, Inhabited
 
-/-- Regularity at inert types (InReg, D1/P1): when `cast A B e t ↦ t` at an inert `A`.
-See `wiz-notes/p1-stable.md`. -/
+/-- Regularity at inert types (InReg, D1/P1). The rule is InReg_conv: `cast A B e t ≡ t`
+when `A` is inert and `A ≡ B` (`wiz-notes/conv-regularity.md`). -/
 inductive InertReg where
-  /-- the old rule: `A` and `B` quote alike (`sameVal`). Not stable under substitution
-  (P1): kept only to measure what the stable rules lose -/
-  | syntactic
-  /-- (default) `A` and `B` are equal by `groundEqTy`: no free variable in a relevant
-  position, so the decision is invariant under conversion and stable under substitution -/
+  /-- only the evaluator's fast path: `cast A B e t ↦ t` when `A` and `B` are equal by
+  `groundEqTy` (no free variable in a relevant position, so the decision is invariant
+  under conversion and stable under substitution). A fragment of the rule; kept as a
+  flag to show what the fast path alone rejects -/
   | ground
-  /-- `ground`, and conversion also identifies `cast A B e t` with `t` at an inert `A`
-  when `A ≡ B` (InReg_conv, decided by `convTy`) -/
+  /-- (default) the rule: `ground` in the evaluator, and conversion identifies a stuck
+  `cast A B e t` with `t` at an inert type when `A ≡ B` (`convTy`) -/
   | conv
   deriving BEq, Repr, Inhabited
 
@@ -537,8 +533,8 @@ structure Globals (R : Type) where
   /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
   it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
   quoteErasesProofs : Bool := false
-  /-- (P1) regularity at inert types: `ground` (stable) by default -/
-  inertReg : InertReg := .ground
+  /-- (P1) regularity at inert types: decided by conversion (`conv`) by default -/
+  inertReg : InertReg := .conv
   /-- a compiler option, not read by the kernel (`--unbox-structs`, stage 22i): erasure
   represents a Σ whose second component is a structure's tail by its first component
   (`unboxedSigma` in `Compiler/Erase.lean`). Off by default: it is not stable under
