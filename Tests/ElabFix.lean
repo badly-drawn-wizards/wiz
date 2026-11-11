@@ -500,7 +500,9 @@ def group : Group where
         let src := s!"import Prelude\ndef L : List Nat := {lst}\ndef bad (h : L = L) : Nat := h\n"
         let loader ← preludeLoader
         -- (glued equations: by default the equation is shown as written, `L = L`; the
-        -- computed form, whose printing is bounded, is what `--eager-eqs` shows)
+        -- computed form, whose printing is bounded, is what `--eager-eqs` shows. The two
+        -- runs share the process's cache of imported modules, whose key must include
+        -- `lazyEqs`: without it the second run got the first run's Prelude, flag and all)
         let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
         let errs := s.messages.filter (·.severity == .error)
         unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}")

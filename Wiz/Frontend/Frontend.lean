@@ -76,7 +76,7 @@ partial def isoKey (base : CommandState R) (m : Name) : Option UInt64 := do
   let g := base.globals
   -- (every option of `Globals` that a module's state depends on or carries)
   let settings := hash (base.termInfo, base.nextScope, g.eager, g.predicativeProp, toString (repr g.regularity),
-    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs)
+    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs, g.lazyEqs)
   let (k, _) ← go [] m {}
   pure (mixHash settings k)
 where
