@@ -230,7 +230,7 @@ continue onto a line starting at the command's column.
 | `command.axiom`              | "axiom" ident [".{" [us] "}"] [binders] ":" T |
 | `command.check`              | "#check" term |
 | `command.reduce`             | "#reduce" term |
-| `command.declareSyntaxCat`   | "declare_syntax_cat" ident |
+| `command.declareSyntaxCat`   | "declare_syntax_cat" ident ["(" "keywords" ":=" ident ")"] |
 | `command.syntax`             | "syntax" [":" prec] [name] [priority] [stx+] ":" ident |
 | `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] ["deriving" C,+] |
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] where [fields] ["deriving" C,+] (where: `structure.where`, "where" [["private"] ident "::"]) |
@@ -243,6 +243,7 @@ continue onto a line starting at the command's column.
 | `command.partial`            | "partial" ["(" "default" ":=" w ")"] command (a `def`) |
 | `command.mutual`             | "mutual" [command+] "end" (`def`s, all partial; or `partial (default := w) def`s) |
 | `command.printAxioms`        | "#print" "axioms" ident |
+| `command.cStruct`            | "c_struct" [str] ["(" "header" ":=" str ")"] ident "where" [fields] ["deriving" C,+] (9i) |
 
 A constructor is `inductive.ctor`: "|" ["private"] ident [binders] [":" T]. A field is
 `structure.field`: ["private"] [quantity] ident ":" T, on its own line (13b: `private`
@@ -276,11 +277,25 @@ def commandLeading : List LeadingParser := [
   { kind := "command.glue", prec := maxPrec,
     p := seqs ["glue", ident, many (bracketedBinder false), ":", term, ":=", str] },
   { kind := "command.foreignType", prec := maxPrec,
-    p := seqs ["foreign_type", ident, optional (seqs ["(", nonReserved "finalizer", ":=", str, ")"])] },
+    p := seqs ["foreign_type", ident, optional (seqs ["(", nonReserved "finalizer", ":=", str, ")"]),
+      -- 9i: the C pointer type it stands for in imported headers (`T *` for the type `T`)
+      optional (seqs ["(", nonReserved "c", ":=", str, ")"])] },
   { kind := "command.importC", prec := maxPrec,
-    p := seqs ["import_c", str, optional (seqs ["(", nonReserved "pure", ")"])] },
+    p := seqs ["import_c", str, optional (seqs ["(", nonReserved "pure", ")"]),
+      -- 9i: opt-outs of the automatic mapping of structs, pointers and buffers
+      many (node "importC.opt" (seqs ["(", orelse (seqs [nonReserved "skip", ":=", str]) (nonReserved "no_auto"), ")"]))] },
+  -- 9i: a C struct, as a Wiz structure: `c_struct ["struct t"] [(header := "h")] T where fields`
+  { kind := "command.cStruct", prec := maxPrec,
+    p := seqs ["c_struct", optional str, optional (seqs ["(", nonReserved "header", ":=", str, ")"]), ident,
+      "where", many structureField, derivingClause] },
+  -- 9f: C source files and libraries linked with the program
+  { kind := "command.linkC", prec := maxPrec, p := seqs ["link_c", str] },
+  { kind := "command.linkLib", prec := maxPrec, p := seqs ["link_lib", str] },
   { kind := "command.extern", prec := maxPrec,
     p := seqs ["extern", str, optional (seqs ["(", nonReserved "header", ":=", str, ")"]), ident, ":", term] },
+  -- stage 9g: a C symbol for a Wiz function
+  { kind := "command.export", prec := maxPrec,
+    p := seqs ["export", str, ident, optional (seqs [":", term])] },
   { kind := "command.attrMacro", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "macro", ident, "]", ident] },
   { kind := "command.attrTactic", prec := maxPrec,
@@ -297,7 +312,7 @@ def commandLeading : List LeadingParser := [
     p := seqs ["attribute", "[", nonReserved "deriver", ident, "]", ident] },
   { kind := "command.deriving", prec := maxPrec,
     p := seqs ["deriving", "instance", sepBy1 ident ",", nonReserved "for", sepBy1 ident ","] },
-  { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
+  { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident, optional (seqs ["(", nonReserved "keywords", ":=", ident, ")"])] },
   { kind := "command.syntax", prec := maxPrec,
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
       optional (seqs ["(", nonReserved "name", ":=", ident, ")"]),

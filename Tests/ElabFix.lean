@@ -31,6 +31,54 @@ def okLibBounded (mb : Nat) (input : String) (infos : List String := []) : IO Un
   let peak ← peakMB
   unless peak ≤ mb do throw (IO.userError s!"used {peak} MB (bound: {mb} MB)")
 
+/-- A state monad over `Nat`, for `do` blocks without `Sys`. -/
+def stateM : String := "import Prelude
+def M (A : Type) : Type := Nat → (_ : A) × Nat
+instance : Monad M where
+  pure := fun a s => (a, s)
+  bind := fun x f s => f (x s).1 (x s).2
+def get : M Nat := fun s => (s, s)
+def put (n : Nat) : M Unit := fun _ => ((), n)
+"
+
+/-- `allBelow` and the two halves of a conjunction (the icestick-uart proofs). -/
+def allBelowSrc : String := "import Prelude
+def allBelow : Nat → (Nat → Bool) → Bool
+  | .zero, p => .true
+  | .succ n, p => Bool.and (p 0) (allBelow n (fun (k : Nat) => p (Nat.succ k)))
+def and_left : (a b : Bool) → Bool.and a b = .true → a = .true
+  | .true, b, h => refl Bool.true
+  | .false, b, h => absurd h.1
+def and_right : (a b : Bool) → Bool.and a b = .true → b = .true
+  | .true, b, h => h
+  | .false, b, h => absurd h.1
+"
+
+/-- The shape of `Hw` (lib/Hdl/Core.wiz) that `Hw.cat (Hw.lit 1 1) d` needs. -/
+def hwSrc : String := "import Prelude
+inductive HwTy where
+  | bits (n : Nat)
+def HwTy.bit : HwTy := HwTy.bits 1
+class Hw (r : HwTy → Type) where
+  lit : (ω n : Nat) → Nat → r (HwTy.bits n)
+  cat : {ω m n : Nat} → r (HwTy.bits m) → r (HwTy.bits n) → r (HwTy.bits (Nat.add m n))
+"
+
+/-- `p.1` and `p.2` of a glued global `p := (a, a)` stay glued: the spine records the
+projection and `p` is not unfolded (elab-bugs-from-hdl 2). -/
+def gluedProjections : IO Unit := do
+  let pairTy : Raw Unit := .sigma "x" () "A" "A"
+  let g : Globals Unit := [Raw.axiom "A" (.sort 0), Raw.axiom "a" "A",
+    Raw.defn "p" pairTy (.pair "a" "a")].foldl Globals.insert {}
+  let pv := eval g [] (.const "p" [])
+  for (which, v) in [("fst", vFst pv), ("snd", vSnd pv)] do
+    match v with
+    | .unfold "p" _ sp _ =>
+      unless sp.size == 1 do throw (IO.userError s!"{which}: spine of size {sp.size}")
+    | _ => throw (IO.userError s!"{which}: the projection unfolded p")
+    -- and it still computes
+    checkEq "a" (quote g 0 (whnf v)).pretty
+
 /-- (13b) The messages of `input`, with `lib/Prelude.wiz` and the module `Priv` (`priv`)
 importable: privacy is per module. -/
 def runPriv (priv input : String) : IO (Array String × Array String) := do
@@ -73,6 +121,15 @@ def privMod2 : String :=
   "def Acct.balance (a : Acct) : Nat := a.bal\n" ++
   "private inductive Color where\n  | red\n  | blue\n" ++
   "def fav : Color := .red\n"
+
+/-- A `Type 1` inductive with a function field over a `Type` (stored lifted, as
+`fun h => k (down h)`), and an abstract channel type indexed by it (lib/Session.wiz's
+`Proto` and `Chan`, in small). -/
+def protoLike : String :=
+  "import Prelude\ninductive P : Type 1 where\n  | step (A : Type) (k : A → P)\n  | stop\n" ++
+  "def P.flip : P → P\n  | .step A k => .step A (fun a => P.flip (k a))\n  | .stop => .stop\n" ++
+  "axiom Ch : P → Type\n" ++
+  "axiom Ch.next : {A : Type} → {k : A → P} → Ch (P.step A k) → (a : A) → Ch (k a)\n"
 
 def group : Group where
   name := "elabfix"
@@ -201,6 +258,73 @@ def group : Group where
         failsPriv privMod "import Priv\ndef x : Pos Nat := (5, ())" "Pos"
         failsPriv privMod "import Priv\nstructure Fake (A : Type) where\n  val : A\ndef x : Pos Nat := Fake.mk 5" "mismatch"
         failsPriv privMod "import Priv\ndef x (p : Pos Nat) : Nat := p.1" "cannot project" },
+    { name := "rfl compares the two sides in the elaborator's view: no equation with a look-alike (13b)", run := fun _ => do
+        let look := "import Priv\nstructure Look (A : Type) where\n  val : A\n"
+        let neq := "rfl: the two sides are not definitionally equal"
+        -- the kernel compares by shape, so `reflTy Look : Look = Pos` would check there,
+        -- and `cast` along it would make a `Pos` without `Pos.mk`
+        failsPriv privMod (look ++ "def e : Look Nat = Pos Nat := rfl") neq
+        failsPriv privMod (look ++ "def e : Pos Nat = Look Nat := rfl") neq
+        failsPriv privMod (look ++ "def e (A : Type) : Look A = Pos A := rfl") neq
+        failsPriv privMod (look ++ "def forge (x : Look Nat) : Pos Nat := cast rfl x") neq
+        failsPriv privMod (look ++ "def e : Look Nat = Pos Nat := refl (Look Nat)") "mismatch"
+        -- inside an equation that computes first (a pair, a function, a parameter of a data type)
+        failsPriv privMod (look ++ "def p : Type × Nat := (Look Nat, 1)\ndef e : p = (Pos Nat, 1) := rfl") neq
+        failsPriv privMod (look ++ "def e : (fun (A : Type) => Look A) = (fun (A : Type) => Pos A) := rfl") neq
+        failsPriv privMod (look ++ "def e : List (Look Nat) = List (Pos Nat) := rfl") neq
+        -- inductive and coinductive types, a structure with a private field (4g makes
+        -- these equations compute in the kernel)
+        let fake := "import Priv\ninductive Fake where\n  | num (n : Nat)\n  | secret (n : Nat)\n"
+        failsPriv privMod2 (fake ++ "def e : Fake = Tok := rfl") neq
+        failsPriv privMod2 (fake ++ "def e : Tok = Fake := rfl") neq
+        failsPriv privMod2 ("import Priv\ncoinductive Fake (A : Type) where\n  head : A\n  tail : Fake A\n  name : Nat\n" ++
+          "def e : Fake Nat = Sig Nat := rfl") neq
+        failsPriv privMod2 "import Priv\nstructure Fake where\n  owner : Nat\n  bal : Nat\ndef e : Fake = Acct := rfl" neq
+        -- controls: a type and itself, through a definition, values; in its own module a
+        -- look-alike is still the same type
+        okPriv privMod ("import Priv\ndef a : Pos Nat = Pos Nat := rfl\ndef T : Type := Pos Nat\ndef b : T = Pos Nat := rfl\n" ++
+          "def c (p : Pos Nat) : p = p := rfl\ndef d : Nat.add 1 1 = 2 := rfl\ndef f : List Nat = List Nat := rfl\n" ++
+          "def g (A : Type) : List A = List A := rfl\ndef i : (fun (n : Nat) => Nat.add 0 n) = (fun n => n) := rfl\n" ++
+          "def l (x : Nat) : (x, 1) = (x, Nat.add 0 1) := rfl")
+        okPriv privMod2 "import Priv\ndef e : Tok = Tok := rfl\ndef j : Sig Nat = Sig Nat := rfl\ndef k : Acct = Acct := rfl"
+        okPriv "" (privMod ++ "structure Look (A : Type) where\n  val : A\ndef e : Look Nat = Pos Nat := rfl\n" ++
+          "def forge (x : Look Nat) : Pos Nat := cast e x\n#eval (forge (Look.mk 4)).val") ["4"] },
+    { name := "the tactic request assign: a term with holes is type-checked at the end of the block (13b)", run := fun _ => do
+        let tac (body : String) := "syntax (name := viaHole) \"viaHole\" : tactic\ndef Tactic.viaHole : Tactic := fun _ => do\n" ++
+          "  g ← TacticM.mainGoal;\n  ng ← TacticM.newGoal g (.const \"Nat\");\n  e ← TacticM.goalExpr ng;\n" ++
+          "  TacticM.assign g (" ++ body ++ ");\n  TacticM.replaceMainGoal (.cons ng .nil)\n" ++
+          "attribute [tactic tactic.viaHole] Tactic.viaHole\n"
+        -- `K x ?n : Look Nat` given to a goal `Pos Nat`: with the hole the type was never
+        -- inferred, and the kernel takes the look-alike for the private type
+        failsPriv privMod ("import Priv\nstructure Look (A : Type) where\n  val : A\n" ++
+          "def K (x : Look Nat) (n : Nat) : Look Nat := x\n" ++ tac "Expr.app (.app (.const \"K\") (.var 0)) e" ++
+          "def forge (x : Look Nat) : Pos Nat := by\n  viaHole\n  exact 0") "mismatch"
+        -- control: a term with a hole of the goal's type (what `apply` does)
+        okLib ("import Prelude\n" ++ tac "Expr.app (.const \"Nat.succ\") e" ++ "def three : Nat := by\n  viaHole\n  exact 2\n#eval three") ["3"]
+        okLib ("import Prelude\ndef ap : (A B : Type) → (A → B) → A → B := by\n  intro A; intro B; intro f; intro a\n  apply f\n  assumption") },
+    { name := "OPEN (13b): a first-order unification solution forges a value of a private type", run := fun _ => do
+        -- not wanted: this records that the path is open. `?F ?p =?= G x` is solved by
+        -- `?F := G`, `?p := x`; nobody type-checks the solutions, and the kernel takes
+        -- `Look Nat` for `Pos Nat` by shape. When this test fails, the path was closed:
+        -- turn it into a `failsPriv` and update docs/stages/13-language.md, 13b.
+        okPriv privMod ("import Priv\nstructure Look (A : Type) where\n  val : A\n" ++
+          "inductive G : Look Nat → Type where\n  | mk (l : Look Nat) : G l\n" ++
+          "def sel {F : Pos Nat → Type} (p : Pos Nat) (w : F p) : Pos Nat := p\n" ++
+          "def forge (x : Look Nat) : Pos Nat := sel _ (G.mk x)\n#eval (forge (Look.mk 11)).val") ["11"] },
+    { name := "rfl is checked by the elaborator, not left to the kernel (wishful: elab-rfl-unchecked)", run := fun _ => do
+        failsLib "import Prelude\ndef w (r a : Nat) : r = Nat.succ a := rfl" "rfl: the two sides are not definitionally equal"
+        failsLib "import Prelude\ndef z (a : Nat) : a = a + 0 := rfl" "rfl: the two sides are not definitionally equal"
+        okLib "import Prelude\ndef k (a : Nat) : 0 + a = a := rfl\ndef m (xs : List Nat) : List.append List.nil xs = xs := rfl"
+        -- (agent elab-whnf's case) under a constructor whose motive is a hole: the kernel
+        -- used to answer "expected False, inferred True"
+        failsLibs "import Logic\ndef t : Ex (fun (m : Nat) => 3 = m) := Ex.intro _ 4 rfl" "rfl: the two sides are not definitionally equal"
+        okLibs "import Logic\ndef t : Ex (fun (m : Nat) => 3 = m) := Ex.intro _ 3 rfl"
+        -- so a tactic can try it: `rfl` fails, and the alternative runs
+        okLib "import Prelude\ndef a (r x : Nat) (h : r = Nat.succ x) : r = Nat.succ x := by first | rfl | exact h"
+        failsLib "import Prelude\ndef c (r x : Nat) : r = Nat.succ x := by rfl" "rfl: the two sides are not definitionally equal"
+        -- η still holds by `rfl`, also at an equation formed while a type was a hole
+        okLib ("import Prelude\ndef GP {S : Type} (f : S → S) : Prop := (s : S) → f s = s\nstructure One where\n  a : Nat\n" ++
+          "def x2 : GP (fun (s : One) => One.mk s.a) := fun s => rfl\ndef x6 : GP (fun (s : Unit) => ()) := fun s => rfl") },
     { name := "private constructors, observations and fields: the public API (13b)", run := fun _ => do
         okPriv privMod2 ("import Priv\n#eval Tok.value (Tok.num 3)\n#eval Tok.value (Tok.hide 4)\n#eval Tok.value (.num 5)\n" ++
           "#eval Sig.sample (Sig.next (Sig.const 3))\n#eval (Sig.const 2).name\n" ++
@@ -221,6 +345,9 @@ def group : Group where
         -- the recursors would hand out the private constructor's fields
         failsPriv privMod2 "import Priv\ndef f := @Tok.casesOn" "'Tok.casesOn' is private to module Priv"
         failsPriv privMod2 "import Priv\ndef f := @Tok.rec" "private"
+        -- the description is private too: `μ Tok.desc ()` is the type with nothing hidden
+        failsPriv privMod2 "import Priv\ndef raw : μ Tok.desc () := con ('secret, 7, (), ())" "'Tok.desc' is private to module Priv"
+        failsPriv privMod2 "import Priv\ndef D := @Sig.desc" "'Sig.desc' is private to module Priv"
         -- a type declared private: values of it can't be matched elsewhere either
         failsPriv privMod2 "import Priv\ndef f : Nat := match fav with\n  | .red => 1\n  | .blue => 2" "private to module Priv" },
     { name := "private observations of a coinductive: no observing, no building (13b)", run := fun _ => do
@@ -238,7 +365,136 @@ def group : Group where
         failsPriv privMod2 "import Priv\ndef f (a : Acct) : Nat := a.2.1" "project"
         failsLib "import Prelude\nclass C (A : Type) where\n  private m : A" "can't be private" },
     { name := "`private def` right after a structure (13b)", run := fun _ =>
-        okLib "import Prelude\nstructure P where\n  x : Nat\nprivate def q : P := P.mk 1\n#eval q.x" ["1"] }
+        okLib "import Prelude\nstructure P where\n  x : Nat\nprivate def q : P := P.mk 1\n#eval q.x" ["1"] },
+    { name := "a projection of an inline application doesn't run it (elab-bugs-from-hdl 2)", run := fun _ =>
+        -- `(mk n).b` used to evaluate `mk n` (100000 nested matches) to find the type of
+        -- `.b`: the evaluator overflowed the stack. Projections of glued values stay glued.
+        okLibBounded 2000 ("import Prelude\nstructure S where\n  a : Nat\n  b : List Nat\n" ++
+          "def step (p : Nat × List Nat) : Nat × List Nat := match p with\n  | (a, b) => (a + 1, .cons a b)\n" ++
+          "def go : Nat → Nat × List Nat\n  | .zero => (0, .nil)\n  | .succ n => step (go n)\n" ++
+          "def mk (n : Nat) : S := match go n with\n  | (a, b) => S.mk a b\n" ++
+          "def len : Nat := List.length (mk 100000).b\ndef len2 : Nat := List.length (go 100000).2\n" ++
+          "#eval List.length (mk 3).b") ["3"] },
+    { name := "projections of a glued value stay glued (elab-bugs-from-hdl 2)", run := fun _ => gluedProjections },
+    { name := "a two-row match with a catch-all covers the other constructors (elab-bugs-from-hdl 3)", run := fun _ =>
+        okLib ("import Prelude\ninductive Op where\n  | input (port : Nat)\n  | const (v : Nat)\n  | add\n  | sub\n  | slice (lo : Nat)\n" ++
+          "def Op.isAdd : Op → Bool\n  | .add => .true\n  | _ => .false\n" ++
+          "def Op.isAdd2 (o : Op) : Bool := match o with\n  | .add => .true\n  | _ => .false\n" ++
+          "def Op.lo : Op → List Nat → Nat\n  | .slice lo, _ => lo\n  | _, _ => 0\n" ++
+          "#eval Op.isAdd (Op.input 0)\n#eval Op.isAdd2 Op.add\n#eval Op.lo (Op.slice 4) List.nil") [".false", ".true", "4"] },
+    { name := "every form of `let` in a `do` block scopes over the rest of the block (do-let-omega-scope)", run := fun _ =>
+        -- `let ω x := e; s₁; s₂`, `let x : T := e; …` and `let (a, b) := e; …` used to
+        -- parse as a term-level `let` whose body was `s₁` alone: `x` was unknown in `s₂`
+        okLib (stateM ++ "def a (d : Nat) : M Nat := do\n  let ω n := Nat.add d 1;\n  put n;\n  Monad.pure n\n" ++
+          "def b (d : Nat) : M Nat := do\n  let n : Nat := Nat.add d 2;\n  put n;\n  Monad.pure n\n" ++
+          "def c (p : (_ : Nat) × Nat) : M Nat := do\n  let (x, y) := p;\n  put x;\n  Monad.pure y\n" ++
+          "#eval (a 1 0).1\n#eval (b 1 0).1\n#eval (c (3, 4) 0).2") ["2", "3", "3"] },
+    { name := "structural recursion doesn't depend on the order of the matched arguments (B4)", run := fun _ =>
+        -- the recursive call's result type `?p ?k = .true` met the expected `p (succ k) =
+        -- .true` before the arguments were elaborated, and the first-order guess
+        -- `?k := succ k` was kept (see "When unification approximates", Unify.lean)
+        okLib (allBelowSrc ++
+          "def spec1 : (n k : Nat) → (p : Nat → Bool) → allBelow n p = .true → Nat.lt k n = .true → p k = .true\n" ++
+          "  | .zero, .zero, p, h, hk => absurd hk.1\n  | .zero, .succ k, p, h, hk => absurd hk.1\n" ++
+          "  | .succ n, .zero, p, h, hk => and_left (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h\n" ++
+          "  | .succ n, .succ k, p, h, hk =>\n    spec1 n k (fun (j : Nat) => p (Nat.succ j))\n" ++
+          "      (and_right (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h) hk\n" ++
+          "def spec2 : (k n : Nat) → (p : Nat → Bool) → allBelow n p = .true → Nat.lt k n = .true → p k = .true\n" ++
+          "  | .zero, .zero, p, h, hk => absurd hk.1\n  | .succ k, .zero, p, h, hk => absurd hk.1\n" ++
+          "  | .zero, .succ n, p, h, hk => and_left (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h\n" ++
+          "  | .succ k, .succ n, p, h, hk =>\n    spec2 k n (fun (j : Nat) => p (Nat.succ j))\n" ++
+          "      (and_right (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h) hk\n") },
+    { name := "approximation: no guess for a hole an unelaborated explicit argument determines", run := fun _ =>
+        -- `?p ?k =?= ok (base + k)`: `?p`, `?k` stand for the explicit arguments
+        -- `(fun j => ok (base + j))` and `k`; guessing `?k := base + k` was wrong
+        okLib (allBelowSrc ++
+          "def spec : (k n : Nat) → (p : Nat → Bool) → allBelow n p = .true → Nat.lt k n = .true → p k = .true\n" ++
+          "  | .zero, .zero, p, h, hk => absurd hk.1\n  | .succ k, .zero, p, h, hk => absurd hk.1\n" ++
+          "  | .zero, .succ n, p, h, hk => and_left (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h\n" ++
+          "  | .succ k, .succ n, p, h, hk =>\n    spec k n (fun (j : Nat) => p (Nat.succ j))\n" ++
+          "      (and_right (p 0) (allBelow n (fun (j : Nat) => p (Nat.succ j))) h) hk\n" ++
+          "def ok (b : Nat) : Bool := Nat.beq b 3\n" ++
+          "def t (base : Nat) (h : allBelow 16 (fun (j : Nat) => ok (base + j)) = .true) (k : Nat)\n" ++
+          "    (hk : Nat.lt k 16 = .true) : ok (base + k) = .true :=\n  spec k 16 (fun (j : Nat) => ok (base + j)) h hk\n" ++
+          -- (a rigid result is still propagated: `Fin`-like indices come from the expected type)
+          "def t2 (p : Nat → Bool) (h : allBelow 16 p = .true) (k : Nat) (hk : Nat.lt k 16 = .true) : p k = .true :=\n" ++
+          "  spec k 16 p h hk\n") },
+    { name := "approximation: flex-rigid outside the pattern fragment still guesses (`?m ?A =?= M Nat`)", run := fun _ =>
+        okLib (stateM ++ "def g : M Nat := Monad.bind get (fun x => Monad.pure (Nat.add x 1))\n#eval (g 4).1") ["5"] },
+    { name := "approximation: flex-flex waits for the other arguments (Hw.cat (Hw.lit 1 1) d)", run := fun _ =>
+        -- `?r (.bits ?m) =?= ?r' (.bits 1)`: neither side is a pattern; the argument waits
+        -- until `d` fixes `?r`, then it is flex-rigid
+        okLib (hwSrc ++ "def frame9 {r : HwTy → Type} [Hw r] (d : r (HwTy.bits 8)) : r (HwTy.bits 9) :=\n" ++
+          "  Hw.cat (Hw.lit 1 1) d\n" ++
+          "def hiFirst {r : HwTy → Type} [Hw r] (hi : r HwTy.bit) (d : r (HwTy.bits 8)) : r (HwTy.bits 9) :=\n" ++
+          "  Hw.cat hi d\n") },
+    { name := "approximation: flex-flex guesses only as the last resort", run := fun _ =>
+        -- both arguments are flex-flex against the result: nothing else can make progress
+        okLib (hwSrc ++ "def two {r : HwTy → Type} [Hw r] : r (HwTy.bits 2) :=\n  Hw.cat (Hw.lit 1 1) (Hw.lit 1 0)\n") },
+    { name := "approximation: a repeated variable in a hole's spine (not a pattern) falls back to first order", run := fun _ =>
+        -- `?m Γ i' =?= r i'` with `i'` in `Γ`: pruning the repeated `i'` loses it, so the
+        -- solution is first-order from the repeated variable on (hdl-usability)
+        okLibs ("import Hdl.Core\nstructure CombT (i o : HwTy) where\n  run : {r : HwTy → Type} → [Hw r] → r i → r o\n" ++
+          "def mapIn {ω i' i o : HwTy} (f : CombT i' i) (c : Circuit i o) : Circuit i' o :=\n" ++
+          "  Circuit.mk c.st c.init (fun s x => c.step s (f.run x))\n") },
+    { name := "a clause definition's type: instance holes still pending are solved before it is closed (hdl-cleanup)", run := fun _ =>
+        -- `Comb.el f` checks `f : Comb i o` against `Comb ?i ?o`, which η-expands `f` to
+        -- `fun {r} [_] => f ?inst` while `?r` is unsolved: `?inst` is pending, and the type
+        -- of a definition by equations was closed before it was retried
+        okLibs ("import Hdl.Core\n" ++
+          "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
+          "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
+          "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
+    { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
+        -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
+        -- the scrutinee isn't abstracted inside `?A b` (that would leave the pattern fragment)
+        okLib (stateM ++ "def a1 (b : Bool) : M Nat := do\n  t ← get;\n  x ← (match b with | .true => get | .false => Monad.pure 1);\n  Monad.pure (Nat.add x t)\n" ++
+          "def a2 (o : Option Nat) : M Nat := do\n  t ← get;\n  let r := (match o with | .some w => w | .none => t);\n  Monad.pure r\n" ++
+          "def a3 (b : Bool) : M Nat := do\n  t ← get;\n  match t, b with\n  | .zero, .true => Monad.pure 1\n  | _, _ => Monad.pure 2\n" ++
+          "#eval (a1 .true 3).1\n#eval (a1 .false 3).1\n#eval (a2 .none 7).1") ["6", "4", "7"] },
+    { name := "a type in a message is bounded (P1)", run := fun _ => do
+        -- an equation between two long lists computes to a Σ of `True`s; printed in full,
+        -- with primes for each shadowed binder, it was tens of kilobytes
+        let n := 120
+        let lst := (List.range n).foldr (fun i acc => s!"(List.cons {i} {acc})") "List.nil"
+        let src := s!"import Prelude\ndef L : List Nat := {lst}\ndef bad (h : L = L) : Nat := h\n"
+        let loader ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
+        let errs := s.messages.filter (·.severity == .error)
+        unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}")
+        let t := errs[0]!.text
+        check (t.length < 4000) s!"the message has {t.length} characters"
+        check ((t.splitOn "characters left out").length > 1) s!"nothing was left out: {t.take 300}" },
+    -- agent/elab-whnf
+    { name := "a constructor field with a lifted domain: `?k (down h)` is a pattern (gap 7)", run := fun _ =>
+        okLib (protoLike ++
+          "def Q : P := .step Nat (fun _ => .step Bool (fun _ => .stop))\n" ++
+          "def many : Nat → P\n  | .zero => .stop\n  | .succ n => .step Nat (fun _ => many n)\n" ++
+          -- the inferred index is a definition that computes to a constructor
+          "def t1 (c : Ch (P.flip Q)) : Ch (P.flip (.step Bool (fun _ => .stop))) := Ch.next c 3\n" ++
+          "def t2 (c : Ch (P.flip Q)) : Ch P.stop := Ch.next (Ch.next c 3) Bool.true\n" ++
+          -- in a match branch, with the scrutinee replaced by a constructor
+          "def t3 : (n : Nat) → Ch (many n) → Nat\n  | .zero, c => 0\n  | .succ n, c => t3 n (Ch.next c 5)\n" ++
+          "def t4 (c : Ch Q) := Ch.next c 1") },
+    { name := "... and still fails at once on different constructors or a wrong message", run := fun _ => do
+        failsLib (protoLike ++ "def bad (c : Ch P.stop) : Ch P.stop := Ch.next c 3") "tag mismatch"
+        failsLib (protoLike ++ "def Q : P := .step Nat (fun _ => .stop)\n" ++
+          "def bad (c : Ch Q) : Ch P.stop := Ch.next c Bool.true") "mismatch" },
+    { name := "nested Ex.intro with motive holes: no ill-typed first-order solution (vApp panic)", run := fun _ => do
+        okLibs ("import Logic\n" ++
+          "def t : Ex (fun (n : Nat) => Ex (fun (m : Nat) => n = m)) := Ex.intro _ 3 (Ex.intro _ 3 rfl)\n" ++
+          "def t' : Ex (fun (n : Nat) => Ex (fun (m : Nat) => n = m)) := Ex.intro _ 3 (Ex.intro (fun (m : Nat) => 3 = m) 3 rfl)")
+        -- without an expected type the motives can't be inferred: an error, not a panic
+        -- (since agent/elab-bugs the inner `Ex.intro` waits for nothing better and no
+        -- ill-typed guess is made: `rfl` meets the unsolved motive `?P ?w`)
+        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" }
   ]
+
+/-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
+order, so that branches adding groups rarely touch the same lines. A new group also
+needs a shard in `.github/test-shards.json` (CI checks). -/
+def groups : List Group :=
+  group ::
+  []
 
 end Tests.ElabFix

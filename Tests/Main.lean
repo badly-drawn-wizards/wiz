@@ -6,9 +6,11 @@ import Tests.Elab
 import Tests.ElabFix
 import Tests.Grail
 import Tests.LSP
+import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
 import Tests.Feral
+import Tests.Tower
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -16,14 +18,121 @@ set_option compiler.extract_closed false
 
 open Tests
 
+/-- Every test group: each test module lists its own (`groups` at its end), so that a
+new group touches only its module (and `.github/test-shards.json`). -/
 def groups : List Group :=
-  [Rig.group, Eval.evalGroup, Eval.convGroup, Eval.structGroup, Check.mlttGroup, Check.qttGroup, Check.structGroup,
-   Parser.lexGroup, Parser.termGroup, Parser.cmdGroup, Elab.group, Elab.levelGroup, Elab.structGroup, Elab.ottGroup, Elab.qtyGroup, Elab.dataGroup, Elab.inductiveGroup, Elab.matchGroup, Elab.coinductiveGroup, Elab.sizedGroup, Elab.runGroup, Elab.macroGroup, Elab.builtinGroup, Elab.tacticGroup, Elab.classGroup, Elab.backendGroup, Elab.cGroup, Elab.llvmGroup, Elab.ffiGroup, Elab.effectsGroup, Elab.toolingGroup, Elab.stdGroup, Elab.wordGroup, Elab.selfHostGroup, Elab.languageGroup, Elab.opticGroup, Elab.derivingGroup, Elab.reuseGroup, Elab.borrowGroup, Elab.phantomGroup, Elab.liftGroup, Elab.regionsGroup, Elab.vecGroup, Elab.hdlGroup, Elab.seplogicGroup, LSP.group, LSP.serverGroup, Grail.modulesGroup, Grail.toolchainGroup, Grail.grailGroup, Grail.grailJobsGroup, Grail.grailDepsGroup, Grail.testRunnerGroup, Grail.grailSelfhostGroup, ElabFix.group, Elab.infoviewGroup, Scaling.group, Elab.trustGroup, Feral.group]
+  Check.groups ++
+  Elab.groups ++
+  ElabFix.groups ++
+  Feral.groups ++
+  Eval.groups ++
+  Grail.groups ++
+  Lint.groups ++
+  LSP.groups ++
+  Parser.groups ++
+  Rig.groups ++
+  Scaling.groups ++
+  Tower.groups ++
+  []
 
 /-- Whether a command-line selector picks a group: `=NAME` exactly, anything else as a
-prefix of the group's name. -/
+prefix of the group's name. `=NAME#I,J,…` picks only the cases with those indices
+(counting from 0) of the group `NAME`; CI splits a long group this way
+(`scripts/ci.py`). -/
 def selects (g : Group) (arg : String) : Bool :=
-  if arg.startsWith "=" then "=" ++ g.name == arg else g.name.startsWith arg
+  if arg.startsWith "=" then "=" ++ g.name == (arg.splitOn "#")[0]! else g.name.startsWith arg
+
+/-- The cases of `g` that the selectors pick: `none` for all of them. -/
+def selectedCases (g : Group) (args : List String) : Option (List Nat) := Id.run do
+  let mut ixs : List Nat := []
+  if !args.any (selects g) then return none
+  for arg in args.filter (selects g) do
+    match arg.splitOn "#" with
+    | [_, list] => ixs := ixs ++ (list.splitOn ",").filterMap String.toNat?
+    | _ => return none
+  return some ixs
+
+/-- The group named `name`, among the suite's and the driver's fixtures (`--run` finds
+these; no selector picks them). -/
+def findGroup (name : String) : Option Group :=
+  (groups ++ [driverFixtures]).find? (·.name == name)
+
+/-- The arguments of a suite run, checked: an argument that is neither a toolchain flag
+nor `--timings`/`--shard` (an unknown or misspelt flag), a selector that picks no group
+and a case index that the group does not have are errors (exit code 2), not an empty run
+that passes. -/
+def checkSelectors (args : List String) : IO (Option UInt32) := do
+  for arg in args do
+    if arg.startsWith "--" then
+      IO.eprintln s!"unknown flag (or a flag without its value): {arg}"
+      return some 2
+    let picked := groups.filter (selects · arg)
+    if picked.isEmpty then
+      IO.eprintln s!"no test group matches {arg} (`tests --list` lists them; `=NAME` is exact, anything else a prefix)"
+      return some 2
+    if let [_, list] := arg.splitOn "#" then
+      for g in picked do
+        for ix in list.splitOn "," do
+          unless ix.toNat?.any (· < g.cases.length) do
+            IO.eprintln s!"no case {ix} in {g.name}: it has {g.cases.length} (0 to {g.cases.length - 1}; `tests --list-cases '={g.name}'`)"
+            return some 2
+  return none
+
+/-- `tests --run GROUP INDEX` (also `GROUP#INDEX`, and `=GROUP`): the case with that
+index (from 0) of the group named `GROUP`, run as `lake test -- '=GROUP#INDEX'` runs it,
+in a child process with the suite's toolchain (`grail.local.wiz`, then any toolchain
+flags). Prints the case's name and result (and a failure's output) and exits 0 if it
+passed, 1 if it failed, 2 on a usage error and 3 if it was skipped: a skipped case is not
+a pass. -/
+def runOne (args : List String) : IO UInt32 := do
+  let usage := "usage: tests --run GROUP INDEX [toolchain flags] (INDEX from 0: `tests --list-cases '=GROUP'`)"
+  let args := match args with
+    | [one] => one.splitOn "#"
+    | args => args
+  let [group, ix] := args
+    | IO.eprintln s!"unexpected arguments: {" ".intercalate args}\n{usage}"; return 2
+  let group := if group.startsWith "=" then (group.drop 1).toString else group
+  let some g := findGroup group
+    | IO.eprintln s!"no test group named {group} (`tests --list`)\n{usage}"; return 2
+  let some i := ix.toNat?
+    | IO.eprintln s!"not a case index: {ix}\n{usage}"; return 2
+  unless i < g.cases.length do
+    IO.eprintln s!"no case {i} in {group}: it has {g.cases.length} (0 to {g.cases.length - 1}; `tests --list-cases '={group}'`)"
+    return 2
+  let [r] ← g.run (some [i])
+    | IO.eprintln s!"{group} #{i} did not run"; return 1
+  if !r.ok then
+    IO.println s!"\n{group} #{i}: FAILED"; return 1
+  if let some why := r.skipped then
+    IO.println s!"\n{group} #{i}: SKIPPED ({why}); a skipped case is not a pass"; return 3
+  IO.println s!"\n{group} #{i}: passed"
+  return 0
+
+/-- A JSON string literal. -/
+def jsonStr (s : String) : String := Id.run do
+  let mut out := "\""
+  for c in s.toList do
+    out := match c with
+      | '"' => out ++ "\\\""
+      | '\\' => out ++ "\\\\"
+      | '\n' => out ++ "\\n"
+      | c => if c.toNat < 0x20 then
+          let h := String.ofList (Nat.toDigits 16 c.toNat)
+          out ++ "\\u00" ++ (if h.length < 2 then "0" ++ h else h)
+        else out.push c
+  return out.push '"'
+
+/-- The `--timings` record of a case: one line of JSON. -/
+def timingLine (shard group : String) (r : CaseResult) : String :=
+  let notes := ", ".intercalate (r.notes.map jsonStr)
+  s!"\{\"shard\": {jsonStr shard}, \"group\": {jsonStr group}, \"index\": {r.index}, \"case\": {jsonStr r.name}, " ++
+  s!"\"seconds\": {showMs r.ms}, \"ok\": {r.ok}, \"notes\": [{notes}]}"
+
+/-- Remove `--FLAG VALUE` from the arguments; the value, if it was there. -/
+def takeFlag (flag : String) : List String → Option String × List String
+  | f :: v :: rest => if f == flag then (some v, rest) else
+    let (x, r) := takeFlag flag (v :: rest); (x, f :: r)
+  | args => (none, args)
 
 /-- This machine's toolchain settings, from the uncommitted `grail.local.wiz` that the nix
 dev shell writes (`flake.nix`), as grail reads them. -/
@@ -49,48 +158,91 @@ def suiteToolchain (args : List String) (readLocal : Bool) : IO (Wiz.Toolchain �
   pure (base.parseFlags args)
 
 /-- `lake test` runs everything; `lake test -- conv rig` runs only groups whose name
-starts with one of the arguments, and `lake test -- =c` only the group named `c`.
+starts with one of the arguments, `lake test -- =c` only the group named `c`, and
+`lake test -- =selfhost#0,3` only cases 0 and 3 of the group `selfhost`.
 `lake test -- --list` prints the group names, one per line (CI checks its shards
-against them). -/
+against them), and `lake test -- --list-cases SELECTOR…` the selected cases, as
+`GROUP<tab>INDEX<tab>NAME` lines; `lake test -- --run GROUP INDEX` runs one case and
+exits with its result (`runOne`). A selector that picks nothing, a case index the group
+lacks and an unknown flag are errors. A skipped case (`Tests.skip`) shows as `⊘` and is
+counted apart. `--timings FILE` appends one line of JSON per case to
+FILE (its group, index, name, wall time in seconds, whether it passed, and its notes:
+`Tests.note`), labelled with `--shard NAME`. -/
 def main (args : List String) : IO UInt32 := do
+  -- a `panic!` fails the case that hits it (each case runs in its own process), as it
+  -- fails `wiz check`; `--panic-probe continue` turns it off again
+  Wiz.exitOnPanic
+  -- tower, as the shims of the tower tests call it (`Tests/Tower.lean`)
+  -- (23k) a grail job's supervisor, and grail itself (the job-hygiene tests run it)
+  if let "--grail-exec" :: rest := args then return ← Grail.execMain rest
+  if let "--grail" :: rest := args then return ← Grail.cliMain rest
+  if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--allocs" :: _ => true
+    | "--run-case" :: _ | "--check" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
   flagsRef.set tc.toFlags
   match args' with
-  | ["--run", group, ix] =>
-    match groups.find? (·.name == group) >>= (·.cases[ix.toNat!]?) with
+  -- one case in this process: what `Group.run` starts for each case
+  | ["--run-case", group, ix] =>
+    match findGroup group >>= fun g => ix.toNat? >>= (g.cases[·]?) with
     | some c => c.runHere
     | none => do IO.eprintln s!"no such case: {group} #{ix}"; pure 2
+  | "--run" :: rest => runOne rest
   -- (D1) check a file with the given regularity mode, in a child process that the test
   -- can time out: `Elab.checkDiverges`
   | ["--check", mode, file] => do
     let input ← IO.FS.readFile file
-    let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { globals := { regularity := Elab.regularityMode mode } }
+    -- `MODE+eager`: without `lazyProofs` (P2: the evaluator runs proofs, as before)
+    let (mode, lazyProofs) := match mode.splitOn "+" with
+      | [m, "eager"] => (m, false)
+      | _ => (mode, true)
+    let s := Wiz.runFrontend (R := Wiz.ZeroOneMany) input { globals := { regularity := Elab.regularityMode mode, lazyProofs } }
     let errs := s.messages.filter (·.severity == .error)
     for m in errs do IO.eprintln (m.render input)
     pure (if errs.isEmpty then 0 else 1)
   -- a job of a grail build that a test runs (`Grail/Graph.lean`)
   | ["--grail-job", job] => Grail.jobMain tc job
-  | ["--probe-checker"] => do Scaling.probeChecker; pure 0
+  -- (kernel hygiene, `Tests/Lint.lean`) hit a `panic!` of the evaluator, with or without
+  -- `exitOnPanic`
+  | ["--panic-probe", mode, site] => Lint.panicProbe mode site
+  | "--probe-checker" :: opts => do Scaling.probeChecker opts; pure 0
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
   | ["--list"] => do
     for g in groups do IO.println g.name
     pure 0
+  | "--list-cases" :: sels => do
+    for g in groups do
+      let only := selectedCases g sels
+      if sels.isEmpty || sels.any (selects g) then
+        for c in g.cases, i in [0:g.cases.length] do
+          if only.all (·.contains i) then IO.println s!"{g.name}\t{i}\t{c.name}"
+    pure 0
   | args => do
+    let (timings, args) := takeFlag "--timings" args
+    let (shard, args) := takeFlag "--shard" args
+    let shard := shard.getD ""
+    if let some code ← checkSelectors args then return code
     let selected := if args.isEmpty then groups
       else groups.filter fun g => args.any (selects g)
     let mut passed := 0
     let mut failed := 0
+    let mut skipped := 0
     for g in selected do
       let start ← IO.monoMsNow
-      let (p, f) ← g.run
-      IO.println s!"  ({g.name}: {((← IO.monoMsNow) - start) / 1000} s)"
-      passed := passed + p
-      failed := failed + f
-    IO.println s!"\n{passed} passed, {failed} failed"
+      let results ← g.run (selectedCases g args) fun r => do
+        if let some file := timings then
+          let h ← IO.FS.Handle.mk file .append
+          h.putStrLn (timingLine shard g.name r)
+      let cases := results.foldl (· + ·.ms) 0
+      IO.println s!"  ({g.name}: {showMs ((← IO.monoMsNow) - start)} s; cases {showMs cases} s)"
+      let p := (results.filter (·.ok)).length
+      let k := (results.filter (·.skipped.isSome)).length
+      passed := passed + (p - k)
+      skipped := skipped + k
+      failed := failed + (results.length - p)
+    IO.println s!"\n{passed} passed, {failed} failed{if skipped == 0 then "" else s!", {skipped} skipped"}"
     pure (if failed == 0 then 0 else 1)

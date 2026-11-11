@@ -26,7 +26,7 @@ def clampC : Circuit none0 u8 :=
 
 -- popcount by meta recursion over the bit index
 def bitAt {r : HwTy → Type} [Hw r] (x : r u8) (i : Nat) : r u8 :=
-  Hw.cat (Hw.lit 7 0 : r (HwTy.bits 7)) (Hw.slice i 1 x : r (HwTy.bits 1))
+  Hw.cat (Hw.lit 7 0) (Hw.slice i 1 x)
 def popCount {r : HwTy → Type} [Hw r] (x : r u8) : Nat → r u8
   | .zero => Hw.lit 8 0
   | .succ i => Hw.add (bitAt x i) (popCount x i)
@@ -42,8 +42,6 @@ def firC : Circuit u8 u8 :=
       Hw.pair (Hw.pair x (Hw.pair a b)) (Hw.add (Hw.add x c) (Hw.add ab (Hw.add b a))))
 
 def trace : List Nat := .cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 200 (.cons 7 .nil)))))
-def NetS.nodeCount (s : Nat × NetS) : Nat := s.2.next
-def NetS.workDone (s : Nat × NetS) : Nat := s.2.work
 def report {ω i o : HwTy} (c : Circuit i o) : (Nat × Nat) × (List Nat × List Nat × List Nat) :=
   ((Netlist.size (Circuit.netlist "c" c), Netlist.size (Circuit.netlistNaive "c" c)),
    (Circuit.runPacked c trace, Circuit.simNet .true c trace, Circuit.simNet .false c trace))
@@ -59,18 +57,18 @@ def r4 : (Nat × Nat) × (List Nat × List Nat × List Nat) := report firC
 #eval r4
 def chain : Circuit u8 u8 := Circuit.mk none0 nil0 (fun s x => Hw.pair s (dbl 20 x))
 def chainS : Netlist × NetS := Circuit.netlistS .true "chain" chain
-def q1 : Nat × Nat × Nat := (Netlist.size chainS.1, Netlist.count Op.isAdd chainS.1, chainS.2.work)
+def q1 : Nat × Nat × Nat := (Netlist.size chainS.1, Netlist.count NetOp.isAdd chainS.1, chainS.2.work)
 #eval q1
 def chain3 : Circuit u8 u8 := Circuit.mk none0 nil0 (fun s x => Hw.pair s (dbl 3 x))
 def q2 : List Nat × List Nat := (Circuit.runPacked chain3 trace, Circuit.simNet .true chain3 trace)
 #eval q2
-def inp : Wire u8 := NetM.emit (Op.input 0) 8 List.nil
-def n1 : Nat × NetS := Wire.build .true (dblNoShare 10 inp)
-def n2 : Nat × NetS := Wire.build .false (dblNoShare 10 inp)
-def q3 : Nat × Nat × Nat := (NetS.nodeCount n1, NetS.workDone n1, NetS.nodeCount n2)
+def inp : Wire u8 := NetM.emit (NetOp.input 0) 8 List.nil
+def n1 : NetS := (Wire.build .true (dblNoShare 10 inp)).2
+def n2 : NetS := (Wire.build .false (dblNoShare 10 inp)).2
+def q3 : Nat × Nat × Nat := (n1.next, n1.work, n2.next)
 #eval q3
 -- identical subterms from different paths merge: (x + y) built twice, once as (y + x)
 def twoPaths {r : HwTy → Type} [Hw r] (x y : r u8) : r u8 := Hw.mul (Hw.add x y) (Hw.add y x)
-def inp2 : Wire u8 := NetM.emit (Op.input 1) 8 List.nil
-def m1 : Nat × NetS := Wire.build .true (twoPaths inp inp2)
-#eval NetS.nodeCount m1
+def inp2 : Wire u8 := NetM.emit (NetOp.input 1) 8 List.nil
+def m1 : NetS := (Wire.build .true (twoPaths inp inp2)).2
+#eval m1.next

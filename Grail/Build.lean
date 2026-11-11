@@ -12,7 +12,9 @@ succeeds, so an interrupted build leaves nothing half-written. Keys:
   keys, transitively), mixed with `binId` (this grail binary: elaborator and backends);
 * `ir F` from `check F`; `c F` from `ir F`;
 * `obj F` from the text of `main.c` and the compiler and `cflags`;
-* `link E` from `obj F` and the compiler and `ldflags`.
+* `link E` from `obj F` and the compiler and `ldflags`, and (9f) the `link_c` files (their
+  paths and contents: the link compiles them, with `cflags`) and `link_lib` libraries,
+  which `c F` lists in `link.txt`.
 
 So editing a module reruns the checks of the files that import it, and an edit that
 doesn't change the generated C stops at `obj`. The jobs form a graph (`Grail/Graph.lean`)
@@ -54,6 +56,8 @@ def hex (k : UInt64) : String :=
 structure Memo where
   loaded : Std.HashMap String Loaded := {}
   states : Std.HashMap String (CommandState ZeroOneMany) := {}
+  /-- (23i) a command's program by name: the path it runs by, and its identity -/
+  tools : Std.HashMap String (Except String (String × String)) := {}
 
 structure Runner where
   ctx : Ctx
@@ -72,7 +76,8 @@ structure Runner where
 
 def Runner.load (r : Runner) (file : String) : IO Loaded := do
   if let some l := (← r.memo.get).loaded[file]? then return l
-  let l ← Grail.load r.ctx.tc r.ctx.roots r.ctx.binId (← IO.FS.readFile (r.ctx.dir / file))
+  let path := r.ctx.dir / file
+  let l ← Grail.load r.ctx.tc r.ctx.roots r.ctx.binId (← IO.FS.readFile path) (path.parent.getD r.ctx.dir)
   r.memo.modify fun m => { m with loaded := m.loaded.insert file l }
   pure l
 

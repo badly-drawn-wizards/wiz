@@ -12,6 +12,39 @@ import Grail.Elab
 namespace Grail
 open Wiz
 
+/-- (23i) What a command runs: a program found on `PATH` (or a path), or an `exe` target. -/
+inductive Tool where
+  | path (name : String)
+  | exe (target : String)
+  deriving Repr, Inhabited, BEq
+
+/-- A piece of an argument. -/
+inductive Part where
+  | text (s : String)
+  | input (path : String)
+  | output (path : String)
+  deriving Repr, Inhabited, BEq
+
+/-- A command target (23i), its steps folded. -/
+structure Command where
+  name : String
+  tool : Tool
+  args : List (List Part) := []
+  /-- every declared input, in order (argument inputs too) -/
+  inputs : List String := []
+  /-- declared output files and directories (`true`: a directory) -/
+  outputs : List (String × Bool) := []
+  stdout : Option String := none
+  env : List (String × String) := []
+  inOutDir : Bool := false
+  uses : List Tool := []
+  phony : Bool := false
+  manual : Bool := false
+  deriving Repr, Inhabited, BEq
+
+def Command.outputPaths (c : Command) : List String :=
+  c.outputs.map (·.1) ++ c.stdout.toList
+
 inductive Target where
   | lib (name : String) (root : String)
   | check (name : String) (file : String)
@@ -20,14 +53,19 @@ inductive Target where
   | tests (name : String) (root : String)
   /-- the self-hosted toolchain: `checker`, `compiler`, or the `bootstrap` check -/
   | selfhost (name : String) (role : String)
+  /-- an external command with declared inputs and outputs (23i) -/
+  | command (c : Command)
   deriving Repr, Inhabited, BEq
 
 def Target.name : Target → String
   | .lib n _ | .check n _ | .exe n _ | .tests n _ | .selfhost n _ => n
+  | .command c => c.name
 
-/-- Built by `grail build` without naming it? Not the bootstrap check (it takes minutes). -/
+/-- Built by `grail build` without naming it? Not the bootstrap check (it takes minutes),
+nor phony or manual commands. -/
 def Target.isDefault : Target → Bool
   | .selfhost _ "bootstrap" => false
+  | .command c => !c.phony && !c.manual
   | _ => true
 
 /-- A package from git (stage 23h, `Grail/Deps.lean`) -/
@@ -52,6 +90,52 @@ def decodeSettings (x : Sx) : Except String (List (String × String)) := do
     | _ => throw "settings: expected (set key value)"
 
 open Cache in
+def decodeTool : Sx → Except String Tool
+  | .l #[.a "path", .a n] => pure (.path n)
+  | .l #[.a "exe", .a n] => pure (.exe n)
+  | t => throw s!"bad tool {t.render}"
+
+open Cache in
+def decodeCommand (name : String) (tool : Sx) (steps : Sx) : Except String Command := do
+  let some ss := items? steps | throw "command: expected a list of steps"
+  let mut c : Command := { name, tool := ← decodeTool tool }
+  let addOut (c : Command) (p : String) (dir : Bool) : Command :=
+    if c.outputs.any (·.1 == p) then c else { c with outputs := c.outputs ++ [(p, dir)] }
+  let addIn (c : Command) (p : String) : Command :=
+    if c.inputs.contains p then c else { c with inputs := c.inputs ++ [p] }
+  for st in ss.toList.drop 1 do
+    match st with
+    | .l #[.a "arg", ps] =>
+      let some ps := items? ps | throw "arg: expected a list of parts"
+      let parts ← ps.toList.drop 1 |>.mapM fun
+        | .l #[.a "text", .a s] => pure (Part.text s)
+        | .l #[.a "in", .a p] => pure (.input p)
+        | .l #[.a "out", .a p] => pure (.output p)
+        | x => throw s!"bad argument part {x.render}"
+      c := { c with args := c.args ++ [parts] }
+      for p in parts do
+        match p with
+        | .input f => c := addIn c f
+        | .output f => c := addOut c f false
+        | .text _ => pure ()
+    | .l #[.a "input", .a p] => c := addIn c p
+    | .l #[.a "output", .a p] => c := addOut c p false
+    | .l #[.a "dir", .a p] =>
+      -- (an output part of the same path, before or after, names the directory)
+      c := if c.outputs.any (·.1 == p) then { c with outputs := c.outputs.map fun (q, d) => (q, d || q == p) }
+        else addOut c p true
+    | .l #[.a "stdout", .a p] => c := { c with stdout := some p }
+    | .l #[.a "env", .a k, .a v] => c := { c with env := c.env ++ [(k, v)] }
+    | .l #[.a "in-out-dir"] => c := { c with inOutDir := true }
+    | .l #[.a "uses", t] => c := { c with uses := c.uses ++ [← decodeTool t] }
+    | .l #[.a "phony"] => c := { c with phony := true }
+    | .l #[.a "manual"] => c := { c with manual := true }
+    | x => throw s!"command {name}: unknown step {x.render}"
+  if c.phony && !c.outputPaths.isEmpty then
+    throw s!"command {name}: a phony command has no outputs (it is never recorded)"
+  pure c
+
+open Cache in
 def decodePackage (x : Sx) : Except String Package := do
   let .l #[.a "package", .a name, ts, ss, ds] := x | throw "expected (package name targets settings deps)"
   let some ts := items? ts | throw "targets: expected a list"
@@ -61,7 +145,13 @@ def decodePackage (x : Sx) : Except String Package := do
     | .l #[.a "exe", .a n, .a f] => pure (.exe n f)
     | .l #[.a "tests", .a n, .a r] => pure (.tests n r)
     | .l #[.a "selfhost", .a n, .a r] => pure (.selfhost n r)
+    | .l #[.a "command", .a n, tool, steps] => return .command (← decodeCommand n tool steps)
     | t => throw s!"unknown target {t.render}"
+  -- (23i) one target per name: `grail build NAME` names one thing
+  let mut seen : List String := []
+  for t in targets do
+    if seen.contains t.name then throw s!"two targets are called {t.name}"
+    seen := t.name :: seen
   let some ds := items? ds | throw "deps: expected a list"
   let deps ← ds.toList.drop 1 |>.mapM fun
     | .l #[.a "dep", .a name, .a url, .a rev] => pure { name, url, rev : Dep }
@@ -72,7 +162,7 @@ def decodePackage (x : Sx) : Except String Package := do
 def evalBuildFile (tc : Toolchain) (salt : UInt64) (roots : List System.FilePath) (path : System.FilePath)
     (expr : String) : IO (Except String Cache.Sx) := do
   let src := (← IO.FS.readFile path) ++ s!"\ndef grailOut : String := {expr}\n"
-  let l ← load tc roots salt src
+  let l ← load tc roots salt src (path.parent.getD ".")
   let s ← elaborate tc salt l
   if hasErrors s then return .error (render path.toString l s)
   match evalString s "grailOut" with

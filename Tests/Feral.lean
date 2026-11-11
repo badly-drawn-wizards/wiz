@@ -185,4 +185,8 @@ def group : Group where
         check ((errorsOf b bad).any (fun e => e.startsWith "6:8: " && has e "the generated source was rejected")) (toString (errorsOf b bad)) }
   ]
 
+def groups : List Group :=
+  group ::
+  []
+
 end Tests.Feral

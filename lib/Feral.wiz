@@ -23,20 +23,18 @@ import Prelude
 -- Positions: runtime `Syntax` has none, so every function here carries the *path* of the
 -- node it works on (child indices from the block), and errors are `Syntax.errorAt path`.
 
--- keywords: reserved in files that import Feral (a rule of the `command` category reserves
--- its atoms; without this `if c then a else b` would parse as an application of `if`)
-syntax (name := feralKeywords) "#feral_keywords" "if" "then" "else" "while" "for" "in" "return" "mut" "fn" "struct" "enum" : command
--- ## Grammar (LOWERING.md §1). Keywords of these categories are not reserved in Wiz.
-declare_syntax_cat feral_lt
-declare_syntax_cat feral_ty
-declare_syntax_cat feral_pat
-declare_syntax_cat feral_expr
-declare_syntax_cat feral_stmt
-declare_syntax_cat feral_alt
-declare_syntax_cat feral_binder
-declare_syntax_cat feral_field
-declare_syntax_cat feral_ctor
-declare_syntax_cat feral_item
+-- ## Grammar (LOWERING.md §1). The categories share the keyword scope `feral_kw` (13j):
+-- `if`, `then`, `mut`, `fn` … are keywords inside them and ordinary Wiz identifiers elsewhere.
+declare_syntax_cat feral_lt (keywords := feral_kw)
+declare_syntax_cat feral_ty (keywords := feral_kw)
+declare_syntax_cat feral_pat (keywords := feral_kw)
+declare_syntax_cat feral_expr (keywords := feral_kw)
+declare_syntax_cat feral_stmt (keywords := feral_kw)
+declare_syntax_cat feral_alt (keywords := feral_kw)
+declare_syntax_cat feral_binder (keywords := feral_kw)
+declare_syntax_cat feral_field (keywords := feral_kw)
+declare_syntax_cat feral_ctor (keywords := feral_kw)
+declare_syntax_cat feral_item (keywords := feral_kw)
 
 -- lifetimes: `'a`
 syntax (name := lt) "'" noWs ident : feral_lt
@@ -49,7 +47,7 @@ syntax:40 (name := ref) "&" feral_lt? "mut"? feral_ty:40 : feral_ty
 syntax:35 (name := prod) feral_ty:36 "×" feral_ty:35 : feral_ty
 
 -- patterns: a variable, `_`, a constructor `.c x _`
-declare_syntax_cat feral_pvar
+declare_syntax_cat feral_pvar (keywords := feral_kw)
 syntax (name := name) ident : feral_pvar
 syntax (name := wild) "_" : feral_pvar
 syntax (name := var) ident : feral_pat

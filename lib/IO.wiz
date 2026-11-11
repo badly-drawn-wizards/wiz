@@ -41,6 +41,20 @@ extern "wiz_f64_div" Float64.div : Float64 → Float64 → Float64
 extern "wiz_f64_lt" Float64.lt : Float64 → Float64 → Bool
 extern "wiz_f64_show" Float64.toString : Float64 → String
 
+-- (7e) `+ - * / %` and numerals at the machine types (`UInt64` wraps around natively;
+-- the kernel knows nothing about these: they are foreign functions).
+instance {ω n : Nat} : OfNat UInt64 n := OfNat.mk (UInt64.ofNat n)
+instance : Add UInt64 := Add.mk UInt64.add
+instance : Sub UInt64 := Sub.mk UInt64.sub
+instance : Mul UInt64 := Mul.mk UInt64.mul
+instance : Div UInt64 := Div.mk UInt64.div
+instance : Mod UInt64 := Mod.mk UInt64.mod
+instance {ω n : Nat} : OfNat Float64 n := OfNat.mk (Float64.ofNat n)
+instance : Add Float64 := Add.mk Float64.add
+instance : Sub Float64 := Sub.mk Float64.sub
+instance : Mul Float64 := Mul.mk Float64.mul
+instance : Div Float64 := Div.mk Float64.div
+
 extern "wiz_nat_show" Nat.toString : Nat → String
 
 -- Output.
@@ -57,6 +71,12 @@ def IO.argsFrom : Nat → Nat → IO (List String)
   | .succ k, i => IO.bind (IO.arg i) (fun a => IO.bind (IO.argsFrom k (Nat.succ i)) (fun rest => IO.pure (List.cons a rest)))
 def IO.args : IO (List String) := IO.bind IO.argCount (fun n => IO.argsFrom n 0)
 
+-- A Wiz function that C keeps after the call it was passed to (stage 9g). A foreign
+-- function's parameter `f : A → B` is a callback borrowed for the call; as
+-- `f : Callback (A → B)`, the C side owns a reference to it and gives it back with
+-- `wiz_release(ctx)`.
+def Callback (T : Type) : Type := T
+
 -- Byte buffers: functional, but `push` updates in place when the buffer is unique.
 axiom Bytes : Type
 extern "wiz_bytes_empty" Bytes.empty : Bytes
@@ -65,3 +85,126 @@ extern "wiz_bytes_size" Bytes.size : Bytes → Nat
 extern "wiz_bytes_get" Bytes.get : Bytes → Nat → Nat
 extern "wiz_bytes_of_string" Bytes.ofString : String → Bytes
 extern "wiz_bytes_to_string" Bytes.toString : Bytes → String
+
+-- More on byte buffers (sys-bytes). A byte is a `Nat` below 256 (`push` keeps the low
+-- eight bits; `get` past the end is 0, `get?` is `none`). Text and bytes meet only
+-- through a named encoding: `ofUtf8`/`toUtf8` (every string, and a check on the way
+-- back), `ofLatin1`/`toLatin1` (one byte per character, code points 0 … 255).
+-- (`Bytes.ofString`/`toString` above go through a C string: they stop at a NUL byte.)
+extern "wiz_bytes_slice" Bytes.slice : Bytes → Nat → Nat → Bytes
+extern "wiz_bytes_append" Bytes.append : Bytes → Bytes → Bytes
+extern "wiz_bytes_eq" Bytes.eq : Bytes → Bytes → Bool
+
+def Bytes.isEmpty (b : Bytes) : Bool := Nat.beq (Bytes.size b) 0
+def Bytes.at (b : Bytes) (i : Nat) : Option Nat := match Nat.lt i (Bytes.size b) with
+  | .true => .some (Bytes.get b i)
+  | .false => .none
+-- `slice b start len`: the bytes from `start`, at most `len` of them
+def Bytes.take (b : Bytes) (n : Nat) : Bytes := Bytes.slice b 0 n
+def Bytes.drop (b : Bytes) (n : Nat) : Bytes := Bytes.slice b n (Bytes.size b)
+def Bytes.ofListAux : List Nat → Bytes → Bytes
+  | .nil, acc => acc
+  | .cons x xs, acc => Bytes.ofListAux xs (Bytes.push acc x)
+-- each number mod 256
+def Bytes.ofList (l : List Nat) : Bytes := Bytes.ofListAux l Bytes.empty
+def Bytes.toListAux (b : Bytes) : Nat → List Nat → List Nat
+  | .zero, acc => acc
+  | .succ k, acc => Bytes.toListAux b k (.cons (Bytes.get b k) acc)
+def Bytes.toList (b : Bytes) : List Nat := Bytes.toListAux b (Bytes.size b) .nil
+-- one byte
+def Bytes.singleton (x : Nat) : Bytes := Bytes.push Bytes.empty x
+-- 0, 1, …, n - 1 (mod 256)
+def Bytes.rangeAux : Nat → Nat → Bytes → Bytes
+  | .zero, _, acc => acc
+  | .succ k, i, acc => Bytes.rangeAux k (Nat.succ i) (Bytes.push acc i)
+def Bytes.range (n : Nat) : Bytes := Bytes.rangeAux n 0 Bytes.empty
+-- the numbers, as `[1, 2, 255]`
+def Bytes.showAux : List Nat → String
+  | .nil => "]"
+  | .cons x .nil => String.append (Nat.toString x) "]"
+  | .cons x xs => String.append (Nat.toString x) (String.append ", " (Bytes.showAux xs))
+def Bytes.show (b : Bytes) : String := String.append "[" (Bytes.showAux (Bytes.toList b))
+
+-- UTF-8 (every code point; a code point that is not a scalar value, above 0x10FFFF or a
+-- surrogate, is written as U+FFFD)
+def Bytes.pushUtf8 (b : Bytes) (c : Nat) : Bytes :=
+  match Nat.lt c 128 with
+  | .true => Bytes.push b c
+  | .false => match Nat.lt c 2048 with
+    | .true => Bytes.push (Bytes.push b (192 + Nat.div c 64)) (128 + Nat.mod c 64)
+    | .false => match Bool.or (Nat.lt 1114111 c) (Bool.and (Nat.lt 55295 c) (Nat.lt c 57344)) with
+      | .true => Bytes.push (Bytes.push (Bytes.push b 239) 191) 189
+      | .false => match Nat.lt c 65536 with
+        | .true => Bytes.push (Bytes.push (Bytes.push b (224 + Nat.div c 4096)) (128 + Nat.mod (Nat.div c 64) 64)) (128 + Nat.mod c 64)
+        | .false => Bytes.push (Bytes.push (Bytes.push (Bytes.push b (240 + Nat.div c 262144))
+            (128 + Nat.mod (Nat.div c 4096) 64)) (128 + Nat.mod (Nat.div c 64) 64)) (128 + Nat.mod c 64)
+def Bytes.ofCharsUtf8 : List Char → Bytes → Bytes
+  | .nil, acc => acc
+  | .cons c cs, acc => Bytes.ofCharsUtf8 cs (Bytes.pushUtf8 acc (Char.code c))
+def Bytes.ofUtf8 (s : String) : Bytes := match s with
+  | .mk cs => Bytes.ofCharsUtf8 cs Bytes.empty
+
+def Bytes.revChars : List Char → List Char → List Char
+  | .nil, acc => acc
+  | .cons c cs, acc => Bytes.revChars cs (.cons c acc)
+-- the continuation byte at i: its low six bits
+def Bytes.cont (b : Bytes) (i : Nat) : Option Nat := match Bytes.at b i with
+  | .some x => match Bool.and (Nat.lt 127 x) (Nat.lt x 192) with
+    | .true => .some (Nat.sub x 128)
+    | .false => .none
+  | .none => .none
+-- the code point that starts at i, and its length in bytes
+def Bytes.utf8At (b : Bytes) (i : Nat) : Option (Nat × Nat) :=
+  let x := Bytes.get b i;
+  match Nat.lt x 128 with
+  | .true => .some (x, 1)
+  | .false => match Bool.and (Nat.lt 193 x) (Nat.lt x 224) with
+    | .true => (match Bytes.cont b (i + 1) with
+      | .some y => .some ((Nat.sub x 192) * 64 + y, 2)
+      | .none => .none)
+    | .false => match Bool.and (Nat.lt 223 x) (Nat.lt x 240) with
+      | .true => (match Bytes.cont b (i + 1), Bytes.cont b (i + 2) with
+        | .some y, .some z =>
+          let c := (Nat.sub x 224) * 4096 + y * 64 + z;
+          -- no overlong forms, no surrogates
+          (match Bool.or (Nat.lt c 2048) (Bool.and (Nat.lt 55295 c) (Nat.lt c 57344)) with
+          | .true => .none
+          | .false => .some (c, 3))
+        | _, _ => .none)
+      | .false => match Bool.and (Nat.lt 239 x) (Nat.lt x 245) with
+        | .true => (match Bytes.cont b (i + 1), Bytes.cont b (i + 2), Bytes.cont b (i + 3) with
+          | .some y, .some z, .some w =>
+            let c := (Nat.sub x 240) * 262144 + y * 4096 + z * 64 + w;
+            (match Bool.or (Nat.lt c 65536) (Nat.lt 1114111 c) with
+            | .true => .none
+            | .false => .some (c, 4))
+          | _, _, _ => .none)
+        | .false => .none
+-- (fuel: the bytes left)
+def Bytes.decodeUtf8 (b : Bytes) : Nat → Nat → List Char → Except Nat String
+  | .zero, _, acc => .ok (.mk (Bytes.revChars acc .nil))
+  | .succ fuel, i, acc => match Nat.lt i (Bytes.size b) with
+    | .false => .ok (.mk (Bytes.revChars acc .nil))
+    | .true => match Bytes.utf8At b i with
+      | .some (c, n) => Bytes.decodeUtf8 b fuel (i + n) (.cons (Char.mk c) acc)
+      | .none => .error i
+-- the text, or the error "invalid UTF-8 at byte k"
+def Bytes.toUtf8 (b : Bytes) : Except String String :=
+  match Bytes.decodeUtf8 b (Bytes.size b) 0 .nil with
+  | .ok s => .ok s
+  | .error i => .error (String.append "invalid UTF-8 at byte " (Nat.toString i))
+
+-- Latin-1: byte k is character k
+def Bytes.latin1Chars (b : Bytes) : Nat → List Char → List Char
+  | .zero, acc => acc
+  | .succ k, acc => Bytes.latin1Chars b k (.cons (Char.mk (Bytes.get b k)) acc)
+def Bytes.toLatin1 (b : Bytes) : String := .mk (Bytes.latin1Chars b (Bytes.size b) .nil)
+def Bytes.ofLatin1Aux : Nat → List Char → Bytes → Except String Bytes
+  | _, .nil, acc => .ok acc
+  | i, .cons c cs, acc => match Nat.lt (Char.code c) 256 with
+    | .true => Bytes.ofLatin1Aux (Nat.succ i) cs (Bytes.push acc (Char.code c))
+    | .false => .error (String.append "not Latin-1: character " (String.append (Nat.toString i)
+        (String.append " is U+" (Nat.toString (Char.code c)))))
+-- the string's characters as bytes, or an error naming the first one above 255
+def Bytes.ofLatin1 (s : String) : Except String Bytes := match s with
+  | .mk cs => Bytes.ofLatin1Aux 0 cs Bytes.empty

@@ -52,7 +52,7 @@ private def qtyPrefixLit (bi : BinderInfo) (q : R) : String :=
 
 partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .var ix => names[ix]?.getD s!"#{ix}"
-  | .const n _ => n
+  | .const n _ => Globals.privateBase n
   | .mvar m => s!"?m{m}"
   | .qty => "Qty"
   | .size => "Size"
@@ -177,5 +177,15 @@ def Term.pretty (names : List Name := []) (t : Term R) : String :=
   t.prettyPrec names 0
 
 instance : ToString (Term R) := ⟨Term.pretty []⟩
+
+/-- A printed term for a message, at most about `max` characters: a longer one keeps
+its beginning and its end, and says how much was left out. (A normal form can be huge:
+an equation between two long lists computes to a Σ of a hundred `True`s.) -/
+def elideLong (s : String) (max : Nat := 1500) : String :=
+  let n := s.length
+  if n ≤ max then s else
+  let head := String.ofList (s.toList.take (max * 2 / 3))
+  let tail := String.ofList (s.toList.drop (n - max / 3))
+  s!"{head} … ({n - head.length - tail.length} characters left out) … {tail}"
 
 end Wiz

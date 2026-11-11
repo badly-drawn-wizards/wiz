@@ -1,6 +1,6 @@
 name = "wiz"
 version = "0.1.0"
-defaultTargets = ["wiz", "grail"]
+defaultTargets = ["wiz", "grail", "tower"]
 testDriver = "tests"
 # compiled modules go to the shared Lake cache (keyed by their inputs), so worktrees
 # reuse each other's builds
@@ -19,7 +19,7 @@ root = "Main"
 
 [[lean_exe]]
 name = "tests"
-moreLinkObjs = ["sockets"]
+moreLinkObjs = ["sockets", "proc"]
 root = "Tests.Main"
 
 [[lean_lib]]
@@ -27,11 +27,37 @@ name = "Grail"
 
 [[lean_exe]]
 name = "grail"
-moreLinkObjs = ["sockets"]
+moreLinkObjs = ["sockets", "proc"]
 root = "Grail.Main"
+
+# the toolchain manager (stage 26): it doesn't import Wiz
+[[lean_lib]]
+name = "Tower"
+
+[[lean_exe]]
+name = "tower"
+root = "Tower.Main"
 
 # Unix-domain sockets for `wiz lsp --infoview` (Lean's library has none): a C file
 # that the linker compiles into each executable
 [[input_file]]
 name = "sockets"
 path = "c/sockets.c"
+
+# `_exit` for grail's job supervisor (Grail/Exec.lean), linked into grail and the tests
+[[input_file]]
+name = "proc"
+path = "c/proc.c"
+
+# The C runtime as text (`include_str`, runtime/WizRuntime.lean), a library of its own so
+# that only it depends on runtime/wiz.c: `needs` mixes the file's hash into its modules'
+# traces, so editing wiz.c rebuilds it and its importers (Lake doesn't track include_str)
+[[lean_lib]]
+name = "WizRuntime"
+srcDir = "runtime"
+needs = ["wizRuntimeC"]
+
+[[input_file]]
+name = "wizRuntimeC"
+path = "runtime/wiz.c"
+text = true

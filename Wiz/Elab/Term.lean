@@ -191,6 +191,37 @@ def mkStringLit (str : String) (us : List Level := []) : ElabM R (Term R) := do
     (.app (.const "List.nil" []) charTy)
   pure (.app (.const (S ++ ".mk") us) list)
 
+/-- (HD9) A numeral `n` at a type `A` other than the `builtin nat` type:
+`@OfNat.ofNat A n ?inst`, with an instance problem `OfNat A n` (the literal is an
+index of the class, as in Lean, so an instance may inspect it). `none` if the Prelude
+has no `OfNat` class. -/
+def ofNatLit? (ctx : LocalCtx R) (n : Nat) (A : VTy R) : ElabM R (Option (Term R)) := do
+  let s ← get
+  unless s.classes.any (·.name == "OfNat") do return none
+  let some d := s.globals.find? "OfNat.ofNat" | return none
+  let us ← d.levelParams.mapM fun _ => freshLevelMeta
+  let g ← getGlobals
+  let fty := eval g [] (d.type.instLevels d.levelParams us)
+  let .pi _ _ _ domA codA _ ← force fty | return none
+  let qA := quote g ctx.lvl A
+  if let .sort l ← force domA then addSortConstraint ctx qA l
+  let .pi _ _ _ _ codN _ ← force (← instM codA A) | return none
+  let .pi x .instImplicit _ dom _ _ ← force (← instM codN (.natLit n)) | return none
+  let m ← freshMeta ctx s!"instance {x}"
+  addInstProblem ctx m dom
+  -- a numeral that doesn't fit a fixed-width word of lib/Word.wiz wraps around: say so
+  if let .mu _ _ _ _ _ (some (T, _, w :: _)) ← force A then
+    if T == "UIntN" || T == "IntN" then
+      if let .natLit w := whnf w then
+        if w ≤ 4096 then
+          let limit := if T == "UIntN" then 2 ^ w - 1 else 2 ^ (w - 1)
+          if n > limit then
+            let bits := n % 2 ^ w
+            let wrapped := if T == "IntN" && bits ≥ 2 ^ (w - 1) then s!"-{2 ^ w - bits}" else toString bits
+            pushInfo (.done (.warning ctx.info
+              s!"the numeral {n} does not fit in {T} {w} (at most {limit}): it wraps around to {wrapped}"))
+  pure (some (.app (.app (.app (.const "OfNat.ofNat" us) qA) (.natLit n)) m))
+
 /-- `(x).f y` parses as `(x)` applied to `.f` and `y` (an argument `.f` is a constructor
 of the expected type): an argument `.f` right after the previous one, without a space,
 is a field of it instead (`term.field`), as in `x.f y`. -/
@@ -221,7 +252,9 @@ def expand? (stx : Syntax) : ElabM R (Option Syntax) := do
   | some stx' => modify (fun s => { s with nextScope := s.nextScope + 1 }); pure (some stx')
   | none =>
     let some f := s.procMacros.lookup stx.kind | pure none
-    match s.runProcMacro f stx s.nextScope with
+    let (traces, r) := s.runProcMacro f stx s.nextScope
+    for t in traces do pushTrace stx.info t
+    match r with
     | .ok (stx', next) => modify (fun s => { s with nextScope := next }); pure (some stx')
     | .error e => throwAt stx.info e
 
@@ -235,9 +268,12 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
     | .ok r => .ok r
     | .error e =>
       if subTy s.globals ctx.types.reverse.toArray inferred expected then .ok ((), s) else
-      let show' (v : VTy R) := (quote s.globals ctx.lvl v).pretty ctx.names
+      let show' (v : VTy R) := elideLong ((quote s.globals ctx.lvl v).pretty ctx.names)
       .error { info := (ctx.withInfo stx).info,
-               msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})" }
+               msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})",
+               code := e.code,
+               -- what was recorded up to here (the info tree, `trace`s)
+               state? := some s }
 
 /-- A type evaluated while some of its holes were unsolved: an equation in it computed
 (or got stuck) on the holes, and stays so after they are solved (`w ?n = 8`). Evaluate it
@@ -302,12 +338,13 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
       | .mu _ _ _ _ _ h | .nu _ _ _ _ _ h => h
       | _ => none
     if let some (T, us, args) := hint? then
-      if let some d := (← getGlobals).find? (T ++ "." ++ f) then
-        if let some m := (← getGlobals).privateTo? (T ++ "." ++ f) then
+      let Tf := (← getGlobals).resolve (T ++ "." ++ f)
+      if let some d := (← getGlobals).find? Tf then
+        if let some m := (← getGlobals).privateTo? Tf then
           throwAt ctx.info s!"'{T}.{f}' is private to module {m}" "private"
         -- `T.f : {…} → T … → F`: insert the implicits as metavariables, then unify
         let fty : VTy R := eval (← getGlobals) [] (d.type.instLevels d.levelParams us)
-        let (tm, fty) ← insertImplicits ctx (.const (T ++ "." ++ f) us) fty
+        let (tm, fty) ← insertImplicits ctx (.const Tf us) fty
         let .pi _ _ _ dom cod _ ← force fty | throwAt ctx.info s!"{T}.{f} is not a function of {T}"
         unifyAt ctx (.missing) dom ty
         let tm' := Term.app tm t
@@ -434,22 +471,58 @@ def piInfos : Term R → List (Name × BinderInfo × Term R)
 /-- A proof of a proposition that holds by computation: `Unit`, pairs of such, and stuck
 equations `a = b` (which hold by `refl` when they arise from a match on a family with a
 concrete index, `SyntaxF .false`). -/
-partial def trivialProof (g : Globals R) (ty : Val R) : Option (Val R) :=
+partial def trivialProof (g : Globals R) (tys : Array (VTy R)) (ty : Val R) : Option (Val R) :=
   match whnf ty with
   | .unit _ => some .tt
   | .sigma _ _ A B _ => do
-    let a ← trivialProof g A
-    let b ← trivialProof g (Closure.inst g B a)
+    let a ← trivialProof g tys A
+    let b ← trivialProof g tys (Closure.inst g B a)
     pure (.pair a b)
-  | .neutral (.eq A a _) _ => some (.neutral (.refl A a) #[])
-  | .neutral (.eqTy X _) _ => some (.neutral (.reflTy X) #[])
+  -- (13b) `refl` only when the two sides are convertible *here* (`g` is the elaborator's
+  -- view, where a type with a private constructor of another module is opaque): the
+  -- kernel compares by shape, so the comparison can't be left to it (`sameSides`)
+  | .neutral (.eq A a b) _ => if conv g tys A a b then some (.neutral (.refl A a) #[]) else none
+  | .neutral (.eqTy X Y) _ => if convTy g tys X Y then some (.neutral (.reflTy X) #[]) else none
   | _ => none
+
+/-- `Term.abstract`, but not inside the arguments of an unsolved hole: there the
+scrutinee stays as it is (still in scope in every branch). Abstracted, `?A b` would be
+`?A .false` in the branch for `.false`, outside the pattern fragment, and could not be
+solved (`x ← match b with …` in a `do` block, where `?A` is the match's type). -/
+partial def abstractOutsideHoles (t target : Term R) (depth : Nat := 0) : Term R :=
+  if t == target.lift depth then .var depth else
+  match t, (Term.spine t).1 with
+  | .app .., .mvar _ => t.lift 1 depth
+  | .var i, _ => if i ≥ depth then .var (i + 1) else .var i
+  | t, _ => Id.run <| t.mapChildrenM pure (fun d c => pure (abstractOutsideHoles c target (depth + d)))
+
+/-- `typeSort?`, but a hole's universe is the one recorded for it (`addSortConstraint`,
+as for an implicit argument `{A : Type}`): the type of a `match` that is still `M ?A`
+(`x ← match …` in a `do` block) has a universe. `tys`: the context's types, by level. -/
+partial def elabTypeSort? (tys : Array (VTy R)) (v : VTy R) : ElabM R (Option Level) := do
+  let g ← getGlobals
+  if let some l := typeSort? g tys v then return some l
+  match ← force v with
+  | .neutral (.mvar m) _ =>
+    for (_, t, l) in (← get).sortConstraints do
+      if let .mvar m' := (Term.spine t).1 then
+        if m' == m then return some (← instLevel l)
+    return none
+  | .pi _ _ _ A B _ =>
+    let some a ← elabTypeSort? tys A | return none
+    let some b ← elabTypeSort? (tys.push A) (← instM B (Val.var tys.size)) | return none
+    return some (.imax a b)
+  | .sigma _ _ A B _ =>
+    let some a ← elabTypeSort? tys A | return none
+    let some b ← elabTypeSort? (tys.push A) (← instM B (Val.var tys.size)) | return none
+    return some (.max a b)
+  | _ => return none
 
 /-- Replace recursive calls `f y a…` (with `y` a field that has a hypothesis `h`) by
 `h a…`, and `f (k e) a…` (with `k` an infinitary field) by `h e a…`. Returns the
 rewritten syntax and the hypothesis bindings it needs. -/
 partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name × VTy R × Val R))
-    (ihType : Lvl → Option (VTy R)) (lvl : Lvl) (stx : Syntax) :
+    (ihType : Lvl → Option (VTy R)) (lvl : Lvl) (tys : Array (VTy R)) (stx : Syntax) :
     Except String (Syntax × List (Name × VTy R × Val R)) := do
   let isF (h : Syntax) := h.isOfKind "term.ident" && (h.getArg 0).getId? == some rc.fn
   let isExplicitF (h : Syntax) := h.isOfKind "term.explicit" && (h.getArg 1).getId? == some rc.fn
@@ -488,7 +561,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     -- proof that the field's index is that index
     let ihVal : Val R := .neutral (.local ihl) #[]
     let (ihVal, ty) := match whnf ty with
-      | .pi _ _ q dom cod _ => match q.toPoly?, trivialProof g dom with
+      | .pi _ _ q dom cod _ => match q.toPoly?, trivialProof g tys dom with
         | some [], some p => (vApp g ihVal p, Closure.inst g cod p)
         | _, _ =>
           -- an infinitary field: the proof comes after `h`, so the hypothesis becomes
@@ -497,7 +570,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
           match kargs.isEmpty, whnf ty with
           | false, .pi hn hbi hq H hcod _ =>
             match whnf (Closure.inst g hcod (Val.var lvl)) with
-            | .pi _ _ q' E cod2 _ => match q'.toPoly?, trivialProof g E with
+            | .pi _ _ q' E cod2 _ => match q'.toPoly?, trivialProof g (tys.push H) E with
               | some [], some p =>
                 let env : Env R := (List.range lvl).reverse.map Val.var
                 let pTm := quote g (lvl + 1) p
@@ -512,7 +585,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     let ihName := "_ih_" ++ y
     let ident : Syntax := .node a.info "term.ident" #[.ident a.info ihName]
     let others := args.extract np (np + rc.pos) ++ args.extract (np + rc.pos + 1) args.size
-    let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType lvl ·)
+    let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType lvl tys ·)
     let restStx := rest.map (·.1)
     let newBinds := [(ihName, ty, ihVal)] ++ rest.toList.flatMap (·.2)
     let stx' := if restStx.isEmpty then ident
@@ -521,7 +594,7 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
   if isF stx || isExplicitF stx then throw s!"{rc.fn} may only be used in structurally recursive calls"
   match stx with
   | .node i k as =>
-    let rs ← as.mapM (rewriteRecCalls g rc binds ihType lvl ·)
+    let rs ← as.mapM (rewriteRecCalls g rc binds ihType lvl tys ·)
     return (.node i k (rs.map (·.1)), rs.toList.flatMap (·.2))
   | s => return (s, [])
 
@@ -547,22 +620,97 @@ def openGoals (st : TacState R) : ElabM R (Array (LocalCtx R × VTy R)) :=
     let some gl := st.goals[i]? | pure none
     pure (if ← gl.isOpen then some (gl.ctx, gl.ty) else none)
 
+/-- (13b) The types of `ctx`'s variables, by level, evaluated again with their holes
+solved: a binder's type may have been a hole when it was bound (`e : Ex P` with `Ex`'s
+implicit `A` solved later), and conversion and the kernel's inference take the types
+as they are (a hole is rigid there). -/
+def zonkedTypes (ctx : LocalCtx R) : ElabM R (Array (VTy R)) := do
+  let g ← getGlobals
+  let mut tys : Array (VTy R) := #[]
+  for v in ctx.types.reverse do
+    let j := tys.size
+    let t ← zonk j (quote g j (← forceMeta v))
+    tys := tys.push (eval g (ctx.env.drop (ctx.lvl - j)) t)
+  pure tys
+
+/-- (13b) The two sides of an equation that `rfl` is about to prove by `refl`/`reflTy`
+must be definitionally equal **in the elaborator's view** (`Globals.elabView`: a type
+with a private constructor, field or observation of another module is opaque). The
+kernel checks `refl` too, but against the real definitions and by shape, so it accepts
+`Look = Token` for a look-alike `Look` of a private `Token`, and `cast` along that
+equation forges a `Token`. So the comparison is never left to the kernel: unify (which
+may solve holes), and when unification fails, the type-directed conversion with the
+elaborator's globals (η for `Unit`; holes are rigid). `A?` is the type of the sides, or
+`none` for two types. -/
+def sameSides (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R Unit := do
+  let s ← get
+  try unify ctx.lvl a b
+  catch e =>
+    set s
+    -- the sides were evaluated when the equation was formed, perhaps with holes that are
+    -- solved by now (`P.mk s.1 s.2 = s`: `P.mk`'s parameters): evaluate them again
+    let g ← getGlobals
+    let again (v : Val R) : ElabM R (Val R) := do
+      evalIn ctx (← zonk ctx.lvl (quote g ctx.lvl (← forceMeta v)))
+    let a ← again a
+    let b ← again b
+    -- the types of the variables too: a binder's type may have been a hole when it was
+    -- bound, and conversion (which infers the types of neutrals) takes holes as rigid
+    let tys ← zonkedTypes ctx
+    -- what the kernel does with `refl a`: its type `a = a` against `a = b`, both
+    -- computed afresh (an equation at a Σ or Π computes by components, and then holds by
+    -- η where the sides themselves are not compared by `conv`)
+    let ok ← match A? with
+      | some A => do
+        let A ← again A
+        pure (conv g tys A a b || convTy g tys (vEq g A a a) (vEq g A a b))
+      | none => pure (convTy g tys a b || convTy g tys (vEqType g a a) (vEqType g a b))
+    unless ok do
+      throwAt ctx.info s!"rfl: the two sides are not definitionally equal\n  left:  {← showVal ctx a}\n  right: {← showVal ctx b}\n  ({e.msg})"
+
 /-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
 `True`s and `a = b`, an equation of functions a Π. Build the proof by the same shape
-(pairs, lambdas, `()`), with `refl` at the equations left; the kernel checks them. -/
+(pairs, lambdas, `()`, and a case split for a Π over a tag type), with `refl` at the
+equations left; the kernel checks them. -/
 partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
   let g ← getGlobals
   match ← force ty with
-  | .neutral (.eq A a _) #[] => pure (some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a)))
-  | .neutral (.eqTy X _) #[] => pure (some (.reflTy (quote g ctx.lvl X)))
+  | .neutral (.eq A a b) #[] =>
+    sameSides ctx (some A) a b
+    pure (some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a)))
+  | .neutral (.eqTy X Y) #[] =>
+    sameSides ctx none X Y
+    pure (some (.reflTy (quote g ctx.lvl X)))
   | .unit _ => pure (some .tt)
   | .sigma _ _ A B _ =>
     let some a ← rflProof ctx A | pure none
     let some b ← rflProof ctx (← instM B (← evalIn ctx a)) | pure none
     pure (some (.pair a b))
   | .pi x _ _ A B _ =>
-    let some b ← rflProof (ctx.bind x A) (← instM B (Val.var ctx.lvl)) | pure none
-    pure (some (.lam x b))
+    let ctx' := ctx.bind x A
+    match tagField? A with
+    -- (4g) a Π over a tag type is proved tag by tag: an equation between two
+    -- descriptions is `(t : Enum ls) → E t = E' t`, and under the binder `E t` is a stuck
+    -- `ecase t …`, while at each tag it computes. `fun t => ecase t [p₀, …]`; a lifted tag
+    -- (`ULift (Enum ls)`) is split through `down` (the result's type is the goal by η).
+    | some (ls, lifted) =>
+      let tagV (k : Nat) : Val R := if lifted then .up (.tag ls k) else .tag ls k
+      let mut branches : List (Term R) := []
+      for k in [0:ls.length] do
+        let some p ← rflProof ctx' (← instM B (tagV k)) | return none
+        branches := branches ++ [p]
+      -- the motive, under one more binder `t : Enum ls` (in `ctx'`)
+      let t : Val R := Val.var (ctx.lvl + 1)
+      let motive := quote g (ctx.lvl + 2) (← instM B (if lifted then .up t else t))
+      let split : Term R := .ecase "t" motive (if lifted then .down (.var 0) else .var 0) branches
+      -- the binder is erased (quantity 0) and a case split uses its scrutinee, so the
+      -- split goes inside a `transp` along `() = ()`, whose premises are checked erased:
+      -- `transp Unit () (fun _ _ => goal) split () ()  :  goal`
+      let goal := quote g (ctx.lvl + 3) (← instM B (Val.var ctx.lvl))
+      pure (some (.lam x (.transp (.unit 1) .tt (.lam "_" (.lam "_" goal)) split .tt .tt)))
+    | none =>
+      let some b ← rflProof ctx' (← instM B (Val.var ctx.lvl)) | pure none
+      pure (some (.lam x b))
   | _ => pure none
 
 /-- (13a) Does an application have a named argument `(x := e)`? -/
@@ -653,18 +801,28 @@ where
     | "term.match" => elabMatch ctx stx expected
     | "term.by" => elabBy ctx stx expected
     | "term.num" =>
+      let n := (stx.getArg 0).getNat?.getD 0
       match ← force expected with
       | .qty => elabQtyLit ctx stx (((stx.getArg 0).getNat?.map toString).getD "?")
-      | .mu _ _ _ _ _ (some (T, us, _)) =>
+      | .mu _ _ _ _ _ (some (T, _, _)) =>
         -- a numeral of the `builtin nat` type: `succ (… (succ zero))` (the kernel's Nat
         -- is unary; the runtime uses native numbers)
         let s ← get
         match s.builtins.lookup "nat" with
         | some N =>
-          if N != T then throwAt ctx.info s!"numerals are for {N}, not {T}" else
-          pure (.natLit ((stx.getArg 0).getNat?.getD 0))
+          if N == T then pure (.natLit n) else
+          -- (HD9) at another data type, through its `OfNat` instance
+          match ← ofNatLit? ctx n expected with
+          | some t => pure t
+          | none => throwAt ctx.info s!"numerals are for {N}, not {T}"
         | none => throwAt ctx.info "numerals need `builtin nat := …`"
-      | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+      -- an unsolved type: the numeral is a `Nat` (its default type)
+      | .neutral (.mvar _) _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+      -- (HD9) any other type (an axiom, a type variable with an instance): `OfNat`
+      | _ => do
+        match ← ofNatLit? ctx n expected with
+        | some t => pure t
+        | none => let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.str" =>
       match ← force expected with
       | .mu _ _ _ _ _ (some (T, us, _)) =>
@@ -679,8 +837,12 @@ where
     | "term.rfl" =>
       let g ← getGlobals
       match ← force expected with
-      | .neutral (.eq A a _) #[] => pure (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
-      | .neutral (.eqTy X _) #[] => pure (.reflTy (quote g ctx.lvl X))
+      | .neutral (.eq A a b) #[] =>
+        sameSides ctx (some A) a b
+        pure (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
+      | .neutral (.eqTy X Y) #[] =>
+        sameSides ctx none X Y
+        pure (.reflTy (quote g ctx.lvl X))
       | .unit _ => pure .tt
       | e => match ← rflProof ctx e with
         | some t => pure t
@@ -700,7 +862,8 @@ where
     | "term.paren" => check ctx (stx.getArg 1) expected
     | "term.app" =>
       if (stx.getArg 0).isOfKind "term.explicit" || (← builtinApp? ctx stx).isSome ||
-          !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0))) then
+          !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0)) ||
+            holeAndNestedCheck (stx.getArg 1).args || (← numOperands ctx stx)) then
         let (t, ty) ← infer ctx stx
         unifyAt ctx stx expected ty
         pure t
@@ -1054,6 +1217,29 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
       | _ => freshLevelMeta
     return (.sigma b.name q ty cod (some (.max l₁ l₂)), .sort (.max l₁ l₂))
 
+/-- (7e) After an application: its instance problems whose types its arguments have just
+fixed (`Add ?A` in `a + 5`, now `Add Nat`) are solved now, not at the next instance
+problem or the end of the command, so that the value computes when it meets a type
+(`refl (a + 5) : Nat.lor a 5 = a + 5`: native arithmetic can't see an unsolved hole). -/
+partial def solveReady : ElabM R Unit := do
+  unless (← get).pendingInsts.isEmpty do discard synthPending
+
+/-- (7e) A numeral, possibly negated or in parentheses (`3`, `-3`, `(3)`). -/
+partial def numLike (stx : Syntax) : Bool :=
+  stx.isOfKind "term.num" ||
+  ((stx.isOfKind "term.paren" || stx.isOfKind "term.neg") && numLike (stx.getArg 1))
+
+/-- (7e) An application of a class method to a numeral (`Add.add x 1`, `1 + x`, `-3`):
+its numerals are elaborated after its other arguments and the expected type, which may
+fix their type (`0 + a` with `a : Int`, `(-3 : Int)`), as Lean's `binop%` does. -/
+partial def numOperands (ctx : LocalCtx R) (stx : Syntax) : ElabM R Bool := do
+  unless stx.isOfKind "term.app" && (stx.getArg 1).args.any numLike do return false
+  let h := stx.getArg 0
+  unless h.isOfKind "term.ident" do return false
+  let x := stripScope (((h.getArg 0).getId?).getD "_")
+  if (lookupLocal ctx x).isSome then return false
+  return (← get).classes.any fun c => c.fields.any fun f => c.name ++ "." ++ f == x
+
 /-- A `fun` with a binder whose type isn't given: as an argument, it is elaborated after
 the others (`checkApp`). -/
 partial def postponable (stx : Syntax) : Bool :=
@@ -1100,6 +1286,20 @@ partial def needsExpected (stx : Syntax) : Bool :=
   -- a lambda's binder types usually come from the expected type
   stx.isOfKind "term.fun"
 
+/-- The term inside parentheses. -/
+partial def stripParens (a : Syntax) : Syntax := if a.isOfKind "term.paren" then stripParens (a.getArg 1) else a
+
+/-- Arguments `_ … (g … rfl)`: a hole to be filled from the expected type, and an
+application that is checked against its own expected type (`Ex.intro _ 3 (Ex.intro _ 3 rfl)`).
+Inferring the outer application would check the inner one against `?P 3` with the hole
+`?P` unsolved; take the outer one's type from the expected type first instead. -/
+partial def holeAndNestedCheck (args : Array Syntax) : Bool :=
+  args.any (fun a => (stripParens a).isOfKind "term.hole") &&
+  args.any fun a =>
+    let a := stripParens a
+    a.isOfKind "term.app" && !(a.getArg 0).isOfKind "term.explicit" &&
+      (a.getArg 1).args.any fun b => needsExpected b && !(stripParens b).isOfKind "term.fun"
+
 /-- An application in check mode, using the **expected type first**: every explicit
 argument gets a placeholder metavariable, the resulting type is unified with the
 expected type (failure is fine here), and only then are the arguments elaborated,
@@ -1127,14 +1327,27 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
       fty ← instM cod (← evalIn ctx m)
     | _ => return ← (do let (t, ty) ← inferApp ctx stx (postpone := false); unifyAt ctx stx expected ty; pure t)
   (f, fty) ← insertImplicits ctx f fty
-  let _ ← tryCatch (unify ctx.lvl expected fty) (fun _ => pure ())
+  -- (speculative, so no guesses when the result type depends on the arguments: their
+  -- placeholders are determined by the arguments, not by a first-order guess; see "When
+  -- unification approximates" in `Unify.lean`)
+  let holes := pending.filterMap fun (_, m, _, _) => match (Term.spine m).1 with
+    | .mvar id => some id
+    | _ => none
+  let dependent := (quote (← getGlobals) ctx.lvl fty).mvars.any holes.contains
+  let cur := (← get).approx
+  let approx := if dependent then Approx.none else cur
+  let _ ← tryCatch (withApprox approx (unify ctx.lvl expected fty)) (fun _ => pure ())
   let mut args : Array (Term R × Term R) := #[]
   -- a lambda with unannotated binders whose domains aren't known yet waits for the other
   -- arguments, which may fix them (`zipWith3 (fun b x y => if b then x else y) c t e`)
   let mut postponed : Array (Syntax × Term R × VTy R × Bool) := #[]
+  -- (7e) the numerals of a class method's application wait too (`1 + x`); elsewhere a
+  -- numeral may be what fixes a postponed lambda's domain (`mealy (fun s i => …) 0 xs`)
+  let numPostpone ← numOperands ctx stx
   for pass in [0:2] do
     for (arg, m, dom, used) in (if pass == 0 then pending else postponed) do
-      if pass == 0 && postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg)) then
+      if pass == 0 && ((postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg))) ||
+          (numPostpone && numLike arg && (← force dom) matches .neutral (.mvar _) _)) then
         postponed := postponed.push (arg, m, dom, used)
         continue
       let a ← check ctx arg dom
@@ -1175,6 +1388,7 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   let rec respine (t : Term R) : Term R := match t with
     | .app g x => .app (respine g) (((args.find? (·.1 == x)).map (·.2)).getD x)
     | t => t
+  solveReady
   pure (respine f)
 
 /-- **Exercise 3.9.** Infer the type of an application `f a₁ … aₙ` (`term.app`, with
@@ -1194,7 +1408,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   let explicitMode := fStx.isOfKind "term.explicit"
   -- (a lambda argument with unannotated binders is postponed: `checkApp` against an
   -- unknown type does that)
-  if postpone && !explicitMode && (stx.getArg 1).args.any postponable then
+  if postpone && !explicitMode && ((stx.getArg 1).args.any postponable || (← numOperands ctx stx)) then
     let T ← freshMeta ctx "the type of an application"
     let vT ← evalIn ctx T
     let t ← checkApp ctx stx vT
@@ -1202,6 +1416,9 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   let (f, fty) ← infer ctx fStx
   let mut f := f
   let mut fty := fty
+  -- arguments whose type couldn't be unified yet (outside the pattern fragment): they
+  -- wait, behind a placeholder, for the later arguments (which may solve the holes)
+  let mut waiting : Array (Syntax × Term R × VTy R) := #[]
   for arg in (stx.getArg 1).args do
     if !explicitMode then
       (f, fty) ← insertImplicits ctx f fty
@@ -1224,14 +1441,35 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
           let m ← freshMeta (ctx.withInfo arg) s!"instance {x}"
           addInstProblem ctx m dom
           pure m
-        else check ctx arg dom
+        else match ← tryCatch (Except.ok <$> check ctx arg dom) (fun e => pure (.error e)) with
+          | .ok a => pure a
+          | .error e =>
+            if e.code != "non-pattern" then throw e
+            let m ← freshPlaceholder (ctx.withInfo arg)
+            waiting := waiting.push (arg, m, dom)
+            pure m
       f := .app f a
       fty ← instArgM ctx cod a
     | _ => throwAt {} "unreachable"
+  -- the waiting arguments, now; still outside the pattern fragment, with the flex-flex
+  -- guess as the last resort (see "When unification approximates" in `Unify.lean`)
+  let mut done : Array (Term R × Term R) := #[]
+  for (arg, m, dom) in waiting do
+    let a ← tryCatch (check ctx arg dom) fun e => do
+      if e.code != "non-pattern" then throw e
+      withApprox .last (check ctx arg dom)
+    unifyAt ctx arg (← evalIn ctx m) (← evalIn ctx a)
+    done := done.push (m, a)
+  if !done.isEmpty then
+    let rec respine (t : Term R) : Term R := match t with
+      | .app g x => .app (respine g) (((done.find? (·.1 == x)).map (·.2)).getD x)
+      | t => t
+    f := respine f
   -- trailing instance arguments are inserted (`bitWidth A : Nat` for
   -- `bitWidth (0 A : Type) [BitPack A] : Nat`), as are implicits before them
   if !explicitMode && (← trailingInst ctx.lvl fty) then
     (f, fty) ← insertImplicits ctx f fty
+  solveReady
   pure (f, fty)
   --|ex
   --| sorry
@@ -1366,7 +1604,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let mut rhs := cl.rhs
     if let some rc := rc then
       let ihType (l : Lvl) : Option (VTy R) := ctx.types[ctx.lvl - l - 1]?
-      match rewriteRecCalls g rc binds ihType ctx.lvl cl.rhs with
+      match rewriteRecCalls g rc binds ihType ctx.lvl ctx.types.reverse.toArray cl.rhs with
       | .ok (r, extra) => rhs := r; binds := binds ++ extra
       | .error e => throwAt cl.rhs.info e
     let mut ctx' := ctx
@@ -1441,7 +1679,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- the motive's universe
   let tys := ctx.types.reverse.toArray
   let Gv ← evalIn ctx G
-  let vG := typeSort? g tys Gv
+  let vG ← elabTypeSort? tys Gv
   let ctors : List Name := match descD.value.map (fun v => (piInfos descD.type).foldl (fun t _ => match t with
       | .lam _ b => b
       | t => t) v) with
@@ -1685,7 +1923,7 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   -- abstract the scrutinees, last first
   -- (each abstraction adds a binder: the later scrutinee terms are lifted over it)
   let mut absGoal := goalTm
-  for t in ts, k in [0:ts.size] do absGoal := absGoal.abstract (t.lift k)
+  for t in ts, k in [0:ts.size] do absGoal := abstractOutsideHoles absGoal (t.lift k)
   let _ := goalTm
   let mut lvls : List Lvl := []
   -- a scrutinee's type mentions the earlier scrutinees (`match e, h with` for
@@ -1754,6 +1992,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
         return (.var ix, ty)
     -- a macro-scoped name that isn't a local refers to the global of its base name
     let x := stripScope x
+    -- (13b) this module's private declaration of that name, if any
+    let x := (← getGlobals).resolve x
     match (← getGlobals).find? x with
     | some d =>
       -- (13b) a private name of another module
@@ -1769,6 +2009,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       record x {} ty
       return (.const x us, ty)
     | none =>
+      -- (13b) another module's private declaration of that name (under its own kernel
+      -- name, `Globals.privateName`)
+      let g ← getGlobals
+      if let some (_, m) := g.privates.toList.find? fun (n, m) => m != g.module && n == Globals.privateName m x then
+        throwAt ctx.info s!"'{x}' is private to module {m}" "private"
       -- built-in types
       let builtinLevel : Option Level := match explicitLevels with
         | some _ => none
@@ -1905,7 +2150,10 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       let t ← check ctx (stx.getArg 2) X
       let g ← getGlobals
       return (.cast (quote g ctx.lvl X) (quote g ctx.lvl Y) e t, Y)
-    | _ => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
+    -- (4g) an equation between data types computes (to the equation of their codes), and so
+    -- do equations between `Π`s and `Σ`s: then the target can't be read off the proof's type
+    | .neutral .. | .unfold .. => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
+    | _ => throwAt ctx.info "cannot infer the type of this cast: its proof's type is an equation that has computed, so it no longer shows the target type; write `(cast e t : T)`"
   | "term.match" =>
     -- stage 13: the type is found from the alternatives (a metavariable, in `Type`)
     -- (not depending on the scrutinised variables: the motive abstracts them, which
@@ -1984,11 +2232,20 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let some gl := st.goals[← num r]? | throwAt info "tactic: unknown goal"
     pure gl
   -- reflect a term (zonked first) in a goal's context
-  let refl (st : TacState R) (gl : Goal R) (t : Term R) (depth : Nat := gl.ctx.lvl) :
+  -- (constructor applications by name, where the type `ty?` and the types inside `t` tell:
+  -- `reflectT`; a term with no data in it takes the plain `reflect`)
+  let refl (st : TacState R) (gl : Goal R) (t : Term R) (ty? : Option (VTy R) := none) :
       ElabM R (RVal × TacState R) := do
-    let t ← zonk depth t
-    let (r, hs) := (reflect t depth).run st.handles
-    pure (r, { st with handles := hs })
+    let t ← zonk gl.ctx.lvl t
+    if hasData t then
+      let (r, hs) ← (reflectT (RCtx.ofLocal gl.ctx) t ty?).run st.handles
+      pure (r, { st with handles := hs })
+    else
+      let (r, hs) := (reflect t gl.ctx.lvl).run st.handles
+      pure (r, { st with handles := hs })
+  -- the type of a term a request was handed, as far as its head tells
+  let typeOf? (gl : Goal R) (t : Term R) : ElabM R (Option (VTy R)) :=
+    (RCtx.ofLocal gl.ctx).typeOf? t
   let addGoal (st : TacState R) (gl : Goal R) : TacState R × Nat :=
     ({ st with goals := st.goals.push gl }, st.goals.size)
   let unifyGoal (gl : Goal R) (t : Term R) : ElabM R Unit := do
@@ -1998,7 +2255,9 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   if tag == TacTag.done then return st
   if tag == TacTag.result then throwAt info "a tactic may not return syntax"
   if tag == TacTag.fail then throwAt info (((fld 0).toString?).getD "tactic failed")
-  if tag == TacTag.trace then return ← runTac code info st (fld 1)
+  if tag == TacTag.trace then
+    pushTrace info (((fld 0).toString?).getD "")
+    return ← runTac code info st (fld 1)
   if tag == TacTag.fresh then
     let n := (← get).nextScope
     modify fun s => { s with nextScope := n + 1 }
@@ -2018,14 +2277,24 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let st' ← try runTac code info st (fld 0)
       catch e => runTac code info st (apply code (fld 1) (encodeString e.msg))
     return ← runTac code info st' (fld 2)
+  if tag == TacTag.ctorInfo then
+    let ans := match ctorInfo? g (← str (fld 0)) with
+      | some (T, nParams, nFields) => mkCon 1 [encodePair (encodeString T) (encodePair (.nat nParams) (.nat nFields))]
+      | none => mkCon 0 []
+    return ← runTac code info st (apply code (fld 1) ans)
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
+  if tag == TacTag.ppGoal then
+    return ← runTac code info st (apply code (fld 1) (encodeString (← gl.show)))
+  if tag == TacTag.ppExpr then
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    return ← runTac code info st (apply code (fld 2) (encodeString (showTerm gl.ctx t)))
   if tag == TacTag.goalType then
     let (r, st) ← refl st gl (quote g lvl gl.ty)
     return ← runTac code info st (apply code (fld 1) r)
   if tag == TacTag.goalExpr then
-    let (r, st) ← refl st gl gl.tm
+    let (r, st) ← refl st gl gl.tm (some gl.ty)
     return ← runTac code info st (apply code (fld 1) r)
   if tag == TacTag.goalHyps then
     let mut st := st
@@ -2043,6 +2312,67 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     unifyGoal gl (.lam x m)
     let (st, id) := addGoal st { ctx := ctx', ty := ← instM cod (Val.var lvl), tm := m }
     return ← runTac code info st (apply code (fld 2) (.nat id))
+  if tag == TacTag.introFresh then
+    let .pi bx _ _ dom cod _ ← force gl.ty | throwAt info "intro: the goal is not a function type"
+    let x := introName gl.ctx.names (← str (fld 1)) bx (isProp g gl.ctx.types.reverse.toArray dom)
+      (decodeBool (fld 2) == some true)
+    let ctx' := gl.ctx.bind x dom
+    let m ← freshMeta ctx' "goal"
+    unifyGoal gl (.lam x m)
+    let (st, id) := addGoal st { ctx := ctx', ty := ← instM cod (Val.var lvl), tm := m }
+    return ← runTac code info st (apply code (fld 3) (encodePair (encodeString x) (.nat id)))
+  if tag == TacTag.rename then
+    let i ← num (fld 1)
+    unless i < lvl do throwAt info "rename: no such hypothesis"
+    -- names are not part of terms: the same hole, in a context that differs in a name
+    let (st, id) := addGoal st { gl with ctx := { gl.ctx with names := gl.ctx.names.set i (← str (fld 2)) } }
+    return ← runTac code info st (apply code (fld 3) (.nat id))
+  if tag == TacTag.change then
+    let ty ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
+    try unify lvl gl.ty ty
+    catch e => throwAt info s!"change: the new goal is not convertible with the old one ({e.msg})"
+    let m ← freshMeta gl.ctx "goal"
+    unifyGoal gl m
+    let (st, id) := addGoal st { ctx := gl.ctx, ty, tm := m }
+    return ← runTac code info st (apply code (fld 2) (.nat id))
+  if tag == TacTag.whnf then
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let (r, st) ← refl st gl (← whnfTerm gl.ctx t) (← typeOf? gl t)
+    return ← runTac code info st (apply code (fld 2) r)
+  if tag == TacTag.unfold then
+    let n ← str (fld 1)
+    match g.find? n with
+    | some { value := some _, inline := false, .. } => pure ()
+    | some _ => throwAt info s!"unfold: {n} is not a definition"
+    | none => throwAt info s!"unfold: unknown constant {n}"
+    let t ← zonk lvl (← reify st.handles (fld 2) lvl)
+    let (r, st) ← refl st gl (← unfoldIn gl.ctx n t) (← typeOf? gl t)
+    return ← runTac code info st (apply code (fld 3) r)
+  if tag == TacTag.rewrite then
+    let h ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let rtl := decodeBool (fld 2) == some true
+    unless h.mvars.isEmpty do throwAt info "rewrite: the equation has holes"
+    let hty ← match (← get).kernelInfer (gl.kernelCtx g) h with
+      | .ok ty => pure ty
+      | .error e => throwAt info s!"rewrite: {e}"
+    let (A, a, b) ← match ← force hty with
+      | .neutral (.eq A a b) #[] => pure (quote g lvl A, quote g lvl a, quote g lvl b)
+      | v => throwAt info s!"rewrite: not an equation between two terms: {← showVal gl.ctx v}"
+    let goalT ← zonk lvl (quote g lvl gl.ty)
+    -- the side to replace, and its replacement
+    let (old, new) := if rtl then (b, a) else (a, b)
+    let (body, found) := (abstractOcc old goalT).run false
+    unless found do throwAt info s!"rewrite: the goal does not mention {showTerm gl.ctx old}"
+    let newT := body.instantiateAt 0 new
+    -- `P x _ := G[x] = G[a]` (or `G[a] = G[x]`, right to left), transported along `h : a = b`
+    let Ga := body.instantiateAt 0 a
+    let eqn (x y : Term R) : Term R := if rtl then .eqTy y x else .eqTy x y
+    let P : Term R := .lam "x" (.lam "_" (eqn (body.lift 1) (Ga.lift 2)))
+    let pf : Term R := .transp A a P (.reflTy Ga) b h
+    let m ← freshMeta gl.ctx "goal"
+    unifyGoal gl (.cast newT goalT pf m)
+    let (st, id) := addGoal st { ctx := gl.ctx, ty := ← evalIn gl.ctx newT, tm := m }
+    return ← runTac code info st (apply code (fld 3) (.nat id))
   if tag == TacTag.exact then
     let stx ← stxOf (fld 1)
     let t ← check (gl.ctx.withInfo stx) stx gl.ty
@@ -2050,15 +2380,19 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (fld 2)
   if tag == TacTag.elabInfer then
     let (t, ty) ← infer gl.ctx (← stxOf (fld 1))
-    let (r₁, st) ← refl st gl t
+    let (r₁, st) ← refl st gl t (some ty)
     let (r₂, st) ← refl st gl (quote g lvl ty)
     return ← runTac code info st (apply code (fld 2) (encodePair r₁ r₂))
   if tag == TacTag.assign then
     let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let mut st := st
     if t.mvars.isEmpty then
       match (← get).kernelInfer (gl.kernelCtx g) t with
       | .ok ty => unifyAt gl.ctx .missing gl.ty ty
       | .error e => throwAt info s!"assign: {e}"
+    else
+      -- with holes its type can't be inferred yet: at the end of the block (`elabBy`)
+      st := { st with unchecked := st.unchecked.push (gl, t) }
     unifyGoal gl t
     return ← runTac code info st (fld 2)
   if tag == TacTag.newGoal then
@@ -2067,13 +2401,15 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let (st, id) := addGoal st { ctx := gl.ctx, ty, tm := m }
     return ← runTac code info st (apply code (fld 2) (.nat id))
   if tag == TacTag.normalize then
-    let v' ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
-    let (r, st) ← refl st gl (quote g lvl v')
+    let t ← reify st.handles (fld 1) lvl
+    let v' ← evalIn gl.ctx t
+    let (r, st) ← refl st gl (quote g lvl v') (← typeOf? gl (← zonk lvl t))
     return ← runTac code info st (apply code (fld 2) r)
   if tag == TacTag.instantiate then
     let body ← reify st.handles (fld 1) (lvl + 1)
     let arg ← reify st.handles (fld 2) lvl
-    let (r, st) ← refl st gl (body.instantiateAt 0 arg)
+    let t := body.instantiateAt 0 arg
+    let (r, st) ← refl st gl t (← typeOf? gl (← zonk lvl t))
     return ← runTac code info st (apply code (fld 3) r)
   if tag == TacTag.isDefEq then
     let a ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
@@ -2116,6 +2452,18 @@ partial def elabBy (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM 
       if ← gl.isOpen then rest := rest.push (← gl.show)
   pushInfo (.tactic stx.info true #[(ctx, expected)] (← openGoals st))
   unless rest.isEmpty do throwAt ctx.info s!"unsolved goals:\n{"\n\n".intercalate rest.toList}" "unsolved-goals"
+  -- (13b) the terms `assign` took with holes: now that the holes are solved, their types
+  -- are inferred and compared with their goals here, in the elaborator's view (where a
+  -- type with a private constructor is opaque), not left to the kernel
+  for (gl, t) in st.unchecked do
+    let t ← zonk gl.ctx.lvl t
+    unless t.mvars.isEmpty do throwAt ctx.info "assign: the assigned term still has holes at the end of the tactic block"
+    -- (the context's types with their holes solved: they may have been holes when the
+    -- goal was made, and the kernel takes a hole as rigid)
+    let kctx := { gl.kernelCtx (← getGlobals) with types := (← zonkedTypes gl.ctx).toList.reverse }
+    match (← get).kernelInfer kctx t with
+    | .ok ty => unifyAt gl.ctx stx gl.ty ty
+    | .error e => throwAt ctx.info s!"assign: {e}"
   pure m
 
 end
