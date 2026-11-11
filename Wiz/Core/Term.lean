@@ -440,6 +440,12 @@ structure Globals (R : Type) where
   /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
   it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
   quoteErasesProofs : Bool := false
+  /-- (13n, elaborator) `quote` reads a Σ that `vEq` computed from an equation back as the
+  equation (`eqSigmaSides?`), so that a type that is read back and evaluated again (a
+  `match` clause's motive, `zonk`) still shows `rfl` the equation it came from. Set by the
+  elaborator's `getGlobals`; off in the kernel and for `#reduce` (which prints the
+  computed form) -/
+  quoteEqs : Bool := false
   /-- (P1) regularity at inert types: `ground` (stable) by default -/
   inertReg : InertReg := .ground
   /-- a compiler option, not read by the kernel (`--unbox-structs`, stage 22i): erasure
