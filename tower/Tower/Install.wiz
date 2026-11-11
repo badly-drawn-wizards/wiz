@@ -348,7 +348,7 @@ def Tower.layoutFrom (src tc commit : String) : EIO Unit := do
       d ← Tower.run "cp" ("-R" :> Path.join src "editors" :> share :> .nil);
       EIO.pure ()
     | .false => EIO.pure () : EIO Unit);
-  FS.writeFile (Path.join share "REVISION") (commit & "\n")
+  FS.writeFile (Path.join share "REVISION") (commit & "\n");
   -- the marker editors look for (editors/nvim: a library file is served by its toolchain's wiz)
   FS.writeFile (Path.join share "TOOLCHAIN") "A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).\n"
 
@@ -365,7 +365,7 @@ def Tower.sourceBuild (s : Settings) (w : Want) (work tc : String) : EIO String 
     | .false => EIO.fail "building from source needs `lake` (install elan: https://github.com/leanprover/elan)" : EIO Unit);
   Tower.note ("lake build wiz grail (at " & String.take 12 commit & "; this takes a while the first time)");
   -- (without the Lean variables of the environment tower runs in)
-  c ← Tower.runWith (Tower.unsetAll Tower.leanVars (SpawnOptions.inDir src SpawnOptions.default)) "lake" ("build" :> "wiz" :> "grail" :> .nil);
+  c ← Tower.runOpts (Tower.unsetAll Tower.leanVars (SpawnOptions.inDir src SpawnOptions.default)) "lake" ("build" :> "wiz" :> "grail" :> .nil);
   Tower.layoutFrom src tc commit;
   Tower.removeAll src;
   EIO.pure commit

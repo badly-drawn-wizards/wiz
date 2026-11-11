@@ -4843,8 +4843,10 @@ def opticGroup : Group where
 def derivingRun (input : String) : IO (CommandState ZeroOneMany) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let derivingLib ← IO.FS.readFile "lib/Deriving.wiz"
+  let textLib ← IO.FS.readFile "lib/Text.wiz"
   let loader : Name → Option String := fun m =>
-    if m == "Prelude" then some prelude else if m == "Deriving" then some derivingLib else none
+    if m == "Prelude" then some prelude else if m == "Deriving" then some derivingLib
+    else if m == "Text" then some textLib else none
   pure (runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule })
 
 def okDeriving (input : String) (infos : List String := []) : IO Unit := do
@@ -6380,9 +6382,10 @@ def okInfoview (input : String) (infos : List String := []) : IO Unit := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let json ← IO.FS.readFile "lib/Json.wiz"
   let iv ← IO.FS.readFile "lib/Infoview.wiz"
+  let textLib ← IO.FS.readFile "lib/Text.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "Json" then some json
-    else if m == "Infoview" then some iv else none
+    else if m == "Infoview" then some iv else if m == "Text" then some textLib else none
   let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")

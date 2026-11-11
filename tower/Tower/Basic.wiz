@@ -248,7 +248,7 @@ def Tower.leanVars : List String :=
   "LEAN_SYSROOT" :> "LEAN_AR" :> "LEAN_CC" :> "ELAN_TOOLCHAIN" :> "LD_LIBRARY_PATH" :> .nil
 
 -- Run a command, capturing its output (trimmed); an error with its output when it fails.
-def Tower.runWith (o : SpawnOptions) (cmd : String) (args : List String) : EIO String := do
+def Tower.runOpts (o : SpawnOptions) (cmd : String) (args : List String) : EIO String := do
   r ← EIO.lift (Process.outputWith cmd args "" o);
   match r with
   | .error e => EIO.fail e
@@ -256,10 +256,10 @@ def Tower.runWith (o : SpawnOptions) (cmd : String) (args : List String) : EIO S
     | .true => EIO.pure (String.trim o.stdout)
     | .false => EIO.fail (cmd & " " & String.intercalate " " args & ": " & ExitStatus.toString o.status & "\n" &
         String.trim (o.stderr & o.stdout))
-def Tower.run (cmd : String) (args : List String) : EIO String := Tower.runWith SpawnOptions.default cmd args
+def Tower.run (cmd : String) (args : List String) : EIO String := Tower.runOpts SpawnOptions.default cmd args
 -- ... in a directory
 def Tower.runIn (dir cmd : String) (args : List String) : EIO String :=
-  Tower.runWith (SpawnOptions.inDir dir SpawnOptions.default) cmd args
+  Tower.runOpts (SpawnOptions.inDir dir SpawnOptions.default) cmd args
 -- is `cmd` a program we can run?
 def Tower.have (cmd : String) : EIO Bool := do
   r ← EIO.lift (Tower.run cmd ("--version" :> .nil));
