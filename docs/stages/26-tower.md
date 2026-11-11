@@ -95,8 +95,8 @@ codes need. The shims are scripts rather than tower itself under another name (e
 uses one binary for everything) because a Lean program can't see its `argv[0]` and
 can't `exec`. A script costs one `sh` and one quick tower run per call.
 
-**Why tower is written in Lean.** Wiz programs can read their arguments now (`IO.args`,
-21k), but they can't start or `exec` processes, read environment variables, list,
+**Why tower was written in Lean** (it is now also written in Wiz, 26e). Wiz programs could read their arguments (`IO.args`,
+21k), but they couldn't start or `exec` processes, read environment variables, list,
 rename or link files, or set file modes. tower needs all of these, and grail is written
 in Lean for the same reason. tower is its own small library (`Tower/`, which doesn't
 import Wiz) and its own Lake executable, so its Nix package builds in seconds.
@@ -177,3 +177,31 @@ holding a tiny Lake project whose `wiz` and `grail` print their arguments, with 
   linked as a GC root and unlinked by `uninstall` (skipped when there is no `nix`).
 
 The shims in the tests call the test driver (`tests --tower …`), which runs tower.
+
+## 26e: tower in Wiz ✅
+
+`tower/` is tower again, in Wiz: a grail package (`tower/grail.wiz`) whose executable
+`tower` (`cd tower && grail build`: `.grail/bin/tower`) has the same commands, messages,
+settings file, `tower.info` and layout as the Lean one, module for module
+(`Tower/Basic.wiz`, `Install.wiz`, `Cli.wiz`). It uses `lib/Sys.wiz` (9h) for processes,
+the environment and files, `lib/Text.wiz` (9j) for text, and a small C file of its own
+(`Tower/native.c`, `link_c`) for `realpath`. Its own executable comes from
+`/proc/self/exe`; a child's working directory is set by changing tower's around the
+spawn, and the Lean variables are unset in tower itself before `lake build` (Sys has no
+`cwd` or environment for a child yet). `grail test` in `tower/` checks the pure
+functions (`tests/pure.wiz` against `tests/pure.expected`).
+
+**Tests.** The cases of `Tests/Tower.lean` run tower as a process, through its command
+line only, against either implementation: group `tower` against the Lean one (the test
+driver, `tests --tower`), group `tower-wiz` against `tower/`, which the group's first case
+builds with grail in `.lake/build/tower-wiz` (about 10 s from clean; later cases find it
+up to date) and whose `grail test` it runs.
+
+The Lean tower is still what the flake (`packages.tower`) and the release tarball ship.
+Switching means: `packages.tower` builds `tower/` with grail (the `wiz` package plus GMP
+and a C compiler at build time instead of Lake: the binary then links GMP, so the
+package's closure grows by GMP and glibc only), `scripts/release-tarball.sh` takes the
+grail-built binary (it is linked against the system GMP like `wiz build` output, so the
+tarball's "glibc and the C runtime only" promise needs a static GMP or `--gmp` with
+mini-gmp), the `--tower` mode of the test driver and `Tower/` go, and the group `tower`
+is dropped in favour of `tower-wiz`.

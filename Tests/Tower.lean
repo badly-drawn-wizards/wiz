@@ -49,14 +49,58 @@ def upstream : IO (System.FilePath × System.FilePath) := do
   let _ ← gitIn work ["push", "--quiet", bare.toString, "HEAD:refs/heads/main", "v1"]
   pure (bare, work)
 
-/-- A tower home whose shims call this test driver (`--tower`). -/
-def mkEnv : IO Tower.Env := do
-  let home ← IO.FS.createTempDir
-  pure { home, self := [(← IO.appPath).toString, "--tower"] }
+/-- A tower to test: the command that runs it (a program, then its first arguments).
+The Lean one is this test driver (`tests --tower`, `Tower/`); the Wiz one is `tower/`,
+built by grail (stage 26e). Both are run as processes, so the cases only see the CLI and
+the files it writes. -/
+structure Impl where
+  cmd : List String
 
-def tower (e : Tower.Env) (args : List String) : IO Unit := do
-  let r ← Tower.main e args
-  unless r == 0 do throw (IO.userError s!"tower {args}: exit {r}")
+def leanImpl : IO Impl := do pure { cmd := [(← IO.appPath).toString, "--tower"] }
+
+/-- Build `tower/` (the Wiz tower) with grail, in `.lake/build/tower-wiz` (a copy of the
+sources: grail's cache makes the second build of the same sources run no jobs, so only the
+first case of the group pays for it). -/
+def wizImpl : IO Impl := do
+  let root ← IO.FS.realPath "."
+  let dir := root / ".lake/build/tower-wiz"
+  IO.FS.createDirAll dir
+  let o ← IO.Process.output { cmd := "cp", args := #["-R", "tower/.", dir.toString] }
+  if o.exitCode != 0 then throw (IO.userError s!"cp tower: {o.stderr}")
+  let start ← IO.monoMsNow
+  let o ← IO.Process.output {
+    cmd := (root / ".lake/build/bin/grail").toString, cwd := dir,
+    args := #["build", "tower"] ++ (← toolchain).toFlags.toArray }
+  if o.exitCode != 0 then throw (IO.userError s!"grail build tower:\n{o.stderr}{o.stdout}")
+  let ran := !((o.stdout ++ o.stderr).splitOn "0 jobs run").length > 1
+  if ran then note s!"built tower-wiz {showMs ((← IO.monoMsNow) - start)}"
+  note "uses tower-wiz"
+  pure { cmd := [(dir / ".grail/bin/tower").toString] }
+
+/-- A tower home whose shims call the tower under test. -/
+def mkEnv (impl : Impl) : IO Tower.Env := do
+  let home ← IO.FS.createTempDir
+  pure { home, self := impl.cmd }
+
+/-- The arguments that make the tower under test use the home `e` and write shims that call it. -/
+def towerArgs (e : Tower.Env) (args : List String) : Array String :=
+  (e.self.tail ++ ["--home", e.home.toString, "--self", e.self.head!] ++
+    e.self.tail.flatMap (["--self-arg", ·]) ++ args).toArray
+
+/-- Run the tower under test: exit code, stdout, stderr. -/
+def towerOut (e : Tower.Env) (args : List String) (cwd : Option System.FilePath := none) : IO (UInt32 × String × String) := do
+  let o ← IO.Process.output { cmd := e.self.head!, args := towerArgs e args, cwd }
+  pure (o.exitCode, o.stdout, o.stderr)
+
+def tower (e : Tower.Env) (args : List String) (cwd : Option System.FilePath := none) : IO Unit := do
+  let (r, out, err) ← towerOut e args cwd
+  unless r == 0 do throw (IO.userError s!"tower {args}: exit {r}\n{err}{out}")
+
+/-- A tower command that must fail: its stderr. -/
+def towerFails (e : Tower.Env) (args : List String) : IO String := do
+  let (r, out, err) ← towerOut e args
+  if r == 0 then throw (IO.userError s!"tower {args} succeeded:\n{out}")
+  pure err
 
 /-- Run a program; its trimmed stdout (it must succeed). -/
 def runOut (cmd : String) (args : List String) (cwd : Option System.FilePath := none) : IO String := do
@@ -71,34 +115,44 @@ def checkHas (out t : String) : IO Unit := check (contains out t) s!"expected {t
 def readFile? (f : System.FilePath) : IO String := do
   if ← f.pathExists then IO.FS.readFile f else pure ""
 
-def group : Group where
-  name := "tower"
-  exercise := "Stage 26"
-  cases := [
+/-- `tower show` in a directory: the toolchain and why (`none` when it fails). -/
+def showIn (e : Tower.Env) (dir : System.FilePath) : IO (Option (String × String)) := do
+  let (r, out, _) ← towerOut e ["show"] dir
+  if r != 0 then return none
+  match out.splitOn "\n" with
+  | spec :: why :: _ =>
+    let why := why.trimAscii.toString
+    pure (some (spec, if why.startsWith "from " then (why.drop 5).toString else why))
+  | _ => throw (IO.userError s!"tower show: {out}")
+
+/-- The cases, against either tower. -/
+def cases (impl : IO Impl) : List Case := [
     { name := "settings, wiz-toolchain files, overrides and the default", run := fun _ => do
-        let e ← mkEnv
-        let s := ((({} : Tower.Settings).set "cflags" "-I/x y").toOption.get!.set "override" "v1 /a b").toOption.get!
-        checkEq s.render ((Tower.Settings.parse s.render).toOption.get!).render
-        checkEq [("/a b", "v1")] s.overrides
+        let e ← mkEnv (← impl)
+        tower e ["set", "cflags", "-I/x y"]
+        tower e ["set", "override", "v1 /a b"]
+        let (_, text, _) ← towerOut e ["settings"]
+        checkHas text "cflags -I/x y\n"
+        checkHas text "override v1 /a b\n"
+        checkEq text (← IO.FS.readFile (e.home / "settings"))
+        checkEq "/a b  v1" (← runOut e.self.head! (towerArgs e ["override", "list"]).toList)
+        checkHas (← towerFails e ["set", "colour", "blue"]) "unknown setting colour"
+        let e ← mkEnv (← impl)
         let proj ← IO.FS.realPath (← mkTree [("wiz-toolchain", "-- the toolchain\nv1\n"), ("sub/deep/x.wiz", ""), ("other/y", "")])
         -- nothing anywhere: no toolchain
-        checkEq none (← Tower.active e (← IO.FS.createTempDir))
+        checkEq none (← showIn e (← IO.FS.createTempDir))
         tower e ["set", "default", "nightly"]
-        checkEq (some ("v1", (proj / "wiz-toolchain").toString)) (← Tower.active e (proj / "sub/deep"))
+        checkEq (some ("v1", (proj / "wiz-toolchain").toString)) (← showIn e (proj / "sub/deep"))
         tower e ["override", "set", "branch-x", (proj / "sub").toString]
-        checkEq (some "branch-x") ((← Tower.active e (proj / "sub/deep")).map (·.1))
-        checkEq (some "v1") ((← Tower.active e (proj / "other")).map (·.1))
+        checkEq (some "branch-x") ((← showIn e (proj / "sub/deep")).map (·.1))
+        checkEq (some "v1") ((← showIn e (proj / "other")).map (·.1))
         tower e ["override", "unset", (proj / "sub").toString]
-        checkEq (some "v1") ((← Tower.active e (proj / "sub/deep")).map (·.1))
+        checkEq (some "v1") ((← showIn e (proj / "sub/deep")).map (·.1))
         let tmp ← IO.FS.createTempDir
-        checkEq (some ("nightly", "the default toolchain")) (← Tower.active e tmp)
-        -- specs: versions order numerically
-        checkEq (some "v1.10.0") (Tower.latestTag [("refs/tags/v1.9.2", ""), ("refs/tags/v1.10.0", ""), ("refs/tags/x", ""), ("refs/heads/v9", "")])
-        checkEq "github:o/r/abc" (Tower.flakeRef "github:o/r" "abc")
-        checkEq "git+file:///r?rev=abc" (Tower.flakeRef "git+file:///r" "abc") },
+        checkEq (some ("nightly", "the default toolchain")) (← showIn e tmp) },
     { name := "from source: install, channels, update, shims, +SPEC, run", run := fun _ => do
         let (bare, work) ← upstream
-        let e ← mkEnv
+        let e ← mkEnv (← impl)
         tower e ["set", "git", bare.toString]
         tower e ["set", "nightly-ref", "main"]
         tower e ["set", "source", "source"]
@@ -126,11 +180,9 @@ def group : Group where
         checkHas (← runOut shim ["check"] proj) "wiz 1"
         -- run puts the toolchain's bin/ first on PATH
         let sh ← IO.FS.realPath (← mkTree [("t.sh", "wiz from-run\n")])
-        let self := (← IO.appPath).toString
-        let o ← IO.Process.output {
-          cmd := self, args := #["--tower", "--home", e.home.toString, "run", "v1", "--", "sh", (sh / "t.sh").toString] }
-        checkHas o.stdout "wiz 1 [--cflags"
-        checkHas o.stdout "from-run]"
+        let (_, o, _) ← towerOut e ["run", "v1", "--", "sh", (sh / "t.sh").toString]
+        checkHas o "wiz 1 [--cflags"
+        checkHas o "from-run]"
         -- nightly moves: update reinstalls it, v1 (a tag) stays
         IO.FS.writeFile (work / "FakeWiz.lean") (fakeMain "wiz" "3")
         let _ ← gitIn work ["commit", "--quiet", "-am", "v3"]
@@ -157,7 +209,7 @@ def group : Group where
         let x ← IO.FS.createTempDir
         let _ ← runOut "tar" ["-xzf", (rel / "v1" / Tower.tarballName a).toString, "-C", x.toString]
         checkHas (← runOut (x / s!"wiz-{a}-linux/bin/wiz").toString ["check"]) s!"wiz-{a}-linux/share/wiz/lib check"
-        let e ← mkEnv
+        let e ← mkEnv (← impl)
         tower e ["set", "git", bare.toString]
         tower e ["set", "releases", rel.toString]
         tower e ["toolchain", "install", "v1", "--source", "release", "--cc", "gcc"]
@@ -166,13 +218,9 @@ def group : Group where
         checkHas (← readFile? (tc / "tower.info")) "commit abc123"
         -- a corrupt download is refused
         IO.FS.writeFile (rel / "v1" / (Tower.tarballName a ++ ".sha256")) "0000  x\n"
-        match ← Tower.install e "v1" (some "release") (force := true) with
-        | .error m => checkHas m "sha256"
-        | .ok _ => throw (IO.userError "installed a tarball with the wrong checksum")
+        checkHas (← towerFails e ["toolchain", "install", "v1", "--source", "release", "--force"]) "sha256"
         -- a branch has no release
-        match ← Tower.install e "main" (some "release") with
-        | .error m => checkHas m "not a tag"
-        | .ok _ => throw (IO.userError "installed a release of a branch")
+        checkHas (← towerFails e ["toolchain", "install", "main", "--source", "release"]) "not a tag"
         -- link the unpacked tarball (a toolchain layout) and use it by name
         tower e ["toolchain", "link", "mine", (x / s!"wiz-{a}-linux").toString]
         tower e ["self", "shims"]
@@ -190,7 +238,7 @@ def group : Group where
         let _ ← gitIn flake ["init", "--quiet"]
         let _ ← gitIn flake ["add", "."]
         let _ ← gitIn flake ["commit", "--quiet", "-m", "flake"]
-        let e ← mkEnv
+        let e ← mkEnv (← impl)
         tower e ["set", "git", bare.toString]
         tower e ["set", "flake", s!"git+file://{flake}"]
         -- the flake's own commit stands in for the wiz commit
@@ -206,11 +254,42 @@ def group : Group where
         check (← System.FilePath.pathExists target) "uninstall removed the store path" }
   ]
 
+def group : Group where
+  name := "tower"
+  exercise := "Stage 26"
+  cases :=
+    { name := "the Lean functions: settings, specs, flake references", run := fun _ => do
+        let s := ((({} : Tower.Settings).set "cflags" "-I/x y").toOption.get!.set "override" "v1 /a b").toOption.get!
+        checkEq s.render ((Tower.Settings.parse s.render).toOption.get!).render
+        checkEq [("/a b", "v1")] s.overrides
+        -- specs: versions order numerically
+        checkEq (some "v1.10.0") (Tower.latestTag [("refs/tags/v1.9.2", ""), ("refs/tags/v1.10.0", ""), ("refs/tags/x", ""), ("refs/heads/v9", "")])
+        checkEq "github:o/r/abc" (Tower.flakeRef "github:o/r" "abc")
+        checkEq "git+file:///r?rev=abc" (Tower.flakeRef "git+file:///r" "abc") } ::
+    cases leanImpl
+
+/-- The same cases against tower written in Wiz (`tower/`, stage 26e), and its own tests
+(`grail test` in `tower/`: the pure functions, against `tower/tests/*.expected`). -/
+def wizGroup : Group where
+  name := "tower-wiz"
+  exercise := "Stage 26e"
+  cases :=
+    { name := "the Wiz functions: grail test in tower/", run := fun _ => do
+        let _ ← wizImpl
+        let root ← IO.FS.realPath "."
+        let o ← IO.Process.output {
+          cmd := (root / ".lake/build/bin/grail").toString, cwd := root / ".lake/build/tower-wiz",
+          args := #["test"] ++ (← toolchain).toFlags.toArray }
+        if o.exitCode != 0 then throw (IO.userError s!"grail test in tower/:\n{o.stdout}{o.stderr}")
+        checkHas o.stdout "1 passed, 0 failed" } ::
+    cases wizImpl
+
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
 order, so that branches adding groups rarely touch the same lines. A new group also
 needs a shard in `.github/test-shards.json` (CI checks). -/
 def groups : List Group :=
   group ::
+  wizGroup ::
   []
 
 end Tests.Tower

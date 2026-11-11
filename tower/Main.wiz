@@ -1,0 +1,3 @@
+import Tower.Cli
+-- `tower`, the Wiz toolchain manager (stage 26), in Wiz: `Tower/Cli.wiz`.
+def main : IO Unit := IO.bind IO.args (fun args => IO.bind Tower.defaultEnv (fun e => Tower.main e args))
