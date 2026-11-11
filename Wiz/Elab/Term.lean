@@ -505,8 +505,9 @@ partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
       match ctorOf f with
       | some (T, c) => pure (.ctor (some T) c args)
       | none =>
-        -- (13q) `p + k`, as `+` expands (`Add.add p k`), with a numeral `k`
-        match g.resolve f == "Add.add", args with
+        -- (13q) `p + k`, as `+` expands (`Add.add p k`, or `HAdd.hAdd p k`), with a numeral `k`
+        -- (`HAdd.hAdd` too: `+` of the heterogeneous classes)
+        match g.resolve f == "Add.add" || g.resolve f == "HAdd.hAdd", args with
         | true, [p, k] => match (if k.isOfKind "term.num" then (k.getArg 0).getNat? else none) with
           | some 0 => patView g p
           | some n => pure (.plusK p n)
