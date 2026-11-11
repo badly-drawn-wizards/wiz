@@ -60,7 +60,8 @@ neither see it nor print with it (List.cons as `∷` in HoareTactics, String.app
 
 Terms print in the notation they were written with (11r): `#check`, `#eval`, messages,
 hovers, the infoview's goals, and (24e) `trace_state` and tactic messages, so an x-tactic
-that gets stuck shows `⊢ l ↦ 1 ⊢ l ↦ 2` (the goal's `⊢`, then the entailment's) and a
+that gets stuck shows `⊢ (l ↦ 1 ⊢ l ↦ 2)` (a target that shows a `⊢` of its own is put in
+parentheses, so it isn't read as the goal's) and a
 specification reads `⦃p ↦ a ⋆ q ↦ b⦄ Prog.swap p q ⦃_, p ↦ b ⋆ q ↦ a⦄`. Infix and `notation` rules whose template is a constant
 applied to the rule's variables print automatically; binder notation (`∃ x, P`) and
 macros declare an `app_unexpander`. When a constant has several notations, the one

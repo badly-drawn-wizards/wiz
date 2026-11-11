@@ -224,8 +224,13 @@ def MList' (p : Nat) : HProp Nat := ∃ʰ (n : Nat), p ↦ n ⋆ ⌜n = 0⌝
   no atom on the left matches l ↦ 2"), `TacticM.ppExpr`, "unsolved goals" and "failed to
   synthesize an instance" used the elaborator's printer without the notation table;
   they use it now (`Elab.showTermM`, `Goal.show`, `Class.showType`), so an entailment goal
-  reads `⊢ l ↦ 1 ⊢ l ↦ 2` instead of `⊢ Entails Nat (pts Nat l 1) (pts Nat l 2)`.
-  (The first `⊢` is the goal's, the second the entailment's, as in Iris.)
+  reads `⊢ (l ↦ 1 ⊢ l ↦ 2)` instead of `⊢ Entails Nat (pts Nat l 1) (pts Nat l 2)`.
+* **One turnstile per goal.** Entailment keeps `⊢` (SLF's and Iris's symbol, and the
+  library's source), so a goal whose target shows a `⊢` of its own prints the target in
+  parentheses (`goalTarget`, Core/Pretty.lean: `trace_state`, tactic messages, hovers and
+  the infoview, tags kept). Changing the goal marker would change every goal of every
+  file, and a second symbol for entailment would make the goals read differently from
+  the code.
 
 Not covered: implicit arguments outside notation still print (`Prog.read Nat l`, 11r's
 limitation), and `wp c Q` has no notation. Conventions: docs/dsls.md. Tests: group

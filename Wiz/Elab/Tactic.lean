@@ -461,7 +461,7 @@ def Goal.show (gl : Goal R) : ElabM R String := do
       { ctx with env := ctx.env.drop k, names := ctx.names.drop k, types := ctx.types.drop k,
                  bound := ctx.bound.drop k, lvl := ctx.lvl - k }
     lines := lines.push s!"{ctx.names[j]!} : {← showTermM sub (← zonk sub.lvl (quote (← getGlobals) sub.lvl ctx.types[j]!))}"
-  lines := lines.push s!"⊢ {← showTermM ctx (← zonk ctx.lvl (quote (← getGlobals) ctx.lvl gl.ty))}"
+  lines := lines.push s!"⊢ {goalTarget (← showTermM ctx (← zonk ctx.lvl (quote (← getGlobals) ctx.lvl gl.ty)))}"
   pure ("\n".intercalate lines.toList)
 
 /-! ## Unfolding (stage 6f)

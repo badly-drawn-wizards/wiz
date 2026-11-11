@@ -6025,7 +6025,7 @@ def seplogicGroup : Group where
            "fun l Q => ⦃l ↦ 1⦄ Prog.write Nat l 2 ⦃Q⦄ : Nat → (Unit → HProp Nat) → Prop",
            "l : Nat\nv : Nat\n⊢ ⦃l ↦ v⦄ Prog.read Nat l ⦃r, l ↦ v ⋆ ⌜r = v⌝ ⦄"] },
     { name := "... and in x-tactic failures", run := fun _ =>
-        failsLibs "import HoareTactics\ndef h (l : Nat) : (l ↦ 1) ⋆ emp ⊢ (l ↦ 2) := by xsimpl" "⊢ l ↦ 1 ⊢ l ↦ 2" },
+        failsLibs "import HoareTactics\ndef h (l : Nat) : (l ↦ 1) ⋆ emp ⊢ (l ↦ 2) := by xsimpl" "⊢ (l ↦ 1 ⊢ l ↦ 2)" },
     { name := "swap and in-place list reversal are verified", run := fun _ =>
         okLibs ("import HoareExamples\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
           ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → ⦃p ↦ a ⋆ q ↦ b⦄ Prog.swap p q ⦃_, p ↦ b ⋆ q ↦ a⦄",
@@ -6056,7 +6056,7 @@ def seplogicGroup : Group where
           "def e7 (P : Prop) (hP : P) (a : HProp Nat) : a ⊢ hpure P ⋆ a := by xsimpl\n" ++
           "def e8 (p : Nat) (a : HProp Nat) : hexists (fun (n : Nat) => hpure (n = p) ⋆ a) ⊢ a := by\n  xpull as n, h\n  xsimpl") },
     { name := "xsimpl leaves what it cannot prove", run := fun _ => do
-        failsLibs "import HoareTactics\ndef bad (a b c : HProp Nat) : a ⋆ b ⊢ c ⋆ a := by xsimpl" "⊢ b ⊢ c"
+        failsLibs "import HoareTactics\ndef bad (a b c : HProp Nat) : a ⋆ b ⊢ c ⋆ a := by xsimpl" "⊢ (b ⊢ c)"
         failsLibs "import HoareTactics\ndef bad (p : Nat) : (p ↦ 1) ⊢ (p ↦ 2) := by xsimpl" "unsolved goals"
         -- a tactic that fails says why, with the goal
         failsLibs "import HoareExamples\ndef bad (p q n : Nat) : Triple (p ↦ n) (Prog.incr q) (fun _ => p ↦ n) := by xstep" "xstep: the precondition has no cell at q"
