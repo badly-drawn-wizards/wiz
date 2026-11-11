@@ -158,6 +158,21 @@ cached between runs.
   same compiler (the elaboration cache's own keys include the wiz binary's hash, but the
   test driver's grail runs use a fixed binary id and the `/tmp` programs a timestamp).
 
+* **A self-hosted runner** for the heavy shards (`"heavy": true` in
+  `.github/test-shards.json`): set the repository variable `WIZ_RUNNER_HEAVY` to its
+  label; unset, everything runs on `ubuntu-latest`. Pull requests from forks never run
+  there. Setup, security and aarch64 notes: [ci-runner.md](ci-runner.md).
+* **Merging: the merge queue.** CI also runs on `merge_group` events, so `master` can
+  have a GitHub merge queue (it needs an organization-owned repository): a queued PR is
+  tested merged onto `master` *and the PRs queued ahead of it* (up to 3 entries build at
+  once), and lands only if that run's `CI result` passes. Two PRs that are green alone
+  but break together (the selfhost/*.wiz case of 2026-11-11) then never both land. To
+  queue a green PR: `gh pr merge N -R badly-drawn-wizards/wiz --merge --auto` (it enters
+  the queue once its own checks pass; `gh pr merge N --disable-auto` takes it out). A
+  queue run that fails drops that PR from the queue and rebuilds the ones behind it
+  without it. Without a queue (a user-owned repository), `--auto` waits for the required
+  check and merges, and "require branches to be up to date" serialises merges instead.
+
 To run Wiz without a checkout or a Lean toolchain, with the binaries from Cachix:
 
 ```
