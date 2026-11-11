@@ -3875,11 +3875,11 @@ def ioArgHeadN (n : String) (h a : Tm) : Option Tm := match h with
     | .false => .none
   | _ => .none
 -- `T` if the type is `n T`
-def appArgOf (n : String) (t : Tm) : Option Tm := match t with
+partial def appArgOf (n : String) (t : Tm) : Option Tm := match t with
   | .sorted _ u => appArgOf n u
   | .app f a => ioArgHeadN n (tmHead f) a
   | _ => .none
-def isPiTm : Tm → Bool
+partial def isPiTm : Tm → Bool
   | .sorted _ u => isPiTm u
   | .pi _ _ => .true
   | .piq _ _ _ => .true
