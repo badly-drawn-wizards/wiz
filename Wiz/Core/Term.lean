@@ -179,14 +179,28 @@ structure Decl (R : Type) where
   /-- unfold eagerly instead of gluing (constructors, so values look like constructor
   applications) -/
   inline : Bool := false
-  /-- an implementation for the compiler, not checked by the kernel: a structurally
-  recursive definition, with direct recursion instead of the recursor -/
+  /-- an implementation for the compiler: the term compiled code runs instead of `value`
+  (a structurally recursive definition's equations, with direct recursion instead of the
+  recursor; a partial definition's body; a native implementation's constant). The kernel
+  never unfolds it, but checks it against `type` (`checkImpl` in `addDecl`/`setImpl`,
+  `addPartialImpl`), so erasure only sees checked terms. That it computes what `value`
+  computes is not checked. -/
   impl : Option (Term R) := none
   /-- a partial definition's witness: a term of its type that the kernel checks
   (`addPartialDecl`). The definition stays opaque (`value = none`) but is not an axiom:
   its type is inhabited, so assuming `f : T` proves nothing that `w : T` doesn't. -/
   witness : Option (Term R) := none
   deriving Repr, Inhabited
+
+/-- The native implementation of a definition (`attribute [implemented_by g] f`): compiled
+code runs `g` for `f`, while the kernel keeps `f`'s definition. It is the `impl` that is
+just another constant (a recursive definition's `impl` is its own equations, a partial
+definition's is its body, which has a witness). -/
+def Decl.nativeImpl? {R : Type} (d : Decl R) : Option Name :=
+  if d.witness.isSome then none else
+  match d.impl with
+  | some (.const g _) => if g == d.name then none else some g
+  | _ => none
 
 namespace Term
 
@@ -330,19 +344,20 @@ def Term.descTag? {R : Type} : Term R → Option (List Name × Bool × Term R)
 /-- The binder name of a **phantom** argument (`Elab/Inductive.lean`): a type whose
 parameters no field mentions ends in `(0 phantom✝ : D) → … → Unit` instead of `Unit`,
 with `D` mentioning the parameter. Such a function type has one inhabitant up to η,
-`fun _ => ()`, so it has no runtime content (`erasable`). The name is inaccessible,
-so only the elaborator writes it. -/
+`fun _ => ()`, so it has no runtime content (`erasable`, which goes by the type's shape,
+not by this name: conversion ignores binder names). The name is inaccessible, so only
+the elaborator writes it; it uses it to let `()` stand for the tail's value. -/
 def phantomName : Name := "phantom✝"
 
 /-- The **structure marker** (stage 22i): a structure with at least one field ends in
 `(0 phantom✝ : D) → … → (0 fields✝ : Enum [fields✝]) → Unit` (its phantom tail, 22e, then
 the marker), so `structure S where val : A` is `(val : A) × ((0 fields✝ : Enum [fields✝]) → Unit)`.
-Erasure recognises the marker and unboxes the Σ whose second component it ends (the
-structure's last field): at run time that pair is just the field. The marker is in the
-*type*, not only in a name, because the representation must be a function of the type up
-to conversion: conversion ignores binder names but compares domains, and no user-written
-type has the domain `Enum [fields✝]` (the label is inaccessible), so nothing convertible
-to a structure lacks the marker, and nothing else has it. -/
+It is a function into `Unit` with an erased argument, like a phantom tail, so it is a
+singleton and has no runtime content. Erasure does **not** recognise it by this label or
+by a binder name: conversion ignores both (`Enum` types are compared by length), so a
+user's `(0 f : Enum [x]) → Unit` is the same type, and a representation must be the same
+for convertible types. `Compiler/Erase.lean` goes by the shape (`erasedFunTy`), and
+unboxes the Σ before such a tail only under `--unbox-structs` (`unboxedSigma`). -/
 def structTailName : Name := "fields✝"
 
 /-- The marker's domain, `Enum [fields✝]`. -/
@@ -372,6 +387,20 @@ inductive Regularity where
   | off
   deriving BEq, Repr, Inhabited
 
+/-- Regularity at inert types (InReg, D1/P1): when `cast A B e t ↦ t` at an inert `A`.
+See `wiz-notes/p1-stable.md`. -/
+inductive InertReg where
+  /-- the old rule: `A` and `B` quote alike (`sameVal`). Not stable under substitution
+  (P1): kept only to measure what the stable rules lose -/
+  | syntactic
+  /-- (default) `A` and `B` are equal by `groundEqTy`: no free variable in a relevant
+  position, so the decision is invariant under conversion and stable under substitution -/
+  | ground
+  /-- `ground`, and conversion also identifies `cast A B e t` with `t` at an inert `A`
+  when `A ≡ B` (InReg_conv, decided by `convTy`) -/
+  | conv
+  deriving BEq, Repr, Inhabited
+
 /-- The global environment. `order` records insertion order so anything that walks
 the environment does so deterministically (never iterate the hash map directly). -/
 structure Globals (R : Type) where
@@ -386,9 +415,29 @@ structure Globals (R : Type) where
   eager : Bool := false
   /-- which casts reduce by regularity (D1: `off`, so that checking terminates) -/
   regularity : Regularity := .off
+  /-- P2 (the default; `--eager-proofs` turns it off while the transition lasts): proofs
+  are never evaluated. The positions the syntax marks as proofs (`cast`'s equation,
+  `transp`'s two proofs) are suspended; a cast between propositions is stuck instead of
+  applying the equivalence; `split` on a proof is η. See `docs/CoreSpec.md` and
+  `wiz-notes/p2-proofs.md`. -/
+  lazyProofs : Bool := true
+  /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
+  it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
+  quoteErasesProofs : Bool := false
+  /-- (P1) regularity at inert types: `ground` (stable) by default -/
+  inertReg : InertReg := .ground
+  /-- a compiler option, not read by the kernel (`--unbox-structs`, stage 22i): erasure
+  represents a Σ whose second component is a structure's tail by its first component
+  (`unboxedSigma` in `Compiler/Erase.lean`). Off by default: it is not stable under
+  substitution. -/
+  unboxStructs : Bool := false
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false
+  /-- (13b, `wiz --strict-privacy`, off by default) check every declaration a second time
+  against the elaborator's view, where another module's types with private parts have no
+  definition (`privacyCheck`, `Elab/Command.lean`). The kernel ignores this. -/
+  strictPrivacy : Bool := false
   /-- (13b) names private to a module (`private def …`, `private mk ::`), with the
   module: the elaborator rejects them elsewhere. The kernel ignores this. -/
   privates : Std.HashMap Name String := {}

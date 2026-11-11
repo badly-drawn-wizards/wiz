@@ -996,4 +996,8 @@ def longMain : IO UInt32 := do
   IO.println s!"{failed} failed"
   pure (if failed == 0 then 0 else 1)
 
+def groups : List Group :=
+  group :: kernelGroup ::
+  []
+
 end Tests.Audit

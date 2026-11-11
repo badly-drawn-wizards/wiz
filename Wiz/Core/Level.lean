@@ -51,7 +51,9 @@ def instParams (ps : List String) (us : List Level) : Level → Level
   | succ l => succ (instParams ps us l)
   | max a b => max (instParams ps us a) (instParams ps us b)
   | imax a b => imax (instParams ps us a) (instParams ps us b)
-  | l => l
+  -- (the leaves by name, here and below: a new constructor must get its own case)
+  | zero => zero
+  | mvar m => mvar m
 
 /-- Replace level metavariables using `f`. -/
 partial def instMVars (f : Nat → Option Level) : Level → Level
@@ -61,19 +63,20 @@ partial def instMVars (f : Nat → Option Level) : Level → Level
   | succ l => succ (instMVars f l)
   | max a b => max (instMVars f a) (instMVars f b)
   | imax a b => imax (instMVars f a) (instMVars f b)
-  | l => l
+  | zero => zero
+  | param n => param n
 
 def params : Level → List String
   | param n => [n]
   | succ l => params l
   | max a b | imax a b => params a ++ params b
-  | _ => []
+  | zero | mvar _ => []
 
 def hasMVar : Level → Bool
   | mvar _ => true
   | succ l => hasMVar l
   | max a b | imax a b => hasMVar a || hasMVar b
-  | _ => false
+  | zero | param _ => false
 
 /-! ## Normal forms
 
@@ -162,6 +165,17 @@ where
 
 /-- `a ≤ b` for every instantiation (as far as `equiv` can tell). -/
 def le (a b : Level) : Bool := equiv (max a b) b
+
+/-- The least upper bound, kept small: `a` or `b` when one is below the other. -/
+def join (a b : Level) : Level := if b.le a then a else if a.le b then b else max a b
+
+/-- A small `k` with `l ≤ k + 1`: `k` for `succ k`, `u` for a parameter `u`. -/
+def predBound : Level → Level
+  | zero => zero
+  | succ l => l
+  | max a b => join (predBound a) (predBound b)
+  | imax a b => join (predBound a) (predBound b)
+  | l => l
 
 /-- The level as a number, if it is closed. -/
 def toNat? : Level → Option Nat

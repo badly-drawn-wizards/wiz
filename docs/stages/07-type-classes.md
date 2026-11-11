@@ -82,8 +82,8 @@ deriving instance Repr for Shape             -- after the fact
 * **Reflection** (`Elab/Reflect.lean`). `MacroM.getInductive T : MacroM (Option IndView)`
   describes an inductive type or structure: its parameters and indices
   (`ParamView`: name, binder kind, type), its constructors (`CtorView`: short name,
-  fields, the indices of its result), each field (`FieldView`: name, kind, type, and
-  whether it is recursive), and whether it is a structure. `MacroM.getType n` is the
+  fields, the indices of its result), each field (`FieldView`: name, kind, type,
+  whether it is recursive, and whether it is a proof), and whether it is a structure. `MacroM.getType n` is the
   type of any declaration. Types are **syntax**, printed with binder names and parsed
   back, so a macro can splice them; the facts come from the kernel's declarations
   (`T.desc`, `T.c`), so they also hold for declarations replayed from the cache.
@@ -110,3 +110,34 @@ so mutual types); no `DecidableEq` (it needs no-confusion proofs); quotations ca
 splice lists (`$xs*`), so derivers fold one-element quotations and use
 `Syntax.mkApp`; the self-hosted frontend has no macros yet. `Repr String` doesn't
 escape.
+
+## 7d: deriving with proof fields and in any universe ✅
+
+```
+import Deriving
+structure Pos where
+  n : Nat
+  h : Nat.lt 0 n = Bool.true
+  deriving Repr, BEq
+#eval Repr.repr (Pos.mk 3 (refl Bool.true))   -- "Pos.mk 3 _"
+inductive Box.{u} (A : Type u) where          -- Box : Type u → Type u (inferred)
+  | mk (x : A)
+  deriving Repr, BEq, Inhabited
+```
+
+* **Proof fields.** `FieldView` says whether a field is a **proof** (its type is a
+  proposition; `Elab/Reflect.lean` asks the kernel's `isProp`). `Repr` shows it as `_`,
+  `BEq` doesn't compare it (proofs of a proposition are all equal), and `Inhabited`
+  skips a constructor with one (there is no `default` proof).
+* **Any universe.** `Inhabited`, `BEq` and `Repr` take `A : Type u`; a derived instance
+  takes an instance argument for each `Type` or `Type u` parameter. An `instance` has
+  the universe names in its binders and type as its universe parameters
+  (`{A : Type u} → [Repr A] → Repr (Box A)`), so derivers need no `.{u}` syntax.
+* **Inferred universes.** Without a signature, an `inductive` or `structure` lives in
+  the smallest `Type l` that holds its fields: `Box.{u} (A : Type u)` is in `Type u`
+  (before, it was put in `Type` and rejected).
+* **Through `ULift`.** A field smaller than its type's universe is lifted in the
+  description (CoreSpec §4.1, F5 in [Status.md](../Status.md)); the recursor a deriver eliminates
+  with hands out `down` of it, whose type is the field's own, so instance resolution
+  sees `Nat`, not `ULift Nat` (tested on a type in `Type 1` with a `Nat` field and a
+  proof field).

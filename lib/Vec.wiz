@@ -173,18 +173,18 @@ def Vec.set_cons_zero {A : Type} {0 n : Nat} (x : A) (xs : Vec A n) (0 h : Nat.l
     @Vec.set A (Nat.succ n) (@Vec.cons A n x xs) (@Fin.mk (Nat.succ n) 0 h) y = @Vec.cons A n y xs :=
   @Eq.trans (Vec A (Nat.succ n)) (@Vec.set A (Nat.succ n) (@Vec.cons A n x xs) (@Fin.mk (Nat.succ n) 0 h) y)
     (@Vec.cons A n (cast (rfl : A = A) y : A) xs) (@Vec.cons A n y xs)
-    (@castRefl (Vec A (Nat.succ n)) rfl (@Vec.cons A n (cast (rfl : A = A) y : A) xs))
+    (@castRefl (Vec A (Nat.succ n)) (refl (Vec A (Nat.succ n))) (@Vec.cons A n (cast (rfl : A = A) y : A) xs))
     (@congrArg A (Vec A (Nat.succ n)) (fun z => @Vec.cons A n z xs) (cast (rfl : A = A) y : A) y (@castRefl A rfl y))
 def Vec.set_cons_succ {A : Type} {0 n : Nat} (x : A) (xs : Vec A n) (i : Nat) (0 h : Nat.lt (Nat.succ i) (Nat.succ n) = .true) (y : A) :
     @Vec.set A (Nat.succ n) (@Vec.cons A n x xs) (@Fin.mk (Nat.succ n) (Nat.succ i) h) y =
       @Vec.cons A n x (@Vec.set A n xs (@Fin.mk n i h) y) :=
   @Eq.trans (Vec A (Nat.succ n)) (@Vec.set A (Nat.succ n) (@Vec.cons A n x xs) (@Fin.mk (Nat.succ n) (Nat.succ i) h) y)
     (@Vec.cons A n x (@Vec.set A n xs (@Fin.mk n i h) (cast (rfl : A = A) y : A))) (@Vec.cons A n x (@Vec.set A n xs (@Fin.mk n i h) y))
-    (@castRefl (Vec A (Nat.succ n)) rfl (@Vec.cons A n x (@Vec.set A n xs (@Fin.mk n i h) (cast (rfl : A = A) y : A))))
+    (@castRefl (Vec A (Nat.succ n)) (refl (Vec A (Nat.succ n))) (@Vec.cons A n x (@Vec.set A n xs (@Fin.mk n i h) (cast (rfl : A = A) y : A))))
     (@congrArg A (Vec A (Nat.succ n)) (fun z => @Vec.cons A n x (@Vec.set A n xs (@Fin.mk n i h) z)) (cast (rfl : A = A) y : A) y (@castRefl A rfl y))
 def Vec.map_cons {A B : Type} (f : A → B) {0 n : Nat} (x : A) (xs : Vec A n) :
     @Vec.map A B f (Nat.succ n) (@Vec.cons A n x xs) = @Vec.cons B n (f x) (@Vec.map A B f n xs) :=
-  @castRefl (Vec B (Nat.succ n)) rfl (@Vec.cons B n (f x) (@Vec.map A B f n xs))
+  @castRefl (Vec B (Nat.succ n)) (refl (Vec B (Nat.succ n))) (@Vec.cons B n (f x) (@Vec.map A B f n xs))
 def Vec.map_map_cons {A B C : Type} (f : B → C) (g : A → B) {0 n : Nat} (x : A) (xs : Vec A n)
     (ih : @Vec.map B C f n (@Vec.map A B g n xs) = @Vec.map A C (fun a => f (g a)) n xs) :
     @Vec.map B C f (Nat.succ n) (@Vec.map A B g (Nat.succ n) (@Vec.cons A n x xs)) =
