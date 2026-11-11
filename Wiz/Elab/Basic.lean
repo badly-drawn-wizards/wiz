@@ -1,5 +1,6 @@
 import Wiz.Core.Check
 import Wiz.Syntax.Basic
+import Wiz.Syntax.Children
 import Wiz.Compiler.Run
 
 /-!

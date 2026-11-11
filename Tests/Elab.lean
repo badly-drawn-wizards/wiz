@@ -4401,7 +4401,9 @@ def languageGroup : Group where
         okLib (guard ++ "def readω (g : Guard) : Nat × Tok := (g.n, g.tok)\ndef pass (1 g : Guard) : Guard := g")
         failsLib (guard ++ "def s1 (1 g : Guard) : Nat := g.n") "a structure can't be held at a quantity other than ω yet"
         failsLib (guard ++ "def s2 (1 g : Guard) : Tok := g.tok") "use a tuple `A × B` instead"
-        failsLib (guard ++ "def s3 (1 g : Guard) : Nat × Tok := match g with\n  | .mk n t => (n, t)") "cannot match on a value of type"
+        -- (13h) `.mk n t` on a structure is the tuple pattern over its Σ: two projections,
+        -- rejected at quantity 1 like a tuple pattern on a linear pair (`m1` below)
+        failsLib (guard ++ "def s3 (1 g : Guard) : Nat × Tok := match g with\n  | .mk n t => (n, t)") "quantity 1 but used ω"
         failsLib (guard ++ "def s4 (1 g : Guard) : (1 t : Tok) × Nat := let 1 (n, rest) := g; let 1 (t, tail) := rest; (t, n)")
           "variable tail declared with quantity 1 but used 0"
         -- a tuple pattern in `match` is two projections: not for a linear pair
@@ -4454,6 +4456,88 @@ def languageGroup : Group where
           "#eval sum3 (1, 2, 3)\n#eval firstZero (0, 5)\n#eval firstZero (2, 5)") ["6", ".true", ".false"] },
     { name := "the pipe operator", run := fun _ =>
         okLib "import Prelude\n#eval 3 |> Nat.succ |> Nat.succ" ["5"] },
+    -- 13g
+    { name := "as-patterns: x@p binds the matched value, and recursion on it is structural", run := fun _ =>
+        okLib ("import Prelude\ndef last (A : Type) (d : A) : List A → A\n  | .nil => d\n  | .cons x .nil => x\n" ++
+          "  | .cons _ xs@(.cons _ _) => last A d xs\n#eval last Nat 0 (.cons 1 (.cons 2 (.cons 3 .nil)))\n" ++
+          "def dup : List Nat → List Nat\n  | .nil => .nil\n  | l@(.cons x _) => .cons x l\n#eval dup (.cons 1 (.cons 2 .nil))\n" ++
+          "def both (p : Nat × Nat) : Nat := match p with\n  | q@(a, b) => Nat.add (Nat.add a b) q.1\n#eval both (1, 2)\n" ++
+          "def nm : Nat → Nat\n  | n@m@(.succ _) => Nat.add n m\n  | z@_ => z\n#eval nm 3\n#eval nm 0")
+          ["3", ".cons 1 (.cons 1 (.cons 2 .nil))", "4", "6", "0"] },
+    { name := "as-patterns: the name must be a variable; not a term", run := fun _ => do
+        failsLib "import Prelude\ndef f : Nat → Nat\n  | (.succ k)@n => n\n  | _ => 0" "an as-pattern is `x@p` with a variable"
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := n@n" "only allowed in a pattern"
+        failsLib "import Prelude\ndef f : List Nat → Nat\n  | l@(.cons x) => x\n  | _ => 0" "cons expects 2 explicit arguments" },
+    -- 13h
+    { name := "structure patterns: .mk, S.mk and ⟨…⟩ bind the fields; nested and with parameters", run := fun _ =>
+        okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++
+          "def t1 (s : Stats) : Nat := match s with\n  | .mk h m => Nat.add h m\n" ++
+          "def t2 : Stats → Nat\n  | Stats.mk h m => Nat.add h m\n" ++
+          "def t3 (s : Stats) : Nat := match s with\n  | ⟨h, m⟩ => Nat.add h m\n" ++
+          "#eval t1 (Stats.mk 3 4)\n#eval t2 (Stats.mk 3 4)\n#eval t3 (Stats.mk 3 4)\n" ++
+          "structure Box (A : Type) where\n  val : A\ndef unbox {A : Type} : Box A → A\n  | .mk a => a\n#eval unbox (Box.mk 7)\n" ++
+          "def nested (p : Stats × Nat) : Nat := match p with\n  | (.mk (.succ h) _, k) => Nat.add h k\n" ++
+          "  | (s@(.mk _ m), _) => Nat.add m s.hits\n#eval nested (Stats.mk 3 4, 10)\n#eval nested (Stats.mk 0 5, 10)\n" ++
+          "structure Unit' where\ndef u (x : Unit') : Nat := match x with\n  | .mk => 1\n#eval u Unit'.mk")
+          ["7", "7", "7", "7", "12", "5", "1"] },
+    { name := "structure patterns: wrong constructor, wrong number of fields", run := fun _ => do
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def f (s : Stats) : Nat := match s with\n  | .mk h => h")
+          "Stats.mk expects 2 arguments (the fields hits, misses), got 1"
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def f (s : Stats) : Nat := match s with\n  | .make h m => h")
+          "Stats is a structure: its constructor is Stats.mk, not .make"
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def f (n : Nat) : Nat := match n with\n  | ⟨h, m⟩ => h")
+          "needs a type with one constructor, and Nat has 2" },
+    { name := "anonymous constructors: a structure, a pair, a one-constructor data type; as terms and patterns", run := fun _ =>
+        okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def s0 : Stats := ⟨3, 4⟩\n#eval s0.misses\n" ++
+          "def swap (p : Nat × Bool) : Bool × Nat := match p with\n  | ⟨a, b⟩ => ⟨b, a⟩\n#eval (swap (1, .true)).2\n" ++
+          "inductive Wrap where\n  | wrap (n : Nat) (b : Bool)\ndef w0 : Wrap := ⟨5, .true⟩\n" ++
+          "def unwrap (w : Wrap) : Nat := match w with\n  | ⟨n, _⟩ => n\n#eval unwrap w0")
+          ["4", "1", "5"] },
+    { name := "anonymous constructors need an expected type with one constructor", run := fun _ => do
+        failsLib "import Prelude\ndef f := ⟨1, 2⟩" "needs a structure, a pair or a data type with one constructor"
+        failsLib "import Prelude\ndef f : Nat := ⟨1, 2⟩" "needs a type with one constructor, and Nat has 2"
+        failsLib "import Prelude\ndef f : Nat → Nat := ⟨1, 2⟩" "needs a structure, a pair or a data type with one constructor" },
+    { name := "let with a structure pattern: projections without a quantity, also with no expected type", run := fun _ =>
+        okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def t4 (s : Stats) : Nat :=\n  let ⟨h, m⟩ := s\n  Nat.add h m\n" ++
+          "def t5 (s : Stats) : Nat :=\n  let (.mk h m) := s;\n  Nat.add h m\n" ++
+          "def t6 (s : Stats) := let ⟨h, _⟩ := s; Nat.succ h\n" ++
+          "#eval t4 (Stats.mk 3 4)\n#eval t5 (Stats.mk 3 4)\n#eval t6 (Stats.mk 3 4)\n" ++
+          "def t7 (s : Stats) : Nat :=\n  let ω ⟨h, m⟩ := s\n  Nat.add h m\n#eval t7 (Stats.mk 1 1)\n" ++
+          "axiom Tok : Type\naxiom Tok.close : (1 t : Tok) → Unit\n" ++
+          "def lin3 (1 p : Nat × Tok × Tok) : Unit × Unit :=\n  let 1 ⟨n, s, t⟩ := p\n  (Tok.close s, Tok.close t)\n")
+          ["7", "7", "4", "2"] },
+    -- the documented limitation (13h): the Σ of a structure ends in a marker tail that a
+    -- linear split leaves unused; when the encoding changes this becomes a positive test
+    { name := "let 1 ⟨a, b⟩ := s on a structure: nested splits, rejected today for the leftover tail", run := fun _ => do
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def lin (1 s : Stats) : Nat × Nat :=\n  let 1 ⟨h, m⟩ := s\n  (h, m)")
+          "cannot take a value of the structure Stats apart at quantity 1"
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def lin (1 s : Stats) : Nat × Nat :=\n  let 1 (.mk h m) := s\n  (h, m)")
+          "ends in a component that is not a field"
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def f (s : Stats × Nat) : Nat :=\n  let ω ⟨⟨h, m⟩, k⟩ := s\n  h")
+          "its components are names or `_`"
+        failsLib ("import Prelude\ndef f (n : Nat) : Nat :=\n  let 1 ⟨a, b⟩ := n\n  a")
+          "expects a structure or a tuple, got Nat" },
+    -- 13i
+    { name := "structure update: named fields replaced, the others projected", run := fun _ =>
+        okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def bump (s : Stats) : Stats := { s with hits := Nat.succ s.hits }\n" ++
+          "#eval (bump (Stats.mk 3 4)).hits\n#eval (bump (Stats.mk 3 4)).misses\n" ++
+          "def both (s : Stats) : Stats := { { s with hits := 0 } with misses := 10, hits := 1 }\n" ++
+          "#eval Nat.add (both (Stats.mk 3 4)).hits (both (Stats.mk 3 4)).misses\n" ++
+          "structure Box (A : Type) where\n  val : A\n  tag : Nat\n" ++
+          "def retag {A : Type} (b : Box A) (n : Nat) : Box A := { b with tag := n }\n#eval (retag (Box.mk Bool.true 1) 9).tag\n" ++
+          "structure D where\n  n : Nat\n  p : n = 0\n" ++
+          "def d2 (d : D) : D := { d with n := 0, p := rfl }\n#eval (d2 (D.mk 0 rfl)).n\n" ++
+          "def t (s : Stats) : (bump s).misses = s.misses := rfl")
+          ["4", "4", "11", "9", "0"] },
+    { name := "structure update: unknown and repeated fields, a non-structure, a kept dependent field", run := fun _ => do
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def f (s : Stats) : Stats := { s with hit := 1 }")
+          "Stats has no field 'hit' (its fields are hits, misses)"
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def f (s : Stats) : Stats := { s with hits := 1, hits := 2 }")
+          "field 'hits' is updated twice"
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := { n with hits := 1 }"
+          "structure update needs a value of a structure type"
+        failsLib ("import Prelude\nstructure D where\n  n : Nat\n  p : n = 0\ndef f (d : D) : D := { d with n := 3 }")
+          "field 'p' keeps its value, but its type" },
     { name := "recursion over a family at a concrete index", run := fun _ =>
         okLib ("import Prelude\ndef len : SyntaxF .false → Nat\n  | .nil => 0\n  | .cons _ xs => Nat.succ (len xs)\n" ++
           "#eval len (.cons .missing (.cons .missing .nil))") ["2"] },
