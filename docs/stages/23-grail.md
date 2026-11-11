@@ -19,7 +19,7 @@ One module reached by several paths (a diamond) is the same declaration and fine
 module is imported once per file. Two modules with identical declarations still clash,
 as in Lean; put the definition in one module that the others import. A private
 function, axiom or foreign function (`private def helper`) is not a global name: its
-kernel name is `_private.M.A.0.helper` (as in Lean), which `helper` resolves to in M.A
+kernel name is `_private.M.A._0.helper` (as in Lean), which `helper` resolves to in M.A
 only, so two modules' private `helper`s never clash, and the file importing them may
 declare a `helper` of its own. Messages show `helper`. So do private *types*
 (`private inductive`, `private structure`, `private class`, `private coinductive`, a

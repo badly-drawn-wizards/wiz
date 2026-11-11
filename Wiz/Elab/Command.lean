@@ -1315,14 +1315,29 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       reportDup (cmd.getArg 1).info name
     else
       let pats := (cmd.getArg 5).args.toList.filterMap fun a => (a.getArg 1).args[0]?
+      -- the coinductive type named by the result type, if it is one (two types may have
+      -- the same observations: another module's private one, say); else the first whose
+      -- observations the copatterns are
+      let rec resultHead (stx : Syntax) : Option Name :=
+        match stx.kind with
+        | "term.ident" => (stx.getArg 0).getId?
+        | "term.app" => resultHead (stx.getArg 0)
+        | "term.paren" => resultHead (stx.getArg 1)
+        | "term.arrow" | "term.depArrow" => resultHead (stx.getArg 2)
+        | _ => none
+      let declared := (resultHead ((cmd.getArg 4).getArg 1)).map s.globals.resolve
       let coinductiveOf? : Option (Name × List (Name × Bool)) :=
         if pats.all (·.isOfKind "term.dotIdent") then
-          s.coinductives.findSome? fun (T, obs) =>
+          let fits := fun (T, obs) =>
             if pats.all (fun p => obs.any (·.1 == ((p.getArg 1).getId?).getD "_")) then some (T, obs) else none
+          match s.coinductives.find? (some ·.1 == declared) with
+          | some c => fits c
+          | none => s.coinductives.findSome? fits
         else none
       -- (13b) copatterns define every observation: not outside the module of a private one
       if let some (T, obs) := coinductiveOf? then
         if let some (o, m) := obs.findSome? fun (o, _) => (s.globals.privateTo? (T ++ "." ++ o)).map (o, ·) then
+          let T := Globals.privateBase T
           report .error cmd.info (s!"'{T}.{o}' is private to module {m}: a {T} can't be defined by " ++
             "copatterns outside it")
           return
