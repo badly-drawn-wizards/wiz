@@ -16,6 +16,7 @@
 #   share/wiz/.lake/build/bin/{wiz,grail}   the binaries (grail finds lib/ from there)
 #   share/wiz/editors/       the editor plugins, when the checkout has them
 #   share/wiz/REVISION       the commit
+#   share/wiz/TOOLCHAIN      a marker: editors find the toolchain a library file belongs to
 #
 # OUT.tar.gz.sha256 is written next to it.
 set -eu
@@ -35,6 +36,7 @@ done
 cp -R lib "$top/share/wiz/lib"
 [ -d editors ] && cp -R editors "$top/share/wiz/editors"
 echo "$rev" > "$top/share/wiz/REVISION"
+echo 'A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).' > "$top/share/wiz/TOOLCHAIN"
 cat > "$top/bin/wiz" <<'EOF'
 #!/bin/sh
 d=$(cd "$(dirname "$0")/.." && pwd)

@@ -62,6 +62,7 @@ using the source and flags they were installed with.
     share/wiz/lib/           the standard library
     share/wiz/.lake/build/bin/{wiz,grail}   the binaries (grail finds lib/ from here)
     share/wiz/editors/       the editor plugins, when the source has them
+    share/wiz/TOOLCHAIN      a marker: editors find the toolchain a library file belongs to
     tower.info               spec, source, ref, commit, flags
 ```
 
