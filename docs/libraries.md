@@ -136,6 +136,25 @@ at `r (bits n)` (instances of the numeric classes, when they land: `Add`, `Sub`,
 `Neg`, `OfNat` at `r (HwTy.bits n)` through `Hw`), wire names from `let` binders (an
 elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
 
+## H14 C1: traces, the common semantics (`lib/Trace.wiz`) ✅
+
+One semantics for everything that runs step by step (design:
+`/workspace/wiz-notes/cohesion-hardware.md`, 2.1). A trace is a function, `Trace A :=
+Nat → A` (equality is pointwise and computes; a ν-stream's is stuck), and a Mealy machine
+is a step `Mealy S I O := S → I → S × O`, run along an input trace by
+`Mealy.stateAt m s0 xs t` and `Mealy.outAt`. `Mealy.run` is the finite run on a list and
+`Mealy.run_take` says it is a prefix of the infinite one. Proof rules on the trace:
+`Mealy.invariant` (an inductive invariant under an environment assumption) and
+`Mealy.simulates`/`simulatesOut` (refinement by a representation map, one step as the
+premise). `Trace.tail`, `map`, `zip`, `cons`, `const`, `once`, `ofList`, `take`.
+
+A circuit is such a machine: `Circuit.mealy c` (its step at values),
+`Circuit.trace c xs : Trace (El o)`, `Circuit.stateAt`, `Circuit.obs` (state and input
+per cycle, what temporal formulas are about), and `Circuit.run_take`:
+`Circuit.run c (Trace.take n xs) = Trace.take n (Circuit.trace c xs)`, so what a
+simulation prints is what a theorem about the trace says. The temporal logic (H14 T)
+builds on these.
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
