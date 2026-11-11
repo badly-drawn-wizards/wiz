@@ -353,7 +353,7 @@ def sharedWorld (_ : Unit) : World :=
   let w : World :=
     { name := "shared", g, nat, idP := true, wiz := true
       heads := [.const "idU" [], .const "twice" [], .const "constP" [1, 1],
-        -- (W1) a case on its argument, glued: its spine holds a constant at its level
+        -- (a case on its argument, glued: coverage of stuck cases on a global)
         .const "caseF" [],
         -- families over sizes
         m (.ann (.lam (MTm.natAt (.var 0))) (.pi .size (.univ 0))),
@@ -1424,6 +1424,11 @@ def runSeq (p : Plan) (pre : Array Nat) (iseed : Nat) (acc : Acc) : Acc :=
 
 def Plan.strict (p : Plan) : Plan := { p with w := { p.w with strict := true } }
 
+/-- A known issue: an equation of two values of a type with a `ν` computes to a normal form
+with `transp` at a proposition, which the kernel rejects (found by this harness on master
+fd63740 in the native world; investigated by agent nu-transp). -/
+def nuTranspIssue : String := "NU-TRANSP (see /workspace/wiz-notes/nu-transp.md)"
+
 /-- The findings of a sequence, each with the known issue it is attributed to (`""`:
 none). **U5**: the law holds on the same sample when every `Π`/`Σ` carries its sort. -/
 def findingsOf (p : Plan) (pre : Array Nat) (iseed : Nat) (fs : Array (String × String)) :
@@ -1435,6 +1440,10 @@ def findingsOf (p : Plan) (pre : Array Nat) (iseed : Nat) (fs : Array (String ×
     let illTyped := has law "ill typed"
     -- Sz2: `scase … ∞ i (con xs)` reduces to `m ∞ i xs`, and `∞` is not a `Size< ∞`
     let issue := if illTyped && has msg "is not below" then "Sz2"
+      -- NU-TRANSP: an equation at a type with a ν computes to a `transp` at a proposition
+      -- (narrow on purpose: P6, that kernel message, and a ν or `cocon` in the judgment)
+      else if has law "P6" && has msg "transp is for types in Type u, not propositions"
+          && (has msg "ν" || has msg ".nu " || has msg "cocon") then nuTranspIssue
       -- U5b: `vCast` computes at a Π/Σ whose sort depends on a level variable, where
       -- `vEqType` is stuck: the reduct projects a proof that has no Σ type
       else if illTyped && has msg "(level variables" then "U5b"
@@ -1649,6 +1658,23 @@ def replayMain (args : List String) : IO UInt32 := do
     pure 0
   | _ => do IO.eprintln "usage: --prop-replay WORLD CTX MODE FUEL ISEED CHOICE…"; pure 2
 
+/-- NU-TRANSP's replay (world, context, mode, fuel, seed, choices: `tests --prop-replay`). -/
+def nuTranspReplay : List String := ["native", "-", "any", "2", "13265856826267033286", "0", "2", "1", "4", "0", "2", "0", "6"]
+
+/-- NU-TRANSP pinned: the replay must still show it. When the kernel is fixed this fails:
+remove this case and `nuTranspIssue`'s attribution in `findingsOf`. -/
+def nuTranspPinned : IO Unit := do
+  let some w := (← worlds).find? (·.name == "native") | throw (IO.userError "no world native")
+  match nuTranspReplay with
+  | _ :: _ :: _ :: fuel :: iseed :: choices =>
+    let p : Plan := { w, fixed := none, fuel := fuel.toNat!, mode := none }
+    let pre := (choices.filterMap String.toNat?).toArray
+    let acc := runSeq p pre iseed.toNat! {}
+    let fs := findingsOf p pre iseed.toNat! acc.findings
+    unless fs.any (·.1 == nuTranspIssue) do
+      throw (IO.userError s!"NU-TRANSP no longer reproduces (fixed?): unpin it (this case and its attribution in findingsOf); findings now: {fs.toList.map (·.2.1)}")
+  | _ => throw (IO.userError "bad replay")
+
 def leanCase (b : Budget) : IO Unit := do
   let acc ← runLean b
   let failed ← coverage acc 10 (sizes := !(← noSizesRef.get))
@@ -1818,7 +1844,9 @@ def group : Group where
   exercise := "property harness"
   cases := [
     { name := "substitution laws P1–P4, P6 in the Lean kernel (enumerated and sampled terms; coverage gate)",
-      run := fun _ => leanCase {} }]
+      run := fun _ => leanCase {} },
+    { name := "pinned known issue NU-TRANSP still reproduces (unpin when fixed)",
+      run := fun _ => nuTranspPinned }]
 
 def kernelGroup : Group where
   name := "prop-kernels"
