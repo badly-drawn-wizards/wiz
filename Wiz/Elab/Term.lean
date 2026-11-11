@@ -192,6 +192,37 @@ def mkStringLit (str : String) (us : List Level := []) : ElabM R (Term R) := do
     (.app (.const "List.nil" []) charTy)
   pure (.app (.const (S ++ ".mk") us) list)
 
+/-- (HD9) A numeral `n` at a type `A` other than the `builtin nat` type:
+`@OfNat.ofNat A n ?inst`, with an instance problem `OfNat A n` (the literal is an
+index of the class, as in Lean, so an instance may inspect it). `none` if the Prelude
+has no `OfNat` class. -/
+def ofNatLit? (ctx : LocalCtx R) (n : Nat) (A : VTy R) : ElabM R (Option (Term R)) := do
+  let s ← get
+  unless s.classes.any (·.name == "OfNat") do return none
+  let some d := s.globals.find? "OfNat.ofNat" | return none
+  let us ← d.levelParams.mapM fun _ => freshLevelMeta
+  let g ← getGlobals
+  let fty := eval g [] (d.type.instLevels d.levelParams us)
+  let .pi _ _ _ domA codA _ ← force fty | return none
+  let qA := quote g ctx.lvl A
+  if let .sort l ← force domA then addSortConstraint ctx qA l
+  let .pi _ _ _ _ codN _ ← force (← instM codA A) | return none
+  let .pi x .instImplicit _ dom _ _ ← force (← instM codN (.natLit n)) | return none
+  let m ← freshMeta ctx s!"instance {x}"
+  addInstProblem ctx m dom
+  -- a numeral that doesn't fit a fixed-width word of lib/Word.wiz wraps around: say so
+  if let .mu _ _ _ _ _ (some (T, _, w :: _)) ← force A then
+    if T == "UIntN" || T == "IntN" then
+      if let .natLit w := whnf w then
+        if w ≤ 4096 then
+          let limit := if T == "UIntN" then 2 ^ w - 1 else 2 ^ (w - 1)
+          if n > limit then
+            let bits := n % 2 ^ w
+            let wrapped := if T == "IntN" && bits ≥ 2 ^ (w - 1) then s!"-{2 ^ w - bits}" else toString bits
+            pushInfo (.done (.warning ctx.info
+              s!"the numeral {n} does not fit in {T} {w} (at most {limit}): it wraps around to {wrapped}"))
+  pure (some (.app (.app (.app (.const "OfNat.ofNat" us) qA) (.natLit n)) m))
+
 /-- `(x).f y` parses as `(x)` applied to `.f` and `y` (an argument `.f` is a constructor
 of the expected type): an argument `.f` right after the previous one, without a space,
 is a field of it instead (`term.field`), as in `x.f y`. -/
@@ -308,12 +339,13 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
       | .mu _ _ _ _ _ h | .nu _ _ _ _ _ h => h
       | _ => none
     if let some (T, us, args) := hint? then
-      if let some d := (← getGlobals).find? (T ++ "." ++ f) then
-        if let some m := (← getGlobals).privateTo? (T ++ "." ++ f) then
+      let Tf := (← getGlobals).resolve (T ++ "." ++ f)
+      if let some d := (← getGlobals).find? Tf then
+        if let some m := (← getGlobals).privateTo? Tf then
           throwAt ctx.info s!"'{T}.{f}' is private to module {m}" "private"
         -- `T.f : {…} → T … → F`: insert the implicits as metavariables, then unify
         let fty : VTy R := eval (← getGlobals) [] (d.type.instLevels d.levelParams us)
-        let (tm, fty) ← insertImplicits ctx (.const (T ++ "." ++ f) us) fty
+        let (tm, fty) ← insertImplicits ctx (.const Tf us) fty
         let .pi _ _ _ dom cod _ ← force fty | throwAt ctx.info s!"{T}.{f} is not a function of {T}"
         unifyAt ctx (.missing) dom ty
         let tm' := Term.app tm t
@@ -811,18 +843,28 @@ where
     | "term.match" => elabMatch ctx stx expected
     | "term.by" => elabBy ctx stx expected
     | "term.num" =>
+      let n := (stx.getArg 0).getNat?.getD 0
       match ← force expected with
       | .qty => elabQtyLit ctx stx (((stx.getArg 0).getNat?.map toString).getD "?")
-      | .mu _ _ _ _ _ (some (T, us, _)) =>
+      | .mu _ _ _ _ _ (some (T, _, _)) =>
         -- a numeral of the `builtin nat` type: `succ (… (succ zero))` (the kernel's Nat
         -- is unary; the runtime uses native numbers)
         let s ← get
         match s.builtins.lookup "nat" with
         | some N =>
-          if N != T then throwAt ctx.info s!"numerals are for {N}, not {T}" else
-          pure (.natLit ((stx.getArg 0).getNat?.getD 0))
+          if N == T then pure (.natLit n) else
+          -- (HD9) at another data type, through its `OfNat` instance
+          match ← ofNatLit? ctx n expected with
+          | some t => pure t
+          | none => throwAt ctx.info s!"numerals are for {N}, not {T}"
         | none => throwAt ctx.info "numerals need `builtin nat := …`"
-      | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+      -- an unsolved type: the numeral is a `Nat` (its default type)
+      | .neutral (.mvar _) _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+      -- (HD9) any other type (an axiom, a type variable with an instance): `OfNat`
+      | _ => do
+        match ← ofNatLit? ctx n expected with
+        | some t => pure t
+        | none => let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.str" =>
       match ← force expected with
       | .mu _ _ _ _ _ (some (T, us, _)) =>
@@ -866,7 +908,7 @@ where
     | "term.app" =>
       if (stx.getArg 0).isOfKind "term.explicit" || (← builtinApp? ctx stx).isSome ||
           !((stx.getArg 1).args.any needsExpected || (← ctorWithParams ctx (stx.getArg 0)) ||
-            holeAndNestedCheck (stx.getArg 1).args) then
+            holeAndNestedCheck (stx.getArg 1).args || (← numOperands ctx stx)) then
         let (t, ty) ← infer ctx stx
         unifyAt ctx stx expected ty
         pure t
@@ -1407,6 +1449,29 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
       | _ => freshLevelMeta
     return (.sigma b.name q ty cod (some (.max l₁ l₂)), .sort (.max l₁ l₂))
 
+/-- (7e) After an application: its instance problems whose types its arguments have just
+fixed (`Add ?A` in `a + 5`, now `Add Nat`) are solved now, not at the next instance
+problem or the end of the command, so that the value computes when it meets a type
+(`refl (a + 5) : Nat.lor a 5 = a + 5`: native arithmetic can't see an unsolved hole). -/
+partial def solveReady : ElabM R Unit := do
+  unless (← get).pendingInsts.isEmpty do discard synthPending
+
+/-- (7e) A numeral, possibly negated or in parentheses (`3`, `-3`, `(3)`). -/
+partial def numLike (stx : Syntax) : Bool :=
+  stx.isOfKind "term.num" ||
+  ((stx.isOfKind "term.paren" || stx.isOfKind "term.neg") && numLike (stx.getArg 1))
+
+/-- (7e) An application of a class method to a numeral (`Add.add x 1`, `1 + x`, `-3`):
+its numerals are elaborated after its other arguments and the expected type, which may
+fix their type (`0 + a` with `a : Int`, `(-3 : Int)`), as Lean's `binop%` does. -/
+partial def numOperands (ctx : LocalCtx R) (stx : Syntax) : ElabM R Bool := do
+  unless stx.isOfKind "term.app" && (stx.getArg 1).args.any numLike do return false
+  let h := stx.getArg 0
+  unless h.isOfKind "term.ident" do return false
+  let x := stripScope (((h.getArg 0).getId?).getD "_")
+  if (lookupLocal ctx x).isSome then return false
+  return (← get).classes.any fun c => c.fields.any fun f => c.name ++ "." ++ f == x
+
 /-- A `fun` with a binder whose type isn't given: as an argument, it is elaborated after
 the others (`checkApp`). -/
 partial def postponable (stx : Syntax) : Bool :=
@@ -1508,9 +1573,13 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   -- a lambda with unannotated binders whose domains aren't known yet waits for the other
   -- arguments, which may fix them (`zipWith3 (fun b x y => if b then x else y) c t e`)
   let mut postponed : Array (Syntax × Term R × VTy R × Bool) := #[]
+  -- (7e) the numerals of a class method's application wait too (`1 + x`); elsewhere a
+  -- numeral may be what fixes a postponed lambda's domain (`mealy (fun s i => …) 0 xs`)
+  let numPostpone ← numOperands ctx stx
   for pass in [0:2] do
     for (arg, m, dom, used) in (if pass == 0 then pending else postponed) do
-      if pass == 0 && postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg)) then
+      if pass == 0 && ((postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg))) ||
+          (numPostpone && numLike arg && (← force dom) matches .neutral (.mvar _) _)) then
         postponed := postponed.push (arg, m, dom, used)
         continue
       let a ← check ctx arg dom
@@ -1551,6 +1620,7 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   let rec respine (t : Term R) : Term R := match t with
     | .app g x => .app (respine g) (((args.find? (·.1 == x)).map (·.2)).getD x)
     | t => t
+  solveReady
   pure (respine f)
 
 /-- **Exercise 3.9.** Infer the type of an application `f a₁ … aₙ` (`term.app`, with
@@ -1570,7 +1640,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   let explicitMode := fStx.isOfKind "term.explicit"
   -- (a lambda argument with unannotated binders is postponed: `checkApp` against an
   -- unknown type does that)
-  if postpone && !explicitMode && (stx.getArg 1).args.any postponable then
+  if postpone && !explicitMode && ((stx.getArg 1).args.any postponable || (← numOperands ctx stx)) then
     let T ← freshMeta ctx "the type of an application"
     let vT ← evalIn ctx T
     let t ← checkApp ctx stx vT
@@ -1631,6 +1701,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   -- `bitWidth (0 A : Type) [BitPack A] : Nat`), as are implicits before them
   if !explicitMode && (← trailingInst ctx.lvl fty) then
     (f, fty) ← insertImplicits ctx f fty
+  solveReady
   pure (f, fty)
   --|ex
   --| sorry
@@ -2234,6 +2305,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
         return (.var ix, ty)
     -- a macro-scoped name that isn't a local refers to the global of its base name
     let x := stripScope x
+    -- (13b) this module's private declaration of that name, if any
+    let x := (← getGlobals).resolve x
     match (← getGlobals).find? x with
     | some d =>
       -- (13b) a private name of another module
@@ -2249,6 +2322,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       record x {} ty
       return (.const x us, ty)
     | none =>
+      -- (13b) another module's private declaration of that name (under its own kernel
+      -- name, `Globals.privateName`)
+      let g ← getGlobals
+      if let some (_, m) := g.privates.toList.find? fun (n, m) => m != g.module && n == Globals.privateName m x then
+        throwAt ctx.info s!"'{x}' is private to module {m}" "private"
       -- built-in types
       let builtinLevel : Option Level := match explicitLevels with
         | some _ => none

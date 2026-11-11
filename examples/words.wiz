@@ -5,13 +5,14 @@ import Word
 -- a 32-bit FNV-1a hash of a list of bytes
 def fnv1a : List Nat → U32 → U32
   | .nil, h => h
-  | .cons b bs, h => fnv1a bs (UIntN.mul (UIntN.xor h (U32.ofNat b)) (U32.ofNat 16777619))
-def hash (bs : List Nat) : Nat := (fnv1a bs (U32.ofNat 2166136261)).toNat
+  | .cons b bs, h => fnv1a bs (UIntN.xor h (U32.ofNat b) * 16777619)
+def hash (bs : List Nat) : Nat := (fnv1a bs 2166136261).toNat
 
--- wrap-around and two's complement, checked by the kernel (`-7 / 2 = -3`, i.e. 2^32 - 3)
-def sum8 : U8 := UIntN.add (U8.ofNat 250) (U8.ofNat 10)
+-- wrap-around and two's complement, checked by the kernel (`-7 / 2 = -3`, i.e. 2^32 - 3);
+-- numerals and operators at word types come from the classes (7e)
+def sum8 : U8 := 250 + 10
 def wraps : sum8.toNat = 4 := refl 4
-def minus7by2 : I32 := IntN.div (I32.ofNeg 7) (I32.ofNat 2)
+def minus7by2 : I32 := -7 / 2
 def truncates : minus7by2.toNat = 4294967293 := refl 4294967293
 def hashed : hash (.cons 97 .nil) = 3826002220 := refl 3826002220
 

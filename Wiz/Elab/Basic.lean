@@ -36,6 +36,8 @@ structure MetaEntry (R : Type) where
   desc : String := "_"
   /-- how many bound variables it is applied to -/
   arity : Nat := 0
+  /-- (7e) the hole of an instance problem (`addInstProblem`) -/
+  isInst : Bool := false
 
 /-- A type class: its parameters' output flags (`outParam`) and its fields, in order. -/
 structure ClassInfo where
@@ -112,12 +114,14 @@ inductive Info (R : Type) where
   | decl (info : SourceInfo) (name : Name) (names : List Name) (type : Term R) (annotated : Bool) (insertAt : Nat)
   /-- an unknown identifier, with the locals in scope (for "did you mean") -/
   | unknownIdent (info : SourceInfo) (name : Name) (locals : List Name)
+  /-- (7e) a warning for the command's messages (a numeral that doesn't fit its type) -/
+  | warning (info : SourceInfo) (msg : String)
   /-- a `trace` of a tactic or macro: the command elaborator turns it into an info
   message (it is not kept in the tree) -/
   | trace (info : SourceInfo) (text : String)
 
 def Info.info : Info R → SourceInfo
-  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. | .trace i .. => i
+  | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. | .warning i .. | .trace i .. => i
 
 /-- An `Info` as recorded during elaboration, before quoting and zonking. -/
 inductive RawInfo (R : Type) where

@@ -221,19 +221,20 @@ def check_shards(binary):
 GROUP = re.compile(r"^── (.*) \((.*)\)$")
 PASS = re.compile(r"^  ✓ (.*?)(?: \([\d.]+ s\))?$")
 FAIL = re.compile(r"^  ✗ (.*?)(?: \([\d.]+ s\))?$")
+SKIP = re.compile(r"^  ⊘ (.*?)(?: \([\d.]+ s\))?$")
 TIME = re.compile(r"^  \((.*): ([\d.]+) s(?:;.*)?\)$")
-TOTAL = re.compile(r"^(\d+) passed, (\d+) failed$")
+TOTAL = re.compile(r"^(\d+) passed, (\d+) failed(?:, (\d+) skipped)?$")
 
 
 def parse_log(path):
     """(groups, total) of one `lake test` log; groups: [name, passed, failed, seconds,
-    [(case, detail)]]; total: (passed, failed), or None if the driver did not finish."""
+    [(case, detail)]]; total: (passed, failed, skipped), or None if the driver did not finish."""
     groups, total = [], None
     lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
     for i, line in enumerate(lines):
         if m := GROUP.match(line):
             groups.append([m.group(1), 0, 0, None, []])
-        elif groups and PASS.match(line):
+        elif groups and (PASS.match(line) or SKIP.match(line)):
             groups[-1][1] += 1
         elif groups and (m := FAIL.match(line)):
             groups[-1][2] += 1
@@ -246,7 +247,7 @@ def parse_log(path):
         elif groups and (m := TIME.match(line)):
             groups[-1][3] = m.group(2)
         elif m := TOTAL.match(line):
-            total = (int(m.group(1)), int(m.group(2)))
+            total = (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
     return groups, total
 
 
@@ -320,17 +321,17 @@ def slowest_table(records, n=15):
 def summary(title, files):
     logs = [f for f in files if not f.endswith(".jsonl")]
     records = read_timings([f for f in files if f.endswith(".jsonl")])
-    groups, passed, failed, unfinished = [], 0, 0, []
+    groups, passed, failed, skipped, unfinished = [], 0, 0, 0, []
     for log in logs:
         g, total = parse_log(log)
         groups += g
         if total is None:
             unfinished.append(os.path.basename(log))
         else:
-            passed, failed = passed + total[0], failed + total[1]
+            passed, failed, skipped = passed + total[0], failed + total[1], skipped + total[2]
     out = [f"### {title}", ""]
     mark = "✅" if failed == 0 and not unfinished and logs else "❌"
-    out.append(f"{mark} **{passed} passed, {failed} failed**"
+    out.append(f"{mark} **{passed} passed, {failed} failed" + (f", {skipped} skipped" if skipped else "") + "**"
                + (f" in {secs(sum(r['seconds'] for r in records))} s of test time" if records else ""))
     if unfinished:
         out.append(f"\n**The test driver did not finish** in: {', '.join(unfinished)} (see the log).")

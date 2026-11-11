@@ -560,7 +560,7 @@ def nvimGroup : Group where
   cases := [
     { name := "wiz.nvim: abbreviations, and the infoview against wiz lsp (editors/nvim/tests/run.sh)", run := fun _ => do
         let out ← IO.Process.output { cmd := "sh", args := #["editors/nvim/tests/run.sh"] }
-        if out.stdout.startsWith "skipped" then IO.println s!"    ({out.stdout.trimAsciiEnd})"
+        if out.stdout.startsWith "skipped" then skip ((out.stdout.replace "skipped: " "").trimAscii.toString)
         else unless out.exitCode == 0 do
           throw (IO.userError s!"editors/nvim/tests/run.sh failed:\n{out.stdout}{out.stderr}") }
   ]
