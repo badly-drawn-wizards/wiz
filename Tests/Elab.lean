@@ -1122,6 +1122,90 @@ def main : List Nat := .cons (3 * 4 + 10 - 20) (.cons (Nat.div 7 0) (.cons (Nat.
 def foldExpected : String :=
   ".cons 2 (.cons 0 (.cons 0 (.cons 6 (.cons 11 (.cons 0 (.cons 4 (.cons 1180591620717411303424 (.cons 7 .nil))))))))"
 
+/-- (15g) Numerals around the boundaries of the representation: small numbers are 62-bit
+immediates, bigger ones GMP objects (`2^62` is the first), and a few operations on them. -/
+def bigLitSrc : String := "import Prelude
+def a : Nat := 2147483648
+def b : Nat := 4294967296
+def c : Nat := 4611686018427387904
+def d : Nat := 9223372036854775808
+def e : Nat := 18446744073709551616
+def f : Nat := 18446744073709551617
+def g : Nat := 1000000000000000000000000000000
+def h : Nat := 4611686018427387903
+def main : List Nat := .cons a (.cons b (.cons c (.cons d (.cons e (.cons f (.cons g (.cons h (.cons (f - e)
+  (.cons (Nat.div g 1000000000) (.cons (c + c) (.cons (Nat.mod (d + d) 1000) (.cons (h + 1) .nil))))))))))))
+"
+
+def bigLitExpected : String :=
+  ".cons 2147483648 (.cons 4294967296 (.cons 4611686018427387904 (.cons 9223372036854775808 " ++
+  "(.cons 18446744073709551616 (.cons 18446744073709551617 (.cons 1000000000000000000000000000000 " ++
+  "(.cons 4611686018427387903 (.cons 1 (.cons 1000000000000000000000 (.cons 9223372036854775808 (.cons 616 " ++
+  "(.cons 4611686018427387904 .nil))))))))))))"
+
+/-- (15g) Numerals for the self-hosted compiler, whose numbers are 63-bit words: up to
+`2^63 - 1` (and the compiler does not overflow its stack halving 1000000000); arithmetic
+wraps, also when the backend folds it at compile time. -/
+def selfhostBigLits : String := "import Prelude
+def printAll (ns : List Nat) : IO Unit := match ns with
+  | .nil => IO.pure ()
+  | .cons n rest => do
+    IO.println (Nat.toString n);
+    printAll rest
+def main : IO Unit := printAll (.cons 1000000000 (.cons 2147483648 (.cons 4294967296 (.cons 4611686018427387904
+  (.cons 9223372036854775807 (.cons (4611686018427387904 + 4611686018427387904) (.cons (4294967296 * 4294967297) .nil)))))))
+"
+
+def selfhostBigLitsExpected : String :=
+  "1000000000\n2147483648\n4294967296\n4611686018427387904\n9223372036854775807\n0\n4294967296\n"
+
+/-- (15h) Calls of case-shaped definitions: a search that stops (`Bool.or`), a test of
+every element (`Bool.and`), a second argument that never returns, a breadth-first
+search whose next level is only built if the test fails, and a user function of that
+shape (`orElse`). -/
+def caseShapeSrc : String := "import Prelude
+def range : Nat → List Nat → List Nat
+  | .zero, acc => acc
+  | .succ n, acc => range n (.cons n acc)
+def mem (n : Nat) : List Nat → Bool
+  | .nil => .false
+  | .cons x xs => Bool.or (Nat.beq x n) (mem n xs)
+def allLt (n : Nat) : List Nat → Bool
+  | .nil => .true
+  | .cons x xs => Bool.and (Nat.lt x n) (allLt n xs)
+def double : List Nat → List Nat
+  | .nil => .nil
+  | .cons x xs => .cons (x + x) (double xs)
+def reach (n : Nat) : Nat → List Nat → Bool
+  | .zero, _ => .false
+  | .succ fuel, xs => Bool.or (mem n xs) (reach n fuel (.cons 1 (double xs)))
+partial def loop (n : Nat) : Bool := loop (n + 1)
+partial def upFrom (n i : Nat) : Bool := Bool.or (Nat.beq i n) (upFrom n (i + 1))
+def orElse (o : Option Nat) (d : Nat) : Nat := match o with
+  | .some x => x
+  | .none => d
+def pick (o : Option Nat) (xs : List Nat) : Nat := orElse o (List.length (range 50 xs))
+def s1 : Bool := mem 3 (range 1000 .nil)
+def s2 : Bool := reach 8 100 (.cons 1 .nil)
+def s3 : Bool := Bool.and (mem 2000 (range 1000 .nil)) (mem 5 (range 1000 .nil))
+def s4 : Nat := pick (.some 4) (range 100 .nil)
+def b2n : Bool → Nat
+  | .true => 1
+  | .false => 0
+def foldB (f : Bool → Bool → Bool) : List Bool → Bool
+  | .nil => .true
+  | .cons b bs => f b (foldB f bs)
+def rest : List Nat := .cons (b2n (Bool.and (mem 7 (range 5 .nil)) (loop 0))) (.cons (b2n (Bool.or (mem 3 (range 5 .nil)) (loop 0)))
+  (.cons (b2n s1) (.cons (b2n s2) (.cons (b2n s3) (.cons s4 (.cons (b2n (allLt 5 (range 1000 .nil)))
+  (.cons (pick .none (range 3 .nil)) (.cons (b2n (foldB Bool.and (.cons .true (.cons .false .nil)))) .nil))))))))
+def main : List Nat := .cons (b2n (upFrom 10000000 0)) rest
+"
+
+def caseShapeRest : String :=
+  ".cons 0 (.cons 1 (.cons 1 (.cons 1 (.cons 0 (.cons 4 (.cons 0 (.cons 53 (.cons 0 .nil))))))))"
+
+def caseShapeExpected : String := s!".cons 1 ({caseShapeRest})"
+
 def backendGroup : Group where
   name := "backend"
   exercise := "Exercise 8.1"
@@ -1183,7 +1267,44 @@ def backendGroup : Group where
         | [ir, run] =>
           check ((ir.splitOn "join").length > 1 && (ir.splitOn "jmp").length > 2) ir
           checkEq "100000" run
-        | ms => throw (IO.userError s!"unexpected messages {ms}") }
+        | ms => throw (IO.userError s!"unexpected messages {ms}") },
+    { name := "numerals at 2^31 … 2^64+1 and 10^30, interpreted and through the IR (15g)", run := fun _ =>
+        okLib (bigLitSrc ++ "#eval main\n#run main\n") [bigLitExpected, bigLitExpected] },
+    { name := "Bool.and/Bool.or calls are cases: the search is a loop that stops (15h)", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) (caseShapeSrc ++ "#ir mem\n#ir allLt\n#ir pick\n#run rest\n") { loader := ← preludeLoader }
+        let errs := (s.messages.filter (·.severity == .error)).map (·.text)
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors: {errs}")
+        match (s.messages.toList.filter (·.severity == .info)).map (·.text) with
+        | [mem, allLt, pick, run] =>
+          for ir in [mem, allLt] do
+            -- no call of `Bool.or`/`Bool.and`: a case on the test, and the recursion a jump
+            check ((ir.splitOn "Bool.or x").length == 1 && (ir.splitOn "Bool.and x").length == 1) ir
+            check ((ir.splitOn "case").length == 3 && (ir.splitOn "jmp").length == 3) ir
+          -- the default is computed in the `none` branch only
+          check ((pick.splitOn "orElse").length == 1) pick
+          match pick.splitOn "case" with
+          | [before, after] => check ((before.splitOn "range").length == 1 && (after.splitOn "range").length == 2) pick
+          | _ => throw (IO.userError pick)
+          -- (`#run` is the IR's interpreter: the arguments that never return are not computed)
+          checkEq caseShapeRest run
+        | ms => throw (IO.userError s!"unexpected messages {ms}") },
+    { name := "allocations of a short-circuiting search, before and after (15h)", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) caseShapeSrc { loader := ← preludeLoader }
+        let allocs (n : Name) (caseShapes : Bool) : IO Nat := match (do
+            let code ← (compileReachable s.globals s.builtins [n] (caseShapes := caseShapes)).mapError toString
+            let decls ← IR.lowerProgram code (.global n)
+            let (_, a) ← IR.runProgram (IR.optimizeProgram decls)
+            pure a : Except String Nat) with
+          | .ok a => pure a
+          | .error e => throw (IO.userError s!"{n}: {e}")
+        -- a search in a list that exists already: the same cells (but a loop, and it stops)
+        checkEq [1000, 1000] [← allocs "s1" false, ← allocs "s1" true]
+        -- the next level of the search is built only when the test failed
+        checkEq [101, 4] [← allocs "s2" false, ← allocs "s2" true]
+        -- the second list is not built when the first test fails
+        checkEq [2000, 1000] [← allocs "s3" false, ← allocs "s3" true]
+        -- the default of `orElse` is not computed for `some`
+        checkEq [151, 101] [← allocs "s4" false, ← allocs "s4" true] }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
@@ -2932,8 +3053,11 @@ def selfhostCompiler : IO (Except String System.FilePath) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
+  -- (the driver ends with `Process.exit` on a frontend error)
+  let sysLib ← IO.FS.readFile "lib/Sys.wiz"
   let loader : Name → Option String := fun m =>
-    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib else none
+    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib
+    else if m == "Sys" then some sysLib else none
   let s := runFrontend (R := ZeroOneMany) prog { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render prog
   unless errs.isEmpty do return .error s!"unexpected errors:\n{"\n".intercalate errs.toList}"
@@ -3005,6 +3129,20 @@ def selfhostCompileRun (file expected : String) (flags : Array String := #[]) (p
       else IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString] ++ progArgs, cwd := dir }
     unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
     checkEq expected run.stdout
+
+/-- The self-hosted compiler rejects a program: exit code 1, the errors on standard
+error, and no C (15g). -/
+def selfhostCompileFails (file : String) (errors : String) : IO Unit := do
+  match ← selfhostCompiler with
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+  | .ok exe =>
+    let dir ← IO.FS.createTempDir
+    IO.FS.writeFile (dir / "input.wiz") file
+    let out ← IO.Process.output { cmd := "timeout", args := #["300", exe.toString], cwd := dir }
+    checkEq (1 : UInt32) out.exitCode
+    checkEq errors out.stderr
+    checkEq "" out.stdout
 
 /-- (21l) A program with foreign functions gives the same output compiled by the Lean
 compiler and by the self-hosted one (with the collector unless `gc := false`, and with
@@ -3330,8 +3468,8 @@ def selfHostGroup : Group where
         selfhostCheckFile "import Prelude\nmutual\ninductive Tm where\n  | lit (n : Nat)\n  | app (f : Tm) (a : Tm)\n  | many (ts : Tms)\ninductive Tms where\n  | nil\n  | cons (t : Tm) (ts : Tms)\nend\ndef litOr : Tm → Tm\n  | .lit n => .lit (n + 1)\n  | t => t\n#reduce litOr (.lit 1)\n#reduce litOr (.many .nil)\nmutual\ninductive Val where\n  | vnat (n : Nat)\n  | vlazy (v : Unit → Val)\n  | vbox (b : Box)\ninductive Box where\n  | mk (v : Val)\nend\npartial def force : Val → Val\n  | .vlazy v => force (v ())\n  | v => v\ndef unwrap : Val → Val\n  | .vlazy v => v ()\n  | v => v\n#reduce unwrap (Val.vlazy (fun _ => Val.vnat 3))\ndef big (n : Nat) : Nat := Nat.max n 3\n#reduce Nat.beq (big 1) 3\n"
           "Tm : U0\nTms : U0\nlitOr : (x0 : Tm) → Tm\ncon((#0, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (refl(Enum2, #0), tt))))\ncon((#2, (con((#3, (refl(Enum2, #1), tt))), (refl(Enum2, #0), tt))))\nVal : U0\nBox : U0\nforce : (x0 : Val) → Val\nunwrap : (x0 : Val) → Val\ncon((#0, (con((#1, (con((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt)))), (tt, tt)))), (refl(Enum2, #0), tt))))\nbig : (x0 : Nat) → Nat\ncon((#1, (tt, tt)))\n" },
     { name := "recursion through function fields, reordered parameters, big numerals, checked in Wiz", run := fun _ =>
-        selfhostCheckFile "import Prelude\nmutual\ninductive Val where\n  | vnat (n : Nat)\n  | vsuc (v : Val)\n  | vlazy (v : Unit → Val)\n  | vbox (b : Box)\ninductive Box where\n  | mk (v : Val)\nend\ndef whnf : Val → Val\n  | .vlazy v => whnf (v ())\n  | v => v\ndef depth : Val → Nat\n  | .vsuc v => depth v + 1\n  | .vlazy v => depth (v ())\n  | _ => 0\n#reduce Nat.beq (depth (whnf (Val.vlazy (fun _ => Val.vlazy (fun _ => Val.vnat 3))))) 0\n#reduce Nat.beq (depth (Val.vsuc (Val.vlazy (fun _ => Val.vsuc (Val.vnat 0))))) 2\ndef apps : Nat → List Nat → Nat\n  | f, .nil => f\n  | f, .cons a rest => apps (f + a) rest\n#reduce Nat.beq (apps 1 (List.cons 2 (List.cons 3 .nil))) 6\ndef big : Nat := 100000\n#check big\n#reduce Nat.beq (Nat.sub 1000 999) 1\n"
-          "Val : U0\nBox : U0\nwhnf : (x0 : Val) → Val\ndepth : (x0 : Val) → Nat\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\napps : (x0 : Nat) → (x1 : (List Nat)) → Nat\ncon((#1, (tt, tt)))\nbig : Nat\nNat\ncon((#1, (tt, tt)))\n" },
+        selfhostCheckFile "import Prelude\nmutual\ninductive Val where\n  | vnat (n : Nat)\n  | vsuc (v : Val)\n  | vlazy (v : Unit → Val)\n  | vbox (b : Box)\ninductive Box where\n  | mk (v : Val)\nend\ndef whnf : Val → Val\n  | .vlazy v => whnf (v ())\n  | v => v\ndef depth : Val → Nat\n  | .vsuc v => depth v + 1\n  | .vlazy v => depth (v ())\n  | _ => 0\n#reduce Nat.beq (depth (whnf (Val.vlazy (fun _ => Val.vlazy (fun _ => Val.vnat 3))))) 0\n#reduce Nat.beq (depth (Val.vsuc (Val.vlazy (fun _ => Val.vsuc (Val.vnat 0))))) 2\ndef apps : Nat → List Nat → Nat\n  | f, .nil => f\n  | f, .cons a rest => apps (f + a) rest\n#reduce Nat.beq (apps 1 (List.cons 2 (List.cons 3 .nil))) 6\ndef big : Nat := 100000\n#check big\ndef bigger : Nat := 1000000000\n#reduce Nat.beq (Nat.sub 1000 999) 1\n"
+          "Val : U0\nBox : U0\nwhnf : (x0 : Val) → Val\ndepth : (x0 : Val) → Nat\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\napps : (x0 : Nat) → (x1 : (List Nat)) → Nat\ncon((#1, (tt, tt)))\nbig : Nat\nNat\nbigger : Nat\ncon((#1, (tt, tt)))\n" },
     { name := "postponed and inferred matches, pruning, checked in Wiz", run := fun _ =>
         selfhostCheckFile "import Prelude\ndef h1 : List Syntax → List String\n  | .nil => .nil\n  | .cons s rest => .cons (match s with\n      | .ident n => n\n      | _ => \"_\") .nil\ndef h2 (s : Syntax) : List String := .cons (match s with\n      | .ident n => n\n      | _ => \"_\") .nil\ndef h3 (s : List Nat) : List Nat := .cons (match s with\n      | .nil => 0\n      | _ => 1) .nil\ndef h4 (s : List Nat) : List Nat := List.cons (match s with\n      | .nil => 0\n      | _ => 1) .nil\ndef k1 (s : List Nat) : Nat :=\n  let x := match s with\n    | .nil => 0\n    | _ => 1;\n  x + 1\ndef k2 (b : Bool) : Nat :=\n  let y := if b then 2 else 3;\n  y\n#reduce Nat.beq (k1 .nil) 1\n#reduce Nat.beq (k2 .false) 3\ndef genTys (p base : Nat) : Nat → List Nat → List Nat\n  | _, .nil => .nil\n  | m, .cons t rest => .cons (t + m + p) (genTys p base (m + 1) rest)\n#reduce Nat.beq (List.length (genTys 1 2 0 (List.cons 1 (List.cons 2 .nil)))) 2\ndef kw (stx : Syntax) (p : Nat) : String :=\n  let kw := match stx with\n    | .atom v => v\n    | _ => \"infix\";\n  kw\ndef g2 (xs : List Nat) : Nat := match xs with\n    | .cons _ t => match List.append t t with\n      | .nil => 0\n      | later => List.length later\n    | .nil => 0\n#reduce Nat.beq (g2 (List.cons 1 (List.cons 2 .nil))) 2\ndef takeL {A : Type} : Nat → List A → List A\n  | .zero, _ => .nil\n  | .succ n, xs => match xs with\n    | .nil => .nil\n    | .cons x rest => .cons x (takeL n rest)\ndef sp (k : Nat) : List (List Nat) → List (List Nat)\n  | .nil => .nil\n  | .cons pats rest =>\n    let before := takeL k pats;\n    match List.length pats with\n    | .zero => .cons (List.append before .nil) (sp k rest)\n    | .succ _ => sp k rest\ndef sp2 (k : Nat) (pats : List Nat) : List (List Nat) :=\n    let before := takeL k pats;\n    .cons (List.append before .nil) .nil\ninductive Cl where\n  | mk (pats : List Nat) (binds : List Nat) (rhs : Nat)\ndef sp3 (k : Nat) : List Cl → List Cl\n  | .nil => .nil\n  | .cons (.mk pats binds rhs) rest =>\n    let before := takeL k pats;\n    let after := takeL k pats;\n    match List.length pats with\n    | .zero => .cons (.mk (List.append before (List.append pats after)) binds rhs) (sp3 k rest)\n    | .succ _ => sp3 k rest\ndef sp4 (T : String) (k : Nat) : List Cl → List Cl\n  | .nil => .nil\n  | .cons (.mk pats binds rhs) rest =>\n    let before := takeL k pats;\n    match List.length pats with\n    | .zero => .cons (.mk (List.append before pats) binds rhs) (sp4 T k rest)\n    | .succ _ =>\n      let binds' := match Nat.beq k 0 with\n        | .true => binds\n        | .false => List.append binds (.cons k .nil);\n      .cons (.mk before binds' rhs) (sp4 T k rest)\n"
           "h1 : (x0 : (List Syntax)) → (List String)\nh2 : (x0 : Syntax) → (List String)\nh3 : (x0 : (List Nat)) → (List Nat)\nh4 : (x0 : (List Nat)) → (List Nat)\nk1 : (x0 : (List Nat)) → Nat\nk2 : (x0 : Bool) → Nat\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ngenTys : (x0 : Nat) → (x1 : Nat) → (x2 : Nat) → (x3 : (List Nat)) → (List Nat)\ncon((#1, (tt, tt)))\nkw : (x0 : Syntax) → (x1 : Nat) → String\ng2 : (x0 : (List Nat)) → Nat\ncon((#1, (tt, tt)))\ntakeL : (x0 : U0) → (x1 : Nat) → (x2 : (List x0)) → (List x0)\nsp : (x0 : Nat) → (x1 : (List (List Nat))) → (List (List Nat))\nsp2 : (x0 : Nat) → (x1 : (List Nat)) → (List (List Nat))\nCl : U0\nsp3 : (x0 : Nat) → (x1 : (List Cl)) → (List Cl)\nsp4 : (x0 : String) → (x1 : Nat) → (x2 : (List Cl)) → (List Cl)\n" },
@@ -3365,6 +3503,19 @@ def selfHostGroup : Group where
           "  | .succ m => match Nat.beq (Nat.mod m 3) 0 with\n    | .true => count m (acc + 2)\n    | .false => count m acc\n" ++
           "def main : IO Unit := IO.println (Nat.toString (count 10000000 0))\n"
         selfhostCompileRun nested "6666668\n" (flags := #["--rc"]) (opt := "-O0") (smallStack := true) },
+    { name := "big numerals with the self-hosted compiler: no deep recursion, 63-bit words (15g)", run := fun _ => do
+        selfhostCompileRun selfhostBigLits selfhostBigLitsExpected
+        selfhostCompileRun selfhostBigLits selfhostBigLitsExpected (flags := #["--rc"]) },
+    { name := "the self-hosted compiler stops at a frontend error: exit code 1, the errors on stderr, no C (15g)", run := fun _ =>
+        selfhostCompileFails ("import Prelude\ndef a : Nat := 9223372036854775808\ndef b : Nat := nope\n" ++
+          "def main : IO Unit := IO.println (Nat.toString 1)\n")
+          ("error: the numeral does not fit in 63 bits (numbers are 63-bit words here)\nerror: unknown identifier nope\n") },
+    { name := "a numeral from 2^63 is an error in the self-hosted frontend, not a wrapped number (15g)", run := fun _ =>
+        selfhostCheckFile ("import Prelude\ndef a : Nat := 9223372036854775807\ndef b : Nat := 9223372036854775808\n" ++
+          "def c : Nat := 18446744073709551616\ndef d : Nat := 18446744073709551617\ndef e : Nat := 1000000000000000000000000000000\n" ++
+          "def f : Nat := 0009223372036854775807\n")
+          ("a : Nat\n" ++ "error: the numeral does not fit in 63 bits (numbers are 63-bit words here)\n" ++ "error: the numeral does not fit in 63 bits (numbers are 63-bit words here)\n" ++
+            "error: the numeral does not fit in 63 bits (numbers are 63-bit words here)\n" ++ "error: the numeral does not fit in 63 bits (numbers are 63-bit words here)\n" ++ "f : Nat\n") },
     { name := "dead lets without effects are not computed (15e)", run := fun _ =>
         selfhostCompileRun ("import Prelude\ndef f (n : Nat) : Nat :=\n  let unused := List.cons n (List.cons 2 .nil);\n" ++
           "  let alsoUnused := List.cons unused .nil;\n  n + 1\ndef main : IO Unit := IO.println (Nat.toString (f 41))\n") "42\n" (flags := #["--rc"]) },
@@ -3897,6 +4048,10 @@ def nativeCases (llvm : Bool) : List Case :=
           "def main : Nat := count 10000000 0") "6666668" },
     { name := "constant folding and known constructors behave as before (15c)", run := fun _ =>
         cRun (llvm := llvm) foldSrc foldExpected },
+    { name := "numerals at 2^31 … 2^64+1 and 10^30 are constants (15g)", run := fun _ =>
+        cRun (llvm := llvm) bigLitSrc bigLitExpected },
+    { name := "Bool.and/Bool.or don't compute an argument they don't need: one that never returns, 10M steps on a 1 MB stack at -O0 (15h)", run := fun _ =>
+        cRunSmallStack (llvm := llvm) caseShapeSrc caseShapeExpected },
     { name := "memoised suspensions (memo)", run := fun _ =>
         cRun (llvm := llvm) ("import Prelude\ndef twice (t : Unit → Nat) : Nat := t () + t ()\n" ++
           "def lazyAdd (m n : Nat) : Unit → Nat := memo (fun _ => m + n)\n" ++
