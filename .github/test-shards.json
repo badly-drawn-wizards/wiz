@@ -9,11 +9,13 @@
     "backend",
     "borrow",
     "=c",
+    "callbacks",
     "conc",
     "effects",
     "ffi",
     "llvm",
-    "reuse"
+    "reuse",
+    "sys"
   ]},
   {"name": "library", "select": [
     "builtins",
@@ -32,12 +34,14 @@
     "optic",
     "phantom",
     "regions",
+    "repr",
     "seplogic",
     "std",
     "tactics",
     "testrunner",
     "toolchain",
     "tooling",
+    "=tower",
     "trust",
     "vec",
     "word"
@@ -47,6 +51,7 @@
     "conv",
     "copatterns",
     "data",
+    "desceq",
     "elab",
     "eval",
     "inductive",

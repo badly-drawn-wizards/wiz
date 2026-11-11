@@ -74,7 +74,7 @@ the results of the probes listed in the "Probes" section.
 | Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; decided by ground equality since P1, so stable under substitution, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation *of proofs*. TTobs and CCobs do not have definitional regularity; they have the proof term `castrefl`, which is Wiz's `castRefl` ([PT22] §2.2, [PT23] §2.2; checked). CICobs [PLT25] has definitional regularity at **all** types (rule Cast-Refl, side condition by conversion) and proves conversion decidable for a fragment, with an algorithm that never reduces proofs. So regularity at inert types (CoreSpec §8.4) is a special case of a published rule; what is Wiz's own is the restriction, which a proof-reducing evaluator needs. See D1 and `/workspace/wiz-notes/plt-vs-inert.md`. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
-| Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] and [PT23] give ℕ equality rules by constructor (Eq-zero, Eq-Suc); CICobs [PLT25 §2.1, §4.1] gives inductive types *no* rule for equality of elements (it is derivable from the eliminator) and a weaker, non-injective equation between instances. `μ D i ≡ μ D i'` (one family) computes to `i = i'`, other `μ ≡ μ` are stuck (CoreSpec §8.3). |
+| Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] and [PT23] give ℕ equality rules by constructor (Eq-zero, Eq-Suc); CICobs [PLT25 §2.1, §4.1] gives inductive types *no* rule for equality of elements (it is derivable from the eliminator) and a weaker, non-injective equation between instances. Since 4g every `μ ≡ μ` computes by the codes, to `(I, D, i) = (I', D', i')` at `(J : Sort (l+1)) × Desc J × J`, and equality at `Desc` is structural (CoreSpec §8.4b); this is stronger still than CICobs's equation (injective in the index and in the description); see E1. |
 | Sized types: `Size`, `∞`, `↑`, `Size<`, subtyping, `sfix`, `scase` | **published** in outline [AVW17]; **conjecture** for Wiz's rules | Wiz's order and the D2 rule are its own (§10.1). Unfolding only on constructors follows Abel's MiniAgda (unverified). |
 | Coinduction: `ν`, `out`, `cocon`, `coit`, `scofix` | **folklore** | Sized coinduction is Abel's; Wiz's exact rules have no paper. Equality at `ν` is stuck. |
 | QTT usage accounting (the rig, scaling, subusaging) | **published** for Atkey's system [Atkey18] | Wiz differs: quantities are terms with polymorphism (§5.2), branches are joined (§5.3), eliminators scale methods by ω (Q2, fixed), projections on pairs (§7.1; Q1, fixed), "σ = 1 everywhere, then discard" (§5.4). The differences are **conjecture**. |
@@ -91,7 +91,7 @@ the results of the probes listed in the "Probes" section.
 | QTT + descriptions | **conjecture** | Fields carry quantities; the payload Σ uses them; methods are scaled. No paper. |
 | QTT + sized types + coinduction | **conjecture** | Sizes are erased (always quantity 0). No paper. |
 | Observational equality + impredicative `Prop` + regularity | **resolved by D1 (a)**: regularity off; at inert types **conjecture** (argued, see D1) | D1, below. |
-| Observational equality + descriptions (`eq` at `μ`, `cast` between `μ` types) | **conjecture** | `cast` between two `μ` types of one family computes on constructors (PT22/CIC-obs style, CoreSpec §8.4). Different parameters (`List A ≡ List B`) stay stuck. |
+| Observational equality + descriptions (`eq` at `μ` and at `Desc`, `cast` between `μ` types) | **conjecture** (model obligation E1) | `cast` between any two `μ` types computes on constructors along the decomposed equation (PT22/CIC-obs style, CoreSpec §8.4, §8.4b). `List A ≡ List B` computes, and gives `A ≡ B`; `UIntN 8 ≡ UIntN 16` is refutable. Makes `μ` injective in its description (Hur's shape, D4): argued in §8.4b. |
 | Observational equality + sized types | **conjecture** | Subtyping is not reflected in type equality (`μ^s ≡ μ^t` stuck). |
 | Sized types + `∞` | **fixed** (D2) for `∞ < ∞`; **conjecture** otherwise | F2 below. |
 | Sort annotations + level polymorphism | **conjecture** | Annotations are checked symbolically (`Level.equiv`), so they stay right under instantiation if `Level.equiv` is sound (it is designed to be). |
@@ -300,6 +300,98 @@ the results of the probes listed in the "Probes" section.
 * **What remains.** Every other `panic!` in `Eval.lean` also returns `Sort 0` and lets the
   check go on. None is known to be reachable from a well-typed term.
 
+### T1. A recursive definition's compiled code was not checked by the kernel — **fixed** (typing; one disagreement); agreement with the definition is **trusted**
+
+* **The gap.** A declaration has a `value`, which the kernel checks and unfolds, and may
+  have an `impl`, the term that is *compiled* instead (`Decl.impl`; `eraseDecl` takes it
+  first). For a structurally recursive definition by equations the elaborator builds
+  `impl` by elaborating the clauses a second time, with direct recursion instead of the
+  recursor. `addDecl` checked `value` only: nothing type-checked `impl` or compared the
+  two, and everything that compiles ran it (`wiz build`/`run` on both backends,
+  `#eval`/`#run`, macros, tactics, derivers, and the self-hosted tools as programs).
+  Erasure also read the sorts noted on the `Π`s and `Σ`s inside it, which had never
+  passed the kernel's `checkSortNote`. Logical soundness was not at risk: the kernel never
+  unfolds `impl`. Found by reading the code (agent mem-hunt).
+* **A wrong result.** The two elaborations did disagree. The first recognises a
+  recursive call `f y` by its syntax and replaces it by the induction hypothesis; the
+  second resolved `f` by scope, so a local variable called `f` captured the call:
+
+      def f : Nat → Nat
+        | .zero => 0
+        | .succ n => (fun (f : Nat → Nat) => f n) (fun x => x + 100)
+      def thm : f 3 = 0 := refl 0      -- accepted: the definition recurses
+      #eval f 3                         -- printed 102: compiled code called the local
+
+  (the same with `let f := …`). Both terms have the declared type, so no type check
+  finds this.
+* **The fix.**
+  1. *Kernel.* `addDecl` checks `impl` against the declared type, with the definition
+     already declared (`checkImpl`, as `addPartialImpl` does for partial definitions):
+     typing, quantities, level parameters and sort notes. `attribute [implemented_by g] f`
+     stores its constant through the kernel too (`setImpl`). So every term erasure sees
+     has been checked, and erasure reads the sort a `Π`/`Σ` carries everywhere (the
+     exception it made for these implementations, `sortNotesChecked`, is removed). **A declaration whose implementation fails is rejected**, not
+     compiled from its value with a warning: the implementation is the elaborator's own
+     output, so a failure is a bug in Wiz, and falling back would hide it behind a
+     program that is correct but computes every recursive call through the recursor (a
+     change of cost that nobody asked for and no test would notice). The error says that
+     the definition itself checks and that the bug is not the user's.
+  2. *Elaborator.* In the second elaboration the calls the first one rewrote are marked
+     with a macro scope (`markRecCalls`), so they refer to the definition whatever is in
+     scope. `f 3` above now runs to `0`.
+* **What remains (trusted): that `impl` computes what `value` computes.** Nothing checks
+  it: no conversion test, no proof obligation. The kernel's check is of the *type* only,
+  and the example above is well typed, so the kernel change alone would not have caught
+  it; the elaborator change did. The agreement now rests on the two elaborations reading
+  the clauses alike (same syntax, the recursive calls resolved alike, the same local
+  context except for the induction hypotheses, which tactics don't see). `#print axioms`
+  does not list these implementations (it lists the native ones, trusted by design).
+  * *Why not `impl ≡ value`.* They are equal by induction, not by conversion: applied to
+    variables, `value` is stuck on the recursor and `impl` on a case split.
+  * *What could be checked.* (a) Per case: on a constructor both sides compute, and a
+    direct call `f y` unfolds to the recursor on `y`, which is what the induction
+    hypothesis is; so the kernel can split the arguments along `impl`'s case tree
+    (refining a variable each time `impl` is stuck on one) and ask for conversion at
+    each leaf. This is sound and needs nothing from the elaborator, but it is new kernel
+    code (it builds constructor forms from descriptions, and an indexed family's
+    constructors only fit some indices). (b) Derive, don't elaborate: build `impl` from
+    the checked `value` by a fixed translation (each use of an induction hypothesis
+    becomes the call it stands for, the recursor's method becomes a case split), or have
+    the compiler run the recursor itself with hypotheses computed on demand. Then there
+    is no second reading of the source to trust, only the translation, which belongs to
+    the compiler like the rest of erasure. (b) is the cheapest sound option and the
+    self-hosted frontend already works that way (below); it costs the compiled code's
+    current shape (direct, unboxed calls), which has to be measured.
+  * Neither is implemented.
+* **The other places with a second term or a recognition by syntax** (each probed with
+  the shadowing example; the kernel's value and the compiled result agree in all):
+  sized definitions (one term, `sfix`; the definition's name is an ordinary local);
+  copatterns (one term, `coit`; a corecursive call is recognised by syntax, so a
+  parameter named like the definition is taken for the call, in the checked term and the
+  compiled one alike); partial definitions and `mutual` blocks (a witness and a body:
+  unrelated by design, the body is opaque to the kernel and resolves names by scope);
+  instance bodies and generated declarations (one term each); `implemented_by` (the
+  user's second term: trusted, listed by `#print axioms`).
+* **Everything else that is compiled** was checked already: partial definitions' bodies
+  (`addPartialImpl`), the terms of `#eval`/`#run` (inferred by the kernel first),
+  generated declarations (instances, `deriving`, macros: they are commands, and go
+  through `addDecl`), `attribute [inline]` (erases the checked declaration). Declarations
+  replayed from the cache are not checked again, by design: an entry is keyed by the
+  binary that wrote it, and holds what its kernel accepted, `impl` included. The
+  self-hosted frontend elaborates a recursive definition once (recursive calls become
+  the hypotheses of `ind`) and its backend compiles that checked value: it has no `impl`.
+  The eliminators' own compiled code (`PrimCode.lean`, the runtime's `ind`) is
+  hand-written and belongs to the trusted backends (§7).
+* **Cost.** One more check per structurally recursive definition. Rough timings of
+  `wiz check --no-cache` (best of three, a shared machine): the Prelude 0.27 → 0.31 s,
+  `lib/Hoare.wiz` 3.3 → 3.7 s, `lib/Hdl/Core.wiz` 2.0 → 2.3 s, `selfhost/Kernel.wiz`
+  5.0 → 5.1 s, all five self-hosted sources together within noise.
+* **Regression tests.** Group *trust*: "the kernel checks a definition's implementation
+  for the compiler (Decl.impl)" (ill-typed, another type, a wrong sort note, a linear
+  variable used twice, an undeclared level parameter, `setImpl`), "recursive definitions:
+  the compiled equations are kernel-checked terms", and "… a local variable named like
+  the definition doesn't capture its calls in compiled code".
+
 ---
 
 ## 4. Open issues
@@ -346,7 +438,8 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
   axiom-free program**.
 * **Decision D1 (a), `agent/d1-off`.** Regularity is off in both kernels
   (`Globals.regularity := .off`, `kernelRegularity := .false`). In its place `cast`
-  computes on data (CoreSpec §8.3, §8.4): `μ D i ≡ μ D i'` computes to `i = i'` and a
+  computes on data (CoreSpec §8.3, §8.4): `μ D i ≡ μ D i'` computed to `i = i'` (since 4g:
+  to the equation of the codes, E1) and a
   cast between them casts each field of a constructor along the derived payload equation;
   `Desc` and `ν` likewise; equality at `μ` follows the description constructor by
   constructor, so `succ m = succ n` is `m = n` without a cast. The Abel–Coquand box now
@@ -410,7 +503,8 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
   * Two stuck casts that are convertible before a substitution stop being convertible
     after one of them becomes syntactically reflexive.
 
-  `sameFamily?` has the same defect. The fix is to decide the side condition with
+  `sameFamily?` had the same defect; 4g removed it (μ/ν rules are head-directed, E1).
+  The fix for InReg is to decide the side condition with
   conversion. Confirmed by a probe (the note, §10): `h p q p` is well typed, but its δβ-reduct is rejected, so subject reduction fails for the algorithmic typing.
 
   **Fixed (P1, `agent/p1-stable`; `/workspace/wiz-notes/p1-stable.md`).**
@@ -553,6 +647,72 @@ levels (`Setω`) that Wiz's core has no place for (levels are prenex parameters 
 
 ---
 
+### E1. Equality of descriptions (4g): `μ` injective in its description — **conjecture** (model obligation)
+
+**What.** `vEqDesc` compares two description codes by their constructors, and `μ I D i ≡
+μ I' D' i'` computes to `(I, D, i) = (I', D', i')` at the type of codes for every
+pair of families (CoreSpec §8.4b), with `cast` between them computing constructor by
+constructor. This makes `μ` injective in `D : Desc_l I : Type (l+1)`, with `μ D i : Type l`:
+the shape of Hur's paradox (`xtt-cubical-attacks.md` D4).
+
+**Argument (not a proof).** The setoid model of [PT22]/[PT23] with `Type l` as an
+inductive-recursive universe of codes `U_l`, extended with a *nested* inductive
+`Desc(U_l, I)` of description codes (fields are codes of `U_l`, `E : El S → Desc`) and a
+code `μ (I : U_l) (D : Desc(U_l, I)) (i : El I)`. Code equality is the structural
+relation the kernel computes; different constructors are unrelated; cast is by recursion
+on the element. `Desc(U_l, I)` mentions only codes of `U_l` and never families over `U_l`
+(field types are exactly in `Sort (l+1)`, F5/Q4), as for Π-codes, whose injectivity TTobs
+already has. At `l = 0`, `Prop : Sort 1` is a valid field type, which gives an injection
+`(Prop → Prop) ↪ Type`; that is the shape of CCobs's Π-injectivity over a `Prop` domain
+(model: [PT23]; classically `Prop ≅ 2`), not Hur's `(Type → Type) ↪ Type`. Proof fields
+are lifted propositions compared by equivalence, so the A0 issue doesn't return.
+
+**Obligations.** (1) The definition of `U_l` with `Desc(U_l, -)` and the structural
+relation: not plain IR, since `El (μ I D i)` is an inductive family (the initial algebra
+of `⟦D⟧`) defined inside the recursive definition of `El` (as in generic-universe
+constructions, Gratzer 2022, which Pujet's CIC^obs model uses), with impredicative `Prop`
+(as in [PT23]); (2) that
+equality of `μ` codes is equality of `(I, D, i)` at `(J : Sort (l+1)) × Desc J × J`, so
+the cast's payload equation is one `transp` (well typed); (3) quantities as part of
+codes (as for Π).
+
+**Stability.** The rules decide the shape of the result by the heads of the two codes
+only: no syntactic equality, and no simplification of `True` components (a theory review
+on 2026-11-10 showed both are unstable under substitution). The cost is that `μ D i ≡ μ D
+i'` is no longer `i = i'` (README 4g).
+
+**Tests.** `Tests/Elab.lean`, group `desceq` (both kernels where the self-hosted kernel
+is reachable): `List Nat ≡ List Bool` refuted through `Nat ≡ Bool`; `UIntN 8 ≡ UIntN 16`
+refuted; casts between `List A` and `List B` compute elementwise; the Abel–Coquand box
+with two different but equal descriptions checks; the Hur-style encoding over `Type` at
+`l = 0` is rejected by the field-level rule.
+
+### R3. A representation chosen by what conversion ignores — **partly fixed; two parts open**
+
+* **What.** Erasure chose representations by a binder name (`phantom✝`: erased), an
+  `Enum` label (`fields✝`: the Σ before it unboxed) and the display name on a `μ` (`Nat`:
+  a number; a type with `implemented_by` on its constructor: a native value). Conversion
+  ignores all three, so the kernel accepted conversions between types with different
+  representations and `#eval` and compiled code gave wrong values (soundness audit, R3;
+  not a proof of `False`: the kernel is not involved).
+* **Fixed, in erasure only** (`Compiler/Erase.lean`, `Run.lean`'s readback, `◾` applied
+  is `◾` in `runtime/wiz.c` and the IR interpreter): erased functions into `Unit` by
+  quantities (`erasedFunTy`), `Nat` by the description's shape (`natShaped`), one function
+  deciding unboxing at every site. Group `repr`.
+* **Refused instead of miscompiled:** a description whose first field has an abstract type
+  (`def mkD (S : Type) F := Desc.arg 1 S F`, later used at `S := Enum …`). Whether a
+  value's object carries the constructor tag is decided from the type at a known type and
+  from a mark in the run-time description in generic code, and the two disagreed
+  (a wrong value in `#eval`, a crash compiled). Erasure now reports an error.
+* **Open 1: Σ unboxing is not stable under substitution**, with the marker or by shape:
+  generic code over `A × B` meets a structure's bare field. It is off by default
+  (`--unbox-structs`, 22i); the layout needs a new structure encoding to come back.
+* **Open 2: native representations** (`attribute [implemented_by mk get] T.mk`, 22d) are
+  still found by the `μ`'s display name: a copy of `UIntN`'s declaration is convertible to
+  it and has the model's object, and compiled code then computes wrong values. Shape
+  cannot decide this one (it needs the registration attached to something conversion
+  compares). `/workspace/wiz-notes/repr-shape.md`, §4.
+
 ## 5. Stuck but sound
 
 These are places where the kernel deliberately does **not** compute, so some true
@@ -565,9 +725,9 @@ equations are not provable by computation. They are incompleteness, not unsoundn
   kernel's `typeSort?`, except "a Π/Σ under a `fun` whose variable's type isn't written
   down, or one that still mentions a metavariable" (its README 4c text, now in [stages/04-data.md](stages/04-data.md)).
 * **Neutral types**: `a =_X b` and `cast X Y e t` for a variable `X` are stuck.
-* **`μ ≡ μ`, `ν ≡ ν`, `Desc ≡ Desc`** are always stuck (no structural comparison of
-  descriptions; a design decision to avoid committing to injectivity of `μ`, see
-  `xtt-cubical-attacks.md` D4).
+* **`μ ≡ μ`, `ν ≡ ν`** are stuck when the levels are not known equivalent or the sizes
+  are not equal as conversion sees them (`∞` against `↑s`, two different size variables). Since 4g
+  they compute otherwise (E1).
 * **Equality at `ν`** is stuck (no bisimulation).
 * **`Size ≡ Size`, `Qty ≡ Qty`** are stuck in the Lean kernel (in `Kernel.wiz`, `Size`
   is wrongly `False`: O1).
@@ -656,6 +816,8 @@ that checks everything. Wiz's situation:
   is equality, resp. `<`, which `Nat.beq` and `Nat.lt` are, by their equations). The
   kernel computes only these natively; `memo := memo` (`memo f = f` to the kernel) and
   `string := String` affect only the runtime representation and literals.
+* **Compiled equations of recursive definitions** (`Decl.impl`, T1): checked by the
+  kernel for typing since T1, trusted to compute what the definition computes.
 * **Implementations for compiled code** are outside the kernel: `attribute
   [implemented_by g] f` (stage 22b), including the native representations it registers
   for a type (`attribute [implemented_by mk get] T.mk`, builtin keys `repr:T:…`, used by
