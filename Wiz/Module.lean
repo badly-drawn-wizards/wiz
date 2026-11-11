@@ -83,6 +83,11 @@ def toolchainLib : IO System.FilePath := do
   if ← (guess / "Prelude.wiz").pathExists then return guess
   pure "lib"
 
+/-- The module roots of `wiz`: the toolchain's library first (`toolchainLib`; `./lib`
+only when there is none next to the binary), then `dirs` (the `-I` directories). -/
+def roots (dirs : List System.FilePath) : IO (List System.FilePath) :=
+  return (← toolchainLib) :: dirs
+
 /-- The modules of `m` from the first root that a later root also has a file for (a
 different file): that file is never read. `(module, ignored file)`. -/
 def shadowed (roots : List System.FilePath) (m : Std.HashMap Name (System.FilePath × String)) :

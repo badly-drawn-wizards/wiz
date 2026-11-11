@@ -64,6 +64,7 @@
     "lift",
     "=lint",
     "match",
+    "=meta",
     "observational",
     "parser",
     "quantity",
