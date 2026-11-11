@@ -158,6 +158,11 @@ cached between runs.
   same compiler (the elaboration cache's own keys include the wiz binary's hash, but the
   test driver's grail runs use a fixed binary id and the `/tmp` programs a timestamp).
 
+* **A self-hosted runner** for the heavy shards (`"heavy": true` in
+  `.github/test-shards.json`): set the repository variable `WIZ_RUNNER_HEAVY` to its
+  label; unset, everything runs on `ubuntu-latest`. Pull requests from forks never run
+  there. Setup, security and aarch64 notes: [ci-runner.md](ci-runner.md).
+
 To run Wiz without a checkout or a Lean toolchain, with the binaries from Cachix:
 
 ```
