@@ -4708,7 +4708,7 @@ def languageGroup : Group where
         let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Int" then some int else lib m }
         let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
-        checkEq (repr [".cons (.mk 1) (.cons (.mk 2) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255) (.cons (.mk 3) .nil)"]).pretty
+        checkEq (repr [".cons (.mk 1 ()) (.cons (.mk 2 ()) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255 ()) (.cons (.mk 3 ()) .nil)"]).pretty
           (repr (s.messages.toList.map (·.text))).pretty },
     { name := "... instance binders and Enum [..] still parse", run := fun _ =>
         okLib ("import Prelude\ndef f {m : Type → Type} [Monad m] : m Nat := Monad.pure 1\n" ++
