@@ -113,10 +113,13 @@ def Prog.swap_spec (p q a b : Nat) :
     Triple ((p ↦ a) ⋆ (q ↦ b)) (Prog.swap p q) (fun _ => (p ↦ b) ⋆ (q ↦ a)) := by
   xgo
 
--- one step of in-place reversal: read and turn the next pointer, then the loop invariant
+-- one step of in-place reversal: read and turn the next pointer (`n`, named after the
+-- binder of MList's `∃`), then the loop invariant
   | .cons x L, .succ f, h, .succ p, q, L₂ => by
-      xstep as n, hp; xstep
+      xstep; xstep
       xapp (Prog.revLoop.spec L f h n (Nat.succ p) (.cons x L₂))
+-- a contradictory precondition (`MList [] (p + 1)` is `\[p + 1 = 0]`)
+  | .nil, .succ f, h, .succ p, q, L₂ => by xunfold
 ```
 
 **Design: small reflection, tactics on top.** The tactics are Wiz functions over the
@@ -136,11 +139,11 @@ steps.
 | tactic | does |
 |---|---|
 | `xsimpl` | flattens both sides; on the left turns `\[P]` into a hypothesis and `∃x` into a variable; on the right gives `∃` a metavariable witness, cancels atoms equal argument by argument up to conversion (solving metavariables), turns `\[P]` into a side goal (closed if reflexivity, an assumption or `fun e => e` proves it), uses `H₁ ⋆ (H₁ −∗ H₂)` on the left, introduces `… ⊢ ∀x. J x` and `… ⊢ H₁ −∗ H₂`, closes `emp ⊢ emp` and `… ⊢ htop`; unfolds representation predicates that compute (`MList (x :: L) p`) when stuck. What is left is a goal, shown as `⋆` chains |
-| `xpull` | only the left-side part (`xpull as n, h` names what it introduces) |
+| `xpull` | only the left-side part; a pure fact that is contradictory (`succ n = 0`, `Not (a = a)`) closes the goal. Variables are named after their binders, facts `hp` (no shadowing: `n1`, `hp1`); `xpull as n, h` gives names |
 | `xwp` | a triple as `P ⊢ wp c Q`, pulled |
-| `xstep` | one command of `wp c Q`: `get`/`set`/`free` find the cell in the precondition (unfolding predicates if needed), `alloc` introduces the new location, `ret` leaves `P ⊢ Q v`; through binds |
+| `xstep` | one command of `wp c Q` (the program read as a constructor after computing its head, `TacticM.whnfCtorApp`): `get`/`set`/`free` find the cell in the precondition (unfolding predicates if needed), `alloc` introduces the new location, `ret` leaves `P ⊢ Q v`; through binds |
 | `xval`, `xseq` | a returning program, then `xsimpl`; split `c >>= f` |
-| `xapp t` | a call, with `t : Triple P c Q'`: splits binds off the front until the program is `c` (`xapp [r, h] t` names the result and its facts), then `xsimpl` on `L ⊢ P ⋆ ∀r. Q' r −∗ Q r` (SLF's `xapp_lemma`): the frame is inferred, and the goal goes on after the call |
+| `xapp t` | a call, with `t : Triple P c Q'`: splits binds off the front, unfolding the program's head where needed, until the program is `c` (`xapp [r, h] t` names the result and its facts), then `xsimpl` on `L ⊢ P ⋆ ∀r. Q' r −∗ Q r` (SLF's `xapp_lemma`): the frame is inferred, and the goal goes on after the call |
 | `xchange e`, `xunfold` | rewrite an atom of the precondition with `e : H₁ ⊢ H₂`; unfold every atom that computes |
 | `xgo` | `xstep` until a call or the end, then `xsimpl` |
 
@@ -150,29 +153,45 @@ from `alloc`), the length of a mutable list (read-only traversal, with an accumu
 adding one to every element in place, and freeing a list (`free`). Every recursive
 specification is a `def` by structural recursion with one `by` block per case: the
 tactics have no induction (the cases where the precondition is contradictory are one
-`xunfold` and an `absurd`).
+`xunfold`).
 
-**What got in the way** (each is a wishful entry):
+**On the tactic framework (6d–6g).** The tactics were first written before tactics could
+read constructors, unfold definitions or name variables, and worked around each gap
+(the wishful entries `tactic-reflect-constructors`, `tactic-whnf-unfold`,
+`tactic-hygienic-names`, `tactic-trace-output`); they now use the framework:
 
-* Constructor applications are opaque to tactics (`tactic-reflect-constructors`): a list
-  literal `.cons x L`, `Nat.succ p` and a program `Prog.get l k` all reflect as handles.
-  So goals show star lists as chains (never as `starL [...]`, which couldn't be read
-  back), lemmas whose premise is under a binder take the rest of the precondition as one
-  predicate, and programs are taken apart by unification with each constructor.
-* No tactic request unfolds a definition (`tactic-whnf-unfold`; values are glued, so
-  `normalize` keeps names): unfolding is unification with a shape (`hexists ?A ?J`), which
-  also leaves the recursive occurrences as raw eliminator terms (`MList L n` comes back as
-  `ind … L n`); the loop folds them back by unification with the predicates it unfolded.
-  Each failed probe is a failed unification; they stay fast here because they compare
-  arguments first (`XT.argsEq`), but see `slow-failing-unification`.
+* Goals are read with `Expr.view`/`Expr.appOf` (no private copies of `getAppFn`, name
+  equality or syntactic equality), star lists `starL [H₁, …]` are read back as lists, so
+  the lemmas whose premise is under a binder (`xs.pure_l`, `xs.exists_l`) state it as a
+  list like the others.
+* A program is taken apart with one `TacticM.whnfCtorApp` (it used to be unified with
+  each constructor of `Prog` in turn: five failed unifications before a `fail`), and
+  `xapp` unfolds a program's head with `TacticM.unfold` to find the call.
+* A representation predicate is unfolded with `TacticM.unfold` (it used to be unified
+  with `hexists ?A ?J`, `?a ⋆ ?b`, `\[?P]` and `emp`). `unfold` folds the recursive
+  occurrences back (`MList L n`, not a raw eliminator), so the loop no longer remembers
+  what it unfolded to fold it back by unification.
+* Goals are restated with `TacticM.change` (checked at once), not an identity lemma.
+* Variables are named after their binders (the unifier keeps them) with
+  `TacticM.introFresh`, so the `as n, hp` of every list proof is gone.
+* A tactic that fails says why and prints the goal it was looking at (`TacticM.ppGoal`,
+  `ppExpr`): `xstep: the precondition has no cell at q`, `xapp: the specification is about
+  Prog.incr q, but the program is Prog.get …`; `xsimpl` traces why it stopped
+  (`xsimpl: stuck: no atom on the left matches b`) before the goal it leaves.
+
+The remaining gaps:
+
 * The term `rfl` is not checked against its equation by the elaborator, only by the
   kernel (`elab-rfl-unchecked`): `def w (r a : Nat) : r = Nat.succ a := rfl` elaborates
   and is rejected by the kernel. A tactic that tries `rfl` (`try rfl`, `first | rfl | …`)
   therefore "closes" any equation; side conditions are tried with `exact XT.refl _`, which
   unifies.
-* Variables introduced by unification get generated names (`x7`), so the tactics take
-  names (`as n, hp`); `trace` prints nothing (`tactic-trace-output`), so tactics are
-  debugged with `fail`.
+* `TacticM.unfold` fails on a constant that is not a definition (a constructor, an
+  axiom), so the tactics ask `TacticM.ctorInfo` first; an atom headed by an axiom stops
+  `xsimpl` with an error instead of being left alone.
+* A term assigned with `TacticM.assign` is type-inferred at the end of the block (13b), so
+  it must not contain a β-redex with a λ at its head (a reflected λ has no domain):
+  `Q a` is reduced (`TacticM.instantiate`) before it is used.
 * `succ b = succ c` computes to `b = c`, so `Eq.congrArg Nat.succ e` has the type of `e`,
   and `Eq.trans e₁ (Eq.congrArg Nat.succ e)` can't infer its middle endpoint
   (`Nat.succ_eq_of` passes the endpoints; the known gap "implicit endpoints of heap
