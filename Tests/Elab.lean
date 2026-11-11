@@ -5750,6 +5750,25 @@ def trustGroup : Group where
           ["'idW' depends on axioms: [native UIntN := UIntN.ofBits/UIntN.toBits]" ++ note,
            "'w' depends on axioms: [native UIntN.ofNat := UIntN.ofNatNative, native UIntN := UIntN.ofBits/UIntN.toBits, " ++
              "native UIntN.add := UIntN.addNative, native UIntN.toNat := UIntN.toBits]" ++ note] },
+    { name := "#print axioms follows a whole implemented_by chain (t1-review L2)", run := fun _ => do
+        let note := "\n(native: an implementation that compiled code runs, trusted to agree with its definition)"
+        okLib ("import Prelude\naxiom secret : Nat\naxiom ext (n : Nat) : Nat\naxiom fx (n : Nat) : Nat\n" ++
+            -- a1 → a2 → a3, and a3 uses an axiom: compiled code runs a3
+            "def a3 (n : Nat) : Nat := n + secret\ndef a2 (n : Nat) : Nat := n + 1\ndef a1 (n : Nat) : Nat := n\n" ++
+            "attribute [implemented_by a3] a2\nattribute [implemented_by a2] a1\n" ++
+            "def useA (n : Nat) : Nat := a1 n\n#print axioms useA\n#print axioms a3\n" ++
+            -- through a partial definition: its body runs, so what the body uses is listed
+            "partial def p (n : Nat) : Nat := ext n\ndef b (n : Nat) : Nat := n\n" ++
+            "attribute [implemented_by p] b\ndef useB (n : Nat) : Nat := b n\n#print axioms useB\n" ++
+            -- reached through types and values alone, a partial body is still not listed
+            "#print axioms p\n" ++
+            -- an implementation with no value (here an axiom) is named once, by the native line
+            "def c (n : Nat) : Nat := n\nattribute [implemented_by fx] c\n#print axioms c\n")
+          ["'useA' depends on axioms: [native a1 := a2, native a2 := a3, secret]" ++ note,
+           "'a3' depends on axioms: [secret]",
+           "'useB' depends on axioms: [native b := p, ext]" ++ note,
+           "'p' does not depend on any axioms",
+           "'c' depends on axioms: [native c := fx]" ++ note] },
     { name := "O2 in the self-hosted frontend", run := fun _ =>
         selfhostCheckFile (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
             "partial def bad : T .f := bad\npartial def bad2 : T .t → T .f := bad2\n" ++
