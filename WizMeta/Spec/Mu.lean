@@ -17,27 +17,26 @@ convertible inert `μ` types with its argument.
 -/
 
 namespace WizMeta.Spec
-set_option autoImplicit true
 
 inductive Mu : Rules
-  | form : Mu ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ D ∶ .desc l I, Γ ⊢ i ∶ I], Γ ⊢ .mu l I D i ∶ .sort l.succ⟩
-  | con : Mu ⟨[Γ ⊢ .mu l I D i ∶ .sort l.succ, Γ ⊢ x ∶ .interp l I D (.muFamily l I D) i],
+  | form {Γ : Ctx} {I D i : Tm} {l : Lvl} : Mu ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ D ∶ .desc l I, Γ ⊢ i ∶ I], Γ ⊢ .mu l I D i ∶ .sort l.succ⟩
+  | con {Γ : Ctx} {I D i x : Tm} {l : Lvl} : Mu ⟨[Γ ⊢ .mu l I D i ∶ .sort l.succ, Γ ⊢ x ∶ .interp l I D (.muFamily l I D) i],
       Γ ⊢ .con x ∶ .mu l I D i⟩
-  | ind : Mu ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ D ∶ .desc l I, Γ ⊢ P ∶ .indMotiveTy l v I D,
+  | ind {Γ : Ctx} {I D P m i x : Tm} {l v : Lvl} : Mu ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ D ∶ .desc l I, Γ ⊢ P ∶ .indMotiveTy l v I D,
         Γ ⊢ m ∶ .indMethodTy l v I D P, Γ ⊢ i ∶ I, Γ ⊢ x ∶ .mu l I D i],
       Γ ⊢ .ind l I D v P m i x ∶ .apps P [i, x]⟩
-  | iota : Mu ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ D ∶ .desc l I, Γ ⊢ P ∶ .indMotiveTy l v I D,
+  | iota {Γ : Ctx} {I D P m i xs : Tm} {l v : Lvl} : Mu ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ D ∶ .desc l I, Γ ⊢ P ∶ .indMotiveTy l v I D,
         Γ ⊢ m ∶ .indMethodTy l v I D P, Γ ⊢ i ∶ I, Γ ⊢ .con xs ∶ .mu l I D i],
       Γ ⊢ .ind l I D v P m i (.con xs) ⟶ .indCon l v I D P m i xs ∶ .apps P [i, .con xs]⟩
-  | indRed : Mu ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ D ∶ .desc l I, Γ ⊢ P ∶ .indMotiveTy l v I D,
+  | indRed {Γ : Ctx} {I D P m i x x' : Tm} {l v : Lvl} : Mu ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ D ∶ .desc l I, Γ ⊢ P ∶ .indMotiveTy l v I D,
         Γ ⊢ m ∶ .indMethodTy l v I D P, Γ ⊢ i ∶ I, Γ ⊢ x ⟶ x' ∶ .mu l I D i],
       Γ ⊢ .ind l I D v P m i x ⟶ .ind l I D v P m i x' ∶ .apps P [i, x]⟩
-  | cong : l.Equiv l' →
+  | cong {Γ : Ctx} {I I' D D' i i' : Tm} {l l' : Lvl} : l.Equiv l' →
       Mu ⟨[Γ ⊢ I ≡ I' ∶ .sort l.succ, Γ ⊢ D ≡ D' ∶ .desc l I, Γ ⊢ i ≡ i' ∶ I],
         Γ ⊢ .mu l I D i ≡ .mu l' I' D' i' ∶ .sort l.succ⟩
-  | conCong : Mu ⟨[Γ ⊢ .mu l I D i ∶ .sort l.succ, Γ ⊢ x ≡ y ∶ .interp l I D (.muFamily l I D) i],
+  | conCong {Γ : Ctx} {I D i x y : Tm} {l : Lvl} : Mu ⟨[Γ ⊢ .mu l I D i ∶ .sort l.succ, Γ ⊢ x ≡ y ∶ .interp l I D (.muFamily l I D) i],
       Γ ⊢ .con x ≡ .con y ∶ .mu l I D i⟩
-  | indCong : l.Equiv l' → v.Equiv v' →
+  | indCong {Γ : Ctx} {I I' D D' P P' m m' i i' x x' : Tm} {l v l' v' : Lvl} : l.Equiv l' → v.Equiv v' →
       Mu ⟨[Γ ⊢ I ≡ I' ∶ .sort l.succ, Γ ⊢ D ≡ D' ∶ .desc l I, Γ ⊢ P ≡ P' ∶ .indMotiveTy l v I D,
           Γ ⊢ m ≡ m' ∶ .indMethodTy l v I D P, Γ ⊢ i ≡ i' ∶ I, Γ ⊢ x ≡ x' ∶ .mu l I D i],
         Γ ⊢ .ind l I D v P m i x ≡ .ind l' I' D' v' P' m' i' x' ∶ .apps P [i, x]⟩

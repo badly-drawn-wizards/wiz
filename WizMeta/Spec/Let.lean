@@ -8,12 +8,11 @@ what the kernels' "the body sees `x := v`" amounts to. Both formers reduce away.
 -/
 
 namespace WizMeta.Spec
-set_option autoImplicit true
 
 inductive Let : Rules
-  | letE : Let ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ v ∶ A, Γ ⊢ b.inst v ∶ B], Γ ⊢ .letE q A v b ∶ B⟩
-  | zeta : Let ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ v ∶ A, Γ ⊢ b.inst v ∶ B], Γ ⊢ .letE q A v b ⟶ b.inst v ∶ B⟩
-  | ann : Let ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ t ∶ A], Γ ⊢ .ann t A ∶ A⟩
-  | annRed : Let ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ t ∶ A], Γ ⊢ .ann t A ⟶ t ∶ A⟩
+  | letE {Γ : Ctx} {A v B b : Tm} {l : Lvl} {q : Q} : Let ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ v ∶ A, Γ ⊢ b.inst v ∶ B], Γ ⊢ .letE q A v b ∶ B⟩
+  | zeta {Γ : Ctx} {A v B b : Tm} {l : Lvl} {q : Q} : Let ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ v ∶ A, Γ ⊢ b.inst v ∶ B], Γ ⊢ .letE q A v b ⟶ b.inst v ∶ B⟩
+  | ann {Γ : Ctx} {A t : Tm} {l : Lvl} : Let ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ t ∶ A], Γ ⊢ .ann t A ∶ A⟩
+  | annRed {Γ : Ctx} {A t : Tm} {l : Lvl} : Let ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ t ∶ A], Γ ⊢ .ann t A ⟶ t ∶ A⟩
 
 end WizMeta.Spec

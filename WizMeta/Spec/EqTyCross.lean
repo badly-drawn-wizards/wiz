@@ -17,19 +17,18 @@ takes exactly one of the two.
 -/
 
 namespace WizMeta.Spec
-set_option autoImplicit true
 
 inductive EqTyCross : Rules
-  | form : EqTyCross ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ B ∶ .sort l'], Γ ⊢ .eqTy A B ∶ .sort 0⟩
+  | form {Γ : Ctx} {A B : Tm} {l l' : Lvl} : EqTyCross ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ B ∶ .sort l'], Γ ⊢ .eqTy A B ∶ .sort 0⟩
   /-- a proposition and a type that is not one -/
-  | propType : l.IsZero → l'.NeverZero →
+  | propType {Γ : Ctx} {A B : Tm} {l l' : Lvl} : l.IsZero → l'.NeverZero →
       EqTyCross ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ B ∶ .sort l'], Γ ⊢ .eqTy A B ⟶ .False' ∶ .sort 0⟩
-  | typeProp : l.NeverZero → l'.IsZero →
+  | typeProp {Γ : Ctx} {A B : Tm} {l l' : Lvl} : l.NeverZero → l'.IsZero →
       EqTyCross ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ B ∶ .sort l'], Γ ⊢ .eqTy A B ⟶ .False' ∶ .sort 0⟩
-  | pi : s₁.NeverZero → s₂.NeverZero →
+  | pi {Γ : Ctx} {A₁ B₁ A₂ B₂ : Tm} {s₁ s₂ : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero →
       EqTyCross ⟨[Γ ⊢ .pi q (some s₁) A₁ B₁ ∶ .sort s₁, Γ ⊢ .pi q (some s₂) A₂ B₂ ∶ .sort s₂],
         Γ ⊢ .eqTy (.pi q (some s₁) A₁ B₁) (.pi q (some s₂) A₂ B₂) ⟶ .eqTyPi A₁ B₁ A₂ B₂ ∶ .sort 0⟩
-  | sigma : s₁.NeverZero → s₂.NeverZero →
+  | sigma {Γ : Ctx} {A₁ B₁ A₂ B₂ : Tm} {s₁ s₂ : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero →
       EqTyCross ⟨[Γ ⊢ .sigma q (some s₁) A₁ B₁ ∶ .sort s₁, Γ ⊢ .sigma q (some s₂) A₂ B₂ ∶ .sort s₂],
         Γ ⊢ .eqTy (.sigma q (some s₁) A₁ B₁) (.sigma q (some s₂) A₂ B₂) ⟶ .eqTySigma A₁ B₁ A₂ B₂ ∶ .sort 0⟩
 

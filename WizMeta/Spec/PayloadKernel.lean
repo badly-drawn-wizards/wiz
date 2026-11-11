@@ -37,7 +37,6 @@ system takes one. What each gives up:
 -/
 
 namespace WizMeta.Spec
-set_option autoImplicit true
 
 /-- A description that is visibly not `ret`. -/
 def NonRet' : Tm → Prop
@@ -46,39 +45,39 @@ def NonRet' : Tm → Prop
 
 /-- `whnfTy Γ S`: the type `S` is in weak-head normal form (canonical or neutral). -/
 inductive PayloadKernel (whnfTy : Ctx → Tm → Prop) : Rules
-  | eq : PayloadKernel whnfTy ⟨[Γ ⊢ .con x ∶ .mu l I D i, Γ ⊢ .con y ∶ .mu l I D i, .peq Γ l I (.muFamily l I D) i D x y r],
+  | eq {Γ : Ctx} {x I D i y r : Tm} {l : Lvl} : PayloadKernel whnfTy ⟨[Γ ⊢ .con x ∶ .mu l I D i, Γ ⊢ .con y ∶ .mu l I D i, .peq Γ l I (.muFamily l I D) i D x y r],
       Γ ⊢ .eq (.mu l I D i) (.con x) (.con y) ⟶ r ∶ .sort 0⟩
-  | eqRedL : PayloadKernel whnfTy ⟨[Γ ⊢ a ⟶ a' ∶ .mu l I D i, Γ ⊢ b ∶ .mu l I D i],
+  | eqRedL {Γ : Ctx} {a a' I D i b : Tm} {l : Lvl} : PayloadKernel whnfTy ⟨[Γ ⊢ a ⟶ a' ∶ .mu l I D i, Γ ⊢ b ∶ .mu l I D i],
       Γ ⊢ .eq (.mu l I D i) a b ⟶ .eq (.mu l I D i) a' b ∶ .sort 0⟩
-  | eqRedR : PayloadKernel whnfTy ⟨[Γ ⊢ a ∶ .mu l I D i, Γ ⊢ b ⟶ b' ∶ .mu l I D i],
+  | eqRedR {Γ : Ctx} {a I D i b b' : Tm} {l : Lvl} : PayloadKernel whnfTy ⟨[Γ ⊢ a ∶ .mu l I D i, Γ ⊢ b ⟶ b' ∶ .mu l I D i],
       Γ ⊢ .eq (.mu l I D i) a b ⟶ .eq (.mu l I D i) a b' ∶ .sort 0⟩
-  | peqRet : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .dret j ∶ .desc l I], .peq Γ l I X i D x y .True'⟩
+  | peqRet {Γ : Ctx} {D j I X i x y : Tm} {l : Lvl} : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .dret j ∶ .desc l I], .peq Γ l I X i D x y .True'⟩
   /-- a tag field, the same canonical tag on both sides -/
-  | peqTag : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .darg q (.enum k) E ∶ .desc l I, Γ ⊢ .fst x ≡ .tag k a ∶ .enum k,
+  | peqTag {Γ : Ctx} {D q E I x y X i r : Tm} {l : Lvl} {k a : Nat} : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .darg q (.enum k) E ∶ .desc l I, Γ ⊢ .fst x ≡ .tag k a ∶ .enum k,
         Γ ⊢ .fst y ≡ .tag k a ∶ .enum k, .peq Γ l I X i (.app E (.tag k a)) (.snd x) (.snd y) r],
       .peq Γ l I X i D x y r⟩
-  | peqTagLifted : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .darg q (.ulift u (.enum k)) E ∶ .desc l I, Γ ⊢ .down (.fst x) ≡ .tag k a ∶ .enum k,
+  | peqTagLifted {Γ : Ctx} {D q E I x y X i r : Tm} {u l : Lvl} {k a : Nat} : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .darg q (.ulift u (.enum k)) E ∶ .desc l I, Γ ⊢ .down (.fst x) ≡ .tag k a ∶ .enum k,
         Γ ⊢ .down (.fst y) ≡ .tag k a ∶ .enum k, .peq Γ l I X i (.app E (.up (.tag k a))) (.snd x) (.snd y) r],
       .peq Γ l I X i D x y r⟩
   /-- two different canonical tags: the `Σ` rule (whose first component is `False`) -/
-  | peqTagDiff : a ≠ b →
+  | peqTagDiff {Γ : Ctx} {D q E I x y X i : Tm} {l : Lvl} {a b k : Nat} : a ≠ b →
       PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .darg q (.enum k) E ∶ .desc l I, Γ ⊢ .fst x ≡ .tag k a ∶ .enum k, Γ ⊢ .fst y ≡ .tag k b ∶ .enum k],
         .peq Γ l I X i D x y (.eq (.interp l I (.darg q (.enum k) E) X i) x y)⟩
-  | peqTagLiftedDiff : a ≠ b →
+  | peqTagLiftedDiff {Γ : Ctx} {D q E I x y X i : Tm} {u l : Lvl} {a b k : Nat} : a ≠ b →
       PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .darg q (.ulift u (.enum k)) E ∶ .desc l I, Γ ⊢ .down (.fst x) ≡ .tag k a ∶ .enum k,
           Γ ⊢ .down (.fst y) ≡ .tag k b ∶ .enum k],
         .peq Γ l I X i D x y (.eq (.interp l I (.darg q (.ulift u (.enum k)) E) X i) x y)⟩
   /-- a field at any weak-head normal type that is not a tag type, canonical or neutral:
   the `Σ` rule -/
-  | peqField : whnfTy Γ S → (∀ k, S ≠ .enum k) → (∀ u k, S ≠ .ulift u (.enum k)) →
+  | peqField {Γ : Ctx} {S D q E I X i x y : Tm} {l : Lvl} : whnfTy Γ S → (∀ k, S ≠ .enum k) → (∀ u k, S ≠ .ulift u (.enum k)) →
       PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .darg q S E ∶ .desc l I], .peq Γ l I X i D x y (.eq (.interp l I (.darg q S E) X i) x y)⟩
-  | peqRecLast : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .drec q j (.dret j') ∶ .desc l I], .peq Γ l I X i D x y (.eq (.app X j) (.fst x) (.fst y))⟩
-  | peqRec : NonRet' E →
+  | peqRecLast {Γ : Ctx} {D q j j' I X i x y : Tm} {l : Lvl} : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .drec q j (.dret j') ∶ .desc l I], .peq Γ l I X i D x y (.eq (.app X j) (.fst x) (.fst y))⟩
+  | peqRec {Γ : Ctx} {E D q j I X i x y r : Tm} {l : Lvl} : NonRet' E →
       PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .drec q j E ∶ .desc l I, .peq Γ l I X i E (.snd x) (.snd y) r],
         .peq Γ l I X i D x y (.sigma .zero (some 0) (.eq (.app X j) (.fst x) (.fst y)) r.shift)⟩
-  | peqHrecLast : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .dhrec q H j (.dret j') ∶ .desc l I],
+  | peqHrecLast {Γ : Ctx} {D q H j j' I X i x y : Tm} {l : Lvl} : PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .dhrec q H j (.dret j') ∶ .desc l I],
       .peq Γ l I X i D x y (.eq (.hrecFieldTy l H j X) (.fst x) (.fst y))⟩
-  | peqHrec : NonRet' E →
+  | peqHrec {Γ : Ctx} {E D q H j I X i x y r : Tm} {l : Lvl} : NonRet' E →
       PayloadKernel whnfTy ⟨[Γ ⊢ D ≡ .dhrec q H j E ∶ .desc l I, .peq Γ l I X i E (.snd x) (.snd y) r],
         .peq Γ l I X i D x y (.sigma .zero (some 0) (.eq (.hrecFieldTy l H j X) (.fst x) (.fst y)) r.shift)⟩
 

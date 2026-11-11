@@ -37,14 +37,13 @@ system takes one. What each gives up:
 -/
 
 namespace WizMeta.Spec
-set_option autoImplicit true
 
 inductive PayloadUniform : Rules
-  | eq : PayloadUniform ⟨[Γ ⊢ .con x ∶ .mu l I D i, Γ ⊢ .con y ∶ .mu l I D i],
+  | eq {Γ : Ctx} {x I D i y : Tm} {l : Lvl} : PayloadUniform ⟨[Γ ⊢ .con x ∶ .mu l I D i, Γ ⊢ .con y ∶ .mu l I D i],
       Γ ⊢ .eq (.mu l I D i) (.con x) (.con y) ⟶ .eq (.interp l I D (.muFamily l I D) i) x y ∶ .sort 0⟩
-  | eqRedL : PayloadUniform ⟨[Γ ⊢ a ⟶ a' ∶ .mu l I D i, Γ ⊢ b ∶ .mu l I D i],
+  | eqRedL {Γ : Ctx} {a a' I D i b : Tm} {l : Lvl} : PayloadUniform ⟨[Γ ⊢ a ⟶ a' ∶ .mu l I D i, Γ ⊢ b ∶ .mu l I D i],
       Γ ⊢ .eq (.mu l I D i) a b ⟶ .eq (.mu l I D i) a' b ∶ .sort 0⟩
-  | eqRedR : PayloadUniform ⟨[Γ ⊢ a ∶ .mu l I D i, Γ ⊢ b ⟶ b' ∶ .mu l I D i],
+  | eqRedR {Γ : Ctx} {a I D i b b' : Tm} {l : Lvl} : PayloadUniform ⟨[Γ ⊢ a ∶ .mu l I D i, Γ ⊢ b ⟶ b' ∶ .mu l I D i],
       Γ ⊢ .eq (.mu l I D i) a b ⟶ .eq (.mu l I D i) a b' ∶ .sort 0⟩
 
 end WizMeta.Spec

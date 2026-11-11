@@ -33,7 +33,7 @@ def ofNat : Nat → Lvl
   | 0 => zero
   | n + 1 => succ (ofNat n)
 
-instance : OfNat Lvl n := ⟨ofNat n⟩
+instance {n : Nat} : OfNat Lvl n := ⟨ofNat n⟩
 
 /-- The meaning of a level under an assignment of the parameters. -/
 def eval (ρ : Nat → Nat) : Lvl → Nat

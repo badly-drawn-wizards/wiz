@@ -17,6 +17,8 @@ name = "Tests"
 # and `wiz` don't build it.
 [[lean_lib]]
 name = "WizMeta"
+# a misspelt name in a rule must be an error, not a fresh variable
+leanOptions = { autoImplicit = false, relaxedAutoImplicit = false }
 
 [[lean_exe]]
 name = "wiz"
