@@ -1144,8 +1144,9 @@ def classGroup : Group where
     -- (7e) numeric classes
     { name := "arithmetic at Nat goes through the classes and still computes", run := fun _ =>
         okLib ("import Prelude\n#eval 2 + 3 * 4 - 1\n#eval 17 / 5 + 17 % 5\ndef t : 2 + 3 = 5 := rfl\n" ++
-          "def z (n : Nat) : 0 + n = n := rfl\ndef s (n : Nat) : 1 + n = Nat.succ n := rfl\n#check fun (n : Nat) => n + 1")
-          ["13", "5", "fun n => Add.add Nat instAddNat n 1 : Nat → Nat"] },
+          "def z (n : Nat) : 0 + n = n := rfl\ndef s (n : Nat) : 1 + n = Nat.succ n := rfl\n#check fun (n : Nat) => n + 1\n" ++
+          "set_option pp.notation false\n#check fun (n : Nat) => n + 1")
+          ["13", "5", "fun n => n + 1 : Nat → Nat", "fun n => Add.add Nat instAddNat n 1 : Nat → Nat"] },
     { name := "numerals and operators at a type with instances", run := fun _ =>
         okLib (numClassSrc ++ "#eval (5 : Z3) + 2\ndef inc (x : Z3) : Z3 := x + 1\n#eval inc 2\n#eval -(1 : Z3)\n#eval (2 : Z3) * 2 - 1")
           [".b", ".a", ".c", ".a"] },
@@ -4670,7 +4671,7 @@ def languageGroup : Group where
           "def nope : ¬ (exists (b : Bool), b = .true ∧ b = .false) :=\n  fun h => Ex.elim h (fun b p => Bool.trueNeFalse (Eq.trans (Eq.symm p.1) p.2))\n" ++
           "def t7 : forall (n : Nat), n = n := fun n => rfl\n" ++
           "def t8 {P Q : Prop} (h : P <-> Q) (p : P) : (Q /\\ P) \\/ False := Or.inl (h.1 p, p)\n#check t5")
-          ["t5 : Ex Nat (fun n => Ex Nat (fun m => And (n = m) (m = n)))"] },
+          ["t5 : ∃ n, ∃ m, n = m ∧ m = n"] },
     { name := "13f: let with a tuple pattern of three or more names", run := fun _ =>
         okLib ("import Prelude\ndef f (p : Nat × Nat × Nat) : Nat := let (a, b, c) := p; a + b * c\n#eval f (1, 2, 3)\n" ++
           "def g (p : Nat × Bool × Nat × Nat) : Nat := let (a, b, c, d) := p; match b with\n  | .true => a + c + d\n  | .false => 0\n" ++
@@ -4757,14 +4758,14 @@ def languageGroup : Group where
            "fun x xs => List.cons Nat x xs : Nat → List Nat → List Nat",
            "fun b c => if b then c else !c : Bool → Bool → Bool", "fun b c => b && c || !b : Bool → Bool → Bool",
            "fun P Q => P ∧ Q → Q ∨ ¬P : Prop → Prop → Prop", "∃ n, n = n : Prop",
-           "fun f => (fun x => x) (f 1) + 2 : (Nat → Nat) → Nat"] },
+           "fun f => (fun x => x : Nat → Nat) (f 1) + 2 : (Nat → Nat) → Nat"] },
     { name := "... not with set_option pp.notation false (or pp.all)", run := fun _ =>
         okLib ("import Prelude\nset_option pp.notation false\n#check fun (n : Nat) => n + 1\n#check [1]\n" ++
           "set_option pp.notation true\n#check [1]\nset_option pp.all true\n#check [1]")
           ["fun n => Add.add Nat instAddNat n 1 : Nat → Nat", "List.cons Nat 1 (List.nil Nat) : List Nat",
            "[1] : List Nat", "List.cons Nat 1 (List.nil Nat) : List Nat"] },
     { name := "... in messages: a type mismatch", run := fun _ =>
-        failsLib "import Prelude\ndef f (xs : List Nat) : Nat := xs ++ [1]" "inferred: List Nat" },
+        failsLib "import Prelude\ndef f (n : Nat) : n + 1 = 2 := refl n" "expected: n + 1 = 2" },
     { name := "... user notation, declared unexpanders and parenthesisation", run := fun _ =>
         okLib ("import Prelude\ninfixr:67 \" :> \" => List.cons\ndef twice (n : Nat) : Nat := n + n\n" ++
           "syntax:lead (name := dbl) \"dbl \" term:max : term\napp_unexpander twice\n  | `(term| $f $x) => `(term| dbl $x)\n" ++
@@ -4910,8 +4911,8 @@ def stdGroup : Group where
           ["-10", "-3", "-3", "-1", "-10", "5", ".true", "0"] },
     { name := "integers: lemmas, and printing needs no axiom", run := fun _ =>
         okLibs ("import Int\n#check Int.neg_neg\n#check Int.add_zero\n#print axioms Int.add_zero")
-          ["Int.neg_neg : (a : Int) → Neg.neg Int instNegInt (Neg.neg Int instNegInt a) = a",
-           "Int.add_zero : (a : Int) → Add.add Int instAddInt a (OfNat.ofNat Int 0 (instOfNatIntN 0)) = a",
+          ["Int.neg_neg : (a : Int) → - -a = a",
+           "Int.add_zero : (a : Int) → a + OfNat.ofNat Int 0 (instOfNatIntN 0) = a",
            "'Int.add_zero' does not depend on any axioms"] },
     { name := "integers: compiled (C)", run := fun _ =>
         cRunLibs "import Int\ndef main : Int := (-3 : Int) * 4 + 2" "-10" },
@@ -6003,7 +6004,7 @@ def seplogicGroup : Group where
           "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
     { name := "swap and in-place list reversal are verified", run := fun _ =>
         okLibs ("import HoareExamples\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
-          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (star Nat (pts Nat p a) (pts Nat q b)) (Prog.swap p q) (fun _ => star Nat (pts Nat p b) (pts Nat q a))",
+          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (p ↦ a ⋆ q ↦ b) (Prog.swap p q) (fun _ => p ↦ b ⋆ q ↦ a)",
            "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
     { name := "a faulting program has no triple from a satisfiable precondition", run := fun _ =>
         failsLibs ("import Hoare\ndef bad : Triple (@emp Nat) (@Prog.fail Nat Unit) (fun (_ : Unit) => @emp Nat) :=\n" ++
@@ -6041,9 +6042,9 @@ def seplogicGroup : Group where
           "#check @Prog.incrAll.spec\n#check @Prog.freeAll.spec\n" ++
           "#eval Prog.show (Prog.counter) Heap.empty 0 1\n" ++
           "#eval Prog.show (Prog.length 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 0")
-          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → Triple Nat Unit (star Nat (pts Nat p m) (pts Nat q n)) (Prog.incr3 p q) (fun _ => star Nat (pts Nat q (.succ n)) (pts Nat p (.succ (.succ m))))",
-           "Prog.counter_spec : Triple Nat Nat (emp Nat) Prog.counter (fun r => hexists Nat Nat (fun c => star Nat (hpure Nat (r = 1)) (pts Nat c 1)))",
-           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.length fuel p) (fun r => star Nat (hpure Nat (r = List.length Nat L)) (MList L p))",
+          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → Triple Nat Unit (p ↦ m ⋆ q ↦ n) (Prog.incr3 p q) (fun _ => q ↦ .succ n ⋆ p ↦ .succ (.succ m))",
+           "Prog.counter_spec : Triple Nat Nat (emp Nat) Prog.counter (fun r => hexists Nat Nat (fun c => hpure Nat (r = 1) ⋆ c ↦ 1))",
+           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.length fuel p) (fun r => hpure Nat (r = List.length Nat L) ⋆ MList L p)",
            "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)",
            "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },

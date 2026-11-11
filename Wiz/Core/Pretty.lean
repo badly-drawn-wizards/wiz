@@ -226,6 +226,27 @@ def betaForNotation? (g : Globals R) (u : Term R) : Option (Term R) :=
     | _ => none
   | _, _ => none
 
+/-- The text of syntax, positions left out (to recognise a subtree again). -/
+def stxKey (s : Syntax) : String := s.toSExpr (atoms := true)
+
+/-- A procedural unexpander's output has no positions (the interpreter's `Syntax` has
+none), so the subterm references of its input are lost. Put back every subtree of the
+input that comes back unchanged (`[x, ys,*]` keeps `x` and the elements of `ys`). -/
+partial def restoreRefs (input : Array Syntax) (out : Syntax) : Syntax :=
+  let rec collect (m : Std.HashMap String Syntax) (s : Syntax) : Std.HashMap String Syntax :=
+    let m := if (refOf? s).isSome then m.insert (stxKey s) s else m
+    match s with
+    | .node _ _ as => as.foldl collect m
+    | _ => m
+  let m := input.foldl collect {}
+  let rec put (s : Syntax) : Syntax :=
+    match s with
+    | .node i k as => match m[stxKey s]? with
+      | some orig => orig
+      | none => .node i k (as.map put)
+    | s => s
+  if m.isEmpty then out else put out
+
 /-- A piece of formatted syntax: a token (with its declared spelling, if known), a
 separator, formatted text, or "no space here". -/
 inductive Piece where
@@ -513,7 +534,7 @@ partial def unexpand (g : Globals R) (names : List Name) (tys : List (Option (Te
     | .fn fn =>
       for k in (List.range (argStx.size + 1)).reverse do
         if let some out := g.pp.run fn (appStx head (argStx.extract 0 k)) then
-          return some (appStx out (argStx.extract k argStx.size))
+          return some (appStx (restoreRefs (argStx.extract 0 k) out) (argStx.extract k argStx.size))
   return none
 
 /-- Format syntax of category `c` at precedence `prec`; a node made from a subterm is
