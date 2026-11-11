@@ -240,9 +240,9 @@ variable [QuantitySyntax R] [DecidableEq R]
 
 /-- Render a value for error messages. -/
 def showVal (ctx : Ctx R) (v : Val R) : String :=
-  (quote ctx.globals ctx.lvl v).pretty ctx.names
+  elideLong ((quote ctx.globals ctx.lvl v).pretty ctx.names)
 
-def showTerm (ctx : Ctx R) (t : Term R) : String := t.pretty ctx.names
+def showTerm (ctx : Ctx R) (t : Term R) : String := elideLong (t.pretty ctx.names)
 
 end Ctx
 
