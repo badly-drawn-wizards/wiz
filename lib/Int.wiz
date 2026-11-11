@@ -1,0 +1,101 @@
+import Prelude
+-- Integers (`import Int`): a natural number or the negative of a successor, as in Lean.
+-- Arithmetic is defined by cases on the natively computed `Nat` operations, so the
+-- kernel computes it on numerals (`rfl : (-3 : Int) * 4 + 2 = -10`) and compiled code
+-- runs `Nat`'s natives on the magnitudes. `#eval` prints `-5`, not `.negSucc 4`
+-- (`builtin int`).
+inductive Int where
+  | ofNat (n : Nat)
+  | negSucc (n : Nat)
+builtin int := Int
+
+-- `-n` for a natural number `n`
+def Int.negOfNat : Nat → Int
+  | .zero => .ofNat 0
+  | .succ m => .negSucc m
+-- `m - n` as an integer
+def Int.subNatNat (m n : Nat) : Int := match n - m with
+  | .zero => .ofNat (m - n)
+  | .succ k => .negSucc k
+
+def Int.neg : Int → Int
+  | .ofNat n => Int.negOfNat n
+  | .negSucc n => .ofNat (.succ n)
+def Int.add : Int → Int → Int
+  | .ofNat m, .ofNat n => .ofNat (m + n)
+  | .ofNat m, .negSucc n => Int.subNatNat m (.succ n)
+  | .negSucc m, .ofNat n => Int.subNatNat n (.succ m)
+  | .negSucc m, .negSucc n => .negSucc (.succ (m + n))
+def Int.sub (a b : Int) : Int := Int.add a (Int.neg b)
+def Int.mul : Int → Int → Int
+  | .ofNat m, .ofNat n => .ofNat (m * n)
+  | .ofNat m, .negSucc n => Int.negOfNat (m * .succ n)
+  | .negSucc m, .ofNat n => Int.negOfNat (.succ m * n)
+  | .negSucc m, .negSucc n => .ofNat (.succ m * .succ n)
+
+-- The magnitude, the sign, and the conversion to `Nat` that maps negatives to 0.
+def Int.natAbs : Int → Nat
+  | .ofNat n => n
+  | .negSucc n => .succ n
+def Int.isNeg : Int → Bool
+  | .ofNat _ => .false
+  | .negSucc _ => .true
+def Int.toNat : Int → Nat
+  | .ofNat n => n
+  | .negSucc _ => 0
+
+-- Division truncates towards zero and the remainder takes the dividend's sign (C, Rust,
+-- and `IntN` in lib/Word.wiz): `-7 / 2 = -3`, `-7 % 2 = -1`; `a / 0 = 0`, `a % 0 = a`.
+def Int.ofSign (neg : Bool) (n : Nat) : Int := match neg with
+  | .true => Int.negOfNat n
+  | .false => .ofNat n
+def Int.div (a b : Int) : Int :=
+  Int.ofSign (Bool.xor (Int.isNeg a) (Int.isNeg b)) (Nat.div (Int.natAbs a) (Int.natAbs b))
+def Int.mod (a b : Int) : Int := Int.ofSign (Int.isNeg a) (Nat.mod (Int.natAbs a) (Int.natAbs b))
+
+-- Comparisons.
+def Int.beq : Int → Int → Bool
+  | .ofNat m, .ofNat n => Nat.beq m n
+  | .negSucc m, .negSucc n => Nat.beq m n
+  | _, _ => .false
+def Int.lt : Int → Int → Bool
+  | .ofNat m, .ofNat n => Nat.lt m n
+  | .ofNat _, .negSucc _ => .false
+  | .negSucc _, .ofNat _ => .true
+  | .negSucc m, .negSucc n => Nat.lt n m
+def Int.le (a b : Int) : Bool := Bool.not (Int.lt b a)
+
+instance {ω n : Nat} : OfNat Int n := OfNat.mk (.ofNat n)
+instance : Neg Int := Neg.mk Int.neg
+instance : Add Int := Add.mk Int.add
+instance : Sub Int := Sub.mk Int.sub
+instance : Mul Int := Mul.mk Int.mul
+instance : Div Int := Div.mk Int.div
+instance : Mod Int := Mod.mk Int.mod
+
+-- Lemmas (by cases; each holds by computation once the constructors are known).
+def Int.congrArg {A B : Type} (f : A → B) {a b : A} (e : a = b) : f a = f b :=
+  transp (fun b _ => f a = f b) (refl (f a)) e
+def Int.natAdd_zero : (n : Nat) → n + 0 = n
+  | .zero => rfl
+  | .succ n => Int.congrArg Nat.succ (Int.natAdd_zero n)
+def Int.neg_neg : (a : Int) → -(-a) = a
+  | .ofNat .zero => rfl
+  | .ofNat (.succ _) => rfl
+  | .negSucc _ => rfl
+def Int.add_zero : (a : Int) → a + 0 = a
+  | .ofNat n => Int.congrArg Int.ofNat (Int.natAdd_zero n)
+  | .negSucc _ => rfl
+def Int.zero_add : (a : Int) → 0 + a = a
+  | .ofNat _ => rfl
+  | .negSucc _ => rfl
+def Int.natAbs_neg : (a : Int) → Int.natAbs (-a) = Int.natAbs a
+  | .ofNat .zero => rfl
+  | .ofNat (.succ _) => rfl
+  | .negSucc _ => rfl
+def Int.natLt_irrefl : (n : Nat) → Nat.lt n n = .false
+  | .zero => rfl
+  | .succ n => Int.natLt_irrefl n
+def Int.lt_irrefl : (a : Int) → Int.lt a a = .false
+  | .ofNat n => Int.natLt_irrefl n
+  | .negSucc n => Int.natLt_irrefl n

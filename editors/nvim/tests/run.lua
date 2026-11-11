@@ -296,5 +296,66 @@ else
   end)
 end
 
+io.stdout:write 'toolchain libraries\n'
+
+if vim.fn.executable(wiz) ~= 1 then
+  io.stdout:write('  (skipped: ' .. wiz .. ' is not executable)\n')
+else
+  -- an installed toolchain, laid out as tower, the Nix package and the release tarball
+  -- lay it out: bin/wiz (a wrapper), share/wiz/{TOOLCHAIN, lib/, .lake/build/bin/wiz}
+  local tc = vim.fn.tempname()
+  local share = tc .. '/share/wiz'
+  vim.fn.mkdir(share .. '/.lake/build/bin', 'p')
+  vim.fn.mkdir(tc .. '/bin', 'p')
+  local repo_lib = vim.fn.fnamemodify(here .. '/../../../lib', ':p'):gsub('/$', '')
+  vim.fn.system { 'cp', '-R', repo_lib, share .. '/lib' }
+  vim.fn.writefile({ 'A Wiz toolchain (test)' }, share .. '/TOOLCHAIN')
+  vim.uv.fs_symlink(vim.fn.exepath(wiz), share .. '/.lake/build/bin/wiz')
+  vim.fn.writefile({ '#!/bin/sh', 'exec ' .. vim.fn.exepath(wiz) .. " -I '" .. share .. "/lib' \"$@\"" }, tc .. '/bin/wiz')
+  vim.fn.setfperm(tc .. '/bin/wiz', 'rwxr-xr-x')
+  local lsp = require 'wiz.lsp'
+
+  test('a file of an installed toolchain is found to be one', function()
+    eq({ lib = share .. '/lib', wiz = tc .. '/bin/wiz' }, lsp.toolchain(share .. '/lib/Hdl/Core.wiz'), 'toolchain')
+    eq(nil, lsp.toolchain(here .. '/fixture/Goals.wiz'), 'not a toolchain')
+    eq({ tc .. '/bin/wiz', 'lsp' }, lsp.cmd(share .. '/lib'), 'the command')
+  end)
+
+  test('its library files are served by its own wiz lsp, one client per toolchain', function()
+    vim.cmd('edit ' .. vim.fn.fnameescape(share .. '/lib/Prelude.wiz'))
+    wait(30000, function()
+      return lsp.client(0) ~= nil
+    end, 'a client for the toolchain file')
+    local c = lsp.client(0)
+    eq(share .. '/lib', c.config.root_dir, 'root dir')
+    eq({ tc .. '/bin/wiz', 'lsp' }, c.config.cmd, 'cmd')
+    -- go to definition of a Prelude name answers
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    local row, col
+    for i, l in ipairs(lines) do
+      local k = l:find(': Nat', 1, true)
+      if k and l:find('^def ') then
+        row, col = i, k + 2 -- (0-based: the `a` of Nat)
+        break
+      end
+    end
+    vim.api.nvim_win_set_cursor(0, { row, col })
+    local params = vim.lsp.util.make_position_params(0, c.offset_encoding)
+    local res = vim.lsp.buf_request_sync(0, 'textDocument/definition', params, 30000) or {}
+    local uri
+    for _, r in pairs(res) do
+      local loc = r.result and (r.result.uri and r.result or r.result[1])
+      uri = loc and (loc.uri or loc.targetUri)
+    end
+    eq(true, uri ~= nil and uri:find('/lib/Prelude.wiz$') ~= nil, 'the definition of Nat at ' .. row .. ':' .. col .. ' (' .. vim.inspect(res) .. ')')
+    -- another file of the same toolchain: the same client
+    vim.cmd('edit ' .. vim.fn.fnameescape(share .. '/lib/Hdl/Core.wiz'))
+    wait(10000, function()
+      return lsp.client(0) ~= nil
+    end, 'the client for Hdl/Core.wiz')
+    eq(c.id, lsp.client(0).id, 'one client per toolchain')
+  end)
+end
+
 io.stdout:write(('%d passed, %d failed\n'):format(passed, failures))
 vim.cmd((failures == 0) and 'qall!' or 'cquit! 1')

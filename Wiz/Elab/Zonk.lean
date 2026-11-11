@@ -50,6 +50,33 @@ where
   --| sorry
   --sol>
 
+/-- (7e) Replace only the solved *instance* holes in `t` (`MetaEntry.isInst`), leaving
+every other hole as it is. The declared type of a `def` gets this before its body is
+checked: the kernel's native arithmetic can't see through a solved instance hole, while
+zonking the rest (the implicit arguments, say `Lens.GetPut ?S ?A l`) would let the
+type's equation compute further than as written (to a Σ of field equations at a
+structure), and `rfl` would then be proved field by field instead of as `refl` of its
+sides. -/
+partial def zonkInsts (l : Lvl) (t : Term R) : ElabM R (Term R) := do
+  let (h, args) := spine t #[]
+  match h with
+  | .mvar m =>
+    let e ← lookupMeta m
+    match e.solution, e.isInst with
+    | some sol, true =>
+      let g ← getGlobals
+      let env : Env R := ((List.range l).map fun i => Val.var i).reverse
+      let v := args.foldl (fun f a => vApp g f (eval g env a)) sol
+      zonkInsts l (quote g l v)
+    | _, _ => return (← args.mapM (zonkInsts l)).foldl .app (.mvar m)
+  | _ =>
+    let h' ← h.mapChildrenM pure (fun k c => zonkInsts (l + k) c)
+    return (← args.mapM (zonkInsts l)).foldl .app h'
+where
+  spine : Term R → Array (Term R) → Term R × Array (Term R)
+    | .app f a, acc => spine f (#[a] ++ acc)
+    | t, acc => (t, acc)
+
 /-- The metavariables still occurring in a term. -/
 partial def Term.mvars (t : Term R) : Array Nat :=
   (go t |>.run #[]).2

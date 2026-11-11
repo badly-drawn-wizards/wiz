@@ -40,14 +40,16 @@ setting, then realises it from one of three sources:
   which comes from the Cachix cache `badlydrawnwizards` when your Nix user is trusted
   (tower passes the substituter, as in docs/building.md). The store path is linked as
   `toolchains/NAME/nix`, which is a GC root. `bin` and `share` point into it.
-* **release**: `RELEASES/TAG/wiz-ARCH-linux.tar.gz` from GitHub Releases (26d). It is
-  checked against its `.sha256` when there is one. Only tags and the two channels have
-  tarballs.
+* **release**: `RELEASES/TAG/wiz-ARCH-linux.tar.gz` from GitHub Releases (26d) for a
+  tag (and `stable`); for anything else, a commit, `REF@COMMIT` (`master@<sha>`), a
+  branch or `nightly`, the snapshot of its commit, `RELEASES/snapshot-<sha>/…` (26g).
+  It is checked against its `.sha256`, which a snapshot must have. A commit without a
+  snapshot is an error that lists the retained snapshots and the other sources.
 * **source**: `git clone`, then `lake build wiz grail` (this needs elan), then the build
   is copied into the layout below and the clone is removed.
 
 `--source auto` (the default, the `source` setting) tries nix when `nix` runs, then the
-release (if there is one), then the source, and moves on to the next when one fails.
+release, then the source, and moves on to the next when one fails.
 `tower update` re-resolves channels and branches and reinstalls the ones that moved,
 using the source and flags they were installed with.
 
@@ -62,6 +64,7 @@ using the source and flags they were installed with.
     share/wiz/lib/           the standard library
     share/wiz/.lake/build/bin/{wiz,grail}   the binaries (grail finds lib/ from here)
     share/wiz/editors/       the editor plugins, when the source has them
+    share/wiz/TOOLCHAIN      a marker: editors find the toolchain a library file belongs to
     tower.info               spec, source, ref, commit, flags
 ```
 
@@ -146,16 +149,17 @@ runtime, as Lean's own releases do, and the job checks that no `/nix/store` path
 linked in. It runs on:
 
 * tags `vX.Y.Z`: a GitHub release with the tarball and its `.sha256`;
-* pushes to `master`: the pre-release `nightly`, whose assets and tag move with the
-  branch;
+* pushes to `master`: the snapshot of the commit; the tag `nightly` moves to it once
+  CI has passed on it (26g);
 * pull requests that touch the packaging: the tarball is built and tested, but nothing
   is uploaded.
 
-The job also checks and compiles `examples/io.wiz` with the unpacked tarball on plain
-Ubuntu, and installs the tarball through tower from a local release directory.
-`wiz build` and grail need a C compiler and GMP (`apt install gcc libgmp-dev`); the
-self-hosted toolchain also needs the Boehm collector (`libgc-dev`, with `tower set
-gc-ldflags "-lgc -lpthread"`).
+The job also builds and runs `examples/io.wiz` and a small grail package with the
+unpacked tarball in plain Ubuntu 20.04 and 24.04 containers (no compiler, no GMP), runs
+the programs built there in Ubuntu 18.04, and installs the tarball through tower from a
+local release directory. The tarball brings
+its own C compiler, GMP and Boehm collector (26f), so `wiz build` and grail need nothing
+installed.
 
 **Editors.** wiz.nvim starts `wiz lsp` with the root directory as its working
 directory, so the shim picks that project's `wiz-toolchain`. `share/wiz/editors/nvim`
@@ -175,7 +179,126 @@ holding a tiny Lake project whose `wiz` and `grail` print their arguments, with 
 * a release install from a tarball made by `scripts/release-tarball.sh` (which works on
   its own), a refused checksum, no release for a branch, and `link` plus `default` of an
   unpacked tarball;
+* snapshots (26g): full and short pinned commits, a bare commit with `auto`, a `keep/`
+  tag as a spec, a snapshot without its checksum refused, `nightly` following its tag
+  while the branch is ahead (and `update` leaving it alone), and the error for a commit
+  with no snapshot;
 * a Nix install from a local flake whose package is a plain directory (no nixpkgs),
   linked as a GC root and unlinked by `uninstall` (skipped when there is no `nix`).
 
 The shims in the tests call the test driver (`tests --tower …`), which runs tower.
+
+## 26f: the C toolchain in the release tarball ✅
+
+Like Lean's releases, a release tarball ships the C toolchain its programs are built
+with, in `share/wiz/cc/` (`scripts/bundle-cc.sh`, run by the release job). On a machine
+with no `gcc`, GMP or Boehm GC, `tower default nightly` and then `wiz build`, `wiz run`
+and `grail build` work.
+
+```
+share/wiz/cc/
+  bin/cc          clang --sysroot=../sysroot -pthread (links also get libm, as needed)
+  bin/llc         for --llvm: the same clang on the textual IR (-x ir), with llc's arguments
+  bin/clang, bin/ld.lld, lib/*.so*, lib/clang/N/   from the Lean toolchain (`lean --print-prefix`)
+  sysroot/        glibc 2.27 + Linux 4.15 headers and link libraries (Ubuntu 18.04's
+                  libc6, libc6-dev, linux-libc-dev), static GMP 6.3.0 (--enable-fat)
+                  and Boehm GC 8.2.8, built by the script
+  LICENSES/, VERSIONS
+```
+
+What Lean ships, for comparison (lean-4.35.0-linux): clang, ld.lld, libLLVM and
+libclang-cpp, compiler-rt, a link-only glibc 2.26 and static `libgmp.a`/`libuv.a`, but no
+libc headers (Lean's C needs only `lean.h`) and no `llc`. Wiz's runtime and `import_c`
+need libc headers, so the bundle has a whole sysroot, with headers and libraries of the
+same glibc. The clang is Lean's own, so its LLVM follows `lean-toolchain`. Every
+download is pinned by its sha256. The options weighed (zig cc, tcc) are in
+/workspace/wiz-notes/toolchain-cc.md.
+
+**Defaults, not settings.** `wiz` and grail look for `cc/bin/cc` beside their own binary
+(`Toolchain.withBundled`: `<dir>/.lake/build/bin/wiz` next to `<dir>/cc`, as they find
+`<dir>/lib`). When it is there, the defaults are `cc` and `llc` from the bundle and
+`gc-ldflags -lgc -lpthread`; GMP is found by plain `-lgmp`. Flags, `grail.local.wiz`,
+a package's settings and tower's wrapper flags (`tower set cc …`) still replace each
+field, so `--cc emcc --gmp mini-gmp.c …` (WebAssembly) or `--cc gcc` (the system's
+compiler and shared GMP) work as before. A checkout and the Nix package (whose wrapper
+passes every flag) have no bundle and keep their defaults.
+
+**What needs which glibc.** The toolchain's own binaries (`wiz`, `grail`, `tower`) need
+glibc 2.27 or later, as before. The bundled compiler needs glibc **2.30** or later
+(Ubuntu 20.04, Debian 11, RHEL 9 and newer): Lean's `libLLVM` and `libclang-cpp`
+reference `GLIBC_2.29`/`GLIBC_2.30` symbols, so Lean's own `leanc` has the same
+requirement. On an older system `wiz check` works and `wiz build` needs `--cc gcc` (and
+`libgmp-dev`). Programs it builds need glibc 2.27 or later (libc, libpthread, and libm
+and ld.so when they use them) and nothing else: GMP and the GC are linked statically.
+The release job checks this by running programs built on Ubuntu 20.04 in Ubuntu 18.04. The runtime keeps to glibc 2.27: a spawn in a directory uses
+`posix_spawn_file_actions_addchdir_np` (glibc 2.29) when the headers have it, else fork,
+chdir and exec with the same errors (`-DWIZ_NO_SPAWN_CHDIR` forces that path; the `sys`
+tests run both). That has
+licence consequences for programs you distribute, explained in docs/building.md
+("What `wiz build` links").
+
+The tarball grows from 72.5 MB to about 131 MB (the bundle is 165 MB unpacked, 59 MB
+compressed; libLLVM and libclang-cpp are most of it).
+
+## 26g: release snapshots for every master commit ✅
+
+A project that pins a commit (`master@<sha>` in `wiz-toolchain`) can be installed
+without Nix: every master push publishes the tarball of that commit.
+
+**Snapshots.** For each push to master, `.github/workflows/release.yml` builds and tests
+the tarball as before. Then `scripts/release-snapshots.sh publish` creates the
+pre-release `snapshot-<full sha>` (its tag points at the commit) with
+`wiz-x86_64-linux.tar.gz` and its `.sha256`. `gh release create` makes a draft, uploads
+the files and then publishes it, so the tag appears only once the files are complete.
+There is one release per commit rather than one release that holds every commit's files,
+because then tower needs neither the GitHub API nor a token: `git ls-remote` lists the
+`refs/tags/snapshot-*` that exist (this also expands a short sha and gives a clear
+error), and a full sha names its URL,
+`releases/download/snapshot-<sha>/wiz-x86_64-linux.tar.gz`. GitHub sets no limit on the
+number of releases or on their total size (only on each file, 2 GiB, and on the files of
+one release, 1000), so pruning (below) keeps the size in check. Pull requests that touch
+the packaging still build and test the tarball, and they also run
+`scripts/test-release-snapshots.sh`, but they publish nothing.
+
+**nightly is a tag.** It moves only to a commit whose CI passed: master can break even
+though every merged PR was green (two PRs green alone, in semantic conflict). A snapshot
+of a red commit may exist, since pins name commits explicitly, but `nightly` (what
+users get by default) never points at one. `.github/workflows/nightly.yml` runs when
+the CI workflow completes successfully on a master push (`workflow_run`). It waits up to
+an hour for that commit's `snapshot-<sha>` tag, because release.yml runs alongside CI,
+and stops at once if no release.yml run of the commit is still going (one that failed,
+or was cancelled by a newer push). Then it moves the tag, and only forwards: a commit
+that is not ahead of the tag (an older run) leaves it. A ref update is atomic, so tower, which resolves `nightly` through
+`git ls-remote` to the tag's commit and downloads that snapshot, can't hit a missing
+file. Before, the assets were replaced in place, and downloads returned 404 while they
+uploaded. The tag lags the branch by at least one CI run. A release install of
+`nightly` records the tag's commit, and `tower update` compares against the tag, not
+against the branch. The release `nightly` (`releases/download/nightly/…`, for people and
+older towers) then gets the snapshot's files: each file is uploaded under a temporary name,
+the old one is deleted and the new one renamed, so it is missing for one API call
+instead of for a whole upload. `scripts/tower-init.sh` uses the snapshot of the tag
+when `git` is there, and checks the `.sha256`.
+
+**Retention.** After each publish, pruning keeps the newest 20 snapshots
+(`SNAPSHOT_KEEP`; about 2.7 GB at 135 MB a tarball, see 26f), plus every snapshot whose
+commit a `v*` tag, a `keep/…` tag or `nightly` points at. The others are deleted
+together with their tags. **To keep a pinnable toolchain, push a keep/ tag**:
+`git tag keep/icestick <sha> && git push origin keep/icestick`. Its snapshot then
+outlives the window, and `tower toolchain install keep/icestick` works too, because a
+`keep/` tag is a spec for its commit's snapshot.
+
+**Older commits.** Running the workflow by hand (`workflow_dispatch`) with the input
+`commit` set to a full master sha builds that commit and publishes its snapshot (nightly
+does not move): `gh workflow run release.yml -R badly-drawn-wizards/wiz -f
+commit=<sha>`, or "Run workflow" on the Actions page. The commit's tarball is laid out
+by the workflow's current `scripts/release-tarball.sh`, not by the commit's own copy. A
+dispatched snapshot is new, so it survives the next 20 pushes; push a `keep/` tag to
+keep it for good.
+
+**A commit with no snapshot** (never published, pruned, or not on master) fails with
+`no release snapshot of commit <sha>`. The error lists what is retained (nightly and
+the `keep/`/`v*` snapshots, with their commits, and how many recent ones there are) and
+the alternatives: `--source source` (builds with elan), `--source nix`, or dispatching
+the workflow for that commit. With `--source auto` tower falls through to the next
+source.
+

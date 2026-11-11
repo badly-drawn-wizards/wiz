@@ -127,6 +127,94 @@ def modulesGroup : Group where
         -- a module that imports what it uses is fine, and its declarations are seen
         let s := runFrontend (R := ZeroOneMany) "import Prelude\nimport Fine\n#eval three\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         checkEq "[3:1: info: 3]" (toString (s.messages.toList.map (·.render "import Prelude\nimport Fine\n#eval three\n"))) },
+    { name := "two modules declaring one name: an error at the import, whatever the path or order", run := fun _ => do
+        -- wiz-notes/soundness-probes/is-import-shadowing: M.A's `pa : b = true` was checked
+        -- against its own `b`; with M.B's `b := false` replacing it, `pa` proved `false = true`
+        let dir ← mkTree [
+          ("M/Base.wiz", "inductive Bool where\n  | true\n  | false\ninductive Empty where\n"),
+          ("M/A.wiz", "import M.Base\ndef b : Bool := Bool.true\ndef pa : b = Bool.true := refl Bool.true\n"),
+          ("M/B.wiz", "import M.Base\ndef b : Bool := Bool.false\ndef pb : b = Bool.false := refl Bool.false\n"),
+          ("M/C.wiz", "import M.A\ndef c : Bool := b\n"),
+          ("M/D.wiz", "import M.B\ndef d : Bool := b\n"),
+          ("M/E.wiz", "import M.Base\ndef e0 : Bool := Bool.false\n")]
+        let ms ← Module.loadAll [dir]
+        let init : CommandState ZeroOneMany := { loader := loaderOf ms }
+        let cache ← IO.FS.createTempDir
+        let boomA := "def e : Bool.false = Bool.true := pa\ndef boom : Empty := absurd e.1\n"
+        let boomB := "def e : Bool.true = Bool.false := pb\ndef boom : Empty := absurd e.1\n"
+        -- every way a file is elaborated: wiz check (cold and warm cache, no cache), the
+        -- frontend, the language server's engine
+        let paths (src : String) : IO (List (String × CommandState ZeroOneMany)) := do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          pure [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                ("runFrontend", runFrontend src init), ("Query", (Query.elaborate {} src { init with termInfo := true }).1)]
+        let clash (s : CommandState ZeroOneMany) : Bool := s.messages.any fun m =>
+          -- (one message, at the import, on every path: not inside "module … has errors")
+          m.severity == .error && m.text.startsWith "'b' is declared by both"
+        for src in ["import M.A\nimport M.B\n" ++ boomA, "import M.B\nimport M.A\n" ++ boomB,
+                    "import M.A\nimport M.D\n" ++ boomA, "import M.A\nimport M.D\n" ++ boomB,
+                    "import M.C\nimport M.B\n" ++ boomA, "import M.Base\ndef b : Bool := Bool.false\nimport M.A\n" ++ boomA,
+                    "import M.A\ndef b : Bool := Bool.false\n" ++ boomA] do
+          for (how, s) in ← paths src do
+            check (clash s) s!"{how}: no clash reported for\n{src}\n{s.messages.toList.map (·.text)}"
+            check (!s.globals.contains "boom") s!"{how}: boom : Empty was accepted for\n{src}"
+        -- the message names both modules
+        let (s, _) ← Cache.elaborateCached cache "import M.A\nimport M.B\n" init 0
+        check (s.messages.any fun m => m.text == "'b' is declared by both module M.A and module M.B")
+          s!"{s.messages.toList.map (·.text)}"
+        for (how, s) in ← paths "import M.A\ndef b : Bool := Bool.false\n" do
+          check (s.messages.any fun m => m.text == "'b' is declared by both module M.A and this file")
+            s!"{how}: {s.messages.toList.map (·.text)}"
+        for (how, s) in ← paths "import M.B\nimport M.C\n" do
+          check (s.messages.any fun m => m.text == "'b' is declared by both module M.B and module M.A")
+            s!"{how}: {s.messages.toList.map (·.text)}"
+        -- one module reached by two paths (a diamond) is fine
+        for src in ["import M.A\nimport M.C\nimport M.Base\n#eval c\n", "import M.A\nimport M.E\n#eval e0\n",
+                    "import M.E\nimport M.C\n#eval c\n"] do
+          for (how, s) in ← paths src do
+            check (!s.messages.any (·.severity == .error)) s!"{how}: diamond {src}: {s.messages.toList.map (·.text)}"
+            check (s.globals.contains "pa" && s.globals.contains "Bool.true") s!"{how}: diamond lost declarations"
+        -- the language server re-elaborating a file after an edit (the engine reused)
+        let src := "import M.A\nimport M.E\ndef x : Bool := b\n"
+        let (s₁, eng) := Query.elaborate (R := ZeroOneMany) {} src { init with termInfo := true }
+        let (s₂, eng) := Query.elaborate eng src { init with termInfo := true }
+        let (s₃, _) := Query.elaborate eng (src ++ "def y : Bool := x\n") { init with termInfo := true }
+        for s in [s₁, s₂, s₃] do
+          check (!s.messages.any (·.severity == .error)) s!"re-elaboration: {s.messages.toList.map (·.text)}"
+        -- a module whose dependency changed is elaborated again, not replayed from the
+        -- cache: M.A's `pa` no longer holds once its `b` is `false`
+        let src := "import M.A\n" ++ boomA
+        let (s, _) ← Cache.elaborateCached cache src init 0
+        check (s.messages.any (·.severity == .error)) "pa : false = true with b = true"
+        let ms' := ms.insert "M.A" (dir / "M/A.wiz", "import M.Base\ndef b : Bool := Bool.false\ndef pa : b = Bool.true := refl Bool.true\n")
+        let (s, _) ← Cache.elaborateCached cache src { init with loader := loaderOf ms' } 0
+        check (s.messages.any fun m => (m.text.splitOn "module M.A has errors").length > 1)
+          s!"the changed M.A was replayed: {s.messages.toList.map (·.text)}"
+        check (!s.globals.contains "boom") "boom accepted after M.A changed" },
+    { name := "private names are per module: two modules' private helpers don't clash (13b)", run := fun _ => do
+        let dir ← mkTree [
+          ("P/A.wiz", "import Prelude\nprivate def helper : Nat := 1\nprivate def Nat.twice (n : Nat) : Nat := Nat.add n n\n" ++
+                      "private def count : Nat → Nat\n  | .zero => 0\n  | .succ n => Nat.add (count n) 1\n" ++
+                      "def fa : Nat := Nat.add helper (Nat.add (count 3) helper.twice)\n"),
+          ("P/B.wiz", "import Prelude\nprivate def helper : Nat := 10\nprivate def Nat.twice (n : Nat) : Nat := Nat.mul n 3\n" ++
+                      "def fb : Nat := Nat.add helper helper.twice\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+        let cache ← IO.FS.createTempDir
+        let paths (src : String) : IO (List (String × CommandState ZeroOneMany)) := do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          pure [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                ("runFrontend", runFrontend src init), ("Query", (Query.elaborate {} src { init with termInfo := true }).1)]
+        let src := "import P.A\nimport P.B\n#eval fa\n#eval fb\ndef helper : Nat := 5\n#eval helper\n"
+        for (how, s) in ← paths src do
+          checkEq (how, "[3:1: info: 6, 4:1: info: 40, 6:1: info: 5]") (how, toString (s.messages.toList.map (·.render src)))
+        -- still private: elsewhere the name is unknown, with the module named
+        let src := "import P.A\ndef x : Nat := helper\n"
+        for (how, s) in ← paths src do
+          check (s.messages.any fun m => (m.text.splitOn "'helper' is private to module P.A").length > 1)
+            s!"{how}: {s.messages.toList.map (·.text)}" },
     { name := "trust is part of a module's cache key (22f)", run := fun _ => do
         -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
         -- warnings and `#print axioms` of the one run are never replayed in the other
@@ -154,6 +242,14 @@ def modulesGroup : Group where
         checkEq (some (roots.head! / "Prelude.wiz")) (ms["Prelude"]?.map (·.1))
         checkEq ["Prelude"] ((Module.fromFirstRoot roots ms).toArray.qsort (· < ·)).toList
         checkEq [("Prelude", dir / "Prelude.wiz")] (← Module.shadowed roots ms) },
+    { name := "another checkout's lib/ in the current directory is not a root (22f)", run := fun _ => do
+        -- run inside another checkout, every module of its `lib/` was reported as shadowed
+        let dir ← mkTree [("lib/Prelude.wiz", "builtin nat.add := Nat.mul\n"), ("Extra/Mod.wiz", "import Prelude\ndef m : Nat := 1\n")]
+        let roots ← Module.roots [dir / "Extra"]
+        checkEq [← IO.FS.realPath "lib", dir / "Extra"] [← IO.FS.realPath roots.head!, roots[1]!]
+        checkEq 2 roots.length
+        let ms ← Module.loadClosure roots "import Mod\n"
+        checkEq ([] : List (Name × System.FilePath)) (← Module.shadowed roots ms) },
     { name := "an import cycle is an error, not a hang", run := fun _ => do
         let dir ← mkTree [("A.wiz", "import B\n"), ("B.wiz", "import A\n")]
         let ms ← Module.loadAll [dir]
@@ -253,7 +349,7 @@ def linkCCase : Case :=
                           ("app/hi.c", "#include <stdint.h>\nuint64_t hi_num(void) { return 1; }\n")]
         let (s, ok) ← build dir tc
         if !ok then
-          IO.println "    (skipped: no toolchain)"
+          skip "no toolchain"
           return
         checkEq 5 s.ran
         let exe := (dir / ".grail" / "bin" / "hi").toString
@@ -317,7 +413,7 @@ def grailLspCase : Case :=
 #eval two
 ")])
         let some ds ← grailLspDiagnostics dir "main.wiz"
-          | IO.println "    (skipped: no grail beside the test driver; lake build grail)"
+          | skip "no grail beside the test driver; lake build grail"
         check (ds.any (· == "2")) s!"diagnostics: {ds}"
         check (!ds.any fun d => (d.splitOn "unknown module").length > 1) s!"diagnostics: {ds}"
         -- a broken grail.wiz: the server still starts, with the package directory as a root
@@ -377,7 +473,7 @@ def grailGroup : Group where
                           ("hello.wiz", "import IO\ndef main : IO Unit := IO.println \"hello from grail\"\n")]
         let (s, ok) ← build dir tc
         if !ok then
-          IO.println "    (skipped: no toolchain)"
+          skip "no toolchain"
           return
         checkEq 5 s.ran
         let out ← IO.Process.output { cmd := (dir / ".grail" / "bin" / "hello").toString }
@@ -639,8 +735,33 @@ def testRunnerGroup : Group where
         let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
         let (res, _) ← runTests dir tc
         if res.any fun t => (t.message.splitOn "gmp.h").length > 1 then
-          IO.println "    (skipped: no toolchain)"; return
-        for t in res do check t.ok s!"{t.file}: {t.message}" }
+          skip "no toolchain"; return
+        for t in res do check t.ok s!"{t.file}: {t.message}" },
+    -- the suite's own driver (`Tests/Main.lean`): `tests --run GROUP INDEX` ran a case
+    -- in-process and printed nothing for a pass, so a stale binary or a wrong index that
+    -- ran another (passing) case looked like a pass; a selector that picked nothing
+    -- passed with 0 cases. Run against the cases with known outcomes `driverFixtures`.
+    { name := "tests --run: a failing case exits 1 with its output, a skipped one 3, a bad selector 2", run := fun _ => do
+        let self ← IO.appPath
+        let run (args : Array String) : IO (UInt32 × String) := do
+          let o ← IO.Process.output { cmd := self.toString, args }
+          pure (o.exitCode, o.stdout ++ o.stderr)
+        let has (out s : String) : IO Unit := check ((out.splitOn s).length > 1) s!"no {s} in:\n{out}"
+        let (code, out) ← run #["--run", "driver-fixtures", "0"]
+        checkEq 0 code; has out "✓ fixture: passes"; has out "driver-fixtures #0: passed"
+        let (code, out) ← run #["--run", "driver-fixtures", "1"]
+        checkEq 1 code; has out "✗ fixture: fails"; has out "fixture failure"
+        has out "fixture output before the failure"; has out "FAILED"
+        let (code, out) ← run #["--run", "driver-fixtures#2"]
+        checkEq 3 code; has out "⊘ fixture: skips"; has out "skipped (fixture reason)"; has out "SKIPPED"
+        let (code, out) ← run #["--run", "=driver-fixtures", "3"]
+        checkEq 3 code; has out "skipped (old fixture reason)"
+        for bad in [#["--run", "driver-fixtures", "4"], #["--run", "driver-fixtures", "x"],
+            #["--run", "no-such-group", "0"], #["--run", "driver-fixtures"],
+            #["--run", "driver-fixtures", "0", "extra"], #["=no-such-group"], #["=testrunner#99"],
+            #["testrunner", "--no-such-flag"]] do
+          let (code, out) ← run bad
+          check (code == 2) s!"tests {" ".intercalate bad.toList}: exit code {code}, not 2:\n{out}" }
   ]
 
 def grailSelfhostGroup : Group where
@@ -656,7 +777,7 @@ def grailSelfhostGroup : Group where
         let target := Grail.Target.selfhost "selfhost-checker" "checker"
         let r ← runner dir tc { name := "wiz", targets := [target], settings := [] } 4 log
         if !(← r.build [target] [target]) then
-          if ((← log.get).splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"; return
+          if ((← log.get).splitOn "gmp.h").length > 1 then skip "no toolchain"; return
           throw (IO.userError (← log.get))
         let mine := dir / ".grail" / "bin" / "selfhost-checker"
         let .ok theirs ← Tests.Elab.selfhostChecker | throw (IO.userError "the tests' checker failed")
@@ -672,12 +793,242 @@ def grailSelfhostGroup : Group where
         checkEq 0 (← r.stats.get).ran }
   ]
 
+/-! ## Command targets (23i), `grail run` (23j), job hygiene (23k) -/
+
+/-- A package of commands: `upper` makes `build/up.txt` from `src/in.txt` (through a
+shell), `copy` copies it (an edge by path), `show` (phony) prints it. -/
+def cmdGrail (extra : String := "") : String :=
+  "import Grail\ndef package : Package := Package.new \"c\"\n" ++
+  "  |> Package.command (Command.new \"upper\" (Tool.path \"sh\") |> Command.arg \"-c\" |> Command.arg \"tr a-z A-Z < \\\"$1\\\"\" |> Command.arg \"sh\" |> Command.input \"src/in.txt\" |> Command.stdout \"build/up.txt\")\n" ++
+  "  |> Package.command (Command.new \"copy\" (Tool.path \"cp\") |> Command.input \"build/up.txt\" |> Command.output \"build/copy.txt\")\n" ++
+  "  |> Package.phony (Command.new \"show\" (Tool.path \"cat\") |> Command.input \"build/copy.txt\")\n" ++ extra
+
+def cmdFiles (extra : String := "") : List (String × String) :=
+  [("grail.wiz", cmdGrail extra), ("src/in.txt", "hello\n")]
+
+def cmdTc : IO Toolchain := do pure { cacheDir := some (← IO.FS.createTempDir) }
+
+def has (log needle : String) : Bool := (log.splitOn needle).length > 1
+
+/-- A process is gone (or a zombie) within `ms` milliseconds. -/
+partial def goneWithin (pid : String) (ms : Nat) : IO Bool := do
+  let stat := System.FilePath.mk "/proc" / pid / "stat"
+  let alive ← try pure (((← IO.FS.readFile stat).splitOn ") ")[1]?.map (·.take 1 |>.toString) != some "Z") catch _ => pure false
+  if !alive then return true
+  if ms == 0 then return false
+  IO.sleep 100
+  goneWithin pid (ms - min ms 100)
+
+/-- Wait for a file to appear (a job writes its pid there). -/
+partial def waitFor (f : System.FilePath) (ms : Nat) : IO String := do
+  if ← f.pathExists then
+    let t := (← IO.FS.readFile f).trimAscii.toString
+    if !t.isEmpty then return t
+  if ms == 0 then throw (IO.userError s!"{f} did not appear")
+  IO.sleep 100
+  waitFor f (ms - min ms 100)
+
+def grailCommandsGroup : Group where
+  name := "grail-commands"
+  exercise := "Stage 23i–j"
+  cases := [
+    { name := "commands chain through their outputs; a second build runs nothing", run := fun _ => do
+        let dir ← mkTree (cmdFiles)
+        let tc ← cmdTc
+        let (s, ok, log) ← buildLog dir tc ["upper", "copy"]
+        check ok log
+        checkEq 2 s.ran
+        checkEq "[command upper]\n[command copy]\n" log
+        checkEq "HELLO\n" (← IO.FS.readFile (dir / "build/copy.txt"))
+        let (s, ok, _) ← buildLog dir tc ["copy"]
+        check ok "the second build failed"
+        checkEq 0 s.ran
+        checkEq 2 s.upToDate },
+    { name := "an edit reruns; going back and deleting an output restore it from the store", run := fun _ => do
+        let dir ← mkTree (cmdFiles)
+        let tc ← cmdTc
+        let _ ← buildLog dir tc ["copy"]
+        IO.FS.writeFile (dir / "src/in.txt") "world\n"
+        let (s, _, _) ← buildLog dir tc ["copy"]
+        checkEq 2 s.ran
+        checkEq "WORLD\n" (← IO.FS.readFile (dir / "build/copy.txt"))
+        IO.FS.writeFile (dir / "src/in.txt") "hello\n"
+        let (s, _, _) ← buildLog dir tc ["copy"]
+        checkEq 0 s.ran
+        checkEq "HELLO\n" (← IO.FS.readFile (dir / "build/copy.txt"))
+        IO.FS.removeFile (dir / "build/copy.txt")
+        IO.FS.writeFile (dir / "build/up.txt") "changed by hand\n"
+        let (s, _, _) ← buildLog dir tc ["copy"]
+        checkEq 0 s.ran
+        checkEq "HELLO\n" (← IO.FS.readFile (dir / "build/copy.txt"))
+        checkEq "HELLO\n" (← IO.FS.readFile (dir / "build/up.txt")) },
+    { name := "the tool's identity and the command line are in the key", run := fun _ => do
+        let script := "#!/bin/sh\necho one > \"$1\"\n"
+        let g (arg : String) := "import Grail\ndef package : Package := Package.new \"c\"\n" ++
+          s!"  |> Package.command (Command.new \"t\" (Tool.path \"./tool.sh\") |> Command.output \"out.txt\" |> Command.arg \"{arg}\")\n"
+        let dir ← mkTree [("grail.wiz", g "a"), ("tool.sh", script)]
+        IO.setAccessRights (dir / "tool.sh") { user := { read := true, write := true, execution := true } }
+        let tc ← cmdTc
+        let (s, ok, log) ← buildLog dir tc
+        check ok log
+        checkEq 1 s.ran
+        checkEq "one\n" (← IO.FS.readFile (dir / "out.txt"))
+        IO.FS.writeFile (dir / "tool.sh") "#!/bin/sh\necho two > \"$1\"\n"
+        let (s, _, _) ← buildLog dir tc
+        checkEq 1 s.ran
+        checkEq "two\n" (← IO.FS.readFile (dir / "out.txt"))
+        IO.FS.writeFile (dir / "grail.wiz") (g "b")
+        let (s, _, _) ← buildLog dir tc
+        checkEq 1 s.ran },
+    { name := "outputs are checked: declared but not made, made but not declared, declared twice", run := fun _ => do
+        let liar := "  |> Package.command (Command.new \"liar\" (Tool.path \"sh\") |> Command.arg \"-c\" |> Command.arg \"touch \\\"$1\\\"x\" |> Command.arg \"sh\" |> Command.output \"build/l.txt\")\n"
+        let dir ← mkTree (cmdFiles liar)
+        let (s, ok, log) ← buildLog dir (← cmdTc) ["liar"]
+        check (!ok) "the build succeeded"
+        checkEq 1 s.failed
+        check (has log "the declared output build/l.txt was not made") log
+        check (has log "build/l.txtx was made in the output directory but is not a declared output") log
+        check (!(← (dir / "build/l.txtx").pathExists)) "the undeclared file was installed"
+        let twice := "  |> Package.command (Command.new \"again\" (Tool.path \"cp\") |> Command.input \"src/in.txt\" |> Command.output \"build/up.txt\")\n"
+        let dir ← mkTree (cmdFiles twice)
+        let (_, ok, log) ← buildLog dir (← cmdTc) ["copy"]
+        check (!ok) "the build succeeded"
+        check (has log "commands upper and again both declare the output build/up.txt") log
+        let missing := "  |> Package.command (Command.new \"m\" (Tool.path \"cp\") |> Command.input \"src/nope.txt\" |> Command.output \"o.txt\")\n"
+        let dir ← mkTree (cmdFiles missing)
+        let (_, ok, log) ← buildLog dir (← cmdTc) ["m"]
+        check (!ok) "the build succeeded"
+        check (has log "the input src/nope.txt does not exist, and no target makes it") log },
+    { name := "a failed command says how it ended, with the end of its log", run := fun _ => do
+        let bad := "  |> Package.command (Command.new \"bad\" (Tool.path \"sh\") |> Command.arg \"-c\" |> Command.arg \"echo working; echo oops >&2; kill -9 $$\")\n"
+        let dir ← mkTree (cmdFiles bad)
+        let (_, ok, log) ← buildLog dir (← cmdTc) ["bad"]
+        check (!ok) "the build succeeded"
+        check (has log "✗ command bad\n  killed by signal 9 (SIGKILL: out of memory, or killed by hand?); the end of its output:\n  working\n  oops\n") log
+        check (has (← IO.FS.readFile (dir / ".grail/log/bad.txt")) "oops") "no log file"
+        -- a job (a check) killed with nothing to say: no longer an empty message
+        checkEq "killed by signal 9 (SIGKILL: out of memory, or killed by hand?), and printed nothing"
+          (Grail.failureMessage { code := 137, stdout := "", stderr := "" } 1000)
+        checkEq "exit code 3; the end of its output:\nx"
+          (Grail.failureMessage { code := 3, stdout := "x\n", stderr := "" } 1000)
+        -- a check's own error (exit 1) is its messages, as before
+        checkEq "f.wiz:1:1: error: e\n" (Grail.failureMessage { code := 1, stdout := "", stderr := "f.wiz:1:1: error: e\n" } 1000) },
+    { name := "a phony command always runs, is not recorded, and is not a default target", run := fun _ => do
+        let dir ← mkTree (cmdFiles)
+        let tc ← cmdTc
+        let (s, ok, log) ← buildLog dir tc ["show"]
+        check ok log
+        checkEq 3 s.ran
+        check (has log "[command show]\nHELLO\n") log
+        let (s, _, _) ← buildLog dir tc ["show"]
+        checkEq 1 s.ran
+        checkEq 2 s.upToDate
+        match ← Grail.readConfig tc (← binId tc) "lib" dir with
+        | .error e => throw (IO.userError e)
+        | .ok (pkg, _) => checkEq ["upper", "copy"] ((pkg.targets.filter (·.isDefault)).map (·.name)) },
+    { name := "stale installed outputs are removed (changed ones kept); grail clean", run := fun _ => do
+        let dir ← mkTree (cmdFiles)
+        let tc ← cmdTc
+        let _ ← buildLog dir tc ["copy"]
+        IO.FS.writeFile (dir / "grail.wiz") ((cmdGrail).replace "build/copy.txt" "build/copy2.txt")
+        let (_, ok, log) ← buildLog dir tc ["copy"]
+        check ok log
+        check (has log "removed build/copy.txt (installed by an earlier build; no target makes it any more)") log
+        check (!(← (dir / "build/copy.txt").pathExists)) "the stale output is still there"
+        IO.FS.writeFile (dir / "build/copy2.txt") "mine\n"
+        let ctx : Grail.Ctx := { dir, std := "lib", tc, binId := 0 }
+        let report ← Grail.cleanInstalled ctx
+        check (has report "kept build/copy2.txt: changed since grail installed it") report
+        check (has report "removed build/up.txt") report
+        checkEq "mine\n" (← IO.FS.readFile (dir / "build/copy2.txt"))
+        check (!(← (dir / "build/up.txt").pathExists)) "grail clean left an installed output" },
+    { name := "grail run: a command's needs are built, its arguments appended, its exit code returned", run := fun _ => do
+        let ex := "  |> Package.command (Command.new \"exit\" (Tool.path \"sh\") |> Command.arg \"-c\" |> Command.arg \"test -f build/copy.txt && exit $1\" |> Command.arg \"sh\" |> Command.needs \"build/copy.txt\")\n"
+        let dir ← mkTree (cmdFiles ex)
+        let tc ← cmdTc
+        match ← Grail.readConfig tc (← binId tc) "lib" dir with
+        | .error e => throw (IO.userError e)
+        | .ok (pkg, _) =>
+          let log ← IO.mkRef ""
+          let r ← runner dir tc pkg 1 log
+          let some t := pkg.targets.find? (·.name == "exit") | throw (IO.userError "no target")
+          checkEq 7 (← r.runTarget pkg.targets t #["7"])
+          checkEq "[command upper]\n[command copy]\n" (← log.get) },
+    { name := "an exe of the package as a command's tool", run := fun _ => do
+        let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"p\" |> Package.exe \"hello\" \"hello.wiz\"\n" ++
+                            "  |> Package.command (Command.new \"say\" (Tool.exe \"hello\") |> Command.stdout \"said.txt\")\n"),
+                          ("hello.wiz", "import IO\ndef main : IO Unit := IO.println \"hello from grail\"\n")]
+        let (s, ok, log) ← buildLog dir tc ["say"]
+        if !ok && (has log "obj") then
+          skip "no toolchain"
+          return
+        check ok log
+        checkEq 6 s.ran
+        checkEq "hello from grail\n" (← IO.FS.readFile (dir / "said.txt"))
+        -- a comment: the program is rebuilt as far as its C, which doesn't change
+        IO.FS.writeFile (dir / "hello.wiz") "import IO\n-- c\ndef main : IO Unit := IO.println \"hello from grail\"\n"
+        let (s, _, _) ← buildLog dir tc ["say"]
+        checkEq 3 s.ran },
+    { name := "an installed output keeps its executable bit", run := fun _ => do
+        let mk := "  |> Package.command (Command.new \"script\" (Tool.path \"sh\") |> Command.arg \"-c\" |> Command.arg \"printf '#!/bin/sh\\\\necho ran\\\\n' > \\\"$1\\\"; chmod +x \\\"$1\\\"; echo data > \\\"$2\\\"\" |> Command.arg \"sh\" |> Command.output \"bin/run.sh\" |> Command.output \"bin/data.txt\")\n"
+        let dir ← mkTree (cmdFiles mk)
+        let (_, ok, log) ← buildLog dir (← cmdTc) ["script"]
+        check ok log
+        checkEq "ran\n" (← IO.Process.output { cmd := (dir / "bin/run.sh").toString }).stdout
+        check (← Grail.isExecutable (dir / "bin/run.sh")) "the script is not executable"
+        check (!(← Grail.isExecutable (dir / "bin/data.txt"))) "the data file is executable" },
+    { name := "two targets with one name are refused", run := fun _ => do
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"p\" |> Package.lib \"x\" \"src\" |> Package.check \"x\" \"a.wiz\"\n")]
+        let tc ← cmdTc
+        match ← Grail.readConfig tc (← binId tc) "lib" dir with
+        | .ok _ => throw (IO.userError "accepted")
+        | .error e => check (has e "two targets are called x") e }
+  ]
+
+/-- A command that starts a grandchild (`sleep`), writes its pid, and waits. -/
+def slowFiles (secs : String) : List (String × String) :=
+  [("grail.wiz", "import Grail\ndef package : Package := Package.new \"s\"\n" ++
+     s!"  |> Package.command (Command.new \"slow\" (Tool.path \"sh\") |> Command.arg \"-c\" |> Command.arg \"sleep {secs} & echo $! > slow.pid; wait\")\n")]
+
+/-- Start grail (this test driver, `--grail`) building `slow`, and kill it with `signal`
+once the job has started: the job's grandchild must go too. -/
+def killGrailCase (signal : String) : Case :=
+    { name := s!"killing grail (SIG{signal}) kills its jobs", run := fun _ => do
+        let dir ← mkTree (slowFiles (if signal == "KILL" then "298" else "297"))
+        let cache ← IO.FS.createTempDir
+        let self ← IO.appPath
+        let args := #["--grail", "-C", dir.toString, "--cache", cache.toString, "build", "slow"]
+        let child ← IO.Process.spawn { cmd := self.toString, args, stdout := .null, stderr := .null }
+        let pid ← waitFor (dir / "slow.pid") 60000
+        let o ← IO.Process.output { cmd := "kill", args := #[s!"-{signal}", toString child.pid] }
+        checkEq 0 o.exitCode
+        let _ ← child.wait
+        check (← goneWithin pid 5000) s!"the job's process {pid} outlived grail" }
+
+def grailHygieneGroup : Group where
+  name := "grail-hygiene"
+  exercise := "Stage 23k"
+  cases := [
+    killGrailCase "KILL",
+    killGrailCase "TERM",
+    { name := "a time limit kills the job's whole process group", run := fun _ => do
+        let dir ← mkTree (slowFiles "296")
+        let (_, ok, log) ← buildLog dir (← cmdTc) (timeoutMs := some 1500)
+        check (!ok) "the build succeeded"
+        check (has log "timed out after 1.500 s (its process group was killed)") log
+        let pid ← waitFor (dir / "slow.pid") 1000
+        check (← goneWithin pid 5000) s!"the job's process {pid} outlived its time limit" }
+  ]
+
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
 order, so that branches adding groups rarely touch the same lines. A new group also
 needs a shard in `.github/test-shards.json` (CI checks). -/
 def groups : List Group :=
+  grailCommandsGroup ::
   grailDepsGroup ::
   grailGroup ::
+  grailHygieneGroup ::
   grailJobsGroup ::
   grailSelfhostGroup ::
   modulesGroup ::

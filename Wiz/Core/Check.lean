@@ -960,6 +960,9 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
 for the compiler, if it has one, is checked too (`checkImpl`): no term reaches erasure
 unchecked. -/
 def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  -- constants are identified by name: a second declaration of one would change what
+  -- everything checked against the first means
+  if g.contains d.name then throw (.other s!"{d.name} is already declared")
   if d.witness.isSome then throw (.other s!"{d.name}: only a partial definition has a witness")
   checkHeader g d
   let ctx : Ctx R := { globals := g }
@@ -988,6 +991,9 @@ which the kernel checks here: then `f` proves nothing `w` doesn't, whatever the 
 The witness is checked erased (quantity 0): it is only evidence that `T` is inhabited,
 never run, so it may ignore a linear argument. -/
 def addPartialDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  -- constants are identified by name: a second declaration of one would change what
+  -- everything checked against the first means
+  if g.contains d.name then throw (.other s!"{d.name} is already declared")
   let some w := d.witness
     | throw (.other s!"partial definition {d.name} needs a witness, a term of its type")
   if d.value.isSome then throw (.other s!"partial definition {d.name} can't have a value")

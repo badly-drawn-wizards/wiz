@@ -496,6 +496,28 @@ def opaqueTo? (g : Globals R) (T : Name) : Option String :=
   | some m => if m == g.module then none else some m
   | none => none
 
+/-- (13b) The kernel name of a private declaration `n` of module `m` (not the main file):
+`_private.m.0.n`, as Lean does, so that two modules' private `helper`s are different
+constants and never clash (`docs/stages/23-grail.md`, 23b). In `m`, `helper` resolves to
+it (`resolve`); messages show `helper` (`privateBase`). -/
+def privateName (m n : Name) : Name := "_private." ++ m ++ ".0." ++ n
+
+/-- The source name of a private declaration's kernel name (`privateName`); other names
+as they are. -/
+def privateBase (n : Name) : Name :=
+  if n.startsWith "_private." then
+    match n.splitOn ".0." with
+    | _ :: rest@(_ :: _) => ".0.".intercalate rest
+    | _ => n
+  else n
+
+/-- What the name `n`, as written in the module being elaborated, refers to: the
+module's own private declaration of that name if it has one, else `n`. -/
+def resolve (g : Globals R) (n : Name) : Name :=
+  if g.module.isEmpty then n else
+  let p := privateName g.module n
+  if g.decls.contains p then p else n
+
 /-- (13b) The module `n` is private to, if that is not the one being elaborated. -/
 def privateTo? (g : Globals R) (n : Name) : Option String :=
   match g.privates[n]? with
