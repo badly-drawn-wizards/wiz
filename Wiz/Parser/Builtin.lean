@@ -430,6 +430,9 @@ def addMetaParsers (t : ParserTables) (c : Name) : ParserTables :=
 | `command.macroRules`   | "macro_rules" [alts] (each `| `(c| pattern) => `(c| template)`) |
 | `command.notation`     | "notation" [":" prec] [items] "=>" term (items: str or ident [":" prec]) |
 | `command.infix`        | ("infixl" / "infixr" / "infix") ":" num str "=>" term |
+| `command.appUnexpander` | "app_unexpander" ident [alts] (11r: printing `ident`'s applications as notation) |
+| `command.attrUnexpander` | "attribute" "[" "app_unexpander" ident "]" ident (11r) |
+| `command.setOption`    | "set_option" ident (ident / num) (11r: `pp.notation`, `pp.all`) |
 -/
 def macroCommands : List LeadingParser := [
   { kind := "command.macroRules", prec := maxPrec, p := seqs ["macro_rules", many1 matchAlt] },
@@ -438,7 +441,12 @@ def macroCommands : List LeadingParser := [
       many1 (node "notation.item" (orelse str (seqs [ident, optional (seqs [noWs, ":", noWs, precedence])]))),
       "=>", term] },
   { kind := "command.infix", prec := maxPrec,
-    p := seqs [orelse "infixl" (orelse "infixr" "infix"), noWs, ":", noWs, num, str, "=>", term] }
+    p := seqs [orelse "infixl" (orelse "infixr" "infix"), noWs, ":", noWs, num, str, "=>", term] },
+  -- (11r) printing notation: unexpanders, and the `pp` options
+  { kind := "command.appUnexpander", prec := maxPrec, p := seqs ["app_unexpander", ident, many1 matchAlt] },
+  { kind := "command.attrUnexpander", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "app_unexpander", ident, "]", ident] },
+  { kind := "command.setOption", prec := maxPrec, p := seqs ["set_option", ident, orelse ident num] }
 ]
 
 def tables : ParserTables :=

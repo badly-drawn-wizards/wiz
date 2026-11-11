@@ -240,6 +240,11 @@ syntax:30 (name := boolOr) term:31 " || " term:30 : term
 macro_rules
   | `(term| $a || $b) => `(term| match $a with | .true => Bool.true | .false => $b)
 notation:max "!" b:max => Bool.not b
+-- Printed (11r): the `Bool.casesOn` (false branch first) that `if`, `&&` and `||` make
+app_unexpander Bool.casesOn
+  | `(term| $f $m Bool.false $b $a) => `(term| $a && $b)
+  | `(term| $f $m $b Bool.true $a) => `(term| $a || $b)
+  | `(term| $f $m $e $t $c) => `(term| if $c then $t else $e)
 -- (end of the Boolean section)
 
 -- Reflected terms, for tactics. Variables are de Bruijn indices, relative to the goal's
@@ -921,6 +926,27 @@ def ListLit.expand : Macro := fun stx => match Syntax.getArg stx 1 with
   | .node _ ts => MacroM.pure (ListLit.build ts)
   | _ => MacroM.pure (Syntax.mkVar "List.nil")
 attribute [macro term.listLit] ListLit.expand
+-- Printing them (11r): `List.nil` prints as `[]` and `List.cons x [ys,*]` as `[x, ys,*]`,
+-- so a list prints as a literal from its last cell up, as Lean's unexpander does. An
+-- unexpander gets the application with its explicit arguments, as syntax, and fails when
+-- it doesn't apply (`List.cons x xs` with a variable `xs` stays as it is).
+def ListLit.mk (es : SyntaxF .false) : Syntax :=
+  .node "term.listLit" (.cons (.atom "[") (.cons (.node "null" es) (.cons (.atom "]") .nil)))
+def ListLit.unexpandNil : Macro := fun _ => MacroM.pure (ListLit.mk .nil)
+def ListLit.unexpandCons : Macro := fun stx =>
+  let args := Syntax.getArg stx 1;
+  let x := Syntax.getArg args 0;
+  let tl := Syntax.getArg args 1;
+  match tl with
+  | .node k _ => (match Expr.nameEq k "term.listLit" with
+    | .true => (match Syntax.getArg tl 1 with
+      | .node _ .nil => MacroM.pure (ListLit.mk (.cons x .nil))
+      | .node _ es => MacroM.pure (ListLit.mk (.cons x (.cons (.atom ",") es)))
+      | _ => MacroM.throw "not a list literal")
+    | .false => MacroM.throw "not a list literal")
+  | _ => MacroM.throw "not a list literal"
+attribute [app_unexpander List.nil] ListLit.unexpandNil
+attribute [app_unexpander List.cons] ListLit.unexpandCons
 -- (end of the notation section)
 
 -- A decimal numeral as text, for macros (`Nat.toString` is an extern: it only runs compiled).

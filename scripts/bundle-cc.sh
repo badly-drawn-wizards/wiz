@@ -19,7 +19,8 @@
 #
 # Programs it builds link GMP and the GC statically and need only glibc >= 2.27 (libc,
 # libm, libpthread) at run time. DOWNLOADS (default ~/.cache/wiz-bundle-cc) keeps the
-# fetched files; each is checked against its sha256. Runs outside Nix (the release job).
+# fetched files (the list, with mirrors and sha256s, is scripts/bundle-cc.sources).
+# Runs outside Nix (the release job).
 set -eu
 out=$1
 dl=${2:-${HOME:-/tmp}/.cache/wiz-bundle-cc}
@@ -29,23 +30,40 @@ mkdir -p "$dl"
 case $out in /*) ;; *) out=$(pwd)/$out ;; esac
 case $dl in /*) ;; *) dl=$(pwd)/$dl ;; esac
 
-ubuntu=http://archive.ubuntu.com/ubuntu/pool/main
-# url sha256 (one per line)
-sources="
-$ubuntu/g/glibc/libc6_2.27-3ubuntu1.6_amd64.deb 5b813d4512491cd8fb30b2eb9192349ee75ffe3c9f21ae136cc7b2429f70c3b2
-$ubuntu/g/glibc/libc6-dev_2.27-3ubuntu1.6_amd64.deb 96ae7d2cf38f0547ca3cccb3344c8802fdf5bcd71c4b6d9aed09558ac8cc87db
-$ubuntu/l/linux/linux-libc-dev_4.15.0-213.224_amd64.deb 06d9f16644d3a1b2ab7dd01730e833d516b6f575d975855f496eea6463fef2f6
-https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898
-https://github.com/ivmai/bdwgc/releases/download/v8.2.8/gc-8.2.8.tar.gz 7649020621cb26325e1fb5c8742590d92fb48ce5c259b502faf7d9fb5dabb160
-"
-echo "$sources" | while read -r url sum; do
-  [ -n "$url" ] || continue
-  f=$dl/$(basename "$url")
-  if ! { [ -f "$f" ] && echo "$sum  $f" | sha256sum -c --quiet - >/dev/null 2>&1; }; then
-    curl -sSfL --retry 3 -o "$f.part" "$url"
-    echo "$sum  $f.part" | sha256sum -c --quiet -
-    mv "$f.part" "$f"
-  fi
+# the downloads: scripts/bundle-cc.sources (FILE SHA256 URL…), each URL tried in turn
+# with retries, every file checked against its sha256; an Ubuntu pool file is tried on
+# several mirrors, and every file last on this repository's release `bundle-inputs`
+here=$(cd "$(dirname "$0")" && pwd)
+ubuntu_mirrors="http://archive.ubuntu.com/ubuntu/pool/main http://mirrors.kernel.org/ubuntu/pool/main http://mirror.math.princeton.edu/pub/ubuntu/pool/main http://ftp.halifax.rwth-aachen.de/ubuntu/pool/main"
+inputs_release=${WIZ_BUNDLE_INPUTS:-https://github.com/badly-drawn-wizards/wiz/releases/download/bundle-inputs}
+fetch() { # FILE SHA256 URL…
+  f=$1 sum=$2; shift 2
+  [ -f "$dl/$f" ] && echo "$sum  $dl/$f" | sha256sum -c --quiet - >/dev/null 2>&1 && return 0
+  urls=
+  for u in "$@"; do
+    case $u in
+      '$U'/*) for m in $ubuntu_mirrors; do urls="$urls $m${u#'$U'}"; done ;;
+      *) urls="$urls $u" ;;
+    esac
+  done
+  for u in $urls "$inputs_release/$f"; do
+    rm -f "$dl/$f.part"
+    if curl -sSfL --retry 3 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 900 \
+         -o "$dl/$f.part" "$u" &&
+       echo "$sum  $dl/$f.part" | sha256sum -c --quiet - >/dev/null 2>&1; then
+      mv "$dl/$f.part" "$dl/$f"
+      return 0
+    fi
+    echo "bundle-cc: $f: no good copy from $u" >&2
+  done
+  rm -f "$dl/$f.part"
+  echo "bundle-cc: $f: every mirror failed" >&2
+  return 1
+}
+grep -v '^#' "$here/bundle-cc.sources" | while read -r line; do
+  [ -n "$line" ] || continue
+  # shellcheck disable=SC2086
+  fetch $line || exit 1
 done
 
 work=$(mktemp -d)

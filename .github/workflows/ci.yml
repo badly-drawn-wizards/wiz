@@ -11,6 +11,10 @@ on:
     branches: [master]  # agent branches are tested through their PRs
   pull_request:
     branches: [master]
+  # the merge queue (docs/building.md, "Merging"): each queued PR is tested merged onto
+  # master and the PRs ahead of it, and lands only if this run's `CI result` passes
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: "23 2 * * 1" # Mondays: the bootstrap fixpoint check
   workflow_dispatch:
@@ -24,10 +28,12 @@ on:
 # the branches themselves (push events) are never cancelled: pull requests are merged
 # on green without being up to date, so the run of each merge commit is what tells
 # which merge broke something. They get a group per commit, since a shared group with
-# cancel-in-progress off would still drop a queued run when a newer one arrives.
+# cancel-in-progress off would still drop a queued run when a newer one arrives. A merge
+# queue entry has a ref of its own (gh-readonly-queue/master/pr-N-SHA) and is never
+# cancelled by this rule (the queue cancels it when the entry leaves the queue).
 concurrency:
   group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  cancel-in-progress: ${{ github.event_name != 'push' && github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
@@ -55,6 +61,7 @@ jobs:
       tree: solution # only the summary's title reads it (there is one tree now)
       matrix: ${{ steps.shards.outputs.matrix }}
       lake-key: ${{ steps.key.outputs.key }}
+      lake-hash: ${{ steps.key.outputs.hash }}
       compiler-key: ${{ steps.key.outputs.compiler }}
     steps:
       - uses: actions/checkout@v5
@@ -67,7 +74,10 @@ jobs:
         id: key
         shell: bash
         run: |
-          echo "key=lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
+          # the hash part alone too: a test job on another architecture (a self-hosted
+          # runner, docs/ci-runner.md) prefixes its own os/arch
+          echo "hash=${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
+          echo "key=lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
           # what identifies the compiler and test driver (and the C toolchain they use)
           echo "compiler=${{ hashFiles('flake.lock', 'flake.nix', 'lean-toolchain', 'lake-manifest.json', 'lakefile.toml', '**/*.lean', 'runtime/**', 'c/**') }}" >> "$GITHUB_OUTPUT"
       - name: Cache the Lake build
@@ -75,7 +85,7 @@ jobs:
         with:
           path: .lake
           key: ${{ steps.key.outputs.key }}
-          restore-keys: lake-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+          restore-keys: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
       - name: lake build
         run: |
           # The artifact cache only grows (each commit adds the modules it changed); start
@@ -100,7 +110,12 @@ jobs:
   test:
     name: test (${{ matrix.shard.name }})
     needs: build
-    runs-on: ubuntu-latest
+    # A "heavy" shard (.github/test-shards.json) runs on the self-hosted runner whose
+    # label is the repository variable WIZ_RUNNER_HEAVY (docs/ci-runner.md), when that is
+    # set and the code is this repository's: a pull request from a fork never runs there
+    # (it would run untrusted code on that machine) and uses GitHub's runner instead.
+    # Unset (the default): every shard on ubuntu-latest, as before.
+    runs-on: ${{ matrix.shard.heavy && vars.WIZ_RUNNER_HEAVY != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.WIZ_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 90 # the selfhost group is split into parts (test-shards.json) to keep each one short
     strategy:
       fail-fast: false
@@ -111,11 +126,31 @@ jobs:
         with:
           cachix-name: ${{ env.CACHIX_NAME }}
           cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      # The build job's .lake (same os/arch); on another architecture the same sources'
+      # build for it, if a run there saved one (else `lake test` builds from scratch)
       - name: Restore the Lake build
+        id: lake-cache
         uses: actions/cache/restore@v4
         with:
           path: .lake
-          key: ${{ needs.build.outputs.lake-key }}
+          key: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ needs.build.outputs.lake-hash }}
+          # the exact entry can be gone already: the build job saved it minutes ago, but
+          # the repository's 10 GB cache evicts the least recently used entries, and
+          # with many PRs a 740 MB Lake cache lasts only minutes (#103, #134: the late
+          # shards of a run found nothing and ran without wiz and grail). Then the
+          # newest older build of the same toolchain, and the next step catches up.
+          restore-keys: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      # `lake test` builds only the test driver: build the executables the tests run too
+      # (a no-op after an exact hit), and stop if they're missing rather than run without
+      - name: lake build (unless restored)
+        run: |
+          if [ "${{ steps.lake-cache.outputs.cache-hit }}" != true ]; then
+            echo "::warning title=Lake cache::no exact Lake build for this commit (evicted?): building wiz, grail and tests here"
+          fi
+          lake build wiz grail tests
+          for b in wiz grail tests; do
+            [ -x ".lake/build/bin/$b" ] || { echo "::error::.lake/build/bin/$b is missing after lake build"; exit 1; }
+          done
       # What the suite builds from Wiz programs, kept between runs: the elaboration cache
       # (`--cache`, which the grail-selfhost test uses), grail's `.grail` (the test's
       # build of the self-hosted checker) and the self-hosted checker and compiler that
@@ -132,8 +167,8 @@ jobs:
             ~/.cache/wiz
             .grail
             /tmp/wiz-selfhost-*
-          key: wiz-${{ runner.os }}-${{ matrix.shard.name }}-${{ needs.build.outputs.compiler-key }}-${{ hashFiles('**/*.wiz') }}
-          restore-keys: wiz-${{ runner.os }}-${{ matrix.shard.name }}-${{ needs.build.outputs.compiler-key }}-
+          key: wiz-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ matrix.shard.name }}-${{ needs.build.outputs.compiler-key }}-${{ hashFiles('**/*.wiz') }}
+          restore-keys: wiz-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ matrix.shard.name }}-${{ needs.build.outputs.compiler-key }}-
       - name: lake test -- ${{ matrix.shard.name }}
         env:
           SELECT: ${{ matrix.shard.select }}
@@ -145,6 +180,13 @@ jobs:
           # every case's time, as JSON lines (scripts/ci.py summary and baseline read them)
           lake test -- --cache "$HOME/.cache/wiz" --timings "logs/${{ matrix.shard.name }}.jsonl" \
             --shard "${{ matrix.shard.name }}" "${sel[@]}" 2>&1 | tee "logs/${{ matrix.shard.name }}.log"
+      # a test job on another architecture (no build job there) keeps its own build
+      - name: Save the Lake build (${{ runner.arch }})
+        if: always() && runner.arch != 'X64' && steps.lake-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .lake
+          key: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ needs.build.outputs.lake-hash }}
       - name: Save the Wiz build caches
         if: always() && steps.wiz-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -153,7 +195,7 @@ jobs:
             ~/.cache/wiz
             .grail
             /tmp/wiz-selfhost-*
-          key: wiz-${{ runner.os }}-${{ matrix.shard.name }}-${{ needs.build.outputs.compiler-key }}-${{ hashFiles('**/*.wiz') }}
+          key: wiz-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ matrix.shard.name }}-${{ needs.build.outputs.compiler-key }}-${{ hashFiles('**/*.wiz') }}
       - name: Summary
         if: always()
         run: |

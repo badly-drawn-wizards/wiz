@@ -1,5 +1,6 @@
 import Std.Data.HashMap
 import Wiz.Core.Level
+import Wiz.Syntax.PPTable
 
 /-!
 # Core terms
@@ -28,8 +29,6 @@ Stage 4 added Σ-types, observational equality, descriptions with μ/ν data, an
 -/
 
 namespace Wiz
-
-abbrev Name := String
 
 inductive BinderInfo where
   | default
@@ -467,6 +466,9 @@ structure Globals (R : Type) where
   opaques : Std.HashMap Name String := {}
   /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
   module : String := ""
+  /-- (11r) how terms print as notation: unexpanders and the grammar (`Syntax/PPTable.lean`).
+  The kernel ignores this. -/
+  pp : PPTable := {}
   /-- the library module each declaration was made in (none for the main file's). Read by
   erasure only (a type with a native representation is built and taken apart only in its
   own module, `nativeHome?` in `Compiler/Erase.lean`); the kernel ignores it. -/
@@ -512,17 +514,17 @@ def opaqueTo? (g : Globals R) (T : Name) : Option String :=
   | none => none
 
 /-- (13b) The kernel name of a private declaration `n` of module `m` (not the main file):
-`_private.m.0.n`, as Lean does, so that two modules' private `helper`s are different
+`_private.m._0.n`, as Lean does (`_0`, not `0`, so that it parses as an identifier: `mutual` and some derivers print and parse names), so that two modules' private `helper`s are different
 constants and never clash (`docs/stages/23-grail.md`, 23b). In `m`, `helper` resolves to
 it (`resolve`); messages show `helper` (`privateBase`). -/
-def privateName (m n : Name) : Name := "_private." ++ m ++ ".0." ++ n
+def privateName (m n : Name) : Name := "_private." ++ m ++ "._0." ++ n
 
 /-- The source name of a private declaration's kernel name (`privateName`); other names
 as they are. -/
 def privateBase (n : Name) : Name :=
   if n.startsWith "_private." then
-    match n.splitOn ".0." with
-    | _ :: rest@(_ :: _) => ".0.".intercalate rest
+    match n.splitOn "._0." with
+    | _ :: rest@(_ :: _) => "._0.".intercalate rest
     | _ => n
   else n
 
