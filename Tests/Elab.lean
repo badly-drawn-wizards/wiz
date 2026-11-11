@@ -4745,6 +4745,12 @@ def languageGroup : Group where
     { name := "... an importer may define the same notation at another meaning", run := fun _ =>
         okLoc locMod "import Loc\ninfixr:67 \" & \" => List.append\n#eval [1] & [2]\nsyntax (name := shout) \"shout\" term : term\nmacro_rules\n  | `(term| shout $x) => `(term| [$x])\n#eval shout 1"
           [".cons 1 (.cons 2 .nil)", ".cons 1 .nil"] },
+    { name := "local instance: found in its module, not by importers (11w)", run := fun _ => do
+        let m := "import Prelude\nclass Dflt (A : Type) where\n  dflt : A\nlocal instance : Dflt Nat := Dflt.mk 7\ndef seven : Nat := Dflt.dflt\n"
+        okLoc m "import Loc\n#eval seven" ["7"]
+        failsLoc m "import Loc\ndef x : Nat := Dflt.dflt" "failed to synthesize an instance of Dflt Nat"
+        -- the importer may give its own
+        okLoc m "import Loc\ninstance : Dflt Nat := Dflt.mk 3\n#eval (Dflt.dflt : Nat)" ["3"] },
     { name := "... in the main file it is ordinary notation; only grammar commands can be local", run := fun _ => do
         okLib "import Prelude\nlocal infixl:65 \" +! \" => Nat.add\n#eval 1 +! 2" ["3"]
         failsLib "import Prelude\nlocal def x : Nat := 1" "can be `local`" },
@@ -7255,6 +7261,21 @@ def infoviewGroup : Group where
           [r#".cons "Tactic state" (.cons "A : Type" (.cons "f : Nat → Nat → Nat → Nat" (.cons "⊢ Nat → A" (.cons "" (.cons "Messages" (.cons "hello" (.cons "" (.cons "n : Nat" (.cons "⊢ Nat" .nil)))))))))"#,
            r#""<h3>Tactic state</h3><div class=\"no-goals\">No goals</div><h3>Messages</h3><pre class=\"message\">a&lt;b</pre>""#,
            r#".cons "one" (.cons "two" .nil)"#] },
+    { name := "11w: what else is at the cursor (wiz/interactiveInfo): sections, as text and HTML", run := fun _ =>
+        okInfoview (goalPrelude ++ r#"def items : List InfoItem := .cons (.mk "syntax" "syntax term.twice" "syntax \"twice\" term : term" .none)
+  (.cons (.mk "expansion" "expanded by macro rule" "Nat.add a\nb" .none)
+  (.cons (.mk "instance" "instance i" "i" (.some (nat 1)))
+  (.cons (.mk "declaration" "four" "" (.some (nat 2))) .nil)))
+#eval Infoview.plainLines (View.lines (View.ofInfo 40 .none .none items))
+#eval Infoview.plainLines (View.lines (View.ofInfo 40 (.some (.mk .nil .nil)) .none (.cons (.mk "message" "info" "3" .none) .nil)))
+#eval Infoview.htmlInfo 0 .none .none (.cons (.mk "declaration" "x<y" "" (.some (nat 1))) .nil)
+#eval match Json.parse "{\"items\": [{\"kind\": \"import\", \"title\": \"import M\", \"text\": \"lib/M.wiz\", \"type\": null}], \"session\": 1}" with
+  | .ok j => List.length (Items.ofJson j)
+  | .error _ => 0"#)
+          [r#".cons "Syntax" (.cons "syntax term.twice" (.cons "  syntax \"twice\" term : term" (.cons "expanded by macro rule" (.cons "  Nat.add a" (.cons "  b" (.cons "" (.cons "Instances" (.cons "i : Nat" (.cons "" (.cons "Declarations" (.cons "four : Nat" .nil)))))))))))"#,
+           r#".cons "Tactic state" (.cons "No goals" (.cons "" (.cons "Messages" (.cons "info" (.cons "  3" .nil)))))"#,
+           r#""<h3>Declarations</h3><div class=\"item\"><span class=\"names\">x&lt;y</span> : <span class=\"tt k-const\" data-ref=\"1\" data-idx=\"0\" title=\"Nat\">Nat</span></div>""#,
+           "1"] },
     { name := "terminal lines: SGR colours by kind, the selection in reverse video", run := fun _ =>
         okInfoview (goalPrelude ++ "#eval Infoview.ansiLines 3 (View.lines (View.ofState 80 (.some .nil) (.some (.mk \"h\" .nil (arrow 1 (nat 2) (nat 3))))))")
           [r#".cons "\x1b[0;1;4mTactic state\x1b[0m" (.cons "\x1b[0;1;32mNo goals\x1b[0m" (.cons "\x1b[0m" (.cons "\x1b[0;1;4mExpected type\x1b[0m" (.cons "\x1b[0;1;4mcase h\x1b[0m" (.cons "\x1b[0;1;35m⊢\x1b[0m \x1b[0;34mNat\x1b[0m \x1b[0m→\x1b[0m \x1b[0;34;7mNat\x1b[0m" .nil)))))"#] },
