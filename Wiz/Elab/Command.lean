@@ -175,6 +175,29 @@ def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   privacyCheck g d
   pure g'
 
+/-- Replace each const `n` by `f n`. -/
+partial def Term.renameConsts (f : Name → Name) (t : Term R) : Term R :=
+  match t with
+  | .const n ls => .const (f n) ls
+  | t => Id.run (t.mapChildrenM pure fun _ c => pure (c.renameConsts f))
+
+/-- (13b) Give the declarations `added` (just declared, privately, in `s.module`) their
+private kernel names (`Globals.privateName`), in the declarations themselves (a recursive
+definition mentions itself) and in the `builtin`/`extern` registrations. -/
+def renamePrivate (s : CommandState R) (added : Array Name) : CommandState R :=
+  if added.isEmpty then s else
+  let f (n : Name) : Name := if added.contains n then Globals.privateName s.module n else n
+  let rn (t : Term R) := t.renameConsts f
+  let g := s.globals
+  let decls := added.foldl (fun m n => match m[n]? with
+    | some d => (m.erase n).insert (f n) { d with name := f n, type := rn d.type, value := d.value.map rn,
+                                                   impl := d.impl.map rn, witness := d.witness.map rn }
+    | none => m) g.decls
+  let order := g.order.map f
+  let rb (bs : List (Name × Name)) := bs.map fun (k, n) => (k, f n)
+  { s with globals := { g with decls, order, builtins := rb g.builtins, assumed := rb g.assumed },
+           builtins := rb s.builtins }
+
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
 recorded constraint whose hole is now solved, ask the kernel for the solution's type
 and unify its level. -/
@@ -994,6 +1017,18 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let before := s.globals.order.size
     elabCommand (cmd.getArg 1)
     modify fun s =>
+      let added := s.globals.order.extract before s.globals.order.size
+      -- In a module, a private function, axiom or foreign function gets a kernel name of
+      -- its own (`Globals.privateName`), so that another module's private declaration of
+      -- the same name is a different constant (no clash at the import); in the module,
+      -- the source name resolves to it (`Globals.resolve`). Types keep their names (their
+      -- constructors, fields and recursors are in side tables by name).
+      let inner := cmd.getArg 1
+      let inner := if inner.isOfKind "command.partial" then inner.getArg 2 else inner
+      let renamed := !s.module.isEmpty &&
+        (["command.def", "command.defEqns", "command.axiom", "command.extern"].contains inner.kind ||
+         (inner.isOfKind "command.mutual" && (inner.getArg 1).args.all (!·.isOfKind "command.inductive")))
+      let s := if renamed then renamePrivate s added else s
       let added := s.globals.order.extract before s.globals.order.size
       { s with globals := { s.globals with
           privates := added.foldl (fun m n => m.insert n s.module) s.globals.privates } }
