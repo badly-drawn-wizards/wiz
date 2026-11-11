@@ -2370,7 +2370,7 @@ def globalDefs : List (String × List String × Option MTm × MTm) :=
    -- them computes where their equation is stuck, the known U5 class of the property
    -- harness, `Tests/Prop.lean`; `A → Prop` has a sort that depends on `u` and stays bare)
    ("dLv", ["u"], some (sorted 0 (pi (sortParam "u") (sorted 0 (pi (var 0) (sorted 0 (pi (var 1)
-     (sorted 0 (pi (pi (var 2) prop) (sorted 0 (pi (app (var 0) (var 2)) (app (var 1) (var 2))))))))))), prop),
+     (sorted 0 (pi (pi (var 2) prop) (sorted 0 (pi (app (var 0) (var 2)) (app (var 1) (var 2)))))))))))), prop),
    ("caseF", [], some (lam (lam (ecase prop (var 0) [var 1]))), pi prop (pi (enum 1) prop))]
 
 /-- (W1) `fun x p => p : (x : Enum 1) → caseF dLv.{l} x → caseF dLv.{l'} x`: the two types
