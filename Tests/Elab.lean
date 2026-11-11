@@ -6708,6 +6708,8 @@ def hdlGroup : Group where
           "def t3 : Lens.Indep P.xL P.zL := P.x_z_indep\n" ++
           "def t4 : Lens.set (@Q.bL Nat 3) (Q.mk 1 .nil) (.cons 2 .nil) = Q.mk 1 (.cons 2 .nil) := rfl\n" ++
           "def t5 {A : Type} {n : Nat} : Lens.Lawful (@Q.aL A n) := Q.aL_lawful\n#eval Lens.get P.zL (Lens.set P.xL (P.mk 1 .true 3) 9)\n") ["3"] },
+    { name := "docs/hardware.md's example: a circuit refines a specification; a temporal property of every run; simulation agrees", run := fun _ => do
+        okLibs (← IO.FS.readFile "examples/hardware-tour.wiz") ["(.cons 2 (.cons 0 (.cons 0 (.cons 1 (.cons 2 (.cons 0 .nil))))), .true)"] },
     { name := "Verilog: declarations before use (regs, wires, then the updates), sized initial values", run := fun _ =>
         okLibs (hdlVerilogSrc ++ "#eval v1\n")
           ["\"module counter(input clk, input [0:0] x, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd250;\\n  wire [7:0] n3 = r + 8'd1;\\n  always @(posedge clk) r <= n3;\\n  assign y = r;\\nendmodule\\n\""] },

@@ -3,6 +3,7 @@
 * [building.md](building.md)
 * [ci-runner.md](ci-runner.md): a self-hosted runner for the heavy CI shards
 * [exercises.md](exercises.md): generating the exercise tree from this one
+* [hardware.md](hardware.md): hardware in Wiz, from a circuit to a proved temporal property
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
 * [ROADMAP.md](../ROADMAP.md)
