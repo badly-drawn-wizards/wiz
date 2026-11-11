@@ -5641,6 +5641,40 @@ def trustGroup : Group where
         match addDecl g0 { f with impl := g.impl } with
         | .ok _ => throw (IO.userError "f was accepted with g's compiled equations")
         | .error e => check (((toString e).splitOn "do not agree").length > 1) s!"unexpected error: {e}" },
+    { name := "recursive definitions: the agreement check on a mutual family (index unification), and its shortcuts", run := fun _ => do
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "mutual\ninductive A where\n  | a0\n  | a1 (b : B)\ninductive B where\n  | b0\n" ++
+          "  | b1 (k : N) (r : B)\n  | b2 (a : A)\nend\n" ++
+          "def shB : B → B\n  | .b0 => .b0\n  | .b1 k r => .b1 (.s k) (shB r)\n  | .b2 a => .b2 a\n" ++
+          "def idB : B → B\n  | .b0 => .b0\n  | .b1 k r => .b1 k (idB r)\n  | .b2 a => .b2 a\n" ++
+          "def sh : N → N\n  | .z => .z\n  | .s n => .s (sh n)\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        let (some shB, some idB, some sh) := (s.globals.find? "shB", s.globals.find? "idB", s.globals.find? "sh")
+          | throw (IO.userError "a definition is missing")
+        -- another definition's equations are rejected (the calls are compared as calls)
+        let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase "shB" }
+        check ((addDecl g0 shB) matches .ok _) "shB is rejected when added again"
+        let idImpl := replaceConstTo "idB" "shB" idB.impl.get!
+        check ((addDecl g0 { shB with impl := some idImpl }) matches .error _) "shB was accepted with idB's equations"
+        -- the bridge by shape: the value as derived, and two values that only look like it
+        let v := sh.value.get!
+        check (bridgeByShape s.globals v 1 0 [] [] true 0) "the derived value has the shape"
+        let .lam x body := v | throw (IO.userError "sh's value is not a λ")
+        check (!bridgeByShape s.globals (.lam x (.letE "z" (.qlit 1) (.unit 1) .tt (body.lift 1 0))) 1 0 [] [] true 0)
+          "a value under a let has the shape"
+        let (h, args) := body.spine
+        let motiveWithColumn := args.set 0 (.var 0)  -- (N has no parameters: the motive is first)
+        check (!bridgeByShape s.globals (.lam x (motiveWithColumn.foldl .app h)) 1 0 [] [] true 0)
+          "a motive that mentions the column passes as the shape" },
+    { name := "groundEqDesc: one closed description at two levels is not identified", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) "inductive Box.{u} : Type (u+1) where\n  | mk (T : Type u)\n" {}
+        let g := s.globals
+        let at (u : Level) : Val ZeroOneMany := eval g [] (.const "Box.desc" [u])
+        let I : Val ZeroOneMany := .unit (.succ .zero)
+        check (groundEqDesc g 0 I (at .zero) (at .zero)) "Box.desc.{0} is not itself"
+        check (!groundEqDesc g 0 I (at .zero) (at (.succ .zero))) "Box.desc.{0} and Box.desc.{1} were identified" },
     { name := "recursive definitions: a local variable named like the definition doesn't capture its calls in compiled code", run := fun _ =>
         -- (#82's regression test.) `f n` is a recursive call (the kernel's definition
         -- recurses, so `f 2 = 0`); the compiled equations called the local `f`, and `#eval f 2`

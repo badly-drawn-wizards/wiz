@@ -897,10 +897,62 @@ partial def mentionsConst (c : Name) (t : Term R) : Bool := match t with
   | .const n _ => n == c
   | t => (t.forChildren (m := StateM Bool) (fun _ => pure ()) (fun _ x => modify (· || mentionsConst c x)) |>.run false).2
 
+/-- The constant `c` renamed to `c'` (for tests). -/
+partial def replaceConstTo (c c' : Name) (t : Term R) : Term R := match t with
+  | .const n us => if n == c then .const c' us else t
+  | t => Id.run <| t.mapChildrenM pure (fun _ x => pure (replaceConstTo c c' x))
+
 /-- The constant `c` replaced by a variable bound outside the term (`var 0` at the top). -/
 partial def replaceConst (c : Name) (t : Term R) (depth : Nat := 0) : Term R := match t with
   | .const n _ => if n == c then .var depth else t
   | t => Id.run <| t.mapChildrenM pure (fun k x => pure (replaceConst c x (depth + k)))
+
+/-- **The bridge by shape** (`checkImplAgrees`). The value is
+`λ a₀ … a_{k-1}. r Δ motive methods ξ x [e] rs` for a recursor `r` (`T.rec`/`T.recN`),
+literally (no `let`, the body is this application), where
+
+* `x` and `rs` are variables, the split's columns (levels `x`, `rs`, in this order after
+  `ξ`, with one argument between them in mode B: the index equation's proof);
+* in mode A, `ξ` is the variables `ixL`; in mode B, `ξ` mentions no column;
+* `Δ`, `motive` and `methods` mention no column, nor (mode A) an index variable.
+
+Then for every `j` and `y`, applying the value to the arguments of `hypCall f j y`
+(the columns replaced by `y` and the new `rs`, the index variables by `j`'s components,
+every other argument the same variable) evaluates `r` on the *same* `Δ`, motive and
+methods (they do not mention what changed), at index `j` (mode A) or the split's own
+index (mode B) and scrutinee `y`; `r` unfolds to `ind P M j y rs` with the `P` and `M` of
+the value's own split. So `hypCall f j y ≡ ind P M j y`: the conversion `checkImplAgrees`
+would otherwise do (once) holds by evaluation. A value of another shape returns `false`
+and the conversion is done. -/
+def bridgeByShape (g : Globals R) (value : Term R) (k x : Nat) (rs ixL : List Nat) (modeA : Bool)
+    (nΞ : Nat) : Bool := Id.run do
+  let rec peel : Nat → Term R → Option (Term R)
+    | 0, t => some t
+    | n + 1, .lam _ b => peel n b
+    | _, _ => none
+  let some body := peel k value | return false
+  let (.const r _, targs) := body.spine | return false
+  let some rd := g.find? r | return false
+  unless r.endsWith ".rec" || r.endsWith ".recN" do return false
+  let rec pis : Term R → Nat
+    | .pi _ _ _ _ b _ => pis b + 1
+    | _ => 0
+  let nPre := pis rd.type - nΞ - 1
+  -- (level ℓ of the value's λs is de Bruijn index k-1-ℓ in its body)
+  let ix (ℓ : Nat) : Nat := k - 1 - ℓ
+  let cols := x :: rs
+  let forbidden := cols ++ (if modeA then ixL else [])
+  let clean (t : Term R) : Bool := forbidden.all fun ℓ => !t.hasVar (ix ℓ)
+  unless targs.length ≥ nPre + nΞ + 1 do return false
+  unless (targs.take nPre).all clean do return false
+  let ξs := (targs.drop nPre).take nΞ
+  let okξ := if modeA then ξs == ixL.map fun ℓ => (.var (ix ℓ) : Term R) else ξs.all clean
+  unless okξ do return false
+  let after := targs.drop (nPre + nΞ)
+  let after ← if modeA then pure after else match after with
+    | x0 :: _ :: rest => pure (x0 :: rest)
+    | _ => return false
+  return after == (cols.map fun ℓ => (.var (ix ℓ) : Term R))
 
 /-- **The compiled equations agree with the definition** (docs/Status.md T1): for a
 structurally recursive definition whose `impl` is derived from its value, one conversion
@@ -1055,33 +1107,7 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
     -- call evaluates `r` on the same `Δ`, motive and methods, at `(y, rs)` and index `j`,
     -- and `r` unfolds to `ind P M j y rs` with the same `P` and `M`. Otherwise it is
     -- checked by conversion (once, at a fresh field).
-    let byShape : Bool := Id.run do
-      let rec peel : Nat → Term R → Option (Term R)
-        | 0, t => some t
-        | n + 1, .lam _ b => peel n b
-        | _, _ => none
-      let some body := peel k value | return false
-      let (.const r _, targs) := body.spine | return false
-      let some rd := g.find? r | return false
-      unless r.endsWith ".rec" || r.endsWith ".recN" do return false
-      let rec pis : Term R → Nat
-        | .pi _ _ _ _ b _ => pis b + 1
-        | _ => 0
-      let nΞ := iComps.length
-      let nPre := pis rd.type - nΞ - 1
-      let ix (ℓ : Nat) : Nat := k - 1 - ℓ
-      let cols := x :: rs
-      let forbidden := cols ++ (if modeA then ixL else [])
-      let clean (t : Term R) : Bool := forbidden.all fun ℓ => !t.hasVar (ix ℓ)
-      unless (targs.take nPre).all clean do return false
-      let ξs := (targs.drop nPre).take nΞ
-      let okξ := if modeA then ξs == ixL.map fun ℓ => (.var (ix ℓ) : Term R) else ξs.all clean
-      unless okξ do return false
-      let after := targs.drop (nPre + nΞ)
-      let after := if modeA then after else match after with
-        | x0 :: _ :: rest => x0 :: rest
-        | l => l
-      return if after == (cols.map fun ℓ => (.var (ix ℓ) : Term R)) then true else dbgTrace s!"BS {d.name} after {after.length} {cols.length}" fun _ => false
+    let byShape := bridgeByShape g value k x rs ixL modeA iComps.length
     if modeA then
       if byShape || bridge jv (tys.push I) then some fun _ _ => true else none
     else

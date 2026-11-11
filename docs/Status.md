@@ -411,10 +411,18 @@ the results of the probes listed in the "Probes" section.
   is read from the source twice. The kernel checks, besides the type (`checkImpl`), that
   it **agrees with the value** (`checkImplAgrees`, `Core/Check.lean`): applied to fresh
   variables both are stuck on the same argument as `ind P M i x …` and `ind P M' i x …`;
-  they must be convertible with `M'` replaced by `M`, and for every constructor tag `t`,
-  at a fresh index and payload `xs = (t, rest)`, `M j xs H ≡ M' j xs H` with `H` the
-  hypotheses `ind` computes (each direct call unfolds once to the stuck `ind` on a field).
-  By induction on the scrutinee, compiled code computes what the kernel computes. A
+  they must be convertible with both methods replaced by one fresh variable, and for
+  every constructor tag `t` (at the split's index `i`, payload `xs = (t, rest)`; a tag
+  whose payload is empty there is skipped), `M i xs H ≡ M' i xs H`. In this comparison
+  the definition is a free variable `F` in the implementation, and each hypothesis
+  `ind P M j y` is replaced by the call it equals, `F … y …`, so a call is compared with a
+  call by its arguments: unfolding the definition at every call would evaluate it, and its
+  recursor, again each time (quadratic in the size of a big mutual family; it made the
+  self-hosted sources 4× slower to check). That a call equals the hypothesis is checked
+  once by conversion, or follows from the value's shape (`bridgeByShape`: the value is
+  the recursor applied to arguments that do not mention the columns or index
+  variables). By induction on the scrutinee, compiled code computes what the kernel
+  computes. A
   definition whose index variable escapes into a method gets no `impl` (compiled from its
   value). `#print axioms` lists nothing for compiled equations (it did, as `compiled f`,
   between the two steps).
