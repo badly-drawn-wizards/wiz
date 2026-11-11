@@ -61,6 +61,24 @@ def modulesGroup : Group where
         let ms ← Module.loadAll ["lib", dir]
         check (Cache.moduleKey (loaderOf ms) (fun _ => none) 0 "Other" != Cache.moduleKey (loaderOf ms) (fun _ => none) 1 "Other")
           "the toolchain is not in the key" },
+    { name := "the isolated-module key has the proof marker's options (strictProofs, proofSteps, traceProofSteps)", run := fun _ => do
+        -- a module elaborated in isolation is kept per process under `isoKey`: a module kept
+        -- under one setting must not be replayed under another
+        let loader : Name → Option String := fun n => if n == "M" then some "def x : Unit := ()\n" else none
+        let base (g : Globals ZeroOneMany) : CommandState ZeroOneMany := { loader, globals := g }
+        let g0 : Globals ZeroOneMany := {}
+        let k0 := isoKey (base g0) "M"
+        check k0.isSome "the module has no isolated key"
+        checkEq k0 (isoKey (base g0) "M")
+        for (what, g) in [("strictProofs", { g0 with strictProofs := true }),
+                          ("proofSteps", { g0 with proofSteps := g0.proofSteps + 1 }),
+                          ("traceProofSteps", { g0 with traceProofSteps := true })] do
+          check (isoKey (base g) "M" != k0) s!"{what} is not in the isolated-module key"
+          -- and on a warm cache (`M` kept under the defaults) the other setting elaborates
+          -- `M` itself, with the same result here
+          let s0 := runFrontend (R := ZeroOneMany) "import M\n" (base g0)
+          let s1 := runFrontend (R := ZeroOneMany) "import M\n" (base g)
+          check (s0.messages.isEmpty && s1.messages.isEmpty) s!"{what}: importing M reports {s1.messages.toList.map (·.text)}" },
     { name := "a module is cached once, for every file that imports it", run := fun _ => do
         let dir ← mkTree libFiles
         let cache ← IO.FS.createTempDir
