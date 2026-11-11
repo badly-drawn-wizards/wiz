@@ -195,6 +195,25 @@ def Lens.pair {S A B : Type} (l : Lens S A) (m : Lens S B) : Lens S (A × B) := 
 -- stated so that specs can cite it.
 def Store.final {A S : Type} (st : Store A S) (fin : A) : Store.put st fin = st.2 fin := rfl
 
+-- ## The frame rule, for values
+--
+-- A zoom through `l` can't change a place `n` independent of `l` (`Lens.Indep l n`): the
+-- value-level reading of separation logic's frame rule (`Triple.frame`, lib/Hoare.wiz) and
+-- of Feral's "a callee can't touch what it isn't lent". Stated for a successful call
+-- (`Result.All`); see docs/resources.md.
+
+def zoom.frameAt {S X Y B : Type} (n : Lens S Y) (k : X → S) (y : Y) (hk : (x : X) → (n (k x)).1 = y) :
+    (r : Result (B × X)) →
+    Result.All (fun (p : B × S) => (n p.2).1 = y) (match r with
+      | .ok p => Result.ok (p.1, k p.2)
+      | .err e => Result.err e)
+  | .ok p => hk p.2
+  | .err e => ()
+def zoom.frame {S X Y B : Type} (l : Lens S X) (n : Lens S Y) (i : Lens.Indep l n)
+    (m : X → Result (B × X)) (s : S) :
+    Result.All (fun (p : B × S) => (n p.2).1 = (n s).1) (zoom l m s) :=
+  zoom.frameAt n (l s).2 (n s).1 (fun x => i.1 s x) (m (l s).1)
+
 -- ## Examples: lawful lenses
 --
 -- A structure field, and the head of a non-empty list. The front end would generate

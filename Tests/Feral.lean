@@ -120,6 +120,18 @@ def group : Group where
         for n in ["forge_handle", "lengthen_borrow"] do
           let src ← IO.FS.readFile s!"drafts/feral/rejected/{n}.wiz"
           check (!(errorsOf (← frontend src) src).isEmpty) s!"{n} is accepted" },
+    { name := "examples/resources.wiz: Feral's swap on heap cells, verified with the x-tactics through lib/HeapBorrow.wiz", run := fun _ => do
+        let src ← IO.FS.readFile "examples/resources.wiz"
+        let s ← frontend src
+        checkEq "[]" (toString (errorsOf s src))
+        checkEq ("[.ok (2, 1), .some ((), .cons .none (.cons (.some (20, ())) (.cons (.some (10, ())) " ++
+          "(.cons (.some (30, ())) .nil))))]") (toString (infosOf s))
+        -- the heap specification of the identity is not one of swap's
+        let bad := src ++ "\ndef bad (p q : Nat) (a b : U64) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (swapCells p q) (fun _ => (p ↦ a) ⋆ (q ↦ b)) := by\n" ++
+          "  xstep; xstep\n  xapp (Prog.handBack2_ok p q a b () a b)\n"
+        let e ← firstError bad
+        check (((e.splitOn ":")[0]!).toNat! > 69) s!"the error is not in the added definition: {e}" },
     { name := "#lower shows the generated Wiz, item by item", run := fun _ => do
         let src := pre ++ "#lower feral\n  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n" ++
           "    let t := *x;\n    *x := *y;\n    *y := t\n  }\nend\n"
