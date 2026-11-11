@@ -146,7 +146,9 @@ def decl (arities : Std.HashMap Name Nat) (d : IR.Decl) : Array String × Array 
   let boxedLoads := (List.range d.params.size).map fun i =>
     s!"  %p{i} = getelementptr i64, ptr %a, i64 {i}\n  %a{i} = load i64, ptr %p{i}"
   let boxedArgs := ", ".intercalate ((List.range d.params.size).map (s!"i64 %a{·}"))
-  (globals, #[s!"define internal i64 {fn d.name}({ps}) {lb}", "entry:"] ++ lines ++ #[rb,
+  -- (an export's closure is called from the C glue)
+  let linkage := if d.name.startsWith "wiz.export." then "" else "internal "
+  (globals, #[s!"define {linkage}i64 {fn d.name}({ps}) {lb}", "entry:"] ++ lines ++ #[rb,
     s!"define internal i64 {fn d.name}_boxed(ptr %a) {lb}\n{"\n".intercalate boxedLoads}\n  %r = call i64 {fn d.name}({boxedArgs})\n  ret i64 %r\n{rb}"])
 where
   lb := "{"
@@ -194,7 +196,7 @@ declare i32 @wiz_finish(i64)
 
 /-- A whole LLVM module: the functions and a `main` that prints `wiz.entry`'s value (or
 runs it, for `IO`). The foreign wrappers are C (`C.glue`), compiled with the runtime. -/
-def program (decls : Array IR.Decl) (io : Bool := false) : String :=
+def program (decls : Array IR.Decl) (io : Bool := false) (lib : Bool := false) : String :=
   let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
   let parts := decls.map (decl arities)
   let globals := parts.foldl (fun acc (g, _) => acc ++ g) #[]
@@ -205,6 +207,6 @@ def program (decls : Array IR.Decl) (io : Bool := false) : String :=
   let io' := if io then 1 else 0
   runtimeDecls ++ "declare i32 @wiz_run_main(ptr, i32)\ndeclare void @wiz_set_args(i32, ptr)\n" ++ String.join externDecls ++
     "\n".intercalate globals.toList ++ "\n" ++ "\n".intercalate fns.toList ++
-    s!"\ndefine i32 @main(i32 %argc, ptr %argv) \{\n  call void @wiz_set_args(i32 %argc, ptr %argv)\n  %c = call i32 @wiz_run_main(ptr {fn "wiz.entry"}, i32 {io'})\n  ret i32 %c\n}\n"
+    if lib then "\n" else s!"\ndefine i32 @main(i32 %argc, ptr %argv) \{\n  call void @wiz_set_args(i32 %argc, ptr %argv)\n  %c = call i32 @wiz_run_main(ptr {fn "wiz.entry"}, i32 {io'})\n  ret i32 %c\n}\n"
 
 end Wiz.LLVM

@@ -188,15 +188,30 @@ def group : Group where
     { name := "a match on a 400-field constructor is erased within 10 s (was 46 s)", run := fun _ => do
         let ms ← eraseMatchMs 400
         unless ms ≤ 10000 do throw (IO.userError s!"took {ms} ms (bound: 10 s)") },
-    -- (the price of the shortcut: it believes the sort a Π/Σ carries, which the kernel
-    -- validates only in the terms it checks; `wiz-notes/impl-unchecked.md`)
-    { name := "erasure believes a Π's sort only where the kernel validated it (sortNotesChecked)", run := fun _ => do
-        -- `Type → Type` marked as a proposition: wrong, as only an unchecked term could be
+    -- (the price of the shortcut: it believes the sort a Π/Σ carries. The kernel validates
+    -- it in every term erasure is given, a definition's implementation for the compiler
+    -- included, so there is no unchecked term to make an exception for: the flag
+    -- `sortNotesChecked` that this case used to test is gone; Status.md, T1)
+    { name := "erasure believes a Π's sort, and the kernel rejects a wrong one wherever erasure could read it", run := fun _ => do
+        -- `Type → Type` marked as a proposition: erasure would take its values for proofs
         let w : Val ZeroOneMany := .qlit QuantitySyntax.explicitDefault
         let ty : Val ZeroOneMany := .pi "x" .default w (.sort 1) (.mk [] (.sort 1)) (some 0)
-        check (erasable { globals := {} } ty) "with validated sorts, the annotation is read"
-        check (!erasable { globals := { sortNotesChecked := false } } ty)
-          "in an unchecked term the sort is recomputed: Type → Type is not a proposition" },
+        check (erasable { globals := {} } ty) "the annotation is read"
+        -- so no declaration may carry it: not in its type, its value, or its implementation
+        let bad : Term ZeroOneMany := .pi "x" .default (.qlit QuantitySyntax.explicitDefault) (.sort 1) (.sort 1) (some 0)
+        let good : Term ZeroOneMany := .pi "x" .default (.qlit QuantitySyntax.explicitDefault) (.sort 1) (.sort 1) none
+        let d (type value : Term ZeroOneMany) (impl : Option (Term ZeroOneMany)) : Decl ZeroOneMany :=
+          { name := "T", type, value := some value, impl }
+        check ((addDecl {} (d (.sort 2) good none)) matches .ok _) "the unmarked type was rejected"
+        check ((addDecl {} (d (.sort 2) good (some good))) matches .ok _) "a good implementation was rejected"
+        check ((addDecl {} (d (.sort 2) bad none)) matches .error _) "a wrong sort was accepted in a value"
+        check ((addDecl {} (d (.sort 2) good (some bad))) matches .error _)
+          "a wrong sort was accepted in an implementation (erasure would believe it)"
+        let idT (t : Term ZeroOneMany) : Term ZeroOneMany := .pi "f" .default (.qlit QuantitySyntax.explicitDefault) t (t.lift 1) none
+        check ((addDecl {} { name := "i", type := idT good, value := some (.lam "f" (.var 0)) }) matches .ok _)
+          "the identity on Type → Type was rejected"
+        check ((addDecl {} { name := "i", type := idT bad, value := some (.lam "f" (.var 0)) }) matches .error _)
+          "a wrong sort was accepted in a declaration's type" },
     { name := "one-pass reference counting agrees with the specification (insertRC)", run := fun _ => do
         let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         for p in examples ++ [literalProgram 300] do

@@ -300,6 +300,98 @@ the results of the probes listed in the "Probes" section.
 * **What remains.** Every other `panic!` in `Eval.lean` also returns `Sort 0` and lets the
   check go on. None is known to be reachable from a well-typed term.
 
+### T1. A recursive definition's compiled code was not checked by the kernel — **fixed** (typing; one disagreement); agreement with the definition is **trusted**
+
+* **The gap.** A declaration has a `value`, which the kernel checks and unfolds, and may
+  have an `impl`, the term that is *compiled* instead (`Decl.impl`; `eraseDecl` takes it
+  first). For a structurally recursive definition by equations the elaborator builds
+  `impl` by elaborating the clauses a second time, with direct recursion instead of the
+  recursor. `addDecl` checked `value` only: nothing type-checked `impl` or compared the
+  two, and everything that compiles ran it (`wiz build`/`run` on both backends,
+  `#eval`/`#run`, macros, tactics, derivers, and the self-hosted tools as programs).
+  Erasure also read the sorts noted on the `Π`s and `Σ`s inside it, which had never
+  passed the kernel's `checkSortNote`. Logical soundness was not at risk: the kernel never
+  unfolds `impl`. Found by reading the code (agent mem-hunt).
+* **A wrong result.** The two elaborations did disagree. The first recognises a
+  recursive call `f y` by its syntax and replaces it by the induction hypothesis; the
+  second resolved `f` by scope, so a local variable called `f` captured the call:
+
+      def f : Nat → Nat
+        | .zero => 0
+        | .succ n => (fun (f : Nat → Nat) => f n) (fun x => x + 100)
+      def thm : f 3 = 0 := refl 0      -- accepted: the definition recurses
+      #eval f 3                         -- printed 102: compiled code called the local
+
+  (the same with `let f := …`). Both terms have the declared type, so no type check
+  finds this.
+* **The fix.**
+  1. *Kernel.* `addDecl` checks `impl` against the declared type, with the definition
+     already declared (`checkImpl`, as `addPartialImpl` does for partial definitions):
+     typing, quantities, level parameters and sort notes. `attribute [implemented_by g] f`
+     stores its constant through the kernel too (`setImpl`). So every term erasure sees
+     has been checked, and erasure reads the sort a `Π`/`Σ` carries everywhere (the
+     exception it made for these implementations, `sortNotesChecked`, is removed). **A declaration whose implementation fails is rejected**, not
+     compiled from its value with a warning: the implementation is the elaborator's own
+     output, so a failure is a bug in Wiz, and falling back would hide it behind a
+     program that is correct but computes every recursive call through the recursor (a
+     change of cost that nobody asked for and no test would notice). The error says that
+     the definition itself checks and that the bug is not the user's.
+  2. *Elaborator.* In the second elaboration the calls the first one rewrote are marked
+     with a macro scope (`markRecCalls`), so they refer to the definition whatever is in
+     scope. `f 3` above now runs to `0`.
+* **What remains (trusted): that `impl` computes what `value` computes.** Nothing checks
+  it: no conversion test, no proof obligation. The kernel's check is of the *type* only,
+  and the example above is well typed, so the kernel change alone would not have caught
+  it; the elaborator change did. The agreement now rests on the two elaborations reading
+  the clauses alike (same syntax, the recursive calls resolved alike, the same local
+  context except for the induction hypotheses, which tactics don't see). `#print axioms`
+  does not list these implementations (it lists the native ones, trusted by design).
+  * *Why not `impl ≡ value`.* They are equal by induction, not by conversion: applied to
+    variables, `value` is stuck on the recursor and `impl` on a case split.
+  * *What could be checked.* (a) Per case: on a constructor both sides compute, and a
+    direct call `f y` unfolds to the recursor on `y`, which is what the induction
+    hypothesis is; so the kernel can split the arguments along `impl`'s case tree
+    (refining a variable each time `impl` is stuck on one) and ask for conversion at
+    each leaf. This is sound and needs nothing from the elaborator, but it is new kernel
+    code (it builds constructor forms from descriptions, and an indexed family's
+    constructors only fit some indices). (b) Derive, don't elaborate: build `impl` from
+    the checked `value` by a fixed translation (each use of an induction hypothesis
+    becomes the call it stands for, the recursor's method becomes a case split), or have
+    the compiler run the recursor itself with hypotheses computed on demand. Then there
+    is no second reading of the source to trust, only the translation, which belongs to
+    the compiler like the rest of erasure. (b) is the cheapest sound option and the
+    self-hosted frontend already works that way (below); it costs the compiled code's
+    current shape (direct, unboxed calls), which has to be measured.
+  * Neither is implemented.
+* **The other places with a second term or a recognition by syntax** (each probed with
+  the shadowing example; the kernel's value and the compiled result agree in all):
+  sized definitions (one term, `sfix`; the definition's name is an ordinary local);
+  copatterns (one term, `coit`; a corecursive call is recognised by syntax, so a
+  parameter named like the definition is taken for the call, in the checked term and the
+  compiled one alike); partial definitions and `mutual` blocks (a witness and a body:
+  unrelated by design, the body is opaque to the kernel and resolves names by scope);
+  instance bodies and generated declarations (one term each); `implemented_by` (the
+  user's second term: trusted, listed by `#print axioms`).
+* **Everything else that is compiled** was checked already: partial definitions' bodies
+  (`addPartialImpl`), the terms of `#eval`/`#run` (inferred by the kernel first),
+  generated declarations (instances, `deriving`, macros: they are commands, and go
+  through `addDecl`), `attribute [inline]` (erases the checked declaration). Declarations
+  replayed from the cache are not checked again, by design: an entry is keyed by the
+  binary that wrote it, and holds what its kernel accepted, `impl` included. The
+  self-hosted frontend elaborates a recursive definition once (recursive calls become
+  the hypotheses of `ind`) and its backend compiles that checked value: it has no `impl`.
+  The eliminators' own compiled code (`PrimCode.lean`, the runtime's `ind`) is
+  hand-written and belongs to the trusted backends (§7).
+* **Cost.** One more check per structurally recursive definition. Rough timings of
+  `wiz check --no-cache` (best of three, a shared machine): the Prelude 0.27 → 0.31 s,
+  `lib/Hoare.wiz` 3.3 → 3.7 s, `lib/Hdl/Core.wiz` 2.0 → 2.3 s, `selfhost/Kernel.wiz`
+  5.0 → 5.1 s, all five self-hosted sources together within noise.
+* **Regression tests.** Group *trust*: "the kernel checks a definition's implementation
+  for the compiler (Decl.impl)" (ill-typed, another type, a wrong sort note, a linear
+  variable used twice, an undeclared level parameter, `setImpl`), "recursive definitions:
+  the compiled equations are kernel-checked terms", and "… a local variable named like
+  the definition doesn't capture its calls in compiled code".
+
 ---
 
 ## 4. Open issues
@@ -724,6 +816,8 @@ that checks everything. Wiz's situation:
   is equality, resp. `<`, which `Nat.beq` and `Nat.lt` are, by their equations). The
   kernel computes only these natively; `memo := memo` (`memo f = f` to the kernel) and
   `string := String` affect only the runtime representation and literals.
+* **Compiled equations of recursive definitions** (`Decl.impl`, T1): checked by the
+  kernel for typing since T1, trusted to compute what the definition computes.
 * **Implementations for compiled code** are outside the kernel: `attribute
   [implemented_by g] f` (stage 22b), including the native representations it registers
   for a type (`attribute [implemented_by mk get] T.mk`, builtin keys `repr:T:…`, used by

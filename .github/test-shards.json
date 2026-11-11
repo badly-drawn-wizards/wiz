@@ -9,6 +9,7 @@
     "backend",
     "borrow",
     "=c",
+    "callbacks",
     "conc",
     "effects",
     "ffi",
