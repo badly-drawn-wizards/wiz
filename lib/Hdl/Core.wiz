@@ -55,7 +55,7 @@ def Hdl.indexed {A : Type} : Nat → List A → List (Nat × A)
   | _, .nil => .nil
   | k, .cons x xs => .cons (k, x) (Hdl.indexed (Nat.succ k) xs)
 
-infixr:67 " <+> " => String.append
+local infixr:67 " <+> " => String.append
 def Hdl.digitsAux : Nat → Nat → List Char → List Char
   | .zero, _, acc => acc
   | .succ f, n, acc => match Nat.lt n 10 with

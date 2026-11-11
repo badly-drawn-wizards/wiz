@@ -5,6 +5,7 @@
 * [exercises.md](exercises.md): generating the exercise tree from this one
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
+* [dsls.md](dsls.md): the embedded languages (DSLs) in Wiz, and the conventions they follow
 * [ROADMAP.md](../ROADMAP.md)
 
 ## The stages
