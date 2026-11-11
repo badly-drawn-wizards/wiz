@@ -331,7 +331,8 @@ def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
                                            code := "duplicate-declaration" },
              pristine := false }
   | none =>
-  let globals := e.decls.foldl (·.insert ·) s.globals
+  -- (the declarations belong to the module being replayed: `Globals.declModule`)
+  let globals := e.decls.foldl (·.insert ·) { s.globals with module := s.module }
   let globals := { globals with builtins := e.builtins ++ globals.builtins,
                                 assumed := e.assumed ++ globals.assumed,
                                 privates := e.privates.foldl (fun m (n, md) => m.insert n md) globals.privates,

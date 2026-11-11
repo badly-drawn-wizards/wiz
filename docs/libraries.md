@@ -206,8 +206,8 @@ numeric type:
   `Int.natAbs`, `Int.toNat` (negatives to 0), `Int.lt`/`le`/`beq`, and lemmas
   `Int.neg_neg`, `Int.add_zero`, `Int.zero_add`, `Int.natAbs_neg`, `Int.lt_irrefl`.
 * **Words.** One set of instances at `UIntN w` serves `U8 … U64` and `BitVec n` (aliases
-  are seen through). `UIntN w` and `IntN w` have the same shape (types are structural),
-  so resolution compares the declared type names of a class's arguments and skips an
-  instance for a different type: `-7 / 2 : I32` is signed division, `x / 2 : U32`
-  unsigned. Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
+  are seen through). `UIntN w` and `IntN w` have the same shape but are sealed, different
+  types (22k), so `-7 / 2 : I32` is signed division and `x / 2 : U32` unsigned. Their
+  constructors are private to `lib/Word.wiz`: build a word with `ofNat` (or, when the
+  value is known to be in range, `UIntN.ofBitsTrusted`) and read it with `toNat`. Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
   inlined away), as `UIntN.add a b` was.
