@@ -132,6 +132,72 @@ def definitionAt (s : CommandState R) (off : Nat) : Option (Name × SourceInfo �
   let (info, m) ← s.declSites.get? n
   pure (n, info, m)
 
+/-! ## Syntax, imports and instances (11q) -/
+
+/-- Every entry satisfying `p` whose range is the innermost such range containing `off`
+(several entries can share one: a notation's node, its expansion, an instance). -/
+def innermostAll (s : CommandState R) (off : Nat) (p : Info R → Bool) : Array (Info R) :=
+  match innermost s off p with
+  | none => #[]
+  | some i => s.infos.filter fun j => p j && j.info.start == i.info.start && j.info.stop == i.info.stop
+
+/-- Infos about syntax and modules rather than terms. -/
+def isSyntaxInfo : Info R → Bool
+  | .syntaxRef .. | .expansion .. | .importMod .. => true
+  | _ => false
+
+/-- A place to jump to: a range in a module (`""` is this file), or a whole module. -/
+inductive Target where
+  | site (info : SourceInfo) (module : String)
+  | module (m : Name)
+  deriving BEq, Inhabited
+
+/-- Where a syntax kind or category was declared. -/
+def refSite (s : CommandState R) : SyntaxRef → Option Target
+  | .kind k => (s.kindSites.get? k).map fun (i, m) => .site i m
+  | .cat c => (s.catSites.get? c).map fun (i, m) => .site i m
+
+/-- Where what handled some syntax is: the macro rule, or the Wiz function. -/
+def handlerSite (s : CommandState R) : SyntaxHandler → Option Target
+  | .rule i m => some (.site i m)
+  | .fn _ f => (s.declSites.get? f).map fun (i, m) => .site i m
+
+/-- The syntax entries at `off`, unless an identifier inside them is more precise. -/
+def syntaxAt (s : CommandState R) (off : Nat) : Array (Info R) :=
+  let es := innermostAll s off isSyntaxInfo
+  match es[0]?, identAt s off with
+  | some e, some i => if i.info.stop - i.info.start < e.info.stop - e.info.start then #[] else es
+  | _, _ => es
+
+/-- Go to definition (`decl := false`) or declaration (`decl := true`) at `off`. An
+identifier: where the global was declared. A use of syntax: for its definition, what
+expanded it (the macro rule, the procedural macro or the tactic), else its `syntax`
+declaration; for its declaration, the other way round. A module name in an `import`:
+the module. -/
+def targetsAt (s : CommandState R) (off : Nat) (decl : Bool := false) : Array Target := Id.run do
+  let es := syntaxAt s off
+  if es.isEmpty then
+    return match definitionAt s off with
+      | some (_, info, m) => #[.site info m]
+      | none => #[]
+  let refs := es.filterMap fun | .syntaxRef _ r => refSite s r | _ => none
+  let handlers := es.filterMap fun | .expansion _ _ h _ => handlerSite s h | _ => none
+  let mods := es.filterMap fun | .importMod _ m => some (Target.module m) | _ => none
+  let (first, second) := if decl then (refs, handlers) else (handlers, refs)
+  let ts := mods ++ (if first.isEmpty then second else first)
+  ts.foldl (fun acc t => if acc.contains t then acc else acc.push t) #[]
+
+/-- The instances found at the innermost application around `off`. -/
+def instancesAt (s : CommandState R) (off : Nat) : Array (Info R) :=
+  innermostAll s off (· matches .inst ..)
+
+/-- The declarations a command at `off` made (by their declaration sites in this file),
+in the order they were declared. -/
+def declsAt (s : CommandState R) (off : Nat) : Array Name :=
+  s.globals.order.filter fun n => match s.declSites.get? n with
+    | some (i, "") => i.start ≤ off && off < i.stop
+    | _ => false
+
 /-- Globals completing the identifier that ends at `off`. -/
 def completionsAt (s : CommandState R) (input : String) (off : Nat) : Array Name :=
   let chars := input.toList.toArray

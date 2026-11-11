@@ -384,6 +384,16 @@ def infoSx : Info R → Sx
   | .unknownIdent i n ns => node "unknown" [info i, str n, names ns]
   | .warning i m => node "warning" [info i, str m]
   | .trace i t => node "trace" [info i, str t]
+  | .syntaxRef i (.kind k) => node "syntaxKind" [info i, str k]
+  | .syntaxRef i (.cat c) => node "syntaxCat" [info i, str c]
+  -- (the expansion is kept as text: a hover only prints it)
+  | .expansion i k h e =>
+    let handler := match h with
+      | .rule site m => list [.a "rule", info site, str m]
+      | .fn what f => list [.a "fn", str what, str f]
+    node "expansion" [info i, str k, handler, list (e.toList.map (str ·.reprint))]
+  | .importMod i m => node "import" [info i, str m]
+  | .inst i ns ty t => node "inst" [info i, names ns, term ty, term t]
 
 def dInfo (x : Sx) : Option (Info R) := do
   let xs ← items? x
@@ -403,6 +413,18 @@ def dInfo (x : Sx) : Option (Info R) := do
   | "unknown" => pure (.unknownIdent (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)))
   | "warning" => pure (.warning (← dinfo (← a 1)) (← atom? (← a 2)))
   | "trace" => pure (.trace (← dinfo (← a 1)) (← atom? (← a 2)))
+  | "syntaxKind" => pure (.syntaxRef (← dinfo (← a 1)) (.kind (← atom? (← a 2))))
+  | "syntaxCat" => pure (.syntaxRef (← dinfo (← a 1)) (.cat (← atom? (← a 2))))
+  | "expansion" =>
+    let hs ← items? (← a 3)
+    let h ← match ← atom? (← hs[0]?) with
+      | "rule" => pure (SyntaxHandler.rule (← dinfo (← hs[1]?)) (← atom? (← hs[2]?)))
+      | "fn" => pure (.fn (← atom? (← hs[1]?)) (← atom? (← hs[2]?)))
+      | _ => none
+    let e ← (← items? (← a 4)).toList.mapM fun x => do pure (Syntax.atom {} (← atom? x))
+    pure (.expansion (← dinfo (← a 1)) (← atom? (← a 2)) h e.head?)
+  | "import" => pure (.importMod (← dinfo (← a 1)) (← atom? (← a 2)))
+  | "inst" => pure (.inst (← dinfo (← a 1)) (← dnames (← a 2)) (← dterm (← a 3)) (← dterm (← a 4)))
   | _ => none
 
 def Effect.toSx (e : Effect R) : Sx :=
