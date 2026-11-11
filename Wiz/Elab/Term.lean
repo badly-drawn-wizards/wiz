@@ -2678,6 +2678,12 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
       | some (T, nParams, nFields) => mkCon 1 [encodePair (encodeString T) (encodePair (.nat nParams) (.nat nFields))]
       | none => mkCon 0 []
     return ← runTac code info st (apply code (fld 1) ans)
+  if tag == TacTag.isDefinition then
+    let ans := match g.find? (← str (fld 0)) with
+      | some { value := some _, inline := false, .. } => mkCon 1 [encodeBool true]
+      | some _ => mkCon 1 [encodeBool false]
+      | none => mkCon 0 []
+    return ← runTac code info st (apply code (fld 1) ans)
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
@@ -2737,12 +2743,14 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (apply code (fld 2) r)
   if tag == TacTag.unfold then
     let n ← str (fld 1)
-    match g.find? n with
-    | some { value := some _, inline := false, .. } => pure ()
-    | some _ => throwAt info s!"unfold: {n} is not a definition"
-    | none => throwAt info s!"unfold: unknown constant {n}"
     let t ← zonk lvl (← reify st.handles (fld 2) lvl)
-    let (r, st) ← refl st gl (← unfoldIn gl.ctx n t) (← typeOf? gl t)
+    -- not a definition (a constructor, an axiom, an unknown name): nothing to unfold, the
+    -- term comes back unchanged, so a library can try it without catching; the `unfold`
+    -- tactic reports the reason (`TacticM.isDefinition`)
+    let t' ← match g.find? n with
+      | some { value := some _, inline := false, .. } => unfoldIn gl.ctx n t
+      | _ => pure t
+    let (r, st) ← refl st gl t' (← typeOf? gl t)
     return ← runTac code info st (apply code (fld 3) r)
   if tag == TacTag.rewrite then
     let h ← zonk lvl (← reify st.handles (fld 1) lvl)
