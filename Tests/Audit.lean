@@ -485,8 +485,6 @@ def wordsAgree (long llvm : Bool) : IO Unit := do
     if let some got ← compiled src llvm then
       sameOutput s!"width {w}: compiled natives against the definitions (#eval)" expected got
 
-/-- A word built with `.mk` from a number that does not fit its width: the definitions
-compute with the number as it is. -/
 /-! ## The two kernels against each other
 
 A type-directed generator: closed types (so no index needs shifting) and terms of a given
