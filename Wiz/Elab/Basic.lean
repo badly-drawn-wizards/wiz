@@ -1,4 +1,5 @@
 import Wiz.Core.Check
+import Std.Data.TreeMap
 import Wiz.Syntax.Basic
 import Wiz.Syntax.Children
 import Wiz.Compiler.Run
@@ -44,6 +45,9 @@ structure ClassInfo where
   name : Name
   outParams : List Bool
   fields : List Name
+  /-- (7f) `attribute [binop] C.f`: an operator whose numeral operands take the type of its
+  other operands (or of its result), as Lean's `binop%` (`HAdd`, not `HPow`) -/
+  binop : Bool := false
   deriving Inhabited
 
 /-- An instance: a global whose type ends in an application of `cls`. Later instances
@@ -52,7 +56,11 @@ structure InstanceInfo where
   name : Name
   cls : Name
   priority : Nat := 1000
+  /-- (7f) an `attribute [default_instance p] name` registration (`priority` is `p`), not an
+  instance of its own: the instance `name` is also an ordinary one -/
+  isDefault : Bool := false
   deriving Inhabited
+
 
 
 /-- The local context. As in `Ctx`, the lists are aligned and index 0 is innermost. -/
@@ -68,6 +76,15 @@ structure LocalCtx (R : Type) where
   /-- variables known to be erased (constructor fields of quantity 0): a `match` that
   reverts one binds it at quantity 0 again -/
   erasedLvls : List Lvl := []
+
+/-- (7f) An instance problem not solved yet: the hole, in its context, and its class type.
+`blockers` are the unsolved holes in its (non-output) class arguments when it was last
+tried: it is tried again only once one of them is solved (`Elab/Class.lean`). -/
+structure PendingInst (R : Type) where
+  ctx : LocalCtx R
+  hole : Term R
+  ty : VTy R
+  blockers : Array Nat := #[]
 
 /-! ## The info tree (for the language server)
 
@@ -225,8 +242,13 @@ structure ElabState (R : Type) where
   termInfo : Bool := false
   /-- the heuristics unification may use (`Approx`) -/
   approx : Approx := .default
-  /-- instance problems not solved yet: the hole, in its context, and its class type -/
-  pendingInsts : Array (LocalCtx R × Term R × VTy R) := #[]
+  /-- instance problems not solved yet, by number (the order they were made in) -/
+  pendingInsts : Std.TreeMap Nat (PendingInst R) := {}
+  nextInst : Nat := 0
+  /-- (7f) the worklist: the problems waiting for each hole (`PendingInst.blockers`), and
+  the problems to try at the next `synthPending` (new, or a blocker was solved) -/
+  instWaiters : Std.HashMap Nat (Array Nat) := {}
+  instReadyQ : Array Nat := #[]
   /-- the names of the binders unification is under, by level (innermost first): a
   solution `?m x := t` found under a binder `n` is `fun n => t`, not `fun x7 => t`, so a
   goal a tactic makes from it shows (and `intro` takes) the name the user wrote -/
@@ -403,7 +425,12 @@ def lookupMeta (m : Nat) : ElabM R (MetaEntry R) := do
   | none => throwAt {} s!"internal error: unknown metavariable ?m{m}"
 
 def solveMeta (m : Nat) (v : Val R) : ElabM R Unit :=
-  modify fun s => { s with metas := s.metas.modify m ({ · with solution := some v }) }
+  modify fun s =>
+    let s := { s with metas := s.metas.modify m ({ · with solution := some v }) }
+    -- (7f) the instance problems waiting for this hole can be tried again
+    match s.instWaiters[m]? with
+    | some ps => { s with instWaiters := s.instWaiters.erase m, instReadyQ := s.instReadyQ ++ ps }
+    | none => s
 
 /-- A fresh metavariable applied to all the bound variables of `ctx`. -/
 def freshMeta (ctx : LocalCtx R) (desc : String := "_") : ElabM R (Term R) := do

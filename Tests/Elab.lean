@@ -1138,9 +1138,9 @@ def classGroup : Group where
     { name := "a missing instance is an error", run := fun _ =>
         failsLib (classPrelude ++ "#eval (Inhabited.default : String)") "failed to synthesize an instance of Inhabited String" },
     { name := "output parameters are determined by the instance", run := fun _ =>
-        okLib ("import Prelude\nclass HAdd (A B : Type) (C : outParam Type) where\n  hadd : A → B → C\n" ++
-          "instance : HAdd Nat Bool Nat where\n  hadd := fun n b => n\n#check HAdd.hadd (3 : Nat) Bool.true")
-          ["HAdd.hadd Nat Bool Nat instHAddNatBoolNat (3 : Nat) Bool.true : Nat"] },
+        okLib ("import Prelude\nclass MixAdd (A B : Type) (C : outParam Type) where\n  hadd : A → B → C\n" ++
+          "instance : MixAdd Nat Bool Nat where\n  hadd := fun n b => n\n#check MixAdd.hadd (3 : Nat) Bool.true")
+          ["MixAdd.hadd Nat Bool Nat instMixAddNatBoolNat (3 : Nat) Bool.true : Nat"] },
     { name := "later instances win", run := fun _ =>
         okLib (classPrelude ++ "instance : Inhabited Nat := Inhabited.mk 7\n#eval (Inhabited.default : Nat)") ["7"] },
     { name := "priorities", run := fun _ =>
@@ -1161,7 +1161,7 @@ def classGroup : Group where
         okLib ("import Prelude\n#eval 2 + 3 * 4 - 1\n#eval 17 / 5 + 17 % 5\ndef t : 2 + 3 = 5 := rfl\n" ++
           "def z (n : Nat) : 0 + n = n := rfl\ndef s (n : Nat) : 1 + n = Nat.succ n := rfl\n#check fun (n : Nat) => n + 1\n" ++
           "set_option pp.notation false\n#check fun (n : Nat) => n + 1")
-          ["13", "5", "fun n => n + 1 : Nat → Nat", "fun n => Add.add Nat instAddNat n 1 : Nat → Nat"] },
+          ["13", "5", "fun n => n + 1 : Nat → Nat", "fun n => HAdd.hAdd Nat Nat Nat (instHAdd Nat instAddNat) n 1 : Nat → Nat"] },
     { name := "numerals and operators at a type with instances", run := fun _ =>
         okLib (numClassSrc ++ "#eval (5 : Z3) + 2\ndef inc (x : Z3) : Z3 := x + 1\n#eval inc 2\n#eval -(1 : Z3)\n#eval (2 : Z3) * 2 - 1")
           [".b", ".a", ".c", ".a"] },
@@ -1171,7 +1171,7 @@ def classGroup : Group where
     { name := "a numeral at a type without OfNat is an error", run := fun _ =>
         failsLib "import Prelude\ninductive Z3 where\n  | a\n  | b\n  | c\n#eval (1 : Z3)" "failed to synthesize an instance of OfNat Z3 1" },
     { name := "an operator without an instance is an error", run := fun _ =>
-        failsLib "import Prelude\n#eval \"a\" + 1" "failed to synthesize an instance of Add String" },
+        failsLib "import Prelude\n#eval \"a\" + 1" "it needs an instance of Add String, through instHAdd" },
     { name := "prefix minus needs Neg", run := fun _ =>
         failsLib "import Prelude\ndef m : Nat := -1" "failed to synthesize an instance of Neg Nat" },
     { name := "operators in inductive indices and equation types", run := fun _ =>
@@ -1186,7 +1186,30 @@ def classGroup : Group where
     { name := "compiled: a method of a class with several methods", run := fun _ =>
         okLib ("import Prelude\nclass Ring (A : Type) where\n  zero : A\n  plus : A → A → A\n" ++
           "instance : Ring Nat where\n  zero := 0\n  plus := Nat.add\ndef f (a : Nat) : Nat := Ring.plus a Ring.zero\n#ir f\n#run f 4")
-          ["def f x0 :=\n  let x1 := 0\n  let x2 := prim nat.add x0 x1\n  ret x2", "4"] }
+          ["def f x0 :=\n  let x1 := 0\n  let x2 := prim nat.add x0 x1\n  ret x2", "4"] },
+    -- 7f: heterogeneous operators, default instances
+    { name := "7f: a numeral that meets no type is a Nat (default instances), in types too", run := fun _ =>
+        okLib ("import Prelude\n#check fun x => x + 1\ndef t : 1 + 1 = 2 := rfl\ndef u := (rfl : 2 * 3 = 6)\n" ++
+          "def p := (1, 2 ^ 3)\n#check p\n#eval 2 ^ 10\n#eval (2 + 3).succ\ndef m (n : Nat) : Nat := n * .succ n\n#eval m 3\n" ++
+          "#check [1, 2] ++ [3]\ndef xs : List Nat := List.cons 1 (List.cons 2 List.nil)\ndef s (n : Nat) : 2 + n = Nat.add 2 n := rfl")
+          ["fun x => x + 1 : Nat → Nat", "p : Nat × Nat", "1024", "6", "12", "[1, 2] ++ [3] : List Nat"] },
+    { name := "7f: a heterogeneous instance (scalar × structure)", run := fun _ =>
+        okLib ("import Prelude\nstructure V where\n  x : Nat\n  y : Nat\n" ++
+          "instance : HMul Nat V V := HMul.mk (fun k v => V.mk (k * v.x) (k * v.y))\n" ++
+          "def scale (k : Nat) (v : V) : V := k * v\n#eval (scale 3 (V.mk 1 2)).y\n#check scale")
+          ["6", "scale : Nat → V → V"] },
+    { name := "7f: a user default instance, tried before the latest instance", run := fun _ =>
+        okLib ("import Prelude\nclass Default (A : Type) where\n  val : A\n" ++
+          "instance instDefaultNat : Default Nat := Default.mk 7\ninstance : Default Bool := Default.mk Bool.true\n" ++
+          "attribute [default_instance] instDefaultNat\n#eval Default.val + 1")
+          ["8"] },
+    { name := "7f: attribute [default_instance] and [binop] need an instance and a method", run := fun _ => do
+        failsLib "import Prelude\nattribute [default_instance] Nat.add" "Nat.add is not an instance"
+        failsLib "import Prelude\nattribute [binop] Nat.add" "Nat.add is not a method of a class"
+        failsLib "import Prelude\ninstance instHAdd : Add Bool := Add.mk Bool.and" "'instHAdd' is declared by both" },
+    { name := "7f: compiled: operators with defaulted numerals are native", run := fun _ =>
+        okLib "import Prelude\ndef g := fun x => x * 2 + 1\n#ir g\ndef h (x : Nat) : Nat := x ^ 2 + 1\n#run h 5"
+          ["def g x0 :=\n  let x1 := 2\n  let x2 := prim nat.mul x0 x1\n  let x3 := 1\n  let x4 := prim nat.add x2 x3\n  ret x4", "26"] }
   ]
 
 /-- Memoised streams, observed twice and dropped part-way (no leaks, `#run` and native). -/
@@ -4777,7 +4800,7 @@ def languageGroup : Group where
     { name := "... not with set_option pp.notation false (or pp.all)", run := fun _ =>
         okLib ("import Prelude\nset_option pp.notation false\n#check fun (n : Nat) => n + 1\n#check [1]\n" ++
           "set_option pp.notation true\n#check [1]\nset_option pp.all true\n#check [1]")
-          ["fun n => Add.add Nat instAddNat n 1 : Nat → Nat", "List.cons Nat 1 (List.nil Nat) : List Nat",
+          ["fun n => HAdd.hAdd Nat Nat Nat (instHAdd Nat instAddNat) n 1 : Nat → Nat", "List.cons Nat 1 (List.nil Nat) : List Nat",
            "[1] : List Nat", "List.cons Nat 1 (List.nil Nat) : List Nat"] },
     { name := "... in messages: a type mismatch", run := fun _ =>
         failsLib "import Prelude\ndef f (n : Nat) : n + 1 = 2 := refl n" "expected: n + 1 = 2" },
@@ -4931,6 +4954,13 @@ def stdGroup : Group where
            "'Int.add_zero' does not depend on any axioms"] },
     { name := "integers: compiled (C)", run := fun _ =>
         cRunLibs "import Int\ndef main : Int := (-3 : Int) * 4 + 2" "-10" },
+    { name := "7f: x + 1 and 1 + x at words, Int and BitVec: the numeral takes the operand's type", run := fun _ =>
+        okLibs ("import Word\nimport Int\nimport BitVec\ndef a (x : U8) : U8 := x + 1\ndef b (x : U8) : U8 := 1 + x\n" ++
+          "def c (x : Int) : Int := 1 - x * 2\ndef d (x : BitVec 8) : BitVec 8 := x + 1\ndef e (x : U32) : U32 := x + (1 + 2) * 3\n" ++
+          "def f (xs : List U8) : List U8 := List.cons 1 xs\n#eval (a 255).toNat\n#eval (b 1).toNat\n#eval c 5\n#eval (d 7).toNat\n#eval (e 1).toNat\n" ++
+          "#check fun (x : I16) => 2 * x - 1")
+          ["0", "2", "-9", "8", "10",
+           "fun x => OfNat.ofNat I16 2 (instOfNatIntNWN 16 2) * x - OfNat.ofNat I16 1 (instOfNatIntNWN 16 1) : I16 → I16"] },
     { name := "machine types: operators at UInt64 and Float64", run := fun _ =>
         okLibs "import IO\ndef f (a b : UInt64) : UInt64 := a * b + 1\ndef g (x : Float64) : Float64 := x * x - 2 / 3" },
     { name := "arrays, updated in place", run := fun _ =>

@@ -207,12 +207,57 @@ instance : Sub Nat := Sub.mk Nat.sub
 instance : Mul Nat := Mul.mk Nat.mul
 instance : Div Nat := Div.mk Nat.div
 instance : Mod Nat := Mod.mk Nat.mod
-instance {ω n : Nat} : OfNat Nat n := OfNat.mk n
-infixl:65 " + " => Add.add
-infixl:65 " - " => Sub.sub
-infixl:70 " * " => Mul.mul
-infixl:70 " / " => Div.div
-infixl:70 " % " => Mod.mod
+instance instOfNatNat {ω n : Nat} : OfNat Nat n := OfNat.mk n
+-- Heterogeneous operators (7f), as in Lean: `a + b` is `HAdd.hAdd a b` at an instance
+-- `HAdd A B C` (the result type `C` is an output), and the default instance `instHAdd`
+-- makes it `Add.add` when nothing else decides (`x + 1`: `HAdd A A A`). A numeral's type is
+-- decided by what it meets; one that meets nothing is a `Nat` (the default instance
+-- `instOfNatNat`, at a lower priority, so `instHAdd` decides first). The operators are
+-- `binop`s: a numeral operand takes the type of the other operand (`x + 1`, `1 + x` at
+-- `x : U8`) or of the result, without waiting for a default. `^` is not one: `x ^ 2` has a
+-- `Nat` exponent (`Pow A Nat`). At `Nat`, `a + b` unfolds to `Add.add a b` and on to
+-- `Nat.add a b`, so it computes natively, and compiled code is the native `nat.add`.
+def outParam.{u} (A : Sort u) : Sort u := A
+class HAdd (A B : Type) (C : outParam Type) where
+  hAdd : A → B → C
+class HSub (A B : Type) (C : outParam Type) where
+  hSub : A → B → C
+class HMul (A B : Type) (C : outParam Type) where
+  hMul : A → B → C
+class HDiv (A B : Type) (C : outParam Type) where
+  hDiv : A → B → C
+class HMod (A B : Type) (C : outParam Type) where
+  hMod : A → B → C
+class HPow (A B : Type) (C : outParam Type) where
+  hPow : A → B → C
+class Pow (A B : Type) where
+  pow : A → B → A
+instance instHAdd {A : Type} [Add A] : HAdd A A A := HAdd.mk Add.add
+instance instHSub {A : Type} [Sub A] : HSub A A A := HSub.mk Sub.sub
+instance instHMul {A : Type} [Mul A] : HMul A A A := HMul.mk Mul.mul
+instance instHDiv {A : Type} [Div A] : HDiv A A A := HDiv.mk Div.div
+instance instHMod {A : Type} [Mod A] : HMod A A A := HMod.mk Mod.mod
+instance instHPow {A B : Type} [Pow A B] : HPow A B A := HPow.mk Pow.pow
+instance instPowNat : Pow Nat Nat := Pow.mk Nat.pow
+attribute [default_instance] instHAdd
+attribute [default_instance] instHSub
+attribute [default_instance] instHMul
+attribute [default_instance] instHDiv
+attribute [default_instance] instHMod
+attribute [default_instance] instHPow
+attribute [default_instance 100] instOfNatNat
+attribute [binop] HAdd.hAdd
+attribute [binop] HSub.hSub
+attribute [binop] HMul.hMul
+attribute [binop] HDiv.hDiv
+attribute [binop] HMod.hMod
+infixl:65 " + " => HAdd.hAdd
+infixl:65 " - " => HSub.hSub
+infixl:70 " * " => HMul.hMul
+infixl:70 " / " => HDiv.hDiv
+infixl:70 " % " => HMod.hMod
+-- (`T^s` without spaces is a sized type, stage 12)
+infixr:75 " ^ " => HPow.hPow
 syntax:75 (name := neg) "-" term:75 : term
 macro_rules
   | `(term| - $x) => `(term| Neg.neg $x)
@@ -390,9 +435,8 @@ def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.is
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
--- Type classes (stage 7). `outParam` marks a class parameter that instance resolution
--- determines (it is the identity).
-def outParam.{u} (A : Sort u) : Sort u := A
+-- Type classes (stage 7). `outParam` (defined with the numeric classes, above) marks a
+-- class parameter that instance resolution determines (it is the identity).
 
 class Monad (m : Type → Type) where
   pure : {A : Type} → A → m A
@@ -884,7 +928,13 @@ class Append (A : Type) where
   append : A → A → A
 instance {A : Type} : Append (List A) := Append.mk List.append
 instance : Append String := Append.mk String.append
-infixr:67 " ++ " => Append.append
+-- heterogeneous, as the numeric operators (7f): `HAppend A B C`, `HAppend A A A` by default
+class HAppend (A B : Type) (C : outParam Type) where
+  hAppend : A → B → C
+instance instHAppend {A : Type} [Append A] : HAppend A A A := HAppend.mk Append.append
+attribute [default_instance] instHAppend
+attribute [binop] HAppend.hAppend
+infixr:67 " ++ " => HAppend.hAppend
 -- `[a, b, c]` is `List.cons a (List.cons b (List.cons c List.nil))` and `[]` is
 -- `List.nil`, in terms and in patterns. Instance binders (`[Monad m] → …`) still parse:
 -- a dependent arrow is longer than a list literal followed by an arrow.
