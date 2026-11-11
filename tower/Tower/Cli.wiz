@@ -486,7 +486,7 @@ def Tower.dispatch (e : TEnv) (args : List String) : EIO Nat := match args with
     EIO.pure 0
   | .false => match Bool.and (String.eq cmd "--version") (List.isEmpty rest) with
   | .true => do
-    Tower.say "tower 0.1.0-dev";
+    Tower.say "tower 0.1.0";
     EIO.pure 0
   | .false => Tower.usageFail
 

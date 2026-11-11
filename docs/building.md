@@ -49,7 +49,9 @@ runtime (`runtime/wiz.c`), which needs GMP; programs from the self-hosted compil
 need the Boehm GC. The release toolchains (what tower installs) bring all of that in
 `share/wiz/cc` (docs/stages/26-tower.md, 26f): clang, a glibc 2.27 sysroot, and GMP and the
 GC as static libraries (the bundled clang needs glibc 2.30 or later; programs it builds
-need glibc 2.27 or later and nothing else). A checkout uses `cc` and the system's GMP unless you pass
+need glibc 2.27 or later and nothing else), and CaDiCaL, a SAT solver that writes LRAT
+proofs (the Lean toolchain's copy, MIT licence, in `share/wiz/cc/LICENSES/lean4-LICENSES`
+with Lean's third-party licences; z3 is not bundled). A checkout uses `cc` and the system's GMP unless you pass
 `--cc`/`--cflags`/`--ldflags` (the Nix dev shell writes them to `grail.local.wiz`).
 
 **Licences of what is linked into your programs.** The Wiz Runtime Library Exception
@@ -129,7 +131,7 @@ cached between runs.
   On a master push whose tests all passed and whose balance drifted, the `CI result`
   job uploads the regenerated baseline as the `test-timings-baseline` artifact. It also
   prints the command that applies it, in the warning and in the summary:
-  `gh run download RUN -R badly-drawn-wizards/wiz -n test-timings-baseline -D .github`.
+  `gh run download RUN -R wiz-pl/wiz -n test-timings-baseline -D .github`.
   Commit the result in a small PR. CI does not open that PR itself. A PR opened with the
   workflow's token runs no CI (GitHub does not trigger workflows from it), so it could
   not merge on green, and the workflow would also need write permissions.
@@ -171,7 +173,7 @@ cached between runs.
   tested merged onto `master` *and the PRs queued ahead of it* (up to 3 entries build at
   once), and lands only if that run's `CI result` passes. Two PRs that are green alone
   but break together (the selfhost/*.wiz case of 2026-11-11) then never both land. To
-  queue a green PR: `gh pr merge N -R badly-drawn-wizards/wiz --merge --auto` (it enters
+  queue a green PR: `gh pr merge N -R wiz-pl/wiz --merge --auto` (it enters
   the queue once its own checks pass; `gh pr merge N --disable-auto` takes it out). A
   queue run that fails drops that PR from the queue and rebuilds the ones behind it
   without it. Without a queue (a user-owned repository), `--auto` waits for the required
@@ -182,17 +184,17 @@ To run Wiz without a checkout or a Lean toolchain, with the binaries from Cachix
 ```
 nix run --option extra-substituters https://badlydrawnwizards.cachix.org \
   --option extra-trusted-public-keys badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI= \
-  github:badly-drawn-wizards/wiz#wiz -- check hello.wiz
+  github:wiz-pl/wiz#wiz -- check hello.wiz
 ```
 
 or `cachix use badlydrawnwizards` once and then `nix run
-github:badly-drawn-wizards/wiz#wiz -- …` (`#grail` for grail; `wiz build FILE -o OUT`
+github:wiz-pl/wiz#wiz -- …` (`#grail` for grail; `wiz build FILE -o OUT`
 works out of the box). Without a branch the flake reference means the default branch,
 `master`, whose binaries are on Cachix once its `nix package` job has run. The
 `--option`s count only for a trusted Nix user (or with the cache in `nix.conf`);
 otherwise Nix builds wiz from source, which takes a few minutes.
 
 `#nvim-wiz` is Neovim with the Wiz plugin (editors/nvim, docs/stages/11-tooling.md
-11p) and this wiz on `PATH`: `nix run github:badly-drawn-wizards/wiz#nvim-wiz --
+11p) and this wiz on `PATH`: `nix run github:wiz-pl/wiz#nvim-wiz --
 file.wiz`. `packages.<system>.wiz-nvim` is the plugin alone, for a Neovim
 configuration in Nix.

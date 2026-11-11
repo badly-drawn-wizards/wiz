@@ -208,6 +208,8 @@ numeric type:
 * **Words.** One set of instances at `UIntN w` serves `U8 … U64` and `BitVec n` (aliases
   are seen through). `UIntN w` and `IntN w` have the same shape but are sealed, different
   types (22k), so `-7 / 2 : I32` is signed division and `x / 2 : U32` unsigned. Their
-  constructors are private to `lib/Word.wiz`: build a word with `ofNat` (or, when the
-  value is known to be in range, `UIntN.ofBitsTrusted`) and read it with `toNat`. Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
+  constructors are private to `lib/Word.wiz` and carry the proof that the bits are below
+  `2^w` (22l, erased): build a word with `ofNat`, read it with `toNat`, and use
+  `UIntN.toNat_lt` for the range (`UIntN.ext`: same bits, same word; `UIntN.cases1`, in
+  `lib/BitVec.wiz`: a one-bit word is 0 or 1). Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
   inlined away), as `UIntN.add a b` was.

@@ -6,8 +6,10 @@ mean what they claim. It is meant to be honest first: if something is not proved
 so. The calculus itself is specified in [CoreSpec.md](CoreSpec.md); section numbers
 written "§n" refer to it.
 
-The state described here is `master` at commit `f6fd4a3` (2026-11-11, after PR #142),
-plus the results of the probes listed in the "Probes" section. The page was first
+The state described here is the **v0.1.0 release candidate**: `master` at `a916e13`
+(2026-11-11, after PR #159) with PRs #190, #195, #128, #138, #129 and #145 merged
+(branch `agent/release-v0.1`), plus the results of the probes listed in the "Probes"
+section. The tagging commit replaces this sentence with the tag's commit. The page was first
 written at `9717950` (2026-11-09); the [ledger](#0-ledger) lists every item with its
 status and PR, and section 9 lists what open PRs will change here when they merge.
 
@@ -50,12 +52,13 @@ status and PR, and section 9 lists what open PRs will change here when they merg
   regularity is off in both kernels, `cast` computes on data constructor by constructor,
   and the program now checks. One departure from the published "off" theory remains, a
   **conjecture**: regularity is kept at *inert* (first-order data) types (D1 below; now argued relative to the system without regularity, with one incompleteness found).
-* **The kernels no longer evaluate the proofs in `cast` and `transp` (P2: reduced, not
-  closed).** Both kernels suspend those positions, and a cast between propositions is
-  stuck. That is the direction of the algorithm the published decidability results are
-  about ([PT23], [PLT25]). Two things remain: proofs bound by `let` or passed as ordinary
-  arguments are still evaluated, and the elaborator, `#reduce` and error messages still
-  evaluate a proof when they read a value back (D1 below, §7).
+* **The kernels never evaluate a proof (P2, closed up to two stated gaps).** Both
+  kernels suspend the proofs of `cast` and `transp`, a cast between propositions is
+  stuck, and every other proof in an evaluated position must carry a **proof marker**
+  that the kernel verifies and requires (CoreSpec §8.6a). That is the algorithm the
+  published decidability results are about ([PT23], [PLT25]). Open: a `Π`/`Σ` without a
+  sort annotation (U5), and the elaborator's own evaluation of terms it has not marked
+  yet (bounded where it reads proofs back, by a step budget; P2 below).
 * **Four proofs of `False` in the kernel have been found and fixed** (propositions
   compared by shape; `∞ < ∞`; quantities that differ only by a variable, F6; a syntactic
   comparison that missed a variable, F7), each with regression tests. A failure of
@@ -82,8 +85,12 @@ status and PR, and section 9 lists what open PRs will change here when they merg
   terms only), and **IS** (#104: two imported modules declaring one name, the second
   replaced the first while proofs about it stayed). Also fixed: **R5** (#119: an
   out-of-range machine word, so definitions and compiled code disagreed; a proof of
-  `False` only once `native_refl` exists). One hole of R5's kind is **open on master**: `UIntN.ofBitsTrusted` builds an out-of-range word from
-  any module (O4; PR #145 closes it).
+  `False` only once `native_refl` exists) and **O4** (#145: `UIntN.ofBitsTrusted` built
+  out-of-range words from any module; the range is now a field the kernel checks).
+* **One trust extension, off by default:** `native_refl` with `--trust-native` (#129,
+  stage 27a) decides a closed equation by running both sides. Each use is an axiom that
+  `#print axioms` lists, with the implementations the run reached (§7.0). Nothing on
+  this page is claimed for programs that use it beyond what that list says.
 * **Compiled code of recursive definitions is now checked** (T1, #82 and #126): the
   kernel checks that the compiled equations compute what the definition computes, as
   **partial correctness** (if compiled code terminates, its result is the value's;
@@ -111,18 +118,19 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
 | F10 / W1 | `Kernel.wiz` `headSame` ignored levels: `False` | **fixed** | #76 (and #78) | §3 |
 | F11 / Y4, K6 | name declared twice (selfhost); variable out of scope `Prop : Prop` | **fixed** | #72 | §3 |
 | F12 / IS | two imported modules declaring one name: `Empty` | **fixed** | #104; private names per module #109, #132 | §3 |
-| F13 / NU-TRANSP | ill-typed equations at a Σ with a visible proof component | **fixed** (visible); neutral case **open issue** (pinned) | #123; regression fix *#130* | §3, §4 |
+| F13 / NU-TRANSP | ill-typed equations at a Σ with a visible proof component | **fixed** (visible); neutral case **open issue** (pinned) | #123; regression fix #130 | §3, §4 |
 | F14 / R5, R3 open 2 | native representation by display name; out-of-range `.mk` word | **fixed** | #119 (seal) | §3, §4 R3 |
 | T1 | compiled equations of recursive definitions | **fixed**, partial correctness (M1 open, low); L1 doc fixed here | #82, #98, #126 | §3 |
-| T1-L2 | `#print axioms` names only the first link of an `implemented_by` chain | **open issue** (low) | fix in *#129* | §4 |
+| T1-L2 | `#print axioms` names only the first link of an `implemented_by` chain | **fixed** | #129 | §4 |
 | O1 | `Kernel.wiz` `Size ≡ Size` was `False` | **fixed** | (`c079d1b`) | §4 |
-| O4 | `UIntN.ofBitsTrusted`: out-of-range words from any module (probe `a3-word-ofbitstrusted`) | **open issue** (wrong compiled values; `False` with `native_refl`) | fix in *#145* | §4 |
-| D1 | regularity + impredicative `Prop` looped; inert regularity | **fixed** (off); inert rule **conjecture** | (`agent/d1-off`), P1 #46 | §4 |
+| O4 | `UIntN.ofBitsTrusted`: out-of-range words from any module (probe `a3-word-ofbitstrusted`) | **fixed** (words carry `toNat < 2^w`; `ofBitsTrusted` removed) | #145 | §4 |
+| D1 | regularity + impredicative `Prop` looped; inert regularity | **fixed** (off); inert rule **conjecture**, decided by conversion (InReg_conv, the default) | (`agent/d1-off`), P1 #46, #138 | §4 |
 | P1 | inert regularity stable under substitution (`groundEqTy`) | **fixed** | #46 | §4 D1 |
-| P2 | the kernel never evaluates proofs | step 1 **fixed** (`cast`/`transp` proofs) #61; let-bound and argument proofs still evaluated: **open issue** | marker *#128* (Part 1), *#138* (Part 2, InReg by conversion) | §4 D1, §9 |
-| D2 (meta-review) | Π/Σ/`ULift` casts compute without checking component sorts: subject reduction fails | **open issue** (no verdict change known) | pinned in *#128*; fix = mandatory sorts | §4, §9 |
+| P2 | the kernel never evaluates proofs | **fixed** up to two gaps: step 1 (`cast`/`transp` proofs) #61, step 2 (the proof marker `prf.{l} t`, required by the kernel) #128; open: U5, and the elaborator's own evaluation (bounded by `--proof-steps` on read-back) | #61, #128, #138 | §4 D1 |
+| PRF-F7 | `Kernel.wiz`'s force-mode read-back has no step budget: the self-hosted elaborator can hang in messages | **open issue** (low; not the kernel's verdict) | prf-review | §4 |
+| D2 (meta-review) | Π/Σ/`ULift` casts compute without checking component sorts: subject reduction fails | **open issue** (no verdict change known) | pinned in #128 ("D2 (known gap, pinned)"); fix = mandatory sorts | §4, §9 |
 | U5 | an unannotated Π/Σ makes type equality stuck; `propSort?` reads the optional annotation | **open issue** (incompleteness) | mandatory sorts (in progress, `agent/msorts`) | §5, §9 |
-| U5b | `cast` at a Π/Σ of unknown sort computed (ill-typed result) | **open issue** on master | fixed in *#128* | §9 |
+| U5b | `cast` at a Π/Σ of unknown sort computed (ill-typed result) | **fixed** | #128 | §4 |
 | E1 | `μ` injective in its description (4g) | **conjecture** (model obligation) | #40 | §4 |
 | R1 / Q1 | projections dropped linear components; eliminators | **fixed** | #84 | §4 |
 | K3 | μ/ν size argument unchecked | **fixed** | (`4605514`) | §4 |
@@ -135,8 +143,8 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
 | lint | traversals handle every constructor; panics are not values | **fixed** (tested) | #78 | §8 |
 | audit 2 tests | groups `audit`, `audit-kernels` | evidence | *#120* | §8 |
 | property harness | substitution laws on generated terms | evidence | *#121*; W1 generator *#136* | §8 |
-| `native_refl` | trusted evaluation, `--trust-native` | not on master | *#129* | §7.0, §9 |
-| `smt` | trusted SMT, `--trust-smt`; certified `sat_decide` | not on master | *#144* (draft) | §7.0, §9 |
+| `native_refl` | trusted evaluation, `--trust-native` | trust extension, off by default; each use an axiom | #129 | §7.0, §7.1 |
+| `smt` | trusted SMT, `--trust-smt`; certified `sat_decide` | not in 0.1 | *#144* (draft) | §7.0, §9 |
 | linear handles | duplicating a `&mut`; one local borrowed twice (feral) | **open issue** (pinned "KNOWN GAP" tests; wishful `linear-case`) | — | §4 |
 
 ## 1. Ingredients
@@ -149,7 +157,7 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
 | Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs and CCobs treat propositions (rule Eq-Ω: `A ∼ B ⇒ (A → B) ∧ (B → A)`; checked in [PT22] §2.3 and [PT23] Fig. 4). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; decided by ground equality since P1, so stable under substitution, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation *of proofs*. TTobs and CCobs do not have definitional regularity; they have the proof term `castrefl`, which is Wiz's `castRefl` ([PT22] §2.2, [PT23] §2.2; checked). CICobs [PLT25] has definitional regularity at **all** types (rule Cast-Refl, side condition by conversion) and proves conversion decidable for a fragment, with an algorithm that never reduces proofs. So regularity at inert types (CoreSpec §8.4) is a special case of a published rule; what is Wiz's own is the restriction, which a proof-reducing evaluator needs. See D1 and `/workspace/wiz-notes/plt-vs-inert.md`. `--regularity full` restores the old rule for experiments. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; the rule is InReg_conv, [PLT25]'s Cast-Refl restricted to inert types and decided by the conversion checker, with ground equality as the evaluator's fast path, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation *of proofs*. TTobs and CCobs do not have definitional regularity; they have the proof term `castrefl`, which is Wiz's `castRefl` ([PT22] §2.2, [PT23] §2.2; checked). CICobs [PLT25] has definitional regularity at **all** types (rule Cast-Refl, side condition by conversion) and proves conversion decidable for a fragment, with an algorithm that never reduces proofs. So regularity at inert types (CoreSpec §8.4) is a special case of a published rule; what is Wiz's own is the restriction, which a proof-reducing evaluator needs. See D1 and `/workspace/wiz-notes/plt-vs-inert.md`. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] and [PT23] give ℕ equality rules by constructor (Eq-zero, Eq-Suc); CICobs [PLT25 §2.1, §4.1] gives inductive types *no* rule for equality of elements (it is derivable from the eliminator) and a weaker, non-injective equation between instances. Since 4g every `μ ≡ μ` computes by the codes, to `(I, D, i) = (I', D', i')` at `(J : Sort (l+1)) × Desc J × J`, and equality at `Desc` is structural (CoreSpec §8.4b); this is stronger still than CICobs's equation (injective in the index and in the description); see E1. |
@@ -540,8 +548,8 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
   compiled one alike); partial definitions and `mutual` blocks (a witness and a body:
   unrelated by design, the body is opaque to the kernel and resolves names by scope);
   instance bodies and generated declarations (one term each); `implemented_by` (the
-  user's second term: trusted, listed by `#print axioms`; on master only the first link
-  of a chain is listed, L2 in §4).
+  user's second term: trusted, listed by `#print axioms`, the whole chain since #129;
+  L2 in §4).
 * **Everything else that is compiled** was checked already: partial definitions' bodies
   (`addPartialImpl`), the terms of `#eval`/`#run` (inferred by the kernel first),
   generated declarations (instances, `deriving`, macros: they are commands, and go
@@ -633,7 +641,7 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
 * **The fix** (CoreSpec §8.2, both kernels). `a =_A b ↦ True` when `A` is a proposition;
   the Σ rule along a proof first component uses `reflTy (B a.1)`.
 * **Regression.** The elaborator's `refl a` inferred its equation from `a`'s own type, so
-  a program that checked before #123 fails (prf-conv-2's `t5`); PR #130 (open) checks
+  a program that checked before #123 fails (prf-conv-2's `t5`); **fixed** by PR #130, which checks
   `refl a` against the expected equation. WizMeta follows #123 in PR #135 (open).
 * **Open: NU-TRANSP-NEUTRAL.** `propSort?` can't see a neutral proposition (`P q.1` for a
   variable `P`), so a generic subtype is still rejected. Pinned: "known gap: an equation
@@ -659,8 +667,8 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
   `lib/Word.wiz` builds words. Three layers keep a look-alike out: opacity (13b), the
   unwritable seal name, and erasure refusing a native value built outside its module.
   num-classes' nominal instance resolution is removed (the kernel tells the types apart).
-* **What remains.** `UIntN.ofBitsTrusted`, a public unchecked builder kept for
-  `BitVec.mk`, reopens R5 from any module: O4 in §4 (PR #145).
+* **What remained.** `UIntN.ofBitsTrusted`, a public unchecked builder kept for
+  `BitVec.mk`, reopened R5 from any module: O4 in §4, fixed by PR #145.
 * **Tests.** Group *repr*: the "22k: …" cases (look-alikes, a native sealed type in its
   own module, layer 1 and layer 3 refusals, the registration's errors, sealed words);
   group *selfhost*: "the self-hosted frontend: a sealed type has no look-alikes, as in
@@ -719,10 +727,11 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
   `Desc` and `ν` likewise; equality at `μ` follows the description constructor by
   constructor, so `succ m = succ n` is `m = n` without a cast. The Abel–Coquand box now
   yields a stuck proof, and the program checks (tests "D1 (Abel–Coquand): the program
-  checks …", "… the Wiz kernel checks the program …"; with `--regularity full
-  --eager-proofs`, resp. `kernelRegularity := .true`, the kernels still loop, which the
-  tests also check; since P2, below, `--regularity full` alone no longer loops in the
-  Lean kernel).
+  checks …", "… the Wiz kernel checks the program …"). It used to loop with
+  `--regularity full --eager-proofs`, when regularity was a rule of evaluation decided
+  by comparing the two types as written. Regularity is now decided by conversion only,
+  and the program checks in every mode, whichever way the cast's source type is written
+  (test "D1 (Abel–Coquand): the cast's source type by name or as inferred …").
 * **Departure from the published theory (conjecture).** Regularity is kept at **inert**
   types: `Enum`, `Unit`, Σs of inert types, and `μ` types whose fields are all inert (no
   `Prop` field, function, neutral type or type variable), decided by a syntactic,
@@ -796,40 +805,111 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
     constructors at open ones compute structurally. Measured: every test, library file
     and example checks as before, and no cast in `lib/` or `examples/` is decided
     differently from the old rule (the note, §5). The loss shows only on the probe.
-  * **Option** (a decision for the user). `--inert conv` adds InReg_conv: conversion
-    identifies the cast with its argument when the types are convertible (`convTy`). It
-    is congruent, and it accepts `t1` and `t2` too. It is Lean kernel only so far.
-* **P2: the proofs in `cast` and `transp` are never evaluated. P2 is reduced, not closed**
-  (CoreSpec §8.6; `Globals.lazyProofs`, `kernelLazyProofs`; the user's decision,
-  2026-11-10).
+  * **Decided by conversion (the user's decision; both kernels; the default).** The rule
+    is InReg_conv: `cast A B e t ≡ t` when `A` is inert and `A ≡ B`. It is a rule of
+    conversion, [PLT25]'s Cast-Refl restricted to inert types: the conversion checker
+    removes a cast that stayed stuck when its two types are convertible (`unCast` in
+    `Conv.lean`, `stripCast` in `Kernel.wiz`), on either side, under eliminations too.
+    Ground equality stays as the evaluator's fast path, a fragment of the same rule that
+    needs no conversion. So the open-index case above is no longer lost: all eight
+    probes check (tests "P1: InReg decided by conversion …", and the same as core terms
+    on both kernels, "P1: regularity at inert types is decided by conversion, in both
+    kernels"). `--inert ground` (`kernelInertConv := .false`) keeps only the fast path.
+  * **Syntactic equality is gone from regularity**: `--inert syntactic`, the numeral
+    shortcut, `sameVal`, `lvlBound` and `freeVarsAt` are deleted from both kernels, and
+    with them the D1 modes `nonprop` and `refl`. `--regularity full` is Cast-Refl at
+    every type, in conversion only (an experiment).
+  * **Open.** `inertTy` reads a `Σ`'s optional sort annotation, so conversion with this
+    rule is not transitive at types that differ only in that annotation (not unsound;
+    it goes with mandatory sorts). Completeness of "strip when possible, else
+    congruence" against [PLT25]'s backtracking algorithm is argued, not proved. The
+    theorem behind the rule covers Π, ℕ, ⊥, `Prop`, ∃, not Wiz's data types
+    (`/workspace/wiz-notes/conv-regularity.md`).
+* **P2: the kernels never evaluate a proof** (CoreSpec §8.6, §8.6a;
+  `Globals.lazyProofs`, `kernelLazyProofs`; the user's decisions, 2026-11-10;
+  `/workspace/wiz-notes/p2-proofs.md`, `prf-marker.md`).
   * Pujet–Tabareau's and Pujet–Leray–Tabareau's algorithms never reduce a proof, and
     their theorems are about those algorithms. Wiz's kernels ran proofs, so those
     theorems could not cover them even in principle.
-  * Now the equation of a `cast` and the two proofs of a `transp` are suspended, a cast
-    between propositions is stuck, and conversion decides proof irrelevance before it
-    unfolds either side.
-  * Effect on D1: with `--regularity full`, the Lean kernel checks the Abel–Coquand
-    program and its nested variant (test "P2: proofs are never evaluated, so
-    Abel–Coquand checks even with full regularity"). The loop is inside a proof, and
-    nothing runs it. With `--regularity full --eager-proofs` it loops as before.
+  * **Step 1 (PR #61).** The equation of a `cast` and the two proofs of a `transp` are
+    suspended, a cast between propositions is stuck, and conversion decides proof
+    irrelevance before it unfolds either side.
+  * **Step 2, the proof marker.** The evaluator has no types, so a proof bound by `let`,
+    passed as an argument or stored in a field was still evaluated. Now there is a term
+    former `prf.{l} t` (`l` the sort of `t`'s type), which the evaluator suspends when
+    `l` is `0`. The kernel **verifies** it (the level must be the type's sort) and
+    **requires** it: outside a proof, a term whose sort may be `0` must be marked or
+    neutral-shaped (a variable, a constant or `()` under applications and projections),
+    or one of the proofs that are stuck heads (`refl`, `reflTy`, `transp`).
+    So every value the evaluator builds at a proposition is a neutral, `()`, or a glued
+    constant that unfolds to one, and the kernel never does a β, projection or ι step
+    inside a proof. A term that would make it do so is a kernel error ("unmarked proof").
+    The elaborator's marking pass writes the markers (`Wiz/Elab/Mark.lean`; `markCheck`
+    in `Kernel.wiz` for the self-hosted frontend); it is untrusted.
+  * **The marking pass is outside the kernel and may panic on ill-typed input.** It
+    checks nothing and evaluates the term as it goes, so every caller must give it
+    elaborated terms only (the elaborator makes the same assumption of its own terms).
+    Its callers: a declaration the kernel has answered "unmarked proof" to, and a
+    theorem, on their way to the kernel (`withMarksOnDemand`: `addDeclSorted`, the two
+    partial-definition paths), `#reduce`, and the kernel entries of `Frontend.wiz`. A
+    wrong elaborator output can therefore show as a panic in the pass, which ends
+    `wiz check`, where it used to be a kernel error message.
+  * **Inside a marked proof too** (found by audit-2 on the first version: a `let` inside a
+    proof evaluated its value to bind it, and a tower of exponentials in `Prop` hung the
+    checker). The mode of a subterm is decided by its type (a relevant subterm of a proof
+    is checked in relevant mode again), and inside a proof the checker binds a proof
+    suspended (test "P2 (I-1): …", heights 3, 4 and 6 on both kernels). The elaborator's
+    `let` does the same.
+  * **Level-generic terms.** `(a : A)` with `A : Sort u` is a proof at the instance
+    `u := 0`. The marker carries the level, so such a term is marked once, at `u`, and is
+    suspended exactly at the instances where it is a proof (tests "P2 (R1): …").
+  * Effect on D1: the `let`-encoded Abel–Coquand term used to make `Kernel.wiz` loop with
+    regularity on (its proofs are `let`-bound). Marked, it checks in both kernels, with
+    `kernelRegularity := .true` and `--regularity full` too (test "D1 (Abel–Coquand): both
+    kernels check the let-encoded program, with regularity on too"). Unmarked, both
+    kernels reject it.
   * **What [PLT25] proves** (Theorem 5.6): decidability of conversion with full
     regularity, for the fragment with Π, ℕ, ⊥, `Ω`, a proof-irrelevant ∃, the
     observational equality and `cast`, at two universe levels, mechanised in Agda. It
     does not cover general inductive types, and so not Wiz's descriptions, `μ`/`ν`,
     sizes, quantities or `ULift`. Wiz's statement stays "the published algorithm,
     extended; unproved for the extension".
-  * **Remaining gap.** A proof bound by `let`, or passed as an ordinary argument, is
-    still evaluated: the evaluator does not know which arguments are proofs. The test
-    "D1 (Abel–Coquand): the Wiz kernel checks the program (and does not terminate with
-    regularity on: its proofs are let-bound)" shows it: that term binds its proofs with
-    `let`, and with `kernelRegularity := .true` the Wiz kernel still loops on it.
-    Regularity is off by default, so this is not reachable in the default configuration.
-  * **What can still loop.** The elaborator evaluates a suspended proof when it reads a
-    value back into a term, because the kernel must be able to check that term again
-    (CoreSpec §8.6). So do error messages and `#reduce`. On an Abel–Coquand proof under
-    `--regularity full` any of these can fail to terminate. That reading is outside the
-    path by which the kernel accepts a term: the kernel's own comparison of types reads
-    a suspended proof as `()`.
+  * **Open gap 1: sorts that are not written (U5).** The requirement asks for the sort of
+    a type. For a `Π`/`Σ` without an annotation it is computed from the parts; where that
+    fails the kernel rejects the term (it does not guess). The `Π`/`Σ` types the kernel's
+    own templates build carry no annotation, so type equality can be stuck on them where
+    an annotated convertible type computes. Options: mandatory sorts (the marking pass
+    already fills in every sort it can compute, and the templates need theirs written),
+    then relevance marks on binders (`prf-marker.md` §8).
+  * **U5b (found by the property harness, fixed).** `cast` at a `Π`/`Σ` whose sort is not
+    known (no annotation, or a level with parameters) used to compute by the `Π`/`Σ` rule,
+    projecting a proof `e` whose own type, the equation between the two types, is stuck
+    there and is no pair: the result was a term the kernel rejects, and at the level
+    instance `0` evaluation did not commute with instantiation. Now the cast is stuck
+    exactly when the equation is, in both kernels (test "U5b: …"); `Kernel.wiz`'s payload
+    types and the `hrec` field's `Π` carry their sorts so that casts on data compute as
+    before. No verdict in `lib/`, `examples/` or `selfhost/` changes.
+  * **D2 (found by the meta-review): open, needs mandatory sorts.** The `Π`, `Σ` and
+    `ULift` casts compute with no check on their components' sorts. So the kernel accepts
+    `λ e t. cast (Unit₁ → Type) (Unit₂ → Type) e t` and rejects its normal form ("cast
+    between different universes"): subject reduction fails. No verdict change is known.
+    Two gates were tried and failed:
+    * Gating on the sorts read off the heads is too weak. A type variable's sort is not
+      known there, and `lib/Vec`'s payload casts got stuck.
+    * Computing unless the sorts are known and different is unstable under substitution
+      (computes ⟶ stuck).
+
+    The fix needs the component sorts in the term (`wiz-notes/prf-marker.md` §8.1, item 6).
+    The pinned test "D2 (known gap, pinned): …" flips when it lands.
+  * **Open gap 2: the elaborator.** It evaluates terms it has not marked yet, and it
+    evaluates a suspended proof when it reads a value back into a term (the kernel must
+    be able to check that term again). The read-back runs within a **step budget**
+    (`--proof-steps N`, default 1 000 000 closure instantiations per proof; counted, not
+    timed, so the same on every machine), and so do `#reduce`, hover and the
+    elaborator's messages; a proof that runs out reads back as an error. The
+    elaborator's direct evaluation of an unmarked proof has no bound: on a proof without
+    a normal form, elaboration can still loop. Kernel error messages no longer evaluate
+    proofs. None of this is on the path by which the kernel accepts a term.
 * **What it costs (known failures).** Without regularity a cast at a **type variable**
   is stuck (TTobs behaviour): `cast e a = a` for `e : A = A`, "`J` computes on `refl`"
   at a variable family, and the definitional equations of functions defined by `match`
@@ -1035,28 +1115,38 @@ with two different but equal descriptions checks; the Hur-style encoding over `T
   compares (F14). `/workspace/wiz-notes/repr-shape.md`, §4. Kernel brands
   (`structural-vs-nominal.md` §6b) would later replace the seal's axiom.
 
-### O4. `UIntN.ofBitsTrusted` builds out-of-range words from any module — **open issue** (fix: PR #145)
+### O4. `UIntN.ofBitsTrusted` built out-of-range words from any module — **fixed** (PR #145, stage 22l)
 
 `UIntN.ofBitsTrusted {0 w} (n : Nat) : UIntN w := .mk n` (`lib/Word.wiz`) is public and
 unchecked; #119 kept it for `BitVec.mk`, whose callers have the width erased. With `bad :=
 UIntN.ofBitsTrusted 5 : UIntN 1`, `#reduce` and `wiz run` disagree on `sub bad bad`,
 `IntN.resize 8`, `IntN.div`, and on `not`/`div` of an out-of-range `UIntN 64` (probe
 `soundness-probes/a3-word-ofbitstrusted.wiz`, master `6ec079f`; found by hdl-temporal).
-Not a proof of `False` on master: the kernel never runs the natives. **It becomes one with
-`native_refl`** (#129) if that merges first, so #145 should land before or with #129.
+It was not a proof of `False` before #129, since the kernel never runs the natives. **It
+would have become one with `native_refl`** (#129), which is why #145 lands with #129.
 PR #145 (stage 22l) adds an erased field `toNat < 2^w` to both word types, removes
 `ofBitsTrusted`, and makes `BitVec.mk`/`ofVec`/`concat` and `HwTy.El.cat` take the width
 at run time. trust-review: the hole is closed (8 900 expressions, `#eval` against C, 0
-differences); its finding B0 (the pushed head did not check `lib/Word.wiz`) must be
-resolved on the PR before merging.
+differences). Its finding B0 (the pushed head did not check `lib/Word.wiz`) is resolved:
+the fix (`5c218b1`) is on the PR.
 
-### L2. `#print axioms` names only the first link of an `implemented_by` chain — **open issue** (low; fix in PR #129)
+* **Fixed by #145.** `UIntN w` and `IntN w` carry an erased field `toNat < 2^w`, so a
+  word out of range can't be built without a proof of the range; `ofBitsTrusted` is
+  gone (`git grep ofBitsTrusted lib` is empty). With `native_refl` (#129) in the same
+  release, trust-review's AB1 applies: `native_refl` reads a word back with its erased
+  proof field built and checked (group *native*, "an erased proof field is built and
+  checked; an erased data field is refused (AB1)"). Regression tests: groups *word*
+  (the probe is rejected, `UIntN.mk`/`IntN.mk` stay private) and *vec*.
+
+### L2. `#print axioms` named only the first link of an `implemented_by` chain — **fixed** (PR #129)
 
 With `a1 → a2 → a3`, `#eval useA 0` runs `a3` (prints 2, the kernel says 0) but `#print
 axioms` lists only `native a1 := a2`: `axiomsOf` does not walk a native's own
 dependencies, so neither `a2 := a3` nor an `extern` used by the native is listed
 (`soundness-probes/t1-native2.wiz`; t1-review L2). The trusted-base claim "`#print axioms`
-lists the natives `d` depends on" holds only for direct natives until the fix lands.
+lists the natives `d` depends on" held only for direct natives. #129's review fixes make
+`axiomsOf` walk a native's own dependencies (test "(t1-review L2) a three-link chain a1 →
+a2 → a3 → a4, and what the last one uses", group *native*).
 
 ### D2 (meta-review). Π/Σ/`ULift` casts compute without checking that the components are in one sort — **open issue** (subject reduction; no verdict change known)
 
@@ -1069,7 +1159,7 @@ substitution). The fix needs both component sorts in the term: mandatory sorts (
 Pinned by "D2 (known gap, pinned)" in PR #128. Probe
 `soundness-probes/mr-cast-component-sorts.lean`.
 
-### U5, U5b. Sorts that are not written — **open issue** (U5: incompleteness; U5b: fixed in PR #128)
+### U5, U5b. Sorts that are not written — **open issue** (U5: incompleteness; U5b: **fixed**, PR #128)
 
 * **U5.** A Π/Σ without a sort annotation makes type equality and `cast` stuck where an
   annotated, convertible type computes, and `propSort?` reads the optional annotation, so
@@ -1081,6 +1171,14 @@ Pinned by "D2 (known gap, pinned)" in PR #128. Probe
   evaluation does not commute with instantiation. Fixed on PR #128 (the cast is stuck
   exactly when the equation is). Probes `ph-u5-smallest.txt`,
   `ph-u5b-cast-at-unknown-sort.txt`.
+
+### PRF-F7. `Kernel.wiz`'s force-mode read-back has no step budget — **open issue** (low)
+
+Found by prf-review on #128. The Lean elaborator bounds its read-back of a proof by
+`--proof-steps`; `Kernel.wiz`'s read-back in force mode (for messages) has no budget, so
+the self-hosted elaborator can hang while printing a message about a term whose proofs
+loop. The kernel's verdict is not affected: its own comparison of types reads a
+suspended proof as `()`. Fix: the same budget in `Kernel.wiz` (PR #162, draft).
 
 ### Linear handles in the region and feral libraries — **open issue** (pinned; wishful `linear-case`)
 
@@ -1114,9 +1212,11 @@ equations are not provable by computation. They are incompleteness, not unsoundn
   compared): type equality is stuck.
 * **Casts at a level `u` that might be 0**, `Sort u ≡ Sort v` for different parameters.
 * **Regularity at an inert type with an open index** (P1): `cast (Fin n) (Fin n) e k` for
-  variables `n`, `k` is stuck. The rule fires only at ground types, so that its firing is
-  stable under substitution (D1). `castRefl` proves the equation propositionally;
-  `--inert conv` is an experiment that recovers it in conversion.
+  variables `n`, `k` is stuck as a *value* (the evaluator's rule fires only at ground
+  types, so that its firing is stable under substitution), and equal to `k` in
+  *conversion* (InReg_conv, D1). A cast at a type that is not inert (a type variable, a
+  type with a `Prop` field or a function) stays; `castRefl` proves that equation
+  propositionally.
 * **The sort annotation decides between rules** (P1 inventory, U5). `propSort?` reads a
   Π/Σ's optional annotation, so an unannotated type and a convertible annotated one are
   treated differently by type equality and `cast` (stuck against computing). That is a
@@ -1156,7 +1256,7 @@ None of these is implemented. Their status is **design and conjecture**:
 ### 7.0 Trusted components, in one list
 
 Everything a wrong answer from which is not caught by the kernel's type checking, at the
-default options (`f6fd4a3`). "Listed" means `#print axioms d` names it when `d` depends
+default options (the v0.1.0 candidate, see the first paragraph). "Listed" means `#print axioms d` names it when `d` depends
 on it. Details in §7.1 and CoreSpec §16.
 
 | component | what is trusted | listed? | notes |
@@ -1167,14 +1267,15 @@ on it. Details in §7.1 and CoreSpec §16.
 | templates and kernel-built types | `Templates.lean`, method/motive types, the terms built in `vEq`/`vEqType`/`vCast` | — | type-checked by audit-2's tests (#120, open), not by the kernel |
 | axioms | `axiom`, `extern`/`C.*` functions, `foreign` types; the Prelude's `castRefl`; each sealed type's `T.seal✝ : Type` (#119) | yes | a seal is an inhabitant of `Type`, harmless |
 | `builtin` registrations | `nat.*` of the toolchain's `lib/Prelude.wiz` (reviewed, §7.1), `memo`, `string` | library: no; elsewhere: yes (an axiom) | one registration per key (T14) |
-| native implementations | `implemented_by` functions, native representations (`repr:`, sealed types only since #119), the word natives in `runtime/wiz.c` | yes, as `native f := g`; **first link of a chain only** (L2, §4) | the kernel never runs them; `UIntN.ofBitsTrusted` (O4) is an unchecked builder until #145 |
+| native implementations | `implemented_by` functions, native representations (`repr:`, sealed types only since #119), the word natives in `runtime/wiz.c` | yes, as `native f := g`, the whole chain (L2 fixed, #129) | the kernel never runs them (except through `native_refl`, below) |
 | compiled equations (`Decl.impl`) | **not** trusted for their value since #126; trusted to **terminate** (M1, §3 T1) | no | |
 | erasure and the backends | `Compiler/Erase.lean`, `Compiler/Push.lean` (rewrites 1, 2 re-checked for typing only; `inlineCalls` not checked), the IR, RC, the C and LLVM backends, `runtime/wiz.c`, the C compiler, the eliminators' code (`PrimCode.lean`, the runtime's `ind`) | — | erasure relies on QTT (a 0-quantity value is never needed): not proved |
 | partial definitions | the body (opaque to the kernel; a witness of the type is checked) | no | compiled code runs the body; it may loop |
 | the elaboration cache | replayed declarations are not checked again; an entry is keyed by the binary, the source text and (since #104) the module name; a replay refuses a name already declared (F12) | — | `~/.cache/wiz` |
-| library invariants behind private constructors | `lib/Word.wiz` keeps `toNat < 2^w` (until #145 makes it a field), `lib/Region.wiz` handles (linear handles, §4) | — | privacy is the elaborator's (13b) plus erasure's layer 3 (#119); the kernel does not see it |
-| non-default kernel flags | `--regularity full`, `--eager-proofs`, `--inert`, `--predicative-prop`, `--unbox-structs`, `--strict-privacy` | — | experiments: nothing on this page is claimed for them |
-| trust extensions (not on master) | `--trust-native` / `native_refl` (#129), `--trust-smt` (#144) | yes (each use an axiom) | §9 |
+| library invariants behind private constructors | `lib/Region.wiz` handles (linear handles, §4); words no longer (their range is a kernel-checked field since #145) | — | privacy is the elaborator's (13b) plus erasure's layer 3 (#119); the kernel does not see it |
+| non-default kernel flags | `--regularity full`, `--eager-proofs`, `--inert ground`, `--predicative-prop`, `--unbox-structs`, `--strict-privacy` | — | experiments: nothing on this page is claimed for them |
+| trust extension `--trust-native` | `native_refl` (#129, 27a): erasure and its rewrites, the interpreter `Compiler/NativeRun.lean`, Lean's `Nat`, and every `implemented_by`, non-library `builtin` and native representation the run reaches | yes: each use is an axiom `X.native✝`, listed with the implementations the run reached | off by default; §7.1 |
+| trust extension `--trust-smt` (not in 0.1) | `smt` (#144, draft): the SMT solver | yes (each use an axiom) | §9 |
 
 ### 7.1 The kernel and the de Bruijn criterion
 
@@ -1244,21 +1345,26 @@ that checks everything. Wiz's situation:
   natives). They are not `builtin` commands, so the registration checks don't apply.
   `#print axioms d` lists the ones `d` depends on, the library's too, marked `native`
   (`native f := g`, `native T := mk/get`).
+* **Native evaluation** (`native_refl`, stage 27a, only with `--trust-native`): a closed
+  equation decided by running both sides is an axiom, `X.native✝`, listed by `#print
+  axioms` with the implementations the run reached. It trusts erasure and the rewrites on
+  erased code, the interpreter (`Compiler/NativeRun.lean`) and Lean's `Nat` under the
+  `nat.*` builtins, and every `implemented_by`, non-library `builtin` and native
+  representation the computation reaches (a wrong one proves a false equation). Not the
+  IR, the C backend, the runtime or the C compiler (none runs). The library never uses it
+  (group *native*).
 * **Termination** of the kernel is not proved; all evaluation functions are `partial` in
-  Lean. With non-default options it is known to fail (D1: `--regularity full
-  --eager-proofs`).
-* **The evaluator does not run the proofs in `cast` and `transp` (P2: reduced, not
-  closed).** `eval`
-  suspends the equation of a `cast` and the proofs of a `transp`, and `vCast` only
-  projects them. Pujet–Tabareau's decidability result for impredicative OTT (CCobs,
-  [PT23]) and Pujet–Leray–Tabareau's with regularity ([PLT25], Theorem 5.6, for Π, ℕ, ⊥,
-  `Ω`, ∃) are proved for algorithms that never normalise proofs, so a Wiz version of
-  those theorems could be about this kernel once the following are dealt with:
-  proofs bound by `let` or passed as arguments are evaluated strictly; readback
-  outside the kernel (elaboration, `#reduce`, error messages) evaluates proofs; and
-  Wiz's data types are not in the fragment those theorems cover (D1, P2). In [PT23]'s
-  words (§6.1): "we never perform reduction in the proof-irrelevant layer".
-  (`/workspace/wiz-notes/p2-proofs.md`, `/workspace/wiz-notes/plt-vs-inert.md` §6.)
+  Lean.
+* **The kernel does not evaluate proofs (P2).** `eval` suspends the equation of a `cast`,
+  the proofs of a `transp` and every marked proof, and the kernel requires the marker
+  wherever a proof would otherwise be evaluated (CoreSpec §8.6a). Pujet–Tabareau's
+  decidability result for impredicative OTT (CCobs, [PT23]) and Pujet–Leray–Tabareau's
+  with regularity ([PLT25], Theorem 5.6, for Π, ℕ, ⊥, `Ω`, ∃) are proved for algorithms
+  that never normalise proofs, so a Wiz version of those theorems could be about this
+  kernel. What stands between: Wiz's data types are not in the fragment those theorems
+  cover (D1, P2), and sorts are not mandatory (U5). In [PT23]'s words (§6.1): "we never
+  perform reduction in the proof-irrelevant layer".
+  (`/workspace/wiz-notes/p2-proofs.md`, `prf-marker.md`, `plt-vs-inert.md` §6.)
 
 ## 8. Testing evidence
 
@@ -1301,54 +1407,16 @@ that checks everything. Wiz's situation:
 
 ## 9. Queued: what open PRs change on this page
 
-Prepared at `f6fd4a3`. When one of these merges, fold its paragraph into the sections
+Prepared at `f6fd4a3`, updated for the v0.1.0 candidate (#128, #138, #145, #129 and
+#130 are folded in above). When one of these merges, fold its paragraph into the sections
 named and delete it here. Order matters where noted.
 
-* **#128, the proof marker (P2 Part 1).** A term former `prf.{l} t` that the evaluator
-  suspends at `l = 0`, which the kernel verifies and **requires** wherever a proof would
-  otherwise be evaluated; the elaborator's marking pass (`Wiz/Elab/Mark.lean`,
-  `markCheck` in `Kernel.wiz`) writes the markers and is untrusted. The PR carries its own
-  edits of this page (the summary's P2 bullet, D1's P2 item, §7.1's P2 bullet), which do
-  not overlap this refresh's. After it merges: ledger rows P2 (step 2 **fixed**; open:
-  U5 and the elaborator's own evaluation, bounded by `--proof-steps` on read-back), U5b
-  (**fixed**), D2 (meta-review, pinned "D2 (known gap, pinned)"). prf-review: sound;
-  follow-up F7 (Kernel.wiz's force-mode read-back has no step budget, so the self-hosted
-  elaborator can hang in messages) goes to §4. Cost measured +6.6% on checking
-  `selfhost/Kernel.wiz`.
-* **#138, inert regularity by conversion (P2 Part 2; stacked on #128).** Deletes every
-  syntactic regularity decision (`sameVal`, `Val.lvlBound`, `reflProof`,
-  `InertReg.syntactic`, the numeral shortcut; CLI `--regularity nonprop|refl`, `--inert
-  syntactic`) and adds InReg_conv, a rule of conversion (`cast A B e t · sp ≡ t · sp` when
-  one endpoint is inert and `A ≡ B`), with `--inert conv` the **default**; `groundEqTy`
-  stays as the evaluator's fast path. After it merges: D1's "Found gap" and P1 items
-  become history (the eight P1 probes check under the default); Q3 and F7's "What
-  remains" refer to deleted code; §5's "regularity at an inert type with an open index"
-  bullet goes; CoreSpec §15's rows "InReg in conversion" and "regularity in conversion"
-  change. New known limit (completeness, not soundness): conversion with the rule is not
-  transitive at unannotated Σ types (`inertTy` reads the optional annotation), closed by
-  mandatory sorts. prf-review-p2: sound, terminates, kernels agree, nothing lost. Its
-  status stays **conjecture** (an instance of [PLT25]'s Cast-Refl restricted to inert
-  types; [PLT25]'s theorem does not cover Wiz's data types).
-* **#145, words carry their range (22l).** Closes O4: ledger row O4 **fixed**; §7.0's
-  native-implementations and library-invariants rows lose `ofBitsTrusted` and the
-  module invariant (the range is a kernel-checked field). **Merge before #129**, or with
-  it: with `native_refl`, O4 is a proof of `False`. trust-review's AB1 (with both merged,
-  `native_refl` must read back a word's erased proof field) is addressed in #129's
-  review fixes; re-check when the second of the two lands.
-* **#129, `native_refl` behind `--trust-native` (27a).** A trust extension: each use is
-  an axiom `X.native✝`, listed with the implementations the run reached. It trusts
-  erasure and its rewrites, the interpreter `Compiler/NativeRun.lean`, Lean's `Nat`, and
-  every `implemented_by`, non-library `builtin` and native representation the run
-  reaches (a wrong one proves a false equation; group *native* has that adversary); not
-  the IR, C backend, runtime or C compiler. The PR adds its own paragraph to §7.1; add a
-  row to §7.0 ("trust extensions") and fix L2 there (the PR's review fixes include
-  t1-review L2 and trust-review N1, nullary externs read as `0`).
 * **#144, solvers (28; draft).** `smt`: an axiom `X.smt✝N⟨solver⟩` per use, only with
   `--trust-smt` (z3 trusted). `sat_decide`: certified, no new trust (CaDiCaL's LRAT proof
-  is checked by the kernel through `lib/Sat.wiz`, proved sound). Adds a §7.0 row for
-  `--trust-smt`. Depends on #129.
-* **#130** (the `refl a` regression from #123) and **#135** (WizMeta follows #123): F13's
-  "Regression" item and §7.1's WizMeta bullet.
+  is checked by the kernel through `lib/Sat.wiz`, proved sound). Fills in §7.0's row for
+  `--trust-smt`. (CaDiCaL itself is already in the 0.1 bundle, unused there.)
+* **#135** (WizMeta follows #123): §7.1's WizMeta bullet.
+* **#162** (a step budget for `Kernel.wiz`'s read-back): PRF-F7 **fixed**.
 * **#120** (audit 2 tests) and **#121** (property harness), **#136** (W1 generator):
   §8; the ledger rows become "tested". #121's NU-TRANSP-NEUTRAL pin fails once mandatory
   sorts lands and must then be removed.

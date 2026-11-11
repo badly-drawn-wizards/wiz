@@ -18,11 +18,14 @@ def usage : String := "usage:
                                    both flags may be given; --no-stdio: no editor on stdin)
 options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since it is
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
-experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
-(default off),
+trust: --trust-native (27a: `def X : a = b := native_refl` is decided by running a and b;
+the kernel does not check it, `#print axioms` lists it), --native-fuel N (its step limit)
+experimental kernel options (D1, they turn the cache off): --regularity off|full (full:
+Cast-Refl at every type, decided in conversion; default off),
 --predicative-prop, --eager-proofs (P2: the evaluator runs proofs, as it did before; the
 default never evaluates them),
---inert syntactic|ground|conv (P1: regularity at inert types; default ground)
+--inert ground|conv (P1: regularity at inert types, decided by conversion (conv, the
+default) or only by the evaluator's fast path (ground))
 compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
 unboxed; not stable under substitution, so off by default)
 --strict-privacy (13b, an experiment; turns the cache off): check each declaration again with
@@ -91,8 +94,26 @@ initialize ppAllOpt : IO.Ref Bool ← IO.mkRef false
 /-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
 initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
 
+/-- (P2) `--proof-steps N`: the step budget for reading one proof back, outside the kernel
+(`Budget`); and `--trace-proof-steps`, which prints what each read-back took. -/
+initialize proofStepsOpt : IO.Ref (Nat × Bool) ← IO.mkRef (Budget.defaultSteps, false)
+
+/-- Take `--proof-steps N` and `--trace-proof-steps` out of the arguments. -/
+def takeProofSteps : List String → Except String (Option Nat × Bool × List String)
+  | "--proof-steps" :: n :: rest => do
+    let some k := n.toNat? | throw s!"--proof-steps needs a number, not {n}"
+    let (_, t, rest) ← takeProofSteps rest
+    return (some k, t, rest)
+  | "--trace-proof-steps" :: rest => do
+    let (k, _, rest) ← takeProofSteps rest
+    return (k, true, rest)
+  | a :: rest => do
+    let (k, t, rest) ← takeProofSteps rest
+    return (k, t, a :: rest)
+  | [] => return (none, false, [])
+
 /-- (P1) `--inert MODE`: regularity at inert types. -/
-initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
+initialize inertOpt : IO.Ref InertReg ← IO.mkRef .conv
 
 /-- `--unbox-structs` (22i): the last field of a structure is unboxed. Off by default: the
 representation is not stable under substitution (`unboxedSigma` in `Erase.lean`). -/
@@ -102,7 +123,7 @@ initialize unboxOpt : IO.Ref Bool ← IO.mkRef false
 def takeInertOpt : List String → Except String (Option InertReg × List String)
   | "--inert" :: m :: rest => do
     let r ← match m with
-      | "syntactic" => pure InertReg.syntactic | "ground" => pure .ground | "conv" => pure .conv
+      | "ground" => pure InertReg.ground | "conv" => pure .conv
       | _ => throw s!"unknown inert mode {m}"
     let (_, rest) ← takeInertOpt rest
     return (some r, rest)
@@ -125,6 +146,7 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let (regularity, predicativeProp) ← kernelOpts.get
   let lazyProofs ← lazyProofsOpt.get
   let inertReg ← inertOpt.get
+  let (proofSteps, traceProofSteps) ← proofStepsOpt.get
   let unboxStructs ← unboxOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
   let own := Module.fromFirstRoot roots closure
@@ -136,12 +158,13 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
       messages := shadow.toArray,
-      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get,
-                   pp := { useNotation := !(← ppAllOpt.get) } },
-      trustedModule := own.contains }
+      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, proofSteps, traceProofSteps,
+                   strictPrivacy := ← strictPrivacyOpt.get, pp := { useNotation := !(← ppAllOpt.get) } },
+      trustedModule := own.contains, trustNative := tc.trustNative,
+      nativeFuel := tc.nativeFuel.getD NativeRun.defaultFuel }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs &&
-      !(← strictPrivacyOpt.get) && !(← ppAllOpt.get)
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .conv && !unboxStructs &&
+      proofSteps == Budget.defaultSteps && !traceProofSteps && !(← strictPrivacyOpt.get) && !(← ppAllOpt.get)
     then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
@@ -149,6 +172,9 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
     -- the key starts from the headers the file sees; modules enter it by their own keys
     let key₀ := hash (toString (headers.toList.map (·.2)))
     pure (← Cache.elaborateCached dir input init key₀).1
+
+/-- (27a) `--trust-native` and `--native-fuel N`. -/
+def nativeOpts (tc : Toolchain) : Bool × Nat := (tc.trustNative, tc.nativeFuel.getD NativeRun.defaultFuel)
 
 def checkCmd (tc : Toolchain) (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
@@ -182,7 +208,7 @@ def runCmd (tc : Toolchain) (path : String) (llvm : Bool) : IO UInt32 := do
 def kernelOpt : List String → Except String (Regularity × Bool × List String)
   | "--regularity" :: m :: rest => do
     let r ← match m with
-      | "full" => pure Regularity.full | "nonprop" => pure .nonProp | "refl" => pure .refl
+      | "full" => pure Regularity.full
       | "off" => pure .off | _ => throw s!"unknown regularity mode {m}"
     let (_, p, rest) ← kernelOpt rest
     return (r, p, rest)
@@ -195,7 +221,10 @@ def kernelOpt : List String → Except String (Regularity × Bool × List String
   | [] => return (.off, false, [])
 
 def main (args : List String) : IO UInt32 := do
-  if args == ["--version"] then IO.println (← versionLine "wiz"); return 0
+  -- (after the toolchain flags: the tarball's and tower's wrappers put `-I LIB` and
+  -- their flags before the user's arguments)
+  if ((({} : Toolchain).parseFlags args).2) == ["--version"] then
+    IO.println (← versionLine "wiz"); return 0
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   -- (26f) a release toolchain's own C compiler, GMP and GC are the defaults
@@ -209,6 +238,9 @@ def main (args : List String) : IO UInt32 := do
   let args := args.filter (· != "--unbox-structs")
   lazyProofsOpt.set (!args.contains "--eager-proofs")
   let args := args.filter (· != "--eager-proofs")
+  let args ← match takeProofSteps args with
+    | .ok (k, t, a) => do proofStepsOpt.set (k.getD Budget.defaultSteps, t); pure a
+    | .error e => do IO.eprintln e; return 1
   let args ← match takeInertOpt args with
     | .ok (r, a) => do if let some r := r then inertOpt.set r
                        pure a
@@ -232,12 +264,12 @@ def main (args : List String) : IO UInt32 := do
     buildCmd tc path out true false true
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
-  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc); pure 0
+  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc) (native := nativeOpts tc); pure 0
   | "lsp" :: opts => do
     match lspOptions opts with
     | none => IO.println usage; pure 2
     | some (listen, stdio) =>
-      LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc)
+      LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc) (nativeOpts tc)
       -- (an infoview's reader thread may still be blocked: don't wait for it)
       IO.Process.exit 0
   | _ => do IO.println usage; pure 0

@@ -6,7 +6,7 @@ namespace Wiz
 /-- The release this tree is, or leads up to (`-dev` until the commit that is tagged).
 Keep it in step with `version` in lakefile.toml and flake.nix, and with the copy in
 the self-hosted tower (`tower/Tower/Cli.wiz`, `--version`). -/
-def version : String := "0.1.0-dev"
+def version : String := "0.1.0"
 
 /-- The commit a release toolchain was built from: the file `REVISION` that the release
 tarball and tower's installs write next to the toolchain's library

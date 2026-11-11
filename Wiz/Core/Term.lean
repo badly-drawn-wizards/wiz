@@ -166,6 +166,14 @@ inductive Term (R : Type) where
   | up (a : Term R)
   /-- `down t : A` for `t : ULift A`; `down (up a) ↦ a`, and `t ≡ up (down t)` (η) -/
   | down (t : Term R)
+  /-- (P2) **the proof marker**: `prf.{l} t : T` for `t : T`, where `l` must be the sort
+  of `T` (`T : Sort l`; the kernel verifies it). When `l` is `0`, `t` is a proof: the
+  evaluator suspends it and never looks at it (`Head.prf`); otherwise it evaluates `t`.
+  A level-generic term is marked at its level `u` and becomes a suspended proof at the
+  instance `u := 0`. Outside a proof, the kernel requires every term whose sort may be
+  `0` to be marked or neutral-shaped (`Check.lean`, "the proof marker"): so it never
+  evaluates a proof. The elaborator's marking pass (`Wiz/Elab/Mark.lean`) inserts it. -/
+  | prf (l : Level) (t : Term R)
   deriving Repr, Inhabited, BEq
 
 /-- A global declaration. `value = none` is an axiom/postulate. -/
@@ -267,11 +275,15 @@ don't need a case per constructor. -/
   | .ulift l A => return .ulift (← fl l) (← f 0 A)
   | .up a => return .up (← f 0 a)
   | .down t => return .down (← f 0 t)
+  | .prf l t => return .prf (← fl l) (← f 0 t)
   -- (the arguments are children like any others: `Val.lvlBound` reads a closure's free
   -- variables through this traversal, and missing them here made `sameVal` identify
   -- `Nat.add x` with `Nat.add y`, which proved `False`; `wiz-notes/soundness-audit.md`, S1)
   | .natOp op args => return .natOp op (← args.mapM (f 0))
-  | t => pure t
+  -- the leaves, by name: with a default arm a new constructor would be skipped silently
+  -- (S1), and this way it does not compile until it has a case
+  | t@(.var _) | t@(.mvar _) | t@.tt | t@.qty | t@(.qlit _) | t@(.enum _) | t@(.tag ..) | t@.size | t@.szInf
+  | t@(.natLit _) => pure t
 where
   hintM (fl : Level → m Level) (f : Nat → Term R → m (Term R)) :
       Name × List Level × List (Term R) → m (Name × List Level × List (Term R))
@@ -313,6 +325,13 @@ partial def instantiateAt (t : Term R) (k : Nat) (s : Term R) (depth : Nat := 0)
     else if i == k + depth then s.lift depth
     else .var (i - 1)
   | t => Id.run <| t.mapChildrenM pure (fun d c => pure (instantiateAt c k s (depth + d)))
+
+/-- (P2) Remove the proof markers that mark nothing: `prf.{l} t` at a level that is not
+`0` is `t` (a level-generic term, at an instance that is not `Prop`). A proof (`l = 0`)
+is kept as it is. For the compiler, which looks at the shapes of terms. -/
+partial def stripMarks : Term R → Term R
+  | .prf l t => if l.isZero then .prf l t else stripMarks t
+  | t => Id.run <| t.mapChildrenM pure (fun _ c => pure (stripMarks c))
 
 /-- The head and arguments of an application spine. -/
 def spine : Term R → Term R × List (Term R)
@@ -388,32 +407,95 @@ partial def Term.phantomTailVal? {R : Type} : Term R → Option (Term R)
   | .unit _ => some .tt
   | _ => none
 
-/-- Which casts `cast A A e t` reduce to `t` (regularity), for the D1 experiment
-(`wiz-notes/d1-experiment.md`). Regularity, definitional proof irrelevance and an
-impredicative `Prop` together break normalisation (Abel–Coquand, LMCS 2020;
-`Tests/Elab.lean` "D1"). The default is `full`; the others are prototypes. -/
+/-! ### The step budget for reading proofs back (P2)
+
+The kernel never evaluates a proof. The elaborator does, when it reads a value that
+holds a suspended proof back into a term (`quote` outside the kernel: metavariable
+solutions, `#reduce`, hover, messages), and a proof need not have a normal form
+(Abel–Coquand). So that evaluation runs within a **budget of steps**, counted, not
+timed: the same on every machine and in every run. A step is one instantiation of a
+closure (a β-step, or going under a binder to read it back); every loop of the evaluator
+takes one. When the budget runs out the evaluator stops computing (a closure's
+instantiation is a stuck constant from then on), and the proof reads back as a constant
+whose name is the message.
+
+The counter is a mutable cell behind a pure interface (`unsafeBaseIO`). It is made for
+one read-back, used only by the evaluation that read-back starts, and dropped with it,
+so nothing else can observe it. The kernel's own evaluation never has one
+(`Globals.budget = none`): it does not evaluate proofs, so it needs no bound. -/
+
+/-- A step budget: the steps left, plus one (`0`: it ran out). -/
+structure Budget where
+  ref : IO.Ref Nat
+
+namespace Budget
+
+instance : Nonempty Budget := ⟨⟨Classical.choice inferInstance⟩⟩
+
+@[never_extract, noinline] unsafe def tickImpl (b : Budget) : Bool :=
+  unsafeBaseIO do
+    let n ← b.ref.get
+    if n ≤ 1 then do b.ref.set 0; pure false
+    else do b.ref.set (n - 1); pure true
+
+/-- Take one step: `false` when the budget has run out. -/
+@[implemented_by tickImpl] opaque tick (b : Budget) : Bool
+
+/-- (An action, so that what comes after it in `runImpl` comes after `x` is computed: the
+compiler may move a pure computation, not an action.) -/
+@[never_extract, noinline] private def computed {α : Type} (x : α) : BaseIO α := pure x
+
+@[never_extract, noinline] unsafe def runImpl {α : Type} [Inhabited α] (steps : Nat) (f : Budget → α) : α × Nat :=
+  unsafeBaseIO do
+    let r ← IO.mkRef (steps + 1)
+    let x ← computed (f ⟨r⟩)
+    let left ← r.get
+    -- (the budget is over: a closure that outlived it, in a metavariable's solution, must
+    -- not find it exhausted later)
+    r.set (1 <<< 62)
+    pure (x, steps + 1 - left)
+
+/-- Compute `f` with a fresh budget of `steps` steps. Returns the result and the number of
+steps it took; `steps + 1` means the budget ran out. (Afterwards the budget no longer
+counts: a value made under it that is forced later computes freely.) -/
+@[implemented_by runImpl] opaque run {α : Type} [Inhabited α] (steps : Nat) (f : Budget → α) : α × Nat
+
+/-- What a proof reads back as when its budget ran out: a constant with this name. No
+declaration has it, so the kernel rejects a term that contains it, with this text. -/
+def message (steps : Nat) : String :=
+  s!"‹a proof was not read back: it needs more than {steps} evaluation steps (raise the bound with --proof-steps N)›"
+
+/-- Is this the name of `message`'s constant? -/
+def isMessage (n : String) : Bool := n.startsWith "‹a proof was not read back"
+
+/-- The default: far above what any proof in the library needs to be read back (the
+largest measured is noted in `wiz-notes/prf-marker.md`), and small enough to answer at once. -/
+def defaultSteps : Nat := 1000000
+
+end Budget
+
+/-- Regularity beyond the inert types, for the D1 experiment (`wiz-notes/d1-experiment.md`,
+`conv-regularity.md`). `full` is Cast-Refl at **every** type, [PLT25]'s rule: conversion
+identifies `cast A B e t` with `t` when `A ≡ B`. It is decided in the conversion checker
+only; the evaluator never fires it. Off by default: the published decidability proof
+covers Π, ℕ, ⊥, the impredicative `Prop` and ∃, not Wiz's data types. -/
 inductive Regularity where
-  /-- whenever the two types are equal (today's rule) -/
+  /-- Cast-Refl at every type, in conversion -/
   | full
-  /-- (R1) only at types that are not propositions -/
-  | nonProp
-  /-- (R2) only along `refl`, `reflTy`, `()` or a `transp` of such proofs along such proofs -/
-  | refl
-  /-- never: a cast computes only by the shapes of its types -/
+  /-- only at inert types (`InertReg`) -/
   | off
   deriving BEq, Repr, Inhabited
 
-/-- Regularity at inert types (InReg, D1/P1): when `cast A B e t ↦ t` at an inert `A`.
-See `wiz-notes/p1-stable.md`. -/
+/-- Regularity at inert types (InReg, D1/P1). The rule is InReg_conv: `cast A B e t ≡ t`
+when `A` is inert and `A ≡ B` (`wiz-notes/conv-regularity.md`). -/
 inductive InertReg where
-  /-- the old rule: `A` and `B` quote alike (`sameVal`). Not stable under substitution
-  (P1): kept only to measure what the stable rules lose -/
-  | syntactic
-  /-- (default) `A` and `B` are equal by `groundEqTy`: no free variable in a relevant
-  position, so the decision is invariant under conversion and stable under substitution -/
+  /-- only the evaluator's fast path: `cast A B e t ↦ t` when `A` and `B` are equal by
+  `groundEqTy` (no free variable in a relevant position, so the decision is invariant
+  under conversion and stable under substitution). A fragment of the rule; kept as a
+  flag to show what the fast path alone rejects -/
   | ground
-  /-- `ground`, and conversion also identifies `cast A B e t` with `t` at an inert `A`
-  when `A ≡ B` (InReg_conv, decided by `convTy`) -/
+  /-- (default) the rule: `ground` in the evaluator, and conversion identifies a stuck
+  `cast A B e t` with `t` at an inert type when `A ≡ B` (`convTy`) -/
   | conv
   deriving BEq, Repr, Inhabited
 
@@ -437,11 +519,30 @@ structure Globals (R : Type) where
   applying the equivalence; `split` on a proof is η. See `docs/CoreSpec.md` and
   `wiz-notes/p2-proofs.md`. -/
   lazyProofs : Bool := true
+  /-- (P2, for the later step to relevance marks; off by default) the strict form of the
+  marker's requirement: outside a proof, *every* term of a proposition must be `prf t`,
+  variables and applications too (by default a neutral-shaped proof needs no marker).
+  With it, "this argument is a proof" is readable from the syntax alone. -/
+  strictProofs : Bool := false
+  /-- (P2) how many evaluation steps reading one suspended proof back may take, outside
+  the kernel (`Budget`; `--proof-steps N`) -/
+  proofSteps : Nat := Budget.defaultSteps
+  /-- (P2, internal) the budget of the read-back in progress. Never set in the kernel. -/
+  budget : Option Budget := none
+  /-- (P2, `--trace-proof-steps`) print the steps each read-back of a proof took (stderr) -/
+  traceProofSteps : Bool := false
+  /-- (for the step to mandatory sorts; off) the marking pass also writes the sort of
+  every `Π`/`Σ` it can compute. **Off, because it is only safe when it is complete**: the
+  pass does not go inside proofs, and a type with its sort and the same type without are
+  not interchangeable in an equation between types (`propSort?`, U5): with the endpoints
+  of a `cast` annotated and the `reflTy` that proves them equal not, a valid term was
+  rejected (found by the differential test). -/
+  fillSorts : Bool := false
   /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
   it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
   quoteErasesProofs : Bool := false
-  /-- (P1) regularity at inert types: `ground` (stable) by default -/
-  inertReg : InertReg := .ground
+  /-- (P1) regularity at inert types: decided by conversion (`conv`) by default -/
+  inertReg : InertReg := .conv
   /-- a compiler option, not read by the kernel (`--unbox-structs`, stage 22i): erasure
   represents a Σ whose second component is a structure's tail by its first component
   (`unboxedSigma` in `Compiler/Erase.lean`). Off by default: it is not stable under
