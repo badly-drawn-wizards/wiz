@@ -38,8 +38,11 @@ inductive Pi : Rules
   | eqTyApart {Γ : Ctx} {A₁ B₁ A₂ B₂ : Tm} {s₁ s₂ : Lvl} {q q' : Q} : s₁.NeverZero → s₂.NeverZero → q ≠ q' →
       Pi ⟨[Γ ⊢ .pi q (some s₁) A₁ B₁ ∶ .sort s₁, Γ ⊢ .pi q' (some s₂) A₂ B₂ ∶ .sort s₂],
         Γ ⊢ .eqTy (.pi q (some s₁) A₁ B₁) (.pi q' (some s₂) A₂ B₂) ⟶ .False' ∶ .sort 0⟩
-  | cast {Γ : Ctx} {A₁ B₁ A₂ B₂ e t : Tm} {s₁ s₂ : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero →
+  /-- the reduct casts between the domains and between the codomains, so each pair is in one
+  sort (a cast is formed at one sort); otherwise the cast is stuck -/
+  | cast {Γ : Ctx} {A₁ B₁ A₂ B₂ e t : Tm} {s₁ s₂ i j : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero →
       Pi ⟨[Γ ⊢ .pi q (some s₁) A₁ B₁ ∶ .sort s₁, Γ ⊢ .pi q (some s₂) A₂ B₂ ∶ .sort s₂,
+          Γ ⊢ A₁ ∶ .sort i, Γ ⊢ A₂ ∶ .sort i, (A₁ :: Γ) ⊢ B₁ ∶ .sort j, (A₂ :: Γ) ⊢ B₂ ∶ .sort j,
           Γ ⊢ e ∶ .eqTy (.pi q (some s₁) A₁ B₁) (.pi q (some s₂) A₂ B₂), Γ ⊢ t ∶ .pi q (some s₁) A₁ B₁],
         Γ ⊢ .cast (.pi q (some s₁) A₁ B₁) (.pi q (some s₂) A₂ B₂) e t ⟶ .castPi A₁ B₁ A₂ B₂ e t
           ∶ .pi q (some s₂) A₂ B₂⟩

@@ -67,6 +67,13 @@ theorem Derivable.union_right {R S : Rules} {j : Jdg} (d : Derivable S j) : Deri
 
 namespace Spec
 
+/-- The two rule sets for an equation between two `Π` (`Σ`, `ULift`) types (`EqTyCross.lean`,
+`EqTyLevelled.lean`). Rules outside those files that depend on the choice take it as a
+parameter (`ULift`). -/
+inductive EqTyVariant where
+  | cross | levelled
+  deriving Repr, DecidableEq
+
 scoped notation:40 Γ " ⊢ " t " ∶ " A => Jdg.ty Γ t A
 scoped notation:40 Γ " ⊢ " t " ≡ " u " ∶ " A => Jdg.eq Γ t u A
 scoped notation:40 Γ " ⊢ " t " ⟶ " u " ∶ " A => Jdg.red Γ t u A

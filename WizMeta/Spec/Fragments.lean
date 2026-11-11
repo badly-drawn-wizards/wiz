@@ -33,10 +33,6 @@ at `μ`/`Desc` by codes. Sizes and usage checking are left out on purpose.
 
 namespace WizMeta.Spec
 
-inductive EqTyVariant where
-  | cross | levelled
-  deriving Repr, DecidableEq
-
 def eqTyRules : EqTyVariant → Rules
   | .cross => EqTyCross
   | .levelled => EqTyLevelled
@@ -49,7 +45,7 @@ def T1 (sg : Sig) (var : EqTyVariant := .cross) : Rules := T0 sg var ∪ InReg
 /-- Tprog, with one of the three rule sets for equations between constructors
 (`PayloadStuck`, `PayloadUniform`, or `PayloadKernel whnfTy`). -/
 def Tprog (sg : Sig) (var : EqTyVariant := .cross) (payload : Rules := PayloadStuck) : Rules :=
-  T1 sg var ∪ ULift ∪ Desc ∪ Mu ∪ payload
+  T1 sg var ∪ ULift var ∪ Desc ∪ Mu ∪ payload
 
 theorem T0_sub_T1 {sg var j} (d : Derivable (T0 sg var) j) : Derivable (T1 sg var) j := d.union_left
 theorem T1_sub_Tprog {sg var payload j} (d : Derivable (T1 sg var) j) : Derivable (Tprog sg var payload) j :=

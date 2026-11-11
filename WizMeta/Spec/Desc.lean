@@ -25,13 +25,13 @@ def delimPrems (Γ : Ctx) (l v : Lvl) (I P mret marg mrec mhrec : Tm) : List Jdg
 inductive Desc : Rules
   | form {Γ : Ctx} {I : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ I ∶ .sort l.succ], Γ ⊢ .desc l I ∶ .sort l.succ.succ⟩
   | ret {Γ : Ctx} {I i : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ .desc l I ∶ .sort l.succ.succ, Γ ⊢ i ∶ I], Γ ⊢ .dret i ∶ .desc l I⟩
-  | arg {Γ : Ctx} {q S D I : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ q ∶ .qty, Γ ⊢ S ∶ .sort l.succ, Γ ⊢ D ∶ .argContTy l I S], Γ ⊢ .darg q S D ∶ .desc l I⟩
+  | arg {Γ : Ctx} {q S D I : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ q ∶ .qty, Γ ⊢ S ∶ .sort l.succ, Γ ⊢ D ∶ .argContTy l I S], Γ ⊢ .darg q S D ∶ .desc l I⟩
   | drec {Γ : Ctx} {q j I D : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ q ∶ .qty, Γ ⊢ j ∶ I, Γ ⊢ D ∶ .desc l I], Γ ⊢ .drec q j D ∶ .desc l I⟩
   | hrec {Γ : Ctx} {q H j I D : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ q ∶ .qty, Γ ⊢ H ∶ .sort l.succ, Γ ⊢ j ∶ .hrecIndexTy l I H, Γ ⊢ D ∶ .desc l I],
       Γ ⊢ .dhrec q H j D ∶ .desc l I⟩
   | cong {Γ : Ctx} {I I' : Tm} {l l' : Lvl} : l.Equiv l' → Desc ⟨[Γ ⊢ I ≡ I' ∶ .sort l.succ], Γ ⊢ .desc l I ≡ .desc l' I' ∶ .sort l.succ.succ⟩
   | retCong {Γ : Ctx} {I i i' : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ .desc l I ∶ .sort l.succ.succ, Γ ⊢ i ≡ i' ∶ I], Γ ⊢ .dret i ≡ .dret i' ∶ .desc l I⟩
-  | argCong {Γ : Ctx} {q q' S S' D D' I : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ q ≡ q' ∶ .qty, Γ ⊢ S ≡ S' ∶ .sort l.succ, Γ ⊢ D ≡ D' ∶ .argContTy l I S],
+  | argCong {Γ : Ctx} {q q' S S' D D' I : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ I ∶ .sort l.succ, Γ ⊢ q ≡ q' ∶ .qty, Γ ⊢ S ≡ S' ∶ .sort l.succ, Γ ⊢ D ≡ D' ∶ .argContTy l I S],
       Γ ⊢ .darg q S D ≡ .darg q' S' D' ∶ .desc l I⟩
   | recCong {Γ : Ctx} {q q' j j' I D D' : Tm} {l : Lvl} : Desc ⟨[Γ ⊢ q ≡ q' ∶ .qty, Γ ⊢ j ≡ j' ∶ I, Γ ⊢ D ≡ D' ∶ .desc l I],
       Γ ⊢ .drec q j D ≡ .drec q' j' D' ∶ .desc l I⟩

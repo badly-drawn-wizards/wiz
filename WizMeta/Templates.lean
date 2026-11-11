@@ -66,8 +66,11 @@ def delimMethodTys (l v' : Lvl) (I P : Tm) : Tm × Tm × Tm × Tm :=
   let env := [P, I]
   (mret.2.close env, marg.2.close env, mrec.2.close env, mhrec.2.close env)
 
-/-- `fun j => μ D j`, the family a constructor's recursive fields live in. -/
-def muFamily (l : Lvl) (I D : Tm) : Tm := .lam (.mu l I.shift D.shift (v 0))
+/-- `(fun j => μ D j : (j : I) → Sort (l+1))`, the family a constructor's recursive fields live
+in. Annotated, so that the reducts that apply it (`X j` in a payload equation) are
+inferable; the annotation is `familyTy` (written out: it is defined after this). -/
+def muFamily (l : Lvl) (I D : Tm) : Tm :=
+  .ann (.lam (.mu l I.shift D.shift (v 0))) (.pi .many (some l.succ.succ) I (.sort l.succ))
 
 /-- `(i : I) → (_ : μ D i) → Sort v`, the type of `ind`'s motive. -/
 def indMotiveTy (l v' : Lvl) (I D : Tm) : Tm :=

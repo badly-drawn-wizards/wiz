@@ -41,8 +41,10 @@ inductive Sigma : Rules
   | eqTyApart {Γ : Ctx} {A₁ B₁ A₂ B₂ : Tm} {s₁ s₂ : Lvl} {q q' : Q} : s₁.NeverZero → s₂.NeverZero → q ≠ q' →
       Sigma ⟨[Γ ⊢ .sigma q (some s₁) A₁ B₁ ∶ .sort s₁, Γ ⊢ .sigma q' (some s₂) A₂ B₂ ∶ .sort s₂],
         Γ ⊢ .eqTy (.sigma q (some s₁) A₁ B₁) (.sigma q' (some s₂) A₂ B₂) ⟶ .False' ∶ .sort 0⟩
-  | cast {Γ : Ctx} {A₁ B₁ A₂ B₂ e t : Tm} {s₁ s₂ : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero →
+  /-- as for `Π`: the components pairwise in one sort -/
+  | cast {Γ : Ctx} {A₁ B₁ A₂ B₂ e t : Tm} {s₁ s₂ i j : Lvl} {q : Q} : s₁.NeverZero → s₂.NeverZero →
       Sigma ⟨[Γ ⊢ .sigma q (some s₁) A₁ B₁ ∶ .sort s₁, Γ ⊢ .sigma q (some s₂) A₂ B₂ ∶ .sort s₂,
+          Γ ⊢ A₁ ∶ .sort i, Γ ⊢ A₂ ∶ .sort i, (A₁ :: Γ) ⊢ B₁ ∶ .sort j, (A₂ :: Γ) ⊢ B₂ ∶ .sort j,
           Γ ⊢ e ∶ .eqTy (.sigma q (some s₁) A₁ B₁) (.sigma q (some s₂) A₂ B₂), Γ ⊢ t ∶ .sigma q (some s₁) A₁ B₁],
         Γ ⊢ .cast (.sigma q (some s₁) A₁ B₁) (.sigma q (some s₂) A₂ B₂) e t ⟶ .castSigma A₁ B₁ A₂ B₂ e t
           ∶ .sigma q (some s₂) A₂ B₂⟩

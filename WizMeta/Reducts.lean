@@ -151,9 +151,10 @@ def argContTy (l : Lvl) (I S : Tm) : Tm := .pi .many (some l.succ.succ) S (.desc
 def hrecIndexTy (l : Lvl) (I H : Tm) : Tm := .pi .many (some l.succ) H I.shift
 /-- The type of a family over the index type: `(i : I) → Sort (l+1)`. -/
 def familyTy (l : Lvl) (I : Tm) : Tm := .pi .many (some l.succ.succ) I (.sort l.succ)
-/-- The type of `transp`'s motive: `(0 b : A) → (0 _ : a =_A b) → Prop`. -/
-def transpMotiveTy (A a : Tm) : Tm :=
-  .pi .zero (some 1) A (.pi .zero (some 1) (.eq A.shift a.shift (.var 0)) (.sort 0))
+/-- The type of `transp`'s motive for `A : Sort l`: `(0 b : A) → (0 _ : a =_A b) → Prop`.
+The inner `Π` is in `Sort (imax 0 1) = Sort 1`, the outer one in `Sort (imax l 1)`. -/
+def transpMotiveTy (l : Lvl) (A a : Tm) : Tm :=
+  .pi .zero (some (.imax l 1)) A (.pi .zero (some 1) (.eq A.shift a.shift (.var 0)) (.sort 0))
 
 end Tm
 

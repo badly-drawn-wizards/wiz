@@ -28,7 +28,7 @@ inductive Eq : Rules
   | refl {Γ : Ctx} {A a : Tm} {l : Lvl} : Eq ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ a ∶ A], Γ ⊢ .refl A a ∶ .eq A a a⟩
   | reflTy {Γ : Ctx} {A : Tm} {l : Lvl} : Eq ⟨[Γ ⊢ A ∶ .sort l], Γ ⊢ .reflTy A ∶ .eqTy A A⟩
   /-- transport into a `Prop`-valued family; with `cast` it gives J -/
-  | transp {Γ : Ctx} {A a b P p e : Tm} {l : Lvl} : Eq ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ a ∶ A, Γ ⊢ b ∶ A, Γ ⊢ P ∶ .transpMotiveTy A a,
+  | transp {Γ : Ctx} {A a b P p e : Tm} {l : Lvl} : Eq ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ a ∶ A, Γ ⊢ b ∶ A, Γ ⊢ P ∶ .transpMotiveTy l A a,
         Γ ⊢ p ∶ .app (.app P a) (.refl A a), Γ ⊢ e ∶ .eq A a b],
       Γ ⊢ .transp A a P p b e ∶ .app (.app P b) e⟩
   | cast {Γ : Ctx} {A B e t : Tm} {l : Lvl} : Eq ⟨[Γ ⊢ A ∶ .sort l, Γ ⊢ B ∶ .sort l, Γ ⊢ e ∶ .eqTy A B, Γ ⊢ t ∶ A], Γ ⊢ .cast A B e t ∶ B⟩

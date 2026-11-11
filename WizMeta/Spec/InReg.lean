@@ -30,12 +30,12 @@ inductive InReg : Rules
   | conv {Γ : Ctx} {A A' : Tm} {l : Lvl} : InReg ⟨[.inert Γ A, Γ ⊢ A ≡ A' ∶ .sort l], .inert Γ A'⟩
   | enum {Γ : Ctx} {n : Nat} : InReg ⟨[.wf Γ], .inert Γ (.enum n)⟩
   | unit {Γ : Ctx} {l : Lvl} : l.NeverZero → InReg ⟨[.wf Γ], .inert Γ (.unit l)⟩
-  | ulift {Γ : Ctx} {A : Tm} {l : Lvl} : l.NeverZero → InReg ⟨[.inert Γ A], .inert Γ (.ulift l A)⟩
+  | ulift {Γ : Ctx} {A : Tm} {l : Lvl} : l.NeverZero → InReg ⟨[Γ ⊢ .ulift l A ∶ .sort l, .inert Γ A], .inert Γ (.ulift l A)⟩
   | sigma {Γ : Ctx} {A B : Tm} {s : Lvl} {q : Q} : s.NeverZero →
       InReg ⟨[Γ ⊢ .sigma q (some s) A B ∶ .sort s, .inert Γ A, .inert (A :: Γ) B], .inert Γ (.sigma q (some s) A B)⟩
   | mu {Γ : Ctx} {I D i : Tm} {l : Lvl} : InReg ⟨[Γ ⊢ .mu l I D i ∶ .sort l.succ, .inert Γ I, .inertD Γ l I D], .inert Γ (.mu l I D i)⟩
   | descConv {Γ : Ctx} {I D D' : Tm} {l : Lvl} : InReg ⟨[.inertD Γ l I D, Γ ⊢ D ≡ D' ∶ .desc l I], .inertD Γ l I D'⟩
-  | ret {Γ : Ctx} {j I : Tm} {l : Lvl} : InReg ⟨[Γ ⊢ j ∶ I], .inertD Γ l I (.dret j)⟩
+  | ret {Γ : Ctx} {j I : Tm} {l : Lvl} : InReg ⟨[Γ ⊢ .dret j ∶ .desc l I], .inertD Γ l I (.dret j)⟩
   | drec {Γ : Ctx} {j I D q : Tm} {l : Lvl} : InReg ⟨[Γ ⊢ j ∶ I, .inertD Γ l I D], .inertD Γ l I (.drec q j D)⟩
   /-- a tag field: tag by tag -/
   | argTag {Γ : Ctx} {q D I : Tm} {l : Lvl} {k : Nat} : InReg ⟨(Γ ⊢ .darg q (.enum k) D ∶ .desc l I) :: tagPrems Γ l I D k id,
