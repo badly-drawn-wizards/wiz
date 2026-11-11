@@ -98,8 +98,8 @@ codes need. The shims are scripts rather than tower itself under another name (e
 uses one binary for everything) because a Lean program can't see its `argv[0]` and
 can't `exec`. A script costs one `sh` and one quick tower run per call.
 
-**Why tower is written in Lean.** Wiz programs can read their arguments now (`IO.args`,
-21k), but they can't start or `exec` processes, read environment variables, list,
+**Why tower was written in Lean** (it is now also written in Wiz, 26e). Wiz programs could read their arguments (`IO.args`,
+21k), but they couldn't start or `exec` processes, read environment variables, list,
 rename or link files, or set file modes. tower needs all of these, and grail is written
 in Lean for the same reason. tower is its own small library (`Tower/`, which doesn't
 import Wiz) and its own Lake executable, so its Nix package builds in seconds.
@@ -154,11 +154,12 @@ linked in. It runs on:
 * pull requests that touch the packaging: the tarball is built and tested, but nothing
   is uploaded.
 
-The job also checks and compiles `examples/io.wiz` with the unpacked tarball on plain
-Ubuntu, and installs the tarball through tower from a local release directory.
-`wiz build` and grail need a C compiler and GMP (`apt install gcc libgmp-dev`); the
-self-hosted toolchain also needs the Boehm collector (`libgc-dev`, with `tower set
-gc-ldflags "-lgc -lpthread"`).
+The job also builds and runs `examples/io.wiz` and a small grail package with the
+unpacked tarball in plain Ubuntu 20.04 and 24.04 containers (no compiler, no GMP), runs
+the programs built there in Ubuntu 18.04, and installs the tarball through tower from a
+local release directory. The tarball brings
+its own C compiler, GMP and Boehm collector (26f), so `wiz build` and grail need nothing
+installed.
 
 **Editors.** wiz.nvim starts `wiz lsp` with the root directory as its working
 directory, so the shim picks that project's `wiz-toolchain`. `share/wiz/editors/nvim`
@@ -186,6 +187,87 @@ holding a tiny Lake project whose `wiz` and `grail` print their arguments, with 
   linked as a GC root and unlinked by `uninstall` (skipped when there is no `nix`).
 
 The shims in the tests call the test driver (`tests --tower …`), which runs tower.
+
+## 26e: tower in Wiz ✅
+
+`tower/` is tower again, in Wiz: a grail package (`tower/grail.wiz`) whose executable
+`tower` (`cd tower && grail build`: `.grail/bin/tower`) has the same commands, messages,
+settings file, `tower.info` and layout as the Lean one, module for module
+(`Tower/Basic.wiz`, `Install.wiz`, `Cli.wiz`). It uses `lib/Sys.wiz` (9h, 9k) for processes,
+the environment and files (`FS.realPath`, `IO.appPath`, and `SpawnOptions` for a child's
+working directory and for `lake build` without the Lean variables), and `lib/Text.wiz`
+(9j) for text; no C of its own. `grail test` in `tower/` checks the pure
+functions (`tests/pure.wiz` against `tests/pure.expected`).
+
+**Tests.** The cases of `Tests/Tower.lean` run tower as a process, through its command
+line only, against either implementation: group `tower` against the Lean one (the test
+driver, `tests --tower`), group `tower-wiz` against `tower/`, which the group's first case
+builds with grail in `.lake/build/tower-wiz` (about 10 s from clean; later cases find it
+up to date) and whose `grail test` it runs. The Wiz tower follows 26g too: release
+snapshots of commits (short shas through the `snapshot-*` tags, the `.sha256` required),
+`nightly` as the commit of the tag `nightly`, `keep/` tags as specs, release in the `auto`
+candidates, and the same error for a commit without a snapshot.
+
+The Lean tower is still what the flake (`packages.tower`) and the release tarball ship.
+Switching means: `packages.tower` builds `tower/` with grail (the `wiz` package plus GMP
+and a C compiler at build time instead of Lake: the binary then links GMP, so the
+package's closure grows by GMP and glibc only), `scripts/release-tarball.sh` takes the
+grail-built binary (it is linked against the system GMP like `wiz build` output, so the
+tarball's "glibc and the C runtime only" promise needs a static GMP or `--gmp` with
+mini-gmp), the `--tower` mode of the test driver and `Tower/` go, and the group `tower`
+is dropped in favour of `tower-wiz`.
+
+## 26f: the C toolchain in the release tarball ✅
+
+Like Lean's releases, a release tarball ships the C toolchain its programs are built
+with, in `share/wiz/cc/` (`scripts/bundle-cc.sh`, run by the release job). On a machine
+with no `gcc`, GMP or Boehm GC, `tower default nightly` and then `wiz build`, `wiz run`
+and `grail build` work.
+
+```
+share/wiz/cc/
+  bin/cc          clang --sysroot=../sysroot -pthread (links also get libm, as needed)
+  bin/llc         for --llvm: the same clang on the textual IR (-x ir), with llc's arguments
+  bin/clang, bin/ld.lld, lib/*.so*, lib/clang/N/   from the Lean toolchain (`lean --print-prefix`)
+  sysroot/        glibc 2.27 + Linux 4.15 headers and link libraries (Ubuntu 18.04's
+                  libc6, libc6-dev, linux-libc-dev), static GMP 6.3.0 (--enable-fat)
+                  and Boehm GC 8.2.8, built by the script
+  LICENSES/, VERSIONS
+```
+
+What Lean ships, for comparison (lean-4.35.0-linux): clang, ld.lld, libLLVM and
+libclang-cpp, compiler-rt, a link-only glibc 2.26 and static `libgmp.a`/`libuv.a`, but no
+libc headers (Lean's C needs only `lean.h`) and no `llc`. Wiz's runtime and `import_c`
+need libc headers, so the bundle has a whole sysroot, with headers and libraries of the
+same glibc. The clang is Lean's own, so its LLVM follows `lean-toolchain`. Every
+download is pinned by its sha256. The options weighed (zig cc, tcc) are in
+/workspace/wiz-notes/toolchain-cc.md.
+
+**Defaults, not settings.** `wiz` and grail look for `cc/bin/cc` beside their own binary
+(`Toolchain.withBundled`: `<dir>/.lake/build/bin/wiz` next to `<dir>/cc`, as they find
+`<dir>/lib`). When it is there, the defaults are `cc` and `llc` from the bundle and
+`gc-ldflags -lgc -lpthread`; GMP is found by plain `-lgmp`. Flags, `grail.local.wiz`,
+a package's settings and tower's wrapper flags (`tower set cc …`) still replace each
+field, so `--cc emcc --gmp mini-gmp.c …` (WebAssembly) or `--cc gcc` (the system's
+compiler and shared GMP) work as before. A checkout and the Nix package (whose wrapper
+passes every flag) have no bundle and keep their defaults.
+
+**What needs which glibc.** The toolchain's own binaries (`wiz`, `grail`, `tower`) need
+glibc 2.27 or later, as before. The bundled compiler needs glibc **2.30** or later
+(Ubuntu 20.04, Debian 11, RHEL 9 and newer): Lean's `libLLVM` and `libclang-cpp`
+reference `GLIBC_2.29`/`GLIBC_2.30` symbols, so Lean's own `leanc` has the same
+requirement. On an older system `wiz check` works and `wiz build` needs `--cc gcc` (and
+`libgmp-dev`). Programs it builds need glibc 2.27 or later (libc, libpthread, and libm
+and ld.so when they use them) and nothing else: GMP and the GC are linked statically.
+The release job checks this by running programs built on Ubuntu 20.04 in Ubuntu 18.04. The runtime keeps to glibc 2.27: a spawn in a directory uses
+`posix_spawn_file_actions_addchdir_np` (glibc 2.29) when the headers have it, else fork,
+chdir and exec with the same errors (`-DWIZ_NO_SPAWN_CHDIR` forces that path; the `sys`
+tests run both). That has
+licence consequences for programs you distribute, explained in docs/building.md
+("What `wiz build` links").
+
+The tarball grows from 72.5 MB to about 131 MB (the bundle is 165 MB unpacked, 59 MB
+compressed; libLLVM and libclang-cpp are most of it).
 
 ## 26g: release snapshots for every master commit ✅
 

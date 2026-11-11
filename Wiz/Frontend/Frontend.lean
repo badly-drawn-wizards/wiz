@@ -99,6 +99,29 @@ where
 
 variable [IsoCache R]
 
+/-- (11q) The syntax a command the user wrote refers to: its nodes of declared kinds
+(`syntax`, `notation`, `infix…`; not the built-in ones), and the names of declared
+syntax categories (in `syntax … : c`, `c:prec` items and quotations `` `(c| …) ``). -/
+partial def syntaxRefs (s : CommandState R) (cmd : Syntax) : Array (Info R) :=
+  go cmd #[]
+where
+  user (i : SourceInfo) : Bool := i.stop > 0 && !i.synthetic
+  cat (c : Syntax) (name : Option Name) (acc : Array (Info R)) : Array (Info R) :=
+    match name with
+    | some n => if user c.info && s.catSites.contains n then acc.push (.syntaxRef c.info (.cat n)) else acc
+    | none => acc
+  go (stx : Syntax) (acc : Array (Info R)) : Array (Info R) :=
+    match stx with
+    | .node i k as =>
+      let acc := if user i && s.kindSites.contains k then acc.push (.syntaxRef i (.kind k)) else acc
+      let acc :=
+        if k == "stx.cat" then cat (stx.getArg 0) (stx.getArg 0).getId? acc
+        else if k == "command.syntax" then cat (stx.getArg 6) (stx.getArg 6).getId? acc
+        else if k.startsWith "quote." then cat (stx.getArg 1) (some (k.drop 6).toString) acc
+        else acc
+      as.foldl (fun acc a => go a acc) acc
+    | _ => acc
+
 /-- Run the frontend on `input` from the state `s`.
 
 `import M` elaborates the library module `M` (once) into the current state. Like
@@ -155,14 +178,19 @@ where
                 go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
             | none => go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
           let errs := if isoErrs.isEmpty then inner.messages.filter (·.severity == .error) else isoErrs
-          let msg : Msg := { info := cmd.info, severity := .error,
-                             text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+          -- (a declaration this file already has is reported as it is, at the import)
+          let msg : Msg := match errs.find? (·.code == "duplicate-declaration") with
+            | some d => { info := cmd.info, severity := .error, text := d.text, code := d.code }
+            | none => { info := cmd.info, severity := .error,
+                        text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
           -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
           let msgs := msgs ++ (inner.messages.filter (·.severity == .warning)).map fun w =>
             { info := cmd.info, severity := .warning, text := s!"module {m}: {w.render src}" }
-          -- the info tree is positions in this file: keep only ours
-          go' input base chars stop { inner with messages := msgs, module := s.module, infos := s.infos } memo
+          -- the info tree is positions in this file: keep only ours (and (11q) the import)
+          -- (13m) the module's `local` notation stays in it
+          let infos := if s.termInfo then s.infos.push (.importMod (cmd.getArg 1).info m) else s.infos
+          go' input base chars stop { (inner.endModule s) with messages := msgs, module := s.module, infos } memo
       else go' input base chars stop (step cmd s) memo
     | .error e =>
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate
@@ -173,6 +201,8 @@ where
   /-- Elaborate one command, recording where the declarations it adds come from. -/
   step (cmd : Syntax) (s : CommandState R) : CommandState R :=
     let before := s.globals.order.size
+    -- (11q) for the language server: the syntax the command uses, by where it was declared
+    let s := if s.termInfo then { s with infos := s.infos ++ syntaxRefs s cmd } else s
     let s' := ((elabCommand cmd).run { s with pristine := false }).2
     let added := s'.globals.order.extract before s'.globals.order.size
     { s' with declSites := added.foldl (fun m n => m.insert n (cmd.info, s.module)) s'.declSites }

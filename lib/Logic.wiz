@@ -25,6 +25,7 @@ import Prelude
 def True.intro : True := ()
 def False.elim {0 P : Prop} (h : False) : P := absurd h
 def Not (P : Prop) : Prop := P → False
+notation:max "¬" p:40 => Not p
 def Not.elim {P : Prop} {0 R : Prop} (n : Not P) (p : P) : R := absurd (n p)
 def absurdOf {P : Prop} {0 R : Prop} (p : P) (n : Not P) : R := absurd (n p)
 
@@ -32,6 +33,7 @@ def absurdOf {P : Prop} {0 R : Prop} (p : P) (n : Not P) : R := absurd (n p)
 
 def And (P Q : Prop) : Prop := P × Q
 infixr:35 " ∧ " => And
+infixr:35 " /\\ " => And
 def And.intro {P Q : Prop} (p : P) (q : Q) : P ∧ Q := (p, q)
 def And.left {P Q : Prop} (h : P ∧ Q) : P := h.1
 def And.right {P Q : Prop} (h : P ∧ Q) : Q := h.2
@@ -43,6 +45,7 @@ def And.imp {P Q P' Q' : Prop} (f : P → P') (g : Q → Q') (h : P ∧ Q) : P' 
 
 def Or (P Q : Prop) : Prop := (0 R : Prop) → (P → R) → (Q → R) → R
 infixr:30 " ∨ " => Or
+infixr:30 " \\/ " => Or
 def Or.inl {P Q : Prop} (p : P) : P ∨ Q := fun R l r => l p
 def Or.inr {P Q : Prop} (q : Q) : P ∨ Q := fun R l r => r q
 def Or.elim {P Q : Prop} {0 R : Prop} (h : P ∨ Q) (l : P → R) (r : Q → R) : R := h R l r
@@ -50,13 +53,14 @@ def Or.symm {P Q : Prop} (h : P ∨ Q) : Q ∨ P := h (Q ∨ P) (fun p => Or.inr
 def Or.imp {P Q P' Q' : Prop} (f : P → P') (g : Q → Q') (h : P ∨ Q) : P' ∨ Q' :=
   h (P' ∨ Q') (fun p => Or.inl (f p)) (fun q => Or.inr (g q))
 -- the disjunctive syllogism
-def Or.resolveLeft {P Q : Prop} (h : P ∨ Q) (n : Not P) : Q := h Q (fun p => absurd (n p)) (fun q => q)
-def Or.resolveRight {P Q : Prop} (h : P ∨ Q) (n : Not Q) : P := h P (fun p => p) (fun q => absurd (n q))
+def Or.resolveLeft {P Q : Prop} (h : P ∨ Q) (n : ¬ P) : Q := h Q (fun p => absurd (n p)) (fun q => q)
+def Or.resolveRight {P Q : Prop} (h : P ∨ Q) (n : ¬ Q) : P := h P (fun p => p) (fun q => absurd (n q))
 
 -- ## Equivalence
 
 def Iff (P Q : Prop) : Prop := (P → Q) × (Q → P)
 infix:20 " ↔ " => Iff
+infix:20 " <-> " => Iff
 def Iff.intro {P Q : Prop} (f : P → Q) (g : Q → P) : P ↔ Q := (f, g)
 def Iff.mp {P Q : Prop} (h : P ↔ Q) (p : P) : Q := h.1 p
 def Iff.mpr {P Q : Prop} (h : P ↔ Q) (q : Q) : P := h.2 q
@@ -72,17 +76,54 @@ def Ex.intro {A : Type} (0 P : A → Prop) (a : A) (p : P a) : Ex P := fun R k =
 def Ex.elim {A : Type} {P : A → Prop} {0 R : Prop} (h : Ex P) (k : (a : A) → P a → R) : R := h R k
 def Ex.imp {A : Type} {P Q : A → Prop} (f : (a : A) → P a → Q a) (h : Ex P) : Ex Q :=
   h (Ex Q) (fun a p => Ex.intro Q a (f a p))
+
+-- ### Binder notation (stage 13e)
+--
+-- `∃ x, P x` is `Ex (fun x => P x)`; binders as in `fun`, with an optional type for all
+-- of them: `∃ x y, P`, `∃ x y : A, P`, `∃ (x : A) (y : B), P`, mixed `∃ x (y : B), P`.
+-- `exists` is the ASCII spelling (as `forall` is for `∀`). The body extends as far as
+-- possible, like `∀`'s. A procedural macro builds the nest of `Ex`s (quotations can't
+-- splice lists).
+declare_syntax_cat exBinder
+syntax (name := plain) ident : exBinder
+syntax (name := typed) "(" ident+ ":" term ")" : exBinder
+syntax:lead (name := ex) "∃" exBinder+ (":" term)? "," term : term
+syntax:lead (name := exAscii) "exists" exBinder+ (":" term)? "," term : term
+-- `Ex (fun x => body)`, with the binder's type if there is one
+def Ex.wrap (x : Syntax) (ty : Option Syntax) (body : Syntax) : Syntax := match ty with
+  | .none => `(term| Ex (fun $x => $body))
+  | .some A => `(term| Ex (fun ($x : $A) => $body))
+def Ex.wrapIdents {b : Bool} (ty : Option Syntax) (body : Syntax) : SyntaxF b → Syntax
+  | .cons x rest => Ex.wrap x ty (Ex.wrapIdents ty body rest)
+  | _ => body
+-- a plain binder takes the type after the binders (if any), a typed one its own
+def Ex.wrapBinders {b : Bool} (ty : Option Syntax) (body : Syntax) : SyntaxF b → Syntax
+  | .cons bnd rest =>
+    let inner := Ex.wrapBinders ty body rest;
+    match Syntax.getArg bnd 1 with
+    | .node _ xs => Ex.wrapIdents (.some (Syntax.getArg bnd 3)) inner xs
+    | _ => Ex.wrap (Syntax.getArg bnd 0) ty inner
+  | _ => body
+-- the optional `: A` after the binders
+def Ex.binderType (opt : Syntax) : Option Syntax := match Syntax.getArg opt 1 with
+  | .missing => .none
+  | A => .some A
+def Ex.binderMacro : Macro := fun stx => match Syntax.getArg stx 1 with
+  | .node _ bs => MacroM.pure (Ex.wrapBinders (Ex.binderType (Syntax.getArg stx 2)) (Syntax.getArg stx 4) bs)
+  | _ => MacroM.throw "∃: malformed binders"
+attribute [macro term.ex] Ex.binderMacro
+attribute [macro term.exAscii] Ex.binderMacro
 -- `∃` commutes with `∧` on a side that doesn't mention the witness
-def Ex.andRight {A : Type} {P : A → Prop} {Q : Prop} (h : Ex P ∧ Q) : Ex (fun a => P a ∧ Q) :=
-  h.1 (Ex (fun a => P a ∧ Q)) (fun a p => Ex.intro (fun a => P a ∧ Q) a (p, h.2))
+def Ex.andRight {A : Type} {P : A → Prop} {Q : Prop} (h : (∃ a, P a) ∧ Q) : ∃ a, P a ∧ Q :=
+  h.1 (∃ a, P a ∧ Q) (fun a p => Ex.intro (fun a => P a ∧ Q) a (p, h.2))
 
 -- ## Universal quantification
 --
 -- `∀` is the Π type `(a : A) → P a`, a proposition whenever `P a` is (impredicativity).
 -- `∀` and `∃` interact as usual:
-def Ex.notForall {A : Type} {P : A → Prop} (h : Ex P) (n : (a : A) → Not (P a)) : False :=
+def Ex.notForall {A : Type} {P : A → Prop} (h : ∃ a, P a) (n : ∀ a, ¬ P a) : False :=
   h False (fun a p => n a p)
-def Forall.notEx {A : Type} {P : A → Prop} (n : Not (Ex P)) (a : A) : Not (P a) :=
+def Forall.notEx {A : Type} {P : A → Prop} (n : ¬ ∃ a, P a) (a : A) : ¬ P a :=
   fun p => n (Ex.intro P a p)
 
 -- ## Equality
@@ -120,4 +161,4 @@ def Bool.cases (b : Bool) : b = .true ∨ b = .false := match b with
   | .false => Or.inr rfl
 -- `.true = .false` computes to a Σ whose first component is `False`; `absurd` checks its
 -- argument erased, so it may project that (erased) field
-def Bool.trueNeFalse : Not (Bool.true = Bool.false) := fun e => absurd e.1
+def Bool.trueNeFalse : ¬ Bool.true = Bool.false := fun e => absurd e.1

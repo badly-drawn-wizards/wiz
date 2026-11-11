@@ -64,9 +64,9 @@ def elimsChecked (m : Nat) (sol : Val R) (sp : Array (Elim R)) : ElabM R (Val R)
       | .pair .., .fst | .pair .., .snd => true
       | _, .app _ | _, .fst | _, .snd => false
       | _, _ => true
-    -- (merge note: with agent/slow-unify's fast failure, set `unifySawMeta := true` here
-    -- before throwing, so this failure is never taken as final)
+    -- a failure of a guessed solution is never final (`unifySawMeta`, see `unifyGlued`)
     unless fits do
+      modify fun s => { s with unifySawMeta := true }
       throwAt {} s!"the solution found for the hole ?m{m} is ill-typed (a guess that didn't fit)"
     v := vElims g v #[e]
   pure v
@@ -315,6 +315,90 @@ def solve (gamma : Lvl) (m : Nat) (sp : Array (Elim R)) (rhs : Val R) : ElabM R 
   --| sorry
   --sol>
 
+/-- After a failed attempt at unification (the state is back to what it was before it, as
+`ElabM` undoes a failed computation's state), keep what unification learnt meanwhile:
+whether it met a metavariable, and the failures it recorded. They are true whatever the
+attempt did. They come with the error (`throwAt` records the state where it threw); an
+error without a state may have met anything. -/
+def keepLearnt (e : ElabError R) : ElabM R Unit :=
+  modify fun cur => match e.state? with
+    | some s => { cur with unifySawMeta := cur.unifySawMeta || s.unifySawMeta,
+                           unifyFails := s.unifyFails, unifyFailCount := s.unifyFailCount }
+    | none => { cur with unifySawMeta := true }
+
+/-- Did the failed computation that threw `e` meet a metavariable? -/
+def ElabError.sawMeta (e : ElabError R) : Bool := (e.state?.map (·.unifySawMeta)).getD true
+
+/-- Unification met an unsolved metavariable. -/
+def noteMeta : ElabM R Unit := modify fun s => { s with unifySawMeta := true }
+
+/-- Run `x` with a fresh "met a metavariable" flag: its result, and whether `x` met one
+(merged back into the flag afterwards). On failure, the error and the flag; the state is
+the one before `x`, with what it learnt (`keepLearnt`). -/
+def trackMeta {α : Type} (x : ElabM R α) : ElabM R (Except (ElabError R) α × Bool) := do
+  let saw := (← get).unifySawMeta
+  modify fun s => { s with unifySawMeta := false }
+  let (r, here) ← tryCatch (do let a ← x; pure (.ok a, (← get).unifySawMeta))
+    (fun e => do keepLearnt e; pure (.error e, e.sawMeta))
+  modify fun s => { s with unifySawMeta := saw || here }
+  pure (r, here)
+
+/-- The term with its solved metavariables (term and level) replaced by their solutions;
+`none` if it mentions an unsolved one. -/
+partial def Term.instSolved (t : Term R) : ElabM R (Option (Term R)) := (go t).run
+where
+  go (t : Term R) : OptionT (ElabM R) (Term R) := do
+    match t with
+    | .mvar m =>
+      let some v := (← OptionT.lift (lookupMeta m)).solution | failure
+      go (quote (← OptionT.lift getGlobals) 0 v)
+    | t => t.mapChildrenM (fun l => do
+        let l ← OptionT.lift (instLevel l)
+        if l.hasMVar then failure else pure l) (fun _ c => go c)
+
+/-- Two quoted values (in a context of size `l`) with their free variables renamed in the
+order they first occur (as `var (k + 2⁴⁰ + j)` under `k` binders, for the `j`-th). Unifying
+values without metavariables is untyped and only asks which variables are equal, so a
+renaming of the free variables doesn't change whether it succeeds; this way the same
+comparison in another context gives the same key: say under the fresh variables of the
+body of a Church-encoded `Ex`, which unfolding it compares once more. -/
+partial def canonKey (l : Lvl) (t u : Term R) : Term R × Term R :=
+  let go2 := do let t' ← go 0 t; let u' ← go 0 u; pure (t', u')
+  (go2.run {}).1
+where
+  go (k : Nat) : Term R → StateM (Std.HashMap Nat Nat) (Term R)
+    | .var i => do
+      if i < k then return .var i
+      let x := l + k - 1 - i
+      let m ← get
+      let j ← match m[x]? with
+        | some j => pure j
+        | none => do set (m.insert x m.size); pure m.size
+      pure (.var (k + (1 <<< 40) + j))
+    | t => t.mapChildrenM pure (fun k' c => go (k + k') c)
+
+/-- The failure cache (see `ElabState.unifyFails`): two glued applications of the same
+definition `n` in a context of size `l`, quoted (`canonKey`), with solved metavariables
+replaced by their solutions, when neither mentions an unsolved one. -/
+def failKey? (l : Lvl) (n : Name) (t u : Val R) : ElabM R (Option (UInt64 × Term R × Term R)) := do
+  let g ← getGlobals
+  let some qt ← (quote g l t).instSolved | return none
+  let some qu ← (quote g l u).instSolved | return none
+  let (kt, ku) := canonKey l qt qu
+  pure (some (hash n, kt, ku))
+
+def lookupFail (key : UInt64 × Term R × Term R) : ElabM R (Option String) := do
+  let (h, qt, qu) := key
+  let some es := (← get).unifyFails[h]? | return none
+  pure ((es.find? (fun (t', u', _) => t' == qt && u' == qu)).map (·.2.2))
+
+def recordFail (key : UInt64 × Term R × Term R) (msg : String) : ElabM R Unit :=
+  modify fun s =>
+    let (h, qt, qu) := key
+    -- (bounded: start afresh now and then)
+    let (fails, count) := if s.unifyFailCount ≥ 4096 then ({}, 0) else (s.unifyFails, s.unifyFailCount)
+    { s with unifyFails := fails.insert h ((qt, qu, msg) :: (fails.getD h [])), unifyFailCount := count + 1 }
+
 /-- Run `k` under a binder named `x` at level `l` (see `ElabState.binderNames`). -/
 def withBinderName (l : Lvl) (x : Name) (k : ElabM R α) : ElabM R α := do
   if x == "_" || x.isEmpty then return ← k
@@ -342,6 +426,8 @@ def Level.occurs (m : Nat) : Level → Bool
 This is deliberately incomplete. `max ?u ?v =?= 1` has several solutions, and Lean
 postpones such constraints instead of failing (see the optional exercises). -/
 partial def unifyLevel (a b : Level) : ElabM R Unit := do
+  -- (given) a failure that met a metavariable may not be final (see `unifyGlued`)
+  if (← instLevel a).hasMVar || (← instLevel b).hasMVar then noteMeta
   --<sol
   let a ← instLevel a
   let b ← instLevel b
@@ -391,6 +477,8 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   if isEq t != isEq u then
     if let some t' ← recomputeEq? t then return ← unify l t' u
     if let some u' ← recomputeEq? u then return ← unify l t u'
+  -- a failure that met a metavariable may not be final (see `unifyGlued`)
+  if (← force t) matches .neutral (.mvar _) _ || (← force u) matches .neutral (.mvar _) _ then noteMeta
   --<sol
   match ← force t, ← force u with
   | .sort a, .sort b => unifyLevel a b
@@ -460,28 +548,42 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
 partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
   let attempt (x : ElabM R Unit) : ElabM R Bool := do
     let s ← get
-    try x; pure true catch _ => set s; pure false
+    try x; pure true catch e => set s; keepLearnt e; pure false
   match t, u with
   | .lazyInd .., .lazyInd .. =>
     let g ← getGlobals
     pure (quote g l t == quote g l u)
   | .unfold n us sp v, .unfold n' us' sp' v' =>
-    if n == n' && us.length == us'.length && sp.size == sp'.size then
+    let same := n == n' && us.length == us'.length && sp.size == sp'.size
+    if same then
       if ← attempt (do for a in us, b in us' do unifyLevel a b
                        unifySpine l sp sp') then return true
+    -- (the same comparison, without metavariables, failed before: it fails again)
+    let key? ← if same then failKey? l n t u else pure none
+    if let some key := key? then
+      if let some msg ← lookupFail key then throwAt {} msg
     -- lazy delta: unfold the later definition by one step, and compare again
     let g ← getGlobals
     let height (x : Name) : Nat := (g.order.idxOf? x).getD 0
     -- (recursors compute: unfold them first; otherwise the later definition, then the other)
     let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".scasesOn"
     let first := isRec n || (!isRec n' && height n ≥ height n')
-    if first then
-      if ← attempt (unify l v.get u) then return true
-      attempt (unify l t v'.get)
-    else
-      if ← attempt (unify l t v'.get) then return true
-      attempt (unify l v.get u)
+    let (one, other) := if first then (unify l v.get u, unify l t v'.get) else (unify l t v'.get, unify l v.get u)
+    match ← trackMeta one with
+    | (.ok (), _) => return true
+    | (.error err, sawMeta) =>
+      -- A failure that met no metavariable is final. Unfolding is confluent, and the
+      -- mismatch it found is between rigid parts that no metavariable can change, so
+      -- the other order (or unfolding both, which the caller would do next) meets it
+      -- too. Without this, every glued layer tried two or three orders, and a wrong
+      -- proof about `⋆` took minutes to be rejected (each `⋆` is four definitions deep).
+      unless sawMeta do
+        if let some key := key? then recordFail key err.msg
+        -- (with the state as it is now, which has what was learnt)
+        throw { err with state? := some (← get) }
+      attempt other
   | .neutral (.mvar m) sp, v@(.unfold ..) | v@(.unfold ..), .neutral (.mvar m) sp =>
+    noteMeta
     if ← attempt (solve l m sp v) then return true
     if (← get).approx == .none then return false
     unifyFirstOrder l m sp v
@@ -490,6 +592,7 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
   -- * applications (`?M ?A =?= m A`): the first-order approximation.
   -- (Heuristics like Lean's, tried only when pattern unification fails.)
   | .neutral (.mvar m) sp, v@(.neutral h' sp') | v@(.neutral h' sp'), .neutral (.mvar m) sp =>
+    noteMeta
     -- (flex-flex: only as the last resort, see "When unification approximates")
     if let .mvar m' := h' then
       if m' == m || (← get).approx != .last then return false
@@ -566,8 +669,8 @@ partial def unifyFirstOrder (l : Lvl) (m : Nat) (sp : Array (Elim R)) (v : Val R
     let head ← rebuild (sp'.extract 0 (sp'.size - j))
     solve l m (sp.extract 0 k) head
     pure true
-  catch _ =>
-    set s
+  catch e =>
+    set s; keepLearnt e
     pure false
 
 /-- Rigid heads: the same variable, the same global (levels unified), or the same
@@ -590,7 +693,7 @@ partial def unifyHead (l : Lvl) (h h' : Head R) : ElabM R Unit := do
       -- an equation that was stuck on a metavariable (its type, say) may compute now:
       -- `succ ?a = succ ?b` at a solved `Nat` is `?a = ?b`. Compare the computed forms,
       -- if either changed.
-      set s
+      set s; keepLearnt err
       let g ← getGlobals
       let v := vEq g (← force A) a b
       let v' := vEq g (← force A') a' b'

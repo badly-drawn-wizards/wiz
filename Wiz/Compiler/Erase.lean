@@ -1,4 +1,5 @@
 import Wiz.Core.Check
+import Wiz.Compiler.Push
 
 /-!
 # Erasure
@@ -150,6 +151,65 @@ partial def lift (k : Nat) (cut : Nat := 0) : ETerm → ETerm
   | t => t
 
 def apps (f : ETerm) (as : List ETerm) : ETerm := as.foldl app f
+
+/-- Replace variable `k` (at depth `d`) by `s` (a term outside the binders), lowering
+the variables above it. -/
+partial def instVar (k : Nat) (s : ETerm) (d : Nat := 0) : ETerm → ETerm
+  | var i => if i < k + d then var i else if i == k + d then s.lift d else var (i - 1)
+  | lam x b => lam x (instVar k s (d + 1) b)
+  | app f a => app (instVar k s d f) (instVar k s d a)
+  | letE x v b => letE x (instVar k s d v) (instVar k s (d + 1) b)
+  | obj t fs => obj t (fs.map (instVar k s d))
+  | proj i t => proj i (instVar k s d t)
+  | case sc bs => case (instVar k s d sc) (bs.map (instVar k s d))
+  | fix x b => fix x (instVar k s (d + 1) b)
+  | prim op as => prim op (as.map (instVar k s d))
+  | t => t
+
+/-- A closure that only calls the global `fn`: `λ x… . fn a…` with variables and `◾` as
+arguments (a derived implementation's direct call, `Push`). -/
+partial def isCallOf (fn : Name) : ETerm → Bool
+  | lam _ b => isCallOf fn b
+  | t =>
+    let rec spine : ETerm → List ETerm → ETerm × List ETerm
+      | app f a, acc => spine f (a :: acc)
+      | t, acc => (t, acc)
+    match spine t [] with
+    | (global g, args) => g == fn && args.all fun a => match a with
+      | var _ => true
+      | erased => true
+      | _ => false
+    | _ => false
+
+/-- `let ih := λ x… . fn …` (a direct call passed on as a closure, in a derived
+implementation): substituted, so that where it is applied it is a call. -/
+partial def inlineCalls (fn : Name) : ETerm → ETerm
+  | letE x v b =>
+    let v := inlineCalls fn v
+    let b := inlineCalls fn b
+    if isCallOf fn v && v matches lam .. then beta (instVar 0 v 0 b) else letE x v b
+  | lam x b => lam x (inlineCalls fn b)
+  | app f a => app (inlineCalls fn f) (inlineCalls fn a)
+  | obj t fs => obj t (fs.map (inlineCalls fn))
+  | proj i t => proj i (inlineCalls fn t)
+  | case sc bs => case (inlineCalls fn sc) (bs.map (inlineCalls fn))
+  | fix x b => fix x (inlineCalls fn b)
+  | prim op as => prim op (as.map (inlineCalls fn))
+  | t => t
+where
+  /-- `(λ x. b) a` (as the substitution leaves it) is `let x := a; b` -/
+  beta : ETerm → ETerm
+    | app f a => match beta f with
+      | lam x b => letE x (beta a) b
+      | f => app f (beta a)
+    | lam x b => lam x (beta b)
+    | letE x v b => letE x (beta v) (beta b)
+    | obj t fs => obj t (fs.map beta)
+    | proj i t => proj i (beta t)
+    | case sc bs => case (beta sc) (bs.map beta)
+    | fix x b => fix x (beta b)
+    | prim op as => prim op (as.map beta)
+    | t => t
 
 partial def toString : ETerm → String
   | erased => "◾"
@@ -845,10 +905,23 @@ def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- (the kernel has checked it, like the value: `checkImpl`, `addPartialImpl`; it has
   -- accepted the term: nothing to require of its markers, `proof`)
   let ctx : Ctx R := { globals := g, proof := true }
+  -- compiled equations (derived from the value, `deriveImpl`): the calls a nested split
+  -- reverted go into its branches, and a constructor rebuilt from a branch's fields is the
+  -- scrutinee (`Push`), if the result checks (else the step before, else the impl as is)
+  let derived := g.pushCalls && d.impl.isSome && d.value.isSome && Push.mentions d.name v
+  let v := if derived then
+      let ok (t : Term R) : Bool := (check ctx t (ctx.eval d.type)) matches .ok _
+      let pushed := Push.betaCalls d.name ((Push.pushCalls g d.name v).getD v)
+      let reused := Push.reuseScrutinee g 0 pushed
+      if reused != v && ok reused then reused
+      else if pushed != v && ok pushed then pushed
+      else v
+    else v
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
   let us := d.levelParams.map fun _ => Level.succ .zero
   -- (P2: the markers of level-generic terms mark nothing at this instance)
-  eraseTop ctx (v.instLevels d.levelParams us).stripMarks (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
+  let e ← eraseTop ctx (v.instLevels d.levelParams us).stripMarks (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
+  return if derived then e.inlineCalls d.name else e
 
 end Wiz

@@ -1,0 +1,22 @@
+import FeralCore
+import Feral
+-- Pushing to a vector through `&mut`, in a `for` loop. Hand-lowered: drafts/feral/lowered/02_push.wiz
+-- At run time `v` has rc 1 at every push (moved into push_twice and back): in place.
+
+feral
+  fn push_twice (v : &mut Vec U64) (x : U64) : Unit := {   -- an elided region
+    v.push x;                                        -- the handle goes in and comes back (L17)
+    v.push x
+  }
+
+  fn fill (n : U64) : Vec U64 := {
+    let mut v := Vec.new;
+    for i in 0..n do
+      push_twice (&mut v) i;
+    v
+  }
+end
+
+#eval Result.map (fun (v : Vec U64) => List.length v.items) (fill (U64.lit 5))
+-- 10
+#eval Result.map (fun (v : Vec U64) => v.items) (fill (U64.lit 2))

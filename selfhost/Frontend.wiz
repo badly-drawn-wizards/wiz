@@ -66,6 +66,75 @@ def binderType (b : Syntax) : Option Syntax := match kids (kid b 3) with
   | .cons _ (.cons t _) => .some t
   | _ => .none
 
+-- Quantities (stage 21m), as `elabQuantity` in the Lean elaborator: a binder's written
+-- quantity (`(1 x : A)`, `{0 A : Type}`, `(ω f : …)`), or its default: ω on an explicit
+-- binder, 0 on an implicit one. A written quantity is the optional `quantity` node
+-- (`num`, `ω`, or `%t`); `bad` for one this frontend can't read (`%t`, a numeral other
+-- than 0 or 1), which is an error (`qtyErr`) wherever it is written.
+inductive QW where
+  | dflt
+  | is (q : Q)
+  | bad
+def qtyNode (q : Syntax) : QW := match kid q 0 with
+  | .atom v => match strEq v "ω" with
+    | .true => .is .qw
+    | .false => .bad
+  | n => match kid n 0 with
+    | .atom d => match d with
+      | .mk cs => match digits cs 0 with
+        | .zero => .is .qz
+        | .succ k => match k with
+          | .zero => .is .qo
+          | .succ _ => .bad
+    | _ => .bad
+-- the written quantity in an optional `quantity` (a `null` node)
+def writtenQ (qs : Syntax) : QW := match kids qs with
+  | .cons q _ => qtyNode q
+  | .nil => .dflt
+def qtyErr : String := "a quantity must be 0, 1 or ω (quantity terms %t are not supported by the self-hosted frontend)"
+def isImplicitB (b : Syntax) : Bool := strEq (kindOf b) "binder.implicit"
+-- a binder's written quantity (`dflt` for a bare name, a hole, an instance binder)
+def binderW (b : Syntax) : QW := match b with
+  | .ident _ => .dflt
+  | _ => match Bool.or (strEq (kindOf b) "binder.explicit") (isImplicitB b) with
+    | .true => writtenQ (kid b 1)
+    | .false => .dflt
+-- a binder's quantity, the default filled in
+def binderQ (b : Syntax) : Option Q := match binderW b with
+  | .is q => .some q
+  | .dflt => .some (match isImplicitB b with
+    | .true => .qz
+    | .false => .qw)
+  | .bad => .none
+def qsFor (q : Q) : List String → List Q
+  | .nil => .nil
+  | .cons _ xs => .cons q (qsFor q xs)
+def wsFor (w : QW) : List String → List QW
+  | .nil => .nil
+  | .cons _ xs => .cons w (wsFor w xs)
+-- the quantities of a list of binders, one per name (as `paramMask`); `none` if one is bad
+def binderQs : List Syntax → Option (List Q)
+  | .nil => .some .nil
+  | .cons b bs => match binderQ b with
+    | .none => .none
+    | .some q => match binderQs bs with
+      | .none => .none
+      | .some qs => .some (List.append (qsFor q (binderNames b)) qs)
+-- the written quantities of a list of binders, one per name (`fun`'s binders)
+def binderWs : List Syntax → List QW
+  | .nil => .nil
+  | .cons b bs => List.append (wsFor (binderW b) (binderNames b)) (binderWs bs)
+def qName : Q → String
+  | .qz => "0"
+  | .qo => "1"
+  | .qw => "ω"
+def headQ : List Q → Q
+  | .nil => .qw
+  | .cons q _ => q
+def tailQ : List Q → List Q
+  | .nil => .nil
+  | .cons _ qs => qs
+
 -- all the names of a `fun`'s binders
 def binders : List Syntax → List String
   | .nil => .nil
@@ -104,7 +173,9 @@ def elab : Scope → Syntax → Elab
                 | e => e
               | e => e
             | .false => match strEq (kindOf s) "term.depArrow" with
-              | .true => pis names (binderNames (kid s 0)) (binderType (kid s 0)) (kid s 2)
+              | .true => match binderQ (kid s 0) with
+                | .some q => pis names q (binderNames (kid s 0)) (binderType (kid s 0)) (kid s 2)
+                | .none => .err qtyErr
               | .false => match strEq (kindOf s) "term.fun" with
                 | .true => lams names (binders (kids (kid s 1))) (kid s 3)
                 | .false => match strEq (kindOf s) "term.app" with
@@ -134,13 +205,13 @@ def both : Scope → Syntax → Syntax → (Tm → Tm → Tm) → Elab
       | e => e
     | e => e
 -- `(x y : A) → B`: one Π per name, `A` read in each one's context
-def pis : Scope → List String → Option Syntax → Syntax → Elab
-  | names, .nil, _, body => elab names body
-  | names, .cons x xs, ty, body => match ty with
+def pis : Scope → Q → List String → Option Syntax → Syntax → Elab
+  | names, _, .nil, _, body => elab names body
+  | names, q, .cons x xs, ty, body => match ty with
     | .none => .err "a Π needs a binder type"
     | .some a => match elab names a with
-      | .ok aT => match pis (Scope.bind names x) xs ty body with
-        | .ok b => .ok (.pi aT b)
+      | .ok aT => match pis (Scope.bind names x) q xs ty body with
+        | .ok b => .ok (piTm q aT b)
         | e => e
       | e => e
 def lams : Scope → List String → Syntax → Elab
@@ -172,12 +243,14 @@ def groupPis : Scope → List Syntax → Syntax → Elab
   | names, .nil, body => elab names body
   | names, .cons b bs, body => match binderType b with
     | .none => .err "the binders of a definition need types"
-    | .some a => piGroup names (binderNames b) a bs body
-def piGroup : Scope → List String → Syntax → List Syntax → Syntax → Elab
-  | names, .nil, _, bs, body => groupPis names bs body
-  | names, .cons x xs, a, bs, body => match elab names a with
-    | .ok aT => match piGroup (Scope.bind names x) xs a bs body with
-      | .ok b => .ok (.pi aT b)
+    | .some a => match binderQ b with
+      | .some q => piGroup names q (binderNames b) a bs body
+      | .none => .err qtyErr
+def piGroup : Scope → Q → List String → Syntax → List Syntax → Syntax → Elab
+  | names, _, .nil, _, bs, body => groupPis names bs body
+  | names, q, .cons x xs, a, bs, body => match elab names a with
+    | .ok aT => match piGroup (Scope.bind names x) q xs a bs body with
+      | .ok b => .ok (piTm q aT b)
       | e => e
     | e => e
 end
@@ -207,6 +280,10 @@ inductive IndInfo where
 inductive Foreign where
   | fn (name cname header : String) (params : List String) (res : String) (io : Bool) (fin : String)
   | ty (name fin : String)
+  -- (stage 21o) `link_c "f.c"` (`lib := false`) and `link_lib "m"`, and `export "c" f`:
+  -- the Wiz name, the C name, the kinds of the parameters and of the result, `IO`
+  | link (path : String) (lib : Bool)
+  | exported (name cname : String) (params : List String) (res : String) (io : Bool)
 -- the globals so far: by position (the first is `0`), their names in scope, the
 -- inductive types by name, and the foreign declarations
 inductive Globals where
@@ -239,6 +316,7 @@ def closeG (inline : Bool) (gs : Globals) : Nat → Tm → Tm
     | .true => .var i
     | .false => globalTm inline gs (i - d)
   | d, .pi a b => .pi (closeG inline gs d a) (closeG inline gs (d + 1) b)
+  | d, .piq q a b => .piq q (closeG inline gs d a) (closeG inline gs (d + 1) b)
   | d, .lam b => .lam (closeG inline gs (d + 1) b)
   | d, .app f a => .app (closeG inline gs d f) (closeG inline gs d a)
   | d, .letE ty v b => .letE (closeG inline gs d ty) (closeG inline gs d v) (closeG inline gs (d + 1) b)
@@ -328,6 +406,7 @@ def shiftTm (k : Nat) : Nat → Tm → Tm
   | c, .lam b => .lam (shiftTm k (c + 1) b)
   | c, .app f a => .app (shiftTm k c f) (shiftTm k c a)
   | c, .letE ty v b => .letE (shiftTm k c ty) (shiftTm k c v) (shiftTm k (c + 1) b)
+  | c, .letq q ty v b => .letq q (shiftTm k c ty) (shiftTm k c v) (shiftTm k (c + 1) b)
   | c, .ann t ty => .ann (shiftTm k c t) (shiftTm k c ty)
   | c, .sorted l t => .sorted l (shiftTm k c t)
   | c, .piq q a b => .piq q (shiftTm k c a) (shiftTm k (c + 1) b)
@@ -416,6 +495,14 @@ def shiftTms (k : Nat) : Tms → Tms
   | .tnil => .tnil
   | .tcons t rest => .tcons (shiftTm k 0 t) (shiftTms k rest)
 -- `Π (x₁ : A₁) … B` for a telescope of types
+-- a telescope with a quantity for each binder (the missing ones ω)
+def piTeleQ : List Q → Tms → Tm → Tm
+  | _, .tnil, b => b
+  | qs, .tcons a rest, b => piTm (headQ qs) a (piTeleQ (tailQ qs) rest b)
+-- a constructor's parameters: implicit, at 0 (as in the Lean elaborator's `implicitΔ`)
+def piTeleZ : Tms → Tm → Tm
+  | .tnil, b => b
+  | .tcons a rest, b => .piq .qz a (piTeleZ rest b)
 def piTele : Tms → Tm → Tm
   | .tnil, b => b
   | .tcons a rest, b => .pi a (piTele rest b)
@@ -582,6 +669,7 @@ def occurs : Nat → Tm → Bool
   | i, .lam b => occurs (i + 1) b
   | i, .app f a => Bool.or (occurs i f) (occurs i a)
   | i, .letE ty v b => Bool.or (occurs i ty) (Bool.or (occurs i v) (occurs (i + 1) b))
+  | i, .letq _ ty v b => Bool.or (occurs i ty) (Bool.or (occurs i v) (occurs (i + 1) b))
   | i, .ann t ty => Bool.or (occurs i t) (occurs i ty)
   | i, .sorted _ t => occurs i t
   | i, .pair a b => Bool.or (occurs i a) (occurs i b)
@@ -679,7 +767,7 @@ def addCtors (T : String) (ps : List String) (pts : Tms) (nidx : Nat) (I : Tm) (
     | .ok fs => match idxArgs gs scF (np + n) (ctorRes nidx c) with
       | .err _ => .err
       | .ok ics =>
-        let ty := sortTy (piTele pts (ctorType (tApps Tc (tmsAppend (pvars np (np + n)) ics)) fs));
+        let ty := sortTy (piTeleZ pts (ctorType (tApps Tc (tmsAppend (pvars np (np + n)) ics)) fs));
         -- (without an index: `tt`, or `refl` at a phantom tail)
         let proof : Tm := match ics with
           | .tcons ic _ => .eqRefl (shiftTm n 0 I) ic
@@ -741,6 +829,28 @@ def lastIdx : List Syntax → Nat → Nat
   | .cons _ rest, i => match rest with
     | .nil => i
     | .cons _ _ => lastIdx rest (i + 1)
+-- (stage 21m) This kernel's descriptions have no quantities (`darg S D`, where the Lean
+-- kernel's `Desc.arg q S D` has one): a constructor's fields are all stored, at ω. So a
+-- field written with another quantity (`| mk (0 n : Nat)`, a structure's `1 x : A`) is
+-- an error rather than ignored; an implicit field (`{n : Nat}`, 0 for the Lean
+-- elaborator) is stored at ω, a difference (docs/CoreSpec.md §15). A bad quantity on a
+-- parameter is an error too.
+def fieldQtyErr : List Syntax → Option String
+  | .nil => .none
+  | .cons b bs => match binderW b with
+    | .bad => .some qtyErr
+    | .is q => match qEq q .qw with
+      | .true => fieldQtyErr bs
+      | .false => .some "a constructor field with a quantity other than ω is not supported by the self-hosted kernel (its descriptions have no quantities)"
+    | .dflt => fieldQtyErr bs
+def ctorsQtyErr : List Syntax → Option String
+  | .nil => .none
+  | .cons c cs => match fieldQtyErr (kids (kid c 3)) with
+    | .some m => .some m
+    | .none => ctorsQtyErr cs
+def ctorQtyErr (params ctors : List Syntax) : Option String := match binderQs params with
+  | .none => .some qtyErr
+  | .some _ => ctorsQtyErr ctors
 mutual
 def fixDots (T I : String) (s : Syntax) : Syntax := match s with
   | .node k args =>
@@ -762,7 +872,9 @@ def fixDotsArgs (T I : String) : SyntaxF .false → SyntaxF .false
   | .nil => .nil
   | .cons s rest => .cons (fixDots T I s) (fixDotsArgs T I rest)
 end
-def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match kid stx0 1 with
+def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match ctorQtyErr (kids (kid stx0 3)) (kids (kid stx0 6)) with
+  | .some m => errStep gs m
+  | .none => match kid stx0 1 with
   | .ident T =>
     let stx := match sigOf stx0 with
       | .indexed I => match strEq (kindOf I) "term.ident" with
@@ -819,7 +931,9 @@ def inductiveCmd (gs : Globals) (stx0 : Syntax) : Step := match kid stx0 1 with
               let body := fun (D : Tm) => (match sig with
                 | .indexed _ => .lam (.mu 0 (shiftTm 1 0 I) (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0))
                 | _ => .mu 0 I D tl : Tm);
-              let ty := sortTy (piTele pts (match sig with
+              let ty := sortTy (piTeleQ (match binderQs (kids (kid stx 3)) with
+                | .some qs => qs
+                | .none => .nil) pts (match sig with
                 | .indexed _ => .pi I (.univ 0)
                 | _ => .univ 0));
               let val := markClosed (tLams np (body (mkD ds))) ty;
@@ -964,6 +1078,11 @@ def lowerTm (k : Nat) : Nat → Tm → Option Tm
       | .some b' => .some (.pi a' b')
       | .none => .none
     | .none => .none
+  | c, .piq q a b => match lowerTm k c a with
+    | .some a' => match lowerTm k (c + 1) b with
+      | .some b' => .some (.piq q a' b')
+      | .none => .none
+    | .none => .none
   | c, .lam b => match lowerTm k (c + 1) b with
     | .some b' => .some (.lam b')
     | .none => .none
@@ -1006,6 +1125,7 @@ def mentions (i : Nat) : Tm → Bool
     | .some j => Nat.beq i j
     | .none => .false
   | .pi a b => Bool.or (mentions i a) (mentions i b)
+  | .piq _ a b => Bool.or (mentions i a) (mentions i b)
   | .lam b => mentions i b
   | .sorted _ t => mentions i t
   | .app f a => Bool.or (mentions i f) (mentions i a)
@@ -1071,6 +1191,9 @@ partial def pruneTm (k d : Nat) (es : ES) (t : Tm) : Pruned := match spineHead t
     | .pi a b => match pruneTm k d es a with
       | .mk es1 a' => match pruneTm k (d + 1) es1 b with
         | .mk es2 b' => .mk es2 (.pi a' b')
+    | .piq q a b => match pruneTm k d es a with
+      | .mk es1 a' => match pruneTm k (d + 1) es1 b with
+        | .mk es2 b' => .mk es2 (.piq q a' b')
     | .lam b => match pruneTm k (d + 1) es b with
       | .mk es1 b' => .mk es1 (.lam b')
     | t' => .mk es t'
@@ -1496,11 +1619,12 @@ def sortLvl (es : ES) (ty : Val) : Lvl := match whnf (force es ty) with
   | .vsort l => l
   | _ => .lnum 0
 -- `(x : a) → b` with its sort, when both parts' sorts are known (`sorted`)
-def piSorted (es : ES) (a b : Tm) (la lb : Val) : Tm := match whnf (force es la) with
+def piSortedQ (q : Q) (es : ES) (a b : Tm) (la lb : Val) : Tm := match whnf (force es la) with
   | .vsort l1 => match whnf (force es lb) with
-    | .vsort l2 => .sorted (.limax l1 l2) (.pi a b)
-    | _ => .pi a b
-  | _ => .pi a b
+    | .vsort l2 => .sorted (.limax l1 l2) (piTm q a b)
+    | _ => piTm q a b
+  | _ => piTm q a b
+def piSorted (es : ES) (a b : Tm) (la lb : Val) : Tm := piSortedQ .qw es a b la lb
 def tailBools : List Bool → List Bool
   | .nil => .nil
   | .cons _ rest => rest
@@ -2151,7 +2275,9 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
           | e => e
         | .false => match strEq k "term.depArrow" with
           | .true => match binderType (kid s 0) with
-            | .some aStx => depPis gs es cx (binderNames (kid s 0)) aStx (kid s 2)
+            | .some aStx => match binderQ (kid s 0) with
+              | .some q => depPis gs es cx q (binderNames (kid s 0)) aStx (kid s 2)
+              | .none => .err qtyErr
             | .none => .err "a Π needs a binder type"
           | .false => match strEq k "term.ascription" with
             | .true => match inferType gs es cx (kid s 3) with
@@ -2173,19 +2299,21 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
                 | e => e
               | .false => match strEq k "term.fun" with
                 | .true => match Nat.beq (lenL (binders (kids (kid s 1)))) (lenL (fieldsOf (kids (kid s 1)))) with
-                  | .true => inferLams gs es cx (fieldsOf (kids (kid s 1))) (kid s 3)
+                  | .true => match binderQs (kids (kid s 1)) with
+                    | .some qs => inferLams gs es cx qs (fieldsOf (kids (kid s 1))) (kid s 3)
+                    | .none => .err qtyErr
                   | .false => .err "cannot infer the type of a λ; add a type ascription"
                 | .false => .err (String.append "unsupported syntax " k)
 -- `fun (x : A) … => b` with every binder typed: `(x : A) → B` (stage 20a)
-def inferLams (gs : Globals) (es : ES) (cx : Cx) : List Field → Syntax → TE
+def inferLams (gs : Globals) (es : ES) (cx : Cx) (qs : List Q) : List Field → Syntax → TE
   | .nil, body => inferT gs es cx body
   | .cons (.mk x aS) rest, body => match strEq (kindOf aS) "" with
     | .true => .err "cannot infer the type of a λ; add a type ascription"
     | .false => match inferType gs es cx aS with
       | .ok A _ es1 =>
         let cx' := Cx.bind cx x (eval (TCtx.env (Cx.c cx)) A);
-        match inferLams gs es1 cx' rest body with
-        | .ok b bty es2 => .ok (.lam b) (eval (TCtx.env (Cx.c cx)) (.pi A (quote (Cx.lvl cx') (force es2 bty)))) es2
+        match inferLams gs es1 cx' (tailQ qs) rest body with
+        | .ok b bty es2 => .ok (.lam b) (eval (TCtx.env (Cx.c cx)) (piTm (headQ qs) A (quote (Cx.lvl cx') (force es2 bty)))) es2
         | e => e
       | e => e
 -- a type: its sort is computed again by the kernel later, so any sort is fine here
@@ -2195,11 +2323,11 @@ def inferType (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE := match infe
     | _ => .err (String.append "not a type: " (show (scopeNames (Cx.sc cx)) (Cx.lvl cx) t))
   | e => e
 -- `(x y : A) → B`
-def depPis (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (aStx body : Syntax) : TE := match xs with
+def depPis (gs : Globals) (es : ES) (cx : Cx) (q : Q) (xs : List String) (aStx body : Syntax) : TE := match xs with
   | .nil => inferType gs es cx body
   | .cons x rest => match inferType gs es cx aStx with
-    | .ok a la es1 => match depPis gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) a)) rest aStx body with
-      | .ok b lb es2 => .ok (piSorted es2 a b la lb) (.vsort (.limax (sortLvl es2 la) (sortLvl es2 lb))) es2
+    | .ok a la es1 => match depPis gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) a)) q rest aStx body with
+      | .ok b lb es2 => .ok (piSortedQ q es2 a b la lb) (.vsort (.limax (sortLvl es2 la) (sortLvl es2 lb))) es2
       | e => e
     | e => e
 -- the arguments of an application, inserting implicit ones by the mask. A `.c`
@@ -2292,19 +2420,30 @@ def drain (gs : Globals) (es : ES) : Option ES := match es with
         | .false => .none
       | .err => .none
 -- `let x : A := v; b`, inferred or checked
+-- (`let q x := v; b`, stage 21m: a `letq` unless `q` is ω)
+def letTm (q : Q) (A v b : Tm) : Tm := match q with
+  | .qw => .letE A v b
+  | _ => .letq q A v b
 def letT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (expected : Option Val) : TE :=
+  let q := match writtenQ (kid s 1) with
+    | .is q => q
+    | _ => Q.qw;
   let body := fun (A : Tm) (Av : Val) (v : Tm) (es2 : ES) => (match kid s 2 with
     | .ident x =>
       let cx' := Cx.define cx x (eval (TCtx.env (Cx.c cx)) v) Av;
       match expected with
       | .some T => match checkT gs es2 cx' (kid s 7) T with
-        | .ok b _ es3 => TE.ok (.letE A v b) T es3
+        | .ok b _ es3 => TE.ok (letTm q A v b) T es3
         | e => e
       | .none => match inferT gs es2 cx' (kid s 7) with
-        | .ok b bty es3 => .ok (.letE A v b) bty es3
+        | .ok b bty es3 => .ok (letTm q A v b) bty es3
         | e => e
     | _ => TE.err "let needs a name" : TE);
-  match binderType s with
+  match (match writtenQ (kid s 1) with
+    | .bad => Bool.true
+    | _ => Bool.false) with
+  | .true => .err qtyErr
+  | .false => match binderType s with
   -- (without a type, the value's inferred type: stage 19c)
   | .none => match inferT gs es cx (kid s 5) with
     | .ok v Av es2 => body (quote (Cx.lvl cx) (force es2 Av)) Av v es2
@@ -2331,7 +2470,7 @@ def checkT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (ty : Val) : TE :=
     | .true => match newMeta es cx ty with
       | .mk mt es' => .ok mt ty es'
     | .false => match strEq k "term.fun" with
-      | .true => checkLams gs es cx (binders (kids (kid s 1))) (kid s 3) ty
+      | .true => checkLams gs es cx (binders (kids (kid s 1))) (binderWs (kids (kid s 1))) (kid s 3) ty
       | .false => match strEq k "term.let" with
         | .true => letT gs es cx s (.some ty)
         | .false => match (match strEq k "term.app" with
@@ -2372,14 +2511,23 @@ def scrutLets (gs : Globals) (es : ES) (cx : Cx) : List Syntax → SL
       | .ok cx' cols wrap es2 => .ok cx' (.cons (.mk d A A) cols) (fun b => .letE A t (wrap b)) es2
       | e => e
 -- `fun x y => b` against a Π type
-def checkLams (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (body : Syntax) (ty : Val) : TE := match xs with
+-- (a binder's written quantity must be the Π's, as in Lean's `checkFun`)
+def checkLams (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (ws : List QW) (body : Syntax) (ty : Val) : TE := match xs with
   | .nil => checkT gs es cx body ty
   | .cons x rest => match whnf (force es ty) with
     | .vpi q dom env cod _ =>
       let cx' := Cx.bind cx x dom;
-      match checkLams gs es cx' rest body (eval (.cons (fresh (Cx.lvl cx)) env) cod) with
-      | .ok b _ es' => .ok (.lam b) ty es'
-      | e => e
+      let go := fun (u : Unit) => (match checkLams gs es cx' rest (match ws with
+          | .nil => .nil
+          | .cons _ ws' => ws') body (eval (.cons (fresh (Cx.lvl cx)) env) cod) with
+        | .ok b _ es' => TE.ok (.lam b) ty es'
+        | e => e : TE);
+      match ws with
+      | .cons (.is q') _ => match qEq q q' with
+        | .true => go ()
+        | .false => .err (String.append (String.append "binder quantity " (qName q')) (String.append " does not match the expected " (qName q)))
+      | .cons .bad _ => .err qtyErr
+      | _ => go ()
     | _ => .err "a λ against a type that isn't a function type"
 -- compile the clauses over the columns in the context `cx`, against `expected`;
 -- `top`: the next split is the structural one; `ihLvls`: the fields with hypotheses
@@ -2692,13 +2840,15 @@ def defT (gs : Globals) (es : ES) (cx : Cx) (bs : List Syntax) (tyS vS : Syntax)
     | .err m => .err m
   | .cons b rest => match binderType b with
     | .none => .err "the binders of a definition need types"
-    | .some aS => defNames gs es cx (binderNames b) aS rest tyS vS
-def defNames (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (aS : Syntax) (rest : List Syntax) (tyS vS : Syntax) : DefR :=
+    | .some aS => match binderQ b with
+      | .some q => defNames gs es cx q (binderNames b) aS rest tyS vS
+      | .none => .err qtyErr
+def defNames (gs : Globals) (es : ES) (cx : Cx) (q : Q) (xs : List String) (aS : Syntax) (rest : List Syntax) (tyS vS : Syntax) : DefR :=
   match xs with
   | .nil => defT gs es cx rest tyS vS
   | .cons x xs' => match inferType gs es cx aS with
-    | .ok A _ es1 => match defNames gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) A)) xs' aS rest tyS vS with
-      | .ok ty v es2 => .ok (.pi A ty) (.lam v) es2
+    | .ok A _ es1 => match defNames gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) A)) q xs' aS rest tyS vS with
+      | .ok ty v es2 => .ok (piTm q A ty) (.lam v) es2
       | e => e
     | .err m => .err m
 end
@@ -2713,6 +2863,8 @@ def inlineTm (gs : Globals) : Tm → Tm
   | .lam b => .lam (inlineTm gs b)
   | .app f a => .app (inlineTm gs f) (inlineTm gs a)
   | .letE ty v b => .letE (inlineTm gs ty) (inlineTm gs v) (inlineTm gs b)
+  | .piq q a b => .piq q (inlineTm gs a) (inlineTm gs b)
+  | .letq q ty v b => .letq q (inlineTm gs ty) (inlineTm gs v) (inlineTm gs b)
   | .ann t ty => .ann (inlineTm gs t) (inlineTm gs ty)
   | .sorted l t => .sorted l (inlineTm gs t)
   | .pair a b => .pair (inlineTm gs a) (inlineTm gs b)
@@ -2819,7 +2971,9 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
           | .ok RE0 _ esR => match zonk esR n RE0 with
           | .none => errStep gs "could not infer an implicit argument"
           | .some RE =>
-            let tyT := sortTy (piTele pts RE);
+            let tyT := sortTy (piTeleQ (match binderQs (kids (kid stx 3)) with
+              | .some qs => qs
+              | .none => .nil) pts RE);
             let sc := bindAll (Globals.scope gs) params;
             match peelCtx n empty (eval .nil tyT) with
               | .mk c Rv => match sortOf c Rv with
@@ -3012,7 +3166,7 @@ def addMCtors (members ps : List String) (pts : Tms) (m k : Nat) : Globals → N
       | .ok fs1 =>
         -- (a field typed by a member is recursive)
         let fs := markRec members ps fs0 fs1;
-        let ty := sortTy (piTele pts (ctorType (tApps Tc (pvars np (np + n))) fs));
+        let ty := sortTy (piTeleZ pts (ctorType (tApps Tc (pvars np (np + n))) fs));
         let v := markClosed (tLams (np + n) (.con (.pair (.tag k ci) (payloadP (.eqRefl (.enum m) (.tag m j)) n (n - 1))))) ty;
         match check empty v (eval .nil ty) with
         | .err e => .err e
@@ -3028,7 +3182,14 @@ def memberLines (ty : String) : List String → String
   | .cons n rest => match rest with
     | .nil => String.append n ty
     | .cons _ _ => String.append (String.append n ty) (String.append "\n" (memberLines ty rest))
-def mutualInductiveCmd (gs : Globals) (defs : List Syntax) : Step :=
+def mutualQtyErr : List Syntax → Option String
+  | .nil => .none
+  | .cons d ds => match ctorQtyErr (kids (kid d 3)) (kids (kid d 6)) with
+    | .some m => .some m
+    | .none => mutualQtyErr ds
+def mutualInductiveCmd (gs : Globals) (defs : List Syntax) : Step := match mutualQtyErr defs with
+  | .some m => errStep gs m
+  | .none =>
   let members := memberNames defs;
   let m := List.length members;
   let F := joinUnder members;
@@ -3145,9 +3306,13 @@ def setNthSyn (v : Syntax) : List Syntax → Nat → List Syntax
     | .zero => .cons v rest
     | .succ j => .cons s (setNthSyn v rest j)
 def setKid (s : Syntax) (i : Nat) (v : Syntax) : Syntax := mkNode (kindOf s) (setNthSyn v (kids s) i)
+-- (an implicit binder keeps its quantity: its default 0 is written out, stage 21m)
+def zeroQtyStx : Syntax := mkNull (one (mkNode "quantity" (one (mkNode "num" (one (.atom "0"))))))
 def explicitBinders : List Syntax → List Syntax
   | .nil => .nil
-  | .cons b rest => .cons (mkNode "binder.explicit" (.cons (.atom "(") (.cons (kid b 1) (.cons (kid b 2)
+  | .cons b rest => .cons (mkNode "binder.explicit" (.cons (.atom "(") (.cons (match Bool.and (isImplicitB b) (isNilS (kids (kid b 1))) with
+      | .true => zeroQtyStx
+      | .false => kid b 1) (.cons (kid b 2)
       (.cons (kid b 3) (one (.atom ")"))))))) (explicitBinders rest)
 -- `let x := scrutinee; …` for the clause's variables
 def letsFor (body : Syntax) : List Syntax → List Syntax → Syntax
@@ -3288,6 +3453,12 @@ def withDefault (gs : Globals) (stx : Syntax) : Step := match reorderStructural 
 -- one definition (or inductive type), by its form
 def defStep (gs : Globals) (stx : Syntax) : Step := match strEq (kindOf stx) "command.inductive" with
   | .true => inductiveCmd gs stx
+  | .false => match (match binderQs (kids (kid stx 3)) with
+      | .none => Bool.true
+      | .some _ => Bool.false) with
+  | .true => errStep gs qtyErr
+  | .false => match strEq (kindOf stx) "command.inductive" with
+  | .true => inductiveCmd gs stx
   | .false => match Bool.and (strEq (kindOf stx) "command.def") (Bool.and (strEq (kindOf (kid stx 6)) "term.match")
       (scrutsAreParams (fieldNames (fieldsOf (kids (kid stx 3)))) (nonAtoms (kids (kid (kid stx 6) 1))))) with
     | .true => withDefault gs stx
@@ -3305,13 +3476,15 @@ def teleT (gs : Globals) (es : ES) (cx : Cx) (bs : List Syntax) (tyS : Syntax) :
   | .nil => inferType gs es cx tyS
   | .cons b rest => match binderType b with
     | .none => .err "the binders of a definition need types"
-    | .some aS => teleNames gs es cx (binderNames b) aS rest tyS
-def teleNames (gs : Globals) (es : ES) (cx : Cx) (xs : List String) (aS : Syntax) (rest : List Syntax) (tyS : Syntax) : TE :=
+    | .some aS => match binderQ b with
+      | .some q => teleNames gs es cx q (binderNames b) aS rest tyS
+      | .none => .err qtyErr
+def teleNames (gs : Globals) (es : ES) (cx : Cx) (q : Q) (xs : List String) (aS : Syntax) (rest : List Syntax) (tyS : Syntax) : TE :=
   match xs with
   | .nil => teleT gs es cx rest tyS
   | .cons x xs' => match inferType gs es cx aS with
-    | .ok A _ es1 => match teleNames gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) A)) xs' aS rest tyS with
-      | .ok B _ es2 => .ok (.pi A B) (.vsort (.lnum 0)) es2
+    | .ok A _ es1 => match teleNames gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) A)) q xs' aS rest tyS with
+      | .ok B _ es2 => .ok (piTm q A B) (.vsort (.lnum 0)) es2
       | e => e
     | e => e
 end
@@ -3666,6 +3839,92 @@ def foreignTypeCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
       let gs' := Globals.add gs (.mk T (.univ 0) (.axiomC T (.univ 0)) (.axiomC T (.univ 0)) .nil);
       .mk (String.append T " : U0") (Globals.addFFI gs' (.ty T (strValue (kid (kid stx 2) 3))))
   | _ => errStep gs "a foreign type needs a name"
+-- (stage 21o) `link_c` and `link_lib`, as `command.linkC`/`linkLib` in the Lean
+-- frontend: recorded once each, for the backend, which names them in the C it prints
+-- (`// wiz-link-c: f.c`, `// wiz-link-lib: m`); the path is the one written, relative to
+-- the input file's directory. (The frontend is pure: whether the file exists is up to
+-- the C compiler.)
+inductive LinkR where
+  | mk (line : Option String) (gs : Globals)
+def linkKnown (path : String) (lib : Bool) : List Foreign → Bool
+  | .nil => .false
+  | .cons f rest => match f with
+    | .link p l => match Bool.and (strEq p path) (match l with
+        | .true => lib
+        | .false => Bool.not lib) with
+      | .true => .true
+      | .false => linkKnown path lib rest
+    | _ => linkKnown path lib rest
+def hasDashOrSpace : List Char → Bool
+  | .nil => .false
+  | .cons c cs => Bool.or (Nat.beq (Char.code c) 32) (hasDashOrSpace cs)
+def badLib (lib : String) : Bool := match lib with
+  | .mk cs => match cs with
+    | .nil => .true
+    | .cons c _ => Bool.or (Nat.beq (Char.code c) 45) (hasDashOrSpace cs)
+def linkCmd (gs : Globals) (stx : Syntax) (lib : Bool) : LinkR :=
+  let path := strValue (kid stx 1);
+  match Bool.and lib (badLib path) with
+  | .true => LinkR.mk (.some "error: link_lib: give the library's name, as in link_lib \"m\" for -lm") gs
+  | .false => match linkKnown path lib (Globals.ffi gs) with
+    | .true => LinkR.mk .none gs
+    | .false => LinkR.mk .none (Globals.addFFI gs (.link path lib))
+-- a C identifier: letters, digits and `_`, not starting with a digit
+def isDigitC (c : Nat) : Bool := Bool.and (Nat.lt 47 c) (Nat.lt c 58)
+def isIdentC (c : Nat) : Bool := Bool.or (Bool.or (isDigitC c) (Nat.beq c 95))
+  (Bool.or (Bool.and (Nat.lt 64 c) (Nat.lt c 91)) (Bool.and (Nat.lt 96 c) (Nat.lt c 123)))
+def allIdentC : List Char → Bool
+  | .nil => .true
+  | .cons c cs => Bool.and (isIdentC (Char.code c)) (allIdentC cs)
+def isCIdent (n : String) : Bool := match n with
+  | .mk cs => match cs with
+    | .nil => .false
+    | .cons c _ => Bool.and (Bool.not (isDigitC (Char.code c))) (allIdentC cs)
+def exportedAs (cname : String) : List Foreign → Bool
+  | .nil => .false
+  | .cons f rest => match f with
+    | .exported _ c _ _ _ => Bool.or (strEq c cname) (exportedAs cname rest)
+    | _ => exportedAs cname rest
+-- an exported function's kinds: parameters passed (not erased, not a `Unit`) and a
+-- result that isn't a foreign pointer
+def exportParamOk (k : String) : Bool := Bool.not (Bool.or (strEq k "e") (strEq k "v"))
+def exportParamsOk : List String → Bool
+  | .nil => .true
+  | .cons k ks => Bool.and (exportParamOk k) (exportParamsOk ks)
+def globalTyOf (gs : Globals) (f : String) : Option Tm := match Scope.lookup (Globals.scope gs) f with
+  | .none => .none
+  | .some i => match gs with
+    | .mk all _ _ _ => match Array.getD all (Array.size all - 1 - i) (.mk "?" .star .star .star .nil) with
+      | .mk _ ty _ _ _ => .some ty
+-- `export "c_name" f (: T)?` (stage 21o, as `command.export` in the Lean frontend)
+def exportCmd (gs : Globals) (stx : Syntax) : LinkR :=
+  let cname := strValue (kid stx 1);
+  let f := identOf' (kid stx 2);
+  let err := fun (m : String) => (LinkR.mk (Option.some (String.append "error: " m)) gs : LinkR);
+  match globalTyOf gs f with
+  | .none => err (String.append "unknown declaration " f)
+  | .some ty =>
+    let tyOk : Option String := match kids (kid stx 3) with
+      | .cons _ (.cons tS _) => match inferType gs ES.empty (Cx.mk empty (Globals.scope gs) .nil) tS with
+        | .err m => .some m
+        | .ok T0 _ es => match zonk es 0 T0 with
+          | .none => .some "could not infer an implicit argument"
+          | .some T => match convTy empty (eval .nil ty) (eval .nil T) with
+            | .true => .none
+            | .false => .some (String.append (String.append (String.append f " has type ") (show .nil 0 ty))
+                (String.append ", not " (show .nil 0 T)))
+      | _ => .none;
+    match tyOk with
+    | .some m => err m
+    | .none => match isCIdent cname with
+      | .false => err (String.append cname " is not a C identifier")
+      | .true => match exportedAs cname (Globals.ffi gs) with
+        | .true => err (String.append cname " is exported already")
+        | .false => match ffiSig (Globals.ffi gs) ty with
+          | .mk ks r io _ => match Bool.and (exportParamsOk ks) (Bool.not (strEq r "p")) with
+            | .true => LinkR.mk .none (Globals.addFFI gs (.exported f cname ks r io))
+            | .false => err "an exported function's arguments must be Nat, UInt64, Float64, String, Bool, a foreign pointer or a Wiz data type, and its result one of those (not a foreign pointer) or Unit, maybe in IO"
+          | .bad => err "an exported function's arguments must be Nat, UInt64, Float64, String, Bool, a foreign pointer or a Wiz data type, and its result one of those (not a foreign pointer) or Unit, maybe in IO"
 def joinLines : List String → String
   | .nil => ""
   | .cons l rest => match rest with
@@ -3702,7 +3961,7 @@ def implicitBinders : List Syntax → List Syntax
 def fieldName (f : Syntax) : String := identOf' (kid f 2)
 def fieldBinders : List Syntax → List Syntax
   | .nil => .nil
-  | .cons f rest => .cons (binderStx "(" ")" (fieldName f) (kid f 4)) (fieldBinders rest)
+  | .cons f rest => .cons (setKid (binderStx "(" ")" (fieldName f) (kid f 4)) 1 (kid f 1)) (fieldBinders rest)
 def fieldIdents : List Syntax → List Syntax
   | .nil => .nil
   | .cons f rest => .cons (identStx (fieldName f)) (fieldIdents rest)
@@ -3832,6 +4091,21 @@ def doCats (cats : List Cat) : List Cat :=
       (.cons (.mk "doSeq.bind" 1024 0 (.seq .ident (.seq (.atom "←") (thenRest (.cat "term" 0)))))
       (.cons (.mk "doSeq.seq" 1024 0 (thenRest (.cat "term" 0)))
       (.cons (.mk "doSeq.let" 1024 0 (.seq (.atom "let") (.seq .ident (.seq (.atom ":=") (thenRest (.cat "term" 0)))))) .nil)))) .nil) .nil))
+-- (stage 21n) a `private` command is the command (one module: see `stepCommand`)
+def unwrapPrivate (s : Syntax) : Syntax := match strEq (kindOf s) "command.private" with
+  | .true => kid s 1
+  | .false => s
+-- `link_c`, `link_lib`, `export` (stage 21o): no output line unless an error
+def linkStep (gs : Globals) (stx : Syntax) : Option LinkR := match strEq (kindOf stx) "command.linkC" with
+  | .true => .some (linkCmd gs stx .false)
+  | .false => match strEq (kindOf stx) "command.linkLib" with
+    | .true => .some (linkCmd gs stx .true)
+    | .false => match strEq (kindOf stx) "command.export" with
+      | .true => .some (exportCmd gs stx)
+      | .false => .none
+-- the commands `defStep` elaborates
+def knownCommand (k : String) : Bool := Bool.or (Bool.or (strEq k "command.def") (strEq k "command.defEqns"))
+  (Bool.or (strEq k "command.inductive") (Bool.or (strEq k "command.check") (strEq k "command.reduce")))
 -- the output so far, the globals, and the parser's tables and notations
 inductive Run where
   | mk (out : List String) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)
@@ -3856,9 +4130,16 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
     | .true => match infixCmd cats tokens stx0 with
       | .mk cats' tokens' note => .next .none stop gs cats' tokens' (.cons note notes)
     | .false =>
-      let stx := match notes with
+      let stx1 := match notes with
         | .nil => stx0
         | _ => expandNotes notes stx0;
+      -- (stage 21n) `private` declares the same names: privacy is per module, and the
+      -- self-hosted toolchain has one module (docs/stages/21-bootstrap.md, 21n)
+      let stx := unwrapPrivate stx1;
+      match linkStep gs stx with
+      | .some r => (match r with
+        | LinkR.mk line gs' => StepR.next line stop gs' cats tokens notes)
+      | .none =>
       let step := match strEq (kindOf stx) "command.partial" with
         | .true => partialCmd gs (one stx)
         | .false => match strEq (kindOf stx) "command.mutual" with
@@ -3874,7 +4155,11 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
                 | .true => externCmd gs stx
                 | .false => match strEq (kindOf stx) "command.foreignType" with
                   | .true => foreignTypeCmd gs stx
-                  | .false => defStep gs stx;
+                  | .false => match knownCommand (kindOf stx) with
+                    | .true => defStep gs stx
+                    -- (an unknown command, or a modifier this frontend doesn't know, is
+                    -- an error naming it, never ignored)
+                    | .false => errStep gs (String.append "unsupported command " (kindOf stx));
       match step with
       | .mk line gs' => match newDuplicate gs gs' with
         | .some x => .next (.some (String.append (String.append "error: '" x) "' has already been declared")) stop gs cats tokens notes

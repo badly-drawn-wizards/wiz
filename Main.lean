@@ -25,7 +25,7 @@ compiler option (turns the cache off): --unbox-structs (22i: a structure's last 
 unboxed; not stable under substitution, so off by default)
 --strict-privacy (13b, an experiment; turns the cache off): check each declaration again with
   the definitions of other modules' types with private parts hidden
-toolchain: --cc X (default cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
+toolchain: --cc X (default: a release's own share/wiz/cc, else cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
 
 def parseCmd (path : String) : IO UInt32 := do
@@ -38,11 +38,13 @@ def parseCmd (path : String) : IO UInt32 := do
   pure (if r.messages.isEmpty then 0 else 1)
 
 /-- The module roots: the toolchain's library (`Module.toolchainLib`, the binary's own,
-whatever the current directory), then `./lib` and the `-I` directories. Only the first
-root's modules are trusted (stage 22f), and since the first root that has a module wins,
-no other directory can stand in for one of them. -/
+whatever the current directory; `./lib` only when there is none), then the `-I`
+directories. Only the first root's modules are trusted (stage 22f), and since the first
+root that has a module wins, no other directory can stand in for one of them. (`./lib`
+is not searched besides: run in another checkout, every module of its `lib/` would be
+reported as shadowed.) -/
 def moduleRoots (tc : Toolchain) : IO (List System.FilePath) :=
-  return (← Module.toolchainLib) :: "lib" :: tc.searchPath
+  Module.roots tc.searchPath
 
 /-- The library modules from the toolchain's own `lib/` (the first root): their
 `builtin` registrations are trusted. -/
@@ -208,7 +210,9 @@ def kernelOpt : List String → Except String (Regularity × Bool × List String
 def main (args : List String) : IO UInt32 := do
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
-  let (tc, args) := ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).parseFlags args
+  -- (26f) a release toolchain's own C compiler, GMP and GC are the defaults
+  let defaults ← ({ cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") } : Toolchain).withBundled
+  let (tc, args) := defaults.parseFlags args
   if args.contains "--strict-privacy" then strictPrivacyOpt.set true
   let args := args.filter (· != "--strict-privacy")
   if args.contains "--unbox-structs" then unboxOpt.set true

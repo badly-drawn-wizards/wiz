@@ -1,6 +1,7 @@
 -- The infoview: a split beside the editor that follows the cursor and shows the tactic
--- state (`wiz/interactiveGoals`) and the expected type (`wiz/interactiveTermGoal`) at
--- it, as tagged text: every subterm is a range that knows its kind and its ref, so
+-- state (`wiz/interactiveGoals`), the expected type (`wiz/interactiveTermGoal`) and what
+-- else is there (`wiz/interactiveInfo`: syntax and its expansion, an import, instances,
+-- the command's declarations, messages) at it, as tagged text: every subterm is a range that knows its kind and its ref, so
 -- `K` in the infoview asks the server what the subterm under the cursor is
 -- (`wiz/subtermInfo`). Protocol: wiz-notes/infoview-protocol.md.
 local config = require 'wiz.config'
@@ -17,6 +18,7 @@ M.state = {
   src = nil, -- { buf, uri, position } the infoview shows
   session = nil,
   tags = {}, -- { srow, scol, erow, ecol, ref, kind, name, depth } (0-based, end exclusive)
+  links = {}, -- { srow, erow, location } (rows of an info item with a place to go to)
   tick = 0,
   pending = 0, -- requests in flight
   subterm = nil, -- the last wiz/subtermInfo result
@@ -55,7 +57,7 @@ local Builder = {}
 Builder.__index = Builder
 
 function Builder.new()
-  return setmetatable({ lines = { '' }, hls = {}, tags = {} }, Builder)
+  return setmetatable({ lines = { '' }, hls = {}, tags = {}, links = {} }, Builder)
 end
 
 function Builder:pos()
@@ -141,9 +143,53 @@ function Builder:goal(g)
   self:tagged(g.type)
 end
 
+local item_titles = {
+  syntax = 'Syntax',
+  expansion = 'Syntax',
+  import = 'Import',
+  instance = 'Instances',
+  declaration = 'Declarations',
+  message = 'Messages',
+}
+
+local function present(x)
+  return x ~= nil and x ~= vim.NIL
+end
+
+--- One item of wiz/interactiveInfo.
+function Builder:item(it)
+  local srow = self:pos()
+  if it.kind == 'declaration' then
+    self:text(it.title or '', 'WizInfoviewHypName')
+    if present(it.type) then
+      self:text ' : '
+      self:tagged(it.type)
+    end
+  elseif it.kind == 'instance' then
+    self:text((present(it.text) and it.text or '?') .. ' : ', 'WizInfoviewHypName')
+    if present(it.type) then
+      self:tagged(it.type)
+    end
+  else
+    self:text(it.title or '', it.kind == 'message' and 'WizInfoviewMuted' or nil)
+    if present(it.text) then
+      for _, line in ipairs(vim.split(it.text, '\n', { plain = true })) do
+        self:newline()
+        self:text('  ' .. line)
+      end
+    end
+  end
+  local erow = self:pos()
+  if present(it.location) and it.location.uri then
+    table.insert(self.links, { srow = srow, erow = erow, location = it.location })
+  end
+  self:newline()
+end
+
 --- Lines, highlights and tags for a state: `goals` (a wiz/interactiveGoals result or
---- nil) and `term` (a wiz/interactiveTermGoal result or nil).
-function M.layout(src, goals, term, err)
+--- nil), `term` (a wiz/interactiveTermGoal result or nil) and `info` (a
+--- wiz/interactiveInfo result or nil).
+function M.layout(src, goals, term, err, info)
   local b = Builder.new()
   if src then
     local name = vim.fn.fnamemodify(vim.uri_to_fname(src.uri), ':t')
@@ -198,7 +244,23 @@ function M.layout(src, goals, term, err)
     b:goal(term.goal)
     b:newline()
   end
-  if not goals and not (term and term.goal) then
+  local items = info and info.items or {}
+  if type(items) == 'table' then
+    local section = nil
+    for _, it in ipairs(items) do
+      local title = item_titles[it.kind] or 'Info'
+      if title ~= section then
+        if goals or (term and term.goal) or section then
+          b:newline()
+        end
+        b:text(title, 'WizInfoviewTitle')
+        b:newline()
+        section = title
+      end
+      b:item(it)
+    end
+  end
+  if not goals and not (term and term.goal) and #items == 0 then
     b:text('No info.', 'WizInfoviewMuted')
   end
   if b.lines[#b.lines] == '' and #b.lines > 1 then
@@ -327,6 +389,7 @@ local function draw(b)
     })
   end
   S.tags = b.tags
+  S.links = b.links
 end
 
 --- The innermost tag at (row, col) of the infoview buffer (0-based), if any.
@@ -389,7 +452,7 @@ function M.update_now(src)
   S.tick = S.tick + 1
   local tick = S.tick
   local params = { textDocument = { uri = src.uri }, position = src.position }
-  local results, errors, left = {}, {}, 2
+  local results, errors, left = {}, {}, 3
   S.pending = S.pending + 1
   local function done()
     left = left - 1
@@ -402,9 +465,10 @@ function M.update_now(src)
     end
     local goals = results.goals ~= vim.NIL and results.goals or nil
     local term = results.term ~= vim.NIL and results.term or nil
-    S.session = (goals and goals.session) or (term and term.session) or S.session
+    local info = results.info ~= vim.NIL and results.info or nil
+    S.session = (goals and goals.session) or (term and term.session) or (info and info.session) or S.session
     local err = errors.goals or errors.term
-    draw(M.layout(src, goals, term, (not goals and not term) and err or nil))
+    draw(M.layout(src, goals, term, (not goals and not term) and err or nil, info))
   end
   local function handler(key)
     return function(err, result)
@@ -417,6 +481,8 @@ function M.update_now(src)
   end
   lsp.request(src.buf, 'wiz/interactiveGoals', params, handler 'goals')
   lsp.request(src.buf, 'wiz/interactiveTermGoal', params, handler 'term')
+  -- (a server without it answers with an error, which is not shown)
+  lsp.request(src.buf, 'wiz/interactiveInfo', params, handler 'info')
 end
 
 --- Debounced update (on cursor moves).
@@ -519,10 +585,37 @@ function M.inspect()
   end)
 end
 
---- `gd` in the infoview: jump (in the source window) to where the constant is declared.
+local function show_location(loc)
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if S.src and vim.api.nvim_win_get_buf(w) == S.src.buf then
+      vim.api.nvim_set_current_win(w)
+      break
+    end
+  end
+  local client = lsp.client(S.src.buf)
+  vim.lsp.util.show_document(loc, client and client.offset_encoding or 'utf-16', { focus = true })
+end
+
+--- The info item with a location at a row of the infoview (0-based), if any.
+function M.link_at(row)
+  for _, l in ipairs(S.links or {}) do
+    if row >= l.srow and row <= l.erow then
+      return l
+    end
+  end
+  return nil
+end
+
+--- `gd` in the infoview: jump (in the source window) to where the constant under the
+--- cursor is declared, or to where an info item's syntax, macro or module is.
 function M.goto_definition()
   local t = M.select_under_cursor()
   if not t then
+    local win = M.win()
+    local l = win and M.link_at(vim.api.nvim_win_get_cursor(win)[1] - 1)
+    if l and S.src then
+      show_location(l.location)
+    end
     return
   end
   subterm_request(t, function(info)

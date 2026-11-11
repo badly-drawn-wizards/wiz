@@ -52,7 +52,7 @@ private def qtyPrefixLit (bi : BinderInfo) (q : R) : String :=
 
 partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
   | .var ix => names[ix]?.getD s!"#{ix}"
-  | .const n _ => n
+  | .const n _ => Globals.privateBase n
   | .mvar m => s!"?m{m}"
   | .qty => "Qty"
   | .size => "Size"
