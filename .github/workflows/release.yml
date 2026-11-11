@@ -27,6 +27,8 @@ on:
       - scripts/release-tarball.sh
       - scripts/bundle-cc.sh
       - web/**
+      - scripts/bundle-cc.sources
+      - scripts/release-licenses/**
       - .github/workflows/release.yml
       - Tower/**
       - scripts/release-snapshots.sh
@@ -116,8 +118,14 @@ jobs:
         if: steps.web.outputs.web == 'yes'
         run: |
           start=$(date +%s)
-          curl -sSfL -o gmp-6.3.0.tar.xz https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
-          echo "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898  gmp-6.3.0.tar.xz" | sha256sum -c
+          # GMP's source, for mini-gmp: the mirrors scripts/bundle-cc.sources lists for it
+          line=$(grep '^gmp-6.3.0.tar.xz ' .release-tools/scripts/bundle-cc.sources)
+          sum=$(echo "$line" | cut -d' ' -f2)
+          for u in $(echo "$line" | cut -d' ' -f3-); do
+            curl -sSfL --retry 2 -o gmp-6.3.0.tar.xz "$u" && echo "$sum  gmp-6.3.0.tar.xz" | sha256sum -c && break
+            rm -f gmp-6.3.0.tar.xz
+          done
+          [ -f gmp-6.3.0.tar.xz ] || { echo "no mirror had GMP's source"; exit 1; }
           sh web/build.sh web-out --gmp-src gmp-6.3.0.tar.xz
           ls -l web-out
           echo "web infoview built in $(( $(date +%s) - start )) s"
@@ -126,18 +134,26 @@ jobs:
         id: bundle
         run: |
           if grep -q withBundled Wiz/Toolchain.lean; then echo "cc=yes" >> "$GITHUB_OUTPUT"; else echo "cc=no" >> "$GITHUB_OUTPUT"; fi
+      # the bundle's downloads (scripts/bundle-cc.sources), so a rebuild of the bundle
+      # needs no outside server; master also copies them to the release bundle-inputs
+      - name: Cache the bundle's downloads
+        if: steps.bundle.outputs.cc == 'yes'
+        uses: actions/cache@v4
+        with:
+          path: bundle-downloads
+          key: bundle-inputs-${{ hashFiles('.release-tools/scripts/bundle-cc.sources') }}
       - name: Cache the bundled C toolchain
         if: steps.bundle.outputs.cc == 'yes'
         uses: actions/cache@v4
         with:
           path: cc-bundle
-          key: release-cc-${{ runner.os }}-${{ hashFiles('lean-toolchain', '.release-tools/scripts/bundle-cc.sh') }}
+          key: release-cc-${{ runner.os }}-${{ hashFiles('lean-toolchain', '.release-tools/scripts/bundle-cc.sh', '.release-tools/scripts/bundle-cc.sources') }}
       - name: The bundled C toolchain (clang, glibc 2.27 sysroot, static GMP and GC)
         if: steps.bundle.outputs.cc == 'yes'
         run: |
           if [ ! -x cc-bundle/bin/cc ]; then
             sudo apt-get install -y -q m4 >/dev/null # GMP's configure
-            sh .release-tools/scripts/bundle-cc.sh cc-bundle
+            sh .release-tools/scripts/bundle-cc.sh cc-bundle bundle-downloads
           fi
           du -sh cc-bundle
           # what the compiler itself needs (Lean's libLLVM/libclang-cpp: glibc 2.30)
@@ -145,10 +161,13 @@ jobs:
             [ -L "$f" ] || echo "$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1) $f"
           done
       - name: Tarball
+        env:
+          BUNDLE_CC: ${{ steps.bundle.outputs.cc }}
+          BUNDLE_WEB: ${{ steps.web.outputs.web }}
         run: |
           mkdir -p dist
-          cc=; [ "${{ steps.bundle.outputs.cc }}" = yes ] && cc=cc-bundle
-          web=; [ "${{ steps.web.outputs.web }}" = yes ] && web=web-out
+          cc=; [ "$BUNDLE_CC" = yes ] && cc="cc-bundle"
+          web=; [ "$BUNDLE_WEB" = yes ] && web="web-out"
           [ -z "$cc" ] && [ -n "$web" ] && { echo "a web dir needs the cc argument before it"; exit 1; }
           .release-tools/scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz .lake/build/bin "$(git rev-parse HEAD)" $cc $web
           ls -l dist
@@ -223,6 +242,22 @@ jobs:
           PATH="$d/.tower/bin:$PATH" wiz check io.wiz
           PATH="$d/.tower/bin:$PATH" wiz build io.wiz -o io && ./io | head -1
           PATH="$d/.tower/bin:$PATH" tower toolchain list
+      - name: Mirror the bundle's downloads (the release bundle-inputs, the last mirror bundle-cc.sh tries)
+        if: steps.bundle.outputs.cc == 'yes' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          r="-R ${{ github.repository }}"
+          gh release view bundle-inputs $r >/dev/null 2>&1 ||
+            gh release create bundle-inputs $r --prerelease --target "$GITHUB_SHA" --title "Inputs of the bundled C toolchain" \
+              --notes "Copies of the files scripts/bundle-cc.sources lists (sha256-checked there), the last mirror scripts/bundle-cc.sh tries. Not a Wiz release."
+          have=$(gh release view bundle-inputs $r --json assets --jq '.assets[].name')
+          for f in bundle-downloads/*; do
+            case $f in *.part) continue ;; esac
+            [ -f "$f" ] || continue
+            echo "$have" | grep -qxF "$(basename "$f")" || gh release upload bundle-inputs $r "$f"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: wiz-x86_64-linux
