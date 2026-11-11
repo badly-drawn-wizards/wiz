@@ -4104,6 +4104,79 @@ def trustGroup : Group where
         check ((addDecl (R := ZeroOneMany) {} { name := "f", type := ty, value := none }) >>= (addPartialImpl · "f" .tt) matches .error _)
           "an axiom took an implementation"
         let _ := bad },
+    { name := "the kernel checks a definition's implementation for the compiler (Decl.impl)", run := fun _ => do
+        -- `f : Unit := tt`, with the term compiled code runs given by hand
+        let ty : Term ZeroOneMany := .unit 1
+        let f (impl : Term ZeroOneMany) (levelParams : List Name := []) : Decl ZeroOneMany :=
+          { name := "f", levelParams, type := ty, value := some .tt, impl := some impl }
+        let rejected (d : Decl ZeroOneMany) (fragment : String) : Bool :=
+          match addDecl {} d with
+          | .error e => ((toString e).splitOn fragment).length > 1
+          | .ok _ => false
+        check ((addDecl {} (f .tt)) matches .ok _) "a good implementation was rejected"
+        -- it may call the definition (a recursive definition's does): checked with `f` declared
+        check ((addDecl {} (f (.const "f" []))) matches .ok _) "an implementation calling its definition was rejected"
+        check (rejected (f (.const "g" [])) "implementation of f") "an implementation with an unknown constant was accepted"
+        -- ill-typed, and well-typed at another type
+        check (rejected (f (.app .tt .tt)) "implementation of f") "an ill-typed implementation was accepted"
+        check (rejected (f (.unit 1)) "implementation of f") "an implementation of another type was accepted"
+        check (rejected (f (.pair .tt .tt)) "implementation of f") "an implementation of another type was accepted"
+        -- a `Π` noted to be in a sort it is not in (erasure reads the note): `let T : Type := Π… in tt`
+        let piNoted (s : Option Level) : Term ZeroOneMany :=
+          .letE "T" (.qlit .zero) (.sort 1) (.pi "_" .default (.qlit .many) (.unit 1) (.unit 1) s) .tt
+        check ((addDecl {} (f (piNoted none))) matches .ok _) "an implementation without sort notes was rejected"
+        check ((addDecl {} (f (piNoted (some 1)))) matches .ok _) "a right sort note was rejected"
+        check (rejected (f (piNoted (some 0))) "marked as in sort") "a wrong sort note in an implementation was accepted"
+        check (rejected { f .tt with value := some (piNoted (some 0)), impl := none } "marked as in sort")
+          "a wrong sort note in a value was accepted"
+        -- quantities: a linear variable used twice
+        let lin (body : Term ZeroOneMany) : Decl ZeroOneMany :=
+          { name := "f", type := .pi "x" .default (.qlit .one) ty (.sigma "_" (.qlit .one) ty ty none) none,
+            value := some (.lam "x" (.pair (.var 0) .tt)), impl := some (.lam "x" body) }
+        check ((addDecl {} (lin (.pair .tt (.var 0)))) matches .ok _) "a linear implementation was rejected"
+        check (rejected (lin (.pair (.var 0) (.var 0))) "implementation of f") "an implementation using a linear variable twice was accepted"
+        -- universe level parameters
+        check (rejected (f (.ann .tt (.unit (.param "u")))) "unknown universe level parameter u")
+          "an implementation with an undeclared level parameter was accepted"
+        -- `attribute [implemented_by g] f` goes through the kernel too (`setImpl`)
+        let g ← match addDecls (R := ZeroOneMany) {} [{ name := "f", type := ty, value := some .tt },
+            { name := "g", type := ty, value := some .tt }, { name := "h", type := .sort 2, value := some (.sort 1) }] with
+          | .ok g => pure g
+          | .error e => throw (IO.userError s!"setup rejected: {e}")
+        check ((setImpl g "f" (.const "g" [])) matches .ok _) "a native implementation of the same type was rejected"
+        check ((setImpl g "f" (.const "h" [])) matches .error _) "a native implementation of another type was accepted" },
+    { name := "recursive definitions: the compiled equations are kernel-checked terms", run := fun _ => do
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def add : N → N → N\n  | .z, m => m\n  | .s n, m => .s (add n m)\n" ++
+          "def double : N → N\n  | .z => .z\n  | .s n => .s (.s (double n))\n" ++
+          "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
+          "def vlen {A : Type} {0 n : N} : V A n → N\n  | .nil => .z\n  | .cons _ xs => .s (vlen xs)\n" ++
+          "#eval double (add (.s .z) (.s .z))\n"
+        let s := runFrontend (R := ZeroOneMany) src
+        check (s.messages.all (·.severity != .error)) s!"errors: {s.messages.toList.map (·.text)}"
+        for n in ["add", "double", "vlen"] do
+          let some d := s.globals.find? n | throw (IO.userError s!"{n} is missing")
+          let some impl := d.impl | throw (IO.userError s!"{n} has no implementation")
+          -- what `addDecl` did: the implementation checks at the declared type, with `n` declared
+          let ctx : Ctx ZeroOneMany := { globals := s.globals }
+          check ((Wiz.check ctx impl (ctx.eval d.type)) matches .ok _) s!"{n}'s implementation does not check"
+          -- and the declaration can't be re-added with a broken one
+          let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase n }
+          check ((addDecl g0 d) matches .ok _) s!"{n} is rejected when added again"
+          check ((addDecl g0 { d with impl := some .tt }) matches .error _)
+            s!"{n} was accepted with an implementation of another type" },
+    { name := "recursive definitions: a local variable named like the definition doesn't capture its calls in compiled code", run := fun _ =>
+        -- `f n` is a recursive call (the kernel's definition recurses, so `f 2 = 0`); the
+        -- compiled equations called the local `f`, and `#eval f 2` was `3`
+        ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
+            "def f : N → N\n  | .z => .z\n  | .s n => (fun (f : N → N) => f n) (fun x => .s (.s x))\n" ++
+            "def fThm : f (.s (.s .z)) = .z := refl N.z\n#eval f (.s (.s .z))\n#run f (.s (.s .z))\n" ++
+            "def g : N → N\n  | .z => .z\n  | .s n => let g : N → N := fun x => .s (.s x); g n\n" ++
+            "def gThm : g (.s (.s .z)) = .z := refl N.z\n#eval g (.s (.s .z))\n" ++
+            -- a pattern variable too
+            "def h : N → (N → N) → N\n  | .z, _ => .z\n  | .s n, h => h n (fun x => .s x)\n" ++
+            "def hThm : h (.s (.s .z)) (fun x => .s x) = .z := refl N.z\n#eval h (.s (.s .z)) (fun x => .s x)\n")
+          [".z", ".z", ".z", ".z"] },
     { name := "O3: an unchecked registration is an axiom", run := fun _ => do
         let msgs ← messagesLib badAdd
         let expect := ["warning: builtin nat := N is not checked: it is an axiom of every declaration that depends on N (see `#print axioms`)",
