@@ -1424,10 +1424,18 @@ def runSeq (p : Plan) (pre : Array Nat) (iseed : Nat) (acc : Acc) : Acc :=
 
 def Plan.strict (p : Plan) : Plan := { p with w := { p.w with strict := true } }
 
-/-- A known issue: an equation of two values of a type with a `ν` computes to a normal form
-with `transp` at a proposition, which the kernel rejects (found by this harness on master
-fd63740 in the native world; investigated by agent nu-transp). -/
-def nuTranspIssue : String := "NU-TRANSP (see /workspace/wiz-notes/nu-transp.md)"
+/-- A known issue: an equation at a Σ with a proof component whose proposition is
+*neutral* (a variable, or a family applied: `(0 k : P) × B`, `(x : A) × P x`) computes to a
+normal form with `transp` or `eq` at that proposition, which the kernel rejects. Found by
+this harness (agent nu-transp: /workspace/wiz-notes/nu-transp.md). #123 fixed the visible
+propositions; the neutral ones need mandatory sorts (mandatory-sorts.md). -/
+def nuTranspIssue : String := "NU-TRANSP-NEUTRAL (see /workspace/wiz-notes/nu-transp.md)"
+
+/-- Does a kernel message reject `transp` or `eq` at a proposition that is a variable or a
+variable applied (printed `x…`)? -/
+def neutralPropMsg (msg : String) : Bool :=
+  ["transp is for types in Type u, not propositions: x", "equality is for types in Type u, not propositions: x"].any
+    fun frag => (msg.splitOn frag).length > 1
 
 /-- The findings of a sequence, each with the known issue it is attributed to (`""`:
 none). **U5**: the law holds on the same sample when every `Π`/`Σ` carries its sort. -/
@@ -1440,10 +1448,9 @@ def findingsOf (p : Plan) (pre : Array Nat) (iseed : Nat) (fs : Array (String ×
     let illTyped := has law "ill typed"
     -- Sz2: `scase … ∞ i (con xs)` reduces to `m ∞ i xs`, and `∞` is not a `Size< ∞`
     let issue := if illTyped && has msg "is not below" then "Sz2"
-      -- NU-TRANSP: an equation at a type with a ν computes to a `transp` at a proposition
-      -- (narrow on purpose: P6, that kernel message, and a ν or `cocon` in the judgment)
-      else if has law "P6" && has msg "transp is for types in Type u, not propositions"
-          && (has msg "ν" || has msg ".nu " || has msg "cocon") then nuTranspIssue
+      -- NU-TRANSP-NEUTRAL: `transp`/`eq` at a neutral proposition in a normal form
+      -- (narrow on purpose: P6, and that kernel message naming a variable)
+      else if has law "P6" && neutralPropMsg msg then nuTranspIssue
       -- U5b: `vCast` computes at a Π/Σ whose sort depends on a level variable, where
       -- `vEqType` is stuck: the reduct projects a proof that has no Σ type
       else if illTyped && has msg "(level variables" then "U5b"
@@ -1658,22 +1665,22 @@ def replayMain (args : List String) : IO UInt32 := do
     pure 0
   | _ => do IO.eprintln "usage: --prop-replay WORLD CTX MODE FUEL ISEED CHOICE…"; pure 2
 
-/-- NU-TRANSP's replay (world, context, mode, fuel, seed, choices: `tests --prop-replay`). -/
-def nuTranspReplay : List String := ["native", "-", "any", "2", "13265856826267033286", "0", "2", "1", "4", "0", "2", "0", "6"]
-
-/-- NU-TRANSP pinned: the replay must still show it. When the kernel is fixed this fails:
-remove this case and `nuTranspIssue`'s attribution in `findingsOf`. -/
+/-- NU-TRANSP-NEUTRAL pinned: `(P : Prop) (B : Type) (p q : (0 k : P) × B) ⊢ p = q : Prop`
+is well typed, and its normal form is not (a `transp` along `P`). When this fails, the
+kernel handles neutral propositions (mandatory sorts): remove this case and
+`nuTranspIssue`'s attribution in `findingsOf`. -/
 def nuTranspPinned : IO Unit := do
   let some w := (← worlds).find? (·.name == "native") | throw (IO.userError "no world native")
-  match nuTranspReplay with
-  | _ :: _ :: _ :: fuel :: iseed :: choices =>
-    let p : Plan := { w, fixed := none, fuel := fuel.toNat!, mode := none }
-    let pre := (choices.filterMap String.toNat?).toArray
-    let acc := runSeq p pre iseed.toNat! {}
-    let fs := findingsOf p pre iseed.toNat! acc.findings
-    unless fs.any (·.1 == nuTranspIssue) do
-      throw (IO.userError s!"NU-TRANSP no longer reproduces (fixed?): unpin it (this case and its attribution in findingsOf); findings now: {fs.toList.map (·.2.1)}")
-  | _ => throw (IO.userError "bad replay")
+  let sig (P B : Tm) : Tm := .sigma "k" (.qlit .zero) P B none
+  let j : Jd := { ctx := #[.sort 0, .sort 1, sig (.var 1) (.var 1), sig (.var 2) (.var 2)],
+                  t := .eq (sig (.var 3) (.var 3)) (.var 1) (.var 0), T := .sort 0 }
+  unless accepts w.g (close j.ctx j.t j.T) do
+    throw (IO.userError s!"the pinned judgment is not well typed: {why w.g j}")
+  let k := (mkCx w j.ctx).k
+  let nt := quote w.g k.lvl (k.eval j.t)
+  let msg := why w.g { j with t := nt }
+  unless (msg.splitOn "not propositions").length > 1 do
+    throw (IO.userError s!"NU-TRANSP-NEUTRAL no longer reproduces (mandatory sorts?): unpin it (this case and its attribution in findingsOf); normal form {nt.pretty (names 4)}: {msg}")
 
 def leanCase (b : Budget) : IO Unit := do
   let acc ← runLean b
@@ -1845,7 +1852,7 @@ def group : Group where
   cases := [
     { name := "substitution laws P1–P4, P6 in the Lean kernel (enumerated and sampled terms; coverage gate)",
       run := fun _ => leanCase {} },
-    { name := "pinned known issue NU-TRANSP still reproduces (unpin when fixed)",
+    { name := "pinned known issue NU-TRANSP-NEUTRAL still reproduces (unpin when fixed)",
       run := fun _ => nuTranspPinned }]
 
 def kernelGroup : Group where
