@@ -69,7 +69,8 @@ structure SynthState (R : Type) where
 
 /-- A type, with solved holes filled in, for messages. -/
 def showType (ctx : LocalCtx R) (ty : VTy R) : ElabM R String := do
-  pure ((← zonk ctx.lvl (quote (← getGlobals) ctx.lvl ty)).pretty ctx.names)
+  let g ← getGlobals
+  pure ((← zonk ctx.lvl (quote g ctx.lvl ty)).pretty ctx.names (some g))
 
 /-- The class of a type, if it is an application of one (kept by glued evaluation). -/
 def classOf? (ty : VTy R) : ElabM R (Option (ClassInfo × List Level × Array (Val R))) := do

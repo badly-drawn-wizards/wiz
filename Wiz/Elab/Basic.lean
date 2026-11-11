@@ -432,7 +432,13 @@ def instLevel (l : Level) : ElabM R Level := do
   pure (l.instMVars fun m => ls[m]?.join)
 
 
-def showTerm (ctx : LocalCtx R) (t : Term R) : String := elideLong (t.pretty ctx.names)
+/-- A term for a message, with notation when the globals are given (11r, 13o). -/
+def showTerm (ctx : LocalCtx R) (t : Term R) (g : Option (Globals R) := none) : String :=
+  elideLong (t.pretty ctx.names g)
+
+/-- A term for a message, with notation (13o: goals, tactic messages). -/
+def showTermM (ctx : LocalCtx R) (t : Term R) : ElabM R String :=
+  return showTerm ctx t (some (← getGlobals))
 
 def showVal (ctx : LocalCtx R) (v : Val R) : ElabM R String := do
   let g ← getGlobals
