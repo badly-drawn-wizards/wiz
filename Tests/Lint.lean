@@ -1,4 +1,5 @@
 import Wiz
+import Lean
 import Tests.Harness
 
 /-!
@@ -931,12 +932,65 @@ def panicProbe (mode site : String) : IO UInt32 := do
   | .error e => IO.println s!"rejected: {e}"
   return 0
 
+/-! ## `isoKey`: every setting of `Globals` is in the key
+
+`runFrontend` keeps the modules it elaborated in isolation for the whole process, keyed by
+`isoKey`: the texts and the settings of the base state. A setting left out of the key lets a
+module elaborated under one value be reused under another (`lazyEqs` was: a test's
+`--eager-eqs` run got the glued Prelude). Every field of `Globals` is listed here, either as
+a setting, with a way to change it (the key must change), or as state, with why it isn't
+one. A new field fails the test until it is listed. -/
+
+open Lean Elab Term in
+/-- The fields of `Wiz.Globals`, in order, as the compiler sees them. -/
+elab "globalsFields%" : term => do
+  return toExpr ((getStructureFields (← getEnv) ``Wiz.Globals).toList.map toString)
+
+/-- The settings, each with a change of it. -/
+def globalsSettings : List (String × (Globals R → Globals R)) := [
+  ("eager", fun g => { g with eager := !g.eager }),
+  ("regularity", fun g => { g with regularity := match g.regularity with | .full => .off | _ => .full }),
+  ("lazyProofs", fun g => { g with lazyProofs := !g.lazyProofs }),
+  ("lazyEqs", fun g => { g with lazyEqs := !g.lazyEqs }),
+  ("inertReg", fun g => { g with inertReg := match g.inertReg with | .conv => .ground | _ => .conv }),
+  ("unboxStructs", fun g => { g with unboxStructs := !g.unboxStructs }),
+  ("pushCalls", fun g => { g with pushCalls := !g.pushCalls }),
+  ("predicativeProp", fun g => { g with predicativeProp := !g.predicativeProp }),
+  ("strictPrivacy", fun g => { g with strictPrivacy := !g.strictPrivacy }),
+  ("builtins", fun g => { g with builtins := ("nat", "N") :: g.builtins })]
+
+/-- The other fields: what a module's elaboration builds, or what is never set on a base
+state. -/
+def globalsState : List (String × String) := [
+  ("decls", "the declarations (a base state has none: `isoKey` requires it)"),
+  ("order", "the declarations' order (likewise)"),
+  ("assumed", "unchecked `builtin`s, made by the module itself"),
+  ("quoteErasesProofs", "set by the kernel's own comparisons, inside one call, never on a state"),
+  ("privates", "made by the module's private declarations"),
+  ("opaques", "made by the module's private constructors"),
+  ("module", "the module being elaborated, set per module"),
+  ("instCache", "derived from the declarations by `insert`"),
+  ("declModule", "made per declaration")]
+
 /-! ## The group -/
 
 def lintGroup : Group where
   name := "lint"
   exercise := "kernel hygiene (wiz-notes/kernel-lint.md)"
   cases := [
+    { name := "isoKey: every setting of Globals is in the key (the cache of imported modules)", run := fun _ => do
+        let all := globalsFields%
+        let listed := globalsSettings.map (·.1) ++ globalsState.map (·.1)
+        for f in all do
+          unless listed.contains f do
+            throw (IO.userError s!"Globals.{f} is not listed: a setting goes in `isoKey` and globalsSettings, state in globalsState")
+        for f in listed do
+          unless all.contains f do throw (IO.userError s!"globalsSettings/globalsState list {f}, which Globals has no more")
+        let base : CommandState R := { loader := fun m => if m == "M" then some "def x : Unit := ()\n" else none }
+        let some k := isoKey base "M" | throw (IO.userError "no key for a pristine base")
+        for (f, change) in globalsSettings do
+          let some k' := isoKey { base with globals := change base.globals } "M" | throw (IO.userError s!"{f}: no key")
+          unless k != k' do throw (IO.userError s!"Globals.{f} is not in isoKey: changing it leaves the key as it was") },
     { name := "Term: every constructor in the source has a witness row, with the source's children", run := fun _ => do
         let ctors ← readCtors "Wiz/Core/Term.lean" "Term"
         report "Term table" do
