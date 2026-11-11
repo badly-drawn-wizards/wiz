@@ -94,6 +94,12 @@ jobs), so an acceptance is never replayed without the flag. `lib/` never uses `s
 evaluation); `native_refl` could run the same check compiled (bv_decide's trust), not
 done yet.
 
+**Limits of the prototype.** Reflection follows the goal as a tree, so a circuit with
+fan-out written as nested calls (`maj` uses the carry twice) grows exponentially once
+unfolded: an 8-bit carry chain checks, a 16-bit one goes over 2 GB. The fix is to reflect
+shared subterms (`let`s, or a circuit given as nodes, as the HDL builds them) as one node
+each. A stuck `a && b` is a `match`, not `Bool.and`, so it is an atom (write `Bool.and`).
+
 **Not yet**: bit vectors. Bit-blasting `UIntN w` operations into circuits is easy; the
 correctness proof needs lemmas such as `testBit (land a b) i = testBit a i && testBit b i`
 and the range invariant (28a), which the library does not have yet.
