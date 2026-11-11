@@ -615,7 +615,9 @@ def tmEq : Tm → Tm → Bool
   | .pfalse, .pfalse => .true
   | .exfalso a b, .exfalso c d => Bool.and (tmEq a c) (tmEq b d)
   | .enum k, .enum k' => Nat.beq k k'
-  | .tag _ i, .tag _ j => Nat.beq i j
+  -- (the enumeration's size too: `valSame` compares it, and "the same term" must not
+  -- depend on both sides having one type)
+  | .tag k i, .tag k' j => Bool.and (Nat.beq k k') (Nat.beq i j)
   | .ecase a b bs, .ecase c d bs' => Bool.and (tmEq a c) (Bool.and (tmEq b d) (tmsEq bs bs'))
   | .eq a b c, .eq d e f => Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f))
   | .eqTy a b, .eqTy c d => Bool.and (tmEq a c) (tmEq b d)
@@ -1821,13 +1823,22 @@ def uAdd : List Q → List Q → List Q
 def uScale (q : Q) : List Q → List Q
   | .nil => .nil
   | .cons a r => .cons (qmul q a) (uScale q r)
+-- (a usage list drops its trailing zeros: `uZeros` is empty, `uOne i` stops at `i`. So a
+-- list that has run out means "0 from here on": a branch that doesn't mention a variable
+-- uses it 0 times, which joins with 1 to ω)
+def uJoinZero : List Q → List Q
+  | .nil => .nil
+  | .cons a r => .cons (qjoin a .qz) (uJoinZero r)
 def uJoin : List Q → List Q → List Q
   | .cons a r, .cons b r' => .cons (qjoin a b) (uJoin r r')
-  | u, .nil => u
-  | .nil, u => u
--- leave a binder of quantity `q`: its own usage must fit
+  | u, .nil => uJoinZero u
+  | .nil, u => uJoinZero u
+-- leave a binder of quantity `q`: its own usage must fit (an empty list: used 0 times,
+-- which a binder at 1 does not allow)
 def popUsage (q : Q) : List Q → Option (List Q)
-  | .nil => .some .nil
+  | .nil => match qle .qz q with
+    | .true => .some .nil
+    | .false => .none
   | .cons used rest => match qle used q with
     | .true => .some rest
     | .false => .none
@@ -2306,14 +2317,6 @@ end
 
 def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
 
--- (Q1) must a value `v` of type `a` be used: is `a` a Σ with a field whose quantity
--- doesn't allow zero uses, here or in its second part? (`p.1` drops `p.2`)
-partial def mustUse (a v : Val) : Bool := match whnf a with
-  | .vsigma q _ env b _ => match qle .qz q with
-    | .true => mustUse (eval (.cons (vfst v) env) b) (vsnd v)
-    | .false => .true
-  | _ => .false
-
 -- **Exercise 14.3.** Bidirectional type checking with usage (`infer` and `check` in
 -- `Check.lean`): each answer comes with the usage of the variables (types and proofs
 -- count nothing); leaving a binder checks its variable's usage against its quantity.
@@ -2358,26 +2361,21 @@ def infer : TCtx → Tm → TyRes
       | r => r
     | r => r
   | _, .pair _ _ => .err "cannot infer the type of a pair; add a type ascription"
+  -- (R1) projections are available only on unrestricted pairs: outside erased positions
+  -- `p.1` and `p.2` count `p` as used ω times, whatever the component types (a pair held
+  -- at 1 can't be projected: this kernel has no `split`, so it can't be taken apart here)
   | c, .fst p => match infer c p with
     | .ok ty u => match whnf ty with
-      | .vsigma q a env b _ => match Bool.or (TCtx.erased c) (qle .qo q) with
-        -- `p.1` drops `p.2` (Q1): if that holds a field that must be used, only an
-        -- unrestricted pair may drop it, so `p` counts as used ω times
-        | .true => match TCtx.erased c with
-          | .true => .ok a u
-          | .false =>
-            let pv := eval (TCtx.env c) p;
-            match mustUse (eval (.cons (vfst pv) env) b) (vsnd pv) with
-            | .true => .ok a (uScale .qw u)
-            | .false => .ok a u
-        | .false => .err "cannot project an erased field"
+      | .vsigma q a _ _ _ => match TCtx.erased c with
+        | .true => .ok a u
+        | .false => match qle .qo q with
+          | .true => .ok a (uScale .qw u)
+          | .false => .err "cannot project an erased field"
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   | c, .snd p => match infer c p with
     | .ok ty u => match whnf ty with
-      -- `p.2` discards the first field: if it must be used, only an unrestricted pair
-      -- (whose field is ω·q) may drop it, so `p` counts as used ω times
-      | .vsigma q _ env b _ => match Bool.or (TCtx.erased c) (qle .qz q) with
+      | .vsigma _ _ env b _ => match TCtx.erased c with
         | .true => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
         | .false => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) (uScale .qw u)
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
@@ -2456,7 +2454,7 @@ def infer : TCtx → Tm → TyRes
   | c0, .subst A a P p b e =>
     -- a proof: everything in it is erased
     let c := TCtx.erase c0;
-    match inferUniv c A with
+    match checkEqDomain c A with
     | .ok _ _ =>
       let vA := eval (TCtx.env c) A;
       match check c a vA with
@@ -2500,7 +2498,7 @@ def infer : TCtx → Tm → TyRes
   | c, .mus l I D i sz => match check (TCtx.erase c) sz .vsize with
     | .ok _ _ => infer c (.mu l I D i)
     | r => r
-  | c, .sfix l I D v P f sz i x => match inferUniv c I with
+  | c, .sfix l I D v P f sz i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2515,7 +2513,7 @@ def infer : TCtx → Tm → TyRes
               | .ok _ _ =>
                 let vi := eval (TCtx.env c) i;
                 match check c x (.vmu l vI vD vi (eval (TCtx.env c) sz)) with
-                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd (uScale .qw uf) ux)
+                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uScale .qw (uAdd uf ux))
                 | r => r
               | r => r
             | r => r
@@ -2523,7 +2521,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .scase l I D v P m sz i x => match inferUniv c I with
+  | c, .scase l I D v P m sz i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2540,7 +2538,7 @@ def infer : TCtx → Tm → TyRes
               | .ok _ _ =>
                 let vi := eval (TCtx.env c) i;
                 match check c x (.vmu l vI vD vi vs) with
-                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd um ux)
+                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd um (uScale .qw ux))
                 | r => r
               | r => r
             | r => r
@@ -2559,7 +2557,7 @@ def infer : TCtx → Tm → TyRes
       | ty' => .err (String.append "not a coinductive type: " (showVal c ty'))
     | r => r
   | _, .cocon _ => .err "cannot infer the type of a constructor; add a type ascription"
-  | c, .scofix l I D A f sz i a => match inferUniv c I with
+  | c, .scofix l I D A f sz i a => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2574,7 +2572,7 @@ def infer : TCtx → Tm → TyRes
               | .ok _ _ =>
                 let vi := eval (TCtx.env c) i;
                 match check c a (vapp vA vi) with
-                | .ok _ ua => .ok (.vnu l vI vD vi (eval (TCtx.env c) sz)) (uAdd (uScale .qw uf) ua)
+                | .ok _ ua => .ok (.vnu l vI vD vi (eval (TCtx.env c) sz)) (uScale .qw (uAdd uf ua))
                 | r => r
               | r => r
             | r => r
@@ -2582,7 +2580,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .coit l I D S st i x => match inferUniv c I with
+  | c, .coit l I D S st i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2596,7 +2594,7 @@ def infer : TCtx → Tm → TyRes
             | .ok _ _ =>
               let vi := eval (TCtx.env c) i;
               match check c x (vapp vS vi) with
-              | .ok _ ux => .ok (.vnu l vI vD vi .vszInf) (uAdd (uScale .qw ust) ux)
+              | .ok _ ux => .ok (.vnu l vI vD vi .vszInf) (uScale .qw (uAdd ust ux))
               | r => r
             | r => r
           | r => r
@@ -2624,7 +2622,7 @@ def infer : TCtx → Tm → TyRes
             | .ok _ ub => match check c d (delimMrec l I vP) with
               | .ok _ ud => match check c e (delimMhrec l I vP) with
                 | .ok _ ue => .ok (vapp vP (eval (TCtx.env c) D))
-                    (uAdd (uScale .qw (uAdd ua (uAdd ub (uAdd ud ue)))) uD)
+                    (uScale .qw (uAdd (uAdd ua (uAdd ub (uAdd ud ue))) uD))
                 | r => r
               | r => r
             | r => r
@@ -2632,7 +2630,7 @@ def infer : TCtx → Tm → TyRes
         | r => r
       | ty => .err (String.append "not a description: " (showVal c ty))
     | r => r
-  | c, .ind l I D v P m i x => match inferUniv c I with
+  | c, .ind l I D v P m i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2646,7 +2644,7 @@ def infer : TCtx → Tm → TyRes
             | .ok _ _ =>
               let vi := eval (TCtx.env c) i;
               match check c x (.vmu l vI vD vi .vszInf) with
-              | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd (uScale .qw um) ux)
+              | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uScale .qw (uAdd um ux))
               | r => r
             | r => r
           | r => r
@@ -2683,11 +2681,12 @@ def letIn : TCtx → Q → Tm → Tm → Tm → TyRes
   | c, q, ty, v, b => match inferUniv c ty with
     | .ok _ _ =>
       let tyv := eval (TCtx.env c) ty;
-      match check c v tyv with
+      -- (a `let` at 0 never computes its value: an erased position)
+      match check (erasedIf q c) v tyv with
       | .ok _ uv => match infer (TCtx.define c (eval (TCtx.env c) v) tyv) b with
         | .ok bty ub => match popUsage q ub with
           | .some ub' => .ok bty (uAdd (uScale q uv) ub')
-          | .none => .err "the let-bound variable is used more than its quantity allows"
+          | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
       | r => r
     | r => r
@@ -2696,11 +2695,12 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
   | c, q, ty, v, b, T => match inferUniv c ty with
     | .ok _ _ =>
       let tyv := eval (TCtx.env c) ty;
-      match check c v tyv with
+      -- (a `let` at 0 never computes its value: an erased position)
+      match check (erasedIf q c) v tyv with
       | .ok _ uv => match check (TCtx.define c (eval (TCtx.env c) v) tyv) b T with
         | .ok _ ub => match popUsage q ub with
           | .some ub' => .ok T (uAdd (uScale q uv) ub')
-          | .none => .err "the let-bound variable is used more than its quantity allows"
+          | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
       | r => r
     | r => r
@@ -2714,7 +2714,7 @@ def checkW : TCtx → Tm → Val → TyRes
     match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
     | .ok _ u => match popUsage q u with
       | .some u' => .ok (.vpi q dom env cod .none) u'
-      | .none => .err "the bound variable is used more than its quantity allows"
+      | .none => .err "the bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
     | r => r
   | c, .letE ty v b, T => checkLet c .qw ty v b T
   | c, .letq q ty v b, T => checkLet c q ty v b T
@@ -2722,7 +2722,7 @@ def checkW : TCtx → Tm → Val → TyRes
   | c, .up a, .vulift n A => match check c a A with
     | .ok _ u => .ok (.vulift n A) u
     | r => r
-  | c, .pair a b, .vsigma q ta env tb _ => match check c a ta with
+  | c, .pair a b, .vsigma q ta env tb _ => match check (erasedIf q c) a ta with
     | .ok _ ua => match check c b (eval (.cons (eval (TCtx.env c) a) env) tb) with
       | .ok _ ub => .ok (.vsigma q ta env tb .none) (uAdd (uScale q ua) ub)
       | r => r
@@ -2796,6 +2796,23 @@ def checkBranches : TCtx → Nat → Tm → Tms → Nat → Option (List Q) → 
       | .none => .some u)
     | r => r
 -- a type: its universe (types are erased: their usage counts for nothing)
+-- the index type of a data type at level `l` is exactly in `Sort (l+1)`: the premise of
+-- `μ`/`ν`, and of every eliminator that names `I` (`checkIndexLevel` in `Check.lean`;
+-- the eliminators check their scrutinee against `μ.{l} I D i` without the type former)
+def checkIndexLevel : TCtx → Nat → Tm → TyRes
+  | c, l, I => match inferUniv c I with
+    | .ok (.vsort lI) u => match lvlEquiv lI (.lnum (l + 1)) with
+      | .true => .ok (.vsort lI) u
+      | .false => .err (String.append (String.append (String.append "an index type must be in the data type's universe: Sort " (Nat.toString (l + 1))) ", not Sort ") (lvlShow lI))
+    | r => r
+-- `transp` is for types in `Type u`, as `eq` and `refl` are: the type of its motive and
+-- the type of its proof `e` are equations at `A`, which the `eq` rule rejects at a proposition
+def checkEqDomain : TCtx → Tm → TyRes
+  | c, A => match inferUniv c A with
+    | .ok (.vsort l) u => match lvlNeverZero l with
+      | .true => .ok (.vsort l) u
+      | .false => .err "transp is for types in Type u, not propositions"
+    | r => r
 def inferUniv : TCtx → Tm → TyRes
   | c, t => match infer (TCtx.erase c) t with
     | .ok ty _ => match whnf ty with

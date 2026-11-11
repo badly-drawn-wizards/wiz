@@ -6,12 +6,17 @@ import Tower.Basic
 -- tarball `RELEASES/TAG/wiz-ARCH-linux.tar.gz`; tags and channels only) or `source`
 -- (`git clone` + `lake build wiz grail`). `auto` tries them in that order. A toolchain
 -- is built in `toolchains/.tmp-…` and renamed into place.
+-- A spec that is not a tag (or `stable`) takes the release snapshot of its commit,
+-- `RELEASES/snapshot-<full sha>/…` (26g): `nightly` is the commit of the tag `nightly`.
 
--- What a spec asks for: the ref to resolve, a pinned commit, a channel's release tag.
+-- What a spec asks for: the ref to resolve, a pinned commit, the release tag of a tag
+-- spec, and the commit whose snapshot a release install takes when it is not `commit`
+-- (`nightly`: the commit of the tag `nightly`, which may be behind the branch).
 structure Want where
   ref : String
   commit : Option String
   tag : Option String
+  snapshot : Option String
 
 -- ## Refs
 
@@ -74,10 +79,14 @@ def Tower.findRef (rs : List (String × String)) (ref : String) : Option String 
     | .some c => .some c
     | .none => String.lookup ref rs
 
+-- tags that name a snapshot's commit rather than a release of their own
+def Tower.snapshotNamer (ref : String) : Bool :=
+  Bool.or (String.startsWith ref "keep/") (Bool.or (String.startsWith ref "snapshot-") (String.eq ref "nightly"))
+
 -- What a spec asks for, resolved against the repository's refs.
 def Tower.resolveSpec (s : Settings) (spec : String) : EIO Want :=
   match String.splitOn spec "@" with
-  | .cons r (.cons c .nil) => EIO.pure (Want.mk r (.some c) .none)
+  | .cons r (.cons c .nil) => EIO.pure (Want.mk r (.some c) .none .none)
   | _ => do
     refs ← EIO.lift (Tower.lsRemote s.git);
     let rs := (match refs with
@@ -88,20 +97,24 @@ def Tower.resolveSpec (s : Settings) (spec : String) : EIO Want :=
       | .error e => " (could not list it)" : String);
     match String.eq spec "nightly" with
     | .true => match Tower.findRef rs s.nightlyRef with
-      | .some c => EIO.pure (Want.mk s.nightlyRef (.some c) (.some "nightly"))
+      -- the tag `nightly` (when there is one): the newest commit with a complete snapshot
+      | .some c => EIO.pure (Want.mk s.nightlyRef (.some c) .none (String.lookup "refs/tags/nightly" rs))
       | .none => EIO.fail ("nightly: no branch " & s.nightlyRef & " in " & s.git & listed)
     | .false => match String.eq spec "stable" with
     | .true => match refs with
       | .error e => EIO.fail ("stable: " & e)
       | .ok rs => match Tower.latestTag rs with
-        | .some t => EIO.pure (Want.mk t (Tower.findRef rs t) (.some t))
+        | .some t => EIO.pure (Want.mk t (Tower.findRef rs t) (.some t) .none)
         | .none => EIO.fail ("stable: no release tags (vX.Y.Z) in " & s.git & " yet; use nightly")
     | .false => match Tower.findRef rs spec with
+      -- a tag has its own release, except the tags that name a snapshot's commit
       | .some c => EIO.pure (Want.mk spec (.some c) (match String.lookup ("refs/tags/" & spec) rs with
-        | .some x => .some spec
-        | .none => .none))
+        | .some x => match Tower.snapshotNamer spec with
+          | .true => .none
+          | .false => .some spec
+        | .none => .none) .none)
       | .none => match Bool.and (Tower.isHex spec) (Nat.le 7 (String.length spec)) with
-        | .true => EIO.pure (Want.mk spec (.some spec) .none)
+        | .true => EIO.pure (Want.mk spec (.some spec) .none .none)
         | .false => EIO.fail (spec & ": no such tag or branch in " & s.git)
 
 -- ## Wrappers
@@ -194,17 +207,25 @@ def Tower.firstDir (x : String) : List String → EIO (Option String)
     | .true => EIO.pure (.some (Path.join x n))
     | .false => Tower.firstDir x rest
 
--- unpack the release tarball of `tag` into `work`; the toolchain directory in it
-def Tower.releaseFetch (s : Settings) (tag work : String) : EIO String := do
+-- unpack the release tarball of `tag` into `work`; the toolchain directory in it. The
+-- `.sha256` next to it is checked when there is one, and must be there when `needSum`;
+-- `missing` makes the error when the tarball itself can't be fetched.
+def Tower.releaseFetch (s : Settings) (tag work : String) (needSum : Bool) (missing : String → EIO String) : EIO String := do
   a ← Tower.arch;
   let url := s.releases & "/" & tag & "/" & Tower.tarballName a;
   Tower.note ("downloading " & url);
   let file := Path.join work "wiz.tar.gz";
-  Tower.fetch url file;
-  -- a checksum next to it, when there is one
+  got ← EIO.lift (Tower.fetch url file);
+  (match got with
+    | .ok u => EIO.pure ()
+    | .error e => do
+      m ← missing e;
+      EIO.fail m : EIO Unit);
   sum ← EIO.lift (Tower.fetch (url & ".sha256") (Path.join work "sum"));
   (match sum with
-    | .error e => EIO.pure ()
+    | .error e => match needSum with
+      | .true => EIO.fail (url & ".sha256: " & e & " (a snapshot is only installed with its checksum)")
+      | .false => EIO.pure ()
     | .ok u => do
       wantText ← FS.readFile (Path.join work "sum");
       gotText ← Tower.run "sha256sum" (file :> .nil);
@@ -225,6 +246,94 @@ def Tower.releaseFetch (s : Settings) (tag work : String) : EIO String := do
     match ok with
     | .true => EIO.pure d
     | .false => EIO.fail (url & ": no share/wiz/.lake/build/bin/wiz in the tarball")
+
+-- ## Snapshots (26g)
+
+-- the snapshots the repository lists: (full commit, tag name)
+def Tower.snapshots : List (String × String) → List (String × String)
+  | .nil => .nil
+  | .cons r rest => match String.stripPrefix r.1 "refs/tags/snapshot-" with
+    | .some c => (c, "snapshot-" & c) :> Tower.snapshots rest
+    | .none => Tower.snapshots rest
+
+def Tower.shortList : List (String × String) → List String
+  | .nil => .nil
+  | .cons m rest => String.take 12 m.1 :> Tower.shortList rest
+
+-- The release tag of the snapshot of `commit`: a full sha names it directly (no `git
+-- ls-remote` needed); a shorter one is looked up among the snapshot tags.
+def Tower.snapshotTag (refs : Except String (List (String × String))) (commit : String) : Except String String :=
+  match Nat.beq (String.length commit) 40 with
+  | .true => .ok ("snapshot-" & commit)
+  | .false => match refs with
+    | .error e => .error (commit & ": a short commit, and the snapshots could not be listed (" & e & "); use the full sha")
+    | .ok rs => match List.filter (fun (m : String × String) => String.startsWith m.1 commit) (Tower.snapshots rs) with
+      | .nil => .error (commit & ": no snapshot")
+      | .cons m .nil => .ok m.2
+      | ms => .error (commit & ": ambiguous, snapshots " & String.intercalate ", " (Tower.shortList ms))
+
+-- a ref that keeps its commit's snapshot: the tag nightly, keep/… and v* tags
+def Tower.keeps (r : String) : Bool := match String.stripPrefix r "refs/tags/" with
+  | .none => .false
+  | .some t => Bool.or (String.eq t "nightly") (Bool.or (String.startsWith t "keep/") (match Tower.versionOf t with
+    | .some v => .true
+    | .none => .false))
+
+def Tower.namedList : List (String × String) → List String
+  | .nil => .nil
+  | .cons p rest => (String.drop 10 p.1 & " (master@" & p.2 & ")") :> Tower.namedList rest
+
+-- what is retained: the tag `nightly`, the snapshots kept by a `v*` or `keep/…` tag, and
+-- how many others
+def Tower.retained (s : Settings) (refs : Except String (List (String × String))) : String := match refs with
+  | .error e => ""
+  | .ok rs =>
+    let snaps := Tower.snapshots rs;
+    let has := (fun (c : String) => List.any (fun (p : String × String) => String.eq p.1 c) snaps);
+    let named := List.filter (fun (p : String × String) => Bool.and (Tower.keeps p.1) (has p.2)) rs;
+    let others := List.length (List.filter (fun (p : String × String) =>
+      Bool.not (List.any (fun (q : String × String) => String.eq q.2 p.1) named)) snaps);
+    "\n  retained: " & (match List.isEmpty named with
+      | .true => "no named snapshots"
+      | .false => String.intercalate ", " (Tower.namedList named)) &
+      (match Nat.beq others 0 with
+        | .true => ""
+        | .false => ", and " & Nat.repr others & " recent master commit" & (match Nat.beq others 1 with
+          | .true => ""
+          | .false => "s") & " (`git ls-remote " & s.git & " 'refs/tags/snapshot-*'`)")
+
+-- Why there is no snapshot of `commit`, and what to do instead.
+def Tower.noSnapshot (s : Settings) (refs : Except String (List (String × String))) (commit why : String) : String :=
+  "no release snapshot of commit " & commit & " (" & why & "): snapshots are published for master commits only, " &
+    "and kept for the newest ones and for commits a v*, keep/… or nightly tag points at" & Tower.retained s refs &
+    "\n  alternatives: `--source source` (builds it with elan), `--source nix`, a retained toolchain above, " &
+    "or have it published (release.yml's workflow_dispatch with commit=" & commit & "; push a tag keep/NAME to keep it)"
+
+-- the refs, listed now unless they already were
+def Tower.refsAgain (s : Settings) (refs : Except String (List (String × String))) : EIO (Except String (List (String × String))) :=
+  match refs with
+  | .ok rs => EIO.pure (.ok rs)
+  | .error e => EIO.lift (Tower.lsRemote s.git)
+
+-- the release tarball for `w`: a tag's own release, else the snapshot of its commit
+def Tower.releaseOf (s : Settings) (spec work : String) (w : Want) : EIO String := match w.tag with
+  | .some t => Tower.releaseFetch s t work .false (fun (e : String) => EIO.pure e)
+  | .none => match (match w.snapshot with
+      | .some c => .some c
+      | .none => w.commit : Option String) with
+    | .none => EIO.fail (spec & ": no commit")
+    | .some c => do
+      -- the repository's refs, once, for a short sha and for the error
+      refs ← (match Nat.beq (String.length c) 40 with
+        | .true => EIO.pure (.error "not listed")
+        | .false => EIO.lift (Tower.lsRemote s.git) : EIO (Except String (List (String × String))));
+      match Tower.snapshotTag refs c with
+      | .ok t => Tower.releaseFetch s t work .true (fun (e : String) => do
+          refs' ← Tower.refsAgain s refs;
+          EIO.pure (Tower.noSnapshot s refs' c e))
+      | .error e => do
+        refs' ← Tower.refsAgain s refs;
+        EIO.fail (Tower.noSnapshot s refs' c e)
 
 -- copy what a toolchain needs from a built checkout `src` into `tc/share/wiz`
 def Tower.layoutFrom (src tc commit : String) : EIO Unit := do
@@ -265,9 +374,7 @@ def Tower.candidates (src : String) (w : Want) : EIO (List String) := match Stri
   | .false => EIO.pure (src :> .nil)
   | .true => do
     n ← Tower.have "nix";
-    let rel := (match w.tag with
-      | .some t => "release" :> "source" :> .nil
-      | .none => "source" :> .nil);
+    let rel := ("release" :> "source" :> .nil : List String);
     match n with
     | .true => EIO.pure ("nix" :> rel)
     | .false => EIO.pure rel
@@ -282,10 +389,8 @@ def Tower.realise (s : Settings) (spec how : String) (w : Want) (flags : List (S
       Tower.createDirAll tc;
       EIO.pure (Info.mk spec "nix" w.ref commit "" .nil, .some path)
   | .false => match String.eq how "release" with
-  | .true => match w.tag with
-    | .none => EIO.fail ("release: " & spec & " is not a tag or a channel (only those have release tarballs)")
-    | .some tag => do
-      d ← Tower.releaseFetch s tag work;
+  | .true => do
+      d ← Tower.releaseOf s spec work w;
       FS.rename d tc;
       rev ← Tower.readFileD (Path.join tc "share/wiz/REVISION");
       let commit := (match String.isEmpty (String.trim rev) with

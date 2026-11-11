@@ -281,7 +281,12 @@ def Tower.updateEach (e : TEnv) (s : Settings) : List String → Nat → EIO Nat
         | .error m => do
           Tower.note (n & ": " & m);
           Tower.updateEach e s rest 1
-        | .ok w => match Tower.optEq w.commit (.some i.commit) with
+        -- a release install of nightly follows the tag nightly (its snapshot), not the branch
+        | .ok w => match Tower.optEq (match String.eq i.source "release" with
+            | .true => (match w.snapshot with
+              | .some c => .some c
+              | .none => w.commit)
+            | .false => w.commit : Option String) (.some i.commit) with
           | .true => do
             Tower.say (i.spec & ": up to date");
             Tower.updateEach e s rest status

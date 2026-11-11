@@ -62,10 +62,35 @@ cached between runs.
   self-hosted checker or compiler, which the first case that needs it builds) stay in
   one part, so each program is built once, and the other cases fill the parts up. A new
   case counts as its group's median, with the programs most of its group uses. The
-  baseline holds only the split shards' cases, one per line.
+  baseline holds only the split shards' cases, one per line (`selfhost` and `library`).
   `scripts/ci.py plan` shows the parts and their
   estimates. To refresh the baseline from a CI run:
   `gh run download RUN -n test-timings && scripts/ci.py baseline timings.jsonl > .github/test-timings.json`.
+* **Shard balance.** CI's wall time is its longest job, so the invariant is that **no
+  test shard's test time is over 1.5× the median shard's**. Every split shard's cases
+  have an entry in `.github/test-timings.json`, and no shared program is built by two
+  parts of one split shard. It is tracked in two places:
+  * `scripts/ci.py check-shards` (the build job) warns when a split shard has cases
+    that are not in the baseline.
+  * `scripts/ci.py balance` (the `CI result` job) checks the run's measured case times.
+    It adds a "Shard balance" table to the run summary and a warning annotation for each
+    violation.
+
+  Both only warn, on pull requests and on master. A new case has no time until a CI run
+  has measured it, and runner times vary, so a failure here would block merges that are
+  correct.
+
+  On a master push whose tests all passed and whose balance drifted, the `CI result`
+  job uploads the regenerated baseline as the `test-timings-baseline` artifact. It also
+  prints the command that applies it, in the warning and in the summary:
+  `gh run download RUN -R badly-drawn-wizards/wiz -n test-timings-baseline -D .github`.
+  Commit the result in a small PR. CI does not open that PR itself. A PR opened with the
+  workflow's token runs no CI (GitHub does not trigger workflows from it), so it could
+  not merge on green, and the workflow would also need write permissions.
+
+  If a shard stays over the limit after the refresh, raise its `"split"` or make it a
+  split shard. `scripts/ci.py plan` shows the predicted parts. One case longer than the
+  limit cannot be split: `grail-selfhost` is one case of about 3.5 min.
 * **The exercise tree** (the `exercise tree` job) is generated with
   `scripts/mkexercises.py` into a temporary directory and built (`lake build wiz grail
   tests`), with a Lake cache of its own; it runs beside the test shards. It does not run

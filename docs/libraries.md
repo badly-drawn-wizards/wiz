@@ -67,6 +67,73 @@ Sharing has two parts:
   of an object value names one wire: the doubling chain `let y := x + x` at depth 20
   emits 20 adders in 25 builder steps. Write `let ω x := …` to opt out.
 
+## H14 S1: a usable HDL: names, bundles, composition, reset, emitters ✅
+
+Driven by a real design (a UART on a Lattice iCEstick, written in this library and run on
+the board; its findings G1–G10 are the requirements). Design notes:
+`/workspace/wiz-notes/hdl-usability.md`. Everything is in `lib/Hdl/Core.wiz`; examples and
+tests in `examples/hdl-compose.wiz` (group `hdl`) and in the `scaling` group.
+
+```
+structure Tx (r : HwTy → Type) where      -- a bundle: a structure of signals
+  line : r Bit
+  left : r B4
+  deriving Bundle                         -- Tx.code, Tx.pack, Tx.unpack, Tx.bundle
+def txStep {r : HwTy → Type} [Hw r] (s : Tx r) (go : r Bit) : r Tx.code :=
+  let idle := Hw.eq s.left (Hw.lit 4 0);  -- field access by name
+  Tx.pack (Tx.mk (Hw.mux go (Hw.lit 1 0) s.line) (Hw.label "left" …))
+def top : Circuit In.code Out.code := Circuit.bundled Tx.bundle In.bundle Out.bundle init (BStep.mk …)
+-- module top(input clk, input [0:0] rx, output [0:0] tx, output [4:0] leds); reg … line; reg … left;
+```
+
+* **Structured wires.** `Wire t` is a product of node ids, one per leaf of `t`: pairs and
+  projections emit nothing, `mux` at a product is one multiplexer per leaf. A code may
+  carry names, `HwTy.named s t` (ignored by `El`, `width` and the bus encoding). Ports
+  and registers are one per leaf, named by the path of `named` segments joined with `_`
+  (`HwTy.portNames`; an unnamed leaf is `x`/`y`/`r`, with `_k` where names would clash);
+  wires are named by `Hw.label "name" x`, others are `nK`. Verilog names are sanitised
+  and unique. `Hw` gained `const`, `tag`/`untag`, `label`, `resetTo`, `hold`.
+* **Bundles.** A structure parameterised by `r : HwTy → Type` with fields `r T` or nested
+  bundles; `deriving Bundle` defines its code (a product of `named` fields) and the
+  conversions. A bundle is a *value* (`S.bundle`), not an instance: structures are
+  structural types, so two structures with the same field types are one type and
+  instance resolution could not tell their bundles apart.
+* **Composition** (Lava/Clash-style arrows): `Circuit.comb`, `delay`, `seq`, `par`,
+  `loop` (feedback through a register), `named` (names the state), `mapIn`/`mapOut`,
+  `inputName`/`outputName`, and `Circuit.inst c s x` for an instance with its own state
+  inside a hand-written step. Each has its semantics as a lemma: `Circuit.runFrom_seq`,
+  `run_seq` (`run (seq a b) xs = run b (run a xs)`), `run_par`, `run_delay`,
+  `runFrom_loop`, `run_named`, `runFrom_comb`, `inst_el`, `stepEl_withReset`/`Enable`.
+  Combinational code passed to a combinator is a `Comb i o` value (a polymorphic
+  function cannot be applied under a step's own representation binder; see the
+  wishful notes on non-linear unification spines). The netlist is flat.
+* **Reset and enable**, by construction: `Circuit.withReset c` adds an input `rst` (while
+  high, the next state is `c.init`: synchronous) and `withEnable` an input `en` (while low,
+  the state holds), built from `Hw.resetTo`/`Hw.hold`, whose meaning at values is a
+  multiplexer and which the netlist turns into a reset or enable of the register they
+  feed: `always @(posedge clk) if (rst) r <= 4'd0; else if (en) r <= next;`. Where the
+  pattern does not apply (a `resetTo` not feeding a register), the node stays a
+  multiplexer with the same meaning. `initial` values are always printed.
+* **Emitters.** `Testbench.verilog n vec cycles` (a bench that replays a vector file and
+  compares every output in every cycle), `Circuit.vectors n c xs` (the vector file of a
+  value simulation), `Vcd.ofRun name c xs` (a waveform of every input, output and state
+  leaf), `Pcf.emit n clkPin pins` and `Pcf.check` (pin constraints from named ports:
+  `Pin.one "uart_tx" 8`, `Pin.bus "leds" [99, 98, …]`).
+* **Designs in a list.** `Circuit i o` quantifies over representations and lives in
+  `Type 1`; `Circuit.design name c : Design` packs a top at the first order (the step at
+  values and the netlist), so `List Design` works.
+* **Simulation scales.** `Circuit.run` is tail recursive (`Circuit.run_eq` relates it to
+  the structural `Circuit.runFrom`, the one to reason with); `Netlist.simulate` keeps node
+  values in a skew-binary random-access list: O(n log n) per cycle instead of O(n²).
+* **Names.** The generic helpers are `Hdl.map`, `Hdl.nthD`, `Hdl.rev`, `Hdl.show`, …
+  (importers keep `List.map` and the like); the netlist types are `NetOp`, `NetNode`,
+  `NetReg`, `NetPort`. (`<+>` stays.)
+
+Not done: module hierarchy in the Verilog, enumerations at `HwTy`, numerals and operators
+at `r (bits n)` (instances of the numeric classes, when they land: `Add`, `Sub`, `Mul`,
+`Neg`, `OfNat` at `r (HwTy.bits n)` through `Hw`), wire names from `let` binders (an
+elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃`, `↔`, `Not`, equality lemmas, `funext`, `propext`),
