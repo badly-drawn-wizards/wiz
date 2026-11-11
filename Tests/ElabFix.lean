@@ -492,6 +492,8 @@ def group : Group where
           "def P.sum (p : P) : Nat := Nat.add p.x p.y\ndef Q.origin : P := P.mk 1 2\n" ++
           "def a : Nat := Q.origin.x\ndef b : Nat := Q.origin.sum\ndef c (p : P) : Nat := p.sum\n" ++
           "#eval a\n#eval b\n#eval c (P.mk 3 4)") ["1", "3", "7"] },
+    { name := "dotted names through a derived definition: `Cnt.bundle.toEl` (cohesion-hardware)", run := fun _ =>
+        okLibs "import Hdl.Core\ndef B4 : HwTy := HwTy.bits 4\ndef Bit : HwTy := HwTy.bit\nstructure Cnt (r : HwTy → Type) where\n  count : r B4\n  up : r Bit\n  deriving Bundle\ndef z : Cnt HwTy.El := Cnt.mk (BitVec.ofNat 4 3) (BitVec.ofNat 1 1)\ndef e1 : HwTy.El Cnt.bundle.code := Bundle.toEl Cnt.bundle z\ndef e2 : HwTy.El Cnt.bundle.code := Cnt.bundle.toEl z\n" },
     { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
         -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
         -- the scrutinee isn't abstracted inside `?A b` (that would leave the pattern fragment)
