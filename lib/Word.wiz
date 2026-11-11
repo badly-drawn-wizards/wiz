@@ -75,19 +75,21 @@ def Word.min_lt (x b c : Nat) (h : Nat.lt b c = .true) : Nat.lt (Word.min x b) c
   Word.lt_of_le_lt (Word.min x b) b c (Word.pick_lt x b (Nat.lt x b) (refl (Nat.lt x b))) h
 -- bitwise or and xor of two numbers below `2^k` are below `2^k` (`Nat.bitwise` goes
 -- through the bits from the lowest, halving both)
-def Word.mul2_succ (n : Nat) : Nat.mul 2 (Nat.succ n) = Nat.succ (Nat.succ (Nat.mul 2 n)) :=
-  Word.congrSucc (Word.add_succ n (Nat.add n 0))
 def Word.lt_2x1 : (r M : Nat) → Nat.lt r M = .true → Nat.lt (Nat.succ (Nat.mul 2 r)) (Nat.mul 2 M) = .true
   | .zero, .zero, h => absurd h.1
   | .succ _, .zero, h => absurd h.1
+  -- (`2 (M + 1)` unfolds to `M + 1 + (M + 1 + 0)`; `Word.add_succ` moves the inner `+ 1`
+  -- out, after which `Nat.lt` reduces)
   | .zero, .succ M, _ =>
-    transp (fun t _ => Nat.lt 1 t = .true) (refl Bool.true) (Word.symm (Word.mul2_succ M))
+    transp (fun t _ => Nat.lt 0 t = .true) rfl (Word.symm (Word.add_succ M (Nat.add M 0)))
   | .succ r, .succ M, h =>
-    let ih : Nat.lt (Nat.succ (Nat.succ (Nat.succ (Nat.mul 2 r)))) (Nat.succ (Nat.succ (Nat.mul 2 M))) = .true :=
+    let ih : Nat.lt (Nat.succ (Nat.succ (Nat.add r (Nat.add r 0)))) (Nat.succ (Nat.add M (Nat.add M 0))) = .true :=
       Word.lt_2x1 r M h;
-    let step : Nat.lt (Nat.succ (Nat.succ (Nat.succ (Nat.mul 2 r)))) (Nat.mul 2 (Nat.succ M)) = .true :=
-      transp (fun t _ => Nat.lt (Nat.succ (Nat.succ (Nat.succ (Nat.mul 2 r)))) t = .true) ih (Word.symm (Word.mul2_succ M));
-    transp (fun t _ => Nat.lt (Nat.succ t) (Nat.mul 2 (Nat.succ M)) = .true) step (Word.symm (Word.mul2_succ r))
+    let step : Nat.lt (Nat.succ (Nat.succ (Nat.add r (Nat.add r 0)))) (Nat.add M (Nat.succ (Nat.add M 0))) = .true :=
+      transp (fun t _ => Nat.lt (Nat.succ (Nat.succ (Nat.add r (Nat.add r 0)))) t = .true) ih
+        (Word.symm (Word.add_succ M (Nat.add M 0)));
+    transp (fun t _ => Nat.lt (Nat.succ t) (Nat.add M (Nat.succ (Nat.add M 0))) = .true) step
+      (Word.symm (Word.add_succ r (Nat.add r 0)))
 def Word.lt_2x (r M : Nat) (h : Nat.lt r M = .true) : Nat.lt (Nat.mul 2 r) (Nat.mul 2 M) = .true :=
   Word.lt_of_succ_lt (Nat.mul 2 r) (Nat.mul 2 M) (Word.lt_2x1 r M h)
 def Word.pos_of_lt2 : (a M : Nat) → Nat.lt a (Nat.mul 2 M) = .true → Nat.lt 0 M = .true
@@ -101,9 +103,9 @@ def Word.divGo2_lt : (fuel a M : Nat) → Nat.lt a (Nat.mul 2 M) = .true → Nat
   | .succ _, .succ (.succ .zero), .zero, h => absurd h.1
   | .succ _, .succ (.succ (.succ _)), .zero, h => absurd h.1
   | .succ f, .succ (.succ .zero), .succ M, h =>
-    Word.divGo2_lt f 0 M (transp (fun t _ => Nat.lt 2 t = .true) h (Word.mul2_succ M))
+    Word.divGo2_lt f 0 M (transp (fun t _ => Nat.lt 1 t = .true) h (Word.add_succ M (Nat.add M 0)))
   | .succ f, .succ (.succ (.succ a)), .succ M, h =>
-    Word.divGo2_lt f (Nat.succ a) M (transp (fun t _ => Nat.lt (Nat.succ (Nat.succ (Nat.succ a))) t = .true) h (Word.mul2_succ M))
+    Word.divGo2_lt f (Nat.succ a) M (transp (fun t _ => Nat.lt (Nat.succ (Nat.succ a)) t = .true) h (Word.add_succ M (Nat.add M 0)))
 def Word.div2_lt (a M : Nat) (h : Nat.lt a (Nat.mul 2 M) = .true) : Nat.lt (Nat.div a 2) M = .true :=
   Word.divGo2_lt a a M h
 -- a bit chosen by `c`, on top of `2 r`
@@ -123,7 +125,7 @@ def Word.lor_lt : (fuel k a b : Nat) → Nat.lt a (Nat.pow 2 k) = .true → Nat.
     Nat.lt (Nat.bitwise Bool.or fuel a b) (Nat.pow 2 k) = .true
   | .zero, k, _, _, _, _ => Word.pow_pos k
   | .succ f, .zero, .zero, .zero, _, _ =>
-    transp (fun t _ => Nat.lt (Nat.mul 2 t) 1 = .true) (refl Bool.true) (Word.symm (Word.bitwise_or_zero f))
+    transp (fun t _ => Nat.lt (Nat.mul 2 t) 1 = .true) rfl (Word.symm (Word.bitwise_or_zero f))
   | .succ _, .zero, .succ .zero, _, h, _ => absurd h.1
   | .succ _, .zero, .succ (.succ _), _, h, _ => absurd h.1
   | .succ _, .zero, .zero, .succ .zero, _, h => absurd h.1
@@ -135,7 +137,7 @@ def Word.xor_lt : (fuel k a b : Nat) → Nat.lt a (Nat.pow 2 k) = .true → Nat.
     Nat.lt (Nat.bitwise Bool.xor fuel a b) (Nat.pow 2 k) = .true
   | .zero, k, _, _, _, _ => Word.pow_pos k
   | .succ f, .zero, .zero, .zero, _, _ =>
-    transp (fun t _ => Nat.lt (Nat.mul 2 t) 1 = .true) (refl Bool.true) (Word.symm (Word.bitwise_xor_zero f))
+    transp (fun t _ => Nat.lt (Nat.mul 2 t) 1 = .true) rfl (Word.symm (Word.bitwise_xor_zero f))
   | .succ _, .zero, .succ .zero, _, h, _ => absurd h.1
   | .succ _, .zero, .succ (.succ _), _, h, _ => absurd h.1
   | .succ _, .zero, .zero, .succ .zero, _, h => absurd h.1
@@ -155,13 +157,14 @@ def UIntN.toNat {w : Nat} : UIntN w → Nat
   | .mk n _ => n
 def IntN.toNat {w : Nat} : IntN w → Nat
   | .mk n _ => n
+-- (the field is erased: it is used only as the equation `transp` rewrites along)
 def UIntN.toNat_lt {0 w : Nat} : (a : UIntN w) → Nat.lt a.toNat (Nat.pow 2 w) = .true
-  | .mk _ h => h
+  | .mk n h => transp (fun t _ => Nat.lt n (Nat.pow 2 w) = t) (refl (Nat.lt n (Nat.pow 2 w))) h
 def IntN.toNat_lt {0 w : Nat} : (a : IntN w) → Nat.lt a.toNat (Nat.pow 2 w) = .true
-  | .mk _ h => h
+  | .mk n h => transp (fun t _ => Nat.lt n (Nat.pow 2 w) = t) (refl (Nat.lt n (Nat.pow 2 w))) h
 -- two words with the same bits are equal (the proofs don't count)
 def UIntN.ext {0 w : Nat} : (a b : UIntN w) → a.toNat = b.toNat → a = b
-  | .mk _ _, .mk _ _, e => (e, ())
+  | .mk _ _, .mk _ _, e => (e, (), (), ())
 -- `x`, or `b` if that is smaller: below `2^w` when `b` is. Every word this module builds
 -- that `ofNat` doesn't is `below x b` with `x ≤ b`, so it is `x`.
 private def UIntN.below {0 w : Nat} (x b : Nat) (0 h : Nat.lt b (Nat.pow 2 w) = .true) : UIntN w :=
