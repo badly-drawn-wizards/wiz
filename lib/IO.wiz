@@ -41,6 +41,20 @@ extern "wiz_f64_div" Float64.div : Float64 → Float64 → Float64
 extern "wiz_f64_lt" Float64.lt : Float64 → Float64 → Bool
 extern "wiz_f64_show" Float64.toString : Float64 → String
 
+-- (7e) `+ - * / %` and numerals at the machine types (`UInt64` wraps around natively;
+-- the kernel knows nothing about these: they are foreign functions).
+instance {ω n : Nat} : OfNat UInt64 n := OfNat.mk (UInt64.ofNat n)
+instance : Add UInt64 := Add.mk UInt64.add
+instance : Sub UInt64 := Sub.mk UInt64.sub
+instance : Mul UInt64 := Mul.mk UInt64.mul
+instance : Div UInt64 := Div.mk UInt64.div
+instance : Mod UInt64 := Mod.mk UInt64.mod
+instance {ω n : Nat} : OfNat Float64 n := OfNat.mk (Float64.ofNat n)
+instance : Add Float64 := Add.mk Float64.add
+instance : Sub Float64 := Sub.mk Float64.sub
+instance : Mul Float64 := Mul.mk Float64.mul
+instance : Div Float64 := Div.mk Float64.div
+
 extern "wiz_nat_show" Nat.toString : Nat → String
 
 -- Output.

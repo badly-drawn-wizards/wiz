@@ -204,6 +204,12 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
   -- (`unifyAt`). (The type isn't zonked here: an equation that stays as written lets
   -- `rfl` be `refl` of its sides.)
   while ← synthPending do pure ()
+  -- (7e) with the instances solved, the type's instance holes are replaced by their
+  -- solutions: the kernel's native arithmetic (`vNatOp`) can't see a solved hole, so
+  -- `Nat.land a (b + 5)` with `+`'s instance a hole would unfold `Nat.land`'s unary
+  -- definition instead. (Only the instance holes, `zonkInsts`: the other holes stay, so
+  -- the equation stays as written, as above.)
+  let ty ← if (← get).pendingInsts.isEmpty then zonkInsts ctx.lvl ty else pure ty
   let val ← valStx.mapM fun s => do Elab.check ctx s (← evalIn ctx ty)
   let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val := val.map fun v => tele.foldr (fun (x, _, _, _) b => Term.lam x b) v
@@ -377,6 +383,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
   let (ty, _) ← Elab.checkType ctx tyStx
+  finishInstances
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let alts := (cmd.getArg 5).args
@@ -489,6 +496,7 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
   let (ty, _) ← Elab.checkType ctx tyStx
+  finishInstances
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let .nu l I D i _ (some (T, us, args)) ← force (← evalIn ctx ty)
@@ -565,6 +573,8 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let coit : Term R := .coit l (q ctx.lvl I) (q ctx.lvl D) Sfun step (q ctx.lvl i) init
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) coit
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
+  -- (7e) the right-hand sides' instance problems (`nats (n + 1)`)
+  finishInstances
   let val ← zonk 0 val
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
@@ -585,6 +595,7 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
   let (ctx, tele) ← elabTelescope { info } (((cmd.getArg 3).args.flatMap binderViews)).toList
   let tyStx := (cmd.getArg 4).getArg 1
   let (ty, _) ← Elab.checkType ctx tyStx
+  finishInstances
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let .nu l I D i sz hint ← force (← evalIn ctx ty)
@@ -620,6 +631,8 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
   let payload : Term R := comps.foldr .pair (.pair e .tt)
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (Term.cocon payload)
   let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
+  -- (7e) the right-hand sides' instance problems (`nats (n + 1)`)
+  finishInstances
   let val ← zonk 0 val
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
@@ -780,7 +793,7 @@ def builtinShapeError (g : Globals R) (key : Name) (d : Decl R) : Option String 
   let isN (N : Name) : Term R → Bool
     | .const c [] => c == N
     | _ => false
-  if key == "nat" || key == "string" then
+  if key == "nat" || key == "string" || key == "int" then
     match d.type, d.value.map (eval g []) with
     | .sort _, some (.mu _ _ _ _ _ (some (T, _, _))) => if T == d.name then none else some "it must be an inductive type"
     | _, _ => some "it must be an inductive type"
@@ -870,11 +883,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   -- the info tree of a declaration; its `trace`s become info messages
   let addInfos (is : Array (Info R)) : StateM (CommandState R) Unit :=
     unless is.isEmpty do modify fun s =>
-      let traces := is.filterMap fun
+      -- (`trace`s become info messages, and (7e) `warning`s warnings; the warnings stay in
+      -- the tree too)
+      let msgs := is.filterMap fun
         | .trace info text => some { info, severity := .info, text }
+        | .warning info text => some { info, severity := .warning, text }
         | _ => none
-      if traces.isEmpty then { s with infos := s.infos ++ is }
-      else { s with infos := s.infos ++ is.filter (!· matches .trace ..), messages := s.messages ++ traces }
+      if msgs.isEmpty then { s with infos := s.infos ++ is }
+      else { s with infos := s.infos ++ is.filter (!· matches .trace ..), messages := s.messages ++ msgs }
   -- the finalizer of a foreign pointer type (for a foreign function's result)
   let finOf (t : Term R) : String := match (Term.spine t).1 with
     | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
@@ -1295,7 +1311,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.builtin" =>
     let key := ((cmd.getArg 1).getId?).getD "_"
     let n := ((cmd.getArg 3).getId?).getD "_"
-    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo",
+    let known := ["nat", "nat.zero", "nat.succ", "nat.pred", "nat.add", "nat.sub", "nat.mul", "nat.beq", "nat.blt", "string", "memo", "int",
       "nat.div", "nat.mod", "nat.pow", "nat.land", "nat.lor", "nat.xor", "nat.shiftLeft", "nat.shiftRight", "nat.log2"]
     if !known.contains key then report .error cmd.info s!"unknown builtin {key}; known: {known}"
     -- one registration per key, and one key per constant: a second `builtin nat.add := K`
@@ -1314,7 +1330,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- the toolchain's library is trusted (its registrations are reviewed: README,
         -- "Trusted base"); anywhere else, nothing checks that `n` computes like the native
         -- operation, so the registration is an axiom of whatever depends on `n`
-        let trusted := s.trustedModule s.module
+        -- (`builtin int` only says how values print: nothing to trust)
+        let trusted := s.trustedModule s.module || key == "int"
         modify fun s => { s with builtins := (key, n) :: s.builtins,
                                  globals := { s.globals with builtins := (key, n) :: s.globals.builtins,
                                                              assumed := if trusted then s.globals.assumed
