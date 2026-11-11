@@ -5527,8 +5527,9 @@ def trustGroup : Group where
           | .error e => ((toString e).splitOn fragment).length > 1
           | .ok _ => false
         check ((addDecl {} (f .tt)) matches .ok _) "a good implementation was rejected"
-        -- it may call the definition (a recursive definition's does): checked with `f` declared
-        check ((addDecl {} (f (.const "f" []))) matches .ok _) "an implementation calling its definition was rejected"
+        -- one that calls the definition must be its value with the calls on fields (derived):
+        -- `f` itself is not (compiled code would loop: t1-review M1), though `f ≡ tt`
+        check ((addDecl {} (f (.const "f" []))) matches .error _) "an implementation that is the definition itself was accepted"
         check (rejected (f (.const "g" [])) "implementation of f") "an implementation with an unknown constant was accepted"
         -- ill-typed, and well-typed at another type
         check (rejected (f (.app .tt .tt)) "implementation of f") "an ill-typed implementation was accepted"
@@ -5671,10 +5672,10 @@ def trustGroup : Group where
     { name := "groundEqDesc: one closed description at two levels is not identified", run := fun _ => do
         let s := runFrontend (R := ZeroOneMany) "inductive Box.{u} : Type (u+1) where\n  | mk (T : Type u)\n" {}
         let g := s.globals
-        let at (u : Level) : Val ZeroOneMany := eval g [] (.const "Box.desc" [u])
+        let atL (u : Level) : Val ZeroOneMany := eval g [] (.const "Box.desc" [u])
         let I : Val ZeroOneMany := .unit (.succ .zero)
-        check (groundEqDesc g 0 I (at .zero) (at .zero)) "Box.desc.{0} is not itself"
-        check (!groundEqDesc g 0 I (at .zero) (at (.succ .zero))) "Box.desc.{0} and Box.desc.{1} were identified" },
+        check (groundEqDesc g 0 I (atL .zero) (atL .zero)) "Box.desc.{0} is not itself"
+        check (!groundEqDesc g 0 I (atL .zero) (atL (.succ .zero))) "Box.desc.{0} and Box.desc.{1} were identified" },
     { name := "recursive definitions: a local variable named like the definition doesn't capture its calls in compiled code", run := fun _ =>
         -- (#82's regression test.) `f n` is a recursive call (the kernel's definition
         -- recurses, so `f 2 = 0`); the compiled equations called the local `f`, and `#eval f 2`
