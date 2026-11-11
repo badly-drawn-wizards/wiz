@@ -307,16 +307,16 @@ def templatesCheck : IO Unit := do
     for (n, ty, t) in [("interpTm", interpTy, Templates.interpTm l), ("allTm", allTy, allBody),
                        ("hypsTm", hypsTy, byName (Templates.hypsTm l w)), ("mapTm", mapTy, byName (Templates.mapTm l))] do
       -- (checked in an erased position: a template's quantities are variables, `q`, so its
-      -- projections are of pairs at quantity `q`; then declared, as an axiom, for the next)
+      -- projections are of pairs at quantity `q`; then inserted, for the next)
       let d := Decl.withSorts g { name := n, levelParams := ps, type := ty, value := some t }
       let ctx : Ctx Q := { globals := g, erased := true }
       let r : TCM Unit := do
         let _ ← Wiz.checkType ctx d.type
-        let _ ← Wiz.check ctx (d.value.getD .tt) (ctx.eval d.type)
+        -- (with the proof markers the kernel requires at `v = 0`: the pass adds them)
+        let _ ← Wiz.check ctx ((d.withMarks g).value.getD .tt) (ctx.eval d.type)
       if let .error e := r then throw (IO.userError s!"{n} at l = {l}, v = {w}: {e}")
-      match addDecl (R := Q) g { d with value := none } with
-      | .ok g' => g := g'
-      | .error e => throw (IO.userError s!"{n} at l = {l}, v = {w}, its type: {e}")
+      -- (inserted unchecked, with its value: it was just checked, erased)
+      g := g.insert d
 
 def structGroup : Group where
   name := "check: structural types"
