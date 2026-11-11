@@ -948,6 +948,14 @@ that checks everything. Wiz's situation:
   natives). They are not `builtin` commands, so the registration checks don't apply.
   `#print axioms d` lists the ones `d` depends on, the library's too, marked `native`
   (`native f := g`, `native T := mk/get`).
+* **Native evaluation** (`native_refl`, stage 27a, only with `--trust-native`): a closed
+  equation decided by running both sides is an axiom, `X.native✝`, listed by `#print
+  axioms` with the implementations the run reached. It trusts erasure and the rewrites on
+  erased code, the interpreter (`Compiler/NativeRun.lean`) and Lean's `Nat` under the
+  `nat.*` builtins, and every `implemented_by`, non-library `builtin` and native
+  representation the computation reaches (a wrong one proves a false equation). Not the
+  IR, the C backend, the runtime or the C compiler (none runs). The library never uses it
+  (group *native*).
 * **Termination** of the kernel is not proved; all evaluation functions are `partial` in
   Lean. With non-default options it is known to fail (D1: `--regularity full
   --eager-proofs`).
