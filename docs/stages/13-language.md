@@ -162,6 +162,97 @@ ignores them. The motivating use is the HDL's signals (`drafts/hdl/Signal.wiz`):
 code builds and observes them only through the library's combinators and `sample`
 (`drafts/hdl/rejected/observe_signal.wiz`). Tests: group `elabfix`.
 
+## 13c: `if`, `&&`, `||`, `!` in the Prelude ✅
+
+```
+import Prelude
+def clamp (n : Nat) : Nat := if Nat.lt n 10 then n else 10
+#eval Nat.beq 1 1 && !(Nat.beq 2 3) || Bool.false    -- .true
+```
+
+`lib/Prelude.wiz` now declares `if c then a else b` (a macro for
+`match c with | .true => a | .false => b`), and `a && b`, `a || b` as macros for
+`match a with | .true => b | .false => .false` and `match a with | .true => .true | .false => b`,
+so both **short-circuit**: compiled code (and `#eval`) evaluates `b` only when `a` doesn't
+decide. `!b` is `Bool.not b`. Precedences are Lean's: `if` is a leading term like `match`,
+`||` 30, `&&` 35 (right-associative), `!` binds tightest. The kernel sees the `match`, so
+`Bool.true && b` reduces to `b`, as `Bool.and Bool.true b` does, but a stuck `a && b` is a
+`match` on `a` and not convertible to `Bool.and a b` (state lemmas about `Bool.and` by
+cases on `a`). `if`, `then` and `else` are now reserved words in every program; `not` is
+not (constructors and class fields named `not` exist in `lib/Hdl`).
+
+The self-hosted frontend doesn't read `lib/Prelude.wiz`: it embeds its own prelude
+(`preludeText`, selfhost/Frontend.wiz) and has had `if` since 19a (an application of `if`,
+rewritten to a `match`). It has no `&&`, `||` or `!`, so `selfhost/*.wiz` don't use them.
+Tests: group `language`.
+
+## 13d: `Functor` and `Applicative` (`import Functor`) ✅
+
+```
+import Functor
+#eval Nat.add <$> Option.some 1 <*> Option.some 2          -- .some 3
+#eval (fun (a b : Nat) => (a, b)) <$> List.cons 1 (List.cons 2 .nil) <*> List.cons 3 .nil
+                                        -- .cons (1, 3) (.cons (2, 3) .nil)
+def both : IO (String × String) := (fun (a b : String) => (a, b)) <$> IO.readFile "a" <*> IO.readFile "b"
+```
+
+`lib/Functor.wiz` has `class Functor f` (`map`), `class Applicative f` (`pure`, `seq`),
+`f <$> x` (`Functor.map`, infixr 100) and `mf <*> x` (`Applicative.seq`, infixl 60), as in
+Lean. Two generic instances make **every `Monad` an `Applicative`** (`seq` by two binds)
+and **every `Applicative` a `Functor`** (`map g x = pure g <*> x`), so `IO`, `Eff r`,
+`Eff1 ω r R`, `StateT`, `ReaderT`, `TacticM` and user monads get `<$>`/`<*>` with no more
+declarations. The module also gives `Monad` instances for `Option`, `Except E` and `List`
+(nondeterminism: `<*>` takes every combination), with direct `Functor` instances
+(`Option.map`, `Except.map`, `List.map`). An instance declared later wins over the
+generic ones (7b), which is how a type that isn't a monad (an HDL signal) declares its own
+`Applicative`.
+
+`Monad` itself is unchanged (it doesn't extend `Applicative`: classes have no `extends`
+yet), so `do`, `Monad1` and `do1` are as before. The module is separate from the Prelude
+because programs that import only the Prelude already define `List.map`, a class
+`Functor` and `Monad Option` instances of their own (`lib/Hdl/Core.wiz`, the tests).
+Tests: group `language`.
+
+## 13e: `∃ x, P`, `¬`, and ASCII spellings ✅
+
+```
+import Logic
+def two : ∃ n : Nat, n + n = 4 := Ex.intro _ 2 rfl
+def swap {A : Type} {P : A → A → Prop} (h : ∃ x y, P x y) : ∃ y x, P x y :=
+  Ex.elim h (fun x h' => Ex.elim h' (fun y p =>
+    Ex.intro (fun y => ∃ x, P x y) y (Ex.intro (fun x => P x y) x p)))
+def nope : ¬ (exists (b : Bool), b = .true ∧ b = .false) :=
+  fun h => Ex.elim h (fun b p => Bool.trueNeFalse (Eq.trans (Eq.symm p.1) p.2))
+```
+
+`lib/Logic.wiz` has binder notation for its Church-encoded `Ex`: `∃ x, P` is
+`Ex (fun x => P)`, with binders as in `fun` and an optional type for all of them
+(`∃ x y : A, P`, `∃ (x : A) (y : B), P`, `∃ x (y : B), P`). The body extends as far as
+possible, as `∀`'s does. A nested `Ex.intro` wants its motive (`Ex.intro (fun y => ∃ x, P x y) y …`):
+with holes for both motives the elaborator can't solve them from the expected type. A procedural macro (`Ex.binderMacro`) builds the nested `Ex`s,
+since quotations can't splice lists. `¬ P` is `Not P` (Lean's precedence: `¬ a = b` is
+`¬ (a = b)`). ASCII spellings follow `->` for `→`, `fun` for `λ`, `=>` for `↦`:
+`forall` for `∀` (built in, so `forall` is a reserved word now), `exists` for `∃`, `/\`
+for `∧`, `\/` for `∨`, `<->` for `↔`. `lib/Logic.wiz` and `lib/HProp.wiz` state their
+lemmas with them (`hexists J h` is `∃ a : A, J a h`; `star` is
+`∃ h₁ h₂ : Heap V, StarAt …`). Tests: group `language`.
+
+## 13f: `let` with tuple patterns of any length ✅
+
+```
+def f (p : Nat × Nat × Nat) : Nat := let (a, b, c) := p; a + b * c
+def lin (1 p : Nat × Tok × Tok) : Unit × Unit :=
+  let 1 (n, s, t) := p;
+  (Tok.close s, Tok.close t)
+```
+
+`let q (x₁, …, xₙ) := e; body` with three or more names (`term.letTuple`) is right-nested
+pairs, as tuple types and tuple patterns are: `let q (x₁, r₁) := e; let q (x₂, r₂) := r₁; …`,
+with intermediate names (`tuple✝k`) that no program can mention (`letTupleToPairs`,
+`Elab/Term.lean`). Each step is a `let (x, y)` split at quantity `q`, so with `let 1` every
+component of a linear tuple is bound once, which is how a tuple holding resources is taken
+apart now that linear pairs aren't projected. Tests: group `language`.
+
 ## 13g: as-patterns `x@p` ✅
 
 ```
