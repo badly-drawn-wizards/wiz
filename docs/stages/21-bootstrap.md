@@ -241,3 +241,120 @@ error for a type that can't be marshalled.
 Not mirrored yet: `import_c` (9b: the frontend would need the preprocessed header, and a
 C parser in Wiz), `glue` (9c), `implemented_by` (22d), `Bytes`, and big numbers (a `Nat`
 is 63 bits in this runtime, so a C result above that is cut).
+
+## 21m: written quantities in the self-hosted frontend
+
+Finding K10 of audit 2: `Frontend.wiz` built every binder at ω, whatever was written, so
+`def twice (1 x : Nat) (f : Nat → Nat → Nat) : Nat := f x x` was accepted. It now reads
+the binder's `quantity` node as `elabQuantity` does in the Lean elaborator (`binderQ`,
+`writtenQ`): `0`, `1` or `ω`, by default ω on an explicit binder and 0 on an implicit
+one; a numeral other than 0 or 1, or a quantity term `%t`, is an error. The quantities
+reach the kernel, which already checks usage (`popUsage`):
+
+* the binders of a `def`, an `axiom` and a partial definition's signature (`defT`,
+  `teleT`, and the match-compiled definitions' telescope, `piTeleQ`), `(1 x : A) → B`
+  (`depPis`, and `pis` in the scope checker for constructor field types), and a typed
+  `fun` (`inferLams`);
+* a `fun` checked against a Π: a written quantity must be the Π's ("binder quantity 1
+  does not match the expected ω", as `checkFun`); an unwritten one takes it;
+* `let 1 x := v; b` is the kernel's `letq` (the backend erases the value of a `let 0`);
+* a constructor's parameters are implicit at 0 (the Lean elaborator's `implicitΔ`), so
+  `List.cons` is `(x0 :0 U0) → (x1 : x0) → …`; an inductive type's own parameters keep
+  their binders' quantities. The helper definition that `withDefault'` makes writes an
+  implicit binder's 0 out when it makes the binder explicit.
+
+Erasure needs nothing new: arguments at 0 were erased already, and there are more of
+them now (an implicit `{w : Nat}` is no longer passed). The self-hosted sources needed no
+change: the Lean frontend checks them with the same rules.
+
+What does not match the Lean frontend (pinned in a test, and in
+[CoreSpec §15](../CoreSpec.md)): a linear variable used once in each branch of a `match`
+is accepted here (the kernel's case joins the branches' usage) and rejected there (a
+branch is an ω argument of `T.casesOn`); a constructor field with a quantity is an error
+here, since `Kernel.wiz`'s descriptions have none; implicit constructor fields don't
+exist here. An unused linear variable (`def drop (1 x : Nat) : Nat := Nat.zero`) and a
+match on a linear variable are rejected by both, through the kernel's `popUsage` and
+eliminator rules (PR #84).
+
+**Tests** (group `selfhost`): `selfhostAgrees` runs 23 declarations through both
+frontends (accepted and rejected alike: linear functions passed and used twice, `let 1`,
+`let 0`, implicit parameters used at runtime, a `fun`'s quantity against the expected
+one, a quantity `2`); `selfhostVerdicts` pins the three differences above; a program
+with quantities is compiled and run under both collectors.
+
+## 21n: `private`, and unknown commands, in the self-hosted frontend
+
+Parity with [13b](13-language.md) as far as it is reachable. `private def …` (any
+`command.private`: a definition, axiom, partial definition, `mutual` block, inductive
+type or structure) was an error here ("unsupported syntax command.def"); private
+constructors (`| private c`), private fields and `private mk ::` were parsed and ignored.
+Now `private` before a command declares the same names as without it.
+
+**Privacy is not enforced, because nothing can reach it.** In the Lean toolchain a private
+name is private to its *module*: another module gets "'x' is private to module M", and
+there a type with private parts is opaque (it equals only itself, isn't matched, isn't
+built by tuples or look-alike types; its recursors are private). The module itself sees
+everything as usual. The self-hosted toolchain has exactly one module, the input file:
+every `import` loads the frontend's own Prelude (`preludeText`), which declares nothing
+private. So every check of 13b is about a use from another module, and in a one-module
+world each of them holds vacuously; treating `private` as public there is exactly the
+Lean frontend's behaviour inside the declaring module. Mirrored: the syntax in every
+position, and the in-module meaning. Not mirrored, and unreachable: the "private to
+module" errors, the opacity of types with private constructors or fields outside the
+module, private recursors. PR #79's `T.desc` and `--strict-privacy` are the same (module
+crossing). **The day the self-hosted toolchain gets modules**, privacy must come with them:
+`Globals` needs each name's module (and whether it is private); `Scope.lookup` from
+another module must reject a private name; a type with a private constructor or field
+must become an opaque constant outside its module (no unfolding of its `μ` in the
+frontend's conversion, no `match`, `.1` or constructor through the Σ), while the kernel
+keeps checking against the full definition, as 13b's elaborator view does.
+
+An unknown command, or a modifier the frontend doesn't know (`sealed`, `noncomputable`
+when the grammar gets them), is an error naming it ("unsupported command
+command.sealed"), never ignored.
+
+## 21o: `link_c`, `link_lib` and `export`, self-hosted
+
+Parity with [9f](09-ffi.md) and the first half of 9g.
+
+* **`link_c "f.c"`, `link_lib "m"`** (`linkCmd` in `Frontend.wiz`): recorded once each in
+  `Globals`' foreign declarations (a new constructor `Foreign.link`), with the Lean
+  frontend's check of a library name. The self-hosted compiler prints one C file with the
+  runtime included, so it can't link anything itself: it names the files and libraries
+  in the first lines of its output, `// wiz-link-c: f.c` and `// wiz-link-lib: m`, and
+  whoever compiles that C adds them (`cc out.c f.c -lm`; the tests do). A path is the one
+  written, relative to the input file's directory; the frontend is pure, so a missing
+  file is reported by the C compiler rather than at the `link_c`.
+* **`export "c_name" f (: T)?`** (`exportCmd`; `Foreign.exported`): the same checks and
+  messages as `command.export` (the declaration exists, the optional type converts with
+  its type, a C identifier, not exported twice, arguments `Nat`, `UInt64`, `Float64`,
+  `String`, `Bool`, a foreign pointer or a Wiz value, a result among those but not a
+  foreign pointer, or `Unit`, maybe in `IO`). The backend (`exportDocs`) writes a C
+  function `c_name` after the program's definitions, in both modes: C values become Wiz
+  values (a `String` copied, a foreign pointer lent without a finalizer, a `Bool` from
+  `int`), the definition's closure is applied (`get_f`, with the world for `IO`, whose
+  result is the pair's first field), and the result is converted back (a `String` as a
+  `malloc`ed `char *` the caller frees, `rt_export_str`; `Unit` as `void`).
+
+Not mirrored: callbacks (a parameter of function type, `Callback`), `c_struct` (9i),
+`--lib`/`--no-main` builds and the `.h` file of the exports, and the handle functions
+`wiz_retain`/`wiz_release`/`wiz_live_objects` (a Wiz value given to C is a plain word
+here; under reference counting C owns the reference it gets, as in 9g, but can't make or
+drop one). An exported function is called while the Wiz program runs (from C code it
+called), as in the test; the runtime isn't set up for a C `main` of its own.
+
+## 21p: a C `Nat` that doesn't fit is an error
+
+A `Nat` in the self-hosted runtime is a 63-bit scalar (PR #80 makes a numeral from 2^63 on
+an error). A foreign function's `Nat` result, or a `Nat` argument C passes to an export,
+from 2^63 on used to be cut silently; `rt_out_nat` now stops the program with "a
+foreign function's Nat does not fit in 63 bits" (exit code 3). The Lean toolchain's
+`Nat`s are unbounded, so there the same program prints the number: a known difference.
+UInt64 is unaffected (its large values are objects).
+
+**Tests** (group `selfhost`): `private` in every position both frontends take it, and
+`private` inside `mutual` rejected by both; unknown commands named in the error; the
+`export`/`link_lib` checks (9 declarations, same verdicts); one program with exports
+(numbers, strings both ways, `Bool`, `IO`) called from a `link_c` file and `link_lib
+"m"`, run by the Lean compiler and by the self-hosted one in both modes, same output;
+the 63-bit error in both modes against the Lean toolchain's answer.

@@ -471,6 +471,14 @@ def group : Group where
         okLibs ("import Hdl.Core\nstructure CombT (i o : HwTy) where\n  run : {r : HwTy → Type} → [Hw r] → r i → r o\n" ++
           "def mapIn {ω i' i o : HwTy} (f : CombT i' i) (c : Circuit i o) : Circuit i' o :=\n" ++
           "  Circuit.mk c.st c.init (fun s x => c.step s (f.run x))\n") },
+    { name := "a clause definition's type: instance holes still pending are solved before it is closed (hdl-cleanup)", run := fun _ =>
+        -- `Comb.el f` checks `f : Comb i o` against `Comb ?i ?o`, which η-expands `f` to
+        -- `fun {r} [_] => f ?inst` while `?r` is unsolved: `?inst` is pending, and the type
+        -- of a definition by equations was closed before it was retried
+        okLibs ("import Hdl.Core\n" ++
+          "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
+          "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
+          "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
     { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
         -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
         -- the scrutinee isn't abstracted inside `?A b` (that would leave the pattern fragment)

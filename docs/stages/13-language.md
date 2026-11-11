@@ -48,7 +48,10 @@ structure with its constructor and projections, an inductive type with its
 constructors and recursors) private to its **module**: other modules get "'x' is
 private to module M"; the module itself, including its later declarations, uses the
 names as usual. Privacy is per module ([23c](23-grail.md): each module is elaborated in isolation and
-under its own name), and the main file is a module of its own.
+under its own name), and the main file is a module of its own. In a module, a private
+function, axiom or foreign function gets a kernel name of its own (`_private.M.0.secret`,
+as in Lean), so two modules' private `secret`s don't clash; see
+[23b](23-grail.md).
 
 `private mk ::` right after a structure's `where` keeps the type and its projections
 public but makes the constructor private. Types are structural, so a private name
@@ -158,6 +161,45 @@ checks with it unfolded. The self-hosted frontend parses the `private` markers a
 ignores them. The motivating use is the HDL's signals (`drafts/hdl/Signal.wiz`): user
 code builds and observes them only through the library's combinators and `sample`
 (`drafts/hdl/rejected/observe_signal.wiz`). Tests: group `elabfix`.
+
+## 13j: keyword scopes ✅
+
+A keyword of a `term` or `command` rule is reserved in the whole file; a keyword of any
+other category is reserved nowhere (`"if"` there matches an identifier spelled `if`).
+That is right for tactics, whose names stay usable as variables, and wrong for an
+embedded language with identifiers and application by juxtaposition: its `ident` rule
+accepts `then` too, so `if c then a else b` is the application of `if` to five arguments.
+Reserving the words globally (by listing them in a `command` rule) takes `if`, `in`,
+`mut`, `fn` … away from every file that imports the language.
+
+```
+declare_syntax_cat feral_expr (keywords := feral)
+declare_syntax_cat feral_stmt (keywords := feral)
+```
+
+puts the categories in the **keyword scope** `feral`. The identifier-like atoms of their
+rules are the scope's keywords, and an `ident` item inside a category of the scope does
+not match them:
+
+* inside the language, `if c then a else b` is the `if` rule, and `let if := 1` is
+  `expected identifier ('if' is a keyword here)`;
+* outside it (in `term`, in `command`, in another language, and in a `term` nested
+  inside the language) the words are ordinary identifiers;
+* categories share a scope by naming it, because a keyword of statements (`return`) must
+  not be an identifier of expressions (or `f x` and a `return y` on the next line are
+  one application).
+
+The scope's name is an identifier, so it can't be a word that is reserved at that point
+(declare the categories before the `syntax "feral" … : command` rule, or pick another
+name). A category keeps the scope it was first declared with. Symbol atoms (`+=`, `..`)
+are still tokens everywhere: they never take an identifier away.
+
+The parser stays scannerless with one token table (`Wiz/Parser/Token.lean`): the scope is
+a property of the category being parsed (`ParserTables.reservedIn`, read by the `ident`
+case of `runDescr`), so the memo key, which already names the category, is unchanged.
+The design options are in the notes (`scoped-keywords.md`). The self-hosted parser
+interprets the built-in tables, which use no scope, and has no `syntax` command yet.
+Tests: `parser: commands and syntax`, `language`.
 
 ## 13n: `rfl` at an equation that has computed ✅
 
