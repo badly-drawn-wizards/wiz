@@ -238,7 +238,7 @@ def main (args : List String) : IO UInt32 := do
     match lspOptions opts with
     | none => IO.println usage; pure 2
     | some (listen, stdio) =>
-      let listen := if listen.web.isSome then listen else { listen with web := ← webDir }
+      let listen ← if listen.web.isSome then pure listen else do pure { listen with web := ← webDir }
       LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc)
       -- (an infoview's reader thread may still be blocked: don't wait for it)
       IO.Process.exit 0
