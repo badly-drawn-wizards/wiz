@@ -1753,9 +1753,12 @@ def cbName (c : CbSig) : String := match c with
   | .mk _ ps r io => "wiz_cb_" +++ joinStrs ps +++ "_" +++ (match io with
     | .true => "io_"
     | .false => "") +++ r
+def ffiCTypes : List String → List String
+  | .nil => .nil
+  | .cons k rest => .cons (ffiCType k) (ffiCTypes rest)
 -- the C type of its function pointer
 def cbPtrType (c : CbSig) : String := match c with
-  | .mk _ ps r _ => ffiCTypeOut r +++ " (*)(" +++ commaSep (.cons "void *" (List.map ffiCType ps)) +++ ")"
+  | .mk _ ps r _ => ffiCTypeOut r +++ " (*)(" +++ commaSep (.cons "void *" (ffiCTypes ps)) +++ ")"
 -- (stage 21r) the `c_struct` of a kind `S:T`
 def kindStruct (ffi : List Foreign) (k : String) : Option Foreign := match dropPrefix (strChars "S:") (strChars k) with
   | .some r => cstructOf ffi (String.mk r)
