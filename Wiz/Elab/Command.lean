@@ -1428,8 +1428,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             | .ok g' =>
               modify fun s => { s with globals := g' }
               let axs := sides.filter (·.value.isNone)
-              unless axs.isEmpty do
-                report .warning cmd.info s!"{name} is accepted on the strength of the axiom{if axs.size == 1 then "" else "s"} {", ".intercalate (axs.toList.map (·.name))} that its tactics added, not checked by the kernel; `#print axioms` lists {if axs.size == 1 then "it" else "them"} for everything that uses {name}"
+              let names := ", ".intercalate (axs.toList.map (·.name))
+              let pl := if axs.size == 1 then "" else "s"
+              if axs.isEmpty then pure ()
+              else if axs.all (fun d => (d.name.splitOn ".smt✝").length > 1) then
+                report .warning cmd.info s!"{name} is accepted on the word of an SMT solver (--trust-smt), not checked by the kernel: its proof uses the axiom{pl} {names}, which `#print axioms` lists for everything that uses {name}"
+              else
+                report .warning cmd.info s!"{name} is accepted on the strength of the axiom{pl} {names} that its tactics added, not checked by the kernel; `#print axioms` lists {if axs.size == 1 then "it" else "them"} for everything that uses {name}"
             | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
       | (.error e, hv) => addInfos hv; reportErr e
   | "command.partial" | "command.mutual" =>
@@ -1802,6 +1807,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- (27a) a `native_refl` axiom
         let note := note ++ if as.any (·.endsWith ".native✝") then
           "\n(.native✝: an equation decided by running it (native_refl, --trust-native): trusted are erasure, the interpreter and the native implementations listed)" else ""
+        let note := note ++ if as.any (fun a => (a.splitOn ".smt✝").length > 1) then
+          "\n(.smt✝N⟨solver⟩: a goal closed by an SMT solver (the smt tactic, --trust-smt): trusted are the solver named in the axiom, Wiz's translation to SMT-LIB (Wiz/Smt/Translate.lean) and the answer cache)" else ""
         report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]{note}"
   | "command.foreignType" =>
     -- an opaque C pointer type; values are released with the finalizer
