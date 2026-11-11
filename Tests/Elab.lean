@@ -5714,7 +5714,7 @@ def seplogicGroup : Group where
           "  star.swap H K (J ⋆ (p ↦ a))") "mismatch" },
     { name := "a wrong specification is rejected, quickly", run := fun _ => do
         -- swap's specification with the postcondition of the identity
-        failsLibsWithin 60 ("import Hoare\n" ++
+        failsLibsWithin 60 ("import HoareExamples\n" ++
           "def bad (p q a b : Nat) : Triple ((p ↦ a) ⋆ (q ↦ b)) (Prog.swap p q) (fun _ => (p ↦ a) ⋆ (q ↦ b)) :=\n" ++
           "  Prog.swap_spec p q a b") "mismatch"
         -- a wrong value read back
