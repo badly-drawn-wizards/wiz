@@ -3892,16 +3892,16 @@ def calcDsl (decl : String) : String := "import Prelude\ndeclare_syntax_cat calc
 syntax (name := var) ident : calc_e
 syntax (name := host) \"[\" term \"]\" : calc_e
 syntax:lead (name := app) calc_e:max calc_e:max : calc_e
-syntax:20 (name := ifE) \"if\" calc_e \"then\" calc_e:20 \"else\" calc_e:20 : calc_e
+syntax:20 (name := ifE) \"when\" calc_e \"yes\" calc_e:20 \"no\" calc_e:20 : calc_e
 syntax (name := calc) \"run_calc\" calc_e \"done\" : term
 macro_rules
   | `(term| run_calc [ $t ] done) => `(term| $t)
 macro_rules
   | `(term| run_calc $f $a done) => `(term| (run_calc $f done) (run_calc $a done))
 macro_rules
-  | `(term| run_calc if $c then $a else $b done) => `(term| match run_calc $c done with | .true => run_calc $a done | .false => run_calc $b done)
-def then : Nat := 1
-def else (if : Nat) : Nat := Nat.succ if
+  | `(term| run_calc when $c yes $a no $b done) => `(term| match run_calc $c done with | .true => run_calc $a done | .false => run_calc $b done)
+def yes : Nat := 1
+def no (when : Nat) : Nat := Nat.succ when
 def isZero : Nat → Bool
   | .zero => .true
   | .succ _ => .false
@@ -4094,17 +4094,18 @@ def languageGroup : Group where
         failsLib ("import Prelude\naxiom Tok : Type\naxiom Tok.close : (1 t : Tok) → Unit\n" ++
           "def lin (1 p : Nat × Tok × Tok) : Unit × Unit :=\n  let 1 (n, s, t) := p;\n  (Tok.close s, Tok.close s)\n")
           "quantity 1 but used" },
-    -- keyword scopes (13j): `if`/`then`/`else` are keywords inside `run_calc … done` only
+    -- keyword scopes (13j): `when`/`yes`/`no` are keywords inside `run_calc … done` only
+    -- (not `if`/`then`/`else`: the Prelude's `if` (13c) reserves those in every file)
     { name := "keyword scope: a DSL's keywords are identifiers outside it (13j)", run := fun _ =>
         okLib (calcDsl " (keywords := calc_kw)" ++
-          "#eval run_calc if [isZero] [0] then [else] [then] else [else (else then)] done\n" ++
-          "#eval run_calc if [isZero] [then] then [5] else [else 7] done") ["2", "8"] },
+          "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done\n" ++
+          "#eval run_calc when [isZero] [yes] yes [5] no [no 7] done") ["2", "8"] },
     { name := "... and not its own identifiers", run := fun _ =>
-        failsLib (calcDsl " (keywords := calc_kw)" ++ "#eval run_calc [else] then done")
-          "identifier ('then' is a keyword here)" },
-    { name := "... without the scope the DSL's `if` is an application", run := fun _ => do
+        failsLib (calcDsl " (keywords := calc_kw)" ++ "#eval run_calc [no] yes done")
+          "identifier ('yes' is a keyword here)" },
+    { name := "... without the scope the DSL's `when` is an application", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-        let input := calcDsl "" ++ "#eval run_calc if [isZero] [0] then [else] [then] else [else (else then)] done"
+        let input := calcDsl "" ++ "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done"
         let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
         check ((s.messages.filter (·.severity == .error)).size > 0) "expected errors" }
   ]
