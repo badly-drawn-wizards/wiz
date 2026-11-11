@@ -315,6 +315,17 @@ def toolchainGroup : Group where
         for f in files do
           let text ← IO.FS.readFile f
           check ((text.splitOn "getEnv \"WIZ").length == 1) s!"{f} reads a WIZ_ variable" },
+    { name := "wiz: an unknown flag or command is an error (exit 2), the usage alone is not", run := fun _ => do
+        let wiz := ".lake/build/bin/wiz"
+        let run (args : Array String) := IO.Process.output { cmd := wiz, args }
+        let o ← run #["--impl=elab", "check", "x.wiz"]
+        checkEq 2 o.exitCode
+        check ((o.stderr.splitOn "unknown flag: --impl=elab").length > 1) s!"stderr: {o.stderr}"
+        let o ← run #["frobnicate", "x.wiz"]
+        checkEq 2 o.exitCode
+        check ((o.stderr.splitOn "unknown command").length > 1) s!"stderr: {o.stderr}"
+        checkEq 0 (← run #[]).exitCode
+        checkEq 0 (← run #["--help"]).exitCode },
     { name := "flags fill the toolchain record", run := fun _ => do
         let (tc, rest) := ({} : Toolchain).parseFlags
           ["check", "--cc", "clang", "--cflags", "-I/a  -I/b", "-I", "src", "x.wiz", "--no-cache", "--llvm"]

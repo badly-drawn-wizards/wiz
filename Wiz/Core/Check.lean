@@ -902,10 +902,70 @@ partial def replaceConstTo (c c' : Name) (t : Term R) : Term R := match t with
   | .const n us => if n == c then .const c' us else t
   | t => Id.run <| t.mapChildrenM pure (fun _ x => pure (replaceConstTo c c' x))
 
-/-- The constant `c` replaced by a variable bound outside the term (`var 0` at the top). -/
-partial def replaceConst (c : Name) (t : Term R) (depth : Nat := 0) : Term R := match t with
-  | .const n _ => if n == c then .var depth else t
-  | t => Id.run <| t.mapChildrenM pure (fun k x => pure (replaceConst c x (depth + k)))
+/-- The constant `c` at the levels `us` replaced by a variable bound outside the term
+(`var 0` at the top). At other levels it stays (and `callsOnFields` rejects it). -/
+partial def replaceConst (c : Name) (us : List Level) (t : Term R) (depth : Nat := 0) : Term R := match t with
+  | .const n us' => if n == c && us' == us then .var depth else t
+  | t => Id.run <| t.mapChildrenM pure (fun k x => pure (replaceConst c us x (depth + k)))
+
+/-- **Every call is on a field** (`checkImplAgrees`; termination of compiled code). The
+implementation is `λ a₀ … a_{k-1}. [let …] K Δ motive m₁ … mₙ ξ x …` for a `T.casesOn`
+(or `casesOnN`) `K`, and the definition `fn` (at its own levels `us`) occurs only in the
+methods, each time as the head of a call whose argument at position `x` (the split's
+column) is a field of the method's constructor (`λ fields. …`, a field variable or such a
+variable applied to arguments, for an infinitary field). Then every call compiled code
+makes is on a strictly smaller value (a field of the scrutinee), so it terminates as the
+kernel's recursion does; the conversion check alone cannot see calls at types where every
+two values are convertible (`Unit`, propositions). -/
+partial def callsOnFields (g : Globals R) (fn : Name) (us : List Level) (k x : Nat) (impl : Term R) : Bool := Id.run do
+  let rec peel : Nat → Term R → Option (Term R)
+    | 0, t => some t
+    | n + 1, .lam _ b => peel n b
+    | _, _ => none
+  let some body := peel k impl | return false
+  let rec skipLets : Term R → Nat → Term R × Nat
+    | .letE _ _ ty v b, n => if mentionsConst fn ty || mentionsConst fn v then (.tt, 0) else skipLets b (n + 1)
+    | t, n => (t, n)
+  let (body, nLets) := skipLets body 0
+  let (.const K _, args) := body.spine | return false
+  unless K.endsWith ".casesOn" || K.endsWith ".casesOnN" do return false
+  let T := String.ofList (K.toList.take (K.length - (if K.endsWith ".casesOnN" then 9 else 8)))
+  let (some Td, some descD, some kd) := (g.find? T, g.find? (T ++ ".desc"), g.find? K) | return false
+  let rec pis : Term R → Nat
+    | .pi _ _ _ _ b _ => pis b + 1
+    | _ => 0
+  let nΔ := pis descD.type
+  let nΞ := pis Td.type - nΔ
+  let nc := pis kd.type - nΔ - nΞ - 2
+  let rec mbinders : Term R → List Name
+    | .pi m _ _ _ b _ => m :: mbinders b
+    | _ => []
+  let ctors := ((mbinders kd.type).drop (nΔ + 1)).take nc |>.map fun mn => String.ofList (mn.toList.drop 2)
+  -- outside the methods: no call at all
+  let outside := args.take (nΔ + 1) ++ args.drop (nΔ + 1 + nc)
+  if outside.any (mentionsConst fn ·) then return false
+  let methods := (args.drop (nΔ + 1)).take nc
+  let ok := (ctors.zip methods).all fun (c, m) => Id.run do
+    let some cd := g.find? (T ++ "." ++ c) | return false
+    let F := pis cd.type - nΔ
+    let some mb := peel F m | return !mentionsConst fn m
+    -- in `mb` under `dd` more binders, field `j` is `var (dd + F - 1 - j)`
+    return calls F 0 mb
+  return ok
+where
+  isField (F dd : Nat) (t : Term R) : Bool := match t with
+    | .var i => dd ≤ i && i < dd + F
+    | .app f _ => isField F dd f
+    | _ => false
+  calls (F dd : Nat) (t : Term R) : Bool :=
+    match t.spine with
+    | (.const n us', as) =>
+      if n == fn then
+        us' == us && as.length > x && isField F dd as[x]! && as.all (calls F dd)
+      else as.all (calls F dd)
+    | (h, as@(_ :: _)) => calls F dd h && as.all (calls F dd)
+    | (t, []) => (t.forChildren (m := StateM Bool) (fun _ => pure ())
+        (fun k c => modify (· && calls F (dd + k) c)) |>.run true).2
 
 /-- **The bridge by shape** (`checkImplAgrees`). The value is
 `λ a₀ … a_{k-1}. r Δ motive methods ξ x [e] rs` for a recursor `r` (`T.rec`/`T.recN`),
@@ -1001,21 +1061,15 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
   let a := whnf (args.foldl (vApp g) (eval g [] value))
   -- (the implementation with `F` for the definition: everything it says but the calls is
   -- compared with `F` free, which is the more general statement)
-  let b := whnf (args.foldl (vApp g) (eval g [fV] (replaceConst d.name impl)))
+  let b := whnf (args.foldl (vApp g) (eval g [fV] (replaceConst d.name (d.levelParams.map Level.param) impl)))
   let (.neutral (.local x) sp, .neutral (.local x') sp') := (a, b)
     | fail "the value or the implementation is not stuck on an argument"
   let (some (Elim.ind l I D v P M i), some (Elim.ind l' I' D' v' P' MF i')) := ((sp[0]? : Option (Elim R)), (sp'[0]? : Option (Elim R)))
     | fail "the value or the implementation is not an induction on an argument"
   let MF? : Option (Val R) := some MF
-  -- the implementation's methods with the real definition (where the hypotheses stay the
-  -- kernel's), evaluated only if needed
-  let realM : Thunk (Val R) := Thunk.mk fun _ =>
-    match whnf (args.foldl (vApp g) (eval g [] impl)) with
-    | .neutral _ sp'' => match (sp''[0]? : Option (Elim R)) with
-      | some (.ind _ _ _ _ _ m _) => m
-      | _ => MF
-    | _ => MF
   unless x == x' && sp.size == sp'.size do fail "they split different arguments"
+  unless callsOnFields g d.name (d.levelParams.map Level.param) k x impl do
+    fail "a call of the definition is not on a field of the constructor it is in (compiled code could loop)"
   -- (the methods are checked below; here both are a fresh variable of the method type, so
   -- that comparing them costs nothing: comparing `M` with itself would go through every
   -- branch of it)
@@ -1088,6 +1142,23 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
     let call : Term R := ((List.range k).map argTm).foldl .app (ref 0)
     let body := (List.range (m + nE)).foldr (fun _ t => Term.lam "r" t) call
     eval g env body
+  -- (the same call as a term at depth `D`, `y` and `j` terms there: for a hypothesis under
+  -- the binder of an infinitary field)
+  let hypCallTm (D : Nat) (jT yT : Term R) (rs : List Nat) (eqArg : Bool) : Term R :=
+    let m := rs.length
+    let nE := if eqArg then 1 else 0
+    let sh := m + nE
+    let lvl (ℓ : Nat) : Term R := .var (D + sh - 1 - ℓ)
+    let unpackT (q : Nat) : Term R := .fst ((List.range q).foldl (fun t _ => .snd t) (jT.lift sh))
+    let argTm (ℓ : Nat) : Term R :=
+      if ℓ == x then yT.lift sh
+      else match rs.idxOf? ℓ with
+        | some p => .var (m - 1 - p)
+        | none => match ixL.idxOf? ℓ with
+          | some q => unpackT q
+          | none => lvl ℓ
+    let call : Term R := ((List.range k).map argTm).foldl .app (lvl fL)
+    (List.range sh).foldr (fun _ t => Term.lam "r" t) call
   let fReal : Val R := eval g [] (.const d.name (d.levelParams.map Level.param))
   let replace? : Option (Array (VTy R) → Val R → Bool) := do
     let rs ← rsL?
@@ -1125,6 +1196,20 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
             | some (.ind _ _ _ _ _ _ j) =>
               some (if ok tys' j then hypCall fV j (.neutral hd sp.pop) rs (!modeA) else c)
             | _ => none
+          -- an infinitary field's: `λ h. ind P M (j h) (k h)` becomes `λ h. F … (k h) …`
+          | .lam hn clo =>
+            let hl := tys'.size
+            match whnf (Closure.inst g clo (Val.var hl)) with
+            | .neutral hd sp => match sp.back? with
+              | some (.ind _ _ _ _ _ _ j) =>
+                if ok tys' j then
+                  let jT := quote g (hl + 1) j
+                  let yT := quote g (hl + 1) (.neutral hd sp.pop)
+                  let env := (List.range hl).reverse.map Val.var
+                  some (eval g env (.lam hn (hypCallTm (hl + 1) jT yT rs (!modeA))))
+                else some c
+              | _ => none
+            | _ => none
           | _ => none
         pure (.pair c' (← swap tys' ok n r))
       | h => some h
@@ -1148,11 +1233,15 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
     let tys' := tysJ.push restTy
     let xs : Val R := .pair t (Val.var tysJ.size)
     let hyps := [I, D, X, P, fInd, jv, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
-    let (hyps, M') := match replace?, MF? with
-      | some ok, some mF => match swap tys' ok 1000 hyps with
-        | some h' => (h', mF)
-        | none => (hyps, realM.get)
-      | _, _ => (hyps, realM.get)
+    -- (the implementation is compared with `F` free, always: so each of its calls must be
+    -- one of the hypotheses' calls, on a field. A call on anything else, the scrutinee say,
+    -- would make compiled code loop where the kernel's recursion is well founded: such an
+    -- implementation is rejected, though it may be convertible to the value)
+    let some ok := replace? | fail "its calls could not be matched with the definition's hypotheses"
+    let some mF := MF? | fail "its calls could not be matched with the definition's hypotheses"
+    let some hyps' := swap tys' ok 1000 hyps
+      | fail s!"a hypothesis of constructor {ls[c]!} is not of the form the calls are compared with"
+    let (hyps, M') := (hyps', mF)
     let goal := vApp g (vApp g P jv) (.con xs)
     unless conv g tys' goal ([jv, xs, hyps].foldl (vApp g) M) ([jv, xs, hyps].foldl (vApp g) M') do
       fail s!"they differ for constructor {ls[c]!}"

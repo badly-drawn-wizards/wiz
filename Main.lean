@@ -230,4 +230,12 @@ def main (args : List String) : IO UInt32 := do
       LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc)
       -- (an infoview's reader thread may still be blocked: don't wait for it)
       IO.Process.exit 0
-  | _ => do IO.println usage; pure 0
+  | [] | ["help"] | ["--help"] | ["-h"] => do IO.println usage; pure 0
+  | _ => do
+    -- (an unknown flag, `--impl` say, or a command used wrongly: an error, not the usage
+    -- with success)
+    match args.find? (·.startsWith "-") with
+    | some f => IO.eprintln s!"unknown flag: {f}"
+    | none => IO.eprintln s!"unknown command: {" ".intercalate args}"
+    IO.eprintln usage
+    pure 2

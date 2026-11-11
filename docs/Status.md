@@ -421,8 +421,13 @@ the results of the probes listed in the "Probes" section.
   self-hosted sources 4× slower to check). That a call equals the hypothesis is checked
   once by conversion, or follows from the value's shape (`bridgeByShape`: the value is
   the recursor applied to arguments that do not mention the columns or index
-  variables). By induction on the scrutinee, compiled code computes what the kernel
-  computes. A
+  variables). Conversion alone gives only partial correctness: at a type where every two
+  values are convertible (`Unit`, a proposition) it does not see the calls, and a call on
+  a value convertible to a smaller one (`f (sup (λ _. g z))` for `f (g z)`) agrees and
+  loops. So the kernel also checks, syntactically, that every call of the definition is
+  on a field of the constructor it is in (`callsOnFields`; t1-review M1). By induction on
+  the scrutinee, compiled code computes what the kernel computes, and terminates when it
+  does. A
   definition whose index variable escapes into a method gets no `impl` (compiled from its
   value). `#print axioms` lists nothing for compiled equations (it did, as `compiled f`,
   between the two steps).
@@ -430,8 +435,14 @@ the results of the probes listed in the "Probes" section.
     reverted the hypothesis, and rebuilds a constructor where a catch-all names the
     scrutinee. Erasure rewrites both before compiling (`Compiler/Push.lean`, from
     `eraseDecl`: calls moved into the inner split's branches, the rebuilt constructor
-    replaced by the scrutinee, a closure that only calls the definition inlined); each
-    rewrite is checked by the kernel again and dropped if it does not check. Measured on
+    replaced by the scrutinee, a closure that only calls the definition inlined). These
+    are rewrites of the compiler, trusted like the rest of erasure: the first two are
+    `Term` rewrites whose result the kernel type-checks again (at the declared type; it is
+    dropped if it does not check), but their agreement with the checked implementation is
+    not checked (they are equalities by construction: moving an argument into the branches
+    of a case, and replacing `c fields` by the scrutinee in branch `c`); the third works
+    on the erased term and is not checked at all (substituting a closure for the variable
+    it is bound to). Measured on
     lib/, examples/ and the self-hosted compiler: 582 derived implementations, all agree;
     the optimised IR of 560 of 581 definitions is identical to the second elaboration's
     (+0.2% lines overall: unreachable branches of absurd cases in a mutual family);
