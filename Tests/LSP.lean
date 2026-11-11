@@ -566,6 +566,19 @@ def serverGroup : Group where
         check ((LSP.getStr r ["uri"]).endsWith "lib/Prelude.wiz") s!"import: {r.compress}"
         let (_, r) := ask srv "textDocument/hover" src (offAfter src "import Pre" (-1))
         check (has r "module `Prelude`") s!"import hover: {r.compress}" },
+    { name := "11r: at the start of a tactic, the goals before it (inside it, after)", run := fun _ => do
+        let src := "import Prelude\ndef k : (A : Type) → A → Nat → A := by\n  intro A\n  intro x\n  intro n\n  exact x\n"
+        let (srv, _) ← openDoc src
+        let at_ := offAfter src "  exact" (-5)
+        let (srv, r) := ask srv "wiz/plainGoal" src at_
+        checkEq "[\"A : Type\\nx : A\\nn : Nat\\n⊢ A\"]" (LSP.get? r ["goals"] |>.get!).compress
+        let (srv, r) := ask srv "wiz/interactiveGoals" src at_
+        check (has r "\"names\":[\"A\"]") s!"interactive: {r.compress}"
+        let (srv, r) := ask srv "wiz/plainGoal" src (at_ + 2)
+        checkEq "no goals" (LSP.getStr r ["rendered"])
+        -- the first tactic: before it, the block's goal
+        let (_, r) := ask srv "wiz/plainGoal" src (offAfter src "  intro A" (-7))
+        checkEq "[\"⊢ (A : Type) → A → Nat → A\"]" (LSP.get? r ["goals"] |>.get!).compress },
     { name := "11r: hovers, expected types and definitions inside tactic arguments and list literals", run := fun _ => do
         let src := "import Prelude\ndef f (n : Nat) : Nat := by\n  exact Nat.add n 1\ndef xs (k : Nat) : List Nat := [k, 2]\n"
         let (srv, _) ← openDoc src
