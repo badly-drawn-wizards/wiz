@@ -239,9 +239,29 @@ What Lean ships, for comparison (lean-4.35.0-linux): clang, ld.lld, libLLVM and
 libclang-cpp, compiler-rt, a link-only glibc 2.26 and static `libgmp.a`/`libuv.a`, but no
 libc headers (Lean's C needs only `lean.h`) and no `llc`. Wiz's runtime and `import_c`
 need libc headers, so the bundle has a whole sysroot, with headers and libraries of the
-same glibc. The clang is Lean's own, so its LLVM follows `lean-toolchain`. Every
-download is pinned by its sha256. The options weighed (zig cc, tcc) are in
-/workspace/wiz-notes/toolchain-cc.md.
+same glibc. The clang is Lean's own, so its LLVM follows `lean-toolchain`. The options
+weighed (zig cc, tcc) are in /workspace/wiz-notes/toolchain-cc.md.
+
+**Downloads.** `scripts/bundle-cc.sources` lists the five outside files (three Ubuntu
+.debs, GMP and the Boehm GC) with their sha256 and URLs. Each file is tried from each
+URL in turn, with retries, and is kept only if its hash matches. The .debs are tried
+on four Ubuntu mirrors (archive.ubuntu.com, mirrors.kernel.org, Princeton, RWTH
+Aachen), GMP on ftp.gnu.org, ftpmirror.gnu.org and gmplib.org, and the GC on GitHub and
+hboehm.info. The last place tried for every file is this repository's release
+`bundle-inputs`. On master pushes the release job copies the downloads there (`gh
+release upload` of any file missing). The job also caches the downloads, keyed by the
+sources file's hash, so rebuilding the bundle after a change to `bundle-cc.sh` needs no
+outside server. A master run once failed because archive.ubuntu.com was unreachable,
+which is why there are mirrors.
+
+**Licences in the tarball.** `share/wiz/` has `LICENSE` (GPL-3.0), `COPYING.RUNTIME`
+and `NOTICE` (`scripts/release-licenses/NOTICE`). The NOTICE lists what is linked into
+wiz, grail and tower: the Lean runtime (Apache-2.0), mimalloc and libuv (MIT), libc++
+(Apache-2.0 with LLVM exception), static GMP (LGPL-3.0+) and glibc. It also lists what
+the bundled C toolchain contains, and says that the programs it builds link GMP
+statically, with the LGPL's relinking terms. `share/wiz/LICENSES/` has the texts: Lean's
+`LICENSE` and its third-party `LICENSES` file (LLVM, glibc, GMP), plus libuv's and
+mimalloc's. The bundle's own texts are in `share/wiz/cc/LICENSES/`.
 
 **Defaults, not settings.** `wiz` and grail look for `cc/bin/cc` beside their own binary
 (`Toolchain.withBundled`: `<dir>/.lake/build/bin/wiz` next to `<dir>/cc`, as they find

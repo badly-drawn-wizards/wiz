@@ -73,6 +73,10 @@ covers only Wiz's own runtime. Other libraries keep their licences:
 * glibc is linked dynamically, as with any C program. The compiler-rt builtins clang
   links in (Apache-2.0 with LLVM exception) need no notice.
 
+A release toolchain's `share/wiz/NOTICE` says the same, and also lists the third-party
+code linked into `wiz`, `grail` and `tower` themselves; the licence texts are in
+`share/wiz/LICENSES/` and `share/wiz/cc/LICENSES/`.
+
 ## Continuous integration
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
