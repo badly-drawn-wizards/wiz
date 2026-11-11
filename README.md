@@ -78,8 +78,13 @@ the License, or (at your option) any later version (SPDX: `GPL-3.0-or-later`). I
 distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; see
 [LICENSE](LICENSE) for the full text.
 
-This covers everything in the repository, including the runtime (`runtime/`, `selfhost/rt.c`)
-and the libraries (`lib/`) that are compiled into programs built with Wiz. One file comes
+**Programs you build with Wiz are yours to license as you like.** The runtime
+(`runtime/`, `selfhost/rt.c`), the libraries (`lib/`) and whatever else a Wiz compiler copies
+into its output are under the GPL *with the Wiz Runtime Library Exception*, an additional
+permission under section 7 of GPLv3: see [COPYING.RUNTIME](COPYING.RUNTIME). The compilers,
+checkers, kernels, grail, tower and the editor support are under the GPL without it.
+
+One file comes
 from elsewhere under its own, compatible licence: `editors/nvim/data/lean-abbreviations.json`
 (Apache-2.0, see `editors/nvim/data/LICENSE.lean-abbreviations`). Programs built with Wiz link
 against GMP (LGPL-3.0-or-later / GPL-2.0-or-later) and, for the self-hosted runtime, the Boehm
