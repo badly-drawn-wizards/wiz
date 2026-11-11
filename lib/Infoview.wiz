@@ -74,6 +74,11 @@ def Infoview.goals : List Json → List Goal
 -- `{"goals": [goal…], "range", "session"}` (`wiz/interactiveGoals`); `userName` may be
 -- `null`, which reads as `""`
 def Goals.ofJson (j : Json) : List Goal := Infoview.goals (Json.getList j "goals")
+-- The tactic state at the cursor: the goals, and the info messages (`trace`,
+-- `trace_state`) of the tactic it belongs to (the result's `messages`).
+inductive TacView where
+  | mk (goals : List Goal) (messages : List String)
+def TacView.ofJson (j : Json) : TacView := .mk (Goals.ofJson j) (Infoview.strings (Json.getList j "messages"))
 
 -- ## Pieces: text with a style, and the tags around it
 
@@ -298,14 +303,33 @@ def View.ofGoals (width : Nat) (gs : List Goal) : View := match gs with
 -- The whole infoview: the tactic state (if the cursor is in a `by` block) and the
 -- expected type (if there is a term), tags numbered across both.
 def Infoview.header (s : String) : List Piece := .cons (Infoview.str s "header") .nil
-def View.ofState (width : Nat) (goals : Option (List Goal)) (term : Option Goal) : View :=
-  let tac : List (List Piece) × Flat := match goals with
+-- the lines of a text (reversed line in `acc`)
+def Infoview.textLines : List Char → List Char → List (List Char)
+  | .nil, acc => .cons (Json.revOnto acc .nil) .nil
+  | .cons c cs, acc => match Nat.beq (Char.code c) 10 with
+    | .true => .cons (Json.revOnto acc .nil) (Infoview.textLines cs .nil)
+    | .false => Infoview.textLines cs (.cons c acc)
+def Infoview.wrapLines (width : Nat) : List (List Char) → List (List Piece)
+  | .nil => .nil
+  | .cons l ls => List.append (Infoview.wrap width 0 (.cons (.mk l "" .nil) .nil)) (Infoview.wrapLines width ls)
+-- messages, each line wrapped, with a blank line between them
+def Infoview.msgLines (width : Nat) : List String → List (List Piece)
+  | .nil => .nil
+  | .cons m .nil => Infoview.wrapLines width (Infoview.textLines (String.chars m) .nil)
+  | .cons m ms => List.append (Infoview.wrapLines width (Infoview.textLines (String.chars m) .nil)) (.cons .nil (Infoview.msgLines width ms))
+def View.ofTacState (width : Nat) (st : Option TacView) (term : Option Goal) : View :=
+  let tac0 : List (List Piece) × Flat := match st with
     | .none => (List.nil, Flat.mk List.nil 0 List.nil)
-    | .some gs => match gs with
+    | .some (.mk gs _) => match gs with
       | .nil => (.cons (Infoview.header "Tactic state") (.cons (.cons (Infoview.str "No goals" "done") .nil) .nil), .mk .nil 0 .nil)
       | .cons _ _ =>
         let r := Infoview.goalsLines width gs (.mk .nil 0 .nil);
         (.cons (Infoview.header "Tactic state") r.1, r.2);
+  let tac : List (List Piece) × Flat := match st with
+    | .none => tac0
+    | .some (.mk _ msgs) => match msgs with
+      | .nil => tac0
+      | .cons _ _ => (List.append tac0.1 (.cons .nil (.cons (Infoview.header "Messages") (Infoview.msgLines width msgs))), tac0.2);
   let all : List (List Piece) × Flat := match term with
     | .none => tac
     | .some g =>
@@ -318,6 +342,11 @@ def View.ofState (width : Nat) (goals : Option (List Goal)) (term : Option Goal)
   | .nil => .mk (.cons (.cons (Infoview.str "Nothing to show at the cursor" "dim") .nil) .nil) .nil
   | .cons _ _ => match all.2 with
     | .mk _ _ is => .mk all.1 (Infoview.revTags is .nil)
+-- … without messages
+def View.ofState (width : Nat) (goals : Option (List Goal)) (term : Option Goal) : View :=
+  View.ofTacState width (match goals with
+    | .none => .none
+    | .some gs => .some (.mk gs .nil)) term
 
 -- the innermost tag (index + 1) at column `col` (from 0) of a line, or 0
 def Infoview.tagAt : List Piece → Nat → Nat
@@ -689,17 +718,30 @@ partial def Key.decode (s : List Char) : List Key := match s with
         | .false => .cons .escape (Key.decode rest)
 
 -- The whole infoview as HTML, numbered like `View.ofState` (so selections agree).
-def Infoview.htmlState (sel : Nat) (goals : Option (List Goal)) (term : Option Goal) : String :=
+def Infoview.htmlMsgs : List String → Html → Html
+  | .nil, h => h
+  | .cons m ms, h => Infoview.htmlMsgs ms (Html.lit "</pre>" (Html.add (Infoview.htmlText m .nil) (Html.lit "<pre class=\"message\">" h)))
+def Infoview.htmlTacState (sel : Nat) (st : Option TacView) (term : Option Goal) : String :=
   let h0 : Html := .mk .nil 0;
-  let h1 : Html := match goals with
+  let h1 : Html := match st with
     | .none => h0
-    | .some gs => match gs with
+    | .some (.mk gs _) => match gs with
       | .nil => Html.lit "<h3>Tactic state</h3><div class=\"no-goals\">No goals</div>" h0
       | .cons _ _ => Infoview.htmlGoals sel gs (Html.lit "<h3>Tactic state</h3>" h0);
-  let h2 : Html := match term with
+  let hm : Html := match st with
     | .none => h1
-    | .some g => Infoview.htmlGoal sel g (Html.lit "<h3>Expected type</h3>" h1);
+    | .some (.mk _ msgs) => match msgs with
+      | .nil => h1
+      | .cons _ _ => Infoview.htmlMsgs msgs (Html.lit "<h3>Messages</h3>" h1);
+  let h2 : Html := match term with
+    | .none => hm
+    | .some g => Infoview.htmlGoal sel g (Html.lit "<h3>Expected type</h3>" hm);
   match h2 with
   | .mk acc _ => match acc with
     | .nil => "<div class=\"nothing\">Nothing to show at the cursor</div>"
     | .cons _ _ => .mk (Json.revOnto acc .nil)
+-- … without messages
+def Infoview.htmlState (sel : Nat) (goals : Option (List Goal)) (term : Option Goal) : String :=
+  Infoview.htmlTacState sel (match goals with
+    | .none => .none
+    | .some gs => .some (.mk gs .nil)) term
