@@ -2,8 +2,8 @@
 #
 # Runs on `master` (the integration branch, with the solutions in it) and on pull
 # requests into it: the full suite, split into shards (.github/test-shards.json). The
-# exercise tree is not a branch: the `exercises` job generates it with
-# scripts/mkexercises.py and checks that it builds.
+# exercise tree (scripts/mkexercises.py) is checked only when a release is tagged:
+# release.yml's `exercise tree` job, which must pass before anything is published.
 name: CI
 
 on:
@@ -244,7 +244,7 @@ jobs:
   # One check for branch protection, and the whole suite's summary.
   result:
     name: CI result
-    needs: [build, test, exercises, package]
+    needs: [build, test, package]
     if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -298,39 +298,10 @@ jobs:
       - name: Verdict
         shell: bash
         run: |
-          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, exercises: ${{ needs.exercises.result }}, package: ${{ needs.package.result }}"
-          for r in "${{ needs.build.result }}" "${{ needs.test.result }}" "${{ needs.exercises.result }}" "${{ needs.package.result }}"; do
+          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, package: ${{ needs.package.result }}"
+          for r in "${{ needs.build.result }}" "${{ needs.test.result }}" "${{ needs.package.result }}"; do
             [ "$r" = success ] || exit 1
           done
-
-  # The exercise tree, generated from this one (docs/exercises.md): it must build. It runs
-  # beside the test shards, with its own Lake cache (most modules differ from this tree's).
-  exercises:
-    name: exercise tree
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup
-        with:
-          cachix-name: ${{ env.CACHIX_NAME }}
-          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Generate the exercise tree
-        run: python3 scripts/mkexercises.py . "$RUNNER_TEMP/exercises"
-      - name: Cache its Lake build
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/exercises/.lake
-          key: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}
-          restore-keys: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
-      - name: lake build (exercise tree)
-        env:
-          LAKE_CACHE_DIR: ${{ runner.temp }}/exercises/.lake/cache
-        run: |
-          # (the dev shell comes from this checkout's flake; the build runs in the copy)
-          cd "$RUNNER_TEMP/exercises"
-          lake build wiz grail tests
 
   # Stage-1 C of the toolchain = stage-2 C (scripts/fixpoint.sh). Scheduled runs use the
   # default branch (master).
