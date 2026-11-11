@@ -187,7 +187,11 @@ end ReprInfo
 
 variable {R : Type} [QRig R] [DecidableEq R] [ToString R] [QuantitySyntax R]
 
-private def isZeroQ (q : Val R) : Bool := q.toPoly? == some []
+/-- Is a position at quantity `q` erased? The kernel's own test (`QPoly.isErased`, used by
+`Ctx.erasedAt`): a position the kernel checked in erased mode must become `◾` here. -/
+private def isZeroQ (q : Val R) : Bool := match q.toPoly? with
+  | some p => p.isErased
+  | none => false
 
 /-- Is `ty` an **erased function into `Unit`**, `(0 x₁ : D₁) → … → (0 xₙ : Dₙ) → Unit` with
 `n ≥ 1` (`n ≥ 0` with `allowUnit`)? Such a type has one inhabitant up to η,
@@ -218,7 +222,10 @@ where
   one: `typeSort?` recomputes it from every component, which along a structure's
   telescope of `n` fields, asked once per field, is quadratic. (The annotation is
   optional; without it the sort is computed, and the two agree, so the answer is the
-  same on both sides of a conversion: `wiz-notes/repr-shape.md`.) -/
+  same on both sides of a conversion: `wiz-notes/repr-shape.md`.) A wrong "erasable" is
+  a miscompilation, so this relies on the kernel having validated the annotation
+  (`checkSortNote`): every term erasure is given has been checked, a definition's
+  implementation for the compiler included (`checkImpl`; Status.md, T1). -/
   isPropTy (ctx : Ctx R) (ty : VTy R) : Bool :=
     match whnf ty with
     | .pi _ _ _ _ _ (some l) | .sigma _ _ _ _ (some l) => l.equiv 0
@@ -450,7 +457,21 @@ partial def Wiz.IR.freeIdx' (t : Term R) (depth : Nat := 0) (acc : Std.HashSet N
     acc := acc'
     pure acc
 
-/-- The type of a term that is already known to be well typed, without checking it
+/-- The type of `p.2`, for `p` a pair whose second component has type `B`: `B` at
+`p.1`, evaluating `p` only if `B` mentions it (as `Ctx.instArg`: along a chain of
+projections `p.2.2.….1`, a structure's field, evaluating `p` at every step would be
+quadratic in the chain's length). -/
+partial def sndType (ctx : Ctx R) (B : Closure R) (p : Term R) : VTy R :=
+  match B with
+  | .mk env body =>
+    Wiz.eval ctx.globals ((if body.hasVar 0 then vFst (ctx.eval p) else .unit .zero) :: env) body
+
+/-- (The fallback runs the kernel's `infer` in erased mode: it wants the type only, and
+this context's quantities are approximate. **Erasure is not the checker**: in erased mode
+`infer` does not notice a relevant misuse (a projection of a linear pair, a read of an
+erased field), so nothing here may be taken as a second check of the term.)
+
+The type of a term that is already known to be well typed, without checking it
 again: along an elimination spine only (heads, applications, projections, annotations,
 `ecase`, `ind`), else by the kernel's `infer`. Erasure asks for the type of every
 subterm, so a full `infer` at each would re-check each subterm once per enclosing node:
@@ -464,20 +485,21 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
     | none => throw (.unboundGlobal n)
   | .app f a => match whnf (← quickType ctx f) with
     | .pi _ _ _ _ cod _ => pure (ctx.instArg cod a)
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .fst p => match whnf (← quickType ctx p) with
     | .sigma _ _ A _ _ => pure A
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .snd p => match whnf (← quickType ctx p) with
-    | .sigma _ _ _ B _ => pure (Closure.inst g B (vFst (ctx.eval p)))
-    | _ => return (← infer ctx t).1
+    -- (`p` is evaluated only if the type of the second component mentions the first)
+    | .sigma _ _ _ B _ => pure (sndType ctx B p)
+    | _ => return (← infer { ctx with erased := true } t).1
   | .ann _ ty => pure (ctx.eval ty)
   | .down p => match whnf (← quickType ctx p) with
     | .ulift _ A => pure A
-    | _ => return (← infer ctx t).1
+    | _ => return (← infer { ctx with erased := true } t).1
   | .ecase _ m s _ => pure (Closure.inst g (.mk ctx.env m) (ctx.eval s))
   | .ind _ _ _ _ P _ i x => pure (vApp g (vApp g (ctx.eval P) (ctx.eval i)) (ctx.eval x))
-  | _ => return (← infer ctx t).1
+  | _ => return (← infer { ctx with erased := true } t).1
 
 /-- **Exercise 5.1a.** Erase `t`, checking it against `ty`.
 
@@ -565,7 +587,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
   | .letE x q ty' v b, _ =>
     let vTy := ctx.eval ty'
     let some p := (ctx.eval q).toPoly? | throw (.other "erasure: unknown quantity")
-    let v' ← if p == [] then pure .erased else eraseCheck ctx v vTy
+    let v' ← if p.isErased then pure .erased else eraseCheck ctx v vTy
     let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty inDesc
     return .letE x v' b'
   -- the type is known (and not erasable), so don't infer the whole application again
@@ -590,6 +612,21 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
   -- (`known`: the type, when the caller has it. Otherwise `quickType`, which off the
   -- elimination spine asks the kernel's `infer`: that checks the whole term again, once
   -- per enclosing node, quadratic in the depth of a `match`'s tree of `split`s)
+  --<sol
+  -- a projection: the pair first, and the projection's type from the pair's. (Asking
+  -- `quickType` here and again at each projection below would walk the rest of a chain
+  -- `p.2.2.….1`, a structure's field, once per step: quadratic in its length.) If the
+  -- pair can't be erased, the general path below decides (the projection may still be
+  -- erasable).
+  if let some (p, isFst) := (match t with | .fst p => some (p, true) | .snd p => some (p, false) | _ => none) then
+    if let .ok (p', pty) := eraseInfer ctx p then
+      if let .sigma _ _ A B _ := whnf pty then
+        let ty := known.getD (if isFst then A else sndType ctx B p)
+        if erasable ctx ty then return (.erased, ty)
+        let unboxed := unboxedSigma ctx.globals ctx.lvl pty
+        return (if isFst then (if unboxed then p' else .proj 0 p') else (if unboxed then .erased else .proj 1 p'), ty)
+  --|ex
+  --sol>
   let ty ← match known with
     | some ty => pure ty
     | none => quickType ctx t
@@ -613,15 +650,22 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
     | .snd p => do
       let (p', pty) ← eraseInfer ctx p
       pure (if unboxedSigma g ctx.lvl pty then .erased else .proj 1 p')
-    | .split _ s _ m x y b => do
-      let (s', sty) ← eraseInfer ctx s
+    | .split sq s _ m x y b => do
+      -- a split at 0 never computes its scrutinee (the kernel checks it as an erased
+      -- position): both components are `◾`
+      let zero := isZeroQ (ctx.eval sq)
+      let (s', sty) ← if zero then pure (.erased, ← quickType ctx s) else eraseInfer ctx s
       let .sigma _ q A B _ := whnf sty | throw (.other "erasure: split of a non-pair")
       let some pq := q.toPoly? | throw (.other "erasure: unknown quantity")
       -- let s := s'; let x := s.0; let y := s.1; b   (b lives under x, y: lift past s)
       let vx := Val.var ctx.lvl
       let ctx₂ := (ctx.bind x pq A).bind y [] (Closure.inst g B vx)
-      -- the body's type, as the kernel checks it: the motive at the pair
+      -- the body's type, as the kernel checks it: the motive at the pair (the body may
+      -- be a pair or a λ, which have no inferred type)
       let b' ← eraseCheck ctx₂ b (Closure.inst g (.mk ctx.env m) (.pair vx (Val.var (ctx.lvl + 1)))) inDesc
+      if zero then
+        pure (.letE "s" .erased (.letE x .erased (.letE y .erased (b'.lift 1 2))))
+      else
       if unboxedSigma g ctx.lvl sty then
         pure (.letE "s" s' (.letE x (.var 0) (.letE y .erased (b'.lift 1 2))))
       else
@@ -859,6 +903,7 @@ where
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- the compiler's version (direct recursion), if the elaborator made one
   let some v := d.impl <|> d.value | return .prim .unreachable #[]
+  -- (the kernel has checked it, like the value: `checkImpl`, `addPartialImpl`)
   -- (`module`: the declaration's own, for `nativeHome?`)
   let ctx : Ctx R := { globals := { g with module := (g.declModule[d.name]?).getD "" } }
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives

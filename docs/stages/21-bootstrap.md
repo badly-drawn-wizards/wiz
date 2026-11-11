@@ -136,7 +136,25 @@ fallback). The garbage-collected mode is unchanged, byte for byte.
 to C, and that program (stage 2, reference counted) compiles it again to the same C,
 freeing every object by the end.
 
-Next: the hypotheses of `ind` computed eagerly when the method demands them; then reference counting by default.
+* **Small branching functions inlined with suspended arguments**: a global whose body
+  is a `case` on a parameter with cheap branches (`Bool.and`, `Bool.or`, …) is put in
+  place at saturated calls with its arguments bound by marked `let`s, so the demand
+  analysis evaluates an argument only in the branches that use it: `Bool.and a b` no
+  longer evaluates `b` when `a` is false (call by value did, and `conv`, `tmEq`, `occurs`
+  and the like recursed through it).
+* **Unmemoised hypotheses** (`indv`): when the method of an `ind` reads its hypotheses
+  only as hypotheses (`hs.1ʲ.0`), each at most once on every path and not under a `λ`,
+  or is itself a `λ` (a function-valued motive), it gets a view of the payload instead
+  of the chain of suspensions, and a read computes the hypothesis where it stands
+  (`p_hypAt`). Any other use of `hs` keeps the memoised chain.
+* **Static constants**: a `λ` capturing nothing and an object built only from constants
+  (an `ind`'s description, typically) are built once, kept as roots and released at
+  exit (before the leak check, as string literals).
+
+  Stage 2 compiling the toolchain, same input: 5232 M allocations with master's backend,
+  2200 M with these three (−58%); peak live objects +11% (the constants), C +16%.
+
+Next: reference counting by default.
 
 ## 21i: phantom parameters in the self-hosted frontend ✅
 

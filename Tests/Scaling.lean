@@ -103,7 +103,7 @@ def listSource (n : Nat) : String :=
   String.join ((List.range n).map (s!"List.cons {·} (")) ++ "List.nil" ++ String.ofList (List.replicate n ')')
 
 /-- Elaborate `src` (with the library), or fail. -/
-def elabOk (src : String) : IO (CommandState ZeroOneMany) := do
+def elabOk (src : String) (unbox : Bool := false) : IO (CommandState ZeroOneMany) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
   let ioLib ← IO.FS.readFile "lib/IO.wiz"
   let stdLib ← IO.FS.readFile "lib/Std.wiz"
@@ -111,7 +111,7 @@ def elabOk (src : String) : IO (CommandState ZeroOneMany) := do
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Std" then some stdLib
     else if m == "Eff" then some effLib else none
-  let st := runFrontend (R := ZeroOneMany) src { loader }
+  let st := runFrontend (R := ZeroOneMany) src { loader, globals := { unboxStructs := unbox } }
   let errs := (st.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   pure st
@@ -120,6 +120,41 @@ def elabOk (src : String) : IO (CommandState ZeroOneMany) := do
 def literalProgram (n : Nat) : String :=
   let text := String.ofList ((List.range n).map fun i => Char.ofNat (97 + i % 26))
   s!"import IO\ndef s : String := \"{text}\"\ndef main : IO Unit := IO.println s\n"
+
+/-- Milliseconds to erase `f`, a match on a constructor with `n` fields (returning the
+last one): elaboration is not counted. -/
+def eraseMatchMs (n : Nat) : IO Nat := do
+  let fields := " ".intercalate ((List.range n).map (s!"x{·}"))
+  let src := s!"import Prelude\ninductive T where\n  | mk {" ".intercalate ((List.range n).map (s!"(x{·} : Nat)"))}\n" ++
+    s!"def f (t : T) : Nat := match t with\n  | .mk {fields} => x{n - 1}\n"
+  let st ← elabOk src
+  let start ← IO.monoMsNow
+  match compileReachable st.globals st.builtins ["f"] with
+  | .ok code => check (code.contains "f") "f was not erased"
+  | .error e => throw (IO.userError (toString e))
+  pure ((← IO.monoMsNow) - start)
+
+/-- A circuit with a chain of 1500 adders and xors, and a counter on long traces. -/
+def hdlScaleSrc : String := "import Hdl.Core
+def u8 : HwTy := HwTy.bits 8
+def chainOf {r : HwTy → Type} [Hw r] : Nat → r u8 → r u8 → r u8
+  | .zero, x, y => x
+  | .succ k, x, y => let z := Hw.xor (Hw.add x y) (Hw.lit 8 k); chainOf k z x
+def big : Circuit u8 u8 := Circuit.mk u8 (BitVec.ofNat 8 1) (fun s x => let y := chainOf 1500 s x; Hw.pair y y)
+def Rng.trace : Nat → Nat → List Nat
+  | .zero, _ => .nil
+  | .succ k, s => .cons (Nat.mod s 256) (Rng.trace k (Nat.mod (s * 1103515245 + 12345) 2147483648))
+def ok : Bool × Nat := let xs := Rng.trace 100 7; (Hdl.natsEq (Circuit.runPacked big xs) (Circuit.simNet .true big xs), Netlist.size (Circuit.netlist \"big\" big))
+#eval ok
+def ctr : Circuit u8 u8 := Circuit.mk u8 (BitVec.ofNat 8 0) (fun s x => Hw.pair (Hw.add s x) s)
+def Rep.go : Nat → List (HwTy.El u8) → List (HwTy.El u8)
+  | .zero, acc => acc
+  | .succ k, acc => Rep.go k (List.cons (BitVec.ofNat 8 3) acc)
+def n : Nat := List.length (Circuit.run ctr (Rep.go 200000 List.nil))
+#eval n
+def m : Nat := List.length (Netlist.simulate (Circuit.netlist \"c\" ctr) (Hdl.map (fun (v : HwTy.El u8) => List.cons (BitVec.toNat v) List.nil) (Rep.go 200000 List.nil)))
+#eval m
+"
 
 def group : Group where
   name := "scaling"
@@ -134,10 +169,11 @@ def group : Group where
     -- the kernel's application and pair rules, and erasure's spines, evaluated every
     -- argument for the codomain, which a non-dependent Π doesn't mention: O(n²) on a
     -- nested spine (4000 characters: 32 s to build)
-    -- the kernel's `.1` rule (Q1) evaluated the pair to find the second part's fields,
-    -- so `(Circuit.netlistS c).1` (lib/Hdl/Core.wiz) ran the netlist builder at check time
-    -- and overflowed the stack; here the second part takes 2^40 steps to evaluate
-    { name := "p.1 decides from the type whether p.2 may be dropped, without evaluating p", run := fun _ =>
+    -- the kernel's first `.1` rule (Q1) evaluated the pair to find the second part's
+    -- fields, so `(Circuit.netlistS c).1` (lib/Hdl/Core.wiz) ran the netlist builder at
+    -- check time and overflowed the stack; here the second part takes 2^40 steps to
+    -- evaluate. (R1: the rule no longer looks at the components at all.)
+    { name := "p.1 is checked without evaluating p", run := fun _ =>
         checksWithin 60 (natDecl ++
           "def blow : N → N × N\n  | .z => (N.z, N.z)\n  | .s n => let (a, b) := blow n; let (c, d) := blow n; (a, d)\n" ++
           s!"def big : N × (N × N) := (N.z, blow {String.join ((List.range 40).map fun _ => "(N.s ")}N.z{String.mk (List.replicate 40 ')')})\n" ++
@@ -167,29 +203,53 @@ def group : Group where
     { name := "a 16000-element list written out is elaborated in linear time and space", run := fun _ => do
         let _ ← within 30 1000 fun _ => elabOk s!"import Prelude\ndef l : List Nat := {listSource 16000}\n"
         pure () },
-    -- erasure re-inferred the body of each `split` with the kernel: a match's tree of
-    -- nested splits (one per field of a matched constructor) was checked again once per
-    -- level, quadratic in its depth; and `erasable` recomputed the sort of the rest of the
-    -- telescope at each field. (300 fields: 16 s before, 6.7 s after, under load; the
-    -- bound is loose, and some super-linear cost remains: see the PR)
-    { name := "a match on a 300-field constructor is erased in linear time", run := fun _ => do
-        let n := 300
-        let fields := " ".intercalate ((List.range n).map (s!"x{·}"))
-        let src := s!"import Prelude\ninductive T where\n  | mk {" ".intercalate ((List.range n).map (s!"(x{·} : Nat)"))}\n" ++
-          s!"def f (t : T) : Nat := match t with\n  | .mk {fields} => x{n - 1}\n"
-        let st ← elabOk src
-        let r ← within 20 1000 fun _ => pure (compileReachable st.globals st.builtins ["f"])
-        match r with
-        | .ok code => check (code.contains "f") "f was not erased"
-        | .error e => throw (IO.userError (toString e)) },
+    -- erasure re-inferred the body of each `split` with the kernel (a match's tree of
+    -- nested splits was checked again once per level), `erasable` recomputed the sort of
+    -- the rest of the telescope at each field, and each step of a field's projection chain
+    -- `p.2.2.….1` asked for the type of the rest of the chain, evaluating `p` each time.
+    -- 400 fields: 46 s before, under 1 s now (still super-linear: about ×6 per doubling)
+    { name := "a match on a 400-field constructor is erased within 10 s (was 46 s)", run := fun _ => do
+        let ms ← eraseMatchMs 400
+        unless ms ≤ 10000 do throw (IO.userError s!"took {ms} ms (bound: 10 s)") },
+    -- (the price of the shortcut: it believes the sort a Π/Σ carries. The kernel validates
+    -- it in every term erasure is given, a definition's implementation for the compiler
+    -- included, so there is no unchecked term to make an exception for: the flag
+    -- `sortNotesChecked` that this case used to test is gone; Status.md, T1)
+    { name := "erasure believes a Π's sort, and the kernel rejects a wrong one wherever erasure could read it", run := fun _ => do
+        -- `Type → Type` marked as a proposition: erasure would take its values for proofs
+        let w : Val ZeroOneMany := .qlit QuantitySyntax.explicitDefault
+        let ty : Val ZeroOneMany := .pi "x" .default w (.sort 1) (.mk [] (.sort 1)) (some 0)
+        check (erasable { globals := {} } ty) "the annotation is read"
+        -- so no declaration may carry it: not in its type, its value, or its implementation
+        let bad : Term ZeroOneMany := .pi "x" .default (.qlit QuantitySyntax.explicitDefault) (.sort 1) (.sort 1) (some 0)
+        let good : Term ZeroOneMany := .pi "x" .default (.qlit QuantitySyntax.explicitDefault) (.sort 1) (.sort 1) none
+        let d (type value : Term ZeroOneMany) (impl : Option (Term ZeroOneMany)) : Decl ZeroOneMany :=
+          { name := "T", type, value := some value, impl }
+        check ((addDecl {} (d (.sort 2) good none)) matches .ok _) "the unmarked type was rejected"
+        check ((addDecl {} (d (.sort 2) good (some good))) matches .ok _) "a good implementation was rejected"
+        check ((addDecl {} (d (.sort 2) bad none)) matches .error _) "a wrong sort was accepted in a value"
+        check ((addDecl {} (d (.sort 2) good (some bad))) matches .error _)
+          "a wrong sort was accepted in an implementation (erasure would believe it)"
+        let idT (t : Term ZeroOneMany) : Term ZeroOneMany := .pi "f" .default (.qlit QuantitySyntax.explicitDefault) t (t.lift 1) none
+        check ((addDecl {} { name := "i", type := idT good, value := some (.lam "f" (.var 0)) }) matches .ok _)
+          "the identity on Type → Type was rejected"
+        check ((addDecl {} { name := "i", type := idT bad, value := some (.lam "f" (.var 0)) }) matches .error _)
+          "a wrong sort was accepted in a declaration's type" },
     { name := "one-pass reference counting agrees with the specification (insertRC)", run := fun _ => do
         let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         for p in examples ++ [literalProgram 300] do
           let bad ← rcMismatches (← elabOk p) "main"
-          unless bad.isEmpty do throw (IO.userError s!"they differ on {bad}") }]
+          unless bad.isEmpty do throw (IO.userError s!"they differ on {bad}") },
+    -- the netlist interpreter appended to its list of node values and looked arguments up
+    -- by position: O(n²) per cycle (FINDINGS.md G6 of the iCEstick project: traces were
+    -- cut to 6000 cycles); now a random-access list, O(n log n). Here 3258 nodes for 100
+    -- cycles (the old interpreter: about 5·10⁸ list steps), compared with the values;
+    -- then `Circuit.run` and `Netlist.simulate` on a 200000-cycle trace.
+    { name := "the HDL's netlist simulation is O(n log n) per cycle; long traces run", run := fun _ =>
+        within 120 1500 fun _ => Tests.Elab.okLibs hdlScaleSrc ["(.true, 3258)", "200000", "200000"] }]
 
 
-/-! ### A probe (`tests --probe-checker`): where building the self-hosted checker spends
+/-! ### A probe (`tests --probe-checker [unbox] [rc]`): where building the self-hosted checker spends
 its time and memory, phase by phase, and whether the one-pass reference counting agrees
 with the specification on all of it. -/
 
@@ -198,7 +258,7 @@ def rss : IO String := do
   let get (k : String) : String := ((s.splitOn "\n").find? (·.startsWith k)).getD "" |>.drop k.length |>.trimAscii.toString
   pure s!"rss {get "VmRSS:"}, peak {get "VmHWM:"}"
 
-def probeChecker : IO Unit := do
+def probeChecker (opts : List String := []) : IO Unit := do
   let t0 ← IO.monoMsNow
   let say (what : String) : IO Unit := do
     IO.eprintln s!"[{((← IO.monoMsNow) - t0) / 1000} s] {what}: {← rss}"
@@ -206,7 +266,7 @@ def probeChecker : IO Unit := do
   let src ← Selfhost.checkerFiles.mapM (fun (f : String) => IO.FS.readFile f)
   let prog := Selfhost.checkerSource src
   say "start"
-  let st ← elabOk prog
+  let st ← elabOk prog (unbox := opts.contains "unbox")
   say s!"frontend ({st.globals.decls.size} globals)"
   let code ← match compileReachable st.globals st.builtins ["main"] with
     | .ok c => pure c
@@ -221,9 +281,11 @@ def probeChecker : IO Unit := do
   let opt := IR.optimizeProgram hoisted
   say s!"optimizeProgram ({opt.size} declarations)"
   let c := C.program opt true (Build.extraC st)
-  say s!"C ({c.length} characters)"
-  let bad ← rcMismatches st "main"
-  say s!"reference counting: one pass and specification differ on {bad.length} declarations {bad.take 10}"
+  say s!"C ({c.length} characters, hash {hash c})"
+  -- (the specification is quadratic in space: about 4.7 GB here, so only on request)
+  if opts.contains "rc" then
+    let bad ← rcMismatches st "main"
+    say s!"reference counting: one pass and specification differ on {bad.length} declarations {bad.take 10}"
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
 order, so that branches adding groups rarely touch the same lines. A new group also

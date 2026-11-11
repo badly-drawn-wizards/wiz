@@ -252,6 +252,21 @@ inductive Tac where
   | catch (body : Tac) (handler : String → Tac) (next : Tac)
   | getInductive (n : String) (k : Option IndView → Tac)
   | getType (n : String) (k : Option Syntax → Tac)
+  -- tactic framework (tactic-fw): printing; new requests are appended, the numbers above
+  -- don't change
+  | ppGoal (g : Nat) (k : String → Tac)
+  | ppExpr (g : Nat) (e : Expr) (k : String → Tac)
+  -- names: introduce with a fresh name (the name and the new goal); rename hypothesis `i`
+  | introFresh (g : Nat) (hint : String) (inaccessible : Bool) (k : String × Nat → Tac)
+  | rename (g : Nat) (i : Nat) (x : String) (k : Nat → Tac)
+  -- unfolding and rewriting: restate the goal (a new goal), compute, unfold `n` once,
+  -- rewrite with an equation `h` (a new goal)
+  | change (g : Nat) (ty : Expr) (k : Nat → Tac)
+  | whnf (g : Nat) (e : Expr) (k : Expr → Tac)
+  | unfold (g : Nat) (n : String) (e : Expr) (k : Expr → Tac)
+  | rewrite (g : Nat) (h : Expr) (rtl : Bool) (k : Nat → Tac)
+  -- reflection: is `n` a constructor? its type, number of parameters, number of fields
+  | ctorInfo (n : String) (k : Option (String × Nat × Nat) → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -278,6 +293,37 @@ def TacticM.instantiate (g : Nat) (body arg : Expr) : TacticM Expr := fun k => T
 def TacticM.isDefEq (g : Nat) (a b : Expr) : TacticM Bool := fun k => Tac.isDefEq g a b k
 def TacticM.inferType (g : Nat) (e : Expr) : TacticM Expr := fun k => Tac.inferType g e k
 def TacticM.evalTactic (stx : Syntax) : TacticM Unit := fun k => Tac.evalTactic stx (k ())
+-- goal `g` as the elaborator shows it (hypotheses, then `⊢ type`), and a term in goal
+-- `g`'s context: for `trace` and for error messages
+def TacticM.ppGoal (g : Nat) : TacticM String := fun k => Tac.ppGoal g k
+def TacticM.ppExpr (g : Nat) (e : Expr) : TacticM String := fun k => Tac.ppExpr g e k
+-- Introduce a variable under a fresh name, and return the name with the new goal. The
+-- name is `hint`, or (if `hint` is "") the binder's, or `h` (a proof) or `x`; if it is
+-- taken it gets the first free numeric suffix (`n`, `n1`, `n2`, …).
+def TacticM.introFresh (g : Nat) (hint : String) : TacticM (String × Nat) :=
+  fun k => Tac.introFresh g hint .false k
+-- … under an inaccessible name (`n✝`): the user cannot write it, so no proof depends on
+-- it; `rename_i` (or `TacticM.rename`) names it.
+def TacticM.introInaccessible (g : Nat) (hint : String) : TacticM (String × Nat) :=
+  fun k => Tac.introFresh g hint .true k
+-- goal `g` with its hypothesis `i` (the variable `Expr.var i`) renamed: a new goal
+def TacticM.rename (g : Nat) (i : Nat) (x : String) : TacticM Nat := fun k => Tac.rename g i x k
+-- Goal `g` restated as `ty`, which must be convertible with its type: the new goal.
+def TacticM.change (g : Nat) (ty : Expr) : TacticM Nat := fun k => Tac.change g ty k
+-- `e` with its head unfolded until it is not a definition (a constructor, a binder, a
+-- variable): weak head normal form. Recursive calls are folded back where possible.
+def TacticM.whnf (g : Nat) (e : Expr) : TacticM Expr := fun k => Tac.whnf g e k
+-- `e` with every application of the definition `n` unfolded once (the `match` on its
+-- arguments computed, the definitions in its body still folded, recursive calls folded
+-- back): `MList (x :: L) p` becomes `∃ n, (p ↦ (x, n)) ⋆ MList L n`.
+def TacticM.unfold (g : Nat) (n : String) (e : Expr) : TacticM Expr := fun k => Tac.unfold g n e k
+-- Rewrite goal `g` with `h : a = b` (a complete term): every `a` in it becomes `b` (or
+-- every `b` becomes `a`, if `rtl`). The new goal.
+def TacticM.rewrite (g : Nat) (h : Expr) (rtl : Bool) : TacticM Nat := fun k => Tac.rewrite g h rtl k
+-- Is the constant `n` a constructor of an inductive type? Then the type's name, its
+-- number of parameters and the constructor's number of fields: `List.cons` is
+-- `("List", 1, 2)`, and `List.cons A x L` has the fields `x` and `L` after one parameter.
+def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := fun k => Tac.ctorInfo n k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
@@ -379,6 +425,17 @@ macro_rules
 syntax (name := letBind) "let" ident ":=" term ";" doSeq : doSeq
 macro_rules
   | `(term| do let $x := $e; $rest) => `(term| let $x := $e; do $rest)
+-- the other forms of `let` scope over the rest of the block too (as a term, `let … := e;
+-- s₁; s₂` would end at `s₁`): with the quantity `ω`, with a type, and a pair
+syntax (name := letBindW) "let" "ω" ident ":=" term ";" doSeq : doSeq
+macro_rules
+  | `(term| do let ω $x := $e; $rest) => `(term| let ω $x := $e; do $rest)
+syntax (name := letBindT) "let" ident ":" term ":=" term ";" doSeq : doSeq
+macro_rules
+  | `(term| do let $x : $T := $e; $rest) => `(term| let $x : $T := $e; do $rest)
+syntax (name := letBindP) "let" "(" ident "," ident ")" ":=" term ";" doSeq : doSeq
+macro_rules
+  | `(term| do let ($x, $y) := $e; $rest) => `(term| let ($x, $y) := $e; do $rest)
 -- `do1`: the same over `Monad1.bind1`, for linear sequencing (L6). The action of each
 -- step and the rest of the block are used once, so the rest may use a linear variable
 -- (and an action may consume one); the bound results are unrestricted.
@@ -391,6 +448,12 @@ macro_rules
   | `(term| do1 $x ← $e; $rest) => `(term| Monad1.bind1 $e (fun $x => do1 $rest))
 macro_rules
   | `(term| do1 let $x := $e; $rest) => `(term| let $x := $e; do1 $rest)
+macro_rules
+  | `(term| do1 let ω $x := $e; $rest) => `(term| let ω $x := $e; do1 $rest)
+macro_rules
+  | `(term| do1 let $x : $T := $e; $rest) => `(term| let $x : $T := $e; do1 $rest)
+macro_rules
+  | `(term| do1 let ($x, $y) := $e; $rest) => `(term| let ($x, $y) := $e; do1 $rest)
 
 -- Taking syntax apart.
 def SyntaxF.nth {b : Bool} : SyntaxF b → Nat → Syntax
@@ -521,3 +584,225 @@ def Tactic.trace : Tactic := fun stx => match Syntax.getArg (Syntax.getArg stx 1
   | .atom s => TacticM.trace s
   | _ => TacticM.pure ()
 attribute [tactic tactic.trace] Tactic.trace
+
+-- `trace_state`: the open goals, as an info message (as `trace`, at the tactic)
+def TacticM.ppGoals : List Nat → TacticM String
+  | .nil => TacticM.pure "no goals"
+  | .cons g .nil => TacticM.ppGoal g
+  | .cons g gs => do
+    a ← TacticM.ppGoal g;
+    rest ← TacticM.ppGoals gs;
+    TacticM.pure (String.append a (String.append "\n\n" rest))
+syntax (name := traceState) "trace_state" : tactic
+def Tactic.traceState : Tactic := fun _ => do
+  gs ← TacticM.getGoals;
+  s ← TacticM.ppGoals gs;
+  TacticM.trace s
+attribute [tactic tactic.traceState] Tactic.traceState
+
+-- ## Names (stage 6e)
+--
+-- `intros` takes the binders' names, as inaccessible names (`n✝`);
+-- `rename_i a, b` names the last inaccessible hypotheses (`b` the most recent).
+-- introduce while the goal is (syntactically) a function type; the names, in order
+def TacticM.introsLoop : Nat → Nat → TacticM (List String × Nat)
+  | .zero, g => TacticM.pure (.nil, g)
+  | .succ fuel, g => do
+    ty ← TacticM.goalType g;
+    match ty with
+    | .pi _ _ _ _ _ => do
+      p ← TacticM.introInaccessible g "";
+      r ← TacticM.introsLoop fuel p.2;
+      TacticM.pure (.cons p.1 r.1, r.2)
+    | _ => TacticM.pure (.nil, g)
+def TacticM.intros (g : Nat) : TacticM (List String × Nat) := TacticM.introsLoop 4096 g
+syntax (name := intros) "intros" : tactic
+def Tactic.intros : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  r ← TacticM.intros g;
+  TacticM.replaceMainGoal (.cons r.2 .nil)
+attribute [tactic tactic.intros] Tactic.intros
+
+-- does a name carry the inaccessible mark `✝` (code point 10013)?
+def List.hasDagger : List Char → Bool
+  | .nil => .false
+  | .cons c cs => match Nat.beq (Char.code c) 10013 with
+    | .true => .true
+    | .false => List.hasDagger cs
+def String.isInaccessible : String → Bool
+  | .mk cs => List.hasDagger cs
+
+-- the indices of the inaccessible hypotheses, innermost first
+def TacticM.inaccessibleFrom : Nat → List (String × Expr) → List Nat
+  | _, .nil => .nil
+  | i, .cons h hs => match String.isInaccessible h.1 with
+    | .true => .cons i (TacticM.inaccessibleFrom (Nat.succ i) hs)
+    | .false => TacticM.inaccessibleFrom (Nat.succ i) hs
+def List.revOnto {A : Type} : List A → List A → List A
+  | .nil, acc => acc
+  | .cons x xs, acc => List.revOnto xs (.cons x acc)
+-- `names` are given innermost first, like the indices
+def TacticM.renameAll : Nat → List Nat → List String → TacticM Nat
+  | g, _, .nil => TacticM.pure g
+  | _, .nil, .cons _ _ => TacticM.fail "rename_i: more names than inaccessible hypotheses"
+  | g, .cons i ixs, .cons x xs => do
+    g' ← TacticM.rename g i x;
+    TacticM.renameAll g' ixs xs
+def Syntax.identNames {b : Bool} : SyntaxF b → List String
+  | .cons (.ident x) rest => .cons x (Syntax.identNames rest)
+  | .cons _ rest => Syntax.identNames rest
+  | _ => .nil
+def Syntax.sepIdents (stx : Syntax) : List String := match stx with
+  | .node _ xs => Syntax.identNames xs
+  | _ => .nil
+syntax (name := renameI) "rename_i" sepBy1(ident, ",") : tactic
+def Tactic.renameI : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  hyps ← TacticM.goalHyps g;
+  g' ← TacticM.renameAll g (TacticM.inaccessibleFrom 0 hyps) (List.revOnto (Syntax.sepIdents (Syntax.getArg stx 1)) .nil);
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.renameI] Tactic.renameI
+
+-- ## Reading and building terms (stage 6g)
+--
+-- A reflected term is an application spine: a head (a constant, a variable, …) and its
+-- arguments. Constructor applications are reflected by name (`List.cons A x L`,
+-- `Nat.succ n`), so data in a goal is read like any other application.
+def Expr.charsEq : List Char → List Char → Bool
+  | .nil, .nil => .true
+  | .cons a xs, .cons b ys => match Nat.beq (Char.code a) (Char.code b) with
+    | .true => Expr.charsEq xs ys
+    | .false => .false
+  | _, _ => .false
+def Expr.nameEq : String → String → Bool
+  | .mk a, .mk b => Expr.charsEq a b
+-- the head of an application and its arguments, in order (in front of `acc`)
+def Expr.spineOnto : Expr → List Expr → Expr × List Expr
+  | .app f a, acc => Expr.spineOnto f (.cons a acc)
+  | e, acc => (e, acc)
+def Expr.getAppFn (e : Expr) : Expr := (Expr.spineOnto e .nil).1
+def Expr.getAppArgs (e : Expr) : List Expr := (Expr.spineOnto e .nil).2
+def Expr.mkApp : Expr → List Expr → Expr
+  | f, .nil => f
+  | f, .cons a rest => Expr.mkApp (.app f a) rest
+-- the name of the constant at the head, and the arguments
+def Expr.constApp (e : Expr) : Option (String × List Expr) := match Expr.spineOnto e .nil with
+  | (.const n, args) => .some (n, args)
+  | _ => .none
+def Expr.headName (e : Expr) : Option String := match Expr.getAppFn e with
+  | .const n => .some n
+  | _ => .none
+-- the arguments of `e`, if it is the constant `n` applied to some
+def Expr.appOf (n : String) (e : Expr) : Option (List Expr) := match Expr.spineOnto e .nil with
+  | (.const m, args) => (match Expr.nameEq m n with
+    | .true => .some args
+    | .false => .none)
+  | _ => .none
+def Expr.isAppOf (n : String) (e : Expr) : Bool := match Expr.appOf n e with
+  | .some _ => .true
+  | .none => .false
+-- Syntactic equality (binder names don't matter; an opaque handle only equals itself).
+-- Constructor applications are compared like any application.
+def Expr.beq : Expr → Expr → Bool
+  | .var i, .var j => Nat.beq i j
+  | .const a, .const b => Expr.nameEq a b
+  | .sort u, .sort v => Nat.beq u v
+  | .pi _ _ q₁ d₁ c₁, .pi _ _ q₂ d₂ c₂ => Bool.and (Expr.beq q₁ q₂) (Bool.and (Expr.beq d₁ d₂) (Expr.beq c₁ c₂))
+  | .lam _ b₁, .lam _ b₂ => Expr.beq b₁ b₂
+  | .app f a, .app g b => Bool.and (Expr.beq f g) (Expr.beq a b)
+  | .lit n, .lit m => Nat.beq n m
+  | .opaque i, .opaque j => Nat.beq i j
+  | _, _ => .false
+-- One level of a term, as a tactic wants to match on it: the head with all its
+-- arguments (after Ltac2's `Constr.Unsafe.kind` and Lean's `getAppFn`/`getAppArgs`).
+inductive ExprView where
+  | const (name : String) (args : List Expr)
+  | var (i : Nat) (args : List Expr)
+  | lit (n : Nat)
+  | sort (u : Nat)
+  | pi (x : String) (implicit : Bool) (q : Expr) (dom : Expr) (body : Expr)
+  | lam (x : String) (body : Expr)
+  -- an opaque head (a kernel form with no `Expr` constructor), or a redex
+  | other (head : Expr) (args : List Expr)
+def Expr.view (e : Expr) : ExprView := match Expr.spineOnto e .nil with
+  | (.const n, args) => .const n args
+  | (.var i, args) => .var i args
+  | (.lit n, .nil) => .lit n
+  | (.sort u, .nil) => .sort u
+  | (.pi x i q d b, .nil) => .pi x i q d b
+  | (.lam x b, .nil) => .lam x b
+  | (h, args) => .other h args
+def List.dropN {A : Type} : Nat → List A → List A
+  | .zero, xs => xs
+  | .succ n, .nil => .nil
+  | .succ n, .cons _ xs => List.dropN n xs
+-- `e` as a constructor application: the constructor's name and its fields (the
+-- arguments after the type's parameters). `List.cons A x L` is `("List.cons", [x, L])`.
+def TacticM.ctorApp (e : Expr) : TacticM (Option (String × List Expr)) := match Expr.constApp e with
+  | .none => TacticM.pure .none
+  | .some p => do
+    i ← TacticM.ctorInfo p.1;
+    match i with
+    | .none => TacticM.pure .none
+    | .some info => TacticM.pure (.some (p.1, List.dropN info.2.1 p.2))
+-- … after computing `e`'s head (`Prog.swap p q` is read as the `Prog.get p …` it
+-- computes to)
+def TacticM.whnfCtorApp (g : Nat) (e : Expr) : TacticM (Option (String × List Expr)) := do
+  e' ← TacticM.whnf g e;
+  TacticM.ctorApp e'
+
+-- ## Unfolding and rewriting (stage 6f)
+--
+-- `unfold f, g` unfolds the definitions `f` and `g` in the goal, once each (and fails
+-- if one of them changes nothing);
+-- `whnf` computes the goal's head; `change t` restates the goal as the convertible
+-- `t`; `rw h` and `rw ← h` rewrite it with the equation `h`.
+-- (the `unfold` tactic fails, as Lean's does, when a name changes nothing; the request
+-- `TacticM.unfold` just returns the term unchanged, for tactics that try)
+def TacticM.unfoldAll (g : Nat) : List String → Expr → TacticM Expr
+  | .nil, e => TacticM.pure e
+  | .cons n ns, e => do
+    e' ← TacticM.unfold g n e;
+    match Expr.beq e e' with
+    | .true => TacticM.fail (String.append "unfold: nothing to unfold: the goal has no application of " (String.append n " that computes"))
+    | .false => TacticM.unfoldAll g ns e'
+syntax (name := unfold) "unfold" sepBy1(ident, ",") : tactic
+def Tactic.unfold : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  ty ← TacticM.goalType g;
+  ty' ← TacticM.unfoldAll g (Syntax.sepIdents (Syntax.getArg stx 1)) ty;
+  g' ← TacticM.change g ty';
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.unfold] Tactic.unfold
+
+syntax (name := whnf) "whnf" : tactic
+def Tactic.whnf : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  ty ← TacticM.goalType g;
+  ty' ← TacticM.whnf g ty;
+  g' ← TacticM.change g ty';
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.whnf] Tactic.whnf
+
+syntax (name := change) "change" term : tactic
+def Tactic.change : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  p ← TacticM.elabInfer g (Syntax.getArg stx 1);
+  g' ← TacticM.change g p.1;
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.change] Tactic.change
+
+syntax (name := rw) "rw" term : tactic
+def Tactic.rw : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  p ← TacticM.elabInfer g (Syntax.getArg stx 1);
+  g' ← TacticM.rewrite g p.1 .false;
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.rw] Tactic.rw
+syntax (name := rwBack) "rw" "←" term : tactic
+def Tactic.rwBack : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  p ← TacticM.elabInfer g (Syntax.getArg stx 2);
+  g' ← TacticM.rewrite g p.1 .true;
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.rwBack] Tactic.rwBack

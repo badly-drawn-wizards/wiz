@@ -17,6 +17,8 @@ structure Toolchain where
   llc : String := "llc"
   /-- libraries a package links with (`-lm`), after `ldflags` -/
   libs : List String := []
+  /-- (9f) how to link GMP: `-lgmp`, or for WebAssembly a C file (mini-gmp) -/
+  gmp : List String := ["-lgmp"]
   /-- the Boehm collector, for the self-hosted runtime -/
   gcCflags : List String := []
   gcLdflags : List String := []
@@ -32,7 +34,7 @@ def words (s : String) : List String := (s.splitOn " ").filter (· ≠ "")
 
 /-- What identifies the generated code: compilers and flags (not the cache or roots). -/
 def id (t : Toolchain) : UInt64 :=
-  hash (toString [t.cc, " ".intercalate t.cflags, " ".intercalate t.ldflags, " ".intercalate t.libs, t.llc,
+  hash (toString [t.cc, " ".intercalate t.cflags, " ".intercalate t.ldflags, " ".intercalate t.libs, t.llc, " ".intercalate t.gmp,
     " ".intercalate t.gcCflags, " ".intercalate t.gcLdflags])
 
 /-- Set one field by its name (as in `grail.local.wiz` and the flags); `false` if unknown.
@@ -44,6 +46,7 @@ def set (t : Toolchain) (key value : String) : Option Toolchain :=
   | "ldflags" => some { t with ldflags := words value }
   | "llc" => some { t with llc := value }
   | "libs" => some { t with libs := words value }
+  | "gmp" => some { t with gmp := words value }
   | "gc-cflags" => some { t with gcCflags := words value }
   | "gc-ldflags" => some { t with gcLdflags := words value }
   | "cache" => some { t with cacheDir := some (System.FilePath.mk value) }
@@ -51,7 +54,7 @@ def set (t : Toolchain) (key value : String) : Option Toolchain :=
   | _ => none
 
 /-- Take the toolchain flags out of the arguments: `--cc X`, `--cflags "…"`,
-`--ldflags "…"`, `--llc X`, `--gc-cflags "…"`, `--gc-ldflags "…"`, `--cache DIR`,
+`--ldflags "…"`, `--libs "…"`, `--gmp "…"`, `--llc X`, `--gc-cflags "…"`, `--gc-ldflags "…"`, `--cache DIR`,
 `--no-cache`, `-I DIR`. -/
 partial def parseFlags (t : Toolchain) : List String → Toolchain × List String
   | "--no-cache" :: rest => parseFlags { t with cacheDir := none } rest
@@ -66,14 +69,14 @@ partial def parseFlags (t : Toolchain) : List String → Toolchain × List Strin
 /-- Flags that give this toolchain (its compilers, flags and cache) to another process. -/
 def toFlags (t : Toolchain) : List String :=
   ["--cc", t.cc, "--cflags", " ".intercalate t.cflags, "--ldflags", " ".intercalate t.ldflags,
-   "--libs", " ".intercalate t.libs, "--llc", t.llc, "--gc-cflags", " ".intercalate t.gcCflags,
+   "--libs", " ".intercalate t.libs, "--gmp", " ".intercalate t.gmp, "--llc", t.llc, "--gc-cflags", " ".intercalate t.gcCflags,
    "--gc-ldflags", " ".intercalate t.gcLdflags] ++
   (match t.cacheDir with | some d => ["--cache", d.toString] | none => ["--no-cache"]) ++
   t.searchPath.flatMap fun d => ["-I", d.toString]
 
 /-- `grail config`: one `key value` line per field. -/
 def render (t : Toolchain) : String :=
-  s!"cc {t.cc}\ncflags {" ".intercalate t.cflags}\nldflags {" ".intercalate t.ldflags}\nlibs {" ".intercalate t.libs}\nllc {t.llc}\n" ++
+  s!"cc {t.cc}\ncflags {" ".intercalate t.cflags}\nldflags {" ".intercalate t.ldflags}\nlibs {" ".intercalate t.libs}\ngmp {" ".intercalate t.gmp}\nllc {t.llc}\n" ++
   s!"gc-cflags {" ".intercalate t.gcCflags}\ngc-ldflags {" ".intercalate t.gcLdflags}\n" ++
   s!"cache {(t.cacheDir.map toString).getD "(off)"}\nroots {" ".intercalate (t.searchPath.map toString)}\n"
 

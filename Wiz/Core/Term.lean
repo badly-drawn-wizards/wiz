@@ -179,8 +179,12 @@ structure Decl (R : Type) where
   /-- unfold eagerly instead of gluing (constructors, so values look like constructor
   applications) -/
   inline : Bool := false
-  /-- an implementation for the compiler, not checked by the kernel: a structurally
-  recursive definition, with direct recursion instead of the recursor -/
+  /-- an implementation for the compiler: the term compiled code runs instead of `value`
+  (a structurally recursive definition's equations, with direct recursion instead of the
+  recursor; a partial definition's body; a native implementation's constant). The kernel
+  never unfolds it, but checks it against `type` (`checkImpl` in `addDecl`/`setImpl`,
+  `addPartialImpl`), so erasure only sees checked terms. That it computes what `value`
+  computes is not checked. -/
   impl : Option (Term R) := none
   /-- a partial definition's witness: a term of its type that the kernel checks
   (`addPartialDecl`). The definition stays opaque (`value = none`) but is not an axiom:
@@ -439,6 +443,10 @@ structure Globals (R : Type) where
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false
+  /-- (13b, `wiz --strict-privacy`, off by default) check every declaration a second time
+  against the elaborator's view, where another module's types with private parts have no
+  definition (`privacyCheck`, `Elab/Command.lean`). The kernel ignores this. -/
+  strictPrivacy : Bool := false
   /-- (13b) names private to a module (`private def …`, `private mk ::`), with the
   module: the elaborator rejects them elsewhere. The kernel ignores this. -/
   privates : Std.HashMap Name String := {}

@@ -55,9 +55,11 @@ These have no tests. Write your own tests in `Tests/` as you go.
   `Rig` laws.
 * **1.8** Implement Atkey's σ ∈ {0, 1} modes properly (see "Simplification vs. Atkey" in
   `Core/Check.lean`), so the checker stops verifying linearity inside type positions.
-  ([Stage 4d](04-data.md) adds a light version, `Ctx.erased`, which only relaxes projections.)
-* **1.9** Σ-types with a QTT-friendly eliminator, `let (x, y) := p; b`, which uses
-  `p` once and binds both components at its quantity.
+  ([Stage 4d](04-data.md) adds a light version, `Ctx.erased`, which only relaxes projections: in an erased position they are free, elsewhere they need an unrestricted pair.)
+* **1.9** Σ-types with a QTT-friendly eliminator, `let q (x, y) := p; b`, which uses
+  `p` `q` times and binds both components at that quantity. ([Stage 4b](04-data.md) has
+  it; projections `p.1`, `p.2` are for unrestricted pairs only, since each drops a
+  component.)
 * **1.10** Glued evaluation: stop unfolding globals eagerly, keeping both the stuck
   and the unfolded form, so error messages print `Nat` and not its Church encoding.
 * **1.11** Universe cumulativity (`Type i ≤ Type j`) and/or universe polymorphism.

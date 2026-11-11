@@ -260,5 +260,41 @@ else
   end)
 end
 
+io.stdout:write 'grail packages\n'
+
+local grail = vim.g.wiz_config.lsp.grail.cmd[1]
+if vim.fn.executable(grail) ~= 1 or vim.fn.executable(wiz) ~= 1 then
+  io.stdout:write('  (skipped: ' .. grail .. ' is not executable)\n')
+else
+  test('a grail package gets `grail lsp -C ROOT`, and its modules are found', function()
+    local main = here .. '/fixture/pkg/Main.wiz'
+    vim.cmd('edit ' .. vim.fn.fnameescape(main))
+    local root = here .. '/fixture/pkg'
+    eq({ grail, 'lsp', '-C', root }, require('wiz.lsp').cmd(root), 'the command')
+    wait(30000, function()
+      local c = require('wiz.lsp').client(0)
+      return c ~= nil and c.config.root_dir == root
+    end, 'the grail lsp client')
+    local diags = {}
+    wait(30000, function()
+      diags = vim.diagnostic.get(0)
+      return #diags > 0
+    end, 'diagnostics')
+    local msgs = {}
+    for _, d in ipairs(diags) do
+      table.insert(msgs, d.message)
+    end
+    eq({ '4' }, msgs, 'the diagnostics of Main.wiz')
+  end)
+
+  test('without grail.enable, or outside a package, the command is lsp.cmd', function()
+    local cfg = require('wiz.config').get().lsp
+    eq(cfg.cmd, require('wiz.lsp').cmd(here .. '/fixture'), 'outside a package')
+    cfg.grail.enable = false
+    eq(cfg.cmd, require('wiz.lsp').cmd(here .. '/fixture/pkg'), 'grail.enable = false')
+    cfg.grail.enable = true
+  end)
+end
+
 io.stdout:write(('%d passed, %d failed\n'):format(passed, failures))
 vim.cmd((failures == 0) and 'qall!' or 'cquit! 1')

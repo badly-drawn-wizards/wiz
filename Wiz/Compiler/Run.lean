@@ -128,16 +128,40 @@ where
     | .obj 2 #[_, D'] | .obj 3 #[_, _, D'] => fields D' (x.field 1) (acc.push (x.field 0))
     | _ => acc
 
+/-- (9g) The signature of a function C calls (a callback, an exported function): the
+kinds of its parameters and result (letters), and whether the result is in `IO`. -/
+structure CallbackSig where
+  params : List Char
+  result : Char
+  io : Bool
+  deriving BEq, Inhabited, Repr
+
+/-- `[nn/b]`: the parameters, `/`, then the result, with `!` before it for a result in
+`IO`. -/
+def CallbackSig.toKey (c : CallbackSig) : String :=
+  s!"[{String.ofList c.params}/{if c.io then "!" else ""}{c.result}]"
+
+def CallbackSig.ofKey (s : List Char) : CallbackSig :=
+  let ps := s.takeWhile (· != '/')
+  let r := (s.dropWhile (· != '/')).drop 1
+  let (io, r) := match r with | '!' :: r => (true, r) | r => (false, r)
+  { params := ps, result := r.headD 'v', io }
+
 /-- How one argument or result of a foreign function is marshalled: a kind letter, or
 (9i) a C struct passed by value, `<ctype|header|f₁=k₁,…>`, whose fields are kinds
-again. A struct's `header` is empty when its definition is generated from the fields. -/
+again. A struct's `header` is empty when its definition is generated from the fields.
+(9g) A Wiz closure passed to C as a callback, a function pointer and a context
+pointer, is `k[sig]` (borrowed for the call) or `K[sig]` (`owned`: the C side has a
+reference and gives it back with `wiz_release`). -/
 inductive FKind where
   | k (c : Char)
   | struct (ctype : String) (header : String) (fields : List (String × FKind))
+  | callback (owned : Bool) (sig : CallbackSig)
   deriving BEq, Inhabited, Repr
 
 partial def FKind.toKey : FKind → String
   | .k c => c.toString
+  | .callback owned sig => (if owned then "K" else "k") ++ sig.toKey
   | .struct c h fs => "<" ++ c ++ "|" ++ h ++ "|" ++ ",".intercalate (fs.map fun (f, kd) => f ++ "=" ++ kd.toKey) ++ ">"
 
 /-- The text up to the matching `>` (after a `<`), and the rest. -/
@@ -170,6 +194,8 @@ partial def FKind.parseOne (cs : List Char) : Option (FKind × List Char) :=
         | _ => none
       some (.struct (String.ofList c) (String.ofList h) fields, rest)
     | _ => none
+  | 'k' :: '[' :: r => some (.callback false (CallbackSig.ofKey (r.takeWhile (· != ']'))), (r.dropWhile (· != ']')).drop 1)
+  | 'K' :: '[' :: r => some (.callback true (CallbackSig.ofKey (r.takeWhile (· != ']'))), (r.dropWhile (· != ']')).drop 1)
   | c :: r => some (.k c, r)
   | [] => none
 
@@ -183,6 +209,7 @@ partial def FKind.parseMany (cs : List Char) : List FKind :=
 def FKind.letter : FKind → Char
   | .k c => c
   | .struct .. => 'S'
+  | .callback owned _ => if owned then 'K' else 'k'
 
 /-- A foreign function's key: `extern:cname:kinds:result:io:header:finalizer` (see
 `extern`). Kinds: `n` Nat, `u` UInt64, `f` Float64, `s` String, `b` Bool, `v` Unit,
@@ -204,6 +231,15 @@ def ExternSig.ofKey? (key : Name) : Option ExternSig :=
     some { cname := c, params := FKind.parseMany ps.toList, result := ((FKind.parseMany r.toList).headD (.k 'v')),
            io := io == "io", header := h, fin }
   | _ => none
+
+/-- An exported function (stage 9g), `export:cname:kinds:result:io`: C calls `cname`. -/
+def ExternSig.ofExportKey? (key : Name) : Option ExternSig :=
+  match key.splitOn ":" with
+  | ["export", c, ps, r, io] =>
+    some { cname := c, params := ps.toList.map .k, result := .k (r.toList.headD 'v'), io := io == "io", header := "" }
+  | _ => none
+
+def exportPrefix : String := "export:"
 
 def nativeArity (key : Name) : Nat :=
   match ExternSig.ofKey? key with
@@ -478,13 +514,14 @@ interpreters, which can't call C), a definition implemented by a foreign functio
 its own code: `#eval` and `#run` run the model, compiled code the native. Also returns
 the definitions that couldn't be erased, with the reasons. -/
 def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
-    (externImpls : Bool := true) : TCM (Code × List (Name × String)) := do
+    (externImpls : Bool := true) (caseShapes : Bool := true) : TCM (Code × List (Name × String)) := do
   let mut code : Code := {}
   let mut failed : List (Name × String) := []
   let mut todo := roots.toArray
   -- definitions registered as native operations
   let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && !key.startsWith "repr:" &&
     !key.startsWith "cstruct:" && !key.startsWith "seal:" &&
+    !key.startsWith RVal.exportPrefix &&
     key != inlineKey
   -- native representations (stage 22d): the interpreters keep the model's objects when
   -- the conversions are foreign functions
@@ -505,47 +542,70 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
       let T : Name := (key.drop 5).toString
       if (reprOf? g.builtins T).isSome then some (x, T) else none
     else none
+  -- `attribute [implemented_by m] n`: `n` gets `m`'s code (following chains)
+  let rec target (m : Name) : Nat → Name
+    | 0 => m
+    | fuel + 1 => match (g.find? m).bind (·.impl) with
+      | some (.const m' _) =>
+        if !externImpls && builtins.any (fun (k, x) => x == m' && k.startsWith "extern:") then m
+        else target m' fuel
+      | _ => m
+  -- the erased code of `n` before inlining (`none`: no such definition), and the reason
+  -- if it couldn't be erased
+  let eraseOne (n : Name) : Option (ETerm × Option String) :=
+    let m := target n 100
+    if let some (key, _) := natives.find? (·.2 == m) then
+      some (.prim .unreachable #[.global key], none)
+    else match g.find? m with
+      | none => none
+      | some d =>
+        -- (an `implemented_by` not followed: the definition itself)
+        let d := if d.impl matches some (.const ..) then { d with impl := none } else d
+        -- a declaration that can't be erased yet becomes a runtime error if it is reached
+        match eraseDecl g d with
+        | .ok e => some (e, none)
+        | .error err => some (.prim .unreachable #[], some (toString err))
+  -- (kept: a definition is erased once, when first called or when reached)
+  let mut raw : Std.HashMap Name (Option (ETerm × Option String)) := {}
   while h : todo.size > 0 do
     let n := todo.back
     todo := todo.pop
     if code.contains n then continue
-    -- `attribute [implemented_by m] n`: `n` gets `m`'s code (following chains)
-    let rec target (m : Name) : Nat → Name
-      | 0 => m
-      | fuel + 1 => match (g.find? m).bind (·.impl) with
-        | some (.const m' _) =>
-          if !externImpls && builtins.any (fun (k, x) => x == m' && k.startsWith "extern:") then m
-          else target m' fuel
-        | _ => m
-    let m := target n 100
-    if let some (key, _) := natives.find? (·.2 == m) then
-      code := code.insert n (.prim .unreachable #[.global key])
-      continue
-    let some d := g.find? m | continue
     -- (22j, layer 3) the seal of a type with a native representation stays in the type's
     -- module, except inside the type itself
     unless nativeSeals.isEmpty do
-      let here := (g.declModule[m]?).getD ""
-      for (k, T) in nativeSeals do
-        if (g.declModule[T]?).getD "" != here then
-          if let some v := d.impl <|> d.value then
-            if sealOutsideMu (· == k) v then
-              throw (.other (s!"cannot compile {n}: {T} has a native representation (it is a sealed type), so generic " ++
-                s!"code over types or descriptions cannot be used at it: {T}'s seal is passed as an argument here"))
-    -- (an `implemented_by` not followed: the definition itself)
-    let d := if d.impl matches some (.const ..) then { d with impl := none } else d
-    -- a declaration that can't be erased yet becomes a runtime error if it is reached
-    let e ← match eraseDecl g d with
-      | .ok e => pure e
-      | .error err => do
-        -- (a refusal, not a gap: running on would give a wrong value)
-        if ((toString err).splitOn abstractFieldMsg).length > 1 || ((toString err).splitOn nativeHomeMsg).length > 1 then
-          throw (.other s!"cannot erase {n}: {err}")
-        failed := (n, toString err) :: failed; pure (.prim .unreachable #[])
+      let m := target n 100
+      if let some d := g.find? m then
+        let here := (g.declModule[m]?).getD ""
+        for (k, T) in nativeSeals do
+          if (g.declModule[T]?).getD "" != here then
+            if let some v := d.impl <|> d.value then
+              if sealOutsideMu (· == k) v then
+                throw (.other (s!"cannot compile {n}: {T} has a native representation (it is a sealed type), so generic " ++
+                  s!"code over types or descriptions cannot be used at it: {T}'s seal is passed as an argument here"))
+    let r ← match raw.get? n with
+      | some r => pure r
+      | none => do let r := eraseOne n; raw := raw.insert n r; pure r
+    let some (e, err) := r | continue
+    if let some err := err then
+      -- (a refusal, not a gap: running on would give a wrong value)
+      if (err.splitOn abstractFieldMsg).length > 1 || (err.splitOn nativeHomeMsg).length > 1 then
+        throw (.other s!"cannot erase {n}: {err}")
+      failed := (n, err) :: failed
     let e := if e.globals.any inlines.contains then
       let inl := inlines
       e.inlineSimp fun f => if f == n then none else inl.get? f
     else e
+    -- calls of case-shaped definitions (`Bool.and`, …) become `case`s (15h)
+    let e ← if caseShapes then do
+        for f in e.globals do
+          unless raw.contains f do raw := raw.insert f (eraseOne f)
+        let known := raw
+        pure (e.caseInline fun f => if f == n then none else
+          match known.get? f with
+          | some (some (b, _)) => b.caseShape?
+          | _ => none)
+      else pure e
     code := code.insert n e
     todo := e.globals todo
   pure (code, failed.reverse)
@@ -553,8 +613,8 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
 /-- The same, ignoring the definitions that couldn't be erased (reaching one is a
 runtime error). -/
 def compileReachable (g : Globals R) (builtins : List (Name × Name)) (roots : List Name)
-    (externImpls : Bool := true) : TCM Code :=
-  return (← compileReachableE g builtins roots externImpls).1
+    (externImpls : Bool := true) (caseShapes : Bool := true) : TCM Code :=
+  return (← compileReachableE g builtins roots externImpls caseShapes).1
 
 /-- Erase every global. -/
 def compileAll (g : Globals R) (builtins : List (Name × Name) := []) : TCM Code :=
