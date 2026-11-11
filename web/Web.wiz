@@ -172,6 +172,10 @@ def WSt.onEvent (s : WSt) (ev : String) : IO WSt :=
       WSt.notify "initialized" (Json.mkObj .nil);
       WSt.notify "textDocument/didOpen" (Json.mkObj (.cons (Json.field "textDocument" (Web.textDoc s1 q.2)) .nil));
       WSt.refresh s2
+    | .false => match String.eq kind "follow" with
+    -- (11r) `follow\nURI`: show another editor's document (the page follows its cursor,
+    -- `wiz/infoview/cursor`, which the page turns into `follow` and `cursor`)
+    | .true => IO.pure (WSt.setDoc s (String.mk rest) s.line s.col s.version)
     | .false => match String.eq kind "change" with
       | .true => do
         let s1 := WSt.setDoc s s.uri s.line s.col (s.version + 1);

@@ -625,6 +625,34 @@ def serverGroup : Group where
         -- an unmasked frame from a client breaks the protocol
         WebSocket.sendText w "x"
         checkEq none (← WebSocket.recvText r' w') },
+    { name := "11r: the web infoview's files over HTTP on the WebSocket's port (fixed list, local origins)", run := fun _ => do
+        let dir ← IO.FS.createTempDir
+        IO.FS.writeFile (dir / "infoview.html") "<p>page</p>"
+        IO.FS.writeFile (dir / "secret.txt") "no"
+        -- one request, through `accept`, on a socket pair: the answer's text
+        let ask (req : String) (web : Option String := some dir.toString) : IO (Bool × String) := do
+          let ((r, w), (r', w')) ← Socket.pair
+          let (r, w, r', w') := (IO.FS.Stream.ofHandle r, IO.FS.Stream.ofHandle w, IO.FS.Stream.ofHandle r', IO.FS.Stream.ofHandle w')
+          w.putStr req; w.flush
+          let ok ← WebSocket.accept r' w' web
+          let mut out := ""
+          for _ in [0:20] do
+            let l ← r.getLine
+            out := out ++ l
+            if l.isEmpty || (out.splitOn "\r\n\r\n").length > 1 then break
+          pure (ok, out)
+        let (ok, out) ← ask "GET /infoview.html?port=1&follow=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        check (!ok && (out.splitOn "200 OK").length > 1 && (out.splitOn "text/html").length > 1) s!"page: {out}"
+        let (_, out) ← ask "GET / HTTP/1.1\r\n\r\n"
+        check ((out.splitOn "200 OK").length > 1) s!"index: {out}"
+        for path in ["/secret.txt", "/../infoview.html", "/wiz-infoview.wasm", "/infoview.html/x"] do
+          let (_, out) ← ask s!"GET {path} HTTP/1.1\r\n\r\n"
+          check ((out.splitOn "404").length > 1) s!"{path}: {out}"
+        let (_, out) ← ask "GET /infoview.html HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n"
+        check ((out.splitOn "403").length > 1) s!"foreign origin: {out}"
+        -- without the directory (plain `--ws`): no files at all
+        let (_, out) ← ask "GET /infoview.html HTTP/1.1\r\n\r\n" none
+        check ((out.splitOn "426").length > 1) s!"no web directory: {out}" },
     { name := "WebSocket transport (--ws): infoview requests, editing, origins", run := fun _ => do
         let _ ← IO.asTask (prio := .dedicated) (do IO.sleep 60000; IO.eprintln "timed out"; IO.Process.exit 3 : IO Unit)
         try wsCase; IO.Process.exit 0

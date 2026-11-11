@@ -14,6 +14,8 @@ def usage : String := "usage:
   wiz lsp --infoview SOCK          … and for infoviews on the Unix socket SOCK
   wiz lsp --ws [ADDR:]PORT         … and on a WebSocket (127.0.0.1 unless ADDR is given;
                                    both flags may be given; --no-stdio: no editor on stdin)
+  wiz lsp … --web DIR              the web infoview's files, served on the WebSocket's port
+                                   (default: share/wiz/web, or web/out in a checkout)
 options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since it is
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
@@ -73,7 +75,17 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
     if port ≥ 65536 then none
     pure ({ l with ws := some (addr, port.toUInt16) }, io)
   | "--no-stdio" :: rest => do let (l, _) ← lspOptions rest; pure (l, false)
+  | "--web" :: dir :: rest => do let (l, io) ← lspOptions rest; pure ({ l with web := some dir }, io)
   | _ => none
+
+/-- (11r) The web infoview's files (`web/build.sh`'s output) beside the toolchain's
+library: `share/wiz/web` in a release, `web/out` in a checkout. -/
+def webDir : IO (Option String) := do
+  let lib ← Module.toolchainLib
+  let base := (lib.parent.getD ".")
+  for d in [base / "web", base / "web" / "out"] do
+    if ← (d / "wiz-infoview.mjs").pathExists then return some (← IO.FS.realPath d).toString
+  pure none
 
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
@@ -222,11 +234,11 @@ def main (args : List String) : IO UInt32 := do
     buildCmd tc path out true false true
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
-  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc); pure 0
   | "lsp" :: opts => do
     match lspOptions opts with
     | none => IO.println usage; pure 2
     | some (listen, stdio) =>
+      let listen := if listen.web.isSome then listen else { listen with web := ← webDir }
       LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc)
       -- (an infoview's reader thread may still be blocked: don't wait for it)
       IO.Process.exit 0

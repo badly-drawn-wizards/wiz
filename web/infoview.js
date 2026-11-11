@@ -56,7 +56,21 @@ globalThis.wizSend = (text) => {
   }
   pending = buf.slice(at);
 };
+// (11r) `?follow=1`: no editor of our own; show the editor's cursor (wiz.nvim's
+// :WizInfoviewBrowser opens the page so), as the server announces it
+const follow = params.get("follow") === "1";
 function received(text) {
+  if (follow) {
+    try {
+      const m = JSON.parse(text);
+      if (m.method === "wiz/infoview/cursor") {
+        const p = m.params || {};
+        post("follow", (p.textDocument || {}).uri || "");
+        post("cursor", `${(p.position || {}).line || 0} ${(p.position || {}).character || 0}`);
+        return;
+      }
+    } catch (e) { /* not JSON: Wiz reports it */ }
+  }
   post("net", `Content-Length: ${encoder.encode(text).length}\r\n\r\n${text}`);
 }
 globalThis.wizSetHtml = (id, html) => {
@@ -130,6 +144,11 @@ async function start() {
   state = wasm._wiz_web_init();
   for (const ev of early.splice(0)) step(ev);
   connect();
+  if (follow) {
+    editor.style.display = "none";
+    setStatus("following the editor");
+    return;
+  }
   post("open", uri + "\n" + editor.value);
   opened = true;
   onCursor();
