@@ -1,4 +1,5 @@
 import Tower.Install
+import Wiz.Version
 
 /-!
 # tower's commands (stage 26c)
@@ -36,6 +37,7 @@ usage: tower [--home DIR] COMMAND
                                  gc-cflags, gc-ldflags)
   self shims                     write the shims in ~/.tower/bin
   self install                   copy tower to ~/.tower/bin and write the shims
+  --version                      print tower's version
 
 SPEC: nightly, stable, a tag, a branch, a commit, REF@COMMIT, or a linked name.
 A project names its toolchain in a file `wiz-toolchain` (one line: a SPEC).
@@ -280,6 +282,7 @@ def main (e : Env) (args : List String) : IO UInt32 := do
     | ["settings"] => do IO.print (← e.settings).render; pure 0
     | "self" :: rest => selfCmd e rest
     | ["--help"] | ["help"] | [] => do IO.print usage; pure 0
+    | ["--version"] => do IO.println s!"tower {Wiz.version}"; pure 0
     | _ => do IO.eprint usage; pure 2
   catch err => fail (toString err)
 
