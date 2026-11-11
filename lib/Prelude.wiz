@@ -646,57 +646,6 @@ def Tactic.renameI : Tactic := fun stx => do
   TacticM.replaceMainGoal (.cons g' .nil)
 attribute [tactic tactic.renameI] Tactic.renameI
 
--- ## Unfolding and rewriting (stage 6f)
---
--- `unfold f, g` unfolds the definitions `f` and `g` in the goal, once each;
--- `whnf` computes the goal's head; `change t` restates the goal as the convertible
--- `t`; `rw h` and `rw ← h` rewrite it with the equation `h`.
-def TacticM.unfoldAll (g : Nat) : List String → Expr → TacticM Expr
-  | .nil, e => TacticM.pure e
-  | .cons n ns, e => do
-    e' ← TacticM.unfold g n e;
-    TacticM.unfoldAll g ns e'
-syntax (name := unfold) "unfold" sepBy1(ident, ",") : tactic
-def Tactic.unfold : Tactic := fun stx => do
-  g ← TacticM.mainGoal;
-  ty ← TacticM.goalType g;
-  ty' ← TacticM.unfoldAll g (Syntax.sepIdents (Syntax.getArg stx 1)) ty;
-  g' ← TacticM.change g ty';
-  TacticM.replaceMainGoal (.cons g' .nil)
-attribute [tactic tactic.unfold] Tactic.unfold
-
-syntax (name := whnf) "whnf" : tactic
-def Tactic.whnf : Tactic := fun _ => do
-  g ← TacticM.mainGoal;
-  ty ← TacticM.goalType g;
-  ty' ← TacticM.whnf g ty;
-  g' ← TacticM.change g ty';
-  TacticM.replaceMainGoal (.cons g' .nil)
-attribute [tactic tactic.whnf] Tactic.whnf
-
-syntax (name := change) "change" term : tactic
-def Tactic.change : Tactic := fun stx => do
-  g ← TacticM.mainGoal;
-  p ← TacticM.elabInfer g (Syntax.getArg stx 1);
-  g' ← TacticM.change g p.1;
-  TacticM.replaceMainGoal (.cons g' .nil)
-attribute [tactic tactic.change] Tactic.change
-
-syntax (name := rw) "rw" term : tactic
-def Tactic.rw : Tactic := fun stx => do
-  g ← TacticM.mainGoal;
-  p ← TacticM.elabInfer g (Syntax.getArg stx 1);
-  g' ← TacticM.rewrite g p.1 .false;
-  TacticM.replaceMainGoal (.cons g' .nil)
-attribute [tactic tactic.rw] Tactic.rw
-syntax (name := rwBack) "rw" "←" term : tactic
-def Tactic.rwBack : Tactic := fun stx => do
-  g ← TacticM.mainGoal;
-  p ← TacticM.elabInfer g (Syntax.getArg stx 2);
-  g' ← TacticM.rewrite g p.1 .true;
-  TacticM.replaceMainGoal (.cons g' .nil)
-attribute [tactic tactic.rwBack] Tactic.rwBack
-
 -- ## Reading and building terms (stage 6g)
 --
 -- A reflected term is an application spine: a head (a constant, a variable, …) and its
@@ -784,3 +733,59 @@ def TacticM.ctorApp (e : Expr) : TacticM (Option (String × List Expr)) := match
 def TacticM.whnfCtorApp (g : Nat) (e : Expr) : TacticM (Option (String × List Expr)) := do
   e' ← TacticM.whnf g e;
   TacticM.ctorApp e'
+
+-- ## Unfolding and rewriting (stage 6f)
+--
+-- `unfold f, g` unfolds the definitions `f` and `g` in the goal, once each (and fails
+-- if one of them changes nothing);
+-- `whnf` computes the goal's head; `change t` restates the goal as the convertible
+-- `t`; `rw h` and `rw ← h` rewrite it with the equation `h`.
+-- (the `unfold` tactic fails, as Lean's does, when a name changes nothing; the request
+-- `TacticM.unfold` just returns the term unchanged, for tactics that try)
+def TacticM.unfoldAll (g : Nat) : List String → Expr → TacticM Expr
+  | .nil, e => TacticM.pure e
+  | .cons n ns, e => do
+    e' ← TacticM.unfold g n e;
+    match Expr.beq e e' with
+    | .true => TacticM.fail (String.append "unfold: nothing to unfold: the goal has no application of " (String.append n " that computes"))
+    | .false => TacticM.unfoldAll g ns e'
+syntax (name := unfold) "unfold" sepBy1(ident, ",") : tactic
+def Tactic.unfold : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  ty ← TacticM.goalType g;
+  ty' ← TacticM.unfoldAll g (Syntax.sepIdents (Syntax.getArg stx 1)) ty;
+  g' ← TacticM.change g ty';
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.unfold] Tactic.unfold
+
+syntax (name := whnf) "whnf" : tactic
+def Tactic.whnf : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  ty ← TacticM.goalType g;
+  ty' ← TacticM.whnf g ty;
+  g' ← TacticM.change g ty';
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.whnf] Tactic.whnf
+
+syntax (name := change) "change" term : tactic
+def Tactic.change : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  p ← TacticM.elabInfer g (Syntax.getArg stx 1);
+  g' ← TacticM.change g p.1;
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.change] Tactic.change
+
+syntax (name := rw) "rw" term : tactic
+def Tactic.rw : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  p ← TacticM.elabInfer g (Syntax.getArg stx 1);
+  g' ← TacticM.rewrite g p.1 .false;
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.rw] Tactic.rw
+syntax (name := rwBack) "rw" "←" term : tactic
+def Tactic.rwBack : Tactic := fun stx => do
+  g ← TacticM.mainGoal;
+  p ← TacticM.elabInfer g (Syntax.getArg stx 2);
+  g' ← TacticM.rewrite g p.1 .true;
+  TacticM.replaceMainGoal (.cons g' .nil)
+attribute [tactic tactic.rwBack] Tactic.rwBack

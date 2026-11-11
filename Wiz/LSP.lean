@@ -81,6 +81,9 @@ def ofPos (text : String) (line col : Nat) : Nat := Id.run do
 def range (text : String) (info : SourceInfo) : Json :=
   Json.mkObj [("start", toPos text info.start), ("end", toPos text (max info.stop (info.start + 1)))]
 
+-- (the whole elaborator is specialised to `ZeroOneMany` here; the default limit of
+-- 200000 heartbeats no longer covers compiling that)
+set_option maxHeartbeats 800000 in
 /-- Elaborate a document (incrementally) with the libraries available to `import`. -/
 def elaborate (srv : Server) (doc : Doc) : Doc :=
   let libs := srv.libs

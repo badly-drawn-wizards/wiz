@@ -214,7 +214,8 @@ unifying with every shape they knew. Four requests (and the tactics of the same 
   structural recursion is `fun x => T.rec … x`, so the eliminator at its head is
   unfolded with it, `isRecursor`), but the definitions the body mentions still folded
   (`ex`, `star` above). An application that is stuck (`MList L p`, `L` a variable) stays
-  as it is. Unlike Lean's `unfold`, it does not fail when nothing changes.
+  as it is: the request returns the term unchanged, and the `unfold` tactic then fails
+  ("nothing to unfold"), as Lean's does.
 * `TacticM.whnf g e` (`whnf`): the head unfolded until it is not a definition.
 * **Recursive calls are folded back.** A structurally recursive definition is an
   eliminator, so what unfolding leaves for `MList L n` is `ind … L n`, with the whole

@@ -972,10 +972,19 @@ def tacticGroup : Group where
           "def t (x : Nat) (xs : List Nat) : Wrap (len (.cons x xs)) := by\n  unfold len\n  trace_state\n  unfold Wrap\n  rfl")
           ["x : Nat\nL : List Nat\np : Nat\n⊢ Ent (ex (fun n => star (cell p x n) (MList L n))) (ex (fun n => star (cell p x n) (MList L n)))",
            "x : Nat\nxs : List Nat\n⊢ Wrap (.succ (len xs))"] },
-    { name := "unfold: a stuck application stays folded; several names; not a definition", run := fun _ => do
+    { name := "unfold: several names; it fails when nothing changes (stuck, or absent); not a definition", run := fun _ => do
         okLib (unfoldPrelude ++
-          "def t3 (L : List Nat) (p : Nat) : Ent (MList L p) (MList L p) := by\n  unfold MList\n  trace_state\n  unfold Ent, star\n  trace_state\n  intros\n  assumption")
-          ["L : List Nat\np : Nat\n⊢ Ent (MList L p) (MList L p)", "L : List Nat\np : Nat\n⊢ (h : Nat) → MList L p h → MList L p h"]
+          "def t3 (L : List Nat) (p : Nat) : Ent (star (MList L p) (MList L p)) (MList L p) := by\n  unfold Ent, star\n  trace_state\n  intros\n  rename_i h, a\n  exact (a _ (fun x y => x))")
+          ["L : List Nat\np : Nat\n⊢ (h : Nat) → And' (MList L p h) (MList L p h) → MList L p h"]
+        failsLib (unfoldPrelude ++ "def t3 (L : List Nat) (p : Nat) : Ent (MList L p) (MList L p) := by\n  unfold MList\n  unfold Ent\n  intros\n  assumption")
+          "unfold: nothing to unfold: the goal has no application of MList that computes"
+        failsLib (unfoldPrelude ++ "def t3 (L : List Nat) (p : Nat) : Ent (MList L p) (MList L p) := by\n  unfold Ent, star\n  intros\n  assumption")
+          "unfold: nothing to unfold: the goal has no application of star that computes"
+        okLib (unfoldPrelude ++ "syntax (name := tryUnfold) \"try_unfold\" : tactic\n" ++
+          "def tryUnfoldTac : Tactic := fun _ => do\n  g ← TacticM.mainGoal;\n  ty ← TacticM.goalType g;\n  ty' ← TacticM.unfold g \"MList\" ty;\n" ++
+          "  s ← TacticM.ppExpr g ty';\n  TacticM.trace s\nattribute [tactic tactic.tryUnfold] tryUnfoldTac\n" ++
+          "def t3 (L : List Nat) (p : Nat) : Ent (MList L p) (MList L p) := by\n  try_unfold\n  unfold Ent\n  intros\n  assumption")
+          ["Ent (MList L p) (MList L p)"]
         failsLib "import Prelude\ndef t : Nat := by\n  unfold List.cons\n  exact 0" "unfold: List.cons is not a definition"
         failsLib "import Prelude\ndef t : Nat := by\n  unfold nope\n  exact 0" "unfold: unknown constant nope" },
     { name := "whnf computes the goal's head; change restates it (checked by conversion)", run := fun _ => do
