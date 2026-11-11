@@ -57,6 +57,7 @@
     "inductive",
     "lexer",
     "lift",
+    "=lint",
     "match",
     "observational",
     "parser",

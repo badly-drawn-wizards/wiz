@@ -193,6 +193,9 @@ def main (args : List String) : IO UInt32 := do
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1
+  -- a `panic!` (a kernel-internal failure) ends a batch command with status 1 instead of
+  -- going on with a default value; the language server keeps running
+  unless args.head? == some "lsp" do exitOnPanic
   match args with
   | ["parse", path] => parseCmd path
   | ["check", path] => checkCmd tc path

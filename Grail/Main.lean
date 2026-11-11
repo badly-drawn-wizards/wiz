@@ -63,6 +63,8 @@ def findStd (opt : Option String) : IO System.FilePath := do
   pure "lib"
 
 def main (args : List String) : IO UInt32 := do
+  -- a `panic!` (a kernel-internal failure) ends the build, as it ends `wiz check`
+  Wiz.exitOnPanic
   let home := (← IO.getEnv "HOME").getD "."
   let defaults : Toolchain := { cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") }
   -- a job of a build, in its own process (`Grail/Graph.lean`)
