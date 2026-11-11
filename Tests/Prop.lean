@@ -1339,8 +1339,9 @@ its three queries for `Kernel.wiz`, always asked). -/
 
 /-- the context of the targeted pairs -/
 def lvCtx : Array Tm := #[.enum (MTm.labels 1), piW (.sort 0) (.sort 0), .enum (MTm.labels 1)]
-/-- the two levels (the last one equal: a control, convertible) -/
-def lvPairs : Array (Nat × Nat) := #[(0, 1), (1, 2), (2, 0), (1, 1)]
+/-- the two levels (a pair at one level is the same type twice, which `tyPair` does not
+send: the controls are the general generator's) -/
+def lvPairs : Array (Nat × Nat) := #[(0, 1), (1, 2), (2, 0)]
 
 /-- the polymorphic propositions of a world: gadgets `c.{l}` of type `Prop` -/
 def lvConsts (w : World) : Array Name :=
