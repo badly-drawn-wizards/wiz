@@ -167,6 +167,53 @@ def crossLevel : MTm :=
   let no := lam (exfalso pfalse (var 0))
   erased (pair (pair (pair no no) no) (lam star)) (eqTy (sorted 2 (pi A1 (univ 0))) (sorted 2 (pi A2 (univ 0))))
 
+
+/-! ## The second reading (meta-review): defects found, and presupposition properties
+
+Terms here are written in the spec's own syntax (`WizMeta.Tm`), most of them in a context. -/
+
+namespace Review
+
+def F : Nat := WizMeta.defaultFuel
+def env (o : Opts := {}) (sg : Sig := []) : WizMeta.Env := { sig := sg, opts := o }
+def piT (s : WizMeta.Lvl) (A B : Tm) : Tm := .pi .many (some s) A B
+def sgT (s : WizMeta.Lvl) (A B : Tm) : Tm := .sigma .many (some s) A B
+
+def okOr {α : Type} (what : String) : WizMeta.M α → IO α
+  | .ok a => pure a
+  | .error e => throw (IO.userError s!"{what}: {e}")
+
+/-- Subject reduction at one term: its weak-head normal form checks against its type
+(unless the type is a proposition: proofs are not reduced). -/
+def subjRed (o : Opts) (sg : Sig) (Γ : WizMeta.Ctx) (t : Tm) : WizMeta.M Bool := do
+  let E := env o sg
+  let T ← WizMeta.infer E F Γ t
+  if (← WizMeta.propOf E F Γ (← WizMeta.whnf E F Γ T)) == some true then return false
+  let t' ← WizMeta.whnf E F Γ t
+  WizMeta.check E F Γ t' T
+  pure true
+
+/-- A cast between `X` and `Y` given `e : X ≡ Y` and `t : X` in the context. -/
+def castIn (X Y : Tm) : WizMeta.Ctx × Tm := ([X, .eqTy X Y], .cast X Y (.var 1) (.var 0))
+
+/-- Closed types with their sorts, for the template properties. -/
+def typePool : List (Tm × WizMeta.Lvl) :=
+  [(Tm.True', 0), (.unit 1, 1), (.enum 2, 1), (.sort 0, 1), (.unit 2, 2), (.sort 1, 2),
+   (piT 1 (.enum 2) (.unit 1), 1), (sgT 2 (.sort 1) (.unit 1), 2), (.ulift 3 (.enum 2), 3)]
+
+/-- Index types `I : Sort (l+1)` with an element, and fields of that level. -/
+def indexPool : List (WizMeta.Lvl × Tm × Tm) :=
+  [(0, .unit 1, .tt), (0, .enum 2, .tag 2 1), (1, .unit 2, .tt), (0, .sort 0, Tm.True'), (1, .sort 1, .enum 2)]
+
+/-- Kernel subterms with the number of binders they are under. -/
+partial def subterms (t : Term ZeroOneMany) (d : Nat := 0) : List (Term ZeroOneMany × Nat) :=
+  let kids : StateM (List (Term ZeroOneMany × Nat)) (Term ZeroOneMany) :=
+    t.mapChildrenM pure fun k c => do modify (· ++ subterms c (d + k)); pure c
+  (t, d) :: (kids.run []).2
+
+end Review
+
+open Review in
 def group : Group where
   name := "meta"
   exercise := "WizMeta (metatheory-plan M1c): the reference checker"
@@ -300,7 +347,118 @@ def group : Group where
     { name := "T4: an equation between Π types with domains in different universes (accepted by the kernels' rule, stuck with the levelled one)", run := fun _ => do
         accepts crossLevel
         rejects crossLevel { kernelOpts with eqTyLevelled := true }
-        check (kernelAccepts crossLevel) "the Lean kernel no longer decomposes across levels: update the note" }
+        check (kernelAccepts crossLevel) "the Lean kernel no longer decomposes across levels: update the note" },
+    { name := "review: a structural cast whose components are in different sorts is stuck (its reduct would cast across universes)", run := fun _ => do
+        -- (Unit₁ → Unit₂) and (Unit₂ → Unit₂) are both in Sort 2; so are the Σs and the lifts
+        let pairs : List (String × Tm × Tm) :=
+          [("Π", piT 2 (.unit 1) (.unit 2), piT 2 (.unit 2) (.unit 2)),
+           ("Σ", sgT 2 (.unit 1) (.unit 2), sgT 2 (.unit 2) (.unit 2)),
+           ("ULift", .ulift 1 Tm.True', .ulift 1 (.unit 1))]
+        for o in [({} : Opts), { eqTyLevelled := true }] do
+          for (what, X, Y) in pairs do
+            let (Γ, t) := castIn X Y
+            let _ ← okOr s!"{what}: subject reduction (levelled {o.eqTyLevelled})" (subjRed o [] Γ t)
+            let t' ← okOr what (WizMeta.whnf (env o) F Γ t)
+            check (match t' with | .cast .. => true | _ => false) s!"{what}: the cast computed: {repr t'}"
+        -- control: components in one sort, the cast computes and its reduct has the type
+        for (what, X, Y) in [("Π", piT 2 (.unit 2) (.unit 1), piT 2 (.unit 2) (.enum 2)),
+                             ("Σ", sgT 2 (.unit 2) (.unit 1), sgT 2 (.unit 2) (.enum 2))] do
+          let (Γ, t) := castIn X Y
+          let _ ← okOr s!"{what} control" (subjRed {} [] Γ t)
+          let t' ← okOr what (WizMeta.whnf (env) F Γ t)
+          check (match t' with | .cast .. => false | _ => true) s!"{what}: the control cast is stuck" },
+    { name := "review: transp's motive type is a type at every level (it was annotated Sort 1)", run := fun _ => do
+        for (A, l) in typePool ++ [(.sort (.param 0), (WizMeta.Lvl.param 0).succ)] do
+          let Γ : WizMeta.Ctx := [A]
+          let k ← okOr s!"motive type at {repr A}" (WizMeta.inferSort (env) F Γ (Tm.transpMotiveTy l A.shift (.var 0)))
+          check (k.equiv (.imax l 1)) s!"sort {k.pretty}"
+        let t : Tm := .transp (.sort 1) (.enum 2) (.lam (.lam Tm.True')) .tt (.enum 2) (.refl (.sort 1) (.enum 2))
+        let _ ← okOr "transp at Sort 2" (WizMeta.infer (env { checkTemplates := true }) F [] t) },
+    { name := "review: in the levelled variant A ≡ B is formed only at one sort", run := fun _ => do
+        let t : Tm := .eqTy Tm.True' (.enum 2)
+        let _ ← okOr "cross" (WizMeta.infer (env) F [] t)
+        check (match WizMeta.infer (env { eqTyLevelled := true }) F [] t with | .error (.fail _) => true | _ => false)
+          "levelled: formed across sorts" },
+    { name := "review: All and hyps compute at a field only when its quantity is a literal", run := fun _ => do
+        let I : Tm := .unit 1
+        let X : Tm := .lam (.unit 1)
+        let P : Tm := .lam (.lam Tm.True')
+        -- context: q : Qty, xs : ⟦arg q (Enum 2) (λ_. ret tt)⟧ X tt
+        for (qv, ok) in [((Tm.var 1, Tm.var 0), false), ((.qlit .many, .qlit .many), true)] do
+          let Γ : WizMeta.Ctx := [.interp 0 I (.darg qv.2 (.enum 2) (.lam (.dret .tt))) X .tt, .qty]
+          let t : Tm := .ann .tt (.dall 0 0 I (.darg qv.1 (.enum 2) (.lam (.dret .tt))) X P .tt (.var 0))
+          let r := WizMeta.infer (env) F Γ t
+          check ((match r with | .ok _ => true | _ => false) == ok) s!"tt : All … at quantity {repr qv.1}: {repr (r.toOption)}" },
+    { name := "review: the description templates are types (presupposition), at every index type and motive level", run := fun _ => do
+        let E := env
+        let mut n := 0
+        for (l, I, i) in indexPool do
+          let descs : List Tm := [.dret i, .drec (.qlit .one) i (.dret i),
+            .darg (.qlit .many) I (.lam (.dret i.shift)),
+            .dhrec (.qlit .many) I (.lam (.var 0)) (.dret i)]
+          let _ ← okOr "Tm.familyTy" (WizMeta.inferSort E F [] (Tm.familyTy l I))
+          for S in [Tm.enum 2, I] do
+            if (← okOr "field" (WizMeta.inferSort E F [] S)).equiv l.succ then
+              let _ ← okOr "Tm.argContTy" (WizMeta.inferSort E F [] (Tm.argContTy l I S))
+              let _ ← okOr "Tm.hrecIndexTy" (WizMeta.inferSort E F [] (Tm.hrecIndexTy l I S))
+          for v in [(0 : WizMeta.Lvl), 1, 2] do
+            let k ← okOr "Tm.delimMotiveTy" (WizMeta.inferSort E F [] (Tm.delimMotiveTy l v I))
+            check (k.equiv (.imax l.succ.succ v.succ)) s!"Tm.delimMotiveTy sort {k.pretty}"
+            let ΓP : WizMeta.Ctx := [Tm.delimMotiveTy l v I]
+            let (a, b, c, h) := Tm.delimMethodTys l v I.shift (.var 0)
+            for T in [a, b, c, h] do
+              let _ ← okOr s!"Tm.delimMethodTys l={l.pretty} v={v.pretty}" (WizMeta.inferSort E F ΓP T)
+            for D in descs do
+              let _ ← okOr "a sample description" (WizMeta.check E F [] D (.desc l I))
+              let _ ← okOr "Tm.indMotiveTy" (WizMeta.inferSort E F [] (Tm.indMotiveTy l v I D))
+              let Γm : WizMeta.Ctx := [Tm.indMotiveTy l v I D]
+              let _ ← okOr s!"Tm.indMethodTy l={l.pretty} v={v.pretty}" (WizMeta.inferSort E F Γm (Tm.indMethodTy l v I.shift D.shift (.var 0)))
+              -- at a variable family (a λ such as `muFamily` makes β-redexes, which `infer` does not type)
+              let ΓX : WizMeta.Ctx := [Tm.familyTy l I]
+              let _ ← okOr "predTy" (WizMeta.inferSort E F ΓX (Tm.predTy l v I.shift (.var 0)))
+              let _ ← okOr "sectionTy" (WizMeta.inferSort E F (Tm.predTy l v I.shift (.var 0) :: ΓX) (Tm.sectionTy l v (I.shiftN 2) (.var 1) (.var 0)))
+              n := n + 1
+        check (n == 60) s!"{n} instances" },
+    { name := "review: the corpus with every built type checked to be a type, and subject reduction on it", run := fun _ => do
+        match tally (diffTerms 400) { kernelOpts with checkTemplates := true } with
+        | .error e => throw (IO.userError e)
+        | .ok t =>
+          unless t.disagree.isEmpty do
+            throw (IO.userError ("\n".intercalate (t.disagree.map fun (i, w, tm) => s!"#{i}: {w}\n    {tm}")))
+        let sg ← match refSig with | .ok sg => pure sg | .error e => throw (IO.userError e)
+        let mut reduced := 0
+        let mut uninferable := 0
+        for tm in diffTerms 400 do
+          let some t := WizMeta.ofTerm [] tm.toTerm | continue
+          match WizMeta.inferClosed sg t kernelOpts with
+          | .ok _ =>
+            match subjRed kernelOpts sg [] t with
+            | .ok true => reduced := reduced + 1
+            | .ok false => pure ()
+            -- a reduct with a β- or projection redex on a constructor (`(x, y).2` in an
+            -- equation's reduct) is typable by the rules but not inferable by a bidirectional
+            -- checker: not a counterexample, counted apart
+            | .error (.fail "cannot infer a type for this term") => uninferable := uninferable + 1
+            | .error e => throw (IO.userError s!"subject reduction fails ({e}): {tm.pretty 0}")
+          | .error _ => pure ()
+        IO.println s!"    {reduced} accepted relevant terms reduced to a weak-head normal form of their type ({uninferable} reducts not inferable)"
+        check (reduced ≥ 50) s!"too few: {reduced}" },
+    { name := "review: weakening and substitution commute with the translation (every subterm of the corpus)", run := fun _ => do
+        let s : Term ZeroOneMany := MTm.toTerm (enum 2)
+        let some s' := WizMeta.ofTerm [] s | throw (IO.userError "enum")
+        let mut n := 0
+        for tm in diffTerms 400 do
+          for (u, _) in subterms tm.toTerm do
+            let some u' := WizMeta.ofTerm [] u | continue
+            for cut in [0, 1] do
+              let ρ : Nat → Nat := fun i => if i ≥ cut then i + 1 else i
+              check (WizMeta.ofTerm [] (u.lift 1 cut) == some (u'.ren ρ)) s!"lift 1 {cut}: {repr u}"
+            check (WizMeta.ofTerm [] (u.instantiateAt 0 s) == some (u'.inst s')) s!"instantiate 0: {repr u}"
+            let σ : Nat → Tm := fun i => if i == 0 then .var 0 else if i == 1 then s' else .var (i - 1)
+            check (WizMeta.ofTerm [] (u.instantiateAt 1 s) == some (u'.sub σ)) s!"instantiate 1: {repr u}"
+            n := n + 1
+        IO.println s!"    {n} subterms"
+        check (n ≥ 5000) s!"too few subterms: {n}" }
   ]
 
 def groups : List Group :=
