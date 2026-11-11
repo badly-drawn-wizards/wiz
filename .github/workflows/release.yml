@@ -7,8 +7,9 @@
 #
 # The build is outside Nix, with elan's Lean, whose bundled clang and sysroot make the
 # binaries depend only on glibc (>= 2.27) and the C runtime libraries, as Lean's own
-# releases do: no /nix/store paths. `wiz build` and grail still need a C compiler and
-# GMP (`apt install gcc libgmp-dev`; the self-hosted toolchain needs libgc-dev too).
+# releases do: no /nix/store paths. The tarball also carries its own C toolchain
+# (share/wiz/cc, scripts/bundle-cc.sh, stage 26f): Lean's clang and lld, a glibc 2.27
+# sysroot, static GMP and Boehm GC, so `wiz build` and grail need nothing installed.
 name: release
 
 on:
@@ -19,6 +20,7 @@ on:
     branches: [master]
     paths:
       - scripts/release-tarball.sh
+      - scripts/bundle-cc.sh
       - .github/workflows/release.yml
       - Tower/**
   workflow_dispatch:
@@ -62,20 +64,59 @@ jobs:
             ldd .lake/build/bin/$b
             if ldd .lake/build/bin/$b | grep -q /nix/store; then echo "$b links /nix/store paths"; exit 1; fi
           done
+      - name: Cache the bundled C toolchain
+        uses: actions/cache@v4
+        with:
+          path: cc-bundle
+          key: release-cc-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'scripts/bundle-cc.sh') }}
+      - name: The bundled C toolchain (clang, glibc 2.27 sysroot, static GMP and GC)
+        run: |
+          if [ ! -x cc-bundle/bin/cc ]; then
+            sudo apt-get install -y -q m4 >/dev/null # GMP's configure
+            scripts/bundle-cc.sh cc-bundle
+          fi
+          du -sh cc-bundle
       - name: Tarball
         run: |
           mkdir -p dist
-          scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz
+          scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz .lake/build/bin "$(git rev-parse HEAD)" cc-bundle
           ls -l dist
-      - name: The tarball works on a plain Ubuntu (with gcc and GMP), and tower installs it
+      - name: The tarball builds programs with no C compiler or GMP installed (plain Ubuntu 18.04 and 24.04 containers)
+        # the acceptance test of 26f: the images have no gcc, cc, clang, libgmp or headers;
+        # 18.04 has glibc 2.27, the oldest the toolchain and its programs promise to run on
         run: |
-          sudo apt-get install -y -q gcc libgmp-dev >/dev/null
+          t=$(mktemp -d)
+          tar -xzf dist/wiz-x86_64-linux.tar.gz -C "$t"
+          d=$(mktemp -d); cp examples/io.wiz examples/import_c.wiz "$d/"
+          mkdir -p "$d/pkg"; cp examples/io.wiz "$d/pkg/Main.wiz"
+          printf 'import Grail\ndef package : Package := Package.new "hello"\n  |> Package.exe "hello" "Main.wiz"\n' > "$d/pkg/grail.wiz"
+          cat > "$d/smoke.sh" <<'EOF'
+          set -eux
+          export PATH=/t/wiz-x86_64-linux/bin:$PATH HOME=/tmp/home
+          mkdir -p $HOME; cp -R /w /tmp/w; cd /tmp/w
+          for c in cc gcc clang; do if command -v $c; then echo "$c is installed"; exit 1; fi; done
+          for h in /usr/include/stdio.h /usr/include/gmp.h /usr/include/x86_64-linux-gnu/gmp.h; do
+            if [ -e $h ]; then echo "$h is installed"; exit 1; fi
+          done
+          wiz check io.wiz
+          wiz build io.wiz -o io
+          ./io > out; head -3 out
+          wiz run io.wiz > out; head -1 out
+          wiz build io.wiz -o io-llvm --llvm
+          ./io-llvm > out; head -1 out
+          wiz run import_c.wiz
+          cd pkg; grail build; .grail/bin/hello > out; head -1 out
+          EOF
+          for img in ubuntu:18.04 ubuntu:24.04; do
+            echo "::group::$img"
+            docker run --rm -v "$t:/t:ro" -v "$d:/w:ro" "$img" sh /w/smoke.sh
+            echo "::endgroup::"
+          done
+      - name: tower installs the tarball (and its wiz builds with the bundled cc)
+        run: |
           t=$(mktemp -d)
           tar -xzf dist/wiz-x86_64-linux.tar.gz -C "$t"
           d=$(mktemp -d); cp examples/io.wiz "$d/"; cd "$d"
-          "$t/wiz-x86_64-linux/bin/wiz" check io.wiz
-          "$t/wiz-x86_64-linux/bin/wiz" build io.wiz -o io
-          ./io | head -3
           # tower: install this tarball as a toolchain from a local release directory
           rel=$(mktemp -d); mkdir -p "$rel/nightly"
           cp "$GITHUB_WORKSPACE"/dist/* "$rel/nightly/"
@@ -88,6 +129,7 @@ jobs:
           $tower default nightly
           echo "$d/.tower/bin" >> "$GITHUB_PATH"
           PATH="$d/.tower/bin:$PATH" wiz check io.wiz
+          PATH="$d/.tower/bin:$PATH" wiz build io.wiz -o io && ./io | head -1
           PATH="$d/.tower/bin:$PATH" tower toolchain list
       - uses: actions/upload-artifact@v4
         with:

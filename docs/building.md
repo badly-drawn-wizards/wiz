@@ -31,6 +31,36 @@ the artifact cache never serves a stale one. The only one today is the C runtime
 `Wiz/Compiler/C.lean`). A new `include_str` goes in such a library too, not in `Wiz`
 (a `needs` on `Wiz` would rebuild all of it); `scripts/test-embed.sh` checks the setup (CI runs it in the build job).
 
+## What `wiz build` links
+
+`wiz build` turns a program into C (or LLVM IR) and hands it to a C compiler with the
+runtime (`runtime/wiz.c`), which needs GMP; programs from the self-hosted compiler also
+need the Boehm GC. The release toolchains (what tower installs) bring all of that in
+`share/wiz/cc` (docs/stages/26-tower.md, 26f): clang, a glibc 2.27 sysroot, and GMP and the
+GC as static libraries. A checkout uses `cc` and the system's GMP unless you pass
+`--cc`/`--cflags`/`--ldflags` (the Nix dev shell writes them to `grail.local.wiz`).
+
+**Licences of what is linked into your programs.** The Wiz Runtime Library Exception
+(COPYING.RUNTIME) lets you distribute programs compiled by Wiz under any terms, but it
+covers only Wiz's own runtime. Other libraries keep their licences:
+
+* **GMP** is under the LGPL-3.0-or-later (or GPL-2.0-or-later). The release toolchain
+  links it **statically**, as Lean does for Lean programs. If you give someone a binary
+  built that way under terms that are not the (L)GPL, the LGPL asks you to: say that the
+  program uses GMP and include the GNU LGPL and GPL texts (they are in
+  `share/wiz/cc/LICENSES/`); offer GMP's source (or say where to get it); and let the
+  recipient relink your program with a modified GMP, which for a static binary means also
+  providing your program's object files (or its source). If your program's source is
+  public anyway, you have done the last part already. Using programs yourself, or in a
+  company without giving them to others, creates no obligations.
+* With **dynamic** GMP only the notice and the source offer remain, because the user can
+  replace `libgmp.so`. To build that way, use the system's compiler and GMP:
+  `--cc gcc` (with `libgmp-dev` installed; tower: `tower set cc gcc`).
+* The **Boehm GC** (self-hosted runtime) has an MIT-style licence: keep its notice
+  (`share/wiz/cc/LICENSES/bdwgc-README.QUICK`).
+* glibc is linked dynamically, as with any C program. The compiler-rt builtins clang
+  links in (Apache-2.0 with LLVM exception) need no notice.
+
 ## Continuous integration
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
