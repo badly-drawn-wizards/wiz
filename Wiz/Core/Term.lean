@@ -374,6 +374,15 @@ def structTailName : Name := "fields✝"
 /-- The marker's domain, `Enum [fields✝]`. -/
 def structTailDom {R : Type} : Term R := .enum [structTailName]
 
+/-- The **seal** of a `sealed inductive T` (stage 22k): an axiom `T.seal✝ : Type`, private
+to `T`'s module, that `T`'s index tail mentions (`(0 phantom✝ : T.seal✝) → … → Unit`,
+like a phantom type parameter, 22e). A constant without a value is compared by name, so
+a declaration of the same shape that can't write the name is not convertible to `T`. -/
+def sealName (T : Name) : Name := T ++ ".seal✝"
+
+/-- The registration of a seal, `seal:T` (with the seal's name), among the builtins. -/
+def sealKey (T : Name) : Name := "seal:" ++ T
+
 /-- A binder name of a phantom tail (`phantomName` or `structTailName`). -/
 def isPhantomName (x : Name) : Bool := x == phantomName || x == structTailName
 
@@ -467,6 +476,10 @@ structure Globals (R : Type) where
   (`Term.instLevels`). Built by `insert` from the value inserted with it; a pure function
   of that value, so it can't change what unfolding gives (`instValue`). -/
   instCache : Std.HashMap Name (List (List Level × Thunk (Term R))) := {}
+  /-- the library module each declaration was made in (none for the main file's). Read by
+  erasure only (a type with a native representation is built and taken apart only in its
+  own module, `nativeHome?` in `Compiler/Erase.lean`); the kernel ignores it. -/
+  declModule : Std.HashMap Name String := {}
 
 namespace Globals
 
@@ -496,7 +509,9 @@ def insert (g : Globals R) (d : Decl R) : Globals R :=
   { g with
     decls := g.decls.insert d.name d
     order := if g.decls.contains d.name then g.order else g.order.push d.name
-    instCache := g.cacheInst d }
+    instCache := g.cacheInst d
+    declModule := if g.module == "" || g.decls.contains d.name then g.declModule
+      else g.declModule.insert d.name g.module }
 
 /-- The value `v` of the global `n` (its parameters `ps`) at the levels `us`:
 `v.instLevels ps us`, from `instCache` when `insert` computed it. (The cache is keyed by
