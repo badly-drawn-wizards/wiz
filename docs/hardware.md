@@ -27,11 +27,20 @@ structure Light (r : HwTy → Type) where
   waiting : r Bit
   deriving Bundle, Lens
 
+def nextPhase {r : HwTy → Type} [Hw r] (p : r B2) (waiting tick : r Bit) : r B2 :=
+  let advance := tick &&& (waiting ||| ~~~(p === 0));
+  if advance then (if p === 2 then 0 else p + 1) else p
+
 def lightStep {r : HwTy → Type} [Hw r] (s : Light r) (x : Sensors r) : r (HwTy.prod Light.code B2) :=
   let p := nextPhase s.phase s.waiting x.tick;
-  let w := Hw.and (Hw.or s.waiting x.car) (isPhase p 0);
+  let w := (s.waiting ||| x.car) &&& (p === 0);
   Hw.pair (Light.pack (Lens.set Light.waitingL (Lens.set Light.phaseL s p) w)) s.phase
 ```
+
+Signals have operators (section H14 S2): numerals take their width from the type,
+`+ - *`, bitwise `&&& ||| ^^^ ~~~`, shifts `<<< >>>`, comparisons `=== =/= <ᵤ …` (one
+bit), and `if c then a else b` on a one-bit signal is a multiplexer. They are the `Hw`
+operations, so the netlist is the same as with `Hw.and`, `Hw.mux` and friends.
 
 `Light.phaseL : Lens (Light r) (r B2)` is a lens at every representation; `Hdl.zoom` runs
 a sub-step on one field, and `Hdl.zoom_frame` says the other fields are untouched (the
@@ -66,8 +75,8 @@ refines xs t : Circuit.stateAt lightC (Trace.map embI xs) t = embS (Mealy.stateA
 
 `embS` maps an abstract state to the circuit's state (the colour's code, the flag as a
 bit), `embI` an abstract input to the sensors. `step_ok` has one case per abstract state
-and input, each closed, so the kernel evaluates the circuit's step on known bits, gates
-and all (`refl`).
+and input, each closed, so each is `rfl`: the kernel evaluates the circuit's step on
+known bits, gates and all.
 
 When a step obligation has *symbolic* bits (a register left as a variable, a control
 input not embedded from Booleans), `rfl` gets stuck on gates such as `Hw.and 0 x` (finding
@@ -107,7 +116,10 @@ invariant, fairness and ranking for liveness) apply to the same traces.
 `Circuit.netlist`, `Verilog.emit`, `Testbench.verilog` (a self-checking bench replaying
 a value simulation), `Vcd.ofRun` (a waveform) and `Pcf.emit` (pin constraints) take the
 same circuit to an iCE40 board; the hdl test group checks that the value simulation, the
-netlist simulation and Icarus Verilog agree. Memories (`HwTy.mem`) become Verilog arrays,
+netlist simulation and Icarus Verilog agree. For long simulations in compiled programs,
+`Design.simFast` (`lib/Hdl/Sim.wiz`, PR #199) runs the netlist about 25 times faster than
+the value simulation; the value simulation stays the reference that proofs are about.
+Memories (`HwTy.mem`) become Verilog arrays,
 which yosys maps to the iCE40's block RAM; at values a memory is a function, so a proof
 about it is pointwise (`HwTy.El.memRead_write_miss`).
 

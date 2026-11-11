@@ -22,18 +22,16 @@ structure Sensors (r : HwTy → Type) where
   tick : r Bit
   deriving Bundle
 
-def isPhase {r : HwTy → Type} [Hw r] (p : r B2) (k : Nat) : r Bit := Hw.eq p (Hw.lit 2 k)
-
--- the next phase: written with gates, as a designer would (`advance` = tick and, when
--- green, a car)
+-- the next phase, written with gates and operators as a designer would (`advance`: a
+-- tick and, when green, a car); `if` on a signal is a multiplexer
 def nextPhase {r : HwTy → Type} [Hw r] (p : r B2) (waiting tick : r Bit) : r B2 :=
-  let advance := Hw.and tick (Hw.or waiting (Hw.not (isPhase p 0)));
-  Hw.mux advance (Hw.mux (isPhase p 2) (Hw.lit 2 0) (Hw.add p (Hw.lit 2 1))) p
+  let advance := tick &&& (waiting ||| ~~~(p === 0));
+  if advance then (if p === 2 then 0 else p + 1) else p
 
 def lightStep {r : HwTy → Type} [Hw r] (s : Light r) (x : Sensors r) : r (HwTy.prod Light.code B2) :=
   let p := nextPhase s.phase s.waiting x.tick;
   -- a car is remembered until the light leaves green
-  let w := Hw.and (Hw.or s.waiting x.car) (isPhase p 0);
+  let w := (s.waiting ||| x.car) &&& (p === 0);
   Hw.pair (Light.pack (Lens.set Light.waitingL (Lens.set Light.phaseL s p) w)) s.phase
 
 def Light.start : Light HwTy.El := Light.mk (BitVec.ofNat 2 2) (BitVec.ofNat 1 0)
@@ -71,7 +69,7 @@ def specStep (s : Abs) (x : Bool × Bool) : Abs × Color :=
 
 ------------------------------------------------------------------------------------
 -- 3. The representation map and the refinement: one step, for every abstract state and
--- input (24 cases, each closed: evaluation, `refl`). No case needs the circuit to be written with
+-- input (24 cases, each closed: `rfl`). No case needs the circuit to be written with
 -- multiplexers only: the gates evaluate because every bit is known in each case.
 
 def Color.code : Color → BitVec 2
@@ -84,30 +82,30 @@ def embI (x : Bool × Bool) : HwTy.El Sensors.code := Bundle.toEl Sensors.bundle
 def step_cases : (c : Color) → (w car tick : Bool) →
     Circuit.stepEl lightC (embS (Abs.mk c w)) (embI (car, tick)) =
       (embS (specStep (Abs.mk c w) (car, tick)).1, Color.code (specStep (Abs.mk c w) (car, tick)).2)
-  | .green, .true, .true, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .green .true)) (embI (.true, .true)))
-  | .green, .true, .true, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .green .true)) (embI (.true, .false)))
-  | .green, .true, .false, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .green .true)) (embI (.false, .true)))
-  | .green, .true, .false, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .green .true)) (embI (.false, .false)))
-  | .green, .false, .true, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .green .false)) (embI (.true, .true)))
-  | .green, .false, .true, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .green .false)) (embI (.true, .false)))
-  | .green, .false, .false, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .green .false)) (embI (.false, .true)))
-  | .green, .false, .false, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .green .false)) (embI (.false, .false)))
-  | .yellow, .true, .true, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .yellow .true)) (embI (.true, .true)))
-  | .yellow, .true, .true, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .yellow .true)) (embI (.true, .false)))
-  | .yellow, .true, .false, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .yellow .true)) (embI (.false, .true)))
-  | .yellow, .true, .false, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .yellow .true)) (embI (.false, .false)))
-  | .yellow, .false, .true, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .yellow .false)) (embI (.true, .true)))
-  | .yellow, .false, .true, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .yellow .false)) (embI (.true, .false)))
-  | .yellow, .false, .false, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .yellow .false)) (embI (.false, .true)))
-  | .yellow, .false, .false, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .yellow .false)) (embI (.false, .false)))
-  | .red, .true, .true, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .red .true)) (embI (.true, .true)))
-  | .red, .true, .true, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .red .true)) (embI (.true, .false)))
-  | .red, .true, .false, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .red .true)) (embI (.false, .true)))
-  | .red, .true, .false, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .red .true)) (embI (.false, .false)))
-  | .red, .false, .true, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .red .false)) (embI (.true, .true)))
-  | .red, .false, .true, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .red .false)) (embI (.true, .false)))
-  | .red, .false, .false, .true => refl (Circuit.stepEl lightC (embS (Abs.mk .red .false)) (embI (.false, .true)))
-  | .red, .false, .false, .false => refl (Circuit.stepEl lightC (embS (Abs.mk .red .false)) (embI (.false, .false)))
+  | .green, .true, .true, .true => rfl
+  | .green, .true, .true, .false => rfl
+  | .green, .true, .false, .true => rfl
+  | .green, .true, .false, .false => rfl
+  | .green, .false, .true, .true => rfl
+  | .green, .false, .true, .false => rfl
+  | .green, .false, .false, .true => rfl
+  | .green, .false, .false, .false => rfl
+  | .yellow, .true, .true, .true => rfl
+  | .yellow, .true, .true, .false => rfl
+  | .yellow, .true, .false, .true => rfl
+  | .yellow, .true, .false, .false => rfl
+  | .yellow, .false, .true, .true => rfl
+  | .yellow, .false, .true, .false => rfl
+  | .yellow, .false, .false, .true => rfl
+  | .yellow, .false, .false, .false => rfl
+  | .red, .true, .true, .true => rfl
+  | .red, .true, .true, .false => rfl
+  | .red, .true, .false, .true => rfl
+  | .red, .true, .false, .false => rfl
+  | .red, .false, .true, .true => rfl
+  | .red, .false, .true, .false => rfl
+  | .red, .false, .false, .true => rfl
+  | .red, .false, .false, .false => rfl
 def step_ok (s : Abs) (x : Bool × Bool) :
     Circuit.stepEl lightC (embS s) (embI x) = (embS (specStep s x).1, Color.code (specStep s x).2) :=
   step_cases s.color s.waiting x.1 x.2
@@ -152,8 +150,7 @@ def light_safe (xs : Trace (Bool × Bool)) (t : Nat)
 def light_phase (xs : Trace (Bool × Bool)) (t : Nat) :
     (Bundle.ofEl Light.bundle (Circuit.stateAt lightC (Trace.map embI xs) t)).phase =
       Color.code (Mealy.stateAt specStep Abs.start xs t).color :=
-  @Eq.congrArg (HwTy.El lightC.st) (BitVec 2) (fun (s : HwTy.El lightC.st) => (Bundle.ofEl Light.bundle s).phase)
-    (Circuit.stateAt lightC (Trace.map embI xs) t) (embS (Mealy.stateAt specStep Abs.start xs t)) (refines xs t)
+  Eq.congrArg (fun (s : HwTy.El lightC.st) => (Bundle.ofEl Light.bundle s).phase) (refines xs t)
 
 ------------------------------------------------------------------------------------
 -- 5. Simulation, the netlist and Verilog: what a simulation shows is what the theorems
