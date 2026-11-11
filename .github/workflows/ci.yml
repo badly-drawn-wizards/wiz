@@ -282,8 +282,13 @@ jobs:
           cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Generate the exercise tree
         run: python3 scripts/mkexercises.py . "$RUNNER_TEMP/exercises"
-      - name: Cache its Lake build
-        uses: actions/cache@v4
+      # Its Lake build (~1.7 GB) is saved only by pushes to master; pull requests restore
+      # master's and don't save their own. Saved from every PR, these filled the
+      # repository's 10 GB Actions cache and evicted the main Lake builds that the test
+      # shards restore (#147).
+      - name: Restore its Lake build
+        id: exercises-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/exercises/.lake
           key: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}
@@ -295,6 +300,12 @@ jobs:
           # (the dev shell comes from this checkout's flake; the build runs in the copy)
           cd "$RUNNER_TEMP/exercises"
           lake build wiz grail tests
+      - name: Save its Lake build (master only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.exercises-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/exercises/.lake
+          key: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}
 
   # Stage-1 C of the toolchain = stage-2 C (scripts/fixpoint.sh). Scheduled runs use the
   # default branch (master).
