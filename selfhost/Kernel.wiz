@@ -1893,7 +1893,14 @@ def TCtx.erase (c : TCtx) : TCtx := match c with
   | .mk e t l _ m => .mk e t l .true m
 -- (P2) inside a proof
 def TCtx.inProof (c : TCtx) : TCtx := match c with
-  | .mk e t l x _ => .mk e t l x 1
+  | .mk e t l x m => match Nat.beq m 3 with
+    | .true => c
+    | .false => .mk e t l x 1
+-- (tests only) no marker requirement anywhere below, and proofs evaluated: the
+-- well-typedness pre-check of the differential tests, so that a term which needs markers
+-- inside a proof reaches the marking passes (review F2; `lazyProofs := false` in Lean)
+def TCtx.noMarkers (c : TCtx) : TCtx := match c with
+  | .mk e t l x _ => .mk e t l x 3
 -- (P2) at the term a marker wraps, and below it
 def TCtx.atMarked (c : TCtx) : TCtx := match c with
   | .mk e t l x m => match m with
@@ -2572,7 +2579,9 @@ def isProofTy (c : TCtx) (ty : Val) : Bool := match kernelLazyProofs with
     | .some l => lvlIsZero l
     | .none => .false
 def TCtx.relevant (c : TCtx) : TCtx := match c with
-  | .mk e t l x _ => .mk e t l x 0
+  | .mk e t l x m => match Nat.beq m 3 with
+    | .true => c
+    | .false => .mk e t l x 0
 def modeAt (c : TCtx) (ty : Val) : TCtx := match Nat.beq (TCtx.pm c) 1 with
   | .false => c
   | .true => match sortOf c ty with
@@ -3006,7 +3015,18 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
     | r => r
 -- (given) `check` matches on the type's shape (`whnf`), and answers with the type it got
 -- (and with the proof marker's requirement)
-def check (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := checkM (modeAt c0 ty) t ty
+def check (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := match unknownSortInProof c0 t ty with
+  | .some m => .err m
+  | .none => checkM (modeAt c0 ty) t ty
+-- inside a proof, a sort that can't be computed is an error as in relevant mode
+-- (`requireMarker`), for a term the requirement would apply to (review F4)
+def unknownSortInProof (c : TCtx) (t : Tm) (ty : Val) : Option String := match Nat.beq (TCtx.pm c) 1 with
+  | .false => .none
+  | .true => match Bool.and kernelLazyProofs (Bool.not (neutralShaped t)) with
+    | .false => .none
+    | .true => match sortOf c ty with
+      | .none => .some (String.append "internal error: cannot compute the sort of " (showVal c ty))
+      | .some _ => .none
 -- (the mode is decided by the type: `modeAt`)
 def checkM (c : TCtx) (t : Tm) (ty : Val) : TyRes := match requireMarker c t ty with
   | .some m => .err m
@@ -3209,8 +3229,15 @@ mutual
 -- `TCtx.pm c = 1`: `t` is inside a proof, where a proof needs no marker but a relevant
 -- subterm is marked as anywhere else: the mode is decided by the type, `modeAt`)
 def markCheck (c0 : TCtx) (t : Tm) (ty : Val) : Tm := match t with
-  | .prf _ _ => t
+  -- a marker already in the term (read-back writes a proof back as `prf.{0} …`): kept, and
+  -- gone into as `underMarker` does, since the kernel checks a proof's relevant subterms
+  -- (review F1)
+  | .prf l t' => .prf l (markCheck (markUnder c0 l) t' ty)
   | _ => markCheckM (modeAt c0 ty) t ty
+-- the context below a marker `prf.{l}` (`underMarker`)
+def markUnder (c : TCtx) (l : Lvl) : TCtx := match lvlIsZero l with
+  | .true => TCtx.inProof c
+  | .false => TCtx.atMarked c
 def markCheckM (c : TCtx) (t : Tm) (ty : Val) : Tm := match TCtx.pm c with
   -- relevant mode: wrap if the sort may be `0`; inside a marker at `0` it is a proof
   | .zero => (match markDecide c t ty with
@@ -3263,7 +3290,8 @@ def markCheckW : TCtx → Tm → Val → Tm
   | c, t, _ => MR.tm (markInferW c t)
 -- mark `t`, and compute its type (`.none`: it could not be computed)
 def markInfer (c : TCtx) (t : Tm) : MR := match t with
-  | .prf _ t' => .mk t (MR.ty (markInfer c t'))
+  | .prf l t' => match markInferW (markUnder c l) t' with
+    | .mk t'' ty => .mk (.prf l t'') ty
   | _ => match markInferW c t with
     | .mk t' ty => match ty with
       -- (inside a proof nothing is wrapped; the relevant subterms were marked on the way)
@@ -3293,7 +3321,9 @@ def markLetIn (c : TCtx) (ty v b : Tm) (k : Tm → Tm → Tm → Tm) : MR :=
   | .true => (match markInfer (TCtx.define c (suspend (TCtx.env c) v) tyv) b with
     | .mk b' tb => .mk (k ty' (markCheck (modeIf c (match tb with
         | .some tbv => isProofTy c tbv
-        | .none => .true)) v tyv) b') tb)
+        -- (the body's type unknown: marked as in relevant mode, as `Mark.lean` does;
+        -- over-marking is harmless, under-marking an "unmarked proof", review F3)
+        | .none => .false)) v tyv) b') tb)
   | .false =>
     let v' := markCheck c v tyv;
     match markInfer (TCtx.define c (eval (TCtx.env c) v') tyv) b with

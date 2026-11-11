@@ -479,7 +479,11 @@ of the expected one.)
 
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) := do
-  -- (given) P2: inside a proof, a term that is not a proof is a relevant term again
+  -- (given) P2: inside a proof, a term that is not a proof is a relevant term again. A
+  -- sort that can't be computed is an error here as it is in relevant mode (`requireMarker`),
+  -- for a term the requirement would apply to, not a silent "proof mode" (review F4)
+  if ctx.proof && ({ ctx with proof := false }).wantsMarker t && (ctx.sortOf? ty).isNone then
+    let _ ← ctx.sortOf ty
   let ctx := ctx.modeAt ty
   -- (given) P2: outside a proof, a proof is marked or neutral-shaped
   ctx.requireMarker t ty

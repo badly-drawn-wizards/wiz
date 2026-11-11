@@ -3507,7 +3507,9 @@ def leanVerdict (t : MTm) (mark : Bool := true) : String :=
   -- term as it is). The pass evaluates the term as it goes and checks nothing, like the
   -- elaborator whose output it is made for; a random term can be ill-typed, so it is
   -- marked only if it is well typed (checked first without the marker's requirement).
-  if mark && !(infer (R := ZeroOneMany) { globals := g, proof := true } t.toTerm).toBool then "error" else
+  -- (the pre-check requires no markers at all, also inside proofs, so that a term whose
+  -- proofs hold relevant subterms reaches the pass: review F2)
+  if mark && !(infer (R := ZeroOneMany) { globals := { g with lazyProofs := false } } t.toTerm).toBool then "error" else
   let tm := if mark then (Mark.infer (R := ZeroOneMany) { globals := g } t.toTerm).1 else t.toTerm
   match infer (R := ZeroOneMany) { globals := g } tm with
   | .ok (ty, _) => match MTm.ofTerm (quote g 0 ty) with
@@ -3521,7 +3523,7 @@ def wizVerdict : String :=
   "def rawVerdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n" ++
   "def markedVerdict (t : Tm) : String := rawVerdict (MR.tm (markInfer empty t))\n" ++
   -- (a random term is marked only if it is well typed: the pass checks nothing)
-  "def verdict (t : Tm) : String := match infer (TCtx.inProof empty) t with\n  | .err _ => \"error\"\n  | .ok _ _ => markedVerdict t\n"
+  "def verdict (t : Tm) : String := match infer (TCtx.noMarkers empty) t with\n  | .err _ => \"error\"\n  | .ok _ _ => markedVerdict t\n"
 
 /-- What the Lean kernel says about a declaration: `ok` or `error`. -/
 def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
@@ -3529,7 +3531,7 @@ def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
   let g := leanGlobals ()
   -- (marked only if well typed, as in `leanVerdict`)
   let pre : TCM Unit := do
-    let ctx : Ctx ZeroOneMany := { globals := g, proof := true }
+    let ctx : Ctx ZeroOneMany := { globals := { g with lazyProofs := false } }
     let _ ← Wiz.checkType ctx ty.toTerm
     if let some v := v then
       let _ ← Wiz.check ctx v.toTerm (ctx.eval ty.toTerm)
@@ -4398,6 +4400,30 @@ def selfHostGroup : Group where
           "def main : IO Unit := do\n" ++ String.join calls ++
           s!"  IO.println (lamShape (quote 0 (eval .nil {cV.toWiz})))\n"
         ioRun (kernel ++ "\n" ++ main) (String.join (cases.map fun (_, _, nfOk) => if nfOk then "ok\nok\n" else "ok\nerror\n") ++ "lam\n") },
+    { name := "F1 (prf-review): the marking passes go inside a marker already in the term (both kernels)", run := fun _ => do
+        -- a marker written by read-back (`prf.{0} (refl B2 ((), fun x => x))`, a solved hole)
+        -- holds a relevant subterm whose proof needs a marker of its own (I-1)
+        let surf := "def B2 : Type := (x : Unit) × (True → True)\n" ++
+          "def P (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : Prop := True\n" ++
+          "def t3 (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : P h := ()\n" ++
+          "def t5 : P (refl ((), fun x => x)) := t3 (refl ((), fun x => x))\n" ++
+          "def t4 : P (refl ((), fun x => x)) := t3 _\n"
+        ok surf
+        -- raw: prf.{0} ((fun _ => () : a = a → True) (refl B2 a)) : True, a := ((), fun x => x)
+        let B2 : MTm := .sigma (.unit 0) (.pi .ptrue .ptrue)
+        let a : MTm := .ann (.pair .star (.lam (.var 0))) B2
+        let v : MTm := .prf (.num 0) (.app (.ann (.lam .star) (.pi (.eq B2 a a) .ptrue)) (.refl B2 a))
+        let ty : MTm := .ptrue
+        let g : Globals ZeroOneMany := {}
+        let d : Decl ZeroOneMany := { name := "f1", levelParams := [], type := ty.toTerm, value := some v.toTerm }
+        -- as it is, the kernel rejects it (the λ inside `refl`'s relevant `a` is unmarked) ...
+        unless (addDecl g d) matches .error (.unmarkedProof ..) do throw (IO.userError "the unmarked term was not rejected for its inner proof")
+        -- ... and the pass marks it
+        if let .error e := addDecl g (Decl.withMarks g d) then throw (IO.userError s!"the marked term is rejected: {e}")
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def okD (v : Tm) : String := match checkDecl .ptrue (.some v) with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n" ++
+          s!"def main : IO Unit := do\n  IO.println (okD {v.toWiz});\n  IO.println (okD (markClosed {v.toWiz} .ptrue))\n"
+        ioRun (kernel ++ "\n" ++ main) "error\nok\n" },
     { name := "P2 (R1): a level-generic term is marked at its level, and is a suspended proof at the instance 0 (both kernels)", run := fun _ => do
         -- k.{u} (A : Sort u) (a : A) : A := (fun x => x : A → A) a
         let ty : MTm := .pi (.sortParam "u") (.pi (.var 0) (.var 1))
@@ -4430,7 +4456,7 @@ def selfHostGroup : Group where
         let expected := decls.map leanDeclVerdict
         unless (expected.filter (· == "ok")).length ≥ 60 do throw (IO.userError "too few valid declarations")
         unless (expected.filter (· == "error")).length ≥ 30 do throw (IO.userError "too few invalid declarations")
-        let decl := "def wellTyped (ty : Tm) (v0 : Option Tm) : Bool := match inferUniv (TCtx.inProof empty) ty with\n  | .err _ => .false\n  | .ok _ _ => match v0 with\n    | .none => .true\n    | .some v => match check (TCtx.inProof empty) v (eval .nil ty) with\n      | .ok _ _ => .true\n      | .err _ => .false\n" ++
+        let decl := "def wellTyped (ty : Tm) (v0 : Option Tm) : Bool := match inferUniv (TCtx.noMarkers empty) ty with\n  | .err _ => .false\n  | .ok _ _ => match v0 with\n    | .none => .true\n    | .some v => match check (TCtx.noMarkers empty) v (eval .nil ty) with\n      | .ok _ _ => .true\n      | .err _ => .false\n" ++
           "def declVerdict (ty0 : Tm) (v0 : Option Tm) : String := match wellTyped ty0 v0 with\n  | .false => \"error\"\n  | .true =>\n    let ty := markTy empty ty0;\n    match checkDecl ty (match v0 with\n      | .some v => .some (markClosed v ty)\n      | .none => .none) with\n    | .ok _ _ => \"ok\"\n    | .err _ => \"error\"\n"
         let calls := decls.map fun (_, v, ty) =>
           s!"(declVerdict {ty.toWiz} {match v with | some v => s!"(.some {v.toWiz})" | none => ".none"})"

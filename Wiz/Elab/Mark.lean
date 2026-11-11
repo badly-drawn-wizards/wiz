@@ -48,6 +48,11 @@ private def sortLevel? (ty : Option (VTy R)) : Option Level :=
   | some (.sort l) => some l
   | _ => none
 
+/-- The context below a marker `prf.{l}` already in the term, as the kernel's
+`Ctx.underMarker`: a proof at level `0`, marked (its `fun`s exempt) otherwise. -/
+def underMarker (ctx : Ctx R) (l : Level) : Ctx R :=
+  if l.isZero then { ctx with proof := true, marked := false } else { ctx with marked := true }
+
 mutual
 
 /-- Mark `t`, which is checked against `ty`. (`ctx.marked`: `t` is the body of a marked
@@ -55,7 +60,10 @@ mutual
 needs no marker but a relevant subterm is marked as anywhere else; `Check.lean`.) -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : Term R :=
   match t with
-  | .prf .. => t
+  -- a marker already in the term (from read-back, which writes a proof back as
+  -- `prf.{0} …`, or from the user): kept, and gone into as the kernel does (`underMarker`):
+  -- since I-1 the kernel checks the relevant subterms of a proof too (review F1)
+  | .prf l t' => .prf l (check (underMarker ctx l) t' ty)
   | _ =>
     -- the mode of a subterm is decided by its type
     let ctx := ctx.modeAt ty
@@ -112,7 +120,10 @@ partial def checkRest (ctx : Ctx R) (t : Term R) (ty : VTy R) : Term R :=
 /-- Mark `t`, and compute its type (`none`: it could not be computed). -/
 partial def infer (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
   match t with
-  | .prf _ t' => (t, (infer ctx t').2)
+  | .prf l t' =>
+    -- (as in `check`; the marker is not added again)
+    let (t', ty) := inferCore (underMarker ctx l) t'
+    (.prf l t', ty)
   | _ =>
     let (t', ty?) := inferCore ctx t
     -- (inside a proof nothing is wrapped; the relevant subterms were marked on the way)
