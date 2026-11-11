@@ -588,6 +588,19 @@ def openGoals (st : TacState R) : ElabM R (Array (LocalCtx R × VTy R)) :=
     let some gl := st.goals[i]? | pure none
     pure (if ← gl.isOpen then some (gl.ctx, gl.ty) else none)
 
+/-- (13b) The types of `ctx`'s variables, by level, evaluated again with their holes
+solved: a binder's type may have been a hole when it was bound (`e : Ex P` with `Ex`'s
+implicit `A` solved later), and conversion and the kernel's inference take the types
+as they are (a hole is rigid there). -/
+def zonkedTypes (ctx : LocalCtx R) : ElabM R (Array (VTy R)) := do
+  let g ← getGlobals
+  let mut tys : Array (VTy R) := #[]
+  for v in ctx.types.reverse do
+    let j := tys.size
+    let t ← zonk j (quote g j (← forceMeta v))
+    tys := tys.push (eval g (ctx.env.drop (ctx.lvl - j)) t)
+  pure tys
+
 /-- (13b) The two sides of an equation that `rfl` is about to prove by `refl`/`reflTy`
 must be definitionally equal **in the elaborator's view** (`Globals.elabView`: a type
 with a private constructor, field or observation of another module is opaque). The
@@ -611,11 +624,7 @@ def sameSides (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R U
     let b ← again b
     -- the types of the variables too: a binder's type may have been a hole when it was
     -- bound, and conversion (which infers the types of neutrals) takes holes as rigid
-    let mut tys : Array (VTy R) := #[]
-    for v in ctx.types.reverse do
-      let j := tys.size
-      let t ← zonk j (quote g j (← forceMeta v))
-      tys := tys.push (eval g (ctx.env.drop (ctx.lvl - j)) t)
+    let tys ← zonkedTypes ctx
     -- what the kernel does with `refl a`: its type `a = a` against `a = b`, both
     -- computed afresh (an equation at a Σ or Π computes by components, and then holds by
     -- η where the sides themselves are not compared by `conv`)
@@ -2371,7 +2380,10 @@ partial def elabBy (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM 
   for (gl, t) in st.unchecked do
     let t ← zonk gl.ctx.lvl t
     unless t.mvars.isEmpty do throwAt ctx.info "assign: the assigned term still has holes at the end of the tactic block"
-    match (← get).kernelInfer (gl.kernelCtx (← getGlobals)) t with
+    -- (the context's types with their holes solved: they may have been holes when the
+    -- goal was made, and the kernel takes a hole as rigid)
+    let kctx := { gl.kernelCtx (← getGlobals) with types := (← zonkedTypes gl.ctx).toList.reverse }
+    match (← get).kernelInfer kctx t with
     | .ok ty => unifyAt gl.ctx stx gl.ty ty
     | .error e => throwAt ctx.info s!"assign: {e}"
   pure m
