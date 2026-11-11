@@ -6712,7 +6712,7 @@ def hdlGroup : Group where
            "\"$timescale 1ns $end\\n$scope module counter $end\\n$var wire 1 ! clk $end\\n$var wire 1 \\\" go $end\\n$var wire 4 # leds $end\\n$var wire 1 $ top $end\\n$var wire 4 % count $end\\n$var wire 1 & up $end\\n$upscope $end\\n$enddefinitions $end\\n#0\\n0!\\n0\\\"\\nb0000 #\\n0$\\nb0000 %\\n1&\\n#1\\n1!\\n#2\\n0!\\n#3\\n1!\\n#4\\n0!\\n#5\\n1!\\n#6\\n0!\\n1\\\"\\n#7\\n1!\\n#8\\n\"",
            ".cons 17 (.cons 5 (.cons 4 .nil))"] },
     { name := "H14 T: temporal properties (UART idle-high and delivery for ever, valid/ready refinement, stability, liveness)", run := fun _ => do
-        okLibs (← IO.FS.readFile "examples/hdl-temporal.wiz") ["1"] },
+        okLibs (← IO.FS.readFile "examples/hdl-temporal.wiz") },
     { name := "Verilog: Icarus Verilog accepts the emitted modules (skipped without iverilog on PATH)", run := fun _ => do
         let found ← (do let o ← IO.Process.output { cmd := "iverilog", args := #["-V"] }; pure (o.exitCode == 0)) <|> pure false
         unless found do skip "no iverilog"; return

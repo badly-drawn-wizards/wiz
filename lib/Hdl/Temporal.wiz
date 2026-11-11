@@ -247,7 +247,10 @@ def Mealy.simulates {S T I J O P : Type} (impl : Mealy S I O) (spec : Mealy T J 
   | .zero => rfl
   | .succ t => Eq.trans
       (Eq.congrArg (fun (s : S) => (impl s (embI (xs t))).1) (Mealy.simulates impl spec embS embI embO h s0 xs t))
-      (Eq.congrArg (fun (r : S × O) => r.1) (h (Mealy.stateAt spec s0 xs t) (xs t)))
+      (@Eq.congrArg (S × O) S (fun (r : S × O) => r.1)
+        (impl (embS (Mealy.stateAt spec s0 xs t)) (embI (xs t)))
+        (embS (spec (Mealy.stateAt spec s0 xs t) (xs t)).1, embO (spec (Mealy.stateAt spec s0 xs t) (xs t)).2)
+        (h (Mealy.stateAt spec s0 xs t) (xs t)))
 def Mealy.simulatesOut {S T I J O P : Type} (impl : Mealy S I O) (spec : Mealy T J P)
     (embS : T → S) (embI : J → I) (embO : P → O)
     (h : (s : T) → (x : J) → impl (embS s) (embI x) = (embS (spec s x).1, embO (spec s x).2))
@@ -255,7 +258,10 @@ def Mealy.simulatesOut {S T I J O P : Type} (impl : Mealy S I O) (spec : Mealy T
     Mealy.outAt impl (embS s0) (Trace.map embI xs) t = embO (Mealy.outAt spec s0 xs t) :=
   Eq.trans
     (Eq.congrArg (fun (s : S) => (impl s (embI (xs t))).2) (Mealy.simulates impl spec embS embI embO h s0 xs t))
-    (Eq.congrArg (fun (r : S × O) => r.2) (h (Mealy.stateAt spec s0 xs t) (xs t)))
+    (@Eq.congrArg (S × O) O (fun (r : S × O) => r.2)
+      (impl (embS (Mealy.stateAt spec s0 xs t)) (embI (xs t)))
+      (embS (spec (Mealy.stateAt spec s0 xs t) (xs t)).1, embO (spec (Mealy.stateAt spec s0 xs t) (xs t)).2)
+      (h (Mealy.stateAt spec s0 xs t) (xs t)))
 
 -- Refinement with stuttering (TLA): if, on the states the run can reach (`inv`), every
 -- step is a step of the abstract relation `next` or leaves the abstraction `f`
