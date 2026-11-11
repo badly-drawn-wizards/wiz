@@ -39,6 +39,10 @@ def num (v : RVal) : M Nat :=
   | some n => pure n
   | none => throw "a number operation on a value that is not a number"
 
+/-- The number of bits beyond which `nat.pow` and `nat.shiftLeft` are refused: Lean's
+`Nat.pow` panics (ending the process, the language server too) on exponents from 2^24. -/
+def maxBits : Nat := 16777216
+
 mutual
 
 partial def run (code : Code) (env : List RVal) : ETerm → M RVal
@@ -50,7 +54,11 @@ partial def run (code : Code) (env : List RVal) : ETerm → M RVal
     tick
     match code[n]? with
     | some (.prim .unreachable #[.global op]) =>
-      pure (if RVal.nativeArity op == 0 then .nat 0 else .native op #[])
+      -- (only `nat.zero` is a constant the interpreter knows; a foreign constant's value
+      -- is whatever C returns, which only compiled code sees)
+      if op == "nat.zero" then pure (.nat 0)
+      else if RVal.nativeArity op == 0 then throw s!"{n} is a foreign constant ({op}): only compiled code has its value"
+      else pure (.native op #[])
     | some t => run code [] t
     | none => throw s!"no code for {n}"
   | .lam _ b => pure (.clo env b)
@@ -83,7 +91,15 @@ partial def apply (code : Code) (f a : RVal) : M RVal := do
 
 partial def fireNative (op : Name) (args : Array RVal) : M RVal := do
   if op.startsWith "nat." then
-    if let some r := natNative? op (← args.mapM num) then return .nat r
+    let ns ← args.mapM num
+    match op, ns with
+    | "nat.pow", #[a, b] =>
+      if a > 1 && a.log2 * b ≥ maxBits || a > 1 && b ≥ maxBits then
+        throw s!"nat.pow: the result would have more than {maxBits} bits"
+    | "nat.shiftLeft", #[a, b] =>
+      if a > 0 && b ≥ maxBits then throw s!"nat.shiftLeft: the result would have more than {maxBits} bits"
+    | _, _ => pure ()
+    if let some r := natNative? op ns then return .nat r
   match op with
   | "nat.beq" => do let a ← num args[0]!; let b ← num args[1]!; pure (.obj (if a == b then 1 else 0) #[])
   | "nat.blt" => do let a ← num args[0]!; let b ← num args[1]!; pure (.obj (if a < b then 1 else 0) #[])
