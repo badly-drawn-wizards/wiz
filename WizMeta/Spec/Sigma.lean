@@ -30,7 +30,7 @@ inductive Sigma : Rules
         Γ ⊢ .fst p ≡ .fst p' ∶ A, Γ ⊢ .snd p ≡ .snd p' ∶ B.inst (.fst p)],
       Γ ⊢ p ≡ p' ∶ .sigma q (some s) A B⟩
   | cong {Γ : Ctx} {A A' B B' : Tm} {i j s s' : Lvl} {q : Q} : s.Equiv (.max i j) → s'.Equiv (.max i j) →
-      Sigma ⟨[Γ ⊢ A ≡ A' ∶ .sort i, (A :: Γ) ⊢ B ≡ B' ∶ .sort j],
+      Sigma ⟨[Γ ⊢ A ∶ .sort i, Γ ⊢ A ≡ A' ∶ .sort i, (A :: Γ) ⊢ B ≡ B' ∶ .sort j],
         Γ ⊢ .sigma q (some s) A B ≡ .sigma q (some s') A' B' ∶ .sort s⟩
   | fstCong {Γ : Ctx} {p p' A B : Tm} {s : Lvl} {q : Q} : Sigma ⟨[Γ ⊢ p ≡ p' ∶ .sigma q (some s) A B], Γ ⊢ .fst p ≡ .fst p' ∶ A⟩
   | sndCong {Γ : Ctx} {p p' A B : Tm} {s : Lvl} {q : Q} : Sigma ⟨[Γ ⊢ p ≡ p' ∶ .sigma q (some s) A B], Γ ⊢ .snd p ≡ .snd p' ∶ B.inst (.fst p)⟩

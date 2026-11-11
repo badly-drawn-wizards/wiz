@@ -17,17 +17,22 @@ namespace WizMeta.Spec
 inductive Pi : Rules
   | form {Γ : Ctx} {A B : Tm} {i j s : Lvl} {q : Q} : s.Equiv (.imax i j) →
       Pi ⟨[Γ ⊢ A ∶ .sort i, (A :: Γ) ⊢ B ∶ .sort j], Γ ⊢ .pi q (some s) A B ∶ .sort s⟩
-  | lam {Γ : Ctx} {A B b : Tm} {s : Lvl} {q : Q} : Pi ⟨[Γ ⊢ .pi q (some s) A B ∶ .sort s, (A :: Γ) ⊢ b ∶ B], Γ ⊢ .lam b ∶ .pi q (some s) A B⟩
+  -- `Γ ⊢ A ∶ Sort i` in the rules with a premise under the binder: the renaming lemma needs
+  -- the binder's type typed to extend the target context (it is not reachable from
+  -- `Γ ⊢ Π A B ∶ Sort s` without an inversion lemma)
+  | lam {Γ : Ctx} {A B b : Tm} {s i : Lvl} {q : Q} :
+      Pi ⟨[Γ ⊢ .pi q (some s) A B ∶ .sort s, Γ ⊢ A ∶ .sort i, (A :: Γ) ⊢ b ∶ B], Γ ⊢ .lam b ∶ .pi q (some s) A B⟩
   | app {Γ : Ctx} {f A B a : Tm} {s : Lvl} {q : Q} : Pi ⟨[Γ ⊢ f ∶ .pi q (some s) A B, Γ ⊢ a ∶ A], Γ ⊢ .app f a ∶ B.inst a⟩
-  | beta {Γ : Ctx} {A B b a : Tm} {s : Lvl} {q : Q} : Pi ⟨[Γ ⊢ .pi q (some s) A B ∶ .sort s, (A :: Γ) ⊢ b ∶ B, Γ ⊢ a ∶ A],
+  | beta {Γ : Ctx} {A B b a : Tm} {s i : Lvl} {q : Q} :
+      Pi ⟨[Γ ⊢ .pi q (some s) A B ∶ .sort s, Γ ⊢ A ∶ .sort i, (A :: Γ) ⊢ b ∶ B, Γ ⊢ a ∶ A],
       Γ ⊢ .app (.lam b) a ⟶ b.inst a ∶ B.inst a⟩
   | appRed {Γ : Ctx} {f f' A B a : Tm} {s : Lvl} {q : Q} : Pi ⟨[Γ ⊢ f ⟶ f' ∶ .pi q (some s) A B, Γ ⊢ a ∶ A], Γ ⊢ .app f a ⟶ .app f' a ∶ B.inst a⟩
   /-- η, as extensionality -/
-  | eta {Γ : Ctx} {f A B g : Tm} {s : Lvl} {q : Q} : Pi ⟨[Γ ⊢ f ∶ .pi q (some s) A B, Γ ⊢ g ∶ .pi q (some s) A B,
+  | eta {Γ : Ctx} {f A B g : Tm} {s i : Lvl} {q : Q} : Pi ⟨[Γ ⊢ f ∶ .pi q (some s) A B, Γ ⊢ g ∶ .pi q (some s) A B, Γ ⊢ A ∶ .sort i,
         (A :: Γ) ⊢ .app f.shift (.var 0) ≡ .app g.shift (.var 0) ∶ B],
       Γ ⊢ f ≡ g ∶ .pi q (some s) A B⟩
   | cong {Γ : Ctx} {A A' B B' : Tm} {i j s s' : Lvl} {q : Q} : s.Equiv (.imax i j) → s'.Equiv (.imax i j) →
-      Pi ⟨[Γ ⊢ A ≡ A' ∶ .sort i, (A :: Γ) ⊢ B ≡ B' ∶ .sort j],
+      Pi ⟨[Γ ⊢ A ∶ .sort i, Γ ⊢ A ≡ A' ∶ .sort i, (A :: Γ) ⊢ B ≡ B' ∶ .sort j],
         Γ ⊢ .pi q (some s) A B ≡ .pi q (some s') A' B' ∶ .sort s⟩
   | appCong {Γ : Ctx} {f f' A B a a' : Tm} {s : Lvl} {q : Q} : Pi ⟨[Γ ⊢ f ≡ f' ∶ .pi q (some s) A B, Γ ⊢ a ≡ a' ∶ A], Γ ⊢ .app f a ≡ .app f' a' ∶ B.inst a⟩
   /-- funext: an equation between functions is pointwise -/

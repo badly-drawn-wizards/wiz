@@ -4,6 +4,8 @@ import WizMeta.Templates
 import WizMeta.Reducts
 import WizMeta.Spec.Fragments
 import WizMeta.Spec.Laws
+import WizMeta.Spec.Weakening
+import WizMeta.Spec.Substitution
 import WizMeta.Checker
 import WizMeta.Translate
 

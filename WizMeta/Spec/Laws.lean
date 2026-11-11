@@ -4,10 +4,18 @@ import WizMeta.Spec.Fragments
 # The first laws: statements, and the substitution calculus
 
 Weakening and substitution are the first lemmas of every later proof (and substitution is
-the law both of the kernel's 2026-11-10 `False` proofs broke). They are **stated** here for
-any system, as properties `Weakening R`, `Substitution R`; they are **not proved** for
-T0. With rules as data the proof is one closure property per rule set
-(`Rules.RenStable` below is the shape for renaming), file by file.
+the law both of the kernel's 2026-11-10 `False` proofs broke).
+
+**Proved** (for T0 and T1, both `EqTy` variants; `Weakening.lean`, `Substitution.lean`):
+renaming along any type-respecting renaming (`T0_rename`, `T1_rename`) and substitution
+along any type-respecting substitution (`T0_subst`, `T1_subst`), for every judgment form,
+hence `T0_weakening` and `T0_substitution`. They need two hypotheses that the statements
+below omit: the signature is closed (`Sig.Closed`; otherwise `Γ ⊢ c ∶ var 5` is derivable
+and its weakening is not, so `Weakening (T0 sg)` is **false** for such an `sg`) and the
+context is well formed (would follow from context validity, not proved).
+
+**Stated, not proved** (below): the plain forms of the two laws, `Validity` and
+`SubjectReduction`, for any system; and everything for Tprog (ULift, Desc, μ, payloads).
 
 Proved here: the laws of renaming and substitution on terms that those proofs start
 from (identity and composition of renamings, and that substitution by variables is the
@@ -73,7 +81,11 @@ def SubstitutionEq (R : Rules) : Prop :=
 def Validity (R : Rules) : Prop :=
   ∀ Γ t A, Derivable R (Γ ⊢ t ∶ A) → ∃ l, Derivable R (Γ ⊢ A ∶ .sort l)
 
-/-- Reduction preserves typing. -/
+/-- Reduction preserves typing. As stated (the redex's typing is a conclusion, not a
+hypothesis) it is false for the levelled variant: `Core.eqTySortApart`,
+`Unit/Empty/ULift.eqTyApart`, `Pi/Sigma.eqTyApart` and `Eq.eqTyFormers` derive steps from
+`A ≡ B` with `A`, `B` in different sorts, which `EqTyLevelled.form` does not form. The
+usual form (`Γ ⊢ t ∶ A → Γ ⊢ t ⟶ u ∶ A' → Γ ⊢ u ∶ A`) does not have the problem. -/
 def SubjectReduction (R : Rules) : Prop :=
   ∀ Γ t u A, Derivable R (Γ ⊢ t ⟶ u ∶ A) → Derivable R (Γ ⊢ t ∶ A) ∧ Derivable R (Γ ⊢ u ∶ A)
 
