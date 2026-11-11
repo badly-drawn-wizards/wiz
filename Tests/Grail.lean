@@ -254,7 +254,7 @@ def modulesGroup : Group where
                 ("runFrontend", runFrontend src init)]
         let src := "import Q.M\n#eval three\n#eval shown\ndef x := Od.s\n"
         for (how, s) in ← paths src do
-          checkEq (how, "[4:10: error: 'Od.s' is private to module Q.M, 2:1: info: 3, 3:1: info: \"Ev.s (Od.s Ev.z)\"]")
+          checkEq (how, "[2:1: info: 3, 3:1: info: \"Ev.s (Od.s Ev.z)\", 4:10: error: 'Od.s' is private to module Q.M]")
             (how, toString (s.messages.toList.map (·.render src))) },
     { name := "trust is part of a module's cache key (22f)", run := fun _ => do
         -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
