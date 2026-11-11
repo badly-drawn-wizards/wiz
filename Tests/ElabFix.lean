@@ -325,7 +325,7 @@ def group : Group where
         -- η still holds by `rfl`, also at an equation formed while a type was a hole
         okLib ("import Prelude\ndef GP {S : Type} (f : S → S) : Prop := (s : S) → f s = s\nstructure One where\n  a : Nat\n" ++
           "def x2 : GP (fun (s : One) => One.mk s.a) := fun s => rfl\ndef x6 : GP (fun (s : Unit) => ()) := fun s => rfl") },
-    { name := "rfl at an equation that has computed: one refl when the sides are convertible, castRefl only for a field's cast (structure eta)", run := fun _ => do
+    { name := "rfl at an equation that has computed: one refl when the sides are convertible, no axiom (structure eta)", run := fun _ => do
         let pair2 := "import Prelude\nstructure Pair2 (A B : Type) where\n  fst : A\n  snd : B\n"
         let lens := "def Store (A S : Type) : Type := A × (A → S)\ndef Lens (S A : Type) : Type := S → Store A S\n" ++
           "def Lens.GetPut {S A : Type} (l : Lens S A) : Prop := (s : S) → (l s).2 (l s).1 = s\n" ++
@@ -353,10 +353,10 @@ def group : Group where
           "rfl: the two sides are not definitionally equal"
         failsLib "import Prelude\ndef bad {A B : Type} (p q : A × B) : (p.1, q.2) = p := rfl"
           "rfl: the two sides are not definitionally equal"
-        -- a field equation written by hand with a cast at a type variable: `castRefl`, and
-        -- `#print axioms` says so; the same equation on its own is not `rfl`
-        okLib ("import Prelude\ndef h {A B : Type} (s : A × B) : (0 e : s.1 = s.1) × ((cast (refl B) s.2 : B) = s.2) := rfl\n" ++
-          "#print axioms h\n") ["'h' depends on axioms: [castRefl]"]
+        -- a field equation written by hand with a cast at a type variable is not proved by
+        -- `rfl` (no axiom is added silently: write `castRefl`)
+        failsLib "import Prelude\ndef h {A B : Type} (s : A × B) : (0 e : s.1 = s.1) × ((cast (refl B) s.2 : B) = s.2) := rfl"
+          "rfl: the two sides are not definitionally equal"
         failsLib "import Prelude\ndef h2 {B : Type} (b : B) : (cast (refl B) b : B) = b := rfl"
           "rfl: the two sides are not definitionally equal" },
     { name := "private constructors, observations and fields: the public API (13b)", run := fun _ => do

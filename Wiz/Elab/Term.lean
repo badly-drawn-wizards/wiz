@@ -648,30 +648,6 @@ def sidesOk (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R Boo
   try sameSides ctx A? a b; pure true
   catch _ => set s; pure false
 
-/-- The level `u` with `Sort l ≡ Sort (u+1)`, read off a sort `l` that is a successor. -/
-partial def levelPred? : Level → Option Level
-  | .succ l => some l
-  | .max a b => do return .max (← levelPred? a) (← levelPred? b)
-  | _ => none
-
-/-- `castRefl.{u} X (reflTy X) u : cast X X _ u = u` for the equation `cast X Y e u =_A b`,
-when `X ≡ Y` and `u ≡ b` (`rflProof`, at a field equation that computed with a cast).
-`none` if the left side is not such a cast, `castRefl` (lib/Prelude.wiz) is not declared,
-or `X`'s universe is not known. `#print axioms` then lists `castRefl`. -/
-def castReflProof (ctx : LocalCtx R) (A a b : Val R) : ElabM R (Option (Term R)) := do
-  let g ← getGlobals
-  unless g.contains "castRefl" do return none
-  let .neutral (.cast X Y _ u) #[] := whnf (← force (← refreshVal ctx a)) | return none
-  let A ← refreshVal ctx A
-  let b ← refreshVal ctx b
-  let tys ← zonkedTypes ctx
-  unless convTy g tys X Y && convTy g tys X A do return none
-  let some l := typeSort? g tys X | return none
-  let some lu := levelPred? l | return none
-  unless ← sidesOk ctx (some X) u b do return none
-  let Xt := quote g ctx.lvl X
-  return some (.app (.app (.app (.const "castRefl" [lu]) Xt) (.reflTy Xt)) (quote g ctx.lvl u))
-
 /-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
 `True`s and `a = b`, an equation of functions a Π. (13n) At a Σ that `vEq` computed from
 `a = b` with `a ≡ b`, the proof is one `refl a` (`eqSigmaSides?`). Otherwise build it by the same shape
@@ -681,16 +657,8 @@ partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R))
   let g ← getGlobals
   match ← force ty with
   | .neutral (.eq A a b) #[] =>
-    -- a field's equation after the first carries a cast along the earlier fields'
-    -- equations, `cast X Y e u = v`, which without regularity at `X` (P1: only inert
-    -- types) is not `u = v` definitionally; the axiom `castRefl` proves it. Only when the
-    -- whole equation could not be proved by one `refl` (below) and only if `X ≡ Y` and
-    -- `u ≡ v`, so `rfl` still proves only equations whose sides are convertible
-    if ← sidesOk ctx (some A) a b then
-      return some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
-    if let some p ← castReflProof ctx A a b then return some p
-    sameSides ctx (some A) a b   -- the error
-    pure none
+    sameSides ctx (some A) a b
+    pure (some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a)))
   | .neutral (.eqTy X Y) #[] =>
     sameSides ctx none X Y
     pure (some (.reflTy (quote g ctx.lvl X)))

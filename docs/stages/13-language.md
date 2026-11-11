@@ -176,11 +176,9 @@ the optional exercise 4.16, done by recording the equation in its computed form.
 is used: `#print axioms` lists none for these proofs. An equation at a constructor
 (`List.cons x xs = List.cons x xs`) works the same way, through its payload's Σ.
 
-**The fallback uses an axiom.** If a field equation `cast X Y e u = v` is reached anyway
-(a Σ of equations written by hand), and `X ≡ Y` and `u ≡ v`, the field is proved by
-`castRefl (refl X) u`. `castRefl` is the Prelude's axiom, so `#print axioms` then lists
-it. `rfl` on such an equation alone, `cast e b = b`, is still an error. In both cases
-`rfl` proves only equations whose sides are convertible.
+Nothing else changed. A Σ of field equations written by hand, with a cast at a type
+variable in it, is still not `rfl`. `rfl` never adds an axiom; whoever needs that
+equation writes `castRefl` themselves.
 
 `lib/Optic.wiz` now states the `Pair2` lens laws with their implicit arguments
 (`@Lens.Lawful (Pair2 A B) A …`), so that the equation has computed when `rfl` sees it.
