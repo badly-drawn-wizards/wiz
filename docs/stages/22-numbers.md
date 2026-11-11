@@ -348,10 +348,18 @@ a type of its own:
   block). A sealed type without a native representation is still useful: it has no
   look-alikes (a brand).
 
-**Native representations are found by the seal.** Erasure and readback look for a
+**The words.** `lib/Word.wiz` declares `sealed inductive UIntN` and `IntN` with
+`| private mk`: they are different types (`IntN.toUIntN`/`UIntN.toIntN` convert, natively
+the identity on the bits), so instance resolution needs no special rule to give `I32`
+signed and `U32` unsigned division (7e). Outside the module a word is built with `ofNat`
+or, by a caller that knows the value is below `2^w` but not `w` at runtime (`BitVec.mk`,
+used by `concat` and `ofVec`), with the unchecked `UIntN.ofBitsTrusted`.
+
+**Native representations are found by the seal.** `attribute [implemented_by mk get]
+T.mk` requires `sealed inductive T` and a private `T.mk` (an error otherwise). Erasure and readback look for a
 registered seal among the index type's domains (through an indexed family's Σ), not at
 the `μ`'s display name, so the representation is a function of the type up to
-conversion (`repr-shape.md` (I1)).
+conversion (`repr-shape.md` (I1)); the display name is no longer consulted.
 
 **Who keeps a look-alike out** (three layers, `wiz-notes/repr-shape.md` §4C.6):
 
