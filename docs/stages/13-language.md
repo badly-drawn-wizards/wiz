@@ -356,7 +356,7 @@ type go through `OfNat` like any argument (7e).
 
 **Patterns.** The match compiler (`patView`) reads constructors, applications, tuples and
 parentheses. Patterns are now macro-expanded first (`expandPattern`, `Wiz/Elab/Term.lean`;
-in `match` and in definitions by equations): every syntax kind other than those forms is
+in `match` and in definitions by equations; inside `⟨…⟩` and `x@p` (13g–h) too): every syntax kind other than those forms is
 expanded if a macro applies, so `[x, y]` becomes `List.cons x (List.cons y List.nil)`,
 and a user notation whose expansion is a constructor application works in patterns too.
 Tests: group `language`.

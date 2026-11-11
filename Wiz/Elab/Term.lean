@@ -266,7 +266,7 @@ is, for `patView` to accept or reject. -/
 partial def expandPattern (stx : Syntax) : ElabM R Syntax := do
   match stx with
   | .node info k args =>
-    if k == "null" || k == "term.paren" || k == "term.tuple" || k == "term.app" then
+    if k == "null" || k == "term.paren" || k == "term.tuple" || k == "term.app" || k == "term.anon" || k == "term.asPat" then
       return .node info k (← args.mapM expandPattern)
     if k == "term.ident" || k == "term.hole" || k == "term.dotIdent" then return stx
     match ← expand? stx with

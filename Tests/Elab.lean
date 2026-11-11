@@ -4600,13 +4600,16 @@ def languageGroup : Group where
           "#eval xs\n#eval ys\n#eval zs\n#eval ws ++ [6]\n#eval List.length ([] : List Nat)")
           [".cons 1 (.cons 2 (.cons 3 .nil))", ".nil", ".cons .nil (.cons (.cons 1 .nil) (.cons (.cons 2 (.cons 3 .nil)) .nil))",
            ".cons 4 (.cons 5 (.cons 6 .nil))", "0"] },
-    { name := "... in patterns: [], [x], [x, y], inside tuples and constructors", run := fun _ =>
+    { name := "... in patterns: [], [x], [x, y], inside tuples, constructors, ⟨…⟩ and x@p", run := fun _ =>
         okLib ("import Prelude\ndef len : List Nat → Nat\n  | [] => 0\n  | [_] => 1\n  | [_, _] => 2\n  | _ => 9\n" ++
           "def f (p : List Nat × List Nat) : Nat := match p with\n  | ([x], [y, z]) => Nat.add x (Nat.add y z)\n" ++
           "  | ([], _) => 0\n  | (.cons x _, _) => x\n" ++
           "def g : List (List Nat) → Nat\n  | .cons [x] _ => x\n  | _ => 0\n" ++
-          "#eval len []\n#eval len [5]\n#eval len [5, 6]\n#eval len [5, 6, 7]\n#eval f ([1], [2, 3])\n#eval g [[7]]")
-          ["0", "1", "2", "9", "6", "7"] },
+          "structure P where\n  a : List Nat\n  b : Nat\ndef h : P → Nat\n  | ⟨[x], _⟩ => x\n  | _ => 0\n" ++
+          "def k : List Nat → List Nat\n  | xs@[_] => xs ++ xs\n  | xs => xs\n" ++
+          "#eval len []\n#eval len [5]\n#eval len [5, 6]\n#eval len [5, 6, 7]\n#eval f ([1], [2, 3])\n#eval g [[7]]\n" ++
+          "#eval h ⟨[8], 0⟩\n#eval k [9]")
+          ["0", "1", "2", "9", "6", "7", "8", ".cons 9 (.cons 9 .nil)"] },
     { name := "... numerals in a list literal are elaborated at the element type (7e)", run := fun _ => do
         let lib ← preludeLoader
         let int ← IO.FS.readFile "lib/Int.wiz"
