@@ -1611,8 +1611,10 @@ def serialGroup : Group where
           "say (gotShow (Bytes.append all all) h)",
           "Fd.write pty.controller all", "Serial.drain pty.controller",
           "k ← Fd.readExactlyWithin t 256 (Duration.seconds 5)", "say (gotShow all k)",
-          "Fd.close t", "Fd.close pty.controller"]
-          "yes\nyes\n1\nall yes\nall yes\n" },
+          "Fd.close t", "e ← Fd.readWithin pty.controller 10 (Duration.seconds 5)",
+          r#"say (match e with | .ready .none => "end" | .ready (.some _) => "data?" | .timedOut => "timed out")"#,
+          "Fd.close pty.controller"]
+          "yes\nyes\n1\nall yes\nall yes\nend\n" },
     { name := "a terminal that does not answer in time", run := fun _ =>
         serialRun ["pty ← Pty.open",
           "t ← Serial.open pty.path (SerialConfig.raw8N1 .b9600)",

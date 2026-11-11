@@ -465,6 +465,8 @@ before it changed), and a new module `lib/Serial.wiz` with its C shim `lib/seria
   `Serial.drain` (`tcdrain`), `Serial.isTty`.
 * **Pseudo-terminals.** `Pty.open : EIO Pty` (`posix_openpt`): `controller : Fd` is
   the device's side, `path` the terminal side another program opens like a serial port.
+  Once nothing has the terminal side open, reading the controller is the end of the file
+  (Linux reports EIO there; a controller from `Pty.open` turns that into the end).
   A Linux pseudo-terminal always has 8 data bits and no parity (configuring 7E1 on one
   is the error above); rates, stop bits and flow control are kept, though nothing is
   slowed down.

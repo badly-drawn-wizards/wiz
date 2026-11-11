@@ -166,12 +166,14 @@ def Serial.withPort {A : Type} (path : String) (c : SerialConfig) (body : Fd →
 -- A pseudo-terminal: `controller` is the side a program plays the device on, `path`
 -- names the terminal side (`/dev/pts/N`), which another program opens like a serial
 -- port. The terminal side starts in the usual cooked mode: configure it (or the
--- controller) with `Serial.configure` before sending binary data.
+-- controller) with `Serial.configure` before sending binary data. When nothing has the
+-- terminal side open any more, reading the controller gives the end of the file.
 structure Pty where
   controller : Fd
   path : String
 def Pty.open : EIO Pty := do
   m ← Serial.checkHigh "posix_openpt" Pty.openRaw;
   f ← EIO.lift (Fd.adopt m);
+  EIO.lift (Fd.markPtyController f);
   p ← EIO.lift (Pty.nameRaw m);
   EIO.pure (Pty.mk f p)

@@ -1972,7 +1972,7 @@ WIZ_API uint64_t wiz_sys_file_seek(void *p, uint64_t whence, uint64_t off, int b
    faster. Closing twice is an error (EBADF), never a second close(2) of a number
    that may have been reused. */
 
-typedef struct { int fd; int owned; } wiz_sys_fdh;
+typedef struct { int fd; int owned; int eio_eof; } wiz_sys_fdh;
 WIZ_API void wiz_sys_fd_free(void *p) {
   wiz_sys_fdh *h = (wiz_sys_fdh *)p;
   if (h->fd >= 0 && h->owned) close(h->fd);
@@ -1980,7 +1980,7 @@ WIZ_API void wiz_sys_fd_free(void *p) {
 }
 static void *wiz_sys_fd_wrap(int fd, int owned) {
   wiz_sys_fdh *h = (wiz_sys_fdh *)malloc(sizeof *h);
-  h->fd = fd; h->owned = owned;
+  h->fd = fd; h->owned = owned; h->eio_eof = 0;
   return h;
 }
 /* access 0 read, 1 write, 2 both; flags: 1 create, 2 truncate, 4 append, 8 exclusive,
@@ -2005,6 +2005,9 @@ WIZ_API void *wiz_sys_fd_std(uint64_t i) { return wiz_sys_fd_wrap((int)(i < 3 ? 
 WIZ_API void *wiz_sys_fd_adopt(uint64_t fd) { return wiz_sys_fd_wrap((int)fd, 1); }
 /* the descriptor number, for C shims (-1 once closed: a huge Nat) */
 WIZ_API uint64_t wiz_sys_fd_raw(void *p) { return (uint64_t)(int64_t)((wiz_sys_fdh *)p)->fd; }
+/* a pseudo-terminal's controller: EIO from a read is the end of the file (Linux says
+   EIO once no one has the terminal side open) */
+WIZ_API void wiz_sys_fd_set_pty(void *p) { ((wiz_sys_fdh *)p)->eio_eof = 1; }
 /* nothing: a use of the handle, so it stays open until here (`Fd.withRaw`) */
 WIZ_API void wiz_sys_fd_keep(void *p) { (void)p; }
 WIZ_API uint64_t wiz_sys_fd_close(void *p) {
@@ -2067,8 +2070,7 @@ WIZ_API wiz_val wiz_sys_fd_read(void *p, uint64_t n, int timed, uint64_t ns) {
     if (k == 0) { wiz_sys_err = WIZ_SYS_EOF; free(d); return wiz_bytes_empty(); }
     if (errno == EINTR) continue;
     if (errno == EAGAIN && timed) continue; /* spurious readiness on a non-blocking fd */
-    /* EIO on a pty master whose other side is closed is its end of file */
-    wiz_sys_err = errno; free(d); return wiz_bytes_empty();
+    wiz_sys_err = errno == EIO && h->eio_eof ? WIZ_SYS_EOF : errno; free(d); return wiz_bytes_empty();
   }
 }
 /* exactly n bytes, unless the end (WIZ_SYS_EOF) or the deadline (WIZ_SYS_TIMEOUT)
@@ -2090,7 +2092,7 @@ WIZ_API wiz_val wiz_sys_fd_read_exact(void *p, uint64_t n, int timed, uint64_t n
     if (k > 0) { got += (size_t)k; continue; }
     if (k == 0) { e = WIZ_SYS_EOF; break; }
     if (errno == EINTR || (errno == EAGAIN && timed)) continue;
-    e = errno; break;
+    e = errno == EIO && h->eio_eof ? WIZ_SYS_EOF : errno; break;
   }
   wiz_sys_err = e;
   return wiz_bytes_adopt(d, got, n);

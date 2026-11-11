@@ -442,6 +442,8 @@ extern "wiz_sys_fd_adopt" Fd.adopt : Nat → IO Fd
 extern "wiz_sys_fd_raw" Fd.raw : Fd → IO Nat
 extern "wiz_sys_fd_close" Fd.closeRaw : Fd → IO Nat
 extern "wiz_sys_fd_keep" Fd.keep : Fd → IO Unit
+-- (lib/Serial) a pseudo-terminal controller: its EIO, once the terminal side is closed, is the end of the file
+extern "wiz_sys_fd_set_pty" Fd.markPtyController : Fd → IO Unit
 extern "wiz_sys_pipe" Fd.pipeRaw : IO Nat
 extern "wiz_sys_fd_read" Fd.readRaw : Fd → Nat → Bool → Nat → IO Bytes
 extern "wiz_sys_fd_read_exact" Fd.readExactRaw : Fd → Nat → Bool → Nat → IO Bytes
