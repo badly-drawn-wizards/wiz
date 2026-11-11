@@ -1,0 +1,61 @@
+import Sys
+-- Owned handles: `import Handle` (cohesion step M6, /workspace/wiz-notes/cohesion-resources.md;
+-- docs/libraries.md).
+--
+-- An OS handle (a `File`, an `Fd`, a `Child`) is an ordinary (ω) value in lib/Sys.wiz,
+-- closed by its finalizer when the last reference goes, or by an explicit close that the
+-- type system does not track. `Owned h` is the obligation to release `h`: a token at
+-- quantity 1, indexed by the handle (as `MVar.Hole m` and `Lock.Guard l` are, 25d), so
+--
+--  * it can't be dropped: every acquired handle is released exactly once, on every path;
+--  * it can't be copied: a handle is released once, not twice;
+--  * every operation through `Handle.use` takes it and hands it back, so there is no
+--    use after release *through this API*, and the token can move to another thread
+--    with the closure that captured it (`Chan.fork`).
+--
+-- What it does not do: `h` itself stays an ω value, so code that calls lib/Sys.wiz's
+-- operations on `h` directly is not checked. Making the handles themselves linear (and
+-- the operations direct style, `(1 o : Owned f) → … → IO (Owned f)`) needs linear Σ fields
+-- (linear-case stage 2); then lib/Sys.wiz and lib/Serial.wiz move onto this module.
+--
+-- Trusted: the two natives `wiz_handle_own`/`wiz_handle_disown` (runtime/wiz.c: an empty
+-- box, as an MVar hole) and their private `extern`s; nothing else reaches `Owned`.
+
+axiom Owned : {H : Type} → H → Type
+private extern "wiz_handle_own" Owned.mint : {0 H : Type} → {0 h : H} → IO (Owned h)
+private extern "wiz_handle_disown" Owned.burn : {0 H : Type} → {0 h : H} → (1 o : Owned h) → IO Unit
+
+-- How a kind of handle is released.
+class Release (H : Type) where
+  release : H → IO Unit
+
+-- acquire `h`, and own it
+def Handle.own {H B : Type} (h : H) (1 k : (1 o : Owned h) → IO B) : IO B :=
+  fun w => let 1 (o, w') := @Owned.mint H h w; k o w'
+-- release `h`, using up the token
+def Handle.release {H B : Type} [r : Release H] (h : H) (1 o : Owned h) (1 next : IO B) : IO B :=
+  fun w => let 1 (u, w') := Owned.burn o w; IO.then1 (Release.release h) next w'
+-- an operation on an owned handle: the token goes in and comes back
+def Handle.use {H A B : Type} (h : H) (1 o : Owned h) (act : H → IO A) (1 k : (a : A) → (1 o : Owned h) → IO B) : IO B :=
+  IO.bind (act h) (fun a => k a o)
+-- acquire with `acquire` (an error owns nothing), then `k` owns the handle. `k` is an
+-- ordinary function (it runs only if `acquire` succeeds), so it can't capture another
+-- linear value: an acquisition that fails would leave that value unused.
+def Handle.with {H B : Type} (acquire : EIO H) (k : (h : H) → (1 o : Owned h) → EIO B) : EIO B :=
+  IO.bind acquire (fun r => match r with
+    | .ok h => Handle.own h (k h)
+    | .error e => EIO.fail e)
+
+-- ## The handles of lib/Sys.wiz
+
+instance : Release File where
+  release := fun f => IO.bind (File.close f) (fun _ => IO.pure ())
+instance : Release Fd where
+  release := fun f => IO.bind (Fd.close f) (fun _ => IO.pure ())
+-- a child process is released by waiting for it
+instance : Release Child where
+  release := fun c => IO.bind (Child.wait c) (fun _ => IO.pure ())
+
+-- `File.open p mode`, owned
+def File.withOwned {B : Type} (p mode : String) (k : (f : File) → (1 o : Owned f) → EIO B) : EIO B :=
+  Handle.with (File.open p mode) k

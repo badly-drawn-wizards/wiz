@@ -146,6 +146,18 @@ laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpret
 `lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
 freeing a list). See [stage 24](stages/24-separation-logic.md).
 
+## Owned handles (`lib/Handle.wiz`) ✅
+
+`Owned h` is the obligation to release the handle `h` (a `File`, `Fd`, `Child`, or any
+type with a `Release` instance): a token at quantity 1 indexed by the handle, as
+`MVar.Hole m` and `Lock.Guard l` are ([25d](stages/25-concurrency.md)). `Handle.own`,
+`Handle.use` (the token goes in and comes back), `Handle.release`, `Handle.with`, and
+`File.withOwned`. A handle acquired this way is released exactly once on every path, and
+not used after release through this API. The handles themselves stay ω values, so
+direct calls to lib/Sys.wiz are not checked. Making them linear (direct style, with
+lib/Sys.wiz and lib/Serial.wiz moved onto this module) waits for linear Σ fields
+(linear-case stage 2). Trusted: two natives (`wiz_handle_own`/`wiz_handle_disown`).
+
 ## Functors and Booleans
 
 `lib/Functor.wiz` (`import Functor`): `Functor`, `Applicative`, `<$>`, `<*>`; every `Monad`
