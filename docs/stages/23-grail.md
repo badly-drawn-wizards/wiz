@@ -170,7 +170,8 @@ def package : Package := Package.new "uart"
   empty). When the command succeeds, every declared output must exist and nothing else
   may have been made there (both are errors, naming the files); the directory is renamed
   into the store, `.grail/build/<key>/`, and the outputs are **installed** at their paths
-  in the package (copied when different, mode 644; an output directory is replaced as a
+  in the package (copied when different; mode 755 if the command made the file executable,
+  644 otherwise; an output directory is replaced as a
   whole). So a failed or killed command leaves `build/` as it was, going back to an
   earlier input reinstalls the earlier outputs without running anything, and a deleted
   or hand-edited output is put back by the next build (it is grail's).

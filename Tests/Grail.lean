@@ -764,6 +764,14 @@ def grailCommandsGroup : Group where
         IO.FS.writeFile (dir / "hello.wiz") "import IO\n-- c\ndef main : IO Unit := IO.println \"hello from grail\"\n"
         let (s, _, _) ← buildLog dir tc ["say"]
         checkEq 3 s.ran },
+    { name := "an installed output keeps its executable bit", run := fun _ => do
+        let mk := "  |> Package.command (Command.new \"script\" (Tool.path \"sh\") |> Command.arg \"-c\" |> Command.arg \"printf '#!/bin/sh\\\\necho ran\\\\n' > \\\"$1\\\"; chmod +x \\\"$1\\\"; echo data > \\\"$2\\\"\" |> Command.arg \"sh\" |> Command.output \"bin/run.sh\" |> Command.output \"bin/data.txt\")\n"
+        let dir ← mkTree (cmdFiles mk)
+        let (_, ok, log) ← buildLog dir (← cmdTc) ["script"]
+        check ok log
+        checkEq "ran\n" (← IO.Process.output { cmd := (dir / "bin/run.sh").toString }).stdout
+        check (← Grail.isExecutable (dir / "bin/run.sh")) "the script is not executable"
+        check (!(← Grail.isExecutable (dir / "bin/data.txt"))) "the data file is executable" },
     { name := "two targets with one name are refused", run := fun _ => do
         let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"p\" |> Package.lib \"x\" \"src\" |> Package.check \"x\" \"a.wiz\"\n")]
         let tc ← cmdTc

@@ -68,6 +68,19 @@ def failureMessage (o : Outcome) (timeoutMs : Nat) : String :=
 own exit would wait for it. -/
 @[extern "grail_exit_now"] opaque exitNow (code : UInt8) : IO Unit
 
+@[export grail_ok_unit] def okUnit : IO Unit := pure ()
+@[export grail_ok_bool] def okBool (b : Bool) : IO Bool := pure b
+@[extern "grail_path_clear"] opaque pathClear : IO Unit
+@[extern "grail_path_push"] opaque pathPush (b : UInt8) : IO Unit
+@[extern "grail_path_executable"] opaque pathExecutableRaw : IO Bool
+
+/-- Is the file executable by its owner? (c/proc.c: Lean's library can't read a mode.)
+Not thread-safe: the scheduler's thread calls it. -/
+def isExecutable (p : System.FilePath) : IO Bool := do
+  pathClear
+  for b in p.toString.toUTF8 do pathPush b
+  pathExecutableRaw
+
 /-- `--grail-exec MS [--cwd DIR] [--env K=V]… -- CMD ARGS…` -/
 def execMain (args : List String) : IO UInt32 := do
   let usage : IO UInt32 := do IO.eprintln s!"grail --grail-exec: bad arguments {args}"; pure 2

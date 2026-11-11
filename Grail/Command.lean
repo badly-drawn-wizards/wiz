@@ -156,16 +156,22 @@ def writeInstalled (c : Ctx) (m : Std.HashMap String UInt64) : IO Unit := do
   IO.FS.writeFile tmp (String.join (lines.toList.map (· ++ "\n")))
   IO.FS.rename tmp (installedFile c)
 
-/-- Copy a data file if its content differs (mode 644). -/
+/-- Copy a file if its content or its executable bit differs: mode 755 if the command
+made it executable (by its owner), 644 otherwise. -/
 def installData (src dst : System.FilePath) : IO Unit := do
   let new ← IO.FS.readBinFile src
+  let exec ← isExecutable src
   if ← dst.pathExists then
     if !(← dst.isDir) then
-      if (← IO.FS.readBinFile dst) == new then return
+      if (← IO.FS.readBinFile dst) == new && (← isExecutable dst) == exec then return
     else IO.FS.removeDirAll dst
   if let some d := dst.parent then IO.FS.createDirAll d
   let tmp := dst.toString ++ s!".tmp{← IO.Process.getPID}"
   IO.FS.writeBinFile tmp new
+  let r : IO.AccessRight := { read := true }
+  let rx : IO.AccessRight := { read := true, execution := true }
+  IO.setAccessRights tmp (if exec then { user := { read := true, write := true, execution := true }, group := rx, other := rx }
+    else { user := { read := true, write := true }, group := r, other := r })
   IO.FS.rename tmp dst
 
 /-- Install a command's outputs (from the store directory `out`) at their paths in the
