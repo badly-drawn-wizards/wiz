@@ -18,9 +18,10 @@ import Word
 
 def BitVec (n : Nat) : Type := UIntN n
 
--- the bits as a number, and a number below `2^n` as bits (`mk` doesn't reduce; `ofNat` does)
+-- the bits as a number, and a number below `2^n` as bits (`mk` doesn't reduce and is
+-- unchecked, `UIntN.ofBitsTrusted`: the caller keeps `x < 2^n`; `ofNat` reduces)
 def BitVec.toNat {0 n : Nat} (a : BitVec n) : Nat := UIntN.toNat a
-def BitVec.mk {0 n : Nat} (x : Nat) : BitVec n := @UIntN.mk n x
+def BitVec.mk {0 n : Nat} (x : Nat) : BitVec n := UIntN.ofBitsTrusted x
 
 def BitVec.ofNat (n x : Nat) : BitVec n := UIntN.ofNat n x
 

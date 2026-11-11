@@ -94,8 +94,13 @@ def group : Group where
         fails "def f : (1 x : Type) → Type := fun (ω x) => x" "quantity" },
     { name := "linear identity checks", run := fun _ =>
         ok "def lid {A : Type} (1 x : A) : A := x" },
-    { name := "self-application escapes the hole's scope", run := fun _ =>
-        fails "def w (A : Type) := fun f => f f" "scope" },
+    { name := "self-application escapes the hole's scope", run := fun _ => do
+        -- (with pruning, the escaping variable is pruned away and the occurs check fires
+        -- instead: either is right)
+        let errs := errors "def w (A : Type) := fun f => f f"
+        unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+        unless (errs[0]!.splitOn "scope").length > 1 || (errs[0]!.splitOn "occurs check").length > 1 do
+          throw (IO.userError s!"error mentions neither the scope nor the occurs check:\n{errs[0]!}") },
     { name := "occurs check", run := fun _ =>
         fails "def o (A : Type) (g : _ → A) := g g" "occurs" },
     { name := "not a function", run := fun _ =>
@@ -368,6 +373,16 @@ def ottGroup : Group where
           "def e (f : Unit → True) : pf f = ((), ()) := ((), ())")
           ["fun f => (0 e : True) × True"]
         fails (p ++ "def bad (f : Unit → True) (h : pf f = ((), ())) : False := h.2") "mismatch" },
+    -- (nu-transp-elab) `refl a` whose argument's type has a metavariable (`fun x => x`):
+    -- after the rule "an equation at a proposition is True", inferring the equation from
+    -- `a` alone computed it by the funext rule (the sort of `?m → ?m` unknown), which didn't
+    -- unify with the expected `(0 e : True) × True`; `refl` is now checked against `A`
+    { name := "refl at a pair with a proof component, its type from the expected equation (nu-transp-elab)", run := fun _ =>
+        ok ("def B2 : Type := (x : Unit) × (True → True)\n" ++
+          "def P (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : Prop := True\n" ++
+          "def t3 (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : P h := ()\n" ++
+          "def t5 : P (refl ((), fun x => x)) := t3 (refl ((), fun x => x))\n" ++
+          "def t4 : P (refl ((), fun x => x)) := t3 _\n") },
     -- KNOWN GAP (pinned): a *neutral* proposition (`P q.1` for a variable `P : A → Prop`,
     -- or `P : Prop`) is not seen by `propSort?`, so the two rules don't fire and the
     -- kernel still rejects these. Mandatory sorts (`wiz-notes/mandatory-sorts.md`: every
@@ -1144,8 +1159,9 @@ def classGroup : Group where
     -- (7e) numeric classes
     { name := "arithmetic at Nat goes through the classes and still computes", run := fun _ =>
         okLib ("import Prelude\n#eval 2 + 3 * 4 - 1\n#eval 17 / 5 + 17 % 5\ndef t : 2 + 3 = 5 := rfl\n" ++
-          "def z (n : Nat) : 0 + n = n := rfl\ndef s (n : Nat) : 1 + n = Nat.succ n := rfl\n#check fun (n : Nat) => n + 1")
-          ["13", "5", "fun n => Add.add Nat instAddNat n 1 : Nat → Nat"] },
+          "def z (n : Nat) : 0 + n = n := rfl\ndef s (n : Nat) : 1 + n = Nat.succ n := rfl\n#check fun (n : Nat) => n + 1\n" ++
+          "set_option pp.notation false\n#check fun (n : Nat) => n + 1")
+          ["13", "5", "fun n => n + 1 : Nat → Nat", "fun n => Add.add Nat instAddNat n 1 : Nat → Nat"] },
     { name := "numerals and operators at a type with instances", run := fun _ =>
         okLib (numClassSrc ++ "#eval (5 : Z3) + 2\ndef inc (x : Z3) : Z3 := x + 1\n#eval inc 2\n#eval -(1 : Z3)\n#eval (2 : Z3) * 2 - 1")
           [".b", ".a", ".c", ".a"] },
@@ -3837,6 +3853,11 @@ def phantomHeader : String :=
   "structure S (w : Nat) where\n  x : Nat\ninductive N (w : Nat) where\n  | z\n  | s (n : N w)\n" ++
   "def width (w : Nat) (a : UIntN w) : Nat := w\ndef u8 : UIntN 8 := .mk 3\n"
 
+/-- (22k) A sealed type, a look-alike, and another sealed type of the same shape. -/
+def sealHeader : String :=
+  "sealed inductive W (w : Nat) where\n  | mk (toNat : Nat)\ninductive L (w : Nat) where\n  | mk (toNat : Nat)\n" ++
+  "sealed inductive V (w : Nat) where\n  | mk (toNat : Nat)\n"
+
 /-- Finding Y4 (audit 2): the probe (`def T` twice, with `Box T` in between), and the
 other ways a command could declare a name again. -/
 def dupNames : String :=
@@ -4176,6 +4197,14 @@ def selfHostGroup : Group where
         ioRun prog "1000000\n18446744073709551615\n"
         selfhostLinkRun [("main.wiz", prog)] "1000000\n" (fails := some "does not fit in 63 bits")
         selfhostLinkRun [("main.wiz", prog)] "1000000\n" (flags := #["--rc"]) (fails := some "does not fit in 63 bits") },
+    { name := "the self-hosted frontend: a sealed type has no look-alikes, as in the Lean frontend (22k)", run := fun _ =>
+        selfhostAgrees sealHeader [
+          ("def same (x : W 8) : W 8 := x\ndef get {w : Nat} : W w → Nat\n  | .mk n => n\ndef five : Nat := get (W.mk 5 : W 8)\n", true),
+          ("def bad (x : L 8) : W 8 := x\n", false),
+          ("def bad (x : W 8) : L 8 := x\n", false),
+          ("def bad (x : V 8) : W 8 := x\n", false),
+          ("def bad (x : W 8) : W 16 := x\n", false),
+          ("sealed structure P where\n  x : Nat\n", false)] },
     { name := "the self-hosted frontend: constructor parameters from the expected type (21j)", run := fun _ =>
         selfhostAgrees ("def Code : Bool → Type\n  | .true => Nat\n  | .false => Bool\n" ++
           "structure Tagged (b : Bool) where\n  val : Code b\n")
@@ -4657,7 +4686,7 @@ def languageGroup : Group where
           "def nope : ¬ (exists (b : Bool), b = .true ∧ b = .false) :=\n  fun h => Ex.elim h (fun b p => Bool.trueNeFalse (Eq.trans (Eq.symm p.1) p.2))\n" ++
           "def t7 : forall (n : Nat), n = n := fun n => rfl\n" ++
           "def t8 {P Q : Prop} (h : P <-> Q) (p : P) : (Q /\\ P) \\/ False := Or.inl (h.1 p, p)\n#check t5")
-          ["t5 : Ex Nat (fun n => Ex Nat (fun m => And (n = m) (m = n)))"] },
+          ["t5 : ∃ n, ∃ m, n = m ∧ m = n"] },
     { name := "13f: let with a tuple pattern of three or more names", run := fun _ =>
         okLib ("import Prelude\ndef f (p : Nat × Nat × Nat) : Nat := let (a, b, c) := p; a + b * c\n#eval f (1, 2, 3)\n" ++
           "def g (p : Nat × Bool × Nat × Nat) : Nat := let (a, b, c, d) := p; match b with\n  | .true => a + c + d\n  | .false => 0\n" ++
@@ -4732,7 +4761,38 @@ def languageGroup : Group where
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let input := calcDsl "" ++ "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done"
         let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
-        check ((s.messages.filter (·.severity == .error)).size > 0) "expected errors" }
+        check ((s.messages.filter (·.severity == .error)).size > 0) "expected errors" },
+    { name := "notation prints as notation: arithmetic, lists, Booleans, logic (11r)", run := fun _ =>
+        okLib ("import Prelude\nimport Logic\n#check fun (n : Nat) => n + 1\n#check fun (a b : Nat) => a * (b + 1) - a\n" ++
+          "#check fun (xs ys : List Nat) => xs ++ ys\n#check [1, 2, 3]\n#check ([] : List Nat)\n" ++
+          "#check fun (x : Nat) (xs : List Nat) => List.cons x xs\n" ++
+          "#check fun (b c : Bool) => if b then c else !c\n#check fun (b c : Bool) => b && c || !b\n" ++
+          "#check fun (P Q : Prop) => P ∧ Q → Q ∨ ¬ P\n#check ∃ (n : Nat), n = n\n#check fun (f : Nat → Nat) => (fun x => x) (f 1) + 2")
+          ["fun n => n + 1 : Nat → Nat", "fun a b => a * (b + 1) - a : Nat → Nat → Nat",
+           "fun xs ys => xs ++ ys : List Nat → List Nat → List Nat", "[1, 2, 3] : List Nat", "[] : List Nat",
+           "fun x xs => List.cons Nat x xs : Nat → List Nat → List Nat",
+           "fun b c => if b then c else !c : Bool → Bool → Bool", "fun b c => b && c || !b : Bool → Bool → Bool",
+           "fun P Q => P ∧ Q → Q ∨ ¬P : Prop → Prop → Prop", "∃ n, n = n : Prop",
+           "fun f => (fun x => x : Nat → Nat) (f 1) + 2 : (Nat → Nat) → Nat"] },
+    { name := "... not with set_option pp.notation false (or pp.all)", run := fun _ =>
+        okLib ("import Prelude\nset_option pp.notation false\n#check fun (n : Nat) => n + 1\n#check [1]\n" ++
+          "set_option pp.notation true\n#check [1]\nset_option pp.all true\n#check [1]")
+          ["fun n => Add.add Nat instAddNat n 1 : Nat → Nat", "List.cons Nat 1 (List.nil Nat) : List Nat",
+           "[1] : List Nat", "List.cons Nat 1 (List.nil Nat) : List Nat"] },
+    { name := "... in messages: a type mismatch", run := fun _ =>
+        failsLib "import Prelude\ndef f (n : Nat) : n + 1 = 2 := refl n" "expected: n + 1 = 2" },
+    { name := "... user notation, declared unexpanders and parenthesisation", run := fun _ =>
+        okLib ("import Prelude\ninfixr:67 \" :> \" => List.cons\ndef twice (n : Nat) : Nat := n + n\n" ++
+          "syntax:lead (name := dbl) \"dbl \" term:max : term\napp_unexpander twice\n  | `(term| $f $x) => `(term| dbl $x)\n" ++
+          "#check fun (x : Nat) (xs : List Nat) => List.cons x (List.cons x xs)\n#check fun (n : Nat) => twice (n + 1) * 2\n" ++
+          "#check fun (n : Nat) => twice (twice n)")
+          ["fun x xs => x :> x :> xs : Nat → List Nat → List Nat", "fun n => dbl (n + 1) * 2 : Nat → Nat",
+           "fun n => dbl (dbl n) : Nat → Nat"] },
+    { name := "... local notation's unexpanders end with the module", run := fun _ =>
+        okLoc locMod "import Loc\n#check fun (x : Nat) (xs : List Nat) => List.cons x xs\n#check fun (a b : String) => a &&& b"
+          ["fun x xs => List.cons Nat x xs : Nat → List Nat → List Nat", "fun a b => a &&& b : String → String → String"] },
+    { name := "... an unexpander that is not an Unexpander is rejected", run := fun _ =>
+        failsLib "import Prelude\ndef notOne : Nat := 1\nattribute [app_unexpander List.nil] notOne" "is not an unexpander" }
   ]
 
 /-- Machine words (`lib/Word.wiz`): one table of operations at widths 8–100, signed and
@@ -4744,7 +4804,7 @@ def wordTableValue : String := ".cons 44 (.cons 254 (.cons 1 (.cons 0 (.cons 184
 /-- 64-bit edge cases and the operations natively implemented in stage 22d (words as
 their bits: scalars below 2^63, raw boxes below 2^64), plus a 64-bit FNV-1a, generic
 width, and `match` on a word. -/
-def wordTable64 : String := "import Word\ndef b2n : Bool → Nat\n  | .true => 1\n  | .false => 0\ndef m64 : Nat := 18446744073709551615\ndef p63 : Nat := 9223372036854775808\ndef fnv64 : List Nat → U64 → U64\n  | .nil, h => h\n  | .cons b bs, h => fnv64 bs (UIntN.mul (UIntN.xor h (U64.ofNat b)) (U64.ofNat 1099511628211))\ndef twice {ω w : Nat} (a : UIntN w) : UIntN w := UIntN.add a a\ndef bits : U64 → Nat\n  | .mk n => n\ndef bump (a : I64) : I64 := match a with\n  | .mk n => .mk (Nat.mod (Nat.add n 1) (Nat.pow 2 64))\ndef main : List Nat :=\n  (.cons ((U64.ofNat p63).toNat)\n    (.cons ((UIntN.add (U64.ofNat p63) (U64.ofNat p63)).toNat)\n    (.cons ((UIntN.sub (U64.ofNat 0) (U64.ofNat 1)).toNat)\n    (.cons (b2n (UIntN.beq (U64.ofNat p63) (UIntN.add (U64.ofNat 4611686018427387904) (U64.ofNat 4611686018427387904))))\n    (.cons (b2n (UIntN.lt (U64.ofNat (p63 - 1)) (U64.ofNat p63)))\n    (.cons (b2n (UIntN.le (U64.ofNat m64) (U64.ofNat 5)))\n    (.cons ((UIntN.land (U64.ofNat m64) (U64.ofNat (p63 + 5))).toNat)\n    (.cons ((UIntN.xor (U64.ofNat m64) (U64.ofNat 1)).toNat)\n    (.cons ((UIntN.lor (U64.ofNat p63) (U64.ofNat 1)).toNat)\n    (.cons ((UIntN.shiftRight (U64.ofNat m64) 63).toNat)\n    (.cons ((UIntN.shiftRight (U64.ofNat m64) 64).toNat)\n    (.cons ((UIntN.shiftLeft (U64.ofNat 1) 63).toNat)\n    (.cons ((UIntN.shiftLeft (U64.ofNat 1) 64).toNat)\n    (.cons ((UIntN.shiftLeft (U64.ofNat 1) 1000).toNat)\n    (.cons (b2n (UIntN.testBit (U64.ofNat p63) 63))\n    (.cons (b2n (UIntN.testBit (U64.ofNat m64) 64))\n    (.cons (b2n (UIntN.msb (U64.ofNat p63)))\n    (.cons ((UIntN.resize 8 (U64.ofNat m64)).toNat)\n    (.cons ((UIntN.resize 100 (U64.ofNat m64)).toNat)\n    (.cons ((IntN.resize 100 (I64.ofNeg 1)).toNat)\n    (.cons ((IntN.resize 64 (IntN.ofNeg 100 3)).toNat)\n    (.cons ((I64.ofNeg 1).toNat)\n    (.cons ((IntN.shiftRight (I64.ofNeg 1) 200).toNat)\n    (.cons ((IntN.shiftRight (I64.ofNeg p63) 63).toNat)\n    (.cons (b2n (IntN.lt (I64.ofNeg p63) (I64.ofNat (p63 - 1))))\n    (.cons ((IntN.rem (I64.ofNeg p63) (I64.ofNeg 1)).toNat)\n    (.cons ((IntN.mul (I64.ofNeg 1) (I64.ofNeg 1)).toNat)\n    (.cons (IntN.natAbs (UIntN.toIntN (U64.ofNat m64)))\n    (.cons (b2n (IntN.isNeg (I64.ofNat p63)))\n    (.cons ((U64.ofNat (Nat.add m64 8)).toNat)\n    (.cons ((I64.ofNeg (Nat.add m64 2)).toNat)\n    (.cons ((UIntN.mul (UIntN.ofNat 65 (Nat.add m64 1)) (UIntN.ofNat 65 2)).toNat)\n    (.cons ((UIntN.ofNat 65 (Nat.add m64 1)).toNat)\n    (.cons ((UIntN.div (U64.ofNat m64) (U64.ofNat p63)).toNat)\n    (.cons ((UIntN.mod (U64.ofNat m64) (U64.ofNat p63)).toNat)\n    (.cons ((UIntN.not (U64.ofNat 0)).toNat)\n    (.cons (b2n (IntN.beq (I64.ofNeg 1) (IntN.not (I64.ofNat 0))))\n    (.cons ((fnv64 (.cons 104 (.cons 105 .nil)) (U64.ofNat 14695981039346656037)).toNat)\n    (.cons ((twice (U64.ofNat p63)).toNat)\n    (.cons ((twice (UIntN.ofNat 70 p63)).toNat)\n    (.cons (bits (U64.ofNat m64))\n    (.cons ((bump (I64.ofNeg 1)).toNat)\n    (.cons ((IntN.toUIntN (I64.ofNeg 2)).toNat)\n    .nil)))))))))))))))))))))))))))))))))))))))))))\n"
+def wordTable64 : String := "import Word\ndef b2n : Bool → Nat\n  | .true => 1\n  | .false => 0\ndef m64 : Nat := 18446744073709551615\ndef p63 : Nat := 9223372036854775808\ndef fnv64 : List Nat → U64 → U64\n  | .nil, h => h\n  | .cons b bs, h => fnv64 bs (UIntN.mul (UIntN.xor h (U64.ofNat b)) (U64.ofNat 1099511628211))\ndef twice {ω w : Nat} (a : UIntN w) : UIntN w := UIntN.add a a\ndef bits (a : U64) : Nat := a.toNat\ndef bump (a : I64) : I64 := IntN.ofNat 64 (Nat.add a.toNat 1)\ndef main : List Nat :=\n  (.cons ((U64.ofNat p63).toNat)\n    (.cons ((UIntN.add (U64.ofNat p63) (U64.ofNat p63)).toNat)\n    (.cons ((UIntN.sub (U64.ofNat 0) (U64.ofNat 1)).toNat)\n    (.cons (b2n (UIntN.beq (U64.ofNat p63) (UIntN.add (U64.ofNat 4611686018427387904) (U64.ofNat 4611686018427387904))))\n    (.cons (b2n (UIntN.lt (U64.ofNat (p63 - 1)) (U64.ofNat p63)))\n    (.cons (b2n (UIntN.le (U64.ofNat m64) (U64.ofNat 5)))\n    (.cons ((UIntN.land (U64.ofNat m64) (U64.ofNat (p63 + 5))).toNat)\n    (.cons ((UIntN.xor (U64.ofNat m64) (U64.ofNat 1)).toNat)\n    (.cons ((UIntN.lor (U64.ofNat p63) (U64.ofNat 1)).toNat)\n    (.cons ((UIntN.shiftRight (U64.ofNat m64) 63).toNat)\n    (.cons ((UIntN.shiftRight (U64.ofNat m64) 64).toNat)\n    (.cons ((UIntN.shiftLeft (U64.ofNat 1) 63).toNat)\n    (.cons ((UIntN.shiftLeft (U64.ofNat 1) 64).toNat)\n    (.cons ((UIntN.shiftLeft (U64.ofNat 1) 1000).toNat)\n    (.cons (b2n (UIntN.testBit (U64.ofNat p63) 63))\n    (.cons (b2n (UIntN.testBit (U64.ofNat m64) 64))\n    (.cons (b2n (UIntN.msb (U64.ofNat p63)))\n    (.cons ((UIntN.resize 8 (U64.ofNat m64)).toNat)\n    (.cons ((UIntN.resize 100 (U64.ofNat m64)).toNat)\n    (.cons ((IntN.resize 100 (I64.ofNeg 1)).toNat)\n    (.cons ((IntN.resize 64 (IntN.ofNeg 100 3)).toNat)\n    (.cons ((I64.ofNeg 1).toNat)\n    (.cons ((IntN.shiftRight (I64.ofNeg 1) 200).toNat)\n    (.cons ((IntN.shiftRight (I64.ofNeg p63) 63).toNat)\n    (.cons (b2n (IntN.lt (I64.ofNeg p63) (I64.ofNat (p63 - 1))))\n    (.cons ((IntN.rem (I64.ofNeg p63) (I64.ofNeg 1)).toNat)\n    (.cons ((IntN.mul (I64.ofNeg 1) (I64.ofNeg 1)).toNat)\n    (.cons (IntN.natAbs (UIntN.toIntN (U64.ofNat m64)))\n    (.cons (b2n (IntN.isNeg (I64.ofNat p63)))\n    (.cons ((U64.ofNat (Nat.add m64 8)).toNat)\n    (.cons ((I64.ofNeg (Nat.add m64 2)).toNat)\n    (.cons ((UIntN.mul (UIntN.ofNat 65 (Nat.add m64 1)) (UIntN.ofNat 65 2)).toNat)\n    (.cons ((UIntN.ofNat 65 (Nat.add m64 1)).toNat)\n    (.cons ((UIntN.div (U64.ofNat m64) (U64.ofNat p63)).toNat)\n    (.cons ((UIntN.mod (U64.ofNat m64) (U64.ofNat p63)).toNat)\n    (.cons ((UIntN.not (U64.ofNat 0)).toNat)\n    (.cons (b2n (IntN.beq (I64.ofNeg 1) (IntN.not (I64.ofNat 0))))\n    (.cons ((fnv64 (.cons 104 (.cons 105 .nil)) (U64.ofNat 14695981039346656037)).toNat)\n    (.cons ((twice (U64.ofNat p63)).toNat)\n    (.cons ((twice (UIntN.ofNat 70 p63)).toNat)\n    (.cons (bits (U64.ofNat m64))\n    (.cons ((bump (I64.ofNeg 1)).toNat)\n    (.cons ((IntN.toUIntN (I64.ofNeg 2)).toNat)\n    .nil)))))))))))))))))))))))))))))))))))))))))))\n"
 def wordTable64Value : String := ".cons 9223372036854775808 (.cons 0 (.cons 18446744073709551615 (.cons 1 (.cons 1 (.cons 0 (.cons 9223372036854775813 (.cons 18446744073709551614 (.cons 9223372036854775809 (.cons 1 (.cons 0 (.cons 9223372036854775808 (.cons 0 (.cons 0 (.cons 1 (.cons 0 (.cons 1 (.cons 255 (.cons 18446744073709551615 (.cons 1267650600228229401496703205375 (.cons 18446744073709551613 (.cons 18446744073709551615 (.cons 18446744073709551615 (.cons 18446744073709551615 (.cons 1 (.cons 0 (.cons 1 (.cons 1 (.cons 1 (.cons 7 (.cons 18446744073709551615 (.cons 0 (.cons 18446744073709551616 (.cons 1 (.cons 9223372036854775807 (.cons 18446744073709551615 (.cons 1 (.cons 628919584683901914 (.cons 0 (.cons 18446744073709551616 (.cons 18446744073709551615 (.cons 0 (.cons 18446744073709551614 .nil))))))))))))))))))))))))))))))))))))))))))"
 
 def wordGroup : Group where
@@ -4782,11 +4842,11 @@ def wordGroup : Group where
     { name := "a word is not an object: no constructor in the IR", run := fun _ => do
         let loader ← preludeLoader
         let src := "import Word\ndef f (a b : U64) : U64 := UIntN.add (UIntN.xor a b) (U64.ofNat 3)\n" ++
-          "def g : U64 → Nat\n  | .mk n => n\n#ir f\n#ir g"
+          "def g (a : U64) : Nat := a.toNat\n#ir f\n#ir g"
         let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
-        check ((out.splitOn "wiz_word_to_bits").length > 1) s!"match doesn't read the bits natively:\n{out}" },
+        check ((out.splitOn "wiz_word_to_bits").length > 1) s!"toNat doesn't read the bits natively:\n{out}" },
     { name := "a U64 result is read back from a raw box", run := fun _ =>
         cRun "import Word\ndef main : U64 := UIntN.mul (U64.ofNat 18446744073709551615) (U64.ofNat 3)"
           ".mk 18446744073709551613" },
@@ -4803,7 +4863,7 @@ def wordGroup : Group where
         checkEq (repr #["the numeral 300 does not fit in UIntN 8 (at most 255): it wraps around to 44",
           "the numeral 200 does not fit in IntN 8 (at most 128): it wraps around to -56"]).pretty (repr ws).pretty
         check (s.messages.any (·.text == "44")) "300 : U8 is not 44" },
-    { name := "signed and unsigned division are told apart (one shape, two types)", run := fun _ =>
+    { name := "signed and unsigned division are told apart (one shape, two sealed types)", run := fun _ =>
         okLib "import Word\n#eval (-7 / 2 : I32).toNat\n#eval (-7 % 2 : I32).toNat\n#eval ((4294967289 : U32) / 2).toNat"
           ["4294967293", "4294967295", "2147483644"] },
     { name := "compiled: a + b at a word type calls the native", run := fun _ => do
@@ -4866,8 +4926,8 @@ def stdGroup : Group where
           ["-10", "-3", "-3", "-1", "-10", "5", ".true", "0"] },
     { name := "integers: lemmas, and printing needs no axiom", run := fun _ =>
         okLibs ("import Int\n#check Int.neg_neg\n#check Int.add_zero\n#print axioms Int.add_zero")
-          ["Int.neg_neg : (a : Int) → Neg.neg Int instNegInt (Neg.neg Int instNegInt a) = a",
-           "Int.add_zero : (a : Int) → Add.add Int instAddInt a (OfNat.ofNat Int 0 (instOfNatIntN 0)) = a",
+          ["Int.neg_neg : (a : Int) → - -a = a",
+           "Int.add_zero : (a : Int) → a + OfNat.ofNat Int 0 (instOfNatIntN 0) = a",
            "'Int.add_zero' does not depend on any axioms"] },
     { name := "integers: compiled (C)", run := fun _ =>
         cRunLibs "import Int\ndef main : Int := (-3 : Int) * 4 + 2" "-10" },
@@ -5102,7 +5162,7 @@ def builtinGroup : Group where
         okLib "import Prelude\n#check List.append" ["List.append : {A : Type} → List A → List A → List A"] },
     { name := "a stuck number times a big numeral, in a type (nat-pow-blowup)", run := fun _ =>
         okLib ("import Word\naxiom Q : Nat → Type\naxiom y : (n : Nat) → Q (Nat.mod n 18446744073709551616)\n" ++
-          "def bump (a : I64) : I64 := match a with\n  | .mk n => .mk (Nat.mod (Nat.add n 1) (Nat.pow 2 64))") },
+          "def bump (a : I64) : I64 := IntN.ofNat 64 (Nat.mod (Nat.add a.toNat 1) (Nat.pow 2 64))") },
     { name := "Nat.beq and Nat.lt compute natively on numerals", run := fun _ =>
         okLib ("import Word\ndef t : Nat.beq 9223372036854775808 9223372036854775808 = Bool.true := rfl\n" ++
           "def u : Nat.lt 9223372036854775807 9223372036854775808 = Bool.true := rfl\n" ++
@@ -5747,8 +5807,8 @@ def trustGroup : Group where
         -- the library's are listed too: words run natively, in a native representation
         okLib ("import Prelude\nimport Word\ndef idW (x : UIntN 8) : UIntN 8 := x\n#print axioms idW\n" ++
             "def w : UIntN 8 := UIntN.add (UIntN.ofNat 8 3) (UIntN.ofNat 8 4)\n#print axioms w\n")
-          ["'idW' depends on axioms: [native UIntN := UIntN.ofBits/UIntN.toBits]" ++ note,
-           "'w' depends on axioms: [native UIntN.ofNat := UIntN.ofNatNative, native UIntN := UIntN.ofBits/UIntN.toBits, " ++
+          ["'idW' depends on axioms: [native UIntN := UIntN.ofBits/UIntN.toBits, UIntN.seal✝]" ++ note,
+           "'w' depends on axioms: [native UIntN.ofNat := UIntN.ofNatNative, native UIntN := UIntN.ofBits/UIntN.toBits, UIntN.seal✝, " ++
              "native UIntN.add := UIntN.addNative, native UIntN.toNat := UIntN.toBits]" ++ note] },
     { name := "O2 in the self-hosted frontend", run := fun _ =>
         selfhostCheckFile (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
@@ -5959,7 +6019,7 @@ def seplogicGroup : Group where
           "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
     { name := "swap and in-place list reversal are verified", run := fun _ =>
         okLibs ("import HoareExamples\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
-          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (star Nat (pts Nat p a) (pts Nat q b)) (Prog.swap p q) (fun _ => star Nat (pts Nat p b) (pts Nat q a))",
+          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (p ↦ a ⋆ q ↦ b) (Prog.swap p q) (fun _ => p ↦ b ⋆ q ↦ a)",
            "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
     { name := "a faulting program has no triple from a satisfiable precondition", run := fun _ =>
         failsLibs ("import Hoare\ndef bad : Triple (@emp Nat) (@Prog.fail Nat Unit) (fun (_ : Unit) => @emp Nat) :=\n" ++
@@ -5997,9 +6057,9 @@ def seplogicGroup : Group where
           "#check @Prog.incrAll.spec\n#check @Prog.freeAll.spec\n" ++
           "#eval Prog.show (Prog.counter) Heap.empty 0 1\n" ++
           "#eval Prog.show (Prog.length 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 0")
-          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → Triple Nat Unit (star Nat (pts Nat p m) (pts Nat q n)) (Prog.incr3 p q) (fun _ => star Nat (pts Nat q (.succ n)) (pts Nat p (.succ (.succ m))))",
-           "Prog.counter_spec : Triple Nat Nat (emp Nat) Prog.counter (fun r => hexists Nat Nat (fun c => star Nat (hpure Nat (r = 1)) (pts Nat c 1)))",
-           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.length fuel p) (fun r => star Nat (hpure Nat (r = List.length Nat L)) (MList L p))",
+          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → Triple Nat Unit (p ↦ m ⋆ q ↦ n) (Prog.incr3 p q) (fun _ => q ↦ .succ n ⋆ p ↦ .succ (.succ m))",
+           "Prog.counter_spec : Triple Nat Nat (emp Nat) Prog.counter (fun r => hexists Nat Nat (fun c => hpure Nat (r = 1) ⋆ c ↦ 1))",
+           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.length fuel p) (fun r => hpure Nat (r = List.length Nat L) ⋆ MList L p)",
            "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)",
            "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
@@ -6342,9 +6402,11 @@ on a `μ`. -/
 
 /-- `#eval main`, `#run main` (the IR interpreter), and `main` compiled by the C and the
 LLVM backends all give `expected`. `unbox`: with `--unbox-structs`. -/
-def reprAll (src expected : String) (unbox : Bool := false) (libs : Bool := false) : IO Unit := do
+def reprAll (src expected : String) (unbox : Bool := false) (libs : Bool := false)
+    (extra : Name → Option String := fun _ => none) : IO Unit := do
   let full := src ++ "\n#eval main\n#run main\n"
   let loader ← if libs then libLoader else preludeLoader
+  let loader := fun m => extra m <|> loader m
   let s := runFrontend (R := ZeroOneMany) full
     { trustedModule := Tests.libModule, loader, globals := { unboxStructs := unbox } }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render full
@@ -6489,6 +6551,50 @@ def r3RoundTrips : String × Nat := Id.run do
   src := src ++ "def main : Nat := " ++ " + ".intercalate terms ++ "\n"
   pure (src, total)
 
+/-- (22k) A type with a native representation, sealed, with a private constructor, in a
+module of its own: `W` is a byte, compiled as its bits. -/
+def sealNat8 : String := "import Word
+sealed inductive W where
+  | private mk (toNat : Nat)
+extern \"wiz_word_of_bits\" W.ofBits : NatObj → W
+extern \"wiz_word_to_bits\" W.toBits : W → NatObj
+attribute [implemented_by W.ofBits W.toBits] W.mk
+def W.of (n : Nat) : W := .mk (Nat.mod n 256)
+def W.get : W → Nat
+  | .mk n => n
+def W.succ (a : W) : W := W.of (a.get + 1)
+"
+
+def sealLoader (m : Name) : Option String := if m == "Nat8" then some sealNat8 else none
+
+/-- `input` with `Nat8` importable: its error messages. -/
+def sealErrors (input : String) : IO (Array String) := do
+  let loader ← preludeLoader
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => sealLoader m <|> loader m }
+  pure ((s.messages.filter (·.severity == .error)).map fun m => m.render input)
+
+def sealFails (input fragment : String) : IO Unit := do
+  let errs ← sealErrors input
+  unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+  unless (errs[0]!.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+/-- (22k, layer 3) What erasure refuses, on kernel terms no surface program produces: the
+elaborated program `import Nat8` plus a hand-made declaration `bad` (outside `W`'s module).
+`fragment`: the refusal expected (`none`: it compiles). -/
+def sealLayer3 (bad : Decl ZeroOneMany) (fragment : Option String) : IO Unit := do
+  let loader ← preludeLoader
+  let src := "import Nat8\ndef ok : Nat := W.get (W.succ (W.of 7))\n"
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun m => sealLoader m <|> loader m }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let s := { s with globals := s.globals.insert bad }
+  match Build.irProgram s bad.name, fragment with
+  | .ok _, none => pure ()
+  | .ok _, some f => throw (IO.userError s!"{bad.name} compiled; expected a refusal mentioning '{f}'")
+  | .error e, some f => check ((e.splitOn f).length > 1) e
+  | .error e, none => throw (IO.userError s!"{bad.name} was refused: {e}")
+
 def reprGroup : Group where
   name := "repr"
   exercise := "Representations and conversion (R3)"
@@ -6537,7 +6643,50 @@ def reprGroup : Group where
     { name := "structures and the Σ of their shape: values converted back and forth", run := fun _ => do
         let (src, total) := r3RoundTrips
         reprAll src (toString total)
-        reprAll src (toString total) (unbox := true) }
+        reprAll src (toString total) (unbox := true) },
+    { name := "22k: a sealed type: a look-alike, another sealed type, another width are other types", run := fun _ => do
+        let hdr := "import Prelude\n" ++ sealHeader
+        okLib (hdr ++ "def same (x : W 8) : W 8 := x\ndef get {w : Nat} : W w → Nat\n  | .mk n => n\n#eval get (W.mk 5 : W 8)\n#print axioms same\n")
+          ["5", "'same' depends on axioms: [W.seal✝]"]
+        for d in ["def bad (x : L 8) : W 8 := x", "def bad (x : W 8) : L 8 := x", "def bad (x : V 8) : W 8 := x",
+            "def bad (x : W 8) : W 16 := x"] do
+          failsLib (hdr ++ d ++ "\n") "type mismatch"
+        failsLib (hdr ++ "def bad : W 8 = L 8 := rfl\n") "not definitionally equal"
+        failsLib (hdr ++ "def bad : W 8 = V 8 := rfl\n") "not definitionally equal"
+        failsLib "import Prelude\nsealed structure P where\n  x : Nat\n" "`sealed` applies to an `inductive` declaration"
+        -- the seal can't be named
+        check (!(← sealErrors "import Nat8\ndef s : Type := W.seal✝\n").isEmpty) "W.seal✝ was named" },
+    { name := "22k: a native sealed type in its own module: its functions, generic code and lists of it, interpreted and compiled", run := fun _ =>
+        reprAll ("import Nat8\ndef keep {A : Type} (x : A) : A := x\ndef sum : List W → Nat\n  | .nil => 0\n  | .cons x xs => x.get + sum xs\n" ++
+          "def main : Nat := W.get (keep (W.succ (W.of 299))) + sum (.cons (W.of 1) (.cons (W.of 256) .nil))\n") "45" (extra := sealLoader) },
+    { name := "22k: outside its module a native type is not built, taken apart or matched by a look-alike (R5, layer 1)", run := fun _ => do
+        sealFails "import Nat8\ndef big (n : Nat) : W := .mk (n + 300)\n" "private to module Nat8"
+        sealFails "import Nat8\ndef get (x : W) : Nat := match x with\n  | .mk n => n\n" "Nat8"
+        sealFails "import Nat8\ninductive Box (A : Type) where\n  | mk (n : Nat)\ndef toBox (x : W) : Box _ := x\n" "type mismatch"
+        sealFails "import Nat8\ndef d := W.desc\n" "private" },
+    { name := "22k: the words are sealed: UIntN 8 is not IntN 8 or a look-alike, and out-of-range words can't be built (R5)", run := fun _ => do
+        -- audit 2's R5 probe (`wiz-notes/soundness-probes/a2-r5-word-out-of-range.wiz`)
+        let errs ← sealErrors ("import Word\ndef big (n : Nat) : UIntN 8 := .mk (n + 300)\n" ++
+          "def main : Nat := (big 0).toNat + (UIntN.not (big 0)).toNat\n")
+        check (errs.size > 0 && (errs[0]!.splitOn "'UIntN.mk' is private to module Word").length > 1) s!"{errs}"
+        for d in ["def f (x : IntN 8) : UIntN 8 := x", "def f (x : UIntN 8) : IntN 8 := x",
+            "inductive MyU (w : Nat) where\n  | mk (toNat : Nat)\ndef f (x : MyU 8) : UIntN 8 := x"] do
+          sealFails ("import Word\n" ++ d ++ "\n") "type mismatch"
+        sealFails "import Word\ndef e : UIntN 8 = IntN 8 := rfl\n" "not definitionally equal"
+        -- the conversions are the identity on the bits
+        okLib "import Word\n#eval (UIntN.toIntN (UIntN.ofNat 8 200)).toNat\n#eval (IntN.toUIntN (IntN.ofNeg 8 1)).toNat\n" ["200", "255"] },
+    { name := "22k: a native representation needs a sealed type and a private constructor", run := fun _ => do
+        let natives := "extern \"wiz_word_of_bits\" W.ofBits : NatObj → W\nextern \"wiz_word_to_bits\" W.toBits : W → NatObj\n" ++
+          "attribute [implemented_by W.ofBits W.toBits] W.mk\n"
+        sealFails ("import Word\ninductive W where\n  | private mk (toNat : Nat)\n" ++ natives) "needs `sealed inductive W`"
+        sealFails ("import Word\nsealed inductive W where\n  | mk (toNat : Nat)\n" ++ natives) "needs a private constructor" },
+    { name := "22k: erasure refuses a native value built outside its module, and the seal outside its type (layer 3)", run := fun _ => do
+        -- a `W` built by `con` (the elaborator refuses `W.mk`; a kernel term need not)
+        sealLayer3 { name := "forged", type := .const "W" [], value := some (.con .tt) } (some nativeHomeMsg)
+        -- the seal as a term outside a `μ`
+        sealLayer3 { name := "leak", type := .sort (.succ .zero), value := some (.const (sealName "W") []) } (some "has a native representation (it is a sealed type)")
+        -- and the module's own functions are fine
+        sealLayer3 { name := "fine", type := .const "Nat" [], value := some (.app (.const "W.get" []) (.app (.const "W.of" []) (.const "ok" []))) } none }
   ]
 
 /-- A user-declared `ShareLet` (no HDL library): the hook fires on a `let` in check mode
