@@ -1,0 +1,37 @@
+import FeralCore
+-- Lowering of drafts/feral/surface/02_push.wiz (rules: drafts/feral/LOWERING.md).
+
+-- fn push_twice {'a} (v : &'a mut Vec U64) (x : U64) : Unit
+-- (a call that only hands `&mut` arguments back moves the handle in and rebinds it,
+-- L17: no reborrow scope is needed)
+def push_twice {ρ : Region} (v : Uniq ρ (Vec U64)) (x : U64) : Result (Unit × Uniq ρ (Vec U64)) :=
+  match Vec.push v x with             -- v.push x   (the handle goes in and comes back)
+  | .ok r =>
+    let (u, v) := r;
+    match Vec.push v x with           -- v.push x
+    | .ok r =>
+      let (u, v) := r;
+      .ok ((), v)
+    | .err e => .err e
+  | .err e => .err e
+
+-- the `for i in 0..n` loop of `fill` (L8: a range loop is structural recursion on the
+-- number of iterations left; the live mutable variable `v` is threaded)
+def fill.loop0 : Nat → U64 → Vec U64 → Result (Vec U64)
+  | .zero, _, v => .ok v
+  | .succ k, i, v => match Uniq.borrow Region.static v (fun ρ h v r => push_twice r i) with   -- push_twice (&mut v) i
+    | .ok r =>
+      let (u, v) := r;
+      fill.loop0 k (U64.mk (Nat.succ i.val)) v     -- i < n ≤ 2^64 - 1: no overflow check
+    | .err e => .err e
+
+-- fn fill (n : U64) : Vec U64
+def fill (n : U64) : Result (Vec U64) :=
+  let v := Vec.new;
+  match fill.loop0 n.val (U64.lit 0) v with
+  | .ok v => .ok v
+  | .err e => .err e
+
+#eval Result.map (fun (v : Vec U64) => List.length v.items) (fill (U64.lit 5))
+-- 10
+#eval Result.map (fun (v : Vec U64) => v.items) (fill (U64.lit 2))

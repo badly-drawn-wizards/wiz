@@ -1,0 +1,21 @@
+import FeralCore
+import Feral
+-- Returning one of two mutable borrows. Hand-lowered: drafts/feral/lowered/12_pick.wiz
+
+feral
+  -- `&'a mut` is covariant in `'a`: with `'a : 'b`, `x` is a `&'b mut U64` too
+  fn pick {'a 'b} {'a : 'b} (c : Bool) (x : &'a mut U64) (y : &'b mut U64) : &'b mut U64 :=
+    if c then x else y
+
+  fn main (c : Bool) : U64 × U64 := {
+    let mut a : U64 := 1;
+    let mut b : U64 := 2;
+    *pick c (&mut a) (&mut b) := 10;                 -- both borrows live until here
+    (a, b)
+  }
+end
+
+#eval Result.map (fun (p : U64 × U64) => let (a, b) := p; ((a.val, b.val) : Nat × Nat)) (main .true)
+-- .ok (10, 2)
+#eval Result.map (fun (p : U64 × U64) => let (a, b) := p; ((a.val, b.val) : Nat × Nat)) (main .false)
+-- .ok (1, 10)

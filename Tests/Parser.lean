@@ -94,6 +94,12 @@ def termGroup : Group where
     { name := "∀", run := fun _ =>
         parses "∀ (A : Type) x, A"
           "(term.forall [(binder.explicit [] [A] [(term.type [])]) x] (term.ident A))" },
+    { name := "forall (13e)", run := fun _ =>
+        parses "forall (A : Type) x, A"
+          "(term.forall [(binder.explicit [] [A] [(term.type [])]) x] (term.ident A))" },
+    { name := "let with a tuple of three or more names (13f)", run := fun _ =>
+        parses "let 1 (a, b, c, d) := p; a"
+          "(term.letTuple [(quantity 1)] a b [c d] (term.ident p) [] (term.ident a))" },
     { name := "let with semicolon", run := fun _ =>
         parses "let 1 x : A := f a; x"
           "(term.let [(quantity 1)] x [(term.ident A)] (term.app (term.ident f) [(term.ident a)]) [] (term.ident x))" },

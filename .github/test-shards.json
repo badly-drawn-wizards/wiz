@@ -23,6 +23,7 @@
     "builtins",
     "classes",
     "deriving",
+    "=feral",
     "=grail",
     "=grail-commands",
     "=grail-deps",

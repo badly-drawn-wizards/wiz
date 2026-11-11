@@ -1,0 +1,16 @@
+import FeralCore
+import Feral
+-- REJECTED (Rust E0499: two mutable borrows live at once).
+-- expect: E0499 at 11
+-- Inside r1's scope `v` is a `Lent` token (L20); the lowering of `&mut v` borrows the
+-- token, and `r2.push` gets a `Uniq ρ2 (Lent ρ1 (Vec U64))` (hand-lowered: ../E0499_two_mut.wiz).
+feral
+  fn bad () : Vec U64 := {
+    let mut v := Vec.new;
+    let r1 := &mut v;
+    let r2 := &mut v;
+    r1.push 1;
+    r2.push 2;
+    v
+  }
+end

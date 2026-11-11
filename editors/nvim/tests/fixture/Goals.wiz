@@ -6,3 +6,8 @@ def k : Nat → Bool → Nat := by
   exact n
 
 def two : Nat := Nat.add 1 1
+
+syntax (name := twice) "twice" term:max : term
+macro_rules
+  | `(term| twice $x) => `(term| Nat.add $x $x)
+def four : Nat := twice two

@@ -1,0 +1,20 @@
+import FeralCore
+import Feral
+-- REJECTED by Feral: `pick` needs `'a : 'b`, but `rb`'s borrow is the outer one, so the
+-- scopes only give `'b : 'a` (L22). (rustc accepts this program: it reborrows `rb` at a
+-- shorter lifetime implicitly; in Feral a `&mut` argument keeps its region, L22, so this
+-- is stricter than Rust. Recorded in STATUS.md.)
+-- expect: E0597 at 17
+feral
+  fn pick {'a 'b} {'a : 'b} (c : Bool) (x : &'a mut U64) (y : &'b mut U64) : &'b mut U64 :=
+    if c then x else y
+
+  fn bad () : U64 × U64 := {
+    let mut b : U64 := 2;
+    let rb := &mut b;
+    let mut a : U64 := 1;
+    let ra := &mut a;
+    *pick true ra rb := 10;
+    (a, b)
+  }
+end

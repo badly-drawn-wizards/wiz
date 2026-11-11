@@ -109,7 +109,11 @@ structure CommandState (R : Type) where
   (`lib/`). The main file never is, nor a module from a `-I` directory. -/
   trustedModule : String → Bool := fun _ => false
   /-- macro rules, latest first -/
-  macros : List (Name × Syntax × Syntax × List Name) := []
+  macros : List MacroRule := []
+  /-- (11q) where each syntax kind and syntax category was declared (the command's range,
+  and module), for go to definition on syntax -/
+  kindSites : Std.HashMap Name (SourceInfo × String) := {}
+  catSites : Std.HashMap Name (SourceInfo × String) := {}
   nextScope : Nat := 1000000
   /-- (`runFrontend`) the modules already checked in isolation, with their errors
   (`none` while one is being checked: an import cycle) -/
@@ -361,27 +365,123 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   ensureNoMVars fullTy info
   pure (fullTy, val)
 
-/-- The recursive calls of `fn` in a right-hand side, as `rewriteRecCalls` recognises them
-(an application whose head is the identifier `fn` or `@fn`), with the head given a macro
-scope (`fn✝rec`): such a name is never a local variable's, so it resolves to the global
-`fn`. The second elaboration of a recursive definition's equations (`elabDefEqns`) uses
-it: there the definition is a global, and a local variable called `fn` (a `fun` or `let`
-binder) would capture the call, which the first elaboration turned into the induction
-hypothesis without looking at what is in scope. Compiled code would then call the local
-where the checked definition recurses. -/
-partial def markRecCalls (fn : Name) (stx : Syntax) : Syntax :=
-  let marked (i : SourceInfo) : Syntax := .ident i (fn ++ "✝rec")
-  match stx with
-  | .node i k args =>
-    let args := args.map (markRecCalls fn)
-    let head? : Option Syntax := if k == "term.app" then args[0]? else none
-    match head? with
-    | some (Syntax.node hi "term.ident" #[Syntax.ident ii n]) =>
-      if n == fn then .node i k (args.set! 0 (.node hi "term.ident" #[marked ii])) else .node i k args
-    | some (Syntax.node hi "term.explicit" #[at_, Syntax.ident ii n]) =>
-      if n == fn then .node i k (args.set! 0 (.node hi "term.explicit" #[at_, marked ii])) else .node i k args
-    | _ => .node i k args
-  | s => s
+/-- Derivation gives up (`fn` and the reason are for debugging). -/
+def deriveBail {α : Type} (_fn _why : String) : Option α := none
+
+/-- **The compiled equations of a structurally recursive definition, derived from its
+checked value** (docs/Status.md T1; wiz-notes/impl-unchecked.md, "Design"). `val` is
+`λ tele cols. [let …] T.rec Δ motive m₁ … mₙ ξ x rs` (`compileMatch` with a recursion
+context; `nT` telescope variables, `n` columns, the structural one at `pos`). The result
+is the same term with `T.casesOn` for `T.rec` and each method
+`m_c = λ fields ihs. body` replaced by `λ fields. body[ih := C]`, where `C` is the direct
+call the hypothesis stands for:
+
+* a field `y : T Δ js`: `λ rs. @f tele[ξ := js] (y at pos, rs elsewhere)`;
+* an infinitary field `k : (h : H) → T Δ (js h)`: `λ h rs. @f tele[ξ := js h] (k h …)`.
+
+Nothing is elaborated again, so the source can't be read differently. `none` (compiled
+code then runs the value) for an index-unification match (mode B: the hypothesis wants the
+index equation) and when an index variable occurs in `Δ`, the motive or a method (the
+recursor keeps the outer index in every step, a direct call would pass the field's). -/
+partial def deriveImpl (g : Globals R) (fn : Name) (us : List Level) (nT n pos : Nat) (val : Term R) :
+    Option (Term R) := do
+  let (xs, body) ← peel (nT + n) val
+  let body' ← go (nT + n) body
+  let body' := Push.betaCalls fn body'
+  pure (xs.foldr .lam body')
+where
+  peel : Nat → Term R → Option (List Name × Term R)
+    | 0, t => some ([], t)
+    | k + 1, .lam x b => do let (xs, r) ← peel k b; pure (x :: xs, r)
+    | _, _ => none
+  go (L : Nat) : Term R → Option (Term R)
+    | .letE x q ty v b => do pure (.letE x q ty v (← go (L + 1) b))
+    | t => split L t
+  recView (T : Name) (nΔ : Nat) (A : Term R) : Option (Option (Name × Term R) × List (Term R)) :=
+    match Term.spine A with
+    | (.const m _, args) => if m == T then some (none, args.drop nΔ) else none
+    | (.pi h _ _ H Bd _, []) => match Term.spine Bd with
+      | (.const m _, args) => if m == T then some (some (h, H), args.drop nΔ) else none
+      | _ => none
+    | _ => none
+  lamN (x : Name) : Nat → (Array (B R) → B R) → B R
+    | 0, k => k #[]
+    | m + 1, k => B.lam x fun v => lamN x m fun vs => k (#[v] ++ vs)
+  split (L : Nat) (t : Term R) : Option (Term R) := do
+    let (.const r rus, args) := t.spine | deriveBail fn "not a spine"
+    let base (k : Nat) : Name := String.ofList (r.toList.take (r.length - k))
+    let (T, cases) ← if r.endsWith ".recN" then some (base 5, base 5 ++ ".casesOnN")
+      else if r.endsWith ".rec" then some (base 4, base 4 ++ ".casesOn") else deriveBail fn s!"head {r}"
+    let Td ← g.find? T
+    let descD ← g.find? (T ++ ".desc")
+    let rd ← g.find? r
+    let nΔ := (piInfos descD.type).length
+    let nΞ := (piInfos Td.type).length - nΔ
+    let recBs := piInfos rd.type
+    let nc := recBs.length - nΔ - nΞ - 2
+    -- mode A: Δ, motive, methods, ξ, x, then the other columns (mode B has the index
+    -- equation's proof after `x`)
+    let modeB := args.length == recBs.length + n
+    unless args.length == recBs.length + (n - 1) || modeB do
+      deriveBail fn s!"arity {args.length} {recBs.length} {n}"
+    let Δargs := args.take nΔ
+    let motive := args[nΔ]!
+    let methods := (args.drop (nΔ + 1)).take nc
+    let ξ := (args.drop (nΔ + 1 + nc)).take nΞ
+    let rest := args.drop (nΔ + 1 + nc + nΞ)
+    -- the index variables: telescope variables, by level
+    let idxLvls ← if modeB then pure [] else ξ.mapM fun a => match a with
+      | .var i => if L - 1 - i < nT then some (L - 1 - i) else deriveBail fn "idx not tele"
+      | _ => deriveBail fn "idx not var"
+    if idxLvls.any (fun l => (Δargs ++ [motive] ++ methods).any (·.hasVar (L - 1 - l))) then deriveBail fn "idx escapes"
+    let ctors := ((recBs.drop (nΔ + 1)).take nc).map fun (m, _, _) => String.ofList (m.toList.drop 2)
+    let Δb : List (B R) := Δargs.map fun a => fun d => a.lift (d - L)
+    let mut methods' : List (Term R) := []
+    for c in ctors, m in methods do
+      let cd ← g.find? (T ++ "." ++ c)
+      let fields := (peelPis cd.type).1.drop nΔ
+      let F := fields.length
+      let recs := fields.zipIdx.filterMap fun ((_, _, _, A), fi) => (recView T nΔ A).map (·, fi)
+      let k := recs.length
+      let (fieldNames, m1) ← peel F m
+      let (_, mbody) ← peel k m1
+      let fieldB (fi : Nat) : B R := B.bvar (L + fi)
+      let call (js : List (B R)) (y : B R) : B R :=
+        lamN "r" (n - 1) fun rsB =>
+          let teleArgs := (List.range nT).map fun tv => match idxLvls.idxOf? tv with
+            | some q => js[q]!
+            | none => B.bvar tv
+          let colArgs := (List.range n).map fun cI =>
+            if cI == pos then y else rsB[if cI < pos then cI else cI - 1]!
+          B.app (B.closed (.const fn us)) (teleArgs ++ colArgs)
+      -- mode B: the hypothesis takes the index equation first. Where the field's index is
+      -- the scrutinee's (`js ≡ ξ`), the direct call fits; otherwise the hypothesis can
+      -- only be used with an equation between different indices (a field of another
+      -- sort of a mutual family, typically unused): it stays the recursor itself, which
+      -- is what the value computes there
+      let liftB (t : Term R) : B R := fun d => t.lift (d - L)
+      let sameIdx (js : List (B R)) (d : Nat) : Bool :=
+        js.length == ξ.length && (js.zip ξ).all fun (j, x) => B.norm g j d == B.norm g (liftB x) d
+      let viaRec (js : List (B R)) (y : B R) : B R :=
+        B.app (B.closed (.const r rus)) (Δb ++ [liftB motive] ++ methods.map liftB ++ js ++ [y])
+      let hyp (js : List (B R)) (y : B R) (d : Nat) : B R :=
+        if !modeB then call js y
+        else if sameIdx js d then B.lam "e" fun _ => call js y
+        -- (under its equation, so that compiled code builds a closure, never runs it:
+        -- such a hypothesis is only ever applied to a proof that two different indices
+        -- are equal)
+        else B.lam "e" fun ev => B.app (viaRec js y) [ev]
+      let Cs : List (B R) := recs.map fun ((v, js), fi) =>
+        let σ : Array (B R) := (Δb ++ (List.range fi).map fieldB).toArray
+        match v with
+        | none => hyp (js.map (B.ofTele · σ)) (fieldB fi) (L + F)
+        | some (h, _) => B.lam h fun hv => hyp (js.map (B.ofTele · (σ.push hv))) (B.app (fieldB fi) [hv]) (L + F + 1)
+      let mut b := mbody
+      for j in [0:k] do
+        let i := k - 1 - j
+        b := b.instantiateAt 0 ((Cs[i]! (L + F)).lift i)
+      methods' := methods' ++ [fieldNames.foldr .lam b]
+    pure ((Δargs ++ [motive] ++ methods' ++ ξ ++ rest).foldl .app (.const cases rus))
 
 /-- Does the checked value of a structurally recursive definition use an index variable
 of its scrutinee's type anywhere but as the recursor's index argument (in the parameters,
@@ -479,27 +579,14 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
   ensureNoMVars fullTy info
-  -- for the compiler: the same equations with direct recursion (the definition, as an
-  -- axiom for the moment, is called like any function) and case analysis, so that only
-  -- the recursive calls the program makes are computed
-  let esc := rc.isSome && indexEscapes (← getGlobals) val
-  let impl ← if rc.isNone || esc then pure none else do
-    let saved ← get
-    try
-      modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none },
-                                unifyFails := {}, unifyFailCount := 0 }
-      -- the calls the first elaboration took for recursive ones, by their syntax
-      -- (`rewriteRecCalls`), are calls of the definition here too, whatever `name` is
-      -- bound to locally
-      let clauses := clauses.map fun c => { c with rhs := markRecCalls name c.rhs }
-      let body' ← compileMatch ctx' (perm vars) clauses tyv none true
-      solveSortConstraints
-      let v' ← zonk 0 (tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body'))
-      modify fun s => { s with globals := saved.globals, unifyFails := {}, unifyFailCount := 0 }
-      pure (if v'.mvars.isEmpty then some v' else none)
-    catch _ =>
-      set saved
-      pure none
+  -- for the compiler: the value with each hypothesis replaced by the direct call it stands
+  -- for (`deriveImpl`), so that only the recursive calls the program makes are computed;
+  -- the kernel checks that it agrees with the value (`checkImplAgrees`). None when an
+  -- index variable escapes into a method (`indexEscapes`): compiled code runs the value
+  let g ← getGlobals
+  let us := (← get).levelParams.map Level.param
+  let impl := if rc.isNone || indexEscapes g val then none
+    else deriveImpl g name us tele.size names.length pos val
   pure (fullTy, val, impl)
 
 /-- Does the identifier `n` occur anywhere in `stx`? -/
@@ -700,7 +787,7 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
 
 /-- Run the elaborator; also returns the info tree it recorded (even after an error). -/
 def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
-    (macros : List (Name × Syntax × Syntax × List Name) := []) (builtins : List (Name × Name) := [])
+    (macros : List MacroRule := []) (builtins : List (Name × Name) := [])
     (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
     (metaCode : Thunk (Except String Code) := Thunk.pure (.ok {}))
     (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) (termInfo : Bool := false) :
@@ -721,7 +808,7 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   | .error e => (.error e, (e.state?.map finishInfos).getD #[])
 
 def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
-    (macros : List (Name × Syntax × Syntax × List Name) := []) (builtins : List (Name × Name) := [])
+    (macros : List MacroRule := []) (builtins : List (Name × Name) := [])
     (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
     (metaCode : Thunk (Except String Code) := Thunk.pure (.ok {}))
     (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) : Except (ElabError R) α :=
@@ -771,9 +858,9 @@ def classMethods (sDecl : Decl R) (levelParams : List Name)
   pure out
 
 /-- `notation` and `infixl`/`infixr`/`infix`: register a syntax rule and a macro rule.
-Returns the new tables and the rule `(kind, pattern, template, vars)`. -/
+Returns the new tables and the macro rule. -/
 def notationRule (tables : ParserTables) (cmd : Syntax) :
-    Except String (ParserTables × (Name × Syntax × Syntax × List Name)) := do
+    Except String (ParserTables × MacroRule) := do
   let antiquot (v : Name) : Syntax := .node {} "antiquot" #[.atom {} "$", .ident {} v]
   -- items: `.inl op` for an atom, `.inr (name, prec?)` for an argument
   let (prec, items, rhs) ← if cmd.isOfKind "command.infix" then do
@@ -813,13 +900,13 @@ def notationRule (tables : ParserTables) (cmd : Syntax) :
     let p := if h : ps.length = 1 then ps[0] else .seq ps.toArray
     let kind := mkKindName tables "term" p
     let tables := tables.addTrailing "term" { kind, prec, lhsPrec := lp?.getD prec, p }
-    pure (tables, (kind, .node {} kind (items.map pat).toArray, rhs, vars))
+    pure (tables, { kind, pattern := .node {} kind (items.map pat).toArray, template := rhs, vars, site := cmd.info })
   | _ =>
     let ps := items.map descr
     let p := if h : ps.length = 1 then ps[0] else .seq ps.toArray
     let kind := mkKindName tables "term" p
     let tables := tables.addLeading "term" { kind, prec, p }
-    pure (tables, (kind, .node {} kind (items.map pat).toArray, rhs, vars))
+    pure (tables, { kind, pattern := .node {} kind (items.map pat).toArray, template := rhs, vars, site := cmd.info })
 
 /-- Is a `builtin key := d` registration well formed? Numerals and the native operations
 need the shapes they assume: `nat` a type, `nat.zero : N`, `nat.succ : N → N`, the
@@ -907,8 +994,11 @@ def privateFields (cmd : Syntax) : List Name :=
 `instance`, …): the `trace`s of its tactics and macros still become info messages. -/
 def withTraces (r : Except (ElabError R) α × Array (Info R)) : StateM (CommandState R) (Except (ElabError R) α) := do
   for i in r.2 do
-    if let .trace info text := i then
-      modify fun s => { s with messages := s.messages.push { info, severity := .info, text } }
+    match i with
+    | .trace info text => modify fun s => { s with messages := s.messages.push { info, severity := .info, text } }
+    -- (11q) the rest of the tree too (hovers in `#check`, an inductive type's binders)
+    | .warning .. => pure ()
+    | i => modify fun s => { s with infos := s.infos.push i }
   pure r.1
 
 /-- (13m) The end of an imported module: `inner` is the state after it, `outer` the
@@ -933,13 +1023,13 @@ def CommandState.endModule (inner outer : CommandState R) : CommandState R :=
     let acc := cat.leading.foldl (fun acc lp => lp.p.tokens.foldl (·.insert ·) acc) acc
     cat.trailing.foldl (fun acc tp => tp.p.tokens.foldl (·.insert ·) acc) acc
   -- (entries numbered from the oldest, as `local` recorded them)
-  let keep {α : Type} (xs : List (Name × α)) (dropped : List Nat) : List (Name × α) :=
+  let keep {α : Type} (key : α → Name) (xs : List α) (dropped : List Nat) : List α :=
     let n := xs.length
-    (xs.zipIdx.filter fun ((k, _), i) => !kinds.contains k && !dropped.contains (n - 1 - i)).map (·.1)
+    (xs.zipIdx.filter fun (x, i) => !kinds.contains (key x) && !dropped.contains (n - 1 - i)).map (·.1)
   { reset with
     tables := { t with cats := cats', tokens := t.tokens.filter used.contains }
-    macros := keep inner.macros rules
-    procMacros := keep inner.procMacros procs
+    macros := keep (·.kind) inner.macros rules
+    procMacros := keep (·.1) inner.procMacros procs
     tactics := inner.tactics.filter (!kinds.contains ·.1)
     cmdMacros := inner.cmdMacros.filter (!kinds.contains ·.1) }
 
@@ -1178,7 +1268,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | (.error e, hv) => addInfos hv; reportErr e; return
     modify fun s => { s with globals := g }
   | "command.check" =>
-    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals do
       let (t, ty) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -1192,7 +1282,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
   | "command.reduce" =>
-    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -1354,7 +1444,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else
       let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
         else elabStructure cmd levelParams
-      match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals elabCmd levelParams) with
+      match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals elabCmd levelParams) with
       | .error e => report .error e.info e.msg
       | .ok decls =>
         -- a structure's projection functions `S.f` (unless the name is taken, as `S.mk`)
@@ -2012,7 +2102,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error err => report .error cmd.info s!"cannot erase {n}: {err}"
   | "command.eval" =>
     -- elaborate, erase, run, and read the result back using its type
-    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -2037,7 +2127,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | .error err => report .error cmd.info s!"cannot run this: {err}"
   | "command.run" =>
     -- like `#eval`, but through the IR, with reference counting, on a checked heap
-    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals do
+    let r ← withTraces <| runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals do
       let (t, _) ← Elab.infer {} (cmd.getArg 1)
       solveSortConstraints
       let t ← zonk 0 t
@@ -2071,7 +2161,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | .error err => report .error cmd.info s!"#ir: {err}"
   | "command.syntax" | "command.declareSyntaxCat" =>
     match updateTables s.tables cmd with
-    | .ok tables => modify fun s => { s with tables }
+    | .ok tables =>
+      -- (11q) where the new kinds and categories were declared
+      let site := (cmd.info, s.module)
+      let kindSites := tables.kinds.fold (init := s.kindSites) fun m k _ =>
+        if s.tables.kinds.contains k then m else m.insert k site
+      let catSites := tables.cats.fold (init := s.catSites) fun m c _ =>
+        if s.tables.cats.contains c then m else m.insert c site
+      modify fun s => { s with tables, kindSites, catSites }
     | .error msg => report .error cmd.info msg
   | "command.macroRules" =>
     for alt in (cmd.getArg 1).args do
@@ -2081,29 +2178,68 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         report .error alt.info "a macro rule is `| `(cat| pattern) => `(cat| template)`"
         return
       let pattern := lhs.getArg 3
-      modify fun s => { s with macros := (pattern.kind, pattern, rhs.getArg 3, []) :: s.macros }
+      let rule : MacroRule := { kind := pattern.kind, pattern, template := rhs.getArg 3, site := alt.info, module := s.module }
+      modify fun s => { s with macros := rule :: s.macros }
   | "command.notation" | "command.infix" =>
     match notationRule s.tables cmd with
-    | .ok (tables, rule) => modify fun s => { s with tables, macros := rule :: s.macros }
+    | .ok (tables, rule) =>
+      modify fun s => { s with tables, macros := { rule with module := s.module } :: s.macros,
+                               kindSites := s.kindSites.insert rule.kind (cmd.info, s.module) }
     | .error e => report .error cmd.info e
   | k =>
     -- user-defined command syntax: expand a macro, if one applies
-    let rules := s.macros.map fun (kind, pattern, template, vars) => ({ kind, pattern, template, vars } : Elab.MacroRule)
-    match Elab.expandMacro? rules cmd s.nextScope with
-    | some cmd' =>
+    -- (11q) what expanded a command the user wrote
+    let recordExp (h : SyntaxHandler) (out : Option Syntax) : StateM (CommandState R) Unit :=
+      if cmd.info.stop > 0 && !cmd.info.synthetic then
+        modify fun s => { s with infos := s.infos.push (.expansion cmd.info k h out) }
+      else pure ()
+    match Elab.expandMacroRule? s.macros cmd s.nextScope with
+    | some (cmd', r) =>
       modify fun s => { s with nextScope := s.nextScope + 1 }
+      recordExp (.rule r.site r.module) (some cmd')
       elabCommand cmd'
     | none =>
       -- (HD8) a command macro, written in Wiz
       match s.cmdMacros.lookup k with
       | some f =>
+        recordExp (.fn "command macro" f) none
         let r := match metaCodeFor f with
           | .ok code => Elab.runCommandMacro code f cmd s.nextScope (macroEnv s.globals)
           | .error e => (#[], .error e)
-        elabExpansion s!"macro {f}" r cmd.info
+        for t in r.1 do report .info cmd.info t
+        match r.2 with
+        | .error e => report .error cmd.info s!"macro {f}: {e}"
+        | .ok (cmds, next) =>
+          modify fun s => { s with nextScope := next }
+          for c in cmds do
+            -- located output (Elab/ProcMacro.lean): diagnostics and generated source,
+            -- placed at a node of the macro's input
+            let info := Elab.pathInfo cmd (c.getArg 0)
+            let text := Elab.atomText (c.getArg 1)
+            match c.kind with
+            | "macro.error" => report .error info text
+            | "macro.info" => report .info info text
+            | "macro.source" =>
+              let chars := text.toList.toArray
+              let mut pos := 0
+              let errorsBefore : Nat := ((← get).messages.filter (·.severity == .error)).size
+              for _ in [0:chars.size + 1] do
+                if skipWs chars pos ≥ chars.size then break
+                match parseCommand chars (← get).tables pos with
+                | .ok (stx, stop) =>
+                  elabCommand (Elab.setInfoAll info stx)
+                  pos := stop
+                | .error e =>
+                  report .error info s!"macro {f}: the generated source does not parse: {e.render text}\n{text}"
+                  break
+              let errorsAfter : Nat := ((← get).messages.filter (·.severity == .error)).size
+              if errorsAfter > errorsBefore then
+                report .error info s!"macro {f}: the generated source was rejected (an internal error of the macro, unless reported above); it is:\n{text}"
+            | _ => elabCommand c
       | none => match s.procMacros.lookup k with
         | some f =>
           -- a `Macro` for a command kind: one command
+          recordExp (.fn "macro" f) none
           let r := match metaCodeFor f "Macro.run" with
             | .ok code =>
               let (tr, r) := Elab.runProcMacro code f cmd s.nextScope (macroEnv s.globals)
