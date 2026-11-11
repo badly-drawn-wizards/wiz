@@ -182,7 +182,7 @@ Two ways to prove `False` without writing `axiom` are closed.
   the current directory replaced the toolchain's and was trusted, registrations and
   all. Now the first root is the library next to the binary (`Module.toolchainLib`:
   `<dir>/lib` for `<dir>/.lake/build/bin/wiz`, which is a checkout, the Nix package's
-  and the release tarball's `share/wiz`, as grail's `findStd`), then `./lib`, then the
+  and the release tarball's `share/wiz`, as grail's `findStd`; `./lib` only when there is none), then the
   `-I` directories. Its modules are trusted, and since the first root that has a module
   wins, no other directory can stand in for one: a file that would (`Prelude.wiz` in an
   `-I` directory) is ignored with a warning. The language server uses the same roots.

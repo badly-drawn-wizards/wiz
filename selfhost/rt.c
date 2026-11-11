@@ -987,7 +987,11 @@ INLINE void rt_drop(V v) {
 #endif
 }
 static uint64_t rt_in_nat(V v) { return ISBOX(v) ? (uint64_t)UNBOX(v) : 0; }
-static V rt_out_nat(uint64_t n) { return BOX(n); }
+/* (21p) a `Nat` here is 63 bits: a C number that doesn't fit is an error, not cut */
+static V rt_out_nat(uint64_t n) {
+  if (n >> 63) die("a foreign function's Nat does not fit in 63 bits (the self-hosted runtime's Nat)");
+  return BOX(n);
+}
 static uint64_t rt_in_u64(V v) {
   if (ISBOX(v)) return (uint64_t)UNBOX(v);
   uint64_t b = (uint64_t)OBJ(v)->f[0];
@@ -1019,6 +1023,15 @@ static void rt_free_cstr(char *s) {
 #endif
 }
 static V rt_out_str(const char *s) { return s ? wstr(s, strlen(s)) : wstr("", 0); }
+/* (21o) an exported function's `String` result: a `malloc`ed copy the caller frees */
+static char *rt_export_str(V v) {
+  char *s = rt_in_str(v);
+#ifdef WIZ_RC
+  return s;
+#else
+  return strdup(s);
+#endif
+}
 static void *rt_in_ptr(V v) { return ISBOX(v) ? NULL : (void *)OBJ(v)->f[0]; }
 #ifndef WIZ_RC
 static size_t rt_nfin;

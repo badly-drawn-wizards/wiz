@@ -75,7 +75,6 @@ inductive String where
   | mk (data : List Char)
 def String.append : String → String → String
   | .mk xs, .mk ys => .mk (List.append xs ys)
-infixr:67 " ++ " => List.append
 -- `x |> f` is `f x` (stage 13)
 def pipe {A B : Type} (a : A) (f : A → B) : B := f a
 infixl:10 " |> " => pipe
@@ -839,6 +838,29 @@ def Tactic.rwBack : Tactic := fun stx => do
   g' ← TacticM.rewrite g p.1 .true;
   TacticM.replaceMainGoal (.cons g' .nil)
 attribute [tactic tactic.rwBack] Tactic.rwBack
+
+-- ## Notation: `++` and list literals (agent/notation)
+--
+-- `a ++ b` appends lists and strings: it is the method of a class, like the numeric
+-- operators (HD9, homogeneous), so other libraries can give it more instances.
+class Append (A : Type) where
+  append : A → A → A
+instance {A : Type} : Append (List A) := Append.mk List.append
+instance : Append String := Append.mk String.append
+infixr:67 " ++ " => Append.append
+-- `[a, b, c]` is `List.cons a (List.cons b (List.cons c List.nil))` and `[]` is
+-- `List.nil`, in terms and in patterns. Instance binders (`[Monad m] → …`) still parse:
+-- a dependent arrow is longer than a list literal followed by an arrow.
+syntax (name := listLit) "[" sepBy(term, ",") "]" : term
+def ListLit.build {b : Bool} : SyntaxF b → Syntax
+  | .cons (.atom _) ts => ListLit.build ts
+  | .cons t ts => Syntax.mkApp (Syntax.mkVar "List.cons") (.cons t (.cons (ListLit.build ts) .nil))
+  | _ => Syntax.mkVar "List.nil"
+def ListLit.expand : Macro := fun stx => match Syntax.getArg stx 1 with
+  | .node _ ts => MacroM.pure (ListLit.build ts)
+  | _ => MacroM.pure (Syntax.mkVar "List.nil")
+attribute [macro term.listLit] ListLit.expand
+-- (end of the notation section)
 
 -- A decimal numeral as text, for macros (`Nat.toString` is an extern: it only runs compiled).
 partial def Syntax.decPowers (n p : Nat) (acc : List Nat) : List Nat := match Nat.lt n p with

@@ -117,6 +117,14 @@ structure CommandState (R : Type) where
   /-- no command has been elaborated into this state yet (it is the initial state, up to
   messages and the info tree) -/
   pristine : Bool := true
+  /-- (13m) what `local` commands of the module being elaborated added, latest first: node
+  kinds and syntax categories, and macro rules and `attribute [macro]` registrations
+  (numbered from the oldest). They are dropped when the module's import ends
+  (`CommandState.endModule`). -/
+  localKinds : List Name := []
+  localCats : List Name := []
+  localRules : List Nat := []
+  localProcs : List Nat := []
 
 /-- "'n' has already been declared", naming the module that declared it if that is not
 the one being elaborated (two modules, or a module and the file importing it). -/
@@ -420,8 +428,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let ty ← zonk ctx.lvl ty
   ensureNoMVars ty info
   let alts := (cmd.getArg 5).args
-  let clauses : List (MClause R) := alts.toList.map fun a =>
-    { pats := ((a.getArg 1).args.filter (!· matches .atom ..)).toList, rhs := a.getArg 3 }
+  let clauses : List (MClause R) ← alts.toList.mapM fun a => do
+    pure { pats := ← ((a.getArg 1).args.filter (!· matches .atom ..)).toList.mapM expandPattern, rhs := a.getArg 3 }
   let n := (clauses.head?.map (·.pats.length)).getD 0
   -- introduce `n` arguments of the type
   let mut ctx' := ctx
@@ -445,9 +453,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let g ← getGlobals
   let pos : Nat := if !recursive then 0 else
     match clauses.head? with
-    | some c => (c.pats.findIdx? fun p => match patView g p with
-        | .ok (.ctor ..) => true
-        | _ => false).getD 0
+    | some c => (c.pats.findIdx? (patIsCtor g)).getD 0
     | none => 0
   let perm {α : Type} (xs : List α) : List α :=
     match xs.drop pos with
@@ -480,7 +486,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let impl ← if rc.isNone || esc then pure none else do
     let saved ← get
     try
-      modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
+      modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none },
+                                unifyFails := {}, unifyFailCount := 0 }
       -- the calls the first elaboration took for recursive ones, by their syntax
       -- (`rewriteRecCalls`), are calls of the definition here too, whatever `name` is
       -- bound to locally
@@ -488,7 +495,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
       let body' ← compileMatch ctx' (perm vars) clauses tyv none true
       solveSortConstraints
       let v' ← zonk 0 (tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body'))
-      modify fun s => { s with globals := saved.globals }
+      modify fun s => { s with globals := saved.globals, unifyFails := {}, unifyFailCount := 0 }
       pure (if v'.mvars.isEmpty then some v' else none)
     catch _ =>
       set saved
@@ -887,14 +894,14 @@ partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Exce
 
 /-- (13b) Does a `structure` command say `private mk ::` after `where`? -/
 def structurePrivateMk (cmd : Syntax) : Bool :=
-  let spec := (cmd.getArg 5).getArg 1
+  let spec := (cmd.child "where").child "ctor"
   !spec.args.isEmpty && !(spec.getArg 0).args.isEmpty
 
 /-- (13b) The fields (observations) of a `structure` or `coinductive` command marked
 `private`. -/
 def privateFields (cmd : Syntax) : List Name :=
-  (cmd.getArg 6).args.toList.filterMap fun f =>
-    if (f.getArg 0).args.isEmpty then none else (f.getArg 2).getId?
+  (cmd.child "fields").args.toList.filterMap fun f =>
+    if (f.child "private").args.isEmpty then none else (f.child "name").getId?
 
 /-- The result of `runElabH`, for a command that keeps no info tree (`#check`, `#eval`,
 `instance`, …): the `trace`s of its tactics and macros still become info messages. -/
@@ -903,6 +910,38 @@ def withTraces (r : Except (ElabError R) α × Array (Info R)) : StateM (Command
     if let .trace info text := i then
       modify fun s => { s with messages := s.messages.push { info, severity := .info, text } }
   pure r.1
+
+/-- (13m) The end of an imported module: `inner` is the state after it, `outer` the
+importer's before the `import`. The module's `local` notation is dropped: its parsers
+(and categories), the macro rules and macros of its kinds, and its `local` macro rules
+and registrations; tokens no remaining parser mentions are no longer reserved. Kind
+names stay taken, so a later notation gets a new kind and none of the dropped rules. -/
+def CommandState.endModule (inner outer : CommandState R) : CommandState R :=
+  let kinds := inner.localKinds.take (inner.localKinds.length - outer.localKinds.length)
+  let cats := inner.localCats.take (inner.localCats.length - outer.localCats.length)
+  let rules := inner.localRules.take (inner.localRules.length - outer.localRules.length)
+  let procs := inner.localProcs.take (inner.localProcs.length - outer.localProcs.length)
+  let reset := { inner with localKinds := outer.localKinds, localCats := outer.localCats,
+                            localRules := outer.localRules, localProcs := outer.localProcs }
+  if kinds.isEmpty && cats.isEmpty && rules.isEmpty && procs.isEmpty then reset else
+  let t := inner.tables
+  let cats' := t.cats.fold (init := ({} : Std.HashMap Name Category)) fun acc c cat =>
+    if cats.contains c then acc else
+    acc.insert c { leading := cat.leading.filter (!kinds.contains ·.kind),
+                   trailing := cat.trailing.filter (!kinds.contains ·.kind) }
+  let used : Std.HashSet String := cats'.fold (init := {}) fun acc _ cat =>
+    let acc := cat.leading.foldl (fun acc lp => lp.p.tokens.foldl (·.insert ·) acc) acc
+    cat.trailing.foldl (fun acc tp => tp.p.tokens.foldl (·.insert ·) acc) acc
+  -- (entries numbered from the oldest, as `local` recorded them)
+  let keep {α : Type} (xs : List (Name × α)) (dropped : List Nat) : List (Name × α) :=
+    let n := xs.length
+    (xs.zipIdx.filter fun ((k, _), i) => !kinds.contains k && !dropped.contains (n - 1 - i)).map (·.1)
+  { reset with
+    tables := { t with cats := cats', tokens := t.tokens.filter used.contains }
+    macros := keep inner.macros rules
+    procMacros := keep inner.procMacros procs
+    tactics := inner.tactics.filter (!kinds.contains ·.1)
+    cmdMacros := inner.cmdMacros.filter (!kinds.contains ·.1) }
 
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
@@ -1038,6 +1077,21 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let added := s.globals.order.extract before s.globals.order.size
       { s with globals := { s.globals with
           privates := added.foldl (fun m n => m.insert n s.module) s.globals.privates } }
+  | "command.local" =>
+    -- (13m) grammar that stays in this module: remember what the command adds
+    let inner := cmd.getArg 1
+    unless ["command.syntax", "command.declareSyntaxCat", "command.notation", "command.infix",
+            "command.macroRules", "command.attrMacro"].contains inner.kind do
+      report .error cmd.info "only `syntax`, `declare_syntax_cat`, `notation`, `infixl`/`infixr`/`infix`, `macro_rules` and `attribute [macro …]` can be `local`"
+      return
+    let before ← get
+    elabCommand inner
+    modify fun s =>
+      let kinds := s.tables.kinds.toList.filterMap fun (k, _) => if before.tables.kinds.contains k then none else some k
+      let cats := s.tables.cats.toList.filterMap fun (c, _) => if before.tables.cats.contains c then none else some c
+      { s with localKinds := kinds ++ s.localKinds, localCats := cats ++ s.localCats
+               localRules := (List.range' before.macros.length (s.macros.length - before.macros.length)).reverse ++ s.localRules
+               localProcs := (List.range' before.procMacros.length (s.procMacros.length - before.procMacros.length)).reverse ++ s.localProcs }
   | "command.def" | "command.axiom" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
@@ -1288,11 +1342,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           else report .error cmd.info s!"{C} is not a class"
         | _ => report .error cmd.info "an instance's type must be an application of a class"
   | "command.inductive" | "command.structure" =>
-    let name := ((cmd.getArg 1).getId?).getD "_"
-    let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
-    let ctorSpec := ((cmd.getArg 5).getArg 1)
+    -- (children by name, `childNames`: positions shift when the grammar grows)
+    let name := ((cmd.child "name").getId?).getD "_"
+    let levelParams := ((cmd.child "univParams").getArg 1).args.toList.filterMap Syntax.getId?
+    let ctorSpec := if cmd.isOfKind "command.structure" then (cmd.child "where").child "ctor" else .missing
     if s.globals.contains name then
-      reportDup (cmd.getArg 1).info name
+      reportDup (cmd.child "name").info name
     else if cmd.isOfKind "command.structure" && !ctorSpec.args.isEmpty &&
         (ctorSpec.getArg 1).getId? != some "mk" then
       report .error (ctorSpec.getArg 1).info s!"a structure's constructor is `mk` (only `private mk ::` can be written)"
@@ -1316,7 +1371,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
         -- the recursors need the declarations above
         if cmd.isOfKind "command.inductive" then
-          let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 2).getId?
+          let ctors := (cmd.child "ctors").args.toList.filterMap fun c => (c.child "name").getId?
           -- (indexed families also get `recN`/`casesOnN`, for motives that don't depend
           -- on the scrutinee)
           let indexed := isIndexed g name
@@ -1336,8 +1391,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           -- recursors (their cases would hand out a private constructor's fields, and
           -- they are what a `match` compiles to); elsewhere `T` is opaque
           -- (`Globals.elabView`): it isn't matched there, and nothing else converts to it
-          let privCtors := (cmd.getArg 6).args.toList.filterMap fun c =>
-            if (c.getArg 1).args.isEmpty then none else (c.getArg 2).getId?
+          let privCtors := (cmd.child "ctors").args.toList.filterMap fun c =>
+            if (c.child "private").args.isEmpty then none else (c.child "name").getId?
           unless privCtors.isEmpty do
             -- (and the description: `μ T.desc i` written out is the type with nothing
             -- hidden; a raw `con` builds a value of it, and it lists the private fields)
@@ -1356,7 +1411,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           g := { g with privates := privFields.foldl (fun m f => m.insert (name ++ "." ++ f) s.module) g.privates,
                         opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g }
-        derivingClause (cmd.getArg 7) name
+        derivingClause (cmd.child "deriving") name
   | "command.builtin" =>
     let key := ((cmd.getArg 1).getId?).getD "_"
     let n := ((cmd.getArg 3).getId?).getD "_"

@@ -970,10 +970,7 @@ def Circuit.runFrom_comb {i o : HwTy} (f : Comb i o) :
     (s : HwTy.El (HwTy.bits 0)) → (xs : List (HwTy.El i)) →
     Circuit.runFrom (Circuit.comb f) s xs = Hdl.map (Comb.el f) xs
   | s, .nil => refl (@List.nil (HwTy.El o))
-  -- (`f x`, not `Comb.el f x`: checked against `Comb i o`, a variable `f` is η-expanded,
-  -- `fun {r} [_] => f ?inst`, and that instance is still pending when this equation
-  -- needs it)
-  | s, .cons x xs => Hdl.consEq (f x) (Circuit.runFrom_comb f s xs)
+  | s, .cons x xs => Hdl.consEq (Comb.el f x) (Circuit.runFrom_comb f s xs)
 
 def Circuit.runFrom_delay {t : HwTy} (v : HwTy.El t) : (s : HwTy.El t) → (xs : List (HwTy.El t)) →
     Circuit.runFrom (Circuit.delay t v) s xs = Hdl.shift s xs
