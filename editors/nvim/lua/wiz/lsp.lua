@@ -17,9 +17,41 @@ function M.capabilities(extra)
   return vim.tbl_deep_extend('force', caps, extra or {})
 end
 
---- The project root of `buf`: the nearest directory with a root marker, else the
---- file's own directory.
+local function exists(p)
+  return vim.uv.fs_stat(p) ~= nil
+end
+
+--- The installed toolchain whose standard library `path` lies in, if any: `share/wiz/`
+--- of a toolchain (tower's, the Nix package, a release tarball) has the marker
+--- `TOOLCHAIN` (older installations: `REVISION` or the binary in `.lake/build/bin/`),
+--- its library in `lib/` and its binary in `.lake/build/bin/wiz`. Returns
+--- `{ lib = <share/wiz/lib>, wiz = <the toolchain's bin/wiz, else its binary> }`.
+function M.toolchain(path)
+  if not path or path == '' then
+    return nil
+  end
+  for dir in vim.fs.parents(path) do
+    if vim.fs.basename(dir) == 'lib' then
+      local share = vim.fs.dirname(dir)
+      local bin = share .. '/.lake/build/bin/wiz'
+      if exists(dir .. '/Prelude.wiz') and exists(bin)
+          and (exists(share .. '/TOOLCHAIN') or exists(share .. '/REVISION')) then
+        local wrapper = vim.fs.dirname(vim.fs.dirname(share)) .. '/bin/wiz'
+        return { lib = dir, wiz = vim.fn.executable(wrapper) == 1 and wrapper or bin }
+      end
+    end
+  end
+  return nil
+end
+
+--- The project root of `buf`: a toolchain's library directory for a file of an
+--- installed toolchain (it is served by that toolchain's own `wiz lsp`), else the
+--- nearest directory with a root marker, else the file's own directory.
 function M.root(buf)
+  local tc = config.get().lsp.toolchains ~= false and M.toolchain(vim.api.nvim_buf_get_name(buf))
+  if tc then
+    return tc.lib
+  end
   local markers = config.get().lsp.root_markers
   local root = vim.fs.root(buf, markers)
   if root then
@@ -34,6 +66,11 @@ end
 --- not executable, warns once and falls back to `lsp.cmd`.
 function M.cmd(root)
   local cfg = config.get().lsp
+  -- a toolchain's library: that toolchain's wiz (the same version serves its own files)
+  local tc = root and M.toolchain(root .. '/Prelude.wiz')
+  if cfg.toolchains ~= false and tc and tc.lib == root then
+    return { tc.wiz, 'lsp' }
+  end
   local g = cfg.grail or {}
   if g.enable ~= false and root and vim.uv.fs_stat(root .. '/grail.wiz') then
     local cmd = vim.deepcopy(g.cmd or { 'grail', 'lsp' })
@@ -55,6 +92,7 @@ function M.client_config(buf)
   return {
     name = 'wiz',
     cmd = M.cmd(root),
+    cmd_cwd = root,
     root_dir = root,
     capabilities = M.capabilities(cfg.capabilities),
     handlers = M.handlers,
