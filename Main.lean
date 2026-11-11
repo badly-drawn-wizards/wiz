@@ -1,8 +1,10 @@
 import Wiz
+import Wiz.Version
 
 open Wiz
 
 def usage : String := "usage:
+  wiz --version           print the version (and, for a release, its commit)
   wiz parse FILE          print the syntax tree of every command
   wiz check FILE          elaborate and type check (quantities: 0, 1, ω)
   wiz build FILE -o OUT [--llvm]   compile the definition `main` to an executable (via C or LLVM)
@@ -209,6 +211,7 @@ def kernelOpt : List String → Except String (Regularity × Bool × List String
   | [] => return (.off, false, [])
 
 def main (args : List String) : IO UInt32 := do
+  if args == ["--version"] then IO.println (← versionLine "wiz"); return 0
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   -- (26f) a release toolchain's own C compiler, GMP and GC are the defaults
