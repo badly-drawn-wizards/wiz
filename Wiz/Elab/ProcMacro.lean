@@ -36,13 +36,21 @@ def mkCon (tag : Nat) (fields : List RVal) : RVal := .obj tag fields.toArray
 def encodeString (s : String) : RVal :=
   mkCon 0 [s.toList.foldr (fun c t => mkCon 1 [mkCon 0 [.nat c.toNat], t]) (mkCon 0 [])]
 
+/-- (11r) The range of syntax the user wrote, as two hidden trailing fields of its
+constructor value (`start`, `stop`). Wiz code never reads them (its `SyntaxF` has no such
+fields), so they survive exactly as long as a macro or tactic hands back the very value
+it was given (`exact $t` passes the user's `t` through), and are gone from anything it
+builds. `relocate` reads them back. -/
+def rangeFields (i : SourceInfo) : List RVal :=
+  if i.stop == 0 || i.synthetic then [] else [.nat i.start, .nat i.stop]
+
 /-- A host syntax tree as a runtime `Syntax` value. -/
 partial def encodeSyntax : Syntax → RVal
   | .missing => mkCon 0 []
-  | .atom _ v => mkCon 1 [encodeString v]
-  | .ident _ n => mkCon 2 [encodeString n]
-  | .node _ k args =>
-    mkCon 3 [encodeString k, args.foldr (fun a t => mkCon 5 [encodeSyntax a, t]) (mkCon 4 [])]
+  | .atom i v => mkCon 1 ([encodeString v] ++ rangeFields i)
+  | .ident i n => mkCon 2 ([encodeString n] ++ rangeFields i)
+  | .node i k args =>
+    mkCon 3 ([encodeString k, args.foldr (fun a t => mkCon 5 [encodeSyntax a, t]) (mkCon 4 [])] ++ rangeFields i)
 
 /-- The `i`th field of a constructor value. -/
 def _root_.Wiz.RVal.conField (v : RVal) (i : Nat) : RVal := v.field i
@@ -68,6 +76,33 @@ where
   --| sorry
   --sol>
 
+/-- (11r) Give a decoded syntax tree the ranges its value carries (`rangeFields`): the
+user's syntax that a macro or tactic passed through gets its own ranges back, and
+everything else gets `fallback` (the call's range, synthetic). `s` is `decodeSyntax`'s
+result for `v`, so the two have the same shape. -/
+partial def relocate (fallback : SourceInfo) (v : RVal) (s : Syntax) : Syntax :=
+  let info : SourceInfo := match v with
+    | .obj t fs =>
+      let k := if t == 3 then 2 else 1
+      match fs[k]?, fs[k + 1]? with
+      | some (.nat a), some (.nat b) => { start := a, stop := b }
+      | _, _ => fallback
+    | _ => fallback
+  match s with
+  | .atom _ x => .atom info x
+  | .ident _ n => .ident info n
+  | .node _ k as => .node info k (go (v.conField 1) as.toList).toArray
+  | s => s
+where
+  go (l : RVal) : List Syntax → List Syntax
+    | [] => []
+    | a :: as => relocate fallback (l.conField 0) a :: go (l.conField 1) as
+
+/-- Decode a macro's or tactic's syntax, with the ranges of what it passed through. -/
+def decodeLocated (info : SourceInfo) (v : RVal) : Option Syntax :=
+  let fallback := { info with synthetic := true }
+  (decodeSyntax fallback v).map (relocate fallback v)
+
 /-- Give the identifiers a quotation introduced (`x✝`) the scope `scope`. -/
 partial def scopeQuoted (scope : Nat) : Syntax → Syntax
   | .ident i n => if n.endsWith "✝" then .ident i s!"{n}{scope}" else .ident i n
@@ -92,8 +127,8 @@ partial def runMacroTac (code : Code) (env : MacroEnv) (what : String) (info : S
   let str (r : RVal) := (r.toString?).getD ""
   match v.tag? with
   | some 1 => -- result
-    -- (11q) the output is the macro's, not the user's: synthetic, at the call's range
-    match decodeSyntax { info with synthetic := true } (v.conField 0) with
+    -- (11q, 11r) the macro's output: synthetic at the call's range, except what it passed through
+    match decodeLocated info (v.conField 0) with
     | some out => (traces, pure (scopeQuoted scope out, next))
     | none => (traces, throw s!"{what} returned a malformed syntax tree")
   | some 2 => (traces, throw (((v.conField 0).toString?).getD "macro failed")) -- fail

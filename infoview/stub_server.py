@@ -18,6 +18,10 @@ INFO = {"text": "Nat", "kind": "const", "name": "Nat", "session": 3,
         "type": {"tag": [{"ref": 7, "kind": "sort"}, {"text": "Type"}]},
         "definition": {"uri": "file:///lib/Prelude.wiz", "range": {"start": {"line": 6, "character": 0}, "end": {"line": 6, "character": 9}}}}
 
+ITEMS = {"session": 3, "items": [{"kind": "declaration", "title": "k", "text": None,
+          "range": {"start": {"line": 1, "character": 0}, "end": {"line": 5, "character": 9}},
+          "type": {"tag": [{"ref": 8, "kind": "const", "name": "Nat"}, {"text": "Nat"}]}, "location": None}]}
+
 def frame(obj):
     body = json.dumps(obj, ensure_ascii=False).encode()
     return b"Content-Length: %d\r\n\r\n" % len(body) + body
@@ -37,6 +41,7 @@ def messages(conn):
 
 def answer(m):
     return {"wiz/interactiveGoals": GOALS, "wiz/interactiveTermGoal": None, "wiz/subtermInfo": INFO,
+            "wiz/interactiveInfo": ITEMS,
             "initialize": {"capabilities": {}}}.get(m.get("method"))
 
 def stdio():

@@ -26,6 +26,9 @@ Tactic state
 A : Type
 x : A
 ⊢ Nat → A
+
+Declarations
+k : Nat
 END
 check "dump" "$TMP/dump.exp" "$TMP/dump.txt"
 wait
@@ -62,3 +65,15 @@ x : A
 END
 head -4 "$TMP/e2e.txt" > "$TMP/e2e.cut"
 check "end to end: wiz lsp --infoview, the goals after intro x" "$TMP/e2e.exp" "$TMP/e2e.cut"
+
+# (11r) a notation: its syntax, expansion and instance, and the command's declaration
+cat > "$TMP/n.wiz" <<'END'
+import Prelude
+def three : Nat := 1 + 2
+END
+(cd "$ROOT" && python3 "$ROOT/infoview/editor_stub.py" "$WIZ" "$TMP/lsp2.sock" "$TMP/n.wiz" 1 21 -- \
+  "$BIN" "$TMP/lsp2.sock" --dump --width 60) > "$TMP/n.txt"
+for want in "Syntax" "  Add.add 1 2" "Instances" "Declarations" "three : Nat"; do
+  grep -qxF "$want" "$TMP/n.txt" || { echo "FAIL: end to end, notation: no line '$want' in"; cat "$TMP/n.txt"; exit 1; }
+done
+echo "ok: end to end: the syntax, expansion, instance and declaration at a notation"

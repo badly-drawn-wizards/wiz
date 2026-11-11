@@ -240,6 +240,44 @@ def Infoview.wrap (width indent : Nat) (pieces : List Piece) : List (List Piece)
 inductive View where
   | mk (lines : List (List Piece)) (tags : List TagInfo)
 
+-- ## Everything else at the cursor (`wiz/interactiveInfo`, stage 11q–r)
+
+-- `{"kind", "title", "text"?, "type"?}`: a use of syntax or its expansion, an import, an
+-- instance, a declaration of the command, a message (`text` and `type` may be null)
+inductive InfoItem where
+  | mk (kind : String) (title : String) (text : String) (type : Option TT)
+def InfoItem.ofJson (j : Json) : InfoItem :=
+  let ty : Option TT := match Json.get j "type" with
+    | .some t => match Json.isNull t with
+      | .true => .none
+      | .false => .some (TT.ofJson t)
+    | .none => .none;
+  .mk (Json.getStr j "kind") (Json.getStr j "title") (Json.getStr j "text") ty
+def Infoview.items : List Json → List InfoItem
+  | .nil => .nil
+  | .cons j js => .cons (InfoItem.ofJson j) (Infoview.items js)
+-- `{"items": [item…], "session"}`, or `null` (no items)
+def Items.ofJson (j : Json) : List InfoItem := Infoview.items (Json.getList j "items")
+-- the section an item is shown in
+def InfoItem.section (i : InfoItem) : String := match i with
+  | .mk k _ _ _ => match String.eq k "syntax" with
+    | .true => "Syntax"
+    | .false => match String.eq k "expansion" with
+      | .true => "Syntax"
+      | .false => match String.eq k "import" with
+        | .true => "Import"
+        | .false => match String.eq k "instance" with
+          | .true => "Instances"
+          | .false => match String.eq k "declaration" with
+            | .true => "Declarations"
+            | .false => "Messages"
+-- what goes before the type: a declaration's name, an instance's term
+def InfoItem.head (i : InfoItem) : String := match i with
+  | .mk k title text _ => match String.eq k "instance" with
+    | .true => text
+    | .false => title
+def Infoview.isEmptyStr (s : String) : Bool := Nat.beq (List.length (String.chars s)) 0
+
 def Infoview.revTags : List TagInfo → List TagInfo → List TagInfo
   | .nil, acc => acc
   | .cons t ts, acc => Infoview.revTags ts (.cons t acc)
@@ -317,7 +355,39 @@ def Infoview.msgLines (width : Nat) : List String → List (List Piece)
   | .nil => .nil
   | .cons m .nil => Infoview.wrapLines width (Infoview.textLines (String.chars m) .nil)
   | .cons m ms => List.append (Infoview.wrapLines width (Infoview.textLines (String.chars m) .nil)) (.cons .nil (Infoview.msgLines width ms))
-def View.ofTacState (width : Nat) (st : Option TacView) (term : Option Goal) : View :=
+-- lines indented by two spaces
+def Infoview.indented : List (List Char) → List (List Char)
+  | .nil => .nil
+  | .cons l ls => .cons (.cons (Json.chr 32) (.cons (Json.chr 32) l)) (Infoview.indented ls)
+-- one item: `head : type` (wrapped, indent 4), or its title and its text (indented)
+def Infoview.itemLines (width : Nat) (i : InfoItem) (st : Flat) : List (List Piece) × Flat := match i with
+  | .mk _ title text ty => match ty with
+    | .some t =>
+      let pre : List Piece := .cons (Infoview.str (InfoItem.head i) "name") (.cons (Infoview.str " : " "") .nil);
+      match Infoview.piecesOf pre t st with
+      | .mk ps n is => (Infoview.wrap width 4 ps, .mk .nil n is)
+    | .none =>
+      let body : List (List Piece) := match Infoview.isEmptyStr text with
+        | .true => .nil
+        | .false => Infoview.wrapLines width (Infoview.indented (Infoview.textLines (String.chars text) .nil));
+      (List.append (Infoview.wrapLines width (.cons (String.chars title) .nil)) body, st)
+-- the items, a header (after a blank line) where the section changes
+def Infoview.itemsLines (width : Nat) (sec : String) : List InfoItem → Flat → List (List Piece) × Flat
+  | .nil, st => (List.nil, st)
+  | .cons i is, st =>
+    let s := InfoItem.section i;
+    let head : List (List Piece) := match String.eq s sec with
+      | .true => .nil
+      | .false => .cons .nil (.cons (Infoview.header s) .nil);
+    let a := Infoview.itemLines width i st;
+    let b := Infoview.itemsLines width s is a.2;
+    (List.append head (List.append a.1 b.1), b.2)
+def Infoview.dropBlank : List (List Piece) → List (List Piece)
+  | .cons .nil ls => ls
+  | ls => ls
+-- The whole infoview: the tactic state, the expected type and the other items, tags
+-- numbered across all of them.
+def View.ofInfo (width : Nat) (st : Option TacView) (term : Option Goal) (items : List InfoItem) : View :=
   let tac0 : List (List Piece) × Flat := match st with
     | .none => (List.nil, Flat.mk List.nil 0 List.nil)
     | .some (.mk gs _) => match gs with
@@ -338,10 +408,17 @@ def View.ofTacState (width : Nat) (st : Option TacView) (term : Option Goal) : V
         | .nil => .nil
         | .cons _ _ => .cons .nil .nil;
       (List.append tac.1 (List.append gap (.cons (Infoview.header "Expected type") r.1)), r.2);
+  let rest := Infoview.itemsLines width "" items all.2;
+  let all : List (List Piece) × Flat := match all.1 with
+    | .nil => (Infoview.dropBlank rest.1, rest.2)
+    | .cons _ _ => (List.append all.1 rest.1, rest.2);
   match all.1 with
   | .nil => .mk (.cons (.cons (Infoview.str "Nothing to show at the cursor" "dim") .nil) .nil) .nil
   | .cons _ _ => match all.2 with
     | .mk _ _ is => .mk all.1 (Infoview.revTags is .nil)
+-- … without the other items
+def View.ofTacState (width : Nat) (st : Option TacView) (term : Option Goal) : View :=
+  View.ofInfo width st term .nil
 -- … without messages
 def View.ofState (width : Nat) (goals : Option (List Goal)) (term : Option Goal) : View :=
   View.ofTacState width (match goals with
@@ -721,7 +798,25 @@ partial def Key.decode (s : List Char) : List Key := match s with
 def Infoview.htmlMsgs : List String → Html → Html
   | .nil, h => h
   | .cons m ms, h => Infoview.htmlMsgs ms (Html.lit "</pre>" (Html.add (Infoview.htmlText m .nil) (Html.lit "<pre class=\"message\">" h)))
-def Infoview.htmlTacState (sel : Nat) (st : Option TacView) (term : Option Goal) : String :=
+-- one item, and the items with a heading where the section changes
+def Infoview.htmlItem (sel : Nat) (i : InfoItem) (h : Html) : Html := match i with
+  | .mk _ title text ty => match ty with
+    | .some t => Html.lit "</div>" (TT.html sel t (Html.lit "</span> : "
+        (Html.add (Infoview.htmlText (InfoItem.head i) .nil) (Html.lit "<div class=\"item\"><span class=\"names\">" h))))
+    | .none =>
+      let h1 := Html.lit "</div>" (Html.add (Infoview.htmlText title .nil) (Html.lit "<div class=\"item-title\">" h));
+      match Infoview.isEmptyStr text with
+      | .true => h1
+      | .false => Html.lit "</pre>" (Html.add (Infoview.htmlText text .nil) (Html.lit "<pre class=\"item-text\">" h1))
+def Infoview.htmlItems (sel : Nat) (sec : String) : List InfoItem → Html → Html
+  | .nil, h => h
+  | .cons i is, h =>
+    let s := InfoItem.section i;
+    let h1 : Html := match String.eq s sec with
+      | .true => h
+      | .false => Html.lit "</h3>" (Html.add (Infoview.htmlText s .nil) (Html.lit "<h3>" h));
+    Infoview.htmlItems sel s is (Infoview.htmlItem sel i h1)
+def Infoview.htmlInfo (sel : Nat) (st : Option TacView) (term : Option Goal) (items : List InfoItem) : String :=
   let h0 : Html := .mk .nil 0;
   let h1 : Html := match st with
     | .none => h0
@@ -736,10 +831,13 @@ def Infoview.htmlTacState (sel : Nat) (st : Option TacView) (term : Option Goal)
   let h2 : Html := match term with
     | .none => hm
     | .some g => Infoview.htmlGoal sel g (Html.lit "<h3>Expected type</h3>" hm);
+  let h2 := Infoview.htmlItems sel "" items h2;
   match h2 with
   | .mk acc _ => match acc with
     | .nil => "<div class=\"nothing\">Nothing to show at the cursor</div>"
     | .cons _ _ => .mk (Json.revOnto acc .nil)
+def Infoview.htmlTacState (sel : Nat) (st : Option TacView) (term : Option Goal) : String :=
+  Infoview.htmlInfo sel st term .nil
 -- … without messages
 def Infoview.htmlState (sel : Nat) (goals : Option (List Goal)) (term : Option Goal) : String :=
   Infoview.htmlTacState sel (match goals with

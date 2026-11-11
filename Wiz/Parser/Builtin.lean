@@ -260,7 +260,7 @@ continue onto a line starting at the command's column.
 | `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] ["deriving" C,+] |
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] where [fields] ["deriving" C,+] (where: `structure.where`, "where" [["private"] ident "::"]) |
 | `command.private`            | "private" command (every name it declares is private to the module) |
-| `command.local`              | "local" command (13m: a `syntax`, `notation`, `infix…`, `macro_rules` or `attribute [macro …]` whose syntax stays in the module) |
+| `command.local`              | "local" command (13m: a `syntax`, `notation`, `infix…`, `macro_rules` or `attribute [macro …]` whose syntax stays in the module; 11r: an `instance` found only in the module) |
 | `command.deriving`           | "deriving" "instance" C,+ "for" T,+ |
 | `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
 | `command.attrInline`         | "attribute" "[" "inline" "]" ident |
