@@ -287,6 +287,8 @@ def synthPending (force : Bool := false) : ElabM R Bool := do
 /-- Record an instance problem, and try it right away. -/
 def addInstProblem (ctx : LocalCtx R) (m : Term R) (ty : VTy R) : ElabM R Unit := do
   modify fun s => { s with pendingInsts := s.pendingInsts.push (ctx, m, ty) }
+  if let .mvar k := m.spine.1 then
+    modify fun s => { s with metas := s.metas.modify k ({ · with isInst := true }) }
   let _ ← synthPending
 
 /-- At the end of a command: solve what can be solved, then report what is stuck. -/

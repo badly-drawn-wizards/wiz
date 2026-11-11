@@ -35,6 +35,8 @@ structure MetaEntry (R : Type) where
   desc : String := "_"
   /-- how many bound variables it is applied to -/
   arity : Nat := 0
+  /-- (7e) the hole of an instance problem (`addInstProblem`) -/
+  isInst : Bool := false
 
 /-- A type class: its parameters' output flags (`outParam`) and its fields, in order. -/
 structure ClassInfo where
