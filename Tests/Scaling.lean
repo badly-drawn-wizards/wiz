@@ -222,6 +222,21 @@ def listMatchProgram (len n : Nat) : String :=
   "def count : Nat → Nat\n  | .zero => 0\n  | .succ k => match isNil l with\n    | .true => count k\n    | .false => Nat.add 1 (count k)\n" ++
   s!"def t : count {n} = {n} := refl {n}\n"
 
+/-- (icestick-cpu C7) A structurally recursive call in every alternative of a `match` on
+a type with nullary constructors, on a `len`-element list, checked by `refl`. The
+alternative of a nullary constructor is an argument of `T.casesOn`, not a `fun`, so it was
+evaluated whatever the tag: each alternative ran the recursive call on the whole tail, the
+work doubling per element (n = 20: 11 s, 910 MB). -/
+def matchAltsProgram (len : Nat) : String :=
+  "import Prelude\n" ++
+  "inductive T where\n  | a (s : String)\n  | b\n  | c\n" ++
+  "inductive U where\n  | a\n  | b\n  | c\n" ++
+  "def f : Nat → List T → Nat\n  | k, .nil => k\n  | k, .cons t ts => match t with\n    | .a s => f k ts\n    | _ => f (Nat.succ k) ts\n" ++
+  "def g : Nat → List U → Nat\n  | k, .nil => k\n  | k, .cons u us => match u with\n    | .a => g k us\n    | .b => g (Nat.succ k) us\n    | .c => g (Nat.succ k) us\n" ++
+  "def rep {A : Type} (x : A) : Nat → List A\n  | .zero => .nil\n  | .succ k => .cons x (rep x k)\n" ++
+  s!"def t1 : f 0 (rep T.b {len}) = {len} := refl {len}\n" ++
+  s!"def t2 : g 0 (rep U.c {len}) = {len} := refl {len}\n"
+
 /-- A structurally recursive function whose recursive call is under a `fun`. -/
 def hypUnderBinder : String :=
   "def sumF : List Nat → Nat → Nat\n  | .nil => fun k => k\n  | .cons x xs => fun k => sumF xs (Nat.add k x)\n"
@@ -347,6 +362,12 @@ def group : Group where
         let st := runFrontend (R := ZeroOneMany) ("import Prelude\n" ++ hypUnderBinder ++
           "def t : sumF (.cons 1 (.cons 2 (.cons 3 .nil))) 0 = 7 := refl 7\n") { loader }
         check (st.messages.any (·.severity == .error)) "a wrong sum was accepted" },
+    -- (icestick-cpu C7) every alternative of a `match` calling the function recursively:
+    -- exponential while a hypothesis was computed by value (the alternatives of nullary
+    -- constructors are evaluated as arguments); linear with `Val.lazyInd` on constructors
+    { name := "a recursive call in every alternative of a match is computed once per element (C7)", run := fun _ => do
+        let _ ← within 30 1000 fun _ => elabOk (matchAltsProgram 200)
+        pure () },
     -- (P2) the direct hypotheses are the template's, on every description of the library
     -- and the examples, and on stuck descriptions (where the direct one falls back)
     { name := "direct induction hypotheses agree with the template on every Desc in lib/ and examples/", run := fun _ => do
