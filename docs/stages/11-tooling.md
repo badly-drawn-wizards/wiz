@@ -236,6 +236,68 @@ a procedural macro's output (it has no ranges of the user's), the arguments of
 `attribute`, and docstrings (Wiz has none). Design notes: `wiz-notes/info-syntax.md`.
 Tested in the `lsp-server` group and by wiz.nvim's tests (`nvim`).
 
+## 11r: printing notation (unexpanders) ✅
+
+Terms print as the notation they were written with: `#check`, `#reduce`, `#eval`,
+messages (`type mismatch`, kernel errors), hovers and the infoview's goals.
+
+```
+#check fun (n : Nat) => n + 1        -- fun n => n + 1 : Nat → Nat
+#check [1, 2, 3]                     -- [1, 2, 3] : List Nat
+#check fun (b c : Bool) => b && !c   -- fun b c => b && !c : Bool → Bool → Bool
+#check ∃ (n : Nat), n = n            -- ∃ n, n = n : Prop
+```
+
+Before, these printed the elaborated term: `Add.add Nat instAddNat n 1`,
+`List.cons Nat 1 (List.cons Nat 2 (List.cons Nat 3 (List.nil Nat)))`, and a `match` on a
+`Bool.casesOn`. The mechanism is Lean's: a delaborator and `app_unexpander`s
+(`Core/Pretty.lean`, `Syntax/PPTable.lean`).
+
+* **Unexpanders.** At an application of a constant `c`, its explicit arguments (the
+  binder infos of `c`'s type say which) are turned into syntax, bottom-up, and `c`'s
+  unexpanders are tried, latest first, on `c x₁ … xₙ` as syntax; the first that applies
+  gives the notation (arguments beyond what it takes are applied to it). A subterm that
+  isn't notation (or a variable, a constant, a numeral, a `fun`) stays a leaf, printed
+  as before.
+* **Three kinds.** (1) *Automatic*: every `notation`, `infixl`/`infixr`/`infix` and
+  `macro_rules` rule whose template is a constant applied to the rule's variables is
+  read backwards (`+ - * / %`, `++`, `!`, `-x`, `|>`, `∧ ∨ ¬ ↔`, `<$>`, user notation).
+  So the notation declared last for a constant is the one printed (Logic declares its
+  ASCII spellings `/\`, `\/`, `<->` first). (2) *Declared*:
+  `app_unexpander c | `(term| $f $x …) => `(term| …)`, quotation rules over the
+  application (`$f` is the head); the Prelude prints `Bool.casesOn` as `if`/`&&`/`||`
+  this way, Logic `Ex (fun x => p)` as `∃ x, p`. (3) *Procedural*:
+  `attribute [app_unexpander c] f` with `f : Macro` (`Syntax → MacroM Syntax`, failing
+  when it doesn't apply), run by the interpreter: the Prelude's `ListLit.unexpandNil`
+  and `ListLit.unexpandCons` print `List.nil` as `[]` and `List.cons x [ys,*]` as
+  `[x, ys,*]`, collecting the spine from the last cell up. All three can be `local`; a
+  module's local ones (and its local notation's automatic ones) end with it.
+* **`match`.** A `match` elaborates to `(fun x => T.casesOn … x : …) scrutinee`; such a
+  redex prints as its reduct when that has an unexpander, so `if` comes back.
+* **Formatting.** The notation is printed by walking the grammar of each node's kind
+  (the parser descriptors, built-in ones included): atoms, children at the precedence
+  their position asks for, parentheses where a node's precedence is lower (a node whose
+  grammar ends in an open `term p`, like `fun` or `if`, counts as precedence `p`).
+  Spacing follows the atoms as declared (`" + "`, `"!"`, `"∃ "`); keywords get spaces,
+  brackets none, separators `, `. A node that can't be formatted (a kind without a
+  grammar, a shape the grammar doesn't fit) prints its subterm without notation, so an
+  unexpander can make output prettier but never wrong.
+* **Tags survive.** Every syntax node made from a subterm remembers it, so in the
+  infoview the subterms of notation (`n`, `1` and the whole `n + 1`) are still tagged
+  and hoverable. (A procedural unexpander's output keeps the tags of its leaves only.)
+* **Options.** `wiz … --pp-all` prints without notation (and turns the cache off);
+  `set_option pp.notation false` (or `pp.all true`) does so from that point of a file
+  (a module's setting stays in the module). `Term.prettyPrec` (used where printed terms
+  are parsed back, `Reflect.lean`) never uses notation.
+
+Not covered (follow-ups): implicit arguments outside notation still print (Lean hides
+them: `pp.explicit false`), data values from `#eval`/`#reduce` (`.cons 1 .nil`) are
+constructor values, not applications, so lists print as before there; `do` notation;
+`⟨a, b⟩` and structure literals; numerals of other types (`OfNat.ofNat`); goals passed
+to tactics as text and `trace_state` print without notation. The self-hosted toolchain
+has its own printer (selfhost/Frontend.wiz) and prints no notation. Design notes:
+`wiz-notes/pp-unexpand.md`. Tested in the `language` group.
+
 ## 11t: filling holes, and completion that knows the context
 
 * **Completion** (`Wiz/Completion.lean`): `textDocument/completion` answers a
