@@ -265,9 +265,9 @@ variable [QuantitySyntax R] [DecidableEq R]
 /-- Render a value for error messages. (P2: without evaluating a suspended proof, which
 reads back as `()`; so no path of the kernel, accepting or rejecting, runs a proof.) -/
 def showVal (ctx : Ctx R) (v : Val R) : String :=
-  elideLong ((quote { ctx.globals with quoteErasesProofs := true } ctx.lvl v).pretty ctx.names)
+  elideLong ((quote { ctx.globals with quoteErasesProofs := true } ctx.lvl v).pretty ctx.names (some ctx.globals))
 
-def showTerm (ctx : Ctx R) (t : Term R) : String := elideLong (t.pretty ctx.names)
+def showTerm (ctx : Ctx R) (t : Term R) : String := elideLong (t.pretty ctx.names (some ctx.globals))
 
 end Ctx
 

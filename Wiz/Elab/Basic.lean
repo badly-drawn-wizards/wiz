@@ -436,8 +436,9 @@ def instLevel (l : Level) : ElabM R Level := do
 
 def showTerm (ctx : LocalCtx R) (t : Term R) : String := elideLong (t.pretty ctx.names)
 
-def showVal (ctx : LocalCtx R) (v : Val R) : ElabM R String :=
-  return elideLong ((quote (← getGlobals) ctx.lvl v).pretty ctx.names)
+def showVal (ctx : LocalCtx R) (v : Val R) : ElabM R String := do
+  let g ← getGlobals
+  return elideLong ((quote g ctx.lvl v).pretty ctx.names (some g))
 
 /-- Run `x` with the unification heuristics `a` (`Approx`); the previous setting comes
 back afterwards (on failure too: `ElabM` drops a failed computation's state). -/
