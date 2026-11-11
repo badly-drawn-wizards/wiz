@@ -25,7 +25,7 @@ Linked into the binaries wiz, grail and tower (built with Lean 4):
   LICENSES/lean4-third-party (the LGPL v3) and LICENSE (the GPL v3, which the LGPL
   v3 adds to). Its source: https://gmplib.org/. Because wiz, grail and tower are
   themselves under the GPL, with their complete source at
-  https://github.com/badly-drawn-wizards/wiz, you can relink them with a modified
+  https://github.com/wiz-pl/wiz, you can relink them with a modified
   GMP by rebuilding them.
 * glibc, dynamically (libc, libm, libpthread, libdl, librt): GNU LGPL v2.1 or later.
 
