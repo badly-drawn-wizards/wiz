@@ -1096,6 +1096,13 @@ partial def elabSigmas (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax)
       | _ => freshLevelMeta
     return (.sigma b.name q ty cod (some (.max l₁ l₂)), .sort (.max l₁ l₂))
 
+/-- (7e) After an application: its instance problems whose types its arguments have just
+fixed (`Add ?A` in `a + 5`, now `Add Nat`) are solved now, not at the next instance
+problem or the end of the command, so that the value computes when it meets a type
+(`refl (a + 5) : Nat.lor a 5 = a + 5`: native arithmetic can't see an unsolved hole). -/
+partial def solveReady : ElabM R Unit := do
+  unless (← get).pendingInsts.isEmpty do discard synthPending
+
 /-- (7e) A numeral, possibly negated or in parentheses (`3`, `-3`, `(3)`). -/
 partial def numLike (stx : Syntax) : Bool :=
   stx.isOfKind "term.num" ||
@@ -1237,6 +1244,7 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   let rec respine (t : Term R) : Term R := match t with
     | .app g x => .app (respine g) (((args.find? (·.1 == x)).map (·.2)).getD x)
     | t => t
+  solveReady
   pure (respine f)
 
 /-- **Exercise 3.9.** Infer the type of an application `f a₁ … aₙ` (`term.app`, with
@@ -1294,6 +1302,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
   -- `bitWidth (0 A : Type) [BitPack A] : Nat`), as are implicits before them
   if !explicitMode && (← trailingInst ctx.lvl fty) then
     (f, fty) ← insertImplicits ctx f fty
+  solveReady
   pure (f, fty)
   --|ex
   --| sorry

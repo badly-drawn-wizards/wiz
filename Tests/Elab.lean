@@ -926,6 +926,9 @@ def classGroup : Group where
     { name := "operators in inductive indices and equation types", run := fun _ =>
         okLib ("import Prelude\ninductive V (A : Type) : Nat → Type where\n  | nil : V A 0\n  | cons {n : Nat} (x : A) (v : V A n) : V A (n + 1)\n" ++
           "def add0 : (n : Nat) → 0 + n = n\n  | _ => rfl\ndef two : V Nat (1 + 1) := .cons 1 (.cons 2 .nil)") },
+    { name := "every native Nat operation computes through the classes, in proofs and #reduce", run := fun _ =>
+        okLib ("import Prelude\ndef a : Nat := Nat.pow 2 70\ndef t1 : a + 5 = 1180591620717411303429 := refl 1180591620717411303429\ndef t2 : a - 5 = 1180591620717411303419 := refl 1180591620717411303419\ndef t3 : a * 3 = 3541774862152233910272 := refl 3541774862152233910272\ndef t4 : a / 1024 = 1152921504606846976 := refl 1152921504606846976\ndef t5 : (a + 7) % 1024 = 7 := refl 7\ndef t6 : Nat.land a (a + 5) = a := refl a\ndef t7 : Nat.lor a 5 = a + 5 := refl (a + 5)\ndef t8 : Nat.xor (a + 5) 5 = a := refl a\ndef t9 : Nat.shiftLeft 1 70 = a := refl a\ndef t10 : Nat.shiftRight (a * 4) 72 = 1 := refl 1\ndef t11 : Nat.log2 (a + 1) = 70 := refl 70\ndef t12 : Nat.beq (a + 1) (1 + a) = .true := refl Bool.true\ndef t13 : Nat.lt a (a + 1) = .true := refl Bool.true\ndef t14 : Nat.testBit (a + 4) 2 = .true := refl Bool.true\ndef t15 : 2 + 3 * 4 - 1 = 13 := rfl\n#reduce (a * 3 - 1) / 7 % 1000\n#eval Nat.xor (a + 5) 5")
+          ["38", "1180591620717411303424"] },
     { name := "compiled: a + b at Nat is the native addition", run := fun _ =>
         okLib "import Prelude\ndef f (a b : Nat) : Nat := a * b + a\n#ir f"
           ["def f x0 x1 :=\n  dup x0\n  let x2 := prim nat.mul x0 x1\n  let x3 := prim nat.add x2 x0\n  ret x3"] },

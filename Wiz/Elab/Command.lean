@@ -151,6 +151,11 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
   -- (`unifyAt`). (The type isn't zonked here: an equation that stays as written lets
   -- `rfl` be `refl` of its sides.)
   while ← synthPending do pure ()
+  -- (7e) with the instances solved, the type's holes are replaced by their solutions: the
+  -- kernel's native arithmetic (`vNatOp`) can't see a solved hole, so `Nat.land a (b + 5)`
+  -- with `+`'s instance a hole would unfold `Nat.land`'s unary definition instead. (Only
+  -- the holes: the rest of the type stays as written.)
+  let ty ← if (← get).pendingInsts.isEmpty then zonk ctx.lvl ty else pure ty
   let val ← valStx.mapM fun s => do Elab.check ctx s (← evalIn ctx ty)
   let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
   let val := val.map fun v => tele.foldr (fun (x, _, _, _) b => Term.lam x b) v
