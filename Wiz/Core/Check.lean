@@ -229,7 +229,9 @@ List A`) doesn't need its argument: evaluating it anyway, at every application a
 nested spine (a long list or string literal), would be quadratic in its length. -/
 def instArg (ctx : Ctx R) (c : Closure R) (a : Term R) : Val R :=
   match c with
-  | .mk env body => Wiz.eval ctx.globals ((if body.hasVar 0 then ctx.eval a else .unit .zero) :: env) body
+  -- (the placeholder is the stuck unknown, not a well-formed value: if `hasVar` ever
+  -- missed an occurrence, the codomain would be stuck on it, not a type that checks)
+  | .mk env body => Wiz.eval ctx.globals ((if body.hasVar 0 then ctx.eval a else default) :: env) body
 
 /-- The types of the locals indexed by level, as `conv` wants them. -/
 def tys (ctx : Ctx R) : Array (VTy R) := ctx.types.reverse.toArray

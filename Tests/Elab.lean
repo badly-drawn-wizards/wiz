@@ -1996,7 +1996,19 @@ def globalDefs : List (String × List String × Option MTm × MTm) :=
    -- universe-polymorphic
    ("idP", ["u"], some (lam (lam (var 0))), pi (sortParam "u") (pi (var 0) (var 1))),
    ("constP", ["u", "v"], some (lam (lam (lam (lam (var 1))))),
-     pi (sortParam "u") (pi (sortParam "v") (pi (var 1) (pi (var 1) (var 3)))))]
+     pi (sortParam "u") (pi (sortParam "v") (pi (var 1) (pi (var 1) (var 3))))),
+   -- (W1, `wiz-notes/kernel-lint.md`) a proposition that is a theorem at level 0 and false
+   -- at level 1, and a case that is stuck on its scrutinee with `A` in its environment
+   ("dLv", ["u"], some (pi (sortParam "u") (pi (var 0) (pi (var 1) (pi (pi (var 2) prop)
+     (pi (app (var 0) (var 2)) (app (var 1) (var 2))))))), prop),
+   ("caseF", [], some (lam (lam (ecase prop (var 0) [var 1]))), pi prop (pi (enum 1) prop))]
+
+/-- (W1) `fun x p => p : (x : Enum 1) → caseF dLv.{l} x → caseF dLv.{l'} x`: the two types
+are stuck cases with the same motive and branch terms, whose environments hold `dLv` at
+the two levels. Well typed only when `l = l'`. -/
+def levelInEnv (l l' : Nat) : MTm :=
+  ann (lam (lam (var 0))) (pi (enum 1)
+    (pi (app (app (const "caseF") (const "dLv" [l])) (var 0)) (app (app (const "caseF") (const "dLv" [l'])) (var 1))))
 
 def qWiz : ZeroOneMany → String
   | .zero => ".qz"
@@ -2375,7 +2387,8 @@ def qtyApart : List MTm :=
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
+  propShapes ++ qtyApart ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ [levelInEnv 0 0, levelInEnv 1 1, levelInEnv 0 1, levelInEnv 1 0,
+   natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
