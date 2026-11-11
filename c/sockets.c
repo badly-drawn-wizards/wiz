@@ -196,3 +196,14 @@ lean_object *wiz_unix_close(uint32_t fd, lean_object *w) {
   unlink(path_addr.sun_path);
   return wiz_sock_ok_unit(w);
 }
+
+/* Kernel hygiene (wiz-notes/kernel-lint.md): a Lean `panic!` (an ill-typed value in the
+   evaluator, `xs[i]!` out of range) prints a message and goes on with the type's default
+   value. A checker must not go on: with the flag set, the process exits with status 1
+   after the message. */
+extern void lean_set_exit_on_panic(_Bool flag);
+
+lean_object *wiz_exit_on_panic(uint8_t flag, lean_object *w) {
+  lean_set_exit_on_panic(flag != 0);
+  return wiz_sock_ok_unit(w);
+}

@@ -136,7 +136,25 @@ fallback). The garbage-collected mode is unchanged, byte for byte.
 to C, and that program (stage 2, reference counted) compiles it again to the same C,
 freeing every object by the end.
 
-Next: the hypotheses of `ind` computed eagerly when the method demands them; then reference counting by default.
+* **Small branching functions inlined with suspended arguments**: a global whose body
+  is a `case` on a parameter with cheap branches (`Bool.and`, `Bool.or`, …) is put in
+  place at saturated calls with its arguments bound by marked `let`s, so the demand
+  analysis evaluates an argument only in the branches that use it: `Bool.and a b` no
+  longer evaluates `b` when `a` is false (call by value did, and `conv`, `tmEq`, `occurs`
+  and the like recursed through it).
+* **Unmemoised hypotheses** (`indv`): when the method of an `ind` reads its hypotheses
+  only as hypotheses (`hs.1ʲ.0`), each at most once on every path and not under a `λ`,
+  or is itself a `λ` (a function-valued motive), it gets a view of the payload instead
+  of the chain of suspensions, and a read computes the hypothesis where it stands
+  (`p_hypAt`). Any other use of `hs` keeps the memoised chain.
+* **Static constants**: a `λ` capturing nothing and an object built only from constants
+  (an `ind`'s description, typically) are built once, kept as roots and released at
+  exit (before the leak check, as string literals).
+
+  Stage 2 compiling the toolchain, same input: 5232 M allocations with master's backend,
+  2200 M with these three (−58%); peak live objects +11% (the constants), C +16%.
+
+Next: reference counting by default.
 
 ## 21i: phantom parameters in the self-hosted frontend ✅
 
@@ -173,3 +191,53 @@ exclude the program's name; `#eval`/`#run` can't call them (they are C). With th
 self-hosted compiler takes its backend mode as a flag: `--rc`, `--rc-owned` or `--gc`
 (`genProgramArgs`). The first-line pragma `-- wiz: rc` still works when no flag is
 given, for one release. `scripts/fixpoint.sh --rc` runs the bootstrap in that mode.
+
+## 21l: foreign functions and foreign types, self-hosted
+
+Parity with [stage 9a](09-ffi.md) and 9d: the self-hosted compiler takes the same
+`extern` and `foreign_type` declarations as the Lean one, and compiles them to the same
+calls.
+
+```
+import IO
+foreign_type FILE (finalizer := "fclose")
+extern "fopen" (header := "stdio.h") fopen : String → String → IO FILE
+extern "fputs" (header := "stdio.h") fputs : String → FILE → IO Nat
+extern "strlen" (header := "string.h") strlen : String → Nat
+```
+
+* **Frontend** (`externCmd`, `foreignTypeCmd` in `Frontend.wiz`). To the checker an
+  `extern` is an axiom, as before; it now also computes the marshalling kinds from the
+  elaborated type (`ffiSig`), as `command.extern` does in `Elab/Command.lean`: `Nat`,
+  `UInt64`, `Float64`, `String`, `Bool`, `Unit`, a foreign type, or a value passed as it
+  is (a type variable, a Wiz data type, `Array`/`Str`/`StrMap`/`Bytes`); a parameter that
+  is a type (or of quantity 0) is not passed; a result in `IO` takes and gives back the
+  world. Anything else is the same error as the Lean frontend's. `foreign_type T` is an
+  axiom `T : Type` with its finalizer. Both are recorded in a new field of `Globals`
+  (`ffi : List Foreign`).
+* **Backend** (`ffiDocs` in `Backend.wiz`). Each foreign function becomes a C function
+  `d_g` of its arity (and `get_g`, its curried closure, or the constant computed once
+  for arity 0) that converts its arguments, calls the C function and converts the
+  result back, in both modes (`rt_drop` releases an argument under reference counting).
+  The headers are `#include`d once each; without one, a prototype is written from the
+  Wiz type, except for the runtime's own `wiz_…` functions (as `C.glue` does).
+* **Runtime** (`rt.c`). The conversions (`rt_in_*`, `rt_out_*`), two new object kinds:
+  `T_EXT`, a foreign pointer and its finalizer, and `T_RAW`, a 64-bit word (a `UInt64`
+  or `Float64` whose top bit is set; smaller ones are scalars). Under reference counting
+  the finalizer runs when the last reference goes, as in the Lean runtime; under the
+  collector, when the pointer is collected (`GC_register_finalizer`), and the program
+  collects once more at exit if there are any. A foreign pointer is lent to C for the
+  call and released after it. The runtime functions `lib/IO.wiz` binds for `UInt64` and
+  `Float64` (`wiz_u64_add`, `wiz_f64_show`, …) are in `rt.c` too, and the self-hosted
+  Prelude declares the same `UInt64` and `Float64` operations.
+
+**Tests** (`ffiAgrees`): the same program compiled by the Lean compiler and by the
+self-hosted one (with the collector and with reference counting, which also checks that
+nothing leaks) prints the same: C library functions through headers, numbers, strings
+(UTF-8 both ways), `Bool`, `Unit`, `IO`, `UInt64` wrapping around, negative floats, a
+`FILE` closed by its finalizer when its last reference goes (read back complete), and the
+error for a type that can't be marshalled.
+
+Not mirrored yet: `import_c` (9b: the frontend would need the preprocessed header, and a
+C parser in Wiz), `glue` (9c), `implemented_by` (22d), `Bytes`, and big numbers (a `Nat`
+is 63 bits in this runtime, so a C result above that is cut).

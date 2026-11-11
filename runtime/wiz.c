@@ -496,6 +496,9 @@ WIZ_API wiz_val wiz_mk_obj(wiz_val t, wiz_val l) {
    own, and so free, them. The lowering takes numbers apart with `natTag`/`nat.pred`, so
    reaching this is a compiler bug: stop instead of leaking. */
 WIZ_API wiz_val wiz_proj(wiz_val v, uint32_t i) {
+  /* a projection of `◾` is `◾`: a pair of proofs reaches code that is generic in the
+     sorts of its components as `◾` (as in the interpreters) */
+  if (v == WIZ_BOX(0)) return v;
   if (WIZ_IS_SCALAR(v) || wiz_is_big(v)) {
     if (i == 0) return WIZ_BOX(WIZ_IS_SCALAR(v) && WIZ_UNBOX(v) == 0 ? 0 : 1);
     wiz_panic("internal error: proj of a field of a number (use natTag/nat.pred)");
@@ -579,6 +582,10 @@ WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
     wiz_dec(f);
     return n > 1 ? wiz_apply(r, n - 1, args + 1) : r;
   }
+  /* `◾` applied is `◾`: a function with no runtime content (a proof, or an erased function
+     into `Unit`, `erasedFunTy` in Erase.lean) reaches generic code as `◾`, and generic
+     code applies it like any function */
+  if (f == WIZ_BOX(0)) { for (uint32_t i = 0; i < n; i++) wiz_dec(args[i]); return f; }
   if (WIZ_IS_SCALAR(f) || ((wiz_hdr *)f)->tag != WIZ_TAG_CLO) wiz_panic("applying a non-function");
   wiz_clo *c = (wiz_clo *)f;
   uint32_t m = c->h.size, total = m + n;
@@ -984,6 +991,22 @@ WIZ_API wiz_val wiz_io_result(wiz_val v, wiz_val world) {
   wiz_val p = wiz_ctor_new(0, 2);
   WIZ_SET(p, 0, v); WIZ_SET(p, 1, world);
   return p;
+}
+
+/* ---- callbacks and exported functions (stage 9g) ----
+   These three are part of the C interface whatever WIZ_API is. C code that holds a
+   Wiz value (the context of a callback it keeps, a handle an exported function
+   returned) owns one reference and gives it back with `wiz_release`; `wiz_retain`
+   takes one more. `wiz_live_objects` counts the objects alive, for leak tests. */
+void wiz_release(void *v) { wiz_dec((wiz_val)v); }
+void wiz_retain(void *v) { wiz_inc((wiz_val)v); }
+long wiz_live_objects(void) { return (long)wiz_live; }
+/* the value of an `IO` result (value, world), which is consumed */
+static wiz_val wiz_io_value(wiz_val r) {
+  wiz_val v = ((wiz_ctor *)r)->fields[0];
+  wiz_inc(v);
+  wiz_dec(r);
+  return v;
 }
 
 /* foreign pointers: borrowed for a call (the wrapper drops the reference after it) */

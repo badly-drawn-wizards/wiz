@@ -132,10 +132,11 @@ deterministic scheduler) needs one-shot linear continuations (plan C5, `LEff`).
 
 **Sequencing and current workarounds.** Linear steps sequence with `do1` or `IO.bind`
 (both take the action and the continuation at quantity 1, [9e](09-ffi.md)); plain `do`
-uses `Monad.bind`, whose continuation is ω, so it can't capture an endpoint. Implicit
-continuations aren't inferred through a defined protocol yet (`Chan Q` against
-`Chan (.send ?A ?k)` needs `Q` unfolded; plan gap 7), so give them by name:
-`Chan.send (k := fun _ => …) c a next`. `match` uses its branches at ω, so pass endpoints
+uses `Monad.bind`, whose continuation is ω, so it can't capture an endpoint. The
+protocol's continuation `k` is inferred from the endpoint's type, also through a defined
+protocol (`Chan.send c a next` with `c : Chan (Proto.dual Q)`): `Proto`'s field
+`k : A → Proto` is stored lifted, as `fun h => k (down h)`, and the unifier takes
+`?k (down h)` as a pattern (plan gap 7). `match` uses its branches at ω, so pass endpoints
 into a branch as arguments (`| .val x => fun c => …`) instead of capturing them. `Proto.dual`
 is an involution only propositionally; `Eq.cast` at quantity 1 (9e) can move an endpoint
 along a proof. Direct style (`send : (1 c) → A → IO (Chan (k a))`) waits for linear Σ

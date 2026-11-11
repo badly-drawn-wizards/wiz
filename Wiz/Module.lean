@@ -46,9 +46,61 @@ def resolve (roots : List System.FilePath) (m : Name) : IO (Option System.FilePa
     if ← p.pathExists then return some p
   pure none
 
+/-- The `link_c "f.c"` files of a source text (9f), as written. -/
+def cSourcesOf (src : String) : List String :=
+  ((src.splitOn "link_c \"").drop 1).filterMap fun part =>
+    let f := (part.splitOn "\"").headD ""
+    if f.isEmpty then none else some f
+
+/-- The key of a `link_c` path in `cSourceTable`: the module (`""`: the main file) and the
+path as written. -/
+def cSourceKey (m : Name) (rel : String) : String := m ++ "\x00" ++ rel
+
+/-- Resolve the `link_c` files of the main file (in `dir`) and of the modules it reaches
+(with their paths): each relative to its own file. Files that don't exist are left out
+(the elaborator reports them). -/
+def cSourceTable (dir : System.FilePath) (src : String)
+    (mods : Std.HashMap Name (System.FilePath × String)) : IO (Std.HashMap String String) := do
+  let mut t : Std.HashMap String String := {}
+  for (m, base, text) in ("", dir, src) :: mods.toList.map (fun (n, p, txt) => (n, p.parent.getD ".", txt)) do
+    for rel in cSourcesOf text do
+      let f := if System.FilePath.isAbsolute rel then System.FilePath.mk rel else base / rel
+      if ← f.pathExists then
+        if !(← f.isDir) then t := t.insert (cSourceKey m rel) (← IO.FS.realPath f).toString
+  pure t
+
+/-- `cSourceTable` as the elaborator's resolver (`CommandState.cSources`). -/
+def cSourceResolver (t : Std.HashMap String String) : String → String → Option String :=
+  fun m rel => t[cSourceKey m rel]?
+
+/-- The toolchain's own library: `lib/` of the checkout or installation the running
+binary belongs to (`<dir>/.lake/build/bin/wiz`: a checkout, `share/wiz` of the Nix
+package and of the release tarball, which tower installs), else `./lib`. As grail's
+`findStd`. It is the first module root, so no other root can replace its modules. -/
+def toolchainLib : IO System.FilePath := do
+  let exe ← IO.appPath
+  let guess := ((((exe.parent.bind (·.parent)).bind (·.parent)).bind (·.parent)).getD ".") / "lib"
+  if ← (guess / "Prelude.wiz").pathExists then return guess
+  pure "lib"
+
+/-- The modules of `m` from the first root that a later root also has a file for (a
+different file): that file is never read. `(module, ignored file)`. -/
+def shadowed (roots : List System.FilePath) (m : Std.HashMap Name (System.FilePath × String)) :
+    IO (List (Name × System.FilePath)) := do
+  let some lib := roots.head? | return []
+  let mut out := []
+  for (n, (p, _)) in m.toList do
+    unless p == lib / relPath n do continue
+    let real ← IO.FS.realPath p
+    for r in roots.drop 1 do
+      let q := r / relPath n
+      if ← q.pathExists then
+        if (← IO.FS.realPath q) != real then out := (n, q) :: out
+  pure out
+
 /-- The modules of `m` (from `loadClosure` or `loadAll`) that come from the first root,
-the toolchain's `lib/`: their `builtin` registrations are trusted (a later root can't
-replace them, since the first root that has a module wins). -/
+the toolchain's library (`toolchainLib`): their `builtin` registrations are trusted (a
+later root can't replace them, since the first root that has a module wins). -/
 def fromFirstRoot (roots : List System.FilePath) (m : Std.HashMap Name (System.FilePath × String)) : List Name :=
   match roots with
   | [] => []

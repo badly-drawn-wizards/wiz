@@ -9,6 +9,7 @@
     "backend",
     "borrow",
     "=c",
+    "callbacks",
     "conc",
     "effects",
     "ffi",
@@ -16,7 +17,7 @@
     "reuse",
     "sys"
   ]},
-  {"name": "library", "select": [
+  {"name": "library", "split": 3, "select": [
     "builtins",
     "classes",
     "deriving",
@@ -33,6 +34,7 @@
     "optic",
     "phantom",
     "regions",
+    "repr",
     "seplogic",
     "std",
     "tactics",
@@ -49,11 +51,13 @@
     "conv",
     "copatterns",
     "data",
+    "desceq",
     "elab",
     "eval",
     "inductive",
     "lexer",
     "lift",
+    "=lint",
     "match",
     "=meta",
     "observational",

@@ -74,7 +74,9 @@ it is not to be kept: `base` is not an initial state, or `m`'s imports run in a 
 partial def isoKey (base : CommandState R) (m : Name) : Option UInt64 := do
   unless base.pristine && base.globals.order.isEmpty && base.imported.isEmpty && base.infos.isEmpty do none
   let g := base.globals
-  let settings := hash (base.termInfo, base.nextScope, g.eager, g.predicativeProp, toString (repr g.regularity), g.builtins)
+  -- (every option of `Globals` that a module's state depends on or carries)
+  let settings := hash (base.termInfo, base.nextScope, g.eager, g.predicativeProp, toString (repr g.regularity),
+    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs)
   let (k, _) ← go [] m {}
   pure (mixHash settings k)
 where
@@ -86,6 +88,8 @@ where
       match base.loader m with
       | none => some (hash ("unknown", m), memo)
       | some src => do
+        -- (9f) the files a module links are resolved per run: not kept across runs
+        if base.cSources.isSome && !(Module.cSourcesOf src).isEmpty then none
         let k₀ := mixHash (hash m) (hash src)
         let k₀ := (Module.headersOf src).foldl (fun k h => mixHash k (hash ((base.cHeaders h).getD ""))) k₀
         let (k, memo) ← (Module.importsOf src).foldlM (fun (k, memo) n => do
@@ -146,7 +150,7 @@ where
           let (inner, memo) := match iso? with
             -- (a pristine state may still list imports, of modules without commands; the
             -- isolated state may come from another run: the loader and headers are ours)
-            | some iso => if s.pristine then ({ iso with checked, loader := s.loader, cHeaders := s.cHeaders,
+            | some iso => if s.pristine then ({ iso with checked, loader := s.loader, cHeaders := s.cHeaders, cSources := s.cSources,
                                                           imported := iso.imported.filter (!s.imported.contains ·) ++ s.imported }, memo) else
                 go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
             | none => go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
