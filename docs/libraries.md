@@ -165,12 +165,9 @@ reverse once); and each call into C converts the list to a C string and back. Sp
 200000 characters, joining and trimming them takes 0.1 s compiled (the `text` tests).
 `Std.Str` is the native alternative for indexing.
 
-Not yet unified: `lib/Json.wiz` (`String.eq`, `String.chars`, `Nat.repr`),
-`lib/Deriving.wiz` (`Nat.repr`, `String.beq`), `lib/Hoare.wiz` (`List.revApp`,
-`List.reverse`) and `lib/Hdl/Core.wiz` (`List.map`) define some of the same names. The
-definitions agree, and when two imported modules define a name the later import's wins
-silently, so importing them together works today; the fix is for each of them to import
-`Text` and drop its copy.
+`lib/Json.wiz`, `lib/Deriving.wiz` and `lib/Hoare.wiz` import `Text` and use its
+`String.eq`, `String.chars`, `String.beq`, `Nat.repr`, `List.revApp` and `List.reverse`
+instead of copies of their own (two modules declaring one name are an error at import).
 
 ## Numbers: classes, integers, words ✅
 

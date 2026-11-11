@@ -6483,6 +6483,15 @@ def textGroup : Group where
   name := "text"
   exercise := "Stage 9j"
   cases := [
+    -- two modules that declare one name are an error at import: the libraries that had
+    -- copies of Text's functions use Text's
+    { name := "Text imports together with Json, Deriving, Hoare and Hdl.Core", run := fun _ => do
+        for m in ["Json", "Deriving", "Hoare", "Hdl.Core"] do
+          okLibs s!"import Text\nimport {m}\n#eval Nat.repr 120" ["\"120\""]
+          okLibs s!"import {m}\nimport Text\n#eval String.eq \"ab\" \"ab\"" [".true"]
+        okLibs ("import Json\nimport Deriving\nimport Hoare\nimport Hdl.Core\nimport Text\n" ++
+          "#eval List.reverse (.cons 1 (.cons 2 .nil))\n#eval String.beq \"a\" \"b\"")
+          [".cons 2 (.cons 1 .nil)", ".false"] },
     { name := "split, join, trim, replace, prefixes, numbers (#eval)", run := fun _ =>
         okLibs ("import Text\n#eval String.splitOn \"a,b,,c\" \",\"\n#eval String.splitOn \"a::b::\" \"::\"\n" ++
           "#eval String.splitOn \"abc\" \"\"\n#eval String.intercalate \", \" (.cons \"a\" (.cons \"b\" .nil))\n" ++
