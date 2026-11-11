@@ -4811,9 +4811,8 @@ def trustGroup : Group where
           "#run wd (.sup (fun i => .sup (fun _ => .z) i) 10) 5\n#run vsum (.cons 1 (.cons 2 .nil))\n#run Nat.lt 3 5\n" ++
           "def t1 : leftmost (build 4) = 0 := refl 0\ndef t2 : last l5 = 5 := refl 5\n" ++
           "def t4 : findT 1 3 (build 3) = 0 := refl 0\ndef t5 : wd (.sup (fun i => .sup (fun _ => .z) i) 10) 5 = 15 := refl 15\n"
-        let loader ← preludeLoader
-        let vecSrc ← IO.FS.readFile "lib/Vec.wiz"
-        let loader := fun m => if m == "Vec" then some vecSrc else loader m
+        let ms ← Module.loadAll ["lib"]
+        let loader := fun m => (ms[m]?).map (·.2)
         let run (push : Bool) : IO (List String) := do
           let s := runFrontend (R := ZeroOneMany) src
             { loader, trustedModule := Tests.libModule, globals := { pushCalls := push } }
@@ -4821,13 +4820,27 @@ def trustGroup : Group where
           unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
           -- every derived implementation passes the kernel's agreement check
           for (n, d) in s.globals.decls.toList do
-            if d.trustedEquations then
+            if d.derivedEquations then
               unless (checkImplAgrees s.globals d d.value.get! d.impl.get!) matches .ok _ do
                 throw (IO.userError s!"{n}: the compiled equations do not agree")
           pure (s.messages.toList.map (·.text))
         let expect := ["0", "5", "0", "15", "3", ".true"]
         checkEq (repr expect).pretty (repr (← run true)).pretty
         checkEq (repr expect).pretty (repr (← run false)).pretty },
+    { name := "recursive definitions: the kernel rejects compiled equations that compute something else", run := fun _ => do
+        -- `g`'s compiled equations, well typed at `f`'s type, given to `f`: `f 0 = 0` but
+        -- `g 0 = 1`, so the agreement check (one conversion per constructor) fails
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def f : N → N\n  | .z => .z\n  | .s n => f n\n" ++
+          "def g : N → N\n  | .z => .s .z\n  | .s n => g n\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let (some f, some g) := (s.globals.find? "f", s.globals.find? "g")
+          | throw (IO.userError "f or g is missing")
+        let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase "f" }
+        check ((addDecl g0 f) matches .ok _) "f is rejected when added again"
+        match addDecl g0 { f with impl := g.impl } with
+        | .ok _ => throw (IO.userError "f was accepted with g's compiled equations")
+        | .error e => check (((toString e).splitOn "do not agree").length > 1) s!"unexpected error: {e}" },
     { name := "O3: an unchecked registration is an axiom", run := fun _ => do
         let msgs ← messagesLib badAdd
         let expect := ["warning: builtin nat := N is not checked: it is an axiom of every declaration that depends on N (see `#print axioms`)",
@@ -4900,8 +4913,7 @@ def trustGroup : Group where
           check ((l.splitOn r).length > 1) s!"{r} is not listed: {l}" },
     { name := "Prelude registrations are trusted and compute natively", run := fun _ =>
         okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4\n#print axioms t\n#eval 3 * 7 + Nat.pow 2 10\n"
-          -- (until the kernel checks them, T1: compiled equations are listed)
-          ["'t' depends on axioms: [compiled Nat.add]" ++ "\n(compiled: a recursive definition's equations as compiled code runs them, trusted to agree with its definition)", "1045"] },
+          ["'t' does not depend on any axioms", "1045"] },
     { name := "#print axioms: the Prelude's castRefl", run := fun _ =>
         okLib ("import Prelude\n#print axioms castRefl\n" ++
             "def r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n#print axioms r\n")
@@ -4911,12 +4923,12 @@ def trustGroup : Group where
         okLib ("import Prelude\ndef slow (n : Nat) : Nat := n + 0\ndef fast (n : Nat) : Nat := n\n" ++
             "attribute [implemented_by fast] slow\ndef use (n : Nat) : Nat := slow n\n" ++
             "#print axioms use\n#print axioms fast\n" ++
-            -- a recursive definition's own compiled equations are listed as `compiled` (trusted
-            -- until the kernel checks them, T1); a partial one's body is checked, not listed
+            -- a recursive definition's compiled equations (checked to agree with its value, T1)
+            -- and a partial one's body (checked) are not listed
             "def len : List Nat → Nat\n  | .nil => 0\n  | .cons _ t => len t + 1\n#print axioms len\n" ++
             "partial def spin (n : Nat) : Nat := fast n\n#print axioms spin\n")
           ["'use' depends on axioms: [native slow := fast]" ++ note, "'fast' does not depend on any axioms",
-           "'len' depends on axioms: [compiled len, compiled Nat.add]" ++ "\n(compiled: a recursive definition's equations as compiled code runs them, trusted to agree with its definition)", "'spin' does not depend on any axioms"]
+           "'len' does not depend on any axioms", "'spin' does not depend on any axioms"]
         -- the library's are listed too: words run natively, in a native representation
         okLib ("import Prelude\nimport Word\ndef idW (x : UIntN 8) : UIntN 8 := x\n#print axioms idW\n" ++
             "def w : UIntN 8 := UIntN.add (UIntN.ofNat 8 3) (UIntN.ofNat 8 4)\n#print axioms w\n")

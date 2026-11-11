@@ -882,8 +882,8 @@ code runs instead of the value. It may call the definition itself (a structurall
 recursive definition's equations with direct recursion), so it is checked against the
 declared type in `g`, which already has the definition. The kernel never unfolds it, so it
 proves nothing; it is checked because erasure reads it (its types, the sorts noted on its
-`Π`s and `Σ`s, its quantities) as it reads a checked term. That it computes what the
-value computes is *not* checked. -/
+`Π`s and `Σ`s, its quantities) as it reads a checked term. That a definition's derived
+equations compute what its value computes is checked by `checkImplAgrees` (`addDecl`). -/
 def checkImpl (g : Globals R) (d : Decl R) (impl : Term R) : TCM Unit := do
   if let some u := impl.levelParamsUsed.find? (!d.levelParams.contains ·) then
     throw (.other s!"unknown universe level parameter {u} in the implementation of {d.name}")
@@ -967,7 +967,11 @@ def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
     -- usage is the empty vector: a closed term has no locals to misuse
     let _ ← check ctx v (ctx.eval d.type)
   let g' := g.insert d
-  if let some impl := d.impl then checkImpl g' d impl
+  if let some impl := d.impl then
+    checkImpl g' d impl
+    -- compiled equations derived from the value compute what it computes
+    if let some v := d.value then
+      if d.derivedEquations then checkImplAgrees g' d v impl
   pure g'
 
 /-- Give the declaration `name` another implementation for the compiler
@@ -1014,11 +1018,8 @@ Also listed, marked `native`: the **native implementations** the declaration's c
 code runs, wherever they are registered (the library's too). `native f := g` is
 `attribute [implemented_by g] f`, and `native T := mk/get` a native representation of the
 type `T` (`attribute [implemented_by mk get] T.mk`, a `repr:` registration). The kernel
-never runs them, so they prove nothing: they are trusted to agree with the definitions.
-
-Marked `compiled`: the structurally recursive definitions whose **compiled equations**
-(`Decl.trustedEquations`, their `impl`) are trusted to agree with their values
-(docs/Status.md, T1). They too prove nothing; compiled code runs them. -/
+never runs them, so they prove nothing: they are trusted to agree with the definitions. A structurally recursive definition's compiled equations are not listed: the kernel
+checks that they agree with its value (`checkImplAgrees`). -/
 partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run do
   let mut seen : Std.HashSet Name := {}
   let mut todo := [n]
@@ -1037,7 +1038,6 @@ partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run 
       for (k, m) in g.assumed.reverse do
         if m == c then out := out.push s!"builtin {k} := {c}"
       if let some i := d.nativeImpl? then out := out.push s!"native {c} := {i}"
-      if d.trustedEquations then out := out.push s!"compiled {c}"
       -- (a `repr:T:mk:get:…` registration is on `T`'s constructor: it concerns whatever
       -- mentions the type or the constructor)
       for (k, m) in g.builtins.reverse do

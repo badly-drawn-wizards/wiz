@@ -432,28 +432,6 @@ where
       methods' := methods' ++ [fieldNames.foldr .lam b]
     pure ((Δargs ++ [motive] ++ methods' ++ ξ ++ rest).foldl .app (.const cases rus))
 
-/-- The recursive calls of `fn` in a right-hand side, as `rewriteRecCalls` recognises them
-(an application whose head is the identifier `fn` or `@fn`), with the head given a macro
-scope (`fn✝rec`): such a name is never a local variable's, so it resolves to the global
-`fn`. The second elaboration of a recursive definition's equations (`elabDefEqns`) uses
-it: there the definition is a global, and a local variable called `fn` (a `fun` or `let`
-binder) would capture the call, which the first elaboration turned into the induction
-hypothesis without looking at what is in scope. Compiled code would then call the local
-where the checked definition recurses. -/
-partial def markRecCalls (fn : Name) (stx : Syntax) : Syntax :=
-  let marked (i : SourceInfo) : Syntax := .ident i (fn ++ "✝rec")
-  match stx with
-  | .node i k args =>
-    let args := args.map (markRecCalls fn)
-    let head? : Option Syntax := if k == "term.app" then args[0]? else none
-    match head? with
-    | some (Syntax.node hi "term.ident" #[Syntax.ident ii n]) =>
-      if n == fn then .node i k (args.set! 0 (.node hi "term.ident" #[marked ii])) else .node i k args
-    | some (Syntax.node hi "term.explicit" #[at_, Syntax.ident ii n]) =>
-      if n == fn then .node i k (args.set! 0 (.node hi "term.explicit" #[at_, marked ii])) else .node i k args
-    | _ => .node i k args
-  | s => s
-
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
 arguments of `T`; a right-hand side that calls `f` makes it structurally recursive. -/
 def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
@@ -518,30 +496,12 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
   ensureNoMVars fullTy info
-  -- for the compiler: the same equations with direct recursion (the definition, as an
-  -- axiom for the moment, is called like any function) and case analysis, so that only
-  -- the recursive calls the program makes are computed
-  let impl ← if rc.isNone then pure none
-    else if !(← getGlobals).implByElab then
-      pure (deriveImpl (← getGlobals) name ((← get).levelParams.map Level.param) tele.size names.length pos val)
-    else do
-    -- (`--impl=elab`, for comparison while derivation is new) the same equations
-    -- elaborated a second time
-    let saved ← get
-    try
-      modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
-      -- the calls the first elaboration took for recursive ones, by their syntax
-      -- (`rewriteRecCalls`), are calls of the definition here too, whatever `name` is
-      -- bound to locally
-      let clauses := clauses.map fun c => { c with rhs := markRecCalls name c.rhs }
-      let body' ← compileMatch ctx' (perm vars) clauses tyv none true
-      solveSortConstraints
-      let v' ← zonk 0 (tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body'))
-      modify fun s => { s with globals := saved.globals }
-      pure (if v'.mvars.isEmpty then some v' else none)
-    catch _ =>
-      set saved
-      pure none
+  -- for the compiler: the value with each hypothesis replaced by the direct call it stands
+  -- for (`deriveImpl`), so that only the recursive calls the program makes are computed;
+  -- the kernel checks that it agrees with the value (`checkImplAgrees`)
+  let g ← getGlobals
+  let us := (← get).levelParams.map Level.param
+  let impl := if rc.isNone then none else deriveImpl g name us tele.size names.length pos val
   pure (fullTy, val, impl)
 
 /-- Does the identifier `n` occur anywhere in `stx`? -/
@@ -1420,8 +1380,6 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- never run it, compiled code does)
         let note := if as.any (·.startsWith "native ") then
           "\n(native: an implementation that compiled code runs, trusted to agree with its definition)" else ""
-        let note := note ++ (if as.any (·.startsWith "compiled ") then
-          "\n(compiled: a recursive definition's equations as compiled code runs them, trusted to agree with its definition)" else "")
         report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]{note}"
   | "command.foreignType" =>
     -- an opaque C pointer type; values are released with the finalizer
