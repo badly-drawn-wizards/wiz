@@ -910,14 +910,16 @@ partial def replaceConst (c : Name) (us : List Level) (t : Term R) (depth : Nat 
 
 /-- **Every call is on a field** (`checkImplAgrees`; termination of compiled code). The
 implementation is `λ a₀ … a_{k-1}. [let …] K Δ motive m₁ … mₙ ξ x …` for a `T.casesOn`
-(or `casesOnN`) `K`, and the definition `fn` (at its own levels `us`) occurs only in the
+(or `casesOnN`) `K`, whose scrutinee is the column variable `x` itself (and, in mode A,
+whose indices are the index variables `ixL`), and the definition `fn` (at its own levels `us`) occurs only in the
 methods, each time as the head of a call whose argument at position `x` (the split's
 column) is a field of the method's constructor (`λ fields. …`, a field variable or such a
 variable applied to arguments, for an infinitary field). Then every call compiled code
 makes is on a strictly smaller value (a field of the scrutinee), so it terminates as the
 kernel's recursion does; the conversion check alone cannot see calls at types where every
 two values are convertible (`Unit`, propositions). -/
-partial def callsOnFields (g : Globals R) (fn : Name) (us : List Level) (k x : Nat) (impl : Term R) : Bool := Id.run do
+partial def callsOnFields (g : Globals R) (fn : Name) (us : List Level) (k x : Nat) (ixL : Option (List Nat))
+    (impl : Term R) : Bool := Id.run do
   let rec peel : Nat → Term R → Option (Term R)
     | 0, t => some t
     | n + 1, .lam _ b => peel n b
@@ -942,6 +944,13 @@ partial def callsOnFields (g : Globals R) (fn : Name) (us : List Level) (k x : N
     | _ => []
   let ctors := ((mbinders kd.type).drop (nΔ + 1)).take nc |>.map fun mn => String.ofList (mn.toList.drop 2)
   -- outside the methods: no call at all
+  -- the split is the split of the column `x` (a split of anything else, a constructor
+  -- applied to `x` say, would make its "fields" `x` itself: t1-review M1c), at the index
+  -- variables in mode A
+  let ix (ℓ : Nat) : Term R := .var (nLets + k - 1 - ℓ)
+  unless args[nΔ + 1 + nc + nΞ]? == some (ix x) do return false
+  if let some ls := ixL then
+    unless (args.drop (nΔ + 1 + nc)).take nΞ == ls.map ix do return false
   let outside := args.take (nΔ + 1) ++ args.drop (nΔ + 1 + nc)
   if outside.any (mentionsConst fn ·) then return false
   let methods := (args.drop (nΔ + 1)).take nc
@@ -1068,8 +1077,6 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
     | fail "the value or the implementation is not an induction on an argument"
   let MF? : Option (Val R) := some MF
   unless x == x' && sp.size == sp'.size do fail "they split different arguments"
-  unless callsOnFields g d.name (d.levelParams.map Level.param) k x impl do
-    fail "a call of the definition is not on a field of the constructor it is in (compiled code could loop)"
   -- (the methods are checked below; here both are a fresh variable of the method type, so
   -- that comparing them costs nothing: comparing `M` with itself would go through every
   -- branch of it)
@@ -1123,6 +1130,8 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
   -- (an index variable that is also a column: no substitution of the index)
   let ixL? := ixL0?.bind fun ls => if (rsL?.getD []).all (!ls.contains ·) then some ls else none
   let modeA := ixL?.isSome
+  unless callsOnFields g d.name (d.levelParams.map Level.param) k x ixL? impl do
+    fail "a call of the definition is not on a field of the constructor of the split it is in (compiled code could loop)"
   let ixL := ixL?.getD []
   let hypCall (head j y : Val R) (rs : List Nat) (eqArg : Bool) : Val R :=
     let m := rs.length

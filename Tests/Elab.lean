@@ -5736,7 +5736,20 @@ def trustGroup : Group where
         check (!(← verdict "f" fun _ => .const "f" [])) "f with f itself was accepted"
         check (!(← verdict "wd" (wrapCalls "wd" (fun a => .app (.const "W.sup" []) (.lam "_" (a.lift 1)))))) "wd with wd (sup (λ _. g z)) was accepted"
         check (!(← verdict "w2" (wrapCalls "w2" (fun a => .app (.app (.const "W2.node" []) a) (.lam "_" (a.lift 1)))))) "w2 with w2 (node l (λ _. l)) was accepted"
-        check (!(← verdict "u" (wrapCalls "u" (fun a => .app (.const "N.s" []) a)))) "u with u (.s n) was accepted (a call at Unit)" },
+        check (!(← verdict "u" (wrapCalls "u" (fun a => .app (.const "N.s" []) a)))) "u with u (.s n) was accepted (a call at Unit)"
+        -- t1-192-scrutinee / t1-192-run (M1c): a top split of `N.s x` instead of `x`, whose
+        -- "field" is then `x` itself, with the real split inside
+        let splitOfSucc (nm : Name) (impl : Term ZeroOneMany) : Term ZeroOneMany :=
+          match impl with
+          | .lam xn body =>
+            match body.spine with
+            | (h, [mot, mz, _, _]) =>
+              let inner := [mot.lift 1, mz.lift 1, .lam "m" (.app (.const nm []) (.var 1)), .var 1].foldl .app h
+              .lam xn ([mot, mz, .lam "n" inner, .app (.const "N.s" []) (.var 0)].foldl .app h)
+            | _ => impl
+          | _ => impl
+        check (!(← verdict "u" (splitOfSucc "u"))) "u with a split of (.s x) was accepted"
+        check (!(← verdict "f" (splitOfSucc "f"))) "f with a split of (.s x) was accepted" },
     { name := "O3: an unchecked registration is an axiom", run := fun _ => do
         let msgs ← messagesLib badAdd
         let expect := ["warning: builtin nat := N is not checked: it is an axiom of every declaration that depends on N (see `#print axioms`)",
