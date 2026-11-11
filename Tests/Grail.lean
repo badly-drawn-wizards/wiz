@@ -186,6 +186,29 @@ def modulesGroup : Group where
         check (s.messages.any fun m => (m.text.splitOn "module M.A has errors").length > 1)
           s!"the changed M.A was replayed: {s.messages.toList.map (·.text)}"
         check (!s.globals.contains "boom") "boom accepted after M.A changed" },
+    { name := "private names are per module: two modules' private helpers don't clash (13b)", run := fun _ => do
+        let dir ← mkTree [
+          ("P/A.wiz", "import Prelude\nprivate def helper : Nat := 1\nprivate def Nat.twice (n : Nat) : Nat := Nat.add n n\n" ++
+                      "private def count : Nat → Nat\n  | .zero => 0\n  | .succ n => Nat.add (count n) 1\n" ++
+                      "def fa : Nat := Nat.add helper (Nat.add (count 3) helper.twice)\n"),
+          ("P/B.wiz", "import Prelude\nprivate def helper : Nat := 10\nprivate def Nat.twice (n : Nat) : Nat := Nat.mul n 3\n" ++
+                      "def fb : Nat := Nat.add helper helper.twice\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+        let cache ← IO.FS.createTempDir
+        let paths (src : String) : IO (List (String × CommandState ZeroOneMany)) := do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          pure [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                ("runFrontend", runFrontend src init), ("Query", (Query.elaborate {} src { init with termInfo := true }).1)]
+        let src := "import P.A\nimport P.B\n#eval fa\n#eval fb\ndef helper : Nat := 5\n#eval helper\n"
+        for (how, s) in ← paths src do
+          checkEq (how, "[3:1: info: 6, 4:1: info: 40, 6:1: info: 5]") (how, toString (s.messages.toList.map (·.render src)))
+        -- still private: elsewhere the name is unknown, with the module named
+        let src := "import P.A\ndef x : Nat := helper\n"
+        for (how, s) in ← paths src do
+          check (s.messages.any fun m => (m.text.splitOn "'helper' is private to module P.A").length > 1)
+            s!"{how}: {s.messages.toList.map (·.text)}" },
     { name := "trust is part of a module's cache key (22f)", run := fun _ => do
         -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
         -- warnings and `#print axioms` of the one run are never replayed in the other

@@ -307,12 +307,13 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
       | .mu _ _ _ _ _ h | .nu _ _ _ _ _ h => h
       | _ => none
     if let some (T, us, args) := hint? then
-      if let some d := (← getGlobals).find? (T ++ "." ++ f) then
-        if let some m := (← getGlobals).privateTo? (T ++ "." ++ f) then
+      let Tf := (← getGlobals).resolve (T ++ "." ++ f)
+      if let some d := (← getGlobals).find? Tf then
+        if let some m := (← getGlobals).privateTo? Tf then
           throwAt ctx.info s!"'{T}.{f}' is private to module {m}" "private"
         -- `T.f : {…} → T … → F`: insert the implicits as metavariables, then unify
         let fty : VTy R := eval (← getGlobals) [] (d.type.instLevels d.levelParams us)
-        let (tm, fty) ← insertImplicits ctx (.const (T ++ "." ++ f) us) fty
+        let (tm, fty) ← insertImplicits ctx (.const Tf us) fty
         let .pi _ _ _ dom cod _ ← force fty | throwAt ctx.info s!"{T}.{f} is not a function of {T}"
         unifyAt ctx (.missing) dom ty
         let tm' := Term.app tm t
@@ -1921,6 +1922,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
         return (.var ix, ty)
     -- a macro-scoped name that isn't a local refers to the global of its base name
     let x := stripScope x
+    -- (13b) this module's private declaration of that name, if any
+    let x := (← getGlobals).resolve x
     match (← getGlobals).find? x with
     | some d =>
       -- (13b) a private name of another module
@@ -1936,6 +1939,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       record x {} ty
       return (.const x us, ty)
     | none =>
+      -- (13b) another module's private declaration of that name (under its own kernel
+      -- name, `Globals.privateName`)
+      let g ← getGlobals
+      if let some (_, m) := g.privates.toList.find? fun (n, m) => m != g.module && n == Globals.privateName m x then
+        throwAt ctx.info s!"'{x}' is private to module {m}" "private"
       -- built-in types
       let builtinLevel : Option Level := match explicitLevels with
         | some _ => none

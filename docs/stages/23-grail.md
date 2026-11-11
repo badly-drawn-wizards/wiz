@@ -17,9 +17,13 @@ would keep everything checked against the earlier one: a theorem about M.A's `b`
 then be about M.B's (it proved `Empty`, `wiz-notes/soundness-probes/is-import-shadowing`).
 One module reached by several paths (a diamond) is the same declaration and fine: a
 module is imported once per file. Two modules with identical declarations still clash,
-as in Lean; put the definition in one module that the others import. `private` names are
-global names too, so they clash as well (a module-qualified private name is a
-follow-up). The kernel's `addDecl` refuses a name that is already declared, behind all
+as in Lean; put the definition in one module that the others import. A private
+function, axiom or foreign function (`private def helper`) is not a global name: its
+kernel name is `_private.M.A.0.helper` (as in Lean), which `helper` resolves to in M.A
+only, so two modules' private `helper`s never clash, and the file importing them may
+declare a `helper` of its own. Messages show `helper`. Private *types* (`private
+inductive`, `private structure`) keep their names, since their constructors, fields and
+recursors are looked up by name, so two of one name still clash. The kernel's `addDecl` refuses a name that is already declared, behind all
 of this.
 
 ## 23c: a key per module, atomic writes ✅
