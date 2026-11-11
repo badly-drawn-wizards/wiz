@@ -6,6 +6,7 @@ import Tests.Elab
 import Tests.ElabFix
 import Tests.Grail
 import Tests.LSP
+import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
 import Tests.Tower
@@ -24,6 +25,7 @@ def groups : List Group :=
   ElabFix.groups ++
   Eval.groups ++
   Grail.groups ++
+  Lint.groups ++
   LSP.groups ++
   Parser.groups ++
   Rig.groups ++
@@ -106,11 +108,14 @@ against them), and `lake test -- --list-cases SELECTOR…` the selected cases, a
 FILE (its group, index, name, wall time in seconds, whether it passed, and its notes:
 `Tests.note`), labelled with `--shard NAME`. -/
 def main (args : List String) : IO UInt32 := do
+  -- a `panic!` fails the case that hits it (each case runs in its own process), as it
+  -- fails `wiz check`; `--panic-probe continue` turns it off again
+  Wiz.exitOnPanic
   -- tower, as the shims of the tower tests call it (`Tests/Tower.lean`)
   if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run" :: _ | "--check" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run" :: _ | "--check" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -134,7 +139,10 @@ def main (args : List String) : IO UInt32 := do
     pure (if errs.isEmpty then 0 else 1)
   -- a job of a grail build that a test runs (`Grail/Graph.lean`)
   | ["--grail-job", job] => Grail.jobMain tc job
-  | ["--probe-checker"] => do Scaling.probeChecker; pure 0
+  -- (kernel hygiene, `Tests/Lint.lean`) hit a `panic!` of the evaluator, with or without
+  -- `exitOnPanic`
+  | ["--panic-probe", mode, site] => Lint.panicProbe mode site
+  | "--probe-checker" :: opts => do Scaling.probeChecker opts; pure 0
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
   | ["--list"] => do

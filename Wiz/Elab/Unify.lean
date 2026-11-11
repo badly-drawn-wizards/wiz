@@ -26,6 +26,27 @@ namespace Wiz
 
 variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 
+/-- (Given) `vElims`, but an elimination that doesn't fit the value (applying a number,
+projecting a function) is an elaboration error, not a panic in the evaluator. Heuristic
+solutions (the first-order approximation, which is untyped) can be ill-typed:
+`?P 3 =?= Ex ?A ?Q` guesses `?Q := 3`, and `?Q 3` comes later. -/
+def elimsChecked (m : Nat) (sol : Val R) (sp : Array (Elim R)) : ElabM R (Val R) := do
+  let g ← getGlobals
+  let mut v := sol
+  for e in sp do
+    let fits : Bool := match v, e with
+      | .neutral .., _ | .unfold .., _ | .lazyInd .., _ => true
+      | .lam .., .app _ => true
+      | .pair .., .fst | .pair .., .snd => true
+      | _, .app _ | _, .fst | _, .snd => false
+      | _, _ => true
+    -- (merge note: with agent/slow-unify's fast failure, set `unifySawMeta := true` here
+    -- before throwing, so this failure is never taken as final)
+    unless fits do
+      throwAt {} s!"the solution found for the hole ?m{m} is ill-typed (a guess that didn't fit)"
+    v := vElims g v #[e]
+  pure v
+
 /-- **Exercise 3.1.** Unfold solved metavariables at the head of a value, repeatedly.
 A neutral `?m sp` whose meta has a solution `v` becomes `v` with the eliminations of
 `sp` applied (`vElims`). Anything else is returned unchanged. -/
@@ -34,7 +55,7 @@ partial def forceMeta (v : Val R) : ElabM R (Val R) := do
   match v with
   | .neutral (.mvar m) sp =>
     match (← lookupMeta m).solution with
-    | some sol => forceMeta (vElims (← getGlobals) sol sp)
+    | some sol => forceMeta (← elimsChecked m sol sp)
     | none => pure v
   | _ => pure v
   --|ex
@@ -63,25 +84,34 @@ def recomputeEq? (v : Val R) : ElabM R (Option (Val R)) := do
   else return none
 
 /-- A partial renaming from context `cod` (size `cod`) to context `dom` (size `dom`):
-`ren` maps the levels of variables in the spine to their new levels. -/
+`ren` maps the levels of variables in the spine to their new levels; `downs` maps the
+variables that occur in the spine lowered, as `down x` (see `invert`). -/
 structure PRen where
   dom : Lvl
   cod : Lvl
   ren : Std.HashMap Lvl Lvl
+  downs : Std.HashMap Lvl Lvl := {}
 
 /-- Go under a binder on both sides. -/
 def PRen.lift (p : PRen) : PRen :=
-  { dom := p.dom + 1, cod := p.cod + 1, ren := p.ren.insert p.cod p.dom }
+  { p with dom := p.dom + 1, cod := p.cod + 1, ren := p.ren.insert p.cod p.dom }
 
 /-- **Exercise 3.2.** Invert a spine into a partial renaming. `gamma` is the size of the
 current context. Every spine entry must be an application (`Elim.app v`) whose
 argument forces to a bound variable with an empty spine (`.neutral (.local x) #[]`),
 and a variable that occurs twice is left out of the renaming (the solution may not use
 it). Otherwise throw (at `{}`), saying the problem is outside the pattern fragment.
-The i-th spine variable maps to level i. -/
+The i-th spine variable maps to level i.
+
+(Given) A lowered variable `down x` (`x : ULift A`) counts as a variable too: the
+solution's i-th parameter `y` stands for `down x`, and `x` itself for `up y` (η for
+`ULift`). Constructor fields with a lifted domain (`k : A → Proto` with `A : Type` in a
+`Type 1` inductive) are stored as `fun h => k (down h)`, so unifying two such fields
+meets `?k … (down h)`. -/
 def invert (gamma : Lvl) (sp : Array (Elim R)) : ElabM R PRen := do
   --<sol
   let mut ren : Std.HashMap Lvl Lvl := {}
+  let mut downs : Std.HashMap Lvl Lvl := {}
   let mut repeated : Array Lvl := #[]
   let mut dom := 0
   for e in sp do
@@ -89,11 +119,16 @@ def invert (gamma : Lvl) (sp : Array (Elim R)) : ElabM R PRen := do
     match ← force v with
     | .neutral (.local x) #[] =>
       -- a repeated variable can't be used by the solution (which occurrence?)
-      if ren.contains x then repeated := repeated.push x
+      if ren.contains x || downs.contains x then repeated := repeated.push x
       ren := ren.insert x dom
       dom := dom + 1
+    | .neutral (.local x) #[.down] =>
+      if ren.contains x || downs.contains x then repeated := repeated.push x
+      downs := downs.insert x dom
+      dom := dom + 1
     | _ => throwAt {} "unification problem is outside the pattern fragment"
-  pure { dom, cod := gamma, ren := repeated.foldl (·.erase ·) ren }
+  pure { dom, cod := gamma, ren := repeated.foldl (·.erase ·) ren,
+         downs := repeated.foldl (·.erase ·) downs }
   --|ex
   --| sorry
   --sol>
@@ -153,7 +188,12 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .neutral (.local x) sp =>
     match p.ren[x]? with
     | some x' => goSp (.var (p.dom - x' - 1)) sp
-    | none => throwAt {} "a variable escapes the scope of the hole being solved"
+    | none => match p.downs[x]? with
+      -- (given) `down x` is the parameter `y`; a bare `x` is `up y`
+      | some x' =>
+        let y : Term R := .var (p.dom - x' - 1)
+        if sp[0]? matches some Elim.down then goSp y (sp.extract 1 sp.size) else goSp (.up y) sp
+      | none => throwAt {} "a variable escapes the scope of the hole being solved"
   | .neutral (.global n us) sp => goSp (.const n us) sp
   | .neutral (.eq A a b) sp => do goSp (.eq (← rename m p A) (← rename m p a) (← rename m p b)) sp
   | .neutral (.eqTy A B) sp => do goSp (.eqTy (← rename m p A) (← rename m p B)) sp
@@ -400,7 +440,9 @@ where
   isPattern (sp : Array (Elim R)) : ElabM R Bool := do
     for e in sp do
       match e with
-      | .app a => unless (← forceMeta a) matches .neutral (.local _) #[] do return false
+      | .app a => match ← forceMeta a with
+        | .neutral (.local _) #[] | .neutral (.local _) #[.down] => pure ()
+        | _ => return false
       | _ => return false
     pure true
 

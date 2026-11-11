@@ -88,6 +88,14 @@ structure CommandState (R : Type) where
   cCode : Array String := #[]
   /-- foreign pointer types and their finalizers -/
   foreignTypes : List (Name × String) := []
+  /-- (9f) where the `link_c "f.c"` files are: by module (`""`: the main file) and the path
+  as written, the file's absolute path, or `none` if it doesn't exist (the command line
+  resolves them, relative to each module's file: the frontend is pure). Without a
+  resolver (the language server), paths are kept as written and not checked. -/
+  cSources : Option (String → String → Option String) := none
+  /-- (9f) the C files to compile and link with the program, and the libraries (`link_lib`) -/
+  linkC : Array String := #[]
+  linkLibs : Array String := #[]
   /-- for the language server (stage 11): the info tree of this file (identifiers, expected
   types, tactic states, …), and where each global was declared (its command's range, and
   module; `""` is the main file) -/
@@ -261,6 +269,28 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   ensureNoMVars fullTy info
   pure (fullTy, val)
 
+/-- The recursive calls of `fn` in a right-hand side, as `rewriteRecCalls` recognises them
+(an application whose head is the identifier `fn` or `@fn`), with the head given a macro
+scope (`fn✝rec`): such a name is never a local variable's, so it resolves to the global
+`fn`. The second elaboration of a recursive definition's equations (`elabDefEqns`) uses
+it: there the definition is a global, and a local variable called `fn` (a `fun` or `let`
+binder) would capture the call, which the first elaboration turned into the induction
+hypothesis without looking at what is in scope. Compiled code would then call the local
+where the checked definition recurses. -/
+partial def markRecCalls (fn : Name) (stx : Syntax) : Syntax :=
+  let marked (i : SourceInfo) : Syntax := .ident i (fn ++ "✝rec")
+  match stx with
+  | .node i k args =>
+    let args := args.map (markRecCalls fn)
+    let head? : Option Syntax := if k == "term.app" then args[0]? else none
+    match head? with
+    | some (Syntax.node hi "term.ident" #[Syntax.ident ii n]) =>
+      if n == fn then .node i k (args.set! 0 (.node hi "term.ident" #[marked ii])) else .node i k args
+    | some (Syntax.node hi "term.explicit" #[at_, Syntax.ident ii n]) =>
+      if n == fn then .node i k (args.set! 0 (.node hi "term.explicit" #[at_, marked ii])) else .node i k args
+    | _ => .node i k args
+  | s => s
+
 /-- `def f binders : T | p… => rhs …`: the alternatives match the leading explicit
 arguments of `T`; a right-hand side that calls `f` makes it structurally recursive. -/
 def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
@@ -332,6 +362,10 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
     let saved ← get
     try
       modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
+      -- the calls the first elaboration took for recursive ones, by their syntax
+      -- (`rewriteRecCalls`), are calls of the definition here too, whatever `name` is
+      -- bound to locally
+      let clauses := clauses.map fun c => { c with rhs := markRecCalls name c.rhs }
       let body' ← compileMatch ctx' (perm vars) clauses tyv none true
       solveSortConstraints
       let v' ← zonk 0 (tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body'))
@@ -750,6 +784,44 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let finOf (t : Term R) : String := match (Term.spine t).1 with
     | .const n _ => ((s.foreignTypes.find? (·.1 == n)).map (·.2)).getD ""
     | _ => ""
+  -- how a foreign function's parameter or result is marshalled (stage 9a, `ExternSig`)
+  let ffiKind (t : Term R) : Option Char := match t with
+    | .unit _ => some 'v'
+    -- a type variable: any Wiz value, passed as it is
+    | .var _ => some 'w'
+    | t => match (Term.spine t).1 with
+      | .const "Nat" _ => some 'n'
+      | .const "UInt64" _ => some 'u'
+      | .const "Float64" _ => some 'f'
+      | .const "String" _ => some 's'
+      | .const "Bool" _ => some 'b'
+      | .const "Bytes" _ | .const "Array" _ | .const "Str" _ | .const "StrMap" _ => some 'w'
+      | .var _ => some 'w'
+      | .const n _ =>
+        if s.foreignTypes.any (·.1 == n) then some 'p'
+        -- a Wiz data type (`UIntN w`): the value as it is, for runtime natives
+        else if (s.globals.find? n).any (·.value.isSome) then some 'w' else none
+      | _ => none
+  -- the parameters and result of a function type, and whether the result is in `IO`
+  let rec ffiParams : Term R → List (Term R × Term R) × Term R
+    | .pi _ _ q A B _ => let (ps, r) := ffiParams B; ((q, A) :: ps, r)
+    | t => ([], t)
+  let ffiIO (res : Term R) : Bool × Term R := match Term.spine res with
+    | (.const "IO" _, [A]) => (true, A)
+    | _ => (false, res)
+  -- (9g) a function that C calls: Wiz values come in (`n u f s b p w`) and go out
+  -- (`n u f s b v w`); none erased, none a callback
+  let ffiCallSig (ty : Term R) : Option RVal.CallbackSig := do
+    let (ps, res) := ffiParams ty
+    let (io, res) := ffiIO res
+    let ks ← ps.mapM fun (q, A) => if q == .qlit 0 then none else
+      match ffiKind A with
+      | some 'v' => none
+      | k => k
+    let rk ← match ffiKind res with
+      | some 'p' => none
+      | k => k
+    pure { params := ks, result := rk, io }
   -- (9i) the C struct a Wiz structure stands for (`c_struct`), as a marshalling kind
   let structKind? (n : Name) : Option RVal.FKind :=
     (s.builtins.find? fun (k, x) => x == n && k.startsWith "cstruct:").bind fun (k, _) =>
@@ -787,7 +859,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       (impl : Option (Term R) := none) := do
     match addDeclSorted s.globals { name, levelParams, type := ty, value := val, impl } with
     | .ok g => modify fun s => { s with globals := g }
-    | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
+    | .error e =>
+      -- the implementation (a recursive definition's equations compiled a second time,
+      -- `elabDefEqns`) is the elaborator's own: if only it fails, the bug is ours
+      let ours := impl.isSome &&
+        (addDeclSorted s.globals { name, levelParams, type := ty, value := val }) matches .ok _
+      report .error cmd.info (s!"kernel rejected {name}: {e}" ++ (if ours then
+        "\n(the definition itself checks: this is a bug in Wiz's compilation of recursive definitions, not in your code; please report it)" else ""))
   match cmd.kind with
   | "command.private" =>
     -- (13b) every name the command declares is private to this module
@@ -1437,6 +1515,21 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           modify fun s => { s with builtins := (s!"cstruct:{k.toKey}", name) :: s.builtins,
                                    globals := { s.globals with builtins := (s!"cstruct:{k.toKey}", name) :: s.globals.builtins },
                                    cCode := if s.cCode.contains code then s.cCode else s.cCode.push code }
+  | "command.linkC" =>
+    -- (9f) an unchecked C source file, compiled and linked with the program
+    let rel := ((cmd.getArg 1).getStr?).getD ""
+    let file ← match s.cSources with
+      | none => pure (some rel)
+      | some resolve => pure (resolve s.module rel)
+    match file with
+    | none => report .error (cmd.getArg 1).info s!"link_c: no file {rel} (paths are relative to the .wiz file)"
+    | some f => unless s.linkC.contains f do modify fun s => { s with linkC := s.linkC.push f }
+  | "command.linkLib" =>
+    -- (9f) a library to link with (`-lNAME`)
+    let lib := ((cmd.getArg 1).getStr?).getD ""
+    if lib.isEmpty || lib.startsWith "-" || lib.any Char.isWhitespace then
+      report .error (cmd.getArg 1).info s!"link_lib: give the library's name, as in link_lib \"m\" for -lm"
+    else unless s.linkLibs.contains lib do modify fun s => { s with linkLibs := s.linkLibs.push lib }
   | "command.extern" =>
     -- an axiom, bound to a C function: the marshalling follows the Wiz type
     let cname := ((cmd.getArg 1).getStr?).getD "_"
@@ -1482,17 +1575,63 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           match kind t with
           | some k => some k
           | none => if cname.startsWith "wiz_" then some (.k 'w') else none
-        let pkind (qa : Term R × Term R) : Option RVal.FKind := if qa.1 == .qlit 0 then some (.k 'e') else kind qa.2
+        -- (9g) a function is passed as a callback: borrowed for the call, or, as a
+        -- `Callback T`, owned by the C side (runtime natives take closures as they are)
+        let native := cname.startsWith "wiz_"
+        let callback? (A : Term R) : Option (Option RVal.FKind) :=
+          if native then none else
+          match A with
+          | .pi .. => some ((ffiCallSig A).map (.callback false ·))
+          | A => match Term.spine A with
+            | (.const "Callback" _, [T]) => some ((ffiCallSig T).map (.callback true ·))
+            | _ => none
+        let pkind (qa : Term R × Term R) : Option RVal.FKind :=
+          if qa.1 == .qlit 0 then some (.k 'e') else
+          match callback? qa.2 with
+          | some k => k
+          | none => kind qa.2
         match ps.mapM pkind, kind res with
         | some ks, some rk =>
+          if !io && ks.any (fun k => match k with | .callback _ c => c.io | _ => false) then
+            report .error cmd.info "a foreign function that takes a callback in IO must be in IO itself"
+          else
           let key : Name := s!"extern:{cname}:{String.join (ks.map (·.toKey))}:{rk.toKey}:{if io then "io" else "pure"}:{header}:{finOf res}"
           match addDeclSorted s.globals { name, type := ty, value := none } with
           | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
                                               globals := { g with builtins := (key, name) :: g.builtins } }
           | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
         | _, _ =>
-          let msg := "a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit, a c_struct or a Wiz data type (the result may be in IO)"
+          let msg := "a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit, a c_struct, a Wiz data type or a function of those (a callback; the result may be in IO)"
           report .error cmd.info msg
+  | "command.export" =>
+    -- (9g) a C symbol for a Wiz function: the inverse of `extern`
+    let cname := ((cmd.getArg 1).getStr?).getD "_"
+    let fStx := cmd.getArg 2
+    let f := (fStx.getId?).getD "_"
+    match s.globals.find? f with
+    | none => report .error fStx.info s!"unknown declaration {f}"
+    | some d =>
+      -- an optional type, which must be the definition's
+      let ty? : Except (ElabError R) (Term R) :=
+        if (cmd.getArg 3).isNone then pure d.type else do
+          let (ty, _) ← runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
+            (elabDeclTerms #[] (some ((cmd.getArg 3).getArg 1)) none cmd.info) []
+          pure ty
+      match ty? with
+      | .error e => report .error e.info e.msg
+      | .ok ty =>
+        if !d.levelParams.isEmpty then report .error fStx.info s!"{f} has universe parameters: only closed functions can be exported"
+        else if !convTy s.globals #[] (eval s.globals [] d.type) (eval s.globals [] ty) then
+          report .error (cmd.getArg 3).info s!"{f} has type {d.type.pretty}, not {ty.pretty}"
+        else if !C.isCIdent cname then report .error (cmd.getArg 1).info s!"{cname} is not a C identifier"
+        else if s.builtins.any (fun (k, _) => (RVal.ExternSig.ofExportKey? k).any (·.cname == cname)) then
+          report .error (cmd.getArg 1).info s!"{cname} is exported already"
+        else match ffiCallSig ty with
+          | none =>
+            report .error cmd.info "an exported function's arguments must be Nat, UInt64, Float64, String, Bool, a foreign pointer or a Wiz data type, and its result one of those (not a foreign pointer) or Unit, maybe in IO"
+          | some c =>
+            let key : Name := s!"export:{cname}:{String.ofList c.params}:{c.result}:{if c.io then "io" else "pure"}"
+            modify fun s => { s with builtins := (key, f) :: s.builtins }
   | "command.attrMacro" =>
     let k := ((cmd.getArg 3).getId?).getD "_"
     let f := ((cmd.getArg 5).getId?).getD "_"
@@ -1589,7 +1728,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             let key := ReprInfo.key T { mkImpl := impl, getImpl := get, tag, nfields, r, mkArity, p, getArity }
             modify fun s => { s with builtins := (key, f) :: s.builtins,
                                      globals := { s.globals with builtins := (key, f) :: s.globals.builtins } }
-      else if s.builtins.any (fun (k, x) => x == f && k != inlineKey) then
+      else if s.builtins.any (fun (k, x) => x == f && k != inlineKey && !k.startsWith RVal.exportPrefix) then
         report .error fStx.info s!"{f} is a builtin or foreign function: it already has an implementation"
       else if f == impl then report .error (cmd.getArg 3).info s!"{f} can't be implemented by itself"
       else if df.levelParams.length != di.levelParams.length then
@@ -1603,7 +1742,11 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           report .error (cmd.getArg 3).info
             s!"{impl} can't implement {f}: its type {tyI.pretty} is not {f}'s type {df.type.pretty}"
         else
-          modify fun s => { s with globals := s.globals.insert { df with impl := some (.const impl us) } }
+          -- (the kernel checks the constant at `f`'s type too: no implementation is
+          -- stored unchecked)
+          match setImpl s.globals f (.const impl us) with
+          | .ok g' => modify fun s => { s with globals := g' }
+          | .error e => report .error (cmd.getArg 3).info s!"kernel rejected {impl} as the implementation of {f}: {e}"
   | "command.attrInline" =>
     -- `attribute [inline] f` (22i): compiled code substitutes `f`'s body where `f` is
     -- applied to all its arguments, so a lambda argument is applied directly (no
@@ -1614,7 +1757,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     | none => report .error fStx.info s!"unknown declaration {f}"
     | some d =>
       if d.value.isNone then report .error fStx.info s!"{f} has no definition to inline"
-      else if s.builtins.any (·.2 == f) then
+      else if s.builtins.any (fun (k, x) => x == f && !k.startsWith RVal.exportPrefix) then
         report .error fStx.info s!"{f} is a builtin, foreign or inline function already"
       else
         modify fun s => { s with builtins := s.builtins ++ [(inlineKey, f)],

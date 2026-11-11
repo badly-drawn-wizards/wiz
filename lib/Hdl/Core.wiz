@@ -509,11 +509,20 @@ def Verilog.nodes : Nat → List Node → String
   | _, .nil => ""
   | k, .cons n ns => "  wire " <+> Verilog.range n.width <+> Verilog.node k <+> " = " <+> Verilog.expr n <+> ";\n"
                      <+> Verilog.nodes (Nat.succ k) ns
+-- A register's declaration with its initial value (sized: an unsized literal is only
+-- guaranteed 32 bits), and, after the wires (Verilog wants a name declared before its
+-- use, and Icarus Verilog insists), its update.
+def Verilog.size (w : Nat) : String := match w with
+  | .zero => "1"
+  | .succ _ => Nat.show w
 def Verilog.regs : Nat → List Reg → String
   | _, .nil => ""
   | k, .cons r rs => "  reg " <+> Verilog.range r.width <+> "r" <+> Nat.show k <+> "; initial r" <+> Nat.show k
-      <+> " = " <+> Nat.show r.init <+> ";\n  always @(posedge clk) r" <+> Nat.show k <+> " <= "
-      <+> Verilog.node r.next <+> ";\n" <+> Verilog.regs (Nat.succ k) rs
+      <+> " = " <+> Verilog.size r.width <+> "'d" <+> Nat.show r.init <+> ";\n" <+> Verilog.regs (Nat.succ k) rs
+def Verilog.updates : Nat → List Reg → String
+  | _, .nil => ""
+  | k, .cons r rs => "  always @(posedge clk) r" <+> Nat.show k <+> " <= " <+> Verilog.node r.next <+> ";\n"
+      <+> Verilog.updates (Nat.succ k) rs
 def Verilog.port (dir : String) (p : Port) : String := ", " <+> dir <+> " " <+> Verilog.range p.width <+> p.name
 def Verilog.ports (dir : String) : List Port → String
   | .nil => ""
@@ -523,4 +532,5 @@ def Verilog.assigns : List Port → String
   | .cons p ps => "  assign " <+> p.name <+> " = " <+> Verilog.node p.node <+> ";\n" <+> Verilog.assigns ps
 def Verilog.emit (n : Netlist) : String :=
   "module " <+> n.name <+> "(input clk" <+> Verilog.ports "input" n.inputs <+> Verilog.ports "output" n.outputs
-  <+> ");\n" <+> Verilog.regs 0 n.regs <+> Verilog.nodes 0 n.nodes <+> Verilog.assigns n.outputs <+> "endmodule\n"
+  <+> ");\n" <+> Verilog.regs 0 n.regs <+> Verilog.nodes 0 n.nodes <+> Verilog.updates 0 n.regs
+  <+> Verilog.assigns n.outputs <+> "endmodule\n"
