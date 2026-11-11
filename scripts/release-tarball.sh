@@ -2,11 +2,12 @@
 # A release tarball of the Wiz toolchain (stage 26d): what `tower` installs from GitHub
 # Releases, and what you can untar by hand.
 #
-#   scripts/release-tarball.sh OUT.tar.gz [BINDIR] [REVISION] [CCDIR]
+#   scripts/release-tarball.sh OUT.tar.gz [BINDIR] [REVISION] [CCDIR] [WEBDIR]
 #
 # BINDIR (default .lake/build/bin) holds the built wiz, grail and tower; the standard
 # library, the nvim plugin and the docs come from this checkout. CCDIR is the C toolchain
-# made by scripts/bundle-cc.sh (stage 26f; the release job passes it). The tarball is one
+# made by scripts/bundle-cc.sh (stage 26f; the release job passes it); WEBDIR the web
+# infoview built by web/build.sh (11r: `wiz lsp` serves it). The tarball is one
 # directory, wiz-ARCH-linux/:
 #
 #   bin/wiz, bin/grail       wrappers: the binary with -I share/wiz/lib (no other flags:
@@ -17,6 +18,7 @@
 #   share/wiz/.lake/build/bin/{wiz,grail}   the binaries (grail finds lib/ from there)
 #   share/wiz/editors/       the editor plugins, when the checkout has them
 #   share/wiz/cc/            the C compiler, glibc 2.27 sysroot, static GMP and GC (CCDIR)
+#   share/wiz/web/           the web infoview: page, script, Wasm (WEBDIR)
 #   share/wiz/REVISION       the commit
 #   share/wiz/TOOLCHAIN      a marker: editors find the toolchain a library file belongs to
 #
@@ -26,6 +28,7 @@ out=$1
 bindir=${2:-.lake/build/bin}
 rev=${3:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}
 ccdir=${4:-}
+webdir=${5:-}
 arch=$(uname -m)
 name=wiz-$arch-linux
 work=$(mktemp -d)
@@ -40,6 +43,10 @@ cp -R lib "$top/share/wiz/lib"
 [ -d editors ] && cp -R editors "$top/share/wiz/editors"
 echo "$rev" > "$top/share/wiz/REVISION"
 [ -n "$ccdir" ] && cp -R "$ccdir" "$top/share/wiz/cc"
+if [ -n "$webdir" ]; then
+  mkdir -p "$top/share/wiz/web"
+  for f in infoview.html infoview.js wiz-infoview.mjs wiz-infoview.wasm; do cp "$webdir/$f" "$top/share/wiz/web/$f"; done
+fi
 echo 'A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).' > "$top/share/wiz/TOOLCHAIN"
 cat > "$top/bin/wiz" <<'EOF'
 #!/bin/sh

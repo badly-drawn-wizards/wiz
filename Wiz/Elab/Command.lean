@@ -129,6 +129,8 @@ structure CommandState (R : Type) where
   localCats : List Name := []
   localRules : List Nat := []
   localProcs : List Nat := []
+  /-- (11r) `local instance`s: their positions in `instances` (numbered from the oldest) -/
+  localInsts : List Nat := []
 
 /-- "'n' has already been declared", naming the module that declared it if that is not
 the one being elaborated (two modules, or a module and the file importing it). -/
@@ -1011,8 +1013,13 @@ def CommandState.endModule (inner outer : CommandState R) : CommandState R :=
   let cats := inner.localCats.take (inner.localCats.length - outer.localCats.length)
   let rules := inner.localRules.take (inner.localRules.length - outer.localRules.length)
   let procs := inner.localProcs.take (inner.localProcs.length - outer.localProcs.length)
+  let insts := inner.localInsts.take (inner.localInsts.length - outer.localInsts.length)
   let reset := { inner with localKinds := outer.localKinds, localCats := outer.localCats,
-                            localRules := outer.localRules, localProcs := outer.localProcs }
+                            localRules := outer.localRules, localProcs := outer.localProcs,
+                            localInsts := outer.localInsts }
+  -- (11r) a `local instance` is found only in its module (its definition stays: a name)
+  let reset := if insts.isEmpty then reset else
+    { reset with instances := (reset.instances.zipIdx.filter fun (_, i) => !insts.contains i).map (·.1) }
   if kinds.isEmpty && cats.isEmpty && rules.isEmpty && procs.isEmpty then reset else
   let t := inner.tables
   let cats' := t.cats.fold (init := ({} : Std.HashMap Name Category)) fun acc c cat =>
@@ -1211,8 +1218,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     -- (13m) grammar that stays in this module: remember what the command adds
     let inner := cmd.getArg 1
     unless ["command.syntax", "command.declareSyntaxCat", "command.notation", "command.infix",
-            "command.macroRules", "command.attrMacro"].contains inner.kind do
-      report .error cmd.info "only `syntax`, `declare_syntax_cat`, `notation`, `infixl`/`infixr`/`infix`, `macro_rules` and `attribute [macro …]` can be `local`"
+            "command.macroRules", "command.attrMacro", "command.instance"].contains inner.kind do
+      report .error cmd.info "only `syntax`, `declare_syntax_cat`, `notation`, `infixl`/`infixr`/`infix`, `macro_rules`, `attribute [macro …]` and `instance` can be `local`"
       return
     let before ← get
     elabCommand inner
@@ -1221,7 +1228,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let cats := s.tables.cats.toList.filterMap fun (c, _) => if before.tables.cats.contains c then none else some c
       { s with localKinds := kinds ++ s.localKinds, localCats := cats ++ s.localCats
                localRules := (List.range' before.macros.length (s.macros.length - before.macros.length)).reverse ++ s.localRules
-               localProcs := (List.range' before.procMacros.length (s.procMacros.length - before.procMacros.length)).reverse ++ s.localProcs }
+               localProcs := (List.range' before.procMacros.length (s.procMacros.length - before.procMacros.length)).reverse ++ s.localProcs
+               localInsts := (List.range' before.instances.size (s.instances.size - before.instances.size)).reverse ++ s.localInsts }
   | "command.def" | "command.axiom" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?

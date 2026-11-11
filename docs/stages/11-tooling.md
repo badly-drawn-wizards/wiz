@@ -235,3 +235,31 @@ Not covered: hovers inside tactic arguments (a tactic gets its syntax without ra
 a procedural macro's output (it has no ranges of the user's), the arguments of
 `attribute`, and docstrings (Wiz has none). Design notes: `wiz-notes/info-syntax.md`.
 Tested in the `lsp-server` group and by wiz.nvim's tests (`nvim`).
+
+## 11r: hovers in tactic arguments, the other infoviews, `local instance`, the browser infoview ✅
+
+* **Ranges through reflected syntax.** A tactic or procedural macro gets the user's
+  syntax as a Wiz `Syntax` value, which has no ranges, and its output used to get the
+  call's range everywhere. Now `encodeSyntax` adds each node's range as two hidden
+  trailing fields of its constructor value. Wiz code never reads them (`SyntaxF` has no
+  such fields), so they survive exactly when a tactic hands back the value it was given
+  (`exact $t` passes `t` through), and are absent from anything it builds;
+  `relocate` (after the exercise `decodeSyntax`) puts them back, and everything else is
+  synthetic (11q). So hovers, expected types and go to definition work inside `by`
+  arguments, nested tactics (`first`, `repeat`, `( … ; … )`) record their goals at
+  their own ranges, and a list literal's elements keep theirs.
+* **The terminal and web infoviews** ask for `wiz/interactiveInfo` too and show its
+  sections (Syntax, Import, Instances, Declarations, Messages) under the goals, with the
+  same tags (`lib/Infoview.wiz`: `InfoItem`, `View.ofInfo`, `Infoview.htmlInfo`).
+* **`local instance`** (13m's `local` for instances, as Lean has it): the instance is
+  found in its module only; the importer doesn't see it (its definition, a name, stays).
+* **The infoview in a browser from wiz.nvim**: `:WizInfoviewBrowser` (`<LocalLeader>b`)
+  sends `wiz/browserInfoview` to the buffer's own server, which starts listening on a
+  WebSocket (127.0.0.1, a free port) unless it already does, and answers with the page's
+  URL; Neovim opens it (`vim.ui.open`). The same port serves the web infoview's four
+  files over HTTP (`WebSocket.webAssets`: only those names, and only to local origins;
+  anything else is `404`/`403`), from `share/wiz/web` of a release toolchain (the release
+  job builds them with Emscripten) or `web/out` of a checkout (`web/build.sh`), or
+  `wiz lsp --web DIR`. With `?follow=1` the page has no editor of its own: it follows
+  the editor's cursor (`wiz/infoview/cursor`, §8.2). `wiz lsp` now always runs the
+  multi-connection loop (`serveWith`), so this works without `--ws`.

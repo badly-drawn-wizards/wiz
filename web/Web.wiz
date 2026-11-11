@@ -25,20 +25,26 @@ structure WSt where
   goals : Option TacView
   term : Option Goal
   sel : Nat
+  -- (11r) what else is at the cursor (`wiz/interactiveInfo`)
+  items : List InfoItem
 
-def WSt.empty : WSt := WSt.mk .nil 1 .nil "" 0 0 0 0 .none .none 0
+def WSt.empty : WSt := WSt.mk .nil 1 .nil "" 0 0 0 0 .none .none 0 .nil
 def WSt.setConn (s : WSt) (buf : List Char) (next : Nat) (pending : List (Nat × Nat)) : WSt :=
-  WSt.mk buf next pending s.uri s.line s.col s.session s.version s.goals s.term s.sel
+  WSt.mk buf next pending s.uri s.line s.col s.session s.version s.goals s.term s.sel s.items
 def WSt.setDoc (s : WSt) (uri : String) (line col version : Nat) : WSt :=
-  WSt.mk s.buf s.next s.pending uri line col s.session version s.goals s.term s.sel
+  WSt.mk s.buf s.next s.pending uri line col s.session version s.goals s.term s.sel s.items
 def WSt.setGoals (s : WSt) (goals : Option TacView) (session : Nat) : WSt :=
-  WSt.mk s.buf s.next s.pending s.uri s.line s.col session s.version goals s.term 0
+  WSt.mk s.buf s.next s.pending s.uri s.line s.col session s.version goals s.term 0 s.items
 def WSt.setTerm (s : WSt) (term : Option Goal) : WSt :=
-  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals term 0
+  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals term 0 s.items
 def WSt.setSel (s : WSt) (sel : Nat) : WSt :=
-  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals s.term sel
+  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals s.term sel s.items
 
-def WSt.render (s : WSt) : IO Unit := Js.setHtml "goals" (Infoview.htmlTacState s.sel s.goals s.term)
+def WSt.setItems (s : WSt) (items : List InfoItem) : WSt :=
+  WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals s.term 0 items
+def WSt.view (s : WSt) : View := View.ofInfo 80 s.goals s.term s.items
+
+def WSt.render (s : WSt) : IO Unit := Js.setHtml "goals" (Infoview.htmlInfo s.sel s.goals s.term s.items)
 
 def WSt.send (s : WSt) (method : String) (params : Json) (kind : Nat) : IO WSt := do
   Js.send (Rpc.frame (Rpc.request s.next method params));
@@ -48,7 +54,8 @@ def WSt.notify (method : String) (params : Json) : IO Unit :=
     (.cons (Json.field "method" (Json.mkStr method)) (.cons (Json.field "params" params) .nil))))))
 def WSt.refresh (s : WSt) : IO WSt := do
   s1 ← WSt.send s "wiz/interactiveGoals" (Rpc.position s.uri s.line s.col) 1;
-  WSt.send s1 "wiz/interactiveTermGoal" (Rpc.position s.uri s.line s.col) 2
+  s2 ← WSt.send s1 "wiz/interactiveTermGoal" (Rpc.position s.uri s.line s.col) 2;
+  WSt.send s2 "wiz/interactiveInfo" (Rpc.position s.uri s.line s.col) 4
 
 def Web.lookup : List (Nat × Nat) → Nat → Nat
   | .nil, _ => 0
@@ -108,7 +115,9 @@ def WSt.onResponse (s : WSt) (j : Json) : IO WSt :=
         | .true => do
           Js.setHtml "info" (Web.infoHtml r);
           IO.pure s1
-        | .false => IO.pure s1
+        | .false => match Nat.beq kind 4 with
+          | .true => IO.pure (WSt.setItems s1 (Items.ofJson r))
+          | .false => IO.pure s1
 
 def WSt.onMessage (s : WSt) (j : Json) : IO WSt := match Json.get j "method" with
   | .some (.str m) => match String.eq m "wiz/elaborated" with
@@ -131,7 +140,7 @@ partial def WSt.drain (s : WSt) : IO WSt := match Rpc.unframe s.buf with
 -- select a tag (index + 1) and ask what it is
 def WSt.select (s : WSt) (sel : Nat) : IO WSt :=
   let s1 := WSt.setSel s sel;
-  match Infoview.nthTag (View.tags (View.ofTacState 80 s.goals s.term)) (sel - 1) with
+  match Infoview.nthTag (View.tags (WSt.view s)) (sel - 1) with
   | .none => do Js.setHtml "info" ""; IO.pure s1
   | .some t => WSt.send s1 "wiz/subtermInfo" (Json.mkObj (.cons (Json.field "textDocument" (Json.mkObj (.cons (Json.field "uri" (Json.mkStr s.uri)) .nil)))
       (.cons (Json.field "session" (Json.ofNat s.session)) (.cons (Json.field "ref" (Json.ofNat (TagInfo.ref t))) .nil)))) 3
@@ -163,6 +172,10 @@ def WSt.onEvent (s : WSt) (ev : String) : IO WSt :=
       WSt.notify "initialized" (Json.mkObj .nil);
       WSt.notify "textDocument/didOpen" (Json.mkObj (.cons (Json.field "textDocument" (Web.textDoc s1 q.2)) .nil));
       WSt.refresh s2
+    | .false => match String.eq kind "follow" with
+    -- (11r) `follow\nURI`: show another editor's document (the page follows its cursor,
+    -- `wiz/infoview/cursor`, which the page turns into `follow` and `cursor`)
+    | .true => IO.pure (WSt.setDoc s (String.mk rest) s.line s.col s.version)
     | .false => match String.eq kind "change" with
       | .true => do
         let s1 := WSt.setDoc s s.uri s.line s.col (s.version + 1);
@@ -180,7 +193,7 @@ def WSt.onEvent (s : WSt) (ev : String) : IO WSt :=
           | .true => WSt.select s (Web.nat rest + 1)
           | .false => match String.eq kind "key" with
             | .true =>
-              let v := View.ofTacState 80 s.goals s.term;
+              let v := WSt.view s;
               let key := String.mk rest;
               let nav : Nav := match String.eq key "ArrowRight" with
                 | .true => Nav.next
