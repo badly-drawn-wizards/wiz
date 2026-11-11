@@ -193,7 +193,9 @@ def scofixFunTy (g : Globals R) (l : Level) (I D A : Val R) (w : R) : VTy R :=
       (pi "i" (tv 4, l1) (pi "a" (.app (tv 3) (tv 0), l1) (.nu l (tv 6) (tv 5) (tv 1) (.szSuc (tv 3)) none, l1))))).1
 
 /-- (Mandatory sorts) Two sorts written on convertible types are equivalent. A hole (only
-in the elaborator, before its sorts pass) is compared with nothing. -/
+in the elaborator, before its sorts pass) is compared with nothing. **Invariant**: no hole
+reaches the kernel (`checkHeader` rejects a declaration with one, and formation every
+`Π`/`Σ`/`ULift` with one), so in the kernel this is `Level.equiv`. -/
 def sameSort (k k' : Level) : Bool := k.hasHole || k'.hasHole || k.equiv k'
 
 def sameSorts (σ σ' : BinderSorts) : Bool := sameSort σ.dom σ'.dom && sameSort σ.cod σ'.cod

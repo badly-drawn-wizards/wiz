@@ -1053,6 +1053,13 @@ def checkHeader (g : Globals R) (d : Decl R) : TCM Unit := do
   -- same stuck constant
   if g.budget.isSome then throw (.other "internal error: the kernel was called inside a proof's read-back (a step budget is set)")
   if g.contains d.name then throw (.duplicateDecl d.name)
+  -- (mandatory sorts) **no hole reaches the kernel**: every `Π`/`Σ`/`ULift` of a checked
+  -- declaration has its sorts. Formation rejects a hole too, at every `Π`/`Σ`/`ULift` it
+  -- checks; this says it once for the whole declaration (its implementation and witness
+  -- included), so that `sameSort`'s tolerance of holes (for the elaborator) is never used
+  -- on a term the kernel accepted
+  if d.type.hasHole || d.value.any (·.hasHole) || d.impl.any (·.hasHole) || d.witness.any (·.hasHole) then
+    throw (.other s!"internal error: a Π/Σ/ULift in {d.name} without its sorts (the sorts pass did not fill it)")
   unless d.levelParams.eraseDups.length == d.levelParams.length do
     throw (.other s!"duplicate universe level parameter in {d.name}")
   let used := d.type.levelParamsUsed ++ (d.value.map Term.levelParamsUsed).getD [] ++

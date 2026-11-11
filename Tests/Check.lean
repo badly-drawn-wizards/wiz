@@ -265,10 +265,43 @@ def hintCase : IO Unit := do
       if let .error e := infer (R := Q) { globals := g } (ty former h) then
         throw (IO.userError s!"a well-typed hint was rejected: {e}")
 
+/-- (Mandatory sorts; review F3) The description templates (`Templates.lean`) carry
+hand-written component sorts, which the kernel trusts when it evaluates them: kernel-check
+each template term against its type, at closed levels and at level parameters, so that a
+wrong leaf is caught mechanically (the kernel checks every written sort of a term). -/
+def templatesCheck : IO Unit := do
+  let ω : Term Q := .qlit .many
+  let v (i : Nat) : Term Q := .var i
+  let pi (a b : Term Q) : Term Q := .pi "x" .default ω a b .hole
+  let apps (f : Term Q) (as : List (Term Q)) : Term Q := as.foldl .app f
+  for (l, w, ps) in [(Level.ofNat 0, Level.ofNat 0, []), (Level.ofNat 0, Level.ofNat 1, []), (Level.ofNat 1, Level.ofNat 2, []),
+                     (Level.ofNat 2, Level.ofNat 0, []), (Level.param "u", Level.param "v", ["u", "v"])] do
+    let l1 : Level := .succ l
+    let interp (I D X i : Term Q) : Term Q := apps (Templates.interpTm l) [I, D, X, i]
+    -- I : Sort (l+1), D : Desc I, X : I → Sort (l+1)
+    let pre (rest : Term Q) : Term Q := pi (.sort l1) (pi (.desc l (v 0)) (pi (pi (v 1) (.sort l1)) rest))
+    let interpTy := pre (pi (v 2) (.sort l1))
+    -- P : (i : I) → X i → Sort w (ctx X0 D1 I2)
+    let Pty : Term Q := pi (v 2) (pi (.app (v 1) (v 0)) (.sort w))
+    let allTy := pre (pi Pty (pi (v 3) (pi (interp (v 4) (v 3) (v 2) (v 0)) (.sort (.max l1 w)))))
+    -- f : (i : I) → (x : X i) → P i x (ctx P0 X1 D2 I3)
+    let fTy : Term Q := pi (v 3) (pi (.app (v 2) (v 0)) (apps (v 2) [v 1, v 0]))
+    let hypsTy := pre (pi Pty (pi fTy (pi (v 4) (pi (interp (v 5) (v 4) (v 3) (v 0))
+      (apps (Templates.allTm l w) [v 6, v 5, v 4, v 3, v 1, v 0])))))
+    -- Y : I → Sort (l+1) (ctx X0 D1 I2); f : (i : I) → X i → Y i (ctx Y0 X1 D2 I3)
+    let mapTy := pre (pi (pi (v 2) (.sort l1)) (pi (pi (v 3) (pi (.app (v 2) (v 0)) (.app (v 2) (v 1))))
+      (pi (v 4) (pi (interp (v 5) (v 4) (v 3) (v 0)) (interp (v 6) (v 5) (v 3) (v 1))))))
+    for (n, ty, t) in [("interpTm", interpTy, Templates.interpTm l), ("allTm", allTy, Templates.allTm l w),
+                       ("hypsTm", hypsTy, Templates.hypsTm l w), ("mapTm", mapTy, Templates.mapTm l)] do
+      match addDeclS (R := Q) {} { name := n, levelParams := ps, type := ty, value := some t } with
+      | .ok _ => pure ()
+      | .error e => throw (IO.userError s!"{n} at l = {l}, v = {w}: {e}")
+
 def structGroup : Group where
   name := "check: structural types"
   exercise := "Exercise 4.7"
   cases := [
+    { name := "mandatory sorts: every description template is a well-typed term of its type, its written sorts included", run := fun _ => templatesCheck },
     { name := "the hint of μ/ν is checked before it is evaluated (a panicking or a looping hint is rejected)", run := fun _ => hintCase },
     { name := "transp at a proposition is rejected, at a type accepted (as eq and refl)", run := fun _ => do
         let P : Term Q := .lam "b" (.lam "e" (.unit 0))
