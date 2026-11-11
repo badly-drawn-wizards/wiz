@@ -22,7 +22,7 @@ structure WSt where
   col : Nat
   session : Nat
   version : Nat
-  goals : Option (List Goal)
+  goals : Option TacView
   term : Option Goal
   sel : Nat
 
@@ -31,14 +31,14 @@ def WSt.setConn (s : WSt) (buf : List Char) (next : Nat) (pending : List (Nat ×
   WSt.mk buf next pending s.uri s.line s.col s.session s.version s.goals s.term s.sel
 def WSt.setDoc (s : WSt) (uri : String) (line col version : Nat) : WSt :=
   WSt.mk s.buf s.next s.pending uri line col s.session version s.goals s.term s.sel
-def WSt.setGoals (s : WSt) (goals : Option (List Goal)) (session : Nat) : WSt :=
+def WSt.setGoals (s : WSt) (goals : Option TacView) (session : Nat) : WSt :=
   WSt.mk s.buf s.next s.pending s.uri s.line s.col session s.version goals s.term 0
 def WSt.setTerm (s : WSt) (term : Option Goal) : WSt :=
   WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals term 0
 def WSt.setSel (s : WSt) (sel : Nat) : WSt :=
   WSt.mk s.buf s.next s.pending s.uri s.line s.col s.session s.version s.goals s.term sel
 
-def WSt.render (s : WSt) : IO Unit := Js.setHtml "goals" (Infoview.htmlState s.sel s.goals s.term)
+def WSt.render (s : WSt) : IO Unit := Js.setHtml "goals" (Infoview.htmlTacState s.sel s.goals s.term)
 
 def WSt.send (s : WSt) (method : String) (params : Json) (kind : Nat) : IO WSt := do
   Js.send (Rpc.frame (Rpc.request s.next method params));
@@ -99,7 +99,7 @@ def WSt.onResponse (s : WSt) (j : Json) : IO WSt :=
     match Nat.beq kind 1 with
     | .true => match Json.isNull r with
       | .true => IO.pure (WSt.setGoals s1 .none s1.session)
-      | .false => IO.pure (WSt.setGoals s1 (.some (Goals.ofJson r)) (Json.getNat r "session"))
+      | .false => IO.pure (WSt.setGoals s1 (.some (TacView.ofJson r)) (Json.getNat r "session"))
     | .false => match Nat.beq kind 2 with
       | .true => match Json.get r "goal" with
         | .some g => IO.pure (WSt.setTerm s1 (.some (Goal.ofJson g)))
@@ -131,7 +131,7 @@ partial def WSt.drain (s : WSt) : IO WSt := match Rpc.unframe s.buf with
 -- select a tag (index + 1) and ask what it is
 def WSt.select (s : WSt) (sel : Nat) : IO WSt :=
   let s1 := WSt.setSel s sel;
-  match Infoview.nthTag (View.tags (View.ofState 80 s.goals s.term)) (sel - 1) with
+  match Infoview.nthTag (View.tags (View.ofTacState 80 s.goals s.term)) (sel - 1) with
   | .none => do Js.setHtml "info" ""; IO.pure s1
   | .some t => WSt.send s1 "wiz/subtermInfo" (Json.mkObj (.cons (Json.field "textDocument" (Json.mkObj (.cons (Json.field "uri" (Json.mkStr s.uri)) .nil)))
       (.cons (Json.field "session" (Json.ofNat s.session)) (.cons (Json.field "ref" (Json.ofNat (TagInfo.ref t))) .nil)))) 3
@@ -180,7 +180,7 @@ def WSt.onEvent (s : WSt) (ev : String) : IO WSt :=
           | .true => WSt.select s (Web.nat rest + 1)
           | .false => match String.eq kind "key" with
             | .true =>
-              let v := View.ofState 80 s.goals s.term;
+              let v := View.ofTacState 80 s.goals s.term;
               let key := String.mk rest;
               let nav : Nav := match String.eq key "ArrowRight" with
                 | .true => Nav.next

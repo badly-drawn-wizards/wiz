@@ -247,3 +247,35 @@ its memory cap) used to be reported with an empty message; now it is `killed by 
 (SIGKILL: out of memory, or killed by hand?), and printed nothing`, or the end of what it
 printed. Tests: groups `grail-commands` and `grail-hygiene` (grail itself, as
 `tests --grail …`, killed with `SIGKILL` and `SIGTERM` while a job's grandchild sleeps).
+
+## 23l: `grail lsp` ✅
+
+`wiz lsp` finds modules under the toolchain's library, `./lib` and its `-I` directories,
+so in a grail package (`Package.lib "lib" "src"`) an editor reported `import
+Icestick.Gates` as an unknown module. `grail lsp [OPTIONS…]` reads `grail.wiz` (and
+`grail.local.wiz`) and runs `wiz lsp OPTIONS…` in the package directory with the
+package's module roots as `-I` directories, in the order a `grail build` check uses
+them: the package directory, the roots of its `lib` targets, its dependencies' roots
+(from `grail.lock`, checked out as for a build), then the toolchain's own `-I`. The
+toolchain flags are the ones a build would use (the build files' settings, then the
+command line). stdin, stdout and stderr are the server's, and grail exits with its exit
+code. The `wiz` is `--wiz PATH`, else the one beside `grail`, else `wiz` on `PATH`.
+
+A `grail.wiz` that doesn't evaluate is reported on stderr, and the server starts anyway
+with the package directory as its only extra root, so that the build file itself can be
+edited with diagnostics.
+
+**Editors.** wiz.nvim (editors/nvim) starts `grail lsp -C ROOT` when the project root has
+a `grail.wiz` (`lsp.grail = { enable = true, cmd = { 'grail', 'lsp' } }`), and `lsp.cmd`
+otherwise; without `grail` on `PATH` it warns once and starts `wiz lsp`. Its
+`lsp/wiz.lua` (for `vim.lsp.enable 'wiz'`) does the same. Another client needs the same
+rule: run `grail lsp` in the directory of the nearest `grail.wiz` (or with `-C` it), else
+`wiz lsp`. A VS Code extension would decide it per workspace folder (and restart the
+server when `grail.wiz` changes); Emacs' eglot or lsp-mode with a server-command
+function on the project root; Helix with `language-server.wiz.command = "grail"`,
+`args = ["lsp"]` per project (`.helix/languages.toml`), since Helix starts it in the
+workspace root.
+
+The server reads the package's modules when it starts, as before: an edit to a module
+is seen by the files that import it after a restart (`:WizLspRestart`), and so is an
+edit to `grail.wiz`.

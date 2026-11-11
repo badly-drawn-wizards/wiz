@@ -1,5 +1,6 @@
 import Grail.Graph
 import Grail.Deps
+import Grail.Lsp
 
 /-!
 # grail, a build tool for Wiz
@@ -22,6 +23,10 @@ def usage : String := "usage:
   grail run TARGET [-- ARGS…]
                           build an exe or command target's needs and run it with
                           ARGS, its input and output grail's own; exits with its code
+  grail lsp [OPTIONS…]     the language server (`wiz lsp OPTIONS…`) with the package's
+                          module roots (its lib targets' and its dependencies') and
+                          its toolchain; --wiz PATH picks the wiz (default: the one
+                          beside grail, else wiz on PATH)
   grail targets           list the targets
   grail config            print the toolchain grail would use
   grail clean             remove .grail/build, .grail/bin, .grail/tmp, .grail/log and
@@ -45,6 +50,8 @@ structure Opts where
   jobs : Option Nat := none
   timeout : Option Nat := none
   testTimeout : Option Nat := none
+  /-- `grail lsp`: the `wiz` to run -/
+  wiz : Option String := none
 
 /-- `-C DIR`, `--std DIR`, `-j N`, `--timeout SECS`, `--test-timeout SECS`, taken out of the arguments. -/
 partial def grailOpts (o : Opts) : List String → Opts × List String
@@ -53,6 +60,7 @@ partial def grailOpts (o : Opts) : List String → Opts × List String
   | "-j" :: n :: rest => grailOpts { o with jobs := n.toNat? } rest
   | "--timeout" :: n :: rest => grailOpts { o with timeout := n.toNat? } rest
   | "--test-timeout" :: n :: rest => grailOpts { o with testTimeout := n.toNat? } rest
+  | "--wiz" :: w :: rest => grailOpts { o with wiz := some w } rest
   | a :: rest =>
     if a.startsWith "-j" && (a.drop 2).toString.toNat?.isSome then grailOpts { o with jobs := (a.drop 2).toString.toNat? } rest
     else let (o, r) := grailOpts o rest; (o, a :: r)
@@ -70,6 +78,8 @@ def findStd (opt : Option String) : IO System.FilePath := do
 def cliMain (args : List String) : IO UInt32 := do
   -- (23k) the supervisor of a job process
   if let "--grail-exec" :: rest := args then return ← execMain rest
+  -- a `panic!` (a kernel-internal failure) ends the build, as it ends `wiz check`
+  Wiz.exitOnPanic
   let home := (← IO.getEnv "HOME").getD "."
   let defaults : Toolchain := { cacheDir := some (System.FilePath.mk home / ".cache" / "wiz") }
   -- a job of a build, in its own process (`Grail/Graph.lean`)
@@ -97,6 +107,28 @@ def cliMain (args : List String) : IO UInt32 := do
     for d in ["build", "bin", "tmp", "log"] do
       if ← (dir / ".grail" / d).pathExists then IO.FS.removeDirAll (dir / ".grail" / d)
     pure 0
+  -- the language server, with the package's module roots (Grail/Lsp.lean)
+  | "lsp" :: lspOpts =>
+    let wiz ← wizExe opts.wiz
+    let dirAbs ← absolute dir
+    match ← readConfig flagged binId std dir with
+    | .error e =>
+      -- a broken grail.wiz must still be editable: the server starts without the roots
+      IO.eprintln s!"{e}\ngrail lsp: starting {wiz} lsp with only the package directory as a module root"
+      runLsp wiz (lspArgs flagged [dirAbs] lspOpts) dirAbs
+    | .ok (pkg, localSettings) =>
+      let mut tc := defaults
+      for (k, v) in pkg.settings ++ localSettings do
+        match tc.set k v with
+        | some t => tc := t
+        | none => IO.eprintln s!"grail lsp: unknown setting {k} (ignored)"
+      tc := (tc.parseFlags raw).1
+      let readPkg (d : System.FilePath) : IO (Except String Package) := do
+        pure ((← readConfig tc binId std d).map (·.1))
+      let deps ← match ← lockedRoots readPkg dir pkg IO.eprint with
+        | .ok rs => rs.mapM absolute
+        | .error e => do IO.eprintln s!"grail lsp: {e} (the dependencies' modules are not found)"; pure []
+      runLsp wiz (lspArgs tc ([dirAbs] ++ libRootsOf dirAbs pkg.targets ++ deps) lspOpts) dirAbs
   | "build" :: _ | "test" :: _ | ["targets"] | ["config"] | ["update"] | ["run", _] =>
     let (pkg, localSettings) ← match ← readConfig flagged binId std dir with
       | .ok r => pure r
