@@ -368,6 +368,16 @@ def ottGroup : Group where
           "def e (f : Unit → True) : pf f = ((), ()) := ((), ())")
           ["fun f => (0 e : True) × True"]
         fails (p ++ "def bad (f : Unit → True) (h : pf f = ((), ())) : False := h.2") "mismatch" },
+    -- (nu-transp-elab) `refl a` whose argument's type has a metavariable (`fun x => x`):
+    -- after the rule "an equation at a proposition is True", inferring the equation from
+    -- `a` alone computed it by the funext rule (the sort of `?m → ?m` unknown), which didn't
+    -- unify with the expected `(0 e : True) × True`; `refl` is now checked against `A`
+    { name := "refl at a pair with a proof component, its type from the expected equation (nu-transp-elab)", run := fun _ =>
+        ok ("def B2 : Type := (x : Unit) × (True → True)\n" ++
+          "def P (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : Prop := True\n" ++
+          "def t3 (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : P h := ()\n" ++
+          "def t5 : P (refl ((), fun x => x)) := t3 (refl ((), fun x => x))\n" ++
+          "def t4 : P (refl ((), fun x => x)) := t3 _\n") },
     -- KNOWN GAP (pinned): a *neutral* proposition (`P q.1` for a variable `P : A → Prop`,
     -- or `P : Prop`) is not seen by `propSort?`, so the two rules don't fire and the
     -- kernel still rejects these. Mandatory sorts (`wiz-notes/mandatory-sorts.md`: every
