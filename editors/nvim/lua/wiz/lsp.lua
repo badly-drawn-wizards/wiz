@@ -85,6 +85,25 @@ function M.cmd(root)
   return cfg.cmd
 end
 
+--- Turn on Neovim's built-in completion for the client (`lsp.completion`).
+function M.on_attach(client, buf)
+  local cfg = config.get().lsp
+  local want = cfg.completion
+  if want == 'auto' then
+    want = not (package.loaded['cmp'] or package.loaded['blink.cmp'])
+  end
+  if want and vim.lsp.completion and vim.lsp.completion.enable then
+    vim.lsp.completion.enable(true, client.id, buf, { autotrigger = true })
+    if config.get().mappings then
+      vim.keymap.set('i', '<C-Space>', vim.lsp.completion.get,
+        { buffer = buf, desc = 'wiz.nvim: complete (the language server)' })
+    end
+  end
+  if cfg.on_attach then
+    cfg.on_attach(client, buf)
+  end
+end
+
 --- A `vim.lsp.start` config for `buf`.
 function M.client_config(buf)
   local cfg = config.get().lsp
@@ -96,7 +115,7 @@ function M.client_config(buf)
     root_dir = root,
     capabilities = M.capabilities(cfg.capabilities),
     handlers = M.handlers,
-    on_attach = cfg.on_attach,
+    on_attach = M.on_attach,
   }
 end
 
