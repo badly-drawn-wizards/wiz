@@ -2523,6 +2523,19 @@ WIZ_API wiz_val wiz_mvar_read(wiz_val mv) { return wiz_mvar_take_(mv, 1); }
 WIZ_API wiz_val wiz_mvar_take_hole(wiz_val mv) { return wiz_pair(wiz_mvar_take_(mv, 0), WIZ_BOX(0)); }
 WIZ_API void wiz_mvar_fill(wiz_val mv, wiz_val hole, wiz_val a) { wiz_dec(hole); wiz_mvar_put(mv, a); }
 
+/* lib/Ref.wiz: a cell is an MVar that stays full; its ownership token is a box with
+   nothing in it (as an MVar hole). The token's index (the cell's value) is a ghost: the
+   types in Ref.wiz are trusted to keep it equal to what the cell holds. */
+WIZ_API wiz_val wiz_ref_new(wiz_val a) { return wiz_pair(wiz_mvar_new_full(a), WIZ_BOX(0)); }
+WIZ_API wiz_val wiz_ref_read(wiz_val mv, wiz_val tok) { return wiz_pair(wiz_mvar_take_(mv, 1), wiz_pair(WIZ_BOX(0), tok)); }
+WIZ_API wiz_val wiz_ref_write(wiz_val mv, wiz_val a, wiz_val tok) {
+  wiz_inc(mv); /* take_ and put each consume one reference */
+  wiz_dec(wiz_mvar_take_(mv, 0));
+  wiz_mvar_put(mv, a);
+  return tok;
+}
+WIZ_API void wiz_ref_free(wiz_val mv, wiz_val tok) { wiz_dec(tok); wiz_dec(mv); }
+
 /* a lock is a binary semaphore, so a guard may be released by another thread */
 typedef struct {
   pthread_mutex_t mu;
