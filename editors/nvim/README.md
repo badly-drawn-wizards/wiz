@@ -124,6 +124,12 @@ In Wiz buffers (normal mode): `<LocalLeader>i` toggles the infoview, `<LocalLead
 refreshes it, `<LocalLeader>\` is `:WizAbbrev`. The usual LSP keymaps (`K` hover,
 `gd`, `grn`, `gra`, `]d`, …) are Neovim's own.
 
+What the server offers, and Neovim's keys for it:
+
+| | |
+|---|---|
+| code actions (`gra`) | did you mean (an unknown identifier), add missing cases, add a type ascription, fill a hole `_`/`?x` from its expected type (a constructor `(.c ?x ?y)`, an anonymous constructor `⟨?px, ?py⟩`, `fun x => ?body`) |
+
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
 type, kind and, for a constant, where it is declared: `wiz/subtermInfo`); moving the
 cursor highlights that subterm; `gd` jumps to the constant's declaration (or, on a
