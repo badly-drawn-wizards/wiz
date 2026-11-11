@@ -97,7 +97,7 @@ partial def fallbackHtml (c : Ctx) (subs : Array (Subterm ZeroOneMany)) : TT →
 definition as a link. -/
 def subJson (c : Ctx) (sub : Subterm ZeroOneMany) : Json :=
   let ty := match LSP.subtermType c.st.globals sub with
-    | some t => Json.str (t.pretty sub.names)
+    | some t => Json.str (t.pretty sub.names (some c.st.globals))
     | none => Json.null
   let defn := match sub.kind, sub.name with
     | "const", some n => match c.href? n, c.st.declSites.get? n with
@@ -105,7 +105,7 @@ def subJson (c : Ctx) (sub : Subterm ZeroOneMany) : Json :=
       | _, _ => Json.null
     | _, _ => Json.null
   Json.mkObj [("kind", sub.kind), ("name", match sub.name with | some n => Json.str n | none => Json.null),
-    ("text", sub.term.pretty sub.names), ("type", ty), ("definition", defn)]
+    ("text", sub.term.pretty sub.names (some c.st.globals)), ("type", ty), ("definition", defn)]
 
 /-- The name as shown: with its universe parameters. -/
 def shownName (d : Decl ZeroOneMany) : String :=
@@ -137,7 +137,7 @@ def instanceTypes (t : Term ZeroOneMany) : List Name :=
 def entry (c : Ctx) (src : String) (n : Name) (counter : Nat) : Option Entry := do
   let d ← c.st.globals.find? n
   let (site, _) ← c.st.declSites.get? n
-  let (tt, subs) := (d.type.prettyTagged [] []).run #[]
+  let (tt, subs) := (d.type.prettyTagged [] [] (some c.st.globals)).run #[]
   let sigId := s!"sig-{counter}"
   let data := Json.mkObj [("id", sigId), ("name", n), ("sig", LSP.ttJson subs 0 tt),
     ("subs", Json.arr (subs.map (subJson c)))]

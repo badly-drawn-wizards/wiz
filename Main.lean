@@ -34,6 +34,7 @@ compiler option (turns the cache off): --unbox-structs (22i: a structure's last 
 unboxed; not stable under substitution, so off by default)
 --strict-privacy (13b, an experiment; turns the cache off): check each declaration again with
   the definitions of other modules' types with private parts hidden
+--pp-all (11r; turns the cache off): print terms without notation (as `set_option pp.all true`)
 toolchain: --cc X (default: a release's own share/wiz/cc, else cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
 
@@ -101,6 +102,9 @@ initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 the elaborator's view. Off by default. -/
 initialize strictPrivacyOpt : IO.Ref Bool ← IO.mkRef false
 
+/-- (11r) `--pp-all`: terms print without notation. -/
+initialize ppAllOpt : IO.Ref Bool ← IO.mkRef false
+
 /-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
 initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
 
@@ -149,11 +153,12 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
       messages := shadow.toArray,
-      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get },
+      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get,
+                   pp := { useNotation := !(← ppAllOpt.get) } },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
   let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs &&
-      !(← strictPrivacyOpt.get)
+      !(← strictPrivacyOpt.get) && !(← ppAllOpt.get)
     then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
@@ -285,6 +290,8 @@ def main (args : List String) : IO UInt32 := do
   let (tc, args) := defaults.parseFlags args
   if args.contains "--strict-privacy" then strictPrivacyOpt.set true
   let args := args.filter (· != "--strict-privacy")
+  if args.contains "--pp-all" then ppAllOpt.set true
+  let args := args.filter (· != "--pp-all")
   if args.contains "--unbox-structs" then unboxOpt.set true
   let args := args.filter (· != "--unbox-structs")
   lazyProofsOpt.set (!args.contains "--eager-proofs")

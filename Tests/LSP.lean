@@ -196,7 +196,26 @@ def group : Group where
             let (tt, subs) := (t.prettyTagged [] []).run #[]
             unless tt.flatten == t.pretty do
               throw (IO.userError s!"{n}: {tt.flatten} ≠ {t.pretty}")
-            check (subs.size > 0) s!"{n}: no tags" }
+            check (subs.size > 0) s!"{n}: no tags" },
+    { name := "tagged printing with notation agrees with the printer, and tags the parts (11r)", run := fun _ => do
+        let p ← prelude
+        let st := runFrontend (R := ZeroOneMany) "import Prelude\ndef t (n : Nat) : List Nat := [n + 2, 3]"
+          { trustedModule := Tests.libModule, loader := fun _ => some p }
+        let g := st.globals
+        for n in g.order do
+          let some d := g.find? n | continue
+          for t in [d.type] ++ d.value.toList do
+            let (tt, _) := (t.prettyTagged [] [] (some g)).run #[]
+            unless tt.flatten == t.pretty [] (some g) do
+              throw (IO.userError s!"{n}: {tt.flatten} ≠ {t.pretty [] (some g)}")
+        let some d := g.find? "t" | throw (IO.userError "no t")
+        let some v := d.value | throw (IO.userError "no value")
+        let (tt, subs) := (v.prettyTagged [] [] (some g)).run #[]
+        checkEq "fun n => [n + 2, 3]" tt.flatten
+        -- the variable, the numerals, the sum and the list are subterms of their own
+        let shown := subs.toList.map fun sub => sub.term.pretty sub.names (some g)
+        for x in ["n", "2", "3", "n + 2", "[n + 2, 3]"] do
+          check (shown.contains x) s!"no tag for {x}: {shown}" }
   ]
 
 /-- Apply a `WorkspaceEdit` (for `file:///t.wiz`) to `src`. -/

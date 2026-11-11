@@ -297,7 +297,7 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
     | .ok r => .ok r
     | .error e =>
       if subTy s.globals ctx.types.reverse.toArray inferred expected then .ok ((), s) else
-      let show' (v : VTy R) := elideLong ((quote s.globals ctx.lvl v).pretty ctx.names)
+      let show' (v : VTy R) := elideLong ((quote s.globals ctx.lvl v).pretty ctx.names (some s.globals))
       .error { info := (ctx.withInfo stx).info,
                msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})",
                code := e.code,
@@ -956,6 +956,44 @@ where
           mkStringLit (((stx.getArg 0).getStr?).getD "") us
         | none => throwAt ctx.info "string literals need `builtin string := …`"
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+    -- `refl a` against an equation `a' =_A b'`: as elsewhere, infer and unify; if that
+    -- fails, once more checking `a` against `A`, so that the metavariables in `a`'s type are
+    -- solved by `A`. Inferring `a`'s type alone can leave a component's sort unknown
+    -- (`fun x => x : ?m → ?m`), and then the equation computes by another rule than the
+    -- expected one (at a proposition it is `True`, nu-transp), and the two don't unify.
+    -- (`A` is read back from the computed Σ by `eqSigmaSides?`, a guess: the Σ may also be
+    -- a constructor's payload equation, at the payload type; hence only as a second try.)
+    | "term.refl" =>
+      let s ← get
+      try
+        let (t, ty) ← infer ctx stx
+        unifyAt ctx stx expected ty
+        pure t
+      catch err =>
+        let s' ← get
+        set s
+        let A? : Option (VTy R) := match ← force expected with
+          | .neutral (.eq A _ _) #[] => some A
+          | e => (eqSigmaSides? e).map (·.1)
+        let A? ← match A? with
+          | some A => do
+            let A ← force A
+            pure (if A matches .sort _ then none else some A)
+          | none => pure none
+        match A? with
+        | none =>
+          set s'
+          throw err
+        | some A =>
+          let g ← getGlobals
+          try
+            let a ← check ctx (stx.getArg 1) A
+            let va ← evalIn ctx a
+            unifyAt ctx stx expected (vEq g A va va)
+            pure (.refl (quote g ctx.lvl A) a)
+          catch _ =>
+            set s'
+            throw err
     | "term.rfl" =>
       let g ← getGlobals
       match ← force expected with
