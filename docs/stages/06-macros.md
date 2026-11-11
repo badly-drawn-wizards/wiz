@@ -215,7 +215,10 @@ unifying with every shape they knew. Four requests (and the tactics of the same 
   unfolded with it, `isRecursor`), but the definitions the body mentions still folded
   (`ex`, `star` above). An application that is stuck (`MList L p`, `L` a variable) stays
   as it is: the request returns the term unchanged, and the `unfold` tactic then fails
-  ("nothing to unfold"), as Lean's does.
+  ("nothing to unfold"), as Lean's does. So does a name that is not a definition (a
+  constructor, an axiom): the request returns the term unchanged, so a library can try
+  it without catching, and the tactic says "`n` is not a definition" (it asks
+  `TacticM.isDefinition n` first).
 * `TacticM.whnf g e` (`whnf`): the head unfolded until it is not a definition.
 * **Recursive calls are folded back.** A structurally recursive definition is an
   eliminator, so what unfolding leaves for `MList L n` is `ind … L n`, with the whole

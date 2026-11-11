@@ -357,7 +357,7 @@ the results of the probes listed in the "Probes" section.
   index type's level", and `MTm.elimLevels` (22 terms) is in the differential samples, so
   `Kernel.wiz` must give the same verdicts.
 
-### T1. A recursive definition's compiled code was not checked by the kernel — **fixed** (typing; one disagreement); agreement with the definition is **trusted**
+### T1. A recursive definition's compiled code was not checked by the kernel — **fixed** (typing; two disagreements); agreement with the definition is **checked** (branch `agent/impl-derive`)
 
 * **The gap.** A declaration has a `value`, which the kernel checks and unfolds, and may
   have an `impl`, the term that is *compiled* instead (`Decl.impl`; `eraseDecl` takes it
@@ -396,30 +396,42 @@ the results of the probes listed in the "Probes" section.
   2. *Elaborator.* In the second elaboration the calls the first one rewrote are marked
      with a macro scope (`markRecCalls`), so they refer to the definition whatever is in
      scope. `f 3` above now runs to `0`.
-* **What remains (trusted): that `impl` computes what `value` computes.** Nothing checks
-  it: no conversion test, no proof obligation. The kernel's check is of the *type* only,
-  and the example above is well typed, so the kernel change alone would not have caught
-  it; the elaborator change did. The agreement now rests on the two elaborations reading
-  the clauses alike (same syntax, the recursive calls resolved alike, the same local
-  context except for the induction hypotheses, which tactics don't see). `#print axioms`
-  does not list these implementations (it lists the native ones, trusted by design).
-  * *Why not `impl ≡ value`.* They are equal by induction, not by conversion: applied to
-    variables, `value` is stuck on the recursor and `impl` on a case split.
-  * *What could be checked.* (a) Per case: on a constructor both sides compute, and a
-    direct call `f y` unfolds to the recursor on `y`, which is what the induction
-    hypothesis is; so the kernel can split the arguments along `impl`'s case tree
-    (refining a variable each time `impl` is stuck on one) and ask for conversion at
-    each leaf. This is sound and needs nothing from the elaborator, but it is new kernel
-    code (it builds constructor forms from descriptions, and an indexed family's
-    constructors only fit some indices). (b) Derive, don't elaborate: build `impl` from
-    the checked `value` by a fixed translation (each use of an induction hypothesis
-    becomes the call it stands for, the recursor's method becomes a case split), or have
-    the compiler run the recursor itself with hypotheses computed on demand. Then there
-    is no second reading of the source to trust, only the translation, which belongs to
-    the compiler like the rest of erasure. (b) is the cheapest sound option and the
-    self-hosted frontend already works that way (below); it costs the compiled code's
-    current shape (direct, unboxed calls), which has to be measured.
-  * Neither is implemented.
+* **A second wrong result** (agent impl-derive). The second elaboration inferred the
+  implicit index of a recursive call from its argument, where the recursor keeps the
+  outer index: `def g {ω n : Nat} : V n → Nat | .cons _ xs => n + g xs` proved
+  `g v3 = 9` and `#eval g v3` printed `6`; with an erased index the definition was
+  rejected instead. Guarded first (PR #98: no `impl` when an index variable escapes into a
+  method), then removed with the second elaboration (below).
+* **Resolved: agreement is checked.** The second elaboration is gone. The elaborator
+  *derives* `impl` from the checked value (`deriveImpl`, `Elab/Command.lean`): the same
+  term with `T.casesOn` for `T.rec` and each induction hypothesis replaced by the direct
+  call it stands for (`λ rs. f tele (… y …)`; under its index equation for a match with
+  index unification; for a field of another sort of a mutual family, whose hypothesis
+  only an equation between different indices could unlock, the recursor itself). Nothing
+  is read from the source twice. The kernel checks, besides the type (`checkImpl`), that
+  it **agrees with the value** (`checkImplAgrees`, `Core/Check.lean`): applied to fresh
+  variables both are stuck on the same argument as `ind P M i x …` and `ind P M' i x …`;
+  they must be convertible with `M'` replaced by `M`, and for every constructor tag `t`,
+  at a fresh index and payload `xs = (t, rest)`, `M j xs H ≡ M' j xs H` with `H` the
+  hypotheses `ind` computes (each direct call unfolds once to the stuck `ind` on a field).
+  By induction on the scrutinee, compiled code computes what the kernel computes. A
+  definition whose index variable escapes into a method gets no `impl` (compiled from its
+  value). `#print axioms` lists nothing for compiled equations (it did, as `compiled f`,
+  between the two steps).
+  * *Code quality.* The derived term passes a call as an argument where a nested split
+    reverted the hypothesis, and rebuilds a constructor where a catch-all names the
+    scrutinee. Erasure rewrites both before compiling (`Compiler/Push.lean`, from
+    `eraseDecl`: calls moved into the inner split's branches, the rebuilt constructor
+    replaced by the scrutinee, a closure that only calls the definition inlined); each
+    rewrite is checked by the kernel again and dropped if it does not check. Measured on
+    lib/, examples/ and the self-hosted compiler: 582 derived implementations, all agree;
+    the optimised IR of 560 of 581 definitions is identical to the second elaboration's
+    (+0.2% lines overall: unreachable branches of absurd cases in a mutual family);
+    allocations equal on a workload of recursive functions (nested splits, indexed,
+    infinitary, mutual).
+  * *Recognised by syntax, still:* a call `f y` in `f`'s equations is the recursive call;
+    a local variable named `f` in scope is now an **error** ("a local variable named f
+    shadows the recursive definition f …; rename the local variable").
 * **The other places with a second term or a recognition by syntax** (each probed with
   the shadowing example; the kernel's value and the compiled result agree in all):
   sized definitions (one term, `sfix`; the definition's name is an ordinary local);
@@ -446,8 +458,11 @@ the results of the probes listed in the "Probes" section.
 * **Regression tests.** Group *trust*: "the kernel checks a definition's implementation
   for the compiler (Decl.impl)" (ill-typed, another type, a wrong sort note, a linear
   variable used twice, an undeclared level parameter, `setImpl`), "recursive definitions:
-  the compiled equations are kernel-checked terms", and "… a local variable named like
-  the definition doesn't capture its calls in compiled code".
+  the compiled equations are kernel-checked terms", "… a local variable named like the
+  definition is an error", "… compiled code keeps an outer index that a method mentions",
+  "… compiled equations derived from the value agree with it, with and without moving
+  calls out of nested splits", "… the kernel rejects compiled equations that compute
+  something else".
 
 ---
 
@@ -919,8 +934,10 @@ that checks everything. Wiz's situation:
   is equality, resp. `<`, which `Nat.beq` and `Nat.lt` are, by their equations). The
   kernel computes only these natively; `memo := memo` (`memo f = f` to the kernel) and
   `string := String` affect only the runtime representation and literals.
-* **Compiled equations of recursive definitions** (`Decl.impl`, T1): checked by the
-  kernel for typing since T1, trusted to compute what the definition computes.
+* **Compiled equations of recursive definitions** (`Decl.impl`, T1): no longer trusted:
+  the kernel checks their type and that they compute what the definition computes
+  (`checkImplAgrees`). What erasure does to them afterwards (`Compiler/Push.lean`, checked
+  again by the kernel for typing) belongs to the compiler, like the rest of erasure.
 * **Implementations for compiled code** are outside the kernel: `attribute
   [implemented_by g] f` (stage 22b), including the native representations it registers
   for a type (`attribute [implemented_by mk get] T.mk`, builtin keys `repr:T:…`, used by

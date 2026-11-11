@@ -120,7 +120,10 @@ partial def runDescr : ParserDescr → P (Array Syntax)
   | .ident => do
     let i ← nextPos
     match ← peekToken with
-    | some t@{ tok := .ident _, .. } => setPos t.stop; pure #[tokSyntax t]
+    | some t@{ tok := .ident v, .. } =>
+      -- a keyword of the category's scope is not an identifier here (13j)
+      if (← ctx).reserved.contains v then failAt i s!"identifier ('{v}' is a keyword here)" else
+      setPos t.stop; pure #[tokSyntax t]
     | some t@{ tok := .atom "$", .. } =>
       -- an antiquotation where an identifier is expected (inside quotations)
       setPos t.stop
@@ -280,7 +283,8 @@ partial def categoryParser (c : Name) (rbp : Nat) : P Syntax := do
   | some (some (stx, stop)) => setPos stop; pure stx
   | some none => failAt (← nextPos) c
   | none =>
-    match ← try? (categoryLoop c rbp) with
+    let reserved := (← ctx).tables.reservedIn c
+    match ← try? (withCtx (fun x => { x with reserved }) (categoryLoop c rbp)) with
     | some stx => memoStore key (some (stx, (← state).pos)); pure stx
     | none => memoStore key none; failAt (← nextPos) c
 

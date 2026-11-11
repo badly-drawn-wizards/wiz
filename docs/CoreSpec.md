@@ -595,7 +595,8 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
 | `A` | `a =_A b` reduces to | tag | line |
 |---|---|---|---|
 | `(q x : A₁) → B` | `(0 x : A₁) → a x =_{B x} b x` (funext) | [std: PT22] | 523–525 |
-| `(q x : A₁) × B` | `(0 e : a.1 =_{A₁} b.1) × (cast (B a.1) (B b.1) ê a.2 =_{B b.1} b.2)`, where `ê = transp A₁ a.1 (λy _. B a.1 ≡ B y) (reflTy (B a.1)) b.1 e` | [std: PT22] | 526–532 |
+| a proposition (`propSort? A = true`) | `True` (**proof irrelevance**) | [wiz: Prop components] | `vEq` |
+| `(q x : A₁) × B` | `(0 e : a.1 =_{A₁} b.1) × (cast (B a.1) (B b.1) ê a.2 =_{B b.1} b.2)`, where `ê = transp A₁ a.1 (λy _. B a.1 ≡ B y) (reflTy (B a.1)) b.1 e`; if `A₁` is a proposition, `ê = reflTy (B a.1)` | [std: PT22; wiz] | 526–532 |
 | `Unit_l`, `Empty_l` | `True` | [std] | 533 |
 | `Enum ls`, with `a = tag i`, `b = tag j` | `True` if `i = j`, else `False` | [wiz: finite types] | 534–536 |
 | `μ D i`, with `a = con x`, `b = con y` | `x =_{⟦D⟧ (μ D) i} y`, **by the description** (`vEqPayload`, below) | [wiz: OTT for descriptions] | `vEqPayload` |
@@ -605,6 +606,25 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
 | `Desc_l I` | **by the constructors** (`vEqDesc`, §8.4b): `ret j = ret j' ⟶ j =_I j'`, `arg`/`rec`/`hrec` componentwise, different constructors `False` | [wiz: 4g] | `vEqDesc` |
 | anything else (a neutral type, `ν`, `Sort u` with `u` possibly 0, a non-constructor element of `μ`/`Enum`) | stuck: the neutral `a =_A b` | | 545–546 |
 | numerals `n`, `m` (any `A`) | `True` if `n = m`, else `False` | [impl] | 516 |
+
+The first row and the Σ rule's proof case are Wiz's [nu-transp]: in PT22 the components of
+a Σ are types, but a Wiz Σ may have a proof component (`(x : A) × P x`, `(0 h : P) × B`), and
+the equation of its components must not be formed at a proposition (the `eq` rule rejects
+it, as `transp` along a proposition, §8.1). Both are justified by conv-irr (§8.5):
+
+* at a proposition `A`, `a ≡ b` already holds, so `a =_A b` is `True`: it is never `False`
+  (two proofs, however written, are equal), so the rule gives no new inhabitant of `Empty`;
+* if `A₁` is a proposition, `a.1 ≡ b.1`, so `B a.1 ≡ B b.1` and `reflTy (B a.1) : B a.1 ≡ B b.1`
+  is well typed; `transp` along `A₁` would not be.
+
+Without them the computed equation was ill typed (a normal form the kernel rejects), and the
+kernel rejected well-typed programs that let-bound `h.2` for `h : p = q` at a subtype. The
+test `propSort? A = true` is stable under substitution (a proposition stays one); a `none`
+(an unknown sort) is handled as before (U5/U5b). **Known gap**: `propSort?` sees only
+propositions whose head shows it (`True`, an equation, a Π/Σ annotated `0`), not a neutral one
+(`P q.1` for a variable `P : A → Prop`): there the equation is still formed at the proposition,
+and the kernel rejects it (pinned in the 'observational equality' group). Mandatory sorts
+(every Π/Σ carries its components' sorts) closes it.
 
 Equality of payloads by the description (`vEqPayload`), so that `succ m = succ n` is
 `m = n` and not, through the Σ rule, an equation with a cast along the tags'
@@ -1639,17 +1659,23 @@ proved**, and the D1 experiment shows checking can loop (Status.md).
   shapes.
 * **Implementations for the compiler** (`Decl.impl`): the term compiled code runs
   instead of the value. Three things set one: a structurally recursive definition by
-  equations (the same equations with direct recursion, so that a program computes only
-  the recursive calls it makes), a partial definition (its body, above), and
+  equations (its value with the recursor's hypotheses replaced by direct calls, so that a
+  program computes only the recursive calls it makes), a partial definition (its body,
+  above), and
   `attribute [implemented_by g] f` (the constant `g`). The kernel never unfolds an
   implementation, so it proves nothing, but it **checks every one against the declared
   type**, with the definition itself already declared (a recursive one calls it):
   `checkImpl`, from `addDecl` and `setImpl`, as `addPartialImpl` does for a partial
   definition. So an implementation is well typed at `T`, its quantities are respected,
   and the sorts noted on its `Π`s and `Σ`s are right (`checkSortNote`): erasure reads all
-  three. A declaration whose implementation does not check is rejected. **Not checked:**
-  that the implementation computes what the value computes (they are equal by induction,
-  not by conversion); see Status.md, T1.
+  three. A declaration whose implementation does not check is rejected. For a
+  structurally recursive definition the kernel also checks that the implementation
+  **computes what the value computes** (`checkImplAgrees`): both are stuck on the same
+  argument as `ind P M i x` and `ind P M' i x` (through `T.rec` and `T.casesOn`), convertible
+  with `M'` replaced by `M`, and for each constructor tag `t` and a fresh payload
+  `xs = (t, rest)`, `M j xs H ≡ M' j xs H` with `H` the hypotheses `ind` computes; by
+  induction on the scrutinee they agree on every closed argument (Status.md, T1). An
+  `implemented_by` constant is not checked this way (trusted, listed by `#print axioms`).
 * `Decl.inline` (evaluate eagerly) does not affect what the kernel accepts.
 
 *Kernel.wiz.* There is no global table: a constant term carries its value and type
@@ -1729,6 +1755,19 @@ Each item says what the code does; the code is what the kernel checks.
 | conversion fast path | none | `valSame`: bounded structural equality (`Kernel.wiz:1461`) |
 | μ/ν size argument | unchecked | unchecked (`Kernel.wiz:1918, 1967`) |
 | equality of descriptions, `μ ≡ μ` (4g, §8.4b) | `vEqDesc`, `vEqType`, `famPayloadEq?` | the same rules without quantities (`vEqDesc`, `famEqTy`, `famPayload`); levels are numerals |
+
+**The self-hosted frontend's quantities** (`Frontend.wiz`, stage 21m; finding K10 of audit 2,
+now closed). The frontend reads written quantities (`0`, `1`, `ω`) on binders, `fun`
+binders and `let`, with the Lean elaborator's defaults (ω explicit, 0 implicit; a
+constructor's parameters at 0), and the kernel checks usage. What still differs, pinned
+by the test "the self-hosted frontend: quantities, the pinned differences (21m)":
+
+| program | Lean frontend | self-hosted frontend |
+|---|---|---|
+| a linear variable used once in each branch of a `match` (`def m1 (1 x : Nat) (b : Bool) : Nat := match b with \| .true => x \| .false => x`) | **rejects**: a branch is an argument of `T.casesOn`, a function whose methods are ω | **accepts**: the match is the kernel's `scase`/`ecase`, whose branches are alternatives (usage joined). Sound: `x` is used once on every path |
+| a constructor field with a quantity (`\| mk (0 n : Nat)`, a structure's `1 a : Nat`) | accepts (`Desc.arg q S D`) | **rejects** with an error: `darg S D` has no quantity, every field is stored at ω |
+| an implicit constructor field (`\| cons {n : Nat} …`) | a field at 0, filled in at the call | an explicit field at ω (the frontend has no implicit constructor fields; a call that leaves it out is rejected) |
+| `%t` quantity terms, quantity variables | yes | an error |
 
 ---
 

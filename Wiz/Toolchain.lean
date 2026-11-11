@@ -74,6 +74,19 @@ def toFlags (t : Toolchain) : List String :=
   (match t.cacheDir with | some d => ["--cache", d.toString] | none => ["--no-cache"]) ++
   t.searchPath.flatMap fun d => ["-I", d.toString]
 
+/-- (26f) The C toolchain a release tarball ships, `share/wiz/cc` (scripts/bundle-cc.sh):
+clang with a glibc 2.27 sysroot holding static GMP and the Boehm GC, and an `llc` that
+runs that clang on IR. Found beside the running binary (`<dir>/.lake/build/bin/wiz` with
+`<dir>/cc/bin/cc`, as `toolchainLib` finds `<dir>/lib`). When it is there it gives the
+defaults of `cc`, `llc` and `gc-ldflags`; flags, `grail.local.wiz` and tower's settings
+still replace any field. A checkout and the Nix package have no bundle: `t` unchanged. -/
+def withBundled (t : Toolchain) : IO Toolchain := do
+  let exe ← IO.appPath
+  let root := (((exe.parent.bind (·.parent)).bind (·.parent)).bind (·.parent)).getD "."
+  let bin := root / "cc" / "bin"
+  unless ← (bin / "cc").pathExists do return t
+  pure { t with cc := (bin / "cc").toString, llc := (bin / "llc").toString, gcLdflags := ["-lgc", "-lpthread"] }
+
 /-- `grail config`: one `key value` line per field. -/
 def render (t : Toolchain) : String :=
   s!"cc {t.cc}\ncflags {" ".intercalate t.cflags}\nldflags {" ".intercalate t.ldflags}\nlibs {" ".intercalate t.libs}\ngmp {" ".intercalate t.gmp}\nllc {t.llc}\n" ++

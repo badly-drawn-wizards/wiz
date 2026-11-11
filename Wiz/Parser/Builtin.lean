@@ -1,4 +1,5 @@
 import Wiz.Parser.Descr
+import Wiz.Syntax.Children
 
 /-!
 # The built-in grammar
@@ -92,6 +93,9 @@ def levelTrailing : List TrailingParser := [
   { kind := "level.add", prec := 65, lhsPrec := 65, p := seqs ["+", num] }
 ]
 
+/-- `⟨t₁, …, tₙ⟩` (13h) -/
+def anonCtor : ParserDescr := seqs ["⟨", withoutPosition (sepBy term ","), "⟩"]
+
 /-- Term syntax.
 
 | kind                 | prec | children |
@@ -110,7 +114,7 @@ def levelTrailing : List TrailingParser := [
 | `term.explicit`      | max  | "@" ident |
 | `term.fun`           | max  | "fun" [binder+] "=>" term |
 | `term.let`           | lead | "let" [quantity] ident [":" T] ":=" term [";"] term |
-| `term.forall`        | lead | "∀" [binder+] "," term |
+| `term.forall`        | lead | ("∀" / "forall") [binder+] "," term |
 | `term.depArrow`      | 25   | binder "→" term |
 | `term.app` (trailing)| lead | f [args+] |
 | `term.arrow` (trailing)| 25 | A "→" B |
@@ -121,6 +125,7 @@ def levelTrailing : List TrailingParser := [
 | `term.proj` (trailing) | max | t "." num |
 | `term.field` (trailing) | max | t "." ident (a Σ field, or `T.f t` for a nominal `T`) |
 | `term.letPair`       | lead | "let" [quantity] "(" ident "," ident ")" ":=" term [";"] term |
+| `term.letTuple`      | lead | "let" [quantity] "(" ident "," ident "," [idents,+] ")" ":=" term [";"] term |
 | `term.absurd`        | lead | "absurd" term |
 | `term.eq` (trailing) | 50   | a "=" b |
 | `term.refl`          | lead | "refl" term |
@@ -134,6 +139,10 @@ def levelTrailing : List TrailingParser := [
 | `term.match`         | lead | "match" [terms] "with" [alts] |
 | `term.szInf`, `term.szSuc`, `term.sizeLt` | | "∞", "↑" s, "Size<" s |
 | `term.sized` (trailing) | max | T "^" s: an inductive or coinductive type at size `s` |
+| `term.asPat` (trailing) | max | x "@" p, without spaces: an as-pattern (13g; patterns only) |
+| `term.anon`          | max  | "⟨" [terms] "⟩": the constructor of the expected structure (13h; also a pattern) |
+| `term.letPat`        | lead | "let" [quantity] (`term.anon` / `term.paren`) ":=" term [";"] term (13h) |
+| `term.structUpdate`  | max  | "{" term "with" [`structUpdate.field`: ident ":=" term],+ "}" (13i) |
 
 The data primitives `Desc`, `Desc.ret`, `Desc.arg`, `Desc.rec`, `Desc.elim`,
 `Desc.interp`, `Desc.All`, `μ`, `ν`, `con`, `ind`, `out`, `coit` and `cocon` have no syntax of their
@@ -167,7 +176,7 @@ def termLeading : List LeadingParser := [
     p := withPosition <| seqs ["let", optional quantity, ident, typeSpec false, ":=", term,
       optional ";", term] },
   { kind := "term.forall", prec := leadPrec,
-    p := seqs ["∀", many1 simpleBinder, ",", term] },
+    p := seqs [orelse "∀" "forall", many1 simpleBinder, ",", term] },
   { kind := "term.depArrow", prec := 25, p := seqs [bracketedBinder true, arrow, term 25] },
   { kind := "term.depSigma", prec := 35, p := seqs [explicitBinder true, "×", term 35] },
   { kind := "term.tuple", prec := maxPrec,
@@ -176,6 +185,10 @@ def termLeading : List LeadingParser := [
   { kind := "term.letPair", prec := leadPrec,
     p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ")", ":=", term,
       optional ";", term] },
+  -- three or more components: right-nested pairs (`Elab.letTupleToPairs`)
+  { kind := "term.letTuple", prec := leadPrec,
+    p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ",", sepBy1 ident ",", ")",
+      ":=", term, optional ";", term] },
   { kind := "term.absurd", prec := leadPrec, p := seqs ["absurd", term maxPrec] },
   { kind := "term.refl", prec := leadPrec, p := seqs ["refl", term maxPrec] },
   { kind := "term.rfl", prec := maxPrec, p := "rfl" },
@@ -184,6 +197,16 @@ def termLeading : List LeadingParser := [
   { kind := "term.enum", prec := maxPrec, p := seqs [nonReserved "Enum", "[", sepBy ident ",", "]"] },
   { kind := "term.tag", prec := maxPrec, p := seqs ["'", noWs, ident] },
   { kind := "term.dotIdent", prec := maxPrec, p := seqs [".", noWs, ident] },
+  -- 13h: the anonymous constructor (also a pattern), and `let` with a pattern
+  { kind := "term.anon", prec := maxPrec, p := anonCtor },
+  { kind := "term.letPat", prec := leadPrec,
+    p := withPosition <| seqs ["let", optional quantity,
+      orelse (node "term.anon" anonCtor) (node "term.paren" (seqs ["(", withoutPosition term, ")"])),
+      ":=", term, optional ";", term] },
+  -- 13i: structure update
+  { kind := "term.structUpdate", prec := maxPrec,
+    p := seqs ["{", withoutPosition (seqs [term, "with",
+      sepBy1 (node "structUpdate.field" (seqs [ident, ":=", term])) ","]), "}"] },
   { kind := "term.szInf", prec := maxPrec, p := "∞" },
   { kind := "term.szSuc", prec := maxPrec, p := seqs ["↑", term maxPrec] },
   { kind := "term.sizeLt", prec := leadPrec, p := seqs ["Size<", term maxPrec] },
@@ -206,7 +229,9 @@ def termTrailing : List TrailingParser := [
   { kind := "term.eq", prec := 50, lhsPrec := 51, p := seqs ["=", term 51] },
   { kind := "term.proj", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, num] },
   { kind := "term.field", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, ident] },
-  { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "^", term maxPrec] }
+  { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "^", term maxPrec] },
+  -- 13g: an as-pattern `x@p` (no space around `@`; only in patterns)
+  { kind := "term.asPat", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "@", noWs, term maxPrec] }
 ]
 
 /-- A field of a `structure`, `class` or `coinductive` (an observation), on its own line;
@@ -230,11 +255,12 @@ continue onto a line starting at the command's column.
 | `command.axiom`              | "axiom" ident [".{" [us] "}"] [binders] ":" T |
 | `command.check`              | "#check" term |
 | `command.reduce`             | "#reduce" term |
-| `command.declareSyntaxCat`   | "declare_syntax_cat" ident |
+| `command.declareSyntaxCat`   | "declare_syntax_cat" ident ["(" "keywords" ":=" ident ")"] |
 | `command.syntax`             | "syntax" [":" prec] [name] [priority] [stx+] ":" ident |
 | `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] ["deriving" C,+] |
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] where [fields] ["deriving" C,+] (where: `structure.where`, "where" [["private"] ident "::"]) |
 | `command.private`            | "private" command (every name it declares is private to the module) |
+| `command.local`              | "local" command (13m: a `syntax`, `notation`, `infix…`, `macro_rules` or `attribute [macro …]` whose syntax stays in the module) |
 | `command.deriving`           | "deriving" "instance" C,+ "for" T,+ |
 | `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
 | `command.attrInline`         | "attribute" "[" "inline" "]" ident |
@@ -256,6 +282,8 @@ def commandLeading : List LeadingParser := [
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec true, many1 matchAlt] },
   -- 13b: every name the command declares is visible only in this module
   { kind := "command.private", prec := maxPrec, p := seqs ["private", cat "command" 0] },
+  -- 13m: notation that importers don't see (`local` is not reserved)
+  { kind := "command.local", prec := maxPrec, p := seqs [nonReserved "local", cat "command" 0] },
   -- stage 13: general recursion; a `mutual` block's definitions are partial too
   -- (a partial definition's type needs a witness: found, or given with `(default := w)`)
   { kind := "command.partial", prec := maxPrec,
@@ -312,7 +340,7 @@ def commandLeading : List LeadingParser := [
     p := seqs ["attribute", "[", nonReserved "deriver", ident, "]", ident] },
   { kind := "command.deriving", prec := maxPrec,
     p := seqs ["deriving", "instance", sepBy1 ident ",", nonReserved "for", sepBy1 ident ","] },
-  { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident] },
+  { kind := "command.declareSyntaxCat", prec := maxPrec, p := seqs ["declare_syntax_cat", ident, optional (seqs ["(", nonReserved "keywords", ":=", ident, ")"])] },
   { kind := "command.syntax", prec := maxPrec,
     p := seqs ["syntax", optional (seqs [noWs, ":", noWs, precedence]),
       optional (seqs ["(", nonReserved "name", ":=", ident, ")"]),
@@ -418,5 +446,37 @@ def tables : ParserTables :=
   let t := stxTrailing.foldl (·.addTrailing "stx" ·) t
   let t := macroCommands.foldl (·.addLeading "command" ·) t
   ["term", "command", "level", "tactic"].foldl addMetaParsers t
+
+/-- The number of children a descriptor adds to its node, when that is fixed. -/
+partial def arity? : ParserDescr → Option Nat
+  | .atom _ | .nonReserved _ | .ident | .num | .str | .cat .. | .many _ | .many1 _ | .optional _
+  | .sepBy .. | .sepBy1 .. | .node .. => some 1
+  | .seq ps => ps.foldl (fun acc p => do pure ((← acc) + (← arity? p))) (some 0)
+  | .orelse p q => do
+    let a ← arity? p
+    if (← arity? q) == a then some a else none
+  | .withPosition p | .withoutPosition p => arity? p
+  | .colGt | .colGe | .noWs | .checkPrec _ => some 0
+
+/-- Every `node k p` inside a descriptor. -/
+partial def nodesIn : ParserDescr → List (Name × ParserDescr)
+  | .node k p => (k, p) :: nodesIn p
+  | .seq ps => ps.toList.flatMap nodesIn
+  | .many p | .many1 p | .optional p | .sepBy p .. | .sepBy1 p .. | .withPosition p | .withoutPosition p => nodesIn p
+  | .orelse p q => nodesIn p ++ nodesIn q
+  | _ => []
+
+/-- The kinds whose `childNames` disagree with the grammar: a different number of
+children, or a rule whose number of children isn't fixed. Empty when all is well (the
+test group `parser: commands` checks that). -/
+def childNamesMismatches : List String :=
+  let rules := (termLeading ++ commandLeading).flatMap fun lp => (lp.kind, lp.p) :: nodesIn lp.p
+  rules.filterMap fun (k, p) =>
+    let names := childNames k
+    if names.isEmpty then none
+    else match arity? p with
+      | some n => if n == names.length then none else
+          some s!"{k}: the grammar produces {n} children, childNames lists {names.length}"
+      | none => some s!"{k}: the number of children is not fixed"
 
 end Wiz.Builtin

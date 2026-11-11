@@ -882,8 +882,8 @@ code runs instead of the value. It may call the definition itself (a structurall
 recursive definition's equations with direct recursion), so it is checked against the
 declared type in `g`, which already has the definition. The kernel never unfolds it, so it
 proves nothing; it is checked because erasure reads it (its types, the sorts noted on its
-`Π`s and `Σ`s, its quantities) as it reads a checked term. That it computes what the
-value computes is *not* checked. -/
+`Π`s and `Σ`s, its quantities) as it reads a checked term. That a definition's derived
+equations compute what its value computes is checked by `checkImplAgrees` (`addDecl`). -/
 def checkImpl (g : Globals R) (d : Decl R) (impl : Term R) : TCM Unit := do
   if let some u := impl.levelParamsUsed.find? (!d.levelParams.contains ·) then
     throw (.other s!"unknown universe level parameter {u} in the implementation of {d.name}")
@@ -892,10 +892,80 @@ def checkImpl (g : Globals R) (d : Decl R) (impl : Term R) : TCM Unit := do
   | .ok _ => pure ()
   | .error e => throw (.other s!"the implementation of {d.name} (the term compiled code runs) does not check: {e}")
 
+/-- **The compiled equations agree with the definition** (docs/Status.md T1): for a
+structurally recursive definition whose `impl` is derived from its value, one conversion
+per constructor. `g` has the definition (with its value). Applied to fresh variables for
+the value's λ-prefix, both must be stuck on the same variable as `ind P M i x …` (the
+value through `T.rec`) and `ind P M' i x …` (the implementation through `T.casesOn`, whose
+method ignores the hypotheses and calls the definition directly):
+
+* the two stuck terms are convertible with `M'` replaced by `M`;
+* for every tag `t` of the description `D = Σ (t : Enum ls). F t`, at a fresh index `j` and
+  payload `xs = (t, rest)`, with `H` the hypotheses the kernel computes for `ind`
+  (`hyps D (μ D) P (λ j y. ind P M j y) j xs`, as `vIndStep` does):
+  `M j xs H ≡ M' j xs H : P j (con xs)`. Where the value uses a hypothesis, `ind P M j' y`
+  on a field `y`, the implementation calls the definition, which unfolds once to the same
+  stuck `ind` (so the check terminates).
+
+By induction on the scrutinee this gives `value ≡ impl` on every closed argument, with
+the implementation's own recursive calls standing for the value (the induction
+hypothesis): what compiled code computes is what the kernel computes. An implementation
+convertible to the value passes at once. -/
+partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) : TCM Unit := do
+  let fail {α : Type} (why : String) : TCM α :=
+    throw (.other s!"the compiled equations of {d.name} do not agree with its definition: {why}")
+  -- (an implementation convertible to the value agrees with it, trivially)
+  if conv g #[] (eval g [] d.type) (eval g [] value) (eval g [] impl) then return
+  let rec lams : Term R → Nat
+    | .lam _ b => lams b + 1
+    | _ => 0
+  let k := lams value
+  let mut tys : Array (VTy R) := #[]
+  let mut ty := eval g [] d.type
+  for i in [0:k] do
+    match whnf ty with
+    | .pi _ _ _ A B _ => tys := tys.push A; ty := Closure.inst g B (Val.var i)
+    | _ => fail "its value has more binders than its type"
+  let args := (List.range k).map Val.var
+  let a := whnf (args.foldl (vApp g) (eval g [] value))
+  let b := whnf (args.foldl (vApp g) (eval g [] impl))
+  let (.neutral (.local x) sp, .neutral (.local x') sp') := (a, b)
+    | fail "the value or the implementation is not stuck on an argument"
+  let (some (Elim.ind l I D v P M i), some (Elim.ind l' I' D' v' P' M' i')) := ((sp[0]? : Option (Elim R)), (sp'[0]? : Option (Elim R)))
+    | fail "the value or the implementation is not an induction on an argument"
+  unless x == x' && sp.size == sp'.size do fail "they split different arguments"
+  let b' : Val R := .neutral (.local x') (sp'.set! 0 (.ind l' I' D' v' P' M i'))
+  unless conv g tys ty a b' do fail "their motives, indices or other arguments differ"
+  -- the methods, constructor by constructor
+  let .darg _ S F := whnf D | fail "the description does not start with a tag"
+  let (ls, lifted) ← match whnf S with
+    | .enum ls => pure (ls, false)
+    | .ulift _ A => match whnf A with
+      | .enum ls => pure (ls, true)
+      | _ => fail "the description does not start with a tag"
+    | _ => fail "the description does not start with a tag"
+  let jL := tys.size
+  let jv : Val R := Val.var jL
+  let X := muFamily l I D
+  -- y0 j1 m2 P3 D4 I5 (as in `vIndStep`)
+  let f : Val R := .lam "j" (.mk [M, P, D, I] (.lam "y" (.ind l (.var 5) (.var 4) v (.var 3) (.var 2) (.var 1) (.var 0))))
+  for c in [0:ls.length] do
+    let t : Val R := if lifted then .up (.tag ls c) else .tag ls c
+    let restTy := vInterp g l I (vApp g F t) X jv
+    let tys' := (tys.push I).push restTy
+    let xs : Val R := .pair t (Val.var (jL + 1))
+    let hyps := [I, D, X, P, f, jv, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+    let goal := vApp g (vApp g P jv) (.con xs)
+    unless conv g tys' goal ([jv, xs, hyps].foldl (vApp g) M) ([jv, xs, hyps].foldl (vApp g) M') do
+      fail s!"they differ for constructor {ls[c]!}"
+
 /-- Type check a declaration and add it to the global environment. Its implementation
 for the compiler, if it has one, is checked too (`checkImpl`): no term reaches erasure
 unchecked. -/
 def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  -- constants are identified by name: a second declaration of one would change what
+  -- everything checked against the first means
+  if g.contains d.name then throw (.other s!"{d.name} is already declared")
   if d.witness.isSome then throw (.other s!"{d.name}: only a partial definition has a witness")
   checkHeader g d
   let ctx : Ctx R := { globals := g }
@@ -903,7 +973,11 @@ def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
     -- usage is the empty vector: a closed term has no locals to misuse
     let _ ← check ctx v (ctx.eval d.type)
   let g' := g.insert d
-  if let some impl := d.impl then checkImpl g' d impl
+  if let some impl := d.impl then
+    checkImpl g' d impl
+    -- compiled equations derived from the value compute what it computes
+    if let some v := d.value then
+      if d.derivedEquations then checkImplAgrees g' d v impl
   pure g'
 
 /-- Give the declaration `name` another implementation for the compiler
@@ -920,6 +994,9 @@ which the kernel checks here: then `f` proves nothing `w` doesn't, whatever the 
 The witness is checked erased (quantity 0): it is only evidence that `T` is inhabited,
 never run, so it may ignore a linear argument. -/
 def addPartialDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  -- constants are identified by name: a second declaration of one would change what
+  -- everything checked against the first means
+  if g.contains d.name then throw (.other s!"{d.name} is already declared")
   let some w := d.witness
     | throw (.other s!"partial definition {d.name} needs a witness, a term of its type")
   if d.value.isSome then throw (.other s!"partial definition {d.name} can't have a value")
@@ -950,7 +1027,8 @@ Also listed, marked `native`: the **native implementations** the declaration's c
 code runs, wherever they are registered (the library's too). `native f := g` is
 `attribute [implemented_by g] f`, and `native T := mk/get` a native representation of the
 type `T` (`attribute [implemented_by mk get] T.mk`, a `repr:` registration). The kernel
-never runs them, so they prove nothing: they are trusted to agree with the definitions. -/
+never runs them, so they prove nothing: they are trusted to agree with the definitions. A structurally recursive definition's compiled equations are not listed: the kernel
+checks that they agree with its value (`checkImplAgrees`). -/
 partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run do
   let mut seen : Std.HashSet Name := {}
   let mut todo := [n]

@@ -297,6 +297,12 @@ where
     ((new.fold (init := #[]) fun acc n m => if old.contains n then acc else acc.push (n, m)).qsort
       (fun a b => a.1 < b.1))
 
+/-- Who declared a name, for messages: a module, or the file being checked (`""`). -/
+def Effect.whose : Option String → String
+  | some "" => "this file"
+  | some m => s!"module {m}"
+  | none => "an earlier declaration"
+
 /-- Replay an effect. -/
 def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
   -- a builtin key is registered once (`command.builtin`); a replayed registration (a
@@ -308,6 +314,21 @@ def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
     let was := (s.globals.builtins.lookup k).getD "?"
     let text := s!"builtin {k} := {n}: {k} is already registered (as {was}); a builtin can be registered only once"
     { s with messages := s.messages.push { info := {}, severity := .error, text }, pristine := false } else
+  -- An effect's declarations were new where it was recorded (a module elaborated on its
+  -- own, from its own imports). Replayed into an importer that already has one of the
+  -- names, from another module or from the file itself, it would replace that
+  -- declaration while keeping everything checked against it: the kernel identifies
+  -- constants by name, so a theorem about the old one would hold of the new one
+  -- (`wiz-notes/soundness-probes/is-import-shadowing`). The same declaration reached
+  -- twice (a diamond) is never replayed twice: a module is imported once per file.
+  match e.decls.find? (s.globals.contains ·.name) with
+  | some d =>
+    let site := e.sites.find? (·.1 == d.name)
+    let text := s!"'{d.name}' is declared by both {Effect.whose (s.declSites.get? d.name |>.map (·.2))} and {Effect.whose (site.map (·.2.2))}"
+    { s with messages := s.messages.push { info := (site.map (·.2.1)).getD {}, severity := .error, text,
+                                           code := "duplicate-declaration" },
+             pristine := false }
+  | none =>
   let globals := e.decls.foldl (·.insert ·) s.globals
   let globals := { globals with builtins := e.builtins ++ globals.builtins,
                                 assumed := e.assumed ++ globals.assumed,
@@ -361,7 +382,18 @@ def infoSx : Info R → Sx
       info m.firstAlt, info m.lastAlt]
   | .decl i n ns t a at_ => node "decl" [info i, str n, names ns, term t, bool a, nat at_]
   | .unknownIdent i n ns => node "unknown" [info i, str n, names ns]
+  | .warning i m => node "warning" [info i, str m]
   | .trace i t => node "trace" [info i, str t]
+  | .syntaxRef i (.kind k) => node "syntaxKind" [info i, str k]
+  | .syntaxRef i (.cat c) => node "syntaxCat" [info i, str c]
+  -- (the expansion is kept as text: a hover only prints it)
+  | .expansion i k h e =>
+    let handler := match h with
+      | .rule site m => list [.a "rule", info site, str m]
+      | .fn what f => list [.a "fn", str what, str f]
+    node "expansion" [info i, str k, handler, list (e.toList.map (str ·.reprint))]
+  | .importMod i m => node "import" [info i, str m]
+  | .inst i ns ty t => node "inst" [info i, names ns, term ty, term t]
 
 def dInfo (x : Sx) : Option (Info R) := do
   let xs ← items? x
@@ -379,7 +411,20 @@ def dInfo (x : Sx) : Option (Info R) := do
   | "decl" => pure (.decl (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)) (← dterm (← a 4))
       (← dbool (← a 5)) (← (← atom? (← a 6)).toNat?))
   | "unknown" => pure (.unknownIdent (← dinfo (← a 1)) (← atom? (← a 2)) (← dnames (← a 3)))
+  | "warning" => pure (.warning (← dinfo (← a 1)) (← atom? (← a 2)))
   | "trace" => pure (.trace (← dinfo (← a 1)) (← atom? (← a 2)))
+  | "syntaxKind" => pure (.syntaxRef (← dinfo (← a 1)) (.kind (← atom? (← a 2))))
+  | "syntaxCat" => pure (.syntaxRef (← dinfo (← a 1)) (.cat (← atom? (← a 2))))
+  | "expansion" =>
+    let hs ← items? (← a 3)
+    let h ← match ← atom? (← hs[0]?) with
+      | "rule" => pure (SyntaxHandler.rule (← dinfo (← hs[1]?)) (← atom? (← hs[2]?)))
+      | "fn" => pure (.fn (← atom? (← hs[1]?)) (← atom? (← hs[2]?)))
+      | _ => none
+    let e ← (← items? (← a 4)).toList.mapM fun x => do pure (Syntax.atom {} (← atom? x))
+    pure (.expansion (← dinfo (← a 1)) (← atom? (← a 2)) h e.head?)
+  | "import" => pure (.importMod (← dinfo (← a 1)) (← atom? (← a 2)))
+  | "inst" => pure (.inst (← dinfo (← a 1)) (← dnames (← a 2)) (← dterm (← a 3)) (← dterm (← a 4)))
   | _ => none
 
 def Effect.toSx (e : Effect R) : Sx :=
@@ -454,7 +499,7 @@ def salt : UInt64 := hash "wiz-cache-14-builtin-once"  -- 14: a builtin key is r
 
 A **module's key** is computed from text alone, before anything is elaborated:
 
-    key(M) = hash(salt, toolchain, text of M, the C headers M imports, key(N) for M's imports N)
+    key(M) = hash(salt, toolchain, name and text of M, the C headers M imports, key(N) for M's imports N)
 
 so editing one module invalidates it and the modules that (transitively) import it, and
 nothing else. A module is elaborated **in isolation** (from the empty state plus its own
@@ -508,7 +553,9 @@ where
       match loader m with
       | none => (0, memo)
       | some src =>
-        let k₀ := mixHash (mixHash salt toolchain) (hash src)
+        -- (the name too: what a module elaborates to records it, in the sites of its
+        -- declarations and in its private names)
+        let k₀ := mixHash (mixHash (mixHash salt toolchain) (hash src)) (hash m)
         let k₀ := if trusted m then mixHash k₀ (hash "trusted") else k₀
         let k₀ := (Module.headersOf src).foldl (fun k h => mixHash k (hash ((headers h).getD ""))) k₀
         let (k, memo) := (Module.importsOf src).foldl (fun (k, memo) n =>
@@ -625,6 +672,17 @@ where
               -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
               let warns := (inner.messages.filter (·.severity == .warning)).map fun w =>
                 ({ info := cmd.info, severity := .warning, text := s!"module {m}: {w.render src}" } : Msg)
+              -- (13m) the module's `local` notation stays in it
+              let inner := inner.endModule s
+              -- a module that would replace a declaration this file already has (from
+              -- another module, or its own) is not brought in at all: the rest of its
+              -- commands were checked against its own declaration, not this file's
+              if errs.any (·.code == "duplicate-declaration") then
+                -- (the code goes up with it: an importer of an importer is dropped too)
+                let dup := (errs.find? (·.code == "duplicate-declaration")).map (·.text) |>.getD msg.text
+                s := { s with messages := s.messages.push { msg with text := dup, code := "duplicate-declaration" } ++ warns,
+                              imported := m :: s.imported, pristine := false }
+              else
               s := { inner with messages := (if errs.isEmpty then s.messages else s.messages.push msg) ++ warns,
                                 module := s.module, infos := s.infos }
           pos := stop

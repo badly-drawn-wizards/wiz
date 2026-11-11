@@ -180,11 +180,11 @@ structure Decl (R : Type) where
   applications) -/
   inline : Bool := false
   /-- an implementation for the compiler: the term compiled code runs instead of `value`
-  (a structurally recursive definition's equations, with direct recursion instead of the
-  recursor; a partial definition's body; a native implementation's constant). The kernel
-  never unfolds it, but checks it against `type` (`checkImpl` in `addDecl`/`setImpl`,
-  `addPartialImpl`), so erasure only sees checked terms. That it computes what `value`
-  computes is not checked. -/
+  (a structurally recursive definition's value with direct recursion instead of the
+  recursor, `deriveImpl`; a partial definition's body; a native implementation's
+  constant). The kernel never unfolds it, but checks it against `type` (`checkImpl` in
+  `addDecl`/`setImpl`, `addPartialImpl`), so erasure only sees checked terms, and checks
+  that a derived one computes what `value` computes (`checkImplAgrees`). -/
   impl : Option (Term R) := none
   /-- a partial definition's witness: a term of its type that the kernel checks
   (`addPartialDecl`). The definition stays opaque (`value = none`) but is not an axiom:
@@ -201,6 +201,14 @@ def Decl.nativeImpl? {R : Type} (d : Decl R) : Option Name :=
   match d.impl with
   | some (.const g _) => if g == d.name then none else some g
   | _ => none
+
+/-- Does compiled code run equations of this definition derived from its value? A
+structurally recursive definition's `impl` (its value with direct recursion,
+`deriveImpl`): the kernel checks its type and that it agrees with the value
+(`checkImplAgrees`). Not a native implementation (`nativeImpl?`, trusted and listed by
+`#print axioms`) nor a partial definition's body (it has no value to agree with). -/
+def Decl.derivedEquations {R : Type} (d : Decl R) : Bool :=
+  d.impl.isSome && d.value.isSome && d.witness.isNone && d.nativeImpl?.isNone
 
 namespace Term
 
@@ -434,6 +442,10 @@ structure Globals (R : Type) where
   (`unboxedSigma` in `Compiler/Erase.lean`). Off by default: it is not stable under
   substitution. -/
   unboxStructs : Bool := false
+  /-- a compiler option, not read by the kernel (on by default; off only to compare
+  compiled code in the tests): compiled equations get the direct calls a nested split
+  reverted moved into its branches before erasure (`Push.pushCalls`) -/
+  pushCalls : Bool := true
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false
@@ -509,6 +521,28 @@ def opaqueTo? (g : Globals R) (T : Name) : Option String :=
   match g.opaques[T]? with
   | some m => if m == g.module then none else some m
   | none => none
+
+/-- (13b) The kernel name of a private declaration `n` of module `m` (not the main file):
+`_private.m.0.n`, as Lean does, so that two modules' private `helper`s are different
+constants and never clash (`docs/stages/23-grail.md`, 23b). In `m`, `helper` resolves to
+it (`resolve`); messages show `helper` (`privateBase`). -/
+def privateName (m n : Name) : Name := "_private." ++ m ++ ".0." ++ n
+
+/-- The source name of a private declaration's kernel name (`privateName`); other names
+as they are. -/
+def privateBase (n : Name) : Name :=
+  if n.startsWith "_private." then
+    match n.splitOn ".0." with
+    | _ :: rest@(_ :: _) => ".0.".intercalate rest
+    | _ => n
+  else n
+
+/-- What the name `n`, as written in the module being elaborated, refers to: the
+module's own private declaration of that name if it has one, else `n`. -/
+def resolve (g : Globals R) (n : Name) : Name :=
+  if g.module.isEmpty then n else
+  let p := privateName g.module n
+  if g.decls.contains p then p else n
 
 /-- (13b) The module `n` is private to, if that is not the one being elaborated. -/
 def privateTo? (g : Globals R) (n : Name) : Option String :=

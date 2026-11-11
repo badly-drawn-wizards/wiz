@@ -1,5 +1,7 @@
 import Grail.Test
 import Grail.Selfhost
+import Grail.Exec
+import Grail.Command
 
 /-!
 # The build graph and its scheduler (stage 23g)
@@ -14,7 +16,9 @@ wrote), by the scheduler, in its own process, cheaply; a node whose output direc
 
 The rest are **jobs**, run from a ready queue, at most `-j N` at a time, each as a
 separate process (`<self> --grail-job JOB TOOLCHAIN-FLAGS`, or the C compiler directly)
-under `timeout`, which kills the job's whole process group when its time is up. A job
+under a supervisor (`Grail/Exec.lean`, 23k), which kills the job's whole process group
+when its time is up or grail dies. Command targets (23i, `Grail/Command.lean`) are jobs
+too. A job
 writes into a temporary directory that the scheduler renames into place when the job
 succeeds. A failed job is reported, and the nodes that depend on it are skipped; the
 others still run (a test is the exception: it runs anyway, its output being the error).
@@ -52,6 +56,9 @@ inductive Action where
   /-- generate the self-hosted program `role` (`Grail/Selfhost.lean`) -/
   | source (role : String)
   | self1 | stage2 | self2 | fixpoint
+  /-- (23i) a command target: its tools (an `exe` tool by the position of its link among
+  the node's dependencies) and inputs (one another command makes: by its position) -/
+  | command (c : Command) (tools : Array (Tool × Option Nat)) (inputs : Array (String × Option Nat))
   deriving Inhabited
 
 structure Node where
@@ -133,7 +140,34 @@ def addSelfhost (dir : System.FilePath) (libs : List String) (name role : String
     pure (← GraphM.add "fixpoint" (pure (.fixpoint, #[k1, k3], false))).toList
   | _ => throw (IO.userError s!"unknown self-hosted target {role} (checker, compiler, bootstrap)")
 
-def addTarget (dir : System.FilePath) (libs : List String) : Target → GraphM (List Nat)
+/-- (23i) A command, after what makes its inputs and its `exe` tools. -/
+partial def addCommand (dir : System.FilePath) (libs : List String) (all : List Target) (c : Command) :
+    GraphM (Option Nat) := do
+  let r ← GraphM.add s!"command {c.name}" do
+    let mut deps : Array Nat := #[]
+    let mut tools := #[]
+    for t in c.tool :: c.uses do
+      match t with
+      | .path _ => tools := tools.push (t, none)
+      | .exe n =>
+        let some file := all.findSome? fun | .exe m f => if m == n then some f else none | _ => none
+          | throw (IO.userError s!"command {c.name}: no exe target {n}")
+        let some l ← addLink dir libs n file true | throw (IO.userError s!"command {c.name}: a cycle through exe {n}")
+        tools := tools.push (t, some deps.size)
+        deps := deps.push l
+    let mut inputs := #[]
+    for i in c.inputs do
+      match producerOf all i with
+      | some p =>
+        let some k ← addCommand dir libs all p
+          | throw (IO.userError s!"command {c.name}: a cycle through command {p.name} (input {i})")
+        inputs := inputs.push (i, some deps.size)
+        deps := deps.push k
+      | none => inputs := inputs.push (i, none)
+    pure (.command c tools inputs, deps, false)
+  pure r
+
+def addTarget (dir : System.FilePath) (libs : List String) (all : List Target := []) : Target → GraphM (List Nat)
   | .check _ f => do pure (← addCheck dir libs f).toList
   | .lib _ root => do
     let mut ids := #[]
@@ -144,6 +178,7 @@ def addTarget (dir : System.FilePath) (libs : List String) : Target → GraphM (
   -- `grail test`
   | .tests _ _ => pure []
   | .selfhost n role => addSelfhost dir libs n role
+  | .command c => do pure (← addCommand dir libs all c).toList
 
 def libsOf (ts : List Target) : List String := ts.filterMap fun | .lib _ r => some r | _ => none
 
@@ -154,12 +189,6 @@ structure Done where
   key : UInt64
   out : System.FilePath
   deriving Inhabited
-
-/-- How a job process ended. -/
-structure Outcome where
-  code : UInt32
-  stdout : String
-  stderr : String
 
 /-- What a job's end means: success (and whether to record the output), and its report. -/
 structure Finish where
@@ -172,6 +201,10 @@ inductive How where
   | grail (job : Sx)
   /-- a command, given the output directory -/
   | cmd (cmd : String) (args : System.FilePath → Array String)
+  /-- (23i) a command target's program: its arguments, working directory and
+  environment, given the job's directory -/
+  | command (cmd : String) (args : System.FilePath → Array String) (cwd : System.FilePath → System.FilePath)
+      (env : List (String × String))
   /-- in the scheduler's process (cheap: writing a generated file) -/
   | here (act : System.FilePath → IO (Except String Unit))
 
@@ -186,6 +219,8 @@ structure Job where
   finish : Option (Outcome → System.FilePath → IO Finish) := none
   /-- after success, up to date (`true`) or run: installs, and more report -/
   onOk : Bool → System.FilePath → IO String := fun _ _ => pure ""
+  /-- before it runs, given its directory (a command's output directories) -/
+  setup : System.FilePath → IO Unit := fun _ => pure ()
 
 /-- A node whose dependencies are done: finished already, failed, or a job. -/
 inductive Prep where
@@ -199,17 +234,6 @@ def Runner.outDir (r : Runner) (key : UInt64) : System.FilePath := r.ctx.grailDi
 def Runner.jobSx (r : Runner) (out : System.FilePath) (job : Sx) : Sx :=
   node "job" [str r.ctx.dir.toString, str r.ctx.std.toString, str (toString r.ctx.binId.toNat),
     list (r.ctx.libRoots.map (str ·.toString)), str out.toString, job]
-
-def secs (ms : Nat) : String :=
-  let f := toString (ms % 1000)
-  s!"{ms / 1000}.{String.ofList (List.replicate (3 - f.length) '0')}{f}"
-
-/-- Run a command with a time limit (`timeout` kills its process group). -/
-def runTimed (ms : Nat) (cmd : String) (args : Array String) : IO Outcome := do
-  try
-    let o ← IO.Process.output { cmd := "timeout", args := #["-k", "5", secs ms, cmd] ++ args }
-    pure { code := o.exitCode, stdout := o.stdout, stderr := o.stderr }
-  catch e => pure { code := 127, stdout := "", stderr := s!"{cmd}: {e}" }
 
 def indent (s : String) : String :=
   "  " ++ (s.trimAsciiEnd.toString.replace "\n" "\n  ")
@@ -237,6 +261,61 @@ def Runner.judgeTest (r : Runner) (file : String) (update : Bool) (results : Tes
   | some e =>
     if e != actual then report { file, ok := false, message := firstDifference e actual }
     else report { file, ok := true }
+
+/-- (23i) A command whose dependencies are done: its key, and the job that runs it. -/
+def Runner.prepCommand (r : Runner) (c : Command) (tools : Array (Tool × Option Nat))
+    (inputs : Array (String × Option Nat)) (d : Nat → Done) : IO Prep := do
+  let cwd ← IO.currentDir
+  let abs (p : System.FilePath) : System.FilePath := if p.isAbsolute then p else cwd / p
+  let pkgAbs := abs r.ctx.dir
+  -- the tools: what runs, and identities
+  let mut ids := #[]
+  let mut exe := ""
+  for (t, pos) in tools do
+    let (run, id) ← match t, pos with
+      | .exe n, some i => pure ((abs ((d i).out / n)).toString, s!"exe {n} {(d i).key.toNat}")
+      | .path n, _ => match ← r.resolveTool n with
+        | .ok x => pure x
+        | .error e => return .fail s!"command {c.name}: {e}"
+      | .exe n, none => return .fail s!"command {c.name}: no link for {n}"
+    if exe.isEmpty then exe := run
+    ids := ids.push id
+  -- the inputs: what made them, or their contents
+  let mut ins := #[]
+  for (i, pos) in inputs do
+    match pos with
+    | some k => ins := ins.push s!"{i} from {(d k).key.toNat}"
+    | none =>
+      let f := r.ctx.dir / i
+      if !(← f.pathExists) then return .fail s!"command {c.name}: the input {i} does not exist, and no target makes it"
+      ins := ins.push s!"{i} {(← hashPath f).toNat}"
+  let key := mixHash (hash "command") (hash (toString [toString (repr { c with name := "" }), toString ids.toList, toString ins.toList]))
+  let label := s!"command {c.name}"
+  pure (.job {
+    key, timeoutMs := r.timeoutMs, force := c.phony,
+    setup := fun tmp => prepareOutputs c (abs tmp / "out"),
+    how := .command exe (fun tmp => renderArgs c pkgAbs (abs tmp / "out"))
+      (fun tmp => if c.inOutDir then abs tmp / "out" else pkgAbs) c.env,
+    finish := some fun o tmp => do
+      let logText := (if c.stdout.isSome then "" else o.stdout) ++ o.stderr
+      IO.FS.writeFile (tmp / "log.txt") logText
+      let logDir := r.ctx.grailDir / "log"
+      let logFile := logDir / s!"{c.name}.txt"
+      let shown := if r.ctx.dir.toString == "." then s!".grail/log/{c.name}.txt" else logFile.toString
+      let failed (msg : String) : IO Finish := do
+        IO.FS.createDirAll logDir
+        IO.FS.writeFile logFile logText
+        pure { res := .error s!"{msg}\n(the whole log: {shown})" }
+      if o.code != 0 then
+        return ← failed (describeExit o.code r.timeoutMs ++
+          (if logText.trimAscii.isEmpty then ", and printed nothing" else s!"; the end of its output:\n{tailLines logText}"))
+      if let some p := c.stdout then IO.FS.writeFile (tmp / "out" / p) o.stdout
+      if let .error e ← checkOutputs c (tmp / "out") then return ← failed e
+      pure { res := .ok (), record := !c.phony,
+             log := s!"[{label}]\n" ++ (if c.phony then o.stdout ++ o.stderr else "") },
+    onOk := fun _ out => do
+      if !c.phony then installOutputs r c out
+      pure "" })
 
 /-- Prepare a node whose dependencies are done (`deps`, in the node's order; only a
 tolerant node sees failed ones). -/
@@ -301,7 +380,7 @@ def Runner.prep (r : Runner) (update : Bool) (results : TestResults) (n : Node)
       how := .grail (node "test" [str file, str kind.name, str exe]),
       finish := some fun o out => do
         if o.code == 124 then r.judgeTest file update results (.error s!"timed out after {secs r.testTimeoutMs} s")
-        else if o.code != 0 then r.judgeTest file update results (.error s!"the test's process failed ({o.code}): {o.stderr}")
+        else if o.code != 0 then r.judgeTest file update results (.error s!"the test's process failed: {failureMessage o r.testTimeoutMs}")
         else r.judgeTest file update results (.ok (← IO.FS.readFile (out / "actual"))) })
   | .source role =>
     let (prog, self) ← r.selfhostSources role
@@ -336,6 +415,7 @@ def Runner.prep (r : Runner) (update : Bool) (results : TestResults) (n : Node)
     let input := r.ctx.dir / genSelf "compiler"
     let key := mixHash (hash "self2") (hash (toString [toString (d 0).key, ← IO.FS.readFile input]))
     pure (.job { key := key, timeoutMs := r.timeoutMs, how := .grail (node "run-on" [str ((d 0).out / "stage2").toString, str input.toString, str "self2.c"]) })
+  | .command c tools inputs => r.prepCommand c tools inputs (d ·)
   | .fixpoint =>
     let self1 ← IO.FS.readFile ((d 0).out / "self1.c")
     let self2 ← IO.FS.readFile ((d 1).out / "self2.c")
@@ -385,8 +465,7 @@ partial def Runner.schedule (r : Runner) (g : Graph)
         | some f => f o tmp
         | none =>
           if o.code == 0 then pure { res := .ok (), log := s!"[{label}]\n{o.stdout}" }
-          else if o.code == 124 then pure { res := .error s!"timed out after {secs j.timeoutMs} s" }
-          else pure { res := .error (if o.stderr.isEmpty then o.stdout else o.stderr) }
+          else pure { res := .error (failureMessage o j.timeoutMs) }
       catch e => pure { res := .error (toString e) }
     match fin.res with
     | .ok () =>
@@ -416,10 +495,17 @@ partial def Runner.schedule (r : Runner) (g : Graph)
         | .error e => { code := 1, stdout := "", stderr := e })
     | .grail job =>
       let args := #["--grail-job", (r.jobSx tmp job).render] ++ r.ctx.tc.toFlags.toArray
-      let t ← IO.asTask (prio := .dedicated) (runTimed ms r.self.toString args)
+      let t ← IO.asTask (prio := .dedicated) (runSupervised r.self ms r.self.toString args)
       st.modify fun s => { s with tasks := t.map (i, ·) :: s.tasks }
     | .cmd cmd args =>
-      let t ← IO.asTask (prio := .dedicated) (runTimed ms cmd (args tmp))
+      let t ← IO.asTask (prio := .dedicated) (runSupervised r.self ms cmd (args tmp))
+      st.modify fun s => { s with tasks := t.map (i, ·) :: s.tasks }
+    | .command cmd args cwd env =>
+      let t ← IO.asTask (prio := .dedicated) do
+        try
+          j.setup tmp
+          runSupervised r.self ms cmd (args tmp) (some (cwd tmp)) env
+        catch e => pure ({ code := 127, stdout := "", stderr := toString e } : Outcome)
       st.modify fun s => { s with tasks := t.map (i, ·) :: s.tasks }
   -- a node whose dependencies are done
   let ready (i : Nat) : IO Unit := do
@@ -490,11 +576,54 @@ partial def Runner.schedule (r : Runner) (g : Graph)
 /-- Build these targets (of a package with targets `all`); false if anything failed. -/
 def Runner.build (r : Runner) (all targets : List Target) : IO Bool := do
   let g ← try
-      let (_, g) ← (targets.forM fun t => do let _ ← addTarget r.ctx.dir (libsOf all) t).run {}
+      if let .error e := checkCommands all then throw (IO.userError e)
+      let (_, g) ← (targets.forM fun t => do let _ ← addTarget r.ctx.dir (libsOf all) all t).run {}
       pure g
     catch e => r.err s!"{e}\n"; return false
+  -- (23i) outputs an earlier build installed that no command declares now
+  r.out (← removeStale r.ctx all)
   let res ← r.schedule g (r.prep false (← IO.mkRef {}))
   pure (res.all (· matches some (.ok _)))
+
+/-- (23j) `grail run TARGET -- ARGS`: build what TARGET needs, then run it with `extra`
+appended, its stdio grail's own (not captured), in the package directory, in grail's
+process group (so Ctrl-C reaches it). A command run this way is not recorded: its
+outputs are written at their paths in the package, and its stdout is not redirected.
+Returns its exit code (128+N if it died of signal N). -/
+def Runner.runTarget (r : Runner) (all : List Target) (t : Target) (extra : Array String) : IO UInt32 := do
+  let cwd ← IO.currentDir
+  let pkgAbs := if r.ctx.dir.isAbsolute then r.ctx.dir else cwd / r.ctx.dir
+  let exeTarget (n : String) : Option Target := all.find? fun | .exe m _ => m == n | _ => false
+  let bin (n : String) : System.FilePath := pkgAbs / ".grail" / "bin" / n
+  let spawn (cmd : String) (args : Array String) (env : List (String × String)) : IO UInt32 := do
+    let child ← try IO.Process.spawn { cmd, args, cwd := pkgAbs, env := env.toArray.map fun (k, v) => (k, some v) }
+      catch e => r.err s!"{cmd}: {e}\n"; return 127
+    child.wait
+  match t with
+  | .exe n _ =>
+    unless ← r.build all [t] do return 1
+    spawn (bin n).toString extra []
+  | .command c =>
+    let mut needs : List Target := []
+    for tool in c.tool :: c.uses do
+      if let .exe n := tool then
+        match exeTarget n with
+        | some e => needs := needs ++ [e]
+        | none => r.err s!"command {c.name}: no exe target {n}\n"; return 1
+    for i in c.inputs do
+      if let some p := producerOf all i then needs := needs ++ [.command p]
+    unless ← r.build all needs do return 1
+    let exe ← match c.tool with
+      | .exe n => pure (bin n).toString
+      | .path n => match ← r.resolveTool n with
+        | .ok (run, _) => pure run
+        | .error e => r.err s!"{e}\n"; return 127
+    for i in c.inputs do
+      unless (producerOf all i).isSome || (← (r.ctx.dir / i).pathExists) do
+        r.err s!"command {c.name}: the input {i} does not exist, and no target makes it\n"; return 1
+    prepareOutputs c pkgAbs
+    spawn exe (renderArgs { c with inOutDir := false } pkgAbs pkgAbs ++ extra) c.env
+  | _ => r.err s!"grail run: {t.name} is not an exe or a command target\n"; pure 2
 
 /-- Run the tests of these targets whose path contains one of `filters` (all, if none). -/
 def Runner.tests (r : Runner) (targets : List Target) (filters : List String) (update : Bool) :

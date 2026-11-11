@@ -1,0 +1,20 @@
+import FeralCore
+import Feral
+-- REJECTED (Rust E0597: a reference stored into a longer-lived place).
+-- expect: E0597 at 15
+-- `slot` holds references of a's region; storing `&b` there needs `b`'s borrow to
+-- outlive `a`'s, and the scopes only give evidence the other way round (L22).
+feral
+  fn remember {'a 'b 'm} {'a : 'b} (slot : &'m mut Option (&'b U64)) (x : &'a U64) : Unit := {
+    *slot := .some x
+  }
+
+  fn bad () : Unit := {
+    let a := 3;
+    let mut slot := .some (&a);
+    { let b := 5; remember (&mut slot) (&b) };
+    match slot with
+    | .some s => ()
+    | .none => ()
+  }
+end

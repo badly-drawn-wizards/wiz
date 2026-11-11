@@ -26,15 +26,6 @@ rule (if any) rewrites it.
 
 namespace Wiz.Elab
 
-/-- A rule: the node kind it applies to, the pattern, the template, and the names that
-`notation` arguments use in the template (`[]` for `macro_rules`, which uses `$x`). -/
-structure MacroRule where
-  kind : Name
-  pattern : Syntax
-  template : Syntax
-  vars : List Name := []
-  deriving Inhabited
-
 def antiquotName? : Syntax → Option Name
   | .node _ "antiquot" args => args[1]? >>= Syntax.getId?
   | _ => none
@@ -88,12 +79,18 @@ partial def instantiate (binds : List (Name × Syntax)) (vars : List Name) (scop
   --| sorry
   --sol>
 
-/-- Expand `stx` with the latest matching rule, if any. -/
-def expandMacro? (rules : List MacroRule) (stx : Syntax) (scope : Nat) : Option Syntax := do
+/-- Expand `stx` with the latest matching rule, if any; also returns the rule. The
+template's ranges are marked synthetic (11q): they are in the file that declared the
+rule, while what the antiquotations bind keeps the ranges the user wrote. -/
+def expandMacroRule? (rules : List MacroRule) (stx : Syntax) (scope : Nat) : Option (Syntax × MacroRule) := do
   for r in rules do
     if r.kind == stx.kind then
       if let some binds := matchPattern r.pattern stx [] then
-        return instantiate binds r.vars scope "" r.template
+        return (instantiate binds r.vars scope "" r.template.markSynthetic, r)
   none
+
+/-- Expand `stx` with the latest matching rule, if any. -/
+def expandMacro? (rules : List MacroRule) (stx : Syntax) (scope : Nat) : Option Syntax :=
+  (expandMacroRule? rules stx scope).map (·.1)
 
 end Wiz.Elab

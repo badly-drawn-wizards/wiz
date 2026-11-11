@@ -753,7 +753,8 @@ Reference: Pujet & Tabareau, *Observational Equality: Now for Good* (POPL 2022).
 `p = q` at a Σ type needs a proof that `B p.1 = B q.1`; build it with
 `transp A₁ p.1 (fun y _ => B p.1 = B y) (reflTy (B p.1)) q.1 e`. For `Prop`, use
 `Level.equiv l 0`; for `Type u` (`Level.isNeverZero`) it's `vEqType`. Otherwise
-it's stuck. -/
+it's stuck. At a proposition (`propSort?`), the equation is `True` (proof irrelevance);
+in the Σ rule, if `A₁` is a proposition, the proof is just `reflTy (B p.1)`. -/
 partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   -- numerals: decide directly, or else look one step inside (`vNatView`)
   if let (.natLit n, .natLit m) := (whnf a, whnf b) then (if n == m then .unit 0 else .empty 0) else
@@ -772,6 +773,9 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   else
   --<sol
   let v (i : Nat) : Term R := .var i
+  -- at a proposition: proof irrelevance (an equation at a proposition is ill typed, and
+  -- any two proofs are convertible, so it is `True`; never `False`)
+  if propSort? A == some true then .unit 0 else
   match A with
   | .pi x _ _ A₁ B _ =>
     -- (x :0 A₁) → (B x ∋ a x = b x); env: b, a, B
@@ -779,10 +783,16 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   | .sigma x _ A₁ B _ =>
     -- env (inside the Σ, after `e`): b, a, B, A₁
     let P : Term R := .lam "y" (.lam "_" (.eqTy (.app (v 5) (.fst (v 4))) (.app (v 5) (v 1))))
-    let apB : Term R := .transp (v 4) (.fst (v 2)) P (.reflTy (.app (v 3) (.fst (v 2)))) (.fst (v 1)) (v 0)
+    -- (if `A₁` is a proposition, `p.1 ≡ q.1` by irrelevance, so `B p.1 ≡ B q.1`: `reflTy`
+    -- proves it, and `transp` along a proposition would be ill typed)
+    let apB : Term R := if propSort? (whnf A₁) == some true then .reflTy (.app (v 3) (.fst (v 2)))
+      else .transp (v 4) (.fst (v 2)) P (.reflTy (.app (v 3) (.fst (v 2)))) (.fst (v 1)) (v 0)
     let body : Term R := .eq (.app (v 3) (.fst (v 1)))
       (.cast (.app (v 3) (.fst (v 2))) (.app (v 3) (.fst (v 1))) apB (.snd (v 2))) (.snd (v 1))
-    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁] body) (some 0)
+    -- the equation's own type `A` rides along at the end of the environment, unused by
+    -- the body: `eqSigmaSides?` reads `A`, `a`, `b` back, so that the elaborator's `rfl`
+    -- can prove the whole equation by one `refl` instead of field by field
+    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁, A] body) (some 0)
   | .unit _ | .empty _ => .unit 0
   | .enum _ => match a, b with
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
@@ -1388,6 +1398,14 @@ partial def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .scase l I D lv P m s i => vScase g l I D lv P m s i v
 
 end
+
+/-- The equation `a =_A b` that computed (by `vEq`, at a Σ type `A`) to this Σ, read back
+from its closure: `(A, a, b)`. A guess by shape (a user's Σ can have such a closure too), so
+whoever uses it must check that `vEq A a b` is the type it has (the elaborator's `rfl`
+compares the two sides, and the kernel checks the `refl` it builds). -/
+def eqSigmaSides? : Val R → Option (Val R × Val R × Val R)
+  | .sigma "e" _ _ (.mk [b, a, _, _, A@(.sigma ..)] (.eq _ (.cast ..) (.snd (.var 1)))) (some _) => some (A, a, b)
+  | _ => none
 
 /-- Normal form of a closed term (every definition unfolded). -/
 def nf (g : Globals R) (t : Term R) : Term R :=
