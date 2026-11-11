@@ -230,7 +230,10 @@ reference `GLIBC_2.29`/`GLIBC_2.30` symbols, so Lean's own `leanc` has the same
 requirement. On an older system `wiz check` works and `wiz build` needs `--cc gcc` (and
 `libgmp-dev`). Programs it builds need glibc 2.27 or later (libc, libpthread, and libm
 and ld.so when they use them) and nothing else: GMP and the GC are linked statically.
-The release job checks this by running programs built on Ubuntu 20.04 in Ubuntu 18.04. That has
+The release job checks this by running programs built on Ubuntu 20.04 in Ubuntu 18.04. The runtime keeps to glibc 2.27: a spawn in a directory uses
+`posix_spawn_file_actions_addchdir_np` (glibc 2.29) when the headers have it, else fork,
+chdir and exec with the same errors (`-DWIZ_NO_SPAWN_CHDIR` forces that path; the `sys`
+tests run both). That has
 licence consequences for programs you distribute, explained in docs/building.md
 ("What `wiz build` links").
 

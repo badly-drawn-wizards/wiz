@@ -15,6 +15,7 @@
     "ffi",
     "llvm",
     "reuse",
+    "serial",
     "sys"
   ]},
   {"name": "library", "split": 3, "select": [
@@ -22,7 +23,9 @@
     "classes",
     "deriving",
     "=grail",
+    "=grail-commands",
     "=grail-deps",
+    "=grail-hygiene",
     "=grail-jobs",
     "hdl",
     "infoview",
