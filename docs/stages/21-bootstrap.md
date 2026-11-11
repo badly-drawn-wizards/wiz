@@ -281,3 +281,35 @@ frontends (accepted and rejected alike: linear functions passed and used twice, 
 `let 0`, implicit parameters used at runtime, a `fun`'s quantity against the expected
 one, a quantity `2`); `selfhostVerdicts` pins the three differences above; a program
 with quantities is compiled and run under both collectors.
+
+## 21n: `private`, and unknown commands, in the self-hosted frontend
+
+Parity with [13b](13-language.md) as far as it is reachable. `private def …` (any
+`command.private`: a definition, axiom, partial definition, `mutual` block, inductive
+type or structure) was an error here ("unsupported syntax command.def"); private
+constructors (`| private c`), private fields and `private mk ::` were parsed and ignored.
+Now `private` before a command declares the same names as without it.
+
+**Privacy is not enforced, because nothing can reach it.** In the Lean toolchain a private
+name is private to its *module*: another module gets "'x' is private to module M", and
+there a type with private parts is opaque (it equals only itself, isn't matched, isn't
+built by tuples or look-alike types; its recursors are private). The module itself sees
+everything as usual. The self-hosted toolchain has exactly one module, the input file:
+every `import` loads the frontend's own Prelude (`preludeText`), which declares nothing
+private. So every check of 13b is about a use from another module, and in a one-module
+world each of them holds vacuously; treating `private` as public there is exactly the
+Lean frontend's behaviour inside the declaring module. Mirrored: the syntax in every
+position, and the in-module meaning. Not mirrored, and unreachable: the "private to
+module" errors, the opacity of types with private constructors or fields outside the
+module, private recursors. PR #79's `T.desc` and `--strict-privacy` are the same (module
+crossing). **The day the self-hosted toolchain gets modules**, privacy must come with them:
+`Globals` needs each name's module (and whether it is private); `Scope.lookup` from
+another module must reject a private name; a type with a private constructor or field
+must become an opaque constant outside its module (no unfolding of its `μ` in the
+frontend's conversion, no `match`, `.1` or constructor through the Σ), while the kernel
+keeps checking against the full definition, as 13b's elaborator view does.
+
+An unknown command, or a modifier the frontend doesn't know (`sealed`, `noncomputable`
+when the grammar gets them), is an error naming it ("unsupported command
+command.sealed"), never ignored.
+

@@ -2971,6 +2971,20 @@ def quantityProgram : String :=
   "  IO.println (Nat.toString (get b + sum p));\n  IO.println (Nat.toString (Nat.add 1 (lin 4 (fun y => y))));\n" ++
   "  IO.println (Nat.toString (Nat.add (id1 7) (len (List.cons 1 (List.cons 2 .nil)))))\n"
 
+/-- (stage 21n) `private` everywhere the Lean frontend takes it: with one module, the
+names are used as usual (privacy is per module). -/
+def privateDecls : List (String × Bool) := [
+  ("private def secret : Nat := 42\ndef useIt : Nat := secret\nprivate axiom ax : Nat\ndef useAx : Nat := ax\n", true),
+  ("inductive Tok where\n  | num (n : Nat)\n  | private hidden (n : Nat)\ndef t : Tok := Tok.hidden 3\n" ++
+     "def val : Tok → Nat\n  | .num n => n\n  | .hidden n => n\n", true),
+  ("structure Acct where\n  owner : Nat\n  private bal : Nat\ndef b (a : Acct) : Nat := a.bal\n" ++
+     "structure Shr (A : Type) where\n  private mk ::\n  val : A\ndef s : Shr Nat := Shr.mk 3\n", true),
+  ("private inductive P where\n  | a\ndef pa : P := P.a\nprivate structure S where\n  x : Nat\ndef sx (s : S) : Nat := s.x\n", true),
+  ("private mutual\ndef ev : Nat → Bool\n  | .zero => .true\n  | .succ n => od n\ndef od : Nat → Bool\n" ++
+     "  | .zero => .false\n  | .succ n => ev n\nend\ndef e2 : Bool := ev 2\n", true),
+  ("mutual\nprivate def ev : Nat → Bool\n  | .zero => .true\n  | .succ n => od n\nprivate def od : Nat → Bool\n" ++
+     "  | .zero => .false\n  | .succ n => ev n\nend\n", false),
+  ("private def dup : Nat := 1\ndef dup : Nat := 2\n", false)]
 /-- (stage 21i) Phantom parameters, for both frontends. -/
 def phantomHeader : String :=
   "inductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\ninductive Proxy (A : Type) where\n  | mk\n" ++
@@ -3286,6 +3300,11 @@ def selfHostGroup : Group where
     { name := "the self-hosted backend: quantities erase and run, with either collector (21m)", run := fun _ => do
         selfhostCompileRun quantityProgram "6\n5\n9\n"
         selfhostCompileRun quantityProgram "6\n5\n9\n" (flags := #["--rc"]) },
+    { name := "the self-hosted frontend: private declarations, constructors and fields, as in one Lean module (21n)", run := fun _ =>
+        selfhostAgrees "" privateDecls },
+    { name := "the self-hosted frontend: an unknown command is an error naming it (21n)", run := fun _ =>
+        selfhostCheckFile "import Prelude\ndef f : Nat := 1\n#eval f\nattribute [inline] f\ndef g : Nat := f\n"
+          "f : Nat\nerror: unsupported command command.eval\nerror: unsupported command command.attrInline\ng : Nat\n" },
     { name := "the self-hosted frontend: constructor parameters from the expected type (21j)", run := fun _ =>
         selfhostAgrees ("def Code : Bool → Type\n  | .true => Nat\n  | .false => Bool\n" ++
           "structure Tagged (b : Bool) where\n  val : Code b\n")

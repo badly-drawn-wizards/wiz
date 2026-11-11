@@ -3965,6 +3965,13 @@ def doCats (cats : List Cat) : List Cat :=
       (.cons (.mk "doSeq.bind" 1024 0 (.seq .ident (.seq (.atom "←") (thenRest (.cat "term" 0)))))
       (.cons (.mk "doSeq.seq" 1024 0 (thenRest (.cat "term" 0)))
       (.cons (.mk "doSeq.let" 1024 0 (.seq (.atom "let") (.seq .ident (.seq (.atom ":=") (thenRest (.cat "term" 0)))))) .nil)))) .nil) .nil))
+-- (stage 21n) a `private` command is the command (one module: see `stepCommand`)
+def unwrapPrivate (s : Syntax) : Syntax := match strEq (kindOf s) "command.private" with
+  | .true => kid s 1
+  | .false => s
+-- the commands `defStep` elaborates
+def knownCommand (k : String) : Bool := Bool.or (Bool.or (strEq k "command.def") (strEq k "command.defEqns"))
+  (Bool.or (strEq k "command.inductive") (Bool.or (strEq k "command.check") (strEq k "command.reduce")))
 -- the output so far, the globals, and the parser's tables and notations
 inductive Run where
   | mk (out : List String) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)
@@ -3989,9 +3996,12 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
     | .true => match infixCmd cats tokens stx0 with
       | .mk cats' tokens' note => .next .none stop gs cats' tokens' (.cons note notes)
     | .false =>
-      let stx := match notes with
+      let stx1 := match notes with
         | .nil => stx0
         | _ => expandNotes notes stx0;
+      -- (stage 21n) `private` declares the same names: privacy is per module, and the
+      -- self-hosted toolchain has one module (docs/stages/21-bootstrap.md, 21n)
+      let stx := unwrapPrivate stx1;
       let step := match strEq (kindOf stx) "command.partial" with
         | .true => partialCmd gs (one stx)
         | .false => match strEq (kindOf stx) "command.mutual" with
@@ -4007,7 +4017,11 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
                 | .true => externCmd gs stx
                 | .false => match strEq (kindOf stx) "command.foreignType" with
                   | .true => foreignTypeCmd gs stx
-                  | .false => defStep gs stx;
+                  | .false => match knownCommand (kindOf stx) with
+                    | .true => defStep gs stx
+                    -- (an unknown command, or a modifier this frontend doesn't know, is
+                    -- an error naming it, never ignored)
+                    | .false => errStep gs (String.append "unsupported command " (kindOf stx));
       match step with
       | .mk line gs' => match newDuplicate gs gs' with
         | .some x => .next (.some (String.append (String.append "error: '" x) "' has already been declared")) stop gs cats tokens notes
