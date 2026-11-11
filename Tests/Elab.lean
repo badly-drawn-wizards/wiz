@@ -4315,6 +4315,40 @@ def selfHostGroup : Group where
         ioDiverges (withReg ++ "\n" ++ verdict ++ s!"def main : IO Unit := IO.println (verdict {loop.toWiz})\n") }
   ]
 
+/-- (13m) The messages of `input` with the module `Loc` (`loc`) importable besides the
+library, through the frontend (`runFrontend`) and through the command cache
+(`Cache.elaborateUncached`, what `wiz check` runs): errors (rendered) and the rest. -/
+def runLoc (loc input : String) : IO (List (Array String × Array String)) := do
+  let lib ← preludeLoader
+  let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Loc" then some loc else lib m }
+  let split (s : CommandState ZeroOneMany) :=
+    ((s.messages.filter (·.severity == .error)).map (·.render input), (s.messages.filter (·.severity != .error)).map (·.text))
+  pure [split (runFrontend input init), split (← Cache.elaborateUncached input init)]
+
+def okLoc (loc input : String) (infos : List String := []) : IO Unit := do
+  for (errs, msgs) in ← runLoc loc input do
+    unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+    checkEq (repr infos).pretty (repr msgs.toList).pretty
+
+def failsLoc (loc input fragment : String) : IO Unit := do
+  for (errs, _) in ← runLoc loc input do
+    unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+    unless (errs[0]!.splitOn fragment).length > 1 do
+      throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
+
+/-- A module with `local` notation (an operator, a keyword with its macro rule) and an
+exported operator that is defined with them. -/
+def locMod : String := "import Prelude
+local infixr:67 \" & \" => String.append
+local infixr:67 \" :> \" => List.cons
+local syntax (name := shout) \"shout\" term : term
+local macro_rules
+  | `(term| shout $x) => `(term| $x & \"!\")
+infixr:67 \" &&& \" => String.append
+def greet (s : String) : String := shout (\"hi \" & s)
+def three : List Nat := 1 :> 2 :> 3 :> .nil
+"
+
 /-- A term language with identifiers, juxtaposition and `if … then … else`, run by macros
 (13j); `decl` follows `declare_syntax_cat` (a keyword scope, or nothing). The file also
 defines `then` and `else` as Wiz names. -/
@@ -4608,6 +4642,56 @@ def languageGroup : Group where
         failsLib ("import Prelude\naxiom Tok : Type\naxiom Tok.close : (1 t : Tok) → Unit\n" ++
           "def lin (1 p : Nat × Tok × Tok) : Unit × Unit :=\n  let 1 (n, s, t) := p;\n  (Tok.close s, Tok.close s)\n")
           "quantity 1 but used" },
+    -- (13k) list literals: a Prelude macro
+    { name := "list literals: [a, b, c], [], nested, multi-line, with ++", run := fun _ =>
+        okLib ("import Prelude\ndef xs : List Nat := [1, 2, 3]\ndef ys : List String := []\n" ++
+          "def zs : List (List Nat) := [[], [1], [Nat.add 1 1, 3]]\ndef ws : List Nat := [\n  4,\n  5\n]\n" ++
+          "def t : List.length [1, 2, 3] = 3 := rfl\n" ++
+          "#eval xs\n#eval ys\n#eval zs\n#eval ws ++ [6]\n#eval List.length ([] : List Nat)")
+          [".cons 1 (.cons 2 (.cons 3 .nil))", ".nil", ".cons .nil (.cons (.cons 1 .nil) (.cons (.cons 2 (.cons 3 .nil)) .nil))",
+           ".cons 4 (.cons 5 (.cons 6 .nil))", "0"] },
+    { name := "... in patterns: [], [x], [x, y], inside tuples, constructors, ⟨…⟩ and x@p", run := fun _ =>
+        okLib ("import Prelude\ndef len : List Nat → Nat\n  | [] => 0\n  | [_] => 1\n  | [_, _] => 2\n  | _ => 9\n" ++
+          "def f (p : List Nat × List Nat) : Nat := match p with\n  | ([x], [y, z]) => Nat.add x (Nat.add y z)\n" ++
+          "  | ([], _) => 0\n  | (.cons x _, _) => x\n" ++
+          "def g : List (List Nat) → Nat\n  | .cons [x] _ => x\n  | _ => 0\n" ++
+          "structure P where\n  a : List Nat\n  b : Nat\ndef h : P → Nat\n  | ⟨[x], _⟩ => x\n  | _ => 0\n" ++
+          "def k : List Nat → List Nat\n  | xs@[_] => xs ++ xs\n  | xs => xs\n" ++
+          "#eval len []\n#eval len [5]\n#eval len [5, 6]\n#eval len [5, 6, 7]\n#eval f ([1], [2, 3])\n#eval g [[7]]\n" ++
+          "#eval h ⟨[8], 0⟩\n#eval k [9]")
+          ["0", "1", "2", "9", "6", "7", "8", ".cons 9 (.cons 9 .nil)"] },
+    { name := "... numerals in a list literal are elaborated at the element type (7e)", run := fun _ => do
+        let lib ← preludeLoader
+        let int ← IO.FS.readFile "lib/Int.wiz"
+        let input := "import Word\nimport Int\n#eval ([1, 2] : List U8)\n#eval ([1, 2] : List Int)\n" ++
+          "def w : List U8 := [255, 1 + 2]\n#eval w"
+        let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Int" then some int else lib m }
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        checkEq (repr [".cons (.mk 1) (.cons (.mk 2) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255) (.cons (.mk 3) .nil)"]).pretty
+          (repr (s.messages.toList.map (·.text))).pretty },
+    { name := "... instance binders and Enum [..] still parse", run := fun _ =>
+        okLib ("import Prelude\ndef f {m : Type → Type} [Monad m] : m Nat := Monad.pure 1\n" ++
+          "def g : (m : Type → Type) → [Monad m] → m Nat := fun m => Monad.pure 2\n" ++
+          "def h : [inst : Monad TacticM] → Nat := 3\ndef E : Type := Enum [a, b]") },
+    -- (13l) `++` is a class method
+    { name := "++ appends lists and strings (class Append)", run := fun _ =>
+        okLib ("import Prelude\ndef a (ys : List Nat) : List Nat := .cons 1 .nil ++ ys ++ .nil\n" ++
+          "def b {A : Type} (xs : List A) : List A := xs ++ xs\ndef c (s : String) : String := \"<\" ++ s ++ \">\"\n" ++
+          "#eval a [2]\n#eval b [1]\n#eval c \"x\"")
+          [".cons 1 (.cons 2 .nil)", ".cons 1 (.cons 1 .nil)", "\"<x>\""] },
+    -- (13m) `local` notation
+    { name := "local notation is used in its module and not seen by importers", run := fun _ => do
+        okLoc locMod "import Loc\n#eval greet \"a\" &&& \"b\"\n#eval three" ["\"hi a!b\"", ".cons 1 (.cons 2 (.cons 3 .nil))"]
+        failsLoc locMod "import Loc\ndef x : String := \"a\" & \"b\"" "unexpected character '&'"
+        -- the local keyword is an identifier again
+        okLoc locMod "import Loc\ndef shout : Nat := 4\n#eval shout" ["4"] },
+    { name := "... an importer may define the same notation at another meaning", run := fun _ =>
+        okLoc locMod "import Loc\ninfixr:67 \" & \" => List.append\n#eval [1] & [2]\nsyntax (name := shout) \"shout\" term : term\nmacro_rules\n  | `(term| shout $x) => `(term| [$x])\n#eval shout 1"
+          [".cons 1 (.cons 2 .nil)", ".cons 1 .nil"] },
+    { name := "... in the main file it is ordinary notation; only grammar commands can be local", run := fun _ => do
+        okLib "import Prelude\nlocal infixl:65 \" +! \" => Nat.add\n#eval 1 +! 2" ["3"]
+        failsLib "import Prelude\nlocal def x : Nat := 1" "can be `local`" },
     -- keyword scopes (13j): `when`/`yes`/`no` are keywords inside `run_calc … done` only
     -- (not `if`/`then`/`else`: the Prelude's `if` (13c) reserves those in every file)
     { name := "keyword scope: a DSL's keywords are identifiers outside it (13j)", run := fun _ =>
@@ -5765,7 +5849,7 @@ def seplogicGroup : Group where
           "  star.swap H K (J ⋆ (p ↦ a))") "mismatch" },
     { name := "a wrong specification is rejected, quickly", run := fun _ => do
         -- swap's specification with the postcondition of the identity
-        failsLibsWithin 60 ("import Hoare\n" ++
+        failsLibsWithin 60 ("import HoareExamples\n" ++
           "def bad (p q a b : Nat) : Triple ((p ↦ a) ⋆ (q ↦ b)) (Prog.swap p q) (fun _ => (p ↦ a) ⋆ (q ↦ b)) :=\n" ++
           "  Prog.swap_spec p q a b") "mismatch"
         -- a wrong value read back
@@ -5782,14 +5866,14 @@ def seplogicGroup : Group where
           "  Triple.bind (Triple.read l 1) (fun r => Triple.pure (fun e =>\n" ++
           "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
     { name := "swap and in-place list reversal are verified", run := fun _ =>
-        okLibs ("import Hoare\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
+        okLibs ("import HoareExamples\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
           ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (star Nat (pts Nat p a) (pts Nat q b)) (Prog.swap p q) (fun _ => star Nat (pts Nat p b) (pts Nat q a))",
            "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
     { name := "a faulting program has no triple from a satisfiable precondition", run := fun _ =>
         failsLibs ("import Hoare\ndef bad : Triple (@emp Nat) (@Prog.fail Nat Unit) (fun (_ : Unit) => @emp Nat) :=\n" ++
           "  Triple.ret () (fun (_ : Unit) => @emp Nat)") "mismatch" },
     { name := "the programs run on concrete heaps, as adequacy says", run := fun _ =>
-        okLibs ("import Hoare\n" ++
+        okLibs ("import HoareExamples\n" ++
           "#eval Prog.show (Prog.swap 1 2) (Heap.ofList (.cons 10 (.cons 20 .nil)) 1) 3 3\n" ++
           -- the list 1, 2, 3 in cells at 1, 3, 5
           "#eval Prog.show (Prog.reverse 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 7\n" ++
@@ -5799,7 +5883,33 @@ def seplogicGroup : Group where
            -- reversed: the cell at 5 (value 3) points to 3 (value 2), which points to 1 (value 1)
            ".some (5, .cons .none (.cons (.some 1) (.cons (.some 0) (.cons (.some 2) (.cons (.some 1) (.cons (.some 3) (.cons (.some 3) .nil)))))))",
            -- not enough fuel: a fault
-           ".none", ".some (7, .cons (.some 7) (.cons .none .nil))"] }
+           ".none", ".some (7, .cons (.some 7) (.cons .none .nil))"] },
+    { name := "xsimpl: cancellation up to AC, ∃ on both sides, pure facts, emp, htop and wands", run := fun _ =>
+        okLibs ("import HoareTactics\n" ++
+          "def e1 (a b c : HProp Nat) : (a ⋆ b) ⋆ c ⊢ c ⋆ (b ⋆ a) := by xsimpl\n" ++
+          "def e2 (p q : Nat) : (p ↦ 1) ⋆ (q ↦ 2) ⊢ hexists (fun (n : Nat) => (q ↦ n) ⋆ (p ↦ 1)) := by xsimpl\n" ++
+          "def e3 (p : Nat) : hexists (fun (n : Nat) => hpure (n = 3) ⋆ (p ↦ n)) ⊢ hexists (fun (m : Nat) => p ↦ m) := by xsimpl\n" ++
+          "def e4 (a b : HProp Nat) : emp ⋆ (a ⋆ emp) ⋆ b ⊢ b ⋆ a ⋆ htop ⋆ emp := by xsimpl\n" ++
+          "def e5 (a b c : HProp Nat) : c ⋆ (a ⋆ (a −∗ b)) ⊢ b ⋆ c := by xsimpl\n" ++
+          "def e6 (a b : HProp Nat) : a ⊢ b −∗ (a ⋆ b) := by xsimpl\n" ++
+          "def e7 (P : Prop) (hP : P) (a : HProp Nat) : a ⊢ hpure P ⋆ a := by xsimpl\n" ++
+          "def e8 (p : Nat) (a : HProp Nat) : hexists (fun (n : Nat) => hpure (n = p) ⋆ a) ⊢ a := by\n  xpull as n, h\n  xsimpl") },
+    { name := "xsimpl leaves what it cannot prove", run := fun _ => do
+        failsLibs "import HoareTactics\ndef bad (a b c : HProp Nat) : a ⋆ b ⊢ c ⋆ a := by xsimpl" "⊢ Entails Nat b c"
+        failsLibs "import HoareTactics\ndef bad (p : Nat) : (p ↦ 1) ⊢ (p ↦ 2) := by xsimpl" "unsolved goals" },
+    { name := "the x-tactics verify a counter, list length, map and free on mutable lists", run := fun _ =>
+        okLibs ("import HoareExamples\n#check @Prog.incr3_spec\n#check @Prog.counter_spec\n#check @Prog.length_spec\n" ++
+          "#check @Prog.incrAll.spec\n#check @Prog.freeAll.spec\n" ++
+          "#eval Prog.show (Prog.counter) Heap.empty 0 1\n" ++
+          "#eval Prog.show (Prog.length 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 0")
+          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → Triple Nat Unit (star Nat (pts Nat p m) (pts Nat q n)) (Prog.incr3 p q) (fun _ => star Nat (pts Nat q (.succ n)) (pts Nat p (.succ (.succ m))))",
+           "Prog.counter_spec : Triple Nat Nat (emp Nat) Prog.counter (fun r => hexists Nat Nat (fun c => star Nat (hpure Nat (r = 1)) (pts Nat c 1)))",
+           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.length fuel p) (fun r => star Nat (hpure Nat (r = List.length Nat L)) (MList L p))",
+           "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)",
+           "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
+           ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
+    { name := "a wrong specification is not proved by the x-tactics", run := fun _ =>
+        failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" }
   ]
 
 

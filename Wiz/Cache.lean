@@ -650,6 +650,8 @@ where
               -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
               let warns := (inner.messages.filter (·.severity == .warning)).map fun w =>
                 ({ info := cmd.info, severity := .warning, text := s!"module {m}: {w.render src}" } : Msg)
+              -- (13m) the module's `local` notation stays in it
+              let inner := inner.endModule s
               -- a module that would replace a declaration this file already has (from
               -- another module, or its own) is not brought in at all: the rest of its
               -- commands were checked against its own declaration, not this file's

@@ -178,6 +178,10 @@ def cmdGroup : Group where
         let r ← parseFileOk "syntax \"if\" term \"then\" term \"else\" term : term\n#check if a then b else c"
         checkEq "(command.check (term.if_then_else (term.ident a) (term.ident b) (term.ident c)))"
           r.commands[1]!.toSExpr },
+    { name := "local syntax (13m): the rule applies in the file; local stays an identifier", run := fun _ => do
+        let r ← parseFileOk "local syntax \"[\" sepBy(term, \",\") \"]\" : term\n#check [a, local]\n#check [x : C] → x"
+        checkEq "(command.check (term.[_,_] [(term.ident a) (term.ident local)]))" r.commands[1]!.toSExpr
+        checkEq "(command.check (term.depArrow (binder.inst [x] (term.ident C)) (term.ident x)))" r.commands[2]!.toSExpr },
     { name := "trailing syntax with precedence: + and *", run := fun _ => do
         let r ← parseFileOk ("syntax:65 term:65 \" + \" term:66 : term\n" ++
           "syntax:70 term:70 \" * \" term:71 : term\n#check a + b * c + d")

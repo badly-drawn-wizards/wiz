@@ -244,89 +244,8 @@ def star.swap {V : Type} (0 A B C : HProp V) : A ⋆ (B ⋆ C) ⊢ B ⋆ (A ⋆ 
   Entails.trans (star.assoc_r A B C)
     (Entails.trans (star.mono_l C (star.comm_entails A B)) (star.assoc_l B A C))
 
--- ## Example: swapping two cells
-
-def Prog.swap (p q : Nat) : Prog Nat Unit :=
-  .get p (fun a => .get q (fun b => .set p b (.set q a (.ret ()))))
-
-def Prog.swap_spec (p q a b : Nat) : Triple ((p ↦ a) ⋆ (q ↦ b)) (Prog.swap p q) (fun _ => (p ↦ b) ⋆ (q ↦ a)) :=
-  wp.get_intro p a (q ↦ b) (fun a' => W.get q (fun b' => W.set p b' (W.set q a' ((p ↦ b) ⋆ (q ↦ a)))))
-    (Entails.trans (star.comm_entails (p ↦ a) (q ↦ b))
-    (wp.get_intro q b (p ↦ a) (fun b' => W.set p b' (W.set q a ((p ↦ b) ⋆ (q ↦ a))))
-    (Entails.trans (star.comm_entails (q ↦ b) (p ↦ a))
-    (wp.set_intro p a b (q ↦ b) (W.set q a ((p ↦ b) ⋆ (q ↦ a)))
-    (Entails.trans (star.comm_entails (p ↦ b) (q ↦ b))
-    (wp.set_intro q b a (p ↦ b) ((p ↦ b) ⋆ (q ↦ a))
-      (star.comm_entails (q ↦ a) (p ↦ b))))))))
-
--- ## Example: in-place list reversal
---
--- A list cell at `p` is two cells: the value at `p`, the next pointer at `p + 1`; `0` is
--- the null pointer. `MList L p`: the cells from `p` hold `L` (SLF, Repr: `MList`).
-
-def MList : List Nat → Nat → HProp Nat
-  | .nil, p => hpure (p = 0)
-  | .cons x L, p => hexists (fun (n : Nat) =>
-      hpure (Not (p = 0)) ⋆ ((p ↦ x) ⋆ ((Nat.succ p ↦ n) ⋆ MList L n)))
-
--- `List.revApp L acc` (lib/Text.wiz) is `reverse L ++ acc`
-
--- the loop: `q` is the reversed prefix, `p` the rest; each step turns one pointer round
-def Prog.revLoop : Nat → Nat → Nat → Prog Nat Nat
-  | .zero, p, q => .fail
-  | .succ f, .zero, q => .ret q
-  | .succ f, .succ p, q =>
-      .get (Nat.succ (Nat.succ p)) (fun n => .set (Nat.succ (Nat.succ p)) q (Prog.revLoop f n (Nat.succ p)))
-def Prog.reverse (fuel p : Nat) : Prog Nat Nat := Prog.revLoop fuel p 0
-
-def Nat.succ_ne_zero (n : Nat) : Not (Nat.succ n = 0) := fun e => absurd e.1
-
--- one step of the loop: the rearrangement of the cells around the pointer update
-def Prog.revLoop.step (p x n q : Nat) (0 L L₂ : List Nat) (0 X : HProp Nat)
-    (k : MList L n ⋆ MList (.cons x L₂) (Nat.succ p) ⊢ X) :
-    (Nat.succ (Nat.succ p) ↦ q) ⋆ ((Nat.succ p ↦ x) ⋆ (MList L n ⋆ MList L₂ q)) ⊢ X :=
-  Entails.trans (star.swap (Nat.succ (Nat.succ p) ↦ q) (Nat.succ p ↦ x) (MList L n ⋆ MList L₂ q))
-  (Entails.trans (star.mono_r (Nat.succ p ↦ x) (star.swap (Nat.succ (Nat.succ p) ↦ q) (MList L n) (MList L₂ q)))
-  (Entails.trans (star.swap (Nat.succ p ↦ x) (MList L n) ((Nat.succ (Nat.succ p) ↦ q) ⋆ MList L₂ q))
-  (Entails.trans (star.mono_r (MList L n)
-     (hexists.intro (fun (n' : Nat) => hpure (Not (Nat.succ p = 0)) ⋆ ((Nat.succ p ↦ x) ⋆ ((Nat.succ (Nat.succ p) ↦ n') ⋆ MList L₂ n'))) q
-       (hpure.intro_r (Nat.succ_ne_zero p)
-         (Entails.refl ((Nat.succ p ↦ x) ⋆ ((Nat.succ (Nat.succ p) ↦ q) ⋆ MList L₂ q))))))
-  k)))
-
--- the invariant: with more fuel than cells, `MList L p ⋆ MList L₂ q` becomes `MList (revApp L L₂)`
-def Prog.revLoop.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length L) f = .true → (p q : Nat) → (L₂ : List Nat) →
-    Triple (MList L p ⋆ MList L₂ q) (Prog.revLoop f p q) (fun r => MList (List.revApp L L₂) r)
-  | .nil, .zero, h, p, q, L₂ => absurd h.1
-  | .cons x L, .zero, h, p, q, L₂ => absurd h.1
-  | .nil, .succ f, h, .zero, q, L₂ => hpure.elim_l (fun _ => Entails.refl (MList L₂ q))
-  | .nil, .succ f, h, .succ p, q, L₂ => hpure.elim_l (fun e => absurd (Nat.succ_ne_zero p e))
-  | .cons x L, .succ f, h, .zero, q, L₂ =>
-      Entails.trans (star.exists_l_entails (fun (n : Nat) => hpure (Not (0 = 0)) ⋆ ((0 ↦ x) ⋆ ((Nat.succ 0 ↦ n) ⋆ MList L n))) (MList L₂ q))
-        (hexists.elim (H := wp (Prog.revLoop (Nat.succ f) 0 q) (fun r => MList (List.revApp (.cons x L) L₂) r))
-         (fun n => Entails.trans (star.assoc_l (hpure (Not (0 = 0))) ((0 ↦ x) ⋆ ((Nat.succ 0 ↦ n) ⋆ MList L n)) (MList L₂ q))
-          (hpure.elim_l (fun ne => absurd (ne rfl)))))
-  | .cons x L, .succ f, h, .succ p, q, L₂ =>
-      Entails.trans (star.exists_l_entails (fun (n : Nat) => hpure (Not (Nat.succ p = 0)) ⋆ ((Nat.succ p ↦ x) ⋆ ((Nat.succ (Nat.succ p) ↦ n) ⋆ MList L n))) (MList L₂ q))
-        (hexists.elim (H := wp (Prog.revLoop (Nat.succ f) (Nat.succ p) q) (fun r => MList (List.revApp (.cons x L) L₂) r))
-         (fun n => Entails.trans (star.assoc_l (hpure (Not (Nat.succ p = 0))) ((Nat.succ p ↦ x) ⋆ ((Nat.succ (Nat.succ p) ↦ n) ⋆ MList L n)) (MList L₂ q))
-          (hpure.elim_l (fun ne =>
-            -- (p+1 ↦ x ⋆ (p+2 ↦ n ⋆ MList L n)) ⋆ MList L₂ q  ⊢  p+2 ↦ n ⋆ (p+1 ↦ x ⋆ (MList L n ⋆ MList L₂ q))
-            Entails.trans (star.assoc_l (Nat.succ p ↦ x) ((Nat.succ (Nat.succ p) ↦ n) ⋆ MList L n) (MList L₂ q))
-            (Entails.trans (star.mono_r (Nat.succ p ↦ x) (star.assoc_l (Nat.succ (Nat.succ p) ↦ n) (MList L n) (MList L₂ q)))
-            (Entails.trans (star.swap (Nat.succ p ↦ x) (Nat.succ (Nat.succ p) ↦ n) (MList L n ⋆ MList L₂ q))
-            (wp.get_intro (Nat.succ (Nat.succ p)) n ((Nat.succ p ↦ x) ⋆ (MList L n ⋆ MList L₂ q))
-              (fun n' => W.set (Nat.succ (Nat.succ p)) q (wp (Prog.revLoop f n' (Nat.succ p)) (fun r => MList (List.revApp L (.cons x L₂)) r)))
-            (wp.set_intro (Nat.succ (Nat.succ p)) n q ((Nat.succ p ↦ x) ⋆ (MList L n ⋆ MList L₂ q))
-              (wp (Prog.revLoop f n (Nat.succ p)) (fun r => MList (List.revApp L (.cons x L₂)) r))
-            (Prog.revLoop.step p x n q L L₂ (wp (Prog.revLoop f n (Nat.succ p)) (fun r => MList (List.revApp L (.cons x L₂)) r))
-              (Prog.revLoop.spec L f h n (Nat.succ p) (.cons x L₂)))))))))))
-
-def Prog.reverse_spec (L : List Nat) (fuel p : Nat) (h : Nat.lt (List.length L) fuel = .true) :
-    Triple (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse L) r) :=
-  Entails.trans (hpure.intro_r (refl 0) (Entails.refl (MList L p)))
-    (Entails.trans (star.comm_entails (hpure (0 = 0)) (MList L p))
-      (Prog.revLoop.spec L fuel h p 0 .nil))
+-- The examples (swap, in-place list reversal, and more) are in lib/HoareExamples.wiz,
+-- proved with the tactics of lib/HoareTactics.wiz.
 
 -- ## Adequacy: `wp` is sound for an interpreter on concrete heaps
 --
@@ -519,17 +438,3 @@ def Triple.run {V A : Type} {0 P : HProp V} {ω c : Prog V A} {0 Q : A → HProp
     (0 H : HProp V) (h : Heap V) (n : Nat) (b : Heap.Bounded h n) (p : (P ⋆ H) h) :
     Prog.Post (fun a => Q a ⋆ H) (Prog.run c h n) :=
   adequacy c (fun a => Q a ⋆ H) h n b (Triple.frame H t h p)
-
--- ## Running programs on concrete heaps
-
--- the heap holding `vs` from location `1` on (location `0` is null)
-def Heap.ofList {V : Type} : List V → Nat → Heap V
-  | .nil, l => Heap.empty
-  | .cons v vs, l => Heap.union (Heap.single l v) (Heap.ofList vs (Nat.succ l))
--- the cells `l … l + k - 1`
-def Heap.toList {V : Type} (h : Heap V) : Nat → Nat → List (Option V)
-  | .zero, l => .nil
-  | .succ k, l => .cons (h l) (Heap.toList h k (Nat.succ l))
--- run, and show the result and the first `k` cells
-def Prog.show {V A : Type} (c : Prog V A) (h : Heap V) (n k : Nat) : Option (A × List (Option V)) :=
-  Option.caseOf (Prog.run c h n) .none (fun r => .some (r.1, Heap.toList r.2.1 k 0))
