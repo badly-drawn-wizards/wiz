@@ -1,0 +1,12 @@
+import IO
+import Word
+-- `Bytes` as lists of `U8` (sys-bytes, 9k). A module of its own: IO and Sys count bytes
+-- as `Nat`s below 256 and don't import Word.
+def Bytes.ofU8sAux : List U8 → Bytes → Bytes
+  | .nil, acc => acc
+  | .cons x xs, acc => Bytes.ofU8sAux xs (Bytes.push acc (UIntN.toNat x))
+def Bytes.ofU8s (l : List U8) : Bytes := Bytes.ofU8sAux l Bytes.empty
+def Bytes.toU8sAux (b : Bytes) : Nat → List U8 → List U8
+  | .zero, acc => acc
+  | .succ k, acc => Bytes.toU8sAux b k (.cons (U8.ofNat (Bytes.get b k)) acc)
+def Bytes.toU8s (b : Bytes) : List U8 := Bytes.toU8sAux b (Bytes.size b) .nil
