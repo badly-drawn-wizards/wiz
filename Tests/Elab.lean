@@ -4826,7 +4826,13 @@ def wordGroup : Group where
         check ((out.splitOn "wiz_word_add").length > 1 && (out.splitOn "wiz_word_mul").length > 1 &&
           (out.splitOn "proj").length == 1) s!"no native call (or a dictionary) in:\n{out}" },
     { name := "compiled: operators at words run natively (C)", run := fun _ =>
-        cRun "import Word\ndef main : Nat := ((250 : U8) + 10 * 2).toNat + (-1 / 2 : I8).toNat" "14" }
+        cRun "import Word\ndef main : Nat := ((250 : U8) + 10 * 2).toNat + (-1 / 2 : I8).toNat" "14" },
+    { name := "22l: a word carries its range: no unchecked builder, and the constructor needs the proof", run := fun _ => do
+        -- the probe (wiz-notes/soundness-probes/a3-word-ofbitstrusted.wiz)
+        for (src, frag) in [("def bad : UIntN 1 := UIntN.ofBitsTrusted 5", "unknown"),
+            ("def bad : UIntN 1 := UIntN.mk 5 rfl", "private"), ("def bad : IntN 1 := IntN.mk 5 rfl", "private")] do
+          let ms ← msgsLib ("import Word\n" ++ src ++ "\n")
+          check (ms.any fun m => m.startsWith "error" && (m.splitOn frag).length > 1) s!"{src}: {ms}" }
   ]
 
 /-- Every `lib/*.wiz` and `lib/D/*.wiz` (as `D.X`), by module name. -/
@@ -5912,7 +5918,18 @@ def vecGroup : Group where
         let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
-        check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }
+        check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" },
+    { name := "22l: the range is a theorem (toNat_lt, ext, cases1)", run := fun _ =>
+        okLibs ("import BitVec\ndef r (x : UIntN 8) : Nat.lt x.toNat 256 = .true := UIntN.toNat_lt x\n" ++
+          "def s (x : IntN 8) : Nat.lt x.toNat 256 = .true := IntN.toNat_lt x\n" ++
+          "def c (x : UIntN 1) : x = 0 ∨ x = 1 := UIntN.cases1 x\n" ++
+          "def e : (UIntN.lor (UIntN.max 8) (UIntN.ofNat 8 3) : UIntN 8) = UIntN.ofNat 8 255 := UIntN.ext _ _ rfl\n") },
+    { name := "22l: concat and ofVec go through ofNat: interpreted and compiled agree", run := fun _ => do
+        let src := "import BitVec\ndef main : Nat := (BitVec.concat (BitVec.ofNat 4 15) (BitVec.ofNat 4 1)).toNat + " ++
+          "1000 * (BitVec.ofVec (Vec.cons Bool.true (Vec.cons Bool.false (Vec.cons Bool.true Vec.nil)))).toNat + " ++
+          "10000 * (UIntN.xor (UIntN.max 3) (UIntN.ofNat 3 2)).toNat\n"
+        okLibs (src ++ "#eval main\n") ["55241"]
+        cRunLibs src "55241" }
   ]
 
 /-! ## Stage 24: separation logic (lib/Logic.wiz, lib/HProp.wiz, lib/Hoare.wiz) -/
