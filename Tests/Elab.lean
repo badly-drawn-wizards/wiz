@@ -6738,9 +6738,9 @@ def hdlGroup : Group where
            "fun c x => if c then x else 0 : Wire Bit → Wire B8 → Wire B8",
            "(1, 24, 14)"] },
     { name := "S2: if on a condition that is no signal takes the ordinary path (its messages)", run := fun _ => do
-        failsLibs "import Hdl.Core\ndef f (n : Nat) : Nat := if n then 1 else 2" "constructor"
-        failsLibs "import Hdl.Core\ndef f (A : Type) (a : A) : Nat := if a then 1 else 2" "cannot match on a value of type A"
-        okLibs "import Hdl.Core\ndef f (b : Bool) : (if b then 1 else 1) = 1 := if b then rfl else rfl\n#check fun (b : Bool) (x : Nat) => if b then x + 1 else 0"
+        failsLibs "import Prelude\ndef f (n : Nat) : Nat := if n then 1 else 2" "constructor"
+        failsLibs "import Prelude\ndef f (A : Type) (a : A) : Nat := if a then 1 else 2" "cannot match on a value of type A"
+        okLibs "import Prelude\ndef f (b : Bool) : (if b then 1 else 1) = 1 := if b then rfl else rfl\n#check fun (b : Bool) (x : Nat) => if b then x + 1 else 0"
           ["fun b x => if b then x + 1 else 0 : Bool → Nat → Nat"] },
     { name := "auto-share: a let becomes ShareLet.share when an instance exists", run := fun _ =>
         okLibs shareLetHook ["101", "1", "1"] },
