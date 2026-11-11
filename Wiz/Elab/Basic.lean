@@ -359,7 +359,10 @@ partial def term (tys : Array (VTy R)) (env : Env R) : Term R → Term R
   | .letE x q T v b =>
     let T := (type tys env T).1
     let v := term tys env v
-    .letE x (term tys env q) T v (term (tys.push (eval g env T)) (eval g env v :: env) b)
+    -- (P2: a `let`-bound proof is bound suspended, not evaluated, as in the kernel)
+    let vT := eval g env T
+    let val := if g.lazyProofs && isProp g tys vT then suspend g env v else eval g env v
+    .letE x (term tys env q) T v (term (tys.push vT) (val :: env) b)
   | t => Id.run <| t.mapChildrenM pure fun k c => pure (if k == 0 then term tys env c else c)
 
 /-- `t` has type `ty`: like `term`, also under the `fun`s that `ty` gives types to. -/
