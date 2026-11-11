@@ -143,6 +143,34 @@ elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
 laws) and `lib/Hoare.wiz` (`wp`, triples, the frame rule, verified swap and list reversal,
 adequacy for an interpreter). See [stage 24](stages/24-separation-logic.md).
 
+## 9j: text and lists (`lib/Text.wiz`) ✅
+
+`import Text` (only `Prelude` underneath): the string and list functions a program needs,
+pure (so `#eval` runs them) and linear in their input.
+
+* **Lists**: `List.reverse`, `revApp`, `map`, `filter`, `foldl`, `foldr`, `any`, `all`,
+  `find`, `isEmpty`, `head`, `take`, `drop`, `concat`.
+* **Characters**: `Char.eq`, `isSpace` (ASCII), `isDigit`.
+* **Strings**: `chars`, `ofChars`, `singleton`, `length`, `isEmpty`, `eq` (also `beq`),
+  `lt` (by code point), `startsWith`, `endsWith`, `stripPrefix`, `stripSuffix`
+  (`Option`), `contains`, `containsChar`, `take`, `drop`, `dropEnd`, `splitOn`, `join`,
+  `intercalate`, `trim`, `trimLeft`, `trimRight`, `replace`, `parseNat` (`Option Nat`),
+  `lookup` (in a list of pairs keyed by strings), `elem`; `Nat.repr` (decimal, pure).
+  The same functions on `List Char` are `Chars.*`.
+
+**Cost model.** A `String` is `String.mk` around a `List Char` in the kernel *and* at
+runtime (`builtin string` only changes how values print). Walking a string from the
+front, prefix tests, `take`/`drop` are proportional to what they walk; `String.append a b`
+copies `a`, so appending in a loop from the left is quadratic (`join` and `intercalate`
+build from the right); the end of a string is far (`endsWith`, `dropEnd`, `trimRight`
+reverse once); and each call into C converts the list to a C string and back. Splitting
+200000 characters, joining and trimming them takes 0.1 s compiled (the `text` tests).
+`Std.Str` is the native alternative for indexing.
+
+`lib/Json.wiz`, `lib/Deriving.wiz` and `lib/Hoare.wiz` import `Text` and use its
+`String.eq`, `String.chars`, `String.beq`, `Nat.repr`, `List.revApp` and `List.reverse`
+instead of copies of their own (two modules declaring one name are an error at import).
+
 ## Numbers: classes, integers, words ✅
 
 (Stage doc: docs/stages/07-type-classes.md, 7e.) The Prelude's `Add`, `Sub`, `Mul`,

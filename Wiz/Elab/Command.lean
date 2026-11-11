@@ -453,9 +453,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let g ← getGlobals
   let pos : Nat := if !recursive then 0 else
     match clauses.head? with
-    | some c => (c.pats.findIdx? fun p => match patView g p with
-        | .ok (.ctor ..) => true
-        | _ => false).getD 0
+    | some c => (c.pats.findIdx? (patIsCtor g)).getD 0
     | none => 0
   let perm {α : Type} (xs : List α) : List α :=
     match xs.drop pos with
@@ -488,7 +486,8 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let impl ← if rc.isNone || esc then pure none else do
     let saved ← get
     try
-      modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none } }
+      modify fun s => { s with globals := s.globals.insert { name, levelParams := saved.levelParams, type := fullTy, value := none },
+                                unifyFails := {}, unifyFailCount := 0 }
       -- the calls the first elaboration took for recursive ones, by their syntax
       -- (`rewriteRecCalls`), are calls of the definition here too, whatever `name` is
       -- bound to locally
@@ -496,7 +495,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
       let body' ← compileMatch ctx' (perm vars) clauses tyv none true
       solveSortConstraints
       let v' ← zonk 0 (tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body'))
-      modify fun s => { s with globals := saved.globals }
+      modify fun s => { s with globals := saved.globals, unifyFails := {}, unifyFailCount := 0 }
       pure (if v'.mvars.isEmpty then some v' else none)
     catch _ =>
       set saved
@@ -895,14 +894,14 @@ partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Exce
 
 /-- (13b) Does a `structure` command say `private mk ::` after `where`? -/
 def structurePrivateMk (cmd : Syntax) : Bool :=
-  let spec := (cmd.getArg 5).getArg 1
+  let spec := (cmd.child "where").child "ctor"
   !spec.args.isEmpty && !(spec.getArg 0).args.isEmpty
 
 /-- (13b) The fields (observations) of a `structure` or `coinductive` command marked
 `private`. -/
 def privateFields (cmd : Syntax) : List Name :=
-  (cmd.getArg 6).args.toList.filterMap fun f =>
-    if (f.getArg 0).args.isEmpty then none else (f.getArg 2).getId?
+  (cmd.child "fields").args.toList.filterMap fun f =>
+    if (f.child "private").args.isEmpty then none else (f.child "name").getId?
 
 /-- The result of `runElabH`, for a command that keeps no info tree (`#check`, `#eval`,
 `instance`, …): the `trace`s of its tactics and macros still become info messages. -/
@@ -1343,11 +1342,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           else report .error cmd.info s!"{C} is not a class"
         | _ => report .error cmd.info "an instance's type must be an application of a class"
   | "command.inductive" | "command.structure" =>
-    let name := ((cmd.getArg 1).getId?).getD "_"
-    let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
-    let ctorSpec := ((cmd.getArg 5).getArg 1)
+    -- (children by name, `childNames`: positions shift when the grammar grows)
+    let name := ((cmd.child "name").getId?).getD "_"
+    let levelParams := ((cmd.child "univParams").getArg 1).args.toList.filterMap Syntax.getId?
+    let ctorSpec := if cmd.isOfKind "command.structure" then (cmd.child "where").child "ctor" else .missing
     if s.globals.contains name then
-      reportDup (cmd.getArg 1).info name
+      reportDup (cmd.child "name").info name
     else if cmd.isOfKind "command.structure" && !ctorSpec.args.isEmpty &&
         (ctorSpec.getArg 1).getId? != some "mk" then
       report .error (ctorSpec.getArg 1).info s!"a structure's constructor is `mk` (only `private mk ::` can be written)"
@@ -1371,7 +1371,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
         -- the recursors need the declarations above
         if cmd.isOfKind "command.inductive" then
-          let ctors := (cmd.getArg 6).args.toList.filterMap fun c => (c.getArg 2).getId?
+          let ctors := (cmd.child "ctors").args.toList.filterMap fun c => (c.child "name").getId?
           -- (indexed families also get `recN`/`casesOnN`, for motives that don't depend
           -- on the scrutinee)
           let indexed := isIndexed g name
@@ -1391,8 +1391,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           -- recursors (their cases would hand out a private constructor's fields, and
           -- they are what a `match` compiles to); elsewhere `T` is opaque
           -- (`Globals.elabView`): it isn't matched there, and nothing else converts to it
-          let privCtors := (cmd.getArg 6).args.toList.filterMap fun c =>
-            if (c.getArg 1).args.isEmpty then none else (c.getArg 2).getId?
+          let privCtors := (cmd.child "ctors").args.toList.filterMap fun c =>
+            if (c.child "private").args.isEmpty then none else (c.child "name").getId?
           unless privCtors.isEmpty do
             -- (and the description: `μ T.desc i` written out is the type with nothing
             -- hidden; a raw `con` builds a value of it, and it lists the private fields)
@@ -1411,7 +1411,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           g := { g with privates := privFields.foldl (fun m f => m.insert (name ++ "." ++ f) s.module) g.privates,
                         opaques := g.opaques.insert name s.module }
         modify fun s => { s with globals := g }
-        derivingClause (cmd.getArg 7) name
+        derivingClause (cmd.child "deriving") name
   | "command.builtin" =>
     let key := ((cmd.getArg 1).getId?).getD "_"
     let n := ((cmd.getArg 3).getId?).getD "_"
