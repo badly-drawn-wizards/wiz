@@ -4,6 +4,7 @@
 * [exercises.md](exercises.md): generating the exercise tree from this one
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
+* [error-codes.md](error-codes.md): the error codes and their quick fixes
 * [ROADMAP.md](../ROADMAP.md)
 
 ## The stages

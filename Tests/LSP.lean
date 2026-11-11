@@ -50,9 +50,9 @@ def posJson (src : String) (off : Nat) : String :=
   s!"\{\"line\":{l},\"character\":{c}}"
 
 /-- Open `src` as `file:///t.wiz`; returns the server and the messages it sent. -/
-def openDoc (src : String) (init : Lean.Json := req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}") :
-    IO (LSP.Server × Array Lean.Json) := do
-  let (srv, _) := LSP.handle (← server) init
+def openDoc (src : String) (init : Lean.Json := req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+    (srv? : Option LSP.Server := none) : IO (LSP.Server × Array Lean.Json) := do
+  let (srv, _) := LSP.handle (← match srv? with | some s => pure s | none => server) init
   let msg := Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
     ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])]
   pure (LSP.handle srv msg)
@@ -220,8 +220,8 @@ def titled (as : Array Lean.Json) (t : String) : Option Lean.Json :=
   as.find? fun a => LSP.getStr a ["title"] == t
 
 /-- The diagnostics' codes after opening `src`. -/
-def codes (src : String) : IO (List String) := do
-  let (_, out) ← openDoc src
+def codes (src : String) (srv? : Option LSP.Server := none) : IO (List String) := do
+  let (_, out) ← openDoc src (srv? := srv?)
   match LSP.get? out[0]! ["params", "diagnostics"] with
   | some (.arr ds) => pure (ds.toList.map fun d => LSP.getStr d ["code"])
   | _ => pure []
@@ -517,6 +517,98 @@ def serverGroup : Group where
         let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\",\"version\":2},\"contentChanges\":[{\"text\":\"import Prelude\\n\"}]}}")
         let (_, r) := resolve srv
         check (has r "-32801") s!"stale resolve: {r.compress}" },
+    { name := "error codes: the common errors carry theirs", run := fun _ => do
+        let pre := "import Prelude\nstructure P where\n  count : Nat\n  total : Nat\ninductive Color where\n  | red\n  | green\n"
+        for (code, body) in [
+            ("no-such-field", "def f (p : P) : Nat := p.cuont\n"),
+            ("no-such-field", "def f (p : P) : P := { p with cuont := 1 }\n"),
+            ("unknown-constructor", "def c : Color := .gren\n"),
+            ("unknown-constructor", "def c (x : Color) : Nat := match x with\n  | .red => 0\n  | .gren => 1\n"),
+            ("missing-case", "def c (x : Color) : Nat := match x with\n  | .red => 0\n"),
+            ("type-mismatch", "def b : Nat := Bool.true\n"),
+            ("wrong-argument-count", "def g : Nat := Nat.succ 1 2\n"),
+            ("unsolved-hole", "def u : Nat := (fun (A : Type) => 0) _\n"),
+            ("unknown-identifier", "def i : Nat := nope\n"),
+            ("parse-error", "def := 1\n")] do
+          let cs ← codes (pre ++ body)
+          check (cs.contains code) s!"{code}: got {cs} for\n{body}"
+        let cs ← codes "import Prelud\n"
+        check (cs.contains "unknown-module") s!"unknown-module: got {cs}"
+        -- every code in `ErrorCode.all` has a row in docs/error-codes.md, and every row a code
+        let doc ← IO.FS.readFile "docs/error-codes.md"
+        let rows := (doc.splitOn "\n").filterMap fun l =>
+          if l.startsWith "| `" then some ((((l.drop 3).toString.splitOn "`").headD "")) else none
+        for c in ErrorCode.all do
+          check (rows.contains c) s!"docs/error-codes.md has no row for {c}"
+        for c in rows do
+          check (ErrorCode.all.contains c) s!"docs/error-codes.md lists {c}, which is not in ErrorCode.all" },
+    { name := "code action: did you mean (fields, namespace, constructors)", run := fun _ => do
+        let pre := "import Prelude\nstructure P where\n  count : Nat\n  total : Nat\ninductive Box where\n  | mk (n : Nat)\ndef Box.double : Box → Nat\n  | .mk n => n + n\ninductive Color where\n  | red\n  | green\n"
+        for (body, needle, title, fixed) in [
+            ("def f (p : P) : Nat := p.cuont\n", "p.cuont", "Did you mean 'count'?", "p.count\n"),
+            ("def f (b : Box) : Nat := b.duoble\n", "b.duoble", "Did you mean 'double'?", "b.double\n"),
+            ("def f (p : P) : P := { p with totl := 1 }\n", "totl", "Did you mean 'total'?", "{ p with total := 1 }\n"),
+            ("def c : Color := .gren\n", ".gren", "Did you mean 'green'?", ":= .green\n"),
+            ("def c (x : Color) : Nat := match x with\n  | .red => 0\n  | .gren => 1\n", "| .gren", "Did you mean 'green'?", "| .green => 1\n")] do
+          let src := pre ++ body
+          let (srv, out) ← openDoc src
+          check (has out[0]! s!"\"suggestions\":[\"{(title.splitOn "'").getD 1 ""}\"]") s!"data: {out[0]!.compress}"
+          let (_, as) := codeActions srv src (offAfter src needle (-1))
+          let some a := titled as title | throw (IO.userError s!"{body}: actions: {as.map (·.compress)}")
+          let src' := applyEdit src (LSP.get? a ["edit"]).get!
+          check (src'.endsWith fixed) s!"edited:\n{src'}"
+          checkEq ([] : List String) (← codes src') },
+    { name := "code action: did you mean (imports), add the missing import", run := fun _ => do
+        let extra := "import Prelude\ndef extraThing : Nat := 3\ninductive Shade where\n  | dark\n"
+        let srv ← server
+        let srv := { srv with libs := srv.libs.insert "Extra.Things" ("lib/Extra/Things.wiz", extra) }
+        -- a misspelt module
+        let src := "import Prelude\nimport Extra.Thing\ndef y : Nat := extraThing\n"
+        let (srv1, out) ← openDoc src (srv? := some srv)
+        check (has out[0]! "\"code\":\"unknown-module\"") s!"diagnostic: {out[0]!.compress}"
+        let (_, as) := codeActions srv1 src (offAfter src "Extra.Th")
+        let some a := titled as "Did you mean 'Extra.Things'?" | throw (IO.userError s!"actions: {as.map (·.compress)}")
+        let src' := applyEdit src (LSP.get? a ["edit"]).get!
+        checkEq "import Prelude\nimport Extra.Things\ndef y : Nat := extraThing\n" src'
+        checkEq ([] : List String) (← codes src' (srv? := some srv))
+        -- a name another module declares (also a constructor `T.c` of a type it declares)
+        for (use, needle) in [("extraThing", "extraThing"), ("Shade.dark", "Shade.dark")] do
+          let src := s!"import Prelude\ndef y := {use}\n"
+          let (srv1, _) ← openDoc src (srv? := some srv)
+          let (_, as) := codeActions srv1 src (offAfter src needle (-1))
+          let some a := titled as "Add `import Extra.Things`" | throw (IO.userError s!"{use}: actions: {as.map (·.compress)}")
+          let src' := applyEdit src (LSP.get? a ["edit"]).get!
+          checkEq s!"import Prelude\nimport Extra.Things\ndef y := {use}\n" src'
+          checkEq ([] : List String) (← codes src' (srv? := some srv))
+        -- not for a name no module declares
+        let src := "import Prelude\ndef y : Nat := extraThings\n"
+        let (srv1, _) ← openDoc src (srv? := some srv)
+        let (_, as) := codeActions srv1 src (offAfter src "extraThings" (-1))
+        check (!(as.any (has · "Add `import"))) s!"actions: {as.map (·.compress)}" },
+    { name := "code action: make implicit arguments explicit (@f) or inferred (drop the @)", run := fun _ => do
+        let pre := "import Prelude\ndef myId {A : Type} (x : A) : A := x\n"
+        let src := pre ++ "def v : Nat := myId Nat 1\n"
+        let (srv, out) ← openDoc src
+        check (has out[0]! "\"code\":\"wrong-argument-count\"") s!"diagnostic: {out[0]!.compress}"
+        let (_, as) := codeActions srv src (offAfter src "myId Nat" (-5))
+        let some a := titled as "Give the implicit arguments explicitly: @myId" | throw (IO.userError s!"actions: {as.map (·.compress)}")
+        let src' := applyEdit src (LSP.get? a ["edit"]).get!
+        checkEq (pre ++ "def v : Nat := @myId Nat 1\n") src'
+        checkEq ([] : List String) (← codes src')
+        -- the other way round
+        let src := pre ++ "def w : Nat := @myId 1\n"
+        let (srv, out) ← openDoc src
+        check (has out[0]! "\"severity\":1") s!"no error: {out[0]!.compress}"
+        let (_, as) := codeActions srv src (offAfter src "@myId 1" (-1))
+        let some a := titled as "Let the implicit arguments of myId be inferred: drop the @" | throw (IO.userError s!"actions: {as.map (·.compress)}")
+        let src' := applyEdit src (LSP.get? a ["edit"]).get!
+        checkEq (pre ++ "def w : Nat := myId 1\n") src'
+        checkEq ([] : List String) (← codes src')
+        -- not when the count is right
+        let src := pre ++ "def z : Nat := Nat.succ 1 2\n"
+        let (srv, _) ← openDoc src
+        let (_, as) := codeActions srv src (offAfter src "Nat.succ" (-1))
+        check (!(as.any (has · "implicit"))) s!"actions: {as.map (·.compress)}" },
     { name := "11q: go to definition and declaration of syntax, a macro use's hover", run := fun _ => do
         let src := "import Prelude\nsyntax (name := twice) \"twice\" term:max : term\nmacro_rules\n  | `(term| twice $x) => `(term| Nat.add $x $x)\ndef two : Nat := 2\ndef four : Nat := twice two\n"
         let (srv, _) ← openDoc src

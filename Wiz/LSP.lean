@@ -94,17 +94,21 @@ def elaborate (srv : Server) (doc : Doc) : Doc :=
   let (s, eng) := Query.elaborate doc.engine doc.text init key₀
   { doc with state := s, engine := eng }
 
-def diagnostic (doc : Doc) (m : Msg) : Json :=
+/-- The modules `import` can reach, with their sources (for code actions). -/
+def Server.modules (srv : Server) : List (String × String) :=
+  srv.libs.toList.map fun (n, (_, src)) => (n, src)
+
+def diagnostic (srv : Server) (doc : Doc) (m : Msg) : Json :=
   let code := if m.code.isEmpty then [] else
     [("code", Json.str m.code),
-     ("data", Json.mkObj ((Actions.messageData doc.state m).map fun (k, vs) =>
+     ("data", Json.mkObj ((Actions.messageData doc.state m doc.text srv.modules).map fun (k, vs) =>
         (k, if k == "name" then Json.str (vs.headD "") else Json.arr (vs.map Json.str).toArray)))]
   Json.mkObj ([("range", range doc.text m.info),
                ("severity", (match m.severity with | .error => 1 | .warning => 2 | .info => 3 : Nat)),
                ("source", "wiz"), ("message", m.text)] ++ code)
 
-def diagnostics (uri : String) (doc : Doc) : Json :=
-  let ds := doc.state.messages.toList.map (diagnostic doc)
+def diagnostics (srv : Server) (uri : String) (doc : Doc) : Json :=
+  let ds := doc.state.messages.toList.map (diagnostic srv doc)
   Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/publishDiagnostics"),
               ("params", Json.mkObj [("uri", uri), ("diagnostics", Json.arr ds.toArray)])]
 
@@ -401,9 +405,9 @@ def infoview (srv : Server) (uri : String) (doc : Doc) (method : String) (msg : 
     pure (memo s!"sub {r}" (withTable doc ((subtermType st.globals sub).mapM (·.prettyTagged sub.names sub.types)) k))
 
 /-- A code action as JSON: with its edit, or (`resolveId`) with what `codeAction/resolve` needs. -/
-def codeAction (uri : String) (doc : Doc) (a : Actions.Action) (resolveId : Option Nat) : Json :=
+def codeAction (srv : Server) (uri : String) (doc : Doc) (a : Actions.Action) (resolveId : Option Nat) : Json :=
   let diags := match a.fixes.bind (doc.state.messages[·]?) with
-    | some m => [("diagnostics", Json.arr #[diagnostic doc m])]
+    | some m => [("diagnostics", Json.arr #[diagnostic srv doc m])]
     | none => []
   let rest := match resolveId with
     | some k => [("data", Json.mkObj [("uri", uri), ("session", doc.session), ("id", k)])]
@@ -447,14 +451,14 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
       ("params", Json.mkObj [("uri", uri), ("version", match version with | some v => Json.num v | none => Json.null),
                              ("session", session)])]
     ({ srv with docs := srv.docs.insert uri doc, sessions := session },
-     #[diagnostics uri doc] ++ (if srv.elaboratedNotes then #[note] else #[]))
+     #[diagnostics srv uri doc] ++ (if srv.elaboratedNotes then #[note] else #[]))
   | "textDocument/didClose" => ({ srv with docs := srv.docs.erase uri }, #[])
   | "textDocument/codeAction" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
     let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])
-    let acts := Actions.actionsAt doc.state doc.text (pos "start") (pos "end")
+    let acts := Actions.actionsAt doc.state doc.text (pos "start") (pos "end") srv.modules
     let base := doc.actions.size
-    let json := acts.mapIdx fun i a => codeAction uri doc a (if srv.resolveEdits then some (base + i) else none)
+    let json := acts.mapIdx fun i a => codeAction srv uri doc a (if srv.resolveEdits then some (base + i) else none)
     ({ srv with docs := srv.docs.insert uri { doc with actions := doc.actions ++ acts } }, #[reply (Json.arr json)])
   | "codeAction/resolve" =>
     let auri := getStr msg ["params", "data", "uri"]
@@ -463,7 +467,7 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     let some k := (get? msg ["params", "data", "id"]).bind (·.getNat?.toOption) | return (srv, #[replyError (-32602) "missing id"])
     if session != doc.session then return (srv, #[replyError (-32801) "the document changed"])
     let some a := doc.actions[k]? | return (srv, #[replyError (-32801) "unknown action"])
-    (srv, #[reply (codeAction auri doc a none)])
+    (srv, #[reply (codeAction srv auri doc a none)])
   | "wiz/plainGoal" | "wiz/plainTermGoal" | "wiz/interactiveGoals" | "wiz/interactiveTermGoal" | "wiz/subtermInfo"
   | "wiz/interactiveInfo" =>
     let some doc := srv.docs.get? uri | return (srv, #[replyError (-32602) s!"unknown document {uri}"])

@@ -1,4 +1,5 @@
 import Wiz.Rig
+import Wiz.Core.ErrorCode
 import Wiz.Core.Conv
 import Wiz.Core.Usage
 import Wiz.Core.Pretty
@@ -205,6 +206,12 @@ def kernelRejected (name : Name) (e : TypeError) : String :=
   | .duplicateDecl n => s!"'{n}' has already been declared"
   | .other m => if (m.splitOn "quantity").length > 1 then m else s!"kernel rejected {name}: {m}"
   | e => s!"kernel rejected {name}: {e}"
+
+/-- The error code of a kernel error reported with `kernelRejected` (`ErrorCode`). -/
+def kernelRejectedCode : TypeError → String
+  | .quantityMismatch .. => ErrorCode.quantity
+  | .other m => if (m.splitOn "quantity").length > 1 then ErrorCode.quantity else ErrorCode.kernelRejected
+  | _ => ErrorCode.kernelRejected
 
 abbrev TCM := Except TypeError
 

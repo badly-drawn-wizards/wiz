@@ -395,6 +395,7 @@ def infoSx : Info R → Sx
     node "expansion" [info i, str k, handler, list (e.toList.map (str ·.reprint))]
   | .importMod i m => node "import" [info i, str m]
   | .inst i ns ty t => node "inst" [info i, names ns, term ty, term t]
+  | .fix i c d => node "fix" [info i, str c, list (d.map fun (k, vs) => list [str k, names vs])]
 
 def dInfo (x : Sx) : Option (Info R) := do
   let xs ← items? x
@@ -426,6 +427,11 @@ def dInfo (x : Sx) : Option (Info R) := do
     pure (.expansion (← dinfo (← a 1)) (← atom? (← a 2)) h e.head?)
   | "import" => pure (.importMod (← dinfo (← a 1)) (← atom? (← a 2)))
   | "inst" => pure (.inst (← dinfo (← a 1)) (← dnames (← a 2)) (← dterm (← a 3)) (← dterm (← a 4)))
+  | "fix" =>
+    let d ← (← items? (← a 3)).toList.mapM fun kv => do
+      let #[k, vs] ← items? kv | none
+      pure (← atom? k, ← dnames vs)
+    pure (.fix (← dinfo (← a 1)) (← atom? (← a 2)) d)
   | _ => none
 
 def Effect.toSx (e : Effect R) : Sx :=
@@ -494,7 +500,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-14-builtin-once"  -- 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-15-error-codes"  -- 15: error codes, `Info.fix`; 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 
@@ -660,15 +666,15 @@ where
           -- what the rest of the file sees depends on the module's text, through its key
           key := mixHash key (← keyOf keys m)
           if stack.contains m then
-            s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"import cycle through {m}" } }
+            s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"import cycle through {m}", code := ErrorCode.importCycle } }
           else if !s.imported.contains m then
             match s.loader m with
-            | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}" } }
+            | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}", code := ErrorCode.unknownModule } }
             | some src =>
               let (inner, h) ← importModule keys base stack s m src
               hits := hits + h
               let errs := inner.messages.filter (·.severity == .error)
-              let msg : Msg := { info := cmd.info, severity := .error,
+              let msg : Msg := { info := cmd.info, severity := .error, code := ErrorCode.moduleErrors,
                                  text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
               -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
               let warns := (inner.messages.filter (·.severity == .warning)).map fun w =>
