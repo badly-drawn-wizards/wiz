@@ -14,7 +14,7 @@ conventions a new one follows. Details are in the stage sections cited.
 | logic | `Logic` | import | `∧ ∨ ¬ ↔ ∃` (ASCII `/\ \/ <-> exists`) | 13e, 24a |
 | functors | `Functor` | import | `<$> <*>` | 13d |
 | tactics | (Prelude) | `by` | `intro`, `exact`, `apply`, `rw`, `unfold` … | 6c–6f |
-| separation logic | `HProp`, `Hoare` | import | `⊢ ↦ ⋆ −∗` | 24b–c |
+| separation logic | `HProp`, `Hoare` | import | `⊢ ↦ ⋆ −∗`, `⌜P⌝`, `∃ʰ x, H`, `⦃P⦄ c ⦃r, Q⦄` | 24b–c, 24e |
 | x-tactics | `HoareTactics` | `by` | `xsimpl xpull xwp xstep xval xseq xapp xchange xunfold xgo` | 24d |
 | Feral (Rust-like) | `Feral` | `feral … end`, `#lower feral … end`, `#unchecked feral … end` | its own grammar (keyword scope `feral_kw`) | 22j |
 | HDL | `Hdl.Core` | import | none: combinators `Hw.add`, `Hw.mux`, `Circuit.mk` … | libraries.md, H14 |
@@ -45,7 +45,8 @@ One meaning per symbol across the libraries. The levels (higher binds tighter):
 | 70 | `*` `/` `%` | Prelude |
 | 75 | `-x` | Prelude |
 | 100 | `<$>`; `<*>` is 60 | Functor |
-| max | `!` `¬` `[…]` | Prelude, Logic |
+| max | `!` `¬` `[…]`, `⌜P⌝`, `⦃P⦄ c ⦃r, Q⦄` | Prelude, Logic, HProp, Hoare |
+| lead (extends right) | `∃ x, P`, `∃ʰ x, H`, `if`, `fun` | Logic, HProp, Prelude |
 
 Words reserved by an import: `exists` (Logic, as in Lean) and `feral` (Feral). Using one
 as a name is an error that says which syntax reserved it:
@@ -58,7 +59,9 @@ neither see it nor print with it (List.cons as `∷` in HoareTactics, String.app
 ## Printing
 
 Terms print in the notation they were written with (11r): `#check`, `#eval`, messages,
-hovers and the infoview's goals. Infix and `notation` rules whose template is a constant
+hovers, the infoview's goals, and (24e) `trace_state` and tactic messages, so an x-tactic
+that gets stuck shows `⊢ l ↦ 1 ⊢ l ↦ 2` (the goal's `⊢`, then the entailment's) and a
+specification reads `⦃p ↦ a ⋆ q ↦ b⦄ Prog.swap p q ⦃_, p ↦ b ⋆ q ↦ a⦄`. Infix and `notation` rules whose template is a constant
 applied to the rule's variables print automatically; binder notation (`∃ x, P`) and
 macros declare an `app_unexpander`. When a constant has several notations, the one
 declared last prints, so ASCII spellings are declared first. `set_option pp.notation
