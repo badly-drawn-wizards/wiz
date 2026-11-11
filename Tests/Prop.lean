@@ -1724,8 +1724,10 @@ def pinned : List (String × Bool × MTm × Bool) :=
    ("PH-K1: conversion of μ^(↑∞) with μ^∞ (under a variable's spine)", false, conv (.univ 0) Gi N, false),
    ("PH-K1: regularity, cast from μ^(↑∞) to μ^∞ of zero, normal form", true,
      .ann (.lam (.cast Gi N (.var 0) MTm.natZero)) (.pi (.eqTy Gi N) N), true),
-   ("PH-K1: type equality μ^(↑∞) = μ^∞, normal form", true, .eqTy Gi N, true),
-   ("PH-K1: () : μ^(↑∞) = μ^∞", false, .ann .star (.eqTy Gi N), true),
+   -- (these two differed at 76801e9 and agree at fd63740: Kernel.wiz's sizes changed in
+   -- between, probably #40, desc-eq's "sizes compared as conversion does", dc4a32d)
+   ("PH-K1: type equality μ^(↑∞) = μ^∞, normal form", true, .eqTy Gi N, false),
+   ("PH-K1: () : μ^(↑∞) = μ^∞", false, .ann .star (.eqTy Gi N), false),
    ("PH-K1: ∞ : Size< ↑∞ (D2: rejected)", false, .ann .szInf SL, false),
    ("PH-K1: Size< ↑∞ ≤ Size< ∞", false, .ann (.lam (.var 0)) (.pi SL (.sizeLt .szInf)), false),
    ("PH-K1: Size< ∞ ≤ Size< ↑∞", false, .ann (.lam (.var 0)) (.pi (.sizeLt .szInf) SL), false),
