@@ -1,8 +1,12 @@
-# Release tarballs (stage 26d): what `tower` installs with `--source release`, and what
-# you can untar by hand (scripts/release-tarball.sh describes the layout).
+# Release tarballs (stages 26d, 26g): what `tower` installs with `--source release`, and
+# what you can untar by hand (scripts/release-tarball.sh describes the layout).
 #
 # * a tag vX.Y.Z: a GitHub release of that tag with wiz-x86_64-linux.tar.gz (+ .sha256);
-# * a push to master: the moving pre-release `nightly`, its assets replaced;
+# * a push to master: the pre-release `snapshot-<sha>` of that commit, then old snapshots
+#   are pruned (scripts/release-snapshots.sh); the tag `nightly` moves to it only once CI
+#   has passed on that commit (nightly.yml);
+# * workflow_dispatch with `commit`: builds that (older) master commit and publishes its
+#   snapshot (to satisfy a pin whose snapshot was pruned);
 # * a pull request that touches the packaging: builds and tests the tarball, uploads nothing.
 #
 # The build is outside Nix, with elan's Lean, whose bundled clang and sysroot make the
@@ -10,6 +14,7 @@
 # releases do: no /nix/store paths. The tarball also carries its own C toolchain
 # (share/wiz/cc, scripts/bundle-cc.sh, stage 26f): Lean's clang and lld, a glibc 2.27
 # sysroot, static GMP and Boehm GC, so `wiz build` and grail need nothing installed.
+# (A dispatched commit older than 26f gets no bundle and is tested with gcc, as before.)
 name: release
 
 on:
@@ -23,10 +28,20 @@ on:
       - scripts/bundle-cc.sh
       - .github/workflows/release.yml
       - Tower/**
+      - scripts/release-snapshots.sh
+      - scripts/test-release-snapshots.sh
+      - .github/workflows/nightly.yml
   workflow_dispatch:
+    inputs:
+      commit:
+        description: "a master commit (full sha) to build and publish as snapshot-<sha>; empty: just build"
+        required: false
+        default: ""
 
 concurrency:
-  group: release-${{ github.ref }}
+  # a newer master push cancels an older one (which then never moves nightly back);
+  # a dispatched snapshot runs alongside
+  group: release-${{ github.ref }}-${{ inputs.commit }}
   cancel-in-progress: true
 
 permissions:
@@ -39,8 +54,28 @@ jobs:
     timeout-minutes: 90
     env:
       LAKE_CACHE_DIR: ${{ github.workspace }}/.lake/cache
+      # the commit built: the pushed one, or the dispatched `commit`
+      OLD_COMMIT: ${{ inputs.commit }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+      # this workflow's own scripts (a dispatched old commit may predate them)
+      - uses: actions/checkout@v5
+        with:
+          path: .release-tools
+          sparse-checkout: scripts
+      - name: The snapshot scripts work (a fake gh, nothing published)
+        run: sh .release-tools/scripts/test-release-snapshots.sh
+      - name: A dispatched commit is on master
+        if: inputs.commit != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$OLD_COMMIT" in *[!0-9a-f]*) echo "commit: not a sha"; exit 1 ;; esac
+          [ "$(git rev-parse HEAD)" = "$OLD_COMMIT" ] || { echo "commit: give the full 40-hex sha"; exit 1; }
+          st=$(gh api "repos/${{ github.repository }}/compare/$OLD_COMMIT...master" --jq .status)
+          case $st in ahead|identical) ;; *) echo "$OLD_COMMIT is not on master ($st)"; exit 1 ;; esac
       - name: elan
         run: |
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
@@ -64,26 +99,41 @@ jobs:
             ldd .lake/build/bin/$b
             if ldd .lake/build/bin/$b | grep -q /nix/store; then echo "$b links /nix/store paths"; exit 1; fi
           done
+      # 26f: does the built commit use share/wiz/cc? (a dispatched old one may not)
+      - name: Bundle a C toolchain?
+        id: bundle
+        run: |
+          if grep -q withBundled Wiz/Toolchain.lean; then echo "cc=yes" >> "$GITHUB_OUTPUT"; else echo "cc=no" >> "$GITHUB_OUTPUT"; fi
       - name: Cache the bundled C toolchain
+        if: steps.bundle.outputs.cc == 'yes'
         uses: actions/cache@v4
         with:
           path: cc-bundle
-          key: release-cc-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'scripts/bundle-cc.sh') }}
+          key: release-cc-${{ runner.os }}-${{ hashFiles('lean-toolchain', '.release-tools/scripts/bundle-cc.sh') }}
       - name: The bundled C toolchain (clang, glibc 2.27 sysroot, static GMP and GC)
+        if: steps.bundle.outputs.cc == 'yes'
         run: |
           if [ ! -x cc-bundle/bin/cc ]; then
             sudo apt-get install -y -q m4 >/dev/null # GMP's configure
-            scripts/bundle-cc.sh cc-bundle
+            sh .release-tools/scripts/bundle-cc.sh cc-bundle
           fi
           du -sh cc-bundle
+          # what the compiler itself needs (Lean's libLLVM/libclang-cpp: glibc 2.30)
+          for f in cc-bundle/bin/clang cc-bundle/bin/ld.lld cc-bundle/lib/*.so*; do
+            [ -L "$f" ] || echo "$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1) $f"
+          done
       - name: Tarball
         run: |
           mkdir -p dist
-          scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz .lake/build/bin "$(git rev-parse HEAD)" cc-bundle
+          cc=; [ "${{ steps.bundle.outputs.cc }}" = yes ] && cc=cc-bundle
+          .release-tools/scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz .lake/build/bin "$(git rev-parse HEAD)" $cc
           ls -l dist
-      - name: The tarball builds programs with no C compiler or GMP installed (plain Ubuntu 18.04 and 24.04 containers)
-        # the acceptance test of 26f: the images have no gcc, cc, clang, libgmp or headers;
-        # 18.04 has glibc 2.27, the oldest the toolchain and its programs promise to run on
+      - name: The tarball builds programs with no C compiler or GMP installed (plain Ubuntu containers)
+        # the acceptance test of 26f: the images have no gcc, cc, clang, libgmp or libc
+        # headers. 20.04 (glibc 2.31) and 24.04 build and run; 18.04 (glibc 2.27, the
+        # oldest the toolchain's binaries and the programs it builds support) checks and
+        # runs the programs built on 20.04 (the bundled clang itself needs glibc 2.30)
+        if: steps.bundle.outputs.cc == 'yes'
         run: |
           t=$(mktemp -d)
           tar -xzf dist/wiz-x86_64-linux.tar.gz -C "$t"
@@ -99,6 +149,11 @@ jobs:
             if [ -e $h ]; then echo "$h is installed"; exit 1; fi
           done
           wiz check io.wiz
+          if [ "$1" = old ]; then
+            # programs built on a newer system run here
+            for p in io io-llvm hello; do /o/$p > out; head -1 out; done
+            exit 0
+          fi
           wiz build io.wiz -o io
           ./io > out; head -3 out
           wiz run io.wiz > out; head -1 out
@@ -106,20 +161,33 @@ jobs:
           ./io-llvm > out; head -1 out
           wiz run import_c.wiz
           cd pkg; grail build; .grail/bin/hello > out; head -1 out
+          cp .grail/bin/hello ../io ../io-llvm /o/
           EOF
-          for img in ubuntu:18.04 ubuntu:24.04; do
+          for img in ubuntu:24.04 ubuntu:20.04; do
             echo "::group::$img"
-            docker run --rm -v "$t:/t:ro" -v "$d:/w:ro" "$img" sh /w/smoke.sh
+            o=$(mktemp -d)
+            docker run --rm -v "$t:/t:ro" -v "$d:/w:ro" -v "$o:/o" "$img" sh /w/smoke.sh new
             echo "::endgroup::"
           done
-      - name: tower installs the tarball (and its wiz builds with the bundled cc)
+          echo "::group::ubuntu:18.04"
+          docker run --rm -v "$t:/t:ro" -v "$d:/w:ro" -v "$o:/o:ro" ubuntu:18.04 sh /w/smoke.sh old
+          echo "::endgroup::"
+      - name: The tarball works on a plain Ubuntu (with gcc and GMP for an old commit), and tower installs it
         run: |
+          [ "${{ steps.bundle.outputs.cc }}" = yes ] || sudo apt-get install -y -q gcc libgmp-dev >/dev/null
           t=$(mktemp -d)
           tar -xzf dist/wiz-x86_64-linux.tar.gz -C "$t"
           d=$(mktemp -d); cp examples/io.wiz "$d/"; cd "$d"
-          # tower: install this tarball as a toolchain from a local release directory
-          rel=$(mktemp -d); mkdir -p "$rel/nightly"
-          cp "$GITHUB_WORKSPACE"/dist/* "$rel/nightly/"
+          "$t/wiz-x86_64-linux/bin/wiz" check io.wiz
+          "$t/wiz-x86_64-linux/bin/wiz" build io.wiz -o io
+          ./io | head -3
+          # an old commit's own tower may not know snapshots; the rest was checked
+          [ -z "$OLD_COMMIT" ] || exit 0
+          # tower: install this tarball as nightly from a local release directory laid out
+          # as GitHub's (snapshot-<sha>/), nightly being HEAD of the checkout
+          sha=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
+          rel=$(mktemp -d); mkdir -p "$rel/snapshot-$sha"
+          cp "$GITHUB_WORKSPACE"/dist/* "$rel/snapshot-$sha/"
           tower="$t/wiz-x86_64-linux/bin/tower --home $d/.tower"
           $tower set git "$GITHUB_WORKSPACE"
           $tower set nightly-ref HEAD
@@ -142,14 +210,14 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" dist/* --title "Wiz ${GITHUB_REF_NAME}" --notes "Wiz ${GITHUB_REF_NAME}: install with tower (docs/stages/26-tower.md)" ||
             gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
-      - name: Publish (nightly, from master)
+      # snapshot-<sha>, then pruning (26g); nightly.yml moves nightly once CI passed
+      - name: Publish (snapshot, from master)
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view nightly >/dev/null 2>&1 ||
-            gh release create nightly --prerelease --title "Wiz nightly" --notes "Wiz built from the master branch; moves with it." --target "$GITHUB_SHA"
-          gh release upload nightly dist/* --clobber
-          # the release's tag follows the branch
-          git tag -f nightly "$GITHUB_SHA"
-          git push -f origin refs/tags/nightly
+        run: .release-tools/scripts/release-snapshots.sh publish "$GITHUB_SHA" dist
+      - name: Publish (snapshot of a dispatched commit)
+        if: inputs.commit != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .release-tools/scripts/release-snapshots.sh publish "$OLD_COMMIT" dist

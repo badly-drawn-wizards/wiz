@@ -17,3 +17,4 @@ web/out/
 # grail
 .grail/
 grail.local.wiz
+__pycache__/
