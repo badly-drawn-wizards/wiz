@@ -534,8 +534,9 @@ def gluedGroup : Group where
         let errs := st.messages.filter (·.severity == .error)
         unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}")
         check ((errs[0]!.text.splitOn "chk (slow 3000 1) = ").length > 1) s!"not as written: {errs[0]!.text.take 300}" },
-    -- `rfl` at a glued equation whose sides agree is one `refl`, read off the equation
-    { name := "rfl at a glued equation: one refl of its sides", run := fun _ => do
+    -- `rfl` at an equation that computes to a Σ is one `refl` when its sides agree: the
+    -- sides as written when it was glued (before, guessed back from the Σ, `eqSigmaSides?`)
+    { name := "rfl at a glued equation: computed, and at a Σ one refl of the sides as written", run := fun _ => do
         let _ ← elabOk (slowStatement ++ "def r : chk (slow 3000 1) = .true := rfl\n" ++
           "def s : ((0, Nat.add 1 1) : Nat × Nat) = (0, 2) := rfl\n")
         pure () },

@@ -757,15 +757,6 @@ def sidesOk (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R Boo
   try sameSides ctx A? a b; pure true
   catch _ => set s; pure false
 
-/-- (glued equations) `rfl` at a glued equation whose sides agree (`sidesOk`): `refl a`,
-read off the equation as written. `none` if it is not glued or the sides don't agree:
-then the equation is computed and proved by its shape (`rflProof`). -/
-def rflGlued? (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
-  let .lazyEq A a b _ ← forceMeta ty | return none
-  unless ← sidesOk ctx (some A) a b do return none
-  let g ← getGlobals
-  return some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
-
 /-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
 `True`s and `a = b`, an equation of functions a Π. (13n) At a Σ that `vEq` computed from
 `a = b` with `a ≡ b`, the proof is one `refl a` (`eqSigmaSides?`). Otherwise build it by the same shape
@@ -773,7 +764,10 @@ def rflGlued? (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
 equations left; the kernel checks them. -/
 partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
   let g ← getGlobals
-  if let some t ← rflGlued? ctx ty then return some t
+  -- (glued equations) the equation as written, if it was glued: its sides, exactly
+  let written? : Option (Val R × Val R × Val R) := match ← forceMeta ty with
+    | .lazyEq A a b _ => some (A, a, b)
+    | _ => none
   match ← force ty with
   | .neutral (.eq A a b) #[] =>
     sameSides ctx (some A) a b
@@ -785,7 +779,9 @@ partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R))
   | ty'@(.sigma _ _ A B _) =>
     -- an equation `a = b` at a Σ type has computed to this Σ (`vEq`): if `a ≡ b`, one
     -- `refl` proves it, with no cast to see through (`s = s`, `P.mk s.1 s.2 = s`)
-    if let some (T, a, b) := eqSigmaSides? ty' then
+    -- (glued equations: the sides as written, when the equation was glued; else guessed
+    -- back from the Σ)
+    if let some (T, a, b) := written?.orElse fun _ => eqSigmaSides? ty' then
       let T ← refreshVal ctx T
       let a ← refreshVal ctx a
       let b ← refreshVal ctx b
@@ -977,9 +973,6 @@ where
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.rfl" =>
       let g ← getGlobals
-      -- (glued equations) the sides as written: one `refl` if they agree, before the
-      -- equation is computed (and its sides guessed back, `eqSigmaSides?`)
-      if let some t ← rflGlued? ctx expected then return t
       match ← force expected with
       | .neutral (.eq A a b) #[] =>
         sameSides ctx (some A) a b
@@ -988,7 +981,7 @@ where
         sameSides ctx none X Y
         pure (.reflTy (quote g ctx.lvl X))
       | .unit _ => pure .tt
-      | e => match ← rflProof ctx e with
+      | e => match ← rflProof ctx expected with
         | some t => pure t
         | none => throwAt ctx.info s!"rfl: the expected type is not an equation (it may have computed further): {← showVal ctx e}\n  try `refl x`"
     | "term.cast" =>

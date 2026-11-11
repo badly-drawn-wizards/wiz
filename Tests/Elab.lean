@@ -3143,6 +3143,11 @@ def samples : List MTm :=
   propShapes ++ qtyApart ++ elimLevels ++ transpProp ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ elimRule.map (·.1) ++ usageRule.map (·.1) ++ [levelInEnv 0 0, levelInEnv 1 1, levelInEnv 0 1, levelInEnv 1 0,
    natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
+   -- (glued equations) a refl against an equation with the same sides, with sides that
+   -- compute to them, and with different ones
+   ann (refl natTy (natSucc natZero)) (eq natTy (natSucc natZero) (natSucc natZero)),
+   ann (refl (enum 2) (tag 2 0)) (eq (enum 2) (ecase (enum 2) (tag 2 1) [tag 2 0, tag 2 0]) (tag 2 0)),
+   ann (refl natTy natZero) (eq natTy natZero (natSucc natZero)),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
    ann (con (pair (tag 2 1) (pair star (pair star star)))) natTy,
    ann (con (pair (tag 2 0) star)) natTy,
@@ -4135,15 +4140,24 @@ def selfHostGroup : Group where
     { name := "the self-hosted frontend: the Prelude's division and bits compute", run := fun _ =>
         selfhostCheckFile "import Prelude\n#reduce Nat.beq (Nat.mod 17 5) 2\n#reduce Nat.beq (Nat.xor 6 3) 5\n#reduce Nat.beq (Nat.log2 9) 3\n"
           "con((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\n" },
-    -- (glued equations, `wiz-notes/glued-eq.md`) both kernels compare two equations side
-    -- by side first and compute them only when that fails
-    { name := "the self-hosted frontend: glued equations, as in the Lean frontend", run := fun _ =>
-        selfhostAgrees "def add3 (n : Nat) : Nat := Nat.add n 3\ndef t : add3 2 = 5 := refl 5\n" [
-          ("def u : add3 2 = 5 := t\n", true),
-          ("def u : add3 (Nat.add 1 1) = Nat.add 4 1 := t\n", true),
-          ("def x : add3 2 = 6 := t\n", false),
-          ("def x : add3 3 = 5 := t\n", false),
-          ("def f : (fun (n : Nat) => add3 n) = (fun (n : Nat) => Nat.add n 3) := fun n => refl (add3 n)\n", true)] },
+    -- (glued equations, `wiz-notes/glued-eq.md`) Kernel.wiz glues an equation too, and its
+    -- syntactic comparison (`sameVal`, behind regularity and `famEq`) reads back what it
+    -- computes, as the Lean kernel's does (review R1): glued and computed compare alike
+    { name := "Kernel.wiz: a glued equation compares (sameVal) like its computed form, as in the Lean kernel", run := fun _ => do
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let g := leanGlobals ()
+        let A : Val ZeroOneMany := .enum ["a", "b"]
+        let (t0, t1) : Val ZeroOneMany × Val ZeroOneMany := (.tag ["a", "b"] 0, .tag ["a", "b"] 1)
+        check (sameVal g (vEqL g A t0 t0) (vEq g A t0 t0) && sameVal g (vEqL g A t0 t1) (vEq g A t0 t1) &&
+          !sameVal g (vEqL g A t0 t0) (vEq g A t0 t1)) "the Lean kernel's sameVal"
+        let probe :=
+          "def b2s (b : Bool) : String := match b with\n  | .true => \"true\"\n  | .false => \"false\"\n" ++
+          "def t0 : Val := .vtag 2 0\ndef t1 : Val := .vtag 2 1\n" ++
+          "def main : IO Unit := do\n" ++
+          "  IO.println (b2s (sameVal (vEqG (.venum 2) t0 t0) (vEq (.venum 2) t0 t0)));\n" ++
+          "  IO.println (b2s (sameVal (vEqG (.venum 2) t0 t1) (vEq (.venum 2) t0 t1)));\n" ++
+          "  IO.println (b2s (sameVal (vEqG (.venum 2) t0 t0) (vEq (.venum 2) t0 t1)))\n"
+        ioRun (kernel ++ "\n" ++ probe) "true\ntrue\nfalse\n" },
     { name := "the self-hosted frontend: phantom parameters count, as in the Lean frontend (21i)", run := fun _ =>
         selfhostAgrees phantomHeader [
           ("def same (x : UIntN 8) : UIntN 8 := x\n", true),

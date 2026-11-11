@@ -1650,7 +1650,13 @@ def quoteM (qm : Bool) : Nat → Val → Tm
       | .none => .star
       | .some r => quoteSpine qm l .star r
   | l, .vne h sp => quoteSpine qm l (quoteHead qm l h) sp
-  | l, .vglued h sp _ => quoteSpine qm l (quoteHead qm l h) sp
+  | l, .vglued h sp g => match qm with
+    | .true => quoteSpine qm l (quoteHead qm l h) sp
+    -- (glued equations) the kernel's own syntactic comparisons (`sameVal`) read back what
+    -- an equation computes, as before it was glued (and as the Lean kernel does)
+    | .false => match isGluedEq (.vglued h sp g) with
+      | .true => quoteM qm l (whnf (g ()))
+      | .false => quoteSpine qm l (quoteHead qm l h) sp
   | l, .vulift k A => .ulift k (quoteM qm l A)
   | l, .vup a => .up (quoteM qm l a)
   --|ex
@@ -2481,7 +2487,7 @@ def infer : TCtx → Tm → TyRes
       | .true =>
         let vA := eval (TCtx.env c) A;
         match check c a vA with
-        | .ok _ _ => .ok (vEq vA (eval (TCtx.env c) a) (eval (TCtx.env c) a)) (uZeros (TCtx.lvl c))
+        | .ok _ _ => .ok (vEqG vA (eval (TCtx.env c) a) (eval (TCtx.env c) a)) (uZeros (TCtx.lvl c))
         | r => r
     | r => r
   | c, .tyRefl X => match inferUniv c X with
@@ -2519,7 +2525,7 @@ def infer : TCtx → Tm → TyRes
           | .ok _ _ => match check c b vA with
             | .ok _ _ =>
               let vb := eval (TCtx.env c) b;
-              match check c e (vEq vA va vb) with
+              match check c e (vEqG vA va vb) with
               | .ok _ _ => .ok (vapp (vapp vP vb) (eval (TCtx.env c) e)) (uZeros (TCtx.lvl c))
               | r => r
             | r => r
