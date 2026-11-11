@@ -441,6 +441,10 @@ structure Globals (R : Type) where
   applying the equivalence; `split` on a proof is η. See `docs/CoreSpec.md` and
   `wiz-notes/p2-proofs.md`. -/
   lazyProofs : Bool := true
+  /-- Glued equations (the default; `--eager-eqs` turns it off, and so does
+  `--eager-proofs`): `eval (.eq A a b)` is `Val.lazyEq`, and `vEq` runs only when the type
+  is forced. See `wiz-notes/glued-eq.md`. -/
+  lazyEqs : Bool := true
   /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
   it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
   quoteErasesProofs : Bool := false

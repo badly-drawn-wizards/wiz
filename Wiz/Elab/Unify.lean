@@ -93,6 +93,7 @@ partial def force (v : Val R) : ElabM R (Val R) := do
   match ← forceMeta v with
   | .unfold _ _ _ v => force v.get
   | .lazyInd _ _ _ _ _ _ _ _ _ v => force v.get
+  | .lazyEq _ _ _ v => force v.get
   | v => pure v
 
 /-- An equation stuck on a metavariable (its type or a side) computes once the
@@ -183,6 +184,9 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | .snd => pure (.snd t)
       | .down => pure (.down t)
       | _ => pure t) t
+  -- (glued equations) folded, as written
+  if let .lazyEq A a b _ ← forceMeta v then
+    return .eq (← rename m p A) (← rename m p a) (← rename m p b)
   if let .natLit n ← force v then return .natLit n
   --<sol
   let goSp (h : Term R) (sp : Array (Elim R)) : ElabM R (Term R) :=
@@ -212,6 +216,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | .sfix l I D v P f s i =>
         return .sfix l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p f) (← rename m p s) (← rename m p i) acc
   match ← force v with
+  | .lazyEq _ _ _ v => rename m p v.get  -- (not reached: `force` forces it)
   | .neutral (.local x) sp =>
     match p.ren[x]? with
     | some x' => goSp (.var (p.dom - x' - 1)) sp
@@ -536,6 +541,8 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     let s ← get
     try x; pure true catch e => set s; keepLearnt e; pure false
   match t, u with
+  -- (glued equations) side by side; on failure the caller forces both
+  | .lazyEq A a b _, .lazyEq A' a' b' _ => attempt do unify l A A'; unify l a a'; unify l b b'
   | .lazyInd _ _ _ _ _ _ _ x _ _, .lazyInd _ _ _ _ _ _ _ y _ _ =>
     -- (on a constructor, `ind` is lazy for speed alone: compared by what it computes)
     if (whnf x matches .con _) || (whnf y matches .con _) then return false
@@ -570,6 +577,9 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
         -- (with the state as it is now, which has what was learnt)
         throw { err with state? := some (← get) }
       attempt other
+  | .neutral (.mvar m) sp, v@(.lazyEq ..) | v@(.lazyEq ..), .neutral (.mvar m) sp =>
+    noteMeta
+    attempt (solve l m sp v)
   | .neutral (.mvar m) sp, v@(.unfold ..) | v@(.unfold ..), .neutral (.mvar m) sp =>
     noteMeta
     if ← attempt (solve l m sp v) then return true

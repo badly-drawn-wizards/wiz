@@ -508,6 +508,15 @@ def sigmaTm (q : Q) (a b : Tm) : Tm := match q with
 partial def whnf (v : Val) : Val := match v with
   | .vglued _ _ g => whnf (g ())
   | _ => v
+-- (glued equations) an equation not yet computed (`vEqG`): a proposition, whatever it
+-- computes to
+def isGluedEq (v : Val) : Bool := match v with
+  | .vglued h sp _ => match h with
+    | .heq _ _ _ => match sp with
+      | .snil => .true
+      | _ => .false
+    | _ => .false
+  | _ => .false
 
 
 
@@ -919,7 +928,7 @@ def eval : Env → Tm → Val
     | .vtag _ i => eval env (tmsNth bs i)
     | .vne h sp => .vne h (.secase sp env m bs)
     | v => v
-  | env, .eq A a b => vEq (eval env A) (eval env a) (eval env b)
+  | env, .eq A a b => vEqG (eval env A) (eval env a) (eval env b)
   | env, .eqTy A B => vEqType (eval env A) (eval env B)
   | env, .coe A B e t =>
     let vA := eval env A;
@@ -1127,6 +1136,23 @@ def nuFamily (l : Nat) (I D : Val) : Val :=
   .vlam (.cons D (.cons I .nil)) (.nu l (.var 2) (.var 1) (.var 0) .szInf)
 def nuFamilyAt (l : Nat) (I D sz : Val) : Val :=
   .vlam (.cons sz (.cons D (.cons I .nil))) (.nu l (.var 3) (.var 2) (.var 0) (.var 1))
+-- (glued equations, `vEqL` in `Eval.lean`) `a = b` glued: `vEq` runs when `whnf` first looks
+-- through it, and two glued equations are compared side by side first (`lazyDelta`,
+-- `convHead` on `heq`). At a proposition it is `True` at once (a folded equation there
+-- would read back ill typed)
+def vEqG (A a b : Val) : Val := match eqStrict (whnf A) with
+  | .true => vEq A a b
+  | .false => .vglued (.heq A a b) .snil (memo (fun _ => vEq A a b))
+def eqStrict (A : Val) : Bool := match propSort A with
+  | .some p => match p with
+    | .true => .true
+    | .false => liftedProp A
+  | .none => liftedProp A
+def liftedProp : Val → Bool
+  | .vulift _ A1 => match propSort (whnf A1) with
+    | .some p => p
+    | .none => .false
+  | _ => .false
 -- `a = b` at `A`, by `A` (`vEq` in `Eval.lean`; the closures are the same templates)
 -- at a proposition, `True` (proof irrelevance: the equation would be ill typed, and two
 -- proofs are always convertible); otherwise by `A`
@@ -1925,7 +1951,7 @@ def headType : TCtx → Head → Val
   | _, .heq _ _ _ => .vsort (.lnum 0)
   | _, .heqTy _ _ => .vsort (.lnum 0)
   | _, .hcast _ B _ _ => B
-  | _, .hrefl A a => vEq A a a
+  | _, .hrefl A a => vEqG A a a
   | _, .hreflTy X => vEqType X X
   | _, .htransp _ _ P _ b e => vapp (vapp P b) e
   | _, .hconst _ ps ls _ ty => eval .nil (substIfAny ps ls ty)
@@ -1936,7 +1962,9 @@ end
 -- (without computing the whole sort: a Π type is a proposition when its codomain is,
 -- as `imax i j` is `0` exactly when `j` is; `conv` asks this at every step)
 mutual
-def isProp (c : TCtx) (ty : Val) : Bool := isPropW c (whnf ty)
+def isProp (c : TCtx) (ty : Val) : Bool := match isGluedEq ty with
+  | .true => .true
+  | .false => isPropW c (whnf ty)
 def isPropW : TCtx → Val → Bool
   | c, .vpi _ a env b _ => isProp (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b)
   | c, .vsigma _ a env b _ => Bool.and (isProp c a) (isProp (TCtx.bind c a) (eval (.cons (fresh (TCtx.lvl c)) env) b))
@@ -2148,10 +2176,12 @@ def conv : TCtx → Val → Val → Val → Bool
   -- (proof irrelevance is checked at the other types only: at a Π type the comparison
   -- of the bodies, at a Σ type of the components, checks it again, and asking at every
   -- level made long Π types quadratic)
-  | c, ty, a, b => match (match whnf ty with
-      | .vpi _ _ _ _ _ => Bool.false
-      | .vsigma _ _ _ _ _ => Bool.false
-      | w => isPropW c w) with
+  | c, ty, a, b => match (match isGluedEq ty with
+      | .true => Bool.true
+      | .false => match whnf ty with
+        | .vpi _ _ _ _ _ => Bool.false
+        | .vsigma _ _ _ _ _ => Bool.false
+        | w => isPropW c w) with
     | .true => .true
     | .false => match whnf ty with
       | .vpi _ dom env cod _ =>
@@ -2297,7 +2327,13 @@ def convBranches : TCtx → Nat → Env → Tm → Env → Tms → Tms → Nat �
 -- **Exercise 14.7.** Subtyping (`subTy` in `Conv.lean`): sizes grow covariantly in `μ`,
 -- functions are contravariant in their domain (and may differ in quantity when they are
 -- propositions), pairs covariant; otherwise convertible.
-def subTy (c : TCtx) (A B : Val) : Bool := match whnf A with
+-- (glued equations) two glued equations with convertible sides are equal, hence subtypes
+def subTy (c : TCtx) (A B : Val) : Bool := match Bool.and (isGluedEq A) (isGluedEq B) with
+  | .true => match lazyDelta c A B with
+    | .true => .true
+    | .false => subTyW c A B
+  | .false => subTyW c A B
+def subTyW (c : TCtx) (A B : Val) : Bool := match whnf A with
   --<sol
   | .vmu l I D i s => match whnf B with
     | .vmu l' I' D' i' s' => Bool.and (Bool.and (Nat.beq l l') (sizeLe c s s'))
@@ -2718,8 +2754,18 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
         | r => r
       | r => r
     | r => r
+-- (glued equations) the type `check` matches on: against a glued equation only `fun`, a
+-- pair and `()` look at what it computes to; anything else is inferred and compared with it
+-- glued (`checkByInfer`, `subTy`)
+def checkTy (t : Tm) (ty : Val) : Val := match isGluedEq ty with
+  | .false => whnf ty
+  | .true => match t with
+    | .lam _ => whnf ty
+    | .pair _ _ => whnf ty
+    | .star => whnf ty
+    | _ => ty
 -- (given) `check` matches on the type's shape (`whnf`), and answers with the type it got
-def check (c : TCtx) (t : Tm) (ty : Val) : TyRes := match checkW c t (whnf ty) with
+def check (c : TCtx) (t : Tm) (ty : Val) : TyRes := match checkW c t (checkTy t ty) with
   | .ok _ u => .ok ty u
   | r => r
 def checkW : TCtx → Tm → Val → TyRes

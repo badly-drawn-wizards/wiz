@@ -989,7 +989,8 @@ def tacticGroup : Group where
           "  u ← TacticM.trace (String.append p.1 (String.append \" \" (String.append q.1 (String.append \" \" (String.append r.1 (String.append \" \" s.1))))));\n" ++
           "  TacticM.replaceMainGoal (.cons s.2 .nil)\nattribute [tactic tactic.in3] in3Tac\n" ++
           "def k : (n : Nat) → (n : Nat) → (1 = 1) → Bool → Nat := by\n  in3\n  trace_state\n  exact n1")
-          ["n n1 h n2", "n : Nat\nn1 : Nat\nh : True\nn2 : Bool\n⊢ Nat"] },
+          -- (glued equations: a hypothesis's equation is shown as written, not computed)
+          ["n n1 h n2", "n : Nat\nn1 : Nat\nh : 1 = 1\nn2 : Bool\n⊢ Nat"] },
     { name := "a hole solved under a binder keeps the binder's name (not x0)", run := fun _ =>
         okLib ("import Prelude\ndef ap0 {B : Nat → Type} (f : (k : Nat) → B k) : B 0 := f 0\ndef g0 (n : Nat) : List Nat := .nil\n#check ap0 g0\n" ++
           "def Ex {A : Type} (P : A → Prop) : Prop := (R : Prop) → ((a : A) → P a → R) → R\n" ++
@@ -4134,6 +4135,15 @@ def selfHostGroup : Group where
     { name := "the self-hosted frontend: the Prelude's division and bits compute", run := fun _ =>
         selfhostCheckFile "import Prelude\n#reduce Nat.beq (Nat.mod 17 5) 2\n#reduce Nat.beq (Nat.xor 6 3) 5\n#reduce Nat.beq (Nat.log2 9) 3\n"
           "con((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\n" },
+    -- (glued equations, `wiz-notes/glued-eq.md`) both kernels compare two equations side
+    -- by side first and compute them only when that fails
+    { name := "the self-hosted frontend: glued equations, as in the Lean frontend", run := fun _ =>
+        selfhostAgrees "def add3 (n : Nat) : Nat := Nat.add n 3\ndef t : add3 2 = 5 := refl 5\n" [
+          ("def u : add3 2 = 5 := t\n", true),
+          ("def u : add3 (Nat.add 1 1) = Nat.add 4 1 := t\n", true),
+          ("def x : add3 2 = 6 := t\n", false),
+          ("def x : add3 3 = 5 := t\n", false),
+          ("def f : (fun (n : Nat) => add3 n) = (fun (n : Nat) => Nat.add n 3) := fun n => refl (add3 n)\n", true)] },
     { name := "the self-hosted frontend: phantom parameters count, as in the Lean frontend (21i)", run := fun _ =>
         selfhostAgrees phantomHeader [
           ("def same (x : UIntN 8) : UIntN 8 := x\n", true),

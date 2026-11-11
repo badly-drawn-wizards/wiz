@@ -51,6 +51,7 @@ matching on a value's shape. -/
 partial def whnf : Val R → Val R
   | .unfold _ _ _ v => whnf v.get
   | .lazyInd _ _ _ _ _ _ _ _ _ v => whnf v.get
+  | .lazyEq _ _ _ v => whnf v.get
   | v => v
 
 /-- A value with its suspended inductions on constructors computed (`vInd`): they are
@@ -164,8 +165,15 @@ def propSort? : Val R → Option Bool
   | .pi _ _ _ _ _ (some s) | .sigma _ _ _ _ (some s) | .unit s | .empty s | .ulift s _ =>
     if s.equiv 0 then some true else if s.isNeverZero then some false else none
   | .sort _ | .qty | .enum _ | .desc .. | .mu .. | .nu .. | .size | .sizeLt _ => some false
-  | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
+  | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] | .lazyEq .. => some true
   | _ => none
+
+/-- `propSort?` of a type not yet in weak head normal form: a glued equation is a
+proposition without computing it; anything else is forced first. -/
+def propSortW? (v : Val R) : Option Bool :=
+  match v with
+  | .lazyEq .. => some true
+  | v => propSort? (whnf v)
 
 /-! ### A level above every variable of a value
 
@@ -189,6 +197,7 @@ partial def Val.lvlBound : Val R → Nat
   | .neutral h sp => max h.lvlBound (Elim.spineBound sp)
   | .unfold _ _ sp _ => Elim.spineBound sp
   | .lazyInd _ I D _ P m i x sp _ => max (Val.maxBound [I, D, P, m, i, x]) (Elim.spineBound sp)
+  | .lazyEq A a b _ => Val.maxBound [A, a, b]
   | .pi _ _ q a b _ | .sigma _ q a b _ => max (max q.lvlBound a.lvlBound) (b.lvlBound 1)
   | .lam _ b => b.lvlBound 1
   | .pair a b => max a.lvlBound b.lvlBound
@@ -249,7 +258,7 @@ partial def reflProof (e : Val R) : Bool :=
 def proofHead (h : Head R) : Bool :=
   match h with
   | .prf .. | .refl .. | .reflTy _ | .transp .. => true
-  | .cast A B _ _ => propSort? (whnf A) == some true && propSort? (whnf B) == some true
+  | .cast A B _ _ => propSortW? A == some true && propSortW? B == some true
   | _ => false
 
 /-- (D1 experiment) May `cast A A e t` reduce to `t` under `g.regularity`? -/
@@ -324,7 +333,7 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .tt => .tt
   | .empty l => .empty l
   | .absurd m t => vAbsurd (eval g env m) (eval g env t)
-  | .eq A a b => vEq g (eval g env A) (eval g env a) (eval g env b)
+  | .eq A a b => vEqL g (eval g env A) (eval g env a) (eval g env b)
   | .eqTy A B => vEqType g (eval g env A) (eval g env B)
   | .cast A B e t =>
     let vA := eval g env A
@@ -821,6 +830,24 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   --| sorry
   --sol>
 
+/-- **Glued equations** (`wiz-notes/glued-eq.md`): `a =_A b` as a glued value
+(`Val.lazyEq`), whose `vEq` runs only when the type is forced (`whnf`). Nothing about
+what an equation computes to changes: `vEq` is the definition. What changes is when it
+runs: an equation that is only compared with another one with convertible sides
+(`convGlued`, congruence of `=`), or only asked for its sort (always `Prop`), is never
+computed. Strict for normal forms (`g.eager`), under `--eager-proofs` (`!g.lazyProofs`,
+"evaluate as before") and under `--eager-eqs` (`!g.lazyEqs`, the differential test's
+reference). -/
+partial def vEqL (g : Globals R) (A a b : Val R) : Val R :=
+  if g.eager || !g.lazyProofs || !g.lazyEqs then vEq g A a b
+  -- at a proposition `vEq` is `True` at once; and a folded `a = b` there would read back
+  -- as an ill-typed term (`eq` is for types in `Type u`): keep the computed `True`
+  else if propSort? (whnf A) == some true then vEq g A a b
+  else if let .ulift _ A₁ := whnf A then
+    if propSort? (whnf A₁) == some true then vEq g A a b
+    else .lazyEq A a b (Thunk.mk fun _ => vEq g A a b)
+  else .lazyEq A a b (Thunk.mk fun _ => vEq g A a b)
+
 /-- Equality of two payloads `x y : ⟦D⟧ X i`, by the description: constructor by
 constructor, so that `succ m = succ n` is `m = n` (and not, through the Σ rule, an
 equation with a cast along the tags' equation, which without regularity would be stuck):
@@ -1313,6 +1340,10 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
     | some k => (quote g (l + 1) (.neutral (.local l) (sp.extract k sp.size))).instantiateAt 0 .tt
   -- (folded only on a numeral, as before kernel-eval: `ind` on a constructor is lazy for
   -- speed alone and reads back as what it computes, so read-back is unchanged)
+  -- (glued equations) folded, except in the kernel's own syntactic comparisons, which
+  -- read back what it computes, as before equations were glued
+  | .lazyEq A a b v =>
+    if g.quoteErasesProofs then quote g l v.get else .eq (quote g l A) (quote g l a) (quote g l b)
   | .lazyInd lv I D v P m i x sp val =>
     if (whnf x matches .con _) then quote g l (unlazyCon val.get) else
     sp.foldl (fun t e => match e with

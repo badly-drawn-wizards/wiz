@@ -272,6 +272,8 @@ partial def erasedFunTy (g : Globals R) (ty : VTy R) (lvl : Nat) (allowUnit : Bo
 functions into `Unit` (`erasedFunTy`: phantom tails), and lifts of these (`ULift`, Q4: a
 lifted proof is still a proof at run time). -/
 partial def erasable (ctx : Ctx R) (ty : VTy R) : Bool :=
+  -- (glued equations) an equation is a proof type: erasable without computing it
+  if ty matches .lazyEq .. then true else
   match whnf ty with
   | .sort _ | .size | .sizeLt _ | .qty => true
   | .ulift _ A => erasable ctx A

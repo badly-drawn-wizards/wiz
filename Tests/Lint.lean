@@ -444,7 +444,8 @@ def valTable : List ValRow := [
   ⟨"ulift", 1, [], 1, fun c _ l => .ulift (l 0) (c 0)⟩,
   ⟨"up", 1, [], 0, fun c _ _ => .up (c 0)⟩,
   ⟨"unfold", 0, [], 2, fun _ _ l => .unfold "f" [l 0, l 1] #[] (thunk stuck)⟩,
-  ⟨"lazyInd", 6, [], 2, fun c _ l => .lazyInd (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) #[] (thunk stuck)⟩
+  ⟨"lazyInd", 6, [], 2, fun c _ l => .lazyInd (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) #[] (thunk stuck)⟩,
+  ⟨"lazyEq", 3, [], 0, fun c _ _ => .lazyEq (c 0) (c 1) (c 2) (thunk stuck)⟩
 ]
 
 def headTable : List ValRow := [
@@ -500,7 +501,7 @@ def valCtorName : Val R → String
   | .nu .. => "nu" | .size => "size" | .szInf => "szInf" | .szSuc _ => "szSuc"
   | .sizeLt _ => "sizeLt" | .cocon _ => "cocon" | .scofix .. => "scofix" | .coit .. => "coit"
   | .natLit _ => "natLit" | .ulift .. => "ulift" | .up _ => "up" | .unfold .. => "unfold"
-  | .lazyInd .. => "lazyInd"
+  | .lazyInd .. => "lazyInd" | .lazyEq .. => "lazyEq"
 
 def headCtorName : Head R → String
   | .local _ => "local" | .global .. => "global" | .mvar _ => "mvar" | .eq .. => "eq"
@@ -973,7 +974,9 @@ def lintGroup : Group where
             expect (elimCtorName e == r.name) s!"Elim.{r.name}: the row builds a `{elimCtorName e}`" },
     { name := "Val, Head, Elim: lvlBound counts and quote (both modes) reads back every child and level", run := fun _ =>
         report "value traversals" do
-          checkValRows "Val" valTable
+          -- (a glued equation reads back as what it computes in the kernel's own syntactic
+          -- comparisons, `quoteErasesProofs`: here the row's thunk, a constant)
+          checkValRows "Val" valTable (eraseExempt := ["lazyEq"])
           -- (a suspended proof is erased by `quoteErasesProofs`; its bound still counts)
           checkValRows "Head" headTable (eraseExempt := ["prf"])
           checkValRows "Elim" (elimTable.map (·.toValRow fun e => .neutral (.global "h" []) #[e]))

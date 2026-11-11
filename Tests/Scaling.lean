@@ -456,10 +456,110 @@ def probeChecker (opts : List String := []) : IO Unit := do
     let bad ← rcMismatches st "main"
     say s!"reference counting: one pass and specification differ on {bad.length} declarations {bad.take 10}"
 
+/-! ### Glued equations (`wiz-notes/glued-eq.md`)
+
+An equation's type is computed only when it is looked at (`Val.lazyEq`); two equations
+whose sides are convertible are equal without computing either (congruence of `=`). The
+reference is `--eager-eqs` (`Globals.lazyEqs := false`), the evaluation as before. -/
+
+/-- A statement that takes a while to compute (≈ 0.5 s in the elaborator and the kernel
+each): `chk` is a definition, so the statement stays glued until it is forced (a native
+operation at its head, `Nat.beq (slow …) 0`, would compute its arguments at once). -/
+def slowStatement : String :=
+  "import Prelude\ndef fib2 : Nat → Nat × Nat\n  | .zero => (0, 1)\n  | .succ k => let p := fib2 k; (p.2, Nat.add p.1 p.2)\n" ++
+  "def slow : Nat → Nat → Nat\n  | .zero, a => a\n  | .succ k, a => slow k (Nat.mod (Nat.add (Nat.mul a 7) (fib2 30).1) 1000003)\n" ++
+  "def chk (n : Nat) : Bool := Nat.beq (Nat.mod n 1) 0\n" ++
+  "def t : chk (slow 3000 1) = .true := refl Bool.true\n"
+
+/-- `slowStatement`, then `n` uses of `t` at the same statement. -/
+def slowUses (n : Nat) : String :=
+  slowStatement ++ String.join ((List.range n).map fun i => s!"def u{i} : chk (slow 3000 1) = .true := t\n")
+
+/-- What a file elaborates to, for the differential test: the declarations accepted, in
+order, and the positions of the errors. -/
+def verdictsOf (src : String) (lazyEqs : Bool) (loader : Name → Option String) : Array Name × List Nat :=
+  let st := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader, globals := { lazyEqs } }
+  (st.globals.order, ((st.messages.filter (·.severity == .error)).map (·.info.start)).toList)
+
+/-- The differential test's corpora: every module of `lib/` (all at once, and the ones
+that can't be imported together alone), every example, and the self-hosted toolchain. -/
+def gluedCorpora : IO (List (String × String)) := do
+  let mut out := [("lib/ (all at once)", ← allLibSource)]
+  for m in libApart do out := out ++ [(s!"lib/{m}", s!"import {m}\n")]
+  let mut ex := #[]
+  for e in ← System.FilePath.readDir "examples" do
+    if e.path.extension == some "wiz" then ex := ex.push e.path.toString
+  for f in ex.qsort (· < ·) do out := out ++ [(f, ← IO.FS.readFile f)]
+  let src ← Selfhost.compilerFiles.mapM (fun (f : String) => IO.FS.readFile f)
+  pure (out ++ [("selfhost (the five files)", Selfhost.compilerSource src)])
+
+def gluedGroup : Group where
+  name := "glued-eq"
+  exercise := "glued equations (wiz-notes/glued-eq.md)"
+  cases := [
+    -- the native_refl reuse case: a statement checked once, then used again at the same
+    -- statement. Before, each use computed the statement again (≈ 1 s each: 20 uses ≈ 25 s)
+    { name := "a proof used at the same statement does not compute it again (20 uses)", run := fun _ => do
+        let _ ← within 12 2000 fun _ => elabOk (slowUses 20)
+        pure () },
+    { name := "... and with --eager-eqs (computed every time) the same file is accepted (2 uses)", run := fun _ => do
+        let loader ← Tests.Elab.preludeLoader
+        let st := runFrontend (R := ZeroOneMany) (slowUses 2) { loader, globals := { lazyEqs := false } }
+        let errs := (st.messages.filter (·.severity == .error)).map (·.render (slowUses 2))
+        check errs.isEmpty s!"rejected: {errs.toList.take 2}" },
+    -- the glued comparison only adds "equal" for convertible sides; otherwise the two
+    -- equations are computed and compared as before, in both directions
+    { name := "statements that differ by computation are compared computed (accepted and rejected)", run := fun _ => do
+        let ok := "import Prelude\ndef add3 (n : Nat) : Nat := Nat.add n 3\n" ++
+          "def t : add3 2 = 5 := refl 5\ndef u : add3 (Nat.add 1 1) = Nat.add 4 1 := t\ndef v : 5 = add3 2 := t\n" ++
+          "def w : Nat.add 2 3 = 5 := t\n"
+        let _ ← elabOk ok
+        let loader ← Tests.Elab.preludeLoader
+        for bad in ["def x : add3 2 = 6 := t\n", "def x : add3 3 = 5 := t\n", "def x : add3 2 = 6 := refl 6\n"] do
+          let st := runFrontend (R := ZeroOneMany) (ok ++ bad) { loader }
+          check (st.messages.any (·.severity == .error)) s!"accepted: {bad}" },
+    -- an introduction form looks at what the equation computes to: `fun` at a function
+    -- type (funext), a pair at a Σ (a structure), `()` at a type with one element
+    { name := "fun, a pair and () are checked against what a glued equation computes to", run := fun _ => do
+        let _ ← elabOk ("import Prelude\ndef id' (n : Nat) : Nat := n\n" ++
+          "def f : id' = (fun (n : Nat) => n) := fun n => refl n\n" ++
+          "def p : ((1, 2) : Nat × Nat) = (1, id' 2) := (refl 1, refl 2)\n" ++
+          "def q : (() : Unit) = () := ()\n")
+        pure () },
+    -- a wrong proof is reported with the equation as written (it was the computed form)
+    { name := "a wrong refl is rejected, the equation shown as written", run := fun _ => do
+        let src := slowStatement ++ "def bad : chk (slow 3000 1) = .false := refl Bool.false\n"
+        let loader ← Tests.Elab.preludeLoader
+        let st := runFrontend (R := ZeroOneMany) src { loader }
+        let errs := st.messages.filter (·.severity == .error)
+        unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}")
+        check ((errs[0]!.text.splitOn "chk (slow 3000 1) = ").length > 1) s!"not as written: {errs[0]!.text.take 300}" },
+    -- `rfl` at a glued equation whose sides agree is one `refl`, read off the equation
+    { name := "rfl at a glued equation: one refl of its sides", run := fun _ => do
+        let _ ← elabOk (slowStatement ++ "def r : chk (slow 3000 1) = .true := rfl\n" ++
+          "def s : ((0, Nat.add 1 1) : Nat × Nat) = (0, 2) := rfl\n")
+        pure () },
+    -- the differential test: with and without glued equations, the frontend accepts
+    -- the same declarations and reports errors at the same places, on every corpus
+    { name := "differential: lib/, examples/ and the self-hosted toolchain, the same with --eager-eqs", run := fun _ => do
+        let loader ← Tests.Elab.libLoader
+        let mut n := 0
+        for (what, src) in ← gluedCorpora do
+          let (d₁, e₁) := verdictsOf src true loader
+          let (d₀, e₀) := verdictsOf src false loader
+          unless d₁ == d₀ do
+            let only (a b : Array Name) := (a.toList.filter (!b.contains ·)).take 5
+            throw (IO.userError s!"{what}: accepted only glued {only d₁ d₀}, only --eager-eqs {only d₀ d₁}")
+          unless e₁ == e₀ do throw (IO.userError s!"{what}: errors at {e₁.take 5} vs {e₀.take 5} (--eager-eqs)")
+          n := n + d₁.size
+        check (n > 5000) s!"only {n} declarations" }
+  ]
+
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
 order, so that branches adding groups rarely touch the same lines. A new group also
 needs a shard in `.github/test-shards.json` (CI checks). -/
 def groups : List Group :=
+  gluedGroup ::
   group ::
   []
 

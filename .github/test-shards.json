@@ -73,5 +73,8 @@
     "scaling",
     "sized",
     "universes"
+  ]},
+  {"name": "glued-eq", "select": [
+    "=glued-eq"
   ]}
 ]

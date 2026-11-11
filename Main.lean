@@ -19,7 +19,9 @@ content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
 (default off),
 --predicative-prop, --eager-proofs (P2: the evaluator runs proofs, as it did before; the
-default never evaluates them),
+default never evaluates them; it also implies --eager-eqs),
+--eager-eqs (an equation's type is computed when it is evaluated, as before glued
+equations; the default computes it only when it is looked at),
 --inert syntactic|ground|conv (P1: regularity at inert types; default ground)
 compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
 unboxed; not stable under substitution, so off by default)
@@ -85,6 +87,9 @@ initialize strictPrivacyOpt : IO.Ref Bool ← IO.mkRef false
 /-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
 initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
 
+/-- Glued equations: an equation's type is computed only when needed, unless `--eager-eqs`. -/
+initialize lazyEqsOpt : IO.Ref Bool ← IO.mkRef true
+
 /-- (P1) `--inert MODE`: regularity at inert types. -/
 initialize inertOpt : IO.Ref InertReg ← IO.mkRef .ground
 
@@ -118,6 +123,7 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let sources ← Module.cSourceTable ((System.FilePath.mk path).parent.getD ".") input closure
   let (regularity, predicativeProp) ← kernelOpts.get
   let lazyProofs ← lazyProofsOpt.get
+  let lazyEqs ← lazyEqsOpt.get
   let inertReg ← inertOpt.get
   let unboxStructs ← unboxOpt.get
   -- `builtin` registrations are trusted only in the toolchain's own library
@@ -130,10 +136,10 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
       messages := shadow.toArray,
-      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get },
+      globals := { regularity, predicativeProp, lazyProofs, lazyEqs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs &&
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && lazyEqs && inertReg == .ground && !unboxStructs &&
       !(← strictPrivacyOpt.get)
     then tc.cacheDir else none
   match cache with
@@ -199,6 +205,8 @@ def main (args : List String) : IO UInt32 := do
   let args := args.filter (· != "--unbox-structs")
   lazyProofsOpt.set (!args.contains "--eager-proofs")
   let args := args.filter (· != "--eager-proofs")
+  lazyEqsOpt.set (!args.contains "--eager-eqs")
+  let args := args.filter (· != "--eager-eqs")
   let args ← match takeInertOpt args with
     | .ok (r, a) => do if let some r := r then inertOpt.set r
                        pure a

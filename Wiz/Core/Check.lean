@@ -365,7 +365,14 @@ of the expected one.)
 
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
-  match t, whnf ty with
+  -- (glued equations) only the introduction forms look at what an equation computes to
+  -- (`fun` for funext, a pair for a Σ, `()`); anything else is inferred and compared with
+  -- the glued type, side by side
+  let ty' := match ty, t with
+    | .lazyEq .., .lam .. | .lazyEq .., .pair .. | .lazyEq .., .tt => whnf ty
+    | .lazyEq .., _ => ty
+    | _, _ => whnf ty
+  match t, ty' with
   -- (given) Q4
   | .up a, .ulift _ A => check ctx a A
   --<sol
@@ -601,7 +608,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     unless l.isNeverZero do throw (.other "refl is for terms of types in Type u")
     let _ ← check ctx a (ctx.eval A)
     let va := ctx.eval a
-    pure (vEq ctx.globals (ctx.eval A) va va, Usage.zeros ctx.lvl)
+    pure (vEqL ctx.globals (ctx.eval A) va va, Usage.zeros ctx.lvl)
   | .reflTy X => do
     let _ ← checkType ctx X
     let vX := ctx.eval X
@@ -634,7 +641,7 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx p (vApp g (vApp g vP va) (.neutral (.refl vA va) #[]))
     let _ ← check ctx b vA
     let vb := ctx.eval b
-    let _ ← check ctx e (vEq g vA va vb)
+    let _ ← check ctx e (vEqL g vA va vb)
     pure (vApp g (vApp g vP vb) (ctx.eval e), Usage.zeros ctx.lvl)
   | .qty => pure (.sort 1, Usage.zeros ctx.lvl)
   | .qlit _ => pure (.qty, Usage.zeros ctx.lvl)

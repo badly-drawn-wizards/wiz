@@ -553,6 +553,7 @@ partial def forceNames (v : Val R) (names : List Name := []) : ElabM R (Val R ×
   | .unfold n _ _ v =>
     forceNames v.get (if names.contains n || isRecursor (← getGlobals) n then names else names ++ [n])
   | .lazyInd _ _ _ _ _ _ _ _ _ v => forceNames v.get names
+  | .lazyEq _ _ _ v => forceNames v.get names
   | v => pure (v, names)
 
 /-- The weak head normal form of `t`, with recursive calls folded back. -/

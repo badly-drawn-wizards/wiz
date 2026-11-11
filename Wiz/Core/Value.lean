@@ -96,6 +96,11 @@ inductive Val (R : Type) where
   million of them first), applied to the eliminations `sp` (applications and
   projections, which stay lazy). `whnf` forces it; quoting keeps the folded form. -/
   | lazyInd (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) (sp : Array (Elim R)) (val : Thunk (Val R))
+  /-- (glued equations, `wiz-notes/glued-eq.md`) **glued** equation type `a =_A b`: its
+  sides as evaluated, and `vEq A a b` computed only when needed (`whnf` forces it).
+  Conversion compares two of them side by side first (congruence of `=`). An equation is
+  always a proposition, so `propSort?`/`typeSort?` answer without forcing. -/
+  | lazyEq (A a b : Val R) (val : Thunk (Val R))
 
 /-- An elimination stuck on a neutral. -/
 inductive Elim (R : Type) where

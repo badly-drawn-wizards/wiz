@@ -38,7 +38,7 @@ def headType (g : Globals R) (tys : Array (VTy R)) : Head R → Option (VTy R)
   | .mvar _ => none
   | .eq .. | .eqTy .. => some (.sort 0)
   | .cast _ B _ _ => some B
-  | .refl A a => some (vEq g A a a)
+  | .refl A a => some (vEqL g A a a)
   | .reflTy X => some (vEqType g X X)
   | .transp _ _ P _ b e => some (vApp g (vApp g P b) e)
   | .prf ty _ _ _ => some ty.get
@@ -206,6 +206,8 @@ partial def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VT
 partial def typeSort? (g : Globals R) (tys : Array (VTy R)) : VTy R → Option Level
   | .unfold _ _ _ v => typeSort? g tys v.get
   | .lazyInd _ _ _ _ _ _ _ _ _ v => typeSort? g tys v.get
+  -- (glued equations) an equation is a proposition, whatever it computes to
+  | .lazyEq .. => some 0
   | .sort l => some (.succ l)
   | .pi _ _ _ A B _ => do
     return .imax (← typeSort? g tys A) (← typeSort? g (tys.push A) (Closure.inst g B (Val.var tys.size)))
@@ -376,6 +378,10 @@ partial def convGlued (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Opti
     -- (P2: the kernel's comparisons don't evaluate proofs)
     let g := { g with quoteErasesProofs := true }
     some (quote g tys.size a == quote g tys.size b)
+  -- (glued equations) congruence of `=`: convertible types and sides give convertible
+  -- equations (`vEq` respects conversion); otherwise the caller forces both
+  | .lazyEq A a b _, .lazyEq A' a' b' _ =>
+    some (convTy g tys A A' && conv g tys A a a' && conv g tys A b b')
   | _, _ => none
 
 /-- **Exercise 1.4c.** Compare two neutrals. On success return their (common) type.
@@ -488,6 +494,9 @@ end
 (`μ^s ≤ μ^t` when `s ≤ t`), coinductive ones contravariant, functions contravariant in
 the domain, and everything else is conversion. -/
 partial def subTy (g : Globals R) (tys : Array (VTy R)) (A B : VTy R) : Bool :=
+  -- (glued equations) two equations with convertible sides: equal, hence subtypes;
+  -- otherwise forced below
+  if (A matches .lazyEq ..) && (B matches .lazyEq ..) && convGlued g tys A B == some true then true else
   let v := Val.var tys.size
   match whnf A, whnf B with
   | .mu l I D i s _, .mu l' I' D' i' s' _ =>

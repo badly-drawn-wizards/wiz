@@ -1534,6 +1534,16 @@ type-directed algorithmic equality, cited in `Conv.lean:24`; not re-checked]
   and unfolds lazily, so `f a ≡ f b` is first tried by comparing the spines
   (`convGlued`, `Conv.lean:358`); if that fails, both sides are unfolded. Axioms (no
   definition) and partial definitions are neutral heads.
+* **Glued equations** [impl]: `a =_A b` evaluates to `Val.lazyEq A a b` with the sides
+  evaluated and the equality computation of §8 (`vEq`) suspended until `whnf` looks at
+  it. An equation is a proposition, so its sort needs no computation. Two glued
+  equations are first compared side by side (`convGlued`): `A ≡ A'`, `a ≡ a'`, `b ≡ b'`
+  give `(a =_A b) ≡ (a' =_A' b')`, the congruence rule of the `=` former. If that
+  fails, both are computed and compared as before. It only adds "equal" answers for
+  convertible sides, so the accepted set changes only by congruence instances.
+  Strict at a proposition (where `vEq` is `True` at once), for normal forms, and under
+  `--eager-proofs` and `--eager-eqs`. Both kernels do this. In `Kernel.wiz` it is a
+  `vglued` with head `heq`. See `wiz-notes/glued-eq.md`.
 * **ι**: the eliminator rules of §7–§10 and the equality computations of §8.
 
 ### 11.2 conv at a type
@@ -1619,7 +1629,7 @@ observational equality (`μ^s ≡ μ^t` as types is stuck, §8.3).
 ## 12. Evaluation strategy
 
 `eval` (`Eval.lean:128`) is call-by-value on an environment, with closures for binders.
-Lazy places: glued globals and `ind` on numerals (thunks); `coit`/`scofix` values (until
+Lazy places: glued globals, `ind` on numerals and equations (thunks); `coit`/`scofix` values (until
 `out`); `ecase` branches (evaluated only when the tag is known); and the proof positions
 of `cast` and `transp`, which are never evaluated (§8.6). Ill-typed situations
 (applying a non-function) `panic!` and are meant to be unreachable on checked terms. All

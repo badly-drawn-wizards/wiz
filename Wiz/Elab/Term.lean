@@ -106,6 +106,8 @@ def lookupLocal (ctx : LocalCtx R) (x : Name) : Option (Nat × VTy R) := Id.run 
 the metavariable's value. -/
 partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
     ElabM R (Term R × VTy R) := do
+  -- (glued equations) an equation never computes to an implicit Π
+  if (← forceMeta ty) matches .lazyEq .. then return (t, ty)
   -- (given, stage 7) an instance argument: a hole for instance resolution
   if let .pi x .instImplicit _ dom cod _ ← force ty then
     let m ← freshMeta ctx s!"instance {x}"
@@ -126,6 +128,7 @@ partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
 explicit ones, and at least one instance argument (`{B} → [C B] → T`)? Such trailing
 instance arguments are inserted after an application. -/
 partial def trailingInst (lvl : Lvl) (ty : VTy R) : ElabM R Bool := do
+  if (← forceMeta ty) matches .lazyEq .. then return false
   match ← force ty with
   | .pi _ .instImplicit .. => pure true
   | .pi _ .implicit _ _ cod _ => trailingInst (lvl + 1) (← instM cod (Val.var lvl))
@@ -754,6 +757,15 @@ def sidesOk (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R Boo
   try sameSides ctx A? a b; pure true
   catch _ => set s; pure false
 
+/-- (glued equations) `rfl` at a glued equation whose sides agree (`sidesOk`): `refl a`,
+read off the equation as written. `none` if it is not glued or the sides don't agree:
+then the equation is computed and proved by its shape (`rflProof`). -/
+def rflGlued? (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
+  let .lazyEq A a b _ ← forceMeta ty | return none
+  unless ← sidesOk ctx (some A) a b do return none
+  let g ← getGlobals
+  return some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
+
 /-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
 `True`s and `a = b`, an equation of functions a Π. (13n) At a Σ that `vEq` computed from
 `a = b` with `a ≡ b`, the proof is one `refl a` (`eqSigmaSides?`). Otherwise build it by the same shape
@@ -761,6 +773,7 @@ def sidesOk (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R Boo
 equations left; the kernel checks them. -/
 partial def rflProof (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
   let g ← getGlobals
+  if let some t ← rflGlued? ctx ty then return some t
   match ← force ty with
   | .neutral (.eq A a b) #[] =>
     sameSides ctx (some A) a b
@@ -876,6 +889,15 @@ partial def check (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R
   let ctx := ctx.withInfo stx
   recordExpected ctx stx expected
   if let some stx' ← expand? stx then return ← check ctx stx' expected
+  -- (glued equations) a variable, an application or a hole against an equation: inferred
+  -- and unified with the glued equation (side by side), without computing it. An
+  -- equation never computes to a data form or an implicit Π, which is all the steps
+  -- skipped here look for.
+  if (← forceMeta expected) matches .lazyEq .. then
+    let plainApp := stx.isOfKind "term.app" && (stx.getArg 0).isOfKind "term.ident"
+    if stx.isOfKind "term.ident" || plainApp || stx.isOfKind "term.hole" ||
+        stx.isOfKind "term.syntheticHole" || stx.isOfKind "term.paren" then
+      return ← checkOther ctx stx expected
   if let some t ← checkData? ctx stx expected then return t
   -- a variable or application whose type is the expected type's own definition
   -- (`f : Comb i o` against `Comb ?i ?o`, `def Comb … := {r} → [Hw r] → …`): unify the
@@ -955,6 +977,9 @@ where
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.rfl" =>
       let g ← getGlobals
+      -- (glued equations) the sides as written: one `refl` if they agree, before the
+      -- equation is computed (and its sides guessed back, `eqSigmaSides?`)
+      if let some t ← rflGlued? ctx expected then return t
       match ← force expected with
       | .neutral (.eq A a b) #[] =>
         sameSides ctx (some A) a b
@@ -2557,7 +2582,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let va ← evalIn ctx a
     match ← force A with
     | .sort _ => return (.reflTy a, vEqType g va va)
-    | A => return (.refl (quote g ctx.lvl A) a, vEq g A va va)
+    | A => return (.refl (quote g ctx.lvl A) a, vEqL g A va va)
   | "term.transp" =>
     let (e, ety) ← infer ctx (stx.getArg 3)
     let g ← getGlobals
