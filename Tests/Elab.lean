@@ -4326,10 +4326,16 @@ def languageGroup : Group where
           "def g : List (List Nat) → Nat\n  | .cons [x] _ => x\n  | _ => 0\n" ++
           "#eval len []\n#eval len [5]\n#eval len [5, 6]\n#eval len [5, 6, 7]\n#eval f ([1], [2, 3])\n#eval g [[7]]")
           ["0", "1", "2", "9", "6", "7"] },
-    { name := "... numerals in a list literal are elaborated at the element type (7e)", run := fun _ =>
-        okLib ("import Word\nimport Int\n#eval ([1, 2] : List U8)\n#eval ([1, 2] : List Int)\n" ++
-          "def w : List U8 := [255, 1 + 2]\n#eval w")
-          [".cons (.mk 1) (.cons (.mk 2) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255) (.cons (.mk 3) .nil)"] },
+    { name := "... numerals in a list literal are elaborated at the element type (7e)", run := fun _ => do
+        let lib ← preludeLoader
+        let int ← IO.FS.readFile "lib/Int.wiz"
+        let input := "import Word\nimport Int\n#eval ([1, 2] : List U8)\n#eval ([1, 2] : List Int)\n" ++
+          "def w : List U8 := [255, 1 + 2]\n#eval w"
+        let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Int" then some int else lib m }
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        checkEq (repr [".cons (.mk 1) (.cons (.mk 2) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255) (.cons (.mk 3) .nil)"]).pretty
+          (repr (s.messages.toList.map (·.text))).pretty },
     { name := "... instance binders and Enum [..] still parse", run := fun _ =>
         okLib ("import Prelude\ndef f {m : Type → Type} [Monad m] : m Nat := Monad.pure 1\n" ++
           "def g : (m : Type → Type) → [Monad m] → m Nat := fun m => Monad.pure 2\n" ++
