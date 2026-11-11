@@ -1354,8 +1354,10 @@ def backendGroup : Group where
         checkEq [101, 4] [← allocs "s2" false, ← allocs "s2" true]
         -- the second list is not built when the first test fails
         checkEq [2000, 1000] [← allocs "s3" false, ← allocs "s3" true]
-        -- the default of `orElse` is not computed for `some`
-        checkEq [151, 101] [← allocs "s4" false, ← allocs "s4" true] }
+        -- the default of `orElse` is not computed for `some`; and (HD9's inlining) `pick`
+        -- and `orElse` are inlined into `s4`, whose `case` on the known `.some 4` then
+        -- picks its branch, so the `.some` cell isn't built either
+        checkEq [151, 100] [← allocs "s4" false, ← allocs "s4" true] }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
