@@ -253,7 +253,7 @@ def linkCCase : Case :=
                           ("app/hi.c", "#include <stdint.h>\nuint64_t hi_num(void) { return 1; }\n")]
         let (s, ok) ← build dir tc
         if !ok then
-          IO.println "    (skipped: no toolchain)"
+          skip "no toolchain"
           return
         checkEq 5 s.ran
         let exe := (dir / ".grail" / "bin" / "hi").toString
@@ -317,7 +317,7 @@ def grailLspCase : Case :=
 #eval two
 ")])
         let some ds ← grailLspDiagnostics dir "main.wiz"
-          | IO.println "    (skipped: no grail beside the test driver; lake build grail)"
+          | skip "no grail beside the test driver; lake build grail"
         check (ds.any (· == "2")) s!"diagnostics: {ds}"
         check (!ds.any fun d => (d.splitOn "unknown module").length > 1) s!"diagnostics: {ds}"
         -- a broken grail.wiz: the server still starts, with the package directory as a root
@@ -377,7 +377,7 @@ def grailGroup : Group where
                           ("hello.wiz", "import IO\ndef main : IO Unit := IO.println \"hello from grail\"\n")]
         let (s, ok) ← build dir tc
         if !ok then
-          IO.println "    (skipped: no toolchain)"
+          skip "no toolchain"
           return
         checkEq 5 s.ran
         let out ← IO.Process.output { cmd := (dir / ".grail" / "bin" / "hello").toString }
@@ -639,8 +639,33 @@ def testRunnerGroup : Group where
         let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
         let (res, _) ← runTests dir tc
         if res.any fun t => (t.message.splitOn "gmp.h").length > 1 then
-          IO.println "    (skipped: no toolchain)"; return
-        for t in res do check t.ok s!"{t.file}: {t.message}" }
+          skip "no toolchain"; return
+        for t in res do check t.ok s!"{t.file}: {t.message}" },
+    -- the suite's own driver (`Tests/Main.lean`): `tests --run GROUP INDEX` ran a case
+    -- in-process and printed nothing for a pass, so a stale binary or a wrong index that
+    -- ran another (passing) case looked like a pass; a selector that picked nothing
+    -- passed with 0 cases. Run against the cases with known outcomes `driverFixtures`.
+    { name := "tests --run: a failing case exits 1 with its output, a skipped one 3, a bad selector 2", run := fun _ => do
+        let self ← IO.appPath
+        let run (args : Array String) : IO (UInt32 × String) := do
+          let o ← IO.Process.output { cmd := self.toString, args }
+          pure (o.exitCode, o.stdout ++ o.stderr)
+        let has (out s : String) : IO Unit := check ((out.splitOn s).length > 1) s!"no {s} in:\n{out}"
+        let (code, out) ← run #["--run", "driver-fixtures", "0"]
+        checkEq 0 code; has out "✓ fixture: passes"; has out "driver-fixtures #0: passed"
+        let (code, out) ← run #["--run", "driver-fixtures", "1"]
+        checkEq 1 code; has out "✗ fixture: fails"; has out "fixture failure"
+        has out "fixture output before the failure"; has out "FAILED"
+        let (code, out) ← run #["--run", "driver-fixtures#2"]
+        checkEq 3 code; has out "⊘ fixture: skips"; has out "skipped (fixture reason)"; has out "SKIPPED"
+        let (code, out) ← run #["--run", "=driver-fixtures", "3"]
+        checkEq 3 code; has out "skipped (old fixture reason)"
+        for bad in [#["--run", "driver-fixtures", "4"], #["--run", "driver-fixtures", "x"],
+            #["--run", "no-such-group", "0"], #["--run", "driver-fixtures"],
+            #["--run", "driver-fixtures", "0", "extra"], #["=no-such-group"], #["=testrunner#99"],
+            #["testrunner", "--no-such-flag"]] do
+          let (code, out) ← run bad
+          check (code == 2) s!"tests {" ".intercalate bad.toList}: exit code {code}, not 2:\n{out}" }
   ]
 
 def grailSelfhostGroup : Group where
@@ -656,7 +681,7 @@ def grailSelfhostGroup : Group where
         let target := Grail.Target.selfhost "selfhost-checker" "checker"
         let r ← runner dir tc { name := "wiz", targets := [target], settings := [] } 4 log
         if !(← r.build [target] [target]) then
-          if ((← log.get).splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"; return
+          if ((← log.get).splitOn "gmp.h").length > 1 then skip "no toolchain"; return
           throw (IO.userError (← log.get))
         let mine := dir / ".grail" / "bin" / "selfhost-checker"
         let .ok theirs ← Tests.Elab.selfhostChecker | throw (IO.userError "the tests' checker failed")

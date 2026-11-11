@@ -1520,7 +1520,7 @@ def cRun (src : String) (expected : String) (llvm : Bool := false) : IO Unit := 
   | .ok v => checkEq expected v
   | .error e =>
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
-    if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+    if missing then skip "no toolchain" else throw (IO.userError e)
 
 /-- (15f) Build `main` with the C compiler's optimiser off (`-O0`: it does no tail calls of
 its own) and run it on a 1 MB stack (`WIZ_STACK_MB`): deep recursion overflows it, a loop
@@ -1541,7 +1541,7 @@ def cRunSmallStack (src : String) (expected : String) (llvm : Bool := false) : I
   match built with
   | .error e =>
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
-    if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+    if missing then skip "no toolchain" else throw (IO.userError e)
   | .ok () =>
     let out ← IO.Process.output { cmd := exe.toString, env := #[("WIZ_STACK_MB", some "1")] }
     unless out.exitCode == 0 do throw (IO.userError s!"the program failed ({out.exitCode}): {out.stderr.take 500}")
@@ -1601,7 +1601,7 @@ def borrowGroup : Group where
         let exe := dir / "proj"
         match ← Build.compileC (← toolchain) (C.program projOfNumber) exe with
         | .error e =>
-          if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+          if (e.splitOn "gmp.h").length > 1 then skip "no toolchain" else throw (IO.userError e)
         | .ok () =>
           let out ← IO.Process.output { cmd := exe.toString }
           checkEq 3 out.exitCode
@@ -1643,7 +1643,7 @@ def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[
   | .ok v => k v
   | .error e =>
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
-    if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+    if missing then skip "no toolchain" else throw (IO.userError e)
 
 /-- Build `main : IO _` with the C backend (and the `IO` library) and compare its output. -/
 def ioRun (src : String) (expected : String) (args : Array String := #[]) (llvm : Bool := false) : IO Unit :=
@@ -1684,7 +1684,7 @@ def linkRun (files : List (String × String)) (expected : String) (llvm : Bool :
   | .ok v => checkEq expected v
   | .error e =>
     let missing := ["gmp.h", "llc:"].any fun m => (e.splitOn m).length > 1
-    if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+    if missing then skip "no toolchain" else throw (IO.userError e)
 
 /-- A program that links a C file (with a static helper and a header the FFI can't bind)
 and the maths library. -/
@@ -1948,7 +1948,7 @@ def ioRunC (src csrc expected : String) (fails : Option String := none) : IO Uni
     | .ok v => if fails.isSome then throw (IO.userError s!"expected a failure, got {v}") else checkEq expected v
     | .error e =>
       if ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1 then
-        IO.println "    (skipped: no toolchain)"
+        skip "no toolchain"
       else match fails with
         | some frag => unless (e.splitOn frag).length > 1 do throw (IO.userError s!"error does not mention '{frag}':\n{e}")
         | none => throw (IO.userError s!"{if llvm then "(llvm) " else ""}{e}")
@@ -1963,7 +1963,7 @@ def libRunC (src csrc expected : String) : IO Unit := do
     match ← Build.build tc s "main" (dir / "lib.o") llvm true with
     | .error e =>
       if ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1 then
-        IO.println "    (skipped: no toolchain)"
+        skip "no toolchain"
       else throw (IO.userError s!"{if llvm then "(llvm) " else ""}{e}")
     | .ok _ =>
       IO.FS.writeFile (dir / "main.c") csrc
@@ -3249,10 +3249,10 @@ toolchain's `gcCflags`/`gcLdflags`), run it, and compare its output. -/
 def selfhostCompileRun (file expected : String) (flags : Array String := #[]) (progArgs : Array String := #[])
     (opt : String := "-O2") (smallStack : Bool := false) : IO Unit := do
   let tc ← toolchain
-  if tc.gcCflags.isEmpty then IO.println "    (skipped: no garbage collector, --gc-cflags)"; return
+  if tc.gcCflags.isEmpty then skip "no garbage collector, --gc-cflags"; return
   match ← selfhostCompiler with
   | .error e =>
-    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+    if (e.splitOn "gmp.h").length > 1 then skip "no toolchain" else throw (IO.userError e)
   | .ok exe =>
     let dir ← IO.FS.createTempDir
     IO.FS.writeFile (dir / "input.wiz") file
@@ -3276,7 +3276,7 @@ error, and no C (15g). -/
 def selfhostCompileFails (file : String) (errors : String) : IO Unit := do
   match ← selfhostCompiler with
   | .error e =>
-    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+    if (e.splitOn "gmp.h").length > 1 then skip "no toolchain" else throw (IO.userError e)
   | .ok exe =>
     let dir ← IO.FS.createTempDir
     IO.FS.writeFile (dir / "input.wiz") file
@@ -3333,7 +3333,7 @@ its output. -/
 def selfhostCheckFile (file expected : String) : IO Unit := do
   match ← selfhostChecker with
   | .error e =>
-    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+    if (e.splitOn "gmp.h").length > 1 then skip "no toolchain" else throw (IO.userError e)
   | .ok exe =>
     let dir ← IO.FS.createTempDir
     IO.FS.writeFile (dir / "input.wiz") file
@@ -3346,7 +3346,7 @@ def selfhostOutput (file : String) : IO (Option String) := do
   match ← selfhostChecker with
   | .error e =>
     if (e.splitOn "gmp.h").length > 1 then
-      IO.println "    (skipped: no toolchain)"
+      skip "no toolchain"
       pure none
     else throw (IO.userError e)
   | .ok exe =>
@@ -3373,7 +3373,7 @@ def ioDiverges (src : String) (secs : Nat := 5) : IO Unit := do
     let exe := dir / "wiz_main"
     match ← Build.compileC (← toolchain) (C.program decls true (Build.extraC s)) exe with
     | .error e =>
-      if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+      if (e.splitOn "gmp.h").length > 1 then skip "no toolchain" else throw (IO.userError e)
     | .ok () =>
       let out ← IO.Process.output { cmd := "sh", args := #["-c",
         s!"ulimit -v 8000000; exec timeout {secs} \"$0\"", exe.toString] }
@@ -4930,7 +4930,7 @@ def cRunLibs (src : String) (expected : String) : IO Unit := do
   match ← Build.runGlobal (← toolchain) s "main" dir with
   | .ok v => checkEq expected v
   | .error e =>
-    if (e.splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+    if (e.splitOn "gmp.h").length > 1 then skip "no toolchain" else throw (IO.userError e)
 
 def vecPrelude : String := "import Vec
 def v3 : Vec Nat 3 := .cons 10 (.cons 20 (.cons 30 .nil))
@@ -5469,7 +5469,7 @@ def reprAll (src expected : String) (unbox : Bool := false) (libs : Bool := fals
     | .ok v => checkEq expected v
     | .error e =>
       let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
-      if missing then IO.println "    (skipped: no toolchain)" else throw (IO.userError e)
+      if missing then skip "no toolchain" else throw (IO.userError e)
 
 /-- The audit's probe: a hand-written Σ of a structure's shape, converted both ways. -/
 def r3Marker : String := "import Prelude
@@ -5724,7 +5724,7 @@ def hdlGroup : Group where
            ".cons 17 (.cons 5 (.cons 4 .nil))"] },
     { name := "Verilog: Icarus Verilog accepts the emitted modules (skipped without iverilog on PATH)", run := fun _ => do
         let found ← (do let o ← IO.Process.output { cmd := "iverilog", args := #["-V"] }; pure (o.exitCode == 0)) <|> pure false
-        unless found do IO.println "    (no iverilog: skipped)"; return
+        unless found do skip "no iverilog"; return
         let s := runFrontend (R := ZeroOneMany) (hdlVerilogSrc ++ "#eval v1\n#eval v2\n#eval v3\n")
           { trustedModule := Tests.libModule, loader := ← libLoader }
         let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render ""
@@ -6154,7 +6154,7 @@ def infoviewGroup : Group where
         let env := #[("WIZ_CFLAGS", some (" ".intercalate tc.cflags)), ("WIZ_LDFLAGS", some (" ".intercalate tc.ldflags))]
         let out ← IO.Process.output { cmd := "sh", args := #["infoview/test.sh"], env := env }
         unless out.exitCode == 0 do
-          if ((out.stdout ++ out.stderr).splitOn "gmp.h").length > 1 then IO.println "    (skipped: no toolchain)"
+          if ((out.stdout ++ out.stderr).splitOn "gmp.h").length > 1 then skip "no toolchain"
           else throw (IO.userError s!"infoview/test.sh failed:\n{out.stdout}{out.stderr}") }
   ]
 
