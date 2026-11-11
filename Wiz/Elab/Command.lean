@@ -1375,7 +1375,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             -- (`addDeclSorted` without `withSorts`' evaluation of the type, which is for
             -- checking a value against it: evaluating an equation computes both sides, F5)
             -- (nor `Sorts.type`'s: an equation's sort is `Prop`; its sides get their sorts)
-            let axD : Decl R := { name := ax, type := Sorts.term g #[] [] ty, value := none }
+            -- (P2: and the proof markers of its sides, `Mark.type`, which does not evaluate it
+            -- either; `Decl.withMarks` would, for checking a value)
+            let axD : Decl R := { name := ax, type := (Mark.type { globals := g } (Sorts.term g #[] [] ty)).1, value := none }
             match (do let g' ← addDecl g axD; privacyCheck g axD; pure g' : TCM (Globals R)) with
             | .error e => report .error cmd.info s!"kernel rejected {ax}: {e}"
             | .ok g' =>
