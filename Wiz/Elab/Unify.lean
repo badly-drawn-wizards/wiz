@@ -261,11 +261,27 @@ def solve (gamma : Lvl) (m : Nat) (sp : Array (Elim R)) (rhs : Val R) : ElabM R 
   --<sol
   let p ← invert gamma sp
   let body ← rename m p rhs
-  let sol := (List.range sp.size).foldl (fun t i => Term.lam s!"x{sp.size - i - 1}" t) body
+  -- a spine variable that is a binder unification went under keeps that binder's name
+  let hints := (← get).binderNames
+  let nameOf (j : Nat) : Name := match sp[j]? with
+    | some (.app (.neutral (.local lv) #[])) => match hints.find? (·.1 == lv) with
+      | some (_, x) => x
+      | none => s!"x{j}"
+    | _ => s!"x{j}"
+  let sol := (List.range sp.size).foldl (fun t i => Term.lam (nameOf (sp.size - i - 1)) t) body
   solveMeta m (eval (← getGlobals) [] sol)
   --|ex
   --| sorry
   --sol>
+
+/-- Run `k` under a binder named `x` at level `l` (see `ElabState.binderNames`). -/
+def withBinderName (l : Lvl) (x : Name) (k : ElabM R α) : ElabM R α := do
+  if x == "_" || x.isEmpty then return ← k
+  let saved := (← get).binderNames
+  modify fun s => { s with binderNames := (l, x) :: saved }
+  let a ← k
+  modify fun s => { s with binderNames := saved }
+  pure a
 
 /-- Does level metavariable `m` occur in `l`? -/
 def Level.occurs (m : Nat) : Level → Bool
@@ -337,11 +353,12 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   --<sol
   match ← force t, ← force u with
   | .sort a, .sort b => unifyLevel a b
-  | .pi _ bi q a b _, .pi _ bi' q' a' b' _ =>
+  | .pi x bi q a b _, .pi x' bi' q' a' b' _ =>
     unless bi == bi' do throwAt {} "implicit vs explicit binder mismatch"
     unify l q q'
     unify l a a'
-    unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
+    withBinderName l (if x == "_" then x' else x) do
+      unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
   | .sigma _ q a b _, .sigma _ q' a' b' _ =>
     unify l q q'
     unify l a a'
@@ -372,9 +389,10 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .coit u I D S st i s, .coit u' I' D' S' st' i' s' =>
     unifyLevel u u'
     for (a, b) in [(I, I'), (D, D'), (S, S'), (st, st'), (i, i'), (s, s')] do unify l a b
-  | .lam _ b, .lam _ b' => unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
-  | .lam _ b, t' => unify (l + 1) (← instM b (Val.var l)) (← vAppM t' (Val.var l))
-  | t', .lam _ b => unify (l + 1) (← vAppM t' (Val.var l)) (← instM b (Val.var l))
+  | .lam x b, .lam x' b' =>
+    withBinderName l (if x == "_" then x' else x) do unify (l + 1) (← instM b (Val.var l)) (← instM b' (Val.var l))
+  | .lam x b, t' => withBinderName l x do unify (l + 1) (← instM b (Val.var l)) (← vAppM t' (Val.var l))
+  | t', .lam x b => withBinderName l x do unify (l + 1) (← vAppM t' (Val.var l)) (← instM b (Val.var l))
   | .neutral (.mvar m) sp, .neutral (.mvar m') sp' =>
     if m == m' then unifySpine l sp sp' else solve l m sp (.neutral (.mvar m') sp')
   | .neutral (.mvar m) sp, t' => solve l m sp t'
