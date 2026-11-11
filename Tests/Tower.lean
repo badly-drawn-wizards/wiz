@@ -284,7 +284,7 @@ def cases (impl : IO Impl) : List Case := [
         let m ← towerFails e ["toolchain", "install", s!"main@{(c3.take 8)}"]
         checkHas m "no snapshot"; checkHas m "keep/demo" },
     { name := "from Nix: a flake's package, linked as a GC root", run := fun _ => do
-        unless ← Tower.have? "nix" do IO.println "    (no nix: skipped)"; return
+        unless ← Tower.have? "nix" do skip "no nix"; return
         let (bare, _) ← upstream
         let flake ← mkTree [
           ("flake.nix", "{ outputs = { self }: let p = builtins.path { path = ./tc; name = \"fake-wiz\"; }; in\n" ++

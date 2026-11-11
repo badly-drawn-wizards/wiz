@@ -82,7 +82,7 @@ structure Tx (r : HwTy → Type) where      -- a bundle: a structure of signals
 def txStep {r : HwTy → Type} [Hw r] (s : Tx r) (go : r Bit) : r Tx.code :=
   let idle := Hw.eq s.left (Hw.lit 4 0);  -- field access by name
   Tx.pack (Tx.mk (Hw.mux go (Hw.lit 1 0) s.line) (Hw.label "left" …))
-def top : Circuit In.code Out.code := Circuit.bundled Tx.bundle In.bundle Out.bundle init (BStep.mk …)
+def top : Circuit In.code Out.code := Circuit.bundled Tx.bundle In.bundle Out.bundle init topStep
 -- module top(input clk, input [0:0] rx, output [0:0] tx, output [4:0] leds); reg … line; reg … left;
 ```
 
@@ -97,16 +97,18 @@ def top : Circuit In.code Out.code := Circuit.bundled Tx.bundle In.bundle Out.bu
   bundles; `deriving Bundle` defines its code (a product of `named` fields) and the
   conversions. A bundle is a *value* (`S.bundle`), not an instance: structures are
   structural types, so two structures with the same field types are one type and
-  instance resolution could not tell their bundles apart.
+  instance resolution could not tell their bundles apart (instances once declared types get
+  kernel-level brands).
 * **Composition** (Lava/Clash-style arrows): `Circuit.comb`, `delay`, `seq`, `par`,
   `loop` (feedback through a register), `named` (names the state), `mapIn`/`mapOut`,
   `inputName`/`outputName`, and `Circuit.inst c s x` for an instance with its own state
   inside a hand-written step. Each has its semantics as a lemma: `Circuit.runFrom_seq`,
   `run_seq` (`run (seq a b) xs = run b (run a xs)`), `run_par`, `run_delay`,
   `runFrom_loop`, `run_named`, `runFrom_comb`, `inst_el`, `stepEl_withReset`/`Enable`.
-  Combinational code passed to a combinator is a `Comb i o` value (a polymorphic
-  function cannot be applied under a step's own representation binder; see the
-  wishful notes on non-linear unification spines). The netlist is flat.
+  Combinational code passed to a combinator is a function at every representation,
+  `Comb i o := {r : HwTy → Type} → [Hw r] → r i → r o` (`Circuit.comb (fun x => Hw.xor x k)`),
+  and a bundled step is such a function on structures (`Circuit.bundled … cntStep`).
+  The netlist is flat.
 * **Reset and enable**, by construction: `Circuit.withReset c` adds an input `rst` (while
   high, the next state is `c.init`: synchronous) and `withEnable` an input `en` (while low,
   the state holds), built from `Hw.resetTo`/`Hw.hold`, whose meaning at values is a

@@ -1648,6 +1648,94 @@ WIZ_API void *wiz_sys_spawn_with(const char *cmd, wiz_val args, uint64_t in, uin
   wiz_sys_free_strings(envp);
   return c;
 }
+/* posix_spawn_file_actions_addchdir_np is glibc 2.29 (the release toolchain's sysroot,
+   26f, is glibc 2.27): without it, a spawn with a directory forks, and the child sets
+   itself up with async-signal-safe calls only. -DWIZ_NO_SPAWN_CHDIR forces that path
+   (the tests run it both ways). */
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && !defined(WIZ_NO_SPAWN_CHDIR)
+#if __GLIBC_PREREQ(2, 29)
+#define WIZ_SPAWN_ADDCHDIR 1
+#endif
+#endif
+#ifndef WIZ_SPAWN_ADDCHDIR
+/* fork, set up the child as posix_spawn would (signals, group, streams, directory), and
+   exec `cmd`, searched in this program's PATH as posix_spawnp does. 0 or the errno of
+   the step that failed (the child reports it through a close-on-exec pipe). */
+static int wiz_sys_fork_spawn(pid_t *pid, const char *cmd, char **argv, char **envp, const uint64_t *modes,
+                              int pipes[3][2], const char *cwd, uint64_t group) {
+  /* everything the child needs is computed here: it must not allocate */
+  const char *path = getenv("PATH");
+  if (!path) path = "/bin:/usr/bin";
+  size_t clen = strlen(cmd);
+  int slash = strchr(cmd, '/') != NULL;
+  int rep[2];
+  if (pipe(rep) < 0) return errno;
+  fcntl(rep[0], F_SETFD, FD_CLOEXEC); fcntl(rep[1], F_SETFD, FD_CLOEXEC);
+  sigset_t all, old;
+  sigfillset(&all);
+  pthread_sigmask(SIG_SETMASK, &all, &old);
+  pid_t p = fork();
+  if (p == 0) {
+    int e = 0;
+    signal(SIGPIPE, SIG_DFL);
+    sigset_t none;
+    sigemptyset(&none);
+    if (group == 1 && setpgid(0, 0) < 0) e = errno;
+    if (!e && group == 2 && setsid() < 0) e = errno;
+    for (int i = 0; i < 3 && !e; i++) {
+      if (modes[i] == 1) {
+        int child_end = i == 0 ? pipes[i][0] : pipes[i][1];
+        if (dup2(child_end, i) < 0) e = errno;
+      } else if (modes[i] == 2) {
+        int fd = open("/dev/null", i == 0 ? O_RDONLY : O_WRONLY);
+        if (fd < 0) e = errno;
+        else if (fd != i) { if (dup2(fd, i) < 0) e = errno; close(fd); }
+      }
+    }
+    if (!e && chdir(cwd) < 0) e = errno;
+    if (!e) {
+      sigprocmask(SIG_SETMASK, &none, NULL);
+      if (slash) { execve(cmd, argv, envp); e = errno; }
+      else {
+        char buf[4096];
+        e = ENOENT;
+        for (const char *d = path; ; ) {
+          const char *colon = strchr(d, ':');
+          size_t dlen = colon ? (size_t)(colon - d) : strlen(d);
+          if (dlen + 1 + clen + 1 <= sizeof buf) {
+            size_t k = 0;
+            if (dlen == 0) buf[k++] = '.'; else { memcpy(buf, d, dlen); k = dlen; }
+            buf[k++] = '/';
+            memcpy(buf + k, cmd, clen + 1);
+            execve(buf, argv, envp);
+            /* as posix_spawnp: keep looking after these, remember a permission error */
+            if (errno == EACCES) e = EACCES;
+            else if (errno != ENOENT && errno != ENOTDIR) { e = errno; break; }
+          }
+          if (!colon) break;
+          d = colon + 1;
+        }
+      }
+    }
+    ssize_t w = write(rep[1], &e, sizeof e);
+    (void)w;
+    _exit(127);
+  }
+  int r = 0;
+  if (p < 0) r = errno;
+  pthread_sigmask(SIG_SETMASK, &old, NULL);
+  close(rep[1]);
+  if (p > 0) {
+    int e = 0;
+    ssize_t n;
+    do n = read(rep[0], &e, sizeof e); while (n < 0 && errno == EINTR);
+    if (n == (ssize_t)sizeof e) { r = e; waitpid(p, NULL, 0); }
+    else *pid = p;
+  }
+  close(rep[0]);
+  return r;
+}
+#endif
 static void *wiz_sys_spawn_in(const char *cmd, wiz_val args, uint64_t in, uint64_t out, uint64_t err,
                               const char *cwd, char **envp, uint64_t group) {
   static int sigpipe_ignored = 0;
@@ -1668,8 +1756,15 @@ static void *wiz_sys_spawn_in(const char *cmd, wiz_val args, uint64_t in, uint64
       posix_spawn_file_actions_addopen(&fa, i, "/dev/null", i == 0 ? O_RDONLY : O_WRONLY, 0);
     }
   }
-  if (r == 0 && cwd[0]) r = posix_spawn_file_actions_addchdir_np(&fa, cwd);
   pid_t pid = 0;
+#ifdef WIZ_SPAWN_ADDCHDIR
+  if (r == 0 && cwd[0]) r = posix_spawn_file_actions_addchdir_np(&fa, cwd);
+#else
+  if (r == 0 && cwd[0]) {
+    fflush(stdout); fflush(stderr);
+    r = wiz_sys_fork_spawn(&pid, cmd, argv, envp ? envp : environ, modes, pipes, cwd, group);
+  } else
+#endif
   if (r == 0) {
     fflush(stdout); fflush(stderr);
     /* the child gets SIGPIPE back (we ignore it), and an empty signal mask */
