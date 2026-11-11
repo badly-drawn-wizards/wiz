@@ -11,8 +11,10 @@
 #
 # The build is outside Nix, with elan's Lean, whose bundled clang and sysroot make the
 # binaries depend only on glibc (>= 2.27) and the C runtime libraries, as Lean's own
-# releases do: no /nix/store paths. `wiz build` and grail still need a C compiler and
-# GMP (`apt install gcc libgmp-dev`; the self-hosted toolchain needs libgc-dev too).
+# releases do: no /nix/store paths. The tarball also carries its own C toolchain
+# (share/wiz/cc, scripts/bundle-cc.sh, stage 26f): Lean's clang and lld, a glibc 2.27
+# sysroot, static GMP and Boehm GC, so `wiz build` and grail need nothing installed.
+# (A dispatched commit older than 26f gets no bundle and is tested with gcc, as before.)
 name: release
 
 on:
@@ -23,6 +25,7 @@ on:
     branches: [master]
     paths:
       - scripts/release-tarball.sh
+      - scripts/bundle-cc.sh
       - .github/workflows/release.yml
       - Tower/**
       - scripts/release-snapshots.sh
@@ -96,14 +99,82 @@ jobs:
             ldd .lake/build/bin/$b
             if ldd .lake/build/bin/$b | grep -q /nix/store; then echo "$b links /nix/store paths"; exit 1; fi
           done
+      # 26f: does the built commit use share/wiz/cc? (a dispatched old one may not)
+      - name: Bundle a C toolchain?
+        id: bundle
+        run: |
+          if grep -q withBundled Wiz/Toolchain.lean; then echo "cc=yes" >> "$GITHUB_OUTPUT"; else echo "cc=no" >> "$GITHUB_OUTPUT"; fi
+      - name: Cache the bundled C toolchain
+        if: steps.bundle.outputs.cc == 'yes'
+        uses: actions/cache@v4
+        with:
+          path: cc-bundle
+          key: release-cc-${{ runner.os }}-${{ hashFiles('lean-toolchain', '.release-tools/scripts/bundle-cc.sh') }}
+      - name: The bundled C toolchain (clang, glibc 2.27 sysroot, static GMP and GC)
+        if: steps.bundle.outputs.cc == 'yes'
+        run: |
+          if [ ! -x cc-bundle/bin/cc ]; then
+            sudo apt-get install -y -q m4 >/dev/null # GMP's configure
+            sh .release-tools/scripts/bundle-cc.sh cc-bundle
+          fi
+          du -sh cc-bundle
+          # what the compiler itself needs (Lean's libLLVM/libclang-cpp: glibc 2.30)
+          for f in cc-bundle/bin/clang cc-bundle/bin/ld.lld cc-bundle/lib/*.so*; do
+            [ -L "$f" ] || echo "$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1) $f"
+          done
       - name: Tarball
         run: |
           mkdir -p dist
-          .release-tools/scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz
+          cc=; [ "${{ steps.bundle.outputs.cc }}" = yes ] && cc=cc-bundle
+          .release-tools/scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz .lake/build/bin "$(git rev-parse HEAD)" $cc
           ls -l dist
-      - name: The tarball works on a plain Ubuntu (with gcc and GMP), and tower installs it
+      - name: The tarball builds programs with no C compiler or GMP installed (plain Ubuntu containers)
+        # the acceptance test of 26f: the images have no gcc, cc, clang, libgmp or libc
+        # headers. 20.04 (glibc 2.31) and 24.04 build and run; 18.04 (glibc 2.27, the
+        # oldest the toolchain's binaries and the programs it builds support) checks and
+        # runs the programs built on 20.04 (the bundled clang itself needs glibc 2.30)
+        if: steps.bundle.outputs.cc == 'yes'
         run: |
-          sudo apt-get install -y -q gcc libgmp-dev >/dev/null
+          t=$(mktemp -d)
+          tar -xzf dist/wiz-x86_64-linux.tar.gz -C "$t"
+          d=$(mktemp -d); cp examples/io.wiz examples/import_c.wiz "$d/"
+          mkdir -p "$d/pkg"; cp examples/io.wiz "$d/pkg/Main.wiz"
+          printf 'import Grail\ndef package : Package := Package.new "hello"\n  |> Package.exe "hello" "Main.wiz"\n' > "$d/pkg/grail.wiz"
+          cat > "$d/smoke.sh" <<'EOF'
+          set -eux
+          export PATH=/t/wiz-x86_64-linux/bin:$PATH HOME=/tmp/home
+          mkdir -p $HOME; cp -R /w /tmp/w; cd /tmp/w
+          for c in cc gcc clang; do if command -v $c; then echo "$c is installed"; exit 1; fi; done
+          for h in /usr/include/stdio.h /usr/include/gmp.h /usr/include/x86_64-linux-gnu/gmp.h; do
+            if [ -e $h ]; then echo "$h is installed"; exit 1; fi
+          done
+          wiz check io.wiz
+          if [ "$1" = old ]; then
+            # programs built on a newer system run here
+            for p in io io-llvm hello; do /o/$p > out; head -1 out; done
+            exit 0
+          fi
+          wiz build io.wiz -o io
+          ./io > out; head -3 out
+          wiz run io.wiz > out; head -1 out
+          wiz build io.wiz -o io-llvm --llvm
+          ./io-llvm > out; head -1 out
+          wiz run import_c.wiz
+          cd pkg; grail build; .grail/bin/hello > out; head -1 out
+          cp .grail/bin/hello ../io ../io-llvm /o/
+          EOF
+          for img in ubuntu:24.04 ubuntu:20.04; do
+            echo "::group::$img"
+            o=$(mktemp -d)
+            docker run --rm -v "$t:/t:ro" -v "$d:/w:ro" -v "$o:/o" "$img" sh /w/smoke.sh new
+            echo "::endgroup::"
+          done
+          echo "::group::ubuntu:18.04"
+          docker run --rm -v "$t:/t:ro" -v "$d:/w:ro" -v "$o:/o:ro" ubuntu:18.04 sh /w/smoke.sh old
+          echo "::endgroup::"
+      - name: The tarball works on a plain Ubuntu (with gcc and GMP for an old commit), and tower installs it
+        run: |
+          [ "${{ steps.bundle.outputs.cc }}" = yes ] || sudo apt-get install -y -q gcc libgmp-dev >/dev/null
           t=$(mktemp -d)
           tar -xzf dist/wiz-x86_64-linux.tar.gz -C "$t"
           d=$(mktemp -d); cp examples/io.wiz "$d/"; cd "$d"
@@ -126,6 +197,7 @@ jobs:
           $tower default nightly
           echo "$d/.tower/bin" >> "$GITHUB_PATH"
           PATH="$d/.tower/bin:$PATH" wiz check io.wiz
+          PATH="$d/.tower/bin:$PATH" wiz build io.wiz -o io && ./io | head -1
           PATH="$d/.tower/bin:$PATH" tower toolchain list
       - uses: actions/upload-artifact@v4
         with:
