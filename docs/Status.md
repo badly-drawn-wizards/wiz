@@ -184,6 +184,14 @@ the results of the probes listed in the "Probes" section.
   registrations as a literal does (`P z z` with `nat.pow := P` is the numeral `1` with no
   literal in the term). So with the Prelude imported nothing more can be registered, and
   without it every registration is an axiom of whatever uses its constant or a numeral.
+* **A second hole, closed** (icestick-uart P3). "The toolchain's `lib/`" was `lib/`
+  relative to the current directory, so an installed toolchain (its library comes as
+  `-I share/wiz/lib`) trusted nothing (every registration of the Prelude was reported
+  as an axiom), while a `lib/Prelude.wiz` in the current directory replaced the real one
+  and was trusted; and the cache key ignored trust, so the two verdicts leaked between
+  runs. Now the trusted library is the one next to the binary, searched first, a file
+  that would shadow one of its modules is ignored with a warning, and trust is part of
+  every module's cache key (stage 22f).
 * **Regression tests.** Group *trust*: the probe's warnings and `#print axioms` output, a
   registration in a module from an `-I` directory, the crash and the shape errors, and the
   Prelude's numerals still computing natively with no axioms; the T14 probe and second
