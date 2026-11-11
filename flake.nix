@@ -89,6 +89,8 @@
               share=$out/share/wiz
               mkdir -p $share/.lake/build/bin $out/bin
               cp -r ${fs.toSource { root = ./lib; fileset = ./lib; }} $share/lib
+              # the marker editors look for (editors/nvim: a library file is served by its toolchain's wiz)
+              echo 'A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).' > $share/TOOLCHAIN
               cp ${unwrapped}/bin/wiz ${unwrapped}/bin/grail $share/.lake/build/bin/
               # wiz's module roots: ./lib (a checkout's), then the packaged standard library
               makeWrapper $share/.lake/build/bin/wiz $out/bin/wiz \
