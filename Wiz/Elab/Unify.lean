@@ -577,7 +577,7 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     let g ← getGlobals
     let height (x : Name) : Nat := (g.order.idxOf? x).getD 0
     -- (recursors compute: unfold them first; otherwise the later definition, then the other)
-    let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".scasesOn"
+    let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".casesOnA" || x.endsWith ".scasesOn"
     let first := isRec n || (!isRec n' && height n ≥ height n')
     let (one, other) := if first then (unify l v.get u, unify l t v'.get) else (unify l t v'.get, unify l v.get u)
     match ← trackMeta one with

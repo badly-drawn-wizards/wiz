@@ -1064,7 +1064,7 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
           unless ok do
             throwAt b.info s!"binder quantity {showTerm ctx q'} does not match the expected {← showVal ctx q}"
         recordBinder ctx b.info b.name dom
-        let t ← checkFun (ctx.bind b.name dom) rest body (← instM cod (Val.var ctx.lvl))
+        let t ← checkFun (ctx.bindQ b.name dom ((Val.toPoly? q).bind (·.isConst?))) rest body (← instM cod (Val.var ctx.lvl))
         return .lam b.name t
       else if bi == .implicit || bi == .instImplicit then
         let t ← checkFun (ctx.bind x dom) bs body (← instM cod (Val.var ctx.lvl))
@@ -1542,6 +1542,10 @@ partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)
       pure (quote (← getGlobals) ctx.lvl vty, val)
   recordBinder ctx (stx.getArg 2).info x (← evalIn ctx ty)
   let ctx' := ctx.define x (← evalIn ctx ty) (← evalIn ctx val)
+  -- (21v) a linear `let` makes later `match`es additive (`LocalCtx.linearLvls`)
+  let ctx' := match q with
+    | .qlit r => if r != 0 && QRig.many? != some r then { ctx' with linearLvls := ctx.lvl :: ctx'.linearLvls } else ctx'
+    | _ => ctx'
   let body := stx.getArg 7
   match expected with
   | some e =>
@@ -2130,7 +2134,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let w : Term R := .qlit QuantitySyntax.explicitDefault
   let mut G := q goal
   for r in rs.reverse do
-    let wr : Term R := if ctx.erasedLvls.contains r then .qlit 0 else w
+    -- (21v) a reverted linear variable is re-bound at 1, so each branch may use it once
+    let wr : Term R := if ctx.erasedLvls.contains r then .qlit 0 else if ctx.linearLvls.contains r then .qlit 1 else w
     G := .pi (nameOf r) .default wr (q (typeOf r)) (G.abstract (varTm r)) none
   G := ctx.sortType g G
   -- the motive's universe
@@ -2145,7 +2150,11 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let nΞ := ξ.length
   -- a motive that depends on neither the indices nor the scrutinee: the non-dependent
   -- eliminator (`T.recN`), whose branches need no cast along the index equation
-  let nondep := modeA && !sized && nΞ > 0 && !((ξLvls ++ [x]).any fun l => G.hasVar (ctx.lvl - l - 1))
+  -- (21v) with a variable bound at quantity 1 in scope: the additive case `T.casesOnA`,
+  -- whose branches are alternatives, so that each may use the variable once (with
+  -- `casesOn` the methods are separate ω arguments, and the uses add up)
+  let additive := !sized && !useRec && !ctx.linearLvls.isEmpty && (g.find? (T ++ ".casesOnA")).isSome
+  let nondep := !additive && modeA && !sized && nΞ > 0 && !((ξLvls ++ [x]).any fun l => G.hasVar (ctx.lvl - l - 1))
   let motive : Term R ←
     if nondep then pure G
     else if modeA then
@@ -2170,7 +2179,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     | _ => false
   let some v := vG.orElse fun _ => if unknown then some (.succ .zero) else none
     | throwAt ctx.info "could not determine the universe of the match's type"
-  let elimName := T ++ (if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn") ++
+  let elimName := T ++ (if additive then ".casesOnA" else if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn") ++
     (if nondep then "N" else "")
   let some ed := g.find? elimName | throwAt ctx.info s!"{elimName} is missing"
   let elimHead : Term R := .const elimName (us ++ [v])
@@ -2181,8 +2190,14 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   for a in Δargs ++ sizeArgs ++ [← evalIn ctx motive] do
     let .pi _ _ _ _ cod _ ← force fty | throwAt ctx.info "internal error: eliminator type"
     fty ← instM cod a
+  -- (21v, additive) the bundle's type `(t : Enum ls) → Br t`, and its branches
+  let mut bundleTy : Option (VTy R × Closure R) := none
+  let mut ups : Array (Term R) := #[]
+  if additive then
+    let .pi _ _ _ mA codA _ ← force fty | throwAt ctx.info "internal error: eliminator type"
+    bundleTy := some (mA, codA)
   -- one method per constructor
-  for c in ctors do
+  for c in ctors, ci in [0:ctors.length] do
     let some cd := g.find? (T ++ "." ++ c) | throwAt ctx.info s!"missing constructor {c}"
     let fieldInfos := (piInfos cd.type).drop nΔ
     -- `T …`, or `(h : H) → T …` (an infinitary field: its hypothesis is a function)
@@ -2194,7 +2209,15 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       | .pi _ _ _ _ B _ => head B
       | A => head A
     let nRec := if useRec then (fieldInfos.filter fun (_, _, A) => isRecField A).length else 0
-    let .pi _ _ _ mTy cod _ ← force fty | throwAt ctx.info "internal error: eliminator type"
+    let (mTy, cod?) ← match bundleTy with
+      | some (mA, _) => do
+        -- `Br 'c` is `ULift (M_c)`
+        let .pi _ _ _ _ brC _ ← force mA | throwAt ctx.info "internal error: additive eliminator type"
+        let .ulift _ A ← force (← instM brC (.tag ctors ci)) | throwAt ctx.info "internal error: additive method type"
+        pure (A, none)
+      | none => do
+        let .pi _ _ _ mTy cod _ ← force fty | throwAt ctx.info "internal error: eliminator type"
+        pure (mTy, some cod)
     -- introduce fields, hypotheses, the equation, and the reverted variables
     let mut ctx' := ctx
     let mut mt := mTy
@@ -2268,7 +2291,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           let .pi _ _ _ A B _ ← force mt | throwAt ctx.info "internal error: reverted variable"
           rsLvls := rsLvls.push ctx'.lvl
           mt ← instM B (Val.var ctx'.lvl)
-          ctx' := ctx'.bind (nameOf r) A
+          ctx' := ctx'.bindQ (nameOf r) A (if ctx.linearLvls.contains r then some 1 else none)
         -- the value of `x` in this branch, for variable patterns
         let ctorVal ← evalIn ctx' ((Δargs.map (quote g ctx'.lvl) ++ fieldLvls.toList.map
           (fun l => (.var (ctx'.lvl - l - 1) : Term R))).foldl .app (.const (T ++ "." ++ c) us))
@@ -2348,8 +2371,18 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let names := (if sized then ["_j"] else []) ++ fieldInfos.map (·.1) ++ (List.replicate nRec "_ih") ++
       (if modeA then [] else ["e"])
     let method := names.foldr .lam body
-    f := .app f method
-    fty ← instM cod (← evalIn ctx method)
+    match cod? with
+    | some cod =>
+      f := .app f method
+      fty ← instM cod (← evalIn ctx method)
+    | none => ups := ups.push (.up (method.lift 1))  -- (under the bundle's `fun t`)
+  -- (21v) the bundle `fun t => ecase t [up m_c…]`
+  if let some (mA, codA) := bundleTy then
+    let .pi _ _ _ _ brC _ ← force mA | throwAt ctx.info "internal error: additive eliminator type"
+    let brTm := quote g (ctx.lvl + 2) (← instM brC (Val.var (ctx.lvl + 1)))
+    let bundle : Term R := .lam "t" (.ecase "z" brTm (.var 0) ups.toList)
+    f := .app f bundle
+    fty ← instM codA (← evalIn ctx bundle)
   -- indices, scrutinee, equation proof, reverted variables
   for vξ in ξ do f := .app f (q vξ)
   f := .app f (varTm x)

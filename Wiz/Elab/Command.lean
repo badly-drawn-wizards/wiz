@@ -357,7 +357,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
     goal ← instM Bc (Val.var ctx'.lvl)
     if ((Val.toPoly? xq).bind (·.isConst?)) == some 0 then
       ctx' := { ctx' with erasedLvls := ctx'.lvl :: ctx'.erasedLvls }
-    ctx' := ctx'.bind x A
+    ctx' := ctx'.bindQ x A ((Val.toPoly? xq).bind (·.isConst?))
   let tree ← compileMatch ctx' vars clauses goal none true
   let body := Term.letE name (.qlit w) fTyTm fValTm (names.foldr .lam tree)
   let F : Term R := .lam "s" (.lam "rec" (.lam "i" (.lam x0 body)))
@@ -551,7 +551,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
     tyv ← instM B (Val.var ctx'.lvl)
     if ((Val.toPoly? xq).bind (·.isConst?)) == some 0 then
       ctx' := { ctx' with erasedLvls := ctx'.lvl :: ctx'.erasedLvls }
-    ctx' := ctx'.bind x A
+    ctx' := ctx'.bindQ x A ((Val.toPoly? xq).bind (·.isConst?))
   let mentions (stx : Syntax) : Bool := syntaxMentions name stx
   -- (a partial definition calls itself as a declared constant instead)
   let recursive := !isPartial && clauses.any (fun c => mentions c.rhs)
@@ -1631,6 +1631,19 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
               | .ok g' => g := g'
               | .error e =>
                 report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty [] (some s.globals)}"
+                return
+          -- (21v) the additive case `T.casesOnA`, for a `match` whose branches share a
+          -- linear variable (none for a type without constructors: its bundle would be
+          -- a linear argument nothing uses)
+          unless ctors.isEmpty do
+            match mkRecursor g name ctors false (additive := true) with
+            | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
+            | .ok d =>
+              recNames := recNames ++ [d.name]
+              match addDeclSorted g d with
+              | .ok g' => g := g'
+              | .error e =>
+                report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
                 return
           -- (13b) `| private c`: the constructor is private to this module, and so are the
           -- recursors (their cases would hand out a private constructor's fields, and

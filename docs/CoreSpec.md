@@ -1760,11 +1760,14 @@ Each item says what the code does; the code is what the kernel checks.
 now closed). The frontend reads written quantities (`0`, `1`, `ω`) on binders, `fun`
 binders and `let`, with the Lean elaborator's defaults (ω explicit, 0 implicit; a
 constructor's parameters at 0), and the kernel checks usage. What still differs, pinned
-by the test "the self-hosted frontend: quantities, the pinned differences (21m)":
+by the test "the self-hosted frontend: quantities, the pinned differences (21m)", are below. A linear
+variable used once in each branch of a `match` was a difference until stage 21v: the Lean
+frontend now compiles such a match to the additive `T.casesOnA`, and both accept it.
+Commands: `#eval` is `#reduce` here, and `attribute [inline]` is checked and ignored
+(21u); classes and instances, the other attributes and `import_c` are errors.
 
 | program | Lean frontend | self-hosted frontend |
 |---|---|---|
-| a linear variable used once in each branch of a `match` (`def m1 (1 x : Nat) (b : Bool) : Nat := match b with \| .true => x \| .false => x`) | **rejects**: a branch is an argument of `T.casesOn`, a function whose methods are ω | **accepts**: the match is the kernel's `scase`/`ecase`, whose branches are alternatives (usage joined). Sound: `x` is used once on every path |
 | a constructor field with a quantity (`\| mk (0 n : Nat)`, a structure's `1 a : Nat`) | accepts (`Desc.arg q S D`) | **rejects** with an error: `darg S D` has no quantity, every field is stored at ω |
 | an implicit constructor field (`\| cons {n : Nat} …`) | a field at 0, filled in at the call | an explicit field at ω (the frontend has no implicit constructor fields; a call that leaves it out is rejected) |
 | `%t` quantity terms, quantity variables | yes | an error |
