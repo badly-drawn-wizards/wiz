@@ -179,8 +179,12 @@ structure Decl (R : Type) where
   /-- unfold eagerly instead of gluing (constructors, so values look like constructor
   applications) -/
   inline : Bool := false
-  /-- an implementation for the compiler, not checked by the kernel: a structurally
-  recursive definition, with direct recursion instead of the recursor -/
+  /-- an implementation for the compiler: the term compiled code runs instead of `value`
+  (a structurally recursive definition's equations, with direct recursion instead of the
+  recursor; a partial definition's body; a native implementation's constant). The kernel
+  never unfolds it, but checks it against `type` (`checkImpl` in `addDecl`/`setImpl`,
+  `addPartialImpl`), so erasure only sees checked terms. That it computes what `value`
+  computes is not checked. -/
   impl : Option (Term R) := none
   /-- a partial definition's witness: a term of its type that the kernel checks
   (`addPartialDecl`). The definition stays opaque (`value = none`) but is not an axiom:
@@ -427,12 +431,6 @@ structure Globals (R : Type) where
   (`unboxedSigma` in `Compiler/Erase.lean`). Off by default: it is not stable under
   substitution. -/
   unboxStructs : Bool := false
-  /-- a compiler setting, not read by the kernel: may erasure read the sort a `Π`/`Σ`
-  carries instead of recomputing it (`erasable` in `Compiler/Erase.lean`)? The kernel
-  validates those sorts (`checkSortNote`) in the terms it checks; `eraseDecl` turns this
-  off while it erases a term the kernel has not checked (a structurally recursive
-  definition's `impl`; `wiz-notes/impl-unchecked.md`). -/
-  sortNotesChecked : Bool := true
   /-- D1 experiment (default off): reject impredicative `Π`s, those into `Prop` whose
   domain is a universe or ends in one (`Prop`, `A → Prop`, `Type`, …) -/
   predicativeProp : Bool := false
