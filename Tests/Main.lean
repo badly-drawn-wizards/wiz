@@ -6,6 +6,7 @@ import Tests.Elab
 import Tests.ElabFix
 import Tests.Grail
 import Tests.LSP
+import Tests.Meta
 import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
@@ -27,6 +28,7 @@ def groups : List Group :=
   Grail.groups ++
   Lint.groups ++
   LSP.groups ++
+  Meta.groups ++
   Parser.groups ++
   Rig.groups ++
   Scaling.groups ++
