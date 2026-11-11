@@ -193,6 +193,8 @@ where
           go' input base chars stop { (inner.endModule s) with messages := msgs, module := s.module, infos } memo
       else go' input base chars stop (step cmd s) memo
     | .error e =>
+      -- (13o) a keyword where a name was expected: which notation, from which module
+      let e := e.explainKeywords s.tables (fun k => (s.kindSites[k]?).map (·.2))
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate
       go' input base chars (recoverPos chars (skipWs chars pos))
         { s with messages := s.messages.push { info := { start := e.pos, stop := e.pos },

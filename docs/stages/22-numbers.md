@@ -426,8 +426,8 @@ loops, `?`, `U64`, and functions that return borrows.
   fails to check is reported at the node with its text.
 
 Limitations: the fragment (LOWERING.md §1a); spec clauses are not parsed; `U64` and `Vec`
-are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; keywords such as `if` and `mut`
-are reserved in a file that imports `Feral`; errors inside generated code point at the
+are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; (keywords such as `if` and `mut` are
+reserved only inside `feral … end` since 13j, and only `feral` itself elsewhere); errors inside generated code point at the
 whole item; one borrow error per function; stricter than rustc where a `&mut` would be
 implicitly reborrowed at a shorter lifetime.
 

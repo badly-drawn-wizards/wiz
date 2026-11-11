@@ -2143,6 +2143,18 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   for a in Δargs ++ sizeArgs ++ [← evalIn ctx motive] do
     let .pi _ _ _ _ cod _ ← force fty | throwAt ctx.info "internal error: eliminator type"
     fty ← instM cod a
+  -- (13o) a constructor pattern of another type: say so, rather than report the
+  -- scrutinee's constructors as missing (`if n then …` at `n : Nat` is a match on
+  -- `.true`/`.false`). A pattern a macro wrote is reported at the match.
+  for cl' in clauses do
+    if let some p := cl'.pats[k]? then
+      if let (_, .ctor _ c' _) ← pview p then
+        unless ctors.contains c' do
+          let info := if p.info.synthetic || p.info.stop == 0 then ctx.info else p.info
+          let hint := if c' == "true" || c' == "false" then
+            "; the condition of `if`, `&&` and `||` is a Bool" else ""
+          throwAt info (s!"the value matched has type {T}, which has no constructor .{c'} " ++
+            s!"(its constructors: {", ".intercalate (ctors.map (s!".{·}"))}){hint}")
   -- one method per constructor
   for c in ctors do
     let some cd := g.find? (T ++ "." ++ c) | throwAt ctx.info s!"missing constructor {c}"
