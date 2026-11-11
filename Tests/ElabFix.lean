@@ -485,6 +485,12 @@ def group : Group where
           "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
           "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
           "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
+    { name := "an equation at a product type: η for projected holes, stale casts (cohesion-hardware)", run := fun _ =>
+        -- `Eq.congrArg f e`/`fstEq e` with `e : f y = (y, y)`: the expected `?p = ?q` computes
+        -- to `(?p.1 = ?q.1) × …` and `?q.1 =?= y` is solved by η (`?q := (?a, ?b)`); a cast
+        -- computed while the second component's type was a hole is dropped once its two
+        -- types are the same (it would compute away)
+        okLibs "import Logic\ndef fstEq {A B : Type} {p q : (_ : A) × B} (e : p = q) : p.1 = q.1 := Eq.congrArg (fun (r : (_ : A) × B) => r.1) e\ndef t1 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y := fstEq (h y)\ndef t2 (f : Nat → (_ : Nat) × Nat) (y : Nat) (h : f y = (y, y)) : (f y).1 = y := fstEq h\ndef t3 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y :=\n  Eq.congrArg (fun (r : (_ : Nat) × Nat) => r.1) (h y)\n" },
     { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
         -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
         -- the scrutinee isn't abstracted inside `?A b` (that would leave the pattern fragment)
