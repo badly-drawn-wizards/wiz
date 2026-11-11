@@ -130,6 +130,7 @@ partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
   | .tag k _ => .some (.venum k)
   | .star => .some (.vunit 1)
   | .letE A v b => quickType (TCtx.define c (eval (TCtx.env c) v) (eval (TCtx.env c) A)) b
+  | .letq _ A v b => quickType (TCtx.define c (eval (TCtx.env c) v) (eval (TCtx.env c) A)) b
   | .down x => match quickType c x with
     | .some xty => match whnf xty with
       | .vulift _ A => .some A
@@ -239,6 +240,16 @@ def eraseCheck (c : TCtx) (t : Tm) (ty : Val) : ER := match erasable c ty with
       | .ok b' => .ok (.letE v' b')
       | e => e
     | e => e
+  -- (`let q x := v`, stage 21m: at 0 the value is erased, else as a `let`)
+  | .letq q A v b =>
+    let vA := eval (TCtx.env c) A;
+    match (match q with
+      | .qz => ER.ok .erased
+      | _ => eraseCheck c v vA) with
+    | .ok v' => match eraseCheck (TCtx.define c (eval (TCtx.env c) v) vA) b ty with
+      | .ok b' => .ok (.letE v' b')
+      | e => e
+    | e => e
   | _ => eraseInfer c t
   --|ex
   --| .err "not implemented"
@@ -254,6 +265,7 @@ def eraseInfer (c : TCtx) (t : Tm) : ER := match quickType c t with
       | .app _ _ => eraseApp c t
       | .ann x A => eraseCheck c x (eval (TCtx.env c) A)
       | .letE _ _ _ => eraseCheck c t ty
+      | .letq _ _ _ _ => eraseCheck c t ty
       | .fst p => match eraseInfer c p with
         | .ok p' => .ok (.proj 0 p')
         | e => e

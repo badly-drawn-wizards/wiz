@@ -241,3 +241,43 @@ error for a type that can't be marshalled.
 Not mirrored yet: `import_c` (9b: the frontend would need the preprocessed header, and a
 C parser in Wiz), `glue` (9c), `implemented_by` (22d), `Bytes`, and big numbers (a `Nat`
 is 63 bits in this runtime, so a C result above that is cut).
+
+## 21m: written quantities in the self-hosted frontend
+
+Finding K10 of audit 2: `Frontend.wiz` built every binder at ω, whatever was written, so
+`def twice (1 x : Nat) (f : Nat → Nat → Nat) : Nat := f x x` was accepted. It now reads
+the binder's `quantity` node as `elabQuantity` does in the Lean elaborator (`binderQ`,
+`writtenQ`): `0`, `1` or `ω`, by default ω on an explicit binder and 0 on an implicit
+one; a numeral other than 0 or 1, or a quantity term `%t`, is an error. The quantities
+reach the kernel, which already checks usage (`popUsage`):
+
+* the binders of a `def`, an `axiom` and a partial definition's signature (`defT`,
+  `teleT`, and the match-compiled definitions' telescope, `piTeleQ`), `(1 x : A) → B`
+  (`depPis`, and `pis` in the scope checker for constructor field types), and a typed
+  `fun` (`inferLams`);
+* a `fun` checked against a Π: a written quantity must be the Π's ("binder quantity 1
+  does not match the expected ω", as `checkFun`); an unwritten one takes it;
+* `let 1 x := v; b` is the kernel's `letq` (the backend erases the value of a `let 0`);
+* a constructor's parameters are implicit at 0 (the Lean elaborator's `implicitΔ`), so
+  `List.cons` is `(x0 :0 U0) → (x1 : x0) → …`; an inductive type's own parameters keep
+  their binders' quantities. The helper definition that `withDefault'` makes writes an
+  implicit binder's 0 out when it makes the binder explicit.
+
+Erasure needs nothing new: arguments at 0 were erased already, and there are more of
+them now (an implicit `{w : Nat}` is no longer passed). The self-hosted sources needed no
+change: the Lean frontend checks them with the same rules.
+
+What does not match the Lean frontend (pinned in a test, and in
+[CoreSpec §15](../CoreSpec.md)): a linear variable used once in each branch of a `match`
+is accepted here (the kernel's case joins the branches' usage) and rejected there (a
+branch is an ω argument of `T.casesOn`); a constructor field with a quantity is an error
+here, since `Kernel.wiz`'s descriptions have none; implicit constructor fields don't
+exist here. An unused linear variable (`def drop (1 x : Nat) : Nat := Nat.zero`) and a
+match on a linear variable are rejected once the kernel's `popUsage` and eliminator
+rules of PR #84 are in.
+
+**Tests** (group `selfhost`): `selfhostAgrees` runs 21 declarations through both
+frontends (accepted and rejected alike: linear functions passed and used twice, `let 1`,
+`let 0`, implicit parameters used at runtime, a `fun`'s quantity against the expected
+one, a quantity `2`); `selfhostVerdicts` pins the three differences above; a program
+with quantities is compiled and run under both collectors.

@@ -1607,6 +1607,19 @@ Each item says what the code does; the code is what the kernel checks.
 | μ/ν size argument | unchecked | unchecked (`Kernel.wiz:1918, 1967`) |
 | equality of descriptions, `μ ≡ μ` (4g, §8.4b) | `vEqDesc`, `vEqType`, `famPayloadEq?` | the same rules without quantities (`vEqDesc`, `famEqTy`, `famPayload`); levels are numerals |
 
+**The self-hosted frontend's quantities** (`Frontend.wiz`, stage 21m; finding K10 of audit 2,
+now closed). The frontend reads written quantities (`0`, `1`, `ω`) on binders, `fun`
+binders and `let`, with the Lean elaborator's defaults (ω explicit, 0 implicit; a
+constructor's parameters at 0), and the kernel checks usage. What still differs, pinned
+by the test "the self-hosted frontend: quantities, the pinned differences (21m)":
+
+| program | Lean frontend | self-hosted frontend |
+|---|---|---|
+| a linear variable used once in each branch of a `match` (`def m1 (1 x : Nat) (b : Bool) : Nat := match b with \| .true => x \| .false => x`) | **rejects**: a branch is an argument of `T.casesOn`, a function whose methods are ω | **accepts**: the match is the kernel's `scase`/`ecase`, whose branches are alternatives (usage joined). Sound: `x` is used once on every path |
+| a constructor field with a quantity (`\| mk (0 n : Nat)`, a structure's `1 a : Nat`) | accepts (`Desc.arg q S D`) | **rejects** with an error: `darg S D` has no quantity, every field is stored at ω |
+| an implicit constructor field (`\| cons {n : Nat} …`) | a field at 0, filled in at the call | an explicit field at ω (the frontend has no implicit constructor fields; a call that leaves it out is rejected) |
+| `%t` quantity terms, quantity variables | yes | an error |
+
 ---
 
 ## 16. What is not in the core, and who checks what
