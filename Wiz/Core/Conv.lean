@@ -41,7 +41,8 @@ def headType (g : Globals R) (tys : Array (VTy R)) : Head R → Option (VTy R)
   | .refl A a => some (vEq g A a a)
   | .reflTy X => some (vEqType g X X)
   | .transp _ _ P _ b e => some (vApp g (vApp g P b) e)
-  | .prf ty _ _ _ => some ty.get
+  -- (a suspended proof carries no type: see `inferNe` and `convNe`)
+  | .prf .. => none
 
 /-! ### Types of the data eliminators' arguments (stage 4d)
 
@@ -181,9 +182,18 @@ partial def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VT
   | .unfold n us sp _ => inferNe g tys (.neutral (.global n us) sp)
   | .lazyInd _ _ _ _ _ _ _ _ _ v => inferNe g tys v.get
   | .neutral h sp => do
-    let mut ty ← headType g tys h
-    let mut acc : Val R := .neutral h #[]
-    for e in sp do
+    -- (P2) a suspended proof has no type of its own; what follows its last `absurd` is
+    -- typed by the motive (a neutral that is a *type* and starts at a proof has one)
+    let (start, ty₀) ← match headType g tys h with
+      | some ty => pure (0, ty)
+      | none => match lastAbsurd? sp with
+        | some k => match sp[k]? with
+          | some (.absurd m) => pure (k + 1, m)
+          | _ => none
+        | none => none
+    let mut ty := ty₀
+    let mut acc : Val R := .neutral h (sp.extract 0 start)
+    for e in sp.extract start sp.size do
       match e, whnf ty with
       | .app x, .pi _ _ _ _ cod _ => ty := Closure.inst g cod x; acc := vApp g acc x
       | .fst, .sigma _ _ A _ _ => ty := A; acc := vFst acc
@@ -225,6 +235,18 @@ partial def typeSort? (g : Globals R) (tys : Array (VTy R)) : VTy R → Option L
 def isProp (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) : Bool :=
   match typeSort? g tys ty with
   | some l => l.equiv 0
+  | none => false
+
+/-- (P2) Is the neutral `h · sp[0..k)` a proof of `False`? Either it starts at a proof
+head and has passed through no `absurd` (then it is a proof, and it is being given to an
+`absurd`), or its type is computed. -/
+def falsePrefix (g : Globals R) (tys : Array (VTy R)) (h : Head R) (sp : Array (Elim R)) (k : Nat) : Bool :=
+  let pre := sp.extract 0 k
+  (proofHead h && (lastAbsurd? pre).isNone) ||
+  match inferNe g tys (.neutral h pre) with
+  | some ty => match whnf ty with
+    | .empty l => l.isZero
+    | _ => false
   | none => false
 
 mutual
@@ -400,19 +422,44 @@ partial def convNe (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option 
   --<sol
   let .neutral h sp := a | none
   let .neutral h' sp' := b | none
-  unless sp.size == sp'.size do none
   let isProof : Head R → Bool
     | .refl .. | .reflTy _ | .transp .. | .prf .. => true
     | _ => false
-  let headsEq := match h, h' with
-    | .eq A x y, .eq A' x' y' => convTy g tys A A' && conv g tys A x x' && conv g tys A y y'
-    | .eqTy A B, .eqTy A' B' => convTy g tys A A' && convTy g tys B B'
-    | .cast A B _ t, .cast A' B' _ t' => convTy g tys A A' && convTy g tys B B' && conv g tys A t t'
-    | _, _ => (isProof h && isProof h') || h.equiv h'
-  unless headsEq do none
-  let mut ty ← headType g tys h
-  let mut acc : Val R := .neutral h #[]
-  for e in sp, e' in sp' do
+  -- (P2) **a proof under `absurd` is irrelevant**: the argument of `absurd` at `False` is a
+  -- proof, which is never compared (it may be a suspended proof on one side and a
+  -- hypothesis on the other). So if the two neutrals pass through an `absurd` on a proof
+  -- of `False` at the same distance from their ends, they are compared from there on:
+  -- the motives, then the eliminations that follow, typed by the motive.
+  let cut : Option (Nat × Nat × VTy R × VTy R) := (List.range (min sp.size sp'.size)).findSome? fun d =>
+    let i := sp.size - 1 - d
+    let j := sp'.size - 1 - d
+    match sp[i]?, sp'[j]? with
+    | some (.absurd m), some (.absurd m') =>
+      if falsePrefix g tys h sp i && falsePrefix g tys h' sp' j then some (i + 1, j + 1, m, m') else none
+    | _, _ => none
+  let (start, start', ty₀) ← match cut with
+    | some (i, j, m, m') => if convTy g tys m m' then pure (i, j, m) else none
+    | none =>
+      let headsEq := match h, h' with
+        | .eq A x y, .eq A' x' y' => convTy g tys A A' && conv g tys A x x' && conv g tys A y y'
+        | .eqTy A B, .eqTy A' B' => convTy g tys A A' && convTy g tys B B'
+        | .cast A B _ t, .cast A' B' _ t' => convTy g tys A A' && convTy g tys B B' && conv g tys A t t'
+        | _, _ => (isProof h && isProof h') || h.equiv h'
+      if !headsEq then none else
+      -- two proofs with only applications and projections after them (their type was not
+      -- seen to be a proposition, or `conv` would have answered): equal, with nothing to
+      -- compare. (The type returned is not used.)
+      let onProofs (sp : Array (Elim R)) : Bool := sp.all fun
+        | .app _ | .fst | .snd | .down => true
+        | _ => false
+      if isProof h && isProof h' && onProofs sp && onProofs sp' then return .unit 0 else
+      match headType g tys h with
+      | some ty => pure (0, 0, ty)
+      | none => none
+  unless sp.size - start == sp'.size - start' do none
+  let mut ty := ty₀
+  let mut acc : Val R := .neutral h (sp.extract 0 start)
+  for e in sp.extract start sp.size, e' in sp'.extract start' sp'.size do
     match e, e', whnf ty with
     | .app x, .app y, .pi _ _ _ dom cod _ =>
       unless conv g tys dom x y do none

@@ -237,7 +237,8 @@ def termTable : List TermRow := [
   ⟨"natOp", [0, 0], 0, fun c _ => .natOp "nat.add" #[c 0, c 1]⟩,
   ⟨"ulift", [0], 1, fun c l => .ulift (l 0) (c 0)⟩,
   ⟨"up", [0], 0, fun c _ => .up (c 0)⟩,
-  ⟨"down", [0], 0, fun c _ => .down (c 0)⟩
+  ⟨"down", [0], 0, fun c _ => .down (c 0)⟩,
+  ⟨"prf", [0], 1, fun c l => .prf (l 0) (c 0)⟩
 ]
 
 /-- The name of a term's constructor, from its derived `Repr` (`Wiz.Term.pi …`). -/
@@ -352,10 +353,18 @@ comparisons, `sameVal`): the proof positions the syntax marks (P2). -/
 def eraseDrops : List (String × Nat × String) := [
   ("cast", 2, "the equation of a cast is a proof"),
   ("transp", 3, "transp's proof `p`"),
-  ("transp", 5, "transp's equation `e`")]
+  ("transp", 5, "transp's equation `e`"),
+  ("prf", 0, "a marked proof at level 0 is erased"),
+  -- (P2) read-back erases every proof head, not only suspensions (a `refl` head where the
+  -- term was evaluated and a suspension where it was read back are the same proof)
+  ("refl", 0, "a refl is a proof"), ("refl", 1, "a refl is a proof"),
+  ("reflTy", 0, "a reflTy is a proof"),
+  ("transp", 0, "a transp is a proof"), ("transp", 1, "a transp is a proof"),
+  ("transp", 2, "a transp is a proof"), ("transp", 4, "a transp is a proof")]
 
 /-- The levels that evaluation drops (none today). -/
-def evalLevelDrops : List (String × Nat × String) := []
+def evalLevelDrops : List (String × Nat × String) := [
+  ("prf", 0, "a marker at a level that is not 0 is its term's value (it suspends nothing), and read-back writes no marker back")]
 
 def checkTermEval (rows : List TermRow) : Failures Unit := do
   for row in rows do
@@ -458,7 +467,7 @@ def headTable : List ValRow := [
   ⟨"reflTy", 1, [], 0, fun c _ _ => .neutral (.reflTy (c 0)) #[]⟩,
   ⟨"transp", 6, [], 0, fun c _ _ => .neutral (.transp (c 0) (c 1) (c 2) (c 3) (c 4) (c 5)) #[]⟩,
   -- the suspended proof `var 0` in the environment `[c 0]`, whose value is `c 0`
-  ⟨"prf", 1, [], 0, fun c _ _ => .neutral (.prf (thunk stuck) [c 0] (.var 0) (thunk (c 0))) #[]⟩
+  ⟨"prf", 1, [], 0, fun c _ _ => .neutral (.prf [c 0] (.var 0)) #[]⟩
 ]
 
 /-- The eliminations, as builders of one spine entry. -/
@@ -630,7 +639,7 @@ def catchAlls (body : List String) : List String :=
 
 /-- file, function, the number of default arms, and why they are safe (the note has more). -/
 def pinned : List (String × String × Nat × String) := [
-  ("Wiz/Core/Term.lean", "mapChildrenM", 1, "`| t => pure t`: the childless constructors; the lint checks every constructor with children dynamically"),
+  ("Wiz/Core/Term.lean", "mapChildrenM", 0, "the leaves by name (prf-conv): no default arm"),
   ("Wiz/Core/Term.lean", "lift", 1, "everything but `var` goes to mapChildrenM"),
   ("Wiz/Core/Term.lean", "abstract", 1, "as lift"),
   ("Wiz/Core/Term.lean", "strengthen?", 1, "as lift"),
@@ -838,8 +847,7 @@ def wizFns : List WizFn := [
     exempt := closedConst "a constant's type is not part of its value" ++ [
       ("letE", "ty", "a let's type is not part of its value"), ("letq", "ty", "as letE"),
       ("ann", "ty", "an annotation is not part of the value")] },
-  { fn := "forceSp", ty := "Spine", arg := 1,
-    pending := some "`| v, _ => v` drops ecase/delim/ind/sfix/scase/out from a suspended proof's spine when it is read back (display only today; audit review C-3; prf-conv rewrites this function)" },
+  { fn := "forceSp", ty := "Spine", arg := 1 },
   { fn := "fromAbsurd", ty := "Spine", arg := 0,
     exempt := [("sabsurd", "sp", "the eliminations from the last `absurd` on: what is below it is the erased proof")] },
   { fn := "quoteM", ty := "Val", arg := 1 },
@@ -850,7 +858,7 @@ def wizFns : List WizFn := [
   { fn := "convHead", ty := "Head", arg := 1, binary := true, defaultOk := true, diagonal := true,
     childTys := ["Tm", "Tms", "Val", "Env", "Spine", "Head", "Lvl", "List Lvl"],
     exempt := closedConst "constants are compared by name" ++ proofFields },
-  { fn := "convSpine", ty := "Spine", arg := 2, binary := true, defaultOk := true, diagonal := true },
+  { fn := "convSpineW", ty := "Spine", arg := 3, binary := true, defaultOk := true, diagonal := true },
   -- the structural fast path (`valSame`): its default is "don't know", but an arm that
   -- answers "the same" must have compared every child, levels included
   { fn := "headSame", ty := "Head", arg := 1, binary := true, defaultOk := true,
@@ -975,7 +983,7 @@ def lintGroup : Group where
         report "value traversals" do
           checkValRows "Val" valTable
           -- (a suspended proof is erased by `quoteErasesProofs`; its bound still counts)
-          checkValRows "Head" headTable (eraseExempt := ["prf"])
+          checkValRows "Head" headTable (eraseExempt := ["prf", "refl", "reflTy", "transp"])
           checkValRows "Elim" (elimTable.map (·.toValRow fun e => .neutral (.global "h" []) #[e]))
           -- the variable itself
           expect ((Val.var 4 : Val R).lvlBound == 5) "Head.local: lvlBound is not the level + 1"
