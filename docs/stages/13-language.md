@@ -514,6 +514,17 @@ the optional exercise 4.16, done by recording the equation in its computed form.
 is used: `#print axioms` lists none for these proofs. An equation at a constructor
 (`List.cons x xs = List.cons x xs`) works the same way, through its payload's Σ.
 
+**Inside a `match` clause** the expected type is the motive, read back (`quote`) and
+evaluated at the pattern. The read-back spelled the computed Σ out, so the equation was
+lost and `rfl` failed there (cohesion-hardware's `step_cases`). Two changes fix this:
+* `vEq` now also puts an unforgeable mark in the closure (a global whose name can't be
+  written), so `eqSigmaSides?` recognises only its own Σs;
+* with `Globals.quoteEqs`, which the elaborator's `getGlobals` sets, `quote` reads a
+  marked Σ back as the equation `a = b`, and that evaluates to the same Σ again.
+
+The kernel and `#reduce` leave the flag off and still show the computed form. The
+elaborator's messages now print such a type as the equation.
+
 Nothing else changed. A Σ of field equations written by hand, with a cast at a type
 variable in it, is still not `rfl`. `rfl` never adds an axiom; whoever needs that
 equation writes `castRefl` themselves.

@@ -261,6 +261,20 @@ partial def sizePred? : Val R → Option (Val R)
   | .szSuc s => some s
   | _ => none
 
+/-- The mark `vEq` puts at the end of the closure of a Σ it computed from an equation
+(13n): a neutral whose head is a global name that cannot be written (it starts with a
+space), so no user term evaluates to a closure that carries it. -/
+def eqReductMark : Val R := .neutral (.global " eq-reduct" []) #[]
+
+/-- The equation `a =_A b` that `vEq` computed (at a Σ type `A`) to this Σ, read back from
+its closure: `(A, a, b)`. Only a Σ that carries `eqReductMark` qualifies. With
+`Globals.quoteEqs` (the elaborator), `quote` reads such a Σ back as the equation `a = b`
+(which evaluates to it again), so the equation survives a read-back (a `match` clause's
+motive), and `rfl` can prove it by one `refl`. -/
+def eqSigmaSides? : Val R → Option (Val R × Val R × Val R)
+  | .sigma "e" _ _ (.mk [b, a, _, _, A, .neutral (.global " eq-reduct" []) #[]] _) _ => some (A, a, b)
+  | _ => none
+
 mutual
 
 /-- **Exercise 1.1.** Evaluate a term in an environment.
@@ -755,10 +769,10 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
       else .transp (v 4) (.fst (v 2)) P (.reflTy (.app (v 3) (.fst (v 2)))) (.fst (v 1)) (v 0)
     let body : Term R := .eq (.app (v 3) (.fst (v 1)))
       (.cast (.app (v 3) (.fst (v 2))) (.app (v 3) (.fst (v 1))) apB (.snd (v 2))) (.snd (v 1))
-    -- the equation's own type `A` rides along at the end of the environment, unused by
-    -- the body: `eqSigmaSides?` reads `A`, `a`, `b` back, so that the elaborator's `rfl`
-    -- can prove the whole equation by one `refl` instead of field by field
-    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁, A] body) (some 0)
+    -- the equation's own type `A` and the mark ride along at the end of the environment,
+    -- unused by the body: `eqSigmaSides?` reads `A`, `a`, `b` back, so that `quote` gives
+    -- back the equation and the elaborator's `rfl` proves it by one `refl` (13n)
+    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁, A, eqReductMark] body) (some 0)
   | .unit _ | .empty _ => .unit 0
   | .enum _ => match a, b with
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
@@ -1313,7 +1327,10 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | .sort k => .sort k
   | .pi x bi q a b s => .pi x bi (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l))) s
   | .lam x b => .lam x (quote g (l + 1) (Closure.inst g b (Val.var l)))
-  | .sigma x q a b s => .sigma x (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l))) s
+  | v@(.sigma x q a b s) => match (if g.quoteEqs then eqSigmaSides? v else none) with
+    -- (13n) a computed equation reads back as the equation, which evaluates to it again
+    | some (A, a', b') => .eq (quote g l A) (quote g l a') (quote g l b')
+    | none => .sigma x (quote g l q) (quote g l a) (quote g (l + 1) (Closure.inst g b (Val.var l))) s
   | .pair a b => .pair (quote g l a) (quote g l b)
   | .unit k => .unit k
   | .tt => .tt
@@ -1365,17 +1382,9 @@ partial def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
 
 end
 
-/-- The equation `a =_A b` that computed (by `vEq`, at a Σ type `A`) to this Σ, read back
-from its closure: `(A, a, b)`. A guess by shape (a user's Σ can have such a closure too), so
-whoever uses it must check that `vEq A a b` is the type it has (the elaborator's `rfl`
-compares the two sides, and the kernel checks the `refl` it builds). -/
-def eqSigmaSides? : Val R → Option (Val R × Val R × Val R)
-  | .sigma "e" _ _ (.mk [b, a, _, _, A@(.sigma ..)] (.eq _ (.cast ..) (.snd (.var 1)))) (some _) => some (A, a, b)
-  | _ => none
-
 /-- Normal form of a closed term (every definition unfolded). -/
 def nf (g : Globals R) (t : Term R) : Term R :=
-  let g := { g with eager := true }
+  let g := { g with eager := true, quoteEqs := false }
   quote g 0 (eval g [] t)
 
 end Wiz
