@@ -297,7 +297,7 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
     | .ok r => .ok r
     | .error e =>
       if subTy s.globals ctx.types.reverse.toArray inferred expected then .ok ((), s) else
-      let show' (v : VTy R) := elideLong ((quote s.globals ctx.lvl v).pretty ctx.names)
+      let show' (v : VTy R) := elideLong ((quote s.globals ctx.lvl v).pretty ctx.names (some s.globals))
       .error { info := (ctx.withInfo stx).info,
                msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}\n  ({e.msg})",
                code := e.code,
@@ -352,7 +352,7 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
         let some d := g.find? (S ++ "." ++ f)
           | throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty}"
         if let some m := g.privateTo? (S ++ "." ++ f) then
-          throwAt ctx.info s!"'{S}.{f}' is private to module {m}" "private"
+          throwAt ctx.info s!"'{Globals.privateBase S}.{f}' is private to module {m}" "private"
         let fty : VTy R := eval g [] (d.type.instLevels d.levelParams us)
         let (tm, fty) ← insertImplicits ctx (.const (S ++ "." ++ f) us) fty
         let .pi _ _ _ dom cod _ ← force fty | throwAt ctx.info s!"{S}.{f} is not a function of {S}"
@@ -370,7 +370,7 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
       let Tf := (← getGlobals).resolve (T ++ "." ++ f)
       if let some d := (← getGlobals).find? Tf then
         if let some m := (← getGlobals).privateTo? Tf then
-          throwAt ctx.info s!"'{T}.{f}' is private to module {m}" "private"
+          throwAt ctx.info s!"'{Globals.privateBase T}.{f}' is private to module {m}" "private"
         -- `T.f : {…} → T … → F`: insert the implicits as metavariables, then unify
         let fty : VTy R := eval (← getGlobals) [] (d.type.instLevels d.levelParams us)
         let (tm, fty) ← insertImplicits ctx (.const Tf us) fty
@@ -450,8 +450,11 @@ structure RecCtx where
 
 partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
   let ctorOf (n : Name) : Option (Name × Name) :=
-    match n.splitOn "." with
-    | [T, c] =>
+    -- (13b) this module's private type's constructor, under its kernel name
+    let n := g.resolve n
+    match (n.splitOn ".").reverse with
+    | c :: T@(_ :: _) =>
+      let T := ".".intercalate T.reverse
       if g.contains (T ++ ".desc") && g.contains n then some (T, c)
       -- (13h) a structure's constructor
       else if c == "mk" && g.contains n && g.contains T then some (T, c) else none
@@ -1336,7 +1339,7 @@ partial def elabLetPat (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy
   let names ← match structHead? g sty with
     | some (S, _, _) =>
       if let some m := g.privateTo? (S ++ ".mk") then
-        throwAt pat.info s!"cannot take a value of type {S} apart here: its constructor is private to module {m}" "private"
+        throwAt pat.info s!"cannot take a value of type {Globals.privateBase S} apart here: its constructor is private to module {m}" "private"
       let some L := structLayout? g S
         | throwAt pat.info (s!"cannot take a value of type {S} apart: {S} is opaque " ++
             s!"outside module {(g.opaqueTo? S).getD "?"} (it has private constructors or fields)") "private"
@@ -1403,7 +1406,7 @@ partial def elabStructUpdate (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R
   let some (S, us, params) := structHead? g (← forceMeta sty)
     | throwAt (ctx.withInfo sStx).info s!"structure update needs a value of a structure type, not one of type {← showVal ctx sty}"
   if let some m := g.privateTo? (S ++ ".mk") then
-    throwAt ctx.info s!"cannot update a value of type {S} here: its constructor is private to module {m}" "private"
+    throwAt ctx.info s!"cannot update a value of type {Globals.privateBase S} here: its constructor is private to module {m}" "private"
   let some L := structLayout? g S
     | throwAt ctx.info (s!"cannot update a value of type {S}: {S} is opaque " ++
         s!"outside module {(g.opaqueTo? S).getD "?"} (it has private constructors or fields)") "private"
@@ -1907,7 +1910,7 @@ partial def structPattern? (ctx : LocalCtx R) (vars : List Lvl) (clauses : List 
   match structHead? g xty with
   | some (S, _, _) =>
     if let some m := g.privateTo? (S ++ ".mk") then
-      throwAt p0.info s!"cannot match on a value of type {S} here: its constructor is private to module {m}" "private"
+      throwAt p0.info s!"cannot match on a value of type {Globals.privateBase S} here: its constructor is private to module {m}" "private"
     let some L := structLayout? g S
       | throwAt p0.info (s!"cannot match on a value of type {S}: {S} is opaque " ++
           s!"outside module {(g.opaqueTo? S).getD "?"} (it has private constructors or fields)") "private"
