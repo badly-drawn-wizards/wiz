@@ -5289,20 +5289,14 @@ def builtinGroup : Group where
 
 /-- `okLib` with `lib/Optic.wiz` importable too. -/
 def okOptic (input : String) (infos : List String := []) : IO Unit := do
-  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let optic ← IO.FS.readFile "lib/Optic.wiz"
-  let loader : Name → Option String := fun m =>
-    if m == "Prelude" then some prelude else if m == "Optic" then some optic else none
+  let loader ← libLoader
   let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   checkEq (repr infos).pretty (repr (s.messages.toList.map (·.text))).pretty
 
 def failsOptic (input : String) (fragment : String) : IO Unit := do
-  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let optic ← IO.FS.readFile "lib/Optic.wiz"
-  let loader : Name → Option String := fun m =>
-    if m == "Prelude" then some prelude else if m == "Optic" then some optic else none
+  let loader ← libLoader
   let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")

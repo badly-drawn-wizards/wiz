@@ -180,8 +180,8 @@ def group : Group where
     { name := "the unifier meets an equation with its computed form (unify-computed-equations)", run := fun _ =>
         okOptic ("import Optic\n" ++
           "def t3 (x : Nat) (xs ys : List Nat) (h : xs = ys) : List.cons x xs = List.cons x ys :=\n" ++
-          "  Optic.congrArg (List.cons x) h\n" ++
-          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Optic.congrArg Nat.succ h") },
+          "  Eq.congrArg (List.cons x) h\n" ++
+          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Eq.congrArg Nat.succ h") },
     -- agent/elab-stretch
     { name := "numerals and notation in class field types (numerals-in-class-decls)", run := fun _ =>
         okLib ("import Prelude\ninductive HwTy where\n  | bits (n : Nat)\nclass Hw (r : HwTy → Type) where\n" ++
