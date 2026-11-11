@@ -1297,6 +1297,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- never run it, compiled code does)
         let note := if as.any (·.startsWith "native ") then
           "\n(native: an implementation that compiled code runs, trusted to agree with its definition)" else ""
+        let note := note ++ (if as.any (·.startsWith "compiled ") then
+          "\n(compiled: a recursive definition's equations as compiled code runs them, trusted to agree with its definition)" else "")
         report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]{note}"
   | "command.foreignType" =>
     -- an opaque C pointer type; values are released with the finalizer

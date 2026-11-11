@@ -145,7 +145,7 @@ def modulesGroup : Group where
           check (((axiomsOf s).splitOn "depends on axioms").length > 1) s!"untrusted: {axiomsOf s}"
           let s ← run Tests.libModule
           checkEq 0 (unchecked s)
-          checkEq "'y' does not depend on any axioms" (axiomsOf s) },
+          checkEq ("'y' depends on axioms: [compiled Nat.add]" ++ "\n(compiled: a recursive definition's equations as compiled code runs them, trusted to agree with its definition)") (axiomsOf s) },
     { name := "the toolchain's library is the first root, and nothing replaces its modules (22f)", run := fun _ => do
         let dir ← mkTree [("Prelude.wiz", "builtin nat.add := Nat.mul\n"), ("Fake.wiz", "import Prelude\ndef f : Nat := 1\n")]
         let roots : List System.FilePath := [← Module.toolchainLib, dir]

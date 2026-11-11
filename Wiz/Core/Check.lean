@@ -950,7 +950,11 @@ Also listed, marked `native`: the **native implementations** the declaration's c
 code runs, wherever they are registered (the library's too). `native f := g` is
 `attribute [implemented_by g] f`, and `native T := mk/get` a native representation of the
 type `T` (`attribute [implemented_by mk get] T.mk`, a `repr:` registration). The kernel
-never runs them, so they prove nothing: they are trusted to agree with the definitions. -/
+never runs them, so they prove nothing: they are trusted to agree with the definitions.
+
+Marked `compiled`: the structurally recursive definitions whose **compiled equations**
+(`Decl.trustedEquations`, their `impl`) are trusted to agree with their values
+(docs/Status.md, T1). They too prove nothing; compiled code runs them. -/
 partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run do
   let mut seen : Std.HashSet Name := {}
   let mut todo := [n]
@@ -969,6 +973,7 @@ partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run 
       for (k, m) in g.assumed.reverse do
         if m == c then out := out.push s!"builtin {k} := {c}"
       if let some i := d.nativeImpl? then out := out.push s!"native {c} := {i}"
+      if d.trustedEquations then out := out.push s!"compiled {c}"
       -- (a `repr:T:mk:get:…` registration is on `T`'s constructor: it concerns whatever
       -- mentions the type or the constructor)
       for (k, m) in g.builtins.reverse do

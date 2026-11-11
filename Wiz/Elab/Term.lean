@@ -551,7 +551,10 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
           | _, _ => (ihVal, ty)
       | _ => (ihVal, ty)
     let ihName := "_ih_" ++ y
-    let ident : Syntax := .node a.info "term.ident" #[.ident a.info ihName]
+    -- (`term.recCall`: the hypothesis, after checking that no local variable named like
+    -- the definition is in scope, see `infer`)
+    let ident : Syntax := .node a.info "term.recCall"
+      #[.ident (stx.getArg 0).info rc.fn, .node a.info "term.ident" #[.ident a.info ihName]]
     let others := args.extract np (np + rc.pos) ++ args.extract (np + rc.pos + 1) args.size
     let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType lvl tys ·)
     let restStx := rest.map (·.1)
@@ -559,7 +562,8 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     let stx' := if restStx.isEmpty then ident
       else .node stx.info "term.app" #[ident, .node {} "null" restStx]
     return (stx', newBinds)
-  if isF stx || isExplicitF stx then throw s!"{rc.fn} may only be used in structurally recursive calls"
+  if isF stx || isExplicitF stx then
+    throw s!"{rc.fn} may only be used in structurally recursive calls (inside its equations, {rc.fn} is the definition: rename a local variable called {rc.fn})"
   match stx with
   | .node i k as =>
     let rs ← as.mapM (rewriteRecCalls g rc binds ihType lvl tys ·)
@@ -1957,6 +1961,16 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       | _ =>
         pushInfo (.done (.unknownIdent ctx.info x ctx.names))
         throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
+  | "term.recCall" =>
+    -- a recursive call `f y …` of the definition whose equations these are, already the
+    -- induction hypothesis (`rewriteRecCalls`). A local variable named `f` would make the
+    -- call ambiguous (the second elaboration once called the local, T1): an error.
+    let fn := ((stx.getArg 0).getId?).getD "_"
+    if (lookupLocal ctx fn).isSome then
+      throwAt ((ctx.withInfo (stx.getArg 0)).info)
+        (s!"a local variable named {fn} shadows the recursive definition {fn}: inside the equations of {fn}, " ++
+          s!"`{fn} …` is the recursive call; rename the local variable") "shadowed-recursive"
+    infer ctx (stx.getArg 1)
   | "term.type" | "term.sort" =>
     let l ← match (stx.getArg 1).args[0]? with
       | some ls => elabLevel ls

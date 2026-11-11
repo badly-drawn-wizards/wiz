@@ -202,6 +202,14 @@ def Decl.nativeImpl? {R : Type} (d : Decl R) : Option Name :=
   | some (.const g _) => if g == d.name then none else some g
   | _ => none
 
+/-- Does compiled code run equations of this definition that are trusted to agree with
+its value? A structurally recursive definition's `impl` (its equations with direct
+recursion, docs/Status.md T1): the kernel checks its type, not that it computes what the
+value computes. Not a native implementation (`nativeImpl?`, listed on its own) nor a
+partial definition's body (it has no value to agree with). -/
+def Decl.trustedEquations {R : Type} (d : Decl R) : Bool :=
+  d.impl.isSome && d.value.isSome && d.witness.isNone && d.nativeImpl?.isNone
+
 namespace Term
 
 variable {R : Type}

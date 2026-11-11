@@ -4862,7 +4862,8 @@ def trustGroup : Group where
           check ((l.splitOn r).length > 1) s!"{r} is not listed: {l}" },
     { name := "Prelude registrations are trusted and compute natively", run := fun _ =>
         okLib "import Prelude\ndef t : 2 + 2 = 4 := refl 4\n#print axioms t\n#eval 3 * 7 + Nat.pow 2 10\n"
-          ["'t' does not depend on any axioms", "1045"] },
+          -- (until the kernel checks them, T1: compiled equations are listed)
+          ["'t' depends on axioms: [compiled Nat.add]" ++ "\n(compiled: a recursive definition's equations as compiled code runs them, trusted to agree with its definition)", "1045"] },
     { name := "#print axioms: the Prelude's castRefl", run := fun _ =>
         okLib ("import Prelude\n#print axioms castRefl\n" ++
             "def r (A : Type) (e : A = A) (a : A) : (cast e a : A) = a := castRefl e a\n#print axioms r\n")
@@ -4872,11 +4873,12 @@ def trustGroup : Group where
         okLib ("import Prelude\ndef slow (n : Nat) : Nat := n + 0\ndef fast (n : Nat) : Nat := n\n" ++
             "attribute [implemented_by fast] slow\ndef use (n : Nat) : Nat := slow n\n" ++
             "#print axioms use\n#print axioms fast\n" ++
-            -- a recursive definition's own compiled equations and a partial one's body are not natives
+            -- a recursive definition's own compiled equations are listed as `compiled` (trusted
+            -- until the kernel checks them, T1); a partial one's body is checked, not listed
             "def len : List Nat → Nat\n  | .nil => 0\n  | .cons _ t => len t + 1\n#print axioms len\n" ++
             "partial def spin (n : Nat) : Nat := fast n\n#print axioms spin\n")
           ["'use' depends on axioms: [native slow := fast]" ++ note, "'fast' does not depend on any axioms",
-           "'len' does not depend on any axioms", "'spin' does not depend on any axioms"]
+           "'len' depends on axioms: [compiled len, compiled Nat.add]" ++ "\n(compiled: a recursive definition's equations as compiled code runs them, trusted to agree with its definition)", "'spin' does not depend on any axioms"]
         -- the library's are listed too: words run natively, in a native representation
         okLib ("import Prelude\nimport Word\ndef idW (x : UIntN 8) : UIntN 8 := x\n#print axioms idW\n" ++
             "def w : UIntN 8 := UIntN.add (UIntN.ofNat 8 3) (UIntN.ofNat 8 4)\n#print axioms w\n")
