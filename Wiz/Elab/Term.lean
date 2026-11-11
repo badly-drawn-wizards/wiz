@@ -448,6 +448,54 @@ structure RecCtx where
   /-- all the parameters, and whether each is explicit: `@f` passes them all -/
   allParams : List (Name × Bool) := []
 
+/-- The constructors of the data type `T` (the tags of its description). -/
+def ctorNames (g : Globals R) (T : Name) : List Name :=
+  match g.find? (T ++ ".desc") with
+  | none => []
+  | some descD =>
+    let rec strip : Term R → Term R → Term R
+      | .pi _ _ _ _ b _, .lam _ v => strip b v
+      | _, v => v
+    match descD.value with
+    | some v => ((strip descD.type v).descTag?.map (·.1)).getD []
+    | none => []
+
+/-- A `mutual` block's constructor `n` (`Ev.s`, `ctorConst`): its family `F`, the data
+type whose constructor it is (the head of its result type), if `n` is one of `F`'s
+qualified tags. -/
+def familyCtor? (g : Globals R) (n : Name) : Option Name := do
+  guard (n.contains '.')
+  let d ← g.find? n
+  let rec res : Term R → Term R
+    | .pi _ _ _ _ b _ => res b
+    | t => t
+  let .const F _ := (Term.spine (res d.type)).1 | none
+  if (ctorNames g F).contains n then some F else none
+
+/-- Is the qualified tag `X.c` of a `mutual` block's family (`ctorConst`) a constructor
+of the type `ty`, that is, is `ty` the member `X := F F.Tag.X`? -/
+def memberTag (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (t : Name) : Bool :=
+  let X := (t.dropEnd ((ctorShort t).length + 1)).toString
+  t.contains '.' && (g.find? X).isSome && convTy g tys ty (eval g [] (.const X []))
+
+/-- The constructor that `.c` names at the expected type `expected`, a data type whose
+`μ` has the nominal hint `T`: `T.c`; at a member of a `mutual` block (whose family `T`
+holds the members' constructors under qualified tags, `ctorConst`), the member's own `c`
+(`Ev.s`, not `Od.s`). -/
+def dotCtor? (g : Globals R) (tys : Array (VTy R)) (T c : Name) (expected : VTy R) : Option Name :=
+  if g.contains (T ++ "." ++ c) then some (T ++ "." ++ c) else
+  let tags := (ctorNames g T).filter (·.contains '.')
+  let cands := tags.filter fun t => ctorShort t == c
+  let isMember := memberTag g tys expected
+  match cands.find? isMember with
+  | some t => some t
+  | none =>
+    -- the expected member is known and has no `c`; or it isn't known (a hole in the
+    -- index), and only one member has a `c`
+    if tags.any isMember then none else match cands with
+    | [t] => some t
+    | _ => none
+
 partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
   let ctorOf (n : Name) : Option (Name × Name) :=
     -- (13b) this module's private type's constructor, under its kernel name
@@ -457,7 +505,9 @@ partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
       let T := ".".intercalate T.reverse
       if g.contains (T ++ ".desc") && g.contains n then some (T, c)
       -- (13h) a structure's constructor
-      else if c == "mk" && g.contains n && g.contains T then some (T, c) else none
+      else if c == "mk" && g.contains n && g.contains T then some (T, c)
+      -- a `mutual` block's constructor `Ev.s`: the family, and the tag (the name itself)
+      else (familyCtor? g n).map (·, n)
     | _ => none
   match stx.kind with
   | "term.paren" => patView g (stx.getArg 1)
@@ -507,18 +557,6 @@ def patIsCtor (g : Globals R) (stx : Syntax) : Bool :=
 /-- The pattern `x₁@…@xₙ@p`. -/
 def asPatStx (ns : List Name) (p : Syntax) : Syntax :=
   ns.foldr (fun n acc => .node p.info "term.asPat" #[.node {} "term.ident" #[.ident {} n], .atom {} "@", acc]) p
-
-/-- The constructors of the data type `T`. -/
-def ctorNames (g : Globals R) (T : Name) : List Name :=
-  match g.find? (T ++ ".desc") with
-  | none => []
-  | some descD =>
-    let rec strip : Term R → Term R → Term R
-      | .pi _ _ _ _ b _, .lam _ v => strip b v
-      | _, v => v
-    match descD.value with
-    | some v => ((strip descD.type v).descTag?.map (·.1)).getD []
-    | none => []
 
 /-- Find a component of type `False`/`Empty` inside a (Σ-nested) proof `e : ty`. -/
 partial def findAbsurd (g : Globals R) (ty e : Val R) : Option (Val R) :=
@@ -677,16 +715,20 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
 
 /-- (For the language server) a `match` or equations on a value of type `ty` in the first
 column: which constructors have a case, and where the alternatives are. -/
-def recordMatch (info : SourceInfo) (alts : Array Syntax) (clauses : List (MClause R)) (ty : VTy R) :
-    ElabM R Unit := do
+def recordMatch (info : SourceInfo) (alts : Array Syntax) (clauses : List (MClause R)) (ty : VTy R)
+    (tys : Array (VTy R)) : ElabM R Unit := do
   let .mu _ _ _ _ _ (some (T, _, _)) ← force ty | return
   let (some first, some last) := (alts[0]?, alts.back?) | return
   let g ← getGlobals
   let firsts := clauses.filterMap (·.pats.head?)
   let views : List (Except String PatView) := firsts.map fun p => (patViewAs g p).map (·.2)
-  let covered := views.filterMap fun v => match v with
+  let written := views.filterMap fun v => match v with
     | .ok (.ctor _ c _) => some c
     | _ => none
+  -- the constructors with a case; at a member of a `mutual` block, also the other
+  -- members' (ruled out by the index)
+  let covered := (ctorNames g T).filter fun t =>
+    written.any (ctorSelects · t) || (t.contains '.' && !memberTag g tys ty t)
   let catchAll := views.any fun v => v matches .ok (.var _) || v matches .ok .wild
   let columns := (clauses.head?.map (·.pats.length)).getD 1
   pushInfo (.done (.matchCases info { type := T, covered, catchAll, columns, firstAlt := first.info, lastAlt := last.info }))
@@ -1058,9 +1100,9 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
   if let some (h, c) := dot? then
     match expected with
     | .mu l I D i sz (some (T, us, args)) =>
-      unless (← getGlobals).contains (T ++ "." ++ c) do
-        throwAt h.info s!"{T} has no constructor {c}"
-      let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
+      let some cn := dotCtor? g ctx.types.reverse.toArray T c expected
+        | throwAt h.info s!"{← if (ctorNames g T).any (·.contains '.') then showVal ctx expected else pure T} has no constructor {c}"
+      let ident : Syntax := .node h.info "term.ident" #[.ident h.info cn]
       let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
       let sizedBase := match (sizeView sz).1 with
         | some (.neutral (.local _) #[]) | some (.neutral (.mvar _) _) => true
@@ -1083,9 +1125,10 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     | .neutral (.global T _) _ =>
       -- (13b) a type with private constructors (fields, observations) of another module:
       -- opaque here, so `.c` is `T.c` (which may be private)
-      unless (g.opaqueHere? expected).isSome && g.contains (T ++ "." ++ c) do
+      let cn? := dotCtor? g ctx.types.reverse.toArray T c expected
+      unless (g.opaqueHere? expected).isSome && cn?.isSome do
         return ← shapeError s!".{c} needs an expected inductive type"
-      let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
+      let ident : Syntax := .node h.info "term.ident" #[.ident h.info (cn?.getD c)]
       let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
       return some (← check ctx stx' expected)
     | .nu _ _ _ _ _ (some (T, _, _)) =>
@@ -2145,7 +2188,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     fty ← instM cod a
   -- one method per constructor
   for c in ctors do
-    let some cd := g.find? (T ++ "." ++ c) | throwAt ctx.info s!"missing constructor {c}"
+    let some cd := g.find? (ctorConst T c) | throwAt ctx.info s!"missing constructor {c}"
     let fieldInfos := (piInfos cd.type).drop nΔ
     -- `T …`, or `(h : H) → T …` (an infinitary field: its hypothesis is a function)
     let isRecField (A : Term R) : Bool :=
@@ -2233,7 +2276,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           ctx' := ctx'.bind (nameOf r) A
         -- the value of `x` in this branch, for variable patterns
         let ctorVal ← evalIn ctx' ((Δargs.map (quote g ctx'.lvl) ++ fieldLvls.toList.map
-          (fun l => (.var (ctx'.lvl - l - 1) : Term R))).foldl .app (.const (T ++ "." ++ c) us))
+          (fun l => (.var (ctx'.lvl - l - 1) : Term R))).foldl .app (.const (ctorConst T c) us))
         let explicitIdx := fieldInfos.zipIdx.filter (fun ((_, bi, _), _) => bi == .default) |>.map (·.2)
         let mut cls : List (MClause R) := []
         -- a variable pattern is `x` itself (no object is rebuilt from its fields), unless
@@ -2249,7 +2292,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           let after := cl'.pats.drop (k + 1)
           match pv with
           | .ctor _ c' ps =>
-            if c' == c then
+            if ctorSelects c' c then
               unless ps.length == explicitIdx.length do
                 throwAt (cl'.pats[k]!).info s!"{c} expects {explicitIdx.length} explicit arguments"
               let sub := (List.range fieldInfos.length).map fun i =>
@@ -2360,7 +2403,7 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   binders := absBinders
   goalTm := absGoal
   let goal ← evalIn ctx' goalTm
-  if let some x := lvls.head? then recordMatch stx.info alts clauses ctx'.types[ctx'.lvl - x - 1]!
+  if let some x := lvls.head? then recordMatch stx.info alts clauses ctx'.types[ctx'.lvl - x - 1]! ctx'.types.reverse.toArray
   let body ← compileMatch ctx' lvls clauses goal none true
   let lam := (binders.toList.map (·.1)).foldr .lam body
   -- (the `i`-th scrutinee's type is under the `i` binders before it)

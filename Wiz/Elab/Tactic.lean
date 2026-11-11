@@ -382,7 +382,7 @@ partial def reflectCtor (rc : RCtx R) (tag rest : Term R) (ty? : Option (VTy R))
     | _ => return none
   let some c := ls[i]? | return none
   let g ← globalsR
-  let cname := T ++ "." ++ c
+  let cname := ctorConst T c
   let some d := g.find? cname | return none
   let some sh := ctorShape? d | return none
   let parts := tupleParts rest

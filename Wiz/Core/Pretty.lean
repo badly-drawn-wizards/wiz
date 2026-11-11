@@ -138,7 +138,8 @@ partial def Term.prettyPrec (names : List Name) (prec : Nat) : Term R → String
     -- `.c f₁ … fₙ`: the payload ends with the index equation and `()`
     let fields := (tuple rest #[]).toList
     let fields := fields.take (fields.length - 2)
-    let c := s!".{ls[i]?.getD s!"#{i}"}"
+    -- (a `mutual` block's tag `A.c` is written `.c`, `ctorShort`)
+    let c := s!".{ctorShort (ls[i]?.getD s!"#{i}")}"
     if fields.isEmpty then c else app c fields
   | .con x => app "con" [x]
   | .ind _ _ _ _ P m i x => app "ind" [P, m, i, x]

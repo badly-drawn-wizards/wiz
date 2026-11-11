@@ -242,6 +242,20 @@ def modulesGroup : Group where
         let (s, _) := Query.elaborate (R := ZeroOneMany) {} src { init with termInfo := true }
         checkEq (some ("favA", "Color")) (Query.hoverAt s 21)
         check (s.messages.any fun m => (m.text.splitOn "inferred: Color").length > 1) s!"{s.messages.toList.map (·.text)}" },
+    { name := "a private mutual block's constructors are named per type (Ev.s, Od.s) and private (13b)", run := fun _ => do
+        let dir ← mkTree [("Q/M.wiz", "import Prelude\nimport Deriving\nprivate mutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\nprivate mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | Ev.s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | .s e => Nat.succ (evN e)\nend\ndef three : Nat := odN (Od.s (Ev.s (.s .z)))\ndef shown : String := Repr.repr (Ev.s (Od.s Ev.z))\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+        let cache ← IO.FS.createTempDir
+        let paths (src : String) : IO (List (String × CommandState ZeroOneMany)) := do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          pure [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                ("runFrontend", runFrontend src init)]
+        let src := "import Q.M\n#eval three\n#eval shown\ndef x := Od.s\n"
+        for (how, s) in ← paths src do
+          checkEq (how, "[4:10: error: 'Od.s' is private to module Q.M, 2:1: info: 3, 3:1: info: \"Ev.s (Od.s Ev.z)\"]")
+            (how, toString (s.messages.toList.map (·.render src))) },
     { name := "trust is part of a module's cache key (22f)", run := fun _ => do
         -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
         -- warnings and `#print axioms` of the one run are never replayed in the other

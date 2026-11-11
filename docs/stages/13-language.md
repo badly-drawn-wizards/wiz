@@ -10,7 +10,11 @@ Writing the lexer and parser in Wiz showed what the language lacked:
   parser's core is a mutual block, with no fuel.
 * **Mutual inductive types.** `mutual inductive A … inductive B … end` becomes one
   family indexed by a tag type, `A_B : A_B.Tag → Type`, with `def A := A_B .A`.
-  Recursion over a family at a concrete index (`SyntaxF .false`) works.
+  Recursion over a family at a concrete index (`SyntaxF .false`) works. The constructors
+  are named per member, as for a single inductive type: `A.c`, `B.c` (two members may
+  share a constructor name), and `.c` picks the expected member's; `deriving C` on a
+  member derives `C` for the family (`Repr` shows `A.c …`). The family's name is
+  internal.
 * **`match` without an expected type**, **tuple patterns** `(a, b, c)`, and `x |> f`.
 * Keywords of tactic syntax (`first`, `exact` …) are no longer reserved words.
 * The prelude has `Nat.lt` (native at runtime), `Nat.le`, `Nat.max`, `Bool.and/or/not`.

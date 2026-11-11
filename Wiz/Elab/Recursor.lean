@@ -137,7 +137,7 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
   -- constructor signatures: fields after the Δ binders, and the result's index args
   let mut cinfo : Array (Name × List (Name × BinderInfo × Term R × Term R) × List (Term R)) := #[]
   for c in ctors do
-    let some cd := g.find? (T ++ "." ++ c) | throw s!"missing constructor {c}"
+    let some cd := g.find? (ctorConst T c) | throw s!"missing constructor {c}"
     let (bs, res) := peelPis cd.type
     let fields := bs.drop nΔ
     cinfo := cinfo.push (c, fields, (Term.spine res).2.drop nΔ)
@@ -206,7 +206,7 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
               if isRec A then some (A, f, k) else none
             let rec ihs (rs : List (Term R × B R × Nat)) (σ' : Array (B R)) : B R :=
               match rs with
-              | [] => motApp mot ((idx.map (ofTele · σ)) ++ [app (closed (.const (T ++ "." ++ c) us)) σ.toList])
+              | [] => motApp mot ((idx.map (ofTele · σ)) ++ [app (closed (.const (ctorConst T c) us)) σ.toList])
               | (A, f, k) :: rs' =>
                 -- `A` lives in the context of Δ and the fields before it
                 let σk := σ.extract 0 (nΔ + k)
@@ -268,7 +268,7 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
             (if recLifts[k]? == some .hrec then FieldLift.hrec else FieldLift.none).unwrap (proj h k d)
           let σ := Δv ++ fs.toArray
           let idxB := idx.map (ofTele · σ)
-          let ctorApp := app (closed (.const (T ++ "." ++ c) us)) (Δv.toList ++ fs)
+          let ctorApp := app (closed (.const (ctorConst T c) us)) (Δv.toList ++ fs)
           let A := norm g (motApp mot (idxB ++ [ctorApp]))
           let tag : B R := upTag (closed (.tag ls ci))
           let Bty := motApp mot (unpack i ++ [conAt i (pair tag r)])
