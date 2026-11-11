@@ -84,7 +84,7 @@ partial def relocate (fallback : SourceInfo) (v : RVal) (s : Syntax) : Syntax :=
   let info : SourceInfo := match v with
     | .obj t fs =>
       let k := if t == 3 then 2 else 1
-      match fs[k]?, fs[k + 1]? with
+      match (fs[k]? : Option RVal), (fs[k + 1]? : Option RVal) with
       | some (.nat a), some (.nat b) => { start := a, stop := b }
       | _, _ => fallback
     | _ => fallback

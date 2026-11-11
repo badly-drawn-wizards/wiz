@@ -140,7 +140,7 @@ def accept (r w : IO.FS.Stream) (web : Option String := none) : IO Bool := do
     let some dir := web | return ← refuse "426 Upgrade Required"
     -- `GET /name?query HTTP/1.1`
     let target := ((line.drop 4).toString.splitOn " ").headD ""
-    let path := ((target.splitOn "?").headD "").toString
+    let path : String := (target.splitOn "?").headD ""
     let name := if path.startsWith "/" then (path.drop 1).toString else path
     let name := if name.isEmpty then "infoview.html" else name
     let some (_, mime) := webAssets.find? (·.1 == name) | return ← refuse "404 Not Found"
