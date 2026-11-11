@@ -62,9 +62,13 @@ git tag -a vX.Y.Z -m "Wiz vX.Y.Z" <commit>
 git push origin vX.Y.Z
 ```
 
-The tag push runs release.yml. Its `exercises` job builds the exercise tree, then
-`tarball` builds, tests and publishes the release `vX.Y.Z` with
-`wiz-x86_64-linux.tar.gz` and its `.sha256`. The release is not a pre-release.
+The tag push runs release.yml. Its `exercises` job builds the exercise tree. Then
+`tarball` builds and tests the tarball, runs the install smoke test with the tag's name,
+and publishes the release `vX.Y.Z` with `wiz-x86_64-linux.tar.gz` and its `.sha256`.
+The release notes are CHANGELOG.md's section `[X.Y.Z]` plus the install line; the step
+fails if the section is missing. If the release already exists (a re-run), the step
+fails rather than replace its assets. Delete a half-made draft release by hand before
+re-running. The release is not a pre-release.
 Snapshots are published with `--latest=false`, so the tag's release becomes "latest".
 Snapshot pruning keeps every snapshot that a `v*` tag points at.
 
