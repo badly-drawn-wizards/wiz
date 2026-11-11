@@ -121,9 +121,11 @@ structure CommandState (R : Type) where
 /-- "'n' has already been declared", naming the module that declared it if that is not
 the one being elaborated (two modules, or a module and the file importing it). -/
 def CommandState.alreadyDeclared (s : CommandState R) (n : Name) : String :=
+  let whose (m : String) : String := if m.isEmpty then "this file" else s!"module {m}"
   match s.declSites.get? n with
   | some (_, m) => if m == s.module then s!"'{n}' has already been declared" else
-    s!"'{n}' has already been declared, by {if m.isEmpty then "the importing file" else s!"module {m}"}"
+    -- (the message of the cache's replay, `Cache.Effect.apply`)
+    s!"'{n}' is declared by both {whose m} and {whose s.module}"
   | none => s!"'{n}' has already been declared"
 
 /-- (13b) The types that are opaque in the module being elaborated: declared in another
@@ -839,6 +841,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   let s ← get
   let report (sev : Severity) (info : SourceInfo) (text : String) : StateM (CommandState R) Unit :=
     modify fun s => { s with messages := s.messages.push { info, severity := sev, text } }
+  -- a second declaration of a name (code `duplicate-declaration`: an import reports it as it is)
+  let reportDup (info : SourceInfo) (n : Name) : StateM (CommandState R) Unit :=
+    modify fun s => { s with messages := s.messages.push { info, severity := .error, text := s.alreadyDeclared n,
+                                                           code := "duplicate-declaration" } }
   let reportErr (e : ElabError R) : StateM (CommandState R) Unit :=
     modify fun s => { s with messages := s.messages.push { info := e.info, severity := .error, text := e.msg, code := e.code } }
   -- the info tree of a declaration; its `trace`s become info messages
@@ -954,7 +960,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let typeStx := (cmd.getArg 4).args[1]?
     let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
     if s.globals.contains name then
-      report .error (cmd.getArg 1).info (s.alreadyDeclared name)
+      reportDup (cmd.getArg 1).info name
     else match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDeclTerms binders typeStx valStx cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) levelParams with
       | (.ok (ty, val), hv) =>
         addInfos hv
@@ -985,7 +991,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let name := ((d.getArg 1).getId?).getD "_"
       let levelParams := ((d.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
       if g.contains name then
-        report .error (d.getArg 1).info (s.alreadyDeclared name)
+        reportDup (d.getArg 1).info name
         return
       let some tyStx := typeOf d | report .error d.info "a partial definition needs a type"; return
       match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) g (elabDeclTerms (d.getArg 3).args (some tyStx) none d.info) levelParams with
@@ -1060,7 +1066,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
     if s.globals.contains name then
-      report .error (cmd.getArg 1).info (s.alreadyDeclared name)
+      reportDup (cmd.getArg 1).info name
     else
       let pats := (cmd.getArg 5).args.toList.filterMap fun a => (a.getArg 1).args[0]?
       let coinductiveOf? : Option (Name × List (Name × Bool)) :=
@@ -1086,7 +1092,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
     if s.globals.contains name then
-      report .error (cmd.getArg 1).info (s.alreadyDeclared name)
+      reportDup (cmd.getArg 1).info name
     else
       match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabCoinductive cmd levelParams) levelParams) with
       | .error e => report .error e.info e.msg
@@ -1112,7 +1118,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let name := ((cmd.getArg 1).getId?).getD "_"
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
     if s.globals.contains name then
-      report .error (cmd.getArg 1).info (s.alreadyDeclared name)
+      reportDup (cmd.getArg 1).info name
     else if let some f := (cmd.getArg 6).args.find? fun f => !(f.getArg 0).args.isEmpty then
       report .error f.info "a class's methods can't be private (make the class private instead)"
     else
@@ -1201,7 +1207,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let levelParams := ((cmd.getArg 2).getArg 1).args.toList.filterMap Syntax.getId?
     let ctorSpec := ((cmd.getArg 5).getArg 1)
     if s.globals.contains name then
-      report .error (cmd.getArg 1).info (s.alreadyDeclared name)
+      reportDup (cmd.getArg 1).info name
     else if cmd.isOfKind "command.structure" && !ctorSpec.args.isEmpty &&
         (ctorSpec.getArg 1).getId? != some "mk" then
       report .error (ctorSpec.getArg 1).info s!"a structure's constructor is `mk` (only `private mk ::` can be written)"
@@ -1482,7 +1488,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let name := ((cmd.getArg 1).getId?).getD "_"
     let binders := (cmd.getArg 2).args
     let body := ((cmd.getArg 6).getStr?).getD ""
-    if s.globals.contains name then report .error (cmd.getArg 1).info (s.alreadyDeclared name)
+    if s.globals.contains name then reportDup (cmd.getArg 1).info name
     else
       let elabTy := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
         (elabDeclTerms binders (some (cmd.getArg 4)) none cmd.info) []
@@ -1547,7 +1553,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let ctype := if (cmd.getArg 1).isNone then "wiz_s" ++ ((C.mangle name).drop 1).toString
       else (((cmd.getArg 1).getArg 0).getStr?).getD "_"
     let fields := (cmd.getArg 5).args
-    if s.globals.contains name then report .error (cmd.getArg 3).info (s.alreadyDeclared name)
+    if s.globals.contains name then reportDup (cmd.getArg 3).info name
     else if fields.isEmpty then report .error cmd.info "a c_struct needs at least one field"
     else if ctype.contains ':' || ctype.contains '|' || ctype.contains '<' || header.contains ':' || header.contains '|' then
       report .error cmd.info "c_struct: unexpected characters in the C type or header"
@@ -1611,7 +1617,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let cname := ((cmd.getArg 1).getStr?).getD "_"
     let header := if (cmd.getArg 2).isNone then "" else (((cmd.getArg 2).getArg 3).getStr?).getD ""
     let name := ((cmd.getArg 3).getId?).getD "_"
-    if s.globals.contains name then report .error (cmd.getArg 3).info (s.alreadyDeclared name)
+    if s.globals.contains name then reportDup (cmd.getArg 3).info name
     else
       let elabTy := runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
         (elabDeclTerms #[] (some (cmd.getArg 5)) none cmd.info) []

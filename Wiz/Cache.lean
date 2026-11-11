@@ -653,7 +653,8 @@ where
               -- commands were checked against its own declaration, not this file's
               if errs.any (·.code == "duplicate-declaration") then
                 -- (the code goes up with it: an importer of an importer is dropped too)
-                s := { s with messages := s.messages.push { msg with code := "duplicate-declaration" } ++ warns,
+                let dup := (errs.find? (·.code == "duplicate-declaration")).map (·.text) |>.getD msg.text
+                s := { s with messages := s.messages.push { msg with text := dup, code := "duplicate-declaration" } ++ warns,
                               imported := m :: s.imported, pristine := false }
               else
               s := { inner with messages := (if errs.isEmpty then s.messages else s.messages.push msg) ++ warns,
