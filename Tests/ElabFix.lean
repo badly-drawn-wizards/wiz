@@ -180,8 +180,8 @@ def group : Group where
     { name := "the unifier meets an equation with its computed form (unify-computed-equations)", run := fun _ =>
         okOptic ("import Optic\n" ++
           "def t3 (x : Nat) (xs ys : List Nat) (h : xs = ys) : List.cons x xs = List.cons x ys :=\n" ++
-          "  Optic.congrArg (List.cons x) h\n" ++
-          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Optic.congrArg Nat.succ h") },
+          "  Eq.congrArg (List.cons x) h\n" ++
+          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Eq.congrArg Nat.succ h") },
     -- agent/elab-stretch
     { name := "numerals and notation in class field types (numerals-in-class-decls)", run := fun _ =>
         okLib ("import Prelude\ninductive HwTy where\n  | bits (n : Nat)\nclass Hw (r : HwTy → Type) where\n" ++
@@ -508,6 +508,12 @@ def group : Group where
           "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
           "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
           "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
+    { name := "an equation at a product type: η for projected holes, stale casts (cohesion-hardware)", run := fun _ =>
+        -- `Eq.congrArg f e`/`fstEq e` with `e : f y = (y, y)`: the expected `?p = ?q` computes
+        -- to `(?p.1 = ?q.1) × …` and `?q.1 =?= y` is solved by η (`?q := (?a, ?b)`); a cast
+        -- computed while the second component's type was a hole is dropped once its two
+        -- types are the same (it would compute away)
+        okLibs "import Logic\ndef fstEq {A B : Type} {p q : (_ : A) × B} (e : p = q) : p.1 = q.1 := Eq.congrArg (fun (r : (_ : A) × B) => r.1) e\ndef t1 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y := fstEq (h y)\ndef t2 (f : Nat → (_ : Nat) × Nat) (y : Nat) (h : f y = (y, y)) : (f y).1 = y := fstEq h\ndef t3 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y :=\n  Eq.congrArg (fun (r : (_ : Nat) × Nat) => r.1) (h y)\n" },
     { name := "pruning: a `let` of an inferred `match` (icestick-cpu C6)", run := fun _ =>
         -- the match's type `?T n` meets `List (?A n x✝)` from a branch, where `x✝` (the
         -- scrutinee) is in scope: `?A` can't depend on `x✝`, so it is pruned to `?A' n`
@@ -516,12 +522,6 @@ def group : Group where
           "def size2 (n : Nat) : List String :=\n  let s := match Nat.lt 256 n with\n" ++
           "    | .true => List.nil\n    | .false => List.cons \"small\" List.nil;\n  List.append s s\n" ++
           "#eval size 300\n#eval size2 3") [".cons \"big\" (.cons \"big\" .nil)", ".cons \"small\" (.cons \"small\" .nil)"] },
-    { name := "an equation at a product type: η for projected holes, stale casts (cohesion-hardware)", run := fun _ =>
-        -- `Eq.congrArg f e`/`fstEq e` with `e : f y = (y, y)`: the expected `?p = ?q` computes
-        -- to `(?p.1 = ?q.1) × …` and `?q.1 =?= y` is solved by η (`?q := (?a, ?b)`); a cast
-        -- computed while the second component's type was a hole is dropped once its two
-        -- types are the same (it would compute away)
-        okLibs "import Logic\ndef fstEq {A B : Type} {p q : (_ : A) × B} (e : p = q) : p.1 = q.1 := Eq.congrArg (fun (r : (_ : A) × B) => r.1) e\ndef t1 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y := fstEq (h y)\ndef t2 (f : Nat → (_ : Nat) × Nat) (y : Nat) (h : f y = (y, y)) : (f y).1 = y := fstEq h\ndef t3 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y :=\n  Eq.congrArg (fun (r : (_ : Nat) × Nat) => r.1) (h y)\n" },
     { name := "a `match` bound by `←` in a `do` block gets its type from its alternatives (do-match-expected-type)", run := fun _ =>
         -- the goal `M ?A`: its universe comes from `?A`'s (an implicit `{A : Type}`), and
         -- the scrutinee isn't abstracted inside `?A b` (that would leave the pattern fragment)
@@ -564,7 +564,120 @@ def group : Group where
         -- without an expected type the motives can't be inferred: an error, not a panic
         -- (since agent/elab-bugs the inner `Ex.intro` waits for nothing better and no
         -- ill-typed guess is made: `rfl` meets the unsolved motive `?P ?w`)
-        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" }
+        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" },
+    { name := "a failing unification under a binder fails fast (wiz-reals S1: one unfolding order per layer)", run := fun _ =>
+        -- each `Int.ofPair` is `Nat.sub` five definitions deep; trying both unfolding orders
+        -- at every layer took 17 s
+        failsLibsWithin 8 ("import Int\nimport Logic\n" ++
+          "def Int.ofPair (a b : Nat) : Int := Int.subNatNat a b\n" ++
+          "axiom ofPair_negate (a b : Nat) : -(Int.ofPair a b) = Int.ofPair b a\n" ++
+          "axiom ofPair_add (a b c d : Nat) : Int.ofPair a b + Int.ofPair c d = Int.ofPair (a + c) (b + d)\n" ++
+          "def r (a b c d : Nat) : Int.ofPair a b + -(Int.ofPair c d) = Int.ofPair (a + d) (b + c) :=\n" ++
+          "  Eq.trans (Eq.congrArg (fun y => Int.ofPair _ _ + y) (ofPair_negate _ _)) (ofPair_add _ _ _ _)\n")
+          "outside the pattern fragment" },
+    -- agent/bugfix-elab
+    { name := "a module reaching a duplicate declaration through an import stops there: an error, not a run of its macros (dup-import-macro-panic)", run := fun _ => do
+        -- `DupMap` declares lib/Text.wiz's `List.map`; lib/Deriving.wiz imports Text and then
+        -- runs its derivers (`deriving instance … for Bool, Option, List`). Text is dropped
+        -- for the clash: Deriving's later commands, replayed from its own isolated run,
+        -- once ran without it, and the macro interpreter panicked
+        let lib ← libLoader
+        let dup := "import Prelude\ndef List.map {A B : Type} (f : A → B) : List A → List B\n" ++
+          "  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\n"
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "DupMap" then some dup else lib m }
+        for src in ["import DupMap\nimport Deriving\n", "import DupMap\nimport Hdl.Core\ndef x : Nat := 1\n"] do
+          for (how, st) in [("runFrontend", runFrontend src init), ("wiz check", ← Cache.elaborateUncached src init)] do
+            let errs := (st.messages.filter (·.severity == .error)).map (·.text)
+            check (errs.any (·.startsWith "'List.map' is declared by both module DupMap and module Text"))
+              s!"{how}: {src}: {errs}" },
+    { name := "soundness: a lemma about lib/Text's List.map never meets another module's List.map (dup-import-macro-panic)", run := fun _ => do
+        -- `BadMap.List.map` returns `.nil`; `M` (and `N`, through `M`) prove
+        -- `List.map id [x] = [x]` about Text's. Replayed next to BadMap's, that lemma would
+        -- give `[] = [0]`. On every path (the cache cold and warm, without it, the
+        -- frontend) the module that reaches the clash is dropped, or re-checked
+        let lib ← libLoader
+        let mods : List (Name × String) := [
+          ("BadMap", "import Prelude\ndef List.map {A B : Type} (f : A → B) (xs : List A) : List B := .nil\n"),
+          ("M", "import Prelude\nimport Text\ndef lem (x : Nat) : List.map (fun (y : Nat) => y) (List.cons x List.nil) = List.cons x List.nil := rfl\n"),
+          ("N", "import M\ndef lem2 (x : Nat) : List.map (fun (y : Nat) => y) (List.cons x List.nil) = List.cons x List.nil := lem x\n")]
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => (mods.lookup m).orElse fun _ => lib m }
+        let cache ← IO.FS.createTempDir
+        let bad := "def bad : (List.nil : List Nat) = List.cons 0 List.nil := "
+        for src in ["import BadMap\nimport M\n" ++ bad ++ "lem 0\n", "import BadMap\nimport N\n" ++ bad ++ "lem2 0\n",
+                    "import N\nimport BadMap\n" ++ bad ++ "lem2 0\n", "import M\nimport BadMap\n" ++ bad ++ "lem 0\n"] do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          for (how, st) in [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                            ("runFrontend", runFrontend src init)] do
+            check (st.messages.any fun m => m.severity == .error && (m.text.splitOn "is declared by both").length > 1)
+              s!"{how}: no clash reported for\n{src}"
+            check (!st.globals.contains "bad") s!"{how}: [] = [0] was accepted for\n{src}"
+        IO.FS.removeDirAll cache },
+    { name := "a module kept from an isolated run is kept per pp.notation setting, and the other Globals options (isokey-settings)", run := fun _ => do
+        -- the first run keeps Prelude's isolated state (with notation on); the second, with
+        -- notation off from the start (`wiz check --pp-all`), once got that state, notation on
+        let loader ← preludeLoader
+        let src := "import Prelude\n#check [1]\n"
+        let texts (s : CommandState ZeroOneMany) := s.messages.toList.map (·.text)
+        let on := runFrontend src ({ loader, trustedModule := Tests.libModule } : CommandState ZeroOneMany)
+        checkEq (repr ["[1] : List Nat"]).pretty (repr (texts on)).pretty
+        let off := runFrontend src ({ loader, trustedModule := Tests.libModule, globals := { pp := { useNotation := false } } } : CommandState ZeroOneMany)
+        checkEq (repr ["List.cons Nat 1 (List.nil Nat) : List Nat"]).pretty (repr (texts off)).pretty
+        -- and the options the key didn't have: each gives its own key
+        let base : CommandState ZeroOneMany := { loader, trustedModule := Tests.libModule }
+        let k := isoKey base "Prelude"
+        check k.isSome "no key for an initial state"
+        for (opt, st) in [("pp.notation", { base with globals := { pp := { useNotation := false } } }),
+                          ("pushCalls", { base with globals := { pushCalls := false } }),
+                          ("strictPrivacy", { base with globals := { strictPrivacy := true } }),
+                          ("quoteErasesProofs", { base with globals := { quoteErasesProofs := true } }),
+                          ("assumed", { base with globals := { assumed := [("a", "b")] } })] do
+          check (isoKey st "Prelude" != k) s!"{opt} is not in isoKey" },
+    { name := "a recursive `def … := match` on its parameters is its equations (def-match-recursion)", run := fun _ => do
+        okLib ("import Prelude\n" ++
+          -- the match on the second parameter, under a `fun`, and directly
+          "def Fe.f (x : Nat) : List Nat → Nat := fun ps => match ps with\n  | .nil => x\n  | .cons _ t => Fe.f x t\n" ++
+          "def Fe.g (x : Nat) (ps : List Nat) : Nat := match ps with\n  | .nil => x\n  | .cons _ t => Nat.succ (Fe.g x t)\n" ++
+          -- a parameter after the scrutinee, and the scrutinee used in a right-hand side
+          "def Fe.h (ps : List Nat) (acc : Nat) : Nat := match ps with\n  | .nil => acc\n  | .cons _ t => Fe.h t (Nat.succ acc)\n" ++
+          "def Fe.len (ps : List Nat) : Nat := match ps with\n  | .nil => 0\n  | .cons _ t => Nat.succ (Fe.len t)\n" ++
+          "def Fe.k (ps : List Nat) : Nat := match ps with\n  | .nil => 0\n  | .cons _ t => Nat.add (Fe.len ps) (Fe.k t)\n" ++
+          -- two scrutinees
+          "def Fe.zip (xs : List Nat) (ys : List Nat) : Nat := match xs, ys with\n  | .cons _ a, .cons _ b => Nat.succ (Fe.zip a b)\n  | _, _ => 0\n" ++
+          "#eval Fe.f 7 (.cons 1 (.cons 2 .nil))\n#eval Fe.g 7 (.cons 1 (.cons 2 .nil))\n#eval Fe.h (.cons 1 (.cons 2 .nil)) 5\n" ++
+          "#eval Fe.k (.cons 1 (.cons 2 .nil))\n#eval Fe.zip (.cons 1 (.cons 2 .nil)) (.cons 3 .nil)\n")
+          ["7", "9", "7", "3", "1"]
+        -- not structurally recursive: the equations' error
+        failsLib "import Prelude\ndef f (ps : List Nat) : Nat := match ps with\n  | .nil => 0\n  | .cons _ t => f ps\n"
+          "recursive call of f on ps" },
+    { name := "a recursive call in a plain `def … :=` that isn't a match on its parameters says what's wrong (def-match-recursion)", run := fun _ => do
+        failsLib "import Prelude\ndef Fe.f (x : Nat) : Nat := Nat.succ (Fe.f x)\n"
+          "recursive call to Fe.f in a definition without equations"
+        failsLib "import Prelude\ndef f (x : Nat) (ps : List Nat) : Nat := Nat.add 1 (match ps with\n  | .nil => x\n  | .cons _ t => f x t)\n"
+          "recursive call to f in a definition without equations"
+        -- a local of that name is still a local
+        okLib "import Prelude\ndef f (x : Nat) : Nat := let f := x; f\n" },
+    { name := "a match on a structure with a field at quantity 0 binds it at 0 (struct-erased-field-match)", run := fun _ => do
+        let hdr := "import Prelude\nstructure S0 where\n  0 n : Nat\n  m : Nat\n"
+        okLib (hdr ++ "def s0mt (s : S0) : Nat := match s with\n  | .mk n m => m\n" ++
+          "def s0a (s : S0) : Nat := match s with\n  | ⟨_, m⟩ => Nat.succ m\n" ++
+          -- the erased field in an erased position (a type)
+          "def s0t (s : S0) : Type := match s with\n  | .mk n m => Nat\n" ++
+          "#eval s0mt (S0.mk 3 4)\n") ["4"]
+        -- used at runtime it is an error (not a projection at ω behind the user's back)
+        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#250: the body of an impossible arm is type checked; an empty match", run := fun _ => do
+        let hdr := "import Prelude\ninductive T : Bool → Type where\n  | mk : T .true\n"
+        failsLibW (hdr ++ "def f (t : T .false) : False := match t with\n  | .mk => \"hello\"\n") "type mismatch"
+        -- a well-typed body on an impossible arm is still accepted
+        okLib (hdr ++ "def f (t : T .false) (h : False) : False := match t with\n  | .mk => h\n")
+        -- no arms when every case is impossible
+        okLib (hdr ++ "def f (t : T .false) : False := match t with\n" ++
+          "def g : T .false → False := fun t => match t with\n" ++
+          "def h (n : Nat) : (b : Bool) → T b → b = .false → Nat\n  | _, .mk, e => absurd e.1\n" ++
+          "def k : {b : Bool} → T b → b = .false → False\n  | _, .mk, e => absurd e.1\n")
+        failsLibW (hdr ++ "def f (t : T .true) : False := match t with\n") "missing case for constructor mk"
+        failsLibW (hdr ++ "def g : (b : Bool) → T b → False := fun b t => match t with\n") "missing case for constructor mk" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
