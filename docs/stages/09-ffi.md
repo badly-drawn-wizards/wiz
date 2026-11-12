@@ -20,6 +20,8 @@ def main : IO Unit := do
   function. Marshalling follows `T`: `Nat` and `UInt64` ↔ `uint64_t`, `Float64` ↔
   `double`, `String` ↔ UTF-8 `char*`, `Bool` ↔ `int`, `Unit` ↔ `void`; a result in `IO`
   takes and returns the world. The backends emit a C wrapper per foreign function.
+  A foreign function returning `Unit` must be in `IO` (`… → IO Unit`): a pure call whose
+  result is `Unit` carries nothing, so compiled code may drop it, effect and all (4h).
   Without a header, a prototype is generated from the Wiz type.
 * `UInt64` and `Float64` are axioms whose operations are runtime functions, bound
   with `extern` (boxed raw words at runtime). The kernel doesn't compute with them.
