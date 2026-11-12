@@ -38,14 +38,14 @@ Run Wiz without a checkout, with the binaries from the public Cachix cache:
 
 ```sh
 cachix use badlydrawnwizards
-nix run github:badly-drawn-wizards/wiz#wiz -- check hello.wiz   # `#grail` for grail
+nix run github:wiz-pl/wiz#wiz -- check hello.wiz   # `#grail` for grail
 ```
 
 Or install toolchains with **tower** (like elan/rustup: `wiz` and `grail` shims on
 `PATH`, a `wiz-toolchain` file per project; [docs/stages/26-tower.md](docs/stages/26-tower.md)):
 
 ```sh
-nix profile install github:badly-drawn-wizards/wiz#tower
+nix profile install github:wiz-pl/wiz#tower
 tower --self ~/.nix-profile/bin/tower self install   # shims in ~/.tower/bin: put it on PATH
 tower default nightly
 ```

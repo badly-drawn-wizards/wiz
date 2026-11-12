@@ -203,3 +203,48 @@ The self-hosted backend does the same for its own input (small case-shaped funct
 inlined with lazy arguments, branch `agent/selfhost-demand-d`); `&&` and `||` as macros
 that expand to matches (`agent/prelude-batch`) need neither.
 
+
+### 15i: closed definitions are computed once (CAFs) ✅
+
+A top-level definition without parameters after erasure, such as a table
+`def Fx.fontT : RomT := RomT.build 7 Fx.font`, compiled to a function that computed its
+body again at every use: in the value simulation of the OLED demo that rebuilt the font
+and program ROMs every simulated cycle. Now, as for GHC's and Lean's *constant applicative
+forms*, both native backends (C and LLVM) compute such a value **on its first use** and
+keep it for the rest of the run:
+
+* `IR.cafs` (`Wiz/Compiler/IR.lean`) picks the definitions without parameters whose body
+  does work (allocates or calls a function with parameters). Not cached: `wiz.entry`, the
+  closures of exported functions, the wrappers of foreign functions, and bodies that only
+  return a scalar or another constant (`def tab := table`). The hoisted literal constants
+  of 20f (`wiz.const.k`) are now just CAFs, cached by LLVM too.
+* The function reads a slot (one atomic load) and returns the value; while the slot is
+  empty it calls `wiz_caf_init` (`runtime/wiz.c`), which runs the body, makes the result
+  **immortal** (rc 0: never counted, never freed, not a leak) and publishes it with a
+  compare-and-swap. Threads may race to build it: the first wins, a loser's copy stays
+  immortal and unused.
+* Lazily, never at startup: a definition used only in a branch that is never taken is
+  never computed, even one that diverges or fails (an axiom). A definition that uses itself
+  while it is being built builds itself again, as before: it loops exactly when it looped
+  before.
+* An `IO A` is a function of the world: its value is a closure (or the definition has the
+  world as a parameter), so caching it doesn't run it; it runs at each use. Erased
+  definitions (proofs, types) are not compiled at all, and function values (a partial
+  application) are cached as closures.
+* `wiz_immortal` now walks every kind of object (closures, suspensions, arrays, maps,
+  numbers …), with an explicit stack (a constant may be a long list), instead of only
+  constructors. An immortal memoised suspension (inside a constant, so visible to every
+  thread) is forced under the suspension lock, like one shared between threads, and its
+  value made immortal.
+
+The cost is the GHC one: a constant that is large and used once stays in memory until the
+program ends, and an immortal value is never unique, so it is copied, not updated in place.
+
+Benchmark: `examples/closed-table-bench.wiz` (a 256-entry table and a ROM tree built from
+it, read in a loop; `/workspace/wiz-tools/bench/closed-table`). Informal, 100000 lookups:
+8.1 s with the table rebuilt at each use, 0.08 s cached.
+
+Tests: groups `backend` (which definitions are cached), `c` and `llvm` (a table in a
+loop, a diverging and a failing constant in an untaken branch, a memoised suspension, a
+big number, erased definitions, self-referential codata, no leaks; an `IO` constant run
+four times), `conc` (eight threads first using a table and a suspension in it at once).
