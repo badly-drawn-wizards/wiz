@@ -187,6 +187,49 @@ Not done: shifts by a signal (a barrel shifter needs a `NetOp`), signed comparis
 arithmetic shift, ASCII spellings of `≤ᵤ` …, `&&`/`||` on signals (they are `if`s whose
 other branch is a `Bool`).
 
+## H14 C1: traces, the common semantics (`lib/Trace.wiz`) ✅
+
+One semantics for everything that runs step by step (design:
+`/workspace/wiz-notes/cohesion-hardware.md`, 2.1). A trace is a function, `Trace A :=
+Nat → A` (equality is pointwise and computes; a ν-stream's is stuck), and a Mealy machine
+is a step `Mealy S I O := S → I → S × O`, run along an input trace by
+`Mealy.stateAt m s0 xs t` and `Mealy.outAt`. `Mealy.run` is the finite run on a list and
+`Mealy.run_take` says it is a prefix of the infinite one. Proof rules on the trace:
+`Mealy.invariant` (an inductive invariant under an environment assumption) and
+`Mealy.simulates`/`simulatesOut` (refinement by a representation map, one step as the
+premise). `Trace.tail`, `map`, `zip`, `cons`, `const`, `once`, `ofList`, `take`.
+
+A circuit is such a machine: `Circuit.mealy c` (its step at values),
+`Circuit.trace c xs : Trace (El o)`, `Circuit.stateAt`, `Circuit.obs` (state and input
+per cycle, what temporal formulas are about), and `Circuit.run_take`:
+`Circuit.run c (Trace.take n xs) = Trace.take n (Circuit.trace c xs)`, so what a
+simulation prints is what a theorem about the trace says. The temporal logic (H14 T)
+builds on these.
+
+## H14 C3: memories (`HwTy.mem`) ✅
+
+The toy CPU's finding C1 (no memories: a ROM as a chain of multiplexers, RAM as
+flip-flops). A memory is a code, `HwTy.mem aw dw` (2^aw words of dw bits), and at values
+a function `BitVec aw → BitVec dw`, so reasoning about it is pointwise. `Hw.memRead m a`
+reads a word (combinationally); `Hw.memWrite m we a d` is the memory with word `a`
+replaced by `d` when `we` is high. A memory that is part of a circuit's state takes the
+writes of its next value at the clock edge; a read of the written value in the same
+cycle sees the write (the netlist adds the bypass). `Hw.const (HwTy.mem aw dw) f` is a
+ROM. Lemmas: `HwTy.El.memRead_write_miss` (another address: the old word),
+`memRead_write_hit`, `memRead_write_off`. A reset leaves the contents alone
+(`HwTy.El.resetToAt`, as block RAM does; `Circuit.stepEl_withReset` states it), a clock
+enable gates the writes.
+
+In the netlist a memory is a `NetMem` (name, widths, initial contents, its writes in
+order) read by `memRead k` nodes; the simulator keeps its contents in a trie. Verilog: an
+array with an `initial` block, reads `m[addr]`, the writes in one `always` block (a later
+write wins). yosys maps a memory whose read data (or address) goes through a register to
+iCE40 block RAM (`SB_RAM40_4K`): `examples/hdl-mem.wiz` (a 16×8 RAM with a registered read,
+a ROM; checked by Icarus and yosys in group `hdl` when they are on PATH). Small ROMs
+become LUTs, a 256-word one block RAM. What the netlist cannot express is listed in
+`Netlist.errors` and printed as `// error:` lines: a choice between two different
+memories, a memory in a port, a state memory replaced instead of written.
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
