@@ -10,6 +10,10 @@ Section numbers (`4c`, `22e`, …) refer to the stage docs: section `NNx` is in
 
 ## [Unreleased]
 
+* tower: a `wiz-toolchain.local` next to `wiz-toolchain` (uncommitted; add it to
+  `.gitignore`) overrides it with a spec or a path to a toolchain directory or built
+  checkout; the shims, `which` and `show` honour it (26a, #281).
+
 ## [0.1.0] - unreleased (draft)
 
 The first tagged release. Everything below is new in it; it collects stages 1–26 and the
