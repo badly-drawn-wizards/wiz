@@ -282,7 +282,10 @@ def kernelOpt : List String → Except String (Regularity × Bool × List String
   | [] => return (.off, false, [])
 
 def main (args : List String) : IO UInt32 := do
-  if args == ["--version"] then IO.println (← versionLine "wiz"); return 0
+  -- (after the toolchain flags: the tarball's and tower's wrappers put `-I LIB` and
+  -- their flags before the user's arguments)
+  if ((({} : Toolchain).parseFlags args).2) == ["--version"] then
+    IO.println (← versionLine "wiz"); return 0
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   -- (26f) a release toolchain's own C compiler, GMP and GC are the defaults
