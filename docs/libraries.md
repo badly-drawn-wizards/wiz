@@ -131,10 +131,61 @@ def top : Circuit In.code Out.code := Circuit.bundled Tx.bundle In.bundle Out.bu
   (importers keep `List.map` and the like); the netlist types are `NetOp`, `NetNode`,
   `NetReg`, `NetPort`. (`<+>` stays.)
 
-Not done: module hierarchy in the Verilog, enumerations at `HwTy`, numerals and operators
-at `r (bits n)` (instances of the numeric classes, when they land: `Add`, `Sub`, `Mul`,
-`Neg`, `OfNat` at `r (HwTy.bits n)` through `Hw`), wire names from `let` binders (an
-elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
+Not done: module hierarchy in the Verilog, enumerations at `HwTy`, wire names from `let`
+binders (an elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
+(Numerals and operators: H14 S2.)
+
+## H14 S2: operator notation for signals ✅
+
+Signals are written with operators: `c + 1`, `x &&& ~~~y`, `s.left === 0`,
+`if go then 10 else if tick then s.left - 1 else s.left`, instead of
+`Hw.add c (Hw.lit 7 1)` …, `Hw.mux go (Hw.lit 4 10) (Hw.mux tick …)`.
+`examples/hdl-operators.wiz` shows each design both ways.
+
+| notation (at `r (HwTy.bits n)`, `[Hw r]`) | meaning | precedence |
+|---|---|---|
+| numeral `k` | `Hw.lit n k`: the width from the type | |
+| `a + b`, `a - b`, `a * b`, `-a` | `Hw.add`, `Hw.sub`, `Hw.mul`, `0 - a` | 65, 65, 70, 75 |
+| `a &&& b`, `a ^^^ b`, `a \|\|\| b`, `~~~a` | `Hw.and`, `Hw.xor`, `Hw.or`, `Hw.not` | 60, 58, 55, max |
+| `a <<< k`, `a >>> k` (`k : Nat`) | logical shifts by a fixed number of places: wiring (`Hw.shl`, `Hw.lshr`) | 75 |
+| `a <ᵤ b`, `a ≤ᵤ b`, `a >ᵤ b`, `a ≥ᵤ b` | unsigned comparisons, one bit (`Hw.ult`, `Hw.ule`, `Hw.ugt`, `Hw.uge`) | 62 |
+| `a === b`, `a =/= b` | equality, inequality, one bit (`Hw.eq`, `Hw.neq`) | 61 |
+| `if c then a else b` (`c : r HwTy.bit`) | `Hw.mux c a b`, at any `r t` | |
+
+* **Classes.** `+ - * -x` and numerals are the numeric classes (`Add` … `OfNat`, HD9).
+  The bitwise operators are new classes in the prelude, as in Lean: `AndOp`, `OrOp`,
+  `XorOp`, `Complement`, `ShiftLeft`, `ShiftRight`, with instances for `Nat`, `UIntN w`
+  (and so `BitVec n`) and signals. The shifts take the amount as a `Nat`: a fixed amount
+  is what hardware shifts by wiring (a concatenation with `k` zeros and a slice; no
+  shifter; by `n` or more places, `0`).
+* **Comparisons are the HDL's own.** They return a 1-bit signal, not a `Bool`, so they are
+  not `==`/`<` (Chisel makes the same choice: `===`, `=/=`), and they are unsigned (`ᵤ`,
+  leaving room for signed ones). As in Verilog they bind tighter than the bitwise
+  operators: `idle &&& s.cnt === 9` needs no parentheses.
+* **`if` on a signal.** `if c then a else b` is a `match` on a `Bool` (13c). When the
+  condition's type is not a data type and has an instance `Mux C C` (the prelude's class
+  `Mux C A`, whose HDL instance is `Mux (r HwTy.bit) (r t)`), the elaborator makes it
+  `Mux.mux c a b` instead (`ifMux?` in `Wiz/Elab/Term.lean`), at an instance `Mux C A`
+  for the branches' type `A`. Every other condition (a `Bool`, an unsolved type, `Nat`, a
+  type without a `Mux` instance) takes the ordinary path, with its messages, and
+  `if b then rfl else rfl` still refines the goal. A branch that is a numeral (or an `if`
+  of numerals) is elaborated after the other, so `if t then 0 else c + 1` gets its width
+  from `c`.
+* **Constants of the expected width.** A numeral is a literal; a meta-level `Nat`
+  expression is `Hw.ofNat e` (`c === Hw.ofNat (n - 1)`), whose width comes from the type.
+* **Same circuits.** The instances are the `Hw` operations, so a circuit written with the
+  operators has the netlist and the Verilog of the one written with `Hw.add` …, byte for
+  byte (`examples/hdl-operators.wiz`; also the iCEstick UART's `txStep` and `rxStep`
+  rewritten). Associativity matters for that: `a &&& b &&& c` is `(a &&& b) &&& c`, a
+  different (equivalent) netlist from `Hw.and a (Hw.and b c)`.
+* **Printing.** The operators print back as written (11r): `fun x y => if x === y then
+  x + 1 else x <<< 2 &&& ~~~y`. `Mux.mux` and `Hw.mux` print as `if`; and a numeral at any
+  type other than `Nat` (`OfNat.ofNat A n _`) now prints as the numeral, for `Int` and
+  words too (`fun x => x + 1 : Int → Int`).
+
+Not done: shifts by a signal (a barrel shifter needs a `NetOp`), signed comparisons and
+arithmetic shift, ASCII spellings of `≤ᵤ` …, `&&`/`||` on signals (they are `if`s whose
+other branch is a `Bool`).
 
 ## Logic, heap predicates and Hoare triples ✅
 
@@ -145,6 +196,16 @@ laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpret
 `lib/HoareTactics.wiz` (SLF-style automation: `xsimpl`, `xpull`, `xstep`, `xapp`, …) and
 `lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
 freeing a list). See [stage 24](stages/24-separation-logic.md).
+
+`lib/Ref.wiz` puts mutable cells in `IO` under linear points-to tokens (plan CS7b). A
+location `l : Loc V` is an ordinary value. Owning the cell is a separate token `Pts l v`
+at quantity 1, so one owner per cell, no leak, no double free and no use after free are
+all type errors. The token's ghost index is the cell's value, so a function's type is its
+Hoare triple: `swap : (1 tp : Pts p a) → (1 tq : Pts q b) → (1 k : (1 tp : Pts p b) →
+(1 tq : Pts q a) → IO B) → IO B`. `Ref.get` hands back the value with an erased proof
+that it is the index. The trusted part is the four natives `wiz_ref_*` (runtime/wiz.c,
+over MVar cells) and their types, kept true by an invariant the API maintains; the header
+of lib/Ref.wiz has the argument. Compiled code only.
 
 ## Owned handles (`lib/Handle.wiz`) ✅
 
