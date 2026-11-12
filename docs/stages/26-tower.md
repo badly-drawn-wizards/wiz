@@ -12,7 +12,7 @@ A **spec** names a toolchain:
 
 | spec | means |
 |---|---|
-| `nightly` | the tip of the branch `nightly-ref` (default `master`) |
+| `nightly` | the commit of the tag `nightly` (the newest commit of `nightly-ref`, default `master`, whose CI passed, 26g); without that tag, the tip of `nightly-ref` |
 | `stable` | the highest `vX.Y.Z` tag |
 | `v0.2.0`, `my-branch`, a commit | that tag, branch or commit |
 | `REF@COMMIT` | that commit (`master@6f29a0a…`); the ref is a label |
@@ -126,7 +126,7 @@ compiler you are working on.
 
 **With Nix**: the package (`packages.tower`) contains tower and the `wiz` and `grail`
 shims, which call that same tower; installing it puts all three on `PATH`:
-`nix profile install github:badly-drawn-wizards/wiz#tower` (or `home.packages` /
+`nix profile install github:wiz-pl/wiz#tower` (or `home.packages` /
 `environment.systemPackages`), then `tower default nightly`. Nix installs only tower and
 the shims: the toolchains are installed by tower into `~/.tower` (with `tower set source
 release` they come from the release tarballs and never from Nix). The package adds git,
@@ -134,7 +134,7 @@ tar and curl to tower's `PATH`; `nix` and `lake` are yours. `tower self shims` i
 there for shims in `~/.tower/bin` (they then call the tower given with `--self`).
 
 **With the install script** (no Nix):
-`curl -sSfL https://raw.githubusercontent.com/badly-drawn-wizards/wiz/master/scripts/tower-init.sh | sh`
+`curl -sSfL https://raw.githubusercontent.com/wiz-pl/wiz/master/scripts/tower-init.sh | sh`
 (or `| sh -s -- v0.2.0` for a tag). It downloads the tarball, runs `tower self install`
 and then `tower default nightly`.
 
@@ -239,9 +239,29 @@ What Lean ships, for comparison (lean-4.35.0-linux): clang, ld.lld, libLLVM and
 libclang-cpp, compiler-rt, a link-only glibc 2.26 and static `libgmp.a`/`libuv.a`, but no
 libc headers (Lean's C needs only `lean.h`) and no `llc`. Wiz's runtime and `import_c`
 need libc headers, so the bundle has a whole sysroot, with headers and libraries of the
-same glibc. The clang is Lean's own, so its LLVM follows `lean-toolchain`. Every
-download is pinned by its sha256. The options weighed (zig cc, tcc) are in
-/workspace/wiz-notes/toolchain-cc.md.
+same glibc. The clang is Lean's own, so its LLVM follows `lean-toolchain`. The options
+weighed (zig cc, tcc) are in /workspace/wiz-notes/toolchain-cc.md.
+
+**Downloads.** `scripts/bundle-cc.sources` lists the five outside files (three Ubuntu
+.debs, GMP and the Boehm GC) with their sha256 and URLs. Each file is tried from each
+URL in turn, with retries, and is kept only if its hash matches. The .debs are tried
+on four Ubuntu mirrors (archive.ubuntu.com, mirrors.kernel.org, Princeton, RWTH
+Aachen), GMP on ftp.gnu.org, ftpmirror.gnu.org and gmplib.org, and the GC on GitHub and
+hboehm.info. The last place tried for every file is this repository's release
+`bundle-inputs`. On master pushes the release job copies the downloads there (`gh
+release upload` of any file missing). The job also caches the downloads, keyed by the
+sources file's hash, so rebuilding the bundle after a change to `bundle-cc.sh` needs no
+outside server. A master run once failed because archive.ubuntu.com was unreachable,
+which is why there are mirrors.
+
+**Licences in the tarball.** `share/wiz/` has `LICENSE` (GPL-3.0), `COPYING.RUNTIME`
+and `NOTICE` (`scripts/release-licenses/NOTICE`). The NOTICE lists what is linked into
+wiz, grail and tower: the Lean runtime (Apache-2.0), mimalloc and libuv (MIT), libc++
+(Apache-2.0 with LLVM exception), static GMP (LGPL-3.0+) and glibc. It also lists what
+the bundled C toolchain contains, and says that the programs it builds link GMP
+statically, with the LGPL's relinking terms. `share/wiz/LICENSES/` has the texts: Lean's
+`LICENSE` and its third-party `LICENSES` file (LLVM, glibc, GMP), plus libuv's and
+mimalloc's. The bundle's own texts are in `share/wiz/cc/LICENSES/`.
 
 **Defaults, not settings.** `wiz` and grail look for `cc/bin/cc` beside their own binary
 (`Toolchain.withBundled`: `<dir>/.lake/build/bin/wiz` next to `<dir>/cc`, as they find
@@ -300,9 +320,16 @@ or was cancelled by a newer push). Then it moves the tag, and only forwards: a c
 that is not ahead of the tag (an older run) leaves it. A ref update is atomic, so tower, which resolves `nightly` through
 `git ls-remote` to the tag's commit and downloads that snapshot, can't hit a missing
 file. Before, the assets were replaced in place, and downloads returned 404 while they
-uploaded. The tag lags the branch by at least one CI run. A release install of
-`nightly` records the tag's commit, and `tower update` compares against the tag, not
-against the branch. The release `nightly` (`releases/download/nightly/…`, for people and
+uploaded. The tag lags the branch by at least one CI run. **A channel is the same
+commit whatever the source**: `nightly` resolves to the tag's commit for a Nix, release
+or source install alike, and `stable` to its `vX.Y.Z` tag's commit. Before, only
+release installs followed the tag, so with `nix` on `PATH` (`--source auto` tries Nix
+first) `tower default nightly` built the tip of master, which Cachix may not have yet,
+and fell back to a local build of wiz. CI has built the Nix package of the commit behind the
+tag (`nix build .#wiz`, pushed to Cachix when the secret is set), so it is usually a
+download. Only when there is no tag `nightly` (a fork, a fresh repository) does
+`nightly` fall back to the tip of the branch `nightly-ref`. Every install records the
+tag's commit, and `tower update` compares against the tag, not against the branch. The release `nightly` (`releases/download/nightly/…`, for people and
 older towers) then gets the snapshot's files: each file is uploaded under a temporary name,
 the old one is deleted and the new one renamed, so it is missing for one API call
 instead of for a whole upload. `scripts/tower-init.sh` uses the snapshot of the tag
@@ -318,7 +345,7 @@ outlives the window, and `tower toolchain install keep/icestick` works too, beca
 
 **Older commits.** Running the workflow by hand (`workflow_dispatch`) with the input
 `commit` set to a full master sha builds that commit and publishes its snapshot (nightly
-does not move): `gh workflow run release.yml -R badly-drawn-wizards/wiz -f
+does not move): `gh workflow run release.yml -R wiz-pl/wiz -f
 commit=<sha>`, or "Run workflow" on the Actions page. The commit's tarball is laid out
 by the workflow's current `scripts/release-tarball.sh`, not by the commit's own copy. A
 dispatched snapshot is new, so it survives the next 20 pushes; push a `keep/` tag to

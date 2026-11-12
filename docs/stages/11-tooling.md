@@ -239,3 +239,192 @@ Not covered: hovers inside tactic arguments (a tactic gets its syntax without ra
 a procedural macro's output (it has no ranges of the user's), the arguments of
 `attribute`, and docstrings (Wiz has none). Design notes: `wiz-notes/info-syntax.md`.
 Tested in the `lsp-server` group and by wiz.nvim's tests (`nvim`).
+
+## 11r: printing notation (unexpanders) ✅
+
+Terms print as the notation they were written with: `#check`, `#reduce`, `#eval`,
+messages (`type mismatch`, kernel errors), hovers and the infoview's goals.
+
+```
+#check fun (n : Nat) => n + 1        -- fun n => n + 1 : Nat → Nat
+#check [1, 2, 3]                     -- [1, 2, 3] : List Nat
+#check fun (b c : Bool) => b && !c   -- fun b c => b && !c : Bool → Bool → Bool
+#check ∃ (n : Nat), n = n            -- ∃ n, n = n : Prop
+```
+
+Before, these printed the elaborated term: `Add.add Nat instAddNat n 1`,
+`List.cons Nat 1 (List.cons Nat 2 (List.cons Nat 3 (List.nil Nat)))`, and a `match` on a
+`Bool.casesOn`. The mechanism is Lean's: a delaborator and `app_unexpander`s
+(`Core/Pretty.lean`, `Syntax/PPTable.lean`).
+
+* **Unexpanders.** At an application of a constant `c`, its explicit arguments (the
+  binder infos of `c`'s type say which) are turned into syntax, bottom-up, and `c`'s
+  unexpanders are tried, latest first, on `c x₁ … xₙ` as syntax; the first that applies
+  gives the notation (arguments beyond what it takes are applied to it). A subterm that
+  isn't notation (or a variable, a constant, a numeral, a `fun`) stays a leaf, printed
+  as before.
+* **Three kinds.** (1) *Automatic*: every `notation`, `infixl`/`infixr`/`infix` and
+  `macro_rules` rule whose template is a constant applied to the rule's variables is
+  read backwards (`+ - * / %`, `++`, `!`, `-x`, `|>`, `∧ ∨ ¬ ↔`, `<$>`, user notation).
+  So the notation declared last for a constant is the one printed (Logic declares its
+  ASCII spellings `/\`, `\/`, `<->` first). (2) *Declared*:
+  `app_unexpander c | `(term| $f $x …) => `(term| …)`, quotation rules over the
+  application (`$f` is the head); the Prelude prints `Bool.casesOn` as `if`/`&&`/`||`
+  this way, Logic `Ex (fun x => p)` as `∃ x, p`. (3) *Procedural*:
+  `attribute [app_unexpander c] f` with `f : Macro` (`Syntax → MacroM Syntax`, failing
+  when it doesn't apply), run by the interpreter: the Prelude's `ListLit.unexpandNil`
+  and `ListLit.unexpandCons` print `List.nil` as `[]` and `List.cons x [ys,*]` as
+  `[x, ys,*]`, collecting the spine from the last cell up. All three can be `local`; a
+  module's local ones (and its local notation's automatic ones) end with it.
+* **`match`.** A `match` elaborates to `(fun x => T.casesOn … x : …) scrutinee`; such a
+  redex prints as its reduct when that has an unexpander, so `if` comes back.
+* **Formatting.** The notation is printed by walking the grammar of each node's kind
+  (the parser descriptors, built-in ones included): atoms, children at the precedence
+  their position asks for, parentheses where a node's precedence is lower (a node whose
+  grammar ends in an open `term p`, like `fun` or `if`, counts as precedence `p`).
+  Spacing follows the atoms as declared (`" + "`, `"!"`, `"∃ "`); keywords get spaces,
+  brackets none, separators `, `. A node that can't be formatted (a kind without a
+  grammar, a shape the grammar doesn't fit) prints its subterm without notation, so an
+  unexpander can make output prettier but never wrong.
+* **Tags survive.** Every syntax node made from a subterm remembers it, so in the
+  infoview the subterms of notation (`n`, `1` and the whole `n + 1`) are still tagged
+  and hoverable. (A procedural unexpander's output keeps the tags of its leaves only.)
+* **Options.** `wiz … --pp-all` prints without notation (and turns the cache off);
+  `set_option pp.notation false` (or `pp.all true`) does so from that point of a file
+  (a module's setting stays in the module). `Term.prettyPrec` (used where printed terms
+  are parsed back, `Reflect.lean`) never uses notation.
+
+Not covered (follow-ups): implicit arguments outside notation still print (Lean hides
+them: `pp.explicit false`), data values from `#eval`/`#reduce` (`.cons 1 .nil`) are
+constructor values, not applications, so lists print as before there; `do` notation;
+`⟨a, b⟩` and structure literals; numerals of other types (`OfNat.ofNat`); goals passed
+to tactics as text and `trace_state` print without notation. The self-hosted toolchain
+has its own printer (selfhost/Frontend.wiz) and prints no notation. Design notes:
+`wiz-notes/pp-unexpand.md`. Tested in the `language` group.
+
+## 11s: scroll, the documentation generator (`wiz doc`) ✅
+
+Like Lean's doc-gen4: a static site from a set of modules. Design notes:
+`wiz-notes/scroll.md`.
+
+    wiz doc [MODULE|FILE|DIR …] -o OUT [--lib] [--source-url URL] [--title T] [--web DIR]
+    grail doc [TARGET…] [-o OUT] [--source-url URL] [--title T]
+
+`--lib` documents the toolchain's library; a directory, every module under it (it is a
+module root too); a file or module name, that module. `grail doc` runs `wiz doc` on the
+package's `lib` targets with its module roots (dependencies included), into
+`.grail/doc`. Source links are `URL` + the file's path in its root + `#L<line>`
+(without `--source-url`, the path as text). Flags only, no environment variables.
+
+* **Doc comments.** `/-- … -/` right before a command (only whitespace between)
+  documents the declarations it makes, as in Lean; before a constructor (`/-- … -/ | c`
+  or `| /-- … -/ c`) or a `structure`/`class` field, that one. `/-! … -/` documents the
+  module (without one, scroll takes the module's leading `--` comment block). To the
+  lexer a doc comment is still a block comment: the grammar is unchanged, and the
+  self-hosted frontend (selfhost/Lex.wiz) deliberately ignores doc comments (they are
+  for tools; nothing it checks depends on them). The Lean frontend finds a command's doc
+  comment from where the command starts (`docCommentBefore`,
+  `Wiz/Parser/DocComment.lean`) and stores it with what the declaration is:
+  `CommandState.declDocs : Name → DeclDoc` (`kind`: `def`, `partial def`, `inductive`,
+  `structure`, `class`, `instance`, `constructor`, `field`, `auxiliary`, …; `doc`;
+  `parent`), `CommandState.docOf?`. The cache replays them (`Effect.docs`; salt 15).
+  Doc comments are Markdown (`Wiz/Doc/Markdown.lean`: paragraphs, headings, fences,
+  lists, quotes, `code`, emphasis, links; HTML is escaped), and a name in backticks links
+  to its declaration.
+* **The site** (`Wiz/Doc/Site.lean`): `index.html` (the modules and their summaries),
+  one page per module (`A.B.html`): every public declaration (private and auxiliary ones
+  are left out) with its kind, its signature (the infoview's tagged printer,
+  `Term.prettyTagged`, so notation-aware printing applies when it does), its doc, a
+  source link, its constructors or fields, and the instances of a class or for a type;
+  every constant in a signature links to where it is documented (the definition sites
+  the language server's go to definition uses, `declSites`). `search.js` is the
+  client-side index of every declaration (name, module, kind, summary), searched by
+  `scroll-search.js` (`/` focuses the box). The pages are complete HTML: they read
+  without JS, and the search works from `file://`.
+* **Interactive signatures, with the infoview's Wasm.** Each page carries its data as
+  JSON (`<script id="wiz-doc-data">`, and `A.B.json`): per declaration the signature in
+  the infoview protocol's tagged-text format and the table of its subterms, each a
+  `wiz/subtermInfo` answer (`kind`, `name`, `text`, `type`, `definition` as a link),
+  precomputed since there is no server. With the Wasm module (served over HTTP), the
+  web infoview's module (`web/Web.wiz`, now also exporting `wiz_doc_init` and
+  `wiz_doc_step`) renders each signature as it comes into view: hover a subterm for its
+  type and where it is defined, click a constant to go to its definition, click anything
+  else to select it (the arrows move the selection, as in the infoview). The tagged text
+  both share is a library of its own, `lib/Tagged.wiz` (the JSON, flattening, numbering
+  and navigating tags, the HTML, the subterm box `Tagged.infoHtml`, and the page's
+  model `DocPage.step`), which `lib/Infoview.wiz` imports; the browser half they share is
+  `web/tagged.js` (loading and stepping the module, the mouse and keys on `.tt`), used by
+  `web/infoview.js` and `web/scroll.js`. `web/build.sh` builds the module as before and
+  copies the site's scripts and `scroll.css`; `wiz doc` takes them from `share/wiz/web`
+  of a release, `web/out` of a checkout, or `--web DIR`. Without them the pages are
+  plain HTML (and `wiz doc` says so).
+* **CI** builds the library's documentation on `master` with the Wasm module (the
+  `docs` job, on pushes only: `wiz doc --lib` with source links to the commit) and
+  uploads it as the artifact `wiz-docs` (kept 3 days). Proposed, not configured: publish it from `master` to GitHub Pages
+  (`actions/upload-pages-artifact` + `actions/deploy-pages` in that job, Pages set to
+  "GitHub Actions").
+* **Tests**: the group `doc` (`Tests/Doc.lean`): doc comments stored and replayed by the
+  cache; Markdown; `wiz doc` on a small package with doc comments (kinds, docs, source
+  links, instances, the index); every cross-link resolves; every declaration is in the
+  search index; the pages without JS; `grail doc`; and the page model of the Wasm module
+  run natively on a page's JSON (hover, click, keys).
+
+## 11w: hovers in tactic arguments, the other infoviews, `local instance`, the browser infoview ✅
+
+* **Ranges through reflected syntax.** A tactic or procedural macro gets the user's
+  syntax as a Wiz `Syntax` value, which has no ranges, and its output used to get the
+  call's range everywhere. Now `encodeSyntax` adds each node's range as two hidden
+  trailing fields of its constructor value. Wiz code never reads them (`SyntaxF` has no
+  such fields), so they survive exactly when a tactic hands back the value it was given
+  (`exact $t` passes `t` through), and are absent from anything it builds;
+  `relocate` (after the exercise `decodeSyntax`) puts them back, and everything else is
+  synthetic (11q). So hovers, expected types and go to definition work inside `by`
+  arguments, nested tactics (`first`, `repeat`, `( … ; … )`) record their goals at
+  their own ranges, and a list literal's elements keep theirs.
+* **The terminal and web infoviews** ask for `wiz/interactiveInfo` too and show its
+  sections (Syntax, Import, Instances, Declarations, Messages) under the goals, with the
+  same tags (`lib/Infoview.wiz`: `InfoItem`, `View.ofInfo`, `Infoview.htmlInfo`).
+* **`local instance`** (13m's `local` for instances, as Lean has it): the instance is
+  found in its module only; the importer doesn't see it (its definition, a name, stays).
+* **The infoview in a browser from wiz.nvim**: `:WizInfoviewBrowser` (`<LocalLeader>b`)
+  sends `wiz/browserInfoview` to the buffer's own server, which starts listening on a
+  WebSocket (127.0.0.1, a free port) unless it already does, and answers with the page's
+  URL; Neovim opens it (`vim.ui.open`). The same port serves the web infoview's four
+  files over HTTP (`WebSocket.webAssets`: only those names, and only to local origins;
+  anything else is `404`/`403`), from `share/wiz/web` of a release toolchain (the release
+  job builds them with Emscripten) or `web/out` of a checkout (`web/build.sh`), or
+  `wiz lsp --web DIR`. With `?follow=1` the page has no editor of its own: it follows
+  the editor's cursor (`wiz/infoview/cursor`, §8.2). `wiz lsp` now always runs the
+  multi-connection loop (`serveWith`), so this works without `--ws`.
+
+## 11v: the outline, workspace symbols and folding
+
+* **Document symbols** (`textDocument/documentSymbol`, `Wiz/Symbols.lean`): one symbol per
+  command, named after the first declaration it makes, with the others it makes (a
+  structure's fields and constructor, an inductive type's constructors) as children; a
+  type is a `Struct`, a constructor a `Constructor`, the rest `Function`, with the type as
+  `detail`. The elaborator's own names (`.desc`, `.casesOn`, `.rec`, …) are left out.
+* **Workspace symbols** (`workspace/symbol`): the declarations of the open documents and
+  of the modules they import whose name contains the query, ignoring case, at most 300,
+  each where it was declared (library modules by their path).
+* **Folding ranges** (`textDocument/foldingRange`): commands spanning several lines,
+  `by` blocks, `match`es, and block comments (kind `comment`).
+* wiz.nvim: `gO` (Neovim 0.11) lists the outline; `lsp.folding = true` folds with the
+  server's ranges (`vim.lsp.foldexpr`).
+
+## 11y: references, highlights and rename
+
+`Wiz/Refs.lean`, from the info tree's identifiers (each records what it resolved to):
+
+* **References** (`textDocument/references`): for a global, its uses in every open
+  document and in the package's other modules (the library modules that aren't the
+  toolchain's, so under `grail lsp` the package's own and its dependencies'), each
+  elaborated once per source and kept by the server, plus the name in its declaration.
+  For a local, its binder and the uses that see that binder (the nearest binder of the
+  name before the use, inside the declaration).
+* **Document highlights** (`textDocument/documentHighlight`, also what tells the
+  infoview where the cursor is): the same, in the document.
+* **Rename** (`textDocument/prepareRename`, `textDocument/rename`): edits every place
+  that spells the whole name, in all those documents; it refuses a declaration of the
+  toolchain's library and a new name that isn't one. A use through generalised field
+  notation (`p.norm` for `Point.norm`) is not edited.
