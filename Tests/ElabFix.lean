@@ -623,6 +623,11 @@ def group : Group where
           "def use.{a, b} {C : Cat.{a, b}} {F G : Fn C Types} (α : NT F G) (X : C.Obj) (x : F.obj X) : α.app X x = α.app X x := by\n" ++
           "  rw (natEq α X x)\n" ++
           "  exact rfl\n") },
+    { name := "two `let`s on one line, the body on the next (wiz-reals P6)", run := fun _ =>
+        -- the position the body's application is checked against is the enclosing one, not
+        -- the second `let`'s column
+        okLib ("import Prelude\ndef t (a b : Nat) : Nat :=\n  let x := a; let y := b;\n  Nat.add x y\n#eval t 2 3\n" ++
+          "def u (a : Nat) : Nat :=\n  let x := a\n  Nat.add x x\n#eval u 4") ["5", "8"] },
     { name := "a broken module's errors are reported once, not nested in every importer (wiz-reals P9)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let mods : List (String × String) := [("Prelude", prelude),
