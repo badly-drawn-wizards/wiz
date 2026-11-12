@@ -4724,7 +4724,7 @@ def languageGroup : Group where
         let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Int" then some int else lib m }
         let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
-        checkEq (repr [".cons (.mk 1) (.cons (.mk 2) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255) (.cons (.mk 3) .nil)"]).pretty
+        checkEq (repr [".cons (.mk 1 ()) (.cons (.mk 2 ()) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255 ()) (.cons (.mk 3 ()) .nil)"]).pretty
           (repr (s.messages.toList.map (·.text))).pretty },
     { name := "... instance binders and Enum [..] still parse", run := fun _ =>
         okLib ("import Prelude\ndef f {m : Type → Type} [Monad m] : m Nat := Monad.pure 1\n" ++
@@ -4849,7 +4849,7 @@ def wordGroup : Group where
         check ((out.splitOn "wiz_word_to_bits").length > 1) s!"toNat doesn't read the bits natively:\n{out}" },
     { name := "a U64 result is read back from a raw box", run := fun _ =>
         cRun "import Word\ndef main : U64 := UIntN.mul (U64.ofNat 18446744073709551615) (U64.ofNat 3)"
-          ".mk 18446744073709551613" },
+          ".mk 18446744073709551613 ()" },
     -- (7e) numeric classes at the words
     { name := "numerals and operators at word types wrap around", run := fun _ =>
         okLib ("import Word\ndef s : U8 := 250 + 10\n#eval s.toNat\ndef t : s = 4 := rfl\n#eval (300 : U8).toNat\n" ++
@@ -4873,7 +4873,13 @@ def wordGroup : Group where
         check ((out.splitOn "wiz_word_add").length > 1 && (out.splitOn "wiz_word_mul").length > 1 &&
           (out.splitOn "proj").length == 1) s!"no native call (or a dictionary) in:\n{out}" },
     { name := "compiled: operators at words run natively (C)", run := fun _ =>
-        cRun "import Word\ndef main : Nat := ((250 : U8) + 10 * 2).toNat + (-1 / 2 : I8).toNat" "14" }
+        cRun "import Word\ndef main : Nat := ((250 : U8) + 10 * 2).toNat + (-1 / 2 : I8).toNat" "14" },
+    { name := "22l: a word carries its range: no unchecked builder, and the constructor needs the proof", run := fun _ => do
+        -- the probe (wiz-notes/soundness-probes/a3-word-ofbitstrusted.wiz)
+        for (src, frag) in [("def bad : UIntN 1 := UIntN.ofBitsTrusted 5", "ofBitsTrusted"),
+            ("def bad : UIntN 1 := UIntN.mk 5 rfl", "private"), ("def bad : IntN 1 := IntN.mk 5 rfl", "private")] do
+          let ms ← msgsLib ("import Word\n" ++ src ++ "\n")
+          check (ms.any fun m => m.startsWith "error" && (m.splitOn frag).length > 1) s!"{src}: {ms}" }
   ]
 
 /-- Every `lib/*.wiz` and `lib/D/*.wiz` (as `D.X`), by module name. -/
@@ -5959,7 +5965,18 @@ def vecGroup : Group where
         let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
-        check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }
+        check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" },
+    { name := "22l: the range is a theorem (toNat_lt, ext, cases1)", run := fun _ =>
+        okLibs ("import BitVec\ndef r (x : UIntN 8) : Nat.lt x.toNat 256 = .true := UIntN.toNat_lt x\n" ++
+          "def s (x : IntN 8) : Nat.lt x.toNat 256 = .true := IntN.toNat_lt x\n" ++
+          "def c (x : UIntN 1) : x = 0 ∨ x = 1 := UIntN.cases1 x\n" ++
+          "def e : (UIntN.lor (UIntN.max 8) (UIntN.ofNat 8 3) : UIntN 8) = UIntN.ofNat 8 255 := UIntN.ext _ _ rfl\n") },
+    { name := "22l: concat and ofVec go through ofNat: interpreted and compiled agree", run := fun _ => do
+        let src := "import BitVec\ndef main : Nat := (BitVec.concat (BitVec.ofNat 4 15) (BitVec.ofNat 4 1)).toNat + " ++
+          "1000 * (BitVec.ofVec (Vec.cons Bool.true (Vec.cons Bool.false (Vec.cons Bool.true Vec.nil)))).toNat + " ++
+          "10000 * (UIntN.xor (UIntN.max 3) (UIntN.ofNat 3 2)).toNat\n"
+        okLibs (src ++ "#eval main\n") ["55241"]
+        cRunLibs src "55241" }
   ]
 
 /-! ## Stage 24: separation logic (lib/Logic.wiz, lib/HProp.wiz, lib/Hoare.wiz) -/
@@ -6816,6 +6833,8 @@ def hdlGroup : Group where
            ".cons \"a choice between two different memories (a memory can only be written, not chosen)\" .nil",
            "\"module ram(input clk, input [0:0] we, input [3:0] waddr, input [7:0] wdata, input [3:0] raddr, output [7:0] y);\\n  reg [7:0] q; initial q = 8'd0;\\n  reg [7:0] cells [0:15];\\n  initial begin\\n    cells[0] = 8'd0;\\n    cells[1] = 8'd0;\\n    cells[2] = 8'd0;\\n    cells[3] = 8'd0;\\n    cells[4] = 8'd0;\\n    cells[5] = 8'd0;\\n    cells[6] = 8'd0;\\n    cells[7] = 8'd0;\\n    cells[8] = 8'd0;\\n    cells[9] = 8'd0;\\n    cells[10] = 8'd0;\\n    cells[11] = 8'd0;\\n    cells[12] = 8'd0;\\n    cells[13] = 8'd0;\\n    cells[14] = 8'd0;\\n    cells[15] = 8'd0;\\n  end\\n  wire [7:0] n5 = cells[raddr];\\n  always @(posedge clk) q <= n5;\\n  always @(posedge clk) begin\\n    if (we) cells[waddr] <= wdata;\\n  end\\n  assign y = q;\\nendmodule\\n\""] },
     { name := "memories in Verilog: Icarus replays the RAM's test bench; yosys maps RAM and a 256-word ROM to SB_RAM40_4K (skipped without the tools)", run := fun _ => hdlMemTools },
+    { name := "bits: one-bit laws by case split (Hdl.Bits); control logic written with gates proved with symbolic inputs; the Boolean bridge", run := fun _ => do
+        okLibs (← IO.FS.readFile "examples/hdl-bits.wiz") ["1"] },
     { name := "Verilog: declarations before use (regs, wires, then the updates), sized initial values", run := fun _ =>
         okLibs (hdlVerilogSrc ++ "#eval v1\n")
           ["\"module counter(input clk, input [0:0] x, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd250;\\n  wire [7:0] n3 = r + 8'd1;\\n  always @(posedge clk) r <= n3;\\n  assign y = r;\\nendmodule\\n\""] },

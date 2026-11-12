@@ -244,6 +244,24 @@ become LUTs, a 256-word one block RAM. What the netlist cannot express is listed
 `Netlist.errors` and printed as `// error:` lines: a choice between two different
 memories, a memory in a port, a state memory replaced instead of written.
 
+## H14 C4: bit-level reasoning (`lib/Hdl/Bits.wiz`) ✅
+
+The toy CPU's finding C2: `rfl` reduces a multiplexer on a known select but not a gate on
+a symbolic bit (`Hw.and 0 x`), so a circuit had to be written with multiplexers for its
+proof to go through. `Bit.ind P h0 h1 x` (from the words' range, 22l: a one-bit word is 0
+or 1) splits a property of a bit into its two closed cases, `Bit.ind2`/`ind3` two or
+three bits; each case is then evaluation. Closed equations of bits are best closed with
+`Bit.eqv _ _ rfl` (by their numbers), since two equal words may carry different range
+proofs. The library proves the laws once: constants (`Bit.and_zero`, `or_one`, …),
+`not_not`, idempotence, complements, commutativity, associativity, De Morgan,
+distributivity; the multiplexer normal form (`Bit.and_mux`: `a & b = a ? b : 0`,
+`or_mux`, `not_mux`, `xor_mux`; `HwTy.El.mux_same`, `mux_not` at any type); and the
+Boolean bridge `Bit.toBool` (a homomorphism: `toBool_and/or/xor/not/mux`;
+`Bit.eq_of_toBool`), which turns an equation of bits into a Boolean goal for
+`sat_decide` (28b). Example: `examples/hdl-bits.wiz` (the CPU's stall signal written
+with gates, proved equal to its multiplexer form and, once the opcode is known, to
+`!txReady`, for every value of the status bits).
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
@@ -316,6 +334,8 @@ numeric type:
 * **Words.** One set of instances at `UIntN w` serves `U8 … U64` and `BitVec n` (aliases
   are seen through). `UIntN w` and `IntN w` have the same shape but are sealed, different
   types (22k), so `-7 / 2 : I32` is signed division and `x / 2 : U32` unsigned. Their
-  constructors are private to `lib/Word.wiz`: build a word with `ofNat` (or, when the
-  value is known to be in range, `UIntN.ofBitsTrusted`) and read it with `toNat`. Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
+  constructors are private to `lib/Word.wiz` and carry the proof that the bits are below
+  `2^w` (22l, erased): build a word with `ofNat`, read it with `toNat`, and use
+  `UIntN.toNat_lt` for the range (`UIntN.ext`: same bits, same word; `UIntN.cases1`, in
+  `lib/BitVec.wiz`: a one-bit word is 0 or 1). Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
   inlined away), as `UIntN.add a b` was.
