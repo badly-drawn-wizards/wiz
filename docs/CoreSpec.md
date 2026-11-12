@@ -1759,8 +1759,7 @@ Each item says what the code does; the code is what the kernel checks.
 **The self-hosted frontend's quantities** (`Frontend.wiz`, stage 21m; finding K10 of audit 2,
 now closed). The frontend reads written quantities (`0`, `1`, `ω`) on binders, `fun`
 binders and `let`, with the Lean elaborator's defaults (ω explicit, 0 implicit; a
-constructor's parameters at 0), and the kernel checks usage. What still differs, pinned
-by the test "the self-hosted frontend: quantities, the pinned differences (21m)", are below. A linear
+constructor's parameters at 0), and the kernel checks usage. What still differs is below. A linear
 variable used once in each branch of a `match` was a difference until stage 21v: the Lean
 frontend now compiles such a match to the additive `T.casesOnA`, and both accept it.
 Constructor field quantities and implicit constructor fields were differences until 21w:

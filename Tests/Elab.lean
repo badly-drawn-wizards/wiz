@@ -3817,16 +3817,6 @@ def quantityDecls : List (String × Bool) := [
   ("def l0 (x : Nat) : Nat := let 0 y := x; y\n", false),
   ("def linTwice (1 z : Nat) : Nat := lin z (fun y => Nat.add y y)\n", false)]
 
-/-- (stage 21m) The pinned differences, `(declaration, Lean accepts, self-hosted accepts)`
-(docs/CoreSpec.md §15): the self-hosted kernel's descriptions have no quantities, so a
-constructor field written with one is an error there. (A linear variable used once in
-each branch of a `match` was one until 21v: `linearMatchDecls`.) -/
-def quantityDiffs : List (String × Bool × Bool) := [
-  -- (21w) a match on a structure with a field at 0: the Lean elaborator projects every
-  -- field at ω (`structPattern?`), and the projection of the erased one is rejected; here a
-  -- structure is a data type, and the field is bound at 0 like any constructor's
-  ("structure S0 where\n  0 n : Nat\n  m : Nat\ndef s0mt (s : S0) : Nat := match s with\n  | .mk n m => m\n", false, true)]
-
 /-- (stage 21w) Constructor fields with quantities (`Desc.arg q S D`) and implicit
 constructor fields (at 0, filled in at the call, not named by patterns): the same
 verdicts in both frontends. -/
@@ -3862,6 +3852,9 @@ def fieldQtyDecls : List (String × Bool) := [
   ("def p1 (1 x : Tok) : P1 := P1.mk x 3\ndef p1b (p : P1) : Nat := p.b\n", true),
   -- (the Lean elaborator takes a structure apart by projections at ω)
   ("def p1m (p : P1) : Nat := match p with\n  | .mk a b => b\n", true),
+  -- (a match on a structure binds a field at 0 at 0, in both since #217)
+  ("def s0mt (s : S0) : Nat := match s with\n  | .mk n m => m\n", true),
+  ("def s0mn (s : S0) : Nat := match s with\n  | .mk n m => n\n", false),
   -- recursive fields carry quantities too; a bad quantity is an error
   ("inductive R1 where\n  | z\n  | s (1 r : R1)\n", true),
   ("inductive Q2 where\n  | mk (2 n : Nat)\n", false)]
@@ -4346,8 +4339,6 @@ def selfHostGroup : Group where
           "def main : IO Unit := IO.println (Nat.toString (get b + sum p))\n") "6\n" },
     { name := "the self-hosted frontend: written quantities, as in the Lean frontend (21m, K10)", run := fun _ =>
         selfhostAgrees quantityHeader quantityDecls },
-    { name := "the self-hosted frontend: quantities, the pinned differences (21m)", run := fun _ =>
-        selfhostVerdicts quantityHeader quantityDiffs },
     { name := "a linear variable used once in each branch of a match: both frontends accept it (21v)", run := fun _ =>
         selfhostAgrees linearMatchHeader linearMatchDecls },
     { name := "the additive match (T.casesOnA) runs, compiled by the Lean compiler (21v)", run := fun _ =>

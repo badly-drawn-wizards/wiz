@@ -456,9 +456,9 @@ elaborator takes a structure apart by projections at ω), and a field at 0 has n
 projection function (`classMethods` makes none). `Backend.wiz` needed nothing new: a
 payload's field at 0 is the first part of a `Σ` at 0, erased already.
 
-What still differs (pinned, "quantities, the pinned differences (21m)"): a `match` on a
-structure that has a field at 0 is rejected by the Lean frontend (its projection at ω of
-the erased field) and accepted here (the field is bound at 0).
+A `match` on a structure that has a field at 0 was a difference until #217 (the Lean
+elaborator projected the erased field at ω); both now bind it at 0, so no difference is
+pinned any more and the 21m test of pinned differences is gone.
 
 **Shapes changed** (selfhost/*.wiz): `Tm.darg/drec/dhrec` and `Val.vdarg/vdrec/vdhrec` take
 the quantity first; new `Tm.qty`, `Tm.qlit`, `Tm.sigmaQ`, `Val.vqty`, `Val.vqlit`,
