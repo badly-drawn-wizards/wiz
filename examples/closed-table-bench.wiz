@@ -1,0 +1,70 @@
+-- A benchmark for closed top-level definitions in compiled code (CAFs, stage 15i): a
+-- lookup table (a list of 256 entries) and a ROM tree built from it, both closed
+-- definitions, read in a loop. Compiled code computes each once, on its first use; before
+-- 15i they were rebuilt at every use (every iteration here; every simulated cycle in the
+-- value simulation of the OLED demo, whose font and program ROMs are such tables).
+--
+--   wiz build examples/closed-table-bench.wiz -o bench && ./bench 1000000
+--
+-- prints a checksum of N lookups (default 100000) in each structure.
+import Prelude
+import IO
+import Text
+
+def Bench.range : Nat → List Nat → List Nat
+  | .zero, acc => acc
+  | .succ n, acc => Bench.range n (.cons n acc)
+
+def Bench.entry (i : Nat) : Nat := Nat.mod (i * i + 7 * i + 3) 251
+
+-- the table: 256 entries, computed
+def Bench.table : List Nat := List.map Bench.entry (Bench.range 256 .nil)
+
+def Bench.nth : List Nat → Nat → Nat
+  | .nil, _ => 0
+  | .cons x _, .zero => x
+  | .cons _ xs, .succ n => Bench.nth xs n
+
+inductive Bench.Rom where
+  | leaf (v : Nat)
+  | node (l : Bench.Rom) (r : Bench.Rom)
+
+def Bench.take : Nat → List Nat → List Nat
+  | .zero, _ => .nil
+  | .succ _, .nil => .nil
+  | .succ n, .cons x xs => .cons x (Bench.take n xs)
+
+def Bench.drop : Nat → List Nat → List Nat
+  | .zero, xs => xs
+  | .succ _, .nil => .nil
+  | .succ n, .cons _ xs => Bench.drop n xs
+
+-- a balanced tree of depth `d` over the first 2^d entries of a list (as `RomT.build`)
+def Bench.build : Nat → List Nat → Bench.Rom
+  | .zero, xs => .leaf (Bench.nth xs 0)
+  | .succ d, xs => .node (Bench.build d (Bench.take (Nat.pow 2 d) xs)) (Bench.build d (Bench.drop (Nat.pow 2 d) xs))
+
+-- the ROM: a closed definition built from another one
+def Bench.rom : Bench.Rom := Bench.build 8 Bench.table
+
+-- read address `a` (bit `d - 1` first)
+def Bench.read : Nat → Bench.Rom → Nat → Nat
+  | _, .leaf v, _ => v
+  | .zero, .node _ _, _ => 0
+  | .succ d, .node l r, a => match Nat.testBit a d with
+    | .true => Bench.read d r a
+    | .false => Bench.read d l a
+
+def Bench.loop : Nat → Nat → Nat
+  | .zero, acc => acc
+  | .succ n, acc =>
+    let a := Nat.mod (n * 37) 256
+    Bench.loop n (Nat.mod (acc + Bench.nth Bench.table a + Bench.read 8 Bench.rom a) 1000000007)
+
+def Bench.arg : List String → Nat
+  | .cons s _ => match String.parseNat s with
+    | .some n => n
+    | .none => 100000
+  | .nil => 100000
+
+def main : IO Unit := IO.bind IO.args (fun as => IO.println (Nat.toString (Bench.loop (Bench.arg as) 0)))
