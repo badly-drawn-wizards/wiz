@@ -67,6 +67,9 @@ inductive Tm where
   | ptrue
   | pfalse
   | exfalso (motive t : Tm)
+  -- (linear-case stage 2) `let () := u; b`, the unit eliminator: consumes `u : Unit n`
+  -- (its usage counts), computes to `b` by η
+  | letUnit (u b : Tm)
   -- an enumeration of `k` tags, its `i`-th tag, and case analysis (the motive is
   -- under one binder, the scrutinee)
   | enum (k : Nat)
@@ -447,6 +450,7 @@ def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
   | .fst p => .fst (tmSubst ps ls p)
   | .snd p => .snd (tmSubst ps ls p)
   | .exfalso m t => .exfalso (tmSubst ps ls m) (tmSubst ps ls t)
+  | .letUnit u b => .letUnit (tmSubst ps ls u) (tmSubst ps ls b)
   | .ecase m sc bs => .ecase (tmSubst ps ls m) (tmSubst ps ls sc) (tmsSubst ps ls bs)
   | .eq A a b => .eq (tmSubst ps ls A) (tmSubst ps ls a) (tmSubst ps ls b)
   | .eqTy A B => .eqTy (tmSubst ps ls A) (tmSubst ps ls B)
@@ -616,6 +620,7 @@ def tmEq : Tm → Tm → Bool
   | .ptrue, .ptrue => .true
   | .pfalse, .pfalse => .true
   | .exfalso a b, .exfalso c d => Bool.and (tmEq a c) (tmEq b d)
+  | .letUnit a b, .letUnit c d => Bool.and (tmEq a c) (tmEq b d)
   | .enum k, .enum k' => Nat.beq k k'
   -- (the enumeration's size too: `valSame` compares it, and "the same term" must not
   -- depend on both sides having one type)
@@ -912,6 +917,7 @@ def eval : Env → Tm → Val
   | _, .empty n => .vempty (n + 1)
   | _, .ptrue => .vunit 0
   | _, .pfalse => .vempty 0
+  | env, .letUnit _ b => eval env b
   | env, .exfalso m t => match whnf (eval env t) with
     | .vne h sp => .vne h (.sabsurd sp (eval env m))
     | v => v
@@ -1698,6 +1704,7 @@ def show (names : List String) : Nat → Tm → String
   | l, .letE t v b => String.append (String.append "let " (nameAt names l))
       (String.append (String.append " := " (show names l v)) (String.append "; " (show names (l + 1) b)))
   | l, .sorted _ t => show names l t
+  | l, .letUnit u b => String.append (String.append "let () := " (show names l u)) (String.append "; " (show names l b))
   | l, .ann t ty => String.append (String.append "(" (show names l t)) (String.append " : " (String.append (show names l ty) ")"))
   | l, .piq q a b => String.append (String.append (String.append "(" (nameAt names l))
       (String.append (showQ q) (show names l a))) (String.append ") → " (show names (l + 1) b))
@@ -1858,30 +1865,6 @@ def popUsage (q : Q) : List Q → Option (List Q)
   | .cons used rest => match qle used q with
     | .true => .some rest
     | .false => .none
-
--- (K2a) does a value of this type have no content: is it `Unit`, or a function with
--- erased arguments into such (`(x :0 D) → … → Unit`, a phantom tail)? It has one value up
--- to η. `l` is a level above the type's variables (`unitShaped` in `Check.lean`). A
--- named type is never unit-shaped: a global (`vglued`) is not unfolded, so a token type
--- defined as `Unit` (or a field-less structure, a brand) must still be used
-partial def unitShaped (l : Nat) (ty : Val) : Bool := match ty with
-  | .vglued _ _ _ => .false
-  | _ => match whnf ty with
-    | .vunit _ => .true
-    | .vpi q _ env cod _ => match q with
-      | .qz => unitShaped (Nat.succ l) (eval (.cons (fresh l) env) cod)
-      | _ => .false
-    | _ => .false
--- leave a binder `x :q ty` (`popBinder` in `Check.lean`): `popUsage`, except that a
--- unit-shaped variable may go unused at any quantity (K2a: by η, the body is
--- `let () := x; …`, which would use `x` once)
-def popBinder (l : Nat) (q : Q) (ty : Val) (u : List Q) : Option (List Q) := match u with
-  | .nil => match unitShaped l ty with
-    | .true => .some .nil
-    | .false => popUsage q .nil
-  | .cons used rest => match Bool.and (qEq used .qz) (unitShaped l ty) with
-    | .true => .some rest
-    | .false => popUsage q (.cons used rest)
 
 inductive TyRes where
   | ok (ty : Val) (u : List Q)
@@ -2426,6 +2409,13 @@ def infer : TCtx → Tm → TyRes
   | c, .ptrue => .ok (.vsort (.lnum 0)) (uZeros (TCtx.lvl c))
   | c, .pfalse => .ok (.vsort (.lnum 0)) (uZeros (TCtx.lvl c))
   | _, .star => .err "cannot infer the type of tt; add a type ascription"
+  -- the unit eliminator: `u` must be of type `Unit` itself (not a function into it,
+  -- which may be a closure holding a resource); usage `U_u + U_b`
+  | c, .letUnit u b => match checkUnit c u with
+    | .ok _ uu => match infer c b with
+      | .ok bty ub => .ok bty (uAdd uu ub)
+      | r => r
+    | r => r
   | c, .exfalso m t => match inferUniv c m with
     | .ok _ _ => match infer (TCtx.erase c) t with
       | .ok ty _ => match whnf ty with
@@ -2727,7 +2717,7 @@ def letIn : TCtx → Q → Tm → Tm → Tm → TyRes
       -- (a `let` at 0 never computes its value: an erased position)
       match check (erasedIf q c) v tyv with
       | .ok _ uv => match infer (TCtx.define c (eval (TCtx.env c) v) tyv) b with
-        | .ok bty ub => match popBinder (Nat.succ (TCtx.lvl c)) q tyv ub with
+        | .ok bty ub => match popUsage q ub with
           | .some ub' => .ok bty (uAdd (uScale q uv) ub')
           | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
@@ -2741,7 +2731,7 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
       -- (a `let` at 0 never computes its value: an erased position)
       match check (erasedIf q c) v tyv with
       | .ok _ uv => match check (TCtx.define c (eval (TCtx.env c) v) tyv) b T with
-        | .ok _ ub => match popBinder (Nat.succ (TCtx.lvl c)) q tyv ub with
+        | .ok _ ub => match popUsage q ub with
           | .some ub' => .ok T (uAdd (uScale q uv) ub')
           | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
@@ -2751,17 +2741,30 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
 def check (c : TCtx) (t : Tm) (ty : Val) : TyRes := match checkW c t (whnf ty) with
   | .ok _ u => .ok ty u
   | r => r
+-- the scrutinee of `let () := u; b`: of type `Unit` itself (after `whnf`)
+def checkUnit (c : TCtx) (u : Tm) : TyRes := match u with
+  | .star => .ok (.vunit 1) (uZeros (TCtx.lvl c))
+  | _ => match infer c u with
+    | .ok ty uu => match whnf ty with
+      | .vunit n => .ok (.vunit n) uu
+      | ty' => .err (String.append "let () := u needs u of type Unit, not " (showVal c ty'))
+    | r => r
 def checkW : TCtx → Tm → Val → TyRes
   --<sol
   | c, .lam b, .vpi q dom env cod _ =>
     match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
-    | .ok _ u => match popBinder (Nat.succ (TCtx.lvl c)) q dom u with
+    | .ok _ u => match popUsage q u with
       | .some u' => .ok (.vpi q dom env cod .none) u'
       | .none => .err "the bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
     | r => r
   | c, .letE ty v b, T => checkLet c .qw ty v b T
   | c, .letq q ty v b, T => checkLet c q ty v b T
   | c, .star, .vunit n => .ok (.vunit n) (uZeros (TCtx.lvl c))
+  | c, .letUnit u b, T => match checkUnit c u with
+    | .ok _ uu => match check c b T with
+      | .ok _ ub => .ok T (uAdd uu ub)
+      | r => r
+    | r => r
   | c, .up a, .vulift n A => match check c a A with
     | .ok _ u => .ok (.vulift n A) u
     | r => r

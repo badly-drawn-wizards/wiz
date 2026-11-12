@@ -300,9 +300,9 @@ The judgments output usage vectors with these operations [std: Atkey18; McBride1
 * **variables** use themselves once: `𝟙ₓ`;
 * **application** to a `q`-binder scales the argument's usage by `q`: `U₁ + q·U₂`;
 * **leaving a binder** declared `q` pops its usage `u` and requires `u ≤ q`
-  (**subusaging**, `popUsage`, `Check.lean:231`), **or `u = 0` and the binder's type is
-  unit-shaped** (K2a, `popBinder`/`unitShaped`; §10.2a): `Unit`, or `(0 x : D) → … →
-  Unit`, written as such, not a global that unfolds to one;
+  (**subusaging**, `popUsage`, `Check.lean:231`), whatever the binder's type: a linear
+  `Unit` is not exempt (K2a was withdrawn, §10.2a); it is consumed by the unit
+  eliminator `let () := u; b`, whose usage is `U_u + U_b`;
 * **types, quantities and proofs use nothing** (their usage is discarded);
 * **branches** of an `ecase` combine by the **join** `⊔` (least upper bound in `≤`) of
   their usages (`QPoly.join?`, `QPoly.lean:105`); `0 ⊔ 1 = ω` in `{0,1,ω}`, and if
@@ -444,11 +444,12 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
     and they are gone, together with the evaluation of the pair they needed.)
   * **Structures** are right-nested Σ types ending in a marker tail (§R3 of the audit;
     `structTailName`), and `s.field` is a chain of projections. So a structure held at a
-    quantity other than ω has no usable field access. It is taken apart with
-    `let 1 ⟨a, b⟩ := s` (nested `split`s): the last split binds the marker tail, of type
-    `(0 fields✝ : …) → Unit`, at 1, and it may go unused because that type is
-    unit-shaped (K2a, §10.2a; linear-case stage 2). Before K2a the elaborator refused
-    such a `let` ("marker tail").
+    quantity other than ω has no usable field access, and it has no destructuring form
+    either (`match` does not split a Σ linearly, and a nested `let 1 (x, y)` leaves the
+    marker tail, a linear variable of type `(0 fields✝ : …) → Unit`, with nothing to
+    consume it). The elaborator's error says so. Linear data is a tuple, taken apart with
+    `let 1 (x, y) := …`, or a one-constructor `inductive` with fields at 1, taken apart by
+    `match` (`T.casesOn1`, §10.2). (Exempting the marker tail is unsound: §10.2a.)
   * **η for Σ** (§11.2) is part of conversion: it compares `vFst`/`vSnd` of *values* and
     never builds projection *terms* for the checker, so no usage is computed for an
     η-expansion. Types are checked in `Γ⁰` and their usage is discarded, so a type may
@@ -491,7 +492,7 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
   `def Coin : Type := Nat`), besides the unsound reads of one field among several.
   Follow-up (not in the kernel): a destructuring `let 1 (.mk a b) := s` for structures,
   compiled to nested splits, and tuple patterns in `match` compiled to `split`; both in
-  `/workspace/wiz-notes/linear-case-design.md`. The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator.
+  `/workspace/wiz-notes/linear-case-design.md`. The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator. Landed (stage 4h): the quantity on `scase` (K1) and the unit eliminator `let () := u; b`; K2a was withdrawn (§10.2a), and re-encoding B is not done, so structures still have no linear destructuring form.
 
 *Kernel.wiz* has no `split` (no `let (x, y)` in its term syntax). Its `fst`/`snd` rules
 are the ones above (usage scaled by ω outside erased positions; no check at the
@@ -1488,8 +1489,8 @@ a < ∞                       ⇔ a = ↑ᵏ x for a variable x : Size< u       
   case at 0 passes `◾` as the payload. The method then takes the payload apart with
   the rules that exist: `split` at `q` gives the tag at `q·ω` and the rest at `q`,
   `ecase` on the tag joins the branches, each further `split` gives a field declared `p`
-  at `q·p`, the index equation at `q·0 = 0`, and the final `Unit` at `q`, which may go
-  unused (K2a, §10.2a). The elaborator's `T.casesOn1` is exactly this chain
+  at `q·p`, the index equation at `q·0 = 0`, and the final `Unit` at `q`, which the unit
+  eliminator `let () := u; b` consumes (§10.2a). The elaborator's `T.casesOn1` is exactly this chain
   (`Recursor.lean`, `linear := true`); `match` uses it when the scrutinee mentions a
   variable bound at 1, binding the scrutinee at 1.
 
@@ -1535,44 +1536,64 @@ elaborator tests (the M4 probes of `wiz-notes/cohesion-resources.md` §7 and the
 negatives: a payload dropped in one branch, duplicated, the scrutinee used after the
 match, a 0 field used at run time).
 
-### 10.2a Unit-shaped binders may go unused (K2a)
+### 10.2a The unit eliminator; K2a withdrawn
 
 ```
-     Γ, x :q A ⊢ b ⇐ B ⊣ (0 :: U)     A unit-shaped
-     ───────────────────────────────────── (leaving a binder; lam, let, split)       popBinder, Check.lean
-     … ⊣ U          (for any q, also q = 1)
+     Γ ⊢ u ⇒ Unit_l ⊣ U₁     Γ ⊢ b ⇒ B ⊣ U₂        (u has the type `Unit` itself, after whnf)
+     ───────────────────────────────────── letUnit                 checkUnit, Check.lean
+     Γ ⊢ let () := u; b ⇒ B ⊣ U₁ + U₂             (and the ⇐ version)
 
-     unit-shaped:  Unit_l     |     (0 x : D) → A   with A unit-shaped (under the binder)
-                   and never a global constant (`Val.unfold` / `vglued` is not unfolded)
+     let () := u; b  ⟶  b          (η: every u is ())                                  eval, Eval.lean
+     erasure:  let _ := u'; b'      (strict: u is evaluated first)                     Erase.lean
 ```
 
-* **Why.** A unit-shaped type has exactly one value up to η (`()`, `fun _ … _ => ()`;
-  conversion has η for `Unit` and Π), and erasure compiles values of such Π types to
-  nothing by the same shape (`erasedFunTy`). By η, `b` is convertible to
-  `let () := x; b`, which a unit eliminator would type with `x` used once. The marker
-  tail of a structure, `(0 fields✝ : …) → Unit`, and the final `Unit` of a constructor's
-  payload are of this shape, so a linear structure and a linear constructor payload can
-  be taken apart completely (§7.1, §10.2).
-* **It does not let a 1-variable be used twice**: only usage `0` is exempt; a
-  unit-shaped variable used once or more is checked against `q` as before, and the
-  usage of whatever computed `x` (`q·U_v` at a `let`, `q·U_a` at an application) is
-  added in full, once. **Nor a 0-variable at run time**: no erased position changes.
-* **What it does allow (stated honestly).** A linear `t` may be *consumed into* a
-  unit-shaped value that is then dropped: with `use : (1 t : Tok) → Unit`,
-  `(fun (1 u : Unit) => 0) (use t)` uses `t` once and is accepted. Its β-reduct `0` does
-  not use `t` at all, so **usage is not preserved by reduction at a dropped unit**: K2a
-  makes linearity affine through unit-shaped consumers, and whether `use t` runs is the
-  evaluator's business (a dropped `Unit` is not forced by a lazy `let`; a dropped
-  erased function into `Unit` is never built). A linear API whose disposal must run
-  must therefore not return a unit-shaped type; Wiz's effectful consumers return a
-  `World` (`IO`), and the resource tokens of `lib/Ref.wiz` (`Pts`) and `lib/Handle.wiz`
-  (`Owned`) are axioms, so they are not unit-shaped and must be consumed. The exclusion
-  of global constants is what keeps a token type *defined* as a singleton
-  (`def Tok : Type := Unit`, a structure without fields, a brand's singleton tail) from
-  becoming droppable: K2a looks at the type as written, not at its unfolding, which
-  only ever rejects more.
-* Not exempt: `Σ`s of unit-shaped types, Π whose domain is not at the literal `0`
-  (a closure at run time), `Enum [c]`, `ULift Unit`, a neutral type.
+* **What it is.** Linear logic's 1-elimination (Atkey's `let () = u in b`). It is the
+  only way a `Unit` held at 1 is used up: a binder at 1 never goes unused, whatever its
+  type. `T.casesOn1` ends its chain of splits with it (the payload's final `Unit`); the
+  surface syntax is `let () := u; b`.
+* **Why it does not let a 1-variable be used twice, or a 0-variable at run time.** `u`
+  is charged once and `b` as itself (`U₁ + U₂`, the `let` rule at 1 without a binder),
+  in the same context: a 1-variable occurs in one of them, a 0-variable in neither
+  outside erased positions. Unlike K2a it never discharges an obligation: whatever `u`
+  uses is counted, and `u` is used up by being evaluated.
+* **Run time.** In the kernel's evaluator (types, conversion) it computes to `b` by η.
+  Erasure keeps the evaluation of `u`: `let _ := u'; b'`, a strict `let` of a call, which
+  the backend's dead-code pass keeps (it drops only pure values). So a consumer that
+  computed `u` (`useU t`) runs exactly once: tested with a C consumer that releases a lock
+  guard, after which a second `acquire` succeeds (C and LLVM, reference counting).
+* **Only `Unit` itself.** `checkUnit` requires the `whnf` of `u`'s type to be `Unit_l`,
+  never a type that is a singleton by η: a function into `Unit` may be a closure holding
+  a resource, and consuming it would mean applying it, to an argument nobody may have.
+* **Kernel.wiz** has the same rule (`Tm.letUnit`, `checkUnit`). `Backend.wiz` refuses it:
+  its `let`s are lazy and an unused one is dropped, so it can't promise to run `u`. The
+  self-hosted frontend never produces it.
+
+**K2a (withdrawn).** The design proposed that a binder whose type is unit-shaped (`Unit`,
+or `(0 x : D) → … → Unit`) may go unused at any quantity, justified by η. It was
+implemented on this branch and withdrawn after review (linear-review): **any rule that
+trusts a type to "hold nothing" fails as soon as the type has a closure inhabitant.**
+Counterexamples, all negative tests now (group `linear-case`, and `linearCaseRule` in both
+kernels):
+
+* `stash (1 t : T) : (0 e : T = Unit) → Unit := fun e => Eq.subst (fun X => X) e t`
+  hides any linear `t` in a closure of a unit-shaped type; `let 1 g := stash t; k`
+  dropped it. Compiled: a forgotten `Lock` guard, and the next `acquire` deadlocked.
+* The same closure in a λ binder, a `let`, the second component of a pair.
+* A unit-valued consumer `useU : (1 t : Tok) → Unit` whose result is dropped,
+  `(fun (1 u : Unit) => 0) (useU t)`: the reduct does not mention `t`, and erasure need
+  never evaluate it. Linear values are consumed explicitly, so even `Unit` is not exempt.
+* Restricting K2a to a structure's marker tail does not help: a structure value built as
+  a raw pair can put a closure of the tail's type in the tail slot, whose phantom domain
+  is a user-chosen parameter (`S (Tok = Unit)`, or `S (PL (Tok = Unit))` with a
+  propositional wrapper).
+* Restricting it to types written literally (not unfolding globals) does not help:
+  `stash`'s type is literal.
+
+So a linear structure still can't be taken apart (§7.1); linear data that must be taken
+apart is a one-constructor `inductive` with fields at 1 (`T.casesOn1`). Re-encoding
+structures with the marker in a 0-quantity first component (repr-shape B) would make the
+tail an erased position (a closure built there is charged `0·U`, so it can't capture a
+linear variable): a possible later stage.
 
 ### 10.3 ν, out, cocon, coit, scofix
 
@@ -1834,7 +1855,7 @@ Each item says what the code does; the code is what the kernel checks.
 | quantities | any `QRig`, quantity variables, `Qty` | literals `0, 1, ω` only (`Q`, `Kernel.wiz:19`); no `Qty` type |
 | description fields | carry a quantity | carry none; the methods receive `tt` (`Kernel.wiz:830–845`) |
 | `scase` at a quantity (K1) | `q` a quantity term | `q` a literal (`Tm.scase l q …`, `Spine.sscase`); the same rule, `U_m + q·U_x`, payload at `q` |
-| unit-shaped binders unused (K2a) | `popBinder`/`unitShaped` at `lam`, `let`, `split` | `popBinder`/`unitShaped` at `lam`, `let` (no `split`); the same shape, globals (`vglued`) not unfolded |
+| the unit eliminator `let () := u; b` | `Term.letUnit`, `checkUnit`; erasure evaluates `u` | `Tm.letUnit`, `checkUnit`, the same rule; `Backend.wiz` refuses it (lazy `let`s), the frontend never produces it |
 | `split` (`let (x, y)`) | yes | **no**. Projections need an unrestricted pair in both kernels (§7.1, R1), so a pair held at quantity 1 cannot be consumed in Kernel.wiz's fragment, nor at all in the self-hosted language (no `let (x, y)`; its `IO` and `Prod` are at ω): every term that projects one is rejected by both kernels, and terms with `split` are outside the fragment (the differential test's term type `MTm` has no `split`) |
 | numerals, `natOp` | yes | no |
 | levels of data | `Level` | closed numerals (`descr l`, `mu l`, `ulift l`) |

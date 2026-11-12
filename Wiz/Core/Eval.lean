@@ -316,6 +316,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .tt => .tt
   | .empty l => .empty l
   | .absurd m t => vAbsurd (eval g env m) (eval g env t)
+  -- (η for Unit: `u` is `()`, so the eliminator is its body)
+  | .letUnit _ b => eval g env b
   | .eq A a b => vEq g (eval g env A) (eval g env a) (eval g env b)
   | .eqTy A B => vEqType g (eval g env A) (eval g env B)
   | .cast A B e t =>
