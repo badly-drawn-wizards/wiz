@@ -1,5 +1,8 @@
 # Wiz documentation
 
+* [stability.md](stability.md): what a release promises (0.1.z)
+* [release.md](release.md): making a release (checklist, tagging, smoke test)
+* [CHANGELOG.md](../CHANGELOG.md)
 * [building.md](building.md)
 * [ci-runner.md](ci-runner.md): a self-hosted runner for the heavy CI shards
 * [exercises.md](exercises.md): generating the exercise tree from this one
