@@ -4,6 +4,7 @@ import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
 import Wiz.Refs
+import Wiz.Symbols
 import Wiz.Socket
 import Wiz.WebSocket
 import Std.Sync.Channel
@@ -129,6 +130,7 @@ def capabilities : Json :=
     ("documentHighlightProvider", true),
     ("referencesProvider", true), ("renameProvider", Json.mkObj [("prepareProvider", true)]),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
+    ("documentSymbolProvider", true), ("workspaceSymbolProvider", true), ("foldingRangeProvider", true),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
     ("experimental", Json.mkObj [("wizInfoview", Json.mkObj [("version", (1 : Nat)),
@@ -462,6 +464,36 @@ def inToolchain (srv : Server) (doc : Doc) (n : Name) : Bool :=
   match doc.state.declSites.get? n with
   | some (_, m) => !m.isEmpty && srv.trusted.contains m
   | none => true
+/-! ## Symbols and folding (11v) -/
+
+partial def symbolJson (doc : Doc) (sym : Symbols.Symbol) : Json :=
+  Json.mkObj ([("name", Json.str sym.name), ("kind", sym.kind), ("range", range doc.text sym.range),
+               ("selectionRange", range doc.text sym.range)] ++
+              (if sym.detail.isEmpty then [] else [("detail", Json.str sym.detail)]) ++
+              (if sym.children.isEmpty then [] else [("children", Json.arr (sym.children.map (symbolJson doc)))]))
+
+/-- `workspace/symbol`: the declarations of the open documents and their imports whose
+name contains `query` (ignoring case), at most 300. -/
+def workspaceSymbols (srv : Server) (query : String) : Json := Id.run do
+  let q := query.toLower
+  let mut seen : Std.HashSet String := {}
+  let mut out : Array Json := #[]
+  -- the documents' own declarations, then the libraries'
+  for own in [true, false] do
+    for (uri, doc) in srv.docs.toList do
+      for n in doc.state.globals.order do
+        if out.size ≥ 300 then break
+        let m := match doc.state.declSites.get? n with
+          | some (_, m) => m
+          | none => ""
+        if m.isEmpty != own || Symbols.hidden n || seen.contains n then continue
+        if !q.isEmpty && (n.toLower.splitOn q).length < 2 then continue
+        let loc := location srv uri doc n
+        if loc == Json.null then continue
+        seen := seen.insert n
+        out := out.push (Json.mkObj ([("name", Json.str n), ("kind", Symbols.kindOf doc.state.globals n false), ("location", loc)] ++
+          (if m.isEmpty then [] else [("containerName", Json.str m)])))
+  Json.arr out
 
 /-- Handle one message; returns the replies (and notifications) to send. -/
 def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
@@ -543,6 +575,15 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
           if es.isEmpty then none else some (u, Json.arr es)
         (srv, #[reply (Json.mkObj [("changes", Json.mkObj changes.toList)])])
       | none => (srv, #[replyError (-32602) "nothing to rename here"])
+  | "textDocument/documentSymbol" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
+    (srv, #[reply (Json.arr ((Symbols.documentSymbols doc.state).map (symbolJson doc)))])
+  | "textDocument/foldingRange" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
+    let rs := (Symbols.foldingRanges doc.state doc.text).map fun (a, b, k) =>
+      Json.mkObj ([("startLine", (a : Json)), ("endLine", (b : Json))] ++ (if k.isEmpty then [] else [("kind", Json.str k)]))
+    (srv, #[reply (Json.arr rs)])
+  | "workspace/symbol" => (srv, #[reply (workspaceSymbols srv (getStr msg ["params", "query"]))])
   | "textDocument/codeAction" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
     let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])
