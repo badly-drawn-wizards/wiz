@@ -3031,6 +3031,13 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
       st := { st with unchecked := st.unchecked.push (gl, t) }
     unifyGoal gl t
     return ← runTac code info st (fld 2)
+  if tag == TacTag.assignLate then
+    -- (28c) as `assign`, but the term is not inferred by the kernel now: the declaration's
+    -- own check (`addDeclSorted`) is its check
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    unless t.mvars.isEmpty do throwAt info "assignLate: the term has holes"
+    unifyGoal gl t
+    return ← runTac code info st (fld 2)
   if tag == TacTag.newGoal then
     let ty ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
     let m ← freshMeta gl.ctx "goal"

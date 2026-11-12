@@ -390,7 +390,8 @@ def SatT.solveDag (g : Nat) (out : Nat) (st : SatT.St) (close : Expr → Expr �
     -- σ and the node list, once each: definitions the proof mentions by name
     σ ← TacticM.define g (.const "Sat.Env") (.app (.const "Sat.envOf") (SatT.exprsE (.const "Bool") (SatT.revE (SatT.St.vals st) .nil)));
     nodesC ← TacticM.define g (.app (.const "List") (.const "Sat.GNode")) (SatT.gnodesE nodes);
-    TacticM.assign g (close nodesC (SatT.stepsE proof) σ (SatT.holdsE σ nodesC 0 nodes (SatT.St.vals st)))
+    -- (not checked now: the kernel checks the declaration, which is where it costs)
+    TacticM.assignLate g (close nodesC (SatT.stepsE proof) σ (SatT.holdsE σ nodesC 0 nodes (SatT.St.vals st)))
 
 def SatT.decideDag (g : Nat) (lhs rhs : Expr) : TacticM Unit := match SatT.isConst "Bool.true" rhs with
   | .true => do

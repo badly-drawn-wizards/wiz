@@ -143,3 +143,14 @@ clauses hold under `σ` itself). No axioms.
   the definition being elaborated and checked by the kernel like any other (it is not an
   axiom: `#print axioms` does not list it). The proof uses two, `σ` and the node list,
   instead of repeating them in every node's proof.
+* **`TacticM.assignLate`** (a new request): `assign` without the kernel's check of the
+  term at that moment. `assign` type-checks the term with the kernel and the declaration
+  is checked again at the end, so a big proof cost twice (on an 8-bit carry chain: 13 s
+  in `assign`, 14 s at the end); `sat_decide`'s proof is only checked at the end. An
+  ill-typed term is still refused, at the declaration.
+* **Where the time goes** (probes, not measurements): of the remaining check, about half
+  is the gates (`allHold`: each `refl` compared by conversion) and half the LRAT check run
+  by the kernel's evaluator over association lists. Running the check compiled
+  (`native_refl`'s evaluator) did not help: comparing the stated certificate with the
+  expected type costs as much as the check. Faster: a checker for the kernel's evaluator
+  (arrays or maps for the clause database).
