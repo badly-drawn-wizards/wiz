@@ -6213,7 +6213,17 @@ def opticGroup : Group where
     { name := "an unlawful lens has no GetPut proof", run := fun _ =>
         failsOptic ("import Optic\ndef bad : Lens (List Nat) Nat := fun s => match s with\n" ++
           "  | .nil => (0, fun a => List.cons a List.nil)\n  | .cons x xs => (x, fun a => List.cons a (List.cons a xs))\n" ++
-          "def badGP : Lens.GetPut bad := fun s => refl s") "type mismatch" }
+          "def badGP : Lens.GetPut bad := fun s => refl s") "type mismatch" },
+    { name := "the frame rule for values: a zoom keeps every independent place", run := fun _ => do
+        okOptic ("import Optic\n" ++
+          "def t (m : Nat → Result (Unit × Nat)) (s : Pair2 Nat Nat) :\n" ++
+          "    Result.All (fun (p : Unit × Pair2 Nat Nat) => (Pair2.sndL p.2).1 = (Pair2.sndL s).1) (zoom Pair2.fstL m s) :=\n" ++
+          "  zoom.frame Pair2.fstL Pair2.sndL Pair2.indep m s")
+        -- the zoomed place itself is not kept
+        failsOptic ("import Optic\n" ++
+          "def bad (m : Nat → Result (Unit × Nat)) (s : Pair2 Nat Nat) :\n" ++
+          "    Result.All (fun (p : Unit × Pair2 Nat Nat) => (Pair2.fstL p.2).1 = (Pair2.fstL s).1) (zoom Pair2.fstL m s) :=\n" ++
+          "  zoom.frame Pair2.fstL Pair2.sndL Pair2.indep m s") "type mismatch" }
   ]
 
 /-! ## HD8: command macros, reflection, `deriving` -/
@@ -6948,7 +6958,22 @@ def seplogicGroup : Group where
         okLibs (src ++ "def bumpCell_spec (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ Nat.succ a) := by xgo")
         failsLibs (src ++ "def bad (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ a) := by xgo") "unsolved goals" },
     { name := "a wrong specification is not proved by the x-tactics", run := fun _ =>
-        failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" }
+        failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" },
+    { name := "HeapBorrow: a borrow of a heap cell, specified by its functional model", run := fun _ => do
+        okLibs ("import HeapBorrow\n" ++
+          "def incr (n : Nat) : Result (Unit × Nat) := Result.ok ((), Nat.succ n)\n" ++
+          "def t1 (l n : Nat) : Triple (l ↦ n) (Prog.borrowMut l incr) (fun _ => hexists (fun (v : Nat) => hpure (v = Nat.succ n) ⋆ (l ↦ v))) :=\n" ++
+          "  Prog.borrowMut_spec l n incr (fun _ v => v = Nat.succ n) rfl\n" ++
+          "def t2 (l r n m : Nat) : Triple ((l ↦ n) ⋆ (r ↦ m)) (Prog.borrowMut l incr) (fun _ => (l ↦ Nat.succ n) ⋆ (r ↦ m)) := by\n" ++
+          "  xstep\n" ++
+          "  xapp (Prog.handBack_ok l n () (Nat.succ n))\n" ++
+          "def len (n : Nat) : Result Nat := Result.ok (Nat.succ n)\n" ++
+          "def t3 (l n : Nat) : Triple (l ↦ n) (Prog.borrowShr l len) (fun k => hpure (k = Nat.succ n) ⋆ (l ↦ n)) :=\n" ++
+          "  Prog.borrowShr_spec l n len (fun k => k = Nat.succ n) rfl\n")
+        failsLibs ("import HeapBorrow\n" ++
+          "def incr (n : Nat) : Result (Unit × Nat) := Result.ok ((), Nat.succ n)\n" ++
+          "def bad (l n : Nat) : Triple (l ↦ n) (Prog.borrowMut l incr) (fun _ => hexists (fun (v : Nat) => hpure (v = n) ⋆ (l ↦ v))) :=\n" ++
+          "  Prog.borrowMut_spec l n incr (fun _ v => v = n) rfl") "not definitionally equal" }
   ]
 
 

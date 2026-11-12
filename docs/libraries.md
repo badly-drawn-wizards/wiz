@@ -282,6 +282,14 @@ laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpret
 `lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
 freeing a list). See [stage 24](stages/24-separation-logic.md).
 
+`lib/HeapBorrow.wiz` is the bridge to Feral's functional model: a `&mut`/`&` borrow of a
+heap cell (`Prog.borrowMut`, `Prog.borrowMut2`, `Prog.borrowShr`: read the cell, run the
+value-level function, write the final value back), whose triples follow from the
+function's `Result.Holds` specification (`Prog.borrowMut_spec`, …) or from its computed
+result (`Prog.handBack_ok`, `Prog.handBack2_ok`, for `xapp`). How it fits with regions,
+optics and quantities: [Resources in Wiz](resources.md); the example is
+`examples/resources.wiz`.
+
 `lib/Ref.wiz` puts mutable cells in `IO` under linear points-to tokens (plan CS7b). A
 location `l : Loc V` is an ordinary value. Owning the cell is a separate token `Pts l v`
 at quantity 1, so one owner per cell, no leak, no double free and no use after free are

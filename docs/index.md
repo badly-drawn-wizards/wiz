@@ -8,6 +8,7 @@
 * [exercises.md](exercises.md): generating the exercise tree from this one
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
+* [resources.md](resources.md): resources in Wiz: quantities, regions, optics, Feral and separation logic, with one running example
 * [ROADMAP.md](../ROADMAP.md)
 
 ## The stages
