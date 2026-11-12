@@ -655,7 +655,13 @@ def group : Group where
           "def s0t (s : S0) : Type := match s with\n  | .mk n m => Nat\n" ++
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
-        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" }
+        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#258: absurd sees through a computed constructor equation", run := fun _ => do
+        okLib ("import Prelude\ndef f (h : Bool.false = Bool.true) : False := absurd h\n" ++
+          "def g (n : Nat) (h : Nat.succ n = 0) : Nat := absurd h\n" ++
+          "def k (h : @Option.some Nat 1 = .none) : Bool := absurd h\n")
+        failsLibW "import Prelude\ndef f (n : Nat) (h : n = n) : False := absurd h\n" "absurd expects a proof of False or Empty" }
+
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
