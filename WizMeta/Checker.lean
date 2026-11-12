@@ -223,7 +223,11 @@ def whnfEq (E : Env) : Nat → Ctx → Tm → Tm → Tm → M Tm
     | some false =>
       match A' with
       | .pi _ _ A₁ B => pure (eqPi A₁ B a b)
-      | .sigma _ _ A₁ B => pure (eqSigma A₁ B a b)
+      | .sigma _ _ A₁ B =>
+        -- a proof first component: `reflTy` instead of `transp` along it (`Sigma.eqProof`)
+        match ← propOf E n Γ (← whnf E n Γ A₁) with
+        | some true => pure (eqSigmaProof A₁ B a b)
+        | _ => pure (eqSigma A₁ B a b)
       | .unit _ => pure True'
       | .empty _ => pure True'
       | .enum _ => do
