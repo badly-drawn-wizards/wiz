@@ -2802,7 +2802,12 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let trueT : Term R := .const "Bool.true" []
     -- (the command decides it, by `Native.decideNative`, before it adds the axiom)
     let ax := s!"{s.smtDecl}.sat{s.sideDecls.size + 1}.native✝"
-    let d : Decl R := { name := ax, levelParams := [], type := .eq boolT e trueT, value := none }
+    -- (stated as `Sat.IsTrue e`, a definition, not as the equation it unfolds to: the
+    -- kernel's equation type computes both sides when it is evaluated (F5 of
+    -- wiz-notes/kernel-eval.md), so every use would run the check again; the glued
+    -- `IsTrue e` is compared with the use's type by its arguments)
+    let ty : Term R := if g.contains "Sat.IsTrue" then .app (.const "Sat.IsTrue" []) e else .eq boolT e trueT
+    let d : Decl R := { name := ax, levelParams := [], type := ty, value := none }
     modify fun s => { s with globals := s.globals.insert d, sideDecls := s.sideDecls.push d, unifyFails := {} }
     let (r, st) ← refl st gl (Term.const ax [])
     return ← runTac code info st (apply code (fld 2) r)
@@ -2820,12 +2825,20 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let val ← zonk lvl (← reify st.handles (fld 2) lvl)
     unless (Term.mvars ty).isEmpty && (Term.mvars val).isEmpty do throwAt info "tactic: a definition with holes"
     let q : Term R := .qlit QuantitySyntax.explicitDefault
-    let dTy := (List.range lvl).reverse.foldl (fun body j => .pi (names[j]!) .default q (quote g j types[j]!) body none) ty
-    let dVal := (List.range lvl).reverse.foldl (fun body j => Term.lam (names[j]!) body) val
+    -- (a closed value is defined as it is, not over the context: a closed constant can be
+    -- shared with closed terms, such as what native evaluation decides)
+    let closed? : Option (Term R × Term R) := do
+      let ty' ← (List.range lvl).foldlM (fun t _ => t.strengthen? 0) ty
+      let val' ← (List.range lvl).foldlM (fun t _ => t.strengthen? 0) val
+      pure (ty', val')
+    let k := match closed? with | some _ => 0 | none => lvl
+    let (ty, val) := closed?.getD (ty, val)
+    let dTy := (List.range k).reverse.foldl (fun body j => .pi (names[j]!) .default q (quote g j types[j]!) body none) ty
+    let dVal := (List.range k).reverse.foldl (fun body j => Term.lam (names[j]!) body) val
     let n := s!"{s.smtDecl}.def✝{s.sideDecls.size + 1}"
     let d : Decl R := { name := n, levelParams := s.levelParams, type := dTy, value := some dVal }
     modify fun s => { s with globals := s.globals.insert d, sideDecls := s.sideDecls.push d, unifyFails := {} }
-    let use : Term R := (List.range lvl).foldl (fun f j => Term.app f (.var (lvl - 1 - j)))
+    let use : Term R := (List.range k).foldl (fun f j => Term.app f (.var (lvl - 1 - j)))
       (Term.const n (s.levelParams.map Level.param))
     let (r, st) ← refl st gl use
     return ← runTac code info st (apply code (fld 3) r)

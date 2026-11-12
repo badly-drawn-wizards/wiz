@@ -1433,12 +1433,16 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           for d in sides do
             -- (28e) an axiom `….native✝` a tactic asked for is decided here, by running it
             if d.value.isNone && d.name.endsWith ".native✝" then
-              match d.type with
-              | .eq A a b =>
+              let eqn : Option (Term R × Term R × Term R) := match d.type with
+                | .eq A a b => some (A, a, b)
+                | .app (.const "Sat.IsTrue" _) e => some (.const "Bool" [], e, .const "Bool.true" [])
+                | _ => none
+              match eqn with
+              | some (A, a, b) =>
                 match Native.decideNative g s.builtins A a b s.nativeFuel with
                 | .ok _ => pure ()
                 | .error e => report .error cmd.info s!"{d.name}: native evaluation: {e}"; ok := false; break
-              | _ => report .error cmd.info s!"{d.name}: not an equation"; ok := false; break
+              | none => report .error cmd.info s!"{d.name}: not an equation"; ok := false; break
             let r : Except String (Globals R) := if d.value.isSome then
                 (addDeclSorted g d).mapError toString
               else

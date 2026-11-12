@@ -380,11 +380,13 @@ def SatT.showInputs (g : Nat) (model : List Nat) : List Sat.GNode → List Expr 
 -- decide node `out` of `st`, closing goal `g` with `close nodes proof σ holds`
 -- the proof that the LRAT check passes: by the kernel's evaluation (`Sat.trivial`), or
 -- (28e, `native`) by running the checker compiled, an axiom (trusted: --trust-native)
-def SatT.checkProof (g : Nat) (native : Bool) (nodes : List Sat.GNode) (out : Nat) (proofE : Expr) : TacticM Expr :=
+-- (`nodesC`, the node list, is a closed definition: the native axiom's statement is then
+-- exactly the type the proof expects, compared by its arguments, never run)
+def SatT.checkProof (g : Nat) (native : Bool) (nodesC : Expr) (out : Nat) (proofE : Expr) : TacticM Expr :=
   match native with
   | .false => TacticM.pure (.const "Sat.trivial")
   | .true => TacticM.nativeDecide g (Expr.mkApp (.const "Sat.lratCheck")
-      (.cons (Expr.mkApp (.const "Sat.dagFull") (.cons (SatT.gnodesE nodes) (.cons (.lit out) .nil))) (.cons proofE .nil)))
+      (.cons (Expr.mkApp (.const "Sat.dagFull") (.cons nodesC (.cons (.lit out) .nil))) (.cons proofE .nil)))
 
 def SatT.solveDag (g : Nat) (native : Bool) (out : Nat) (st : SatT.St) (close : Expr → Expr → Expr → Expr → Expr → Expr) : TacticM Unit := do
   let nodes := SatT.St.nodes st;
@@ -396,10 +398,10 @@ def SatT.solveDag (g : Nat) (native : Bool) (out : Nat) (st : SatT.St) (close : 
     TacticM.fail (String.append "sat_decide: the goal is false; a counterexample:" m)
   | .unsat proof => do
     let proofE := SatT.stepsE proof;
-    hE ← SatT.checkProof g native nodes out proofE;
     -- σ and the node list, once each: definitions the proof mentions by name
     σ ← TacticM.define g (.const "Sat.Env") (.app (.const "Sat.envOf") (SatT.exprsE (.const "Bool") (SatT.revE (SatT.St.vals st) .nil)));
     nodesC ← TacticM.define g (.app (.const "List") (.const "Sat.GNode")) (SatT.gnodesE nodes);
+    hE ← SatT.checkProof g native nodesC out proofE;
     TacticM.assign g (close nodesC proofE hE σ (SatT.holdsE σ nodesC 0 nodes (SatT.St.vals st)))
 
 def SatT.decideDag (g : Nat) (native : Bool) (lhs rhs : Expr) : TacticM Unit := match SatT.isConst "Bool.true" rhs with
