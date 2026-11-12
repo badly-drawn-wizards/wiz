@@ -129,7 +129,7 @@ def group : Group where
         -- the heap specification of the identity is not one of swap's
         let bad := src ++ "\ndef bad (p q : Nat) (a b : U64) :\n" ++
           "    Triple ((p ↦ a) ⋆ (q ↦ b)) (swapCells p q) (fun _ => (p ↦ a) ⋆ (q ↦ b)) := by\n" ++
-          "  xstep; xstep\n  xapp (Prog.handBack2_ok p q a b () a b)\n"
+          "  xgo\n"
         let e ← firstError bad
         check (((e.splitOn ":")[0]!).toNat! > 69) s!"the error is not in the added definition: {e}" },
     { name := "#lower shows the generated Wiz, item by item", run := fun _ => do
