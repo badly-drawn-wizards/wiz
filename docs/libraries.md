@@ -211,3 +211,9 @@ numeric type:
   constructors are private to `lib/Word.wiz`: build a word with `ofNat` (or, when the
   value is known to be in range, `UIntN.ofBitsTrusted`) and read it with `toNat`. Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
   inlined away), as `UIntN.add a b` was.
+
+## Native structures: word arrays, word maps, interned strings ✅
+
+`lib/WordArray.wiz` (`U8Array`, `U32Array`, `U64Array`), `lib/WordMap.wiz` (`U64Map V`)
+and `lib/Intern.wiz` (`InternTable`, ids as `U32`): list models with laws, run natively
+in compiled code, updated in place when unique. See `docs/stages/29-natives.md`.

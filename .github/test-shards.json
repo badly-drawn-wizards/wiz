@@ -34,6 +34,7 @@
     "lsp",
     "macros",
     "modules",
+    "=natives",
     "=nvim",
     "optic",
     "phantom",
