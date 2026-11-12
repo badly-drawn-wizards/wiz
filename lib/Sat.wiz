@@ -171,31 +171,76 @@ def Sat.rupNext (k : List Sat.Lit → Bool) (α : List Sat.Lit) : Sat.Unit → B
   | .unit l => k (.cons l α)
   | .fail => .false
 
--- The clause database: clauses with their ids (the newest first).
-inductive Sat.Entry where
-  | mk (id : Nat) (c : List Sat.Lit)
-def Sat.Db.eval (τ : Nat → Bool) : List Sat.Entry → Bool
-  | .nil => .true
-  | .cons (.mk _ c) es => Bool.and (Sat.Clause.eval τ c) (Sat.Db.eval τ es)
-def Sat.pick (b : Bool) (c : List Sat.Lit) (rest : Option (List Sat.Lit)) : Option (List Sat.Lit) := match b with
-  | .true => .some c
-  | .false => rest
-def Sat.lookup (h : Nat) : List Sat.Entry → Option (List Sat.Lit)
-  | .nil => .none
-  | .cons (.mk i c) es => Sat.pick (Nat.beq h i) c (Sat.lookup h es)
+-- The clause database: a binary trie keyed by the bits of a clause's id, low bit first,
+-- to a bounded depth (`Sat.idBits`). The kernel evaluates it as data: a lookup is a walk
+-- of at most `idBits` nodes (an association list was a walk of the whole database at every
+-- hint). Soundness does not depend on the keys at all: every clause stored holds, so
+-- whatever a lookup finds holds; two ids with the same path (ids beyond `2^idBits`) can
+-- only make a proof fail, never pass.
+inductive Sat.Trie where
+  | leaf
+  | node (v : Option (List Sat.Lit)) (l r : Sat.Trie)
+def Sat.idBits : Nat := 10
+-- the path of `k`: its low bits, `d` of them
+def Sat.path : Nat → Nat → List Bool
+  | .zero, _ => .nil
+  | .succ d, k => .cons (Nat.isOdd k) (Sat.path d (Nat.div k 2))
 def Sat.optEval (τ : Nat → Bool) : Option (List Sat.Lit) → Bool
   | .none => .true
   | .some c => Sat.Clause.eval τ c
-def Sat.pick_ok (τ : Nat → Bool) (c : List Sat.Lit) (rest : Option (List Sat.Lit)) : (b : Bool) →
-    Sat.Clause.eval τ c = .true → Sat.optEval τ rest = .true → Sat.optEval τ (Sat.pick b c rest) = .true
-  | .true, hc, _ => hc
-  | .false, _, hr => hr
-def Sat.lookup_ok (τ : Nat → Bool) (h : Nat) : (db : List Sat.Entry) → Sat.Db.eval τ db = .true → Sat.optEval τ (Sat.lookup h db) = .true
-  | .nil, _ => rfl
-  | .cons (.mk i c) es, hdb =>
-    Sat.pick_ok τ c (Sat.lookup h es) (Nat.beq h i)
-      (Sat.and_left (Sat.Clause.eval τ c) (Sat.Db.eval τ es) hdb)
-      (Sat.lookup_ok τ h es (Sat.and_right (Sat.Clause.eval τ c) (Sat.Db.eval τ es) hdb))
+def Sat.Db.eval (τ : Nat → Bool) : Sat.Trie → Bool
+  | .leaf => .true
+  | .node v l r => Bool.and (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r))
+def Sat.Trie.get : List Bool → Sat.Trie → Option (List Sat.Lit)
+  | .nil, .leaf => .none
+  | .nil, .node v _ _ => v
+  | .cons _ _, .leaf => .none
+  | .cons .true p, .node _ _ r => Sat.Trie.get p r
+  | .cons .false p, .node _ l _ => Sat.Trie.get p l
+-- `c` at path `p`
+def Sat.Trie.set (c : List Sat.Lit) : List Bool → Sat.Trie → Sat.Trie
+  | .nil, .leaf => .node (.some c) .leaf .leaf
+  | .nil, .node _ l r => .node (.some c) l r
+  | .cons .true p, .leaf => .node .none .leaf (Sat.Trie.set c p .leaf)
+  | .cons .true p, .node v l r => .node v l (Sat.Trie.set c p r)
+  | .cons .false p, .leaf => .node .none (Sat.Trie.set c p .leaf) .leaf
+  | .cons .false p, .node v l r => .node v (Sat.Trie.set c p l) r
+def Sat.lookup (h : Nat) (db : Sat.Trie) : Option (List Sat.Lit) := Sat.Trie.get (Sat.path Sat.idBits h) db
+def Sat.insert (h : Nat) (c : List Sat.Lit) (db : Sat.Trie) : Sat.Trie := Sat.Trie.set c (Sat.path Sat.idBits h) db
+
+-- what a lookup finds holds; an insert of a clause that holds keeps the database true
+def Sat.get_ok (τ : Nat → Bool) : (p : List Bool) → (t : Sat.Trie) → Sat.Db.eval τ t = .true → Sat.optEval τ (Sat.Trie.get p t) = .true
+  | .nil, .leaf, _ => rfl
+  | .nil, .node v l r, h => Sat.and_left (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r)) h
+  | .cons _ _, .leaf, _ => rfl
+  | .cons .true p, .node v l r, h =>
+    Sat.get_ok τ p r (Sat.and_right (Sat.Db.eval τ l) (Sat.Db.eval τ r) (Sat.and_right (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r)) h))
+  | .cons .false p, .node v l r, h =>
+    Sat.get_ok τ p l (Sat.and_left (Sat.Db.eval τ l) (Sat.Db.eval τ r) (Sat.and_right (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r)) h))
+def Sat.node_ok (τ : Nat → Bool) (v : Option (List Sat.Lit)) (l r : Sat.Trie) (hv : Sat.optEval τ v = .true)
+    (hl : Sat.Db.eval τ l = .true) (hr : Sat.Db.eval τ r = .true) : Sat.Db.eval τ (.node v l r) = .true :=
+  Sat.and_intro (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r)) hv (Sat.and_intro (Sat.Db.eval τ l) (Sat.Db.eval τ r) hl hr)
+def Sat.set_ok (τ : Nat → Bool) (c : List Sat.Lit) (hc : Sat.Clause.eval τ c = .true) : (p : List Bool) → (t : Sat.Trie) →
+    Sat.Db.eval τ t = .true → Sat.Db.eval τ (Sat.Trie.set c p t) = .true
+  | .nil, .leaf, _ => Sat.node_ok τ (.some c) .leaf .leaf hc rfl rfl
+  | .nil, .node v l r, h =>
+    let lr := Sat.and_right (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r)) h;
+    Sat.node_ok τ (.some c) l r hc (Sat.and_left (Sat.Db.eval τ l) (Sat.Db.eval τ r) lr) (Sat.and_right (Sat.Db.eval τ l) (Sat.Db.eval τ r) lr)
+  | .cons .true p, .leaf, _ => Sat.node_ok τ .none .leaf (Sat.Trie.set c p .leaf) rfl rfl (Sat.set_ok τ c hc p .leaf rfl)
+  | .cons .true p, .node v l r, h =>
+    let lr := Sat.and_right (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r)) h;
+    Sat.node_ok τ v l (Sat.Trie.set c p r) (Sat.and_left (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r)) h)
+      (Sat.and_left (Sat.Db.eval τ l) (Sat.Db.eval τ r) lr) (Sat.set_ok τ c hc p r (Sat.and_right (Sat.Db.eval τ l) (Sat.Db.eval τ r) lr))
+  | .cons .false p, .leaf, _ => Sat.node_ok τ .none (Sat.Trie.set c p .leaf) .leaf rfl (Sat.set_ok τ c hc p .leaf rfl) rfl
+  | .cons .false p, .node v l r, h =>
+    let lr := Sat.and_right (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r)) h;
+    Sat.node_ok τ v (Sat.Trie.set c p l) r (Sat.and_left (Sat.optEval τ v) (Bool.and (Sat.Db.eval τ l) (Sat.Db.eval τ r)) h)
+      (Sat.set_ok τ c hc p l (Sat.and_left (Sat.Db.eval τ l) (Sat.Db.eval τ r) lr)) (Sat.and_right (Sat.Db.eval τ l) (Sat.Db.eval τ r) lr)
+def Sat.lookup_ok (τ : Nat → Bool) (h : Nat) (db : Sat.Trie) (hdb : Sat.Db.eval τ db = .true) : Sat.optEval τ (Sat.lookup h db) = .true :=
+  Sat.get_ok τ (Sat.path Sat.idBits h) db hdb
+def Sat.insert_ok (τ : Nat → Bool) (h : Nat) (c : List Sat.Lit) (db : Sat.Trie) (hc : Sat.Clause.eval τ c = .true)
+    (hdb : Sat.Db.eval τ db = .true) : Sat.Db.eval τ (Sat.insert h c db) = .true :=
+  Sat.set_ok τ c hc (Sat.path Sat.idBits h) db hdb
 def Sat.withClause (k : List Sat.Lit → Bool) : Option (List Sat.Lit) → Bool
   | .none => .false
   | .some c => k c
@@ -206,7 +251,7 @@ def Sat.withClause_ok (τ : Nat → Bool) (k : List Sat.Lit → Bool) : (o : Opt
   | .some c, ho, hk, h => hk c ho h
 
 -- Follow the hints: each must be unit (its literal is added to α) or, the last, a conflict.
-def Sat.rupGo (db : List Sat.Entry) : List Nat → List Sat.Lit → Bool
+def Sat.rupGo (db : Sat.Trie) : List Nat → List Sat.Lit → Bool
   | .nil, _ => .false
   | .cons h hs, α =>
     Sat.withClause (fun c => Sat.rupNext (fun β => Sat.rupGo db hs β) α (Sat.classify (Sat.unfalsified α c))) (Sat.lookup h db)
@@ -224,7 +269,7 @@ def Sat.rupNext_ok (τ : Nat → Bool) (k : List Sat.Lit → Bool) (α : List Sa
   | .nil, hr, _ => absurd hr.1
   | .cons l rest, hr, h => Sat.rupTail_ok τ k α hα hk l rest hr h
 
-def Sat.rupGo_ok (τ : Nat → Bool) (db : List Sat.Entry) (hdb : Sat.Db.eval τ db = .true) : (hs : List Nat) → (α : List Sat.Lit) →
+def Sat.rupGo_ok (τ : Nat → Bool) (db : Sat.Trie) (hdb : Sat.Db.eval τ db = .true) : (hs : List Nat) → (α : List Sat.Lit) →
     Sat.holds τ α = .true → Sat.rupGo db hs α = .true → False
   | .nil, _, _, h => absurd h.1
   | .cons h hs, α, hα, hg =>
@@ -239,7 +284,7 @@ def Sat.rupGo_ok (τ : Nat → Bool) (db : List Sat.Entry) (hdb : Sat.Db.eval τ
 def Sat.negAll : List Sat.Lit → List Sat.Lit
   | .nil => .nil
   | .cons l ls => .cons (Sat.Lit.neg l) (Sat.negAll ls)
-def Sat.rup (db : List Sat.Entry) (c : List Sat.Lit) (hints : List Nat) : Bool := Sat.rupGo db hints (Sat.negAll c)
+def Sat.rup (db : Sat.Trie) (c : List Sat.Lit) (hints : List Nat) : Bool := Sat.rupGo db hints (Sat.negAll c)
 
 def Sat.negAll_ok (τ : Nat → Bool) : (c : List Sat.Lit) → Sat.Clause.eval τ c = .false → Sat.holds τ (Sat.negAll c) = .true
   | .nil, _ => rfl
@@ -250,7 +295,7 @@ def Sat.negAll_ok (τ : Nat → Bool) : (c : List Sat.Lit) → Sat.Clause.eval �
     Sat.and_intro (Sat.Lit.eval τ (Sat.Lit.neg l)) (Sat.holds τ (Sat.negAll ls)) (Sat.Lit.eval_neg' τ l hl) (Sat.negAll_ok τ ls hls)
 
 -- a clause that passes the RUP check holds wherever the database does
-def Sat.rup_ok (τ : Nat → Bool) (db : List Sat.Entry) (c : List Sat.Lit) (hints : List Nat)
+def Sat.rup_ok (τ : Nat → Bool) (db : Sat.Trie) (c : List Sat.Lit) (hints : List Nat)
     (hdb : Sat.Db.eval τ db = .true) (h : Sat.rup db c hints = .true) : Sat.Clause.eval τ c = .true :=
   Sat.byCases (Sat.Clause.eval τ c) (fun e => Sat.rupGo_ok τ db hdb hints (Sat.negAll c) (Sat.negAll_ok τ c e) h)
 
@@ -264,51 +309,50 @@ inductive Sat.Step where
 def Sat.isNil : List Sat.Lit → Bool
   | .nil => .true
   | .cons _ _ => .false
-def Sat.stepCheck (k : List Sat.Entry → Bool) (db : List Sat.Entry) : Sat.Step → Bool
-  | .add id c hints => Bool.and (Sat.rup db c hints) (Bool.or (Sat.isNil c) (k (.cons (.mk id c) db)))
+def Sat.stepCheck (k : Sat.Trie → Bool) (db : Sat.Trie) : Sat.Step → Bool
+  | .add id c hints => Bool.and (Sat.rup db c hints) (Bool.or (Sat.isNil c) (k (Sat.insert id c db)))
   | .del _ => k db
 -- the proof derives the empty clause from `db`
-def Sat.check : List Sat.Step → List Sat.Entry → Bool
+def Sat.check : List Sat.Step → Sat.Trie → Bool
   | .nil, _ => .false
   | .cons s ss, db => Sat.stepCheck (fun db' => Sat.check ss db') db s
 
 def Sat.isNil_ok (τ : Nat → Bool) : (c : List Sat.Lit) → Sat.isNil c = .true → Sat.Clause.eval τ c = .true → False
   | .nil, _, h => absurd h.1
   | .cons _ _, h, _ => absurd h.1
-def Sat.stepCheck_ok (τ : Nat → Bool) (k : List Sat.Entry → Bool) (db : List Sat.Entry) (hdb : Sat.Db.eval τ db = .true)
-    (hk : (db' : List Sat.Entry) → Sat.Db.eval τ db' = .true → k db' = .true → False) : (s : Sat.Step) →
+def Sat.stepCheck_ok (τ : Nat → Bool) (k : Sat.Trie → Bool) (db : Sat.Trie) (hdb : Sat.Db.eval τ db = .true)
+    (hk : (db' : Sat.Trie) → Sat.Db.eval τ db' = .true → k db' = .true → False) : (s : Sat.Step) →
     Sat.stepCheck k db s = .true → False
   | .add id c hints, h =>
-    let hr := Sat.and_left (Sat.rup db c hints) (Bool.or (Sat.isNil c) (k (.cons (.mk id c) db))) h;
+    let hr := Sat.and_left (Sat.rup db c hints) (Bool.or (Sat.isNil c) (k (Sat.insert id c db))) h;
     let hc : Sat.Clause.eval τ c = .true := Sat.rup_ok τ db c hints hdb hr;
-    Or.elim (Sat.or_cases (Sat.isNil c) (k (.cons (.mk id c) db)) (Sat.and_right (Sat.rup db c hints) (Bool.or (Sat.isNil c) (k (.cons (.mk id c) db))) h))
+    Or.elim (Sat.or_cases (Sat.isNil c) (k (Sat.insert id c db)) (Sat.and_right (Sat.rup db c hints) (Bool.or (Sat.isNil c) (k (Sat.insert id c db))) h))
       (fun e => Sat.isNil_ok τ c e hc)
-      (fun e => hk (.cons (.mk id c) db) (Sat.and_intro (Sat.Clause.eval τ c) (Sat.Db.eval τ db) hc hdb) e)
+      (fun e => hk (Sat.insert id c db) (Sat.insert_ok τ id c db hc hdb) e)
   | .del _, h => hk db hdb h
-def Sat.check_ok (τ : Nat → Bool) : (ps : List Sat.Step) → (db : List Sat.Entry) → Sat.Db.eval τ db = .true → Sat.check ps db = .true → False
+def Sat.check_ok (τ : Nat → Bool) : (ps : List Sat.Step) → (db : Sat.Trie) → Sat.Db.eval τ db = .true → Sat.check ps db = .true → False
   | .nil, _, _, h => absurd h.1
   | .cons s ss, db, hdb, h =>
     Sat.stepCheck_ok τ (fun db' => Sat.check ss db') db hdb (fun db' h' hc => Sat.check_ok τ ss db' h' hc) s h
 
--- the input clauses, numbered from `i` (DIMACS numbers them from 1, newest last; the
--- database keeps the newest first, so the list is reversed)
-def Sat.initDb : Nat → List (List Sat.Lit) → List Sat.Entry → List Sat.Entry
+-- the input clauses, numbered from `i` (as DIMACS numbers them, from 1)
+def Sat.initDb : Nat → List (List Sat.Lit) → Sat.Trie → Sat.Trie
   | _, .nil, acc => acc
-  | i, .cons c cs, acc => Sat.initDb (Nat.succ i) cs (.cons (.mk i c) acc)
-def Sat.initDb_ok (τ : Nat → Bool) : (i : Nat) → (cs : List (List Sat.Lit)) → (acc : List Sat.Entry) →
+  | i, .cons c cs, acc => Sat.initDb (Nat.succ i) cs (Sat.insert i c acc)
+def Sat.initDb_ok (τ : Nat → Bool) : (i : Nat) → (cs : List (List Sat.Lit)) → (acc : Sat.Trie) →
     Sat.Cnf.eval τ cs = .true → Sat.Db.eval τ acc = .true → Sat.Db.eval τ (Sat.initDb i cs acc) = .true
   | _, .nil, _, _, ha => ha
   | i, .cons c cs, acc, h, ha =>
-    Sat.initDb_ok τ (Nat.succ i) cs (.cons (.mk i c) acc)
+    Sat.initDb_ok τ (Nat.succ i) cs (Sat.insert i c acc)
       (Sat.and_right (Sat.Clause.eval τ c) (Sat.Cnf.eval τ cs) h)
-      (Sat.and_intro (Sat.Clause.eval τ c) (Sat.Db.eval τ acc) (Sat.and_left (Sat.Clause.eval τ c) (Sat.Cnf.eval τ cs) h) ha)
+      (Sat.insert_ok τ i c acc (Sat.and_left (Sat.Clause.eval τ c) (Sat.Cnf.eval τ cs) h) ha)
 
 -- **The checker is sound**: a formula with an LRAT refutation has no model.
 def Sat.lratCheck (cnf : List (List Sat.Lit)) (proof : List Sat.Step) : Bool :=
-  Sat.check proof (Sat.initDb 1 cnf .nil)
+  Sat.check proof (Sat.initDb 1 cnf .leaf)
 def Sat.lratCheck_sound (cnf : List (List Sat.Lit)) (proof : List Sat.Step) (h : Sat.lratCheck cnf proof = .true)
     (τ : Nat → Bool) (hτ : Sat.Cnf.eval τ cnf = .true) : False :=
-  Sat.check_ok τ proof (Sat.initDb 1 cnf .nil) (Sat.initDb_ok τ 1 cnf .nil hτ rfl) h
+  Sat.check_ok τ proof (Sat.initDb 1 cnf .leaf) (Sat.initDb_ok τ 1 cnf .leaf hτ rfl) h
 
 -- ## Boolean formulas and the Tseitin translation
 --
