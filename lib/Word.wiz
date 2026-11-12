@@ -299,6 +299,13 @@ instance {ω w : Nat} : Mul (IntN w) := Mul.mk IntN.mul
 instance {ω w : Nat} : Neg (IntN w) := Neg.mk IntN.neg
 instance {ω w : Nat} : Div (IntN w) := Div.mk IntN.div
 instance {ω w : Nat} : Mod (IntN w) := Mod.mk IntN.rem
+-- bitwise (H14 S2): `&&& ||| ^^^ ~~~ <<< >>>` on unsigned words
+instance {ω w : Nat} : AndOp (UIntN w) := AndOp.mk UIntN.land
+instance {ω w : Nat} : OrOp (UIntN w) := OrOp.mk UIntN.lor
+instance {ω w : Nat} : XorOp (UIntN w) := XorOp.mk UIntN.xor
+instance {ω w : Nat} : Complement (UIntN w) := Complement.mk UIntN.not
+instance {ω w : Nat} : ShiftLeft (UIntN w) := ShiftLeft.mk UIntN.shiftLeft
+instance {ω w : Nat} : ShiftRight (UIntN w) := ShiftRight.mk UIntN.shiftRight
 
 -- Rust's fixed widths. Operations come from the width-indexed types (`x.add y`).
 def U8 : Type := UIntN 8

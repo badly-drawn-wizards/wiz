@@ -504,6 +504,9 @@ the environment does so deterministically (never iterate the hash map directly).
 structure Globals (R : Type) where
   decls : Std.HashMap Name (Decl R) := {}
   order : Array Name := #[]
+  /-- each declaration's position in `order` (its definitional height, for lazy delta in
+  unification: `Globals.height`) -/
+  heights : Std.HashMap Name Nat := {}
   /-- `builtin key := name` registrations, such as `("nat", Nat)` and `("nat.add", Nat.add)` -/
   builtins : List (Name × Name) := []
   /-- the registrations made outside the toolchain's library, which nothing checks: each
@@ -565,6 +568,10 @@ structure Globals (R : Type) where
   /-- (13b) structures with a private constructor, with their module: elsewhere the
   elaborator sees them as opaque (`Globals.elabView`). The kernel ignores this. -/
   opaques : Std.HashMap Name String := {}
+  /-- (13b) the definitions `elabView` hid (the opaque types of other modules), kept so
+  that conversion can compare two *values* of such a type in the full view (`conv`; only
+  a Bool comes out, so nothing of the definition is exposed) -/
+  hidden : Std.HashMap Name (Decl R) := {}
   /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
   module : String := ""
   /-- (11r) how terms print as notation: unexpanders and the grammar (`Syntax/PPTable.lean`).
@@ -587,11 +594,18 @@ def contains (g : Globals R) (n : Name) : Bool := g.decls.contains n
 def builtinKey? (g : Globals R) (n : Name) : Option Name :=
   (g.builtins.find? (·.2 == n)).map (·.1)
 
+/-- A declaration's position in `order` (later declarations are higher); 0 if unknown. -/
+def height (g : Globals R) (n : Name) : Nat :=
+  match g.heights[n]? with
+  | some h => h
+  | none => if g.heights.isEmpty then (g.order.idxOf? n).getD 0 else 0
+
 /-- Unchecked insertion. Use `Wiz.addDecl` to type check first. -/
 def insert (g : Globals R) (d : Decl R) : Globals R :=
   { g with
     decls := g.decls.insert d.name d
     order := if g.decls.contains d.name then g.order else g.order.push d.name
+    heights := if g.decls.contains d.name then g.heights else g.heights.insert d.name g.order.size
     declModule := if g.module == "" || g.decls.contains d.name then g.declModule
       else g.declModule.insert d.name g.module }
 
@@ -604,8 +618,13 @@ def elabView (g : Globals R) : Globals R :=
   g.opaques.fold (init := g) fun g' n m =>
     if m == g.module then g' else
     match g'.decls[n]? with
-    | some d => { g' with decls := g'.decls.insert n { d with value := none } }
+    | some d => { g' with decls := g'.decls.insert n { d with value := none }, hidden := g'.hidden.insert n d }
     | none => g'
+
+/-- (13b) The environment with the definitions `elabView` hid put back. -/
+def fullView (g : Globals R) : Globals R :=
+  if g.hidden.isEmpty then g else
+  { g with decls := g.hidden.fold (fun m n d => m.insert n d) g.decls, hidden := {} }
 
 /-- (13b) Is `T` opaque here (a structure, inductive or coinductive type with private
 constructors, fields or observations, of another module)? Its module, if so. -/
