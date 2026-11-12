@@ -316,6 +316,32 @@ def unboxedSigma (g : Globals R) (lvl : Nat) (ty : VTy R) : Bool :=
   | .sigma _ _ _ B _ => erasedFunTy g (Closure.inst g B (.var lvl)) (lvl + 1)
   | _ => false
 
+/-- (linear-case stage 2) Does a value of this type carry nothing at run time: `erasable`
+(the predicate erasure itself uses, so the two can't drift), `Unit`, or a `Σ` of such
+(a structure with only contentless fields), after `whnf` (so a named `def Tk := Unit`
+counts)? -/
+partial def contentless (ctx : Ctx R) (ty : VTy R) : Bool :=
+  erasable ctx ty ||
+  match whnf ty with
+  | .unit _ => true
+  | .sigma x _ A B _ => contentless ctx A && contentless (ctx.bind x [] A) (Closure.inst ctx.globals B (.var ctx.lvl))
+  | _ => false
+
+/-- (linear-case stage 2) Is the result of the function type `ty` (under its Πs)
+contentless, or is a prefix of it already erasable? `extern` and `implemented_by` refuse
+such a type: an effect behind it would be dropped by erasure. (`IO A` is a Π over the
+linear `World` into `A × World`, which is never contentless.) -/
+partial def resultContentless (g : Globals R) (ty : VTy R) : Bool :=
+  go { globals := g } ty 1000
+where
+  go (ctx : Ctx R) (ty : VTy R) : Nat → Bool
+    | 0 => false
+    | fuel + 1 =>
+      if contentless ctx ty then true else
+      match whnf ty with
+      | .pi x _ _ A B _ => go (ctx.bind x [] A) (Closure.inst ctx.globals B (.var ctx.lvl)) fuel
+      | _ => false
+
 /-- (linear-case stage 2, defence in depth) Is `t` an application of a foreign function
 (`extern`)? Its call is kept even where its type is erasable: an effect never hides in a
 value that erasure drops. (`extern` itself refuses a pure `Unit` result; this covers a
