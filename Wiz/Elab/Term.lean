@@ -760,6 +760,20 @@ def sidesOk (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R Boo
   try sameSides ctx A? a b; pure true
   catch _ => set s; pure false
 
+/-- (glued equations) `rfl` at a glued equation whose sides agree (`sidesOk`): one `refl` of
+the sides as written, without computing the equation. Its computed form can be far bigger
+than the sides: at a data type a nest of payload equations as big as the values (a sorted
+list against itself), at a structure a Σ of casts whose `transp` motives contain the rest
+of the Σ, exponential in the dependent fields (`C.op.op = C` for a category). Not at two
+numerals, where the computed `True` is immediate (`rfl` is `()` there, as before). `none`:
+then as before (computed, and proved by its shape, `rflProof`). -/
+def rflWritten? (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Option (Term R)) := do
+  let .lazyEq A a b _ ← forceMeta ty | return none
+  if (whnf a) matches .natLit _ && (whnf b) matches .natLit _ then return none
+  unless ← sidesOk ctx (some A) a b do return none
+  let g ← getGlobals
+  return some (.refl (quote g ctx.lvl A) (quote g ctx.lvl a))
+
 /-- `rfl` at an equation that has already computed: `succ a = succ b` at `Nat` is a Σ of
 `True`s and `a = b`, an equation of functions a Π. (13n) At a Σ that `vEq` computed from
 `a = b` with `a ≡ b`, the proof is one `refl a` (`eqSigmaSides?`). Otherwise build it by the same shape
@@ -1024,6 +1038,8 @@ where
             throw err
     | "term.rfl" =>
       let g ← getGlobals
+      -- (glued equations) the sides as written, before the equation is computed
+      if let some t ← rflWritten? ctx expected then return t
       match ← force expected with
       | .neutral (.eq A a b) #[] =>
         sameSides ctx (some A) a b

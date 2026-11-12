@@ -401,7 +401,8 @@ def group : Group where
         -- (mandatory sorts: the domain `Type` is in `Sort 2`, the codomain, an equation, in `Prop`)
         let ty (s : BinderSorts) : Term ZeroOneMany := .pi "X" .default w (.sort 1) (.eqTy (.var 0) (.var 0)) s
         let d (s : BinderSorts) : Decl ZeroOneMany :=
-          { name := "r", type := ty s, value := some (.lam "X" (.reflTy (.var 0))) }
+          -- (the value is a proof: marked, as the marking pass would)
+          { name := "r", type := ty s, value := some (.prf .zero (.lam "X" (.reflTy (.var 0)))) }
         check ((addDecl {} (d ⟨2, 0⟩)) matches .ok _) "the right sort note was rejected"
         check ((addDecl {} (d ⟨2, 1⟩)) matches .error _) "a wrong sort note (Type for a proposition) was accepted" },
     { name := "one-pass reference counting agrees with the specification (insertRC)", run := fun _ => do
@@ -539,6 +540,30 @@ def gluedGroup : Group where
     { name := "rfl at a glued equation: computed, and at a Σ one refl of the sides as written", run := fun _ => do
         let _ ← elabOk (slowStatement ++ "def r : chk (slow 3000 1) = .true := rfl\n" ++
           "def s : ((0, Nat.add 1 1) : Nat × Nat) = (0, 2) := rfl\n")
+        pure () },
+    -- (wiz-reals' eqblow) `rfl` at two equal computed lists: the computed equation is a
+    -- nest of payload equations as big as the lists, proved piece by piece (N = 24: 5 s,
+    -- N = 36: over 2 GB); one `refl` of the sides as written compares them once
+    { name := "rfl at two equal computed lists is one comparison of the lists (insertion sort, 36)", run := fun _ => do
+        let src := "import Prelude\ndef ins (x : Nat) : List Nat → List Nat\n  | .nil => .cons x .nil\n" ++
+          "  | .cons y ys => if Nat.le x y then .cons x (.cons y ys) else .cons y (ins x ys)\n" ++
+          "def sort : List Nat → List Nat\n  | .nil => .nil\n  | .cons x xs => ins x (sort xs)\n" ++
+          "def mk : Nat → List Nat\n  | .zero => .nil\n  | .succ n => .cons (Nat.mod (Nat.mul n 7) 13) (mk n)\n" ++
+          "def chk : sort (mk 36) = List.append (sort (mk 36)) .nil := rfl\n"
+        let _ ← within 15 1000 fun _ => elabOk src
+        pure () },
+    -- (wiz-cats' B3) `rfl` at an equation of two structures with dependent fields: the
+    -- computed equation is a Σ of casts whose motives contain the rest of the Σ,
+    -- exponential in the fields (`C.op.op = C`: over 2 GB); `refl C` takes no time
+    { name := "rfl at an equation of two dependent structures (a category's op.op) is one refl", run := fun _ => do
+        let src := "import Prelude\nstructure Cat.{u, v} where\n  Obj : Type u\n  Hom : Obj → Obj → Type v\n" ++
+          "  id : (X : Obj) → Hom X X\n  comp : {X Y Z : Obj} → Hom X Y → Hom Y Z → Hom X Z\n" ++
+          "  id_comp : {X Y : Obj} → (0 f : Hom X Y) → comp (id X) f = f\n" ++
+          "  comp_id : {X Y : Obj} → (0 f : Hom X Y) → comp f (id Y) = f\n" ++
+          "def Cat.op.{u, v} (C : Cat.{u, v}) : Cat.{u, v} :=\n" ++
+          "  Cat.mk C.Obj (fun X Y => C.Hom Y X) C.id (fun f g => C.comp g f) (fun f => C.comp_id f) (fun f => C.id_comp f)\n" ++
+          "def opop.{u, v} (C : Cat.{u, v}) : Cat.op (Cat.op C) = C := rfl\n#check opop\n"
+        let _ ← within 15 1000 fun _ => elabOk src
         pure () },
     -- the differential test: with and without glued equations, the frontend accepts
     -- the same declarations and reports errors at the same places, on every corpus
