@@ -6799,6 +6799,8 @@ def hdlGroup : Group where
            ".cons 17 (.cons 5 (.cons 4 .nil))"] },
     { name := "H14 T: temporal properties (UART idle-high and delivery for ever, valid/ready refinement, stability, liveness)", run := fun _ => do
         okLibs (← IO.FS.readFile "examples/hdl-temporal.wiz") },
+    { name := "H14 T2: the iCEstick UART, temporal properties for every trace and byte (framing, idle-high, receiver, loopback)", run := fun _ => do
+        okLibs (← IO.FS.readFile "examples/hdl-uart-temporal.wiz") },
     { name := "H14 T: temporal notation □ ◇ ○ ~> |-> |=>, printed back; `|=>` leaves `fun`/`match` alone (13o)", run := fun _ => do
         okLibs ("import Hdl.Temporal\n" ++
           "def p (a b : TL Nat) : TL Nat := □ (a ~> ◇ b)\n#check p\n#check fun (a b : TL Nat) => TL.always (TL.leadsTo a (TL.eventually b))\n" ++
