@@ -45,16 +45,16 @@ def finishInfos (st : ElabState R) : Array (Info R) :=
   | .error _ => #[]
 
 /-- A goal as text: one hypothesis per line (`x : T`, `x : T := v`), then `⊢ T`. -/
-def GoalView.show (g : GoalView R) : String := Id.run do
+def GoalView.show (g : GoalView R) (env : Option (Globals R) := none) : String := Id.run do
   let mut lines : Array String := #[]
   let mut names : List Name := []
   for (x, ty, v) in g.hyps do
     let val := match v with
-      | some v => s!" := {v.pretty names}"
+      | some v => s!" := {v.pretty names env}"
       | none => ""
-    lines := lines.push s!"{x} : {ty.pretty names}{val}"
+    lines := lines.push s!"{x} : {ty.pretty names env}{val}"
     names := x :: names
-  lines := lines.push s!"⊢ {g.target.pretty names}"
+  lines := lines.push s!"⊢ {g.target.pretty names env}"
   "\n".intercalate lines.toList
 
 end Wiz

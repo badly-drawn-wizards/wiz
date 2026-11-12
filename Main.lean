@@ -1,8 +1,10 @@
 import Wiz
+import Wiz.Version
 
 open Wiz
 
 def usage : String := "usage:
+  wiz --version           print the version (and, for a release, its commit)
   wiz parse FILE          print the syntax tree of every command
   wiz check FILE          elaborate and type check (quantities: 0, 1, ω)
   wiz build FILE -o OUT [--llvm]   compile the definition `main` to an executable (via C or LLVM)
@@ -14,6 +16,8 @@ def usage : String := "usage:
   wiz lsp --infoview SOCK          … and for infoviews on the Unix socket SOCK
   wiz lsp --ws [ADDR:]PORT         … and on a WebSocket (127.0.0.1 unless ADDR is given;
                                    both flags may be given; --no-stdio: no editor on stdin)
+  wiz lsp … --web DIR              the web infoview's files, served on the WebSocket's port
+                                   (default: share/wiz/web, or web/out in a checkout)
 options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since it is
 content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full|nonprop|refl
@@ -25,6 +29,7 @@ compiler option (turns the cache off): --unbox-structs (22i: a structure's last 
 unboxed; not stable under substitution, so off by default)
 --strict-privacy (13b, an experiment; turns the cache off): check each declaration again with
   the definitions of other modules' types with private parts hidden
+--pp-all (11r; turns the cache off): print terms without notation (as `set_option pp.all true`)
 toolchain: --cc X (default: a release's own share/wiz/cc, else cc), --cflags \"…\" --ldflags \"…\" (where GMP lives),
   --libs \"…\" (say -lm), --gmp \"…\" (default -lgmp), --llc X (default llc)"
 
@@ -73,7 +78,17 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
     if port ≥ 65536 then none
     pure ({ l with ws := some (addr, port.toUInt16) }, io)
   | "--no-stdio" :: rest => do let (l, _) ← lspOptions rest; pure (l, false)
+  | "--web" :: dir :: rest => do let (l, io) ← lspOptions rest; pure ({ l with web := some dir }, io)
   | _ => none
+
+/-- (11w) The web infoview's files (`web/build.sh`'s output) beside the toolchain's
+library: `share/wiz/web` in a release, `web/out` in a checkout. -/
+def webDir : IO (Option String) := do
+  let lib ← Module.toolchainLib
+  let base := (lib.parent.getD ".")
+  for d in [base / "web", base / "web" / "out"] do
+    if ← (d / "wiz-infoview.mjs").pathExists then return some (← IO.FS.realPath d).toString
+  pure none
 
 /-- The experimental kernel options (D1): `--regularity MODE`, `--predicative-prop`. -/
 initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
@@ -81,6 +96,9 @@ initialize kernelOpts : IO.Ref (Regularity × Bool) ← IO.mkRef (.off, false)
 /-- `--strict-privacy` (13b, an experiment): the second check of every declaration against
 the elaborator's view. Off by default. -/
 initialize strictPrivacyOpt : IO.Ref Bool ← IO.mkRef false
+
+/-- (11r) `--pp-all`: terms print without notation. -/
+initialize ppAllOpt : IO.Ref Bool ← IO.mkRef false
 
 /-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
 initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
@@ -130,11 +148,12 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
       messages := shadow.toArray,
-      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get },
+      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, strictPrivacy := ← strictPrivacyOpt.get,
+                   pp := { useNotation := !(← ppAllOpt.get) } },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
   let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .ground && !unboxStructs &&
-      !(← strictPrivacyOpt.get)
+      !(← strictPrivacyOpt.get) && !(← ppAllOpt.get)
     then tc.cacheDir else none
   match cache with
   | none => Cache.elaborateUncached input init
@@ -188,6 +207,7 @@ def kernelOpt : List String → Except String (Regularity × Bool × List String
   | [] => return (.off, false, [])
 
 def main (args : List String) : IO UInt32 := do
+  if args == ["--version"] then IO.println (← versionLine "wiz"); return 0
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   -- (26f) a release toolchain's own C compiler, GMP and GC are the defaults
@@ -195,6 +215,8 @@ def main (args : List String) : IO UInt32 := do
   let (tc, args) := defaults.parseFlags args
   if args.contains "--strict-privacy" then strictPrivacyOpt.set true
   let args := args.filter (· != "--strict-privacy")
+  if args.contains "--pp-all" then ppAllOpt.set true
+  let args := args.filter (· != "--pp-all")
   if args.contains "--unbox-structs" then unboxOpt.set true
   let args := args.filter (· != "--unbox-structs")
   lazyProofsOpt.set (!args.contains "--eager-proofs")
@@ -222,11 +244,11 @@ def main (args : List String) : IO UInt32 := do
     buildCmd tc path out true false true
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
-  | ["lsp"] => do LSP.serve (← loadLibraryPaths tc) (trusted := ← libTrusted tc); pure 0
   | "lsp" :: opts => do
     match lspOptions opts with
     | none => IO.println usage; pure 2
     | some (listen, stdio) =>
+      let listen ← if listen.web.isSome then pure listen else do pure { listen with web := ← webDir }
       LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc)
       -- (an infoview's reader thread may still be blocked: don't wait for it)
       IO.Process.exit 0

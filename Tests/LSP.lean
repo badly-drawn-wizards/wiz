@@ -196,7 +196,26 @@ def group : Group where
             let (tt, subs) := (t.prettyTagged [] []).run #[]
             unless tt.flatten == t.pretty do
               throw (IO.userError s!"{n}: {tt.flatten} ≠ {t.pretty}")
-            check (subs.size > 0) s!"{n}: no tags" }
+            check (subs.size > 0) s!"{n}: no tags" },
+    { name := "tagged printing with notation agrees with the printer, and tags the parts (11r)", run := fun _ => do
+        let p ← prelude
+        let st := runFrontend (R := ZeroOneMany) "import Prelude\ndef t (n : Nat) : List Nat := [n + 2, 3]"
+          { trustedModule := Tests.libModule, loader := fun _ => some p }
+        let g := st.globals
+        for n in g.order do
+          let some d := g.find? n | continue
+          for t in [d.type] ++ d.value.toList do
+            let (tt, _) := (t.prettyTagged [] [] (some g)).run #[]
+            unless tt.flatten == t.pretty [] (some g) do
+              throw (IO.userError s!"{n}: {tt.flatten} ≠ {t.pretty [] (some g)}")
+        let some d := g.find? "t" | throw (IO.userError "no t")
+        let some v := d.value | throw (IO.userError "no value")
+        let (tt, subs) := (v.prettyTagged [] [] (some g)).run #[]
+        checkEq "fun n => [n + 2, 3]" tt.flatten
+        -- the variable, the numerals, the sum and the list are subterms of their own
+        let shown := subs.toList.map fun sub => sub.term.pretty sub.names (some g)
+        for x in ["n", "2", "3", "n + 2", "[n + 2, 3]"] do
+          check (shown.contains x) s!"no tag for {x}: {shown}" }
   ]
 
 /-- Apply a `WorkspaceEdit` (for `file:///t.wiz`) to `src`. -/
@@ -566,6 +585,31 @@ def serverGroup : Group where
         check ((LSP.getStr r ["uri"]).endsWith "lib/Prelude.wiz") s!"import: {r.compress}"
         let (_, r) := ask srv "textDocument/hover" src (offAfter src "import Pre" (-1))
         check (has r "module `Prelude`") s!"import hover: {r.compress}" },
+    { name := "11w: at the start of a tactic, the goals before it (inside it, after)", run := fun _ => do
+        let src := "import Prelude\ndef k : (A : Type) → A → Nat → A := by\n  intro A\n  intro x\n  intro n\n  exact x\n"
+        let (srv, _) ← openDoc src
+        let at_ := offAfter src "  exact" (-5)
+        let (srv, r) := ask srv "wiz/plainGoal" src at_
+        checkEq "[\"A : Type\\nx : A\\nn : Nat\\n⊢ A\"]" (LSP.get? r ["goals"] |>.get!).compress
+        let (srv, r) := ask srv "wiz/interactiveGoals" src at_
+        check (has r "\"names\":[\"A\"]") s!"interactive: {r.compress}"
+        let (srv, r) := ask srv "wiz/plainGoal" src (at_ + 2)
+        checkEq "no goals" (LSP.getStr r ["rendered"])
+        -- the first tactic: before it, the block's goal
+        let (_, r) := ask srv "wiz/plainGoal" src (offAfter src "  intro A" (-7))
+        checkEq "[\"⊢ (A : Type) → A → Nat → A\"]" (LSP.get? r ["goals"] |>.get!).compress },
+    { name := "11w: hovers, expected types and definitions inside tactic arguments and list literals", run := fun _ => do
+        let src := "import Prelude\ndef f (n : Nat) : Nat := by\n  exact Nat.add n 1\ndef xs (k : Nat) : List Nat := [k, 2]\n"
+        let (srv, _) ← openDoc src
+        let (srv, r) := ask srv "textDocument/hover" src (offAfter src "add n" (-1))
+        check (has r "n : Nat") s!"hover in exact: {r.compress}"
+        let (srv, r) := ask srv "textDocument/definition" src (offAfter src "Nat.add n" (-4))
+        check ((LSP.getStr r ["uri"]).endsWith "lib/Prelude.wiz") s!"definition in exact: {r.compress}"
+        let (srv, r) := ask srv "wiz/plainTermGoal" src (offAfter src "add n" (-1))
+        checkEq "n : Nat\n⊢ Nat" (LSP.getStr r ["goal"])
+        -- a list literal (a procedural macro): its elements are the user's
+        let (_, r) := ask srv "textDocument/hover" src (offAfter src "[k" (-1))
+        check (has r "k : Nat") s!"hover in a list literal: {r.compress}" },
     { name := "11q: binders, pattern variables, declarations, messages and instances in the infoview", run := fun _ => do
         let src := "import Prelude\ndef pred (n : Nat) : Nat := match n with\n  | .zero => 0\n  | .succ m => m\nstructure P where\n  x : Nat\n  y : Bool\n#check pred 3\ndef six : Nat := 2 * 3\n"
         let (srv, _) ← openDoc src
@@ -625,6 +669,34 @@ def serverGroup : Group where
         -- an unmasked frame from a client breaks the protocol
         WebSocket.sendText w "x"
         checkEq none (← WebSocket.recvText r' w') },
+    { name := "11w: the web infoview's files over HTTP on the WebSocket's port (fixed list, local origins)", run := fun _ => do
+        let dir ← IO.FS.createTempDir
+        IO.FS.writeFile (dir / "infoview.html") "<p>page</p>"
+        IO.FS.writeFile (dir / "secret.txt") "no"
+        -- one request, through `accept`, on a socket pair: the answer's text
+        let ask (req : String) (web : Option String := some dir.toString) : IO (Bool × String) := do
+          let ((r, w), (r', w')) ← Socket.pair
+          let (r, w, r', w') := (IO.FS.Stream.ofHandle r, IO.FS.Stream.ofHandle w, IO.FS.Stream.ofHandle r', IO.FS.Stream.ofHandle w')
+          w.putStr req; w.flush
+          let ok ← WebSocket.accept r' w' web
+          let mut out := ""
+          for _ in [0:20] do
+            let l ← r.getLine
+            out := out ++ l
+            if l.isEmpty || (out.splitOn "\r\n\r\n").length > 1 then break
+          pure (ok, out)
+        let (ok, out) ← ask "GET /infoview.html?port=1&follow=1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        check (!ok && (out.splitOn "200 OK").length > 1 && (out.splitOn "text/html").length > 1) s!"page: {out}"
+        let (_, out) ← ask "GET / HTTP/1.1\r\n\r\n"
+        check ((out.splitOn "200 OK").length > 1) s!"index: {out}"
+        for path in ["/secret.txt", "/../infoview.html", "/wiz-infoview.wasm", "/infoview.html/x"] do
+          let (_, out) ← ask s!"GET {path} HTTP/1.1\r\n\r\n"
+          check ((out.splitOn "404").length > 1) s!"{path}: {out}"
+        let (_, out) ← ask "GET /infoview.html HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n"
+        check ((out.splitOn "403").length > 1) s!"foreign origin: {out}"
+        -- without the directory (plain `--ws`): no files at all
+        let (_, out) ← ask "GET /infoview.html HTTP/1.1\r\n\r\n" none
+        check ((out.splitOn "426").length > 1) s!"no web directory: {out}" },
     { name := "WebSocket transport (--ws): infoview requests, editing, origins", run := fun _ => do
         let _ ← IO.asTask (prio := .dedicated) (do IO.sleep 60000; IO.eprintln "timed out"; IO.Process.exit 3 : IO Unit)
         try wsCase; IO.Process.exit 0

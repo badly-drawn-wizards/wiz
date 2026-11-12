@@ -73,6 +73,10 @@ covers only Wiz's own runtime. Other libraries keep their licences:
 * glibc is linked dynamically, as with any C program. The compiler-rt builtins clang
   links in (Apache-2.0 with LLVM exception) need no notice.
 
+A release toolchain's `share/wiz/NOTICE` says the same, and also lists the third-party
+code linked into `wiz`, `grail` and `tower` themselves; the licence texts are in
+`share/wiz/LICENSES/` and `share/wiz/cc/LICENSES/`.
+
 ## Continuous integration
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
@@ -157,7 +161,30 @@ cached between runs.
   is made of (the `.lean` files, Lean, `flake.lock`), and partial hits only come from the
   same compiler (the elaboration cache's own keys include the wiz binary's hash, but the
   test driver's grail runs use a fixed binary id and the `/tmp` programs a timestamp).
+* **Storage.** The repository's Actions cache holds 10 GB and evicts the least recently
+  used entries, so pull requests don't keep big entries: the elan toolchain (~770 MB) is
+  saved only by `master` (pull requests restore master's), and a pull request's (or merge
+  queue entry's) `lake-*` and `exercises-*` entries (~500 MB each), saved only to hand
+  the build to its test shards, are deleted by the `CI result` job when the run ends
+  (not when it is cancelled). The next push restores master's build and catches up.
+  Artifacts are short-lived: test logs 3 days, `test-timings` 7 days on master (2
+  elsewhere), `test-timings-baseline` 7 days, the release tarball 90 days for a tag,
+  7 for a snapshot (both are also release assets) and 3 for a pull request.
+  To see the usage: `gh api repos/wiz-pl/wiz/actions/cache/usage` and
+  `gh cache list -R wiz-pl/wiz -S size_in_bytes`.
 
+* **Path filters.** On a pull request the `changes` job (`scripts/ci.py changes`) reads
+  the files the PR changes and decides what runs: nothing but `changes` and `CI result`
+  for a docs-only PR (`docs/`, `*.md`, LICENSE); every shard when a Lean file, the build,
+  the runtime, `scripts/` or `.github/` changed; otherwise each shard with `"inputs"` in
+  `.github/test-shards.json` only when one of its inputs changed (a `lib/X.wiz` input
+  brings the lib files it imports), and the shards without `"inputs"` (backends,
+  library) for any non-docs change. So a PR touching only, say, `lib/Json.wiz` skips
+  `core` and the selfhost shards. `CI result` counts a job the filter skipped as fine
+  and a job it wanted only if it succeeded. Pushes to `master`, the merge queue and
+  manual runs always run everything, so a missing input shows up there at the latest.
+  A test that starts reading a new file belongs in a shard without `"inputs"`, or add
+  the file to its shard's `"inputs"`.
 * **A self-hosted runner** for the heavy shards (`"heavy": true` in
   `.github/test-shards.json`): set the repository variable `WIZ_RUNNER_HEAVY` to its
   label; unset, everything runs on `ubuntu-latest`. Pull requests from forks never run
