@@ -1417,7 +1417,7 @@ def inertW (depth : Nat) : Val → Bool
   | .vmu _ I D _ _ => match inertTy (Nat.succ depth) I with
     | .true => inertDesc (Nat.succ depth) D
     | .false => .false
-  | .vpi q a env b s => tailW depth (.vpi q a env b s)
+  | .vpi q i j a env b => tailW depth (.vpi q i j a env b)
   | _ => .false
 -- (C1) a singleton tail (`singletonTail` in `Eval.lean`): `Unit_l` with `l` never zero, or
 -- `(0 x : A) → T` with `T` a singleton tail; the domains are not inspected. Every value is
@@ -1429,7 +1429,7 @@ def tailW (depth : Nat) : Val → Bool
   | .vunit l => match Nat.beq l 0 with
     | .true => .false
     | .false => .true
-  | .vpi q _ env b _ => match q with
+  | .vpi q _ _ _ env b => match q with
     | .qz => singletonTail (Nat.succ depth) (eval (.cons (groundAtom (Nat.add 3000 depth)) env) b)
     | _ => .false
   | _ => .false
@@ -1501,7 +1501,7 @@ def groundTyW (d : Nat) : Val → Val → Bool
         | .false => .false
       | .false => .false
     | .false => .false
-  | .vpi q a env b s, .vpi q' a' env' b' s' => groundTailW d (.vpi q a env b s) (.vpi q' a' env' b' s')
+  | .vpi q i j a env b, .vpi q2 i2 j2 a2 env2 b2 => groundTailW d (.vpi q i j a env b) (.vpi q2 i2 j2 a2 env2 b2)
   | _, _ => .false
 -- (C1) two singleton tails, equal and ground (`groundEqTail` in `Eval.lean`): quantities
 -- `0`, domains by `groundDom`, codomains under an atom, the final `Unit`s
@@ -1510,7 +1510,7 @@ def groundEqTail (d : Nat) (A B : Val) : Bool := match Nat.lt d 64 with
   | .true => groundTailW d (whnf A) (whnf B)
 def groundTailW (d : Nat) : Val → Val → Bool
   | .vunit l, .vunit l' => Bool.and (Nat.lt 0 l) (Nat.beq l l')
-  | .vpi q a env b _, .vpi q' a' env' b' _ => match q with
+  | .vpi q _ _ a env b, .vpi q' _ _ a' env' b' => match q with
     | .qz => match Bool.and (qEq q q') (groundDom (Nat.succ d) a a') with
       | .true => groundEqTail (Nat.succ d) (eval (.cons (groundAtom d) env) b) (eval (.cons (groundAtom d) env') b')
       | .false => .false
@@ -1581,7 +1581,7 @@ def groundValW : Val → Val → Val → Bool
   | .vmu l I D i _, .vcon x, .vcon y => groundEqVal (vInterp l I D (muFamily l I D) i) x y
   | .vmu _ _ _ _ _, a, b => groundAtomEq a b
   -- (C1) a singleton tail: one value up to η
-  | .vpi q a env b s, _, _ => singletonTail 0 (.vpi q a env b s)
+  | .vpi q i j a env b, _, _ => singletonTail 0 (.vpi q i j a env b)
   | _, _, _ => .false
 -- (4g) sizes equal as conversion decides it (`sizeEqTrue` in `Eval.lean`, `sizeEq`
 -- below): any `↑ᵏ ∞` is `∞`, and `↑ᵏ x = ↑ᵐ y` when `k = m` and `x`, `y` are one variable
