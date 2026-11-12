@@ -138,7 +138,7 @@ partial def joinParams : Body → Array Var
   | .jdecl _ ps jb k => ps ++ joinParams jb ++ joinParams k
   | _ => #[]
 
-def decl (arities : Std.HashMap Name Nat) (d : IR.Decl) : Array String × Array String :=
+def decl (arities : Std.HashMap Name Nat) (cafs : Std.HashSet Name) (d : IR.Decl) : Array String × Array String :=
   let ps := ", ".intercalate (d.params.toList.map (s!"i64 %x{·}"))
   let ((), st) := (do
     for p in joinParams d.body do emit s!"  %jp{p} = alloca i64"
@@ -151,8 +151,19 @@ def decl (arities : Std.HashMap Name Nat) (d : IR.Decl) : Array String × Array 
   let boxedArgs := ", ".intercalate ((List.range d.params.size).map (s!"i64 %a{·}"))
   -- (an export's closure is called from the C glue)
   let linkage := if d.name.startsWith "wiz.export." then "" else "internal "
-  (globals, #[s!"define {linkage}i64 {fn d.name}({ps}) {lb}", "entry:"] ++ lines ++ #[rb,
-    s!"define internal i64 {fn d.name}_boxed(ptr %a) {lb}\n{"\n".intercalate boxedLoads}\n  %r = call i64 {fn d.name}({boxedArgs})\n  ret i64 %r\n{rb}"])
+  let boxed := s!"define internal i64 {fn d.name}_boxed(ptr %a) {lb}\n{"\n".intercalate boxedLoads}\n  %r = call i64 {fn d.name}({boxedArgs})\n  ret i64 %r\n{rb}"
+  -- (a closed definition, `IR.cafs`: its body is `_build`, run once by `wiz_caf_init`;
+  -- the function loads the cached value from the slot)
+  if cafs.contains d.name then
+    let f := fn d.name
+    (globals.push s!"{f}.slot = internal global i64 0, align 8",
+      #[s!"define internal i64 {f}.build() {lb}", "entry:"] ++ lines ++ #[rb,
+        s!"define internal i64 {f}() {lb}\nentry:\n  %v = load atomic i64, ptr {f}.slot acquire, align 8\n" ++
+        s!"  %c = icmp ne i64 %v, 0\n  br i1 %c, label %hit, label %miss\nhit:\n" ++
+        s!"  call void @wiz_inc(i64 %v)\n  ret i64 %v\nmiss:\n" ++
+        s!"  %r = call i64 @wiz_caf_init(ptr {f}.slot, ptr {f}.build)\n  ret i64 %r\n{rb}", boxed])
+  else
+  (globals, #[s!"define {linkage}i64 {fn d.name}({ps}) {lb}", "entry:"] ++ lines ++ #[rb, boxed])
 where
   lb := "{"
   rb := "}"
@@ -194,6 +205,7 @@ declare i64 @wiz_reset(i64)
 declare i64 @wiz_drop_moved(i64, i64)
 declare i64 @wiz_reuse(i64, i32, i32)
 declare void @wiz_unreachable()
+declare i64 @wiz_caf_init(ptr, ptr)
 declare i32 @wiz_finish(i64)
 "
 
@@ -201,7 +213,8 @@ declare i32 @wiz_finish(i64)
 runs it, for `IO`). The foreign wrappers are C (`C.glue`), compiled with the runtime. -/
 def program (decls : Array IR.Decl) (io : Bool := false) (lib : Bool := false) : String :=
   let arities := decls.foldl (fun m d => m.insert d.name d.params.size) {}
-  let parts := decls.map (decl arities)
+  let cafs := IR.cafs decls
+  let parts := decls.map (decl arities cafs)
   let globals := (parts.foldl (fun acc (g, _) => acc ++ g) #[]).toList.eraseDups.toArray
   let fns := parts.foldl (fun acc (_, f) => acc ++ f) #[]
   let externDecls := (C.externs decls).toList.map fun key =>
