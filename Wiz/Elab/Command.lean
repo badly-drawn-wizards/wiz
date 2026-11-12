@@ -132,6 +132,8 @@ structure CommandState (R : Type) where
   trustNative : Bool := false
   /-- (27a) `--native-fuel N`: the interpreter steps `native_refl` may take -/
   nativeFuel : Nat := NativeRun.defaultFuel
+  /-- (28) solvers: `--sat-solver`, `--solver-timeout`, the answer cache -/
+  smt : Smt.Config := {}
   /-- macro rules, latest first -/
   macros : List MacroRule := []
   /-- (11q) where each syntax kind and syntax category was declared (the command's range,
@@ -934,13 +936,15 @@ def elabCopatterns (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) : El
     isRec && ((copatternAlt? alts o).map fun a => isCorecCall name (a.getArg 3)).getD false
   if corecursive then elabCopatternsCoit name cmd obs else elabCopatternsCocon name cmd obs
 
-/-- Run the elaborator; also returns the info tree it recorded (even after an error). -/
-def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
+/-- `runElabH`, with (28) the solver settings and the definition's name, and the axioms
+that tactics added on success (`ElabState.sideDecls`; the trusted `smt` of 28a will). -/
+def runElabS (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     (macros : List MacroRule := []) (builtins : List (Name × Name) := [])
     (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
     (metaCode : Thunk (Except String Code) := Thunk.pure (.ok {}))
-    (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) (termInfo : Bool := false) :
-    Except (ElabError R) α × Array (Info R) :=
+    (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) (termInfo : Bool := false)
+    (smt : Smt.Config := {}) (smtDecl : Name := "") :
+    Except (ElabError R) (α × Array (Decl R)) × Array (Info R) :=
   -- macros and tactics run against the globals as they are when this command starts
   let compileCode (roots : List Name) := match metaCode.get with
     | .ok c => if roots.all c.contains then .ok c
@@ -953,9 +957,21 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer { ctx with proof := true } t).map (·.1) |>.mapError toString
   -- (13b) structures with a constructor private to another module don't unfold here
   match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
-                kernelInfer, classes, instances, termInfo } with
-  | .ok (a, st) => (.ok a, finishInfos st)
+                kernelInfer, classes, instances, termInfo, smt, smtDecl } with
+  | .ok (a, st) => (.ok (a, st.sideDecls), finishInfos st)
   | .error e => (.error e, (e.state?.map finishInfos).getD #[])
+
+/-- Run the elaborator; also returns the info tree it recorded (even after an error). -/
+def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
+    (macros : List MacroRule := []) (builtins : List (Name × Name) := [])
+    (procMacros : List (Name × Name) := []) (tactics : List (Name × Name) := [])
+    (metaCode : Thunk (Except String Code) := Thunk.pure (.ok {}))
+    (classes : List ClassInfo := []) (instances : Array InstanceInfo := #[]) (termInfo : Bool := false) :
+    Except (ElabError R) α × Array (Info R) :=
+  -- (one body: `runElabS` without solver settings, so no tactic adds a declaration)
+  match runElabS g x levelParams macros builtins procMacros tactics metaCode classes instances termInfo with
+  | (.ok (a, _), infos) => (.ok a, infos)
+  | (.error e, infos) => (.error e, infos)
 
 def runElab (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
     (macros : List MacroRule := []) (builtins : List (Name × Name) := [])
@@ -1546,10 +1562,26 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
                 modify fun s => { s with globals := g'.insert d }
                 report .warning nr.info s!"{name} is accepted on the strength of native evaluation (--trust-native, {v.steps} steps), not checked by the kernel: its proof is the axiom {ax}, which `#print axioms` lists for everything that uses {name}"
         | _ => report .error nr.info "native_refl proves an equation `a = b`; this type is not one"
-    else match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDeclTerms binders typeStx valStx cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) levelParams with
-      | (.ok (ty, val), hv) =>
+    else match runElabS (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) (smt := s.smt) (smtDecl := name) s.globals (elabDeclTerms binders typeStx valStx cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) levelParams with
+      | (.ok ((ty, val), sides), hv) =>
         addInfos hv
-        addDeclChecked name levelParams ty val
+        if sides.isEmpty then addDeclChecked name levelParams ty val
+        else
+          -- (28) axioms a tactic added, checked by the kernel as types (an axiom's
+          -- statement is what was trusted), then the definition, which applies them
+          let mut g := s.globals
+          let mut ok := true
+          for d in sides do
+            let d := { d with type := Sorts.term g #[] [] d.type }
+            match (do let g' ← addDecl g d; privacyCheck g d; pure g' : TCM (Globals R)) with
+            | .ok g' => g := g'
+            | .error e => report .error cmd.info s!"kernel rejected {d.name}: {e}"; ok := false; break
+          if ok then
+            match addDeclSorted g { name, levelParams, type := ty, value := val } with
+            | .ok g' =>
+              modify fun s => { s with globals := g' }
+              report .warning cmd.info s!"{name} is accepted on the strength of the axiom{if sides.size == 1 then "" else "s"} {", ".intercalate (sides.toList.map (·.name))} that its tactics added, not checked by the kernel; `#print axioms` lists {if sides.size == 1 then "it" else "them"} for everything that uses {name}"
+            | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
       | (.error e, hv) => addInfos hv; reportErr e
   | "command.partial" | "command.mutual" =>
     -- each definition, with the witness written for it (`partial (default := w) def …`)

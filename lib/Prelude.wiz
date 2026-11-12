@@ -328,6 +328,15 @@ inductive IndView where
   | mk (name : String) (levelParams : List String) (params : List ParamView)
        (indices : List ParamView) (ctors : List CtorView) (isStructure : Bool)
 
+-- (stage 28b) What the SAT solver said about a CNF (`Tac.satSolve`): a refutation as
+-- LRAT steps `(id, clause, hints)` (deletions dropped), a model (the literals that are
+-- true), or why there is no answer. Literals are numbers: `2 v` is variable `v`, `2 v + 1`
+-- its negation. Untrusted: `sat_decide` checks the refutation in the kernel.
+inductive SatAnswer where
+  | unsat (proof : List (Nat × List Nat × List Nat))
+  | sat (model : List Nat)
+  | error (msg : String)
+
 -- Requests to the elaborator, each with what to do with the answer: a free monad (its
 -- continuations are infinitary fields). The elaborator interprets them; the order of
 -- the constructors is fixed (`Elab/Tactic.lean`).
@@ -373,6 +382,11 @@ inductive Tac where
   -- is `n` a definition (something `unfold` can unfold: not a constructor, an axiom, …)?
   -- `none` if there is no constant `n`
   | isDefinition (n : String) (k : Option Bool → Tac)
+  -- solvers (stage 28b): ask the SAT solver about a CNF over variables `0 … nvars-1`
+  -- (untrusted: `sat_decide` checks the proof); look inside an equation (an opaque handle
+  -- `a = b` at `A`: `(A, a, b)`)
+  | satSolve (nvars : Nat) (clauses : List (List Nat)) (k : SatAnswer → Tac)
+  | eqView (g : Nat) (e : Expr) (k : Option (Expr × Expr × Expr) → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -434,6 +448,8 @@ def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := f
 -- or an axiom: for those `unfold` returns the term unchanged)? `none` if there is no
 -- constant `n`.
 def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.isDefinition n k
+def TacticM.satSolve (nvars : Nat) (clauses : List (List Nat)) : TacticM SatAnswer := fun k => Tac.satSolve nvars clauses k
+def TacticM.eqView (g : Nat) (e : Expr) : TacticM (Option (Expr × Expr × Expr)) := fun k => Tac.eqView g e k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 

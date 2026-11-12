@@ -179,7 +179,7 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
       globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, proofSteps, traceProofSteps,
                    strictPrivacy := ← strictPrivacyOpt.get, pp := { useNotation := !(← ppAllOpt.get) } },
       trustedModule := own.contains, trustNative := tc.trustNative,
-      nativeFuel := tc.nativeFuel.getD NativeRun.defaultFuel }
+      nativeFuel := tc.nativeFuel.getD NativeRun.defaultFuel, smt := tc.smt }
   -- the cache doesn't know the experimental options
   let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .conv && !unboxStructs &&
       proofSteps == Budget.defaultSteps && !traceProofSteps && !(← strictPrivacyOpt.get) && !(← ppAllOpt.get)
@@ -358,7 +358,7 @@ def main (args : List String) : IO UInt32 := do
     | none => IO.println usage; pure 2
     | some (listen, stdio) =>
       let listen ← if listen.web.isSome then pure listen else do pure { listen with web := ← webDir }
-      LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc) (nativeOpts tc)
+      LSP.serve (← loadLibraryPaths tc) listen stdio (← libTrusted tc) (nativeOpts tc) tc.smt
       -- (an infoview's reader thread may still be blocked: don't wait for it)
       IO.Process.exit 0
   | _ => do IO.println usage; pure 0
