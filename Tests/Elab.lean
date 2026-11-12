@@ -6760,7 +6760,7 @@ def hdlGroup : Group where
            "(.true, 12)",
            "(.true, .true)",
            "\"module shifts(input clk, input [7:0] x_0, input [3:0] x_1, output [7:0] y_0, output [7:0] y_1, output [7:0] y_2, output [7:0] y_3);\\n  wire [7:0] n3 = x_0 << x_1;\\n  wire [7:0] n4 = x_0 >> x_1;\\n  wire [7:0] n5 = $signed(x_0) >>> x_1;\\n  wire [0:0] n6 = x_0[7:7];\\n  wire [2:0] n9 = n6 ? 3'd7 : 3'd0;\\n  wire [10:0] n10 = {n9, x_0};\\n  wire [7:0] n11 = n10[10:3];\\n  assign y_0 = n3;\\n  assign y_1 = n4;\\n  assign y_2 = n5;\\n  assign y_3 = n11;\\nendmodule\\n\"",
-           "fun x s => x <<< s ||| x >>> s ^^^ x >>>ₛ s ^^^ x >>>ₛ 2 : Wire B8 → Wire B3 → Wire B8",
+           "fun x s => x <<< s ||| x >>> s ^^^ x >>>ₛ s ^^^ x >>>ₛ 2 : Wire B8 → Wire B3 → Wire (.bits 8)",
            "fun x y => x <ₛ y ||| x ≥ₛ 2 : Wire B8 → Wire B8 → Wire HwTy.bit",
            "(.true, .true)",
            "fun a b => a &&& b ||| b : Wire Bit → Wire Bit → Wire Bit",

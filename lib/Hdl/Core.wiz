@@ -2064,9 +2064,9 @@ instance {r : HwTy → Type} [Hw r] {ω n : Nat} : ShiftRight (r (HwTy.bits n)) 
 
 -- (H14 S4) Shifts by a signal `s : r (HwTy.bits m)`: `a <<< s`, `a >>> s` are barrel
 -- shifters (`Hw.shlBy`, `Hw.lshrBy`; Verilog `<<`, `>>`). A `Nat` amount stays wiring.
-instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : HShiftLeft (r (HwTy.bits n)) (r (HwTy.bits m)) :=
+instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : HShiftLeft (r (HwTy.bits n)) (r (HwTy.bits m)) (r (HwTy.bits n)) :=
   HShiftLeft.mk (fun a s => Hw.shlBy a s)
-instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : HShiftRight (r (HwTy.bits n)) (r (HwTy.bits m)) :=
+instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : HShiftRight (r (HwTy.bits n)) (r (HwTy.bits m)) (r (HwTy.bits n)) :=
   HShiftRight.mk (fun a s => Hw.lshrBy a s)
 
 -- Arithmetic shift right, `a >>>ₛ k` (copies of the sign bit come in): by a fixed `k :
@@ -2081,11 +2081,11 @@ def Hw.ashr {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : N
   | _, _ => Hw.share a (fun a => match Nat.lt k n with
     | .true => Hw.slice k n (Hw.cat (Hw.signs a k) a)
     | .false => Hw.signs a n)
-class AShiftRight (A B : Type) where
-  ashr : A → B → A
-instance {r : HwTy → Type} [Hw r] {ω n : Nat} : AShiftRight (r (HwTy.bits n)) Nat :=
+class AShiftRight (A B : Type) (C : outParam Type) where
+  ashr : A → B → C
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : AShiftRight (r (HwTy.bits n)) Nat (r (HwTy.bits n)) :=
   AShiftRight.mk (fun a k => Hw.ashr a k)
-instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : AShiftRight (r (HwTy.bits n)) (r (HwTy.bits m)) :=
+instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : AShiftRight (r (HwTy.bits n)) (r (HwTy.bits m)) (r (HwTy.bits n)) :=
   AShiftRight.mk (fun a s => Hw.ashrBy a s)
 infixl:75 " >>>ₛ " => AShiftRight.ashr
 
