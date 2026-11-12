@@ -38,6 +38,7 @@ information is coming. `ElabState.approx` (`Approx`) says which guesses are allo
 | the same, in the "expected type first" pass of an application whose result type mentions placeholders of its explicit arguments | `?p ?k =?= ok (base + k)`, `?p`, `?k` the arguments `p`, `k` | no guess (`.none`): the speculative pass fails and is undone, the arguments decide, the result type is unified after them | the expected type is not propagated when the result type depends on explicit arguments (`propagateExpectedType`) |
 | flex-flex, both not patterns, different holes | `?r (.bits ?m) =?= ?r' (.bits 1)` (`Hw.cat (Hw.lit 1 1) d`) | postponed: the argument waits behind a placeholder for the other arguments (`inferApp`); still stuck after them, the first-order guess `?r := ?r'` as the last resort (`.last`) | postponed; postponed problems are retried at the end, with approximations |
 | flex-flex, one side a pattern | `?a (f y) =?= ?b x` | solve the pattern side (either orientation) | the same |
+| a structure-valued hole under projections, applied | `(?C).2.2.1 ?f ?g =?= C.2.2.1 f g` (`C.comp`) | `?C =?= C`, then the eliminations pairwise (`.default`; a guess: another structure with an equal field would do too) | `Category.comp ?C ?f ?g` is a constant applied: first-order (`isDefEqApp`) |
 | the same hole on both sides | `?m a =?= ?m b` | unify the arguments (a guess too: `?m` may ignore them) | first-order (`isDefEqApp`), else postponed |
 
 Wiz has no global queue of postponed problems: postponement is per application (an

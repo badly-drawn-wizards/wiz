@@ -558,7 +558,7 @@ def group : Group where
           -- the old form, every matched argument with `_` at the implicit ones, still works
           "def g : (k : Nat) → {m : Nat} → m = m → Nat\n  | .zero, _, _ => 0\n  | .succ k, _, e => g k _ e\n" ++
           "def h (n : Nat) : (k : Nat) → {m : Nat} → m = m → Nat\n  | .zero, _, _ => n\n  | .succ k, _, e => h n k e\n" ++
-          "#eval f 3 (refl 2)\n#eval h 7 3 (refl 2)") ["0", "7"] },
+          "#eval @f 3 2 (refl 2)\n#eval @h 7 3 2 (refl 2)") ["0", "7"] },
     { name := "a structure-valued hole under a projection is solved from the projection (wiz-cats B5)", run := fun _ =>
         -- `(?C).2.2.1 ?X ?Y ?Z ?f ?g =?= C.2.2.1 X Y Z f g`: `?C := C`, then the arguments
         -- (a first-order guess, like Lean's for `Category.comp ?C`: the kernel rechecks)
