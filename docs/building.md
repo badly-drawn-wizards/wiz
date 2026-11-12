@@ -161,6 +161,17 @@ cached between runs.
   is made of (the `.lean` files, Lean, `flake.lock`), and partial hits only come from the
   same compiler (the elaboration cache's own keys include the wiz binary's hash, but the
   test driver's grail runs use a fixed binary id and the `/tmp` programs a timestamp).
+* **Storage.** The repository's Actions cache holds 10 GB and evicts the least recently
+  used entries, so pull requests don't keep big entries: the elan toolchain (~770 MB) is
+  saved only by `master` (pull requests restore master's), and a pull request's (or merge
+  queue entry's) `lake-*` and `exercises-*` entries (~500 MB each), saved only to hand
+  the build to its test shards, are deleted by the `CI result` job when the run ends
+  (not when it is cancelled). The next push restores master's build and catches up.
+  Artifacts are short-lived: test logs 3 days, `test-timings` 7 days on master (2
+  elsewhere), `test-timings-baseline` 7 days, the release tarball 90 days for a tag,
+  7 for a snapshot (both are also release assets) and 3 for a pull request.
+  To see the usage: `gh api repos/wiz-pl/wiz/actions/cache/usage` and
+  `gh cache list -R wiz-pl/wiz -S size_in_bytes`.
 
 * **A self-hosted runner** for the heavy shards (`"heavy": true` in
   `.github/test-shards.json`): set the repository variable `WIZ_RUNNER_HEAVY` to its
