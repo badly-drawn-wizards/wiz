@@ -480,7 +480,13 @@ loops, `?`, `U64`, and functions that return borrows.
   node, and Wiz source parsed as commands and positioned there. Generated source that
   fails to check is reported at the node with its text.
 
-Limitations: the fragment (LOWERING.md §1a); spec clauses are not parsed; `U64` and `Vec`
+Specifications: a `spec f requires (P) ensures (Q)` item states `f.Spec`, a Wiz
+proposition over the arguments' values, `result`, `old x` and `final x` (an `&mut`
+argument's value when the borrow ends, its handed-back handle), with total correctness
+(`Result.Holds`), proved in Wiz; see [Resources in Wiz](../resources.md).
+
+Limitations: the fragment (LOWERING.md §1a); loop invariants, `decreases` and `final result`
+(a returned borrow) in specs are not supported; `U64` and `Vec`
 are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; keywords such as `if` and `mut`
 are reserved in a file that imports `Feral`; errors inside generated code point at the
 whole item; one borrow error per function; stricter than rustc where a `&mut` would be
