@@ -3,6 +3,8 @@ import Wiz.Query
 import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Refs
+import Wiz.Symbols
 import Wiz.Socket
 import Wiz.WebSocket
 import Std.Sync.Channel
@@ -60,6 +62,9 @@ structure Server where
   cursor : Option (String × Json) := none
   /-- (`--infoview`) the last `wiz/infoview/cursor` sent, so the same one is not sent twice -/
   lastCursor : Option Json := none
+  /-- (references, rename) the library modules that aren't the toolchain's, elaborated
+  with their info trees: by module, with the hash of the source they were made from -/
+  modules : Std.HashMap String (UInt64 × St) := {}
 
 /-- Line and column (0-based) of a character offset. -/
 def toPos (text : String) (off : Nat) : Json :=
@@ -84,14 +89,19 @@ def range (text : String) (info : SourceInfo) : Json :=
 -- (the whole elaborator is specialised to `ZeroOneMany` here; the default limit of
 -- 200000 heartbeats no longer covers compiling that)
 set_option maxHeartbeats 800000 in
-/-- Elaborate a document (incrementally) with the libraries available to `import`. -/
-def elaborate (srv : Server) (doc : Doc) : Doc :=
+/-- Elaborate a text (incrementally, reusing `eng`) with the libraries available to `import`. -/
+def elabText (srv : Server) (eng : Query.Engine ZeroOneMany) (text : String) : St × Query.Engine ZeroOneMany :=
   let libs := srv.libs
   let trusted := srv.trusted
   let init : St := { loader := fun m => (libs.get? m).map (·.2), termInfo := true,
                      trustedModule := trusted.contains }
   let key₀ := hash (libs.toList.map (·.2.2) |>.toString)
-  let (s, eng) := Query.elaborate doc.engine doc.text init key₀
+  Query.elaborate eng text init key₀
+
+set_option maxHeartbeats 800000 in
+/-- Elaborate a document (incrementally) with the libraries available to `import`. -/
+def elaborate (srv : Server) (doc : Doc) : Doc :=
+  let (s, eng) := elabText srv doc.engine doc.text
   { doc with state := s, engine := eng }
 
 def diagnostic (doc : Doc) (m : Msg) : Json :=
@@ -116,9 +126,11 @@ def capabilities : Json :=
   Json.mkObj [("capabilities", Json.mkObj [
     ("textDocumentSync", (1 : Nat)), ("hoverProvider", true), ("definitionProvider", true),
     ("declarationProvider", true),
-    -- (answered with null; asked for so that editors report cursor moves, for `--infoview`)
+    -- (also so that editors report cursor moves, for `--infoview`)
     ("documentHighlightProvider", true),
+    ("referencesProvider", true), ("renameProvider", Json.mkObj [("prepareProvider", true)]),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
+    ("documentSymbolProvider", true), ("workspaceSymbolProvider", true), ("foldingRangeProvider", true),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
     ("experimental", Json.mkObj [("wizInfoview", Json.mkObj [("version", (1 : Nat)),
@@ -220,6 +232,17 @@ def expansionText (e : Syntax) : String :=
   let t := e.reprint
   if t.length > 600 then (t.take 597).toString ++ "…" else t
 
+/-- How a hover names the identifier at `off`: its name, except for a local a macro
+introduced at the range of other source (Feral's `v_26` for a call `double (v.len)`, at
+the call: Elab/ProcMacro.lean, `locateMarked`), which is named by that source when it
+is short and on one line. -/
+def identLabel (doc : Doc) (off : Nat) (n : Name) : String :=
+  match Query.identAt doc.state off with
+  | some (.ident i _ true _ _) =>
+    let src := String.ofList ((doc.text.toList.drop i.start).take (i.stop - i.start))
+    if src != n && !src.contains '\n' && src.length ≤ 60 && !src.isEmpty then src else n
+  | _ => n
+
 /-- The hover of a use of syntax or an `import` (`Query.syntaxAt`), as Markdown. -/
 def syntaxHover (srv : Server) (uri : String) (doc : Doc) (es : Array (Info ZeroOneMany)) : Option String := do
   let e ← es[0]?
@@ -228,6 +251,10 @@ def syntaxHover (srv : Server) (uri : String) (doc : Doc) (es : Array (Info Zero
   -- the syntax and its type (the expected type where it was checked), as Lean shows it
   let ty := st.infos.findSome? fun
     | .term r g _ => if r.start == e.info.start && r.stop == e.info.stop then some (g.target.pretty g.names (some st.globals)) else none
+    | _ => none
+  -- else an identifier there (not checked against a type: a function applied, say)
+  let ty := ty.orElse fun _ => st.infos.findSome? fun
+    | .ident r _ _ names t => if r.start == e.info.start && r.stop == e.info.stop then some (t.pretty names (some st.globals)) else none
     | _ => none
   for x in es do
     match x with
@@ -414,6 +441,75 @@ def codeAction (uri : String) (doc : Doc) (a : Actions.Action) (resolveId : Opti
       [("edit", Json.mkObj [("changes", Json.mkObj [(uri, Json.arr edits)])])]
   Json.mkObj ([("title", Json.str a.title), ("kind", Json.str a.kind)] ++ diags ++ rest)
 
+/-! ## References and rename (11x) -/
+
+/-- The modules besides the open documents where a global's uses can be: the library
+modules that aren't the toolchain's (a grail package's own and its dependencies'),
+each elaborated once per source (kept in `srv.modules`). -/
+def packageModules (srv : Server) : Server × Array (String × String × St) := Id.run do
+  let mut srv := srv
+  let mut out : Array (String × String × St) := #[]
+  for (m, (path, src)) in srv.libs.toList do
+    if srv.trusted.contains m then continue
+    let uri := "file://" ++ path
+    if srv.docs.contains uri then continue
+    let h := hash src
+    let st := match srv.modules.get? m with
+      | some (h', st) => if h' == h then st else (elabText srv {} src).1
+      | none => (elabText srv {} src).1
+    srv := { srv with modules := srv.modules.insert m (h, st) }
+    out := out.push (uri, src, st)
+  (srv, out)
+
+/-- The places of what is at `off` of `doc`: (uri, text, ranges) per document. A
+global's in every open document and the package's modules, a local's in `doc`. -/
+def referencesOf (srv : Server) (uri : String) (doc : Doc) (off : Nat) :
+    Server × Option (Refs.Target × SourceInfo × Array (String × String × Array SourceInfo)) := Id.run do
+  let some (t, r) := Refs.targetAt doc.state off | return (srv, none)
+  match t with
+  | .local .. => (srv, some (t, r, #[(uri, doc.text, Refs.rangesIn doc.state doc.text t)]))
+  | .global _ =>
+    let (srv, mods) := packageModules srv
+    let docs := srv.docs.toList.toArray.map fun (u, d) => (u, d.text, d.state)
+    let all := (docs ++ mods).map fun (u, text, st) => (u, text, Refs.rangesIn st text t)
+    (srv, some (t, r, all.filter (!·.2.2.isEmpty)))
+
+/-- Is a global declared in the toolchain's library (so that rename must refuse it)? -/
+def inToolchain (srv : Server) (doc : Doc) (n : Name) : Bool :=
+  match doc.state.declSites.get? n with
+  | some (_, m) => !m.isEmpty && srv.trusted.contains m
+  | none => true
+/-! ## Symbols and folding (11v) -/
+
+partial def symbolJson (doc : Doc) (sym : Symbols.Symbol) : Json :=
+  Json.mkObj ([("name", Json.str sym.name), ("kind", sym.kind), ("range", range doc.text sym.range),
+               ("selectionRange", range doc.text sym.range)] ++
+              (if sym.detail.isEmpty then [] else [("detail", Json.str sym.detail)]) ++
+              (if sym.children.isEmpty then [] else [("children", Json.arr (sym.children.map (symbolJson doc)))]))
+
+/-- `workspace/symbol`: the declarations of the open documents and their imports whose
+name contains `query` (ignoring case), at most 300. -/
+def workspaceSymbols (srv : Server) (query : String) : Json := Id.run do
+  let q := query.toLower
+  let mut seen : Std.HashSet String := {}
+  let mut out : Array Json := #[]
+  -- the documents' own declarations, then the libraries'
+  for own in [true, false] do
+    for (uri, doc) in srv.docs.toList do
+      for n in doc.state.globals.order do
+        if out.size ≥ 300 then break
+        let m := match doc.state.declSites.get? n with
+          | some (_, m) => m
+          | none => ""
+        if m.isEmpty != own || Symbols.hidden n || seen.contains n then continue
+        if !q.isEmpty && (n.toLower.splitOn q).length < 2 then continue
+        let loc := location srv uri doc n
+        if loc == Json.null then continue
+        seen := seen.insert n
+        out := out.push (Json.mkObj ([("name", Json.str n), ("kind", Symbols.kindOf doc.state.globals n false), ("location", loc)] ++
+          (if m.isEmpty then [] else [("containerName", Json.str m)])))
+  Json.arr out
+
 /-- Handle one message; returns the replies (and notifications) to send. -/
 def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
   let method := getStr msg ["method"]
@@ -449,6 +545,60 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     ({ srv with docs := srv.docs.insert uri doc, sessions := session },
      #[diagnostics uri doc] ++ (if srv.elaboratedNotes then #[note] else #[]))
   | "textDocument/didClose" => ({ srv with docs := srv.docs.erase uri }, #[])
+  | "textDocument/references" | "textDocument/documentHighlight" | "textDocument/prepareRename" | "textDocument/rename" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
+    let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])
+    let rangeIn (text : String) (r : SourceInfo) : Json :=
+      Json.mkObj [("start", toPos text r.start), ("end", toPos text r.stop)]
+    match method with
+    | "textDocument/documentHighlight" =>
+      match Refs.targetAt doc.state off with
+      | some (t, _) => (srv, #[reply (Json.arr ((Refs.rangesIn doc.state doc.text t).map fun r =>
+          Json.mkObj [("range", rangeIn doc.text r), ("kind", (1 : Nat))]))])
+      | none => (srv, #[reply Json.null])
+    | "textDocument/prepareRename" =>
+      match Refs.targetAt doc.state off with
+      | some (.global n, _) =>
+        if inToolchain srv doc n then (srv, #[replyError (-32803) s!"{n} is declared in the toolchain's library"]) else
+        match Refs.targetAt doc.state off with
+        | some (_, r) => (srv, #[reply (Json.mkObj [("range", rangeIn doc.text r), ("placeholder", Json.str (Refs.textAt doc.text r))])])
+        | none => (srv, #[reply Json.null])
+      | some (_, r) => (srv, #[reply (Json.mkObj [("range", rangeIn doc.text r), ("placeholder", Json.str (Refs.textAt doc.text r))])])
+      | none => (srv, #[reply Json.null])
+    | "textDocument/references" =>
+      let (srv, res) := referencesOf srv uri doc off
+      match res with
+      | some (_, _, docs) =>
+        (srv, #[reply (Json.arr (docs.flatMap fun (u, text, rs) => rs.map fun r =>
+          Json.mkObj [("uri", Json.str u), ("range", rangeIn text r)]))])
+      | none => (srv, #[reply Json.null])
+    | _ =>
+      let new := getStr msg ["params", "newName"]
+      if !Refs.validName new then return (srv, #[replyError (-32602) s!"'{new}' is not a name"])
+      let (srv, res) := referencesOf srv uri doc off
+      match res with
+      | some (t, _, docs) =>
+        if let .global n := t then
+          if inToolchain srv doc n then return (srv, #[replyError (-32803) s!"{n} is declared in the toolchain's library"])
+        let name := match t with
+          | .global n => n
+          | .local x .. => x
+        -- edit the places that spell the whole name (not `p.norm` for `Point.norm`)
+        let changes := docs.filterMap fun (u, text, rs) =>
+          let es := (rs.filter (Refs.textAt text · == name)).map fun r =>
+            Json.mkObj [("range", rangeIn text r), ("newText", Json.str new)]
+          if es.isEmpty then none else some (u, Json.arr es)
+        (srv, #[reply (Json.mkObj [("changes", Json.mkObj changes.toList)])])
+      | none => (srv, #[replyError (-32602) "nothing to rename here"])
+  | "textDocument/documentSymbol" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
+    (srv, #[reply (Json.arr ((Symbols.documentSymbols doc.state).map (symbolJson doc)))])
+  | "textDocument/foldingRange" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
+    let rs := (Symbols.foldingRanges doc.state doc.text).map fun (a, b, k) =>
+      Json.mkObj ([("startLine", (a : Json)), ("endLine", (b : Json))] ++ (if k.isEmpty then [] else [("kind", Json.str k)]))
+    (srv, #[reply (Json.arr rs)])
+  | "workspace/symbol" => (srv, #[reply (workspaceSymbols srv (getStr msg ["params", "query"]))])
   | "textDocument/codeAction" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
     let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])
@@ -477,7 +627,7 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     | "textDocument/hover" =>
       let md? := match syntaxHover srv uri doc (Query.syntaxAt doc.state off) with
         | some md => some md
-        | none => (Query.hoverAt doc.state off).map fun (n, ty) => s!"```wiz\n{n} : {ty}\n```"
+        | none => (Query.hoverAt doc.state off).map fun (n, ty) => s!"```wiz\n{identLabel doc off n} : {ty}\n```"
       match md? with
       | some md => (srv, #[reply (Json.mkObj [("contents", Json.mkObj [("kind", "markdown"), ("value", md)])])])
       | none => (srv, #[reply Json.null])
