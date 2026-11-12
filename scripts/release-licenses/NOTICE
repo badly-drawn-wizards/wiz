@@ -34,7 +34,8 @@ ld.lld and compiler-rt (Apache 2.0 with LLVM Exceptions; their libraries: libc++
 libunwind, zlib, libgcc_s and libatomic under the GCC Runtime Library Exception),
 glibc 2.27 headers and link libraries (LGPL v2.1+), Linux UAPI headers (GPL v2 with
 the Linux syscall note), GMP 6.3.0 (LGPL v3+ / GPL v2+) and the Boehm GC 8.2.8
-(MIT-style). See cc/LICENSES/ and cc/VERSIONS.
+(MIT-style), and CaDiCaL (MIT; the SAT solver, from the Lean toolchain; its licence
+is in cc/LICENSES/lean4-LICENSES). See cc/LICENSES/ and cc/VERSIONS.
 
 Programs you build with this toolchain
 ======================================

@@ -81,7 +81,10 @@ partial def isoKey (base : CommandState R) (m : Name) : Option UInt64 := do
   unless g.decls.isEmpty && g.privates.isEmpty && g.opaques.isEmpty && g.declModule.isEmpty do none
   let ppKeys (m : List Name) : List Name := m.mergeSort (fun a b => decide (a ≤ b))
   let settings := hash (base.termInfo, base.nextScope, g.eager, g.predicativeProp, toString (repr g.regularity),
-    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs)
+    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs,
+    -- (P2) the marker's requirement and the read-back budget decide what a module's
+    -- proofs elaborate to and what it reports
+    g.strictProofs, g.proofSteps, g.traceProofSteps)
   let settings := mixHash settings (hash (g.assumed, g.quoteErasesProofs, g.pushCalls, g.strictPrivacy, g.module,
     g.pp.useNotation, ppKeys (g.pp.unexpanders.toList.map (·.1)), ppKeys (g.pp.formats.toList.map (·.1))))
   let (k, _) ← go [] m {}
