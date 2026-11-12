@@ -157,15 +157,15 @@ def Nat.All (P : Nat → Prop) : Nat → Prop
 def Nat.lt_succ_split : (k m : Nat) → Nat.lt k (Nat.succ m) = .true → Nat.lt k m = .true ∨ k = m
   | .zero, .zero, h => Or.inr rfl
   | .zero, .succ m, h => Or.inl rfl
-  | .succ k, .zero, h => absurd (Nat.lt_zero k h)
+  | .succ k, .zero, h => absurd (Nat.not_lt_zero k h)
   | .succ k, .succ m, h => Or.imp (fun (e : Nat.lt k m = .true) => e) (fun (e : k = m) => Eq.congrArg Nat.succ e)
       (Nat.lt_succ_split k m h)
 def Nat.lt_to_succ : (k m : Nat) → Nat.lt k m = .true → Nat.lt k (Nat.succ m) = .true
   | .zero, m, h => rfl
-  | .succ k, .zero, h => absurd (Nat.lt_zero (Nat.succ k) h)
+  | .succ k, .zero, h => absurd (Nat.not_lt_zero (Nat.succ k) h)
   | .succ k, .succ m, h => Nat.lt_to_succ k m h
 def Nat.all_spec (0 P : Nat → Prop) : (n : Nat) → Nat.All P n → (k : Nat) → Nat.lt k n = .true → P k
-  | .zero, h, k, hk => absurd (Nat.lt_zero k hk)
+  | .zero, h, k, hk => absurd (Nat.not_lt_zero k hk)
   | .succ n, h, k, hk => Or.elim (Nat.lt_succ_split k n hk)
       (fun (e : Nat.lt k n = .true) => Nat.all_spec P n h.1 k e)
       (fun (e : k = n) => Eq.substProp P (Eq.symm e) h.2)
