@@ -1,4 +1,4 @@
-import Logic
+import Nat
 /-!
 # Vec
 
@@ -13,8 +13,7 @@ length of a `Vec` is an erased index (quantity 0): at runtime a vector is a list
 Main definitions: `Fin` (`Fin.of`, `Fin.zero`, `Fin.succ`, `Fin.last`), `Vec` with
 `Vec.get`, `Vec.set`, `Vec.map`, `Vec.zipWith`, `Vec.foldr`, `Vec.append`,
 `Vec.reverse`, `Vec.splitAt`, conversions to and from `List`, and lemmas such as
-`Vec.get_set` and `Vec.map_map`. A few `Nat` lemmas used for the indices
-(`Nat.add_comm`, …) live here too.
+`Vec.get_set` and `Vec.map_map`.
 
 ```
 import Vec
@@ -25,22 +24,8 @@ def v : Vec Nat 3 := Vec.fromList [1, 2, 3]
 ```
 -/
 
-/-- `congrArg`: applying `f` to equal arguments gives equal results. -/
-def congrArg.{u, v} {A : Type u} {B : Type v} (f : A → B) {a b : A} (e : a = b) : f a = f b :=
-  transp (fun b _ => f a = f b) (refl (f a)) e
+-- (`congrArg`, `Nat.add_zero`, `Nat.add_succ` and `Nat.add_comm` are in lib/Nat.wiz)
 
-/-- `n + 0 = n` (`+` recurses on its first argument, so this needs induction). -/
-def Nat.add_zero : (n : Nat) → n + 0 = n
-  | .zero => rfl
-  | .succ n => congrArg Nat.succ (Nat.add_zero n)
-/-- `m + (n + 1) = (m + n) + 1`. -/
-def Nat.add_succ : (m n : Nat) → m + Nat.succ n = Nat.succ (m + n)
-  | .zero, _ => rfl
-  | .succ m, n => congrArg Nat.succ (Nat.add_succ m n)
-/-- Addition of natural numbers is commutative. -/
-def Nat.add_comm : (m n : Nat) → m + n = n + m
-  | .zero, n => Eq.symm (Nat.add_zero n)
-  | .succ m, n => Eq.trans (congrArg Nat.succ (Nat.add_comm m n)) (Eq.symm (Nat.add_succ n m))
 /-- `n < n + 1`. -/
 def Nat.lt_self : (n : Nat) → Nat.lt n (Nat.succ n) = .true
   | .zero => rfl

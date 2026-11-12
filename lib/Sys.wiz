@@ -135,9 +135,9 @@ structure FileStat where
 
 /-- The `FileKind` for the runtime's code (0 file, 1 directory, 2 link, else other). -/
 def FileKind.ofNat : Nat → FileKind
-  | .zero => .file
-  | .succ .zero => .dir
-  | .succ (.succ .zero) => .symlink
+  | 0 => .file
+  | 1 => .dir
+  | 2 => .symlink
   | _ => .other
 
 /-- Raw `getcwd`; use `FS.currentDir`. -/
@@ -486,23 +486,23 @@ def SpawnOptions.default : SpawnOptions := SpawnOptions.mk .inherit .inherit .in
 def SpawnOptions.piped : SpawnOptions := SpawnOptions.mk .piped .piped .piped .none .false .nil .inherit
 /-- Run in directory `d`. -/
 def SpawnOptions.inDir (d : String) (o : SpawnOptions) : SpawnOptions :=
-  SpawnOptions.mk o.stdin o.stdout o.stderr (.some d) o.clearEnv o.env o.group
+  { o with cwd := .some d }
 /-- Add a change to the environment (after the ones already there). -/
 def SpawnOptions.change (c : EnvChange) (o : SpawnOptions) : SpawnOptions :=
-  SpawnOptions.mk o.stdin o.stdout o.stderr o.cwd o.clearEnv (List.append o.env (.cons c .nil)) o.group
+  { o with env := List.append o.env (.cons c .nil) }
 /-- Set an environment variable in the child. -/
 def SpawnOptions.setEnv (k v : String) (o : SpawnOptions) : SpawnOptions := SpawnOptions.change (.set k v) o
 /-- Remove an environment variable in the child. -/
 def SpawnOptions.unsetEnv (k : String) (o : SpawnOptions) : SpawnOptions := SpawnOptions.change (.unset k) o
 /-- Start the child from an empty environment (the changes then apply to it). -/
 def SpawnOptions.emptyEnv (o : SpawnOptions) : SpawnOptions :=
-  SpawnOptions.mk o.stdin o.stdout o.stderr o.cwd .true o.env o.group
+  { o with clearEnv := .true }
 /-- Put the child in a `ProcessGroup`. -/
 def SpawnOptions.withGroup (g : ProcessGroup) (o : SpawnOptions) : SpawnOptions :=
-  SpawnOptions.mk o.stdin o.stdout o.stderr o.cwd o.clearEnv o.env g
+  { o with group := g }
 /-- Connect the child's stdin, stdout and stderr as given. -/
 def SpawnOptions.withStdio (i out err : Stdio) (o : SpawnOptions) : SpawnOptions :=
-  SpawnOptions.mk i out err o.cwd o.clearEnv o.env o.group
+  { o with stdin := i, stdout := out, stderr := err }
 /-- The changes as the runtime reads them: `+NAME=value` or `-NAME`. -/
 def EnvChange.encode : List EnvChange → List String
   | .nil => .nil
@@ -533,7 +533,7 @@ extern "wiz_sys_child_try_wait" Child.tryWaitRaw : Child → IO Nat
 extern "wiz_sys_child_kill_group" Child.killGroupRaw : Child → Nat → IO Nat
 /-- How the child ended, or `none` while it runs (does not block). -/
 def Child.tryWait (c : Child) : EIO (Option ExitStatus) :=
-  EIO.bind (Sys.check "wait" (Child.tryWaitRaw c)) (fun n => EIO.pure (match Nat.beq n 4294967296 with
+  EIO.bind (Sys.check "wait" (Child.tryWaitRaw c)) (fun n => EIO.pure (match Nat.beq n 0x100000000 with
     | .true => .none
     | .false => .some (ExitStatus.ofNat n)))
 /-- A signal to the whole process group the child leads (spawned with `.newGroup` or `.newSession`). -/
@@ -683,8 +683,8 @@ def Fd.withRaw {A : Type} (f : Fd) (k : Nat → IO A) : IO A :=
 /-- A pipe: the end to read from, the end to write to. -/
 def Fd.pipe : EIO (Fd × Fd) := do
   n ← Sys.check "pipe" Fd.pipeRaw;
-  r ← EIO.lift (Fd.adopt (Nat.mod n 4294967296));
-  w ← EIO.lift (Fd.adopt (Nat.div n 4294967296));
+  r ← EIO.lift (Fd.adopt (Nat.mod n 0x100000000));
+  w ← EIO.lift (Fd.adopt (Nat.div n 0x100000000));
   EIO.pure (r, w)
 /-- The child's end of its stdin (0), stdout (1) or stderr (2) pipe, to read or write with
 time limits and `Fd.poll`; the `Child` no longer reads or closes it. -/

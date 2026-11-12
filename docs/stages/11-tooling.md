@@ -459,3 +459,17 @@ as Markdown: in a hover under the type (`double : Nat → Nat`, a rule, then the
 a completion item's `documentation`, and as signature help's `documentation`. Locals have
 none; the library's declarations are documented (`lib/`), so `Nat.add` explains itself.
 
+## 11v: the outline, workspace symbols and folding
+
+* **Document symbols** (`textDocument/documentSymbol`, `Wiz/Symbols.lean`): one symbol per
+  command, named after the first declaration it makes, with the others it makes (a
+  structure's fields and constructor, an inductive type's constructors) as children; a
+  type is a `Struct`, a constructor a `Constructor`, the rest `Function`, with the type as
+  `detail`. The elaborator's own names (`.desc`, `.casesOn`, `.rec`, …) are left out.
+* **Workspace symbols** (`workspace/symbol`): the declarations of the open documents and
+  of the modules they import whose name contains the query, ignoring case, at most 300,
+  each where it was declared (library modules by their path).
+* **Folding ranges** (`textDocument/foldingRange`): commands spanning several lines,
+  `by` blocks, `match`es, and block comments (kind `comment`).
+* wiz.nvim: `gO` (Neovim 0.11) lists the outline; `lsp.folding = true` folds with the
+  server's ranges (`vim.lsp.foldexpr`).

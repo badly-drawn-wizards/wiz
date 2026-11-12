@@ -142,3 +142,39 @@ def Int.natLt_irrefl : (n : Nat) → Nat.lt n n = .false
 def Int.lt_irrefl : (a : Int) → Int.lt a a = .false
   | .ofNat n => Int.natLt_irrefl n
   | .negSucc n => Int.natLt_irrefl n
+
+/-- The absolute value `|a|`, as an integer. (By cases, not `Int.ofNat (Int.natAbs a)`:
+an equation `Int.abs a = Int.abs b` would then compute to one of `natAbs`, which
+`Eq.trans` can't see through.) -/
+def Int.abs : Int → Int
+  | .ofNat n => .ofNat n
+  | .negSucc n => .ofNat (.succ n)
+/-- `Int.abs` is `natAbs` as an integer. -/
+def Int.ofNat_natAbs : (a : Int) → Int.ofNat (Int.natAbs a) = Int.abs a
+  | .ofNat _ => rfl
+  | .negSucc _ => rfl
+/-- `|-n| = n` for a natural number `n`. -/
+def Int.natAbs_negOfNat : (k : Nat) → Int.natAbs (Int.negOfNat k) = k
+  | .zero => rfl
+  | .succ _ => rfl
+/-- The magnitude of a product is the product of the magnitudes. -/
+def Int.natAbs_mul : (a b : Int) → Int.natAbs (a * b) = Int.natAbs a * Int.natAbs b
+  | .ofNat _, .ofNat _ => rfl
+  | .ofNat m, .negSucc n => Int.natAbs_negOfNat (m * Nat.succ n)
+  | .negSucc m, .ofNat n => Int.natAbs_negOfNat (Nat.succ m * n)
+  | .negSucc _, .negSucc _ => rfl
+/-- `|-n| = n` for a natural number `n`, as integers. -/
+def Int.abs_negOfNat : (k : Nat) → Int.abs (Int.negOfNat k) = Int.ofNat k
+  | .zero => rfl
+  | .succ _ => rfl
+/-- `|a · b| = |a| · |b|`. -/
+def Int.abs_mul : (a b : Int) → Int.abs (a * b) = Int.abs a * Int.abs b
+  | .ofNat _, .ofNat _ => rfl
+  | .ofNat m, .negSucc n => Int.abs_negOfNat (m * Nat.succ n)
+  | .negSucc m, .ofNat n => Int.abs_negOfNat (Nat.succ m * n)
+  | .negSucc _, .negSucc _ => rfl
+/-- `|-a| = |a|`. -/
+def Int.abs_neg : (a : Int) → Int.abs (-a) = Int.abs a
+  | .ofNat .zero => rfl
+  | .ofNat (.succ _) => rfl
+  | .negSucc _ => rfl

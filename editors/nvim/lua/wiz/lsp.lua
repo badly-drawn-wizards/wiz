@@ -85,9 +85,15 @@ function M.cmd(root)
   return cfg.cmd
 end
 
---- Turn on Neovim's built-in completion for the client (`lsp.completion`).
+--- Turn on Neovim's built-in completion for the client (`lsp.completion`), and
+--- `lsp.folding`: fold with the server's ranges in the current window.
 function M.on_attach(client, buf)
   local cfg = config.get().lsp
+  if cfg.folding and vim.lsp.foldexpr and vim.api.nvim_get_current_buf() == buf then
+    vim.wo.foldmethod = 'expr'
+    vim.wo.foldexpr = 'v:lua.vim.lsp.foldexpr()'
+    vim.wo.foldlevel = 99
+  end
   local want = cfg.completion
   if want == 'auto' then
     want = not (package.loaded['cmp'] or package.loaded['blink.cmp'])

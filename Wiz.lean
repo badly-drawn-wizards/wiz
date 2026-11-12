@@ -50,6 +50,7 @@ import Wiz.Infoview
 import Wiz.Actions
 import Wiz.Completion
 import Wiz.Signature
+import Wiz.Symbols
 import Wiz.LSP
 import Wiz.Toolchain
 import Wiz.Module
