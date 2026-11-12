@@ -180,8 +180,8 @@ def group : Group where
     { name := "the unifier meets an equation with its computed form (unify-computed-equations)", run := fun _ =>
         okOptic ("import Optic\n" ++
           "def t3 (x : Nat) (xs ys : List Nat) (h : xs = ys) : List.cons x xs = List.cons x ys :=\n" ++
-          "  Optic.congrArg (List.cons x) h\n" ++
-          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Optic.congrArg Nat.succ h") },
+          "  Eq.congrArg (List.cons x) h\n" ++
+          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Eq.congrArg Nat.succ h") },
     -- agent/elab-stretch
     { name := "numerals and notation in class field types (numerals-in-class-decls)", run := fun _ =>
         okLib ("import Prelude\ninductive HwTy where\n  | bits (n : Nat)\nclass Hw (r : HwTy → Type) where\n" ++
@@ -785,7 +785,19 @@ def group : Group where
     -- agent/dogfood-fixes
     { name := "auto-share: an ill-kinded instance match does not apply; no evaluator panic (autoshare-illkinded-panic)", run := fun _ =>
         -- `ShareLet (r a) (r b)` matched `S T.El` first order with r := S, a := T.El
-        okLib "import Prelude\n-- the auto-share hook of Hdl.Core, alone (docs/libraries.md, H14 S0)\nclass ShareLet (A B : Type) where\n  share : A → (A → B) → B\ninductive T where\n  | bits (n : Nat)\ndef T.El : T → Type\n  | .bits n => Nat\nclass Hw (r : T → Type) where\n  lit : (n : Nat) → r (T.bits n)\ninstance : Hw T.El where\n  lit := fun n => n\ninstance {r : T → Type} [Hw r] {a b : T} : ShareLet (r a) (r b) where\n  share := fun x f => f x\nstructure S (r : T → Type) where\n  x : r (T.bits 3)\n  y : r (T.bits 8)\ndef base : S T.El := S.mk 1 2\n-- `S T.El` is taken for `r a` with r := S, a := T.El: ill-kinded\ndef f (k : Nat) : S T.El :=\n  let b := base;\n  S.mk b.x k\n" }
+        okLib "import Prelude\n-- the auto-share hook of Hdl.Core, alone (docs/libraries.md, H14 S0)\nclass ShareLet (A B : Type) where\n  share : A → (A → B) → B\ninductive T where\n  | bits (n : Nat)\ndef T.El : T → Type\n  | .bits n => Nat\nclass Hw (r : T → Type) where\n  lit : (n : Nat) → r (T.bits n)\ninstance : Hw T.El where\n  lit := fun n => n\ninstance {r : T → Type} [Hw r] {a b : T} : ShareLet (r a) (r b) where\n  share := fun x f => f x\nstructure S (r : T → Type) where\n  x : r (T.bits 3)\n  y : r (T.bits 8)\ndef base : S T.El := S.mk 1 2\n-- `S T.El` is taken for `r a` with r := S, a := T.El: ill-kinded\ndef f (k : Nat) : S T.El :=\n  let b := base;\n  S.mk b.x k\n" },
+    { name := "#250: the body of an impossible arm is type checked; an empty match", run := fun _ => do
+        let hdr := "import Prelude\ninductive T : Bool → Type where\n  | mk : T .true\n"
+        failsLibW (hdr ++ "def f (t : T .false) : False := match t with\n  | .mk => \"hello\"\n") "type mismatch"
+        -- a well-typed body on an impossible arm is still accepted
+        okLib (hdr ++ "def f (t : T .false) (h : False) : False := match t with\n  | .mk => h\n")
+        -- no arms when every case is impossible
+        okLib (hdr ++ "def f (t : T .false) : False := match t with\n" ++
+          "def g : T .false → False := fun t => match t with\n" ++
+          "def h (n : Nat) : (b : Bool) → T b → b = .false → Nat\n  | _, .mk, e => absurd e.1\n" ++
+          "def k : {b : Bool} → T b → b = .false → False\n  | _, .mk, e => absurd e.1\n")
+        failsLibW (hdr ++ "def f (t : T .true) : False := match t with\n") "missing case for constructor mk"
+        failsLibW (hdr ++ "def g : (b : Bool) → T b → False := fun b t => match t with\n") "missing case for constructor mk" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
