@@ -23,6 +23,9 @@ M.defaults = {
     capabilities = nil, -- merged into the client's capabilities
     -- Show the types of binders written without one (`fun x => …`) inline (0.10+).
     inlay_hints = false,
+    -- Fold with the server's folding ranges (commands, `by` blocks, comments) in the
+    -- windows showing a Wiz buffer (0.11+, `vim.lsp.foldexpr`; all folds start open).
+    folding = false,
   },
   abbreviations = {
     enable = true,

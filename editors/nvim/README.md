@@ -95,6 +95,7 @@ require('wiz').setup {
     on_attach = nil,                   -- function(client, bufnr)
     capabilities = nil,                -- merged into the defaults
     inlay_hints = false,               -- show binder types inline (0.10+)
+    folding = false,                   -- fold with the server's ranges (0.11+)
   },
   abbreviations = {
     enable = true,
@@ -132,6 +133,8 @@ What the server offers, and Neovim's keys for it:
 | | |
 |---|---|
 | inlay hints (`lsp.inlay_hints`, or `:lua vim.lsp.inlay_hint.enable()`) | `: T` after a `fun`/`let` binder written without a type |
+| outline (`gO`), workspace symbols (`:lua vim.lsp.buf.workspace_symbol()`) | the file's declarations (fields and constructors as children); every declaration of the open files and their imports |
+| folding (`lsp.folding`) | commands, `by` blocks, `match`es, block comments |
 
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
 type, kind and, for a constant, where it is declared: `wiz/subtermInfo`); moving the
