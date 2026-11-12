@@ -217,6 +217,19 @@ def within {α : Type} (secs mb : Nat) (act : Unit → IO α) : IO α := do
     throw (IO.userError s!"took {ms} ms and {peak} MB (bounds: {secs} s, {mb} MB)")
   pure a
 
+/-- A structure of `n` numbers and a function adding every field (`s.f0 + … + s.f(n-1)`). -/
+def wideSum (n : Nat) : String :=
+  s!"structure W{n} where\n" ++ String.join ((List.range n).map (s!"  f{·} : Nat\n")) ++
+  s!"def sum{n} (s : W{n}) : Nat := " ++ " + ".intercalate ((List.range n).map (s!"s.f{·}")) ++ "\n"
+
+/-- The projections in an IR body. -/
+partial def projCount : IR.Body → Nat
+  | .vdecl _ (.proj _ _) b => projCount b + 1
+  | .vdecl _ _ b | .dup _ b | .drop _ b => projCount b
+  | .case _ alts => alts.foldl (fun n a => n + projCount a) 0
+  | .jdecl _ _ body k => projCount body + projCount k
+  | _ => 0
+
 /-- A list of `n` numerals written out: `List.cons 0 (List.cons 1 (… List.nil))`. -/
 def listSource (n : Nat) : String :=
   String.join ((List.range n).map (s!"List.cons {·} (")) ++ "List.nil" ++ String.ofList (List.replicate n ')')
@@ -323,6 +336,17 @@ def group : Group where
         unless bad.isEmpty do throw (IO.userError "they differ on the projection chain") },
     { name := "the IR of a step over bundles of 8, 16 and 32 fields (reuse was exponential: 20 took 115 s)", run := fun _ =>
         checksLibsWithin 240 ("import Hdl.Core\n" ++ String.join ([8, 16, 32].map wideBundle)) },
+    -- field k of a structure (a right-nested Σ) is k projections: reading every field
+    -- was n²/2 of them; the simplifier shares the projections already bound (15j)
+    { name := "reading every field of a 32- and a 64-field structure takes a linear number of projections (15j)", run := fun _ => do
+        let st ← elabOk ("import Prelude\n" ++ wideSum 32 ++ wideSum 64)
+        let counts ← [32, 64].mapM fun n => do
+          let ds ← loweredOf st [s!"sum{n}"]
+          match ds.find? (·.name == s!"sum{n}") with
+          | some d => pure (projCount d.body)
+          | none => throw (IO.userError s!"no IR for sum{n}")
+        -- one projection to each field and one to each tail
+        checkEq [64, 128] counts },
     -- `insertRC` recomputed the free variables of the rest of the body at each binding
     -- (and kept them while handling the rest): quadratic in time and space along a chain
     -- of bindings, the constant a literal becomes (6000 characters: 18 000 bindings, about
