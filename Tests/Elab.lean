@@ -7862,8 +7862,8 @@ def hdlPrimCheck : IO Unit := do
         "serial_core core (.clk(ck_CLKOUT0_g), .sys4x(ck_CLKOUT1_g), .d(d), .ck(ck), .q(q), .dq(dq), .back(back));"] do
       unless (v.splitOn frag).length > 1 do throw (IO.userError s!"missing from the Verilog: {frag}\n{v}")
     if (v.splitOn "assign dq").length > 1 then throw (IO.userError s!"a pad is assigned:\n{v}")
-    checkEq (repr ([".cons \"OSERDESE2 (node 22) has no behavioural model\" (.cons \"ODDR (node 29) has no behavioural model\" .nil)",
-      ".error \"simulation refused: OSERDESE2 (node 22) has no behavioural model; ODDR (node 29) has no behavioural model\"",
+    checkEq (repr ([".cons \"OSERDESE2 (node 14) has no behavioural model\" (.cons \"ODDR (node 21) has no behavioural model\" .nil)",
+      ".error \"simulation refused: OSERDESE2 (node 14) has no behavioural model; ODDR (node 21) has no behavioural model\"",
       ".nil",
       "\"module blink(input clk, input [0:0] x, output [0:0] led, inout [0:0] pin, output [0:0] seen);\\n  reg [0:0] r; initial r = 1'd0;\\n  wire [0:0] n2 = ~x;\\n  wire [0:0] n4;\\n  wire [0:0] n6 = ~r;\\n  IOBUF u3 (.I(r), .T(n2), .O(n4), .IO(pin));\\n  OBUF u7 (.I(r), .O(led));\\n  always @(posedge clk) r <= n6;\\n  assign seen = n4;\\nendmodule\\n\"",
       ".ok (.cons (.mk 0, .mk 0, .mk 0) (.cons (.mk 1, .mk 1, .mk 0) (.cons (.mk 0, .mk 0, .mk 0) (.cons (.mk 1, .mk 1, .mk 1) .nil))))",
