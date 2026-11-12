@@ -83,12 +83,6 @@ def group : Group where
         let ms ← msgs (lcg ++ s!"def it : iter 20000 (UIntN.ofNat 16 1) = UIntN.ofNat 16 {lcgValue 20000} := native_refl\n#print axioms it\n")
         noErrors ms
         expect ms "'it' depends on axioms: [it.native✝" },
-    { name := "V1: the OLED demo's units at full width (examples/hdl-verified-native.wiz)", run := fun _ => do
-        let ms ← msgs (← IO.FS.readFile "examples/hdl-verified-native.wiz")
-        noErrors ms
-        expect ms "root_full is accepted on the strength of native evaluation"
-        expect ms "smin_full is accepted on the strength of native evaluation"
-        expect ms "'smin_full' depends on axioms: [smin_full.native✝" },
     { name := "rejected without --trust-native", run := fun _ => do
         let ms ← msgs (sumTo ++ "def s : sumTo 4 = 10 := native_refl\n") (trust := false)
         expect ms "error: native evaluation is not enabled"
@@ -229,6 +223,26 @@ def group : Group where
             throw (IO.userError s!"{n} depends on a native_refl axiom") }
   ]
 
-def groups : List Group := [group]
+/-- H14 V1 (docs/libraries.md): the OLED demo's arithmetic units, against their Nat
+definitions. Slow (minutes: kernel evaluation over every input of each unit's domain,
+and native_refl over 2^20 inputs), so a group of its own, in a heavy shard. -/
+def hdlVerifiedGroup : Group where
+  name := "hdl-verified"
+  exercise := "—"
+  cases := [
+    { name := "V1: kernel-checked on the units' domains, nothing trusted (examples/hdl-verified.wiz)", run := fun _ => do
+        let ms ← msgs (← IO.FS.readFile "examples/hdl-verified.wiz") (trust := false)
+        noErrors ms
+        expect ms "info: (20, 19)"
+        if has ms "native" then throw (IO.userError s!"the kernel-checked file mentions native evaluation:\n{"\n".intercalate ms}") },
+    { name := "V1: full widths by native_refl, each an axiom #print axioms names (examples/hdl-verified-native.wiz)", run := fun _ => do
+        let ms ← msgs (← IO.FS.readFile "examples/hdl-verified-native.wiz")
+        noErrors ms
+        expect ms "root_full is accepted on the strength of native evaluation"
+        expect ms "norm_full is accepted on the strength of native evaluation"
+        expect ms "smin_full is accepted on the strength of native evaluation"
+        expect ms "'smin_full' depends on axioms: [smin_full.native✝" } ]
+
+def groups : List Group := [group, hdlVerifiedGroup]
 
 end Tests.Native

@@ -2,6 +2,9 @@
   {"name": "selfhost", "split": 4, "heavy": true, "select": [
     "=selfhost"
   ]},
+  {"name": "hdl-verified", "heavy": true, "select": [
+    "=hdl-verified"
+  ]},
   {"name": "grail-selfhost", "heavy": true, "select": [
     "=grail-selfhost"
   ]},
@@ -28,7 +31,7 @@
     "=grail-deps",
     "=grail-hygiene",
     "=grail-jobs",
-    "hdl",
+    "=hdl",
     "infoview",
     "language",
     "lsp",

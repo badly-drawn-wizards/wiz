@@ -219,10 +219,11 @@ Two structure lemmas tie the 24-bit units to the kernel-checked pieces by defini
 **Trust.** `examples/hdl-verified.wiz` is kernel-checked, nothing trusted.
 `examples/hdl-verified-native.wiz` uses `native_refl` (27a): with `--trust-native` only,
 one axiom per check (`#print axioms` lists it), trusting erasure and the interpreter.
+Both run in the test group *hdl-verified* (a heavy shard: minutes).
 
-**What was hard (findings).** `sat_decide` (28b/28c) was meant to do the word-level
+**What was hard (findings).** `sat_decide` (28b/28c, PRs #197/#208) was meant to do the word-level
 units, but: (F1) it is Boolean only, and nothing bit-blasts `UIntN`/`BitVec` (the bit
-library is one-bit; the Nat div/mod lemmas a bridge needs don't exist); (F2) `unfold`
+library, #167, is one-bit; the Nat div/mod lemmas a bridge needs don't exist); (F2) `unfold`
 left a definition by cases on a numeral as a raw eliminator (PR #224); (F5) its
 certificate check costs about 0.3 s per LRAT step, so a 6-bit adder's commutativity
 takes about 40 s, and these units would need 10⁴ and more; (F3) exhaustive `rfl` is
