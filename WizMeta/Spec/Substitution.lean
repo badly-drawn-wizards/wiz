@@ -63,6 +63,10 @@ theorem sub_eqSigma (A B a b : Tm) (σ : Nat → Tm) :
     (eqSigma A B a b).sub σ = eqSigma (A.sub σ) (B.sub (upSub σ)) (a.sub σ) (b.sub σ) := by
   simp only [eqSigma, sub, sub_shift, sub_inst, sub_eqSigmaTransport]
 
+theorem sub_eqSigmaProof (A B a b : Tm) (σ : Nat → Tm) :
+    (eqSigmaProof A B a b).sub σ = eqSigmaProof (A.sub σ) (B.sub (upSub σ)) (a.sub σ) (b.sub σ) := by
+  simp only [eqSigmaProof, sub, sub_shift, sub_inst]
+
 theorem sub_eqTyPi (A₁ B₁ A₂ B₂ : Tm) (σ : Nat → Tm) :
     (eqTyPi A₁ B₁ A₂ B₂).sub σ = eqTyPi (A₁.sub σ) (B₁.sub (upSub σ)) (A₂.sub σ) (B₂.sub (upSub σ)) := by
   simp only [eqTyPi, sub, sub_shift, sub_shift2, sub_inst, sub_under1, sub_under2]; rfl
@@ -281,9 +285,12 @@ theorem sigma_subClosed {R : Rules} (hren : ∀ j, Derivable R j → Renames R j
   | sndCong =>
     simp only [Jdg.sub, Tm.sub, Tm.sub_inst]
     exact ofRule (hs _ .sndCong) (by fromIH ih σ Δ hσ hΔ)
-  | eq h =>
+  | eq h h' =>
     simp only [Jdg.sub, Tm.sub, Tm.sub_eqSigma]
-    exact ofRule (hs _ (.eq h)) (by fromIH ih σ Δ hσ hΔ)
+    exact ofRule (hs _ (.eq h h')) (by fromIH ih σ Δ hσ hΔ)
+  | eqProof h h' =>
+    simp only [Jdg.sub, Tm.sub, Tm.sub_eqSigmaProof]
+    exact ofRule (hs _ (.eqProof h h')) (by fromIH ih σ Δ hσ hΔ)
   | eqTyApart h1 h2 h3 => exact ofRule (hs _ (.eqTyApart h1 h2 h3)) (by fromIH ih σ Δ hσ hΔ)
   | cast h1 h2 =>
     simp only [Jdg.sub, Tm.sub, Tm.sub_castSigma]

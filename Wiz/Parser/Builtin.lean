@@ -213,7 +213,7 @@ def termLeading : List LeadingParser := [
   { kind := "term.match", prec := leadPrec,
     -- alternatives line up at or right of the first `|`, so an outer match's next
     -- alternative ends a nested match (as in Lean)
-    p := seqs ["match", sepBy1 term ",", "with", withPosition (many1 (seqs [colGe, matchAlt]))] },
+    p := seqs ["match", sepBy1 term ",", "with", withPosition (many (seqs [colGe, matchAlt]))] },
   -- tactics line up (or are separated by `;`); the tactics themselves come from the prelude
   { kind := "term.by", prec := leadPrec,
     p := seqs ["by", withPosition (many1 (seqs [colGe, cat "tactic" 0, optional ";"]))] },
@@ -261,7 +261,7 @@ continue onto a line starting at the command's column.
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] where [fields] ["deriving" C,+] (where: `structure.where`, "where" [["private"] ident "::"]) |
 | `command.private`            | "private" command (every name it declares is private to the module) |
 | `command.sealed`             | "sealed" command (an `inductive`: no other declaration is this type) |
-| `command.local`              | "local" command (13m: a `syntax`, `notation`, `infix…`, `macro_rules` or `attribute [macro …]` whose syntax stays in the module) |
+| `command.local`              | "local" command (13m: a `syntax`, `notation`, `infix…`, `macro_rules` or `attribute [macro …]` whose syntax stays in the module; 11w: an `instance` found only in the module) |
 | `command.deriving`           | "deriving" "instance" C,+ "for" T,+ |
 | `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
 | `command.attrInline`         | "attribute" "[" "inline" "]" ident |
