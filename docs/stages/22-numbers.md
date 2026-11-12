@@ -441,9 +441,11 @@ loops, `?`, `U64`, and functions that return borrows.
   borrows two locals threads the outer handle through `Uniq1.borrowIn`.
   `#lower` marks such functions `-- linear handles`. The kernel then rejects passing one
   `&mut` twice (E0499) on the `#unchecked` lowering too.
-  Any other construct keeps the whole block on the ω handles for now: loops, `return`,
-  `?`, `match`/`if let`, methods, indexing, shared or field borrows, returned borrows.
-  M4b-2 and M4b-3 cover those.
+  Since M4b-2, `for` and `while` loops are covered too: the loop function takes every
+  handle it mentions at 1 and hands it back in `Result1`. So is `v.push x` on a `&mut`,
+  lowered to FeralCore's linear twin `Vec.push1`. Any other construct keeps the whole
+  block on the ω handles for now: `return`, `?`, `match`/`if let`, `while let`, other
+  methods, indexing, shared or field borrows, returned borrows. M4b-3 covers those.
 * **Located output for command macros.** Runtime `Syntax` has no positions. A command
   macro now names a node of its input by **path** (child indices), and its output may
   contain `Syntax.errorAt path msg`, `Syntax.infoAt path msg` and
