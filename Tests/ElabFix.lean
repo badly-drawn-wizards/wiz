@@ -180,8 +180,8 @@ def group : Group where
     { name := "the unifier meets an equation with its computed form (unify-computed-equations)", run := fun _ =>
         okOptic ("import Optic\n" ++
           "def t3 (x : Nat) (xs ys : List Nat) (h : xs = ys) : List.cons x xs = List.cons x ys :=\n" ++
-          "  Optic.congrArg (List.cons x) h\n" ++
-          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Optic.congrArg Nat.succ h") },
+          "  Eq.congrArg (List.cons x) h\n" ++
+          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Eq.congrArg Nat.succ h") },
     -- agent/elab-stretch
     { name := "numerals and notation in class field types (numerals-in-class-decls)", run := fun _ =>
         okLib ("import Prelude\ninductive HwTy where\n  | bits (n : Nat)\nclass Hw (r : HwTy → Type) where\n" ++
@@ -781,7 +781,19 @@ def group : Group where
           "def s0t (s : S0) : Type := match s with\n  | .mk n m => Nat\n" ++
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
-        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" }
+        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#250: the body of an impossible arm is type checked; an empty match", run := fun _ => do
+        let hdr := "import Prelude\ninductive T : Bool → Type where\n  | mk : T .true\n"
+        failsLibW (hdr ++ "def f (t : T .false) : False := match t with\n  | .mk => \"hello\"\n") "type mismatch"
+        -- a well-typed body on an impossible arm is still accepted
+        okLib (hdr ++ "def f (t : T .false) (h : False) : False := match t with\n  | .mk => h\n")
+        -- no arms when every case is impossible
+        okLib (hdr ++ "def f (t : T .false) : False := match t with\n" ++
+          "def g : T .false → False := fun t => match t with\n" ++
+          "def h (n : Nat) : (b : Bool) → T b → b = .false → Nat\n  | _, .mk, e => absurd e.1\n" ++
+          "def k : {b : Bool} → T b → b = .false → False\n  | _, .mk, e => absurd e.1\n")
+        failsLibW (hdr ++ "def f (t : T .true) : False := match t with\n") "missing case for constructor mk"
+        failsLibW (hdr ++ "def g : (b : Bool) → T b → False := fun b t => match t with\n") "missing case for constructor mk" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
