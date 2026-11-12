@@ -31,9 +31,10 @@ fi
 (cd "$ROOT" && "$WIZ" --cc emcc --cflags "-I$OUT/gmp" --gmp "$OUT/gmp/mini-gmp.c" \
   --ldflags "-sMEMORY64=1 -sSTACK_SIZE=33554432 --no-entry \
 -sALLOW_MEMORY_GROWTH -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web,node \
--sEXPORTED_FUNCTIONS=_wiz_web_init,_wiz_web_step,_wiz_release,_free \
+-sEXPORTED_FUNCTIONS=_wiz_web_init,_wiz_web_step,_wiz_doc_init,_wiz_doc_step,_wiz_release,_free \
 -sEXPORTED_RUNTIME_METHODS=stringToNewUTF8 \
 -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=\$stringToNewUTF8,\$UTF8ToString" \
   build web/Web.wiz -o "$OUT/wiz-infoview.mjs" --no-main)
-cp "$ROOT/web/infoview.html" "$ROOT/web/infoview.js" "$OUT/"
+cp "$ROOT/web/infoview.html" "$ROOT/web/infoview.js" "$ROOT/web/tagged.js" "$ROOT/web/scroll.js" \
+  "$ROOT/web/scroll-search.js" "$ROOT/web/scroll.css" "$OUT/"
 echo "built $OUT/wiz-infoview.mjs"

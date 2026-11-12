@@ -10,6 +10,8 @@
 #   bin/llc           the same clang on textual LLVM IR, with llc's arguments (`--llvm`)
 #   bin/clang, bin/ld.lld, lib/*.so*   the compiler and linker, from the Lean toolchain
 #                     (`lean --print-prefix`, or $LEAN_PREFIX): the same LLVM as Lean's
+#   bin/cadical       (stage 28b) the SAT solver `sat_decide` asks for LRAT proofs, also
+#                     the Lean toolchain's (Lean ships it for bv_decide; ~1 MB with libc++)
 #   lib/clang/N/      compiler-rt (builtins, crtbegin/end) and clang's own headers
 #   sysroot/          glibc 2.27 and Linux 4.15 headers and the libraries to link against
 #                     (Ubuntu 18.04's libc6, libc6-dev, linux-libc-dev), with static
@@ -35,7 +37,7 @@ case $dl in /*) ;; *) dl=$(pwd)/$dl ;; esac
 # several mirrors, and every file last on this repository's release `bundle-inputs`
 here=$(cd "$(dirname "$0")" && pwd)
 ubuntu_mirrors="http://archive.ubuntu.com/ubuntu/pool/main http://mirrors.kernel.org/ubuntu/pool/main http://mirror.math.princeton.edu/pub/ubuntu/pool/main http://ftp.halifax.rwth-aachen.de/ubuntu/pool/main"
-inputs_release=${WIZ_BUNDLE_INPUTS:-https://github.com/badly-drawn-wizards/wiz/releases/download/bundle-inputs}
+inputs_release=${WIZ_BUNDLE_INPUTS:-https://github.com/wiz-pl/wiz/releases/download/bundle-inputs}
 fetch() { # FILE SHA256 URL…
   f=$1 sum=$2; shift 2
   [ -f "$dl/$f" ] && echo "$sum  $dl/$f" | sha256sum -c --quiet - >/dev/null 2>&1 && return 0
@@ -72,9 +74,9 @@ rm -rf "$out"
 mkdir -p "$out/bin" "$out/lib" "$out/LICENSES"
 
 # the compiler and linker, and the shared libraries they need (from Lean's lib/)
-cp -L "$lean/bin/clang" "$lean/bin/ld.lld" "$out/bin/"
+cp -L "$lean/bin/clang" "$lean/bin/ld.lld" "$lean/bin/cadical" "$out/bin/"
 need() { readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'; }
-todo="$out/bin/clang $out/bin/ld.lld"
+todo="$out/bin/clang $out/bin/ld.lld $out/bin/cadical"
 while [ -n "$todo" ]; do
   next=
   for b in $todo; do
@@ -92,7 +94,8 @@ mkdir -p "$out/lib/clang/$ver/include"
 cp -R "$lean/lib/clang/$ver/lib" "$out/lib/clang/$ver/"
 cp "$lean/include/clang/"*.h "$out/lib/clang/$ver/include/"
 cp "$lean/LICENSE" "$out/LICENSES/lean4-LICENSE"
-[ -d "$lean/LICENSES" ] && cp -R "$lean/LICENSES" "$out/LICENSES/lean4-LICENSES"
+# (a file in current Lean toolchains: the third-party licences, CaDiCaL's among them)
+[ -e "$lean/LICENSES" ] && cp -R "$lean/LICENSES" "$out/LICENSES/lean4-LICENSES"
 
 # the sysroot: glibc 2.27 and the kernel headers, only what compiling and linking need
 sys=$out/sysroot
@@ -177,6 +180,7 @@ find "$sys/usr/lib" -name '*.la' -delete
 
 cat > "$out/VERSIONS" <<EOF
 clang, ld.lld, compiler-rt: from $(basename "$lean") ($("$out/bin/clang" --version | head -1))
+cadical: from $(basename "$lean") ($("$out/bin/cadical" --version))
 glibc 2.27 (libc6, libc6-dev 2.27-3ubuntu1.6), Linux headers 4.15 (linux-libc-dev 4.15.0-213.224): Ubuntu 18.04
 GMP 6.3.0 (static, --enable-fat), Boehm GC 8.2.8 (static, threads)
 EOF
@@ -191,4 +195,8 @@ int main(void) { mpz_t a; mpz_init_set_ui(a, 1); mpz_mul_2exp(a, a, 100); GC_INI
 EOF
 "$cc" -O2 "$work/t.c" -o "$work/t" -lgmp -lgc
 "$work/t"
+# and the SAT solver gives LRAT proofs
+printf 'p cnf 1 2\n1 0\n-1 0\n' > "$work/t.cnf"
+st=0; "$out/bin/cadical" -q --lrat --no-binary "$work/t.cnf" "$work/t.lrat" >/dev/null || st=$?
+[ "$st" = 20 ] && [ -s "$work/t.lrat" ] || { echo "bundle-cc: cadical gave no LRAT proof (exit $st)" >&2; exit 1; }
 du -sh "$out"
