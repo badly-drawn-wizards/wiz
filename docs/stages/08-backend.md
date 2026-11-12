@@ -68,7 +68,11 @@ that builds an object reuses the token, and the others free it at once
 (`reuse w in ctor 0`, which needs no cell). The IR has no types, and a `Bool` returned
 by a function has no cell to give, so only variables known to be objects (projected
 from, or built) go across, outermost first; the local pass pairs what is left. A
-zipper's insertion loop then allocates nothing per level.
+zipper's insertion loop then allocates nothing per level. A drop that finds no
+allocation is remembered and not tried again further down the path: the answer could
+only be the same, and asking again (with the drop's parts each time) was exponential
+along a chain of projections, the shape of a wide structure's fields read by a
+bundle's `pack` (a 20-field bundle took two minutes).
 
 | #   | Where                 | What                                          |
 |-----|-----------------------|-----------------------------------------------|
