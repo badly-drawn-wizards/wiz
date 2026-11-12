@@ -12,6 +12,7 @@ import Tests.Allocs
 import Tests.Scaling
 import Tests.Feral
 import Tests.Tower
+import Tests.Doc
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -23,6 +24,7 @@ open Tests
 new group touches only its module (and `.github/test-shards.json`). -/
 def groups : List Group :=
   Check.groups ++
+  Doc.groups ++
   Elab.groups ++
   ElabFix.groups ++
   Feral.groups ++
@@ -181,7 +183,7 @@ def main (args : List String) : IO UInt32 := do
   if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run-case" :: _ | "--check" :: _ | "--check-libs" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run-case" :: _ | "--check" :: _ | "--check-libs" :: _ | "--probe-reuse" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -219,6 +221,7 @@ def main (args : List String) : IO UInt32 := do
   -- `exitOnPanic`
   | ["--panic-probe", mode, site] => Lint.panicProbe mode site
   | "--probe-checker" :: opts => do Scaling.probeChecker opts; pure 0
+  | ["--probe-reuse"] => Scaling.probeReuse
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
   | ["--list"] => do
