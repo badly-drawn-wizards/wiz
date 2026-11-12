@@ -7,7 +7,8 @@ import Tower.Basic
 -- (`git clone` + `lake build wiz grail`). `auto` tries them in that order. A toolchain
 -- is built in `toolchains/.tmp-…` and renamed into place.
 -- A spec that is not a tag (or `stable`) takes the release snapshot of its commit,
--- `RELEASES/snapshot-<full sha>/…` (26g): `nightly` is the commit of the tag `nightly`.
+-- `RELEASES/snapshot-<full sha>/…` (26g). Channels name one commit for every source:
+-- `nightly` is the commit of the tag `nightly` (the branch's tip without one).
 
 -- What a spec asks for: the ref to resolve, a pinned commit, the release tag of a tag
 -- spec, and the commit whose snapshot a release install takes when it is not `commit`
@@ -97,8 +98,12 @@ def Tower.resolveSpec (s : Settings) (spec : String) : EIO Want :=
       | .error e => " (could not list it)" : String);
     match String.eq spec "nightly" with
     | .true => match Tower.findRef rs s.nightlyRef with
-      -- the tag `nightly` (when there is one): the newest commit with a complete snapshot
-      | .some c => EIO.pure (Want.mk s.nightlyRef (.some c) .none (String.lookup "refs/tags/nightly" rs))
+      -- the tag `nightly` (when there is one): the newest commit whose CI passed, with a
+      -- complete snapshot; nightly's commit for every source (Nix and source installs
+      -- too), else the branch's tip
+      | .some c => match String.lookup "refs/tags/nightly" rs with
+        | .some t => EIO.pure (Want.mk s.nightlyRef (.some t) .none (.some t))
+        | .none => EIO.pure (Want.mk s.nightlyRef (.some c) .none .none)
       | .none => EIO.fail ("nightly: no branch " & s.nightlyRef & " in " & s.git & listed)
     | .false => match String.eq spec "stable" with
     | .true => match refs with
@@ -150,8 +155,13 @@ def Tower.flakeRef (flake commit : String) : String :=
     | .true => flake & "&rev=" & commit
     | .false => flake & "?rev=" & commit
 
+-- the official flakes: the current one and the pre-move name, which settings saved before
+-- the move to wiz-pl still hold (GitHub redirects it)
+def Tower.officialFlake (flake : String) : Bool :=
+  Bool.or (String.eq flake "github:wiz-pl/wiz") (String.eq flake "github:badly-drawn-wizards/wiz")
+
 def Tower.cachixOptions (s : Settings) : List String :=
-  match String.eq s.flake "github:badly-drawn-wizards/wiz" with
+  match Tower.officialFlake s.flake with
   | .true => "--option" :> "extra-substituters" :> "https://badlydrawnwizards.cachix.org" :>
     "--option" :> "extra-trusted-public-keys" :>
     "badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI=" :> .nil
